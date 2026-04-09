@@ -54,12 +54,25 @@ export function useDeserialize(options: {
       throw new Error("Endpoint not found");
     }
     const endpoint = await formatEndpoint(endpointPo);
-    return new ChatCompletionModels[
+    const model = new ChatCompletionModels[
       modelPO.base as keyof typeof ChatCompletionModels
     ]({
       model_config: model_config,
       request_config: await endpoint.chatCompletion(modelPO.name),
     });
+    model.INPUT_MAX_TOKENS = modelPO.INPUT_MAX_TOKENS ?? model.INPUT_MAX_TOKENS;
+    model.OUTPUT_MAX_TOKENS_LOWER_LIMIT =
+      modelPO.OUTPUT_MAX_TOKENS_LOWER_LIMIT ??
+      model.OUTPUT_MAX_TOKENS_LOWER_LIMIT;
+    model.OUTPUT_MAX_TOKENS =
+      modelPO.OUTPUT_MAX_TOKENS ?? model.OUTPUT_MAX_TOKENS;
+    model.IS_SUPPORT_FUNCTION_CALL =
+      modelPO.IS_SUPPORT_FUNCTION_CALL ?? model.IS_SUPPORT_FUNCTION_CALL;
+    model.IS_SUPPORT_TOOLS_CALL =
+      modelPO.IS_SUPPORT_TOOLS_CALL ?? model.IS_SUPPORT_TOOLS_CALL;
+    model.IS_SUPPORT_IMAGE_CONTENT =
+      modelPO.IS_SUPPORT_IMAGE_CONTENT ?? model.IS_SUPPORT_IMAGE_CONTENT;
+    return model;
   }
 
   async function formatTool(toolPO: ChatPL.ToolPO): Promise<Tool> {
