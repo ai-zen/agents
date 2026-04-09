@@ -1,10 +1,10 @@
-import { ChatAL } from "./ChatAL.js";
+import { AgentNS } from "./AgentNS.js";
 import { PickRequired } from "./Common.js";
 import { FunctionCallContext } from "./FunctionCallContext.js";
 
-export abstract class Tool implements ChatAL.ToolDefine {
+export abstract class Tool implements AgentNS.ToolDefine {
   type: "function";
-  function: ChatAL.FunctionDefine;
+  function: AgentNS.FunctionDefine;
 
   constructor(options: PickRequired<Tool, "function">) {
     if (!options.function) throw new Error("Tool must have a function");

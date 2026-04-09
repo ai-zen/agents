@@ -1,4 +1,4 @@
-import { ChatAL } from "../ChatAL.js";
+import { AgentNS } from "../AgentNS.js";
 import { PickRequired } from "../Common.js";
 import { FunctionCallContext } from "../FunctionCallContext.js";
 import { Tool } from "../Tool.js";
@@ -10,7 +10,7 @@ export interface IndexedSearchEntry {
 
 export class IndexedSearchTool implements Tool {
   type: "function";
-  function: ChatAL.FunctionDefine;
+  function: AgentNS.FunctionDefine;
   entries: IndexedSearchEntry[];
 
   constructor(options: PickRequired<IndexedSearchTool, "entries">) {

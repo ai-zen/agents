@@ -1,21 +1,24 @@
 <template>
   <div class="chat">
-    <!-- 场景列表侧边栏 -->
-    <div class="left-side-bar scenes-side-bar" v-loading="sceneState.isLoading">
+    <!-- 智能体列表侧边栏 -->
+    <div
+      class="left-side-bar agents-side-bar"
+      v-loading="chatAgentState.isLoading"
+    >
       <el-scrollbar class="scroll-y">
-        <div class="scenes">
+        <div class="agents">
           <div
-            class="scene"
-            v-for="scene of sceneState.list"
-            :key="scene.id"
-            @click="onSceneClick(scene)"
+            class="agent"
+            v-for="agent of chatAgentState.list"
+            :key="agent.id"
+            @click="onAgentClick(agent)"
             :class="{
-              'is-current': sceneState.current?.id == scene.id,
+              'is-current': chatAgentState.current?.id == agent.id,
             }"
           >
-            <AutoIcon class="icon" :icon="scene.icon"></AutoIcon>
-            <div class="title">{{ scene.title }}</div>
-            <div class="add" @click="addSessionByScene(scene)">
+            <AutoIcon class="icon" :icon="agent.icon"></AutoIcon>
+            <div class="title">{{ agent.title }}</div>
+            <div class="add" @click="addSessionByAgent(agent)">
               <el-icon>
                 <Plus />
               </el-icon>
@@ -57,7 +60,7 @@
       <!-- 对话内容 -->
       <div
         class="chat-content"
-        v-loading="sceneState.isLoading || sessionState.isLoading"
+        v-loading="chatAgentState.isLoading || sessionState.isLoading"
       >
         <template v-if="sessionState.current">
           <el-scrollbar class="scroll-y" ref="scrollBarRef">
@@ -80,7 +83,7 @@
                   />
 
                   <ImagePicker
-                    v-if="currentModelClass?.IS_SUPPORT_IMAGE_CONTENT"
+                    v-if="getModel(currentModelId)?.IS_SUPPORT_IMAGE_CONTENT"
                     v-model="sessionState.current.new_message_image"
                   >
                     <template #default="{ open }">
@@ -171,17 +174,17 @@
     </div>
 
     <SettingDialog
-      :endpointsModelKeyMap="endpointsModelKeyMap"
+      :modelState="modelState"
       :currentSession="sessionState.current"
-      :currentSessionScene="currentSessionScene"
-      :currentModelKey="currentModelKey"
+      :currentSessionAgent="currentSessionAgent"
+      :currentModelId="currentModelId"
       ref="settingDialogRef"
     />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ChatAL, ChatCompletionModels } from "@ai-zen/chats-core";
+import { AgentNS } from "@ai-zen/agents-core";
 import {
   CloseBold,
   MagicStick,
@@ -196,13 +199,14 @@ import { ElMessage, ElScrollbar } from "element-plus";
 import { computed, onMounted, ref } from "vue";
 import { AutoIcon, ChatMessage, EmojiPicker, Resize } from "../../components";
 import {
-  useAgent,
+  useChatAgent,
   useEndpoint,
   useKnowledgeBase,
-  useScene,
   useSession,
   useTool,
 } from "../../composables";
+import { useAgentTool } from "../../composables/useAgentTool";
+import { useModel } from "../../composables/useModel";
 import { ChatPL } from "../../types/ChatPL";
 import { insertTextAtCursor } from "../../utils";
 import ImagePicker from "./ImagePicker.vue";
@@ -214,16 +218,18 @@ const scrollBarRef = ref<InstanceType<typeof ElScrollbar> | undefined>();
 const inputRef = ref<HTMLTextAreaElement | undefined>();
 const settingDialogRef = ref<InstanceType<typeof SettingDialog> | undefined>();
 
-const { endpointState, endpointsModelKeyMap, initEndpointState } =
-  useEndpoint();
+const { initEndpointState, getEndpoint } = useEndpoint();
 
-const { sceneState, getScene, initSceneState } = useScene();
+const { modelState, initModelState, getModel } = useModel();
+
+const { chatAgentState, getAgent, getAgents, initChatAgentState } =
+  useChatAgent();
 
 const { initKnowledgeBaseState, getKnowledgeBases } = useKnowledgeBase();
 
 const { initToolState, getTools } = useTool();
 
-const { initAgentState, getAgents } = useAgent();
+const { initAgentToolState, getAgentTools } = useAgentTool();
 
 const {
   sessionState,
@@ -232,30 +238,26 @@ const {
   removeSession,
   initSessionState,
 } = useSession({
-  getDefaultScene() {
-    return sceneState.current ?? undefined;
+  getDefaultAgent() {
+    return chatAgentState.current ?? undefined;
   },
 });
 
-const currentSessionScene = computed(() => {
-  return getScene(sessionState.current?.scene_id);
+const currentSessionAgent = computed(() => {
+  return getAgent(sessionState.current?.agent_id);
 });
 
-const currentModelKey = computed(() => {
-  return (
-    sessionState.current?.model_key || currentSessionScene.value?.model_key
-  );
-});
-
-const currentModelClass = computed(() => {
-  return ChatCompletionModels[currentModelKey.value!];
+const currentModelId = computed(() => {
+  return sessionState.current?.model_id || currentSessionAgent.value?.model_id;
 });
 
 const { chatRef, isHasPendingMessage } = useChat({
   getCurrentSession: () => sessionState.current,
-  getCurrentSessionScene: () => currentSessionScene.value,
-  getEndpoints: () => endpointState.list,
+  getCurrentSessionAgent: () => currentSessionAgent.value,
+  getEndpoint,
+  getModel,
   getAgents,
+  getAgentTools,
   getKnowledgeBases,
   getTools,
 });
@@ -266,6 +268,14 @@ useAutoScroll({
 });
 
 async function onSendClick() {
+  try {
+    await settingDialogRef.value?.validate();
+  } catch (error) {
+    ElMessage.error("请选择一个有效的服务端");
+    settingDialogRef.value?.open();
+    return;
+  }
+
   if (!chatRef.value) {
     ElMessage.error("未初始化有效聊天");
     return;
@@ -276,14 +286,6 @@ async function onSendClick() {
     return;
   }
 
-  try {
-    await settingDialogRef.value?.validate();
-  } catch (error) {
-    ElMessage.error("请选择一个有效的服务端");
-    settingDialogRef.value?.open();
-    return;
-  }
-
   // 发送，并将结果同步到会话，触发自动保存
   const text = sessionState.current.new_message_content;
   const image = sessionState.current.new_message_image;
@@ -291,7 +293,7 @@ async function onSendClick() {
   sessionState.current.new_message_image = "";
 
   // 生成消息内容
-  let content: ChatAL.MessageContentSection[] | string;
+  let content: AgentNS.MessageContentSection[] | string;
   if (image) {
     content = [
       { type: "image_url", image_url: { url: image } },
@@ -315,14 +317,14 @@ function onAbortClick() {
  * 判断某个会话自从创建后是否还未经使用
  */
 function isUnusedSession(session: ChatPL.SessionPO) {
-  return session.messages.length == getScene(session.scene_id)?.messages.length;
+  return session.messages.length == getAgent(session.agent_id)?.messages.length;
 }
 
 /**
- * 响应点击场景列表项
+ * 响应点击智能体列表项
  */
-function onSceneClick(scene: ChatPL.ScenePO) {
-  sceneState.current = scene;
+function onAgentClick(agent: ChatPL.AgentPO) {
+  chatAgentState.current = agent;
   const lastSession = sessionState.list.at(-1);
 
   // 如果存在最后一个会话且未使用则先删除
@@ -330,15 +332,15 @@ function onSceneClick(scene: ChatPL.ScenePO) {
     removeSession(lastSession.id);
   }
 
-  // 从场景添加一个新会话
-  addSessionByScene(scene);
+  // 从智能体添加一个新会话
+  addSessionByAgent(agent);
 }
 
 /**
- * 从场景添加一个新会话
+ * 从智能体添加一个新会话
  */
-function addSessionByScene(scene: ChatPL.ScenePO) {
-  addSession(createSession(scene));
+function addSessionByAgent(agent: ChatPL.AgentPO) {
+  addSession(createSession(agent));
 }
 
 /**
@@ -346,17 +348,18 @@ function addSessionByScene(scene: ChatPL.ScenePO) {
  */
 function onSessionTabClick(session: ChatPL.SessionPO) {
   sessionState.current = session;
-  sceneState.current = getScene(session.scene_id) ?? null;
+  chatAgentState.current = getAgent(session.agent_id) ?? null;
 }
 
 onMounted(async () => {
   await Promise.all([
+    initModelState(),
     initEndpointState(),
-    initSceneState(),
     initKnowledgeBaseState(),
     initToolState(),
-    initAgentState(),
+    initAgentToolState(),
   ]);
+  await initChatAgentState();
   await initSessionState();
 });
 </script>
@@ -459,7 +462,7 @@ onMounted(async () => {
   }
 }
 
-.scenes-side-bar {
+.agents-side-bar {
   background-color: var(--el-bg-color);
   width: 220px;
   position: relative;
@@ -467,11 +470,11 @@ onMounted(async () => {
   // border-right: var(--el-border);
   box-shadow: var(--el-box-shadow-light);
 
-  .scenes {
+  .agents {
     padding: 0px;
   }
 
-  .scene {
+  .agent {
     box-sizing: border-box;
     width: 100%;
     background-color: var(--el-bg-color);

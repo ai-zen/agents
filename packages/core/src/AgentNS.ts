@@ -1,9 +1,9 @@
 import type { JSONSchema7 } from "json-schema";
 
 /**
- * Chat Abstraction Layer
+ * Agent Abstraction Layer
  */
-export namespace ChatAL {
+export namespace AgentNS {
   export enum Role {
     Unknown = "unknown",
     System = "system",

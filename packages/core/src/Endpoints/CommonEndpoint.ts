@@ -1,4 +1,3 @@
-import { ModelsKeys } from "../Models/index.js";
 import { Endpoint } from "../Endpoint.js";
 
 export interface CommonEndpointConfig {
@@ -9,8 +8,6 @@ export interface CommonEndpointConfig {
 
 export class CommonEndpoint extends Endpoint<CommonEndpointConfig> {
   static title = "Common";
-
-  static COMPATIBLE_MODELS_KEYS: ModelsKeys[] = [];
 
   async build() {
     return {

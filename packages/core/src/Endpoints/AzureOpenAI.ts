@@ -1,11 +1,9 @@
-import { Models, ModelsKeys } from "../Models/index.js";
 import { Endpoint } from "../Endpoint.js";
 import { ModelType } from "../Model.js";
 
 export interface AzureOpenAIConfig {
   azure_endpoint: string;
   api_key: string;
-  deployments: Partial<Record<ModelsKeys, string>>;
   api_version: string;
   headers?: Record<string, string>;
   body?: Record<string, any>;
@@ -14,22 +12,11 @@ export interface AzureOpenAIConfig {
 export class AzureOpenAI extends Endpoint<AzureOpenAIConfig> {
   static title = "Azure OpenAI";
 
-  static COMPATIBLE_MODELS_KEYS: ModelsKeys[] = [
-    "GPT4O_20240513",
-    "GPT4O_20240806",
-    "GPT4_0125Preview",
-    "GPT4_1106Preview",
-    "GPT4_VisionPreview",
-    "GPT35Turbo_0125",
-    "GPT35Turbo_0631",
-    "GPT35Turbo_1106",
-    "GPT35Turbo16K_0631",
-    "TextEmbeddingAda002_2",
-  ];
-
-  async build(model_key: ModelsKeys) {
-    let { azure_endpoint, deployments, api_version, api_key } =
-      this.endpoint_config;
+  async build(
+    path: "chat/completions" | "embeddings",
+    deployment_name: string,
+  ) {
+    let { azure_endpoint, api_version, api_key } = this.endpoint_config;
 
     if (!azure_endpoint) {
       throw new Error("Azure OpenAI endpoint requires azure_endpoint");
@@ -38,18 +25,6 @@ export class AzureOpenAI extends Endpoint<AzureOpenAIConfig> {
     if (!azure_endpoint.endsWith("/")) {
       azure_endpoint += "/";
     }
-
-    let path = "";
-    switch (Models[model_key].type) {
-      case ModelType.Embedding:
-        path = "embeddings";
-        break;
-      case ModelType.ChatCompletion:
-        path = "chat/completions";
-        break;
-    }
-
-    let deployment_name = deployments[model_key];
 
     return {
       ...this.endpoint_config,
@@ -63,5 +38,13 @@ export class AzureOpenAI extends Endpoint<AzureOpenAIConfig> {
         ...this.endpoint_config?.body,
       },
     };
+  }
+
+  chatCompletion(deployment_name: string) {
+    return this.build("chat/completions", deployment_name);
+  }
+
+  embedding(deployment_name: string) {
+    return this.build("embeddings", deployment_name);
   }
 }

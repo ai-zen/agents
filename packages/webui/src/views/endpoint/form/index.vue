@@ -58,17 +58,6 @@
         </el-select>
       </el-form-item>
 
-      <el-form-item prop="enabled_models_keys" label="启用的模型">
-        <el-select v-model="formState.form.enabled_models_keys" multiple>
-          <el-option
-            v-for="(model, key) of Models"
-            :key="key"
-            :value="key"
-            :label="model.title"
-          ></el-option>
-        </el-select>
-      </el-form-item>
-
       <component
         v-if="
           formState.form.endpoint_key &&
@@ -98,7 +87,7 @@
 </template>
 
 <script setup lang="ts">
-import { Endpoints, Models, ModelsKeys } from "@ai-zen/chats-core";
+import { Endpoints } from "@ai-zen/agents-core";
 import { Check } from "@element-plus/icons-vue";
 import { ElForm, ElMessage } from "element-plus";
 import { computed, onMounted, reactive, ref } from "vue";
@@ -124,7 +113,7 @@ const MODE_CONFIG: Record<FormMode, { title: string }> = {
 };
 
 const currentModeConfig = computed(
-  () => MODE_CONFIG[route.query.mode as FormMode]
+  () => MODE_CONFIG[route.query.mode as FormMode],
 );
 
 function createEndpoint() {
@@ -139,11 +128,8 @@ function createEndpoint() {
         // Authorization: "",
         // "api-key": "",
       },
-      body: {
-        // model: "",
-      },
+      body: {},
     },
-    enabled_models_keys: [] as ModelsKeys[],
   };
 }
 

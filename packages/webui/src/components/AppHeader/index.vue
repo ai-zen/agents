@@ -3,10 +3,11 @@
     <div class="logo">CHATS</div>
     <div class="nav">
       <RouterLink to="/chat">聊天</RouterLink>
-      <RouterLink to="/scene/list">场景</RouterLink>
-      <RouterLink to="/agent/list">代理</RouterLink>
+      <RouterLink to="/agent/list">智能体</RouterLink>
+      <RouterLink to="/agent-tool/list">子智能体</RouterLink>
       <RouterLink to="/tool/list">工具</RouterLink>
       <RouterLink to="/knowledge-base/list">知识库</RouterLink>
+      <RouterLink to="/model/list">模型</RouterLink>
       <RouterLink to="/endpoint/list">服务端</RouterLink>
     </div>
     <div class="user">

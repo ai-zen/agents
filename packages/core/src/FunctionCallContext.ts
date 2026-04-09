@@ -1,22 +1,22 @@
-import { Chat } from "./Chat";
-import { ChatAL } from "./ChatAL";
+import { Agent } from "./Agent";
+import { AgentNS } from "./AgentNS";
 
 /**
  * Function calling context
  */
 export class FunctionCallContext {
-  chat_instance: Chat;
-  function_call: ChatAL.FunctionCall;
+  agent: Agent;
+  function_call: AgentNS.FunctionCall;
   parsed_args: any;
-  result_message: ChatAL.Message;
+  result_message: AgentNS.Message;
   is_prevent_default = false;
 
   constructor(options: {
-    chat_instance: Chat;
-    function_call: ChatAL.FunctionCall;
-    result_message: ChatAL.Message;
+    agent: Agent;
+    function_call: AgentNS.FunctionCall;
+    result_message: AgentNS.Message;
   }) {
-    this.chat_instance = options.chat_instance;
+    this.agent = options.agent;
     this.function_call = options.function_call;
     this.parsed_args = options.function_call.arguments
       ? JSON.parse(options.function_call.arguments)

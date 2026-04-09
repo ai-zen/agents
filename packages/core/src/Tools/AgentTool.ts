@@ -1,6 +1,6 @@
-import { Chat } from "../Chat.js";
-import { ChatAL } from "../ChatAL.js";
-import { ChatContext } from "../ChatContext.js";
+import { Agent } from "../Agent.js";
+import { AgentNS } from "../AgentNS.js";
+import { AgentContext } from "../AgentContext.js";
 import { PickRequired } from "../Common.js";
 import { FunctionCallContext } from "../FunctionCallContext.js";
 import { Message } from "../Message.js";
@@ -9,13 +9,13 @@ import { Tool } from "../Tool.js";
 /**
  * AgentTool is a combination of Agent and Tool, which has tool definitions and generates output using chat.
  */
-export class AgentTool extends ChatContext implements Tool {
+export class AgentTool extends AgentContext implements Tool {
   type: "function";
-  function: ChatAL.FunctionDefine;
+  function: AgentNS.FunctionDefine;
 
-  constructor(options: PickRequired<AgentTool, "function" | "model_key">) {
+  constructor(options: PickRequired<AgentTool, "function" | "model">) {
     if (!options.function) throw new Error("AgentTool must have a function");
-    if (options.messages?.at(-1)?.role != ChatAL.Role.User) {
+    if (options.messages?.at(-1)?.role != AgentNS.Role.User) {
       throw new Error("AgentTool must end with a user message.");
     }
     super(options);
@@ -30,28 +30,28 @@ export class AgentTool extends ChatContext implements Tool {
    */
   async exec(ctx: FunctionCallContext): Promise<string> {
     // Create a chat for the agent
-    const agentChat = new Chat({
+    const agent = new Agent({
       // Clone a new agent for execution
       ...new AgentTool({ ...this }),
     });
 
     // Inject the arguments into the cloned agent's message list
-    agentChat.messages = this.injectArgs(agentChat.messages, ctx.parsed_args);
+    agent.messages = this.injectArgs(agent.messages, ctx.parsed_args);
 
     // Get question message
-    const questionMessage = agentChat.messages.at(-1)!;
+    const questionMessage = agent.messages.at(-1)!;
 
     // Create an assistant reply message
-    agentChat.append(Message.Assistant());
+    agent.append(Message.Assistant());
 
     // If references are found, insert them before the user question
-    await agentChat.rag?.rewrite(questionMessage, this.messages);
+    await agent.rag?.rewrite(questionMessage, this.messages);
 
     // Send the agent chat to the server
-    await agentChat.run();
+    await agent.run();
 
     // Return the last message content of the agent chat as the result
-    return agentChat.messages.at(-1)?.content as string;
+    return agent.messages.at(-1)?.content as string;
   }
 
   /**
@@ -62,7 +62,7 @@ export class AgentTool extends ChatContext implements Tool {
    */
   static replaceStringWithValues(
     template: string,
-    valueMap: Record<string, any>
+    valueMap: Record<string, any>,
   ): string {
     const regex = /{{\s?(\w+)\s?}}/g;
 
@@ -82,7 +82,7 @@ export class AgentTool extends ChatContext implements Tool {
    * @param messages - The list of messages.
    * @param parsed_args - The parsed arguments.
    */
-  injectArgs<T extends ChatAL.Message>(messages: T[], parsed_args: any): T[] {
+  injectArgs<T extends AgentNS.Message>(messages: T[], parsed_args: any): T[] {
     return JSON.parse(JSON.stringify(messages)).map((message: T) => ({
       ...message,
       content:

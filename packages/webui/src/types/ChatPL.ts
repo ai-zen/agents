@@ -1,16 +1,33 @@
-import {
-  ChatCompletionModelsKeys,
-  EmbeddingModelsKeys,
-  ModelsKeys,
-  ChatAL,
-  EndpointKeys,
-} from "@ai-zen/chats-core";
+import { AgentNS, EndpointKeys, Models } from "@ai-zen/agents-core";
+import { ModelType } from "@ai-zen/agents-core/dist/Model";
 
 /**
  * Chat Persistence Layer
  */
 export namespace ChatPL {
-  export interface ToolPO extends ChatAL.ToolDefine {
+  export interface ModelPO {
+    id: string;
+    /** 模型标题 */
+    title: string;
+    /** 模型图标 */
+    icon: string;
+    /** 模型标识，用于服务端调用的唯一标识 */
+    name: string;
+    /** 模型类型 */
+    type: ModelType;
+    /** 模型基类 */
+    base: keyof typeof Models;
+    /** 服务端 */
+    endpoint_id: string;
+    INPUT_MAX_TOKENS?: number;
+    OUTPUT_MAX_TOKENS_LOWER_LIMIT?: number;
+    OUTPUT_MAX_TOKENS?: number;
+    IS_SUPPORT_FUNCTION_CALL?: boolean;
+    IS_SUPPORT_TOOLS_CALL?: boolean;
+    IS_SUPPORT_IMAGE_CONTENT?: boolean;
+  }
+
+  export interface ToolPO extends AgentNS.ToolDefine {
     id: string;
     title: string;
     icon: string;
@@ -24,31 +41,31 @@ export namespace ChatPL {
   }
 
   export interface ChatContextPO {
-    model_key: ChatCompletionModelsKeys;
+    model_id: string;
     model_config: any;
-    messages: ChatAL.Message[];
+    messages: AgentNS.Message[];
     knowledge_bases_ids: string[];
     retrieval_type?: RetrievalType;
     tools_ids: string[];
-    agents_ids: string[];
+    agent_tools_ids: string[];
     id: string;
     title: string;
     icon: string;
   }
 
-  export interface AgentPO extends ChatContextPO, ChatAL.ToolDefine {}
+  export interface AgentToolPO extends ChatContextPO, AgentNS.ToolDefine {}
 
-  export interface ScenePO extends ChatContextPO {}
+  export interface AgentPO extends ChatContextPO {}
 
   export interface SessionPO {
     id: string;
     title: string;
     icon: string;
-    scene_id: string;
-    messages: ChatAL.Message[];
+    agent_id: string;
+    messages: AgentNS.Message[];
     new_message_image: string;
     new_message_content: string;
-    model_key?: ChatCompletionModelsKeys;
+    model_id?: string;
     model_config?: any;
   }
 
@@ -57,7 +74,6 @@ export namespace ChatPL {
     title: string;
     icon: string;
     endpoint_key: EndpointKeys;
-    enabled_models_keys: ModelsKeys[];
     endpoint_config: any;
   }
 
@@ -73,7 +89,7 @@ export namespace ChatPL {
     id: string;
     title: string;
     icon: string;
-    model_key: EmbeddingModelsKeys;
+    model_id: string;
     model_config: any;
     data: KnowledgeItemPO[];
   }

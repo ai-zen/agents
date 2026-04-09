@@ -1,25 +1,23 @@
 <template>
-  <el-dialog title="场景配置" v-model="dialogState.visible">
+  <el-dialog title="智能体配置" v-model="dialogState.visible">
     <el-form
-      v-if="currentSession && currentSessionScene"
+      v-if="currentSession && currentSessionAgent"
       :model="currentSession"
       ref="formRef"
       label-position="top"
     >
-      <el-form-item prop="model_key" label="聊天模型" :rules="MODEL_KEY_RULE">
+      <el-form-item prop="model_id" label="聊天模型" :rules="MODEL_KEY_RULE">
         <el-select
-          v-model="currentSession.model_key"
+          v-model="currentSession.model_id"
           style="width: 100%"
           clearable
-          :placeholder="`使用场景默认模型 (${
-            Models[currentSessionScene.model_key]?.title
-          })`"
         >
           <el-option
-            v-for="(model, key) of ChatCompletionModels"
-            :label="`${model.title} (${endpointsModelKeyMap![key as ModelsKeys]?.length || 0})`"
-            :value="key"
-            :disabled="!endpointsModelKeyMap![key as ModelsKeys]?.length"
+            v-for="model of modelState.list.filter(
+              (x) => x.type == ModelType.ChatCompletion,
+            )"
+            :label="model.title"
+            :value="model.id"
           ></el-option>
         </el-select>
       </el-form-item>
@@ -28,26 +26,25 @@
 </template>
 
 <script setup lang="ts">
-import { ChatCompletionModels, Models, ModelsKeys } from "@ai-zen/chats-core";
-import { FormItemRule, ElForm } from "element-plus";
+import { ElForm, FormItemRule } from "element-plus";
 import { onMounted, reactive, ref } from "vue";
+import { useModel } from "../../composables/useModel";
 import { ChatPL } from "../../types/ChatPL";
+import { ModelType } from "@ai-zen/agents-core/dist/Model";
 
 const formRef = ref<InstanceType<typeof ElForm> | null>(null);
 
 const props = defineProps<{
-  endpointsModelKeyMap?: Record<ModelsKeys, ChatPL.EndpointPO[]>;
+  modelState: ReturnType<typeof useModel>["modelState"];
   currentSession?: ChatPL.SessionPO;
-  currentSessionScene?: ChatPL.ScenePO;
-  currentModelKey?: string;
+  currentSessionAgent?: ChatPL.AgentPO;
+  currentModelId?: string;
 }>();
 
 const MODEL_KEY_RULE: FormItemRule = {
-  validator(_rule, _value, callback) {
-    if (
-      !(props.endpointsModelKeyMap as any)[props.currentModelKey as any]?.length
-    ) {
-      callback(new Error("请选择可用的聊天模型"));
+  validator(_rule, value, callback) {
+    if (!value) {
+      callback(new Error("请选择聊天模型"));
     } else {
       callback();
     }

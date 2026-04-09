@@ -1,7 +1,7 @@
 <template>
   <div
     class="chat-message"
-    :class="{ 'my-message': message.role === ChatAL.Role.User }"
+    :class="{ 'my-message': message.role === AgentNS.Role.User }"
   >
     <div class="message-header">
       <span class="message-sender">{{ props.roleText[message.role] }}</span>
@@ -27,10 +27,10 @@
           </div>
         </div>
         <div class="message-append-row">
-          <template v-if="message.role == ChatAL.Role.Assistant">
+          <template v-if="message.role == AgentNS.Role.Assistant">
             <div
               class="text-button"
-              v-if="message.status == ChatAL.MessageStatus.Completed"
+              v-if="message.status == AgentNS.MessageStatus.Completed"
               @click="onCopyClick"
             >
               复制
@@ -38,12 +38,12 @@
             <div v-else-if="message.status" class="text-status">
               {{
                 {
-                  [ChatAL.MessageStatus.Pending]: "思考中",
-                  [ChatAL.MessageStatus.Writing]: "输出中",
-                  [ChatAL.MessageStatus.Completed]: "完成",
-                  [ChatAL.MessageStatus.Error]: "发生错误",
-                  [ChatAL.MessageStatus.Aborted]: "已中止",
-                  [ChatAL.MessageStatus.Unknown]: "未知状态",
+                  [AgentNS.MessageStatus.Pending]: "思考中",
+                  [AgentNS.MessageStatus.Writing]: "输出中",
+                  [AgentNS.MessageStatus.Completed]: "完成",
+                  [AgentNS.MessageStatus.Error]: "发生错误",
+                  [AgentNS.MessageStatus.Aborted]: "已中止",
+                  [AgentNS.MessageStatus.Unknown]: "未知状态",
                 }[message.status]
               }}
             </div>
@@ -59,23 +59,23 @@
 
 <script setup lang="ts">
 import { PropType, computed, ref } from "vue";
-import { ChatAL } from "@ai-zen/chats-core";
+import { AgentNS } from "@ai-zen/agents-core";
 import { ElMessage } from "element-plus";
 import Markdown from "./Markdown.vue";
 
 const props = defineProps({
   message: {
-    type: Object as PropType<ChatAL.Message>,
+    type: Object as PropType<AgentNS.Message>,
     required: true,
   },
   roleText: {
-    type: Object as PropType<Record<ChatAL.Role, string>>,
+    type: Object as PropType<Record<AgentNS.Role, string>>,
     default: () => ({
-      [ChatAL.Role.System]: "系统",
-      [ChatAL.Role.User]: "你",
-      [ChatAL.Role.Assistant]: "AI助手",
-      [ChatAL.Role.Function]: "函数调用结果",
-      [ChatAL.Role.Tool]: "工具使用结果",
+      [AgentNS.Role.System]: "系统",
+      [AgentNS.Role.User]: "你",
+      [AgentNS.Role.Assistant]: "AI助手",
+      [AgentNS.Role.Function]: "函数调用结果",
+      [AgentNS.Role.Tool]: "工具使用结果",
     }),
   },
 });
@@ -94,11 +94,11 @@ const renderedContent = computed((): { output: string; html: boolean } => {
   const is_empty =
     !msg_content?.length && !msg.function_call && !msg.tool_calls?.length;
 
-  if (msg.status == ChatAL.MessageStatus.Pending && is_empty) {
+  if (msg.status == AgentNS.MessageStatus.Pending && is_empty) {
     return { output: "思考中...", html: false };
-  } else if (msg.status == ChatAL.MessageStatus.Writing && is_empty) {
+  } else if (msg.status == AgentNS.MessageStatus.Writing && is_empty) {
     return { output: "输出中...", html: false };
-  } else if (msg.status == ChatAL.MessageStatus.Error) {
+  } else if (msg.status == AgentNS.MessageStatus.Error) {
     return {
       output: msg_content?.toString() || "发生未知错误",
       html: false,
@@ -121,7 +121,7 @@ const renderedContent = computed((): { output: string; html: boolean } => {
       output = msg_content || "";
     }
 
-    if (msg.role == ChatAL.Role.Function || msg.role == ChatAL.Role.Tool) {
+    if (msg.role == AgentNS.Role.Function || msg.role == AgentNS.Role.Tool) {
       output = `\`${msg.name}\`\n\n`;
       output += `\n\`\`\`\`\`\`json\n${msg_content}\n\`\`\`\`\`\``;
     }
@@ -141,9 +141,9 @@ const renderedContent = computed((): { output: string; html: boolean } => {
     }
 
     // TODO: 以下内容改为markdown警告展示
-    if (msg.finish_reason == ChatAL.FinishReason.ContentFilter) {
+    if (msg.finish_reason == AgentNS.FinishReason.ContentFilter) {
       output += "内容很不幸被过滤了";
-    } else if (msg.finish_reason == ChatAL.FinishReason.Length) {
+    } else if (msg.finish_reason == AgentNS.FinishReason.Length) {
       output += "内容超出长度限制";
     }
 

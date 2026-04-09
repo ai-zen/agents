@@ -1,8 +1,8 @@
-import { ChatAL } from "./ChatAL";
+import { AgentNS } from "./AgentNS";
 
 export abstract class Rag {
   abstract rewrite(
-    questionMessage: ChatAL.Message,
-    messages?: ChatAL.Message[]
+    questionMessage: AgentNS.Message,
+    messages?: AgentNS.Message[]
   ): Promise<void>;
 }

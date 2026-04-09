@@ -41,18 +41,16 @@
           placeholder="请输入标题"
         ></el-input>
       </el-form-item>
+
       <el-form-item
-        prop="model_key"
+        prop="model_id"
         label="模型"
         :rules="{ required: true, message: '请选择模型' }"
       >
-        <el-select
-          v-model="formState.form.model_key"
-          :disabled="route.query.mode == FormMode.Edit"
-        >
+        <el-select v-model="formState.form.model_id">
           <el-option
-            v-for="(model, key) of EmbeddingModels"
-            :value="key"
+            v-for="model of modelState.list"
+            :value="model.id"
             :label="model.title"
           ></el-option>
         </el-select>
@@ -60,11 +58,11 @@
 
       <component
         v-if="
-          formState.form.model_key && MODELS_FORMS_MAP[formState.form.model_key]
+          formState.form.model_id && MODELS_FORMS_MAP[currentModelPo?.base!]
         "
-        :is="MODELS_FORMS_MAP[formState.form.model_key]"
+        :is="MODELS_FORMS_MAP[currentModelPo?.base!]"
         :model_config="formState.form.model_config"
-        :model_key="formState.form.model_key"
+        :model_po="getModel(formState.form.model_id)"
       >
       </component>
 
@@ -86,13 +84,13 @@
 </template>
 
 <script setup lang="ts">
-import { EmbeddingModels } from "@ai-zen/chats-core";
 import { Check } from "@element-plus/icons-vue";
 import { ElForm, ElMessage } from "element-plus";
 import { computed, onMounted, reactive, ref } from "vue";
 import { useRoute } from "vue-router";
 import * as api from "../../../api";
 import { MODELS_FORMS_MAP } from "../../../components/ModelsForms";
+import { useModel } from "../../../composables";
 import router from "../../../router";
 import { ChatPL } from "../../../types/ChatPL";
 import { FormMode } from "../../../types/Common";
@@ -111,8 +109,14 @@ const MODE_CONFIG: Record<FormMode, { title: string }> = {
   },
 };
 
+const { modelState, initModelState, getModel } = useModel();
+
 const currentModeConfig = computed(
-  () => MODE_CONFIG[route.query.mode as FormMode]
+  () => MODE_CONFIG[route.query.mode as FormMode],
+);
+
+const currentModelPo = computed(() =>
+  modelState.list.find((model) => model.id == formState.form.model_id),
 );
 
 function createKnowledgeBase() {
@@ -120,7 +124,7 @@ function createKnowledgeBase() {
     id: uuid(),
     title: "",
     icon: "📚",
-    model_key: "TextEmbeddingAda002_2",
+    model_id: "",
     model_config: {},
     data: [],
   };
@@ -184,6 +188,10 @@ async function submit() {
     formState.isSaving = false;
   }
 }
+
+onMounted(() => {
+  initModelState();
+});
 </script>
 
 <style lang="scss" scoped>

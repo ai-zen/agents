@@ -3,7 +3,7 @@ import {
   fetchEventSource,
 } from "@ai-zen/node-fetch-event-source";
 import type { JSONSchema7 } from "json-schema";
-import { ChatAL } from "../../ChatAL.js";
+import { AgentNS } from "../../AgentNS.js";
 import {
   ChatCompletionModel,
   ChatCompletionModelCreateOptions,
@@ -161,8 +161,8 @@ export interface ChatGPT_ModelConfig {
 class RetriableError extends Error {}
 class FatalError extends Error {}
 
-export abstract class ChatGPT<
-  M extends ChatGPT_ModelConfig = ChatGPT_ModelConfig
+export class ChatGPT<
+  M extends ChatGPT_ModelConfig = ChatGPT_ModelConfig,
 > extends ChatCompletionModel<M> {
   async createCompletion(options: ChatCompletionModelCreateOptions) {
     if (!this.model_config) {
@@ -207,7 +207,7 @@ export abstract class ChatGPT<
     const model_config = this.formatModelConfig(this.model_config);
     const request_config = this.formatRequestConfig(this.request_config);
 
-    const stream = new AsyncQueue<ChatAL.StreamResponseData>();
+    const stream = new AsyncQueue<AgentNS.StreamResponseData>();
 
     fetchEventSource(request_config.url, {
       signal: options.signal,
@@ -275,18 +275,14 @@ export abstract class ChatGPT<
     return { ...request_config } as RequestConfig;
   }
 
-  formatTools(tools: ChatAL.ToolDefine[] | undefined) {
+  formatTools(tools: AgentNS.ToolDefine[] | undefined) {
     if (!tools?.length) return {};
-    if (
-      (this.constructor as typeof ChatCompletionModel).IS_SUPPORT_TOOLS_CALL
-    ) {
+    if (this.IS_SUPPORT_TOOLS_CALL) {
       return {
         tools: tools,
         tool_choice: "auto",
       };
-    } else if (
-      (this.constructor as typeof ChatCompletionModel).IS_SUPPORT_FUNCTION_CALL
-    ) {
+    } else if (this.IS_SUPPORT_FUNCTION_CALL) {
       return {
         functions: tools.map((tool) => tool.function),
         function_call: "auto",
@@ -294,14 +290,14 @@ export abstract class ChatGPT<
     }
   }
 
-  formatData(data: ChatGPTTypes.ResponseData): ChatAL.ResponseData {
+  formatData(data: ChatGPTTypes.ResponseData): AgentNS.ResponseData {
     return {
       ...data,
       choices: data.choices?.map(this.formatChoice.bind(this)),
     };
   }
 
-  formatChoice(choice: ChatGPTTypes.Choice): ChatAL.Choice {
+  formatChoice(choice: ChatGPTTypes.Choice): AgentNS.Choice {
     return {
       ...choice,
       message: this.formatMessage(choice.message),
@@ -310,15 +306,15 @@ export abstract class ChatGPT<
   }
 
   formatSteamData(
-    data: ChatGPTTypes.StreamResponseData
-  ): ChatAL.StreamResponseData {
+    data: ChatGPTTypes.StreamResponseData,
+  ): AgentNS.StreamResponseData {
     return {
       ...data,
       choices: data.choices?.map(this.formatStreamChoice.bind(this)),
     };
   }
 
-  formatStreamChoice(choice: ChatGPTTypes.StreamChoice): ChatAL.StreamChoice {
+  formatStreamChoice(choice: ChatGPTTypes.StreamChoice): AgentNS.StreamChoice {
     return {
       ...choice,
       delta: this.formatDelta(choice.delta),
@@ -327,8 +323,8 @@ export abstract class ChatGPT<
   }
 
   formatDelta(
-    delta: ChatGPTTypes.ResponseDelta | undefined
-  ): ChatAL.Delta | undefined {
+    delta: ChatGPTTypes.ResponseDelta | undefined,
+  ): AgentNS.Delta | undefined {
     if (!delta) return undefined;
     return {
       ...delta,
@@ -338,8 +334,8 @@ export abstract class ChatGPT<
   }
 
   formatMessage(
-    message: ChatGPTTypes.Message | undefined
-  ): ChatAL.Message | undefined {
+    message: ChatGPTTypes.Message | undefined,
+  ): AgentNS.Message | undefined {
     if (!message) return undefined;
     return {
       ...message,
@@ -349,49 +345,46 @@ export abstract class ChatGPT<
   }
 
   formatContent(
-    content: ChatGPTTypes.ResponseDelta["content"]
-  ): ChatAL.Message["content"] {
+    content: ChatGPTTypes.ResponseDelta["content"],
+  ): AgentNS.Message["content"] {
     return content;
   }
 
   formatFinalResponse(
-    finish_reason: ChatGPTTypes.FinishReason | null
-  ): ChatAL.FinishReason {
+    finish_reason: ChatGPTTypes.FinishReason | null,
+  ): AgentNS.FinishReason {
     switch (finish_reason) {
       case null:
-        return ChatAL.FinishReason.Stop;
+        return AgentNS.FinishReason.Stop;
       case ChatGPTTypes.FinishReason.Stop:
-        return ChatAL.FinishReason.Stop;
+        return AgentNS.FinishReason.Stop;
       case ChatGPTTypes.FinishReason.ContentFilter:
-        return ChatAL.FinishReason.ContentFilter;
+        return AgentNS.FinishReason.ContentFilter;
       case ChatGPTTypes.FinishReason.Length:
-        return ChatAL.FinishReason.Length;
+        return AgentNS.FinishReason.Length;
       case ChatGPTTypes.FinishReason.FunctionCall:
-        return ChatAL.FinishReason.FunctionCall;
+        return AgentNS.FinishReason.FunctionCall;
       case ChatGPTTypes.FinishReason.ToolCalls:
-        return ChatAL.FinishReason.ToolCalls;
+        return AgentNS.FinishReason.ToolCalls;
       default:
-        return ChatAL.FinishReason.Unknown;
+        return AgentNS.FinishReason.Unknown;
     }
   }
 
-  formatRole(role: ChatGPTTypes.Role): ChatAL.Role {
+  formatRole(role: ChatGPTTypes.Role): AgentNS.Role {
     switch (role) {
       case ChatGPTTypes.Role.Assistant:
-        return ChatAL.Role.Assistant;
+        return AgentNS.Role.Assistant;
       case ChatGPTTypes.Role.System:
-        return ChatAL.Role.System;
+        return AgentNS.Role.System;
       case ChatGPTTypes.Role.User:
-        return ChatAL.Role.User;
+        return AgentNS.Role.User;
       case ChatGPTTypes.Role.Function:
-        return ChatAL.Role.Function;
+        return AgentNS.Role.Function;
       case ChatGPTTypes.Role.Tool:
-        return ChatAL.Role.Tool;
+        return AgentNS.Role.Tool;
       default:
-        return ChatAL.Role.Unknown;
+        return AgentNS.Role.Unknown;
     }
   }
-
-  static OUTPUT_MAX_TOKENS_LOWER_LIMIT = 800;
-  static OUTPUT_MAX_TOKENS = 4096;
 }

@@ -1,5 +1,4 @@
 import { SignJWT } from "jose";
-import { Models, ModelsKeys } from "../Models/index.js";
 import { Endpoint } from "../Endpoint.js";
 import { ModelType } from "../Model.js";
 
@@ -10,12 +9,13 @@ export interface ZhipuConfig {
   body?: Record<string, any>;
 }
 
+/**
+ * @deprecated
+ */
 export class Zhipu extends Endpoint<ZhipuConfig> {
   static title = "Zhipu";
 
-  static COMPATIBLE_MODELS_KEYS: ModelsKeys[] = ["GLM3Turbo", "GLM4", "GLM4V"];
-
-  async build(model_key: ModelsKeys) {
+  async build(path: "chat/completions" | "embeddings", model: string) {
     let { zhipu_endpoint, api_key } = this.endpoint_config;
 
     if (!zhipu_endpoint) {
@@ -24,16 +24,6 @@ export class Zhipu extends Endpoint<ZhipuConfig> {
 
     if (!zhipu_endpoint.endsWith("/")) {
       zhipu_endpoint += "/";
-    }
-
-    let path = "";
-    switch (Models[model_key].type) {
-      case ModelType.Embedding:
-        path = "embeddings";
-        break;
-      case ModelType.ChatCompletion:
-        path = "chat/completions";
-        break;
     }
 
     return {
@@ -46,7 +36,7 @@ export class Zhipu extends Endpoint<ZhipuConfig> {
       },
       body: {
         ...this.endpoint_config?.body,
-        model: Models[model_key].code,
+        model: model,
       },
     };
   }

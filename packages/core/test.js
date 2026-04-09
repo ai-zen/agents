@@ -1,13 +1,13 @@
 import {
   AgentTool,
   AzureOpenAI,
-  Chat,
-  ChatAL,
+  Agent,
+  AgentNS,
   CallbackTool,
 } from "./dist/index.js";
 
 async function main() {
-  const chat = new Chat({
+  const chat = new Agent({
     endpoints: [
       // new OpenAI({
       //   enabled_models_keys: ["GPT35Turbo_1106"],
@@ -23,10 +23,10 @@ async function main() {
         },
       }),
     ],
-    model_key: "GPT35Turbo_1106",
+    model: "GPT35Turbo_1106",
     messages: [
       {
-        role: ChatAL.Role.System,
+        role: AgentNS.Role.System,
         content: "你是是一个AI助手，专门帮助用户回答问题。",
       },
     ],
@@ -77,14 +77,14 @@ async function main() {
             required: ["city", "date"],
           },
         },
-        model_key: "GPT35Turbo_1106",
+        model: "GPT35Turbo_1106",
         messages: [
           {
-            role: ChatAL.Role.System,
+            role: AgentNS.Role.System,
             content: "你是一个 mock 数据生成大师，专门帮助用户生成MOCK信息。",
           },
           {
-            role: ChatAL.Role.User,
+            role: AgentNS.Role.User,
             content:
               "请为这个城市 {{ city }} 时间 {{ date }} 生成 mock 天气预报数据，直接返回 JSON 数据，不需要进行其他说明。",
           },

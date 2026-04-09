@@ -1,28 +1,22 @@
 import { AsyncQueue } from "@ai-zen/async-queue";
 import EventBus from "@ai-zen/event-bus";
-import { ChatAL } from "./ChatAL.js";
-import { ChatContext } from "./ChatContext.js";
+import { AgentNS } from "./AgentNS.js";
+import { AgentContext as AgentContext } from "./AgentContext.js";
 import { PickRequired } from "./Common.js";
-import { Endpoint } from "./Endpoint.js";
 import { FunctionCallContext } from "./FunctionCallContext.js";
 import { Message } from "./Message.js";
-import { ChatCompletionModel } from "./Models/ChatCompletionModel.js";
-import { ChatCompletionModels } from "./Models/index.js";
 import { Tool } from "./Tool.js";
-import { AgentTool } from "./Tools/AgentTool.js";
-import { EmbeddingSearch } from "./Rags/EmbeddingSearch.js";
 
 interface PendingTask {
   controller: AbortController;
-  receiver: ChatAL.Message;
+  receiver: AgentNS.Message;
 }
 
-export class Chat extends ChatContext {
+export class Agent extends AgentContext {
   events = new EventBus();
 
-  constructor(options: PickRequired<ChatContext, "model_key" | "endpoints">) {
+  constructor(options: PickRequired<AgentContext, "model">) {
     super(options);
-    this.inheritEndpoints();
   }
 
   /**
@@ -36,7 +30,7 @@ export class Chat extends ChatContext {
   abort() {
     this.pendingTasks.forEach((task) => {
       task.controller.abort();
-      task.receiver.status = ChatAL.MessageStatus.Aborted;
+      task.receiver.status = AgentNS.MessageStatus.Aborted;
     });
   }
 
@@ -44,38 +38,20 @@ export class Chat extends ChatContext {
    * Run the conversation with the server.
    */
   async run() {
-    const modelKey = this.model_key;
-    if (!modelKey) {
-      throw new Error("The Model Key cannot be empty");
-    }
-
-    const endpoint = Endpoint.match(this.endpoints, modelKey);
-    if (!endpoint) {
-      throw new Error(`Endpoint not found for ${modelKey}`);
-    }
-
-    const model = new ChatCompletionModels[modelKey]({
-      model_config: this.model_config,
-      request_config: await endpoint.build(modelKey)
-    }) as ChatCompletionModel;
-    if (!model) {
-      throw new Error("Model not found");
-    }
-
     const receiver = this.messages.at(-1) as Message;
     if (!receiver) {
       throw new Error(
-        "You need to send at least one message as a receive message"
+        "You need to send at least one message as a receive message",
       );
     }
-    if (receiver.role !== ChatAL.Role.Assistant) {
+    if (receiver.role !== AgentNS.Role.Assistant) {
       throw new Error(
-        "The last message will serve as the receiving message, and its role can only be assistant."
+        "The last message will serve as the receiving message, and its role can only be assistant.",
       );
     }
-    if (receiver.status !== ChatAL.MessageStatus.Pending) {
+    if (receiver.status !== AgentNS.MessageStatus.Pending) {
       throw new Error(
-        "The last message will serve as the receiving message, and its status can only be pending."
+        "The last message will serve as the receiving message, and its status can only be pending.",
       );
     }
 
@@ -87,22 +63,22 @@ export class Chat extends ChatContext {
 
     this.events.emit("run");
 
-    const stream = model.createStream({
+    const stream = this.model.createStream({
       signal: controller.signal,
       messages: this.formatHistory(),
       tools: this.formatTools(),
       onOpen: () => {
-        receiver.status = ChatAL.MessageStatus.Writing;
+        receiver.status = AgentNS.MessageStatus.Writing;
         this.events.emit("open");
       },
-      onError: (error) => {
-        receiver.status = ChatAL.MessageStatus.Error;
+      onError: (error: any) => {
+        receiver.status = AgentNS.MessageStatus.Error;
         receiver.content = error.message;
         this.events.emit("error", error);
       },
       onFinally: () => {
         this.events.emit("finally");
-      }
+      },
     });
 
     abortBlock: {
@@ -110,22 +86,22 @@ export class Chat extends ChatContext {
         await this.parseStreamData(receiver, stream);
 
         if (
-          (receiver.status as ChatAL.MessageStatus) ===
-            ChatAL.MessageStatus.Aborted ||
-          (receiver.status as ChatAL.MessageStatus) ===
-            ChatAL.MessageStatus.Error
+          (receiver.status as AgentNS.MessageStatus) ===
+            AgentNS.MessageStatus.Aborted ||
+          (receiver.status as AgentNS.MessageStatus) ===
+            AgentNS.MessageStatus.Error
         ) {
           break abortBlock;
         }
 
-        receiver.status = ChatAL.MessageStatus.Completed;
+        receiver.status = AgentNS.MessageStatus.Completed;
 
         if (await this.handleToolCall(receiver)) {
           if (
-            (receiver.status as ChatAL.MessageStatus) ===
-              ChatAL.MessageStatus.Aborted ||
-            (receiver.status as ChatAL.MessageStatus) ===
-              ChatAL.MessageStatus.Error
+            (receiver.status as AgentNS.MessageStatus) ===
+              AgentNS.MessageStatus.Aborted ||
+            (receiver.status as AgentNS.MessageStatus) ===
+              AgentNS.MessageStatus.Error
           ) {
             break abortBlock;
           }
@@ -134,7 +110,7 @@ export class Chat extends ChatContext {
           await this.run();
         }
       } catch (error: any) {
-        receiver.status = ChatAL.MessageStatus.Error;
+        receiver.status = AgentNS.MessageStatus.Error;
         receiver.content = error.message;
         this.events.emit("error", error);
       }
@@ -154,8 +130,8 @@ export class Chat extends ChatContext {
       function: {
         name: tool.function.name,
         description: tool.function.description,
-        parameters: tool.function.parameters
-      }
+        parameters: tool.function.parameters,
+      },
     }));
   }
 
@@ -167,8 +143,8 @@ export class Chat extends ChatContext {
       .filter(
         (message) =>
           (message.status == undefined ||
-            message.status == ChatAL.MessageStatus.Completed) &&
-          !message.omit
+            message.status == AgentNS.MessageStatus.Completed) &&
+          !message.omit,
       )
       .map((message) => ({
         role: message.role,
@@ -178,7 +154,7 @@ export class Chat extends ChatContext {
           : undefined,
         tool_calls: message.tool_calls?.length ? message.tool_calls : undefined,
         tool_call_id: message.tool_call_id ?? undefined,
-        name: message.name ?? undefined
+        name: message.name ?? undefined,
       }));
   }
 
@@ -186,8 +162,8 @@ export class Chat extends ChatContext {
    * Parse the streamed response data.
    */
   async parseStreamData(
-    receiver: ChatAL.Message,
-    stream: AsyncQueue<ChatAL.StreamResponseData>
+    receiver: AgentNS.Message,
+    stream: AsyncQueue<AgentNS.StreamResponseData>,
   ) {
     for await (const chunk of stream) {
       this.events.emit("chunk", chunk);
@@ -217,14 +193,14 @@ export class Chat extends ChatContext {
               if (!receiver.content[index]) {
                 receiver.content[index] = {
                   index,
-                  ...deltaSection
+                  ...deltaSection,
                 };
               }
 
               if ("image_url" in deltaSection) {
                 const currentSection = receiver.content[
                   index
-                ] as ChatAL.ImageUrlContentSection;
+                ] as AgentNS.ImageUrlContentSection;
                 currentSection["type"] = "image_url";
                 currentSection["image_url"] ??= { url: "" };
                 currentSection["image_url"].url += deltaSection.image_url;
@@ -233,7 +209,7 @@ export class Chat extends ChatContext {
               if ("text" in deltaSection) {
                 const currentSection = receiver.content[
                   index
-                ] as ChatAL.TextContentSection;
+                ] as AgentNS.TextContentSection;
                 currentSection["type"] = "text";
                 currentSection["text"] ??= "";
                 currentSection["text"] += deltaSection.text;
@@ -263,9 +239,9 @@ export class Chat extends ChatContext {
                 function: {
                   name: "",
                   arguments: "",
-                  ...deltaToolCall.function
+                  ...deltaToolCall.function,
                 },
-                ...deltaToolCall
+                ...deltaToolCall,
               };
             }
 
@@ -281,7 +257,7 @@ export class Chat extends ChatContext {
             if (deltaToolCall.function?.arguments) {
               if (
                 deltaToolCall.function.arguments.startsWith(
-                  receiver.tool_calls[index]["function"]!["arguments"]!
+                  receiver.tool_calls[index]["function"]!["arguments"]!,
                 )
               ) {
                 receiver.tool_calls[index]["function"]!["arguments"] =
@@ -299,7 +275,7 @@ export class Chat extends ChatContext {
             receiver.function_call = {
               name: "",
               arguments: "",
-              ...delta.function_call
+              ...delta.function_call,
             };
           }
 
@@ -312,6 +288,8 @@ export class Chat extends ChatContext {
           }
         }
       }
+
+      this.events.emit("chunk-parsed", receiver, chunk);
     }
 
     this.events.emit("parsed", receiver);
@@ -321,14 +299,14 @@ export class Chat extends ChatContext {
    * Handle the tool call.
    * @returns A boolean value indicating whether a new round of chat is needed.
    */
-  async handleToolCall(receiver: ChatAL.Message): Promise<boolean> {
-    const tasks: ChatAL.ToolCall[] = [];
+  async handleToolCall(receiver: AgentNS.Message): Promise<boolean> {
+    const tasks: AgentNS.ToolCall[] = [];
 
     if (receiver.tool_calls?.length) {
       tasks.push(
         ...receiver.tool_calls.filter(
-          (toolCall) => toolCall.type == "function" && toolCall.function
-        )
+          (toolCall) => toolCall.type == "function" && toolCall.function,
+        ),
       );
     }
 
@@ -338,35 +316,36 @@ export class Chat extends ChatContext {
 
     const promises = tasks.map(async (task) => {
       const resultReceiver = this.append(
-        task.id ? Message.Tool(task) : Message.Function(task.function!)
+        task.id ? Message.Tool(task) : Message.Function(task.function!),
       );
 
       try {
         const matchTools: Tool | undefined = this.tools.find(
           (tool) =>
-            tool.function.name == task.function!.name && tool.type == "function"
+            tool.function.name == task.function!.name &&
+            tool.type == "function",
         );
 
         const ctx = new FunctionCallContext({
           function_call: task.function!,
-          chat_instance: this,
-          result_message: resultReceiver
+          agent: this,
+          result_message: resultReceiver,
         });
 
         resultReceiver.content = await matchTools?.exec(ctx);
-        resultReceiver.status = ChatAL.MessageStatus.Completed;
+        resultReceiver.status = AgentNS.MessageStatus.Completed;
 
         return {
           is_prevent_default: ctx.is_prevent_default,
-          status: resultReceiver.status
+          status: resultReceiver.status,
         };
       } catch (error: any) {
         resultReceiver.content = error?.message;
-        resultReceiver.status = ChatAL.MessageStatus.Error;
+        resultReceiver.status = AgentNS.MessageStatus.Error;
 
         return {
           is_prevent_default: true,
-          status: resultReceiver.status
+          status: resultReceiver.status,
         };
       }
     });
@@ -375,11 +354,11 @@ export class Chat extends ChatContext {
 
     const isNeedNext = Boolean(
       results.length &&
-        results.every(
-          (result) =>
-            !result.is_prevent_default &&
-            result.status === ChatAL.MessageStatus.Completed
-        )
+      results.every(
+        (result) =>
+          !result.is_prevent_default &&
+          result.status === AgentNS.MessageStatus.Completed,
+      ),
     );
 
     return isNeedNext;
@@ -392,8 +371,8 @@ export class Chat extends ChatContext {
     return (
       this.messages.some(
         (message) =>
-          message.status === ChatAL.MessageStatus.Pending ||
-          message.status == ChatAL.MessageStatus.Writing
+          message.status === AgentNS.MessageStatus.Pending ||
+          message.status == AgentNS.MessageStatus.Writing,
       ) ?? false
     );
   }
@@ -403,17 +382,7 @@ export class Chat extends ChatContext {
    * @param content The user question.
    * @returns A promise that resolves to the conversation messages.
    */
-  async send(content: ChatAL.MessageContentSection[] | string) {
-    const Model = ChatCompletionModels[this.model_key];
-
-    if (
-      content instanceof Array &&
-      content.some((x) => x.type == "image_url") &&
-      !Model.IS_SUPPORT_IMAGE_CONTENT
-    ) {
-      throw new Error("The model does not support image content.");
-    }
-
+  async send(content: AgentNS.MessageContentSection[] | string) {
     // Create a question message.
     const questionMessage = this.append(Message.User(content));
 
@@ -425,20 +394,5 @@ export class Chat extends ChatContext {
 
     // Run the chat.
     return this.run();
-  }
-
-  /**
-   * Inherit endpoints of AgentTool and EmbeddingSearch.
-   */
-  inheritEndpoints() {
-    this.tools?.forEach((tool) => {
-      if (tool instanceof AgentTool && !tool.endpoints?.length) {
-        tool.endpoints = this.endpoints;
-      }
-    });
-
-    if (this.rag instanceof EmbeddingSearch && !this.rag.endpoints?.length) {
-      this.rag.endpoints = this.endpoints;
-    }
   }
 }

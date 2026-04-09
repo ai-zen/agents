@@ -7,24 +7,24 @@ const routes: RouteRecordRaw[] = [
     meta: { title: "聊天" },
   },
   {
-    path: "/scene/list",
-    component: () => import("./views/scene/list/index.vue"),
-    meta: { title: "场景列表" },
-  },
-  {
-    path: "/scene/form",
-    component: () => import("./views/scene/form/index.vue"),
-    meta: { title: "编辑场景" },
-  },
-  {
     path: "/agent/list",
     component: () => import("./views/agent/list/index.vue"),
-    meta: { title: "代理列表" },
+    meta: { title: "智能体列表" },
   },
   {
     path: "/agent/form",
     component: () => import("./views/agent/form/index.vue"),
-    meta: { title: "编辑代理" },
+    meta: { title: "编辑智能体" },
+  },
+  {
+    path: "/agent-tool/list",
+    component: () => import("./views/agent-tool/list/index.vue"),
+    meta: { title: "子智能体列表" },
+  },
+  {
+    path: "/agent-tool/form",
+    component: () => import("./views/agent-tool/form/index.vue"),
+    meta: { title: "编辑子智能体" },
   },
   {
     path: "/tool/list",
@@ -60,6 +60,16 @@ const routes: RouteRecordRaw[] = [
     path: "/endpoint/form",
     component: () => import("./views/endpoint/form/index.vue"),
     meta: { title: "编辑服务端" },
+  },
+  {
+    path: "/model/list",
+    component: () => import("./views/model/list/index.vue"),
+    meta: { title: "模型列表" },
+  },
+  {
+    path: "/model/form",
+    component: () => import("./views/model/form/index.vue"),
+    meta: { title: "编辑模型" },
   },
   {
     path: "/",

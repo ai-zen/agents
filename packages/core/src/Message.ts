@@ -1,19 +1,19 @@
-import { ChatAL } from "./ChatAL.js";
+import { AgentNS } from "./AgentNS.js";
 import { PickRequired } from "./Common.js";
 
 /**
  * Represents a message in a AI chat conversation.
  */
-export class Message implements ChatAL.Message {
+export class Message implements AgentNS.Message {
   name?: string | undefined;
-  raw_content?: string | ChatAL.MessageContentSection[];
-  content?: string | ChatAL.MessageContentSection[];
-  function_call?: ChatAL.FunctionCall | undefined;
+  raw_content?: string | AgentNS.MessageContentSection[];
+  content?: string | AgentNS.MessageContentSection[];
+  function_call?: AgentNS.FunctionCall | undefined;
   tool_call_id?: number | undefined;
-  tool_calls?: ChatAL.ToolCall[] | undefined;
-  role: ChatAL.Role;
-  status?: ChatAL.MessageStatus | undefined;
-  finish_reason?: ChatAL.FinishReason | undefined;
+  tool_calls?: AgentNS.ToolCall[] | undefined;
+  role: AgentNS.Role;
+  status?: AgentNS.MessageStatus | undefined;
+  finish_reason?: AgentNS.FinishReason | undefined;
   hidden?: boolean | undefined;
   omit?: boolean | undefined;
 
@@ -40,7 +40,7 @@ export class Message implements ChatAL.Message {
    */
   static rewrite(
     message: Message,
-    newContent: string | ChatAL.MessageContentSection[]
+    newContent: string | AgentNS.MessageContentSection[]
   ) {
     message.raw_content = message.raw_content || message.content;
     message.content = newContent;
@@ -51,9 +51,9 @@ export class Message implements ChatAL.Message {
    */
   static System(content = "") {
     return new Message({
-      role: ChatAL.Role.System,
+      role: AgentNS.Role.System,
       content,
-      status: ChatAL.MessageStatus.Completed,
+      status: AgentNS.MessageStatus.Completed,
     });
   }
 
@@ -62,45 +62,45 @@ export class Message implements ChatAL.Message {
    */
   static Assistant(content = "") {
     return new Message({
-      role: ChatAL.Role.Assistant,
+      role: AgentNS.Role.Assistant,
       content,
-      status: ChatAL.MessageStatus.Pending,
+      status: AgentNS.MessageStatus.Pending,
     });
   }
 
   /**
    * Creates a user message.
    */
-  static User(content: ChatAL.MessageContentSection[] | string) {
+  static User(content: AgentNS.MessageContentSection[] | string) {
     return new Message({
-      role: ChatAL.Role.User,
+      role: AgentNS.Role.User,
       content,
-      status: ChatAL.MessageStatus.Completed,
+      status: AgentNS.MessageStatus.Completed,
     });
   }
 
   /**
    * Creates a tool result message.
    */
-  static Tool(tool_call: ChatAL.ToolCall, result = "") {
+  static Tool(tool_call: AgentNS.ToolCall, result = "") {
     return new Message({
-      role: ChatAL.Role.Tool,
+      role: AgentNS.Role.Tool,
       tool_call_id: tool_call.id,
       name: tool_call.function!.name,
       content: result,
-      status: ChatAL.MessageStatus.Pending,
+      status: AgentNS.MessageStatus.Pending,
     });
   }
 
   /**
    * Creates a function result message.
    */
-  static Function(function_call: ChatAL.FunctionCall, result = "") {
+  static Function(function_call: AgentNS.FunctionCall, result = "") {
     return new Message({
-      role: ChatAL.Role.Function,
+      role: AgentNS.Role.Function,
       name: function_call!.name,
       content: result,
-      status: ChatAL.MessageStatus.Pending,
+      status: AgentNS.MessageStatus.Pending,
     });
   }
 }

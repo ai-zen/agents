@@ -1,5 +1,5 @@
 import { PickRequired } from "./Common.js";
-import { EmbeddingModelsKeys } from "./Models/index.js";
+import { EmbeddingModel } from "./Models/index.js";
 import { DatabaseRecord, Vector, VectorDatabase } from "./VectorDatabase.js";
 
 export interface KnowledgeItem extends DatabaseRecord {
@@ -8,16 +8,16 @@ export interface KnowledgeItem extends DatabaseRecord {
 }
 
 export class KnowledgeBase {
-  model_key: EmbeddingModelsKeys;
+  model: EmbeddingModel;
   model_config: {};
   data: KnowledgeItem[];
 
   private db: VectorDatabase<KnowledgeItem>;
 
-  constructor(options: PickRequired<KnowledgeBase, "model_key">) {
-    if (!options.model_key)
-      throw new Error("KnowledgeBase must have a model_key");
-    this.model_key = options.model_key;
+  constructor(options: PickRequired<KnowledgeBase, "model">) {
+    if (!options.model)
+      throw new Error("KnowledgeBase must have a model");
+    this.model = options.model;
     this.model_config = options.model_config ?? {};
     this.data = options.data ?? [];
     this.db = new VectorDatabase(this.data);

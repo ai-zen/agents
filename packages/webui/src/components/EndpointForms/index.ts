@@ -1,4 +1,4 @@
-import { EndpointKeys } from "@ai-zen/chats-core";
+import { EndpointKeys } from "@ai-zen/agents-core";
 import { defineComponent } from "vue";
 import AzureOpenAI_EndpointConfigForm from "./AzureOpenAI.vue";
 import CommonEndpoint_EndpointConfigForm from "./CommonEndpoint.vue";

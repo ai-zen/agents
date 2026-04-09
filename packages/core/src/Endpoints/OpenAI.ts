@@ -1,6 +1,4 @@
 import { Endpoint } from "../Endpoint.js";
-import { ModelType } from "../Model.js";
-import { ModelsKeys, Models } from "../Models/index.js";
 
 export interface OpenAIConfig {
   openai_endpoint?: string;
@@ -13,18 +11,7 @@ export interface OpenAIConfig {
 export class OpenAI extends Endpoint<OpenAIConfig> {
   static title = "OpenAI";
 
-  static COMPATIBLE_MODELS_KEYS: ModelsKeys[] = [
-    "GPT4_0125Preview",
-    "GPT4_1106Preview",
-    "GPT4_VisionPreview",
-    "GPT35Turbo_0125",
-    "GPT35Turbo_0631",
-    "GPT35Turbo_1106",
-    "GPT35Turbo16K_0631",
-    "TextEmbeddingAda002_2",
-  ];
-
-  async build(model_key: ModelsKeys) {
+  async build(path: "chat/completions" | "embeddings", model: string) {
     let { openai_endpoint, api_key } = this.endpoint_config;
 
     if (!openai_endpoint) {
@@ -34,17 +21,6 @@ export class OpenAI extends Endpoint<OpenAIConfig> {
     if (!openai_endpoint.endsWith("/")) {
       openai_endpoint += "/";
     }
-
-    let path = "";
-    switch (Models[model_key].type) {
-      case ModelType.Embedding:
-        path = "embeddings";
-        break;
-      case ModelType.ChatCompletion:
-        path = "chat/completions";
-        break;
-    }
-
     return {
       ...this.endpoint_config,
       url: `${openai_endpoint}${path}`,
@@ -60,7 +36,7 @@ export class OpenAI extends Endpoint<OpenAIConfig> {
       },
       body: {
         ...this.endpoint_config?.body,
-        model: Models[model_key].code,
+        model: model,
       },
     };
   }

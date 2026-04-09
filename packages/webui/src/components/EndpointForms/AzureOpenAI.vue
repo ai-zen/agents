@@ -32,26 +32,6 @@
     />
   </el-form-item>
 
-  <el-form-item
-    prop="endpoint_config.deployments"
-    label="deployments"
-    :rules="{
-      required: true,
-      validator(_rule, value, callback) {
-        if (!Object.keys(value ?? {}).length) {
-          callback(new Error('请添加 deployments'));
-        } else {
-          callback();
-        }
-      },
-    }"
-  >
-    <DeploymentsEditor
-      v-model="props.endpoint_config.deployments"
-      :options="options"
-    />
-  </el-form-item>
-
   <el-form-item prop="endpoint_config.headers" label="headers">
     <JsonEditor v-model="props.endpoint_config.headers" />
   </el-form-item>
@@ -63,8 +43,6 @@
 
 <script setup lang="ts">
 import JsonEditor from "../JsonEditor/index.vue";
-import DeploymentsEditor from "../DeploymentsEditor/index.vue";
-import { AzureOpenAI, Models } from "@ai-zen/chats-core";
 
 const props = defineProps({
   endpoint_config: {
@@ -72,9 +50,4 @@ const props = defineProps({
     type: Object,
   },
 });
-
-const options = AzureOpenAI.COMPATIBLE_MODELS_KEYS.map((x) => ({
-  label: Models[x].title,
-  value: x,
-}));
 </script>

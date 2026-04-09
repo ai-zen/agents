@@ -5,7 +5,7 @@ import { debounce } from "../utils/debounce";
 import { uuid } from "../utils/uuid";
 
 export function useSession(options: {
-  getDefaultScene: () => ChatPL.ScenePO | undefined;
+  getDefaultAgent: () => ChatPL.AgentPO | undefined;
 }) {
   const sessionState = reactive({
     list: [] as ChatPL.SessionPO[],
@@ -48,25 +48,27 @@ export function useSession(options: {
       0,
       ...sessionState.list.map((session) =>
         Number(
-          new RegExp(`^${prefix}对话([\\d]+$)`).exec(session.title)?.[1] ?? 0
-        )
-      )
+          new RegExp(`^${prefix}对话([\\d]+$)`).exec(session.title)?.[1] ?? 0,
+        ),
+      ),
     );
 
     return `${prefix}对话${maxKeyNumber + 1}`;
   }
 
-  function createSession(scene = options.getDefaultScene()) {
-    if (!scene) throw new Error("scene is required");
+  function createSession(agent = options.getDefaultAgent()) {
+    if (!agent) throw new Error("agent is required");
 
-    const clonedScene = JSON.parse(JSON.stringify(scene));
+    const clonedAgent = JSON.parse(JSON.stringify(agent));
 
     return <ChatPL.SessionPO>{
       id: uuid(),
-      title: createSessionTitle(clonedScene.title),
-      icon: clonedScene.icon,
-      scene_id: clonedScene.id,
-      messages: clonedScene.messages,
+      title: createSessionTitle(clonedAgent.title),
+      icon: clonedAgent.icon,
+      agent_id: clonedAgent.id,
+      messages: clonedAgent.messages,
+      model_id: clonedAgent.model_id,
+      model_config: clonedAgent.model_config,
       new_message_image: "",
       new_message_content: "",
     };
@@ -123,7 +125,7 @@ export function useSession(options: {
     () => sessionState.current?.id,
     debounce(() => {
       saveCurrentSessionId(sessionState.current?.id);
-    }, 300)
+    }, 300),
   );
 
   // 在当前对话任意内容变化时自动保存
@@ -132,7 +134,7 @@ export function useSession(options: {
     debounce(() => {
       if (sessionState.current) saveSession(sessionState.current);
     }, 300),
-    { deep: true }
+    { deep: true },
   );
 
   async function initSessionState() {

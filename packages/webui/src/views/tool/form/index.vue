@@ -75,7 +75,7 @@
         <el-input
           v-model="formState.form.code"
           type="textarea"
-          rows="10"
+          :rows="10"
           placeholder="请输入代码，必须使用 return 返回结果"
         ></el-input>
       </el-form-item>
@@ -123,7 +123,7 @@ const MODE_CONFIG: Record<FormMode, { title: string }> = {
 };
 
 const currentModeConfig = computed(
-  () => MODE_CONFIG[route.query.mode as FormMode]
+  () => MODE_CONFIG[route.query.mode as FormMode],
 );
 
 function createTool() {

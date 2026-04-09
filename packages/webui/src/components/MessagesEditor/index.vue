@@ -8,9 +8,9 @@
     >
       <el-row>
         <el-select class="role" v-model="message.role">
-          <el-option :value="ChatAL.Role.System" label="系统"></el-option>
-          <el-option :value="ChatAL.Role.Assistant" label="助手"></el-option>
-          <el-option :value="ChatAL.Role.User" label="用户"></el-option>
+          <el-option :value="AgentNS.Role.System" label="系统"></el-option>
+          <el-option :value="AgentNS.Role.Assistant" label="助手"></el-option>
+          <el-option :value="AgentNS.Role.User" label="用户"></el-option>
         </el-select>
         <el-tooltip
           v-if="allowSet?.includes('hidden')"
@@ -59,12 +59,12 @@
 <script setup lang="ts">
 import { Delete, Plus } from "@element-plus/icons-vue";
 import { PropType } from "vue";
-import { ChatAL } from "@ai-zen/chats-core";
+import { AgentNS } from "@ai-zen/agents-core";
 
 const props = defineProps({
   modelValue: {
     required: true,
-    type: Array as PropType<ChatAL.Message[]>,
+    type: Array as PropType<AgentNS.Message[]>,
   },
   allowSet: {
     required: false,
@@ -79,16 +79,16 @@ function deleteMessage(index: number) {
 function addMessage() {
   // 根据上一条消息的角色自动安排下一个消息的角色
   const lastMessage = props.modelValue.at(-1);
-  let role = ChatAL.Role.User;
+  let role = AgentNS.Role.User;
   switch (lastMessage?.role) {
-    case ChatAL.Role.System:
-      role = ChatAL.Role.User;
+    case AgentNS.Role.System:
+      role = AgentNS.Role.User;
       break;
-    case ChatAL.Role.Assistant:
-      role = ChatAL.Role.User;
+    case AgentNS.Role.Assistant:
+      role = AgentNS.Role.User;
       break;
-    case ChatAL.Role.User:
-      role = ChatAL.Role.Assistant;
+    case AgentNS.Role.User:
+      role = AgentNS.Role.Assistant;
       break;
   }
 
@@ -96,7 +96,7 @@ function addMessage() {
     role,
     content: "",
     hidden: true,
-    status: ChatAL.MessageStatus.Completed,
+    status: AgentNS.MessageStatus.Completed,
   });
 }
 </script>

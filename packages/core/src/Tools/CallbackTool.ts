@@ -1,11 +1,11 @@
-import { ChatAL } from "../ChatAL.js";
+import { AgentNS } from "../AgentNS.js";
 import { PickRequired } from "../Common.js";
 import { Tool } from "../Tool.js";
 import { FunctionCallContext } from "../FunctionCallContext.js";
 
 export class CallbackTool implements Tool {
   type: "function";
-  function: ChatAL.FunctionDefine;
+  function: AgentNS.FunctionDefine;
   callback?: (this: FunctionCallContext, parsed_args: any) => any;
 
   constructor(options: PickRequired<CallbackTool, "function" | "callback">) {

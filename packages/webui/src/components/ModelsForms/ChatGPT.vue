@@ -142,11 +142,12 @@
     label="max_tokens"
     :rules="{
       type: 'integer',
-      min: OUTPUT_MAX_TOKENS_LOWER_LIMIT,
-      max: OUTPUT_MAX_TOKENS,
+      min: model_po.OUTPUT_MAX_TOKENS_LOWER_LIMIT,
+      max: model_po.OUTPUT_MAX_TOKENS,
       required: false,
-      transform: (v) => (v ? Number(v) : OUTPUT_MAX_TOKENS_LOWER_LIMIT),
-      message: `请输${OUTPUT_MAX_TOKENS_LOWER_LIMIT}~${OUTPUT_MAX_TOKENS}之间的正整数`,
+      transform: (v) =>
+        v ? Number(v) : model_po.OUTPUT_MAX_TOKENS_LOWER_LIMIT,
+      message: `请输${model_po.OUTPUT_MAX_TOKENS_LOWER_LIMIT}~${model_po.OUTPUT_MAX_TOKENS}之间的正整数`,
     }"
   >
     <el-text class="tips" size="small"> 最大输出TOKEN长度 </el-text>
@@ -156,7 +157,7 @@
       @update:model-value="
         (v) =>
           (props.model_config.max_tokens = v
-            ? OUTPUT_MAX_TOKENS_LOWER_LIMIT
+            ? model_po.OUTPUT_MAX_TOKENS_LOWER_LIMIT
             : undefined)
       "
       active-text="使用自定义值"
@@ -165,41 +166,26 @@
     <el-slider
       v-if="props.model_config.max_tokens !== undefined"
       :step="1"
-      :min="OUTPUT_MAX_TOKENS_LOWER_LIMIT"
-      :max="OUTPUT_MAX_TOKENS"
+      :min="model_po.OUTPUT_MAX_TOKENS_LOWER_LIMIT"
+      :max="model_po.OUTPUT_MAX_TOKENS"
       v-model="props.model_config.max_tokens"
     />
   </el-form-item>
 </template>
 
 <script setup lang="ts">
-import {
-  ChatCompletionModels,
-  ChatCompletionModelsKeys,
-} from "@ai-zen/chats-core";
-import { PropType, computed } from "vue";
+import { PropType } from "vue";
+import { ChatPL } from "../../types/ChatPL";
 
 const props = defineProps({
   model_config: {
     required: true,
     type: Object,
   },
-  model_key: {
+  model_po: {
     required: true,
-    type: String as PropType<ChatCompletionModelsKeys>,
+    type: Object as PropType<ChatPL.ModelPO>,
   },
-});
-
-const currentModelClass = computed(() => {
-  return ChatCompletionModels[props.model_key];
-});
-
-const OUTPUT_MAX_TOKENS_LOWER_LIMIT = computed(() => {
-  return currentModelClass.value.OUTPUT_MAX_TOKENS_LOWER_LIMIT;
-});
-
-const OUTPUT_MAX_TOKENS = computed(() => {
-  return currentModelClass.value.OUTPUT_MAX_TOKENS;
 });
 </script>
 

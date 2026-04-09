@@ -14,7 +14,7 @@
     <el-text class="tips" size="small">
       采样温度，控制输出的随机性，必须为正数
       取值范围是：[0.0,1.0]，不能等于0，默认值为0.95,值越大，会使输出更随机，更具创造性；值越小，输出会更加稳定或确定。
-      建议您根据应用场景调整 top_p 或 temperature 参数，但不要同时调整两个参数
+      建议您根据应用智能体调整 top_p 或 temperature 参数，但不要同时调整两个参数
     </el-text>
     <el-switch
       size="small"
@@ -50,7 +50,7 @@
       核取样，用温度取样的另一种方法，取值范围是：(0.0, 1.0) 开区间，不能等于 0
       或 1，默认值为 0.7 模型考虑具有 top_p 概率质量tokens的结果 例如：0.1
       意味着模型解码器只考虑从前 10% 的概率的候选集中取tokens
-      建议您根据应用场景调整 top_p 或 temperature 参数，但不要同时调整两个参数
+      建议您根据应用智能体调整 top_p 或 temperature 参数，但不要同时调整两个参数
     </el-text>
     <el-switch
       size="small"
@@ -75,11 +75,12 @@
     label="max_tokens"
     :rules="{
       type: 'integer',
-      min: OUTPUT_MAX_TOKENS_LOWER_LIMIT,
-      max: OUTPUT_MAX_TOKENS,
+      min: model_po.OUTPUT_MAX_TOKENS_LOWER_LIMIT,
+      max: model_po.OUTPUT_MAX_TOKENS,
       required: false,
-      transform: (v) => (v ? Number(v) : OUTPUT_MAX_TOKENS_LOWER_LIMIT),
-      message: `请输${OUTPUT_MAX_TOKENS_LOWER_LIMIT}~${OUTPUT_MAX_TOKENS}之间的正整数`,
+      transform: (v) =>
+        v ? Number(v) : model_po.OUTPUT_MAX_TOKENS_LOWER_LIMIT,
+      message: `请输${model_po.OUTPUT_MAX_TOKENS_LOWER_LIMIT}~${model_po.OUTPUT_MAX_TOKENS}之间的正整数`,
     }"
   >
     <el-text class="tips" size="small"> 最大输出TOKEN长度 </el-text>
@@ -89,7 +90,7 @@
       @update:model-value="
         (v) =>
           (props.model_config.max_tokens = v
-            ? OUTPUT_MAX_TOKENS_LOWER_LIMIT
+            ? model_po.OUTPUT_MAX_TOKENS_LOWER_LIMIT
             : undefined)
       "
       active-text="使用自定义值"
@@ -98,41 +99,26 @@
     <el-slider
       v-if="props.model_config.max_tokens !== undefined"
       :step="1"
-      :min="OUTPUT_MAX_TOKENS_LOWER_LIMIT"
-      :max="OUTPUT_MAX_TOKENS"
+      :min="model_po.OUTPUT_MAX_TOKENS_LOWER_LIMIT"
+      :max="model_po.OUTPUT_MAX_TOKENS"
       v-model="props.model_config.max_tokens"
     />
   </el-form-item>
 </template>
 
 <script setup lang="ts">
-import {
-  ChatCompletionModels,
-  ChatCompletionModelsKeys,
-} from "@ai-zen/chats-core";
-import { PropType, computed } from "vue";
+import { PropType } from "vue";
+import { ChatPL } from "../../types/ChatPL";
 
 const props = defineProps({
   model_config: {
     required: true,
     type: Object,
   },
-  model_key: {
+  model_po: {
     required: true,
-    type: String as PropType<ChatCompletionModelsKeys>,
+    type: Object as PropType<ChatPL.ModelPO>,
   },
-});
-
-const currentModelClass = computed(() => {
-  return ChatCompletionModels[props.model_key];
-});
-
-const OUTPUT_MAX_TOKENS_LOWER_LIMIT = computed(() => {
-  return currentModelClass.value.OUTPUT_MAX_TOKENS_LOWER_LIMIT;
-});
-
-const OUTPUT_MAX_TOKENS = computed(() => {
-  return currentModelClass.value.OUTPUT_MAX_TOKENS;
 });
 </script>
 

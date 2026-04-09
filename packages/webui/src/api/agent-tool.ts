@@ -2,7 +2,7 @@ import { ChatPL } from "../types/ChatPL";
 
 function openDB() {
   return new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open("agent", 1);
+    const request = indexedDB.open("agent-tool", 1);
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains("list")) {
@@ -19,35 +19,9 @@ function openDB() {
   });
 }
 
-export async function getCurrentAgentId(): Promise<string | null> {
+export async function getAgentToolList(): Promise<ChatPL.AgentToolPO[]> {
   const db = await openDB();
-  return new Promise<string>((resolve, reject) => {
-    const request = db
-      .transaction("config", "readwrite")
-      .objectStore("config")
-      .get("current-agent-id");
-    request.onsuccess = () => {
-      resolve((request.result as { key: string; value: string })?.value);
-    };
-    request.onerror = reject;
-  }).finally(() => db.close());
-}
-
-export async function setCurrentAgentId(id: string | null | undefined) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const request = db
-      .transaction("config", "readwrite")
-      .objectStore("config")
-      .put({ key: "current-agent-id", value: id });
-    request.onsuccess = resolve;
-    request.onerror = reject;
-  }).finally(() => db.close());
-}
-
-export async function getAgentList(): Promise<ChatPL.AgentPO[]> {
-  const db = await openDB();
-  return new Promise<ChatPL.AgentPO[]>((resolve, reject) => {
+  return new Promise<ChatPL.AgentToolPO[]>((resolve, reject) => {
     const request = db
       .transaction("list", "readonly")
       .objectStore("list")
@@ -59,31 +33,31 @@ export async function getAgentList(): Promise<ChatPL.AgentPO[]> {
   }).finally(() => db.close());
 }
 
-export async function addAgent(agent: ChatPL.AgentPO) {
+export async function addAgentTool(agentTool: ChatPL.AgentToolPO) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const request = db
       .transaction("list", "readwrite")
       .objectStore("list")
-      .add(agent);
+      .add(agentTool);
     request.onsuccess = resolve;
     request.onerror = reject;
   }).finally(() => db.close());
 }
 
-export async function editAgent(agent: ChatPL.AgentPO) {
+export async function editAgentTool(agentTool: ChatPL.AgentToolPO) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const request = db
       .transaction("list", "readwrite")
       .objectStore("list")
-      .put(agent);
+      .put(agentTool);
     request.onsuccess = resolve;
     request.onerror = reject;
   }).finally(() => db.close());
 }
 
-export async function deleteAgent(id: string) {
+export async function deleteAgentTool(id: string) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const request = db
@@ -95,9 +69,11 @@ export async function deleteAgent(id: string) {
   }).finally(() => db.close());
 }
 
-export async function getAgent(id: string): Promise<ChatPL.AgentPO | null> {
+export async function getAgentTool(
+  id: string,
+): Promise<ChatPL.AgentToolPO | null> {
   const db = await openDB();
-  return new Promise<ChatPL.AgentPO>((resolve, reject) => {
+  return new Promise<ChatPL.AgentToolPO>((resolve, reject) => {
     const request = db
       .transaction("list", "readonly")
       .objectStore("list")

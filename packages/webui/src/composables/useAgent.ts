@@ -8,12 +8,14 @@ export function useAgent() {
     isLoading: false,
     isReady: false,
     isSaving: false,
+    current: null as ChatPL.AgentPO | null,
   });
 
   async function getList() {
     try {
       agentState.isLoading = true;
-      agentState.list = await api.getAgentList();
+      const list = await api.getAgentList();
+      agentState.list = list;
       agentState.isReady = true;
     } finally {
       agentState.isLoading = false;

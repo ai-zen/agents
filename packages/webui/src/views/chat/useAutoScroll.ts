@@ -1,10 +1,10 @@
-import { ChatAL } from "@ai-zen/chats-core";
+import { AgentNS } from "@ai-zen/agents-core";
 import { nextTick, watch } from "vue";
 import { debounce, nextFrame } from "../../utils";
 
 export function useAutoScroll(options: {
   getScrollEl(): HTMLDivElement | null | undefined;
-  getMessages(): ChatAL.Message[] | undefined;
+  getMessages(): AgentNS.Message[] | undefined;
 }) {
   // 滚动到底部（带防抖）
   const scrollToBottomWithDebounce = debounce(async () => {

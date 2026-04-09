@@ -47,7 +47,7 @@
           placeholder="请输入内容"
           type="textarea"
           resize="vertical"
-          rows="10"
+          :rows="10"
         ></el-input>
       </el-form-item>
     </el-form>
@@ -65,15 +65,14 @@
 </template>
 
 <script setup lang="ts">
-import { EmbeddingModel, EmbeddingModels } from "@ai-zen/chats-core";
 import { ElForm, ElMessage } from "element-plus";
-import { reactive, ref, toRaw } from "vue";
+import { onMounted, reactive, ref, toRaw } from "vue";
 import * as api from "../../../api";
-import { useEndpoint } from "../../../composables/useEndpoints";
+import { TagsEditor } from "../../../components";
+import { useDeserialize, useEndpoint, useModel } from "../../../composables";
 import { ChatPL } from "../../../types/ChatPL";
 import { FormMode } from "../../../types/Common";
 import { uuid } from "../../../utils/uuid";
-import { TagsEditor } from "../../../components";
 
 const emit = defineEmits<{
   save: [mode: FormMode, data: ChatPL.KnowledgeItemPO];
@@ -104,7 +103,14 @@ async function onDialogCancel() {
   dialogState.isOpen = false;
 }
 
-const { initEndpointState, matchEndpointInstance } = useEndpoint();
+const { initEndpointState, getEndpoint } = useEndpoint();
+
+const { initModelState, getModel } = useModel();
+
+const { formatEmbeddingModel } = useDeserialize({
+  getEndpoint,
+  getModel,
+});
 
 async function onDialogConfirm() {
   if (!dialogState.detail) return;
@@ -121,15 +127,16 @@ async function onDialogConfirm() {
   }
 
   try {
-    const request_config = await matchEndpointInstance(
-      dialogState.detail.model_key
-    ).build(dialogState.detail.model_key);
-    const embeddingModel = new EmbeddingModels[dialogState.detail.model_key]({
-      request_config,
-      model_config: dialogState.detail.model_config,
-    }) as EmbeddingModel;
+    const modelPo = getModel(dialogState.detail.model_id);
+    if (!modelPo) {
+      throw new Error("Model not found");
+    }
+    const embeddingModel = await formatEmbeddingModel(
+      modelPo,
+      dialogState.detail.model_config,
+    );
     dialogState.form.vector = await embeddingModel.createEmbedding(
-      dialogState.form.text
+      dialogState.form.text,
     );
     const item = structuredClone(toRaw(dialogState.form));
     await api.putKnowledgeItem(dialogState.detail.id, item);
@@ -152,7 +159,7 @@ async function add(data: {
   dialogState.detail = data.detail;
   dialogState.form = Object.assign(
     createForm(),
-    data.item ? structuredClone(toRaw(data.item)) : {}
+    data.item ? structuredClone(toRaw(data.item)) : {},
   );
   await initEndpointState();
   dialogState.isOpen = true;
@@ -168,7 +175,7 @@ async function edit(data: {
   dialogState.detail = data.detail;
   dialogState.form = Object.assign(
     createForm(),
-    structuredClone(toRaw(data.item))
+    structuredClone(toRaw(data.item)),
   );
   await initEndpointState();
   dialogState.isOpen = true;
@@ -178,6 +185,11 @@ async function edit(data: {
 defineExpose({
   add,
   edit,
+});
+
+onMounted(() => {
+  initModelState();
+  initEndpointState();
 });
 </script>
 

@@ -1,9 +1,9 @@
 <template>
   <div class="list-page">
-    <el-page-header content="场景列表" @back="$router.back()">
+    <el-page-header content="模型列表" @back="$router.back()">
       <template #extra>
         <el-button plain type="success" @click="create">
-          <el-icon><Plus /></el-icon>&ensp; 新增场景
+          <el-icon><Plus /></el-icon>&ensp; 新增模型
         </el-button>
       </template>
     </el-page-header>
@@ -52,15 +52,20 @@
             </el-button>
           </div>
         </div>
+        <div class="info-row">
+          <span class="label">模型标识：</span>
+          <span class="value">{{ item.name }}</span>
+        </div>
+        <div class="info-row">
+          <span class="label">模型类型：</span>
+          <span class="value">{{ item.type }}</span>
+        </div>
+        <div class="info-row">
+          <span class="label">模型基类：</span>
+          <span class="value">{{ item.base }}</span>
+        </div>
       </div>
     </div>
-
-    <!-- <el-row>
-      <el-pagination
-        :total="listState.total"
-        v-model:current-page="listState.currentPage"
-      ></el-pagination>
-    </el-row> -->
   </div>
 </template>
 
@@ -83,23 +88,23 @@ const filterState = reactive({
 });
 
 const filterList = computed(() =>
-  listState.list.filter((item) => item.title.includes(filterState.form.keyword))
+  listState.list.filter(
+    (item) =>
+      item.title.includes(filterState.form.keyword) ||
+      item.name.includes(filterState.form.keyword),
+  ),
 );
 
 const listState = reactive({
-  list: [] as ChatPL.ScenePO[],
+  list: [] as ChatPL.ModelPO[],
   isLoading: false,
   isReady: false,
-  // currentPage: 1,
-  // pageSize: 30,
-  // pageSizes: [30],
-  // total: 0,
 });
 
 async function getList() {
   try {
     listState.isLoading = true;
-    listState.list = await api.getSceneList();
+    listState.list = await api.getModelList();
     listState.isReady = true;
   } catch (error: any) {
     ElMessage.error(`获取列表失败：${error?.message}`);
@@ -109,11 +114,11 @@ async function getList() {
 }
 
 function create() {
-  router.push({ path: "/scene/form", query: { mode: FormMode.Create } });
+  router.push({ path: "/model/form", query: { mode: FormMode.Create } });
 }
 
 function edit(id: string) {
-  router.push({ path: "/scene/form", query: { mode: FormMode.Edit, id } });
+  router.push({ path: "/model/form", query: { mode: FormMode.Edit, id } });
 }
 
 async function del(id: string) {
@@ -123,7 +128,7 @@ async function del(id: string) {
         instance.confirmButtonLoading = true;
         instance.confirmButtonText = "删除中...";
         try {
-          await api.deleteScene(id);
+          await api.deleteModel(id);
           ElMessage.success("删除成功");
           getList(); // 刷新列表
         } catch (error: any) {
@@ -143,3 +148,20 @@ onMounted(() => {
   getList();
 });
 </script>
+
+<style lang="scss" scoped>
+.info-row {
+  display: flex;
+  margin-top: 8px;
+  font-size: 14px;
+
+  .label {
+    color: var(--el-text-color-secondary);
+    min-width: 80px;
+  }
+
+  .value {
+    color: var(--el-text-color-regular);
+  }
+}
+</style>

@@ -1,11 +1,11 @@
-import { ChatAL } from "../ChatAL.js";
+import { AgentNS } from "../AgentNS.js";
 import { PickRequired } from "../Common.js";
 import { Tool } from "../Tool.js";
 import { FunctionCallContext } from "../FunctionCallContext.js";
 
 export class CodeTool implements Tool {
   type: "function";
-  function: ChatAL.FunctionDefine;
+  function: AgentNS.FunctionDefine;
   code?: string;
 
   constructor(options: PickRequired<CodeTool, "function" | "code">) {

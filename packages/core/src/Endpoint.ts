@@ -1,4 +1,3 @@
-import { ModelsKeys } from "./Models/index.js";
 import { RequestConfig } from "./Model.js";
 
 export abstract class Endpoint<C extends {} = any> {
@@ -12,42 +11,21 @@ export abstract class Endpoint<C extends {} = any> {
     return this.constructor.name;
   }
 
-  static COMPATIBLE_MODELS_KEYS: ModelsKeys[] = [];
-
-  get compatible_models_keys() {
-    return (this.constructor as typeof Endpoint).COMPATIBLE_MODELS_KEYS;
-  }
-
-  enabled_models_keys: ModelsKeys[];
   endpoint_config: C;
 
-  constructor(options: C & { enabled_models_keys: ModelsKeys[] }) {
-    const { enabled_models_keys, ...endpoint_config } = options;
-
-    enabled_models_keys?.forEach((model_key) => {
-      if (!this.isCompatible(model_key)) {
-        throw new Error(`Model ${model_key} is not compatible by ${this.name}`);
-      }
-    });
-
-    this.enabled_models_keys = enabled_models_keys ?? [
-      ...this.compatible_models_keys,
-    ];
+  constructor(options: C) {
+    const { ...endpoint_config } = options;
 
     this.endpoint_config = (endpoint_config as any) ?? {};
   }
 
-  abstract build(model_key: string): Promise<RequestConfig>;
+  abstract build(path: string, model: string): Promise<RequestConfig>;
 
-  isMatch(model_key: ModelsKeys) {
-    return this.enabled_models_keys.includes(model_key);
+  chatCompletion(model: string) {
+    return this.build("chat/completions", model);
   }
 
-  static match(endpoints: Endpoint[], model_key: ModelsKeys) {
-    return endpoints.find((x) => x.isMatch(model_key));
-  }
-
-  isCompatible(model_key: ModelsKeys) {
-    return this.compatible_models_keys.includes(model_key);
+  embedding(model: string) {
+    return this.build("embeddings", model);
   }
 }

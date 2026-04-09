@@ -1,25 +1,25 @@
-# AI-ZEN Chats
+# AI-ZEN Agents
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
 ## Project Introduction
 
-**AI-ZEN Chats** is a simple AI chat framework that consists of two sub-projects: `@ai-zen/chats-core` and `@ai-zen/chats-webui`. It aims to simplify the development of AI chat applications. Currently, the project is still in its early development stage but already provides the foundation to build fully functional AI chat applications.
+**AI-ZEN Agents** is a simple LLM Agent Framework that consists of two sub-projects: `@ai-zen/agents-core` and `@ai-zen/agents-webui`. It aims to simplify the development of LLM Agent applications. Currently, the project is still in its early development stage but already provides the foundation to build fully functional LLM Agent applications.
 
 There are still many known issues to be fixed in this project, and there are still many features that have not been implemented.
 
 ## Features
 
-### @ai-zen/chats-core
+### @ai-zen/agents-core
 
 - A Typescript library that can be used in Node.js and browser environments
 - Provides encapsulations for "models", "tools," and "RAG" concepts
-- Allows for easy implementation of AI chat applications with reusable components
+- Allows for easy implementation of LLM Agent applications with reusable components
 
-### @ai-zen/chats-webui
+### @ai-zen/agents-webui
 
 - A Vue.js-based web application
-- Showcases and interacts with AI chat applications
+- Showcases and interacts with LLM Agent applications
 - Integrates modules for "session", "scenario", "agent", "tool", "knowledge base", and "server"
 - Utilizes IndexedDB for persistent application data
 - Can run independently in the browser without relying on backend services

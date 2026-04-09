@@ -83,7 +83,9 @@ const filterState = reactive({
 });
 
 const filterList = computed(() =>
-  listState.list.filter((item) => item.title.includes(filterState.form.keyword))
+  listState.list.filter((item) =>
+    item.title.includes(filterState.form.keyword),
+  ),
 );
 
 const listState = reactive({
@@ -99,7 +101,7 @@ const listState = reactive({
 async function getList() {
   try {
     listState.isLoading = true;
-    listState.list = await api.getAgentList();
+    listState.list = await api.getAgentToolList();
     listState.isReady = true;
   } catch (error: any) {
     ElMessage.error(`获取列表失败：${error?.message}`);
@@ -123,7 +125,7 @@ async function del(id: string) {
         instance.confirmButtonLoading = true;
         instance.confirmButtonText = "删除中...";
         try {
-          await api.deleteAgent(id);
+          await api.deleteAgentTool(id);
           ElMessage.success("删除成功");
           getList(); // 刷新列表
         } catch (error: any) {

@@ -1,45 +1,53 @@
-import { Chat } from "@ai-zen/chats-core";
+import { Agent } from "@ai-zen/agents-core";
 import { computed, ref, watch } from "vue";
 import { useDeserialize } from "../../composables/useDeserialize";
 import { ChatPL } from "../../types/ChatPL";
 
 export function useChat(options: {
   getCurrentSession(): ChatPL.SessionPO | undefined;
-  getCurrentSessionScene(): ChatPL.ScenePO | undefined;
-  getEndpoints(): ChatPL.EndpointPO[];
-  getAgents(): ChatPL.AgentPO[];
-  getKnowledgeBases(): ChatPL.KnowledgeBasePO[];
-  getTools(): ChatPL.ToolPO[];
+  getCurrentSessionAgent(): ChatPL.AgentPO | undefined;
+  getEndpoint(id: string): ChatPL.EndpointPO | undefined;
+  getModel(id: string): ChatPL.ModelPO | undefined;
+  getTools(ids: string[]): ChatPL.ToolPO[];
+  getAgentTools(ids: string[]): ChatPL.AgentToolPO[];
+  getAgents(ids: string[]): ChatPL.AgentPO[];
+  getKnowledgeBases(ids: string[]): ChatPL.KnowledgeBasePO[];
 }) {
-  const { formatScene } = useDeserialize({
-    getEndpoints: options.getEndpoints,
+  const { formatAgent } = useDeserialize({
+    getEndpoint: options.getEndpoint,
+    getModel: options.getModel,
+    getTools: options.getTools,
+    getAgentTools: options.getAgentTools,
     getAgents: options.getAgents,
     getKnowledgeBases: options.getKnowledgeBases,
-    getTools: options.getTools,
   });
 
-  const chatRef = ref<Chat>();
+  const chatRef = ref<Agent>();
 
-  function initChat() {
+  async function initChat() {
     const sessionPO = options.getCurrentSession();
     if (!sessionPO) return;
-    const scenePO = options.getCurrentSessionScene();
-    if (!scenePO) return;
-    chatRef.value = new Chat({
-      ...formatScene(scenePO),
-      model_key: sessionPO.model_key || scenePO.model_key,
-      model_config: sessionPO.model_config || scenePO.model_config,
-      messages: sessionPO.messages,
+    const agentPO = options.getCurrentSessionAgent();
+    if (!agentPO) return;
+    if (!sessionPO.model_id && !agentPO.model_id) return;
+    chatRef.value = await formatAgent({
+      ...agentPO,
+      model_id: sessionPO.model_id || agentPO.model_id,
+      model_config: {
+        ...agentPO.model_config,
+        ...sessionPO.model_config,
+      },
     });
+    chatRef.value.messages = sessionPO.messages;
   }
 
   watch(
     [
       () => options.getCurrentSession(),
-      () => options.getCurrentSession()?.model_key,
+      () => options.getCurrentSession()?.model_id,
       () => options.getCurrentSession()?.model_config,
     ],
-    initChat
+    initChat,
   );
 
   const isHasPendingMessage = computed(() => {

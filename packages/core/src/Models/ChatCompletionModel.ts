@@ -1,11 +1,11 @@
 import { AsyncQueue } from "@ai-zen/async-queue";
-import { ChatAL } from "../ChatAL.js";
+import { AgentNS } from "../AgentNS.js";
 import { Model, ModelType } from "../Model.js";
 
 export interface ChatCompletionModelCreateStreamOptions {
   signal?: AbortSignal;
-  messages: ChatAL.Message[];
-  tools: ChatAL.ToolDefine[];
+  messages: AgentNS.Message[];
+  tools: AgentNS.ToolDefine[];
   onOpen?(): void;
   onError?(error: Error): void;
   onFinally?(): void;
@@ -13,22 +13,22 @@ export interface ChatCompletionModelCreateStreamOptions {
 
 export interface ChatCompletionModelCreateOptions {
   signal?: AbortSignal;
-  messages: ChatAL.Message[];
-  tools: ChatAL.ToolDefine[];
+  messages: AgentNS.Message[];
+  tools: AgentNS.ToolDefine[];
 }
 
 export abstract class ChatCompletionModel<C = {}> extends Model<C> {
   static type = ModelType.ChatCompletion;
-  static INPUT_MAX_TOKENS: number;
-  static OUTPUT_MAX_TOKENS_LOWER_LIMIT: number;
-  static OUTPUT_MAX_TOKENS: number;
-  static IS_SUPPORT_FUNCTION_CALL?: boolean;
-  static IS_SUPPORT_TOOLS_CALL?: boolean;
-  static IS_SUPPORT_IMAGE_CONTENT?: boolean;
+  INPUT_MAX_TOKENS?: number;
+  OUTPUT_MAX_TOKENS_LOWER_LIMIT?: number;
+  OUTPUT_MAX_TOKENS?: number;
+  IS_SUPPORT_FUNCTION_CALL?: boolean;
+  IS_SUPPORT_TOOLS_CALL?: boolean;
+  IS_SUPPORT_IMAGE_CONTENT?: boolean;
   abstract createStream(
-    options: ChatCompletionModelCreateStreamOptions
-  ): AsyncQueue<ChatAL.StreamResponseData>;
+    options: ChatCompletionModelCreateStreamOptions,
+  ): AsyncQueue<AgentNS.StreamResponseData>;
   abstract createCompletion(
-    options: ChatCompletionModelCreateOptions
-  ): Promise<ChatAL.ResponseData>;
+    options: ChatCompletionModelCreateOptions,
+  ): Promise<AgentNS.ResponseData>;
 }
