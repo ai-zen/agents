@@ -1,9 +1,9 @@
 <template>
   <div class="list-page">
-    <el-page-header content="智能体列表" @back="$router.back()">
+    <el-page-header content="子智能体列表" @back="$router.back()">
       <template #extra>
         <el-button plain type="success" @click="create">
-          <el-icon><Plus /></el-icon>&ensp; 新增智能体
+          <el-icon><Plus /></el-icon>&ensp; 新增子智能体
         </el-button>
       </template>
     </el-page-header>

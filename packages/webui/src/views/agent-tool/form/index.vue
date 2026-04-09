@@ -222,10 +222,10 @@ const route = useRoute();
 
 const MODE_CONFIG: Record<FormMode, { title: string }> = {
   create: {
-    title: "新增智能体",
+    title: "新增子智能体",
   },
   edit: {
-    title: "编辑智能体",
+    title: "编辑子智能体",
   },
 };
 
@@ -293,7 +293,7 @@ onMounted(async () => {
     ) {
       const agent = await api.getAgentTool(route.query.id);
       if (!agent)
-        throw new Error(`未查找到 id == ${route.query.id} 对应的智能体`);
+        throw new Error(`未查找到 id == ${route.query.id} 对应的子智能体`);
       formState.form = agent;
     } else {
       throw new Error(`非法访问`);
