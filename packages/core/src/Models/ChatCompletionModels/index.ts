@@ -1,5 +1,5 @@
-export * from "./ChatGPT";
-import { ChatGPT } from "./ChatGPT";
+export * from "./ChatGPT.js";
+import { ChatGPT } from "./ChatGPT.js";
 
 export const ChatCompletionModels = {
   ChatGPT,

@@ -164,6 +164,10 @@ class FatalError extends Error {}
 export class ChatGPT<
   M extends ChatGPT_ModelConfig = ChatGPT_ModelConfig,
 > extends ChatCompletionModel<M> {
+  IS_SUPPORT_FUNCTION_CALL = true;
+  IS_SUPPORT_TOOLS_CALL = true;
+  IS_SUPPORT_IMAGE_CONTENT = true;
+
   async createCompletion(options: ChatCompletionModelCreateOptions) {
     if (!this.model_config) {
       throw new Error("ChatGPT config not set");

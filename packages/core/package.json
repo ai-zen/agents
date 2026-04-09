@@ -10,7 +10,7 @@
     "prebuild": "npm run clean",
     "build": "tsc",
     "prepublishOnly": "npm run build",
-    "test": "npm run build && node ./test.js"
+    "test": "npm run build && node ./dist/test.js"
   },
   "keywords": [],
   "author": "",

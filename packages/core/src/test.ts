@@ -1,29 +1,19 @@
-import {
-  AgentTool,
-  AzureOpenAI,
-  Agent,
-  AgentNS,
-  CallbackTool,
-} from "./dist/index.js";
+import { Agent, AgentNS, AgentTool, CallbackTool, OpenAI } from "./index.js";
+import { ChatGPT } from "./Models/ChatCompletionModels/ChatGPT.js";
 
 async function main() {
+  const endpoint = new OpenAI({
+    openai_endpoint: "https://open.bigmodel.cn/api/paas/v4",
+    api_key: "YOUR_ZHIPU_KEY",
+  });
+
+  const glm45air = new ChatGPT({
+    model_config: {},
+    request_config: await endpoint.chatCompletion("glm-4.5-air"),
+  });
+
   const chat = new Agent({
-    endpoints: [
-      // new OpenAI({
-      //   enabled_models_keys: ["GPT35Turbo_1106"],
-      //   api_key: "YOUR_OPENAI_KEY",
-      // }),
-      new AzureOpenAI({
-        enabled_models_keys: ["GPT35Turbo_1106"],
-        azure_endpoint: "https://YOUR_AZURE_RESOURCES.openai.azure.com/",
-        api_key: "YOUR_AZURE_OPENAI_KEY",
-        api_version: "2024-02-15-preview",
-        deployments: {
-          GPT35Turbo_1106: "YOUR_MODEL_DEPLOYMENT_NAME",
-        },
-      }),
-    ],
-    model: "GPT35Turbo_1106",
+    model: glm45air,
     messages: [
       {
         role: AgentNS.Role.System,
@@ -77,7 +67,7 @@ async function main() {
             required: ["city", "date"],
           },
         },
-        model: "GPT35Turbo_1106",
+        model: glm45air,
         messages: [
           {
             role: AgentNS.Role.System,
@@ -94,6 +84,7 @@ async function main() {
   });
 
   console.log("send...");
+  console.log("tools", JSON.stringify(chat.formatTools(), null, 4));
   const messages = await chat.send("当前时间纽约天气如何？");
   console.log("messages", JSON.stringify(messages, null, 4));
 }
