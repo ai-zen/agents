@@ -186,7 +186,7 @@ const defaultConfig: Config = {
       updatedAt: new Date().toISOString(),
     },
   ],
-  defaultModel: "deepseekv4flash",
+  defaultModel: "deepseek-v4-flash",
   defaultAgent: "default",
 };
 
@@ -843,7 +843,7 @@ const program = new Command();
 program
   .name("aiz")
   .description("🤖 AI Agent 命令行工具 - 支持 OpenAI、BigModelCN、DeepSeek")
-  .version("0.0.3");
+  .version("0.0.4");
 
 // ==================== 对话命令 ====================
 
