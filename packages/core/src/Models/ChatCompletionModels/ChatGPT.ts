@@ -76,6 +76,7 @@ export namespace ChatGPTTypes {
     content?: string | MessageContentSection[];
     function_call?: FunctionCall;
     tool_calls?: ToolCall[];
+    reasoning_content?: string;
   }
 
   export type ResponseMessage = Message;

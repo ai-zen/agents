@@ -157,6 +157,7 @@ export class Agent extends AgentContext {
           : undefined,
         tool_calls: message.tool_calls?.length ? message.tool_calls : undefined,
         tool_call_id: message.tool_call_id ?? undefined,
+        reasoning_content: message.reasoning_content ?? undefined,
         name: message.name ?? undefined,
       }));
   }
@@ -289,6 +290,14 @@ export class Agent extends AgentContext {
           if (delta.function_call.arguments) {
             receiver.function_call!.arguments += delta.function_call.arguments;
           }
+        }
+
+        if (delta?.reasoning_content) {
+          if (typeof receiver.reasoning_content != "string") {
+            receiver.reasoning_content = "";
+          }
+
+          receiver.reasoning_content += delta.reasoning_content;
         }
       }
 

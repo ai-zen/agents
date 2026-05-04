@@ -11,6 +11,7 @@ export class Message implements AgentNS.Message {
   function_call?: AgentNS.FunctionCall | undefined;
   tool_call_id?: number | undefined;
   tool_calls?: AgentNS.ToolCall[] | undefined;
+  reasoning_content?: string | undefined;
   role: AgentNS.Role;
   status?: AgentNS.MessageStatus | undefined;
   finish_reason?: AgentNS.FinishReason | undefined;
@@ -28,6 +29,7 @@ export class Message implements AgentNS.Message {
     this.function_call = options.function_call;
     this.tool_call_id = options.tool_call_id;
     this.tool_calls = options.tool_calls;
+    this.reasoning_content = options.reasoning_content;
     this.role = options.role;
     this.status = options.status;
     this.finish_reason = options.finish_reason;

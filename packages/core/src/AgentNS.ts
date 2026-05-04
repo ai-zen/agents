@@ -70,6 +70,7 @@ export namespace AgentNS {
     function_call?: FunctionCall;
     tool_call_id?: number;
     tool_calls?: ToolCall[];
+    reasoning_content?: string;
     role: Role;
     status?: MessageStatus;
     finish_reason?: FinishReason;
@@ -83,6 +84,7 @@ export namespace AgentNS {
     function_call?: FunctionCall;
     tool_call_id?: number;
     tool_calls?: ToolCall[];
+    reasoning_content?: string;
     role?: Role;
     status?: MessageStatus;
     finish_reason?: FinishReason;
