@@ -61,12 +61,15 @@ export class Agent extends AgentContext {
 
     this.pendingTasks.add(pendingTask);
 
-    this.events.emit("run");
+    const messages = this.formatHistory();
+    const tools = this.formatTools();
+
+    this.events.emit("run", messages, tools);
 
     const stream = this.model.createStream({
       signal: controller.signal,
-      messages: this.formatHistory(),
-      tools: this.formatTools(),
+      messages,
+      tools,
       onOpen: () => {
         receiver.status = AgentNS.MessageStatus.Writing;
         this.events.emit("open");

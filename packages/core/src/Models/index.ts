@@ -1,3 +1,6 @@
+export * from "./ChatCompletionModels/index.js";
+export * from "./EmbeddingModels/index.js";
+
 import { ChatCompletionModels } from "./ChatCompletionModels/index.js";
 import { EmbeddingModels } from "./EmbeddingModels/index.js";
 

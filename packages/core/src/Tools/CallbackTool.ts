@@ -6,7 +6,7 @@ import { FunctionCallContext } from "../FunctionCallContext.js";
 export class CallbackTool implements Tool {
   type: "function";
   function: AgentNS.FunctionDefine;
-  callback?: (this: FunctionCallContext, parsed_args: any) => any;
+  callback?: (this: FunctionCallContext | any, parsed_args: any) => any;
 
   constructor(options: PickRequired<CallbackTool, "function" | "callback">) {
     if (!options.function) throw new Error("CallbackTool must have a function");
