@@ -15,7 +15,7 @@ import {
   unlinkSync,
 } from "fs";
 import { Agent, AgentNS, OpenAI, ChatGPT } from "@ai-zen/agents-core";
-import { shellTool } from "./tools.js";
+import { allTools } from "./tools.js";
 // import crypto from "crypto";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -535,7 +535,7 @@ async function createAgent(
         content: "完成任务后立即汇报，不要输出多余的内容，不要解释",
       },
     ],
-    tools: [shellTool],
+    tools: [...allTools],
   });
 
   agent.events.on("run", (messages: AgentNS.Message[]) => {

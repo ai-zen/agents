@@ -1,6 +1,6 @@
 {
   "name": "@ai-zen/agents-cli",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Command line interface for AI agents",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -32,7 +32,7 @@
   },
   "devDependencies": {
     "@types/inquirer": "^9.0.7",
-    "@types/node": "^20.10.5",
+    "@types/node": "^24.1.0",
     "rimraf": "^5.0.5",
     "typescript": "^5.3.3"
   }
