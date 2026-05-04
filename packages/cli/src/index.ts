@@ -843,7 +843,7 @@ const program = new Command();
 program
   .name("aiz")
   .description("🤖 AI Agent 命令行工具 - 支持 OpenAI、BigModelCN、DeepSeek")
-  .version("2.0.0");
+  .version("0.0.3");
 
 // ==================== 对话命令 ====================
 
