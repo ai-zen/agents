@@ -8,6 +8,7 @@ import { registerConversationsCommand } from "./commands/conversations.js";
 import { registerAgentsCommand } from "./commands/agents.js";
 import { registerConfigCommand } from "./commands/config.js";
 import { getConversationsList } from "./conversations.js";
+import pkg from "../package.json" with { type: "json" };
 
 // ==================== 主程序 ====================
 
@@ -16,7 +17,7 @@ const program = new Command();
 program
   .name("aiz")
   .description("🤖 AI Agent 命令行工具 - 支持 OpenAI、BigModelCN、DeepSeek")
-  .version("0.1.0");
+  .version(pkg.version);
 
 // 注册子命令
 registerChatCommand(program);
