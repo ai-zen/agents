@@ -61,29 +61,5 @@ export async function createAgent(
     tools: [...allTools],
   });
 
-  agent.events.on("run", (messages: AgentNS.Message[]) => {
-    const lastMessage = messages[messages.length - 2];
-    if (lastMessage?.tool_calls?.length || lastMessage?.function_call) {
-      console.log(
-        "\n",
-        chalk.yellowBright(`🔧 执行工具: `),
-        "\n",
-        lastMessage,
-        "\n",
-      );
-    }
-
-    const lastToolMessage = messages[messages.length - 1];
-    if (lastToolMessage?.role === "tool") {
-      console.log(
-        "\n",
-        chalk.yellowBright(`🔧 工具输出: `),
-        "\n",
-        lastToolMessage,
-        "\n",
-      );
-    }
-  });
-
   return agent;
 }

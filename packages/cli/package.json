@@ -13,8 +13,8 @@
     "prebuild": "npm run clean",
     "build": "tsc",
     "prepublishOnly": "npm run build",
-    "start": "node ./dist/index.js",
-    "test": "node ./dist/test.js"
+    "start": "npm run build && node ./dist/index.js",
+    "test": "npm run build && node ./dist/test.js"
   },
   "keywords": [
     "ai",

@@ -1,8 +1,106 @@
 import chalk from "chalk";
-import ora from "ora";
 import inquirer from "inquirer";
 import { Agent, AgentNS } from "@ai-zen/agents-core";
 import { saveConversation } from "./conversations.js";
+
+// ==================== 工具调用状态管理 ====================
+
+interface ToolCallState {
+  name: string;
+  arguments: string;
+  namePrinted: boolean; // 名称是否已显示
+  argsPrinted: boolean; // 参数首行标题是否已显示
+  completed: boolean;
+}
+
+type ToolCallStates = Record<number, ToolCallState>;
+
+function handleToolCallChunk(
+  delta: AgentNS.Delta,
+  finishReason: AgentNS.FinishReason | null,
+  states: ToolCallStates,
+): void {
+  if (!delta.tool_calls || delta.tool_calls.length === 0) return;
+
+  // 标记是否首次有工具调用（用来打印总标题）
+  const isFirstToolCall =
+    Object.keys(states).length === 0 &&
+    delta.tool_calls.some((tc) => tc.function?.name || tc.function?.arguments);
+
+  if (isFirstToolCall) {
+    process.stdout.write(chalk.blue.bold("\n\n💭 工具调用中..."));
+  }
+
+  for (const tc of delta.tool_calls) {
+    const index = tc.index ?? 0;
+    const func = tc.function;
+
+    // 初始化状态
+    if (!states[index]) {
+      states[index] = {
+        name: "",
+        arguments: "",
+        namePrinted: false,
+        argsPrinted: false,
+        completed: false,
+      };
+    }
+
+    const state = states[index];
+
+    // 累加名称
+    if (func?.name) {
+      state.name += func.name;
+    }
+
+    // 累加参数
+    if (func?.arguments) {
+      state.arguments += func.arguments;
+    }
+
+    // 打印工具名称（首次出现时）
+    if (state.name && !state.namePrinted) {
+      process.stdout.write(chalk.magenta.bold(`\n🔧 ${index} ${state.name}\n`));
+      state.namePrinted = true;
+    }
+
+    // 打印参数首行标题（首次有参数时）
+    if (state.arguments && !state.argsPrinted && state.namePrinted) {
+      // process.stdout.write(chalk.gray(`\n参数: `));
+      state.argsPrinted = true;
+    }
+
+    // 流式打印参数增量
+    if (func?.arguments && state.argsPrinted) {
+      process.stdout.write(chalk.gray(func.arguments));
+    }
+
+    // 检测是否完成
+    if (finishReason === AgentNS.FinishReason.ToolCalls) {
+      state.completed = true;
+    }
+  }
+
+  // 工具调用结束时，换行并在完成后格式化输出
+  if (finishReason === AgentNS.FinishReason.ToolCalls) {
+    for (const idx of Object.keys(states).map(Number)) {
+      const state = states[idx];
+      if (state.completed && state.arguments) {
+        // 换到新行，打印格式化的参数
+        process.stdout.write("\n");
+        try {
+          const parsed = JSON.parse(state.arguments);
+          process.stdout.write(
+            chalk.gray(`    ${JSON.stringify(parsed, null, 4)}\n`),
+          );
+        } catch {
+          // JSON 解析失败（可能被截断），直接输出原始内容
+          process.stdout.write(chalk.gray(`    ${state.arguments}\n`));
+        }
+      }
+    }
+  }
+}
 
 // ==================== 对话交互 ====================
 
@@ -25,6 +123,77 @@ export async function runConversation(
   let currentName =
     conversationName || `对话_${new Date().toLocaleDateString()}`;
   let currentId = conversationId;
+
+  // ============ 流式输出事件监听（一次性注册，避免每轮重复创建函数导致内存泄漏） ============
+
+  // 每轮对话的状态（在 send 前更新）
+  let streamingState: {
+    reasoningHeaderPrinted: boolean;
+    contentHeaderPrinted: boolean;
+    toolCallStates: ToolCallStates;
+  } = {
+    reasoningHeaderPrinted: false,
+    contentHeaderPrinted: false,
+    toolCallStates: {},
+  };
+
+  const onRun = async () => {
+    // 重置本轮流式状态
+    streamingState = {
+      reasoningHeaderPrinted: false,
+      contentHeaderPrinted: false,
+      toolCallStates: {},
+    };
+  };
+
+  const onChunk = (chunk: AgentNS.StreamResponseData) => {
+    if (chunk?.choices?.[0]?.delta) {
+      const delta = chunk.choices[0].delta;
+      const finishReason = chunk.choices[0].finish_reason ?? null;
+
+      // 检测并处理 tool_calls
+      if (delta.tool_calls) {
+        handleToolCallChunk(delta, finishReason, streamingState.toolCallStates);
+      }
+
+      // 流式输出 reasoning_content（思考过程）
+      if (delta.reasoning_content) {
+        if (!streamingState.reasoningHeaderPrinted) {
+          process.stdout.write(chalk.blue.bold("\n\n💭 思考中...\n"));
+          streamingState.reasoningHeaderPrinted = true;
+        }
+
+        process.stdout.write(chalk.blue(delta.reasoning_content));
+      }
+
+      // 流式输出 content（文本增量）
+      if (delta.content) {
+        if (!streamingState.contentHeaderPrinted) {
+          process.stdout.write(chalk.blue.bold("\n\n💭 回答中...\n"));
+          streamingState.contentHeaderPrinted = true;
+        }
+
+        if (typeof delta.content === "string") {
+          process.stdout.write(delta.content);
+        } else if (Array.isArray(delta.content)) {
+          for (const section of delta.content) {
+            if (section.type === "text" && section.text) {
+              process.stdout.write(section.text);
+            }
+          }
+        }
+      }
+    }
+  };
+
+  const onError = (_error: any) => {
+    process.stdout.write(chalk.red(`\n\n❌ 发生错误\n`));
+  };
+
+  // 一次性注册事件（整个对话生命周期）
+  agent.events.on("run", onRun);
+  agent.events.on("chunk", onChunk);
+  agent.events.on("error", onError);
 
   while (shouldContinue) {
     const { question } = await inquirer.prompt([
@@ -120,12 +289,17 @@ export async function runConversation(
         if (msg.role === AgentNS.Role.User) {
           console.log(chalk.cyan(`👤 你: ${msg.content}`));
         } else if (msg.role === AgentNS.Role.Assistant) {
-          const content =
-            typeof msg.content === "string"
-              ? msg.content.substring(0, 100) +
-                (msg.content.length > 100 ? "..." : "")
-              : "[复杂内容]";
-          console.log(chalk.green(`🤖 AI: ${content}`));
+          const textContent = getMessagePreviewContent(msg);
+          if (msg.tool_calls && msg.tool_calls.length > 0) {
+            const toolNames = msg.tool_calls
+              .map((tc) => tc.function?.name)
+              .filter(Boolean)
+              .join(", ");
+            console.log(chalk.green(`🤖 AI: ${textContent}`));
+            console.log(chalk.magenta(`   🔧 调用了工具: ${toolNames}`));
+          } else {
+            console.log(chalk.green(`🤖 AI: ${textContent}`));
+          }
         }
       }
       console.log();
@@ -134,50 +308,39 @@ export async function runConversation(
 
     if (!trimmedQuestion) continue;
 
-    // 发送问题并获取回答
-    const spinner = ora({
-      text: chalk.yellow("AI 正在思考..."),
-      spinner: "dots",
-    }).start();
+    // ============ 流式输出对话 ============
+
+    console.log(chalk.green.bold("\n🤖 AI:"));
 
     try {
       const messages = await agent.send(trimmedQuestion);
-      spinner.stop();
+      // 流式输出完成后，换行
+      process.stdout.write("\n\n");
 
       const lastMessage = messages.at(-1);
 
       if (lastMessage?.status === "error") {
-        console.error(chalk.red(`\n❌ 发生错误: \n`), lastMessage);
+        console.error(chalk.red(`\n❌ 发生错误\n`));
         return;
       }
 
-      if (lastMessage?.role === AgentNS.Role.Assistant) {
-        console.log(chalk.green.bold("\n🤖 AI:"));
-        if (typeof lastMessage.reasoning_content === "string") {
-          console.log(chalk.blue.bold("\n" + "=".repeat(60)));
-          console.log(chalk.blue.bold("  AI 思考过程:"));
-          console.log(formatMessage(lastMessage.reasoning_content));
-          console.log(chalk.blue.bold("=".repeat(60) + "\n"));
-        }
-
-        if (typeof lastMessage.content === "string") {
-          // 格式化输出，支持代码块
-          console.log(formatMessage(lastMessage.content));
-        } else if (Array.isArray(lastMessage.content)) {
-          for (const section of lastMessage.content) {
-            if (section.type === "text") {
-              console.log(formatMessage(section.text));
-            } else if (section.type === "image_url") {
-              console.log(chalk.yellow(`[图片: ${section.image_url.url}]`));
-            }
+      // 如果有多模态内容（如图片），在流式输出后补充显示
+      if (
+        lastMessage?.role === AgentNS.Role.Assistant &&
+        Array.isArray(lastMessage.content)
+      ) {
+        for (const section of lastMessage.content) {
+          if (section.type === "image_url") {
+            console.log(chalk.yellow(`[图片: ${section.image_url.url}]`));
           }
         }
       }
 
       console.log();
     } catch (error: any) {
-      spinner.stop();
-      console.error(chalk.red(`\n❌ 发生错误: ${error.message || error}\n`));
+      process.stdout.write(
+        chalk.red(`\n❌ 发生错误: ${error.message || error}\n`),
+      );
 
       // 如果是 API Key 的问题，提示用户设置
       if (
@@ -194,25 +357,28 @@ export async function runConversation(
     }
   }
 
+  // 对话结束，取消事件监听
+  agent.events.off("chunk", onChunk);
+  agent.events.off("error", onError);
+
   console.log(chalk.blue.bold("\n👋 再见！\n"));
 }
 
-function formatMessage(content: string): string {
-  // 简单的格式化，高亮代码块
-  const lines = content.split("\n");
-  let inCodeBlock = false;
-  let formatted = "";
-
-  for (const line of lines) {
-    if (line.startsWith("```")) {
-      inCodeBlock = !inCodeBlock;
-      formatted += chalk.gray(line) + "\n";
-    } else if (inCodeBlock) {
-      formatted += chalk.yellow(line) + "\n";
-    } else {
-      formatted += line + "\n";
-    }
+/**
+ * 获取消息的文本预览内容（用于 history 命令显示）
+ */
+function getMessagePreviewContent(msg: AgentNS.Message): string {
+  if (typeof msg.content === "string") {
+    return (
+      msg.content.substring(0, 100) + (msg.content.length > 100 ? "..." : "")
+    );
   }
-
-  return formatted;
+  if (Array.isArray(msg.content)) {
+    const textParts = msg.content
+      .filter((s) => s.type === "text")
+      .map((s) => s.text);
+    const preview = textParts.join("").substring(0, 100);
+    return preview + (preview.length >= 100 ? "..." : "");
+  }
+  return "[复杂内容]";
 }
