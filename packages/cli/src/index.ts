@@ -110,10 +110,7 @@ const defaultConfig: Config = {
       modelName: "gpt-5.5",
       description:
         "OpenAI 最新旗舰模型，擅长编程与代码调试、在线研究、数据分析",
-      defaultParams: {
-        temperature: 0.7,
-        maxTokens: 8192,
-      },
+      defaultParams: {},
     },
     // ========== 智谱AI 系列 ==========
     {
@@ -123,10 +120,7 @@ const defaultConfig: Config = {
       modelName: "glm-5.1",
       description:
         "智谱AI 最新旗舰模型，支持8小时长程Agent任务，综合能力对标Claude Opus 4.6",
-      defaultParams: {
-        temperature: 0.7,
-        maxTokens: 8192,
-      },
+      defaultParams: {},
     },
     {
       id: "glm-5v-turbo",
@@ -134,10 +128,7 @@ const defaultConfig: Config = {
       endpointId: "bigmodelcn",
       modelName: "glm-5v-turbo",
       description: "智谱AI 多模态Coding基座，兼顾视觉理解与代码能力",
-      defaultParams: {
-        temperature: 0.7,
-        maxTokens: 4096,
-      },
+      defaultParams: {},
     },
     {
       id: "glm-4.7-flash",
@@ -145,10 +136,7 @@ const defaultConfig: Config = {
       endpointId: "bigmodelcn",
       modelName: "glm-4.7-flash",
       description: "智谱AI 免费轻量模型，通用能力同级别最优",
-      defaultParams: {
-        temperature: 0.7,
-        maxTokens: 4096,
-      },
+      defaultParams: {},
     },
     // ========== DeepSeek 系列 ==========
     {
@@ -158,10 +146,7 @@ const defaultConfig: Config = {
       modelName: "deepseek-v4-pro",
       description:
         "DeepSeek 旗舰模型，Agentic Coding开源第一，100万tokens上下文，1.6万亿参数",
-      defaultParams: {
-        temperature: 0.7,
-        maxTokens: 8192,
-      },
+      defaultParams: {},
     },
     {
       id: "deepseek-v4-flash",
@@ -170,10 +155,7 @@ const defaultConfig: Config = {
       modelName: "deepseek-v4-flash",
       description:
         "DeepSeek 经济高效模型，2840亿参数/130亿活跃参数，100万tokens上下文",
-      defaultParams: {
-        temperature: 0.7,
-        maxTokens: 4096,
-      },
+      defaultParams: {},
     },
   ],
   agents: [
@@ -705,18 +687,20 @@ async function runConversation(
       const messages = await agent.send(trimmedQuestion);
       spinner.stop();
 
-      // 获取最后一条助手消息
-      const lastAssistantMessage = messages
-        .filter((m) => m.role === AgentNS.Role.Assistant)
-        .pop();
+      const lastMessage = messages.at(-1);
 
-      if (lastAssistantMessage) {
+      if (lastMessage?.status === "error") {
+        console.error(chalk.red(`\n❌ 发生错误: \n`), lastMessage);
+        return;
+      }
+
+      if (lastMessage?.role === AgentNS.Role.Assistant) {
         console.log(chalk.green.bold("\n🤖 AI:"));
-        if (typeof lastAssistantMessage.content === "string") {
+        if (typeof lastMessage.content === "string") {
           // 格式化输出，支持代码块
-          console.log(formatMessage(lastAssistantMessage.content));
-        } else if (Array.isArray(lastAssistantMessage.content)) {
-          for (const section of lastAssistantMessage.content) {
+          console.log(formatMessage(lastMessage.content));
+        } else if (Array.isArray(lastMessage.content)) {
+          for (const section of lastMessage.content) {
             if (section.type === "text") {
               console.log(formatMessage(section.text));
             } else if (section.type === "image_url") {
