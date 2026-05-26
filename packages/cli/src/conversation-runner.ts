@@ -327,6 +327,25 @@ export async function runConversation(
             `\n❌ 发生错误时最后一条消息: ${JSON.stringify(lastMessage)}\n`,
           ),
         );
+
+        // 发生错误时自动保存当前对话
+        try {
+          currentId = saveConversation(
+            currentName,
+            agent.messages,
+            modelId,
+            currentId,
+            agentId,
+          );
+          console.log(
+            chalk.yellow(
+              `💾 错误时对话已自动保存: ${currentName} (ID: ${currentId})\n`,
+            ),
+          );
+        } catch (saveError) {
+          console.error(chalk.red(`❌ 自动保存失败: ${saveError}\n`));
+        }
+
         return;
       }
 
