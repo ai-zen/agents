@@ -186,8 +186,10 @@ export async function runConversation(
     }
   };
 
-  const onError = (_error: any) => {
-    process.stdout.write(chalk.red(`\n\n❌ 发生错误\n`));
+  const onError = (error: any) => {
+    process.stdout.write(
+      chalk.red(`\n❌ 通过onError捕获到错误: ${error?.message || error}\n`),
+    );
   };
 
   // 一次性注册事件（整个对话生命周期）
@@ -320,7 +322,11 @@ export async function runConversation(
       const lastMessage = messages.at(-1);
 
       if (lastMessage?.status === "error") {
-        console.error(chalk.red(`\n❌ 发生错误\n`));
+        console.error(
+          chalk.red(
+            `\n❌ 发生错误时最后一条消息: ${JSON.stringify(lastMessage)}\n`,
+          ),
+        );
         return;
       }
 
@@ -339,7 +345,7 @@ export async function runConversation(
       console.log();
     } catch (error: any) {
       process.stdout.write(
-        chalk.red(`\n❌ 发生错误: ${error.message || error}\n`),
+        chalk.red(`\n❌ 请求错误: ${error?.message || error}\n`),
       );
 
       // 如果是 API Key 的问题，提示用户设置
