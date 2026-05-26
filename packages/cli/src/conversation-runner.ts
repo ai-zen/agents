@@ -346,7 +346,7 @@ export async function runConversation(
           console.error(chalk.red(`❌ 自动保存失败: ${saveError}\n`));
         }
 
-        return;
+        // return // 不返回，继续对话
       }
 
       // 如果有多模态内容（如图片），在流式输出后补充显示
