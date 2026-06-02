@@ -35,6 +35,8 @@ export class AgentTool extends AgentContext implements Tool {
       ...new AgentTool({ ...this }),
     });
 
+    ctx.agent.events.emit("sub-agent", { agent, ctx });
+
     // Inject the arguments into the cloned agent's message list
     agent.messages = this.injectArgs(agent.messages, ctx.parsed_args);
 
@@ -48,7 +50,12 @@ export class AgentTool extends AgentContext implements Tool {
     await agent.rag?.rewrite(questionMessage, this.messages);
 
     // Send the agent chat to the server
-    await agent.run();
+    try {
+      await agent.run();
+    } finally {
+      // 子 Agent 所有轮次完成（包括 tool_calls 多轮递归）后通知
+      ctx.agent.events.emit("sub-agent-end", { agent, ctx });
+    }
 
     // Return the last message content of the agent chat as the result
     return agent.messages.at(-1)?.content as string;

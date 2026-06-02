@@ -1,5 +1,6 @@
 import chalk from "chalk";
 import inquirer from "inquirer";
+import { AgentNS } from "@ai-zen/agents-core";
 import {
   getAgents,
   getDefaultAgent,
@@ -16,6 +17,21 @@ import {
 } from "./common.js";
 
 /**
+ * 获取消息列表中的文本摘要
+ */
+function getMessagesSummary(messages: AgentNS.Message[]): string {
+  const systemMsg = messages.find((m) => m.role === AgentNS.Role.System);
+  if (systemMsg && typeof systemMsg.content === "string") {
+    return systemMsg.content.substring(0, 80);
+  }
+  const firstMsg = messages[0];
+  if (firstMsg && typeof firstMsg.content === "string") {
+    return firstMsg.content.substring(0, 80);
+  }
+  return "(空)";
+}
+
+/**
  * 展现 Agent 详情
  */
 function formatAgentDetails(
@@ -29,7 +45,8 @@ function formatAgentDetails(
     ),
     chalk.gray(`     ID: ${agent.id}`),
     agent.description ? chalk.gray(`     描述: ${agent.description}`) : "",
-    chalk.gray(`     系统提示: ${agent.systemPrompt.substring(0, 80)}...`),
+    chalk.gray(`     消息数: ${agent.messages.length} 条`),
+    chalk.gray(`     摘要: ${getMessagesSummary(agent.messages)}`),
     chalk.gray(
       `     创建时间: ${new Date(agent.createdAt).toLocaleString("zh-CN")}`,
     ),
@@ -100,7 +117,7 @@ export async function manageAgentsInteractive(): Promise<void> {
 
 /** 创建 Agent */
 async function createAgentInteractive(): Promise<void> {
-  const { name, description, systemPrompt, modelId } = await inquirer.prompt([
+  const { name, description, systemContent, modelId } = await inquirer.prompt([
     {
       type: "input",
       name: "name",
@@ -110,7 +127,7 @@ async function createAgentInteractive(): Promise<void> {
     { type: "input", name: "description", message: "描述 (可选):" },
     {
       type: "editor",
-      name: "systemPrompt",
+      name: "systemContent",
       message: "系统提示 (在编辑器中输入):",
       default: "你是一个AI助手，请用中文回复。",
     },
@@ -134,7 +151,7 @@ async function createAgentInteractive(): Promise<void> {
     id,
     name,
     description,
-    systemPrompt,
+    messages: [{ role: AgentNS.Role.System, content: systemContent }],
     modelId: modelId || undefined,
     createdAt: now,
     updatedAt: now,
@@ -147,7 +164,16 @@ async function editAgentInteractive(agentId: string): Promise<void> {
   const agent = getAgent(agentId);
   if (!agent) return;
 
-  const { name, description, systemPrompt, modelId } = await inquirer.prompt([
+  // 获取当前 system 消息内容
+  const currentSystem = agent.messages.find(
+    (m) => m.role === AgentNS.Role.System && typeof m.content === "string",
+  );
+  const currentContent =
+    currentSystem && typeof currentSystem.content === "string"
+      ? currentSystem.content
+      : "";
+
+  const { name, description, systemContent, modelId } = await inquirer.prompt([
     {
       type: "input",
       name: "name",
@@ -162,9 +188,9 @@ async function editAgentInteractive(agentId: string): Promise<void> {
     },
     {
       type: "editor",
-      name: "systemPrompt",
+      name: "systemContent",
       message: "系统提示:",
-      default: agent.systemPrompt,
+      default: currentContent,
     },
     {
       type: "list",
@@ -184,7 +210,7 @@ async function editAgentInteractive(agentId: string): Promise<void> {
     ...agent,
     name,
     description,
-    systemPrompt,
+    messages: [{ role: AgentNS.Role.System, content: systemContent }],
     modelId: modelId || undefined,
     updatedAt: new Date().toISOString(),
   });

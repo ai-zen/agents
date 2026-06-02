@@ -2,6 +2,7 @@ import chalk from "chalk";
 import { Agent, AgentNS } from "@ai-zen/agents-core";
 import { saveConversation } from "./conversations.js";
 import { createRequire } from "module";
+import { TuiDeltaRenderer } from "./tui-delta-renderer.js";
 
 interface TKModule {
   terminal: any;
@@ -65,20 +66,6 @@ interface ConversationContext {
   aborted: boolean;
 }
 
-interface ToolCallPrint {
-  name: string;
-  arguments: string;
-  namePrinted: boolean;
-  argsPrinted: boolean;
-  completed: boolean;
-}
-
-interface RenderContext {
-  reasoningPrinted: boolean;
-  contentPrinted: boolean;
-  toolPrints: Record<number, ToolCallPrint>;
-}
-
 function getMessageText(msg: AgentNS.Message): string {
   const c = msg.content;
   if (typeof c === "string") return c;
@@ -138,12 +125,6 @@ async function runConversationTUIInternal(
     agentId,
     running: true,
     aborted: false,
-  };
-
-  const renderCtx: RenderContext = {
-    reasoningPrinted: false,
-    contentPrinted: false,
-    toolPrints: {},
   };
 
   let isStreaming = false;
@@ -270,18 +251,16 @@ async function runConversationTUIInternal(
 
   term.on('resize', () => resizeLayout());
 
-  // ===== Agent 事件：完全遵循原始版的换行和颜色逻辑 =====
+  // ===== 流式渲染器 =====
 
-  // 原始版 printToolCallChunk:
-  //   首次:   chalk.blue.bold("\n\n💭 工具调用中...")    ← 前2换行，无后换行
-  //   工具名: chalk.magenta.bold(`\n🔧 ${index} ${p.name}\n`)  ← 前后都有换行
-  //   参数:   chalk.gray(func.arguments)                    ← 直接追加
-  //   完成:   "\n" + chalk.gray(json/raw) + "\n"          ← 换行+内容+换行
+  const mainRenderer = new TuiDeltaRenderer(write, writeln, {
+    reasoningHeader: '\n\n^b💭 思考中...^:\n',
+    contentHeader: '\n\n^b💭 回答中...^:\n',
+    toolCallsHeader: '\n\n^b💭 工具调用中...^:',
+  });
 
   const onRun = () => {
-    renderCtx.reasoningPrinted = false;
-    renderCtx.contentPrinted = false;
-    for (const k in renderCtx.toolPrints) delete renderCtx.toolPrints[k];
+    mainRenderer.reset();
     isStreaming = true;
     ctx.aborted = false;
   };
@@ -291,88 +270,7 @@ async function runConversationTUIInternal(
     if (!chunk?.choices?.[0]?.delta) return;
     const delta = chunk.choices[0].delta;
     const fr = chunk.choices[0].finish_reason ?? null;
-
-    // ---- 工具调用 ----
-    if (delta.tool_calls) {
-      const isFirstToolCall =
-        Object.keys(renderCtx.toolPrints).length === 0 &&
-        delta.tool_calls.some((tc) => tc.function?.name || tc.function?.arguments);
-
-      if (isFirstToolCall) {
-        // 原始: chalk.blue.bold("\n\n💭 工具调用中...")  末尾无 \n
-        write('\n\n^b💭 工具调用中...^:');
-      }
-
-      for (const tc of delta.tool_calls) {
-        const index = tc.index ?? 0;
-        const func = tc.function;
-        if (!renderCtx.toolPrints[index]) {
-          renderCtx.toolPrints[index] = { name: "", arguments: "", namePrinted: false, argsPrinted: false, completed: false };
-        }
-        const p = renderCtx.toolPrints[index];
-        if (func?.name) p.name += func.name;
-        if (func?.arguments) p.arguments += func.arguments;
-
-        // 原始: chalk.magenta.bold(`\n🔧 ${index} ${p.name}\n`)
-        if (p.name && !p.namePrinted) {
-          write(`\n^m🔧 ${index} ${p.name}^:\n`);
-          p.namePrinted = true;
-        }
-
-        if (p.arguments && !p.argsPrinted && p.namePrinted) p.argsPrinted = true;
-        // 原始: chalk.gray(func.arguments)
-        if (func?.arguments && p.argsPrinted) {
-          write(`^K${func.arguments}^:`);
-        }
-
-        if (fr === AgentNS.FinishReason.ToolCalls) p.completed = true;
-      }
-
-      // 工具调用完成：打印完整参数
-      if (fr === AgentNS.FinishReason.ToolCalls) {
-        for (const idx of Object.keys(renderCtx.toolPrints).map(Number)) {
-          const p = renderCtx.toolPrints[idx];
-          if (p.completed && p.arguments) {
-            // 原始: "\n" + chalk.gray(json/raw) + "\n"
-            write('\n');
-            try {
-              const parsed = JSON.parse(p.arguments);
-              writeln(`^K    ${JSON.stringify(parsed, null, 4)}^:`);
-            } catch {
-              writeln(`^K    ${p.arguments}^:`);
-            }
-          }
-        }
-      }
-    }
-
-    // ---- 思考内容 ----
-    if (delta.reasoning_content) {
-      if (!renderCtx.reasoningPrinted) {
-        // 原始: chalk.blue.bold("\n\n💭 思考中...\n")
-        write('\n\n^b💭 思考中...^:\n');
-        renderCtx.reasoningPrinted = true;
-      }
-      // 原始: chalk.blue(delta.reasoning_content)
-      write(`^b${delta.reasoning_content}^:`);
-    }
-
-    // ---- 文本内容 ----
-    if (delta.content) {
-      if (!renderCtx.contentPrinted) {
-        // 原始: chalk.blue.bold("\n\n💭 回答中...\n")
-        write('\n\n^b💭 回答中...^:\n');
-        renderCtx.contentPrinted = true;
-      }
-      if (typeof delta.content === "string") {
-        // 原始: process.stdout.write(delta.content)
-        write(delta.content);
-      } else if (Array.isArray(delta.content)) {
-        for (const s of delta.content) {
-          if (s.type === "text" && s.text) write(s.text);
-        }
-      }
-    }
+    mainRenderer.render(delta, fr);
   };
 
   const onParsed = () => { isStreaming = false; };
@@ -385,11 +283,61 @@ async function runConversationTUIInternal(
     if (!ctx.aborted) appendErrorMsg(`错误: ${error?.message || error}`);
   };
 
+  // ===== 子 Agent 事件 =====
+
+  const onSubAgent = ({
+    agent: subAgent,
+    ctx: subCtx,
+  }: {
+    agent: Agent;
+    ctx: any;
+  }) => {
+    const toolName = subCtx.function_call?.name || "子任务";
+
+    const subRenderer = new TuiDeltaRenderer(write, writeln, {
+      reasoningHeader: '\n    ^b💭 思考中...^:\n',
+      contentHeader: '\n    ',
+      toolCallsHeader: '\n    ^b💭 工具调用中...^:',
+    });
+
+    let namePrinted = false;
+
+    // 子 Agent 每轮开始时重置渲染器状态
+    subAgent.events.on("run", () => {
+      subRenderer.reset();
+    });
+
+    subAgent.events.on("chunk", (chunk: AgentNS.StreamResponseData) => {
+      if (!namePrinted) {
+        write(`\n  ^y🧩 ${toolName}:^:\n`);
+        namePrinted = true;
+      }
+      const delta = chunk?.choices?.[0]?.delta;
+      if (!delta) return;
+      const fr = chunk?.choices?.[0]?.finish_reason ?? null;
+      subRenderer.render(delta, fr);
+    });
+
+    subAgent.events.on("error", (error: any) => {
+      subRenderer.reset();
+      write(`\n    ^r❌ ${toolName} 错误: ${error?.message || error}^:\n`);
+    });
+  };
+
+  // ===== 子 Agent 结束事件 =====
+
+  const onSubAgentEnd = ({ ctx: subCtx }: { agent: Agent; ctx: any }) => {
+    const toolName = subCtx.function_call?.name || "子任务";
+    write(`\n    ^K✅ ${toolName} 完成^:\n`);
+  };
+
   agent.events.on('run', onRun);
   agent.events.on('chunk', onChunk);
   agent.events.on('parsed', onParsed);
   agent.events.on('finally', onFinally);
   agent.events.on('error', onError);
+  agent.events.on('sub-agent', onSubAgent);
+  agent.events.on('sub-agent-end', onSubAgentEnd);
 
   // ===== 发送消息 =====
 
@@ -411,7 +359,7 @@ async function runConversationTUIInternal(
           if (section.type === 'image_url') writeln(`  ^y[图片: ${section.image_url.url}]^:`);
         }
       }
-      // 原始版末尾: process.stdout.write("\n\n");
+      // 末尾换行
       write('\n\n');
     } catch (error: any) {
       if (ctx.aborted) { appendSystemMsg('⏹️ 回复已被中断'); return; }
@@ -496,6 +444,8 @@ async function runConversationTUIInternal(
     agent.events.off('parsed', onParsed);
     agent.events.off('finally', onFinally);
     agent.events.off('error', onError);
+    agent.events.off('sub-agent', onSubAgent);
+    agent.events.off('sub-agent-end', onSubAgentEnd);
   }
 
   // ===== 初始化显示 =====

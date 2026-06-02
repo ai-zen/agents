@@ -11,6 +11,7 @@ import { execTool } from "./exec.js";
 import { findTextTool } from "./findText.js";
 import { downloadFileTool } from "./downloadFile.js";
 import { generateImageTool } from "./generateImage.js";
+import { renameTool } from "./rename.js";
 
 export {
   cwd,
@@ -26,6 +27,7 @@ export {
   findTextTool,
   downloadFileTool,
   generateImageTool,
+  renameTool,
 };
 
 export const allTools = [
@@ -42,4 +44,5 @@ export const allTools = [
   findTextTool,
   downloadFileTool,
   generateImageTool,
+  renameTool,
 ];

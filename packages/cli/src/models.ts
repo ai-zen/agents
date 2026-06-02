@@ -1,4 +1,4 @@
-import { Model, ModelParams, ImageModel } from "./types.js";
+import { Model, ImageModel } from "./types.js";
 import { readConfig, saveConfig } from "./config.js";
 
 // ==================== 对话模型管理 ====================
@@ -50,13 +50,6 @@ export function deleteModel(modelId: string): void {
 export function getModelsByEndpoint(endpointId: string): Model[] {
   const config = readConfig();
   return config.models.filter((m) => m.endpointId === endpointId);
-}
-
-export function mergeParams(
-  defaultParams?: ModelParams,
-  overrideParams?: ModelParams,
-): ModelParams {
-  return { ...defaultParams, ...overrideParams };
 }
 
 // ==================== 图片生成模型管理 ====================

@@ -2,6 +2,7 @@ import chalk from "chalk";
 import inquirer from "inquirer";
 import { Agent, AgentNS } from "@ai-zen/agents-core";
 import { saveConversation } from "./conversations.js";
+import { DeltaRenderer } from "./delta-renderer.js";
 
 // ==================== 类型定义 ====================
 
@@ -12,20 +13,6 @@ interface ConversationContext {
   currentId: string | undefined;
   agentId: string | undefined;
   running: boolean;
-}
-
-interface ToolCallPrint {
-  name: string;
-  arguments: string;
-  namePrinted: boolean;
-  argsPrinted: boolean;
-  completed: boolean;
-}
-
-interface RenderContext {
-  reasoningPrinted: boolean;
-  contentPrinted: boolean;
-  toolPrints: Record<number, ToolCallPrint>;
 }
 
 // ==================== 工具函数 ====================
@@ -40,71 +27,6 @@ function getMessageText(msg: AgentNS.Message): string {
       .join("");
   }
   return "";
-}
-
-// ==================== 工具调用渲染 ====================
-
-function printToolCallChunk(
-  delta: AgentNS.Delta,
-  finishReason: AgentNS.FinishReason | null,
-  prints: Record<number, ToolCallPrint>,
-): void {
-  if (!delta.tool_calls || delta.tool_calls.length === 0) return;
-
-  const isFirstToolCall =
-    Object.keys(prints).length === 0 &&
-    delta.tool_calls.some((tc) => tc.function?.name || tc.function?.arguments);
-
-  if (isFirstToolCall)
-    process.stdout.write(chalk.blue.bold("\n\n💭 工具调用中..."));
-
-  for (const tc of delta.tool_calls) {
-    const index = tc.index ?? 0;
-    const func = tc.function;
-
-    if (!prints[index]) {
-      prints[index] = {
-        name: "",
-        arguments: "",
-        namePrinted: false,
-        argsPrinted: false,
-        completed: false,
-      };
-    }
-
-    const p = prints[index];
-
-    if (func?.name) p.name += func.name;
-    if (func?.arguments) p.arguments += func.arguments;
-
-    if (p.name && !p.namePrinted) {
-      process.stdout.write(chalk.magenta.bold(`\n🔧 ${index} ${p.name}\n`));
-      p.namePrinted = true;
-    }
-
-    if (p.arguments && !p.argsPrinted && p.namePrinted) p.argsPrinted = true;
-    if (func?.arguments && p.argsPrinted)
-      process.stdout.write(chalk.gray(func.arguments));
-
-    if (finishReason === AgentNS.FinishReason.ToolCalls) p.completed = true;
-  }
-
-  if (finishReason === AgentNS.FinishReason.ToolCalls) {
-    for (const idx of Object.keys(prints).map(Number)) {
-      const p = prints[idx];
-      if (p.completed && p.arguments) {
-        process.stdout.write("\n");
-        try {
-          const parsed = JSON.parse(p.arguments);
-          process.stdout.write(
-            chalk.gray(`    ${JSON.stringify(parsed, null, 4)}\n`),
-          );
-        } catch {
-          process.stdout.write(chalk.gray(`    ${p.arguments}\n`));
-        }
-      }
-    }
-  }
 }
 
 // ==================== 命令处理 ====================
@@ -368,59 +290,95 @@ export async function runConversation(
     running: true,
   };
 
-  // ============ 流式事件 ============
+  // ============ 流式渲染 ============
 
-  const renderCtx: RenderContext = {
-    reasoningPrinted: false,
-    contentPrinted: false,
-    toolPrints: {},
-  };
+  const mainRenderer = new DeltaRenderer({
+    reasoningHeader: "\n\n💭 思考中...\n",
+    contentHeader: "\n\n💭 回答中...\n",
+    reasoningStyle: chalk.blue,
+    contentStyle: chalk.white,
+  });
 
   const onRun = () => {
-    renderCtx.reasoningPrinted = false;
-    renderCtx.contentPrinted = false;
-    for (const k in renderCtx.toolPrints) delete renderCtx.toolPrints[k];
+    mainRenderer.reset();
   };
 
   const onChunk = (chunk: AgentNS.StreamResponseData) => {
     if (!chunk?.choices?.[0]?.delta) return;
     const delta = chunk.choices[0].delta;
     const fr = chunk.choices[0].finish_reason ?? null;
-
-    if (delta.tool_calls) printToolCallChunk(delta, fr, renderCtx.toolPrints);
-
-    if (delta.reasoning_content) {
-      if (!renderCtx.reasoningPrinted) {
-        process.stdout.write(chalk.blue.bold("\n\n💭 思考中...\n"));
-        renderCtx.reasoningPrinted = true;
-      }
-      process.stdout.write(chalk.blue(delta.reasoning_content));
-    }
-
-    if (delta.content) {
-      if (!renderCtx.contentPrinted) {
-        process.stdout.write(chalk.blue.bold("\n\n💭 回答中...\n"));
-        renderCtx.contentPrinted = true;
-      }
-      if (typeof delta.content === "string")
-        process.stdout.write(delta.content);
-      else if (Array.isArray(delta.content)) {
-        for (const s of delta.content) {
-          if (s.type === "text" && s.text) process.stdout.write(s.text);
-        }
-      }
-    }
+    mainRenderer.render(delta, fr);
   };
 
   const onError = (error: any) => {
-    process.stdout.write(
-      chalk.red(`\n❌ 通过onError捕获到错误: ${error?.message || error}\n`),
-    );
+    process.stdout.write(chalk.red(`\n❌ 错误: ${error?.message || error}\n`));
   };
+
+  // ============ 子 Agent 渲染 ============
+
+  const onSubAgent = ({
+    agent: subAgent,
+    ctx: subCtx,
+  }: {
+    agent: Agent;
+    ctx: any;
+  }) => {
+    const toolName = subCtx.function_call?.name || "子任务";
+
+    const renderer = new DeltaRenderer({
+      reasoningHeader: "💭 ",
+      contentHeader: "",
+      reasoningStyle: chalk.blue,
+      contentStyle: chalk.white,
+      indent: "    ",
+    });
+
+    let namePrinted = false;
+
+    // 子 Agent 每轮开始时重置渲染器状态
+    subAgent.events.on("run", () => {
+      renderer.reset();
+    });
+
+    subAgent.events.on("chunk", (chunk: AgentNS.StreamResponseData) => {
+      if (!namePrinted) {
+        process.stdout.write(chalk.yellow.bold(`\n  🧩 ${toolName}:\n`));
+        namePrinted = true;
+      }
+      const delta = chunk?.choices?.[0]?.delta;
+      if (!delta) return;
+
+      const fr = chunk?.choices?.[0]?.finish_reason ?? null;
+      renderer.render(delta, fr);
+    });
+
+    subAgent.events.on("error", (error: any) => {
+      renderer.reset();
+      process.stdout.write(
+        chalk.red(`\n    ❌ ${toolName} 错误: ${error?.message || error}\n`),
+      );
+    });
+  };
+
+  // ============ 子 Agent 结束事件 ============
+
+  const onSubAgentEnd = ({
+    ctx: subCtx,
+  }: {
+    agent: Agent;
+    ctx: any;
+  }) => {
+    const toolName = subCtx.function_call?.name || "子任务";
+    process.stdout.write(chalk.gray(`\n    ✅ ${toolName} 完成\n`));
+  };
+
+  // ============ 注册事件 ============
 
   agent.events.on("run", onRun);
   agent.events.on("chunk", onChunk);
   agent.events.on("error", onError);
+  agent.events.on("sub-agent", onSubAgent);
+  agent.events.on("sub-agent-end", onSubAgentEnd);
 
   // ============ 主循环 ============
 
@@ -466,6 +424,8 @@ export async function runConversation(
   agent.events.off("run", onRun);
   agent.events.off("chunk", onChunk);
   agent.events.off("error", onError);
+  agent.events.off("sub-agent", onSubAgent);
+  agent.events.off("sub-agent-end", onSubAgentEnd);
 
   console.log(chalk.blue.bold("\n👋 再见！\n"));
 }

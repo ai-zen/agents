@@ -39,15 +39,15 @@ async function chooseMode(): Promise<"tui" | "normal"> {
 export async function startNewChat(): Promise<void> {
   try {
     const agents = getAgents();
+    let messages: AgentNS.Message[] | undefined;
     let agentId: string | undefined;
-    let systemPrompt: string | undefined;
     let modelId: string | undefined;
 
-    // 有 Agent 时直接弹出选择列表（去掉多余的确认步骤）
+    // 有 Agent 时直接弹出选择列表
     if (agents.length === 1) {
       // 只有一个 Agent，直接使用
       const agent = agents[0];
-      systemPrompt = agent.systemPrompt;
+      messages = agent.messages;
       agentId = agent.id;
       if (agent.modelId) modelId = agent.modelId;
     } else if (agents.length > 1) {
@@ -71,7 +71,7 @@ export async function startNewChat(): Promise<void> {
       if (selectedAgentId !== "__none__") {
         const agent = getAgent(selectedAgentId);
         if (agent) {
-          systemPrompt = agent.systemPrompt;
+          messages = agent.messages;
           agentId = agent.id;
           if (agent.modelId) modelId = agent.modelId;
         }
@@ -106,10 +106,6 @@ export async function startNewChat(): Promise<void> {
     }
 
     const model = await ensureEndpointConfig(modelId);
-    const messages = systemPrompt
-      ? [{ role: AgentNS.Role.System, content: systemPrompt }]
-      : [];
-
     const agent = await createAgent(model.id, messages);
 
     // 选择模式

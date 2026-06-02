@@ -1,7 +1,9 @@
 import chalk from "chalk";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
+import { AgentNS } from "@ai-zen/agents-core";
 import { Config } from "./types.js";
+import { migrateRawConfig, ensureVersions } from "./config-migration.js";
 
 // ==================== 默认配置 ====================
 
@@ -90,7 +92,46 @@ export const defaultConfig: Config = {
     {
       id: "default",
       name: "默认助手",
-      systemPrompt: "你是一个AI助手，专门帮助用户回答问题和执行任务。请用中文回复。",
+      messages: [
+        {
+          role: AgentNS.Role.System,
+          content: "你是一个AI助手，专门帮助用户回答问题和执行任务。请用中文回复。",
+        },
+      ],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+  ],
+  subAgents: [
+    {
+      id: "通用助手",
+      name: "通用助手",
+      messages: [
+        {
+          role: AgentNS.Role.System,
+          content:
+            "你是一个通用助手，擅长独立完成各类任务。请根据给定的任务描述，认真分析并完成任务。完成任务后直接返回结果，不要解释你的思考过程。",
+        },
+        {
+          role: AgentNS.Role.User,
+          content: "{{task}}",
+        },
+      ],
+      function: {
+        name: "general_assistant",
+        description:
+          "当你觉得当前任务比较复杂，可以拆分为一个独立的子任务交给通用助手处理时使用。通用助手会独立完成任务并返回结果。适合需要独立分析、多角度思考的场景。",
+        parameters: {
+          type: "object",
+          properties: {
+            task: {
+              type: "string",
+              description: "要交给通用助手处理的任务，需要清晰完整地描述要做什么",
+            },
+          },
+          required: ["task"],
+        },
+      },
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     },
@@ -150,19 +191,54 @@ export function ensureConfigDir(): void {
   }
 }
 
+/**
+ * 合并两个数组成员，确保默认项始终存在
+ * 以用户保存的配置为主，补充默认配置中新增的项
+ */
+function mergeArrays<T extends { id: string }>(
+  defaultItems: T[],
+  savedItems: T[] | undefined,
+): T[] {
+  const savedIds = new Set((savedItems || []).map((item) => item.id));
+  const merged = [...(savedItems || [])];
+  for (const defaultItem of defaultItems) {
+    if (!savedIds.has(defaultItem.id)) {
+      merged.push(defaultItem);
+    }
+  }
+  return merged;
+}
+
 export function readConfig(): Config {
   ensureConfigDir();
   if (!existsSync(CONFIG_FILE)) {
+    ensureVersions(defaultConfig);
     saveConfig(defaultConfig);
     return defaultConfig;
   }
   try {
     const content = readFileSync(CONFIG_FILE, "utf-8");
-    // 浅合并：旧配置没有的新字段（如 imageModels），JSON.parse 展开时不会产生该 key，
-    // 会保留 defaultConfig 中的默认值，因此不需要深度合并。
-    return { ...defaultConfig, ...JSON.parse(content) };
+    const saved = JSON.parse(content);
+
+    // 向下兼容：旧配置迁移（migrateRawConfig 直接修改 saved）
+    if (migrateRawConfig(saved)) {
+      saveConfig({ ...defaultConfig, ...saved });
+    }
+
+    // 浅合并顶层字段
+    const config: Config = { ...defaultConfig, ...saved };
+
+    // 合并数组类型字段，确保新版本新增的默认项自动出现
+    config.agents = mergeArrays(defaultConfig.agents, saved.agents);
+    config.subAgents = mergeArrays(defaultConfig.subAgents || [], saved.subAgents);
+
+    // 补充版本号
+    ensureVersions(config);
+
+    return config;
   } catch (error) {
     console.error(chalk.red(`读取配置文件失败: ${error}`));
+    ensureVersions(defaultConfig);
     return defaultConfig;
   }
 }
