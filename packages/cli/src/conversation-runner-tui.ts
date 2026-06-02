@@ -322,7 +322,7 @@ async function runConversationTUIInternal(
         if (p.arguments && !p.argsPrinted && p.namePrinted) p.argsPrinted = true;
         // 原始: chalk.gray(func.arguments)
         if (func?.arguments && p.argsPrinted) {
-          write(func.arguments);
+          write(`^K${func.arguments}^:`);
         }
 
         if (fr === AgentNS.FinishReason.ToolCalls) p.completed = true;
