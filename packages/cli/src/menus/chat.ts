@@ -1,0 +1,140 @@
+import chalk from "chalk";
+import inquirer from "inquirer";
+import { AgentNS } from "@ai-zen/agents-core";
+import { createAgent } from "../agent-creator.js";
+import { runConversation } from "../conversation-runner.js";
+import { ensureEndpointConfig } from "../config-wizard.js";
+import { getAgents, getDefaultAgent, getAgent } from "../agents.js";
+import { getModels, getDefaultModel } from "../models.js";
+import { loadConversation } from "../conversations.js";
+import { getConversationsList } from "../conversations.js";
+
+/**
+ * 开始新对话：选择 Agent（可选）→ 选择模型 → 进入对话
+ */
+export async function startNewChat(): Promise<void> {
+  try {
+    const agents = getAgents();
+    let agentId: string | undefined;
+    let systemPrompt: string | undefined;
+    let modelId: string | undefined;
+
+    // 有 Agent 时直接弹出选择列表（去掉多余的确认步骤）
+    if (agents.length === 1) {
+      // 只有一个 Agent，直接使用
+      const agent = agents[0];
+      systemPrompt = agent.systemPrompt;
+      agentId = agent.id;
+      if (agent.modelId) modelId = agent.modelId;
+    } else if (agents.length > 1) {
+      const defaultAgent = getDefaultAgent();
+      const { selectedAgentId } = await inquirer.prompt([
+        {
+          type: "list",
+          name: "selectedAgentId",
+          message: "选择 Agent (或选「不使用」或「取消」):",
+          choices: [
+            ...agents.map((a) => ({
+              name: `${a.name}${defaultAgent?.id === a.id ? " (默认)" : ""}`,
+              value: a.id,
+            })),
+            { name: "🚫 不使用 Agent", value: "__none__" },
+            { name: "🔙 取消", value: "__cancel__" },
+          ],
+        },
+      ]);
+      if (selectedAgentId === "__cancel__") return; // 取消返回主菜单
+      if (selectedAgentId !== "__none__") {
+        const agent = getAgent(selectedAgentId);
+        if (agent) {
+          systemPrompt = agent.systemPrompt;
+          agentId = agent.id;
+          if (agent.modelId) modelId = agent.modelId;
+        }
+      }
+    }
+
+    // 优先使用默认模型，没有配置默认模型时才要求用户选择
+    if (!modelId) {
+      const defaultModel = getDefaultModel();
+      if (defaultModel) {
+        modelId = defaultModel.id;
+        console.log(chalk.gray(`使用默认模型: ${defaultModel.name} (${defaultModel.id})`));
+      } else {
+        const models = getModels();
+        const { selectedModelId } = await inquirer.prompt([
+          {
+            type: "list",
+            name: "selectedModelId",
+            message: "选择模型（未配置默认模型）:",
+            choices: [
+              ...models.map((m) => ({
+                name: `${m.name} (${m.id})`,
+                value: m.id,
+              })),
+              { name: "🔙 取消", value: "__cancel__" },
+            ],
+          },
+        ]);
+        if (selectedModelId === "__cancel__") return; // 取消返回主菜单
+        modelId = selectedModelId;
+      }
+    }
+
+    const model = await ensureEndpointConfig(modelId);
+    const messages = systemPrompt
+      ? [{ role: AgentNS.Role.System, content: systemPrompt }]
+      : [];
+
+    const agent = await createAgent(model.id, messages);
+    await runConversation(agent, model.id, undefined, undefined, agentId);
+  } catch (error: any) {
+    console.error(chalk.red(`\n❌ 错误: ${error.message}\n`));
+  }
+}
+
+/**
+ * 继续已保存的对话：列出对话 → 选择 → 进入对话
+ */
+export async function continueConversation(): Promise<void> {
+  const conversations = getConversationsList();
+  if (conversations.length === 0) {
+    console.log(chalk.yellow("\n📭 没有已保存的对话\n"));
+    return;
+  }
+
+  const { convId } = await inquirer.prompt([
+    {
+      type: "list",
+      name: "convId",
+      message: "选择对话:",
+      choices: [
+        ...conversations.map((c) => ({
+          name: `${c.name} (${c.messageCount} 条消息, ${new Date(c.updatedAt).toLocaleString("zh-CN")})`,
+          value: c.id,
+        })),
+        { name: "🔙 取消", value: "__cancel__" },
+      ],
+    },
+  ]);
+
+  if (convId === "__cancel__") return; // 取消返回主菜单
+
+  try {
+    const conversation = loadConversation(convId);
+    console.log(chalk.green(`\n✅ 已加载对话: ${conversation.name}\n`));
+
+    const model = await ensureEndpointConfig(conversation.modelId);
+    const agent = await createAgent(model.id, conversation.messages);
+
+    await runConversation(
+      agent,
+      model.id,
+      conversation.id,
+      conversation.name,
+      conversation.agentId,
+    );
+  } catch (error: any) {
+    console.error(chalk.red(`\n❌ 错误: ${error.message}\n`));
+  }
+}

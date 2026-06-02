@@ -8,6 +8,7 @@ export enum ModelType {
   Completion = "completion",
   ChatCompletion = "chat_completion",
   Embedding = "embedding",
+  ImageGeneration = "image_generation",
 }
 
 export abstract class Model<ModelConfig = {}> {

@@ -28,4 +28,8 @@ export abstract class Endpoint<C extends {} = any> {
   embedding(model: string) {
     return this.build("embeddings", model);
   }
+
+  imageGeneration(model: string) {
+    return this.build("images/generations", model);
+  }
 }

@@ -1,5 +1,4 @@
 import { Endpoint } from "../Endpoint.js";
-import { ModelType } from "../Model.js";
 
 export interface AzureOpenAIConfig {
   azure_endpoint: string;
@@ -13,7 +12,7 @@ export class AzureOpenAI extends Endpoint<AzureOpenAIConfig> {
   static title = "Azure OpenAI";
 
   async build(
-    path: "chat/completions" | "embeddings",
+    path: string,
     deployment_name: string,
   ) {
     let { azure_endpoint, api_version, api_key } = this.endpoint_config;
@@ -46,5 +45,9 @@ export class AzureOpenAI extends Endpoint<AzureOpenAIConfig> {
 
   embedding(deployment_name: string) {
     return this.build("embeddings", deployment_name);
+  }
+
+  imageGeneration(deployment_name: string) {
+    return this.build("images/generations", deployment_name);
   }
 }

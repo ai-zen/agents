@@ -1,9 +1,8 @@
 import { Agent, AgentNS, OpenAI, ChatGPT } from "@ai-zen/agents-core";
-import chalk from "chalk";
 import { ModelParams } from "./types.js";
 import { getModel } from "./models.js";
 import { getEndpoint } from "./endpoints.js";
-import { allTools } from "./tools.js";
+import { allTools } from "./tools/index.js";
 
 // ==================== Agent 创建 ====================
 

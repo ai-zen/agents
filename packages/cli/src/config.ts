@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
-import { Config, Endpoint, Model } from "./types.js";
+import { Config } from "./types.js";
 
 // ==================== 默认配置 ====================
 
@@ -97,6 +97,34 @@ export const defaultConfig: Config = {
   ],
   defaultModel: "deepseek-v4-flash",
   defaultAgent: "default",
+  imageModels: [
+    {
+      id: "cogview-4",
+      name: "CogView-4",
+      endpointId: "bigmodelcn",
+      modelName: "cogview-4",
+      description: "智谱AI CogView-4 图片生成模型，默认 1024x1024",
+      defaultSize: "1024x1024",
+    },
+    {
+      id: "glm-image",
+      name: "GLM-Image",
+      endpointId: "bigmodelcn",
+      modelName: "glm-image",
+      description: "智谱AI GLM-Image 图片生成模型，默认 1280x1280，仅支持 hd 质量",
+      defaultSize: "1280x1280",
+      defaultQuality: "hd",
+    },
+    {
+      id: "cogview-3-flash",
+      name: "CogView-3-Flash",
+      endpointId: "bigmodelcn",
+      modelName: "cogview-3-flash",
+      description: "智谱AI CogView-3-Flash 快速图片生成模型，默认 1024x1024",
+      defaultSize: "1024x1024",
+    },
+  ],
+  defaultImageModel: "cogview-4",
 };
 
 // 配置目录
@@ -130,6 +158,8 @@ export function readConfig(): Config {
   }
   try {
     const content = readFileSync(CONFIG_FILE, "utf-8");
+    // 浅合并：旧配置没有的新字段（如 imageModels），JSON.parse 展开时不会产生该 key，
+    // 会保留 defaultConfig 中的默认值，因此不需要深度合并。
     return { ...defaultConfig, ...JSON.parse(content) };
   } catch (error) {
     console.error(chalk.red(`读取配置文件失败: ${error}`));

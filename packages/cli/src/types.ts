@@ -28,6 +28,17 @@ export interface Model {
   defaultParams?: ModelParams;
 }
 
+/** 图片生成模型配置 */
+export interface ImageModel {
+  id: string;
+  name: string;
+  endpointId: string;
+  modelName: string;
+  description?: string;
+  defaultSize?: string;
+  defaultQuality?: string;
+}
+
 export interface AgentConfig {
   id: string;
   name: string;
@@ -44,6 +55,10 @@ export interface Config {
   agents: AgentConfig[];
   defaultModel?: string;
   defaultAgent?: string;
+  /** 图片生成模型列表 */
+  imageModels?: ImageModel[];
+  /** 默认图片生成模型 ID */
+  defaultImageModel?: string;
 }
 
 export interface ConversationData {

@@ -15,7 +15,7 @@ export interface ZhipuConfig {
 export class Zhipu extends Endpoint<ZhipuConfig> {
   static title = "Zhipu";
 
-  async build(path: "chat/completions" | "embeddings", model: string) {
+  async build(path: string, model: string) {
     let { zhipu_endpoint, api_key } = this.endpoint_config;
 
     if (!zhipu_endpoint) {

@@ -1,7 +1,7 @@
-import { Model, ModelParams } from "./types.js";
+import { Model, ModelParams, ImageModel } from "./types.js";
 import { readConfig, saveConfig } from "./config.js";
 
-// ==================== 模型管理 ====================
+// ==================== 对话模型管理 ====================
 
 export function getModel(modelId: string): Model | undefined {
   const config = readConfig();
@@ -57,4 +57,53 @@ export function mergeParams(
   overrideParams?: ModelParams,
 ): ModelParams {
   return { ...defaultParams, ...overrideParams };
+}
+
+// ==================== 图片生成模型管理 ====================
+
+export function getImageModel(imageModelId: string): ImageModel | undefined {
+  const config = readConfig();
+  return config.imageModels?.find((m) => m.id === imageModelId);
+}
+
+export function getImageModels(): ImageModel[] {
+  const config = readConfig();
+  return config.imageModels || [];
+}
+
+export function getDefaultImageModel(): ImageModel | undefined {
+  const config = readConfig();
+  if (config.defaultImageModel) {
+    return getImageModel(config.defaultImageModel);
+  }
+  return config.imageModels?.[0];
+}
+
+export function setDefaultImageModel(imageModelId: string): void {
+  const config = readConfig();
+  if (!config.imageModels?.find((m) => m.id === imageModelId)) {
+    throw new Error(`图片模型 ${imageModelId} 不存在`);
+  }
+  config.defaultImageModel = imageModelId;
+  saveConfig(config);
+}
+
+export function upsertImageModel(model: ImageModel): void {
+  const config = readConfig();
+  if (!config.imageModels) config.imageModels = [];
+  const index = config.imageModels.findIndex((m) => m.id === model.id);
+  if (index >= 0) {
+    config.imageModels[index] = model;
+  } else {
+    config.imageModels.push(model);
+  }
+  saveConfig(config);
+}
+
+export function deleteImageModel(imageModelId: string): void {
+  const config = readConfig();
+  if (config.imageModels) {
+    config.imageModels = config.imageModels.filter((m) => m.id !== imageModelId);
+  }
+  saveConfig(config);
 }

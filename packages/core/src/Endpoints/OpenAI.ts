@@ -11,7 +11,7 @@ export interface OpenAIConfig {
 export class OpenAI extends Endpoint<OpenAIConfig> {
   static title = "OpenAI";
 
-  async build(path: "chat/completions" | "embeddings", model: string) {
+  async build(path: string, model: string) {
     let { openai_endpoint, api_key } = this.endpoint_config;
 
     if (!openai_endpoint) {
