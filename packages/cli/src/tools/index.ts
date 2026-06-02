@@ -12,6 +12,7 @@ import { findTextTool } from "./findText.js";
 import { downloadFileTool } from "./downloadFile.js";
 import { generateImageTool } from "./generateImage.js";
 import { renameTool } from "./rename.js";
+import { copyTool } from "./copy.js";
 
 export {
   cwd,
@@ -28,6 +29,7 @@ export {
   downloadFileTool,
   generateImageTool,
   renameTool,
+  copyTool,
 };
 
 export const allTools = [
@@ -45,4 +47,5 @@ export const allTools = [
   downloadFileTool,
   generateImageTool,
   renameTool,
+  copyTool,
 ];
