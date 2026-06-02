@@ -26,11 +26,12 @@
   "dependencies": {
     "@ai-zen/agents-core": "^2.0.2",
     "chalk": "^5.3.0",
-    "inquirer": "^9.2.12"
+    "inquirer": "^9.2.12",
+    "terminal-kit": "^3.1.2"
   },
   "devDependencies": {
     "@types/inquirer": "^9.0.7",
-    "@types/node": "^24.1.0",
+    "@types/node": "^24.12.2",
     "rimraf": "^5.0.5",
     "typescript": "^5.3.3"
   }

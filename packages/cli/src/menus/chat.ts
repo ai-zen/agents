@@ -3,11 +3,35 @@ import inquirer from "inquirer";
 import { AgentNS } from "@ai-zen/agents-core";
 import { createAgent } from "../agent-creator.js";
 import { runConversation } from "../conversation-runner.js";
+import { runConversationTUI } from "../conversation-runner-tui.js";
 import { ensureEndpointConfig } from "../config-wizard.js";
 import { getAgents, getDefaultAgent, getAgent } from "../agents.js";
 import { getModels, getDefaultModel } from "../models.js";
 import { loadConversation } from "../conversations.js";
 import { getConversationsList } from "../conversations.js";
+
+/**
+ * 让用户选择使用 TUI 模式还是普通模式
+ */
+async function chooseMode(): Promise<"tui" | "normal"> {
+  // 如果不是 TTY，跳过 TUI 模式
+  if (!process.stdout.isTTY) {
+    return "normal";
+  }
+  
+  const { mode } = await inquirer.prompt([
+    {
+      type: "list",
+      name: "mode",
+      message: "选择对话模式:",
+      choices: [
+        { name: "🎨 TUI 模式（终端图形界面，支持滚动/实时中断）", value: "tui" },
+        { name: "📝 普通模式（基于 prompt 的对话）", value: "normal" },
+      ],
+    },
+  ]);
+  return mode;
+}
 
 /**
  * 开始新对话：选择 Agent（可选）→ 选择模型 → 进入对话
@@ -87,7 +111,15 @@ export async function startNewChat(): Promise<void> {
       : [];
 
     const agent = await createAgent(model.id, messages);
-    await runConversation(agent, model.id, undefined, undefined, agentId);
+
+    // 选择模式
+    const mode = await chooseMode();
+
+    if (mode === "tui") {
+      await runConversationTUI(agent, model.id, undefined, undefined, agentId);
+    } else {
+      await runConversation(agent, model.id, undefined, undefined, agentId);
+    }
   } catch (error: any) {
     console.error(chalk.red(`\n❌ 错误: ${error.message}\n`));
   }
@@ -127,13 +159,26 @@ export async function continueConversation(): Promise<void> {
     const model = await ensureEndpointConfig(conversation.modelId);
     const agent = await createAgent(model.id, conversation.messages);
 
-    await runConversation(
-      agent,
-      model.id,
-      conversation.id,
-      conversation.name,
-      conversation.agentId,
-    );
+    // 选择模式
+    const mode = await chooseMode();
+
+    if (mode === "tui") {
+      await runConversationTUI(
+        agent,
+        model.id,
+        conversation.id,
+        conversation.name,
+        conversation.agentId,
+      );
+    } else {
+      await runConversation(
+        agent,
+        model.id,
+        conversation.id,
+        conversation.name,
+        conversation.agentId,
+      );
+    }
   } catch (error: any) {
     console.error(chalk.red(`\n❌ 错误: ${error.message}\n`));
   }
