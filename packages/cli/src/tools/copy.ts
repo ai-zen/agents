@@ -28,7 +28,7 @@ export const copyTool = new CallbackTool({
   async callback(input): Promise<string> {
     try {
       await fsp.cp(input.src as string, input.dest as string, {
-        recursive: input.recursive as boolean,
+        recursive: (input.recursive as boolean) ?? false,
       });
       return "success";
     } catch (error: any) {
