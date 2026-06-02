@@ -2,10 +2,21 @@ import { CallbackTool } from "@ai-zen/agents-core";
 import * as fsp from "fs/promises";
 import * as path from "path";
 
+interface MatchItem {
+  line: number;
+  content: string;
+  match?: string;
+}
+
+interface MatchResult {
+  file: string;
+  matches: MatchItem[];
+}
+
 export const findTextTool = new CallbackTool({
   function: {
     name: "findText",
-    description: "查找文本出现的位置",
+    description: "查找文本出现的位置，支持普通文本或正则匹配，返回文件名及具体行号、行内容",
     parameters: {
       type: "object",
       properties: {
@@ -19,7 +30,11 @@ export const findTextTool = new CallbackTool({
         },
         text: {
           type: "string",
-          description: "要查找的文本",
+          description: "要查找的文本（与 regex 二选一）",
+        },
+        regex: {
+          type: "string",
+          description: "正则表达式（与 text 二选一，例如 \\bconst\\s+\\w+）",
         },
         exclude: {
           type: "array",
@@ -29,12 +44,21 @@ export const findTextTool = new CallbackTool({
           },
         },
       },
-      required: ["path", "pattern", "text"],
+      required: ["path", "pattern"],
     },
   },
   async callback(input): Promise<string> {
     try {
-      const result: string[] = [];
+      const result: MatchResult[] = [];
+      const text = input.text as string | undefined;
+      const regexStr = input.regex as string | undefined;
+
+      if (!text && !regexStr) {
+        return '请提供 text 或 regex 参数';
+      }
+
+      const regex = regexStr ? new RegExp(regexStr) : null;
+
       for await (const file of fsp.glob(input.pattern as string, {
         cwd: input.path,
         exclude: (input.exclude as string[]) || ["**/node_modules/**"],
@@ -43,11 +67,36 @@ export const findTextTool = new CallbackTool({
         const stats = await fsp.stat(fullPath);
         if (stats.isFile()) {
           const content = await fsp.readFile(fullPath, "utf-8");
-          if (content.includes(input.text as string)) {
-            result.push(file);
+          const lines = content.split("\n");
+          const matches: MatchItem[] = [];
+
+          lines.forEach((lineContent, index) => {
+            if (regex) {
+              const matchResult = lineContent.match(regex);
+              if (matchResult) {
+                matches.push({
+                  line: index + 1,
+                  content: lineContent,
+                  match: matchResult[0],
+                });
+              }
+            } else if (lineContent.includes(text!)) {
+              matches.push({
+                line: index + 1,
+                content: lineContent,
+              });
+            }
+          });
+
+          if (matches.length > 0) {
+            result.push({
+              file,
+              matches,
+            });
           }
         }
       }
+
       return JSON.stringify(result);
     } catch (error: any) {
       return error?.message;
