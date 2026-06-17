@@ -27,7 +27,7 @@ export class CallbackTool implements Tool {
     // If the result is already a string, return it as is. Otherwise, serialize it using JSON.stringify().
     // Note that even if the result is undefined, it is a valid value and still needs to be serialized before returning
     if (typeof result !== "string") {
-      result = JSON.stringify(result);
+      result = JSON.stringify(result) ?? "";
     }
 
     // Return the result

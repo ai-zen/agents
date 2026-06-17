@@ -166,6 +166,8 @@ class FatalError extends Error {}
 export class ChatGPT<
   M extends ChatGPT_ModelConfig = ChatGPT_ModelConfig,
 > extends ChatCompletionModel<M> {
+  static code = "chatgpt";
+  static title = "ChatGPT";
   IS_SUPPORT_FUNCTION_CALL = true;
   IS_SUPPORT_TOOLS_CALL = true;
   IS_SUPPORT_IMAGE_CONTENT = true;
@@ -302,6 +304,7 @@ export class ChatGPT<
         function_call: "auto",
       };
     }
+    return {};
   }
 
   formatData(data: ChatGPTTypes.ResponseData): AgentNS.ResponseData {
@@ -381,6 +384,9 @@ export class ChatGPT<
       case ChatGPTTypes.FinishReason.ToolCalls:
         return AgentNS.FinishReason.ToolCalls;
       default:
+        // 穷举检查：如果 ChatGPTTypes.FinishReason 新增了枚举值但忘记在此处理，
+        // 下一行的 never 赋值会导致 TypeScript 编译时报错（类型无法赋给 never）
+        const _exhaustiveFR: never = finish_reason;
         return AgentNS.FinishReason.Unknown;
     }
   }
@@ -398,6 +404,9 @@ export class ChatGPT<
       case ChatGPTTypes.Role.Tool:
         return AgentNS.Role.Tool;
       default:
+        // 穷举检查：如果 ChatGPTTypes.Role 新增了枚举值但忘记在此处理，
+        // 下一行的 never 赋值会导致 TypeScript 编译时报错（类型无法赋给 never）
+        const _exhaustiveRole: never = role;
         return AgentNS.Role.Unknown;
     }
   }
