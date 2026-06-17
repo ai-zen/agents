@@ -342,7 +342,19 @@ export class Agent extends AgentContext {
           function_call: task.function!,
           agent: this,
           result_message: resultReceiver,
+          allowJsonParseError: this.allowJsonParseError,
         });
+
+        // 如果 JSON 解析失败且允许容错，将错误信息作为结果返回给 AI
+        if (ctx.parse_error) {
+          resultReceiver.content = `参数解析错误: ${ctx.parse_error}\n请检查你提供的参数格式，确保是合法的 JSON。`;
+          resultReceiver.status = AgentNS.MessageStatus.Completed;
+
+          return {
+            is_prevent_default: false,
+            status: resultReceiver.status,
+          };
+        }
 
         resultReceiver.content = await matchTools?.exec(ctx);
         resultReceiver.status = AgentNS.MessageStatus.Completed;
@@ -352,6 +364,17 @@ export class Agent extends AgentContext {
           status: resultReceiver.status,
         };
       } catch (error: any) {
+        // 如果允许 JSON 解析错误，将执行异常也作为正常结果返回给 AI
+        if (this.allowJsonParseError) {
+          resultReceiver.content = `执行工具时出错: ${error?.message}`;
+          resultReceiver.status = AgentNS.MessageStatus.Completed;
+
+          return {
+            is_prevent_default: false,
+            status: resultReceiver.status,
+          };
+        }
+
         resultReceiver.content = error?.message;
         resultReceiver.status = AgentNS.MessageStatus.Error;
 

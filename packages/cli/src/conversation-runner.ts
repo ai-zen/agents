@@ -273,13 +273,11 @@ export async function runConversation(
   conversationName?: string,
   agentId?: string,
 ): Promise<void> {
-  console.log(chalk.blue.bold("\n" + "=".repeat(60)));
   console.log(
     chalk.blue.bold(
-      "  对话已开始 (输入 'exit' 退出, 'save' 保存, 'clear' 清屏, 'back' 撤回)",
+      "💬 对话已开始 (输入 'exit' 退出, 'save' 保存, 'clear' 清屏, 'back' 撤回)\n",
     ),
   );
-  console.log(chalk.blue.bold("=".repeat(60) + "\n"));
 
   const ctx: ConversationContext = {
     input: "",

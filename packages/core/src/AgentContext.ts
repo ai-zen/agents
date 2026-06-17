@@ -10,6 +10,7 @@ export class AgentContext {
   messages: AgentNS.Message[];
   tools: Tool[];
   rag?: Rag;
+  allowJsonParseError: boolean;
 
   constructor(options: PickRequired<AgentContext, "model">) {
     if (!options.model) throw new Error("AgentContext must have a model");
@@ -18,6 +19,7 @@ export class AgentContext {
     this.messages = options.messages ?? [];
     this.tools = options.tools ?? [];
     this.rag = options.rag;
+    this.allowJsonParseError = options.allowJsonParseError ?? true;
   }
 
   /**
