@@ -24,15 +24,29 @@ export class AgentTool extends AgentContext implements Tool {
   }
 
   /**
+   * 将当前 AgentTool 的配置导出为纯对象，用于创建子 Agent。
+   * 会深拷贝 messages 以避免共享引用导致的意外修改。
+   */
+  toAgentConfig(): PickRequired<AgentContext, "model"> {
+    return {
+      model: this.model,
+      model_config: this.model_config ? { ...this.model_config } : undefined,
+      messages: JSON.parse(JSON.stringify(this.messages)),
+      tools: this.tools?.map((t) => t),
+      rag: this.rag,
+      allowJsonParseError: this.allowJsonParseError,
+    };
+  }
+
+  /**
    * Executes the agent's function with the given function call context.
    * @param ctx - The function call context.
    * @returns {Promise<string>} The result of the function execution.
    */
   async exec(ctx: FunctionCallContext): Promise<string> {
-    // Create a chat for the agent
+    // Create a chat for the agent using exported config
     const agent = new Agent({
-      // Clone a new agent for execution
-      ...new AgentTool({ ...this }),
+      ...this.toAgentConfig(),
     });
 
     ctx.agent.events.emit("sub-agent", { agent, ctx });

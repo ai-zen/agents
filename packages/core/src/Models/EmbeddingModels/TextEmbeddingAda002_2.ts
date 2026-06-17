@@ -22,8 +22,8 @@ export interface TextEmbeddingAda002_2_ModelConfig {}
 export class TextEmbeddingAda002_2 extends EmbeddingModel<TextEmbeddingAda002_2_ModelConfig> {
   static title = "text-embedding-ada-002-2";
   static code = "text-embedding-ada-002";
-  static INPUT_MAX_TOKENS: 8191;
-  static OUTPUT_DIMENSION: 1536;
+  static INPUT_MAX_TOKENS = 8191;
+  static OUTPUT_DIMENSION = 1536;
 
   async createEmbedding(input: string) {
     if (!this.model_config) {

@@ -356,7 +356,11 @@ export class Agent extends AgentContext {
           };
         }
 
-        resultReceiver.content = await matchTools?.exec(ctx);
+        if (!matchTools) {
+          resultReceiver.content = `未知工具: ${task.function!.name}，没有找到对应的工具实现。`;
+        } else {
+          resultReceiver.content = await matchTools.exec(ctx);
+        }
         resultReceiver.status = AgentNS.MessageStatus.Completed;
 
         return {

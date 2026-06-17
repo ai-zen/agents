@@ -39,14 +39,26 @@ export class AzureOpenAI extends Endpoint<AzureOpenAIConfig> {
     };
   }
 
+  /**
+   * Azure OpenAI 的聊天补全接口。
+   * @param deployment_name - Azure OpenAI 中的模型部署名称（非模型名）
+   */
   chatCompletion(deployment_name: string) {
     return this.build("chat/completions", deployment_name);
   }
 
+  /**
+   * Azure OpenAI 的嵌入接口。
+   * @param deployment_name - Azure OpenAI 中的模型部署名称（非模型名）
+   */
   embedding(deployment_name: string) {
     return this.build("embeddings", deployment_name);
   }
 
+  /**
+   * Azure OpenAI 的图片生成接口。
+   * @param deployment_name - Azure OpenAI 中的模型部署名称（非模型名）
+   */
   imageGeneration(deployment_name: string) {
     return this.build("images/generations", deployment_name);
   }
