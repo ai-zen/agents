@@ -9,6 +9,9 @@ lerna-debug.log*
 
 node_modules
 dist
+vitest.config.js
+vitest.config.js.map
+vitest.config.d.ts
 dist-ssr
 *.local
 

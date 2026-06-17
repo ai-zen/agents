@@ -6,7 +6,10 @@
     "sourceMap": true,
     "strict": true,
     "declaration": true,
+    "skipLibCheck": true,
     "rootDir": "./src",
     "outDir": "./dist"
-  }
+  },
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts"]
 }

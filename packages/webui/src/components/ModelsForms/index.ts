@@ -7,7 +7,7 @@ type ModelsFormsMap = Record<
   ReturnType<typeof defineComponent>
 >;
 
-export const MODELS_FORMS_MAP: ModelsFormsMap = {
+export const MODELS_FORMS_MAP: Partial<ModelsFormsMap> = {
   ChatGPT: ChatGPT_ModelConfigForm,
   TextEmbeddingAda002_2: undefined,
 };

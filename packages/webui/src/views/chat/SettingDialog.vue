@@ -34,7 +34,7 @@ import { ModelType } from "@ai-zen/agents-core/dist/Model";
 
 const formRef = ref<InstanceType<typeof ElForm> | null>(null);
 
-const props = defineProps<{
+defineProps<{
   modelState: ReturnType<typeof useModel>["modelState"];
   currentSession?: ChatPL.SessionPO;
   currentSessionAgent?: ChatPL.AgentPO;

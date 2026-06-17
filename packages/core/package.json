@@ -10,15 +10,16 @@
     "prebuild": "npm run clean",
     "build": "tsc",
     "prepublishOnly": "npm run build",
-    "test": "npm run build && node ./dist/test.js"
+    "test": "vitest run"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "devDependencies": {
     "@types/json-schema": "^7.0.15",
-    "rimraf": "^5.0.5",
-    "typescript": "^5.3.3"
+    "rimraf": "^6.0.0",
+    "typescript": "^5.3.3",
+    "vitest": "^4.1.9"
   },
   "dependencies": {
     "@ai-zen/async-queue": "^1.2.2",
