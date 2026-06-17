@@ -103,32 +103,54 @@ function handleClear(): void {
 
 // ==================== back 撤回 ====================
 
+interface BackTarget {
+  index: number;
+  role: AgentNS.Role;
+  label: string;
+  toolName?: string;
+  preview: string;
+}
+
 async function handleBack(
   agent: Agent,
   ctx: ConversationContext,
 ): Promise<void> {
-  const userMessages: { index: number; content: string }[] = [];
+  // 收集可撤回的目标消息：用户消息 和 工具/函数调用结果消息
+  const targets: BackTarget[] = [];
   for (let i = 0; i < agent.messages.length; i++) {
-    if (agent.messages[i].role === AgentNS.Role.User) {
-      userMessages.push({
+    const msg = agent.messages[i];
+    if (msg.role === AgentNS.Role.User) {
+      const text = getMessageText(msg);
+      targets.push({
         index: i,
-        content: getMessageText(agent.messages[i]),
+        role: msg.role,
+        label: chalk.green("👤 用户"),
+        preview: text.substring(0, 60) + (text.length > 60 ? "..." : ""),
+      });
+    } else if (msg.role === AgentNS.Role.Tool || msg.role === AgentNS.Role.Function) {
+      const text = getMessageText(msg);
+      const toolName = msg.name ? ` [${msg.name}]` : "";
+      targets.push({
+        index: i,
+        role: msg.role,
+        label: chalk.cyan(`🔧 工具${toolName}`),
+        preview: text.substring(0, 60) + (text.length > 60 ? "..." : ""),
       });
     }
   }
 
-  if (userMessages.length === 0) {
-    console.log(chalk.red("\n❌ 还没有用户消息可以撤回\n"));
+  if (targets.length === 0) {
+    console.log(chalk.red("\n❌ 还没有消息可以撤回\n"));
     ctx.input = "";
     return;
   }
 
-  console.log(chalk.yellow.bold("\n📋 选择要撤回到哪条用户消息:"));
-  console.log(chalk.gray("将删除所选消息及其之后的所有消息\n"));
+  console.log(chalk.yellow.bold("\n📋 选择要撤回到哪条消息:"));
+  console.log(chalk.gray("将删除所选消息及其之后的所有内容\n"));
 
-  const choices = [...userMessages].reverse().map((msg) => ({
-    name: `${msg.content.substring(0, 80)}${msg.content.length > 80 ? "..." : ""}`,
-    value: msg.index,
+  const choices = [...targets].reverse().map((target) => ({
+    name: `${target.label} ${chalk.gray(target.preview)}`,
+    value: target.index,
   }));
 
   const { selectedIndex } = await inquirer.prompt([
@@ -136,6 +158,7 @@ async function handleBack(
       type: "list",
       name: "selectedIndex",
       message: "撤回到:",
+      pageSize: 15,
       choices: [{ name: "↩️  取消操作", value: -1 }, ...choices],
     },
   ]);
@@ -146,55 +169,91 @@ async function handleBack(
     return;
   }
 
-  const originalText = getMessageText(agent.messages[selectedIndex]);
+  const selectedMsg = agent.messages[selectedIndex];
+  const isUserMsg = selectedMsg.role === AgentNS.Role.User;
+  const originalText = getMessageText(selectedMsg);
 
-  console.log(
-    chalk.gray(
-      `原内容: ${originalText.substring(0, 200)}${originalText.length > 200 ? "..." : ""}`,
-    ),
-  );
-  console.log();
+  // 截断消息：用户消息则删除该消息及其之后的内容；工具结果消息则保留该消息，只删其后内容
+  const sliceEnd = isUserMsg ? selectedIndex : selectedIndex + 1;
+  agent.messages = agent.messages.slice(0, sliceEnd);
 
-  const { editChoice } = await inquirer.prompt([
-    {
-      type: "list",
-      name: "editChoice",
-      message: "请选择:",
-      choices: [
-        { name: "✏️  修改后重新发送", value: "edit" },
-        { name: "🔄 直接重新发送（不修改内容）", value: "resend" },
-        { name: "↩️  取消操作", value: "cancel" },
-      ],
-    },
-  ]);
+  if (isUserMsg) {
+    // 用户消息：可修改或直接重发
+    console.log(
+      chalk.gray(
+        `原内容: ${originalText.substring(0, 200)}${originalText.length > 200 ? "..." : ""}`,
+      ),
+    );
+    console.log();
 
-  if (editChoice === "cancel") {
-    console.log(chalk.gray("已取消操作\n"));
-    ctx.input = "";
-    return;
-  }
-
-  agent.messages = agent.messages.slice(0, selectedIndex);
-
-  if (editChoice === "edit") {
-    const { editedContent } = await inquirer.prompt([
+    const { editChoice } = await inquirer.prompt([
       {
-        type: "input",
-        name: "editedContent",
-        message: chalk.cyan("修改消息:"),
-        prefix: "✏️",
-        default: originalText,
+        type: "list",
+        name: "editChoice",
+        message: "请选择:",
+        choices: [
+          { name: "✏️  修改后重新发送", value: "edit" },
+          { name: "🔄 直接重新发送（不修改内容）", value: "resend" },
+          { name: "↩️  取消操作", value: "cancel" },
+        ],
       },
     ]);
-    const trimmed = editedContent.trim();
+
+    if (editChoice === "cancel") {
+      console.log(chalk.gray("已取消操作\n"));
+      ctx.input = "";
+      return;
+    }
+
+    if (editChoice === "edit") {
+      const { editedContent } = await inquirer.prompt([
+        {
+          type: "input",
+          name: "editedContent",
+          message: chalk.cyan("修改消息:"),
+          prefix: "✏️",
+          default: originalText,
+        },
+      ]);
+      const trimmed = editedContent.trim();
+      if (!trimmed) {
+        console.log(chalk.red("\n❌ 消息内容不能为空\n"));
+        ctx.input = "";
+        return;
+      }
+      ctx.input = trimmed;
+    } else {
+      ctx.input = originalText;
+    }
+  } else {
+    // 工具/函数调用结果消息：让用户输入一条新消息插入到该位置继续
+    console.log(
+      chalk.gray(
+        `原工具结果: ${originalText.substring(0, 200)}${originalText.length > 200 ? "..." : ""}`,
+      ),
+    );
+    console.log(
+      chalk.yellow("💡 请输入一条新消息，将插入到工具调用结果之后继续对话"),
+    );
+    console.log();
+
+    const { newMessage } = await inquirer.prompt([
+      {
+        type: "input",
+        name: "newMessage",
+        message: chalk.cyan("新消息:"),
+        prefix: "💬",
+      },
+    ]);
+
+    const trimmed = newMessage.trim();
     if (!trimmed) {
       console.log(chalk.red("\n❌ 消息内容不能为空\n"));
       ctx.input = "";
       return;
     }
+
     ctx.input = trimmed;
-  } else {
-    ctx.input = originalText;
   }
 }
 
