@@ -14,7 +14,8 @@
     "build": "tsc",
     "prepublishOnly": "npm run build",
     "start": "npm run build && node ./dist/index.js",
-    "test": "npm run build && node ./dist/test.js"
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [
     "ai",
@@ -32,6 +33,7 @@
     "@types/inquirer": "^9.0.7",
     "@types/node": "^24.12.2",
     "rimraf": "^6.0.0",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "vitest": "^4.1.9"
   }
 }
