@@ -166,6 +166,7 @@ export const defaultConfig: Config = {
     },
   ],
   defaultImageModel: "cogview-4",
+  mcpServers: [],
 };
 
 // 配置目录

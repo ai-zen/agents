@@ -3,6 +3,7 @@ import { getModel } from "./models.js";
 import { getEndpoint } from "./endpoints.js";
 import { readConfig } from "./config.js";
 import { allTools } from "./tools/index.js";
+import { startAllMcpServers } from "./mcp-manager.js";
 
 // ==================== 模型创建 ====================
 
@@ -45,7 +46,7 @@ export async function createAgent(
   // 创建主模型
   const model = await buildModel(modelId);
 
-  // 组装工具列表：文件工具 + 子 Agent 工具
+  // 组装工具列表：文件工具 + 子 Agent 工具 + MCP 工具
   const tools = [...allTools];
 
   // 加载子 Agent 工具
@@ -70,6 +71,10 @@ export async function createAgent(
       console.warn(`⚠️  子 Agent "${subConfig.name}" 加载失败: ${error.message}`);
     }
   }
+
+  // 加载 MCP 工具
+  const mcpTools = await startAllMcpServers();
+  tools.push(...mcpTools);
 
   // 创建 Agent
   const agent = new Agent({

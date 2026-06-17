@@ -73,6 +73,30 @@ export interface SubAgentConfig {
   version?: number;
 }
 
+// ==================== MCP 服务器配置 ====================
+
+/** MCP 服务器传输方式 */
+export type McpTransportType = "stdio" | "sse";
+
+/** MCP 服务器配置 */
+export interface McpServerConfig {
+  id: string;
+  name: string;
+  transport: McpTransportType;
+  /** stdio 模式：命令 */
+  command?: string;
+  /** stdio 模式：参数 */
+  args?: string[];
+  /** stdio 模式：环境变量 */
+  env?: Record<string, string>;
+  /** stdio 模式：工作目录 */
+  cwd?: string;
+  /** SSE 模式：URL */
+  url?: string;
+  /** 是否启用（允许临时禁用而不删除配置） */
+  enabled?: boolean;
+}
+
 export interface Config {
   endpoints: Endpoint[];
   models: Model[];
@@ -85,6 +109,8 @@ export interface Config {
   imageModels?: ImageModel[];
   /** 默认图片生成模型 ID */
   defaultImageModel?: string;
+  /** MCP 服务器列表 */
+  mcpServers?: McpServerConfig[];
 }
 
 export interface ConversationData {

@@ -94,6 +94,12 @@ describe("defaultConfig", () => {
     expect(defaultConfig.defaultImageModel).toBeTruthy();
   });
 
+  it("有 MCP 服务器配置（默认为空数组）", () => {
+    expect(defaultConfig.mcpServers).toBeDefined();
+    expect(Array.isArray(defaultConfig.mcpServers)).toBe(true);
+    expect(defaultConfig.mcpServers!.length).toBe(0);
+  });
+
   it("有子 Agent", () => {
     expect(defaultConfig.subAgents?.length).toBeGreaterThan(0);
     const general = defaultConfig.subAgents?.find(
