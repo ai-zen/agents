@@ -10,8 +10,11 @@ export const existTool = new CallbackTool({
       properties: {
         path: {
           type: "string",
+          description: "文件或目录路径",
         },
       },
+      required: ["path"],
+      additionalProperties: false,
     },
   },
   async callback(input): Promise<string> {

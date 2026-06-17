@@ -119,6 +119,7 @@ export namespace AgentNS {
   export interface FunctionDefine {
     name: string;
     description: string;
+    strict?: boolean;
     parameters: JSONSchema7;
   }
 

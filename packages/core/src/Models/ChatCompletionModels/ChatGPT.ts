@@ -37,6 +37,7 @@ export namespace ChatGPTTypes {
   export interface FunctionDefine {
     description: string;
     name: string;
+    strict?: boolean;
     parameters: JSONSchema7;
   }
 
@@ -283,8 +284,16 @@ export class ChatGPT<
   formatTools(tools: AgentNS.ToolDefine[] | undefined) {
     if (!tools?.length) return {};
     if (this.IS_SUPPORT_TOOLS_CALL) {
+      // 注入 strict: true，确保模型严格按照 JSON Schema 生成参数
+      const strictTools = tools.map((tool) => ({
+        ...tool,
+        function: {
+          ...tool.function,
+          strict: true,
+        },
+      }));
       return {
-        tools: tools,
+        tools: strictTools,
         tool_choice: "auto",
       };
     } else if (this.IS_SUPPORT_FUNCTION_CALL) {
