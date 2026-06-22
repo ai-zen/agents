@@ -7,6 +7,9 @@ import {
   CONFIG_DIR,
   CONVERSATIONS_DIR,
   AGENTS_DIR,
+  SUB_AGENTS_DIR,
+  SKILLS_DIR,
+  TOOLS_DIR,
   CONFIG_FILE,
 } from "./config.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
@@ -75,14 +78,8 @@ describe("defaultConfig", () => {
     expect(defaultConfig.models.length).toBeGreaterThan(0);
   });
 
-  it("有默认 Agent", () => {
+  it("有默认 Agent 指向 default", () => {
     expect(defaultConfig.defaultAgent).toBe("default");
-    const defaultAgent = defaultConfig.agents.find(
-      (a) => a.id === "default",
-    );
-    expect(defaultAgent).toBeDefined();
-    expect(defaultAgent!.messages.length).toBeGreaterThan(0);
-    expect(defaultAgent!.messages[0].role).toBe("system");
   });
 
   it("有默认模型", () => {
@@ -100,26 +97,32 @@ describe("defaultConfig", () => {
     expect(defaultConfig.mcpServers!.length).toBe(0);
   });
 
-  it("有子 Agent", () => {
-    expect(defaultConfig.subAgents?.length).toBeGreaterThan(0);
-    const general = defaultConfig.subAgents?.find(
-      (s) => s.id === "通用助手",
-    );
-    expect(general).toBeDefined();
-    expect(general!.function.name).toBe("general_assistant");
+  it("子 Agent 默认为空（由文件系统发现）", () => {
+    expect(defaultConfig.subAgents).toBeDefined();
+    expect(Array.isArray(defaultConfig.subAgents)).toBe(true);
+    expect(defaultConfig.subAgents!.length).toBe(0);
   });
 });
 
 // ==================== ensureConfigDir ====================
 
 describe("ensureConfigDir", () => {
-  it("创建配置目录和子目录", () => {
+  it("创建配置目录、子目录和默认子 Agent 文件", () => {
     ensureConfigDir();
     expect(mkdirSync).toHaveBeenCalledWith(CONFIG_DIR, { recursive: true });
     expect(mkdirSync).toHaveBeenCalledWith(CONVERSATIONS_DIR, {
       recursive: true,
     });
     expect(mkdirSync).toHaveBeenCalledWith(AGENTS_DIR, { recursive: true });
+    expect(mkdirSync).toHaveBeenCalledWith(SUB_AGENTS_DIR, { recursive: true });
+    expect(mkdirSync).toHaveBeenCalledWith(SKILLS_DIR, { recursive: true });
+    expect(mkdirSync).toHaveBeenCalledWith(TOOLS_DIR, { recursive: true });
+    // 首次运行应写入默认通用助手文件
+    expect(writeFileSync).toHaveBeenCalledWith(
+      expect.stringContaining("general-assistant.json"),
+      expect.any(String),
+      "utf-8",
+    );
   });
 });
 
@@ -174,8 +177,9 @@ describe("saveConfig / readConfig", () => {
       }),
     );
     const config = readConfig();
-    // agents 和 subAgents 应该从默认配置补充
-    expect(config.agents.length).toBeGreaterThan(0);
-    expect(config.subAgents?.length).toBeGreaterThan(0);
+    // agents 已迁移到文件系统，config 中为空
+    expect(config.agents?.length).toBe(0);
+    // subAgents 默认为空（由文件系统发现）
+    expect(config.subAgents?.length).toBe(0);
   });
 });

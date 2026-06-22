@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
-import { join } from "path";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 import { AgentNS } from "@ai-zen/agents-core";
 import { Config } from "./types.js";
 import { migrateRawConfig, ensureVersions } from "./config-migration.js";
@@ -88,54 +89,8 @@ export const defaultConfig: Config = {
       },
     },
   ],
-  agents: [
-    {
-      id: "default",
-      name: "默认助手",
-      messages: [
-        {
-          role: AgentNS.Role.System,
-          content: "你是一个AI助手，专门帮助用户回答问题和执行任务。请用中文回复。",
-        },
-      ],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    },
-  ],
-  subAgents: [
-    {
-      id: "通用助手",
-      name: "通用助手",
-      messages: [
-        {
-          role: AgentNS.Role.System,
-          content:
-            "你是一个通用助手，擅长独立完成各类任务。请根据给定的任务描述，认真分析并完成任务。完成任务后直接返回结果，不要解释你的思考过程。",
-        },
-        {
-          role: AgentNS.Role.User,
-          content: "{{task}}",
-        },
-      ],
-      function: {
-        name: "general_assistant",
-        description:
-          "当你觉得当前任务比较复杂，可以拆分为一个独立的子任务交给通用助手处理时使用。通用助手会独立完成任务并返回结果。适合需要独立分析、多角度思考的场景。",
-        parameters: {
-          type: "object",
-          properties: {
-            task: {
-              type: "string",
-              description: "要交给通用助手处理的任务，需要清晰完整地描述要做什么",
-            },
-          },
-          required: ["task"],
-        },
-      },
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    },
-  ],
+  agents: [],
+  subAgents: [],
   defaultModel: "deepseek-v4-flash",
   defaultAgent: "default",
   imageModels: [
@@ -176,11 +131,78 @@ export const CONFIG_DIR = join(
 );
 export const CONVERSATIONS_DIR = join(CONFIG_DIR, "conversations");
 export const AGENTS_DIR = join(CONFIG_DIR, "agents");
+export const SUB_AGENTS_DIR = join(CONFIG_DIR, "sub-agents");
+export const SKILLS_DIR = join(CONFIG_DIR, "skills");
+export const TOOLS_DIR = join(CONFIG_DIR, "tools");
 export const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 
 // ==================== 配置管理 ====================
 
+/** 获取当前模块目录（ESM 兼容） */
+function getModuleDir(): string {
+  try {
+    return dirname(fileURLToPath(import.meta.url));
+  } catch {
+    return process.cwd();
+  }
+}
+
+/** 默认助手的 JSON 内容 */
+const DEFAULT_AGENT_JSON = JSON.stringify(
+  {
+    id: "default",
+    name: "默认助手",
+    description: "默认的 AI 助手，适用于日常问答和任务执行。",
+    messages: [
+      {
+        role: "system",
+        content: "你是一个AI助手，专门帮助用户回答问题和执行任务。请用中文回复。",
+      },
+    ],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  null,
+  2,
+);
+
+/** 默认通用助手的 JSON 内容 */
+const DEFAULT_GENERAL_ASSISTANT_JSON = JSON.stringify(
+  {
+    id: "general-assistant",
+    name: "通用助手",
+    description:
+      "一个通用的子 Agent，擅长独立完成各类任务。可被主 Agent 自动调用，也可直接对话使用。",
+    system:
+      "你是一个通用助手，擅长独立完成各类任务。请根据给定的任务描述，认真分析并完成任务。完成任务后直接返回结果，不要解释你的思考过程。",
+    tools: [
+      "cwd",
+      "readFile",
+      "writeFile",
+      "batchReplace",
+      "mkdir",
+      "rm",
+      "glob",
+      "ls",
+      "exist",
+      "exec",
+      "findText",
+      "downloadFile",
+      "generateImage",
+      "rename",
+      "copy",
+    ],
+  },
+  null,
+  2,
+);
+
+/**
+ * 确保配置目录存在，并在首次初始化时写入默认子 Agent 文件
+ */
 export function ensureConfigDir(): void {
+  const isFirstRun = !existsSync(CONFIG_DIR);
+
   if (!existsSync(CONFIG_DIR)) {
     mkdirSync(CONFIG_DIR, { recursive: true });
   }
@@ -189,6 +211,38 @@ export function ensureConfigDir(): void {
   }
   if (!existsSync(AGENTS_DIR)) {
     mkdirSync(AGENTS_DIR, { recursive: true });
+  }
+  if (!existsSync(SUB_AGENTS_DIR)) {
+    mkdirSync(SUB_AGENTS_DIR, { recursive: true });
+  }
+  if (!existsSync(SKILLS_DIR)) {
+    mkdirSync(SKILLS_DIR, { recursive: true });
+  }
+  if (!existsSync(TOOLS_DIR)) {
+    mkdirSync(TOOLS_DIR, { recursive: true });
+  }
+
+  // 首次运行：写入默认文件
+  if (isFirstRun) {
+    // 默认普通 Agent
+    const defaultAgentPath = join(AGENTS_DIR, "default.json");
+    if (!existsSync(defaultAgentPath)) {
+      try {
+        writeFileSync(defaultAgentPath, DEFAULT_AGENT_JSON, "utf-8");
+      } catch (error) {
+        console.warn(chalk.yellow(`⚠️  无法写入默认 Agent 文件: ${error}`));
+      }
+    }
+
+    // 默认子 Agent（通用助手）
+    const defaultSubAgentPath = join(SUB_AGENTS_DIR, "general-assistant.json");
+    if (!existsSync(defaultSubAgentPath)) {
+      try {
+        writeFileSync(defaultSubAgentPath, DEFAULT_GENERAL_ASSISTANT_JSON, "utf-8");
+      } catch (error) {
+        console.warn(chalk.yellow(`⚠️  无法写入默认子 Agent 文件: ${error}`));
+      }
+    }
   }
 }
 
@@ -230,7 +284,7 @@ export function readConfig(): Config {
     const config: Config = { ...defaultConfig, ...saved };
 
     // 合并数组类型字段，确保新版本新增的默认项自动出现
-    config.agents = mergeArrays(defaultConfig.agents, saved.agents);
+    // 注意：agents 已迁移到文件系统，不再从默认配置合并
     config.subAgents = mergeArrays(defaultConfig.subAgents || [], saved.subAgents);
 
     // 补充版本号

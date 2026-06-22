@@ -59,6 +59,20 @@ interface McpConnection {
 /** 当前活跃的 MCP 连接列表 */
 const connections: McpConnection[] = [];
 
+/**
+ * 获取按服务器名称索引的 MCP 工具列表
+ * 供子 Agent 加载器按名称引用
+ */
+export function getConnectedMcpTools(): Record<string, CallbackTool[]> {
+  const result: Record<string, CallbackTool[]> = {};
+  for (const conn of connections) {
+    result[conn.config.name] = conn.tools;
+    // 也支持按 id 查找
+    result[conn.config.id] = conn.tools;
+  }
+  return result;
+}
+
 // ==================== 核心逻辑 ====================
 
 /**
