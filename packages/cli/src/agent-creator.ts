@@ -1,3 +1,4 @@
+import chalk from "chalk";
 import { Agent, AgentNS, AgentTool, OpenAI, ChatGPT, CallbackTool, Tool } from "@ai-zen/agents-core";
 import { getModel } from "./models.js";
 import { getEndpoint } from "./endpoints.js";
@@ -53,9 +54,9 @@ function mergeTools(agentTools: Tool[], newTools: Tool[]): void {
       (t) => t.function.name === newTool.function.name,
     );
     if (index >= 0) {
-      agentTools[index] = newTool; // 覆盖
+      agentTools[index] = newTool;
     } else {
-      agentTools.push(newTool); // 追加
+      agentTools.push(newTool);
     }
   }
 }
@@ -119,6 +120,29 @@ async function getAllSubAgentConfigs(): Promise<SubAgentConfig[]> {
   return configs;
 }
 
+// ==================== 构建 load_skill 工具 ====================
+
+/**
+ * 创建 load_skill 工具实例
+ * function 定义（含 enum）每次重新生成，确保 Skill 列表最新
+ */
+function createLoadSkillTool(): CallbackTool {
+  return new CallbackTool({
+    function: buildLoadSkillFunction(),
+    callback(this, args: { skill_id: string }) {
+      const content = loadSkillContent(args.skill_id);
+      if (!content) {
+        return `❌ Skill "${args.skill_id}" 不存在，请确认文件名是否正确`;
+      }
+      this.agent.messages.push({
+        role: AgentNS.Role.System,
+        content: `以下是 Skill "${args.skill_id}" 的内容，请按照其中的指导完成任务：\n\n${content}`,
+      });
+      return `✅ Skill "${args.skill_id}" 已加载，内容已附加到当前对话中`;
+    },
+  });
+}
+
 // ==================== 构建完整工具列表 ====================
 
 /**
@@ -142,26 +166,15 @@ async function buildToolList(
     if (subAgent) tools.push(subAgent);
   }
 
-  // 3. MCP 工具
+  // 3. MCP 工具（长连接，启动时连接一次，后续复用）
   const mcpTools = await startAllMcpServers();
+  if (mcpTools.length > 0) {
+    console.log(chalk.green(`  ✅ MCP 工具已加载: ${mcpTools.length} 个`));
+  }
   tools.push(...mcpTools);
 
   // 4. load_skill
-  const loadSkillTool = new CallbackTool({
-    function: buildLoadSkillFunction(),
-    callback(this, args: { skill_id: string }) {
-      const content = loadSkillContent(args.skill_id);
-      if (!content) {
-        return `❌ Skill "${args.skill_id}" 不存在，请确认文件名是否正确`;
-      }
-      this.agent.messages.push({
-        role: AgentNS.Role.System,
-        content: `以下是 Skill "${args.skill_id}" 的内容，请按照其中的指导完成任务：\n\n${content}`,
-      });
-      return `✅ Skill "${args.skill_id}" 已加载，内容已附加到当前对话中`;
-    },
-  });
-  tools.push(loadSkillTool);
+  tools.push(createLoadSkillTool());
 
   return tools;
 }
@@ -179,8 +192,9 @@ export async function createAgent(
   const tools = await buildToolList(model, modelId);
 
   // 创建 Agent，并设置 onBeforeSend 钩子
-  // 每次请求前重新扫描可动态更新的资源（用户工具、子 Agent、MCP），
+  // 每次请求前刷新文件系统中的资源（用户工具、子 Agent、Skill 列表），
   // 确保工具定义始终是最新的。
+  // MCP 工具是长连接，只在启动时连接一次，不在此刷新。
   const agent = new Agent({
     model: model,
     messages: messages || [
@@ -191,20 +205,22 @@ export async function createAgent(
     ],
     tools,
     onBeforeSend: async () => {
-      // 1. 刷新用户自定义工具
+      // 1. 刷新用户自定义工具（文件系统，轻量操作）
       const freshUserTools = await discoverUserTools();
       mergeTools(agent.tools, freshUserTools);
 
-      // 2. 刷新子 Agent
+      // 2. 刷新子 Agent（文件系统，轻量操作）
       const freshSubConfigs = await getAllSubAgentConfigs();
       for (const subConfig of freshSubConfigs) {
         const subAgent = await buildSubAgentTool(subConfig, modelId, model);
         if (subAgent) mergeTools(agent.tools, [subAgent]);
       }
 
-      // 3. 刷新 MCP 工具
-      const freshMcpTools = await startAllMcpServers();
-      mergeTools(agent.tools, freshMcpTools);
+      // 3. 刷新 load_skill 工具定义，更新可用 Skill 枚举列表
+      mergeTools(agent.tools, [createLoadSkillTool()]);
+
+      // 注意：MCP 工具是长连接，不在每次请求前刷新。
+      // 如需重连，调用 mcp-manager 的 reloadAllMcpServers()
     },
   });
 
