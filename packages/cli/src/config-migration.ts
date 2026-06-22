@@ -7,6 +7,9 @@
  * - 未来所有 schema 变更的兼容处理
  */
 
+import { existsSync, writeFileSync } from "fs";
+import { join } from "path";
+
 // ==================== 版本常量 ====================
 
 /** 当前实体版本 */
@@ -22,15 +25,18 @@ interface Versioned {
 
 /**
  * 对从磁盘读取的原始配置执行迁移
+ * @param saved 从 config.json 读取的原始数据
+ * @param agentsDir agents 目录路径（用于迁移旧 agents 到文件系统）
  * @returns 是否发生过变更（需要回写磁盘）
  */
-export function migrateRawConfig(saved: any): boolean {
+export function migrateRawConfig(saved: any, agentsDir?: string): boolean {
   let changed = false;
 
   // 逐个执行迁移步骤
   changed = migrateAgentsSystemPrompt(saved) || changed;
   changed = migrateSubAgentsSystemPrompt(saved) || changed;
   changed = migrateSubAgentsToolConfig(saved) || changed;
+  changed = migrateAgentsToFileSystem(saved, agentsDir) || changed;
 
   return changed;
 }
@@ -102,6 +108,37 @@ function migrateSubAgentsToolConfig(saved: any): boolean {
       sub.function = sub.toolConfig;
       delete sub.toolConfig;
       changed = true;
+    }
+  }
+
+  return changed;
+}
+
+/**
+ * v1 → v2: agents 从 config.json 迁移到 ~/.ai-zen/agents/ 独立文件
+ *
+ * 将 config.json 中的 agents[] 数组中的每个 Agent
+ * 写入到 agents/ 目录下的 {id}.json 文件。
+ * 不删除 config.json 中的 agents 字段（标记已废弃，后续版本清理）。
+ */
+function migrateAgentsToFileSystem(saved: any, agentsDir?: string): boolean {
+  if (!agentsDir) return false;
+  if (!Array.isArray(saved.agents) || saved.agents.length === 0) return false;
+
+  let changed = false;
+
+  for (const agent of saved.agents) {
+    if (!agent.id) continue;
+
+    const filePath = join(agentsDir, `${agent.id}.json`);
+    // 如果文件已存在，不覆盖（用户可能已经修改过文件）
+    if (existsSync(filePath)) continue;
+
+    try {
+      writeFileSync(filePath, JSON.stringify(agent, null, 2), "utf-8");
+      changed = true;
+    } catch {
+      // 单个文件写入失败不影响其他
     }
   }
 

@@ -1,9 +1,31 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   migrateRawConfig,
   ensureVersions,
   CURRENT_VERSION,
 } from "./config-migration.js";
+
+// ==================== Mock 文件系统 ====================
+
+const vol = new Map<string, string>();
+
+vi.mock("fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("fs")>();
+  return {
+    ...actual,
+    existsSync: vi.fn((path: string) => {
+      if (path.includes("node_modules")) return actual.existsSync(path);
+      return vol.has(path);
+    }),
+    writeFileSync: vi.fn((path: string, content: string) => {
+      vol.set(path, content);
+    }),
+  };
+});
+
+beforeEach(() => {
+  vol.clear();
+});
 
 // ==================== migrateRawConfig ====================
 
@@ -118,6 +140,55 @@ describe("migrateRawConfig", () => {
           function: { name: "t", description: "t", parameters: {} },
         },
       ],
+    };
+    const changed = migrateRawConfig(saved);
+    expect(changed).toBe(false);
+  });
+
+  it("将 config.json 中的 agents 写入文件系统", () => {
+    const agentsDir = "/mock/.ai-zen/agents";
+    const saved = {
+      agents: [
+        { id: "agent1", name: "Agent 1", messages: [{ role: "system", content: "hi" }] },
+        { id: "agent2", name: "Agent 2", messages: [{ role: "system", content: "hello" }] },
+      ],
+    };
+    const changed = migrateRawConfig(saved, agentsDir);
+    expect(changed).toBe(true);
+    expect(vol.has("/mock/.ai-zen/agents/agent1.json")).toBe(true);
+    expect(vol.has("/mock/.ai-zen/agents/agent2.json")).toBe(true);
+
+    const agent1 = JSON.parse(vol.get("/mock/.ai-zen/agents/agent1.json")!);
+    expect(agent1.id).toBe("agent1");
+    expect(agent1.name).toBe("Agent 1");
+  });
+
+  it("不覆盖已存在的 agents 文件", () => {
+    const agentsDir = "/mock/.ai-zen/agents";
+    vol.set("/mock/.ai-zen/agents/agent1.json", JSON.stringify({ id: "agent1", name: "已有" }));
+
+    const saved = {
+      agents: [
+        { id: "agent1", name: "新版本", messages: [] },
+      ],
+    };
+    const changed = migrateRawConfig(saved, agentsDir);
+    expect(changed).toBe(false);
+    // 内容不变
+    const agent1 = JSON.parse(vol.get("/mock/.ai-zen/agents/agent1.json")!);
+    expect(agent1.name).toBe("已有");
+  });
+
+  it("agents 为空时不写入", () => {
+    const agentsDir = "/mock/.ai-zen/agents";
+    const saved = { agents: [] };
+    const changed = migrateRawConfig(saved, agentsDir);
+    expect(changed).toBe(false);
+  });
+
+  it("不传 agentsDir 时不触发文件系统迁移", () => {
+    const saved = {
+      agents: [{ id: "a1", name: "Test", messages: [] }],
     };
     const changed = migrateRawConfig(saved);
     expect(changed).toBe(false);

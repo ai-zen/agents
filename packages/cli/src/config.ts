@@ -276,7 +276,8 @@ export function readConfig(): Config {
     const saved = JSON.parse(content);
 
     // 向下兼容：旧配置迁移（migrateRawConfig 直接修改 saved）
-    if (migrateRawConfig(saved)) {
+    // 传入 AGENTS_DIR 以便将旧 config.json 中的 agents 写入文件系统
+    if (migrateRawConfig(saved, AGENTS_DIR)) {
       saveConfig({ ...defaultConfig, ...saved });
     }
 
