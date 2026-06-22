@@ -71,6 +71,8 @@ aiz 你好，请介绍一下你自己。
 
 创建和管理自定义 Agent。每个 Agent 包含系统提示词预设，可快速切换不同角色和风格。
 
+Agent 以独立 JSON 文件存储在 `~/.ai-zen/agents/` 目录下，每个文件一个 Agent。
+
 ### ⚙️ 配置管理
 
 通过交互式向导管理以下配置：
@@ -87,11 +89,103 @@ aiz 你好，请介绍一下你自己。
 | **查看图片生成模型** | 列出所有图片生成模型 |
 | **管理 MCP 服务器** | 添加、编辑、删除 MCP 服务器 |
 
+## 文件系统发现机制
+
+CLI 中的所有用户资源均通过文件系统自动发现，无需手动注册。
+
+### 目录结构
+
+```
+~/.ai-zen/                    ← 全局（所有项目共享）
+├── config.json               ← 端点、模型、MCP 等配置
+├── agents/                   ← 普通 Agent
+│   └── default.json          ← 首次运行自动创建
+├── sub-agents/               ← 子 Agent
+│   └── general-assistant.json
+├── skills/                   ← Skill 提示词
+│   └── git-operations.md
+├── tools/                    ← 用户自定义工具
+│   └── my-tool.js
+└── conversations/            ← 对话记录
+
+/path/to/project/
+└── .ai-zen/                  ← 项目级（覆盖全局同名）
+    ├── agents/
+    ├── sub-agents/
+    ├── skills/
+    └── tools/
+```
+
+### 资源说明
+
+| 资源 | 目录 | 格式 | 说明 |
+|------|------|------|------|
+| **普通 Agent** | `agents/` | `.json` | 对话时可选的预设角色，包含 system prompt |
+| **子 Agent** | `sub-agents/` | `.json` / `.js` | 注册为主 Agent 的工具，由 LLM 按需调用 |
+| **Skill** | `skills/` | `.md` | 任务指导文档，通过 `load_skill` 工具按需加载 |
+| **用户自定义工具** | `tools/` | `.js` | 扩展 Agent 能力，和内置工具一样被 LLM 调用 |
+
+### 用户自定义工具示例
+
+```javascript
+// ~/.ai-zen/tools/weather.js
+export default {
+  name: "get_weather",
+  description: "获取指定城市的天气信息",
+  parameters: {
+    type: "object",
+    properties: {
+      city: { type: "string", description: "城市名称" }
+    },
+    required: ["city"]
+  },
+  callback: async (args) => {
+    // 调用天气 API...
+    return `${args.city} 的天气是晴天，25°C`;
+  }
+};
+```
+
+### 子 Agent 示例（JSON）
+
+```json
+{
+  "id": "code-reviewer",
+  "name": "代码审查员",
+  "description": "审查代码变更",
+  "system": "你是资深代码审查者，擅长发现潜在 bug、性能问题和安全漏洞。",
+  "tools": ["readFile", "findText", "glob", "exec"]
+}
+```
+
+### Skill 示例
+
+```markdown
+# Git 操作
+
+## 查看状态
+使用 `exec` 工具执行 `git status`
+
+## 提交代码
+1. 使用 `exec` 执行 `git add -A`
+2. 使用 `exec` 执行 `git commit -m "<message>"`
+```
+
+在对话中，AI 可以通过 `load_skill` 工具按需加载 Skill 内容。
+
+## onBeforeSend 钩子
+
+每次 LLM 请求前，CLI 会自动扫描文件系统，刷新以下资源：
+
+1. **用户自定义工具** — `~/.ai-zen/tools/` 和项目 `.ai-zen/tools/`
+2. **子 Agent** — `~/.ai-zen/sub-agents/` 和项目 `.ai-zen/sub-agents/`
+3. **Skill 列表** — `load_skill` 工具的可用枚举
+
+这意味着你在对话过程中新增或修改了文件，下一次 AI 回复时就能感知到。MCP 工具是长连接，只在启动时连接一次，不在此刷新。
+
 ## 配置文件
 
-配置文件存储在 `~/.ai-zen/config.json`，对话记录存储在 `~/.ai-zen/conversations/` 目录下。
-
-首次启动会自动生成默认配置，包含三个预置端点（OpenAI、智谱AI、DeepSeek）和对应的模型列表。
+配置文件存储在 `~/.ai-zen/config.json`，主要包含端点、模型、MCP 等基础设施配置。
 
 ### 配置结构
 
@@ -102,8 +196,7 @@ aiz 你好，请介绍一下你自己。
       "id": "openai",
       "name": "OpenAI",
       "apiKey": "sk-xxx",
-      "baseUrl": "https://api.openai.com/v1",
-      "description": "OpenAI API 端点"
+      "baseUrl": "https://api.openai.com/v1"
     }
   ],
   "models": [
@@ -111,49 +204,14 @@ aiz 你好，请介绍一下你自己。
       "id": "gpt-5.5",
       "name": "GPT-5.5",
       "endpointId": "openai",
-      "modelName": "gpt-5.5",
-      "description": "模型描述",
-      "defaultParams": {}
+      "modelName": "gpt-5.5"
     }
   ],
-  "agents": [
-    {
-      "id": "default",
-      "name": "默认助手",
-      "messages": [
-        { "role": "system", "content": "你是一个AI助手..." }
-      ],
-      "createdAt": "...",
-      "updatedAt": "..."
-    }
-  ],
-  "subAgents": [
-    {
-      "id": "通用助手",
-      "name": "通用助手",
-      "messages": [
-        { "role": "system", "content": "你是一个通用助手..." },
-        { "role": "user", "content": "{{task}}" }
-      ],
-      "function": {
-        "name": "general_assistant",
-        "description": "将复杂任务交给通用助手处理",
-        "parameters": { ... }
-      }
-    }
-  ],
+  "agents": [],       // ← 已迁移到 ~/.ai-zen/agents/ 目录
+  "subAgents": [],    // ← 已迁移到 ~/.ai-zen/sub-agents/ 目录
   "defaultModel": "deepseek-v4-flash",
   "defaultAgent": "default",
-  "imageModels": [
-    {
-      "id": "cogview-4",
-      "name": "CogView-4",
-      "endpointId": "bigmodelcn",
-      "modelName": "cogview-4",
-      "description": "智谱AI CogView-4",
-      "defaultSize": "1024x1024"
-    }
-  ],
+  "imageModels": [ ... ],
   "defaultImageModel": "cogview-4",
   "mcpServers": []
 }
@@ -161,7 +219,7 @@ aiz 你好，请介绍一下你自己。
 
 ### 配置迁移
 
-旧版配置（使用 `systemPrompt` / `toolConfig` 字段）会在启动时自动迁移到新格式。
+从旧版本升级时，`config.json` 中的 `agents` 和 `subAgents` 数据会自动迁移到文件系统目录中。已存在的文件不会被覆盖。
 
 ## 内置工具
 
@@ -196,16 +254,6 @@ CLI 启动时会自动注册以下 15 个内置工具到 Agent：
 | `cogview-3-flash` | 智谱AI CogView-3-Flash 快速生成 | 1024x1024 |
 
 生成的图片返回临时 URL（有效期约 30 天），可配合 `downloadFile` 工具保存到本地。
-
-## 子 Agent 工具
-
-子 Agent（`subAgents`）是会注册为主 Agent 工具的独立子任务。配置中预置了一个 `通用助手` 子 Agent：
-
-- **名称**: `general_assistant`
-- **功能**: 将复杂任务拆分为独立子任务，由子 Agent 独立完成
-- **特点**: 子 Agent 拥有自己的模型实例、消息上下文和工具列表，可独立调用内置工具
-
-子 Agent 的消息中可使用 `{{变量名}}` 占位符，调用时会被传入的参数自动替换。
 
 ## MCP 服务器支持
 
@@ -265,9 +313,18 @@ MCP 服务器会在 Agent 启动时自动连接，获取工具列表并注册为
 
 首次使用时会提示输入 API Key，可选择保存以便下次使用。也可通过 `aiz` 进入主菜单 → 配置管理 → 设置 API Key 来配置。
 
-### 模型不存在或端点错误
+### 如何添加自定义工具？
 
-检查 `~/.ai-zen/config.json` 中的端点和模型配置是否正确。可通过配置向导修改。
+在 `~/.ai-zen/tools/` 或项目 `.ai-zen/tools/` 目录下创建 `.js` 文件，导出 `{ name, description, parameters, callback }` 即可。CLI 会自动发现并注册。
+
+### 如何添加 Skill？
+
+在 `~/.ai-zen/skills/` 或项目 `.ai-zen/skills/` 目录下创建 `.md` 文件。AI 在对话中可以通过 `load_skill` 工具按需加载这些技能指导。
+
+### Agent 和子 Agent 有什么区别？
+
+- **Agent**：对话时用户主动选择的预设角色，包含 system prompt
+- **子 Agent**：注册为主 Agent 的工具，由 LLM 在对话中按需自动调用，用于处理子任务
 
 ## 开发
 

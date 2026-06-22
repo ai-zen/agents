@@ -10,8 +10,8 @@
 
 | 包名 | 说明 | 版本 |
 |------|------|------|
-| [`@ai-zen/agents-core`](./packages/core) | 核心框架 — Agent、消息、工具、模型、端点、RAG、向量数据库抽象 | [![version](https://img.shields.io/badge/version-2.3.0-blue)] |
-| [`@ai-zen/agents-cli`](./packages/cli) | 命令行界面 — 交互式对话终端，内置文件/代码执行等工具 | [![version](https://img.shields.io/badge/version-0.5.0-blue)] |
+| [`@ai-zen/agents-core`](./packages/core) | 核心框架 — Agent、消息、工具、模型、端点、RAG、向量数据库抽象 | [![version](https://img.shields.io/badge/version-2.4.0-blue)] |
+| [`@ai-zen/agents-cli`](./packages/cli) | 命令行界面 — 交互式对话终端，内置文件/代码执行等工具 | [![version](https://img.shields.io/badge/version-0.6.0-blue)] |
 | [`@ai-zen/agents-webui`](./packages/webui) | Web 用户界面（Vue 3 + Element Plus） | [![version](https://img.shields.io/badge/version-2.0.0-blue)] |
 
 ## 快速开始
@@ -64,8 +64,8 @@ TypeScript 核心库，可在 Node.js 和浏览器环境中使用。提供构建
 
 | 类 | 说明 |
 |------|------|
-| **Agent** | 对话管理与生命周期控制，继承 AgentContext，支持流式解析、工具调用、多轮对话、事件系统 |
-| **AgentContext** | Agent 上下文基类，持有 model、messages、tools、rag 等配置 |
+| **Agent** | 对话管理与生命周期控制，继承 AgentContext，支持流式解析、工具调用、多轮对话、事件系统、`onBeforeSend` 钩子 |
+| **AgentContext** | Agent 上下文基类，持有 model、messages、tools、rag、`onBeforeSend` 等配置 |
 | **Message** | 消息模型，支持文本/图片等多模态内容，提供静态工厂方法 |
 | **Tool** | 工具抽象基类，自定义工具需实现 `exec()` 方法 |
 | **CallbackTool** | 通过回调函数快速定义工具 |
@@ -86,6 +86,21 @@ TypeScript 核心库，可在 Node.js 和浏览器环境中使用。提供构建
 - **端点**: `OpenAI`、`AzureOpenAI`、`Zhipu`（已废弃）、`CommonEndpoint`（通用端点，适用于任意 OpenAI 兼容接口）
 - **RAG**: `EmbeddingSearch`（基于嵌入向量检索的知识库增强）
 
+**`onBeforeSend` 钩子**：`Agent` 每轮请求前调用，可用于刷新工具定义、更新 RAG 等。通过构造函数传入：
+
+```typescript
+const agent = new Agent({
+  model,
+  messages,
+  tools,
+  onBeforeSend: async () => {
+    // 每次请求前刷新工具列表
+    const newTools = await discoverNewTools();
+    mergeTools(agent.tools, newTools);
+  },
+});
+```
+
 [查看 core 完整文档 →](./packages/core/README.md)
 
 ## 💻 @ai-zen/agents-cli
@@ -94,8 +109,10 @@ TypeScript 核心库，可在 Node.js 和浏览器环境中使用。提供构建
 
 - 交互式主菜单与对话管理
 - 多端点支持（OpenAI、智谱AI、DeepSeek 等任意 OpenAI 兼容接口）
-- Agent 管理与自定义（系统提示词预设）
-- 子 Agent 工具注册（可被主 Agent 按需调用的子任务）
+- Agent 管理与自定义（系统提示词预设），以独立文件存储在 `~/.ai-zen/agents/`
+- 子 Agent 工具注册，以独立文件存储在 `~/.ai-zen/sub-agents/`，支持 JSON 和 JS 格式
+- 用户自定义工具，以 JS 文件存储在 `~/.ai-zen/tools/`
+- Skill 提示词，以 Markdown 文件存储在 `~/.ai-zen/skills/`，通过 `load_skill` 工具按需加载
 - MCP（Model Context Protocol）服务器集成
 - 图片生成（通过智谱AI CogView / GLM-Image）
 - 内置文件系统工具（读/写/搜索/执行命令等）
@@ -103,6 +120,31 @@ TypeScript 核心库，可在 Node.js 和浏览器环境中使用。提供构建
 - 交互式配置向导
 
 **内置工具**：`cwd`、`readFile`、`writeFile`、`batchReplace`、`mkdir`、`rm`、`glob`、`ls`、`exist`、`exec`、`findText`、`downloadFile`、`generateImage`、`rename`、`copy`（共 15 个工具）
+
+### 文件系统发现机制
+
+所有用户资源均通过文件系统自动发现，支持全局（`~/.ai-zen/`）和项目级（`.ai-zen/`）两级，项目级覆盖全局同名资源：
+
+```
+~/.ai-zen/                    ← 全局
+├── config.json               ← 端点、模型等配置
+├── agents/                   ← 普通 Agent（独立 JSON 文件）
+│   └── default.json
+├── sub-agents/               ← 子 Agent（JSON / JS）
+│   └── general-assistant.json
+├── skills/                   ← Skill 提示词（.md）
+├── tools/                    ← 用户自定义工具（.js）
+└── conversations/            ← 对话记录
+
+/path/to/project/
+└── .ai-zen/                  ← 项目级（覆盖全局同名）
+    ├── agents/
+    ├── sub-agents/
+    ├── skills/
+    └── tools/
+```
+
+每次 LLM 请求前，CLI 会自动扫描文件系统，确保工具定义始终最新。新增或修改文件后，下一次对话请求即可生效。
 
 [查看 CLI 完整文档 →](./packages/cli/README.md)
 
