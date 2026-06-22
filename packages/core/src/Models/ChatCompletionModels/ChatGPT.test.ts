@@ -205,7 +205,7 @@ describe("ChatGPT Model", () => {
               content: null as any,
               tool_calls: [
                 {
-                  id: 1,
+                  id: "1",
                   type: "function",
                   function: { name: "getWeather", arguments: '{"city":"北京"}' },
                 },
@@ -372,7 +372,7 @@ describe("ChatGPT Model", () => {
             delta: {
               tool_calls: [{
                 index: 0,
-                id: 1,
+                id: "1",
                 type: "function",
                 function: { name: "getWeather", arguments: '{"city":"北京"}' },
               }],

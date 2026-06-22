@@ -38,7 +38,8 @@ export class Agent extends AgentContext {
    * Run the conversation with the server.
    */
   async run() {
-    const receiver = this.messages.at(-1) as Message;
+    // 验证初始 receiver 消息
+    let receiver = this.messages.at(-1) as Message | undefined;
     if (!receiver) {
       throw new Error(
         "You need to send at least one message as a receive message",
@@ -55,71 +56,82 @@ export class Agent extends AgentContext {
       );
     }
 
-    const controller = new AbortController();
+    const initialController = new AbortController();
+    const initialPendingTask: PendingTask = { controller: initialController, receiver };
+    this.pendingTasks.add(initialPendingTask);
 
-    const pendingTask: PendingTask = { controller, receiver };
+    // 使用 while 循环替代递归
+    let currentReceiver: Message = receiver;
+    let currentController: AbortController = initialController;
+    const allPendingTasks: PendingTask[] = [initialPendingTask];
+    let needContinue = true;
 
-    this.pendingTasks.add(pendingTask);
+    while (needContinue) {
+      needContinue = false;
 
-    const messages = this.formatHistory();
-    const tools = this.formatTools();
+      const messages = this.formatHistory();
+      const tools = this.formatTools();
 
-    this.events.emit("run", messages, tools);
+      this.events.emit("run", messages, tools);
 
-    const stream = this.model.createStream({
-      signal: controller.signal,
-      messages,
-      tools,
-      onOpen: () => {
-        receiver.status = AgentNS.MessageStatus.Writing;
-        this.events.emit("open");
-      },
-      onError: (error: any) => {
-        receiver.status = AgentNS.MessageStatus.Error;
-        receiver.content = error.message;
-        this.events.emit("error", error);
-      },
-      onFinally: () => {
-        this.events.emit("finally");
-      },
-    });
+      const stream = this.model.createStream({
+        signal: currentController.signal,
+        messages,
+        tools,
+        onOpen: () => {
+          currentReceiver.status = AgentNS.MessageStatus.Writing;
+          this.events.emit("open");
+        },
+        onError: (error: any) => {
+          currentReceiver.status = AgentNS.MessageStatus.Error;
+          currentReceiver.content = error.message;
+          this.events.emit("error", error);
+        },
+        onFinally: () => {
+          this.events.emit("finally");
+        },
+      });
 
-    abortBlock: {
       try {
-        await this.parseStreamData(receiver, stream);
+        await this.parseStreamData(currentReceiver, stream);
 
         if (
-          (receiver.status as AgentNS.MessageStatus) ===
-            AgentNS.MessageStatus.Aborted ||
-          (receiver.status as AgentNS.MessageStatus) ===
-            AgentNS.MessageStatus.Error
+          currentReceiver.status === AgentNS.MessageStatus.Aborted ||
+          currentReceiver.status === AgentNS.MessageStatus.Error
         ) {
-          break abortBlock;
+          continue;
         }
 
-        receiver.status = AgentNS.MessageStatus.Completed;
+        currentReceiver.status = AgentNS.MessageStatus.Completed;
 
-        if (await this.handleToolCall(receiver)) {
+        if (await this.handleToolCall(currentReceiver)) {
           if (
-            (receiver.status as AgentNS.MessageStatus) ===
-              AgentNS.MessageStatus.Aborted ||
-            (receiver.status as AgentNS.MessageStatus) ===
-              AgentNS.MessageStatus.Error
+            currentReceiver.status === AgentNS.MessageStatus.Aborted ||
+            currentReceiver.status === AgentNS.MessageStatus.Error
           ) {
-            break abortBlock;
+            continue;
           }
 
+          // 准备下一轮对话
           this.append(Message.Assistant());
-          await this.run();
+          currentReceiver = this.messages.at(-1) as Message;
+          currentController = new AbortController();
+          const newPendingTask: PendingTask = { controller: currentController, receiver: currentReceiver };
+          allPendingTasks.push(newPendingTask);
+          this.pendingTasks.add(newPendingTask);
+          needContinue = true;
         }
       } catch (error: any) {
-        receiver.status = AgentNS.MessageStatus.Error;
-        receiver.content = error.message;
+        currentReceiver.status = AgentNS.MessageStatus.Error;
+        currentReceiver.content = error.message;
         this.events.emit("error", error);
       }
     }
 
-    this.pendingTasks.delete(pendingTask);
+    // 清理所有 pendingTasks
+    for (const task of allPendingTasks) {
+      this.pendingTasks.delete(task);
+    }
 
     return this.messages;
   }
@@ -326,81 +338,71 @@ export class Agent extends AgentContext {
       tasks.push({ function: receiver.function_call });
     }
 
-    const promises = tasks.map(async (task) => {
-      const resultReceiver = this.append(
-        task.id ? Message.Tool(task) : Message.Function(task.function!),
-      );
+    if (tasks.length === 0) return false;
 
-      try {
-        const matchTools: Tool | undefined = this.tools.find(
-          (tool) =>
-            tool.function.name == task.function!.name &&
-            tool.type == "function",
+    // 并行执行所有工具，每个工具独立处理结果，互不影响
+    const results = await Promise.all(
+      tasks.map(async (task) => {
+        const resultReceiver = this.append(
+          task.id ? Message.Tool(task) : Message.Function(task.function!),
         );
 
-        const ctx = new FunctionCallContext({
-          function_call: task.function!,
-          agent: this,
-          result_message: resultReceiver,
-          allowJsonParseError: this.allowJsonParseError,
-        });
+        try {
+          const matchTools: Tool | undefined = this.tools.find(
+            (tool) =>
+              tool.function.name == task.function!.name &&
+              tool.type == "function",
+          );
 
-        // 如果 JSON 解析失败且允许容错，将错误信息作为结果返回给 AI
-        if (ctx.parse_error) {
-          resultReceiver.content = `参数解析错误: ${ctx.parse_error}\n请检查你提供的参数格式，确保是合法的 JSON。`;
+          const ctx = new FunctionCallContext({
+            function_call: task.function!,
+            agent: this,
+            result_message: resultReceiver,
+            allowJsonParseError: this.allowJsonParseError,
+          });
+
+          // 如果 JSON 解析失败且允许容错，将错误信息作为结果返回给 AI
+          if (ctx.parse_error) {
+            resultReceiver.content = `参数解析错误: ${ctx.parse_error}\n请检查你提供的参数格式，确保是合法的 JSON。`;
+            resultReceiver.status = AgentNS.MessageStatus.Completed;
+            return { is_prevent_default: false, status: resultReceiver.status };
+          }
+
+          if (!matchTools) {
+            resultReceiver.content = `未知工具: ${task.function!.name}，没有找到对应的工具实现。`;
+          } else {
+            resultReceiver.content = await matchTools.exec(ctx);
+          }
           resultReceiver.status = AgentNS.MessageStatus.Completed;
 
           return {
-            is_prevent_default: false,
+            is_prevent_default: ctx.is_prevent_default,
             status: resultReceiver.status,
           };
+        } catch (error: any) {
+          if (this.allowJsonParseError) {
+            // 工具执行异常时，将错误信息返回给 AI 继续
+            resultReceiver.content = `执行工具 ${task.function!.name} 时出错: ${error?.message}`;
+            resultReceiver.status = AgentNS.MessageStatus.Completed;
+            return { is_prevent_default: false, status: resultReceiver.status };
+          }
+
+          // allowJsonParseError=false 时，标记为 Error
+          resultReceiver.content = error?.message;
+          resultReceiver.status = AgentNS.MessageStatus.Error;
+          return { is_prevent_default: true, status: resultReceiver.status };
         }
-
-        if (!matchTools) {
-          resultReceiver.content = `未知工具: ${task.function!.name}，没有找到对应的工具实现。`;
-        } else {
-          resultReceiver.content = await matchTools.exec(ctx);
-        }
-        resultReceiver.status = AgentNS.MessageStatus.Completed;
-
-        return {
-          is_prevent_default: ctx.is_prevent_default,
-          status: resultReceiver.status,
-        };
-      } catch (error: any) {
-        // 如果允许 JSON 解析错误，将执行异常也作为正常结果返回给 AI
-        if (this.allowJsonParseError) {
-          resultReceiver.content = `执行工具时出错: ${error?.message}`;
-          resultReceiver.status = AgentNS.MessageStatus.Completed;
-
-          return {
-            is_prevent_default: false,
-            status: resultReceiver.status,
-          };
-        }
-
-        resultReceiver.content = error?.message;
-        resultReceiver.status = AgentNS.MessageStatus.Error;
-
-        return {
-          is_prevent_default: true,
-          status: resultReceiver.status,
-        };
-      }
-    });
-
-    const results = await Promise.all(promises);
-
-    const isNeedNext = Boolean(
-      results.length &&
-      results.every(
-        (result) =>
-          !result.is_prevent_default &&
-          result.status === AgentNS.MessageStatus.Completed,
-      ),
+      }),
     );
 
-    return isNeedNext;
+    // is_prevent_default: 工具主动要求停止（preventDefault）
+    // status: 消息状态，Error 表示工具执行出错且不容错
+    // 两者任一为 true，则不继续下一轮
+    const shouldStop = results.some(
+      (r) => r.is_prevent_default || r.status === AgentNS.MessageStatus.Error,
+    );
+
+    return !shouldStop;
   }
 
   /**

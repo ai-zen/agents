@@ -16,7 +16,7 @@ function createMockCtx(
   return new FunctionCallContext({
     agent,
     function_call: { name: functionName, arguments: JSON.stringify(parsedArgs) },
-    result_message: Message.Tool({ id: 1, function: { name: functionName } }),
+    result_message: Message.Tool({ id: "1", function: { name: functionName } }),
   });
 }
 

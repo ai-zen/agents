@@ -17,7 +17,7 @@ describe("FunctionCallContext", () => {
   describe("构造函数 - JSON 解析", () => {
     it("应正确解析合法 JSON 参数", () => {
       const agent = createMockAgent();
-      const resultMsg = Message.Tool({ id: 1, function: { name: "fn" } });
+      const resultMsg = Message.Tool({ id: "1", function: { name: "fn" } });
 
       const ctx = new FunctionCallContext({
         agent,
@@ -31,7 +31,7 @@ describe("FunctionCallContext", () => {
 
     it("解析失败且 allowJsonParseError=true 时不应抛出异常", () => {
       const agent = createMockAgent();
-      const resultMsg = Message.Tool({ id: 1, function: { name: "fn" } });
+      const resultMsg = Message.Tool({ id: "1", function: { name: "fn" } });
 
       const ctx = new FunctionCallContext({
         agent,
@@ -47,7 +47,7 @@ describe("FunctionCallContext", () => {
 
     it("解析失败且 allowJsonParseError=false 时应抛出异常", () => {
       const agent = createMockAgent();
-      const resultMsg = Message.Tool({ id: 1, function: { name: "fn" } });
+      const resultMsg = Message.Tool({ id: "1", function: { name: "fn" } });
 
       expect(() => {
         new FunctionCallContext({
@@ -61,7 +61,7 @@ describe("FunctionCallContext", () => {
 
     it("arguments 为 undefined 时 parsed_args 应为 undefined", () => {
       const agent = createMockAgent();
-      const resultMsg = Message.Tool({ id: 1, function: { name: "fn" } });
+      const resultMsg = Message.Tool({ id: "1", function: { name: "fn" } });
 
       const ctx = new FunctionCallContext({
         agent,
@@ -77,7 +77,7 @@ describe("FunctionCallContext", () => {
   describe("preventDefault", () => {
     it("调用后 is_prevent_default 应变为 true", () => {
       const agent = createMockAgent();
-      const resultMsg = Message.Tool({ id: 1, function: { name: "fn" } });
+      const resultMsg = Message.Tool({ id: "1", function: { name: "fn" } });
 
       const ctx = new FunctionCallContext({
         agent,
@@ -94,7 +94,7 @@ describe("FunctionCallContext", () => {
   describe("构造函数 - 字段赋值", () => {
     it("应正确保存 agent 引用", () => {
       const agent = createMockAgent();
-      const resultMsg = Message.Tool({ id: 1, function: { name: "fn" } });
+      const resultMsg = Message.Tool({ id: "1", function: { name: "fn" } });
 
       const ctx = new FunctionCallContext({
         agent,

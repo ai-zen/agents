@@ -38,7 +38,7 @@ export namespace AgentNS {
 
   export interface ToolCall {
     index?: number;
-    id?: number;
+    id?: string;
     type?: string;
     function?: FunctionCall;
   }
@@ -68,7 +68,7 @@ export namespace AgentNS {
     raw_content?: MessageContent;
     content?: MessageContent;
     function_call?: FunctionCall;
-    tool_call_id?: number;
+    tool_call_id?: string;
     tool_calls?: ToolCall[];
     reasoning_content?: string;
     role: Role;
@@ -82,7 +82,7 @@ export namespace AgentNS {
     name?: string;
     content?: MessageContent;
     function_call?: FunctionCall;
-    tool_call_id?: number;
+    tool_call_id?: string;
     tool_calls?: ToolCall[];
     reasoning_content?: string;
     role?: Role;

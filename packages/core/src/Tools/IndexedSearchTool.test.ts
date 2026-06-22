@@ -12,7 +12,7 @@ function createMockCtx(agent: Agent, parsed_args: any): FunctionCallContext {
   return new FunctionCallContext({
     agent,
     function_call: { name: "indexedSearch", arguments: JSON.stringify(parsed_args) },
-    result_message: Message.Tool({ id: 1, function: { name: "indexedSearch" } }),
+    result_message: Message.Tool({ id: "1", function: { name: "indexedSearch" } }),
   });
 }
 
@@ -46,7 +46,7 @@ describe("IndexedSearchTool", () => {
     const ctx = new FunctionCallContext({
       agent,
       function_call: { name: "indexedSearch", arguments: JSON.stringify({ keywords: "weather" }) },
-      result_message: Message.Tool({ id: 1, function: { name: "indexedSearch" } }),
+      result_message: Message.Tool({ id: "1", function: { name: "indexedSearch" } }),
     });
 
     const result = await tool.exec(ctx);

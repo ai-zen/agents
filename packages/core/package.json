@@ -10,7 +10,8 @@
     "prebuild": "npm run clean",
     "build": "tsc",
     "prepublishOnly": "npm run build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:integration": "vitest run --reporter=verbose src/integration.test.ts"
   },
   "keywords": [],
   "author": "",

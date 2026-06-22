@@ -9,7 +9,7 @@ export class Message implements AgentNS.Message {
   raw_content?: string | AgentNS.MessageContentSection[];
   content?: string | AgentNS.MessageContentSection[];
   function_call?: AgentNS.FunctionCall | undefined;
-  tool_call_id?: number | undefined;
+  tool_call_id?: string | undefined;
   tool_calls?: AgentNS.ToolCall[] | undefined;
   reasoning_content?: string | undefined;
   role: AgentNS.Role;

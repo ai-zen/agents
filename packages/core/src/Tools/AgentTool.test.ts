@@ -196,7 +196,7 @@ describe("AgentTool", () => {
           name: "getWeather",
           arguments: '{"city":"北京"}',
         },
-        result_message: Message.Tool({ id: 1, function: { name: "getWeather" } }),
+        result_message: Message.Tool({ id: "1", function: { name: "getWeather" } }),
       });
 
       const result = await tool.exec(ctx);
@@ -227,7 +227,7 @@ describe("AgentTool", () => {
       const ctx = new FunctionCallContext({
         agent,
         function_call: { name: "testFn", arguments: "{}" },
-        result_message: Message.Tool({ id: 1, function: { name: "testFn" } }),
+        result_message: Message.Tool({ id: "1", function: { name: "testFn" } }),
       });
 
       await tool.exec(ctx);

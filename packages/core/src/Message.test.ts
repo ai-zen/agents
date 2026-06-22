@@ -26,7 +26,7 @@ describe("Message", () => {
         content: "回复",
         name: "助手",
         tool_calls: [
-          { id: 1, function: { name: "fn1", arguments: "{}" } },
+          { id: "1", function: { name: "fn1", arguments: "{}" } },
         ],
         reasoning_content: "思考中...",
         status: AgentNS.MessageStatus.Pending,
@@ -92,12 +92,12 @@ describe("Message", () => {
   describe("Message.Tool", () => {
     it("应根据 tool_call 创建 tool 消息", () => {
       const toolCall: AgentNS.ToolCall = {
-        id: 42,
+        id: "42",
         function: { name: "getWeather", arguments: "{}" },
       };
       const msg = Message.Tool(toolCall, "晴天");
       expect(msg.role).toBe(AgentNS.Role.Tool);
-      expect(msg.tool_call_id).toBe(42);
+      expect(msg.tool_call_id).toBe("42");
       expect(msg.name).toBe("getWeather");
       expect(msg.content).toBe("晴天");
       expect(msg.status).toBe(AgentNS.MessageStatus.Pending);
