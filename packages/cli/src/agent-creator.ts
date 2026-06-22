@@ -1,4 +1,4 @@
-import { Agent, AgentNS, AgentTool, OpenAI, ChatGPT, CallbackTool } from "@ai-zen/agents-core";
+import { Agent, AgentNS, AgentTool, OpenAI, ChatGPT, CallbackTool, Tool } from "@ai-zen/agents-core";
 import { getModel } from "./models.js";
 import { getEndpoint } from "./endpoints.js";
 import { readConfig } from "./config.js";
@@ -41,6 +41,131 @@ async function buildModel(modelId: string) {
   return model;
 }
 
+// ==================== 工具去重合并 ====================
+
+/**
+ * 将新工具合并到 Agent 的工具列表中，按 function.name 去重。
+ * 同名工具以新为准（覆盖），新工具追加。
+ */
+function mergeTools(agentTools: Tool[], newTools: Tool[]): void {
+  for (const newTool of newTools) {
+    const index = agentTools.findIndex(
+      (t) => t.function.name === newTool.function.name,
+    );
+    if (index >= 0) {
+      agentTools[index] = newTool; // 覆盖
+    } else {
+      agentTools.push(newTool); // 追加
+    }
+  }
+}
+
+// ==================== 构建子 Agent 工具 ====================
+
+/**
+ * 根据子 Agent 配置构建 AgentTool 实例
+ */
+async function buildSubAgentTool(
+  subConfig: SubAgentConfig,
+  defaultModelId: string,
+  defaultModel: any,
+): Promise<AgentTool | null> {
+  try {
+    const subModelId = subConfig.modelId || defaultModelId;
+    const subModel = subModelId === defaultModelId
+      ? defaultModel
+      : await buildModel(subModelId);
+
+    const { tools: subTools, mcpTools: subMcpTools } = resolveSubAgentTools(subConfig);
+
+    const allSubTools: CallbackTool[] = [];
+    if (subConfig.tools && subConfig.tools.length > 0) {
+      allSubTools.push(...subTools);
+    } else if (!subConfig.tools && !subConfig.extraTools && !subConfig.mcpServers) {
+      allSubTools.push(...allTools);
+    } else {
+      allSubTools.push(...subTools);
+    }
+    allSubTools.push(...subMcpTools);
+
+    return new AgentTool({
+      model: subModel,
+      function: subConfig.function,
+      messages: subConfig.messages,
+      tools: allSubTools,
+    });
+  } catch (error: any) {
+    console.warn(`⚠️  子 Agent "${subConfig.name}" 加载失败: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * 获取所有子 Agent 配置（文件系统 + config.json 向后兼容）
+ */
+async function getAllSubAgentConfigs(): Promise<SubAgentConfig[]> {
+  const configs: SubAgentConfig[] = [];
+
+  const discovered = await discoverSubAgents();
+  configs.push(...discovered);
+
+  const config = readConfig();
+  for (const subConfig of config.subAgents || []) {
+    if (!configs.find((a) => a.id === subConfig.id)) {
+      configs.push(subConfig);
+    }
+  }
+
+  return configs;
+}
+
+// ==================== 构建完整工具列表 ====================
+
+/**
+ * 构建 Agent 的完整工具列表
+ * 包含：内置工具 + 用户自定义工具 + 子 Agent + MCP 工具 + load_skill
+ */
+async function buildToolList(
+  defaultModel: any,
+  defaultModelId: string,
+): Promise<Tool[]> {
+  const tools: Tool[] = [...allTools];
+
+  // 1. 用户自定义工具
+  const userTools = await discoverUserTools();
+  tools.push(...userTools);
+
+  // 2. 子 Agent
+  const subAgentConfigs = await getAllSubAgentConfigs();
+  for (const subConfig of subAgentConfigs) {
+    const subAgent = await buildSubAgentTool(subConfig, defaultModelId, defaultModel);
+    if (subAgent) tools.push(subAgent);
+  }
+
+  // 3. MCP 工具
+  const mcpTools = await startAllMcpServers();
+  tools.push(...mcpTools);
+
+  // 4. load_skill
+  const loadSkillTool = new CallbackTool({
+    function: buildLoadSkillFunction(),
+    callback(this, args: { skill_id: string }) {
+      const content = loadSkillContent(args.skill_id);
+      if (!content) {
+        return `❌ Skill "${args.skill_id}" 不存在，请确认文件名是否正确`;
+      }
+      this.agent.messages.push({
+        role: AgentNS.Role.System,
+        content: `以下是 Skill "${args.skill_id}" 的内容，请按照其中的指导完成任务：\n\n${content}`,
+      });
+      return `✅ Skill "${args.skill_id}" 已加载，内容已附加到当前对话中`;
+    },
+  });
+  tools.push(loadSkillTool);
+
+  return tools;
+}
+
 // ==================== Agent 创建 ====================
 
 export async function createAgent(
@@ -50,152 +175,37 @@ export async function createAgent(
   // 创建主模型
   const model = await buildModel(modelId);
 
-  // ========== 加载内置工具 + 用户自定义工具 ==========
+  // 构建初始工具列表
+  const tools = await buildToolList(model, modelId);
 
-  const tools: CallbackTool[] = [...allTools];
-
-  // 加载用户自定义工具（全局 + 项目级）
-  const userTools = await discoverUserTools();
-  if (userTools.length > 0) {
-    tools.push(...userTools);
-  }
-
-  // ========== 加载子 Agent（文件系统发现 + config.json 向后兼容） ==========
-
-  // 收集所有子 Agent 配置
-  const subAgentConfigs: SubAgentConfig[] = [];
-
-  // 1. 文件系统发现（全局 + 项目级）
-  const discoveredAgents = await discoverSubAgents();
-  subAgentConfigs.push(...discoveredAgents);
-
-  // 2. config.json 中配置的 subAgents（向后兼容）
-  const config = readConfig();
-  for (const subConfig of config.subAgents || []) {
-    // 如果文件系统已经发现同名 Agent，跳过 config 中的（文件系统优先）
-    if (!subAgentConfigs.find((a) => a.id === subConfig.id)) {
-      subAgentConfigs.push(subConfig);
-    }
-  }
-
-  // 加载所有子 Agent
-  for (const subConfig of subAgentConfigs) {
-    try {
-      const subModelId = subConfig.modelId || modelId;
-      const subModel = subModelId === modelId
-        ? model
-        : await buildModel(subModelId);
-
-      // 解析子 Agent 引用的工具
-      const { tools: subTools, mcpTools: subMcpTools } = resolveSubAgentTools(subConfig);
-
-      // 合并所有工具
-      const allSubTools: CallbackTool[] = [];
-
-      // 如果子 Agent 没有显式声明 tools，默认赋予所有全局工具（向后兼容）
-      if (subConfig.tools && subConfig.tools.length > 0) {
-        allSubTools.push(...subTools);
-      } else if (!subConfig.tools && !subConfig.extraTools && !subConfig.mcpServers) {
-        // 完全没声明任何工具引用 → 默认全部（兼容旧版 config.subAgents）
-        allSubTools.push(...allTools);
-      } else {
-        allSubTools.push(...subTools);
-      }
-
-      // 添加 MCP 工具
-      allSubTools.push(...subMcpTools);
-
-      const subAgent = new AgentTool({
-        model: subModel,
-        function: subConfig.function,
-        messages: subConfig.messages,
-        tools: allSubTools,
-      });
-
-      tools.push(subAgent);
-    } catch (error: any) {
-      console.warn(`⚠️  子 Agent "${subConfig.name}" 加载失败: ${error.message}`);
-    }
-  }
-
-  // 加载 MCP 工具
-  const mcpTools = await startAllMcpServers();
-  tools.push(...mcpTools);
-
-  // ========== 注册 Skill 加载工具 ==========
-  //
-  // 每次回调都重新读取文件，保证内容是最新的。
-  // enum 在工具注册时固定，但 description 中已提醒 AI 可尝试加载不在列表中的 Skill。
-
-  const loadSkillTool = new CallbackTool({
-    function: buildLoadSkillFunction(),
-    callback(this, args: { skill_id: string }) {
-      // 每次调用都重新扫描 + 读取，保证最新
-      const content = loadSkillContent(args.skill_id);
-      if (!content) {
-        return `❌ Skill "${args.skill_id}" 不存在，请确认文件名是否正确`;
-      }
-
-      // 将 Skill 内容作为 system message 注入到 Agent 的对话中
-      this.agent.messages.push({
-        role: AgentNS.Role.System,
-        content: `以下是 Skill "${args.skill_id}" 的内容，请按照其中的指导完成任务：\n\n${content}`,
-      });
-
-      return `✅ Skill "${args.skill_id}" 已加载，内容已附加到当前对话中`;
-    },
-  });
-
-  tools.push(loadSkillTool);
-
-  // ========== 构建感知提示 ==========
-  //
-  // 在 system message 末尾追加当前可用的子 Agent 和 Skill 信息。
-  // 如果传入了 messages（来自 Agent 配置），替换最后一条 system 消息的内容。
-
-  const subAgentNames = subAgentConfigs.map((c) => c.name);
-  const awarenessSuffix = [
-    "",
-    "---",
-    "",
-    subAgentNames.length > 0 ? `可调用的子助手：${subAgentNames.join("、")}` : "",
-    "可用 Skill 列表可通过 load_skill 工具查看。",
-  ]
-    .filter(Boolean)
-    .join("\n");
-
-  let finalMessages: AgentNS.Message[];
-
-  if (messages && messages.length > 0) {
-    // 有传入消息（来自 Agent 配置），在最后一条 system 消息追加感知信息
-    finalMessages = messages.map((msg, index) => {
-      if (
-        index === messages.length - 1 &&
-        msg.role === AgentNS.Role.System &&
-        typeof msg.content === "string"
-      ) {
-        return {
-          ...msg,
-          content: msg.content + awarenessSuffix,
-        };
-      }
-      return msg;
-    });
-  } else {
-    // 默认 system prompt
-    finalMessages = [
-      {
-        role: AgentNS.Role.System,
-        content: `你是一个AI助手，专门帮助用户回答问题和执行任务。请用中文回复。${awarenessSuffix}`,
-      },
-    ];
-  }
-
-  // 创建 Agent
+  // 创建 Agent，并设置 onBeforeSend 钩子
+  // 每次请求前重新扫描可动态更新的资源（用户工具、子 Agent、MCP），
+  // 确保工具定义始终是最新的。
   const agent = new Agent({
     model: model,
-    messages: finalMessages,
+    messages: messages || [
+      {
+        role: AgentNS.Role.System,
+        content: "你是一个AI助手，专门帮助用户回答问题和执行任务。请用中文回复。",
+      },
+    ],
     tools,
+    onBeforeSend: async () => {
+      // 1. 刷新用户自定义工具
+      const freshUserTools = await discoverUserTools();
+      mergeTools(agent.tools, freshUserTools);
+
+      // 2. 刷新子 Agent
+      const freshSubConfigs = await getAllSubAgentConfigs();
+      for (const subConfig of freshSubConfigs) {
+        const subAgent = await buildSubAgentTool(subConfig, modelId, model);
+        if (subAgent) mergeTools(agent.tools, [subAgent]);
+      }
+
+      // 3. 刷新 MCP 工具
+      const freshMcpTools = await startAllMcpServers();
+      mergeTools(agent.tools, freshMcpTools);
+    },
   });
 
   return agent;

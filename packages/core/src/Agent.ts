@@ -69,6 +69,9 @@ export class Agent extends AgentContext {
     while (needContinue) {
       needContinue = false;
 
+      // 每次请求前调用钩子，允许外部刷新工具定义等
+      await this.onBeforeSend?.();
+
       const messages = this.formatHistory();
       const tools = this.formatTools();
 
