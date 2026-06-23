@@ -41,6 +41,7 @@ export const defaultConfig: Config = {
       modelName: "gpt-5.5",
       description: "OpenAI 最新旗舰模型，擅长编程与代码调试、在线研究、数据分析",
       defaultParams: {},
+      maxContextChars: 500000,
     },
     // ========== 智谱AI 系列 ==========
     {
@@ -50,6 +51,7 @@ export const defaultConfig: Config = {
       modelName: "glm-5.1",
       description: "智谱AI 最新旗舰模型，支持8小时长程Agent任务，综合能力对标Claude Opus 4.6",
       defaultParams: {},
+      maxContextChars: 500000,
     },
     {
       id: "glm-5v-turbo",
@@ -58,6 +60,7 @@ export const defaultConfig: Config = {
       modelName: "glm-5v-turbo",
       description: "智谱AI 多模态Coding基座，兼顾视觉理解与代码能力",
       defaultParams: {},
+      maxContextChars: 500000,
     },
     {
       id: "glm-4.7-flash",
@@ -66,6 +69,7 @@ export const defaultConfig: Config = {
       modelName: "glm-4.7-flash",
       description: "智谱AI 免费轻量模型，通用能力同级别最优",
       defaultParams: {},
+      maxContextChars: 500000,
     },
     // ========== DeepSeek 系列 ==========
     {
@@ -77,6 +81,7 @@ export const defaultConfig: Config = {
       defaultParams: {
         thinking: { type: "disabled" },
       },
+      maxContextChars: 500000,
     },
     {
       id: "deepseek-v4-flash",
@@ -87,6 +92,7 @@ export const defaultConfig: Config = {
       defaultParams: {
         thinking: { type: "disabled" },
       },
+      maxContextChars: 500000,
     },
   ],
   agents: [],

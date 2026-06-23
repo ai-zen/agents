@@ -12,7 +12,7 @@ import { discoverUserTools } from "./tool-loader.js";
 
 // ==================== 模型创建 ====================
 
-async function buildModel(modelId: string) {
+export async function buildModel(modelId: string) {
   const modelConfig = getModel(modelId);
   if (!modelConfig) {
     throw new Error(`模型 ${modelId} 不存在`);

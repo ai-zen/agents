@@ -1,8 +1,11 @@
 import chalk from "chalk";
 import inquirer from "inquirer";
-import { Agent, AgentNS } from "@ai-zen/agents-core";
+import { Agent, AgentNS, Message } from "@ai-zen/agents-core";
 import { saveConversation } from "./conversations.js";
 import { DeltaRenderer } from "./delta-renderer.js";
+import { shouldMigrate, generateMigrationDoc, calcTotalChars } from "./task-migration-agent.js";
+import { getModel } from "./models.js";
+import { createAgent } from "./agent-creator.js";
 
 // ==================== 类型定义 ====================
 
@@ -13,6 +16,8 @@ interface ConversationContext {
   currentId: string | undefined;
   agentId: string | undefined;
   running: boolean;
+  /** 对话开始时系统提示词列表（不含用户消息），用于重建新会话 */
+  systemMessages: AgentNS.Message[];
 }
 
 // ==================== 工具函数 ====================
@@ -27,6 +32,11 @@ function getMessageText(msg: AgentNS.Message): string {
       .join("");
   }
   return "";
+}
+
+/** 从消息列表中提取系统提示词（不含用户消息和其他角色消息） */
+function extractSystemMessages(messages: AgentNS.Message[]): AgentNS.Message[] {
+  return messages.filter((msg) => msg.role === AgentNS.Role.System);
 }
 
 // ==================== 命令处理 ====================
@@ -323,6 +333,70 @@ async function sendAndStream(
   }
 }
 
+// ==================== 任务迁移 ====================
+
+/**
+ * 执行任务迁移
+ * 1. 保存当前会话
+ * 2. 使用摘要 Agent 生成交接文档
+ * 3. 创建新会话，将交接文档作为第一条用户消息
+ * 4. 返回新的 Agent 和更新后的上下文
+ */
+async function performMigration(
+  agent: Agent,
+  ctx: ConversationContext,
+): Promise<{ newAgent: Agent; summary: string } | null> {
+  console.log(
+    chalk.yellow.bold("\n📋 上下文已接近最大长度，正在生成交接文档...\n"),
+  );
+
+  try {
+    // 1. 先保存当前会话
+    const savedId = saveConversation(
+      ctx.currentName,
+      agent.messages,
+      ctx.modelId,
+      ctx.currentId,
+      ctx.agentId,
+    );
+    console.log(
+      chalk.gray(`  ✅ 原对话已保存: ${ctx.currentName} (ID: ${savedId})`),
+    );
+
+    // 2. 生成交接文档
+    console.log(chalk.gray("  📝 正在分析对话历史，筛选关键信息..."));
+    const summary = await generateMigrationDoc(agent.messages);
+    console.log(chalk.gray("  ✅ 交接文档已生成"));
+
+    // 3. 计算当前上下文大小，给用户参考
+    const totalChars = calcTotalChars(agent.messages);
+    console.log(
+      chalk.gray(`  📊 原上下文: ${totalChars.toLocaleString()} 字符`),
+    );
+
+    // 4. 创建新 Agent（使用相同的模型和系统提示词）
+    const newAgent = await createAgent(ctx.modelId, ctx.systemMessages);
+
+    // 5. 将交接文档作为第一条用户消息注入到新 Agent
+    // 注意：交接文档既作为背景信息，也作为指令
+    newAgent.messages.push(Message.User(summary));
+
+    // 更新上下文
+    ctx.currentName = `${ctx.currentName} (续)`;
+    ctx.currentId = undefined; // 新会话，新 ID
+
+    return { newAgent, summary };
+  } catch (error: any) {
+    console.error(
+      chalk.red(`\n❌ 任务迁移失败: ${error.message}\n`),
+    );
+    console.log(
+      chalk.yellow("⚠️  继续使用当前会话，请考虑手动保存后重新开始\n"),
+    );
+    return null;
+  }
+}
+
 // ==================== 对话主循环 ====================
 
 export async function runConversation(
@@ -332,6 +406,9 @@ export async function runConversation(
   conversationName?: string,
   agentId?: string,
 ): Promise<void> {
+  // 提取系统提示词，用于后续重建新会话
+  const systemMessages = extractSystemMessages(agent.messages);
+
   console.log(
     chalk.blue.bold(
       "💬 对话已开始 (输入 'exit' 退出, 'save' 保存, 'clear' 清屏, 'back' 撤回)\n",
@@ -345,6 +422,7 @@ export async function runConversation(
     modelId,
     agentId,
     running: true,
+    systemMessages,
   };
 
   // ============ 流式渲染 ============
@@ -475,7 +553,49 @@ export async function runConversation(
     }
 
     if (!ctx.input) continue;
+
+    // 发送消息并等待 AI 回复完成
     await sendAndStream(agent, ctx);
+
+    // 如果会话还在继续（没有退出），检测是否需要任务迁移
+    if (ctx.running) {
+      const modelConfig = getModel(ctx.modelId);
+      const maxContextChars = modelConfig?.maxContextChars;
+
+      if (shouldMigrate(agent.messages, maxContextChars)) {
+        console.log(
+          chalk.cyan.bold("\n🔄 检测到上下文已接近最大长度，准备任务迁移...\n"),
+        );
+
+        const result = await performMigration(agent, ctx);
+
+        if (result) {
+          // 切换事件监听：取消旧 agent 的监听，注册到新 agent
+          agent.events.off("run", onRun);
+          agent.events.off("chunk", onChunk);
+          agent.events.off("error", onError);
+          agent.events.off("sub-agent", onSubAgent);
+          agent.events.off("sub-agent-end", onSubAgentEnd);
+
+          agent = result.newAgent;
+
+          agent.events.on("run", onRun);
+          agent.events.on("chunk", onChunk);
+          agent.events.on("error", onError);
+          agent.events.on("sub-agent", onSubAgent);
+          agent.events.on("sub-agent-end", onSubAgentEnd);
+
+          console.log(
+            chalk.green.bold(
+              "\n🚀 任务迁移完成！新会话已就绪，交接文档已作为上下文注入。\n",
+            ),
+          );
+          console.log(
+            chalk.gray("💡 你可以继续提问，新助手已经了解之前的全部工作。\n"),
+          );
+        }
+      }
+    }
   }
 
   agent.events.off("run", onRun);

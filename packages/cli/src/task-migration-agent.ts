@@ -1,0 +1,166 @@
+/**
+ * 任务迁移 Agent
+ *
+ * 当会话上下文达到阈值时，由迁移 Agent 读取完整对话历史，
+ * 筛选出对后续工作有用的信息，生成结构化的 Markdown 交接文档。
+ *
+ * 交接文档将作为新会话的第一条用户消息，让新 Agent 了解任务背景。
+ *
+ * 迁移 Agent 是专用的、无状态的，不注册任何工具，用完即弃。
+ */
+
+import { Agent, AgentNS, Message } from "@ai-zen/agents-core";
+import { getDefaultModel } from "./models.js";
+import { readConfig } from "./config.js";
+import { buildModel } from "./agent-creator.js";
+
+/**
+ * 任务迁移 Agent 的系统提示词
+ *
+ * 核心原则：不是压缩对话，而是筛选出对未来工作有用的信息。
+ * 可以丢弃的内容：已完成的细节、无关的闲聊、重复的讨论。
+ * 必须保留的内容：未完成的任务、重要决策、用户偏好、关键文件位置。
+ */
+const MIGRATION_SYSTEM_PROMPT = `你是一个专业的任务交接分析师。你的任务是阅读一段完整的AI助手与用户的对话历史，筛选出对后续工作有用的关键信息，生成一份结构清晰的交接文档。
+
+这份交接文档将作为新会话的第一条用户消息，让新的AI助手了解任务背景并继续工作。
+
+请记住：你的目标是**信息筛选**，而不是压缩或总结。只保留对未来工作有用的信息，可以丢弃无关的细节。
+
+请按以下模板生成 Markdown 格式的文档：
+
+## ✅ 已完成的任务
+列出已经完成的任务及其产出物（文件路径、代码片段位置等）。
+如果没有已完成的任务，保留此标题并注明"无"。
+注意：此处只记录任务标题和产出路径，不需要描述完成过程的细节。
+
+## 📋 未完成的任务
+列出所有待继续完成的任务，包含：
+- 任务描述
+- 当前进度
+- 下一步需要做什么
+- 相关的文件路径
+- 优先级（如果对话中提到过）
+
+## 🧠 重要记忆
+记录所有对后续工作有影响的信息，包括但不限于：
+- 用户的技术偏好和约定（如"不要用 any 类型"、"统一用 { code, data, msg } 格式"等）
+- 踩过的坑和教训（如"xxx 库和 yyy 不兼容，不要同时使用"）
+- 项目特定的架构决策
+- 任何对后续工作有指导意义的信息
+
+## 📁 文件索引
+按用途分类列出对话中涉及的重要文件路径，方便新 Agent 按需阅读。
+不要包含文件内容本身，只记录路径。
+
+---
+
+注意事项：
+1. 只包含确定的信息，不要猜测或补充对话中没有的内容
+2. 已完成的任务只需列出任务标题和产出路径，不要罗列完成过程的每一步
+3. 未完成的任务如果进度不明确，请注明"对话中未明确提及完成状态"
+4. 如果某个部分没有需要记录的内容，标注"无"即可，不要为了填内容而编造
+5. 语言风格与原始对话一致（中文）
+`;
+
+/**
+ * 计算消息列表的总字符数（直接序列化后算长度）
+ */
+export function calcTotalChars(messages: AgentNS.Message[]): number {
+  return JSON.stringify(messages).length;
+}
+
+/**
+ * 判断是否需要进行任务迁移
+ * 当消息总字符数超过模型 maxContextChars 的 2/3 时返回 true
+ */
+export function shouldMigrate(
+  messages: AgentNS.Message[],
+  maxContextChars: number | undefined,
+): boolean {
+  if (!maxContextChars || maxContextChars <= 0) return false;
+  const totalChars = calcTotalChars(messages);
+  const threshold = Math.floor(maxContextChars * (2 / 3));
+  return totalChars >= threshold;
+}
+
+/**
+ * 创建任务迁移 Agent
+ * 用于生成交接文档，不注册任何工具
+ */
+export async function createMigrationAgent(): Promise<Agent> {
+  const config = readConfig();
+
+  // 确定使用的模型：优先使用 defaultMigrationModel，否则用 defaultModel
+  let modelId = config.defaultMigrationModel || config.defaultModel;
+  if (!modelId) {
+    const defaultModel = getDefaultModel();
+    modelId = defaultModel?.id;
+  }
+  if (!modelId) {
+    throw new Error("没有可用的模型来创建任务迁移 Agent，请先配置默认模型");
+  }
+
+  const model = await buildModel(modelId);
+
+  const agent = new Agent({
+    model,
+    messages: [
+      Message.System(MIGRATION_SYSTEM_PROMPT),
+    ],
+    tools: [], // 迁移 Agent 不需要任何工具
+  });
+
+  return agent;
+}
+
+/**
+ * 使用迁移 Agent 生成交接文档
+ * @param historyMessages 原始会话的完整消息列表
+ * @returns 交接文档的 Markdown 文本
+ */
+export async function generateMigrationDoc(
+  historyMessages: AgentNS.Message[],
+): Promise<string> {
+  const migrationAgent = await createMigrationAgent();
+
+  // 构造用户消息：将完整对话历史作为上下文提供给迁移 Agent
+  const historyText = historyMessages
+    .map((msg) => {
+      const role = msg.role;
+      let content = "";
+      if (typeof msg.content === "string") {
+        content = msg.content;
+      } else if (Array.isArray(msg.content)) {
+        content = msg.content
+          .filter((s) => s.type === "text")
+          .map((s) => s.text)
+          .join("");
+      }
+      return `[${role}] ${content}`;
+    })
+    .join("\n\n");
+
+  const userContent = `请阅读以下完整的对话历史，生成交接文档：\n\n${historyText}`;
+
+  // 发送消息给迁移 Agent
+  const messages = await migrationAgent.send(userContent);
+
+  // 提取 AI 回复内容
+  const lastMessage = messages.at(-1);
+  if (!lastMessage || lastMessage.status === "error") {
+    throw new Error("任务迁移 Agent 生成交接文档失败");
+  }
+
+  let doc = "";
+  if (typeof lastMessage.content === "string") {
+    doc = lastMessage.content;
+  } else if (Array.isArray(lastMessage.content)) {
+    doc = lastMessage.content
+      .filter((s) => s.type === "text")
+      .map((s) => s.text)
+      .join("");
+  }
+
+  return doc;
+}

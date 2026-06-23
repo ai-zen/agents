@@ -27,6 +27,8 @@ export interface Model {
   modelName: string;
   description?: string;
   defaultParams?: ModelParams;
+  /** 最大上下文字符长度，用于触发任务迁移阈值（达到 2/3 时自动交接） */
+  maxContextChars?: number;
   version?: number;
 }
 
@@ -149,6 +151,8 @@ export interface Config {
   subAgents?: SubAgentConfig[];
   defaultModel?: string;
   defaultAgent?: string;
+  /** 默认迁移模型 ID（用于任务迁移时生成交接文档，不配置则使用 defaultModel） */
+  defaultMigrationModel?: string;
   /** 图片生成模型列表 */
   imageModels?: ImageModel[];
   /** 默认图片生成模型 ID */
