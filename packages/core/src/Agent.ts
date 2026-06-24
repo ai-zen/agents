@@ -109,8 +109,8 @@ export class Agent extends AgentContext {
 
         if (await this.handleToolCall(currentReceiver)) {
           if (
-            currentReceiver.status === AgentNS.MessageStatus.Aborted ||
-            currentReceiver.status === AgentNS.MessageStatus.Error
+            (currentReceiver.status as AgentNS.MessageStatus | undefined) === AgentNS.MessageStatus.Aborted ||
+            (currentReceiver.status as AgentNS.MessageStatus | undefined) === AgentNS.MessageStatus.Error
           ) {
             continue;
           }

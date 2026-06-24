@@ -48,7 +48,7 @@ export namespace ChatGPTTypes {
 
   export interface ToolCall {
     index?: number;
-    id?: number;
+    id?: string;
     type?: string;
     function?: FunctionCall;
   }
