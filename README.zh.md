@@ -11,7 +11,7 @@
 | 包名 | 说明 | 版本 |
 |------|------|------|
 | [`@ai-zen/agents-core`](./packages/core) | 核心框架 — Agent、消息、工具、模型、端点、RAG、向量数据库抽象 | [![version](https://img.shields.io/badge/version-2.4.0-blue)] |
-| [`@ai-zen/agents-cli`](./packages/cli) | 命令行界面 — 交互式对话终端，内置文件/代码执行等工具 | [![version](https://img.shields.io/badge/version-0.7.1-blue)] |
+| [`@ai-zen/agents-cli`](./packages/cli) | 命令行界面 — 交互式对话终端，内置文件/代码执行等工具 | [![version](https://img.shields.io/badge/version-0.7.4-blue)] |
 | [`@ai-zen/agents-webui`](./packages/webui) | Web 用户界面（Vue 3 + Element Plus） | [![version](https://img.shields.io/badge/version-2.0.0-blue)] |
 
 ## 快速开始
