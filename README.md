@@ -11,7 +11,7 @@
 | 包名 | 说明 | 版本 |
 |------|------|------|
 | [`@ai-zen/agents-core`](./packages/core) | 核心框架 — Agent、消息、工具、模型、端点、RAG、向量数据库抽象 | [![version](https://img.shields.io/badge/version-2.4.0-blue)] |
-| [`@ai-zen/agents-cli`](./packages/cli) | 命令行界面 — 交互式对话终端，内置文件/代码执行等工具 | [![version](https://img.shields.io/badge/version-0.6.0-blue)] |
+| [`@ai-zen/agents-cli`](./packages/cli) | 命令行界面 — 交互式对话终端，内置文件/代码执行等工具 | [![version](https://img.shields.io/badge/version-0.7.1-blue)] |
 | [`@ai-zen/agents-webui`](./packages/webui) | Web 用户界面（Vue 3 + Element Plus） | [![version](https://img.shields.io/badge/version-2.0.0-blue)] |
 
 ## 快速开始
@@ -107,7 +107,10 @@ const agent = new Agent({
 
 交互式命令行工具，提供完整的 AI 对话体验：
 
-- 交互式主菜单与对话管理
+- 交互式主菜单与对话管理，支持草稿自动保存与恢复（进程强制退出后可继续对话）
+- 对话内命令体系（`/exit`、`/save`、`/new`、`/back`、`/editor`、`/help` 等）
+- 上下文任务迁移，自动生成交接文档实现长对话无缝衔接
+- Shell 兜底钩子（`aiz hook install`），命令不存在时自动转发给 AI
 - 多端点支持（OpenAI、智谱AI、DeepSeek 等任意 OpenAI 兼容接口）
 - Agent 管理与自定义（系统提示词预设），以独立文件存储在 `~/.ai-zen/agents/`
 - 子 Agent 工具注册，以独立文件存储在 `~/.ai-zen/sub-agents/`，支持 JSON 和 JS 格式
@@ -134,7 +137,8 @@ const agent = new Agent({
 │   └── general-assistant.json
 ├── skills/                   ← Skill 提示词（.md）
 ├── tools/                    ← 用户自定义工具（.js）
-└── conversations/            ← 对话记录
+├── conversations/            ← 对话记录
+└── draft.json                ← 自动保存的草稿（崩溃恢复用）
 
 /path/to/project/
 └── .ai-zen/                  ← 项目级（覆盖全局同名）
