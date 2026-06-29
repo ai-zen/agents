@@ -1,18 +1,18 @@
 {
   "name": "@ai-zen/agents-cli",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "AI-ZEN Agents CLI - interactive conversation terminal with file tools, MCP support, and draft recovery",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
   "bin": {
-    "aiz": "./dist/index.js"
+    "aiz": "dist/index.js"
   },
   "scripts": {
     "clean": "rimraf ./dist",
     "prebuild": "npm run clean",
     "build": "tsc",
-    "prepublishOnly": "npm run build",
+    "prepublishOnly": "node scripts/check-publish-tool.mjs && npm run build",
     "start": "npm run build && node ./dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest"
