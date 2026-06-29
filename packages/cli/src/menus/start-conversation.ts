@@ -8,11 +8,15 @@ import { getAgents, getDefaultAgent, getAgent } from "../agents.js";
 import { getModels, getDefaultModel } from "../models.js";
 import { loadConversation } from "../conversations.js";
 import { getConversationsList } from "../conversations.js";
+import { readDraft, clearDraft } from "../draft.js";
 
 /**
  * 开始新对话：选择 Agent（可选）→ 选择模型 → 进入对话
+ * 开始新对话时会清除已有的草稿
  */
-export async function startNewChat(): Promise<void> {
+export async function startNewConversation(): Promise<void> {
+  // 开始新对话时清除草稿
+  clearDraft();
   try {
     const agents = getAgents();
     let messages: AgentNS.Message[] | undefined;
@@ -85,6 +89,33 @@ export async function startNewChat(): Promise<void> {
     const agent = await createAgent(model.id, messages);
 
     await runConversation(agent, model.id, undefined, undefined, agentId);
+  } catch (error: any) {
+    console.error(chalk.red(`\n❌ 错误: ${error.message}\n`));
+  }
+}
+
+/**
+ * 继续上次未完成的对话（从草稿恢复）
+ */
+export async function continueDraft(): Promise<void> {
+  const draft = readDraft();
+  if (!draft) {
+    console.log(chalk.yellow("\n📭 没有未完成的对话\n"));
+    return;
+  }
+
+  try {
+    const timeStr = new Date(draft.updatedAt).toLocaleString("zh-CN");
+    console.log(
+      chalk.green(
+        `\n✅ 已恢复上次未完成的对话 (${draft.messageCount} 条消息, ${timeStr})\n`,
+      ),
+    );
+
+    const model = await ensureEndpointConfig(draft.modelId);
+    const agent = await createAgent(model.id, draft.messages);
+
+    await runConversation(agent, model.id, undefined, undefined, draft.agentId);
   } catch (error: any) {
     console.error(chalk.red(`\n❌ 错误: ${error.message}\n`));
   }

@@ -131,7 +131,8 @@ export const defaultConfig: Config = {
 };
 
 // 配置目录
-export const CONFIG_DIR = join(
+// 可通过 AI_ZEN_DIR 环境变量覆盖，用于测试隔离
+export const CONFIG_DIR = process.env.AI_ZEN_DIR || join(
   process.env.HOME || process.env.USERPROFILE || "",
   ".ai-zen",
 );

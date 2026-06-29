@@ -2,23 +2,13 @@ import chalk from "chalk";
 import inquirer from "inquirer";
 import { Agent, AgentNS, Message } from "@ai-zen/agents-core";
 import { saveConversation } from "./conversations.js";
+import { saveDraft, clearDraft } from "./draft.js";
 import { DeltaRenderer } from "./delta-renderer.js";
 import { shouldMigrate, generateMigrationDoc, calcTotalChars } from "./task-migration-agent.js";
 import { getModel } from "./models.js";
 import { createAgent } from "./agent-creator.js";
-
-// ==================== 类型定义 ====================
-
-interface ConversationContext {
-  input: string;
-  currentName: string;
-  modelId: string;
-  currentId: string | undefined;
-  agentId: string | undefined;
-  running: boolean;
-  /** 对话开始时系统提示词列表（不含用户消息），用于重建新会话 */
-  systemMessages: AgentNS.Message[];
-}
+import { dispatchCommand, getCommandNames } from "./conversation-commands/index.js";
+import { ConversationContext } from "./conversation-commands/types.js";
 
 // ==================== 工具函数 ====================
 
@@ -37,234 +27,6 @@ function getMessageText(msg: AgentNS.Message): string {
 /** 从消息列表中提取系统提示词（不含用户消息和其他角色消息） */
 function extractSystemMessages(messages: AgentNS.Message[]): AgentNS.Message[] {
   return messages.filter((msg) => msg.role === AgentNS.Role.System);
-}
-
-// ==================== 命令处理 ====================
-
-async function handleExit(
-  agent: Agent,
-  ctx: ConversationContext,
-): Promise<void> {
-  if (agent.messages.length > 1) {
-    const { saveBeforeExit } = await inquirer.prompt([
-      {
-        type: "confirm",
-        name: "saveBeforeExit",
-        message: "退出前是否保存当前对话?",
-        default: true,
-      },
-    ]);
-
-    if (saveBeforeExit) {
-      try {
-        const id = saveConversation(
-          ctx.currentName,
-          agent.messages,
-          ctx.modelId,
-          ctx.currentId,
-          ctx.agentId,
-        );
-        console.log(
-          chalk.green(`\n✅ 对话已保存: ${ctx.currentName} (ID: ${id})\n`),
-        );
-      } catch (error) {
-        console.error(chalk.red(`\n❌ 保存失败: ${error}\n`));
-      }
-    }
-  }
-  ctx.running = false;
-}
-
-async function handleSave(
-  agent: Agent,
-  ctx: ConversationContext,
-): Promise<void> {
-  const { name } = await inquirer.prompt([
-    {
-      type: "input",
-      name: "name",
-      message: "对话名称:",
-      default: ctx.currentName,
-    },
-  ]);
-
-  try {
-    const id = saveConversation(
-      name,
-      agent.messages,
-      ctx.modelId,
-      ctx.currentId,
-      ctx.agentId,
-    );
-    console.log(chalk.green(`\n✅ 对话已保存: ${name} (ID: ${id})\n`));
-    ctx.currentName = name;
-    ctx.currentId = id;
-  } catch (error) {
-    console.error(chalk.red(`\n❌ 保存失败: ${error}\n`));
-  }
-}
-
-function handleClear(): void {
-  console.clear();
-  console.log(chalk.blue.bold("\n" + "=".repeat(60)));
-  console.log(chalk.blue.bold("  屏幕已清空"));
-  console.log(chalk.blue.bold("=".repeat(60) + "\n"));
-}
-
-// ==================== back 撤回 ====================
-
-interface BackTarget {
-  index: number;
-  role: AgentNS.Role;
-  label: string;
-  toolName?: string;
-  preview: string;
-}
-
-async function handleBack(
-  agent: Agent,
-  ctx: ConversationContext,
-): Promise<void> {
-  // 收集可撤回的目标消息：用户消息 和 工具/函数调用结果消息
-  const targets: BackTarget[] = [];
-  for (let i = 0; i < agent.messages.length; i++) {
-    const msg = agent.messages[i];
-    if (msg.role === AgentNS.Role.User) {
-      const text = getMessageText(msg);
-      targets.push({
-        index: i,
-        role: msg.role,
-        label: chalk.green("👤 用户"),
-        preview: text.substring(0, 60) + (text.length > 60 ? "..." : ""),
-      });
-    } else if (msg.role === AgentNS.Role.Tool || msg.role === AgentNS.Role.Function) {
-      const text = getMessageText(msg);
-      const toolName = msg.name ? ` [${msg.name}]` : "";
-      targets.push({
-        index: i,
-        role: msg.role,
-        label: chalk.cyan(`🔧 工具${toolName}`),
-        preview: text.substring(0, 60) + (text.length > 60 ? "..." : ""),
-      });
-    }
-  }
-
-  if (targets.length === 0) {
-    console.log(chalk.red("\n❌ 还没有消息可以撤回\n"));
-    ctx.input = "";
-    return;
-  }
-
-  console.log(chalk.yellow.bold("\n📋 选择要撤回到哪条消息:"));
-  console.log(chalk.gray("将删除所选消息及其之后的所有内容\n"));
-
-  const choices = [...targets].reverse().map((target) => ({
-    name: `${target.label} ${chalk.gray(target.preview)}`,
-    value: target.index,
-  }));
-
-  const { selectedIndex } = await inquirer.prompt([
-    {
-      type: "list",
-      name: "selectedIndex",
-      message: "撤回到:",
-      pageSize: 15,
-      choices: [{ name: "↩️  取消操作", value: -1 }, ...choices],
-    },
-  ]);
-
-  if (selectedIndex === -1) {
-    console.log(chalk.gray("已取消操作\n"));
-    ctx.input = "";
-    return;
-  }
-
-  const selectedMsg = agent.messages[selectedIndex];
-  const isUserMsg = selectedMsg.role === AgentNS.Role.User;
-  const originalText = getMessageText(selectedMsg);
-
-  // 截断消息：用户消息则删除该消息及其之后的内容；工具结果消息则保留该消息，只删其后内容
-  const sliceEnd = isUserMsg ? selectedIndex : selectedIndex + 1;
-  agent.messages = agent.messages.slice(0, sliceEnd);
-
-  if (isUserMsg) {
-    // 用户消息：可修改或直接重发
-    console.log(
-      chalk.gray(
-        `原内容: ${originalText.substring(0, 200)}${originalText.length > 200 ? "..." : ""}`,
-      ),
-    );
-    console.log();
-
-    const { editChoice } = await inquirer.prompt([
-      {
-        type: "list",
-        name: "editChoice",
-        message: "请选择:",
-        choices: [
-          { name: "✏️  修改后重新发送", value: "edit" },
-          { name: "🔄 直接重新发送（不修改内容）", value: "resend" },
-          { name: "↩️  取消操作", value: "cancel" },
-        ],
-      },
-    ]);
-
-    if (editChoice === "cancel") {
-      console.log(chalk.gray("已取消操作\n"));
-      ctx.input = "";
-      return;
-    }
-
-    if (editChoice === "edit") {
-      const { editedContent } = await inquirer.prompt([
-        {
-          type: "input",
-          name: "editedContent",
-          message: chalk.cyan("修改消息:"),
-          prefix: "✏️",
-          default: originalText,
-        },
-      ]);
-      const trimmed = editedContent.trim();
-      if (!trimmed) {
-        console.log(chalk.red("\n❌ 消息内容不能为空\n"));
-        ctx.input = "";
-        return;
-      }
-      ctx.input = trimmed;
-    } else {
-      ctx.input = originalText;
-    }
-  } else {
-    // 工具/函数调用结果消息：让用户输入一条新消息插入到该位置继续
-    console.log(
-      chalk.gray(
-        `原工具结果: ${originalText.substring(0, 200)}${originalText.length > 200 ? "..." : ""}`,
-      ),
-    );
-    console.log(
-      chalk.yellow("💡 请输入一条新消息，将插入到工具调用结果之后继续对话"),
-    );
-    console.log();
-
-    const { newMessage } = await inquirer.prompt([
-      {
-        type: "input",
-        name: "newMessage",
-        message: chalk.cyan("新消息:"),
-        prefix: "💬",
-      },
-    ]);
-
-    const trimmed = newMessage.trim();
-    if (!trimmed) {
-      console.log(chalk.red("\n❌ 消息内容不能为空\n"));
-      ctx.input = "";
-      return;
-    }
-
-    ctx.input = trimmed;
-  }
 }
 
 // ==================== 发送消息 ====================
@@ -301,6 +63,8 @@ async function sendAndStream(
       } catch (saveError) {
         console.error(chalk.red(`❌ 自动保存失败: ${saveError}\n`));
       }
+      // 错误时也保存草稿，便于恢复
+      saveDraft(agent.messages, ctx.modelId, ctx.agentId);
       return;
     }
 
@@ -313,6 +77,9 @@ async function sendAndStream(
           console.log(chalk.yellow(`[图片: ${section.image_url.url}]`));
       }
     }
+
+    // 回复成功后静默保存草稿
+    saveDraft(agent.messages, ctx.modelId, ctx.agentId);
 
     console.log();
   } catch (error: any) {
@@ -378,7 +145,6 @@ async function performMigration(
     const newAgent = await createAgent(ctx.modelId, ctx.systemMessages);
 
     // 5. 将交接文档作为第一条用户消息注入到新 Agent
-    // 注意：交接文档既作为背景信息，也作为指令
     newAgent.messages.push(Message.User(summary));
 
     // 更新上下文
@@ -409,9 +175,10 @@ export async function runConversation(
   // 提取系统提示词，用于后续重建新会话
   const systemMessages = extractSystemMessages(agent.messages);
 
+  const cmdList = getCommandNames().map((c) => `/${c}`).join(", ");
   console.log(
     chalk.blue.bold(
-      "💬 对话已开始 (输入 'exit' 退出, 'save' 保存, 'clear' 清屏, 'back' 撤回)\n",
+      `💬 对话已开始 (输入 ${cmdList} 查看和操作)\n`,
     ),
   );
 
@@ -470,7 +237,6 @@ export async function runConversation(
 
     let namePrinted = false;
 
-    // 子 Agent 每轮开始时重置渲染器状态
     subAgent.events.on("run", () => {
       renderer.reset();
     });
@@ -531,26 +297,9 @@ export async function runConversation(
 
     if (!ctx.input) continue;
 
-    const lower = ctx.input.toLowerCase();
-
-    switch (lower) {
-      case "exit":
-      case "quit":
-        await handleExit(agent, ctx);
-        continue;
-
-      case "save":
-        await handleSave(agent, ctx);
-        continue;
-
-      case "clear":
-        handleClear();
-        continue;
-
-      case "back":
-        await handleBack(agent, ctx);
-        break;
-    }
+    // 先尝试分发命令（以 / 开头）
+    const handled = await dispatchCommand(agent, ctx);
+    if (handled) continue;
 
     if (!ctx.input) continue;
 
@@ -584,6 +333,9 @@ export async function runConversation(
           agent.events.on("error", onError);
           agent.events.on("sub-agent", onSubAgent);
           agent.events.on("sub-agent-end", onSubAgentEnd);
+
+          // 迁移后保存新会话的草稿
+          saveDraft(agent.messages, ctx.modelId, ctx.agentId);
 
           console.log(
             chalk.green.bold(
