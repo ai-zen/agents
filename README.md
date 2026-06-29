@@ -11,7 +11,7 @@ This project uses pnpm workspace with the following sub-packages:
 | Package | Description | Version |
 |---------|-------------|---------|
 | [`@ai-zen/agents-core`](./packages/core) | Core framework — Agent, Messages, Tools, Models, Endpoints, RAG, Vector Database | [![version](https://img.shields.io/badge/version-2.4.0-blue)] |
-| [`@ai-zen/agents-cli`](./packages/cli) | CLI — Interactive conversation terminal with file tools, MCP support | [![version](https://img.shields.io/badge/version-0.7.4-blue)] |
+| [`@ai-zen/agents-cli`](./packages/cli) | CLI — Interactive conversation terminal with file tools, MCP support | [![version](https://img.shields.io/badge/version-0.7.5-blue)] |
 | [`@ai-zen/agents-webui`](./packages/webui) | Web UI (Vue 3 + Element Plus) | [![version](https://img.shields.io/badge/version-2.0.0-blue)] |
 
 ## Quick Start
