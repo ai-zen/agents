@@ -82,7 +82,7 @@ The migration prompt template includes:
 - **Pending Tasks** — Description, progress, next steps
 - **Important Notes** — Technical preferences, lessons learned, architecture decisions
 - **File Index** — Key files with descriptions
-- **Handover Instructions** — SOP for the接手 agent (read files first, verify state, then act)
+- **Handover Instructions** — SOP for the relay agent (read files first, verify state, then act)
 
 ### Shell Fallback Hook
 
