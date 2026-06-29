@@ -1,7 +1,7 @@
 {
   "name": "@ai-zen/agents-cli",
   "version": "0.7.0",
-  "description": "Command line interface for AI agents",
+  "description": "AI Agent CLI - interactive conversation terminal with file tools, MCP support, and draft recovery",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
@@ -20,7 +20,12 @@
   "keywords": [
     "ai",
     "agent",
-    "cli"
+    "cli",
+    "llm",
+    "chat",
+    "mcp",
+    "model-context-protocol",
+    "autonomous-agent"
   ],
   "author": "",
   "license": "ISC",
