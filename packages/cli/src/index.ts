@@ -45,10 +45,10 @@ async function main(): Promise<void> {
     return;
   }
 
-  // 有参数且不是 hook 命令：直接进入对话（参数作为初始消息提示）
+  // 有参数且不是 hook 命令：直接进入对话（参数作为初始消息）
   const message = args.join(" ");
   console.log(chalk.blue.bold(`\n🤖 快速开始: "${message}"\n`));
-  await startNewConversation();
+  await startNewConversation(message);
 }
 
 main().catch((error) => {

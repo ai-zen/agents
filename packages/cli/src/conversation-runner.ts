@@ -171,6 +171,7 @@ export async function runConversation(
   conversationId?: string,
   conversationName?: string,
   agentId?: string,
+  initialMessage?: string,
 ): Promise<void> {
   // 提取系统提示词，用于后续重建新会话
   const systemMessages = extractSystemMessages(agent.messages);
@@ -280,6 +281,14 @@ export async function runConversation(
   agent.events.on("error", onError);
   agent.events.on("sub-agent", onSubAgent);
   agent.events.on("sub-agent-end", onSubAgentEnd);
+
+  // ============ 如果有初始消息，先发送 ============
+
+  if (initialMessage) {
+    ctx.input = initialMessage;
+    console.log(chalk.cyan("💬 你: ") + initialMessage + "\n");
+    await sendAndStream(agent, ctx);
+  }
 
   // ============ 主循环 ============
 

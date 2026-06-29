@@ -14,7 +14,7 @@ import { readDraft, clearDraft } from "../draft.js";
  * 开始新对话：选择 Agent（可选）→ 选择模型 → 进入对话
  * 开始新对话时会清除已有的草稿
  */
-export async function startNewConversation(): Promise<void> {
+export async function startNewConversation(initialMessage?: string): Promise<void> {
   // 开始新对话时清除草稿
   clearDraft();
   try {
@@ -88,7 +88,7 @@ export async function startNewConversation(): Promise<void> {
     const model = await ensureEndpointConfig(modelId);
     const agent = await createAgent(model.id, messages);
 
-    await runConversation(agent, model.id, undefined, undefined, agentId);
+    await runConversation(agent, model.id, undefined, undefined, agentId, initialMessage);
   } catch (error: any) {
     console.error(chalk.red(`\n❌ 错误: ${error.message}\n`));
   }
