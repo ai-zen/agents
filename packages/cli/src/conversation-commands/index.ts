@@ -1,5 +1,5 @@
 import { Agent } from "@ai-zen/agents-core";
-import { ConversationContext, CommandHandler } from "./types.js";
+import { ConversationContext, CommandHandler } from "../types.js";
 import { handleExit } from "./exit.js";
 import { handleSave } from "./save.js";
 import { handleNew } from "./new.js";

@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import inquirer from "inquirer";
 import { Agent, AgentNS } from "@ai-zen/agents-core";
-import { ConversationContext } from "./types.js";
+import { ConversationContext } from "../types.js";
 
 function getMessageText(msg: AgentNS.Message): string {
   const c = msg.content;

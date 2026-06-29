@@ -1,8 +1,8 @@
 import chalk from "chalk";
 import { Agent } from "@ai-zen/agents-core";
-import { ConversationContext } from "./types.js";
+import { ConversationContext } from "../types.js";
 
-export function handleHelp(agent: Agent, ctx: ConversationContext): void {
+export async function handleHelp(agent: Agent, ctx: ConversationContext): Promise<void> {
   console.log(chalk.blue.bold("\n📖 可用命令:\n"));
   console.log(`  ${chalk.cyan("/exit")}   ${chalk.gray("/quit")}   退出对话`);
   console.log(`  ${chalk.cyan("/save")}           保存当前对话`);

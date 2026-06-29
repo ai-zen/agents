@@ -3,7 +3,7 @@ import inquirer from "inquirer";
 import { Agent } from "@ai-zen/agents-core";
 import { saveConversation } from "../conversations.js";
 import { clearDraft } from "../draft.js";
-import { ConversationContext } from "./types.js";
+import { ConversationContext } from "../types.js";
 
 export async function handleExit(agent: Agent, ctx: ConversationContext): Promise<void> {
   if (agent.messages.length > 1) {

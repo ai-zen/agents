@@ -7,8 +7,8 @@ import { DeltaRenderer } from "./delta-renderer.js";
 import { shouldMigrate, generateMigrationDoc, calcTotalChars } from "./task-migration-agent.js";
 import { getModel } from "./models.js";
 import { createAgent } from "./agent-creator.js";
+import { ConversationContext } from "./types.js";
 import { dispatchCommand, getCommandNames } from "./conversation-commands/index.js";
-import { ConversationContext } from "./conversation-commands/types.js";
 
 // ==================== 工具函数 ====================
 

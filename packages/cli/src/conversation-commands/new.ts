@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import inquirer from "inquirer";
 import { Agent, Message } from "@ai-zen/agents-core";
-import { ConversationContext } from "./types.js";
+import { ConversationContext } from "../types.js";
 
 export async function handleNew(agent: Agent, ctx: ConversationContext): Promise<void> {
   const { confirmNew } = await inquirer.prompt([

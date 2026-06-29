@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import inquirer from "inquirer";
 import { Agent } from "@ai-zen/agents-core";
-import { ConversationContext } from "./types.js";
+import { ConversationContext } from "../types.js";
 
 export async function handleEditor(agent: Agent, ctx: ConversationContext): Promise<void> {
   const { content } = await inquirer.prompt([
