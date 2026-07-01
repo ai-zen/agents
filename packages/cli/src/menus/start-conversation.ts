@@ -6,16 +6,25 @@ import { runConversation } from "../conversation-runner.js";
 import { ensureEndpointConfig } from "../config-wizard.js";
 import { getAgents, getDefaultAgent, getAgent } from "../agents.js";
 import { getModels, getDefaultModel } from "../models.js";
-import { loadConversation } from "../conversations.js";
+import { loadConversation, saveConversation } from "../conversations.js";
 import { getConversationsList } from "../conversations.js";
 import { readDraft, clearDraft } from "../draft.js";
 
 /**
  * 开始新对话：选择 Agent（可选）→ 选择模型 → 进入对话
- * 开始新对话时会清除已有的草稿
+ * 如果存在草稿，会自动将草稿保存为对话存档，再开始新对话
  */
 export async function startNewConversation(initialMessage?: string): Promise<void> {
-  // 开始新对话时清除草稿
+  // 有草稿时自动保存为对话存档，避免数据丢失
+  const draft = readDraft();
+  if (draft) {
+    const timeStr = new Date(draft.updatedAt).toLocaleString("zh-CN");
+    const draftName = `自动保存-草稿-${new Date(draft.updatedAt).toISOString().slice(0, 16).replace("T", " ")}`;
+    saveConversation(draftName, draft.messages, draft.modelId, undefined, draft.agentId);
+    console.log(chalk.green(`📦 草稿已自动保存为对话存档: "${draftName}" (${draft.messageCount} 条消息, ${timeStr})\n`));
+  }
+  
+  // 清除草稿
   clearDraft();
   try {
     const agents = getAgents();

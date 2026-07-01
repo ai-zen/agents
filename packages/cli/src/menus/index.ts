@@ -25,7 +25,7 @@ export async function showMainMenu(): Promise<void> {
         name: `▶️  继续上次未完成的对话 (${draft.messageCount} 条消息, ${timeStr})`,
         value: "continue-draft",
       },
-      { name: "💬 开始新对话（放弃草稿）", value: "chat" },
+      { name: "💬 开始新对话（未完成的对话将被存档）", value: "chat" },
     );
   } else {
     choices.push({ name: "💬 开始新对话", value: "chat" });

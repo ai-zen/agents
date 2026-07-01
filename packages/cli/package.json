@@ -1,6 +1,6 @@
 {
   "name": "@ai-zen/agents-cli",
-  "version": "0.7.5",
+  "version": "0.7.6",
   "description": "AI-ZEN Agents CLI - interactive conversation terminal with file tools, MCP support, and draft recovery",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
