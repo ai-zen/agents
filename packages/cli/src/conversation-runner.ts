@@ -308,7 +308,17 @@ export async function runConversation(
 
     // 先尝试分发命令（以 / 开头）
     const handled = await dispatchCommand(agent, ctx);
-    if (handled) continue;
+    if (handled) {
+      // 命令处理完后默认跳过发送（continue），等待用户下一次输入。
+      // 但某些命令（如 /back 撤回后重发）设置了 ctx.input 和 shouldSend 标记，
+      // 希望主循环继续发送消息，此时不应跳过。
+      if (ctx.shouldSend) {
+        ctx.shouldSend = false;
+        console.log(chalk.cyan("💬 你: ") + ctx.input + "\n");
+      } else {
+        continue;
+      }
+    }
 
     if (!ctx.input) continue;
 

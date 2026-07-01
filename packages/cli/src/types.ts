@@ -182,6 +182,14 @@ export interface ConversationContext {
   running: boolean;
   /** 对话开始时系统提示词列表（不含用户消息），用于重建新会话 */
   systemMessages: AgentNS.Message[];
+  /**
+   * 命令处理后是否需要继续发送消息。
+   * 
+   * 默认情况下，命令处理后主循环会跳过发送（continue），等待用户下一次输入。
+   * 但某些命令（如 /back 撤回后重发）需要主循环继续执行发送逻辑，
+   * 此时命令处理函数应设置 ctx.input 并标记 shouldSend = true。
+   */
+  shouldSend?: boolean;
 }
 
 /**

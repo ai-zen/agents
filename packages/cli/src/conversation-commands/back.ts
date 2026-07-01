@@ -87,61 +87,51 @@ export async function handleBack(agent: Agent, ctx: ConversationContext): Promis
   agent.messages = agent.messages.slice(0, sliceEnd);
 
   if (isUserMsg) {
+    // 用户消息：直接弹出带原内容的输入框，回车即发送
+    console.log(chalk.yellow.bold("\n✏️  已撤回，原消息内容如下:"));
     console.log(
       chalk.gray(
-        `原内容: ${originalText.substring(0, 200)}${originalText.length > 200 ? "..." : ""}`,
+        `  ${originalText.substring(0, 200)}${originalText.length > 200 ? "..." : ""}`,
       ),
     );
     console.log();
+    console.log(chalk.cyan("  ── 操作说明 ──"));
+    console.log(chalk.gray("  • 直接按回车 → 原样重新发送"));
+    console.log(chalk.gray("  • 修改内容后回车 → 发送修改后的版本"));
+    console.log(chalk.gray("  • 清空输入后回车 → 取消操作"));
+    console.log(chalk.gray("  ⚠ 此处输入的内容会直接发送，不支持 / 命令"));
+    console.log();
 
-    const { editChoice } = await inquirer.prompt([
+    const { editedContent } = await inquirer.prompt([
       {
-        type: "list",
-        name: "editChoice",
-        message: "请选择:",
-        choices: [
-          { name: "✏️  修改后重新发送", value: "edit" },
-          { name: "🔄 直接重新发送（不修改内容）", value: "resend" },
-          { name: "↩️  取消操作", value: "cancel" },
-        ],
+        type: "input",
+        name: "editedContent",
+        message: chalk.cyan("重新发送:"),
+        prefix: "✏️",
+        default: originalText,
       },
     ]);
 
-    if (editChoice === "cancel") {
-      console.log(chalk.gray("已取消操作\n"));
+    const trimmed = editedContent.trim();
+    if (!trimmed) {
+      console.log(chalk.gray("↩️  已取消操作\n"));
       ctx.input = "";
       return;
     }
 
-    if (editChoice === "edit") {
-      const { editedContent } = await inquirer.prompt([
-        {
-          type: "input",
-          name: "editedContent",
-          message: chalk.cyan("修改消息:"),
-          prefix: "✏️",
-          default: originalText,
-        },
-      ]);
-      const trimmed = editedContent.trim();
-      if (!trimmed) {
-        console.log(chalk.red("\n❌ 消息内容不能为空\n"));
-        ctx.input = "";
-        return;
-      }
-      ctx.input = trimmed;
-    } else {
-      ctx.input = originalText;
-    }
+    ctx.input = trimmed;
+    ctx.shouldSend = true;
   } else {
+    // 工具消息：需要用户输入新消息来继续对话
+    console.log(chalk.yellow.bold("\n🔧  已撤回，原工具调用结果:"));
     console.log(
       chalk.gray(
-        `原工具结果: ${originalText.substring(0, 200)}${originalText.length > 200 ? "..." : ""}`,
+        `  ${originalText.substring(0, 200)}${originalText.length > 200 ? "..." : ""}`,
       ),
     );
-    console.log(
-      chalk.yellow("💡 请输入一条新消息，将插入到工具调用结果之后继续对话"),
-    );
+    console.log();
+    console.log(chalk.cyan("  ── 操作说明 ──"));
+    console.log(chalk.gray("  请输入一条新消息，将插入到工具调用结果之后继续对话"));
     console.log();
 
     const { newMessage } = await inquirer.prompt([
@@ -155,7 +145,7 @@ export async function handleBack(agent: Agent, ctx: ConversationContext): Promis
 
     const trimmed = newMessage.trim();
     if (!trimmed) {
-      console.log(chalk.red("\n❌ 消息内容不能为空\n"));
+      console.log(chalk.red("\n❌ 消息内容不能为空，已取消操作\n"));
       ctx.input = "";
       return;
     }
