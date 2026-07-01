@@ -12,10 +12,6 @@ vi.mock("inquirer", () => ({
 
 import inquirer from "inquirer";
 
-/**
- * handleBack 只操作 agent.messages 和 ctx，
- * 用最简单的对象模拟即可，不需要真正的 Agent 实例
- */
 function createMockAgent(messages: AgentNS.Message[]) {
   return { messages };
 }
@@ -37,7 +33,7 @@ describe("handleBack", () => {
     vi.clearAllMocks();
   });
 
-  it("没有消息时返回提示，不清除消息", async () => {
+  it("没有消息时返回提示", async () => {
     const agent = createMockAgent([]);
     const ctx = createCtx();
 
@@ -66,7 +62,6 @@ describe("handleBack", () => {
     ]);
     const ctx = createCtx();
 
-    // 模拟选择取消
     vi.mocked(inquirer.prompt).mockResolvedValueOnce({ selectedIndex: -1 });
 
     await handleBack(agent as any, ctx);
@@ -75,7 +70,7 @@ describe("handleBack", () => {
     expect(agent.messages.length).toBe(3);
   });
 
-  it("撤回用户消息并输入空内容时取消操作", async () => {
+  it("撤回用户消息后选择取消操作", async () => {
     const agent = createMockAgent([
       { role: AgentNS.Role.System, content: "system" },
       { role: AgentNS.Role.User, content: "hello" },
@@ -83,21 +78,19 @@ describe("handleBack", () => {
     ]);
     const ctx = createCtx();
 
-    // 模拟选择撤回用户消息（index 1），然后输入空内容
     vi.mocked(inquirer.prompt)
       .mockResolvedValueOnce({ selectedIndex: 1 })
-      .mockResolvedValueOnce({ editedContent: "" });
+      .mockResolvedValueOnce({ editChoice: "cancel" });
 
     await handleBack(agent as any, ctx);
 
     expect(ctx.input).toBe("");
     expect(ctx.shouldSend).toBeUndefined();
-    // 消息已被截断到用户消息前
     expect(agent.messages.length).toBe(1);
     expect(agent.messages[0].content).toBe("system");
   });
 
-  it("撤回用户消息后输入内容并发送", async () => {
+  it("撤回用户消息后选择原样重新发送", async () => {
     const agent = createMockAgent([
       { role: AgentNS.Role.System, content: "system" },
       { role: AgentNS.Role.User, content: "hello" },
@@ -107,6 +100,26 @@ describe("handleBack", () => {
 
     vi.mocked(inquirer.prompt)
       .mockResolvedValueOnce({ selectedIndex: 1 })
+      .mockResolvedValueOnce({ editChoice: "resend" });
+
+    await handleBack(agent as any, ctx);
+
+    expect(ctx.input).toBe("hello");
+    expect(ctx.shouldSend).toBe(true);
+    expect(agent.messages.length).toBe(1);
+  });
+
+  it("撤回用户消息后选择修改并输入新内容", async () => {
+    const agent = createMockAgent([
+      { role: AgentNS.Role.System, content: "system" },
+      { role: AgentNS.Role.User, content: "hello" },
+      { role: AgentNS.Role.Assistant, content: "hi" },
+    ]);
+    const ctx = createCtx();
+
+    vi.mocked(inquirer.prompt)
+      .mockResolvedValueOnce({ selectedIndex: 1 })
+      .mockResolvedValueOnce({ editChoice: "edit" })
       .mockResolvedValueOnce({ editedContent: "modified message" });
 
     await handleBack(agent as any, ctx);
@@ -116,7 +129,7 @@ describe("handleBack", () => {
     expect(agent.messages.length).toBe(1);
   });
 
-  it("撤回用户消息后直接回车（默认值）发送原内容", async () => {
+  it("撤回用户消息后选择修改但输入空内容则取消", async () => {
     const agent = createMockAgent([
       { role: AgentNS.Role.System, content: "system" },
       { role: AgentNS.Role.User, content: "hello" },
@@ -126,12 +139,13 @@ describe("handleBack", () => {
 
     vi.mocked(inquirer.prompt)
       .mockResolvedValueOnce({ selectedIndex: 1 })
-      .mockResolvedValueOnce({ editedContent: "hello" }); // 默认值即原内容
+      .mockResolvedValueOnce({ editChoice: "edit" })
+      .mockResolvedValueOnce({ editedContent: "" });
 
     await handleBack(agent as any, ctx);
 
-    expect(ctx.input).toBe("hello");
-    expect(ctx.shouldSend).toBe(true);
+    expect(ctx.input).toBe("");
+    expect(ctx.shouldSend).toBeUndefined();
   });
 
   it("撤回工具消息后输入新消息继续对话", async () => {
@@ -143,7 +157,6 @@ describe("handleBack", () => {
     ]);
     const ctx = createCtx();
 
-    // 选择撤回工具消息（index 3）
     vi.mocked(inquirer.prompt)
       .mockResolvedValueOnce({ selectedIndex: 3 })
       .mockResolvedValueOnce({ newMessage: "继续" });
@@ -151,7 +164,6 @@ describe("handleBack", () => {
     await handleBack(agent as any, ctx);
 
     expect(ctx.input).toBe("继续");
-    // 消息截断到工具消息之后（sliceEnd = index + 1 = 4）
     expect(agent.messages.length).toBe(4);
   });
 
@@ -174,7 +186,7 @@ describe("handleBack", () => {
     expect(ctx.shouldSend).toBeUndefined();
   });
 
-  it("撤回用户消息后输入空白字符视为取消", async () => {
+  it("撤回用户消息后修改时输入空白字符视为取消", async () => {
     const agent = createMockAgent([
       { role: AgentNS.Role.System, content: "system" },
       { role: AgentNS.Role.User, content: "hello" },
@@ -184,6 +196,7 @@ describe("handleBack", () => {
 
     vi.mocked(inquirer.prompt)
       .mockResolvedValueOnce({ selectedIndex: 1 })
+      .mockResolvedValueOnce({ editChoice: "edit" })
       .mockResolvedValueOnce({ editedContent: "   " });
 
     await handleBack(agent as any, ctx);
