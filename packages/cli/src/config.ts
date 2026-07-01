@@ -186,7 +186,7 @@ const DEFAULT_GENERAL_ASSISTANT_JSON = JSON.stringify(
       "cwd",
       "readFile",
       "writeFile",
-      "batchReplace",
+      "batchEdit",
       "mkdir",
       "rm",
       "glob",

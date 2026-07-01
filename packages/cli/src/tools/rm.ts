@@ -24,7 +24,7 @@ export const rmTool = new CallbackTool({
   async callback(input): Promise<string> {
     try {
       await fsp.rm(input.path as string, {
-        recursive: input.recursive as boolean,
+        recursive: (input.recursive as boolean) ?? false,
       });
       return "success";
     } catch (error: any) {

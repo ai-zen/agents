@@ -165,7 +165,7 @@ All user resources are automatically discovered from the filesystem:
 | `cwd` | Get current working directory |
 | `readFile` | Read file contents |
 | `writeFile` | Write content to file |
-| `batchReplace` | Batch replace text in files |
+| `batchEdit` | Batch replace text in files |
 | `mkdir` | Create directories |
 | `rm` | Delete files or directories |
 | `glob` | Scan files with glob patterns |

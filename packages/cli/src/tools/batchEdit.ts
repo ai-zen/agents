@@ -1,10 +1,10 @@
 import { CallbackTool } from "@ai-zen/agents-core";
 import * as fsp from "fs/promises";
 
-export const batchReplaceTool = new CallbackTool({
+export const batchEditTool = new CallbackTool({
   function: {
-    name: "batchReplace",
-    description: "批量替换文件文本，可以优先使用这个工具对文件进行编辑",
+    name: "batchEdit",
+    description: "批量编辑文件文本，可以优先使用这个工具对文件进行编辑",
     parameters: {
       type: "object",
       properties: {
@@ -29,7 +29,8 @@ export const batchReplaceTool = new CallbackTool({
               isReplaceAll: {
                 type: "boolean",
                 description:
-                  "是否替换所有匹配的文本，使用此功能前应确保你提供的 oldText 足够精确，避免误替换",
+                  "是否替换所有匹配的文本（默认仅替换首次匹配）。使用此功能前应确保你提供的 oldText 足够精确，避免误替换",
+                default: false,
               },
             },
             required: ["oldText", "newText"],

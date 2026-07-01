@@ -1,7 +1,7 @@
 import { cwd } from "./cwd.js";
 import { readFileTool } from "./readFile.js";
 import { writeFileTool } from "./writeFile.js";
-import { batchReplaceTool } from "./batchReplace.js";
+import { batchEditTool } from "./batchEdit.js";
 import { mkdirTool } from "./mkdir.js";
 import { rmTool } from "./rm.js";
 import { globTool } from "./glob.js";
@@ -18,7 +18,7 @@ export {
   cwd,
   readFileTool,
   writeFileTool,
-  batchReplaceTool,
+  batchEditTool,
   mkdirTool,
   rmTool,
   globTool,
@@ -36,7 +36,7 @@ export const allTools = [
   cwd,
   readFileTool,
   writeFileTool,
-  batchReplaceTool,
+  batchEditTool,
   mkdirTool,
   rmTool,
   globTool,

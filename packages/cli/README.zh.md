@@ -165,7 +165,7 @@ aiz hook uninstall
 | `cwd` | 获取当前工作目录 |
 | `readFile` | 读取文件内容 |
 | `writeFile` | 写入文件 |
-| `batchReplace` | 批量替换文本 |
+| `batchEdit` | 批量编辑文本 |
 | `mkdir` | 创建目录 |
 | `rm` | 删除文件或目录 |
 | `glob` | 通配符扫描文件 |
