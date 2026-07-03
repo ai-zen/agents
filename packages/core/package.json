@@ -1,6 +1,6 @@
 {
   "name": "@ai-zen/agents-core",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "description": "",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -23,7 +23,7 @@
     "vitest": "^4.1.9"
   },
   "dependencies": {
-    "@ai-zen/async-queue": "^1.2.2",
+    "@ai-zen/async-queue": "^1.4.0",
     "@ai-zen/event-bus": "^1.1.0",
     "@ai-zen/node-fetch-event-source": "^2.1.4",
     "jose": "^5"

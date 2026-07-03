@@ -51,8 +51,8 @@ importers:
   packages/core:
     dependencies:
       '@ai-zen/async-queue':
-        specifier: ^1.2.2
-        version: 1.3.2
+        specifier: ^1.4.0
+        version: 1.4.0
       '@ai-zen/event-bus':
         specifier: ^1.1.0
         version: 1.1.0
@@ -82,8 +82,8 @@ importers:
         specifier: workspace:^
         version: link:../core
       '@ai-zen/async-queue':
-        specifier: ^1.2.2
-        version: 1.3.2
+        specifier: ^1.4.0
+        version: 1.4.0
       '@ai-zen/event-bus':
         specifier: ^1.1.0
         version: 1.1.0
@@ -139,8 +139,9 @@ importers:
 
 packages:
 
-  '@ai-zen/async-queue@1.3.2':
-    resolution: {integrity: sha512-wobiagzFPhI4BwUNGfwHt/Gmzz/XeNc5q/kW+bUP25JQD8XTz/+1vAZM709fLTcl7UmwwoHNdMir9Lzy/TgOSA==}
+  '@ai-zen/async-queue@1.4.0':
+    resolution: {integrity: sha512-+LPm6OQl38WqMMzdSqOCWHQw9R5VIumnNEJOj9kTpCZzJAEXlQUCVXwdNzhriVy6kv6fRIEl2E/Gwuh4LdgzrQ==}
+    engines: {node: '>=18.0.0'}
 
   '@ai-zen/event-bus@1.1.0':
     resolution: {integrity: sha512-xjfQEmUMly++dOSrQMJkwrnBVl7bQHtiw8S09AW5jPuqnFV9OwBk0PsGFc/T+4eP4yWThBJo2X3cCdE5DkAr+Q==}
@@ -1671,7 +1672,7 @@ packages:
 
 snapshots:
 
-  '@ai-zen/async-queue@1.3.2': {}
+  '@ai-zen/async-queue@1.4.0': {}
 
   '@ai-zen/event-bus@1.1.0': {}
 

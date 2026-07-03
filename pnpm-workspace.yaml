@@ -4,6 +4,8 @@ packages:
 allowBuilds:
   '@parcel/watcher': false
   esbuild: false
+minimumReleaseAgeExclude:
+  - '@ai-zen/async-queue@1.4.0'
 onlyBuiltDependencies:
   - esbuild
   - '@parcel/watcher'
