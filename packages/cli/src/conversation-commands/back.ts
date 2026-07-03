@@ -163,5 +163,6 @@ export async function handleBack(agent: Agent, ctx: ConversationContext): Promis
     }
 
     ctx.input = trimmed;
+    ctx.shouldSend = true;
   }
 }

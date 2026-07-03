@@ -9,6 +9,7 @@ import { getModels, getDefaultModel } from "../models.js";
 import { loadConversation, saveConversation } from "../conversations.js";
 import { getConversationsList } from "../conversations.js";
 import { readDraft, clearDraft } from "../draft.js";
+import { formatRelativeTime, formatShortTime, formatFileSize, formatMessageTime } from "../format-time.js";
 
 /**
  * 开始新对话：选择 Agent（可选）→ 选择模型 → 进入对话
@@ -18,14 +19,19 @@ export async function startNewConversation(initialMessage?: string): Promise<voi
   // 有草稿时自动保存为对话存档，避免数据丢失
   const draft = readDraft();
   if (draft) {
-    const timeStr = new Date(draft.updatedAt).toLocaleString("zh-CN");
-    const draftName = `自动保存-草稿-${new Date(draft.updatedAt).toISOString().slice(0, 16).replace("T", " ")}`;
-    saveConversation(draftName, draft.messages, draft.modelId, undefined, draft.agentId);
-    console.log(chalk.green(`📦 草稿已自动保存为对话存档: "${draftName}" (${draft.messageCount} 条消息, ${timeStr})\n`));
+    try {
+      const draftName = `草稿-${formatShortTime(draft.updatedAt)}`;
+      saveConversation(draftName, draft.messages, draft.modelId, undefined, draft.agentId);
+      console.log(chalk.green(`📦 草稿已自动保存为对话存档: "${draftName}" (${formatMessageTime(draft.messageCount, draft.updatedAt)})\n`));
+      // 保存成功后清除草稿
+      clearDraft();
+    } catch (error) {
+      console.error(chalk.red(`❌ 草稿自动存档失败: ${error}\n`));
+      console.log(chalk.yellow("⚠️  草稿保留在文件中，下次启动仍可恢复\n"));
+    }
+  } else {
+    clearDraft();
   }
-  
-  // 清除草稿
-  clearDraft();
   try {
     const agents = getAgents();
     let messages: AgentNS.Message[] | undefined;
@@ -114,10 +120,9 @@ export async function continueDraft(): Promise<void> {
   }
 
   try {
-    const timeStr = new Date(draft.updatedAt).toLocaleString("zh-CN");
     console.log(
       chalk.green(
-        `\n✅ 已恢复上次未完成的对话 (${draft.messageCount} 条消息, ${timeStr})\n`,
+        `\n✅ 已恢复上次未完成的对话 (${formatMessageTime(draft.messageCount, draft.updatedAt)})\n`,
       ),
     );
 
@@ -147,7 +152,7 @@ export async function continueConversation(): Promise<void> {
       message: "选择对话:",
       choices: [
         ...conversations.map((c) => ({
-          name: `${c.name} (${c.messageCount} 条消息, ${new Date(c.updatedAt).toLocaleString("zh-CN")})`,
+          name: `${c.name} (${formatRelativeTime(c.updatedAt)}, ${formatFileSize(c.size || 0)})`,
           value: c.id,
         })),
         { name: "🔙 取消", value: "__cancel__" },

@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import inquirer from "inquirer";
 import { Agent, Message } from "@ai-zen/agents-core";
+import { formatShortTime } from "../format-time.js";
 import { ConversationContext } from "../types.js";
 
 export async function handleNew(agent: Agent, ctx: ConversationContext): Promise<void> {
@@ -22,7 +23,7 @@ export async function handleNew(agent: Agent, ctx: ConversationContext): Promise
   agent.messages = ctx.systemMessages.map((m) => new Message(m));
 
   // 更新上下文状态
-  ctx.currentName = `对话_${new Date().toISOString()}`;
+  ctx.currentName = `对话_${formatShortTime(new Date().toISOString())}`;
   ctx.currentId = undefined;
   ctx.input = "";
 

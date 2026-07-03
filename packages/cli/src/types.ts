@@ -210,4 +210,6 @@ export interface ConversationData {
   updatedAt: string;
   messages: AgentNS.Message[];
   messageCount: number;
+  /** 文件大小（字节），仅列表场景有效 */
+  size?: number;
 }

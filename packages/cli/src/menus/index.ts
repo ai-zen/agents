@@ -5,6 +5,7 @@ import { manageConversations } from "./conversations.js";
 import { manageAgentsInteractive } from "./agents.js";
 import { showInteractiveConfig } from "./config.js";
 import { readDraft } from "../draft.js";
+import { formatMessageTime } from "../format-time.js";
 
 /**
  * 主菜单
@@ -19,10 +20,9 @@ export async function showMainMenu(): Promise<void> {
 
   // 如果有草稿，放在最前面作为首选
   if (draft) {
-    const timeStr = new Date(draft.updatedAt).toLocaleString("zh-CN");
     choices.push(
       {
-        name: `▶️  继续上次未完成的对话 (${draft.messageCount} 条消息, ${timeStr})`,
+        name: `▶️  继续上次未完成的对话 (${formatMessageTime(draft.messageCount, draft.updatedAt)})`,
         value: "continue-draft",
       },
       { name: "💬 开始新对话（未完成的对话将被存档）", value: "chat" },

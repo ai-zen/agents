@@ -10,6 +10,7 @@ import {
   setDefaultAgent,
 } from "../agents.js";
 import { getModels } from "../models.js";
+import { formatFullTime } from "../format-time.js";
 import {
   selectItemAndAction,
   confirmAction,
@@ -48,7 +49,7 @@ function formatAgentDetails(
     chalk.gray(`     消息数: ${agent.messages.length} 条`),
     chalk.gray(`     摘要: ${getMessagesSummary(agent.messages)}`),
     chalk.gray(
-      `     创建时间: ${new Date(agent.createdAt).toLocaleString("zh-CN")}`,
+      `     创建时间: ${formatFullTime(agent.createdAt)}`,
     ),
     SEPARATOR_LONG,
   ].filter(Boolean);
@@ -145,7 +146,15 @@ async function createAgentInteractive(): Promise<void> {
     },
   ]);
 
-  const id = name.toLowerCase().replace(/[^a-zA-Z0-9\u4e00-\u9fa5_-]/g, "_");
+  let id = name.toLowerCase().replace(/[^a-zA-Z0-9\u4e00-\u9fa5_-]/g, "_");
+
+  // 检查 ID 是否已存在，冲突时追加随机后缀
+  if (getAgent(id)) {
+    const suffix = Math.random().toString(36).substring(2, 6);
+    id = `${id}_${suffix}`;
+    console.log(chalk.yellow(`⚠️  名称生成的 ID 已存在，已调整为: ${id}\n`));
+  }
+
   const now = new Date().toISOString();
   upsertAgent({
     id,

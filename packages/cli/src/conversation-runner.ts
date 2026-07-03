@@ -8,6 +8,7 @@ import { shouldMigrate, generateMigrationDoc, calcTotalChars } from "./task-migr
 import { getModel } from "./models.js";
 import { createAgent } from "./agent-creator.js";
 import { ConversationContext } from "./types.js";
+import { formatShortTime } from "./format-time.js";
 import { dispatchCommand, getCommandNames } from "./conversation-commands/index.js";
 
 // ==================== 工具函数 ====================
@@ -185,7 +186,7 @@ export async function runConversation(
 
   const ctx: ConversationContext = {
     input: "",
-    currentName: conversationName || `对话_${new Date().toISOString()}`,
+    currentName: conversationName || `对话_${formatShortTime(new Date().toISOString())}`,
     currentId: conversationId,
     modelId,
     agentId,

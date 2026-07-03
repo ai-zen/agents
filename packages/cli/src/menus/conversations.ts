@@ -4,6 +4,7 @@ import {
   deleteConversation,
   loadConversation,
 } from "../conversations.js";
+import { formatRelativeTime, formatFileSize } from "../format-time.js";
 import {
   selectItemAndAction,
   confirmAction,
@@ -19,11 +20,7 @@ function formatConversationDetails(
   return [
     chalk.white.bold(`  📝 ${c.name}`),
     chalk.gray(`     ID: ${c.id}`),
-    chalk.gray(`     模型: ${c.modelId}`),
-    chalk.gray(`     消息数: ${c.messageCount}`),
-    chalk.gray(
-      `     更新时间: ${new Date(c.updatedAt).toLocaleString("zh-CN")}`,
-    ),
+    chalk.gray(`     更新时间: ${formatRelativeTime(c.updatedAt)}`),
     SEPARATOR_LONG,
   ];
 }
@@ -44,7 +41,7 @@ export async function manageConversations(): Promise<void> {
 
     const result = await selectItemAndAction(conversations, {
       getName: (c) =>
-        `${c.name} (${c.messageCount} 条消息, ${new Date(c.updatedAt).toLocaleString("zh-CN")})`,
+        `${c.name} (${formatRelativeTime(c.updatedAt)}, ${formatFileSize(c.size || 0)})`,
       getValue: (c) => c.id,
       getDetails: (c) => formatConversationDetails(c),
       actions: [{ name: "🗑️  删除", value: "delete" }],

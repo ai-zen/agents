@@ -6,13 +6,14 @@ import {
   getConversationsList,
 } from "./conversations.js";
 import { AgentNS } from "@ai-zen/agents-core";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync, statSync } from "fs";
 import { CONVERSATIONS_DIR } from "./config.js";
 
 // ==================== Mock 文件系统 ====================
 
 const vol = new Map<string, string>(); // path -> content
 const dirs = new Set<string>();
+const mtimes = new Map<string, Date>(); // path -> mtime
 
 vi.mock("fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("fs")>();
@@ -32,6 +33,7 @@ vi.mock("fs", async (importOriginal) => {
     }),
     writeFileSync: vi.fn((path: string, content: string) => {
       vol.set(path, content);
+      mtimes.set(path, new Date());
     }),
     unlinkSync: vi.fn((path: string) => {
       vol.delete(path);
@@ -47,6 +49,13 @@ vi.mock("fs", async (importOriginal) => {
         }
       }
       return files;
+    }),
+    statSync: vi.fn((path: string) => {
+      if (path.includes("node_modules")) return actual.statSync(path);
+      if (!vol.has(path)) throw new Error(`ENOENT: ${path}`);
+      const mtime = mtimes.get(path) || new Date();
+      const content = vol.get(path) || "";
+      return { mtime, size: Buffer.byteLength(content, "utf-8") };
     }),
   };
 });
@@ -77,6 +86,7 @@ const sampleMessages: AgentNS.Message[] = [
 beforeEach(() => {
   vol.clear();
   dirs.clear();
+  mtimes.clear();
   dirs.add(CONVERSATIONS_DIR);
   vi.clearAllMocks();
 });
@@ -100,7 +110,7 @@ describe("getConversationsList", () => {
     expect(names).toContain("对话B");
   });
 
-  it("对话列表包含正确字段", () => {
+  it("对话列表包含正确字段（仅文件名和 mtime）", () => {
     saveConversation("测试", sampleMessages, "deepseek-v4-flash", undefined, "agent-1");
 
     const list = getConversationsList();
@@ -108,19 +118,22 @@ describe("getConversationsList", () => {
     const conv = list[0];
     expect(conv.id).toBe("测试");
     expect(conv.name).toBe("测试");
-    expect(conv.modelId).toBe("deepseek-v4-flash");
-    expect(conv.agentId).toBe("agent-1");
-    expect(conv.messageCount).toBe(3);
+    expect(conv.modelId).toBe("unknown");
+    expect(conv.agentId).toBeUndefined();
+    expect(conv.messageCount).toBe(0);
+    expect(conv.messages).toEqual([]);
     expect(conv.createdAt).toBeDefined();
     expect(conv.updatedAt).toBeDefined();
+    expect(conv.size).toBeGreaterThan(0);
   });
 
-  it("损坏的 JSON 文件被跳过", () => {
+  it("损坏的 JSON 文件仍可显示（只读文件名和 mtime）", () => {
     writeFileSync(`${CONVERSATIONS_DIR}/bad.json`, "not-json");
     saveConversation("好的", sampleMessages, "model-1");
     const list = getConversationsList();
-    expect(list.length).toBe(1);
-    expect(list[0].name).toBe("好的");
+    expect(list.length).toBe(2);
+    expect(list.map(c => c.name)).toContain("bad");
+    expect(list.map(c => c.name)).toContain("好的");
   });
 });
 

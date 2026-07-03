@@ -15,4 +15,5 @@ export async function handleEditor(agent: Agent, ctx: ConversationContext): Prom
   }
 
   ctx.input = content.trim();
+  ctx.shouldSend = true;
 }

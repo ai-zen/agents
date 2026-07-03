@@ -164,6 +164,7 @@ describe("handleBack", () => {
     await handleBack(agent as any, ctx);
 
     expect(ctx.input).toBe("继续");
+    expect(ctx.shouldSend).toBe(true);
     expect(agent.messages.length).toBe(4);
   });
 

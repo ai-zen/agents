@@ -5,6 +5,7 @@ import {
   writeFileSync,
   readdirSync,
   unlinkSync,
+  statSync,
 } from "fs";
 import { join } from "path";
 import { AgentNS } from "@ai-zen/agents-core";
@@ -18,6 +19,10 @@ function sanitizeFileName(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, "_");
 }
 
+/**
+ * 获取对话列表，仅读取文件名和文件系统 mtime，不读取文件内容。
+ * 适用于大量对话场景，避免逐个 JSON 解析的性能问题。
+ */
 export function getConversationsList(): ConversationData[] {
   ensureConfigDir();
   const conversations: ConversationData[] = [];
@@ -27,31 +32,29 @@ export function getConversationsList(): ConversationData[] {
   const files = readdirSync(CONVERSATIONS_DIR);
 
   for (const file of files) {
-    if (file.endsWith(".json")) {
-      const filePath = join(CONVERSATIONS_DIR, file);
-      try {
-        const content = readFileSync(filePath, "utf-8");
-        const data = JSON.parse(content);
-        conversations.push({
-          id: file.replace(/\.json$/, ""),
-          name: data.name || file.replace(/\.json$/, ""),
-          modelId: data.modelId || "unknown",
-          agentId: data.agentId,
-          createdAt: data.createdAt || new Date().toISOString(),
-          updatedAt:
-            data.updatedAt || data.createdAt || new Date().toISOString(),
-          messages: data.messages || [],
-          messageCount: (data.messages || []).length,
-        });
-      } catch (error) {
-        console.error(
-          chalk.red(`读取对话文件失败 ${file}: ${error}`),
-        );
-      }
+    if (!file.endsWith(".json")) continue;
+
+    const id = file.replace(/\.json$/, "");
+    const filePath = join(CONVERSATIONS_DIR, file);
+
+    try {
+      const stat = statSync(filePath);
+      conversations.push({
+        id,
+        name: id,
+        modelId: "unknown",
+        createdAt: stat.mtime.toISOString(),
+        updatedAt: stat.mtime.toISOString(),
+        messages: [],
+        messageCount: 0,
+        size: stat.size,
+      });
+    } catch {
+      // 文件被删除等情况，跳过
     }
   }
 
-  // 按更新时间排序
+  // 按 mtime 降序排列
   return conversations.sort(
     (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
   );
