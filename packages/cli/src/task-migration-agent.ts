@@ -142,24 +142,18 @@ export async function generateMigrationDoc(
 ): Promise<string> {
   const migrationAgent = await createMigrationAgent();
 
-  // 构造用户消息：将完整对话历史作为上下文提供给迁移 Agent
-  const historyText = historyMessages
-    .map((msg) => {
-      const role = msg.role;
-      let content = "";
-      if (typeof msg.content === "string") {
-        content = msg.content;
-      } else if (Array.isArray(msg.content)) {
-        content = msg.content
-          .filter((s) => s.type === "text")
-          .map((s) => s.text)
-          .join("");
-      }
-      return `[${role}] ${content}`;
-    })
-    .join("\n\n");
+  // 构造用户消息：将完整对话历史（JSON 格式）作为上下文提供给迁移 Agent
+  // 使用 JSON.stringify 保留所有结构化信息（tool_calls、function_call、多模态内容等）
+  const historyJson = JSON.stringify(historyMessages, null, 2);
 
-  const userContent = `请阅读以下完整的对话历史，生成交接文档：\n\n${historyText}`;
+  const userContent = `请分析以下对话历史（JSON 格式）并生成交接文档。
+
+这是 AI 助手与用户的完整对话记录，每条消息包含 role（角色）和 content（内容）字段。
+你可以使用 shell 工具读取文件、查看项目结构来验证对话中提到的信息。
+
+\`\`\`json
+${historyJson}
+\`\`\``;
 
   // 发送消息给迁移 Agent
   const messages = await migrationAgent.send(userContent);
