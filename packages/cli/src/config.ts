@@ -295,6 +295,18 @@ export function readConfig(): Config {
     // 注意：agents 已迁移到文件系统，不再从默认配置合并
     config.subAgents = mergeArrays(defaultConfig.subAgents || [], saved.subAgents);
 
+    // 深合并 models：以 saved.models 为主，但用 defaultConfig 中同名模型的字段补充缺失属性
+    // 避免后续新增的字段（如 maxContextChars）因旧 config.json 中缺失而导致功能异常
+    if (Array.isArray(saved.models)) {
+      config.models = saved.models.map((savedModel: any) => {
+        const defaultModel = defaultConfig.models.find((m) => m.id === savedModel.id);
+        if (defaultModel) {
+          return { ...defaultModel, ...savedModel };
+        }
+        return savedModel;
+      });
+    }
+
     // 补充版本号
     ensureVersions(config);
 

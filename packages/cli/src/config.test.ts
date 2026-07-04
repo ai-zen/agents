@@ -182,4 +182,41 @@ describe("saveConfig / readConfig", () => {
     // subAgents 默认为空（由文件系统发现）
     expect(config.subAgents?.length).toBe(0);
   });
+
+  it("从 config.json 读取的 models 缺失字段时，用 defaultConfig 补充", () => {
+    vi.mocked(existsSync).mockReturnValue(true);
+    // 模拟老版本 config.json：models 数组中每个模型缺少 maxContextChars 字段
+    const savedModels = defaultConfig.models.map((m) => {
+      const { maxContextChars, ...rest } = m;
+      return rest;
+    });
+    // 确认模拟数据确实没有 maxContextChars
+    for (const m of savedModels) {
+      expect(m).not.toHaveProperty("maxContextChars");
+    }
+
+    vi.mocked(readFileSync).mockReturnValueOnce(
+      JSON.stringify({
+        endpoints: defaultConfig.endpoints,
+        models: savedModels,
+        defaultModel: "deepseek-v4-flash",
+        defaultAgent: "default",
+        imageModels: defaultConfig.imageModels,
+        mcpServers: defaultConfig.mcpServers,
+      }),
+    );
+
+    const config = readConfig();
+
+    // 验证每个模型都补充了 maxContextChars
+    expect(config.models.length).toBe(defaultConfig.models.length);
+    for (const model of config.models) {
+      expect(model).toHaveProperty("maxContextChars");
+      expect(model.maxContextChars).toBe(500000);
+    }
+
+    // 验证用户保存的值（如 defaultParams）没有被覆盖
+    const deepseekFlash = config.models.find((m) => m.id === "deepseek-v4-flash");
+    expect(deepseekFlash?.defaultParams).toEqual({ thinking: { type: "disabled" } });
+  });
 });
