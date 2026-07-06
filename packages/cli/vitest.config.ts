@@ -5,5 +5,6 @@ export default defineConfig({
     globals: true,
     environment: "node",
     include: ["src/**/*.test.ts"],
+    testTimeout: process.env.RUN_INTEGRATION === "true" ? 120000 : 10000,
   },
 });

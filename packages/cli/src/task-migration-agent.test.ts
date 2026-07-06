@@ -202,13 +202,116 @@ describe("shouldMigrate", () => {
 });
 
 // ==================== 集成测试（会调用真实 API，默认跳过） ====================
+// 设置 RUN_INTEGRATION=true 环境变量来启用集成测试
+// 需要确保 ~/.ai-zen/config.json 中配置了有效的 API Key 和默认模型
+// 用法: RUN_INTEGRATION=true npx vitest run task-migration-agent.test.ts
+const runIntegration = process.env.RUN_INTEGRATION === "true";
 
-describe.skip("generateMigrationDoc 集成测试", () => {
-  it("需要配置 API Key 才能运行", () => {
-    // 手动测试方式：
-    // 1. 确保 ~/.ai-zen/config.json 中配置了有效的 API Key 和默认模型
-    // 2. 修改 test.skip 为 test 后运行
-    // 3. 构造包含多轮对话和工具调用的模拟消息列表
-    // 4. 调用 generateMigrationDoc 验证生成的交接文档格式
+(runIntegration ? describe : describe.skip)("generateMigrationDoc 集成测试", () => {
+  /**
+   * 构造一个模拟的多轮对话历史，包含：
+   * - 系统提示词
+   * - 多轮用户/助手对话
+   * - 工具调用（readFile、writeFile）
+   * - 工具结果返回
+   * - 多模态内容（图片）
+   */
+  function makeMockHistory(): AgentNS.Message[] {
+    return [
+      makeTextMsg(AgentNS.Role.System, "你是一个AI助手，帮助用户回答问题和执行任务。"),
+      makeTextMsg(AgentNS.Role.User, "帮我看看当前项目结构"),
+      makeToolCallMsg(AgentNS.Role.Assistant, [
+        { name: "readFile", args: '{"path":"package.json"}' },
+        { name: "ls", args: '{"path":"./src"}' },
+      ]),
+      makeTextMsg(AgentNS.Role.Tool, '{"name":"readFile","content":"{\"name\":\"test-project\"}"}', { tool_call_id: "call_0" }),
+      makeTextMsg(AgentNS.Role.Tool, '{"name":"ls","content":"[\"index.ts\",\"utils.ts\"]"}', { tool_call_id: "call_1" }),
+      makeTextMsg(AgentNS.Role.Assistant, "项目结构已查看，根目录有 package.json，src 下有 index.ts 和 utils.ts"),
+      makeTextMsg(AgentNS.Role.User, "帮我创建一个新文件 src/api.ts，写一个简单的 fetch 封装"),
+      makeToolCallMsg(AgentNS.Role.Assistant, [
+        { name: "writeFile", args: '{"path":"src/api.ts","content":"export async function fetchData(url: string) {\n  const res = await fetch(url);\n  return res.json();\n}"}' },
+      ]),
+      makeTextMsg(AgentNS.Role.Tool, "文件已写入", { tool_call_id: "call_0" }),
+      makeTextMsg(AgentNS.Role.Assistant, "文件 src/api.ts 已创建，包含一个 fetchData 函数"),
+      makeTextMsg(AgentNS.Role.User, "很好，再帮我把这个函数改名为 requestApi，并且加上错误处理"),
+      makeTextMsg(AgentNS.Role.Assistant, "好的，我来修改 src/api.ts"),
+      makeToolCallMsg(AgentNS.Role.Assistant, [
+        { name: "readFile", args: '{"path":"src/api.ts"}' },
+      ]),
+      makeTextMsg(AgentNS.Role.Tool, "export async function fetchData(url: string) {\n  const res = await fetch(url);\n  return res.json();\n}", { tool_call_id: "call_0" }),
+      makeToolCallMsg(AgentNS.Role.Assistant, [
+        { name: "writeFile", args: '{"path":"src/api.ts","content":"export async function requestApi(url: string) {\n  try {\n    const res = await fetch(url);\n    if (!res.ok) throw new Error(\\"HTTP \" + res.status);\n    return res.json();\n  } catch (err) {\n    console.error(\\"请求失败:\", err);\n    throw err;\n  }\n}"}' },
+      ]),
+      makeTextMsg(AgentNS.Role.Tool, "文件已写入", { tool_call_id: "call_0" }),
+      makeTextMsg(AgentNS.Role.Assistant, "已修改完成：函数改名为 requestApi，加了 try/catch 错误处理和 HTTP 状态检查"),
+      makeTextMsg(AgentNS.Role.User, "好的，谢谢"),
+    ];
+  }
+
+  it("生成符合模板格式的交接文档", async () => {
+    const { generateMigrationDoc } = await import("./task-migration-agent.js");
+    const history = makeMockHistory();
+
+    const doc = await generateMigrationDoc(history);
+
+    // 验证文档不为空
+    expect(doc).toBeTruthy();
+    expect(doc.trim().length).toBeGreaterThan(0);
+
+    // 验证包含必要的模板章节标题
+    const requiredSections = [
+      "对话断点",
+      "已完成的任务",
+      "未完成的任务",
+      "重要记忆",
+      "文件索引",
+      "接手指令",
+    ];
+    for (const section of requiredSections) {
+      expect(doc).toContain(section);
+    }
+
+    // 验证文档格式为 Markdown（包含标题标记）
+    expect(doc).toContain("##");
+
+    // 验证包含对话历史中的关键信息
+    expect(doc).toContain("src/api.ts");
+    expect(doc).toContain("requestApi");
+  });
+
+  it("处理简短对话时返回有效文档", async () => {
+    const { generateMigrationDoc } = await import("./task-migration-agent.js");
+    const history: AgentNS.Message[] = [
+      makeTextMsg(AgentNS.Role.System, "你是一个AI助手。"),
+      makeTextMsg(AgentNS.Role.User, "你好"),
+      makeTextMsg(AgentNS.Role.Assistant, "你好！有什么可以帮你的吗？"),
+    ];
+
+    const doc = await generateMigrationDoc(history);
+
+    expect(doc).toBeTruthy();
+    expect(doc.trim().length).toBeGreaterThan(0);
+    expect(doc).toContain("##");
+  });
+
+  it("处理包含图片内容的对话历史", async () => {
+    const { generateMigrationDoc } = await import("./task-migration-agent.js");
+    const history: AgentNS.Message[] = [
+      makeTextMsg(AgentNS.Role.System, "你是一个AI助手。"),
+      makeTextMsg(AgentNS.Role.User, "帮我看一下这张图片"),
+      {
+        role: AgentNS.Role.Assistant,
+        content: [
+          { type: "text" as const, text: "这是一张示意图：" },
+          { type: "image_url" as const, image_url: { url: "https://example.com/diagram.png" } },
+        ],
+      },
+    ];
+
+    const doc = await generateMigrationDoc(history);
+
+    expect(doc).toBeTruthy();
+    expect(doc.trim().length).toBeGreaterThan(0);
+    expect(doc).toContain("##");
   });
 });
