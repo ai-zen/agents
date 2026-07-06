@@ -11,8 +11,10 @@
 
 import { Agent, AgentNS, Message } from "@ai-zen/agents-core";
 import { getDefaultModel } from "./models.js";
-import { readConfig } from "./config.js";
+import { readConfig, CONFIG_DIR } from "./config.js";
 import { buildModel } from "./agent-creator.js";
+import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { join } from "path";
 
 /**
  * 任务迁移 Agent 的系统提示词
@@ -130,6 +132,52 @@ export async function createMigrationAgent(): Promise<Agent> {
 }
 
 /**
+ * 将迁移 Agent 的完整上下文写入错误日志，方便后续调试
+ */
+export function logMigrationError(
+  historyMessages: AgentNS.Message[],
+  error: Error,
+  migrationAgentMessages?: AgentNS.Message[],
+): string {
+  const logsDir = join(CONFIG_DIR, "logs");
+  if (!existsSync(logsDir)) {
+    mkdirSync(logsDir, { recursive: true });
+  }
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const logFile = join(logsDir, `migration-error-${timestamp}.json`);
+
+  const logData = {
+    timestamp: new Date().toISOString(),
+    error: {
+      message: error.message,
+      stack: error.stack,
+    },
+    sourceContextSize: JSON.stringify(historyMessages).length,
+    sourceMessageCount: historyMessages.length,
+    migrationAgentMessages: migrationAgentMessages
+      ? migrationAgentMessages.map((m) => ({
+          role: m.role,
+          status: m.status,
+          content:
+            typeof m.content === "string"
+              ? m.content.substring(0, 5000)
+              : "[non-string content]",
+          finish_reason: m.finish_reason,
+        }))
+      : null,
+  };
+
+  try {
+    writeFileSync(logFile, JSON.stringify(logData, null, 2), "utf-8");
+  } catch {
+    // 日志写入失败静默处理
+  }
+
+  return logFile;
+}
+
+/**
  * 使用迁移 Agent 生成交接文档
  * @param historyMessages 原始会话的完整消息列表
  * @returns 交接文档的 Markdown 文本
@@ -152,38 +200,44 @@ export async function generateMigrationDoc(
 ${historyJson}
 \`\`\``;
 
-  // 发送消息给迁移 Agent
-  const messages = await migrationAgent.send(userContent);
+  try {
+    // 发送消息给迁移 Agent
+    const messages = await migrationAgent.send(userContent);
 
-  // 提取 AI 回复内容：从后往前找第一个非 error 的 assistant 消息
-  let lastMessage = messages
-    .slice()
-    .reverse()
-    .find((m) => m.role === AgentNS.Role.Assistant && m.status !== "error");
+    // 提取 AI 回复内容：从后往前找第一个非 error 的 assistant 消息
+    let lastMessage = messages
+      .slice()
+      .reverse()
+      .find((m) => m.role === AgentNS.Role.Assistant && m.status !== "error");
 
-  if (!lastMessage) {
-    // 所有 assistant 消息都是 error，取最后一条获取具体错误信息
-    lastMessage = messages.at(-1);
-    const errMsg = typeof lastMessage?.content === "string"
-      ? lastMessage.content
-      : "未知错误";
-    throw new Error(`任务迁移失败: AI 回复出错 - ${errMsg}`);
+    if (!lastMessage) {
+      // 所有 assistant 消息都是 error，取最后一条获取具体错误信息
+      lastMessage = messages.at(-1);
+      const errMsg = typeof lastMessage?.content === "string"
+        ? lastMessage.content
+        : "未知错误";
+      throw new Error(`任务迁移失败: AI 回复出错 - ${errMsg}`);
+    }
+
+    let doc = "";
+    if (typeof lastMessage.content === "string") {
+      doc = lastMessage.content;
+    } else if (Array.isArray(lastMessage.content)) {
+      doc = lastMessage.content
+        .filter((s) => s.type === "text")
+        .map((s) => s.text)
+        .join("");
+    }
+
+    // 如果内容为空，报错
+    if (!doc.trim()) {
+      throw new Error("任务迁移失败: AI 返回了空内容");
+    }
+
+    return doc;
+  } catch (error: any) {
+    // 出错时将迁移 Agent 的完整上下文写入错误日志
+    logMigrationError(historyMessages, error, migrationAgent.messages);
+    throw error;
   }
-
-  let doc = "";
-  if (typeof lastMessage.content === "string") {
-    doc = lastMessage.content;
-  } else if (Array.isArray(lastMessage.content)) {
-    doc = lastMessage.content
-      .filter((s) => s.type === "text")
-      .map((s) => s.text)
-      .join("");
-  }
-
-  // 如果内容为空，报错
-  if (!doc.trim()) {
-    throw new Error("任务迁移失败: AI 返回了空内容");
-  }
-
-  return doc;
 }
