@@ -146,15 +146,13 @@ describe("shouldMigrate", () => {
     );
   }
 
-  it("消息序列化长度超过 2/3 阈值时返回 true", () => {
-    // maxContextChars = 5000
-    // 300 条消息，序列化后远超 2/3 阈值 (3333)
+  it("消息序列化长度超过 maxContextChars 时返回 true", () => {
+    // 300 条消息，JSON.stringify 远超 5000
     const msgs = makeMsgs(300);
     expect(shouldMigrate(msgs, 5000)).toBe(true);
   });
 
-  it("消息序列化长度远小于阈值时返回 false", () => {
-    // 1 条消息，序列化后很小
+  it("消息序列化长度小于 maxContextChars 时返回 false", () => {
     const msgs = makeMsgs(1);
     expect(shouldMigrate(msgs, 50000)).toBe(false);
   });
@@ -178,25 +176,21 @@ describe("shouldMigrate", () => {
     expect(shouldMigrate([], 100000)).toBe(false);
   });
 
-  it("边界值：序列化后刚好等于 2/3 阈值时返回 true", () => {
-    // 构造一个已知总长度的消息列表
+  it("边界值：序列化后刚好等于 maxContextChars 时返回 true", () => {
     const msgs = [
       makeTextMsg(AgentNS.Role.User, "测试消息"),
     ];
     const totalChars = calcTotalChars(msgs);
-    // 设置 maxContextChars 使 2/3 阈值刚好等于 totalChars
-    // totalChars = 2/3 * max -> max = totalChars * 3 / 2
-    const maxContextChars = Math.ceil(totalChars * 3 / 2);
+    const maxContextChars = totalChars;
     expect(shouldMigrate(msgs, maxContextChars)).toBe(true);
   });
 
-  it("边界值：序列化后刚好不到 2/3 阈值时返回 false", () => {
+  it("边界值：序列化后刚好小于 maxContextChars 时返回 false", () => {
     const msgs = [
       makeTextMsg(AgentNS.Role.User, "测试消息"),
     ];
     const totalChars = calcTotalChars(msgs);
-    // maxContextChars 设为 totalChars * 2，这样 2/3 阈值 = totalChars * 4/3 > totalChars
-    const maxContextChars = totalChars * 2;
+    const maxContextChars = totalChars + 1;
     expect(shouldMigrate(msgs, maxContextChars)).toBe(false);
   });
 });

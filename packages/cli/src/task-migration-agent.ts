@@ -89,7 +89,7 @@ export function calcTotalChars(messages: AgentNS.Message[]): number {
 
 /**
  * 判断是否需要进行任务迁移
- * 当消息总字符数超过模型 maxContextChars 的 2/3 时返回 true
+ * 当消息内容总字符数超过模型 maxContextChars 时返回 true
  */
 export function shouldMigrate(
   messages: AgentNS.Message[],
@@ -97,8 +97,7 @@ export function shouldMigrate(
 ): boolean {
   if (!maxContextChars || maxContextChars <= 0) return false;
   const totalChars = calcTotalChars(messages);
-  const threshold = Math.floor(maxContextChars * (2 / 3));
-  return totalChars >= threshold;
+  return totalChars >= maxContextChars;
 }
 
 /**
