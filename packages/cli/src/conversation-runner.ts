@@ -133,7 +133,7 @@ async function performMigration(
 
     // 2. 生成交接文档
     console.log(chalk.gray("  📝 正在分析对话历史，筛选关键信息..."));
-    const summary = await generateMigrationDoc(agent.messages);
+    const summary = await generateMigrationDoc(agent.formatHistory());
     console.log(chalk.gray("  ✅ 交接文档已生成"));
 
     // 3. 计算当前上下文大小，给用户参考
