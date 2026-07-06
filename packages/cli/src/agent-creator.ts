@@ -21,6 +21,7 @@ export const DEFAULT_SYSTEM_PROMPT = [
 import { getModel } from "./models.js";
 import { getEndpoint } from "./endpoints.js";
 import { readConfig } from "./config.js";
+
 import { allTools } from "./tools/index.js";
 import { startAllMcpServers } from "./mcp-manager.js";
 import { discoverSubAgents, resolveSubAgentTools } from "./sub-agent-loader.js";
@@ -227,14 +228,14 @@ export async function createAgent(
       const freshUserTools = await discoverUserTools();
       mergeTools(agent.tools, freshUserTools);
 
-      // 2. 刷新子 Agent（文件系统，轻量操作）
+      // 3. 刷新子 Agent（文件系统，轻量操作）
       const freshSubConfigs = await getAllSubAgentConfigs();
       for (const subConfig of freshSubConfigs) {
         const subAgent = await buildSubAgentTool(subConfig, modelId, model);
         if (subAgent) mergeTools(agent.tools, [subAgent]);
       }
 
-      // 3. 刷新 load_skill 工具定义，更新可用 Skill 枚举列表
+      // 4. 刷新 load_skill 工具定义，更新可用 Skill 枚举列表
       mergeTools(agent.tools, [createLoadSkillTool()]);
 
       // 注意：MCP 工具是长连接，不在每次请求前刷新。

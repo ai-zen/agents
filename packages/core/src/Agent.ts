@@ -124,6 +124,9 @@ export class Agent extends AgentContext {
           this.pendingTasks.add(newPendingTask);
           needContinue = true;
         }
+
+        // 每次 run 完成（一次 API 请求 + 可能的工具调用）
+        this.events.emit("run-end");
       } catch (error: any) {
         currentReceiver.status = AgentNS.MessageStatus.Error;
         currentReceiver.content = error.message;

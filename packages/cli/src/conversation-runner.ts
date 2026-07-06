@@ -265,6 +265,12 @@ export async function runConversation(
 
   // ============ 子 Agent 结束事件 ============
 
+  // ============ 每次 run 完成后保存草稿 ==========
+
+  const onRunEnd = () => {
+    saveDraft(agent.messages, ctx.modelId, ctx.agentId);
+  };
+
   const onSubAgentEnd = ({
     ctx: subCtx,
   }: {
@@ -277,6 +283,7 @@ export async function runConversation(
 
   // ============ 注册事件 ============
 
+  agent.events.on("run-end", onRunEnd);
   agent.events.on("run", onRun);
   agent.events.on("chunk", onChunk);
   agent.events.on("error", onError);
@@ -345,6 +352,7 @@ export async function runConversation(
           agent.events.off("error", onError);
           agent.events.off("sub-agent", onSubAgent);
           agent.events.off("sub-agent-end", onSubAgentEnd);
+          agent.events.off("run-end", onRunEnd);
 
           agent = result.newAgent;
 
@@ -353,6 +361,7 @@ export async function runConversation(
           agent.events.on("error", onError);
           agent.events.on("sub-agent", onSubAgent);
           agent.events.on("sub-agent-end", onSubAgentEnd);
+          agent.events.on("run-end", onRunEnd);
 
           // 迁移后保存新会话的草稿
           saveDraft(agent.messages, ctx.modelId, ctx.agentId);
@@ -375,6 +384,7 @@ export async function runConversation(
   agent.events.off("error", onError);
   agent.events.off("sub-agent", onSubAgent);
   agent.events.off("sub-agent-end", onSubAgentEnd);
+  agent.events.off("run-end", onRunEnd);
 
   console.log(chalk.blue.bold("\n👋 再见！\n"));
 }
