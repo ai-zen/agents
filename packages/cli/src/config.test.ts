@@ -208,11 +208,12 @@ describe("saveConfig / readConfig", () => {
 
     const config = readConfig();
 
-    // 验证每个模型都补充了 maxContextChars
+    // 验证每个模型都补充了 maxContextChars，且值与 defaultConfig 中同名模型一致
     expect(config.models.length).toBe(defaultConfig.models.length);
     for (const model of config.models) {
       expect(model).toHaveProperty("maxContextChars");
-      expect(model.maxContextChars).toBe(500000);
+      const defaultModel = defaultConfig.models.find((m) => m.id === model.id);
+      expect(model.maxContextChars).toBe(defaultModel?.maxContextChars);
     }
 
     // 验证用户保存的值（如 defaultParams）没有被覆盖

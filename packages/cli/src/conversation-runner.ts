@@ -64,8 +64,6 @@ async function sendAndStream(
       } catch (saveError) {
         console.error(chalk.red(`❌ 自动保存失败: ${saveError}\n`));
       }
-      // 错误时也保存草稿，便于恢复
-      saveDraft(agent.messages, ctx.modelId, ctx.agentId);
       return;
     }
 
@@ -78,9 +76,6 @@ async function sendAndStream(
           console.log(chalk.yellow(`[图片: ${section.image_url.url}]`));
       }
     }
-
-    // 回复成功后静默保存草稿
-    saveDraft(agent.messages, ctx.modelId, ctx.agentId);
 
     console.log();
   } catch (error: any) {

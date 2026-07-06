@@ -229,14 +229,14 @@ export async function createAgent(
       const freshUserTools = await discoverUserTools();
       mergeTools(agent.tools, freshUserTools);
 
-      // 3. 刷新子 Agent（文件系统，轻量操作）
+      // 2. 刷新子 Agent（文件系统，轻量操作）
       const freshSubConfigs = await getAllSubAgentConfigs();
       for (const subConfig of freshSubConfigs) {
         const subAgent = await buildSubAgentTool(subConfig, modelId, model);
         if (subAgent) mergeTools(agent.tools, [subAgent]);
       }
 
-      // 4. 刷新 load_skill 工具定义，更新可用 Skill 枚举列表
+      // 3. 刷新 load_skill 工具定义，更新可用 Skill 枚举列表
       mergeTools(agent.tools, [createLoadSkillTool()]);
 
       // 注意：MCP 工具是长连接，不在每次请求前刷新。

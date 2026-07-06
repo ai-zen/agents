@@ -27,7 +27,7 @@ export interface Model {
   modelName: string;
   description?: string;
   defaultParams?: ModelParams;
-  /** 最大上下文字符长度，用于触发任务迁移阈值（达到 2/3 时自动交接） */
+  /** 最大上下文字符长度，用于触发任务迁移阈值 */
   maxContextChars?: number;
   version?: number;
 }

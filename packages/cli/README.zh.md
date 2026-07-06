@@ -208,7 +208,10 @@ aiz hook uninstall
 | ID | 名称 | 端点 |
 |----|------|------|
 | `gpt-5.5` | GPT-5.5 | OpenAI |
+| `glm-5.2` | GLM-5.2 | 智谱AI |
 | `glm-5.1` | GLM-5.1 | 智谱AI |
+| `glm-5` | GLM-5 | 智谱AI |
+| `glm-5-turbo` | GLM-5-Turbo | 智谱AI |
 | `glm-5v-turbo` | GLM-5V-Turbo | 智谱AI |
 | `glm-4.7-flash` | GLM-4.7-Flash | 智谱AI |
 | `deepseek-v4-pro` | DeepSeek-V4-Pro | DeepSeek |

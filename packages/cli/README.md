@@ -210,7 +210,10 @@ Supports MCP (Model Context Protocol) for integrating external tools:
 | ID | Name | Endpoint |
 |----|------|----------|
 | `gpt-5.5` | GPT-5.5 | OpenAI |
+| `glm-5.2` | GLM-5.2 | ZhipuAI |
 | `glm-5.1` | GLM-5.1 | ZhipuAI |
+| `glm-5` | GLM-5 | ZhipuAI |
+| `glm-5-turbo` | GLM-5-Turbo | ZhipuAI |
 | `glm-5v-turbo` | GLM-5V-Turbo | ZhipuAI |
 | `glm-4.7-flash` | GLM-4.7-Flash | ZhipuAI |
 | `deepseek-v4-pro` | DeepSeek-V4-Pro | DeepSeek |
