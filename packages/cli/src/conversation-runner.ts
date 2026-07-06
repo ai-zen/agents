@@ -149,7 +149,7 @@ async function performMigration(
     newAgent.messages.push(Message.User(summary));
 
     // 更新上下文
-    ctx.currentName = `${ctx.currentName} (续)`;
+    ctx.currentName = `对话_${formatShortTime(new Date().toISOString())}`;
     ctx.currentId = undefined; // 新会话，新 ID
 
     return { newAgent, summary };
