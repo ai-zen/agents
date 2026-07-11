@@ -1,6 +1,6 @@
 import chalk from "chalk";
 import inquirer from "inquirer";
-import { Agent, AgentNS } from "@ai-zen/agents-core";
+import { AgentNS } from "@ai-zen/agents-core";
 import { ConversationContext } from "../types.js";
 
 function getMessageText(msg: AgentNS.Message): string {
@@ -23,7 +23,8 @@ interface BackTarget {
   preview: string;
 }
 
-export async function handleBack(agent: Agent, ctx: ConversationContext): Promise<void> {
+export async function handleBack(ctx: ConversationContext): Promise<void> {
+  const agent = ctx.agent;
   // 收集可撤回的目标消息：用户消息 和 工具/函数调用结果消息
   const targets: BackTarget[] = [];
   for (let i = 0; i < agent.messages.length; i++) {

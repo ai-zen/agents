@@ -1,10 +1,11 @@
 import chalk from "chalk";
 import inquirer from "inquirer";
-import { Agent, Message } from "@ai-zen/agents-core";
+import { Message } from "@ai-zen/agents-core";
 import { formatShortTime } from "../format-time.js";
 import { ConversationContext } from "../types.js";
 
-export async function handleNew(agent: Agent, ctx: ConversationContext): Promise<void> {
+export async function handleNew(ctx: ConversationContext): Promise<void> {
+  const agent = ctx.agent;
   const { confirmNew } = await inquirer.prompt([
     {
       type: "confirm",

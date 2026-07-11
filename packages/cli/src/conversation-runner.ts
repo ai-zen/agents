@@ -32,14 +32,11 @@ function extractSystemMessages(messages: AgentNS.Message[]): AgentNS.Message[] {
 
 // ==================== 发送消息 ====================
 
-async function sendAndStream(
-  agent: Agent,
-  ctx: ConversationContext,
-): Promise<void> {
+async function sendAndStream(ctx: ConversationContext): Promise<void> {
   console.log(chalk.green.bold("\n🤖 AI:"));
 
   try {
-    const messages = await agent.send(ctx.input);
+    const messages = await ctx.agent.send(ctx.input);
     process.stdout.write("\n\n");
 
     const lastMessage = messages.at(-1);
@@ -53,7 +50,7 @@ async function sendAndStream(
       try {
         saveConversation(
           ctx.currentName,
-          agent.messages,
+          ctx.agent.messages,
           ctx.modelId,
           ctx.currentId,
           ctx.agentId,
@@ -103,12 +100,9 @@ async function sendAndStream(
  * 1. 保存当前会话
  * 2. 使用摘要 Agent 生成交接文档
  * 3. 创建新会话，将交接文档作为第一条用户消息
- * 4. 返回新的 Agent 和更新后的上下文
+ * 4. 更新 ctx.agent 为新 Agent
  */
-async function performMigration(
-  agent: Agent,
-  ctx: ConversationContext,
-): Promise<{ newAgent: Agent; summary: string } | null> {
+async function performMigration(ctx: ConversationContext): Promise<string | null> {
   console.log(
     chalk.yellow.bold("\n📋 上下文已接近最大长度，正在生成交接文档...\n"),
   );
@@ -117,7 +111,7 @@ async function performMigration(
     // 1. 先保存当前会话
     const savedId = saveConversation(
       ctx.currentName,
-      agent.messages,
+      ctx.agent.messages,
       ctx.modelId,
       ctx.currentId,
       ctx.agentId,
@@ -128,11 +122,11 @@ async function performMigration(
 
     // 2. 生成交接文档
     console.log(chalk.gray("  📝 正在分析对话历史，筛选关键信息..."));
-    const summary = await generateMigrationDoc(agent.formatHistory());
+    const summary = await generateMigrationDoc(ctx.agent.formatHistory());
     console.log(chalk.gray("  ✅ 交接文档已生成"));
 
     // 3. 计算当前上下文大小，给用户参考
-    const totalChars = calcTotalChars(agent.messages);
+    const totalChars = calcTotalChars(ctx.agent.messages);
     console.log(
       chalk.gray(`  📊 原上下文: ${totalChars.toLocaleString()} 字符`),
     );
@@ -143,11 +137,14 @@ async function performMigration(
     // 5. 将交接文档作为第一条用户消息注入到新 Agent
     newAgent.messages.push(Message.User(summary));
 
+    // 6. 切换 ctx.agent 到新 Agent
+    ctx.agent = newAgent;
+
     // 更新上下文
     ctx.currentName = `对话_${formatShortTime(new Date().toISOString())}`;
     ctx.currentId = undefined; // 新会话，新 ID
 
-    return { newAgent, summary };
+    return summary;
   } catch (error: any) {
     console.error(
       chalk.red(`\n❌ 任务迁移失败: ${error.message}\n`),
@@ -180,6 +177,7 @@ export async function runConversation(
   );
 
   const ctx: ConversationContext = {
+    agent,
     input: "",
     currentName: conversationName || `对话_${formatShortTime(new Date().toISOString())}`,
     currentId: conversationId,
@@ -263,7 +261,7 @@ export async function runConversation(
   // ============ 每次 run 完成后保存草稿 ==========
 
   const onRunEnd = () => {
-    saveDraft(agent.messages, ctx.modelId, ctx.agentId);
+    saveDraft(ctx.agent.messages, ctx.modelId, ctx.agentId);
   };
 
   const onSubAgentEnd = ({
@@ -278,19 +276,19 @@ export async function runConversation(
 
   // ============ 注册事件 ============
 
-  agent.events.on("run-end", onRunEnd);
-  agent.events.on("run", onRun);
-  agent.events.on("chunk", onChunk);
-  agent.events.on("error", onError);
-  agent.events.on("sub-agent", onSubAgent);
-  agent.events.on("sub-agent-end", onSubAgentEnd);
+  ctx.agent.events.on("run-end", onRunEnd);
+  ctx.agent.events.on("run", onRun);
+  ctx.agent.events.on("chunk", onChunk);
+  ctx.agent.events.on("error", onError);
+  ctx.agent.events.on("sub-agent", onSubAgent);
+  ctx.agent.events.on("sub-agent-end", onSubAgentEnd);
 
   // ============ 如果有初始消息，先发送 ============
 
   if (initialMessage) {
     ctx.input = initialMessage;
     console.log(chalk.cyan("💬 你: ") + initialMessage + "\n");
-    await sendAndStream(agent, ctx);
+    await sendAndStream(ctx);
   }
 
   // ============ 主循环 ============
@@ -310,7 +308,7 @@ export async function runConversation(
     if (!ctx.input) continue;
 
     // 先尝试分发命令（以 / 开头）
-    const handled = await dispatchCommand(agent, ctx);
+    const handled = await dispatchCommand(ctx);
     if (handled) {
       // 命令处理完后默认跳过发送（continue），等待用户下一次输入。
       // 但某些命令（如 /back 撤回后重发）设置了 ctx.input 和 shouldSend 标记，
@@ -326,40 +324,39 @@ export async function runConversation(
     if (!ctx.input) continue;
 
     // 发送消息并等待 AI 回复完成
-    await sendAndStream(agent, ctx);
+    await sendAndStream(ctx);
 
     // 如果会话还在继续（没有退出），检测是否需要任务迁移
     if (ctx.running) {
       const modelConfig = getModel(ctx.modelId);
       const maxContextChars = modelConfig?.maxContextChars;
 
-      if (shouldMigrate(agent.messages, maxContextChars)) {
+      if (shouldMigrate(ctx.agent.messages, maxContextChars)) {
         console.log(
           chalk.cyan.bold("\n🔄 检测到上下文已接近最大长度，准备任务迁移...\n"),
         );
 
-        const result = await performMigration(agent, ctx);
+        // 解绑旧 Agent 的事件
+        ctx.agent.events.off("run", onRun);
+        ctx.agent.events.off("chunk", onChunk);
+        ctx.agent.events.off("error", onError);
+        ctx.agent.events.off("sub-agent", onSubAgent);
+        ctx.agent.events.off("sub-agent-end", onSubAgentEnd);
+        ctx.agent.events.off("run-end", onRunEnd);
 
-        if (result) {
-          // 切换事件监听：取消旧 agent 的监听，注册到新 agent
-          agent.events.off("run", onRun);
-          agent.events.off("chunk", onChunk);
-          agent.events.off("error", onError);
-          agent.events.off("sub-agent", onSubAgent);
-          agent.events.off("sub-agent-end", onSubAgentEnd);
-          agent.events.off("run-end", onRunEnd);
+        const summary = await performMigration(ctx);
 
-          agent = result.newAgent;
-
-          agent.events.on("run", onRun);
-          agent.events.on("chunk", onChunk);
-          agent.events.on("error", onError);
-          agent.events.on("sub-agent", onSubAgent);
-          agent.events.on("sub-agent-end", onSubAgentEnd);
-          agent.events.on("run-end", onRunEnd);
+        if (summary) {
+          // 绑定新 Agent 的事件（ctx.agent 已在 performMigration 中被替换）
+          ctx.agent.events.on("run", onRun);
+          ctx.agent.events.on("chunk", onChunk);
+          ctx.agent.events.on("error", onError);
+          ctx.agent.events.on("sub-agent", onSubAgent);
+          ctx.agent.events.on("sub-agent-end", onSubAgentEnd);
+          ctx.agent.events.on("run-end", onRunEnd);
 
           // 迁移后保存新会话的草稿
-          saveDraft(agent.messages, ctx.modelId, ctx.agentId);
+          saveDraft(ctx.agent.messages, ctx.modelId, ctx.agentId);
 
           console.log(
             chalk.green.bold(
@@ -369,17 +366,25 @@ export async function runConversation(
           console.log(
             chalk.gray("💡 你可以继续提问，新助手已经了解之前的全部工作。\n"),
           );
+        } else {
+          // 迁移失败，重新绑定旧 Agent 的事件
+          ctx.agent.events.on("run", onRun);
+          ctx.agent.events.on("chunk", onChunk);
+          ctx.agent.events.on("error", onError);
+          ctx.agent.events.on("sub-agent", onSubAgent);
+          ctx.agent.events.on("sub-agent-end", onSubAgentEnd);
+          ctx.agent.events.on("run-end", onRunEnd);
         }
       }
     }
   }
 
-  agent.events.off("run", onRun);
-  agent.events.off("chunk", onChunk);
-  agent.events.off("error", onError);
-  agent.events.off("sub-agent", onSubAgent);
-  agent.events.off("sub-agent-end", onSubAgentEnd);
-  agent.events.off("run-end", onRunEnd);
+  ctx.agent.events.off("run", onRun);
+  ctx.agent.events.off("chunk", onChunk);
+  ctx.agent.events.off("error", onError);
+  ctx.agent.events.off("sub-agent", onSubAgent);
+  ctx.agent.events.off("sub-agent-end", onSubAgentEnd);
+  ctx.agent.events.off("run-end", onRunEnd);
 
   console.log(chalk.blue.bold("\n👋 再见！\n"));
 }

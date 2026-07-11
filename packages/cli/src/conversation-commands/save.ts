@@ -1,10 +1,10 @@
 import chalk from "chalk";
 import inquirer from "inquirer";
-import { Agent } from "@ai-zen/agents-core";
 import { saveConversation } from "../conversations.js";
 import { ConversationContext } from "../types.js";
 
-export async function handleSave(agent: Agent, ctx: ConversationContext): Promise<void> {
+export async function handleSave(ctx: ConversationContext): Promise<void> {
+  const agent = ctx.agent;
   const { name } = await inquirer.prompt([
     {
       type: "input",

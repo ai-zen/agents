@@ -1,4 +1,3 @@
-import { Agent } from "@ai-zen/agents-core";
 import { ConversationContext, CommandHandler } from "../types.js";
 import { handleExit } from "./exit.js";
 import { handleSave } from "./save.js";
@@ -35,7 +34,6 @@ export function isCommand(input: string): boolean {
  * @returns true 表示是命令且已处理，false 表示不是命令
  */
 export async function dispatchCommand(
-  agent: Agent,
   ctx: ConversationContext,
 ): Promise<boolean> {
   const input = ctx.input;
@@ -52,7 +50,7 @@ export async function dispatchCommand(
     return true;
   }
 
-  await handler(agent, ctx);
+  await handler(ctx);
   return true;
 }
 

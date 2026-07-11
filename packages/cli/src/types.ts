@@ -174,6 +174,8 @@ export interface LoadedSubAgent {
 
 /** 对话上下文，由 runConversation 创建并传递给各命令处理函数 */
 export interface ConversationContext {
+  /** 当前 Agent，所有操作通过 ctx.agent 引用，避免闭包捕获变量问题 */
+  agent: Agent;
   input: string;
   currentName: string;
   modelId: string;
@@ -195,9 +197,9 @@ export interface ConversationContext {
 /**
  * 命令处理函数签名
  * 通过修改 ctx.input 或 ctx.running 来控制主循环行为
+ * 内部使用 ctx.agent 访问当前 Agent
  */
 export type CommandHandler = (
-  agent: Agent,
   ctx: ConversationContext,
 ) => Promise<void>;
 

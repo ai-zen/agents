@@ -16,8 +16,9 @@ function createMockAgent(messages: AgentNS.Message[]) {
   return { messages };
 }
 
-function createCtx(): ConversationContext {
+function createCtx(agent: any): ConversationContext {
   return {
+    agent,
     input: "",
     currentName: "test",
     modelId: "test-model",
@@ -35,9 +36,9 @@ describe("handleBack", () => {
 
   it("没有消息时返回提示", async () => {
     const agent = createMockAgent([]);
-    const ctx = createCtx();
+    const ctx = createCtx(agent);
 
-    await handleBack(agent as any, ctx);
+    await handleBack(ctx);
 
     expect(ctx.input).toBe("");
     expect(agent.messages.length).toBe(0);
@@ -47,9 +48,9 @@ describe("handleBack", () => {
     const agent = createMockAgent([
       { role: AgentNS.Role.System, content: "system prompt" },
     ]);
-    const ctx = createCtx();
+    const ctx = createCtx(agent);
 
-    await handleBack(agent as any, ctx);
+    await handleBack(ctx);
 
     expect(ctx.input).toBe("");
   });
@@ -60,11 +61,11 @@ describe("handleBack", () => {
       { role: AgentNS.Role.User, content: "hello" },
       { role: AgentNS.Role.Assistant, content: "hi" },
     ]);
-    const ctx = createCtx();
+    const ctx = createCtx(agent);
 
     vi.mocked(inquirer.prompt).mockResolvedValueOnce({ selectedIndex: -1 });
 
-    await handleBack(agent as any, ctx);
+    await handleBack(ctx);
 
     expect(ctx.input).toBe("");
     expect(agent.messages.length).toBe(3);
@@ -76,13 +77,13 @@ describe("handleBack", () => {
       { role: AgentNS.Role.User, content: "hello" },
       { role: AgentNS.Role.Assistant, content: "hi" },
     ]);
-    const ctx = createCtx();
+    const ctx = createCtx(agent);
 
     vi.mocked(inquirer.prompt)
       .mockResolvedValueOnce({ selectedIndex: 1 })
       .mockResolvedValueOnce({ editChoice: "cancel" });
 
-    await handleBack(agent as any, ctx);
+    await handleBack(ctx);
 
     expect(ctx.input).toBe("");
     expect(ctx.shouldSend).toBeUndefined();
@@ -96,13 +97,13 @@ describe("handleBack", () => {
       { role: AgentNS.Role.User, content: "hello" },
       { role: AgentNS.Role.Assistant, content: "hi" },
     ]);
-    const ctx = createCtx();
+    const ctx = createCtx(agent);
 
     vi.mocked(inquirer.prompt)
       .mockResolvedValueOnce({ selectedIndex: 1 })
       .mockResolvedValueOnce({ editChoice: "resend" });
 
-    await handleBack(agent as any, ctx);
+    await handleBack(ctx);
 
     expect(ctx.input).toBe("hello");
     expect(ctx.shouldSend).toBe(true);
@@ -115,14 +116,14 @@ describe("handleBack", () => {
       { role: AgentNS.Role.User, content: "hello" },
       { role: AgentNS.Role.Assistant, content: "hi" },
     ]);
-    const ctx = createCtx();
+    const ctx = createCtx(agent);
 
     vi.mocked(inquirer.prompt)
       .mockResolvedValueOnce({ selectedIndex: 1 })
       .mockResolvedValueOnce({ editChoice: "edit" })
       .mockResolvedValueOnce({ editedContent: "modified message" });
 
-    await handleBack(agent as any, ctx);
+    await handleBack(ctx);
 
     expect(ctx.input).toBe("modified message");
     expect(ctx.shouldSend).toBe(true);
@@ -135,14 +136,14 @@ describe("handleBack", () => {
       { role: AgentNS.Role.User, content: "hello" },
       { role: AgentNS.Role.Assistant, content: "hi" },
     ]);
-    const ctx = createCtx();
+    const ctx = createCtx(agent);
 
     vi.mocked(inquirer.prompt)
       .mockResolvedValueOnce({ selectedIndex: 1 })
       .mockResolvedValueOnce({ editChoice: "edit" })
       .mockResolvedValueOnce({ editedContent: "" });
 
-    await handleBack(agent as any, ctx);
+    await handleBack(ctx);
 
     expect(ctx.input).toBe("");
     expect(ctx.shouldSend).toBeUndefined();
@@ -155,13 +156,13 @@ describe("handleBack", () => {
       { role: AgentNS.Role.Assistant, content: "", tool_calls: [{ id: "call1", type: "function", function: { name: "calc", arguments: "{}" } }] },
       { role: AgentNS.Role.Tool, content: "2", name: "calc" },
     ]);
-    const ctx = createCtx();
+    const ctx = createCtx(agent);
 
     vi.mocked(inquirer.prompt)
       .mockResolvedValueOnce({ selectedIndex: 3 })
       .mockResolvedValueOnce({ newMessage: "继续" });
 
-    await handleBack(agent as any, ctx);
+    await handleBack(ctx);
 
     expect(ctx.input).toBe("继续");
     expect(ctx.shouldSend).toBe(true);
@@ -175,13 +176,13 @@ describe("handleBack", () => {
       { role: AgentNS.Role.Assistant, content: "", tool_calls: [{ id: "call1", type: "function", function: { name: "calc", arguments: "{}" } }] },
       { role: AgentNS.Role.Tool, content: "result" },
     ]);
-    const ctx = createCtx();
+    const ctx = createCtx(agent);
 
     vi.mocked(inquirer.prompt)
       .mockResolvedValueOnce({ selectedIndex: 3 })
       .mockResolvedValueOnce({ newMessage: "" });
 
-    await handleBack(agent as any, ctx);
+    await handleBack(ctx);
 
     expect(ctx.input).toBe("");
     expect(ctx.shouldSend).toBeUndefined();
@@ -193,14 +194,14 @@ describe("handleBack", () => {
       { role: AgentNS.Role.User, content: "hello" },
       { role: AgentNS.Role.Assistant, content: "hi" },
     ]);
-    const ctx = createCtx();
+    const ctx = createCtx(agent);
 
     vi.mocked(inquirer.prompt)
       .mockResolvedValueOnce({ selectedIndex: 1 })
       .mockResolvedValueOnce({ editChoice: "edit" })
       .mockResolvedValueOnce({ editedContent: "   " });
 
-    await handleBack(agent as any, ctx);
+    await handleBack(ctx);
 
     expect(ctx.input).toBe("");
     expect(ctx.shouldSend).toBeUndefined();
