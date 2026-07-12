@@ -13,6 +13,7 @@ import { downloadFileTool } from "./downloadFile.js";
 import { generateImageTool } from "./generateImage.js";
 import { renameTool } from "./rename.js";
 import { copyTool } from "./copy.js";
+import { editTool } from "./edit.js";
 
 export {
   cwd,
@@ -30,6 +31,7 @@ export {
   generateImageTool,
   renameTool,
   copyTool,
+  editTool,
 };
 
 export const allTools = [
@@ -48,4 +50,5 @@ export const allTools = [
   generateImageTool,
   renameTool,
   copyTool,
+  editTool,
 ];
