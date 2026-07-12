@@ -529,4 +529,3 @@ SubAgent 在运行时以工具形式注册，但其权限控制走独立的 `sub
 
 ### apiKey 明文存储
 当前阶段 apiKey 以明文存储在 `config.json` 中。文件权限（600）由用户自行保证。后续版本可考虑集成系统密钥链（macOS Keychain / Windows Credential Manager / Linux libsecret）。
-��
