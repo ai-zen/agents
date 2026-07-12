@@ -1,0 +1,39 @@
+{
+  "name": "@ai-zen/agents-sdk",
+  "version": "0.1.0",
+  "description": "AI-Zen Agents SDK — shared business logic for CLI and Desktop",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "clean": "rimraf ./dist",
+    "prebuild": "npm run clean",
+    "build": "tsc",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "sdk",
+    "llm",
+    "mcp",
+    "model-context-protocol"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@ai-zen/agents-core": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "dayjs": "^1.11.21"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.2",
+    "prettier": "^3.9.5",
+    "rimraf": "^6.0.0",
+    "typescript": "^5.3.3",
+    "vitest": "^4.1.9"
+  }
+}
