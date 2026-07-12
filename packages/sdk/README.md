@@ -23,7 +23,7 @@ Desktop ──┘              │
 types        ← 纯类型，零业务依赖
 config       ← 读写 config.json + 迁移 + 内存缓存 + 原子写入
 store        ← 实体 CRUD（Endpoints / Models / Agents / Conversations / Draft）
-tools        ← 工具发现与装配（内置 + 用户 + MCP + Skill + SubAgent）
+capabilities  ← 能力发现与装配（内置 + 用户 + MCP + Skill + SubAgent）
 runtime      ← Agent 组装 + 对话生命周期 + 任务迁移
 shared       ← 日志、错误
 ```

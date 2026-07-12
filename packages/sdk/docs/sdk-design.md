@@ -117,7 +117,7 @@ Agent.permissions
 types        ← 纯类型，零业务依赖
 config       ← 读写 config.json + 迁移 + 内存缓存 + 原子写入
 store        ← 实体 CRUD（Endpoints / Models / Agents / Conversations / Draft）
-tools        ← 工具发现与装配（内置 + 用户 + MCP + Skill + SubAgent）
+capabilities ← 能力发现与装配（内置 + 用户 + MCP + Skill + SubAgent）
 runtime      ← Agent 组装 + 对话生命周期 + 任务迁移
 shared       ← 日志、错误
 ```
@@ -125,9 +125,9 @@ shared       ← 日志、错误
 ### 依赖方向
 
 ```
-runtime ──> tools ──> store ──> config ──> types
-  │           │
-  └──> shared <──┘
+runtime ──> capabilities ──> store ──> config ──> types
+  │                │
+  └──> shared <────┘
 ```
 
 上层依赖下层，反之不行。同层模块不互相依赖。
@@ -525,7 +525,8 @@ SubAgent 在运行时以工具形式注册，但其权限控制走独立的 `sub
 迁移 Agent 不注册任何工具，只做文本分析。避免迁移过程触发新的工具调用。
 
 ### 模块分层严格
-`types → config → store → tools → runtime`，每层只依赖下一层。改一层不影响上层。
+`types → config → store → capabilities → runtime`，每层只依赖下一层。改一层不影响上层。
 
 ### apiKey 明文存储
 当前阶段 apiKey 以明文存储在 `config.json` 中。文件权限（600）由用户自行保证。后续版本可考虑集成系统密钥链（macOS Keychain / Windows Credential Manager / Linux libsecret）。
+��
