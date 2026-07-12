@@ -120,7 +120,7 @@ describe("AgentTool", () => {
       ];
 
       // injectArgs 是静态方法，但需要通过实例访问（protected），这里直接用原型
-      const result = AgentTool.prototype.injectArgs.call(
+      const result = AgentTool.injectArgs.call(
         { constructor: { name: "AgentTool" } },
         messages,
         { city: "北京", date: "2024-01-15" },
@@ -134,7 +134,7 @@ describe("AgentTool", () => {
       const originalContent = "请告诉我 {{ city }} 的天气";
       const messages = [Message.User(originalContent)];
 
-      AgentTool.prototype.injectArgs.call(
+      AgentTool.injectArgs.call(
         { constructor: { name: "AgentTool" } },
         messages,
         { city: "上海" },
@@ -150,7 +150,7 @@ describe("AgentTool", () => {
       ];
       const messages = [Message.User(sections)];
 
-      const result = AgentTool.prototype.injectArgs.call(
+      const result = AgentTool.injectArgs.call(
         { constructor: { name: "AgentTool" } },
         messages,
         { city: "广州" },

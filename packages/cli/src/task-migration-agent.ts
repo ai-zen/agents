@@ -215,10 +215,10 @@ export function formatHistoryToText(messages: AgentNS.Message[]): string {
 }
 
 /**
- * 计算消息列表的总字符数（纯文本格式下的大小）
+ * 计算消息列表的总字符数（JSON 序列化后的大小）
  */
 export function calcTotalChars(messages: AgentNS.Message[]): number {
-  return formatHistoryToText(messages).length;
+  return JSON.stringify(messages).length;
 }
 
 /**
@@ -265,12 +265,16 @@ export async function createMigrationAgent(): Promise<Agent> {
 }
 
 /**
- * 将迁移 Agent 的完整上下文写入错误日志，方便后续调试
+ * 记录迁移错误日志
+ * 存储最原始的信息：原始聊天记录 + 迁移 Agent 的完整消息列表 + 错误信息
  */
 export function logMigrationError(
   historyMessages: AgentNS.Message[],
   error: Error,
   migrationAgentMessages?: AgentNS.Message[],
+  options?: {
+    userPrompt?: string;
+  },
 ): string {
   const logsDir = join(CONFIG_DIR, "logs");
   if (!existsSync(logsDir)) {
@@ -280,35 +284,95 @@ export function logMigrationError(
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const logFile = join(logsDir, `migration-error-${timestamp}.json`);
 
-  const logData = {
+  const logData: Record<string, any> = {
     timestamp: new Date().toISOString(),
     error: {
       message: error.message,
       stack: error.stack,
     },
-    sourceContextSize: formatHistoryToText(historyMessages).length,
-    sourceMessageCount: historyMessages.length,
-    migrationAgentMessages: migrationAgentMessages
-      ? migrationAgentMessages.map((m) => ({
-          role: m.role,
-          status: m.status,
-          content:
-            typeof m.content === "string"
-              ? m.content.substring(0, 5000)
-              : "[non-string content]",
-          finish_reason: m.finish_reason,
-        }))
-      : null,
+    // 原始聊天记录
+    historyMessages,
+    // 迁移 Agent 的完整消息列表
+    migrationAgentMessages,
   };
+
+  // 迁移 Agent 收到的完整 prompt 另存为独立文件
+  if (options?.userPrompt) {
+    try {
+      const promptFile = join(logsDir, `migration-prompt-${timestamp}.txt`);
+      writeFileSync(promptFile, options.userPrompt, "utf-8");
+      logData.userPromptFile = promptFile;
+    } catch {
+      // 静默
+    }
+  }
 
   try {
     writeFileSync(logFile, JSON.stringify(logData, null, 2), "utf-8");
   } catch {
-    // 日志写入失败静默处理
+    // 静默
   }
 
   return logFile;
 }
+
+// ==================== 伪造工具调用 ====================
+
+/**
+ * 伪造一轮工具调用，返回一对消息：assistant（含 tool_calls）+ tool（含返回结果）。
+ *
+ * ## 设计缘由
+ *
+ * 任务迁移需要将对话历史传给独立的迁移 Agent 分析。序列化历史有两种选择：
+ *
+ * 1. **JSON 格式** — 结构化，Agent 能准确区分每条消息的角色和字段，不会混淆。
+ *    但体积巨大（每条消息重复出现 role/content/tool_calls 等字段名），
+ *    在长对话场景下可能比纯文本大 3-5 倍，严重挤占迁移 Agent 的上下文窗口。
+ *
+ * 2. **纯文本格式**（formatHistoryToText）— 紧凑，体积小，保留关键信息。
+ *    但如果直接作为 user 消息传给迁移 Agent，Agent 看到一大段纯文本对话记录，
+ *    会分不清这是"需要分析的历史数据"还是"当前正在发生的对话"，导致分析偏差
+ *    （如把历史中的用户消息当成当前用户指令、忽略工具调用的关联关系等）。
+ *
+ * 本函数的解决方案：将纯文本历史包装为一轮伪造的 `readFile` 工具调用。
+ * 迁移 Agent 看到的是：用户请求读文件 → assistant 调用了 readFile → tool 返回了文件内容。
+ * 这样 Agent 能借助工具调用的语义边界，清晰区分：
+ * - "工具返回的内容" = 需要分析的历史数据
+ * - "用户的消息" = 当前任务指令
+ *
+ * 既享受了纯文本的小体积优势，又避免了直接注入导致的混淆。
+ */
+export function forgeToolCallRound(options: {
+  toolName: string;
+  toolArgs: Record<string, any>;
+  toolResult: string;
+  callId?: string;
+}): [Message, Message] {
+  const callId = options.callId || `forge_${Date.now()}`;
+
+  const toolCall: AgentNS.ToolCall = {
+    id: callId,
+    type: "function",
+    function: {
+      name: options.toolName,
+      arguments: JSON.stringify(options.toolArgs),
+    },
+  };
+
+  const assistantMsg = new Message({
+    role: AgentNS.Role.Assistant,
+    content: "",
+    tool_calls: [toolCall],
+    status: AgentNS.MessageStatus.Completed,
+  });
+
+  const toolMsg = Message.Tool(toolCall, options.toolResult);
+  toolMsg.status = AgentNS.MessageStatus.Completed;
+
+  return [assistantMsg, toolMsg];
+}
+
+// ==================== 交接文档生成 ====================
 
 /**
  * 使用迁移 Agent 生成交接文档
@@ -319,64 +383,46 @@ export async function generateMigrationDoc(
   historyMessages: AgentNS.Message[],
 ): Promise<string> {
   const migrationAgent = await createMigrationAgent();
-
-  // 将对话历史渲染为紧凑的纯文本格式
-  // 相比 JSON.stringify，纯文本去掉了字段名冗余，体积更小
-  // 同时保留了 tool_call_id、函数名、参数等关键信息
   const historyText = formatHistoryToText(historyMessages);
-  const originalJsonSize = JSON.stringify(historyMessages).length;
-  const textSize = historyText.length;
-  const savedPercent = originalJsonSize > 0
-    ? Math.round((1 - textSize / originalJsonSize) * 100)
-    : 0;
 
-  const userContent = `请分析以下对话历史并生成交接文档。
+  const [forgeAssistant, forgeTool] = forgeToolCallRound({
+    toolName: "readFile",
+    toolArgs: { path: "conversation-history.md" },
+    toolResult: historyText,
+  });
 
-这是 AI 助手与用户的完整对话记录（纯文本格式，相比 JSON 节省约 ${savedPercent}% 空间）。
-每条消息包含角色和内容，工具调用会标注 call_id（如 call_0、call_1），
-工具返回结果会标注对应的 [回应 call_id] 以便关联。
-
-\`\`\`
-${historyText}
-\`\`\``;
+  migrationAgent.messages.push(
+    Message.User("请你帮我读取历史记录文件"),
+    forgeAssistant,
+    forgeTool,
+    Message.User("请你根据这些内容生成交接文档"),
+  );
+  migrationAgent.append(Message.Assistant());
 
   try {
-    // 发送消息给迁移 Agent
-    const messages = await migrationAgent.send(userContent);
+    const messages = await migrationAgent.run();
 
-    // 提取 AI 回复内容：从后往前找第一个非 error 的 assistant 消息
-    let lastMessage = messages
+    const lastMessage = messages
       .slice()
       .reverse()
       .find((m) => m.role === AgentNS.Role.Assistant && m.status !== "error");
 
-    if (!lastMessage) {
-      // 所有 assistant 消息都是 error，取最后一条获取具体错误信息
-      lastMessage = messages.at(-1);
-      const errMsg = typeof lastMessage?.content === "string"
+    if (!lastMessage) throw new Error("AI 回复出错");
+
+    const doc =
+      typeof lastMessage.content === "string"
         ? lastMessage.content
-        : "未知错误";
-      throw new Error(`任务迁移失败: AI 回复出错 - ${errMsg}`);
-    }
+        : Array.isArray(lastMessage.content)
+          ? lastMessage.content
+              .filter((s: any) => s.type === "text")
+              .map((s: any) => s.text)
+              .join("")
+          : "";
 
-    let doc = "";
-    if (typeof lastMessage.content === "string") {
-      doc = lastMessage.content;
-    } else if (Array.isArray(lastMessage.content)) {
-      doc = lastMessage.content
-        .filter((s) => s.type === "text")
-        .map((s) => s.text)
-        .join("");
-    }
-
-    // 如果内容为空，报错
-    if (!doc.trim()) {
-      throw new Error("任务迁移失败: AI 返回了空内容");
-    }
+    if (!doc.trim()) throw new Error("AI 返回了空内容");
 
     return doc;
   } catch (error: any) {
-    // 出错时将迁移 Agent 的完整上下文写入错误日志
     logMigrationError(historyMessages, error, migrationAgent.messages);
     throw error;
   }

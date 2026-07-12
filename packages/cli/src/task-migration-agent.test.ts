@@ -205,17 +205,17 @@ describe("formatHistoryToText", () => {
 // ==================== calcTotalChars ====================
 
 describe("calcTotalChars", () => {
-  it("计算消息列表的总字符数（基于纯文本渲染）", () => {
+  it("计算消息列表的总字符数（基于 JSON 序列化）", () => {
     const msgs = [
       makeTextMsg(AgentNS.Role.User, "你好"),
       makeTextMsg(AgentNS.Role.Assistant, "你好！有什么可以帮你的吗？"),
     ];
-    const expected = formatHistoryToText(msgs).length;
+    const expected = JSON.stringify(msgs).length;
     expect(calcTotalChars(msgs)).toBe(expected);
   });
 
-  it("计算空消息列表，长度为 0", () => {
-    expect(calcTotalChars([])).toBe(0);
+  it("计算空消息列表，长度为 2（[]）", () => {
+    expect(calcTotalChars([])).toBe(2);
   });
 
   it("包含 tool_calls 的消息", () => {
@@ -224,7 +224,7 @@ describe("calcTotalChars", () => {
         { name: "readFile", args: '{"path":"src/index.ts"}' },
       ]),
     ];
-    const expected = formatHistoryToText(msgs).length;
+    const expected = JSON.stringify(msgs).length;
     expect(calcTotalChars(msgs)).toBe(expected);
   });
 
@@ -232,7 +232,7 @@ describe("calcTotalChars", () => {
     const msgs = [
       makeFunctionCallMsg(AgentNS.Role.Assistant, "writeFile", '{"path":"a.txt","content":"hi"}'),
     ];
-    const expected = formatHistoryToText(msgs).length;
+    const expected = JSON.stringify(msgs).length;
     expect(calcTotalChars(msgs)).toBe(expected);
   });
 
@@ -245,7 +245,7 @@ describe("calcTotalChars", () => {
         { name: "writeFile", args: '{"path":"test.ts","content":"..."}' },
       ]),
     ];
-    const expected = formatHistoryToText(msgs).length;
+    const expected = JSON.stringify(msgs).length;
     expect(calcTotalChars(msgs)).toBe(expected);
   });
 
@@ -260,7 +260,7 @@ describe("calcTotalChars", () => {
         ],
       },
     ];
-    const expected = formatHistoryToText(msgs).length;
+    const expected = JSON.stringify(msgs).length;
     expect(calcTotalChars(msgs)).toBe(expected);
   });
 
@@ -268,19 +268,17 @@ describe("calcTotalChars", () => {
     const msgs: AgentNS.Message[] = [
       { role: AgentNS.Role.Assistant },
     ];
-    const expected = formatHistoryToText(msgs).length;
+    const expected = JSON.stringify(msgs).length;
     expect(calcTotalChars(msgs)).toBe(expected);
   });
 
-  it("hidden 消息不计入总长度", () => {
+  it("hidden 和 omit 消息也计入总长度（JSON 序列化不会跳过任何字段）", () => {
     const msgs = [
       makeTextMsg(AgentNS.Role.User, "可见"),
       makeTextMsg(AgentNS.Role.User, "隐藏", { hidden: true }),
     ];
-    const expected = formatHistoryToText(msgs).length;
+    const expected = JSON.stringify(msgs).length;
     expect(calcTotalChars(msgs)).toBe(expected);
-    // 验证 hidden 消息被跳过，所以长度只来自可见消息
-    expect(calcTotalChars(msgs)).toBe("[user] 可见".length);
   });
 });
 
@@ -299,7 +297,6 @@ describe("shouldMigrate", () => {
 
   it("消息文本长度超过 maxContextChars 时返回 true", () => {
     const msgs = makeMsgs(300);
-    // 300 条 "[user] xxxxxxxxxx" + 换行符，远超 5000
     expect(shouldMigrate(msgs, 5000)).toBe(true);
   });
 
@@ -427,9 +424,18 @@ const runIntegration = process.env.RUN_INTEGRATION === "true";
   it("处理简短对话时返回有效文档", async () => {
     const { generateMigrationDoc } = await import("./task-migration-agent.js");
     const history: AgentNS.Message[] = [
-      makeTextMsg(AgentNS.Role.System, "你是一个AI助手。"),
-      makeTextMsg(AgentNS.Role.User, "你好"),
-      makeTextMsg(AgentNS.Role.Assistant, "你好！有什么可以帮你的吗？"),
+      makeTextMsg(AgentNS.Role.System, "你是一个AI助手，帮助用户回答问题和执行任务。"),
+      makeTextMsg(AgentNS.Role.User, "帮我创建一个 Node.js 脚本，读取当前目录下所有 .md 文件并统计总字数"),
+      makeToolCallMsg(AgentNS.Role.Assistant, [
+        { name: "readFile", args: '{"path":"package.json"}' },
+      ]),
+      makeTextMsg(AgentNS.Role.Tool, '{"name":"readProject","content":"{\"name\":\"test-project\"}"}', { tool_call_id: "call_0" }),
+      makeTextMsg(AgentNS.Role.Assistant, "已查看项目结构，package.json 显示项目名为 test-project"),
+      makeToolCallMsg(AgentNS.Role.Assistant, [
+        { name: "writeFile", args: '{"path":"count-md.js","content":"const fs = require(\"fs\");\\nconst path = require(\"path\");\\nconst mdFiles = fs.readdirSync(__dirname).filter(f => f.endsWith(\".md\"));\\nlet total = 0;\\nfor (const f of mdFiles) {\\n  const content = fs.readFileSync(f, \"utf-8\");\\n  total += content.length;\\n}\\nconsole.log(\"总字数:\", total);"}' },
+      ]),
+      makeTextMsg(AgentNS.Role.Tool, "文件已写入", { tool_call_id: "call_0" }),
+      makeTextMsg(AgentNS.Role.Assistant, "脚本 count-md.js 已创建，功能是统计当前目录下所有 .md 文件的总字数"),
     ];
 
     const doc = await generateMigrationDoc(history);
