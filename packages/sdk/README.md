@@ -22,13 +22,13 @@ Desktop ──┘              │
 ```
 types        ← 纯类型，零业务依赖
 config       ← 读写 config.json + 迁移 + 内存缓存 + 原子写入
-store        ← 实体 CRUD（Endpoints / Models / Agents / Conversations / Draft）
+crud         ← 实体 CRUD（Endpoints / Models / Agents / Conversations / Draft）
 capabilities  ← 能力发现与装配（内置 + 用户 + MCP + Skill + SubAgent）
 runtime      ← Agent 组装 + 对话生命周期 + 任务迁移
 shared       ← 日志、错误
 ```
 
-依赖方向：`runtime → capabilities → store → config → types`，上层依赖下层，反之不行。
+依赖方向：`runtime → capabilities → crud → config → types`，上层依赖下层，反之不行。
 
 ## 核心概念
 
@@ -59,7 +59,7 @@ Agent.permissions
 |------|------|
 | `types` | ⏳ 待实现 |
 | `config` | ⏳ 待实现 |
-| `store` | ⏳ 待实现 |
+| `crud` | ⏳ 待实现 |
 | `capabilities` | ⏳ 待实现 |
 | `runtime` | ⏳ 待实现 |
 | `shared` | ⏳ 待实现 |
