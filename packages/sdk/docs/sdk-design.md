@@ -126,8 +126,8 @@ shared       ← 日志、错误
 
 ```
 runtime ──> capabilities ──> store ──> config ──> types
-  │                │
-  └──> shared <────┘
+  │              │
+  └──> shared <──┘
 ```
 
 上层依赖下层，反之不行。同层模块不互相依赖。

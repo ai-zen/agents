@@ -28,7 +28,7 @@ runtime      ← Agent 组装 + 对话生命周期 + 任务迁移
 shared       ← 日志、错误
 ```
 
-依赖方向：`runtime → tools → store → config → types`，上层依赖下层，反之不行。
+依赖方向：`runtime → capabilities → store → config → types`，上层依赖下层，反之不行。
 
 ## 核心概念
 
@@ -60,7 +60,7 @@ Agent.permissions
 | `types` | ⏳ 待实现 |
 | `config` | ⏳ 待实现 |
 | `store` | ⏳ 待实现 |
-| `tools` | ⏳ 待实现 |
+| `capabilities` | ⏳ 待实现 |
 | `runtime` | ⏳ 待实现 |
 | `shared` | ⏳ 待实现 |
 | 测试 | ⏳ 零覆盖 |
