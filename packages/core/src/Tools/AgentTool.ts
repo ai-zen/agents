@@ -52,7 +52,7 @@ export class AgentTool extends AgentContext implements Tool {
     ctx.agent.events.emit("sub-agent", { agent, ctx });
 
     // Inject the arguments into the cloned agent's message list
-    agent.messages = this.injectArgs(agent.messages, ctx.parsed_args);
+    agent.messages = AgentTool.injectArgs(agent.messages, ctx.parsed_args);
 
     // Get question message
     const questionMessage = agent.messages.at(-1)!;
@@ -103,7 +103,7 @@ export class AgentTool extends AgentContext implements Tool {
    * @param messages - The list of messages.
    * @param parsed_args - The parsed arguments.
    */
-  injectArgs<T extends AgentNS.Message>(messages: T[], parsed_args: any): T[] {
+  static injectArgs<T extends AgentNS.Message>(messages: T[], parsed_args: any): T[] {
     return JSON.parse(JSON.stringify(messages)).map((message: T) => ({
       ...message,
       content:
