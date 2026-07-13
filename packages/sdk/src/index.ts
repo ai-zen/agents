@@ -9,6 +9,15 @@ export type {
   Conversation,
   Draft,
   AppConfig,
+  McpIcon,
+  McpAnnotations,
+  McpToolDef,
+  McpResourceDef,
+  McpPromptDef,
+  McpServerManifest,
+  McpServerConfig,
+  McpTransport,
+  McpConnectionState,
 } from "./types";
 
 // 能力管线

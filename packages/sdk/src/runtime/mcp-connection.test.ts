@@ -5,7 +5,7 @@ import type { McpServerConfig, McpTransport, McpServerManifest } from "../types"
 function mockTransport(): McpTransport {
   return {
     connect: vi.fn().mockResolvedValue({
-      tools: [{ name: "test-tool", description: "a tool", parameters: {} }],
+      tools: [{ name: "test-tool", description: "a tool", inputSchema: { type: "object" } }],
       resources: [],
     }),
     disconnect: vi.fn().mockResolvedValue(undefined),

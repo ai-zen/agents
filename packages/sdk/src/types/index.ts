@@ -132,19 +132,65 @@ export interface McpTransport {
   onListChanged?: (callback: () => void) => void;
 }
 
-/** load_mcp 成功后返回的工具/资源清单 */
+// ---- MCP 共享子类型 ----
+
+/** 图标（MCP 规范 §Icons） */
+export interface McpIcon {
+  src: string;             // HTTP/HTTPS URL 或 data: URI
+  mimeType?: string;       // 如 "image/png"
+  sizes?: string[];        // 如 ["48x48"]、["any"]
+  theme?: "light" | "dark";
+}
+
+/** 注解（MCP 规范 §Annotations） */
+export interface McpAnnotations {
+  audience?: ("user" | "assistant")[];
+  priority?: number;       // 0.0-1.0
+  lastModified?: string;   // ISO 8601
+}
+
+// ---- MCP Server Manifest ----
+
+/** load_mcp 成功后返回的工具/资源/提示清单 */
 export interface McpServerManifest {
   tools: McpToolDef[];
   resources: McpResourceDef[];
+  prompts?: McpPromptDef[];
 }
 
+/** 工具定义（MCP 规范 §Tools） */
 export interface McpToolDef {
-  name: string;
-  description: string;
-  parameters: Record<string, unknown>;
+  name: string;                      // 唯一标识
+  title?: string;                    // 展示名称
+  description: string;               // 功能描述
+  icons?: McpIcon[];                 // UI 图标
+  inputSchema: Record<string, unknown>;  // 参数 JSON Schema（原 parameters）
+  outputSchema?: Record<string, unknown>; // 输出 JSON Schema
+  annotations?: McpAnnotations;      // 行为元数据
+  execution?: {                      // 任务增强执行
+    taskSupport?: "forbidden" | "optional" | "required";
+  };
 }
 
+/** 资源定义（MCP 规范 §Resources） */
 export interface McpResourceDef {
-  uri: string;
-  description?: string;
+  uri: string;                       // 资源 URI
+  name: string;                      // 展示名称
+  description?: string;              // 描述
+  mimeType?: string;                 // MIME 类型
+  size?: number;                     // 字节大小
+  icons?: McpIcon[];
+  annotations?: McpAnnotations;
+}
+
+/** 提示模板定义（MCP 规范 §Prompts） */
+export interface McpPromptDef {
+  name: string;                      // 唯一标识
+  title?: string;                    // 展示名称
+  description?: string;              // 描述
+  arguments?: {                      // 参数列表
+    name: string;
+    description?: string;
+    required?: boolean;
+  }[];
 }
