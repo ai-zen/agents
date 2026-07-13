@@ -50,6 +50,12 @@ export type { McpConnectOptions } from "./runtime/mcp-connection";
 export { shouldMigrate, buildMigrationPrompt, HANDOFF_SECTIONS, buildMigrationAgentDefinition, buildPostMigrationMessages } from "./runtime/task-migration";
 export type { BuildMigrationAgentOptions } from "./runtime/task-migration";
 
+// 会话运行时
+export { createSession } from "./session/session";
+export type { Session, SessionBuilder, SessionPlugin, SessionContext } from "./session/types";
+export { autoMigrate } from "./session/auto-migrate";
+export type { AutoMigrateOptions } from "./session/auto-migrate";
+
 // 共享
 export { createLogger } from "./shared/logger";
 export type { Logger, LogFunctions } from "./shared/logger";
