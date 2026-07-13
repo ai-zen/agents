@@ -604,4 +604,135 @@ describeIf("集成测试 - DeepSeek API", () => {
       TIMEOUT,
     );
   });
+
+  // ========== 6. lastUsage（token 用量追踪）==========
+
+  describe("lastUsage（token 用量）", () => {
+    it(
+      "简单对话后 lastUsage 应包含 prompt_tokens / completion_tokens / total_tokens",
+      async () => {
+        const agent = new Agent({
+          model,
+          messages: [Message.System("你是一个AI助手，请用中文回复，尽量简短。")],
+        });
+
+        expect(agent.lastUsage).toBeUndefined(); // 初始为空
+
+        await agent.send("你好，请回复'测试通过'这四个字。");
+
+        expect(agent.lastUsage).toBeDefined();
+        expect(typeof agent.lastUsage!.prompt_tokens).toBe("number");
+        expect(typeof agent.lastUsage!.completion_tokens).toBe("number");
+        expect(typeof agent.lastUsage!.total_tokens).toBe("number");
+        expect(agent.lastUsage!.prompt_tokens).toBeGreaterThan(0);
+        expect(agent.lastUsage!.completion_tokens).toBeGreaterThan(0);
+        expect(agent.lastUsage!.total_tokens).toBeGreaterThan(0);
+        // total = prompt + completion
+        expect(agent.lastUsage!.total_tokens).toBe(
+          agent.lastUsage!.prompt_tokens + agent.lastUsage!.completion_tokens,
+        );
+      },
+      TIMEOUT,
+    );
+
+    it(
+      "多轮对话后 lastUsage 应反映最新一轮的 token 用量",
+      async () => {
+        const agent = new Agent({
+          model,
+          messages: [Message.System("你是一个AI助手，请用中文回复，尽量简短。")],
+        });
+
+        await agent.send("回复'第一轮'。");
+        const firstUsage = agent.lastUsage!;
+        expect(firstUsage.prompt_tokens).toBeGreaterThan(0);
+
+        await agent.send("回复'第二轮'。");
+        const secondUsage = agent.lastUsage!;
+
+        // 第二轮 prompt_tokens 应该 > 第一轮（因为包含了历史消息）
+        expect(secondUsage.prompt_tokens).toBeGreaterThan(
+          firstUsage.prompt_tokens,
+        );
+        // lastUsage 已更新为最新一轮
+        expect(secondUsage).not.toEqual(firstUsage);
+      },
+      TIMEOUT,
+    );
+
+    it(
+      "工具调用后 lastUsage 应正确记录（含多轮 tool call）",
+      async () => {
+        const weatherTool = new CallbackTool({
+          function: {
+            name: "get_weather",
+            description: "查询指定城市的当前天气",
+            parameters: {
+              type: "object",
+              properties: {
+                city: { type: "string", description: "城市名" },
+              },
+              required: ["city"],
+            },
+          },
+          callback(args: { city: string }) {
+            return `${args.city}：晴，25°C`;
+          },
+        });
+
+        const agent = new Agent({
+          model,
+          messages: [
+            Message.System(
+              "你是一个天气助手，必须使用 get_weather 工具查询天气。请用中文回复。",
+            ),
+          ],
+          tools: [weatherTool],
+        });
+
+        await agent.send("北京天气怎么样？");
+
+        // 工具调用完成后 lastUsage 应有值
+        expect(agent.lastUsage).toBeDefined();
+        expect(agent.lastUsage!.prompt_tokens).toBeGreaterThan(0);
+        expect(agent.lastUsage!.total_tokens).toBeGreaterThan(0);
+
+        // 确认工具确实被调用了
+        const toolMessages = agent.messages.filter(
+          (m) => m.role === AgentNS.Role.Tool,
+        );
+        expect(toolMessages.length).toBeGreaterThan(0);
+      },
+      TIMEOUT,
+    );
+
+    it(
+      "abort 中断后 lastUsage 保持中断前的值",
+      async () => {
+        const agent = new Agent({
+          model,
+          messages: [
+            Message.System("你是一个AI助手，请用中文回复。"),
+          ],
+        });
+
+        // 先完成一轮正常对话，确保 lastUsage 有值
+        await agent.send("回复'OK'。");
+        const beforeUsage = agent.lastUsage;
+        expect(beforeUsage).toBeDefined();
+
+        // 发起一个可能较长的请求，然后 abort
+        const sendPromise = agent.send("请写一篇5000字的文章。");
+
+        await new Promise((r) => setTimeout(r, 1500));
+        agent.abort();
+        await sendPromise;
+
+        // abort 后 lastUsage 应保持上一轮的值（不会被覆盖为 undefined）
+        expect(agent.lastUsage).toBeDefined();
+        expect(agent.lastUsage!.prompt_tokens).toBe(beforeUsage!.prompt_tokens);
+      },
+      TIMEOUT,
+    );
+  });
 });
