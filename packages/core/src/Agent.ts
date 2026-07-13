@@ -15,6 +15,9 @@ interface PendingTask {
 export class Agent extends AgentContext {
   events = new EventBus();
 
+  /** 最近一次 API 响应的 token 用量 */
+  lastUsage?: AgentNS.Usage;
+
   constructor(options: PickRequired<AgentContext, "model">) {
     super(options);
   }
@@ -189,6 +192,11 @@ export class Agent extends AgentContext {
   ) {
     for await (const chunk of stream) {
       this.events.emit("chunk", chunk);
+
+      // 捕获流式最后一个 chunk 的 usage
+      if (chunk?.usage) {
+        this.lastUsage = chunk.usage;
+      }
 
       if (chunk?.error) {
         throw new Error(chunk.error.message);

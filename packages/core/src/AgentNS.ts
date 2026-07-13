@@ -102,6 +102,7 @@ export namespace AgentNS {
   export interface StreamResponseData {
     error?: { code: string; message: string };
     choices?: StreamChoice[];
+    usage?: Usage;
   }
 
   export interface Choice {
@@ -114,6 +115,13 @@ export namespace AgentNS {
   export interface ResponseData {
     error?: { code: string; message: string };
     choices?: Choice[];
+    usage?: Usage;
+  }
+
+  export interface Usage {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
   }
 
   export interface FunctionDefine {

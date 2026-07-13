@@ -226,6 +226,7 @@ export class ChatGPT<
         ...model_config,
         ...this.formatTools(options.tools),
         stream: true,
+        stream_options: { include_usage: true },
         messages: options.messages,
       }),
       async onopen(response) {
@@ -327,6 +328,7 @@ export class ChatGPT<
   ): AgentNS.StreamResponseData {
     return {
       ...data,
+      usage: data.usage ?? undefined,
       choices: data.choices?.map(this.formatStreamChoice.bind(this)),
     };
   }
