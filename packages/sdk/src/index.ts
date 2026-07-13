@@ -20,6 +20,11 @@ export type { DisclosureItem, DisclosureParam } from "./capabilities/disclosure"
 export { assembleCapabilities } from "./capabilities/pipeline";
 export type { AssemblyInput, AssemblyOutput } from "./capabilities/pipeline";
 
+// 发现
+export { discoverSubAgents } from "./capabilities/discovery/subagents";
+export { discoverSkills } from "./capabilities/discovery/skills";
+export { discoverMcpServers } from "./capabilities/discovery/mcp";
+
 // 配置
 export { readConfig, writeConfig, getDefaultConfig } from "./config/manager";
 
