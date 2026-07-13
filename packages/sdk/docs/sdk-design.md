@@ -119,15 +119,19 @@ config       ← 读写 config.json + 迁移 + 内存缓存 + 原子写入
 crud         ← 实体 CRUD（Endpoints / Models / Agents / Conversations / Draft）
 capabilities ← 能力发现与装配（内置 + 用户 + MCP + Skill + SubAgent）
 runtime      ← Agent 组装 + 对话生命周期 + 任务迁移
+session      ← 会话包装（插件链：autoMigrate 等），依赖 Core Agent
 shared       ← 日志、错误
 ```
 
 ### 依赖方向
 
 ```
-runtime ──> capabilities ──> crud ──> config ──> types
-  │              │
-  └──> shared <──┘
+session ──> runtime ──> capabilities ──> crud ──> config ──> types
+  │            │              │
+  ├────────────┤              │
+  │            └──> shared <──┘
+  │
+  └──> @ai-zen/agents-core (Agent, Message)
 ```
 
 上层依赖下层，反之不行。同层模块不互相依赖。
@@ -567,3 +571,135 @@ SubAgent 在运行时以工具形式注册，但其权限控制走独立的 `sub
 
 ### apiKey 明文存储
 当前阶段 apiKey 以明文存储在 `config.json` 中。文件权限（600）由用户自行保证。后续版本可考虑集成系统密钥链（macOS Keychain / Windows Credential Manager / Linux libsecret）。
+
+---
+
+## 11. 会话运行时（Session + Plugin）
+
+Core `Agent` 不做复杂逻辑（不感知迁移、自动保存等）。SDK 提供薄包装层 `Session`，通过插件机制扩展行为。
+
+### 设计原则
+
+- **Agent 保持纯粹**：Core `Agent` 只管 `send()` / `run()`，不污染
+- **插件可堆叠**：每个插件单一职责，通过 `.use()` 链式组合
+- **Session 是薄壳**：主要逻辑是 `send()` 委托 + 遍历插件钩子
+
+### 核心类型
+
+```typescript
+interface SessionContext {
+  agent: Agent;   // 当前 Core Agent 实例（迁移后可被插件替换）
+  model: Model;   // 模型配置（含 maxContextTokens）
+}
+
+interface SessionPlugin {
+  /** Agent.run() 返回后调用。可返回新 Agent 替换当前实例。 */
+  afterRun?(ctx: SessionContext): Promise<Agent | void>;
+}
+
+interface Session {
+  readonly agent: Agent;
+  send(content: string): Promise<Message[]>;
+}
+```
+
+### 创建工厂
+
+```typescript
+function createSession(options: {
+  agent: Agent;
+  model: Model;
+}): SessionBuilder;
+
+interface SessionBuilder {
+  use(plugin: SessionPlugin): SessionBuilder;
+  init(): Promise<Session>;
+}
+```
+
+用法：
+
+```typescript
+const session = await createSession({ agent, model })
+  .use(autoMigrate({ maxTokens, migrationAgent, onHandoff }))
+  .use(autoDraft({ draftsDir }))   // 未来
+  .init();
+
+await session.send("你好");
+```
+
+### send() 流程
+
+```
+send(content)
+  ├─ agent.send(content)           // 委托 Core Agent
+  ├─ 遍历 plugins:
+  │    for (const plugin of plugins) {
+  │      const newAgent = await plugin.afterRun?.({ agent, model });
+  │      if (newAgent) agent = newAgent;   // 插件可替换 Agent
+  │    }
+  └─ 返回 messages
+```
+
+---
+
+### 内置插件：autoMigrate
+
+```typescript
+interface AutoMigrateOptions {
+  /** 触发迁移的 token 阈值 */
+  maxTokens: number;
+  /** 迁移 Agent（无工具，system prompt = buildMigrationPrompt） */
+  migrationAgent: Agent;
+  /** 迁移完成回调，传入交接文档 */
+  onHandoff?: (handoffDoc: string) => void;
+}
+
+function autoMigrate(options: AutoMigrateOptions): SessionPlugin;
+```
+
+**afterRun 逻辑**：
+
+```
+1. 读取 agent.lastUsage?.prompt_tokens
+2. shouldMigrate(promptTokens, maxTokens)
+3. 如果未超限 → 返回 void（Agent 不变）
+4. 如果超限：
+   a. 将当前 agent.messages（完整历史）作为 user 消息发给 migrationAgent
+   b. migrationAgent.send() → 生成交接文档 handoffDoc
+   c. 调用 onHandoff(handoffDoc)（消费者可在此保存旧对话）
+   d. 构建新 Agent：
+      - 沿用原 system prompt + 工具配置
+      - messages 初始化为 buildPostMigrationMessages(handoffDoc)
+   e. 返回新 Agent → Session 自动替换
+```
+
+**使用示例**：
+
+```typescript
+const migrationAgent = new Agent({
+  model,
+  messages: [Message.System(buildMigrationPrompt())],
+  // 无 tools → 迁移 Agent 专用化
+});
+
+const session = await createSession({ agent, model })
+  .use(autoMigrate({
+    maxTokens: model.maxContextTokens,
+    migrationAgent,
+    onHandoff: (doc) => {
+      // 保存旧对话到磁盘
+      writeConversation(id, session.agent.messages);
+    },
+  }))
+  .init();
+
+// 用户无感 — 上下文超限时自动迁移，Agent 被透明替换
+await session.send("继续重构...");
+```
+
+### 迁移失败处理
+
+- 迁移 Agent 调用失败 → 原 Agent 不变，错误日志写入 `~/.ai-zen/logs/`
+- `onHandoff` 中保存旧对话失败 → 不影响迁移流程，新 Agent 已就绪
+- 迁移过程中用户旧对话不丢失（已保存在 `agent.messages` 中）
