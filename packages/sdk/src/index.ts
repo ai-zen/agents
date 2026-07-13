@@ -24,11 +24,13 @@ export type { AssemblyInput, AssemblyOutput } from "./capabilities/pipeline";
 export { BUILTIN_TOOLS } from "./capabilities/discovery/builtin";
 export type { BuiltinToolName } from "./capabilities/discovery/builtin";
 export { discoverSubAgents } from "./capabilities/discovery/subagents";
-export { discoverSkills } from "./capabilities/discovery/skills";
+export { discoverSkills, readSkill, parseFrontmatter } from "./capabilities/discovery/skills";
+export type { SkillInfo, Frontmatter } from "./capabilities/discovery/skills";
 export { discoverMcpServers } from "./capabilities/discovery/mcp";
 
 // 配置
 export { readConfig, writeConfig, getDefaultConfig } from "./config/manager";
+export { ensureDefaultAgent, DEFAULT_AGENT_ID, DEFAULT_AGENT_DEFINITION } from "./config/bootstrap";
 
 // CRUD
 export { listAgents, readAgent, writeAgent, deleteAgent } from "./crud/agents";
@@ -40,6 +42,8 @@ export { createAgent } from "./runtime/factory";
 export type { CreateAgentInput, ResolvedAgent } from "./runtime/factory";
 export { resolveAgent } from "./runtime/resolve";
 export type { ResolveAgentInput } from "./runtime/resolve";
+export { createSkillSubAgent } from "./runtime/skill-sub-agent";
+export type { CreateSkillSubAgentInput } from "./runtime/skill-sub-agent";
 export { shouldMigrate, countContextChars, buildMigrationPrompt, HANDOFF_SECTIONS } from "./runtime/task-migration";
 
 // 共享
