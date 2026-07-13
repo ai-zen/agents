@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { assembleCapabilities } from "./pipeline";
-import type { AgentPermissions, DisclosureItem } from "../types";
+import type { AgentPermissions } from "../types";
+import type { DisclosureItem } from "./disclosure";
 
 const builtinTools = ["readFile", "exec", "rm", "writeFile", "glob"];
 const userTools = ["my-custom-tool"];

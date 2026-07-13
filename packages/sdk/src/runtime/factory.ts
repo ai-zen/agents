@@ -1,6 +1,7 @@
-import type { AgentDefinition, AppConfig, Model, DisclosureItem } from "../types";
+import type { AgentDefinition, AppConfig, Model } from "../types";
 import { assembleCapabilities } from "../capabilities/pipeline";
 import type { AssemblyOutput } from "../capabilities/pipeline";
+import type { DisclosureItem } from "../capabilities/disclosure";
 
 export interface CreateAgentInput {
   definition: AgentDefinition;

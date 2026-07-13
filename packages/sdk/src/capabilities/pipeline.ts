@@ -1,8 +1,8 @@
-import type { AgentPermissions, DisclosureItem } from "../types";
+import type { AgentPermissions } from "../types";
 import { filterByPermissions } from "./permissions";
 import { prefilterSubAgents, prefilterSkillTools } from "./prefilter";
 import { buildDisclosureParam } from "./disclosure";
-import type { DisclosureParam } from "./disclosure";
+import type { DisclosureParam, DisclosureItem } from "./disclosure";
 
 const DYNAMIC_TOOLS = [
   "load_skill",
