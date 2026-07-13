@@ -3,6 +3,7 @@ import { readAgent } from "../crud/agents";
 import { discoverSubAgents } from "../capabilities/discovery/subagents";
 import { discoverSkills } from "../capabilities/discovery/skills";
 import { discoverMcpServers } from "../capabilities/discovery/mcp";
+import { discoverUserTools } from "../capabilities/discovery/usertools";
 import { BUILTIN_TOOLS } from "../capabilities/discovery/builtin";
 import { createAgent } from "./factory";
 import type { CreateAgentInput, ResolvedAgent } from "./factory";
@@ -13,6 +14,7 @@ export interface ResolveAgentInput {
   agentsDir: string;
   subAgentsDir?: string;
   skillsDir?: string;
+  toolsDir?: string;
   mcpPaths?: string[];
 }
 
@@ -26,6 +28,7 @@ export function resolveAgent(input: ResolveAgentInput): ResolvedAgent {
     agentsDir,
     subAgentsDir,
     skillsDir,
+    toolsDir,
     mcpPaths = [],
   } = input;
 
@@ -36,12 +39,14 @@ export function resolveAgent(input: ResolveAgentInput): ResolvedAgent {
 
   const subagents = subAgentsDir ? discoverSubAgents(subAgentsDir) : [];
   const skills = skillsDir ? discoverSkills(skillsDir) : [];
+  const userTools = toolsDir ? discoverUserTools(toolsDir) : [];
   const mcps = discoverMcpServers(mcpPaths);
 
   const createInput: CreateAgentInput = {
     definition,
     config,
     builtinTools: [...BUILTIN_TOOLS],
+    userTools,
     subagents: subagents.map((s) => s.id),
     skills,
     mcps,

@@ -27,6 +27,7 @@ export { discoverSubAgents } from "./capabilities/discovery/subagents";
 export { discoverSkills, readSkill, parseFrontmatter } from "./capabilities/discovery/skills";
 export type { SkillInfo, Frontmatter } from "./capabilities/discovery/skills";
 export { discoverMcpServers } from "./capabilities/discovery/mcp";
+export { discoverUserTools } from "./capabilities/discovery/usertools";
 
 // 配置
 export { readConfig, writeConfig, getDefaultConfig } from "./config/manager";
