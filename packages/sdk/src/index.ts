@@ -40,6 +40,7 @@ export { createAgent } from "./runtime/factory";
 export type { CreateAgentInput, ResolvedAgent } from "./runtime/factory";
 export { resolveAgent } from "./runtime/resolve";
 export type { ResolveAgentInput } from "./runtime/resolve";
+export { shouldMigrate, countContextChars, buildMigrationPrompt, HANDOFF_SECTIONS } from "./runtime/task-migration";
 
 // 共享
 export { createLogger } from "./shared/logger";
