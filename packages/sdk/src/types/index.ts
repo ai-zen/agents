@@ -33,7 +33,7 @@ export interface Model {
   id: string; // 唯一标识
   name: string; // 展示名称
   endpointId: string; // 关联 Endpoint.id
-  maxContextChars: number; // 上下文窗口上限（字符数近似）
+  maxContextTokens: number; // 上下文窗口 token 上限
   defaultParams?: Record<string, unknown>; // 模型默认参数（temperature 等）
 }
 
@@ -74,6 +74,7 @@ export interface Conversation {
   agentId: string; // 关联 Agent.id
   modelId: string; // 对话使用的模型
   messages: AgentMessage[]; // 完整消息历史
+  lastPromptTokens?: number; // 最近一轮 API 返回的 usage.prompt_tokens
   createdAt: string; // ISO 8601
   updatedAt: string; // ISO 8601
 }

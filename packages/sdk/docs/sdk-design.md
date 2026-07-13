@@ -16,7 +16,7 @@ Endpoint ──1:N──> Model ──> Agent ──1:N──> Conversation
 | 实体 | 说明 | 存储 |
 |------|------|------|
 | **Endpoint** | API 端点，含 baseUrl + apiKey | `config.json` |
-| **Model** | 模型配置，绑定一个 Endpoint + 默认参数 + maxContextChars | `config.json` |
+| **Model** | 模型配置，绑定一个 Endpoint + 默认参数 + maxContextTokens | `config.json` |
 | **Agent** | 可对话的 AI 人格，含提示词、权限、可选工具签名 | `agents/*.json` |
 | **SubAgent** | 特殊 Agent：有 `function` 字段，可被其他 Agent 作为工具调用 | `sub-agents/*.json` |
 | **Conversation** | 用户与 Agent 的对话记录 | `conversations/*.json` |
@@ -444,7 +444,7 @@ skill 走 `load_skill` 参数枚举披露，不占初始上下文。加载后正
   │
   ├─ 检查上下文量
   │   ├─ 未超 threshold → 正常继续
-  │   └─ 超过 maxContextChars → 触发任务迁移
+  │   └─ 超过 maxContextTokens → 触发任务迁移
   │
   ├─ 任务迁移
   │   ├─ 保存当前对话
@@ -461,9 +461,47 @@ skill 走 `load_skill` 参数枚举披露，不占初始上下文。加载后正
 
 ### 上下文计量
 
-`maxContextChars` 按 `JSON.stringify(messages).length` 计算。这是一个近似值，比 token 计数更廉价、确定性更高。
+不估算、不学习。**只在 API 响应后，用 `usage.prompt_tokens` 做迁移判断。**
 
-默认值：当前默认模型上下文窗口约 1M tokens，按 1 token ≈ 2 字符粗估，`maxContextChars` 默认设为 500,000（约 250K tokens，为窗口的 25%，留足 response 空间）。其他模型按同样比例设定。
+```
+Round N 请求
+  ↓
+API 响应 → usage.prompt_tokens = 180,000
+  ↓
+shouldMigrate(180_000, 250_000) → false → 继续
+  ...
+  ↓
+API 响应 → usage.prompt_tokens = 260,000
+  ↓
+shouldMigrate(260_000, 250_000) → true → 触发迁移
+```
+
+#### shouldMigrate
+
+```typescript
+function shouldMigrate(promptTokens: number, maxTokens: number): boolean {
+  return promptTokens > maxTokens;
+}
+```
+
+纯比较，无依赖。运行时在每轮 API 响应后调用。
+
+#### Conversation 存储
+
+```typescript
+interface Conversation {
+  // ... 其他字段
+  lastPromptTokens?: number;  // 最近一轮 API 返回的 usage.prompt_tokens
+}
+```
+
+#### 流式兼容性
+
+`usage` 在流式最后一个 chunk 返回（`stream_options: { include_usage: true }`）。`shouldMigrate` 在流结束后调用即可，无额外处理。
+
+#### 阈值设定
+
+`Model.maxContextTokens` 设为模型上下文窗口的约 25%（例如 1M tokens 窗口 → 250,000），留足 response 空间。
 
 ### Draft 自动保存与恢复
 

@@ -1,17 +1,11 @@
 import type { AgentDefinition, AgentMessage } from "../types";
 
 /**
- * 按 JSON.stringify(messages).length 计算上下文字符数近似值。
- */
-export function countContextChars(messages: AgentMessage[]): number {
-  return JSON.stringify(messages).length;
-}
-
-/**
  * 判断是否需要触发任务迁移。
+ * 运行时在每轮 API 响应后，用 usage.prompt_tokens 调用此函数。
  */
-export function shouldMigrate(messages: AgentMessage[], maxContextChars: number): boolean {
-  return countContextChars(messages) > maxContextChars;
+export function shouldMigrate(promptTokens: number, maxTokens: number): boolean {
+  return promptTokens > maxTokens;
 }
 
 /** 交接文档各节标题 */

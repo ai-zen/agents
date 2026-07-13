@@ -1,35 +1,17 @@
 import { describe, it, expect } from "vitest";
-import { shouldMigrate, countContextChars, buildMigrationPrompt, buildMigrationAgentDefinition, buildPostMigrationMessages } from "./task-migration";
-import type { AgentMessage } from "../types";
-
-describe("countContextChars", () => {
-  it("计算 JSON 序列化后的字符数", () => {
-    const messages: AgentMessage[] = [
-      { role: "system", content: "Hello" },
-      { role: "user", content: "Hi" },
-    ];
-    const expected = JSON.stringify(messages).length;
-    expect(countContextChars(messages)).toBe(expected);
-  });
-
-  it("空数组为 2（空 JSON 数组）", () => {
-    expect(countContextChars([])).toBe(2);
-  });
-});
+import { shouldMigrate, buildMigrationPrompt, buildMigrationAgentDefinition, buildPostMigrationMessages } from "./task-migration";
 
 describe("shouldMigrate", () => {
-  it("超过阈值返回 true", () => {
-    const messages: AgentMessage[] = [
-      { role: "user", content: "x".repeat(600) },
-    ];
-    expect(shouldMigrate(messages, 500)).toBe(true);
+  it("promptTokens 超过 maxTokens 返回 true", () => {
+    expect(shouldMigrate(260_000, 250_000)).toBe(true);
   });
 
-  it("未超阈值返回 false", () => {
-    const messages: AgentMessage[] = [
-      { role: "user", content: "hello" },
-    ];
-    expect(shouldMigrate(messages, 500000)).toBe(false);
+  it("promptTokens 未超过返回 false", () => {
+    expect(shouldMigrate(180_000, 250_000)).toBe(false);
+  });
+
+  it("恰好等于时返回 false（边界内不触发）", () => {
+    expect(shouldMigrate(250_000, 250_000)).toBe(false);
   });
 });
 

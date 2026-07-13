@@ -21,7 +21,7 @@ const config: AppConfig = {
     { id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com", apiKey: "sk-xxx" },
   ],
   models: [
-    { id: "gpt4", name: "GPT-4", endpointId: "openai", maxContextChars: 500000 },
+    { id: "gpt4", name: "GPT-4", endpointId: "openai", maxContextTokens: 500000 },
   ],
 };
 

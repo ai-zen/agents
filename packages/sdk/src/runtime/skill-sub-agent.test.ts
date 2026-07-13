@@ -6,7 +6,7 @@ import type { AppConfig, AgentPermissions } from "../types";
 const mockConfig: AppConfig = {
   defaultModel: "gpt-4",
   endpoints: [{ id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com", apiKey: "sk-test" }],
-  models: [{ id: "gpt-4", name: "GPT-4", endpointId: "openai", maxContextChars: 500_000 }],
+  models: [{ id: "gpt-4", name: "GPT-4", endpointId: "openai", maxContextTokens: 500_000 }],
 };
 
 const mockSkill: SkillInfo = {

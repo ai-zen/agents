@@ -8,8 +8,8 @@ const config: AppConfig = {
     { id: "e1", name: "OpenAI", baseUrl: "https://api.openai.com", apiKey: "sk-xxx" },
   ],
   models: [
-    { id: "m1", name: "GPT-4", endpointId: "e1", maxContextChars: 500000 },
-    { id: "m2", name: "GPT-3.5", endpointId: "e1", maxContextChars: 100000 },
+    { id: "m1", name: "GPT-4", endpointId: "e1", maxContextTokens: 500000 },
+    { id: "m2", name: "GPT-3.5", endpointId: "e1", maxContextTokens: 100000 },
   ],
 };
 
