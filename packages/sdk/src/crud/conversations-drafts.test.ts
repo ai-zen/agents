@@ -68,6 +68,22 @@ describe("conversations", () => {
     deleteConversation(dir, "x");
     expect(readConversation(dir, "x")).toBeNull();
   });
+
+  it("lastPromptTokens 往返持久化", () => {
+    const conv = { ...sampleConversation("c1"), lastPromptTokens: 42000 };
+    writeConversation(dir, conv);
+    const read = readConversation(dir, "c1");
+    expect(read).not.toBeNull();
+    expect(read!.lastPromptTokens).toBe(42000);
+  });
+
+  it("lastPromptTokens 未设置时为 undefined", () => {
+    const conv = sampleConversation("c1"); // 无 lastPromptTokens
+    writeConversation(dir, conv);
+    const read = readConversation(dir, "c1");
+    expect(read).not.toBeNull();
+    expect(read!.lastPromptTokens).toBeUndefined();
+  });
 });
 
 // ---- Drafts ----

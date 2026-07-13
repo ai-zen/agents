@@ -55,6 +55,7 @@ export { createSession } from "./session/session";
 export type { Session, SessionBuilder, SessionPlugin, SessionContext } from "./session/types";
 export { autoMigrate } from "./session/auto-migrate";
 export type { AutoMigrateOptions } from "./session/auto-migrate";
+export { getLastPromptTokens } from "./session/helpers";
 
 // 共享
 export { createLogger } from "./shared/logger";
