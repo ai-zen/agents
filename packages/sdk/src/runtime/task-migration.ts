@@ -1,4 +1,4 @@
-import type { AgentMessage } from "../types";
+import type { AgentDefinition, AgentMessage } from "../types";
 
 /**
  * 按 JSON.stringify(messages).length 计算上下文字符数近似值。
@@ -53,4 +53,54 @@ export function buildMigrationPrompt(): string {
     "",
     "只输出交接文档本身，不要加额外说明。",
   ].join("\n");
+}
+
+// ---- 迁移 Agent 定义 ----
+
+export interface BuildMigrationAgentOptions {
+  /** 指定模型，不填用默认 */
+  modelId?: string;
+}
+
+/**
+ * 创建迁移 Agent 的 AgentDefinition。
+ * 该 Agent 无权限（无工具），仅用于文本分析生成交接文档。
+ */
+export function buildMigrationAgentDefinition(
+  options: BuildMigrationAgentOptions = {},
+): AgentDefinition {
+  const now = new Date().toISOString();
+  return {
+    id: "task-migration",
+    name: "任务交接助手",
+    description: "专用迁移 Agent：分析对话历史并生成结构化交接文档",
+    messages: [
+      { role: "system", content: buildMigrationPrompt() },
+    ],
+    modelId: options.modelId,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+// ---- 迁移后新对话 ----
+
+/**
+ * 构建迁移后的新对话初始消息。
+ * 将交接文档包装为第一条 user 消息，引导新 Agent 先阅读再继续。
+ */
+export function buildPostMigrationMessages(handoffDoc: string): AgentMessage[] {
+  const content = [
+    "这是上一轮对话的任务交接文档。请先阅读交接文档，理解上下文后再继续协助用户完成任务。",
+    "",
+    "---",
+    "",
+    handoffDoc,
+    "",
+    "---",
+    "",
+    "请确认你已理解以上内容，然后询问用户接下来需要什么帮助。",
+  ].join("\n");
+
+  return [{ role: "user", content }];
 }

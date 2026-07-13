@@ -194,6 +194,9 @@ describe("McpConnectionManager", () => {
       maxRetries: 2,
     });
 
+    // 预装 catch 避免 unhandled rejection 警告
+    promise.catch(() => {});
+
     // 第 1 次重试：1s
     await vi.advanceTimersByTimeAsync(1000);
     // 第 2 次重试：2s
@@ -227,6 +230,7 @@ describe("McpConnectionManager", () => {
       autoReconnect: true,
       maxRetries: 5,
     });
+    promise.catch(() => {});
 
     // 推进 500ms 后手动断开
     await vi.advanceTimersByTimeAsync(500);

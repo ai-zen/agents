@@ -46,7 +46,8 @@ export { createSkillSubAgent } from "./runtime/skill-sub-agent";
 export type { CreateSkillSubAgentInput } from "./runtime/skill-sub-agent";
 export { McpConnectionManager } from "./runtime/mcp-connection";
 export type { McpConnectOptions } from "./runtime/mcp-connection";
-export { shouldMigrate, countContextChars, buildMigrationPrompt, HANDOFF_SECTIONS } from "./runtime/task-migration";
+export { shouldMigrate, countContextChars, buildMigrationPrompt, HANDOFF_SECTIONS, buildMigrationAgentDefinition, buildPostMigrationMessages } from "./runtime/task-migration";
+export type { BuildMigrationAgentOptions } from "./runtime/task-migration";
 
 // 共享
 export { createLogger } from "./shared/logger";
