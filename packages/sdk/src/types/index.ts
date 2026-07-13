@@ -95,3 +95,55 @@ export interface AppConfig {
   endpoints: Endpoint[];
   models: Model[];
 }
+
+// ---- MCP（已定稿，来自 docs/sdk-design.md §7）----
+
+/** MCP 连接状态 */
+export type McpConnectionState = "disconnected" | "connecting" | "connected" | "error";
+
+/** mcp.json 中的单个 server 配置 */
+export interface McpServerConfig {
+  transport: "stdio" | "http";
+  // stdio
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  // http
+  url?: string;
+  headers?: Record<string, string>;
+  // oauth (http only)
+  oauth?: {
+    authorizationUrl: string;
+    tokenUrl: string;
+    clientId: string;
+    clientSecret?: string;
+    scope?: string;
+  };
+}
+
+/** MCP 连接句柄：上层实现的具体传输 */
+export interface McpTransport {
+  /** 建立连接，成功返回工具/资源清单 */
+  connect(config: McpServerConfig): Promise<McpServerManifest>;
+  /** 断开连接 */
+  disconnect(): Promise<void>;
+  /** 注册 list_changed 回调 */
+  onListChanged?: (callback: () => void) => void;
+}
+
+/** load_mcp 成功后返回的工具/资源清单 */
+export interface McpServerManifest {
+  tools: McpToolDef[];
+  resources: McpResourceDef[];
+}
+
+export interface McpToolDef {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+export interface McpResourceDef {
+  uri: string;
+  description?: string;
+}
