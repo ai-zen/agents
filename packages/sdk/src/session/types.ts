@@ -11,10 +11,12 @@ export interface SessionContext {
 
 /**
  * Session 插件接口。
- * 每个插件单一职责，通过 afterRun 钩子介入 send 后的流程。
+ * 每个插件单一职责，通过钩子介入 send 前后的流程。
  */
 export interface SessionPlugin {
-  /** Agent.run() 返回后调用。可返回新 Agent 替换当前实例。 */
+  /** Agent.send() 调用前触发。可用于刷新工具列表等。 */
+  beforeSend?(ctx: SessionContext): Promise<void>;
+  /** Agent.send() 返回后调用。可返回新 Agent 替换当前实例。 */
   afterRun?(ctx: SessionContext): Promise<Agent | void>;
 }
 

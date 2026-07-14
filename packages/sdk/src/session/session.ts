@@ -22,11 +22,18 @@ class SessionImpl implements Session {
   }
 
   async send(content: string): Promise<any[]> {
-    // 1. 委托 Core Agent
+    const ctx: SessionContext = { agent: this._agent, model: this._model };
+
+    // 1. 遍历插件 beforeSend 钩子（如刷新工具列表）
+    for (const plugin of this._plugins) {
+      if (!plugin.beforeSend) continue;
+      await plugin.beforeSend(ctx);
+    }
+
+    // 2. 委托 Core Agent
     const messages = await this._agent.send(content);
 
-    // 2. 遍历插件 afterRun 钩子
-    const ctx: SessionContext = { agent: this._agent, model: this._model };
+    // 3. 遍历插件 afterRun 钩子
     for (const plugin of this._plugins) {
       if (!plugin.afterRun) continue;
 

@@ -12,8 +12,8 @@ export interface AutoMigrateOptions {
   maxTokens: number;
   /** 迁移 Agent（无工具，system prompt = buildMigrationPrompt） */
   migrationAgent: Agent;
-  /** 迁移完成回调，传入交接文档 */
-  onHandoff?: (handoffDoc: string) => void;
+  /** 迁移完成回调，传入交接文档、旧 Agent、新 Agent */
+  onHandoff?: (handoffDoc: string, oldAgent: Agent, newAgent: Agent) => void;
 }
 
 /**
@@ -44,16 +44,7 @@ export function autoMigrate(options: AutoMigrateOptions): SessionPlugin {
         const handoffDoc = getLastAssistantContent(migrationResult);
         if (!handoffDoc) return; // 迁移 Agent 无有效输出
 
-        // b. 回调 onHandoff
-        if (onHandoff) {
-          try {
-            await onHandoff(handoffDoc);
-          } catch (err: any) {
-            log.error(`[autoMigrate] onHandoff 回调失败: ${err?.message ?? err}`);
-          }
-        }
-
-        // c. 构建新 Agent：沿用原 system prompt + 工具 + model
+        // b. 构建新 Agent：沿用原 system prompt + 工具 + model
         const systemMsg = agent.messages.find(
           (m: any) => m.role === AgentNS.Role.System,
         );
@@ -75,6 +66,15 @@ export function autoMigrate(options: AutoMigrateOptions): SessionPlugin {
           allowJsonParseError: (agent as any).allowJsonParseError,
           onBeforeSend: (agent as any).onBeforeSend,
         });
+
+        // c. 回调 onHandoff（此时新旧 Agent 都已就绪，调用方可重绑事件）
+        if (onHandoff) {
+          try {
+            await onHandoff(handoffDoc, agent, newAgent);
+          } catch (err: any) {
+            log.error(`[autoMigrate] onHandoff 回调失败: ${err?.message ?? err}`);
+          }
+        }
 
         return newAgent;
       } catch (err: any) {

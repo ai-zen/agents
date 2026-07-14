@@ -162,3 +162,76 @@ describe("Session.send", () => {
     expect(capturedAgentInP2).toBe(newAgent);
   });
 });
+
+describe("SessionPlugin.beforeSend", () => {
+  it("agent.send 之前调用 plugin.beforeSend", async () => {
+    const agent = mockAgent();
+    const callOrder: string[] = [];
+    const plugin: SessionPlugin = {
+      beforeSend: vi.fn(async () => { callOrder.push("beforeSend"); }),
+      afterRun: vi.fn(async () => { callOrder.push("afterRun"); }),
+    };
+
+    // 包装 agent.send 以记录调用顺序
+    const origSend = agent.send;
+    agent.send = vi.fn(async (content: string) => {
+      callOrder.push("send");
+      return origSend(content);
+    });
+
+    const session = await createSession({ agent: agent as any, model: { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 } })
+      .use(plugin)
+      .init();
+
+    await session.send("hello");
+
+    expect(callOrder).toEqual(["beforeSend", "send", "afterRun"]);
+  });
+
+  it("beforeSend 收到 SessionContext", async () => {
+    const agent = mockAgent();
+    const beforeSend = vi.fn();
+    const plugin: SessionPlugin = { beforeSend };
+
+    const model = { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 };
+    const session = await createSession({ agent: agent as any, model })
+      .use(plugin)
+      .init();
+
+    await session.send("hello");
+
+    expect(beforeSend).toHaveBeenCalledTimes(1);
+    const ctx = beforeSend.mock.calls[0][0];
+    expect(ctx.agent).toBe(agent);
+    expect(ctx.model).toBe(model);
+  });
+
+  it("多个 beforeSend 按注册顺序执行", async () => {
+    const agent = mockAgent();
+    const order: number[] = [];
+    const p1: SessionPlugin = { beforeSend: vi.fn(async () => { order.push(1); }) };
+    const p2: SessionPlugin = { beforeSend: vi.fn(async () => { order.push(2); }) };
+    const p3: SessionPlugin = { beforeSend: vi.fn(async () => { order.push(3); }) };
+
+    const session = await createSession({ agent: agent as any, model: { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 } })
+      .use(p1)
+      .use(p2)
+      .use(p3)
+      .init();
+
+    await session.send("hello");
+
+    expect(order).toEqual([1, 2, 3]);
+  });
+
+  it("plugin 没有 beforeSend 时跳过", async () => {
+    const agent = mockAgent();
+    const plugin: SessionPlugin = { afterRun: vi.fn() };
+
+    const session = await createSession({ agent: agent as any, model: { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 } })
+      .use(plugin)
+      .init();
+
+    await expect(session.send("hello")).resolves.toBeDefined();
+  });
+});

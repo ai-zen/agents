@@ -95,9 +95,11 @@ describe("autoMigrate", () => {
       const migrationInput = migrationAgent.send.mock.calls[0][0];
       expect(migrationInput).toContain("Refactor please");
 
-      // onHandoff 被调用，传入了交接文档
+      // onHandoff 被调用，传入了交接文档 + 旧 Agent + 新 Agent
       expect(onHandoff).toHaveBeenCalledTimes(1);
-      expect(onHandoff.mock.calls[0][0]).toContain("## 💬 对话断点");
+      expect(onHandoff.mock.calls[0][0]).toContain("## 💬 对话断点");   // handoffDoc
+      expect(onHandoff.mock.calls[0][1]).toBe(agent);                   // oldAgent
+      expect(onHandoff.mock.calls[0][2]).toBe(result);                  // newAgent
 
       // 新 Agent 保留了 system prompt
       const newAgent = result!;
@@ -187,6 +189,41 @@ describe("autoMigrate", () => {
       const result = await plugin.afterRun!({ agent: agent as any, model: baseModel });
 
       expect(result!.model).toBe(sharedModel);
+    });
+
+    it("onHandoff 中可将旧 Agent 事件重绑到新 Agent", async () => {
+      const agent = mockAgent({
+        lastUsage: { prompt_tokens: 80000, completion_tokens: 5000, total_tokens: 85000 },
+        messages: [{ role: "system", content: "Helper" }],
+      });
+
+      // 模拟 UI 事件绑定：给旧 Agent 挂事件
+      const oldEvents: string[] = [];
+      (agent as any).events = { on: (e: string) => oldEvents.push(e) };
+
+      const migrationAgent = mockAgent({});
+
+      // 收集迁移后重绑的事件
+      const reboundEvents: string[] = [];
+      const plugin = autoMigrate({
+        maxTokens: 50000,
+        migrationAgent: migrationAgent as any,
+        onHandoff: (_doc, oldA, newA) => {
+          // CLI 模式：解绑旧事件 + 重绑到新 Agent
+          // 这里模拟将事件名列表传递到新 Agent
+          (newA as any).events = {
+            on: (e: string) => reboundEvents.push(e),
+          };
+        },
+      });
+
+      const result = await plugin.afterRun!({ agent: agent as any, model: baseModel });
+      expect(result).toBeDefined();
+
+      // 新 Agent 可以绑事件
+      (result as any).events.on("chunk");
+      (result as any).events.on("sub-agent");
+      expect(reboundEvents).toEqual(["chunk", "sub-agent"]);
     });
   });
 
