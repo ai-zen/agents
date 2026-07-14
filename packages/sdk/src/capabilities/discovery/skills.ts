@@ -40,37 +40,49 @@ export interface SkillInfo extends DisclosureItem {
 // ---- 发现（轻量，用于枚举披露）----
 
 /**
- * 扫描目录中发现的所有 Skill（含 SKILL.md 的子目录）。
+ * 扫描多个目录中发现的所有 Skill（含 SKILL.md 的子目录）。
+ * 按优先级顺序传入路径列表，同名 skill 靠前的路径优先（先到先得）。
  * 解析 YAML frontmatter 中的 name 和 description。
  * 同时进行规范合规校验，警告通过 logger 输出。
  */
-export function discoverSkills(dir: string): DisclosureItem[] {
-  if (!existsSync(dir)) return [];
-
-  const entries = readdirSync(dir, { withFileTypes: true });
+export function discoverSkills(paths: string[]): DisclosureItem[] {
+  const seen = new Set<string>();
   const items: DisclosureItem[] = [];
 
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+  for (const dir of paths) {
+    if (!existsSync(dir)) continue;
 
-    const skillMdPath = join(dir, entry.name, "SKILL.md");
-    if (!existsSync(skillMdPath)) continue;
-
+    let entries;
     try {
-      const raw = readFileSync(skillMdPath, "utf-8");
-      const fm = parseFrontmatter(raw);
-
-      // 规范合规校验
-      const errors = validateSkill(entry.name, fm);
-      for (const err of errors) {
-        log.warn(`[skills] ${err.skillId}: ${err.field} — ${err.message}`);
-      }
-
-      if (fm.name) {
-        items.push({ id: entry.name, description: fm.description ?? "" });
-      }
+      entries = readdirSync(dir, { withFileTypes: true });
     } catch {
-      // 跳过解析失败的文件
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (seen.has(entry.name)) continue;
+
+      const skillMdPath = join(dir, entry.name, "SKILL.md");
+      if (!existsSync(skillMdPath)) continue;
+
+      try {
+        const raw = readFileSync(skillMdPath, "utf-8");
+        const fm = parseFrontmatter(raw);
+
+        // 规范合规校验
+        const errors = validateSkill(entry.name, fm);
+        for (const err of errors) {
+          log.warn(`[skills] ${err.skillId}: ${err.field} — ${err.message}`);
+        }
+
+        if (fm.name) {
+          seen.add(entry.name);
+          items.push({ id: entry.name, description: fm.description ?? "" });
+        }
+      } catch {
+        // 跳过解析失败的文件
+      }
     }
   }
 
@@ -81,11 +93,19 @@ export function discoverSkills(dir: string): DisclosureItem[] {
 
 /**
  * 读取单个 Skill 的完整内容与元数据。
- * 返回 null 如果 skill 不存在或 SKILL.md 不可读。
+ * 在 skillDirs 中依次查找，找到即返回。
+ * 返回 null 如果 skill 在所有目录中都不存在或 SKILL.md 不可读。
  */
-export function readSkill(skillsDir: string, skillId: string): SkillInfo | null {
-  const skillMdPath = join(skillsDir, skillId, "SKILL.md");
-  if (!existsSync(skillMdPath)) return null;
+export function readSkill(skillDirs: string[], skillId: string): SkillInfo | null {
+  let skillMdPath: string | null = null;
+  for (const dir of skillDirs) {
+    const candidate = join(dir, skillId, "SKILL.md");
+    if (existsSync(candidate)) {
+      skillMdPath = candidate;
+      break;
+    }
+  }
+  if (!skillMdPath) return null;
 
   try {
     const content = readFileSync(skillMdPath, "utf-8");

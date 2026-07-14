@@ -40,14 +40,14 @@ function writeSkillRaw(id: string, raw: string) {
 
 describe("discoverSkills", () => {
   it("空目录返回空数组", () => {
-    expect(discoverSkills(dir)).toEqual([]);
+    expect(discoverSkills([dir])).toEqual([]);
   });
 
   it("发现所有 Skill", () => {
     writeSkill("code-review", "code-review", "Automated code review");
     writeSkill("deploy", "deploy", "One-click deployment");
 
-    const result = discoverSkills(dir);
+    const result = discoverSkills([dir]);
     expect(result).toHaveLength(2);
     expect(result[0].id).toBe("code-review");
     expect(result[0].description).toBe("Automated code review");
@@ -58,7 +58,7 @@ describe("discoverSkills", () => {
     mkdirSync(join(dir, "empty-dir"), { recursive: true });
     writeSkill("valid", "valid", "A valid skill");
 
-    expect(discoverSkills(dir)).toHaveLength(1);
+    expect(discoverSkills([dir])).toHaveLength(1);
   });
 
   it("跳过解析失败的 SKILL.md（无 name）", () => {
@@ -66,20 +66,52 @@ describe("discoverSkills", () => {
     mkdirSync(skillDir, { recursive: true });
     writeFileSync(join(skillDir, "SKILL.md"), "no frontmatter here");
 
-    expect(discoverSkills(dir)).toEqual([]);
+    expect(discoverSkills([dir])).toEqual([]);
   });
 
   it("目录不存在时返回空数组", () => {
-    expect(discoverSkills(join(dir, "nonexistent"))).toEqual([]);
+    expect(discoverSkills([join(dir, "nonexistent")])).toEqual([]);
   });
 
   it("name 不符合规范时仍可发现（校验为警告不阻塞）", () => {
     writeSkill("my-tool", "我的工具", "中文名不符合规范但不应阻塞");
 
-    const result = discoverSkills(dir);
+    const result = discoverSkills([dir]);
     // 仍能发现（name 非空即收录）
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe("my-tool");
+  });
+
+  it("多路径扫描：合并所有路径的 skill", () => {
+    const dir2 = mkdtempSync(join(tmpdir(), "ai-zen-discovery2-"));
+    try {
+      writeSkill("skill-a", "skill-a", "Skill A from dir1");
+      // dir2 放另一批
+      mkdirSync(join(dir2, "skill-b"), { recursive: true });
+      writeFileSync(join(dir2, "skill-b", "SKILL.md"), `---\nname: skill-b\ndescription: Skill B from dir2\n---\n# skill-b`);
+
+      const result = discoverSkills([dir, dir2]);
+      expect(result).toHaveLength(2);
+      expect(result[0].id).toBe("skill-a");
+      expect(result[1].id).toBe("skill-b");
+    } finally {
+      rmSync(dir2, { recursive: true, force: true });
+    }
+  });
+
+  it("多路径：同名 skill 靠前路径优先（先到先得）", () => {
+    const dir2 = mkdtempSync(join(tmpdir(), "ai-zen-discovery2-"));
+    try {
+      writeSkill("shared-skill", "shared-skill", "From dir1");
+      mkdirSync(join(dir2, "shared-skill"), { recursive: true });
+      writeFileSync(join(dir2, "shared-skill", "SKILL.md"), `---\nname: shared-skill\ndescription: From dir2\n---\n# shared-skill`);
+
+      const result = discoverSkills([dir, dir2]);
+      expect(result).toHaveLength(1);
+      expect(result[0].description).toBe("From dir1");
+    } finally {
+      rmSync(dir2, { recursive: true, force: true });
+    }
   });
 });
 
@@ -327,7 +359,7 @@ sub-agent: true
 
 Full content here.`);
 
-    const skill = readSkill(dir, "my-skill");
+    const skill = readSkill([dir], "my-skill");
 
     expect(skill).not.toBeNull();
     expect(skill!.id).toBe("my-skill");
@@ -339,12 +371,12 @@ Full content here.`);
   });
 
   it("skill 不存在返回 null", () => {
-    expect(readSkill(dir, "nonexistent")).toBeNull();
+    expect(readSkill([dir], "nonexistent")).toBeNull();
   });
 
   it("目录存在但无 SKILL.md 返回 null", () => {
     mkdirSync(join(dir, "empty-skill"), { recursive: true });
-    expect(readSkill(dir, "empty-skill")).toBeNull();
+    expect(readSkill([dir], "empty-skill")).toBeNull();
   });
 
   it("sub-agent 未声明时 subAgent 为 false", () => {
@@ -355,7 +387,7 @@ name: plain-skill
 ---
 # Body`);
 
-    const skill = readSkill(dir, "plain-skill");
+    const skill = readSkill([dir], "plain-skill");
     expect(skill!.subAgent).toBe(false);
   });
 
@@ -368,8 +400,38 @@ description: 中文名也可读
 ---
 # Body`);
 
-    const skill = readSkill(dir, "my-skill");
+    const skill = readSkill([dir], "my-skill");
     expect(skill).not.toBeNull();
     expect(skill!.name).toBe("我的技能");
+  });
+
+  it("多路径查找：在第一个路径找到即返回", () => {
+    const dir2 = mkdtempSync(join(tmpdir(), "ai-zen-discovery2-"));
+    try {
+      const skillDir = join(dir, "my-skill");
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(join(skillDir, "SKILL.md"), `---\nname: my-skill\ndescription: From dir1\n---\n# Body`);
+
+      const skill = readSkill([dir, dir2], "my-skill");
+      expect(skill).not.toBeNull();
+      expect(skill!.description).toBe("From dir1");
+    } finally {
+      rmSync(dir2, { recursive: true, force: true });
+    }
+  });
+
+  it("多路径查找：在第二个路径找到", () => {
+    const dir2 = mkdtempSync(join(tmpdir(), "ai-zen-discovery2-"));
+    try {
+      const skillDir = join(dir2, "my-skill");
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(join(skillDir, "SKILL.md"), `---\nname: my-skill\ndescription: From dir2\n---\n# Body`);
+
+      const skill = readSkill([dir, dir2], "my-skill");
+      expect(skill).not.toBeNull();
+      expect(skill!.description).toBe("From dir2");
+    } finally {
+      rmSync(dir2, { recursive: true, force: true });
+    }
   });
 });

@@ -12,9 +12,9 @@ export interface ResolveAgentInput {
   agentId: string;
   config: AppConfig;
   agentsDir: string;
-  subAgentsDir?: string;
-  skillsDir?: string;
-  toolsDir?: string;
+  subAgentsPaths?: string[];
+  skillsPaths?: string[];
+  toolsPaths?: string[];
   mcpPaths?: string[];
 }
 
@@ -26,9 +26,9 @@ export function resolveAgent(input: ResolveAgentInput): ResolvedAgent {
     agentId,
     config,
     agentsDir,
-    subAgentsDir,
-    skillsDir,
-    toolsDir,
+    subAgentsPaths = [],
+    skillsPaths = [],
+    toolsPaths = [],
     mcpPaths = [],
   } = input;
 
@@ -37,9 +37,9 @@ export function resolveAgent(input: ResolveAgentInput): ResolvedAgent {
     throw new Error(`Agent "${agentId}" 不存在`);
   }
 
-  const subagents = subAgentsDir ? discoverSubAgents(subAgentsDir) : [];
-  const skills = skillsDir ? discoverSkills(skillsDir) : [];
-  const userTools = toolsDir ? discoverUserTools(toolsDir) : [];
+  const subagents = discoverSubAgents(subAgentsPaths);
+  const skills = discoverSkills(skillsPaths);
+  const userTools = discoverUserTools(toolsPaths);
   const mcps = discoverMcpServers(mcpPaths);
 
   const createInput: CreateAgentInput = {

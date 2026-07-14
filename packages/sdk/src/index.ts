@@ -64,6 +64,8 @@ export { createSession } from "./session/session";
 export type { Session, SessionBuilder, SessionPlugin, SessionContext } from "./session/types";
 export { autoMigrate } from "./session/auto-migrate";
 export type { AutoMigrateOptions } from "./session/auto-migrate";
+export { autoDraft, checkDraftForRestore } from "./session/auto-draft";
+export type { AutoDraftOptions } from "./session/auto-draft";
 export { getLastPromptTokens } from "./session/helpers";
 
 // 共享

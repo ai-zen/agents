@@ -29,14 +29,14 @@ function writeAgentFile(id: string, functionName: string, description: string) {
 
 describe("discoverSubAgents", () => {
   it("空目录返回空数组", () => {
-    expect(discoverSubAgents(dir)).toEqual([]);
+    expect(discoverSubAgents([dir])).toEqual([]);
   });
 
   it("发现所有 SubAgent", () => {
     writeAgentFile("agent-a", "general_assistant", "通用助手");
     writeAgentFile("agent-b", "code-reviewer", "代码审查");
 
-    const result = discoverSubAgents(dir);
+    const result = discoverSubAgents([dir]);
     expect(result).toHaveLength(2);
     expect(result.map((s) => s.id)).toEqual(["general_assistant", "code-reviewer"]);
     expect(result.map((s) => s.description)).toEqual(["通用助手", "代码审查"]);
@@ -54,7 +54,7 @@ describe("discoverSubAgents", () => {
     };
     writeFileSync(join(dir, "plain-agent.json"), JSON.stringify(plain, null, 2));
 
-    const result = discoverSubAgents(dir);
+    const result = discoverSubAgents([dir]);
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe("general_assistant");
   });
@@ -63,11 +63,56 @@ describe("discoverSubAgents", () => {
     writeAgentFile("good", "helper", "Helper");
     writeFileSync(join(dir, "bad.json"), "{ not json }");
 
-    const result = discoverSubAgents(dir);
+    const result = discoverSubAgents([dir]);
     expect(result).toHaveLength(1);
   });
 
   it("目录不存在时返回空数组", () => {
-    expect(discoverSubAgents(join(dir, "nonexistent"))).toEqual([]);
+    expect(discoverSubAgents([join(dir, "nonexistent")])).toEqual([]);
+  });
+
+  it("多路径扫描：合并所有路径的 SubAgent", () => {
+    const dir2 = mkdtempSync(join(tmpdir(), "ai-zen-discovery2-"));
+    try {
+      writeAgentFile("agent-a", "general_assistant", "助手");
+      // dir2 放另一个
+      const agentB: AgentDefinition = {
+        id: "agent-b",
+        name: "agent-b",
+        messages: [{ role: "system", content: "Hi" }],
+        function: { name: "code-reviewer", description: "代码审查", parameters: { type: "object", properties: {}, required: [] } },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      writeFileSync(join(dir2, "agent-b.json"), JSON.stringify(agentB, null, 2));
+
+      const result = discoverSubAgents([dir, dir2]);
+      expect(result).toHaveLength(2);
+      expect(result.map((s) => s.id)).toEqual(["general_assistant", "code-reviewer"]);
+    } finally {
+      rmSync(dir2, { recursive: true, force: true });
+    }
+  });
+
+  it("多路径：同名 function.name 靠前路径优先", () => {
+    const dir2 = mkdtempSync(join(tmpdir(), "ai-zen-discovery2-"));
+    try {
+      writeAgentFile("agent-a", "shared_func", "From dir1");
+      const agentB: AgentDefinition = {
+        id: "agent-b",
+        name: "agent-b",
+        messages: [{ role: "system", content: "Hi" }],
+        function: { name: "shared_func", description: "From dir2", parameters: { type: "object", properties: {}, required: [] } },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      writeFileSync(join(dir2, "agent-b.json"), JSON.stringify(agentB, null, 2));
+
+      const result = discoverSubAgents([dir, dir2]);
+      expect(result).toHaveLength(1);
+      expect(result[0].description).toBe("From dir1");
+    } finally {
+      rmSync(dir2, { recursive: true, force: true });
+    }
   });
 });

@@ -78,8 +78,8 @@ describe("resolveAgent", () => {
       agentId: "my-agent",
       config,
       agentsDir: join(dir, "agents"),
-      subAgentsDir: join(dir, "sub-agents"),
-      skillsDir: join(dir, "skills"),
+      subAgentsPaths: [join(dir, "sub-agents")],
+      skillsPaths: [join(dir, "skills")],
       mcpPaths: [join(dir, "mcp.json")],
     });
 

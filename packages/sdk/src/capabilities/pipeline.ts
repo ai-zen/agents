@@ -35,6 +35,21 @@ const EMPTY_HINT_SKILL = "（当前没有可用的 Skill，请联系用户添加
 const EMPTY_HINT_MCP = "（当前没有可用的 MCP 服务器，请联系用户添加）";
 
 /**
+ * 数组去重：后出现的覆盖先出现的，保持非重复项的原有顺序。
+ */
+function dedupLastWin(names: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (let i = names.length - 1; i >= 0; i--) {
+    if (!seen.has(names[i])) {
+      seen.add(names[i]);
+      result.unshift(names[i]);
+    }
+  }
+  return result;
+}
+
+/**
  * 能力装配管线：权限过滤 + 安全预过滤 + 枚举披露，一站式输出。
  */
 export function assembleCapabilities(input: AssemblyInput): AssemblyOutput {
@@ -67,7 +82,10 @@ export function assembleCapabilities(input: AssemblyInput): AssemblyOutput {
     subagents: safeSubagents,
   });
 
-  // 4. 枚举披露：按已过滤的 skill/mcp id 列表筛选出完整 item
+  // 4. 工具去重：后出现的覆盖先出现的（用户可覆盖内置同名工具）
+  const dedupedTools = dedupLastWin(filtered.tools);
+
+  // 5. 枚举披露：按已过滤的 skill/mcp id 列表筛选出完整 item
   const allowedSkillIds = new Set(filtered.skills);
   const allowedMcpIds = new Set(filtered.mcps);
 
@@ -84,7 +102,7 @@ export function assembleCapabilities(input: AssemblyInput): AssemblyOutput {
   );
 
   return {
-    tools: filtered.tools,
+    tools: dedupedTools,
     subagents: filtered.subagents,
     skillParam,
     mcpParam,

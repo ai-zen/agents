@@ -137,4 +137,26 @@ describe("assembleCapabilities", () => {
     expect(result.mcpParam.enum).toBeUndefined();
     expect(result.mcpParam.description).toContain("当前没有可用的 MCP 服务器");
   });
+
+  it("同名工具：用户工具覆盖内置工具（后注册优先）", () => {
+    const result = assembleCapabilities({
+      permissions: {
+        tools: { allow: ["*"] },
+        skills: { allow: ["*"] },
+        mcps: { allow: ["*"] },
+        subagents: { allow: ["*"] },
+      },
+      builtinTools,                         // 含 "readFile"
+      userTools: ["readFile", "custom"],    // 用户定义同名工具覆盖内置
+      subagents,
+      skills,
+      mcps,
+    });
+
+    // readFile 仍存在（用户版覆盖内置版），custom 也在
+    expect(result.tools).toContain("readFile");
+    expect(result.tools).toContain("custom");
+    // readFile 只出现一次
+    expect(result.tools.filter((t) => t === "readFile")).toHaveLength(1);
+  });
 });

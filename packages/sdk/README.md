@@ -1,6 +1,6 @@
 # @ai-zen/agents-sdk
 
-> 🚧 **开发中** — 当前处于从零构建阶段。
+> 🚧 **开发中** — 核心模块已完成，P0 阻塞项已消除，当前处于完善阶段。
 
 AI-Zen SDK — 共享业务逻辑层，为 CLI 和 Desktop 提供统一的 Agent 运行时。
 
@@ -23,12 +23,14 @@ Desktop ──┘              │
 types        ← 纯类型，零业务依赖
 config       ← 读写 config.json + 迁移 + 内存缓存 + 原子写入
 crud         ← 实体 CRUD（Endpoints / Models / Agents / Conversations / Draft）
-capabilities  ← 能力发现与装配（内置 + 用户 + MCP + Skill + SubAgent）
-runtime      ← Agent 组装 + 对话生命周期 + 任务迁移
+capabilities ← 能力发现与装配（内置 + 用户 + MCP + Skill + SubAgent）
+runtime      ← Agent 组装 + 对话生命周期 + 任务迁移 + MCP 连接管理
+session      ← 会话包装（插件链：autoMigrate、autoDraft 等）
 shared       ← 日志、错误
 ```
 
-依赖方向：`runtime → capabilities → crud → config → types`，上层依赖下层，反之不行。
+依赖方向：`session → runtime → capabilities → crud → config → types`，上层依赖下层，反之不行。
+Session 额外依赖 `@ai-zen/agents-core`。
 
 ## 核心概念
 
@@ -57,13 +59,32 @@ Agent.permissions
 
 | 模块 | 状态 |
 |------|------|
-| `types` | ⏳ 待实现 |
-| `config` | ⏳ 待实现 |
-| `crud` | ⏳ 待实现 |
-| `capabilities` | ⏳ 待实现 |
-| `runtime` | ⏳ 待实现 |
-| `shared` | ⏳ 待实现 |
-| 测试 | ⏳ 零覆盖 |
+| `types` | ✅ 已实现 — 核心实体、权限模型、MCP 类型完整 |
+| `config` | ✅ 已实现 — 原子读写 + 默认 Agent 初始化 |
+| `crud` | ✅ 已实现 — Agent / Conversation / Draft 完整 CRUD |
+| `capabilities` | ✅ 已实现 — 发现 + 权限过滤 + 安全预过滤 + 枚举披露 |
+| `runtime` | ✅ 已实现 — Agent 组装、Skill 子 Agent、任务迁移、MCP 连接管理 |
+| `session` | ✅ 已实现 — Session 构建器 + autoMigrate + autoDraft 插件 |
+| `shared` | ✅ 已实现 — SdkError + 可注入 Logger |
+| 测试 | ✅ 191 个测试，25 个文件，全通过 |
+
+## Session 插件
+
+SDK 提供薄包装层 `Session`，通过插件链扩展 Core Agent 行为：
+
+| 插件 | 说明 |
+|------|------|
+| `autoMigrate` | 上下文超限时自动触发任务迁移，生成交接文档，透明替换 Agent |
+| `autoDraft` | 每次 `send()` 后自动保存当前消息历史到 draft 文件 |
+
+```ts
+const session = await createSession({ agent, model })
+  .use(autoMigrate({ maxTokens, migrationAgent }))
+  .use(autoDraft({ draftsDir, agentId }))
+  .init();
+
+await session.send("你好");
+```
 
 ## 设计原则
 
