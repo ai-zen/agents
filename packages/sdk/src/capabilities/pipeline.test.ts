@@ -1,11 +1,34 @@
 import { describe, it, expect } from "vitest";
 import { assembleCapabilities } from "./pipeline";
-import type { AgentPermissions } from "../types";
+import type { AgentPermissions, AgentDefinition } from "../types";
 import type { DisclosureItem } from "./disclosure";
+import type { Tool } from "@ai-zen/agents-core";
+import { CallbackTool } from "@ai-zen/agents-core";
 
-const builtinTools = ["readFile", "exec", "rm", "writeFile", "glob"];
-const userTools = ["my-custom-tool"];
-const subagents = ["general_assistant", "code-reviewer"];
+function makeTool(name: string): Tool {
+  return new CallbackTool({
+    function: { name, description: `${name} tool`, parameters: { type: "object", properties: {}, required: [] } },
+    callback: async () => name,
+  });
+}
+
+function makeSubAgent(name: string): AgentDefinition {
+  return {
+    id: name,
+    name,
+    messages: [
+      { role: "system", content: `You are ${name}.` },
+      { role: "user", content: "{{task}}" },
+    ],
+    function: { name, description: `${name} sub-agent`, parameters: { type: "object", properties: { task: { type: "string", description: "Task" } }, required: ["task"] } },
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+const builtinTools: Tool[] = ["readFile", "exec", "rm", "writeFile", "glob"].map(makeTool);
+const userTools: Tool[] = [makeTool("my-custom-tool")];
+const subagents: AgentDefinition[] = ["general_assistant", "code-reviewer"].map(makeSubAgent);
 const skills: DisclosureItem[] = [
   { id: "code-review", description: "代码审查" },
   { id: "deploy", description: "部署工具" },
@@ -14,8 +37,12 @@ const mcps: DisclosureItem[] = [
   { id: "github", description: "GitHub API" },
 ];
 
+function toolNames(result: { tools: Tool[] }): string[] {
+  return result.tools.map((t: Tool) => t.function.name);
+}
+
 describe("assembleCapabilities", () => {
-  it("全开 — 返回全部候选", () => {
+  it("全开 — 返回全部候选（内置工具 + 用户工具 + 动态工具 id）", () => {
     const result = assembleCapabilities({
       permissions: {
         tools: { allow: ["*"] },
@@ -30,16 +57,16 @@ describe("assembleCapabilities", () => {
       mcps,
     });
 
-    expect(result.tools).toContain("readFile");
-    expect(result.tools).toContain("my-custom-tool");
-    expect(result.tools).toContain("load_skill");
-    expect(result.tools).toContain("load_mcp");
-    expect(result.subagents).toEqual(["general_assistant", "code-reviewer"]);
-    expect(result.skillParam.enum).toEqual(["code-review", "deploy"]);
-    expect(result.mcpParam.enum).toEqual(["github"]);
+    // 内置 + 用户
+    expect(toolNames(result)).toContain("readFile");
+    expect(toolNames(result)).toContain("my-custom-tool");
+    // 动态工具 id 在 pipeline 内部处理（无 mcpManager 时跳过）
+    // subagents 已转为 AgentToolLazy
+    expect(toolNames(result)).toContain("general_assistant");
+    expect(toolNames(result)).toContain("code-reviewer");
   });
 
-  it("skills 维度 deny: ['*'] — 无枚举，描述带提示", () => {
+  it("skills 维度 deny: ['*'] — 无 skill 枚举，动态工具不注册", () => {
     const result = assembleCapabilities({
       permissions: {
         tools: { allow: ["*"] },
@@ -54,11 +81,11 @@ describe("assembleCapabilities", () => {
       mcps,
     });
 
-    expect(result.skillParam.enum).toBeUndefined();
-    expect(result.skillParam.description).toContain("当前没有可用的 Skill");
+    expect(toolNames(result)).not.toContain("load_skill");
+    expect(toolNames(result)).not.toContain("call_skill_sub_agent");
   });
 
-  it("tools 维度拒绝 load_skill — load_skill 不在 tools 中", () => {
+  it("tools 维度拒绝 load_skill — load_skill 不在结果中", () => {
     const result = assembleCapabilities({
       permissions: {
         tools: { deny: ["load_skill"] },
@@ -73,9 +100,7 @@ describe("assembleCapabilities", () => {
       mcps,
     });
 
-    expect(result.tools).not.toContain("load_skill");
-    // load_mcp 不受影响
-    expect(result.tools).toContain("load_mcp");
+    expect(toolNames(result)).not.toContain("load_skill");
   });
 
   it("SubAgent 递归保护 — 剔除自身", () => {
@@ -92,8 +117,8 @@ describe("assembleCapabilities", () => {
       selfFunctionName: "code-reviewer",
     });
 
-    expect(result.subagents).not.toContain("code-reviewer");
-    expect(result.subagents).toContain("general_assistant");
+    expect(toolNames(result)).not.toContain("code-reviewer");
+    expect(toolNames(result)).toContain("general_assistant");
   });
 
   it("Skill 子 Agent — 剔除递归工具", () => {
@@ -112,12 +137,12 @@ describe("assembleCapabilities", () => {
       isSkillSubAgent: true,
     });
 
-    expect(result.tools).not.toContain("call_skill_sub_agent");
-    expect(result.tools).not.toContain("load_skill");
-    expect(result.tools).toContain("readFile"); // 其他工具保留
+    expect(toolNames(result)).not.toContain("call_skill_sub_agent");
+    expect(toolNames(result)).not.toContain("load_skill");
+    expect(toolNames(result)).toContain("readFile");
   });
 
-  it("空 skills 和 mcps — 枚举退化，描述带提示", () => {
+  it("空 skills 和 mcps — 动态工具不注册", () => {
     const result = assembleCapabilities({
       permissions: {
         tools: { allow: ["*"] },
@@ -132,13 +157,12 @@ describe("assembleCapabilities", () => {
       mcps: [],
     });
 
-    expect(result.skillParam.enum).toBeUndefined();
-    expect(result.skillParam.description).toContain("当前没有可用的 Skill");
-    expect(result.mcpParam.enum).toBeUndefined();
-    expect(result.mcpParam.description).toContain("当前没有可用的 MCP 服务器");
+    expect(toolNames(result)).not.toContain("load_skill");
+    expect(toolNames(result)).not.toContain("load_mcp");
   });
 
   it("同名工具：用户工具覆盖内置工具（后注册优先）", () => {
+    const customReadFile = makeTool("readFile");
     const result = assembleCapabilities({
       permissions: {
         tools: { allow: ["*"] },
@@ -146,17 +170,15 @@ describe("assembleCapabilities", () => {
         mcps: { allow: ["*"] },
         subagents: { allow: ["*"] },
       },
-      builtinTools,                         // 含 "readFile"
-      userTools: ["readFile", "custom"],    // 用户定义同名工具覆盖内置
+      builtinTools,
+      userTools: [customReadFile, makeTool("custom")],
       subagents,
       skills,
       mcps,
     });
 
-    // readFile 仍存在（用户版覆盖内置版），custom 也在
-    expect(result.tools).toContain("readFile");
-    expect(result.tools).toContain("custom");
-    // readFile 只出现一次
-    expect(result.tools.filter((t) => t === "readFile")).toHaveLength(1);
+    expect(toolNames(result)).toContain("readFile");
+    expect(toolNames(result)).toContain("custom");
+    expect(result.tools.filter((t: Tool) => t.function.name === "readFile")).toHaveLength(1);
   });
 });

@@ -1,30 +1,25 @@
 import { describe, it, expect } from "vitest";
 import { createSkillSubAgent } from "./skill-sub-agent";
+import type { AgentDefinition, AppConfig, AgentPermissions } from "../types";
 import type { SkillInfo } from "../capabilities/discovery/skills";
-import type { AppConfig, AgentPermissions } from "../types";
+import { CallbackTool } from "@ai-zen/agents-core";
+import type { Tool } from "@ai-zen/agents-core";
 
-const mockConfig: AppConfig = {
-  defaultModel: "gpt-4",
-  endpoints: [{ id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com", apiKey: "sk-test" }],
-  models: [{ id: "gpt-4", name: "GPT-4", endpointId: "openai", maxContextTokens: 500_000 }],
-};
+function makeTool(name: string): Tool {
+  return new CallbackTool({
+    function: { name, description: `${name} tool`, parameters: { type: "object", properties: {}, required: [] } },
+    callback: async () => name,
+  });
+}
 
-const mockSkill: SkillInfo = {
-  id: "code-review",
-  name: "代码审查",
-  description: "审查代码质量",
-  subAgent: true,
-  content: `---
-name: 代码审查
-description: 审查代码质量
-sub-agent: true
----
-# 代码审查指南
-
-你必须严格审查代码的：
-1. 安全性
-2. 性能
-3. 可维护性`,
+const config: AppConfig = {
+  defaultModel: "gpt4",
+  endpoints: [
+    { id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com", apiKey: "sk-xxx" },
+  ],
+  models: [
+    { id: "gpt4", name: "GPT-4", endpointId: "openai", maxContextTokens: 500000 },
+  ],
 };
 
 const fullPermissions: AgentPermissions = {
@@ -34,77 +29,83 @@ const fullPermissions: AgentPermissions = {
   subagents: { allow: ["*"] },
 };
 
+const restrictedPermissions: AgentPermissions = {
+  tools: { allow: ["readFile"] },
+  skills: { deny: ["*"] },
+  mcps: { deny: ["*"] },
+  subagents: { deny: ["*"] },
+};
+
+const createSkill = (overrides: Partial<SkillInfo> = {}): SkillInfo => ({
+  id: "code-review",
+  name: "代码审查",
+  description: "审查代码质量",
+  content: "# 代码审查指南\n\n## 安全性\n检查安全漏洞。",
+  subAgent: true,
+  ...overrides,
+});
+
 describe("createSkillSubAgent", () => {
   it("以 SKILL.md 正文作为 system prompt", () => {
     const result = createSkillSubAgent({
-      skill: mockSkill,
-      task: "审查这段代码",
-      config: mockConfig,
+      skill: createSkill(),
+      task: "审查 app.ts",
+      config,
       callerPermissions: fullPermissions,
     });
 
-    expect(result.systemPrompt).toContain("# 代码审查指南");
-    expect(result.systemPrompt).toContain("安全性");
+    const systemMsg = result.definition.messages.find((m) => m.role === "system");
+    expect(systemMsg).toBeDefined();
+    expect(systemMsg!.content).toContain("# 代码审查指南");
+    expect(systemMsg!.content).toContain("安全性");
   });
 
   it("task 作为 user 消息", () => {
     const result = createSkillSubAgent({
-      skill: mockSkill,
-      task: "审查 src/app.ts",
-      config: mockConfig,
+      skill: createSkill(),
+      task: "审查 app.ts",
+      config,
       callerPermissions: fullPermissions,
     });
 
     const userMsg = result.definition.messages.find((m) => m.role === "user");
     expect(userMsg).toBeDefined();
-    expect(userMsg!.content).toBe("审查 src/app.ts");
+    expect(userMsg!.content).toBe("审查 app.ts");
   });
 
   it("继承调用者 permissions", () => {
-    const restrictedPermissions: AgentPermissions = {
-      tools: { allow: ["readFile", "exec"] },
-      skills: { deny: ["deploy"] },
-    };
-
     const result = createSkillSubAgent({
-      skill: mockSkill,
-      task: "审查代码",
-      config: mockConfig,
+      skill: createSkill(),
+      task: "test",
+      config,
       callerPermissions: restrictedPermissions,
     });
 
-    // permissions 应该被传递到 definition 中
     expect(result.definition.permissions).toEqual(restrictedPermissions);
   });
 
   it("isSkillSubAgent=true 预过滤递归工具", () => {
     const result = createSkillSubAgent({
-      skill: mockSkill,
-      task: "审查代码",
-      config: mockConfig,
+      skill: createSkill(),
+      task: "test",
+      config,
       callerPermissions: fullPermissions,
-      builtinTools: ["readFile", "exec", "call_skill_sub_agent", "load_skill"],
+      builtinTools: ["readFile", "exec", "call_skill_sub_agent", "load_skill"].map(makeTool),
     });
 
-    // call_skill_sub_agent 和 load_skill 应被预过滤
-    const tools = result.capabilities.tools;
-    expect(tools).not.toContain("call_skill_sub_agent");
-    expect(tools).not.toContain("load_skill");
-    expect(tools).toContain("readFile");
-    expect(tools).toContain("exec");
+    const toolNames = result.capabilities.tools.map((t: Tool) => t.function.name);
+    expect(toolNames).not.toContain("call_skill_sub_agent");
+    expect(toolNames).not.toContain("load_skill");
+    expect(toolNames).toContain("readFile");
+    expect(toolNames).toContain("exec");
   });
 
   it("skill 无 sub-agent 标记时抛出错误", () => {
-    const plainSkill: SkillInfo = {
-      ...mockSkill,
-      subAgent: false,
-    };
-
     expect(() =>
       createSkillSubAgent({
-        skill: plainSkill,
+        skill: createSkill({ subAgent: false }),
         task: "test",
-        config: mockConfig,
+        config,
         callerPermissions: fullPermissions,
       }),
     ).toThrow("不支持子 Agent 模式");
@@ -112,12 +113,12 @@ describe("createSkillSubAgent", () => {
 
   it("返回的 Agent 使用默认模型", () => {
     const result = createSkillSubAgent({
-      skill: mockSkill,
-      task: "task",
-      config: mockConfig,
+      skill: createSkill(),
+      task: "test",
+      config,
       callerPermissions: fullPermissions,
     });
 
-    expect(result.model.id).toBe("gpt-4");
+    expect(result.model.id).toBe("gpt4");
   });
 });

@@ -1,23 +1,10 @@
-/**
- * 15 个内置工具名称（代码写死）。
- * 这些工具由运行时直接提供实现，不走用户工具加载。
- */
-export const BUILTIN_TOOLS = [
-  "cwd",
-  "readFile",
-  "writeFile",
-  "batchEdit",
-  "mkdir",
-  "rm",
-  "glob",
-  "ls",
-  "exist",
-  "exec",
-  "findText",
-  "downloadFile",
-  "generateImage",
-  "rename",
-  "copy",
-] as const;
+import { Tool } from "@ai-zen/agents-core";
+import { BUILTIN_TOOLS } from "../implements/builtin";
 
-export type BuiltinToolName = (typeof BUILTIN_TOOLS)[number];
+/**
+ * 发现内置工具。直接返回 BUILTIN_TOOLS 实例。
+ * 与 discoverUserTools 保持对称：都返回 Tool[]。
+ */
+export function discoverBuiltinTools(): Tool[] {
+  return [...BUILTIN_TOOLS];
+}

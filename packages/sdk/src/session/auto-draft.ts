@@ -16,6 +16,8 @@ export interface AutoDraftOptions {
   agentId: string;
   /** 已命名对话 ID（可选，无则保存为 _current.json） */
   conversationId?: string;
+  /** 当前工作目录 */
+  cwd?: string;
 }
 
 const CURRENT_DRAFT = "_current.json";
@@ -25,7 +27,7 @@ const EXPIRE_DAYS = 7;
  * 自动保存 Draft 插件：每次 Agent.run() 返回后，将当前消息历史写入 draft 文件。
  */
 export function autoDraft(options: AutoDraftOptions): SessionPlugin {
-  const { draftsDir, agentId, conversationId } = options;
+  const { draftsDir, agentId, conversationId, cwd } = options;
 
   return {
     afterRun: async (ctx) => {
@@ -35,6 +37,7 @@ export function autoDraft(options: AutoDraftOptions): SessionPlugin {
           agentId,
           modelId: ctx.model.id,
           messages: convertMessages(ctx.agent.messages),
+          cwd,
           updatedAt: new Date().toISOString(),
         };
 

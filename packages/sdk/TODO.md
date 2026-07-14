@@ -1,6 +1,8 @@
 # TODO
 
-> 基于规范对照和代码审查，记录当前 SDK 的待办事项。
+> SDK = 后端（完整功能体系），CLI/Desktop = 前端（纯界面）。SDK 包圆一切，上层只管输入输出。
+>
+> **接手此项目请先读完本文档，再读 [`docs/sdk-design.md`](./docs/sdk-design.md)。**
 
 ---
 
@@ -8,71 +10,82 @@
 
 ### 项目定位
 
-这是 `@ai-zen/agents-sdk`，位于 monorepo `packages/sdk/` 下。整个仓库结构：
+这是 `@ai-zen/agents-sdk`，位于 pnpm monorepo `packages/sdk/` 下。
 
 ```
 agents/                        ← pnpm workspace
 ├── packages/
 │   ├── core/                  ← @ai-zen/agents-core  基础框架（Agent, Message, Tool, Model, RAG）
 │   ├── sdk/                   ← @ai-zen/agents-sdk   【本包】业务逻辑层
-│   ├── cli/                   ← @ai-zen/agents-cli   命令行（旧版，未接入 SDK，待重写）
+│   ├── cli/                   ← @ai-zen/agents-cli   命令行（未接入 SDK，待重写）
 │   └── webui/                 ← @ai-zen/agents-webui Web 界面
 ├── GOAL.md                    ← 项目设计原则（必读）
-├── AI_README.md               ← AI 助手行为准则
+├── AI_README.md               ← AI 助手行为准则（改动前先商量）
 └── README.md                  ← 项目总览
 ```
 
-**SDK 的定位**：介于 Core 和上层（CLI/Desktop）之间的共享业务逻辑层。SDK 不直接与 LLM 通信——那是 Core 的工作。SDK 负责：
+### SDK 的职责
+
+SDK 不直接与 LLM 通信——那是 Core 的工作。SDK 负责：
 
 - 配置文件读写、实体 CRUD
 - 能力发现（内置工具、用户工具、Skill、SubAgent、MCP）
 - 权限过滤、枚举披露
-- Agent 装配（把定义 + 配置 + 候选 → 可运行的数据）
-- Session 插件链（autoMigrate 等）
-- MCP 连接生命周期管理
+- Agent 装配（把定义 + 配置 + 候选 → `ResolvedAgent`，含 `Tool[]`）
+- Session 插件链（`refreshTools`、`autoMigrate`、`autoDraft`）
+- MCP 连接生命周期管理（包括底层 transport 实现）
 - 任务迁移
 
-### 关键文件
+### SDK 与 Core 的边界（关键！）
+
+| | SDK | Core |
+|------|-----|------|
+| 包名 | `@ai-zen/agents-sdk` | `@ai-zen/agents-core` |
+| 主要产出 | `ResolvedAgent`（纯数据）、`Session`（插件包装） | `Agent`（实例）、`Message`、`Tool` |
+| LLM 通信 | ❌ 不涉及 | ✅ `Agent.send()` / `Agent.run()` |
+| 文件 I/O | ✅ config / agent / conversation / draft | ❌ |
+| 权限 | ✅ 过滤 + 披露 | ❌ 不感知 |
+
+**关键约定**：SDK 不创建 Core `Agent` 实例。`resolveAgent` 产出纯数据 `ResolvedAgent`，由上层（CLI/Desktop）用它构造 Core `Agent`，再用 SDK 的 `createSession` 包装。
+
+### 设计真相源
 
 | 文件 | 角色 |
 |------|------|
 | `docs/sdk-design.md` | **唯一设计真相源**。所有实现必须与本文档一致 |
-| `docs/skills-spec.md` | Agent Skills 官方规范（agentskills.io） |
+| `docs/skills-spec.md` | Agent Skills 官方规范 |
 | `docs/skills-compliance-plan.md` | Skills 规范对齐方案（已 100% 落地） |
-| `docs/mcp-*.md`（9 篇） | MCP 官方规范快照（modelcontextprotocol.io） |
-| `src/index.ts` | SDK 公开 API 导出清单 |
+| `docs/mcp-*.md`（9 篇） | MCP 官方规范快照 |
 
 ### 模块分层（依赖方向严格单向）
 
 ```
 session ──> runtime ──> capabilities ──> crud ──> config ──> types
-  │            │              │
-  ├────────────┤              │
-  │            └──> shared <──┘
+  │            │
+  ├────────────┤
+  │            └──> shared
   │
-  └──> @ai-zen/agents-core (Agent, Message, AgentNS)
+  └──> @ai-zen/agents-core (Agent, Message)
 ```
 
 每层只能依赖下一层，不能反向。同层模块不互相依赖。
 
-### SDK 与 Core 的边界
+`capabilities/` 内部：
 
-| | SDK | Core |
-|------|-----|------|
-| 包名 | `@ai-zen/agents-sdk` | `@ai-zen/agents-core` |
-| 主要产出 | `ResolvedAgent`（数据）、`Session`（插件包装） | `Agent`（实例）、`Message`、`Tool` |
-| LLM 通信 | ❌ 不涉及 | ✅ `Agent.send()` / `Agent.run()` |
-| 文件 I/O | ✅ config/agent/conversation/draft | ❌ |
-| 权限 | ✅ 过滤 + 披露 | ❌ 不感知 |
-
-**关键约定**：SDK 的 `createAgent` / `resolveAgent` 产出的是纯数据 `ResolvedAgent`，消费者需要用它构造 Core 的 `Agent` 实例，再用 SDK 的 `createSession` 包裹。SDK 不创建 Core Agent 实例。
+```
+capabilities/
+  discovery/       ← 阶段 1：扫描文件系统，找到候选
+  implements/      ← 阶段 3：工具实例 + 动态工具工厂
+  pipeline.ts      ← 阶段 2：权限过滤管线
+  ...
+```
 
 ### 开发命令
 
 ```bash
 cd packages/sdk
 
-pnpm test          # 运行 173 个测试（24 个文件）
+pnpm test          # 运行 195 个测试（25 个文件）
 pnpm test:watch    # 监听模式
 pnpm build         # tsc 编译到 dist/
 pnpm format        # Prettier 格式化
@@ -82,91 +95,133 @@ pnpm format:check  # 检查格式
 ### 测试约定
 
 - 每个源文件同目录下配一个 `*.test.ts`
-- 需要文件系统的测试使用 `tmpdir()` 临时目录，`beforeEach`/`afterEach` 清理
+- 需要文件系统的测试使用 vitest 的 `tmpdir()` 临时目录，`beforeEach`/`afterEach` 清理
 - Mock 使用 vitest 的 `vi.fn()` 和 `vi.useFakeTimers()`
 - 集成测试放在 `test/` 目录
 
 ### 当前状态
 
-- ✅ `src-deprecated/` 已清理（旧代码）
-- ✅ `dist/` 已重新构建（与新 `src/` 一致）
-- ✅ `.gitignore` 已更新
 - ✅ TypeScript strict 模式，零编译错误
-- ✅ 191 个测试全部通过（25 个文件）
+- ✅ 195 个测试全部通过（25 个文件）
+- ✅ `src-deprecated/` 已清理
+- ⚠️ CLI 尚未接入 SDK，自己维护了一套重复实现（`agent-creator.ts`、`draft.ts`、`conversation-runner.ts` 等）
+- ⚠️ CLI 有 25 个测试失败，部分因 Windows 路径分隔符问题，部分因缺少 SDK 构建产物
+
+### 常见坑
+
+- **Windows 路径**：`memfs` mock 中路径可能返回 `\` 而非 `/`，测试断言需兼容
+- **CLI 测试依赖 SDK 构建**：CLI 的 e2e 测试需要先 `pnpm build` SDK，否则报 `ERR_MODULE_NOT_FOUND`
 
 ---
 
-## P0 — 投产阻塞
+## 已定案设计
 
-### 1. ~~发现层多路径对称化~~ ✅ 已完成
+参见 [`docs/sdk-design.md`](./docs/sdk-design.md)，尤其：
 
-> 已实现：`discoverSkills`/`discoverSubAgents`/`discoverUserTools`/`readSkill` 全部改为多路径 + Set 去重。
-> `ResolveAgentInput` 改为 `subAgentsPaths`/`skillsPaths`/`toolsPaths`。
+- **§4** 模块分层：`capabilities/` 内部拆为 `discovery/` + `implements/`
+- **§6** 工具装配三阶段：发现（返回实例）→ 过滤（权限管线）→ 实例化（产出 `Tool[]`）
+- **§7** MCP 连接：SDK 全权管理，包括底层 transport 实现
+- **§11** Session 插件：`refreshTools`（`beforeSend` 钩子，全量重扫）
+- **§12** 一站式装配：`resolveAgent` 产出 `ResolvedAgent { tools: Tool[], refresh() }`
 
-### 2. ~~Draft 自动保存（autoDraft 插件）~~ ✅ 已完成
+消费模式（方案 B — 三步）：
 
-> 已实现：`src/session/auto-draft.ts` 含 `autoDraft` 插件和 `checkDraftForRestore`。
-
----
-
-## P1 — 重要
-
-### 3. OAuth 流程（MCP HTTP）
-
-设计文档 §7 描述了完整的 OAuth 流程（token 检查/刷新/授权码交换/本地回调服务器），
-当前仅 `McpServerConfig.oauth` 类型已定义，`McpConnectionManager` 中零实现。
-
-- [ ] 实现 OAuth token 持久化（`mcp-oauth/` 目录）
-- [ ] 实现授权码流程（本地回调服务器 + 浏览器打开）
-- [ ] 实现 token 刷新逻辑
-
-### 4. ~~工具去重~~ ✅ 已完成
-
-> 已实现：`assembleCapabilities` 中 `dedupLastWin` 去重，后出现的覆盖先出现的。
-
-### 5. 集成测试补充
-
-当前 `test/integration.test.ts` 仅 1 个测试，覆盖 `createAgent`（纯函数）。
-
-- [ ] `resolveAgent` 端到端测试（文件系统 → 装配）
-- [ ] Session + autoMigrate 端到端测试（触发迁移 → Agent 替换）
+```ts
+const resolved = resolveAgent({ agentId, config, ...paths });
+const agent = new Agent({ model, messages: resolved.messages, tools: resolved.tools });
+const session = await createSession({ agent, model })
+  .use(refreshTools(resolved))
+  .use(autoMigrate(...))
+  .use(autoDraft(...))
+  .init();
+```
 
 ---
 
-## P2 — 可延后
+## 实现步骤
 
-### 6. ~~README 开发状态更新~~ ✅ 已完成
+### P0 — 核心通路
 
-> 已更新：模块状态表全部改为 ✅，测试数据更新为 191 个。
+| # | 步骤 | 说明 | 状态 |
+|---|------|------|:--:|
+| 1 | `discoverBuiltinTools` 保持 | 已从 `BUILTIN_TOOLS` 提取 function.name，与其他 discover 函数对称 | ✅ |
+| 2 | `discoverUserTools` 返回 `Tool[]` | 类型已改为 `Tool[]`，`require` 部分待实现（当前返回空数组） | ⬜ |
+| 2b | 安全模块加载机制 | `discoverUserTools` 需要安全的 `require()` 加载 `.js` 文件，含沙箱/错误隔离 | ⬜ |
+| 3 | `discoverSubAgents` 返回 `AgentDefinition[]` | ✅ 已完成 | ✅ |
+| 4 | `assembleCapabilities` 接受/产出 `Tool[]` | ✅ 已完成。输入 `Tool[]` / `AgentDefinition[]`，输出 `AssemblyOutput { tools: Tool[] }`，subagents 已内部转为 AgentToolLazy，动态工具已内部按条件注册 | ✅ |
+| 5 | `resolveAgent` 实现三阶段组装 | ✅ 已完成。discovery → pipeline → implements 全部在 `resolveAgent` 内闭环 | ✅ |
+| 6 | `refreshTools` 插件 | `SessionPlugin.beforeSend` → `resolved.refresh()` → `ctx.agent.tools = fresh.tools` | ⬜ |
+| 6b | `AgentToolLazy.buildAgent` 注入 | 在 `resolveAgent` 中注入 model/config/permissions 等回调，让 SubAgent 可真正运行 | ⬜ |
 
-### 7. Agent Skills 阶段 3（辅助文件加载）
+### P1 — MCP 闭环
 
-设计文档 §8 规定了 `loadSupportingFile` 机制，当前 `scripts/`、`references/`、`assets/` 目录未实现加载逻辑。
+| # | 步骤 | 说明 | 状态 |
+|---|------|------|:--:|
+| 7 | SDK 内置 stdio transport | 当前 `McpTransport` 是空接口，需实现 stdio 进程管理（子进程 spawn、stdin/stdout JSON-RPC） | ⬜ |
+| 8 | SDK 内置 HTTP transport | 同上，含 HTTP SSE 连接 + 请求/响应 | ⬜ |
+| 8b | OAuth token 持久化 | 实现 `mcp-oauth/` 目录的 token 读写 + 授权码交换流程（本地回调服务器 + 浏览器打开）+ token 刷新 | ⬜ |
+| 9 | `McpTransport` 补充方法 | `callTool` / `readResource` / `listPrompts` / `getPrompt` 等方法 | ⬜ |
+| 10 | `McpConnectionManager` 暴露 transport | `getTransport(name)` 供 `call_mcp_tool` / `read_mcp_resource` 使用 | ⬜ |
+| 10b | `createCallSkillSubAgentTool` 工厂函数 | 在 `capabilities/implements/skill-tools.ts` 中创建 `CallbackTool`，参数 schema 含 skill_id 枚举和 task 参数。回调中调用 `runtime/skill-sub-agent.ts` 的 `createSkillSubAgent` | ⬜ |
+| 10c | `createSkillSubAgent` 已在 `runtime/skill-sub-agent.ts` 中实现 | 用 Skill 正文构造 AgentDefinition，继承调用者 permissions，调用 createAgent 完成装配。当前已实现 ✅（与 10b 配合使用） | ✅ |
+| 10d | `pipeline.ts` 取消跳过 `call_skill_sub_agent` 注册 | 需传入 config、skillsPaths 等参数到 assembleCapabilities，条件满足时注册该工具 | ⬜ |
+| 10e | `call_mcp_tool` 回调完整实现 | 通过 transport.callTool 调用，非占位符 | ⬜ |
+| 10f | `read_mcp_resource` 回调完整实现 | 通过 transport.readResource 调用，非占位符 | ⬜ |
 
-### 8. Skill 预算管理
+### P2 — 收尾
 
-设计文档 §8 规定：加载后的 skill 正文按使用频次排序，低频可能被任务迁移截断。当前无实现。
+| # | 步骤 | 说明 | 状态 |
+|---|------|------|:--:|
+| 11 | `ResolvedAgent` 对齐设计文档 | 补充 `messages`、`tools` 顶级字段、`refresh()` 方法；当前 `ResolvedAgent` 只有 `definition`/`model`/`capabilities`，tools 在嵌套中 | ⬜ |
+| 12 | `resolveAgent` 产出对齐 | 改为返回设计文档 §12 定义的完整 `ResolvedAgent`（含顶级 `tools: Tool[]`、`messages`、`refresh()`） | ⬜ |
+| 13 | 更新 `src/index.ts` 导出 | 补全 `resolveAgent`、`refreshTools`、`createGenerateImageTool` 等新 API | ⬜ |
+| 14 | 端到端测试 | `resolveAgent` → `new Agent()` → `createSession` 完整链路 | ⬜ |
+| 15 | CLI 接入 SDK | 删 CLI 中重复的 agent-creator、工具发现、draft 逻辑 | ⬜ |
 
-### 9. MCP Prompts 支持
+### P2 — Skill 增强
 
-`McpPromptDef` 类型已定义，但 `prompts/list`、`prompts/get` 以及对应的动态加载工具未实现。
+| # | 步骤 | 说明 | 状态 |
+|---|------|------|:--:|
+| 16 | Skill 辅助文件加载 | 实现 `loadSupportingFile` 机制，加载 `scripts/`、`references/`、`assets/` 目录 | ⬜ |
+| 17 | Skill 预算管理 | 按使用频次排序，低频 Skill 加载后可能被任务迁移截断 | ⬜ |
 
-### 10. MCP Resources 模板与订阅
+### P2 — MCP 增强
 
-`resources/templates/list`、`resources/subscribe` 未实现。
+| # | 步骤 | 说明 | 状态 |
+|---|------|------|:--:|
+| 18 | MCP Prompts 支持 | `prompts/list`、`prompts/get` 及对应的动态提示工具 | ⬜ |
+| 19 | MCP Resources 模板与订阅 | `resources/templates/list`、`resources/subscribe` | ⬜ |
+
+### P3 — 可延后
+
+| # | 步骤 | 说明 | 状态 |
+|---|------|------|:--:|
+| 20 | MCP Roots / Sampling | MCP Client 特性，SDK 层暂不处理，由上层实现 | ⬜ |
+| 21 | `generateImage` 扩展更多服务 | 当前仅支持 ZhipuImage（智谱），后续可扩展 DALL-E 等 | ⬜ |
 
 ---
 
-## P3 — 暂不处理（设计明确延后或有意不做）
+## 已完成
 
-### 11. MCP Roots / Sampling
-
-MCP Client 特性，SDK 层可以不实现，由上层处理。
-
-### 12. MCP tool 级权限
-
-设计文档 §10 明确说"当前无此需求"，预留扩展即可。
-
-### 13. ~~启动恢复（Draft 7 天过期清理）~~ ✅ 已完成
-
-> `checkDraftForRestore` 已实现：检查 `_current.json`，7 天内返回 Draft，过期自动清理。
+| # | 项 | 说明 |
+|---|------|------|
+| ✅ | 类型定义改为返回实例 | `discoverSubAgents` → `AgentDefinition[]`，`discoverBuiltinTools` → `Tool[]`，`discoverUserTools` → `Tool[]` |
+| ✅ | `AssemblyOutput` 归一化 | 去掉 `subagents`/`skillParam`/`mcpParam` 三个字段，全部合并进 `tools: Tool[]` |
+| ✅ | `pipeline.ts` 内部闭环 | SubAgent → AgentToolLazy、动态工具按条件注册，全部在管线内完成 |
+| ✅ | `factory.ts` 去冗余 | 删掉 `rawSubagents` 等无意义的中间变量 |
+| ✅ | `capabilities/` 目录重组 | `discovery/` + `implements/`，删除旧 `tools/` |
+| ✅ | `BUILTIN_TOOLS` 注册 = 实现 | `implements/builtin/` 下 16 个文件（15 个内置工具 + `generateImage` 工厂），每个含 schema + callback |
+| ✅ | `generateImage` 工具 | 从 CLI 照搬实现，适配 SDK 的 `AppConfig` 架构，通过 `imageModels` 配置驱动 |
+| ✅ | `AppConfig` 图片模型支持 | 新增 `ImageModel` 接口，`AppConfig` 增加 `imageModels?` 和 `defaultImageModel?` 字段 |
+| ✅ | 设计文档 §12 | `resolveAgent` + `ResolvedAgent` + `refresh()` 完整定义 |
+| ✅ | MCP 责任归属修正 | `types/index.ts`、`mcp-tools.ts` 删除"上层实现"错误阐述，设计文档 §7 明确 SDK 全权管理 |
+| ✅ | `load_mcp` 实际使用 McpConnectionManager | connect / getManifest / touch，不再返回占位符 |
+| ✅ | `SessionPlugin.beforeSend` | 已存在（代码 + 设计文档均已支持） |
+| ✅ | `autoMigrate` + `autoDraft` | 已实现并通过测试 |
+| ✅ | Conversation / Draft 含 `cwd` | 类型已定义 |
+| ✅ | `McpConnectionManager` | 连接生命周期管理已实现（重连、退避、超时、状态机） |
+| ✅ | 发现层多路径对称化 | `discoverSkills`/`discoverSubAgents`/`discoverUserTools`/`readSkill` 多路径 + Set 去重 |
+| ✅ | 工具去重 | `assembleCapabilities` 中 `dedupLastWin` |
+| ✅ | Draft 7 天过期清理 | `checkDraftForRestore` |
+| ✅ | `onHandoff` 回调扩展 | 传入 oldAgent / newAgent，支持 CLI 重绑事件 |
+| ✅ | `exec` 工具错误处理 | 补充 exitCode 返回，命令执行失败时返回错误码而非空结果 |

@@ -1,4 +1,5 @@
 import type { AgentDefinition, AgentPermissions, AppConfig } from "../types";
+import { Tool } from "@ai-zen/agents-core";
 import type { SkillInfo } from "../capabilities/discovery/skills";
 import type { DisclosureItem } from "../capabilities/disclosure";
 import { createAgent } from "./factory";
@@ -9,9 +10,9 @@ export interface CreateSkillSubAgentInput {
   task: string;
   config: AppConfig;
   callerPermissions: AgentPermissions;
-  builtinTools?: string[];
-  userTools?: string[];
-  subagents?: string[];
+  builtinTools?: Tool[];
+  userTools?: Tool[];
+  subagents?: AgentDefinition[];
   skills?: DisclosureItem[];
   mcps?: DisclosureItem[];
 }

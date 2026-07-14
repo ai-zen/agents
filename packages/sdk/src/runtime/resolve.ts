@@ -4,7 +4,7 @@ import { discoverSubAgents } from "../capabilities/discovery/subagents";
 import { discoverSkills } from "../capabilities/discovery/skills";
 import { discoverMcpServers } from "../capabilities/discovery/mcp";
 import { discoverUserTools } from "../capabilities/discovery/usertools";
-import { BUILTIN_TOOLS } from "../capabilities/discovery/builtin";
+import { discoverBuiltinTools } from "../capabilities/discovery/builtin";
 import { createAgent } from "./factory";
 import type { CreateAgentInput, ResolvedAgent } from "./factory";
 
@@ -37,19 +37,14 @@ export function resolveAgent(input: ResolveAgentInput): ResolvedAgent {
     throw new Error(`Agent "${agentId}" 不存在`);
   }
 
-  const subagents = discoverSubAgents(subAgentsPaths);
-  const skills = discoverSkills(skillsPaths);
-  const userTools = discoverUserTools(toolsPaths);
-  const mcps = discoverMcpServers(mcpPaths);
-
   const createInput: CreateAgentInput = {
     definition,
     config,
-    builtinTools: [...BUILTIN_TOOLS],
-    userTools,
-    subagents: subagents.map((s) => s.id),
-    skills,
-    mcps,
+    builtinTools: discoverBuiltinTools(),
+    userTools: discoverUserTools(toolsPaths),
+    subagents: discoverSubAgents(subAgentsPaths),
+    skills: discoverSkills(skillsPaths),
+    mcps: discoverMcpServers(mcpPaths),
   };
 
   return createAgent(createInput);

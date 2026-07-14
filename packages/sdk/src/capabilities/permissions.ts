@@ -1,7 +1,7 @@
 import type { AgentPermissions, PermissionPolicy } from "../types";
 import { matchPermission } from "./permission";
 
-interface CandidateSets {
+export interface CandidateSets {
   tools: string[];
   skills: string[];
   mcps: string[];
@@ -43,7 +43,6 @@ function filterDimension(names: string[], policy?: PermissionPolicy): string[] {
 }
 
 function validatePolicy(policy: PermissionPolicy): void {
-  // 运行时检测：allow 和 deny 同时存在
   if ("allow" in policy && "deny" in policy) {
     throw new Error("权限维度不能同时配置 allow 和 deny");
   }

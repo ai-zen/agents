@@ -75,6 +75,7 @@ export interface Conversation {
   modelId: string; // 对话使用的模型
   messages: AgentMessage[]; // 完整消息历史
   lastPromptTokens?: number; // 最近一轮 API 返回的 usage.prompt_tokens
+  cwd?: string; // 对话开始时的当前工作目录
   createdAt: string; // ISO 8601
   updatedAt: string; // ISO 8601
 }
@@ -85,16 +86,33 @@ export interface Draft {
   agentId: string;
   modelId: string;
   messages: AgentMessage[];
+  cwd?: string; // 对话开始时的当前工作目录
   updatedAt: string; // ISO 8601
 }
 
 // ---- 配置文件（暂时约定）----
+
+/** 图片生成模型配置 */
+export interface ImageModel {
+  id: string;
+  name: string;
+  endpointId: string;
+  modelName: string;
+  description?: string;
+  defaultSize?: string;
+  defaultQuality?: string;
+  version?: number;
+}
 
 /** config.json 结构 */
 export interface AppConfig {
   defaultModel?: string; // 默认模型 id
   endpoints: Endpoint[];
   models: Model[];
+  /** 图片生成模型列表 */
+  imageModels?: ImageModel[];
+  /** 默认图片生成模型 ID */
+  defaultImageModel?: string;
 }
 
 // ---- MCP（已定稿，来自 docs/sdk-design.md §7）----
@@ -122,7 +140,12 @@ export interface McpServerConfig {
   };
 }
 
-/** MCP 连接句柄：上层实现的具体传输 */
+/**
+ * MCP 底层传输适配器。
+ *
+ * TODO: SDK 应内置 stdio / HTTP 两种 transport 实现，不依赖上层注入。
+ * 当前为临时接口，后续由 SDK 内部闭环。
+ */
 export interface McpTransport {
   /** 建立连接，成功返回工具/资源清单 */
   connect(config: McpServerConfig): Promise<McpServerManifest>;

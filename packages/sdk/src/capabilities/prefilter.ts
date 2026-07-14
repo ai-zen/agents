@@ -1,3 +1,5 @@
+import type { AgentDefinition } from "../types";
+
 const SKILL_RECURSIVE_TOOLS = ["call_skill_sub_agent", "load_skill"];
 
 /**
@@ -5,13 +7,13 @@ const SKILL_RECURSIVE_TOOLS = ["call_skill_sub_agent", "load_skill"];
  * 预过滤不受权限配置影响。
  */
 export function prefilterSubAgents(
-  candidates: string[],
+  candidates: AgentDefinition[],
   selfName?: string,
   callerName?: string,
-): string[] {
+): AgentDefinition[] {
   const exclude = new Set([selfName, callerName].filter(Boolean) as string[]);
   if (exclude.size === 0) return candidates;
-  return candidates.filter((name) => !exclude.has(name));
+  return candidates.filter((def) => !exclude.has(def.function?.name ?? ""));
 }
 
 /**

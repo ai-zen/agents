@@ -4,6 +4,7 @@ export type {
   AgentPermissions,
   Endpoint,
   Model,
+  ImageModel,
   AgentDefinition,
   AgentMessage,
   Conversation,
@@ -30,8 +31,7 @@ export { assembleCapabilities } from "./capabilities/pipeline";
 export type { AssemblyInput, AssemblyOutput } from "./capabilities/pipeline";
 
 // 发现
-export { BUILTIN_TOOLS } from "./capabilities/discovery/builtin";
-export type { BuiltinToolName } from "./capabilities/discovery/builtin";
+export { discoverBuiltinTools } from "./capabilities/discovery/builtin";
 export { discoverSubAgents } from "./capabilities/discovery/subagents";
 export { discoverSkills, readSkill, parseFrontmatter } from "./capabilities/discovery/skills";
 export type { SkillInfo, Frontmatter } from "./capabilities/discovery/skills";
@@ -67,6 +67,12 @@ export type { AutoMigrateOptions } from "./session/auto-migrate";
 export { autoDraft, checkDraftForRestore } from "./session/auto-draft";
 export type { AutoDraftOptions } from "./session/auto-draft";
 export { getLastPromptTokens } from "./session/helpers";
+
+// 工具
+export { BUILTIN_TOOLS } from "./capabilities/implements/builtin";
+export { createGenerateImageTool } from "./capabilities/implements/builtin/generateImage";
+export { createLoadSkillTool } from "./capabilities/implements/skill-tools";
+export { createLoadMcpTool, createCallMcpTool, createReadMcpResourceTool } from "./capabilities/implements/mcp-tools";
 
 // 共享
 export { createLogger } from "./shared/logger";

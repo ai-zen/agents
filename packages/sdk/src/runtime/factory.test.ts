@@ -1,26 +1,33 @@
 import { describe, it, expect } from "vitest";
 import { createAgent } from "./factory";
-import type { AgentDefinition, AppConfig } from "../types";
+import type { AgentDefinition, AppConfig, AgentDefinition as AgentDef } from "../types";
+import { CallbackTool } from "@ai-zen/agents-core";
+import type { Tool } from "@ai-zen/agents-core";
+
+function makeTool(name: string): Tool {
+  return new CallbackTool({
+    function: { name, description: `${name} tool`, parameters: { type: "object", properties: {}, required: [] } },
+    callback: async () => name,
+  });
+}
 
 const config: AppConfig = {
-  defaultModel: "m1",
+  defaultModel: "gpt4",
   endpoints: [
-    { id: "e1", name: "OpenAI", baseUrl: "https://api.openai.com", apiKey: "sk-xxx" },
+    { id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com", apiKey: "sk-xxx" },
   ],
   models: [
-    { id: "m1", name: "GPT-4", endpointId: "e1", maxContextTokens: 500000 },
-    { id: "m2", name: "GPT-3.5", endpointId: "e1", maxContextTokens: 100000 },
+    { id: "gpt4", name: "GPT-4", endpointId: "openai", maxContextTokens: 500000 },
+    { id: "gpt35", name: "GPT-3.5", endpointId: "openai", maxContextTokens: 8000 },
   ],
 };
 
-const baseAgent: AgentDefinition = {
+const baseDef: AgentDefinition = {
   id: "test-agent",
-  name: "测试 Agent",
-  messages: [{ role: "system", content: "You are helpful." }],
+  name: "Test Agent",
+  messages: [{ role: "system", content: "You are a test agent." }],
   permissions: {
     tools: { allow: ["readFile", "exec"] },
-    skills: { allow: ["*"] },
-    mcps: { allow: ["*"] },
     subagents: { deny: ["*"] },
   },
   createdAt: new Date().toISOString(),
@@ -29,46 +36,59 @@ const baseAgent: AgentDefinition = {
 
 describe("createAgent", () => {
   it("使用 Agent 指定的 modelId", () => {
-    const agent = { ...baseAgent, modelId: "m2" };
-    const result = createAgent({ definition: agent, config });
+    const result = createAgent({
+      definition: { ...baseDef, modelId: "gpt35" },
+      config,
+      builtinTools: ["readFile", "exec", "rm"].map(makeTool),
+    });
 
-    expect(result.model.id).toBe("m2");
-    expect(result.model.name).toBe("GPT-3.5");
+    expect(result.model.id).toBe("gpt35");
   });
 
   it("未指定 modelId 时使用默认模型", () => {
-    const result = createAgent({ definition: baseAgent, config });
-    expect(result.model.id).toBe("m1");
-  });
+    const result = createAgent({
+      definition: baseDef,
+      config,
+      builtinTools: ["readFile", "exec"].map(makeTool),
+    });
 
-  it("提取 system prompt", () => {
-    const result = createAgent({ definition: baseAgent, config });
-    expect(result.systemPrompt).toBe("You are helpful.");
+    expect(result.model.id).toBe("gpt4");
   });
 
   it("权限过滤生效 — exec 可用，rm 不可用", () => {
     const result = createAgent({
-      definition: baseAgent,
+      definition: baseDef,
       config,
-      builtinTools: ["readFile", "exec", "rm"],
+      builtinTools: ["readFile", "exec", "rm"].map(makeTool),
     });
 
-    expect(result.capabilities.tools).toContain("readFile");
-    expect(result.capabilities.tools).toContain("exec");
-    expect(result.capabilities.tools).not.toContain("rm");
+    expect(result.capabilities.tools.map((t: Tool) => t.function.name)).toContain("readFile");
+    expect(result.capabilities.tools.map((t: Tool) => t.function.name)).toContain("exec");
+    expect(result.capabilities.tools.map((t: Tool) => t.function.name)).not.toContain("rm");
   });
 
-  it("SubAgent deny: ['*'] — subagents 为空", () => {
+  it("SubAgent deny: ['*'] — subagents 不在 tools 中", () => {
     const result = createAgent({
-      definition: baseAgent,
+      definition: baseDef,
       config,
-      subagents: ["general_assistant"],
+      builtinTools: ["readFile"].map(makeTool),
+      subagents: [{
+        id: "ga", name: "ga",
+        messages: [{ role: "system", content: "Hi" }, { role: "user", content: "{{task}}" }],
+        function: { name: "general_assistant", description: "", parameters: { type: "object", properties: {}, required: [] } },
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      }],
     });
-    expect(result.capabilities.subagents).toEqual([]);
+
+    expect(result.capabilities.tools.map((t: Tool) => t.function.name)).not.toContain("general_assistant");
   });
 
   it("modelId 指向不存在的模型时抛异常", () => {
-    const agent = { ...baseAgent, modelId: "nonexistent" };
-    expect(() => createAgent({ definition: agent, config })).toThrow();
+    expect(() =>
+      createAgent({
+        definition: { ...baseDef, modelId: "nonexistent" },
+        config,
+      }),
+    ).toThrow();
   });
 });
