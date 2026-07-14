@@ -48,27 +48,11 @@ export function createAgent(input: CreateAgentInput): ResolvedAgent {
     throw new Error(`模型 "${modelId}" 不存在`);
   }
 
-  // 如果配置了图片模型，自动注入 generateImage 工具
-  let builtinTools = input.builtinTools ?? [];
-  const imageModels = (input.config as any).imageModels as any[] | undefined;
-  if (imageModels && imageModels.length > 0) {
-    // 先检查是否已被用户工具覆盖
-    const userToolNames = new Set(
-      (input.userTools ?? []).map((t: Tool) => t.function.name),
-    );
-    const builtinNames = new Set(
-      builtinTools.map((t: Tool) => t.function.name),
-    );
-    if (
-      !userToolNames.has("generateImage") &&
-      !builtinNames.has("generateImage")
-    ) {
-      builtinTools = [
-        ...builtinTools,
-        createGenerateImageTool(input.config),
-      ];
-    }
-  }
+  const builtinTools = injectGenerateImageTool(
+    input.builtinTools ?? [],
+    input.userTools ?? [],
+    input.config,
+  );
 
   const capabilities = assembleCapabilities({
     permissions: input.definition.permissions ?? {},
@@ -91,4 +75,25 @@ export function createAgent(input: CreateAgentInput): ResolvedAgent {
     model,
     capabilities,
   };
+}
+
+/**
+ * 如果配置了图片模型，自动注入 generateImage 工具。
+ * 跳过条件：用户工具或内置工具中已存在同名工具（用户可覆盖）。
+ */
+function injectGenerateImageTool(
+  builtinTools: Tool[],
+  userTools: Tool[],
+  config: AppConfig,
+): Tool[] {
+  const imageModels = (config as any).imageModels as any[] | undefined;
+  if (!imageModels || imageModels.length === 0) return builtinTools;
+
+  const existingNames = new Set([
+    ...userTools.map((t) => t.function.name),
+    ...builtinTools.map((t) => t.function.name),
+  ]);
+  if (existingNames.has("generateImage")) return builtinTools;
+
+  return [...builtinTools, createGenerateImageTool(config)];
 }
