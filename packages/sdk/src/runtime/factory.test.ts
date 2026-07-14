@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createAgent } from "./factory";
+import { assembleAgent } from "./factory";
 import type { AgentDefinition, AppConfig, AgentDefinition as AgentDef } from "../types";
 import { CallbackTool } from "@ai-zen/agents-core";
 import type { Tool } from "@ai-zen/agents-core";
@@ -34,9 +34,9 @@ const baseDef: AgentDefinition = {
   updatedAt: new Date().toISOString(),
 };
 
-describe("createAgent", () => {
+describe("assembleAgent", () => {
   it("使用 Agent 指定的 modelId", () => {
-    const result = createAgent({
+    const result = assembleAgent({
       definition: { ...baseDef, modelId: "gpt35" },
       config,
       builtinTools: ["readFile", "exec", "rm"].map(makeTool),
@@ -46,7 +46,7 @@ describe("createAgent", () => {
   });
 
   it("未指定 modelId 时使用默认模型", () => {
-    const result = createAgent({
+    const result = assembleAgent({
       definition: baseDef,
       config,
       builtinTools: ["readFile", "exec"].map(makeTool),
@@ -56,7 +56,7 @@ describe("createAgent", () => {
   });
 
   it("权限过滤生效 — exec 可用，rm 不可用", () => {
-    const result = createAgent({
+    const result = assembleAgent({
       definition: baseDef,
       config,
       builtinTools: ["readFile", "exec", "rm"].map(makeTool),
@@ -68,7 +68,7 @@ describe("createAgent", () => {
   });
 
   it("SubAgent deny: ['*'] — subagents 不在 tools 中", () => {
-    const result = createAgent({
+    const result = assembleAgent({
       definition: baseDef,
       config,
       builtinTools: ["readFile"].map(makeTool),
@@ -85,7 +85,7 @@ describe("createAgent", () => {
 
   it("modelId 指向不存在的模型时抛异常", () => {
     expect(() =>
-      createAgent({
+      assembleAgent({
         definition: { ...baseDef, modelId: "nonexistent" },
         config,
       }),

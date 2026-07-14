@@ -5,8 +5,8 @@ import { discoverSkills } from "../capabilities/discovery/skills";
 import { discoverMcpServers } from "../capabilities/discovery/mcp";
 import { discoverUserTools } from "../capabilities/discovery/usertools";
 import { discoverBuiltinTools } from "../capabilities/discovery/builtin";
-import { createAgent } from "./factory";
-import type { CreateAgentInput, ResolvedAgent } from "./factory";
+import { assembleAgent } from "./factory";
+import type { AssembleAgentInput, ResolvedAgent } from "./factory";
 
 export interface ResolveAgentInput {
   agentId: string;
@@ -37,7 +37,7 @@ export function resolveAgent(input: ResolveAgentInput): ResolvedAgent {
     throw new Error(`Agent "${agentId}" 不存在`);
   }
 
-  const createInput: CreateAgentInput = {
+  const createInput: AssembleAgentInput = {
     definition,
     config,
     builtinTools: discoverBuiltinTools(),
@@ -47,5 +47,5 @@ export function resolveAgent(input: ResolveAgentInput): ResolvedAgent {
     mcps: discoverMcpServers(mcpPaths),
   };
 
-  return createAgent(createInput);
+  return assembleAgent(createInput);
 }

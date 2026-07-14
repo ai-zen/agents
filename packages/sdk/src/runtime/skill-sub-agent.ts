@@ -2,7 +2,7 @@ import type { AgentDefinition, AgentPermissions, AppConfig } from "../types";
 import { Tool } from "@ai-zen/agents-core";
 import type { SkillInfo } from "../capabilities/discovery/skills";
 import type { DisclosureItem } from "../capabilities/disclosure";
-import { createAgent } from "./factory";
+import { assembleAgent } from "./factory";
 import type { ResolvedAgent } from "./factory";
 
 export interface CreateSkillSubAgentInput {
@@ -55,7 +55,7 @@ export function createSkillSubAgent(input: CreateSkillSubAgentInput): ResolvedAg
     updatedAt: now,
   };
 
-  return createAgent({
+  return assembleAgent({
     definition,
     config,
     builtinTools,

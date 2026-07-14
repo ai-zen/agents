@@ -48,8 +48,8 @@ export { listConversations, readConversation, writeConversation, deleteConversat
 export { readDraft, writeDraft, deleteDraft } from "./crud/drafts";
 
 // 运行时
-export { createAgent } from "./runtime/factory";
-export type { CreateAgentInput, ResolvedAgent } from "./runtime/factory";
+export { assembleAgent } from "./runtime/factory";
+export type { AssembleAgentInput, ResolvedAgent } from "./runtime/factory";
 export { resolveAgent } from "./runtime/resolve";
 export type { ResolveAgentInput } from "./runtime/resolve";
 export { createSkillSubAgent } from "./runtime/skill-sub-agent";

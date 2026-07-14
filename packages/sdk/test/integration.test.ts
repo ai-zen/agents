@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createAgent } from "../src/runtime/factory";
+import { assembleAgent } from "../src/runtime/factory";
 import type { AgentDefinition, AppConfig } from "../src/types";
 import { CallbackTool } from "@ai-zen/agents-core";
 import type { Tool } from "@ai-zen/agents-core";
@@ -39,7 +39,7 @@ const agentDef: AgentDefinition = {
 
 describe("集成：端到端 Agent 组装", () => {
   it("完整链路：配置 + 定义 + 候选 → 可运行的 Agent", () => {
-    const resolved = createAgent({
+    const resolved = assembleAgent({
       definition: agentDef,
       config,
       builtinTools: ["readFile", "exec", "rm", "glob", "findText", "writeFile"].map(makeTool),

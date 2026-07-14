@@ -6,7 +6,7 @@ import type { DisclosureItem } from "../capabilities/disclosure";
 import type { McpConnectionManager } from "../runtime/mcp-connection";
 import { createGenerateImageTool } from "../capabilities/implements/builtin/generateImage";
 
-export interface CreateAgentInput {
+export interface AssembleAgentInput {
   definition: AgentDefinition;
   config: AppConfig;
   builtinTools?: Tool[];
@@ -34,10 +34,11 @@ export interface ResolvedAgent {
 }
 
 /**
- * 从 AgentDefinition 和 AppConfig 组装一个可运行的 Agent。
- * 解析模型、装配能力管线。
+ * 从 AgentDefinition 和 AppConfig 装配 ResolvedAgent。
+ * 解析模型、注入条件工具、运行能力装配管线。
+ * 产出纯数据 ResolvedAgent，不创建 Core Agent 实例。
  */
-export function createAgent(input: CreateAgentInput): ResolvedAgent {
+export function assembleAgent(input: AssembleAgentInput): ResolvedAgent {
   const modelId = input.definition.modelId ?? input.config.defaultModel;
   if (!modelId) {
     throw new Error("未指定模型且无默认模型");
