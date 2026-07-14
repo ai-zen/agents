@@ -27,8 +27,10 @@ export { filterByPermissions } from "./capabilities/permissions";
 export { prefilterSubAgents, prefilterSkillTools } from "./capabilities/prefilter";
 export { buildDisclosureParam } from "./capabilities/disclosure";
 export type { DisclosureItem, DisclosureParam } from "./capabilities/disclosure";
-export { assembleCapabilities } from "./capabilities/pipeline";
-export type { AssemblyInput, AssemblyOutput } from "./capabilities/pipeline";
+export { filterCapabilities } from "./capabilities/filter";
+export type { FilterInput, FilterOutput } from "./capabilities/filter";
+export { instantiateTools } from "./capabilities/instantiate";
+export type { InstantiateInput } from "./capabilities/instantiate";
 
 // 发现
 export { discoverBuiltinTools } from "./capabilities/discovery/builtin";
@@ -48,12 +50,9 @@ export { listConversations, readConversation, writeConversation, deleteConversat
 export { readDraft, writeDraft, deleteDraft } from "./crud/drafts";
 
 // 运行时
-export { assembleAgent } from "./runtime/factory";
-export type { AssembleAgentInput, ResolvedAgent } from "./runtime/factory";
+export type { ResolvedAgent } from "./runtime/types";
 export { resolveAgent } from "./runtime/resolve";
 export type { ResolveAgentInput } from "./runtime/resolve";
-export { createSkillSubAgent } from "./runtime/skill-sub-agent";
-export type { CreateSkillSubAgentInput } from "./runtime/skill-sub-agent";
 export { McpConnectionManager } from "./runtime/mcp-connection";
 export type { McpConnectOptions } from "./runtime/mcp-connection";
 export { shouldMigrate, buildMigrationPrompt, HANDOFF_SECTIONS, buildMigrationAgentDefinition, buildPostMigrationMessages } from "./runtime/task-migration";
@@ -71,7 +70,7 @@ export { getLastPromptTokens } from "./session/helpers";
 // 工具
 export { BUILTIN_TOOLS } from "./capabilities/implements/builtin";
 export { createGenerateImageTool } from "./capabilities/implements/builtin/generateImage";
-export { createLoadSkillTool } from "./capabilities/implements/skill-tools";
+export { createLoadSkillTool, createCallSkillSubAgentTool } from "./capabilities/implements/skill-tools";
 export { createLoadMcpTool, createCallMcpTool, createReadMcpResourceTool } from "./capabilities/implements/mcp-tools";
 
 // 共享

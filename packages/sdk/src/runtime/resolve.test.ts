@@ -85,7 +85,7 @@ describe("resolveAgent", () => {
 
     expect(result.definition.id).toBe("my-agent");
     expect(result.model.id).toBe("gpt4");
-    const names = result.capabilities.tools.map((t: any) => t.function.name);
+    const names = result.tools.map((t: any) => t.function.name);
     expect(names).toContain("general_assistant");
   });
 
@@ -108,6 +108,6 @@ describe("resolveAgent", () => {
       agentsDir: join(dir, "agents"),
     });
 
-    expect(result.capabilities.tools.length).toBeGreaterThan(0); // 内置工具默认存在
+    expect(result.tools.length).toBeGreaterThan(0); // 内置工具默认存在
   });
 });

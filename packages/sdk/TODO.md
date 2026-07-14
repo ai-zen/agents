@@ -151,7 +151,6 @@ const session = await createSession({ agent, model })
 | 4 | `assembleCapabilities` 接受/产出 `Tool[]` | ✅ 已完成。输入 `Tool[]` / `AgentDefinition[]`，输出 `AssemblyOutput { tools: Tool[] }`，subagents 已内部转为 AgentToolLazy，动态工具已内部按条件注册 | ✅ |
 | 5 | `resolveAgent` 实现三阶段组装 | ✅ 已完成。discovery → pipeline → implements 全部在 `resolveAgent` 内闭环 | ✅ |
 | 6 | `refreshTools` 插件 | `SessionPlugin.beforeSend` → `resolved.refresh()` → `ctx.agent.tools = fresh.tools` | ⬜ |
-| 6b | `AgentToolLazy.buildAgent` 注入 | 在 `resolveAgent` 中注入 model/config/permissions 等回调，让 SubAgent 可真正运行 | ⬜ |
 
 ### P1 — MCP 闭环
 
@@ -162,9 +161,8 @@ const session = await createSession({ agent, model })
 | 8b | OAuth token 持久化 | 实现 `mcp-oauth/` 目录的 token 读写 + 授权码交换流程（本地回调服务器 + 浏览器打开）+ token 刷新 | ⬜ |
 | 9 | `McpTransport` 补充方法 | `callTool` / `readResource` / `listPrompts` / `getPrompt` 等方法 | ⬜ |
 | 10 | `McpConnectionManager` 暴露 transport | `getTransport(name)` 供 `call_mcp_tool` / `read_mcp_resource` 使用 | ⬜ |
-| 10b | `createCallSkillSubAgentTool` 工厂函数 | 在 `capabilities/implements/skill-tools.ts` 中创建 `CallbackTool`，参数 schema 含 skill_id 枚举和 task 参数。回调中调用 `runtime/skill-sub-agent.ts` 的 `createSkillSubAgent` | ⬜ |
-| 10c | `createSkillSubAgent` 已在 `runtime/skill-sub-agent.ts` 中实现 | 用 Skill 正文构造 AgentDefinition，继承调用者 permissions，调用 createAgent 完成装配。当前已实现 ✅（与 10b 配合使用） | ✅ |
-| 10d | `pipeline.ts` 取消跳过 `call_skill_sub_agent` 注册 | 需传入 config、skillsPaths 等参数到 assembleCapabilities，条件满足时注册该工具 | ⬜ |
+| 10b | `createCallSkillSubAgentTool` 工厂函数 | 在 `capabilities/implements/skill-tools.ts` 中创建 `CallbackTool`。回调中直接克隆 `this.agent`（Core Agent 实例），替换 messages 为 skill 正文 + task，过滤递归工具 | ✅ |
+| 10c | `pipeline.ts` 注册 `call_skill_sub_agent` | 在 `assembleCapabilities` 的条件注册中补全，skillsPaths 和 skillDisclosure 已就绪 | ⬜ |
 | 10e | `call_mcp_tool` 回调完整实现 | 通过 transport.callTool 调用，非占位符 | ⬜ |
 | 10f | `read_mcp_resource` 回调完整实现 | 通过 transport.readResource 调用，非占位符 | ⬜ |
 
@@ -172,11 +170,10 @@ const session = await createSession({ agent, model })
 
 | # | 步骤 | 说明 | 状态 |
 |---|------|------|:--:|
-| 11 | `ResolvedAgent` 对齐设计文档 | 补充 `messages`、`tools` 顶级字段、`refresh()` 方法；当前 `ResolvedAgent` 只有 `definition`/`model`/`capabilities`，tools 在嵌套中 | ⬜ |
-| 12 | `resolveAgent` 产出对齐 | 改为返回设计文档 §12 定义的完整 `ResolvedAgent`（含顶级 `tools: Tool[]`、`messages`、`refresh()`） | ⬜ |
-| 13 | 更新 `src/index.ts` 导出 | 补全 `resolveAgent`、`refreshTools`、`createGenerateImageTool` 等新 API | ⬜ |
-| 14 | 端到端测试 | `resolveAgent` → `new Agent()` → `createSession` 完整链路 | ⬜ |
-| 15 | CLI 接入 SDK | 删 CLI 中重复的 agent-creator、工具发现、draft 逻辑 | ⬜ |
+| 11 | `runtime/` 简化 | `factory.ts` → `types.ts`（只保留类型），`assembleAgent` 内联到 `resolveAgent`，删 `skill-sub-agent.ts` | ⬜ |
+| 12 | 更新 `src/index.ts` 导出 | 补全 `createCallSkillSubAgentTool` 等新 API | ⬜ |
+| 13 | 端到端测试 | `resolveAgent` → `new Agent()` → `createSession` 完整链路 | ⬜ |
+| 14 | CLI 接入 SDK | 删 CLI 中重复的 agent-creator、工具发现、draft 逻辑 | ⬜ |
 
 ### P2 — Skill 增强
 
@@ -225,3 +222,7 @@ const session = await createSession({ agent, model })
 | ✅ | Draft 7 天过期清理 | `checkDraftForRestore` |
 | ✅ | `onHandoff` 回调扩展 | 传入 oldAgent / newAgent，支持 CLI 重绑事件 |
 | ✅ | `exec` 工具错误处理 | 补充 exitCode 返回，命令执行失败时返回错误码而非空结果 |
+| ✅ | `ResolvedAgent` 对齐设计文档 | `messages`、`tools` 顶级字段、`refresh()` 方法已就位 |
+| ✅ | `resolveAgent` 一站式装配 | 从磁盘加载 → 发现 → 过滤 → 实例化，全部在 `resolveAgent` 内闭环 |
+| ✅ | `createCallSkillSubAgentTool` | `call_skill_sub_agent` 工具工厂，回调直接克隆 `this.agent`（Core Agent），无需 `createSkillSubAgent` |
+| ✅ | `runtime/` 简化 | 删 `factory.ts`、`skill-sub-agent.ts`，装配逻辑全部内联到 `resolveAgent` |

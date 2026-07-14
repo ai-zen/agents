@@ -1,4 +1,5 @@
-import { CallbackTool } from "@ai-zen/agents-core";
+import { CallbackTool, Agent, Message } from "@ai-zen/agents-core";
+import type { Tool } from "@ai-zen/agents-core";
 import type { DisclosureParam } from "../disclosure";
 import { readSkill } from "../discovery/skills";
 import { createLogger } from "../../shared/logger";
@@ -39,7 +40,7 @@ export function createLoadSkillTool(
 
       // 检查是否已加载（去重）
       const alreadyLoaded = this.agent?.messages?.some(
-        (m: any) => m.content?.includes(`Skill "${skillId}" 已加载`)
+        (m: any) => m.content?.includes(`Skill "${skillId}" 已加载`),
       );
       if (alreadyLoaded) {
         return `Skill "${skillId}" 已加载`;
@@ -54,6 +55,68 @@ export function createLoadSkillTool(
       }
 
       return `✅ Skill "${skillId}" 已加载，内容已附加到当前对话中`;
+    },
+  });
+}
+
+/**
+ * 创建 call_skill_sub_agent 工具。
+ * 回调中直接克隆当前 Core Agent（this.agent），替换 messages 为 skill 正文 + task，
+ * 并预过滤掉 call_skill_sub_agent 和 load_skill（防递归）。
+ */
+export function createCallSkillSubAgentTool(
+  skillDirs: string[],
+  skillDisclosure: DisclosureParam,
+): CallbackTool {
+  return new CallbackTool({
+    function: {
+      name: "call_skill_sub_agent",
+      description: "将任务委派给指定的 Skill 子 Agent，由其独立完成并返回结果。",
+      parameters: {
+        type: "object",
+        properties: {
+          skill_id: {
+            type: "string",
+            description: skillDisclosure.description,
+            ...(skillDisclosure.enum ? { enum: skillDisclosure.enum } : {}),
+          },
+          task: {
+            type: "string",
+            description: "要委派给子 Agent 完成的任务描述",
+          },
+        },
+        required: ["skill_id", "task"],
+        additionalProperties: false,
+      },
+    },
+    async callback(input): Promise<string> {
+      const skillId = input.skill_id as string;
+      const task = input.task as string;
+      const skill = readSkill(skillDirs, skillId);
+      if (!skill) {
+        return `❌ Skill "${skillId}" 不存在，请确认名称是否正确`;
+      }
+      if (!skill.subAgent) {
+        return `Skill "${skillId}" 不支持子 Agent 模式，请使用 load_skill 加载指导后自行处理`;
+      }
+
+      // 克隆当前 Agent，只替换 messages，过滤递归工具
+      const subAgent = new Agent({
+        model: (this as any).agent.model,
+        messages: [
+          Message.System(skill.content),
+          Message.User(task),
+        ],
+        tools: (this as any).agent.tools.filter(
+          (t: Tool) =>
+            t.function.name !== "call_skill_sub_agent" &&
+            t.function.name !== "load_skill",
+        ),
+      });
+
+      await subAgent.run();
+      const lastMsg = subAgent.messages.at(-1);
+      return typeof lastMsg?.content === "string" ? lastMsg.content : "";
     },
   });
 }
