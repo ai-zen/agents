@@ -76,7 +76,8 @@ session ──> runtime ──> capabilities ──> crud ──> config ──>
 capabilities/
   discovery/       ← 阶段 1：扫描文件系统，找到候选
   implements/      ← 阶段 3：工具实例 + 动态工具工厂
-  pipeline.ts      ← 阶段 2：权限过滤管线
+  filter.ts        ← 阶段 2：安全预过滤 + 权限过滤（纯名称操作）
+  instantiate.ts   ← 阶段 3：名称 → Tool 实例映射
   ...
 ```
 
@@ -85,7 +86,7 @@ capabilities/
 ```bash
 cd packages/sdk
 
-pnpm test          # 运行 195 个测试（25 个文件）
+pnpm test          # 运行 177 个测试（22 个文件）
 pnpm test:watch    # 监听模式
 pnpm build         # tsc 编译到 dist/
 pnpm format        # Prettier 格式化
@@ -102,7 +103,7 @@ pnpm format:check  # 检查格式
 ### 当前状态
 
 - ✅ TypeScript strict 模式，零编译错误
-- ✅ 195 个测试全部通过（25 个文件）
+- ✅ 177 个测试全部通过（22 个文件）
 - ✅ `src-deprecated/` 已清理
 - ⚠️ CLI 尚未接入 SDK，自己维护了一套重复实现（`agent-creator.ts`、`draft.ts`、`conversation-runner.ts` 等）
 - ⚠️ CLI 有 25 个测试失败，部分因 Windows 路径分隔符问题，部分因缺少 SDK 构建产物
@@ -148,8 +149,8 @@ const session = await createSession({ agent, model })
 | 2 | `discoverUserTools` 返回 `Tool[]` | 类型已改为 `Tool[]`，`require` 部分待实现（当前返回空数组） | ⬜ |
 | 2b | 安全模块加载机制 | `discoverUserTools` 需要安全的 `require()` 加载 `.js` 文件，含沙箱/错误隔离 | ⬜ |
 | 3 | `discoverSubAgents` 返回 `AgentDefinition[]` | ✅ 已完成 | ✅ |
-| 4 | `assembleCapabilities` 接受/产出 `Tool[]` | ✅ 已完成。输入 `Tool[]` / `AgentDefinition[]`，输出 `AssemblyOutput { tools: Tool[] }`，subagents 已内部转为 AgentToolLazy，动态工具已内部按条件注册 | ✅ |
-| 5 | `resolveAgent` 实现三阶段组装 | ✅ 已完成。discovery → pipeline → implements 全部在 `resolveAgent` 内闭环 | ✅ |
+| 4 | `filterCapabilities` + `instantiateTools` 拆分 | ✅ 已完成。`filterCapabilities` 纯名称操作，`instantiateTools` 名称→实例映射，接口清晰 | ✅ |
+| 5 | `resolveAgent` 实现三阶段组装 | ✅ 已完成。discovery → filterCapabilities → instantiateTools 全部在 `resolveAgent` 内闭环 | ✅ |
 | 6 | `refreshTools` 插件 | `SessionPlugin.beforeSend` → `resolved.refresh()` → `ctx.agent.tools = fresh.tools` | ⬜ |
 
 ### P1 — MCP 闭环
@@ -162,7 +163,7 @@ const session = await createSession({ agent, model })
 | 9 | `McpTransport` 补充方法 | `callTool` / `readResource` / `listPrompts` / `getPrompt` 等方法 | ⬜ |
 | 10 | `McpConnectionManager` 暴露 transport | `getTransport(name)` 供 `call_mcp_tool` / `read_mcp_resource` 使用 | ⬜ |
 | 10b | `createCallSkillSubAgentTool` 工厂函数 | 在 `capabilities/implements/skill-tools.ts` 中创建 `CallbackTool`。回调中直接克隆 `this.agent`（Core Agent 实例），替换 messages 为 skill 正文 + task，过滤递归工具 | ✅ |
-| 10c | `pipeline.ts` 注册 `call_skill_sub_agent` | 在 `assembleCapabilities` 的条件注册中补全，skillsPaths 和 skillDisclosure 已就绪 | ⬜ |
+| 10c | `instantiateTools` 注册 `call_skill_sub_agent` | 在 `instantiateTools` 的条件注册中补全，skillsPaths 和 skillDisclosure 已就绪 | ✅ |
 | 10e | `call_mcp_tool` 回调完整实现 | 通过 transport.callTool 调用，非占位符 | ⬜ |
 | 10f | `read_mcp_resource` 回调完整实现 | 通过 transport.readResource 调用，非占位符 | ⬜ |
 
@@ -170,8 +171,8 @@ const session = await createSession({ agent, model })
 
 | # | 步骤 | 说明 | 状态 |
 |---|------|------|:--:|
-| 11 | `runtime/` 简化 | `factory.ts` → `types.ts`（只保留类型），`assembleAgent` 内联到 `resolveAgent`，删 `skill-sub-agent.ts` | ⬜ |
-| 12 | 更新 `src/index.ts` 导出 | 补全 `createCallSkillSubAgentTool` 等新 API | ⬜ |
+| 11 | `runtime/` 简化 | `factory.ts` → `types.ts`（只保留类型），`assembleAgent` 内联到 `resolveAgent`，删 `skill-sub-agent.ts` | ✅ |
+| 12 | 更新 `src/index.ts` 导出 | 补全 `createCallSkillSubAgentTool`、`filterCapabilities`、`instantiateTools` 等 | ✅ |
 | 13 | 端到端测试 | `resolveAgent` → `new Agent()` → `createSession` 完整链路 | ⬜ |
 | 14 | CLI 接入 SDK | 删 CLI 中重复的 agent-creator、工具发现、draft 逻辑 | ⬜ |
 
@@ -226,3 +227,4 @@ const session = await createSession({ agent, model })
 | ✅ | `resolveAgent` 一站式装配 | 从磁盘加载 → 发现 → 过滤 → 实例化，全部在 `resolveAgent` 内闭环 |
 | ✅ | `createCallSkillSubAgentTool` | `call_skill_sub_agent` 工具工厂，回调直接克隆 `this.agent`（Core Agent），无需 `createSkillSubAgent` |
 | ✅ | `runtime/` 简化 | 删 `factory.ts`、`skill-sub-agent.ts`，装配逻辑全部内联到 `resolveAgent` |
+| ✅ | `assembleCapabilities` 拆分为 `filterCapabilities` + `instantiateTools` | `filterCapabilities` 纯名称过滤，`instantiateTools` 名称→实例映射，`FilterOutput` 直接透传 |
