@@ -71,17 +71,13 @@ export function resolveAgent(input: ResolveAgentInput): ResolvedAgent {
     });
 
     // 阶段 3：实例化（名称 → Tool 实例）
-    const allowedSkillIds = new Set(filtered.skills);
-    const allowedMcpIds = new Set(filtered.mcps);
-
     const tools = instantiateTools({
-      allowedTools: filtered.tools,
-      allowedSubagents: filtered.subagents,
-      allowedSkills: skills.filter((s) => allowedSkillIds.has(s.id)),
-      allowedMcps: mcps.filter((m) => allowedMcpIds.has(m.id)),
+      filtered,
       builtinInstances,
       userInstances,
       subagentDefs,
+      skills,
+      mcps,
       skillsPaths,
       mcpManager,
       mcpConfigs,

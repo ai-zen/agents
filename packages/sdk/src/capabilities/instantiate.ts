@@ -1,8 +1,9 @@
 import type { Tool } from "@ai-zen/agents-core";
 import { AgentToolLazy } from "@ai-zen/agents-core";
 import type { AgentDefinition, McpServerConfig, McpTransport } from "../types";
-import type { DisclosureItem, DisclosureParam } from "./disclosure";
+import type { DisclosureItem } from "./disclosure";
 import { buildDisclosureParam } from "./disclosure";
+import type { FilterOutput } from "./filter";
 import { createLoadSkillTool, createCallSkillSubAgentTool } from "./implements/skill-tools";
 import { createLoadMcpTool, createCallMcpTool, createReadMcpResourceTool } from "./implements/mcp-tools";
 import type { McpConnectionManager } from "../runtime/mcp-connection";
@@ -11,14 +12,8 @@ const EMPTY_HINT_SKILL = "（当前没有可用的 Skill，请联系用户添加
 const EMPTY_HINT_MCP = "（当前没有可用的 MCP 服务器，请联系用户添加）";
 
 export interface InstantiateInput {
-  /** 权限过滤后的工具名称列表 */
-  allowedTools: string[];
-  /** 权限过滤后的 SubAgent 名称列表 */
-  allowedSubagents: string[];
-  /** 权限过滤后可用的 skill 完整信息 */
-  allowedSkills: DisclosureItem[];
-  /** 权限过滤后可用的 mcp 完整信息 */
-  allowedMcps: DisclosureItem[];
+  /** filterCapabilities 的输出 */
+  filtered: FilterOutput;
 
   /** 内置工具实例索引 */
   builtinInstances: Tool[];
@@ -26,6 +21,10 @@ export interface InstantiateInput {
   userInstances: Tool[];
   /** SubAgent 完整定义索引 */
   subagentDefs: AgentDefinition[];
+  /** Skill 完整信息索引（含 description） */
+  skills: DisclosureItem[];
+  /** MCP 完整信息索引（含 description） */
+  mcps: DisclosureItem[];
 
   /** Skill 目录路径（给动态工具回调查找） */
   skillsPaths: string[];
@@ -43,13 +42,12 @@ export interface InstantiateInput {
  */
 export function instantiateTools(input: InstantiateInput): Tool[] {
   const {
-    allowedTools,
-    allowedSubagents,
-    allowedSkills,
-    allowedMcps,
+    filtered,
     builtinInstances,
     userInstances,
     subagentDefs,
+    skills,
+    mcps,
     skillsPaths,
     mcpManager,
     mcpConfigs,
@@ -57,7 +55,7 @@ export function instantiateTools(input: InstantiateInput): Tool[] {
   } = input;
 
   const result: Tool[] = [];
-  const allowedToolNames = new Set(allowedTools);
+  const allowedToolNames = new Set(filtered.tools);
 
   // 1. 内置 + 用户工具
   for (const t of [...builtinInstances, ...userInstances]) {
@@ -66,26 +64,31 @@ export function instantiateTools(input: InstantiateInput): Tool[] {
     }
   }
 
-  // 2. 构建枚举披露参数
+  // 2. 从 id 映射回完整信息，构建枚举披露参数
+  const allowedSkillSet = new Set(filtered.skills);
+  const allowedMcpSet = new Set(filtered.mcps);
+  const filteredSkills = skills.filter((s) => allowedSkillSet.has(s.id));
+  const filteredMcps = mcps.filter((m) => allowedMcpSet.has(m.id));
+
   const skillDisclosure = buildDisclosureParam(
-    allowedSkills,
+    filteredSkills,
     "选择一个 Skill",
     EMPTY_HINT_SKILL,
   );
   const mcpDisclosure = buildDisclosureParam(
-    allowedMcps,
+    filteredMcps,
     "选择一个 MCP 服务器",
     EMPTY_HINT_MCP,
   );
 
   // 3. 动态工具（按条件注册）
-  if (allowedToolNames.has("load_skill") && allowedSkills.length > 0) {
+  if (allowedToolNames.has("load_skill") && filteredSkills.length > 0) {
     result.push(createLoadSkillTool(skillsPaths, skillDisclosure));
   }
-  if (allowedToolNames.has("call_skill_sub_agent") && allowedSkills.length > 0) {
+  if (allowedToolNames.has("call_skill_sub_agent") && filteredSkills.length > 0) {
     result.push(createCallSkillSubAgentTool(skillsPaths, skillDisclosure));
   }
-  if (allowedToolNames.has("load_mcp") && mcpManager && mcpConfigs && mcpTransportFactory && allowedMcps.length > 0) {
+  if (allowedToolNames.has("load_mcp") && mcpManager && mcpConfigs && mcpTransportFactory && filteredMcps.length > 0) {
     result.push(createLoadMcpTool(mcpManager, mcpConfigs, mcpDisclosure, mcpTransportFactory));
   }
   if (allowedToolNames.has("call_mcp_tool") && mcpManager) {
@@ -96,7 +99,7 @@ export function instantiateTools(input: InstantiateInput): Tool[] {
   }
 
   // 4. SubAgent → AgentToolLazy
-  const allowedSubagentSet = new Set(allowedSubagents);
+  const allowedSubagentSet = new Set(filtered.subagents);
   for (const def of subagentDefs) {
     if (!def.function || !allowedSubagentSet.has(def.function.name)) continue;
     const lazy = new AgentToolLazy({
