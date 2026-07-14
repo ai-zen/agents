@@ -152,6 +152,7 @@ const session = await createSession({ agent, model })
 | 4 | `filterCapabilities` + `instantiateTools` 拆分 | ✅ 已完成。`filterCapabilities` 纯名称操作，`instantiateTools` 名称→实例映射，接口清晰 | ✅ |
 | 5 | `resolveAgent` 实现三阶段组装 | ✅ 已完成。discovery → filterCapabilities → instantiateTools 全部在 `resolveAgent` 内闭环 | ✅ |
 | 6 | `refreshTools` 插件 | `SessionPlugin.beforeSend` → `resolved.refresh()` → `ctx.agent.tools = fresh.tools` | ⬜ |
+| 6b | `AgentToolLazy.buildAgent` 注入 | 在 `instantiateTools` 中创建 AgentToolLazy 时注入 model/config 等回调，让 SubAgent 可真正运行。当前占位抛错 | ⬜ |
 
 ### P1 — MCP 闭环
 
