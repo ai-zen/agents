@@ -34,15 +34,15 @@ const baseModel = { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 
 // ---------------------------------------------------------------------------
 
 describe("autoMigrate", () => {
-  it("返回一个 SessionPlugin（有 afterRun）", () => {
+  it("返回一个 SessionPlugin（有 afterSend）", () => {
     const migrationAgent = mockAgent({});
     const plugin = autoMigrate({ maxTokens: 50000, migrationAgent: migrationAgent as any });
 
     expect(plugin).toBeDefined();
-    expect(typeof plugin.afterRun).toBe("function");
+    expect(typeof plugin.afterSend).toBe("function");
   });
 
-  describe("afterRun", () => {
+  describe("afterSend", () => {
     it("promptTokens <= maxTokens 时返回 undefined（不迁移）", async () => {
       const agent = mockAgent({
         lastUsage: { prompt_tokens: 30000, completion_tokens: 5000, total_tokens: 35000 },
@@ -50,7 +50,7 @@ describe("autoMigrate", () => {
       const migrationAgent = mockAgent({});
       const plugin = autoMigrate({ maxTokens: 50000, migrationAgent: migrationAgent as any });
 
-      const result = await plugin.afterRun!({ agent: agent as any, model: baseModel });
+      const result = await plugin.afterSend!({ agent: agent as any, model: baseModel });
 
       expect(result).toBeUndefined();
       // 迁移 Agent 未被调用
@@ -84,7 +84,7 @@ describe("autoMigrate", () => {
         onHandoff,
       });
 
-      const result = await plugin.afterRun!({ agent: agent as any, model: baseModel });
+      const result = await plugin.afterSend!({ agent: agent as any, model: baseModel });
 
       // 返回了新 Agent
       expect(result).toBeDefined();
@@ -123,7 +123,7 @@ describe("autoMigrate", () => {
       const migrationAgent = mockAgent({});
       const plugin = autoMigrate({ maxTokens: 50000, migrationAgent: migrationAgent as any });
 
-      const result = await plugin.afterRun!({ agent: agent as any, model: baseModel });
+      const result = await plugin.afterSend!({ agent: agent as any, model: baseModel });
 
       expect(result).toBeUndefined();
       expect(migrationAgent.send).not.toHaveBeenCalled();
@@ -143,7 +143,7 @@ describe("autoMigrate", () => {
         onHandoff,
       });
 
-      const result = await plugin.afterRun!({ agent: agent as any, model: baseModel });
+      const result = await plugin.afterSend!({ agent: agent as any, model: baseModel });
 
       // 失败时返回 undefined，Agent 不变
       expect(result).toBeUndefined();
@@ -168,7 +168,7 @@ describe("autoMigrate", () => {
         onHandoff,
       });
 
-      const result = await plugin.afterRun!({ agent: agent as any, model: baseModel });
+      const result = await plugin.afterSend!({ agent: agent as any, model: baseModel });
 
       // 即使 onHandoff 抛错，仍然返回新 Agent
       expect(result).toBeDefined();
@@ -186,7 +186,7 @@ describe("autoMigrate", () => {
       migrationAgent.send.mockResolvedValue([{ role: "assistant", content: "交接文档" }]);
 
       const plugin = autoMigrate({ maxTokens: 50000, migrationAgent: migrationAgent as any });
-      const result = await plugin.afterRun!({ agent: agent as any, model: baseModel });
+      const result = await plugin.afterSend!({ agent: agent as any, model: baseModel });
 
       expect(result!.model).toBe(sharedModel);
     });
@@ -217,7 +217,7 @@ describe("autoMigrate", () => {
         },
       });
 
-      const result = await plugin.afterRun!({ agent: agent as any, model: baseModel });
+      const result = await plugin.afterSend!({ agent: agent as any, model: baseModel });
       expect(result).toBeDefined();
 
       // 新 Agent 可以绑事件

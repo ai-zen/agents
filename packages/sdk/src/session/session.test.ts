@@ -72,10 +72,10 @@ describe("Session.send", () => {
     expect(result.length).toBeGreaterThan(0);
   });
 
-  it("agent.send 之后调用 plugin.afterRun", async () => {
+  it("agent.send 之后调用 plugin.afterSend", async () => {
     const agent = mockAgent();
-    const afterRun = vi.fn().mockResolvedValue(undefined);
-    const plugin: SessionPlugin = { afterRun };
+    const afterSend = vi.fn().mockResolvedValue(undefined);
+    const plugin: SessionPlugin = { afterSend };
 
     const session = await createSession({ agent: agent as any, model: { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 } })
       .use(plugin)
@@ -83,18 +83,18 @@ describe("Session.send", () => {
 
     await session.send("hello");
 
-    expect(afterRun).toHaveBeenCalledTimes(1);
-    // afterRun 收到 SessionContext
-    const ctx = afterRun.mock.calls[0][0];
+    expect(afterSend).toHaveBeenCalledTimes(1);
+    // afterSend 收到 SessionContext
+    const ctx = afterSend.mock.calls[0][0];
     expect(ctx.agent).toBeDefined();
     expect(ctx.model).toBeDefined();
   });
 
-  it("plugin.afterRun 返回新 Agent 时替换 session.agent", async () => {
+  it("plugin.afterSend 返回新 Agent 时替换 session.agent", async () => {
     const agent = mockAgent();
     const newAgent = mockAgent();
     const plugin: SessionPlugin = {
-      afterRun: vi.fn().mockResolvedValue(newAgent),
+      afterSend: vi.fn().mockResolvedValue(newAgent),
     };
 
     const session = await createSession({ agent: agent as any, model: { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 } })
@@ -111,9 +111,9 @@ describe("Session.send", () => {
   it("多个 plugin 按注册顺序执行", async () => {
     const agent = mockAgent();
     const order: number[] = [];
-    const p1: SessionPlugin = { afterRun: vi.fn(async () => { order.push(1); }) };
-    const p2: SessionPlugin = { afterRun: vi.fn(async () => { order.push(2); }) };
-    const p3: SessionPlugin = { afterRun: vi.fn(async () => { order.push(3); }) };
+    const p1: SessionPlugin = { afterSend: vi.fn(async () => { order.push(1); }) };
+    const p2: SessionPlugin = { afterSend: vi.fn(async () => { order.push(2); }) };
+    const p3: SessionPlugin = { afterSend: vi.fn(async () => { order.push(3); }) };
 
     const session = await createSession({ agent: agent as any, model: { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 } })
       .use(p1)
@@ -126,9 +126,9 @@ describe("Session.send", () => {
     expect(order).toEqual([1, 2, 3]);
   });
 
-  it("plugin 没有 afterRun 时跳过", async () => {
+  it("plugin 没有 afterSend 时跳过", async () => {
     const agent = mockAgent();
-    const plugin: SessionPlugin = {}; // 无 afterRun
+    const plugin: SessionPlugin = {}; // 无 afterSend
 
     const session = await createSession({ agent: agent as any, model: { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 } })
       .use(plugin)
@@ -144,10 +144,10 @@ describe("Session.send", () => {
     let capturedAgentInP2: any = null;
 
     const p1: SessionPlugin = {
-      afterRun: vi.fn(async () => newAgent as any),
+      afterSend: vi.fn(async () => newAgent as any),
     };
     const p2: SessionPlugin = {
-      afterRun: vi.fn(async (ctx) => {
+      afterSend: vi.fn(async (ctx) => {
         capturedAgentInP2 = ctx.agent;
       }),
     };
@@ -169,7 +169,7 @@ describe("SessionPlugin.beforeSend", () => {
     const callOrder: string[] = [];
     const plugin: SessionPlugin = {
       beforeSend: vi.fn(async () => { callOrder.push("beforeSend"); }),
-      afterRun: vi.fn(async () => { callOrder.push("afterRun"); }),
+      afterSend: vi.fn(async () => { callOrder.push("afterSend"); }),
     };
 
     // 包装 agent.send 以记录调用顺序
@@ -185,7 +185,7 @@ describe("SessionPlugin.beforeSend", () => {
 
     await session.send("hello");
 
-    expect(callOrder).toEqual(["beforeSend", "send", "afterRun"]);
+    expect(callOrder).toEqual(["beforeSend", "send", "afterSend"]);
   });
 
   it("beforeSend 收到 SessionContext", async () => {
@@ -226,7 +226,7 @@ describe("SessionPlugin.beforeSend", () => {
 
   it("plugin 没有 beforeSend 时跳过", async () => {
     const agent = mockAgent();
-    const plugin: SessionPlugin = { afterRun: vi.fn() };
+    const plugin: SessionPlugin = { afterSend: vi.fn() };
 
     const session = await createSession({ agent: agent as any, model: { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 } })
       .use(plugin)

@@ -659,7 +659,7 @@ interface SessionPlugin {
   /** Agent.send() 调用前触发。可用于刷新工具列表、更新 RAG 等。 */
   beforeSend?(ctx: SessionContext): Promise<void>;
   /** Agent.send() 返回后调用。可返回新 Agent 替换当前实例。 */
-  afterRun?(ctx: SessionContext): Promise<Agent | void>;
+  afterSend?(ctx: SessionContext): Promise<Agent | void>;
 }
 
 interface Session {
@@ -702,9 +702,9 @@ send(content)
   │      await plugin.beforeSend?.({ agent, model });    // 如刷新工具列表
   │    }
   ├─ agent.send(content)           // 委托 Core Agent
-  ├─ 遍历 plugins.afterRun:
+  ├─ 遍历 plugins.afterSend:
   │    for (const plugin of plugins) {
-  │      const newAgent = await plugin.afterRun?.({ agent, model });
+  │      const newAgent = await plugin.afterSend?.({ agent, model });
   │      if (newAgent) agent = newAgent;   // 插件可替换 Agent
   │    }
   └─ 返回 messages
@@ -759,7 +759,7 @@ interface AutoMigrateOptions {
 function autoMigrate(options: AutoMigrateOptions): SessionPlugin;
 ```
 
-**afterRun 逻辑**：
+**afterSend 逻辑**：
 
 ```
 1. 读取 agent.lastUsage?.prompt_tokens

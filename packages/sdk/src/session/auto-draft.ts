@@ -30,7 +30,7 @@ export function autoDraft(options: AutoDraftOptions): SessionPlugin {
   const { draftsDir, agentId, conversationId, cwd } = options;
 
   return {
-    afterRun: async (ctx) => {
+    afterSend: async (ctx) => {
       try {
         const draft: Draft = {
           conversationId,

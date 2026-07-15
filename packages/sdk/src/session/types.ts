@@ -17,7 +17,7 @@ export interface SessionPlugin {
   /** Agent.send() 调用前触发。可用于刷新工具列表等。 */
   beforeSend?(ctx: SessionContext): Promise<void>;
   /** Agent.send() 返回后调用。可返回新 Agent 替换当前实例。 */
-  afterRun?(ctx: SessionContext): Promise<Agent | void>;
+  afterSend?(ctx: SessionContext): Promise<Agent | void>;
 }
 
 /**

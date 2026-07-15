@@ -24,7 +24,7 @@ export function autoMigrate(options: AutoMigrateOptions): SessionPlugin {
   const { maxTokens, migrationAgent, onHandoff } = options;
 
   return {
-    afterRun: async (ctx) => {
+    afterSend: async (ctx) => {
       const { agent } = ctx;
 
       // 1. 读取 lastUsage

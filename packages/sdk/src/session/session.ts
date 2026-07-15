@@ -33,11 +33,11 @@ class SessionImpl implements Session {
     // 2. 委托 Core Agent
     const messages = await this._agent.send(content);
 
-    // 3. 遍历插件 afterRun 钩子
+    // 3. 遍历插件 afterSend 钩子
     for (const plugin of this._plugins) {
-      if (!plugin.afterRun) continue;
+      if (!plugin.afterSend) continue;
 
-      const newAgent = await plugin.afterRun(ctx);
+      const newAgent = await plugin.afterSend(ctx);
       if (newAgent) {
         this._agent = newAgent;
         ctx.agent = newAgent; // 后续插件看到新 Agent
