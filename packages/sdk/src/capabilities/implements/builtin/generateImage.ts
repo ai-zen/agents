@@ -1,13 +1,11 @@
-import { CallbackTool, OpenAI, ZhipuImage } from "@ai-zen/agents-core";
-import type { AppConfig } from "../../../types";
+import { CallbackTool, OpenAI, ZhipuImage, type FunctionCallContext } from "@ai-zen/agents-core";
+import type { AppConfig, ImageModel } from "../../../types";
 
 /**
  * 根据文字描述生成图片。返回图片 URL，可通过 downloadFile 工具保存到本地。
  *
  * 依赖 AppConfig 中的 imageModels 和 defaultImageModel 配置。
  * 如果未配置图片模型，工具会返回错误提示。
- *
- * TODO: 当前仅支持 ZhipuImage（智谱），后续可扩展支持其他图片生成服务。
  */
 export function createGenerateImageTool(config: AppConfig): CallbackTool {
   return new CallbackTool({
@@ -42,15 +40,15 @@ export function createGenerateImageTool(config: AppConfig): CallbackTool {
         additionalProperties: false,
       },
     },
-    async callback(input): Promise<string> {
+    async callback(input: Record<string, unknown>): Promise<string> {
       try {
         const prompt = input.prompt as string;
         if (!prompt || !prompt.trim()) {
           return JSON.stringify({ success: false, error: "prompt 不能为空" });
         }
 
-        const imageModels = (config as any).imageModels as any[] | undefined;
-        const defaultImageModel = (config as any).defaultImageModel as string | undefined;
+        const imageModels = config.imageModels;
+        const defaultImageModel = config.defaultImageModel;
 
         if (!imageModels || imageModels.length === 0) {
           return JSON.stringify({
@@ -60,19 +58,19 @@ export function createGenerateImageTool(config: AppConfig): CallbackTool {
         }
 
         const modelId = (input.model as string) || defaultImageModel;
-        const imageModel = modelId
-          ? imageModels.find((m: any) => m.id === modelId)
+        const imageModel: ImageModel | undefined = modelId
+          ? imageModels.find((m) => m.id === modelId)
           : imageModels[0];
 
         if (!imageModel) {
           return JSON.stringify({
             success: false,
-            error: `图片模型 "${modelId}" 不存在。可用的图片模型: ${imageModels.map((m: any) => m.id).join(", ")}`,
+            error: `图片模型 "${modelId}" 不存在。可用的图片模型: ${imageModels.map((m) => m.id).join(", ")}`,
           });
         }
 
         const endpoint = config.endpoints.find(
-          (e: { id: string }) => e.id === imageModel.endpointId,
+          (e) => e.id === imageModel.endpointId,
         );
         if (!endpoint) {
           return JSON.stringify({
@@ -106,7 +104,7 @@ export function createGenerateImageTool(config: AppConfig): CallbackTool {
             (input.quality as string) || imageModel.defaultQuality || undefined,
         });
 
-        const images = result.data.map((img: any, i: number) => ({
+        const images = result.data.map((img: { url?: string }, i: number) => ({
           index: i,
           url: img.url,
           description: `图片 ${i + 1}`,
@@ -125,10 +123,10 @@ export function createGenerateImageTool(config: AppConfig): CallbackTool {
           null,
           2,
         );
-      } catch (error: any) {
+      } catch (error: unknown) {
         return JSON.stringify({
           success: false,
-          error: error?.message || "图片生成失败",
+          error: error instanceof Error ? error.message : "图片生成失败",
         });
       }
     },

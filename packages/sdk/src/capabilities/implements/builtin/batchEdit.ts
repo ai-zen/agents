@@ -47,7 +47,7 @@ export const batchEditTool = new CallbackTool({
       const content = await fsp.readFile(input.path as string, "utf-8");
       let newContent = content;
       const results: { oldText: string; newText: string; result: string }[] = [];
-      for (const replacement of input.replacements as any[]) {
+      for (const replacement of (input.replacements as any[])) {
         if (!newContent.includes(replacement.oldText as string)) {
           results.push({
             oldText: replacement.oldText as string,

@@ -6,15 +6,49 @@ import type { SessionPlugin } from "./types";
 // 轻量 mock：模拟 Core Agent 的 send 行为
 // ---------------------------------------------------------------------------
 
-function mockAgent(opts?: { lastUsage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }; messages?: any[]; tools?: any[]; model?: any }) {
+function mockRuntime(config?: any) {
+  return {
+    config: config ?? {
+      defaultModel: "m1",
+      models: [
+        { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 },
+      ],
+      endpoints: [],
+    },
+    agentsDir: "",
+    subAgentsPaths: [],
+    skillsPaths: [],
+    toolsPaths: [],
+    mcpPaths: [],
+    conversationsDir: "",
+    draftsDir: "",
+    createModel: vi.fn(),
+  };
+}
+
+function mockAgent(opts?: {
+  lastUsage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+  messages?: any[];
+  tools?: any[];
+  model?: any;
+}): any {
   const messages: any[] = opts?.messages ?? [{ role: "system", content: "You are a helper." }];
   return {
+    runtime: mockRuntime(),
+    definition: {
+      id: "test-agent",
+      name: "Test Agent",
+      messages: [{ role: "system", content: "You are a helper." }],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
     lastUsage: opts?.lastUsage,
     messages,
     tools: opts?.tools ?? [],
     model: opts?.model ?? {},
+    caps: undefined,
+    permissions: undefined,
     send: vi.fn(async (_content: string) => {
-      // 模拟 AI 回复
       messages.push({ role: "user", content: _content });
       messages.push({ role: "assistant", content: "OK" });
       return messages;
@@ -28,7 +62,7 @@ function mockAgent(opts?: { lastUsage?: { prompt_tokens: number; completion_toke
 
 describe("createSession", () => {
   it("返回 SessionBuilder（有 use 和 init 方法）", () => {
-    const builder = createSession({ agent: mockAgent() as any, model: { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 } });
+    const builder = createSession({ agent: mockAgent() });
 
     expect(builder).toBeDefined();
     expect(typeof builder.use).toBe("function");
@@ -37,14 +71,14 @@ describe("createSession", () => {
 
   it("use() 返回 SessionBuilder（链式调用）", () => {
     const plugin: SessionPlugin = {};
-    const builder = createSession({ agent: mockAgent() as any, model: { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 } });
+    const builder = createSession({ agent: mockAgent() });
 
     const builder2 = builder.use(plugin);
-    expect(builder2).toBe(builder); // 返回同一实例，支持链式
+    expect(builder2).toBe(builder);
   });
 
   it("init() 返回 Session（有 agent 和 send）", async () => {
-    const session = await createSession({ agent: mockAgent() as any, model: { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 } }).init();
+    const session = await createSession({ agent: mockAgent() }).init();
 
     expect(session).toBeDefined();
     expect(session.agent).toBeDefined();
@@ -55,7 +89,7 @@ describe("createSession", () => {
 describe("Session.send", () => {
   it("委托给 agent.send(content)", async () => {
     const agent = mockAgent();
-    const session = await createSession({ agent: agent as any, model: { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 } }).init();
+    const session = await createSession({ agent: agent }).init();
 
     await session.send("hello");
 
@@ -64,7 +98,7 @@ describe("Session.send", () => {
 
   it("返回 messages", async () => {
     const agent = mockAgent();
-    const session = await createSession({ agent: agent as any, model: { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 } }).init();
+    const session = await createSession({ agent: agent }).init();
 
     const result = await session.send("hello");
 
@@ -74,30 +108,31 @@ describe("Session.send", () => {
 
   it("agent.send 之后调用 plugin.afterSend", async () => {
     const agent = mockAgent();
-    const afterSend = vi.fn().mockResolvedValue(undefined);
+    const afterSend = vi.fn();
     const plugin: SessionPlugin = { afterSend };
 
-    const session = await createSession({ agent: agent as any, model: { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 } })
+    const session = await createSession({ agent: agent })
       .use(plugin)
       .init();
 
     await session.send("hello");
 
     expect(afterSend).toHaveBeenCalledTimes(1);
-    // afterSend 收到 SessionContext
     const ctx = afterSend.mock.calls[0][0];
     expect(ctx.agent).toBeDefined();
     expect(ctx.model).toBeDefined();
   });
 
-  it("plugin.afterSend 返回新 Agent 时替换 session.agent", async () => {
+  it("plugin 通过 ctx.agent 替换 session.agent", async () => {
     const agent = mockAgent();
     const newAgent = mockAgent();
     const plugin: SessionPlugin = {
-      afterSend: vi.fn().mockResolvedValue(newAgent),
+      afterSend: vi.fn(async (ctx) => {
+        ctx.agent = newAgent;
+      }),
     };
 
-    const session = await createSession({ agent: agent as any, model: { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 } })
+    const session = await createSession({ agent: agent })
       .use(plugin)
       .init();
 
@@ -115,7 +150,7 @@ describe("Session.send", () => {
     const p2: SessionPlugin = { afterSend: vi.fn(async () => { order.push(2); }) };
     const p3: SessionPlugin = { afterSend: vi.fn(async () => { order.push(3); }) };
 
-    const session = await createSession({ agent: agent as any, model: { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 } })
+    const session = await createSession({ agent: agent })
       .use(p1)
       .use(p2)
       .use(p3)
@@ -128,13 +163,12 @@ describe("Session.send", () => {
 
   it("plugin 没有 afterSend 时跳过", async () => {
     const agent = mockAgent();
-    const plugin: SessionPlugin = {}; // 无 afterSend
+    const plugin: SessionPlugin = {};
 
-    const session = await createSession({ agent: agent as any, model: { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 } })
+    const session = await createSession({ agent: agent })
       .use(plugin)
       .init();
 
-    // 不应抛异常
     await session.send("hello");
   });
 
@@ -144,7 +178,9 @@ describe("Session.send", () => {
     let capturedAgentInP2: any = null;
 
     const p1: SessionPlugin = {
-      afterSend: vi.fn(async () => newAgent as any),
+      afterSend: vi.fn(async (ctx) => {
+        ctx.agent = newAgent;
+      }),
     };
     const p2: SessionPlugin = {
       afterSend: vi.fn(async (ctx) => {
@@ -152,7 +188,7 @@ describe("Session.send", () => {
       }),
     };
 
-    const session = await createSession({ agent: agent as any, model: { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 } })
+    const session = await createSession({ agent: agent })
       .use(p1)
       .use(p2)
       .init();
@@ -160,6 +196,15 @@ describe("Session.send", () => {
     await session.send("hello");
 
     expect(capturedAgentInP2).toBe(newAgent);
+  });
+
+  it("Session 的 model 来自 agent.runtime.config", async () => {
+    const agent = mockAgent();
+    const session = await createSession({ agent: agent }).init();
+
+    const ctxModel = (session as any)._model;
+    expect(ctxModel).toBeDefined();
+    expect(ctxModel.id).toBe("m1");
   });
 });
 
@@ -172,14 +217,13 @@ describe("SessionPlugin.beforeSend", () => {
       afterSend: vi.fn(async () => { callOrder.push("afterSend"); }),
     };
 
-    // 包装 agent.send 以记录调用顺序
     const origSend = agent.send;
     agent.send = vi.fn(async (content: string) => {
       callOrder.push("send");
       return origSend(content);
     });
 
-    const session = await createSession({ agent: agent as any, model: { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 } })
+    const session = await createSession({ agent: agent })
       .use(plugin)
       .init();
 
@@ -193,8 +237,7 @@ describe("SessionPlugin.beforeSend", () => {
     const beforeSend = vi.fn();
     const plugin: SessionPlugin = { beforeSend };
 
-    const model = { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 };
-    const session = await createSession({ agent: agent as any, model })
+    const session = await createSession({ agent: agent })
       .use(plugin)
       .init();
 
@@ -203,7 +246,8 @@ describe("SessionPlugin.beforeSend", () => {
     expect(beforeSend).toHaveBeenCalledTimes(1);
     const ctx = beforeSend.mock.calls[0][0];
     expect(ctx.agent).toBe(agent);
-    expect(ctx.model).toBe(model);
+    expect(ctx.model).toBeDefined();
+    expect(ctx.model.id).toBe("m1");
   });
 
   it("多个 beforeSend 按注册顺序执行", async () => {
@@ -213,7 +257,7 @@ describe("SessionPlugin.beforeSend", () => {
     const p2: SessionPlugin = { beforeSend: vi.fn(async () => { order.push(2); }) };
     const p3: SessionPlugin = { beforeSend: vi.fn(async () => { order.push(3); }) };
 
-    const session = await createSession({ agent: agent as any, model: { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 } })
+    const session = await createSession({ agent: agent })
       .use(p1)
       .use(p2)
       .use(p3)
@@ -228,7 +272,7 @@ describe("SessionPlugin.beforeSend", () => {
     const agent = mockAgent();
     const plugin: SessionPlugin = { afterSend: vi.fn() };
 
-    const session = await createSession({ agent: agent as any, model: { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 } })
+    const session = await createSession({ agent: agent })
       .use(plugin)
       .init();
 

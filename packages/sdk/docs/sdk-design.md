@@ -118,7 +118,7 @@ types        ← 纯类型，零业务依赖
 config       ← 读写 config.json + 迁移 + 内存缓存 + 原子写入
 crud         ← 实体 CRUD（Endpoints / Models / Agents / Conversations / Draft）
 capabilities ← 能力：discovery（发现）+ implements（实现）+ 权限过滤管线
-runtime      ← Agent 组装 + 对话生命周期 + 任务迁移 + resolveAgent 一站式装配
+runtime      ← Runtime 全局上下文 + 模型工厂 + Agent 组装 + MCP 连接管理 + 任务迁移
 session      ← 会话包装（插件链：autoMigrate、autoDraft、refreshTools），依赖 Core Agent
 shared       ← 日志、错误
 ```
@@ -136,27 +136,63 @@ session ──> runtime ──> capabilities ──> crud ──> config ──>
 
 上层依赖下层，反之不行。同层模块不互相依赖。
 
+### Runtime 全局上下文
+
+`Runtime` 是 SDK 的全局上下文实例，持有所有运行时状态。各层不接收散装参数，而是通过 `Runtime` 实例获取所需：
+
+```typescript
+class Runtime {
+  config: AppConfig;           // 应用配置（端点、模型等）
+  agentsDir: string;           // Agent 定义目录
+  subAgentsPaths: string[];    // SubAgent 搜索路径
+  skillsPaths: string[];       // Skill 搜索路径
+  toolsPaths: string[];        // 用户工具搜索路径
+  mcpPaths: string[];          // MCP 配置搜索路径
+  conversationsDir: string;    // 对话记录目录
+  draftsDir: string;           // 草稿目录
+  mcpManager?: McpConnectionManager;
+  mcpConfigs?: Map<string, { name: string; config: McpServerConfig }>;
+  mcpTransportFactory?: (config: McpServerConfig) => McpTransport;
+
+  createModel(modelId: string): Promise<ChatCompletionModel>;  // 委托给 create-model
+}
+```
+
+`Runtime` 实例一旦创建不可变，`refresh` 时创建新实例。各层（Capabilities、SdkAgent、Session 插件等）都持有 `runtime` 引用。
+
+### 模型工厂
+
+模型构建是独立的 runtime 子层，不依赖 capabilities/ 或其他模块：
+
+```
+runtime/create-model.ts
+  └── createModel(config, modelId) → ChatCompletionModel
+```
+
+由 `Runtime.createModel()` 委托调用，`Capabilities` 不直接涉及模型构建。
+
 ### capabilities 内部结构
 
 ```
 capabilities/
+  capabilities.ts  ← Capabilities 类：全局注册表，提供 filter + instantiate + buildTools
+  permission.ts    ← 权限匹配
+  permissions.ts   ← 四维度过滤
+  disclosure.ts    ← 枚举披露
   discovery/       ← 阶段 1：扫描文件系统，找到候选
+    builtin.ts     ← discoverBuiltinTools → Tool[]（条件注入 generateImage）
     subagents.ts   ← discoverSubAgents → AgentDefinition[]
     skills.ts      ← discoverSkills → DisclosureItem[]
     mcp.ts         ← discoverMcpServers → DisclosureItem[]
     usertools.ts   ← discoverUserTools → Tool[]
   implements/       ← 阶段 3：工具实例（注册 = 实现）
-    builtin/       ← BUILTIN_TOOLS: 15 个 Tool 实例
+    builtin/       ← BUILTIN_TOOLS: 16 个 Tool 实例（含 generateImage 工厂）
     mcp-tools.ts   ← createLoadMcpTool / createCallMcpTool / createReadMcpResourceTool
     skill-tools.ts ← createLoadSkillTool / createCallSkillSubAgentTool
-  pipeline.ts      ← 阶段 2：assembleCapabilities 过滤管线
-  permission.ts    ← 权限匹配
-  permissions.ts   ← 四维度过滤
-  prefilter.ts     ← 安全预过滤
-  disclosure.ts    ← 枚举披露
+    sub-agents-tools.ts ← createSubAgentTool(def, runtime, caps)
 ```
 
-`resolveAgent` 按 discovery → pipeline → implements 三阶段组装，最终产出 `ResolvedAgent.tools: Tool[]`。
+`Capabilities` 类管理完整的三阶段管线：构造函数接收 `Runtime` 实例（非散装参数），从中获取配置和路径执行全局发现（阶段 1），`filter()` 执行安全预过滤 + 权限过滤（阶段 2），`instantiate()` 执行名称到 Tool 实例的映射（阶段 3）。`buildTools()` 是 filter + instantiate 的快捷调用。
 
 ---
 
@@ -198,59 +234,97 @@ capabilities/
 
 ## 6. 工具装配流程
 
-装配分为三个阶段：**发现**（返回候选实例）、**过滤**（权限管线）、**实例化**（产出 `Tool[]`）。全部在 `resolveAgent` 中完成，最终产出 `ResolvedAgent`（含可直接注册的 `Tool[]`）。
+装配分为三个阶段：**发现**、**过滤**、**实例化**。全部由 `Capabilities` 类管理，最终产出 `SdkAgent`（含可直接注册的 `Tool[]`）。
 
-### 阶段 1 — 发现（返回实例，不是名称）
+### Capabilities 类
+
+`Capabilities` 是全局能力注册表，构造函数接收 `Runtime` 实例，从中获取配置和路径执行全局发现。之后 `filter()` 和 `instantiate()` 按需被不同 Agent 调用。
+
+```typescript
+class Capabilities {
+  constructor(runtime: Runtime);  // 所有全局状态从 Runtime 获取
+
+  readonly runtime: Runtime;      // 持有 Runtime 引用，各层可访问
+
+  // 阶段 2：按权限 + 排除黑名单过滤，返回名称列表
+  filter(permissions: AgentPermissions, options?: {
+    exclude?: ExcludeOptions;   // 四维黑名单，优先级高于 permissions
+  }): FilterOutput;
+
+  // 阶段 3：将过滤后的名称映射为 Tool 实例
+  instantiate(filtered: FilterOutput): Tool[];
+
+  // 快捷：filter + instantiate 一步完成
+  buildTools(permissions: AgentPermissions, options?: {
+    exclude?: ExcludeOptions;
+  }): Tool[];
+
+  // 重新执行全局发现（重新扫描文件系统）
+  refresh(): void;
+}
+```
+
+### ExcludeOptions — 排除黑名单
+
+与 `AgentPermissions` 四维对称，作为优先级高于 permissions 的安全黑名单：
+
+```typescript
+interface ExcludeOptions {
+  tools?: string[];       // 排除的工具名称（内置 + 用户 + 动态工具）
+  skills?: string[];      // 排除的 skill id
+  mcps?: string[];        // 排除的 MCP server 名
+  subagents?: string[];   // 排除的 agent/function 名称
+}
+```
+
+用途：
+- SubAgent 递归保护：`{ exclude: { subagents: [自身 function.name] } }`
+- Skill 自调用保护：`{ exclude: { skills: [自身 skillId] } }`
+
+### 阶段 1 — 发现（构造函数中执行一次）
 
 | 来源 | 发现函数 | 返回类型 | 说明 |
 |------|----------|----------|------|
-| 内置工具 | `BUILTIN_TOOLS`（常量） | `Tool[]` | 15 个完整实例，注册与实现在同一文件 |
+| 内置工具 | `discoverBuiltinTools(config?)` | `Tool[]` | 16 个实例（含条件注入的 generateImage） |
 | 用户工具 | `discoverUserTools(paths)` | `Tool[]` | 扫描 `tools/*.js`，动态 `require` 为 Tool 实例 |
 | SubAgent | `discoverSubAgents(paths)` | `AgentDefinition[]` | 含完整定义（function、messages 等） |
 | Skill | `discoverSkills(paths)` | `DisclosureItem[]` | id + name + description，供枚举披露 |
 | MCP Server | `discoverMcpServers(paths)` | `DisclosureItem[]` | server 名 + 描述，供枚举披露 |
 
-**注意**：没有 `discoverBuiltinTools` 函数。`BUILTIN_TOOLS` 是常量，直接作为候选。
+发现结果全局共享，SubAgent 和 Skill 子 Agent 复用同一份候选集。
 
-### 阶段 2 — 过滤（权限管线）
+### 阶段 2 — 过滤（Capabilities.filter）
 
 ```
-assembleCapabilities({
-  permissions,
-  builtinTools: Tool[],      // 直接用 BUILTIN_TOOLS
-  userTools: Tool[],
-  subagents: AgentDefinition[],
-  skills: DisclosureItem[],
-  mcps: DisclosureItem[],
-  selfFunctionName?,         // 递归保护
-  callerFunctionName?,       // 反向调用保护
-  isSkillSubAgent?,          // Skill 子 Agent 场景
-})
-  ├── 安全预过滤（递归保护、Skill 工具剔除）
-  ├── 四维度权限过滤（allow/deny + 通配符）
-  ├── 工具去重（后注册覆盖先注册）
-  └── 产出 AssemblyOutput
+filter(permissions, { exclude })
+  │
+  ├── 1. 安全预过滤
+  │     └── 从 SubAgent 候选集中剔除 exclude.subagents 中的名称
+  │
+  ├── 2. 拼装所有候选名称
+  │     ├── 内置工具名 + 用户工具名 + 动态工具名
+  │     └── 从 tools 候选名中剔除 exclude.tools
+  │
+  ├── 3. 四维度权限过滤
+  │     ├── tools:     候选名 → filterByPermissions(permissions.tools)
+  │     ├── subagents: 排除后的 SubAgent → filterByPermissions(permissions.subagents)
+  │     ├── skills:    排除 exclude.skills 后的 skill id → filterByPermissions(permissions.skills)
+  │     └── mcps:      排除 exclude.mcps 后的 MCP id → filterByPermissions(permissions.mcps)
+  │
+  └── 产出 FilterOutput { tools: string[], subagents: string[], skills: string[], mcps: string[] }
 ```
 
-### 安全预过滤
-
-在权限判断之前，从候选集中剔除绝对不能给的项目。预过滤不受用户配置影响，allow/deny 拿不回来：
-
-- **SubAgent 递归保护**：候选 SubAgent 列表预过滤掉自身 `function.name`
-- **SubAgent 反向调用保护**：候选 SubAgent 列表预过滤掉调用者的 `function.name`
-- **Skill 递归保护**：Skill 子 Agent 的候选 tools 预过滤掉 `call_skill_sub_agent` 和 `load_skill`
+安全预过滤在权限判断之前执行，不受用户配置影响。
 
 ### 权限过滤与披露
-
-未配置的维度等同于 `deny: ['*']`。
 
 #### tools
 
 ```
 候选 = BUILTIN_TOOLS + discoverUserTools()  →  Tool[]
-安全预过滤：Skill 子 Agent 场景下剔除 call_skill_sub_agent、load_skill
-权限裁剪：allow 或 deny
-结果 → 保留的 Tool[] 实例
+排除 = exclude.tools（黑名单裁剪）
+权限 = filterByPermissions(permissions.tools)
+结果 → 保留的 Tool[] 实例 + 5 个动态工具（按条件注册）
 ```
 
 SubAgent 不作为普通工具出现在此维度。`call_skill_sub_agent`、`load_skill`、`load_mcp` 等动态加载工具也在此维度控制。
@@ -259,8 +333,8 @@ SubAgent 不作为普通工具出现在此维度。`call_skill_sub_agent`、`loa
 
 ```
 候选 = discoverSubAgents()  →  AgentDefinition[]（按 function.name 标识）
-安全预过滤：剔除自身 function.name + 调用者 function.name
-权限裁剪：allow 或 deny
+排除 = exclude.subagents（剔除自身 / 调用者）
+权限 = filterByPermissions(permissions.subagents)
 结果 → 保留的 AgentDefinition[]，后续构造 AgentToolLazy
 ```
 
@@ -268,33 +342,53 @@ SubAgent 不作为普通工具出现在此维度。`call_skill_sub_agent`、`loa
 
 ```
 候选 = discoverSkills()  →  DisclosureItem[]（id + name + description）
-权限裁剪：allow 或 deny
-结果 → 编译进 load_skill 的 skill_id 参数枚举（LLM 在函数签名中直接看到）
+排除 = exclude.skills（防止 Skill 调用自身）
+权限 = filterByPermissions(permissions.skills)
+结果 → 编译进 load_skill 的 skill_id 参数枚举
 ```
-
-未授权的 skill 不在枚举中，LLM 不知道其存在。调用 `load_skill` 后展开正文。
 
 #### mcps
 
 ```
 候选 = discoverMcpServers()  →  DisclosureItem[]（server 名 + 描述）
-权限裁剪：allow 或 deny
-结果 → 编译进 load_mcp 的 server 参数枚举（LLM 在函数签名中直接看到）
+排除 = exclude.mcps
+权限 = filterByPermissions(permissions.mcps)
+结果 → 编译进 load_mcp 的 server 参数枚举
 ```
 
-未授权的 server 不在枚举中，LLM 不知道其存在。连接后该 server 的所有工具直接可用，不做 tool 级裁剪。
+### 阶段 3 — 实例化（Capabilities.instantiate）
+
+```
+instantiate(filtered: FilterOutput)
+  │
+  ├── 1. 内置 + 用户工具：名称匹配 → 直接入 result
+  │
+  ├── 2. 构建枚举披露参数
+  │     ├── skillDisclosure：按 filtered.skills 筛选 → 编译枚举
+  │     └── mcpDisclosure：按 filtered.mcps 筛选 → 编译枚举
+  │
+  ├── 3. 动态工具（按条件注册）
+  │     ├── load_skill         ← 需要 tools 允许 + skills 非空
+  │     ├── call_skill_sub_agent ← 同上
+  │     ├── load_mcp           ← 需要 tools 允许 + mcps 非空 + mcpManager 就绪
+  │     ├── call_mcp_tool      ← 需要 tools 允许 + mcpManager 就绪
+  │     └── read_mcp_resource  ← 同上
+  │
+  ├── 4. SubAgent → AgentToolLazy
+  │     └── 每个保留的 SubAgent → createSubAgentTool(def, runtime, caps)
+  │
+  └── 5. 去重（后注册覆盖先注册）
+```
 
 ### 动态工具注册条件
-
-五个动态加载工具不是无脑注册的，每个都有前提条件：
 
 | 工具 | 注册条件 |
 |------|----------|
 | `load_skill` | `permissions.tools` 允许 + skills 维度至少有一个可用 skill |
 | `call_skill_sub_agent` | `permissions.tools` 允许 + 至少有一个 `sub-agent: true` 的 skill |
-| `load_mcp` | `permissions.tools` 允许 + mcps 维度至少有一个可用 server |
-| `call_mcp_tool` | `permissions.tools` 允许（无 MCP 时也可注册，运行时校验） |
-| `read_mcp_resource` | `permissions.tools` 允许（同上） |
+| `load_mcp` | `permissions.tools` 允许 + mcps 维度至少有一个可用 server + mcpManager 就绪 |
+| `call_mcp_tool` | `permissions.tools` 允许 + mcpManager 就绪 |
+| `read_mcp_resource` | `permissions.tools` 允许 + mcpManager 就绪 |
 
 ### 去重规则
 
@@ -344,7 +438,7 @@ parameters:
   权限外 / 不存在 → 同 load_skill
 ```
 
-实现：以 Skill 正文作为 system prompt 创建临时 Agent，传入 task 作为 user 消息。临时 Agent **继承调用者的 permissions**，但 tools 候选集经安全预过滤剔除 `call_skill_sub_agent` 和 `load_skill`（防递归），其余维度原样继承。
+实现：以 Skill 正文作为 system prompt 创建临时 Agent，传入 task 作为 user 消息。临时 Agent **通过 Capabilities 独立解析工具集**（继承调用者的 permissions，但传入 `exclude: { skills: [当前 skillId] }` 防止自调用），不直接继承父 Agent 的工具列表。
 
 权限：同 `load_skill`，走 `permissions.skills`。
 
@@ -651,46 +745,58 @@ Core `Agent` 不做复杂逻辑（不感知迁移、自动保存等）。SDK 提
 
 ```typescript
 interface SessionContext {
-  agent: Agent;   // 当前 Core Agent 实例（迁移后可被插件替换）
-  model: Model;   // 模型配置（含 maxContextTokens）
+  agent: SdkAgent;   // 当前 SdkAgent 实例（迁移后可被插件替换）
+  model: Model;      // 模型配置（含 maxContextTokens）
 }
 
 interface SessionPlugin {
   /** Agent.send() 调用前触发。可用于刷新工具列表、更新 RAG 等。 */
   beforeSend?(ctx: SessionContext): Promise<void>;
-  /** Agent.send() 返回后调用。可返回新 Agent 替换当前实例。 */
-  afterSend?(ctx: SessionContext): Promise<Agent | void>;
+  /** Agent.send() 返回后调用。可通过 ctx.agent 替换当前 Agent。 */
+  afterSend?(ctx: SessionContext): Promise<void>;
 }
 
 interface Session {
-  readonly agent: Agent;
+  readonly agent: SdkAgent;
   send(content: string): Promise<Message[]>;
 }
 ```
 
 ### 创建工厂
 
+`createSession` 只需传入 `agent`，自动从 `agent.runtime.config` 查找 `Model` 配置：
+
 ```typescript
 function createSession(options: {
-  agent: Agent;
-  model: Model;
+  agent: SdkAgent;       // 从 agent.runtime.config 自动解析 Model
 }): SessionBuilder;
+```
 
+```typescript
+// 新建对话
+const session = await createSession({ agent })
+  .use(autoMigrate({ maxTokens, migrationAgent, onHandoff }))
+  .use(autoDraft({ draftsDir, agentId }))
+  .init();
+
+// 恢复历史对话（直接替换 agent.messages）
+const agent = await createAgent(runtime, agentId);
+agent.messages.push(...conversation.messages);
+const session = await createSession({ agent })
+  .use(autoMigrate({ maxTokens, migrationAgent, onHandoff }))
+  .use(autoDraft({ draftsDir, agentId }))
+  .init();
+```
+
+恢复时直接重建 Agent 并注入历史消息，无需中间层。
+
+### SessionBuilder
+
+```typescript
 interface SessionBuilder {
   use(plugin: SessionPlugin): SessionBuilder;
   init(): Promise<Session>;
 }
-```
-
-用法：
-
-```typescript
-const session = await createSession({ agent, model })
-  .use(autoMigrate({ maxTokens, migrationAgent, onHandoff }))
-  .use(autoDraft({ draftsDir }))   // 未来
-  .init();
-
-await session.send("你好");
 ```
 
 ### send() 流程
@@ -704,43 +810,44 @@ send(content)
   ├─ agent.send(content)           // 委托 Core Agent
   ├─ 遍历 plugins.afterSend:
   │    for (const plugin of plugins) {
-  │      const newAgent = await plugin.afterSend?.({ agent, model });
-  │      if (newAgent) agent = newAgent;   // 插件可替换 Agent
+  │      await plugin.afterSend?.(ctx);             // 插件通过 ctx.agent 替换
   │    }
+  ├─ agent = ctx.agent                              // 统一读取最终 Agent
   └─ 返回 messages
 ```
 
 ---
 
-### 内置插件：refreshTools
+### 内置插件：autoRefreshTools
 
 对话过程中文件系统可能发生变化（新增 skill、工具文件、sub-agent），需要在每次发送前刷新工具列表。
 
+`SdkAgent` 上持有 `caps` 引用，`autoRefreshTools` 插件的 `beforeSend` 中直接操作：
+
 ```typescript
-function refreshTools(resolved: ResolvedAgent): SessionPlugin;
-```
+function autoRefreshTools(): SessionPlugin {
+  return {
+    beforeSend: async (ctx) => {
+      const { agent } = ctx;
+      if (!agent.caps) return;
 
-**beforeSend 逻辑**：
+      // 1. 重新扫描文件系统
+      agent.caps.refresh();
 
-```
-1. 调用 resolved.refresh()  →  重新扫描所有路径 → 重新过滤 → 返回新的 ResolvedAgent
-2. ctx.agent.tools = fresh.tools   // Core Agent 的 tools 是 public 属性，直接赋值
+      // 2. 重新按权限过滤并实例化工具
+      agent.tools = agent.caps.buildTools(agent.permissions ?? {}, {
+        exclude: {
+          subagents: agent.definition.function?.name
+            ? [agent.definition.function.name]
+            : undefined,
+        },
+      });
+    },
+  };
+}
 ```
 
 全量重扫（读目录、读文件、权限过滤），不做增量检测。目录通常很小（几个到几十个文件），开销忽略不计。
-
-**使用示例**：
-
-```typescript
-const resolved = resolveAgent({ agentId, config, ...paths });
-const agent = new Agent({ model, messages: resolved.messages, tools: resolved.tools });
-
-const session = await createSession({ agent, model })
-  .use(refreshTools(resolved))    // ← 每次 send 前自动刷新
-  .use(autoMigrate(...))
-  .use(autoDraft(...))
-  .init();
-```
 
 ---
 
@@ -751,9 +858,9 @@ interface AutoMigrateOptions {
   /** 触发迁移的 token 阈值 */
   maxTokens: number;
   /** 迁移 Agent（无工具，system prompt = buildMigrationPrompt） */
-  migrationAgent: Agent;
-  /** 迁移完成回调，传入交接文档 */
-  onHandoff?: (handoffDoc: string) => void;
+  migrationAgent: SdkAgent;
+  /** 迁移完成回调，传入交接文档、旧 Agent、新 Agent */
+  onHandoff?: (handoffDoc: string, oldAgent: SdkAgent, newAgent: SdkAgent) => void;
 }
 
 function autoMigrate(options: AutoMigrateOptions): SessionPlugin;
@@ -772,25 +879,25 @@ function autoMigrate(options: AutoMigrateOptions): SessionPlugin;
    d. 构建新 Agent：
       - 沿用原 system prompt + 工具配置
       - messages 初始化为 buildPostMigrationMessages(handoffDoc)
-   e. 返回新 Agent → Session 自动替换
+   e. ctx.agent = newAgent → Session 统一读取 ctx.agent 完成替换
 ```
 
 **使用示例**：
 
 ```typescript
-const migrationAgent = new Agent({
-  model,
-  messages: [Message.System(buildMigrationPrompt())],
-  // 无 tools → 迁移 Agent 专用化
-});
+// migrationAgent 通过 createAgent 创建，不注册任何工具
+// 迁移 Agent 专用化：只有 system prompt，无 tools
+const migrationAgent = await createAgent(runtime, "migration-agent");
 
-const session = await createSession({ agent, model })
+const session = await createSession({ agent })
   .use(autoMigrate({
     maxTokens: model.maxContextTokens,
     migrationAgent,
-    onHandoff: (doc) => {
+    onHandoff: (doc, oldAgent, newAgent) => {
       // 保存旧对话到磁盘
-      writeConversation(id, session.agent.messages);
+      writeConversation(id, oldAgent.messages);
+      // 重绑事件到新 Agent
+      rebindEvents(oldAgent, newAgent);
     },
   }))
   .init();
@@ -807,114 +914,126 @@ await session.send("继续重构...");
 
 ---
 
-## 12. 一站式装配（resolveAgent + ResolvedAgent）
+## 12. 一站式装配（Runtime + createAgent + SdkAgent）
 
-`resolveAgent` 是 SDK 对上层的主要入口。它完成全部装配工作，产出 `ResolvedAgent`——包含可直接用于构造 Core `Agent` 的 `Tool[]`。
+SDK 不是一个模块工具箱（到处 import 散装函数），而是一个 **Runtime 实例**，持有所有全局状态，各层通过它获取所需。
 
-### 核心类型
+### Runtime — 全局上下文
 
-```typescript
-interface ResolvedAgent {
-  /** Agent 定义（messages 已展开 {{task}} 占位符） */
-  definition: AgentDefinition;
-  /** 解析后的模型配置 */
-  model: Model;
-  /** 预设消息列表 */
-  messages: AgentMessage[];
-  /** 最终工具列表（已过滤、已实例化，可直接注册到 Core Agent） */
-  tools: Tool[];
-  /** 重新扫描所有路径，返回新的 ResolvedAgent（路径参数取自 resolveAgent 输入） */
-  refresh(): ResolvedAgent;
-}
-```
-
-### resolveAgent
+`Runtime` 是 SDK 的全局上下文实例，由上层（CLI/Desktop）创建并传入：
 
 ```typescript
-interface ResolveAgentInput {
-  agentId: string;
+class Runtime {
   config: AppConfig;
-  agentsDir: string;
-  subAgentsPaths?: string[];
-  skillsPaths?: string[];
-  toolsPaths?: string[];
-  mcpPaths?: string[];
+  agentsDir: string;           // Agent 定义目录
+  subAgentsPaths: string[];    // SubAgent 搜索路径
+  skillsPaths: string[];       // Skill 搜索路径
+  toolsPaths: string[];        // 用户工具搜索路径
+  mcpPaths: string[];          // MCP 配置搜索路径
+  conversationsDir: string;    // 对话记录目录
+  draftsDir: string;           // 草稿目录
+  mcpManager?: McpConnectionManager;
+  mcpConfigs?: Map<string, { name: string; config: McpServerConfig }>;
+  mcpTransportFactory?: (config: McpServerConfig) => McpTransport;
+
+  createModel(modelId: string): Promise<ChatCompletionModel>;
 }
-
-function resolveAgent(input: ResolveAgentInput): ResolvedAgent;
 ```
 
-### 内部流程
+`Runtime` 实例贯穿整个 SDK：
 
 ```
-resolveAgent(input)
-  │
-  ├── readAgent(agentsDir, agentId)          // 读 Agent 定义
-  │     └── 找不到 → throw Error
-  │
-  ├── 解析 model
-  │     ├── definition.modelId ?? config.defaultModel
-  │     └── config.models.find(id) → Model
-  │
-  ├── 阶段 1 — 发现
-  │     ├── builtinTools   = BUILTIN_TOOLS                    // Tool[]
-  │     ├── userTools      = discoverUserTools(toolsPaths)     // Tool[]
-  │     ├── subagents      = discoverSubAgents(subAgentsPaths) // AgentDefinition[]
-  │     ├── skills         = discoverSkills(skillsPaths)       // DisclosureItem[]
-  │     └── mcps           = discoverMcpServers(mcpPaths)      // DisclosureItem[]
-  │
-  ├── 阶段 2 — 过滤
-  │     └── assembly = assembleCapabilities({
-  │           permissions: definition.permissions ?? {},
-  │           builtinTools, userTools, subagents, skills, mcps,
-  │           selfFunctionName, callerFunctionName, isSkillSubAgent,
-  │         })
-  │
-  ├── 阶段 3 — 实例化
-  │     ├── 保留的 Tool[]（内置 + 用户，已过滤）
-  │     ├── 保留的 AgentDefinition[] → AgentToolLazy 实例
-  │     ├── 按条件注册 5 个动态工具（见 §6 注册条件表）
-  │     │     ├── load_skill(skillParam)          // 枚举 = 过滤后的 skill 列表
-  │     │     ├── call_skill_sub_agent(skillParam)
-  │     │     ├── load_mcp(mcpParam)              // 枚举 = 过滤后的 server 列表
-  │     │     ├── call_mcp_tool
-  │     │     └── read_mcp_resource
-  │     └── 去重 → 合并为 tools: Tool[]
-  │
-  └── 产出 ResolvedAgent { definition, model, messages, tools, refresh }
+Runtime
+├── Capabilities(runtime)    ← 能力管线，从 runtime 获取配置和路径
+├── createAgent(runtime)    ← 函数，装配 Agent
+├── SdkAgent                 ← 持有 runtime，回调中通过 .runtime 访问
+└── Session                  ← 持有 SdkAgent，间接持有 runtime
 ```
 
-`refresh()` 复用阶段 1→2→3，重新扫描所有路径、重新过滤、重新实例化。
+### createAgent
+
+```typescript
+async function createAgent(
+  runtime: Runtime,
+  agentId: string,
+): Promise<SdkAgent>
+```
+
+函数内部创建 `Capabilities` 实例（执行全局发现），读取 Agent 定义，通过 `runtime.createModel()` 构建模型，通过 `caps.buildTools()` 过滤并实例化工具。一次性使用，无状态。
+
+### SdkAgent
+
+```typescript
+class SdkAgent extends Agent {
+  readonly runtime: Runtime;           // 全局上下文
+  readonly definition: AgentDefinition; // Agent 原始定义
+  readonly permissions?: AgentPermissions;
+  readonly caps?: Capabilities;         // 能力注册表，用于运行时刷新
+}
+```
+
+`SdkAgent` 继承 Core `Agent`，携带 SDK 层元数据。各回调（`call_skill_sub_agent`、SubAgent `buildAgent` 等）通过 `this.agent` 获取 `runtime` 和 `caps`。
 
 ### 消费模式
 
-上层三步走，SDK 不越界创建 Core Agent 实例：
-
 ```typescript
-// 1. SDK 装配
-const resolved = resolveAgent({ agentId, config, ...paths });
-
-// 2. 上层创建 Core Agent
-const agent = new Agent({
-  model: toCoreModel(resolved.model),
-  messages: resolved.messages,
-  tools: resolved.tools,          // ← 直接就是 Tool[]，权限已生效
+// 1. 创建 Runtime（一次创建，全局复用）
+const runtime = new Runtime({
+  config,
+  agentsDir: "~/.ai-zen/agents",
+  conversationsDir: "~/.ai-zen/conversations",
+  draftsDir: "~/.ai-zen/drafts",
+  subAgentsPaths: ["~/.ai-zen/sub-agents"],
+  skillsPaths: ["~/.ai-zen/skills"],
+  toolsPaths: ["~/.ai-zen/tools"],
 });
 
-// 3. 上层包装 Session
-const session = await createSession({ agent, model: resolved.model })
-  .use(refreshTools(resolved))    // ← beforeSend 时自动刷新
+// 2. 新建 Agent + 新建对话
+const agent = await createAgent(runtime, "my-agent");
+// agent 是 SdkAgent，自带 model、messages、tools、permissions、runtime
+
+const session = await createSession({ agent })
   .use(autoMigrate({ maxTokens, migrationAgent, onHandoff }))
-  .use(autoDraft({ draftsDir, agentId }))
+  .use(autoDraft({ draftsDir: runtime.draftsDir, agentId: "my-agent" }))
+  .init();
+
+// 3. 恢复历史对话（直接替换 agent.messages）
+const conversations = listConversations(runtime.conversationsDir);
+const conv = conversations[0];  // 用户选择
+const restoredAgent = await createAgent(runtime, conv.agentId);
+restoredAgent.messages.push(...conv.messages);
+const restored = await createSession({ agent: restoredAgent })
+  .use(autoMigrate({ maxTokens, migrationAgent, onHandoff }))
+  .use(autoDraft({ draftsDir: runtime.draftsDir, agentId: conv.agentId }))
   .init();
 ```
 
-### refresh() 与 cwd
+### SubAgent 解析
 
-`refresh()` 复用 `resolveAgent` 的路径参数，不需要上层重新传入。如果对话中途 cwd 发生变化，通过 `SessionPlugin` 更新 `ResolvedAgent` 内部的路径引用即可。
+SubAgent（有 `function` 字段的 Agent）不继承父 Agent 的工具列表，通过 `Capabilities` 按自身 permissions 独立装配。模型构建通过 `Runtime`：
+
+```typescript
+// createSubAgentTool(def, runtime, caps) 的 buildAgent 回调中：
+// 模型构建
+if (def.modelId) {
+  subModel = await runtime.createModel(def.modelId);
+} else {
+  subModel = parentAgent.model;  // 复用父 Agent 模型
+}
+
+// 能力过滤
+const subFiltered = caps.filter(def.permissions ?? {}, {
+  exclude: { subagents: [def.function.name] },  // 排除自身
+});
+const tools = caps.instantiate(subFiltered);
+```
+
+Skill 子 Agent（`call_skill_sub_agent` 创建的临时 Agent）同样通过 `caps.buildTools()` 独立解析工具集，传入 `exclude: { skills: [当前 skillId] }` 防止自调用。
 
 ### 设计决策
 
-- **SDK 不创建 Core Agent 实例**：`ResolvedAgent` 是纯数据，边界清晰。Core 是另一个包，SDK 不越界
-- **refresh() 是同步的**：全量重扫目录 + 重新过滤，不涉及异步 I/O 之外的复杂操作
-- **tools 是 Tool[]**：权限系统消费者就是 `resolveAgent`，上层拿到的是最终结果，不再需要理解权限逻辑
+- **Runtime 是全局上下文**：各层不接收散装参数，通过 Runtime 实例获取配置、路径、模型工厂等全局服务
+- **SdkAgent 持有 Runtime**：回调中通过 `.runtime` 访问全局服务，不再需要 `CapabilitiesLike` 等中间接口
+- **SubAgent 独立解析工具**：不继承父 Agent 的工具列表快照，通过 Capabilities 按自身 permissions 独立装配
+- **SubAgent 独立模型**：可通过 `modelId` 指定不同模型，由 `Runtime.createModel()` 构建
+- **tools 是 Tool[]**：权限系统消费者就是 `createAgent`，上层拿到的是最终结果，不再需要理解权限逻辑

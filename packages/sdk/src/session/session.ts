@@ -1,23 +1,24 @@
-import type { Agent } from "@ai-zen/agents-core";
+import type { SdkAgent } from "../runtime/sdk-agent";
 import type { Model } from "../types";
 import type { Session, SessionBuilder, SessionContext, SessionPlugin } from "./types";
+import { SdkError } from "../shared/errors";
 
 // ---------------------------------------------------------------------------
 // Session 实现
 // ---------------------------------------------------------------------------
 
 class SessionImpl implements Session {
-  private _agent: Agent;
+  private _agent: SdkAgent;
   private readonly _model: Model;
   private readonly _plugins: SessionPlugin[];
 
-  constructor(agent: Agent, model: Model, plugins: SessionPlugin[]) {
+  constructor(agent: SdkAgent, model: Model, plugins: SessionPlugin[]) {
     this._agent = agent;
     this._model = model;
     this._plugins = plugins;
   }
 
-  get agent(): Agent {
+  get agent(): SdkAgent {
     return this._agent;
   }
 
@@ -33,16 +34,14 @@ class SessionImpl implements Session {
     // 2. 委托 Core Agent
     const messages = await this._agent.send(content);
 
-    // 3. 遍历插件 afterSend 钩子
+    // 3. 遍历插件 afterSend 钩子（插件通过 ctx.agent 替换 Agent）
     for (const plugin of this._plugins) {
       if (!plugin.afterSend) continue;
-
-      const newAgent = await plugin.afterSend(ctx);
-      if (newAgent) {
-        this._agent = newAgent;
-        ctx.agent = newAgent; // 后续插件看到新 Agent
-      }
+      await plugin.afterSend(ctx);
     }
+
+    // 4. 更新当前 Agent（可能有插件替换了 ctx.agent）
+    this._agent = ctx.agent;
 
     return messages;
   }
@@ -53,11 +52,11 @@ class SessionImpl implements Session {
 // ---------------------------------------------------------------------------
 
 class SessionBuilderImpl implements SessionBuilder {
-  private readonly _agent: Agent;
+  private readonly _agent: SdkAgent;
   private readonly _model: Model;
   private readonly _plugins: SessionPlugin[] = [];
 
-  constructor(agent: Agent, model: Model) {
+  constructor(agent: SdkAgent, model: Model) {
     this._agent = agent;
     this._model = model;
   }
@@ -77,14 +76,33 @@ class SessionBuilderImpl implements SessionBuilder {
 // ---------------------------------------------------------------------------
 
 /**
+ * 从 agent.runtime.config 中查找对应 modelId 的 Model 配置。
+ */
+function resolveModelConfig(agent: SdkAgent): Model {
+  const modelId = agent.definition.modelId ?? agent.runtime.config.defaultModel;
+  if (!modelId) {
+    throw new SdkError("NO_MODEL", "Agent 未指定 modelId 且 config 无 defaultModel");
+  }
+  const model = agent.runtime.config.models.find((m) => m.id === modelId);
+  if (!model) {
+    throw new SdkError("MODEL_NOT_FOUND", `模型 "${modelId}" 在 config 中不存在`);
+  }
+  return model;
+}
+
+/**
  * 创建 Session 构建器。
  *
+ * 从 agent.runtime.config 自动查找 Model 配置，无需调用方手动传入。
+ *
  * ```ts
- * const session = await createSession({ agent, model })
+ * const session = await createSession({ agent })
  *   .use(autoMigrate({ maxTokens, migrationAgent }))
+ *   .use(autoDraft({ ... }))
  *   .init();
  * ```
  */
-export function createSession(options: { agent: Agent; model: Model }): SessionBuilder {
-  return new SessionBuilderImpl(options.agent, options.model);
+export function createSession(options: { agent: SdkAgent }): SessionBuilder {
+  const model = resolveModelConfig(options.agent);
+  return new SessionBuilderImpl(options.agent, model);
 }

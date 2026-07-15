@@ -1,8 +1,10 @@
-import { CallbackTool, Agent, Message } from "@ai-zen/agents-core";
+import { CallbackTool, Agent, Message, type FunctionCallContext } from "@ai-zen/agents-core";
 import type { Tool } from "@ai-zen/agents-core";
+import { SdkAgent } from "../../runtime/sdk-agent";
 import type { DisclosureParam } from "../disclosure";
 import { readSkill } from "../discovery/skills";
 import { createLogger } from "../../shared/logger";
+import type { Capabilities } from "../capabilities";
 
 const log = createLogger();
 
@@ -31,7 +33,7 @@ export function createLoadSkillTool(
         additionalProperties: false,
       },
     },
-    callback: async function (this: any, input): Promise<string> {
+    callback: async function (this: FunctionCallContext, input: Record<string, unknown>): Promise<string> {
       const skillId = input.skill_id as string;
       const skill = readSkill(skillDirs, skillId);
       if (!skill) {
@@ -40,7 +42,7 @@ export function createLoadSkillTool(
 
       // 检查是否已加载（去重）
       const alreadyLoaded = this.agent?.messages?.some(
-        (m: any) => m.content?.includes(`Skill "${skillId}" 已加载`),
+        (m) => String(m.content ?? "").includes(`Skill "${skillId}" 已加载`),
       );
       if (alreadyLoaded) {
         return `Skill "${skillId}" 已加载`;
@@ -48,10 +50,9 @@ export function createLoadSkillTool(
 
       // 注入到对话上下文
       if (this.agent) {
-        this.agent.messages.push({
-          role: "system",
-          content: `以下是 Skill "${skillId}" 的内容，请按照其中的指导完成任务：\n\n${skill.content}`,
-        } as any);
+        this.agent.messages.push(
+          Message.System(`以下是 Skill "${skillId}" 的内容，请按照其中的指导完成任务：\n\n${skill.content}`),
+        );
       }
 
       return `✅ Skill "${skillId}" 已加载，内容已附加到当前对话中`;
@@ -61,12 +62,14 @@ export function createLoadSkillTool(
 
 /**
  * 创建 call_skill_sub_agent 工具。
- * 回调中直接克隆当前 Core Agent（this.agent），替换 messages 为 skill 正文 + task，
- * 并预过滤掉 call_skill_sub_agent 和 load_skill（防递归）。
+ *
+ * 回调中创建独立的 Skill 子 Agent，通过 caps 按父 Agent 权限独立解析工具集，
+ * 并传入 selfSkillId 防止 Skill 调用自身。
  */
 export function createCallSkillSubAgentTool(
   skillDirs: string[],
   skillDisclosure: DisclosureParam,
+  caps?: Capabilities,
 ): CallbackTool {
   return new CallbackTool({
     function: {
@@ -89,7 +92,7 @@ export function createCallSkillSubAgentTool(
         additionalProperties: false,
       },
     },
-    async callback(input): Promise<string> {
+    async callback(input: Record<string, unknown>): Promise<string> {
       const skillId = input.skill_id as string;
       const task = input.task as string;
       const skill = readSkill(skillDirs, skillId);
@@ -100,18 +103,26 @@ export function createCallSkillSubAgentTool(
         return `Skill "${skillId}" 不支持子 Agent 模式，请使用 load_skill 加载指导后自行处理`;
       }
 
-      // 克隆当前 Agent，只替换 messages，过滤递归工具
+      // parentAgent 应为 SdkAgent（由 resolveAgent 产出），携带 permissions
+      const parentAgent = (this).agent;
+      const parentPermissions = parentAgent instanceof SdkAgent
+        ? parentAgent.permissions
+        : undefined;
+      const skillTools: Tool[] = caps && parentPermissions
+        ? caps.buildTools(parentPermissions, {
+            exclude: {
+              skills: [skillId],
+            },
+          })
+        : [];
+
       const subAgent = new Agent({
-        model: (this as any).agent.model,
+        model: parentAgent.model,
         messages: [
           Message.System(skill.content),
           Message.User(task),
         ],
-        tools: (this as any).agent.tools.filter(
-          (t: Tool) =>
-            t.function.name !== "call_skill_sub_agent" &&
-            t.function.name !== "load_skill",
-        ),
+        tools: skillTools,
       });
 
       await subAgent.run();

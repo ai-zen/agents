@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { resolveAgent } from "./resolve";
+import { createAgent } from "./create-agent";
+import { Runtime } from "./runtime";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -67,47 +68,54 @@ function writeMcpConfig(servers: Record<string, unknown>) {
   writeFileSync(join(dir, "mcp.json"), JSON.stringify({ servers }, null, 2));
 }
 
-describe("resolveAgent", () => {
-  it("从磁盘完整装配 Agent", () => {
+describe("createAgent", () => {
+  it("从磁盘完整装配 Agent", async () => {
     writeAgentFile("my-agent");
     writeSubAgent("sa1", "general_assistant");
     writeSkill("code-review", "代码审查");
     writeMcpConfig({ github: { transport: "stdio", command: "gh" } });
 
-    const result = resolveAgent({
-      agentId: "my-agent",
+    const runtime = new Runtime({
       config,
       agentsDir: join(dir, "agents"),
       subAgentsPaths: [join(dir, "sub-agents")],
       skillsPaths: [join(dir, "skills")],
       mcpPaths: [join(dir, "mcp.json")],
+      conversationsDir: join(dir, "conversations"),
+      draftsDir: join(dir, "drafts"),
     });
+    const agent = await createAgent(runtime, "my-agent");
 
-    expect(result.definition.id).toBe("my-agent");
-    expect(result.model.id).toBe("gpt4");
-    const names = result.tools.map((t: any) => t.function.name);
+    // SdkAgent 携带 permissions
+    expect(agent.permissions).toBeDefined();
+    expect(agent.permissions!.tools).toEqual({ allow: ["*"] });
+
+    const names = agent.tools.map((t: any) => t.function.name);
     expect(names).toContain("general_assistant");
   });
 
-  it("Agent 不存在时抛异常", () => {
-    expect(() =>
-      resolveAgent({
-        agentId: "nonexistent",
-        config,
-        agentsDir: join(dir, "agents"),
-      }),
-    ).toThrow();
-  });
-
-  it("可选的发现目录不存在不抛异常", () => {
-    writeAgentFile("my-agent");
-
-    const result = resolveAgent({
-      agentId: "my-agent",
+  it("Agent 不存在时抛异常", async () => {
+    const runtime = new Runtime({
       config,
       agentsDir: join(dir, "agents"),
+      conversationsDir: join(dir, "conversations"),
+      draftsDir: join(dir, "drafts"),
     });
 
-    expect(result.tools.length).toBeGreaterThan(0); // 内置工具默认存在
+    await expect(createAgent(runtime, "nonexistent")).rejects.toThrow();
+  });
+
+  it("可选的发现目录不存在不抛异常", async () => {
+    writeAgentFile("my-agent");
+
+    const runtime = new Runtime({
+      config,
+      agentsDir: join(dir, "agents"),
+      conversationsDir: join(dir, "conversations"),
+      draftsDir: join(dir, "drafts"),
+    });
+
+    const agent = await createAgent(runtime, "my-agent");
+    expect(agent.tools.length).toBeGreaterThan(0); // 内置工具默认存在
   });
 });

@@ -59,7 +59,7 @@ describe("filterByPermissions", () => {
 
   it("抛出异常", () => {
     const permissions: AgentPermissions = {
-      tools: { allow: ["readFile"], deny: ["rm"] } as any,
+      tools: { allow: ["readFile"], deny: ["rm"] },
     };
 
     expect(() => filterByPermissions(permissions, candidates)).toThrow();

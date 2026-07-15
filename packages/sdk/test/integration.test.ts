@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { resolveAgent } from "../src/runtime/resolve";
+import { createAgent } from "../src/runtime/create-agent";
+import { Runtime } from "../src/runtime/runtime";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -27,7 +28,7 @@ const config: AppConfig = {
 };
 
 describe("集成：端到端 Agent 组装", () => {
-  it("完整链路：配置文件 + Agent 定义 + 候选 → ResolvedAgent", () => {
+  it("完整链路：配置文件 + Agent 定义 + 候选 → SdkAgent", async () => {
     // 写 Agent 定义
     const agentsDir = join(dir, "agents");
     mkdirSync(agentsDir, { recursive: true });
@@ -63,18 +64,20 @@ describe("集成：端到端 Agent 组装", () => {
     mkdirSync(join(skillsDir, "code-review"), { recursive: true });
     writeFileSync(join(skillsDir, "code-review", "SKILL.md"), "---\nname: code-review\ndescription: 代码审查\n---\n# Code Review");
 
-    const resolved = resolveAgent({
-      agentId: "my-agent",
+    const runtime = new Runtime({
       config,
       agentsDir,
       subAgentsPaths: [subAgentsDir],
       skillsPaths: [skillsDir],
     });
+    const agent = await createAgent(runtime, "my-agent");
 
-    expect(resolved.model.id).toBe("gpt4");
-    expect(resolved.messages[0].content).toBe("你是一个专业的代码助手。");
+    expect(agent.permissions).toBeDefined();
+    expect(agent.permissions!.tools).toEqual({ allow: ["readFile", "exec", "glob", "findText"] });
 
-    const toolNames = resolved.tools.map((t: Tool) => t.function.name);
+    expect(agent.messages[0].content).toBe("你是一个专业的代码助手。");
+
+    const toolNames = agent.tools.map((t: Tool) => t.function.name);
     expect(toolNames).toContain("readFile");
     expect(toolNames).toContain("exec");
     expect(toolNames).toContain("glob");

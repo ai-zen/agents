@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { McpConnectionManager } from "./mcp-connection";
 import type { McpServerConfig, McpTransport, McpServerManifest } from "../types";
 
-function mockTransport(): McpTransport {
+function mockTransport(): any {
   return {
     connect: vi.fn().mockResolvedValue({
       tools: [{ name: "test-tool", description: "a tool", inputSchema: { type: "object" } }],
@@ -48,7 +48,7 @@ describe("McpConnectionManager", () => {
 
   it("connect 失败 → error", async () => {
     const transport = mockTransport();
-    (transport.connect as any).mockRejectedValue(new Error("connection refused"));
+    (transport.connect).mockRejectedValue(new Error("connection refused"));
 
     await expect(manager.connect("github", stdioConfig, transport)).rejects.toThrow("connection refused");
     expect(manager.getState("github")).toBe("error");
@@ -117,13 +117,13 @@ describe("McpConnectionManager", () => {
 
   it("connect 错误状态后可以重试 connect", async () => {
     const transport = mockTransport();
-    (transport.connect as any).mockRejectedValueOnce(new Error("fail"));
+    (transport.connect).mockRejectedValueOnce(new Error("fail"));
 
     await expect(manager.connect("github", stdioConfig, transport)).rejects.toThrow();
     expect(manager.getState("github")).toBe("error");
 
     // 重试成功
-    (transport.connect as any).mockResolvedValueOnce({
+    (transport.connect).mockResolvedValueOnce({
       tools: [],
       resources: [],
     });
@@ -160,7 +160,7 @@ describe("McpConnectionManager", () => {
 
   it("connect 失败后自动重试（指数退避）", async () => {
     const transport = mockTransport();
-    (transport.connect as any)
+    (transport.connect)
       .mockRejectedValueOnce(new Error("transient"))
       .mockRejectedValueOnce(new Error("transient"))
       .mockResolvedValueOnce({ tools: [], resources: [] });
@@ -184,7 +184,7 @@ describe("McpConnectionManager", () => {
   it("超过最大重试次数后进入 error", async () => {
     const transport = mockTransport();
     // initial + 2 retries = 3 次失败
-    (transport.connect as any)
+    (transport.connect)
       .mockRejectedValueOnce(new Error("always fail"))
       .mockRejectedValueOnce(new Error("always fail"))
       .mockRejectedValueOnce(new Error("always fail"));
@@ -210,11 +210,11 @@ describe("McpConnectionManager", () => {
   it("配置错误不重试", async () => {
     const transport = mockTransport();
     const configError = Object.assign(new Error("invalid transport"), { code: "CONFIG_ERROR" });
-    (transport.connect as any).mockRejectedValue(configError);
+    (transport.connect).mockRejectedValue(configError);
 
     const promise = manager.connect("github", stdioConfig, transport, {
       autoReconnect: true,
-      isConfigError: (err) => (err as any).code === "CONFIG_ERROR",
+      isConfigError: (err: any) => (err).code === "CONFIG_ERROR",
     });
 
     await expect(promise).rejects.toThrow("invalid transport");
@@ -224,7 +224,7 @@ describe("McpConnectionManager", () => {
 
   it("手动 disconnect 取消进行中的重连", async () => {
     const transport = mockTransport();
-    (transport.connect as any).mockRejectedValueOnce(new Error("fail"));
+    (transport.connect).mockRejectedValueOnce(new Error("fail"));
 
     const promise = manager.connect("github", stdioConfig, transport, {
       autoReconnect: true,

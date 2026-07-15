@@ -1,6 +1,5 @@
-import type { Agent } from "@ai-zen/agents-core";
 import { AgentNS } from "@ai-zen/agents-core";
-import { Message } from "@ai-zen/agents-core";
+import { SdkAgent } from "../runtime/sdk-agent";
 import type { SessionPlugin } from "./types";
 import { shouldMigrate, buildPostMigrationMessages } from "../runtime/task-migration";
 import { createLogger } from "../shared/logger";
@@ -11,9 +10,9 @@ export interface AutoMigrateOptions {
   /** 触发迁移的 token 阈值 */
   maxTokens: number;
   /** 迁移 Agent（无工具，system prompt = buildMigrationPrompt） */
-  migrationAgent: Agent;
+  migrationAgent: SdkAgent;
   /** 迁移完成回调，传入交接文档、旧 Agent、新 Agent */
-  onHandoff?: (handoffDoc: string, oldAgent: Agent, newAgent: Agent) => void;
+  onHandoff?: (handoffDoc: string, oldAgent: SdkAgent, newAgent: SdkAgent) => void;
 }
 
 /**
@@ -44,30 +43,19 @@ export function autoMigrate(options: AutoMigrateOptions): SessionPlugin {
         const handoffDoc = getLastAssistantContent(migrationResult);
         if (!handoffDoc) return; // 迁移 Agent 无有效输出
 
-        // b. 构建新 Agent：沿用原 system prompt + 工具 + model
-        const systemMsg = agent.messages.find(
-          (m: any) => m.role === AgentNS.Role.System,
-        );
-
+        // b. 构建新 Agent：从 definition.messages 恢复原始预设消息，再拼接迁移文档
         const newMessages = [
-          // 保留 system prompt
-          ...(systemMsg ? [new Message(systemMsg as any)] : []),
-          // 交接文档作为第一条 user 消息
-          ...buildPostMigrationMessages(handoffDoc).map(
-            (am) => new Message({ role: am.role as AgentNS.Role, content: am.content }),
-          ),
-        ];
+          ...agent.definition.messages,
+          ...buildPostMigrationMessages(handoffDoc),
+        ] as AgentNS.Message[];
 
-        const newAgent = new (agent.constructor as any)({
-          model: agent.model,
-          messages: newMessages,
-          tools: agent.tools,
-          rag: (agent as any).rag,
-          allowJsonParseError: (agent as any).allowJsonParseError,
-          onBeforeSend: (agent as any).onBeforeSend,
-        });
+        // 迁移后保持 SdkAgent 类型，保留 definition、permissions、caps 等 SDK 字段
+        const newAgent = new SdkAgent({ ...agent, messages: newMessages });
 
-        // c. 回调 onHandoff（此时新旧 Agent 都已就绪，调用方可重绑事件）
+        // c. 替换当前 Agent
+        ctx.agent = newAgent;
+
+        // d. 回调 onHandoff（此时新旧 Agent 都已就绪，调用方可重绑事件）
         if (onHandoff) {
           try {
             await onHandoff(handoffDoc, agent, newAgent);
@@ -75,11 +63,8 @@ export function autoMigrate(options: AutoMigrateOptions): SessionPlugin {
             log.error(`[autoMigrate] onHandoff 回调失败: ${err?.message ?? err}`);
           }
         }
-
-        return newAgent;
       } catch (err: any) {
         log.error(`[autoMigrate] 迁移失败: ${err?.message ?? err}`);
-        return; // 失败不替换 Agent
       }
     },
   };
