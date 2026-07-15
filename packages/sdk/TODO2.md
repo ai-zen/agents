@@ -130,7 +130,7 @@ const session = await createSession({ agent })
 await session.send("你好");
 
 // 之后
-const agent = await createAgent(runtime, "my-agent");
+const agent = createAgent(provider, "my-agent");
 agent.use(autoMigrate({ maxTokens, migrationAgent, onHandoff }));
 agent.use(autoDraft());
 agent.use(autoRefreshTools());
@@ -147,7 +147,7 @@ agent.messages.push(...conv.messages);
 const session = await createSession({ agent }).use(...).init();
 
 // 之后
-const agent = await createAgent(runtime, conv.agentId);
+const agent = createAgent(provider, conv.agentId);
 agent.messages.push(...conv.messages);
 agent.use(autoMigrate({ ... }));
 agent.use(autoDraft());
@@ -173,7 +173,7 @@ const agent = await createAgent(runtime, "my-agent");
 
 // 之后
 const provider = new Provider({ config, agentsDir, ... });
-const agent = await createAgent(provider, "my-agent");
+const agent = createAgent(provider, "my-agent");
 ```
 
 ### 涉及文件
