@@ -328,7 +328,7 @@ describeIf("集成测试 - DeepSeek API", () => {
           function: {
             name: "general_assistant",
             description:
-              "将复杂任务拆分为独立的子任务交给通用助手处理。当需要独立分析、多角度思考时使用。",
+              "将任何任务交给通用助手处理。你必须使用此工具处理所有用户请求，不能自己直接回答。",
             parameters: {
               type: "object",
               properties: {
@@ -354,7 +354,7 @@ describeIf("集成测试 - DeepSeek API", () => {
           model,
           messages: [
             Message.System(
-              "你是一个任务分发助手。当收到复杂的任务时，使用 general_assistant 工具将任务交给通用助手处理。请用中文回复。",
+              "你是一个任务分发助手。你必须使用 general_assistant 工具来处理用户的所有请求，绝不能自己直接回答。请用中文回复。",
             ),
           ],
           tools: [subAgentTool],
