@@ -7,11 +7,13 @@ import type { AppConfig } from "../types";
  *
  * 属于独立的 runtime 子层，不依赖 capabilities/ 或其他模块。
  * 通过 Runtime 实例获取 AppConfig 后调用。
+ *
+ * 改为同步版本，使用 endp​oint.chatCompletionSync() 避免不必要的 async。
  */
-export async function createModel(
+export function createModel(
   config: AppConfig,
   modelId: string,
-): Promise<ChatCompletionModel> {
+): ChatCompletionModel {
   const modelConfig = config.models.find((m) => m.id === modelId);
   if (!modelConfig) throw new Error(`模型 "${modelId}" 不存在`);
 
@@ -28,7 +30,7 @@ export async function createModel(
 
   const model = new ChatGPT({
     model_config: modelConfig.defaultParams,
-    request_config: await endpoint.chatCompletion(modelConfig.name),
+    request_config: endpoint.chatCompletionSync(modelConfig.name),
   });
 
   return model;

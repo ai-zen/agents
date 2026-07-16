@@ -14,6 +14,17 @@ class TestEndpoint extends Endpoint<{ baseUrl: string; key: string }> {
       body: { model },
     };
   }
+
+  buildSync(path: string, model: string) {
+    return {
+      url: `${this.endpoint_config.baseUrl}/${path}`,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${this.endpoint_config.key}`,
+      },
+      body: { model },
+    };
+  }
 }
 
 describe("Endpoint 基类", () => {
@@ -52,6 +63,13 @@ describe("Endpoint 基类", () => {
       const result = await ep.imageGeneration("dall-e-3");
       expect(result.url).toContain("images/generations");
       expect(result.body.model).toBe("dall-e-3");
+    });
+
+    it("chatCompletionSync 同步返回配置", () => {
+      const ep = new TestEndpoint({ baseUrl: "https://test.com", key: "key" });
+      const result = ep.chatCompletionSync("gpt-4");
+      expect(result.url).toContain("chat/completions");
+      expect(result.body.model).toBe("gpt-4");
     });
   });
 });

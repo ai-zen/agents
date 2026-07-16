@@ -23,6 +23,20 @@ export class CommonEndpoint extends Endpoint<CommonEndpointConfig> {
     };
   }
 
+  buildSync() {
+    return {
+      ...this.endpoint_config,
+      url: this.endpoint_config.url,
+      headers: {
+        "Content-Type": "application/json",
+        ...this.endpoint_config?.headers,
+      },
+      body: {
+        ...this.endpoint_config?.body,
+      },
+    };
+  }
+
   isCompatible(): boolean {
     return true;
   }

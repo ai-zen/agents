@@ -61,10 +61,10 @@ export class Runtime {
   }
 
   /**
-   * 构建 Core 模型。
+   * 构建 Core 模型（同步版本）。
    * 委托给 create-model，Runtime 只提供 config 上下文。
    */
-  createModel(modelId: string): Promise<ChatCompletionModel> {
+  createModel(modelId: string): ChatCompletionModel {
     return createModel(this.config, modelId);
   }
 }

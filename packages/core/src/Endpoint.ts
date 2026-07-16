@@ -28,9 +28,27 @@ export abstract class Endpoint<C extends {} = any> {
    */
   abstract build(path: string, model: string): Promise<RequestConfig>;
 
+  /**
+   * 同步构建 HTTP 请求配置。
+   * 默认实现直接调用异步 build() 并用 Promise 包装，子类可覆盖为纯同步实现。
+   * @param path - API 路径
+   * @param model - 模型标识
+   */
+  buildSync(path: string, model: string): RequestConfig {
+    // 默认通过异步 build 实现，子类应覆盖为纯同步版本
+    throw new Error(
+      `${this.constructor.name} 未实现 buildSync，请使用异步 build()`,
+    );
+  }
+
   /** @param model - 模型名（Azure OpenAI 中为部署名） */
   chatCompletion(model: string) {
     return this.build("chat/completions", model);
+  }
+
+  /** @param model - 模型名（Azure OpenAI 中为部署名） */
+  chatCompletionSync(model: string) {
+    return this.buildSync("chat/completions", model);
   }
 
   /** @param model - 模型名（Azure OpenAI 中为部署名） */

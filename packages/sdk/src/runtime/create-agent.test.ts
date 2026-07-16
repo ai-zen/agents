@@ -69,7 +69,7 @@ function writeMcpConfig(servers: Record<string, unknown>) {
 }
 
 describe("createAgent", () => {
-  it("从磁盘完整装配 Agent", async () => {
+  it("从磁盘完整装配 Agent", () => {
     writeAgentFile("my-agent");
     writeSubAgent("sa1", "general_assistant");
     writeSkill("code-review", "代码审查");
@@ -84,7 +84,7 @@ describe("createAgent", () => {
       conversationsDir: join(dir, "conversations"),
       draftsDir: join(dir, "drafts"),
     });
-    const agent = await createAgent(runtime, "my-agent");
+    const agent = createAgent(runtime, "my-agent");
 
     // SdkAgent 携带 permissions
     expect(agent.permissions).toBeDefined();
@@ -94,7 +94,7 @@ describe("createAgent", () => {
     expect(names).toContain("general_assistant");
   });
 
-  it("Agent 不存在时抛异常", async () => {
+  it("Agent 不存在时抛异常", () => {
     const runtime = new Runtime({
       config,
       agentsDir: join(dir, "agents"),
@@ -102,10 +102,10 @@ describe("createAgent", () => {
       draftsDir: join(dir, "drafts"),
     });
 
-    await expect(createAgent(runtime, "nonexistent")).rejects.toThrow();
+    expect(() => createAgent(runtime, "nonexistent")).toThrow();
   });
 
-  it("可选的发现目录不存在不抛异常", async () => {
+  it("可选的发现目录不存在不抛异常", () => {
     writeAgentFile("my-agent");
 
     const runtime = new Runtime({
@@ -115,7 +115,7 @@ describe("createAgent", () => {
       draftsDir: join(dir, "drafts"),
     });
 
-    const agent = await createAgent(runtime, "my-agent");
+    const agent = createAgent(runtime, "my-agent");
     expect(agent.tools.length).toBeGreaterThan(0); // 内置工具默认存在
   });
 });

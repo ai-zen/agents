@@ -70,7 +70,7 @@ describe("集成：端到端 Agent 组装", () => {
       subAgentsPaths: [subAgentsDir],
       skillsPaths: [skillsDir],
     });
-    const agent = await createAgent(runtime, "my-agent");
+    const agent = createAgent(runtime, "my-agent");
 
     expect(agent.permissions).toBeDefined();
     expect(agent.permissions!.tools).toEqual({ allow: ["readFile", "exec", "glob", "findText"] });
