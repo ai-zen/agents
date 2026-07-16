@@ -17,7 +17,6 @@ export type {
   McpPromptDef,
   McpServerManifest,
   McpServerConfig,
-  McpTransport,
   McpConnectionState,
 } from "./types";
 

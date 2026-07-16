@@ -1,5 +1,5 @@
 import type { ChatCompletionModel } from "@ai-zen/agents-core";
-import type { AppConfig, McpServerConfig, McpTransport } from "../types";
+import type { AppConfig, McpServerConfig } from "../types";
 import type { McpConnectionManager } from "./mcp-connection";
 import { createModel } from "./create-model";
 
@@ -32,7 +32,6 @@ export class Runtime {
   // ---- MCP ----
   readonly mcpManager?: McpConnectionManager;
   readonly mcpConfigs?: Map<string, { name: string; config: McpServerConfig }>;
-  readonly mcpTransportFactory?: (config: McpServerConfig) => McpTransport;
 
   constructor(options: {
     config: AppConfig;
@@ -45,7 +44,6 @@ export class Runtime {
     draftsDir: string;
     mcpManager?: McpConnectionManager;
     mcpConfigs?: Map<string, { name: string; config: McpServerConfig }>;
-    mcpTransportFactory?: (config: McpServerConfig) => McpTransport;
   }) {
     this.config = options.config;
     this.agentsDir = options.agentsDir;
@@ -57,7 +55,6 @@ export class Runtime {
     this.draftsDir = options.draftsDir;
     this.mcpManager = options.mcpManager;
     this.mcpConfigs = options.mcpConfigs;
-    this.mcpTransportFactory = options.mcpTransportFactory;
   }
 
   /**

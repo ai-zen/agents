@@ -1,24 +1,19 @@
 import { CallbackTool } from "@ai-zen/agents-core";
 import type { DisclosureParam } from "../disclosure";
 import type { McpConnectionManager } from "../../runtime/mcp-connection";
-import type { McpServerConfig, McpTransport } from "../../types";
-
-// ---------------------------------------------------------------------------
-// TODO: SDK 应内置 stdio / HTTP transport 实现。
-// McpConnectionManager 已完整管理连接生命周期（重连、退避、超时、状态机），
-// 三个工具的回调直接使用 McpConnectionManager 的 API。
-// 当前 transport 由 resolveAgent 内部创建并注入，不暴露给上层。
-// ---------------------------------------------------------------------------
+import type { McpServerConfig } from "../../types";
 
 /**
  * 创建 load_mcp 工具。
  * server 枚举来自 mcpDisclosure（已在装配时按 permissions.mcps 裁剪）。
+ *
+ * 连接使用官方的 StdioClientTransport / StreamableHTTPClientTransport，
+ * 通过 McpConnectionManager 统一管理生命周期。
  */
 export function createLoadMcpTool(
   mcpManager: McpConnectionManager,
   mcpConfigs: Map<string, { name: string; config: McpServerConfig }>,
   mcpDisclosure: DisclosureParam,
-  transportFactory: (config: McpServerConfig) => McpTransport,
 ): CallbackTool {
   return new CallbackTool({
     function: {
@@ -53,8 +48,7 @@ export function createLoadMcpTool(
       }
 
       try {
-        const transport = transportFactory(serverConfig.config);
-        const manifest = await mcpManager.connect(serverName, serverConfig.config, transport);
+        const manifest = await mcpManager.connect(serverName, serverConfig.config);
         const toolList = manifest.tools.map((t) => `- ${t.name}: ${t.description}`).join("\n");
         return `✅ MCP 服务器 "${serverName}" 已连接 (${manifest.tools.length} 个工具):\n${toolList}`;
       } catch (error: any) {
@@ -66,6 +60,7 @@ export function createLoadMcpTool(
 
 /**
  * 创建 call_mcp_tool 工具。
+ * 通过官方 Client.callTool() API 调用 MCP 服务器上的工具。
  */
 export function createCallMcpTool(mcpManager: McpConnectionManager): CallbackTool {
   return new CallbackTool({
@@ -90,16 +85,42 @@ export function createCallMcpTool(mcpManager: McpConnectionManager): CallbackToo
         return `请先使用 load_mcp 连接 "${serverName}"`;
       }
 
-      // TODO: 通过 McpConnectionManager 持有的 transport 调用工具
-      // const transport = mcpManager.getTransport(serverName);
-      // return transport.callTool(input.tool as string, input.arguments as Record<string, unknown>);
-      return `❌ TODO: call_mcp_tool — 需在 McpTransport 接口补充 callTool 方法`;
+      const client = mcpManager.getClient(serverName);
+      if (!client) {
+        return `MCP 服务器 "${serverName}" 的客户端不可用`;
+      }
+
+      try {
+        mcpManager.touch(serverName);
+        const result = await client.callTool({
+          name: input.tool as string,
+          arguments: input.arguments as Record<string, unknown>,
+        });
+
+        // 格式化返回内容
+        const contents = (result as any).content ?? [];
+        const textParts = contents
+          .filter((c: any) => c.type === "text")
+          .map((c: any) => c.text);
+        const text = textParts.join("\n");
+
+        if ((result as any).isError) {
+          return `❌ 工具执行出错:\n${text || JSON.stringify(result)}`;
+        }
+
+        return text || JSON.stringify(result);
+      } catch (error: any) {
+        return `❌ 调用 "${input.tool}" 失败: ${error?.message ?? error}`;
+      }
     },
   });
 }
 
 /**
  * 创建 read_mcp_resource 工具。
+ * 通过 Client.readResource() 或 Client.listResources() 读取资源。
+ * 注意：官方 SDK 的 Client.readResource() 需要先连接。
+ * 资源内容通过 McpConnectionManager 获取。
  */
 export function createReadMcpResourceTool(mcpManager: McpConnectionManager): CallbackTool {
   return new CallbackTool({
@@ -123,10 +144,25 @@ export function createReadMcpResourceTool(mcpManager: McpConnectionManager): Cal
         return `请先使用 load_mcp 连接 "${serverName}"`;
       }
 
-      // TODO: 通过 McpConnectionManager 持有的 transport 读取资源
-      // const transport = mcpManager.getTransport(serverName);
-      // return transport.readResource(input.uri as string);
-      return `❌ TODO: read_mcp_resource — 需在 McpTransport 接口补充 readResource 方法`;
+      const client = mcpManager.getClient(serverName);
+      if (!client) {
+        return `MCP 服务器 "${serverName}" 的客户端不可用`;
+      }
+
+      try {
+        mcpManager.touch(serverName);
+        const result = await (client as any).readResource({
+          uri: input.uri as string,
+        });
+
+        const contents = result?.contents ?? [];
+        const textParts = contents
+          .filter((c: any) => c.text)
+          .map((c: any) => c.text);
+        return textParts.join("\n") || JSON.stringify(result);
+      } catch (error: any) {
+        return `❌ 读取资源 "${input.uri}" 失败: ${error?.message ?? error}`;
+      }
     },
   });
 }

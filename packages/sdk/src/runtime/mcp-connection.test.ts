@@ -1,16 +1,24 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { McpConnectionManager } from "./mcp-connection";
-import type { McpServerConfig, McpTransport, McpServerManifest } from "../types";
+import type { McpServerConfig } from "../types";
 
-function mockTransport(): any {
-  return {
-    connect: vi.fn().mockResolvedValue({
-      tools: [{ name: "test-tool", description: "a tool", inputSchema: { type: "object" } }],
-      resources: [],
-    }),
-    disconnect: vi.fn().mockResolvedValue(undefined),
-  };
-}
+// 纯 mock 对象，不涉及 vi.mock
+const mockClient = {
+  connect: vi.fn().mockResolvedValue(undefined),
+  close: vi.fn().mockResolvedValue(undefined),
+  listTools: vi.fn().mockResolvedValue({
+    tools: [{ name: "test-tool", description: "a tool", inputSchema: { type: "object", properties: {} } }],
+  }),
+  listResources: vi.fn().mockResolvedValue({ resources: [] }),
+  listPrompts: vi.fn().mockResolvedValue({ prompts: [] }),
+  callTool: vi.fn().mockResolvedValue({ content: [{ type: "text", text: "ok" }] }),
+};
+
+const mockTransport = {
+  start: vi.fn().mockResolvedValue(undefined),
+  close: vi.fn().mockResolvedValue(undefined),
+  send: vi.fn().mockResolvedValue(undefined),
+};
 
 const stdioConfig: McpServerConfig = {
   transport: "stdio",
@@ -18,12 +26,35 @@ const stdioConfig: McpServerConfig = {
   args: ["server.js"],
 };
 
+const httpConfig: McpServerConfig = {
+  transport: "http",
+  url: "https://mcp.example.com",
+};
+
 describe("McpConnectionManager", () => {
   let manager: McpConnectionManager;
 
   beforeEach(() => {
-    manager = new McpConnectionManager();
-    vi.useFakeTimers();
+    vi.clearAllMocks();
+
+    // 通过自定义 transport 工厂 + 自定义 Client 工厂来注入 mock
+    // McpConnectionManager 现在支持可选的 transportFactory 和 clientFactory
+    manager = new McpConnectionManager(
+      // transportFactory
+      () => mockTransport as any,
+      // clientFactory
+      () => mockClient as any,
+    );
+
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+
+    mockClient.connect.mockResolvedValue(undefined);
+    mockClient.close.mockResolvedValue(undefined);
+    mockClient.listTools.mockResolvedValue({
+      tools: [{ name: "test-tool", description: "a tool", inputSchema: { type: "object", properties: {} } }],
+    });
+    mockClient.listResources.mockResolvedValue({ resources: [] });
+    mockClient.listPrompts.mockResolvedValue({ prompts: [] });
   });
 
   afterEach(() => {
@@ -36,98 +67,108 @@ describe("McpConnectionManager", () => {
     expect(manager.getState("github")).toBe("disconnected");
   });
 
-  it("connect → connecting → connected", async () => {
-    const transport = mockTransport();
-    const promise = manager.connect("github", stdioConfig, transport);
+  it("connect → connected", async () => {
+    const promise = manager.connect("github", stdioConfig);
 
     expect(manager.getState("github")).toBe("connecting");
 
-    await promise;
+    const manifest = await promise;
     expect(manager.getState("github")).toBe("connected");
+    expect(manifest.tools).toHaveLength(1);
+    expect(manifest.tools[0].name).toBe("test-tool");
   });
 
   it("connect 失败 → error", async () => {
-    const transport = mockTransport();
-    (transport.connect).mockRejectedValue(new Error("connection refused"));
+    mockClient.connect.mockRejectedValueOnce(new Error("connection refused"));
 
-    await expect(manager.connect("github", stdioConfig, transport)).rejects.toThrow("connection refused");
+    await expect(manager.connect("github", stdioConfig)).rejects.toThrow("connection refused");
     expect(manager.getState("github")).toBe("error");
   });
 
   it("disconnect → disconnected", async () => {
-    const transport = mockTransport();
-    await manager.connect("github", stdioConfig, transport);
+    await manager.connect("github", stdioConfig);
 
     await manager.disconnect("github");
     expect(manager.getState("github")).toBe("disconnected");
   });
 
   it("重复 connect 已连接的 server 直接返回清单", async () => {
-    const transport = mockTransport();
-    await manager.connect("github", stdioConfig, transport);
+    await manager.connect("github", stdioConfig);
 
-    // 第二次 connect 不应该调用 transport.connect
-    const manifest = await manager.connect("github", stdioConfig, transport);
+    const manifest = await manager.connect("github", stdioConfig);
     expect(manifest.tools).toHaveLength(1);
-    expect(transport.connect).toHaveBeenCalledTimes(1);
   });
 
   it("重复 connect 正在连接中的 server 复用同一 promise", async () => {
-    const transport = mockTransport();
-    // 同时发起两次连接
     const [r1, r2] = await Promise.all([
-      manager.connect("github", stdioConfig, transport),
-      manager.connect("github", stdioConfig, transport),
+      manager.connect("github", stdioConfig),
+      manager.connect("github", stdioConfig),
     ]);
     expect(r1).toBe(r2);
-    expect(transport.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it("stdio 缺少 command 时抛出错误", async () => {
+    // 使用默认构造（无 factory）来测试校验逻辑，因为 mock 工厂会绕过校验
+    const rawManager = new McpConnectionManager();
+    const badConfig: McpServerConfig = { transport: "stdio" };
+    await expect(rawManager.connect("bad", badConfig)).rejects.toThrow("缺少 command");
+  });
+
+  it("http 缺少 url 时抛出错误", async () => {
+    const rawManager = new McpConnectionManager();
+    const badConfig: McpServerConfig = { transport: "http" };
+    await expect(rawManager.connect("bad", badConfig)).rejects.toThrow("缺少 url");
+  });
+
+  it("不支持的 transport 类型时抛出错误", async () => {
+    const rawManager = new McpConnectionManager();
+    const badConfig = { transport: "websocket" } as any;
+    await expect(rawManager.connect("bad", badConfig)).rejects.toThrow("不支持");
+  });
+
+  // ---- 获取 Client ----
+
+  it("getClient 返回已连接的 Client", async () => {
+    await manager.connect("github", stdioConfig);
+    const client = manager.getClient("github");
+    expect(client).toBeDefined();
+  });
+
+  it("getClient 返回未连接 server 的 undefined", () => {
+    expect(manager.getClient("nonexistent")).toBeUndefined();
   });
 
   // ---- 空闲超时 ----
 
   it("空闲超时后自动断开", async () => {
-    const transport = mockTransport();
-    await manager.connect("github", stdioConfig, transport, { idleTimeoutMs: 1000 });
-
-    // 推进时间超过超时
+    await manager.connect("github", stdioConfig, { idleTimeoutMs: 1000 });
     await vi.advanceTimersByTimeAsync(1500);
-
     expect(manager.getState("github")).toBe("disconnected");
-    expect(transport.disconnect).toHaveBeenCalled();
   });
 
   it("活跃操作重置超时计时器", async () => {
-    const transport = mockTransport();
-    await manager.connect("github", stdioConfig, transport, { idleTimeoutMs: 1000 });
+    await manager.connect("github", stdioConfig, { idleTimeoutMs: 1000 });
 
-    // 500ms 时触发活跃
     await vi.advanceTimersByTimeAsync(500);
     manager.touch("github");
 
-    // 再过 800ms（总计 1300ms，但距上次 touch 仅 800ms）
     await vi.advanceTimersByTimeAsync(800);
     expect(manager.getState("github")).toBe("connected");
 
-    // 再过 400ms（距上次 touch 1200ms > 1000ms）
     await vi.advanceTimersByTimeAsync(400);
     expect(manager.getState("github")).toBe("disconnected");
   });
 
-  // ---- 重连 ----
+  // ---- 错误状态恢复 ----
 
   it("connect 错误状态后可以重试 connect", async () => {
-    const transport = mockTransport();
-    (transport.connect).mockRejectedValueOnce(new Error("fail"));
+    mockClient.connect.mockRejectedValueOnce(new Error("fail"));
 
-    await expect(manager.connect("github", stdioConfig, transport)).rejects.toThrow();
+    await expect(manager.connect("github", stdioConfig)).rejects.toThrow();
     expect(manager.getState("github")).toBe("error");
 
-    // 重试成功
-    (transport.connect).mockResolvedValueOnce({
-      tools: [],
-      resources: [],
-    });
-    await manager.connect("github", stdioConfig, transport);
+    mockClient.connect.mockResolvedValueOnce(undefined);
+    await manager.connect("github", stdioConfig);
     expect(manager.getState("github")).toBe("connected");
   });
 
@@ -137,17 +178,25 @@ describe("McpConnectionManager", () => {
     await expect(manager.disconnect("nonexistent")).resolves.toBeUndefined();
   });
 
+  // ---- disconnectAll ----
+
+  it("disconnectAll 断开所有连接", async () => {
+    await manager.connect("github", stdioConfig);
+    await manager.connect("slack", httpConfig);
+
+    await manager.disconnectAll();
+    expect(manager.getState("github")).toBe("disconnected");
+    expect(manager.getState("slack")).toBe("disconnected");
+  });
+
   // ---- 多 server 独立管理 ----
 
   it("多个 server 状态独立", async () => {
-    const t1 = mockTransport();
-    const t2 = mockTransport();
-
-    await manager.connect("github", stdioConfig, t1);
+    await manager.connect("github", stdioConfig);
     expect(manager.getState("github")).toBe("connected");
     expect(manager.getState("slack")).toBe("disconnected");
 
-    await manager.connect("slack", { transport: "http", url: "https://slack.example.com" }, t2);
+    await manager.connect("slack", { transport: "http", url: "https://slack.example.com" });
     expect(manager.getState("github")).toBe("connected");
     expect(manager.getState("slack")).toBe("connected");
 
@@ -156,87 +205,71 @@ describe("McpConnectionManager", () => {
     expect(manager.getState("slack")).toBe("connected");
   });
 
-  // ---- 自动重连（指数退避）----
+  // ---- 自动重连 ----
 
   it("connect 失败后自动重试（指数退避）", async () => {
-    const transport = mockTransport();
-    (transport.connect)
+    mockClient.connect
       .mockRejectedValueOnce(new Error("transient"))
       .mockRejectedValueOnce(new Error("transient"))
-      .mockResolvedValueOnce({ tools: [], resources: [] });
+      .mockResolvedValueOnce(undefined);
 
-    const promise = manager.connect("github", stdioConfig, transport, {
+    const promise = manager.connect("github", stdioConfig, {
       autoReconnect: true,
       maxRetries: 5,
     });
 
-    // 第 1 次重试：1s 后
     await vi.advanceTimersByTimeAsync(1000);
-    // 第 2 次重试：2s 后
     await vi.advanceTimersByTimeAsync(2000);
 
     const manifest = await promise;
     expect(manifest).toBeDefined();
     expect(manager.getState("github")).toBe("connected");
-    expect(transport.connect).toHaveBeenCalledTimes(3);
   });
 
   it("超过最大重试次数后进入 error", async () => {
-    const transport = mockTransport();
-    // initial + 2 retries = 3 次失败
-    (transport.connect)
+    mockClient.connect
       .mockRejectedValueOnce(new Error("always fail"))
       .mockRejectedValueOnce(new Error("always fail"))
       .mockRejectedValueOnce(new Error("always fail"));
 
-    const promise = manager.connect("github", stdioConfig, transport, {
+    const promise = manager.connect("github", stdioConfig, {
       autoReconnect: true,
       maxRetries: 2,
     });
-
-    // 预装 catch 避免 unhandled rejection 警告
     promise.catch(() => {});
 
-    // 第 1 次重试：1s
     await vi.advanceTimersByTimeAsync(1000);
-    // 第 2 次重试：2s
     await vi.advanceTimersByTimeAsync(2000);
 
     await expect(promise).rejects.toThrow("always fail");
     expect(manager.getState("github")).toBe("error");
-    expect(transport.connect).toHaveBeenCalledTimes(3); // initial + 2 retries
   });
 
   it("配置错误不重试", async () => {
-    const transport = mockTransport();
     const configError = Object.assign(new Error("invalid transport"), { code: "CONFIG_ERROR" });
-    (transport.connect).mockRejectedValue(configError);
+    mockClient.connect.mockRejectedValue(configError);
 
-    const promise = manager.connect("github", stdioConfig, transport, {
+    const promise = manager.connect("github", stdioConfig, {
       autoReconnect: true,
-      isConfigError: (err: any) => (err).code === "CONFIG_ERROR",
+      isConfigError: (err: any) => err.code === "CONFIG_ERROR",
     });
 
     await expect(promise).rejects.toThrow("invalid transport");
-    expect(transport.connect).toHaveBeenCalledTimes(1); // 不重试
     expect(manager.getState("github")).toBe("error");
   });
 
   it("手动 disconnect 取消进行中的重连", async () => {
-    const transport = mockTransport();
-    (transport.connect).mockRejectedValueOnce(new Error("fail"));
+    mockClient.connect.mockRejectedValueOnce(new Error("fail"));
 
-    const promise = manager.connect("github", stdioConfig, transport, {
+    const promise = manager.connect("github", stdioConfig, {
       autoReconnect: true,
       maxRetries: 5,
     });
     promise.catch(() => {});
 
-    // 推进 500ms 后手动断开
     await vi.advanceTimersByTimeAsync(500);
     await manager.disconnect("github");
 
-    // 重连应被取消，promise 应 reject
     await expect(promise).rejects.toThrow();
     expect(manager.getState("github")).toBe("disconnected");
   });

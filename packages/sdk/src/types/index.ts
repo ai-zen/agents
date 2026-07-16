@@ -141,19 +141,16 @@ export interface McpServerConfig {
 }
 
 /**
- * MCP 底层传输适配器。
+ * MCP 底层传输适配器（已废弃）。
  *
- * TODO: SDK 应内置 stdio / HTTP 两种 transport 实现，不依赖上层注入。
- * 当前为临时接口，后续由 SDK 内部闭环。
+ * 现在由 @modelcontextprotocol/sdk 内置的 StdioClientTransport 和
+ * StreamableHTTPClientTransport 实现，不再需要外部注入。
+ *
+ * McpConnectionManager 内部使用官方 SDK 的 Transport 接口，
+ * 上层无需关心 transport 实现细节。
+ *
+ * @deprecated 改用 @modelcontextprotocol/sdk 的 Transport
  */
-export interface McpTransport {
-  /** 建立连接，成功返回工具/资源清单 */
-  connect(config: McpServerConfig): Promise<McpServerManifest>;
-  /** 断开连接 */
-  disconnect(): Promise<void>;
-  /** 注册 list_changed 回调 */
-  onListChanged?: (callback: () => void) => void;
-}
 
 // ---- MCP 共享子类型 ----
 

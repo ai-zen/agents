@@ -181,8 +181,8 @@ export class Capabilities {
     if (allowedToolNames.has("call_skill_sub_agent") && filteredSkills.length > 0) {
       result.push(createCallSkillSubAgentTool(runtime.skillsPaths, skillDisclosure, this));
     }
-    if (allowedToolNames.has("load_mcp") && runtime.mcpManager && runtime.mcpConfigs && runtime.mcpTransportFactory && filteredMcps.length > 0) {
-      result.push(createLoadMcpTool(runtime.mcpManager, runtime.mcpConfigs, mcpDisclosure, runtime.mcpTransportFactory));
+    if (allowedToolNames.has("load_mcp") && runtime.mcpManager && runtime.mcpConfigs && filteredMcps.length > 0) {
+      result.push(createLoadMcpTool(runtime.mcpManager, runtime.mcpConfigs, mcpDisclosure));
     }
     if (allowedToolNames.has("call_mcp_tool") && runtime.mcpManager) {
       result.push(createCallMcpTool(runtime.mcpManager));
