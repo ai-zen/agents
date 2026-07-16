@@ -21,12 +21,12 @@ export class AgentToolLazy implements Tool {
   private messages: AgentNS.Message[];
 
   /** 延遲構建 Agent 的回調。this = FunctionCallContext */
-  private buildAgent: (this: FunctionCallContext, parsedArgs: any) => Promise<Agent>;
+  private buildAgent: (this: FunctionCallContext, parsedArgs: any) => Agent | Promise<Agent>;
 
   constructor(options: {
     function: AgentNS.FunctionDefine;
     messages: AgentNS.Message[];
-    buildAgent: (this: FunctionCallContext, parsedArgs: any) => Promise<Agent>;
+    buildAgent: (this: FunctionCallContext, parsedArgs: any) => Agent | Promise<Agent>;
   }) {
     if (!options.function) throw new Error("AgentToolLazy must have a function");
     if (options.messages?.at(-1)?.role !== AgentNS.Role.User) {

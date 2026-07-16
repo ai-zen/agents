@@ -28,7 +28,7 @@ export function createSubAgentTool(
       parameters: def.function.parameters as unknown as AgentNS.FunctionDefine["parameters"],
     },
     messages: def.messages as unknown as AgentNS.Message[],
-    buildAgent: async function (this: FunctionCallContext, _parsedArgs: any): Promise<Agent> {
+    buildAgent: function (this: FunctionCallContext, _parsedArgs: any): Agent {
       if (!caps) {
         throw new Error(
           `SubAgent "${selfName}" 缺少 Capabilities 引用。` +
@@ -39,7 +39,7 @@ export function createSubAgentTool(
       // 模型解析：SubAgent 可指定独立模型，否则复用父 Agent 的模型
       let subModel: ChatCompletionModel;
       if (def.modelId) {
-        subModel = await runtime.createModel(def.modelId);
+        subModel = runtime.createModel(def.modelId);
       } else {
         const parentModel = this.agent?.model;
         if (!parentModel) {
