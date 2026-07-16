@@ -13,79 +13,67 @@
 
 ## 改造内容
 
-### 1. Core Agent 增加插件能力
+### 1. SdkAgent 增加插件能力
 
-在 `@ai-zen/agents-core` 的 `Agent` 类上增加：
+Core `Agent` 保持纯粹不动。插件能力通过 SDK 的 `SdkAgent` 提供，`SdkAgent` 继承 Core `Agent`，在其上增加 `use()` 和 `init()` 方法。
 
 ```typescript
-class Agent {
-  // 新增
-  use(plugin: AgentPlugin): void;
-  init(): Promise<void>;
+// sdk/src/runtime/sdk-agent.ts
 
-  // beforeSend / afterSend 内部勾子（插件注册的目标）
-  private _beforeSendHooks: Array<(ctx: SendContext) => Promise<void>>;
-  private _afterSendHooks: Array<(ctx: SendContext) => Promise<void>>;
+class SdkAgent extends Agent {
+  private _hooks: AgentHook[] = [];
+
+  use(plugin: AgentPlugin): void {
+    this._hooks.push(plugin);
+  }
+
+  async init(): Promise<void> {
+    for (const hook of this._hooks) {
+      await hook.onInit?.();
+    }
+  }
 }
 
 interface AgentPlugin {
+  onInit?(): Promise<void>;
   onBeforeSend?(ctx: SendContext): Promise<void>;
   onAfterSend?(ctx: SendContext): Promise<void>;
 }
 
 interface SendContext {
-  agent: Agent;
+  agent: SdkAgent;
   content: string;
   messages: Message[];
 }
 ```
 
-`send()` 流程改为：
+`send()` 流程改为在 `SdkAgent` 中重写：
 
 ```
 send(content)
-  ├─ 遍历 _beforeSendHooks
-  ├─ 原有 send 逻辑
-  ├─ 遍历 _afterSendHooks
+  ├─ 遍历 _hooks.onBeforeSend
+  ├─ super.send(content)    // 委托 Core Agent
+  ├─ 遍历 _hooks.onAfterSend
   └─ 返回 messages
 ```
 
 ### 设计哲学：`init()` 为插件而生
 
-`Agent` 本身没有异步初始化需求——模型、工具、消息在构造时已就绪。`init()` 的存在完全是为了**给插件一个执行异步初始化的机会**。
+`SdkAgent` 本身没有异步初始化需求——模型、工具、消息在构造时已就绪。`init()` 的存在完全是为了**给插件一个执行异步初始化的机会**。
 
 例如 `autoMigrate` 插件可能需要在初始化时检查草稿，`autoDraft` 可能需要清理过期文件。这些是插件的需求，不是 Agent 的需求。
-
-```typescript
-class Agent {
-  async init(): Promise<void> {
-    for (const hook of this._initHooks) {
-      await hook();
-    }
-  }
-}
-```
-
-插件通过 `use()` 注册时，可附带 `onInit` 勾子：
-
-```typescript
-interface AgentPlugin {
-  onInit?(): Promise<void>;        // 插件异步初始化
-  onBeforeSend?(ctx: SendContext): Promise<void>;
-  onAfterSend?(ctx: SendContext): Promise<void>;
-}
-```
 
 **`init()` 不是必须调用的**——如果不使用任何插件，可以不调。但建议统一调用以保持一致性。
 
 ### 2. SDK 的 useXxx 函数
 
-去掉 `SessionPlugin` 接口，每个插件改为独立函数，返回 `AgentPlugin`：
+每个插件改为独立函数，返回 `AgentPlugin`：
 
 ```typescript
 // sdk/src/plugin/auto-migrate.ts
 export function autoMigrate(options: AutoMigrateOptions): AgentPlugin {
   return {
+    onInit: async () => { /* ... */ },
     onAfterSend: async (ctx) => { /* ... */ },
   };
 }
@@ -93,7 +81,7 @@ export function autoMigrate(options: AutoMigrateOptions): AgentPlugin {
 // sdk/src/plugin/auto-draft.ts
 export function autoDraft(): AgentPlugin {
   return {
-    onAfterSend: async (ctx) => { /* ... 从 ctx.agent.runtime 获取路径 */ },
+    onAfterSend: async (ctx) => { /* ... 从 ctx.agent.provider 获取路径 */ },
   };
 }
 
@@ -113,7 +101,7 @@ export function autoRefreshTools(): AgentPlugin {
 
 ### 4. 新增/修改的文件
 
-- `packages/core/src/Agent.ts` — 增加 `use()` / `init()` / 勾子机制
+- `packages/sdk/src/runtime/sdk-agent.ts` — 增加 `use()` / `init()` / 勾子机制
 - `packages/sdk/src/plugin/` — 插件目录，每个插件一个文件
 - `packages/sdk/src/index.ts` — 导出新插件函数
 - `packages/sdk/docs/sdk-design.md` — 更新使用方式
@@ -234,7 +222,7 @@ const agent = createAgent(provider, "my-agent");
 
 | # | 步骤 | 说明 |
 |---|------|------|
-| 1 | Core Agent 增加 `use()` / `init()` / 勾子 | 修改 `packages/core/src/Agent.ts` |
+| 1 | SdkAgent 增加 `use()` / `init()` / 勾子 | 修改 `packages/sdk/src/runtime/sdk-agent.ts` |
 | 2 | SDK 创建 `src/plugin/` 目录 | 从 `src/session/` 搬移并改造 |
 | 3 | 改造 `autoMigrate` | `SessionPlugin` → `AgentPlugin`，去掉 `SessionContext` 依赖 |
 | 4 | 改造 `autoDraft` | 从 `ctx.agent.runtime` 自发现路径，零参数 |
