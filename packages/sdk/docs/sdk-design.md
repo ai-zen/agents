@@ -118,30 +118,29 @@ types        ← 纯类型，零业务依赖
 config       ← 读写 config.json + 迁移 + 内存缓存 + 原子写入
 crud         ← 实体 CRUD（Endpoints / Models / Agents / Conversations / Draft）
 capabilities ← 能力：discovery（发现）+ implements（实现）+ 权限过滤管线
-runtime      ← Runtime 全局上下文 + 模型工厂 + Agent 组装 + MCP 连接管理 + 任务迁移
-session      ← 会话包装（插件链：autoMigrate、autoDraft、refreshTools），依赖 Core Agent
+runtime      ← Provider 全局上下文 + 模型工厂 + Agent 组装 + MCP 连接管理 + 任务迁移
+plugin       ← 插件（autoMigrate、autoDraft、autoRefreshTools），扩展 SdkAgent 行为
 shared       ← 日志、错误
 ```
 
 ### 依赖方向
 
 ```
-session ──> runtime ──> capabilities ──> crud ──> config ──> types
-  │            │
-  ├────────────┤
-  │            └──> shared
+plugin ──> runtime ──> capabilities ──> crud ──> config ──> types
+  │           │
+  │           └──> shared
   │
   └──> @ai-zen/agents-core (Agent, Message)
 ```
 
 上层依赖下层，反之不行。同层模块不互相依赖。
 
-### Runtime 全局上下文
+### Provider 全局上下文
 
-`Runtime` 是 SDK 的全局上下文实例，持有所有运行时状态。各层不接收散装参数，而是通过 `Runtime` 实例获取所需：
+`Provider` 是 SDK 的全局上下文实例，持有所有配置和外部依赖。各层不接收散装参数，而是通过 `Provider` 实例获取所需：
 
 ```typescript
-class Runtime {
+class Provider {
   config: AppConfig;           // 应用配置（端点、模型等）
   agentsDir: string;           // Agent 定义目录
   subAgentsPaths: string[];    // SubAgent 搜索路径
@@ -154,11 +153,11 @@ class Runtime {
   mcpConfigs?: Map<string, { name: string; config: McpServerConfig }>;
   mcpTransportFactory?: (config: McpServerConfig) => McpTransport;
 
-  createModel(modelId: string): Promise<ChatCompletionModel>;  // 委托给 create-model
+  createModel(modelId: string): ChatCompletionModel;  // 同步，委托给 create-model
 }
 ```
 
-`Runtime` 实例一旦创建不可变，`refresh` 时创建新实例。各层（Capabilities、SdkAgent、Session 插件等）都持有 `runtime` 引用。
+`Provider` 实例一旦创建不可变。各层（Capabilities、SdkAgent、Plugin 等）都持有 `provider` 引用。
 
 ### 模型工厂
 
@@ -169,7 +168,7 @@ runtime/create-model.ts
   └── createModel(config, modelId) → ChatCompletionModel
 ```
 
-由 `Runtime.createModel()` 委托调用，`Capabilities` 不直接涉及模型构建。
+由 `Provider.createModel()` 委托调用，`Capabilities` 不直接涉及模型构建。
 
 ### capabilities 内部结构
 
@@ -189,10 +188,10 @@ capabilities/
     builtin/       ← BUILTIN_TOOLS: 16 个 Tool 实例（含 generateImage 工厂）
     mcp-tools.ts   ← createLoadMcpTool / createCallMcpTool / createReadMcpResourceTool
     skill-tools.ts ← createLoadSkillTool / createCallSkillSubAgentTool
-    sub-agents-tools.ts ← createSubAgentTool(def, runtime, caps)
+    sub-agents-tools.ts ← createSubAgentTool(def, provider, caps)
 ```
 
-`Capabilities` 类管理完整的三阶段管线：构造函数接收 `Runtime` 实例（非散装参数），从中获取配置和路径执行全局发现（阶段 1），`filter()` 执行安全预过滤 + 权限过滤（阶段 2），`instantiate()` 执行名称到 Tool 实例的映射（阶段 3）。`buildTools()` 是 filter + instantiate 的快捷调用。
+`Capabilities` 类管理完整的三阶段管线：构造函数接收 `Provider` 实例（非散装参数），从中获取配置和路径执行全局发现（阶段 1），`filter()` 执行安全预过滤 + 权限过滤（阶段 2），`instantiate()` 执行名称到 Tool 实例的映射（阶段 3）。`buildTools()` 是 filter + instantiate 的快捷调用。
 
 ---
 
@@ -238,13 +237,13 @@ capabilities/
 
 ### Capabilities 类
 
-`Capabilities` 是全局能力注册表，构造函数接收 `Runtime` 实例，从中获取配置和路径执行全局发现。之后 `filter()` 和 `instantiate()` 按需被不同 Agent 调用。
+`Capabilities` 是全局能力注册表，构造函数接收 `Provider` 实例，从中获取配置和路径执行全局发现。之后 `filter()` 和 `instantiate()` 按需被不同 Agent 调用。
 
 ```typescript
 class Capabilities {
-  constructor(runtime: Runtime);  // 所有全局状态从 Runtime 获取
+  constructor(provider: Provider);  // 所有全局状态从 Provider 获取
 
-  readonly runtime: Runtime;      // 持有 Runtime 引用，各层可访问
+  readonly provider: Provider;      // 持有 Provider 引用，各层可访问
 
   // 阶段 2：按权限 + 排除黑名单过滤，返回名称列表
   filter(permissions: AgentPermissions, options?: {
@@ -375,7 +374,7 @@ instantiate(filtered: FilterOutput)
   │     └── read_mcp_resource  ← 同上
   │
   ├── 4. SubAgent → AgentToolLazy
-  │     └── 每个保留的 SubAgent → createSubAgentTool(def, runtime, caps)
+  │     └── 每个保留的 SubAgent → createSubAgentTool(def, provider, caps)
   │
   └── 5. 去重（后注册覆盖先注册）
 ```
@@ -731,90 +730,88 @@ SubAgent 在运行时以工具形式注册，但其权限控制走独立的 `sub
 
 ---
 
-## 11. 会话运行时（Session + Plugin）
+## 11. 插件机制（SdkAgent + Plugin）
 
-Core `Agent` 不做复杂逻辑（不感知迁移、自动保存等）。SDK 提供薄包装层 `Session`，通过插件机制扩展行为。
+Core `Agent` 保持纯粹，只管 `send()` / `run()`。插件能力由 SDK 的 `SdkAgent` 提供——`SdkAgent` 继承 Core `Agent`，在其上增加 `use()` 和 `init()` 方法。
 
-### 设计原则
+### 设计哲学
 
-- **Agent 保持纯粹**：Core `Agent` 只管 `send()` / `run()`，不污染
-- **插件可堆叠**：每个插件单一职责，通过 `.use()` 链式组合
-- **Session 是薄壳**：主要逻辑是 `send()` 委托 + 遍历插件钩子
+- **Agent 保持纯粹**：Core `Agent` 不感知插件，不增加 `use()` / `init()` 等方法
+- **插件注册在 SdkAgent 上**：`SdkAgent` 继承 Core `Agent`，提供 `use()` 注册插件，`init()` 执行插件异步初始化
+- **`init()` 为插件而生**：`SdkAgent` 本身没有异步初始化需求——模型、工具、消息在构造时已就绪。`init()` 的存在完全是为了给插件一个执行异步初始化的机会
 
 ### 核心类型
 
 ```typescript
-interface SessionContext {
-  agent: SdkAgent;   // 当前 SdkAgent 实例（迁移后可被插件替换）
-  model: Model;      // 模型配置（含 maxContextTokens）
+// sdk/src/runtime/sdk-agent.ts
+
+class SdkAgent extends Agent {
+  private _hooks: AgentPlugin[] = [];
+
+  use(plugin: AgentPlugin): void {
+    this._hooks.push(plugin);
+  }
+
+  async init(): Promise<void> {
+    for (const hook of this._hooks) {
+      await hook.onInit?.();
+    }
+  }
+
+  // 重写 send，在 send 前后执行插件勾子
+  async send(content: string): Promise<Message[]> {
+    const ctx: SendContext = { agent: this, content, messages: this.messages };
+
+    for (const hook of this._hooks) {
+      await hook.onBeforeSend?.(ctx);
+    }
+
+    const messages = await super.send(content);
+
+    for (const hook of this._hooks) {
+      await hook.onAfterSend?.(ctx);
+    }
+
+    return messages;
+  }
 }
 
-interface SessionPlugin {
-  /** Agent.send() 调用前触发。可用于刷新工具列表、更新 RAG 等。 */
-  beforeSend?(ctx: SessionContext): Promise<void>;
-  /** Agent.send() 返回后调用。可通过 ctx.agent 替换当前 Agent。 */
-  afterSend?(ctx: SessionContext): Promise<void>;
+interface AgentPlugin {
+  onInit?(): Promise<void>;
+  onBeforeSend?(ctx: SendContext): Promise<void>;
+  onAfterSend?(ctx: SendContext): Promise<void>;
 }
 
-interface Session {
-  readonly agent: SdkAgent;
-  send(content: string): Promise<Message[]>;
+interface SendContext {
+  agent: SdkAgent;
+  content: string;
+  messages: Message[];
 }
 ```
 
-### 创建工厂
+**`init()` 不是必须调用的**——如果不使用任何插件，可以不调。但建议统一调用以保持一致性。
 
-`createSession` 只需传入 `agent`，自动从 `agent.runtime.config` 查找 `Model` 配置：
-
-```typescript
-function createSession(options: {
-  agent: SdkAgent;       // 从 agent.runtime.config 自动解析 Model
-}): SessionBuilder;
-```
+### 消费模式
 
 ```typescript
 // 新建对话
-const session = await createSession({ agent })
-  .use(autoMigrate({ maxTokens, migrationAgent, onHandoff }))
-  .use(autoDraft({ draftsDir, agentId }))
-  .init();
+const provider = new Provider({ config, ...paths });
+const agent = createAgent(provider, "my-agent");
+agent.use(autoMigrate({ maxTokens, migrationAgent, onHandoff }));
+agent.use(autoDraft());
+agent.use(autoRefreshTools());
+await agent.init();
+await agent.send("你好");
 
-// 恢复历史对话（直接替换 agent.messages）
-const agent = await createAgent(runtime, agentId);
-agent.messages.push(...conversation.messages);
-const session = await createSession({ agent })
-  .use(autoMigrate({ maxTokens, migrationAgent, onHandoff }))
-  .use(autoDraft({ draftsDir, agentId }))
-  .init();
+// 恢复历史对话
+const agent = createAgent(provider, conv.agentId);
+agent.messages.push(...conv.messages);
+agent.use(autoMigrate({ ... }));
+agent.use(autoDraft());
+await agent.init();
 ```
 
-恢复时直接重建 Agent 并注入历史消息，无需中间层。
-
-### SessionBuilder
-
-```typescript
-interface SessionBuilder {
-  use(plugin: SessionPlugin): SessionBuilder;
-  init(): Promise<Session>;
-}
-```
-
-### send() 流程
-
-```
-send(content)
-  ├─ 遍历 plugins.beforeSend:
-  │    for (const plugin of plugins) {
-  │      await plugin.beforeSend?.({ agent, model });    // 如刷新工具列表
-  │    }
-  ├─ agent.send(content)           // 委托 Core Agent
-  ├─ 遍历 plugins.afterSend:
-  │    for (const plugin of plugins) {
-  │      await plugin.afterSend?.(ctx);             // 插件通过 ctx.agent 替换
-  │    }
-  ├─ agent = ctx.agent                              // 统一读取最终 Agent
-  └─ 返回 messages
-```
+插件通过 `SdkAgent.use()` 注册，无中间层，无 Builder，无 Session。
 
 ---
 
@@ -822,12 +819,10 @@ send(content)
 
 对话过程中文件系统可能发生变化（新增 skill、工具文件、sub-agent），需要在每次发送前刷新工具列表。
 
-`SdkAgent` 上持有 `caps` 引用，`autoRefreshTools` 插件的 `beforeSend` 中直接操作：
-
 ```typescript
-function autoRefreshTools(): SessionPlugin {
+function autoRefreshTools(): AgentPlugin {
   return {
-    beforeSend: async (ctx) => {
+    onBeforeSend: async (ctx) => {
       const { agent } = ctx;
       if (!agent.caps) return;
 
@@ -863,47 +858,41 @@ interface AutoMigrateOptions {
   onHandoff?: (handoffDoc: string, oldAgent: SdkAgent, newAgent: SdkAgent) => void;
 }
 
-function autoMigrate(options: AutoMigrateOptions): SessionPlugin;
+function autoMigrate(options: AutoMigrateOptions): AgentPlugin;
 ```
 
-**afterSend 逻辑**：
+**onAfterSend 逻辑**：
 
 ```
 1. 读取 agent.lastUsage?.prompt_tokens
 2. shouldMigrate(promptTokens, maxTokens)
-3. 如果未超限 → 返回 void（Agent 不变）
+3. 如果未超限 → 返回（Agent 不变）
 4. 如果超限：
    a. 将当前 agent.messages（完整历史）作为 user 消息发给 migrationAgent
    b. migrationAgent.send() → 生成交接文档 handoffDoc
    c. 调用 onHandoff(handoffDoc)（消费者可在此保存旧对话）
    d. 构建新 Agent：
-      - 沿用原 system prompt + 工具配置
+      - 沿用原始 system prompt + 工具配置
       - messages 初始化为 buildPostMigrationMessages(handoffDoc)
-   e. ctx.agent = newAgent → Session 统一读取 ctx.agent 完成替换
+   e. ctx.agent = newAgent → 替换当前 Agent
 ```
 
 **使用示例**：
 
 ```typescript
-// migrationAgent 通过 createAgent 创建，不注册任何工具
-// 迁移 Agent 专用化：只有 system prompt，无 tools
-const migrationAgent = await createAgent(runtime, "migration-agent");
+const migrationAgent = createAgent(provider, "migration-agent");
 
-const session = await createSession({ agent })
-  .use(autoMigrate({
-    maxTokens: model.maxContextTokens,
-    migrationAgent,
-    onHandoff: (doc, oldAgent, newAgent) => {
-      // 保存旧对话到磁盘
-      writeConversation(id, oldAgent.messages);
-      // 重绑事件到新 Agent
-      rebindEvents(oldAgent, newAgent);
-    },
-  }))
-  .init();
-
-// 用户无感 — 上下文超限时自动迁移，Agent 被透明替换
-await session.send("继续重构...");
+const agent = createAgent(provider, "my-agent");
+agent.use(autoMigrate({
+  maxTokens: model.maxContextTokens,
+  migrationAgent,
+  onHandoff: (doc, oldAgent, newAgent) => {
+    writeConversation(id, oldAgent.messages);
+    rebindEvents(oldAgent, newAgent);
+  },
+}));
+await agent.init();
+await agent.send("继续重构...");
 ```
 
 ### 迁移失败处理
@@ -914,16 +903,16 @@ await session.send("继续重构...");
 
 ---
 
-## 12. 一站式装配（Runtime + createAgent + SdkAgent）
+## 12. 一站式装配（Provider + createAgent + SdkAgent）
 
-SDK 不是一个模块工具箱（到处 import 散装函数），而是一个 **Runtime 实例**，持有所有全局状态，各层通过它获取所需。
+SDK 不是一个模块工具箱（到处 import 散装函数），而是一个 **Provider 实例**，持有所有配置和外部依赖，各层通过它获取所需。
 
-### Runtime — 全局上下文
+### Provider — 全局上下文
 
-`Runtime` 是 SDK 的全局上下文实例，由上层（CLI/Desktop）创建并传入：
+`Provider` 是 SDK 的全局上下文实例，由上层（CLI/Desktop）创建并传入：
 
 ```typescript
-class Runtime {
+class Provider {
   config: AppConfig;
   agentsDir: string;           // Agent 定义目录
   subAgentsPaths: string[];    // SubAgent 搜索路径
@@ -936,49 +925,51 @@ class Runtime {
   mcpConfigs?: Map<string, { name: string; config: McpServerConfig }>;
   mcpTransportFactory?: (config: McpServerConfig) => McpTransport;
 
-  createModel(modelId: string): Promise<ChatCompletionModel>;
+  createModel(modelId: string): ChatCompletionModel;  // 同步
 }
 ```
 
-`Runtime` 实例贯穿整个 SDK：
+`Provider` 实例贯穿整个 SDK：
 
 ```
-Runtime
-├── Capabilities(runtime)    ← 能力管线，从 runtime 获取配置和路径
-├── createAgent(runtime)    ← 函数，装配 Agent
-├── SdkAgent                 ← 持有 runtime，回调中通过 .runtime 访问
-└── Session                  ← 持有 SdkAgent，间接持有 runtime
+Provider
+├── Capabilities(provider)  ← 能力管线，从 provider 获取配置和路径
+├── createAgent(provider)  ← 函数，装配 Agent
+└── SdkAgent                ← 持有 provider，回调中通过 .provider 访问
 ```
 
 ### createAgent
 
 ```typescript
-async function createAgent(
-  runtime: Runtime,
+function createAgent(
+  provider: Provider,
   agentId: string,
-): Promise<SdkAgent>
+): SdkAgent
 ```
 
-函数内部创建 `Capabilities` 实例（执行全局发现），读取 Agent 定义，通过 `runtime.createModel()` 构建模型，通过 `caps.buildTools()` 过滤并实例化工具。一次性使用，无状态。
+函数内部创建 `Capabilities` 实例（执行全局发现），读取 Agent 定义，通过 `provider.createModel()` 构建模型，通过 `caps.buildTools()` 过滤并实例化工具。纯同步，一次性。
 
 ### SdkAgent
 
 ```typescript
 class SdkAgent extends Agent {
-  readonly runtime: Runtime;           // 全局上下文
+  readonly provider: Provider;         // 全局上下文
   readonly definition: AgentDefinition; // Agent 原始定义
   readonly permissions?: AgentPermissions;
   readonly caps?: Capabilities;         // 能力注册表，用于运行时刷新
+
+  use(plugin: AgentPlugin): void;       // 注册插件
+  init(): Promise<void>;                // 执行插件异步初始化
 }
 ```
 
-`SdkAgent` 继承 Core `Agent`，携带 SDK 层元数据。各回调（`call_skill_sub_agent`、SubAgent `buildAgent` 等）通过 `this.agent` 获取 `runtime` 和 `caps`。
+`SdkAgent` 继承 Core `Agent`，携带 SDK 层元数据，并提供 `use()` 和 `init()` 方法。各回调（`call_skill_sub_agent`、SubAgent `buildAgent` 等）通过 `this.agent.provider` 访问全局服务。
 
 ### 消费模式
 
 ```typescript
-// 1. 创建 Runtime（一次创建，全局复用）
-const runtime = new Runtime({
+// 1. 创建 Provider（一次创建，全局复用）
+const provider = new Provider({
   config,
   agentsDir: "~/.ai-zen/agents",
   conversationsDir: "~/.ai-zen/conversations",
@@ -988,35 +979,36 @@ const runtime = new Runtime({
   toolsPaths: ["~/.ai-zen/tools"],
 });
 
-// 2. 新建 Agent + 新建对话
-const agent = await createAgent(runtime, "my-agent");
-// agent 是 SdkAgent，自带 model、messages、tools、permissions、runtime
+// 2. 新建 Agent
+const agent = createAgent(provider, "my-agent");
+// agent 是 SdkAgent，自带 model、messages、tools、permissions、provider
 
-const session = await createSession({ agent })
-  .use(autoMigrate({ maxTokens, migrationAgent, onHandoff }))
-  .use(autoDraft({ draftsDir: runtime.draftsDir, agentId: "my-agent" }))
-  .init();
+// 3. 注册插件后开始对话
+agent.use(autoMigrate({ maxTokens, migrationAgent, onHandoff }));
+agent.use(autoDraft());
+agent.use(autoRefreshTools());
+await agent.init();
+await agent.send("你好");
 
-// 3. 恢复历史对话（直接替换 agent.messages）
-const conversations = listConversations(runtime.conversationsDir);
-const conv = conversations[0];  // 用户选择
-const restoredAgent = await createAgent(runtime, conv.agentId);
+// 4. 恢复历史对话
+const conversations = listConversations(provider.conversationsDir);
+const conv = conversations[0];
+const restoredAgent = createAgent(provider, conv.agentId);
 restoredAgent.messages.push(...conv.messages);
-const restored = await createSession({ agent: restoredAgent })
-  .use(autoMigrate({ maxTokens, migrationAgent, onHandoff }))
-  .use(autoDraft({ draftsDir: runtime.draftsDir, agentId: conv.agentId }))
-  .init();
+restoredAgent.use(autoMigrate({ maxTokens, migrationAgent, onHandoff }));
+restoredAgent.use(autoDraft());
+await restoredAgent.init();
 ```
 
 ### SubAgent 解析
 
-SubAgent（有 `function` 字段的 Agent）不继承父 Agent 的工具列表，通过 `Capabilities` 按自身 permissions 独立装配。模型构建通过 `Runtime`：
+SubAgent（有 `function` 字段的 Agent）不继承父 Agent 的工具列表，通过 `Capabilities` 按自身 permissions 独立装配。模型构建通过 `Provider`：
 
 ```typescript
-// createSubAgentTool(def, runtime, caps) 的 buildAgent 回调中：
+// createSubAgentTool(def, provider, caps) 的 buildAgent 回调中：
 // 模型构建
 if (def.modelId) {
-  subModel = await runtime.createModel(def.modelId);
+  subModel = provider.createModel(def.modelId);
 } else {
   subModel = parentAgent.model;  // 复用父 Agent 模型
 }
@@ -1032,8 +1024,10 @@ Skill 子 Agent（`call_skill_sub_agent` 创建的临时 Agent）同样通过 `c
 
 ### 设计决策
 
-- **Runtime 是全局上下文**：各层不接收散装参数，通过 Runtime 实例获取配置、路径、模型工厂等全局服务
-- **SdkAgent 持有 Runtime**：回调中通过 `.runtime` 访问全局服务，不再需要 `CapabilitiesLike` 等中间接口
+- **Provider 是全局上下文**：各层不接收散装参数，通过 Provider 实例获取配置、路径、模型工厂等全局服务
+- **SdkAgent 持有 Provider**：回调中通过 `.provider` 访问全局服务
+- **插件注册在 SdkAgent 上**：Core Agent 保持纯粹，不感知插件
+- **`init()` 为插件而生**：SdkAgent 本身无异步初始化需求，`init()` 仅用于插件异步初始化
 - **SubAgent 独立解析工具**：不继承父 Agent 的工具列表快照，通过 Capabilities 按自身 permissions 独立装配
-- **SubAgent 独立模型**：可通过 `modelId` 指定不同模型，由 `Runtime.createModel()` 构建
+- **SubAgent 独立模型**：可通过 `modelId` 指定不同模型，由 `Provider.createModel()` 构建
 - **tools 是 Tool[]**：权限系统消费者就是 `createAgent`，上层拿到的是最终结果，不再需要理解权限逻辑
