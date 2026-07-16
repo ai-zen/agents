@@ -1,6 +1,6 @@
 import { AgentNS } from "@ai-zen/agents-core";
 import { SdkAgent } from "../runtime/sdk-agent";
-import type { SessionPlugin } from "./types";
+import type { AgentPlugin } from "../runtime/sdk-agent";
 import { shouldMigrate, buildPostMigrationMessages } from "../runtime/task-migration";
 import { createLogger } from "../shared/logger";
 
@@ -18,12 +18,20 @@ export interface AutoMigrateOptions {
 /**
  * 自动迁移插件：每次 Agent.run() 返回后检查 prompt_tokens 是否超限，
  * 超限则用迁移 Agent 生成交接文档，创建新 Agent 替换。
+ *
+ * ```ts
+ * agent.use(autoMigrate({
+ *   maxTokens: 250_000,
+ *   migrationAgent,
+ *   onHandoff: (doc, old, next) => { ... },
+ * }));
+ * ```
  */
-export function autoMigrate(options: AutoMigrateOptions): SessionPlugin {
+export function autoMigrate(options: AutoMigrateOptions): AgentPlugin {
   const { maxTokens, migrationAgent, onHandoff } = options;
 
   return {
-    afterSend: async (ctx) => {
+    onAfterSend: async (ctx) => {
       const { agent } = ctx;
 
       // 1. 读取 lastUsage
@@ -52,7 +60,7 @@ export function autoMigrate(options: AutoMigrateOptions): SessionPlugin {
         // 迁移后保持 SdkAgent 类型，保留 definition、permissions、caps 等 SDK 字段
         const newAgent = new SdkAgent({ ...agent, messages: newMessages });
 
-        // c. 替换当前 Agent
+        // c. 替换当前 Agent（通过 ctx.agent）
         ctx.agent = newAgent;
 
         // d. 回调 onHandoff（此时新旧 Agent 都已就绪，调用方可重绑事件）

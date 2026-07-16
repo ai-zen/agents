@@ -17,7 +17,7 @@ agents/
 │   │   ├── crud/              ← 实体 CRUD
 │   │   ├── capabilities/      ← 能力发现 + 权限过滤 + 实例化
 │   │   ├── runtime/           ← Provider + 模型工厂 + Agent 组装 + MCP + 任务迁移
-│   │   ├── plugin/            ← Agent 插件（autoMigrate, autoDraft, autoRefreshTools）
+│   │   ├── plugin/            ← Agent 原生插件（autoMigrate, autoDraft, autoRefreshTools）
 │   │   └── shared/            ← 日志、错误
 │   ├── cli/                   ← @ai-zen/agents-cli   命令行（待接入 SDK）
 │   └── webui/                 ← @ai-zen/agents-webui Web 界面
@@ -40,15 +40,15 @@ plugin ──> runtime ──> capabilities ──> crud ──> config ──> 
 
 | 类 | 说明 |
 |---|------|
-| `Provider` | 全局上下文，持有配置、路径、模型工厂、MCP 管理器 |
+| `Runtime` | 全局上下文，持有配置、路径、模型工厂、MCP 管理器 |
 | `Capabilities` | 全局能力注册表（发现 → 过滤 → 实例化） |
-| `SdkAgent` | 继承 Core Agent，携带 provider/definition/permissions/caps，支持 `use()` 插件注册 |
+| `SdkAgent` | 继承 Core Agent，携带 runtime/definition/permissions/caps，支持 `use()` 插件注册 |
 | `AgentPlugin` | 插件接口（`onInit`, `onBeforeSend`, `onAfterSend`） |
 
 ### 消费模式
 
 ```typescript
-const provider = new Provider({ config, ...paths });
+const provider = new Runtime({ config, ...paths });
 const agent = createAgent(provider, "my-agent");
 agent.use(autoMigrate({ maxTokens, migrationAgent, onHandoff }));
 agent.use(autoDraft());
@@ -62,7 +62,10 @@ await agent.send("你好");
 ## 当前状态
 
 - ✅ TypeScript strict 模式，零编译错误
-- ✅ 171 个测试全部通过（21 个文件）
+- ✅ 165 个测试全部通过（20 个文件）
+- ✅ Session → SdkAgent.use() 改造完成（已删除 src/session/）
+- ✅ SdkAgent 支持 use() / init() / 插件勾子
+- ✅ 插件已搬迁到 src/plugin/，使用 AgentPlugin 接口
 - ⚠️ CLI 尚未接入 SDK，自己维护了一套重复实现
 - ⚠️ CLI 有 25 个测试失败（Windows 路径 + 缺少 SDK 构建产物）
 
@@ -74,12 +77,12 @@ await agent.send("你好");
 
 | # | 步骤 | 说明 | 状态 |
 |---|------|------|:--:|
-| 1 | `SdkAgent.use()` / `init()` 实现 | 在 SdkAgent 上实现插件注册和初始化勾子 | ⬜ |
-| 2 | `plugin/` 目录搬迁 | 从 `session/` 搬移到 `plugin/`，改造为 `AgentPlugin` | ⬜ |
-| 3 | `autoMigrate` 改造 | `SessionPlugin` → `AgentPlugin`，去掉 SessionContext 依赖 | ⬜ |
-| 4 | `autoDraft` 改造 | 从 `ctx.agent.provider` 自发现路径，零参数 | ⬜ |
-| 5 | `autoRefreshTools` 改造 | 同上 | ⬜ |
-| 6 | 删除 `src/session/` | 整个目录 | ⬜ |
+| 1 | ✅ `SdkAgent.use()` / `init()` 实现 | 在 SdkAgent 上实现插件注册和初始化勾子 | ✅ |
+| 2 | ✅ `plugin/` 目录搬迁 | 从 `session/` 搬移到 `plugin/`，改造为 `AgentPlugin` | ✅ |
+| 3 | ✅ `autoMigrate` 改造 | `SessionPlugin` → `AgentPlugin`，去掉 SessionContext 依赖 | ✅ |
+| 4 | ✅ `autoDraft` 改造 | 从 `ctx.agent.provider` 自发现路径，零参数 | ✅ |
+| 5 | ✅ `autoRefreshTools` 改造 | 同上 | ✅ |
+| 6 | ✅ 删除 `src/session/` | 整个目录 | ✅ |
 | 7 | `Provider.createModel()` 改为同步 | Core 需提供 `chatCompletionSync` | ⬜ |
 | 8 | `createAgent` 改为同步 | 依赖 #7 | ⬜ |
 | 9 | `AgentToolLazy.buildAgent` 注入 | 在 `createAgent` 中创建 SubAgent 时注入 provider/model 回调 | ⬜ |
@@ -120,11 +123,9 @@ await agent.send("你好");
 
 | # | 项 | 说明 |
 |---|------|------|
-| ✅ | Runtime → Provider | 全局上下文改名 |
 | ✅ | Session 层移除 | 改为 SdkAgent 原生 `use()` / `init()` 插件机制 |
-| ✅ | `resolveAgent` → `createAgent` | 一站式装配（待同步改为同步） |
-| ✅ | `createSession` 移除 | 不再需要 Builder 包装层 |
-| ✅ | `restoreSession` 移除 | 改为直接 `createAgent` + `agent.messages.push(...)` |
+| ✅ | 插件搬迁到 `src/plugin/` | autoMigrate, autoDraft, autoRefreshTools 使用 AgentPlugin 接口 |
+| ✅ | SdkAgent 测试 | 覆盖 use() / init() / send() 钩子流程 |
 | ✅ | 工具装配三阶段 | Capabilities 统一管理发现 → 过滤 → 实例化 |
 | ✅ | MCP 连接生命周期 | McpConnectionManager（重连、退避、超时、状态机） |
 | ✅ | 自动迁移 | autoMigrate 插件 + 交接文档 |

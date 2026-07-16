@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { autoDraft, checkDraftForRestore } from "./auto-draft";
-import { readDraft, deleteDraft } from "../crud/drafts";
+import { readDraft } from "../crud/drafts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -11,6 +11,13 @@ import { tmpdir } from "node:os";
 
 function mockAgent(opts: { messages?: any[]; tools?: any[]; model?: any }): any {
   return {
+    runtime: {
+      config: {
+        defaultModel: "m1",
+        models: [{ id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 }],
+        endpoints: [],
+      },
+    },
     lastUsage: undefined,
     messages: opts.messages ?? [{ role: "system", content: "You are a helper." }],
     tools: opts.tools ?? [],
@@ -18,8 +25,6 @@ function mockAgent(opts: { messages?: any[]; tools?: any[]; model?: any }): any 
     send: vi.fn(),
   };
 }
-
-const baseModel = { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 };
 
 // ---------------------------------------------------------------------------
 // 测试
@@ -36,13 +41,13 @@ describe("autoDraft", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("返回一个 SessionPlugin（有 afterSend）", () => {
+  it("返回一个 AgentPlugin（有 onAfterSend）", () => {
     const plugin = autoDraft({ draftsDir: dir, agentId: "agent-1" });
     expect(plugin).toBeDefined();
-    expect(typeof plugin.afterSend).toBe("function");
+    expect(typeof plugin.onAfterSend).toBe("function");
   });
 
-  it("afterSend 后写入 draft 文件（未命名 → _current.json）", async () => {
+  it("onAfterSend 后写入 draft 文件（未命名 → _current.json）", async () => {
     const agent = mockAgent({
       messages: [
         { role: "system", content: "You are helpful." },
@@ -52,13 +57,12 @@ describe("autoDraft", () => {
     });
 
     const plugin = autoDraft({ draftsDir: dir, agentId: "agent-1" });
-    await plugin.afterSend!({ agent: agent, model: baseModel });
+    await plugin.onAfterSend!({ agent, content: "hello", messages: agent.messages });
 
     // 读取 _current.json
     const draft = readDraft(dir); // 无 conversationId → _current.json
     expect(draft).not.toBeNull();
     expect(draft!.agentId).toBe("agent-1");
-    expect(draft!.modelId).toBe("m1");
     expect(draft!.conversationId).toBeUndefined();
     expect(draft!.messages).toHaveLength(3);
     expect(draft!.messages[0]).toEqual({ role: "system", content: "You are helpful." });
@@ -76,20 +80,20 @@ describe("autoDraft", () => {
       agentId: "agent-1",
       conversationId: "conv-123",
     });
-    await plugin.afterSend!({ agent: agent, model: baseModel });
+    await plugin.onAfterSend!({ agent, content: "hello", messages: agent.messages });
 
     const draft = readDraft(dir, "conv-123");
     expect(draft).not.toBeNull();
     expect(draft!.conversationId).toBe("conv-123");
   });
 
-  it("多次 afterSend 会覆盖之前的 draft", async () => {
+  it("多次 onAfterSend 会覆盖之前的 draft", async () => {
     const agent = mockAgent({
       messages: [{ role: "system", content: "Round 1" }],
     });
 
     const plugin = autoDraft({ draftsDir: dir, agentId: "agent-1" });
-    await plugin.afterSend!({ agent: agent, model: baseModel });
+    await plugin.onAfterSend!({ agent, content: "hello", messages: agent.messages });
 
     // 修改消息后再次保存
     agent.messages = [
@@ -97,7 +101,7 @@ describe("autoDraft", () => {
       { role: "user", content: "Q" },
       { role: "assistant", content: "A" },
     ];
-    await plugin.afterSend!({ agent: agent, model: baseModel });
+    await plugin.onAfterSend!({ agent, content: "hello", messages: agent.messages });
 
     const draft = readDraft(dir);
     expect(draft!.messages).toHaveLength(3);
@@ -115,7 +119,7 @@ describe("autoDraft", () => {
     });
 
     const plugin = autoDraft({ draftsDir: dir, agentId: "agent-1" });
-    await plugin.afterSend!({ agent: agent, model: baseModel });
+    await plugin.onAfterSend!({ agent, content: "hello", messages: agent.messages });
 
     const draft = readDraft(dir);
     expect(draft).not.toBeNull();
@@ -135,7 +139,7 @@ describe("autoDraft", () => {
 
     // 不应抛异常
     await expect(
-      plugin.afterSend!({ agent: agent, model: baseModel }),
+      plugin.onAfterSend!({ agent, content: "hello", messages: agent.messages }),
     ).resolves.toBeUndefined();
 
     const draft = readDraft(nestedDir);
@@ -169,7 +173,7 @@ describe("checkDraftForRestore", () => {
       messages: [{ role: "system", content: "Unfinished work" }],
     });
     const plugin = autoDraft({ draftsDir: dir, agentId: "agent-1" });
-    await plugin.afterSend!({ agent: agent, model: baseModel });
+    await plugin.onAfterSend!({ agent, content: "hello", messages: agent.messages });
 
     const result = checkDraftForRestore(dir);
     expect(result).not.toBeNull();

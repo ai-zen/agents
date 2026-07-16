@@ -1,7 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { autoMigrate } from "./auto-migrate";
-import { createSession } from "./session";
-import type { SessionPlugin } from "./types";
 
 // ---------------------------------------------------------------------------
 // mock
@@ -16,7 +14,7 @@ function mockAgent(opts: {
 }): any {
   const messages: any[] = opts.messages ?? [{ role: "system", content: "You are a helper." }];
   return {
-    // SdkAgent 需要的字段（autoMigrate 中会通过展开构造新 SdkAgent）
+    // SdkAgent 需要的字段
     runtime: { buildModel: vi.fn(), config: {}, agentsDir: "", subAgentsPaths: [], skillsPaths: [], toolsPaths: [], mcpPaths: [] },
     definition: opts.definition ?? {
       id: "test-agent",
@@ -39,22 +37,20 @@ function mockAgent(opts: {
   };
 }
 
-const baseModel = { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 };
-
 // ---------------------------------------------------------------------------
 // 测试
 // ---------------------------------------------------------------------------
 
 describe("autoMigrate", () => {
-  it("返回一个 SessionPlugin（有 afterSend）", () => {
+  it("返回一个 AgentPlugin（有 onAfterSend）", () => {
     const migrationAgent = mockAgent({});
     const plugin = autoMigrate({ maxTokens: 50000, migrationAgent: migrationAgent });
 
     expect(plugin).toBeDefined();
-    expect(typeof plugin.afterSend).toBe("function");
+    expect(typeof plugin.onAfterSend).toBe("function");
   });
 
-  describe("afterSend", () => {
+  describe("onAfterSend", () => {
     it("promptTokens <= maxTokens 时不触发迁移", async () => {
       const agent = mockAgent({
         lastUsage: { prompt_tokens: 30000, completion_tokens: 5000, total_tokens: 35000 },
@@ -62,8 +58,8 @@ describe("autoMigrate", () => {
       const migrationAgent = mockAgent({});
       const plugin = autoMigrate({ maxTokens: 50000, migrationAgent: migrationAgent });
 
-      const ctx = { agent: agent, model: baseModel };
-      await plugin.afterSend!(ctx);
+      const ctx = { agent, content: "hello", messages: agent.messages };
+      await plugin.onAfterSend!(ctx);
 
       // ctx.agent 不变
       expect(ctx.agent).toBe(agent);
@@ -97,8 +93,8 @@ describe("autoMigrate", () => {
         onHandoff,
       });
 
-      const ctx = { agent: agent, model: baseModel };
-      await plugin.afterSend!(ctx);
+      const ctx = { agent, content: "hello", messages: agent.messages };
+      await plugin.onAfterSend!(ctx);
 
       // ctx.agent 已被替换为新 Agent
       expect(ctx.agent).not.toBe(agent);
@@ -136,8 +132,8 @@ describe("autoMigrate", () => {
       const migrationAgent = mockAgent({});
       const plugin = autoMigrate({ maxTokens: 50000, migrationAgent: migrationAgent });
 
-      const ctx = { agent: agent, model: baseModel };
-      await plugin.afterSend!(ctx);
+      const ctx = { agent, content: "hello", messages: agent.messages };
+      await plugin.onAfterSend!(ctx);
 
       expect(ctx.agent).toBe(agent);
       expect(migrationAgent.send).not.toHaveBeenCalled();
@@ -157,8 +153,8 @@ describe("autoMigrate", () => {
         onHandoff,
       });
 
-      const ctx = { agent: agent, model: baseModel };
-      await plugin.afterSend!(ctx);
+      const ctx = { agent, content: "hello", messages: agent.messages };
+      await plugin.onAfterSend!(ctx);
 
       // 失败时 ctx.agent 不变
       expect(ctx.agent).toBe(agent);
@@ -183,8 +179,8 @@ describe("autoMigrate", () => {
         onHandoff,
       });
 
-      const ctx = { agent: agent, model: baseModel };
-      await plugin.afterSend!(ctx);
+      const ctx = { agent, content: "hello", messages: agent.messages };
+      await plugin.onAfterSend!(ctx);
 
       // 即使 onHandoff 抛错，ctx.agent 仍然被替换
       expect(ctx.agent).not.toBe(agent);
@@ -201,8 +197,8 @@ describe("autoMigrate", () => {
       migrationAgent.send.mockResolvedValue([{ role: "assistant", content: "交接文档" }]);
 
       const plugin = autoMigrate({ maxTokens: 50000, migrationAgent: migrationAgent });
-      const ctx = { agent: agent, model: baseModel };
-      await plugin.afterSend!(ctx);
+      const ctx = { agent, content: "hello", messages: agent.messages };
+      await plugin.onAfterSend!(ctx);
 
       expect(ctx.agent.model).toBe(sharedModel);
     });
@@ -229,84 +225,13 @@ describe("autoMigrate", () => {
         },
       });
 
-      const ctx = { agent: agent, model: baseModel };
-      await plugin.afterSend!(ctx);
+      const ctx = { agent, content: "hello", messages: agent.messages };
+      await plugin.onAfterSend!(ctx);
 
       // 新 Agent 可以绑事件
       (ctx.agent as any).events.on("chunk");
       (ctx.agent as any).events.on("sub-agent");
       expect(reboundEvents).toEqual(["chunk", "sub-agent"]);
-    });
-  });
-
-  describe("集成：Session + autoMigrate", () => {
-    function makeSessionAgent(opts?: any) {
-      return {
-        ...mockAgent(opts),
-        definition: {
-          id: "test-agent",
-          name: "Test Agent",
-          modelId: "m1",
-          messages: [{ role: "system", content: "Helper" }],
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-        runtime: {
-          buildModel: vi.fn(),
-          config: {
-            defaultModel: "m1",
-            models: [{ id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 }],
-            endpoints: [],
-          },
-          agentsDir: "",
-          subAgentsPaths: [],
-          skillsPaths: [],
-          toolsPaths: [],
-          mcpPaths: [],
-          conversationsDir: "",
-          draftsDir: "",
-        },
-      };
-    }
-
-    it("send 后自动触发迁移并替换 Agent", async () => {
-      const agent = makeSessionAgent({
-        lastUsage: { prompt_tokens: 80000, completion_tokens: 5000, total_tokens: 85000 },
-        messages: [{ role: "system", content: "Helper" }],
-      });
-      const migrationAgent = mockAgent({});
-      migrationAgent.send.mockResolvedValue([{ role: "assistant", content: "交接文档" }]);
-
-      const session = await createSession({ agent: agent })
-        .use(autoMigrate({ maxTokens: 50000, migrationAgent: migrationAgent }))
-        .init();
-
-      const beforeAgent = session.agent;
-      await session.send("hello");
-      const afterAgent = session.agent;
-
-      // Agent 已被替换
-      expect(afterAgent).not.toBe(beforeAgent);
-      // 新 Agent 的 messages 包含交接文档
-      const userMsgs = afterAgent.messages.filter((m: any) => m.role === "user");
-      expect(userMsgs[0].content).toContain("交接文档");
-    });
-
-    it("未超限时不替换 Agent", async () => {
-      const agent = makeSessionAgent({
-        lastUsage: { prompt_tokens: 10000, completion_tokens: 2000, total_tokens: 12000 },
-      });
-      const migrationAgent = mockAgent({});
-
-      const session = await createSession({ agent: agent })
-        .use(autoMigrate({ maxTokens: 50000, migrationAgent: migrationAgent }))
-        .init();
-
-      const beforeAgent = session.agent;
-      await session.send("hello");
-      const afterAgent = session.agent;
-
-      expect(afterAgent).toBe(beforeAgent);
     });
   });
 });

@@ -1,4 +1,4 @@
-import type { SessionPlugin } from "./types";
+import type { AgentPlugin } from "../runtime/sdk-agent";
 
 /**
  * 自动刷新能力插件：每次 send 前重新扫描文件系统，
@@ -9,14 +9,13 @@ import type { SessionPlugin } from "./types";
  * 此插件确保 LLM 能看到最新的可用能力。
  *
  * ```ts
- * const session = await createSession({ agent })
- *   .use(refreshTools())
- *   .init();
+ * agent.use(autoRefreshTools());
+ * await agent.init();
  * ```
  */
-export function autoRefreshTools(): SessionPlugin {
+export function autoRefreshTools(): AgentPlugin {
   return {
-    beforeSend: async (ctx) => {
+    onBeforeSend: async (ctx) => {
       const { agent } = ctx;
 
       // caps 不存在（非 SdkAgent）时跳过

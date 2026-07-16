@@ -52,22 +52,20 @@ export { readDraft, writeDraft, deleteDraft } from "./crud/drafts";
 export { Runtime } from "./runtime/runtime";
 export { createModel } from "./runtime/create-model";
 export { SdkAgent } from "./runtime/sdk-agent";
+export type { AgentPlugin, SendContext } from "./runtime/sdk-agent";
 export { createAgent } from "./runtime/create-agent";
 export { McpConnectionManager } from "./runtime/mcp-connection";
 export type { McpConnectOptions } from "./runtime/mcp-connection";
 export { shouldMigrate, buildMigrationPrompt, HANDOFF_SECTIONS, buildMigrationAgentDefinition, buildPostMigrationMessages } from "./runtime/task-migration";
 export type { BuildMigrationAgentOptions } from "./runtime/task-migration";
 
-// 会话运行时
-export { createSession } from "./session/session";
-
-export type { Session, SessionBuilder, SessionPlugin, SessionContext } from "./session/types";
-export { autoMigrate } from "./session/auto-migrate";
-export type { AutoMigrateOptions } from "./session/auto-migrate";
-export { autoDraft, checkDraftForRestore } from "./session/auto-draft";
-export type { AutoDraftOptions } from "./session/auto-draft";
-export { autoRefreshTools } from "./session/auto-refresh-tools";
-export { getLastPromptTokens } from "./session/helpers";
+// 插件（Agent 原生插件机制）
+export { autoMigrate } from "./plugin/auto-migrate";
+export type { AutoMigrateOptions } from "./plugin/auto-migrate";
+export { autoDraft, checkDraftForRestore } from "./plugin/auto-draft";
+export type { AutoDraftOptions } from "./plugin/auto-draft";
+export { autoRefreshTools } from "./plugin/auto-refresh-tools";
+export { getLastPromptTokens } from "./plugin/helpers";
 
 // 工具
 export { BUILTIN_TOOLS } from "./capabilities/implements/builtin";

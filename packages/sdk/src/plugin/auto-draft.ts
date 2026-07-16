@@ -1,6 +1,5 @@
-import type { Agent } from "@ai-zen/agents-core";
 import type { AgentMessage, Draft } from "../types";
-import type { SessionPlugin } from "./types";
+import type { AgentPlugin } from "../runtime/sdk-agent";
 import { writeDraft, readDraft, deleteDraft } from "../crud/drafts";
 import { createLogger } from "../shared/logger";
 import { existsSync } from "node:fs";
@@ -25,17 +24,24 @@ const EXPIRE_DAYS = 7;
 
 /**
  * 自动保存 Draft 插件：每次 Agent.run() 返回后，将当前消息历史写入 draft 文件。
+ *
+ * ```ts
+ * agent.use(autoDraft({
+ *   draftsDir: "~/.ai-zen/drafts",
+ *   agentId: "my-agent",
+ * }));
+ * ```
  */
-export function autoDraft(options: AutoDraftOptions): SessionPlugin {
+export function autoDraft(options: AutoDraftOptions): AgentPlugin {
   const { draftsDir, agentId, conversationId, cwd } = options;
 
   return {
-    afterSend: async (ctx) => {
+    onAfterSend: async (ctx) => {
       try {
         const draft: Draft = {
           conversationId,
           agentId,
-          modelId: ctx.model.id,
+          modelId: ctx.agent.runtime.config.defaultModel ?? "",
           messages: convertMessages(ctx.agent.messages),
           cwd,
           updatedAt: new Date().toISOString(),
