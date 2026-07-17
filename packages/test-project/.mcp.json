@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "postgres": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-postgres"]
+    }
+  }
+}

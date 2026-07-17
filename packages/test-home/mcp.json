@@ -1,0 +1,14 @@
+{
+  "servers": {
+    "github": {
+      "transport": "stdio",
+      "command": "gh",
+      "args": ["mcp"]
+    },
+    "filesystem": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    }
+  }
+}

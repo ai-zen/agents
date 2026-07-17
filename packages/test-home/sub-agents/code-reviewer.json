@@ -1,0 +1,35 @@
+{
+  "id": "code-reviewer",
+  "name": "代码审查员",
+  "description": "审查代码并给出改进建议",
+  "messages": [
+    {
+      "role": "system",
+      "content": "你是一个代码审查专家。审查以下代码，指出问题并给出改进建议。关注：代码质量、性能、安全、可维护性。"
+    },
+    {
+      "role": "user",
+      "content": "{{task}}"
+    }
+  ],
+  "function": {
+    "name": "code_reviewer",
+    "description": "代码审查：审查代码质量、安全性、性能",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "要审查的代码或文件路径"
+        }
+      },
+      "required": ["task"]
+    }
+  },
+  "permissions": {
+    "tools": { "allow": ["readFile", "glob", "findText"] },
+    "subagents": { "deny": ["*"] }
+  },
+  "createdAt": "2025-01-01T00:00:00.000Z",
+  "updatedAt": "2025-01-01T00:00:00.000Z"
+}

@@ -1,0 +1,35 @@
+{
+  "id": "general-assistant",
+  "name": "通用助手",
+  "description": "通用助手，可处理各种日常任务",
+  "messages": [
+    {
+      "role": "system",
+      "content": "你是一个通用助手，可以处理用户交给你的各种任务。请认真、仔细地完成。"
+    },
+    {
+      "role": "user",
+      "content": "{{task}}"
+    }
+  ],
+  "function": {
+    "name": "general_assistant",
+    "description": "通用助手：处理各种日常任务",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "要完成的任务描述"
+        }
+      },
+      "required": ["task"]
+    }
+  },
+  "permissions": {
+    "tools": { "allow": ["*"] },
+    "subagents": { "deny": ["*"] }
+  },
+  "createdAt": "2025-01-01T00:00:00.000Z",
+  "updatedAt": "2025-01-01T00:00:00.000Z"
+}

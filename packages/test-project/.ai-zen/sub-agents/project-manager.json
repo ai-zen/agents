@@ -1,0 +1,36 @@
+{
+  "id": "project-manager",
+  "name": "项目经理",
+  "description": "项目管理助手：分析任务、制定计划",
+  "messages": [
+    {
+      "role": "system",
+      "content": "你是一个项目经理助手。分析用户的需求，制定合理的任务分解和开发计划。"
+    },
+    {
+      "role": "user",
+      "content": "{{task}}"
+    }
+  ],
+  "function": {
+    "name": "project_manager",
+    "description": "项目管理：分析需求、分解任务、制定计划",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "项目需求或任务描述"
+        }
+      },
+      "required": ["task"]
+    }
+  },
+  "permissions": {
+    "tools": { "allow": ["readFile", "writeFile"] },
+    "skills": { "allow": ["*"] },
+    "subagents": { "deny": ["*"] }
+  },
+  "createdAt": "2025-01-01T00:00:00.000Z",
+  "updatedAt": "2025-01-01T00:00:00.000Z"
+}

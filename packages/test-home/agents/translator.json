@@ -1,0 +1,19 @@
+{
+  "id": "translator",
+  "name": "翻译助手",
+  "description": "多语言翻译助手",
+  "messages": [
+    {
+      "role": "system",
+      "content": "你是一个专业的翻译助手。你可以翻译多种语言，保持原文的语气和风格。"
+    }
+  ],
+  "permissions": {
+    "tools": { "allow": ["readFile", "writeFile", "exec"] },
+    "skills": { "deny": ["*"] },
+    "mcps": { "deny": ["*"] },
+    "subagents": { "deny": ["*"] }
+  },
+  "createdAt": "2025-01-01T00:00:00.000Z",
+  "updatedAt": "2025-01-01T00:00:00.000Z"
+}

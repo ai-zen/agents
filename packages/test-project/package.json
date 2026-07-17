@@ -1,0 +1,7 @@
+{
+  "name": "@ai-zen/test-project",
+  "version": "0.0.0",
+  "private": true,
+  "description": "AI-Zen Agents 测试项目",
+  "type": "module"
+}

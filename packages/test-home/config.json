@@ -1,0 +1,48 @@
+{
+  "defaultModel": "gpt4",
+  "endpoints": [
+    {
+      "id": "openai",
+      "name": "OpenAI",
+      "baseUrl": "https://api.openai.com/v1",
+      "apiKey": "sk-test-placeholder"
+    },
+    {
+      "id": "zhipu",
+      "name": "智谱 GLM",
+      "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+      "apiKey": "zhipu-test-placeholder"
+    }
+  ],
+  "models": [
+    {
+      "id": "gpt4",
+      "name": "GPT-4o",
+      "endpointId": "openai",
+      "maxContextTokens": 500000
+    },
+    {
+      "id": "gpt4-mini",
+      "name": "GPT-4o-mini",
+      "endpointId": "openai",
+      "maxContextTokens": 500000
+    },
+    {
+      "id": "glm-4",
+      "name": "GLM-4",
+      "endpointId": "zhipu",
+      "maxContextTokens": 500000
+    }
+  ],
+  "imageModels": [
+    {
+      "id": "cogview",
+      "name": "CogView",
+      "endpointId": "zhipu",
+      "modelName": "cogview-4",
+      "defaultSize": "1024x1024",
+      "defaultQuality": "standard"
+    }
+  ],
+  "defaultImageModel": "cogview"
+}
