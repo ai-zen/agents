@@ -62,7 +62,7 @@ await agent.send("你好");
 ## 当前状态
 
 - ✅ TypeScript strict 模式，零编译错误
-- ✅ 165 个测试全部通过（20 个文件）
+- ✅ 177 个测试全部通过（20 个文件）
 - ✅ Session → SdkAgent.use() 改造完成（已删除 src/session/）
 - ✅ SdkAgent 支持 use() / init() / 插件勾子
 - ✅ 插件已搬迁到 src/plugin/，使用 AgentPlugin 接口
@@ -73,49 +73,49 @@ await agent.send("你好");
 
 ## 待完成任务
 
-### P0 — 核心通路
+### P0 — 核心通路（全部完成 ✅）
 
 | # | 步骤 | 说明 | 状态 |
 |---|------|------|:--:|
-| 1 | ✅ `SdkAgent.use()` / `init()` 实现 | 在 SdkAgent 上实现插件注册和初始化勾子 | ✅ |
-| 2 | ✅ `plugin/` 目录搬迁 | 从 `session/` 搬移到 `plugin/`，改造为 `AgentPlugin` | ✅ |
-| 3 | ✅ `autoMigrate` 改造 | `SessionPlugin` → `AgentPlugin`，去掉 SessionContext 依赖 | ✅ |
-| 4 | ✅ `autoDraft` 改造 | 从 `ctx.agent.provider` 自发现路径，零参数 | ✅ |
-| 5 | ✅ `autoRefreshTools` 改造 | 同上 | ✅ |
-| 6 | ✅ 删除 `src/session/` | 整个目录 | ✅ |
-| 7 | `Provider.createModel()` 改为同步 | Core 需提供 `chatCompletionSync` | ⬜ |
-| 8 | `createAgent` 改为同步 | 依赖 #7 | ⬜ |
-| 9 | `AgentToolLazy.buildAgent` 注入 | 在 `createAgent` 中创建 SubAgent 时注入 provider/model 回调 | ⬜ |
-| 10 | `discoverUserTools` 安全加载 | 安全的 `require()` 加载 `.js` 文件，含沙箱/错误隔离 | ⬜ |
+| 1 | `SdkAgent.use()` / `init()` 实现 | 在 SdkAgent 上实现插件注册和初始化勾子 | ✅ |
+| 2 | `plugin/` 目录搬迁 | 从 `session/` 搬移到 `plugin/`，改造为 `AgentPlugin` | ✅ |
+| 3 | `autoMigrate` 改造 | `SessionPlugin` → `AgentPlugin`，去掉 SessionContext 依赖 | ✅ |
+| 4 | `autoDraft` 改造 | 从 `ctx.agent.provider` 自发现路径，零参数 | ✅ |
+| 5 | `autoRefreshTools` 改造 | 同上 | ✅ |
+| 6 | 删除 `src/session/` | 整个目录 | ✅ |
+| 7 | `Provider.createModel()` 改为同步 | 已使用 `chatCompletionSync` 实现 | ✅ |
+| 8 | `createAgent` 改为同步 | 不再依赖 async | ✅ |
+| 9 | `AgentToolLazy.buildAgent` 注入 | 在 `createAgent` 中创建 SubAgent 时注入 provider/model 回调 | ✅ |
+| 10 | `discoverUserTools` 安全加载 | 使用 `vm` 沙箱加载 `.js` 文件 | ✅ |
 
-### P1 — MCP 闭环
+### P1 — MCP 闭环（基本完成，仅余 OAuth）
 
 | # | 步骤 | 说明 | 状态 |
 |---|------|------|:--:|
-| 11 | SDK 内置 stdio transport | 子进程 spawn、stdin/stdout JSON-RPC | ⬜ |
-| 12 | SDK 内置 HTTP transport | HTTP SSE 连接 + 请求/响应 | ⬜ |
-| 13 | OAuth token 持久化 | `mcp-oauth/` 目录 token 读写 + 授权码交换 + token 刷新 | ⬜ |
-| 14 | `McpTransport` 补充方法 | `callTool` / `readResource` / `listPrompts` / `getPrompt` | ⬜ |
-| 15 | `call_mcp_tool` 完整实现 | 通过 transport.callTool 调用 | ⬜ |
-| 16 | `read_mcp_resource` 完整实现 | 通过 transport.readResource 调用 | ⬜ |
+| 11 | SDK 内置 stdio transport | 通过 `@modelcontextprotocol/sdk` 的 `StdioClientTransport` | ✅ |
+| 12 | SDK 内置 HTTP transport | 通过 `StreamableHTTPClientTransport` | ✅ |
+| 13 | **OAuth token 持久化** | `mcp-oauth/` 目录 token 读写 + 授权码交换 + token 刷新 | ⬜ |
+| 14 | `McpTransport` 补充方法 | `callTool` / `readResource` / `listPrompts` 已通过 Manifest 返回 | ✅ |
+| 15 | `call_mcp_tool` 完整实现 | 通过 `client.callTool()` | ✅ |
+| 16 | `read_mcp_resource` 完整实现 | 通过 `client.readResource()` | ✅ |
 
 ### P2 — 收尾
 
 | # | 步骤 | 说明 | 状态 |
 |---|------|------|:--:|
-| 17 | 端到端测试 | `createAgent` → `agent.use()` → `agent.init()` → `agent.send()` 完整链路 | ⬜ |
-| 18 | CLI 接入 SDK | 删 CLI 中重复的 agent-creator、工具发现、draft 逻辑 | ⬜ |
-| 19 | Skill 辅助文件加载 | `loadSupportingFile` 机制，加载 `scripts/`、`references/`、`assets/` | ⬜ |
-| 20 | Skill 预算管理 | 按使用频次排序，低频 Skill 加载后可能被任务迁移截断 | ⬜ |
-| 21 | MCP Prompts 支持 | `prompts/list`、`prompts/get` 及动态提示工具 | ⬜ |
-| 22 | MCP Resources 模板与订阅 | `resources/templates/list`、`resources/subscribe` | ⬜ |
+| 17 | 端到端测试 | `createAgent` → `agent.use()` → `agent.init()` → `agent.send()` | ✅ |
+| 18 | **CLI 接入 SDK** | 删 CLI 中重复的 agent-creator、工具发现、draft 逻辑 | ⬜ |
 
-### P3 — 可延后
+### ❌ 已关闭（不做 / 伪需求）
 
-| # | 步骤 | 说明 | 状态 |
-|---|------|------|:--:|
-| 23 | MCP Roots / Sampling | MCP Client 特性，SDK 层暂不处理，由上层实现 | ⬜ |
-| 24 | `generateImage` 扩展更多服务 | 当前仅支持 ZhipuImage，后续可扩展 DALL-E 等 | ⬜ |
+| # | 项 | 原因 |
+|---|------|------|
+| ~~19~~ | ~~Skill 辅助文件加载~~ | 伪需求，关闭 |
+| ~~20~~ | ~~Skill 预算管理~~ | 不做 |
+| ~~21~~ | ~~MCP Prompts 支持~~ | 不做 |
+| ~~22~~ | ~~MCP Resources 模板与订阅~~ | 不做 |
+| ~~23~~ | ~~MCP Roots / Sampling~~ | 不做，由上层实现 |
+| ~~24~~ | ~~`generateImage` 扩展更多服务~~ | 不做 |
 
 ---
 
