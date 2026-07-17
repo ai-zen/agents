@@ -126,9 +126,9 @@ await agent.send("你好");
 
 ## 附加改动（已完成）
 
-### Runtime → Provider（暂未改名）
+### Runtime → Provider ✅ 已完成
 
-`Runtime` 类计划改名为 `Provider`，`Runtime` 本质是配置 + 路径 + 模型工厂 + MCP 管理器的集合，是 Agent 所需外部依赖的**提供者**。当前保留 `Runtime` 名称，后续版本可再改名。
+`Runtime` 类已改名为 `Provider`（类定义在 `runtime/runtime.ts` 中），`Provider` 本质是配置 + 路径 + 模型工厂 + MCP 管理器的集合，是 Agent 所需外部依赖的**提供者**。
 
 ---
 

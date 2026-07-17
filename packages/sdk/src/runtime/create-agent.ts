@@ -2,7 +2,7 @@ import type { AgentNS } from "@ai-zen/agents-core";
 import { readAgent } from "../crud/agents";
 import { Capabilities } from "../capabilities/capabilities";
 import { SdkAgent } from "./sdk-agent";
-import type { Runtime } from "./runtime";
+import type { Provider } from "./runtime";
 
 /**
  * 从磁盘创建 Agent（同步）。
@@ -16,17 +16,17 @@ import type { Runtime } from "./runtime";
  * ```
  */
 export function createAgent(
-  runtime: Runtime,
+  provider: Provider,
   agentId: string,
 ): SdkAgent {
-  const caps = new Capabilities(runtime);
-  const definition = readAgent(runtime.agentsDir, agentId);
+  const caps = new Capabilities(provider);
+  const definition = readAgent(provider.agentsDir, agentId);
   if (!definition) throw new Error(`Agent "${agentId}" 不存在`);
 
-  const modelId = definition.modelId ?? runtime.config.defaultModel;
+  const modelId = definition.modelId ?? provider.config.defaultModel;
   if (!modelId) throw new Error("未指定模型且无默认模型");
 
-  const model = runtime.createModel(modelId);
+  const model = provider.createModel(modelId);
 
   const tools = caps.buildTools(definition.permissions ?? {}, {
     exclude: {
@@ -37,7 +37,7 @@ export function createAgent(
   });
 
   return new SdkAgent({
-    runtime,
+    provider,
     definition,
     model,
     messages: definition.messages as AgentNS.Message[],

@@ -48,7 +48,7 @@ export { listConversations, readConversation, writeConversation, deleteConversat
 export { readDraft, writeDraft, deleteDraft } from "./crud/drafts";
 
 // 运行时
-export { Runtime } from "./runtime/runtime";
+export { Provider } from "./runtime/runtime";
 export { createModel } from "./runtime/create-model";
 export { SdkAgent } from "./runtime/sdk-agent";
 export type { AgentPlugin, SendContext } from "./runtime/sdk-agent";

@@ -1,7 +1,7 @@
 import type { Tool } from "@ai-zen/agents-core";
 import type { AgentDefinition, AgentPermissions } from "../types";
 import type { DisclosureItem } from "./disclosure";
-import type { Runtime } from "../runtime/runtime";
+import type { Provider } from "../runtime/runtime";
 import { buildDisclosureParam } from "./disclosure";
 import { filterByPermissions } from "./permissions";
 import { createLoadSkillTool, createCallSkillSubAgentTool } from "./implements/skill-tools";
@@ -50,11 +50,11 @@ const EMPTY_HINT_MCP = "（当前没有可用的 MCP 服务器，请联系用户
  *   - 发现结果全局共享，SubAgent 复用同一份候选集
  *   - filter 是纯函数（名称匹配），可被任意 Agent 独立调用
  *   - instantiate 是纯映射（名称→实例），不含业务逻辑
- *   - 通过持有的 Runtime 实例获取配置、路径、模型工厂等全局服务
+ *   - 通过持有的 Provider 实例获取配置、路径、模型工厂等全局服务
  */
 export class Capabilities {
-  /** Runtime 全局上下文 */
-  readonly runtime: Runtime;
+  /** Provider 全局上下文 */
+  readonly provider: Provider;
 
   // ---- 全局候选集（发现一次，全局复用）----
   builtinInstances: Tool[];
@@ -63,15 +63,15 @@ export class Capabilities {
   skills: DisclosureItem[];
   mcps: DisclosureItem[];
 
-  constructor(runtime: Runtime) {
-    this.runtime = runtime;
+  constructor(provider: Provider) {
+    this.provider = provider;
 
     // 初始化候选集
-    this.builtinInstances = discoverBuiltinTools(runtime.config);
-    this.userInstances = discoverUserTools(runtime.toolsPaths);
-    this.subagentDefs = discoverSubAgents(runtime.subAgentsPaths);
-    this.skills = discoverSkills(runtime.skillsPaths);
-    this.mcps = discoverMcpServers(runtime.mcpPaths);
+    this.builtinInstances = discoverBuiltinTools(provider.config);
+    this.userInstances = discoverUserTools(provider.toolsPaths);
+    this.subagentDefs = discoverSubAgents(provider.subAgentsPaths);
+    this.skills = discoverSkills(provider.skillsPaths);
+    this.mcps = discoverMcpServers(provider.mcpPaths);
   }
 
   /**
@@ -148,7 +148,7 @@ export class Capabilities {
   instantiate(filtered: FilterOutput): Tool[] {
     const result: Tool[] = [];
     const allowedToolNames = new Set(filtered.tools);
-    const runtime = this.runtime;
+    const provider = this.provider;
 
     // 1. 内置 + 用户工具
     for (const t of [...this.builtinInstances, ...this.userInstances]) {
@@ -176,26 +176,26 @@ export class Capabilities {
 
     // 3. 动态工具（按条件注册）
     if (allowedToolNames.has("load_skill") && filteredSkills.length > 0) {
-      result.push(createLoadSkillTool(runtime.skillsPaths, skillDisclosure));
+      result.push(createLoadSkillTool(provider.skillsPaths, skillDisclosure));
     }
     if (allowedToolNames.has("call_skill_sub_agent") && filteredSkills.length > 0) {
-      result.push(createCallSkillSubAgentTool(runtime.skillsPaths, skillDisclosure, this));
+      result.push(createCallSkillSubAgentTool(provider.skillsPaths, skillDisclosure, this));
     }
-    if (allowedToolNames.has("load_mcp") && runtime.mcpManager && runtime.mcpConfigs && filteredMcps.length > 0) {
-      result.push(createLoadMcpTool(runtime.mcpManager, runtime.mcpConfigs, mcpDisclosure));
+    if (allowedToolNames.has("load_mcp") && provider.mcpManager && provider.mcpConfigs && filteredMcps.length > 0) {
+      result.push(createLoadMcpTool(provider.mcpManager, provider.mcpConfigs, mcpDisclosure));
     }
-    if (allowedToolNames.has("call_mcp_tool") && runtime.mcpManager) {
-      result.push(createCallMcpTool(runtime.mcpManager));
+    if (allowedToolNames.has("call_mcp_tool") && provider.mcpManager) {
+      result.push(createCallMcpTool(provider.mcpManager));
     }
-    if (allowedToolNames.has("read_mcp_resource") && runtime.mcpManager) {
-      result.push(createReadMcpResourceTool(runtime.mcpManager));
+    if (allowedToolNames.has("read_mcp_resource") && provider.mcpManager) {
+      result.push(createReadMcpResourceTool(provider.mcpManager));
     }
 
     // 4. SubAgent → createSubAgentTool（封装 AgentToolLazy）
     const allowedSubagentSet = new Set(filtered.subagents);
     for (const def of this.subagentDefs) {
       if (!def.function || !allowedSubagentSet.has(def.function.name)) continue;
-      result.push(createSubAgentTool(def, this.runtime, this));
+      result.push(createSubAgentTool(def, this.provider, this));
     }
 
     // 5. 去重（后注册覆盖先注册）
@@ -207,12 +207,12 @@ export class Capabilities {
    * 适用于运行时文件系统变更（新增/删除 skill、工具、SubAgent 等）。
    */
   refresh(): void {
-    const runtime = this.runtime;
-    this.builtinInstances = discoverBuiltinTools(runtime.config);
-    this.userInstances = discoverUserTools(runtime.toolsPaths);
-    this.subagentDefs = discoverSubAgents(runtime.subAgentsPaths);
-    this.skills = discoverSkills(runtime.skillsPaths);
-    this.mcps = discoverMcpServers(runtime.mcpPaths);
+    const provider = this.provider;
+    this.builtinInstances = discoverBuiltinTools(provider.config);
+    this.userInstances = discoverUserTools(provider.toolsPaths);
+    this.subagentDefs = discoverSubAgents(provider.subAgentsPaths);
+    this.skills = discoverSkills(provider.skillsPaths);
+    this.mcps = discoverMcpServers(provider.mcpPaths);
   }
 }
 

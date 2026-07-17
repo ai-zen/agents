@@ -33,7 +33,7 @@ function createTestAgent(opts?: {
 }): SdkAgent {
   const messages = opts?.messages ?? [{ role: "system", content: "You are a helper." }];
   return new SdkAgent({
-    runtime: mockRuntime() as any,
+    provider: mockRuntime() as any,
     definition: {
       id: "test-agent",
       name: "Test Agent",

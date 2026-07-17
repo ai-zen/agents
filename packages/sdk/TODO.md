@@ -40,7 +40,7 @@ plugin ──> runtime ──> capabilities ──> crud ──> config ──> 
 
 | 类 | 说明 |
 |---|------|
-| `Runtime` | 全局上下文，持有配置、路径、模型工厂、MCP 管理器 |
+| `Provider` | 全局上下文，持有配置、路径、模型工厂、MCP 管理器 |
 | `Capabilities` | 全局能力注册表（发现 → 过滤 → 实例化） |
 | `SdkAgent` | 继承 Core Agent，携带 runtime/definition/permissions/caps，支持 `use()` 插件注册 |
 | `AgentPlugin` | 插件接口（`onInit`, `onBeforeSend`, `onAfterSend`） |
@@ -48,7 +48,7 @@ plugin ──> runtime ──> capabilities ──> crud ──> config ──> 
 ### 消费模式
 
 ```typescript
-const provider = new Runtime({ config, ...paths });
+const provider = new Provider({ config, ...paths });
 const agent = createAgent(provider, "my-agent");
 agent.use(autoMigrate({ maxTokens, migrationAgent, onHandoff }));
 agent.use(autoDraft());

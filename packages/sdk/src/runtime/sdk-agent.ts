@@ -2,7 +2,7 @@ import { Agent, type ChatCompletionModel } from "@ai-zen/agents-core";
 import type { AgentNS, Tool } from "@ai-zen/agents-core";
 import type { AgentDefinition, AgentPermissions } from "../types";
 import type { Capabilities } from "../capabilities/capabilities";
-import type { Runtime } from "./runtime";
+import type { Provider } from "./runtime";
 
 // ---------------------------------------------------------------------------
 // 插件接口
@@ -43,10 +43,10 @@ export interface AgentPlugin {
  *
  * Core Agent 不做复杂逻辑（不感知权限、不感知文件系统），
  * SdkAgent 在 Core Agent 基础上增加了 SDK 层需要的元数据，
- * 并通过 runtime 字段访问全局上下文。
+ * 并通过 provider 字段访问全局上下文。
  *
  * 携带：
- *   - runtime：全局 Runtime 实例
+ *   - provider：全局 Provider 实例
  *   - definition：Agent 原始定义
  *   - permissions：Agent 权限，供 call_skill_sub_agent 等回调读取
  *   - caps：Capabilities 全局注册表，供 refreshTools 刷新工具列表
@@ -57,8 +57,8 @@ export interface AgentPlugin {
  *   - send()：重写，在前后执行插件钩子
  */
 export class SdkAgent extends Agent {
-  /** 全局 Runtime 实例 */
-  readonly runtime: Runtime;
+  /** 全局 Provider 实例 */
+  readonly provider: Provider;
   /** Agent 原始定义 */
   readonly definition: AgentDefinition;
   /** Agent 权限 */
@@ -70,7 +70,7 @@ export class SdkAgent extends Agent {
   private _plugins: AgentPlugin[] = [];
 
   constructor(params: {
-    runtime: Runtime;
+    provider: Provider;
     definition: AgentDefinition;
     model: ChatCompletionModel;
     model_config?: Record<string, unknown>;
@@ -91,7 +91,7 @@ export class SdkAgent extends Agent {
       allowJsonParseError: params.allowJsonParseError,
       onBeforeSend: params.onBeforeSend,
     });
-    this.runtime = params.runtime;
+    this.provider = params.provider;
     this.definition = params.definition;
     this.permissions = params.permissions;
     this.caps = params.caps;

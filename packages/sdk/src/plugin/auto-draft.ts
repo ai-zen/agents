@@ -41,7 +41,7 @@ export function autoDraft(options: AutoDraftOptions): AgentPlugin {
         const draft: Draft = {
           conversationId,
           agentId,
-          modelId: ctx.agent.runtime.config.defaultModel ?? "",
+          modelId: ctx.agent.provider.config.defaultModel ?? "",
           messages: convertMessages(ctx.agent.messages),
           cwd,
           updatedAt: new Date().toISOString(),

@@ -6,7 +6,7 @@ import type { AppConfig } from "../types";
  * 模型工厂 — 根据 modelId 和 config 构建 Core ChatCompletionModel。
  *
  * 属于独立的 runtime 子层，不依赖 capabilities/ 或其他模块。
- * 通过 Runtime 实例获取 AppConfig 后调用。
+ * 通过 Provider 实例获取 AppConfig 后调用。
  *
  * 改为同步版本，使用 endp​oint.chatCompletionSync() 避免不必要的 async。
  */

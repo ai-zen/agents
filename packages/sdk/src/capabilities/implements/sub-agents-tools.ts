@@ -1,7 +1,7 @@
 import { Agent, AgentToolLazy, type FunctionCallContext } from "@ai-zen/agents-core";
 import type { Tool, AgentNS, ChatCompletionModel } from "@ai-zen/agents-core";
 import type { AgentDefinition } from "../../types";
-import type { Runtime } from "../../runtime/runtime";
+import type { Provider } from "../../runtime/runtime";
 import type { Capabilities } from "../capabilities";
 
 /**
@@ -12,7 +12,7 @@ import type { Capabilities } from "../capabilities";
  */
 export function createSubAgentTool(
   def: AgentDefinition,
-  runtime: Runtime,
+  provider: Provider,
   caps?: Capabilities,
 ): Tool {
   if (!def.function) {
@@ -39,7 +39,7 @@ export function createSubAgentTool(
       // 模型解析：SubAgent 可指定独立模型，否则复用父 Agent 的模型
       let subModel: ChatCompletionModel;
       if (def.modelId) {
-        subModel = runtime.createModel(def.modelId);
+        subModel = provider.createModel(def.modelId);
       } else {
         const parentModel = this.agent?.model;
         if (!parentModel) {

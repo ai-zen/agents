@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 
 function mockAgent(opts: { messages?: any[]; tools?: any[]; model?: any }): any {
   return {
-    runtime: {
+    provider: {
       config: {
         defaultModel: "m1",
         models: [{ id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 }],
