@@ -13,22 +13,21 @@ import { SdkAgent } from "../src/runtime/sdk-agent";
 import { autoDraft, checkDraftForRestore } from "../src/plugin/auto-draft";
 import { autoRefreshTools } from "../src/plugin/auto-refresh-tools";
 import type { Tool } from "@ai-zen/agents-core";
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 
 // ---------------------------------------------------------------------------
 // 真实路径
 // ---------------------------------------------------------------------------
-const USER_TEST_DIR = join(homedir(), ".ai-zen-test");
-const USER_CONFIG = join(USER_TEST_DIR, "config.json");
-const USER_AGENTS_DIR = join(USER_TEST_DIR, "agents");
-const USER_SUB_AGENTS_DIR = join(USER_TEST_DIR, "sub-agents");
-const USER_SKILLS_DIR = join(USER_TEST_DIR, "skills");
-const USER_TOOLS_DIR = join(USER_TEST_DIR, "tools");
-const USER_MCP = join(USER_TEST_DIR, "mcp.json");
-const USER_CONVERSATIONS_DIR = join(USER_TEST_DIR, "conversations");
-const USER_DRAFTS_DIR = join(USER_TEST_DIR, "drafts");
+const TEST_HOME_DIR = join(__dirname, "..", "..", "test-home");
+const TEST_CONFIG = join(TEST_HOME_DIR, "config.json");
+const TEST_AGENTS_DIR = join(TEST_HOME_DIR, "agents");
+const TEST_SUB_AGENTS_DIR = join(TEST_HOME_DIR, "sub-agents");
+const TEST_SKILLS_DIR = join(TEST_HOME_DIR, "skills");
+const TEST_TOOLS_DIR = join(TEST_HOME_DIR, "tools");
+const TEST_MCP = join(TEST_HOME_DIR, "mcp.json");
+const TEST_CONVERSATIONS_DIR = join(TEST_HOME_DIR, "conversations");
+const TEST_DRAFTS_DIR = join(TEST_HOME_DIR, "drafts");
 
 const PROJECT_DIR = join(__dirname, "..", "..", "test-project");
 const PROJECT_MCP = join(PROJECT_DIR, ".mcp.json");
@@ -40,8 +39,8 @@ const PROJECT_AIZEN_MCP = join(PROJECT_AIZEN_DIR, "mcp.json");
 
 // 前置检查
 function checkPaths() {
-  if (!existsSync(USER_CONFIG)) {
-    throw new Error(`测试数据不存在，请先创建 ${USER_CONFIG}`);
+  if (!existsSync(TEST_CONFIG)) {
+    throw new Error(`测试数据不存在，请先创建 ${TEST_CONFIG}`);
   }
 }
 
@@ -56,7 +55,7 @@ describe("端到端：真实文件系统路径", () => {
   describe("1. 发现阶段", () => {
     it("config.json 可正常读取", () => {
       checkPaths();
-      const config = readConfig(USER_CONFIG);
+      const config = readConfig(TEST_CONFIG);
       expect(config.defaultModel).toBe("gpt4");
       expect(config.endpoints).toHaveLength(2);
       expect(config.models).toHaveLength(3);
@@ -66,7 +65,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("discoverBuiltinTools: 有 imageModels 时包含 generateImage", () => {
       checkPaths();
-      const config = readConfig(USER_CONFIG);
+      const config = readConfig(TEST_CONFIG);
       const tools = discoverBuiltinTools(config);
       const names = tools.map((t) => t.function.name);
       expect(names).toContain("generateImage");
@@ -75,7 +74,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("discoverSubAgents: 能发现用户级 SubAgent", () => {
       checkPaths();
-      const agents = discoverSubAgents([USER_SUB_AGENTS_DIR]);
+      const agents = discoverSubAgents([TEST_SUB_AGENTS_DIR]);
       expect(agents.length).toBeGreaterThanOrEqual(2);
       const names = agents.map((a) => a.function!.name);
       expect(names).toContain("general_assistant");
@@ -84,7 +83,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("discoverSubAgents: 合并用户级和项目级 SubAgent", () => {
       checkPaths();
-      const agents = discoverSubAgents([USER_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR]);
+      const agents = discoverSubAgents([TEST_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR]);
       const names = agents.map((a) => a.function!.name);
       expect(names).toContain("general_assistant");
       expect(names).toContain("code_reviewer");
@@ -93,7 +92,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("discoverSkills: 能发现用户级 Skill", () => {
       checkPaths();
-      const skills = discoverSkills([USER_SKILLS_DIR]);
+      const skills = discoverSkills([TEST_SKILLS_DIR]);
       expect(skills.length).toBeGreaterThanOrEqual(2);
       const ids = skills.map((s) => s.id);
       expect(ids).toContain("code-review");
@@ -102,7 +101,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("discoverSkills: 合并用户级和项目级 Skill", () => {
       checkPaths();
-      const skills = discoverSkills([USER_SKILLS_DIR, PROJECT_SKILLS_DIR]);
+      const skills = discoverSkills([TEST_SKILLS_DIR, PROJECT_SKILLS_DIR]);
       const ids = skills.map((s) => s.id);
       expect(ids).toContain("code-review");
       expect(ids).toContain("git-helper");
@@ -111,7 +110,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("readSkill: 可读取完整 Skill 内容和元数据", () => {
       checkPaths();
-      const skill = readSkill([USER_SKILLS_DIR], "code-review");
+      const skill = readSkill([TEST_SKILLS_DIR], "code-review");
       expect(skill).not.toBeNull();
       expect(skill!.name).toBe("code-review");
       expect(skill!.description).toBe("代码审查最佳实践指南");
@@ -123,7 +122,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("discoverUserTools: 能发现用户级工具", () => {
       checkPaths();
-      const tools = discoverUserTools([USER_TOOLS_DIR]);
+      const tools = discoverUserTools([TEST_TOOLS_DIR]);
       expect(tools.length).toBeGreaterThanOrEqual(2);
       const names = tools.map((t) => t.function.name);
       expect(names).toContain("count_lines");
@@ -132,7 +131,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("discoverUserTools: 合并用户级和项目级工具", () => {
       checkPaths();
-      const tools = discoverUserTools([USER_TOOLS_DIR, PROJECT_TOOLS_DIR]);
+      const tools = discoverUserTools([TEST_TOOLS_DIR, PROJECT_TOOLS_DIR]);
       const names = tools.map((t) => t.function.name);
       expect(names).toContain("count_lines");
       expect(names).toContain("greet");
@@ -141,7 +140,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("discoverMcpServers: 能发现用户级 MCP 服务器", () => {
       checkPaths();
-      const servers = discoverMcpServers([USER_MCP]);
+      const servers = discoverMcpServers([TEST_MCP]);
       const names = servers.map((s) => s.id);
       expect(names).toContain("github");
       expect(names).toContain("filesystem");
@@ -149,7 +148,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("discoverMcpServers: 合并用户级 + 项目共享 + 项目个人 MCP", () => {
       checkPaths();
-      const servers = discoverMcpServers([USER_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP]);
+      const servers = discoverMcpServers([TEST_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP]);
       const names = servers.map((s) => s.id);
       expect(names).toContain("github");
       expect(names).toContain("filesystem");
@@ -159,7 +158,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("用户工具可实际调用", async () => {
       checkPaths();
-      const tools = discoverUserTools([USER_TOOLS_DIR]);
+      const tools = discoverUserTools([TEST_TOOLS_DIR]);
       const greetTool = tools.find((t) => t.function.name === "greet")!;
       expect(greetTool).toBeDefined();
 
@@ -192,7 +191,7 @@ describe("端到端：真实文件系统路径", () => {
   describe("2. CRUD 操作", () => {
     it("listAgents: 能列出用户级 Agent", () => {
       checkPaths();
-      const agents = listAgents(USER_AGENTS_DIR);
+      const agents = listAgents(TEST_AGENTS_DIR);
       expect(agents.length).toBeGreaterThanOrEqual(2);
       const ids = agents.map((a) => a.id);
       expect(ids).toContain("code-assistant");
@@ -201,7 +200,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("readAgent: 可读取单个 Agent 定义", () => {
       checkPaths();
-      const agent = readAgent(USER_AGENTS_DIR, "code-assistant");
+      const agent = readAgent(TEST_AGENTS_DIR, "code-assistant");
       expect(agent).not.toBeNull();
       expect(agent!.name).toBe("代码助手");
       expect(agent!.permissions?.tools).toEqual({ allow: ["*"] });
@@ -209,7 +208,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("readAgent: translator 权限受限", () => {
       checkPaths();
-      const agent = readAgent(USER_AGENTS_DIR, "translator");
+      const agent = readAgent(TEST_AGENTS_DIR, "translator");
       expect(agent).not.toBeNull();
       expect(agent!.permissions?.tools).toEqual({ allow: ["readFile", "writeFile", "exec"] });
       expect(agent!.permissions?.skills).toEqual({ deny: ["*"] });
@@ -224,16 +223,16 @@ describe("端到端：真实文件系统路径", () => {
   describe("3. Capabilities 管线", () => {
     it("使用真实路径构建 Provider + Capabilities", () => {
       checkPaths();
-      const config = readConfig(USER_CONFIG);
+      const config = readConfig(TEST_CONFIG);
       const provider = new Provider({
         config,
-        agentsDir: USER_AGENTS_DIR,
-        subAgentsPaths: [USER_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR],
-        skillsPaths: [USER_SKILLS_DIR, PROJECT_SKILLS_DIR],
-        toolsPaths: [USER_TOOLS_DIR, PROJECT_TOOLS_DIR],
-        mcpPaths: [USER_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP],
-        conversationsDir: USER_CONVERSATIONS_DIR,
-        draftsDir: USER_DRAFTS_DIR,
+        agentsDir: TEST_AGENTS_DIR,
+        subAgentsPaths: [TEST_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR],
+        skillsPaths: [TEST_SKILLS_DIR, PROJECT_SKILLS_DIR],
+        toolsPaths: [TEST_TOOLS_DIR, PROJECT_TOOLS_DIR],
+        mcpPaths: [TEST_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP],
+        conversationsDir: TEST_CONVERSATIONS_DIR,
+        draftsDir: TEST_DRAFTS_DIR,
       });
 
       const caps = new Capabilities(provider);
@@ -247,20 +246,20 @@ describe("端到端：真实文件系统路径", () => {
 
     it("code-assistant: allow all 时所有能力可用", () => {
       checkPaths();
-      const config = readConfig(USER_CONFIG);
+      const config = readConfig(TEST_CONFIG);
       const provider = new Provider({
         config,
-        agentsDir: USER_AGENTS_DIR,
-        subAgentsPaths: [USER_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR],
-        skillsPaths: [USER_SKILLS_DIR, PROJECT_SKILLS_DIR],
-        toolsPaths: [USER_TOOLS_DIR, PROJECT_TOOLS_DIR],
-        mcpPaths: [USER_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP],
-        conversationsDir: USER_CONVERSATIONS_DIR,
-        draftsDir: USER_DRAFTS_DIR,
+        agentsDir: TEST_AGENTS_DIR,
+        subAgentsPaths: [TEST_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR],
+        skillsPaths: [TEST_SKILLS_DIR, PROJECT_SKILLS_DIR],
+        toolsPaths: [TEST_TOOLS_DIR, PROJECT_TOOLS_DIR],
+        mcpPaths: [TEST_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP],
+        conversationsDir: TEST_CONVERSATIONS_DIR,
+        draftsDir: TEST_DRAFTS_DIR,
       });
 
       const caps = new Capabilities(provider);
-      const definition = readAgent(USER_AGENTS_DIR, "code-assistant")!;
+      const definition = readAgent(TEST_AGENTS_DIR, "code-assistant")!;
       const tools = caps.buildTools(definition.permissions ?? {});
 
       const names = tools.map((t) => t.function.name);
@@ -275,20 +274,20 @@ describe("端到端：真实文件系统路径", () => {
 
     it("translator: 受限权限只暴露指定工具", () => {
       checkPaths();
-      const config = readConfig(USER_CONFIG);
+      const config = readConfig(TEST_CONFIG);
       const provider = new Provider({
         config,
-        agentsDir: USER_AGENTS_DIR,
-        subAgentsPaths: [USER_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR],
-        skillsPaths: [USER_SKILLS_DIR, PROJECT_SKILLS_DIR],
-        toolsPaths: [USER_TOOLS_DIR, PROJECT_TOOLS_DIR],
-        mcpPaths: [USER_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP],
-        conversationsDir: USER_CONVERSATIONS_DIR,
-        draftsDir: USER_DRAFTS_DIR,
+        agentsDir: TEST_AGENTS_DIR,
+        subAgentsPaths: [TEST_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR],
+        skillsPaths: [TEST_SKILLS_DIR, PROJECT_SKILLS_DIR],
+        toolsPaths: [TEST_TOOLS_DIR, PROJECT_TOOLS_DIR],
+        mcpPaths: [TEST_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP],
+        conversationsDir: TEST_CONVERSATIONS_DIR,
+        draftsDir: TEST_DRAFTS_DIR,
       });
 
       const caps = new Capabilities(provider);
-      const definition = readAgent(USER_AGENTS_DIR, "translator")!;
+      const definition = readAgent(TEST_AGENTS_DIR, "translator")!;
       const tools = caps.buildTools(definition.permissions ?? {});
 
       const names = tools.map((t) => t.function.name);
@@ -307,16 +306,16 @@ describe("端到端：真实文件系统路径", () => {
   describe("4. createAgent 完整装配", () => {
     it("从真实路径创建 code-assistant", () => {
       checkPaths();
-      const config = readConfig(USER_CONFIG);
+      const config = readConfig(TEST_CONFIG);
       const provider = new Provider({
         config,
-        agentsDir: USER_AGENTS_DIR,
-        subAgentsPaths: [USER_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR],
-        skillsPaths: [USER_SKILLS_DIR, PROJECT_SKILLS_DIR],
-        toolsPaths: [USER_TOOLS_DIR, PROJECT_TOOLS_DIR],
-        mcpPaths: [USER_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP],
-        conversationsDir: USER_CONVERSATIONS_DIR,
-        draftsDir: USER_DRAFTS_DIR,
+        agentsDir: TEST_AGENTS_DIR,
+        subAgentsPaths: [TEST_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR],
+        skillsPaths: [TEST_SKILLS_DIR, PROJECT_SKILLS_DIR],
+        toolsPaths: [TEST_TOOLS_DIR, PROJECT_TOOLS_DIR],
+        mcpPaths: [TEST_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP],
+        conversationsDir: TEST_CONVERSATIONS_DIR,
+        draftsDir: TEST_DRAFTS_DIR,
       });
 
       const agent = createAgent(provider, "code-assistant");
@@ -348,16 +347,16 @@ describe("端到端：真实文件系统路径", () => {
 
     it("从真实路径创建 translator（受限权限）", () => {
       checkPaths();
-      const config = readConfig(USER_CONFIG);
+      const config = readConfig(TEST_CONFIG);
       const provider = new Provider({
         config,
-        agentsDir: USER_AGENTS_DIR,
-        subAgentsPaths: [USER_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR],
-        skillsPaths: [USER_SKILLS_DIR, PROJECT_SKILLS_DIR],
-        toolsPaths: [USER_TOOLS_DIR, PROJECT_TOOLS_DIR],
-        mcpPaths: [USER_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP],
-        conversationsDir: USER_CONVERSATIONS_DIR,
-        draftsDir: USER_DRAFTS_DIR,
+        agentsDir: TEST_AGENTS_DIR,
+        subAgentsPaths: [TEST_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR],
+        skillsPaths: [TEST_SKILLS_DIR, PROJECT_SKILLS_DIR],
+        toolsPaths: [TEST_TOOLS_DIR, PROJECT_TOOLS_DIR],
+        mcpPaths: [TEST_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP],
+        conversationsDir: TEST_CONVERSATIONS_DIR,
+        draftsDir: TEST_DRAFTS_DIR,
       });
 
       const agent = createAgent(provider, "translator");
@@ -378,16 +377,16 @@ describe("端到端：真实文件系统路径", () => {
   describe("5. 插件集成", () => {
     it("autoRefreshTools 可在真实 SdkAgent 上使用", () => {
       checkPaths();
-      const config = readConfig(USER_CONFIG);
+      const config = readConfig(TEST_CONFIG);
       const provider = new Provider({
         config,
-        agentsDir: USER_AGENTS_DIR,
-        subAgentsPaths: [USER_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR],
-        skillsPaths: [USER_SKILLS_DIR, PROJECT_SKILLS_DIR],
-        toolsPaths: [USER_TOOLS_DIR, PROJECT_TOOLS_DIR],
-        mcpPaths: [USER_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP],
-        conversationsDir: USER_CONVERSATIONS_DIR,
-        draftsDir: USER_DRAFTS_DIR,
+        agentsDir: TEST_AGENTS_DIR,
+        subAgentsPaths: [TEST_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR],
+        skillsPaths: [TEST_SKILLS_DIR, PROJECT_SKILLS_DIR],
+        toolsPaths: [TEST_TOOLS_DIR, PROJECT_TOOLS_DIR],
+        mcpPaths: [TEST_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP],
+        conversationsDir: TEST_CONVERSATIONS_DIR,
+        draftsDir: TEST_DRAFTS_DIR,
       });
 
       const agent = createAgent(provider, "code-assistant");
@@ -413,21 +412,21 @@ describe("端到端：真实文件系统路径", () => {
 
     it("autoDraft 插件可正常保存和检查草稿", () => {
       checkPaths();
-      const config = readConfig(USER_CONFIG);
+      const config = readConfig(TEST_CONFIG);
       const provider = new Provider({
         config,
-        agentsDir: USER_AGENTS_DIR,
-        subAgentsPaths: [USER_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR],
-        skillsPaths: [USER_SKILLS_DIR, PROJECT_SKILLS_DIR],
-        toolsPaths: [USER_TOOLS_DIR, PROJECT_TOOLS_DIR],
-        mcpPaths: [USER_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP],
-        conversationsDir: USER_CONVERSATIONS_DIR,
-        draftsDir: USER_DRAFTS_DIR,
+        agentsDir: TEST_AGENTS_DIR,
+        subAgentsPaths: [TEST_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR],
+        skillsPaths: [TEST_SKILLS_DIR, PROJECT_SKILLS_DIR],
+        toolsPaths: [TEST_TOOLS_DIR, PROJECT_TOOLS_DIR],
+        mcpPaths: [TEST_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP],
+        conversationsDir: TEST_CONVERSATIONS_DIR,
+        draftsDir: TEST_DRAFTS_DIR,
       });
 
       const agent = createAgent(provider, "code-assistant");
       agent.use(autoDraft({
-        draftsDir: USER_DRAFTS_DIR,
+        draftsDir: TEST_DRAFTS_DIR,
         agentId: "code-assistant",
       }));
 
@@ -437,7 +436,7 @@ describe("端到端：真实文件系统路径", () => {
       plugin.onAfterSend(ctx);
 
       // 检查草稿文件已创建
-      const draftPath = join(USER_DRAFTS_DIR, "_current.json");
+      const draftPath = join(TEST_DRAFTS_DIR, "_current.json");
       expect(existsSync(draftPath)).toBe(true);
 
       const draftContent = JSON.parse(readFileSync(draftPath, "utf-8"));
@@ -445,7 +444,7 @@ describe("端到端：真实文件系统路径", () => {
       expect(draftContent.messages.length).toBeGreaterThan(0);
 
       // checkDraftForRestore 能检测到
-      const draft = checkDraftForRestore(USER_DRAFTS_DIR);
+      const draft = checkDraftForRestore(TEST_DRAFTS_DIR);
       expect(draft).not.toBeNull();
       expect(draft!.agentId).toBe("code-assistant");
     });
@@ -457,7 +456,7 @@ describe("端到端：真实文件系统路径", () => {
   describe("6. 多路径合并优先级", () => {
     it("用户级 + 项目级 SubAgent 不冲突合并", () => {
       checkPaths();
-      const agents = discoverSubAgents([USER_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR]);
+      const agents = discoverSubAgents([TEST_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR]);
       const names = agents.map((a) => a.function!.name);
       // 各自有不同名称，不会冲突
       expect(new Set(names).size).toBe(names.length);
@@ -465,7 +464,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("用户级 + 项目级 Skill 不冲突合并", () => {
       checkPaths();
-      const skills = discoverSkills([USER_SKILLS_DIR, PROJECT_SKILLS_DIR]);
+      const skills = discoverSkills([TEST_SKILLS_DIR, PROJECT_SKILLS_DIR]);
       const ids = skills.map((s) => s.id);
       // 各自有不同 id，不会冲突
       expect(new Set(ids).size).toBe(ids.length);
@@ -474,7 +473,7 @@ describe("端到端：真实文件系统路径", () => {
     it("用户级 + 项目级 MCP 合并时同名按优先级覆盖", () => {
       checkPaths();
       // 这里的 server 名称各不相同，验证能全部发现
-      const servers = discoverMcpServers([USER_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP]);
+      const servers = discoverMcpServers([TEST_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP]);
       const names = servers.map((s) => s.id);
       expect(names).toContain("github");
       expect(names).toContain("filesystem");
