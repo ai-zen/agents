@@ -8,10 +8,10 @@ A modular LLM Agent framework based on `@ai-zen/agents-core`.
 
 This project uses pnpm workspace with the following sub-packages:
 
-| Package | Description | Version |
-|---------|-------------|---------|
-| [`@ai-zen/agents-core`](./packages/core) | Core framework — Agent, Messages, Tools, Models, Endpoints, RAG, Vector Database | [![version](https://img.shields.io/badge/version-2.4.0-blue)] |
-| [`@ai-zen/agents-sdk`](./packages/sdk) | SDK — Shared business logic (capabilities, permissions, MCP, plugins) | [![version](https://img.shields.io/badge/version-0.1.0-blue)] |
+| Package | Description |
+|---------|-------------|
+| [`@ai-zen/agents-core`](./packages/core) | Core framework — Agent, Messages, Tools, Models, Endpoints, RAG, Vector Database |
+| [`@ai-zen/agents-sdk`](./packages/sdk) | SDK — Shared business logic (capabilities, permissions, MCP, plugins) |
 
 ### External Projects
 
@@ -20,7 +20,7 @@ These projects were previously part of this monorepo and have been migrated to t
 | Package | Repository | Description |
 |---------|------------|-------------|
 | [`@ai-zen/cli`](https://github.com/ai-zen/cli) | `git@github.com:ai-zen/cli.git` | CLI — Interactive conversation terminal with file tools, MCP support, and draft recovery (formerly `@ai-zen/agents-cli`) |
-| Web UI | — | Discontinued |
+| Web UI | — | 已停止维护 |
 
 ## Quick Start
 
@@ -51,7 +51,7 @@ TypeScript core library for Node.js and browser environments.
 
 | Class | Description |
 |-------|-------------|
-| **Agent** | Conversation lifecycle management with streaming, tool calls, events, `onBeforeSend` hook |
+| **Agent** | Conversation lifecycle management with streaming, tool calls, events, `onInnerLoopStart`/`onInnerLoopEnd` hooks |
 | **AgentContext** | Base context class holding model, messages, tools, rag configuration |
 | **Message** | Message model supporting text/image multimodal content |
 | **Tool** | Abstract base class for tools |
