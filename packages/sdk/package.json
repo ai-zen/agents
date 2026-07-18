@@ -9,10 +9,13 @@
     "clean": "rimraf ./dist",
     "prebuild": "npm run clean",
     "build": "tsc",
+    "prepublishOnly": "node scripts/check-publish-tool.mjs && npm run build",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "test:all": "vitest run && vitest run --config vitest.integration.config.ts && vitest run --config vitest.e2e.config.ts"
   },
   "keywords": [
     "ai",
@@ -31,6 +34,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.12.2",
+    "dotenv": "^17.4.2",
     "prettier": "^3.9.5",
     "rimraf": "^6.0.0",
     "typescript": "^5.3.3",

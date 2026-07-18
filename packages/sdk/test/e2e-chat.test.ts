@@ -11,7 +11,6 @@
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Provider } from "../src/runtime/Provider";
@@ -23,17 +22,7 @@ import { BUILTIN_TOOLS } from "../src/capabilities/implements/builtin/index";
 // 配置
 // ---------------------------------------------------------------------------
 
-const API_KEY = process.env.DEEPSEEK_API_KEY || readEnvLocal();
-
-function readEnvLocal(): string {
-  try {
-    const raw = readFileSync(join(__dirname, "..", ".env.local"), "utf-8");
-    const match = raw.match(/DEEPSEEK_API_KEY=(.+)/);
-    return match ? match[1].trim() : "";
-  } catch {
-    return "";
-  }
-}
+const API_KEY = process.env.DEEPSEEK_API_KEY || "";
 
 const skip = !API_KEY;
 
