@@ -4,7 +4,7 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-config({ path: resolve(__dirname, "../../.env.local") });
+config({ path: resolve(__dirname, "./.env.local") });
 
 export default defineConfig({
   test: {
