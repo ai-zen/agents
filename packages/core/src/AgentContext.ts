@@ -11,8 +11,10 @@ export class AgentContext {
   tools: Tool[];
   rag?: Rag;
   allowJsonParseError: boolean;
-  /** 每次请求前调用的钩子，可用于刷新工具定义、RAG 等 */
-  onBeforeSend?: () => Promise<void> | void;
+  /** 每次内循环开始调用的钩子，可用于刷新工具定义、RAG 等 */
+  onInnerLoopStart?: () => Promise<void> | void;
+  /** 每次内循环结束调用的钩子，可用于后处理 */
+  onInnerLoopEnd?: () => Promise<void> | void;
 
   constructor(options: PickRequired<AgentContext, "model">) {
     if (!options.model) throw new Error("AgentContext must have a model");
@@ -22,7 +24,8 @@ export class AgentContext {
     this.tools = options.tools ?? [];
     this.rag = options.rag;
     this.allowJsonParseError = options.allowJsonParseError ?? true;
-    this.onBeforeSend = options.onBeforeSend;
+    this.onInnerLoopStart = options.onInnerLoopStart;
+    this.onInnerLoopEnd = options.onInnerLoopEnd;
   }
 
   /**

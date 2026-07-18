@@ -60,7 +60,10 @@ export class Agent extends AgentContext {
     }
 
     const initialController = new AbortController();
-    const initialPendingTask: PendingTask = { controller: initialController, receiver };
+    const initialPendingTask: PendingTask = {
+      controller: initialController,
+      receiver,
+    };
     this.pendingTasks.add(initialPendingTask);
 
     // 使用 while 循环替代递归
@@ -69,16 +72,17 @@ export class Agent extends AgentContext {
     const allPendingTasks: PendingTask[] = [initialPendingTask];
     let needContinue = true;
 
+    // 内循环
     while (needContinue) {
       needContinue = false;
 
       // 每次请求前调用钩子，允许外部刷新工具定义等
-      await this.onBeforeSend?.();
+      await this.onInnerLoopStart?.();
 
       const messages = this.formatHistory();
       const tools = this.formatTools();
 
-      this.events.emit("run", messages, tools);
+      this.events.emit("inner-loop-start", messages, tools);
 
       const stream = this.model.createStream({
         signal: currentController.signal,
@@ -112,8 +116,10 @@ export class Agent extends AgentContext {
 
         if (await this.handleToolCall(currentReceiver)) {
           if (
-            (currentReceiver.status as AgentNS.MessageStatus | undefined) === AgentNS.MessageStatus.Aborted ||
-            (currentReceiver.status as AgentNS.MessageStatus | undefined) === AgentNS.MessageStatus.Error
+            (currentReceiver.status as AgentNS.MessageStatus | undefined) ===
+              AgentNS.MessageStatus.Aborted ||
+            (currentReceiver.status as AgentNS.MessageStatus | undefined) ===
+              AgentNS.MessageStatus.Error
           ) {
             continue;
           }
@@ -122,14 +128,20 @@ export class Agent extends AgentContext {
           this.append(Message.Assistant());
           currentReceiver = this.messages.at(-1) as Message;
           currentController = new AbortController();
-          const newPendingTask: PendingTask = { controller: currentController, receiver: currentReceiver };
+          const newPendingTask: PendingTask = {
+            controller: currentController,
+            receiver: currentReceiver,
+          };
           allPendingTasks.push(newPendingTask);
           this.pendingTasks.add(newPendingTask);
           needContinue = true;
         }
 
-        // 每次 run 完成（一次 API 请求 + 可能的工具调用）
-        this.events.emit("run-end");
+        // 每次 内循环 完成（一次 API 请求 + 可能的工具调用）
+        this.events.emit("inner-loop-end");
+
+        // 每次 内循环 完成，允许外面做一些后处理再进行下次循环
+        await this.onInnerLoopEnd?.();
       } catch (error: any) {
         currentReceiver.status = AgentNS.MessageStatus.Error;
         currentReceiver.content = error.message;
@@ -362,7 +374,7 @@ export class Agent extends AgentContext {
         );
 
         try {
-          const matchTools: Tool | undefined = this.tools.find(
+          const matchedTool: Tool | undefined = this.tools.find(
             (tool) =>
               tool.function.name == task.function!.name &&
               tool.type == "function",
@@ -382,10 +394,10 @@ export class Agent extends AgentContext {
             return { is_prevent_default: false, status: resultReceiver.status };
           }
 
-          if (!matchTools) {
+          if (!matchedTool) {
             resultReceiver.content = `未知工具: ${task.function!.name}，没有找到对应的工具实现。`;
           } else {
-            resultReceiver.content = await matchTools.exec(ctx);
+            resultReceiver.content = await matchedTool.exec(ctx);
           }
           resultReceiver.status = AgentNS.MessageStatus.Completed;
 
