@@ -1,7 +1,7 @@
-import type { AgentMessage, Draft } from "../types";
-import type { AgentPlugin } from "../runtime/sdk-agent";
-import { writeDraft, readDraft, deleteDraft } from "../crud/drafts";
-import { createLogger } from "../shared/logger";
+import type { Draft } from "../types/index.js";
+import type { AgentPlugin } from "../runtime/sdk-agent.js";
+import { writeDraft, readDraft, deleteDraft } from "../crud/drafts.js";
+import { createLogger } from "../shared/logger.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import dayjs from "dayjs";
@@ -13,6 +13,8 @@ export interface AutoDraftOptions {
   draftsDir: string;
   /** 当前 Agent ID */
   agentId: string;
+  /** 使用的模型 ID */
+  modelId: string;
   /** 已命名对话 ID（可选，无则保存为 _current.json） */
   conversationId?: string;
   /** 当前工作目录 */
@@ -24,16 +26,9 @@ const EXPIRE_DAYS = 7;
 
 /**
  * 自动保存 Draft 插件：每次 Agent.run() 返回后，将当前消息历史写入 draft 文件。
- *
- * ```ts
- * agent.use(autoDraft({
- *   draftsDir: "~/.ai-zen/drafts",
- *   agentId: "my-agent",
- * }));
- * ```
  */
 export function autoDraft(options: AutoDraftOptions): AgentPlugin {
-  const { draftsDir, agentId, conversationId, cwd } = options;
+  const { draftsDir, agentId, modelId, conversationId, cwd } = options;
 
   return {
     onAfterSend: async (ctx) => {
@@ -41,8 +36,8 @@ export function autoDraft(options: AutoDraftOptions): AgentPlugin {
         const draft: Draft = {
           conversationId,
           agentId,
-          modelId: ctx.agent.provider.config.defaultModel ?? "",
-          messages: convertMessages(ctx.agent.messages),
+          modelId,
+          messages: ctx.agent.messages,
           cwd,
           updatedAt: new Date().toISOString(),
         };
@@ -63,34 +58,14 @@ export function checkDraftForRestore(draftsDir: string): Draft | null {
   const path = join(draftsDir, CURRENT_DRAFT);
   if (!existsSync(path)) return null;
 
-  const draft = readDraft(draftsDir); // 无 conversationId → 读 _current.json
+  const draft = readDraft(draftsDir);
   if (!draft) return null;
 
   const age = dayjs().diff(dayjs(draft.updatedAt), "day");
   if (age > EXPIRE_DAYS) {
-    // 过期自动清理
     deleteDraft(draftsDir);
     return null;
   }
 
   return draft;
-}
-
-// ---------------------------------------------------------------------------
-// 辅助
-// ---------------------------------------------------------------------------
-
-/**
- * 将 Core Agent 的消息转换为 SDK AgentMessage 类型。
- */
-function convertMessages(messages: any[]): AgentMessage[] {
-  return messages.map((m) => ({
-    role: mapRole(m.role),
-    content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
-  }));
-}
-
-function mapRole(role: any): "system" | "user" | "assistant" {
-  if (role === "system" || role === "user" || role === "assistant") return role;
-  return "user"; // tool/function 等 → user
 }

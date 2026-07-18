@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { discoverSkills, readSkill, parseFrontmatter, validateSkill } from "./skills";
-import type { Frontmatter } from "./skills";
+import { discoverSkills, readSkill, parseFrontmatter, validateSkill } from "./skills.js";
+import type { Frontmatter } from "./skills.js";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -102,13 +102,14 @@ describe("discoverSkills", () => {
   it("多路径：同名 skill 靠前路径优先（先到先得）", () => {
     const dir2 = mkdtempSync(join(tmpdir(), "ai-zen-discovery2-"));
     try {
-      writeSkill("shared-skill", "shared-skill", "From dir1");
+      writeSkill("shared-skill", "shared-skill", "From dir1（高优先级）");
       mkdirSync(join(dir2, "shared-skill"), { recursive: true });
-      writeFileSync(join(dir2, "shared-skill", "SKILL.md"), `---\nname: shared-skill\ndescription: From dir2\n---\n# shared-skill`);
+      writeFileSync(join(dir2, "shared-skill", "SKILL.md"), `---\nname: shared-skill\ndescription: From dir2（低优先级）\n---\n# shared-skill`);
 
       const result = discoverSkills([dir, dir2]);
       expect(result).toHaveLength(1);
-      expect(result[0].description).toBe("From dir1");
+      // dir 在前（高优先级），应优先
+      expect(result[0].description).toBe("From dir1（高优先级）");
     } finally {
       rmSync(dir2, { recursive: true, force: true });
     }
@@ -405,7 +406,7 @@ description: 中文名也可读
     expect(skill!.name).toBe("我的技能");
   });
 
-  it("多路径查找：在第一个路径找到即返回", () => {
+  it("多路径查找：在第一个路径找到即返回（先到先得）", () => {
     const dir2 = mkdtempSync(join(tmpdir(), "ai-zen-discovery2-"));
     try {
       const skillDir = join(dir, "my-skill");

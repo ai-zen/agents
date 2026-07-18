@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, renameSync, unlinkSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { AppConfig } from "../types";
+import type { AppConfig } from "../types/index.js";
 
 /**
  * 返回默认配置。

@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { readConfig, writeConfig, getDefaultConfig } from "./manager";
+import { readConfig, writeConfig, getDefaultConfig } from "./manager.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { AppConfig } from "../types";
+import type { AppConfig } from "../types/index.js";
 
 let dir: string;
 

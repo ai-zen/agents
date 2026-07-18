@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildDisclosureParam } from "./disclosure";
+import { buildDisclosureParam } from "./disclosure.js";
 
 describe("buildDisclosureParam", () => {
   const baseDesc = "选择一个 Skill";

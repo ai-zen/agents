@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { autoMigrate } from "./auto-migrate";
+import { autoMigrate } from "./auto-migrate.js";
 
 // ---------------------------------------------------------------------------
 // mock

@@ -1,5 +1,5 @@
-import type { AgentPermissions, PermissionPolicy } from "../types";
-import { matchPermission } from "./permission";
+import type { AgentPermissions, PermissionPolicy } from "../types/index.js";
+import { matchPermission } from "./permission.js";
 
 export interface CandidateSets {
   tools: string[];

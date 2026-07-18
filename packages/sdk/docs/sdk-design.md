@@ -31,7 +31,7 @@ interface AgentDefinition {
   id: string;                    // 唯一标识，文件名 = id.json
   name: string;                  // 展示名称
   description?: string;          // 简短描述（列表展示用）
-  messages: AgentMessage[];      // 预设对话（至少一条 system）
+  messages: AgentNS.Message[];      // 预设对话（至少一条 system）
   modelId?: string;              // 指定模型，不填用默认
   permissions?: AgentPermissions;
 
@@ -51,10 +51,7 @@ interface AgentDefinition {
   version?: number;
 }
 
-interface AgentMessage {
-  role: "system" | "user" | "assistant";
-  content: string;               // SubAgent 的 user content 可用 {{task}} 占位符
-}
+// 使用 Core 的 AgentNS.Message（role 为 AgentNS.Role 枚举，content 为 MessageContent）
 ```
 
 ### SubAgent 约定
@@ -208,7 +205,6 @@ capabilities/
   conversations/        ← 对话记录（*.json）
   drafts/               ← 当前会话自动保存
   mcp-oauth/            ← MCP OAuth token 持久化
-  memory/               ← Agent 长期记忆文件
 
 项目根/
   .mcp.json             ← 项目共享 MCP（可提交 git）
@@ -217,7 +213,6 @@ capabilities/
     skills/             ← 项目 Skill 目录
     tools/              ← 项目工具目录
     sub-agents/         ← 项目 SubAgent
-    memory/             ← 项目记忆文件
 ```
 
 ### MCP 配置合并
@@ -582,18 +577,14 @@ connect()
 ```
 Scanner  →  扫描目录，找到所有包含 SKILL.md 的子目录
 Parser   →  解析 YAML frontmatter，提取 name/description 等元数据
-Loader   →  load_skill 触发时返回完整正文；执行动态上下文注入（shell 命令），字符串替换（$ARGUMENTS）
+Loader   →  load_skill 触发时返回完整正文
 ```
 
 ### 渐进式披露
 
 - **阶段 1**：`load_skill` 的 `skill_id` 参数枚举暴露 name + description（不占上下文）
 - **阶段 2**：调用 `load_skill` 后，完整正文进入上下文
-- **阶段 3**：按需加载辅助文件（loadSupportingFile）
 
-### 预算管理
-
-skill 走 `load_skill` 参数枚举披露，不占初始上下文。加载后正文占用上下文，按使用频次排序，低频 skill 加载后可能被后续的任务迁移截断。
 
 ---
 

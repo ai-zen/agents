@@ -1,11 +1,11 @@
-import type { AgentDefinition } from "../../types";
+import type { AgentDefinition } from "../../types/index.js";
 import { Tool } from "@ai-zen/agents-core";
 import { readdirSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
  * 扫描多个目录中发现的所有 SubAgent 完整定义。
- * 按优先级顺序传入路径列表，同名 function.name 靠前的路径优先（先到先得）。
+ * 按优先级从高到低传入路径列表，同名 function.name 靠前的路径优先（先到先得）。
  * 跳过无 function 的普通 Agent 和解析失败的文件。
  */
 export function discoverSubAgents(paths: string[]): AgentDefinition[] {

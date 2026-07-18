@@ -1,6 +1,6 @@
 import { OpenAI, ChatGPT } from "@ai-zen/agents-core";
 import type { ChatCompletionModel } from "@ai-zen/agents-core";
-import type { AppConfig } from "../types";
+import type { AppConfig } from "../types/index.js";
 
 /**
  * 模型工厂 — 根据 modelId 和 config 构建 Core ChatCompletionModel。
@@ -28,9 +28,12 @@ export function createModel(
     api_key: endpointConfig.apiKey,
   });
 
+  // 发送给 API 的模型名：modelName > id
+  const apiModelName = modelConfig.modelName || modelConfig.id;
+
   const model = new ChatGPT({
     model_config: modelConfig.defaultParams,
-    request_config: endpoint.chatCompletionSync(modelConfig.name),
+    request_config: endpoint.chatCompletionSync(apiModelName),
   });
 
   return model;

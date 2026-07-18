@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { filterByPermissions } from "./permissions";
-import type { AgentPermissions } from "../types";
+import { filterByPermissions } from "./permissions.js";
+import type { AgentPermissions } from "../types/index.js";
 
 const candidates = {
   tools: ["readFile", "exec", "rm"],

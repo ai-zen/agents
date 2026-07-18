@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { createAgent } from "./create-agent";
-import { Provider } from "./runtime";
+import { AgentNS } from "@ai-zen/agents-core";
+import { createAgent } from "./create-agent.js";
+import { Provider } from "./runtime.js";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { AgentDefinition, AppConfig } from "../types";
+import type { AgentDefinition, AppConfig } from "../types/index.js";
 
 let dir: string;
 
@@ -32,7 +33,7 @@ function writeAgentFile(id: string, def: Partial<AgentDefinition> = {}) {
   const agent: AgentDefinition = {
     id,
     name: id,
-    messages: [{ role: "system", content: "You are helpful." }],
+    messages: [{ role: AgentNS.Role.System, content: "You are helpful." }],
     permissions: { tools: { allow: ["*"] }, skills: { allow: ["*"] }, mcps: { allow: ["*"] }, subagents: { allow: ["*"] } },
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -48,8 +49,8 @@ function writeSubAgent(id: string, functionName: string) {
     id,
     name: id,
     messages: [
-      { role: "system", content: "You are a sub-agent." },
-      { role: "user", content: "{{task}}" },
+      { role: AgentNS.Role.System, content: "You are a sub-agent." },
+      { role: AgentNS.Role.User, content: "{{task}}" },
     ],
     function: { name: functionName, description: "A sub-agent", parameters: { type: "object", properties: {}, required: [] } },
     createdAt: new Date().toISOString(),

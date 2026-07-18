@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
-import { SdkAgent } from "./sdk-agent";
-import type { AgentPlugin, SendContext } from "./sdk-agent";
+import { AgentNS } from "@ai-zen/agents-core";
+import { SdkAgent } from "./sdk-agent.js";
+import type { AgentPlugin, SendContext } from "./sdk-agent.js";
 
 // ---------------------------------------------------------------------------
 // mock helpers
@@ -31,13 +32,13 @@ function createTestAgent(opts?: {
   tools?: any[];
   model?: any;
 }): SdkAgent {
-  const messages = opts?.messages ?? [{ role: "system", content: "You are a helper." }];
+  const messages = opts?.messages ?? [{ role: AgentNS.Role.System, content: "You are a helper." }];
   return new SdkAgent({
     provider: mockRuntime() as any,
     definition: {
       id: "test-agent",
       name: "Test Agent",
-      messages: [{ role: "system", content: "You are a helper." }],
+      messages: [{ role: AgentNS.Role.System, content: "You are a helper." }],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     },
@@ -237,7 +238,7 @@ describe("SdkAgent", () => {
       agent.use(plugin);
 
       // Mock agent.send 来避免调用真实的 Core Agent
-      const mockMessages = [{ role: "assistant", content: "OK" }];
+      const mockMessages = [{ role: AgentNS.Role.Assistant, content: "OK" }];
       const mockSend = vi.fn(async (content: string) => {
         // 验证 beforeSend 已经被调用了
         // 在 SdkAgent.send 中，beforeSend 已经在 super.send 之前调用了

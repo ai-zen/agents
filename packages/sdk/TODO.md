@@ -11,16 +11,14 @@
 agents/
 ├── packages/
 │   ├── core/                  ← @ai-zen/agents-core  基础框架（Agent, Message, Tool, Model, RAG）
-│   ├── sdk/                   ← @ai-zen/agents-sdk   业务逻辑层（本包）
-│   │   ├── types/             ← 纯类型，零业务依赖
-│   │   ├── config/            ← 读写 config.json + 迁移 + 缓存
-│   │   ├── crud/              ← 实体 CRUD
-│   │   ├── capabilities/      ← 能力发现 + 权限过滤 + 实例化
-│   │   ├── runtime/           ← Provider + 模型工厂 + Agent 组装 + MCP + 任务迁移
-│   │   ├── plugin/            ← Agent 原生插件（autoMigrate, autoDraft, autoRefreshTools）
-│   │   └── shared/            ← 日志、错误
-│   ├── cli/                   ← @ai-zen/agents-cli   命令行（待接入 SDK）
-│   └── webui/                 ← @ai-zen/agents-webui Web 界面
+│   └── sdk/                   ← @ai-zen/agents-sdk   业务逻辑层（本包）
+│       ├── types/             ← 纯类型，零业务依赖
+│       ├── config/            ← 读写 config.json + 迁移 + 缓存
+│       ├── crud/              ← 实体 CRUD
+│       ├── capabilities/      ← 能力发现 + 权限过滤 + 实例化
+│       ├── runtime/           ← Provider + 模型工厂 + Agent 组装 + MCP + 任务迁移
+│       ├── plugin/            ← Agent 原生插件（autoMigrate, autoDraft, autoRefreshTools）
+│       └── shared/            ← 日志、错误
 ├── GOAL.md                    ← 项目设计原则（必读）
 ├── AI_README.md               ← AI 助手行为准则
 └── README.md                  ← 项目总览
@@ -66,8 +64,7 @@ await agent.send("你好");
 - ✅ Session → SdkAgent.use() 改造完成（已删除 src/session/）
 - ✅ SdkAgent 支持 use() / init() / 插件勾子
 - ✅ 插件已搬迁到 src/plugin/，使用 AgentPlugin 接口
-- ⚠️ CLI 尚未接入 SDK，自己维护了一套重复实现
-- ⚠️ CLI 有 25 个测试失败（Windows 路径 + 缺少 SDK 构建产物）
+- ✅ CLI 已迁移到独立仓库 `git@github.com:ai-zen/cli.git`，使用 `@ai-zen/agents-sdk`
 
 ---
 
@@ -104,7 +101,7 @@ await agent.send("你好");
 | # | 步骤 | 说明 | 状态 |
 |---|------|------|:--:|
 | 17 | 端到端测试 | `createAgent` → `agent.use()` → `agent.init()` → `agent.send()` | ✅ |
-| 18 | **CLI 接入 SDK** | 删 CLI 中重复的 agent-creator、工具发现、draft 逻辑 | ⬜ |
+| ~~18~~ | ~~CLI 接入 SDK~~ | CLI 已迁移到独立仓库 | 🚚 |
 
 ### ❌ 已关闭（不做 / 伪需求）
 

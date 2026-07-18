@@ -1,8 +1,8 @@
 import { AgentNS } from "@ai-zen/agents-core";
-import { SdkAgent } from "../runtime/sdk-agent";
-import type { AgentPlugin } from "../runtime/sdk-agent";
-import { shouldMigrate, buildPostMigrationMessages } from "../runtime/task-migration";
-import { createLogger } from "../shared/logger";
+import { SdkAgent } from "../runtime/sdk-agent.js";
+import type { AgentPlugin } from "../runtime/sdk-agent.js";
+import { shouldMigrate, buildPostMigrationMessages } from "../runtime/task-migration.js";
+import { createLogger } from "../shared/logger.js";
 
 const log = createLogger();
 

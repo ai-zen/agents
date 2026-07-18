@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { discoverSubAgents } from "./subagents";
+import { AgentNS } from "@ai-zen/agents-core";
+import { discoverSubAgents } from "./subagents.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { AgentDefinition } from "../../types";
+import type { AgentDefinition } from "../../types/index.js";
 
 let dir: string;
 
@@ -19,7 +20,7 @@ function writeAgentFile(id: string, functionName: string, description = "") {
   const agent: AgentDefinition = {
     id,
     name: id,
-    messages: [{ role: "system", content: "You are helpful." }],
+    messages: [{ role: AgentNS.Role.System, content: "You are helpful." }],
     function: { name: functionName, description, parameters: { type: "object", properties: {}, required: [] } },
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -49,7 +50,7 @@ describe("discoverSubAgents", () => {
     const plain: AgentDefinition = {
       id: "plain-agent",
       name: "普通 Agent",
-      messages: [{ role: "system", content: "Hi" }],
+      messages: [{ role: AgentNS.Role.System, content: "Hi" }],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -80,7 +81,7 @@ describe("discoverSubAgents", () => {
       const agentB: AgentDefinition = {
         id: "agent-b",
         name: "agent-b",
-        messages: [{ role: "system", content: "Hi" }],
+        messages: [{ role: AgentNS.Role.System, content: "Hi" }],
         function: { name: "code-reviewer", description: "代码审查", parameters: { type: "object", properties: {}, required: [] } },
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -95,15 +96,15 @@ describe("discoverSubAgents", () => {
     }
   });
 
-  it("多路径：同名 function.name 靠前路径优先", () => {
+  it("多路径：同名 function.name 靠前路径优先（先到先得）", () => {
     const dir2 = mkdtempSync(join(tmpdir(), "ai-zen-discovery2-"));
     try {
-      writeAgentFile("agent-a", "shared_func", "From dir1");
+      writeAgentFile("agent-a", "shared_func", "From dir1（高优先级）");
       const agentB: AgentDefinition = {
         id: "agent-b",
         name: "agent-b",
-        messages: [{ role: "system", content: "Hi" }],
-        function: { name: "shared_func", description: "From dir2", parameters: { type: "object", properties: {}, required: [] } },
+        messages: [{ role: AgentNS.Role.System, content: "Hi" }],
+        function: { name: "shared_func", description: "From dir2（低优先级）", parameters: { type: "object", properties: {}, required: [] } },
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -112,7 +113,8 @@ describe("discoverSubAgents", () => {
       const result = discoverSubAgents([dir, dir2]);
       expect(result).toHaveLength(1);
       expect(result[0].function!.name).toBe("shared_func");
-      expect(result[0].function!.description).toBe("From dir1");
+      // dir 在前（高优先级），应优先
+      expect(result[0].function!.description).toBe("From dir1（高优先级）");
     } finally {
       rmSync(dir2, { recursive: true, force: true });
     }

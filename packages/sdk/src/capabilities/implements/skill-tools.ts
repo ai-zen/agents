@@ -1,10 +1,10 @@
 import { CallbackTool, Agent, Message, type FunctionCallContext } from "@ai-zen/agents-core";
 import type { Tool } from "@ai-zen/agents-core";
-import { SdkAgent } from "../../runtime/sdk-agent";
-import type { DisclosureParam } from "../disclosure";
-import { readSkill } from "../discovery/skills";
-import { createLogger } from "../../shared/logger";
-import type { Capabilities } from "../capabilities";
+import { SdkAgent } from "../../runtime/sdk-agent.js";
+import type { DisclosureParam } from "../disclosure.js";
+import { readSkill } from "../discovery/skills.js";
+import { createLogger } from "../../shared/logger.js";
+import type { Capabilities } from "../capabilities.js";
 
 const log = createLogger();
 

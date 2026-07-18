@@ -1,7 +1,7 @@
 import { readdirSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { DisclosureItem } from "../disclosure";
-import { createLogger } from "../../shared/logger";
+import type { DisclosureItem } from "../disclosure.js";
+import { createLogger } from "../../shared/logger.js";
 
 const log = createLogger();
 
@@ -41,7 +41,7 @@ export interface SkillInfo extends DisclosureItem {
 
 /**
  * 扫描多个目录中发现的所有 Skill（含 SKILL.md 的子目录）。
- * 按优先级顺序传入路径列表，同名 skill 靠前的路径优先（先到先得）。
+ * 按优先级从高到低传入路径列表，同名 skill 靠前的路径优先（先到先得）。
  * 解析 YAML frontmatter 中的 name 和 description。
  * 同时进行规范合规校验，警告通过 logger 输出。
  */
@@ -93,7 +93,7 @@ export function discoverSkills(paths: string[]): DisclosureItem[] {
 
 /**
  * 读取单个 Skill 的完整内容与元数据。
- * 在 skillDirs 中依次查找，找到即返回。
+ * 按优先级从高到低传入路径列表，靠前的路径优先（先到先得）。
  * 返回 null 如果 skill 在所有目录中都不存在或 SKILL.md 不可读。
  */
 export function readSkill(skillDirs: string[], skillId: string): SkillInfo | null {

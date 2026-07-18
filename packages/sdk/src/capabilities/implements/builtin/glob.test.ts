@@ -49,9 +49,9 @@ describe("globTool", () => {
       expect(files).toContain("index.js");
       expect(files).not.toContain("node_modules/pkg.js");
     } finally {
+      try { unlinkSync(join(dir, "index.js")); } catch {}
       try { unlinkSync(join(dir, "node_modules", "pkg.js")); } catch {}
       try { unlinkSync(join(dir, "node_modules")); } catch {}
-      try { unlinkSync(join(dir, "index.js")); } catch {}
       try { unlinkSync(dir); } catch {}
     }
   });

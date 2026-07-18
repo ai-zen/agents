@@ -1,4 +1,4 @@
-import type { PermissionPolicy } from "../types";
+import type { PermissionPolicy } from "../types/index.js";
 
 /**
  * 单维度权限匹配。

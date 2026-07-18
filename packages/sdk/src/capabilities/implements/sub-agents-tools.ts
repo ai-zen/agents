@@ -1,8 +1,8 @@
 import { Agent, AgentToolLazy, type FunctionCallContext } from "@ai-zen/agents-core";
 import type { Tool, AgentNS, ChatCompletionModel } from "@ai-zen/agents-core";
-import type { AgentDefinition } from "../../types";
-import type { Provider } from "../../runtime/runtime";
-import type { Capabilities } from "../capabilities";
+import type { AgentDefinition } from "../../types/index.js";
+import type { Provider } from "../../runtime/runtime.js";
+import type { Capabilities } from "../capabilities.js";
 
 /**
  * 创建 SubAgent 工具（AgentToolLazy）。

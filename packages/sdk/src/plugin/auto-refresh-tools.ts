@@ -1,4 +1,4 @@
-import type { AgentPlugin } from "../runtime/sdk-agent";
+import type { AgentPlugin } from "../runtime/sdk-agent.js";
 
 /**
  * 自动刷新能力插件：每次 send 前重新扫描文件系统，

@@ -5,8 +5,8 @@
   "description": "",
   "scripts": {
     "build-core": "pnpm --filter @ai-zen/agents-core build",
-    "dev": "pnpm build-core && pnpm --filter @ai-zen/agents-webui dev",
-    "cli": "pnpm build-core && pnpm --filter @ai-zen/agents-cli start"
+    "build-sdk": "pnpm --filter @ai-zen/agents-sdk build",
+    "test": "pnpm --filter @ai-zen/agents-core test && pnpm --filter @ai-zen/agents-sdk test"
   },
   "keywords": [],
   "author": "",

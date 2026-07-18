@@ -3,6 +3,8 @@
 // 来源：docs/sdk-design.md §1-§3
 // ============================================================
 
+import type { AgentNS } from "@ai-zen/agents-core";
+
 // ---- 权限（已定稿）----
 
 /** 单维度权限策略：allow 或 deny 互斥 */
@@ -26,6 +28,7 @@ export interface Endpoint {
   name: string; // 展示名称
   baseUrl: string; // API 地址
   apiKey: string; // API 密钥（明文，文件权限 600 由用户保证）
+  description?: string; // 描述
 }
 
 /** 模型配置，绑定一个 Endpoint */
@@ -33,8 +36,12 @@ export interface Model {
   id: string; // 唯一标识
   name: string; // 展示名称
   endpointId: string; // 关联 Endpoint.id
+  modelName?: string; // 发送给 API 的模型名称（不填则用 id）
   maxContextTokens: number; // 上下文窗口 token 上限
+  maxContextChars?: number; // 旧版字符数阈值（兼容迁移）
   defaultParams?: Record<string, unknown>; // 模型默认参数（temperature 等）
+  description?: string; // 描述
+  version?: number;
 }
 
 /** Agent 定义，有 function 字段时为 SubAgent */
@@ -42,30 +49,16 @@ export interface AgentDefinition {
   id: string; // 唯一标识，文件名 = id.json
   name: string; // 展示名称
   description?: string; // 简短描述（列表展示用）
-  messages: AgentMessage[]; // 预设对话（至少一条 system）
+  messages: AgentNS.Message[]; // 预设对话（至少一条 system）
   modelId?: string; // 指定模型，不填用默认
   permissions?: AgentPermissions;
 
   // 以下有则视为 SubAgent
-  function?: {
-    name: string; // 工具注册名（英文标识）
-    description: string; // 工具描述（LLM 据此决定是否调用）
-    parameters: {
-      type: "object";
-      properties: Record<string, { type: string; description: string }>;
-      required: string[];
-    };
-  };
+  function?: AgentNS.FunctionDefine;
 
   createdAt: string; // ISO 8601
   updatedAt: string; // ISO 8601
   version?: number;
-}
-
-/** 预设消息 */
-export interface AgentMessage {
-  role: "system" | "user" | "assistant";
-  content: string; // SubAgent 的 user content 可用 {{task}} 占位符
 }
 
 /** 对话记录 */
@@ -73,7 +66,7 @@ export interface Conversation {
   id: string; // 唯一标识
   agentId: string; // 关联 Agent.id
   modelId: string; // 对话使用的模型
-  messages: AgentMessage[]; // 完整消息历史
+  messages: AgentNS.Message[]; // 完整消息历史
   lastPromptTokens?: number; // 最近一轮 API 返回的 usage.prompt_tokens
   cwd?: string; // 对话开始时的当前工作目录
   createdAt: string; // ISO 8601
@@ -85,7 +78,7 @@ export interface Draft {
   conversationId?: string; // 已命名对话的 id，未命名为 undefined
   agentId: string;
   modelId: string;
-  messages: AgentMessage[];
+  messages: AgentNS.Message[];
   cwd?: string; // 对话开始时的当前工作目录
   updatedAt: string; // ISO 8601
 }
@@ -113,6 +106,10 @@ export interface AppConfig {
   imageModels?: ImageModel[];
   /** 默认图片生成模型 ID */
   defaultImageModel?: string;
+  /** 默认 Agent ID（CLI/Desktop 使用） */
+  defaultAgent?: string;
+  /** 默认迁移模型 ID */
+  defaultMigrationModel?: string;
 }
 
 // ---- MCP（已定稿，来自 docs/sdk-design.md §7）----
@@ -120,14 +117,18 @@ export interface AppConfig {
 /** MCP 连接状态 */
 export type McpConnectionState = "disconnected" | "connecting" | "connected" | "error";
 
-/** mcp.json 中的单个 server 配置 */
+/** MCP 服务器配置（含 CLI/Desktop 需要的额外字段） */
 export interface McpServerConfig {
-  transport: "stdio" | "http";
+  id: string;
+  name: string;
+  transport: "stdio" | "http" | "sse";
+  /** 是否启用 */
+  enabled?: boolean;
   // stdio
   command?: string;
   args?: string[];
   env?: Record<string, string>;
-  // http
+  // http/sse
   url?: string;
   headers?: Record<string, string>;
   // oauth (http only)

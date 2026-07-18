@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { matchPermission } from "./permission";
+import { matchPermission } from "./permission.js";
 
 describe("matchPermission", () => {
   describe("allow 模式", () => {

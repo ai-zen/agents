@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
-import { autoRefreshTools } from "./auto-refresh-tools";
-import { SdkAgent } from "../runtime/sdk-agent";
-import type { AgentPlugin } from "../runtime/sdk-agent";
+import { autoRefreshTools } from "./auto-refresh-tools.js";
+import { SdkAgent } from "../runtime/sdk-agent.js";
+import type { AgentPlugin } from "../runtime/sdk-agent.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -37,7 +37,7 @@ function createTestAgent(opts?: {
   permissions?: any;
   definition?: any;
 }): SdkAgent {
-  const messages = [{ role: "system", content: "You are a helper." }];
+  const messages: any[] = [{ role: "system", content: "You are a helper." }];
   return new SdkAgent({
     provider: mockRuntime() as any,
     definition: opts?.definition ?? {

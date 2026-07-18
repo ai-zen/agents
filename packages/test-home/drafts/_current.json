@@ -1,11 +1,10 @@
 {
   "agentId": "code-assistant",
-  "modelId": "gpt4",
   "messages": [
     {
       "role": "system",
       "content": "你是一个专业的代码助手。你擅长编写、分析和重构代码。始终遵循最佳实践，提供清晰、可维护的代码。"
     }
   ],
-  "updatedAt": "2026-07-17T17:01:28.719Z"
+  "updatedAt": "2026-07-17T19:24:05.851Z"
 }

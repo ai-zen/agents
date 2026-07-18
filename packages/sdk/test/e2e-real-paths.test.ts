@@ -83,7 +83,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("discoverSubAgents: 合并用户级和项目级 SubAgent", () => {
       checkPaths();
-      const agents = discoverSubAgents([TEST_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR]);
+      const agents = discoverSubAgents([PROJECT_SUB_AGENTS_DIR, TEST_SUB_AGENTS_DIR]);
       const names = agents.map((a) => a.function!.name);
       expect(names).toContain("general_assistant");
       expect(names).toContain("code_reviewer");
@@ -101,7 +101,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("discoverSkills: 合并用户级和项目级 Skill", () => {
       checkPaths();
-      const skills = discoverSkills([TEST_SKILLS_DIR, PROJECT_SKILLS_DIR]);
+      const skills = discoverSkills([PROJECT_SKILLS_DIR, TEST_SKILLS_DIR]);
       const ids = skills.map((s) => s.id);
       expect(ids).toContain("code-review");
       expect(ids).toContain("git-helper");
@@ -131,7 +131,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("discoverUserTools: 合并用户级和项目级工具", () => {
       checkPaths();
-      const tools = discoverUserTools([TEST_TOOLS_DIR, PROJECT_TOOLS_DIR]);
+      const tools = discoverUserTools([PROJECT_TOOLS_DIR, TEST_TOOLS_DIR]);
       const names = tools.map((t) => t.function.name);
       expect(names).toContain("count_lines");
       expect(names).toContain("greet");
@@ -148,7 +148,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("discoverMcpServers: 合并用户级 + 项目共享 + 项目个人 MCP", () => {
       checkPaths();
-      const servers = discoverMcpServers([TEST_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP]);
+      const servers = discoverMcpServers([PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP]);
       const names = servers.map((s) => s.id);
       expect(names).toContain("github");
       expect(names).toContain("filesystem");
@@ -227,10 +227,10 @@ describe("端到端：真实文件系统路径", () => {
       const provider = new Provider({
         config,
         agentsDir: TEST_AGENTS_DIR,
-        subAgentsPaths: [TEST_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR],
-        skillsPaths: [TEST_SKILLS_DIR, PROJECT_SKILLS_DIR],
-        toolsPaths: [TEST_TOOLS_DIR, PROJECT_TOOLS_DIR],
-        mcpPaths: [TEST_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP],
+        subAgentsPaths: [PROJECT_SUB_AGENTS_DIR, TEST_SUB_AGENTS_DIR],
+        skillsPaths: [PROJECT_SKILLS_DIR, TEST_SKILLS_DIR],
+        toolsPaths: [PROJECT_TOOLS_DIR, TEST_TOOLS_DIR],
+        mcpPaths: [PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP],
         conversationsDir: TEST_CONVERSATIONS_DIR,
         draftsDir: TEST_DRAFTS_DIR,
       });
@@ -250,10 +250,10 @@ describe("端到端：真实文件系统路径", () => {
       const provider = new Provider({
         config,
         agentsDir: TEST_AGENTS_DIR,
-        subAgentsPaths: [TEST_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR],
-        skillsPaths: [TEST_SKILLS_DIR, PROJECT_SKILLS_DIR],
-        toolsPaths: [TEST_TOOLS_DIR, PROJECT_TOOLS_DIR],
-        mcpPaths: [TEST_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP],
+        subAgentsPaths: [PROJECT_SUB_AGENTS_DIR, TEST_SUB_AGENTS_DIR],
+        skillsPaths: [PROJECT_SKILLS_DIR, TEST_SKILLS_DIR],
+        toolsPaths: [PROJECT_TOOLS_DIR, TEST_TOOLS_DIR],
+        mcpPaths: [PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP],
         conversationsDir: TEST_CONVERSATIONS_DIR,
         draftsDir: TEST_DRAFTS_DIR,
       });
@@ -278,10 +278,10 @@ describe("端到端：真实文件系统路径", () => {
       const provider = new Provider({
         config,
         agentsDir: TEST_AGENTS_DIR,
-        subAgentsPaths: [TEST_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR],
-        skillsPaths: [TEST_SKILLS_DIR, PROJECT_SKILLS_DIR],
-        toolsPaths: [TEST_TOOLS_DIR, PROJECT_TOOLS_DIR],
-        mcpPaths: [TEST_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP],
+        subAgentsPaths: [PROJECT_SUB_AGENTS_DIR, TEST_SUB_AGENTS_DIR],
+        skillsPaths: [PROJECT_SKILLS_DIR, TEST_SKILLS_DIR],
+        toolsPaths: [PROJECT_TOOLS_DIR, TEST_TOOLS_DIR],
+        mcpPaths: [PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP],
         conversationsDir: TEST_CONVERSATIONS_DIR,
         draftsDir: TEST_DRAFTS_DIR,
       });
@@ -310,10 +310,10 @@ describe("端到端：真实文件系统路径", () => {
       const provider = new Provider({
         config,
         agentsDir: TEST_AGENTS_DIR,
-        subAgentsPaths: [TEST_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR],
-        skillsPaths: [TEST_SKILLS_DIR, PROJECT_SKILLS_DIR],
-        toolsPaths: [TEST_TOOLS_DIR, PROJECT_TOOLS_DIR],
-        mcpPaths: [TEST_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP],
+        subAgentsPaths: [PROJECT_SUB_AGENTS_DIR, TEST_SUB_AGENTS_DIR],
+        skillsPaths: [PROJECT_SKILLS_DIR, TEST_SKILLS_DIR],
+        toolsPaths: [PROJECT_TOOLS_DIR, TEST_TOOLS_DIR],
+        mcpPaths: [PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP],
         conversationsDir: TEST_CONVERSATIONS_DIR,
         draftsDir: TEST_DRAFTS_DIR,
       });
@@ -351,10 +351,10 @@ describe("端到端：真实文件系统路径", () => {
       const provider = new Provider({
         config,
         agentsDir: TEST_AGENTS_DIR,
-        subAgentsPaths: [TEST_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR],
-        skillsPaths: [TEST_SKILLS_DIR, PROJECT_SKILLS_DIR],
-        toolsPaths: [TEST_TOOLS_DIR, PROJECT_TOOLS_DIR],
-        mcpPaths: [TEST_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP],
+        subAgentsPaths: [PROJECT_SUB_AGENTS_DIR, TEST_SUB_AGENTS_DIR],
+        skillsPaths: [PROJECT_SKILLS_DIR, TEST_SKILLS_DIR],
+        toolsPaths: [PROJECT_TOOLS_DIR, TEST_TOOLS_DIR],
+        mcpPaths: [PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP],
         conversationsDir: TEST_CONVERSATIONS_DIR,
         draftsDir: TEST_DRAFTS_DIR,
       });
@@ -381,10 +381,10 @@ describe("端到端：真实文件系统路径", () => {
       const provider = new Provider({
         config,
         agentsDir: TEST_AGENTS_DIR,
-        subAgentsPaths: [TEST_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR],
-        skillsPaths: [TEST_SKILLS_DIR, PROJECT_SKILLS_DIR],
-        toolsPaths: [TEST_TOOLS_DIR, PROJECT_TOOLS_DIR],
-        mcpPaths: [TEST_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP],
+        subAgentsPaths: [PROJECT_SUB_AGENTS_DIR, TEST_SUB_AGENTS_DIR],
+        skillsPaths: [PROJECT_SKILLS_DIR, TEST_SKILLS_DIR],
+        toolsPaths: [PROJECT_TOOLS_DIR, TEST_TOOLS_DIR],
+        mcpPaths: [PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP],
         conversationsDir: TEST_CONVERSATIONS_DIR,
         draftsDir: TEST_DRAFTS_DIR,
       });
@@ -416,10 +416,10 @@ describe("端到端：真实文件系统路径", () => {
       const provider = new Provider({
         config,
         agentsDir: TEST_AGENTS_DIR,
-        subAgentsPaths: [TEST_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR],
-        skillsPaths: [TEST_SKILLS_DIR, PROJECT_SKILLS_DIR],
-        toolsPaths: [TEST_TOOLS_DIR, PROJECT_TOOLS_DIR],
-        mcpPaths: [TEST_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP],
+        subAgentsPaths: [PROJECT_SUB_AGENTS_DIR, TEST_SUB_AGENTS_DIR],
+        skillsPaths: [PROJECT_SKILLS_DIR, TEST_SKILLS_DIR],
+        toolsPaths: [PROJECT_TOOLS_DIR, TEST_TOOLS_DIR],
+        mcpPaths: [PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP],
         conversationsDir: TEST_CONVERSATIONS_DIR,
         draftsDir: TEST_DRAFTS_DIR,
       });

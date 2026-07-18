@@ -1,15 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { AgentNS } from "@ai-zen/agents-core";
 import {
   listConversations,
   readConversation,
   writeConversation,
   deleteConversation,
-} from "./conversations";
-import { readDraft, writeDraft, deleteDraft } from "./drafts";
+} from "./conversations.js";
+import { readDraft, writeDraft, deleteDraft } from "./drafts.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { Conversation, Draft } from "../types";
+import type { Conversation, Draft } from "../types/index.js";
 
 let dir: string;
 
@@ -26,7 +27,7 @@ function sampleConversation(id: string): Conversation {
     id,
     agentId: "agent-1",
     modelId: "model-1",
-    messages: [{ role: "user", content: "hello" }],
+    messages: [{ role: AgentNS.Role.User, content: "hello" }],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -37,7 +38,7 @@ function sampleDraft(conversationId?: string): Draft {
     conversationId,
     agentId: "agent-1",
     modelId: "model-1",
-    messages: [{ role: "user", content: "draft message" }],
+    messages: [{ role: AgentNS.Role.User, content: "draft message" }],
     updatedAt: new Date().toISOString(),
   };
 }

@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-一个模块化的 LLM Agent 框架，提供从核心库到命令行界面再到 Web 应用的全栈解决方案。
+基于 `@ai-zen/agents-core` 的模块化 LLM Agent 框架。
 
 ## 项目结构
 
@@ -11,8 +11,16 @@
 | 包名 | 说明 | 版本 |
 |------|------|------|
 | [`@ai-zen/agents-core`](./packages/core) | 核心框架 — Agent、消息、工具、模型、端点、RAG、向量数据库抽象 | [![version](https://img.shields.io/badge/version-2.4.0-blue)] |
-| [`@ai-zen/agents-cli`](./packages/cli) | 命令行界面 — 交互式对话终端，内置文件/代码执行等工具 | [![version](https://img.shields.io/badge/version-0.7.4-blue)] |
-| [`@ai-zen/agents-webui`](./packages/webui) | Web 用户界面（Vue 3 + Element Plus） | [![version](https://img.shields.io/badge/version-2.0.0-blue)] |
+| [`@ai-zen/agents-sdk`](./packages/sdk) | SDK — 共享业务逻辑（能力管线、权限、MCP、插件） | [![version](https://img.shields.io/badge/version-0.1.0-blue)] |
+
+### 外部项目
+
+以下项目原为本 monorepo 的子包，已迁移至独立仓库：
+
+| 包名 | 仓库 | 说明 |
+|------|------|------|
+| [`@ai-zen/cli`](https://github.com/ai-zen/cli) | `git@github.com:ai-zen/cli.git` | 命令行界面 — 交互式对话终端，内置文件工具、MCP 支持、草稿恢复（原名 `@ai-zen/agents-cli`） |
+| Web UI | — | 已停止维护 |
 
 ## 快速开始
 
@@ -33,27 +41,6 @@ pnpm install
 
 ```bash
 pnpm build-core
-```
-
-### 启动 CLI
-
-```bash
-pnpm cli
-```
-
-或直接使用全局安装的 CLI（需先构建）：
-
-```bash
-cd packages/cli
-pnpm build
-npm install -g .
-aiz
-```
-
-### 启动 Web 应用
-
-```bash
-pnpm dev
 ```
 
 ## 🧩 @ai-zen/agents-core
@@ -88,75 +75,27 @@ TypeScript 核心库，可在 Node.js 和浏览器环境中使用。提供构建
 
 [查看 core 完整文档 →](./packages/core/README.md)
 
-## 💻 @ai-zen/agents-cli
+## 📦 @ai-zen/agents-sdk
 
-交互式命令行工具，提供完整的 AI 对话体验：
+基于 `@ai-zen/agents-core` 构建的 SDK 层，为 CLI 和 Desktop 应用提供共享业务逻辑：
 
-- 交互式主菜单与对话管理，支持草稿自动保存与恢复（进程强制退出后可继续对话）
-- 对话内命令体系（`/exit`、`/save`、`/new`、`/back`、`/editor`、`/help` 等）
-- 上下文任务迁移，自动生成交接文档实现长对话无缝衔接
-- Shell 兜底钩子（`aiz hook install`），命令不存在时自动转发给 AI
-- 多端点支持（OpenAI、智谱AI、DeepSeek 等任意 OpenAI 兼容接口）
-- Agent 管理与自定义（系统提示词预设），以独立文件存储在 `~/.ai-zen/agents/`
-- 子 Agent 工具注册，以独立文件存储在 `~/.ai-zen/sub-agents/`，支持 JSON 和 JS 格式
-- 用户自定义工具，以 JS 文件存储在 `~/.ai-zen/tools/`
-- Skill 提示词，以 Markdown 文件存储在 `~/.ai-zen/skills/`，通过 `load_skill` 工具按需加载
-- MCP（Model Context Protocol）服务器集成
-- 图片生成（通过智谱AI CogView / GLM-Image）
-- 内置文件系统工具（读/写/搜索/执行命令等）
-- 对话保存与历史管理
-- 交互式配置向导
+- **Capabilities** — 三阶段工具装配（发现、过滤、实例化）+ 权限模型
+- **MCP** — 完整的连接生命周期管理（连接、重连、OAuth、空闲超时）
+- **Skill** — 发现、frontmatter 解析、惰性加载
+- **插件** — autoMigrate、autoDraft、autoRefreshTools
+- **Provider** — 全局上下文，持有配置、路径和模型工厂
 
-**内置工具**：`cwd`、`readFile`、`writeFile`、`batchReplace`、`mkdir`、`rm`、`glob`、`ls`、`exist`、`exec`、`findText`、`downloadFile`、`generateImage`、`rename`、`copy`（共 15 个工具）
-
-### 文件系统发现机制
-
-所有用户资源均通过文件系统自动发现，支持全局（`~/.ai-zen/`）和项目级（`.ai-zen/`）两级，项目级覆盖全局同名资源：
-
-```
-~/.ai-zen/                    ← 全局
-├── config.json               ← 端点、模型等配置
-├── agents/                   ← 普通 Agent（独立 JSON 文件）
-│   └── default.json
-├── sub-agents/               ← 子 Agent（JSON / JS）
-│   └── general-assistant.json
-├── skills/                   ← Skill 提示词（.md）
-├── tools/                    ← 用户自定义工具（.js）
-├── conversations/            ← 对话记录
-└── draft.json                ← 自动保存的草稿（崩溃恢复用）
-
-/path/to/project/
-└── .ai-zen/                  ← 项目级（覆盖全局同名）
-    ├── agents/
-    ├── sub-agents/
-    ├── skills/
-    └── tools/
-```
-
-每次 LLM 请求前，CLI 会自动扫描文件系统，确保工具定义始终最新。新增或修改文件后，下一次对话请求即可生效。
-
-[查看 CLI 完整文档 →](./packages/cli/README.zh.md)
-
-## 🌐 @ai-zen/agents-webui
-
-基于 Vue 3 + Element Plus + Vite 的 Web 应用：
-
-- 可视化 Agent 对话界面
-- 智能体（Agent）、子智能体（AgentTool）、工具、知识库、端点、模型管理
-- 使用 IndexedDB 持久化数据
-- 无需后端服务，浏览器独立运行
-
-**路由**：`/chat`（聊天）、`/agent/*`（Agent 管理）、`/agent-tool/*`（子 Agent 管理）、`/tool/*`（工具管理）、`/knowledge-base/*`（知识库管理）、`/endpoint/*`（端点管理）、`/model/*`（模型管理）
+[查看 SDK 文档 →](./packages/sdk/docs/sdk-design.md)
 
 ## 脚本命令
 
 | 命令 | 说明 |
 |------|------|
-| `pnpm build-core` | 构建 core 包 |
-| `pnpm dev` | 构建 core 后启动 Web 开发服务器 |
-| `pnpm cli` | 构建 core 后启动 CLI |
-| `pnpm --filter @ai-zen/agents-core test` | 运行 core 包测试 |
-| `pnpm --filter @ai-zen/agents-cli test` | 运行 cli 包测试 |
+| `pnpm build-core` | 构建 `@ai-zen/agents-core` |
+| `pnpm build-sdk` | 构建 `@ai-zen/agents-sdk` |
+| `pnpm test` | 运行全部测试（core + sdk） |
+| `pnpm --filter @ai-zen/agents-core test` | 仅运行 core 测试 |
+| `pnpm --filter @ai-zen/agents-sdk test` | 仅运行 SDK 测试 |
 
 ## 许可
 

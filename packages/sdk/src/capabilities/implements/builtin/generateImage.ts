@@ -1,5 +1,5 @@
 import { CallbackTool, OpenAI, ZhipuImage, type FunctionCallContext } from "@ai-zen/agents-core";
-import type { AppConfig, ImageModel } from "../../../types";
+import type { AppConfig, ImageModel } from "../../../types/index.js";
 
 /**
  * 根据文字描述生成图片。返回图片 URL，可通过 downloadFile 工具保存到本地。

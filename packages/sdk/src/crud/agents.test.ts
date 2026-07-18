@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { listAgents, readAgent, writeAgent, deleteAgent } from "./agents";
+import { AgentNS } from "@ai-zen/agents-core";
+import { listAgents, readAgent, writeAgent, deleteAgent } from "./agents.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { AgentDefinition } from "../types";
+import type { AgentDefinition } from "../types/index.js";
 
 let dir: string;
 
@@ -19,7 +20,7 @@ function sampleAgent(id: string): AgentDefinition {
   return {
     id,
     name: `Agent ${id}`,
-    messages: [{ role: "system", content: "You are helpful." }],
+    messages: [{ role: AgentNS.Role.System, content: "You are helpful." }],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };

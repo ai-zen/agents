@@ -1,4 +1,5 @@
-import type { AgentDefinition, AgentMessage } from "../types";
+import { AgentNS } from "@ai-zen/agents-core";
+import type { AgentDefinition } from "../types/index.js";
 
 /**
  * 判断是否需要触发任务迁移。
@@ -69,7 +70,7 @@ export function buildMigrationAgentDefinition(
     name: "任务交接助手",
     description: "专用迁移 Agent：分析对话历史并生成结构化交接文档",
     messages: [
-      { role: "system", content: buildMigrationPrompt() },
+      { role: AgentNS.Role.System, content: buildMigrationPrompt() },
     ],
     modelId: options.modelId,
     createdAt: now,
@@ -83,7 +84,7 @@ export function buildMigrationAgentDefinition(
  * 构建迁移后的新对话初始消息。
  * 将交接文档包装为第一条 user 消息，引导新 Agent 先阅读再继续。
  */
-export function buildPostMigrationMessages(handoffDoc: string): AgentMessage[] {
+export function buildPostMigrationMessages(handoffDoc: string): AgentNS.Message[] {
   const content = [
     "这是上一轮对话的任务交接文档。请先阅读交接文档，理解上下文后再继续协助用户完成任务。",
     "",
@@ -96,5 +97,5 @@ export function buildPostMigrationMessages(handoffDoc: string): AgentMessage[] {
     "请确认你已理解以上内容，然后询问用户接下来需要什么帮助。",
   ].join("\n");
 
-  return [{ role: "user", content }];
+  return [{ role: AgentNS.Role.User, content }];
 }

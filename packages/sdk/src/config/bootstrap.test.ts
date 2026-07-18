@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ensureDefaultAgent, DEFAULT_AGENT_ID, DEFAULT_AGENT_DEFINITION } from "./bootstrap";
+import { ensureDefaultAgent, DEFAULT_AGENT_ID, DEFAULT_AGENT_DEFINITION } from "./bootstrap.js";
 
 function tempDir() {
   return mkdtempSync(join(tmpdir(), "ai-zen-bootstrap-"));
@@ -74,7 +74,7 @@ describe("ensureDefaultAgent", () => {
     const customContent = {
       id: DEFAULT_AGENT_ID,
       name: "我自定义的名字",
-      messages: [{ role: "system" as const, content: "自定义提示词" }],
+      messages: [{ role: "system" as any, content: "自定义提示词" }],
       createdAt: "2024-01-01T00:00:00.000Z",
       updatedAt: "2024-01-01T00:00:00.000Z",
       permissions: { tools: { deny: ["*"] } },

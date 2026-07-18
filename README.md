@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-A modular LLM Agent framework providing a full-stack solution from core library to CLI and Web UI.
+A modular LLM Agent framework based on `@ai-zen/agents-core`.
 
 ## Project Structure
 
@@ -11,8 +11,16 @@ This project uses pnpm workspace with the following sub-packages:
 | Package | Description | Version |
 |---------|-------------|---------|
 | [`@ai-zen/agents-core`](./packages/core) | Core framework — Agent, Messages, Tools, Models, Endpoints, RAG, Vector Database | [![version](https://img.shields.io/badge/version-2.4.0-blue)] |
-| [`@ai-zen/agents-cli`](./packages/cli) | CLI — Interactive conversation terminal with file tools, MCP support | [![version](https://img.shields.io/badge/version-0.7.5-blue)] |
-| [`@ai-zen/agents-webui`](./packages/webui) | Web UI (Vue 3 + Element Plus) | [![version](https://img.shields.io/badge/version-2.0.0-blue)] |
+| [`@ai-zen/agents-sdk`](./packages/sdk) | SDK — Shared business logic (capabilities, permissions, MCP, plugins) | [![version](https://img.shields.io/badge/version-0.1.0-blue)] |
+
+### External Projects
+
+These projects were previously part of this monorepo and have been migrated to their own repositories:
+
+| Package | Repository | Description |
+|---------|------------|-------------|
+| [`@ai-zen/cli`](https://github.com/ai-zen/cli) | `git@github.com:ai-zen/cli.git` | CLI — Interactive conversation terminal with file tools, MCP support, and draft recovery (formerly `@ai-zen/agents-cli`) |
+| Web UI | — | Discontinued |
 
 ## Quick Start
 
@@ -33,27 +41,6 @@ pnpm install
 
 ```bash
 pnpm build-core
-```
-
-### Start CLI
-
-```bash
-pnpm cli
-```
-
-Or install globally:
-
-```bash
-cd packages/cli
-pnpm build
-npm install -g .
-aiz
-```
-
-### Start Web UI
-
-```bash
-pnpm dev
 ```
 
 ## 🧩 @ai-zen/agents-core
@@ -88,71 +75,27 @@ TypeScript core library for Node.js and browser environments.
 
 [View core docs →](./packages/core/README.md)
 
-## 💻 @ai-zen/agents-cli
+## 📦 @ai-zen/agents-sdk
 
-Interactive CLI with full AI conversation experience:
+SDK layer built on top of `@ai-zen/agents-core`, providing shared business logic for CLI and Desktop applications:
 
-- Main menu with draft auto-save and recovery (resume after crash)
-- Conversation commands (`/exit`, `/save`, `/new`, `/back`, `/editor`, `/help`)
-- Context migration with auto-generated handover documents
-- Shell fallback hook (`aiz hook install`) — unknown commands forwarded to AI
-- Multi-endpoint support (OpenAI, ZhipuAI, DeepSeek, etc.)
-- Custom Agent presets stored in `~/.ai-zen/agents/`
-- Sub-Agent tools in `~/.ai-zen/sub-agents/` (JSON/JS)
-- Custom tools in `~/.ai-zen/tools/` (JS)
-- Skill prompts in `~/.ai-zen/skills/` (Markdown)
-- MCP (Model Context Protocol) server integration
-- Image generation (CogView / GLM-Image)
-- 15 built-in file system tools
-- Conversation history management
-- Interactive config wizard
+- **Capabilities** — Three-phase tool assembly (discovery, filtering, instantiation) with permission model
+- **MCP** — Full connection lifecycle management (connect, reconnect, OAuth, idle timeout)
+- **Skill** — Discovery, frontmatter parsing, lazy loading
+- **Plugins** — autoMigrate, autoDraft, autoRefreshTools
+- **Provider** — Global context with config, paths, and model factory
 
-**Built-in tools**: `cwd`, `readFile`, `writeFile`, `batchReplace`, `mkdir`, `rm`, `glob`, `ls`, `exist`, `exec`, `findText`, `downloadFile`, `generateImage`, `rename`, `copy`
-
-### File System Auto-Discovery
-
-```
-~/.ai-zen/                    ← Global
-├── config.json               ← Endpoints, models, MCP config
-├── agents/                   ← Agent presets (JSON)
-│   └── default.json
-├── sub-agents/               ← Sub-Agents (JSON / JS)
-│   └── general-assistant.json
-├── skills/                   ← Skill prompts (.md)
-├── tools/                    ← Custom tools (.js)
-├── conversations/            ← Saved conversations
-└── draft.json                ← Auto-saved draft (crash recovery)
-
-/path/to/project/
-└── .ai-zen/                  ← Project-level (overrides global)
-    ├── agents/
-    ├── sub-agents/
-    ├── skills/
-    └── tools/
-```
-
-[View CLI docs →](./packages/cli/README.md)
-
-## 🌐 @ai-zen/agents-webui
-
-Vue 3 + Element Plus + Vite based web application:
-
-- Visual Agent conversation interface
-- Agent, Sub-Agent, Tool, Knowledge Base, Endpoint, Model management
-- IndexedDB persistence
-- No backend required, runs entirely in browser
-
-**Routes**: `/chat`, `/agent/*`, `/agent-tool/*`, `/tool/*`, `/knowledge-base/*`, `/endpoint/*`, `/model/*`
+[View SDK docs →](./packages/sdk/docs/sdk-design.md)
 
 ## Scripts
 
 | Command | Description |
 |---------|-------------|
-| `pnpm build-core` | Build core package |
-| `pnpm dev` | Build core then start Web dev server |
-| `pnpm cli` | Build core then start CLI |
-| `pnpm --filter @ai-zen/agents-core test` | Run core tests |
-| `pnpm --filter @ai-zen/agents-cli test` | Run CLI tests |
+| `pnpm build-core` | Build `@ai-zen/agents-core` |
+| `pnpm build-sdk` | Build `@ai-zen/agents-sdk` |
+| `pnpm test` | Run all tests (core + sdk) |
+| `pnpm --filter @ai-zen/agents-core test` | Run core tests only |
+| `pnpm --filter @ai-zen/agents-sdk test` | Run SDK tests only |
 
 ## License
 

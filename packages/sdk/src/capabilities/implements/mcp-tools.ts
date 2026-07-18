@@ -1,7 +1,7 @@
 import { CallbackTool } from "@ai-zen/agents-core";
-import type { DisclosureParam } from "../disclosure";
-import type { McpConnectionManager } from "../../runtime/mcp-connection";
-import type { McpServerConfig } from "../../types";
+import type { DisclosureParam } from "../disclosure.js";
+import type { McpConnectionManager } from "../../runtime/mcp-connection.js";
+import type { McpServerConfig } from "../../types/index.js";
 
 /**
  * 创建 load_mcp 工具。

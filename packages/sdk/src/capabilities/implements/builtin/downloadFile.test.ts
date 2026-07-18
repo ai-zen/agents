@@ -1,15 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { existsSync, mkdirSync, unlinkSync } from "fs";
+import { mkdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
 
-// Mock fetch before importing the tool
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
-
-// Mock fs/promises to avoid actual file writes in some tests
-import * as fsp from "fs/promises";
 
 const { downloadFileTool } = await import("./downloadFile.js");
 
@@ -53,15 +49,11 @@ describe("downloadFileTool", () => {
     });
 
     const dir = join(tmpdir(), randomBytes(8).toString("hex"));
-    const result = await downloadFileTool.callback({
-      url: "https://example.com/image.png",
-      outputPath: join(dir, "test.png"),
-    });
+    const result = await downloadFileTool.callback({ url: "https://example.com/image.png", outputPath: join(dir, "test.png") });
     const parsed = JSON.parse(result as string);
     expect(parsed.success).toBe(true);
     expect(parsed.contentType).toBe("image/png");
 
-    // cleanup
     try { unlinkSync(join(dir, "test.png")); } catch {}
     try { unlinkSync(dir); } catch {}
   });
@@ -77,10 +69,7 @@ describe("downloadFileTool", () => {
     const dir = join(tmpdir(), randomBytes(8).toString("hex"));
     mkdirSync(dir, { recursive: true });
     try {
-      const result = await downloadFileTool.callback({
-        url: "https://example.com/file.txt",
-        outputPath: dir,
-      });
+      const result = await downloadFileTool.callback({ url: "https://example.com/file.txt", outputPath: dir });
       const parsed = JSON.parse(result as string);
       expect(parsed.success).toBe(true);
       expect(parsed.filePath).toContain("file.txt");

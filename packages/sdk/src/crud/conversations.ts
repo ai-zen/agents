@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, unlinkSync, readdirSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { Conversation } from "../types";
+import type { Conversation } from "../types/index.js";
 
 function conversationPath(dir: string, id: string): string {
   return join(dir, `${id}.json`);

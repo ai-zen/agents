@@ -1,8 +1,8 @@
 import { Agent, type ChatCompletionModel } from "@ai-zen/agents-core";
 import type { AgentNS, Tool } from "@ai-zen/agents-core";
-import type { AgentDefinition, AgentPermissions } from "../types";
-import type { Capabilities } from "../capabilities/capabilities";
-import type { Provider } from "./runtime";
+import type { AgentDefinition, AgentPermissions } from "../types/index.js";
+import type { Capabilities } from "../capabilities/capabilities.js";
+import type { Provider } from "./runtime.js";
 
 // ---------------------------------------------------------------------------
 // 插件接口

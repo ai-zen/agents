@@ -66,7 +66,6 @@ describe("copyTool", () => {
     writeFileSync(join(srcDir, "a.txt"), "a", "utf-8");
     try {
       const result = await copyTool.callback({ src: srcDir, dest: destDir });
-      // cp without recursive on a directory may throw EISDIR or similar
       expect(typeof result).toBe("string");
       expect(result).not.toBe("success");
     } finally {

@@ -1,9 +1,9 @@
 import type { ChatCompletionModel } from "@ai-zen/agents-core";
-import type { AppConfig, McpServerConfig } from "../types";
-import type { McpConnectionManager } from "./mcp-connection";
-import { createModel } from "./create-model";
+import type { AppConfig, McpServerConfig } from "../types/index.js";
+import type { McpConnectionManager } from "./mcp-connection.js";
+import { createModel } from "./create-model.js";
 
-export { createModel } from "./create-model";
+export { createModel } from "./create-model.js";
 
 /**
  * Provider — 全局上下文实例。

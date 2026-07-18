@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, unlinkSync, readdirSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { AgentDefinition } from "../types";
+import type { AgentDefinition } from "../types/index.js";
 
 function agentPath(dir: string, id: string): string {
   return join(dir, `${id}.json`);

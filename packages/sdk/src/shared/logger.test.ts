@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createLogger, type Logger } from "./logger";
+import { createLogger, type Logger } from "./logger.js";
 
 describe("createLogger", () => {
   it("使用注入的 log 函数", () => {

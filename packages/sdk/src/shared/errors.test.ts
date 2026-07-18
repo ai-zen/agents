@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { SdkError } from "./errors";
+import { SdkError } from "./errors.js";
 
 describe("SdkError", () => {
   it("包含 code 和 message", () => {

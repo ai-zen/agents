@@ -1,4 +1,5 @@
-import type { AgentDefinition } from "../types";
+import { AgentNS } from "@ai-zen/agents-core";
+import type { AgentDefinition } from "../types/index.js";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -10,7 +11,7 @@ export const DEFAULT_AGENT_DEFINITION: Omit<AgentDefinition, "createdAt" | "upda
   description: "通用 AI 助手，所有权限已开放",
   messages: [
     {
-      role: "system",
+      role: AgentNS.Role.System,
       content: "你是一个有用的 AI 助手。",
     },
   ],
@@ -21,6 +22,33 @@ export const DEFAULT_AGENT_DEFINITION: Omit<AgentDefinition, "createdAt" | "upda
     subagents: { allow: ["*"] },
   },
 };
+
+/**
+ * 标准共享子目录列表（不包含运行时目录）。
+ *
+ * 各客户端（CLI/Desktop）的运行时数据（config.json、conversations/、drafts/）
+ * 由客户端自行在各自目录下管理：
+ *   ~/.ai-zen/cli/          ← CLI 运行时
+ *   ~/.ai-zen/desktop/      ← Desktop 运行时（未来）
+ */
+export const CONFIG_SUB_DIRS = [
+  "agents",
+  "sub-agents",
+  "skills",
+  "tools",
+  "mcp-oauth",
+] as const;
+
+/**
+ * 确保配置目录结构完整。
+ * 创建 basePath 及所有标准子目录。
+ */
+export function ensureConfigDirs(basePath: string): void {
+  mkdirSync(basePath, { recursive: true });
+  for (const dir of CONFIG_SUB_DIRS) {
+    mkdirSync(join(basePath, dir), { recursive: true });
+  }
+}
 
 /**
  * 确保 basePath/agents/ 下至少有一个 Agent。

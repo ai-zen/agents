@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { Capabilities } from "./capabilities";
-import type { Provider } from "../runtime/runtime";
-import type { AgentDefinition, AppConfig, AgentPermissions } from "../types";
-import { Tool } from "@ai-zen/agents-core";
+import { Capabilities } from "./capabilities.js";
+import type { Provider } from "../runtime/runtime.js";
+import type { AgentDefinition, AppConfig, AgentPermissions } from "../types/index.js";
+import { AgentNS, Tool } from "@ai-zen/agents-core";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -83,8 +83,8 @@ function writeSubAgent(id: string, functionName: string) {
     id,
     name: id,
     messages: [
-      { role: "system", content: "You are a sub-agent." },
-      { role: "user", content: "{{task}}" },
+      { role: AgentNS.Role.System, content: "You are a sub-agent." },
+      { role: AgentNS.Role.User, content: "{{task}}" },
     ],
     function: {
       name: functionName,
@@ -143,18 +143,19 @@ describe("Capabilities", () => {
       expect(caps.mcps).toEqual([]);
     });
 
-    it("无 imageModels 时不包含 generateImage", () => {
+    it("未配置 defaultImageModel 时不包含 generateImage", () => {
       const caps = new Capabilities(mockProvider());
       const names = caps.builtinInstances.map((t) => t.function.name);
       expect(names).not.toContain("generateImage");
     });
 
-    it("有 imageModels 时包含 generateImage", () => {
+    it("配置了 defaultImageModel 时包含 generateImage", () => {
       const config: AppConfig = {
         defaultModel: "gpt4",
         endpoints: [{ id: "zhipu", name: "智谱", baseUrl: "https://open.bigmodel.cn/api/paas/v4", apiKey: "sk-xxx" }],
         models: [{ id: "gpt4", name: "GPT-4", endpointId: "zhipu", maxContextTokens: 500000 }],
         imageModels: [{ id: "cogview", name: "CogView", endpointId: "zhipu", modelName: "cogview-4" }],
+        defaultImageModel: "cogview",
       };
       const caps = new Capabilities(mockProvider({ config }));
       const names = caps.builtinInstances.map((t) => t.function.name);
@@ -331,7 +332,7 @@ describe("Capabilities", () => {
       const def: AgentDefinition = {
         id: "normal-agent",
         name: "Normal",
-        messages: [{ role: "system", content: "You are helpful." }],
+        messages: [{ role: AgentNS.Role.System, content: "You are helpful." }],
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -464,7 +465,7 @@ describe("Capabilities", () => {
       writeMcpJson({ github: { transport: "stdio", command: "gh" } });
       const provider = mockProvider({
         mcpManager: { getState: vi.fn(), getManifest: vi.fn(), getClient: vi.fn(), connect: vi.fn(), touch: vi.fn() } as any,
-        mcpConfigs: new Map([["github", { name: "github", config: { transport: "stdio", command: "gh" } }]]),
+        mcpConfigs: new Map([["github", { name: "github", config: { id: "github", name: "GitHub", transport: "stdio" as const, command: "gh" } }]]),
         mcpPaths: [join(tmpDir, "mcp.json")],
       });
       const caps = new Capabilities(provider);

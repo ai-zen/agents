@@ -1,17 +1,17 @@
 import type { Tool } from "@ai-zen/agents-core";
-import type { AgentDefinition, AgentPermissions } from "../types";
-import type { DisclosureItem } from "./disclosure";
-import type { Provider } from "../runtime/runtime";
-import { buildDisclosureParam } from "./disclosure";
-import { filterByPermissions } from "./permissions";
-import { createLoadSkillTool, createCallSkillSubAgentTool } from "./implements/skill-tools";
-import { createLoadMcpTool, createCallMcpTool, createReadMcpResourceTool } from "./implements/mcp-tools";
-import { createSubAgentTool } from "./implements/sub-agents-tools";
-import { discoverBuiltinTools } from "./discovery/builtin";
-import { discoverSubAgents } from "./discovery/subagents";
-import { discoverSkills } from "./discovery/skills";
-import { discoverMcpServers } from "./discovery/mcp";
-import { discoverUserTools } from "./discovery/usertools";
+import type { AgentDefinition, AgentPermissions } from "../types/index.js";
+import type { DisclosureItem } from "./disclosure.js";
+import type { Provider } from "../runtime/runtime.js";
+import { buildDisclosureParam } from "./disclosure.js";
+import { filterByPermissions } from "./permissions.js";
+import { createLoadSkillTool, createCallSkillSubAgentTool } from "./implements/skill-tools.js";
+import { createLoadMcpTool, createCallMcpTool, createReadMcpResourceTool } from "./implements/mcp-tools.js";
+import { createSubAgentTool } from "./implements/sub-agents-tools.js";
+import { discoverBuiltinTools } from "./discovery/builtin.js";
+import { discoverSubAgents } from "./discovery/subagents.js";
+import { discoverSkills } from "./discovery/skills.js";
+import { discoverMcpServers } from "./discovery/mcp.js";
+import { discoverUserTools } from "./discovery/usertools.js";
 
 /**
  * 能力过滤系统的公共类型。

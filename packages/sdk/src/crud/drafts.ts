@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { Draft } from "../types";
+import type { Draft } from "../types/index.js";
 
 const CURRENT_DRAFT = "_current.json";
 

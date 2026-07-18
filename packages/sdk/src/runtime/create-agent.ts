@@ -1,8 +1,8 @@
 import type { AgentNS } from "@ai-zen/agents-core";
-import { readAgent } from "../crud/agents";
-import { Capabilities } from "../capabilities/capabilities";
-import { SdkAgent } from "./sdk-agent";
-import type { Provider } from "./runtime";
+import { readAgent } from "../crud/agents.js";
+import { Capabilities } from "../capabilities/capabilities.js";
+import { SdkAgent } from "./sdk-agent.js";
+import type { Provider } from "./runtime.js";
 
 /**
  * 从磁盘创建 Agent（同步）。

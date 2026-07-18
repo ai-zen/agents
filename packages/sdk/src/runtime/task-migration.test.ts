@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { shouldMigrate, buildMigrationPrompt, buildMigrationAgentDefinition, buildPostMigrationMessages } from "./task-migration";
+import { shouldMigrate, buildMigrationPrompt, buildMigrationAgentDefinition, buildPostMigrationMessages } from "./task-migration.js";
 
 describe("shouldMigrate", () => {
   it("promptTokens 超过 maxTokens 返回 true", () => {
