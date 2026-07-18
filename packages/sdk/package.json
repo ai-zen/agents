@@ -1,6 +1,6 @@
 {
   "name": "@ai-zen/agents-sdk",
-  "version": "0.2.0",
+  "version": "0.2.0-alpha.2",
   "description": "AI-Zen Agents SDK — shared business logic for CLI and Desktop",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -40,5 +40,9 @@
     "rimraf": "^6.0.0",
     "typescript": "^5.3.3",
     "vitest": "^4.1.9"
-  }
+  },
+  "files": [
+    "dist",
+    "CHANGELOG.md"
+  ]
 }
