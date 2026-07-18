@@ -809,7 +809,7 @@ describe("Agent", () => {
   });
 
   describe("run - 事件系统", () => {
-    it("应触发 run、open、parsed、finally 事件", async () => {
+    it("应触发 inner-loop-start、open、parsed、finally 事件", async () => {
       // 使用一个会调用 onOpen 回调的 mock 模型
       const queue = new AsyncQueue<AgentNS.StreamResponseData>();
       queue.push({ choices: [{ index: 0, delta: { content: "回复" }, finish_reason: null }] });
@@ -840,13 +840,13 @@ describe("Agent", () => {
       const runHandler = vi.fn();
       const openHandler = vi.fn();
       const parsedHandler = vi.fn();
-      const finallyHandler = vi.fn();
+      const loopEndHandler = vi.fn();
       const chunkHandler = vi.fn();
 
-      agent.events.on("run", runHandler);
+      agent.events.on("inner-loop-start", runHandler);
       agent.events.on("open", openHandler);
       agent.events.on("parsed", parsedHandler);
-      agent.events.on("finally", finallyHandler);
+      agent.events.on("inner-loop-end", loopEndHandler);
       agent.events.on("chunk", chunkHandler);
 
       await agent.run();
@@ -854,7 +854,7 @@ describe("Agent", () => {
       expect(runHandler).toHaveBeenCalledTimes(1);
       expect(openHandler).toHaveBeenCalledTimes(1);
       expect(parsedHandler).toHaveBeenCalledTimes(1);
-      expect(finallyHandler).toHaveBeenCalledTimes(1);
+      expect(loopEndHandler).toHaveBeenCalledTimes(1);
       expect(chunkHandler).toHaveBeenCalledTimes(2);
     });
 
@@ -912,8 +912,8 @@ describe("Agent", () => {
       const runHandler = vi.fn();
       const finallyHandler = vi.fn();
 
-      agent.events.on("run", runHandler);
-      agent.events.on("finally", finallyHandler);
+      agent.events.on("inner-loop-start", runHandler);
+      agent.events.on("inner-loop-end", finallyHandler);
 
       await agent.run();
 
