@@ -77,7 +77,35 @@ await agent.send("你好");
 | `runtime` | ✅ 已实现 — Provider、Capabilities、createAgent、MCP 连接管理、任务迁移 |
 | `plugin` | ✅ 已实现 — AutoMigratePlugin / AutoDraftPlugin / AutoRefreshToolsPlugin |
 | `shared` | ✅ 已实现 — SdkError + 可注入 Logger |
-| 测试 | ✅ 378 个测试，46 个文件，全通过（含真实 API 聊天 e2e） |
+| 测试 | ✅ 359 个测试，45 个文件，全通过（含真实 API 聊天 e2e） |
+
+## 内置工具
+
+| 工具 | 说明 |
+|------|------|
+| `cwd` | 获取当前工作目录 |
+| `readFile` | 读取文件 |
+| `writeFile` | 写入文件 |
+| `exec` | 执行命令（支持 `timeout` 超时参数） |
+| `exec_async` | 异步执行命令，启动后立即返回，不等待结果 |
+| `mkdir` | 创建目录 |
+| `rm` | 删除文件或目录 |
+| `glob` | 使用 glob 模式扫描查找文件 |
+| `ls` | 列出目录内容 |
+| `exist` | 检查文件或目录是否存在 |
+| `findText` | 在文件中搜索文本或正则 |
+| `downloadFile` | 从 URL 下载文件并保存到本地 |
+| `rename` | 重命名或移动文件/目录 |
+| `copy` | 复制文件或目录 |
+| `batchEdit` | 批量编辑文件文本 |
+| `edit` | 编辑文件中的文本 |
+| `sleep` | 等待指定毫秒数后继续 |
+
+条件注入（需配置 `imageModels`）：
+
+| 工具 | 说明 |
+|------|------|
+| `generateImage` | 根据文字描述生成图片 |
 
 ## 内置插件
 

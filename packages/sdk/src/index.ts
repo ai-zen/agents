@@ -75,6 +75,8 @@ export { AutoRefreshToolsPlugin } from "./plugin/AutoRefreshToolsPlugin.js";
 // 工具
 export { BUILTIN_TOOLS } from "./capabilities/implements/builtin/index.js";
 export { createGenerateImageTool } from "./capabilities/implements/builtin/generateImage.js";
+export { execAsyncTool } from "./capabilities/implements/builtin/execAsync.js";
+export { sleepTool } from "./capabilities/implements/builtin/sleep.js";
 export { createLoadSkillTool, createCallSkillSubAgentTool } from "./capabilities/implements/skillTools.js";
 export { createLoadMcpTool, createCallMcpTool, createReadMcpResourceTool } from "./capabilities/implements/mcpTools.js";
 export { createSubAgentTool } from "./capabilities/implements/subAgentTools.js";

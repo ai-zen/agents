@@ -15,8 +15,10 @@ import { renameTool } from "./rename.js";
 import { copyTool } from "./copy.js";
 import { batchEditTool } from "./batchEdit.js";
 import { editTool } from "./edit.js";
+import { execAsyncTool } from "./execAsync.js";
+import { sleepTool } from "./sleep.js";
 
-/** 15 个内置工具实例，注册与实现一体。 */
+/** 17 个内置工具实例，注册与实现一体。 */
 export const BUILTIN_TOOLS: Tool[] = [
   cwdTool,
   readFileTool,
@@ -33,6 +35,8 @@ export const BUILTIN_TOOLS: Tool[] = [
   copyTool,
   batchEditTool,
   editTool,
+  execAsyncTool,
+  sleepTool,
 ];
 
-export { cwdTool, readFileTool, writeFileTool, execTool, mkdirTool, rmTool, globTool, lsTool, existTool, findTextTool, downloadFileTool, renameTool, copyTool, batchEditTool, editTool };
+export { cwdTool, readFileTool, writeFileTool, execTool, mkdirTool, rmTool, globTool, lsTool, existTool, findTextTool, downloadFileTool, renameTool, copyTool, batchEditTool, editTool, execAsyncTool, sleepTool };
