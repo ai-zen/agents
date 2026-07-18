@@ -1,6 +1,5 @@
 import { readdirSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { DisclosureItem } from "../disclosure.js";
 import { createLogger } from "../../shared/logger.js";
 
 const log = createLogger();
@@ -8,15 +7,12 @@ const log = createLogger();
 // ---- 类型 ----
 
 export interface Frontmatter {
-  // ---- 规范字段 (agentskills.io) ----
   name?: string;
   description?: string;
   license?: string;
   compatibility?: string;
   metadata?: Record<string, string>;
   allowedTools?: string[];
-
-  // ---- 扩展字段（非规范）----
   /** @extension Claude Code 启发：声明此 Skill 可作为子 Agent 运行 */
   subAgent?: boolean;
 }
@@ -27,8 +23,11 @@ export interface SkillValidationError {
   message: string;
 }
 
-export interface SkillInfo extends DisclosureItem {
+/** Skill 完整信息。id = 目录名 = SKILL.md 的 name 字段 */
+export interface SkillInfo {
+  id: string;
   name: string;
+  description: string;
   subAgent: boolean;
   content: string;
   license?: string;
@@ -37,17 +36,16 @@ export interface SkillInfo extends DisclosureItem {
   allowedTools?: string[];
 }
 
-// ---- 发现（轻量，用于枚举披露）----
+// ---- 发现（返回完整 SkillInfo，不再丢失 subAgent 等信息）----
 
 /**
  * 扫描多个目录中发现的所有 Skill（含 SKILL.md 的子目录）。
  * 按优先级从高到低传入路径列表，同名 skill 靠前的路径优先（先到先得）。
- * 解析 YAML frontmatter 中的 name 和 description。
- * 同时进行规范合规校验，警告通过 logger 输出。
+ * 解析 YAML frontmatter 中的 name 和 description，同时校验合规。
  */
-export function discoverSkills(paths: string[]): DisclosureItem[] {
+export function discoverSkills(paths: string[]): SkillInfo[] {
   const seen = new Set<string>();
-  const items: DisclosureItem[] = [];
+  const items: SkillInfo[] = [];
 
   for (const dir of paths) {
     if (!existsSync(dir)) continue;
@@ -66,22 +64,10 @@ export function discoverSkills(paths: string[]): DisclosureItem[] {
       const skillMdPath = join(dir, entry.name, "SKILL.md");
       if (!existsSync(skillMdPath)) continue;
 
-      try {
-        const raw = readFileSync(skillMdPath, "utf-8");
-        const fm = parseFrontmatter(raw);
-
-        // 规范合规校验
-        const errors = validateSkill(entry.name, fm);
-        for (const err of errors) {
-          log.warn(`[skills] ${err.skillId}: ${err.field} — ${err.message}`);
-        }
-
-        if (fm.name) {
-          seen.add(entry.name);
-          items.push({ id: entry.name, description: fm.description ?? "" });
-        }
-      } catch {
-        // 跳过解析失败的文件
+      const skill = readSkillFromPath(entry.name, skillMdPath);
+      if (skill) {
+        seen.add(entry.name);
+        items.push(skill);
       }
     }
   }
@@ -97,16 +83,18 @@ export function discoverSkills(paths: string[]): DisclosureItem[] {
  * 返回 null 如果 skill 在所有目录中都不存在或 SKILL.md 不可读。
  */
 export function readSkill(skillDirs: string[], skillId: string): SkillInfo | null {
-  let skillMdPath: string | null = null;
   for (const dir of skillDirs) {
     const candidate = join(dir, skillId, "SKILL.md");
     if (existsSync(candidate)) {
-      skillMdPath = candidate;
-      break;
+      return readSkillFromPath(skillId, candidate);
     }
   }
-  if (!skillMdPath) return null;
+  return null;
+}
 
+// ---- 内部 ----
+
+function readSkillFromPath(skillId: string, skillMdPath: string): SkillInfo | null {
   try {
     const content = readFileSync(skillMdPath, "utf-8");
     const fm = parseFrontmatter(content);
@@ -136,13 +124,7 @@ export function readSkill(skillDirs: string[], skillId: string): SkillInfo | nul
 
 // ---- 解析 ----
 
-/**
- * 解析 SKILL.md 的 YAML frontmatter。
- *
- * 支持的字段：
- * - 规范字段：name / description / license / compatibility / metadata / allowed-tools
- * - 扩展字段：sub-agent（Claude Code 启发，声明可作为子 Agent 运行）
- */
+/** @internal */
 export function parseFrontmatter(content: string): Frontmatter {
   const match = content.match(/^---\n([\s\S]*?)\n---/);
   if (!match) return {};
@@ -154,7 +136,6 @@ export function parseFrontmatter(content: string): Frontmatter {
   while (i < lines.length) {
     const line = lines[i];
 
-    // metadata: 嵌套段
     const metaHeader = line.match(/^metadata:\s*$/);
     if (metaHeader) {
       const metadata: Record<string, string> = {};
@@ -171,30 +152,17 @@ export function parseFrontmatter(content: string): Frontmatter {
       continue;
     }
 
-    // 普通 key: value
     const kv = line.match(/^(\S+):\s*(.*)/);
     if (kv) {
       const key = kv[1];
       const val = kv[2].trim();
       switch (key) {
-        case "name":
-          result.name = val;
-          break;
-        case "description":
-          result.description = val;
-          break;
-        case "sub-agent":
-          result.subAgent = val === "true";
-          break;
-        case "license":
-          result.license = val;
-          break;
-        case "compatibility":
-          result.compatibility = val;
-          break;
-        case "allowed-tools":
-          result.allowedTools = val ? val.split(/\s+/).filter(Boolean) : [];
-          break;
+        case "name": result.name = val; break;
+        case "description": result.description = val; break;
+        case "sub-agent": result.subAgent = val === "true"; break;
+        case "license": result.license = val; break;
+        case "compatibility": result.compatibility = val; break;
+        case "allowed-tools": result.allowedTools = val ? val.split(/\s+/).filter(Boolean) : []; break;
       }
     }
     i++;
@@ -202,8 +170,6 @@ export function parseFrontmatter(content: string): Frontmatter {
 
   return result;
 }
-
-// ---- 辅助 ----
 
 function stripQuotes(s: string): string {
   if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
@@ -214,17 +180,12 @@ function stripQuotes(s: string): string {
 
 // ---- 校验 ----
 
-/** name 字段：仅允许小写字母、数字、连字符 */
 const VALID_NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
-/**
- * 按 Agent Skills 规范校验 frontmatter。
- * 返回警告列表（不阻塞加载）。
- */
+/** @internal */
 export function validateSkill(skillId: string, fm: Frontmatter): SkillValidationError[] {
   const errors: SkillValidationError[] = [];
 
-  // name
   if (!fm.name || fm.name.length === 0) {
     errors.push({ skillId, field: "name", message: "必须存在且非空" });
   } else {
@@ -232,39 +193,21 @@ export function validateSkill(skillId: string, fm: Frontmatter): SkillValidation
       errors.push({ skillId, field: "name", message: `超过 64 字符（当前 ${fm.name.length}）` });
     }
     if (!VALID_NAME_RE.test(fm.name)) {
-      errors.push({
-        skillId,
-        field: "name",
-        message: `"${fm.name}" 不符合规范：仅允许小写字母、数字、连字符，且不能首尾或连续连字符`,
-      });
+      errors.push({ skillId, field: "name", message: `"${fm.name}" 不符合规范：仅允许小写字母、数字、连字符，且不能首尾或连续连字符` });
     }
     if (fm.name !== skillId) {
-      errors.push({
-        skillId,
-        field: "name",
-        message: `"${fm.name}" 与目录名 "${skillId}" 不一致`,
-      });
+      errors.push({ skillId, field: "name", message: `"${fm.name}" 与目录名 "${skillId}" 不一致` });
     }
   }
 
-  // description
   if (!fm.description || fm.description.length === 0) {
     errors.push({ skillId, field: "description", message: "必须存在且非空" });
   } else if (fm.description.length > 1024) {
-    errors.push({
-      skillId,
-      field: "description",
-      message: `超过 1024 字符（当前 ${fm.description.length}）`,
-    });
+    errors.push({ skillId, field: "description", message: `超过 1024 字符（当前 ${fm.description.length}）` });
   }
 
-  // compatibility（可选但需 <= 500 字符）
   if (fm.compatibility && fm.compatibility.length > 500) {
-    errors.push({
-      skillId,
-      field: "compatibility",
-      message: `超过 500 字符（当前 ${fm.compatibility.length}）`,
-    });
+    errors.push({ skillId, field: "compatibility", message: `超过 500 字符（当前 ${fm.compatibility.length}）` });
   }
 
   return errors;

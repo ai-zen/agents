@@ -1,12 +1,11 @@
 import type { Tool } from "@ai-zen/agents-core";
-import type { AgentDefinition, AgentPermissions } from "../types/index.js";
-import type { DisclosureItem } from "./disclosure.js";
-import type { Provider } from "../runtime/runtime.js";
-import { buildDisclosureParam } from "./disclosure.js";
-import { filterByPermissions } from "./permissions.js";
-import { createLoadSkillTool, createCallSkillSubAgentTool } from "./implements/skill-tools.js";
-import { createLoadMcpTool, createCallMcpTool, createReadMcpResourceTool } from "./implements/mcp-tools.js";
-import { createSubAgentTool } from "./implements/sub-agents-tools.js";
+import type { AgentDefinition, AgentPermissions, McpServerConfig } from "../types/index.js";
+import type { SkillInfo } from "./discovery/skills.js";
+import type { Provider } from "../runtime/Provider.js";
+import { PermissionEvaluator } from "./PermissionEvaluator.js";
+import { createLoadSkillTool, createCallSkillSubAgentTool } from "./implements/skillTools.js";
+import { createLoadMcpTool, createCallMcpTool, createReadMcpResourceTool } from "./implements/mcpTools.js";
+import { createSubAgentTool } from "./implements/subAgentTools.js";
 import { discoverBuiltinTools } from "./discovery/builtin.js";
 import { discoverSubAgents } from "./discovery/subagents.js";
 import { discoverSkills } from "./discovery/skills.js";
@@ -35,14 +34,11 @@ export interface ExcludeOptions {
   subagents?: string[];
 }
 
-const EMPTY_HINT_SKILL = "（当前没有可用的 Skill，请联系用户添加）";
-const EMPTY_HINT_MCP = "（当前没有可用的 MCP 服务器，请联系用户添加）";
-
 /**
  * Capabilities — 全局能力注册表。
  *
  * 职责：
- *   1. 全局发现一次（扫描文件系统，收集所有候选）
+ *   1. 全局发现一次（扫描文件系统，收集所有完整候选）
  *   2. 提供 filter(permissions) 按权限过滤
  *   3. 提供 instantiate(filterOutput) 将过滤后的名称实例化为 Tool[]
  *
@@ -60,13 +56,14 @@ export class Capabilities {
   builtinInstances: Tool[];
   userInstances: Tool[];
   subagentDefs: AgentDefinition[];
-  skills: DisclosureItem[];
-  mcps: DisclosureItem[];
+  /** 完整 SkillInfo，含 subAgent 标记，可据此区分枚举 */
+  skills: SkillInfo[];
+  /** 完整 MCP 服务器配置 */
+  mcps: McpServerConfig[];
 
   constructor(provider: Provider) {
     this.provider = provider;
 
-    // 初始化候选集
     this.builtinInstances = discoverBuiltinTools(provider.config);
     this.userInstances = discoverUserTools(provider.toolsPaths);
     this.subagentDefs = discoverSubAgents(provider.subAgentsPaths);
@@ -79,7 +76,6 @@ export class Capabilities {
    * 纯名称操作（安全预过滤 + 权限过滤），不涉及 Tool 实例化。
    */
   filter(permissions: AgentPermissions, options?: {
-    /** 排除项黑名单（优先级高于 permissions）。 */
     exclude?: ExcludeOptions;
   }): FilterOutput {
     const exclude = options?.exclude ?? {};
@@ -88,14 +84,12 @@ export class Capabilities {
     const excludeMcps = new Set(exclude.mcps ?? []);
     const excludeSubAgents = new Set(exclude.subagents ?? []);
 
-    // 1. 安全预过滤：从 SubAgent 候选集中剔除黑名单中的 agent
     const safeSubagents = excludeSubAgents.size === 0
       ? this.subagentDefs
       : this.subagentDefs.filter(
           (def) => !excludeSubAgents.has(def.function?.name ?? ""),
         );
 
-    // 2. 拼装工具候选名称
     const DYNAMIC_TOOL_NAMES = [
       "load_skill",
       "call_skill_sub_agent",
@@ -109,8 +103,8 @@ export class Capabilities {
       ...DYNAMIC_TOOL_NAMES,
     ].filter((name) => !excludeTools.has(name));
 
-    // 3. 权限过滤（纯名称匹配）
-    const filtered = filterByPermissions(permissions, {
+    const evaluator = new PermissionEvaluator(permissions);
+    const filtered = evaluator.filter({
       tools: toolNames,
       skills: this.skills
         .filter((s) => !excludeSkills.has(s.id))
@@ -131,7 +125,6 @@ export class Capabilities {
 
   /**
    * 快捷方法：filter + instantiate 一步完成。
-   * 适用于一次调用即可的场景，需要分别控制过滤和实例化时请使用 filter() + instantiate()。
    */
   buildTools(permissions: AgentPermissions, options?: {
     exclude?: ExcludeOptions;
@@ -141,9 +134,6 @@ export class Capabilities {
 
   /**
    * 将过滤后的名称列表实例化为 Tool 数组。
-   *
-   * @param filtered  filter() 的输出
-   * @returns         Tool 实例列表
    */
   instantiate(filtered: FilterOutput): Tool[] {
     const result: Tool[] = [];
@@ -157,32 +147,23 @@ export class Capabilities {
       }
     }
 
-    // 2. 构建枚举披露参数
+    // 2. 筛选候选项（保留完整信息，传给工具函数自行决定如何构建枚举）
     const allowedSkillSet = new Set(filtered.skills);
     const allowedMcpSet = new Set(filtered.mcps);
     const filteredSkills = this.skills.filter((s) => allowedSkillSet.has(s.id));
     const filteredMcps = this.mcps.filter((m) => allowedMcpSet.has(m.id));
 
-    const skillDisclosure = buildDisclosureParam(
-      filteredSkills,
-      "选择一个 Skill",
-      EMPTY_HINT_SKILL,
-    );
-    const mcpDisclosure = buildDisclosureParam(
-      filteredMcps,
-      "选择一个 MCP 服务器",
-      EMPTY_HINT_MCP,
-    );
-
-    // 3. 动态工具（按条件注册）
+    // 3. 动态工具
     if (allowedToolNames.has("load_skill") && filteredSkills.length > 0) {
-      result.push(createLoadSkillTool(provider.skillsPaths, skillDisclosure));
+      result.push(createLoadSkillTool(provider.skillsPaths, filteredSkills));
     }
-    if (allowedToolNames.has("call_skill_sub_agent") && filteredSkills.length > 0) {
-      result.push(createCallSkillSubAgentTool(provider.skillsPaths, skillDisclosure, this));
+    // call_skill_sub_agent：只要有支持子 Agent 的 skill 就注册
+    const hasSubAgentSkills = filteredSkills.some((s) => s.subAgent);
+    if (allowedToolNames.has("call_skill_sub_agent") && hasSubAgentSkills) {
+      result.push(createCallSkillSubAgentTool(provider.skillsPaths, filteredSkills, this));
     }
     if (allowedToolNames.has("load_mcp") && provider.mcpManager && provider.mcpConfigs && filteredMcps.length > 0) {
-      result.push(createLoadMcpTool(provider.mcpManager, provider.mcpConfigs, mcpDisclosure));
+      result.push(createLoadMcpTool(provider.mcpManager, provider.mcpConfigs, filteredMcps));
     }
     if (allowedToolNames.has("call_mcp_tool") && provider.mcpManager) {
       result.push(createCallMcpTool(provider.mcpManager));
@@ -191,20 +172,19 @@ export class Capabilities {
       result.push(createReadMcpResourceTool(provider.mcpManager));
     }
 
-    // 4. SubAgent → createSubAgentTool（封装 AgentToolLazy）
+    // 4. SubAgent
     const allowedSubagentSet = new Set(filtered.subagents);
     for (const def of this.subagentDefs) {
       if (!def.function || !allowedSubagentSet.has(def.function.name)) continue;
       result.push(createSubAgentTool(def, this.provider, this));
     }
 
-    // 5. 去重（后注册覆盖先注册）
+    // 5. 去重
     return dedupTools(result);
   }
 
   /**
    * 重新执行全局发现（重新扫描文件系统）。
-   * 适用于运行时文件系统变更（新增/删除 skill、工具、SubAgent 等）。
    */
   refresh(): void {
     const provider = this.provider;

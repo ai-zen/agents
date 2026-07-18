@@ -1,17 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { buildDisclosureParam } from "./disclosure.js";
+import { createDisclosureParam } from "./disclosure.js";
 
-describe("buildDisclosureParam", () => {
+describe("createDisclosureParam", () => {
   const baseDesc = "选择一个 Skill";
   const emptyHint = "（当前没有可用的 Skill，请联系用户添加）";
 
   it("有候选项时 — 返回枚举 + 原描述", () => {
-    const items = [
-      { id: "code-review", description: "代码审查" },
-      { id: "deploy", description: "部署工具" },
-    ];
-
-    const result = buildDisclosureParam(items, baseDesc, emptyHint);
+    const result = createDisclosureParam(["code-review", "deploy"], baseDesc, emptyHint);
 
     expect(result.type).toBe("string");
     expect(result.description).toBe(baseDesc);
@@ -19,7 +14,7 @@ describe("buildDisclosureParam", () => {
   });
 
   it("无候选项时 — 无枚举，描述追加提示", () => {
-    const result = buildDisclosureParam([], baseDesc, emptyHint);
+    const result = createDisclosureParam([], baseDesc, emptyHint);
 
     expect(result.type).toBe("string");
     expect(result.description).toBe(`${baseDesc} ${emptyHint}`);
@@ -27,11 +22,7 @@ describe("buildDisclosureParam", () => {
   });
 
   it("单个候选项", () => {
-    const result = buildDisclosureParam(
-      [{ id: "only-one", description: "唯一" }],
-      baseDesc,
-      emptyHint,
-    );
+    const result = createDisclosureParam(["only-one"], baseDesc, emptyHint);
 
     expect(result.enum).toEqual(["only-one"]);
   });

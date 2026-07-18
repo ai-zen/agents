@@ -1,17 +1,17 @@
 import { describe, it, expect } from "vitest";
-import { Provider } from "../src/runtime/runtime";
-import { createAgent } from "../src/runtime/create-agent";
-import { Capabilities } from "../src/capabilities/capabilities";
-import { readConfig } from "../src/config/manager";
-import { readAgent, listAgents } from "../src/crud/agents";
+import { Provider } from "../src/runtime/Provider";
+import { createAgent } from "../src/runtime/createAgent";
+import { Capabilities } from "../src/capabilities/Capabilities";
+import { ConfigManager } from "../src/config/ConfigManager";
+import { AgentRepository } from "../src/crud/AgentRepository";
 import { readSkill, discoverSkills } from "../src/capabilities/discovery/skills";
 import { discoverSubAgents } from "../src/capabilities/discovery/subagents";
 import { discoverUserTools } from "../src/capabilities/discovery/usertools";
 import { discoverMcpServers } from "../src/capabilities/discovery/mcp";
 import { discoverBuiltinTools } from "../src/capabilities/discovery/builtin";
-import { SdkAgent } from "../src/runtime/sdk-agent";
-import { autoDraft, checkDraftForRestore } from "../src/plugin/auto-draft";
-import { autoRefreshTools } from "../src/plugin/auto-refresh-tools";
+import { SdkAgent } from "../src/runtime/SdkAgent";
+import { AutoDraftPlugin } from "../src/plugin/AutoDraftPlugin";
+import { AutoRefreshToolsPlugin } from "../src/plugin/AutoRefreshToolsPlugin";
 import type { Tool } from "@ai-zen/agents-core";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -55,7 +55,7 @@ describe("端到端：真实文件系统路径", () => {
   describe("1. 发现阶段", () => {
     it("config.json 可正常读取", () => {
       checkPaths();
-      const config = readConfig(TEST_CONFIG);
+      const config = new ConfigManager(TEST_CONFIG).read();
       expect(config.defaultModel).toBe("gpt4");
       expect(config.endpoints).toHaveLength(2);
       expect(config.models).toHaveLength(3);
@@ -65,7 +65,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("discoverBuiltinTools: 有 imageModels 时包含 generateImage", () => {
       checkPaths();
-      const config = readConfig(TEST_CONFIG);
+      const config = new ConfigManager(TEST_CONFIG).read();
       const tools = discoverBuiltinTools(config);
       const names = tools.map((t) => t.function.name);
       expect(names).toContain("generateImage");
@@ -191,7 +191,7 @@ describe("端到端：真实文件系统路径", () => {
   describe("2. CRUD 操作", () => {
     it("listAgents: 能列出用户级 Agent", () => {
       checkPaths();
-      const agents = listAgents(TEST_AGENTS_DIR);
+      const agents = new AgentRepository(TEST_AGENTS_DIR).list();
       expect(agents.length).toBeGreaterThanOrEqual(2);
       const ids = agents.map((a) => a.id);
       expect(ids).toContain("code-assistant");
@@ -200,7 +200,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("readAgent: 可读取单个 Agent 定义", () => {
       checkPaths();
-      const agent = readAgent(TEST_AGENTS_DIR, "code-assistant");
+      const agent = new AgentRepository(TEST_AGENTS_DIR).read( "code-assistant");
       expect(agent).not.toBeNull();
       expect(agent!.name).toBe("代码助手");
       expect(agent!.permissions?.tools).toEqual({ allow: ["*"] });
@@ -208,7 +208,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("readAgent: translator 权限受限", () => {
       checkPaths();
-      const agent = readAgent(TEST_AGENTS_DIR, "translator");
+      const agent = new AgentRepository(TEST_AGENTS_DIR).read( "translator");
       expect(agent).not.toBeNull();
       expect(agent!.permissions?.tools).toEqual({ allow: ["readFile", "writeFile", "exec"] });
       expect(agent!.permissions?.skills).toEqual({ deny: ["*"] });
@@ -223,7 +223,7 @@ describe("端到端：真实文件系统路径", () => {
   describe("3. Capabilities 管线", () => {
     it("使用真实路径构建 Provider + Capabilities", () => {
       checkPaths();
-      const config = readConfig(TEST_CONFIG);
+      const config = new ConfigManager(TEST_CONFIG).read();
       const provider = new Provider({
         config,
         agentsDir: TEST_AGENTS_DIR,
@@ -246,7 +246,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("code-assistant: allow all 时所有能力可用", () => {
       checkPaths();
-      const config = readConfig(TEST_CONFIG);
+      const config = new ConfigManager(TEST_CONFIG).read();
       const provider = new Provider({
         config,
         agentsDir: TEST_AGENTS_DIR,
@@ -259,7 +259,7 @@ describe("端到端：真实文件系统路径", () => {
       });
 
       const caps = new Capabilities(provider);
-      const definition = readAgent(TEST_AGENTS_DIR, "code-assistant")!;
+      const definition = new AgentRepository(TEST_AGENTS_DIR).read( "code-assistant")!;
       const tools = caps.buildTools(definition.permissions ?? {});
 
       const names = tools.map((t) => t.function.name);
@@ -274,7 +274,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("translator: 受限权限只暴露指定工具", () => {
       checkPaths();
-      const config = readConfig(TEST_CONFIG);
+      const config = new ConfigManager(TEST_CONFIG).read();
       const provider = new Provider({
         config,
         agentsDir: TEST_AGENTS_DIR,
@@ -287,7 +287,7 @@ describe("端到端：真实文件系统路径", () => {
       });
 
       const caps = new Capabilities(provider);
-      const definition = readAgent(TEST_AGENTS_DIR, "translator")!;
+      const definition = new AgentRepository(TEST_AGENTS_DIR).read( "translator")!;
       const tools = caps.buildTools(definition.permissions ?? {});
 
       const names = tools.map((t) => t.function.name);
@@ -306,7 +306,7 @@ describe("端到端：真实文件系统路径", () => {
   describe("4. createAgent 完整装配", () => {
     it("从真实路径创建 code-assistant", () => {
       checkPaths();
-      const config = readConfig(TEST_CONFIG);
+      const config = new ConfigManager(TEST_CONFIG).read();
       const provider = new Provider({
         config,
         agentsDir: TEST_AGENTS_DIR,
@@ -347,7 +347,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("从真实路径创建 translator（受限权限）", () => {
       checkPaths();
-      const config = readConfig(TEST_CONFIG);
+      const config = new ConfigManager(TEST_CONFIG).read();
       const provider = new Provider({
         config,
         agentsDir: TEST_AGENTS_DIR,
@@ -377,7 +377,7 @@ describe("端到端：真实文件系统路径", () => {
   describe("5. 插件集成", () => {
     it("autoRefreshTools 可在真实 SdkAgent 上使用", () => {
       checkPaths();
-      const config = readConfig(TEST_CONFIG);
+      const config = new ConfigManager(TEST_CONFIG).read();
       const provider = new Provider({
         config,
         agentsDir: TEST_AGENTS_DIR,
@@ -393,7 +393,7 @@ describe("端到端：真实文件系统路径", () => {
       const beforeNames = agent.tools.map((t: Tool) => t.function.name);
 
       // 注册并触发 autoRefreshTools
-      agent.use(autoRefreshTools());
+      agent.use(new AutoRefreshToolsPlugin());
 
       // 模拟 onBeforeSend
       const ctx = { agent, content: "hello", messages: agent.messages };
@@ -412,7 +412,7 @@ describe("端到端：真实文件系统路径", () => {
 
     it("autoDraft 插件可正常保存和检查草稿", () => {
       checkPaths();
-      const config = readConfig(TEST_CONFIG);
+      const config = new ConfigManager(TEST_CONFIG).read();
       const provider = new Provider({
         config,
         agentsDir: TEST_AGENTS_DIR,
@@ -425,15 +425,15 @@ describe("端到端：真实文件系统路径", () => {
       });
 
       const agent = createAgent(provider, "code-assistant");
-      agent.use(autoDraft({
+      agent.use(new AutoDraftPlugin({
         draftsDir: TEST_DRAFTS_DIR,
         agentId: "code-assistant",
       }));
 
-      // 模拟 onAfterSend
+      // 模拟 onInnerLoopEnd
       const ctx = { agent, content: "你好", messages: agent.messages };
       const plugin = (agent as any)._plugins[0];
-      plugin.onAfterSend(ctx);
+      plugin.onInnerLoopEnd(ctx);
 
       // 检查草稿文件已创建
       const draftPath = join(TEST_DRAFTS_DIR, "_current.json");
@@ -444,7 +444,7 @@ describe("端到端：真实文件系统路径", () => {
       expect(draftContent.messages.length).toBeGreaterThan(0);
 
       // checkDraftForRestore 能检测到
-      const draft = checkDraftForRestore(TEST_DRAFTS_DIR);
+      const draft = AutoDraftPlugin.checkDraftForRestore(TEST_DRAFTS_DIR);
       expect(draft).not.toBeNull();
       expect(draft!.agentId).toBe("code-assistant");
     });

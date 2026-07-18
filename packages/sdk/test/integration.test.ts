@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { createAgent } from "../src/runtime/create-agent";
-import { Provider } from "../src/runtime/runtime";
+import { createAgent } from "../src/runtime/createAgent";
+import { Provider } from "../src/runtime/Provider";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";

@@ -1,8 +1,3 @@
-export interface DisclosureItem {
-  id: string;
-  description: string;
-}
-
 export interface DisclosureParam {
   type: "string";
   description: string;
@@ -10,15 +5,15 @@ export interface DisclosureParam {
 }
 
 /**
- * 构建 load_skill / load_mcp 的参数 schema。
+ * 创建 load_skill / load_mcp 的参数 schema。
  * 有候选项时生成枚举，无候选项时退化为自由文本并在描述中追加提示。
  */
-export function buildDisclosureParam(
-  items: DisclosureItem[],
+export function createDisclosureParam(
+  ids: string[],
   baseDescription: string,
   emptyHint: string,
 ): DisclosureParam {
-  if (items.length === 0) {
+  if (ids.length === 0) {
     return {
       type: "string",
       description: `${baseDescription} ${emptyHint}`,
@@ -28,6 +23,6 @@ export function buildDisclosureParam(
   return {
     type: "string",
     description: baseDescription,
-    enum: items.map((item) => item.id),
+    enum: ids,
   };
 }

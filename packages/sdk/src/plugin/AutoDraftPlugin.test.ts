@@ -1,0 +1,203 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { AgentNS } from "@ai-zen/agents-core";
+import { AutoDraftPlugin } from "./AutoDraftPlugin.js";
+import { DraftRepository } from "../crud/DraftRepository.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+// ---------------------------------------------------------------------------
+// mock
+// ---------------------------------------------------------------------------
+
+function mockAgent(opts: { messages?: any[]; tools?: any[]; model?: any }): any {
+  return {
+    provider: {
+      config: {
+        defaultModel: "m1",
+        models: [{ id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 }],
+        endpoints: [],
+      },
+    },
+    lastUsage: undefined,
+    messages: opts.messages ?? [{ role: AgentNS.Role.System, content: "You are a helper." }],
+    tools: opts.tools ?? [],
+    model: opts.model ?? {},
+    send: vi.fn(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 测试
+// ---------------------------------------------------------------------------
+
+describe("AutoDraftPlugin", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "ai-zen-autodraft-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("返回一个 AgentPlugin（有 onInnerLoopEnd）", () => {
+    const plugin = new AutoDraftPlugin({ draftsDir: dir, agentId: "agent-1", modelId: "m1" });
+    expect(plugin).toBeDefined();
+    expect(typeof plugin.onInnerLoopEnd).toBe("function");
+  });
+
+  it("onInnerLoopEnd 后写入 draft 文件（未命名 → _current.json）", async () => {
+    const agent = mockAgent({
+      messages: [
+        { role: AgentNS.Role.System, content: "You are helpful." },
+        { role: AgentNS.Role.User, content: "Hello" },
+        { role: AgentNS.Role.Assistant, content: "Hi there!" },
+      ],
+    });
+
+    const plugin = new AutoDraftPlugin({ draftsDir: dir, agentId: "agent-1", modelId: "m1" });
+    await plugin.onInnerLoopEnd!({ agent, content: "hello", messages: agent.messages });
+
+    const draftRepo = new DraftRepository(dir);
+    const draft = draftRepo.read();
+    expect(draft).not.toBeNull();
+    expect(draft!.agentId).toBe("agent-1");
+    expect(draft!.conversationId).toBeUndefined();
+    expect(draft!.messages).toHaveLength(3);
+    expect(draft!.messages[0]).toEqual({ role: AgentNS.Role.System, content: "You are helpful." });
+    expect(draft!.messages[1]).toEqual({ role: AgentNS.Role.User, content: "Hello" });
+    expect(draft!.updatedAt).toBeDefined();
+  });
+
+  it("已命名对话写入 {conversationId}.json", async () => {
+    const agent = mockAgent({
+      messages: [{ role: AgentNS.Role.System, content: "Hi" }],
+    });
+
+    const plugin = new AutoDraftPlugin({
+      draftsDir: dir,
+      agentId: "agent-1",
+      modelId: "m1",
+      conversationId: "conv-123",
+    });
+    await plugin.onInnerLoopEnd!({ agent, content: "hello", messages: agent.messages });
+
+    const draftRepo = new DraftRepository(dir);
+    const draft = draftRepo.read("conv-123");
+    expect(draft).not.toBeNull();
+    expect(draft!.conversationId).toBe("conv-123");
+  });
+
+  it("多次 onAfterSend 会覆盖之前的 draft", async () => {
+    const agent = mockAgent({
+      messages: [{ role: AgentNS.Role.System, content: "Round 1" }],
+    });
+
+    const plugin = new AutoDraftPlugin({ draftsDir: dir, agentId: "agent-1", modelId: "m1" });
+    await plugin.onInnerLoopEnd!({ agent, content: "hello", messages: agent.messages });
+
+    agent.messages = [
+      { role: AgentNS.Role.System, content: "Round 1" },
+      { role: AgentNS.Role.User, content: "Q" },
+      { role: AgentNS.Role.Assistant, content: "A" },
+    ];
+    await plugin.onInnerLoopEnd!({ agent, content: "hello", messages: agent.messages });
+
+    const draftRepo = new DraftRepository(dir);
+    const draft = draftRepo.read();
+    expect(draft!.messages).toHaveLength(3);
+  });
+
+  it("agent.messages 中的 tool 角色保持不变", async () => {
+    const agent = mockAgent({
+      messages: [
+        { role: AgentNS.Role.System, content: "Hi" },
+        { role: AgentNS.Role.User, content: "read file" },
+        { role: AgentNS.Role.Assistant, content: "", tool_calls: [{ id: "t1", function: { name: "readFile" } }] },
+        { role: "tool", content: "file contents..." },
+        { role: AgentNS.Role.Assistant, content: "File says: hello" },
+      ],
+    });
+
+    const plugin = new AutoDraftPlugin({ draftsDir: dir, agentId: "agent-1", modelId: "m1" });
+    await plugin.onInnerLoopEnd!({ agent, content: "hello", messages: agent.messages });
+
+    const draftRepo = new DraftRepository(dir);
+    const draft = draftRepo.read();
+    expect(draft).not.toBeNull();
+    const roles = draft!.messages.map((m) => m.role);
+    expect(roles).toEqual(["system", "user", "assistant", "tool", "assistant"]);
+  });
+
+  it("写盘失败时不抛异常（目录不存在时自动创建）", async () => {
+    const agent = mockAgent({
+      messages: [{ role: AgentNS.Role.System, content: "Hi" }],
+    });
+
+    const nestedDir = join(dir, "sub1", "sub2");
+    const plugin = new AutoDraftPlugin({ draftsDir: nestedDir, agentId: "agent-1", modelId: "m1" });
+
+    await expect(
+      plugin.onInnerLoopEnd!({ agent, content: "hello", messages: agent.messages }),
+    ).resolves.toBeUndefined();
+
+    const draftRepo = new DraftRepository(nestedDir);
+    const draft = draftRepo.read();
+    expect(draft).not.toBeNull();
+  });
+});
+
+// ==================================================================
+// AutoDraftPlugin.checkDraftForRestore
+// ==================================================================
+
+describe("AutoDraftPlugin.checkDraftForRestore", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "ai-zen-autodraft-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("_current.json 不存在时返回 null", () => {
+    const result = AutoDraftPlugin.checkDraftForRestore(dir);
+    expect(result).toBeNull();
+  });
+
+  it("_current.json 存在且未过期时返回 Draft", async () => {
+    const agent = mockAgent({
+      messages: [{ role: AgentNS.Role.System, content: "Unfinished work" }],
+    });
+    const plugin = new AutoDraftPlugin({ draftsDir: dir, agentId: "agent-1", modelId: "m1" });
+    await plugin.onInnerLoopEnd!({ agent, content: "hello", messages: agent.messages });
+
+    const result = AutoDraftPlugin.checkDraftForRestore(dir);
+    expect(result).not.toBeNull();
+    expect(result!.agentId).toBe("agent-1");
+    expect(result!.messages[0].content).toBe("Unfinished work");
+  });
+
+  it("过期后自动清理并返回 null", async () => {
+    const draftRepo = new DraftRepository(dir);
+    const dayjs = (await import("dayjs")).default;
+    const oldDate = dayjs().subtract(8, "day").toISOString();
+
+    draftRepo.write({
+      agentId: "old-agent",
+      modelId: "m1",
+      messages: [{ role: AgentNS.Role.System, content: "Old" }],
+      updatedAt: oldDate,
+    });
+
+    const result = AutoDraftPlugin.checkDraftForRestore(dir);
+    expect(result).toBeNull();
+
+    const draft = draftRepo.read();
+    expect(draft).toBeNull();
+  });
+});

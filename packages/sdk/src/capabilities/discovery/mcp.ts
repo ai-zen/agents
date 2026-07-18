@@ -1,13 +1,14 @@
 import { existsSync, readFileSync } from "node:fs";
-import type { DisclosureItem } from "../disclosure.js";
+import type { McpServerConfig } from "../../types/index.js";
 
 /**
- * 从 mcp.json 文件列表中发现所有 MCP server 名称。
+ * 从 mcp.json 文件列表中发现所有 MCP server 配置。
  * 按优先级从高到低传入路径列表，同名 server 靠前的文件优先（先到先得）。
+ * 返回完整配置，不再丢失信息。
  */
-export function discoverMcpServers(paths: string[]): DisclosureItem[] {
+export function discoverMcpServers(paths: string[]): McpServerConfig[] {
   const seen = new Set<string>();
-  const items: DisclosureItem[] = [];
+  const items: McpServerConfig[] = [];
 
   for (const path of paths) {
     if (!existsSync(path)) continue;
@@ -17,10 +18,10 @@ export function discoverMcpServers(paths: string[]): DisclosureItem[] {
       const config = JSON.parse(raw);
       const servers = config.servers ?? {};
 
-      for (const name of Object.keys(servers)) {
-        if (!seen.has(name)) {
-          seen.add(name);
-          items.push({ id: name, description: "" });
+      for (const id of Object.keys(servers)) {
+        if (!seen.has(id)) {
+          seen.add(id);
+          items.push({ id, ...servers[id] });
         }
       }
     } catch {

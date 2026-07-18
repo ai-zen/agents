@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { Capabilities } from "./capabilities.js";
-import type { Provider } from "../runtime/runtime.js";
+import type { Provider } from "../runtime/Provider.js";
 import type { AgentDefinition, AppConfig, AgentPermissions } from "../types/index.js";
 import { AgentNS, Tool } from "@ai-zen/agents-core";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
@@ -27,7 +27,6 @@ function mockProvider(overrides?: Partial<Provider>): Provider {
     draftsDir: "",
     mcpManager: undefined,
     mcpConfigs: undefined,
-    createModel: vi.fn(),
     ...overrides,
   } as unknown as Provider;
 }
@@ -97,12 +96,12 @@ function writeSubAgent(id: string, functionName: string) {
   writeFileSync(join(subDir, `${id}.json`), JSON.stringify(def));
 }
 
-function writeSkill(id: string, description: string) {
+function writeSkill(id: string, description: string, subAgent = true) {
   const skillDir = join(tmpDir, "skills", id);
   mkdirSync(skillDir, { recursive: true });
   writeFileSync(
     join(skillDir, "SKILL.md"),
-    `---\nname: ${id}\ndescription: ${description}\n---\n# ${id}`,
+    `---\nname: ${id}\ndescription: ${description}\nsub-agent: ${subAgent}\n---\n# ${id}`,
   );
 }
 
