@@ -5,7 +5,7 @@ import type { SkillInfo } from "../discovery/skills.js";
 import { createDisclosureParam } from "../disclosure.js";
 import { readSkill } from "../discovery/skills.js";
 import { createLogger } from "../../shared/logger.js";
-import type { Capabilities } from "../capabilities.js";
+import type { Capabilities } from "../Capabilities.js";
 
 const log = createLogger();
 

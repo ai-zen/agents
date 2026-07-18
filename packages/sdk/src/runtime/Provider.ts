@@ -1,5 +1,5 @@
 import type { AppConfig, McpServerConfig } from "../types/index.js";
-import type { McpConnectionManager } from "./mcp-connection.js";
+import type { McpConnectionManager } from "./McpConnectionManager.js";
 
 /**
  * Provider — 全局上下文实例。

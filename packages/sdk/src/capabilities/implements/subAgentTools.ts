@@ -2,7 +2,7 @@ import { Agent, AgentToolLazy, type FunctionCallContext } from "@ai-zen/agents-c
 import type { Tool, AgentNS, ChatCompletionModel } from "@ai-zen/agents-core";
 import type { AgentDefinition } from "../../types/index.js";
 import type { Provider } from "../../runtime/Provider.js";
-import type { Capabilities } from "../capabilities.js";
+import type { Capabilities } from "../Capabilities.js";
 import { createModel } from "../../runtime/createModel.js";
 
 /**
