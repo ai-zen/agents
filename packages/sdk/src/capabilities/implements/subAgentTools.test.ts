@@ -24,8 +24,7 @@ function mockProvider(): Provider {
     skillsPaths: [],
     toolsPaths: [],
     mcpPaths: [],
-    conversationsDir: "",
-    draftsDir: "",
+
   } as unknown as Provider;
 }
 

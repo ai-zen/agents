@@ -23,8 +23,7 @@ function mockProvider(overrides?: Partial<Provider>): Provider {
     skillsPaths: [],
     toolsPaths: [],
     mcpPaths: [],
-    conversationsDir: "",
-    draftsDir: "",
+
     // 默认 getMcpManager 返回 undefined（无 mcpPaths）
     getMcpManager: () => undefined as any,
     ...overrides,

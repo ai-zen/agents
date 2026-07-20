@@ -9,8 +9,6 @@ const baseOptions = {
     models: [{ id: "gpt4", name: "GPT-4", endpointId: "openai", modelName: "gpt-4", maxContextTokens: 128000 }],
   },
   agentsDir: "/tmp/agents",
-  conversationsDir: "/tmp/conversations",
-  draftsDir: "/tmp/drafts",
 };
 
 describe("Provider", () => {

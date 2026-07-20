@@ -231,8 +231,6 @@ describe("端到端：真实文件系统路径", () => {
         skillsPaths: [PROJECT_SKILLS_DIR, TEST_SKILLS_DIR],
         toolsPaths: [PROJECT_TOOLS_DIR, TEST_TOOLS_DIR],
         mcpPaths: [PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP],
-        conversationsDir: TEST_CONVERSATIONS_DIR,
-        draftsDir: TEST_DRAFTS_DIR,
       });
 
       const caps = new Capabilities(provider);
@@ -254,8 +252,6 @@ describe("端到端：真实文件系统路径", () => {
         skillsPaths: [PROJECT_SKILLS_DIR, TEST_SKILLS_DIR],
         toolsPaths: [PROJECT_TOOLS_DIR, TEST_TOOLS_DIR],
         mcpPaths: [PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP],
-        conversationsDir: TEST_CONVERSATIONS_DIR,
-        draftsDir: TEST_DRAFTS_DIR,
       });
 
       const caps = new Capabilities(provider);
@@ -282,8 +278,6 @@ describe("端到端：真实文件系统路径", () => {
         skillsPaths: [PROJECT_SKILLS_DIR, TEST_SKILLS_DIR],
         toolsPaths: [PROJECT_TOOLS_DIR, TEST_TOOLS_DIR],
         mcpPaths: [PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP],
-        conversationsDir: TEST_CONVERSATIONS_DIR,
-        draftsDir: TEST_DRAFTS_DIR,
       });
 
       const caps = new Capabilities(provider);
@@ -314,8 +308,6 @@ describe("端到端：真实文件系统路径", () => {
         skillsPaths: [PROJECT_SKILLS_DIR, TEST_SKILLS_DIR],
         toolsPaths: [PROJECT_TOOLS_DIR, TEST_TOOLS_DIR],
         mcpPaths: [PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP],
-        conversationsDir: TEST_CONVERSATIONS_DIR,
-        draftsDir: TEST_DRAFTS_DIR,
       });
 
       const agent = createAgent(provider, "code-assistant");
@@ -355,8 +347,6 @@ describe("端到端：真实文件系统路径", () => {
         skillsPaths: [PROJECT_SKILLS_DIR, TEST_SKILLS_DIR],
         toolsPaths: [PROJECT_TOOLS_DIR, TEST_TOOLS_DIR],
         mcpPaths: [PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP],
-        conversationsDir: TEST_CONVERSATIONS_DIR,
-        draftsDir: TEST_DRAFTS_DIR,
       });
 
       const agent = createAgent(provider, "translator");
@@ -385,8 +375,6 @@ describe("端到端：真实文件系统路径", () => {
         skillsPaths: [PROJECT_SKILLS_DIR, TEST_SKILLS_DIR],
         toolsPaths: [PROJECT_TOOLS_DIR, TEST_TOOLS_DIR],
         mcpPaths: [PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP],
-        conversationsDir: TEST_CONVERSATIONS_DIR,
-        draftsDir: TEST_DRAFTS_DIR,
       });
 
       const agent = createAgent(provider, "code-assistant");
@@ -420,8 +408,6 @@ describe("端到端：真实文件系统路径", () => {
         skillsPaths: [PROJECT_SKILLS_DIR, TEST_SKILLS_DIR],
         toolsPaths: [PROJECT_TOOLS_DIR, TEST_TOOLS_DIR],
         mcpPaths: [PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP],
-        conversationsDir: TEST_CONVERSATIONS_DIR,
-        draftsDir: TEST_DRAFTS_DIR,
       });
 
       const agent = createAgent(provider, "code-assistant");

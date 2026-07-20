@@ -82,8 +82,6 @@ describe("createAgent", () => {
       subAgentsPaths: [join(dir, "sub-agents")],
       skillsPaths: [join(dir, "skills")],
       mcpPaths: [join(dir, "mcp.json")],
-      conversationsDir: join(dir, "conversations"),
-      draftsDir: join(dir, "drafts"),
     });
     const agent = createAgent(provider, "my-agent");
 
@@ -99,8 +97,6 @@ describe("createAgent", () => {
     const provider = new Provider({
       config,
       agentsDir: join(dir, "agents"),
-      conversationsDir: join(dir, "conversations"),
-      draftsDir: join(dir, "drafts"),
     });
 
     expect(() => createAgent(provider, "nonexistent")).toThrow();
@@ -112,8 +108,6 @@ describe("createAgent", () => {
     const provider = new Provider({
       config,
       agentsDir: join(dir, "agents"),
-      conversationsDir: join(dir, "conversations"),
-      draftsDir: join(dir, "drafts"),
     });
 
     const agent = createAgent(provider, "my-agent");

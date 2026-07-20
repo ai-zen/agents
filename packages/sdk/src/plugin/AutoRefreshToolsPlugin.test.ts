@@ -18,8 +18,7 @@ function mockRuntime(config?: any) {
     skillsPaths: [],
     toolsPaths: [],
     mcpPaths: [],
-    conversationsDir: "",
-    draftsDir: "",
+
   };
 }
 

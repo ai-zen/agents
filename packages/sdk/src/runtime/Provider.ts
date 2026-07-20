@@ -22,8 +22,6 @@ export class Provider {
   readonly skillsPaths: string[];
   readonly toolsPaths: string[];
   readonly mcpPaths: string[];
-  readonly conversationsDir: string;
-  readonly draftsDir: string;
 
   // ---- MCP ----
   private _mcpManager?: McpConnectionManager;
@@ -35,8 +33,6 @@ export class Provider {
     skillsPaths?: string[];
     toolsPaths?: string[];
     mcpPaths?: string[];
-    conversationsDir: string;
-    draftsDir: string;
   }) {
     this.config = options.config;
     this.agentsDir = options.agentsDir;
@@ -44,8 +40,6 @@ export class Provider {
     this.skillsPaths = options.skillsPaths ?? [];
     this.toolsPaths = options.toolsPaths ?? [];
     this.mcpPaths = options.mcpPaths ?? [];
-    this.conversationsDir = options.conversationsDir;
-    this.draftsDir = options.draftsDir;
   }
 
   /**
