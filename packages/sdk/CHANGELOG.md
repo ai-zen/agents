@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.6] - 2026-07-20
+
+### 🔧 修复
+
+- **默认 SubAgent 函数名和描述不足以让 LLM 识别为子 Agent** — `function.name` 从 `general_assistant` 改为 `sub_agent_default`，`function.description` 重写为详细描述，明确子 Agent 身份和能力边界。参数名 `query` → `task` 与设计规范统一，system prompt 明确角色定位
+- **`DEFAULT_SUBAGENT_ID` 从 `general-assistant` 改为 `sub-agent-default`** — 文件名与函数名对应，便于识别
+
 ## [0.2.5] - 2026-07-20
 
 ### 🔧 修复
