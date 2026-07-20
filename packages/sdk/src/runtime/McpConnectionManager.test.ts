@@ -124,6 +124,12 @@ describe("McpConnectionManager", () => {
     await expect(rawManager.connect("bad", badConfig)).rejects.toThrow("缺少 url");
   });
 
+  it("sse 缺少 url 时抛出错误", async () => {
+    const rawManager = new McpConnectionManager();
+    const badConfig: McpServerConfig = { id: "bad", transport: "sse" };
+    await expect(rawManager.connect("bad", badConfig)).rejects.toThrow("缺少 url");
+  });
+
   it("不支持的 transport 类型时抛出错误", async () => {
     const rawManager = new McpConnectionManager();
     const badConfig = { transport: "websocket" } as any;
