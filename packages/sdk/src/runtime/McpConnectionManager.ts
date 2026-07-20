@@ -185,27 +185,41 @@ export class McpConnectionManager {
 
     await client.connect(transport);
 
-    const toolsResult = await client.listTools();
-    const resourcesResult = await client.listResources();
-    const promptsResult = await client.listPrompts();
+    // 根据 Server 声明的 capabilities 按需调用，避免调用未声明的方法
+    const serverCaps = client.getServerCapabilities();
 
     const manifest: McpServerManifest = {
-      tools: (toolsResult.tools ?? []).map((t: any) => ({
+      tools: [],
+      resources: [],
+      prompts: [],
+    };
+
+    if (serverCaps?.tools) {
+      const toolsResult = await client.listTools();
+      manifest.tools = (toolsResult.tools ?? []).map((t: any) => ({
         name: t.name,
         description: t.description ?? "",
         inputSchema: t.inputSchema as Record<string, unknown>,
-      })),
-      resources: (resourcesResult.resources ?? []).map((r: any) => ({
+      }));
+    }
+
+    if (serverCaps?.resources) {
+      const resourcesResult = await client.listResources();
+      manifest.resources = (resourcesResult.resources ?? []).map((r: any) => ({
         uri: r.uri,
         name: r.name,
         description: r.description,
         mimeType: r.mimeType,
-      })),
-      prompts: (promptsResult.prompts ?? []).map((p: any) => ({
+      }));
+    }
+
+    if (serverCaps?.prompts) {
+      const promptsResult = await client.listPrompts();
+      manifest.prompts = (promptsResult.prompts ?? []).map((p: any) => ({
         name: p.name,
         description: p.description,
-      })),
-    };
+      }));
+    }
 
     const entry = this.servers.get(name) ?? { state: "connecting" as const };
     this.servers.set(name, {

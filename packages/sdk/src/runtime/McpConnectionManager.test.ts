@@ -6,6 +6,11 @@ import type { McpServerConfig } from "../types/index.js";
 const mockClient = {
   connect: vi.fn().mockResolvedValue(undefined),
   close: vi.fn().mockResolvedValue(undefined),
+  getServerCapabilities: vi.fn().mockReturnValue({
+    tools: {},
+    resources: {},
+    prompts: {},
+  }),
   listTools: vi.fn().mockResolvedValue({
     tools: [{ name: "test-tool", description: "a tool", inputSchema: { type: "object", properties: {} } }],
   }),
