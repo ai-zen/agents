@@ -72,7 +72,7 @@ function writeMcpConfig(servers: Record<string, unknown>) {
 describe("createAgent", () => {
   it("从磁盘完整装配 Agent", () => {
     writeAgentFile("my-agent");
-    writeSubAgent("sa1", "general_assistant");
+    writeSubAgent("sa1", "sub_agent_default");
     writeSkill("code-review", "代码审查");
     writeMcpConfig({ github: { transport: "stdio", command: "gh" } });
 
@@ -90,7 +90,7 @@ describe("createAgent", () => {
     expect(agent.permissions!.tools).toEqual({ allow: ["*"] });
 
     const names = agent.tools.map((t: any) => t.function.name);
-    expect(names).toContain("general_assistant");
+    expect(names).toContain("sub_agent_default");
   });
 
   it("Agent 不存在时抛异常", () => {

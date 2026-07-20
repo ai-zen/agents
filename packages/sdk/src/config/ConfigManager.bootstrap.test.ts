@@ -126,14 +126,14 @@ describe("ConfigManager.ensureDefaultSubAgent", () => {
     if (testDir) rmSync(testDir, { recursive: true, force: true });
   });
 
-  it("全新空目录 → 创建 sub-agents/ 并写入 general-assistant.json", () => {
+  it("全新空目录 → 创建 sub-agents/ 并写入 sub-agent-default.json", () => {
     testDir = tempDir();
     const mgr = makeManager(testDir);
 
     const result = mgr.ensureDefaultSubAgent()!;
 
     expect(result.id).toBe(DEFAULT_SUBAGENT_ID);
-    expect(result.function!.name).toBe("general_assistant");
+    expect(result.function!.name).toBe("sub_agent_default");
     const subPath = join(testDir, "sub-agents", `${DEFAULT_SUBAGENT_ID}.json`);
     expect(existsSync(subPath)).toBe(true);
   });
@@ -242,8 +242,8 @@ describe("ConfigManager.bootstrap", () => {
 
     // subAgent
     expect(result.subAgent).not.toBeNull();
-    expect(result.subAgent!.id).toBe("general-assistant");
-    expect(existsSync(join(testDir, "sub-agents", "general-assistant.json"))).toBe(true);
+    expect(result.subAgent!.id).toBe(DEFAULT_SUBAGENT_ID);
+    expect(existsSync(join(testDir, "sub-agents", `${DEFAULT_SUBAGENT_ID}.json`))).toBe(true);
 
     // dirs
     for (const sub of ["agents", "sub-agents", "skills", "tools", "mcp-oauth"]) {

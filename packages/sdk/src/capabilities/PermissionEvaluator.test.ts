@@ -6,7 +6,7 @@ const candidates = {
   tools: ["readFile", "exec", "rm"],
   skills: ["code-review", "deploy"],
   mcps: ["github", "slack"],
-  subagents: ["general_assistant", "code-reviewer"],
+  subagents: ["sub_agent_default", "code-reviewer"],
 };
 
 describe("PermissionEvaluator", () => {
@@ -56,7 +56,7 @@ describe("PermissionEvaluator", () => {
       expect(result.tools).toEqual(["readFile", "exec"]);
       expect(result.skills).toEqual(["code-review"]);
       expect(result.mcps).toEqual(["github"]);
-      expect(result.subagents).toEqual(["general_assistant", "code-reviewer"]);
+      expect(result.subagents).toEqual(["sub_agent_default", "code-reviewer"]);
     });
   });
 

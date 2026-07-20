@@ -34,19 +34,19 @@ describe("discoverSubAgents", () => {
   });
 
   it("发现所有 SubAgent（返回完整 AgentDefinition）", () => {
-    writeAgentFile("agent-a", "general_assistant", "通用助手");
+    writeAgentFile("agent-a", "sub_agent_default", "通用助手");
     writeAgentFile("agent-b", "code-reviewer", "代码审查");
 
     const result = discoverSubAgents([dir]);
     expect(result).toHaveLength(2);
-    expect(result.map((a) => a.function!.name)).toEqual(["general_assistant", "code-reviewer"]);
+    expect(result.map((a) => a.function!.name)).toEqual(["sub_agent_default", "code-reviewer"]);
     // 应包含完整定义
     expect(result[0].messages).toBeDefined();
     expect(result[0].function!.description).toBe("通用助手");
   });
 
   it("跳过无 function 字段的普通 Agent", () => {
-    writeAgentFile("agent-a", "general_assistant");
+    writeAgentFile("agent-a", "sub_agent_default");
     const plain: AgentDefinition = {
       id: "plain-agent",
       name: "普通 Agent",
@@ -58,7 +58,7 @@ describe("discoverSubAgents", () => {
 
     const result = discoverSubAgents([dir]);
     expect(result).toHaveLength(1);
-    expect(result[0].function!.name).toBe("general_assistant");
+    expect(result[0].function!.name).toBe("sub_agent_default");
   });
 
   it("跳过解析失败的 JSON", () => {
@@ -77,7 +77,7 @@ describe("discoverSubAgents", () => {
   it("多路径扫描：合并所有路径的 SubAgent", () => {
     const dir2 = mkdtempSync(join(tmpdir(), "ai-zen-discovery2-"));
     try {
-      writeAgentFile("agent-a", "general_assistant");
+      writeAgentFile("agent-a", "sub_agent_default");
       const agentB: AgentDefinition = {
         id: "agent-b",
         name: "agent-b",
@@ -90,7 +90,7 @@ describe("discoverSubAgents", () => {
 
       const result = discoverSubAgents([dir, dir2]);
       expect(result).toHaveLength(2);
-      expect(result.map((a) => a.function!.name)).toEqual(["general_assistant", "code-reviewer"]);
+      expect(result.map((a) => a.function!.name)).toEqual(["sub_agent_default", "code-reviewer"]);
     } finally {
       rmSync(dir2, { recursive: true, force: true });
     }

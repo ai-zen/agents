@@ -32,7 +32,7 @@ export const DEFAULT_AGENT_DEFINITION: Omit<AgentDefinition, "createdAt" | "upda
 // ---------------------------------------------------------------------------
 
 /** 默认 SubAgent ID */
-export const DEFAULT_SUBAGENT_ID = "general-assistant";
+export const DEFAULT_SUBAGENT_ID = "sub-agent-default";
 
 /** 默认 SubAgent 定义（不含时间戳） */
 export const DEFAULT_SUBAGENT_DEFINITION: Omit<AgentDefinition, "createdAt" | "updatedAt"> = {
@@ -43,9 +43,9 @@ export const DEFAULT_SUBAGENT_DEFINITION: Omit<AgentDefinition, "createdAt" | "u
     {
       role: AgentNS.Role.System,
       content:
-        "你是一个通用助手，擅长独立完成各类任务。请根据给定的任务描述，认真分析并完成任务。完成任务后直接返回结果，不要解释你的思考过程。",
+        "你是一个通用助手子 Agent，被父 Agent 委派来独立完成具体任务。请根据给定的任务描述，主动调用你的工具（文件读写、执行命令、搜索等）来分析和完成任务。完成任务后直接返回结果，不需要解释你的思考过程。",
     },
-    { role: AgentNS.Role.User, content: "{{query}}" },
+    { role: AgentNS.Role.User, content: "{{task}}" },
   ],
   permissions: {
     tools: { allow: ["*"] },
@@ -54,14 +54,15 @@ export const DEFAULT_SUBAGENT_DEFINITION: Omit<AgentDefinition, "createdAt" | "u
     subagents: { deny: ["*"] },
   },
   function: {
-    name: "general_assistant",
-    description: "通用助手，可独立完成各类任务",
+    name: "sub_agent_default",
+    description:
+      "通用子 Agent，可独立完成各类任务。将任务委派给它后，它会自主调用自身工具（文件读写、代码执行、搜索等）来完成任务并返回结果。适合处理需要多步骤执行、工具调用的复杂任务。",
     parameters: {
       type: "object",
       properties: {
-        query: { type: "string", description: "任务描述" },
+        task: { type: "string", description: "任务描述" },
       },
-      required: ["query"],
+      required: ["task"],
       additionalProperties: false,
     },
   },

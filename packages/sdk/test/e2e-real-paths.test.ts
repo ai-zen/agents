@@ -77,7 +77,7 @@ describe("端到端：真实文件系统路径", () => {
       const agents = discoverSubAgents([TEST_SUB_AGENTS_DIR]);
       expect(agents.length).toBeGreaterThanOrEqual(2);
       const names = agents.map((a) => a.function!.name);
-      expect(names).toContain("general_assistant");
+      expect(names).toContain("sub_agent_default");
       expect(names).toContain("code_reviewer");
     });
 
@@ -85,7 +85,7 @@ describe("端到端：真实文件系统路径", () => {
       checkPaths();
       const agents = discoverSubAgents([PROJECT_SUB_AGENTS_DIR, TEST_SUB_AGENTS_DIR]);
       const names = agents.map((a) => a.function!.name);
-      expect(names).toContain("general_assistant");
+      expect(names).toContain("sub_agent_default");
       expect(names).toContain("code_reviewer");
       expect(names).toContain("project_manager");
     });
@@ -261,7 +261,7 @@ describe("端到端：真实文件系统路径", () => {
       const names = tools.map((t) => t.function.name);
       expect(names).toContain("readFile");
       expect(names).toContain("exec");
-      expect(names).toContain("general_assistant");
+      expect(names).toContain("sub_agent_default");
       expect(names).toContain("code_reviewer");
       expect(names).toContain("project_manager");
       expect(names).toContain("load_skill");
@@ -290,7 +290,7 @@ describe("端到端：真实文件系统路径", () => {
       expect(names).toContain("exec");
       expect(names).not.toContain("rm");
       expect(names).not.toContain("load_skill");
-      expect(names).not.toContain("general_assistant");
+      expect(names).not.toContain("sub_agent_default");
     });
   });
 
@@ -332,7 +332,7 @@ describe("端到端：真实文件系统路径", () => {
       expect(names).toContain("readFile");
       expect(names).toContain("writeFile");
       expect(names).toContain("exec");
-      expect(names).toContain("general_assistant");
+      expect(names).toContain("sub_agent_default");
       expect(names).toContain("load_skill");
       expect(names).toContain("generateImage"); // 有 imageModels 配置
     });
@@ -356,7 +356,7 @@ describe("端到端：真实文件系统路径", () => {
       expect(names).toContain("writeFile");
       expect(names).toContain("exec");
       expect(names).not.toContain("rm");
-      expect(names).not.toContain("general_assistant");
+      expect(names).not.toContain("sub_agent_default");
       expect(names).not.toContain("load_skill");
     });
   });

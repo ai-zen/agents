@@ -40,7 +40,7 @@ describe("集成：端到端 Agent 组装", () => {
         tools: { allow: ["readFile", "exec", "glob", "findText"] },
         skills: { allow: ["code-review"] },
         mcps: { deny: ["*"] },
-        subagents: { allow: ["general_assistant"] },
+        subagents: { allow: ["sub_agent_default"] },
       },
       createdAt: "2025-01-01T00:00:00Z",
       updatedAt: "2025-01-01T00:00:00Z",
@@ -53,7 +53,7 @@ describe("集成：端到端 Agent 组装", () => {
     const saDef: AgentDefinition = {
       id: "ga", name: "ga",
       messages: [{ role: "system", content: "Hi" }, { role: "user", content: "{{task}}" }],
-      function: { name: "general_assistant", description: "", parameters: { type: "object", properties: {}, required: [] } },
+      function: { name: "sub_agent_default", description: "", parameters: { type: "object", properties: {}, required: [] } },
       createdAt: "2025-01-01T00:00:00Z", updatedAt: "2025-01-01T00:00:00Z",
     };
     writeFileSync(join(subAgentsDir, "ga.json"), JSON.stringify(saDef));
@@ -85,7 +85,7 @@ describe("集成：端到端 Agent 组装", () => {
     expect(toolNames).not.toContain("rm");
     expect(toolNames).not.toContain("writeFile");
 
-    // subagents: allow: ["general_assistant"]
-    expect(toolNames).toContain("general_assistant");
+    // subagents: allow: ["sub_agent_default"]
+    expect(toolNames).toContain("sub_agent_default");
   });
 });
