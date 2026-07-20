@@ -234,5 +234,75 @@ describe("AutoMigratePlugin", () => {
 
       expect((agent as any).migrated).toBe(true);
     });
+
+    it("onBeforeMigrate 在迁移开始前被调用", async () => {
+      const agent = mockAgent({
+        lastUsage: { prompt_tokens: 80000, completion_tokens: 5000, total_tokens: 85000 },
+      });
+      const migrationAgent = mockAgent({});
+      migrationAgent.send.mockResolvedValue([{ role: "assistant", content: "交接文档" }]);
+
+      const onBeforeMigrate = vi.fn();
+      const plugin = new AutoMigratePlugin({
+        maxTokens: 50000,
+        migrationAgent: migrationAgent,
+        onBeforeMigrate,
+      });
+
+      const ctx = { agent, content: "hello", messages: agent.messages };
+      await plugin.onAfterSend!(ctx);
+
+      expect(onBeforeMigrate).toHaveBeenCalledTimes(1);
+      expect(onBeforeMigrate.mock.calls[0][0]).toBe(80000);
+      expect(onBeforeMigrate.mock.calls[0][1]).toBe(50000);
+      expect(onBeforeMigrate.mock.calls[0][2]).toBe(agent);
+    });
+
+    it("onBeforeMigrate 中抛错不影响迁移流程", async () => {
+      const agent = mockAgent({
+        lastUsage: { prompt_tokens: 80000, completion_tokens: 5000, total_tokens: 85000 },
+      });
+      const migrationAgent = mockAgent({});
+      migrationAgent.send.mockResolvedValue([{ role: "assistant", content: "交接文档" }]);
+
+      const onBeforeMigrate = vi.fn().mockImplementation(() => {
+        throw new Error("UI error");
+      });
+      const onHandoff = vi.fn();
+
+      const plugin = new AutoMigratePlugin({
+        maxTokens: 50000,
+        migrationAgent: migrationAgent,
+        onBeforeMigrate,
+        onHandoff,
+      });
+
+      const ctx = { agent, content: "hello", messages: agent.messages };
+      await plugin.onAfterSend!(ctx);
+
+      // onBeforeMigrate 抛错不影响后续流程
+      expect(onBeforeMigrate).toHaveBeenCalled();
+      expect(migrationAgent.send).toHaveBeenCalled();
+      expect(onHandoff).toHaveBeenCalled();
+    });
+
+    it("token 未超限时不触发 onBeforeMigrate", async () => {
+      const agent = mockAgent({
+        lastUsage: { prompt_tokens: 30000, completion_tokens: 5000, total_tokens: 35000 },
+      });
+      const migrationAgent = mockAgent({});
+      const onBeforeMigrate = vi.fn();
+      const plugin = new AutoMigratePlugin({
+        maxTokens: 50000,
+        migrationAgent: migrationAgent,
+        onBeforeMigrate,
+      });
+
+      const ctx = { agent, content: "hello", messages: agent.messages };
+      await plugin.onAfterSend!(ctx);
+
+      expect(onBeforeMigrate).not.toHaveBeenCalled();
+      expect(migrationAgent.send).not.toHaveBeenCalled();
+    });
   });
 });

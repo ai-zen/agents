@@ -9,6 +9,9 @@ const log = createLogger();
 export interface AutoMigrateOptions {
   maxTokens: number;
   migrationAgent: SdkAgent;
+  /** 迁移开始前触发（promptTokens 刚超限时），可在此向用户展示迁移提示 */
+  onBeforeMigrate?: (promptTokens: number, maxTokens: number, agent: SdkAgent) => void;
+  /** 迁移完成后触发（交接文档已注入 agent.messages），可在此保存对话等 */
   onHandoff?: (handoffDoc: string, agent: SdkAgent) => void;
 }
 
@@ -35,14 +38,21 @@ export class AutoMigratePlugin implements AgentPlugin {
 
   async onAfterSend(ctx: SendContext): Promise<void> {
     const { agent } = ctx;
-    const { maxTokens, migrationAgent, onHandoff } = this.options;
+    const { maxTokens, migrationAgent, onBeforeMigrate, onHandoff } = this.options;
 
     const promptTokens = agent.lastUsage?.prompt_tokens;
     if (promptTokens == null) return;
 
     if (!TaskMigrationService.shouldMigrate(promptTokens, maxTokens)) return;
 
-    log.warn(`[autoMigrate] Token 使用量已达 ${promptTokens}，超出限制 ${maxTokens}，开始自动迁移……`);
+    // 迁移前钩子：由上层（CLI）处理用户提示
+    if (onBeforeMigrate) {
+      try {
+        await onBeforeMigrate(promptTokens, maxTokens, agent);
+      } catch (err: any) {
+        log.error(`[autoMigrate] onBeforeMigrate 回调失败: ${err?.message ?? err}`);
+      }
+    }
 
     try {
       const historyText = this.serializeMessages(agent.messages);
