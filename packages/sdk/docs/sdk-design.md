@@ -212,6 +212,40 @@ capabilities/
     sub-agents/         ← 项目 SubAgent
 ```
 
+### mcp.json 配置格式
+
+遵循业界标准，`mcp.json` 使用 `mcpServers` 作为顶层字段，每个 server 以 id 为键（可以是任意字符串，含中文等）：
+
+```json
+{
+  "mcpServers": {
+    "server-name": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-foo"],
+      "env": {
+        "API_KEY": "${API_KEY}"
+      },
+      "disabled": false
+    }
+  }
+}
+```
+
+字段说明：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `mcpServers` | object | 顶层字段，key 为 server id，value 为 server 配置 |
+| `command` | string | 启动命令（stdio 类型必填） |
+| `args` | string[] | 命令参数 |
+| `env` | object | 环境变量 |
+| `url` | string | HTTP/SSE 服务器地址（http/sse 类型必填） |
+| `type` | string | transport 类型：`"stdio"`、`"http"` 或 `"sse"`。不填则自动推断——有 `command` 则为 `stdio`，有 `url` 则为 `http`。同时兼容 `transportType` 字段（二者取一，`type` 优先） |
+| `disabled` | boolean | 是否禁用，默认为 `false` |
+| `headers` | object | HTTP 请求头（仅 http/sse） |
+| `autoApprove` | string[] | 可自动批准的工具列表（当前未使用，预留） |
+| `timeout` | number | 超时时间（毫秒）（当前未使用，预留） |
+
 ### MCP 配置合并
 
 优先级从高到低：
@@ -280,7 +314,7 @@ interface ExcludeOptions {
 | 用户工具 | `discoverUserTools(paths)` | `Tool[]` | 扫描 `tools/*.js`，动态 `require` 为 Tool 实例 |
 | SubAgent | `discoverSubAgents(paths)` | `AgentDefinition[]` | 含完整定义（function、messages 等） |
 | Skill | `discoverSkills(paths)` | `SkillInfo[]` | 含 id、name、description、subAgent 标记等完整信息 |
-| MCP Server | `discoverMcpServers(paths)` | `McpServerConfig[]` | 含完整服务器配置（transport、command、url 等） |
+| MCP Server | `discoverMcpServers(paths)` | `McpServerConfig[]` | 含完整服务器配置（type/transport、command、url 等） |
 
 发现结果全局共享，SubAgent 和 Skill 子 Agent 复用同一份候选集。
 
@@ -341,7 +375,7 @@ SubAgent 不作为普通工具出现在此维度。`call_skill_sub_agent`、`loa
 #### mcps
 
 ```
-候选 = discoverMcpServers()  →  McpServerConfig[]（完整服务器配置）
+候选 = discoverMcpServers()  →  McpServerConfig[]（完整服务器配置，含 type/command/url 等）
 排除 = exclude.mcps
 权限 = filterByPermissions(permissions.mcps)
 结果 → 编译进 load_mcp 的 server 参数枚举
