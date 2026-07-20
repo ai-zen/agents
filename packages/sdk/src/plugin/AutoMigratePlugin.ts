@@ -1,25 +1,28 @@
 import { AgentNS } from "@ai-zen/agents-core";
-import { SdkAgent } from "../runtime/SdkAgent.js";
 import type { AgentPlugin, SendContext } from "../runtime/SdkAgent.js";
 import { TaskMigrationService } from "../runtime/TaskMigrationService.js";
 import { createLogger } from "../shared/logger.js";
+import { SdkAgent } from "../runtime/SdkAgent.js";
 
 const log = createLogger();
 
 export interface AutoMigrateOptions {
   maxTokens: number;
   migrationAgent: SdkAgent;
-  onHandoff?: (handoffDoc: string, oldAgent: SdkAgent, newAgent: SdkAgent) => void;
+  onHandoff?: (handoffDoc: string, agent: SdkAgent) => void;
 }
 
 /**
  * 自动迁移插件。
  *
+ * 当 token 使用量超过 maxTokens 时，自动将对话历史交给 migrationAgent 生成交接文档，
+ * 然后用交接文档替换当前 agent 的消息列表，实现无缝迁移。
+ *
  * ```ts
  * agent.use(new AutoMigratePlugin({
  *   maxTokens: 250_000,
- *   migrationAgent,
- *   onHandoff: (doc, old, next) => { ... },
+ *   migrationAgent: anotherAgent,
+ *   onHandoff: (doc, agent) => { ... },
  * }));
  * ```
  */
@@ -39,6 +42,8 @@ export class AutoMigratePlugin implements AgentPlugin {
 
     if (!TaskMigrationService.shouldMigrate(promptTokens, maxTokens)) return;
 
+    log.warn(`[autoMigrate] Token 使用量已达 ${promptTokens}，超出限制 ${maxTokens}，开始自动迁移……`);
+
     try {
       const historyText = this.serializeMessages(agent.messages);
       const migrationResult = await migrationAgent.send(historyText);
@@ -46,17 +51,16 @@ export class AutoMigratePlugin implements AgentPlugin {
       const handoffDoc = this.getLastAssistantContent(migrationResult);
       if (!handoffDoc) return;
 
-      const newMessages = [
+      // 仅替换消息列表，不重建 agent，保留所有引用和插件绑定
+      agent.messages.length = 0;
+      agent.messages.push(
         ...agent.definition.messages,
         ...TaskMigrationService.createPostMessages(handoffDoc),
-      ] as AgentNS.Message[];
-
-      const newAgent = new SdkAgent({ ...agent, messages: newMessages });
-      ctx.agent = newAgent;
+      );
 
       if (onHandoff) {
         try {
-          await onHandoff(handoffDoc, agent, newAgent);
+          await onHandoff(handoffDoc, agent);
         } catch (err: any) {
           log.error(`[autoMigrate] onHandoff 回调失败: ${err?.message ?? err}`);
         }

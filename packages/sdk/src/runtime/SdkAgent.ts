@@ -10,10 +10,16 @@ import type { Provider } from "./Provider.js";
 
 /**
  * Agent 插件上下文：当前 SdkAgent + 发送内容 + 消息列表。
+ *
+ * 注意：
+ * - messages 是当前 agent 消息数组的**快照**（浅拷贝），插件不应直接修改它。
+ *   所有消息变更应通过 agent 上的方法进行。
+ * - 如果 onAfterSend 替换了 ctx.agent，send() 方法会使用新 agent 的消息作为返回值。
  */
 export interface SendContext {
   agent: SdkAgent;
   content: string;
+  /** 当前 agent 消息数组的浅拷贝快照，仅供读取，不应直接修改 */
   messages: AgentNS.Message[];
 }
 
@@ -130,12 +136,16 @@ export class SdkAgent extends Agent {
    *   1. onBeforeSend — send 外部准备（刷新工具等）
    *   2. super.send()  — 委托 Core Agent，内含内循环及其钩子
    *   3. onAfterSend  — send 外部后处理（保存草稿、迁移等）
+   *
+   * 注意：
+   * - ctx.messages 是当前 agent 消息的**浅拷贝快照**，仅供读取，不应直接修改。
+   *   所有消息变更应通过 agent 上的方法进行（如 agent.messages.push 等）。
    */
   async send(content: string): Promise<AgentNS.Message[]> {
     const ctx: SendContext = {
       agent: this,
       content,
-      messages: this.messages,
+      messages: [...this.messages],
     };
 
     for (const plugin of this._plugins) {
@@ -152,7 +162,7 @@ export class SdkAgent extends Agent {
         await plugin.onInnerLoopEnd?.(ctx);
       }
     };
-    const messages = await super.send(content);
+    await super.send(content);
     this.onInnerLoopStart = undefined;
     this.onInnerLoopEnd = undefined;
 
@@ -160,6 +170,6 @@ export class SdkAgent extends Agent {
       await plugin.onAfterSend?.(ctx);
     }
 
-    return messages;
+    return this.messages;
   }
 }

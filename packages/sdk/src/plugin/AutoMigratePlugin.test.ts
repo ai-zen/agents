@@ -64,7 +64,7 @@ describe("AutoMigratePlugin", () => {
       expect(migrationAgent.send).not.toHaveBeenCalled();
     });
 
-    it("promptTokens > maxTokens 时触发迁移并通过 ctx.agent 替换", async () => {
+    it("promptTokens > maxTokens 时触发迁移并替换消息", async () => {
       const agent = mockAgent({
         lastUsage: { prompt_tokens: 80000, completion_tokens: 5000, total_tokens: 85000 },
         messages: [
@@ -74,6 +74,9 @@ describe("AutoMigratePlugin", () => {
         ],
         tools: [{ name: "readFile" }, { name: "exec" }],
       });
+
+      // 迁移前有 3 条消息
+      expect(agent.messages).toHaveLength(3);
 
       const migrationAgent = mockAgent({
         messages: [{ role: "system", content: "Migration system prompt" }],
@@ -93,7 +96,8 @@ describe("AutoMigratePlugin", () => {
       const ctx = { agent, content: "hello", messages: agent.messages };
       await plugin.onAfterSend!(ctx);
 
-      expect(ctx.agent).not.toBe(agent);
+      // agent 没有被替换（同一个对象）
+      expect(ctx.agent).toBe(agent);
 
       expect(migrationAgent.send).toHaveBeenCalledTimes(1);
       const migrationInput = migrationAgent.send.mock.calls[0][0];
@@ -102,17 +106,20 @@ describe("AutoMigratePlugin", () => {
       expect(onHandoff).toHaveBeenCalledTimes(1);
       expect(onHandoff.mock.calls[0][0]).toContain("## 💬 对话断点");
       expect(onHandoff.mock.calls[0][1]).toBe(agent);
-      expect(onHandoff.mock.calls[0][2]).toBe(ctx.agent);
 
-      const newAgent = ctx.agent;
-      const systemMsg = newAgent.messages.find((m: any) => m.role === "system");
+      // 迁移后：definition.messages(1条system) + createPostMessages(1条user) = 2 条
+      expect(agent.messages).toHaveLength(2);
+
+      const systemMsg = agent.messages.find((m: any) => m.role === "system");
       expect(systemMsg).toBeDefined();
       expect(systemMsg!.content).toBe("You are a helper.");
 
-      expect(newAgent.tools).toEqual(agent.tools);
+      // 工具保持不变
+      expect(agent.tools).toEqual([{ name: "readFile" }, { name: "exec" }]);
 
-      const userMsgs = newAgent.messages.filter((m: any) => m.role === "user");
-      expect(userMsgs.length).toBeGreaterThan(0);
+      // 新消息中包含交接文档
+      const userMsgs = agent.messages.filter((m: any) => m.role === "user");
+      expect(userMsgs).toHaveLength(1);
       const handoffUserMsg = userMsgs[0];
       expect(handoffUserMsg.content).toContain("## 💬 对话断点");
       expect(handoffUserMsg.content).toContain("上一轮对话的任务交接文档");
@@ -130,10 +137,19 @@ describe("AutoMigratePlugin", () => {
       expect(migrationAgent.send).not.toHaveBeenCalled();
     });
 
-    it("迁移 Agent 调用失败时 ctx.agent 不变", async () => {
+    it("迁移 Agent 调用失败时消息不变", async () => {
+      const originalMessages = [
+        { role: "system", content: "You are a helper." },
+        { role: "user", content: "hello" },
+      ];
       const agent = mockAgent({
         lastUsage: { prompt_tokens: 80000, completion_tokens: 5000, total_tokens: 85000 },
+        messages: [...originalMessages],
       });
+
+      // 迁移前长度
+      expect(agent.messages).toHaveLength(2);
+
       const migrationAgent = mockAgent({});
       migrationAgent.send.mockRejectedValue(new Error("Migration API error"));
 
@@ -148,10 +164,13 @@ describe("AutoMigratePlugin", () => {
       await plugin.onAfterSend!(ctx);
 
       expect(ctx.agent).toBe(agent);
+      // 迁移失败，消息应保持不变（长度和内容都一致）
+      expect(agent.messages).toHaveLength(2);
+      expect(agent.messages).toEqual(originalMessages);
       expect(onHandoff).not.toHaveBeenCalled();
     });
 
-    it("onHandoff 中抛错不影响迁移流程，ctx.agent 仍被替换", async () => {
+    it("onHandoff 中抛错不影响迁移流程，消息仍被替换", async () => {
       const agent = mockAgent({
         lastUsage: { prompt_tokens: 80000, completion_tokens: 5000, total_tokens: 85000 },
       });
@@ -171,11 +190,13 @@ describe("AutoMigratePlugin", () => {
       const ctx = { agent, content: "hello", messages: agent.messages };
       await plugin.onAfterSend!(ctx);
 
-      expect(ctx.agent).not.toBe(agent);
+      // agent 不变，但消息已被替换
+      expect(ctx.agent).toBe(agent);
+      expect(agent.messages.some((m: any) => m.content?.includes("交接文档"))).toBe(true);
       expect(onHandoff).toHaveBeenCalled();
     });
 
-    it("新 Agent 使用与旧 Agent 相同的 model", async () => {
+    it("新消息使用与旧 agent 相同的 model", async () => {
       const sharedModel = { some: "model" };
       const agent = mockAgent({
         lastUsage: { prompt_tokens: 80000, completion_tokens: 5000, total_tokens: 85000 },
@@ -188,37 +209,30 @@ describe("AutoMigratePlugin", () => {
       const ctx = { agent, content: "hello", messages: agent.messages };
       await plugin.onAfterSend!(ctx);
 
-      expect(ctx.agent.model).toBe(sharedModel);
+      expect(agent.model).toBe(sharedModel);
     });
 
-    it("onHandoff 中可将旧 Agent 事件重绑到新 Agent", async () => {
+    it("onHandoff 中可操作 agent", async () => {
       const agent = mockAgent({
         lastUsage: { prompt_tokens: 80000, completion_tokens: 5000, total_tokens: 85000 },
         messages: [{ role: "system", content: "Helper" }],
       });
 
-      const oldEvents: string[] = [];
-      (agent as any).events = { on: (e: string) => oldEvents.push(e) };
-
       const migrationAgent = mockAgent({});
 
-      const reboundEvents: string[] = [];
       const plugin = new AutoMigratePlugin({
         maxTokens: 50000,
         migrationAgent: migrationAgent,
-        onHandoff: (_doc, oldA, newA) => {
-          (newA as any).events = {
-            on: (e: string) => reboundEvents.push(e),
-          };
+        onHandoff: (_doc, a) => {
+          // onHandoff 可以拿到 agent 引用进行额外处理
+          (a as any).migrated = true;
         },
       });
 
       const ctx = { agent, content: "hello", messages: agent.messages };
       await plugin.onAfterSend!(ctx);
 
-      (ctx.agent as any).events.on("chunk");
-      (ctx.agent as any).events.on("sub-agent");
-      expect(reboundEvents).toEqual(["chunk", "sub-agent"]);
+      expect((agent as any).migrated).toBe(true);
     });
   });
 });

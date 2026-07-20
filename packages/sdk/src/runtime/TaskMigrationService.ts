@@ -20,7 +20,7 @@ export class TaskMigrationService {
 
   static createPrompt(): string {
     return [
-      "你是一个任务交接助手。请根据以下对话历史，生成一份结构化交接文档。",
+      "根据以下对话历史，生成一篇结构化交接文档。不要做任何解释，只输出交接文档。",
       "",
       `文档必须包含以下章节：`,
       `${TaskMigrationService.HANDOFF_SECTIONS.breakpoint}`,
@@ -40,8 +40,6 @@ export class TaskMigrationService {
       "",
       `${TaskMigrationService.HANDOFF_SECTIONS.instructions}`,
       `- 接手后建议的操作步骤`,
-      "",
-      "只输出交接文档本身，不要加额外说明。",
     ].join("\n");
   }
 

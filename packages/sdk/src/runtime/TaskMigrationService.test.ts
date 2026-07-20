@@ -36,7 +36,7 @@ describe("TaskMigrationService", () => {
       expect(def.name).toContain("任务交接");
       expect(def.messages).toHaveLength(1);
       expect(def.messages[0].role).toBe("system");
-      expect(def.messages[0].content).toContain("任务交接助手");
+      expect(def.messages[0].content).toContain("不要做任何解释");
       expect(def.messages[0].content).toContain("## 💬 对话断点");
 
       expect(def.function).toBeUndefined();

@@ -1,6 +1,6 @@
 {
   "name": "@ai-zen/agents-sdk",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "AI-Zen Agents SDK — shared business logic for CLI and Desktop",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
