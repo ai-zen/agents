@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.4] - 2026-07-21
+
+### 🔧 修复
+
+- **`load_skill` 不再注入 System 消息** — 改为在工具返回值中直接返回完整 SKILL.md 内容和 Skill 目录路径、文件列表，LLM 完全透明可见
+- **`SkillInfo` 新增 `dirPath` 字段** — 记录 SKILL.md 所在目录的绝对路径
+- **`McpConnectionManager.doConnect` 按 Server capabilities 按需调用** — 仅对声明了的能力调用对应方法，避免未声明时返回 Method not found
+- **`McpConnectionManager.doConnect` 各 list 调用加 try/catch 保护** — 单个能力获取失败不影响其他能力
+
+## [0.2.3] - 2026-07-20
+
+### 🔧 修复
+
+- **`AgentRepository` — 使用 `EntityRepository` 替代直接文件操作** — 采用基础仓储统一逻辑
+
 ## [0.2.2] - 2026-07-20
 
 ### 🔧 修复
