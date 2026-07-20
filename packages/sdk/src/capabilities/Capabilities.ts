@@ -186,12 +186,13 @@ export class Capabilities {
   /**
    * 重新执行全局发现（重新扫描文件系统）。
    */
-  refresh(): void {
+  refresh(options?: { silent?: boolean }): void {
+    const silent = options?.silent ?? false;
     const provider = this.provider;
     this.builtinInstances = discoverBuiltinTools(provider.config);
-    this.userInstances = discoverUserTools(provider.toolsPaths);
+    this.userInstances = discoverUserTools(provider.toolsPaths, { silent });
     this.subagentDefs = discoverSubAgents(provider.subAgentsPaths);
-    this.skills = discoverSkills(provider.skillsPaths);
+    this.skills = discoverSkills(provider.skillsPaths, { silent });
     this.mcps = discoverMcpServers(provider.mcpPaths);
   }
 }

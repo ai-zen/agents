@@ -14,7 +14,7 @@ export class AutoRefreshToolsPlugin implements AgentPlugin {
 
     if (!agent.caps) return;
 
-    agent.caps.refresh();
+    agent.caps.refresh({ silent: true });
 
     agent.tools = agent.caps.buildTools(agent.permissions ?? {}, {
       exclude: {

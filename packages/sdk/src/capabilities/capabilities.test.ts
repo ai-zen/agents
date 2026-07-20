@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { Capabilities } from "./capabilities.js";
+import { Capabilities } from "./Capabilities.js";
 import type { Provider } from "../runtime/Provider.js";
 import type { AgentDefinition, AppConfig, AgentPermissions } from "../types/index.js";
 import { AgentNS, Tool } from "@ai-zen/agents-core";

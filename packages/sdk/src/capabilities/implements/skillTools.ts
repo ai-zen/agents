@@ -22,6 +22,12 @@ export function createLoadSkillTool(
   const ids = filteredSkills.map((s) => s.id);
   const param = createDisclosureParam(ids, "选择一个 Skill", EMPTY_HINT);
 
+  // 拼接各 skill 的描述供 LLM 参考
+  const skillDescriptions = filteredSkills
+    .map((s) => `  - ${s.id}: ${s.description || "无描述"}`)
+    .join("\n");
+  const skillIdDescription = `${param.description}\n\n各 Skill 说明：\n${skillDescriptions || "  无可用 Skill"}`;
+
   return new CallbackTool({
     function: {
       name: "load_skill",
@@ -31,7 +37,7 @@ export function createLoadSkillTool(
         properties: {
           skill_id: {
             type: "string",
-            description: param.description,
+            description: skillIdDescription,
             ...(param.enum ? { enum: param.enum } : {}),
           },
         },
@@ -80,6 +86,12 @@ export function createCallSkillSubAgentTool(
   const ids = subAgentSkills.map((s) => s.id);
   const param = createDisclosureParam(ids, "选择一个 Skill（支持子 Agent）", EMPTY_HINT);
 
+  // 拼接各 skill 的描述供 LLM 参考
+  const skillDescriptions = subAgentSkills
+    .map((s) => `  - ${s.id}: ${s.description || "无描述"}`)
+    .join("\n");
+  const skillIdDescription = `${param.description}\n\n各 Skill 说明：\n${skillDescriptions || "  无可用 Skill"}`;
+
   return new CallbackTool({
     function: {
       name: "call_skill_sub_agent",
@@ -89,7 +101,7 @@ export function createCallSkillSubAgentTool(
         properties: {
           skill_id: {
             type: "string",
-            description: param.description,
+            description: skillIdDescription,
             ...(param.enum ? { enum: param.enum } : {}),
           },
           task: {

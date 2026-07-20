@@ -14,7 +14,8 @@ import { Tool, CallbackTool } from "@ai-zen/agents-core";
  * 3. 支持直接导出 { function, exec } 格式的对象（自动适配为 Tool）
  * 4. 支持导出 CallbackTool 兼容的 { function, callback } 格式
  */
-export function discoverUserTools(paths: string[]): Tool[] {
+export function discoverUserTools(paths: string[], options?: { silent?: boolean }): Tool[] {
+  const silent = options?.silent ?? false;
   const seen = new Set<string>();
   const tools: Tool[] = [];
 
@@ -31,7 +32,7 @@ export function discoverUserTools(paths: string[]): Tool[] {
         if (!seen.has(name)) {
           seen.add(name);
           try {
-            const tool = loadToolFile(join(dir, name + ".js"));
+            const tool = loadToolFile(join(dir, name + ".js"), silent);
             if (tool) {
               tools.push(tool);
             }
@@ -54,7 +55,7 @@ export function discoverUserTools(paths: string[]): Tool[] {
  * 使用 vm.compileFunction 创建沙箱执行环境，避免污染全局作用域。
  * 注入有限的全局 API（console, setTimeout 等），不暴露 process/require。
  */
-function loadToolFile(filepath: string): Tool | null {
+function loadToolFile(filepath: string, silent?: boolean): Tool | null {
   const code = readFileSync(filepath, "utf-8");
 
   // 构造沙箱上下文
@@ -92,9 +93,11 @@ function loadToolFile(filepath: string): Tool | null {
     }
 
     // 适配不同导出格式
-    return normalizeToolExport(exported, filepath);
+    return normalizeToolExport(exported, filepath, silent);
   } catch (err: any) {
-    console.error(`[usertools] 加载工具文件失败: ${filepath} — ${err?.message ?? err}`);
+    if (!silent) {
+      console.error(`[usertools] 加载工具文件失败: ${filepath} — ${err?.message ?? err}`);
+    }
     return null;
   }
 }
@@ -102,7 +105,7 @@ function loadToolFile(filepath: string): Tool | null {
 /**
  * 统一各种导出格式为 Tool 实例。
  */
-function normalizeToolExport(exported: any, filepath: string): Tool | null {
+function normalizeToolExport(exported: any, filepath: string, silent?: boolean): Tool | null {
   // 情况 1：直接是 Tool 实例
   if (exported instanceof Tool) {
     return exported;
@@ -128,7 +131,9 @@ function normalizeToolExport(exported: any, filepath: string): Tool | null {
     });
   }
 
-  console.error(`[usertools] 无法识别的工具格式: ${filepath}`);
+  if (!silent) {
+    console.error(`[usertools] 无法识别的工具格式: ${filepath}`);
+  }
   return null;
 }
 

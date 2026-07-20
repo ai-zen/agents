@@ -43,7 +43,8 @@ export interface SkillInfo {
  * 按优先级从高到低传入路径列表，同名 skill 靠前的路径优先（先到先得）。
  * 解析 YAML frontmatter 中的 name 和 description，同时校验合规。
  */
-export function discoverSkills(paths: string[]): SkillInfo[] {
+export function discoverSkills(paths: string[], options?: { silent?: boolean }): SkillInfo[] {
+  const silent = options?.silent ?? false;
   const seen = new Set<string>();
   const items: SkillInfo[] = [];
 
@@ -64,7 +65,7 @@ export function discoverSkills(paths: string[]): SkillInfo[] {
       const skillMdPath = join(dir, entry.name, "SKILL.md");
       if (!existsSync(skillMdPath)) continue;
 
-      const skill = readSkillFromPath(entry.name, skillMdPath);
+      const skill = readSkillFromPath(entry.name, skillMdPath, silent);
       if (skill) {
         seen.add(entry.name);
         items.push(skill);
@@ -82,11 +83,12 @@ export function discoverSkills(paths: string[]): SkillInfo[] {
  * 按优先级从高到低传入路径列表，靠前的路径优先（先到先得）。
  * 返回 null 如果 skill 在所有目录中都不存在或 SKILL.md 不可读。
  */
-export function readSkill(skillDirs: string[], skillId: string): SkillInfo | null {
+export function readSkill(skillDirs: string[], skillId: string, options?: { silent?: boolean }): SkillInfo | null {
+  const silent = options?.silent ?? false;
   for (const dir of skillDirs) {
     const candidate = join(dir, skillId, "SKILL.md");
     if (existsSync(candidate)) {
-      return readSkillFromPath(skillId, candidate);
+      return readSkillFromPath(skillId, candidate, silent);
     }
   }
   return null;
@@ -94,16 +96,18 @@ export function readSkill(skillDirs: string[], skillId: string): SkillInfo | nul
 
 // ---- 内部 ----
 
-function readSkillFromPath(skillId: string, skillMdPath: string): SkillInfo | null {
+function readSkillFromPath(skillId: string, skillMdPath: string, silent?: boolean): SkillInfo | null {
   try {
     const content = readFileSync(skillMdPath, "utf-8");
     const fm = parseFrontmatter(content);
     if (!fm.name) return null;
 
     // 规范合规校验
-    const errors = validateSkill(skillId, fm);
-    for (const err of errors) {
-      log.warn(`[skills] ${err.skillId}: ${err.field} — ${err.message}`);
+    if (!silent) {
+      const errors = validateSkill(skillId, fm);
+      for (const err of errors) {
+        log.warn(`[skills] ${err.skillId}: ${err.field} — ${err.message}`);
+      }
     }
 
     return {

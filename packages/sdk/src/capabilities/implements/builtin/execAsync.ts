@@ -98,7 +98,7 @@ export const execAsyncTool = new CallbackTool({
           JSON.stringify({
             success: false,
             pid: null,
-            error: `启动失败: ${err.message}`,
+            message: `启动失败: ${err.message}`,
           }),
         );
       });
