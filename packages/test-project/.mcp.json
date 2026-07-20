@@ -1,9 +1,9 @@
 {
-  "servers": {
+  "mcpServers": {
     "postgres": {
-      "transport": "stdio",
+      "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@anthropic/mcp-postgres"]
+      "args": ["-y", "@modelcontextprotocol/server-postgres", "postgresql://localhost/mydb"]
     }
   }
 }

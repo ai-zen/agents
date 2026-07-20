@@ -1,7 +1,7 @@
 {
-  "servers": {
+  "mcpServers": {
     "custom-server": {
-      "transport": "http",
+      "type": "http",
       "url": "http://localhost:3000/mcp"
     }
   }
