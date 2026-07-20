@@ -143,14 +143,13 @@ class Provider {
   subAgentsPaths: string[];    // SubAgent 搜索路径
   skillsPaths: string[];       // Skill 搜索路径
   toolsPaths: string[];        // 用户工具搜索路径
-  mcpPaths: string[];          // MCP 配置搜索路径
+  mcpPaths: string[];          // MCP 配置搜索路径（有配置时内部创建 mcpManager）
   conversationsDir: string;    // 对话记录目录
   draftsDir: string;           // 草稿目录
-  readonly mcpManager: McpConnectionManager;  // 内部创建，全局唯一
 }
 ```
 
-`McpConnectionManager` 是纯技术基础设施，由 `Provider` 内部创建并维护，外部无需感知其构造细节。外部只需通过 `mcpPaths` 指定 MCP 配置文件路径即可。
+`McpConnectionManager` 是纯技术基础设施，由 `Provider` 在检测到有效 MCP 配置时内部创建并维护，外部无需感知其构造细节。外部只需通过 `mcpPaths` 指定 MCP 配置文件路径即可。
 
 `Provider` 实例一旦创建不可变。各层（Capabilities、SdkAgent、Plugin 等）都持有 `provider` 引用。
 
@@ -540,7 +539,7 @@ parameters:
 
 ## 7. MCP 连接生命周期
 
-MCP 连接由 SDK 全权管理，上层（CLI/Desktop）不感知连接细节。`McpConnectionManager` 由 `Provider` 内部创建，负责完整的连接生命周期，包括重连、退避、空闲超时、状态机。
+MCP 连接由 SDK 全权管理，上层（CLI/Desktop）不感知连接细节。`McpConnectionManager` 由 `Provider` 在检测到有效 MCP 配置时内部创建，负责完整的连接生命周期，包括重连、退避、空闲超时、状态机。
 
 底层 transport（stdio 进程管理、HTTP/SSE 请求）也由 SDK 内置实现，不作为注入点暴露给上层。
 
@@ -953,11 +952,10 @@ class Provider {
   mcpPaths: string[];          // MCP 配置搜索路径
   conversationsDir: string;    // 对话记录目录
   draftsDir: string;           // 草稿目录
-  readonly mcpManager: McpConnectionManager;  // 内部创建
 }
 ```
 
-`McpConnectionManager` 由 `Provider` 在构造时内部创建，外部无需关心其构造细节。`Capabilities` 通过 `provider.mcpManager` 访问 MCP 连接管理，通过 `this.mcps`（`discoverMcpServers` 的产物）获取服务器配置——两者同源，消除不一致风险。
+`McpConnectionManager` 由 `Provider` 在检测到有效 MCP 配置时内部创建，外部无需关心其构造细节。`Capabilities` 通过 `provider.mcpManager` 访问 MCP 连接管理，通过 `this.mcps`（`discoverMcpServers` 的产物）获取服务器配置——两者同源，消除不一致风险。
 
 ### createAgent
 
