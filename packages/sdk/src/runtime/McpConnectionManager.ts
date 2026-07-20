@@ -195,30 +195,42 @@ export class McpConnectionManager {
     };
 
     if (serverCaps?.tools) {
-      const toolsResult = await client.listTools();
-      manifest.tools = (toolsResult.tools ?? []).map((t: any) => ({
-        name: t.name,
-        description: t.description ?? "",
-        inputSchema: t.inputSchema as Record<string, unknown>,
-      }));
+      try {
+        const toolsResult = await client.listTools();
+        manifest.tools = (toolsResult.tools ?? []).map((t: any) => ({
+          name: t.name,
+          description: t.description ?? "",
+          inputSchema: t.inputSchema as Record<string, unknown>,
+        }));
+      } catch (err) {
+        console.error(`[McpConnectionManager] 获取 "${name}" 工具列表失败:`, err);
+      }
     }
 
     if (serverCaps?.resources) {
-      const resourcesResult = await client.listResources();
-      manifest.resources = (resourcesResult.resources ?? []).map((r: any) => ({
-        uri: r.uri,
-        name: r.name,
-        description: r.description,
-        mimeType: r.mimeType,
-      }));
+      try {
+        const resourcesResult = await client.listResources();
+        manifest.resources = (resourcesResult.resources ?? []).map((r: any) => ({
+          uri: r.uri,
+          name: r.name,
+          description: r.description,
+          mimeType: r.mimeType,
+        }));
+      } catch (err) {
+        console.error(`[McpConnectionManager] 获取 "${name}" 资源列表失败:`, err);
+      }
     }
 
     if (serverCaps?.prompts) {
-      const promptsResult = await client.listPrompts();
-      manifest.prompts = (promptsResult.prompts ?? []).map((p: any) => ({
-        name: p.name,
-        description: p.description,
-      }));
+      try {
+        const promptsResult = await client.listPrompts();
+        manifest.prompts = (promptsResult.prompts ?? []).map((p: any) => ({
+          name: p.name,
+          description: p.description,
+        }));
+      } catch (err) {
+        console.error(`[McpConnectionManager] 获取 "${name}" 提示列表失败:`, err);
+      }
     }
 
     const entry = this.servers.get(name) ?? { state: "connecting" as const };
