@@ -1,12 +1,12 @@
 {
-  "servers": {
+  "mcpServers": {
     "github": {
-      "transport": "stdio",
+      "type": "stdio",
       "command": "gh",
       "args": ["mcp"]
     },
     "filesystem": {
-      "transport": "stdio",
+      "type": "stdio",
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
     }

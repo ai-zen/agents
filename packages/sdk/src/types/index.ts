@@ -117,13 +117,13 @@ export interface AppConfig {
 /** MCP 连接状态 */
 export type McpConnectionState = "disconnected" | "connecting" | "connected" | "error";
 
-/** MCP 服务器配置（含 CLI/Desktop 需要的额外字段） */
+/** MCP 服务器配置 */
 export interface McpServerConfig {
   id: string;
-  name: string;
+  /** transport 类型，内部统一使用 "stdio" | "http" | "sse" */
   transport: "stdio" | "http" | "sse";
-  /** 是否启用 */
-  enabled?: boolean;
+  /** 是否禁用，默认为 false */
+  disabled?: boolean;
   // stdio
   command?: string;
   args?: string[];

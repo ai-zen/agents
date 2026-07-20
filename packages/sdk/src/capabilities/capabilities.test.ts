@@ -105,7 +105,7 @@ function writeSkill(id: string, description: string, subAgent = true) {
 }
 
 function writeMcpJson(servers: Record<string, unknown>) {
-  writeFileSync(join(tmpDir, "mcp.json"), JSON.stringify({ servers }, null, 2));
+  writeFileSync(join(tmpDir, "mcp.json"), JSON.stringify({ mcpServers: servers }, null, 2));
 }
 
 function writeUserTool(name: string) {

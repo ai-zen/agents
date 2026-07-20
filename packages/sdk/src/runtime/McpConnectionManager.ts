@@ -41,6 +41,7 @@ export interface McpConnectOptions {
 const DEFAULT_IDLE_TIMEOUT: Record<string, number> = {
   stdio: 30 * 60 * 1000,
   http: 5 * 60 * 1000,
+  sse: 5 * 60 * 1000,
 };
 
 /** 指数退避: 1s → 2s → 4s → 8s → 16s → 30s（封顶） */
@@ -237,9 +238,10 @@ export class McpConnectionManager {
       });
     }
 
-    if (config.transport === "http") {
+    // http 和 sse 都使用 StreamableHTTPClientTransport
+    if (config.transport === "http" || config.transport === "sse") {
       if (!config.url) {
-        throw new Error(`MCP HTTP server 缺少 url`);
+        throw new Error(`MCP ${config.transport} server 缺少 url`);
       }
       return new StreamableHTTPClientTransport(new URL(config.url), {
         requestInit: config.headers ? { headers: config.headers } : undefined,
