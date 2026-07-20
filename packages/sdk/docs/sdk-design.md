@@ -144,8 +144,6 @@ class Provider {
   skillsPaths: string[];       // Skill 搜索路径
   toolsPaths: string[];        // 用户工具搜索路径
   mcpPaths: string[];          // MCP 配置搜索路径（有配置时内部创建 mcpManager）
-  conversationsDir: string;    // 对话记录目录
-  draftsDir: string;           // 草稿目录
 }
 ```
 
@@ -950,8 +948,6 @@ class Provider {
   skillsPaths: string[];       // Skill 搜索路径
   toolsPaths: string[];        // 用户工具搜索路径
   mcpPaths: string[];          // MCP 配置搜索路径
-  conversationsDir: string;    // 对话记录目录
-  draftsDir: string;           // 草稿目录
 }
 ```
 
