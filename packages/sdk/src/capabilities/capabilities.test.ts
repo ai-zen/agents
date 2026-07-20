@@ -25,8 +25,8 @@ function mockProvider(overrides?: Partial<Provider>): Provider {
     mcpPaths: [],
     conversationsDir: "",
     draftsDir: "",
-    mcpManager: undefined,
-    mcpConfigs: undefined,
+    // 默认 getMcpManager 返回 undefined（无 mcpPaths）
+    getMcpManager: () => undefined as any,
     ...overrides,
   } as unknown as Provider;
 }
@@ -428,7 +428,7 @@ describe("Capabilities", () => {
     });
 
     it("无 mcpManager 时不注册 MCP 工具", () => {
-      const provider = mockProvider(); // mcpManager = undefined
+      const provider = mockProvider(); // getMcpManager 返回 undefined
       const caps = new Capabilities(provider);
       const result = caps.instantiate({
         tools: ["load_mcp", "call_mcp_tool", "read_mcp_resource", "readFile"],
@@ -444,8 +444,7 @@ describe("Capabilities", () => {
 
     it("有 mcpManager 但无 mcps 时不注册 load_mcp（call 和 read 仍注册）", () => {
       const provider = mockProvider({
-        mcpManager: { getState: vi.fn(), getManifest: vi.fn(), getClient: vi.fn(), connect: vi.fn(), touch: vi.fn() } as any,
-        mcpConfigs: new Map(),
+        getMcpManager: () => ({ getState: vi.fn(), getManifest: vi.fn(), getClient: vi.fn(), connect: vi.fn(), touch: vi.fn() } as any),
       });
       const caps = new Capabilities(provider);
       const result = caps.instantiate({
@@ -463,8 +462,7 @@ describe("Capabilities", () => {
     it("有 mcpManager 且有 mcps 时注册 load_mcp", () => {
       writeMcpJson({ github: { transport: "stdio", command: "gh" } });
       const provider = mockProvider({
-        mcpManager: { getState: vi.fn(), getManifest: vi.fn(), getClient: vi.fn(), connect: vi.fn(), touch: vi.fn() } as any,
-        mcpConfigs: new Map([["github", { name: "github", config: { id: "github", name: "GitHub", transport: "stdio" as const, command: "gh" } }]]),
+        getMcpManager: () => ({ getState: vi.fn(), getManifest: vi.fn(), getClient: vi.fn(), connect: vi.fn(), touch: vi.fn() } as any),
         mcpPaths: [join(tmpDir, "mcp.json")],
       });
       const caps = new Capabilities(provider);

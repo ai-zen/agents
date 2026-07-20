@@ -1,5 +1,5 @@
 import type { AppConfig, McpServerConfig } from "../types/index.js";
-import type { McpConnectionManager } from "./McpConnectionManager.js";
+import { McpConnectionManager } from "./McpConnectionManager.js";
 
 /**
  * Provider — 全局上下文实例。
@@ -26,8 +26,7 @@ export class Provider {
   readonly draftsDir: string;
 
   // ---- MCP ----
-  readonly mcpManager?: McpConnectionManager;
-  readonly mcpConfigs?: Map<string, { name: string; config: McpServerConfig }>;
+  private _mcpManager?: McpConnectionManager;
 
   constructor(options: {
     config: AppConfig;
@@ -38,8 +37,6 @@ export class Provider {
     mcpPaths?: string[];
     conversationsDir: string;
     draftsDir: string;
-    mcpManager?: McpConnectionManager;
-    mcpConfigs?: Map<string, { name: string; config: McpServerConfig }>;
   }) {
     this.config = options.config;
     this.agentsDir = options.agentsDir;
@@ -49,7 +46,16 @@ export class Provider {
     this.mcpPaths = options.mcpPaths ?? [];
     this.conversationsDir = options.conversationsDir;
     this.draftsDir = options.draftsDir;
-    this.mcpManager = options.mcpManager;
-    this.mcpConfigs = options.mcpConfigs;
+  }
+
+  /**
+   * 获取 McpConnectionManager，有 mcpPaths 时延迟创建。
+   * 首次访问时创建，后续复用同一实例。
+   */
+  getMcpManager(): McpConnectionManager | undefined {
+    if (!this._mcpManager && this.mcpPaths.length > 0) {
+      this._mcpManager = new McpConnectionManager();
+    }
+    return this._mcpManager;
   }
 }

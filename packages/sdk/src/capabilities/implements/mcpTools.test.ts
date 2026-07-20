@@ -16,20 +16,15 @@ function mockManager(overrides?: Partial<McpConnectionManager>): McpConnectionMa
   } as unknown as McpConnectionManager;
 }
 
-const mcpConfigs = new Map<string, { name: string; config: McpServerConfig }>([
-  ["github", { name: "github", config: { id: "github", name: "GitHub", transport: "stdio", command: "gh" } }],
-  ["slack", { name: "slack", config: { id: "slack", name: "Slack", transport: "http", url: "https://slack.example.com" } }],
-]);
-
-const mcps: { id: string; description: string }[] = [
-  { id: "github", description: "GitHub MCP 服务器" },
-  { id: "slack", description: "Slack MCP 服务器" },
+const mcps: McpServerConfig[] = [
+  { id: "github", name: "GitHub", transport: "stdio", command: "gh" },
+  { id: "slack", name: "Slack", transport: "http", url: "https://slack.example.com" },
 ];
 
 describe("createLoadMcpTool", () => {
   it("工具名称和参数正确", () => {
     const manager = mockManager();
-    const tool = createLoadMcpTool(manager, mcpConfigs, mcps);
+    const tool = createLoadMcpTool(manager, mcps);
     expect(tool.function.name).toBe("load_mcp");
     expect(tool.function.parameters.properties.server.enum).toEqual(["github", "slack"]);
     expect(tool.function.parameters.required).toContain("server");
@@ -37,7 +32,7 @@ describe("createLoadMcpTool", () => {
 
   it("服务器不存在时返回错误", async () => {
     const manager = mockManager();
-    const tool = createLoadMcpTool(manager, mcpConfigs, mcps);
+    const tool = createLoadMcpTool(manager, mcps);
     const result = await tool.callback({ server: "non-existent" });
     expect(result).toContain("不存在");
   });
@@ -50,7 +45,7 @@ describe("createLoadMcpTool", () => {
         resources: [],
       })),
     });
-    const tool = createLoadMcpTool(manager, mcpConfigs, mcps);
+    const tool = createLoadMcpTool(manager, mcps);
     const result = await tool.callback({ server: "github" });
     expect(result).toContain("已连接");
     expect(result).toContain("echo");
@@ -66,11 +61,11 @@ describe("createLoadMcpTool", () => {
         resources: [],
       }),
     });
-    const tool = createLoadMcpTool(manager, mcpConfigs, mcps);
+    const tool = createLoadMcpTool(manager, mcps);
     const result = await tool.callback({ server: "github" });
     expect(result).toContain("已连接");
     expect(result).toContain("list");
-    expect(manager.connect).toHaveBeenCalledWith("github", mcpConfigs.get("github")!.config);
+    expect(manager.connect).toHaveBeenCalledWith("github", mcps[0]);
   });
 
   it("连接失败时返回错误", async () => {
@@ -79,7 +74,7 @@ describe("createLoadMcpTool", () => {
       getManifest: vi.fn(() => undefined),
       connect: vi.fn().mockRejectedValue(new Error("连接超时")),
     });
-    const tool = createLoadMcpTool(manager, mcpConfigs, mcps);
+    const tool = createLoadMcpTool(manager, mcps);
     const result = await tool.callback({ server: "github" });
     expect(result).toContain("无法连接");
     expect(result).toContain("连接超时");

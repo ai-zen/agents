@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Provider } from "./Provider.js";
 import { createModel } from "./createModel.js";
-import type { McpConnectionManager } from "./McpConnectionManager.js";
 
 const baseOptions = {
   config: {
@@ -43,22 +42,20 @@ describe("Provider", () => {
     expect(provider.mcpPaths).toEqual(["/tmp/mcp.json"]);
   });
 
-  it("mcpManager 和 mcpConfigs 可选", () => {
+  it("无 mcpPaths 时 getMcpManager 返回 undefined", () => {
     const provider = new Provider(baseOptions);
-    expect(provider.mcpManager).toBeUndefined();
-    expect(provider.mcpConfigs).toBeUndefined();
+    expect(provider.getMcpManager()).toBeUndefined();
   });
 
-  it("传入 mcpManager 和 mcpConfigs", () => {
-    const mcpConfigs = new Map([["github", { name: "github", config: { id: "github", name: "GitHub", transport: "stdio" as const, command: "gh" } }]]);
+  it("有 mcpPaths 时 getMcpManager 延迟创建 McpConnectionManager", () => {
     const provider = new Provider({
       ...baseOptions,
-      mcpManager: {} as McpConnectionManager,
-      mcpConfigs,
+      mcpPaths: ["/tmp/mcp.json"],
     });
-    expect(provider.mcpManager).toBeDefined();
-    expect(provider.mcpConfigs).toBeInstanceOf(Map);
-    expect(provider.mcpConfigs!.has("github")).toBe(true);
+    const manager = provider.getMcpManager();
+    expect(manager).toBeDefined();
+    // 多次调用返回同一实例
+    expect(provider.getMcpManager()).toBe(manager);
   });
 
   it("createModel 根据 config 和 modelId 构建模型", () => {

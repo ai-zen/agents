@@ -162,14 +162,16 @@ export class Capabilities {
     if (allowedToolNames.has("call_skill_sub_agent") && hasSubAgentSkills) {
       result.push(createCallSkillSubAgentTool(provider.skillsPaths, filteredSkills, this));
     }
-    if (allowedToolNames.has("load_mcp") && provider.mcpManager && provider.mcpConfigs && filteredMcps.length > 0) {
-      result.push(createLoadMcpTool(provider.mcpManager, provider.mcpConfigs, filteredMcps));
+
+    const mcpManager = provider.getMcpManager();
+    if (allowedToolNames.has("load_mcp") && mcpManager && filteredMcps.length > 0) {
+      result.push(createLoadMcpTool(mcpManager, filteredMcps));
     }
-    if (allowedToolNames.has("call_mcp_tool") && provider.mcpManager) {
-      result.push(createCallMcpTool(provider.mcpManager));
+    if (allowedToolNames.has("call_mcp_tool") && mcpManager) {
+      result.push(createCallMcpTool(mcpManager));
     }
-    if (allowedToolNames.has("read_mcp_resource") && provider.mcpManager) {
-      result.push(createReadMcpResourceTool(provider.mcpManager));
+    if (allowedToolNames.has("read_mcp_resource") && mcpManager) {
+      result.push(createReadMcpResourceTool(mcpManager));
     }
 
     // 4. SubAgent
