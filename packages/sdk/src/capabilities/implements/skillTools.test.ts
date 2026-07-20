@@ -44,7 +44,7 @@ describe("createLoadSkillTool", () => {
     expect(result).toContain("不存在");
   });
 
-  it("成功加载 Skill 并注入到 agent.messages", async () => {
+  it("成功加载 Skill 返回完整内容与路径信息", async () => {
     writeSkill("git", "# Git 操作指南\n\n## 提交代码\n使用 git commit");
     const tool = createLoadSkillTool(skillDirs, skills);
     const agent = new Agent({
@@ -55,24 +55,12 @@ describe("createLoadSkillTool", () => {
 
     const result = await tool.callback.call({ agent }, { skill_id: "git" });
     expect(result).toContain("已加载");
-    // 检查是否注入了 system message
+    expect(result).toContain("Skill 目录路径:");
+    expect(result).toContain("Git 操作指南");
+    expect(result).toContain("Skill 内容开始");
+    // 不再注入 system message
     const injected = agent.messages.find((m) => String(m.content).includes("Skill"));
-    expect(injected).toBeDefined();
-    expect(String(injected!.content)).toContain("Git 操作指南");
-  });
-
-  it("重复加载同一 Skill 返回已加载提示", async () => {
-    writeSkill("git", "# Git");
-    const tool = createLoadSkillTool(skillDirs, skills);
-    const agent = new Agent({
-      model: { createCompletion: vi.fn() } as any,
-      messages: [{ role: "system", content: "你是一个助手" }],
-      tools: [],
-    });
-
-    await tool.callback.call({ agent }, { skill_id: "git" });
-    const result = await tool.callback.call({ agent }, { skill_id: "git" });
-    expect(result).toContain("已加载"); // 第二次提示"已加载"
+    expect(injected).toBeUndefined();
   });
 });
 

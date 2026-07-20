@@ -30,6 +30,8 @@ export interface SkillInfo {
   description: string;
   subAgent: boolean;
   content: string;
+  /** SKILL.md 所在目录的绝对路径 */
+  dirPath: string;
   license?: string;
   compatibility?: string;
   metadata?: Record<string, string>;
@@ -116,6 +118,7 @@ function readSkillFromPath(skillId: string, skillMdPath: string, silent?: boolea
       description: fm.description ?? "",
       subAgent: fm.subAgent ?? false,
       content,
+      dirPath: skillMdPath.replace(/\/SKILL\.md$/, ""),
       license: fm.license,
       compatibility: fm.compatibility,
       metadata: fm.metadata,

@@ -6,6 +6,8 @@ import { createDisclosureParam } from "../disclosure.js";
 import { readSkill } from "../discovery/skills.js";
 import { createLogger } from "../../shared/logger.js";
 import type { Capabilities } from "../Capabilities.js";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 
 const log = createLogger();
 
@@ -52,20 +54,28 @@ export function createLoadSkillTool(
         return `❌ Skill "${skillId}" 不存在，请确认名称是否正确`;
       }
 
-      const alreadyLoaded = this.agent?.messages?.some(
-        (m) => String(m.content ?? "").includes(`Skill "${skillId}" 已加载`),
-      );
-      if (alreadyLoaded) {
-        return `Skill "${skillId}" 已加载`;
+      // 扫描 skill 目录下的文件列表
+      let fileList = "";
+      try {
+        const entries = readdirSync(skill.dirPath, { withFileTypes: true });
+        const files = entries.map((e) => {
+          const suffix = e.isDirectory() ? "/" : "";
+          return `  - ${e.name}${suffix}`;
+        });
+        fileList = `\n\nSkill 目录文件列表：\n${files.join("\n")}`;
+      } catch {
+        fileList = "";
       }
 
-      if (this.agent) {
-        this.agent.messages.push(
-          Message.System(`以下是 Skill "${skillId}" 的内容，请按照其中的指导完成任务：\n\n${skill.content}`),
-        );
-      }
-
-      return `✅ Skill "${skillId}" 已加载，内容已附加到当前对话中`;
+      return [
+        `Skill "${skillId}" 已加载：`,
+        ``,
+        `Skill 目录路径: ${skill.dirPath}`,
+        fileList,
+        ``,
+        `--- Skill 内容开始 ---`,
+        skill.content,
+      ].join("\n");
     },
   });
 }
