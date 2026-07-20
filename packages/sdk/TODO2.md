@@ -45,15 +45,21 @@
 
 | # | 问题 | 说明 | 状态 |
 |---|------|------|:--:|
-| 4 | **`discoverMcpServers` 与 `createLoadMcpTool` 的字段映射不一致** | `discoverMcpServers` 直接展开原始字段，`createLoadMcpTool` 通过 `mcpConfigs` Map 查找；两者依赖隐式字段名一致，应提取统一解析函数做 `type`→`transport` 等归一化 | ⬜ |
-| 5 | **`disabled` 字段未消费** | 业界标准使用 `disabled` 字段（boolean），`McpServerConfig` 定义了 `enabled` 但用户配置用 `disabled`，应统一为 `disabled` | ⬜ |
+| 4 | **配置归一化：`discoverMcpServers` 需统一解析字段** | 原始 JSON 字段（`type`/`transportType`→`transport`、`disabled`→`enabled`）需在发现阶段归一化为内部 `McpServerConfig` 字段，后续全链路使用统一数据源 | ⬜ |
+| 5 | **`disabled` 字段未消费** | 业界标准使用 `disabled` 字段（boolean），解析时应跳过 `disabled: true` 的 server | ⬜ |
 | 6 | **配置解析失败静默吞错误** | `discoverMcpServers` 中 `catch {}` 静默跳过，调试困难，应加日志 | ⬜ |
-| 7 | **`load_mcp` 的枚举来源与查找来源不一致** | enum 来自 `filteredMcps`（权限过滤后），查找用 `mcpConfigs`（完整 Map），依赖隐式一致性 | ⬜ |
+| 7 | **`load_mcp` 枚举来源与查找来源不一致** | enum 来自 `filteredMcps`（经 `discoverMcpServers` 发现+权限过滤），查找时却依赖外部注入的 `mcpConfigs` Map。`mcpManager` 内部化后，查找直接使用 `this.mcps`，消除不一致 | ⬜ |
 | 8 | **`autoApprove`、`timeout` 等字段未处理** | 用户配置中携带了 `autoApprove`、`timeout` 等字段，当前无任何消费逻辑 | ⬜ |
 
 ### P2 — 类型清理
 
 | # | 问题 | 说明 | 状态 |
 |---|------|------|:--:|
-| 9 | **`sse` transport 未实现** | 业界标准中 `"sse"` 是常见 transport 取值，`McpServerConfig.type` 声明了 `"sse"` 但 `createTransport` 没有对应分支 | ⬜ |
-| 10 | **`McpServerConfig` 中 `name` 和 `id` 语义不清** | `discoverMcpServers` 用 key 作 id，而业界标准中 server 的 key 本身就是唯一标识，应统一用 key 作为 id | ⬜ |
+| 9 | **`sse` transport 未实现** | 业界标准中 `"sse"` 是常见 transport 取值，`createTransport` 需要添加 SSE 分支（使用 `StreamableHTTPClientTransport`） | ⬜ |
+| 10 | **`McpServerConfig` 中 `name` 和 `id` 语义不清** | `discoverMcpServers` 用 key 作 id，而业界标准中 server 的 key 本身就是唯一标识，应统一用 key 作为 id，移除冗余的 `name` 字段 | ⬜ |
+
+### P3 — 架构重构
+
+| # | 问题 | 说明 | 状态 |
+|---|------|------|:--:|
+| 11 | **`mcpManager` 由 Provider 内部创建** | 当前 `mcpManager` 和 `mcpConfigs` 由外部注入，与 `Capabilities` 内部发现的 `this.mcps` 数据源不统一。`McpConnectionManager` 是纯技术基础设施，应由 `Provider` 在构造时内部创建，外部只需传 `mcpPaths`。`createLoadMcpTool` 不再需要 `mcpConfigs` 参数，直接通过 `this.mcps` 构建查找表 | ⬜ |
