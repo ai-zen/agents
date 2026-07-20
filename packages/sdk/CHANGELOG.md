@@ -1,6 +1,12 @@
 # Changelog
 
-## [0.2.4] - 2026-07-21
+## [0.2.5] - 2026-07-20
+
+### 🔧 修复
+
+- **`DEFAULT_SUBAGENT_DEFINITION` 缺少 `permissions` 配置** — 默认 SubAgent `general-assistant` 未配置权限，导致所有维度等同于 `deny: ['*']`，完全无法使用任何工具/skill/MCP/SubAgent。现已按设计规范补全，仅 `subagents` 维度设为 `deny: ['*']` 防止递归调用
+
+## [0.2.4] - 2026-07-20
 
 ### 🔧 修复
 

@@ -47,6 +47,12 @@ export const DEFAULT_SUBAGENT_DEFINITION: Omit<AgentDefinition, "createdAt" | "u
     },
     { role: AgentNS.Role.User, content: "{{query}}" },
   ],
+  permissions: {
+    tools: { allow: ["*"] },
+    skills: { allow: ["*"] },
+    mcps: { allow: ["*"] },
+    subagents: { deny: ["*"] },
+  },
   function: {
     name: "general_assistant",
     description: "通用助手，可独立完成各类任务",
