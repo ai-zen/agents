@@ -37,9 +37,6 @@ export function createAgent(
     },
   });
 
-  // 收集当前注册的所有工具名称（用于 onUnknownTool 提示）
-  const allToolNames = new Set(tools.map((t) => t.function.name));
-
   const agent = new SdkAgent({
     provider,
     definition,
@@ -54,26 +51,18 @@ export function createAgent(
   agent.onUnknownTool = (ctx) => {
     const toolName = ctx.toolCall.function?.name ?? "未知";
 
-    // 检测 MCP 配置是否可用（provider 中有 mcpPaths 说明有 MCP 配置）
     const hasMcpConfig = provider.mcpPaths.length > 0;
+    const hasCallMcpTool = tools.some((t) => t.function.name === "call_mcp_tool");
 
-    // 检测 call_mcp_tool 是否在工具列表中（被权限允许）
-    const hasCallMcpTool = allToolNames.has("call_mcp_tool");
-
-    // 列出所有可用工具名称
-    const availableNames = Array.from(allToolNames);
-    const availableList = availableNames.map((n) => `  - ${n}`).join("\n");
-
-    let hint = "";
     if (hasMcpConfig && !hasCallMcpTool) {
-      // 有 MCP 配置但 call_mcp_tool 被权限拒绝了
-      hint = "\n提示：当前有 MCP 服务器配置，但 call_mcp_tool 权限已被禁用。如需使用 MCP 工具，请联系管理员调整权限。";
-    } else if (hasMcpConfig && hasCallMcpTool) {
-      // 有 MCP 且权限允许，但 LLM 直接用了 MCP 工具名而非 call_mcp_tool
-      hint = "\n提示：MCP 服务器上的工具需要通过 call_mcp_tool 来调用，请先使用 load_mcp 连接服务器，再使用 call_mcp_tool。";
+      return `工具 "${toolName}" 不存在。当前有 MCP 服务器配置，但 call_mcp_tool 权限已被禁用，如需使用 MCP 工具请调整权限。`;
     }
 
-    return `工具 "${toolName}" 不存在。当前可用的工具：\n${availableList}${hint}`;
+    if (hasMcpConfig && hasCallMcpTool) {
+      return `工具 "${toolName}" 不存在。如果要调用 MCP 工具，请使用 call_mcp_tool。`;
+    }
+
+    return `工具 "${toolName}" 不存在。`;
   };
 
   return agent;
