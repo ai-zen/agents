@@ -395,7 +395,15 @@ export class Agent extends AgentContext {
           }
 
           if (!matchedTool) {
-            resultReceiver.content = `未知工具: ${task.function!.name}，没有找到对应的工具实现。`;
+            const onUnknown = this.onUnknownTool;
+            if (onUnknown) {
+              resultReceiver.content = await onUnknown({
+                toolCall: task,
+                availableTools: [...this.tools],
+              });
+            } else {
+              resultReceiver.content = `未知工具: ${task.function!.name}，没有找到对应的工具实现。`;
+            }
           } else {
             resultReceiver.content = await matchedTool.exec(ctx);
           }

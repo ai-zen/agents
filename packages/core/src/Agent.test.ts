@@ -711,6 +711,187 @@ describe("Agent", () => {
       expect(toolResult.content).toContain("unknownTool");
     });
 
+    describe("onUnknownTool 钩子", () => {
+      it("设置同步 onUnknownTool 时，未知工具调用应返回自定义内容并继续对话", async () => {
+        const model = createMultiRoundMockModel([
+          // 第1轮：调用未注册的工具
+          [
+            { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "noSuchTool", arguments: "{}" } }] }, finish_reason: null }] },
+            { choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.ToolCalls }] },
+          ],
+          // 第2轮：AI 回复
+          [
+            { choices: [{ index: 0, delta: { content: "我知道了" }, finish_reason: null }] },
+            { choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.Stop }] },
+          ],
+        ]);
+
+        const agent = new Agent({
+          model,
+          messages: [Message.System("助手")],
+          tools: [],
+          onUnknownTool: (ctx) => {
+            const names = ctx.availableTools.map((t) => t.function.name).join(", ");
+            return `工具 "${ctx.toolCall.function?.name}" 不可用。可用工具: [${names}]。`;
+          },
+        });
+
+        agent.append(Message.Assistant());
+        await agent.run();
+
+        expect(model.createStream).toHaveBeenCalledTimes(2);
+        const toolResult = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
+        expect(toolResult.content).toContain('工具 "noSuchTool" 不可用');
+        expect(toolResult.content).toContain("可用工具");
+      });
+
+      it("设置异步 onUnknownTool 时，未知工具调用应返回自定义内容并继续对话", async () => {
+        const model = createMultiRoundMockModel([
+          // 第1轮：调用未注册的工具
+          [
+            { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "asyncUnknown", arguments: "{}" } }] }, finish_reason: null }] },
+            { choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.ToolCalls }] },
+          ],
+          // 第2轮：AI 回复
+          [
+            { choices: [{ index: 0, delta: { content: "收到" }, finish_reason: null }] },
+            { choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.Stop }] },
+          ],
+        ]);
+
+        const agent = new Agent({
+          model,
+          messages: [Message.System("助手")],
+          tools: [],
+          onUnknownTool: async (ctx) => {
+            // 模拟异步操作，如查询日志或调用外部服务
+            await new Promise((r) => setTimeout(r, 10));
+            return `异步检查：工具 "${ctx.toolCall.function?.name}" 不存在。已记录到审计日志。`;
+          },
+        });
+
+        agent.append(Message.Assistant());
+        await agent.run();
+
+        expect(model.createStream).toHaveBeenCalledTimes(2);
+        const toolResult = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
+        expect(toolResult.content).toContain("异步检查");
+        expect(toolResult.content).toContain("asyncUnknown");
+        expect(toolResult.content).toContain("审计日志");
+      });
+
+      it("onUnknownTool 中 availableTools 应包含当前注册的工具列表", async () => {
+        const readTool = new CallbackTool({
+          function: { name: "readFile", description: "读文件", parameters: { type: "object", properties: {} } },
+          callback: () => "文件内容",
+        });
+        const writeTool = new CallbackTool({
+          function: { name: "writeFile", description: "写文件", parameters: { type: "object", properties: {} } },
+          callback: () => "写入成功",
+        });
+
+        const capturedNames: string[] = [];
+        const model = createMultiRoundMockModel([
+          // 第1轮：调用未注册的工具
+          [
+            { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "deleteFile", arguments: "{}" } }] }, finish_reason: null }] },
+            { choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.ToolCalls }] },
+          ],
+          // 第2轮：AI 回复
+          [
+            { choices: [{ index: 0, delta: { content: "抱歉，我没有删除工具" }, finish_reason: null }] },
+            { choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.Stop }] },
+          ],
+        ]);
+
+        const agent = new Agent({
+          model,
+          messages: [Message.System("助手")],
+          tools: [readTool, writeTool],
+          onUnknownTool: (ctx) => {
+            capturedNames.push(...ctx.availableTools.map((t) => t.function.name));
+            return `不可用，可用工具: ${ctx.availableTools.map((t) => t.function.name).join(", ")}`;
+          },
+        });
+
+        agent.append(Message.Assistant());
+        await agent.run();
+
+        expect(capturedNames).toContain("readFile");
+        expect(capturedNames).toContain("writeFile");
+        expect(capturedNames).not.toContain("deleteFile");
+        expect(model.createStream).toHaveBeenCalledTimes(2);
+      });
+
+      it("onUnknownTool 返回的内容不应影响后续正常工具调用", async () => {
+        const readTool = new CallbackTool({
+          function: { name: "readFile", description: "读文件", parameters: { type: "object", properties: {} } },
+          callback: () => "文件内容",
+        });
+
+        // 注意：parseStreamData 每个 chunk 只处理 delta.tool_calls[0]，
+        // 因此多个 tool_calls 需要分布在多个独立的 chunk 中
+        const model = createMultiRoundMockModel([
+          // 第1轮：依次返回两个 tool_calls（分两个 chunk）
+          [
+            { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "unknownX", arguments: "{}" } }] }, finish_reason: null }] },
+            { choices: [{ index: 0, delta: { tool_calls: [{ index: 1, id: "2", type: "function", function: { name: "readFile", arguments: "{}" } }] }, finish_reason: null }] },
+            { choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.ToolCalls }] },
+          ],
+          // 第2轮：AI 整合结果后回复
+          [
+            { choices: [{ index: 0, delta: { content: "已处理" }, finish_reason: null }] },
+            { choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.Stop }] },
+          ],
+        ]);
+
+        const agent = new Agent({
+          model,
+          messages: [Message.System("助手")],
+          tools: [readTool],
+          onUnknownTool: (ctx) => `工具 "${ctx.toolCall.function?.name}" 不存在`,
+        });
+
+        agent.append(Message.Assistant());
+        await agent.run();
+
+        expect(model.createStream).toHaveBeenCalledTimes(2);
+        const toolResults = agent.messages.filter((m) => m.role === AgentNS.Role.Tool);
+        // 并行调用，应有 2 条工具结果
+        expect(toolResults).toHaveLength(2);
+        const unknownResult = toolResults.find((m) => m.content!.toString().includes("unknownX"));
+        const knownResult = toolResults.find((m) => m.content === "文件内容");
+        expect(unknownResult).toBeDefined();
+        expect(knownResult).toBeDefined();
+      });
+
+      it("未设置 onUnknownTool 时使用默认提示（向后兼容）", async () => {
+        const model = createMultiRoundMockModel([
+          [
+            { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "unknownTool", arguments: "{}" } }] }, finish_reason: null }] },
+            { choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.ToolCalls }] },
+          ],
+          [
+            { choices: [{ index: 0, delta: { content: "好的" }, finish_reason: null }] },
+            { choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.Stop }] },
+          ],
+        ]);
+
+        // 不设置 onUnknownTool，使用默认行为
+        const agent = new Agent({
+          model,
+          messages: [Message.System("助手")],
+          tools: [],
+        });
+
+        agent.append(Message.Assistant());
+        await agent.run();
+
+        const toolResult = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
+        expect(toolResult.content).toBe("未知工具: unknownTool，没有找到对应的工具实现。");
+      });
+    });
+
     it("function_call（旧版）格式也应正常处理", async () => {
       const tool = new CallbackTool({
         function: {

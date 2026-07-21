@@ -74,4 +74,78 @@ describe("AgentContext", () => {
     const ctx = new AgentContext({ model: {} as any });
     expect(ctx.allowJsonParseError).toBe(true);
   });
+
+  // ---- onUnknownTool ----
+
+  describe("onUnknownTool", () => {
+    it("不设置时应为 undefined", () => {
+      const ctx = new AgentContext({ model: {} as any });
+      expect(ctx.onUnknownTool).toBeUndefined();
+    });
+
+    it("应接受同步函数", () => {
+      const ctx = new AgentContext({
+        model: {} as any,
+        onUnknownTool: (ctx) => `工具 "${ctx.toolCall.function?.name}" 不可用`,
+      });
+      expect(ctx.onUnknownTool).toBeDefined();
+    });
+
+    it("应接受异步函数", () => {
+      const ctx = new AgentContext({
+        model: {} as any,
+        onUnknownTool: async (ctx) => `工具 "${ctx.toolCall.function?.name}" 不可用，可用工具: ${ctx.availableTools.map((t) => t.function.name).join(", ")}`,
+      });
+      expect(ctx.onUnknownTool).toBeDefined();
+    });
+
+    it("同步函数应正确返回结果", () => {
+      const ctx = new AgentContext({
+        model: {} as any,
+        onUnknownTool: (ctx) => `未知工具: ${ctx.toolCall.function?.name}，请使用可用工具。`,
+      });
+
+      const result = ctx.onUnknownTool!({
+        toolCall: { function: { name: "Foo" } },
+        availableTools: [],
+      });
+      expect(result).toBe("未知工具: Foo，请使用可用工具。");
+    });
+
+    it("异步函数应正确返回结果", async () => {
+      const ctx = new AgentContext({
+        model: {} as any,
+        onUnknownTool: async (ctx) => {
+          const names = ctx.availableTools.map((t) => t.function.name).join(", ");
+          return `未知工具 "${ctx.toolCall.function?.name}"，可用工具: [${names}]`;
+        },
+      });
+
+      const result = await ctx.onUnknownTool!({
+        toolCall: { function: { name: "Bar" } },
+        availableTools: [
+          { function: { name: "readFile" } } as Tool,
+          { function: { name: "writeFile" } } as Tool,
+        ],
+      });
+      expect(result).toBe('未知工具 "Bar"，可用工具: [readFile, writeFile]');
+    });
+
+    it("应接收正确的 UnknownToolContext 参数", () => {
+      const ctx = new AgentContext({
+        model: {} as any,
+        onUnknownTool: (ctx) => {
+          expect(ctx.toolCall).toHaveProperty("function");
+          expect(ctx.toolCall.function).toHaveProperty("name");
+          expect(ctx.availableTools).toBeInstanceOf(Array);
+          return "ok";
+        },
+      });
+
+      ctx.onUnknownTool!({
+        toolCall: { id: "call_123", type: "function", function: { name: "test", arguments: "{}" } },
+        availableTools: [{ function: { name: "test" } } as Tool],
+      });
+    });
+  });
 });

@@ -423,6 +423,78 @@ const kb = new KnowledgeBase({
 const results = kb.search(targetVector, topN = 5, minScore = 0.8);
 ```
 
+### 生命周期钩子
+
+Agent 提供多个生命周期钩子，可在运行时自定义行为。
+
+```typescript
+const agent = new Agent({
+  model,
+  // 每次内循环开始前触发，可用于刷新工具定义、RAG 等
+  onInnerLoopStart: () => {
+    console.log("内循环开始");
+  },
+  // 每次内循环结束后触发，可用于后处理
+  onInnerLoopEnd: () => {
+    console.log("内循环结束");
+  },
+  // 当 LLM 调用一个未注册的工具时触发
+  onUnknownTool: (ctx) => {
+    return `工具 "${ctx.toolCall.function?.name}" 不可用。`;
+  },
+});
+```
+
+#### onUnknownTool — 未知工具处理钩子
+
+当 LLM 调用了一个 Agent 未注册的工具时，`onUnknownTool` 钩子被触发。
+
+**签名**：
+```typescript
+onUnknownTool?: (ctx: UnknownToolContext) => string | Promise<string>;
+
+interface UnknownToolContext {
+  toolCall: AgentNS.ToolCall;    // LLM 发出的工具调用请求
+  availableTools: Tool[];        // 当前注册的所有工具列表（浅拷贝）
+}
+```
+
+**返回值**：返回的字符串将作为工具执行结果返回给 LLM。
+
+**默认行为**：不设置时，返回固定提示 `"未知工具: {name}，没有找到对应的工具实现。"`。
+
+**使用场景**：
+- 自定义错误提示，提供更有用的上下文信息
+- 根据可用工具列表向 LLM 推荐类似工具
+- 异步记录审计日志或调用外部监控服务
+
+**示例**：
+```typescript
+// 同步用法 — 推荐可用工具
+const agent = new Agent({
+  model,
+  tools: [weatherTool, calculatorTool],
+  onUnknownTool: (ctx) => {
+    const names = ctx.availableTools.map(t => t.function.name).join(", ");
+    return `抱歉，工具 "${ctx.toolCall.function?.name}" 不可用。当前可用的工具有: [${names}]。`;
+  },
+});
+
+// 异步用法 — 记录审计日志
+const agent = new Agent({
+  model,
+  tools: [fileReadTool],
+  onUnknownTool: async (ctx) => {
+    await auditService.log({
+      event: "unknown_tool_call",
+      toolName: ctx.toolCall.function?.name,
+      timestamp: new Date(),
+    });
+    return `工具 "${ctx.toolCall.function?.name}" 不存在，操作已记录。`;
+  },
+});
+```
+
 ### FunctionCallContext（函数调用上下文）
 
 工具执行时的上下文对象，包含以下属性：
