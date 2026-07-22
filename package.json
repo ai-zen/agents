@@ -9,6 +9,6 @@
     "test": "pnpm --filter @ai-zen/agents-core test && pnpm --filter @ai-zen/agents-sdk test"
   },
   "keywords": [],
-  "author": "",
+  "author": "LZQCN",
   "license": "MIT"
 }

@@ -26,8 +26,8 @@
     "mcp",
     "model-context-protocol"
   ],
-  "author": "",
-  "license": "ISC",
+  "author": "LZQCN",
+  "license": "MIT",
   "dependencies": {
     "@ai-zen/agents-core": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",

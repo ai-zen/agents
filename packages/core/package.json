@@ -18,8 +18,8 @@
     "test:integration": "vitest run --reporter=verbose src/integration.test.ts"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "LZQCN",
+  "license": "MIT",
   "devDependencies": {
     "@types/json-schema": "^7.0.15",
     "dotenv": "^17.4.2",
