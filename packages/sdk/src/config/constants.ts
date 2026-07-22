@@ -149,7 +149,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       endpointId: "deepseek",
       modelName: "deepseek-v4-flash",
       maxContextTokens: 250_000,
-      defaultParams: { thinking: { type: "disabled" } },
+      defaultParams: { thinking: { type: "enabled" } },
       description: "DeepSeek 经济高效模型",
     },
   ],
