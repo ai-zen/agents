@@ -27,7 +27,7 @@ const API_KEY = process.env.DEEPSEEK_API_KEY || "";
 const skip = !API_KEY;
 
 const config = {
-  defaultModel: "deepseek-chat",
+  defaultModel: "deepseek-v4-flash",
   endpoints: [
     {
       id: "deepseek",
@@ -38,10 +38,10 @@ const config = {
   ],
   models: [
     {
-      id: "deepseek-chat",
-      name: "DeepSeek Chat",
+      id: "deepseek-v4-flash",
+      name: "DeepSeek V4 Flash",
       endpointId: "deepseek",
-      modelName: "deepseek-chat",
+      modelName: "deepseek-v4-flash",
       maxContextTokens: 128_000,
       defaultParams: {},
     },
@@ -61,7 +61,7 @@ const provider = new Provider({
 
 describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
   it("简单问答：一句话回复", async () => {
-    const model = createModel(provider, "deepseek-chat");
+    const model = createModel(provider, "deepseek-v4-flash");
     const agent = new SdkAgent({
       provider,
       definition: {
@@ -86,7 +86,7 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
   });
 
   it("带工具调用：readFile 读取自身 package.json", async () => {
-    const model = createModel(provider, "deepseek-chat");
+    const model = createModel(provider, "deepseek-v4-flash");
     const pkgPath = join(__dirname, "..", "package.json");
     const tools = BUILTIN_TOOLS.filter((t) =>
       ["readFile", "glob", "ls", "cwd"].includes(t.function.name),
@@ -129,7 +129,7 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
   }, 60_000);
 
   it("多轮对话：记住上下文", async () => {
-    const model = createModel(provider, "deepseek-chat");
+    const model = createModel(provider, "deepseek-v4-flash");
     const agent = new SdkAgent({
       provider,
       definition: {

@@ -1,5 +1,15 @@
 # Changelog
 
+## [3.0.1] - 2026-07-26
+
+### ♻️ 重构
+
+- **`CallbackTool` 从 `implements Tool` 改为 `extends Tool`** — 继承 Tool 抽象类，构造函数委托 `super()`，确保 `toBeInstanceOf(Tool)` 通过
+
+### ✅ 测试
+
+- **集成测试模型名更新** — `deepseek-chat` → `deepseek-v4-flash`
+
 ## [3.0.0-alpha.1] - 2026-07-19
 
 ### 💥 破坏性变更

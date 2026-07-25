@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.3.1] - 2026-07-26
+
+### 💥 破坏性变更
+
+- **`Provider` 移至 `runtime`，合并 `Capabilities`** — 删除 `capabilities/Capabilities.ts` 和原 `runtime/Provider.ts`，Provider 直接暴露 `filter()`、`buildTools()`、`instantiate()`、`refresh()`
+- **去除 `getMcpManager()` 方法** — `mcpManager` 从 lazy getter 改为构造时直接 `new McpConnectionManager()`（有 mcpPaths 时），`readonly` 属性
+- **字段重命名** — `builtinInstances` → `builtinTools`，`userInstances` → `userTools`，`subagentDefs` → `subagents`
+- **`createModel` 签名变更** — 从 `createModel(config, modelId)` 改为 `createModel(provider, modelId)`，调用方不再需要 `.config` 解构
+- **`SdkAgent` 去掉 `caps` 字段** — 只保留 `provider`
+
+### 🚀 新功能
+
+- **用户工具 ESM 支持** — 移除 `node:vm` 沙箱，统一使用 `import()` 加载 `.js` / `.mjs` 文件，每次 `refresh()` 加时间戳 querystring 防止缓存
+- **`CallbackTool` 替代 `createToolFromObject`** — `{ function, exec }` 格式直接映射为 `CallbackTool`
+
+### 🎯 优化
+
+- **默认 Agent 系统提示词更新** — 精简为五条原则：开动脑筋、实事求是、一切行动听指挥、安全第一、能打胜仗
+- **默认 SubAgent `function.description` 优化** — 强调主 Agent 必须提供完整任务上下文
+
+### 🗑 移除
+
+- 删除 `capabilities/Provider.ts`（已移回 `runtime/Provider.ts`）
+- 删除 `createToolFromObject` 工具函数
+- 删除 `TODO.md`、`TODO2.md`
+- 测试 fixture 从 `.js` 迁移为 `.mjs`
+
 ## [0.2.6] - 2026-07-20
 
 ### 🔧 修复

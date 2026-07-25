@@ -33,7 +33,7 @@ beforeAll(() => {
         Authorization: `Bearer ${DEEPSEEK_API_KEY!}`,
       },
       body: {
-        model: "deepseek-chat",
+        model: "deepseek-v4-flash",
       },
     },
     model_config: {
@@ -459,7 +459,7 @@ describeIf("集成测试 - DeepSeek API", () => {
               "Content-Type": "application/json",
               Authorization: "Bearer sk-invalid-key-12345",
             },
-            body: { model: "deepseek-chat" },
+            body: { model: "deepseek-v4-flash" },
           },
           model_config: { temperature: 0.01, max_tokens: 128 },
         });
