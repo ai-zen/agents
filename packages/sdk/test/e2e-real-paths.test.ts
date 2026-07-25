@@ -12,7 +12,7 @@ import { SdkAgent } from "../src/runtime/SdkAgent";
 import { AutoDraftPlugin } from "../src/plugin/AutoDraftPlugin";
 import { AutoRefreshToolsPlugin } from "../src/plugin/AutoRefreshToolsPlugin";
 import type { Tool } from "@ai-zen/agents-core";
-import { existsSync, readFileSync } from "node:fs";
+import { promises as fs } from "node:fs";
 import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -37,8 +37,10 @@ const PROJECT_SUB_AGENTS_DIR = join(PROJECT_AIZEN_DIR, "sub-agents");
 const PROJECT_AIZEN_MCP = join(PROJECT_AIZEN_DIR, "mcp.json");
 
 // 前置检查
-function checkPaths() {
-  if (!existsSync(TEST_CONFIG)) {
+async function checkPaths() {
+  try {
+    await fs.access(TEST_CONFIG);
+  } catch {
     throw new Error(`测试数据不存在，请先创建 ${TEST_CONFIG}`);
   }
 }
@@ -52,9 +54,9 @@ describe("端到端：真实文件系统路径", () => {
   // 1. 基础发现
   // -----------------------------------------------------------------
   describe("1. 发现阶段", () => {
-    it("config.json 可正常读取", () => {
-      checkPaths();
-      const config = new ConfigManager(TEST_CONFIG).read();
+    it("config.json 可正常读取", async () => {
+      await checkPaths();
+      const config = await new ConfigManager(TEST_CONFIG).read();
       expect(config.defaultModel).toBe("gpt4");
       expect(config.endpoints).toHaveLength(2);
       expect(config.models).toHaveLength(3);
@@ -63,8 +65,8 @@ describe("端到端：真实文件系统路径", () => {
     });
 
     it("discoverBuiltinTools: 有 imageModels 时包含 generateImage", async () => {
-      checkPaths();
-      const config = new ConfigManager(TEST_CONFIG).read();
+      await checkPaths();
+      const config = await new ConfigManager(TEST_CONFIG).read();
       const tools = discoverBuiltinTools(config);
       const names = tools.map((t) => t.function.name);
       expect(names).toContain("generateImage");
@@ -72,7 +74,7 @@ describe("端到端：真实文件系统路径", () => {
     });
 
     it("discoverSubAgents: 能发现用户级 SubAgent", async () => {
-      checkPaths();
+      await checkPaths();
       const agents = await discoverSubAgents([TEST_SUB_AGENTS_DIR]);
       expect(agents.length).toBeGreaterThanOrEqual(2);
       const names = agents.map((a) => a.function!.name);
@@ -81,7 +83,7 @@ describe("端到端：真实文件系统路径", () => {
     });
 
     it("discoverSubAgents: 合并用户级和项目级 SubAgent", async () => {
-      checkPaths();
+      await checkPaths();
       const agents = await discoverSubAgents([PROJECT_SUB_AGENTS_DIR, TEST_SUB_AGENTS_DIR]);
       const names = agents.map((a) => a.function!.name);
       expect(names).toContain("sub_agent_default");
@@ -90,7 +92,7 @@ describe("端到端：真实文件系统路径", () => {
     });
 
     it("discoverSkills: 能发现用户级 Skill", async () => {
-      checkPaths();
+      await checkPaths();
       const skills = await discoverSkills([TEST_SKILLS_DIR]);
       expect(skills.length).toBeGreaterThanOrEqual(2);
       const ids = skills.map((s) => s.id);
@@ -99,7 +101,7 @@ describe("端到端：真实文件系统路径", () => {
     });
 
     it("discoverSkills: 合并用户级和项目级 Skill", async () => {
-      checkPaths();
+      await checkPaths();
       const skills = await discoverSkills([PROJECT_SKILLS_DIR, TEST_SKILLS_DIR]);
       const ids = skills.map((s) => s.id);
       expect(ids).toContain("code-review");
@@ -108,7 +110,7 @@ describe("端到端：真实文件系统路径", () => {
     });
 
     it("readSkill: 可读取完整 Skill 内容和元数据", async () => {
-      checkPaths();
+      await checkPaths();
       const skill = await readSkill([TEST_SKILLS_DIR], "code-review");
       expect(skill).not.toBeNull();
       expect(skill!.name).toBe("code-review");
@@ -120,7 +122,7 @@ describe("端到端：真实文件系统路径", () => {
     });
 
     it("discoverUserTools: 能发现用户级工具", async () => {
-      checkPaths();
+      await checkPaths();
       const tools = await discoverUserTools([TEST_TOOLS_DIR]);
       expect(tools.length).toBeGreaterThanOrEqual(2);
       const names = tools.map((t) => t.function.name);
@@ -129,7 +131,7 @@ describe("端到端：真实文件系统路径", () => {
     });
 
     it("discoverUserTools: 合并用户级和项目级工具", async () => {
-      checkPaths();
+      await checkPaths();
       const tools = await discoverUserTools([PROJECT_TOOLS_DIR, TEST_TOOLS_DIR]);
       const names = tools.map((t) => t.function.name);
       expect(names).toContain("count_lines");
@@ -138,7 +140,7 @@ describe("端到端：真实文件系统路径", () => {
     });
 
     it("discoverMcpServers: 能发现用户级 MCP 服务器", async () => {
-      checkPaths();
+      await checkPaths();
       const servers = await discoverMcpServers([TEST_MCP]);
       const names = servers.map((s) => s.id);
       expect(names).toContain("github");
@@ -146,7 +148,7 @@ describe("端到端：真实文件系统路径", () => {
     });
 
     it("discoverMcpServers: 合并用户级 + 项目共享 + 项目个人 MCP", async () => {
-      checkPaths();
+      await checkPaths();
       const servers = await discoverMcpServers([PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP]);
       const names = servers.map((s) => s.id);
       expect(names).toContain("github");
@@ -156,7 +158,7 @@ describe("端到端：真实文件系统路径", () => {
     });
 
     it("用户工具可实际调用", async () => {
-      checkPaths();
+      await checkPaths();
       const tools = await discoverUserTools([TEST_TOOLS_DIR]);
       const greetTool = tools.find((t) => t.function.name === "greet")!;
       expect(greetTool).toBeDefined();
@@ -170,7 +172,7 @@ describe("端到端：真实文件系统路径", () => {
     });
 
     it("项目工具可实际调用", async () => {
-      checkPaths();
+      await checkPaths();
       const tools = await discoverUserTools([PROJECT_TOOLS_DIR]);
       const statsTool = tools.find((t) => t.function.name === "project_stats")!;
       expect(statsTool).toBeDefined();
@@ -188,26 +190,26 @@ describe("端到端：真实文件系统路径", () => {
   // 2. CRUD
   // -----------------------------------------------------------------
   describe("2. CRUD 操作", () => {
-    it("listAgents: 能列出用户级 Agent", () => {
-      checkPaths();
-      const agents = new AgentRepository(TEST_AGENTS_DIR).list();
+    it("listAgents: 能列出用户级 Agent", async () => {
+      await checkPaths();
+      const agents = await new AgentRepository(TEST_AGENTS_DIR).list();
       expect(agents.length).toBeGreaterThanOrEqual(2);
       const ids = agents.map((a) => a.id);
       expect(ids).toContain("code-assistant");
       expect(ids).toContain("translator");
     });
 
-    it("readAgent: 可读取单个 Agent 定义", () => {
-      checkPaths();
-      const agent = new AgentRepository(TEST_AGENTS_DIR).read( "code-assistant");
+    it("readAgent: 可读取单个 Agent 定义", async () => {
+      await checkPaths();
+      const agent = await new AgentRepository(TEST_AGENTS_DIR).read("code-assistant");
       expect(agent).not.toBeNull();
       expect(agent!.name).toBe("代码助手");
       expect(agent!.permissions?.tools).toEqual({ allow: ["*"] });
     });
 
-    it("readAgent: translator 权限受限", () => {
-      checkPaths();
-      const agent = new AgentRepository(TEST_AGENTS_DIR).read( "translator");
+    it("readAgent: translator 权限受限", async () => {
+      await checkPaths();
+      const agent = await new AgentRepository(TEST_AGENTS_DIR).read("translator");
       expect(agent).not.toBeNull();
       expect(agent!.permissions?.tools).toEqual({ allow: ["readFile", "writeFile", "exec"] });
       expect(agent!.permissions?.skills).toEqual({ deny: ["*"] });
@@ -221,8 +223,8 @@ describe("端到端：真实文件系统路径", () => {
   // -----------------------------------------------------------------
   describe("3. Capabilities 管线", () => {
     it("使用真实路径构建 Provider + Capabilities", async () => {
-      checkPaths();
-      const config = new ConfigManager(TEST_CONFIG).read();
+      await checkPaths();
+      const config = await new ConfigManager(TEST_CONFIG).read();
       const provider = await Provider.create({
         config,
         agentsDir: TEST_AGENTS_DIR,
@@ -240,8 +242,8 @@ describe("端到端：真实文件系统路径", () => {
     });
 
     it("code-assistant: allow all 时所有能力可用", async () => {
-      checkPaths();
-      const config = new ConfigManager(TEST_CONFIG).read();
+      await checkPaths();
+      const config = await new ConfigManager(TEST_CONFIG).read();
       const provider = await Provider.create({
         config,
         agentsDir: TEST_AGENTS_DIR,
@@ -251,7 +253,7 @@ describe("端到端：真实文件系统路径", () => {
         mcpPaths: [PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP],
       });
 
-      const definition = new AgentRepository(TEST_AGENTS_DIR).read( "code-assistant")!;
+      const definition = (await new AgentRepository(TEST_AGENTS_DIR).read("code-assistant"))!;
       const tools = provider.buildTools(definition.permissions ?? {});
 
       const names = tools.map((t) => t.function.name);
@@ -265,8 +267,8 @@ describe("端到端：真实文件系统路径", () => {
     });
 
     it("translator: 受限权限只暴露指定工具", async () => {
-      checkPaths();
-      const config = new ConfigManager(TEST_CONFIG).read();
+      await checkPaths();
+      const config = await new ConfigManager(TEST_CONFIG).read();
       const provider = await Provider.create({
         config,
         agentsDir: TEST_AGENTS_DIR,
@@ -276,7 +278,7 @@ describe("端到端：真实文件系统路径", () => {
         mcpPaths: [PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP],
       });
 
-      const definition = new AgentRepository(TEST_AGENTS_DIR).read( "translator")!;
+      const definition = (await new AgentRepository(TEST_AGENTS_DIR).read("translator"))!;
       const tools = provider.buildTools(definition.permissions ?? {});
 
       const names = tools.map((t) => t.function.name);
@@ -294,8 +296,8 @@ describe("端到端：真实文件系统路径", () => {
   // -----------------------------------------------------------------
   describe("4. createAgent 完整装配", () => {
     it("从真实路径创建 code-assistant", async () => {
-      checkPaths();
-      const config = new ConfigManager(TEST_CONFIG).read();
+      await checkPaths();
+      const config = await new ConfigManager(TEST_CONFIG).read();
       const provider = await Provider.create({
         config,
         agentsDir: TEST_AGENTS_DIR,
@@ -333,8 +335,8 @@ describe("端到端：真实文件系统路径", () => {
     });
 
     it("从真实路径创建 translator（受限权限）", async () => {
-      checkPaths();
-      const config = new ConfigManager(TEST_CONFIG).read();
+      await checkPaths();
+      const config = await new ConfigManager(TEST_CONFIG).read();
       const provider = await Provider.create({
         config,
         agentsDir: TEST_AGENTS_DIR,
@@ -361,8 +363,8 @@ describe("端到端：真实文件系统路径", () => {
   // -----------------------------------------------------------------
   describe("5. 插件集成", () => {
     it("autoRefreshTools 可在真实 SdkAgent 上使用", async () => {
-      checkPaths();
-      const config = new ConfigManager(TEST_CONFIG).read();
+      await checkPaths();
+      const config = await new ConfigManager(TEST_CONFIG).read();
       const provider = await Provider.create({
         config,
         agentsDir: TEST_AGENTS_DIR,
@@ -394,8 +396,8 @@ describe("端到端：真实文件系统路径", () => {
     });
 
     it("autoDraft 插件可正常保存和检查草稿", async () => {
-      checkPaths();
-      const config = new ConfigManager(TEST_CONFIG).read();
+      await checkPaths();
+      const config = await new ConfigManager(TEST_CONFIG).read();
       const provider = await Provider.create({
         config,
         agentsDir: TEST_AGENTS_DIR,
@@ -414,18 +416,18 @@ describe("端到端：真实文件系统路径", () => {
       // 模拟 onInnerLoopEnd
       const ctx = { agent, content: "你好", messages: agent.messages };
       const plugin = (agent as any)._plugins[0];
-      plugin.onInnerLoopEnd(ctx);
+      await plugin.onInnerLoopEnd(ctx);
 
       // 检查草稿文件已创建
       const draftPath = join(TEST_DRAFTS_DIR, "_current.json");
-      expect(existsSync(draftPath)).toBe(true);
+      await expect(fs.access(draftPath)).resolves.toBeUndefined();
 
-      const draftContent = JSON.parse(readFileSync(draftPath, "utf-8"));
+      const draftContent = JSON.parse(await fs.readFile(draftPath, "utf-8"));
       expect(draftContent.agentId).toBe("code-assistant");
       expect(draftContent.messages.length).toBeGreaterThan(0);
 
       // checkDraftForRestore 能检测到
-      const draft = AutoDraftPlugin.checkDraftForRestore(TEST_DRAFTS_DIR);
+      const draft = await AutoDraftPlugin.checkDraftForRestore(TEST_DRAFTS_DIR);
       expect(draft).not.toBeNull();
       expect(draft!.agentId).toBe("code-assistant");
     });
@@ -436,7 +438,7 @@ describe("端到端：真实文件系统路径", () => {
   // -----------------------------------------------------------------
   describe("6. 多路径合并优先级", () => {
     it("用户级 + 项目级 SubAgent 不冲突合并", async () => {
-      checkPaths();
+      await checkPaths();
       const agents = await discoverSubAgents([TEST_SUB_AGENTS_DIR, PROJECT_SUB_AGENTS_DIR]);
       const names = agents.map((a) => a.function!.name);
       // 各自有不同名称，不会冲突
@@ -444,7 +446,7 @@ describe("端到端：真实文件系统路径", () => {
     });
 
     it("用户级 + 项目级 Skill 不冲突合并", async () => {
-      checkPaths();
+      await checkPaths();
       const skills = await discoverSkills([TEST_SKILLS_DIR, PROJECT_SKILLS_DIR]);
       const ids = skills.map((s) => s.id);
       // 各自有不同 id，不会冲突
@@ -452,7 +454,7 @@ describe("端到端：真实文件系统路径", () => {
     });
 
     it("用户级 + 项目级 MCP 合并时同名按优先级覆盖", async () => {
-      checkPaths();
+      await checkPaths();
       // 这里的 server 名称各不相同，验证能全部发现
       const servers = await discoverMcpServers([TEST_MCP, PROJECT_MCP, PROJECT_AIZEN_MCP]);
       const names = servers.map((s) => s.id);

@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.3.2] - 2026-07-26
+
+### 💥 破坏性变更
+
+- **`EntityRepository` 所有方法改为异步** — `list()`、`read()`、`write()`、`delete()` 现在返回 `Promise`，需 `await`
+- **`DraftRepository` 所有方法改为异步** — `read()`、`write()`、`delete()` 需 `await`
+- **`ConfigManager` 所有方法改为异步** — `read()`、`write()`、`ensureDirs()`、`ensureDefaultAgent()`、`ensureDefaultSubAgent()`、`ensureDefaultConfig()`、`bootstrap()` 均需 `await`
+- **`createAgent()` 恢复为 `async`** — 因底层仓储改为异步，`createAgent(provider, agentId)` 需 `await`
+- **`AutoDraftPlugin.checkDraftForRestore()` 改为异步** — 需 `await`
+
+### 🎯 优化
+
+- **全面消除同步文件 IO** — 所有生产代码中的 `existsSync`、`readFileSync`、`writeFileSync`、`readdirSync`、`mkdirSync`、`unlinkSync`、`renameSync` 全部替换为 `fs.promises` 异步 API，避免事件循环阻塞
+- **`skillTools.ts` — 工具回调中的 `readdirSync` 替换为 `fs.promises.readdir`**
+
+### ✅ 测试
+
+- 7 个测试文件同步更新为 `async`/`await`，测试辅助函数也使用 `fs.promises`
+
 ## [0.3.1] - 2026-07-26
 
 ### 💥 破坏性变更

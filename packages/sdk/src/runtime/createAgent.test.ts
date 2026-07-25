@@ -2,19 +2,19 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { AgentNS } from "@ai-zen/agents-core";
 import { createAgent } from "./createAgent.js";
 import { Provider } from "./Provider.js";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AgentDefinition, AppConfig } from "../types/index.js";
 
 let dir: string;
 
-beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "ai-zen-resolve-"));
+beforeEach(async () => {
+  dir = await fs.mkdtemp(join(tmpdir(), "ai-zen-resolve-"));
 });
 
-afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
+afterEach(async () => {
+  await fs.rm(dir, { recursive: true, force: true });
 });
 
 const config: AppConfig = {
@@ -27,9 +27,9 @@ const config: AppConfig = {
   ],
 };
 
-function writeAgentFile(id: string, def: Partial<AgentDefinition> = {}) {
+async function writeAgentFile(id: string, def: Partial<AgentDefinition> = {}) {
   const agentsDir = join(dir, "agents");
-  mkdirSync(agentsDir, { recursive: true });
+  await fs.mkdir(agentsDir, { recursive: true });
   const agent: AgentDefinition = {
     id,
     name: id,
@@ -39,12 +39,12 @@ function writeAgentFile(id: string, def: Partial<AgentDefinition> = {}) {
     updatedAt: new Date().toISOString(),
     ...def,
   };
-  writeFileSync(join(agentsDir, `${id}.json`), JSON.stringify(agent, null, 2));
+  await fs.writeFile(join(agentsDir, `${id}.json`), JSON.stringify(agent, null, 2));
 }
 
-function writeSubAgent(id: string, functionName: string) {
+async function writeSubAgent(id: string, functionName: string) {
   const subDir = join(dir, "sub-agents");
-  mkdirSync(subDir, { recursive: true });
+  await fs.mkdir(subDir, { recursive: true });
   const agent: AgentDefinition = {
     id,
     name: id,
@@ -56,25 +56,25 @@ function writeSubAgent(id: string, functionName: string) {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
-  writeFileSync(join(subDir, `${id}.json`), JSON.stringify(agent, null, 2));
+  await fs.writeFile(join(subDir, `${id}.json`), JSON.stringify(agent, null, 2));
 }
 
-function writeSkill(id: string, description: string) {
+async function writeSkill(id: string, description: string) {
   const skillDir = join(dir, "skills", id);
-  mkdirSync(skillDir, { recursive: true });
-  writeFileSync(join(skillDir, "SKILL.md"), `---\nname: ${id}\ndescription: ${description}\n---\n# ${id}`);
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.writeFile(join(skillDir, "SKILL.md"), `---\nname: ${id}\ndescription: ${description}\n---\n# ${id}`);
 }
 
-function writeMcpConfig(servers: Record<string, unknown>) {
-  writeFileSync(join(dir, "mcp.json"), JSON.stringify({ servers }, null, 2));
+async function writeMcpConfig(servers: Record<string, unknown>) {
+  await fs.writeFile(join(dir, "mcp.json"), JSON.stringify({ servers }, null, 2));
 }
 
 describe("createAgent", () => {
   it("从磁盘完整装配 Agent", async () => {
-    writeAgentFile("my-agent");
-    writeSubAgent("sa1", "sub_agent_default");
-    writeSkill("code-review", "代码审查");
-    writeMcpConfig({ github: { transport: "stdio", command: "gh" } });
+    await writeAgentFile("my-agent");
+    await writeSubAgent("sa1", "sub_agent_default");
+    await writeSkill("code-review", "代码审查");
+    await writeMcpConfig({ github: { transport: "stdio", command: "gh" } });
 
     const provider = await Provider.create({
       config,
@@ -103,7 +103,7 @@ describe("createAgent", () => {
   });
 
   it("可选的发现目录不存在不抛异常", async () => {
-    writeAgentFile("my-agent");
+    await writeAgentFile("my-agent");
 
     const provider = await Provider.create({
       config,
@@ -116,7 +116,7 @@ describe("createAgent", () => {
 
   describe("onUnknownTool 钩子", () => {
     it("无 MCP 配置时返回简单提示", async () => {
-      writeAgentFile("my-agent");
+      await writeAgentFile("my-agent");
 
       const provider = await Provider.create({
         config,
@@ -136,8 +136,8 @@ describe("createAgent", () => {
     });
 
     it("有 MCP 配置且 call_mcp_tool 在工具列表中时，应提示使用 call_mcp_tool", async () => {
-      writeAgentFile("my-agent");
-      writeMcpConfig({ github: { transport: "stdio", command: "gh" } });
+      await writeAgentFile("my-agent");
+      await writeMcpConfig({ github: { transport: "stdio", command: "gh" } });
 
       const provider = await Provider.create({
         config,
@@ -159,7 +159,7 @@ describe("createAgent", () => {
     });
 
     it("有 MCP 配置但 call_mcp_tool 权限被禁用时，应提示权限问题", async () => {
-      writeAgentFile("my-agent", {
+      await writeAgentFile("my-agent", {
         permissions: {
           tools: { deny: ["call_mcp_tool", "load_mcp", "read_mcp_resource"] },
           mcps: { deny: ["*"] },
@@ -167,7 +167,7 @@ describe("createAgent", () => {
           subagents: { deny: ["*"] },
         },
       });
-      writeMcpConfig({ github: { transport: "stdio", command: "gh" } });
+      await writeMcpConfig({ github: { transport: "stdio", command: "gh" } });
 
       const provider = await Provider.create({
         config,
@@ -189,7 +189,7 @@ describe("createAgent", () => {
     });
 
     it("无 MCP 配置时不应提示 MCP 相关内容", async () => {
-      writeAgentFile("my-agent");
+      await writeAgentFile("my-agent");
 
       const provider = await Provider.create({
         config,

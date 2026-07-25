@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, unlinkSync, readdirSync, mkdirSync } from "node:fs";
+import { promises as fs } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -18,28 +18,37 @@ export class EntityRepository<T extends { id: string }> {
   }
 
   /** 列出目录下所有实体（跳过解析失败的文件） */
-  list(): T[] {
-    if (!existsSync(this.dir)) return [];
+  async list(): Promise<T[]> {
+    try {
+      await fs.access(this.dir);
+    } catch {
+      return [];
+    }
 
-    const ids = readdirSync(this.dir)
+    const entries = await fs.readdir(this.dir);
+    const ids = entries
       .filter((f) => f.endsWith(".json"))
       .map((f) => f.replace(/\.json$/, ""));
 
     const entities: T[] = [];
     for (const id of ids) {
-      const entity = this.read(id);
+      const entity = await this.read(id);
       if (entity) entities.push(entity);
     }
     return entities;
   }
 
   /** 读取单个实体，不存在返回 null */
-  read(id: string): T | null {
+  async read(id: string): Promise<T | null> {
     const p = this.path(id);
-    if (!existsSync(p)) return null;
+    try {
+      await fs.access(p);
+    } catch {
+      return null;
+    }
 
     try {
-      const raw = readFileSync(p, "utf-8");
+      const raw = await fs.readFile(p, "utf-8");
       return JSON.parse(raw) as T;
     } catch {
       return null;
@@ -47,18 +56,23 @@ export class EntityRepository<T extends { id: string }> {
   }
 
   /** 写入实体（创建或更新） */
-  write(entity: T): void {
-    if (!existsSync(this.dir)) {
-      mkdirSync(this.dir, { recursive: true });
+  async write(entity: T): Promise<void> {
+    try {
+      await fs.access(this.dir);
+    } catch {
+      await fs.mkdir(this.dir, { recursive: true });
     }
-    writeFileSync(this.path(entity.id), JSON.stringify(entity, null, 2), "utf-8");
+    await fs.writeFile(this.path(entity.id), JSON.stringify(entity, null, 2), "utf-8");
   }
 
   /** 删除实体，不存在时不抛异常 */
-  delete(id: string): void {
+  async delete(id: string): Promise<void> {
     const p = this.path(id);
-    if (existsSync(p)) {
-      unlinkSync(p);
+    try {
+      await fs.access(p);
+      await fs.unlink(p);
+    } catch {
+      // 文件不存在，忽略
     }
   }
 }

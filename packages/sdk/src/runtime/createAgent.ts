@@ -5,7 +5,7 @@ import type { Provider } from "./Provider.js";
 import { createModel } from "./createModel.js";
 
 /**
- * 从磁盘创建 Agent（异步）。
+ * 从磁盘创建 Agent。
  *
  * 通过 Provider 获取已发现的能力，读取 Agent 定义，过滤并实例化工具，产出 SdkAgent。
  *
@@ -18,7 +18,7 @@ export async function createAgent(
   provider: Provider,
   agentId: string,
 ): Promise<SdkAgent> {
-  const definition = new AgentRepository(provider.agentsDir).read(agentId);
+  const definition = await new AgentRepository(provider.agentsDir).read(agentId);
   if (!definition) throw new Error(`Agent "${agentId}" 不存在`);
 
   const modelId = definition.modelId ?? provider.config.defaultModel;

@@ -6,7 +6,7 @@ import { createDisclosureParam } from "../disclosure.js";
 import { readSkill } from "../discovery/skills.js";
 import { createLogger } from "../../shared/logger.js";
 import type { Provider } from "../../runtime/Provider.js";
-import { readdirSync } from "node:fs";
+import { promises as fs } from "node:fs";
 import { join } from "node:path";
 
 const log = createLogger();
@@ -57,7 +57,7 @@ export function createLoadSkillTool(
       // 扫描 skill 目录下的文件列表
       let fileList = "";
       try {
-        const entries = readdirSync(skill.dirPath, { withFileTypes: true });
+        const entries = await fs.readdir(skill.dirPath, { withFileTypes: true });
         const files = entries.map((e) => {
           const suffix = e.isDirectory() ? "/" : "";
           return `  - ${e.name}${suffix}`;

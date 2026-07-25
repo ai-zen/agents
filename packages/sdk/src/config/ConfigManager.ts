@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync, readdirSync } from "node:fs";
+import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import type { AppConfig, AgentDefinition } from "../types/index.js";
 import {
@@ -29,23 +29,27 @@ export class ConfigManager {
   /**
    * 读取配置。文件不存在时返回出厂默认配置。
    */
-  read(): AppConfig {
-    if (!existsSync(this.configPath)) {
+  async read(): Promise<AppConfig> {
+    try {
+      await fs.access(this.configPath);
+    } catch {
       return { ...DEFAULT_APP_CONFIG };
     }
-    const raw = readFileSync(this.configPath, "utf-8");
+    const raw = await fs.readFile(this.configPath, "utf-8");
     return JSON.parse(raw) as AppConfig;
   }
 
-  write(config: AppConfig): void {
+  async write(config: AppConfig): Promise<void> {
     const dir = dirname(this.configPath);
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
+    try {
+      await fs.access(dir);
+    } catch {
+      await fs.mkdir(dir, { recursive: true });
     }
 
     const tmpPath = this.configPath + ".tmp";
-    writeFileSync(tmpPath, JSON.stringify(config, null, 2), "utf-8");
-    renameSync(tmpPath, this.configPath);
+    await fs.writeFile(tmpPath, JSON.stringify(config, null, 2), "utf-8");
+    await fs.rename(tmpPath, this.configPath);
   }
 
   // -----------------------------------------------------------------------
@@ -56,23 +60,25 @@ export class ConfigManager {
    * 确保基础目录结构存在。
    * 创建 basePath 及所有标准共享子目录（agents/、sub-agents/、skills/ 等）。
    */
-  ensureDirs(): void {
-    mkdirSync(this.basePath, { recursive: true });
+  async ensureDirs(): Promise<void> {
+    await fs.mkdir(this.basePath, { recursive: true });
     for (const dir of CONFIG_SUB_DIRS) {
-      mkdirSync(join(this.basePath, dir), { recursive: true });
+      await fs.mkdir(join(this.basePath, dir), { recursive: true });
     }
   }
 
   /**
    * 确保 config.json 存在。不存在时写入出厂默认配置 DSL。
    */
-  ensureDefaultConfig(): AppConfig {
-    if (existsSync(this.configPath)) {
-      return this.read();
+  async ensureDefaultConfig(): Promise<AppConfig> {
+    try {
+      await fs.access(this.configPath);
+      return await this.read();
+    } catch {
+      await this.ensureDirs();
+      await this.write(DEFAULT_APP_CONFIG);
+      return { ...DEFAULT_APP_CONFIG };
     }
-    this.ensureDirs();
-    this.write(DEFAULT_APP_CONFIG);
-    return { ...DEFAULT_APP_CONFIG };
   }
 
   /**
@@ -82,17 +88,27 @@ export class ConfigManager {
    * - agents/ 为空 → 写入默认 Agent
    * - 已有其他 Agent → 返回 null
    */
-  ensureDefaultAgent(): AgentDefinition | null {
+  async ensureDefaultAgent(): Promise<AgentDefinition | null> {
     const agentsDir = join(this.basePath, "agents");
     const defaultPath = join(agentsDir, `${DEFAULT_AGENT_ID}.json`);
 
-    if (existsSync(defaultPath)) {
-      return JSON.parse(readFileSync(defaultPath, "utf-8")) as AgentDefinition;
+    try {
+      await fs.access(defaultPath);
+      return JSON.parse(await fs.readFile(defaultPath, "utf-8")) as AgentDefinition;
+    } catch {
+      // default.json 不存在，继续
     }
 
-    mkdirSync(agentsDir, { recursive: true });
+    await fs.mkdir(agentsDir, { recursive: true });
 
-    const existing = readdirSync(agentsDir).filter((f) => f.endsWith(".json"));
+    let existing: string[];
+    try {
+      const allFiles = await fs.readdir(agentsDir);
+      existing = allFiles.filter((f) => f.endsWith(".json"));
+    } catch {
+      existing = [];
+    }
+
     if (existing.length > 0) {
       return null;
     }
@@ -104,7 +120,7 @@ export class ConfigManager {
       updatedAt: now,
     };
 
-    writeFileSync(defaultPath, JSON.stringify(definition, null, 2), "utf-8");
+    await fs.writeFile(defaultPath, JSON.stringify(definition, null, 2), "utf-8");
     return definition;
   }
 
@@ -115,17 +131,27 @@ export class ConfigManager {
    * - sub-agents/ 为空 → 写入默认通用助手 SubAgent
    * - 已有其他 SubAgent → 返回 null
    */
-  ensureDefaultSubAgent(): AgentDefinition | null {
+  async ensureDefaultSubAgent(): Promise<AgentDefinition | null> {
     const subDir = join(this.basePath, "sub-agents");
     const defaultPath = join(subDir, `${DEFAULT_SUBAGENT_ID}.json`);
 
-    if (existsSync(defaultPath)) {
-      return JSON.parse(readFileSync(defaultPath, "utf-8")) as AgentDefinition;
+    try {
+      await fs.access(defaultPath);
+      return JSON.parse(await fs.readFile(defaultPath, "utf-8")) as AgentDefinition;
+    } catch {
+      // 文件不存在，继续
     }
 
-    mkdirSync(subDir, { recursive: true });
+    await fs.mkdir(subDir, { recursive: true });
 
-    const existing = readdirSync(subDir).filter((f) => f.endsWith(".json"));
+    let existing: string[];
+    try {
+      const allFiles = await fs.readdir(subDir);
+      existing = allFiles.filter((f) => f.endsWith(".json"));
+    } catch {
+      existing = [];
+    }
+
     if (existing.length > 0) {
       return null;
     }
@@ -137,7 +163,7 @@ export class ConfigManager {
       updatedAt: now,
     };
 
-    writeFileSync(defaultPath, JSON.stringify(definition, null, 2), "utf-8");
+    await fs.writeFile(defaultPath, JSON.stringify(definition, null, 2), "utf-8");
     return definition;
   }
 
@@ -145,15 +171,15 @@ export class ConfigManager {
    * 一键初始化：目录 + config.json + 默认 Agent + 默认 SubAgent。
    * 已有文件不会被覆盖。
    */
-  bootstrap(): {
+  async bootstrap(): Promise<{
     config: AppConfig;
     agent: AgentDefinition | null;
     subAgent: AgentDefinition | null;
-  } {
-    this.ensureDirs();
-    const config = this.ensureDefaultConfig();
-    const agent = this.ensureDefaultAgent();
-    const subAgent = this.ensureDefaultSubAgent();
+  }> {
+    await this.ensureDirs();
+    const config = await this.ensureDefaultConfig();
+    const agent = await this.ensureDefaultAgent();
+    const subAgent = await this.ensureDefaultSubAgent();
     return { config, agent, subAgent };
   }
 }

@@ -2,7 +2,7 @@ import type { Draft } from "../types/index.js";
 import type { AgentPlugin, SendContext } from "../runtime/SdkAgent.js";
 import { DraftRepository } from "../crud/DraftRepository.js";
 import { createLogger } from "../shared/logger.js";
-import { existsSync } from "node:fs";
+import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import dayjs from "dayjs";
 
@@ -51,23 +51,27 @@ export class AutoDraftPlugin implements AgentPlugin {
       };
 
       const repo = new DraftRepository(draftsDir);
-      repo.write(draft);
+      await repo.write(draft);
     } catch (err: any) {
       log.error(`[autoDraft] 保存失败: ${err?.message ?? err}`);
     }
   }
 
-  static checkDraftForRestore(draftsDir: string): Draft | null {
+  static async checkDraftForRestore(draftsDir: string): Promise<Draft | null> {
     const path = join(draftsDir, CURRENT_DRAFT);
-    if (!existsSync(path)) return null;
+    try {
+      await fs.access(path);
+    } catch {
+      return null;
+    }
 
     const repo = new DraftRepository(draftsDir);
-    const draft = repo.read();
+    const draft = await repo.read();
     if (!draft) return null;
 
     const age = dayjs().diff(dayjs(draft.updatedAt), "day");
     if (age > EXPIRE_DAYS) {
-      repo.delete();
+      await repo.delete();
       return null;
     }
 

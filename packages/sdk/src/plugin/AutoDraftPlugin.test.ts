@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { AgentNS } from "@ai-zen/agents-core";
 import { AutoDraftPlugin } from "./AutoDraftPlugin.js";
 import { DraftRepository } from "../crud/DraftRepository.js";
-import { mkdtempSync, rmSync } from "node:fs";
+import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -34,12 +34,12 @@ function mockAgent(opts: { messages?: any[]; tools?: any[]; model?: any }): any 
 describe("AutoDraftPlugin", () => {
   let dir: string;
 
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "ai-zen-autodraft-"));
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(join(tmpdir(), "ai-zen-autodraft-"));
   });
 
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+  afterEach(async () => {
+    await fs.rm(dir, { recursive: true, force: true });
   });
 
   it("返回一个 AgentPlugin（有 onInnerLoopEnd）", () => {
@@ -61,7 +61,7 @@ describe("AutoDraftPlugin", () => {
     await plugin.onInnerLoopEnd!({ agent, content: "hello", messages: agent.messages });
 
     const draftRepo = new DraftRepository(dir);
-    const draft = draftRepo.read();
+    const draft = await draftRepo.read();
     expect(draft).not.toBeNull();
     expect(draft!.agentId).toBe("agent-1");
     expect(draft!.conversationId).toBeUndefined();
@@ -85,7 +85,7 @@ describe("AutoDraftPlugin", () => {
     await plugin.onInnerLoopEnd!({ agent, content: "hello", messages: agent.messages });
 
     const draftRepo = new DraftRepository(dir);
-    const draft = draftRepo.read("conv-123");
+    const draft = await draftRepo.read("conv-123");
     expect(draft).not.toBeNull();
     expect(draft!.conversationId).toBe("conv-123");
   });
@@ -106,7 +106,7 @@ describe("AutoDraftPlugin", () => {
     await plugin.onInnerLoopEnd!({ agent, content: "hello", messages: agent.messages });
 
     const draftRepo = new DraftRepository(dir);
-    const draft = draftRepo.read();
+    const draft = await draftRepo.read();
     expect(draft!.messages).toHaveLength(3);
   });
 
@@ -125,7 +125,7 @@ describe("AutoDraftPlugin", () => {
     await plugin.onInnerLoopEnd!({ agent, content: "hello", messages: agent.messages });
 
     const draftRepo = new DraftRepository(dir);
-    const draft = draftRepo.read();
+    const draft = await draftRepo.read();
     expect(draft).not.toBeNull();
     const roles = draft!.messages.map((m) => m.role);
     expect(roles).toEqual(["system", "user", "assistant", "tool", "assistant"]);
@@ -144,7 +144,7 @@ describe("AutoDraftPlugin", () => {
     ).resolves.toBeUndefined();
 
     const draftRepo = new DraftRepository(nestedDir);
-    const draft = draftRepo.read();
+    const draft = await draftRepo.read();
     expect(draft).not.toBeNull();
   });
 });
@@ -156,16 +156,16 @@ describe("AutoDraftPlugin", () => {
 describe("AutoDraftPlugin.checkDraftForRestore", () => {
   let dir: string;
 
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "ai-zen-autodraft-"));
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(join(tmpdir(), "ai-zen-autodraft-"));
   });
 
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+  afterEach(async () => {
+    await fs.rm(dir, { recursive: true, force: true });
   });
 
-  it("_current.json 不存在时返回 null", () => {
-    const result = AutoDraftPlugin.checkDraftForRestore(dir);
+  it("_current.json 不存在时返回 null", async () => {
+    const result = await AutoDraftPlugin.checkDraftForRestore(dir);
     expect(result).toBeNull();
   });
 
@@ -176,7 +176,7 @@ describe("AutoDraftPlugin.checkDraftForRestore", () => {
     const plugin = new AutoDraftPlugin({ draftsDir: dir, agentId: "agent-1", modelId: "m1" });
     await plugin.onInnerLoopEnd!({ agent, content: "hello", messages: agent.messages });
 
-    const result = AutoDraftPlugin.checkDraftForRestore(dir);
+    const result = await AutoDraftPlugin.checkDraftForRestore(dir);
     expect(result).not.toBeNull();
     expect(result!.agentId).toBe("agent-1");
     expect(result!.messages[0].content).toBe("Unfinished work");
@@ -187,17 +187,17 @@ describe("AutoDraftPlugin.checkDraftForRestore", () => {
     const dayjs = (await import("dayjs")).default;
     const oldDate = dayjs().subtract(8, "day").toISOString();
 
-    draftRepo.write({
+    await draftRepo.write({
       agentId: "old-agent",
       modelId: "m1",
       messages: [{ role: AgentNS.Role.System, content: "Old" }],
       updatedAt: oldDate,
     });
 
-    const result = AutoDraftPlugin.checkDraftForRestore(dir);
+    const result = await AutoDraftPlugin.checkDraftForRestore(dir);
     expect(result).toBeNull();
 
-    const draft = draftRepo.read();
+    const draft = await draftRepo.read();
     expect(draft).toBeNull();
   });
 });

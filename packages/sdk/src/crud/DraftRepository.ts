@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync } from "node:fs";
+import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import type { Draft } from "../types/index.js";
 
@@ -17,32 +17,41 @@ export class DraftRepository {
     return join(this.dir, conversationId ? `${conversationId}.json` : CURRENT_DRAFT);
   }
 
-  read(conversationId?: string): Draft | null {
+  async read(conversationId?: string): Promise<Draft | null> {
     const p = this.path(conversationId);
-    if (!existsSync(p)) return null;
+    try {
+      await fs.access(p);
+    } catch {
+      return null;
+    }
 
     try {
-      return JSON.parse(readFileSync(p, "utf-8")) as Draft;
+      return JSON.parse(await fs.readFile(p, "utf-8")) as Draft;
     } catch {
       return null;
     }
   }
 
-  write(draft: Draft): void {
-    if (!existsSync(this.dir)) {
-      mkdirSync(this.dir, { recursive: true });
+  async write(draft: Draft): Promise<void> {
+    try {
+      await fs.access(this.dir);
+    } catch {
+      await fs.mkdir(this.dir, { recursive: true });
     }
-    writeFileSync(
+    await fs.writeFile(
       this.path(draft.conversationId),
       JSON.stringify(draft, null, 2),
       "utf-8",
     );
   }
 
-  delete(conversationId?: string): void {
+  async delete(conversationId?: string): Promise<void> {
     const p = this.path(conversationId);
-    if (existsSync(p)) {
-      unlinkSync(p);
+    try {
+      await fs.access(p);
+      await fs.unlink(p);
+    } catch {
+      // 文件不存在，忽略
     }
   }
 }

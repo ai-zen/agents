@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { AgentNS } from "@ai-zen/agents-core";
 import { DraftRepository } from "./DraftRepository.js";
-import { mkdtempSync, rmSync } from "node:fs";
+import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { Draft } from "../types/index.js";
@@ -9,13 +9,13 @@ import type { Draft } from "../types/index.js";
 let repo: DraftRepository;
 let dir: string;
 
-beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "ai-zen-crud-test-"));
+beforeEach(async () => {
+  dir = await fs.mkdtemp(join(tmpdir(), "ai-zen-crud-test-"));
   repo = new DraftRepository(dir);
 });
 
-afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
+afterEach(async () => {
+  await fs.rm(dir, { recursive: true, force: true });
 });
 
 function sampleDraft(conversationId?: string): Draft {
@@ -29,29 +29,29 @@ function sampleDraft(conversationId?: string): Draft {
 }
 
 describe("DraftRepository", () => {
-  it("已命名 draft write + read", () => {
+  it("已命名 draft write + read", async () => {
     const draft = sampleDraft("conv-1");
-    repo.write(draft);
-    const read = repo.read("conv-1");
+    await repo.write(draft);
+    const read = await repo.read("conv-1");
     expect(read).not.toBeNull();
     expect(read!.conversationId).toBe("conv-1");
   });
 
-  it("未命名 draft（_current）", () => {
+  it("未命名 draft（_current）", async () => {
     const draft = sampleDraft();
-    repo.write(draft);
-    const read = repo.read();
+    await repo.write(draft);
+    const read = await repo.read();
     expect(read).not.toBeNull();
     expect(read!.conversationId).toBeUndefined();
   });
 
-  it("不存在的 draft 返回 null", () => {
-    expect(repo.read("none")).toBeNull();
+  it("不存在的 draft 返回 null", async () => {
+    expect(await repo.read("none")).toBeNull();
   });
 
-  it("deleteDraft", () => {
-    repo.write(sampleDraft("conv-1"));
-    repo.delete("conv-1");
-    expect(repo.read("conv-1")).toBeNull();
+  it("deleteDraft", async () => {
+    await repo.write(sampleDraft("conv-1"));
+    await repo.delete("conv-1");
+    expect(await repo.read("conv-1")).toBeNull();
   });
 });
