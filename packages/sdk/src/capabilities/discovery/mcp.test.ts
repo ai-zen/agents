@@ -19,114 +19,114 @@ function writeMcpConfig(filename: string, servers: Record<string, unknown>) {
 }
 
 describe("discoverMcpServers", () => {
-  it("文件不存在返回空数组", () => {
-    expect(discoverMcpServers([join(dir, "nonexistent.json")])).toEqual([]);
+  it("文件不存在返回空数组", async () => {
+    await expect(discoverMcpServers([join(dir, "nonexistent.json")])).resolves.toEqual([]);
   });
 
-  it("发现所有 server", () => {
+  it("发现所有 server", async () => {
     writeMcpConfig("mcp.json", {
       github: { type: "stdio", command: "github-mcp" },
       slack: { type: "http", url: "https://slack.example.com" },
     });
 
-    const result = discoverMcpServers([join(dir, "mcp.json")]);
+    const result = await discoverMcpServers([join(dir, "mcp.json")]);
     expect(result).toHaveLength(2);
     expect(result.map((s) => s.id)).toEqual(["github", "slack"]);
   });
 
-  it("兼容 transport 字段名", () => {
+  it("兼容 transport 字段名", async () => {
     writeFileSync(join(dir, "mcp.json"), JSON.stringify({
       mcpServers: {
         legacy: { transport: "stdio", command: "legacy-mcp" },
       },
     }, null, 2));
 
-    const result = discoverMcpServers([join(dir, "mcp.json")]);
+    const result = await discoverMcpServers([join(dir, "mcp.json")]);
     expect(result).toHaveLength(1);
     expect(result[0].transport).toBe("stdio");
   });
 
-  it("兼容 transportType 字段名", () => {
+  it("兼容 transportType 字段名", async () => {
     writeFileSync(join(dir, "mcp.json"), JSON.stringify({
       mcpServers: {
         compat: { transportType: "stdio", command: "compat-mcp" },
       },
     }, null, 2));
 
-    const result = discoverMcpServers([join(dir, "mcp.json")]);
+    const result = await discoverMcpServers([join(dir, "mcp.json")]);
     expect(result).toHaveLength(1);
     expect(result[0].transport).toBe("stdio");
   });
 
-  it("type 优先于 transport 和 transportType", () => {
+  it("type 优先于 transport 和 transportType", async () => {
     writeFileSync(join(dir, "mcp.json"), JSON.stringify({
       mcpServers: {
         multi: { type: "http", transport: "stdio", transportType: "sse", url: "https://example.com" },
       },
     }, null, 2));
 
-    const result = discoverMcpServers([join(dir, "mcp.json")]);
+    const result = await discoverMcpServers([join(dir, "mcp.json")]);
     expect(result).toHaveLength(1);
     expect(result[0].transport).toBe("http");
   });
 
-  it("自动推断 transport 类型（有 command 则为 stdio）", () => {
+  it("自动推断 transport 类型（有 command 则为 stdio）", async () => {
     writeFileSync(join(dir, "mcp.json"), JSON.stringify({
       mcpServers: {
         inferred: { command: "npx", args: ["-y", "some-server"] },
       },
     }, null, 2));
 
-    const result = discoverMcpServers([join(dir, "mcp.json")]);
+    const result = await discoverMcpServers([join(dir, "mcp.json")]);
     expect(result).toHaveLength(1);
     expect(result[0].transport).toBe("stdio");
   });
 
-  it("自动推断 transport 类型（有 url 则为 http）", () => {
+  it("自动推断 transport 类型（有 url 则为 http）", async () => {
     writeFileSync(join(dir, "mcp.json"), JSON.stringify({
       mcpServers: {
         inferred: { url: "https://api.example.com/mcp" },
       },
     }, null, 2));
 
-    const result = discoverMcpServers([join(dir, "mcp.json")]);
+    const result = await discoverMcpServers([join(dir, "mcp.json")]);
     expect(result).toHaveLength(1);
     expect(result[0].transport).toBe("http");
   });
 
-  it("既无 command 也无 url 时跳过", () => {
+  it("既无 command 也无 url 时跳过", async () => {
     writeFileSync(join(dir, "mcp.json"), JSON.stringify({
       mcpServers: {
         invalid: { someField: "value" },
       },
     }, null, 2));
 
-    const result = discoverMcpServers([join(dir, "mcp.json")]);
+    const result = await discoverMcpServers([join(dir, "mcp.json")]);
     expect(result).toHaveLength(0);
   });
 
-  it("跳过 disabled: true 的 server", () => {
+  it("跳过 disabled: true 的 server", async () => {
     writeMcpConfig("mcp.json", {
       active: { type: "stdio", command: "active-mcp" },
       inactive: { type: "stdio", command: "inactive-mcp", disabled: true },
     });
 
-    const result = discoverMcpServers([join(dir, "mcp.json")]);
+    const result = await discoverMcpServers([join(dir, "mcp.json")]);
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe("active");
   });
 
-  it("空 mcpServers 返回空数组", () => {
+  it("空 mcpServers 返回空数组", async () => {
     writeMcpConfig("mcp.json", {});
-    expect(discoverMcpServers([join(dir, "mcp.json")])).toEqual([]);
+    await expect(discoverMcpServers([join(dir, "mcp.json")])).resolves.toEqual([]);
   });
 
-  it("跳过解析失败的文件", () => {
+  it("跳过解析失败的文件", async () => {
     writeFileSync(join(dir, "mcp.json"), "{ bad json");
-    expect(discoverMcpServers([join(dir, "mcp.json")])).toEqual([]);
+    await expect(discoverMcpServers([join(dir, "mcp.json")])).resolves.toEqual([]);
   });
 
-  it("多路径：同名 server 靠前路径优先（先到先得）", () => {
+  it("多路径：同名 server 靠前路径优先（先到先得）", async () => {
     const dir2 = mkdtempSync(join(tmpdir(), "ai-zen-discovery2-"));
     try {
       writeFileSync(join(dir, "mcp.json"), JSON.stringify({
@@ -141,7 +141,7 @@ describe("discoverMcpServers", () => {
         },
       }, null, 2));
 
-      const result = discoverMcpServers([join(dir, "mcp.json"), join(dir2, "mcp.json")]);
+      const result = await discoverMcpServers([join(dir, "mcp.json"), join(dir2, "mcp.json")]);
       expect(result).toHaveLength(1);
       // dir 在前，应优先
       expect(result[0].id).toBe("github");
@@ -151,7 +151,7 @@ describe("discoverMcpServers", () => {
     }
   });
 
-  it("多路径：合并不同 server", () => {
+  it("多路径：合并不同 server", async () => {
     const dir2 = mkdtempSync(join(tmpdir(), "ai-zen-discovery2-"));
     try {
       writeFileSync(join(dir, "mcp.json"), JSON.stringify({
@@ -166,7 +166,7 @@ describe("discoverMcpServers", () => {
         },
       }, null, 2));
 
-      const result = discoverMcpServers([join(dir, "mcp.json"), join(dir2, "mcp.json")]);
+      const result = await discoverMcpServers([join(dir, "mcp.json"), join(dir2, "mcp.json")]);
       expect(result).toHaveLength(2);
       const ids = result.map((s) => s.id);
       expect(ids).toContain("github");

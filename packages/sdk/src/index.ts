@@ -20,13 +20,11 @@ export type {
 } from "./types/index.js";
 
 // 能力管线
-export { Capabilities } from "./capabilities/Capabilities.js";
 export { PermissionEvaluator } from "./capabilities/PermissionEvaluator.js";
 export type { CandidateSets } from "./capabilities/PermissionEvaluator.js";
 
 export { createDisclosureParam } from "./capabilities/disclosure.js";
 export type { DisclosureParam } from "./capabilities/disclosure.js";
-export type { FilterOutput, ExcludeOptions } from "./capabilities/Capabilities.js";
 
 // 发现
 export { discoverBuiltinTools } from "./capabilities/discovery/builtin.js";
@@ -55,6 +53,7 @@ export { DraftRepository } from "./crud/DraftRepository.js";
 
 // 运行时
 export { Provider } from "./runtime/Provider.js";
+export type { FilterOutput, ExcludeOptions } from "./runtime/Provider.js";
 export { createModel } from "./runtime/createModel.js";
 export { SdkAgent } from "./runtime/SdkAgent.js";
 export type { AgentPlugin, SendContext } from "./runtime/SdkAgent.js";

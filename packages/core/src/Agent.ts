@@ -395,9 +395,8 @@ export class Agent extends AgentContext {
           }
 
           if (!matchedTool) {
-            const onUnknown = this.onUnknownTool;
-            if (onUnknown) {
-              resultReceiver.content = await onUnknown({
+            if (this.onUnknownTool) {
+              resultReceiver.content = await this.onUnknownTool({
                 toolCall: task,
                 availableTools: [...this.tools],
               });

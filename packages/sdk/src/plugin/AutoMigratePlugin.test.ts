@@ -26,7 +26,6 @@ function mockAgent(opts: {
     messages,
     tools: opts.tools ?? [],
     model: opts.model ?? {},
-    caps: undefined,
     permissions: undefined,
     send: vi.fn(async (_content: string) => {
       messages.push({ role: "user", content: _content });

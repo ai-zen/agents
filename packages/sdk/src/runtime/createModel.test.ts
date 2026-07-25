@@ -1,6 +1,28 @@
 import { describe, it, expect } from "vitest";
 import { createModel } from "./createModel.js";
 import type { AppConfig } from "../types/index.js";
+import type { Provider } from "./Provider.js";
+
+function mockProvider(config: AppConfig): Provider {
+  return {
+    config,
+    agentsDir: "",
+    subAgentsPaths: [],
+    skillsPaths: [],
+    toolsPaths: [],
+    mcpPaths: [],
+    builtinTools: [],
+    userTools: [],
+    subagents: [],
+    skills: [],
+    mcps: [],
+    mcpManager: undefined,
+    filter: () => ({ tools: [], subagents: [], skills: [], mcps: [] }),
+    buildTools: () => [],
+    instantiate: () => [],
+    refresh: async () => {},
+  } as unknown as Provider;
+}
 
 const baseConfig: AppConfig = {
   defaultModel: "gpt4",
@@ -17,14 +39,14 @@ const baseConfig: AppConfig = {
 
 describe("createModel", () => {
   it("正常创建模型", () => {
-    const model = createModel(baseConfig, "gpt4");
+    const model = createModel(mockProvider(baseConfig), "gpt4");
     expect(model).toBeDefined();
     expect(typeof model.createCompletion).toBe("function");
     expect(typeof model.createStream).toBe("function");
   });
 
   it("modelId 不存在时报错", () => {
-    expect(() => createModel(baseConfig, "non-existent")).toThrow("不存在");
+    expect(() => createModel(mockProvider(baseConfig), "non-existent")).toThrow("不存在");
   });
 
   it("endpointId 找不到时报错", () => {
@@ -33,7 +55,7 @@ describe("createModel", () => {
       endpoints: [],
       models: [{ id: "bad", name: "Bad", endpointId: "missing-ep", maxContextTokens: 1000 }],
     };
-    expect(() => createModel(badConfig, "bad")).toThrow("未配置");
+    expect(() => createModel(mockProvider(badConfig), "bad")).toThrow("未配置");
   });
 
   it("endpoint apiKey 为空时不直接报错（由底层处理）", () => {
@@ -42,25 +64,23 @@ describe("createModel", () => {
       endpoints: [{ id: "no-key-ep", name: "No Key", baseUrl: "https://example.com/v1", apiKey: "" }],
       models: [{ id: "no-key", name: "No Key Model", endpointId: "no-key-ep", maxContextTokens: 1000 }],
     };
-    // 模型对象可以创建，调用时才会报错
-    const model = createModel(noKeyConfig, "no-key");
+    const model = createModel(mockProvider(noKeyConfig), "no-key");
     expect(model).toBeDefined();
   });
 
   it("modelName 不填时回退到 id", () => {
-    const model = createModel(baseConfig, "gpt4-no-modelname");
+    const model = createModel(mockProvider(baseConfig), "gpt4-no-modelname");
     expect(model).toBeDefined();
-    // 能正常创建即可，模型名回退逻辑由 ChatGPT 内部处理
   });
 
   it("传递 defaultParams", () => {
-    const model = createModel(baseConfig, "ds-v3");
+    const model = createModel(mockProvider(baseConfig), "ds-v3");
     expect(model).toBeDefined();
   });
 
   it("空 models 数组时报错", () => {
     const emptyConfig: AppConfig = { defaultModel: "none", endpoints: [], models: [] };
-    expect(() => createModel(emptyConfig, "none")).toThrow("不存在");
+    expect(() => createModel(mockProvider(emptyConfig), "none")).toThrow("不存在");
   });
 
   it("空 endpoints 数组时报错", () => {
@@ -69,6 +89,6 @@ describe("createModel", () => {
       endpoints: [],
       models: [{ id: "m", name: "M", endpointId: "ep", maxContextTokens: 1000 }],
     };
-    expect(() => createModel(noEpConfig, "m")).toThrow("未配置");
+    expect(() => createModel(mockProvider(noEpConfig), "m")).toThrow("未配置");
   });
 });

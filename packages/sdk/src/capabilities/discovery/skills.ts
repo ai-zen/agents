@@ -1,4 +1,4 @@
-import { readdirSync, existsSync, readFileSync } from "node:fs";
+import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { createLogger } from "../../shared/logger.js";
 
@@ -45,17 +45,21 @@ export interface SkillInfo {
  * 按优先级从高到低传入路径列表，同名 skill 靠前的路径优先（先到先得）。
  * 解析 YAML frontmatter 中的 name 和 description，同时校验合规。
  */
-export function discoverSkills(paths: string[], options?: { silent?: boolean }): SkillInfo[] {
+export async function discoverSkills(paths: string[], options?: { silent?: boolean }): Promise<SkillInfo[]> {
   const silent = options?.silent ?? false;
   const seen = new Set<string>();
   const items: SkillInfo[] = [];
 
   for (const dir of paths) {
-    if (!existsSync(dir)) continue;
+    try {
+      await fs.access(dir);
+    } catch {
+      continue;
+    }
 
     let entries;
     try {
-      entries = readdirSync(dir, { withFileTypes: true });
+      entries = await fs.readdir(dir, { withFileTypes: true });
     } catch {
       continue;
     }
@@ -65,9 +69,13 @@ export function discoverSkills(paths: string[], options?: { silent?: boolean }):
       if (seen.has(entry.name)) continue;
 
       const skillMdPath = join(dir, entry.name, "SKILL.md");
-      if (!existsSync(skillMdPath)) continue;
+      try {
+        await fs.access(skillMdPath);
+      } catch {
+        continue;
+      }
 
-      const skill = readSkillFromPath(entry.name, skillMdPath, silent);
+      const skill = await readSkillFromPath(entry.name, skillMdPath, silent);
       if (skill) {
         seen.add(entry.name);
         items.push(skill);
@@ -85,12 +93,15 @@ export function discoverSkills(paths: string[], options?: { silent?: boolean }):
  * 按优先级从高到低传入路径列表，靠前的路径优先（先到先得）。
  * 返回 null 如果 skill 在所有目录中都不存在或 SKILL.md 不可读。
  */
-export function readSkill(skillDirs: string[], skillId: string, options?: { silent?: boolean }): SkillInfo | null {
+export async function readSkill(skillDirs: string[], skillId: string, options?: { silent?: boolean }): Promise<SkillInfo | null> {
   const silent = options?.silent ?? false;
   for (const dir of skillDirs) {
     const candidate = join(dir, skillId, "SKILL.md");
-    if (existsSync(candidate)) {
-      return readSkillFromPath(skillId, candidate, silent);
+    try {
+      await fs.access(candidate);
+      return await readSkillFromPath(skillId, candidate, silent);
+    } catch {
+      continue;
     }
   }
   return null;
@@ -98,9 +109,9 @@ export function readSkill(skillDirs: string[], skillId: string, options?: { sile
 
 // ---- 内部 ----
 
-function readSkillFromPath(skillId: string, skillMdPath: string, silent?: boolean): SkillInfo | null {
+async function readSkillFromPath(skillId: string, skillMdPath: string, silent?: boolean): Promise<SkillInfo | null> {
   try {
-    const content = readFileSync(skillMdPath, "utf-8");
+    const content = await fs.readFile(skillMdPath, "utf-8");
     const fm = parseFrontmatter(content);
     if (!fm.name) return null;
 

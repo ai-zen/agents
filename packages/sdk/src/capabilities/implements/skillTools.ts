@@ -5,7 +5,7 @@ import type { SkillInfo } from "../discovery/skills.js";
 import { createDisclosureParam } from "../disclosure.js";
 import { readSkill } from "../discovery/skills.js";
 import { createLogger } from "../../shared/logger.js";
-import type { Capabilities } from "../Capabilities.js";
+import type { Provider } from "../../runtime/Provider.js";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -49,7 +49,7 @@ export function createLoadSkillTool(
     },
     callback: async function (this: FunctionCallContext, input: Record<string, unknown>): Promise<string> {
       const skillId = input.skill_id as string;
-      const skill = readSkill(skillDirs, skillId);
+      const skill = await readSkill(skillDirs, skillId);
       if (!skill) {
         return `❌ Skill "${skillId}" 不存在，请确认名称是否正确`;
       }
@@ -89,7 +89,7 @@ export function createLoadSkillTool(
 export function createCallSkillSubAgentTool(
   skillDirs: string[],
   filteredSkills: SkillInfo[],
-  caps?: Capabilities,
+  provider?: Provider,
 ): CallbackTool {
   // 只保留支持子 Agent 模式的 skill
   const subAgentSkills = filteredSkills.filter((s) => s.subAgent);
@@ -126,7 +126,7 @@ export function createCallSkillSubAgentTool(
     async callback(input: Record<string, unknown>): Promise<string> {
       const skillId = input.skill_id as string;
       const task = input.task as string;
-      const skill = readSkill(skillDirs, skillId);
+      const skill = await readSkill(skillDirs, skillId);
       if (!skill) {
         return `❌ Skill "${skillId}" 不存在，请确认名称是否正确`;
       }
@@ -138,8 +138,8 @@ export function createCallSkillSubAgentTool(
       const parentPermissions = parentAgent instanceof SdkAgent
         ? parentAgent.permissions
         : undefined;
-      const skillTools: Tool[] = caps && parentPermissions
-        ? caps.buildTools(parentPermissions, {
+      const skillTools: Tool[] = provider && parentPermissions
+        ? provider.buildTools(parentPermissions, {
             exclude: { skills: [skillId] },
           })
         : [];

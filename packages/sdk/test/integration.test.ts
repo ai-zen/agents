@@ -64,13 +64,13 @@ describe("集成：端到端 Agent 组装", () => {
     mkdirSync(join(skillsDir, "code-review"), { recursive: true });
     writeFileSync(join(skillsDir, "code-review", "SKILL.md"), "---\nname: code-review\ndescription: 代码审查\n---\n# Code Review");
 
-    const provider = new Provider({
+    const provider = await Provider.create({
       config,
       agentsDir,
       subAgentsPaths: [subAgentsDir],
       skillsPaths: [skillsDir],
     });
-    const agent = createAgent(provider, "my-agent");
+    const agent = await createAgent(provider, "my-agent");
 
     expect(agent.permissions).toBeDefined();
     expect(agent.permissions!.tools).toEqual({ allow: ["readFile", "exec", "glob", "findText"] });

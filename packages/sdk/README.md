@@ -9,9 +9,9 @@ AI-Zen SDK — 共享业务逻辑层，为 CLI 和 Desktop 提供统一的 Agent
 
 ```
 CLI ──┐
-      ├── @ai-zen/sdk ──┐
-Desktop ──┘              │
-                    LLM API
+      ├── @ai-zen/agents-sdk ──┐
+Desktop ──┘                    │
+                          LLM API
 ```
 
 ## 模块分层
@@ -32,8 +32,7 @@ shared       ← 日志、错误
 
 | 实体 | 说明 |
 |------|------|
-| **Provider** | 全局上下文，持有配置、路径、模型工厂、MCP 管理器 |
-| **Capabilities** | 全局能力注册表（发现 → 过滤 → 实例化） |
+| **Provider** | 全局上下文 + 能力注册表，持有配置、路径、模型工厂、MCP 管理器，整合发现 → 过滤 → 实例化 |
 | **SdkAgent** | 继承 Core Agent，携带 SDK 元数据，支持 `use()` 插件注册 |
 | **AgentPlugin** | 插件接口（`onInit`, `onBeforeSend`, `onAfterSend`, `onInnerLoopStart`, `onInnerLoopEnd`） |
 | **Endpoint** | API 端点（baseUrl + apiKey） |
@@ -57,7 +56,7 @@ Agent.permissions
 ## 消费模式
 
 ```typescript
-const provider = new Provider({ config, ...paths });
+const provider = await Provider.create({ config, ...paths });
 const agent = createAgent(provider, "my-agent");
 agent.use(new AutoMigratePlugin({ maxTokens, migrationAgent, onHandoff }));
 agent.use(new AutoDraftPlugin({ draftsDir, agentId, modelId }));
@@ -77,7 +76,7 @@ await agent.send("你好");
 | `runtime` | ✅ 已实现 — Provider、Capabilities、createAgent、MCP 连接管理、任务迁移 |
 | `plugin` | ✅ 已实现 — AutoMigratePlugin / AutoDraftPlugin / AutoRefreshToolsPlugin |
 | `shared` | ✅ 已实现 — SdkError + 可注入 Logger |
-| 测试 | ✅ 359 个测试，45 个文件，全通过（含真实 API 聊天 e2e） |
+| 测试 | ✅ 593 个测试，68 个文件，全通过（含真实 API 聊天 e2e） |
 
 ## 内置工具
 

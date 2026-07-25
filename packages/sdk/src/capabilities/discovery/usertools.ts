@@ -1,38 +1,43 @@
-import { readdirSync, existsSync, readFileSync } from "node:fs";
+import { promises as fs } from "node:fs";
 import { join } from "node:path";
-import vm from "node:vm";
+import { pathToFileURL } from "node:url";
 import { Tool, CallbackTool } from "@ai-zen/agents-core";
 
 /**
- * 扫描多个 tools/ 目录，发现所有 .js 文件，动态加载为 Tool 实例。
+ * 扫描多个 tools/ 目录，发现所有 .js / .mjs 文件，动态加载为 Tool 实例。
+ * 使用原生 dynamic import() 加载（在 "type": "module" 下 .js 也是 ESM），
+ * 每次添加时间戳 querystring 防止缓存。
+ *
  * 按优先级从高到低传入路径列表，同名工具靠前的路径优先（先到先得）。
  * 按文件名排序以保证确定性。
- *
- * 加载方式：
- * 1. 使用 vm.compileFunction 创建安全的执行上下文
- * 2. 工具文件应通过 module.exports 或 exports.default 导出 Tool 实例
- * 3. 支持直接导出 { function, exec } 格式的对象（自动适配为 Tool）
- * 4. 支持导出 CallbackTool 兼容的 { function, callback } 格式
  */
-export function discoverUserTools(paths: string[], options?: { silent?: boolean }): Tool[] {
+export async function discoverUserTools(paths: string[], options?: { silent?: boolean }): Promise<Tool[]> {
   const silent = options?.silent ?? false;
   const seen = new Set<string>();
   const tools: Tool[] = [];
 
   for (const dir of paths) {
-    if (!existsSync(dir)) continue;
+    try {
+      await fs.access(dir);
+    } catch {
+      continue;
+    }
 
     try {
-      const files = readdirSync(dir)
-        .filter((f) => f.endsWith(".js"))
-        .map((f) => f.slice(0, -3))
-        .sort();
+      const allFiles = await fs.readdir(dir);
+      const files = allFiles
+        .filter((f) => f.endsWith(".js") || f.endsWith(".mjs"))
+        .map((f) => {
+          const ext = f.endsWith(".mjs") ? ".mjs" : ".js";
+          return { name: f.slice(0, -ext.length), ext };
+        })
+        .sort((a, b) => a.name.localeCompare(b.name));
 
-      for (const name of files) {
+      for (const { name, ext } of files) {
         if (!seen.has(name)) {
           seen.add(name);
           try {
-            const tool = loadToolFile(join(dir, name + ".js"), silent);
+            const tool = await loadToolFile(join(dir, name + ext), silent);
             if (tool) {
               tools.push(tool);
             }
@@ -49,51 +54,29 @@ export function discoverUserTools(paths: string[], options?: { silent?: boolean 
   return tools;
 }
 
+// ==================================================================
+// ESM 加载（import()）
+// ==================================================================
+
 /**
- * 从 .js 文件加载 Tool 实例。
+ * 从 .js / .mjs 文件加载 Tool 实例。
  *
- * 使用 vm.compileFunction 创建沙箱执行环境，避免污染全局作用域。
- * 注入有限的全局 API（console, setTimeout 等），不暴露 process/require。
+ * 使用原生 dynamic import() 加载 ESM 模块。每次调用添加时间戳 querystring
+ * 防止模块缓存，确保 refresh() 能重新加载。
  */
-function loadToolFile(filepath: string, silent?: boolean): Tool | null {
-  const code = readFileSync(filepath, "utf-8");
-
-  // 构造沙箱上下文
-  const sandbox: Record<string, any> = {
-    // 有限全局 API
-    console: console,
-    setTimeout: setTimeout,
-    clearTimeout: clearTimeout,
-    setInterval: setInterval,
-    clearInterval: clearInterval,
-    Buffer: Buffer,
-    URL: URL,
-    URLSearchParams: URLSearchParams,
-    TextEncoder: TextEncoder,
-    TextDecoder: TextDecoder,
-    // 导出的结果存放处
-    module: { exports: {} },
-    exports: {},
-  };
-  sandbox.global = sandbox;
-  sandbox.globalThis = sandbox;
-
-  const context = vm.createContext(sandbox);
-  const script = new vm.Script(code, { filename: filepath });
-
+async function loadToolFile(filepath: string, silent?: boolean): Promise<Tool | null> {
   try {
-    script.runInContext(context, { timeout: 5000 });
+    const url = `${pathToFileURL(filepath).href}?t=${Date.now()}`;
+    const mod = await import(url);
 
-    // 获取导出结果
-    const exported = sandbox.module.exports ?? sandbox.exports;
+    // import() 返回模块命名空间对象，取其 default 导出
+    const exported = mod.default ?? mod;
 
-    // 空导出
     if (!exported || (typeof exported === "object" && Object.keys(exported).length === 0)) {
       return null;
     }
 
-    // 适配不同导出格式
-    return normalizeToolExport(exported, filepath, silent);
+    return normalizeToolExport({ default: exported }, filepath, silent);
   } catch (err: any) {
     if (!silent) {
       console.error(`[usertools] 加载工具文件失败: ${filepath} — ${err?.message ?? err}`);
@@ -101,6 +84,10 @@ function loadToolFile(filepath: string, silent?: boolean): Tool | null {
     return null;
   }
 }
+
+// ==================================================================
+// 导出格式归一化
+// ==================================================================
 
 /**
  * 统一各种导出格式为 Tool 实例。
@@ -118,9 +105,12 @@ function normalizeToolExport(exported: any, filepath: string, silent?: boolean):
     return target;
   }
 
-  // 情况 3：{ function, exec } 格式 → 适配为 Tool 子类
+  // 情况 3：{ function, exec } 格式 → 适配为 CallbackTool
   if (target && typeof target === "object" && target.function && typeof target.exec === "function") {
-    return createToolFromObject(target, filepath);
+    return new CallbackTool({
+      function: target.function,
+      callback: target.exec,
+    });
   }
 
   // 情况 4：{ function, callback } 格式 → 适配为 CallbackTool
@@ -135,23 +125,4 @@ function normalizeToolExport(exported: any, filepath: string, silent?: boolean):
     console.error(`[usertools] 无法识别的工具格式: ${filepath}`);
   }
   return null;
-}
-
-/**
- * 将 { function, exec } 对象适配为 Tool 子类实例。
- */
-function createToolFromObject(obj: { function: any; exec: (ctx: any) => any }, filepath: string): Tool {
-  return new (class extends Tool {
-    constructor() {
-      super({ function: obj.function });
-    }
-
-    async exec(ctx: any): Promise<string> {
-      const result = await obj.exec.call(ctx, ctx.parsed_args);
-      if (typeof result !== "string") {
-        return JSON.stringify(result) ?? "";
-      }
-      return result;
-    }
-  })();
 }

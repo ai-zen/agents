@@ -12,11 +12,9 @@ export class AutoRefreshToolsPlugin implements AgentPlugin {
   async onBeforeSend(ctx: SendContext): Promise<void> {
     const { agent } = ctx;
 
-    if (!agent.caps) return;
+    await agent.provider.refresh({ silent: true });
 
-    agent.caps.refresh({ silent: true });
-
-    agent.tools = agent.caps.buildTools(agent.permissions ?? {}, {
+    agent.tools = agent.provider.buildTools(agent.permissions ?? {}, {
       exclude: {
         subagents: agent.definition.function?.name
           ? [agent.definition.function.name]

@@ -17,15 +17,15 @@ export class AgentContext {
   rag?: Rag;
   allowJsonParseError: boolean;
   /** 每次内循环开始调用的钩子，可用于刷新工具定义、RAG 等 */
-  onInnerLoopStart?: () => Promise<void> | void;
+  declare onInnerLoopStart?: () => Promise<void> | void;
   /** 每次内循环结束调用的钩子，可用于后处理 */
-  onInnerLoopEnd?: () => Promise<void> | void;
+  declare onInnerLoopEnd?: () => Promise<void> | void;
   /**
    * 当 LLM 调用一个未注册的工具时触发。
    * 返回的字符串将作为工具执行结果返回给 LLM。
    * 不设置则使用默认提示。
    */
-  onUnknownTool?: (ctx: UnknownToolContext) => string | Promise<string>;
+  declare onUnknownTool?: (ctx: UnknownToolContext) => string | Promise<string>;
 
   constructor(options: PickRequired<AgentContext, "model">) {
     if (!options.model) throw new Error("AgentContext must have a model");
@@ -35,9 +35,9 @@ export class AgentContext {
     this.tools = options.tools ?? [];
     this.rag = options.rag;
     this.allowJsonParseError = options.allowJsonParseError ?? true;
-    this.onInnerLoopStart = options.onInnerLoopStart;
-    this.onInnerLoopEnd = options.onInnerLoopEnd;
-    this.onUnknownTool = options.onUnknownTool;
+    if (options.onInnerLoopStart !== undefined) this.onInnerLoopStart = options.onInnerLoopStart;
+    if (options.onInnerLoopEnd !== undefined) this.onInnerLoopEnd = options.onInnerLoopEnd;
+    if (options.onUnknownTool !== undefined) this.onUnknownTool = options.onUnknownTool;
   }
 
   /**

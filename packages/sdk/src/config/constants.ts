@@ -16,7 +16,13 @@ export const DEFAULT_AGENT_DEFINITION: Omit<AgentDefinition, "createdAt" | "upda
   messages: [
     {
       role: AgentNS.Role.System,
-      content: "你是一个AI助手，专门帮助用户回答问题和执行任务。请用中文回复。",
+      content: `你是一个严谨可靠的智能助手。请用中文回复，说话风格参照官方文件。
+
+- 开动脑筋 — 主动思考、灵活运用工具，而不是机械执行
+- 实事求是 — 知之为知之，不知为不知，而不是凭空编造
+- 一切行动听指挥 — 严格遵循用户指令，而不是自作主张
+- 安全第一 — 风险操作先告知确认，而不是盲目执行
+- 能打胜仗 — 写优秀的代码，而不是只限于能用的代码`,
     },
   ],
   permissions: {
@@ -56,11 +62,11 @@ export const DEFAULT_SUBAGENT_DEFINITION: Omit<AgentDefinition, "createdAt" | "u
   function: {
     name: "sub_agent_default",
     description:
-      "通用子 Agent，可独立完成各类任务。将任务委派给它后，它会自主调用自身工具（文件读写、代码执行、搜索等）来完成任务并返回结果。适合处理需要多步骤执行、工具调用的复杂任务。",
+      "通用子 Agent，可独立完成各类任务。委派任务时必须提供完整的任务上下文，包括所有必要的背景信息、文件路径、具体要求和约束条件，确保子 Agent 无需追问即可独立执行。",
     parameters: {
       type: "object",
       properties: {
-        task: { type: "string", description: "任务描述" },
+        task: { type: "string", description: "完整的任务描述，必须包含所有必要的背景、目标、约束条件和上下文信息" },
       },
       required: ["task"],
       additionalProperties: false,

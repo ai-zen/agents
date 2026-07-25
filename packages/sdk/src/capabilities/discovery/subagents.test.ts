@@ -29,15 +29,15 @@ function writeAgentFile(id: string, functionName: string, description = "") {
 }
 
 describe("discoverSubAgents", () => {
-  it("空目录返回空数组", () => {
-    expect(discoverSubAgents([dir])).toEqual([]);
+  it("空目录返回空数组", async () => {
+    await expect(discoverSubAgents([dir])).resolves.toEqual([]);
   });
 
-  it("发现所有 SubAgent（返回完整 AgentDefinition）", () => {
+  it("发现所有 SubAgent（返回完整 AgentDefinition）", async () => {
     writeAgentFile("agent-a", "sub_agent_default", "通用助手");
     writeAgentFile("agent-b", "code-reviewer", "代码审查");
 
-    const result = discoverSubAgents([dir]);
+    const result = await discoverSubAgents([dir]);
     expect(result).toHaveLength(2);
     expect(result.map((a) => a.function!.name)).toEqual(["sub_agent_default", "code-reviewer"]);
     // 应包含完整定义
@@ -45,7 +45,7 @@ describe("discoverSubAgents", () => {
     expect(result[0].function!.description).toBe("通用助手");
   });
 
-  it("跳过无 function 字段的普通 Agent", () => {
+  it("跳过无 function 字段的普通 Agent", async () => {
     writeAgentFile("agent-a", "sub_agent_default");
     const plain: AgentDefinition = {
       id: "plain-agent",
@@ -56,25 +56,25 @@ describe("discoverSubAgents", () => {
     };
     writeFileSync(join(dir, "plain-agent.json"), JSON.stringify(plain, null, 2));
 
-    const result = discoverSubAgents([dir]);
+    const result = await discoverSubAgents([dir]);
     expect(result).toHaveLength(1);
     expect(result[0].function!.name).toBe("sub_agent_default");
   });
 
-  it("跳过解析失败的 JSON", () => {
+  it("跳过解析失败的 JSON", async () => {
     writeAgentFile("good", "helper");
     writeFileSync(join(dir, "bad.json"), "{ not json }");
 
-    const result = discoverSubAgents([dir]);
+    const result = await discoverSubAgents([dir]);
     expect(result).toHaveLength(1);
     expect(result[0].function!.name).toBe("helper");
   });
 
-  it("目录不存在时返回空数组", () => {
-    expect(discoverSubAgents([join(dir, "nonexistent")])).toEqual([]);
+  it("目录不存在时返回空数组", async () => {
+    await expect(discoverSubAgents([join(dir, "nonexistent")])).resolves.toEqual([]);
   });
 
-  it("多路径扫描：合并所有路径的 SubAgent", () => {
+  it("多路径扫描：合并所有路径的 SubAgent", async () => {
     const dir2 = mkdtempSync(join(tmpdir(), "ai-zen-discovery2-"));
     try {
       writeAgentFile("agent-a", "sub_agent_default");
@@ -88,7 +88,7 @@ describe("discoverSubAgents", () => {
       };
       writeFileSync(join(dir2, "agent-b.json"), JSON.stringify(agentB, null, 2));
 
-      const result = discoverSubAgents([dir, dir2]);
+      const result = await discoverSubAgents([dir, dir2]);
       expect(result).toHaveLength(2);
       expect(result.map((a) => a.function!.name)).toEqual(["sub_agent_default", "code-reviewer"]);
     } finally {
@@ -96,7 +96,7 @@ describe("discoverSubAgents", () => {
     }
   });
 
-  it("多路径：同名 function.name 靠前路径优先（先到先得）", () => {
+  it("多路径：同名 function.name 靠前路径优先（先到先得）", async () => {
     const dir2 = mkdtempSync(join(tmpdir(), "ai-zen-discovery2-"));
     try {
       writeAgentFile("agent-a", "shared_func", "From dir1（高优先级）");
@@ -110,7 +110,7 @@ describe("discoverSubAgents", () => {
       };
       writeFileSync(join(dir2, "agent-b.json"), JSON.stringify(agentB, null, 2));
 
-      const result = discoverSubAgents([dir, dir2]);
+      const result = await discoverSubAgents([dir, dir2]);
       expect(result).toHaveLength(1);
       expect(result[0].function!.name).toBe("shared_func");
       // dir 在前（高优先级），应优先

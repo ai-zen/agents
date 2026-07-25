@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { promises as fs } from "node:fs";
 import type { McpServerConfig } from "../../types/index.js";
 
 /**
@@ -53,15 +53,19 @@ function normalizeTransport(type: string, raw: Record<string, unknown>): McpServ
  *
  * 按优先级从高到低传入路径列表，同名 server 靠前的文件优先（先到先得）。
  */
-export function discoverMcpServers(paths: string[]): McpServerConfig[] {
+export async function discoverMcpServers(paths: string[]): Promise<McpServerConfig[]> {
   const seen = new Set<string>();
   const items: McpServerConfig[] = [];
 
   for (const path of paths) {
-    if (!existsSync(path)) continue;
+    try {
+      await fs.access(path);
+    } catch {
+      continue;
+    }
 
     try {
-      const raw = readFileSync(path, "utf-8");
+      const raw = await fs.readFile(path, "utf-8");
       const config = JSON.parse(raw);
 
       // 业界标准使用 mcpServers 顶层字段

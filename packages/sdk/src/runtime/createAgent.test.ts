@@ -70,20 +70,20 @@ function writeMcpConfig(servers: Record<string, unknown>) {
 }
 
 describe("createAgent", () => {
-  it("从磁盘完整装配 Agent", () => {
+  it("从磁盘完整装配 Agent", async () => {
     writeAgentFile("my-agent");
     writeSubAgent("sa1", "sub_agent_default");
     writeSkill("code-review", "代码审查");
     writeMcpConfig({ github: { transport: "stdio", command: "gh" } });
 
-    const provider = new Provider({
+    const provider = await Provider.create({
       config,
       agentsDir: join(dir, "agents"),
       subAgentsPaths: [join(dir, "sub-agents")],
       skillsPaths: [join(dir, "skills")],
       mcpPaths: [join(dir, "mcp.json")],
     });
-    const agent = createAgent(provider, "my-agent");
+    const agent = await createAgent(provider, "my-agent");
 
     // SdkAgent 携带 permissions
     expect(agent.permissions).toBeDefined();
@@ -93,37 +93,37 @@ describe("createAgent", () => {
     expect(names).toContain("sub_agent_default");
   });
 
-  it("Agent 不存在时抛异常", () => {
-    const provider = new Provider({
+  it("Agent 不存在时抛异常", async () => {
+    const provider = await Provider.create({
       config,
       agentsDir: join(dir, "agents"),
     });
 
-    expect(() => createAgent(provider, "nonexistent")).toThrow();
+    await expect(createAgent(provider, "nonexistent")).rejects.toThrow();
   });
 
-  it("可选的发现目录不存在不抛异常", () => {
+  it("可选的发现目录不存在不抛异常", async () => {
     writeAgentFile("my-agent");
 
-    const provider = new Provider({
+    const provider = await Provider.create({
       config,
       agentsDir: join(dir, "agents"),
     });
 
-    const agent = createAgent(provider, "my-agent");
+    const agent = await createAgent(provider, "my-agent");
     expect(agent.tools.length).toBeGreaterThan(0); // 内置工具默认存在
   });
 
   describe("onUnknownTool 钩子", () => {
-    it("无 MCP 配置时返回简单提示", () => {
+    it("无 MCP 配置时返回简单提示", async () => {
       writeAgentFile("my-agent");
 
-      const provider = new Provider({
+      const provider = await Provider.create({
         config,
         agentsDir: join(dir, "agents"),
       });
 
-      const agent = createAgent(provider, "my-agent");
+      const agent = await createAgent(provider, "my-agent");
       expect(agent.onUnknownTool).toBeDefined();
 
       const result = agent.onUnknownTool!({
@@ -135,17 +135,17 @@ describe("createAgent", () => {
       expect(result).toContain("不存在");
     });
 
-    it("有 MCP 配置且 call_mcp_tool 在工具列表中时，应提示使用 call_mcp_tool", () => {
+    it("有 MCP 配置且 call_mcp_tool 在工具列表中时，应提示使用 call_mcp_tool", async () => {
       writeAgentFile("my-agent");
       writeMcpConfig({ github: { transport: "stdio", command: "gh" } });
 
-      const provider = new Provider({
+      const provider = await Provider.create({
         config,
         agentsDir: join(dir, "agents"),
         mcpPaths: [join(dir, "mcp.json")],
       });
 
-      const agent = createAgent(provider, "my-agent");
+      const agent = await createAgent(provider, "my-agent");
       expect(agent.onUnknownTool).toBeDefined();
 
       const result = agent.onUnknownTool!({
@@ -158,7 +158,7 @@ describe("createAgent", () => {
       expect(result).toContain("call_mcp_tool");
     });
 
-    it("有 MCP 配置但 call_mcp_tool 权限被禁用时，应提示权限问题", () => {
+    it("有 MCP 配置但 call_mcp_tool 权限被禁用时，应提示权限问题", async () => {
       writeAgentFile("my-agent", {
         permissions: {
           tools: { deny: ["call_mcp_tool", "load_mcp", "read_mcp_resource"] },
@@ -169,13 +169,13 @@ describe("createAgent", () => {
       });
       writeMcpConfig({ github: { transport: "stdio", command: "gh" } });
 
-      const provider = new Provider({
+      const provider = await Provider.create({
         config,
         agentsDir: join(dir, "agents"),
         mcpPaths: [join(dir, "mcp.json")],
       });
 
-      const agent = createAgent(provider, "my-agent");
+      const agent = await createAgent(provider, "my-agent");
       expect(agent.onUnknownTool).toBeDefined();
 
       const result = agent.onUnknownTool!({
@@ -188,15 +188,15 @@ describe("createAgent", () => {
       expect(result).toContain("禁用");
     });
 
-    it("无 MCP 配置时不应提示 MCP 相关内容", () => {
+    it("无 MCP 配置时不应提示 MCP 相关内容", async () => {
       writeAgentFile("my-agent");
 
-      const provider = new Provider({
+      const provider = await Provider.create({
         config,
         agentsDir: join(dir, "agents"),
       });
 
-      const agent = createAgent(provider, "my-agent");
+      const agent = await createAgent(provider, "my-agent");
       const result = agent.onUnknownTool!({
         toolCall: { function: { name: "unknownFn" } },
         availableTools: [],

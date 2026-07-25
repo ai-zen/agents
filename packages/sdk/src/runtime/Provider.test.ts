@@ -40,31 +40,30 @@ describe("Provider", () => {
     expect(provider.mcpPaths).toEqual(["/tmp/mcp.json"]);
   });
 
-  it("无 mcpPaths 时 getMcpManager 返回 undefined", () => {
+  it("无 mcpPaths 时 mcpManager 为 undefined", () => {
     const provider = new Provider(baseOptions);
-    expect(provider.getMcpManager()).toBeUndefined();
+    expect(provider.mcpManager).toBeUndefined();
   });
 
-  it("有 mcpPaths 时 getMcpManager 延迟创建 McpConnectionManager", () => {
+  it("有 mcpPaths 时 mcpManager 在构造时创建", () => {
     const provider = new Provider({
       ...baseOptions,
       mcpPaths: ["/tmp/mcp.json"],
     });
-    const manager = provider.getMcpManager();
-    expect(manager).toBeDefined();
-    // 多次调用返回同一实例
-    expect(provider.getMcpManager()).toBe(manager);
+    expect(provider.mcpManager).toBeDefined();
+    // 直接访问属性，每次都是同一实例
+    expect(provider.mcpManager).toBe(provider.mcpManager);
   });
 
   it("createModel 根据 config 和 modelId 构建模型", () => {
     const provider = new Provider(baseOptions);
-    const model = createModel(provider.config, "gpt4");
+    const model = createModel(provider, "gpt4");
     expect(model).toBeDefined();
     expect(typeof model.createCompletion).toBe("function");
   });
 
   it("createModel 模型不存在时报错", () => {
     const provider = new Provider(baseOptions);
-    expect(() => createModel(provider.config, "non-existent")).toThrow("不存在");
+    expect(() => createModel(provider, "non-existent")).toThrow("不存在");
   });
 });

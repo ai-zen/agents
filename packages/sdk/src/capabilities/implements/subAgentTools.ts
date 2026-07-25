@@ -2,7 +2,6 @@ import { Agent, AgentToolLazy, type FunctionCallContext } from "@ai-zen/agents-c
 import type { Tool, AgentNS, ChatCompletionModel } from "@ai-zen/agents-core";
 import type { AgentDefinition } from "../../types/index.js";
 import type { Provider } from "../../runtime/Provider.js";
-import type { Capabilities } from "../Capabilities.js";
 import { createModel } from "../../runtime/createModel.js";
 
 /**
@@ -14,7 +13,6 @@ import { createModel } from "../../runtime/createModel.js";
 export function createSubAgentTool(
   def: AgentDefinition,
   provider: Provider,
-  caps?: Capabilities,
 ): Tool {
   if (!def.function) {
     throw new Error(`Agent "${def.id}" 没有 function 字段，不能作为 SubAgent 工具`);
@@ -30,17 +28,10 @@ export function createSubAgentTool(
     },
     messages: def.messages as unknown as AgentNS.Message[],
     buildAgent: function (this: FunctionCallContext, _parsedArgs: any): Agent {
-      if (!caps) {
-        throw new Error(
-          `SubAgent "${selfName}" 缺少 Capabilities 引用。` +
-          `请确保 Capabilities.instantiate() 传入了 caps（this）。`,
-        );
-      }
-
       // 模型解析：SubAgent 可指定独立模型，否则复用父 Agent 的模型
       let subModel: ChatCompletionModel;
       if (def.modelId) {
-        subModel = createModel(provider.config, def.modelId);
+        subModel = createModel(provider, def.modelId);
       } else {
         const parentModel = this.agent?.model;
         if (!parentModel) {
@@ -52,12 +43,12 @@ export function createSubAgentTool(
       }
 
       // SubAgent 独立解析自己的工具（排除自身，防止递归）
-      const subFiltered = caps.filter(def.permissions ?? {}, {
+      const subFiltered = provider.filter(def.permissions ?? {}, {
         exclude: {
           subagents: def.function?.name ? [def.function.name] : undefined,
         },
       });
-      const tools = caps.instantiate(subFiltered);
+      const tools = provider.instantiate(subFiltered);
 
       const subAgent = new Agent({
         model: subModel,

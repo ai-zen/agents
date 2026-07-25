@@ -1,7 +1,6 @@
 import { Agent, type ChatCompletionModel } from "@ai-zen/agents-core";
-import type { AgentNS, Tool } from "@ai-zen/agents-core";
+import type { AgentNS, Tool, UnknownToolContext } from "@ai-zen/agents-core";
 import type { AgentDefinition, AgentPermissions } from "../types/index.js";
-import type { Capabilities } from "../capabilities/Capabilities.js";
 import type { Provider } from "./Provider.js";
 
 // ---------------------------------------------------------------------------
@@ -61,7 +60,6 @@ export interface AgentPlugin {
  *   - provider：全局 Provider 实例
  *   - definition：Agent 原始定义
  *   - permissions：Agent 权限，供 call_skill_sub_agent 等回调读取
- *   - caps：Capabilities 全局注册表，供 refreshTools 刷新工具列表
  *
  * 插件能力：
  *   - use(plugin)：注册插件
@@ -75,8 +73,28 @@ export class SdkAgent extends Agent {
   readonly definition: AgentDefinition;
   /** Agent 权限 */
   readonly permissions?: AgentPermissions;
-  /** Capabilities 全局注册表，用于运行时刷新工具列表 */
-  readonly caps?: Capabilities;
+
+  /**
+   * 当 LLM 调用不存在的工具时，给出智能提示。
+   * 如果有 MCP 配置但 call_mcp_tool 不在工具列表中（权限禁用），提示权限问题；
+   * 如果有 MCP 配置且 call_mcp_tool 可用，提示使用 call_mcp_tool；
+   * 否则仅提示工具不存在。
+   */
+  onUnknownTool = (ctx: UnknownToolContext): string => {
+    const toolName = ctx.toolCall.function?.name ?? "未知";
+    const hasMcpConfig = this.provider.mcpPaths.length > 0;
+    const hasCallMcpTool = (this.tools ?? []).some(
+      (t) => t.function.name === "call_mcp_tool",
+    );
+
+    if (hasMcpConfig && !hasCallMcpTool) {
+      return `工具 "${toolName}" 不存在。当前有 MCP 服务器配置，但 call_mcp_tool 权限已被禁用，如需使用 MCP 工具请调整权限。`;
+    }
+    if (hasMcpConfig && hasCallMcpTool) {
+      return `工具 "${toolName}" 不存在。如果要调用 MCP 工具，请使用 call_mcp_tool。`;
+    }
+    return `工具 "${toolName}" 不存在。`;
+  }
 
   /** 已注册的插件列表 */
   private _plugins: AgentPlugin[] = [];
@@ -89,7 +107,6 @@ export class SdkAgent extends Agent {
     messages?: AgentNS.Message[];
     tools?: Tool[];
     permissions?: AgentPermissions;
-    caps?: Capabilities;
     rag?: any;
     allowJsonParseError?: boolean;
   }) {
@@ -104,7 +121,6 @@ export class SdkAgent extends Agent {
     this.provider = params.provider;
     this.definition = params.definition;
     this.permissions = params.permissions;
-    this.caps = params.caps;
   }
 
   /**

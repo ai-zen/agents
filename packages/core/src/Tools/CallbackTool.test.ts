@@ -24,7 +24,7 @@ describe("CallbackTool", () => {
   it("构造函数缺少 function 应抛出错误", () => {
     expect(() => {
       new CallbackTool({} as any);
-    }).toThrow("CallbackTool must have a function");
+    }).toThrow("Tool must have a function");
   });
 
   it("应执行回调并返回序列化结果", async () => {

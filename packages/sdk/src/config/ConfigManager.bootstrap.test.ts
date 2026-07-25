@@ -44,7 +44,7 @@ describe("ConfigManager.ensureDefaultAgent", () => {
     expect(raw.id).toBe(DEFAULT_AGENT_ID);
     expect(raw.name).toBe(DEFAULT_AGENT_DEFINITION.name);
     expect(raw.permissions.tools).toEqual({ allow: ["*"] });
-    expect(raw.messages.length).toBeGreaterThanOrEqual(1);
+    expect(raw.messages.length).toBe(1);
     expect(raw.messages[0].role).toBe("system");
   });
 

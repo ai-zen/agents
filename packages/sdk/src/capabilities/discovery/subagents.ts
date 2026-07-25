@@ -1,6 +1,6 @@
 import type { AgentDefinition } from "../../types/index.js";
 import { Tool } from "@ai-zen/agents-core";
-import { readdirSync, existsSync, readFileSync } from "node:fs";
+import { promises as fs } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -8,23 +8,28 @@ import { join } from "node:path";
  * 按优先级从高到低传入路径列表，同名 function.name 靠前的路径优先（先到先得）。
  * 跳过无 function 的普通 Agent 和解析失败的文件。
  */
-export function discoverSubAgents(paths: string[]): AgentDefinition[] {
+export async function discoverSubAgents(paths: string[]): Promise<AgentDefinition[]> {
   const seen = new Set<string>();
   const agents: AgentDefinition[] = [];
 
   for (const dir of paths) {
-    if (!existsSync(dir)) continue;
-
-    let files;
     try {
-      files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+      await fs.access(dir);
+    } catch {
+      continue;
+    }
+
+    let files: string[];
+    try {
+      const allFiles = await fs.readdir(dir);
+      files = allFiles.filter((f) => f.endsWith(".json"));
     } catch {
       continue;
     }
 
     for (const file of files) {
       try {
-        const raw = readFileSync(join(dir, file), "utf-8");
+        const raw = await fs.readFile(join(dir, file), "utf-8");
         const def = JSON.parse(raw) as AgentDefinition;
         if (def.function) {
           const funcName = def.function.name;

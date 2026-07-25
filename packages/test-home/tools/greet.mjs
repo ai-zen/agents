@@ -1,4 +1,4 @@
-module.exports = {
+export default {
   function: {
     name: "greet",
     description: "返回问候语",

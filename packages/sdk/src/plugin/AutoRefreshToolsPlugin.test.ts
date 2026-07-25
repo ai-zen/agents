@@ -6,7 +6,7 @@ import { SdkAgent } from "../runtime/SdkAgent.js";
 // Helpers
 // ---------------------------------------------------------------------------
 
-function mockRuntime(config?: any) {
+function mockProvider(config?: any) {
   return {
     config: config ?? {
       defaultModel: "m1",
@@ -19,24 +19,28 @@ function mockRuntime(config?: any) {
     toolsPaths: [],
     mcpPaths: [],
 
-  };
-}
+    builtinTools: [],
+    userTools: [],
+    subagents: [],
+    skills: [],
+    mcps: [],
 
-function createMockCaps() {
-  return {
     refresh: vi.fn(),
     buildTools: vi.fn().mockReturnValue([]),
+    filter: vi.fn(),
+    instantiate: vi.fn(),
+    mcpManager: undefined,
   };
 }
 
 function createTestAgent(opts?: {
-  caps?: any;
+  provider?: any;
   permissions?: any;
   definition?: any;
 }): SdkAgent {
   const messages: any[] = [{ role: "system", content: "You are a helper." }];
   return new SdkAgent({
-    provider: mockRuntime() as any,
+    provider: opts?.provider ?? mockProvider() as any,
     definition: opts?.definition ?? {
       id: "test-agent",
       name: "Test Agent",
@@ -48,7 +52,6 @@ function createTestAgent(opts?: {
     messages,
     tools: [],
     permissions: opts?.permissions,
-    caps: opts?.caps,
   });
 }
 
@@ -63,41 +66,31 @@ describe("AutoRefreshToolsPlugin", () => {
     expect(typeof plugin.onBeforeSend).toBe("function");
   });
 
-  it("caps 不存在时跳过（不抛异常）", async () => {
-    const agent = createTestAgent({ caps: undefined });
-    const plugin = new AutoRefreshToolsPlugin();
-    const ctx = { agent, content: "hello", messages: agent.messages };
-
-    await expect(plugin.onBeforeSend!(ctx)).resolves.toBeUndefined();
-  });
-
-  it("caps 存在时调用 caps.refresh()", async () => {
-    const caps = createMockCaps();
-    const agent = createTestAgent({ caps });
+  it("调用 provider.refresh()", async () => {
+    const provider = mockProvider();
+    const agent = createTestAgent({ provider });
     const plugin = new AutoRefreshToolsPlugin();
     const ctx = { agent, content: "hello", messages: agent.messages };
 
     await plugin.onBeforeSend!(ctx);
-    expect(caps.refresh).toHaveBeenCalledTimes(1);
+    expect(provider.refresh).toHaveBeenCalledTimes(1);
   });
 
-  it("caps 存在时调用 caps.buildTools()", async () => {
-    const caps = createMockCaps();
-    const agent = createTestAgent({ caps });
+  it("调用 provider.buildTools()", async () => {
+    const provider = mockProvider();
+    const agent = createTestAgent({ provider });
     const plugin = new AutoRefreshToolsPlugin();
     const ctx = { agent, content: "hello", messages: agent.messages };
 
     await plugin.onBeforeSend!(ctx);
-    expect(caps.buildTools).toHaveBeenCalledTimes(1);
+    expect(provider.buildTools).toHaveBeenCalledTimes(1);
   });
 
   it("buildTools 的结果赋值给 agent.tools", async () => {
     const fakeTools = [{ function: { name: "readFile" } }] as any;
-    const caps = {
-      refresh: vi.fn(),
-      buildTools: vi.fn().mockReturnValue(fakeTools),
-    };
-    const agent = createTestAgent({ caps });
+    const provider = mockProvider();
+    provider.buildTools = vi.fn().mockReturnValue(fakeTools);
+    const agent = createTestAgent({ provider });
     expect(agent.tools).toEqual([]);
 
     const plugin = new AutoRefreshToolsPlugin();
@@ -108,30 +101,30 @@ describe("AutoRefreshToolsPlugin", () => {
   });
 
   it("传入 agent.permissions 给 buildTools", async () => {
-    const caps = createMockCaps();
+    const provider = mockProvider();
     const permissions = { tools: { allow: ["readFile"] } };
-    const agent = createTestAgent({ caps, permissions });
+    const agent = createTestAgent({ provider, permissions });
     const plugin = new AutoRefreshToolsPlugin();
     const ctx = { agent, content: "hello", messages: agent.messages };
 
     await plugin.onBeforeSend!(ctx);
-    expect(caps.buildTools).toHaveBeenCalledWith(permissions, expect.any(Object));
+    expect(provider.buildTools).toHaveBeenCalledWith(permissions, expect.any(Object));
   });
 
   it("Agent 无 permissions 时传入空对象", async () => {
-    const caps = createMockCaps();
-    const agent = createTestAgent({ caps, permissions: undefined });
+    const provider = mockProvider();
+    const agent = createTestAgent({ provider, permissions: undefined });
     const plugin = new AutoRefreshToolsPlugin();
     const ctx = { agent, content: "hello", messages: agent.messages };
 
     await plugin.onBeforeSend!(ctx);
-    expect(caps.buildTools).toHaveBeenCalledWith({}, expect.any(Object));
+    expect(provider.buildTools).toHaveBeenCalledWith({}, expect.any(Object));
   });
 
   it("排除自身的 SubAgent name", async () => {
-    const caps = createMockCaps();
+    const provider = mockProvider();
     const agent = createTestAgent({
-      caps,
+      provider,
       definition: {
         id: "my-agent",
         name: "My Agent",
@@ -145,15 +138,15 @@ describe("AutoRefreshToolsPlugin", () => {
     const ctx = { agent, content: "hello", messages: agent.messages };
 
     await plugin.onBeforeSend!(ctx);
-    expect(caps.buildTools).toHaveBeenCalledWith(expect.any(Object), {
+    expect(provider.buildTools).toHaveBeenCalledWith(expect.any(Object), {
       exclude: { subagents: ["my_agent_func"] },
     });
   });
 
   it("非 SubAgent 时 exclude.subagents 为 undefined", async () => {
-    const caps = createMockCaps();
+    const provider = mockProvider();
     const agent = createTestAgent({
-      caps,
+      provider,
       definition: {
         id: "my-agent",
         name: "My Agent",
@@ -166,14 +159,14 @@ describe("AutoRefreshToolsPlugin", () => {
     const ctx = { agent, content: "hello", messages: agent.messages };
 
     await plugin.onBeforeSend!(ctx);
-    expect(caps.buildTools).toHaveBeenCalledWith(expect.any(Object), {
+    expect(provider.buildTools).toHaveBeenCalledWith(expect.any(Object), {
       exclude: { subagents: undefined },
     });
   });
 
   it("作为插件注册到 Agent 后在 send 时自动触发", async () => {
-    const caps = createMockCaps();
-    const agent = createTestAgent({ caps });
+    const provider = mockProvider();
+    const agent = createTestAgent({ provider });
     const plugin = new AutoRefreshToolsPlugin();
 
     agent.use(plugin);
@@ -182,15 +175,15 @@ describe("AutoRefreshToolsPlugin", () => {
     const ctx = { agent, content: "hello", messages: agent.messages };
     await plugin.onBeforeSend!(ctx);
 
-    expect(caps.refresh).toHaveBeenCalledTimes(1);
-    expect(caps.buildTools).toHaveBeenCalledTimes(1);
+    expect(provider.refresh).toHaveBeenCalledTimes(1);
+    expect(provider.buildTools).toHaveBeenCalledTimes(1);
   });
 
   it("多次 send 时每次调用 refresh", async () => {
-    const caps = createMockCaps();
-    caps.buildTools.mockReturnValue([{ function: { name: "tool1" } }] as any);
+    const provider = mockProvider();
+    provider.buildTools = vi.fn().mockReturnValue([{ function: { name: "tool1" } }] as any);
 
-    const agent = createTestAgent({ caps });
+    const agent = createTestAgent({ provider });
     const plugin = new AutoRefreshToolsPlugin();
     const ctx = { agent, content: "hello", messages: agent.messages };
 
@@ -198,7 +191,7 @@ describe("AutoRefreshToolsPlugin", () => {
     await plugin.onBeforeSend!(ctx);
     await plugin.onBeforeSend!(ctx);
 
-    expect(caps.refresh).toHaveBeenCalledTimes(3);
-    expect(caps.buildTools).toHaveBeenCalledTimes(3);
+    expect(provider.refresh).toHaveBeenCalledTimes(3);
+    expect(provider.buildTools).toHaveBeenCalledTimes(3);
   });
 });
