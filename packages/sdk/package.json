@@ -9,7 +9,7 @@
     "clean": "rimraf ./dist",
     "prebuild": "npm run clean",
     "build": "tsc",
-    "prepublishOnly": "node scripts/check-publish-tool.mjs && npm run build",
+    "prepublishOnly": "node scripts/check-publish-tool.mjs && npm test && npm run build",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "pretest": "tsc --noEmit",
