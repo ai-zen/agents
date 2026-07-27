@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.4] - 2026-07-27
+
+### 🎯 优化
+
+- **`AutoMigratePlugin` 钩子重命名** — `onHandoff` → `onMigrated`，语义更清晰：迁移前用 `onBeforeMigrate`（此时 `agent.messages` 仍是完整旧历史），迁移完成后用 `onMigrated`（交接文档已注入）
+- **`conversation-runner.ts` 保存逻辑修正** — 将保存旧对话从 `onMigrated`（原 `onHandoff`）移至 `onBeforeMigrate`，确保保存的是完整的旧对话历史，而非迁移后的新消息
+
 ## [0.3.3] - 2026-07-27
 
 ### 🎯 优化

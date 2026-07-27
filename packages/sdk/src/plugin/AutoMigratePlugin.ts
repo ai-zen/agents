@@ -9,10 +9,10 @@ const log = createLogger();
 export interface AutoMigrateOptions {
   maxTokens: number;
   migrationAgent: SdkAgent;
-  /** 迁移开始前触发（promptTokens 刚超限时），可在此向用户展示迁移提示 */
+  /** 迁移开始前触发（promptTokens 刚超限时），此时 agent.messages 还是完整旧历史。适用于保存旧对话或向用户展示迁移提示。 */
   onBeforeMigrate?: (promptTokens: number, maxTokens: number, agent: SdkAgent) => void;
-  /** 迁移完成后触发（交接文档已注入 agent.messages），可在此保存对话等 */
-  onHandoff?: (handoffDoc: string, agent: SdkAgent) => void;
+  /** 迁移完成后触发，此时交接文档已注入 agent.messages。适用于 UI 更新等后处理。 */
+  onMigrated?: (handoffDoc: string, agent: SdkAgent) => void;
 }
 
 /**
@@ -25,7 +25,7 @@ export interface AutoMigrateOptions {
  * agent.use(new AutoMigratePlugin({
  *   maxTokens: 250_000,
  *   migrationAgent: anotherAgent,
- *   onHandoff: (doc, agent) => { ... },
+ *   onMigrated: (doc, agent) => { ... },
  * }));
  * ```
  */
@@ -38,7 +38,7 @@ export class AutoMigratePlugin implements AgentPlugin {
 
   async onAfterSend(ctx: SendContext): Promise<void> {
     const { agent } = ctx;
-    const { maxTokens, migrationAgent, onBeforeMigrate, onHandoff } = this.options;
+    const { maxTokens, migrationAgent, onBeforeMigrate, onMigrated } = this.options;
 
     const promptTokens = agent.lastUsage?.prompt_tokens;
     if (promptTokens == null) return;
@@ -68,11 +68,11 @@ export class AutoMigratePlugin implements AgentPlugin {
         ...TaskMigrationService.createPostMessages(handoffDoc),
       );
 
-      if (onHandoff) {
+      if (onMigrated) {
         try {
-          await onHandoff(handoffDoc, agent);
+          await onMigrated(handoffDoc, agent);
         } catch (err: any) {
-          log.error(`[autoMigrate] onHandoff 回调失败: ${err?.message ?? err}`);
+          log.error(`[autoMigrate] onMigrated 回调失败: ${err?.message ?? err}`);
         }
       }
     } catch (err: any) {
