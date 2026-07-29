@@ -1,12 +1,12 @@
 import type { Draft } from "../types/index.js";
 import type { AgentPlugin, SendContext } from "../runtime/SdkAgent.js";
 import { DraftRepository } from "../crud/DraftRepository.js";
-import { createLogger } from "../shared/logger.js";
+import { getLogger } from "../shared/logger.js";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import dayjs from "dayjs";
 
-const log = createLogger();
+const log = getLogger();
 
 export interface AutoDraftOptions {
   draftsDir: string;

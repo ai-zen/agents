@@ -1,9 +1,11 @@
 import { CallbackTool } from "@ai-zen/agents-core";
 import { createDisclosureParam } from "../disclosure.js";
+import { getLogger } from "../../shared/logger.js";
 import type { McpConnectionManager } from "../../runtime/McpConnectionManager.js";
 import type { McpServerConfig } from "../../types/index.js";
 
 const EMPTY_HINT = "（当前没有可用的 MCP 服务器，请联系用户添加）";
+const log = getLogger();
 
 /**
  * 创建 load_mcp 工具。
@@ -50,14 +52,14 @@ export function createLoadMcpTool(
       const existingManifest = mcpManager.getManifest(serverName);
       if (existingManifest && mcpManager.getState(serverName) === "connected") {
         mcpManager.touch(serverName);
-        const toolList = existingManifest.tools.map((t) => `- ${t.name}: ${t.description}`).join("\n");
-        return `✅ MCP 服务器 "${serverName}" 已连接 (${existingManifest.tools.length} 个工具):\n${toolList}`;
+        log.info(`[load_mcp] ${serverName}:\n${JSON.stringify(existingManifest, null, 2)}`);
+        return JSON.stringify({ tools: existingManifest.tools, resources: existingManifest.resources });
       }
 
       try {
         const manifest = await mcpManager.connect(serverName, config);
-        const toolList = manifest.tools.map((t) => `- ${t.name}: ${t.description}`).join("\n");
-        return `✅ MCP 服务器 "${serverName}" 已连接 (${manifest.tools.length} 个工具):\n${toolList}`;
+        log.info(`[load_mcp] ${serverName}:\n${JSON.stringify(manifest, null, 2)}`);
+        return JSON.stringify({ tools: manifest.tools, resources: manifest.resources });
       } catch (error: any) {
         return `无法连接到 "${serverName}": ${error?.message ?? error}`;
       }

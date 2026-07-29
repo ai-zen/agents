@@ -6,13 +6,22 @@ export interface LogFunctions {
 
 export type Logger = LogFunctions;
 
+let currentLogger: Logger = {
+  info: console.log,
+  warn: console.warn,
+  error: console.error,
+};
+
 /**
- * 创建可注入的 Logger，默认使用 console。
+ * 获取全局 Logger 实例。
  */
-export function createLogger(log?: Partial<LogFunctions>): Logger {
-  return {
-    info: log?.info ?? console.log,
-    warn: log?.warn ?? console.warn,
-    error: log?.error ?? console.error,
-  };
+export function getLogger(): Logger {
+  return currentLogger;
+}
+
+/**
+ * 设置全局 Logger 实例，替换默认的 console 输出。
+ */
+export function setLogger(log: Logger): void {
+  currentLogger = log;
 }

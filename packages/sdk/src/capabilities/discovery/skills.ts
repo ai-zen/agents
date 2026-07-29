@@ -1,8 +1,8 @@
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
-import { createLogger } from "../../shared/logger.js";
+import { getLogger } from "../../shared/logger.js";
 
-const log = createLogger();
+const log = getLogger();
 
 // ---- 类型 ----
 

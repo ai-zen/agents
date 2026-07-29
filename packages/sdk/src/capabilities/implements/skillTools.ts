@@ -4,12 +4,12 @@ import { SdkAgent } from "../../runtime/SdkAgent.js";
 import type { SkillInfo } from "../discovery/skills.js";
 import { createDisclosureParam } from "../disclosure.js";
 import { readSkill } from "../discovery/skills.js";
-import { createLogger } from "../../shared/logger.js";
+import { getLogger } from "../../shared/logger.js";
 import type { Provider } from "../../runtime/Provider.js";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 
-const log = createLogger();
+const log = getLogger();
 
 const EMPTY_HINT = "（当前没有可用的 Skill，请联系用户添加）";
 

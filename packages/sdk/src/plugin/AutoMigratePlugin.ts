@@ -1,10 +1,10 @@
 import { AgentNS } from "@ai-zen/agents-core";
 import type { AgentPlugin, SendContext } from "../runtime/SdkAgent.js";
 import { TaskMigrationService } from "../runtime/TaskMigrationService.js";
-import { createLogger } from "../shared/logger.js";
+import { getLogger } from "../shared/logger.js";
 import { SdkAgent } from "../runtime/SdkAgent.js";
 
-const log = createLogger();
+const log = getLogger();
 
 export interface AutoMigrateOptions {
   maxTokens: number;

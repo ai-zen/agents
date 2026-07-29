@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.0] - 2026-07-29
+
+### 💥 破坏性变更
+
+- **`load_mcp` 返回值从纯文本改为结构化 JSON** — 现在返回 `{ tools, resources }`，其中 tools 包含完整的 `inputSchema`（参数 JSON Schema），resources 包含 `uri`、`name`、`description`、`mimeType`。LLM 可获得精确的参数结构信息，不再需要靠描述文字猜测参数格式
+- **`load_mcp` 不再返回 `prompts` 字段** — prompts 属于 UI 层用途，不对 Agent 暴露
+- **`createLogger()` 替换为全局单例 `getLogger()` / `setLogger()`** — 日志不再支持多例，SDK 内部所有模块统一通过 `getLogger()` 获取同一实例
+- **`index.ts` 导出变更** — `createLogger` → `getLogger` / `setLogger`
+
+### 🎯 优化
+
+- **`load_mcp` 连接成功后在日志中打印完整 manifest** — 包含 tools、resources、prompts 的完整 JSON，便于调试排查
+- **SDK 内部日志统一** — `mcps.ts`、`skills.ts`、`usertools.ts`、`McpConnectionManager.ts` 中的 `console.warn`/`console.error` 全部改为 `getLogger().warn`/`getLogger().error`
+
 ## [0.3.4] - 2026-07-27
 
 ### 🎯 优化

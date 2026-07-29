@@ -2,6 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { getLogger } from "../shared/logger.js";
 import type { McpServerConfig, McpServerManifest, McpConnectionState } from "../types/index.js";
 
 // ---------------------------------------------------------------------------
@@ -203,7 +204,7 @@ export class McpConnectionManager {
           inputSchema: t.inputSchema as Record<string, unknown>,
         }));
       } catch (err) {
-        console.error(`[McpConnectionManager] 获取 "${name}" 工具列表失败:`, err);
+        getLogger().error(`[McpConnectionManager] 获取 "${name}" 工具列表失败: ${err?.message ?? err}`);
       }
     }
 
@@ -217,7 +218,7 @@ export class McpConnectionManager {
           mimeType: r.mimeType,
         }));
       } catch (err) {
-        console.error(`[McpConnectionManager] 获取 "${name}" 资源列表失败:`, err);
+        getLogger().error(`[McpConnectionManager] 获取 "${name}" 资源列表失败: ${err?.message ?? err}`);
       }
     }
 
@@ -229,7 +230,7 @@ export class McpConnectionManager {
           description: p.description,
         }));
       } catch (err) {
-        console.error(`[McpConnectionManager] 获取 "${name}" 提示列表失败:`, err);
+        getLogger().error(`[McpConnectionManager] 获取 "${name}" 提示列表失败: ${err?.message ?? err}`);
       }
     }
 

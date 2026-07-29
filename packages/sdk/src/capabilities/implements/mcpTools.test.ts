@@ -37,34 +37,41 @@ describe("createLoadMcpTool", () => {
     expect(result).toContain("不存在");
   });
 
-  it("已连接时直接返回清单", async () => {
+  it("已连接时直接返回 JSON 清单（不含 prompts）", async () => {
+    const manifest = {
+      tools: [{ name: "echo", description: "回显", inputSchema: { type: "object", properties: {} } }],
+      resources: [{ uri: "file:///data", name: "数据文件", description: "数据文件" }],
+      prompts: [{ name: "greet", description: "问候" }],
+    };
     const manager = mockManager({
       getState: vi.fn(() => "connected" as const),
-      getManifest: vi.fn(() => ({
-        tools: [{ name: "echo", description: "回显" }],
-        resources: [],
-      })),
+      getManifest: vi.fn(() => manifest),
     });
     const tool = createLoadMcpTool(manager, mcps);
     const result = await tool.callback({ server: "github" });
-    expect(result).toContain("已连接");
-    expect(result).toContain("echo");
+    const parsed = JSON.parse(result);
+    expect(parsed.tools).toEqual(manifest.tools);
+    expect(parsed.resources).toEqual(manifest.resources);
+    expect(parsed).not.toHaveProperty("prompts");
     expect(manager.connect).not.toHaveBeenCalled();
   });
 
-  it("未连接时调用 connect", async () => {
+  it("未连接时调用 connect 并返回 JSON（不含 prompts）", async () => {
+    const manifest = {
+      tools: [{ name: "list", description: "列出文件", inputSchema: { type: "object", properties: {} } }],
+      resources: [],
+    };
     const manager = mockManager({
       getState: vi.fn(() => "disconnected" as const),
       getManifest: vi.fn(() => undefined),
-      connect: vi.fn().mockResolvedValue({
-        tools: [{ name: "list", description: "列出文件" }],
-        resources: [],
-      }),
+      connect: vi.fn().mockResolvedValue(manifest),
     });
     const tool = createLoadMcpTool(manager, mcps);
     const result = await tool.callback({ server: "github" });
-    expect(result).toContain("已连接");
-    expect(result).toContain("list");
+    const parsed = JSON.parse(result);
+    expect(parsed.tools).toEqual(manifest.tools);
+    expect(parsed.resources).toEqual(manifest.resources);
+    expect(parsed).not.toHaveProperty("prompts");
     expect(manager.connect).toHaveBeenCalledWith("github", mcps[0]);
   });
 

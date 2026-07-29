@@ -1,15 +1,34 @@
-import { describe, it, expect } from "vitest";
-import { createLogger, type Logger } from "./logger.js";
+import { describe, it, expect, beforeEach } from "vitest";
+import { getLogger, setLogger, type Logger } from "./logger.js";
 
-describe("createLogger", () => {
-  it("使用注入的 log 函数", () => {
+describe("logger 全局单例", () => {
+  beforeEach(() => {
+    // 重置为默认
+    setLogger({
+      info: console.log,
+      warn: console.warn,
+      error: console.error,
+    });
+  });
+
+  it("getLogger 默认返回 console", () => {
+    const logger = getLogger();
+    expect(logger.info).toBe(console.log);
+    expect(logger.warn).toBe(console.warn);
+    expect(logger.error).toBe(console.error);
+  });
+
+  it("setLogger 替换全局实例", () => {
     const lines: string[] = [];
-    const logger = createLogger({
+    const customLogger: Logger = {
       info: (msg) => lines.push(`INFO: ${msg}`),
       warn: (msg) => lines.push(`WARN: ${msg}`),
       error: (msg) => lines.push(`ERROR: ${msg}`),
-    });
+    };
 
+    setLogger(customLogger);
+
+    const logger = getLogger();
     logger.info("hello");
     logger.warn("careful");
     logger.error("boom");
@@ -19,13 +38,5 @@ describe("createLogger", () => {
       "WARN: careful",
       "ERROR: boom",
     ]);
-  });
-
-  it("默认使用 console", () => {
-    const logger = createLogger();
-    // 不抛异常即通过
-    logger.info("test");
-    logger.warn("test");
-    logger.error("test");
   });
 });

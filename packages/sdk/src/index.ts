@@ -81,6 +81,6 @@ export { createLoadMcpTool, createCallMcpTool, createReadMcpResourceTool } from 
 export { createSubAgentTool } from "./capabilities/implements/subAgentTools.js";
 
 // 共享
-export { createLogger } from "./shared/logger.js";
+export { getLogger, setLogger } from "./shared/logger.js";
 export type { Logger, LogFunctions } from "./shared/logger.js";
 export { SdkError } from "./shared/errors.js";

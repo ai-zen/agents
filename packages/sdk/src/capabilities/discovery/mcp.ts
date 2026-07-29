@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import { getLogger } from "../../shared/logger.js";
 import type { McpServerConfig } from "../../types/index.js";
 
 /**
@@ -84,7 +85,7 @@ export async function discoverMcpServers(paths: string[]): Promise<McpServerConf
         items.push(normalized);
       }
     } catch (err) {
-      console.warn(`[sdk] 解析 MCP 配置失败: ${path}`, err);
+      getLogger().warn(`[sdk] 解析 MCP 配置失败: ${path} — ${err?.message ?? err}`);
     }
   }
 

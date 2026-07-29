@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Tool, CallbackTool } from "@ai-zen/agents-core";
+import { getLogger } from "../../shared/logger.js";
 
 /**
  * 扫描多个 tools/ 目录，发现所有 .js / .mjs 文件，动态加载为 Tool 实例。
@@ -79,7 +80,7 @@ async function loadToolFile(filepath: string, silent?: boolean): Promise<Tool | 
     return normalizeToolExport({ default: exported }, filepath, silent);
   } catch (err: any) {
     if (!silent) {
-      console.error(`[usertools] 加载工具文件失败: ${filepath} — ${err?.message ?? err}`);
+      getLogger().error(`[usertools] 加载工具文件失败: ${filepath} — ${err?.message ?? err}`);
     }
     return null;
   }
@@ -122,7 +123,7 @@ function normalizeToolExport(exported: any, filepath: string, silent?: boolean):
   }
 
   if (!silent) {
-    console.error(`[usertools] 无法识别的工具格式: ${filepath}`);
+    getLogger().error(`[usertools] 无法识别的工具格式: ${filepath}`);
   }
   return null;
 }
