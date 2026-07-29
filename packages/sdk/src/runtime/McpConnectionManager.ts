@@ -203,8 +203,8 @@ export class McpConnectionManager {
           description: t.description ?? "",
           inputSchema: t.inputSchema as Record<string, unknown>,
         }));
-      } catch (err) {
-        getLogger().error(`[McpConnectionManager] 获取 "${name}" 工具列表失败: ${err?.message ?? err}`);
+      } catch (err: unknown) {
+        getLogger().error(`[McpConnectionManager] 获取 "${name}" 工具列表失败: ${(err as Error)?.message ?? err}`);
       }
     }
 
@@ -217,8 +217,8 @@ export class McpConnectionManager {
           description: r.description,
           mimeType: r.mimeType,
         }));
-      } catch (err) {
-        getLogger().error(`[McpConnectionManager] 获取 "${name}" 资源列表失败: ${err?.message ?? err}`);
+      } catch (err: unknown) {
+        getLogger().error(`[McpConnectionManager] 获取 "${name}" 资源列表失败: ${(err as Error)?.message ?? err}`);
       }
     }
 
@@ -229,8 +229,8 @@ export class McpConnectionManager {
           name: p.name,
           description: p.description,
         }));
-      } catch (err) {
-        getLogger().error(`[McpConnectionManager] 获取 "${name}" 提示列表失败: ${err?.message ?? err}`);
+      } catch (err: unknown) {
+        getLogger().error(`[McpConnectionManager] 获取 "${name}" 提示列表失败: ${(err as Error)?.message ?? err}`);
       }
     }
 

@@ -84,8 +84,8 @@ export async function discoverMcpServers(paths: string[]): Promise<McpServerConf
         seen.add(id);
         items.push(normalized);
       }
-    } catch (err) {
-      getLogger().warn(`[sdk] 解析 MCP 配置失败: ${path} — ${err?.message ?? err}`);
+    } catch (err: unknown) {
+      getLogger().warn(`[sdk] 解析 MCP 配置失败: ${path} — ${(err as Error)?.message ?? err}`);
     }
   }
 
