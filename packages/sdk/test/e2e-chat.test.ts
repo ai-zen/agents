@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { Provider } from "../src/runtime/Provider";
 import { createModel } from "../src/runtime/createModel";
 import { SdkAgent } from "../src/runtime/SdkAgent";
-import { BUILTIN_TOOLS } from "../src/capabilities/implements/builtin/index";
+import { BUILTIN_TOOL_CLASSES } from "../src/capabilities/implements/builtin/index";
 
 // ---------------------------------------------------------------------------
 // 配置
@@ -51,8 +51,6 @@ const config = {
 const provider = new Provider({
   config,
   agentsDir: join(tmpdir(), "ai-zen-e2e-chat", "agents"),
-  conversationsDir: join(tmpdir(), "ai-zen-e2e-chat", "conversations"),
-  draftsDir: join(tmpdir(), "ai-zen-e2e-chat", "drafts"),
 });
 
 // ---------------------------------------------------------------------------
@@ -88,9 +86,11 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
   it("带工具调用：readFile 读取自身 package.json", async () => {
     const model = createModel(provider, "deepseek-v4-flash");
     const pkgPath = join(__dirname, "..", "package.json");
-    const tools = BUILTIN_TOOLS.filter((t) =>
-      ["readFile", "glob", "ls", "cwd"].includes(t.function.name),
-    );
+    const tools = BUILTIN_TOOL_CLASSES
+      .map((Cls) => new Cls(provider.env))
+      .filter((t) =>
+        ["readFile", "glob", "ls", "cwd"].includes(t.function.name),
+      );
 
     const agent = new SdkAgent({
       provider,

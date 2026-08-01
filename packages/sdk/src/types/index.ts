@@ -61,28 +61,6 @@ export interface AgentDefinition {
   version?: number;
 }
 
-/** 对话记录 */
-export interface Conversation {
-  id: string; // 唯一标识
-  agentId: string; // 关联 Agent.id
-  modelId: string; // 对话使用的模型
-  messages: AgentNS.Message[]; // 完整消息历史
-  lastPromptTokens?: number; // 最近一轮 API 返回的 usage.prompt_tokens
-  cwd?: string; // 对话开始时的当前工作目录
-  createdAt: string; // ISO 8601
-  updatedAt: string; // ISO 8601
-}
-
-/** 当前会话草稿 */
-export interface Draft {
-  conversationId?: string; // 已命名对话的 id，未命名为 undefined
-  agentId: string;
-  modelId: string;
-  messages: AgentNS.Message[];
-  cwd?: string; // 对话开始时的当前工作目录
-  updatedAt: string; // ISO 8601
-}
-
 // ---- 配置文件（暂时约定）----
 
 /** 图片生成模型配置 */
@@ -110,6 +88,21 @@ export interface AppConfig {
   defaultAgent?: string;
   /** 默认迁移模型 ID */
   defaultMigrationModel?: string;
+}
+
+// ---- 工具环境 ----
+
+/**
+ * 工具环境 — Provider 在实例化内置工具时注入的环境信息。
+ *
+ * cwd 是相对路径解析的基准（每个 Provider 对应一个工作目录）；
+ * config 供需要模型/端点配置的工具（如 generateImage）使用。
+ */
+export interface ToolEnv {
+  /** 当前工作目录 */
+  cwd: string;
+  /** 应用配置 */
+  config: AppConfig;
 }
 
 // ---- MCP（已定稿，来自 docs/sdk-design.md §7）----

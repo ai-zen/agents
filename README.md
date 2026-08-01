@@ -80,10 +80,11 @@ TypeScript core library for Node.js and browser environments.
 SDK layer built on top of `@ai-zen/agents-core`, providing shared business logic for CLI and Desktop applications:
 
 - **Capabilities** — Three-phase tool assembly (discovery, filtering, instantiation) with permission model
+- **Built-in Tools** — All tools are classes (`SdkCallbackTool`), instantiated per-Provider with `ToolEnv` (`cwd` + config) injection; relative paths resolve against `Provider.cwd`, no global `process.cwd()` dependency
 - **MCP** — Full connection lifecycle management (connect, reconnect, OAuth, idle timeout)
 - **Skill** — Discovery, frontmatter parsing, lazy loading
-- **Plugins** — autoMigrate, autoDraft, autoRefreshTools
-- **Provider** — Global context with config, paths, and model factory
+- **Plugins** — autoMigrate, autoRefreshTools
+- **Provider** — Global context with config, paths (incl. per-workspace `cwd`), and model factory
 
 [View SDK docs →](./packages/sdk/docs/sdk-design.md)
 

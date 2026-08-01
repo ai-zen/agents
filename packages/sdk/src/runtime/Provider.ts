@@ -1,5 +1,5 @@
 import type { Tool } from "@ai-zen/agents-core";
-import type { AppConfig, AgentDefinition, AgentPermissions, McpServerConfig } from "../types/index.js";
+import type { AppConfig, AgentDefinition, AgentPermissions, McpServerConfig, ToolEnv } from "../types/index.js";
 import type { SkillInfo } from "../capabilities/discovery/skills.js";
 import { McpConnectionManager } from "./McpConnectionManager.js";
 import { PermissionEvaluator } from "../capabilities/PermissionEvaluator.js";
@@ -66,6 +66,12 @@ export class Provider {
   /** 应用配置（端点、模型等） */
   readonly config: AppConfig;
 
+  /** 当前工作目录 — 相对路径解析基准，也是 ToolEnv.cwd 的来源 */
+  readonly cwd: string;
+
+  /** 工具环境 — 实例化内置工具时注入 */
+  readonly env: ToolEnv;
+
   // ---- 路径 ----
   readonly agentsDir: string;
   readonly subAgentsPaths: string[];
@@ -92,8 +98,12 @@ export class Provider {
     skillsPaths?: string[];
     toolsPaths?: string[];
     mcpPaths?: string[];
+    /** 当前工作目录，默认 process.cwd() */
+    cwd?: string;
   }) {
     this.config = options.config;
+    this.cwd = options.cwd ?? process.cwd();
+    this.env = { cwd: this.cwd, config: this.config };
     this.agentsDir = options.agentsDir;
     this.subAgentsPaths = options.subAgentsPaths ?? [];
     this.skillsPaths = options.skillsPaths ?? [];
@@ -119,6 +129,8 @@ export class Provider {
     skillsPaths?: string[];
     toolsPaths?: string[];
     mcpPaths?: string[];
+    /** 当前工作目录，默认 process.cwd() */
+    cwd?: string;
   }): Promise<Provider> {
     const provider = new Provider(options);
     await provider.init();
@@ -254,7 +266,7 @@ export class Provider {
    */
   async refresh(options?: { silent?: boolean }): Promise<void> {
     const silent = options?.silent ?? false;
-    this.builtinTools = discoverBuiltinTools(this.config);
+    this.builtinTools = discoverBuiltinTools(this.env);
     this.userTools = await discoverUserTools(this.toolsPaths, { silent });
     this.subagents = await discoverSubAgents(this.subAgentsPaths);
     this.skills = await discoverSkills(this.skillsPaths, { silent });

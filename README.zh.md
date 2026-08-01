@@ -10,8 +10,8 @@
 
 | 包名 | 说明 | 版本 |
 |------|------|------|
-| [`@ai-zen/agents-core`](./packages/core) | 核心框架 — Agent、消息、工具、模型、端点、RAG、向量数据库抽象 | [![version](https://img.shields.io/badge/version-2.4.0-blue)] |
-| [`@ai-zen/agents-sdk`](./packages/sdk) | SDK — 共享业务逻辑（能力管线、权限、MCP、插件） | [![version](https://img.shields.io/badge/version-0.1.0-blue)] |
+| [`@ai-zen/agents-core`](./packages/core) | 核心框架 — Agent、消息、工具、模型、端点、RAG、向量数据库抽象 | [![version](https://img.shields.io/badge/version-3.0.1-blue)] |
+| [`@ai-zen/agents-sdk`](./packages/sdk) | SDK — 共享业务逻辑（能力管线、权限、MCP、插件） | [![version](https://img.shields.io/badge/version-0.5.0-blue)] |
 
 ### 外部项目
 
@@ -80,10 +80,11 @@ TypeScript 核心库，可在 Node.js 和浏览器环境中使用。提供构建
 基于 `@ai-zen/agents-core` 构建的 SDK 层，为 CLI 和 Desktop 应用提供共享业务逻辑：
 
 - **Capabilities** — 三阶段工具装配（发现、过滤、实例化）+ 权限模型
+- **内置工具** — 全部类化（`SdkCallbackTool`），按 Provider 用 `ToolEnv`（cwd + config）实例化；相对路径以 `Provider.cwd` 为基准，不依赖全局 `process.cwd()`
 - **MCP** — 完整的连接生命周期管理（连接、重连、OAuth、空闲超时）
 - **Skill** — 发现、frontmatter 解析、惰性加载
-- **插件** — autoMigrate、autoDraft、autoRefreshTools
-- **Provider** — 全局上下文，持有配置、路径和模型工厂
+- **插件** — autoMigrate、autoRefreshTools
+- **Provider** — 全局上下文，持有配置、路径（含每工作区 `cwd`）和模型工厂
 
 [查看 SDK 文档 →](./packages/sdk/docs/sdk-design.md)
 

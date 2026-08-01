@@ -9,7 +9,6 @@ import { discoverUserTools } from "../src/capabilities/discovery/usertools";
 import { discoverMcpServers } from "../src/capabilities/discovery/mcp";
 import { discoverBuiltinTools } from "../src/capabilities/discovery/builtin";
 import { SdkAgent } from "../src/runtime/SdkAgent";
-import { AutoDraftPlugin } from "../src/plugin/AutoDraftPlugin";
 import { AutoRefreshToolsPlugin } from "../src/plugin/AutoRefreshToolsPlugin";
 import type { Tool } from "@ai-zen/agents-core";
 import { promises as fs } from "node:fs";
@@ -67,7 +66,7 @@ describe("端到端：真实文件系统路径", () => {
     it("discoverBuiltinTools: 有 imageModels 时包含 generateImage", async () => {
       await checkPaths();
       const config = await new ConfigManager(TEST_CONFIG).read();
-      const tools = discoverBuiltinTools(config);
+      const tools = discoverBuiltinTools({ cwd: TEST_HOME_DIR, config });
       const names = tools.map((t) => t.function.name);
       expect(names).toContain("generateImage");
       expect(names.length).toBeGreaterThan(15);
@@ -395,42 +394,6 @@ describe("端到端：真实文件系统路径", () => {
       expect(afterNames).toEqual(beforeNames);
     });
 
-    it("autoDraft 插件可正常保存和检查草稿", async () => {
-      await checkPaths();
-      const config = await new ConfigManager(TEST_CONFIG).read();
-      const provider = await Provider.create({
-        config,
-        agentsDir: TEST_AGENTS_DIR,
-        subAgentsPaths: [PROJECT_SUB_AGENTS_DIR, TEST_SUB_AGENTS_DIR],
-        skillsPaths: [PROJECT_SKILLS_DIR, TEST_SKILLS_DIR],
-        toolsPaths: [PROJECT_TOOLS_DIR, TEST_TOOLS_DIR],
-        mcpPaths: [PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP],
-      });
-
-      const agent = await createAgent(provider, "code-assistant");
-      agent.use(new AutoDraftPlugin({
-        draftsDir: TEST_DRAFTS_DIR,
-        agentId: "code-assistant",
-      }));
-
-      // 模拟 onInnerLoopEnd
-      const ctx = { agent, content: "你好", messages: agent.messages };
-      const plugin = (agent as any)._plugins[0];
-      await plugin.onInnerLoopEnd(ctx);
-
-      // 检查草稿文件已创建
-      const draftPath = join(TEST_DRAFTS_DIR, "_current.json");
-      await expect(fs.access(draftPath)).resolves.toBeUndefined();
-
-      const draftContent = JSON.parse(await fs.readFile(draftPath, "utf-8"));
-      expect(draftContent.agentId).toBe("code-assistant");
-      expect(draftContent.messages.length).toBeGreaterThan(0);
-
-      // checkDraftForRestore 能检测到
-      const draft = await AutoDraftPlugin.checkDraftForRestore(TEST_DRAFTS_DIR);
-      expect(draft).not.toBeNull();
-      expect(draft!.agentId).toBe("code-assistant");
-    });
   });
 
   // -----------------------------------------------------------------

@@ -6,9 +6,8 @@ export type {
   Model,
   ImageModel,
   AgentDefinition,
-  Conversation,
-  Draft,
   AppConfig,
+  ToolEnv,
   McpIcon,
   McpAnnotations,
   McpToolDef,
@@ -45,11 +44,9 @@ export {
   CONFIG_SUB_DIRS,
 } from "./config/ConfigManager.js";
 
-// CRUD — EntityRepository + 实体仓储
+// CRUD — 实体仓储（仅 Agent 定义等能力实体）
 export { EntityRepository } from "./shared/EntityRepository.js";
 export { AgentRepository } from "./crud/AgentRepository.js";
-export { ConversationRepository } from "./crud/ConversationRepository.js";
-export { DraftRepository } from "./crud/DraftRepository.js";
 
 // 运行时
 export { Provider } from "./runtime/Provider.js";
@@ -60,22 +57,37 @@ export type { AgentPlugin, SendContext } from "./runtime/SdkAgent.js";
 export { createAgent } from "./runtime/createAgent.js";
 export { McpConnectionManager } from "./runtime/McpConnectionManager.js";
 export type { McpConnectOptions } from "./runtime/McpConnectionManager.js";
+export { SdkCallbackTool } from "./runtime/SdkCallbackTool.js";
 export { TaskMigrationService } from "./runtime/TaskMigrationService.js";
 export type { BuildMigrationAgentOptions } from "./runtime/TaskMigrationService.js";
 
 // 插件
 export { AutoMigratePlugin } from "./plugin/AutoMigratePlugin.js";
 export type { AutoMigrateOptions } from "./plugin/AutoMigratePlugin.js";
-export { AutoDraftPlugin } from "./plugin/AutoDraftPlugin.js";
-export type { AutoDraftOptions } from "./plugin/AutoDraftPlugin.js";
 export { AutoRefreshToolsPlugin } from "./plugin/AutoRefreshToolsPlugin.js";
 
-
-// 工具
-export { BUILTIN_TOOLS } from "./capabilities/implements/builtin/index.js";
-export { createGenerateImageTool } from "./capabilities/implements/builtin/generateImage.js";
-export { execAsyncTool } from "./capabilities/implements/builtin/execAsync.js";
-export { sleepTool } from "./capabilities/implements/builtin/sleep.js";
+// 工具 — 内置工具类 + 动态工具工厂
+export { BUILTIN_TOOL_CLASSES } from "./capabilities/implements/builtin/index.js";
+export {
+  CwdTool,
+  ReadFileTool,
+  WriteFileTool,
+  ExecTool,
+  MkdirTool,
+  RmTool,
+  GlobTool,
+  LsTool,
+  ExistTool,
+  FindTextTool,
+  DownloadFileTool,
+  RenameTool,
+  CopyTool,
+  BatchEditTool,
+  EditTool,
+  ExecAsyncTool,
+  SleepTool,
+} from "./capabilities/implements/builtin/index.js";
+export { GenerateImageTool } from "./capabilities/implements/builtin/GenerateImageTool.js";
 export { createLoadSkillTool, createCallSkillSubAgentTool } from "./capabilities/implements/skillTools.js";
 export { createLoadMcpTool, createCallMcpTool, createReadMcpResourceTool } from "./capabilities/implements/mcpTools.js";
 export { createSubAgentTool } from "./capabilities/implements/subAgentTools.js";

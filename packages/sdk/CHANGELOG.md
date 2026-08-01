@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.5.0] - 2026-07-29
+
+### 💥 破坏性变更
+
+- **内置工具全部类化** — 17 个内置工具从单例 `CallbackTool` 实例改为类（`CwdTool`、`ReadFileTool`、`WriteFileTool`、`ExecTool` 等，PascalCase 命名），继承新抽象基类 `SdkCallbackTool`。`BUILTIN_TOOLS` 单例注册表替换为 `BUILTIN_TOOL_CLASSES` 类注册表（`Array<new (env: ToolEnv) => SdkCallbackTool>`）
+- **`generateImage` 类化为 `GenerateImageTool`** — 删除工厂函数 `createGenerateImageTool(config)`，构造签名与其它内置工具统一为 `(env: ToolEnv)`。仍按 `config.defaultImageModel` 条件注册，不进入 `BUILTIN_TOOL_CLASSES` 静态注册表
+- **`discoverBuiltinTools` 签名变更** — 从 `discoverBuiltinTools(config: AppConfig)` 改为 `discoverBuiltinTools(env: ToolEnv)`，用 `env` 实例化工具类
+- **`Provider` 新增 `cwd` 与 `env`** — `cwd` 默认 `process.cwd()`，是相对路径解析的基准；`env: ToolEnv`（`{ cwd, config }`）在构造时建立，`refresh()` 用它实例化内置工具。**工具不再依赖全局 `process.cwd()`**，每个 Provider 可绑定不同工作目录
+- **删除会话/草稿产品层** — `Conversation` / `Draft` 类型、`ConversationRepository`、`DraftRepository`、`AutoDraftPlugin` 及其测试全部移除。会话、草稿持久化下放给各端（CLI/Desktop）自行实现（可复用 `EntityRepository`）
+- **`index.ts` 导出变更** — 移除 `Conversation`/`Draft`/`ConversationRepository`/`DraftRepository`/`AutoDraftPlugin`/`BUILTIN_TOOLS`/`execAsyncTool`/`sleepTool`/`createGenerateImageTool`；新增 `ToolEnv`、`SdkCallbackTool`、`BUILTIN_TOOL_CLASSES`、`GenerateImageTool` 及 17 个工具类
+
+### 🚀 新功能
+
+- **`ToolEnv` 接口** — 工具环境 `{ cwd, config }`，在工具构造时注入，作为相对路径解析与配置读取的基准
+- **`SdkCallbackTool` 抽象基类** — `env` 构造注入 + 子类实现 `call()` + `exec()` 桥接 + `resolve()` 相对路径解析（public，便于测试直调）
+
+### 🎯 优化
+
+- **多会话并行支持** — `cwd` 下沉到 Provider（`ToolEnv.cwd`），多个 Provider 可并行服务不同工作目录的会话，互不干扰
+- **工具实例 per-Provider** — 每个 Provider 通过 `discoverBuiltinTools(env)` 实例化自己的一套工具，消除全局单例状态
+
 ## [0.4.0] - 2026-07-29
 
 ### 💥 破坏性变更

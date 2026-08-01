@@ -17,12 +17,12 @@ Desktop ──┘                    │
 ## 模块分层
 
 ```
-types        ← 纯类型，零业务依赖
+types        ← 纯类型，零业务依赖（含 ToolEnv 工具环境）
 config       ← 读写 config.json + 迁移 + 内存缓存 + 原子写入
-crud         ← 实体 CRUD（Endpoints / Models / Agents / Conversations / Draft）
+crud         ← 能力实体 CRUD（Agent 定义等；会话/草稿已下放给各端自行持久化）
 capabilities ← 能力发现与装配（内置 + 用户 + MCP + Skill + SubAgent）
-runtime      ← Provider + 模型工厂 + Agent 组装 + MCP 连接管理 + 任务迁移
-plugin       ← Agent 插件（autoMigrate、autoDraft、autoRefreshTools）
+runtime      ← Provider + 模型工厂 + Agent 组装 + MCP 连接管理 + 任务迁移 + SdkCallbackTool 工具基类
+plugin       ← Agent 插件（autoMigrate、autoRefreshTools）
 shared       ← 日志、错误
 ```
 
@@ -32,14 +32,14 @@ shared       ← 日志、错误
 
 | 实体 | 说明 |
 |------|------|
-| **Provider** | 全局上下文 + 能力注册表，持有配置、路径、模型工厂、MCP 管理器，整合发现 → 过滤 → 实例化 |
+| **Provider** | 全局上下文 + 能力注册表，持有配置、路径（含 `cwd`）、模型工厂、MCP 管理器，整合发现 → 过滤 → 实例化 |
+| **ToolEnv** | 工具环境 `{ cwd, config }`，Provider 实例化内置工具时注入，作为相对路径解析与配置读取的基准 |
+| **SdkCallbackTool** | 内置工具抽象基类：`env` 构造注入 + 子类实现 `call()` + `resolve()` 相对路径解析 |
 | **SdkAgent** | 继承 Core Agent，携带 SDK 元数据，支持 `use()` 插件注册 |
 | **AgentPlugin** | 插件接口（`onInit`, `onBeforeSend`, `onAfterSend`, `onInnerLoopStart`, `onInnerLoopEnd`） |
 | **Endpoint** | API 端点（baseUrl + apiKey） |
 | **Model** | 模型配置，绑定 Endpoint |
 | **SubAgent** | 有 `function` 字段的 Agent，可被其他 Agent 作为工具调用 |
-| **Conversation** | 对话记录 |
-| **Draft** | 当前会话自动保存 |
 
 ## 权限模型
 
@@ -56,10 +56,13 @@ Agent.permissions
 ## 消费模式
 
 ```typescript
-const provider = await Provider.create({ config, ...paths });
+const provider = await Provider.create({
+  config,
+  cwd: "/path/to/workspace", // 每个 Provider 一个工作目录，多会话并行互不干扰
+  ...paths,
+});
 const agent = createAgent(provider, "my-agent");
-agent.use(new AutoMigratePlugin({ maxTokens, migrationAgent, onHandoff }));
-agent.use(new AutoDraftPlugin({ draftsDir, agentId, modelId }));
+agent.use(new AutoMigratePlugin({ maxTokens, migrationAgent, onMigrated }));
 agent.use(new AutoRefreshToolsPlugin());
 await agent.init();
 await agent.send("你好");
@@ -71,14 +74,16 @@ await agent.send("你好");
 |------|------|
 | `types` | ✅ 已实现 — 核心实体、权限模型、MCP 类型完整 |
 | `config` | ✅ 已实现 — ConfigManager + 出厂默认配置 + 一键 bootstrap |
-| `crud` | ✅ 已实现 — Agent / Conversation / Draft 完整 CRUD |
+| `crud` | ✅ 已实现 — Agent 等能力实体 CRUD（会话/草稿由各端自行持久化） |
 | `capabilities` | ✅ 已实现 — 发现 + 权限过滤 + 安全预过滤 + 枚举披露 |
 | `runtime` | ✅ 已实现 — Provider、Capabilities、createAgent、MCP 连接管理、任务迁移 |
-| `plugin` | ✅ 已实现 — AutoMigratePlugin / AutoDraftPlugin / AutoRefreshToolsPlugin |
+| `plugin` | ✅ 已实现 — AutoMigratePlugin / AutoRefreshToolsPlugin |
 | `shared` | ✅ 已实现 — SdkError + 可注入 Logger |
-| 测试 | ✅ 593 个测试，68 个文件，全通过（含真实 API 聊天 e2e） |
+| 测试 | ✅ 409 个测试，47 个文件，全通过（含真实 API 聊天 e2e） |
 
 ## 内置工具
+
+内置工具全部类化（继承 `SdkCallbackTool`），由 Provider 用 `ToolEnv` 实例化——每个 Provider 一套实例，`cwd` 注入，相对路径以 `Provider.cwd` 为基准，不依赖全局 `process.cwd()`。
 
 | 工具 | 说明 |
 |------|------|
@@ -100,7 +105,7 @@ await agent.send("你好");
 | `edit` | 编辑文件中的文本 |
 | `sleep` | 等待指定毫秒数后继续 |
 
-条件注入（需配置 `imageModels`）：
+条件注入（`GenerateImageTool` 需配置 `defaultImageModel` 才注册）：
 
 | 工具 | 说明 |
 |------|------|
@@ -111,7 +116,6 @@ await agent.send("你好");
 | 插件 | 说明 |
 |------|------|
 | `AutoMigratePlugin` | 上下文超限时自动触发任务迁移，生成交接文档，透明替换 Agent |
-| `AutoDraftPlugin` | 每次 `send()` 后自动保存当前消息历史到 draft 文件 |
 | `AutoRefreshToolsPlugin` | 每次 `send()` 前重新扫描文件系统，刷新工具列表 |
 
 ## 设计原则
