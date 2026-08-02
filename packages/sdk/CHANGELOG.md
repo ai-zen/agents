@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.2] - 2026-08-03
+
+### 🚀 新功能
+
+- **`AgentPlugin` 新增 `onInnerLoopsStart` / `onInnerLoopsEnd` 钩子** — 对应 Core 3.2.0 的整组内循环起止钩子（一次 send 各触发一次）。`SdkAgent.send()` 在委托 `super.send()` 前后将这两个钩子包装为插件遍历调用，与单轮 `onInnerLoopStart` / `onInnerLoopEnd` 同构。插件可通过 `ctx` 拿到当前 agent、发送内容与消息快照
+
 ## [0.5.1] - 2026-08-03
 
 ### 🛠 优化

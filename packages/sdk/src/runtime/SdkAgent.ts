@@ -31,6 +31,8 @@ export interface SendContext {
  * onAfterSend:       Agent.send() 返回后调用。可通过 ctx.agent 替换当前 Agent。
  * onInnerLoopStart:  Agent 内循环开始前触发。由 Core Agent 在内循环中调用。
  * onInnerLoopEnd:    Agent 内循环结束后触发。由 Core Agent 在内循环中调用。
+ * onInnerLoopsStart: Agent 整组内循环开始前触发（一次 send 仅一次）。由 Core Agent 在 run() 的 while 循环前调用。
+ * onInnerLoopsEnd:   Agent 整组内循环结束后触发（一次 send 仅一次）。由 Core Agent 在 run() 的 while 循环后调用。
  */
 export interface AgentPlugin {
   /** Agent.init() 时调用，用于异步初始化 */
@@ -43,6 +45,10 @@ export interface AgentPlugin {
   onInnerLoopStart?(ctx: SendContext): Promise<void>;
   /** Agent 内循环结束后触发 */
   onInnerLoopEnd?(ctx: SendContext): Promise<void>;
+  /** Agent 整组内循环开始前触发（一次 send 仅一次） */
+  onInnerLoopsStart?(ctx: SendContext): Promise<void>;
+  /** Agent 整组内循环结束后触发（一次 send 仅一次） */
+  onInnerLoopsEnd?(ctx: SendContext): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -178,9 +184,21 @@ export class SdkAgent extends Agent {
         await plugin.onInnerLoopEnd?.(ctx);
       }
     };
+    this.onInnerLoopsStart = async () => {
+      for (const plugin of this._plugins) {
+        await plugin.onInnerLoopsStart?.(ctx);
+      }
+    };
+    this.onInnerLoopsEnd = async () => {
+      for (const plugin of this._plugins) {
+        await plugin.onInnerLoopsEnd?.(ctx);
+      }
+    };
     await super.send(content);
     this.onInnerLoopStart = undefined;
     this.onInnerLoopEnd = undefined;
+    this.onInnerLoopsStart = undefined;
+    this.onInnerLoopsEnd = undefined;
 
     for (const plugin of this._plugins) {
       await plugin.onAfterSend?.(ctx);
