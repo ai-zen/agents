@@ -1,5 +1,15 @@
 # Changelog
 
+## [3.1.0] - 2026-07-26
+
+### ✨ 新增
+
+- **`Message.id` 字段** — 消息唯一标识，构造函数自动生成（优先 `globalThis.crypto.randomUUID`，无 crypto 的老环境降级为时间戳+随机数，兼容 Node.js 与 Web）。实例构造后 id 全程稳定：流式就地修改不换对象、`JSON.stringify` 落库自动携带、读回保留。接口层面 `id` 为可选（`formatHistory` 发给模型的精简白名单对象不含内部字段，类型兼容）
+
+### 🔧 调整
+
+- **`Message.rewrite` 参数类型由 `Message` 改为 `AgentNS.Message`** — 该方法只读写 content/raw_content，依赖接口而非实现类，消除「精简对象无法传给 rewrite」的类型不匹配
+
 ## [3.0.1] - 2026-07-26
 
 ### ♻️ 重构

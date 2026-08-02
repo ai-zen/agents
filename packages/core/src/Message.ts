@@ -5,6 +5,7 @@ import { PickRequired } from "./Common.js";
  * Represents a message in a AI chat conversation.
  */
 export class Message implements AgentNS.Message {
+  id: string;
   name?: string | undefined;
   raw_content?: string | AgentNS.MessageContentSection[];
   content?: string | AgentNS.MessageContentSection[];
@@ -23,6 +24,7 @@ export class Message implements AgentNS.Message {
    */
   constructor(options: PickRequired<Message | "role">) {
     if (!options.role) throw new Error("Message must have a role");
+    this.id = options.id ?? generateMessageId();
     this.name = options.name;
     this.raw_content = options.raw_content;
     this.content = options.content;
@@ -41,7 +43,7 @@ export class Message implements AgentNS.Message {
    * Rewrite the message. The original content will be stored in `raw_content`.
    */
   static rewrite(
-    message: Message,
+    message: AgentNS.Message,
     newContent: string | AgentNS.MessageContentSection[]
   ) {
     message.raw_content = message.raw_content || message.content;
@@ -105,4 +107,19 @@ export class Message implements AgentNS.Message {
       status: AgentNS.MessageStatus.Pending,
     });
   }
+}
+
+/**
+ * 生成消息唯一 id。core 包需同时兼容 Node.js 与 Web：
+ * - 优先使用全局 crypto.randomUUID（Node 19+ / 现代浏览器均可用）
+ * - 无 crypto 的老环境降级为「时间戳 + 随机数」组合，保证会话内唯一即可
+ */
+function generateMessageId(): string {
+  const c = (
+    globalThis as { crypto?: { randomUUID?: () => string } }
+  ).crypto;
+  if (typeof c?.randomUUID === "function") {
+    return c.randomUUID();
+  }
+  return `msg_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
 }

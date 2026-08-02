@@ -14,6 +14,23 @@ describe("Message", () => {
       expect(msg.status).toBeUndefined();
     });
 
+    it("应自动生成唯一 id", () => {
+      const a = Message.User("a");
+      const b = Message.User("b");
+      expect(a.id).toBeTruthy();
+      expect(typeof a.id).toBe("string");
+      expect(a.id).not.toBe(b.id);
+    });
+
+    it("应保留外部传入的 id", () => {
+      const msg = new Message({
+        role: AgentNS.Role.User,
+        content: "你好",
+        id: "custom-42",
+      });
+      expect(msg.id).toBe("custom-42");
+    });
+
     it("缺少 role 时应抛出错误", () => {
       expect(() => {
         new Message({} as any);
