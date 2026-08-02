@@ -20,6 +20,10 @@ export class AgentContext {
   declare onInnerLoopStart?: () => Promise<void> | void;
   /** 每次内循环结束调用的钩子，可用于后处理 */
   declare onInnerLoopEnd?: () => Promise<void> | void;
+  /** 整组内循环（一次 send，含多轮工具调用）开始前调用的钩子 */
+  declare onInnerLoopsStart?: () => Promise<void> | void;
+  /** 整组内循环（一次 send，含多轮工具调用）结束后调用的钩子 */
+  declare onInnerLoopsEnd?: () => Promise<void> | void;
   /**
    * 当 LLM 调用一个未注册的工具时触发。
    * 返回的字符串将作为工具执行结果返回给 LLM。
@@ -37,6 +41,8 @@ export class AgentContext {
     this.allowJsonParseError = options.allowJsonParseError ?? true;
     if (options.onInnerLoopStart !== undefined) this.onInnerLoopStart = options.onInnerLoopStart;
     if (options.onInnerLoopEnd !== undefined) this.onInnerLoopEnd = options.onInnerLoopEnd;
+    if (options.onInnerLoopsStart !== undefined) this.onInnerLoopsStart = options.onInnerLoopsStart;
+    if (options.onInnerLoopsEnd !== undefined) this.onInnerLoopsEnd = options.onInnerLoopsEnd;
     if (options.onUnknownTool !== undefined) this.onUnknownTool = options.onUnknownTool;
   }
 

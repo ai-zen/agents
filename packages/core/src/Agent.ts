@@ -72,6 +72,11 @@ export class Agent extends AgentContext {
     const allPendingTasks: PendingTask[] = [initialPendingTask];
     let needContinue = true;
 
+    // 整组内循环开始：user + assistant 占位已追加完毕，messages 就绪（一次 send 仅一次）
+    await this.onInnerLoopsStart?.();
+
+    this.events.emit("inner-loops-start", this.messages);
+
     // 内循环
     while (needContinue) {
       needContinue = false;
@@ -148,6 +153,11 @@ export class Agent extends AgentContext {
         this.events.emit("error", error);
       }
     }
+
+    // 整组内循环结束：含多轮工具调用，messages 为完整结果（正常/error/abort 均到达此处）
+    this.events.emit("inner-loops-end", this.messages);
+
+    await this.onInnerLoopsEnd?.();
 
     // 清理所有 pendingTasks
     for (const task of allPendingTasks) {

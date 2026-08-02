@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.0] - 2026-08-03
+
+### ✨ 新增
+
+- **`inner-loops-start` / `inner-loops-end` 事件** — 整组内循环（一次 send，含多轮工具调用）的开始/结束事件，一次 send 各触发一次，携带当前完整 `messages`。与单轮 `inner-loop-start` / `inner-loop-end`（每轮触发一次）通过复数区分：订阅者可拿到「user + assistant 占位已就绪」与「完整结果」两个整轮时机
+- **`onInnerLoopsStart` / `onInnerLoopsEnd` 异步钩子** — 与上述事件同名对应，分别在整组内循环开始前/结束后 `await` 调用（对应单轮钩子 `onInnerLoopStart` / `onInnerLoopEnd`）
+
 ## [3.1.0] - 2026-07-26
 
 ### ✨ 新增

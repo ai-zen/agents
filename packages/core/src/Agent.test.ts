@@ -1103,6 +1103,97 @@ describe("Agent", () => {
       expect(finallyHandler).toHaveBeenCalledTimes(2);
     });
 
+    it("整组内循环事件 inner-loops-start/end 一次 run 各触发一次", async () => {
+      const mockModel = createMockModel([
+        { choices: [{ index: 0, delta: { content: "回复" }, finish_reason: null }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.Stop }] },
+      ]);
+
+      const agent = new Agent({
+        model: mockModel,
+        messages: [Message.System("助手")],
+      });
+      agent.append(Message.Assistant());
+
+      const loopsStart = vi.fn();
+      const loopsEnd = vi.fn();
+      agent.events.on("inner-loops-start", loopsStart);
+      agent.events.on("inner-loops-end", loopsEnd);
+
+      await agent.run();
+
+      expect(loopsStart).toHaveBeenCalledTimes(1);
+      expect(loopsEnd).toHaveBeenCalledTimes(1);
+      // 两个事件都携带当前 messages（start 时消息已就绪，end 时完整结果）
+      expect(loopsStart.mock.calls[0][0]).toBe(agent.messages);
+      expect(loopsEnd.mock.calls[0][0]).toBe(agent.messages);
+    });
+
+    it("多轮工具调用时 inner-loops-start/end 仍只触发一次（区别于每轮的 inner-loop-start/end）", async () => {
+      const tool = new CallbackTool({
+        function: {
+          name: "t",
+          description: "t",
+          parameters: { type: "object", properties: {} },
+        },
+        callback: () => "结果",
+      });
+
+      let callCount = 0;
+      const rounds = [
+        [
+          { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "t", arguments: "{}" } }] }, finish_reason: null }] },
+          { choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.ToolCalls }] },
+        ],
+        [
+          { choices: [{ index: 0, delta: { content: "最终" }, finish_reason: null }] },
+          { choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.Stop }] },
+        ],
+      ];
+
+      const model = {
+        createStream: vi.fn((opts: any) => {
+          opts.onOpen?.();
+          opts.onFinally?.();
+          const q = new AsyncQueue<AgentNS.StreamResponseData>();
+          for (const chunk of rounds[callCount] ?? []) q.push(chunk);
+          callCount++;
+          q.done();
+          return q;
+        }),
+        createCompletion: vi.fn(),
+        code: "mock",
+        title: "Mock",
+        type: ModelType.ChatCompletion,
+        name: "Mock",
+        model_config: {},
+        request_config: { url: "https://test.com", headers: {}, body: {} },
+      } as any;
+
+      const agent = new Agent({
+        model,
+        messages: [Message.System("助手")],
+        tools: [tool],
+      });
+      agent.append(Message.Assistant());
+
+      const loopsStart = vi.fn();
+      const loopsEnd = vi.fn();
+      const loopStart = vi.fn();
+      const loopEnd = vi.fn();
+      agent.events.on("inner-loops-start", loopsStart);
+      agent.events.on("inner-loops-end", loopsEnd);
+      agent.events.on("inner-loop-start", loopStart);
+      agent.events.on("inner-loop-end", loopEnd);
+
+      await agent.run();
+
+      expect(loopsStart).toHaveBeenCalledTimes(1);
+      expect(loopsEnd).toHaveBeenCalledTimes(1);
+      expect(loopStart).toHaveBeenCalledTimes(2);
+      expect(loopEnd).toHaveBeenCalledTimes(2);
+    });
+
     it("触发 error 事件时应携带错误信息", async () => {
       const queue = new AsyncQueue<AgentNS.StreamResponseData>();
       queue.push({ error: { code: "error", message: "测试错误" } });
