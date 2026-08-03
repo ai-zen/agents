@@ -742,8 +742,10 @@ interface AgentPlugin {
   onInit?(): Promise<void>;
   onBeforeSend?(ctx: SendContext): Promise<void>;
   onAfterSend?(ctx: SendContext): Promise<void>;
-  onInnerLoopStart?(ctx: SendContext): Promise<void>;
-  onInnerLoopEnd?(ctx: SendContext): Promise<void>;
+  onInnerLoopStart?(ctx: SendContext): Promise<void>;   // 每轮内循环请求前（Core try 块外，抛错即中断对话）
+  onInnerLoopEnd?(ctx: SendContext): Promise<void>;     // 每轮内循环请求+工具调用后
+  onInnerLoopsStart?(ctx: SendContext): Promise<void>;  // 一次 send 整组内循环开始前
+  onInnerLoopsEnd?(ctx: SendContext): Promise<void>;    // 一次 send 整组内循环结束后
 }
 ```
 
@@ -791,6 +793,38 @@ interface AutoMigrateOptions {
 ```
 
 迁移失败 / 回调抛错 → 不影响流程，原消息不丢失（迁移前仍在 `agent.messages`）。
+
+### 内置插件：ContextGuardPlugin
+
+上下文**安全护栏**，与迁移插件职责分离：迁移处理「正常超限」，护栏处理「严重超限（可能读入超大文件）」。
+
+```typescript
+interface ContextGuardOptions {
+  maxTokens: number;   // 与迁移插件同一告警阈值
+  ratio?: number;      // 越界比例，默认 1.2（+20%）
+}
+```
+
+`onInnerLoopStart` 逻辑（每次内循环**发请求前**检测，Core 里该钩子在 try 块外、`createStream` 前）：
+
+```
+1. 读取 agent.lastUsage?.prompt_tokens；为空（首轮请求前无数据）→ 跳过
+2. promptTokens > maxTokens × ratio → 抛 ContextOverflowError（含 promptTokens/maxTokens/threshold/ratio）
+3. 未超硬上限 → 继续（正常超限交由 AutoMigratePlugin 在范围内迁移）
+```
+
+**为何用 `onInnerLoopStart` 而非 `onAfterSend`/`onInnerLoopEnd`：**
+- 它位于每次「请求前」，且不在 Core `run()` 的 try 块内，**抛错即跳出内循环、直接中断本次 `send()`**，无需改动 Core。
+- 检测依据是上一轮 `usage.prompt_tokens`；首轮请求前无数据自动跳过（须先发出首轮拿到用量）。
+- 超大文件在读入后、紧接着的下一轮请求前即被拦截，不再继续放大上下文。
+
+**推荐配合**（同一 `maxTokens`，区间互补）：
+
+```typescript
+agent.use(new ContextGuardPlugin({ maxTokens }));      // >maxTokens×1.2 → 中断报错
+agent.use(new AutoMigratePlugin({ maxTokens, migrationAgent }));  // [maxTokens, maxTokens×1.2] → 交接迁移
+```
+
 
 ## 15. 任务迁移（TaskMigrationService）
 

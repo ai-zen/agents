@@ -66,6 +66,8 @@ export type { BuildMigrationAgentOptions } from "./runtime/TaskMigrationService.
 export { AutoMigratePlugin } from "./plugin/AutoMigratePlugin.js";
 export type { AutoMigrateOptions } from "./plugin/AutoMigratePlugin.js";
 export { AutoRefreshToolsPlugin } from "./plugin/AutoRefreshToolsPlugin.js";
+export { ContextGuardPlugin } from "./plugin/ContextGuardPlugin.js";
+export type { ContextGuardOptions } from "./plugin/ContextGuardPlugin.js";
 
 // 工具 — 内置工具类 + 动态工具工厂
 export { BUILTIN_TOOL_CLASSES } from "./capabilities/implements/builtin/index.js";
@@ -96,4 +98,4 @@ export { createSubAgentTool } from "./capabilities/implements/subAgentTools.js";
 // 共享
 export { getLogger, setLogger } from "./shared/logger.js";
 export type { Logger, LogFunctions } from "./shared/logger.js";
-export { SdkError } from "./shared/errors.js";
+export { SdkError, ContextOverflowError } from "./shared/errors.js";
