@@ -245,6 +245,12 @@ describe("ConfigManager.bootstrap", () => {
     expect(result.subAgent!.id).toBe(DEFAULT_SUBAGENT_ID);
     await expect(fs.access(join(testDir, "sub-agents", `${DEFAULT_SUBAGENT_ID}.json`))).resolves.toBeUndefined();
 
+    // mcp.json — 默认释放含 socket-pty 的配置
+    const mcp = JSON.parse(await fs.readFile(join(testDir, "mcp.json"), "utf-8"));
+    expect(mcp.mcpServers["socket-pty"]).toBeTruthy();
+    expect(mcp.mcpServers["socket-pty"].command).toBe("npx");
+    expect(mcp.mcpServers["socket-pty"].args).toContain("@ai-zen/socket-pty");
+
     // dirs
     for (const sub of ["agents", "sub-agents", "skills", "tools", "mcp-oauth"]) {
       await expect(fs.access(join(testDir, sub))).resolves.toBeUndefined();
@@ -262,5 +268,54 @@ describe("ConfigManager.bootstrap", () => {
 
     const result = await mgr.bootstrap();
     expect(result.config.defaultModel).toBe("my-custom-model");
+
+    // 已有 mcp.json 不被覆盖
+    const mcp = JSON.parse(await fs.readFile(join(testDir, "mcp.json"), "utf-8"));
+    expect(mcp.mcpServers["socket-pty"]).toBeTruthy();
+  });
+});
+
+// ==================================================================
+// 默认 MCP 配置
+// ==================================================================
+
+describe("ConfigManager.ensureDefaultMcpConfig", () => {
+  let testDir: string;
+
+  afterEach(async () => {
+    if (testDir) await fs.rm(testDir, { recursive: true, force: true });
+  });
+
+  it("mcp.json 不存在 → 释放默认配置（含 socket-pty）", async () => {
+    testDir = await tempDir();
+    const mgr = makeManager(testDir);
+
+    const cfg = await mgr.ensureDefaultMcpConfig();
+
+    expect(cfg.mcpServers).toBeTruthy();
+    expect((cfg.mcpServers as Record<string, any>)["socket-pty"]).toBeTruthy();
+    await expect(fs.access(join(testDir, "mcp.json"))).resolves.toBeUndefined();
+  });
+
+  it("mcp.json 已存在 → 不覆盖，返回已有内容", async () => {
+    testDir = await tempDir();
+    const mgr = makeManager(testDir);
+    const custom = { mcpServers: { "my-server": { type: "stdio", command: "my-cmd" } } };
+    await fs.writeFile(join(testDir, "mcp.json"), JSON.stringify(custom));
+
+    const cfg = await mgr.ensureDefaultMcpConfig();
+
+    expect((cfg.mcpServers as Record<string, any>)["my-server"]).toBeTruthy();
+    expect((cfg.mcpServers as Record<string, any>)["socket-pty"]).toBeUndefined();
+  });
+
+  it("writeMcpConfig/readMcpConfig 往返", async () => {
+    testDir = await tempDir();
+    const mgr = makeManager(testDir);
+
+    await mgr.writeMcpConfig({ mcpServers: { x: { type: "stdio", command: "cmd" } } });
+    const read = await mgr.readMcpConfig();
+
+    expect(read.mcpServers["x"]).toBeTruthy();
   });
 });

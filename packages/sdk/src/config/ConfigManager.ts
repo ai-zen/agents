@@ -7,6 +7,7 @@ import {
   DEFAULT_SUBAGENT_ID,
   DEFAULT_SUBAGENT_DEFINITION,
   DEFAULT_APP_CONFIG,
+  DEFAULT_MCP_CONFIG,
   CONFIG_SUB_DIRS,
 } from "./constants.js";
 
@@ -168,7 +169,7 @@ export class ConfigManager {
   }
 
   /**
-   * 一键初始化：目录 + config.json + 默认 Agent + 默认 SubAgent。
+   * 一对初始化：目录 + config.json + 默认 Agent + 默认 SubAgent + 默认 MCP。
    * 已有文件不会被覆盖。
    */
   async bootstrap(): Promise<{
@@ -180,7 +181,74 @@ export class ConfigManager {
     const config = await this.ensureDefaultConfig();
     const agent = await this.ensureDefaultAgent();
     const subAgent = await this.ensureDefaultSubAgent();
+    await this.ensureDefaultMcpConfig();
     return { config, agent, subAgent };
+  }
+
+  // -----------------------------------------------------------------------
+  // MCP 配置（~/.ai-zen/mcp.json）
+  // -----------------------------------------------------------------------
+
+  /** mcp.json 路径：{basePath}/mcp.json */
+  get mcpPath(): string {
+    return join(this.basePath, "mcp.json");
+  }
+
+  /**
+   * 确保 basePath/mcp.json 存在。不存在时写入出厂默认 MCP 配置（含 socket-pty）。
+   * 已有文件不被覆盖，尊重用户已配置的 MCP 服务器。
+   * @returns 返回当前生效的 MCP 配置原始内容
+   */
+  async ensureDefaultMcpConfig(): Promise<Record<string, unknown>> {
+    const mcpPath = this.mcpPath;
+    try {
+      await fs.access(mcpPath);
+    } catch {
+      // 不存在 → 写入默认
+      await this.ensureDirs();
+      await this.writeJson(mcpPath, DEFAULT_MCP_CONFIG);
+      return { ...DEFAULT_MCP_CONFIG };
+    }
+    // 已存在 → 不覆盖，读取返回
+    return JSON.parse(await fs.readFile(mcpPath, "utf-8")) as Record<string, unknown>;
+  }
+
+  /**
+   * 读取 basePath/mcp.json，不存在时返回空结构。
+   */
+  async readMcpConfig(): Promise<{ mcpServers: Record<string, unknown> }> {
+    const mcpPath = this.mcpPath;
+    try {
+      await fs.access(mcpPath);
+    } catch {
+      return { mcpServers: {} };
+    }
+    try {
+      return JSON.parse(await fs.readFile(mcpPath, "utf-8")) as { mcpServers: Record<string, unknown> };
+    } catch {
+      return { mcpServers: {} };
+    }
+  }
+
+  /**
+   * 原子写入 mcp.json。
+   */
+  async writeMcpConfig(config: { mcpServers: Record<string, unknown> }): Promise<void> {
+    await this.ensureDirs();
+    await this.writeJson(this.mcpPath, config);
+  }
+
+  /** 原子写 JSON 文件（先写 .tmp 再 rename，避免半成品）。 */
+  private async writeJson<T>(path: string, data: T): Promise<void> {
+    const dir = dirname(path);
+    try {
+      await fs.access(dir);
+    } catch {
+      await fs.mkdir(dir, { recursive: true });
+    }
+    const tmpPath = path + ".tmp";
+    await fs.writeFile(tmpPath, JSON.stringify(data, null, 2) + "\n", "utf-8");
+    await fs.rename(tmpPath, path);
   }
 }
 
@@ -190,5 +258,6 @@ export {
   DEFAULT_SUBAGENT_ID,
   DEFAULT_SUBAGENT_DEFINITION,
   DEFAULT_APP_CONFIG,
+  DEFAULT_MCP_CONFIG,
   CONFIG_SUB_DIRS,
 } from "./constants.js";
