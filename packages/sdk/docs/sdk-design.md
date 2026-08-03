@@ -517,9 +517,10 @@ MCP 和 Skill 采用**惰性加载**：装配时不直接注册具体工具，�
 
 ### load_mcp
 
-- 参数：`server`（枚举 = 所有允许的 server）
+- 参数：`server`（枚举 = 所有允许的 server，附各 server 描述）
 - 返回：结构化 JSON `{ tools, resources }`（tools 含完整 `inputSchema`，resources 含 uri/name/description/mimeType）
 - 已连接 → 直接返回当前清单（`touch` 续期）；未连接 → `mcpManager.connect()`；失败 → 错误信息
+- `description`：server 描述在 `server` 参数枚举中呈现，供 LLM 参考（对齐 `load_skill`，缺失时默认空白）
 
 ### call_mcp_tool
 
@@ -559,7 +560,8 @@ MCP 和 Skill 采用**惰性加载**：装配时不直接注册具体工具，�
 
 ### MCP（mcp.ts）
 
-- 格式：`{ "mcpServers": { id: { type?, command?, args?, env?, url?, headers?, disabled? } } }`
+- 格式：`{ "mcpServers": { id: { type?, command?, args?, env?, url?, headers?, disabled?, description? } } }`
+- `description`：服务器描述，经 `load_mcp` **透传呈现给 LLM 参考**（拼接进 `server` 参数枚举，对齐 `load_skill`；非连接必需，缺失时默认空白）
 - transport 推断：`type`/`transport`/`transportType` 优先，否则有 `command` → stdio、有 `url` → http
 - `disabled: true` 跳过；解析失败记日志并跳过
 
@@ -638,6 +640,9 @@ class ConfigManager {
   async ensureDefaultConfig(): Promise<AppConfig>;        // 存在则读，否则写默认
   async ensureDefaultAgent(): Promise<AgentDefinition | null>;  // agents/ 为空才写默认
   async ensureDefaultSubAgent(): Promise<AgentDefinition | null>;
+  async readMcpConfig(): Promise<{ mcpServers: Record<string, unknown> }>;   // 无文件返回空 mcpServers
+  async writeMcpConfig(config: { mcpServers: Record<string, unknown> }): Promise<void>;  // 原子写入 mcp.json
+  async ensureDefaultMcpConfig(): Promise<void>;  // mcp.json 不存在才写 DEFAULT_MCP_CONFIG
   async bootstrap(): Promise<{ config, agent, subAgent }>;      // 一键初始化
 }
 ```
@@ -649,6 +654,7 @@ class ConfigManager {
 | `DEFAULT_APP_CONFIG` | 预置端点（OpenAI / 智谱 / DeepSeek）+ 6 个模型 + 3 个图片模型 + 默认选项 |
 | `DEFAULT_AGENT_ID` / `DEFAULT_AGENT_DEFINITION` | 默认 Agent（id=`default`，四维全开，六条行为原则） |
 | `DEFAULT_SUBAGENT_ID` / `DEFAULT_SUBAGENT_DEFINITION` | 默认通用助手 SubAgent（id=`sub-agent-default`，`subagents: deny` 防递归） |
+| `DEFAULT_MCP_CONFIG` | 出厂默认 MCP 服务器（socket-pty 终端），首启写入 `~/.ai-zen/mcp.json`，已存在则不覆盖 |
 | `CONFIG_SUB_DIRS` | 标准共享子目录：`agents` / `sub-agents` / `skills` / `tools` / `mcp-oauth` |
 
 设计决策：

@@ -25,6 +25,12 @@ export function createLoadMcpTool(
   const ids = filteredMcps.map((s) => s.id);
   const param = createDisclosureParam(ids, "选择一个 MCP 服务器", EMPTY_HINT);
 
+  // 拼接各 MCP 服务器的描述供 LLM 参考（对齐 load_skill 的处理方式）
+  const mcpDescriptions = filteredMcps
+    .map((s) => `  - ${s.id}: ${s.description || "无描述"}`)
+    .join("\n");
+  const serverIdDescription = `${param.description}\n\n各 MCP 服务器说明：\n${mcpDescriptions || "  无可用 MCP 服务器"}`;
+
   return new CallbackTool({
     function: {
       name: "load_mcp",
@@ -34,7 +40,7 @@ export function createLoadMcpTool(
         properties: {
           server: {
             type: "string",
-            description: param.description,
+            description: serverIdDescription,
             ...(param.enum ? { enum: param.enum } : {}),
           },
         },

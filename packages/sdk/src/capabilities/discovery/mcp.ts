@@ -18,6 +18,7 @@ function normalizeConfig(id: string, raw: Record<string, unknown>): McpServerCon
   const config: McpServerConfig = {
     id,
     transport,
+    description: raw.description as string | undefined,
     command: raw.command as string | undefined,
     args: raw.args as string[] | undefined,
     env: raw.env as Record<string, string> | undefined,

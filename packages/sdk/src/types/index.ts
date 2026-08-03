@@ -117,6 +117,8 @@ export interface McpServerConfig {
   transport: "stdio" | "http" | "sse";
   /** 是否禁用，默认为 false */
   disabled?: boolean;
+  /** 服务器描述（供 load_mcp 呈现给 LLM，非连接必需） */
+  description?: string;
   // stdio
   command?: string;
   args?: string[];

@@ -17,8 +17,8 @@ function mockManager(overrides?: Partial<McpConnectionManager>): McpConnectionMa
 }
 
 const mcps: McpServerConfig[] = [
-  { id: "github", name: "GitHub", transport: "stdio", command: "gh" },
-  { id: "slack", name: "Slack", transport: "http", url: "https://slack.example.com" },
+  { id: "github", name: "GitHub", description: "GitHub 文件与仓库工具", transport: "stdio", command: "gh" },
+  { id: "slack", name: "Slack", description: "Slack 消息工具", transport: "http", url: "https://slack.example.com" },
 ];
 
 describe("createLoadMcpTool", () => {
@@ -28,6 +28,11 @@ describe("createLoadMcpTool", () => {
     expect(tool.function.name).toBe("load_mcp");
     expect(tool.function.parameters.properties.server.enum).toEqual(["github", "slack"]);
     expect(tool.function.parameters.required).toContain("server");
+    // description 透传进参数描述，供 LLM 参考（对齐 load_skill）
+    const serverDesc = tool.function.parameters.properties.server.description as string;
+    expect(serverDesc).toContain("github: GitHub 文件与仓库工具");
+    expect(serverDesc).toContain("slack: Slack 消息工具");
+    expect(serverDesc).toContain("各 MCP 服务器说明");
   });
 
   it("服务器不存在时返回错误", async () => {

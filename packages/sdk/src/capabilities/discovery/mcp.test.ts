@@ -105,6 +105,23 @@ describe("discoverMcpServers", () => {
     expect(result).toHaveLength(0);
   });
 
+  it("透传 description 字段", async () => {
+    writeFileSync(join(dir, "mcp.json"), JSON.stringify({
+      mcpServers: {
+        socketPty: {
+          type: "stdio",
+          command: "npx",
+          args: ["-y", "@ai-zen/socket-pty", "mcp"],
+          description: "可托管的伪终端（pty）",
+        },
+      },
+    }, null, 2));
+
+    const result = await discoverMcpServers([join(dir, "mcp.json")]);
+    expect(result).toHaveLength(1);
+    expect(result[0].description).toBe("可托管的伪终端（pty）");
+  });
+
   it("跳过 disabled: true 的 server", async () => {
     writeMcpConfig("mcp.json", {
       active: { type: "stdio", command: "active-mcp" },
