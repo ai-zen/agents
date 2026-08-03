@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.3] - 2026-08-05
+
+### 🚀 新功能
+
+- **初始化时默认释放含 socket-pty 的 mcp.json** — `ConfigManager.bootstrap()` 新增 `ensureDefaultMcpConfig()`，首启在 `~/.ai-zen/mcp.json` 写入默认 MCP 配置（含 socket-pty 终端 server，`command: npx -y @ai-zen/socket-pty mcp`），文件已存在则幂等不覆盖；新增 `readMcpConfig()` / `writeMcpConfig()` 读写方法；新增并导出 `DEFAULT_MCP_CONFIG` 常量
+- **`load_mcp` 透传 server description** — `McpServerConfig` 新增 `description?` 字段，`discoverMcpServers` 解析不再丢弃；`load_mcp` 的 `server` 参数枚举按 `- {id}: {description}` 拼接各 server 说明供 LLM 参考（与 `load_skill` 同构）
+- **新增 `ContextGuardPlugin` 上下文安全护栏** — 在每次内循环**发请求前**（`onInnerLoopStart`，Core 中位于 try 块外）检测上一轮 `usage.prompt_tokens`，超过 `maxTokens × ratio`（默认 1.2，即超阈 20%）时抛出 `ContextOverflowError` 中断对话，防止读入超大文件导致上下文失控。与 `AutoMigratePlugin` 职责分离、区间互补；无需改动 Core
+
+### 🆕 新增导出
+
+- `DEFAULT_MCP_CONFIG`（constants）、`ContextGuardPlugin`、`ContextOverflowError`
+
 ## [0.5.2] - 2026-08-03
 
 ### 🚀 新功能
