@@ -17,10 +17,10 @@ export class ExecTool extends SdkCallbackTool {
             },
             timeout: {
               type: "number",
-              description: "超时时间（毫秒），超时后会终止进程。默认无超时。建议长时间运行的命令使用 exec_async 异步执行。",
+              description: "超时时间（毫秒），必填。超时后会终止进程；超过该时长仍未完成即视为超时并终止。建议长时间运行的命令使用 exec_async 异步执行。",
             },
           },
-          required: ["command"],
+          required: ["command", "timeout"],
           additionalProperties: false,
         },
       },
@@ -28,24 +28,40 @@ export class ExecTool extends SdkCallbackTool {
     });
   }
 
-  async call(input: { command: string; timeout?: number }): Promise<string> {
+  async call(input: { command: string; timeout: number }): Promise<string> {
     const command = input.command;
-    const timeout = input.timeout;
+    const { timeout } = input;
 
-    const result = await new Promise<{ stdout: string; stderr: string; exitCode: number | null; killed?: boolean }>(
+    // 运行时双校验：timeout 必填且必须为正数
+    if (typeof timeout !== "number" || !Number.isFinite(timeout) || timeout <= 0) {
+      throw new Error(
+        `exec: 参数 timeout 为必填项，且必须是正数（毫秒），当前值: ${JSON.stringify(timeout)}`,
+      );
+    }
+
+    const result = await new Promise<{
+      stdout: string;
+      stderr: string;
+      exitCode: number | null;
+      killed: boolean;
+      terminated?: "timeout";
+    }>(
       (resolve) => {
         const child = exec(
           command,
           {
             cwd: this.env.cwd,
-            timeout: timeout && timeout > 0 ? timeout : undefined,
+            timeout,
           },
           (error, stdout, stderr) => {
+            const killed = error?.killed ?? false;
             resolve({
               stdout,
               stderr,
               exitCode: error?.code ?? (error ? 1 : null),
-              killed: error?.killed ?? false,
+              killed,
+              // 明确告知 agent 命令是因超时被终止（Node 不会自动在 stderr 写入该提示）
+              terminated: killed ? "timeout" : undefined,
             });
           },
         );

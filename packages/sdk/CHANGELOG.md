@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.4] - 2026-08-05
+
+### 🚀 新功能
+
+- **`ExecAsyncTool`（exec_async）统一走 shell 解析** — 移除 Unix 平台手动分词逻辑，所有平台均经 `spawn(command, [], { shell: true })` 执行。工具描述明确告知 agent：其本身不捕获输出，如需留存/查看输出可在命令中使用 shell 重定向写入文件（`>` / `>>`），并支持管道（`|`）等 shell 语法
+
+### 🎯 优化
+
+- **`ExecTool`（exec）的 `timeout` 改为必填** — schema `required` 由 `["command"]` 扩为 `["command", "timeout"]`，`call()` 类型签名 `timeout: number`（必填），并在运行时双校验（缺失/非正数/非有限数即抛错）。`timeout` 必填后，命令始终受超时保护，避免无超时长跑
+- **超时原因明确告知 agent** — `exec` 超时被终止（`error.killed` 为 true）时返回结构新增 `terminated: "timeout"` 字段。弥补 Node 不会自动在 stderr 写入超时提示的限制，使 agent 能明确判断命令因超时被终止，从而灵活应对
+
 ## [0.5.3] - 2026-08-05
 
 ### 🚀 新功能

@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { existsSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ExecAsyncTool } from "./ExecAsyncTool.js";
 import { makeEnv } from "./test-helpers.js";
 
@@ -51,5 +54,25 @@ describe("ExecAsyncTool", () => {
     });
     const parsed = JSON.parse(result as string);
     expect(parsed.success).toBe(true);
+  });
+
+  it("命令经 shell 解析，支持重定向到文件", async () => {
+    const tool = new ExecAsyncTool(makeEnv());
+    const outputFile = join(tmpdir(), `exec-async-redirect-${Date.now()}.txt`);
+    try {
+      const cmd =
+        process.platform === "win32"
+          ? `echo redirected > ${outputFile}`
+          : `echo redirected > ${outputFile}`;
+      const result = await tool.call({ command: cmd });
+      const parsed = JSON.parse(result as string);
+      expect(parsed.success).toBe(true);
+
+      // 重定向由 shell 立即完成，等待进程落盘后断言文件生成
+      await new Promise((r) => setTimeout(r, 300));
+      expect(existsSync(outputFile)).toBe(true);
+    } finally {
+      if (existsSync(outputFile)) unlinkSync(outputFile);
+    }
   });
 });

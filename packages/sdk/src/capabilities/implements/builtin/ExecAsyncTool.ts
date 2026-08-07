@@ -8,7 +8,7 @@ export class ExecAsyncTool extends SdkCallbackTool {
       function: {
         name: "exec_async",
         description:
-          "异步执行命令，启动程序后立即返回，不等待执行结果。适用于启动长期运行的进程（如服务器、监听程序、GUI应用等）或不需要等待结果的命令。注意：该工具不会捕获命令的输出，如果需要获取输出请使用 exec。",
+          "异步执行命令，启动程序后立即返回，不等待执行结果。适用于启动长期运行的进程（如服务器、监听程序、GUI应用等）或不需要等待结果的命令。注意：该工具本身不捕获命令的输出；若需获取/留存输出，可在命令中使用 shell 重定向写入文件（如 `> /path/file`，支持 `>>` 追加、`|` 管道）。命令经 shell 解析执行。",
         parameters: {
           type: "object",
           properties: {
@@ -39,60 +39,15 @@ export class ExecAsyncTool extends SdkCallbackTool {
     const cwd = input.cwd ? this.resolve(input.cwd) : this.env.cwd;
     const detached = input.detached ?? false;
 
-    // Windows 用 shell 模式，其他平台直接 spawn 避免 shell 安全问题
-    const useShell = process.platform === "win32";
-
+    // 统一走 shell：允许 shell 语法（重定向 > / >>、管道 | 等）
     return new Promise<string>((resolve) => {
-      let child: ReturnType<typeof spawn>;
-
-      if (useShell) {
-        child = spawn(command, [], {
-          cwd,
-          detached,
-          stdio: "ignore",
-          shell: true,
-          windowsHide: true,
-        });
-      } else {
-        // Unix: 解析命令和参数，直接 spawn
-        const args: string[] = [];
-        let current = "";
-        let inQuote: string | null = null;
-
-        for (const ch of command) {
-          if (inQuote) {
-            if (ch === "\\") {
-              current += command[command.indexOf(ch) + 1] ?? "";
-              continue;
-            }
-            if (ch === inQuote) {
-              inQuote = null;
-              if (current) args.push(current);
-              current = "";
-              continue;
-            }
-            current += ch;
-          } else {
-            if (ch === '"' || ch === "'") {
-              inQuote = ch;
-            } else if (ch === " ") {
-              if (current) {
-                args.push(current);
-                current = "";
-              }
-            } else {
-              current += ch;
-            }
-          }
-        }
-        if (current) args.push(current);
-
-        child = spawn(args[0]!, args.slice(1), {
-          cwd,
-          detached,
-          stdio: "ignore",
-        });
-      }
+      const child = spawn(command, [], {
+        cwd,
+        detached,
+        stdio: "ignore",
+        shell: true,
+        windowsHide: true,
+      });
 
       let resolved = false;
 
