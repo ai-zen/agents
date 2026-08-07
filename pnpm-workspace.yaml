@@ -10,4 +10,9 @@ onlyBuiltDependencies:
   - esbuild
   - '@parcel/watcher'
 overrides:
-  postcss: ^8.5.15
+  '@hono/node-server': ^2.0.5
+  brace-expansion: ^5.0.9
+  fast-uri: ^4.1.2
+  hono: ^4.12.34
+  ip-address: ^10.4.0
+  postcss: ^8.5.23
