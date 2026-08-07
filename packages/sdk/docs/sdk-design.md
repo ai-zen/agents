@@ -399,8 +399,8 @@ export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> 
 | `cwd` | 获取当前工作目录（`env.cwd`） |
 | `readFile` | 读取文件（>300KB 拒绝） |
 | `writeFile` | 写入文件（自动建父目录） |
-| `exec` | 执行命令（支持 `timeout`，`cwd` 为 `env.cwd`） |
-| `exec_async` | 异步执行命令，启动后立即返回（Windows 走 shell） |
+| `exec` | 执行命令（`timeout` 必填，超时被终止时返回 `terminated: "timeout"` 明确告知 agent；`cwd` 为 `env.cwd`） |
+| `exec_async` | 异步执行命令，启动后立即返回；全平台经 shell 解析，支持重定向（`>` / `>>`）、管道（`|`）等 shell 语法 |
 | `mkdir` | 创建目录（`recursive`） |
 | `rm` | 删除文件或目录 |
 | `glob` | glob 模式扫描（`path` 参数 resolve 到 `env.cwd`） |
