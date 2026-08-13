@@ -121,7 +121,7 @@ Conditionally injected (registered only when `defaultImageModel` is configured):
 
 ## Design Principles
 
-See the project-root [`GOAL.md`](../../GOAL.md):
+See the project-root [`PRINCIPLES.md`](../../PRINCIPLES.md):
 
 1. Logical consistency
 2. Design first, documentation as the source of truth

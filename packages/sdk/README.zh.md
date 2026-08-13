@@ -120,7 +120,7 @@ await agent.send("你好");
 
 ## 设计原则
 
-参见项目根 [`GOAL.md`](../../GOAL.md)：
+参见项目根 [`PRINCIPLES.md`](../../PRINCIPLES.md)：
 
 1. 逻辑自洽
 2. 设计为先，文档为准
