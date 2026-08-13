@@ -2,7 +2,7 @@
   "name": "@ai-zen/agents-workspace",
   "private": true,
   "version": "2.0.0",
-  "description": "",
+  "description": "AI-Zen Agents — modular LLM agent framework monorepo (pnpm workspace)",
   "scripts": {
     "build-core": "pnpm --filter @ai-zen/agents-core build",
     "build-sdk": "pnpm --filter @ai-zen/agents-sdk build",

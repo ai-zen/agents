@@ -1,180 +1,187 @@
 # Changelog
 
+## [0.5.5] - 2026-08-13
+
+### 📄 Docs
+
+- **README translated to English** — the main `README.md` is now English-first, with the original Chinese content preserved as `README.zh.md`
+- **Package metadata standardized** — `description` unified to English across packages
+
 ## [0.5.4] - 2026-08-05
 
-### 🚀 新功能
+### 🚀 New Features
 
-- **`ExecAsyncTool`（exec_async）统一走 shell 解析** — 移除 Unix 平台手动分词逻辑，所有平台均经 `spawn(command, [], { shell: true })` 执行。工具描述明确告知 agent：其本身不捕获输出，如需留存/查看输出可在命令中使用 shell 重定向写入文件（`>` / `>>`），并支持管道（`|`）等 shell 语法
+- **`ExecAsyncTool` (exec_async) now uniformly uses shell parsing** — removed the manual word-splitting logic on Unix; all platforms now execute via `spawn(command, [], { shell: true })`. The tool description explicitly tells the agent it does not capture output itself; to retain/inspect output, use shell redirection to a file (`>` / `>>`) in the command, and shell syntax such as pipes (`|`) is supported
 
-### 🎯 优化
+### 🎯 Optimized
 
-- **`ExecTool`（exec）的 `timeout` 改为必填** — schema `required` 由 `["command"]` 扩为 `["command", "timeout"]`，`call()` 类型签名 `timeout: number`（必填），并在运行时双校验（缺失/非正数/非有限数即抛错）。`timeout` 必填后，命令始终受超时保护，避免无超时长跑
-- **超时原因明确告知 agent** — `exec` 超时被终止（`error.killed` 为 true）时返回结构新增 `terminated: "timeout"` 字段。弥补 Node 不会自动在 stderr 写入超时提示的限制，使 agent 能明确判断命令因超时被终止，从而灵活应对
+- **`ExecTool` (exec) `timeout` is now required** — schema `required` expanded from `["command"]` to `["command", "timeout"]`; the `call()` type signature is `timeout: number` (required), with double validation at runtime (throws on missing / non-positive / non-finite). With `timeout` required, commands are always protected by a timeout and cannot run indefinitely
+- **Timeout reason clearly reported to the agent** — when `exec` is killed by a timeout (`error.killed` is `true`), the returned structure adds a `terminated: "timeout"` field. This compensates for Node not automatically writing a timeout notice to stderr, letting the agent clearly determine that the command was terminated by a timeout and respond accordingly
 
 ## [0.5.3] - 2026-08-05
 
-### 🚀 新功能
+### 🚀 New Features
 
-- **初始化时默认释放含 socket-pty 的 mcp.json** — `ConfigManager.bootstrap()` 新增 `ensureDefaultMcpConfig()`，首启在 `~/.ai-zen/mcp.json` 写入默认 MCP 配置（含 socket-pty 终端 server，`command: npx -y @ai-zen/socket-pty mcp`），文件已存在则幂等不覆盖；新增 `readMcpConfig()` / `writeMcpConfig()` 读写方法；新增并导出 `DEFAULT_MCP_CONFIG` 常量
-- **`load_mcp` 透传 server description** — `McpServerConfig` 新增 `description?` 字段，`discoverMcpServers` 解析不再丢弃；`load_mcp` 的 `server` 参数枚举按 `- {id}: {description}` 拼接各 server 说明供 LLM 参考（与 `load_skill` 同构）
-- **新增 `ContextGuardPlugin` 上下文安全护栏** — 在每次内循环**发请求前**（`onInnerLoopStart`，Core 中位于 try 块外）检测上一轮 `usage.prompt_tokens`，超过 `maxTokens × ratio`（默认 1.2，即超阈 20%）时抛出 `ContextOverflowError` 中断对话，防止读入超大文件导致上下文失控。与 `AutoMigratePlugin` 职责分离、区间互补；无需改动 Core
+- **Default mcp.json with socket-pty released on init** — `ConfigManager.bootstrap()` adds `ensureDefaultMcpConfig()`, which on first run writes a default MCP config (incl. the socket-pty terminal server, `command: npx -y @ai-zen/socket-pty mcp`) to `~/.ai-zen/mcp.json`; idempotent, does not overwrite if the file exists. Added `readMcpConfig()` / `writeMcpConfig()` methods, and exported `DEFAULT_MCP_CONFIG` constant
+- **`load_mcp` passes through server description** — `McpServerConfig` gains an optional `description?` field, no longer discarded by `discoverMcpServers`; the `server` parameter enum in `load_mcp` is built as `- {id}: {description}` so the LLM can see each server's description (isomorphic with `load_skill`)
+- **New `ContextGuardPlugin` context safety guard** — before each inner loop's request (`onInnerLoopStart`, outside the try block in Core), checks the previous round's `usage.prompt_tokens`; when it exceeds `maxTokens × ratio` (default 1.2, i.e. 20% over threshold), throws `ContextOverflowError` to interrupt the conversation, preventing context runaway from reading oversized files. Responsibilities are separated from `AutoMigratePlugin` and the ranges complement each other; no Core changes needed
 
-### 🆕 新增导出
+### 🆕 New Exports
 
-- `DEFAULT_MCP_CONFIG`（constants）、`ContextGuardPlugin`、`ContextOverflowError`
+- `DEFAULT_MCP_CONFIG` (constants), `ContextGuardPlugin`, `ContextOverflowError`
 
 ## [0.5.2] - 2026-08-03
 
-### 🚀 新功能
+### 🚀 New Features
 
-- **`AgentPlugin` 新增 `onInnerLoopsStart` / `onInnerLoopsEnd` 钩子** — 对应 Core 3.2.0 的整组内循环起止钩子（一次 send 各触发一次）。`SdkAgent.send()` 在委托 `super.send()` 前后将这两个钩子包装为插件遍历调用，与单轮 `onInnerLoopStart` / `onInnerLoopEnd` 同构。插件可通过 `ctx` 拿到当前 agent、发送内容与消息快照
+- **`AgentPlugin` gains `onInnerLoopsStart` / `onInnerLoopsEnd` hooks** — corresponding to Core 3.2.0's whole-group inner-loop start/end hooks (each fires once per `send`). `SdkAgent.send()` wraps these two hooks into plugin iteration before/after delegating to `super.send()`, isomorphic with the per-round `onInnerLoopStart` / `onInnerLoopEnd`. Plugins can access the current agent, the sent content, and the message snapshot via `ctx`
 
 ## [0.5.1] - 2026-08-03
 
-### 🛠 优化
+### 🛠 Optimized
 
-- **依赖 `@ai-zen/agents-core` 升级并改为范围版本** — 从 `workspace:*`（发布时替换为精确版本 `3.0.1`）改为 `workspace:^`（发布为 `^3.1.0`）。core 3.1.0 起 `Message` 构造自动生成 `id`，SDK 透传的消息随之携带稳定 id；范围版本使 core 后续 minor/patch 升级不再需要 SDK 单独发版跟进
+- **`@ai-zen/agents-core` dependency upgraded and switched to a range version** — from `workspace:*` (replaced with the exact version `3.0.1` at publish time) to `workspace:^` (published as `^3.1.0`). Since core 3.1.0, `Message` auto-generates an `id` in the constructor, so messages passed through the SDK carry a stable id; the range version means subsequent core minor/patch upgrades no longer require a separate SDK release
 
 ## [0.5.0] - 2026-07-29
 
-### 💥 破坏性变更
+### 💥 Breaking Changes
 
-- **内置工具全部类化** — 17 个内置工具从单例 `CallbackTool` 实例改为类（`CwdTool`、`ReadFileTool`、`WriteFileTool`、`ExecTool` 等，PascalCase 命名），继承新抽象基类 `SdkCallbackTool`。`BUILTIN_TOOLS` 单例注册表替换为 `BUILTIN_TOOL_CLASSES` 类注册表（`Array<new (env: ToolEnv) => SdkCallbackTool>`）
-- **`generateImage` 类化为 `GenerateImageTool`** — 删除工厂函数 `createGenerateImageTool(config)`，构造签名与其它内置工具统一为 `(env: ToolEnv)`。仍按 `config.defaultImageModel` 条件注册，不进入 `BUILTIN_TOOL_CLASSES` 静态注册表
-- **`discoverBuiltinTools` 签名变更** — 从 `discoverBuiltinTools(config: AppConfig)` 改为 `discoverBuiltinTools(env: ToolEnv)`，用 `env` 实例化工具类
-- **`Provider` 新增 `cwd` 与 `env`** — `cwd` 默认 `process.cwd()`，是相对路径解析的基准；`env: ToolEnv`（`{ cwd, config }`）在构造时建立，`refresh()` 用它实例化内置工具。**工具不再依赖全局 `process.cwd()`**，每个 Provider 可绑定不同工作目录
-- **删除会话/草稿产品层** — `Conversation` / `Draft` 类型、`ConversationRepository`、`DraftRepository`、`AutoDraftPlugin` 及其测试全部移除。会话、草稿持久化下放给各端（CLI/Desktop）自行实现（可复用 `EntityRepository`）
-- **`index.ts` 导出变更** — 移除 `Conversation`/`Draft`/`ConversationRepository`/`DraftRepository`/`AutoDraftPlugin`/`BUILTIN_TOOLS`/`execAsyncTool`/`sleepTool`/`createGenerateImageTool`；新增 `ToolEnv`、`SdkCallbackTool`、`BUILTIN_TOOL_CLASSES`、`GenerateImageTool` 及 17 个工具类
+- **All built-in tools are now classes** — the 17 built-in tools changed from singleton `CallbackTool` instances to classes (`CwdTool`, `ReadFileTool`, `WriteFileTool`, `ExecTool`, etc., PascalCase naming) extending the new abstract base `SdkCallbackTool`. The `BUILTIN_TOOLS` singleton registry was replaced with the `BUILTIN_TOOL_CLASSES` class registry (`Array<new (env: ToolEnv) => SdkCallbackTool>`)
+- **`generateImage` classed as `GenerateImageTool`** — removed the factory function `createGenerateImageTool(config)`; constructor signature unified with other built-in tools as `(env: ToolEnv)`. Still conditionally registered via `config.defaultImageModel`, not part of the static `BUILTIN_TOOL_CLASSES` registry
+- **`discoverBuiltinTools` signature changed** — from `discoverBuiltinTools(config: AppConfig)` to `discoverBuiltinTools(env: ToolEnv)`, instantiating tool classes with `env`
+- **`Provider` gains `cwd` and `env`** — `cwd` defaults to `process.cwd()` and is the base for relative path resolution; `env: ToolEnv` (`{ cwd, config }`) is established at construction and used by `refresh()` to instantiate built-in tools. **Tools no longer depend on the global `process.cwd()`**; each Provider can be bound to a different working directory
+- **Conversation/draft product layer removed** — `Conversation` / `Draft` types, `ConversationRepository`, `DraftRepository`, `AutoDraftPlugin`, and their tests were all removed. Conversation and draft persistence are delegated to each consumer (CLI/Desktop), which may reuse `EntityRepository`
+- **`index.ts` export changes** — removed `Conversation`/`Draft`/`ConversationRepository`/`DraftRepository`/`AutoDraftPlugin`/`BUILTIN_TOOLS`/`execAsyncTool`/`sleepTool`/`createGenerateImageTool`; added `ToolEnv`, `SdkCallbackTool`, `BUILTIN_TOOL_CLASSES`, `GenerateImageTool`, and the 17 tool classes
 
-### 🚀 新功能
+### 🚀 New Features
 
-- **`ToolEnv` 接口** — 工具环境 `{ cwd, config }`，在工具构造时注入，作为相对路径解析与配置读取的基准
-- **`SdkCallbackTool` 抽象基类** — `env` 构造注入 + 子类实现 `call()` + `exec()` 桥接 + `resolve()` 相对路径解析（public，便于测试直调）
+- **`ToolEnv` interface** — tool environment `{ cwd, config }`, injected at tool construction, serving as the base for relative path resolution and config reads
+- **`SdkCallbackTool` abstract base** — `env` constructor injection + subclass `call()` + `exec()` bridge + `resolve()` relative path resolution (public, easy to call directly in tests)
 
-### 🎯 优化
+### 🎯 Optimized
 
-- **多会话并行支持** — `cwd` 下沉到 Provider（`ToolEnv.cwd`），多个 Provider 可并行服务不同工作目录的会话，互不干扰
-- **工具实例 per-Provider** — 每个 Provider 通过 `discoverBuiltinTools(env)` 实例化自己的一套工具，消除全局单例状态
+- **Multi-session parallelism** — `cwd` moved down to the Provider (`ToolEnv.cwd`); multiple Providers can serve sessions in different working directories in parallel without interference
+- **Per-Provider tool instances** — each Provider instantiates its own set of tools via `discoverBuiltinTools(env)`, eliminating global singleton state
 
 ## [0.4.0] - 2026-07-29
 
-### 💥 破坏性变更
+### 💥 Breaking Changes
 
-- **`load_mcp` 返回值从纯文本改为结构化 JSON** — 现在返回 `{ tools, resources }`，其中 tools 包含完整的 `inputSchema`（参数 JSON Schema），resources 包含 `uri`、`name`、`description`、`mimeType`。LLM 可获得精确的参数结构信息，不再需要靠描述文字猜测参数格式
-- **`load_mcp` 不再返回 `prompts` 字段** — prompts 属于 UI 层用途，不对 Agent 暴露
-- **`createLogger()` 替换为全局单例 `getLogger()` / `setLogger()`** — 日志不再支持多例，SDK 内部所有模块统一通过 `getLogger()` 获取同一实例
-- **`index.ts` 导出变更** — `createLogger` → `getLogger` / `setLogger`
+- **`load_mcp` return value changed from plain text to structured JSON** — now returns `{ tools, resources }`, where tools include the complete `inputSchema` (parameter JSON Schema) and resources include `uri`, `name`, `description`, `mimeType`. The LLM gets precise parameter structure instead of guessing from description text
+- **`load_mcp` no longer returns a `prompts` field** — prompts are for the UI layer and are not exposed to Agents
+- **`createLogger()` replaced with the global singletons `getLogger()` / `setLogger()`** — logging no longer supports multiple instances; all SDK-internal modules uniformly obtain the same instance via `getLogger()`
+- **`index.ts` export changes** — `createLogger` → `getLogger` / `setLogger`
 
-### 🎯 优化
+### 🎯 Optimized
 
-- **`load_mcp` 连接成功后在日志中打印完整 manifest** — 包含 tools、resources、prompts 的完整 JSON，便于调试排查
-- **SDK 内部日志统一** — `mcps.ts`、`skills.ts`、`usertools.ts`、`McpConnectionManager.ts` 中的 `console.warn`/`console.error` 全部改为 `getLogger().warn`/`getLogger().error`
+- **`load_mcp` prints the full manifest to the log after a successful connection** — complete JSON with tools, resources, and prompts, for easier debugging
+- **SDK-internal logging unified** — `console.warn`/`console.error` in `mcps.ts`, `skills.ts`, `usertools.ts`, and `McpConnectionManager.ts` all changed to `getLogger().warn`/`getLogger().error`
 
 ## [0.3.4] - 2026-07-27
 
-### 🎯 优化
+### 🎯 Optimized
 
-- **`AutoMigratePlugin` 钩子重命名** — `onHandoff` → `onMigrated`，语义更清晰：迁移前用 `onBeforeMigrate`（此时 `agent.messages` 仍是完整旧历史），迁移完成后用 `onMigrated`（交接文档已注入）
-- **`conversation-runner.ts` 保存逻辑修正** — 将保存旧对话从 `onMigrated`（原 `onHandoff`）移至 `onBeforeMigrate`，确保保存的是完整的旧对话历史，而非迁移后的新消息
+- **`AutoMigratePlugin` hook renamed** — `onHandoff` → `onMigrated`, with clearer semantics: use `onBeforeMigrate` before migration (at which point `agent.messages` is still the full old history) and `onMigrated` after migration completes (the handoff document has been injected)
+- **`conversation-runner.ts` save logic fixed** — saving the old conversation moved from `onMigrated` (formerly `onHandoff`) to `onBeforeMigrate`, ensuring the complete old conversation history is saved rather than the post-migration new messages
 
 ## [0.3.3] - 2026-07-27
 
-### 🎯 优化
+### 🎯 Optimized
 
-- **默认 SubAgent System Prompt 新增两条强制性要求**：
-  1. 信息不明确/模糊/缺失时拒绝执行，要求补充
-  2. 存在自相矛盾信息时指出矛盾，要求澄清
-- **默认 Agent System Prompt 新增原则**："有矛盾就问 — 如果用户指令中存在自相矛盾之处，应指出矛盾并请求澄清，而不是自行取舍"
-- **默认 SubAgent `function.description` 和 `task` 参数描述**同步更新，强调不明确信息将导致拒绝执行
+- **Default SubAgent System Prompt gains two mandatory requirements**:
+  1. Refuse to execute when information is unclear/ambiguous/missing; ask for clarification
+  2. Point out contradictions when conflicting information is present; ask for clarification
+- **Default Agent System Prompt adds a principle**: "Ask when contradictory — if the user's instructions contain contradictions, point them out and request clarification instead of deciding on your own"
+- **Default SubAgent `function.description` and `task` parameter description** updated in sync, emphasizing that unclear information will lead to refusal
 
 ## [0.3.2] - 2026-07-26
 
-### 💥 破坏性变更
+### 💥 Breaking Changes
 
-- **`EntityRepository` 所有方法改为异步** — `list()`、`read()`、`write()`、`delete()` 现在返回 `Promise`，需 `await`
-- **`DraftRepository` 所有方法改为异步** — `read()`、`write()`、`delete()` 需 `await`
-- **`ConfigManager` 所有方法改为异步** — `read()`、`write()`、`ensureDirs()`、`ensureDefaultAgent()`、`ensureDefaultSubAgent()`、`ensureDefaultConfig()`、`bootstrap()` 均需 `await`
-- **`createAgent()` 恢复为 `async`** — 因底层仓储改为异步，`createAgent(provider, agentId)` 需 `await`
-- **`AutoDraftPlugin.checkDraftForRestore()` 改为异步** — 需 `await`
+- **All `EntityRepository` methods are now async** — `list()`, `read()`, `write()`, `delete()` now return `Promise`, requiring `await`
+- **All `DraftRepository` methods are now async** — `read()`, `write()`, `delete()` require `await`
+- **All `ConfigManager` methods are now async** — `read()`, `write()`, `ensureDirs()`, `ensureDefaultAgent()`, `ensureDefaultSubAgent()`, `ensureDefaultConfig()`, `bootstrap()` all require `await`
+- **`createAgent()` is `async` again** — as the underlying repositories became async, `createAgent(provider, agentId)` requires `await`
+- **`AutoDraftPlugin.checkDraftForRestore()` is now async** — requires `await`
 
-### 🎯 优化
+### 🎯 Optimized
 
-- **全面消除同步文件 IO** — 所有生产代码中的 `existsSync`、`readFileSync`、`writeFileSync`、`readdirSync`、`mkdirSync`、`unlinkSync`、`renameSync` 全部替换为 `fs.promises` 异步 API，避免事件循环阻塞
-- **`skillTools.ts` — 工具回调中的 `readdirSync` 替换为 `fs.promises.readdir`**
+- **Synchronous file I/O fully eliminated** — all `existsSync`, `readFileSync`, `writeFileSync`, `readdirSync`, `mkdirSync`, `unlinkSync`, `renameSync` in production code replaced with the `fs.promises` async API, avoiding event-loop blocking
+- **`skillTools.ts`** — `readdirSync` in the tool callback replaced with `fs.promises.readdir`
 
-### ✅ 测试
+### ✅ Tests
 
-- 7 个测试文件同步更新为 `async`/`await`，测试辅助函数也使用 `fs.promises`
+- 7 test files updated in sync to `async`/`await`; test helpers also use `fs.promises`
 
 ## [0.3.1] - 2026-07-26
 
-### 💥 破坏性变更
+### 💥 Breaking Changes
 
-- **`Provider` 移至 `runtime`，合并 `Capabilities`** — 删除 `capabilities/Capabilities.ts` 和原 `runtime/Provider.ts`，Provider 直接暴露 `filter()`、`buildTools()`、`instantiate()`、`refresh()`
-- **去除 `getMcpManager()` 方法** — `mcpManager` 从 lazy getter 改为构造时直接 `new McpConnectionManager()`（有 mcpPaths 时），`readonly` 属性
-- **字段重命名** — `builtinInstances` → `builtinTools`，`userInstances` → `userTools`，`subagentDefs` → `subagents`
-- **`createModel` 签名变更** — 从 `createModel(config, modelId)` 改为 `createModel(provider, modelId)`，调用方不再需要 `.config` 解构
-- **`SdkAgent` 去掉 `caps` 字段** — 只保留 `provider`
+- **`Provider` moved to `runtime`, merging `Capabilities`** — deleted `capabilities/Capabilities.ts` and the original `runtime/Provider.ts`; Provider now directly exposes `filter()`, `buildTools()`, `instantiate()`, `refresh()`
+- **`getMcpManager()` removed** — `mcpManager` changed from a lazy getter to being constructed directly as `new McpConnectionManager()` (when mcpPaths exist), a `readonly` property
+- **Field renames** — `builtinInstances` → `builtinTools`, `userInstances` → `userTools`, `subagentDefs` → `subagents`
+- **`createModel` signature changed** — from `createModel(config, modelId)` to `createModel(provider, modelId)`; callers no longer need the `.config` destructure
+- **`SdkAgent` drops the `caps` field** — only `provider` remains
 
-### 🚀 新功能
+### 🚀 New Features
 
-- **用户工具 ESM 支持** — 移除 `node:vm` 沙箱，统一使用 `import()` 加载 `.js` / `.mjs` 文件，每次 `refresh()` 加时间戳 querystring 防止缓存
-- **`CallbackTool` 替代 `createToolFromObject`** — `{ function, exec }` 格式直接映射为 `CallbackTool`
+- **User tool ESM support** — removed the `node:vm` sandbox, uniformly using `import()` to load `.js` / `.mjs` files; each `refresh()` appends a timestamp querystring to prevent caching
+- **`CallbackTool` replaces `createToolFromObject`** — the `{ function, exec }` format maps directly to `CallbackTool`
 
-### 🎯 优化
+### 🎯 Optimized
 
-- **默认 Agent 系统提示词更新** — 精简为五条原则：开动脑筋、实事求是、一切行动听指挥、安全第一、能打胜仗
-- **默认 SubAgent `function.description` 优化** — 强调主 Agent 必须提供完整任务上下文
+- **Default Agent system prompt updated** — condensed to five principles: think hard, be truthful, follow instructions, safety first, win battles
+- **Default SubAgent `function.description` optimized** — emphasizes that the main Agent must provide complete task context
 
-### 🗑 移除
+### 🗑 Removed
 
-- 删除 `capabilities/Provider.ts`（已移回 `runtime/Provider.ts`）
-- 删除 `createToolFromObject` 工具函数
-- 删除 `TODO.md`、`TODO2.md`
-- 测试 fixture 从 `.js` 迁移为 `.mjs`
+- Deleted `capabilities/Provider.ts` (moved back to `runtime/Provider.ts`)
+- Deleted the `createToolFromObject` utility function
+- Deleted `TODO.md` and `TODO2.md`
+- Test fixtures migrated from `.js` to `.mjs`
 
 ## [0.2.6] - 2026-07-20
 
-### 🔧 修复
+### 🔧 Fixed
 
-- **默认 SubAgent 函数名和描述不足以让 LLM 识别为子 Agent** — `function.name` 从 `general_assistant` 改为 `sub_agent_default`，`function.description` 重写为详细描述，明确子 Agent 身份和能力边界。参数名 `query` → `task` 与设计规范统一，system prompt 明确角色定位
-- **`DEFAULT_SUBAGENT_ID` 从 `general-assistant` 改为 `sub-agent-default`** — 文件名与函数名对应，便于识别
+- **Default SubAgent function name and description insufficient for the LLM to recognize it as a sub-agent** — `function.name` changed from `general_assistant` to `sub_agent_default`; `function.description` rewritten with detailed wording, clarifying the sub-agent identity and capability boundary. The parameter name changed from `query` to `task` to align with the design spec; the system prompt clarifies the role
+- **`DEFAULT_SUBAGENT_ID` changed from `general-assistant` to `sub-agent-default`** — filename matches the function name for easy recognition
 
 ## [0.2.5] - 2026-07-20
 
-### 🔧 修复
+### 🔧 Fixed
 
-- **`DEFAULT_SUBAGENT_DEFINITION` 缺少 `permissions` 配置** — 默认 SubAgent `general-assistant` 未配置权限，导致所有维度等同于 `deny: ['*']`，完全无法使用任何工具/skill/MCP/SubAgent。现已按设计规范补全，仅 `subagents` 维度设为 `deny: ['*']` 防止递归调用
+- **`DEFAULT_SUBAGENT_DEFINITION` missing `permissions` config** — the default SubAgent `general-assistant` had no permissions, so every dimension effectively became `deny: ['*']`, making it completely unable to use any tool/skill/MCP/SubAgent. Now completed per the design spec, with only the `subagents` dimension set to `deny: ['*']` to prevent recursive calls
 
 ## [0.2.4] - 2026-07-20
 
-### 🔧 修复
+### 🔧 Fixed
 
-- **`load_skill` 不再注入 System 消息** — 改为在工具返回值中直接返回完整 SKILL.md 内容和 Skill 目录路径、文件列表，LLM 完全透明可见
-- **`SkillInfo` 新增 `dirPath` 字段** — 记录 SKILL.md 所在目录的绝对路径
-- **`McpConnectionManager.doConnect` 按 Server capabilities 按需调用** — 仅对声明了的能力调用对应方法，避免未声明时返回 Method not found
-- **`McpConnectionManager.doConnect` 各 list 调用加 try/catch 保护** — 单个能力获取失败不影响其他能力
+- **`load_skill` no longer injects a System message** — instead returns the full SKILL.md content plus the Skill directory path and file list directly in the tool return value, fully transparent to the LLM
+- **`SkillInfo` gains a `dirPath` field** — records the absolute path of the directory containing SKILL.md
+- **`McpConnectionManager.doConnect` calls methods on demand per server capabilities** — only invokes the corresponding method for declared capabilities, avoiding Method not found for undeclared ones
+- **`McpConnectionManager.doConnect` wraps each list call in try/catch** — a failure to fetch one capability does not affect the others
 
 ## [0.2.3] - 2026-07-20
 
-### 🔧 修复
+### 🔧 Fixed
 
-- **`AgentRepository` — 使用 `EntityRepository` 替代直接文件操作** — 采用基础仓储统一逻辑
+- **`AgentRepository` — uses `EntityRepository` instead of direct file operations** — adopting the base repository for unified logic
 
 ## [0.2.2] - 2026-07-20
 
-### 🔧 修复
+### 🔧 Fixed
 
-- **`SdkAgent.send()` — `ctx.messages` 不再直接引用 `this.messages`** — 改为浅拷贝快照，确保消息数组仅由 agent 作为唯一维护者
-- **`AutoMigratePlugin` — 不再创建新 Agent 实例** — 直接替换 `agent.messages` 数组，保留所有引用、插件绑定和事件监听
-- **`AutoMigratePlugin` — 迁移前增加日志提示** — 使用 `log.warn` 输出迁移开始通知
+- **`SdkAgent.send()` — `ctx.messages` no longer references `this.messages` directly** — changed to a shallow-copied snapshot, ensuring the message array is owned solely by the agent
+- **`AutoMigratePlugin` — no longer creates a new Agent instance** — directly replaces the `agent.messages` array, preserving all references, plugin bindings, and event listeners
+- **`AutoMigratePlugin` — adds a log notice before migration** — uses `log.warn` to output the migration start notice
 
-### 🎯 优化
+### 🎯 Optimized
 
-- **`AutoMigratePlugin` — `onHandoff` 签名简化** — 从 `(doc, oldAgent, newAgent)` 改为 `(doc, agent)`，因为 agent 是同一对象
-- **`TaskMigrationService.createPrompt()` — 精简提示词** — 明确要求只输出交接文档，不做任何解释
+- **`AutoMigratePlugin` — `onHandoff` signature simplified** — from `(doc, oldAgent, newAgent)` to `(doc, agent)`, since the agent is the same object
+- **`TaskMigrationService.createPrompt()` — streamlined prompt** — explicitly requires only the handoff document as output, no explanations
 
-### ✅ 测试
+### ✅ Tests
 
-- 补充迁移前后消息数组**长度精确断言**（迁移前 3 条 → 迁移后 2 条）
-- 补充迁移失败时消息数组**长度和内容不变**的断言
+- Added exact assertions for the message array **length before/after migration** (3 before → 2 after)
+- Added assertions that the message array **length and content stay unchanged** on migration failure

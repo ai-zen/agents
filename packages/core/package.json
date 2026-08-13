@@ -1,7 +1,7 @@
 {
   "name": "@ai-zen/agents-core",
-  "version": "3.2.0",
-  "description": "",
+  "version": "3.2.1",
+  "description": "Core framework for building LLM agents: Agent, Messages, Tools, Models, Endpoints, RAG, Vector Database",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",

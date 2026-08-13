@@ -2,7 +2,7 @@
   "name": "@ai-zen/test-project",
   "version": "0.0.0",
   "private": true,
-  "description": "AI-Zen Agents 测试项目",
+  "description": "AI-Zen Agents test project",
   "type": "module",
   "scripts": {
     "mcp-sse": "node mcp-servers/sse-server.mjs",

@@ -1,53 +1,59 @@
 # Changelog
 
+## [3.2.1] - 2026-08-13
+
+### 📄 Docs
+
+- **README translated to English** — the main `README.md` is now English-first, with the original Chinese content preserved as `README.zh.md`; the license statement was corrected from ISC to MIT
+- **Package metadata standardized** — added an English `description` to `package.json`
+
 ## [3.2.0] - 2026-08-03
 
-### ✨ 新增
+### ✨ Added
 
-- **`inner-loops-start` / `inner-loops-end` 事件** — 整组内循环（一次 send，含多轮工具调用）的开始/结束事件，一次 send 各触发一次，携带当前完整 `messages`。与单轮 `inner-loop-start` / `inner-loop-end`（每轮触发一次）通过复数区分：订阅者可拿到「user + assistant 占位已就绪」与「完整结果」两个整轮时机
-- **`onInnerLoopsStart` / `onInnerLoopsEnd` 异步钩子** — 与上述事件同名对应，分别在整组内循环开始前/结束后 `await` 调用（对应单轮钩子 `onInnerLoopStart` / `onInnerLoopEnd`）
+- **`inner-loops-start` / `inner-loops-end` events** — start/end events for a whole group of inner loops (one `send`, including multiple rounds of tool calls); each fires once per `send` and carries the current complete `messages`. Distinguished from the per-round `inner-loop-start` / `inner-loop-end` by the plural form: subscribers get both the "user + assistant placeholder ready" and the "full result" timing
+- **`onInnerLoopsStart` / `onInnerLoopsEnd` async hooks** — correspond to the events above by name; awaited before/after the whole group of inner loops respectively (the per-round counterparts are `onInnerLoopStart` / `onInnerLoopEnd`)
 
 ## [3.1.0] - 2026-07-26
 
-### ✨ 新增
+### ✨ Added
 
-- **`Message.id` 字段** — 消息唯一标识，构造函数自动生成（优先 `globalThis.crypto.randomUUID`，无 crypto 的老环境降级为时间戳+随机数，兼容 Node.js 与 Web）。实例构造后 id 全程稳定：流式就地修改不换对象、`JSON.stringify` 落库自动携带、读回保留。接口层面 `id` 为可选（`formatHistory` 发给模型的精简白名单对象不含内部字段，类型兼容）
+- **`Message.id` field** — unique message identifier, auto-generated in the constructor (prefers `globalThis.crypto.randomUUID`; falls back to timestamp + random in legacy environments without crypto, compatible with both Node.js and Web). The id stays stable for the lifetime of an instance: in-place mutation during streaming keeps the same object, `JSON.stringify` persistence carries it automatically, and it survives read-back. At the interface level `id` is optional (the slim allowlist object sent to the model by `formatHistory` excludes internal fields; types remain compatible)
 
-### 🔧 调整
+### 🔧 Changed
 
-- **`Message.rewrite` 参数类型由 `Message` 改为 `AgentNS.Message`** — 该方法只读写 content/raw_content，依赖接口而非实现类，消除「精简对象无法传给 rewrite」的类型不匹配
+- **`Message.rewrite` parameter type changed from `Message` to `AgentNS.Message`** — the method only reads/writes `content`/`raw_content`, depending on the interface rather than the implementation class, eliminating the type mismatch where slim objects could not be passed to `rewrite`
 
 ## [3.0.1] - 2026-07-26
 
-### ♻️ 重构
+### ♻️ Refactored
 
-- **`CallbackTool` 从 `implements Tool` 改为 `extends Tool`** — 继承 Tool 抽象类，构造函数委托 `super()`，确保 `toBeInstanceOf(Tool)` 通过
+- **`CallbackTool` now `extends Tool` instead of `implements Tool`** — inherits the `Tool` abstract class and delegates to `super()` in the constructor, ensuring `toBeInstanceOf(Tool)` passes
 
-### ✅ 测试
+### ✅ Tests
 
-- **集成测试模型名更新** — `deepseek-chat` → `deepseek-v4-flash`
+- **Integration test model name updated** — `deepseek-chat` → `deepseek-v4-flash`
 
 ## [3.0.0-alpha.1] - 2026-07-19
 
-### 💥 破坏性变更
+### 💥 Breaking Changes
 
-- **重命名 `onBeforeSend` 钩子为 `onInnerLoopStart`** — 更清晰地表达该钩子在内循环开始时的语义
-- **新增 `onInnerLoopEnd` 钩子** — 在内循环结束时调用，可用于后处理
-- **重命名事件 `"run"` 为 `"inner-loop-start"`** — 与钩子命名对齐，语义更明确
-- **重命名事件 `"run-end"` 为 `"inner-loop-end"`** — 与钩子命名对齐，语义更明确
+- **Renamed the `onBeforeSend` hook to `onInnerLoopStart`** — more clearly expresses the hook's semantics at the start of an inner loop
+- **Added the `onInnerLoopEnd` hook** — invoked at the end of an inner loop, useful for post-processing
+- **Renamed the `"run"` event to `"inner-loop-start"`** — aligned with hook naming, clearer semantics
+- **Renamed the `"run-end"` event to `"inner-loop-end"`** — aligned with hook naming, clearer semantics
 
-### 🛠 优化
+### 🛠 Optimized
 
-- `Agent.ts` 中变量 `matchTools` 重命名为 `matchedTool`，命名更规范
-- 补充内循环注释，代码可读性提升
+- In `Agent.ts`, the variable `matchTools` was renamed to `matchedTool` for cleaner naming
+- Added inner-loop comments, improving code readability
 
-### 迁移指南
+### Migration Guide
 
-如果你使用了以下 API，请相应更新：
+If you use any of the following APIs, update accordingly:
 
-| 旧名称 | 新名称 |
-|--------|--------|
+| Old name | New name |
+|----------|----------|
 | `onBeforeSend` | `onInnerLoopStart` |
 | `events.on("run", ...)` | `events.on("inner-loop-start", ...)` |
 | `events.on("run-end", ...)` | `events.on("inner-loop-end", ...)` |
-

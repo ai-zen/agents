@@ -1,4 +1,4 @@
-# AI-ZEN Agents
+# AI-Zen Agents
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
@@ -8,10 +8,10 @@
 
 本项目采用 pnpm workspace 管理，包含以下子包：
 
-| 包名 | 说明 | 版本 |
-|------|------|------|
-| [`@ai-zen/agents-core`](./packages/core) | 核心框架 — Agent、消息、工具、模型、端点、RAG、向量数据库抽象 | [![version](https://img.shields.io/badge/version-3.0.1-blue)] |
-| [`@ai-zen/agents-sdk`](./packages/sdk) | SDK — 共享业务逻辑（能力管线、权限、MCP、插件） | [![version](https://img.shields.io/badge/version-0.5.0-blue)] |
+| 包名 | 说明 |
+|------|------|
+| [`@ai-zen/agents-core`](./packages/core) | 核心框架 — Agent、消息、工具、模型、端点、RAG、向量数据库 |
+| [`@ai-zen/agents-sdk`](./packages/sdk) | SDK — 共享业务逻辑（能力管线、权限、MCP、插件） |
 
 ### 外部项目
 
@@ -45,35 +45,35 @@ pnpm build-core
 
 ## 🧩 @ai-zen/agents-core
 
-TypeScript 核心库，可在 Node.js 和浏览器环境中使用。提供构建 LLM Agent 的核心抽象。
+TypeScript 核心库，可在 Node.js 和浏览器环境中使用。
 
 **核心类**：
 
 | 类 | 说明 |
 |------|------|
-| **Agent** | 对话管理与生命周期控制，支持流式解析、工具调用、多轮对话、事件系统、`onBeforeSend` 钩子 |
-| **AgentContext** | Agent 上下文基类，持有 model、messages、tools、rag、`onBeforeSend` 等配置 |
-| **Message** | 消息模型，支持文本/图片等多模态内容，提供静态工厂方法 |
-| **Tool** | 工具抽象基类，自定义工具需实现 `exec()` 方法 |
+| **Agent** | 对话管理与生命周期控制，支持流式解析、工具调用、事件系统、`onInnerLoopStart`/`onInnerLoopEnd` 钩子 |
+| **AgentContext** | Agent 上下文基类，持有 model、messages、tools、rag 配置 |
+| **Message** | 消息模型，支持文本/图片等多模态内容 |
+| **Tool** | 工具抽象基类 |
 | **CallbackTool** | 通过回调函数快速定义工具 |
 | **CodeTool** | 使用字符串代码定义工具逻辑（通过 `new Function` 执行） |
-| **AgentTool** | 将一个子 Agent 暴露为工具，实现 Agent 嵌套调用 |
+| **AgentTool** | 将一个子 Agent 暴露为工具 |
 | **IndexedSearchTool** | 基于关键词索引的本地搜索工具 |
-| **Endpoint** | API 端点抽象（构建 HTTP 请求），支持 OpenAI / Azure OpenAI / 智谱AI / 通用 |
-| **ChatCompletionModel** | 对话模型抽象，定义 `createStream()` 和 `createCompletion()` |
-| **EmbeddingModel** | 嵌入模型抽象，定义 `createEmbedding()` |
-| **ImageGenerationModel** | 图片生成模型抽象，定义 `generate()` |
-| **Rag** | 检索增强生成基类，通过改写用户消息注入上下文 |
+| **Endpoint** | API 端点抽象（OpenAI / Azure OpenAI / 智谱AI / 通用） |
+| **ChatCompletionModel** | 对话模型抽象 |
+| **EmbeddingModel** | 嵌入模型抽象 |
+| **ImageGenerationModel** | 图片生成模型抽象 |
+| **Rag** | 检索增强生成基类 |
 | **VectorDatabase** | 内存向量数据库，基于余弦相似度检索 |
 | **KnowledgeBase** | 知识库（嵌入模型 + 向量数据库） |
-| **FunctionCallContext** | 函数调用上下文，解析参数、提供 `preventDefault()` |
+| **FunctionCallContext** | 函数调用参数解析，提供 `preventDefault()` |
 
 **内置实现**：
-- **模型**: `ChatGPT`（兼容 OpenAI 接口的对话模型）、`TextEmbeddingAda002_2`（嵌入模型）、`ZhipuImage`（智谱AI 图片生成）
-- **端点**: `OpenAI`、`AzureOpenAI`、`Zhipu`（已废弃）、`CommonEndpoint`（通用端点，适用于任意 OpenAI 兼容接口）
-- **RAG**: `EmbeddingSearch`（基于嵌入向量检索的知识库增强）
+- **模型**: `ChatGPT`（兼容 OpenAI 接口）、`TextEmbeddingAda002_2`、`ZhipuImage`
+- **端点**: `OpenAI`、`AzureOpenAI`、`Zhipu`（已废弃）、`CommonEndpoint`
+- **RAG**: `EmbeddingSearch`
 
-[查看 core 完整文档 →](./packages/core/README.md)
+[查看 core 完整文档 →](./packages/core/README.zh.md)
 
 ## 📦 @ai-zen/agents-sdk
 
@@ -100,4 +100,4 @@ TypeScript 核心库，可在 Node.js 和浏览器环境中使用。提供构建
 
 ## 许可
 
-本项目基于 MIT 许可。详见 [LICENSE](./LICENSE) 文件。
+本项目基于 MIT 许可。详见 [LICENSE](./LICENSE)。
