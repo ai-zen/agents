@@ -4,13 +4,13 @@
 
 ### ♻️ Refactored
 
-- **`innerLoopTasks` 拆分为双集合语义** — 新增 `innerLoopsTasks`（整组内循环：一次 `send` 产生的所有任务，全程保留、run 结束统一清空，供整组追踪）与 `innerLoopTasks`（当前单轮进行中任务：内循环开始时记录、完成时清除）。`abort()` 只中止**当前轮活跃任务**，不再误标已完成的轮次
-- **`run()` 内循环开头统一追加 Assistant 占位** — `send()` 不再手动 `append(Message.Assistant())`；`run()` 每次内循环开头检测最后一条消息，若非 Pending 的 Assistant 则自动追加，多轮工具调用的下一轮同样由内循环开头统一处理。`AgentTool` 同步移除手动追加。原"最后必须 Assistant / 必须 Pending"的硬校验移除（改为自动追加），空消息仍抛错
-- **`AgentTool` 移除未使用的 `Message` import**
+- **`innerLoopTasks` split into dual-set semantics** — added `innerLoopsTasks` (all tasks of one `send` group: every round's assistant plus each tool result, kept for the whole run and cleared when `run()` ends, for whole-group tracking) and `innerLoopTasks` (current in-flight round tasks: recorded at inner-loop start, cleared on completion). `abort()` now only targets the **current round's active tasks** and no longer marks already-completed rounds as Aborted
+- **Assistant placeholder uniformly appended at each inner-loop start** — `send()` no longer manually calls `append(Message.Assistant())`; `run()` checks the last message at the start of every inner loop and appends a Pending Assistant if absent, making `run()` self-contained whether called from `send()` (ending in User) or manually. The next round after tool calls is handled the same way at the next inner-loop start. `AgentTool` also drops its manual append. The strict "last message must be Assistant / must be Pending" validation is removed (replaced by auto-append); an empty message list still throws
+- **Removed unused `Message` import in `AgentTool`**
 
 ### ✅ Tests
 
-- **新增 abort / 双集合 / 自动追加测试** — abort 只影响当前轮（已完成轮次保持 Completed）；`innerLoopsTasks` 保留整组、`innerLoopTasks` 只保留当前轮且 run 后清空；`run()` 自动追加 Assistant 覆盖末尾为 User / 已完成 Assistant 的场景。测试套件现为 **215 tests**
+- **Added abort / dual-set / auto-append tests** — abort only affects the current round (completed rounds stay Completed); `innerLoopsTasks` keeps the whole group while `innerLoopTasks` only keeps the current in-flight round and both are cleared after `run()`; `run()` auto-appends Assistant for message lists ending in User or a completed Assistant. Test suite now at **215 tests**
 
 ## [3.3.0] - 2026-08-14
 
