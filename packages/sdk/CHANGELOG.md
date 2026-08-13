@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.7] - 2026-08-13
+
+### 🛠 Optimized
+
+- **`@ai-zen/agents-core` dependency upgraded to 3.3.1** — dual-set inner-loop task semantics + unified Assistant placeholder at inner-loop start; SDK 426 tests (incl. real DeepSeek e2e) all pass, fully compatible
+
 ## [0.5.6] - 2026-08-14
 
 ### 🚀 New Features
