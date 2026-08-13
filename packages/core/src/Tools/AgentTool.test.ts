@@ -3,7 +3,7 @@ import { AgentTool } from "./AgentTool.js";
 import { Agent } from "../Agent.js";
 import { Message } from "../Message.js";
 import { AgentNS } from "../AgentNS.js";
-import { FunctionCallContext } from "../FunctionCallContext.js";
+import { ToolCallContext } from "../ToolCallContext.js";
 import { AsyncQueue } from "@ai-zen/async-queue";
 
 // Helper: 创建 mock 模型，始终返回固定文本
@@ -190,11 +190,13 @@ describe("AgentTool", () => {
         tools: [tool],
       });
 
-      const ctx = new FunctionCallContext({
+      const ctx = new ToolCallContext({
         agent,
-        function_call: {
-          name: "getWeather",
-          arguments: '{"city":"北京"}',
+        tool_call: {
+          function: {
+            name: "getWeather",
+            arguments: '{"city":"北京"}',
+          },
         },
         result_message: Message.Tool({ id: "1", function: { name: "getWeather" } }),
       });
@@ -224,9 +226,9 @@ describe("AgentTool", () => {
       const subAgentHandler = vi.fn();
       agent.events.on("sub-agent", subAgentHandler);
 
-      const ctx = new FunctionCallContext({
+      const ctx = new ToolCallContext({
         agent,
-        function_call: { name: "testFn", arguments: "{}" },
+        tool_call: { function: { name: "testFn", arguments: "{}" } },
         result_message: Message.Tool({ id: "1", function: { name: "testFn" } }),
       });
 

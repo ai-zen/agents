@@ -66,7 +66,7 @@ TypeScript core library for Node.js and browser environments.
 | **Rag** | Retrieval-Augmented Generation base class |
 | **VectorDatabase** | In-memory vector database with cosine similarity |
 | **KnowledgeBase** | Knowledge base (embedding model + vector database) |
-| **FunctionCallContext** | Function call parameter parsing with `preventDefault()` |
+| **ToolCallContext** | Unified tool-call context spanning interception → execution (`onToolCall` + `Tool.exec`) |
 
 **Built-in Implementations**:
 - **Models**: `ChatGPT` (OpenAI-compatible), `TextEmbeddingAda002_2`, `ZhipuImage`

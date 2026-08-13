@@ -1,6 +1,6 @@
 import { AgentNS } from "./AgentNS.js";
 import { PickRequired } from "./Common.js";
-import { FunctionCallContext } from "./FunctionCallContext.js";
+import { ToolCallContext } from "./ToolCallContext.js";
 
 export abstract class Tool implements AgentNS.ToolDefine {
   type: "function";
@@ -12,5 +12,5 @@ export abstract class Tool implements AgentNS.ToolDefine {
     this.function = options.function;
   }
 
-  abstract exec(ctx: FunctionCallContext): Promise<string>;
+  abstract exec(ctx: ToolCallContext): Promise<string>;
 }

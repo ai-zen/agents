@@ -3,7 +3,7 @@ import EventBus from "@ai-zen/event-bus";
 import { AgentNS } from "./AgentNS.js";
 import { AgentContext as AgentContext } from "./AgentContext.js";
 import { PickRequired } from "./Common.js";
-import { FunctionCallContext } from "./FunctionCallContext.js";
+import { ToolCallContext } from "./ToolCallContext.js";
 import { Message } from "./Message.js";
 import { Tool } from "./Tool.js";
 
@@ -23,15 +23,17 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * An array to record pending tasks, used to abort.
+   * 本组内循环（一次 send）产生的所有消息任务：每轮 assistant + 每个工具结果，
+   * 各带 AbortController（中止其产生）。全程保留（不随完成移出），run 结束统一清空；
+   * abort 统一遍历：中止 controller + 标记 receiver 为 Aborted。
    */
-  private pendingTasks: Set<PendingTask> = new Set();
+  private innerLoopTasks: Set<PendingTask> = new Set();
 
   /**
-   * Abort all pending tasks.
+   * Abort all inner-loop tasks.
    */
   abort() {
-    this.pendingTasks.forEach((task) => {
+    this.innerLoopTasks.forEach((task) => {
       task.controller.abort();
       task.receiver.status = AgentNS.MessageStatus.Aborted;
     });
@@ -64,12 +66,11 @@ export class Agent extends AgentContext {
       controller: initialController,
       receiver,
     };
-    this.pendingTasks.add(initialPendingTask);
+    this.innerLoopTasks.add(initialPendingTask);
 
     // 使用 while 循环替代递归
     let currentReceiver: Message = receiver;
     let currentController: AbortController = initialController;
-    const allPendingTasks: PendingTask[] = [initialPendingTask];
     let needContinue = true;
 
     // 整组内循环开始：user + assistant 占位已追加完毕，messages 就绪（一次 send 仅一次）
@@ -137,8 +138,7 @@ export class Agent extends AgentContext {
             controller: currentController,
             receiver: currentReceiver,
           };
-          allPendingTasks.push(newPendingTask);
-          this.pendingTasks.add(newPendingTask);
+          this.innerLoopTasks.add(newPendingTask);
           needContinue = true;
         }
 
@@ -159,10 +159,8 @@ export class Agent extends AgentContext {
 
     await this.onInnerLoopsEnd?.();
 
-    // 清理所有 pendingTasks
-    for (const task of allPendingTasks) {
-      this.pendingTasks.delete(task);
-    }
+    // 清空本组内循环任务记录
+    this.innerLoopTasks.clear();
 
     return this.messages;
   }
@@ -383,6 +381,21 @@ export class Agent extends AgentContext {
           task.id ? Message.Tool(task) : Message.Function(task.function!),
         );
 
+        // 工具执行前就记录到 innerLoopTasks（与 assistant 轮次统一管理），
+        // abort 可统一中止/标记；全程保留，run 结束统一清空
+        const toolTask: PendingTask = {
+          controller: new AbortController(),
+          receiver: resultReceiver,
+        };
+        this.innerLoopTasks.add(toolTask);
+
+        /** 工具执行完成：若该任务已被 abort（abort 后工具仍会跑完），保持 Aborted 不被覆盖 */
+        const markResult = (status: AgentNS.MessageStatus) => {
+          resultReceiver.status = toolTask.controller.signal.aborted
+            ? AgentNS.MessageStatus.Aborted
+            : status;
+        };
+
         try {
           const matchedTool: Tool | undefined = this.tools.find(
             (tool) =>
@@ -390,17 +403,33 @@ export class Agent extends AgentContext {
               tool.type == "function",
           );
 
-          const ctx = new FunctionCallContext({
-            function_call: task.function!,
+          // 统一上下文：一个类贯穿「拦截决策 → 执行」，onToolCall 与 Tool.exec 收同一实例。
+          // 参数解析（JSON.parse）在构造函数中完成；allowJsonParseError=false 且非法时
+          // 构造函数抛错 → 走下方 catch（标记 Error，不过拦截钩子）。
+          const ctx = new ToolCallContext({
             agent: this,
+            tool_call: task,
+            tool: matchedTool,
             result_message: resultReceiver,
             allowJsonParseError: this.allowJsonParseError,
+            // 注入工具执行的中止信号：abort() 会中止 toolTask.controller →
+            // signal 触发 → 工具实现可监听 signal 真正中断执行
+            signal: toolTask.controller.signal,
           });
+
+          // 阻塞式钩子：可拒绝单个工具调用（返回字符串 = 拒绝原因，作为工具结果返回给 LLM，
+          // 工具不执行、继续下一轮让 LLM 调整）
+          const denied = await this.onToolCall?.(ctx);
+          if (denied) {
+            resultReceiver.content = `工具 ${task.function!.name} 被拒绝：${denied}`;
+            markResult(AgentNS.MessageStatus.Completed);
+            return { is_prevent_default: false, status: resultReceiver.status };
+          }
 
           // 如果 JSON 解析失败且允许容错，将错误信息作为结果返回给 AI
           if (ctx.parse_error) {
             resultReceiver.content = `参数解析错误: ${ctx.parse_error}\n请检查你提供的参数格式，确保是合法的 JSON。`;
-            resultReceiver.status = AgentNS.MessageStatus.Completed;
+            markResult(AgentNS.MessageStatus.Completed);
             return { is_prevent_default: false, status: resultReceiver.status };
           }
 
@@ -416,7 +445,7 @@ export class Agent extends AgentContext {
           } else {
             resultReceiver.content = await matchedTool.exec(ctx);
           }
-          resultReceiver.status = AgentNS.MessageStatus.Completed;
+          markResult(AgentNS.MessageStatus.Completed);
 
           return {
             is_prevent_default: ctx.is_prevent_default,
@@ -426,13 +455,13 @@ export class Agent extends AgentContext {
           if (this.allowJsonParseError) {
             // 工具执行异常时，将错误信息返回给 AI 继续
             resultReceiver.content = `执行工具 ${task.function!.name} 时出错: ${error?.message}`;
-            resultReceiver.status = AgentNS.MessageStatus.Completed;
+            markResult(AgentNS.MessageStatus.Completed);
             return { is_prevent_default: false, status: resultReceiver.status };
           }
 
-          // allowJsonParseError=false 时，标记为 Error
+          // allowJsonParseError=false 时，标记为 Error（已被 abort 则保持 Aborted）
           resultReceiver.content = error?.message;
-          resultReceiver.status = AgentNS.MessageStatus.Error;
+          markResult(AgentNS.MessageStatus.Error);
           return { is_prevent_default: true, status: resultReceiver.status };
         }
       }),

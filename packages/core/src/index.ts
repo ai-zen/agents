@@ -10,4 +10,4 @@ export * from "./KnowledgeBase.js";
 export * from "./Message.js";
 export * from "./Tool.js";
 export * from "./VectorDatabase.js";
-export * from "./FunctionCallContext.js";
+export * from "./ToolCallContext.js";

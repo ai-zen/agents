@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { CodeTool } from "./CodeTool.js";
-import { FunctionCallContext } from "../FunctionCallContext.js";
+import { ToolCallContext } from "../ToolCallContext.js";
 import { Agent } from "../Agent.js";
 import { Message } from "../Message.js";
 
@@ -12,10 +12,10 @@ function createMockCtx(
   agent: Agent,
   functionName: string,
   parsedArgs: any,
-): FunctionCallContext {
-  return new FunctionCallContext({
+): ToolCallContext {
+  return new ToolCallContext({
     agent,
-    function_call: { name: functionName, arguments: JSON.stringify(parsedArgs) },
+    tool_call: { function: { name: functionName, arguments: JSON.stringify(parsedArgs) } },
     result_message: Message.Tool({ id: "1", function: { name: functionName } }),
   });
 }

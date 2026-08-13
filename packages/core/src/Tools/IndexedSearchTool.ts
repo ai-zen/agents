@@ -1,6 +1,6 @@
 import { AgentNS } from "../AgentNS.js";
 import { PickRequired } from "../Common.js";
-import { FunctionCallContext } from "../FunctionCallContext.js";
+import { ToolCallContext } from "../ToolCallContext.js";
 import { Tool } from "../Tool.js";
 
 export interface IndexedSearchEntry {
@@ -36,7 +36,7 @@ export class IndexedSearchTool implements Tool {
     };
   }
 
-  async exec(ctx: FunctionCallContext) {
+  async exec(ctx: ToolCallContext) {
     // GPT may mistakenly input a string instead of an array when there is only one keyword.
     const keywords: string[] =
       ctx.parsed_args.keywords instanceof Array

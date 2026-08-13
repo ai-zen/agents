@@ -66,7 +66,7 @@ TypeScript 核心库，可在 Node.js 和浏览器环境中使用。
 | **Rag** | 检索增强生成基类 |
 | **VectorDatabase** | 内存向量数据库，基于余弦相似度检索 |
 | **KnowledgeBase** | 知识库（嵌入模型 + 向量数据库） |
-| **FunctionCallContext** | 函数调用参数解析，提供 `preventDefault()` |
+| **ToolCallContext** | 统一工具调用上下文，贯穿拦截决策 → 执行（`onToolCall` + `Tool.exec`） |
 
 **内置实现**：
 - **模型**: `ChatGPT`（兼容 OpenAI 接口）、`TextEmbeddingAda002_2`、`ZhipuImage`

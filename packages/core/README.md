@@ -101,7 +101,7 @@ Message status enum:
 Abstract base class that extends the Agent's capabilities. Custom tools must extend `Tool` and implement the `exec()` method:
 
 ```typescript
-import { Tool, FunctionCallContext } from "@ai-zen/agents-core";
+import { Tool, ToolCallContext } from "@ai-zen/agents-core";
 
 class WeatherTool extends Tool {
   constructor() {
@@ -120,7 +120,7 @@ class WeatherTool extends Tool {
     });
   }
 
-  async exec(ctx: FunctionCallContext) {
+  async exec(ctx: ToolCallContext) {
     const { city } = ctx.parsed_args;
     return `The weather in ${city} today is sunny, 22°C.`;
   }
@@ -133,7 +133,7 @@ const agent = new Agent({ model, tools: [new WeatherTool()] });
 ### Built-in Tools
 
 #### CallbackTool
-Define a tool quickly via a callback function. Inside the `callback`, `this` refers to the `FunctionCallContext` instance.
+Define a tool quickly via a callback function. Inside the `callback`, `this` refers to the `ToolCallContext` instance.
 
 ```typescript
 import { CallbackTool } from "@ai-zen/agents-core";
@@ -153,7 +153,7 @@ const tool = new CallbackTool({
     },
   },
   callback(parsedArgs) {
-    // this points to FunctionCallContext
+    // this points to ToolCallContext
     return parsedArgs.a + parsedArgs.b;
   },
 });
@@ -495,18 +495,50 @@ const agent = new Agent({
 });
 ```
 
-### FunctionCallContext
+#### onToolCall — Tool Call Interception Hook
 
-The context object available during tool execution, with the following properties:
+Fired before every tool call execution. Can **reject** a single tool call.
+
+**Signature**:
+```typescript
+onToolCall?: (ctx: ToolCallContext) => string | undefined | Promise<string | undefined>;
+```
+
+**Return value**:
+- A string → reject: the tool is **not executed**, and the string (rejection reason) is returned to the LLM as the tool result; the conversation continues to the next round.
+- `undefined` → allow: the tool executes normally.
+
+The `ctx` received by the hook is the **same `ToolCallContext` instance** passed to `Tool.exec(ctx)`.
+
+**Example**:
+```typescript
+const agent = new Agent({
+  model,
+  tools: [fileTool],
+  onToolCall: (ctx) => {
+    if (ctx.tool_call.function?.name === "rm") {
+      return `Tool "rm" is rejected: requires explicit user authorization.`;
+    }
+    return undefined; // allow
+  },
+});
+```
+
+### ToolCallContext
+
+A single class spanning **interception decision → execution**. The same instance is passed to both the `onToolCall` hook (pre-execution interception) and `Tool.exec(ctx)` (actual execution).
 
 | Property | Description |
 |----------|-------------|
 | `agent` | The Agent instance that triggered the call |
-| `function_call` | Raw function call info (name, arguments) |
+| `tool_call` | Unified tool call shape (`{ id?, type?, function: { name, arguments } }`); legacy `function_call` is wrapped as an id-less `{ function }` |
+| `tool` | The matched registered tool (undefined if not registered) |
+| `function_call` | Compatibility field, equal to `tool_call.function` (legacy shape) |
 | `parsed_args` | The JSON-parsed argument dictionary |
-| `result_message` | The message used to write the execution result |
+| `result_message` | The tool result message — execution result / rejection reason / parse error are written here |
 | `is_prevent_default` | Whether the automatic continuation of the conversation is blocked |
 | `parse_error` | JSON parse error info (when `allowJsonParseError=true`) |
+| `signal` | Abort signal for this tool execution (fires on `abort()`; tools can listen to truly interrupt) |
 | `preventDefault()` | Marks the conversation to stop auto-continuing to the next round |
 
 ## How the Agent Works
@@ -528,8 +560,9 @@ send(content)
         ├── handleToolCall() → executes tool calls
         │     ├── iterates over tool_calls / function_call
         │     ├── creates Tool or Function result messages
-        │     ├── instantiates FunctionCallContext
-        │     ├── executes the matching tool's exec()
+        │     ├── instantiates ToolCallContext
+        │     ├── onToolCall() hook → may reject (reason sent back to the LLM)
+        │     ├── executes the matching tool's exec(ctx)
         │     └── returns whether to continue the conversation
         └── if continuing → appends a new Assistant message → recurses into run()
 ```

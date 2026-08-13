@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { IndexedSearchTool, type IndexedSearchEntry } from "./IndexedSearchTool.js";
-import { FunctionCallContext } from "../FunctionCallContext.js";
+import { ToolCallContext } from "../ToolCallContext.js";
 import { Agent } from "../Agent.js";
 import { Message } from "../Message.js";
 
@@ -8,10 +8,10 @@ function createMockAgent(): Agent {
   return new Agent({ model: {} as any, messages: [Message.System("test")], tools: [] });
 }
 
-function createMockCtx(agent: Agent, parsed_args: any): FunctionCallContext {
-  return new FunctionCallContext({
+function createMockCtx(agent: Agent, parsed_args: any): ToolCallContext {
+  return new ToolCallContext({
     agent,
-    function_call: { name: "indexedSearch", arguments: JSON.stringify(parsed_args) },
+    tool_call: { function: { name: "indexedSearch", arguments: JSON.stringify(parsed_args) } },
     result_message: Message.Tool({ id: "1", function: { name: "indexedSearch" } }),
   });
 }
@@ -43,9 +43,9 @@ describe("IndexedSearchTool", () => {
     const agent = createMockAgent();
 
     // 模拟 GPT 有时会传入字符串而非数组
-    const ctx = new FunctionCallContext({
+    const ctx = new ToolCallContext({
       agent,
-      function_call: { name: "indexedSearch", arguments: JSON.stringify({ keywords: "weather" }) },
+      tool_call: { function: { name: "indexedSearch", arguments: JSON.stringify({ keywords: "weather" }) } },
       result_message: Message.Tool({ id: "1", function: { name: "indexedSearch" } }),
     });
 

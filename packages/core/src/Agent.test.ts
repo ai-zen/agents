@@ -5,7 +5,7 @@ import { AgentNS } from "./AgentNS.js";
 import { Message } from "./Message.js";
 import { CallbackTool } from "./Tools/CallbackTool.js";
 import { Tool } from "./Tool.js";
-import { FunctionCallContext } from "./FunctionCallContext.js";
+import { ToolCallContext } from "./ToolCallContext.js";
 
 // ---- Helper: 创建 Mock 模型 ----
 function createMockModel(streamData: AgentNS.StreamResponseData[] = []) {
@@ -445,7 +445,7 @@ describe("Agent", () => {
           description: "阻止继续",
           parameters: { type: "object", properties: {} },
         },
-        callback(this: FunctionCallContext) {
+        callback(this: ToolCallContext) {
           this.preventDefault();
           return "已停止";
         },
@@ -889,6 +889,216 @@ describe("Agent", () => {
 
         const toolResult = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
         expect(toolResult.content).toBe("未知工具: unknownTool，没有找到对应的工具实现。");
+      });
+    });
+
+    describe("onToolCall 钩子", () => {
+      it("onToolCall 返回字符串（拒绝）时：工具不执行、原因作为工具结果返回、继续下一轮", async () => {
+        const tool = new CallbackTool({
+          function: {
+            name: "sensitiveTool",
+            description: "敏感操作工具",
+            parameters: { type: "object", properties: {} },
+          },
+          callback: vi.fn(() => "敏感操作已执行"),
+        });
+
+        const model = createMultiRoundMockModel([
+          // 第1轮：调用 sensitiveTool
+          [
+            { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "sensitiveTool", arguments: "{}" } }] }, finish_reason: null }] },
+            { choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.ToolCalls }] },
+          ],
+          // 第2轮：AI 收到拒绝原因后调整回复
+          [
+            { choices: [{ index: 0, delta: { content: "好的，我不执行该敏感操作" }, finish_reason: null }] },
+            { choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.Stop }] },
+          ],
+        ]);
+
+        const agent = new Agent({
+          model,
+          messages: [Message.System("助手")],
+          tools: [tool],
+          onToolCall: (ctx) =>
+            `工具 ${ctx.tool_call.function?.name} 被拒绝：需要用户授权`,
+        });
+
+        agent.append(Message.Assistant());
+        await agent.run();
+
+        // 拒绝后继续下一轮（LLM 收到原因并调整）
+        expect(model.createStream).toHaveBeenCalledTimes(2);
+        // 工具未执行
+        expect(tool.callback).not.toHaveBeenCalled();
+        // 拒绝原因作为工具结果返回给 LLM，状态为 Completed
+        const toolResult = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
+        expect(toolResult.content).toContain("sensitiveTool");
+        expect(toolResult.content).toContain("被拒绝");
+        expect(toolResult.content).toContain("需要用户授权");
+        expect(toolResult.status).toBe(AgentNS.MessageStatus.Completed);
+        // 最终消息为第2轮 LLM 回复
+        const lastMsg = agent.messages.at(-1)!;
+        expect(lastMsg.content).toBe("好的，我不执行该敏感操作");
+      });
+
+      it("onToolCall 返回 undefined（允许）时：工具正常执行", async () => {
+        const tool = new CallbackTool({
+          function: {
+            name: "safeTool",
+            description: "安全工具",
+            parameters: { type: "object", properties: {} },
+          },
+          callback: () => "安全工具执行结果",
+        });
+
+        const model = createMultiRoundMockModel([
+          // 第1轮：调用 safeTool
+          [
+            { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "safeTool", arguments: "{}" } }] }, finish_reason: null }] },
+            { choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.ToolCalls }] },
+          ],
+          // 第2轮：AI 整合结果
+          [
+            { choices: [{ index: 0, delta: { content: "已处理" }, finish_reason: null }] },
+            { choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.Stop }] },
+          ],
+        ]);
+
+        const onToolCall = vi.fn(() => undefined);
+
+        const agent = new Agent({
+          model,
+          messages: [Message.System("助手")],
+          tools: [tool],
+          onToolCall,
+        });
+
+        agent.append(Message.Assistant());
+        await agent.run();
+
+        // 钩子被调用且返回 undefined（允许）
+        expect(onToolCall).toHaveBeenCalledTimes(1);
+        // 工具正常执行
+        const toolResult = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
+        expect(toolResult.content).toBe("安全工具执行结果");
+        // 继续下一轮
+        expect(model.createStream).toHaveBeenCalledTimes(2);
+      });
+
+      it("onToolCall 与 Tool.exec 收到同一个 ToolCallContext 实例（贯穿拦截→执行）", async () => {
+        let hookCtx: any;
+        let execCtx: any;
+
+        const tool = new CallbackTool({
+          function: {
+            name: "sharedCtx",
+            description: "共享上下文工具",
+            parameters: { type: "object", properties: {} },
+          },
+          callback: function (this: any) {
+            execCtx = this;
+            return "共享上下文执行结果";
+          },
+        });
+
+        const agent = new Agent({
+          model: createMultiRoundMockModel([
+            // 第1轮：调用 sharedCtx
+            [
+              { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "sharedCtx", arguments: "{}" } }] }, finish_reason: null }] },
+              { choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.ToolCalls }] },
+            ],
+            // 第2轮：AI 回复
+            [
+              { choices: [{ index: 0, delta: { content: "完成" }, finish_reason: null }] },
+              { choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.Stop }] },
+            ],
+          ]),
+          messages: [Message.System("助手")],
+          tools: [tool],
+          onToolCall: (ctx) => {
+            hookCtx = ctx;
+            // 钩子内可读统一字段：tool_call / tool / agent
+            expect(ctx.tool_call.function?.name).toBe("sharedCtx");
+            expect(ctx.tool).toBe(tool);
+            expect(ctx.agent).toBe(agent);
+            return undefined; // 允许执行
+          },
+        });
+
+        agent.append(Message.Assistant());
+        await agent.run();
+
+        // 钩子与 exec 收到的是同一个实例
+        expect(hookCtx).toBeDefined();
+        expect(execCtx).toBeDefined();
+        expect(hookCtx).toBe(execCtx);
+        expect(hookCtx).toBeInstanceOf(ToolCallContext);
+        // 工具确实执行了
+        const toolResult = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
+        expect(toolResult.content).toBe("共享上下文执行结果");
+      });
+
+      it("并行多个工具调用时：每个工具独立过钩子（可单独拒绝）", async () => {
+        const denyTool = new CallbackTool({
+          function: {
+            name: "denyTool",
+            description: "将被拒绝的工具",
+            parameters: { type: "object", properties: {} },
+          },
+          callback: vi.fn(() => "denyTool 执行了"),
+        });
+        const allowTool = new CallbackTool({
+          function: {
+            name: "allowTool",
+            description: "将被允许的工具",
+            parameters: { type: "object", properties: {} },
+          },
+          callback: () => "allowTool 执行结果",
+        });
+
+        const model = createMultiRoundMockModel([
+          // 第1轮：并行返回两个 tool_calls（分两个 chunk）
+          [
+            { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "denyTool", arguments: "{}" } }] }, finish_reason: null }] },
+            { choices: [{ index: 0, delta: { tool_calls: [{ index: 1, id: "2", type: "function", function: { name: "allowTool", arguments: "{}" } }] }, finish_reason: null }] },
+            { choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.ToolCalls }] },
+          ],
+          // 第2轮：AI 整合结果后回复
+          [
+            { choices: [{ index: 0, delta: { content: "已分别处理" }, finish_reason: null }] },
+            { choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.Stop }] },
+          ],
+        ]);
+
+        const agent = new Agent({
+          model,
+          messages: [Message.System("助手")],
+          tools: [denyTool, allowTool],
+          onToolCall: (ctx) => {
+            if (ctx.tool_call.function?.name === "denyTool") {
+              return `工具 denyTool 被拒绝：不允许使用`;
+            }
+            return undefined; // allowTool 放行
+          },
+        });
+
+        agent.append(Message.Assistant());
+        await agent.run();
+
+        // 拒绝的没执行，允许的正常执行
+        expect(denyTool.callback).not.toHaveBeenCalled();
+        const toolResults = agent.messages.filter((m) => m.role === AgentNS.Role.Tool);
+        expect(toolResults).toHaveLength(2);
+        const deniedResult = toolResults.find((m) => m.content!.toString().includes("被拒绝"));
+        const allowedResult = toolResults.find((m) => m.content === "allowTool 执行结果");
+        expect(deniedResult).toBeDefined();
+        expect(deniedResult!.content).toContain("不允许使用");
+        expect(allowedResult).toBeDefined();
+        // 继续下一轮
+        expect(model.createStream).toHaveBeenCalledTimes(2);
+        expect(agent.messages.at(-1)!.content).toBe("已分别处理");
       });
     });
 

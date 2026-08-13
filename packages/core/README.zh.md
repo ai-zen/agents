@@ -101,7 +101,7 @@ Message.Function(functionCall, "执行结果");
 抽象基类，扩展 Agent 的能力。自定义工具需继承 `Tool` 并实现 `exec()` 方法：
 
 ```typescript
-import { Tool, FunctionCallContext } from "@ai-zen/agents-core";
+import { Tool, ToolCallContext } from "@ai-zen/agents-core";
 
 class WeatherTool extends Tool {
   constructor() {
@@ -120,7 +120,7 @@ class WeatherTool extends Tool {
     });
   }
 
-  async exec(ctx: FunctionCallContext) {
+  async exec(ctx: ToolCallContext) {
     const { city } = ctx.parsed_args;
     return `今日${city}天气晴朗，气温22°C。`;
   }
@@ -133,7 +133,7 @@ const agent = new Agent({ model, tools: [new WeatherTool()] });
 ### 内置工具
 
 #### CallbackTool（回调工具）
-通过回调函数快速定义工具。`callback` 中的 `this` 指向 `FunctionCallContext` 实例。
+通过回调函数快速定义工具。`callback` 中的 `this` 指向 `ToolCallContext` 实例。
 
 ```typescript
 import { CallbackTool } from "@ai-zen/agents-core";
@@ -153,7 +153,7 @@ const tool = new CallbackTool({
     },
   },
   callback(parsedArgs) {
-    // this 指向 FunctionCallContext
+    // this 指向 ToolCallContext
     return parsedArgs.a + parsedArgs.b;
   },
 });
@@ -495,18 +495,50 @@ const agent = new Agent({
 });
 ```
 
-### FunctionCallContext（函数调用上下文）
+#### onToolCall — 工具调用拦截钩子
 
-工具执行时的上下文对象，包含以下属性：
+每个工具调用执行前触发，可**拒绝**单个工具调用。
+
+**签名**：
+```typescript
+onToolCall?: (ctx: ToolCallContext) => string | undefined | Promise<string | undefined>;
+```
+
+**返回值**：
+- 字符串 → 拒绝：工具**不执行**，该字符串（拒绝原因）作为工具结果返回给 LLM；对话继续下一轮。
+- `undefined` → 允许：工具正常执行。
+
+钩子收到的 `ctx` 与传给 `Tool.exec(ctx)` 的是**同一个 `ToolCallContext` 实例**。
+
+**示例**：
+```typescript
+const agent = new Agent({
+  model,
+  tools: [fileTool],
+  onToolCall: (ctx) => {
+    if (ctx.tool_call.function?.name === "rm") {
+      return `工具 "rm" 被拒绝：需要用户明确授权。`;
+    }
+    return undefined; // 放行
+  },
+});
+```
+
+### ToolCallContext（工具调用上下文）
+
+一个类贯穿**拦截决策 → 执行**：同一个实例既传给 `onToolCall` 钩子（执行前拦截），也传给 `Tool.exec(ctx)`（真正执行）。
 
 | 属性 | 说明 |
 |------|------|
 | `agent` | 触发调用的 Agent 实例 |
-| `function_call` | 原始函数调用信息（name, arguments） |
+| `tool_call` | 统一形状的工具调用（`{ id?, type?, function: { name, arguments } }`）；旧版 `function_call` 已包装为无 id 的 `{ function }` |
+| `tool` | 匹配到的已注册工具（未注册则为 undefined） |
+| `function_call` | 兼容字段，等价于 `tool_call.function`（旧版形状） |
 | `parsed_args` | JSON 解析后的参数字典 |
-| `result_message` | 用于写入执行结果的消息 |
+| `result_message` | 工具结果消息 —— 执行结果 / 拒绝原因 / 解析错误均写入此处 |
 | `is_prevent_default` | 是否阻止后续自动继续对话 |
 | `parse_error` | JSON 解析错误信息（当 `allowJsonParseError=true` 时） |
+| `signal` | 本次工具执行的中止信号（`abort()` 时触发；工具可监听以真正中断执行） |
 | `preventDefault()` | 标记阻止自动继续下一轮对话 |
 
 ## Agent 运行机制
@@ -528,8 +560,9 @@ send(content)
         ├── handleToolCall() → 执行工具调用
         │     ├── 遍历 tool_calls / function_call
         │     ├── 创建 Tool 或 Function 结果消息
-        │     ├── 实例化 FunctionCallContext
-        │     ├── 执行对应工具的 exec()
+        │     ├── 实例化 ToolCallContext
+        │     ├── onToolCall() 拦截钩子 → 可拒绝（原因回传给 LLM）
+        │     ├── 执行对应工具的 exec(ctx)
         │     └── 返回是否需要继续对话
         └── 若需要继续 → 追加新的 Assistant 消息 → 递归 run()
 ```

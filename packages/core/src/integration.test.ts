@@ -5,7 +5,7 @@ import { Message } from "./Message.js";
 import { ChatGPT } from "./Models/ChatCompletionModels/ChatGPT.js";
 import { CallbackTool } from "./Tools/CallbackTool.js";
 import { AgentTool } from "./Tools/AgentTool.js";
-import { FunctionCallContext } from "./FunctionCallContext.js";
+import { ToolCallContext } from "./ToolCallContext.js";
 
 // ==================== 环境检查 ====================
 
@@ -286,7 +286,7 @@ describeIf("集成测试 - DeepSeek API", () => {
               required: ["action"],
             },
           },
-          callback(this: FunctionCallContext) {
+          callback(this: ToolCallContext) {
             this.preventDefault();
             return `请确认是否执行该操作，确认后我将继续。`;
           },

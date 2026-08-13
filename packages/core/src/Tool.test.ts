@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Tool } from "./Tool.js";
-import { FunctionCallContext } from "./FunctionCallContext.js";
+import { ToolCallContext } from "./ToolCallContext.js";
 
 describe("Tool 基类", () => {
   it("缺少 function 时应抛出错误", () => {
@@ -28,7 +28,7 @@ describe("Tool 基类", () => {
           },
         });
       }
-      async exec(ctx: FunctionCallContext) {
+      async exec(ctx: ToolCallContext) {
         return `executed ${ctx.function_call.name}`;
       }
     })();
@@ -72,7 +72,7 @@ describe("Tool 基类", () => {
           },
         });
       }
-      async exec(ctx: FunctionCallContext) {
+      async exec(ctx: ToolCallContext) {
         const args = ctx.parsed_args;
         return `你好, ${args.name}!`;
       }

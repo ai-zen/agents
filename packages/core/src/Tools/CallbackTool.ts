@@ -1,17 +1,17 @@
 import { AgentNS } from "../AgentNS.js";
 import { PickRequired } from "../Common.js";
 import { Tool } from "../Tool.js";
-import { FunctionCallContext } from "../FunctionCallContext.js";
+import { ToolCallContext } from "../ToolCallContext.js";
 
 export class CallbackTool extends Tool {
-  callback?: (this: FunctionCallContext | any, parsed_args: any) => any;
+  callback?: (this: ToolCallContext | any, parsed_args: any) => any;
 
   constructor(options: PickRequired<CallbackTool, "function" | "callback">) {
     super(options);
     this.callback = options.callback;
   }
 
-  async exec(ctx: FunctionCallContext) {
+  async exec(ctx: ToolCallContext) {
     let result;
 
     // If the tool has a callback function

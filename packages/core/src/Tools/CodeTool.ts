@@ -1,7 +1,7 @@
 import { AgentNS } from "../AgentNS.js";
 import { PickRequired } from "../Common.js";
 import { Tool } from "../Tool.js";
-import { FunctionCallContext } from "../FunctionCallContext.js";
+import { ToolCallContext } from "../ToolCallContext.js";
 
 export class CodeTool implements Tool {
   type: "function";
@@ -15,7 +15,7 @@ export class CodeTool implements Tool {
     this.code = options.code;
   }
 
-  async exec(ctx: FunctionCallContext) {
+  async exec(ctx: ToolCallContext) {
     let result;
 
     // If the tool has code

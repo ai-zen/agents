@@ -148,4 +148,29 @@ describe("AgentContext", () => {
       });
     });
   });
+
+  // ---- onToolCall ----
+
+  describe("onToolCall", () => {
+    it("不设置时应为 undefined", () => {
+      const ctx = new AgentContext({ model: {} as any });
+      expect(ctx.onToolCall).toBeUndefined();
+    });
+
+    it("应接受同步函数", () => {
+      const ctx = new AgentContext({
+        model: {} as any,
+        onToolCall: () => undefined,
+      });
+      expect(ctx.onToolCall).toBeDefined();
+    });
+
+    it("应接受异步函数", () => {
+      const ctx = new AgentContext({
+        model: {} as any,
+        onToolCall: async () => undefined,
+      });
+      expect(ctx.onToolCall).toBeDefined();
+    });
+  });
 });

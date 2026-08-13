@@ -2,7 +2,7 @@ import { Agent } from "../Agent.js";
 import { AgentNS } from "../AgentNS.js";
 import { AgentContext } from "../AgentContext.js";
 import { PickRequired } from "../Common.js";
-import { FunctionCallContext } from "../FunctionCallContext.js";
+import { ToolCallContext } from "../ToolCallContext.js";
 import { Message } from "../Message.js";
 import { Tool } from "../Tool.js";
 
@@ -43,7 +43,7 @@ export class AgentTool extends AgentContext implements Tool {
    * @param ctx - The function call context.
    * @returns {Promise<string>} The result of the function execution.
    */
-  async exec(ctx: FunctionCallContext): Promise<string> {
+  async exec(ctx: ToolCallContext): Promise<string> {
     // Create a chat for the agent using exported config
     const agent = new Agent({
       ...this.toAgentConfig(),

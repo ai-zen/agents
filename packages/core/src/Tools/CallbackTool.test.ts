@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { CallbackTool } from "./CallbackTool.js";
-import { FunctionCallContext } from "../FunctionCallContext.js";
+import { ToolCallContext } from "../ToolCallContext.js";
 import { Agent } from "../Agent.js";
 import { Message } from "../Message.js";
 
@@ -12,10 +12,10 @@ function createMockCtx(
   agent: Agent,
   functionName: string,
   parsedArgs: any,
-): FunctionCallContext {
-  return new FunctionCallContext({
+): ToolCallContext {
+  return new ToolCallContext({
     agent,
-    function_call: { name: functionName, arguments: JSON.stringify(parsedArgs) },
+    tool_call: { function: { name: functionName, arguments: JSON.stringify(parsedArgs) } },
     result_message: Message.Tool({ id: "1", function: { name: functionName } }),
   });
 }
@@ -93,7 +93,7 @@ describe("CallbackTool", () => {
     expect(result).toBe("");
   });
 
-  it("this 上下文应为 FunctionCallContext", async () => {
+  it("this 上下文应为 ToolCallContext", async () => {
     let contextThis: any = null;
     const tool = new CallbackTool({
       function: {
@@ -111,7 +111,7 @@ describe("CallbackTool", () => {
     const ctx = createMockCtx(agent, "contextCheck", {});
 
     await tool.exec(ctx);
-    expect(contextThis).toBeInstanceOf(FunctionCallContext);
+    expect(contextThis).toBeInstanceOf(ToolCallContext);
     expect(contextThis.function_call.name).toBe("contextCheck");
   });
 });
