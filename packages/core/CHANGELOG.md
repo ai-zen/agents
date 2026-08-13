@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.3.1] - 2026-08-13
+
+### ♻️ Refactored
+
+- **`innerLoopTasks` 拆分为双集合语义** — 新增 `innerLoopsTasks`（整组内循环：一次 `send` 产生的所有任务，全程保留、run 结束统一清空，供整组追踪）与 `innerLoopTasks`（当前单轮进行中任务：内循环开始时记录、完成时清除）。`abort()` 只中止**当前轮活跃任务**，不再误标已完成的轮次
+- **`run()` 内循环开头统一追加 Assistant 占位** — `send()` 不再手动 `append(Message.Assistant())`；`run()` 每次内循环开头检测最后一条消息，若非 Pending 的 Assistant 则自动追加，多轮工具调用的下一轮同样由内循环开头统一处理。`AgentTool` 同步移除手动追加。原"最后必须 Assistant / 必须 Pending"的硬校验移除（改为自动追加），空消息仍抛错
+- **`AgentTool` 移除未使用的 `Message` import**
+
+### ✅ Tests
+
+- **新增 abort / 双集合 / 自动追加测试** — abort 只影响当前轮（已完成轮次保持 Completed）；`innerLoopsTasks` 保留整组、`innerLoopTasks` 只保留当前轮且 run 后清空；`run()` 自动追加 Assistant 覆盖末尾为 User / 已完成 Assistant 的场景。测试套件现为 **215 tests**
+
 ## [3.3.0] - 2026-08-14
 
 ### ✨ Added

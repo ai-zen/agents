@@ -3,7 +3,6 @@ import { AgentNS } from "../AgentNS.js";
 import { AgentContext } from "../AgentContext.js";
 import { PickRequired } from "../Common.js";
 import { ToolCallContext } from "../ToolCallContext.js";
-import { Message } from "../Message.js";
 import { Tool } from "../Tool.js";
 
 /**
@@ -57,10 +56,8 @@ export class AgentTool extends AgentContext implements Tool {
     // Get question message
     const questionMessage = agent.messages.at(-1)!;
 
-    // Create an assistant reply message
-    agent.append(Message.Assistant());
-
     // If references are found, insert them before the user question
+    // （Assistant 占位由 run 内循环开头统一追加）
     await agent.rag?.rewrite(questionMessage, this.messages);
 
     // Send the agent chat to the server

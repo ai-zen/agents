@@ -23,14 +23,20 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * 本组内循环（一次 send）产生的所有消息任务：每轮 assistant + 每个工具结果，
+   * 整组内循环（一次 send）产生的所有消息任务：每轮 assistant + 每个工具结果，
    * 各带 AbortController（中止其产生）。全程保留（不随完成移出），run 结束统一清空；
-   * abort 统一遍历：中止 controller + 标记 receiver 为 Aborted。
+   * 供整组追踪/审计使用（abort 不遍历本集合，见 innerLoopTasks）。
+   */
+  private innerLoopsTasks: Set<PendingTask> = new Set();
+
+  /**
+   * 当前内循环（单轮）进行中的消息任务：内循环开始时记录，完成时清除。
+   * 只保留未完成任务；abort 统一遍历本集合：中止 controller + 标记 receiver 为 Aborted。
    */
   private innerLoopTasks: Set<PendingTask> = new Set();
 
   /**
-   * Abort all inner-loop tasks.
+   * Abort current in-flight inner-loop tasks.
    */
   abort() {
     this.innerLoopTasks.forEach((task) => {
@@ -43,44 +49,44 @@ export class Agent extends AgentContext {
    * Run the conversation with the server.
    */
   async run() {
-    // 验证初始 receiver 消息
-    let receiver = this.messages.at(-1) as Message | undefined;
-    if (!receiver) {
+    // 空消息校验：至少需要一条消息（如 send 追加的 User 消息）
+    if (!this.messages.length) {
       throw new Error(
         "You need to send at least one message as a receive message",
       );
     }
-    if (receiver.role !== AgentNS.Role.Assistant) {
-      throw new Error(
-        "The last message will serve as the receiving message, and its role can only be assistant.",
-      );
-    }
-    if (receiver.status !== AgentNS.MessageStatus.Pending) {
-      throw new Error(
-        "The last message will serve as the receiving message, and its status can only be pending.",
-      );
-    }
 
-    const initialController = new AbortController();
-    const initialPendingTask: PendingTask = {
-      controller: initialController,
-      receiver,
-    };
-    this.innerLoopTasks.add(initialPendingTask);
-
-    // 使用 while 循环替代递归
-    let currentReceiver: Message = receiver;
-    let currentController: AbortController = initialController;
-    let needContinue = true;
-
-    // 整组内循环开始：user + assistant 占位已追加完毕，messages 就绪（一次 send 仅一次）
+    // 整组内循环开始：user 消息已就绪（一次 send 仅一次）；
+    // Assistant 占位由每次内循环开头统一追加
     await this.onInnerLoopsStart?.();
 
     this.events.emit("inner-loops-start", this.messages);
 
     // 内循环
+    let needContinue = true;
     while (needContinue) {
       needContinue = false;
+
+      // 内循环开头统一添加 Assistant 占位：若最后一条不是 Pending 的 Assistant 则追加，
+      // 使 run 无论从 send（末尾 User）还是手动追加（末尾任意）都能自洽启动
+      const last = this.messages.at(-1) as Message | undefined;
+      if (
+        !last ||
+        last.role !== AgentNS.Role.Assistant ||
+        last.status !== AgentNS.MessageStatus.Pending
+      ) {
+        this.append(Message.Assistant());
+      }
+
+      const currentReceiver = this.messages.at(-1) as Message;
+      const currentController = new AbortController();
+      const pendingTask: PendingTask = {
+        controller: currentController,
+        receiver: currentReceiver,
+      };
+      // 整组记录 + 当前轮活跃任务
+      this.innerLoopsTasks.add(pendingTask);
+      this.innerLoopTasks.add(pendingTask);
 
       // 每次请求前调用钩子，允许外部刷新工具定义等
       await this.onInnerLoopStart?.();
@@ -115,6 +121,7 @@ export class Agent extends AgentContext {
           currentReceiver.status === AgentNS.MessageStatus.Aborted ||
           currentReceiver.status === AgentNS.MessageStatus.Error
         ) {
+          // 本轮 assistant 已中止/出错：任务完成，finally 统一移除
           continue;
         }
 
@@ -127,18 +134,11 @@ export class Agent extends AgentContext {
             (currentReceiver.status as AgentNS.MessageStatus | undefined) ===
               AgentNS.MessageStatus.Error
           ) {
+            // 本轮 assistant 被中止/出错：任务完成，finally 统一移除
             continue;
           }
 
-          // 准备下一轮对话
-          this.append(Message.Assistant());
-          currentReceiver = this.messages.at(-1) as Message;
-          currentController = new AbortController();
-          const newPendingTask: PendingTask = {
-            controller: currentController,
-            receiver: currentReceiver,
-          };
-          this.innerLoopTasks.add(newPendingTask);
+          // 需要继续下一轮：下一轮内循环开头统一追加 Assistant 占位
           needContinue = true;
         }
 
@@ -151,6 +151,10 @@ export class Agent extends AgentContext {
         currentReceiver.status = AgentNS.MessageStatus.Error;
         currentReceiver.content = error.message;
         this.events.emit("error", error);
+      } finally {
+        // 本轮 assistant 任务已完成（无论正常/continue/异常），从活跃集合移除；
+        // 整组记录（innerLoopsTasks）保留至 run 结束统一清空
+        this.innerLoopTasks.delete(pendingTask);
       }
     }
 
@@ -159,7 +163,8 @@ export class Agent extends AgentContext {
 
     await this.onInnerLoopsEnd?.();
 
-    // 清空本组内循环任务记录
+    // 清空整组 + 当前轮活跃任务记录
+    this.innerLoopsTasks.clear();
     this.innerLoopTasks.clear();
 
     return this.messages;
@@ -381,19 +386,22 @@ export class Agent extends AgentContext {
           task.id ? Message.Tool(task) : Message.Function(task.function!),
         );
 
-        // 工具执行前就记录到 innerLoopTasks（与 assistant 轮次统一管理），
-        // abort 可统一中止/标记；全程保留，run 结束统一清空
+        // 工具执行前就记录（整组 + 当前轮活跃任务），abort 可统一中止/标记；
+        // 完成后从活跃集合移除，整组保留至 run 结束统一清空
         const toolTask: PendingTask = {
           controller: new AbortController(),
           receiver: resultReceiver,
         };
+        this.innerLoopsTasks.add(toolTask);
         this.innerLoopTasks.add(toolTask);
 
-        /** 工具执行完成：若该任务已被 abort（abort 后工具仍会跑完），保持 Aborted 不被覆盖 */
+        /** 工具执行完成：若该任务已被 abort（abort 后工具仍会跑完），保持 Aborted 不被覆盖；
+         *  任务完成即从当前轮活跃集合移除 */
         const markResult = (status: AgentNS.MessageStatus) => {
           resultReceiver.status = toolTask.controller.signal.aborted
             ? AgentNS.MessageStatus.Aborted
             : status;
+          this.innerLoopTasks.delete(toolTask);
         };
 
         try {
@@ -499,13 +507,10 @@ export class Agent extends AgentContext {
     // Create a question message.
     const questionMessage = this.append(Message.User(content));
 
-    // Create an assistant reply message.
-    this.append(Message.Assistant());
-
     // Rewrite the user question.
     await this.rag?.rewrite(questionMessage, this.messages);
 
-    // Run the chat.
+    // Run the chat：Assistant 占位由 run 内循环开头统一追加。
     return this.run();
   }
 }

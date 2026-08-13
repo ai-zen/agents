@@ -167,28 +167,46 @@ describe("Agent", () => {
       expect(lastMsg.content).toBe("你好！我是助手。");
     });
 
-    it("最后一条消息非 Assistant 时应抛出错误", async () => {
+    it("最后一条消息非 Assistant 时 run 应自动追加 Assistant 并正常执行", async () => {
+      const mockModel = createMockModel([
+        { choices: [{ index: 0, delta: { content: "收到" }, finish_reason: null }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.Stop }] },
+      ]);
+
       const agent = new Agent({
-        model: {} as any,
+        model: mockModel,
         messages: [Message.System("你好")],
       });
       agent.append(Message.User("问题"));
 
-      await expect(agent.run()).rejects.toThrow(
-        "The last message will serve as the receiving message, and its role can only be assistant.",
-      );
+      await agent.run();
+
+      // run 内循环开头自动追加 Assistant 并收到回复
+      expect(agent.messages.at(-1)!.role).toBe(AgentNS.Role.Assistant);
+      expect(agent.messages.at(-1)!.content).toBe("收到");
+      expect(agent.messages.at(-1)!.status).toBe(AgentNS.MessageStatus.Completed);
     });
 
-    it("最后一条消息状态非 Pending 时应抛出错误", async () => {
+    it("最后一条消息状态非 Pending 时 run 应自动追加新的 Assistant", async () => {
+      const mockModel = createMockModel([
+        { choices: [{ index: 0, delta: { content: "新回复" }, finish_reason: null }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.Stop }] },
+      ]);
+
       const agent = new Agent({
-        model: {} as any,
+        model: mockModel,
         messages: [Message.System("你好")],
       });
-      agent.append({ ...Message.Assistant(), status: AgentNS.MessageStatus.Completed } as any);
+      agent.append({ ...Message.Assistant("旧的"), status: AgentNS.MessageStatus.Completed } as any);
 
-      await expect(agent.run()).rejects.toThrow(
-        "The last message will serve as the receiving message, and its status can only be pending.",
-      );
+      await agent.run();
+
+      // 旧 Assistant 保留，run 自动追加新的 Assistant 接收回复
+      expect(agent.messages).toHaveLength(3); // system + 旧 assistant + 新 assistant
+      expect(agent.messages[1].content).toBe("旧的");
+      expect(agent.messages[1].status).toBe(AgentNS.MessageStatus.Completed);
+      expect(agent.messages[2].content).toBe("新回复");
+      expect(agent.messages[2].status).toBe(AgentNS.MessageStatus.Completed);
     });
 
     it("没有消息时运行应抛出错误", async () => {
@@ -1196,6 +1214,177 @@ describe("Agent", () => {
       agent.abort();
       // 不抛异常即可
       expect(true).toBe(true);
+    });
+
+    it("abort 只影响当前轮，已完成轮次保持 Completed", async () => {
+      const tool = new CallbackTool({
+        function: {
+          name: "getTime",
+          description: "获取时间",
+          parameters: { type: "object", properties: {} },
+        },
+        callback: () => "12:00:00",
+      });
+
+      // 第一轮：AI 调用工具（立即完成）
+      const firstQueue = new AsyncQueue<AgentNS.StreamResponseData>();
+      firstQueue.push({
+        choices: [{
+          index: 0,
+          delta: { tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "getTime", arguments: "{}" } }] },
+          finish_reason: null,
+        }],
+      });
+      firstQueue.push({
+        choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.ToolCalls }],
+      });
+      firstQueue.done();
+
+      // 第二轮：挂起，等待 abort
+      const secondQueue = new AsyncQueue<AgentNS.StreamResponseData>();
+      let resolveSecondCall!: () => void;
+      const secondCall = new Promise<void>((r) => { resolveSecondCall = r; });
+
+      let callCount = 0;
+      const model = {
+        createStream: vi.fn((opts: any) => {
+          if (callCount === 0) {
+            callCount++;
+            return firstQueue;
+          }
+          callCount++;
+          resolveSecondCall();
+          opts.onOpen?.();
+          // abort 时让队列结束
+          opts.signal.addEventListener("abort", () => {
+            secondQueue.done();
+          });
+          return secondQueue;
+        }),
+        createCompletion: vi.fn(),
+        code: "mock",
+        title: "Mock",
+        type: ModelType.ChatCompletion,
+        name: "Mock",
+        model_config: {},
+        request_config: { url: "https://test.com", headers: {}, body: {} },
+      } as any;
+
+      const agent = new Agent({
+        model,
+        messages: [Message.System("助手")],
+        tools: [tool],
+      });
+      agent.append(Message.Assistant());
+
+      const runPromise = agent.run();
+      // 等待第二轮开始
+      await secondCall;
+      agent.abort();
+      await runPromise;
+
+      const messages = agent.messages;
+      // 第一轮 assistant（含 tool_calls）保持 Completed
+      expect(messages[1].role).toBe(AgentNS.Role.Assistant);
+      expect(messages[1].status).toBe(AgentNS.MessageStatus.Completed);
+      // 工具结果保持 Completed
+      expect(messages[2].role).toBe(AgentNS.Role.Tool);
+      expect(messages[2].status).toBe(AgentNS.MessageStatus.Completed);
+      expect(messages[2].content).toBe("12:00:00");
+      // 第二轮 assistant 被 Aborted
+      expect(messages[3].role).toBe(AgentNS.Role.Assistant);
+      expect(messages[3].status).toBe(AgentNS.MessageStatus.Aborted);
+    });
+
+    it("innerLoopsTasks 保留整组任务，innerLoopTasks 只保留当前轮进行中任务", async () => {
+      const tool = new CallbackTool({
+        function: {
+          name: "getTime",
+          description: "获取时间",
+          parameters: { type: "object", properties: {} },
+        },
+        callback: () => "12:00:00",
+      });
+
+      // 第一轮：AI 调用工具（立即完成）
+      const firstQueue = new AsyncQueue<AgentNS.StreamResponseData>();
+      firstQueue.push({
+        choices: [{
+          index: 0,
+          delta: { tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "getTime", arguments: "{}" } }] },
+          finish_reason: null,
+        }],
+      });
+      firstQueue.push({
+        choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.ToolCalls }],
+      });
+      firstQueue.done();
+
+      // 第二轮：挂起，用于在运行中检查集合内容
+      const secondQueue = new AsyncQueue<AgentNS.StreamResponseData>();
+      let resolveSecondCall!: () => void;
+      const secondCall = new Promise<void>((r) => { resolveSecondCall = r; });
+
+      let callCount = 0;
+      const model = {
+        createStream: vi.fn((opts: any) => {
+          if (callCount === 0) {
+            callCount++;
+            return firstQueue;
+          }
+          callCount++;
+          resolveSecondCall();
+          opts.signal.addEventListener("abort", () => secondQueue.done());
+          return secondQueue;
+        }),
+        createCompletion: vi.fn(),
+        code: "mock",
+        title: "Mock",
+        type: ModelType.ChatCompletion,
+        name: "Mock",
+        model_config: {},
+        request_config: { url: "https://test.com", headers: {}, body: {} },
+      } as any;
+
+      const agent = new Agent({
+        model,
+        messages: [Message.System("助手")],
+        tools: [tool],
+      });
+      agent.append(Message.Assistant());
+
+      const runPromise = agent.run();
+      await secondCall;
+
+      // 整组集合：第一轮 assistant + 工具结果 + 第二轮 assistant
+      expect((agent as any).innerLoopsTasks.size).toBe(3);
+      // 当前轮活跃集合：只有第二轮 assistant（开始记录、完成清除）
+      expect((agent as any).innerLoopTasks.size).toBe(1);
+
+      agent.abort();
+      await runPromise;
+
+      // run 结束后两个集合均清空
+      expect((agent as any).innerLoopsTasks.size).toBe(0);
+      expect((agent as any).innerLoopTasks.size).toBe(0);
+    });
+
+    it("单轮 run 结束后 innerLoopsTasks 与 innerLoopTasks 均清空", async () => {
+      const mockModel = createMockModel([
+        { choices: [{ index: 0, delta: { content: "你好" }, finish_reason: null }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: AgentNS.FinishReason.Stop }] },
+      ]);
+
+      const agent = new Agent({
+        model: mockModel,
+        messages: [Message.System("助手")],
+      });
+      agent.append(Message.Assistant());
+
+      await agent.run();
+
+      expect((agent as any).innerLoopsTasks.size).toBe(0);
+      expect((agent as any).innerLoopTasks.size).toBe(0);
     });
   });
 
