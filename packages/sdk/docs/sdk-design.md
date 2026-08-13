@@ -369,7 +369,7 @@ abstract class SdkCallbackTool extends Tool {
   abstract call(input: unknown): unknown | Promise<unknown>;
 
   /** 桥接 core 的 Tool.exec：解析参数 → call → 序列化 */
-  async exec(ctx: FunctionCallContext): Promise<string>;
+  async exec(ctx: ToolCallContext): Promise<string>;
 
   /** 将相对路径解析到 env.cwd，绝对路径原样返回 */
   resolve(p: string): string;
@@ -746,6 +746,10 @@ interface AgentPlugin {
   onInnerLoopEnd?(ctx: SendContext): Promise<void>;     // 每轮内循环请求+工具调用后
   onInnerLoopsStart?(ctx: SendContext): Promise<void>;  // 一次 send 整组内循环开始前
   onInnerLoopsEnd?(ctx: SendContext): Promise<void>;    // 一次 send 整组内循环结束后
+  onToolCall?(ctx: ToolCallContext): string | undefined | Promise<string | undefined>;
+  // 单个工具调用执行前拦截（对应 Core onToolCall，收同一个 ToolCallContext 实例）：
+  // 返回字符串 = 拒绝该工具（不执行，原因作为工具结果回给 LLM，继续下一轮）；
+  // 返回 undefined = 放行。多个插件按注册顺序调用，任一返回字符串即拒绝（短路）。
 }
 ```
 

@@ -3,7 +3,7 @@ import path from "node:path";
 import { SdkCallbackTool } from "./SdkCallbackTool.js";
 import { makeEnv } from "../capabilities/implements/builtin/test-helpers.js";
 import type { ToolEnv } from "../types/index.js";
-import type { FunctionCallContext } from "@ai-zen/agents-core";
+import type { ToolCallContext } from "@ai-zen/agents-core";
 
 class TestTool extends SdkCallbackTool {
   private fn: (input: any) => unknown;
@@ -25,8 +25,8 @@ class TestTool extends SdkCallbackTool {
   }
 }
 
-function makeCtx(input: unknown): FunctionCallContext {
-  return { parsed_args: input } as unknown as FunctionCallContext;
+function makeCtx(input: unknown): ToolCallContext {
+  return { parsed_args: input } as unknown as ToolCallContext;
 }
 
 describe("SdkCallbackTool", () => {

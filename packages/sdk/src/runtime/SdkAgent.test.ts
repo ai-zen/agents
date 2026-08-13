@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { AgentNS } from "@ai-zen/agents-core";
+import { Agent, AgentNS } from "@ai-zen/agents-core";
 import { SdkAgent } from "./SdkAgent.js";
 import type { AgentPlugin, SendContext } from "./SdkAgent.js";
 
@@ -220,6 +220,84 @@ describe("SdkAgent", () => {
     it("插件没有 onAfterSend 时跳过", () => {
       const plugin: AgentPlugin = { onBeforeSend: vi.fn() };
       expect(plugin.onAfterSend).toBeUndefined();
+    });
+  });
+
+  describe("send() — onToolCall 插件钩子", () => {
+    // 拦截 Core Agent.send：捕获 SdkAgent.send 在 super.send 前设置的 this.onToolCall 包装函数，不真正执行流
+    function captureOnToolCallHook(agent: SdkAgent): () => Promise<(ctx: any) => Promise<string | undefined>> {
+      let capturedHook: ((ctx: any) => Promise<string | undefined>) | undefined;
+      const origSend = (Agent.prototype as any).send;
+      (Agent.prototype as any).send = async function (this: any) {
+        capturedHook = this.onToolCall;
+        return [];
+      };
+      const cleanup = async () => {
+        (Agent.prototype as any).send = origSend;
+        return capturedHook!;
+      };
+      return () => agent.send("hello").then(cleanup);
+    }
+
+    it("send 会包装 this.onToolCall 并在结束后清除", async () => {
+      const agent = createTestAgent();
+      agent.use({ onToolCall: vi.fn(() => undefined) });
+
+      const hook = await captureOnToolCallHook(agent)();
+
+      expect(hook).toBeDefined();
+      // send 结束后钩子已清除
+      expect((agent as any).onToolCall).toBeUndefined();
+    });
+
+    it("任一插件返回字符串即拒绝（短路），全部放行则返回 undefined", async () => {
+      const agent = createTestAgent();
+      const denyPlugin: AgentPlugin = {
+        onToolCall: vi.fn((ctx: any) =>
+          ctx.tool_call.function?.name === "rm" ? "工具 rm 被拒绝：需要授权" : undefined,
+        ),
+      };
+      const allowPlugin: AgentPlugin = { onToolCall: vi.fn(() => undefined) };
+      agent.use(denyPlugin);
+      agent.use(allowPlugin);
+
+      const hook = await captureOnToolCallHook(agent)();
+      const ctx = { tool_call: { function: { name: "rm", arguments: "{}" } }, agent };
+
+      // rm → 第一个插件拒绝，短路
+      expect(await hook(ctx)).toBe("工具 rm 被拒绝：需要授权");
+      expect(allowPlugin.onToolCall).not.toHaveBeenCalled();
+
+      // 其他工具 → 两个插件都放行 → undefined
+      const ctx2 = { tool_call: { function: { name: "readFile", arguments: "{}" } }, agent };
+      expect(await hook(ctx2)).toBeUndefined();
+      expect(denyPlugin.onToolCall).toHaveBeenCalledTimes(2);
+      expect(allowPlugin.onToolCall).toHaveBeenCalledTimes(1);
+    });
+
+    it("onToolCall 插件收到 ToolCallContext（tool_call / tool / agent）", async () => {
+      const agent = createTestAgent();
+      const captured: any[] = [];
+      const plugin: AgentPlugin = {
+        onToolCall: vi.fn(async (ctx: any) => {
+          captured.push({
+            name: ctx.tool_call.function?.name,
+            hasTool: ctx.tool !== undefined,
+            isAgent: ctx.agent === agent,
+          });
+          return undefined;
+        }),
+      };
+      agent.use(plugin);
+
+      const hook = await captureOnToolCallHook(agent)();
+      await hook({
+        tool_call: { function: { name: "readFile", arguments: "{}" } },
+        tool: { function: { name: "readFile" } },
+        agent,
+      });
+
+      expect(captured).toEqual([{ name: "readFile", hasTool: true, isAgent: true }]);
     });
   });
 

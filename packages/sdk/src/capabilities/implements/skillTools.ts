@@ -1,4 +1,4 @@
-import { CallbackTool, Agent, Message, type FunctionCallContext } from "@ai-zen/agents-core";
+import { CallbackTool, Agent, Message, type ToolCallContext } from "@ai-zen/agents-core";
 import type { Tool } from "@ai-zen/agents-core";
 import { SdkAgent } from "../../runtime/SdkAgent.js";
 import type { SkillInfo } from "../discovery/skills.js";
@@ -47,7 +47,7 @@ export function createLoadSkillTool(
         additionalProperties: false,
       },
     },
-    callback: async function (this: FunctionCallContext, input: Record<string, unknown>): Promise<string> {
+    callback: async function (this: ToolCallContext, input: Record<string, unknown>): Promise<string> {
       const skillId = input.skill_id as string;
       const skill = await readSkill(skillDirs, skillId);
       if (!skill) {

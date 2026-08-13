@@ -1,5 +1,10 @@
 import { Agent, type ChatCompletionModel } from "@ai-zen/agents-core";
-import type { AgentNS, Tool, UnknownToolContext } from "@ai-zen/agents-core";
+import type {
+  AgentNS,
+  Tool,
+  ToolCallContext,
+  UnknownToolContext,
+} from "@ai-zen/agents-core";
 import type { AgentDefinition, AgentPermissions } from "../types/index.js";
 import type { Provider } from "./Provider.js";
 
@@ -33,6 +38,9 @@ export interface SendContext {
  * onInnerLoopEnd:    Agent 内循环结束后触发。由 Core Agent 在内循环中调用。
  * onInnerLoopsStart: Agent 整组内循环开始前触发（一次 send 仅一次）。由 Core Agent 在 run() 的 while 循环前调用。
  * onInnerLoopsEnd:   Agent 整组内循环结束后触发（一次 send 仅一次）。由 Core Agent 在 run() 的 while 循环后调用。
+ * onToolCall:        单个工具调用执行前触发（对应 Core onToolCall 钩子）。
+ *                    返回字符串 = 拒绝该工具（原因作为工具结果回给 LLM，工具不执行）；
+ *                    返回 undefined = 放行。多个插件按注册顺序调用，任一返回字符串即拒绝。
  */
 export interface AgentPlugin {
   /** Agent.init() 时调用，用于异步初始化 */
@@ -49,6 +57,12 @@ export interface AgentPlugin {
   onInnerLoopsStart?(ctx: SendContext): Promise<void>;
   /** Agent 整组内循环结束后触发（一次 send 仅一次） */
   onInnerLoopsEnd?(ctx: SendContext): Promise<void>;
+  /**
+   * 单个工具调用执行前触发（对应 Core onToolCall 钩子，收同一个 ToolCallContext 实例）。
+   * 返回字符串 = 拒绝该工具（不执行，原因作为工具结果回给 LLM，继续下一轮）；
+   * 返回 undefined = 放行。多个插件按注册顺序调用，任一返回字符串即拒绝。
+   */
+  onToolCall?(ctx: ToolCallContext): string | undefined | Promise<string | undefined>;
 }
 
 // ---------------------------------------------------------------------------
@@ -194,11 +208,20 @@ export class SdkAgent extends Agent {
         await plugin.onInnerLoopsEnd?.(ctx);
       }
     };
+    // 工具调用拦截：任一插件返回字符串即拒绝该工具（短路），全部放行则返回 undefined
+    this.onToolCall = async (ctx: ToolCallContext) => {
+      for (const plugin of this._plugins) {
+        const denied = await plugin.onToolCall?.(ctx);
+        if (denied !== undefined) return denied;
+      }
+      return undefined;
+    };
     await super.send(content);
     this.onInnerLoopStart = undefined;
     this.onInnerLoopEnd = undefined;
     this.onInnerLoopsStart = undefined;
     this.onInnerLoopsEnd = undefined;
+    this.onToolCall = undefined;
 
     for (const plugin of this._plugins) {
       await plugin.onAfterSend?.(ctx);

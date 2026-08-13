@@ -1,5 +1,5 @@
 import path from "node:path";
-import { Tool, FunctionCallContext } from "@ai-zen/agents-core";
+import { Tool, ToolCallContext } from "@ai-zen/agents-core";
 import type { AgentNS } from "@ai-zen/agents-core";
 import type { ToolEnv } from "../types/index.js";
 
@@ -27,7 +27,7 @@ export abstract class SdkCallbackTool extends Tool {
   abstract call(input: unknown): unknown | Promise<unknown>;
 
   /** 桥接 core 的 Tool.exec：解析参数 → call → 序列化 */
-  async exec(ctx: FunctionCallContext): Promise<string> {
+  async exec(ctx: ToolCallContext): Promise<string> {
     const result = await this.call(ctx.parsed_args);
     if (typeof result === "string") return result;
     // JSON.stringify(undefined) 返回 undefined（非字符串），会破坏 Promise<string> 契约
