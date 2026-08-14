@@ -25,9 +25,8 @@ describe("AgentContext", () => {
   it("应接受自定义配置", () => {
     const tool1 = new (class extends Tool {
       constructor() {
-        super({
-          function: { name: "fn1", description: "", parameters: { type: "object", properties: {} } },
-        });
+        super();
+        this.function = { name: "fn1", description: "", parameters: { type: "object", properties: {} } };
       }
       async exec() {
         return "ok";

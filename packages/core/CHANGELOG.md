@@ -1,5 +1,26 @@
 # Changelog
 
+## [3.4.0] - 2026-08-14
+
+### ⚠️ Breaking
+
+- **`Tool` base class slimmed down — no longer requires passing `function` / `type` via its constructor** — the `Tool` constructor is removed entirely; `type` now defaults to `"function"`, and `function` becomes a field declared by the base class but **assigned by each subclass** (via a class-body field or `this.function = ...` in its own constructor). `exec(ctx)` remains the only abstract method. Subclasses extending or implementing `Tool` must now own their `function` definition themselves
+- **`CallbackTool` callback no longer bound via `this` injection** — the callback signature changed from `(this: ToolCallContext, parsed_args)` to `(parsed_args, ctx: ToolCallContext)`. `Tool.exec` now calls `this.callback(ctx.parsed_args, ctx)` explicitly instead of `this.callback.call(ctx, ...)`. Consumers previously relying on `this` (e.g. `this.agent`, `this.signal`, `this.preventDefault()`) must read them from the second argument `ctx` instead
+- **`AgentToolLazy.buildAgent` no longer bound via `this` injection** — its signature changed from `(this: ToolCallContext, parsedArgs)` to `(parsedArgs, ctx: ToolCallContext)`. Use `ctx.agent` (instead of `this.agent`) to access the parent Agent
+
+### 🛠 Optimized
+
+- **Tool definition now lives with its implementation (`function` colocated with `call`/`exec`)** — instead of passing a separate `function` object through the base constructor, each tool now declares its own `function` definition next to its business logic (`call`), keeping the definition and implementation together and eliminating the redundant two-place maintenance
+- **Sub-agent tools honor the execution abort signal** — `AgentTool` and `AgentToolLazy` now listen for `ctx.signal` and call `agent.abort()` on the child agent when it fires, letting a long-running sub-agent be stopped when the parent tool call is aborted
+
+### 🗑 Deprecated
+
+- **`CodeTool` marked `@deprecated`** — string-code tools (defined via `new Function`) lack type safety and clear parameter mapping. Prefer `CallbackTool` (typed closure) or a custom `Tool` subclass. Kept for backward compatibility, not deleted
+
+### ✅ Tests
+
+- Updated `Tool.test.ts` to the new contract (subclasses provide `function` via a class-body field or `this.function = ...`); updated `CallbackTool` / `Agent` / `AgentContext` tests for the explicit ctx parameter and the redeclared `Tool` field; added a sub-agent abort-linkage test. Core suite: **198 passed**, **17 skipped**
+
 ## [3.3.1] - 2026-08-13
 
 ### ♻️ Refactored

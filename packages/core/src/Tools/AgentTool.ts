@@ -62,7 +62,16 @@ export class AgentTool extends AgentContext implements Tool {
 
     // Send the agent chat to the server
     try {
-      await agent.run();
+      // 子 Agent 中断联动：外层 abort → agent.abort()
+      const onAbort = () => agent.abort();
+      if (ctx.signal) {
+        ctx.signal.addEventListener("abort", onAbort, { once: true });
+      }
+      try {
+        await agent.run();
+      } finally {
+        ctx.signal?.removeEventListener("abort", onAbort);
+      }
     } finally {
       // 子 Agent 所有轮次完成（包括 tool_calls 多轮递归）后通知
       ctx.agent.events.emit("sub-agent-end", { agent, ctx });

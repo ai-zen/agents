@@ -3,31 +3,32 @@ import { Tool } from "./Tool.js";
 import { ToolCallContext } from "./ToolCallContext.js";
 
 describe("Tool 基类", () => {
-  it("缺少 function 时应抛出错误", () => {
-    expect(() => {
-      new (class extends Tool {
-        async exec() {
-          return "ok";
-        }
-      })({} as any);
-    }).toThrow("Tool must have a function");
+  it("type 默认为 'function'", () => {
+    const tool = new (class extends Tool {
+      function = {
+        name: "fn",
+        description: "",
+        parameters: { type: "object", properties: {} },
+      } as Tool["function"];
+      async exec() {
+        return "";
+      }
+    })();
+
+    expect(tool.type).toBe("function");
   });
 
-  it("应正确设置 type 和 function 属性", () => {
+  it("子类通过类体字段提供 function 定义", () => {
     const tool = new (class extends Tool {
-      constructor() {
-        super({
-          function: {
-            name: "testFn",
-            description: "测试函数",
-            parameters: {
-              type: "object",
-              properties: { x: { type: "string" } },
-              required: ["x"],
-            },
-          },
-        });
-      }
+      function = {
+        name: "testFn",
+        description: "测试函数",
+        parameters: {
+          type: "object",
+          properties: { x: { type: "string" } },
+          required: ["x"],
+        },
+      } as Tool["function"];
       async exec(ctx: ToolCallContext) {
         return `executed ${ctx.function_call.name}`;
       }
@@ -38,40 +39,35 @@ describe("Tool 基类", () => {
     expect(tool.function.description).toBe("测试函数");
   });
 
-  it("type 默认为 'function'", () => {
+  it("子类通过构造函数赋值 this.function 也可行", () => {
     const tool = new (class extends Tool {
       constructor() {
-        super({
-          function: {
-            name: "fn",
-            description: "",
-            parameters: { type: "object", properties: {} },
-          },
-        });
+        super();
+        this.function = {
+          name: "ctorFn",
+          description: "",
+          parameters: { type: "object", properties: {} },
+        };
       }
       async exec() {
         return "";
       }
     })();
 
-    expect(tool.type).toBe("function");
+    expect(tool.function.name).toBe("ctorFn");
   });
 
   it("exec 方法应被子类正确重写", async () => {
     const tool = new (class extends Tool {
-      constructor() {
-        super({
-          function: {
-            name: "greet",
-            description: "问候",
-            parameters: {
-              type: "object",
-              properties: { name: { type: "string" } },
-              required: ["name"],
-            },
-          },
-        });
-      }
+      function = {
+        name: "greet",
+        description: "问候",
+        parameters: {
+          type: "object",
+          properties: { name: { type: "string" } },
+          required: ["name"],
+        },
+      } as Tool["function"];
       async exec(ctx: ToolCallContext) {
         const args = ctx.parsed_args;
         return `你好, ${args.name}!`;
@@ -85,27 +81,5 @@ describe("Tool 基类", () => {
 
     const result = await tool.exec(mockCtx);
     expect(result).toBe("你好, 世界!");
-  });
-
-  it("Tool 应实现 AgentNS.ToolDefine 接口", () => {
-    const tool = new (class extends Tool {
-      constructor() {
-        super({
-          function: {
-            name: "fn",
-            description: "desc",
-            parameters: { type: "object", properties: {} },
-          },
-        });
-      }
-      async exec() {
-        return "";
-      }
-    })();
-
-    // 验证实现了 ToolDefine 接口
-    expect(tool.type).toBe("function");
-    expect(tool.function).toBeDefined();
-    expect(tool.function.name).toBe("fn");
   });
 });

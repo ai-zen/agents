@@ -237,5 +237,56 @@ describe("AgentTool", () => {
       expect(subAgentHandler).toHaveBeenCalledTimes(1);
       expect(subAgentHandler.mock.calls[0][0].agent).toBeDefined();
     });
+
+    it("外层 signal abort 时联动中止子 Agent", async () => {
+      // 子 Agent 模型：挂起队列，收到 signal abort 时 done()
+      const subQueue = new AsyncQueue<AgentNS.StreamResponseData>();
+      const subModel = {
+        createStream: vi.fn((opts: any) => {
+          opts.onOpen?.();
+          opts.signal.addEventListener("abort", () => subQueue.done(), { once: true });
+          return subQueue;
+        }),
+        createCompletion: vi.fn(),
+        code: "mock-model",
+        title: "Mock",
+        type: "chat_completion",
+        name: "MockModel",
+        model_config: {},
+        request_config: { url: "https://test.com", headers: {}, body: {} },
+      } as any;
+
+      const tool = new AgentTool({
+        function: {
+          name: "hangFn",
+          description: "挂起",
+          parameters: { type: "object", properties: {}, required: [] },
+        },
+        model: subModel,
+        messages: [Message.User("你好")],
+      });
+
+      const agent = new Agent({
+        model: createMockModel(),
+        messages: [Message.System("主助手")],
+        tools: [tool],
+      });
+
+      const controller = new AbortController();
+      const ctx = new ToolCallContext({
+        agent,
+        tool_call: { function: { name: "hangFn", arguments: "{}" } },
+        result_message: Message.Tool({ id: "1", function: { name: "hangFn" } }),
+        signal: controller.signal,
+      });
+
+      // 并发执行 exec，中途 abort
+      const execPromise = tool.exec(ctx);
+      await new Promise((r) => setTimeout(r, 30));
+      controller.abort();
+
+      // 不应挂起：abort 后子 Agent 被联动中止，exec 能正常 resolve 返回
+      await execPromise;
+    });
   });
 });

@@ -21,10 +21,17 @@ function createMockCtx(
 }
 
 describe("CallbackTool", () => {
-  it("构造函数缺少 function 应抛出错误", () => {
-    expect(() => {
-      new CallbackTool({} as any);
-    }).toThrow("Tool must have a function");
+  it("构造时可提供 function 定义", () => {
+    const tool = new CallbackTool({
+      function: {
+        name: "testFn",
+        description: "测试",
+        parameters: { type: "object", properties: {} },
+      },
+      callback: () => "ok",
+    });
+    expect(tool.function.name).toBe("testFn");
+    expect(tool.type).toBe("function");
   });
 
   it("应执行回调并返回序列化结果", async () => {
@@ -51,7 +58,7 @@ describe("CallbackTool", () => {
     const result = await tool.exec(ctx);
 
     expect(callback).toHaveBeenCalledTimes(1);
-    expect(callback).toHaveBeenCalledWith({ name: "世界" });
+    expect(callback).toHaveBeenCalledWith({ name: "世界" }, ctx);
     expect(result).toBe("你好, 世界!");
   });
 
@@ -93,16 +100,16 @@ describe("CallbackTool", () => {
     expect(result).toBe("");
   });
 
-  it("this 上下文应为 ToolCallContext", async () => {
-    let contextThis: any = null;
+  it("第二参 ctx 应为 ToolCallContext", async () => {
+    let receivedCtx: any = null;
     const tool = new CallbackTool({
       function: {
         name: "contextCheck",
         description: "检查上下文",
         parameters: { type: "object", properties: {} },
       },
-      callback: function (this: any) {
-        contextThis = this;
+      callback: (_parsedArgs: any, ctx: any) => {
+        receivedCtx = ctx;
         return "ok";
       },
     });
@@ -111,7 +118,7 @@ describe("CallbackTool", () => {
     const ctx = createMockCtx(agent, "contextCheck", {});
 
     await tool.exec(ctx);
-    expect(contextThis).toBeInstanceOf(ToolCallContext);
-    expect(contextThis.function_call.name).toBe("contextCheck");
+    expect(receivedCtx).toBeInstanceOf(ToolCallContext);
+    expect(receivedCtx.function_call.name).toBe("contextCheck");
   });
 });

@@ -463,8 +463,8 @@ describe("Agent", () => {
           description: "阻止继续",
           parameters: { type: "object", properties: {} },
         },
-        callback(this: ToolCallContext) {
-          this.preventDefault();
+        callback(_parsedArgs: any, ctx: ToolCallContext) {
+          ctx.preventDefault();
           return "已停止";
         },
       });
@@ -1014,8 +1014,8 @@ describe("Agent", () => {
             description: "共享上下文工具",
             parameters: { type: "object", properties: {} },
           },
-          callback: function (this: any) {
-            execCtx = this;
+          callback: (_parsedArgs: any, ctx: any) => {
+            execCtx = ctx;
             return "共享上下文执行结果";
           },
         });

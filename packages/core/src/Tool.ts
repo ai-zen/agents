@@ -1,16 +1,16 @@
 import { AgentNS } from "./AgentNS.js";
-import { PickRequired } from "./Common.js";
 import { ToolCallContext } from "./ToolCallContext.js";
 
+/**
+ * Tool — 工具抽象基类。
+ *
+ * 工具定义（function / type）由子类通过类体或构造函数自行赋值，
+ * 基类不通过构造函数强制传入。子类必须实现 exec(ctx)。
+ */
 export abstract class Tool implements AgentNS.ToolDefine {
-  type: "function";
-  function: AgentNS.FunctionDefine;
-
-  constructor(options: PickRequired<Tool, "function">) {
-    if (!options.function) throw new Error("Tool must have a function");
-    this.type = options.type ?? "function";
-    this.function = options.function;
-  }
+  type: "function" = "function";
+  /** 工具定义。由子类赋值（类体字段或构造内 this.function = ...）。 */
+  declare function: AgentNS.FunctionDefine;
 
   abstract exec(ctx: ToolCallContext): Promise<string>;
 }

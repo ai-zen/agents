@@ -4,10 +4,12 @@ import { Tool } from "../Tool.js";
 import { ToolCallContext } from "../ToolCallContext.js";
 
 export class CallbackTool extends Tool {
-  callback?: (this: ToolCallContext | any, parsed_args: any) => any;
+  callback?: (parsed_args: any, ctx: ToolCallContext) => any;
 
   constructor(options: PickRequired<CallbackTool, "function" | "callback">) {
-    super(options);
+    super();
+    this.function = options.function;
+    this.type = options.type ?? "function";
     this.callback = options.callback;
   }
 
@@ -16,8 +18,8 @@ export class CallbackTool extends Tool {
 
     // If the tool has a callback function
     if (this.callback) {
-      // Execute the callback function
-      result = await this.callback.call(ctx, ctx.parsed_args);
+      // Execute the callback function, passing parsed args and the full ctx explicitly.
+      result = await this.callback(ctx.parsed_args, ctx);
     }
 
     // If the result is already a string, return it as is. Otherwise, serialize it using JSON.stringify().
