@@ -1,4 +1,5 @@
 import { CallbackTool } from "@ai-zen/agents-core";
+import type { ToolCallContext } from "@ai-zen/agents-core";
 import { createDisclosureParam } from "../disclosure.js";
 import { getLogger } from "../../shared/logger.js";
 import type { McpConnectionManager } from "../../runtime/McpConnectionManager.js";
@@ -93,7 +94,7 @@ export function createCallMcpTool(mcpManager: McpConnectionManager): CallbackToo
         additionalProperties: false,
       },
     },
-    callback: async (input): Promise<string> => {
+    callback: async (input, ctx): Promise<string> => {
       const serverName = input.server as string;
       const state = mcpManager.getState(serverName);
       if (state !== "connected") {
@@ -107,10 +108,14 @@ export function createCallMcpTool(mcpManager: McpConnectionManager): CallbackToo
 
       try {
         mcpManager.touch(serverName);
-        const result = await client.callTool({
-          name: input.tool as string,
-          arguments: input.arguments as Record<string, unknown>,
-        });
+        const result = await client.callTool(
+          {
+            name: input.tool as string,
+            arguments: input.arguments as Record<string, unknown>,
+          },
+          undefined,
+          { signal: ctx?.signal },
+        );
 
         const contents = (result as any).content ?? [];
         const textParts = contents
@@ -148,7 +153,7 @@ export function createReadMcpResourceTool(mcpManager: McpConnectionManager): Cal
         additionalProperties: false,
       },
     },
-    callback: async (input): Promise<string> => {
+    callback: async (input, ctx): Promise<string> => {
       const serverName = input.server as string;
       const state = mcpManager.getState(serverName);
       if (state !== "connected") {
@@ -162,9 +167,10 @@ export function createReadMcpResourceTool(mcpManager: McpConnectionManager): Cal
 
       try {
         mcpManager.touch(serverName);
-        const result = await (client as any).readResource({
-          uri: input.uri as string,
-        });
+        const result = await client.readResource(
+          { uri: input.uri as string },
+          { signal: ctx?.signal },
+        );
 
         const contents = result?.contents ?? [];
         const textParts = contents

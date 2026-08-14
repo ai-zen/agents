@@ -27,13 +27,13 @@ export function createSubAgentTool(
       parameters: def.function.parameters as unknown as AgentNS.FunctionDefine["parameters"],
     },
     messages: def.messages as unknown as AgentNS.Message[],
-    buildAgent: function (this: ToolCallContext, _parsedArgs: any): Agent {
+    buildAgent: (_parsed_args: any, ctx: ToolCallContext): Agent => {
       // 模型解析：SubAgent 可指定独立模型，否则复用父 Agent 的模型
       let subModel: ChatCompletionModel;
       if (def.modelId) {
         subModel = createModel(provider, def.modelId);
       } else {
-        const parentModel = this.agent?.model;
+        const parentModel = ctx.agent?.model;
         if (!parentModel) {
           throw new Error(
             `SubAgent "${selfName}" 未指定 modelId，且父 Agent 没有可复用的模型`,

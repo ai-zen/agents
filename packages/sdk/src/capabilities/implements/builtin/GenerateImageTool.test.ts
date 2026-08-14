@@ -1,7 +1,15 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { GenerateImageTool } from "./GenerateImageTool.js";
 import { makeEnv } from "./test-helpers.js";
 import type { AppConfig } from "../../../types/index.js";
+import type { ToolCallContext } from "@ai-zen/agents-core";
+
+const mockFetch = vi.fn();
+
+afterEach(() => {
+  mockFetch.mockReset();
+  vi.unstubAllGlobals();
+});
 
 const mockConfig: AppConfig = {
   defaultModel: "gpt4",
@@ -72,5 +80,28 @@ describe("GenerateImageTool", () => {
     const parsed = JSON.parse(result);
     expect(parsed.success).toBe(false);
     expect(parsed.error).toContain("未配置");
+  });
+
+  it("图片生成被中断（abort）时返回 aborted 结果", async () => {
+    // mock fetch：收到已 aborted 的 signal 时抛 AbortError
+    mockFetch.mockImplementation(async (url: string, init?: any) => {
+      if (init?.signal?.aborted) {
+        throw new DOMException("The operation was aborted", "AbortError");
+      }
+      throw new Error("should not reach here");
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await tool.call(
+      { prompt: "a cat" },
+      { signal: controller.signal } as unknown as ToolCallContext,
+    );
+    const parsed = JSON.parse(result);
+    expect(parsed.success).toBe(false);
+    expect(parsed.aborted).toBe(true);
+    expect(parsed.error).toContain("中断");
   });
 });

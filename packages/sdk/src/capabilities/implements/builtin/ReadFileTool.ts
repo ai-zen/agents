@@ -1,27 +1,27 @@
 import * as fsp from "fs/promises";
 import { SdkCallbackTool } from "../../../runtime/SdkCallbackTool.js";
 import type { ToolEnv } from "../../../types/index.js";
+import type { AgentNS } from "@ai-zen/agents-core";
 
 export class ReadFileTool extends SdkCallbackTool {
-  constructor(env: ToolEnv) {
-    super({
-      function: {
-        name: "readFile",
-        description: "读取文件",
-        parameters: {
-          type: "object",
-          properties: {
-            path: {
-              type: "string",
-              description: "文件路径",
-            },
-          },
-          required: ["path"],
-          additionalProperties: false,
+  function: AgentNS.FunctionDefine = {
+    name: "readFile",
+    description: "读取文件",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "文件路径",
         },
       },
-      env,
-    });
+      required: ["path"],
+      additionalProperties: false,
+    },
+  };
+
+  constructor(env: ToolEnv) {
+    super({ env });
   }
 
   async call(input: { path: string }): Promise<string> {

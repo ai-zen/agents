@@ -47,7 +47,7 @@ export function createLoadSkillTool(
         additionalProperties: false,
       },
     },
-    callback: async function (this: ToolCallContext, input: Record<string, unknown>): Promise<string> {
+    callback: async function (input: Record<string, unknown>): Promise<string> {
       const skillId = input.skill_id as string;
       const skill = await readSkill(skillDirs, skillId);
       if (!skill) {
@@ -123,7 +123,7 @@ export function createCallSkillSubAgentTool(
         additionalProperties: false,
       },
     },
-    async callback(input: Record<string, unknown>): Promise<string> {
+    async callback(input: Record<string, unknown>, ctx: ToolCallContext): Promise<string> {
       const skillId = input.skill_id as string;
       const task = input.task as string;
       const skill = await readSkill(skillDirs, skillId);
@@ -134,7 +134,7 @@ export function createCallSkillSubAgentTool(
         return `Skill "${skillId}" 不支持子 Agent 模式，请使用 load_skill 加载指导后自行处理`;
       }
 
-      const parentAgent = (this).agent;
+      const parentAgent = ctx.agent;
       const parentPermissions = parentAgent instanceof SdkAgent
         ? parentAgent.permissions
         : undefined;
@@ -153,7 +153,16 @@ export function createCallSkillSubAgentTool(
         tools: skillTools,
       });
 
-      await subAgent.run();
+      // 子 Agent 中断联动：外层 abort → subAgent.abort()
+      const onAbort = () => subAgent.abort();
+      if (ctx.signal) {
+        ctx.signal.addEventListener("abort", onAbort, { once: true });
+      }
+      try {
+        await subAgent.run();
+      } finally {
+        ctx.signal?.removeEventListener("abort", onAbort);
+      }
       const lastMsg = subAgent.messages.at(-1);
       return typeof lastMsg?.content === "string" ? lastMsg.content : "";
     },

@@ -5,6 +5,7 @@ import { tmpdir } from "os";
 import { randomBytes } from "crypto";
 import { DownloadFileTool } from "./DownloadFileTool.js";
 import { makeEnv } from "./test-helpers.js";
+import type { ToolCallContext } from "@ai-zen/agents-core";
 
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
@@ -102,6 +103,36 @@ describe("DownloadFileTool", () => {
       expect(parsed.filePath).toContain("dl.txt");
     } finally {
       try { unlinkSync(join(dir, "dl.txt")); } catch {}
+      try { unlinkSync(dir); } catch {}
+    }
+  });
+
+  it("下载被中断（abort）时返回 aborted 并清理半成品", async () => {
+    // fetch 收到 signal，abort 时抛 AbortError
+    mockFetch.mockImplementation(async (url: string, init?: any) => {
+      if (init?.signal?.aborted) {
+        throw new DOMException("The operation was aborted", "AbortError");
+      }
+      throw new Error("should not reach here");
+    });
+
+    const dir = join(tmpdir(), randomBytes(8).toString("hex"));
+    mkdirSync(dir, { recursive: true });
+    const controller = new AbortController();
+    controller.abort();
+
+    try {
+      const tool = new DownloadFileTool(makeEnv(dir));
+      const result = await tool.call(
+        { url: "https://example.com/aborted.png", outputPath: join(dir, "aborted.png") },
+        { signal: controller.signal } as unknown as ToolCallContext,
+      );
+      const parsed = JSON.parse(result as string);
+      expect(parsed.success).toBe(false);
+      expect(parsed.aborted).toBe(true);
+      // 半成品文件不应残留
+      await expect(import("fs/promises").then((f) => f.stat(join(dir, "aborted.png")))).rejects.toThrow();
+    } finally {
       try { unlinkSync(dir); } catch {}
     }
   });

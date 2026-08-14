@@ -1,6 +1,7 @@
 import * as fsp from "fs/promises";
 import { SdkCallbackTool } from "../../../runtime/SdkCallbackTool.js";
 import type { ToolEnv } from "../../../types/index.js";
+import type { AgentNS } from "@ai-zen/agents-core";
 
 interface Replacement {
   oldText: string;
@@ -9,50 +10,49 @@ interface Replacement {
 }
 
 export class BatchEditTool extends SdkCallbackTool {
-  constructor(env: ToolEnv) {
-    super({
-      function: {
-        name: "batchEdit",
-        description: "批量编辑文件文本，可以优先使用这个工具对文件进行编辑",
-        parameters: {
-          type: "object",
-          properties: {
-            path: {
-              type: "string",
-              description: "文件路径",
-            },
-            replacements: {
-              type: "array",
-              description: "要替换的文本数组",
-              items: {
-                type: "object",
-                properties: {
-                  oldText: {
-                    type: "string",
-                    description: "要替换的文本",
-                  },
-                  newText: {
-                    type: "string",
-                    description: "替换后的文本",
-                  },
-                  isReplaceAll: {
-                    type: "boolean",
-                    description:
-                      "是否替换所有匹配的文本（默认仅替换首次匹配）。使用此功能前应确保你提供的 oldText 足够精确，避免误替换",
-                    default: false,
-                  },
-                },
-                required: ["oldText", "newText"],
-                additionalProperties: false,
+  function: AgentNS.FunctionDefine = {
+    name: "batchEdit",
+    description: "批量编辑文件文本，可以优先使用这个工具对文件进行编辑",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "文件路径",
+        },
+        replacements: {
+          type: "array",
+          description: "要替换的文本数组",
+          items: {
+            type: "object",
+            properties: {
+              oldText: {
+                type: "string",
+                description: "要替换的文本",
+              },
+              newText: {
+                type: "string",
+                description: "替换后的文本",
+              },
+              isReplaceAll: {
+                type: "boolean",
+                description:
+                  "是否替换所有匹配的文本（默认仅替换首次匹配）。使用此功能前应确保你提供的 oldText 足够精确，避免误替换",
+                default: false,
               },
             },
+            required: ["oldText", "newText"],
+            additionalProperties: false,
           },
-          required: ["path", "replacements"],
-          additionalProperties: false,
         },
       },
-      env,
-    });
+      required: ["path", "replacements"],
+      additionalProperties: false,
+    },
+  };
+
+  constructor(env: ToolEnv) {
+    super({ env });
   }
 
   async call(input: { path: string; replacements: Replacement[] }): Promise<string> {

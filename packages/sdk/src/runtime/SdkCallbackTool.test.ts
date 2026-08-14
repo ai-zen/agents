@@ -6,17 +6,20 @@ import type { ToolEnv } from "../types/index.js";
 import type { ToolCallContext } from "@ai-zen/agents-core";
 
 class TestTool extends SdkCallbackTool {
+  function = {
+    name: "test_tool",
+    description: "test",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  };
+
   private fn: (input: any) => unknown;
 
   constructor(env: ToolEnv, fn: (input: any) => unknown) {
-    super({
-      function: {
-        name: "test_tool",
-        description: "test",
-        parameters: { type: "object", properties: {}, required: [] },
-      },
-      env,
-    });
+    super({ env });
     this.fn = fn;
   }
 
@@ -44,6 +47,27 @@ describe("SdkCallbackTool", () => {
   it("exec: call 返回对象时序列化为 JSON", async () => {
     const tool = new TestTool(makeEnv("/ws"), () => ({ ok: true, n: 1 }));
     expect(await tool.exec(makeCtx({}))).toBe(JSON.stringify({ ok: true, n: 1 }));
+  });
+
+  it("exec: call 可收到透传的 ToolCallContext（第二参 ctx）", async () => {
+    const env = makeEnv("/ws");
+    let receivedCtx: ToolCallContext | undefined;
+    class CtxTool extends TestTool {
+      constructor() {
+        super(env, () => "");
+      }
+      call(input: any, ctx?: ToolCallContext): unknown {
+        receivedCtx = ctx;
+        return "ok";
+      }
+    }
+    const tool = new CtxTool();
+    const ctx = {
+      parsed_args: { a: 1 },
+      signal: undefined,
+    } as unknown as ToolCallContext;
+    await tool.exec(ctx);
+    expect(receivedCtx).toBe(ctx);
   });
 
   it("exec: call 返回 undefined 时返回空串，不破坏 Promise<string> 契约", async () => {

@@ -2,31 +2,31 @@ import * as fsp from "fs/promises";
 import * as path from "path";
 import { SdkCallbackTool } from "../../../runtime/SdkCallbackTool.js";
 import type { ToolEnv } from "../../../types/index.js";
+import type { AgentNS } from "@ai-zen/agents-core";
 
 export class WriteFileTool extends SdkCallbackTool {
-  constructor(env: ToolEnv) {
-    super({
-      function: {
-        name: "writeFile",
-        description: "写入文件",
-        parameters: {
-          type: "object",
-          properties: {
-            path: {
-              type: "string",
-              description: "文件路径",
-            },
-            content: {
-              type: "string",
-              description: "文件内容",
-            },
-          },
-          required: ["path", "content"],
-          additionalProperties: false,
+  function: AgentNS.FunctionDefine = {
+    name: "writeFile",
+    description: "写入文件",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "文件路径",
+        },
+        content: {
+          type: "string",
+          description: "文件内容",
         },
       },
-      env,
-    });
+      required: ["path", "content"],
+      additionalProperties: false,
+    },
+  };
+
+  constructor(env: ToolEnv) {
+    super({ env });
   }
 
   async call(input: { path: string; content: string }): Promise<string> {

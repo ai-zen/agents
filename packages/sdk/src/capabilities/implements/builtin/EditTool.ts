@@ -1,6 +1,7 @@
 import * as fsp from "fs/promises";
 import { SdkCallbackTool } from "../../../runtime/SdkCallbackTool.js";
 import type { ToolEnv } from "../../../types/index.js";
+import type { AgentNS } from "@ai-zen/agents-core";
 
 function countOccurrences(content: string, text: string): number {
   let count = 0;
@@ -15,38 +16,37 @@ function countOccurrences(content: string, text: string): number {
 }
 
 export class EditTool extends SdkCallbackTool {
-  constructor(env: ToolEnv) {
-    super({
-      function: {
-        name: "edit",
-        description: "编辑文件中的文本，支持精确替换或替换所有匹配项",
-        parameters: {
-          type: "object",
-          properties: {
-            path: {
-              type: "string",
-              description: "文件路径",
-            },
-            oldText: {
-              type: "string",
-              description: "要替换的文本",
-            },
-            newText: {
-              type: "string",
-              description: "替换后的文本",
-            },
-            isReplaceAll: {
-              type: "boolean",
-              description: "是否替换所有匹配的文本（默认 false，仅替换首次匹配）。使用此功能前应确保你提供的 oldText 足够精确，避免误替换",
-              default: false,
-            },
-          },
-          required: ["path", "oldText", "newText"],
-          additionalProperties: false,
+  function: AgentNS.FunctionDefine = {
+    name: "edit",
+    description: "编辑文件中的文本，支持精确替换或替换所有匹配项",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "文件路径",
+        },
+        oldText: {
+          type: "string",
+          description: "要替换的文本",
+        },
+        newText: {
+          type: "string",
+          description: "替换后的文本",
+        },
+        isReplaceAll: {
+          type: "boolean",
+          description: "是否替换所有匹配的文本（默认 false，仅替换首次匹配）。使用此功能前应确保你提供的 oldText 足够精确，避免误替换",
+          default: false,
         },
       },
-      env,
-    });
+      required: ["path", "oldText", "newText"],
+      additionalProperties: false,
+    },
+  };
+
+  constructor(env: ToolEnv) {
+    super({ env });
   }
 
   async call(input: { path: string; oldText: string; newText: string; isReplaceAll?: boolean }): Promise<string> {

@@ -135,10 +135,14 @@ describe("createCallMcpTool", () => {
     const tool = createCallMcpTool(manager);
     const result = await tool.callback({ server: "github", tool: "echo", arguments: { message: "hello" } });
     expect(result).toBe("hello world");
-    expect(mockClient.callTool).toHaveBeenCalledWith({
-      name: "echo",
-      arguments: { message: "hello" },
-    });
+    expect(mockClient.callTool).toHaveBeenCalledWith(
+      {
+        name: "echo",
+        arguments: { message: "hello" },
+      },
+      undefined,
+      { signal: undefined },
+    );
   });
 
   it("isError 时返回错误信息", async () => {
@@ -235,5 +239,48 @@ describe("createReadMcpResourceTool", () => {
     const result = await tool.callback({ server: "github", uri: "file:///missing" });
     expect(result).toContain("失败");
     expect(result).toContain("资源不存在");
+  });
+});
+
+describe("signal 透传", () => {
+  it("call_mcp_tool 将 ctx.signal 透传给 client.callTool 的 options", async () => {
+    const mockClient = {
+      callTool: vi.fn().mockResolvedValue({ content: [] }),
+    };
+    const manager = mockManager({
+      getState: vi.fn(() => "connected" as const),
+      getClient: vi.fn(() => mockClient),
+    });
+    const tool = createCallMcpTool(manager);
+    const controller = new AbortController();
+    await tool.callback(
+      { server: "github", tool: "echo", arguments: { message: "hi" } },
+      { signal: controller.signal } as any,
+    );
+    expect(mockClient.callTool).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "echo" }),
+      undefined,
+      { signal: controller.signal },
+    );
+  });
+
+  it("read_mcp_resource 将 ctx.signal 透传给 client.readResource 的 options", async () => {
+    const mockClient = {
+      readResource: vi.fn().mockResolvedValue({ contents: [] }),
+    };
+    const manager = mockManager({
+      getState: vi.fn(() => "connected" as const),
+      getClient: vi.fn(() => mockClient),
+    });
+    const tool = createReadMcpResourceTool(manager);
+    const controller = new AbortController();
+    await tool.callback(
+      { server: "github", uri: "file:///README.md" },
+      { signal: controller.signal } as any,
+    );
+    expect(mockClient.readResource).toHaveBeenCalledWith(
+      { uri: "file:///README.md" },
+      { signal: controller.signal },
+    );
   });
 });

@@ -1,6 +1,15 @@
 import { describe, it, expect } from "vitest";
 import { SleepTool } from "./SleepTool.js";
 import { makeEnv } from "./test-helpers.js";
+import type { ToolCallContext } from "@ai-zen/agents-core";
+
+function makeCtxWithSignal(): { ctx: ToolCallContext; abort: () => void } {
+  const controller = new AbortController();
+  return {
+    ctx: { signal: controller.signal } as unknown as ToolCallContext,
+    abort: () => controller.abort(),
+  };
+}
 
 describe("SleepTool", () => {
   it("工具名称和描述正确", () => {
@@ -57,5 +66,40 @@ describe("SleepTool", () => {
     const parsed = JSON.parse(result as string);
     expect(parsed.success).toBe(false);
     expect(parsed.error).toContain("过长");
+  });
+
+  it("等待中被 abort 时提前返回 aborted 结果", async () => {
+    const tool = new SleepTool(makeEnv());
+    const { ctx, abort } = makeCtxWithSignal();
+
+    const start = Date.now();
+    const promise = tool.call({ ms: 60_000 }, ctx);
+    await new Promise((r) => setTimeout(r, 20)); // 让等待先开始
+    abort(); // 中断
+
+    const result = await promise;
+    const elapsed = Date.now() - start;
+
+    const parsed = JSON.parse(result as string);
+    expect(parsed.success).toBe(false);
+    expect(parsed.aborted).toBe(true);
+    expect(elapsed).toBeLessThan(1000); // 明显早于 60s
+  });
+
+  it("signal 已处于 aborted 时立即返回 aborted 结果", async () => {
+    const tool = new SleepTool(makeEnv());
+    const { ctx } = makeCtxWithSignal();
+    // 先 abort，再调用
+    const controller = new AbortController();
+    controller.abort();
+    const ctxAlready: ToolCallContext = { signal: controller.signal } as unknown as ToolCallContext;
+
+    const start = Date.now();
+    const result = await tool.call({ ms: 60_000 }, ctxAlready);
+    const elapsed = Date.now() - start;
+
+    const parsed = JSON.parse(result as string);
+    expect(parsed.aborted).toBe(true);
+    expect(elapsed).toBeLessThan(50);
   });
 });

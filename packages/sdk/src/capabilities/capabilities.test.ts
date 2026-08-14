@@ -14,13 +14,12 @@ import { tmpdir } from "node:os";
 function makeTool(name: string): Tool {
   return new (class extends Tool {
     constructor() {
-      super({
-        function: {
-          name,
-          description: `Tool ${name}`,
-          parameters: { type: "object", properties: {}, required: [] },
-        },
-      });
+      super();
+      this.function = {
+        name,
+        description: `Tool ${name}`,
+        parameters: { type: "object", properties: {}, required: [] },
+      };
     }
     async exec(): Promise<string> {
       return name;

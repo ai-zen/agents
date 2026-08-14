@@ -1,31 +1,31 @@
 import * as fsp from "fs/promises";
 import { SdkCallbackTool } from "../../../runtime/SdkCallbackTool.js";
 import type { ToolEnv } from "../../../types/index.js";
+import type { AgentNS } from "@ai-zen/agents-core";
 
 export class RmTool extends SdkCallbackTool {
-  constructor(env: ToolEnv) {
-    super({
-      function: {
-        name: "rm",
-        description: "删除文件或目录",
-        parameters: {
-          type: "object",
-          properties: {
-            path: {
-              type: "string",
-              description: "文件或目录路径",
-            },
-            recursive: {
-              type: "boolean",
-              description: "是否递归删除子目录",
-            },
-          },
-          required: ["path"],
-          additionalProperties: false,
+  function: AgentNS.FunctionDefine = {
+    name: "rm",
+    description: "删除文件或目录",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "文件或目录路径",
+        },
+        recursive: {
+          type: "boolean",
+          description: "是否递归删除子目录",
         },
       },
-      env,
-    });
+      required: ["path"],
+      additionalProperties: false,
+    },
+  };
+
+  constructor(env: ToolEnv) {
+    super({ env });
   }
 
   async call(input: { path: string; recursive?: boolean }): Promise<string> {

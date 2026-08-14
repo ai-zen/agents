@@ -1,4 +1,5 @@
 import { OpenAI, ZhipuImage } from "@ai-zen/agents-core";
+import type { AgentNS, ToolCallContext } from "@ai-zen/agents-core";
 import { SdkCallbackTool } from "../../../runtime/SdkCallbackTool.js";
 import type { ToolEnv, ImageModel } from "../../../types/index.js";
 
@@ -13,49 +14,52 @@ import type { ToolEnv, ImageModel } from "../../../types/index.js";
  * 不加入 BUILTIN_TOOL_CLASSES 静态注册表。
  */
 export class GenerateImageTool extends SdkCallbackTool {
-  constructor(env: ToolEnv) {
-    super({
-      function: {
-        name: "generateImage",
-        description:
-          "根据文字描述生成图片。返回图片 URL，可通过 downloadFile 工具保存到本地。",
-        parameters: {
-          type: "object",
-          properties: {
-            prompt: {
-              type: "string",
-              description: "所需图像的文本描述，应详细描述画面内容、风格、构图等",
-            },
-            model: {
-              type: "string",
-              description:
-                "图片模型 ID，不指定则使用配置中的默认图片模型。配置中的图片模型可通过 'aiz config show' 查看。",
-            },
-            size: {
-              type: "string",
-              description:
-                '图片尺寸。不指定则使用模型的默认尺寸。cogview系列: 1024x1024, 768x1344, 864x1152, 1344x768, 1152x864, 1440x720, 720x1440。glm-image: 1280x1280, 1568x1056, 1056x1568, 1472x1088, 1088x1472, 1728x960, 960x1728。',
-            },
-            quality: {
-              type: "string",
-              description: "图像质量。hd: 精细(约20秒), standard: 快速(约5-10秒)",
-              enum: ["hd", "standard"],
-            },
-          },
-          required: ["prompt"],
-          additionalProperties: false,
+  function: AgentNS.FunctionDefine = {
+    name: "generateImage",
+    description:
+      "根据文字描述生成图片。返回图片 URL，可通过 downloadFile 工具保存到本地。",
+    parameters: {
+      type: "object",
+      properties: {
+        prompt: {
+          type: "string",
+          description: "所需图像的文本描述，应详细描述画面内容、风格、构图等",
+        },
+        model: {
+          type: "string",
+          description:
+            "图片模型 ID，不指定则使用配置中的默认图片模型。配置中的图片模型可通过 'aiz config show' 查看。",
+        },
+        size: {
+          type: "string",
+          description:
+            '图片尺寸。不指定则使用模型的默认尺寸。cogview系列: 1024x1024, 768x1344, 864x1152, 1344x768, 1152x864, 1440x720, 720x1440。glm-image: 1280x1280, 1568x1056, 1056x1568, 1472x1088, 1088x1472, 1728x960, 960x1728。',
+        },
+        quality: {
+          type: "string",
+          description: "图像质量。hd: 精细(约20秒), standard: 快速(约5-10秒)",
+          enum: ["hd", "standard"],
         },
       },
-      env,
-    });
+      required: ["prompt"],
+      additionalProperties: false,
+    },
+  };
+
+  constructor(env: ToolEnv) {
+    super({ env });
   }
 
-  async call(input: {
-    prompt: string;
-    model?: string;
-    size?: string;
-    quality?: string;
-  }): Promise<string> {
+  async call(
+    input: {
+      prompt: string;
+      model?: string;
+      size?: string;
+      quality?: string;
+    },
+    ctx?: ToolCallContext,
+  ): Promise<string> {
+    const signal = ctx?.signal;
     try {
       const prompt = input.prompt;
       if (!prompt || !prompt.trim()) {
@@ -118,6 +122,7 @@ export class GenerateImageTool extends SdkCallbackTool {
         size: input.size || imageModel.defaultSize || undefined,
         quality:
           input.quality || imageModel.defaultQuality || undefined,
+        signal,
       });
 
       const images = result.data.map((img: { url?: string }, i: number) => ({
@@ -140,6 +145,14 @@ export class GenerateImageTool extends SdkCallbackTool {
         2,
       );
     } catch (error: unknown) {
+      // 中断（abort）时返回明确的中断结果
+      if (signal?.aborted) {
+        return JSON.stringify({
+          success: false,
+          aborted: true,
+          error: "图片生成被中断（aborted）",
+        });
+      }
       return JSON.stringify({
         success: false,
         error: error instanceof Error ? error.message : "图片生成失败",

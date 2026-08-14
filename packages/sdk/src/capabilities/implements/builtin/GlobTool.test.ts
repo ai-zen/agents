@@ -5,6 +5,7 @@ import { tmpdir } from "os";
 import { randomBytes } from "crypto";
 import { GlobTool } from "./GlobTool.js";
 import { makeEnv } from "./test-helpers.js";
+import type { ToolCallContext } from "@ai-zen/agents-core";
 
 function tmpDir(): string {
   const dir = join(tmpdir(), randomBytes(8).toString("hex"));
@@ -70,6 +71,26 @@ describe("GlobTool", () => {
       try { unlinkSync(join(dir, "index.js")); } catch {}
       try { unlinkSync(join(dir, "node_modules", "pkg.js")); } catch {}
       try { unlinkSync(join(dir, "node_modules")); } catch {}
+      try { unlinkSync(dir); } catch {}
+    }
+  });
+
+  it("signal 已 aborted 时返回 aborted 结果", async () => {
+    const tool = new GlobTool(makeEnv());
+    const dir = tmpDir();
+    const controller = new AbortController();
+    controller.abort();
+    try {
+      writeFileSync(join(dir, "a.ts"), "", "utf-8");
+      const result = await tool.call(
+        { path: dir, pattern: "*.ts" },
+        { signal: controller.signal } as unknown as ToolCallContext,
+      );
+      const parsed = JSON.parse(result as string);
+      expect(parsed.aborted).toBe(true);
+      expect(Array.isArray(parsed.files)).toBe(true);
+    } finally {
+      try { unlinkSync(join(dir, "a.ts")); } catch {}
       try { unlinkSync(dir); } catch {}
     }
   });
