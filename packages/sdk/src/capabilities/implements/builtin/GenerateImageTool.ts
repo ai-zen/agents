@@ -1,23 +1,26 @@
-import { OpenAI, ZhipuImage } from "@ai-zen/agents-core";
+import OpenAI from "openai";
 import type { AgentNS, ToolCallContext } from "@ai-zen/agents-core";
 import { SdkCallbackTool } from "../../../runtime/SdkCallbackTool.js";
-import type { ToolEnv, ImageModel } from "../../../types/index.js";
+import type { AgentDefinition, AppConfig, ToolEnv, ImageModel } from "../../../types/index.js";
 
 /**
- * 根据文字描述生成图片。返回图片 URL，可通过 downloadFile 工具保存到本地。
+ * 根据文字描述生成图片。**统一返回字符串**（JSON，含图片 URL 列表）：
+ * 生成结果如何处理（查看/下载/转发）由模型与上层自由决定——
+ * 需要让模型看图时，模型可主动调用 viewImage(URL)；需要保存时用 downloadFile。
  *
- * 依赖 AppConfig 中的 imageModels 和 defaultImageModel 配置。
- * 如果未配置图片模型，工具会返回错误提示。
- *
- * 注意：与其它内置工具不同，generateImage 依赖图片模型配置，
- * 因此由 discoverBuiltinTools 按 env.config.defaultImageModel 条件实例化，
- * 不加入 BUILTIN_TOOL_CLASSES 静态注册表。
+ * 依赖 AppConfig 中的 imageModels 和 defaultImageModel 配置（isAvailable 声明），
+ * 未配置时由 buildTools 过滤，不暴露给 Agent。
  */
 export class GenerateImageTool extends SdkCallbackTool {
+  /** 依赖图片模型配置（defaultImageModel），未配置时由 buildTools 按 isAvailable 过滤 */
+  isAvailable(config: AppConfig, _definition: AgentDefinition): boolean {
+    return !!config.defaultImageModel;
+  }
+
   function: AgentNS.FunctionDefine = {
     name: "generateImage",
     description:
-      "根据文字描述生成图片。返回图片 URL，可通过 downloadFile 工具保存到本地。",
+      "根据文字描述生成图片，返回图片 URL 列表（JSON）。如需查看图片内容，请用 viewImage 工具（传入图片 URL）；如需保存到本地，用 downloadFile 下载。",
     parameters: {
       type: "object",
       properties: {
@@ -105,41 +108,40 @@ export class GenerateImageTool extends SdkCallbackTool {
         });
       }
 
-      const ep = new OpenAI({
-        openai_endpoint: endpoint.baseUrl,
-        api_key: endpoint.apiKey,
+      const client = new OpenAI({
+        apiKey: endpoint.apiKey,
+        baseURL: endpoint.baseUrl,
       });
 
       const modelName = input.model || imageModel.modelName;
 
-      const model = new ZhipuImage({
-        request_config: await ep.imageGeneration(modelName),
-      });
+      // 通过官方 SDK 生成图片（厂商特有字段如 size/quality 用 any 透传）
+      const result = await client.images.generate(
+        {
+          model: modelName,
+          prompt: prompt.trim(),
+          size: input.size || imageModel.defaultSize || undefined,
+          quality:
+            input.quality || imageModel.defaultQuality || undefined,
+        } as any,
+        { signal },
+      );
 
-      const result = await model.generate({
-        prompt: prompt.trim(),
-        model: modelName,
-        size: input.size || imageModel.defaultSize || undefined,
-        quality:
-          input.quality || imageModel.defaultQuality || undefined,
-        signal,
-      });
+      const urls = ((result.data ?? []) as { url?: string }[])
+        .map((img) => img.url)
+        .filter((url): url is string => !!url);
 
-      const images = result.data.map((img: { url?: string }, i: number) => ({
-        index: i,
-        url: img.url,
-        description: `图片 ${i + 1}`,
-      }));
-
+      // 统一返回字符串（JSON）：生成结果如何处理（查看/下载/转发）由模型与上层自由决定，
+      // 不替模型做「看或不看」的假设。需要让模型看图 → 模型可主动调用 viewImage(URL)；
+      // 需要保存 → downloadFile 下载。
       return JSON.stringify(
         {
           success: true,
           model: imageModel.name,
           modelId: imageModel.id,
           created: result.created,
-          images,
-          content_filter: result.content_filter || [],
-          note: "图片临时链接有效期为30天，请及时转存图片。",
+          images: urls.map((url, i) => ({ index: i, url })),
+          note: "图片临时链接有效期为30天。如需查看图片内容，可用 viewImage 工具（传入图片 URL）；如需保存，可用 downloadFile 下载。",
         },
         null,
         2,

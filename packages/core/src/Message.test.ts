@@ -181,37 +181,4 @@ describe("Message", () => {
     });
   });
 
-  describe("Message.rewrite", () => {
-    it("应备份原始内容到 raw_content", () => {
-      const msg = Message.User("原始内容");
-      Message.rewrite(msg, "新内容");
-
-      expect(msg.raw_content).toBe("原始内容");
-      expect(msg.content).toBe("新内容");
-    });
-
-    it("多次 rewrite 时只备份第一次的原始内容", () => {
-      const msg = Message.User("原始内容");
-      Message.rewrite(msg, "第一次改写");
-      Message.rewrite(msg, "第二次改写");
-
-      expect(msg.raw_content).toBe("原始内容");
-      expect(msg.content).toBe("第二次改写");
-    });
-
-    it("支持多模态内容改写", () => {
-      const original: AgentNS.MessageContentSection[] = [
-        { type: "text", text: "原文本" },
-      ];
-      const newContent: AgentNS.MessageContentSection[] = [
-        { type: "text", text: "新文本" },
-        { type: "image_url", image_url: { url: "https://example.com/img.png" } },
-      ];
-      const msg = Message.User(original);
-      Message.rewrite(msg, newContent);
-
-      expect(msg.raw_content).toBe(original);
-      expect(msg.content).toBe(newContent);
-    });
-  });
 });

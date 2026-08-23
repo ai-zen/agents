@@ -18,10 +18,10 @@ describe("ContextGuardPlugin", () => {
     expect(typeof plugin.onInnerLoopStart).toBe("function");
   });
 
-  it("默认 ratio 为 1.2（+20%）", async () => {
+  it("默认 ratio 为 1.5（+50%）", async () => {
     const agent = mockAgent({ lastUsage: { prompt_tokens: 250_001 } });
     const plugin = new ContextGuardPlugin({ maxTokens: 250_000 });
-    // 250001 > 250000*1.2(300000)？否 → 不抛
+    // 250001 > 250000*1.5(375000)？否 → 不抛
     await expect(plugin.onInnerLoopStart!(buildCtx(agent))).resolves.toBeUndefined();
   });
 
@@ -38,7 +38,7 @@ describe("ContextGuardPlugin", () => {
   });
 
   it("用量超过硬上限（maxTokens*ratio）时抛出 ContextOverflowError", async () => {
-    const agent = mockAgent({ lastUsage: { prompt_tokens: 310_000 } });
+    const agent = mockAgent({ lastUsage: { prompt_tokens: 400_000 } });
     const plugin = new ContextGuardPlugin({ maxTokens: 250_000 });
     const ctx = buildCtx(agent);
 
@@ -48,10 +48,10 @@ describe("ContextGuardPlugin", () => {
     } catch (err) {
       expect(err).toBeInstanceOf(ContextOverflowError);
       const e = err as ContextOverflowError;
-      expect(e.promptTokens).toBe(310_000);
+      expect(e.promptTokens).toBe(400_000);
       expect(e.maxTokens).toBe(250_000);
-      expect(e.ratio).toBe(1.2);
-      expect(e.threshold).toBe(300_000);
+      expect(e.ratio).toBe(1.5);
+      expect(e.threshold).toBe(375_000);
     }
   });
 
@@ -65,7 +65,7 @@ describe("ContextGuardPlugin", () => {
   });
 
   it("等于硬上限的边界值不抛错（> 而非 >=）", async () => {
-    const agent = mockAgent({ lastUsage: { prompt_tokens: 300_000 } });
+    const agent = mockAgent({ lastUsage: { prompt_tokens: 375_000 } });
     const plugin = new ContextGuardPlugin({ maxTokens: 250_000 });
     await expect(plugin.onInnerLoopStart!(buildCtx(agent))).resolves.toBeUndefined();
   });

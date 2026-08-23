@@ -69,6 +69,7 @@ export type { AutoMigrateOptions } from "./plugin/AutoMigratePlugin.js";
 export { AutoRefreshToolsPlugin } from "./plugin/AutoRefreshToolsPlugin.js";
 export { ContextGuardPlugin } from "./plugin/ContextGuardPlugin.js";
 export type { ContextGuardOptions } from "./plugin/ContextGuardPlugin.js";
+export { UnknownToolHintPlugin } from "./plugin/UnknownToolHintPlugin.js";
 
 // 工具 — 内置工具类 + 动态工具工厂
 export { BUILTIN_TOOL_CLASSES } from "./capabilities/implements/builtin/index.js";
@@ -92,6 +93,7 @@ export {
   SleepTool,
 } from "./capabilities/implements/builtin/index.js";
 export { GenerateImageTool } from "./capabilities/implements/builtin/GenerateImageTool.js";
+export { ViewImageTool } from "./capabilities/implements/builtin/ViewImageTool.js";
 export { createLoadSkillTool, createCallSkillSubAgentTool } from "./capabilities/implements/skillTools.js";
 export { createLoadMcpTool, createCallMcpTool, createReadMcpResourceTool } from "./capabilities/implements/mcpTools.js";
 export { createSubAgentTool } from "./capabilities/implements/subAgentTools.js";

@@ -5,14 +5,14 @@ import { Agent } from "../Agent.js";
 import { Message } from "../Message.js";
 
 function createMockAgent(): Agent {
-  return new Agent({ model: {} as any, messages: [Message.System("test")], tools: [] });
+  return new Agent({ client: {} as any, model: "gpt-4", messages: [Message.System("test")], tools: [] });
 }
 
-function createMockCtx(agent: Agent, parsed_args: any): ToolCallContext {
+function createMockCtx(agent: Agent, parsedArgs: any): ToolCallContext {
   return new ToolCallContext({
     agent,
-    tool_call: { function: { name: "indexedSearch", arguments: JSON.stringify(parsed_args) } },
-    result_message: Message.Tool({ id: "1", function: { name: "indexedSearch" } }),
+    tool_call: { function: { name: "indexedSearch", arguments: JSON.stringify(parsedArgs) } },
+    resultMessage: Message.Tool({ id: "1", function: { name: "indexedSearch" } }),
   });
 }
 
@@ -46,7 +46,7 @@ describe("IndexedSearchTool", () => {
     const ctx = new ToolCallContext({
       agent,
       tool_call: { function: { name: "indexedSearch", arguments: JSON.stringify({ keywords: "weather" }) } },
-      result_message: Message.Tool({ id: "1", function: { name: "indexedSearch" } }),
+      resultMessage: Message.Tool({ id: "1", function: { name: "indexedSearch" } }),
     });
 
     const result = await tool.exec(ctx);

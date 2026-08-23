@@ -18,14 +18,16 @@ import { BatchEditTool } from "./BatchEditTool.js";
 import { EditTool } from "./EditTool.js";
 import { ExecAsyncTool } from "./ExecAsyncTool.js";
 import { SleepTool } from "./SleepTool.js";
+import { ViewImageTool } from "./ViewImageTool.js";
 import { GenerateImageTool } from "./GenerateImageTool.js";
 
 /**
- * 17 个无条件注册的内置工具类。
+ * 全部内置工具类（19 个）。
  * 工具类由 Provider 用 ToolEnv 实例化（每个 Provider 一套实例，注入其 cwd）。
  *
- * 注意：GenerateImageTool 依赖图片模型配置（defaultImageModel），
- * 由 discoverBuiltinTools 按条件实例化，不在此静态注册表中。
+ * 发现层不做任何过滤——工具的可用性由各工具自行声明（SdkCallbackTool.isAvailable，
+ * 入参含完整 config + 模型信息），在 buildTools/filter 阶段按声明过滤。
+ * 如 GenerateImageTool 依赖 defaultImageModel、ViewImageTool 仅视觉模型可用。
  */
 export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> = [
   CwdTool,
@@ -45,6 +47,8 @@ export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> 
   EditTool,
   ExecAsyncTool,
   SleepTool,
+  ViewImageTool,
+  GenerateImageTool,
 ];
 
 export {
@@ -65,5 +69,6 @@ export {
   EditTool,
   ExecAsyncTool,
   SleepTool,
+  ViewImageTool,
   GenerateImageTool,
 };

@@ -1,38 +1,81 @@
 import { describe, it, expect, vi } from "vitest";
-import { Agent, AgentNS } from "@ai-zen/agents-core";
+import { AgentNS, Tool } from "@ai-zen/agents-core";
+import type { AgentPlugin } from "@ai-zen/agents-core";
 import { SdkAgent } from "./SdkAgent.js";
-import type { AgentPlugin, SendContext } from "./SdkAgent.js";
+import { CallbackTool } from "@ai-zen/agents-core";
 
 // ---------------------------------------------------------------------------
 // mock helpers
 // ---------------------------------------------------------------------------
 
-function mockRuntime(config?: any) {
+type AnyChunk = any;
+
+/** 构造一个流式 chunk */
+function chunk(delta: any, finish_reason: any = null): AnyChunk {
   return {
-    config: config ?? {
+    id: "chunk-1",
+    object: "chat.completion.chunk",
+    created: 0,
+    model: "mock",
+    choices: [{ index: 0, delta, finish_reason }],
+  };
+}
+
+/** 结束 chunk */
+function stopChunk(): AnyChunk {
+  return chunk({}, "stop");
+}
+
+/** 创建 Mock OpenAI client（返回固定回复） */
+function createMockClient(rounds: AnyChunk[][] = [[chunk({ content: "回复" }), stopChunk()]]) {
+  let callCount = 0;
+  const create = vi.fn(async () => {
+    const data = rounds[callCount] ?? [];
+    callCount++;
+    return {
+      async *[Symbol.asyncIterator]() {
+        for (const c of data) yield c;
+      },
+    };
+  });
+  return { chat: { completions: { create } } } as any;
+}
+
+function mockProvider(opts?: { mcpPaths?: string[] }) {
+  return {
+    config: {
       defaultModel: "m1",
-      models: [
-        { id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 },
-      ],
+      models: [{ id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 }],
       endpoints: [],
     },
     agentsDir: "",
     subAgentsPaths: [],
     skillsPaths: [],
     toolsPaths: [],
-    mcpPaths: [],
-
+    mcpPaths: opts?.mcpPaths ?? [],
+    builtinTools: [],
+    userTools: [],
+    subagents: [],
+    skills: [],
+    mcps: [],
+    mcpManager: undefined,
+    filter: () => ({ tools: [], subagents: [], skills: [], mcps: [] }),
+    buildTools: () => [],
+    instantiate: () => [],
+    refresh: async () => {},
   };
 }
 
 function createTestAgent(opts?: {
+  client?: any;
   messages?: any[];
   tools?: any[];
-  model?: any;
+  provider?: any;
 }): SdkAgent {
-  const messages = opts?.messages ?? [{ role: AgentNS.Role.System, content: "You are a helper." }];
+  const messages =
+    opts?.messages ?? [{ role: AgentNS.Role.System, content: "You are a helper." }];
   return new SdkAgent({
-    provider: mockRuntime() as any,
+    provider: opts?.provider ?? (mockProvider() as any),
     definition: {
       id: "test-agent",
       name: "Test Agent",
@@ -40,7 +83,8 @@ function createTestAgent(opts?: {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     },
-    model: opts?.model ?? ({ name: "test-model", createStream: vi.fn() } as any),
+    client: opts?.client ?? createMockClient(),
+    model: "test-model",
     messages,
     tools: opts?.tools ?? [],
   });
@@ -51,28 +95,36 @@ function createTestAgent(opts?: {
 // ---------------------------------------------------------------------------
 
 describe("SdkAgent", () => {
-  describe("use()", () => {
+  it("构造时携带 provider / definition（含 permissions）", () => {
+    const provider = mockProvider() as any;
+    const agent = new SdkAgent({
+      provider,
+      definition: {
+        id: "t",
+        name: "T",
+        messages: [],
+        permissions: { tools: { allow: ["readFile"] } },
+        createdAt: "",
+        updatedAt: "",
+      },
+      client: {} as any,
+      model: "m",
+    });
+
+    expect(agent.provider).toBe(provider);
+    expect(agent.definition.id).toBe("t");
+    expect(agent.definition.permissions?.tools).toEqual({ allow: ["readFile"] });
+    expect(agent.model).toBe("m");
+  });
+
+  describe("use() / init()（继承 Core 插件机制）", () => {
     it("可以注册插件", () => {
       const agent = createTestAgent();
       const plugin: AgentPlugin = { onInit: vi.fn() };
-
       agent.use(plugin);
-      // use 不抛异常即通过
+      expect((agent as any)._plugins).toHaveLength(1);
     });
 
-    it("可以注册多个插件", () => {
-      const agent = createTestAgent();
-      const p1: AgentPlugin = { onInit: vi.fn() };
-      const p2: AgentPlugin = { onBeforeSend: vi.fn() };
-      const p3: AgentPlugin = { onAfterSend: vi.fn() };
-
-      agent.use(p1);
-      agent.use(p2);
-      agent.use(p3);
-    });
-  });
-
-  describe("init()", () => {
     it("依次调用所有插件的 onInit", async () => {
       const agent = createTestAgent();
       const order: number[] = [];
@@ -86,247 +138,130 @@ describe("SdkAgent", () => {
       expect(order).toEqual([1, 2]);
     });
 
-    it("没有插件时 init 不抛异常", async () => {
-      const agent = createTestAgent();
-      await expect(agent.init()).resolves.toBeUndefined();
-    });
-
     it("插件 onInit 抛错时 init 抛出错误", async () => {
       const agent = createTestAgent();
       const plugin: AgentPlugin = {
         onInit: async () => { throw new Error("Init failed"); },
       };
       agent.use(plugin);
-
       await expect(agent.init()).rejects.toThrow("Init failed");
     });
   });
 
-  describe("send() — 钩子执行流程", () => {
-    it("按顺序执行 beforeSend → super.send → afterSend", async () => {
-      const agent = createTestAgent();
+  describe("send() — 插件钩子（真实 send 流程 + mock client）", () => {
+    it("按顺序执行 onBeforeSend → 消息处理 → onAfterSend", async () => {
+      const client = createMockClient([[chunk({ content: "ok" }), stopChunk()]]);
+      const agent = createTestAgent({ client });
       const callOrder: string[] = [];
 
-      // Mock super.send 的行为：通过重写代理方法
-      const origSend = SdkAgent.prototype.send.bind(agent);
-      // 我们只测试插件钩子的执行顺序，不真正调用 super.send
-      // 所以用 spy 来捕获实际调用
-      const beforeSendSpy = vi.fn(async () => { callOrder.push("beforeSend"); });
-      const afterSendSpy = vi.fn(async () => { callOrder.push("afterSend"); });
+      agent.use({
+        onBeforeSend: async () => { callOrder.push("beforeSend"); },
+        onAfterSend: async () => { callOrder.push("afterSend"); },
+      });
 
-      const plugin: AgentPlugin = {
-        onBeforeSend: beforeSendSpy,
-        onAfterSend: afterSendSpy,
-      };
-      agent.use(plugin);
+      await agent.send("hello");
 
-      // 手动模拟钩子调用来验证逻辑
-      const ctx: SendContext = { agent, content: "hello", messages: agent.messages };
-
-      await plugin.onBeforeSend!(ctx);
-      callOrder.push("send");
-      await plugin.onAfterSend!(ctx);
-
-      expect(callOrder).toEqual(["beforeSend", "send", "afterSend"]);
+      expect(callOrder).toEqual(["beforeSend", "afterSend"]);
+      expect(agent.messages.at(-1)!.status).toBe(AgentNS.MessageStatus.Completed);
     });
 
-    it("beforeSend 插件收到 SendContext", async () => {
+    it("onBeforeSend 插件收到 SendContext（agent / content / messages）", async () => {
       const agent = createTestAgent();
-      const beforeSend = vi.fn();
-      const plugin: AgentPlugin = { onBeforeSend: beforeSend };
+      const onBeforeSend = vi.fn();
+      agent.use({ onBeforeSend });
 
-      const ctx: SendContext = { agent, content: "hello", messages: agent.messages };
-      await plugin.onBeforeSend!(ctx);
+      await agent.send("hello");
 
-      expect(beforeSend).toHaveBeenCalledTimes(1);
-      expect(beforeSend.mock.calls[0][0]).toBe(ctx);
+      expect(onBeforeSend).toHaveBeenCalledTimes(1);
+      const ctx = onBeforeSend.mock.calls[0][0];
       expect(ctx.agent).toBe(agent);
       expect(ctx.content).toBe("hello");
-      expect(ctx.messages).toBe(agent.messages);
+      expect(Array.isArray(ctx.messages)).toBe(true);
     });
 
-    it("afterSend 插件收到 SendContext", async () => {
-      const agent = createTestAgent();
-      const afterSend = vi.fn();
-      const plugin: AgentPlugin = { onAfterSend: afterSend };
-
-      const ctx: SendContext = { agent, content: "hello", messages: agent.messages };
-      await plugin.onAfterSend!(ctx);
-
-      expect(afterSend).toHaveBeenCalledTimes(1);
-      expect(afterSend.mock.calls[0][0]).toBe(ctx);
-      expect(ctx.agent).toBe(agent);
-      expect(ctx.content).toBe("hello");
-    });
-
-    it("多个 beforeSend 按注册顺序执行", async () => {
+    it("多个插件按注册顺序执行钩子", async () => {
       const agent = createTestAgent();
       const order: number[] = [];
-      const p1: AgentPlugin = { onBeforeSend: vi.fn(async () => { order.push(1); }) };
-      const p2: AgentPlugin = { onBeforeSend: vi.fn(async () => { order.push(2); }) };
-      const p3: AgentPlugin = { onBeforeSend: vi.fn(async () => { order.push(3); }) };
+      agent.use({ onBeforeSend: async () => { order.push(1); } });
+      agent.use({ onBeforeSend: async () => { order.push(2); } });
+      agent.use({ onBeforeSend: async () => { order.push(3); } });
 
-      const ctx: SendContext = { agent, content: "hello", messages: agent.messages };
-      for (const p of [p1, p2, p3]) {
-        await p.onBeforeSend!(ctx);
-      }
+      await agent.send("hi");
 
       expect(order).toEqual([1, 2, 3]);
-    });
-
-    it("多个 afterSend 按注册顺序执行", async () => {
-      const agent = createTestAgent();
-      const order: number[] = [];
-      const p1: AgentPlugin = { onAfterSend: vi.fn(async () => { order.push(1); }) };
-      const p2: AgentPlugin = { onAfterSend: vi.fn(async () => { order.push(2); }) };
-      const p3: AgentPlugin = { onAfterSend: vi.fn(async () => { order.push(3); }) };
-
-      const ctx: SendContext = { agent, content: "hello", messages: agent.messages };
-      for (const p of [p1, p2, p3]) {
-        await p.onAfterSend!(ctx);
-      }
-
-      expect(order).toEqual([1, 2, 3]);
-    });
-
-    it("afterSend 中替换 ctx.agent 后，后续 plugin 拿到新 Agent", async () => {
-      const agent = createTestAgent();
-      const newAgent = createTestAgent();
-      let capturedAgentInP2: any = null;
-
-      const p1: AgentPlugin = {
-        onAfterSend: vi.fn(async (ctx) => {
-          ctx.agent = newAgent;
-        }),
-      };
-      const p2: AgentPlugin = {
-        onAfterSend: vi.fn(async (ctx) => {
-          capturedAgentInP2 = ctx.agent;
-        }),
-      };
-
-      const ctx: SendContext = { agent, content: "hello", messages: agent.messages };
-      await p1.onAfterSend!(ctx);
-      await p2.onAfterSend!(ctx);
-
-      expect(capturedAgentInP2).toBe(newAgent);
-    });
-
-    it("插件没有 onBeforeSend 时跳过", () => {
-      const plugin: AgentPlugin = { onAfterSend: vi.fn() };
-      expect(plugin.onBeforeSend).toBeUndefined();
-    });
-
-    it("插件没有 onAfterSend 时跳过", () => {
-      const plugin: AgentPlugin = { onBeforeSend: vi.fn() };
-      expect(plugin.onAfterSend).toBeUndefined();
     });
   });
 
-  describe("send() — onToolCall 插件钩子", () => {
-    // 拦截 Core Agent.send：捕获 SdkAgent.send 在 super.send 前设置的 this.onToolCall 包装函数，不真正执行流
-    function captureOnToolCallHook(agent: SdkAgent): () => Promise<(ctx: any) => Promise<string | undefined>> {
-      let capturedHook: ((ctx: any) => Promise<string | undefined>) | undefined;
-      const origSend = (Agent.prototype as any).send;
-      (Agent.prototype as any).send = async function (this: any) {
-        capturedHook = this.onToolCall;
-        return [];
-      };
-      const cleanup = async () => {
-        (Agent.prototype as any).send = origSend;
-        return capturedHook!;
-      };
-      return () => agent.send("hello").then(cleanup);
-    }
+  describe("send() — 插件 onToolCall 钩子", () => {
+    it("任一插件返回字符串即拒绝（短路），全部放行则执行", async () => {
+      const denyTool = new CallbackTool({
+        function: {
+          name: "blockedTool",
+          description: "被插件拒绝的工具",
+          parameters: { type: "object", properties: {} },
+        },
+        callback: vi.fn(() => "不应执行"),
+      });
 
-    it("send 会包装 this.onToolCall 并在结束后清除", async () => {
-      const agent = createTestAgent();
-      agent.use({ onToolCall: vi.fn(() => undefined) });
+      const client = createMockClient([
+        [
+          chunk({ tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "blockedTool", arguments: "{}" } }] }),
+          chunk({}, "tool_calls"),
+        ],
+        [chunk({ content: "已处理" }), stopChunk()],
+      ]);
 
-      const hook = await captureOnToolCallHook(agent)();
+      const agent = createTestAgent({ client, tools: [denyTool] });
+      agent.use({
+        onToolCall: (ctx) =>
+          ctx.tool_call.function?.name === "blockedTool"
+            ? "插件拒绝：不允许"
+            : undefined,
+      });
 
-      expect(hook).toBeDefined();
-      // send 结束后钩子已清除
-      expect((agent as any).onToolCall).toBeUndefined();
+      await agent.send("hi");
+
+      expect(denyTool.callback).not.toHaveBeenCalled();
+      const toolResult = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
+      expect(toolResult.content).toContain("插件拒绝");
     });
 
-    it("任一插件返回字符串即拒绝（短路），全部放行则返回 undefined", async () => {
-      const agent = createTestAgent();
-      const denyPlugin: AgentPlugin = {
-        onToolCall: vi.fn((ctx: any) =>
-          ctx.tool_call.function?.name === "rm" ? "工具 rm 被拒绝：需要授权" : undefined,
-        ),
-      };
-      const allowPlugin: AgentPlugin = { onToolCall: vi.fn(() => undefined) };
-      agent.use(denyPlugin);
-      agent.use(allowPlugin);
+    it("插件 onToolCall 收到同一个 ToolCallContext 实例", async () => {
+      const tool = new CallbackTool({
+        function: {
+          name: "okTool",
+          description: "正常工具",
+          parameters: { type: "object", properties: {} },
+        },
+        callback: (_args: any, ctx: any) => {
+          execCtx = ctx;
+          return "ok";
+        },
+      });
+      let hookCtx: any;
+      let execCtx: any;
 
-      const hook = await captureOnToolCallHook(agent)();
-      const ctx = { tool_call: { function: { name: "rm", arguments: "{}" } }, agent };
+      const client = createMockClient([
+        [
+          chunk({ tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "okTool", arguments: "{}" } }] }),
+          chunk({}, "tool_calls"),
+        ],
+        [chunk({ content: "完成" }), stopChunk()],
+      ]);
 
-      // rm → 第一个插件拒绝，短路
-      expect(await hook(ctx)).toBe("工具 rm 被拒绝：需要授权");
-      expect(allowPlugin.onToolCall).not.toHaveBeenCalled();
-
-      // 其他工具 → 两个插件都放行 → undefined
-      const ctx2 = { tool_call: { function: { name: "readFile", arguments: "{}" } }, agent };
-      expect(await hook(ctx2)).toBeUndefined();
-      expect(denyPlugin.onToolCall).toHaveBeenCalledTimes(2);
-      expect(allowPlugin.onToolCall).toHaveBeenCalledTimes(1);
-    });
-
-    it("onToolCall 插件收到 ToolCallContext（tool_call / tool / agent）", async () => {
-      const agent = createTestAgent();
-      const captured: any[] = [];
-      const plugin: AgentPlugin = {
-        onToolCall: vi.fn(async (ctx: any) => {
-          captured.push({
-            name: ctx.tool_call.function?.name,
-            hasTool: ctx.tool !== undefined,
-            isAgent: ctx.agent === agent,
-          });
+      const agent = createTestAgent({ client, tools: [tool] });
+      agent.use({
+        onToolCall: (ctx) => {
+          hookCtx = ctx;
           return undefined;
-        }),
-      };
-      agent.use(plugin);
-
-      const hook = await captureOnToolCallHook(agent)();
-      await hook({
-        tool_call: { function: { name: "readFile", arguments: "{}" } },
-        tool: { function: { name: "readFile" } },
-        agent,
+        },
       });
 
-      expect(captured).toEqual([{ name: "readFile", hasTool: true, isAgent: true }]);
-    });
-  });
+      await agent.send("hi");
 
-  describe("send() — 集成测试（mock send 行为）", () => {
-    it("SdkAgent.send 方法调用 beforeSend 和 afterSend", async () => {
-      const agent = createTestAgent();
-      const beforeSend = vi.fn();
-      const afterSend = vi.fn();
-
-      const plugin: AgentPlugin = {
-        onBeforeSend: beforeSend,
-        onAfterSend: afterSend,
-      };
-      agent.use(plugin);
-
-      // Mock agent.send 来避免调用真实的 Core Agent
-      const mockMessages = [{ role: AgentNS.Role.Assistant, content: "OK" }];
-      const mockSend = vi.fn(async (content: string) => {
-        // 验证 beforeSend 已经被调用了
-        // 在 SdkAgent.send 中，beforeSend 已经在 super.send 之前调用了
-        return mockMessages;
-      });
-
-      // 我们不能直接覆盖 send 因为 SdkAgent.send 调用了 super.send
-      // 但我们可以在测试中验证这个方法被正确地包装了
-      // 由于我们 mock 了整个 send，我们检查 use() 注册的插件是否可以通过 SdkAgent.send 访问
-      const _plugins = (agent as any)._plugins;
-      expect(_plugins).toHaveLength(1);
-      expect(_plugins[0]).toBe(plugin);
+      expect(hookCtx).toBeDefined();
+      expect(execCtx).toBeDefined();
+      expect(hookCtx).toBe(execCtx);
     });
   });
 });

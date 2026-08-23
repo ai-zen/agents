@@ -4,7 +4,7 @@ import { Tool } from "../Tool.js";
 import { ToolCallContext } from "../ToolCallContext.js";
 
 export class CallbackTool extends Tool {
-  callback?: (parsed_args: any, ctx: ToolCallContext) => any;
+  callback?: (parsedArgs: any, ctx: ToolCallContext) => any;
 
   constructor(options: PickRequired<CallbackTool, "function" | "callback">) {
     super();
@@ -13,22 +13,19 @@ export class CallbackTool extends Tool {
     this.callback = options.callback;
   }
 
-  async exec(ctx: ToolCallContext) {
+  async exec(ctx: ToolCallContext): Promise<AgentNS.MessageContent> {
     let result;
 
     // If the tool has a callback function
     if (this.callback) {
       // Execute the callback function, passing parsed args and the full ctx explicitly.
-      result = await this.callback(ctx.parsed_args, ctx);
+      result = await this.callback(ctx.parsedArgs, ctx);
     }
 
-    // If the result is already a string, return it as is. Otherwise, serialize it using JSON.stringify().
-    // Note that even if the result is undefined, it is a valid value and still needs to be serialized before returning
-    if (typeof result !== "string") {
-      result = JSON.stringify(result) ?? "";
-    }
-
-    // Return the result
-    return result;
+    // string 原样返回；内容块数组（图片/文件等）直接透传；
+    // 其余值（对象/数字等）JSON 序列化后返回（undefined 归一为空串）。
+    if (typeof result === "string") return result;
+    if (Array.isArray(result)) return result as AgentNS.MessageContentSection[];
+    return JSON.stringify(result) ?? "";
   }
 }

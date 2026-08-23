@@ -1,40 +1,32 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { AgentTool } from "./AgentTool.js";
 import { Agent } from "../Agent.js";
 import { Message } from "../Message.js";
 import { AgentNS } from "../AgentNS.js";
 import { ToolCallContext } from "../ToolCallContext.js";
-import { AsyncQueue } from "@ai-zen/async-queue";
 
-// Helper: 创建 mock 模型，始终返回固定文本
-function createMockModel(responseText = "mock回复") {
-  const queue = new AsyncQueue<AgentNS.StreamResponseData>();
-  queue.push({
-    choices: [{
-      index: 0,
-      delta: { content: responseText },
-      finish_reason: null,
-    }],
-  });
-  queue.push({
-    choices: [{
-      index: 0,
-      delta: {},
-      finish_reason: AgentNS.FinishReason.Stop,
-    }],
-  });
-  queue.done();
-
-  return {
-    createStream: vi.fn(() => queue),
-    createCompletion: vi.fn(),
-    code: "mock-model",
-    title: "Mock Model",
-    type: "chat_completion",
-    name: "MockModel",
-    model_config: {},
-    request_config: { url: "https://test.com", headers: {}, body: {} },
-  } as any;
+// Helper: 创建 mock OpenAI client，始终返回固定文本
+function createMockClient(responseText = "mock回复") {
+  const stream = {
+    async *[Symbol.asyncIterator]() {
+      yield {
+        id: "chunk-1",
+        object: "chat.completion.chunk",
+        created: 0,
+        model: "mock",
+        choices: [{ index: 0, delta: { content: responseText }, finish_reason: null }],
+      };
+      yield {
+        id: "chunk-2",
+        object: "chat.completion.chunk",
+        created: 0,
+        model: "mock",
+        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      };
+    },
+  };
+  const create = vi.fn(async () => stream);
+  return { chat: { completions: { create } } } as any;
 }
 
 describe("AgentTool", () => {
@@ -53,14 +45,15 @@ describe("AgentTool", () => {
             description: "test",
             parameters: { type: "object", properties: {}, required: [] },
           },
-          model: {} as any,
+          client: {} as any,
+          model: "gpt-4",
           messages: [Message.System("你好"), Message.Assistant("回复")],
         });
       }).toThrow("AgentTool must end with a user message.");
     });
 
     it("应正确构造", () => {
-      const model = createMockModel();
+      const client = createMockClient();
       const tool = new AgentTool({
         function: {
           name: "getWeather",
@@ -73,7 +66,8 @@ describe("AgentTool", () => {
             required: ["city"],
           },
         },
-        model,
+        client,
+        model: "gpt-4",
         messages: [
           Message.System("你是天气助手"),
           Message.User("请告诉我 {{ city }} 的天气"),
@@ -119,14 +113,13 @@ describe("AgentTool", () => {
         Message.User("请告诉我 {{ city }} 在 {{ date }} 的天气"),
       ];
 
-      // injectArgs 是静态方法，但需要通过实例访问（protected），这里直接用原型
       const result = AgentTool.injectArgs.call(
         { constructor: { name: "AgentTool" } },
         messages,
         { city: "北京", date: "2024-01-15" },
       );
 
-      expect(result[0].content).toBe("你是天气助手"); // system 不变
+      expect(result[0].content).toBe("你是天气助手");
       expect(result[1].content).toBe("请告诉我 北京 在 2024-01-15 的天气");
     });
 
@@ -156,7 +149,6 @@ describe("AgentTool", () => {
         { city: "广州" },
       );
 
-      // 数组内容不做替换（injectArgs 对数组类型 content 不做替换）
       expect(Array.isArray(result[0].content)).toBe(true);
       expect((result[0].content as AgentNS.MessageContentSection[])[0].type).toBe("text");
     });
@@ -164,7 +156,7 @@ describe("AgentTool", () => {
 
   describe("exec", () => {
     it("应执行子 Agent 并返回结果", async () => {
-      const model = createMockModel('{"temperature":25,"weather":"晴天"}');
+      const client = createMockClient('{"temperature":25,"weather":"晴天"}');
       const tool = new AgentTool({
         function: {
           name: "getWeather",
@@ -177,7 +169,8 @@ describe("AgentTool", () => {
             required: ["city"],
           },
         },
-        model,
+        client,
+        model: "gpt-4",
         messages: [
           Message.System("你是天气助手，返回 JSON"),
           Message.User("请告诉我 {{ city }} 的天气"),
@@ -185,7 +178,8 @@ describe("AgentTool", () => {
       });
 
       const agent = new Agent({
-        model: createMockModel(),
+        client: createMockClient(),
+        model: "gpt-4",
         messages: [Message.System("主助手")],
         tools: [tool],
       });
@@ -198,7 +192,7 @@ describe("AgentTool", () => {
             arguments: '{"city":"北京"}',
           },
         },
-        result_message: Message.Tool({ id: "1", function: { name: "getWeather" } }),
+        resultMessage: Message.Tool({ id: "1", function: { name: "getWeather" } }),
       });
 
       const result = await tool.exec(ctx);
@@ -206,19 +200,20 @@ describe("AgentTool", () => {
     });
 
     it("子 Agent 执行时应在 agent.events 上触发 sub-agent 事件", async () => {
-      const model = createMockModel("子Agent回复");
       const tool = new AgentTool({
         function: {
           name: "testFn",
           description: "测试",
           parameters: { type: "object", properties: {}, required: [] },
         },
-        model,
+        client: createMockClient("子Agent回复"),
+        model: "gpt-4",
         messages: [Message.User("你好")],
       });
 
       const agent = new Agent({
-        model: createMockModel(),
+        client: createMockClient(),
+        model: "gpt-4",
         messages: [Message.System("主助手")],
         tools: [tool],
       });
@@ -229,7 +224,7 @@ describe("AgentTool", () => {
       const ctx = new ToolCallContext({
         agent,
         tool_call: { function: { name: "testFn", arguments: "{}" } },
-        result_message: Message.Tool({ id: "1", function: { name: "testFn" } }),
+        resultMessage: Message.Tool({ id: "1", function: { name: "testFn" } }),
       });
 
       await tool.exec(ctx);
@@ -239,22 +234,17 @@ describe("AgentTool", () => {
     });
 
     it("外层 signal abort 时联动中止子 Agent", async () => {
-      // 子 Agent 模型：挂起队列，收到 signal abort 时 done()
-      const subQueue = new AsyncQueue<AgentNS.StreamResponseData>();
-      const subModel = {
-        createStream: vi.fn((opts: any) => {
-          opts.onOpen?.();
-          opts.signal.addEventListener("abort", () => subQueue.done(), { once: true });
-          return subQueue;
-        }),
-        createCompletion: vi.fn(),
-        code: "mock-model",
-        title: "Mock",
-        type: "chat_completion",
-        name: "MockModel",
-        model_config: {},
-        request_config: { url: "https://test.com", headers: {}, body: {} },
-      } as any;
+      // 子 Agent client：返回挂起流，收到 signal abort 时结束
+      const subCreate = vi.fn(async (_body: any, options: any) => {
+        return {
+          async *[Symbol.asyncIterator]() {
+            await new Promise<void>((resolve) => {
+              options.signal.addEventListener("abort", () => resolve());
+            });
+          },
+        };
+      });
+      const subClient = { chat: { completions: { create: subCreate } } } as any;
 
       const tool = new AgentTool({
         function: {
@@ -262,12 +252,14 @@ describe("AgentTool", () => {
           description: "挂起",
           parameters: { type: "object", properties: {}, required: [] },
         },
-        model: subModel,
+        client: subClient,
+        model: "gpt-4",
         messages: [Message.User("你好")],
       });
 
       const agent = new Agent({
-        model: createMockModel(),
+        client: createMockClient(),
+        model: "gpt-4",
         messages: [Message.System("主助手")],
         tools: [tool],
       });
@@ -276,7 +268,7 @@ describe("AgentTool", () => {
       const ctx = new ToolCallContext({
         agent,
         tool_call: { function: { name: "hangFn", arguments: "{}" } },
-        result_message: Message.Tool({ id: "1", function: { name: "hangFn" } }),
+        resultMessage: Message.Tool({ id: "1", function: { name: "hangFn" } }),
         signal: controller.signal,
       });
 

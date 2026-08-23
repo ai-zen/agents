@@ -39,6 +39,12 @@ export interface ExcludeOptions {
   subagents?: string[];
 }
 
+/** filter / buildTools 的过滤选项 */
+export interface FilterOptions {
+  /** 排除项黑名单（优先级高于 permissions） */
+  exclude?: ExcludeOptions;
+}
+
 /**
  * Provider — 全局上下文实例 + 能力注册表。
  *
@@ -152,9 +158,7 @@ export class Provider {
    * 按权限过滤候选集，返回过滤后的名称列表。
    * 纯名称操作（安全预过滤 + 权限过滤），不涉及 Tool 实例化。
    */
-  filter(permissions: AgentPermissions, options?: {
-    exclude?: ExcludeOptions;
-  }): FilterOutput {
+  filter(definition: AgentDefinition, options?: FilterOptions): FilterOutput {
     const exclude = options?.exclude ?? {};
     const excludeTools = new Set(exclude.tools ?? []);
     const excludeSkills = new Set(exclude.skills ?? []);
@@ -180,7 +184,22 @@ export class Provider {
       ...DYNAMIC_TOOL_NAMES,
     ].filter((name) => !excludeTools.has(name));
 
-    const evaluator = new PermissionEvaluator(permissions);
+    // 工具可用性过滤：调用候选工具的 isAvailable（直接透传完整 app config + agent definition）。
+    // 工具自行声明可用条件（如依赖图片模型配置、仅视觉模型可用），返回 false 则剔除。
+    const candidates = [...this.builtinTools, ...this.userTools];
+    for (let i = toolNames.length - 1; i >= 0; i--) {
+      const tool = candidates.find((t) => t.function.name === toolNames[i]);
+      const isAvailable = (
+        tool as
+          | { isAvailable?: (config: AppConfig, def: AgentDefinition) => boolean }
+          | undefined
+      )?.isAvailable;
+      if (isAvailable && !isAvailable(this.config, definition)) {
+        toolNames.splice(i, 1);
+      }
+    }
+
+    const evaluator = new PermissionEvaluator(definition.permissions);
     const filtered = evaluator.filter({
       tools: toolNames,
       skills: this.skills
@@ -203,10 +222,8 @@ export class Provider {
   /**
    * 快捷方法：filter + instantiate 一步完成。
    */
-  buildTools(permissions: AgentPermissions, options?: {
-    exclude?: ExcludeOptions;
-  }): Tool[] {
-    return this.instantiate(this.filter(permissions, options));
+  buildTools(definition: AgentDefinition, options?: FilterOptions): Tool[] {
+    return this.instantiate(this.filter(definition, options));
   }
 
   /**
@@ -286,3 +303,4 @@ function dedupTools(tools: Tool[]): Tool[] {
   }
   return result;
 }
+

@@ -83,7 +83,6 @@ export namespace AgentNS {
      *  可选类型是为了兼容「发给模型的精简格式」（formatHistory 白名单对象不含内部字段）。 */
     id?: string;
     name?: string;
-    raw_content?: MessageContent;
     content?: MessageContent;
     function_call?: FunctionCall;
     tool_call_id?: string;

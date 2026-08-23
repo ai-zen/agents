@@ -48,7 +48,8 @@ describe("createLoadSkillTool", () => {
     writeSkill("git", "# Git 操作指南\n\n## 提交代码\n使用 git commit");
     const tool = createLoadSkillTool(skillDirs, skills);
     const agent = new Agent({
-      model: { createCompletion: vi.fn() } as any,
+      client: {} as any,
+      model: "test",
       messages: [{ role: "system", content: "你是一个助手" }],
       tools: [],
     });

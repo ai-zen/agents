@@ -1,7 +1,7 @@
 {
   "name": "@ai-zen/agents-core",
-  "version": "3.4.0",
-  "description": "Core framework for building LLM agents: Agent, Messages, Tools, Models, Endpoints, RAG, Vector Database",
+  "version": "4.0.0",
+  "description": "Core framework for building LLM agents: plugin-driven Agent runtime on the official OpenAI SDK, Messages, Tools", 
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
@@ -28,9 +28,7 @@
     "vitest": "^4.1.9"
   },
   "dependencies": {
-    "@ai-zen/async-queue": "^1.4.0",
     "@ai-zen/event-bus": "^1.1.0",
-    "@ai-zen/node-fetch-event-source": "^2.1.4",
-    "jose": "^5"
+    "openai": "^7.5.0"
   }
 }

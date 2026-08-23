@@ -1,5 +1,31 @@
 # Changelog
 
+## [4.0.0] - 2026-08-14
+
+### 💥 Breaking Changes
+
+- **Request layer removed — the agent now runs directly on the official OpenAI SDK** — the entire in-house request abstraction is gone: `Endpoint` / `Endpoints/*` (OpenAI / AzureOpenAI / CommonEndpoint / Zhipu), `Model` / `Models/*` (ChatGPT / TextEmbeddingAda002_2 / ZhipuImage and the three abstract model classes), and `Files/DeepSeekFiles`. `Agent` now depends on the `openai` npm package and calls `client.chat.completions.create(...)` (streaming) directly. Any OpenAI-compatible vendor (DeepSeek, Zhipu BigModel, etc.) is supported via `baseURL`
+- **`Agent` / `AgentContext` / `AgentTool` constructor signature changed** — `{ model, model_config }` (a model object) is replaced by `{ client, model, modelConfig? }`: `client` is an `openai` SDK instance, `model` is the model name string sent to the API. `modelConfig` is spread into the request body (including vendor-specific fields such as DeepSeek `thinking`)
+- **RAG and the retrieval stack removed** — `Rag`, `Rags/EmbeddingSearch`, `KnowledgeBase`, `VectorDatabase` and `EmbeddingModel` / `TextEmbeddingAda002_2` are deleted; the `rag` field and the `send()` rewrite hook are gone. Retrieval is left to tools (e.g. `IndexedSearchTool`) rather than implicit prompt rewriting
+- **Capability flags removed** — `IS_SUPPORT_FUNCTION_CALL` / `IS_SUPPORT_TOOLS_CALL` / `IS_SUPPORT_IMAGE_CONTENT` are gone; `formatTools()` always emits modern `tools` (+ `strict: true`, `tool_choice: "auto"`)
+- **Naming unified to camelCase for internal identifiers** — `ToolCallContext`: `parsed_args`→`parsedArgs`, `result_message`→`resultMessage`, `is_prevent_default`→`isPreventDefault`, `parse_error`→`parseError`; `model_config`→`modelConfig` (protocol fields such as `tool_calls` / `finish_reason` stay snake_case)
+- **`Message.raw_content` and `Message.rewrite()` removed** — they only backed the deleted RAG rewrite flow; with RAG gone they had no remaining consumers (dead code removed per Occam's razor)
+
+### ✨ Added
+
+- **Plugin system promoted from SDK to core** — `AgentPlugin` (`onInit` / `onBeforeSend` / `onAfterSend` / `onInnerLoopStart` / `onInnerLoopEnd` / `onInnerLoopsStart` / `onInnerLoopsEnd` / `onToolCall` / `onUnknownTool`) and `SendContext` now live in core; `Agent.use(plugin)` / `Agent.init()` are built-in, so sub-agents (via `AgentTool`) get plugin behavior too. `onToolCall` runs user hooks then plugin hooks (any string short-circuits to reject)
+- **Unified hook dispatch (`dispatchHook`)** — every hook goes through a single entry: it first emits a **non-blocking** kebab-case event (`before-send` / `after-send` / `inner-loop-start` / `inner-loop-end` / `inner-loops-start` / `inner-loops-end` / `tool-call` / `unknown-tool`), then **blockingly** invokes plugins in registration order. All hooks return `HookResult = string | void | Promise<string | void>` — a string short-circuits (reject / interrupt / provide a result per hook semantics), `undefined`/`void` passes through. The Agent keeps a **simple built-in unknown-tool hint** (`defaultUnknownTool`, now private); smarter hints come from the `onUnknownTool` plugin, with `undefined` falling back to the built-in hint
+- **Vision image input types** — `ImageUrlContentSection.image_url.detail` (`"low" | "high" | "original" | "auto"`) and `FileContentSection` (`{ type: "file", file_id? / file_data? / filename? }`) in `AgentNS`
+- **`Tool.exec` returns `AgentNS.MessageContent`** — a tool may now return either a plain string or an array of content sections (e.g. `image_url` / `file` blocks), letting a tool hand structured/multimodal content back to the model (e.g. an image). `CallbackTool` / `CodeTool` / `AgentTool` / `AgentToolLazy` pass content-section arrays through untouched
+
+### 🗑 Removed
+
+- Dependencies dropped: `@ai-zen/node-fetch-event-source`, `@ai-zen/async-queue`, `jose`. New dependency: `openai`
+
+### ✅ Tests
+
+- **Core suite: 124 passed** — `Agent.test` rewritten to mock the `openai` client (fake streaming `create`), including new plugin-mechanism tests (use/init, before/after send, per-round hooks, plugin `onToolCall` rejection); `integration.test` (real DeepSeek API via the official SDK) now green including the previously-failing `preventDefault` case (`callback(this)` → `callback(_args, ctx)`); request-layer / RAG tests deleted
+
 ## [3.4.0] - 2026-08-14
 
 ### ⚠️ Breaking

@@ -5,7 +5,7 @@ import { Agent } from "../Agent.js";
 import { Message } from "../Message.js";
 
 function createMockAgent(): Agent {
-  return new Agent({ model: {} as any, messages: [Message.System("test")], tools: [] });
+  return new Agent({ client: {} as any, model: "gpt-4", messages: [Message.System("test")], tools: [] });
 }
 
 function createMockCtx(
@@ -16,7 +16,7 @@ function createMockCtx(
   return new ToolCallContext({
     agent,
     tool_call: { function: { name: functionName, arguments: JSON.stringify(parsedArgs) } },
-    result_message: Message.Tool({ id: "1", function: { name: functionName } }),
+    resultMessage: Message.Tool({ id: "1", function: { name: functionName } }),
   });
 }
 
@@ -98,6 +98,27 @@ describe("CallbackTool", () => {
     const result = await tool.exec(ctx);
     // JSON.stringify(undefined) 返回 undefined，?? "" 兜底为空字符串
     expect(result).toBe("");
+  });
+
+  it("回调返回内容块数组（图片等）时透传，不序列化", async () => {
+    const sections = [
+      { type: "text", text: "图片如下：" },
+      { type: "image_url", image_url: { url: "https://example.com/a.png" } },
+    ];
+    const tool = new CallbackTool({
+      function: {
+        name: "viewImg",
+        description: "查看图片",
+        parameters: { type: "object", properties: {} },
+      },
+      callback: () => sections,
+    });
+
+    const agent = createMockAgent();
+    const ctx = createMockCtx(agent, "viewImg", {});
+
+    const result = await tool.exec(ctx);
+    expect(result).toBe(sections);
   });
 
   it("第二参 ctx 应为 ToolCallContext", async () => {

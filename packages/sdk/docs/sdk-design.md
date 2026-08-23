@@ -1,4 +1,4 @@
-# SDK 设计文档（v0.5.0）
+# SDK 设计文档（v0.7.0）
 
 > 本文档是 `@ai-zen/agents-sdk` 的**唯一设计真相源**，与当前实现逐项对齐。
 > 任何代码改动若与此文档不符，需先更新文档；文档描述以当前 `src/` 实现为准。
@@ -10,7 +10,7 @@
 - 持有**能力管线**：发现 → 权限过滤 → 实例化（内置工具、用户工具、Skill、MCP、SubAgent）
 - 提供 **Provider 全局上下文**：配置、路径、工作目录、模型工厂、MCP 连接管理
 - 提供 **Agent 组装**：`createAgent()` 一键产出可用的 `SdkAgent`
-- 提供 **插件机制**：`AutoMigratePlugin` / `AutoRefreshToolsPlugin` 扩展 Agent 行为
+- 提供 **插件机制**：`AutoMigratePlugin` / `AutoRefreshToolsPlugin` / `ContextGuardPlugin` 扩展 Agent 行为
 
 **SDK 不管的事**（下放给各端）：
 - 会话（Conversation）/ 草稿（Draft）的持久化 —— 各端自建存储，可复用 `EntityRepository`
@@ -21,9 +21,9 @@
 
 ```
 CLI ──┐
-      ├── @ai-zen/agents-sdk ──┬── @ai-zen/agents-core（Agent / Message / Tool / Model / Endpoint）
+      ├── @ai-zen/agents-sdk ──┬── @ai-zen/agents-core（Agent / Message / Tool / 插件机制）
 Desktop ──┘                   │
-                          LLM API / MCP 服务器
+                          LLM API / MCP 服务器（openai 官方 SDK / @modelcontextprotocol/sdk）
 ```
 
 依赖方向（SDK 内部）：
@@ -41,7 +41,7 @@ plugin ──> runtime ──> capabilities ──> crud ──> config ──> 
 ## 2. 核心实体
 
 ```
-Endpoint ──1:N──> Model ──> Agent
+openai SDK client（baseURL + apiKey）──> Agent（client + model + modelConfig）
                        │
                        └──> Tool（Agent 创建时绑定）
                               ├── 内置工具（BUILTIN_TOOL_CLASSES，按 Provider 实例化）
@@ -89,6 +89,7 @@ interface Model {
   maxContextTokens: number;      // 上下文窗口 token 上限
   maxContextChars?: number;      // 旧版字符数阈值（兼容迁移）
   defaultParams?: Record<string, unknown>;
+  vision?: boolean;              // 是否支持图片输入（视觉模型）：viewImage 据此启用，generateImage 据此决定返回图片块
   description?: string; version?: number;
 }
 
@@ -229,21 +230,22 @@ capabilities/
     usertools.ts              ← discoverUserTools(paths) → Tool[]
     mcp.ts                    ← discoverMcpServers(paths) → McpServerConfig[]
   implements/
-    builtin/                  ← 17 个工具类 + GenerateImageTool + BUILTIN_TOOL_CLASSES + test-helpers
+    builtin/                  ← 19 个内置工具类 + BUILTIN_TOOL_CLASSES + test-helpers
     skillTools.ts             ← createLoadSkillTool / createCallSkillSubAgentTool
     mcpTools.ts               ← createLoadMcpTool / createCallMcpTool / createReadMcpResourceTool
     subAgentTools.ts          ← createSubAgentTool
 runtime/
   Provider.ts                 ← 全局上下文 + 能力管线（filter/instantiate/buildTools/refresh）
-  createModel.ts              ← createModel(provider, modelId) → ChatCompletionModel
+  createModel.ts              ← createModel(provider, modelId) → { client, model, modelConfig }
   createAgent.ts              ← createAgent(provider, agentId) → SdkAgent
-  SdkAgent.ts                 ← SdkAgent + AgentPlugin + SendContext
+  SdkAgent.ts                 ← SdkAgent（插件机制继承自 Core）
   SdkCallbackTool.ts          ← 内置工具抽象基类
   McpConnectionManager.ts     ← MCP 连接生命周期
   TaskMigrationService.ts     ← 任务迁移（shouldMigrate / 交接文档）
 plugin/
   AutoMigratePlugin.ts        ← 上下文超限自动迁移
   AutoRefreshToolsPlugin.ts   ← send 前刷新工具列表
+  UnknownToolHintPlugin.ts    ← 未知工具的 MCP 智能提示（调用方显式注册）
 shared/
   EntityRepository.ts         ← 通用 JSON 仓储
   errors.ts                   ← SdkError
@@ -305,18 +307,14 @@ class Provider {
   /** 重新执行全局发现（重新扫描文件系统） */
   async refresh(options?: { silent?: boolean }): Promise<void>;
 
-  /** 阶段 2：按权限 + 排除黑名单过滤，返回名称列表 */
-  filter(permissions: AgentPermissions, options?: {
-    exclude?: ExcludeOptions;   // 四维黑名单，优先级高于 permissions
-  }): FilterOutput;
+  /** 阶段 2：按 definition（权限 + exclude + 工具 isAvailable）过滤，返回名称列表 */
+  filter(definition: AgentDefinition, options?: FilterOptions): FilterOutput;
 
   /** 阶段 3：将过滤后的名称映射为 Tool 实例 */
   instantiate(filtered: FilterOutput): Tool[];
 
-  /** 快捷：filter + instantiate 一步完成 */
-  buildTools(permissions: AgentPermissions, options?: {
-    exclude?: ExcludeOptions;
-  }): Tool[];
+  /** 快捷：filter + instantiate 一步完成（createAgent 构建工具时传入 definition） */
+  buildTools(definition: AgentDefinition, options?: FilterOptions): Tool[];
 }
 ```
 
@@ -333,6 +331,10 @@ interface ExcludeOptions {
   skills?: string[];      // 排除的 skill id
   mcps?: string[];        // 排除的 MCP server 名
   subagents?: string[];   // 排除的 agent/function 名称
+}
+
+interface FilterOptions {
+  exclude?: ExcludeOptions;
 }
 ```
 
@@ -363,13 +365,20 @@ abstract class SdkCallbackTool extends Tool {
   /** 注入的工具环境 */
   readonly env: ToolEnv;
 
-  constructor(options: { function: AgentNS.FunctionDefine; env: ToolEnv });
+  /**
+   * 工具对当前 Agent 的可用性判断。由工具自行声明，直接透传完整 app config + agent definition（含 modelId / permissions 等），工具自取所需。
+   * 返回 false 则 buildTools/filter 不注册该工具；不实现则默认可用。
+   */
+  isAvailable?(config: AppConfig, definition: AgentDefinition): boolean;
 
-  /** 工具核心逻辑（子类实现，参数为 parsed_args） */
-  abstract call(input: unknown): unknown | Promise<unknown>;
+  constructor(options: SdkCallbackToolOptions /* { env } */);
 
-  /** 桥接 core 的 Tool.exec：解析参数 → call → 序列化 */
-  async exec(ctx: ToolCallContext): Promise<string>;
+  /** 工具核心逻辑（子类实现，参数为 parsedArgs）；可选第二参 ctx 携带完整 ToolCallContext（signal 等） */
+  abstract call(input: unknown, ctx?: ToolCallContext): unknown | Promise<unknown>;
+
+  /** 桥接 core 的 Tool.exec：解析参数 → call → 序列化/透传内容块 */
+  async exec(ctx: ToolCallContext): Promise<AgentNS.MessageContent>;
+  // 返回 string 原样；返回内容块数组（图片/文件等）直接透传（模型可看到）；其余对象 JSON 序列化
 
   /** 将相对路径解析到 env.cwd，绝对路径原样返回 */
   resolve(p: string): string;
@@ -389,10 +398,11 @@ export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> 
   CwdTool, ReadFileTool, WriteFileTool, ExecTool, MkdirTool, RmTool,
   GlobTool, LsTool, ExistTool, FindTextTool, DownloadFileTool,
   RenameTool, CopyTool, BatchEditTool, EditTool, ExecAsyncTool, SleepTool,
+  ViewImageTool, GenerateImageTool,
 ];
 ```
 
-17 个无条件注册的工具类：
+19 个内置工具类（发现层不做任何过滤，可用性由各工具 `isAvailable` 声明，buildTools 阶段过滤）：
 
 | 工具 | 说明 |
 |------|------|
@@ -414,23 +424,31 @@ export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> 
 | `edit` | 单次替换文件文本 |
 | `sleep` | 等待指定毫秒数 |
 
-### GenerateImageTool — 条件注册
+### GenerateImageTool — 依赖图片模型配置
 
-`GenerateImageTool` 同样继承 `SdkCallbackTool`、构造签名 `(env: ToolEnv)`，但它**依赖图片模型配置**（`config.defaultImageModel`），因此**不进入 `BUILTIN_TOOL_CLASSES` 静态注册表**，由 `discoverBuiltinTools` 按条件实例化：
+`GenerateImageTool` 是 `BUILTIN_TOOL_CLASSES` 的一员（构造签名 `(env: ToolEnv)`），通过 `isAvailable(config, definition)` 声明**依赖 `config.defaultImageModel`**，未配置时由 buildTools 过滤。生成成功后**统一返回字符串**（JSON，含图片 URL 列表 + `viewImage` / `downloadFile` 提示）——生成结果如何处理由模型与上层自由决定，不替模型做「看或不看」的假设：需要看图时模型主动调 `viewImage(URL)`，需要保存用 `downloadFile`。
+
+### ViewImageTool — 主动查看图片
+
+`ViewImageTool` 让 Agent 主动查看/分析一张图片。它是 `BUILTIN_TOOL_CLASSES` 的一员，通过 `isAvailable(config, definition)` **声明仅视觉模型可用**（从 `definition.modelId ?? config.defaultModel` 解析模型，检查 `Model.vision === true`），buildTools/filter 直接透传 config + definition 后按声明过滤（非视觉模型在工具列表层面剔除，无需运行时重复校验）：
+
+- 输入 `path_or_url`：
+  - **http(s) URL** → 直接返回 `[{ type: "image_url", image_url: { url } }]`，模型直接查看；
+  - **本地路径** → 解析到 `env.cwd` → 校验存在与格式（JPEG/PNG/GIF/WebP）→ 通过 **Files API**（`client.files.create({ file, purpose: "user_data" })`）上传 → 返回 `[{ type: "text" }, { type: "file", file_id }]`。
+- **不使用 base64**（本地图片走 Files API，符合 DeepSeek 推荐与请求体限制）。
 
 ```typescript
-// capabilities/discovery/builtin.ts
+// capabilities/discovery/builtin.ts — 发现层零过滤，纯注册表映射
+import { BUILTIN_TOOL_CLASSES } from "../implements/builtin/index.js";
 export function discoverBuiltinTools(env: ToolEnv): Tool[] {
-  const tools: Tool[] = BUILTIN_TOOL_CLASSES.map((Cls) => new Cls(env));
-  if (env.config.defaultImageModel) {
-    // 未配置图片模型时不暴露 generateImage
-    tools.push(new GenerateImageTool(env));
-  }
-  return tools;
+  return BUILTIN_TOOL_CLASSES.map((Cls) => new Cls(env));
 }
+
+// 运行时：createAgent 构建工具时直接传入 definition（含 modelId），由工具 isAvailable 自决
+provider.buildTools(definition, { exclude });
 ```
 
-未配置图片模型时调用 `GenerateImageTool` 会返回友好错误（"未配置图片生成模型"）。
+视觉判断收敛在 `ViewImageTool.isAvailable` 一处（按模型 id 匹配 `Model.vision`）；`generateImage` 统一返回字符串，不判断视觉。`Model.vision` 是唯一视觉能力标记。
 
 ## 8. 工具装配流程
 
@@ -440,7 +458,7 @@ export function discoverBuiltinTools(env: ToolEnv): Tool[] {
 
 | 来源 | 发现函数 | 返回类型 |
 |------|----------|----------|
-| 内置工具 | `discoverBuiltinTools(env: ToolEnv)` | `Tool[]`（17 类 + 条件 GenerateImageTool） |
+| 内置工具 | `discoverBuiltinTools(env: ToolEnv)` | `Tool[]`（19 类全量；可用性由 buildTools 按工具 isAvailable 过滤） |
 | 用户工具 | `discoverUserTools(paths, { silent? })` | `Tool[]`（扫描 `tools/*.js`、`*.mjs`，动态 import） |
 | SubAgent | `discoverSubAgents(paths)` | `AgentDefinition[]`（仅含 function 的定义） |
 | Skill | `discoverSkills(paths, { silent? })` | `SkillInfo[]`（含 subAgent 标记等完整信息） |
@@ -451,7 +469,7 @@ export function discoverBuiltinTools(env: ToolEnv): Tool[] {
 ### 阶段 2 — 过滤（Provider.filter）
 
 ```
-filter(permissions, { exclude })
+filter(definition, { exclude })
   │
   ├── 1. 安全预过滤
   │     └── 从 SubAgent 候选集中剔除 exclude.subagents 中的名称
@@ -459,6 +477,9 @@ filter(permissions, { exclude })
   ├── 2. 拼装所有候选名称
   │     ├── 内置工具名 + 用户工具名 + 动态工具名（load_skill / call_skill_sub_agent / load_mcp / call_mcp_tool / read_mcp_resource）
   │     └── 从 tools 候选名中剔除 exclude.tools
+  │
+  ├── 2.5 工具可用性过滤（按工具 isAvailable）
+  │     └── 遍历候选工具，调用 isAvailable(config, definition)，返回 false 则剔除（如 GenerateImageTool 依赖 defaultImageModel、ViewImageTool 仅视觉模型）
   │
   ├── 3. 四维度权限过滤（PermissionEvaluator）
   │     ├── tools / subagents / skills / mcps
@@ -651,7 +672,7 @@ class ConfigManager {
 
 | 常量 | 说明 |
 |------|------|
-| `DEFAULT_APP_CONFIG` | 预置端点（OpenAI / 智谱 / DeepSeek）+ 6 个模型 + 3 个图片模型 + 默认选项 |
+| `DEFAULT_APP_CONFIG` | 预置端点（OpenAI / 智谱 / DeepSeek）+ 7 个模型（含视觉模型 `deepseek-v4-flash-vision-exp` / `glm-5v-turbo`，`vision: true`）+ 3 个图片模型 + 默认选项 |
 | `DEFAULT_AGENT_ID` / `DEFAULT_AGENT_DEFINITION` | 默认 Agent（id=`default`，四维全开，六条行为原则） |
 | `DEFAULT_SUBAGENT_ID` / `DEFAULT_SUBAGENT_DEFINITION` | 默认通用助手 SubAgent（id=`sub-agent-default`，`subagents: deny` 防递归） |
 | `DEFAULT_MCP_CONFIG` | 出厂默认 MCP 服务器（socket-pty 终端），首启写入 `~/.ai-zen/mcp.json`，已存在则不覆盖 |
@@ -708,30 +729,29 @@ class AgentRepository extends EntityRepository<AgentDefinition> {
 
 ## 14. SdkAgent 与插件机制
 
-Core `Agent` 保持纯粹，只管 `send()` / `run()`。插件能力由 SDK 的 `SdkAgent` 提供。
+插件机制（`AgentPlugin` / `SendContext` / `HookResult` / `use` / `init` / `dispatchHook`）已**提升到 core**。`SdkAgent` 继承 Core `Agent`，自动获得全部插件能力，不再重复实现。未知工具的 MCP 智能提示由独立插件 `UnknownToolHintPlugin` 提供（调用方显式注册），Core Agent 内置仅保留简单文本兜底。
 
 ### SdkAgent
 
 ```typescript
 class SdkAgent extends Agent {
   readonly provider: Provider;
-  readonly definition: AgentDefinition;
-  readonly permissions?: AgentPermissions;
-
-  /** LLM 调用不存在工具时的智能提示（含 MCP 场景引导） */
-  onUnknownTool: (ctx: UnknownToolContext) => string;
-
-  use(plugin: AgentPlugin): void;
-  async init(): Promise<void>;       // 执行插件 onInit
-  async send(content: string): Promise<AgentNS.Message[]>;  // 前后执行插件钩子
+  readonly definition: AgentDefinition;   // 含权限 permissions
 }
 ```
 
-构造参数：`{ provider, definition, model, model_config?, messages?, tools?, permissions?, rag?, allowJsonParseError? }`
+构造参数：`{ provider, definition, client, model, modelConfig?, messages?, tools?, allowJsonParseError? }`
 
-### 插件接口
+权限统一从 `definition.permissions` 读取（不单独持有，避免两份权限来源）。
+
+### 插件接口（类型来源 core）
+
+`AgentPlugin` / `SendContext` / `HookResult` 由 `@ai-zen/agents-core` 导出，SDK 直接复用：
 
 ```typescript
+// 统一返回值：string = 短路；undefined/void = 放行
+type HookResult = string | void | Promise<string | void>;
+
 interface SendContext {
   agent: SdkAgent;
   content: string;
@@ -740,20 +760,40 @@ interface SendContext {
 
 interface AgentPlugin {
   onInit?(): Promise<void>;
-  onBeforeSend?(ctx: SendContext): Promise<void>;
-  onAfterSend?(ctx: SendContext): Promise<void>;
-  onInnerLoopStart?(ctx: SendContext): Promise<void>;   // 每轮内循环请求前（Core try 块外，抛错即中断对话）
-  onInnerLoopEnd?(ctx: SendContext): Promise<void>;     // 每轮内循环请求+工具调用后
-  onInnerLoopsStart?(ctx: SendContext): Promise<void>;  // 一次 send 整组内循环开始前
-  onInnerLoopsEnd?(ctx: SendContext): Promise<void>;    // 一次 send 整组内循环结束后
-  onToolCall?(ctx: ToolCallContext): string | undefined | Promise<string | undefined>;
-  // 单个工具调用执行前拦截（对应 Core onToolCall，收同一个 ToolCallContext 实例）：
+  onBeforeSend?(ctx: SendContext): HookResult;        // string = 拒绝 send（抛错）
+  onAfterSend?(ctx: SendContext): HookResult;         // string = 仅短路后续插件
+  onInnerLoopStart?(ctx: SendContext): HookResult;    // string = 中断本轮（抛错）
+  onInnerLoopEnd?(ctx: SendContext): HookResult;      // string = 仅短路后续插件
+  onInnerLoopsStart?(ctx: SendContext): HookResult;   // string = 中断整组（抛错）
+  onInnerLoopsEnd?(ctx: SendContext): HookResult;     // string = 仅短路后续插件
+  onToolCall?(ctx: ToolCallContext): HookResult;
+  // 单个工具调用执行前拦截（收同一个 ToolCallContext 实例）：
   // 返回字符串 = 拒绝该工具（不执行，原因作为工具结果回给 LLM，继续下一轮）；
   // 返回 undefined = 放行。多个插件按注册顺序调用，任一返回字符串即拒绝（短路）。
+  onUnknownTool?(ctx: UnknownToolContext): HookResult;
+  // 返回字符串 = 作为工具结果返回给 LLM；undefined = 走默认提示（SdkAgent 覆盖的智能提示）
 }
 ```
 
-`send()` 流程：`onBeforeSend` → `super.send()`（内含内循环及其钩子）→ `onAfterSend`，返回 `this.messages`（整体取回自行落盘）。
+`send()` 流程：`onBeforeSend` → `super.send()`（内含内循环及其钩子）→ `onAfterSend`，返回 `this.messages`（整体取回自行落盘）。钩子统一经 Core 的 `dispatchHook` 收口：先发 kebab-case 非阻塞事件（`before-send` / `inner-loop-start` / `tool-call` / `unknown-tool` 等），再阻塞调用插件。
+
+### 插件：UnknownToolHintPlugin
+
+未知工具的 **MCP 智能提示**（取代旧 `SdkAgent.defaultUnknownTool` 覆盖，改为独立插件）。由调用方显式注册；未注册时，Agent 回落到底层的简单文本默认提示（core 内建）。
+
+```typescript
+class UnknownToolHintPlugin implements AgentPlugin {
+  constructor(options: { provider: Provider });
+
+  /** 返回 string = 作为工具结果；有 MCP 配置但 call_mcp_tool 被禁用 → 提示权限；可用的 call_mcp_tool → 引导使用；无 MCP → 仅提示不存在 */
+  onUnknownTool(ctx: UnknownToolContext): string | undefined;
+}
+```
+
+```typescript
+const agent = await createAgent(provider, "default");
+agent.use(new UnknownToolHintPlugin({ provider }));  // 显式注册，MCP 场景引导
+```
 
 ### 内置插件：AutoRefreshToolsPlugin
 
@@ -764,7 +804,7 @@ class AutoRefreshToolsPlugin implements AgentPlugin {
   async onBeforeSend(ctx: SendContext): Promise<void> {
     const { agent } = ctx;
     await agent.provider.refresh({ silent: true });
-    agent.tools = agent.provider.buildTools(agent.permissions ?? {}, {
+    agent.tools = agent.provider.buildTools(agent.definition, {
       exclude: { subagents: agent.definition.function?.name ? [agent.definition.function.name] : undefined },
     });
   }
@@ -805,11 +845,11 @@ interface AutoMigrateOptions {
 ```typescript
 interface ContextGuardOptions {
   maxTokens: number;   // 与迁移插件同一告警阈值
-  ratio?: number;      // 越界比例，默认 1.2（+20%）
+  ratio?: number;      // 越界比例，默认 1.5（+50%）
 }
 ```
 
-`onInnerLoopStart` 逻辑（每次内循环**发请求前**检测，Core 里该钩子在 try 块外、`createStream` 前）：
+`onInnerLoopStart` 逻辑（每次内循环**发请求前**检测，Core 里该钩子在 try 块外、`client.chat.completions.create` 前）：
 
 ```
 1. 读取 agent.lastUsage?.prompt_tokens；为空（首轮请求前无数据）→ 跳过
@@ -825,8 +865,8 @@ interface ContextGuardOptions {
 **推荐配合**（同一 `maxTokens`，区间互补）：
 
 ```typescript
-agent.use(new ContextGuardPlugin({ maxTokens }));      // >maxTokens×1.2 → 中断报错
-agent.use(new AutoMigratePlugin({ maxTokens, migrationAgent }));  // [maxTokens, maxTokens×1.2] → 交接迁移
+agent.use(new ContextGuardPlugin({ maxTokens }));      // >maxTokens×1.5 → 中断报错
+agent.use(new AutoMigratePlugin({ maxTokens, migrationAgent }));  // [maxTokens, maxTokens×1.5] → 交接迁移
 ```
 
 
@@ -912,13 +952,13 @@ await agentB.send("……");   // 与 agent 并行，工具以各自 env.cwd 为
 | 能力 | Core（@ai-zen/agents-core） | SDK（@ai-zen/agents-sdk） |
 |------|------------------------------|---------------------------|
 | Agent / Message / Tool | ✅ Agent、Message、Tool、CallbackTool、AgentToolLazy | ❌ 不重复实现 |
-| 模型 / 端点 | ✅ ChatGPT、OpenAI、ZhipuImage 等 | ❌ 只做 `createModel(provider, modelId)` 装配 |
+| 模型 / 端点 | ❌ 已删除（基于 openai 官方 SDK） | ✅ `createModel(provider, modelId)` → `{ client, model, modelConfig }` |
 | 权限模型 | ❌ | ✅ AgentPermissions + PermissionEvaluator |
 | 能力发现 | ❌ | ✅ builtin / user / skill / mcp / subagent |
 | MCP 连接 | ❌ | ✅ McpConnectionManager（基于官方 sdk） |
 | 配置 / 默认值 | ❌ | ✅ ConfigManager + constants |
 | 实体持久化 | ❌ | ✅ EntityRepository（各端可复用） |
-| 插件 | ❌（Agent 保持纯粹） | ✅ SdkAgent.use() + 内置插件 |
+| 插件 | ✅ AgentPlugin / HookResult / use / init / dispatchHook（提升到 core） | ✅ 内置插件 + UnknownToolHintPlugin（显式注册） |
 | 工作目录 | ❌（工具无 cwd 概念） | ✅ Provider.cwd → ToolEnv.cwd |
 
 ## 19. 设计决策汇总
@@ -934,7 +974,7 @@ await agentB.send("……");   // 与 agent 并行，工具以各自 env.cwd 为
 9. **MCP 无 tool 级权限**：server 级信任，连接后其工具全可用
 10. **枚举披露**：skill/mcp 编译为 load_* 参数枚举
 11. **惰性加载**：MCP / Skill 通过加载器工具按需触发，不预注册具体工具
-12. **Agent 保持纯粹**：插件机制在 SdkAgent，Core 不感知
+12. **插件提升到 Core**：AgentPlugin / dispatchHook 在 Core，SDK 只做适配（内置插件 + UnknownToolHintPlugin）
 13. **会话/草稿下放**：SDK 只保留 Message 数据结构，各端自建存储
 14. **全异步 IO**：生产代码无同步文件操作
 15. **apiKey 明文存储**：文件权限 600 由用户保证，后续可考虑系统密钥链

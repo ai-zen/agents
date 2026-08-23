@@ -40,6 +40,8 @@ export interface Model {
   maxContextTokens: number; // 上下文窗口 token 上限
   maxContextChars?: number; // 旧版字符数阈值（兼容迁移）
   defaultParams?: Record<string, unknown>; // 模型默认参数（temperature 等）
+  /** 是否支持图片输入（视觉模型）。看图工具（viewImage）仅对视觉模型启用；generateImage 是否返回图片内容块也据此判断 */
+  vision?: boolean;
   description?: string; // 描述
   version?: number;
 }

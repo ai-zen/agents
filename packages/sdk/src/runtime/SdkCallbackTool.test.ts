@@ -29,7 +29,7 @@ class TestTool extends SdkCallbackTool {
 }
 
 function makeCtx(input: unknown): ToolCallContext {
-  return { parsed_args: input } as unknown as ToolCallContext;
+  return { parsedArgs: input } as unknown as ToolCallContext;
 }
 
 describe("SdkCallbackTool", () => {
@@ -63,7 +63,7 @@ describe("SdkCallbackTool", () => {
     }
     const tool = new CtxTool();
     const ctx = {
-      parsed_args: { a: 1 },
+      parsedArgs: { a: 1 },
       signal: undefined,
     } as unknown as ToolCallContext;
     await tool.exec(ctx);
@@ -73,6 +73,16 @@ describe("SdkCallbackTool", () => {
   it("exec: call 返回 undefined 时返回空串，不破坏 Promise<string> 契约", async () => {
     const tool = new TestTool(makeEnv("/ws"), () => undefined);
     expect(await tool.exec(makeCtx({}))).toBe("");
+  });
+
+  it("exec: call 返回内容块数组（图片等）时透传，不序列化", async () => {
+    const sections = [
+      { type: "text", text: "图片如下：" },
+      { type: "image_url", image_url: { url: "https://example.com/a.png" } },
+    ];
+    const tool = new TestTool(makeEnv("/ws"), () => sections);
+    const result = await tool.exec(makeCtx({}));
+    expect(result).toBe(sections);
   });
 
   it("exec: call 返回 null 时序列化为 'null'", async () => {

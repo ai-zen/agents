@@ -1,11 +1,96 @@
-import { AsyncQueue } from "@ai-zen/async-queue";
 import EventBus from "@ai-zen/event-bus";
+import OpenAI from "openai";
+import type { ChatCompletionChunk } from "openai/resources/chat/completions";
 import { AgentNS } from "./AgentNS.js";
-import { AgentContext as AgentContext } from "./AgentContext.js";
+import { AgentContext } from "./AgentContext.js";
+import type { UnknownToolContext } from "./AgentContext.js";
 import { PickRequired } from "./Common.js";
 import { ToolCallContext } from "./ToolCallContext.js";
 import { Message } from "./Message.js";
 import { Tool } from "./Tool.js";
+
+// ---------------------------------------------------------------------------
+// 插件接口
+// ---------------------------------------------------------------------------
+
+/**
+ * 插件钩子统一返回值：返回 string = 短路（拒绝/中断/提供结果），
+ * 返回 undefined/void = 放行（继续后续插件或默认行为）。
+ */
+export type HookResult = string | void | Promise<string | void>;
+
+/**
+ * Agent 插件上下文：当前 Agent + 发送内容 + 消息列表快照。
+ *
+ * 注意：
+ * - messages 是当前 agent 消息数组的**快照**（浅拷贝），插件不应直接修改它。
+ *   所有消息变更应通过 agent 上的方法进行。
+ */
+export interface SendContext {
+  agent: Agent;
+  content: string;
+  /** 当前 agent 消息数组的浅拷贝快照，仅供读取，不应直接修改 */
+  messages: AgentNS.Message[];
+}
+
+/**
+ * Agent 插件接口。每个插件单一职责，通过钩子介入 Agent 生命周期。
+ *
+ * 所有钩子统一「返回值可短路」：返回字符串时短路（各钩子语义见下表），
+ * 返回 undefined/void 时放行。多个插件按注册顺序调用，任一返回字符串即短路。
+ *
+ * | 钩子 | 入参 | 返回 string 的语义 |
+ * |------|------|---------------------|
+ * | `onInit` | — | 初始化，不短路 |
+ * | `onBeforeSend` | SendContext | 拒绝 send（抛错中断） |
+ * | `onAfterSend` | SendContext | 仅短路后续插件 |
+ * | `onInnerLoopStart` | SendContext | 中断本轮（抛错） |
+ * | `onInnerLoopEnd` | SendContext | 仅短路后续插件 |
+ * | `onInnerLoopsStart` | SendContext | 中断整组（抛错） |
+ * | `onInnerLoopsEnd` | SendContext | 仅短路后续插件 |
+ * | `onToolCall` | ToolCallContext | 拒绝该工具，原因作为工具结果回给 LLM |
+ * | `onUnknownTool` | UnknownToolContext | 作为工具结果返回；undefined 走默认提示 |
+ */
+export interface AgentPlugin {
+  /** Agent.init() 时调用，用于异步初始化 */
+  onInit?(): Promise<void>;
+  /** Agent.send() 调用前触发。返回 string 拒绝本次发送（抛错中断） */
+  onBeforeSend?(ctx: SendContext): HookResult;
+  /** Agent.send() 返回后调用 */
+  onAfterSend?(ctx: SendContext): HookResult;
+  /** Agent 内循环开始前触发（每次 API 请求前）。返回 string 中断本轮 */
+  onInnerLoopStart?(ctx: SendContext): HookResult;
+  /** Agent 内循环结束后触发（一次 API 请求 + 可能的工具调用后） */
+  onInnerLoopEnd?(ctx: SendContext): HookResult;
+  /** Agent 整组内循环开始前触发（一次 send 仅一次）。返回 string 中断整组 */
+  onInnerLoopsStart?(ctx: SendContext): HookResult;
+  /** Agent 整组内循环结束后触发（一次 send 仅一次） */
+  onInnerLoopsEnd?(ctx: SendContext): HookResult;
+  /**
+   * 单个工具调用执行前触发（收同一个 ToolCallContext 实例）。
+   * 返回字符串 = 拒绝该工具（不执行，原因作为工具结果回给 LLM，继续下一轮）；
+   * 返回 undefined = 放行。多个插件按注册顺序调用，任一返回字符串即拒绝（短路）。
+   */
+  onToolCall?(ctx: ToolCallContext): HookResult;
+  /**
+   * LLM 调用未注册工具时触发。
+   * 返回字符串 = 作为工具结果返回给 LLM；
+   * 返回 undefined = 继续（最终使用 Agent 默认提示，或 SdkAgent 覆盖的智能提示）。
+   */
+  onUnknownTool?(ctx: UnknownToolContext): HookResult;
+}
+
+/** 钩子名 → kebab-case 事件名（dispatchHook 内 events.emit 使用） */
+const HOOK_EVENTS: Record<string, string> = {
+  onBeforeSend: "before-send",
+  onAfterSend: "after-send",
+  onInnerLoopStart: "inner-loop-start",
+  onInnerLoopEnd: "inner-loop-end",
+  onInnerLoopsStart: "inner-loops-start",
+  onInnerLoopsEnd: "inner-loops-end",
+  onToolCall: "tool-call",
+  onUnknownTool: "unknown-tool",
+};
 
 interface PendingTask {
   controller: AbortController;
@@ -18,8 +103,59 @@ export class Agent extends AgentContext {
   /** 最近一次 API 响应的 token 用量 */
   lastUsage?: AgentNS.Usage;
 
-  constructor(options: PickRequired<AgentContext, "model">) {
+  /** 已注册的插件列表 */
+  private _plugins: AgentPlugin[] = [];
+
+  constructor(options: PickRequired<AgentContext, "client" | "model">) {
     super(options);
+  }
+
+  /**
+   * 注册一个插件。
+   * 可以在 init() 之前或之后调用，但生命周期钩子仅在 send/run 时生效。
+   */
+  use(plugin: AgentPlugin): void {
+    this._plugins.push(plugin);
+  }
+
+  /**
+   * 初始化所有已注册插件（执行各插件 onInit）。
+   */
+  async init(): Promise<void> {
+    for (const plugin of this._plugins) {
+      await plugin.onInit?.();
+    }
+  }
+
+  /**
+   * 统一钩子分发：先发出**非阻塞**的 kebab-case 事件（events.emit，同步广播、不短路），
+   * 再按注册顺序**阻塞**调用插件钩子，任一返回字符串即短路并返回该字符串。
+   *
+   * 事件与插件收口在同一个入口：
+   * - 事件监听器（agent.events.on）获得的是非阻塞通知（不影响流程）
+   * - 插件钩子（agent.use）获得的是阻塞的可短路回调（可干预流程）
+   *
+   * @returns 短路字符串（undefined 表示全部放行）
+   */
+  private async dispatchHook(
+    hook: keyof AgentPlugin,
+    ctx: SendContext | ToolCallContext | UnknownToolContext,
+  ): Promise<string | undefined> {
+    // 非阻塞事件广播（不 await、不短路）
+    this.events.emit(HOOK_EVENTS[hook as string], ctx);
+
+    // 阻塞插件分发（短路）
+    let result: string | undefined;
+    for (const plugin of this._plugins) {
+      const fn = plugin[hook];
+      if (typeof fn !== "function") continue;
+      const r = await (fn as (ctx: any) => HookResult).call(plugin, ctx);
+      if (r !== undefined) {
+        result = r;
+        break;
+      }
+    }
+    return result;
   }
 
   /**
@@ -47,8 +183,9 @@ export class Agent extends AgentContext {
 
   /**
    * Run the conversation with the server.
+   * @param ctx 插件上下文（由 send() 传入；直接调用 run() 时构造默认上下文）
    */
-  async run() {
+  async run(ctx?: SendContext) {
     // 空消息校验：至少需要一条消息（如 send 追加的 User 消息）
     if (!this.messages.length) {
       throw new Error(
@@ -56,11 +193,18 @@ export class Agent extends AgentContext {
       );
     }
 
-    // 整组内循环开始：user 消息已就绪（一次 send 仅一次）；
-    // Assistant 占位由每次内循环开头统一追加
-    await this.onInnerLoopsStart?.();
+    // 直接 run() 时的兜底上下文
+    const sendCtx: SendContext = ctx ?? {
+      agent: this,
+      content: "",
+      messages: [...this.messages],
+    };
 
-    this.events.emit("inner-loops-start", this.messages);
+    // 整组内循环开始（一次 send 仅一次）；Assistant 占位由每次内循环开头统一追加
+    const loopsDenied = await this.dispatchHook("onInnerLoopsStart", sendCtx);
+    if (loopsDenied !== undefined) {
+      throw new Error(`inner-loops-start 被插件拒绝: ${loopsDenied}`);
+    }
 
     // 内循环
     let needContinue = true;
@@ -88,38 +232,42 @@ export class Agent extends AgentContext {
       this.innerLoopsTasks.add(pendingTask);
       this.innerLoopTasks.add(pendingTask);
 
-      // 每次请求前调用钩子，允许外部刷新工具定义等
-      await this.onInnerLoopStart?.();
+      // 每次请求前分发钩子（可刷新工具定义、安全护栏等）
+      const loopDenied = await this.dispatchHook("onInnerLoopStart", sendCtx);
+      if (loopDenied !== undefined) {
+        throw new Error(`inner-loop-start 被插件拒绝: ${loopDenied}`);
+      }
 
       const messages = this.formatHistory();
       const tools = this.formatTools();
 
-      this.events.emit("inner-loop-start", messages, tools);
-
-      const stream = this.model.createStream({
-        signal: currentController.signal,
-        messages,
-        tools,
-        onOpen: () => {
-          currentReceiver.status = AgentNS.MessageStatus.Writing;
-          this.events.emit("open");
-        },
-        onError: (error: any) => {
-          currentReceiver.status = AgentNS.MessageStatus.Error;
-          currentReceiver.content = error.message;
-          this.events.emit("error", error);
-        },
-        onFinally: () => {
-          this.events.emit("finally");
-        },
-      });
-
       try {
+        // 通过官方 SDK 发起流式对话请求（连接建立后即进入 Writing）
+        const stream = (await this.client.chat.completions.create(
+          {
+            model: this.model,
+            messages,
+            tools,
+            stream: true,
+            stream_options: { include_usage: true },
+            // 透传模型参数（temperature 等；可含厂商特有字段，如 DeepSeek thinking）
+            ...this.modelConfig,
+          } as any,
+          { signal: currentController.signal },
+        )) as unknown as AsyncIterable<ChatCompletionChunk>;
+
+        (currentReceiver as AgentNS.Message).status =
+          AgentNS.MessageStatus.Writing;
+        this.events.emit("open");
+
         await this.parseStreamData(currentReceiver, stream);
 
+        const receiverStatus = currentReceiver.status as
+          | AgentNS.MessageStatus
+          | undefined;
         if (
-          currentReceiver.status === AgentNS.MessageStatus.Aborted ||
-          currentReceiver.status === AgentNS.MessageStatus.Error
+          receiverStatus === AgentNS.MessageStatus.Aborted ||
+          receiverStatus === AgentNS.MessageStatus.Error
         ) {
           // 本轮 assistant 已中止/出错：任务完成，finally 统一移除
           continue;
@@ -143,25 +291,22 @@ export class Agent extends AgentContext {
         }
 
         // 每次 内循环 完成（一次 API 请求 + 可能的工具调用）
-        this.events.emit("inner-loop-end");
-
-        // 每次 内循环 完成，允许外面做一些后处理再进行下次循环
-        await this.onInnerLoopEnd?.();
+        await this.dispatchHook("onInnerLoopEnd", sendCtx);
       } catch (error: any) {
         currentReceiver.status = AgentNS.MessageStatus.Error;
         currentReceiver.content = error.message;
         this.events.emit("error", error);
       } finally {
-        // 本轮 assistant 任务已完成（无论正常/continue/异常），从活跃集合移除；
+        // 每轮结束统一触发（无论正常/continue/异常）
+        this.events.emit("finally");
+        // 本轮 assistant 任务已完成，从活跃集合移除；
         // 整组记录（innerLoopsTasks）保留至 run 结束统一清空
         this.innerLoopTasks.delete(pendingTask);
       }
     }
 
     // 整组内循环结束：含多轮工具调用，messages 为完整结果（正常/error/abort 均到达此处）
-    this.events.emit("inner-loops-end", this.messages);
-
-    await this.onInnerLoopsEnd?.();
+    await this.dispatchHook("onInnerLoopsEnd", sendCtx);
 
     // 清空整组 + 当前轮活跃任务记录
     this.innerLoopsTasks.clear();
@@ -174,12 +319,15 @@ export class Agent extends AgentContext {
    * Get the available tool definitions.
    */
   formatTools() {
+    if (!this.tools?.length) return undefined;
     return this.tools.map((tool) => ({
-      type: tool.type,
+      type: "function",
       function: {
         name: tool.function.name,
         description: tool.function.description,
         parameters: tool.function.parameters,
+        // 注入 strict: true，确保模型严格按照 JSON Schema 生成参数
+        strict: true,
       },
     }));
   }
@@ -210,30 +358,30 @@ export class Agent extends AgentContext {
 
   /**
    * Parse the streamed response data.
+   *
+   * 消费 openai 官方 SDK 的流式 chunk（ChatCompletionChunk）。
+   * 注意：SDK 类型未声明 DeepSeek 等厂商特有的 reasoning_content 字段，
+   * 此处按 any 处理以兼容思维链增量。
    */
   async parseStreamData(
     receiver: AgentNS.Message,
-    stream: AsyncQueue<AgentNS.StreamResponseData>,
+    stream: AsyncIterable<ChatCompletionChunk>,
   ) {
     for await (const chunk of stream) {
       this.events.emit("chunk", chunk);
 
       // 捕获流式最后一个 chunk 的 usage
       if (chunk?.usage) {
-        this.lastUsage = chunk.usage;
-      }
-
-      if (chunk?.error) {
-        throw new Error(chunk.error.message);
+        this.lastUsage = chunk.usage as unknown as AgentNS.Usage;
       }
 
       if (chunk?.choices?.[0]) {
         const finishReason = chunk.choices[0].finish_reason;
         if (finishReason) {
-          receiver.finish_reason = finishReason;
+          receiver.finish_reason = finishReason as AgentNS.FinishReason;
         }
 
-        const delta = chunk.choices[0].delta;
+        const delta = chunk.choices[0].delta as any;
 
         if (delta?.content) {
           if (delta.content instanceof Array) {
@@ -418,45 +566,44 @@ export class Agent extends AgentContext {
             agent: this,
             tool_call: task,
             tool: matchedTool,
-            result_message: resultReceiver,
+            resultMessage: resultReceiver,
             allowJsonParseError: this.allowJsonParseError,
             // 注入工具执行的中止信号：abort() 会中止 toolTask.controller →
             // signal 触发 → 工具实现可监听 signal 真正中断执行
             signal: toolTask.controller.signal,
           });
 
-          // 阻塞式钩子：可拒绝单个工具调用（返回字符串 = 拒绝原因，作为工具结果返回给 LLM，
-          // 工具不执行、继续下一轮让 LLM 调整）
-          const denied = await this.onToolCall?.(ctx);
-          if (denied) {
+          // 工具拦截钩子：返回字符串 = 拒绝（原因作为工具结果返回给 LLM，继续下一轮）
+          const denied = await this.dispatchHook("onToolCall", ctx);
+          if (denied !== undefined) {
             resultReceiver.content = `工具 ${task.function!.name} 被拒绝：${denied}`;
             markResult(AgentNS.MessageStatus.Completed);
-            return { is_prevent_default: false, status: resultReceiver.status };
+            return { isPreventDefault: false, status: resultReceiver.status };
           }
 
           // 如果 JSON 解析失败且允许容错，将错误信息作为结果返回给 AI
-          if (ctx.parse_error) {
-            resultReceiver.content = `参数解析错误: ${ctx.parse_error}\n请检查你提供的参数格式，确保是合法的 JSON。`;
+          if (ctx.parseError) {
+            resultReceiver.content = `参数解析错误: ${ctx.parseError}\n请检查你提供的参数格式，确保是合法的 JSON。`;
             markResult(AgentNS.MessageStatus.Completed);
-            return { is_prevent_default: false, status: resultReceiver.status };
+            return { isPreventDefault: false, status: resultReceiver.status };
           }
 
           if (!matchedTool) {
-            if (this.onUnknownTool) {
-              resultReceiver.content = await this.onUnknownTool({
-                toolCall: task,
-                availableTools: [...this.tools],
-              });
-            } else {
-              resultReceiver.content = `未知工具: ${task.function!.name}，没有找到对应的工具实现。`;
-            }
+            const hint = await this.dispatchHook("onUnknownTool", {
+              toolCall: task,
+              availableTools: [...this.tools],
+            });
+            resultReceiver.content =
+              hint !== undefined
+                ? hint
+                : this.defaultUnknownTool(task);
           } else {
             resultReceiver.content = await matchedTool.exec(ctx);
           }
           markResult(AgentNS.MessageStatus.Completed);
 
           return {
-            is_prevent_default: ctx.is_prevent_default,
+            isPreventDefault: ctx.isPreventDefault,
             status: resultReceiver.status,
           };
         } catch (error: any) {
@@ -464,25 +611,34 @@ export class Agent extends AgentContext {
             // 工具执行异常时，将错误信息返回给 AI 继续
             resultReceiver.content = `执行工具 ${task.function!.name} 时出错: ${error?.message}`;
             markResult(AgentNS.MessageStatus.Completed);
-            return { is_prevent_default: false, status: resultReceiver.status };
+            return { isPreventDefault: false, status: resultReceiver.status };
           }
 
           // allowJsonParseError=false 时，标记为 Error（已被 abort 则保持 Aborted）
           resultReceiver.content = error?.message;
           markResult(AgentNS.MessageStatus.Error);
-          return { is_prevent_default: true, status: resultReceiver.status };
+          return { isPreventDefault: true, status: resultReceiver.status };
         }
       }),
     );
 
-    // is_prevent_default: 工具主动要求停止（preventDefault）
+    // isPreventDefault: 工具主动要求停止（preventDefault）
     // status: 消息状态，Error 表示工具执行出错且不容错
     // 两者任一为 true，则不继续下一轮
     const shouldStop = results.some(
-      (r) => r.is_prevent_default || r.status === AgentNS.MessageStatus.Error,
+      (r) => r.isPreventDefault || r.status === AgentNS.MessageStatus.Error,
     );
 
     return !shouldStop;
+  }
+
+  /**
+   * 未知工具默认提示（简单文本兜底）。
+   * 需要更智能的提示（如根据上下文引导）时，请通过 `onUnknownTool` 插件提供，
+   * 插件返回 undefined 时最终回落到此默认提示。
+   */
+  private defaultUnknownTool(toolCall: AgentNS.ToolCall): string {
+    return `未知工具: ${toolCall.function?.name}，没有找到对应的工具实现。`;
   }
 
   /**
@@ -504,13 +660,28 @@ export class Agent extends AgentContext {
    * @returns A promise that resolves to the conversation messages.
    */
   async send(content: AgentNS.MessageContentSection[] | string) {
-    // Create a question message.
-    const questionMessage = this.append(Message.User(content));
+    // 插件上下文（消息快照仅供读取）
+    const ctx: SendContext = {
+      agent: this,
+      content: typeof content === "string" ? content : "",
+      messages: [...this.messages],
+    };
 
-    // Rewrite the user question.
-    await this.rag?.rewrite(questionMessage, this.messages);
+    // onBeforeSend 钩子：可刷新工具等；返回 string 则拒绝本次发送
+    const denied = await this.dispatchHook("onBeforeSend", ctx);
+    if (denied !== undefined) {
+      throw new Error(`send 被插件拒绝: ${denied}`);
+    }
+
+    // Create a question message.
+    this.append(Message.User(content));
 
     // Run the chat：Assistant 占位由 run 内循环开头统一追加。
-    return this.run();
+    const result = await this.run(ctx);
+
+    // onAfterSend 钩子：可做迁移、保存等后处理
+    await this.dispatchHook("onAfterSend", ctx);
+
+    return result;
   }
 }

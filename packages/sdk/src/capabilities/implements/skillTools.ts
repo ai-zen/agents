@@ -134,18 +134,19 @@ export function createCallSkillSubAgentTool(
         return `Skill "${skillId}" 不支持子 Agent 模式，请使用 load_skill 加载指导后自行处理`;
       }
 
+      // 临时 Skill 子 Agent 复用父 Agent 定义（权限 + 模型），排除当前 Skill 防自调用
       const parentAgent = ctx.agent;
-      const parentPermissions = parentAgent instanceof SdkAgent
-        ? parentAgent.permissions
-        : undefined;
-      const skillTools: Tool[] = provider && parentPermissions
-        ? provider.buildTools(parentPermissions, {
-            exclude: { skills: [skillId] },
-          })
-        : [];
+      const skillTools: Tool[] =
+        provider && parentAgent instanceof SdkAgent
+          ? provider.buildTools(parentAgent.definition, {
+              exclude: { skills: [skillId] },
+            })
+          : [];
 
       const subAgent = new Agent({
+        client: parentAgent.client,
         model: parentAgent.model,
+        modelConfig: parentAgent.modelConfig,
         messages: [
           Message.System(skill.content),
           Message.User(task),

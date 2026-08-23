@@ -1,12 +1,12 @@
 import { ContextOverflowError } from "../shared/errors.js";
-import type { AgentPlugin, SendContext } from "../runtime/SdkAgent.js";
+import type { AgentPlugin, SendContext } from "@ai-zen/agents-core";
 
 export interface ContextGuardOptions {
   /** 上下文告警阈值（token）。用量超过 maxTokens × ratio 即中断。 */
   maxTokens: number;
   /**
    * 超出比例。用量 > maxTokens × ratio 时判定为「严重超限」（如读入超大文件），
-   * 在请求前抛出 ContextOverflowError 中断对话。默认 1.2（即 +20%）。
+   * 在请求前抛出 ContextOverflowError 中断对话。默认 1.5（即 +50%）。
    */
   ratio?: number;
 }
@@ -39,7 +39,7 @@ export class ContextGuardPlugin implements AgentPlugin {
 
   async onInnerLoopStart(ctx: SendContext): Promise<void> {
     const { agent } = ctx;
-    const { maxTokens, ratio = 1.2 } = this.options;
+    const { maxTokens, ratio = 1.5 } = this.options;
 
     // 首轮请求前尚无用量数据，跳过（只能在发出首轮请求、拿到 usage 后才有据可查）
     const promptTokens = agent.lastUsage?.prompt_tokens;

@@ -1,5 +1,5 @@
 import { AgentNS } from "@ai-zen/agents-core";
-import type { AgentPlugin, SendContext } from "../runtime/SdkAgent.js";
+import type { AgentPlugin, SendContext } from "@ai-zen/agents-core";
 import { TaskMigrationService } from "../runtime/TaskMigrationService.js";
 import { getLogger } from "../shared/logger.js";
 import { SdkAgent } from "../runtime/SdkAgent.js";
@@ -37,7 +37,7 @@ export class AutoMigratePlugin implements AgentPlugin {
   }
 
   async onAfterSend(ctx: SendContext): Promise<void> {
-    const { agent } = ctx;
+    const agent = ctx.agent as SdkAgent;
     const { maxTokens, migrationAgent, onBeforeMigrate, onMigrated } = this.options;
 
     const promptTokens = agent.lastUsage?.prompt_tokens;

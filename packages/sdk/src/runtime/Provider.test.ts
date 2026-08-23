@@ -59,7 +59,8 @@ describe("Provider", () => {
     const provider = new Provider(baseOptions);
     const model = createModel(provider, "gpt4");
     expect(model).toBeDefined();
-    expect(typeof model.createCompletion).toBe("function");
+    expect(model.client).toBeDefined();
+    expect(model.model).toBe("gpt-4");
   });
 
   it("createModel 模型不存在时报错", () => {

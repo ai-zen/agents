@@ -1,6 +1,6 @@
 {
   "name": "@ai-zen/agents-sdk",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "AI-Zen Agents SDK — shared business logic for CLI and Desktop",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -31,7 +31,8 @@
   "dependencies": {
     "@ai-zen/agents-core": "workspace:^",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "dayjs": "^1.11.21"
+    "dayjs": "^1.11.21",
+    "openai": "^7.5.0"
   },
   "devDependencies": {
     "@types/node": "^24.12.2",

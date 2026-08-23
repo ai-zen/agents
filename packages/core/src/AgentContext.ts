@@ -1,61 +1,43 @@
+import OpenAI from "openai";
 import { AgentNS } from "./AgentNS.js";
 import { PickRequired } from "./Common.js";
-import { ChatCompletionModel } from "./Models/index.js";
-import { Rag } from "./Rag.js";
 import { Tool } from "./Tool.js";
-import type { Agent } from "./Agent.js";
-import type { ToolCallContext } from "./ToolCallContext.js";
 
 export interface UnknownToolContext {
   toolCall: AgentNS.ToolCall;
   availableTools: Tool[];
 }
 
+/**
+ * AgentContext — 所有 Agent 的基类，持有核心配置。
+ *
+ * 构造签名：`{ client, model, modelConfig?, messages?, tools?, allowJsonParseError? }`
+ * - `client`：openai 官方 SDK 实例（提供与 LLM API 的连接）
+ * - `model`：发送给 API 的模型名
+ * - `modelConfig`：模型参数（temperature 等），透传给 API；可含厂商特有字段（如 DeepSeek `thinking`）
+ *
+ * 扩展方式：通过 `Agent.use(plugin)` 注册插件，不再提供 onXxx 构造钩子。
+ */
 export class AgentContext {
-  model: ChatCompletionModel;
-  model_config: any;
+  /** openai 官方 SDK 客户端 */
+  client: OpenAI;
+  /** 发送给 API 的模型名 */
+  model: string;
+  /** 模型参数，透传给 API（含厂商特有字段） */
+  modelConfig: Record<string, unknown>;
   messages: AgentNS.Message[];
   tools: Tool[];
-  rag?: Rag;
   allowJsonParseError: boolean;
-  /** 每次内循环开始调用的钩子，可用于刷新工具定义、RAG 等 */
-  declare onInnerLoopStart?: () => Promise<void> | void;
-  /** 每次内循环结束调用的钩子，可用于后处理 */
-  declare onInnerLoopEnd?: () => Promise<void> | void;
-  /** 整组内循环（一次 send，含多轮工具调用）开始前调用的钩子 */
-  declare onInnerLoopsStart?: () => Promise<void> | void;
-  /** 整组内循环（一次 send，含多轮工具调用）结束后调用的钩子 */
-  declare onInnerLoopsEnd?: () => Promise<void> | void;
-  /**
-   * 当 LLM 调用一个未注册的工具时触发。
-   * 返回的字符串将作为工具执行结果返回给 LLM。
-   * 不设置则使用默认提示。
-   */
-  declare onUnknownTool?: (ctx: UnknownToolContext) => string | Promise<string>;
-  /**
-   * 工具调用前钩子（阻塞式）：每个工具调用执行前触发，可**拒绝**单个工具调用。
-   * 返回字符串 = 拒绝执行，该字符串（拒绝原因）作为工具结果返回给 LLM；
-   * 返回 undefined = 允许执行。
-   * 与 Tool.exec(ctx) 收同一个 ToolCallContext 实例（一个类贯穿拦截决策 → 执行）。
-   */
-  declare onToolCall?: (
-    ctx: ToolCallContext,
-  ) => string | undefined | Promise<string | undefined>;
 
-  constructor(options: PickRequired<AgentContext, "model">) {
+  constructor(options: PickRequired<AgentContext, "client" | "model">) {
+    if (!options.client) throw new Error("AgentContext must have a client");
     if (!options.model) throw new Error("AgentContext must have a model");
+    this.client = options.client;
     this.model = options.model;
-    this.model_config = options.model_config ?? {};
+    this.modelConfig = options.modelConfig ?? {};
     this.messages = options.messages ?? [];
     this.tools = options.tools ?? [];
-    this.rag = options.rag;
     this.allowJsonParseError = options.allowJsonParseError ?? true;
-    if (options.onInnerLoopStart !== undefined) this.onInnerLoopStart = options.onInnerLoopStart;
-    if (options.onInnerLoopEnd !== undefined) this.onInnerLoopEnd = options.onInnerLoopEnd;
-    if (options.onInnerLoopsStart !== undefined) this.onInnerLoopsStart = options.onInnerLoopsStart;
-    if (options.onInnerLoopsEnd !== undefined) this.onInnerLoopsEnd = options.onInnerLoopsEnd;
-    if (options.onUnknownTool !== undefined) this.onUnknownTool = options.onUnknownTool;
-    if (options.onToolCall !== undefined) this.onToolCall = options.onToolCall;
   }
 
   /**

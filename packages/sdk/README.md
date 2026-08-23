@@ -23,7 +23,7 @@ config       ← read/write config.json + migration + in-memory cache + atomic w
 crud         ← capability-entity CRUD (Agent definitions, etc.; conversations/drafts are persisted by each consumer)
 capabilities ← capability discovery & assembly (built-in + user + MCP + Skill + SubAgent)
 runtime      ← Provider + model factory + Agent assembly + MCP connection management + task migration + SdkCallbackTool base
-plugin       ← Agent plugins (autoMigrate, autoRefreshTools)
+plugin       ← Agent plugins (autoMigrate, autoRefreshTools, contextGuard, unknownToolHint)
 shared       ← logging, errors
 ```
 
@@ -78,9 +78,9 @@ await agent.send("Hello");
 | `crud` | ✅ Implemented — capability-entity CRUD for Agents, etc. (conversations/drafts persisted by each consumer) |
 | `capabilities` | ✅ Implemented — discovery + permission filtering + safe pre-filtering + enumeration disclosure |
 | `runtime` | ✅ Implemented — Provider, Capabilities, createAgent, MCP connection management, task migration |
-| `plugin` | ✅ Implemented — AutoMigratePlugin / AutoRefreshToolsPlugin |
+| `plugin` | ✅ Implemented — AutoMigratePlugin / AutoRefreshToolsPlugin / ContextGuardPlugin / UnknownToolHintPlugin |
 | `shared` | ✅ Implemented — SdkError + injectable Logger |
-| Tests | ✅ 409 tests, 47 files, all passing (incl. real-API chat e2e) |
+| Tests | ✅ 445 passing, 51 files, all green (incl. real-API chat & viewImage e2e) |
 
 ## Built-in Tools
 
@@ -106,11 +106,12 @@ All built-in tools are classes (extending `SdkCallbackTool`), instantiated by th
 | `edit` | Edit text in a file |
 | `sleep` | Wait for a specified number of milliseconds |
 
-Conditionally injected (registered only when `defaultImageModel` is configured):
+Conditionally injected based on the active model / config:
 
-| Tool | Description |
-|------|-------------|
-| `generateImage` | Generate an image from a text description |
+| Tool | Injection Condition | Description |
+|------|---------------------|-------------|
+| `generateImage` | Only when `defaultImageModel` is configured | Generate an image from a text description |
+| `viewImage` | Only for vision models (the agent's `modelId` resolves to a model with `vision: true`) | View / analyze an image: local images are auto-uploaded via the Files API, network URLs are referenced directly |
 
 ## Built-in Plugins
 
@@ -118,6 +119,8 @@ Conditionally injected (registered only when `defaultImageModel` is configured):
 |--------|-------------|
 | `AutoMigratePlugin` | Automatically triggers task migration when the context overflows, generates a handoff document, and transparently replaces the Agent |
 | `AutoRefreshToolsPlugin` | Re-scans the file system before each `send()` to refresh the tool list |
+| `ContextGuardPlugin` | Context safety guard — before each request, throws `ContextOverflowError` (interrupting the conversation) when the previous round's `usage.prompt_tokens` exceeds `maxTokens × ratio` (default 1.5), preventing context runaway from reading oversized files |
+| `UnknownToolHintPlugin` | Smarter unknown-tool hints — when the LLM calls a nonexistent tool, guides it to `call_mcp_tool` / points out permission issues based on MCP config (opt-in via `agent.use`) |
 
 ## Design Principles
 

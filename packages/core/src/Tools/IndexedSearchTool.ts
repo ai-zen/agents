@@ -39,9 +39,9 @@ export class IndexedSearchTool implements Tool {
   async exec(ctx: ToolCallContext) {
     // GPT may mistakenly input a string instead of an array when there is only one keyword.
     const keywords: string[] =
-      ctx.parsed_args.keywords instanceof Array
-        ? ctx.parsed_args.keywords
-        : [ctx.parsed_args.keywords];
+      ctx.parsedArgs.keywords instanceof Array
+        ? ctx.parsedArgs.keywords
+        : [ctx.parsedArgs.keywords];
 
     const results = new Set<IndexedSearchEntry>();
 

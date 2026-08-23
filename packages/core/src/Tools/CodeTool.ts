@@ -26,7 +26,7 @@ export class CodeTool implements Tool {
     this.code = options.code;
   }
 
-  async exec(ctx: ToolCallContext) {
+  async exec(ctx: ToolCallContext): Promise<AgentNS.MessageContent> {
     let result;
 
     // If the tool has code
@@ -36,7 +36,7 @@ export class CodeTool implements Tool {
       const wideArgs = Object.fromEntries(
         Object.keys(this.function.parameters.properties!).map((key) => [
           key,
-          ctx.parsed_args[key],
+          ctx.parsedArgs[key],
         ])
       );
 
@@ -45,13 +45,9 @@ export class CodeTool implements Tool {
       result = await fun.call(ctx, ...Object.values(wideArgs));
     }
 
-    // If the result is already a string, return it as is. Otherwise, serialize it using JSON.stringify().
-    // Note that even if the result is undefined, it is a valid value and still needs to be serialized before returning
-    if (typeof result !== "string") {
-      result = JSON.stringify(result) ?? "";
-    }
-
-    // Return the result
-    return result;
+    // string 原样返回；内容块数组透传；其余值 JSON 序列化（undefined 归一为空串）。
+    if (typeof result === "string") return result;
+    if (Array.isArray(result)) return result as AgentNS.MessageContentSection[];
+    return JSON.stringify(result) ?? "";
   }
 }

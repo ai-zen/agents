@@ -7,7 +7,6 @@ import { PickRequired } from "./Common.js";
 export class Message implements AgentNS.Message {
   id: string;
   name?: string | undefined;
-  raw_content?: string | AgentNS.MessageContentSection[];
   content?: string | AgentNS.MessageContentSection[];
   function_call?: AgentNS.FunctionCall | undefined;
   tool_call_id?: string | undefined;
@@ -26,7 +25,6 @@ export class Message implements AgentNS.Message {
     if (!options.role) throw new Error("Message must have a role");
     this.id = options.id ?? generateMessageId();
     this.name = options.name;
-    this.raw_content = options.raw_content;
     this.content = options.content;
     this.function_call = options.function_call;
     this.tool_call_id = options.tool_call_id;
@@ -37,17 +35,6 @@ export class Message implements AgentNS.Message {
     this.finish_reason = options.finish_reason;
     this.hidden = options.hidden;
     this.omit = options.omit;
-  }
-
-  /**
-   * Rewrite the message. The original content will be stored in `raw_content`.
-   */
-  static rewrite(
-    message: AgentNS.Message,
-    newContent: string | AgentNS.MessageContentSection[]
-  ) {
-    message.raw_content = message.raw_content || message.content;
-    message.content = newContent;
   }
 
   /**

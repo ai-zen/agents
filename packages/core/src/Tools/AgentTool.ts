@@ -12,7 +12,9 @@ export class AgentTool extends AgentContext implements Tool {
   type: "function";
   function: AgentNS.FunctionDefine;
 
-  constructor(options: PickRequired<AgentTool, "function" | "model">) {
+  constructor(
+    options: PickRequired<AgentTool, "function" | "client" | "model">,
+  ) {
     if (!options.function) throw new Error("AgentTool must have a function");
     if (options.messages?.at(-1)?.role != AgentNS.Role.User) {
       throw new Error("AgentTool must end with a user message.");
@@ -26,13 +28,13 @@ export class AgentTool extends AgentContext implements Tool {
    * 将当前 AgentTool 的配置导出为纯对象，用于创建子 Agent。
    * 会深拷贝 messages 以避免共享引用导致的意外修改。
    */
-  toAgentConfig(): PickRequired<AgentContext, "model"> {
+  toAgentConfig(): PickRequired<AgentContext, "client" | "model"> {
     return {
+      client: this.client,
       model: this.model,
-      model_config: this.model_config ? { ...this.model_config } : undefined,
+      modelConfig: this.modelConfig ? { ...this.modelConfig } : undefined,
       messages: JSON.parse(JSON.stringify(this.messages)),
       tools: this.tools?.map((t) => t),
-      rag: this.rag,
       allowJsonParseError: this.allowJsonParseError,
     };
   }
@@ -40,9 +42,9 @@ export class AgentTool extends AgentContext implements Tool {
   /**
    * Executes the agent's function with the given function call context.
    * @param ctx - The function call context.
-   * @returns {Promise<string>} The result of the function execution.
+   * @returns {Promise<AgentNS.MessageContent>} The result of the agent execution (last message content).
    */
-  async exec(ctx: ToolCallContext): Promise<string> {
+  async exec(ctx: ToolCallContext): Promise<AgentNS.MessageContent> {
     // Create a chat for the agent using exported config
     const agent = new Agent({
       ...this.toAgentConfig(),
@@ -51,14 +53,9 @@ export class AgentTool extends AgentContext implements Tool {
     ctx.agent.events.emit("sub-agent", { agent, ctx });
 
     // Inject the arguments into the cloned agent's message list
-    agent.messages = AgentTool.injectArgs(agent.messages, ctx.parsed_args);
+    agent.messages = AgentTool.injectArgs(agent.messages, ctx.parsedArgs);
 
-    // Get question message
-    const questionMessage = agent.messages.at(-1)!;
-
-    // If references are found, insert them before the user question
     // （Assistant 占位由 run 内循环开头统一追加）
-    await agent.rag?.rewrite(questionMessage, this.messages);
 
     // Send the agent chat to the server
     try {
@@ -78,7 +75,7 @@ export class AgentTool extends AgentContext implements Tool {
     }
 
     // Return the last message content of the agent chat as the result
-    return agent.messages.at(-1)?.content as string;
+    return agent.messages.at(-1)?.content ?? "";
   }
 
   /**
@@ -107,14 +104,14 @@ export class AgentTool extends AgentContext implements Tool {
   /**
    * Format the messages by replacing the parameters in the messages with their parsed values.
    * @param messages - The list of messages.
-   * @param parsed_args - The parsed arguments.
+   * @param parsedArgs - The parsed arguments.
    */
-  static injectArgs<T extends AgentNS.Message>(messages: T[], parsed_args: any): T[] {
+  static injectArgs<T extends AgentNS.Message>(messages: T[], parsedArgs: any): T[] {
     return JSON.parse(JSON.stringify(messages)).map((message: T) => ({
       ...message,
       content:
         typeof message.content == "string"
-          ? AgentTool.replaceStringWithValues(message.content, parsed_args)
+          ? AgentTool.replaceStringWithValues(message.content, parsedArgs)
           : message.content,
     }));
   }

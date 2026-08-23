@@ -45,13 +45,14 @@ function createTestAgent(opts?: {
       id: "test-agent",
       name: "Test Agent",
       messages: [{ role: "system", content: "You are a helper." }],
+      permissions: opts?.permissions, // 权限统一从 definition 读取
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     },
-    model: { name: "test-model", createStream: vi.fn() } as any,
+    client: {} as any,
+    model: "test-model",
     messages,
     tools: [],
-    permissions: opts?.permissions,
   });
 }
 
@@ -100,7 +101,7 @@ describe("AutoRefreshToolsPlugin", () => {
     expect(agent.tools).toBe(fakeTools);
   });
 
-  it("传入 agent.permissions 给 buildTools", async () => {
+  it("传入 definition（含 permissions）给 buildTools", async () => {
     const provider = mockProvider();
     const permissions = { tools: { allow: ["readFile"] } };
     const agent = createTestAgent({ provider, permissions });
@@ -108,17 +109,23 @@ describe("AutoRefreshToolsPlugin", () => {
     const ctx = { agent, content: "hello", messages: agent.messages };
 
     await plugin.onBeforeSend!(ctx);
-    expect(provider.buildTools).toHaveBeenCalledWith(permissions, expect.any(Object));
+    expect(provider.buildTools).toHaveBeenCalledWith(
+      expect.objectContaining({ permissions }),
+      expect.any(Object),
+    );
   });
 
-  it("Agent 无 permissions 时传入空对象", async () => {
+  it("Agent 定义无 permissions 时传入 definition（权限为空）", async () => {
     const provider = mockProvider();
     const agent = createTestAgent({ provider, permissions: undefined });
     const plugin = new AutoRefreshToolsPlugin();
     const ctx = { agent, content: "hello", messages: agent.messages };
 
     await plugin.onBeforeSend!(ctx);
-    expect(provider.buildTools).toHaveBeenCalledWith({}, expect.any(Object));
+    expect(provider.buildTools).toHaveBeenCalledWith(
+      expect.objectContaining({ permissions: undefined }),
+      expect.any(Object),
+    );
   });
 
   it("排除自身的 SubAgent name", async () => {

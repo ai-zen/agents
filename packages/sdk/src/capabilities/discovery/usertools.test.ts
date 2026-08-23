@@ -171,7 +171,7 @@ export default {
     expect(result).toHaveLength(1);
 
     const mockCtx = {
-      parsed_args: { a: 3, b: 4 },
+      parsedArgs: { a: 3, b: 4 },
       agent: null,
     };
     const output = await result[0].exec(mockCtx as any);
@@ -202,7 +202,7 @@ export default {
     const result = await discoverUserTools([dir]);
     expect(result).toHaveLength(1);
 
-    const mockCtx = { parsed_args: { a: 10, b: 20 }, agent: null };
+    const mockCtx = { parsedArgs: { a: 10, b: 20 }, agent: null };
     const output = await result[0].exec(mockCtx as any);
     expect(output).toBe("30");
   });

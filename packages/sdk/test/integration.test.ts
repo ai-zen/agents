@@ -72,8 +72,8 @@ describe("集成：端到端 Agent 组装", () => {
     });
     const agent = await createAgent(provider, "my-agent");
 
-    expect(agent.permissions).toBeDefined();
-    expect(agent.permissions!.tools).toEqual({ allow: ["readFile", "exec", "glob", "findText"] });
+    expect(agent.definition.permissions).toBeDefined();
+    expect(agent.definition.permissions!.tools).toEqual({ allow: ["readFile", "exec", "glob", "findText"] });
 
     expect(agent.messages[0].content).toBe("你是一个专业的代码助手。");
 

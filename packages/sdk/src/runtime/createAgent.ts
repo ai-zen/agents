@@ -24,9 +24,9 @@ export async function createAgent(
   const modelId = definition.modelId ?? provider.config.defaultModel;
   if (!modelId) throw new Error("未指定模型且无默认模型");
 
-  const model = createModel(provider, modelId);
+  const { client, model, modelConfig } = createModel(provider, modelId);
 
-  const tools = provider.buildTools(definition.permissions ?? {}, {
+  const tools = provider.buildTools(definition, {
     exclude: {
       subagents: definition.function?.name
         ? [definition.function.name]
@@ -37,10 +37,11 @@ export async function createAgent(
   const agent = new SdkAgent({
     provider,
     definition,
+    client,
     model,
+    modelConfig,
     messages: definition.messages as AgentNS.Message[],
     tools,
-    permissions: definition.permissions,
   });
 
   return agent;

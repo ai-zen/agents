@@ -41,8 +41,8 @@ describe("createModel", () => {
   it("正常创建模型", () => {
     const model = createModel(mockProvider(baseConfig), "gpt4");
     expect(model).toBeDefined();
-    expect(typeof model.createCompletion).toBe("function");
-    expect(typeof model.createStream).toBe("function");
+    expect(model.client).toBeDefined();
+    expect(model.model).toBe("gpt-4");
   });
 
   it("modelId 不存在时报错", () => {
@@ -58,24 +58,27 @@ describe("createModel", () => {
     expect(() => createModel(mockProvider(badConfig), "bad")).toThrow("未配置");
   });
 
-  it("endpoint apiKey 为空时不直接报错（由底层处理）", () => {
+  it("endpoint apiKey 为空时抛出明确错误", () => {
     const noKeyConfig: AppConfig = {
       defaultModel: "no-key",
       endpoints: [{ id: "no-key-ep", name: "No Key", baseUrl: "https://example.com/v1", apiKey: "" }],
       models: [{ id: "no-key", name: "No Key Model", endpointId: "no-key-ep", maxContextTokens: 1000 }],
     };
-    const model = createModel(mockProvider(noKeyConfig), "no-key");
-    expect(model).toBeDefined();
+    expect(() => createModel(mockProvider(noKeyConfig), "no-key")).toThrow(
+      "API Key 未设置",
+    );
   });
 
   it("modelName 不填时回退到 id", () => {
     const model = createModel(mockProvider(baseConfig), "gpt4-no-modelname");
     expect(model).toBeDefined();
+    expect(model.model).toBe("gpt4-no-modelname");
   });
 
   it("传递 defaultParams", () => {
     const model = createModel(mockProvider(baseConfig), "ds-v3");
     expect(model).toBeDefined();
+    expect(model.modelConfig).toEqual({ temperature: 0.7 });
   });
 
   it("空 models 数组时报错", () => {

@@ -5,7 +5,7 @@ import { Agent } from "../Agent.js";
 import { Message } from "../Message.js";
 
 function createMockAgent(): Agent {
-  return new Agent({ model: {} as any, messages: [Message.System("test")], tools: [] });
+  return new Agent({ client: {} as any, model: "gpt-4", messages: [Message.System("test")], tools: [] });
 }
 
 function createMockCtx(
@@ -16,7 +16,7 @@ function createMockCtx(
   return new ToolCallContext({
     agent,
     tool_call: { function: { name: functionName, arguments: JSON.stringify(parsedArgs) } },
-    result_message: Message.Tool({ id: "1", function: { name: functionName } }),
+    resultMessage: Message.Tool({ id: "1", function: { name: functionName } }),
   });
 }
 

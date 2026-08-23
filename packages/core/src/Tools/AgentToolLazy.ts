@@ -11,7 +11,7 @@ import { AgentTool } from "./AgentTool.js";
  * 與 AgentTool 不同，Agent 不在構造時創建，而是在 exec 時通過 buildAgent 回調獲取。
  * 這避免了在工具列表構建階段的遞歸創建問題（SubAgent → buildToolList → SubAgent → ...）。
  *
- * buildAgent 回调通过显式参数 (parsed_args, ctx) 接收上下文，可通过 ctx.agent 访问父 Agent。
+ * buildAgent 回调通过显式参数 (parsedArgs, ctx) 接收上下文，可通过 ctx.agent 访问父 Agent。
  */
 export class AgentToolLazy implements Tool {
   type: "function" = "function";
@@ -21,12 +21,12 @@ export class AgentToolLazy implements Tool {
   private messages: AgentNS.Message[];
 
   /** 延遲構建 Agent 的回調。第二参 ctx 携带 ToolCallContext */
-  private buildAgent: (parsed_args: any, ctx: ToolCallContext) => Agent | Promise<Agent>;
+  private buildAgent: (parsedArgs: any, ctx: ToolCallContext) => Agent | Promise<Agent>;
 
   constructor(options: {
     function: AgentNS.FunctionDefine;
     messages: AgentNS.Message[];
-    buildAgent: (parsed_args: any, ctx: ToolCallContext) => Agent | Promise<Agent>;
+    buildAgent: (parsedArgs: any, ctx: ToolCallContext) => Agent | Promise<Agent>;
   }) {
     if (!options.function) throw new Error("AgentToolLazy must have a function");
     if (options.messages?.at(-1)?.role !== AgentNS.Role.User) {
@@ -37,24 +37,20 @@ export class AgentToolLazy implements Tool {
     this.buildAgent = options.buildAgent;
   }
 
-  async exec(ctx: ToolCallContext): Promise<string> {
+  async exec(ctx: ToolCallContext): Promise<AgentNS.MessageContent> {
     // 1. 延遲構建 Agent（model + tools + system prompt 在此時確定）
-    const agent = await this.buildAgent(ctx.parsed_args, ctx);
+    const agent = await this.buildAgent(ctx.parsedArgs, ctx);
 
     // 2. 注入參數到模板消息 → 替換 agent.messages
     agent.messages = AgentTool.injectArgs(
       JSON.parse(JSON.stringify(this.messages)),
-      ctx.parsed_args,
+      ctx.parsedArgs,
     );
 
     // 3. 拼接 Assistant 接收者
     agent.append(Message.Assistant());
 
-    // 4. RAG rewrite（如有）
-    const questionMessage = agent.messages.at(-2)!;
-    await agent.rag?.rewrite(questionMessage, agent.messages);
-
-    // 5. 執行：监听外部中断信号，abort 时联动中止子 Agent
+    // 4. 執行：监听外部中断信号，abort 时联动中止子 Agent
     ctx.agent.events.emit("sub-agent", { agent, ctx });
     try {
       // 子 Agent 中断联动：外层 abort → agent.abort()
@@ -71,6 +67,6 @@ export class AgentToolLazy implements Tool {
       ctx.agent.events.emit("sub-agent-end", { agent, ctx });
     }
 
-    return agent.messages.at(-1)?.content as string;
+    return agent.messages.at(-1)?.content ?? "";
   }
 }

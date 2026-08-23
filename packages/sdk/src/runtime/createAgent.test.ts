@@ -85,9 +85,9 @@ describe("createAgent", () => {
     });
     const agent = await createAgent(provider, "my-agent");
 
-    // SdkAgent 携带 permissions
-    expect(agent.permissions).toBeDefined();
-    expect(agent.permissions!.tools).toEqual({ allow: ["*"] });
+    // SdkAgent 定义携带 permissions
+    expect(agent.definition.permissions).toBeDefined();
+    expect(agent.definition.permissions!.tools).toEqual({ allow: ["*"] });
 
     const names = agent.tools.map((t: any) => t.function.name);
     expect(names).toContain("sub_agent_default");
@@ -112,100 +112,5 @@ describe("createAgent", () => {
 
     const agent = await createAgent(provider, "my-agent");
     expect(agent.tools.length).toBeGreaterThan(0); // 内置工具默认存在
-  });
-
-  describe("onUnknownTool 钩子", () => {
-    it("无 MCP 配置时返回简单提示", async () => {
-      await writeAgentFile("my-agent");
-
-      const provider = await Provider.create({
-        config,
-        agentsDir: join(dir, "agents"),
-      });
-
-      const agent = await createAgent(provider, "my-agent");
-      expect(agent.onUnknownTool).toBeDefined();
-
-      const result = agent.onUnknownTool!({
-        toolCall: { function: { name: "nonExistentTool" } },
-        availableTools: [],
-      });
-
-      expect(result).toContain("nonExistentTool");
-      expect(result).toContain("不存在");
-    });
-
-    it("有 MCP 配置且 call_mcp_tool 在工具列表中时，应提示使用 call_mcp_tool", async () => {
-      await writeAgentFile("my-agent");
-      await writeMcpConfig({ github: { transport: "stdio", command: "gh" } });
-
-      const provider = await Provider.create({
-        config,
-        agentsDir: join(dir, "agents"),
-        mcpPaths: [join(dir, "mcp.json")],
-      });
-
-      const agent = await createAgent(provider, "my-agent");
-      expect(agent.onUnknownTool).toBeDefined();
-
-      const result = agent.onUnknownTool!({
-        toolCall: { function: { name: "someMcpTool" } },
-        availableTools: [],
-      });
-
-      expect(result).toContain("someMcpTool");
-      expect(result).toContain("不存在");
-      expect(result).toContain("call_mcp_tool");
-    });
-
-    it("有 MCP 配置但 call_mcp_tool 权限被禁用时，应提示权限问题", async () => {
-      await writeAgentFile("my-agent", {
-        permissions: {
-          tools: { deny: ["call_mcp_tool", "load_mcp", "read_mcp_resource"] },
-          mcps: { deny: ["*"] },
-          skills: { deny: ["*"] },
-          subagents: { deny: ["*"] },
-        },
-      });
-      await writeMcpConfig({ github: { transport: "stdio", command: "gh" } });
-
-      const provider = await Provider.create({
-        config,
-        agentsDir: join(dir, "agents"),
-        mcpPaths: [join(dir, "mcp.json")],
-      });
-
-      const agent = await createAgent(provider, "my-agent");
-      expect(agent.onUnknownTool).toBeDefined();
-
-      const result = agent.onUnknownTool!({
-        toolCall: { function: { name: "someTool" } },
-        availableTools: [],
-      });
-
-      expect(result).toContain("someTool");
-      expect(result).toContain("MCP");
-      expect(result).toContain("禁用");
-    });
-
-    it("无 MCP 配置时不应提示 MCP 相关内容", async () => {
-      await writeAgentFile("my-agent");
-
-      const provider = await Provider.create({
-        config,
-        agentsDir: join(dir, "agents"),
-      });
-
-      const agent = await createAgent(provider, "my-agent");
-      const result = agent.onUnknownTool!({
-        toolCall: { function: { name: "unknownFn" } },
-        availableTools: [],
-      });
-
-      expect(result).toContain("unknownFn");
-      expect(result).not.toContain("MCP");
-      expect(result).not.toContain("call_mcp_tool");
-      expect(result).not.toContain("load_mcp");
-    });
   });
 });

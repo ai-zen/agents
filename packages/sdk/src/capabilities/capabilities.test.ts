@@ -47,6 +47,19 @@ const DENY_ALL: AgentPermissions = {
   subagents: { deny: ["*"] },
 };
 
+/** 把权限包成 AgentDefinition（filter/buildTools 现在接收 definition） */
+function makeDef(permissions?: AgentPermissions, modelId?: string): AgentDefinition {
+  return {
+    id: "t",
+    name: "T",
+    messages: [{ role: AgentNS.Role.System, content: "You are helpful." }],
+    permissions,
+    modelId,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // 带真实文件系统的 Provider 能力发现
 // ---------------------------------------------------------------------------
@@ -128,25 +141,12 @@ describe("Provider 能力发现与过滤", () => {
       expect(provider.mcps).toEqual([]);
     });
 
-    it("未配置 defaultImageModel 时不包含 generateImage", async () => {
+    it("discoverBuiltinTools 全量注册内置工具（含 generateImage / viewImage；可用性由 buildTools 按工具声明过滤）", async () => {
       const provider = new Provider({ config: MIN_CONFIG, agentsDir: "" });
       await provider.refresh();
       const names = provider.builtinTools.map((t) => t.function.name);
-      expect(names).not.toContain("generateImage");
-    });
-
-    it("配置了 defaultImageModel 时包含 generateImage", async () => {
-      const config: AppConfig = {
-        defaultModel: "gpt4",
-        endpoints: [{ id: "zhipu", name: "智谱", baseUrl: "https://open.bigmodel.cn/api/paas/v4", apiKey: "sk-xxx" }],
-        models: [{ id: "gpt4", name: "GPT-4", endpointId: "zhipu", maxContextTokens: 500000 }],
-        imageModels: [{ id: "cogview", name: "CogView", endpointId: "zhipu", modelName: "cogview-4" }],
-        defaultImageModel: "cogview",
-      };
-      const provider = new Provider({ config, agentsDir: "" });
-      await provider.refresh();
-      const names = provider.builtinTools.map((t) => t.function.name);
       expect(names).toContain("generateImage");
+      expect(names).toContain("viewImage");
     });
 
     it("能发现文件系统中的 SubAgent", async () => {
@@ -221,7 +221,7 @@ describe("Provider 能力发现与过滤", () => {
         toolsPaths: [join(tmpDir, "tools")],
       });
       await provider.refresh();
-      const result = provider.filter(ALLOW_ALL);
+      const result = provider.filter(makeDef(ALLOW_ALL));
 
       // tools: 内置 + 用户 + 5 个动态工具
       expect(result.tools.length).toBeGreaterThan(15);
@@ -241,7 +241,7 @@ describe("Provider 能力发现与过滤", () => {
         subAgentsPaths: [join(tmpDir, "sub-agents")],
       });
       await provider.refresh();
-      const result = provider.filter(DENY_ALL);
+      const result = provider.filter(makeDef(DENY_ALL));
       expect(result.tools).toEqual([]);
       expect(result.subagents).toEqual([]);
       expect(result.skills).toEqual([]);
@@ -251,9 +251,9 @@ describe("Provider 能力发现与过滤", () => {
     it("按工具白名单过滤", async () => {
       const provider = new Provider({ config: MIN_CONFIG, agentsDir: "" });
       await provider.refresh();
-      const result = provider.filter({
+      const result = provider.filter(makeDef({
         tools: { allow: ["readFile", "writeFile"] },
-      });
+      }));
       expect(result.tools).toContain("readFile");
       expect(result.tools).toContain("writeFile");
       expect(result.tools).not.toContain("exec");
@@ -262,12 +262,12 @@ describe("Provider 能力发现与过滤", () => {
     it("按工具黑名单过滤", async () => {
       const provider = new Provider({ config: MIN_CONFIG, agentsDir: "" });
       await provider.refresh();
-      const result = provider.filter({
+      const result = provider.filter(makeDef({
         tools: { deny: ["exec", "rm"] },
         skills: { allow: ["*"] },
         mcps: { allow: ["*"] },
         subagents: { allow: ["*"] },
-      });
+      }));
       expect(result.tools).not.toContain("exec");
       expect(result.tools).not.toContain("rm");
       expect(result.tools).toContain("readFile");
@@ -276,7 +276,7 @@ describe("Provider 能力发现与过滤", () => {
     it("exclude tools 黑名单优先级高于 permissions", async () => {
       const provider = new Provider({ config: MIN_CONFIG, agentsDir: "" });
       await provider.refresh();
-      const result = provider.filter(ALLOW_ALL, {
+      const result = provider.filter(makeDef(ALLOW_ALL), {
         exclude: { tools: ["readFile"] },
       });
       expect(result.tools).not.toContain("readFile");
@@ -292,7 +292,7 @@ describe("Provider 能力发现与过滤", () => {
         subAgentsPaths: [join(tmpDir, "sub-agents")],
       });
       await provider.refresh();
-      const result = provider.filter(ALLOW_ALL, {
+      const result = provider.filter(makeDef(ALLOW_ALL), {
         exclude: { subagents: ["agent_one"] },
       });
       expect(result.subagents).not.toContain("agent_one");
@@ -308,7 +308,7 @@ describe("Provider 能力发现与过滤", () => {
         skillsPaths: [join(tmpDir, "skills")],
       });
       await provider.refresh();
-      const result = provider.filter(ALLOW_ALL, {
+      const result = provider.filter(makeDef(ALLOW_ALL), {
         exclude: { skills: ["skill-a"] },
       });
       expect(result.skills).not.toContain("skill-a");
@@ -323,7 +323,7 @@ describe("Provider 能力发现与过滤", () => {
         mcpPaths: [join(tmpDir, "mcp.json")],
       });
       await provider.refresh();
-      const result = provider.filter(ALLOW_ALL, {
+      const result = provider.filter(makeDef(ALLOW_ALL), {
         exclude: { mcps: ["github"] },
       });
       expect(result.mcps).not.toContain("github");
@@ -349,14 +349,14 @@ describe("Provider 能力发现与过滤", () => {
         subAgentsPaths: [join(tmpDir, "sub-agents")],
       });
       await provider.refresh();
-      const result = provider.filter(ALLOW_ALL);
+      const result = provider.filter(makeDef(ALLOW_ALL));
       expect(result.subagents).toEqual([]);
     });
 
     it("permissions 缺失时所有维度拒绝", async () => {
       const provider = new Provider({ config: MIN_CONFIG, agentsDir: "" });
       await provider.refresh();
-      const result = provider.filter(undefined as any);
+      const result = provider.filter(makeDef(undefined) as any);
       expect(result.tools).toEqual([]);
       expect(result.subagents).toEqual([]);
       expect(result.skills).toEqual([]);
@@ -366,7 +366,7 @@ describe("Provider 能力发现与过滤", () => {
     it("动态工具名始终在 toolNames 中", async () => {
       const provider = new Provider({ config: MIN_CONFIG, agentsDir: "" });
       await provider.refresh();
-      const result = provider.filter(ALLOW_ALL);
+      const result = provider.filter(makeDef(ALLOW_ALL));
       expect(result.tools).toContain("load_skill");
       expect(result.tools).toContain("call_skill_sub_agent");
       expect(result.tools).toContain("load_mcp");
@@ -377,7 +377,7 @@ describe("Provider 能力发现与过滤", () => {
     it("无 skills/mcps 时动态工具仍出现在 tools 列表中", async () => {
       const provider = new Provider({ config: MIN_CONFIG, agentsDir: "" });
       await provider.refresh();
-      const result = provider.filter(ALLOW_ALL);
+      const result = provider.filter(makeDef(ALLOW_ALL));
       expect(result.tools).toContain("load_skill");
       expect(result.tools).toContain("load_mcp");
     });
@@ -568,11 +568,57 @@ describe("Provider 能力发现与过滤", () => {
         skillsPaths: [join(tmpDir, "skills")],
       });
       await provider.refresh();
-      const tools = provider.buildTools(ALLOW_ALL);
+      const tools = provider.buildTools(makeDef(ALLOW_ALL));
       const names = tools.map((t) => t.function.name);
       expect(names).toContain("readFile");
       expect(names).toContain("agent_one");
       expect(names).toContain("load_skill");
+    });
+
+    it("buildTools: 非视觉模型剔除 viewImage，视觉模型保留", async () => {
+      const config: AppConfig = {
+        defaultModel: "gpt4",
+        endpoints: [],
+        models: [
+          { id: "gpt4", name: "GPT-4", endpointId: "ep", modelName: "gpt4", maxContextTokens: 100000 },
+          { id: "vision", name: "Vision", endpointId: "ep", modelName: "vision-1", maxContextTokens: 100000, vision: true },
+        ],
+      };
+      const provider = new Provider({ config, agentsDir: "" });
+      await provider.refresh();
+
+      // 不传 modelName：viewImage 无法确认视觉能力 → 被过滤（isAvailable 要求 modelName）
+      const noModel = provider.buildTools(makeDef(ALLOW_ALL));
+      expect(noModel.map((t) => t.function.name)).not.toContain("viewImage");
+
+      // 非视觉模型：剔除 viewImage
+      const nonVision = provider.buildTools(makeDef(ALLOW_ALL, "gpt4"));
+      expect(nonVision.map((t) => t.function.name)).not.toContain("viewImage");
+
+      // 视觉模型：保留 viewImage
+      const vision = provider.buildTools(makeDef(ALLOW_ALL, "vision"));
+      expect(vision.map((t) => t.function.name)).toContain("viewImage");
+    });
+
+    it("buildTools: generateImage 仅当配置了 defaultImageModel 时可用", async () => {
+      // 未配置图片模型：generateImage 不可用
+      const provider = new Provider({ config: MIN_CONFIG, agentsDir: "" });
+      await provider.refresh();
+      const noImg = provider.buildTools(makeDef(ALLOW_ALL, "gpt4"));
+      expect(noImg.map((t) => t.function.name)).not.toContain("generateImage");
+
+      // 配置了 defaultImageModel：generateImage 可用
+      const imgConfig: AppConfig = {
+        defaultModel: "gpt4",
+        endpoints: [{ id: "zhipu", name: "智谱", baseUrl: "https://open.bigmodel.cn/api/paas/v4", apiKey: "sk-xxx" }],
+        models: [{ id: "gpt4", name: "GPT-4", endpointId: "zhipu", maxContextTokens: 500000 }],
+        imageModels: [{ id: "cogview", name: "CogView", endpointId: "zhipu", modelName: "cogview-4" }],
+        defaultImageModel: "cogview",
+      };
+      const provider2 = new Provider({ config: imgConfig, agentsDir: "" });
+      await provider2.refresh();
+      const withImg = provider2.buildTools(makeDef(ALLOW_ALL, "gpt4"));
+      expect(withImg.map((t) => t.function.name)).toContain("generateImage");
     });
 
     it("支持 exclude 选项", async () => {
@@ -583,7 +629,7 @@ describe("Provider 能力发现与过滤", () => {
         subAgentsPaths: [join(tmpDir, "sub-agents")],
       });
       await provider.refresh();
-      const tools = provider.buildTools(ALLOW_ALL, {
+      const tools = provider.buildTools(makeDef(ALLOW_ALL), {
         exclude: { subagents: ["agent_one"] },
       });
       const names = tools.map((t) => t.function.name);
@@ -616,12 +662,12 @@ describe("Provider 能力发现与过滤", () => {
         subAgentsPaths: [join(tmpDir, "sub-agents")],
       });
       await provider.refresh();
-      expect(provider.filter(ALLOW_ALL).subagents).toContain("agent_one");
+      expect(provider.filter(makeDef(ALLOW_ALL)).subagents).toContain("agent_one");
 
       // 删除 SubAgent 文件
       rmSync(join(tmpDir, "sub-agents", "sa1.json"));
       await provider.refresh();
-      expect(provider.filter(ALLOW_ALL).subagents).not.toContain("agent_one");
+      expect(provider.filter(makeDef(ALLOW_ALL)).subagents).not.toContain("agent_one");
     });
   });
 
@@ -681,10 +727,10 @@ describe("Provider 能力发现与过滤", () => {
     it("permissions 部分维度缺失时缺失维度按 deny all 处理", async () => {
       const provider = new Provider({ config: MIN_CONFIG, agentsDir: "" });
       await provider.refresh();
-      const result = provider.filter({
+      const result = provider.filter(makeDef({
         tools: { allow: ["readFile"] },
         // skills, mcps, subagents 缺失
-      } as AgentPermissions);
+      } as AgentPermissions));
       expect(result.tools).toContain("readFile");
       expect(result.skills).toEqual([]);
       expect(result.mcps).toEqual([]);

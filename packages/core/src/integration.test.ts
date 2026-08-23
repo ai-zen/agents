@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeAll } from "vitest";
+import OpenAI from "openai";
 import { Agent } from "./Agent.js";
 import { AgentNS } from "./AgentNS.js";
 import { Message } from "./Message.js";
-import { ChatGPT } from "./Models/ChatCompletionModels/ChatGPT.js";
 import { CallbackTool } from "./Tools/CallbackTool.js";
 import { AgentTool } from "./Tools/AgentTool.js";
 import { ToolCallContext } from "./ToolCallContext.js";
@@ -20,26 +20,15 @@ const describeIf = hasApiKey ? describe : describe.skip;
 
 // ==================== 共享资源 ====================
 
-let model: ChatGPT;
+let client: OpenAI;
+const model = "deepseek-v4-flash";
 
 beforeAll(() => {
   if (!hasApiKey) return;
 
-  model = new ChatGPT({
-    request_config: {
-      url: "https://api.deepseek.com/v1/chat/completions",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${DEEPSEEK_API_KEY!}`,
-      },
-      body: {
-        model: "deepseek-v4-flash",
-      },
-    },
-    model_config: {
-      temperature: 0.01, // 低温度保证输出稳定
-      max_tokens: 1024,
-    },
+  client = new OpenAI({
+    apiKey: DEEPSEEK_API_KEY!,
+    baseURL: "https://api.deepseek.com/v1",
   });
 });
 
@@ -55,6 +44,7 @@ describeIf("集成测试 - DeepSeek API", () => {
       "应能完成一次简单的对话并返回回复",
       async () => {
         const agent = new Agent({
+          client,
           model,
           messages: [Message.System("你是一个AI助手，请用中文回复，尽量简短。")],
         });
@@ -73,6 +63,7 @@ describeIf("集成测试 - DeepSeek API", () => {
       "发送多条消息应累积对话历史",
       async () => {
         const agent = new Agent({
+          client,
           model,
           messages: [Message.System("你是一个AI助手，请用中文回复，尽量简短。")],
         });
@@ -92,6 +83,7 @@ describeIf("集成测试 - DeepSeek API", () => {
       "应能处理较长的回复内容",
       async () => {
         const agent = new Agent({
+          client,
           model,
           messages: [Message.System("你是一个AI助手，请用中文回复。")],
         });
@@ -133,6 +125,7 @@ describeIf("集成测试 - DeepSeek API", () => {
         });
 
         const agent = new Agent({
+          client,
           model,
           messages: [
             Message.System(
@@ -181,6 +174,7 @@ describeIf("集成测试 - DeepSeek API", () => {
         });
 
         const agent = new Agent({
+          client,
           model,
           messages: [
             Message.System(
@@ -237,6 +231,7 @@ describeIf("集成测试 - DeepSeek API", () => {
         });
 
         const agent = new Agent({
+          client,
           model,
           messages: [
             Message.System(
@@ -286,13 +281,14 @@ describeIf("集成测试 - DeepSeek API", () => {
               required: ["action"],
             },
           },
-          callback(this: ToolCallContext) {
-            this.preventDefault();
+          callback(_args: unknown, ctx: ToolCallContext) {
+            ctx.preventDefault();
             return `请确认是否执行该操作，确认后我将继续。`;
           },
         });
 
         const agent = new Agent({
+          client,
           model,
           messages: [
             Message.System(
@@ -340,6 +336,7 @@ describeIf("集成测试 - DeepSeek API", () => {
               required: ["task"],
             },
           },
+          client,
           model,
           messages: [
             Message.System(
@@ -351,6 +348,7 @@ describeIf("集成测试 - DeepSeek API", () => {
         });
 
         const agent = new Agent({
+          client,
           model,
           messages: [
             Message.System(
@@ -411,6 +409,7 @@ describeIf("集成测试 - DeepSeek API", () => {
               required: ["expression"],
             },
           },
+          client,
           model,
           messages: [
             Message.System(
@@ -422,6 +421,7 @@ describeIf("集成测试 - DeepSeek API", () => {
         });
 
         const agent = new Agent({
+          client,
           model,
           messages: [
             Message.System(
@@ -452,20 +452,14 @@ describeIf("集成测试 - DeepSeek API", () => {
     it(
       "使用无效的 API Key 应返回错误",
       async () => {
-        const badModel = new ChatGPT({
-          request_config: {
-            url: "https://api.deepseek.com/v1/chat/completions",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: "Bearer sk-invalid-key-12345",
-            },
-            body: { model: "deepseek-v4-flash" },
-          },
-          model_config: { temperature: 0.01, max_tokens: 128 },
+        const badClient = new OpenAI({
+          apiKey: "sk-invalid-key-12345",
+          baseURL: "https://api.deepseek.com/v1",
         });
 
         const agent = new Agent({
-          model: badModel,
+          client: badClient,
+          model,
           messages: [Message.System("你是一个助手")],
         });
 
@@ -487,6 +481,7 @@ describeIf("集成测试 - DeepSeek API", () => {
       "用户通过 abort 中断对话应标记为 Aborted",
       async () => {
         const agent = new Agent({
+          client,
           model,
           messages: [
             Message.System(
@@ -533,6 +528,7 @@ describeIf("集成测试 - DeepSeek API", () => {
         });
 
         const agent = new Agent({
+          client,
           model,
           messages: [
             Message.System(
@@ -581,6 +577,7 @@ describeIf("集成测试 - DeepSeek API", () => {
         });
 
         const agent = new Agent({
+          client,
           model,
           messages: [
             Message.System(
@@ -612,6 +609,7 @@ describeIf("集成测试 - DeepSeek API", () => {
       "简单对话后 lastUsage 应包含 prompt_tokens / completion_tokens / total_tokens",
       async () => {
         const agent = new Agent({
+          client,
           model,
           messages: [Message.System("你是一个AI助手，请用中文回复，尽量简短。")],
         });
@@ -639,6 +637,7 @@ describeIf("集成测试 - DeepSeek API", () => {
       "多轮对话后 lastUsage 应反映最新一轮的 token 用量",
       async () => {
         const agent = new Agent({
+          client,
           model,
           messages: [Message.System("你是一个AI助手，请用中文回复，尽量简短。")],
         });
@@ -681,6 +680,7 @@ describeIf("集成测试 - DeepSeek API", () => {
         });
 
         const agent = new Agent({
+          client,
           model,
           messages: [
             Message.System(
@@ -710,6 +710,7 @@ describeIf("集成测试 - DeepSeek API", () => {
       "abort 中断后 lastUsage 保持中断前的值",
       async () => {
         const agent = new Agent({
+          client,
           model,
           messages: [
             Message.System("你是一个AI助手，请用中文回复。"),

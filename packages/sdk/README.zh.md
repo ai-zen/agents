@@ -22,7 +22,7 @@ config       ← 读写 config.json + 迁移 + 内存缓存 + 原子写入
 crud         ← 能力实体 CRUD（Agent 定义等；会话/草稿已下放给各端自行持久化）
 capabilities ← 能力发现与装配（内置 + 用户 + MCP + Skill + SubAgent）
 runtime      ← Provider + 模型工厂 + Agent 组装 + MCP 连接管理 + 任务迁移 + SdkCallbackTool 工具基类
-plugin       ← Agent 插件（autoMigrate、autoRefreshTools）
+plugin       ← Agent 插件（autoMigrate、autoRefreshTools、contextGuard、unknownToolHint）
 shared       ← 日志、错误
 ```
 
@@ -77,9 +77,9 @@ await agent.send("你好");
 | `crud` | ✅ 已实现 — Agent 等能力实体 CRUD（会话/草稿由各端自行持久化） |
 | `capabilities` | ✅ 已实现 — 发现 + 权限过滤 + 安全预过滤 + 枚举披露 |
 | `runtime` | ✅ 已实现 — Provider、Capabilities、createAgent、MCP 连接管理、任务迁移 |
-| `plugin` | ✅ 已实现 — AutoMigratePlugin / AutoRefreshToolsPlugin |
+| `plugin` | ✅ 已实现 — AutoMigratePlugin / AutoRefreshToolsPlugin / ContextGuardPlugin / UnknownToolHintPlugin |
 | `shared` | ✅ 已实现 — SdkError + 可注入 Logger |
-| 测试 | ✅ 409 个测试，47 个文件，全通过（含真实 API 聊天 e2e） |
+| 测试 | ✅ 445 通过，51 个文件，全绿（含真实 API 聊天与 viewImage e2e） |
 
 ## 内置工具
 
@@ -105,11 +105,12 @@ await agent.send("你好");
 | `edit` | 编辑文件中的文本 |
 | `sleep` | 等待指定毫秒数后继续 |
 
-条件注入（`GenerateImageTool` 需配置 `defaultImageModel` 才注册）：
+条件注入（按当前模型 / 配置决定是否注册）：
 
-| 工具 | 说明 |
-|------|------|
-| `generateImage` | 根据文字描述生成图片 |
+| 工具 | 注入条件 | 说明 |
+|------|----------|------|
+| `generateImage` | 配置了 `defaultImageModel` 才注册 | 根据文字描述生成图片 |
+| `viewImage` | 仅视觉模型可用（Agent 的 `modelId` 解析为 `vision: true` 的模型） | 查看/分析图片：本地图片自动经 Files API 上传，网络 URL 直接引用 |
 
 ## 内置插件
 
@@ -117,6 +118,8 @@ await agent.send("你好");
 |------|------|
 | `AutoMigratePlugin` | 上下文超限时自动触发任务迁移，生成交接文档，透明替换 Agent |
 | `AutoRefreshToolsPlugin` | 每次 `send()` 前重新扫描文件系统，刷新工具列表 |
+| `ContextGuardPlugin` | 上下文安全护栏 — 每轮发请求前检测上一轮 `usage.prompt_tokens`，超过 `maxTokens × ratio`（默认 1.5，即 +50%）时抛 `ContextOverflowError` 中断对话，防止读入超大文件导致上下文失控 |
+| `UnknownToolHintPlugin` | 未知工具智能提示 — LLM 调用不存在的工具时，根据 MCP 配置引导使用 `call_mcp_tool` / 提示权限问题（调用方显式 `agent.use` 注册） |
 
 ## 设计原则
 

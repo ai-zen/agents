@@ -163,7 +163,7 @@ describe("端到端：真实文件系统路径", () => {
       expect(greetTool).toBeDefined();
 
       const result = await greetTool.exec({
-        parsed_args: { name: "测试" },
+        parsedArgs: { name: "测试" },
         agent: null,
       } as any);
       expect(result).toContain("测试");
@@ -177,7 +177,7 @@ describe("端到端：真实文件系统路径", () => {
       expect(statsTool).toBeDefined();
 
       const result = await statsTool.exec({
-        parsed_args: { dir: PROJECT_DIR },
+        parsedArgs: { dir: PROJECT_DIR },
         agent: null,
       } as any);
       expect(result).toContain("项目统计");
@@ -253,7 +253,7 @@ describe("端到端：真实文件系统路径", () => {
       });
 
       const definition = (await new AgentRepository(TEST_AGENTS_DIR).read("code-assistant"))!;
-      const tools = provider.buildTools(definition.permissions ?? {});
+      const tools = provider.buildTools(definition);
 
       const names = tools.map((t) => t.function.name);
       expect(names).toContain("readFile");
@@ -278,7 +278,7 @@ describe("端到端：真实文件系统路径", () => {
       });
 
       const definition = (await new AgentRepository(TEST_AGENTS_DIR).read("translator"))!;
-      const tools = provider.buildTools(definition.permissions ?? {});
+      const tools = provider.buildTools(definition);
 
       const names = tools.map((t) => t.function.name);
       expect(names).toContain("readFile");
@@ -314,7 +314,7 @@ describe("端到端：真实文件系统路径", () => {
 
       // 元数据
       expect(agent.definition.name).toBe("代码助手");
-      expect(agent.permissions?.tools).toEqual({ allow: ["*"] });
+      expect(agent.definition.permissions?.tools).toEqual({ allow: ["*"] });
 
       // 模型
       expect(agent.model).toBeDefined();

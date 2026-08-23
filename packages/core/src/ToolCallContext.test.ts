@@ -7,7 +7,8 @@ import { Message } from "./Message.js";
 // 创建一个最小可用的 Agent mock
 function createMockAgent(): Agent {
   return new Agent({
-    model: {} as any,
+    client: {} as any,
+    model: "gpt-4",
     messages: [Message.System("测试助手")],
     tools: [],
   });
@@ -22,11 +23,11 @@ describe("ToolCallContext", () => {
       const ctx = new ToolCallContext({
         agent,
         tool_call: { function: { name: "fn", arguments: '{"city":"北京","count":3}' } },
-        result_message: resultMsg,
+        resultMessage: resultMsg,
       });
 
-      expect(ctx.parsed_args).toEqual({ city: "北京", count: 3 });
-      expect(ctx.parse_error).toBeUndefined();
+      expect(ctx.parsedArgs).toEqual({ city: "北京", count: 3 });
+      expect(ctx.parseError).toBeUndefined();
     });
 
     it("解析失败且 allowJsonParseError=true 时不应抛出异常", () => {
@@ -36,13 +37,13 @@ describe("ToolCallContext", () => {
       const ctx = new ToolCallContext({
         agent,
         tool_call: { function: { name: "fn", arguments: "{invalid json}" } },
-        result_message: resultMsg,
+        resultMessage: resultMsg,
         allowJsonParseError: true,
       });
 
-      expect(ctx.parsed_args).toBeUndefined();
-      expect(ctx.parse_error).toBeDefined();
-      expect(typeof ctx.parse_error).toBe("string");
+      expect(ctx.parsedArgs).toBeUndefined();
+      expect(ctx.parseError).toBeDefined();
+      expect(typeof ctx.parseError).toBe("string");
     });
 
     it("解析失败且 allowJsonParseError=false 时应抛出异常", () => {
@@ -53,7 +54,7 @@ describe("ToolCallContext", () => {
         new ToolCallContext({
           agent,
           tool_call: { function: { name: "fn", arguments: "{invalid}" } },
-          result_message: resultMsg,
+          resultMessage: resultMsg,
           allowJsonParseError: false,
         });
       }).toThrow();
@@ -66,11 +67,11 @@ describe("ToolCallContext", () => {
       const ctx = new ToolCallContext({
         agent,
         tool_call: { function: { name: "fn" } },
-        result_message: resultMsg,
+        resultMessage: resultMsg,
       });
 
-      expect(ctx.parsed_args).toBeUndefined();
-      expect(ctx.parse_error).toBeUndefined();
+      expect(ctx.parsedArgs).toBeUndefined();
+      expect(ctx.parseError).toBeUndefined();
     });
   });
 
@@ -85,9 +86,9 @@ describe("ToolCallContext", () => {
         result_message: resultMsg,
       });
 
-      expect(ctx.is_prevent_default).toBe(false);
+      expect(ctx.isPreventDefault).toBe(false);
       ctx.preventDefault();
-      expect(ctx.is_prevent_default).toBe(true);
+      expect(ctx.isPreventDefault).toBe(true);
     });
   });
 
@@ -99,12 +100,12 @@ describe("ToolCallContext", () => {
       const ctx = new ToolCallContext({
         agent,
         tool_call: { function: { name: "fn", arguments: "{}" } },
-        result_message: resultMsg,
+        resultMessage: resultMsg,
       });
 
       expect(ctx.agent).toBe(agent);
       expect(ctx.function_call.name).toBe("fn");
-      expect(ctx.result_message).toBe(resultMsg);
+      expect(ctx.resultMessage).toBe(resultMsg);
     });
 
     it("应正确保存统一形状 tool_call 与兼容字段 function_call", () => {
@@ -119,7 +120,7 @@ describe("ToolCallContext", () => {
           function: { name: "fn", arguments: '{"x":1}' },
         },
         tool: {} as any,
-        result_message: resultMsg,
+        resultMessage: resultMsg,
       });
 
       // 统一形状
@@ -129,8 +130,8 @@ describe("ToolCallContext", () => {
       expect(ctx.function_call.name).toBe("fn");
       // 匹配到的工具
       expect(ctx.tool).toBeDefined();
-      // parsed_args 由 tool_call.function.arguments 解析
-      expect(ctx.parsed_args).toEqual({ x: 1 });
+      // parsedArgs 由 tool_call.function.arguments 解析
+      expect(ctx.parsedArgs).toEqual({ x: 1 });
     });
   });
 
@@ -143,13 +144,13 @@ describe("ToolCallContext", () => {
       const ctx = new FunctionCallContext({
         agent,
         tool_call: { function: { name: "fn", arguments: '{"x":1}' } },
-        result_message: resultMsg,
+        resultMessage: resultMsg,
       });
 
       expect(FunctionCallContext).toBe(ToolCallContext);
       expect(ctx).toBeInstanceOf(ToolCallContext);
       expect(ctx).toBeInstanceOf(FunctionCallContext);
-      expect(ctx.parsed_args).toEqual({ x: 1 });
+      expect(ctx.parsedArgs).toEqual({ x: 1 });
     });
   });
 });

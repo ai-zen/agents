@@ -4,10 +4,27 @@ import { makeEnv } from "./test-helpers.js";
 import type { AppConfig } from "../../../types/index.js";
 import type { ToolCallContext } from "@ai-zen/agents-core";
 
+// mock openai：images.generate 成功返回一张图；aborted signal 时抛 AbortError（兼容 abort 测试）
+const { mockImagesGenerate } = vi.hoisted(() => ({
+  mockImagesGenerate: vi.fn(async (_body: unknown, opts?: { signal?: AbortSignal }) => {
+    if (opts?.signal?.aborted) {
+      throw new DOMException("The operation was aborted", "AbortError");
+    }
+    return { created: 123, data: [{ url: "https://cdn.example/img.png" }] };
+  }),
+}));
+
+vi.mock("openai", () => ({
+  default: class MockOpenAI {
+    images = { generate: mockImagesGenerate };
+  },
+}));
+
 const mockFetch = vi.fn();
 
 afterEach(() => {
   mockFetch.mockReset();
+  mockImagesGenerate.mockClear();
   vi.unstubAllGlobals();
 });
 
@@ -16,7 +33,9 @@ const mockConfig: AppConfig = {
   endpoints: [
     { id: "bigmodelcn", name: "BigModelCN", apiKey: "test-key", baseUrl: "https://open.bigmodel.cn/api/paas/v4" },
   ],
-  models: [{ id: "gpt4", name: "GPT-4", endpointId: "bigmodelcn", maxContextTokens: 500000 }],
+  models: [
+    { id: "gpt4", name: "GPT-4", endpointId: "bigmodelcn", maxContextTokens: 500000 },
+  ],
   imageModels: [
     { id: "cogview-4", name: "CogView-4", endpointId: "bigmodelcn", modelName: "cogview-4", defaultSize: "1024x1024" },
   ],
@@ -103,5 +122,20 @@ describe("GenerateImageTool", () => {
     expect(parsed.success).toBe(false);
     expect(parsed.aborted).toBe(true);
     expect(parsed.error).toContain("中断");
+  });
+
+  it("生成成功统一返回 JSON 字符串（图片 URL + viewImage/downloadFile 提示）", async () => {
+    const result = await tool.call({ prompt: "a cat" });
+
+    expect(typeof result).toBe("string");
+    const parsed = JSON.parse(result);
+    expect(parsed.success).toBe(true);
+    expect(parsed.images).toEqual([{ index: 0, url: "https://cdn.example/img.png" }]);
+    expect(parsed.note).toContain("viewImage");
+    expect(parsed.note).toContain("downloadFile");
+    expect(mockImagesGenerate).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "cogview-4", prompt: "a cat" }),
+      expect.anything(),
+    );
   });
 });

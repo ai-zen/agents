@@ -130,7 +130,8 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       modelName: "glm-5v-turbo",
       maxContextTokens: 250_000,
       defaultParams: {},
-      description: "智谱AI 多模态Coding基座",
+      vision: true,
+      description: "智谱AI 多模态Coding基座（支持图片输入）",
     },
     {
       id: "glm-4.7-flash",
@@ -158,6 +159,16 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       maxContextTokens: 250_000,
       defaultParams: { thinking: { type: "enabled" } },
       description: "DeepSeek 经济高效模型",
+    },
+    {
+      id: "deepseek-v4-flash-vision-exp",
+      name: "DeepSeek-V4-Flash-Vision-Exp",
+      endpointId: "deepseek",
+      modelName: "deepseek-v4-flash-vision-exp",
+      maxContextTokens: 250_000,
+      defaultParams: { thinking: { type: "enabled" } },
+      vision: true,
+      description: "DeepSeek 视觉实验模型（支持图片/文件输入）",
     },
   ],
   imageModels: [

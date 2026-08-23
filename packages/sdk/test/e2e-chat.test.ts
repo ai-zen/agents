@@ -69,7 +69,9 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       },
-      model,
+      client: model.client,
+      model: model.model,
+      modelConfig: model.modelConfig,
       messages: [{ role: "system", content: "你是一个简洁的助手，用一句话回复。" }],
     });
 
@@ -106,7 +108,9 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       },
-      model,
+      client: model.client,
+      model: model.model,
+      modelConfig: model.modelConfig,
       messages: [
         {
           role: "system",
@@ -141,7 +145,9 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       },
-      model,
+      client: model.client,
+      model: model.model,
+      modelConfig: model.modelConfig,
       messages: [
         { role: "system", content: "你是一个助手。记住用户说的信息。" },
       ],

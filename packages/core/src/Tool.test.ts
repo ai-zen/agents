@@ -69,14 +69,14 @@ describe("Tool 基类", () => {
         },
       } as Tool["function"];
       async exec(ctx: ToolCallContext) {
-        const args = ctx.parsed_args;
+        const args = ctx.parsedArgs;
         return `你好, ${args.name}!`;
       }
     })();
 
     const mockCtx = {
       function_call: { name: "greet", arguments: '{"name":"世界"}' },
-      parsed_args: { name: "世界" },
+      parsedArgs: { name: "世界" },
     } as any;
 
     const result = await tool.exec(mockCtx);

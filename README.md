@@ -51,27 +51,23 @@ TypeScript core library for Node.js and browser environments.
 
 | Class | Description |
 |-------|-------------|
-| **Agent** | Conversation lifecycle management with streaming, tool calls, events, `onInnerLoopStart`/`onInnerLoopEnd` hooks |
-| **AgentContext** | Base context class holding model, messages, tools, rag configuration |
-| **Message** | Message model supporting text/image multimodal content |
+| **Agent** | Conversation lifecycle management with streaming, tool calls, events, and plugins (`use()` / `init()`) |
+| **AgentContext** | Base context class holding `client` (openai SDK), `model`, messages, tools, `modelConfig` |
+| **AgentPlugin** | Plugin interface — the only extension point (`onBeforeSend` / `onInnerLoopStart` / `onToolCall` / `onUnknownTool` …) |
+| **SendContext** | Plugin hook context (agent + content + message snapshot) |
+| **HookResult** | Unified plugin hook return value — string short-circuits, undefined/void passes through |
+| **Message** | Message model supporting text/image/file multimodal content |
 | **Tool** | Abstract base class for tools |
 | **CallbackTool** | Quick tool definition via callback function |
-| **CodeTool** | Tool logic defined as string code (via `new Function`) |
+| **CodeTool** | (deprecated) Tool logic defined as string code (via `new Function`) |
 | **AgentTool** | Expose a sub-Agent as a tool |
+| **AgentToolLazy** | Lazily-built sub-Agent tool (`buildAgent(parsedArgs, ctx)`) |
 | **IndexedSearchTool** | Keyword-based local search tool |
-| **Endpoint** | API endpoint abstraction (OpenAI / Azure OpenAI / ZhipuAI / Generic) |
-| **ChatCompletionModel** | Chat completion model abstraction |
-| **EmbeddingModel** | Embedding model abstraction |
-| **ImageGenerationModel** | Image generation model abstraction |
-| **Rag** | Retrieval-Augmented Generation base class |
-| **VectorDatabase** | In-memory vector database with cosine similarity |
-| **KnowledgeBase** | Knowledge base (embedding model + vector database) |
 | **ToolCallContext** | Unified tool-call context spanning interception → execution (`onToolCall` + `Tool.exec`) |
 
 **Built-in Implementations**:
-- **Models**: `ChatGPT` (OpenAI-compatible), `TextEmbeddingAda002_2`, `ZhipuImage`
-- **Endpoints**: `OpenAI`, `AzureOpenAI`, `Zhipu` (deprecated), `CommonEndpoint`
-- **RAG**: `EmbeddingSearch`
+- **Runtime**: runs directly on the **official OpenAI SDK** — `client.chat.completions.create` (streaming) / `client.images.generate` / `client.files`; any OpenAI-compatible vendor (OpenAI / DeepSeek / Zhipu BigModel / …) via `baseURL`
+- **Plugins**: `AgentPlugin` with unified `HookResult` semantics; `dispatchHook` as the single entry for non-blocking events (kebab-case) + blocking plugins (short-circuit)
 
 [View core docs →](./packages/core/README.md)
 

@@ -2,6 +2,8 @@
 
 Core framework for building LLM agents, providing the base abstractions needed to build intelligent agents. Works in both Node.js and browser environments.
 
+The agent runtime is **plugin-driven** and runs directly on the **official OpenAI SDK** (`openai` package) — no in-house request layer.
+
 ## Installation
 
 ```bash
@@ -15,32 +17,33 @@ npm install @ai-zen/agents-core
 `Agent` is the core class. It extends `AgentContext` and manages the conversation lifecycle, supporting streaming, tool calls, and multi-round recursive conversations.
 
 ```typescript
-import { Agent, Message, ChatGPT, OpenAI } from "@ai-zen/agents-core";
+import OpenAI from "openai";
+import { Agent, Message } from "@ai-zen/agents-core";
 
-// 1. Create an endpoint
-const endpoint = new OpenAI({
-  api_key: "sk-xxx",
-  openai_endpoint: "https://api.openai.com/v1",
+// 1. Create an OpenAI SDK client (any OpenAI-compatible endpoint via baseURL)
+const client = new OpenAI({
+  apiKey: "sk-xxx",
+  baseURL: "https://api.openai.com/v1",
 });
 
-// 2. Create a model
-const model = new ChatGPT({
-  request_config: await endpoint.chatCompletion("gpt-4"),
-  model_config: { temperature: 0.7 },
+// 2. Create an Agent
+const agent = new Agent({
+  client,
+  model: "gpt-4o",
+  modelConfig: { temperature: 0.7 },
 });
 
-// 3. Create an Agent
-const agent = new Agent({ model });
-
-// 4. Add a system message
+// 3. Add a system message
 agent.append(Message.System("You are an AI assistant."));
 
-// 5. Send a message and await the reply
+// 4. Send a message and await the reply
 await agent.send("Hello, please introduce yourself.");
 
-// 6. Get the reply
+// 5. Get the reply
 console.log(agent.messages.at(-1)?.content);
 ```
+
+The `client` is an `openai` SDK instance — any OpenAI-compatible vendor (OpenAI, DeepSeek, Zhipu BigModel, Azure OpenAI via a compatible endpoint, etc.) is supported through `baseURL`.
 
 ### AgentContext
 
@@ -48,14 +51,17 @@ console.log(agent.messages.at(-1)?.content);
 
 ```typescript
 interface AgentContext {
-  model: ChatCompletionModel;      // Chat model
-  model_config: any;               // Model parameters
-  messages: AgentNS.Message[];     // Message list
-  tools: Tool[];                   // Tool list
-  rag?: Rag;                       // RAG retrieval augmentation
-  allowJsonParseError: boolean;    // Whether JSON parse errors are allowed (default true)
+  client: OpenAI;                    // openai SDK client
+  model: string;                     // Model name sent to the API
+  modelConfig: Record<string, unknown>; // Model params (temperature etc.), spread into the request; may include vendor-specific fields (e.g. DeepSeek `thinking`)
+  messages: AgentNS.Message[];       // Message list
+  tools: Tool[];                     // Tool list
+  allowJsonParseError: boolean;      // Whether JSON parse errors are allowed (default true)
 }
 ```
+
+- `append(message)` — appends a message to the message list and returns it
+- Extension happens through **plugins** (`agent.use(plugin)`), not constructor hooks
 
 ### Message
 
@@ -74,6 +80,18 @@ Message.User("Hello");
 Message.User([
   { type: "text", text: "What is this?" },
   { type: "image_url", image_url: { url: "https://example.com/img.jpg" } },
+]);
+
+// User message (text + image with detail level: low / high / original / auto)
+Message.User([
+  { type: "text", text: "Read the text in this screenshot" },
+  { type: "image_url", image_url: { url: "https://example.com/img.jpg", detail: "high" } },
+]);
+
+// User message (text + file referenced by file_id via the Files API)
+Message.User([
+  { type: "text", text: "What is in this image?" },
+  { type: "file", file_id: "file-api-xxxxxxxxxxxxxxxx" },
 ]);
 
 // Assistant message (Pending by default, waiting for the AI reply)
@@ -98,42 +116,54 @@ Message status enum:
 
 ### Tool
 
-Abstract base class that extends the Agent's capabilities. Custom tools must extend `Tool` and implement the `exec()` method:
+Abstract base class that extends the Agent's capabilities. Custom tools must extend `Tool`, declare a `function` definition, and implement the `exec()` method:
 
 ```typescript
 import { Tool, ToolCallContext } from "@ai-zen/agents-core";
 
 class WeatherTool extends Tool {
-  constructor() {
-    super({
-      function: {
-        name: "get_weather",
-        description: "Query the weather",
-        parameters: {
-          type: "object",
-          properties: {
-            city: { type: "string", description: "City name" },
-          },
-          required: ["city"],
-        },
+  // Tool definition lives with its implementation (class-body field)
+  function = {
+    name: "get_weather",
+    description: "Query the weather",
+    parameters: {
+      type: "object",
+      properties: {
+        city: { type: "string", description: "City name" },
       },
-    });
-  }
+      required: ["city"],
+    },
+  };
 
   async exec(ctx: ToolCallContext) {
-    const { city } = ctx.parsed_args;
+    const { city } = ctx.parsedArgs;
     return `The weather in ${city} today is sunny, 22°C.`;
   }
 }
 
 // Register on an Agent
-const agent = new Agent({ model, tools: [new WeatherTool()] });
+const agent = new Agent({ client, model: "gpt-4o", tools: [new WeatherTool()] });
+```
+
+`exec()` returns `AgentNS.MessageContent` — either a plain string (text result) or an array of content sections (multimodal result). Returning content sections lets a tool hand structured content back to the model, e.g. an image:
+
+```typescript
+async exec(ctx: ToolCallContext): Promise<AgentNS.MessageContent> {
+  // 文本结果
+  return `The weather in ${city} today is sunny.`;
+
+  // 图片/文件结果：模型直接看到
+  return [
+    { type: "text", text: "当前截图：" },
+    { type: "image_url", image_url: { url: "https://example.com/shot.png" } },
+  ];
+}
 ```
 
 ### Built-in Tools
 
 #### CallbackTool
-Define a tool quickly via a callback function. Inside the `callback`, `this` refers to the `ToolCallContext` instance.
+Define a tool quickly via a callback function. The callback receives `(parsedArgs, ctx)` — use `ctx` (a `ToolCallContext`) to access the agent, abort signal, etc.
 
 ```typescript
 import { CallbackTool } from "@ai-zen/agents-core";
@@ -152,38 +182,18 @@ const tool = new CallbackTool({
       additionalProperties: false,
     },
   },
-  callback(parsedArgs) {
-    // this points to ToolCallContext
+  callback(parsedArgs, ctx) {
+    // ctx: ToolCallContext — e.g. ctx.agent, ctx.signal, ctx.preventDefault()
     return parsedArgs.a + parsedArgs.b;
   },
 });
 ```
 
 #### CodeTool
-Define tool logic using string code, executed dynamically via `new Function`. Parameter names must match the keys in `parameters.properties`.
-
-```typescript
-import { CodeTool } from "@ai-zen/agents-core";
-
-const tool = new CodeTool({
-  function: {
-    name: "add",
-    description: "Add two numbers",
-    parameters: {
-      type: "object",
-      properties: {
-        a: { type: "number" },
-        b: { type: "number" },
-      },
-      required: ["a", "b"],
-    },
-  },
-  code: "return a + b;", // a and b are directly available as variables
-});
-```
+> **Deprecated** — string-code tools (defined via `new Function`) lack type safety and clear parameter mapping. Prefer `CallbackTool` or a custom `Tool` subclass. Kept for backward compatibility.
 
 #### AgentTool
-Expose a sub-Agent as a tool, enabling nested Agent calls. The sub-Agent has its own model, message list, and tools.
+Expose a sub-Agent as a tool, enabling nested Agent calls. The sub-Agent has its own client, model, message list, and tools.
 
 ```typescript
 import { AgentTool, Message } from "@ai-zen/agents-core";
@@ -200,7 +210,8 @@ const tool = new AgentTool({
       required: ["task"],
     },
   },
-  model: chatModel, // Reuse the main Agent's model, or use a dedicated one
+  client,            // Reuse the main Agent's client, or use a dedicated one
+  model: "gpt-4o",   // The sub-Agent's model name
   messages: [
     Message.System("You are a general assistant good at completing various tasks independently."),
     Message.User("Please complete the following task: {{task}}"), // {{variable}} is substituted at call time
@@ -209,7 +220,27 @@ const tool = new AgentTool({
 });
 ```
 
-> **Note**: The last message in an AgentTool's message list must be a User message, where `{{variableName}}` placeholders are automatically replaced with `parsed_args` at call time.
+> **Note**: The last message in an AgentTool's message list must be a User message, where `{{variableName}}` placeholders are automatically replaced with `parsedArgs` at call time.
+
+#### AgentToolLazy
+Like `AgentTool`, but the sub-Agent is not built at construction time — it is built lazily via a `buildAgent(parsedArgs, ctx)` callback at execution time. This avoids recursive construction issues when building tool lists (SubAgent → build tool list → SubAgent → …).
+
+```typescript
+import { AgentToolLazy, Agent, Message } from "@ai-zen/agents-core";
+
+const tool = new AgentToolLazy({
+  function: { /* ... */ },
+  messages: [Message.System("..."), Message.User("...")],
+  async buildAgent(parsedArgs, ctx) {
+    // ctx.agent gives access to the parent Agent
+    return new Agent({
+      client: ctx.agent.client,
+      model: parsedArgs.model ?? "gpt-4o",
+      tools: [/* ... */],
+    });
+  },
+});
+```
 
 #### IndexedSearchTool
 A keyword-based local search tool that automatically extracts keywords from entries as the enum.
@@ -225,304 +256,71 @@ const tool = new IndexedSearchTool({
 });
 ```
 
-### Endpoint
+### Plugins — the only extension point
 
-Defines how to connect to an API, building the URL, Headers, and Body of HTTP requests.
+`AgentContext` no longer provides any `onXxx` constructor hooks. **Plugins are the only way to extend the Agent.** Register a plugin with `agent.use(plugin)`, then `await agent.init()`.
 
 ```typescript
-import { OpenAI, AzureOpenAI, CommonEndpoint } from "@ai-zen/agents-core";
+import { Agent, Message } from "@ai-zen/agents-core";
+import type { AgentPlugin, SendContext, ToolCallContext, UnknownToolContext } from "@ai-zen/agents-core";
 
-// OpenAI standard API
-const endpoint = new OpenAI({
-  api_key: "sk-xxx",
-  openai_endpoint: "https://api.openai.com/v1",  // optional, defaults to https://api.openai.com/v1/
-  organization: "org-xxx",                         // optional
-  headers: { "X-Custom": "value" },                // optional extra request headers
-  body: { user: "user-id" },                       // optional extra request body fields
-});
-
-// Azure OpenAI
-const azureEndpoint = new AzureOpenAI({
-  azure_endpoint: "https://xxx.openai.azure.com",
-  api_key: "xxx",
-  api_version: "2024-02-15-preview",
-});
-
-// Common endpoint (any OpenAI-compatible API)
-const commonEndpoint = new CommonEndpoint({
-  url: "https://your-api.com/v1/chat/completions",
-  headers: { Authorization: "Bearer sk-xxx" },
-});
-
-// Build a request
-const config = await endpoint.chatCompletion("gpt-4");
-// config.url => "https://api.openai.com/v1/chat/completions"
-// config.headers => { "Content-Type": "application/json", "Authorization": "Bearer sk-xxx", ... }
-// config.body => { model: "gpt-4", ... }
-```
-
-**Built-in endpoints**:
-
-| Class | Static property `title` | Description |
-|-------|-------------------------|-------------|
-| `OpenAI` | `"OpenAI"` | OpenAI standard API, also compatible with any OpenAI-format API |
-| `AzureOpenAI` | `"Azure OpenAI"` | Azure OpenAI service; note the second argument is the deployment name, not the model name |
-| `CommonEndpoint` | `"Common"` | Common endpoint: specify the full URL directly, minimal customization |
-| `Zhipu` | `"Zhipu"` | ZhipuAI (deprecated; prefer connecting via the OpenAI-compatible API) |
-
-### Model
-
-#### ChatCompletionModel
-```typescript
-import { ChatGPT } from "@ai-zen/agents-core";
-
-const model = new ChatGPT({
-  model_config: {
-    temperature: 0.7,
-    max_tokens: 2048,
-    top_p: 1,
-    frequency_penalty: 0,
-    presence_penalty: 0,
+const guard: AgentPlugin = {
+  // Fired before send(); a string rejects this send (throws)
+  onBeforeSend(ctx: SendContext) {
+    if (ctx.content.includes("secret")) {
+      return "This content is not allowed.";
+    }
   },
-  request_config: await endpoint.chatCompletion("gpt-4"),
-});
 
-// Streaming generation
-const stream = model.createStream({
-  messages: [{ role: "user", content: "Hello" }],
-  tools: [],
-  onOpen: () => console.log("Connection established"),
-  onError: (err) => console.error(err),
-  onFinally: () => console.log("Done"),
-});
-
-for await (const chunk of stream) {
-  console.log(chunk.choices?.[0]?.delta?.content);
-}
-
-// Non-streaming generation
-const response = await model.createCompletion({
-  messages: [{ role: "user", content: "Hello" }],
-  tools: [],
-});
-```
-
-Capability flags:
-
-| Property | Description |
-|----------|-------------|
-| `IS_SUPPORT_FUNCTION_CALL` | Whether function calls are supported (legacy) |
-| `IS_SUPPORT_TOOLS_CALL` | Whether tool calls are supported (modern) |
-| `IS_SUPPORT_IMAGE_CONTENT` | Whether image input is supported |
-| `INPUT_MAX_TOKENS` | Maximum input tokens |
-| `OUTPUT_MAX_TOKENS` | Maximum output tokens |
-
-#### EmbeddingModel
-```typescript
-import { TextEmbeddingAda002_2 } from "@ai-zen/agents-core";
-
-const model = new TextEmbeddingAda002_2({
-  request_config: await endpoint.embedding("text-embedding-ada-002"),
-});
-
-const vector = await model.createEmbedding("text to embed");
-// returns number[], dimension 1536
-```
-
-#### ImageGenerationModel
-```typescript
-import { ZhipuImage } from "@ai-zen/agents-core";
-
-const model = new ZhipuImage({
-  request_config: await endpoint.imageGeneration("cogview-4"),
-});
-
-const result = await model.generate({
-  prompt: "A cute cat",
-  size: "1024x1024",
-  quality: "hd",
-});
-// result.data => [{ url: "https://..." }, ...]
-```
-
-### Model Registry
-
-All built-in model classes can be referenced via the `Models` object:
-
-```typescript
-import { Models } from "@ai-zen/agents-core";
-// Models.ChatGPT
-// Models.TextEmbeddingAda002_2
-// Models.ZhipuImage
-```
-
-### RAG (Retrieval-Augmented Generation)
-
-Improve answer quality by rewriting user messages to inject context information.
-
-```typescript
-import { Rag } from "@ai-zen/agents-core";
-
-class MyRag extends Rag {
-  async rewrite(questionMessage, messages) {
-    const context = await fetchExternalData(questionMessage.content);
-    // Rewrite the user message to inject reference information
-    Message.rewrite(
-      questionMessage,
-      `Reference information: ${context}\n\nUser question: ${questionMessage.content}`
-    );
-  }
-}
-
-const agent = new Agent({ model, rag: new MyRag() });
-```
-
-The built-in `EmbeddingSearch` implementation retrieves from a knowledge base via embedding vectors and injects the matched reference text into the user question:
-
-```typescript
-import { EmbeddingSearch, KnowledgeBase } from "@ai-zen/agents-core";
-
-const rag = new EmbeddingSearch({
-  knowledge_bases: [knowledgeBaseInstance],
-});
-```
-
-### VectorDatabase
-
-An in-memory vector retrieval database based on cosine similarity:
-
-```typescript
-import { VectorDatabase } from "@ai-zen/agents-core";
-
-interface MyRecord {
-  vector: number[];
-  title: string;
-  text: string;
-}
-
-const db = new VectorDatabase<MyRecord>();
-db.insert({ vector: [0.1, 0.2, 0.3], title: "Sample", text: "..." });
-
-const results = db.search(targetVector, topN = 5, minScore = 0.5);
-```
-
-### KnowledgeBase
-
-Automatically integrates an embedding model with a vector database:
-
-```typescript
-import { KnowledgeBase } from "@ai-zen/agents-core";
-
-const kb = new KnowledgeBase({
-  model: embeddingModel,
-  data: [
-    { vector: [...], title: "Document 1", text: "Content 1" },
-  ],
-});
-
-const results = kb.search(targetVector, topN = 5, minScore = 0.8);
-```
-
-### Lifecycle Hooks
-
-The Agent provides several lifecycle hooks to customize behavior at runtime.
-
-```typescript
-const agent = new Agent({
-  model,
-  // Fired before each inner loop starts; useful for refreshing tool definitions, RAG, etc.
-  onInnerLoopStart: () => {
-    console.log("Inner loop started");
-  },
-  // Fired after each inner loop ends; useful for post-processing
-  onInnerLoopEnd: () => {
-    console.log("Inner loop ended");
-  },
-  // Fired when the LLM calls a tool that is not registered
-  onUnknownTool: (ctx) => {
-    return `Tool "${ctx.toolCall.function?.name}" is unavailable.`;
-  },
-});
-```
-
-#### onUnknownTool — Unknown Tool Hook
-
-When the LLM calls a tool that the Agent has not registered, the `onUnknownTool` hook is triggered.
-
-**Signature**:
-```typescript
-onUnknownTool?: (ctx: UnknownToolContext) => string | Promise<string>;
-
-interface UnknownToolContext {
-  toolCall: AgentNS.ToolCall;    // The tool call request from the LLM
-  availableTools: Tool[];        // All currently registered tools (shallow copy)
-}
-```
-
-**Return value**: The returned string is passed back to the LLM as the tool execution result.
-
-**Default behavior**: When unset, it returns the fixed prompt `"Unknown tool: {name}, no matching tool implementation was found."`
-
-**Use cases**:
-- Custom error messages that provide more useful context
-- Recommend similar tools to the LLM based on the available tool list
-- Asynchronously log audit events or call external monitoring services
-
-**Examples**:
-```typescript
-// Synchronous — recommend available tools
-const agent = new Agent({
-  model,
-  tools: [weatherTool, calculatorTool],
-  onUnknownTool: (ctx) => {
-    const names = ctx.availableTools.map(t => t.function.name).join(", ");
-    return `Sorry, the tool "${ctx.toolCall.function?.name}" is unavailable. Available tools: [${names}].`;
-  },
-});
-
-// Asynchronous — log an audit event
-const agent = new Agent({
-  model,
-  tools: [fileReadTool],
-  onUnknownTool: async (ctx) => {
-    await auditService.log({
-      event: "unknown_tool_call",
-      toolName: ctx.toolCall.function?.name,
-      timestamp: new Date(),
-    });
-    return `Tool "${ctx.toolCall.function?.name}" does not exist; the action was recorded.`;
-  },
-});
-```
-
-#### onToolCall — Tool Call Interception Hook
-
-Fired before every tool call execution. Can **reject** a single tool call.
-
-**Signature**:
-```typescript
-onToolCall?: (ctx: ToolCallContext) => string | undefined | Promise<string | undefined>;
-```
-
-**Return value**:
-- A string → reject: the tool is **not executed**, and the string (rejection reason) is returned to the LLM as the tool result; the conversation continues to the next round.
-- `undefined` → allow: the tool executes normally.
-
-The `ctx` received by the hook is the **same `ToolCallContext` instance** passed to `Tool.exec(ctx)`.
-
-**Example**:
-```typescript
-const agent = new Agent({
-  model,
-  tools: [fileTool],
-  onToolCall: (ctx) => {
+  // Fired before every tool call; a string rejects the tool (reason returned to the LLM)
+  onToolCall(ctx: ToolCallContext) {
     if (ctx.tool_call.function?.name === "rm") {
       return `Tool "rm" is rejected: requires explicit user authorization.`;
     }
-    return undefined; // allow
+    // undefined = allow
   },
-});
+
+  // Fired when the LLM calls an unregistered tool; a string is used as the tool result
+  onUnknownTool(ctx: UnknownToolContext) {
+    return `Tool "${ctx.toolCall.function?.name}" is unavailable.`;
+  },
+};
+
+const agent = new Agent({ client, model: "gpt-4o", tools: [weatherTool] });
+agent.use(guard);
+await agent.init();
 ```
+
+#### AgentPlugin hooks
+
+| Hook | Arguments | Returning a string means |
+|------|-----------|--------------------------|
+| `onInit` | — | initialization, no short-circuit |
+| `onBeforeSend` | `SendContext` | reject the send (throws) |
+| `onAfterSend` | `SendContext` | short-circuit later plugins only |
+| `onInnerLoopStart` | `SendContext` | interrupt this round (throws) |
+| `onInnerLoopEnd` | `SendContext` | short-circuit later plugins only |
+| `onInnerLoopsStart` | `SendContext` | interrupt the whole group (throws) |
+| `onInnerLoopsEnd` | `SendContext` | short-circuit later plugins only |
+| `onToolCall` | `ToolCallContext` | reject the tool, the reason is returned to the LLM |
+| `onUnknownTool` | `UnknownToolContext` | used as the tool result; `undefined` → default hint |
+
+#### HookResult — unified short-circuit semantics
+
+Every hook returns `HookResult = string | void | Promise<string | void>`:
+
+- **string** → short-circuits (reject / interrupt / provide a result, per the table above)
+- **undefined / void** → passes through (continue with later plugins or the default behavior)
+
+Multiple plugins run in registration order; the first to return a string short-circuits.
+
+#### dispatchHook — unified entry for events + plugins
+
+Internally every hook goes through `dispatchHook`: it first emits a **non-blocking** kebab-case event (`agent.events`), then **blockingly** invokes plugin hooks in order. So you can either observe via events (non-blocking, cannot affect the flow) or intervene via plugins (blocking, can short-circuit).
+
+Event names: `before-send` / `after-send` / `inner-loop-start` / `inner-loop-end` / `inner-loops-start` / `inner-loops-end` / `tool-call` / `unknown-tool`.
+
+**Unknown tool fallback**: the Agent keeps a simple built-in hint. Smarter hints come from the `onUnknownTool` plugin (e.g. the SDK's `UnknownToolHintPlugin` for MCP guidance, registered explicitly by the caller). Plugins have the highest priority; an `undefined` return falls back to the built-in hint.
 
 ### ToolCallContext
 
@@ -531,13 +329,13 @@ A single class spanning **interception decision → execution**. The same instan
 | Property | Description |
 |----------|-------------|
 | `agent` | The Agent instance that triggered the call |
-| `tool_call` | Unified tool call shape (`{ id?, type?, function: { name, arguments } }`); legacy `function_call` is wrapped as an id-less `{ function }` |
+| `tool_call` | Unified tool call shape (`{ id?, type?, function: { name, arguments } }`) |
 | `tool` | The matched registered tool (undefined if not registered) |
 | `function_call` | Compatibility field, equal to `tool_call.function` (legacy shape) |
-| `parsed_args` | The JSON-parsed argument dictionary |
-| `result_message` | The tool result message — execution result / rejection reason / parse error are written here |
-| `is_prevent_default` | Whether the automatic continuation of the conversation is blocked |
-| `parse_error` | JSON parse error info (when `allowJsonParseError=true`) |
+| `parsedArgs` | The JSON-parsed argument dictionary |
+| `resultMessage` | The tool result message — execution result / rejection reason / parse error are written here |
+| `isPreventDefault` | Whether the automatic continuation of the conversation is blocked |
+| `parseError` | JSON parse error info (when `allowJsonParseError=true`) |
 | `signal` | Abort signal for this tool execution (fires on `abort()`; tools can listen to truly interrupt) |
 | `preventDefault()` | Marks the conversation to stop auto-continuing to the next round |
 
@@ -547,70 +345,65 @@ A single class spanning **interception decision → execution**. The same instan
 
 ```
 send(content)
-  ├── Creates a User message and appends it to the message list
-  ├── Creates an Assistant message (Pending status)
-  ├── RAG.rewrite() rewrites the user question
+  ├── onBeforeSend hook → may reject
+  ├── Appends a User message
   └── run()
-        ├── formatHistory() → filters and formats messages
-        ├── formatTools() → formats tool definitions
-        ├── emits the "run" event
-        ├── model.createStream() → streaming request
-        ├── parseStreamData() → parses the streamed response (content/reasoning/tool_calls)
-        ├── emits "chunk" / "chunk-parsed" / "parsed" events
-        ├── handleToolCall() → executes tool calls
-        │     ├── iterates over tool_calls / function_call
-        │     ├── creates Tool or Function result messages
-        │     ├── instantiates ToolCallContext
-        │     ├── onToolCall() hook → may reject (reason sent back to the LLM)
-        │     ├── executes the matching tool's exec(ctx)
-        │     └── returns whether to continue the conversation
-        └── if continuing → appends a new Assistant message → recurses into run()
+        ├── onInnerLoopsStart hook (once per send)
+        ├── Inner loop (repeats while tool calls continue)
+        │     ├── Appends an Assistant placeholder (Pending) at the start
+        │     ├── onInnerLoopStart hook (before each request)
+        │     ├── client.chat.completions.create(...) — streaming via the official SDK
+        │     ├── parseStreamData() → content / reasoning_content / tool_calls
+        │     ├── handleToolCall() → executes tool calls
+        │     │     ├── onToolCall interception hook → may reject
+        │     │     ├── onUnknownTool plugin (may provide a hint) → built-in fallback
+        │     │     └── Tool.exec(ctx) executes the matched tool
+        │     └── onInnerLoopEnd hook
+        ├── onInnerLoopsEnd hook
+        └── returns this.messages
+  └── onAfterSend hook
 ```
 
 ### Tool Call Handling
 
-- When the model returns `tool_calls` or `function_call`, the Agent automatically executes the matching tools
-- Tool execution results are appended to the message list as Tool/Function role messages
+- When the model returns `tool_calls`, the Agent automatically executes the matching tools (in parallel)
+- Tool execution results are appended to the message list as Tool role messages
 - If all tools succeed and `preventDefault()` was not called, the Agent automatically starts a new round (feeding the results back to the model)
 - If `allowJsonParseError = true` (default), parse failures automatically send the error back to the AI for correction
+- Unregistered tools go through `onUnknownTool` plugins (any string is used as the tool result), falling back to a simple built-in hint
 
 ### Event System
 
-The Agent provides an event bus that lets you listen to key stages of the run:
+The Agent provides an event bus. Events are non-blocking notifications (they cannot affect the flow — use plugins to intervene):
 
 ```typescript
-// Run started (with the formatted messages and tools)
-agent.events.on("run", (messages, tools) => {});
+// Lifecycle events (payload = the corresponding hook ctx)
+agent.events.on("before-send", (ctx: SendContext) => {});
+agent.events.on("after-send", (ctx: SendContext) => {});
+agent.events.on("inner-loop-start", (ctx: SendContext) => {});
+agent.events.on("inner-loop-end", (ctx: SendContext) => {});
+agent.events.on("inner-loops-start", (ctx: SendContext) => {});
+agent.events.on("inner-loops-end", (ctx: SendContext) => {});
+agent.events.on("tool-call", (ctx: ToolCallContext) => {});
+agent.events.on("unknown-tool", (ctx: UnknownToolContext) => {});
 
-// Streaming connection established
-agent.events.on("open", () => {});
+// Streaming / lifecycle events
+agent.events.on("open", () => {});                       // connection established
+agent.events.on("chunk", (chunk) => {});                 // raw streamed chunk
+agent.events.on("chunk-parsed", (receiver, chunk) => {});// chunk merged into the receiver message
+agent.events.on("parsed", (receiver) => {});             // full response parsed
+agent.events.on("error", (error) => {});                 // an error occurred
+agent.events.on("finally", () => {});                    // run finished (success or failure)
 
-// Raw streamed data chunk received
-agent.events.on("chunk", (chunk: AgentNS.StreamResponseData) => {});
-
-// Chunk parsed (merged into the receiver message)
-agent.events.on("chunk-parsed", (receiver, chunk) => {});
-
-// Full response parsed
-agent.events.on("parsed", (receiver) => {});
-
-// An error occurred
-agent.events.on("error", (error) => {});
-
-// Run finished (success or failure)
-agent.events.on("finally", () => {});
-
-// Sub-Agent started (when an AgentTool executes)
-agent.events.on("sub-agent", ({ agent, ctx }) => {});
-
-// Sub-Agent ended
-agent.events.on("sub-agent-end", ({ agent, ctx }) => {});
+// Sub-Agent events
+agent.events.on("sub-agent", ({ agent, ctx }) => {});    // an AgentTool sub-agent started
+agent.events.on("sub-agent-end", ({ agent, ctx }) => {});// sub-agent ended
 ```
 
 ### Aborting
 
 ```typescript
-agent.abort(); // Abort all pending conversations
+agent.abort(); // Abort all in-flight inner-loop tasks of the current round
 ```
 
 ## More Examples
@@ -619,7 +412,8 @@ agent.abort(); // Abort all pending conversations
 
 ```typescript
 const agent = new Agent({
-  model,
+  client,
+  model: "gpt-4o",
   tools: [new WeatherTool(), new CalculatorTool()],
   allowJsonParseError: true, // Let the AI auto-correct argument format errors
 });
