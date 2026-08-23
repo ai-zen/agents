@@ -90,6 +90,52 @@ describe("Message", () => {
       expect(msg.content).toBe(sections);
       expect(Array.isArray(msg.content)).toBe(true);
     });
+
+    it("应支持 image_url 的 detail 细节级别字段", () => {
+      const sections: AgentNS.MessageContentSection[] = [
+        { type: "text", text: "这张图片里有什么？" },
+        {
+          type: "image_url",
+          image_url: { url: "https://example.com/img.png", detail: "low" },
+        },
+      ];
+      const msg = Message.User(sections);
+      const imageSection = (msg.content as AgentNS.MessageContentSection[])[1];
+      expect(imageSection.type).toBe("image_url");
+      expect(
+        (imageSection as AgentNS.ImageUrlContentSection).image_url.detail,
+      ).toBe("low");
+    });
+
+    it("应支持 file 内容块（file_id 引用）", () => {
+      const sections: AgentNS.MessageContentSection[] = [
+        { type: "text", text: "这张图片里有什么？" },
+        { type: "file", file_id: "file-api-xxxxxxxxxxxxxxxx" },
+      ];
+      const msg = Message.User(sections);
+      const fileSection = (msg.content as AgentNS.MessageContentSection[])[1];
+      expect(fileSection.type).toBe("file");
+      expect((fileSection as AgentNS.FileContentSection).file_id).toBe(
+        "file-api-xxxxxxxxxxxxxxxx",
+      );
+    });
+
+    it("应支持 file 内容块（file_data 内联 + filename）", () => {
+      const sections: AgentNS.MessageContentSection[] = [
+        { type: "text", text: "这张图片里有什么？" },
+        {
+          type: "file",
+          file_data: "data:image/jpeg;base64,AAAA",
+          filename: "image.jpg",
+        },
+      ];
+      const msg = Message.User(sections);
+      const fileSection = (msg.content as AgentNS.MessageContentSection[])[1];
+      expect(fileSection.type).toBe("file");
+      const file = fileSection as AgentNS.FileContentSection;
+      expect(file.file_data).toBe("data:image/jpeg;base64,AAAA");
+      expect(file.filename).toBe("image.jpg");
+    });
   });
 
   describe("Message.Assistant", () => {

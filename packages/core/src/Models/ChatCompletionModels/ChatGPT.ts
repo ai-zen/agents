@@ -58,6 +58,9 @@ export namespace ChatGPTTypes {
     type: "image_url";
     image_url: {
       url: string;
+      /** 图片处理细节级别（如 DeepSeek 视觉模型）：
+       *  low 推理前缩放至 512×512，更省 token；high / original 保留原图；auto 自动（当前等价 original） */
+      detail?: "low" | "high" | "original" | "auto";
     };
   }
 
@@ -67,9 +70,21 @@ export namespace ChatGPTTypes {
     text: string;
   }
 
+  /** Files API 引用内容块（如 DeepSeek Files API）：
+   *  file_id 引用已上传文件；file_data 以 base64 data URL 内联（与 file_id 互斥）；
+   *  filename 仅 file_data 时可带，不能与 file_id 同现 */
+  export interface FileContentSection {
+    index?: number;
+    type: "file";
+    file_id?: string;
+    file_data?: string;
+    filename?: string;
+  }
+
   export type MessageContentSection =
     | ImageUrlContentSection
-    | TextContentSection;
+    | TextContentSection
+    | FileContentSection;
 
   export interface Message {
     role: Role;
