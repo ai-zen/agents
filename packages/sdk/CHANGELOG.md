@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.7.1] - 2026-08-25
+
+### 🚀 New Features
+
+- **`FindTextTool` (findText) gains three-layer output protection** — prevents search results from blowing up the context window:
+  - **`maxMatches`** (default 200) — caps the total number of matches; once reached, scanning stops and the result is marked `truncated`
+  - **`maxFileSize`** (default 300KB, aligned with `ReadFileTool`) — files larger than this are **skipped** rather than rejected, so an oversized file doesn't block the whole search
+  - **`maxLineLength`** (default 200) — each matched line's `content` and the regex `match` substring are truncated (with a trailing `…`)
+  - All three are optional parameters that can be overridden by the caller; when truncated the result returns `{ truncated: true, totalMatches, results }`, while non-truncated results keep the original JSON array shape (backward compatible)
+
 ## [0.7.0] - 2026-08-14
 
 ### ⚠️ Breaking
