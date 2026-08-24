@@ -100,4 +100,52 @@ describe("FindTextTool", () => {
       try { unlinkSync(dir); } catch {}
     }
   });
+
+  it("maxMatches 截断结果并标记 truncated", async () => {
+    const tool = new FindTextTool(makeEnv());
+    const dir = tmpDir();
+    try {
+      writeFileSync(join(dir, "data.txt"), "x\nx\nx\nx\nx", "utf-8");
+      const result = await tool.call({ path: dir, pattern: "*.txt", text: "x", maxMatches: 2 });
+      const parsed = JSON.parse(result as string);
+      expect(parsed.truncated).toBe(true);
+      expect(parsed.totalMatches).toBe(2);
+      expect(parsed.results.length).toBe(1);
+      expect(parsed.results[0].matches.length).toBe(2);
+    } finally {
+      try { unlinkSync(join(dir, "data.txt")); } catch {}
+      try { unlinkSync(dir); } catch {}
+    }
+  });
+
+  it("maxFileSize 跳过过大的文件", async () => {
+    const tool = new FindTextTool(makeEnv());
+    const dir = tmpDir();
+    try {
+      writeFileSync(join(dir, "small.txt"), "needle", "utf-8");
+      writeFileSync(join(dir, "big.txt"), "needle" + "a".repeat(100), "utf-8");
+      const result = await tool.call({ path: dir, pattern: "*.txt", text: "needle", maxFileSize: 10 });
+      const parsed = JSON.parse(result as string);
+      expect(parsed.length).toBe(1);
+      expect(parsed[0].file).toBe("small.txt");
+    } finally {
+      try { unlinkSync(join(dir, "small.txt")); } catch {}
+      try { unlinkSync(join(dir, "big.txt")); } catch {}
+      try { unlinkSync(dir); } catch {}
+    }
+  });
+
+  it("maxLineLength 截断行内容", async () => {
+    const tool = new FindTextTool(makeEnv());
+    const dir = tmpDir();
+    try {
+      writeFileSync(join(dir, "data.txt"), "abcdefghij_needle_rest_of_long_line", "utf-8");
+      const result = await tool.call({ path: dir, pattern: "*.txt", text: "needle", maxLineLength: 10 });
+      const parsed = JSON.parse(result as string);
+      expect(parsed[0].matches[0].content).toBe("abcdefghij…");
+    } finally {
+      try { unlinkSync(join(dir, "data.txt")); } catch {}
+      try { unlinkSync(dir); } catch {}
+    }
+  });
 });
