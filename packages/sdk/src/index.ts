@@ -61,7 +61,10 @@ export type { McpConnectOptions } from "./runtime/McpConnectionManager.js";
 export { SdkCallbackTool } from "./runtime/SdkCallbackTool.js";
 export type { SdkCallbackToolOptions } from "./runtime/SdkCallbackTool.js";
 export { TaskMigrationService } from "./runtime/TaskMigrationService.js";
-export type { BuildMigrationAgentOptions } from "./runtime/TaskMigrationService.js";
+export type {
+  MigrationContext,
+  TaskMigrationServiceOptions,
+} from "./runtime/TaskMigrationService.js";
 
 // 插件
 export { AutoMigratePlugin } from "./plugin/AutoMigratePlugin.js";

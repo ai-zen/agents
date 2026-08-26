@@ -1,4 +1,3 @@
-import { AgentNS } from "@ai-zen/agents-core";
 import type { AgentPlugin, SendContext } from "@ai-zen/agents-core";
 import { TaskMigrationService } from "../runtime/TaskMigrationService.js";
 import { getLogger } from "../shared/logger.js";
@@ -7,25 +6,22 @@ import { SdkAgent } from "../runtime/SdkAgent.js";
 const log = getLogger();
 
 export interface AutoMigrateOptions {
+  /** 迁移服务实例（持有迁移前后钩子；生成交接文档时复用传入 agent 的模型调用） */
+  service: TaskMigrationService;
+  /** 触发迁移的上下文阈值 */
   maxTokens: number;
-  migrationAgent: SdkAgent;
-  /** 迁移开始前触发（promptTokens 刚超限时），此时 agent.messages 还是完整旧历史。适用于保存旧对话或向用户展示迁移提示。 */
-  onBeforeMigrate?: (promptTokens: number, maxTokens: number, agent: SdkAgent) => void;
-  /** 迁移完成后触发，此时交接文档已注入 agent.messages。适用于 UI 更新等后处理。 */
-  onMigrated?: (handoffDoc: string, agent: SdkAgent) => void;
 }
 
 /**
- * 自动迁移插件。
+ * 自动迁移插件 — 只负责「触发」，实际迁移逻辑统一委托给持有的 `TaskMigrationService` 实例。
  *
- * 当 token 使用量超过 maxTokens 时，自动将对话历史交给 migrationAgent 生成交接文档，
- * 然后用交接文档替换当前 agent 的消息列表，实现无缝迁移。
+ * 当 token 使用量超过 maxTokens 时触发迁移。`service.migrate()` 需要 `agent`（当前对话）作为
+ * 唯一运行时参数，其余（模型、迁移前后钩子）已由服务在构造时持有。
  *
  * ```ts
  * agent.use(new AutoMigratePlugin({
+ *   service: new TaskMigrationService({ onMigrated }),
  *   maxTokens: 250_000,
- *   migrationAgent: anotherAgent,
- *   onMigrated: (doc, agent) => { ... },
  * }));
  * ```
  */
@@ -38,67 +34,17 @@ export class AutoMigratePlugin implements AgentPlugin {
 
   async onAfterSend(ctx: SendContext): Promise<void> {
     const agent = ctx.agent as SdkAgent;
-    const { maxTokens, migrationAgent, onBeforeMigrate, onMigrated } = this.options;
+    const { service, maxTokens } = this.options;
 
     const promptTokens = agent.lastUsage?.prompt_tokens;
     if (promptTokens == null) return;
 
-    if (!TaskMigrationService.shouldMigrate(promptTokens, maxTokens)) return;
-
-    // 迁移前钩子：由上层（CLI）处理用户提示
-    if (onBeforeMigrate) {
-      try {
-        await onBeforeMigrate(promptTokens, maxTokens, agent);
-      } catch (err: any) {
-        log.error(`[autoMigrate] onBeforeMigrate 回调失败: ${err?.message ?? err}`);
-      }
-    }
+    if (promptTokens <= maxTokens) return;
 
     try {
-      const historyText = this.serializeMessages(agent.messages);
-      const migrationResult = await migrationAgent.send(historyText);
-
-      const handoffDoc = this.getLastAssistantContent(migrationResult);
-      if (!handoffDoc) return;
-
-      // 仅替换消息列表，不重建 agent，保留所有引用和插件绑定
-      agent.messages.length = 0;
-      agent.messages.push(
-        ...agent.definition.messages,
-        ...TaskMigrationService.createPostMessages(handoffDoc),
-      );
-
-      if (onMigrated) {
-        try {
-          await onMigrated(handoffDoc, agent);
-        } catch (err: any) {
-          log.error(`[autoMigrate] onMigrated 回调失败: ${err?.message ?? err}`);
-        }
-      }
+      await service.migrate({ agent, promptTokens, maxTokens });
     } catch (err: any) {
       log.error(`[autoMigrate] 迁移失败: ${err?.message ?? err}`);
     }
-  }
-
-  private serializeMessages(messages: any[]): string {
-    return messages
-      .map((m) => {
-        const role = m.role ?? "unknown";
-        const content =
-          typeof m.content === "string" ? m.content : JSON.stringify(m.content);
-        return `[${role}]: ${content}`;
-      })
-      .join("\n\n");
-  }
-
-  private getLastAssistantContent(messages: any[]): string | null {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === AgentNS.Role.Assistant && messages[i].content) {
-        return typeof messages[i].content === "string"
-          ? messages[i].content
-          : null;
-      }
-    }
-    return null;
   }
 }

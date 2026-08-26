@@ -63,7 +63,8 @@ const provider = await Provider.create({
   ...paths,
 });
 const agent = createAgent(provider, "my-agent");
-agent.use(new AutoMigratePlugin({ maxTokens, migrationAgent, onMigrated }));
+const migrationService = new TaskMigrationService({ onMigrated }); // migrates via the agent's own model client
+agent.use(new AutoMigratePlugin({ service: migrationService, maxTokens }));
 agent.use(new AutoRefreshToolsPlugin());
 await agent.init();
 await agent.send("Hello");
@@ -80,7 +81,7 @@ await agent.send("Hello");
 | `runtime` | ✅ Implemented — Provider, Capabilities, createAgent, MCP connection management, task migration |
 | `plugin` | ✅ Implemented — AutoMigratePlugin / AutoRefreshToolsPlugin / ContextGuardPlugin / UnknownToolHintPlugin |
 | `shared` | ✅ Implemented — SdkError + injectable Logger |
-| Tests | ✅ 445 passing, 51 files, all green (incl. real-API chat & viewImage e2e) |
+| Tests | ✅ 463 passing, 51 files, all green (incl. real-API chat & viewImage e2e) |
 
 ## Built-in Tools
 
@@ -117,7 +118,7 @@ Conditionally injected based on the active model / config:
 
 | Plugin | Description |
 |--------|-------------|
-| `AutoMigratePlugin` | Automatically triggers task migration when the context overflows, generates a handoff document, and transparently replaces the Agent |
+| `AutoMigratePlugin` | Automatically triggers task migration when the context overflows; delegates the actual migration to the injected `TaskMigrationService` instance, which reuses the agent's own model client |
 | `AutoRefreshToolsPlugin` | Re-scans the file system before each `send()` to refresh the tool list |
 | `ContextGuardPlugin` | Context safety guard — before each request, throws `ContextOverflowError` (interrupting the conversation) when the previous round's `usage.prompt_tokens` exceeds `maxTokens × ratio` (default 1.5), preventing context runaway from reading oversized files |
 | `UnknownToolHintPlugin` | Smarter unknown-tool hints — when the LLM calls a nonexistent tool, guides it to `call_mcp_tool` / points out permission issues based on MCP config (opt-in via `agent.use`) |
@@ -133,3 +134,4 @@ See the project-root [`PRINCIPLES.md`](../../PRINCIPLES.md):
 5. Occam's razor
 6. Refactor as you go; keep clean layering
 7. Tests are the foundation
+he foundation

@@ -1,4 +1,4 @@
-# SDK 设计文档（v0.7.0）
+# SDK 设计文档（v0.8.0）
 
 > 本文档是 `@ai-zen/agents-sdk` 的**唯一设计真相源**，与当前实现逐项对齐。
 > 任何代码改动若与此文档不符，需先更新文档；文档描述以当前 `src/` 实现为准。
@@ -241,7 +241,7 @@ runtime/
   SdkAgent.ts                 ← SdkAgent（插件机制继承自 Core）
   SdkCallbackTool.ts          ← 内置工具抽象基类
   McpConnectionManager.ts     ← MCP 连接生命周期
-  TaskMigrationService.ts     ← 任务迁移（shouldMigrate / 交接文档）
+  TaskMigrationService.ts     ← 任务迁移（实例化服务：migrate 复用传入 agent 的模型调用）
 plugin/
   AutoMigratePlugin.ts        ← 上下文超限自动迁移
   AutoRefreshToolsPlugin.ts   ← send 前刷新工具列表
@@ -813,12 +813,12 @@ class AutoRefreshToolsPlugin implements AgentPlugin {
 
 ### 内置插件：AutoMigratePlugin
 
+自动迁移插件只负责「何时触发」，实际迁移逻辑统一委托给注入的 `TaskMigrationService` 实例。
+
 ```typescript
 interface AutoMigrateOptions {
-  maxTokens: number;
-  migrationAgent: SdkAgent;
-  onBeforeMigrate?: (promptTokens, maxTokens, agent: SdkAgent) => void;  // 迁移前，agent.messages 仍是完整旧历史
-  onMigrated?: (handoffDoc: string, agent: SdkAgent) => void;            // 迁移后，交接文档已注入
+  service: TaskMigrationService;  // 迁移服务实例（持有迁移前后钩子；生成交接文档时复用传入 agent 的模型调用）
+  maxTokens: number;              // 触发迁移的上下文阈值
 }
 ```
 
@@ -826,17 +826,13 @@ interface AutoMigrateOptions {
 
 ```
 1. 读取 agent.lastUsage?.prompt_tokens
-2. shouldMigrate(promptTokens, maxTokens)
-3. 未超限 → 返回
-4. 超限：
-   a. onBeforeMigrate(promptTokens, maxTokens, agent)  // 可在此保存旧对话
-   b. 将 agent.messages（完整历史）发给 migrationAgent → 交接文档 handoffDoc
-   c. 仅替换 agent.messages（不重建 Agent，保留所有引用和插件绑定）：
-      agent.messages = [...definition.messages, ...createPostMessages(handoffDoc)]
-   d. onMigrated(handoffDoc, agent)
+2. promptTokens 为空 → 返回
+3. promptTokens <= maxTokens → 返回（未超限）
+4. 超限：service.migrate({ agent, promptTokens, maxTokens })
+   （序列化历史 → 模型生成交接文档 → 替换消息，由 TaskMigrationService 完成）
 ```
 
-迁移失败 / 回调抛错 → 不影响流程，原消息不丢失（迁移前仍在 `agent.messages`）。
+迁移失败 / 服务抛错 → 被捕获并记录，不影响流程，原消息不丢失（迁移前仍在 `agent.messages`）。
 
 ### 内置插件：ContextGuardPlugin
 
@@ -866,21 +862,67 @@ interface ContextGuardOptions {
 
 ```typescript
 agent.use(new ContextGuardPlugin({ maxTokens }));      // >maxTokens×1.5 → 中断报错
-agent.use(new AutoMigratePlugin({ maxTokens, migrationAgent }));  // [maxTokens, maxTokens×1.5] → 交接迁移
+agent.use(new AutoMigratePlugin({
+  service: new TaskMigrationService({ onMigrated }),
+  maxTokens,
+}));  // [maxTokens, maxTokens×1.5] → 交接迁移
 ```
 
 
 ## 15. 任务迁移（TaskMigrationService）
 
+迁移服务是**实例化服务**，职责是「怎么迁移」（序列化历史 → 模型生成交接文档 → 替换消息）。它**不持有**任何模型调用：`migrate()` 直接复用传入 `agent`（`SdkAgent`）自身的 `client` / `model` / `modelConfig` 生成交接文档，因此**无需 Provider、无需独立「迁移 Agent」对象、也无需自建 OpenAI 客户端**。`AutoMigratePlugin` 只负责「何时触发」，手动迁移与自动迁移复用同一条链路。
+
 ```typescript
+interface TaskMigrationServiceOptions {
+  onBeforeMigrate?: (ctx: MigrationContext) => void | Promise<void>;  // 迁移前，agent.messages 仍是完整旧历史
+  onMigrated?: (ctx: MigrationContext) => void | Promise<void>;       // 迁移后，交接文档已注入
+  logger?: Logger;  // 可注入日志（默认全局单例）
+}
+
+interface MigrationContext {
+  agent: SdkAgent;        // 当前对话 Agent（引用不变，仅替换消息列表）
+  model: string;          // 生成交接文档所用模型名（来自 agent.model）
+  promptTokens?: number;  // 当前 prompt token 用量（自动迁移提供；手动迁移可省略）
+  maxTokens?: number;     // 上下文阈值（自动迁移提供；手动迁移可省略）
+  historyText: string;    // 序列化后的完整对话历史（迁移输入）
+  messageCountBefore: number;  // 迁移前消息总数
+  handoffDoc?: string;    // 生成的交接文档（迁移完成后填充）
+}
+
 class TaskMigrationService {
   static readonly HANDOFF_SECTIONS: { breakpoint, completed, pending, memory, files, instructions };
-  static shouldMigrate(promptTokens: number, maxTokens: number): boolean;  // promptTokens > maxTokens
-  static createPrompt(): string;                    // 迁移 Agent system prompt
-  static createAgentDefinition(options?): AgentDefinition;  // "task-migration" 专用迁移 Agent
+  static createPrompt(): string;                    // 交接 prompt（system）
   static createPostMessages(handoffDoc: string): AgentNS.Message[];
+  static serializeMessages(messages: AgentNS.Message[]): string;
+
+  constructor(options?: TaskMigrationServiceOptions);
+  async migrate(params: {
+    agent: SdkAgent;
+    promptTokens?: number;
+    maxTokens?: number;
+  }): Promise<MigrationContext>;
 }
 ```
+
+`migrate()` 逻辑：
+
+```
+1. 序列化 agent.messages → historyText；记录 messageCountBefore
+2. 构造 beforeCtx（不含 handoffDoc）：{ agent, model: agent.model, promptTokens, maxTokens, historyText, messageCountBefore }
+3. onBeforeMigrate(beforeCtx)  // 可在此保存旧对话；异常捕获并记录，不中断
+4. 用 agent.client / agent.model / agent.modelConfig 生成交接文档 handoffDoc（system=createPrompt()，user=historyText）
+5. 替换 agent.messages：agent.messages = [...agent.definition.messages, ...createPostMessages(handoffDoc)]
+6. 构造 afterCtx（含 handoffDoc，与 beforeCtx 独立）：{ ...beforeCtx, handoffDoc }
+7. onMigrated(afterCtx)  // 异常捕获并记录，不中断
+8. 返回 afterCtx
+```
+
+设计约束：
+- **不重建 Agent**：保留所有引用与插件绑定（仅替换消息列表）
+- **钩子容错**：`onBeforeMigrate` / `onMigrated` 抛错被捕获并记录，不中断迁移流程
+- **原子性**：生成失败 / 未取到交接文档时抛错，`agent.messages` 保持原样（不会被部分修改）
+- **上下文独立**：迁移前上下文不含 `handoffDoc`，迁移后上下文含 `handoffDoc`，两对象相互独立
 
 交接文档固定章节：
 
@@ -928,11 +970,12 @@ const provider = await Provider.create({
 // 3. 创建 Agent 并注册插件
 const agent = await createAgent(provider, config.defaultAgent ?? "default");
 agent.use(new AutoMigratePlugin({
+  service: new TaskMigrationService({
+    onBeforeMigrate: (mctx) => {
+      saveConversation(convId, mctx.agent.messages);   // 各端自行实现；迁移前保存完整旧历史
+    },
+  }),
   maxTokens: 250_000,
-  migrationAgent: await createAgent(provider, "task-migration"),
-  onBeforeMigrate: (promptTokens, maxTokens, agent) => {
-    saveConversation(convId, agent.messages);   // 各端自行实现
-  },
 }));
 agent.use(new AutoRefreshToolsPlugin());
 await agent.init();

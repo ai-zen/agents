@@ -62,7 +62,8 @@ const provider = await Provider.create({
   ...paths,
 });
 const agent = createAgent(provider, "my-agent");
-agent.use(new AutoMigratePlugin({ maxTokens, migrationAgent, onMigrated }));
+const migrationService = new TaskMigrationService({ onMigrated }); // 迁移复用传入 agent 自身的模型调用
+agent.use(new AutoMigratePlugin({ service: migrationService, maxTokens }));
 agent.use(new AutoRefreshToolsPlugin());
 await agent.init();
 await agent.send("你好");
@@ -116,7 +117,7 @@ await agent.send("你好");
 
 | 插件 | 说明 |
 |------|------|
-| `AutoMigratePlugin` | 上下文超限时自动触发任务迁移，生成交接文档，透明替换 Agent |
+| `AutoMigratePlugin` | 上下文超限时自动触发任务迁移，生成交接文档，透明替换 Agent（委托注入的 `TaskMigrationService`，复用 Agent 自身的模型调用） |
 | `AutoRefreshToolsPlugin` | 每次 `send()` 前重新扫描文件系统，刷新工具列表 |
 | `ContextGuardPlugin` | 上下文安全护栏 — 每轮发请求前检测上一轮 `usage.prompt_tokens`，超过 `maxTokens × ratio`（默认 1.5，即 +50%）时抛 `ContextOverflowError` 中断对话，防止读入超大文件导致上下文失控 |
 | `UnknownToolHintPlugin` | 未知工具智能提示 — LLM 调用不存在的工具时，根据 MCP 配置引导使用 `call_mcp_tool` / 提示权限问题（调用方显式 `agent.use` 注册） |

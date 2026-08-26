@@ -25,8 +25,8 @@ export interface ContextGuardOptions {
  * ```ts
  * agent.use(new ContextGuardPlugin({ maxTokens: 250_000 }));
  * agent.use(new AutoMigratePlugin({
+ *   service: new TaskMigrationService({ onMigrated }),
  *   maxTokens: 250_000,
- *   migrationAgent,
  * }));
  * ```
  */
