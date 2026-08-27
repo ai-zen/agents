@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.9.1] - 2026-08-28
+
+### 🔧 Fixed
+
+- **SDK-produced messages now always carry an `id`, aligned with core 4.1.0's required `Message.id`** — `TaskMigrationService.createPostMessages()` returns a `Message.User`, and the default agent / sub-agent definitions (`DEFAULT_AGENT_DEFINITION` / `DEFAULT_SUBAGENT_DEFINITION`) build their messages via `Message.System` / `Message.User`. This removes the last places where a bare object literal `{ role, content }` was assigned to `AgentNS.Message`, which would now fail to compile under core 4.1.0 (where `Message.id` is non-optional). Consumers no longer need to patch a missing `id` on SDK-generated messages (e.g. a desktop-side `ensureId` bridge)
+- **No breaking change to public API** — only internal message construction was switched to the `Message` factory methods; exported types and method signatures are unchanged
+
+### ✅ Tests
+
+- SDK suite re-checked green against core 4.1.0 (`Message.id` required)
+
 ## [0.9.0] - 2026-08-28
 
 ### 🎯 Optimized
