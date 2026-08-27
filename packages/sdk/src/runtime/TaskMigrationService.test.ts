@@ -136,11 +136,21 @@ describe("TaskMigrationService", () => {
       const userMsg = createArgs.messages.find((m: any) => m.role === "user");
       expect(userMsg.content).toContain("Refactor please");
 
-      // 消息被替换为 definition.messages + 交接文档注入
-      expect(agent.messages).toHaveLength(2);
+      // 迁移采用 omit 方案：历史标记 omit（保留可审计），末尾追加对话断点
+      // 迁移前 messages = [system, user, assistant]（3 条），definition.messages=[system]（1 条）
+      // 迁移后：system 不省略，user/assistant 标记 omit，末尾追加断点 user → 共 4 条
+      expect(agent.messages).toHaveLength(4);
       const userMsgs = agent.messages.filter((m: any) => m.role === "user");
-      expect(userMsgs).toHaveLength(1);
-      expect(userMsgs[0].content).toContain("## 💬 对话断点");
+      expect(userMsgs).toHaveLength(2);
+      // 历史 user 被标记 omit
+      expect(userMsgs[0].omit).toBe(true);
+      // 末尾断点 user 不省略，且含交接文档
+      const breakpoint = userMsgs.at(-1);
+      expect(breakpoint.omit).toBeFalsy();
+      expect(breakpoint.content).toContain("## 💬 对话断点");
+      // 系统提示不省略
+      const systemMsg = agent.messages.find((m: any) => m.role === "system");
+      expect(systemMsg.omit).toBeFalsy();
     });
 
     it("构造时传入 client/model/modelConfig 优先于 agent 自带", async () => {
@@ -203,6 +213,23 @@ describe("TaskMigrationService", () => {
 
       await expect(service.migrate({ agent })).rejects.toThrow();
       expect(agent.messages).toHaveLength(2);
+    });
+
+    it("historyText 过滤已标记 omit 的历史（重复迁移不重复喂入）", async () => {
+      const agent = mockAgent([
+        { role: "system", content: "You are a coder." },
+        { role: "user", content: "Refactor please", omit: true },
+        { role: "user", content: "hello" },
+      ]);
+      mocks.client.chat.completions.create.mockResolvedValue({
+        choices: [{ message: { content: "交接文档" } }],
+      });
+      const service = createService();
+
+      const ctx = await service.migrate({ agent });
+
+      expect(ctx.historyText).not.toContain("Refactor please");
+      expect(ctx.historyText).toContain("hello");
     });
 
     it("onBeforeMigrate 钩子在迁移前拿到完整上下文", async () => {

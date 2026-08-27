@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### 🎯 Optimized
+
+- **`TaskMigrationService.migrate` 改为 omit 存储策略** — 不再「替换/删除」历史消息，而是将其标记 `omit: true`（保留在 `agent.messages` 可审计/回放，但 `Agent.formatHistory()` 会过滤不发送给模型），并追加一条「对话断点」消息（交接文档 + 接手指令，role=user）作为新上下文起点。发送给模型的序列变为 `[definition.messages, 断点消息]`，历史被压缩但并不丢失。复用 Core 已有 `omit` 机制，SDK 无需改动 Core。
+  - 用**浅拷贝重建** `agent.messages` 数组，避免直接修改 `definition.messages` 引用的对象（防止污染模板）
+  - `historyText`（供模型生成交接文档）改为**过滤已标记 omit 的历史**，避免重复迁移时把旧省略历史重复喂给模型
+  - `AutoMigratePlugin` 仍只负责「何时触发」，无需改动
+
+### ✅ Tests
+
+- `TaskMigrationService` / `AutoMigratePlugin` 断言更新为 omit 语义（历史标 omit + 末尾断点 + 保留系统提示）
+- 新增用例：`historyText` 过滤已标记 omit 的历史
+
 ## [0.8.0] - 2026-08-24
 
 ### ⚠️ Breaking

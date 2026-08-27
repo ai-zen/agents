@@ -81,7 +81,7 @@ await agent.send("Hello");
 | `runtime` | ✅ Implemented — Provider, Capabilities, createAgent, MCP connection management, task migration |
 | `plugin` | ✅ Implemented — AutoMigratePlugin / AutoRefreshToolsPlugin / ContextGuardPlugin / UnknownToolHintPlugin |
 | `shared` | ✅ Implemented — SdkError + injectable Logger |
-| Tests | ✅ 463 passing, 51 files, all green (incl. real-API chat & viewImage e2e) |
+| Tests | ✅ 450 passing, 51 files, all green (incl. real-API chat & viewImage e2e) |
 
 ## Built-in Tools
 

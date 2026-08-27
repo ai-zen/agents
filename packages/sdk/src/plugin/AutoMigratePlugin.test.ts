@@ -108,13 +108,20 @@ describe("AutoMigratePlugin", () => {
       const userMsg = createArgs.messages.find((m: any) => m.role === "user");
       expect(userMsg.content).toContain("Refactor please");
 
-      // agent 同引用，消息被替换为 definition.messages(1) + 交接文档注入(1) = 2
+      // agent 同引用，迁移采用 omit 方案：
+      // 迁移前 messages=[system,user,assistant]（3 条），definition.messages=[system]（1 条）
+      // 迁移后：system 不省略，user/assistant 标记 omit，末尾追加断点 user → 共 4 条
       expect(ctx.agent).toBe(agent);
-      expect(agent.messages).toHaveLength(2);
+      expect(agent.messages).toHaveLength(4);
       const userMsgs = agent.messages.filter((m: any) => m.role === "user");
-      expect(userMsgs).toHaveLength(1);
-      expect(userMsgs[0].content).toContain("## 💬 对话断点");
-      expect(userMsgs[0].content).toContain("上一轮对话的任务交接文档");
+      expect(userMsgs).toHaveLength(2);
+      // 历史 user 被标记 omit
+      expect(userMsgs[0].omit).toBe(true);
+      // 末尾断点 user 不省略，且含交接文档 + 接手指令
+      const breakpoint = userMsgs.at(-1);
+      expect(breakpoint.omit).toBeFalsy();
+      expect(breakpoint.content).toContain("## 💬 对话断点");
+      expect(breakpoint.content).toContain("上一轮对话的任务交接文档");
     });
 
     it("agent.lastUsage 为 undefined 时不触发迁移", async () => {

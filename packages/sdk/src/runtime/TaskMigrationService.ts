@@ -55,7 +55,7 @@ export interface TaskMigrationServiceOptions {
  *
  * 职责：
  *   1. 生成交接文档的提示词 / 注入格式（静态纯工具，供上层使用）
- *   2. 执行完整迁移（串行化 → 模型生成 → 替换消息），并暴露迁移前后钩子（实例方法）
+ *   2. 执行完整迁移（串行化 → 模型生成 → 标记历史 omit + 追加对话断点），并暴露迁移前后钩子（实例方法）
  *
  * 设计上，`AutoMigratePlugin` 只负责「何时触发」（检测 token 超限），
  * 实际迁移逻辑统一收敛到本服务，从而让手动迁移与自动迁移复用同一条链路。
@@ -112,6 +112,11 @@ export class TaskMigrationService {
     ].join("\n");
   }
 
+  /**
+   * 生成迁移后追加的「对话断点」消息（role=user）：交接文档 + 接手指令。
+   * 该消息是 omit 迁移方案中新上下文的起点，模型看到的序列为
+   * `[definition.messages, 断点消息]`（历史消息已被标记 omit，不再发送）。
+   */
   static createPostMessages(handoffDoc: string): AgentNS.Message[] {
     const content = [
       "这是上一轮对话的任务交接文档。请先阅读交接文档，理解上下文后再继续协助用户完成任务。",
@@ -168,10 +173,17 @@ export class TaskMigrationService {
   }
 
   /**
-   * 执行完整迁移：序列化历史 → 模型生成交接文档 → 替换消息列表 → 触发钩子。
+   * 执行完整迁移：序列化历史 → 模型生成交接文档 → 标记历史消息 omit 并追加对话断点 → 触发钩子。
+   *
+   * 存储策略（omit 方案，保留历史可审计）：
+   *   - `agent.definition.messages`（系统提示等模板消息）保留、不省略；
+   *   - 其余既有历史消息统一标记 `omit: true`（仍存于 `agent.messages`，可审计/回放，但不再发送给模型）；
+   *   - 追加一条「对话断点」消息（交接文档 + 接手指令，role=user）作为新上下文的起点。
+   *   因此 `formatHistory()` 发送给模型的是 `[definition.messages, 断点消息]`，
+   *   历史被压缩但并不删除，符合「消息状态唯一由 agent.messages 持有」的设计。
    *
    * 设计约束：
-   *   - 不重建 Agent，保留所有引用与插件绑定（仅替换消息列表）
+   *   - 不重建 Agent，保留所有引用与插件绑定（仅重建消息列表）
    *   - 钩子（onBeforeMigrate / onMigrated）抛错会被捕获并记录，**不中断**迁移流程
    *   - 生成失败 / 未取到交接文档时抛错，此时 `agent.messages` 保持原样（不会被部分修改）
    *
@@ -186,7 +198,11 @@ export class TaskMigrationService {
     maxTokens?: number;
   }): Promise<MigrationContext> {
     const { agent, promptTokens, maxTokens } = params;
-    const historyText = TaskMigrationService.serializeMessages(agent.messages);
+    // 序列化有效上下文：过滤已标记 omit 的历史，避免重复迁移时把旧省略历史再次喂给模型。
+    // historyText 供模型生成交接文档，而 messageCountBefore 仍记录本次迁移前的消息总数。
+    const historyText = TaskMigrationService.serializeMessages(
+      agent.messages.filter((m) => !m.omit),
+    );
     const messageCountBefore = agent.messages.length;
 
     // 生成交接文档所用模型调用：优先使用构造时传入的 client/model/modelConfig，
@@ -222,13 +238,22 @@ export class TaskMigrationService {
       historyText,
     );
 
-    // 替换消息列表
-    const nextMessages: AgentNS.Message[] = [
-      ...agent.definition.messages,
-      ...TaskMigrationService.createPostMessages(handoffDoc),
-    ];
-    agent.messages.length = 0;
-    agent.messages.push(...nextMessages);
+    // 标记历史消息 omit（保留可审计），并追加对话断点。
+    // 以 definition.messages 的长度为界：模板消息保持不省略，其余历史消息统一标记 omit。
+    // 注意：用浅拷贝重建数组，避免直接修改 definition.messages 引用的对象（防止污染模板）。
+    const preserveCount = Math.min(
+      agent.definition.messages.length,
+      agent.messages.length,
+    );
+    const nextMessages: AgentNS.Message[] = agent.messages.map((m, i) => ({
+      ...m,
+      omit: i >= preserveCount ? true : m.omit,
+    }));
+
+    // 追加「对话断点」消息（交接文档 + 接手指令），作为新上下文起点
+    nextMessages.push(...TaskMigrationService.createPostMessages(handoffDoc));
+
+    agent.messages = nextMessages;
 
     // 迁移后上下文（含 handoffDoc，与迁移前上下文独立）
     const afterCtx: MigrationContext = {

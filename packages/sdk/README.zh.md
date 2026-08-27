@@ -80,7 +80,7 @@ await agent.send("你好");
 | `runtime` | ✅ 已实现 — Provider、Capabilities、createAgent、MCP 连接管理、任务迁移 |
 | `plugin` | ✅ 已实现 — AutoMigratePlugin / AutoRefreshToolsPlugin / ContextGuardPlugin / UnknownToolHintPlugin |
 | `shared` | ✅ 已实现 — SdkError + 可注入 Logger |
-| 测试 | ✅ 445 通过，51 个文件，全绿（含真实 API 聊天与 viewImage e2e） |
+| 测试 | ✅ 450 通过，51 个文件，全绿（含真实 API 聊天与 viewImage e2e） |
 
 ## 内置工具
 
