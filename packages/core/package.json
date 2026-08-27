@@ -1,6 +1,6 @@
 {
   "name": "@ai-zen/agents-core",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "description": "Core framework for building LLM agents: plugin-driven Agent runtime on the official OpenAI SDK, Messages, Tools", 
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

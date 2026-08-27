@@ -79,9 +79,9 @@ export namespace AgentNS {
   export type MessageContent = string | MessageContentSection[];
 
   export interface Message {
-    /** 消息唯一标识。Message 实例构造时自动生成、保证有值；
-     *  可选类型是为了兼容「发给模型的精简格式」（formatHistory 白名单对象不含内部字段）。 */
-    id?: string;
+    /** 消息唯一标识，强制必填。Message 实例构造时自动生成、保证有值；
+     *  （formatHistory 发给模型的精简格式为独立白名单对象，不含内部字段，故不影响本类型） */
+    id: string;
     name?: string;
     content?: MessageContent;
     function_call?: FunctionCall;

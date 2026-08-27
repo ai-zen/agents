@@ -1,4 +1,4 @@
-import { AgentNS } from "@ai-zen/agents-core";
+import { AgentNS, Message } from "@ai-zen/agents-core";
 import type OpenAI from "openai";
 import { getLogger, type Logger } from "../shared/logger.js";
 import type { SdkAgent } from "./SdkAgent.js";
@@ -142,7 +142,7 @@ export class TaskMigrationService {
       "请确认你已理解以上内容，然后询问用户接下来需要什么帮助。",
     ].join("\n");
 
-    return [{ role: AgentNS.Role.User, content }];
+    return [Message.User(content)];
   }
 
   /**
