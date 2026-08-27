@@ -1,22 +1,22 @@
 # Changelog
 
-## [Unreleased]
+## [0.9.0] - 2026-08-28
 
 ### 🎯 Optimized
 
-- **`TaskMigrationService.migrate` 引入策略开关 `strategy`** — 决定迁移后的历史处理方式：
-  - **`omit`（默认）**：历史标记 `omit: true`（保留在 `agent.messages` 可审计/回放，但 `Agent.formatHistory()` 会过滤不发送给模型），并追加一条「对话断点」消息（交接文档 + 接手指令，role=user）作为新上下文起点。发送给模型的序列变为 `[definition.messages, 断点消息]`。复用 Core 已有 `omit` 机制，SDK 无需改动 Core。
-  - **`prune`**：物理剔除历史，只保留 `definition.messages` + 断点消息（即原先的替换行为）。
-  - 可在构造 `TaskMigrationService` 时通过 `strategy` 指定默认，也可在 `migrate()` 单次调用中覆盖（`MigrationStrategy` 类型已导出）。
-  - 用**浅拷贝重建** `agent.messages` 数组，避免直接修改 `definition.messages` 引用的对象（防止污染模板）
-  - `historyText`（供模型生成交接文档）改为**过滤已标记 omit 的历史**，避免重复迁移时把旧省略历史重复喂给模型
-  - `AutoMigratePlugin` 仍只负责「何时触发」，无需改动
+- **`TaskMigrationService.migrate` gains a `strategy` switch** — controls how history is handled after migration:
+  - **`omit` (default)**: history messages are marked `omit: true` (kept in `agent.messages` for audit/replay, but `Agent.formatHistory()` filters them out), and a "conversation breakpoint" message (handoff doc + handover instructions, role=user) is appended as the new context start. The sequence sent to the model becomes `[definition.messages, breakpoint message]`. Reuses Core's existing `omit` mechanism — no Core changes needed.
+  - **`prune`**: physically drops history, keeping only `definition.messages` + breakpoint message (the previous replace behavior).
+  - The default can be set via `strategy` when constructing `TaskMigrationService`, and overridden per `migrate()` call (`MigrationStrategy` type is exported).
+  - `agent.messages` is rebuilt via a **shallow copy** to avoid mutating objects referenced by `definition.messages` (prevents polluting the template).
+  - `historyText` (fed to the model to generate the handoff doc) now **filters omitted history**, so repeated migrations don't re-feed old omitted history to the model.
+  - `AutoMigratePlugin` still only decides *when* to trigger — no changes needed.
 
 ### ✅ Tests
 
-- `TaskMigrationService` / `AutoMigratePlugin` 断言更新为 omit 语义（历史标 omit + 末尾断点 + 保留系统提示）
-- 新增用例：`historyText` 过滤已标记 omit 的历史
-- 新增用例：`strategy=prune`（构造默认 + migrate 参数覆盖）物理剔除历史
+- `TaskMigrationService` / `AutoMigratePlugin` assertions updated to the omit semantics (history marked omit + trailing breakpoint + system prompt preserved).
+- New case: `historyText` filters already-omitted history.
+- New case: `strategy=prune` (constructor default + `migrate` param override) physically drops history.
 
 ## [0.8.0] - 2026-08-24
 
