@@ -871,12 +871,20 @@ agent.use(new AutoMigratePlugin({
 
 ## 15. 任务迁移（TaskMigrationService）
 
-迁移服务是**实例化服务**，职责是「怎么迁移」（序列化历史 → 模型生成交接文档 → 标记历史 `omit` + 追加对话断点）。它**不持有**任何模型调用：`migrate()` 直接复用传入 `agent`（`SdkAgent`）自身的 `client` / `model` / `modelConfig` 生成交接文档，因此**无需 Provider、无需独立「迁移 Agent」对象、也无需自建 OpenAI 客户端**。`AutoMigratePlugin` 只负责「何时触发」，手动迁移与自动迁移复用同一条链路。
+迁移服务是**实例化服务**，职责是「怎么迁移」（序列化历史 → 模型生成交接文档 → 按策略处理历史 + 追加对话断点）。它**不持有**任何模型调用：`migrate()` 直接复用传入 `agent`（`SdkAgent`）自身的 `client` / `model` / `modelConfig` 生成交接文档，因此**无需 Provider、无需独立「迁移 Agent」对象、也无需自建 OpenAI 客户端**。`AutoMigratePlugin` 只负责「何时触发」，手动迁移与自动迁移复用同一条链路。
 
-> **存储策略（omit 方案）**：迁移后不删除历史消息，而是将其标记 `omit: true`（仍存于 `agent.messages`，可审计/回放），并追加一条「对话断点」消息（交接文档 + 接手指令，role=user）作为新上下文起点。Core 的 `formatHistory()` 已按 `!message.omit` 过滤，因此发送给模型的是 `[definition.messages, 断点消息]`——历史被压缩但并不丢失。SDK 无需改动 Core 即可实现。
+> **策略开关（`strategy`）**：
+> - **`omit`（默认）**：迁移后不删除历史消息，而是将其标记 `omit: true`（仍存于 `agent.messages`，可审计/回放），并追加一条「对话断点」消息（交接文档 + 接手指令，role=user）作为新上下文起点。Core 的 `formatHistory()` 已按 `!message.omit` 过滤，因此发送给模型的是 `[definition.messages, 断点消息]`——历史被压缩但并不丢失。SDK 无需改动 Core 即可实现。
+> - **`prune`**：物理剔除历史，只保留 `definition.messages` + 断点消息（即原先的替换行为）。
+>
+> 可在构造 `TaskMigrationService` 时通过 `strategy` 指定默认策略，也可在 `migrate()` 单次调用中覆盖。
 
 ```typescript
+type MigrationStrategy = "omit" | "prune";
+// omit（默认）：标记历史 omit: true 保留可审计；prune：物理剔除历史（仅保留模板 + 断点）
+
 interface TaskMigrationServiceOptions {
+  strategy?: MigrationStrategy;  // 迁移后历史处理策略，默认 omit
   onBeforeMigrate?: (ctx: MigrationContext) => void | Promise<void>;  // 迁移前，agent.messages 仍是完整旧历史
   onMigrated?: (ctx: MigrationContext) => void | Promise<void>;       // 迁移后，交接文档已注入
   logger?: Logger;  // 可注入日志（默认全局单例）
@@ -903,6 +911,7 @@ class TaskMigrationService {
     agent: SdkAgent;
     promptTokens?: number;
     maxTokens?: number;
+    strategy?: MigrationStrategy;  // 可选，覆盖构造时的默认值
   }): Promise<MigrationContext>;
 }
 ```
@@ -914,8 +923,10 @@ class TaskMigrationService {
 2. 构造 beforeCtx（不含 handoffDoc）：{ agent, model: agent.model, promptTokens, maxTokens, historyText, messageCountBefore }
 3. onBeforeMigrate(beforeCtx)  // 可在此保存旧对话；异常捕获并记录，不中断
 4. 用 agent.client / agent.model / agent.modelConfig 生成交接文档 handoffDoc（system=createPrompt()，user=historyText）
-5. 标记历史 omit 并追加断点：以 definition.messages 长度为界保留模板消息，
-   其余历史消息统一标记 omit: true；agent.messages = [...模板(含已有消息，历史标 omit), ...createPostMessages(handoffDoc)]
+5. 按策略重建消息列表并追加断点：
+   - omit（默认）：以 definition.messages 长度为界保留模板消息，其余历史标记 omit: true；
+     agent.messages = [...已有消息(历史标 omit), ...createPostMessages(handoffDoc)]
+   - prune：物理剔除历史；agent.messages = [...definition.messages, ...createPostMessages(handoffDoc)]
 6. 构造 afterCtx（含 handoffDoc，与 beforeCtx 独立）：{ ...beforeCtx, handoffDoc }
 7. onMigrated(afterCtx)  // 异常捕获并记录，不中断
 8. 返回 afterCtx
@@ -923,7 +934,8 @@ class TaskMigrationService {
 
 设计约束：
 - **不重建 Agent**：保留所有引用与插件绑定（仅重建消息列表）
-- **保留历史可审计**：历史消息标记 `omit: true` 而非删除，避免与 `definition.messages` 共享引用被污染（用浅拷贝重建数组）
+- **保留历史可审计（`omit` 策略）**：历史消息标记 `omit: true` 而非删除，避免与 `definition.messages` 共享引用被污染（用浅拷贝重建数组）；`prune` 策略则物理剔除，不保留历史
+- **策略可配置**：`strategy` 决定历史处理方式（默认 `omit`，可选 `prune`），构造函数设默认，`migrate()` 可单次覆盖
 - **钩子容错**：`onBeforeMigrate` / `onMigrated` 抛错被捕获并记录，不中断迁移流程
 - **原子性**：生成失败 / 未取到交接文档时抛错，`agent.messages` 保持原样（不会被部分修改）
 - **上下文独立**：迁移前上下文不含 `handoffDoc`，迁移后上下文含 `handoffDoc`，两对象相互独立

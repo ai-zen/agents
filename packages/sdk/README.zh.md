@@ -80,7 +80,7 @@ await agent.send("你好");
 | `runtime` | ✅ 已实现 — Provider、Capabilities、createAgent、MCP 连接管理、任务迁移 |
 | `plugin` | ✅ 已实现 — AutoMigratePlugin / AutoRefreshToolsPlugin / ContextGuardPlugin / UnknownToolHintPlugin |
 | `shared` | ✅ 已实现 — SdkError + 可注入 Logger |
-| 测试 | ✅ 450 通过，51 个文件，全绿（含真实 API 聊天与 viewImage e2e） |
+| 测试 | ✅ 452 通过，51 个文件，全绿（含真实 API 聊天与 viewImage e2e） |
 
 ## 内置工具
 
@@ -117,7 +117,7 @@ await agent.send("你好");
 
 | 插件 | 说明 |
 |------|------|
-| `AutoMigratePlugin` | 上下文超限时自动触发任务迁移，生成交接文档，透明替换 Agent（委托注入的 `TaskMigrationService`，复用 Agent 自身的模型调用） |
+| `AutoMigratePlugin` | 上下文超限时自动触发任务迁移，生成交接文档并追加对话断点（历史按 `strategy` 处理：默认 `omit` 标记保留可审计，可选 `prune` 物理剔除；委托注入的 `TaskMigrationService`，复用 Agent 自身的模型调用） |
 | `AutoRefreshToolsPlugin` | 每次 `send()` 前重新扫描文件系统，刷新工具列表 |
 | `ContextGuardPlugin` | 上下文安全护栏 — 每轮发请求前检测上一轮 `usage.prompt_tokens`，超过 `maxTokens × ratio`（默认 1.5，即 +50%）时抛 `ContextOverflowError` 中断对话，防止读入超大文件导致上下文失控 |
 | `UnknownToolHintPlugin` | 未知工具智能提示 — LLM 调用不存在的工具时，根据 MCP 配置引导使用 `call_mcp_tool` / 提示权限问题（调用方显式 `agent.use` 注册） |

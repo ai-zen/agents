@@ -81,7 +81,7 @@ await agent.send("Hello");
 | `runtime` | ✅ Implemented — Provider, Capabilities, createAgent, MCP connection management, task migration |
 | `plugin` | ✅ Implemented — AutoMigratePlugin / AutoRefreshToolsPlugin / ContextGuardPlugin / UnknownToolHintPlugin |
 | `shared` | ✅ Implemented — SdkError + injectable Logger |
-| Tests | ✅ 450 passing, 51 files, all green (incl. real-API chat & viewImage e2e) |
+| Tests | ✅ 452 passing, 51 files, all green (incl. real-API chat & viewImage e2e) |
 
 ## Built-in Tools
 
@@ -118,7 +118,7 @@ Conditionally injected based on the active model / config:
 
 | Plugin | Description |
 |--------|-------------|
-| `AutoMigratePlugin` | Automatically triggers task migration when the context overflows; delegates the actual migration to the injected `TaskMigrationService` instance, which reuses the agent's own model client |
+| `AutoMigratePlugin` | Automatically triggers task migration when the context overflows; delegates the actual migration to the injected `TaskMigrationService` instance (history handled per `strategy`: default `omit` keeps it auditable, optional `prune` drops it), which reuses the agent's own model client |
 | `AutoRefreshToolsPlugin` | Re-scans the file system before each `send()` to refresh the tool list |
 | `ContextGuardPlugin` | Context safety guard — before each request, throws `ContextOverflowError` (interrupting the conversation) when the previous round's `usage.prompt_tokens` exceeds `maxTokens × ratio` (default 1.5), preventing context runaway from reading oversized files |
 | `UnknownToolHintPlugin` | Smarter unknown-tool hints — when the LLM calls a nonexistent tool, guides it to `call_mcp_tool` / points out permission issues based on MCP config (opt-in via `agent.use`) |

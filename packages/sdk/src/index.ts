@@ -63,6 +63,7 @@ export type { SdkCallbackToolOptions } from "./runtime/SdkCallbackTool.js";
 export { TaskMigrationService } from "./runtime/TaskMigrationService.js";
 export type {
   MigrationContext,
+  MigrationStrategy,
   TaskMigrationServiceOptions,
 } from "./runtime/TaskMigrationService.js";
 

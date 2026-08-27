@@ -232,6 +232,53 @@ describe("TaskMigrationService", () => {
       expect(ctx.historyText).toContain("hello");
     });
 
+    it("strategy=prune（构造默认）时物理剔除历史，仅保留模板 + 断点", async () => {
+      const agent = mockAgent([
+        { role: "system", content: "You are a coder." },
+        { role: "user", content: "Refactor please" },
+        { role: "assistant", content: "Sure..." },
+      ]);
+      mocks.client.chat.completions.create.mockResolvedValue({
+        choices: [{ message: { content: "## 💬 对话断点\n..." } }],
+      });
+      const service = new TaskMigrationService({ strategy: "prune" });
+
+      const ctx = await service.migrate({
+        agent,
+        maxTokens: 50000,
+        promptTokens: 80000,
+      });
+
+      // 历史被剔除：只保留 definition.messages(1) + 断点(1) = 2
+      expect(agent.messages).toHaveLength(2);
+      const userMsgs = agent.messages.filter((m: any) => m.role === "user");
+      expect(userMsgs).toHaveLength(1);
+      expect(userMsgs[0].content).toContain("## 💬 对话断点");
+      expect(userMsgs[0].omit).toBeFalsy();
+      expect(ctx.handoffDoc).toContain("## 💬 对话断点");
+    });
+
+    it("migrate 参数 strategy 覆盖构造默认（默认 omit → 传 prune）", async () => {
+      const agent = mockAgent([
+        { role: "system", content: "You are a coder." },
+        { role: "user", content: "Refactor please" },
+        { role: "assistant", content: "Sure..." },
+      ]);
+      mocks.client.chat.completions.create.mockResolvedValue({
+        choices: [{ message: { content: "交接文档" } }],
+      });
+      const service = new TaskMigrationService(); // 默认 omit
+
+      const ctx = await service.migrate({ agent, strategy: "prune" });
+
+      // 参数覆盖生效：历史被物理剔除
+      expect(agent.messages).toHaveLength(2);
+      const userMsgs = agent.messages.filter((m: any) => m.role === "user");
+      expect(userMsgs).toHaveLength(1);
+      expect(userMsgs[0].content).toContain("交接文档");
+      expect(ctx.agent).toBe(agent); // 引用不变
+    });
+
     it("onBeforeMigrate 钩子在迁移前拿到完整上下文", async () => {
       const agent = mockAgent([
         { role: "system", content: "s" },
