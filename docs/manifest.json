@@ -1,0 +1,34 @@
+{
+  "name": "agents",
+  "npm": "@ai-zen/agents-workspace",
+  "description": {
+    "zh": "AI-Zen Agents — 模块化 LLM Agent 框架 monorepo（core + sdk）：插件驱动的 Agent 运行时、能力管线、检索工具与 MCP 支持。",
+    "en": "AI-Zen Agents — a modular LLM Agent framework monorepo (core + sdk): plugin-driven Agent runtime, capability pipeline, retrieval tools, and MCP support."
+  },
+  "version": "2.0.0",
+  "docsRoot": "docs",
+  "locales": ["zh", "en"],
+  "defaultLocale": "zh",
+  "entry": {
+    "zh": "zh/index.md",
+    "en": "en/index.md"
+  },
+  "sections": {
+    "zh": [
+      { "title": "快速开始", "path": "zh/getting-started.md" },
+      { "title": "架构", "path": "zh/architecture.md" },
+      { "title": "Core API", "path": "zh/core.md" },
+      { "title": "SDK", "path": "zh/sdk.md" },
+      { "title": "检索与 RAG", "path": "zh/rag.md" },
+      { "title": "MCP", "path": "zh/mcp.md" }
+    ],
+    "en": [
+      { "title": "Quick Start", "path": "en/getting-started.md" },
+      { "title": "Architecture", "path": "en/architecture.md" },
+      { "title": "Core API", "path": "en/core.md" },
+      { "title": "SDK", "path": "en/sdk.md" },
+      { "title": "Retrieval & RAG", "path": "en/rag.md" },
+      { "title": "MCP", "path": "en/mcp.md" }
+    ]
+  }
+}
