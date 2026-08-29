@@ -10,7 +10,7 @@
 
 | 包名 | 说明 |
 |------|------|
-| [`@ai-zen/agents-core`](./packages/core) | 核心框架 — Agent、消息、工具、模型、端点、RAG、向量数据库 |
+| [`@ai-zen/agents-core`](./packages/core) | 核心框架 — 插件驱动的 Agent 运行时，运行于官方 openai SDK；Agent、消息、工具、插件 |
 | [`@ai-zen/agents-sdk`](./packages/sdk) | SDK — 共享业务逻辑（能力管线、权限、MCP、插件） |
 
 ### 外部项目
@@ -51,27 +51,23 @@ TypeScript 核心库，可在 Node.js 和浏览器环境中使用。
 
 | 类 | 说明 |
 |------|------|
-| **Agent** | 对话管理与生命周期控制，支持流式解析、工具调用、事件系统、`onInnerLoopStart`/`onInnerLoopEnd` 钩子 |
-| **AgentContext** | Agent 上下文基类，持有 model、messages、tools、rag 配置 |
-| **Message** | 消息模型，支持文本/图片等多模态内容 |
+| **Agent** | 对话管理与生命周期控制，支持流式解析、工具调用、事件系统与插件（`use()` / `init()`） |
+| **AgentContext** | Agent 上下文基类，持有 `client`（openai SDK）、`model`、`messages`、`tools`、`modelConfig` |
+| **AgentPlugin** | 插件接口 — 唯一的扩展点（`onBeforeSend` / `onInnerLoopStart` / `onToolCall` / `onUnknownTool` …） |
+| **SendContext** | 插件钩子上下文（agent + content + 消息快照） |
+| **HookResult** | 统一插件钩子返回值 — 返回 string 短路，返回 undefined/void 放行 |
+| **Message** | 消息模型，支持文本/图片/文件等多模态内容 |
 | **Tool** | 工具抽象基类 |
 | **CallbackTool** | 通过回调函数快速定义工具 |
-| **CodeTool** | 使用字符串代码定义工具逻辑（通过 `new Function` 执行） |
+| **CodeTool** | （已废弃）使用字符串代码定义工具逻辑（通过 `new Function` 执行） |
 | **AgentTool** | 将一个子 Agent 暴露为工具 |
+| **AgentToolLazy** | 延迟构建的子 Agent 工具（`buildAgent(parsedArgs, ctx)`） |
 | **IndexedSearchTool** | 基于关键词索引的本地搜索工具 |
-| **Endpoint** | API 端点抽象（OpenAI / Azure OpenAI / 智谱AI / 通用） |
-| **ChatCompletionModel** | 对话模型抽象 |
-| **EmbeddingModel** | 嵌入模型抽象 |
-| **ImageGenerationModel** | 图片生成模型抽象 |
-| **Rag** | 检索增强生成基类 |
-| **VectorDatabase** | 内存向量数据库，基于余弦相似度检索 |
-| **KnowledgeBase** | 知识库（嵌入模型 + 向量数据库） |
 | **ToolCallContext** | 统一工具调用上下文，贯穿拦截决策 → 执行（`onToolCall` + `Tool.exec`） |
 
 **内置实现**：
-- **模型**: `ChatGPT`（兼容 OpenAI 接口）、`TextEmbeddingAda002_2`、`ZhipuImage`
-- **端点**: `OpenAI`、`AzureOpenAI`、`Zhipu`（已废弃）、`CommonEndpoint`
-- **RAG**: `EmbeddingSearch`
+- **运行时**: 直接运行于官方 openai SDK —— `client.chat.completions.create`（流式）/ `client.images.generate` / `client.files`；任何 OpenAI 兼容厂商（OpenAI / DeepSeek / 智谱 BigModel / …）均可通过 `baseURL` 接入
+- **插件**: `AgentPlugin` + 统一的 `HookResult` 短路语义；`dispatchHook` 作为「非阻塞事件（kebab-case）+ 阻塞插件（短路）」的统一入口
 
 [查看 core 完整文档 →](./packages/core/README.zh.md)
 

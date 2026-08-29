@@ -10,7 +10,7 @@ This project uses pnpm workspace with the following sub-packages:
 
 | Package | Description |
 |---------|-------------|
-| [`@ai-zen/agents-core`](./packages/core) | Core framework — Agent, Messages, Tools, Models, Endpoints, RAG, Vector Database |
+| [`@ai-zen/agents-core`](./packages/core) | Core framework — plugin-driven Agent runtime on the official OpenAI SDK; Agent, Messages, Tools, plugins |
 | [`@ai-zen/agents-sdk`](./packages/sdk) | SDK — Shared business logic (capabilities, permissions, MCP, plugins) |
 
 ### External Projects
