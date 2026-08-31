@@ -60,6 +60,29 @@ describe("ViewImageTool", () => {
     expect(mockFilesCreate).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["file:// 协议（含盘符）", "file:///C:/images/pic.png"],
+    ["file:// 协议（不含盘符）", "file:///tmp/pic.png"],
+    ["localhost", "http://localhost/a.png"],
+    ["127.0.0.1", "http://127.0.0.1/a.png"],
+    ["[::1]", "http://[::1]/a.png"],
+    ["0.0.0.0", "http://0.0.0.0/a.png"],
+  ])("本地 URL 拒绝：%s", async (_label, url) => {
+    const tool = new ViewImageTool(makeEnv("/ws"));
+    const result = await tool.call({ path_or_url: url });
+    expect(result).toContain("不支持本地 URL");
+    expect(mockFilesCreate).not.toHaveBeenCalled();
+  });
+
+  it("参数说明中声明了不支持本地 URL", () => {
+    const tool = new ViewImageTool(makeEnv("/ws"));
+    expect(tool.function.description).toContain("不支持本地 URL");
+    const paramDesc =
+      (tool.function.parameters.properties.path_or_url as { description?: string })
+        .description ?? "";
+    expect(paramDesc).toContain("不支持本地 URL");
+  });
+
   it("本地图片自动通过 Files API 上传并返回 file 内容块", async () => {
     mockFilesCreate.mockResolvedValue({ id: "file-api-12345" });
 

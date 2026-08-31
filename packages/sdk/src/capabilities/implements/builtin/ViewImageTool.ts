@@ -8,6 +8,16 @@ import type { AgentDefinition, AppConfig, ToolEnv } from "../../../types/index.j
 const SUPPORTED_EXT = [".jpg", ".jpeg", ".png", ".gif", ".webp"];
 
 /**
+ * 是否为"本地 URL"——指向本地/回环地址，API 服务商无法下载访问。
+ * 覆盖 file:// 等本地协议，以及指向本机的 http(s) 地址（localhost、127.0.0.1、[::1]、0.0.0.0）。
+ */
+function isLocalUrl(value: string): boolean {
+  if (/^file:\/\//i.test(value)) return true;
+  const m = value.match(/^https?:\/\/([^/?#]+)/i);
+  return !!m && /^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)$/i.test(m[1]);
+}
+
+/**
  * 查看图片工具 — 让 Agent 主动查看/分析一张图片。**仅对视觉模型可用**：
  * 由 `isAvailable(config, definition)` 声明（从 definition.modelId 解析模型，检查 Model.vision），
  * buildTools 阶段按声明过滤——非视觉模型不会拿到该工具，故无需运行时重复校验。
@@ -30,14 +40,14 @@ export class ViewImageTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "viewImage",
     description:
-      "查看一张图片并分析其内容。传入本地图片路径或 http(s) 图片 URL。本地图片会自动上传（Files API）后引用，网络图片直接引用。适合识别图片文字、描述图片内容、分析图表等。",
+      "查看一张图片并分析其内容。传入本地图片路径或 http(s) 图片 URL。本地图片会自动上传（Files API）后引用，网络图片直接引用。不支持本地 URL（如 file:// 协议、指向本机 localhost/127.0.0.1 的 http(s) 地址），本地图片请使用文件路径。适合识别图片文字、描述图片内容、分析图表等。",
     parameters: {
       type: "object",
       properties: {
         path_or_url: {
           type: "string",
           description:
-            "本地图片路径（相对/绝对）或 http(s) 图片 URL。支持的格式：JPEG、PNG、GIF、WebP。",
+            "本地图片路径（相对/绝对）或 http(s) 图片 URL。支持的格式：JPEG、PNG、GIF、WebP。不支持本地 URL（如 file:// 协议、指向本机 localhost/127.0.0.1 的 http(s) 地址），本地图片请使用文件路径。",
         },
       },
       required: ["path_or_url"],
@@ -59,6 +69,11 @@ export class ViewImageTool extends SdkCallbackTool {
       return "viewImage 需要提供 path_or_url 参数（本地图片路径或 http(s) URL）。";
     }
     const value = target.trim();
+
+    // 拒绝服务商无法访问的"本地 URL"：file:// 等本地协议，或指向本机回环地址（localhost/127.0.0.1/[::1]/0.0.0.0）的 http(s) 地址
+    if (isLocalUrl(value)) {
+      return "不支持本地 URL（API 服务商无法下载访问）。本地图片请使用文件路径，而不是本地链接。";
+    }
 
     try {
       // 网络图片：直接返回 image_url 内容块（无需上传）
