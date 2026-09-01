@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.9.3] - 2026-09-01
+
+### 🔧 Fixed
+
+- **`createAgent` 不再污染 Agent 定义模板（`definition.messages` 引用隔离）** — 创建 Agent 时对 `definition.messages` 做模板快照（`[...(definition.messages ?? [])]`）而非直接引用。此前把定义数组直接传给 `AgentContext.messages`（mutable 运行时数组），对话期间 `append()` 会反向把完整对话历史写入 `definition.messages`，导致：
+  - 任务迁移 `prune` 分支展开的是被污染的"完整历史"而非模板 → 旧消息既未被物理删除、也未被标记 `omit`，却能看到新注入的断点消息；
+  - `omit` 分支的 `preserveCount` 因 `definition.messages` 与 `agent.messages` 指向同一数组而等于全长 → 历史消息无法被标记 `omit`；
+  - `/new` 基于被污染的模板拷贝，新对话会继承旧历史。
+  - 顺带修复 Agent 定义缺少 `messages` 字段（`undefined`）时创建 Agent 的崩溃问题（`?? []` 兜底）。
+
+### ✅ Tests
+
+- `createAgent.test.ts` 新增：`append` 不污染 `definition.messages`（引用隔离）；Agent 定义缺少 `messages` 字段时正常创建
+
 ## [0.9.2] - 2026-08-31
 
 ### 🎯 Optimized

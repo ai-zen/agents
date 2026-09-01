@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { AgentNS } from "@ai-zen/agents-core";
+import { AgentNS, Message } from "@ai-zen/agents-core";
 import { createAgent } from "./createAgent.js";
 import { Provider } from "./Provider.js";
 import { promises as fs } from "node:fs";
@@ -112,5 +112,45 @@ describe("createAgent", () => {
 
     const agent = await createAgent(provider, "my-agent");
     expect(agent.tools.length).toBeGreaterThan(0); // 内置工具默认存在
+  });
+
+  it("append 不应污染 Agent 定义模板（definition.messages 引用隔离）", async () => {
+    await writeAgentFile("my-agent");
+
+    const provider = await Provider.create({
+      config,
+      agentsDir: join(dir, "agents"),
+    });
+    const agent = await createAgent(provider, "my-agent");
+
+    const templateBefore = agent.definition.messages!.map((m) => ({ ...m }));
+    const templateCount = templateBefore.length;
+
+    // 对话过程中 append 新消息（模拟 send 行为）
+    agent.append(Message.User("你好"));
+    agent.append(Message.Assistant("你好！"));
+
+    // 模板未被污染：definition.messages 仍为初始模板
+    expect(agent.definition.messages).toHaveLength(templateCount);
+    expect(agent.definition.messages).toEqual(templateBefore);
+    // 会话消息独立累积
+    expect(agent.messages).toHaveLength(templateCount + 2);
+    expect(agent.messages).not.toBe(agent.definition.messages);
+  });
+
+  it("Agent 定义缺少 messages 字段时也能正常创建（空值兜底）", async () => {
+    await writeAgentFile("my-agent", { messages: undefined });
+
+    const provider = await Provider.create({
+      config,
+      agentsDir: join(dir, "agents"),
+    });
+    const agent = await createAgent(provider, "my-agent");
+
+    expect(agent.messages).toEqual([]);
+    agent.append(Message.User("你好"));
+    expect(agent.messages).toHaveLength(1);
+    // definition.messages 为 undefined 时不应抛错（createAgent 已用 ?? [] 兜底）
+    expect(agent.definition.messages).toBeUndefined();
   });
 });

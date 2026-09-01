@@ -40,7 +40,12 @@ export async function createAgent(
     client,
     model,
     modelConfig,
-    messages: definition.messages as AgentNS.Message[],
+    // 在 createAgent 层做模板快照（拷贝），隔离 definition.messages 的引用。
+    // AgentContext.messages 是 mutable 运行时数组，若直接把 definition.messages
+    // 传入，对话期间 append() 会反向污染 Agent 定义模板——definition.messages
+    // 被塞入完整历史后，迁移 prune/omit 失效、/new 继承旧历史。
+    // 快照后，运行时改动只作用于会话副本，模板保持纯净。
+    messages: [...(definition.messages ?? [])] as AgentNS.Message[],
     tools,
   });
 
