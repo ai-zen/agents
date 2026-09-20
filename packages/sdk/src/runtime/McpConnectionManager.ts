@@ -1,4 +1,5 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -11,7 +12,8 @@ import type { McpServerConfig, McpServerManifest, McpConnectionState } from "../
 // 基于官方 @modelcontextprotocol/sdk 的 Client + Transport 实现。
 // 管理 MCP 服务器的完整连接生命周期：
 //   - stdio: 使用 StdioClientTransport（子进程 spawn）
-//   - http:  使用 StreamableHTTPClientTransport（HTTP POST + SSE）
+//   - http:  使用 StreamableHTTPClientTransport（Streamable HTTP：POST + 可选 SSE 流）
+//   - sse:   使用 SSEClientTransport（旧版 HTTP+SSE：GET 建立 SSE 流 + POST 发送消息）
 //   - 重连、退避、空闲超时、状态机
 // ---------------------------------------------------------------------------
 
@@ -265,12 +267,22 @@ export class McpConnectionManager {
       });
     }
 
-    // http 和 sse 都使用 StreamableHTTPClientTransport
-    if (config.transport === "http" || config.transport === "sse") {
+    // http 使用 Streamable HTTP 传输（POST + 可选 SSE 流）
+    if (config.transport === "http") {
       if (!config.url) {
-        throw new Error(`MCP ${config.transport} server 缺少 url`);
+        throw new Error(`MCP http server 缺少 url`);
       }
       return new StreamableHTTPClientTransport(new URL(config.url), {
+        requestInit: config.headers ? { headers: config.headers } : undefined,
+      });
+    }
+
+    // sse 使用旧版 HTTP+SSE 传输（GET 建立 SSE 流，POST 发送消息）
+    if (config.transport === "sse") {
+      if (!config.url) {
+        throw new Error(`MCP sse server 缺少 url`);
+      }
+      return new SSEClientTransport(new URL(config.url), {
         requestInit: config.headers ? { headers: config.headers } : undefined,
       });
     }

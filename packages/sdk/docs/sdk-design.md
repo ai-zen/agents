@@ -584,6 +584,7 @@ MCP 和 Skill 采用**惰性加载**：装配时不直接注册具体工具，�
 - 格式：`{ "mcpServers": { id: { type?, command?, args?, env?, url?, headers?, disabled?, description? } } }`
 - `description`：服务器描述，经 `load_mcp` **透传呈现给 LLM 参考**（拼接进 `server` 参数枚举，对齐 `load_skill`；非连接必需，缺失时默认空白）
 - transport 推断：`type`/`transport`/`transportType` 优先，否则有 `command` → stdio、有 `url` → http
+- transport 语义：`http` = Streamable HTTP（现行规范），`sse` = 旧版 HTTP+SSE（GET 建立 SSE 流 + POST 发送消息），二者由不同客户端传输实现
 - `disabled: true` 跳过；解析失败记日志并跳过
 
 ### SubAgent（subagents.ts）
@@ -596,7 +597,8 @@ MCP 和 Skill 采用**惰性加载**：装配时不直接注册具体工具，�
 基于官方 `@modelcontextprotocol/sdk` 的 `Client` + `Transport`：
 
 - `stdio` → `StdioClientTransport`（子进程）
-- `http` / `sse` → `StreamableHTTPClientTransport`
+- `http` → `StreamableHTTPClientTransport`（Streamable HTTP：POST 发送消息 + 可选 SSE 流）
+- `sse` → `SSEClientTransport`（旧版 HTTP+SSE：GET 建立 SSE 流 + POST 到 endpoint 发送消息）
 
 ### 状态机
 

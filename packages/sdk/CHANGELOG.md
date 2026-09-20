@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.9.4] - 2026-09-20
+
+### 🔧 Fixed
+
+- **MCP `sse` transport 改为真正的 SSE 连接（`SSEClientTransport`）** — 此前 `http` 与 `sse` 合并处理，统一使用 `StreamableHTTPClientTransport`（Streamable HTTP：POST 发送消息 + 可选 SSE 流），使配置声明 `type: "sse"` 的旧版 HTTP+SSE 服务器（GET 建立 SSE 流、POST 到 endpoint 发送消息）实际运行在不匹配的协议栈上。现按 transport 拆分：`http` → `StreamableHTTPClientTransport`，`sse` → `SSEClientTransport`（均为官方 SDK 内置实现）。`headers` 仍经 `requestInit` 透传，由 SDK 统一应用于 SSE 建流（GET）与消息发送（POST）请求；缺少 `url` 时的报错行为保持不变。`McpServerConfig.transport` 注释与 `docs/sdk-design.md` §10/§11 同步更新
+
+### ✅ Tests
+
+- 针对真实 MCP 服务器（`packages/test-project/mcp-servers/sse-server.mjs`，旧版 HTTP+SSE 协议）验证通过：建立连接、工具发现（`echo` / `add`）、工具调用、断开重连；并确认运行时 transport 实例为 `SSEClientTransport`
+
 ## [0.9.3] - 2026-09-01
 
 ### 🔧 Fixed

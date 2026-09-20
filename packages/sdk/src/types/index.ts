@@ -141,8 +141,9 @@ export interface McpServerConfig {
 /**
  * MCP 底层传输适配器（已废弃）。
  *
- * 现在由 @modelcontextprotocol/sdk 内置的 StdioClientTransport 和
- * StreamableHTTPClientTransport 实现，不再需要外部注入。
+ * 现在由 @modelcontextprotocol/sdk 内置的 StdioClientTransport、
+ * StreamableHTTPClientTransport（http）和 SSEClientTransport（sse）实现，
+ * 不再需要外部注入。
  *
  * McpConnectionManager 内部使用官方 SDK 的 Transport 接口，
  * 上层无需关心 transport 实现细节。
