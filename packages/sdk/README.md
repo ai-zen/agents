@@ -19,7 +19,7 @@ Desktop ──┘                    │
 
 ```
 types        ← pure types, zero business dependencies (incl. ToolEnv)
-config       ← read/write config.json + migration + in-memory cache + atomic writes
+config       ← ConfigManager + constants: config.json read/write + directory setup + factory defaults
 crud         ← capability-entity CRUD (Agent definitions, etc.; conversations/drafts are persisted by each consumer)
 capabilities ← capability discovery & assembly (built-in + user + MCP + Skill + SubAgent)
 runtime      ← Provider + model factory + Agent assembly + MCP connection management + task migration + SdkCallbackTool base
@@ -37,7 +37,7 @@ Dependency direction: `plugin → runtime → capabilities → crud → config �
 | **ToolEnv** | Tool environment `{ cwd, config }`; injected when the Provider instantiates built-in tools, serving as the base for relative path resolution and config reads |
 | **SdkCallbackTool** | Abstract base for built-in tools: `env` constructor injection + subclass `call()` + `resolve()` relative path resolution |
 | **SdkAgent** | Extends the Core Agent, carries SDK metadata, supports `use()` plugin registration |
-| **AgentPlugin** | Plugin interface (`onInit`, `onBeforeSend`, `onAfterSend`, `onInnerLoopStart`, `onInnerLoopEnd`) |
+| **AgentPlugin** | Plugin interface (`onInit`, `onBeforeSend`, `onAfterSend`, `onInnerLoopStart`, `onInnerLoopEnd`, `onInnerLoopsStart`, `onInnerLoopsEnd`, `onToolCall`, `onUnknownTool`, `onSubAgentStart`, `onSubAgentEnd`) |
 | **Endpoint** | API endpoint (baseUrl + apiKey) |
 | **Model** | Model config, bound to an Endpoint |
 | **SubAgent** | An Agent with a `function` field, callable by other Agents as a tool |
@@ -62,7 +62,7 @@ const provider = await Provider.create({
   cwd: "/path/to/workspace", // one working directory per Provider; parallel sessions don't interfere
   ...paths,
 });
-const agent = createAgent(provider, "my-agent");
+const agent = await createAgent(provider, "my-agent");
 const migrationService = new TaskMigrationService({ onMigrated }); // migrates via the agent's own model client
 agent.use(new AutoMigratePlugin({ service: migrationService, maxTokens }));
 agent.use(new AutoRefreshToolsPlugin());
@@ -78,10 +78,9 @@ await agent.send("Hello");
 | `config` | ✅ Implemented — ConfigManager + factory defaults + one-shot bootstrap |
 | `crud` | ✅ Implemented — capability-entity CRUD for Agents, etc. (conversations/drafts persisted by each consumer) |
 | `capabilities` | ✅ Implemented — discovery + permission filtering + safe pre-filtering + enumeration disclosure |
-| `runtime` | ✅ Implemented — Provider, Capabilities, createAgent, MCP connection management, task migration |
+| `runtime` | ✅ Implemented — Provider, createAgent, MCP connection management, task migration |
 | `plugin` | ✅ Implemented — AutoMigratePlugin / AutoRefreshToolsPlugin / ContextGuardPlugin / UnknownToolHintPlugin |
 | `shared` | ✅ Implemented — SdkError + injectable Logger |
-| Tests | ✅ 452 passing, 51 files, all green (incl. real-API chat & viewImage e2e) |
 
 ## Built-in Tools
 
@@ -134,4 +133,3 @@ See the project-root [`PRINCIPLES.md`](../../PRINCIPLES.md):
 5. Occam's razor
 6. Refactor as you go; keep clean layering
 7. Tests are the foundation
-he foundation

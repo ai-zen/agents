@@ -18,7 +18,7 @@ Desktop ──┘                    │
 
 ```
 types        ← 纯类型，零业务依赖（含 ToolEnv 工具环境）
-config       ← 读写 config.json + 迁移 + 内存缓存 + 原子写入
+config       ← ConfigManager + constants：读写 config.json + 目录初始化 + 出厂默认
 crud         ← 能力实体 CRUD（Agent 定义等；会话/草稿已下放给各端自行持久化）
 capabilities ← 能力发现与装配（内置 + 用户 + MCP + Skill + SubAgent）
 runtime      ← Provider + 模型工厂 + Agent 组装 + MCP 连接管理 + 任务迁移 + SdkCallbackTool 工具基类
@@ -36,7 +36,7 @@ shared       ← 日志、错误
 | **ToolEnv** | 工具环境 `{ cwd, config }`，Provider 实例化内置工具时注入，作为相对路径解析与配置读取的基准 |
 | **SdkCallbackTool** | 内置工具抽象基类：`env` 构造注入 + 子类实现 `call()` + `resolve()` 相对路径解析 |
 | **SdkAgent** | 继承 Core Agent，携带 SDK 元数据，支持 `use()` 插件注册 |
-| **AgentPlugin** | 插件接口（`onInit`, `onBeforeSend`, `onAfterSend`, `onInnerLoopStart`, `onInnerLoopEnd`） |
+| **AgentPlugin** | 插件接口（`onInit`, `onBeforeSend`, `onAfterSend`, `onInnerLoopStart`, `onInnerLoopEnd`, `onInnerLoopsStart`, `onInnerLoopsEnd`, `onToolCall`, `onUnknownTool`, `onSubAgentStart`, `onSubAgentEnd`） |
 | **Endpoint** | API 端点（baseUrl + apiKey） |
 | **Model** | 模型配置，绑定 Endpoint |
 | **SubAgent** | 有 `function` 字段的 Agent，可被其他 Agent 作为工具调用 |
@@ -61,7 +61,7 @@ const provider = await Provider.create({
   cwd: "/path/to/workspace", // 每个 Provider 一个工作目录，多会话并行互不干扰
   ...paths,
 });
-const agent = createAgent(provider, "my-agent");
+const agent = await createAgent(provider, "my-agent");
 const migrationService = new TaskMigrationService({ onMigrated }); // 迁移复用传入 agent 自身的模型调用
 agent.use(new AutoMigratePlugin({ service: migrationService, maxTokens }));
 agent.use(new AutoRefreshToolsPlugin());
@@ -77,10 +77,9 @@ await agent.send("你好");
 | `config` | ✅ 已实现 — ConfigManager + 出厂默认配置 + 一键 bootstrap |
 | `crud` | ✅ 已实现 — Agent 等能力实体 CRUD（会话/草稿由各端自行持久化） |
 | `capabilities` | ✅ 已实现 — 发现 + 权限过滤 + 安全预过滤 + 枚举披露 |
-| `runtime` | ✅ 已实现 — Provider、Capabilities、createAgent、MCP 连接管理、任务迁移 |
+| `runtime` | ✅ 已实现 — Provider、createAgent、MCP 连接管理、任务迁移 |
 | `plugin` | ✅ 已实现 — AutoMigratePlugin / AutoRefreshToolsPlugin / ContextGuardPlugin / UnknownToolHintPlugin |
 | `shared` | ✅ 已实现 — SdkError + 可注入 Logger |
-| 测试 | ✅ 452 通过，51 个文件，全绿（含真实 API 聊天与 viewImage e2e） |
 
 ## 内置工具
 
