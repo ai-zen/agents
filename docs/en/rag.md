@@ -18,7 +18,7 @@ Since `@ai-zen/agents-core` **4.0.0** (2026-08-14), the framework **removed the 
 - `EmbeddingModel` / `TextEmbeddingAda002_2` (embedding model related)
 - The `AgentContext.rag` field and `Message.rewrite()` / `Message.raw_content` (which existed only to serve the removed RAG rewrite flow)
 
-**Design decision** (based on the repository root `TODO.md`):
+**Design decision**:
 
 > The "implicit retrieval injection" of traditional RAG was judged to be a low-value design. Retrieval capability should be provided by **search tools**, rather than performing implicit prompt rewriting on every request.
 
@@ -60,10 +60,9 @@ The specific retrieval-related tools that may be available (depending on permiss
 
 ## Points that need human review
 
-The following descriptions are based on forensics from the source code and `TODO.md` / `CHANGELOG`, but a human review is still recommended:
+The following descriptions are based on forensics from the source code and `CHANGELOG`, but a human review is still recommended:
 
-1. The core package description in `README.md` (repository root) still reads "Agent, Messages, Tools, Models, Endpoints, **RAG, Vector Database**", which is inconsistent with the actual implementation of this version (RAG/vector database were removed in core 4.0.0). `README.zh.md` (repository root) still describes the old RAG version. Both READMEs are **outdated**; the RAG descriptions were not adopted when writing the documentation.
-2. The statement in `TODO.md` that "if knowledge-base retrieval is needed in the future, it should be a tool rather than implicit RAG" is a **plan**, not an implemented feature. There is currently no knowledge-base retrieval tool.
+1. The statement that "if knowledge-base retrieval is needed in the future, it should be a tool rather than implicit RAG" is a **plan**, not an implemented feature. There is currently no knowledge-base retrieval tool.
 
 ## Related documentation
 

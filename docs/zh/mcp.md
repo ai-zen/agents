@@ -16,7 +16,7 @@ AI-Zen Agents 在 **SDK 层**（`@ai-zen/agents-sdk`）提供对 **Model Context
 | 连接管理 | `McpConnectionManager` 全生命周期（连接 / 重连 / 空闲超时 / OAuth） |
 | 惰性加载 | 通过 `load_mcp` / `call_mcp_tool` / `read_mcp_resource` 按需触发 |
 | 权限 | **server 级信任**：连接后其工具 / 资源全可用（无 tool 级权限） |
-| 传输 | `stdio`（子进程）与 `http` / `sse`（`StreamableHTTPClientTransport`） |
+| 传输 | `stdio` → `StdioClientTransport`（子进程）；`http` → `StreamableHTTPClientTransport`（Streamable HTTP：POST 发送消息 + 可选 SSE 流）；`sse` → `SSEClientTransport`（旧版 HTTP+SSE：GET 建立 SSE 流、POST 发送消息） |
 
 ## MCP 配置
 
@@ -118,7 +118,7 @@ MCP 的工具**不预先注册**，而是注册「加载器工具」，由 LLM �
 
 | 工具 | 说明 |
 |------|------|
-| `load_mcp` | 参数 `server`（枚举 = 所有允许的 server，附描述）；返回结构化 JSON `{ tools, resources }`；已连接则 `touch` 续期并返回清单，未连接则 `mcpManager.connect()` |
+| `load_mcp` | 参数 `server`（枚举 = 所有允许的 server，附描述）、可选 `include_manifest`（默认 `true`）；返回结构化 JSON `{ tools, resources }`；`include_manifest=false` 时仅建立连接并返回摘要 `{ server, connected, tools: 数量, resources: 数量 }`，不返回工具 / 资源定义（适用于上下文中已存在该清单的场景）；已连接则 `touch` 续期并返回清单，未连接则 `mcpManager.connect()` |
 | `call_mcp_tool` | 参数 `server` + `tool` + `arguments`；未连接时提示「请先使用 load_mcp 连接」；`isError` → 错误文本 |
 | `read_mcp_resource` | 参数 `server` + `uri`；返回资源文本内容 |
 

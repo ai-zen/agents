@@ -18,7 +18,7 @@ outline: deep
 - `EmbeddingModel` / `TextEmbeddingAda002_2`（嵌入模型相关）
 - `AgentContext.rag` 字段与 `Message.rewrite()` / `Message.raw_content`（仅服务于被删除的 RAG 重写流程）
 
-**设计决策**（依据仓库根 `TODO.md` 的整理）：
+**设计决策**：
 
 > 传统 RAG 的「隐式检索注入」被认定为低价值设计。检索能力应由**搜索工具**承担，而不是对每次请求做隐式的 prompt 重写。
 
@@ -60,10 +60,9 @@ const tool = new IndexedSearchTool({
 
 ## 需要人工复核的不确定点
 
-以下描述基于源码与 `TODO.md` / `CHANGELOG` 的取证，但仍建议人工复核：
+以下描述基于源码与 `CHANGELOG` 的取证，但仍建议人工复核：
 
-1. `README.md`（仓库根）的 core 包描述仍写作「Agent, Messages, Tools, Models, Endpoints, **RAG, Vector Database**」，与该版本真实实现不一致（RAG/向量库已在 core 4.0.0 删除）。`README.zh.md`（仓库根）仍描述旧的 RAG 版本。这两处 README 已**过时**，文档编写时未采纳其 RAG 描述。
-2. `TODO.md` 中「知识库检索如未来需要，应作为工具而非隐式 RAG」是**规划**而非已实现功能。当前没有知识库检索工具。
+1. 「知识库检索如未来需要，应作为工具而非隐式 RAG」是**规划**而非已实现功能。当前没有知识库检索工具。
 
 ## 相关文档
 

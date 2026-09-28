@@ -1,6 +1,6 @@
 ---
 title: AI-Zen Agents
-description: AI-Zen Agents — a modular LLM Agent framework (core + sdk monorepo) with a plugin-driven runtime, capability pipeline, retrieval tools, and MCP support.
+description: AI-Zen Agents — a modular LLM Agent framework (core + sdk monorepo) with a plugin-driven runtime, capability pipeline, search tools, and MCP support.
 outline: deep
 ---
 

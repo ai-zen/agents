@@ -37,7 +37,7 @@ LLM API / MCP servers (openai SDK / @modelcontextprotocol/sdk)
 
 ```
 types        ← pure types, zero business dependencies (includes ToolEnv, permissions, MCP types)
-config       ← ConfigManager + constants: read/write config.json + migration + atomic writes + factory defaults
+config       ← ConfigManager + constants: read/write config.json + directory setup + atomic writes + factory defaults
 crud         ← capability entity CRUD (AgentDefinition, etc.; sessions/drafts are persisted by each client)
 capabilities ← capability discovery and assembly (built-in + user + MCP + Skill + SubAgent)
 runtime      ← Provider + model factory + Agent assembly + MCP connection management + task migration + SdkCallbackTool
@@ -86,7 +86,8 @@ send(content)
         │     ├── handleToolCall() → perform tool call
         │     │     ├── onToolCall interception hook → may reject
         │     │     ├── onUnknownTool plugin → fallback hint
-        │     │     └── Tool.exec(ctx) run the matched tool
+        │     │     ├── Tool.exec(ctx) run the matched tool
+        │     │     └── sub-agent tools (AgentTool / AgentToolLazy) → onSubAgentStart / onSubAgentEnd delegation boundary
         │     └── onInnerLoopEnd hook
         ├── onInnerLoopsEnd hook
         └── return this.messages

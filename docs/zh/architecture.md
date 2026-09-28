@@ -37,7 +37,7 @@ LLM API / MCP 服务器（openai SDK / @modelcontextprotocol/sdk）
 
 ```
 types        ← 纯类型，零业务依赖（含 ToolEnv、权限、MCP 类型）
-config       ← ConfigManager + constants：读写 config.json + 迁移 + 原子写入 + 出厂默认
+config       ← ConfigManager + constants：读写 config.json + 目录初始化 + 原子写入 + 出厂默认
 crud         ← 能力实体 CRUD（AgentDefinition 等；会话/草稿由各端持久化）
 capabilities ← 能力发现与装配（内置 + 用户 + MCP + Skill + SubAgent）
 runtime      ← Provider + 模型工厂 + Agent 组装 + MCP 连接管理 + 任务迁移 + SdkCallbackTool
@@ -86,7 +86,8 @@ send(content)
         │     ├── handleToolCall() → 执行工具调用
         │     │     ├── onToolCall 拦截钩子 → 可能拒绝
         │     │     ├── onUnknownTool 插件 → 兜底提示
-        │     │     └── Tool.exec(ctx) 执行匹配工具
+        │     │     ├── Tool.exec(ctx) 执行匹配工具
+        │     │     └── 子 Agent 工具（AgentTool / AgentToolLazy）→ onSubAgentStart / onSubAgentEnd 委派边界
         │     └── onInnerLoopEnd 钩子
         ├── onInnerLoopsEnd 钩子
         └── 返回 this.messages

@@ -16,7 +16,7 @@ AI-Zen Agents provides complete support for the **Model Context Protocol (MCP)**
 | Connection management | `McpConnectionManager` full lifecycle (connect / reconnect / idle timeout / OAuth) |
 | Lazy loading | Triggered on demand via `load_mcp` / `call_mcp_tool` / `read_mcp_resource` |
 | Permissions | **server-level trust**: once connected, all of its tools / resources are available (no tool-level permissions) |
-| Transports | `stdio` (subprocess) and `http` / `sse` (`StreamableHTTPClientTransport`) |
+| Transports | `stdio` → `StdioClientTransport` (subprocess); `http` → `StreamableHTTPClientTransport` (Streamable HTTP: POST messages + optional SSE stream); `sse` → `SSEClientTransport` (legacy HTTP+SSE: GET opens the SSE stream, POST sends messages) |
 
 ## MCP configuration
 
@@ -118,7 +118,7 @@ MCP tools are **not pre-registered**; instead, "loader tools" are registered, wh
 
 | Tool | Description |
 |------|------|
-| `load_mcp` | Parameter `server` (enum = all allowed servers, with descriptions); returns structured JSON `{ tools, resources }`; if already connected, `touch` extends and returns the manifest; if not connected, `mcpManager.connect()` |
+| `load_mcp` | Parameters `server` (enum = all allowed servers, with descriptions) and optional `include_manifest` (default `true`); returns structured JSON `{ tools, resources }`; with `include_manifest=false` it only establishes the connection and returns a summary `{ server, connected, tools: n, resources: n }` without tool/resource definitions (useful when the manifest is already in the context); if already connected, `touch` extends and returns the manifest; if not connected, `mcpManager.connect()` |
 | `call_mcp_tool` | Parameters `server` + `tool` + `arguments`; if not connected, prompts "use load_mcp to connect first"; `isError` → error text |
 | `read_mcp_resource` | Parameters `server` + `uri`; returns the resource text content |
 

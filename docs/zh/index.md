@@ -1,6 +1,6 @@
 ---
 title: AI-Zen Agents
-description: AI-Zen Agents — 模块化 LLM Agent 框架（core + sdk monorepo），插件驱动运行时、能力管线、RAG 检索工具与 MCP 支持。
+description: AI-Zen Agents — 模块化 LLM Agent 框架（core + sdk monorepo），插件驱动运行时、能力管线、搜索工具与 MCP 支持。
 outline: deep
 ---
 
