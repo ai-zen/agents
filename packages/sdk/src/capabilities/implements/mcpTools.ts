@@ -3,7 +3,7 @@ import type { ToolCallContext } from "@ai-zen/agents-core";
 import { createDisclosureParam } from "../disclosure.js";
 import { getLogger } from "../../shared/logger.js";
 import type { McpConnectionManager } from "../../runtime/McpConnectionManager.js";
-import type { McpServerConfig } from "../../types/index.js";
+import type { McpServerConfig, McpServerManifest } from "../../types/index.js";
 
 const EMPTY_HINT = "（当前没有可用的 MCP 服务器，请联系用户添加）";
 const log = getLogger();
@@ -35,7 +35,8 @@ export function createLoadMcpTool(
   return new CallbackTool({
     function: {
       name: "load_mcp",
-      description: "连接到指定 MCP 服务器，获取其可用工具和资源列表。",
+      description:
+        "连接到指定 MCP 服务器，获取其可用工具和资源列表。可用 include_manifest=false 仅建立连接、不返回清单（适用于上文中已有该清单的场景）。",
       parameters: {
         type: "object",
         properties: {
@@ -43,6 +44,12 @@ export function createLoadMcpTool(
             type: "string",
             description: serverIdDescription,
             ...(param.enum ? { enum: param.enum } : {}),
+          },
+          include_manifest: {
+            type: "boolean",
+            description:
+              "是否返回该服务器的完整能力清单（工具与资源）。可选，默认 true。若你的上文中已存在该清单（例如本会话早前加载过，而进程重启后连接已失效），可设为 false 仅建立连接、只返回摘要，以节省上下文 token",
+            default: true,
           },
         },
         required: ["server"],
@@ -56,20 +63,38 @@ export function createLoadMcpTool(
         return `❌ MCP 服务器 "${serverName}" 不存在`;
       }
 
+      // 披露开关：默认返回完整清单；显式传 false 时仅建立连接、只返回摘要
+      const includeManifest = input.include_manifest !== false;
+
+      // 获取清单：已连接 → 复用缓存（touch 续期）；未连接 → 建连并发现
+      let manifest: McpServerManifest;
       const existingManifest = mcpManager.getManifest(serverName);
       if (existingManifest && mcpManager.getState(serverName) === "connected") {
         mcpManager.touch(serverName);
-        log.info(`[load_mcp] ${serverName}:\n${JSON.stringify(existingManifest, null, 2)}`);
-        return JSON.stringify({ tools: existingManifest.tools, resources: existingManifest.resources });
+        manifest = existingManifest;
+      } else {
+        try {
+          manifest = await mcpManager.connect(serverName, config);
+        } catch (error: any) {
+          return `无法连接到 "${serverName}": ${error?.message ?? error}`;
+        }
       }
 
-      try {
-        const manifest = await mcpManager.connect(serverName, config);
-        log.info(`[load_mcp] ${serverName}:\n${JSON.stringify(manifest, null, 2)}`);
-        return JSON.stringify({ tools: manifest.tools, resources: manifest.resources });
-      } catch (error: any) {
-        return `无法连接到 "${serverName}": ${error?.message ?? error}`;
+      // 静默模式：只回吐摘要（清单仍留在管理器内，供 call_mcp_tool 使用）
+      if (!includeManifest) {
+        log.info(
+          `[load_mcp] ${serverName}: 已连接（未披露清单：工具 ${manifest.tools.length} 个，资源 ${manifest.resources.length} 个）`,
+        );
+        return JSON.stringify({
+          server: serverName,
+          connected: true,
+          tools: manifest.tools.length,
+          resources: manifest.resources.length,
+        });
       }
+
+      log.info(`[load_mcp] ${serverName}:\n${JSON.stringify(manifest, null, 2)}`);
+      return JSON.stringify({ tools: manifest.tools, resources: manifest.resources });
     },
   });
 }

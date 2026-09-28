@@ -538,9 +538,12 @@ MCP 和 Skill 采用**惰性加载**：装配时不直接注册具体工具，�
 
 ### load_mcp
 
-- 参数：`server`（枚举 = 所有允许的 server，附各 server 描述）
-- 返回：结构化 JSON `{ tools, resources }`（tools 含完整 `inputSchema`，resources 含 uri/name/description/mimeType）
-- 已连接 → 直接返回当前清单（`touch` 续期）；未连接 → `mcpManager.connect()`；失败 → 错误信息
+- 参数：`server`（枚举 = 所有允许的 server，附各 server 描述）+ `include_manifest`（可选布尔，默认 `true`）
+- 返回（两种模式）：
+  - `include_manifest=true`（默认）：结构化 JSON `{ tools, resources }`（tools 含完整 `inputSchema`，resources 含 uri/name/description/mimeType）
+  - `include_manifest=false`：仅建立连接，返回摘要 `{ server, connected, tools: 数量, resources: 数量 }`，不含任何工具/资源定义；完整清单仍留在 `McpConnectionManager` 内供 `call_mcp_tool` 使用
+- 披露开关用途：进程重启后连接已失效、但上文中已存在该清单时，只重建连接而不重复向上下文灌入数十 KB 清单；日志同步降为摘要
+- 已连接 → 直接返回当前清单（`touch` 续期）；未连接 → `mcpManager.connect()`；失败 → 错误信息（两种模式一致）
 - `description`：server 描述在 `server` 参数枚举中呈现，供 LLM 参考（对齐 `load_skill`，缺失时默认空白）
 
 ### call_mcp_tool
@@ -559,7 +562,7 @@ MCP 和 Skill 采用**惰性加载**：装配时不直接注册具体工具，�
 |------|----------|------|--------|
 | `load_skill` | skills | ✅ 重复可加载 | 消耗上下文 |
 | `call_skill_sub_agent` | skills | — 每次独立执行 | 创建临时 Agent |
-| `load_mcp` | mcps | ✅ 重复不重连 | 建立连接 |
+| `load_mcp` | mcps | ✅ 重复不重连 | 建立连接（可选不披露清单） |
 | `call_mcp_tool` | mcps | — 取决于工具 | 取决于工具 |
 | `read_mcp_resource` | mcps | ✅ 可重复读取 | 无 |
 

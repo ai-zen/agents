@@ -28,6 +28,10 @@ describe("createLoadMcpTool", () => {
     expect(tool.function.name).toBe("load_mcp");
     expect(tool.function.parameters.properties.server.enum).toEqual(["github", "slack"]);
     expect(tool.function.parameters.required).toContain("server");
+    // 披露开关：可选参数，默认 true（不改变既有契约）
+    expect(tool.function.parameters.properties.include_manifest.type).toBe("boolean");
+    expect(tool.function.parameters.properties.include_manifest.default).toBe(true);
+    expect(tool.function.parameters.required).not.toContain("include_manifest");
     // description 透传进参数描述，供 LLM 参考（对齐 load_skill）
     const serverDesc = tool.function.parameters.properties.server.description as string;
     expect(serverDesc).toContain("github: GitHub 文件与仓库工具");
@@ -90,6 +94,94 @@ describe("createLoadMcpTool", () => {
     const result = await tool.callback({ server: "github" });
     expect(result).toContain("无法连接");
     expect(result).toContain("连接超时");
+  });
+
+  it("include_manifest=false 且未连接时仅建连并返回摘要（不含工具定义）", async () => {
+    const manifest = {
+      tools: [
+        { name: "echo", description: "回显", inputSchema: { type: "object", properties: {} } },
+        { name: "sum", description: "求和", inputSchema: { type: "object", properties: {} } },
+      ],
+      resources: [{ uri: "file:///data", name: "数据文件" }],
+    };
+    const manager = mockManager({
+      getState: vi.fn(() => "disconnected" as const),
+      getManifest: vi.fn(() => undefined),
+      connect: vi.fn().mockResolvedValue(manifest),
+    });
+    const tool = createLoadMcpTool(manager, mcps);
+    const result = await tool.callback({ server: "github", include_manifest: false });
+
+    expect(manager.connect).toHaveBeenCalledWith("github", mcps[0]);
+    expect(JSON.parse(result)).toEqual({
+      server: "github",
+      connected: true,
+      tools: 2,
+      resources: 1,
+    });
+    // 摘要不得携带任何工具/资源定义（否则节省 token 的目的落空）
+    expect(result).not.toContain("inputSchema");
+    expect(result).not.toContain("echo");
+    expect(result).not.toContain("file:///data");
+  });
+
+  it("include_manifest=false 且已连接时返回摘要，不重复建连", async () => {
+    const manifest = {
+      tools: [
+        { name: "echo", description: "回显", inputSchema: { type: "object", properties: {} } },
+      ],
+      resources: [],
+    };
+    const manager = mockManager({
+      getState: vi.fn(() => "connected" as const),
+      getManifest: vi.fn(() => manifest),
+    });
+    const tool = createLoadMcpTool(manager, mcps);
+    const result = await tool.callback({ server: "github", include_manifest: false });
+
+    expect(manager.connect).not.toHaveBeenCalled();
+    expect(manager.touch).toHaveBeenCalledWith("github");
+    expect(JSON.parse(result)).toEqual({
+      server: "github",
+      connected: true,
+      tools: 1,
+      resources: 0,
+    });
+  });
+
+  it("显式 include_manifest=true 时返回完整清单（同默认）", async () => {
+    const manifest = {
+      tools: [
+        { name: "echo", description: "回显", inputSchema: { type: "object", properties: {} } },
+      ],
+      resources: [{ uri: "file:///data", name: "数据文件" }],
+    };
+    const manager = mockManager({
+      getState: vi.fn(() => "disconnected" as const),
+      getManifest: vi.fn(() => undefined),
+      connect: vi.fn().mockResolvedValue(manifest),
+    });
+    const tool = createLoadMcpTool(manager, mcps);
+    const result = await tool.callback({ server: "github", include_manifest: true });
+    const parsed = JSON.parse(result);
+
+    expect(parsed.tools).toEqual(manifest.tools);
+    expect(parsed.resources).toEqual(manifest.resources);
+    expect(result).toContain("inputSchema");
+  });
+
+  it("include_manifest=false 但连接失败时仍返回错误（不返回摘要）", async () => {
+    const manager = mockManager({
+      getState: vi.fn(() => "disconnected" as const),
+      getManifest: vi.fn(() => undefined),
+      connect: vi.fn().mockRejectedValue(new Error("连接超时")),
+    });
+    const tool = createLoadMcpTool(manager, mcps);
+    const result = await tool.callback({ server: "github", include_manifest: false });
+
+    expect(result).toContain("无法连接");
+    expect(result).toContain("连接超时");
+    expect(result).not.toContain("connected");
   });
 });
 
