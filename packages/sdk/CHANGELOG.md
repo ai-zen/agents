@@ -4,132 +4,132 @@
 
 ### 💥 Breaking Changes
 
-- **`Provider` 改名为 `Scope`（彻底移除，不留兼容别名）** — 原 `runtime/Provider.ts` 迁移为 `scope/Scope.ts`。所有 `provider` 字段 / 参数 / 变量一律改名 `scope`：`SdkAgent.provider` → `SdkAgent.scope`、`createAgent(scope, …)`、`createModel(scope, …)`、`createSubAgentTool(def, scope)`。`FilterOutput` / `ExcludeOptions` / `FilterOptions` 随之从 `runtime/Provider` 迁移到 `scope/Scope`。
-- **能力来源"疏散"为 `ScopePlugin`（新增能力插件契约）** — `Scope` 退化为纯编排容器：只持 `config` / `cwd` / `env` / `agentsDir`，并编排三阶段管线（发现 → 过滤 → 实例化）。原先硬编码在 `Provider.refresh/filter/instantiate` 中的四类能力来源，拆成 **5 个标准插件**，各自自持发现状态与实例化逻辑：
-  - `BuiltinToolsScopePlugin`（`id: "builtin"`）— 20 个内置工具类
-  - `UserToolsScopePlugin`（`id: "user-tools"`）— `tools/*.js`
-  - `SkillsScopePlugin`（`id: "skills"`）— `SKILL.md` + `load_skill` / `call_skill_sub_agent`
-  - `McpScopePlugin`（`id: "mcp"`）— `mcp.json` + 私有 `McpConnectionManager` + `load_mcp` / `call_mcp_tool` / `read_mcp_resource`
-  - `SubAgentsScopePlugin`（`id: "subagents"`）— `sub-agents/*.json`
-- **`Scope` 不再接收能力来源路径、不再暴露聚合候选集** — `new Provider({ config, cwd, agentsDir, skillsPaths, toolsPaths, subAgentsPaths, mcpPaths })` → `new Scope({ config, cwd, agentsDir })`。路径改由插件持有（可传绝对路径，或传相对路径由插件在 `discover()` 时基于 `scope.cwd` join）。`Scope` 不再有 `builtinTools` / `userTools` / `subagents` / `skills` / `mcps` / `mcpManager` 字段。
-- **`Provider.create()` 移除** — 改为显式装配：`new Scope({...}).use(...plugins)` → `await scope.init()`。（静态 `create` 快捷方式暂时移除，未来再议。）
-- **插件必须显式装配** — `Scope` 自身不注册任何默认插件；不装配即"空能力"。便捷工厂 `allInOne({ skillsPaths, toolsPaths, subAgentsPaths, mcpPaths })` 恒返回 5 个标准插件，供一次性装配。
+- **`Provider` renamed to `Scope` (fully removed, no compatibility alias)** — `runtime/Provider.ts` is migrated to `scope/Scope.ts`. All `provider` fields / params / variables are renamed to `scope`: `SdkAgent.provider` → `SdkAgent.scope`, `createAgent(scope, …)`, `createModel(scope, …)`, `createSubAgentTool(def, scope)`. `FilterOutput` / `ExcludeOptions` / `FilterOptions` move from `runtime/Provider` to `scope/Scope` accordingly.
+- **Capability sources "delegated" to `ScopePlugin` (new capability-plugin contract)** — `Scope` degrades to a pure orchestration container: it only holds `config` / `cwd` / `env` / `agentsDir` and orchestrates the three-stage pipeline (discover → filter → instantiate). The four capability sources previously hard-coded in `Provider.refresh/filter/instantiate` are split into **5 standard plugins**, each self-containing its discovery state and instantiation logic:
+  - `BuiltinToolsScopePlugin` (`id: "builtin"`) — 20 built-in tool classes
+  - `UserToolsScopePlugin` (`id: "user-tools"`) — `tools/*.js`
+  - `SkillsScopePlugin` (`id: "skills"`) — `SKILL.md` + `load_skill` / `call_skill_sub_agent`
+  - `McpScopePlugin` (`id: "mcp"`) — `mcp.json` + a private `McpConnectionManager` + `load_mcp` / `call_mcp_tool` / `read_mcp_resource`
+  - `SubAgentsScopePlugin` (`id: "subagents"`) — `sub-agents/*.json`
+- **`Scope` no longer accepts capability-source paths, nor exposes an aggregated candidate set** — `new Provider({ config, cwd, agentsDir, skillsPaths, toolsPaths, subAgentsPaths, mcpPaths })` → `new Scope({ config, cwd, agentsDir })`. Paths are now held by the plugins (pass absolute paths, or pass relative ones that each plugin joins against `scope.cwd` during `discover()`). `Scope` no longer has `builtinTools` / `userTools` / `subagents` / `skills` / `mcps` / `mcpManager` fields.
+- **`Provider.create()` removed** — replaced by explicit assembly: `new Scope({...}).use(...plugins)` → `await scope.init()`. (The static `create` shortcut is removed for now, to be revisited later.)
+- **Plugins must be assembled explicitly** — `Scope` registers no default plugins itself; without assembly it has "empty capabilities". The convenience factory `allInOne({ skillsPaths, toolsPaths, subAgentsPaths, mcpPaths })` always returns the 5 standard plugins for one-shot assembly.
 
 ### 🚀 New Features
 
-- **新增 `ScopePlugin` 扩展点** — 契约 `{ id; discover?; candidates; instantiate; dispose? }`，与 core 的 `AgentPlugin`（Agent 运行时钩子）互为独立扩展点：
-  - `discover?(scope, { silent })` — 阶段 1 · 发现（可异步，内部重新扫描）
-  - `candidates(scope, definition)` — 阶段 2 · 贡献四维候选名（含可用性判断，如同步 `isAvailable`）
-  - `instantiate(scope, filtered)` — 阶段 3 · 按过滤后允许名产出 `Tool[]`
-  - `dispose?()` — 释放（如 MCP 断开连接）
-- **`Scope` 新增 API**：`use(...plugins)`（链式、可变参数）、`getPluginById(id)`（供外部/插件查询插件状态）、`plugins`（只读视图）、`init()` / `refresh({ silent })` / `filter()` / `instantiate()` / `buildTools()` / `dispose()`。`init()` 之后再 `use()` 抛错。
-- **`dispose()` 与 `init()` 对称** — 逆序调用各插件 `dispose()`；`McpScopePlugin.dispose()` → `mcpManager.disconnectAll()`，MCP 长连接不再只依赖空闲超时。
-- **`allInOne()` 便捷工厂** — 恒返回 5 个标准插件，顺序即优先级（`builtin → user-tools → skills → mcp → subagents`，去重时后注册覆盖先注册，用户工具仍可覆盖同名内置工具）。
-- **`McpScopePlugin.hasConfig()`** — 供 `UnknownToolHintPlugin` 判断"是否有 MCP 配置"（替代对 `provider.mcpPaths` 的直接读取）。
+- **New `ScopePlugin` extension point** — contract `{ id; discover?; candidates; instantiate; dispose? }`, an extension point independent of core's `AgentPlugin` (Agent runtime hooks):
+  - `discover?(scope, { silent })` — stage 1 · discovery (may be async, re-scans internally)
+  - `candidates(scope, definition)` — stage 2 · contribute four-dimension candidate names (including availability checks, e.g. a synchronous `isAvailable`)
+  - `instantiate(scope, filtered)` — stage 3 · produce `Tool[]` from the allowed names after filtering
+  - `dispose?()` — release (e.g. disconnect MCP)
+- **New `Scope` API**: `use(...plugins)` (chainable, variadic), `getPluginById(id)` (for external code / plugins to query plugin state), `plugins` (read-only view), `init()` / `refresh({ silent })` / `filter()` / `instantiate()` / `buildTools()` / `dispose()`. Calling `use()` after `init()` throws.
+- **`dispose()` symmetric with `init()`** — calls each plugin's `dispose()` in reverse order; `McpScopePlugin.dispose()` → `mcpManager.disconnectAll()`, so MCP long-lived connections no longer rely solely on an idle timeout.
+- **`allInOne()` convenience factory** — always returns the 5 standard plugins; order is priority (`builtin → user-tools → skills → mcp → subagents`; on dedupe, later registrations override earlier ones, so user tools can still override same-named built-in tools).
+- **`McpScopePlugin.hasConfig()`** — lets `UnknownToolHintPlugin` determine "whether MCP config exists" (replacing a direct read of `provider.mcpPaths`).
 
 ### 🛠 Optimized
 
-- **`UnknownToolHintPlugin` 构造改收 `{ scope }`** — 经 `scope.getPluginById(McpScopePlugin.ID)?.hasConfig()` 获知 MCP 配置，行为语义不变（有配置但 `call_mcp_tool` 被禁 → 提示权限；可用 → 引导使用；无配置 → 仅提示不存在）。
-- **`AutoRefreshToolsPlugin`** — 改经 `agent.scope.refresh()` / `agent.scope.buildTools()`。
-- **渐进式披露（懒加载）设计零改动** — `load_skill` / `call_skill_sub_agent` / `load_mcp` / `call_mcp_tool` / `read_mcp_resource` 的 schema、枚举披露（`createDisclosureParam`）、`include_manifest` 开关、`touch` 续期、`call_skill_sub_agent` 沿用父工具集并剔除自身防递归——全部**逐字保留**，仅从 `Provider.instantiate()` 平移到 `SkillsScopePlugin` / `McpScopePlugin` 的 `instantiate()`。权限语义（`tools` 维度拒绝 `load_*` 即切断披露通道；deny 掉的 skill/mcp 不进 enum）不变。
+- **`UnknownToolHintPlugin` constructor now takes `{ scope }`** — it learns the MCP config via `scope.getPluginById(McpScopePlugin.ID)?.hasConfig()`; behavior semantics are unchanged (config present but `call_mcp_tool` denied → hint about permission; available → guide usage; no config → just hint that it doesn't exist).
+- **`AutoRefreshToolsPlugin`** — now goes through `agent.scope.refresh()` / `agent.scope.buildTools()`.
+- **Progressive-disclosure (lazy-loading) design unchanged** — the schema of `load_skill` / `call_skill_sub_agent` / `load_mcp` / `call_mcp_tool` / `read_mcp_resource`, enum disclosure (`createDisclosureParam`), the `include_manifest` switch, `touch` renewal, and `call_skill_sub_agent` reusing the parent tool set while excluding itself to prevent recursion — all **preserved verbatim**, merely moved from `Provider.instantiate()` to the `instantiate()` of `SkillsScopePlugin` / `McpScopePlugin`. Permission semantics are unchanged (denying `load_*` on the `tools` dimension cuts off the disclosure channel; denied skills/mcps never enter an enum).
 
 ### 📄 Docs
 
-- 新增 [`docs/sdk-design-v1.md`](docs/sdk-design-v1.md)（v1 设计真相源，含 Scope / ScopePlugin 架构、五插件、迁移指南）；旧文档更名为 [`docs/sdk-design-v0.md`](docs/sdk-design-v0.md)。
+- Added [`docs/sdk-design-v1.md`](docs/sdk-design-v1.md) (the v1 design source of truth, covering the Scope / ScopePlugin architecture, the five plugins, and a migration guide); the old doc is renamed to [`docs/sdk-design-v0.md`](docs/sdk-design-v0.md).
 
 ### ✅ Tests
 
-- 全部测试迁移到 Scope + ScopePlugin：`capabilities.test.ts` 重写为按插件维度组织（内置 / SubAgent / Skill / MCP / 用户工具 + 生命周期），`createAgent` / `createModel` / `SdkAgent` / `UnknownToolHint` / `AutoRefreshTools` / `subAgentTools` / `integration` / `e2e-*` 同步更新。SDK 全量 **498 passed / 2 skipped**（含真实 DeepSeek API 的 chat / view-image e2e）。
+- All tests migrated to Scope + ScopePlugin: `capabilities.test.ts` rewritten to be organized by plugin dimension (built-in / SubAgent / Skill / MCP / user tools + lifecycle), with `createAgent` / `createModel` / `SdkAgent` / `UnknownToolHint` / `AutoRefreshTools` / `subAgentTools` / `integration` / `e2e-*` updated accordingly. SDK suite: **498 passed / 2 skipped** (including chat / view-image e2e against the real DeepSeek API).
 
 ## [0.12.0] - 2026-09-29
 
 ### 🚀 New Features
 
-- **统一工具输出保护（`maxToolOutput`）** — `AppConfig` 新增 `maxToolOutput?: number`（字符数，缺省 32768；出厂 `DEFAULT_APP_CONFIG` 已写入该值）。新增输出保护骨架 `guardOutput()`（`capabilities/implements/builtin/outputGuard.ts`）：工具以三个回调自陈策略——`isOverLimit(content)`（工具自读 config 判定，含合计口径）、`dump(dir, content)`（落盘文件清单，缺省即"只警告不落盘"）、`buildWarning(ctx)`（返回体，含预览与统计）；骨架只负责"判定 → 未超限原样返回 / 超限时落盘"两件事。落盘目录为 `<os.tmpdir()>/ai-zen/tool-output/<工具名>-<时间戳>-<随机串>/`，每次调用独立互不覆盖，不做自清理（依赖系统对临时目录的策略）。已接入：
-  - **`exec`** — `stdout + stderr` 合计超限即分文件落盘 `stdout.log` / `stderr.log`，返回警告 + 各流头尾预览（各 1000 字符）+ 字符数/行数统计，原 `exitCode` / `killed` / `terminated` 字段保留；
-  - **`findText`** — 落盘 `result.json`，返回警告 + 头部预览（1000 字符）；既有 `maxMatches` / `maxFileSize` / `maxLineLength` 参数保持不变；
-  - **`glob` / `ls`** — 落盘 `result.json`，返回警告 + 头部预览，并提示缩小范围的方式（更精确的 `pattern` / `exclude`，或改用 `glob`）；
-  - **`readFile`** — 超限**不落盘**，仅返回警告并提示使用 `range` 分批读取。
-  - 另导出 `headPreview()` / `headTailPreview()` 供各工具按需组织预览（预览文本由工具自行生成）。
-- **`readFile` 新增 `range` 参数（可选）** — `range: [起始行, 起始列, 结束行, 结束列]`，行列均 0-based、`-1` 表示末位；如 `[0, 0, 100, -1]` 表示"第 0 行第 0 列读到第 100 行最后一列"。300KB 读取阈值保持不变——读取阈值（能否读）与输出阈值（是否落盘）互相独立。
-- **新增 `inspectFile` 工具（`InspectFileTool`）** — 勘察文件结构概况，不做内容读取，与 `readFile` 的 `range` 配套（先看结构，再决定读取范围）。返回 `path` / `bytes` / `lines` / `chars` / `maxCol` / `lineIndexOfMaxCol`（0-based）/ `avgCol` / `lineEnding`（`LF` / `CRLF` / `mixed`）；可选 `withColCountMap: true` 返回"行索引 → 列数"对象映射。流式扫描，**不受 300KB 读取阈值限制**；列数按字符数计、不含行尾换行符；明细超限时不落盘，仅返回概况 + 提示"文件规模超出可处理范围"。内置工具类由 19 个增至 20 个。
-- **`batchEdit` 输出精简** — 成功项不再回显原文与新文，全部成功时返回 `{ result: "success", replacedCount }`；存在未匹配项时返回 `{ result: "partial", replacedCount, failed: [{ oldText, newText, reason }] }`，仅回显有问题的原文与新文，避免大段文本回显撑大输出。
-- **`AgentDefinition` 新增 `custom` 字段** — 为 `true` 时 SDK 初始化不触碰该 Agent 的内置内容（如默认提示词）。出厂 `DEFAULT_AGENT_DEFINITION` 携带 `custom: false`：`ensureDefaultAgent()` 在 `custom !== true` 时**仅同步出厂提示词**（`name` / `permissions` / `modelId` 等用户改动保留），提示词一致时不写盘、不动 `updatedAt`（比较时忽略随机生成的 message `id`，避免时间戳漂移）。
-- **默认 Agent 提示词调整** — 去掉原有法则，改为两条：① 需要用户决策时，一次只问一个问题；② 当前对话基于 Node.js 驱动，可编写 Node.js 脚本执行复杂任务并通过 `exec` 工具运行。
+- **Unified tool output protection (`maxToolOutput`)** — `AppConfig` gains `maxToolOutput?: number` (in characters, default 32768; the factory `DEFAULT_APP_CONFIG` already writes this value). New output-protection skeleton `guardOutput()` (`capabilities/implements/builtin/outputGuard.ts`): tools declare their policy via three callbacks — `isOverLimit(content)` (the tool reads config itself to decide, including a combined measure), `dump(dir, content)` (the dumped-file list; the default is "warn only, no dump"), `buildWarning(ctx)` (the return body, with preview and stats); the skeleton only does two things: "decide → return as-is when under the limit / dump when over". The dump directory is `<os.tmpdir()>/ai-zen/tool-output/<tool>-<timestamp>-<random>/`, isolated and non-overwriting per call, with no self-cleanup (relying on the OS's policy for temp directories). Wired into:
+  - **`exec`** — when `stdout + stderr` combined exceed the limit, they are dumped to separate files `stdout.log` / `stderr.log`, returning a warning + head/tail preview per stream (1000 chars each) + char/line counts; the original `exitCode` / `killed` / `terminated` fields are preserved;
+  - **`findText`** — dumps `result.json`, returns a warning + head preview (1000 chars); the existing `maxMatches` / `maxFileSize` / `maxLineLength` params are unchanged;
+  - **`glob` / `ls`** — dumps `result.json`, returns a warning + head preview, and hints how to narrow the scope (a more precise `pattern` / `exclude`, or switching to `glob`);
+  - **`readFile`** — does **not** dump on overflow, only returns a warning and suggests batched reads via `range`.
+  - Also exports `headPreview()` / `headTailPreview()` for tools to build previews as needed (the preview text is generated by each tool itself).
+- **`readFile` gains a `range` param (optional)** — `range: [startLine, startCol, endLine, endCol]`, all 0-based, with `-1` meaning the last index; e.g. `[0, 0, 100, -1]` means "read from line 0 col 0 through line 100's last column". The 300KB read threshold is unchanged — the read threshold (whether a file can be read) and the output threshold (whether to dump) are independent.
+- **New `inspectFile` tool (`InspectFileTool`)** — surveys a file's structural overview without reading content, complementing `readFile`'s `range` (look at the structure first, then decide the read range). Returns `path` / `bytes` / `lines` / `chars` / `maxCol` / `lineIndexOfMaxCol` (0-based) / `avgCol` / `lineEnding` (`LF` / `CRLF` / `mixed`); an optional `withColCountMap: true` returns a "line index → column count" object map. Streamed scan, **not limited by the 300KB read threshold**; columns are counted as characters, excluding the line-ending newline; on overflow the detail is not dumped, only the overview plus a hint that "the file scale exceeds the processable range". Built-in tool classes increased from 19 to 20.
+- **`batchEdit` output slimmed down** — successful items no longer echo the old and new text; when all succeed it returns `{ result: "success", replacedCount }`; when there are unmatched items it returns `{ result: "partial", replacedCount, failed: [{ oldText, newText, reason }] }`, echoing only the problematic old and new text, so large blocks aren't echoed back to inflate the output.
+- **`AgentDefinition` gains a `custom` field** — when `true`, SDK init does not touch the Agent's built-in content (e.g. the default prompt). The factory `DEFAULT_AGENT_DEFINITION` carries `custom: false`: `ensureDefaultAgent()` **syncs only the factory prompt** when `custom !== true` (user changes to `name` / `permissions` / `modelId` etc. are preserved), and when the prompt is identical it writes nothing and leaves `updatedAt` untouched (randomly generated message `id`s are ignored in the comparison to avoid timestamp drift).
+- **Default Agent prompt adjusted** — the original rules are replaced by two: ① when a user decision is needed, ask only one question at a time; ② the current conversation is Node.js-driven, so you can write Node.js scripts to perform complex tasks and run them via the `exec` tool.
 
 ### ✅ Tests
 
-- 新增 `outputGuard.test.ts`（骨架：未超限原样返回 / 超限落盘并返回警告 / 无 `dump` 时只警告 / 目录隔离 / `headPreview` 与 `headTailPreview`）、`InspectFileTool.test.ts`（概况字段、`colCountMap` 映射、CRLF 与 mixed、末行无换行、空文件、300KB 以上文件、明细超限降级、目录与不存在路径）及各工具的超限/范围读取用例；`ConfigManager.bootstrap.test.ts` 覆盖 `custom: true` 跳过、仅同步提示词、一致时不写盘。SDK 全量 **499 passed / 6 skipped**
+- Added `outputGuard.test.ts` (skeleton: return as-is under the limit / dump + warning over the limit / warn-only without `dump` / directory isolation / `headPreview` and `headTailPreview`), `InspectFileTool.test.ts` (overview fields, the `colCountMap` map, CRLF and mixed, no trailing newline on the last line, empty files, files over 300KB, detail-overflow degradation, directories and non-existent paths), and overflow/range-read cases for each tool; `ConfigManager.bootstrap.test.ts` covers `custom: true` skipping, syncing only the prompt, and not writing when identical. SDK suite: **499 passed / 6 skipped**
 
 ## [0.11.0] - 2026-09-28
 
 ### 💥 Breaking Changes
 
-- **`createCallSkillSubAgentTool` 移除第三参 `provider`** — Skill 子 Agent 不再经 `provider.buildTools(parent.definition, …)` 重新解析工具集，改为**直接沿用父 Agent 的工具集**（`ctx.agent.tools`），仅剔除 `call_skill_sub_agent` 自身：Skill 子 Agent 作为一次性对话分身，沿用调用者的能力而不再走第二遍权限过滤，同时避免 skill 链式自递归。传入 `Provider` 的调用方需删除该实参
+- **`createCallSkillSubAgentTool` drops the third param `provider`** — the Skill sub-agent no longer re-resolves its tool set via `provider.buildTools(parent.definition, …)`; instead it **reuses the parent Agent's tool set directly** (`ctx.agent.tools`), excluding only `call_skill_sub_agent` itself: as a one-shot conversational clone, the Skill sub-agent reuses the caller's capabilities without a second permission pass, while also preventing chained skill self-recursion. Callers that passed a `Provider` must drop that argument
 
 ### 🚀 New Features
 
-- **Skill 子 Agent 纳入统一委派边界** — `call_skill_sub_agent` 由 `AgentToolLazy` 承载（原为就地实现的 `CallbackTool`），因此与常规 SubAgent 工具共享同一套 `onSubAgentStart` / `onSubAgentEnd` 插件钩子与 `sub-agent-start` / `sub-agent-end` 事件。将护栏装配到 `ctx.subAgent` 的消费方（如上下文护栏）与渲染子 Agent 流式输出的消费方（如 CLI），自此均覆盖该路径
+- **Skill sub-agent brought into the unified delegation boundary** — `call_skill_sub_agent` is now backed by `AgentToolLazy` (previously an in-place `CallbackTool`), so it shares the same `onSubAgentStart` / `onSubAgentEnd` plugin hooks and `sub-agent-start` / `sub-agent-end` events as regular SubAgent tools. Consumers that plug guards into `ctx.subAgent` (e.g. a context guard) and those that render sub-agent streaming output (e.g. the CLI) now cover this path
 
 ### 🛠 Optimized
 
-- **Skill 子 Agent 的构建收敛到 `buildAgent`** — 子 Agent 的初始消息（`System(SKILL.md 内容)` + `User(task)`）改由 `buildAgent` 决定（依托 core 4.3.0 的 `messages` 可选），原先手写的 abort 联动与返回值处理一并删除，交由工具基类统一实现
-- **校验失败改为抛错** — `skill_id` 不存在、或 Skill 未声明 `sub-agent: true` 时抛出错误（原为返回提示文本）；正常路径由 `skill_id` 枚举限定，不触发
-- **依赖 `@ai-zen/agents-core` 升至 `^4.3.0`** — 依赖声明保持 `workspace:^`，由 pnpm 在发布时展开为 `^4.3.0`。core 4.3.0 使 `AgentToolLazy.messages` 变为可选
+- **Skill sub-agent construction consolidated into `buildAgent`** — the sub-agent's initial messages (`System(SKILL.md content)` + `User(task)`) are now decided by `buildAgent` (leveraging core 4.3.0's optional `messages`); the previously hand-written abort linkage and return-value handling are deleted, delegated to the tool base class for a unified implementation
+- **Validation failures now throw** — a missing `skill_id`, or a Skill that doesn't declare `sub-agent: true`, now throws an error (previously it returned a hint text); the normal path is constrained by the `skill_id` enum, so it isn't triggered
+- **Dependency `@ai-zen/agents-core` bumped to `^4.3.0`** — the dependency declaration stays `workspace:^`, expanded to `^4.3.0` by pnpm at publish time. core 4.3.0 makes `AgentToolLazy.messages` optional
 
 ### ✅ Tests
 
-- `skillTools.test.ts` 中 `createCallSkillSubAgentTool` 用例重写为围绕 `AgentToolLazy`：工具契约不变、未知 Skill 抛错、非子 Agent Skill 抛错、委派边界（`onSubAgentStart` 与 `sub-agent-start` 分发、子 Agent 沿用父工具集且剔除自身、初始消息取自 SKILL.md 与 `task`）；SDK 全量 **463 passed / 6 skipped**
+- The `createCallSkillSubAgentTool` cases in `skillTools.test.ts` are rewritten around `AgentToolLazy`: tool contract unchanged, unknown Skill throws, non-sub-agent Skill throws, delegation boundary (`onSubAgentStart` and `sub-agent-start` dispatch, the child reusing the parent tool set while excluding itself, initial messages drawn from SKILL.md and `task`); SDK suite: **463 passed / 6 skipped**
 
 ## [0.10.0] - 2026-09-28
 
 ### 🚀 New Features
 
-- **`load_mcp` 新增 `include_manifest` 开关（可选布尔，默认 `true`）** — 默认行为逐字不变（返回 `{ tools, resources }` 完整清单，tools 含完整 `inputSchema`）；显式传 `false` 时仅建立连接并返回摘要 `{ server, connected, tools: 数量, resources: 数量 }`，不返回任何工具/资源定义。用于「进程重启后连接已失效、但上文中已存在该清单」的场景：只重建连接，不重复向上下文灌入数十 KB 的工具定义，节省 token。完整清单仍留在 `McpConnectionManager` 内，`call_mcp_tool` / `read_mcp_resource` 行为不变；`server` 参数枚举、工具名表与 `DYNAMIC_TOOL_NAMES` 均未变动（前缀缓存结构不变）。失败路径与已连接路径的语义在两种模式下一致；`docs/sdk-design.md` §9 同步更新
+- **`load_mcp` gains an `include_manifest` switch (optional boolean, default `true`)** — the default behavior is unchanged verbatim (returns the full `{ tools, resources }` manifest, with tools carrying the full `inputSchema`); passing `false` explicitly only establishes the connection and returns a summary `{ server, connected, tools: count, resources: count }`, without any tool/resource definitions. It serves the "connection has gone stale after a process restart, but the manifest already exists in context" scenario: rebuild the connection only, without re-injecting tens of KB of tool definitions into the context, saving tokens. The full manifest stays inside `McpConnectionManager`, and `call_mcp_tool` / `read_mcp_resource` behavior is unchanged; the `server` param enum, the tool-name table, and `DYNAMIC_TOOL_NAMES` are all unchanged (the prefix-cache structure is unaffected). The failure-path and already-connected-path semantics are identical in both modes; `docs/sdk-design.md` §9 updated accordingly
 
 ### 🛠 Optimized
 
-- **依赖 `@ai-zen/agents-core` 升至 `^4.2.0`** — 依赖声明保持 `workspace:^`，由 pnpm 在发布时展开为 `^4.2.0`。core 4.2.0 新增子 Agent 委派阻塞钩子 `onSubAgentStart` / `onSubAgentEnd`，并将原有事件 `sub-agent` 更名为 `sub-agent-start`（core 侧破坏性变更）；SDK 内部不监听该事件，源码无需适配。监听该事件的消费方需同步更名
+- **Dependency `@ai-zen/agents-core` bumped to `^4.2.0`** — the dependency declaration stays `workspace:^`, expanded to `^4.2.0` by pnpm at publish time. core 4.2.0 adds the sub-agent delegation blocking hooks `onSubAgentStart` / `onSubAgentEnd` and renames the existing `sub-agent` event to `sub-agent-start` (a core-side breaking change); the SDK doesn't listen to that event internally, so no source adaptation is needed. Consumers listening to that event must rename accordingly
 
 ### ✅ Tests
 
-- `mcpTools.test.ts` 新增 4 个用例：静默 + 未连接、静默 + 已连接、显式 `true`、静默 + 连接失败；SDK 全量 **461 passed / 6 skipped**
+- `mcpTools.test.ts` gains 4 cases: silent + not connected, silent + connected, explicit `true`, silent + connection failure; SDK suite: **461 passed / 6 skipped**
 
 ## [0.9.4] - 2026-09-20
 
 ### 🔧 Fixed
 
-- **MCP `sse` transport 改为真正的 SSE 连接（`SSEClientTransport`）** — 此前 `http` 与 `sse` 合并处理，统一使用 `StreamableHTTPClientTransport`（Streamable HTTP：POST 发送消息 + 可选 SSE 流），使配置声明 `type: "sse"` 的旧版 HTTP+SSE 服务器（GET 建立 SSE 流、POST 到 endpoint 发送消息）实际运行在不匹配的协议栈上。现按 transport 拆分：`http` → `StreamableHTTPClientTransport`，`sse` → `SSEClientTransport`（均为官方 SDK 内置实现）。`headers` 仍经 `requestInit` 透传，由 SDK 统一应用于 SSE 建流（GET）与消息发送（POST）请求；缺少 `url` 时的报错行为保持不变。`McpServerConfig.transport` 注释与 `docs/sdk-design.md` §10/§11 同步更新
+- **MCP `sse` transport switched to a real SSE connection (`SSEClientTransport`)** — previously `http` and `sse` were handled together, both using `StreamableHTTPClientTransport` (Streamable HTTP: POST to send messages + an optional SSE stream), which made legacy HTTP+SSE servers declared as `type: "sse"` (GET to open the SSE stream, POST to the endpoint to send messages) actually run on a mismatched protocol stack. Now they are split by transport: `http` → `StreamableHTTPClientTransport`, `sse` → `SSEClientTransport` (both built-in official SDK implementations). `headers` are still passed through via `requestInit`, applied uniformly by the SDK to the SSE stream setup (GET) and message-sending (POST) requests; the error behavior when `url` is missing is unchanged. The `McpServerConfig.transport` comment and `docs/sdk-design.md` §10/§11 updated accordingly
 
 ### ✅ Tests
 
-- 针对真实 MCP 服务器（`packages/test-project/mcp-servers/sse-server.mjs`，旧版 HTTP+SSE 协议）验证通过：建立连接、工具发现（`echo` / `add`）、工具调用、断开重连；并确认运行时 transport 实例为 `SSEClientTransport`
+- Verified against a real MCP server (`packages/test-project/mcp-servers/sse-server.mjs`, legacy HTTP+SSE protocol): connection setup, tool discovery (`echo` / `add`), tool calls, and disconnect/reconnect; and confirmed the runtime transport instance is `SSEClientTransport`
 
 ## [0.9.3] - 2026-09-01
 
 ### 🔧 Fixed
 
-- **`createAgent` 不再污染 Agent 定义模板（`definition.messages` 引用隔离）** — 创建 Agent 时对 `definition.messages` 做模板快照（`[...(definition.messages ?? [])]`）而非直接引用。此前把定义数组直接传给 `AgentContext.messages`（mutable 运行时数组），对话期间 `append()` 会反向把完整对话历史写入 `definition.messages`，导致：
-  - 任务迁移 `prune` 分支展开的是被污染的"完整历史"而非模板 → 旧消息既未被物理删除、也未被标记 `omit`，却能看到新注入的断点消息；
-  - `omit` 分支的 `preserveCount` 因 `definition.messages` 与 `agent.messages` 指向同一数组而等于全长 → 历史消息无法被标记 `omit`；
-  - `/new` 基于被污染的模板拷贝，新对话会继承旧历史。
-  - 顺带修复 Agent 定义缺少 `messages` 字段（`undefined`）时创建 Agent 的崩溃问题（`?? []` 兜底）。
+- **`createAgent` no longer pollutes the Agent definition template (`definition.messages` reference isolation)** — when creating an Agent, `definition.messages` is now snapshot (`[...(definition.messages ?? [])]`) instead of being referenced directly. Previously the definition array was passed straight to `AgentContext.messages` (a mutable runtime array), so during a conversation `append()` would write the full conversation history back into `definition.messages`, causing:
+  - the task-migration `prune` branch to expand the polluted "full history" instead of the template → old messages were neither physically deleted nor marked `omit`, yet the newly injected breakpoint message was visible;
+  - the `omit` branch's `preserveCount` to equal the full length because `definition.messages` and `agent.messages` pointed to the same array → history messages could not be marked `omit`;
+  - `/new` to copy from the polluted template, so a new conversation inherited the old history.
+  - Also fixes a crash when creating an Agent whose definition lacks a `messages` field (`undefined`) (with a `?? []` fallback).
 
 ### ✅ Tests
 
-- `createAgent.test.ts` 新增：`append` 不污染 `definition.messages`（引用隔离）；Agent 定义缺少 `messages` 字段时正常创建
+- `createAgent.test.ts` gains: `append` does not pollute `definition.messages` (reference isolation); an Agent whose definition lacks a `messages` field is created normally
 
 ## [0.9.2] - 2026-08-31
 
 ### 🎯 Optimized
 
-- **默认 Agent 提示词重构（`DEFAULT_AGENT_DEFINITION`）** — 精简并统一风格：
-  - 人格设定调整为"幽默风趣、严谨可靠"
-  - 原有 8 条原则压缩为一条核心规则：遇到任何不明确、不确定、有矛盾或可能影响结果的状况，立即停下并直接询问用户，而不是自行脑补、猜测或硬干
-  - 新增"惜字如金"原则：只交代结果与必要说明，执行过程（工具调用、读写、搜索等）用户均已可见，不必再复述，以节省 token
-  - 保留护栏：主动调用工具、如实汇报、并只在你被指定的工作范围内行事
-  - 注入"当前操作系统"信息，动态使用 `process.platform`，适配不同平台
-- **`ViewImageTool` 增加本地 URL 校验** — 新增 `isLocalUrl()`，拒绝 `file://` 协议及指向本机回环地址（`localhost`/`127.0.0.1`/`[::1]`/`0.0.0.0`）的 http(s) URL（API 服务商无法下载访问），在调用早期直接报错；`function.description` 与 `path_or_url` 参数说明同步补充"不支持本地 URL，本地图片请使用文件路径"
+- **Default Agent prompt refactored (`DEFAULT_AGENT_DEFINITION`)** — streamlined and stylistically unified:
+  - the persona is set to "witty and humorous, rigorous and reliable"
+  - the original 8 principles are compressed into one core rule: whenever you hit any situation that is unclear, uncertain, contradictory, or that might affect the result, stop immediately and ask the user directly, rather than filling in the gaps yourself, guessing, or forcing ahead
+  - a new "terse" principle: state only the result and necessary explanation; the execution process (tool calls, reads/writes, searches, etc.) is already visible to the user, so don't restate it, to save tokens
+  - guards retained: proactively call tools, report faithfully, and act only within the scope you've been assigned
+  - injects "current operating system" info, dynamically using `process.platform` to adapt to different platforms
+- **`ViewImageTool` gains a local-URL check** — a new `isLocalUrl()` rejects the `file://` protocol and http(s) URLs pointing to local loopback addresses (`localhost`/`127.0.0.1`/`[::1]`/`0.0.0.0`) (API providers cannot download them), erroring early in the call; `function.description` and the `path_or_url` param description now add "local URLs are not supported; use a file path for local images"
 
 ## [0.9.1] - 2026-08-28
 
