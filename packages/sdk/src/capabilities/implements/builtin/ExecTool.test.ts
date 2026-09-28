@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "fs";
 import { ExecTool } from "./ExecTool.js";
 import { makeEnv } from "./test-helpers.js";
 import type { ToolCallContext } from "@ai-zen/agents-core";
+import type { AppConfig } from "../../../types/index.js";
 
 describe("ExecTool", () => {
   it("工具名称和描述正确", () => {
@@ -90,5 +92,43 @@ describe("ExecTool", () => {
     expect(parsed.killed).toBe(true);
     expect(parsed.terminated).toBe("aborted");
     expect(parsed.stdout).not.toContain("should_not_run");
+  });
+
+  it("输出超过 maxToolOutput 时落盘 stdout/stderr，并返回警告与各流头尾预览", async () => {
+    const tool = new ExecTool(makeEnv(process.cwd(), { maxToolOutput: 1000 } as AppConfig));
+    const result = await tool.call({
+      command: `node -e "process.stdout.write('a'.repeat(3000))"`,
+      timeout: 10_000,
+    });
+    const parsed = JSON.parse(result as string);
+
+    expect(parsed.outputTooLarge).toBe(true);
+    expect(parsed.warning).toContain("超过上限 1000 字符");
+
+    // 完整内容分文件落盘
+    const stdoutPath = parsed.files["stdout.log"];
+    const stderrPath = parsed.files["stderr.log"];
+    expect(readFileSync(stdoutPath, "utf-8").length).toBe(3000);
+    expect(readFileSync(stderrPath, "utf-8")).toBe("");
+
+    // 各流独立额度：头 1000 + 尾 1000
+    expect(parsed.stdout.chars).toBe(3000);
+    expect(parsed.stdout.head).toBe("a".repeat(1000));
+    expect(parsed.stdout.tail).toBe("a".repeat(1000));
+    expect(parsed.stdout.omitted).toBe(1000);
+
+    // 原有字段保留（成功场景下 exitCode 沿用既有语义为 null）
+    expect(parsed.exitCode).toBeNull();
+    expect(parsed.killed).toBe(false);
+  });
+
+  it("输出未超过 maxToolOutput 时按原结构返回，不落盘", async () => {
+    const tool = new ExecTool(makeEnv(process.cwd(), { maxToolOutput: 100_000 } as AppConfig));
+    const result = await tool.call({ command: "echo hello", timeout: 5000 });
+    const parsed = JSON.parse(result as string);
+
+    expect(parsed.stdout.trim()).toBe("hello");
+    expect(parsed.files).toBeUndefined();
+    expect(parsed.outputTooLarge).toBeUndefined();
   });
 });

@@ -38,7 +38,8 @@ describe("BatchEditTool", () => {
     try {
       const result = await tool.call({ path: filePath, replacements: [{ oldText: "hello", newText: "hi" }] });
       const parsed = JSON.parse(result as string);
-      expect(parsed[0].result).toBe("success");
+      expect(parsed.result).toBe("success");
+      expect(parsed.replacedCount).toBe(1);
       expect(readFileSync(filePath, "utf-8")).toBe("hi world, hello universe");
     } finally {
       cleanUp(filePath);
@@ -51,7 +52,8 @@ describe("BatchEditTool", () => {
     try {
       const result = await tool.call({ path: filePath, replacements: [{ oldText: "hello", newText: "hi", isReplaceAll: true }] });
       const parsed = JSON.parse(result as string);
-      expect(parsed[0].result).toBe("success");
+      expect(parsed.result).toBe("success");
+      expect(parsed.replacedCount).toBe(1);
       expect(readFileSync(filePath, "utf-8")).toBe("hi world, hi universe");
     } finally {
       cleanUp(filePath);
@@ -64,7 +66,10 @@ describe("BatchEditTool", () => {
     try {
       const result = await tool.call({ path: filePath, replacements: [{ oldText: "not-exists", newText: "hi" }] });
       const parsed = JSON.parse(result as string);
-      expect(parsed[0].result).toBe("文件中未精确匹配到要替换的文本");
+      expect(parsed.result).toBe("partial");
+      expect(parsed.replacedCount).toBe(0);
+      expect(parsed.failed[0].oldText).toBe("not-exists");
+      expect(parsed.failed[0].reason).toContain("未精确匹配");
       expect(readFileSync(filePath, "utf-8")).toBe("hello world");
     } finally {
       cleanUp(filePath);
@@ -77,7 +82,8 @@ describe("BatchEditTool", () => {
     try {
       const result = await tool.call({ path: filePath, replacements: [{ oldText: "a", newText: "x" }, { oldText: "b", newText: "y" }, { oldText: "c", newText: "z" }] });
       const parsed = JSON.parse(result as string);
-      expect(parsed.every((r: any) => r.result === "success")).toBe(true);
+      expect(parsed.result).toBe("success");
+      expect(parsed.replacedCount).toBe(3);
       expect(readFileSync(filePath, "utf-8")).toBe("x y z");
     } finally {
       cleanUp(filePath);
@@ -89,5 +95,51 @@ describe("BatchEditTool", () => {
     const result = await tool.call({ path: "/tmp/not-exists-file-12345.txt", replacements: [{ oldText: "a", newText: "b" }] });
     expect(typeof result).toBe("string");
     expect(result).toContain("ENOENT");
+  });
+
+  it("成功项不回显原文与新文，仅标记成功", async () => {
+    const tool = new BatchEditTool(makeEnv());
+    const oldText = "old-".repeat(200);
+    const newText = "new-".repeat(200);
+    const filePath = tmpFile(oldText);
+    try {
+      const result = (await tool.call({
+        path: filePath,
+        replacements: [{ oldText, newText }],
+      })) as string;
+      const parsed = JSON.parse(result);
+      expect(parsed.result).toBe("success");
+      expect(parsed.replacedCount).toBe(1);
+      // 输出不含原文/新文的回显
+      expect(result).not.toContain(oldText);
+      expect(result).not.toContain(newText);
+    } finally {
+      cleanUp(filePath);
+    }
+  });
+
+  it("失败项回显原文与新文，成功项仅计数", async () => {
+    const tool = new BatchEditTool(makeEnv());
+    const filePath = tmpFile("a b");
+    try {
+      const result = (await tool.call({
+        path: filePath,
+        replacements: [
+          { oldText: "a", newText: "x" },
+          { oldText: "not-exists", newText: "y" },
+        ],
+      })) as string;
+      const parsed = JSON.parse(result);
+      expect(parsed.result).toBe("partial");
+      expect(parsed.replacedCount).toBe(1);
+      expect(parsed.failed).toHaveLength(1);
+      expect(parsed.failed[0].oldText).toBe("not-exists");
+      expect(parsed.failed[0].newText).toBe("y");
+      // 成功项（a → x）不被回显
+      expect(result).not.toContain("\"oldText\":\"a\"");
+      expect(readFileSync(filePath, "utf-8")).toBe("x b");
+    } finally {
+      cleanUp(filePath);
+    }
   });
 });

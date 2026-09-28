@@ -2,6 +2,7 @@ import { exec, type ChildProcess } from "child_process";
 import { SdkCallbackTool } from "../../../runtime/SdkCallbackTool.js";
 import type { ToolEnv } from "../../../types/index.js";
 import type { AgentNS, ToolCallContext } from "@ai-zen/agents-core";
+import { DEFAULT_MAX_TOOL_OUTPUT, guardOutput, headTailPreview } from "./outputGuard.js";
 
 export class ExecTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
@@ -113,6 +114,40 @@ export class ExecTool extends SdkCallbackTool {
       }
     });
 
-    return JSON.stringify(result);
+    // 输出保护：stdout + stderr 合计超过 maxToolOutput 时，分文件落盘并返回警告 + 头尾预览
+    const limit = this.env.config.maxToolOutput ?? DEFAULT_MAX_TOOL_OUTPUT;
+    const guarded = await guardOutput({
+      tool: "exec",
+      content: result,
+      isOverLimit: (output) => output.stdout.length + output.stderr.length > limit,
+      dump: (_dir, output) => [
+        { name: "stdout.log", content: output.stdout },
+        { name: "stderr.log", content: output.stderr },
+      ],
+      buildWarning: (ctx) => {
+        const stdout = headTailPreview(result.stdout);
+        const stderr = headTailPreview(result.stderr);
+        return JSON.stringify({
+          outputTooLarge: true,
+          warning:
+            `输出过大：stdout + stderr 合计 ${result.stdout.length + result.stderr.length} 字符，` +
+            `超过上限 ${limit} 字符。完整内容已分文件落盘（stdout.log / stderr.log），可用 readFile 分批读取。`,
+          files: ctx.files,
+          stdout: { chars: result.stdout.length, lines: countLines(result.stdout), ...stdout },
+          stderr: { chars: result.stderr.length, lines: countLines(result.stderr), ...stderr },
+          exitCode: result.exitCode,
+          killed: result.killed,
+          terminated: result.terminated,
+        });
+      },
+    });
+
+    // 未超限：content 为原始结果对象，按原有结构序列化；超限：buildWarning 已生成返回字符串
+    return typeof guarded === "string" ? guarded : JSON.stringify(guarded);
   }
+}
+
+/** 统计文本行数（空文本记 0 行） */
+function countLines(text: string): number {
+  return text.length === 0 ? 0 : text.split("\n").length;
 }

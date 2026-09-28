@@ -5,6 +5,7 @@ import { tmpdir } from "os";
 import { randomBytes } from "crypto";
 import { ReadFileTool } from "./ReadFileTool.js";
 import { makeEnv } from "./test-helpers.js";
+import type { AppConfig } from "../../../types/index.js";
 
 function tmpFile(content: string): string {
   const dir = join(tmpdir(), randomBytes(8).toString("hex"));
@@ -64,6 +65,49 @@ describe("ReadFileTool", () => {
     try {
       const result = await tool.call({ path: filePath });
       expect(result).toContain("文件过大");
+    } finally {
+      cleanUp(filePath);
+    }
+  });
+
+  it("range 按行列范围读取（0-based，-1 表末位）", async () => {
+    const tool = new ReadFileTool(makeEnv());
+    const filePath = tmpFile("line0\nline1\nline2\nline3");
+    try {
+      // 第 1 行第 0 列 → 第 2 行末列
+      expect(await tool.call({ path: filePath, range: [1, 0, 2, -1] })).toBe("line1\nline2");
+      // 单行区间：第 0 行第 0 列 → 第 0 行第 4 列
+      expect(await tool.call({ path: filePath, range: [0, 0, 0, 4] })).toBe("line0");
+      // 起始列偏移
+      expect(await tool.call({ path: filePath, range: [1, 2, 1, -1] })).toBe("ne1");
+      // 末位写法：最后一行整行
+      expect(await tool.call({ path: filePath, range: [-1, 0, -1, -1] })).toBe("line3");
+    } finally {
+      cleanUp(filePath);
+    }
+  });
+
+  it("输出超过 maxToolOutput 时只警告、不落盘，并提示 range 用法", async () => {
+    const tool = new ReadFileTool(makeEnv(process.cwd(), { maxToolOutput: 10 } as AppConfig));
+    const filePath = tmpFile("0123456789\nabcdefghij");
+    try {
+      const result = (await tool.call({ path: filePath })) as string;
+      expect(result).toContain("超过上限 10 字符");
+      expect(result).toContain("未落盘");
+      expect(result).toContain("range");
+      expect(result).toContain("2 行");
+      // 只警告：不返回落盘路径
+      expect(result).not.toContain("files");
+    } finally {
+      cleanUp(filePath);
+    }
+  });
+
+  it("range 缩小后的输出未超限时正常返回内容", async () => {
+    const tool = new ReadFileTool(makeEnv(process.cwd(), { maxToolOutput: 10 } as AppConfig));
+    const filePath = tmpFile("0123456789\nabcdefghij");
+    try {
+      expect(await tool.call({ path: filePath, range: [0, 0, 0, 4] })).toBe("01234");
     } finally {
       cleanUp(filePath);
     }

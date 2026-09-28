@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased]
+
+### 🚀 New Features
+
+- **统一工具输出保护（`maxToolOutput`）** — `AppConfig` 新增 `maxToolOutput?: number`（字符数，缺省 32768；出厂 `DEFAULT_APP_CONFIG` 已写入该值）。新增输出保护骨架 `guardOutput()`（`capabilities/implements/builtin/outputGuard.ts`）：工具以三个回调自陈策略——`isOverLimit(content)`（工具自读 config 判定，含合计口径）、`dump(dir, content)`（落盘文件清单，缺省即"只警告不落盘"）、`buildWarning(ctx)`（返回体，含预览与统计）；骨架只负责"判定 → 未超限原样返回 / 超限时落盘"两件事。落盘目录为 `<os.tmpdir()>/ai-zen/tool-output/<工具名>-<时间戳>-<随机串>/`，每次调用独立互不覆盖，不做自清理（依赖系统对临时目录的策略）。已接入：
+  - **`exec`** — `stdout + stderr` 合计超限即分文件落盘 `stdout.log` / `stderr.log`，返回警告 + 各流头尾预览（各 1000 字符）+ 字符数/行数统计，原 `exitCode` / `killed` / `terminated` 字段保留；
+  - **`findText`** — 落盘 `result.json`，返回警告 + 头部预览（1000 字符）；既有 `maxMatches` / `maxFileSize` / `maxLineLength` 参数保持不变；
+  - **`glob` / `ls`** — 落盘 `result.json`，返回警告 + 头部预览，并提示缩小范围的方式（更精确的 `pattern` / `exclude`，或改用 `glob`）；
+  - **`readFile`** — 超限**不落盘**，仅返回警告并提示使用 `range` 分批读取。
+  - 另导出 `headPreview()` / `headTailPreview()` 供各工具按需组织预览（预览文本由工具自行生成）。
+- **`readFile` 新增 `range` 参数（可选）** — `range: [起始行, 起始列, 结束行, 结束列]`，行列均 0-based、`-1` 表示末位；如 `[0, 0, 100, -1]` 表示"第 0 行第 0 列读到第 100 行最后一列"。300KB 读取阈值保持不变——读取阈值（能否读）与输出阈值（是否落盘）互相独立。
+- **新增 `inspectFile` 工具（`InspectFileTool`）** — 勘察文件结构概况，不做内容读取，与 `readFile` 的 `range` 配套（先看结构，再决定读取范围）。返回 `path` / `bytes` / `lines` / `chars` / `maxCol` / `lineIndexOfMaxCol`（0-based）/ `avgCol` / `lineEnding`（`LF` / `CRLF` / `mixed`）；可选 `withColCountMap: true` 返回"行索引 → 列数"对象映射。流式扫描，**不受 300KB 读取阈值限制**；列数按字符数计、不含行尾换行符；明细超限时不落盘，仅返回概况 + 提示"文件规模超出可处理范围"。内置工具类由 19 个增至 20 个。
+- **`batchEdit` 输出精简** — 成功项不再回显原文与新文，全部成功时返回 `{ result: "success", replacedCount }`；存在未匹配项时返回 `{ result: "partial", replacedCount, failed: [{ oldText, newText, reason }] }`，仅回显有问题的原文与新文，避免大段文本回显撑大输出。
+- **`AgentDefinition` 新增 `custom` 字段** — 为 `true` 时 SDK 初始化不触碰该 Agent 的内置内容（如默认提示词）。出厂 `DEFAULT_AGENT_DEFINITION` 携带 `custom: false`：`ensureDefaultAgent()` 在 `custom !== true` 时**仅同步出厂提示词**（`name` / `permissions` / `modelId` 等用户改动保留），提示词一致时不写盘、不动 `updatedAt`（比较时忽略随机生成的 message `id`，避免时间戳漂移）。
+- **默认 Agent 提示词调整** — 去掉原有法则，改为两条：① 需要用户决策时，一次只问一个问题；② 当前对话基于 Node.js 驱动，可编写 Node.js 脚本执行复杂任务并通过 `exec` 工具运行。
+
+### ✅ Tests
+
+- 新增 `outputGuard.test.ts`（骨架：未超限原样返回 / 超限落盘并返回警告 / 无 `dump` 时只警告 / 目录隔离 / `headPreview` 与 `headTailPreview`）、`InspectFileTool.test.ts`（概况字段、`colCountMap` 映射、CRLF 与 mixed、末行无换行、空文件、300KB 以上文件、明细超限降级、目录与不存在路径）及各工具的超限/范围读取用例；`ConfigManager.bootstrap.test.ts` 覆盖 `custom: true` 跳过、仅同步提示词、一致时不写盘。SDK 全量 **499 passed / 6 skipped**
+
 ## [0.11.0] - 2026-09-28
 
 ### 💥 Breaking Changes

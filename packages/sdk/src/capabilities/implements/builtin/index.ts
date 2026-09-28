@@ -3,6 +3,7 @@ import type { ToolEnv } from "../../../types/index.js";
 
 import { CwdTool } from "./CwdTool.js";
 import { ReadFileTool } from "./ReadFileTool.js";
+import { InspectFileTool } from "./InspectFileTool.js";
 import { WriteFileTool } from "./WriteFileTool.js";
 import { ExecTool } from "./ExecTool.js";
 import { MkdirTool } from "./MkdirTool.js";
@@ -22,7 +23,7 @@ import { ViewImageTool } from "./ViewImageTool.js";
 import { GenerateImageTool } from "./GenerateImageTool.js";
 
 /**
- * 全部内置工具类（19 个）。
+ * 全部内置工具类（20 个）。
  * 工具类由 Provider 用 ToolEnv 实例化（每个 Provider 一套实例，注入其 cwd）。
  *
  * 发现层不做任何过滤——工具的可用性由各工具自行声明（SdkCallbackTool.isAvailable，
@@ -32,6 +33,7 @@ import { GenerateImageTool } from "./GenerateImageTool.js";
 export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> = [
   CwdTool,
   ReadFileTool,
+  InspectFileTool,
   WriteFileTool,
   ExecTool,
   MkdirTool,
@@ -54,6 +56,7 @@ export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> 
 export {
   CwdTool,
   ReadFileTool,
+  InspectFileTool,
   WriteFileTool,
   ExecTool,
   MkdirTool,

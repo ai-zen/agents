@@ -79,16 +79,16 @@ Agent.permissions
 
 匹配维度：`tools` 按工具名（如 `rm`）、`skills` 按 skill id、`mcps` 按 server 名、`subagents` 按 `function.name`。
 
-## 内置工具（19 个类）
+## 内置工具（20 个类）
 
 所有内置工具都是 `SdkCallbackTool` 子类，由 Provider 用 `ToolEnv` 实例化（每个 Provider 一套实例，注入其 `cwd`）。相对路径一律以 `ToolEnv.cwd` 解析，不依赖全局 `process.cwd()`。
 
 | 工具 | 说明 |
 |------|------|
-| `cwd` / `readFile` / `writeFile` / `mkdir` / `rm` / `glob` / `ls` / `exist` / `rename` / `copy` / `findText` | 文件系统操作 |
+| `cwd` / `readFile` / `inspectFile` / `writeFile` / `mkdir` / `rm` / `glob` / `ls` / `exist` / `rename` / `copy` / `findText` | 文件系统操作（`readFile` 可选 `range` 按行列范围读取；`inspectFile` 返回文件结构概况，流式扫描不受 300KB 限制） |
 | `exec` / `exec_async` | 执行命令（`exec` 支持 `timeout`；`exec_async` 异步立即返回，支持 shell 重定向/管道） |
 | `downloadFile` | 从 URL 下载并保存 |
-| `batchEdit` / `edit` | 批量 / 单次替换文件文本 |
+| `batchEdit` / `edit` | 批量 / 单次替换文件文本（`batchEdit` 仅回显未匹配项） |
 | `sleep` | 等待指定毫秒 |
 
 按配置 / 模型条件注入的工具：
@@ -99,6 +99,8 @@ Agent.permissions
 | `viewImage` | 仅视觉模型（该 Agent 的 `modelId` 解析到 `Model.vision === true`） |
 
 工具的可用性由各工具自己的 `isAvailable(config, definition)` 声明，在 `buildTools` / `filter` 阶段过滤；发现层不做任何过滤。
+
+工具输出保护：`AppConfig.maxToolOutput`（字符数，缺省 32768）是输出统一上限，超限时由各工具自行处置——`exec` 分文件落盘 `stdout.log` / `stderr.log`（返回各流头尾预览），`findText` / `glob` / `ls` 落盘 `result.json`（返回头部预览），`readFile` 仅警告并提示用 `range` 分批读取。落盘目录为 `<tmpdir>/ai-zen/tool-output/<工具名>-<时间戳>-<随机串>/`，每次调用独立。注意 300KB 是**读取**阈值（能否读），与输出阈值是两回事。
 
 `SdkCallbackTool` 抽象基类：
 
@@ -119,7 +121,7 @@ abstract class SdkCallbackTool extends Tool {
 | `Endpoint` | API 端点（baseUrl + apiKey） | `config.json` |
 | `Model` | 模型配置，绑定一个 Endpoint | `config.json` |
 | `ImageModel` | 图片生成模型配置 | `config.json` |
-| `AgentDefinition` | 可对话 AI 人格（提示词、权限、可选工具签名）；有 `function` 即视为 SubAgent | `agents/*.json` |
+| `AgentDefinition` | 可对话 AI 人格（提示词、权限、可选工具签名）；有 `function` 即视为 SubAgent；`custom: true` 表示用户自定义（初始化不同步内置提示词） | `agents/*.json` |
 | `ToolEnv` | `{ cwd, config }`，内置工具构造时注入 | 内存态 |
 | `SdkCallbackTool` | 内置工具抽象基类 | 内存态 |
 

@@ -80,6 +80,7 @@ export { BUILTIN_TOOL_CLASSES } from "./capabilities/implements/builtin/index.js
 export {
   CwdTool,
   ReadFileTool,
+  InspectFileTool,
   WriteFileTool,
   ExecTool,
   MkdirTool,

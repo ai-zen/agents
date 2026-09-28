@@ -3,6 +3,7 @@ import * as path from "path";
 import { SdkCallbackTool } from "../../../runtime/SdkCallbackTool.js";
 import type { ToolEnv } from "../../../types/index.js";
 import type { AgentNS, ToolCallContext } from "@ai-zen/agents-core";
+import { DEFAULT_MAX_TOOL_OUTPUT, guardOutput, headPreview } from "./outputGuard.js";
 
 interface MatchItem {
   line: number;
@@ -163,15 +164,43 @@ export class FindTextTool extends SdkCallbackTool {
       }
 
       if (signal?.aborted) {
-        return JSON.stringify({ aborted: true, results: result });
+        return await this.protect(JSON.stringify({ aborted: true, results: result }));
       }
       if (truncated) {
-        return JSON.stringify({ truncated: true, totalMatches, results: result });
+        return await this.protect(
+          JSON.stringify({ truncated: true, totalMatches, results: result }),
+        );
       }
-      return JSON.stringify(result);
+      return await this.protect(JSON.stringify(result));
     } catch (error: any) {
       return error?.message;
     }
+  }
+
+  /**
+   * 输出保护：结果 JSON 超过 maxToolOutput 时落盘为 result.json，
+   * 返回警告 + 头尾预览；未超限则原样返回。
+   */
+  private async protect(json: string): Promise<string> {
+    const limit = this.env.config.maxToolOutput ?? DEFAULT_MAX_TOOL_OUTPUT;
+    return await guardOutput({
+      tool: "findText",
+      content: json,
+      isOverLimit: (text) => text.length > limit,
+      dump: (_dir, text) => [{ name: "result.json", content: text }],
+      buildWarning: (ctx) => {
+        const preview = headPreview(json);
+        return JSON.stringify({
+          outputTooLarge: true,
+          warning:
+            `输出过大：结果共 ${json.length} 字符，超过上限 ${limit} 字符。` +
+            `完整结果已落盘（result.json），可用 readFile 分批读取。`,
+          files: ctx.files,
+          chars: json.length,
+          ...preview,
+        });
+      },
+    });
   }
 }
 

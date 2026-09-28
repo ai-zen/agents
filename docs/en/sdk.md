@@ -79,16 +79,16 @@ Rules:
 
 Matching dimensions: `tools` by tool name (e.g. `rm`), `skills` by skill id, `mcps` by server name, `subagents` by `function.name`.
 
-## Built-in tools (19 classes)
+## Built-in tools (20 classes)
 
 All built-in tools are `SdkCallbackTool` subclasses, instantiated by the Provider using `ToolEnv` (one set of instances per Provider, with its `cwd` injected). Relative paths are always resolved against `ToolEnv.cwd`, never depending on the global `process.cwd()`.
 
 | Tool | Description |
 |------|------|
-| `cwd` / `readFile` / `writeFile` / `mkdir` / `rm` / `glob` / `ls` / `exist` / `rename` / `copy` / `findText` | filesystem operations |
+| `cwd` / `readFile` / `inspectFile` / `writeFile` / `mkdir` / `rm` / `glob` / `ls` / `exist` / `rename` / `copy` / `findText` | filesystem operations (`readFile` supports an optional `range` for line/column slicing; `inspectFile` returns a structural overview via streamed scan, not limited by the 300KB read threshold) |
 | `exec` / `exec_async` | run commands (`exec` supports `timeout`; `exec_async` returns asynchronously immediately and supports shell redirect/pipelines) |
 | `downloadFile` | download from a URL and save |
-| `batchEdit` / `edit` | batch / single text replacement in files |
+| `batchEdit` / `edit` | batch / single text replacement in files (`batchEdit` echoes back only unmatched items) |
 | `sleep` | wait a specified number of milliseconds |
 
 Tools injected based on config / model conditions:
@@ -99,6 +99,8 @@ Tools injected based on config / model conditions:
 | `viewImage` | only for vision models (the Agent's `modelId` resolves to `Model.vision === true`) |
 
 Tool availability is declared by each tool's own `isAvailable(config, definition)` and filtered during the `buildTools` / `filter` stage; the discovery layer does no filtering.
+
+Tool output protection: `AppConfig.maxToolOutput` (in characters, default 32768) is the unified ceiling; on overflow each tool handles it itself — `exec` dumps `stdout.log` / `stderr.log` separately (with head/tail previews per stream), `findText` / `glob` / `ls` dump `result.json` (with a head preview), and `readFile` only warns and suggests batched reads via `range`. Dumps go to `<tmpdir>/ai-zen/tool-output/<tool>-<timestamp>-<random>/`, one directory per call. Note that 300KB is a **read** threshold (whether a file can be read), distinct from the output threshold.
 
 `SdkCallbackTool` abstract base class:
 
@@ -119,7 +121,7 @@ abstract class SdkCallbackTool extends Tool {
 | `Endpoint` | API endpoint (baseUrl + apiKey) | `config.json` |
 | `Model` | Model configuration, bound to one Endpoint | `config.json` |
 | `ImageModel` | Image-generation model configuration | `config.json` |
-| `AgentDefinition` | an interactive AI persona (prompt, permissions, optional tool signatures); having a `function` makes it a SubAgent | `agents/*.json` |
+| `AgentDefinition` | an interactive AI persona (prompt, permissions, optional tool signatures); having a `function` makes it a SubAgent; `custom: true` marks it as user-defined (init skips syncing built-in prompts) | `agents/*.json` |
 | `ToolEnv` | `{ cwd, config }`, injected when constructing built-in tools | in-memory |
 | `SdkCallbackTool` | abstract base class for built-in tools | in-memory |
 

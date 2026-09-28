@@ -61,6 +61,13 @@ export interface AgentDefinition {
   createdAt: string; // ISO 8601
   updatedAt: string; // ISO 8601
   version?: number;
+  /**
+   * 是否用户自定义。
+   *
+   * 为 true 时 SDK 初始化不会同步/替换该 Agent 的内置内容（如默认提示词）；
+   * 缺省（或为 false）时，初始化会以出厂定义同步其提示词，其余字段保留。
+   */
+  custom?: boolean;
 }
 
 // ---- 配置文件（暂时约定）----
@@ -90,6 +97,14 @@ export interface AppConfig {
   defaultAgent?: string;
   /** 默认迁移模型 ID */
   defaultMigrationModel?: string;
+  /**
+   * 工具输出上限（字符数），缺省取 32768。
+   *
+   * 工具本次输出超过该值时，由工具自身的保护策略处置（落盘或仅警告），
+   * 避免超长输出撑爆上下文。仅作用于"输出"，与工具的读取阈值无关
+   * （如 readFile/findText 对 300KB 文件的读取上限）。
+   */
+  maxToolOutput?: number;
 }
 
 // ---- 工具环境 ----

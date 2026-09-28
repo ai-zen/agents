@@ -46,6 +46,8 @@ describe("ConfigManager.ensureDefaultAgent", () => {
     expect(raw.permissions.tools).toEqual({ allow: ["*"] });
     expect(raw.messages.length).toBe(1);
     expect(raw.messages[0].role).toBe("system");
+    // 出厂默认 Agent 携带 custom: false（初始化时会同步出厂提示词）
+    expect(raw.custom).toBe(false);
   });
 
   it("agents 目录已存在但为空 → 写入 default.json", async () => {
@@ -77,7 +79,7 @@ describe("ConfigManager.ensureDefaultAgent", () => {
     await expect(fs.access(join(agentsDir, `${DEFAULT_AGENT_ID}.json`))).rejects.toThrow();
   });
 
-  it("default.json 已存在 → 幂等，不覆盖", async () => {
+  it("default.json 已存在且 custom !== true → 保留自定义字段，仅同步出厂提示词", async () => {
     testDir = await tempDir();
     const agentsDir = join(testDir, "agents");
     await fs.mkdir(agentsDir, { recursive: true });
@@ -93,13 +95,56 @@ describe("ConfigManager.ensureDefaultAgent", () => {
     await fs.writeFile(join(agentsDir, `${DEFAULT_AGENT_ID}.json`), JSON.stringify(customContent, null, 2));
 
     const mgr = makeManager(testDir);
-    const result = await mgr.ensureDefaultAgent();
+    const result = (await mgr.ensureDefaultAgent())!;
 
     const raw = JSON.parse(await fs.readFile(join(agentsDir, `${DEFAULT_AGENT_ID}.json`), "utf-8"));
+    // 非 messages 字段保留
     expect(raw.name).toBe("我自定义的名字");
     expect(raw.permissions.tools).toEqual({ deny: ["*"] });
-    expect(result).not.toBeNull();
-    expect(result!.name).toBe("我自定义的名字");
+    expect(raw.createdAt).toBe("2024-01-01T00:00:00.000Z");
+    // 提示词已同步为出厂内容，updatedAt 刷新
+    expect(raw.messages[0].content).toBe(DEFAULT_AGENT_DEFINITION.messages[0].content);
+    expect(raw.updatedAt).not.toBe("2024-01-01T00:00:00.000Z");
+    expect(result.name).toBe("我自定义的名字");
+  });
+
+  it("custom: true → 完全跳过提示词同步", async () => {
+    testDir = await tempDir();
+    const agentsDir = join(testDir, "agents");
+    await fs.mkdir(agentsDir, { recursive: true });
+
+    const customContent = {
+      id: DEFAULT_AGENT_ID,
+      name: "我自定义的名字",
+      custom: true,
+      messages: [{ role: "system" as any, content: "我的自定义提示词" }],
+      createdAt: "2024-01-01T00:00:00.000Z",
+      updatedAt: "2024-01-01T00:00:00.000Z",
+    };
+    await fs.writeFile(join(agentsDir, `${DEFAULT_AGENT_ID}.json`), JSON.stringify(customContent, null, 2));
+
+    const mgr = makeManager(testDir);
+    const result = (await mgr.ensureDefaultAgent())!;
+
+    const raw = JSON.parse(await fs.readFile(join(agentsDir, `${DEFAULT_AGENT_ID}.json`), "utf-8"));
+    expect(raw.messages[0].content).toBe("我的自定义提示词");
+    expect(raw.updatedAt).toBe("2024-01-01T00:00:00.000Z");
+    expect(result.messages[0].content).toBe("我的自定义提示词");
+  });
+
+  it("提示词与出厂一致 → 不写盘、updatedAt 不变", async () => {
+    testDir = await tempDir();
+    const mgr = makeManager(testDir);
+    await mgr.ensureDefaultAgent();
+
+    const agentPath = join(testDir, "agents", `${DEFAULT_AGENT_ID}.json`);
+    const first = JSON.parse(await fs.readFile(agentPath, "utf-8"));
+
+    await new Promise<void>((resolve) => setTimeout(() => resolve(), 10));
+    await mgr.ensureDefaultAgent();
+
+    const second = JSON.parse(await fs.readFile(agentPath, "utf-8"));
+    expect(second.updatedAt).toBe(first.updatedAt);
   });
 
   it("返回的 AgentDefinition 包含 createdAt 和 updatedAt", async () => {

@@ -85,7 +85,9 @@ export class ConfigManager {
   /**
    * 确保 basePath/agents/default.json 存在。
    *
-   * - default.json 已存在 → 返回已有定义，不覆盖
+   * - default.json 已存在且 custom === true → 用户声明为自定义，原样返回，不做任何改动
+   * - default.json 已存在且 custom !== true → 仅同步出厂提示词（messages），
+   *   其余字段（name/permissions/modelId 等）保留；提示词一致时不写盘
    * - agents/ 为空 → 写入默认 Agent
    * - 已有其他 Agent → 返回 null
    */
@@ -94,10 +96,24 @@ export class ConfigManager {
     const defaultPath = join(agentsDir, `${DEFAULT_AGENT_ID}.json`);
 
     try {
-      await fs.access(defaultPath);
-      return JSON.parse(await fs.readFile(defaultPath, "utf-8")) as AgentDefinition;
+      const existing = JSON.parse(await fs.readFile(defaultPath, "utf-8")) as AgentDefinition;
+
+      // 用户声明为自定义 → 完全跳过替换
+      if (existing.custom === true) return existing;
+
+      // 仅同步提示词；内容一致则不写盘、不动时间戳
+      const messages = DEFAULT_AGENT_DEFINITION.messages;
+      if (sameMessages(existing.messages ?? [], messages)) return existing;
+
+      const updated: AgentDefinition = {
+        ...existing,
+        messages,
+        updatedAt: new Date().toISOString(),
+      };
+      await fs.writeFile(defaultPath, JSON.stringify(updated, null, 2), "utf-8");
+      return updated;
     } catch {
-      // default.json 不存在，继续
+      // 文件不存在或不可解析，继续走初始化流程
     }
 
     await fs.mkdir(agentsDir, { recursive: true });
@@ -250,6 +266,21 @@ export class ConfigManager {
     await fs.writeFile(tmpPath, JSON.stringify(data, null, 2) + "\n", "utf-8");
     await fs.rename(tmpPath, path);
   }
+}
+
+/**
+ * 比较两段消息列表的提示词内容是否一致。
+ *
+ * 只比较 role 与 content，忽略 id 等每次生成都可能变化的字段，
+ * 避免因 id 差异导致无意义的重复写盘与时间戳漂移。
+ */
+function sameMessages(a: AgentDefinition["messages"], b: AgentDefinition["messages"]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every(
+    (message, index) =>
+      message.role === b[index].role &&
+      JSON.stringify(message.content) === JSON.stringify(b[index].content),
+  );
 }
 
 export {

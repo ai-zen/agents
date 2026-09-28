@@ -60,13 +60,17 @@ export class BatchEditTool extends SdkCallbackTool {
       const filePath = this.resolve(input.path);
       const content = await fsp.readFile(filePath, "utf-8");
       let newContent = content;
-      const results: { oldText: string; newText: string; result: string }[] = [];
+      let replacedCount = 0;
+      // 仅回显"有问题"的替换项（未匹配到），便于模型据此修正；
+      // 成功项不回显原文与新文，仅计入成功数，避免大段文本回显撑大输出
+      const failed: { oldText: string; newText: string; reason: string }[] = [];
+
       for (const replacement of input.replacements) {
         if (!newContent.includes(replacement.oldText)) {
-          results.push({
+          failed.push({
             oldText: replacement.oldText,
             newText: replacement.newText,
-            result: "文件中未精确匹配到要替换的文本",
+            reason: "文件中未精确匹配到要替换的文本",
           });
           continue;
         }
@@ -75,14 +79,14 @@ export class BatchEditTool extends SdkCallbackTool {
         } else {
           newContent = newContent.replace(replacement.oldText, replacement.newText);
         }
-        results.push({
-          oldText: replacement.oldText,
-          newText: replacement.newText,
-          result: "success",
-        });
+        replacedCount++;
       }
       await fsp.writeFile(filePath, newContent);
-      return JSON.stringify(results);
+
+      if (failed.length === 0) {
+        return JSON.stringify({ result: "success", replacedCount });
+      }
+      return JSON.stringify({ result: "partial", replacedCount, failed });
     } catch (error: any) {
       return error?.message;
     }

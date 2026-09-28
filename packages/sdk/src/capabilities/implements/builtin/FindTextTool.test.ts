@@ -1,11 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { writeFileSync, mkdirSync, unlinkSync } from "fs";
+import { writeFileSync, mkdirSync, unlinkSync, readFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
 import { FindTextTool } from "./FindTextTool.js";
 import { makeEnv } from "./test-helpers.js";
 import type { ToolCallContext } from "@ai-zen/agents-core";
+import type { AppConfig } from "../../../types/index.js";
 
 function tmpDir(): string {
   const dir = join(tmpdir(), randomBytes(8).toString("hex"));
@@ -143,6 +144,50 @@ describe("FindTextTool", () => {
       const result = await tool.call({ path: dir, pattern: "*.txt", text: "needle", maxLineLength: 10 });
       const parsed = JSON.parse(result as string);
       expect(parsed[0].matches[0].content).toBe("abcdefghij…");
+    } finally {
+      try { unlinkSync(join(dir, "data.txt")); } catch {}
+      try { unlinkSync(dir); } catch {}
+    }
+  });
+
+  it("输出超过 maxToolOutput 时落盘 result.json 并返回警告与头尾预览", async () => {
+    const tool = new FindTextTool(makeEnv(process.cwd(), { maxToolOutput: 100 } as AppConfig));
+    const dir = tmpDir();
+    try {
+      const lines = Array.from({ length: 30 }, (_, i) => `needle-${i}`).join("\n");
+      writeFileSync(join(dir, "data.txt"), lines, "utf-8");
+
+      const result = await tool.call({ path: dir, pattern: "*.txt", text: "needle" });
+      const parsed = JSON.parse(result as string);
+
+      expect(parsed.outputTooLarge).toBe(true);
+      expect(parsed.warning).toContain("超过上限 100 字符");
+
+      // 完整结果落盘
+      const dumped = JSON.parse(readFileSync(parsed.files["result.json"], "utf-8"));
+      expect(dumped[0].file).toBe("data.txt");
+      expect(dumped[0].matches.length).toBe(30);
+
+      expect(parsed.chars).toBeGreaterThan(100);
+      // 仅头部预览
+      expect(typeof parsed.head).toBe("string");
+      expect(parsed.omitted).toBeGreaterThan(0);
+      expect(parsed.tail).toBeUndefined();
+    } finally {
+      try { unlinkSync(join(dir, "data.txt")); } catch {}
+      try { unlinkSync(dir); } catch {}
+    }
+  });
+
+  it("输出未超过 maxToolOutput 时原样返回结果，不落盘", async () => {
+    const tool = new FindTextTool(makeEnv(process.cwd(), { maxToolOutput: 100_000 } as AppConfig));
+    const dir = tmpDir();
+    try {
+      writeFileSync(join(dir, "data.txt"), "needle", "utf-8");
+      const result = await tool.call({ path: dir, pattern: "*.txt", text: "needle" });
+      const parsed = JSON.parse(result as string);
+      expect(Array.isArray(parsed)).toBe(true);
+      expect(parsed[0].matches.length).toBe(1);
     } finally {
       try { unlinkSync(join(dir, "data.txt")); } catch {}
       try { unlinkSync(dir); } catch {}

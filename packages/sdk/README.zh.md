@@ -88,20 +88,21 @@ await agent.send("你好");
 | 工具 | 说明 |
 |------|------|
 | `cwd` | 获取当前工作目录 |
-| `readFile` | 读取文件 |
+| `readFile` | 读取文件（可选 `range` 按行列范围读取；输出超限仅警告并提示用 `range` 分批） |
+| `inspectFile` | 勘察文件结构概况（行数、列数分布等），流式扫描不受 300KB 限制 |
 | `writeFile` | 写入文件 |
-| `exec` | 执行命令（支持 `timeout` 超时参数） |
+| `exec` | 执行命令（支持 `timeout` 超时参数；stdout+stderr 超限时分文件落盘 `stdout.log` / `stderr.log`） |
 | `exec_async` | 异步执行命令，启动后立即返回，不等待结果 |
 | `mkdir` | 创建目录 |
 | `rm` | 删除文件或目录 |
-| `glob` | 使用 glob 模式扫描查找文件 |
-| `ls` | 列出目录内容 |
+| `glob` | 使用 glob 模式扫描查找文件（输出超限落盘 `result.json`） |
+| `ls` | 列出目录内容（输出超限落盘 `result.json`） |
 | `exist` | 检查文件或目录是否存在 |
-| `findText` | 在文件中搜索文本或正则 |
+| `findText` | 在文件中搜索文本或正则（输出超限落盘 `result.json`） |
 | `downloadFile` | 从 URL 下载文件并保存到本地 |
 | `rename` | 重命名或移动文件/目录 |
 | `copy` | 复制文件或目录 |
-| `batchEdit` | 批量编辑文件文本 |
+| `batchEdit` | 批量编辑文件文本（仅回显未匹配项，成功项只计数） |
 | `edit` | 编辑文件中的文本 |
 | `sleep` | 等待指定毫秒数后继续 |
 
@@ -111,6 +112,8 @@ await agent.send("你好");
 |------|----------|------|
 | `generateImage` | 配置了 `defaultImageModel` 才注册 | 根据文字描述生成图片 |
 | `viewImage` | 仅视觉模型可用（Agent 的 `modelId` 解析为 `vision: true` 的模型） | 查看/分析图片：本地图片自动经 Files API 上传，网络 URL 直接引用 |
+
+工具输出保护：`AppConfig.maxToolOutput`（字符数，缺省 32768）是工具输出的统一上限，超限时由各工具自行处置——`exec` 分文件落盘 `stdout.log` / `stderr.log`（返回各流头尾预览），`findText` / `glob` / `ls` 落盘 `result.json`（返回头部预览），`readFile` 仅警告并提示用 `range` 分批读取。落盘目录为 `<tmpdir>/ai-zen/tool-output/<工具名>-<时间戳>-<随机串>/`，每次调用独立、不自清理。详见 [`docs/sdk-design.md` §7](docs/sdk-design.md)。
 
 ## 内置插件
 

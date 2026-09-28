@@ -1,4 +1,4 @@
-# SDK 设计文档（v0.10.0）
+# SDK 设计文档（v0.11.0）
 
 > 本文档是 `@ai-zen/agents-sdk` 的**唯一设计真相源**，与当前实现逐项对齐。
 > 任何代码改动若与此文档不符，需先更新文档；文档描述以当前 `src/` 实现为准。
@@ -76,6 +76,7 @@ interface AppConfig {
   defaultImageModel?: string;   // 默认图片生成模型 ID
   defaultAgent?: string;        // 默认 Agent ID
   defaultMigrationModel?: string; // 默认迁移模型 ID
+  maxToolOutput?: number;       // 工具输出上限（字符数，缺省 32768）；超限由各工具的保护策略处置
 }
 
 interface Endpoint {
@@ -116,6 +117,7 @@ interface AgentDefinition {
   createdAt: string;             // ISO 8601
   updatedAt: string;             // ISO 8601
   version?: number;
+  custom?: boolean;              // 用户自定义标记：为 true 时初始化不同步内置内容（如默认提示词）
 }
 ```
 
@@ -230,7 +232,7 @@ capabilities/
     usertools.ts              ← discoverUserTools(paths) → Tool[]
     mcp.ts                    ← discoverMcpServers(paths) → McpServerConfig[]
   implements/
-    builtin/                  ← 19 个内置工具类 + BUILTIN_TOOL_CLASSES + test-helpers
+    builtin/                  ← 20 个内置工具类 + BUILTIN_TOOL_CLASSES + outputGuard + test-helpers
     skillTools.ts             ← createLoadSkillTool / createCallSkillSubAgentTool
     mcpTools.ts               ← createLoadMcpTool / createCallMcpTool / createReadMcpResourceTool
     subAgentTools.ts          ← createSubAgentTool
@@ -395,34 +397,49 @@ abstract class SdkCallbackTool extends Tool {
 
 ```typescript
 export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> = [
-  CwdTool, ReadFileTool, WriteFileTool, ExecTool, MkdirTool, RmTool,
+  CwdTool, ReadFileTool, InspectFileTool, WriteFileTool, ExecTool, MkdirTool, RmTool,
   GlobTool, LsTool, ExistTool, FindTextTool, DownloadFileTool,
   RenameTool, CopyTool, BatchEditTool, EditTool, ExecAsyncTool, SleepTool,
   ViewImageTool, GenerateImageTool,
 ];
 ```
 
-19 个内置工具类（发现层不做任何过滤，可用性由各工具 `isAvailable` 声明，buildTools 阶段过滤）：
+20 个内置工具类（发现层不做任何过滤，可用性由各工具 `isAvailable` 声明，buildTools 阶段过滤）：
 
 | 工具 | 说明 |
 |------|------|
 | `cwd` | 获取当前工作目录（`env.cwd`） |
-| `readFile` | 读取文件（>300KB 拒绝） |
+| `readFile` | 读取文件（>300KB 拒绝）；可选 `range: [起始行, 起始列, 结束行, 结束列]` 按行列范围读取（0-based，`-1` 表末位）；输出超限仅警告（不落盘），提示用 `range` 分批读取 |
+| `inspectFile` | 勘察文件结构概况（`bytes` / `lines` / `chars` / `maxCol` / `lineIndexOfMaxCol` / `avgCol` / `lineEnding`）；流式扫描，不受 300KB 限制；可选 `withColCountMap` 返回行索引→列数映射 |
 | `writeFile` | 写入文件（自动建父目录） |
-| `exec` | 执行命令（`timeout` 必填，超时被终止时返回 `terminated: "timeout"` 明确告知 agent；`cwd` 为 `env.cwd`） |
+| `exec` | 执行命令（`timeout` 必填，超时被终止时返回 `terminated: "timeout"` 明确告知 agent；`cwd` 为 `env.cwd`；stdout+stderr 合计超限时分文件落盘 `stdout.log` / `stderr.log`） |
 | `exec_async` | 异步执行命令，启动后立即返回；全平台经 shell 解析，支持重定向（`>` / `>>`）、管道（`|`）等 shell 语法 |
 | `mkdir` | 创建目录（`recursive`） |
 | `rm` | 删除文件或目录 |
-| `glob` | glob 模式扫描（`path` 参数 resolve 到 `env.cwd`） |
-| `ls` | 列出目录内容 |
+| `glob` | glob 模式扫描（`path` 参数 resolve 到 `env.cwd`；输出超限落盘 `result.json`） |
+| `ls` | 列出目录内容（输出超限落盘 `result.json`） |
 | `exist` | 检查文件或目录是否存在 |
-| `findText` | 在文件中搜索文本或正则 |
+| `findText` | 在文件中搜索文本或正则（输出超限落盘 `result.json`） |
 | `downloadFile` | 从 URL 下载文件并保存 |
 | `rename` | 重命名或移动文件/目录 |
 | `copy` | 复制文件或目录 |
-| `batchEdit` | 批量替换文件文本 |
+| `batchEdit` | 批量替换文件文本（仅回显未匹配项，成功项只计数） |
 | `edit` | 单次替换文件文本 |
 | `sleep` | 等待指定毫秒数 |
+
+### 输出保护（`maxToolOutput` + `guardOutput`）
+
+工具输出可能无上限（`exec` 的命令输出、`findText` / `glob` / `ls` 的结果集），故统一设防：
+
+- **上限配置**：`AppConfig.maxToolOutput`（字符数，缺省 32768，出厂默认已写入）。仅 CONFIG 层可配，不暴露工具参数、不按 Agent 覆盖。
+- **骨架**：`guardOutput({ tool, content, isOverLimit, dump?, buildWarning })`（`builtin/outputGuard.ts`）——工具自陈策略，骨架只负责判定与落盘，返回 `T | string`：未超限返回 `content` 本身，超限返回 `buildWarning` 生成的字符串。
+  - `isOverLimit(content)`：上限由工具自行从 config 读取并判定（如 `exec` 用 `stdout + stderr` 合计字符数）；
+  - `dump(dir, content)`：工具组织落盘文件清单；缺省即"只警告、不落盘"；
+  - `buildWarning(ctx)`：工具生成返回体（含预览与统计）。
+- **落盘目录**：`<os.tmpdir()>/ai-zen/tool-output/<tool>-<时间戳>-<随机串>/`，每次调用独立目录、互不覆盖、不做自清理（依赖系统对临时目录的策略）；落盘失败不吞异常。
+- **预览**：`headPreview()`（仅头部）/ `headTailPreview()`（头尾各 1000 字符）供工具自行组织预览文本。
+- **已接入**：`exec`（`stdout.log` + `stderr.log`，各流头尾预览）、`findText` / `glob` / `ls`（`result.json` + 头部预览）、`readFile`（超限仅警告、不落盘）。`inspectFile` 明细超限时不落盘，仅返回概况 + 提示。
+- **读取阈值与输出阈值互相独立**：300KB 是"能否读取"（`readFile` / `findText` 的文件大小阈值），`maxToolOutput` 是"是否落盘"。
 
 ### GenerateImageTool — 依赖图片模型配置
 
@@ -458,7 +475,7 @@ provider.buildTools(definition, { exclude });
 
 | 来源 | 发现函数 | 返回类型 |
 |------|----------|----------|
-| 内置工具 | `discoverBuiltinTools(env: ToolEnv)` | `Tool[]`（19 类全量；可用性由 buildTools 按工具 isAvailable 过滤） |
+| 内置工具 | `discoverBuiltinTools(env: ToolEnv)` | `Tool[]`（20 类全量；可用性由 buildTools 按工具 isAvailable 过滤） |
 | 用户工具 | `discoverUserTools(paths, { silent? })` | `Tool[]`（扫描 `tools/*.js`、`*.mjs`，动态 import） |
 | SubAgent | `discoverSubAgents(paths)` | `AgentDefinition[]`（仅含 function 的定义） |
 | Skill | `discoverSkills(paths, { silent? })` | `SkillInfo[]`（含 subAgent 标记等完整信息） |
@@ -679,8 +696,8 @@ class ConfigManager {
 
 | 常量 | 说明 |
 |------|------|
-| `DEFAULT_APP_CONFIG` | 预置端点（OpenAI / 智谱 / DeepSeek）+ 7 个模型（含视觉模型 `deepseek-v4-flash-vision-exp` / `glm-5v-turbo`，`vision: true`）+ 3 个图片模型 + 默认选项 |
-| `DEFAULT_AGENT_ID` / `DEFAULT_AGENT_DEFINITION` | 默认 Agent（id=`default`，四维全开，六条行为原则） |
+| `DEFAULT_APP_CONFIG` | 预置端点（OpenAI / 智谱 / DeepSeek）+ 7 个模型（含视觉模型 `deepseek-v4-flash-vision-exp` / `glm-5v-turbo`，`vision: true`）+ 3 个图片模型 + 默认选项 + `maxToolOutput: 32768` |
+| `DEFAULT_AGENT_ID` / `DEFAULT_AGENT_DEFINITION` | 默认 Agent（id=`default`，四维全开，`custom: false`，两条行为规则：一次只问一个问题、可编写 Node.js 脚本执行复杂任务） |
 | `DEFAULT_SUBAGENT_ID` / `DEFAULT_SUBAGENT_DEFINITION` | 默认通用助手 SubAgent（id=`sub-agent-default`，`subagents: deny` 防递归） |
 | `DEFAULT_MCP_CONFIG` | 出厂默认 MCP 服务器（socket-pty 终端），首启写入 `~/.ai-zen/mcp.json`，已存在则不覆盖 |
 | `CONFIG_SUB_DIRS` | 标准共享子目录：`agents` / `sub-agents` / `skills` / `tools` / `mcp-oauth` |
@@ -688,6 +705,7 @@ class ConfigManager {
 设计决策：
 - **SDK 持有出厂默认**：预置厂商/模型由 SDK 统一维护，各端不再重复定义
 - **幂等安全**：所有 `ensure*` 对已存在文件不覆盖，用户配置永不丢失
+- **提示词可同步**：`DEFAULT_AGENT_DEFINITION.custom` 为 `false` 时，`ensureDefaultAgent()` 仅同步出厂提示词（其余字段保留，内容一致时不写盘）；用户把 `custom` 设为 `true` 即完全自主、不被触碰
 - **read() 无文件返回默认**：无需先写 config.json 也能工作
 
 ### 文件布局（共享）

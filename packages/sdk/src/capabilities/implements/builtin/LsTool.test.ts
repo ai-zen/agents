@@ -1,10 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { writeFileSync, mkdirSync, unlinkSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
 import { LsTool } from "./LsTool.js";
 import { makeEnv } from "./test-helpers.js";
+import type { AppConfig } from "../../../types/index.js";
 
 function tmpDir(): string {
   const dir = join(tmpdir(), randomBytes(8).toString("hex"));
@@ -52,5 +53,41 @@ describe("LsTool", () => {
     const tool = new LsTool(makeEnv());
     const result = await tool.call({ path: "/tmp/not-exists-xxx-dir" });
     expect(result).toContain("ENOENT");
+  });
+
+  it("输出超过 maxToolOutput 时落盘 result.json 并返回警告与头部预览", async () => {
+    const tool = new LsTool(makeEnv(process.cwd(), { maxToolOutput: 100 } as AppConfig));
+    const dir = tmpDir();
+    const names = Array.from({ length: 30 }, (_, i) => `f${i}.txt`);
+    try {
+      for (const name of names) writeFileSync(join(dir, name), "", "utf-8");
+
+      const result = await tool.call({ path: dir });
+      const parsed = JSON.parse(result as string);
+
+      expect(parsed.outputTooLarge).toBe(true);
+      expect(parsed.warning).toContain("超过上限 100 字符");
+      expect(parsed.warning).toContain("30 项");
+
+      const dumped = JSON.parse(readFileSync(parsed.files["result.json"], "utf-8"));
+      expect(dumped.length).toBe(30);
+      expect(typeof parsed.head).toBe("string");
+    } finally {
+      for (const name of names) try { unlinkSync(join(dir, name)); } catch {}
+      try { unlinkSync(dir); } catch {}
+    }
+  });
+
+  it("输出未超过 maxToolOutput 时原样返回结果，不落盘", async () => {
+    const tool = new LsTool(makeEnv(process.cwd(), { maxToolOutput: 100_000 } as AppConfig));
+    const dir = tmpDir();
+    try {
+      writeFileSync(join(dir, "a.txt"), "", "utf-8");
+      const result = await tool.call({ path: dir });
+      expect(JSON.parse(result as string)).toContain("a.txt");
+    } finally {
+      try { unlinkSync(join(dir, "a.txt")); } catch {}
+      try { unlinkSync(dir); } catch {}
+    }
   });
 });

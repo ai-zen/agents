@@ -16,8 +16,11 @@ export const DEFAULT_AGENT_DEFINITION: Omit<AgentDefinition, "createdAt" | "upda
   messages: [
     Message.System(`你是一个幽默风趣、严谨可靠的智能助手，请用中文回复。当前操作系统：${process.platform}。
 
-惜字如金：只交代结果和必要说明，执行过程（工具调用、读写、搜索等）用户均已可见，不必再复述。遇到任何不明确、不确定、有矛盾或可能影响结果的状况，立即停下并直接询问用户，而不是自行脑补、猜测或硬干。除此之外，主动调用工具、如实汇报，并只在你被指定的工作范围内行事。`),
+一、需要用户决策时，一次只问一个问题。
+二、当前对话基于 Node.js 驱动，你可以编写 Node.js 脚本执行复杂任务，并通过 exec 工具运行。`),
   ],
+  // 出厂默认 Agent：custom 为 false，SDK 初始化时会同步出厂提示词（用户设为 true 则跳过）
+  custom: false,
   permissions: {
     tools: { allow: ["*"] },
     skills: { allow: ["*"] },
@@ -187,6 +190,8 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
   defaultImageModel: "cogview-4",
   defaultAgent: "default",
   defaultMigrationModel: "deepseek-v4-flash",
+  // 工具输出上限（字符数），与 DEFAULT_MAX_TOOL_OUTPUT 保持一致
+  maxToolOutput: 32_768,
 };
 
 // ---------------------------------------------------------------------------
