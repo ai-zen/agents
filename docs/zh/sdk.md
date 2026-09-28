@@ -75,7 +75,7 @@ Agent.permissions
 3. `allow` 与 `deny` 不能同时配置（运行时抛错）。
 4. 无命中 = 拒绝。
 5. 通配符 `*` 匹配任意字符串。
-6. 每个 Agent 的权限完全独立，不继承、不传递（`call_skill_sub_agent` 创建的临时 Skill 子 Agent 继承父权限，是有意的例外）。
+6. 每个 Agent 的权限完全独立，不继承、不传递（`call_skill_sub_agent` 创建的临时 Skill 子 Agent 沿用调用者工具集、不再二次过滤，是有意的例外）。
 
 匹配维度：`tools` 按工具名（如 `rm`）、`skills` 按 skill id、`mcps` 按 server 名、`subagents` 按 `function.name`。
 

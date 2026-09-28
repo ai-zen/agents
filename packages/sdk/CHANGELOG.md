@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.11.0] - 2026-09-28
+
+### 💥 Breaking Changes
+
+- **`createCallSkillSubAgentTool` 移除第三参 `provider`** — Skill 子 Agent 不再经 `provider.buildTools(parent.definition, …)` 重新解析工具集，改为**直接沿用父 Agent 的工具集**（`ctx.agent.tools`），仅剔除 `call_skill_sub_agent` 自身：Skill 子 Agent 作为一次性对话分身，沿用调用者的能力而不再走第二遍权限过滤，同时避免 skill 链式自递归。传入 `Provider` 的调用方需删除该实参
+
+### 🚀 New Features
+
+- **Skill 子 Agent 纳入统一委派边界** — `call_skill_sub_agent` 由 `AgentToolLazy` 承载（原为就地实现的 `CallbackTool`），因此与常规 SubAgent 工具共享同一套 `onSubAgentStart` / `onSubAgentEnd` 插件钩子与 `sub-agent-start` / `sub-agent-end` 事件。将护栏装配到 `ctx.subAgent` 的消费方（如上下文护栏）与渲染子 Agent 流式输出的消费方（如 CLI），自此均覆盖该路径
+
+### 🛠 Optimized
+
+- **Skill 子 Agent 的构建收敛到 `buildAgent`** — 子 Agent 的初始消息（`System(SKILL.md 内容)` + `User(task)`）改由 `buildAgent` 决定（依托 core 4.3.0 的 `messages` 可选），原先手写的 abort 联动与返回值处理一并删除，交由工具基类统一实现
+- **校验失败改为抛错** — `skill_id` 不存在、或 Skill 未声明 `sub-agent: true` 时抛出错误（原为返回提示文本）；正常路径由 `skill_id` 枚举限定，不触发
+- **依赖 `@ai-zen/agents-core` 升至 `^4.3.0`** — 依赖声明保持 `workspace:^`，由 pnpm 在发布时展开为 `^4.3.0`。core 4.3.0 使 `AgentToolLazy.messages` 变为可选
+
+### ✅ Tests
+
+- `skillTools.test.ts` 中 `createCallSkillSubAgentTool` 用例重写为围绕 `AgentToolLazy`：工具契约不变、未知 Skill 抛错、非子 Agent Skill 抛错、委派边界（`onSubAgentStart` 与 `sub-agent-start` 分发、子 Agent 沿用父工具集且剔除自身、初始消息取自 SKILL.md 与 `task`）；SDK 全量 **463 passed / 6 skipped**
+
 ## [0.10.0] - 2026-09-28
 
 ### 🚀 New Features

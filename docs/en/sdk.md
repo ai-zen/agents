@@ -75,7 +75,7 @@ Rules:
 3. `allow` and `deny` cannot be configured simultaneously (throws at runtime).
 4. No match = deny.
 5. The wildcard `*` matches any string.
-6. Each Agent's permissions are fully independent — no inheritance, no propagation (the temporary Skill sub-Agent created by `call_skill_sub_agent` inherits the parent's permissions, which is an intentional exception).
+6. Each Agent's permissions are fully independent — no inheritance, no propagation (the temporary Skill sub-Agent created by `call_skill_sub_agent` reuses the caller's tool set without a second permission pass, which is an intentional exception).
 
 Matching dimensions: `tools` by tool name (e.g. `rm`), `skills` by skill id, `mcps` by server name, `subagents` by `function.name`.
 

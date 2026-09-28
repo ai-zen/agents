@@ -186,7 +186,7 @@ Agent.permissions
 
 ### 隔离
 
-每个 Agent 的权限完全独立，不继承、不传递。A 调用 SubAgent B 时，B 用自己的权限（包括披露范围）。例外：`call_skill_sub_agent` 创建的临时 Skill 子 Agent 继承父 Agent 的 `permissions`（它是临时对话分身而非独立实体）——这是有意的、文档化的不对称。
+每个 Agent 的权限完全独立，不继承、不传递。A 调用 SubAgent B 时，B 用自己的权限（包括披露范围）。例外：`call_skill_sub_agent` 创建的临时 Skill 子 Agent **沿用调用者的工具集**（`ctx.agent.tools`），不再走第二遍权限过滤，并额外剔除 `call_skill_sub_agent` 自身以避免链式自递归（它是临时对话分身而非独立实体）——这是有意的、文档化的不对称。
 
 ### PermissionEvaluator
 
@@ -464,7 +464,7 @@ provider.buildTools(definition, { exclude });
 | Skill | `discoverSkills(paths, { silent? })` | `SkillInfo[]`（含 subAgent 标记等完整信息） |
 | MCP Server | `discoverMcpServers(paths)` | `McpServerConfig[]`（完整服务器配置） |
 
-发现结果全局共享，SubAgent 和 Skill 子 Agent 复用同一份候选集。
+发现结果全局共享：SubAgent 按自身 definition 经 filter/instantiate 解析工具；Skill 子 Agent 直接沿用父 Agent 已实例化的工具集（同一批候选实例）。
 
 ### 阶段 2 — 过滤（Provider.filter）
 
@@ -533,8 +533,10 @@ MCP 和 Skill 采用**惰性加载**：装配时不直接注册具体工具，�
 ### call_skill_sub_agent
 
 - 参数：`skill_id`（仅枚举 `subAgent: true` 的 skill）+ `task`
-- 行为：以 skill 正文为 system prompt 创建临时 Agent，通过 `provider.buildTools()` 按父 Agent permissions 独立解析工具集（`exclude: { skills: [skillId] }` 防自调用）
-- 不支持子 Agent 的 skill → 返回提示改用 `load_skill`
+- 承载类：`AgentToolLazy`（与 SubAgent 工具同一通道）—— 因此同样经过 `onSubAgentStart` / `onSubAgentEnd` 委派边界，并广播 `sub-agent-start` / `sub-agent-end` 事件
+- 行为：`buildAgent` 中读取 SKILL.md，以「正文为 system prompt + `task` 为 user 消息」创建临时 Agent；工具集沿用父 Agent 的工具（`ctx.agent.tools`），剔除 `call_skill_sub_agent` 自身防自递归，不再走第二遍权限过滤
+- 初始消息依赖运行时参数，故不传 `messages` 模板，由 `buildAgent` 自行决定
+- `skill_id` 不存在或未声明 `sub-agent: true` → 抛出错误（正常路径由枚举限定，不触发）
 
 ### load_mcp
 
@@ -561,7 +563,7 @@ MCP 和 Skill 采用**惰性加载**：装配时不直接注册具体工具，�
 | 工具 | 所属维度 | 幂等 | 副作用 |
 |------|----------|------|--------|
 | `load_skill` | skills | ✅ 重复可加载 | 消耗上下文 |
-| `call_skill_sub_agent` | skills | — 每次独立执行 | 创建临时 Agent |
+| `call_skill_sub_agent` | skills | — 每次独立执行 | 创建临时 Agent（走委派边界，分发 `sub-agent-start` / `sub-agent-end`） |
 | `load_mcp` | mcps | ✅ 重复不重连 | 建立连接（可选不披露清单） |
 | `call_mcp_tool` | mcps | — 取决于工具 | 取决于工具 |
 | `read_mcp_resource` | mcps | ✅ 可重复读取 | 无 |
@@ -1042,7 +1044,7 @@ await agentB.send("……");   // 与 agent 并行，工具以各自 env.cwd 为
 3. **工具类化 + 环境注入**：内置工具都是 `SdkCallbackTool` 子类，`ToolEnv` 构造注入，杜绝全局状态
 4. **cwd 下沉到 Provider**：多会话并行靠 ToolEnv.cwd 而非进程级 chdir
 5. **权限即披露**：deny 掉的项对 LLM 完全不可见
-6. **权限不继承**：SubAgent 各自独立判断（Skill 子 Agent 临时分身继承是有意例外）
+6. **权限不继承**：SubAgent 各自独立判断（Skill 子 Agent 作为临时分身沿用调用者工具集、不再二次过滤，是有意例外）
 7. **显式声明，无默认**：权限必须显式声明，不声明 = 全关
 8. **安全预过滤**：递归/反向调用保护在权限判断前剔除，不受用户配置影响
 9. **MCP 无 tool 级权限**：server 级信任，连接后其工具全可用

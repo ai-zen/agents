@@ -1,11 +1,8 @@
-import { CallbackTool, Agent, Message, type ToolCallContext } from "@ai-zen/agents-core";
-import type { Tool } from "@ai-zen/agents-core";
-import { SdkAgent } from "../../runtime/SdkAgent.js";
+import { CallbackTool, Agent, AgentToolLazy, Message, type ToolCallContext } from "@ai-zen/agents-core";
 import type { SkillInfo } from "../discovery/skills.js";
 import { createDisclosureParam } from "../disclosure.js";
 import { readSkill } from "../discovery/skills.js";
 import { getLogger } from "../../shared/logger.js";
-import type { Provider } from "../../runtime/Provider.js";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 
@@ -84,13 +81,15 @@ export function createLoadSkillTool(
  * 创建 call_skill_sub_agent 工具。
  * 只展示 subAgent: true 的 Skill，枚举中自动排除不支持子 Agent 模式的 skill。
  *
- * 回调中创建独立的 Skill 子 Agent，通过 caps 按父 Agent 权限独立解析工具集。
+ * 工具由 AgentToolLazy 承载：子 Agent 在 exec 时构建，从而复用统一的委派边界
+ * （onSubAgentStart / onSubAgentEnd 钩子与 sub-agent-start / sub-agent-end 事件）。
+ * 子 Agent 沿用父 Agent 的工具能力（不做权限过滤），但剔除 call_skill_sub_agent 自身，
+ * 避免 skill 链式自递归。
  */
 export function createCallSkillSubAgentTool(
   skillDirs: string[],
   filteredSkills: SkillInfo[],
-  provider?: Provider,
-): CallbackTool {
+): AgentToolLazy {
   // 只保留支持子 Agent 模式的 skill
   const subAgentSkills = filteredSkills.filter((s) => s.subAgent);
   const ids = subAgentSkills.map((s) => s.id);
@@ -102,7 +101,7 @@ export function createCallSkillSubAgentTool(
     .join("\n");
   const skillIdDescription = `${param.description}\n\n各 Skill 说明：\n${skillDescriptions || "  无可用 Skill"}`;
 
-  return new CallbackTool({
+  return new AgentToolLazy({
     function: {
       name: "call_skill_sub_agent",
       description: "将任务委派给指定的 Skill 子 Agent，由其独立完成并返回结果。",
@@ -123,49 +122,37 @@ export function createCallSkillSubAgentTool(
         additionalProperties: false,
       },
     },
-    async callback(input: Record<string, unknown>, ctx: ToolCallContext): Promise<string> {
-      const skillId = input.skill_id as string;
-      const task = input.task as string;
+    // 初始消息依赖运行时参数（skill_id → SKILL.md 内容），故不传 messages 模板，
+    // 由 buildAgent 读取 SKILL.md 后自行决定；abort 联动与委派边界由 AgentToolLazy 统一处理
+    buildAgent: async (
+      parsedArgs: Record<string, unknown>,
+      ctx: ToolCallContext,
+    ): Promise<Agent> => {
+      const skillId = parsedArgs.skill_id as string;
+      const task = parsedArgs.task as string;
       const skill = await readSkill(skillDirs, skillId);
       if (!skill) {
-        return `❌ Skill "${skillId}" 不存在，请确认名称是否正确`;
+        throw new Error(`❌ Skill "${skillId}" 不存在，请确认名称是否正确`);
       }
       if (!skill.subAgent) {
-        return `Skill "${skillId}" 不支持子 Agent 模式，请使用 load_skill 加载指导后自行处理`;
+        throw new Error(
+          `Skill "${skillId}" 不支持子 Agent 模式，请使用 load_skill 加载指导后自行处理`,
+        );
       }
 
-      // 临时 Skill 子 Agent 复用父 Agent 定义（权限 + 模型），排除当前 Skill 防自调用
+      // 沿用父 Agent 的工具能力（不做权限过滤），剔除自身以防自递归
       const parentAgent = ctx.agent;
-      const skillTools: Tool[] =
-        provider && parentAgent instanceof SdkAgent
-          ? provider.buildTools(parentAgent.definition, {
-              exclude: { skills: [skillId] },
-            })
-          : [];
+      const tools = parentAgent.tools.filter(
+        (t) => t.function.name !== "call_skill_sub_agent",
+      );
 
-      const subAgent = new Agent({
+      return new Agent({
         client: parentAgent.client,
         model: parentAgent.model,
         modelConfig: parentAgent.modelConfig,
-        messages: [
-          Message.System(skill.content),
-          Message.User(task),
-        ],
-        tools: skillTools,
+        messages: [Message.System(skill.content), Message.User(task)],
+        tools,
       });
-
-      // 子 Agent 中断联动：外层 abort → subAgent.abort()
-      const onAbort = () => subAgent.abort();
-      if (ctx.signal) {
-        ctx.signal.addEventListener("abort", onAbort, { once: true });
-      }
-      try {
-        await subAgent.run();
-      } finally {
-        ctx.signal?.removeEventListener("abort", onAbort);
-      }
-      const lastMsg = subAgent.messages.at(-1);
-      return typeof lastMsg?.content === "string" ? lastMsg.content : "";
     },
   });
 }

@@ -253,7 +253,7 @@ export class Provider {
     // call_skill_sub_agent：只要有支持子 Agent 的 skill 就注册
     const hasSubAgentSkills = filteredSkills.some((s) => s.subAgent);
     if (allowedToolNames.has("call_skill_sub_agent") && hasSubAgentSkills) {
-      result.push(createCallSkillSubAgentTool(this.skillsPaths, filteredSkills, this));
+      result.push(createCallSkillSubAgentTool(this.skillsPaths, filteredSkills));
     }
 
     const mcpManager = this.mcpManager;
