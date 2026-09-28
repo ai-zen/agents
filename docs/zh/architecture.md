@@ -29,7 +29,7 @@ LLM API / MCP 服务器（openai SDK / @modelcontextprotocol/sdk）
 | 包 | 版本 | 职责 |
 |----|------|------|
 | `@ai-zen/agents-core` | 4.2.0 | `Agent` / `Message` / `Tool` / `ToolCallContext`、插件机制（`AgentPlugin` + `HookResult` + `dispatchHook`）、事件系统 |
-| `@ai-zen/agents-sdk` | 0.9.1 | `Provider` 全局上下文、能力管线（发现 → 过滤 → 实例化）、权限模型、MCP 生命周期、任务迁移、内置工具、`ConfigManager` |
+| `@ai-zen/agents-sdk` | 0.10.0 | `Provider` 全局上下文、能力管线（发现 → 过滤 → 实例化）、权限模型、MCP 生命周期、任务迁移、内置工具、`ConfigManager` |
 
 > workspace 根包 `@ai-zen/agents-workspace` 为私有，版本 `2.0.0`。该版本号与两个公开子包各自独立的版本并不一致，仅用于 workspace 编排。
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.10.0] - 2026-09-28
+
+### 🚀 New Features
+
+- **`load_mcp` 新增 `include_manifest` 开关（可选布尔，默认 `true`）** — 默认行为逐字不变（返回 `{ tools, resources }` 完整清单，tools 含完整 `inputSchema`）；显式传 `false` 时仅建立连接并返回摘要 `{ server, connected, tools: 数量, resources: 数量 }`，不返回任何工具/资源定义。用于「进程重启后连接已失效、但上文中已存在该清单」的场景：只重建连接，不重复向上下文灌入数十 KB 的工具定义，节省 token。完整清单仍留在 `McpConnectionManager` 内，`call_mcp_tool` / `read_mcp_resource` 行为不变；`server` 参数枚举、工具名表与 `DYNAMIC_TOOL_NAMES` 均未变动（前缀缓存结构不变）。失败路径与已连接路径的语义在两种模式下一致；`docs/sdk-design.md` §9 同步更新
+
+### 🛠 Optimized
+
+- **依赖 `@ai-zen/agents-core` 升至 `^4.2.0`** — 依赖声明保持 `workspace:^`，由 pnpm 在发布时展开为 `^4.2.0`。core 4.2.0 新增子 Agent 委派阻塞钩子 `onSubAgentStart` / `onSubAgentEnd`，并将原有事件 `sub-agent` 更名为 `sub-agent-start`（core 侧破坏性变更）；SDK 内部不监听该事件，源码无需适配。监听该事件的消费方需同步更名
+
+### ✅ Tests
+
+- `mcpTools.test.ts` 新增 4 个用例：静默 + 未连接、静默 + 已连接、显式 `true`、静默 + 连接失败；SDK 全量 **461 passed / 6 skipped**
+
 ## [0.9.4] - 2026-09-20
 
 ### 🔧 Fixed
