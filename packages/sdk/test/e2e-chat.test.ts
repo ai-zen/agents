@@ -2,7 +2,7 @@
  * 真实聊天端到端测试（需 API Key）。
  *
  * 使用 DeepSeek API 测试完整的 send() 链路：
- *   createAgent → agent.init() → agent.send()
+ *   createModel → SdkAgent → agent.send()
  *
  * 运行方式：
  *   npm test -- --testPathPattern "test/e2e-chat"
@@ -10,13 +10,13 @@
  * 跳过条件：未设置 DEEPSEEK_API_KEY 时自动跳过。
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { Provider } from "../src/runtime/Provider";
-import { createModel } from "../src/runtime/createModel";
-import { SdkAgent } from "../src/runtime/SdkAgent";
-import { BUILTIN_TOOL_CLASSES } from "../src/capabilities/implements/builtin/index";
+import { Scope } from "../src/scope/Scope.js";
+import { createModel } from "../src/runtime/createModel.js";
+import { SdkAgent } from "../src/runtime/SdkAgent.js";
+import { BUILTIN_TOOL_CLASSES } from "../src/scope/plugins/builtin/index.js";
 
 // ---------------------------------------------------------------------------
 // 配置
@@ -48,7 +48,7 @@ const config = {
   ],
 };
 
-const provider = new Provider({
+const scope = new Scope({
   config,
   agentsDir: join(tmpdir(), "ai-zen-e2e-chat", "agents"),
 });
@@ -59,9 +59,9 @@ const provider = new Provider({
 
 describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
   it("简单问答：一句话回复", async () => {
-    const model = createModel(provider, "deepseek-v4-flash");
+    const model = createModel(scope, "deepseek-v4-flash");
     const agent = new SdkAgent({
-      provider,
+      scope,
       definition: {
         id: "test",
         name: "Test",
@@ -86,16 +86,16 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
   });
 
   it("带工具调用：readFile 读取自身 package.json", async () => {
-    const model = createModel(provider, "deepseek-v4-flash");
+    const model = createModel(scope, "deepseek-v4-flash");
     const pkgPath = join(__dirname, "..", "package.json");
     const tools = BUILTIN_TOOL_CLASSES
-      .map((Cls) => new Cls(provider.env))
+      .map((Cls) => new Cls(scope.env))
       .filter((t) =>
         ["readFile", "glob", "ls", "cwd"].includes(t.function.name),
       );
 
     const agent = new SdkAgent({
-      provider,
+      scope,
       definition: {
         id: "test-tool",
         name: "Test Tool",
@@ -133,9 +133,9 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
   }, 60_000);
 
   it("多轮对话：记住上下文", async () => {
-    const model = createModel(provider, "deepseek-v4-flash");
+    const model = createModel(scope, "deepseek-v4-flash");
     const agent = new SdkAgent({
-      provider,
+      scope,
       definition: {
         id: "test-multi",
         name: "Test Multi",

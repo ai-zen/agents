@@ -20,11 +20,12 @@ import { tmpdir } from "node:os";
 import { promises as fs } from "node:fs";
 import { deflateSync } from "node:zlib";
 import OpenAI from "openai";
-import { Provider } from "../src/runtime/Provider";
-import { createModel } from "../src/runtime/createModel";
-import { SdkAgent } from "../src/runtime/SdkAgent";
-import { ViewImageTool } from "../src/capabilities/implements/builtin/ViewImageTool";
-import { BUILTIN_TOOL_CLASSES } from "../src/capabilities/implements/builtin/index";
+import { Scope } from "../src/scope/Scope.js";
+import { allInOne } from "../src/scope/plugins/allInOne.js";
+import { createModel } from "../src/runtime/createModel.js";
+import { SdkAgent } from "../src/runtime/SdkAgent.js";
+import { ViewImageTool } from "../src/scope/plugins/builtin/ViewImageTool.js";
+import { BUILTIN_TOOL_CLASSES } from "../src/scope/plugins/builtin/index.js";
 
 // ---------------------------------------------------------------------------
 // 简单图片生成（白底 + 红色实心圆，PNG）
@@ -152,10 +153,10 @@ const config = {
   ],
 };
 
-const provider = new Provider({
+const scope = new Scope({
   config,
   agentsDir: join(tmpdir(), "ai-zen-e2e-view-image", "agents"),
-});
+}).use(...allInOne());
 
 const DEFINITION = (modelId: string, id: string, name: string) => ({
   id,
@@ -183,18 +184,18 @@ const DEFINITION = (modelId: string, id: string, name: string) => ({
 // ---------------------------------------------------------------------------
 
 describe.runIf(!skip)("viewImage 端到端（真实 DeepSeek API）", () => {
-  // Provider 装配用例依赖 builtinTools 候选集，先 init 填充
+  // Scope 装配用例依赖内置工具候选集，先 init 填充
   beforeAll(async () => {
-    await provider.init();
+    await scope.init();
   });
 
-  it("Provider 装配：仅视觉模型注入 viewImage", () => {
+  it("Scope 装配：仅视觉模型注入 viewImage", () => {
     // 视觉模型 → 工具列表含 viewImage
-    const visionTools = provider.buildTools(DEFINITION(VISION_MODEL_ID, "v", "V"));
+    const visionTools = scope.buildTools(DEFINITION(VISION_MODEL_ID, "v", "V"));
     expect(visionTools.map((t) => t.function.name)).toContain("viewImage");
 
     // 非视觉模型 → 不含 viewImage
-    const textTools = provider.buildTools(
+    const textTools = scope.buildTools(
       DEFINITION("deepseek-v4-flash", "t", "T"),
     );
     expect(textTools.map((t) => t.function.name)).not.toContain("viewImage");
@@ -205,7 +206,7 @@ describe.runIf(!skip)("viewImage 端到端（真实 DeepSeek API）", () => {
     try {
       // 从 BUILTIN_TOOL_CLASSES 装配（走真实 env）
       const tool = BUILTIN_TOOL_CLASSES.map(
-        (Cls) => new Cls(provider.env),
+        (Cls) => new Cls(scope.env),
       ).find((t) => t.function.name === "viewImage") as ViewImageTool;
 
       const result = await tool.call({ path_or_url: imgPath });
@@ -241,13 +242,13 @@ describe.runIf(!skip)("viewImage 端到端（真实 DeepSeek API）", () => {
   it("Agent 链路：视觉 Agent 调用 viewImage 查看本地图片并描述内容", async () => {
     const imgPath = await writeTempImage();
     try {
-      const model = createModel(provider, VISION_MODEL_ID);
+      const model = createModel(scope, VISION_MODEL_ID);
       const viewImageTool = BUILTIN_TOOL_CLASSES.map(
-        (Cls) => new Cls(provider.env),
+        (Cls) => new Cls(scope.env),
       ).find((t) => t.function.name === "viewImage")!;
 
       const agent = new SdkAgent({
-        provider,
+        scope,
         definition: DEFINITION(VISION_MODEL_ID, "view-test", "View Test"),
         client: model.client,
         model: model.model,

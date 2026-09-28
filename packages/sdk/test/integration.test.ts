@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { createAgent } from "../src/runtime/createAgent";
-import { Provider } from "../src/runtime/Provider";
+import { createAgent } from "../src/runtime/createAgent.js";
+import { Scope } from "../src/scope/Scope.js";
+import { allInOne } from "../src/scope/plugins/allInOne.js";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -64,13 +65,15 @@ describe("集成：端到端 Agent 组装", () => {
     mkdirSync(join(skillsDir, "code-review"), { recursive: true });
     writeFileSync(join(skillsDir, "code-review", "SKILL.md"), "---\nname: code-review\ndescription: 代码审查\n---\n# Code Review");
 
-    const provider = await Provider.create({
-      config,
-      agentsDir,
-      subAgentsPaths: [subAgentsDir],
-      skillsPaths: [skillsDir],
-    });
-    const agent = await createAgent(provider, "my-agent");
+    const scope = new Scope({ config, agentsDir }).use(
+      ...allInOne({
+        subAgentsPaths: [subAgentsDir],
+        skillsPaths: [skillsDir],
+      }),
+    );
+    await scope.init();
+
+    const agent = await createAgent(scope, "my-agent");
 
     expect(agent.definition.permissions).toBeDefined();
     expect(agent.definition.permissions!.tools).toEqual({ allow: ["readFile", "exec", "glob", "findText"] });

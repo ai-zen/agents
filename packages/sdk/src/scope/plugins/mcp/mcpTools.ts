@@ -1,0 +1,210 @@
+import { CallbackTool } from "@ai-zen/agents-core";
+import type { ToolCallContext } from "@ai-zen/agents-core";
+import { createDisclosureParam } from "../../disclosure.js";
+import { getLogger } from "../../../shared/logger.js";
+import type { McpConnectionManager } from "./McpConnectionManager.js";
+import type { McpServerConfig, McpServerManifest } from "../../../types/index.js";
+
+const EMPTY_HINT = "（当前没有可用的 MCP 服务器，请联系用户添加）";
+const log = getLogger();
+
+/**
+ * 创建 load_mcp 工具。
+ * server 枚举由 filteredMcps （完整 McpServerConfig[]）自动推导，
+ * 查找配置也直接使用 filteredMcps，与枚举来源一致。
+ */
+export function createLoadMcpTool(
+  mcpManager: McpConnectionManager,
+  filteredMcps: McpServerConfig[],
+): CallbackTool {
+  // 构建 id→config 查找表
+  const configMap = new Map<string, McpServerConfig>();
+  for (const s of filteredMcps) {
+    configMap.set(s.id, s);
+  }
+
+  const ids = filteredMcps.map((s) => s.id);
+  const param = createDisclosureParam(ids, "选择一个 MCP 服务器", EMPTY_HINT);
+
+  // 拼接各 MCP 服务器的描述供 LLM 参考（对齐 load_skill 的处理方式）
+  const mcpDescriptions = filteredMcps
+    .map((s) => `  - ${s.id}: ${s.description || "无描述"}`)
+    .join("\n");
+  const serverIdDescription = `${param.description}\n\n各 MCP 服务器说明：\n${mcpDescriptions || "  无可用 MCP 服务器"}`;
+
+  return new CallbackTool({
+    function: {
+      name: "load_mcp",
+      description:
+        "连接到指定 MCP 服务器，获取其可用工具和资源列表。可用 include_manifest=false 仅建立连接、不返回清单（适用于上文中已有该清单的场景）。",
+      parameters: {
+        type: "object",
+        properties: {
+          server: {
+            type: "string",
+            description: serverIdDescription,
+            ...(param.enum ? { enum: param.enum } : {}),
+          },
+          include_manifest: {
+            type: "boolean",
+            description:
+              "是否返回该服务器的完整能力清单（工具与资源）。可选，默认 true。若你的上文中已存在该清单（例如本会话早前加载过，而进程重启后连接已失效），可设为 false 仅建立连接、只返回摘要，以节省上下文 token",
+            default: true,
+          },
+        },
+        required: ["server"],
+        additionalProperties: false,
+      },
+    },
+    callback: async (input): Promise<string> => {
+      const serverName = input.server as string;
+      const config = configMap.get(serverName);
+      if (!config) {
+        return `❌ MCP 服务器 "${serverName}" 不存在`;
+      }
+
+      // 披露开关：默认返回完整清单；显式传 false 时仅建立连接、只返回摘要
+      const includeManifest = input.include_manifest !== false;
+
+      // 获取清单：已连接 → 复用缓存（touch 续期）；未连接 → 建连并发现
+      let manifest: McpServerManifest;
+      const existingManifest = mcpManager.getManifest(serverName);
+      if (existingManifest && mcpManager.getState(serverName) === "connected") {
+        mcpManager.touch(serverName);
+        manifest = existingManifest;
+      } else {
+        try {
+          manifest = await mcpManager.connect(serverName, config);
+        } catch (error: any) {
+          return `无法连接到 "${serverName}": ${error?.message ?? error}`;
+        }
+      }
+
+      // 静默模式：只回吐摘要（清单仍留在管理器内，供 call_mcp_tool 使用）
+      if (!includeManifest) {
+        log.info(
+          `[load_mcp] ${serverName}: 已连接（未披露清单：工具 ${manifest.tools.length} 个，资源 ${manifest.resources.length} 个）`,
+        );
+        return JSON.stringify({
+          server: serverName,
+          connected: true,
+          tools: manifest.tools.length,
+          resources: manifest.resources.length,
+        });
+      }
+
+      log.info(`[load_mcp] ${serverName}:\n${JSON.stringify(manifest, null, 2)}`);
+      return JSON.stringify({ tools: manifest.tools, resources: manifest.resources });
+    },
+  });
+}
+
+/**
+ * 创建 call_mcp_tool 工具。
+ * 通过官方 Client.callTool() API 调用 MCP 服务器上的工具。
+ */
+export function createCallMcpTool(mcpManager: McpConnectionManager): CallbackTool {
+  return new CallbackTool({
+    function: {
+      name: "call_mcp_tool",
+      description: "调用已连接 MCP 服务器上的指定工具。需先通过 load_mcp 连接服务器。",
+      parameters: {
+        type: "object",
+        properties: {
+          server: { type: "string", description: "MCP 服务器名称" },
+          tool: { type: "string", description: "工具名称" },
+          arguments: { type: "object", description: "工具参数" },
+        },
+        required: ["server", "tool", "arguments"],
+        additionalProperties: false,
+      },
+    },
+    callback: async (input, ctx): Promise<string> => {
+      const serverName = input.server as string;
+      const state = mcpManager.getState(serverName);
+      if (state !== "connected") {
+        return `请先使用 load_mcp 连接 "${serverName}"`;
+      }
+
+      const client = mcpManager.getClient(serverName);
+      if (!client) {
+        return `MCP 服务器 "${serverName}" 的客户端不可用`;
+      }
+
+      try {
+        mcpManager.touch(serverName);
+        const result = await client.callTool(
+          {
+            name: input.tool as string,
+            arguments: input.arguments as Record<string, unknown>,
+          },
+          undefined,
+          { signal: ctx?.signal },
+        );
+
+        const contents = (result as any).content ?? [];
+        const textParts = contents
+          .filter((c: any) => c.type === "text")
+          .map((c: any) => c.text);
+        const text = textParts.join("\n");
+
+        if ((result as any).isError) {
+          return `❌ 工具执行出错:\n${text || JSON.stringify(result)}`;
+        }
+
+        return text || JSON.stringify(result);
+      } catch (error: any) {
+        return `❌ 调用 "${input.tool}" 失败: ${error?.message ?? error}`;
+      }
+    },
+  });
+}
+
+/**
+ * 创建 read_mcp_resource 工具。
+ */
+export function createReadMcpResourceTool(mcpManager: McpConnectionManager): CallbackTool {
+  return new CallbackTool({
+    function: {
+      name: "read_mcp_resource",
+      description: "读取已连接 MCP 服务器上的指定资源（文档、数据等）。",
+      parameters: {
+        type: "object",
+        properties: {
+          server: { type: "string", description: "MCP 服务器名称" },
+          uri: { type: "string", description: "资源 URI" },
+        },
+        required: ["server", "uri"],
+        additionalProperties: false,
+      },
+    },
+    callback: async (input, ctx): Promise<string> => {
+      const serverName = input.server as string;
+      const state = mcpManager.getState(serverName);
+      if (state !== "connected") {
+        return `请先使用 load_mcp 连接 "${serverName}"`;
+      }
+
+      const client = mcpManager.getClient(serverName);
+      if (!client) {
+        return `MCP 服务器 "${serverName}" 的客户端不可用`;
+      }
+
+      try {
+        mcpManager.touch(serverName);
+        const result = await client.readResource(
+          { uri: input.uri as string },
+          { signal: ctx?.signal },
+        );
+
+        const contents = result?.contents ?? [];
+        const textParts = contents
+          .filter((c: any) => c.text)
+          .map((c: any) => c.text);
+        return textParts.join("\n") || JSON.stringify(result);
+      } catch (error: any) {
+        return `❌ 读取资源 "${input.uri}" 失败: ${error?.message ?? error}`;
+      }
+    },
+  });
+}

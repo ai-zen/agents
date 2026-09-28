@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { AgentNS, Message } from "@ai-zen/agents-core";
 import { createAgent } from "./createAgent.js";
-import { Provider } from "./Provider.js";
+import { Scope } from "../scope/Scope.js";
+import { allInOne } from "../scope/plugins/allInOne.js";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -26,6 +27,19 @@ const config: AppConfig = {
     { id: "gpt4", name: "GPT-4", endpointId: "openai", maxContextTokens: 500000 },
   ],
 };
+
+async function makeScope(opts: {
+  subAgentsPaths?: string[];
+  skillsPaths?: string[];
+  toolsPaths?: string[];
+  mcpPaths?: string[];
+} = {}): Promise<Scope> {
+  const scope = new Scope({ config, agentsDir: join(dir, "agents"), cwd: dir }).use(
+    ...allInOne(opts),
+  );
+  await scope.init();
+  return scope;
+}
 
 async function writeAgentFile(id: string, def: Partial<AgentDefinition> = {}) {
   const agentsDir = join(dir, "agents");
@@ -66,7 +80,7 @@ async function writeSkill(id: string, description: string) {
 }
 
 async function writeMcpConfig(servers: Record<string, unknown>) {
-  await fs.writeFile(join(dir, "mcp.json"), JSON.stringify({ servers }, null, 2));
+  await fs.writeFile(join(dir, "mcp.json"), JSON.stringify({ mcpServers: servers }, null, 2));
 }
 
 describe("createAgent", () => {
@@ -76,14 +90,12 @@ describe("createAgent", () => {
     await writeSkill("code-review", "代码审查");
     await writeMcpConfig({ github: { transport: "stdio", command: "gh" } });
 
-    const provider = await Provider.create({
-      config,
-      agentsDir: join(dir, "agents"),
+    const scope = await makeScope({
       subAgentsPaths: [join(dir, "sub-agents")],
       skillsPaths: [join(dir, "skills")],
       mcpPaths: [join(dir, "mcp.json")],
     });
-    const agent = await createAgent(provider, "my-agent");
+    const agent = await createAgent(scope, "my-agent");
 
     // SdkAgent 定义携带 permissions
     expect(agent.definition.permissions).toBeDefined();
@@ -94,34 +106,25 @@ describe("createAgent", () => {
   });
 
   it("Agent 不存在时抛异常", async () => {
-    const provider = await Provider.create({
-      config,
-      agentsDir: join(dir, "agents"),
-    });
+    const scope = await makeScope();
 
-    await expect(createAgent(provider, "nonexistent")).rejects.toThrow();
+    await expect(createAgent(scope, "nonexistent")).rejects.toThrow();
   });
 
   it("可选的发现目录不存在不抛异常", async () => {
     await writeAgentFile("my-agent");
 
-    const provider = await Provider.create({
-      config,
-      agentsDir: join(dir, "agents"),
-    });
+    const scope = await makeScope();
 
-    const agent = await createAgent(provider, "my-agent");
+    const agent = await createAgent(scope, "my-agent");
     expect(agent.tools.length).toBeGreaterThan(0); // 内置工具默认存在
   });
 
   it("append 不应污染 Agent 定义模板（definition.messages 引用隔离）", async () => {
     await writeAgentFile("my-agent");
 
-    const provider = await Provider.create({
-      config,
-      agentsDir: join(dir, "agents"),
-    });
-    const agent = await createAgent(provider, "my-agent");
+    const scope = await makeScope();
+    const agent = await createAgent(scope, "my-agent");
 
     const templateBefore = agent.definition.messages!.map((m) => ({ ...m }));
     const templateCount = templateBefore.length;
@@ -141,11 +144,8 @@ describe("createAgent", () => {
   it("Agent 定义缺少 messages 字段时也能正常创建（空值兜底）", async () => {
     await writeAgentFile("my-agent", { messages: undefined });
 
-    const provider = await Provider.create({
-      config,
-      agentsDir: join(dir, "agents"),
-    });
-    const agent = await createAgent(provider, "my-agent");
+    const scope = await makeScope();
+    const agent = await createAgent(scope, "my-agent");
 
     expect(agent.messages).toEqual([]);
     agent.append(Message.User("你好"));

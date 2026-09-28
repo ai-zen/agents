@@ -1,15 +1,17 @@
 import { describe, it, expect } from "vitest";
-import { Provider } from "../src/runtime/Provider";
-import { createAgent } from "../src/runtime/createAgent";
-import { ConfigManager } from "../src/config/ConfigManager";
-import { AgentRepository } from "../src/crud/AgentRepository";
-import { readSkill, discoverSkills } from "../src/capabilities/discovery/skills";
-import { discoverSubAgents } from "../src/capabilities/discovery/subagents";
-import { discoverUserTools } from "../src/capabilities/discovery/usertools";
-import { discoverMcpServers } from "../src/capabilities/discovery/mcp";
-import { discoverBuiltinTools } from "../src/capabilities/discovery/builtin";
-import { SdkAgent } from "../src/runtime/SdkAgent";
-import { AutoRefreshToolsPlugin } from "../src/plugin/AutoRefreshToolsPlugin";
+import { Scope } from "../src/scope/Scope.js";
+import { allInOne } from "../src/scope/plugins/allInOne.js";
+import { createAgent } from "../src/runtime/createAgent.js";
+import { ConfigManager } from "../src/config/ConfigManager.js";
+import { AgentRepository } from "../src/crud/AgentRepository.js";
+import { readSkill, discoverSkills } from "../src/scope/plugins/skills/discover.js";
+import { discoverSubAgents } from "../src/scope/plugins/subagents/discover.js";
+import { discoverUserTools } from "../src/scope/plugins/usertools/discover.js";
+import { discoverMcpServers } from "../src/scope/plugins/mcp/discover.js";
+import { discoverBuiltinTools } from "../src/scope/plugins/builtin/discover.js";
+import { SdkAgent } from "../src/runtime/SdkAgent.js";
+import { AutoRefreshToolsPlugin } from "../src/agent-plugins/AutoRefreshToolsPlugin.js";
+import type { AgentDefinition } from "../src/types";
 import type { Tool } from "@ai-zen/agents-core";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
@@ -24,8 +26,6 @@ const TEST_SUB_AGENTS_DIR = join(TEST_HOME_DIR, "sub-agents");
 const TEST_SKILLS_DIR = join(TEST_HOME_DIR, "skills");
 const TEST_TOOLS_DIR = join(TEST_HOME_DIR, "tools");
 const TEST_MCP = join(TEST_HOME_DIR, "mcp.json");
-const TEST_CONVERSATIONS_DIR = join(TEST_HOME_DIR, "conversations");
-const TEST_DRAFTS_DIR = join(TEST_HOME_DIR, "drafts");
 
 const PROJECT_DIR = join(__dirname, "..", "..", "test-project");
 const PROJECT_MCP = join(PROJECT_DIR, ".mcp.json");
@@ -42,6 +42,41 @@ async function checkPaths() {
   } catch {
     throw new Error(`测试数据不存在，请先创建 ${TEST_CONFIG}`);
   }
+}
+
+/** 用真实路径装配一个标准 Scope（allInOne）并完成发现 */
+async function makeScope(): Promise<Scope> {
+  const config = await new ConfigManager(TEST_CONFIG).read();
+  const scope = new Scope({
+    config,
+    agentsDir: TEST_AGENTS_DIR,
+  }).use(
+    ...allInOne({
+      subAgentsPaths: [PROJECT_SUB_AGENTS_DIR, TEST_SUB_AGENTS_DIR],
+      skillsPaths: [PROJECT_SKILLS_DIR, TEST_SKILLS_DIR],
+      toolsPaths: [PROJECT_TOOLS_DIR, TEST_TOOLS_DIR],
+      mcpPaths: [PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP],
+    }),
+  );
+  await scope.init();
+  return scope;
+}
+
+/** 一个四维全开的探针 Agent 定义（仅用于 filter/buildTools） */
+function allowAllDef(): AgentDefinition {
+  return {
+    id: "probe",
+    name: "Probe",
+    messages: [],
+    permissions: {
+      tools: { allow: ["*"] },
+      skills: { allow: ["*"] },
+      mcps: { allow: ["*"] },
+      subagents: { allow: ["*"] },
+    },
+    createdAt: "2025-01-01T00:00:00Z",
+    updatedAt: "2025-01-01T00:00:00Z",
+  };
 }
 
 // ==================================================================
@@ -218,42 +253,30 @@ describe("端到端：真实文件系统路径", () => {
   });
 
   // -----------------------------------------------------------------
-  // 3. Capabilities 管线
+  // 3. 能力管线（Scope + 插件）
   // -----------------------------------------------------------------
-  describe("3. Capabilities 管线", () => {
-    it("使用真实路径构建 Provider + Capabilities", async () => {
+  describe("3. 能力管线", () => {
+    it("使用真实路径构建 Scope：全局候选集完整", async () => {
       await checkPaths();
-      const config = await new ConfigManager(TEST_CONFIG).read();
-      const provider = await Provider.create({
-        config,
-        agentsDir: TEST_AGENTS_DIR,
-        subAgentsPaths: [PROJECT_SUB_AGENTS_DIR, TEST_SUB_AGENTS_DIR],
-        skillsPaths: [PROJECT_SKILLS_DIR, TEST_SKILLS_DIR],
-        toolsPaths: [PROJECT_TOOLS_DIR, TEST_TOOLS_DIR],
-        mcpPaths: [PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP],
-      });
+      const scope = await makeScope();
+      const result = scope.filter(allowAllDef());
 
-      // 全局发现结果
-      expect(provider.subagents.length).toBeGreaterThanOrEqual(3);
-      expect(provider.skills.length).toBeGreaterThanOrEqual(3);
-      expect(provider.userTools.length).toBeGreaterThanOrEqual(3);
-      expect(provider.mcps.length).toBeGreaterThanOrEqual(4);
+      // 四维候选
+      expect(result.subagents.length).toBeGreaterThanOrEqual(3);
+      expect(result.skills.length).toBeGreaterThanOrEqual(3);
+      expect(result.mcps.length).toBeGreaterThanOrEqual(4);
+      // 用户工具并入 tools 维度
+      expect(result.tools).toContain("count_lines");
+      expect(result.tools).toContain("greet");
+      expect(result.tools).toContain("project_stats");
     });
 
     it("code-assistant: allow all 时所有能力可用", async () => {
       await checkPaths();
-      const config = await new ConfigManager(TEST_CONFIG).read();
-      const provider = await Provider.create({
-        config,
-        agentsDir: TEST_AGENTS_DIR,
-        subAgentsPaths: [PROJECT_SUB_AGENTS_DIR, TEST_SUB_AGENTS_DIR],
-        skillsPaths: [PROJECT_SKILLS_DIR, TEST_SKILLS_DIR],
-        toolsPaths: [PROJECT_TOOLS_DIR, TEST_TOOLS_DIR],
-        mcpPaths: [PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP],
-      });
+      const scope = await makeScope();
 
       const definition = (await new AgentRepository(TEST_AGENTS_DIR).read("code-assistant"))!;
-      const tools = provider.buildTools(definition);
+      const tools = scope.buildTools(definition);
 
       const names = tools.map((t) => t.function.name);
       expect(names).toContain("readFile");
@@ -267,18 +290,10 @@ describe("端到端：真实文件系统路径", () => {
 
     it("translator: 受限权限只暴露指定工具", async () => {
       await checkPaths();
-      const config = await new ConfigManager(TEST_CONFIG).read();
-      const provider = await Provider.create({
-        config,
-        agentsDir: TEST_AGENTS_DIR,
-        subAgentsPaths: [PROJECT_SUB_AGENTS_DIR, TEST_SUB_AGENTS_DIR],
-        skillsPaths: [PROJECT_SKILLS_DIR, TEST_SKILLS_DIR],
-        toolsPaths: [PROJECT_TOOLS_DIR, TEST_TOOLS_DIR],
-        mcpPaths: [PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP],
-      });
+      const scope = await makeScope();
 
       const definition = (await new AgentRepository(TEST_AGENTS_DIR).read("translator"))!;
-      const tools = provider.buildTools(definition);
+      const tools = scope.buildTools(definition);
 
       const names = tools.map((t) => t.function.name);
       expect(names).toContain("readFile");
@@ -296,21 +311,13 @@ describe("端到端：真实文件系统路径", () => {
   describe("4. createAgent 完整装配", () => {
     it("从真实路径创建 code-assistant", async () => {
       await checkPaths();
-      const config = await new ConfigManager(TEST_CONFIG).read();
-      const provider = await Provider.create({
-        config,
-        agentsDir: TEST_AGENTS_DIR,
-        subAgentsPaths: [PROJECT_SUB_AGENTS_DIR, TEST_SUB_AGENTS_DIR],
-        skillsPaths: [PROJECT_SKILLS_DIR, TEST_SKILLS_DIR],
-        toolsPaths: [PROJECT_TOOLS_DIR, TEST_TOOLS_DIR],
-        mcpPaths: [PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP],
-      });
+      const scope = await makeScope();
 
-      const agent = await createAgent(provider, "code-assistant");
+      const agent = await createAgent(scope, "code-assistant");
 
       // 类型
       expect(agent).toBeInstanceOf(SdkAgent);
-      expect(agent.provider).toBe(provider);
+      expect(agent.scope).toBe(scope);
 
       // 元数据
       expect(agent.definition.name).toBe("代码助手");
@@ -335,17 +342,9 @@ describe("端到端：真实文件系统路径", () => {
 
     it("从真实路径创建 translator（受限权限）", async () => {
       await checkPaths();
-      const config = await new ConfigManager(TEST_CONFIG).read();
-      const provider = await Provider.create({
-        config,
-        agentsDir: TEST_AGENTS_DIR,
-        subAgentsPaths: [PROJECT_SUB_AGENTS_DIR, TEST_SUB_AGENTS_DIR],
-        skillsPaths: [PROJECT_SKILLS_DIR, TEST_SKILLS_DIR],
-        toolsPaths: [PROJECT_TOOLS_DIR, TEST_TOOLS_DIR],
-        mcpPaths: [PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP],
-      });
+      const scope = await makeScope();
 
-      const agent = await createAgent(provider, "translator");
+      const agent = await createAgent(scope, "translator");
 
       const names = agent.tools.map((t: Tool) => t.function.name);
       expect(names).toContain("readFile");
@@ -363,17 +362,9 @@ describe("端到端：真实文件系统路径", () => {
   describe("5. 插件集成", () => {
     it("autoRefreshTools 可在真实 SdkAgent 上使用", async () => {
       await checkPaths();
-      const config = await new ConfigManager(TEST_CONFIG).read();
-      const provider = await Provider.create({
-        config,
-        agentsDir: TEST_AGENTS_DIR,
-        subAgentsPaths: [PROJECT_SUB_AGENTS_DIR, TEST_SUB_AGENTS_DIR],
-        skillsPaths: [PROJECT_SKILLS_DIR, TEST_SKILLS_DIR],
-        toolsPaths: [PROJECT_TOOLS_DIR, TEST_TOOLS_DIR],
-        mcpPaths: [PROJECT_AIZEN_MCP, PROJECT_MCP, TEST_MCP],
-      });
+      const scope = await makeScope();
 
-      const agent = await createAgent(provider, "code-assistant");
+      const agent = await createAgent(scope, "code-assistant");
       const beforeNames = agent.tools.map((t: Tool) => t.function.name);
 
       // 注册并触发 autoRefreshTools
@@ -393,7 +384,6 @@ describe("端到端：真实文件系统路径", () => {
       const afterNames = agent.tools.map((t: Tool) => t.function.name);
       expect(afterNames).toEqual(beforeNames);
     });
-
   });
 
   // -----------------------------------------------------------------

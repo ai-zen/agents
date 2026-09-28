@@ -9,7 +9,7 @@
 ### 1.1 当前 `Frontmatter` 类型
 
 ```typescript
-// src/capabilities/discovery/skills.ts (现状)
+// src/scope/plugins/skills/discover.ts (现状)
 export interface Frontmatter {
   name?: string;
   description?: string;
@@ -116,8 +116,8 @@ export function validateSkill(skillId: string, fm: Frontmatter): SkillValidation
 
 | 文件 | 变更 |
 |------|------|
-| `src/capabilities/discovery/skills.ts` | ① 扩展 `Frontmatter` 类型（+4 字段）② 新增 `SkillValidationError` 类型 ③ 新增 `validateSkill()` ④ 重写 `parseFrontmatter()` 支持嵌套 metadata 和数组 allowedTools ⑤ `discoverSkills` / `readSkill` 集成校验 |
-| `src/capabilities/discovery/skills.test.ts` | ① `parseFrontmatter` 测试：metadata 解析、allowed-tools 数组化、license/compatibility 提取 ② `validateSkill` 测试：合法/非法 name、合法/非法 description ③ `sub-agent` 扩展字段保持向后兼容 |
+| `src/scope/plugins/skills/discover.ts` | ① 扩展 `Frontmatter` 类型（+4 字段）② 新增 `SkillValidationError` 类型 ③ 新增 `validateSkill()` ④ 重写 `parseFrontmatter()` 支持嵌套 metadata 和数组 allowedTools ⑤ `discoverSkills` / `readSkill` 集成校验 |
+| `src/scope/plugins/skills/discover.test.ts` | ① `parseFrontmatter` 测试：metadata 解析、allowed-tools 数组化、license/compatibility 提取 ② `validateSkill` 测试：合法/非法 name、合法/非法 description ③ `sub-agent` 扩展字段保持向后兼容 |
 
 ---
 

@@ -4,7 +4,7 @@ AI-Zen SDK — shared business logic layer providing a unified Agent runtime for
 
 ## Source of Truth
 
-**[`docs/sdk-design.md`](./docs/sdk-design.md)** is the single source of truth for this package's design. All implementations must stay consistent with the document.
+**[`docs/sdk-design-v1.md`](./docs/sdk-design-v1.md)** is the single source of truth for this package's design. All implementations must stay consistent with the document. (Pre-refactor design is kept in [`docs/sdk-design-v0.md`](./docs/sdk-design-v0.md).)
 
 ## Architecture
 
@@ -18,23 +18,24 @@ Desktop ──┘                    │
 ## Module Layering
 
 ```
-types        ← pure types, zero business dependencies (incl. ToolEnv)
-config       ← ConfigManager + constants: config.json read/write + directory setup + factory defaults
-crud         ← capability-entity CRUD (Agent definitions, etc.; conversations/drafts are persisted by each consumer)
-capabilities ← capability discovery & assembly (built-in + user + MCP + Skill + SubAgent)
-runtime      ← Provider + model factory + Agent assembly + MCP connection management + task migration + SdkCallbackTool base
-plugin       ← Agent plugins (autoMigrate, autoRefreshTools, contextGuard, unknownToolHint)
-shared       ← logging, errors
+types         ← pure types, zero business dependencies (incl. ToolEnv)
+config        ← ConfigManager + constants: config.json read/write + directory setup + factory defaults
+crud          ← capability-entity CRUD (Agent definitions; conversations/drafts are persisted by each consumer)
+runtime       ← model factory + Agent assembly + task migration (createModel / createAgent / SdkAgent / TaskMigrationService)
+scope         ← Scope orchestration container + ScopePlugin contract + PermissionEvaluator / disclosure + plugins/ (5 self-contained capability sources: discovery + tools + plugin)
+agent-plugins ← Agent plugins (autoMigrate, autoRefreshTools, contextGuard, unknownToolHint)
+shared        ← logging, errors
 ```
 
-Dependency direction: `plugin → runtime → capabilities → crud → config → types`. Upper layers depend on lower layers, never the other way around.
+Dependency direction: `agent-plugins → runtime → scope`; `runtime → scope / crud / shared / types`, `scope → types / shared`. Upper layers depend on lower layers.
 
 ## Core Concepts
 
 | Entity | Description |
 |--------|-------------|
-| **Provider** | Global context + capability registry, holding config, paths (incl. `cwd`), model factory, and MCP manager; integrates discovery → filtering → instantiation |
-| **ToolEnv** | Tool environment `{ cwd, config }`; injected when the Provider instantiates built-in tools, serving as the base for relative path resolution and config reads |
+| **Scope** | Orchestration container: global context (`config` / `cwd` / `agentsDir`) + the three-phase capability pipeline (discover → filter → instantiate) + plugin registry. Explicitly assembled via `scope.use(...)` |
+| **ScopePlugin** | Capability plugin (the v1 extension point): self-owns one capability source's discovery state, candidate names, and instantiation (`discover` / `candidates` / `instantiate` / `dispose`). 5 standard plugins ship out of the box, assembled via `allInOne()` |
+| **ToolEnv** | Tool environment `{ cwd, config }`; injected when the built-in-tools plugin (`BuiltinToolsScopePlugin`) instantiates tools, serving as the base for relative path resolution and config reads |
 | **SdkCallbackTool** | Abstract base for built-in tools: `env` constructor injection + subclass `call()` + `resolve()` relative path resolution |
 | **SdkAgent** | Extends the Core Agent, carries SDK metadata, supports `use()` plugin registration |
 | **AgentPlugin** | Plugin interface (`onInit`, `onBeforeSend`, `onAfterSend`, `onInnerLoopStart`, `onInnerLoopEnd`, `onInnerLoopsStart`, `onInnerLoopsEnd`, `onToolCall`, `onUnknownTool`, `onSubAgentStart`, `onSubAgentEnd`) |
@@ -57,17 +58,24 @@ Agent.permissions
 ## Consumption
 
 ```typescript
-const provider = await Provider.create({
+const scope = new Scope({
   config,
-  cwd: "/path/to/workspace", // one working directory per Provider; parallel sessions don't interfere
-  ...paths,
-});
-const agent = await createAgent(provider, "my-agent");
+  cwd: "/path/to/workspace", // one working directory per Scope; parallel sessions don't interfere
+  agentsDir,
+}).use(
+  ...allInOne({ skillsPaths, toolsPaths, subAgentsPaths, mcpPaths }),
+);
+await scope.init();
+
+const agent = await createAgent(scope, "my-agent");
 const migrationService = new TaskMigrationService({ onMigrated }); // migrates via the agent's own model client
 agent.use(new AutoMigratePlugin({ service: migrationService, maxTokens }));
 agent.use(new AutoRefreshToolsPlugin());
+agent.use(new UnknownToolHintPlugin({ scope }));
 await agent.init();
 await agent.send("Hello");
+
+await scope.dispose(); // disconnect MCP, release plugin resources
 ```
 
 ## Development Status
@@ -77,14 +85,14 @@ await agent.send("Hello");
 | `types` | ✅ Implemented — core entities, permission model, MCP types complete |
 | `config` | ✅ Implemented — ConfigManager + factory defaults + one-shot bootstrap |
 | `crud` | ✅ Implemented — capability-entity CRUD for Agents, etc. (conversations/drafts persisted by each consumer) |
-| `capabilities` | ✅ Implemented — discovery + permission filtering + safe pre-filtering + enumeration disclosure |
-| `runtime` | ✅ Implemented — Provider, createAgent, MCP connection management, task migration |
-| `plugin` | ✅ Implemented — AutoMigratePlugin / AutoRefreshToolsPlugin / ContextGuardPlugin / UnknownToolHintPlugin |
+| `scope` | ✅ Implemented — Scope + ScopePlugin + 5 standard plugins (builtin / user-tools / skills / mcp / subagents) + allInOne |
+| `runtime` | ✅ Implemented — createAgent, MCP connection management, task migration |
+| `agent-plugins` | ✅ Implemented — AutoMigratePlugin / AutoRefreshToolsPlugin / ContextGuardPlugin / UnknownToolHintPlugin |
 | `shared` | ✅ Implemented — SdkError + injectable Logger |
 
 ## Built-in Tools
 
-All built-in tools are classes (extending `SdkCallbackTool`), instantiated by the Provider with a `ToolEnv` — one set of instances per Provider, with `cwd` injected and relative paths resolved against `Provider.cwd`, never depending on the global `process.cwd()`.
+All built-in tools are classes (extending `SdkCallbackTool`), instantiated by the built-in-tools plugin (`BuiltinToolsScopePlugin`) with a `ToolEnv` — one set of instances per Scope, with `cwd` injected and relative paths resolved against `Scope.cwd`, never depending on the global `process.cwd()`.
 
 | Tool | Description |
 |------|-------------|
@@ -114,7 +122,7 @@ Conditionally injected based on the active model / config:
 | `generateImage` | Only when `defaultImageModel` is configured | Generate an image from a text description |
 | `viewImage` | Only for vision models (the agent's `modelId` resolves to a model with `vision: true`) | View / analyze an image: local images are auto-uploaded via the Files API, network URLs are referenced directly |
 
-Tool output protection: `AppConfig.maxToolOutput` (in characters, default 32768) is the unified ceiling for tool output. Each tool handles overflow itself — `exec` dumps `stdout.log` / `stderr.log` separately (returning head/tail previews per stream), `findText` / `glob` / `ls` dump `result.json` (returning a head preview), and `readFile` only warns and suggests batched reads via `range`. Dumps go to `<tmpdir>/ai-zen/tool-output/<tool>-<timestamp>-<random>/`, one directory per call, with no self-cleanup. See [`docs/sdk-design.md` §7](docs/sdk-design.md).
+Tool output protection: `AppConfig.maxToolOutput` (in characters, default 32768) is the unified ceiling for tool output. Each tool handles overflow itself — `exec` dumps `stdout.log` / `stderr.log` separately (returning head/tail previews per stream), `findText` / `glob` / `ls` dump `result.json` (returning a head preview), and `readFile` only warns and suggests batched reads via `range`. Dumps go to `<tmpdir>/ai-zen/tool-output/<tool>-<timestamp>-<random>/`, one directory per call, with no self-cleanup. See [`docs/sdk-design-v1.md` §12](docs/sdk-design-v1.md).
 
 ## Built-in Plugins
 

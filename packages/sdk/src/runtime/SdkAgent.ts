@@ -2,7 +2,7 @@ import type OpenAI from "openai";
 import { Agent } from "@ai-zen/agents-core";
 import type { AgentNS, Tool } from "@ai-zen/agents-core";
 import type { AgentDefinition } from "../types/index.js";
-import type { Provider } from "./Provider.js";
+import type { Scope } from "../scope/Scope.js";
 
 // 插件机制已提升到 core：重新导出，SDK 现有 import 来源保持可用
 export type { AgentPlugin, SendContext } from "@ai-zen/agents-core";
@@ -12,7 +12,7 @@ export type { AgentPlugin, SendContext } from "@ai-zen/agents-core";
  *
  * Core Agent 不感知权限、文件系统等业务逻辑；
  * SdkAgent 在 Core Agent 基础上增加了 SDK 层需要的元数据：
- *   - provider：全局 Provider 实例
+ *   - scope：全局 Scope 实例
  *   - definition：Agent 原始定义（含权限 permissions）
  *
  * 插件能力（use / init / send 钩子分发）继承自 Core Agent，此处不再重复实现。
@@ -20,13 +20,13 @@ export type { AgentPlugin, SendContext } from "@ai-zen/agents-core";
  * 权限统一从 `definition.permissions` 读取，不再单独持有。
  */
 export class SdkAgent extends Agent {
-  /** 全局 Provider 实例 */
-  readonly provider: Provider;
+  /** 全局 Scope 实例 */
+  readonly scope: Scope;
   /** Agent 原始定义 */
   readonly definition: AgentDefinition;
 
   constructor(params: {
-    provider: Provider;
+    scope: Scope;
     definition: AgentDefinition;
     client: OpenAI;
     model: string;
@@ -43,7 +43,7 @@ export class SdkAgent extends Agent {
       tools: params.tools,
       allowJsonParseError: params.allowJsonParseError,
     });
-    this.provider = params.provider;
+    this.scope = params.scope;
     this.definition = params.definition;
   }
 }

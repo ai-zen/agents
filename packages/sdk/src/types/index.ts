@@ -110,9 +110,9 @@ export interface AppConfig {
 // ---- 工具环境 ----
 
 /**
- * 工具环境 — Provider 在实例化内置工具时注入的环境信息。
+ * 工具环境 — Scope 的能力插件在实例化内置工具时注入的环境信息。
  *
- * cwd 是相对路径解析的基准（每个 Provider 对应一个工作目录）；
+ * cwd 是相对路径解析的基准（每个 Scope 对应一个工作目录）；
  * config 供需要模型/端点配置的工具（如 generateImage）使用。
  */
 export interface ToolEnv {

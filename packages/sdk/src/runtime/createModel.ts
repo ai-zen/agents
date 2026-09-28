@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import type { Provider } from "./Provider.js";
+import type { Scope } from "../scope/Scope.js";
 
 /**
  * Agent 模型装配结果：openai SDK client + 模型名 + 模型参数。
@@ -15,13 +15,13 @@ export interface AgentModel {
 }
 
 /**
- * 模型工厂 — 根据 modelId 和 Provider 装配 openai SDK client。
+ * 模型工厂 — 根据 modelId 和 Scope 装配 openai SDK client。
  *
  * 端点（baseUrl / apiKey）来自 config.endpoints，发送给 API 的模型名 = modelName || id。
  * 任何 OpenAI 兼容端点（OpenAI / 智谱 BigModel / DeepSeek 等）均可通过 baseURL 接入。
  */
-export function createModel(provider: Provider, modelId: string): AgentModel {
-  const config = provider.config;
+export function createModel(scope: Scope, modelId: string): AgentModel {
+  const config = scope.config;
   const modelConfig = config.models.find((m) => m.id === modelId);
   if (!modelConfig) throw new Error(`模型 "${modelId}" 不存在`);
 

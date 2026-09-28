@@ -1,32 +1,32 @@
 import type { AgentNS } from "@ai-zen/agents-core";
 import { AgentRepository } from "../crud/AgentRepository.js";
 import { SdkAgent } from "./SdkAgent.js";
-import type { Provider } from "./Provider.js";
+import type { Scope } from "../scope/Scope.js";
 import { createModel } from "./createModel.js";
 
 /**
  * 从磁盘创建 Agent。
  *
- * 通过 Provider 获取已发现的能力，读取 Agent 定义，过滤并实例化工具，产出 SdkAgent。
+ * 通过 Scope 获取已发现的能力，读取 Agent 定义，过滤并实例化工具，产出 SdkAgent。
  *
  * ```ts
- * const agent = await createAgent(provider, "my-agent");
+ * const agent = await createAgent(scope, "my-agent");
  * // agent 是 SdkAgent，可直接注册插件、发送消息
  * ```
  */
 export async function createAgent(
-  provider: Provider,
+  scope: Scope,
   agentId: string,
 ): Promise<SdkAgent> {
-  const definition = await new AgentRepository(provider.agentsDir).read(agentId);
+  const definition = await new AgentRepository(scope.agentsDir).read(agentId);
   if (!definition) throw new Error(`Agent "${agentId}" 不存在`);
 
-  const modelId = definition.modelId ?? provider.config.defaultModel;
+  const modelId = definition.modelId ?? scope.config.defaultModel;
   if (!modelId) throw new Error("未指定模型且无默认模型");
 
-  const { client, model, modelConfig } = createModel(provider, modelId);
+  const { client, model, modelConfig } = createModel(scope, modelId);
 
-  const tools = provider.buildTools(definition, {
+  const tools = scope.buildTools(definition, {
     exclude: {
       subagents: definition.function?.name
         ? [definition.function.name]
@@ -35,7 +35,7 @@ export async function createAgent(
   });
 
   const agent = new SdkAgent({
-    provider,
+    scope,
     definition,
     client,
     model,

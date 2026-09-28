@@ -4,7 +4,7 @@ AI-Zen SDK — 共享业务逻辑层，为 CLI 和 Desktop 提供统一的 Agent
 
 ## 真相源
 
-**[`docs/sdk-design.md`](./docs/sdk-design.md)** 是本包的唯一设计真相源。所有实现必须与文档一致。
+**[`docs/sdk-design-v1.md`](./docs/sdk-design-v1.md)** 是本包的唯一设计真相源。所有实现必须与文档一致。（重构前的设计保留在 [`docs/sdk-design-v0.md`](./docs/sdk-design-v0.md)。）
 ## 架构
 
 ```
@@ -17,23 +17,24 @@ Desktop ──┘                    │
 ## 模块分层
 
 ```
-types        ← 纯类型，零业务依赖（含 ToolEnv 工具环境）
-config       ← ConfigManager + constants：读写 config.json + 目录初始化 + 出厂默认
-crud         ← 能力实体 CRUD（Agent 定义等；会话/草稿已下放给各端自行持久化）
-capabilities ← 能力发现与装配（内置 + 用户 + MCP + Skill + SubAgent）
-runtime      ← Provider + 模型工厂 + Agent 组装 + MCP 连接管理 + 任务迁移 + SdkCallbackTool 工具基类
-plugin       ← Agent 插件（autoMigrate、autoRefreshTools、contextGuard、unknownToolHint）
-shared       ← 日志、错误
+types         ← 纯类型，零业务依赖（含 ToolEnv 工具环境）
+config        ← ConfigManager + constants：读写 config.json + 目录初始化 + 出厂默认
+crud          ← 能力实体 CRUD（Agent 定义等；会话/草稿已下放给各端自行持久化）
+runtime       ← 模型工厂 + Agent 组装 + 任务迁移（createModel / createAgent / SdkAgent / TaskMigrationService）
+scope         ← Scope 编排容器 + ScopePlugin 契约 + PermissionEvaluator / disclosure + plugins/（5 个自包含能力来源：发现 + 工具 + 插件）
+agent-plugins ← Agent 插件（autoMigrate、autoRefreshTools、contextGuard、unknownToolHint）
+shared        ← 日志、错误
 ```
 
-依赖方向：`plugin → runtime → capabilities → crud → config → types`，上层依赖下层，反之不行。
+依赖方向：`agent-plugins → runtime → scope`；`runtime → scope / crud / shared / types`，`scope → types / shared`。上层依赖下层，反之不行。
 
 ## 核心概念
 
 | 实体 | 说明 |
 |------|------|
-| **Provider** | 全局上下文 + 能力注册表，持有配置、路径（含 `cwd`）、模型工厂、MCP 管理器，整合发现 → 过滤 → 实例化 |
-| **ToolEnv** | 工具环境 `{ cwd, config }`，Provider 实例化内置工具时注入，作为相对路径解析与配置读取的基准 |
+| **Scope** | 编排容器：全局上下文（`config` / `cwd` / `agentsDir`）+ 三阶段能力管线（发现 → 过滤 → 实例化）+ 插件注册表。经 `scope.use(...)` 显式装配 |
+| **ScopePlugin** | 能力插件（v1 扩展点）：自持一类能力的发现状态、候选名与实例化（`discover` / `candidates` / `instantiate` / `dispose`）。内置 5 个标准插件，经 `allInOne()` 一键装配 |
+| **ToolEnv** | 工具环境 `{ cwd, config }`，内置工具插件（`BuiltinToolsScopePlugin`）实例化工具时注入，作为相对路径解析与配置读取的基准 |
 | **SdkCallbackTool** | 内置工具抽象基类：`env` 构造注入 + 子类实现 `call()` + `resolve()` 相对路径解析 |
 | **SdkAgent** | 继承 Core Agent，携带 SDK 元数据，支持 `use()` 插件注册 |
 | **AgentPlugin** | 插件接口（`onInit`, `onBeforeSend`, `onAfterSend`, `onInnerLoopStart`, `onInnerLoopEnd`, `onInnerLoopsStart`, `onInnerLoopsEnd`, `onToolCall`, `onUnknownTool`, `onSubAgentStart`, `onSubAgentEnd`） |
@@ -56,17 +57,24 @@ Agent.permissions
 ## 消费模式
 
 ```typescript
-const provider = await Provider.create({
+const scope = new Scope({
   config,
-  cwd: "/path/to/workspace", // 每个 Provider 一个工作目录，多会话并行互不干扰
-  ...paths,
-});
-const agent = await createAgent(provider, "my-agent");
+  cwd: "/path/to/workspace", // 每个 Scope 一个工作目录，多会话并行互不干扰
+  agentsDir,
+}).use(
+  ...allInOne({ skillsPaths, toolsPaths, subAgentsPaths, mcpPaths }),
+);
+await scope.init();
+
+const agent = await createAgent(scope, "my-agent");
 const migrationService = new TaskMigrationService({ onMigrated }); // 迁移复用传入 agent 自身的模型调用
 agent.use(new AutoMigratePlugin({ service: migrationService, maxTokens }));
 agent.use(new AutoRefreshToolsPlugin());
+agent.use(new UnknownToolHintPlugin({ scope }));
 await agent.init();
 await agent.send("你好");
+
+await scope.dispose(); // 断开 MCP、释放插件资源
 ```
 
 ## 开发状态
@@ -76,14 +84,14 @@ await agent.send("你好");
 | `types` | ✅ 已实现 — 核心实体、权限模型、MCP 类型完整 |
 | `config` | ✅ 已实现 — ConfigManager + 出厂默认配置 + 一键 bootstrap |
 | `crud` | ✅ 已实现 — Agent 等能力实体 CRUD（会话/草稿由各端自行持久化） |
-| `capabilities` | ✅ 已实现 — 发现 + 权限过滤 + 安全预过滤 + 枚举披露 |
-| `runtime` | ✅ 已实现 — Provider、createAgent、MCP 连接管理、任务迁移 |
-| `plugin` | ✅ 已实现 — AutoMigratePlugin / AutoRefreshToolsPlugin / ContextGuardPlugin / UnknownToolHintPlugin |
+| `scope` | ✅ 已实现 — Scope + ScopePlugin + 5 个标准插件（builtin / user-tools / skills / mcp / subagents）+ allInOne |
+| `runtime` | ✅ 已实现 — createAgent、MCP 连接管理、任务迁移 |
+| `agent-plugins` | ✅ 已实现 — AutoMigratePlugin / AutoRefreshToolsPlugin / ContextGuardPlugin / UnknownToolHintPlugin |
 | `shared` | ✅ 已实现 — SdkError + 可注入 Logger |
 
 ## 内置工具
 
-内置工具全部类化（继承 `SdkCallbackTool`），由 Provider 用 `ToolEnv` 实例化——每个 Provider 一套实例，`cwd` 注入，相对路径以 `Provider.cwd` 为基准，不依赖全局 `process.cwd()`。
+内置工具全部类化（继承 `SdkCallbackTool`），由内置工具插件（`BuiltinToolsScopePlugin`）用 `ToolEnv` 实例化——每个 Scope 一套实例，`cwd` 注入，相对路径以 `Scope.cwd` 为基准，不依赖全局 `process.cwd()`。
 
 | 工具 | 说明 |
 |------|------|
@@ -113,7 +121,7 @@ await agent.send("你好");
 | `generateImage` | 配置了 `defaultImageModel` 才注册 | 根据文字描述生成图片 |
 | `viewImage` | 仅视觉模型可用（Agent 的 `modelId` 解析为 `vision: true` 的模型） | 查看/分析图片：本地图片自动经 Files API 上传，网络 URL 直接引用 |
 
-工具输出保护：`AppConfig.maxToolOutput`（字符数，缺省 32768）是工具输出的统一上限，超限时由各工具自行处置——`exec` 分文件落盘 `stdout.log` / `stderr.log`（返回各流头尾预览），`findText` / `glob` / `ls` 落盘 `result.json`（返回头部预览），`readFile` 仅警告并提示用 `range` 分批读取。落盘目录为 `<tmpdir>/ai-zen/tool-output/<工具名>-<时间戳>-<随机串>/`，每次调用独立、不自清理。详见 [`docs/sdk-design.md` §7](docs/sdk-design.md)。
+工具输出保护：`AppConfig.maxToolOutput`（字符数，缺省 32768）是工具输出的统一上限，超限时由各工具自行处置——`exec` 分文件落盘 `stdout.log` / `stderr.log`（返回各流头尾预览），`findText` / `glob` / `ls` 落盘 `result.json`（返回头部预览），`readFile` 仅警告并提示用 `range` 分批读取。落盘目录为 `<tmpdir>/ai-zen/tool-output/<工具名>-<时间戳>-<随机串>/`，每次调用独立、不自清理。详见 [`docs/sdk-design-v1.md` §12](docs/sdk-design-v1.md)。
 
 ## 内置插件
 

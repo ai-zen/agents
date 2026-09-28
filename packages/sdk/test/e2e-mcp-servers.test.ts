@@ -9,7 +9,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { join } from "node:path";
-import { McpConnectionManager } from "../src/runtime/McpConnectionManager.js";
+import { McpConnectionManager } from "../src/scope/plugins/mcp/McpConnectionManager.js";
 import type { McpServerConfig } from "../src/types/index.js";
 
 // ---------------------------------------------------------------------------

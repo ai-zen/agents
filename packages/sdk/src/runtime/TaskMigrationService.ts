@@ -59,7 +59,7 @@ export interface TaskMigrationServiceOptions {
  *
  * 一个服务实例对应一次迁移上下文。它**不持有**任何模型调用——生成交接文档时
  * 默认复用传入 `agent`（`SdkAgent`）自身的 `client` / `model` / `modelConfig`，
- * 因此无需 Provider、无需独立「迁移 Agent」对象，也无需自建 OpenAI 客户端。
+ * 因此无需 Scope、无需独立「迁移 Agent」对象，也无需自建 OpenAI 客户端。
  * 如需用不同模型生成交接文档，可在构造时显式传入 `client` / `model` / `modelConfig`，
  * 未传则 migrate 时回退到 agent 自带的配置。
  *
@@ -221,7 +221,7 @@ export class TaskMigrationService {
     const messageCountBefore = agent.messages.length;
 
     // 生成交接文档所用模型调用：优先使用构造时传入的 client/model/modelConfig，
-    // 未传则回退到 agent 自带的（无需 Provider / 独立迁移 Agent）。
+    // 未传则回退到 agent 自带的（无需 Scope / 独立迁移 Agent）。
     const client = this.client ?? agent.client;
     const model = this.model ?? agent.model;
     const modelConfig = this.modelConfig ?? agent.modelConfig;

@@ -41,41 +41,21 @@ function createMockClient(rounds: AnyChunk[][] = [[chunk({ content: "回复" }),
   return { chat: { completions: { create } } } as any;
 }
 
-function mockProvider(opts?: { mcpPaths?: string[] }) {
-  return {
-    config: {
-      defaultModel: "m1",
-      models: [{ id: "m1", name: "test", endpointId: "e1", maxContextTokens: 100000 }],
-      endpoints: [],
-    },
-    agentsDir: "",
-    subAgentsPaths: [],
-    skillsPaths: [],
-    toolsPaths: [],
-    mcpPaths: opts?.mcpPaths ?? [],
-    builtinTools: [],
-    userTools: [],
-    subagents: [],
-    skills: [],
-    mcps: [],
-    mcpManager: undefined,
-    filter: () => ({ tools: [], subagents: [], skills: [], mcps: [] }),
-    buildTools: () => [],
-    instantiate: () => [],
-    refresh: async () => {},
-  };
+/** 最小 Scope mock —— SdkAgent 仅持有引用，测试不触发其能力管线 */
+function mockScope() {
+  return {} as any;
 }
 
 function createTestAgent(opts?: {
   client?: any;
   messages?: any[];
   tools?: any[];
-  provider?: any;
+  scope?: any;
 }): SdkAgent {
   const messages =
     opts?.messages ?? [{ role: AgentNS.Role.System, content: "You are a helper." }];
   return new SdkAgent({
-    provider: opts?.provider ?? (mockProvider() as any),
+    scope: opts?.scope ?? mockScope(),
     definition: {
       id: "test-agent",
       name: "Test Agent",
@@ -95,10 +75,10 @@ function createTestAgent(opts?: {
 // ---------------------------------------------------------------------------
 
 describe("SdkAgent", () => {
-  it("构造时携带 provider / definition（含 permissions）", () => {
-    const provider = mockProvider() as any;
+  it("构造时携带 scope / definition（含 permissions）", () => {
+    const scope = mockScope();
     const agent = new SdkAgent({
-      provider,
+      scope,
       definition: {
         id: "t",
         name: "T",
@@ -111,7 +91,7 @@ describe("SdkAgent", () => {
       model: "m",
     });
 
-    expect(agent.provider).toBe(provider);
+    expect(agent.scope).toBe(scope);
     expect(agent.definition.id).toBe("t");
     expect(agent.definition.permissions?.tools).toEqual({ allow: ["readFile"] });
     expect(agent.model).toBe("m");

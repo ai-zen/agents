@@ -1,5 +1,46 @@
 # Changelog
 
+## [1.0.0-alpha.0] - 2026-09-30
+
+### 💥 Breaking Changes
+
+- **`Provider` 改名为 `Scope`（彻底移除，不留兼容别名）** — 原 `runtime/Provider.ts` 迁移为 `scope/Scope.ts`。所有 `provider` 字段 / 参数 / 变量一律改名 `scope`：`SdkAgent.provider` → `SdkAgent.scope`、`createAgent(scope, …)`、`createModel(scope, …)`、`createSubAgentTool(def, scope)`。`FilterOutput` / `ExcludeOptions` / `FilterOptions` 随之从 `runtime/Provider` 迁移到 `scope/Scope`。
+- **能力来源"疏散"为 `ScopePlugin`（新增能力插件契约）** — `Scope` 退化为纯编排容器：只持 `config` / `cwd` / `env` / `agentsDir`，并编排三阶段管线（发现 → 过滤 → 实例化）。原先硬编码在 `Provider.refresh/filter/instantiate` 中的四类能力来源，拆成 **5 个标准插件**，各自自持发现状态与实例化逻辑：
+  - `BuiltinToolsScopePlugin`（`id: "builtin"`）— 20 个内置工具类
+  - `UserToolsScopePlugin`（`id: "user-tools"`）— `tools/*.js`
+  - `SkillsScopePlugin`（`id: "skills"`）— `SKILL.md` + `load_skill` / `call_skill_sub_agent`
+  - `McpScopePlugin`（`id: "mcp"`）— `mcp.json` + 私有 `McpConnectionManager` + `load_mcp` / `call_mcp_tool` / `read_mcp_resource`
+  - `SubAgentsScopePlugin`（`id: "subagents"`）— `sub-agents/*.json`
+- **`Scope` 不再接收能力来源路径、不再暴露聚合候选集** — `new Provider({ config, cwd, agentsDir, skillsPaths, toolsPaths, subAgentsPaths, mcpPaths })` → `new Scope({ config, cwd, agentsDir })`。路径改由插件持有（可传绝对路径，或传相对路径由插件在 `discover()` 时基于 `scope.cwd` join）。`Scope` 不再有 `builtinTools` / `userTools` / `subagents` / `skills` / `mcps` / `mcpManager` 字段。
+- **`Provider.create()` 移除** — 改为显式装配：`new Scope({...}).use(...plugins)` → `await scope.init()`。（静态 `create` 快捷方式暂时移除，未来再议。）
+- **插件必须显式装配** — `Scope` 自身不注册任何默认插件；不装配即"空能力"。便捷工厂 `allInOne({ skillsPaths, toolsPaths, subAgentsPaths, mcpPaths })` 恒返回 5 个标准插件，供一次性装配。
+
+### 🚀 New Features
+
+- **新增 `ScopePlugin` 扩展点** — 契约 `{ id; discover?; candidates; instantiate; dispose? }`，与 core 的 `AgentPlugin`（Agent 运行时钩子）互为独立扩展点：
+  - `discover?(scope, { silent })` — 阶段 1 · 发现（可异步，内部重新扫描）
+  - `candidates(scope, definition)` — 阶段 2 · 贡献四维候选名（含可用性判断，如同步 `isAvailable`）
+  - `instantiate(scope, filtered)` — 阶段 3 · 按过滤后允许名产出 `Tool[]`
+  - `dispose?()` — 释放（如 MCP 断开连接）
+- **`Scope` 新增 API**：`use(...plugins)`（链式、可变参数）、`getPluginById(id)`（供外部/插件查询插件状态）、`plugins`（只读视图）、`init()` / `refresh({ silent })` / `filter()` / `instantiate()` / `buildTools()` / `dispose()`。`init()` 之后再 `use()` 抛错。
+- **`dispose()` 与 `init()` 对称** — 逆序调用各插件 `dispose()`；`McpScopePlugin.dispose()` → `mcpManager.disconnectAll()`，MCP 长连接不再只依赖空闲超时。
+- **`allInOne()` 便捷工厂** — 恒返回 5 个标准插件，顺序即优先级（`builtin → user-tools → skills → mcp → subagents`，去重时后注册覆盖先注册，用户工具仍可覆盖同名内置工具）。
+- **`McpScopePlugin.hasConfig()`** — 供 `UnknownToolHintPlugin` 判断"是否有 MCP 配置"（替代对 `provider.mcpPaths` 的直接读取）。
+
+### 🛠 Optimized
+
+- **`UnknownToolHintPlugin` 构造改收 `{ scope }`** — 经 `scope.getPluginById(McpScopePlugin.ID)?.hasConfig()` 获知 MCP 配置，行为语义不变（有配置但 `call_mcp_tool` 被禁 → 提示权限；可用 → 引导使用；无配置 → 仅提示不存在）。
+- **`AutoRefreshToolsPlugin`** — 改经 `agent.scope.refresh()` / `agent.scope.buildTools()`。
+- **渐进式披露（懒加载）设计零改动** — `load_skill` / `call_skill_sub_agent` / `load_mcp` / `call_mcp_tool` / `read_mcp_resource` 的 schema、枚举披露（`createDisclosureParam`）、`include_manifest` 开关、`touch` 续期、`call_skill_sub_agent` 沿用父工具集并剔除自身防递归——全部**逐字保留**，仅从 `Provider.instantiate()` 平移到 `SkillsScopePlugin` / `McpScopePlugin` 的 `instantiate()`。权限语义（`tools` 维度拒绝 `load_*` 即切断披露通道；deny 掉的 skill/mcp 不进 enum）不变。
+
+### 📄 Docs
+
+- 新增 [`docs/sdk-design-v1.md`](docs/sdk-design-v1.md)（v1 设计真相源，含 Scope / ScopePlugin 架构、五插件、迁移指南）；旧文档更名为 [`docs/sdk-design-v0.md`](docs/sdk-design-v0.md)。
+
+### ✅ Tests
+
+- 全部测试迁移到 Scope + ScopePlugin：`capabilities.test.ts` 重写为按插件维度组织（内置 / SubAgent / Skill / MCP / 用户工具 + 生命周期），`createAgent` / `createModel` / `SdkAgent` / `UnknownToolHint` / `AutoRefreshTools` / `subAgentTools` / `integration` / `e2e-*` 同步更新。SDK 全量 **498 passed / 2 skipped**（含真实 DeepSeek API 的 chat / view-image e2e）。
+
 ## [0.12.0] - 2026-09-29
 
 ### 🚀 New Features
