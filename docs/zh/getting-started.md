@@ -112,28 +112,32 @@ await agent.send("What is the weather like in Beijing and Shanghai today?");
 
 ## 用 SDK 创建 Agent（能力层）
 
-SDK 提供了一键组装：`ConfigManager`（配置与出厂默认）→ `Provider.create()`（全局上下文 + 能力发现）→ `createAgent()`（产出 `SdkAgent`）。
+SDK 提供了一键组装：`ConfigManager`（配置与出厂默认）→ `Scope`（全局上下文 + 能力插件装配）→ `createAgent()`（产出 `SdkAgent`）。
 
 ```ts
-import { Provider, createAgent, ConfigManager, AutoMigratePlugin, AutoRefreshToolsPlugin, TaskMigrationService } from "@ai-zen/agents-sdk";
+import { Scope, allInOne, createAgent, ConfigManager, AutoMigratePlugin, AutoRefreshToolsPlugin, TaskMigrationService } from "@ai-zen/agents-sdk";
 
 // 1. 初始化配置（幂等，已有文件不覆盖）
 const mgr = new ConfigManager("~/.ai-zen/config.json");
 const { config } = await mgr.bootstrap();
 
-// 2. 创建 Provider（每个工作目录一个实例）
-const provider = await Provider.create({
+// 2. 创建 Scope（每个工作目录一个实例）并注入能力插件
+const scope = new Scope({
   config,
   cwd: "/path/to/workspace-a",
   agentsDir: "~/.ai-zen/agents",
-  subAgentsPaths: ["~/.ai-zen/sub-agents"],
-  skillsPaths: ["~/.ai-zen/skills"],
-  toolsPaths: ["~/.ai-zen/tools"],
-  mcpPaths: ["~/.ai-zen/mcp.json"],
-});
+}).use(
+  ...allInOne({
+    subAgentsPaths: ["~/.ai-zen/sub-agents"],
+    skillsPaths: ["~/.ai-zen/skills"],
+    toolsPaths: ["~/.ai-zen/tools"],
+    mcpPaths: ["~/.ai-zen/mcp.json"],
+  }),
+);
+await scope.init();                    // 首次能力发现，锁定插件注册
 
 // 3. 创建 Agent 并注册插件
-const agent = await createAgent(provider, config.defaultAgent ?? "default");
+const agent = await createAgent(scope, config.defaultAgent ?? "default");
 agent.use(new AutoMigratePlugin({
   service: new TaskMigrationService({ onMigrated: (mctx) => { /* 保存回执 */ } }),
   maxTokens: 250_000,

@@ -1,6 +1,6 @@
 # Skills 规范合规方案
 
-> 补充 `sdk-design.md` §8，对齐 [Agent Skills 规范](https://agentskills.io/specification.md)。
+> 补充 `sdk-design-v1.md`（§11 能力发现细节 · Skill），对齐 [Agent Skills 规范](https://agentskills.io/specification.md)。
 
 ---
 

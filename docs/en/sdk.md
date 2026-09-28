@@ -1,6 +1,6 @@
 ---
 title: SDK
-description: The public API of @ai-zen/agents-sdk — Provider, capability pipeline, permission model, built-in tools, plugins, and task migration.
+description: The public API of @ai-zen/agents-sdk — Scope, capability pipeline, permission model, built-in tools, plugins, and task migration.
 outline: deep
 ---
 
@@ -9,24 +9,28 @@ outline: deep
 `@ai-zen/agents-sdk` is the **engine / capability layer** built on top of `@ai-zen/agents-core`, providing a unified Agent runtime for CLI / Desktop.
 
 - **Installation**: `npm install @ai-zen/agents-sdk` (depends on `@ai-zen/agents-core`, linked via `workspace:^`).
-- **Source of truth**: [`packages/sdk/docs/sdk-design.md`](../../packages/sdk/docs/sdk-design.md).
+- **Source of truth**: [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md) (the older `sdk-design-v0.md` is kept as a historical archive).
 
-## Provider — global context + capability pipeline
+## Scope — global context + capability assembly orchestrator
 
-`Provider` is the **sole entry object** of the SDK. It holds configuration, paths, the working directory, the model factory, and the MCP manager, and integrates the "discover → filter → instantiate" three-stage pipeline.
+`Scope` is the **sole entry object** of the SDK. It holds configuration, the working directory, the agents directory, and a set of capability plugins (`ScopePlugin`), and integrates the "discover → filter → instantiate" three-stage pipeline. Capability sources (built-in/user tools, Skill, MCP, SubAgent) are all delegated to plugins, each self-contained.
 
 ```ts
-import { Provider } from "@ai-zen/agents-sdk";
+import { Scope, allInOne } from "@ai-zen/agents-sdk";
 
-const provider = await Provider.create({
+const scope = new Scope({
   config,                 // AppConfig (from ConfigManager)
   cwd: "/path/to/workspace",
   agentsDir: "~/.ai-zen/agents",
-  subAgentsPaths: ["~/.ai-zen/sub-agents"],
-  skillsPaths: ["~/.ai-zen/skills"],
-  toolsPaths: ["~/.ai-zen/tools"],
-  mcpPaths: ["~/.ai-zen/mcp.json"],
-});
+}).use(
+  ...allInOne({                       // always returns the 5 standard capability plugins
+    subAgentsPaths: ["~/.ai-zen/sub-agents"],
+    skillsPaths: ["~/.ai-zen/skills"],
+    toolsPaths: ["~/.ai-zen/tools"],
+    mcpPaths: ["~/.ai-zen/mcp.json"],
+  }),
+);
+await scope.init();                   // first discovery, then plugin registration is locked
 ```
 
 Key fields and methods:
@@ -36,24 +40,29 @@ Key fields and methods:
 | `config` | Application configuration (endpoints, models, etc.) |
 | `cwd` | Current working directory — the base for relative-path resolution and the source of `ToolEnv.cwd` |
 | `env` | Tool environment `{ cwd, config }`, injected when instantiating built-in tools |
-| `mcpManager` | MCP connection manager (present when MCP config exists) |
-| `async refresh()` | Re-run global capability discovery (re-scan the filesystem) |
+| `agentsDir` | Agents directory (used by `createAgent`) |
+| `plugins` | Registered plugins (read-only view) |
+| `use(...plugins)` | Register capability plugins (chainable, variadic; must precede `init()`) |
+| `getPluginById(id)` | Look up a plugin by id (for external code or other plugins to query state) |
+| `async init()` | First global discovery, then locks plugin registration |
+| `async refresh()` | Re-run global capability discovery (each plugin re-scans the filesystem) |
+| `async dispose()` | Dispose plugins in reverse order (e.g. disconnect MCP); symmetric with `init()` |
 | `filter(definition, options?)` | Stage 2: filter by permission + exclude + `isAvailable`, returning a name list |
 | `instantiate(filtered)` | Stage 3: name → Tool instance |
 | `buildTools(definition, options?)` | `filter` + `instantiate` in one step |
 
-Each `Provider` corresponds to one working directory; multiple Providers can serve sessions in different directories in parallel without interference.
+Each `Scope` corresponds to one working directory; multiple Scopes can serve sessions in different directories in parallel without interference.
 
 ## createAgent / SdkAgent
 
 ```ts
 import { createAgent } from "@ai-zen/agents-sdk";
 
-const agent = await createAgent(provider, config.defaultAgent ?? "default");
+const agent = await createAgent(scope, config.defaultAgent ?? "default");
 // agent is an SdkAgent; you can register plugins and send messages directly
 ```
 
-- `SdkAgent extends Agent` (from core), additionally carrying `provider` and `definition` (including `permissions`).
+- `SdkAgent extends Agent` (from core), additionally carrying `scope` and `definition` (including `permissions`).
 - Permissions are read uniformly from `definition.permissions`, not held separately.
 
 ## Permission model
@@ -81,7 +90,7 @@ Matching dimensions: `tools` by tool name (e.g. `rm`), `skills` by skill id, `mc
 
 ## Built-in tools (20 classes)
 
-All built-in tools are `SdkCallbackTool` subclasses, instantiated by the Provider using `ToolEnv` (one set of instances per Provider, with its `cwd` injected). Relative paths are always resolved against `ToolEnv.cwd`, never depending on the global `process.cwd()`.
+All built-in tools are `SdkCallbackTool` subclasses, instantiated by the Scope using `ToolEnv` (one set of instances per Scope, with its `cwd` injected). Relative paths are always resolved against `ToolEnv.cwd`, never depending on the global `process.cwd()`.
 
 | Tool | Description |
 |------|------|
@@ -166,7 +175,7 @@ agent.use(new AutoMigratePlugin({
 
 ## Consumption pattern (complete)
 
-See the "Consumption pattern (complete example)" and "Boundary with Core" sections in [`packages/sdk/docs/sdk-design.md`](../../packages/sdk/docs/sdk-design.md).
+See the "Consumption pattern (complete example)" and "Boundary with Core" sections in [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md).
 
 ## Related documentation
 
@@ -174,4 +183,4 @@ See the "Consumption pattern (complete example)" and "Boundary with Core" sectio
 - [Architecture](architecture.md)
 - [Core API](core.md) — low-level runtime API
 - [MCP](mcp.md) — the SDK's MCP connection management
-- [`packages/sdk/docs/sdk-design.md`](../../packages/sdk/docs/sdk-design.md) — source of truth for the SDK design
+- [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md) — source of truth for the SDK design

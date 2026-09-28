@@ -10,14 +10,14 @@ AI-Zen Agents 是一个**模块化的 LLM Agent 框架**，以 pnpm workspace �
 
 - **许可证**：MIT
 - **npm 包**：`@ai-zen/agents-workspace`（workspace 根，私有）；公开子包为 `@ai-zen/agents-core` 与 `@ai-zen/agents-sdk`
-- **当前版本**：workspace `2.0.0`；`@ai-zen/agents-core` `4.3.0`；`@ai-zen/agents-sdk` `0.12.0`
+- **当前版本**：workspace `2.0.0`；`@ai-zen/agents-core` `4.3.0`；`@ai-zen/agents-sdk` `1.0.0-alpha.0`
 
 ## 这是什么
 
 框架围绕两个层次设计：
 
 1. **`@ai-zen/agents-core`** —— 插件驱动的 Agent 运行时。直接运行于官方 `openai` SDK 之上，不维护自己的请求层。负责对话生命周期、流式输出、工具调用、多轮递归对话、事件与插件扩展。
-2. **`@ai-zen/agents-sdk`** —— 建立在 core 之上的**引擎 / 能力层**。负责业务能力管线（发现 → 权限过滤 → 实例化）、Provider 全局上下文、MCP 连接管理、任务迁移，以及内置文件/命令工具集。
+2. **`@ai-zen/agents-sdk`** —— 建立在 core 之上的**引擎 / 能力层**。负责业务能力管线（发现 → 权限过滤 → 实例化）、Scope 全局上下文、MCP 连接管理、任务迁移，以及内置文件/命令工具集。
 
 ## 项目结构
 
@@ -25,7 +25,7 @@ AI-Zen Agents 是一个**模块化的 LLM Agent 框架**，以 pnpm workspace �
 agents/
 ├── packages/
 │   ├── core/    # @ai-zen/agents-core — Agent / Message / Tool / 插件机制
-│   └── sdk/     # @ai-zen/agents-sdk — Provider / 能力管线 / MCP / 内置工具
+│   └── sdk/     # @ai-zen/agents-sdk — Scope / 能力管线 / MCP / 内置工具
 ├── package.json # workspace 根（私有）
 └── pnpm-workspace.yaml
 ```
@@ -48,13 +48,13 @@ agents/
         │
         ▼
 @ai-zen/agents-sdk  ──►  @ai-zen/agents-core  ──►  openai 官方 SDK
-  （能力管线 / Provider / MCP）      （Agent 运行时）     （LLM API）
+  （能力管线 / Scope / MCP）      （Agent 运行时）     （LLM API）
         │
         ▼
 LLM API / MCP 服务器
 ```
 
-依赖方向（SDK 内部）：`plugin → runtime → capabilities → crud → config → types`。上层依赖下层，反之不行。详见 [架构](architecture.md)。
+依赖方向（SDK 内部）：`agent-plugins → runtime → scope → crud → config → types`。上层依赖下层，反之不行。详见 [架构](architecture.md)。
 
 ## 快速开始
 
@@ -85,7 +85,7 @@ console.log(agent.messages.at(-1)?.content);
 - [快速开始](getting-started.md) —— 环境要求、安装、构建、第一个 Agent
 - [架构](architecture.md) —— core / sdk 分层与模块依赖
 - [Core API](core.md) —— 核心运行时公开 API（Agent / Message / Tool / 插件）
-- [SDK](sdk.md) —— 能力层（Provider / 权限 / 内置工具 / 迁移）
+- [SDK](sdk.md) —— 能力层（Scope / 权限 / 内置工具 / 迁移）
 - [检索与 RAG](rag.md) —— 检索能力现状、RAG 移除说明
 - [MCP](mcp.md) —— Model Context Protocol 支持
 

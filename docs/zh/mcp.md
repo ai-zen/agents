@@ -140,6 +140,6 @@ SDK 包内维护了更细的 MCP 文档：
 
 ## 相关文档
 
-- [SDK](sdk.md) —— `Provider` 与 MCP 管理器集成
+- [SDK](sdk.md) —— `Scope` 与 MCP 管理器集成
 - [Core API](core.md) —— 运行时底层
 - [架构](architecture.md) —— 分层与依赖方向

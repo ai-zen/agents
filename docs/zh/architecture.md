@@ -15,46 +15,46 @@ AI-Zen Agents 是一个 **pnpm monorepo**，拆分为两个公开子包（`@ai-z
         │
         ▼
 @ai-zen/agents-sdk  ──►  @ai-zen/agents-core  ──►  openai 官方 SDK
- （能力管线 / Provider / MCP / 内置工具） （Agent 运行时）   （LLM API）
+ （能力管线 / Scope / MCP / 内置工具） （Agent 运行时）   （LLM API）
         │
         ▼
 LLM API / MCP 服务器（openai SDK / @modelcontextprotocol/sdk）
 ```
 
 - **Core** 是框架「内核」：只关心对话运行时的通用抽象，不感知权限、文件系统等业务。
-- **SDK** 是「引擎层」：为 CLI / Desktop 提供统一能力，持有能力管线、Provider、MCP、内置工具。
+- **SDK** 是「引擎层」：为 CLI / Desktop 提供统一能力，持有能力管线、Scope、MCP、内置工具。
 
 ## 子包职责
 
 | 包 | 版本 | 职责 |
 |----|------|------|
 | `@ai-zen/agents-core` | 4.3.0 | `Agent` / `Message` / `Tool` / `ToolCallContext`、插件机制（`AgentPlugin` + `HookResult` + `dispatchHook`）、事件系统 |
-| `@ai-zen/agents-sdk` | 0.12.0 | `Provider` 全局上下文、能力管线（发现 → 过滤 → 实例化）、权限模型、MCP 生命周期、任务迁移、内置工具、`ConfigManager` |
+| `@ai-zen/agents-sdk` | 1.0.0-alpha.0 | `Scope` 全局上下文、能力管线（发现 → 过滤 → 实例化）、权限模型、MCP 生命周期、任务迁移、内置工具、`ConfigManager` |
 
 > workspace 根包 `@ai-zen/agents-workspace` 为私有，版本 `2.0.0`。该版本号与两个公开子包各自独立的版本并不一致，仅用于 workspace 编排。
 
 ## SDK 内部模块分层
 
 ```
-types        ← 纯类型，零业务依赖（含 ToolEnv、权限、MCP 类型）
-config       ← ConfigManager + constants：读写 config.json + 目录初始化 + 原子写入 + 出厂默认
-crud         ← 能力实体 CRUD（AgentDefinition 等；会话/草稿由各端持久化）
-capabilities ← 能力发现与装配（内置 + 用户 + MCP + Skill + SubAgent）
-runtime      ← Provider + 模型工厂 + Agent 组装 + MCP 连接管理 + 任务迁移 + SdkCallbackTool
-plugin       ← Agent 插件（autoMigrate / autoRefreshTools / contextGuard / unknownToolHint）
-shared       ← 日志、错误
+types         ← 纯类型，零业务依赖（含 ToolEnv、权限、MCP 类型）
+config        ← ConfigManager + constants：读写 config.json + 目录初始化 + 原子写入 + 出厂默认
+crud          ← 能力实体 CRUD（AgentRepository；通用 EntityRepository 在 shared）
+runtime       ← 运行时常驻件：模型工厂 + Agent 组装 + 任务迁移（createModel / createAgent / SdkAgent / TaskMigrationService）
+scope         ← Scope 编排容器 + ScopePlugin 契约 + PermissionEvaluator + disclosure + plugins/（5 个能力来源，各自自包含「发现 + 工具 + 插件」）
+agent-plugins ← AgentPlugin 插件（autoMigrate / autoRefreshTools / contextGuard / unknownToolHint）
+shared        ← EntityRepository、SdkError、Logger
 ```
 
 **依赖方向**：
 
 ```text
-plugin → runtime → capabilities → crud → config → types
-              │
-              └──→ shared
-              └──→ @ai-zen/agents-core
+agent-plugins → runtime → scope → crud → config → types
+                    │
+                    └──→ shared
+                    └──→ @ai-zen/agents-core
 ```
 
-上层依赖下层，反之不行；同层模块互不依赖。三方依赖关系详见 [`packages/sdk/docs/sdk-design.md`](../../packages/sdk/docs/sdk-design.md)（该文档是 SDK 的单一设计真相源）。
+上层依赖下层，反之不行；同层模块互不依赖（例外：`scope` 的能力插件依赖 `runtime` 的 `createModel`，`runtime ⇆ scope` 仅剩一条类型级边）。三方依赖关系详见 [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md)（该文档是 SDK 的单一设计真相源）。
 
 ## Core 运行时设计
 
@@ -104,20 +104,20 @@ ToolCallContext 同一实例贯穿「拦截决策（`onToolCall`）→ 执行（
 3. 实例化（instantiate） 名称 → Tool 实例 / 动态工具 / SubAgent 延迟构建 / 去重
 ```
 
-`Provider` 是 SDK 的唯一入口对象，持有配置、路径、`cwd`、模型工厂与 MCP 管理器。每个 `Provider` 绑定一个工作目录（`cwd`），实现多会话并行互不干扰。详见 [SDK](sdk.md)。
+`Scope` 是 SDK 的唯一入口对象，持有配置、`cwd`、`agentsDir` 与一组能力插件。每个 `Scope` 绑定一个工作目录（`cwd`），实现多会话并行互不干扰。详见 [SDK](sdk.md)。
 
 ## 多会话并行
 
-内置工具以 `ToolEnv.cwd` 为相对路径基准，**不再依赖全局 `process.cwd()`**。CLI / Desktop 可同时持有多个 `Provider` 服务不同工作目录的会话。
+内置工具以 `ToolEnv.cwd` 为相对路径基准，**不再依赖全局 `process.cwd()`**。CLI / Desktop 可同时持有多个 `Scope` 服务不同工作目录的会话。
 
 ```
 Desktop（workspaces.json）
-   │ 每 workspace 一个 Provider（1:1）
+   │ 每 workspace 一个 Scope（1:1）
    ▼
-Provider(cwd) ──ToolEnv──▶ 工具实例（cwd/config 注入）
+Scope(cwd) ──ToolEnv──▶ 工具实例（cwd/config 注入）
    │
    ▼
-createAgent(provider, agentId) → SdkAgent（并行 send）
+createAgent(scope, agentId) → SdkAgent（并行 send）
 ```
 
 ## 相关文档
@@ -126,4 +126,4 @@ createAgent(provider, agentId) → SdkAgent（并行 send）
 - [SDK](sdk.md) —— 能力层公开 API
 - [检索与 RAG](rag.md) —— 检索能力现状
 - [MCP](mcp.md) —— MCP 接入与生命周期
-- [`packages/sdk/docs/sdk-design.md`](../../packages/sdk/docs/sdk-design.md) —— SDK 设计真相源
+- [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md) —— SDK 设计真相源

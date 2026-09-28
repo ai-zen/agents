@@ -140,6 +140,6 @@ The SDK package maintains more detailed MCP documentation:
 
 ## Related documentation
 
-- [SDK](sdk.md) — `Provider` and MCP manager integration
+- [SDK](sdk.md) — `Scope` and MCP manager integration
 - [Core API](core.md) — low-level runtime
 - [Architecture](architecture.md) — layering and dependency direction

@@ -47,7 +47,7 @@ const tool = new IndexedSearchTool({
 
 ## 全局检索能力（SDK）
 
-在 SDK 层，`Provider` 的**能力发现**会在 `refresh()` 时扫描文件系统，将可用的知识源（用户工具、Skill、MCP、SubAgent）纳入候选集，再由权限过滤与实例化装配。这同样属于「以工具/能力的粒度提供检索」，而非隐式 RAG。
+在 SDK 层，`Scope` 的**能力发现**会在 `refresh()` 时扫描文件系统，将可用的知识源（用户工具、Skill、MCP、SubAgent）纳入候选集，再由权限过滤与实例化装配。这同样属于「以工具/能力的粒度提供检索」，而非隐式 RAG。
 
 具体可用的检索相关工具（取决于权限与配置）：
 

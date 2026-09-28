@@ -10,14 +10,14 @@ AI-Zen Agents is a **modular LLM Agent framework**, organized as a monorepo via 
 
 - **License**: MIT
 - **npm package**: `@ai-zen/agents-workspace` (workspace root, private); public subpackages are `@ai-zen/agents-core` and `@ai-zen/agents-sdk`
-- **Current versions**: workspace `2.0.0`; `@ai-zen/agents-core` `4.3.0`; `@ai-zen/agents-sdk` `0.12.0`
+- **Current versions**: workspace `2.0.0`; `@ai-zen/agents-core` `4.3.0`; `@ai-zen/agents-sdk` `1.0.0-alpha.0`
 
 ## What this is
 
 The framework is designed around two layers:
 
 1. **`@ai-zen/agents-core`** — A plugin-driven Agent runtime. It runs directly on the official `openai` SDK and does not maintain its own request layer. It is responsible for conversation lifecycle, streaming output, tool calls, multi-turn recursive dialogs, events, and plugin extension.
-2. **`@ai-zen/agents-sdk`** — The **engine / capability layer** built on top of core. It is responsible for the business capability pipeline (discover → permission-filter → instantiate), the global Provider context, MCP connection management, task migration, and the built-in file/command toolset.
+2. **`@ai-zen/agents-sdk`** — The **engine / capability layer** built on top of core. It is responsible for the business capability pipeline (discover → permission-filter → instantiate), the global Scope context, MCP connection management, task migration, and the built-in file/command toolset.
 
 ## Project structure
 
@@ -25,7 +25,7 @@ The framework is designed around two layers:
 agents/
 ├── packages/
 │   ├── core/    # @ai-zen/agents-core — Agent / Message / Tool / plugin mechanism
-│   └── sdk/     # @ai-zen/agents-sdk — Provider / capability pipeline / MCP / built-in tools
+│   └── sdk/     # @ai-zen/agents-sdk — Scope / capability pipeline / MCP / built-in tools
 ├── package.json # workspace root (private)
 └── pnpm-workspace.yaml
 ```
@@ -48,13 +48,13 @@ Upper-layer apps (CLI / Desktop)
         │
         ▼
 @ai-zen/agents-sdk  ──►  @ai-zen/agents-core  ──►  official openai SDK
-  (capability pipeline / Provider / MCP)   (Agent runtime)    (LLM API)
+  (capability pipeline / Scope / MCP)   (Agent runtime)    (LLM API)
         │
         ▼
 LLM API / MCP servers
 ```
 
-Dependency direction (inside SDK): `plugin → runtime → capabilities → crud → config → types`. Upper layers depend on lower layers, not the other way around. See [Architecture](architecture.md).
+Dependency direction (inside SDK): `agent-plugins → runtime → scope → crud → config → types`. Upper layers depend on lower layers, not the other way around. See [Architecture](architecture.md).
 
 ## Quick start
 
@@ -85,7 +85,7 @@ For complete installation and usage, see [Quick Start](getting-started.md).
 - [Quick Start](getting-started.md) — environment requirements, installation, build, first Agent
 - [Architecture](architecture.md) — core / sdk layering and module dependencies
 - [Core API](core.md) — core runtime public API (Agent / Message / Tool / plugins)
-- [SDK](sdk.md) — capability layer (Provider / permissions / built-in tools / migration)
+- [SDK](sdk.md) — capability layer (Scope / permissions / built-in tools / migration)
 - [Retrieval & RAG](rag.md) — retrieval capability status, RAG removal note
 - [MCP](mcp.md) — Model Context Protocol support
 

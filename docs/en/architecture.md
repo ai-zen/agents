@@ -15,46 +15,46 @@ Upper-layer apps (CLI / Desktop)
         │
         ▼
 @ai-zen/agents-sdk  ──►  @ai-zen/agents-core  ──►  official openai SDK
- (capability pipeline / Provider / MCP / built-in tools) (Agent runtime)   (LLM API)
+ (capability pipeline / Scope / MCP / built-in tools) (Agent runtime)   (LLM API)
         │
         ▼
 LLM API / MCP servers (openai SDK / @modelcontextprotocol/sdk)
 ```
 
 - **Core** is the "kernel" of the framework: it only cares about general conversation-runtime abstractions and is unaware of business concerns such as permissions or the filesystem.
-- **SDK** is the "engine layer": it provides unified capabilities for CLI / Desktop, holding the capability pipeline, Provider, MCP, and built-in tools.
+- **SDK** is the "engine layer": it provides unified capabilities for CLI / Desktop, holding the capability pipeline, Scope, MCP, and built-in tools.
 
 ## Subpackage responsibilities
 
 | Package | Version | Responsibility |
 |----|------|------|
 | `@ai-zen/agents-core` | 4.3.0 | `Agent` / `Message` / `Tool` / `ToolCallContext`, plugin mechanism (`AgentPlugin` + `HookResult` + `dispatchHook`), event system |
-| `@ai-zen/agents-sdk` | 0.12.0 | `Provider` global context, capability pipeline (discover → filter → instantiate), permission model, MCP lifecycle, task migration, built-in tools, `ConfigManager` |
+| `@ai-zen/agents-sdk` | 1.0.0-alpha.0 | `Scope` global context, capability pipeline (discover → filter → instantiate), permission model, MCP lifecycle, task migration, built-in tools, `ConfigManager` |
 
 > The workspace root package `@ai-zen/agents-workspace` is private and version `2.0.0`. This version number is not consistent with the independent versions of the two public subpackages; it is only used for workspace orchestration.
 
 ## SDK internal module layering
 
 ```
-types        ← pure types, zero business dependencies (includes ToolEnv, permissions, MCP types)
-config       ← ConfigManager + constants: read/write config.json + directory setup + atomic writes + factory defaults
-crud         ← capability entity CRUD (AgentDefinition, etc.; sessions/drafts are persisted by each client)
-capabilities ← capability discovery and assembly (built-in + user + MCP + Skill + SubAgent)
-runtime      ← Provider + model factory + Agent assembly + MCP connection management + task migration + SdkCallbackTool
-plugin       ← Agent plugins (autoMigrate / autoRefreshTools / contextGuard / unknownToolHint)
-shared       ← logging, errors
+types         ← pure types, zero business dependencies (includes ToolEnv, permissions, MCP types)
+config        ← ConfigManager + constants: read/write config.json + directory setup + atomic writes + factory defaults
+crud          ← capability entity CRUD (AgentRepository; the generic EntityRepository lives in shared)
+runtime       ← runtime residents: model factory + Agent assembly + task migration (createModel / createAgent / SdkAgent / TaskMigrationService)
+scope         ← Scope orchestrator + ScopePlugin contract + PermissionEvaluator + disclosure + plugins/ (5 capability sources, each self-contained with discovery + tools + plugin)
+agent-plugins ← AgentPlugin plugins (autoMigrate / autoRefreshTools / contextGuard / unknownToolHint)
+shared        ← EntityRepository, SdkError, Logger
 ```
 
 **Dependency direction**:
 
 ```text
-plugin → runtime → capabilities → crud → config → types
-              │
-              └──→ shared
-              └──→ @ai-zen/agents-core
+agent-plugins → runtime → scope → crud → config → types
+                    │
+                    └──→ shared
+                    └──→ @ai-zen/agents-core
 ```
 
-Upper layers depend on lower layers, not the other way around; modules at the same layer do not depend on each other. For third-party dependency relationships, see [`packages/sdk/docs/sdk-design.md`](../../packages/sdk/docs/sdk-design.md) (the single source of truth for the SDK design).
+Upper layers depend on lower layers, not the other way around; modules at the same layer do not depend on each other (exception: `scope`'s capability plugins depend on `runtime`'s `createModel`, so `runtime ⇆ scope` keeps a single type-level edge). For third-party dependency relationships, see [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md) (the single source of truth for the SDK design).
 
 ## Core runtime design
 
@@ -104,20 +104,20 @@ A single `ToolCallContext` instance spans "interception decision (`onToolCall`) 
 3. Instantiate           name → Tool instance / dynamic tool / SubAgent lazy build / dedupe
 ```
 
-`Provider` is the sole entry object of the SDK, holding configuration, paths, `cwd`, model factory, and the MCP manager. Each `Provider` binds to one working directory (`cwd`), enabling parallel multi-session operation without interference. See [SDK](sdk.md).
+`Scope` is the sole entry object of the SDK, holding configuration, `cwd`, `agentsDir`, and a set of capability plugins. Each `Scope` binds to one working directory (`cwd`), enabling parallel multi-session operation without interference. See [SDK](sdk.md).
 
 ## Parallel multi-session
 
-Built-in tools use `ToolEnv.cwd` as the base for relative paths and **no longer depend on the global `process.cwd()`**. CLI / Desktop can hold multiple `Provider`s at the same time, serving sessions in different working directories.
+Built-in tools use `ToolEnv.cwd` as the base for relative paths and **no longer depend on the global `process.cwd()`**. CLI / Desktop can hold multiple `Scope`s at the same time, serving sessions in different working directories.
 
 ```
 Desktop (workspaces.json)
-   │ one Provider per workspace (1:1)
+   │ one Scope per workspace (1:1)
    ▼
-Provider(cwd) ──ToolEnv──▶ tool instance (cwd/config injected)
+Scope(cwd) ──ToolEnv──▶ tool instance (cwd/config injected)
    │
    ▼
-createAgent(provider, agentId) → SdkAgent (parallel send)
+createAgent(scope, agentId) → SdkAgent (parallel send)
 ```
 
 ## Related documentation
@@ -126,4 +126,4 @@ createAgent(provider, agentId) → SdkAgent (parallel send)
 - [SDK](sdk.md) — capability-layer public API
 - [Retrieval & RAG](rag.md) — retrieval capability status
 - [MCP](mcp.md) — MCP integration and lifecycle
-- [`packages/sdk/docs/sdk-design.md`](../../packages/sdk/docs/sdk-design.md) — source of truth for the SDK design
+- [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md) — source of truth for the SDK design

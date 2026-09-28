@@ -47,7 +47,7 @@ It does not perform vector similarity or semantic retrieval; it only does **keyw
 
 ## Global retrieval capability (SDK)
 
-At the SDK layer, `Provider`'s **capability discovery** scans the filesystem during `refresh()` and brings available knowledge sources (user tools, Skills, MCP, SubAgents) into the candidate set, then assembles them via permission filtering and instantiation. This likewise provides retrieval at the granularity of tools/capabilities, rather than implicit RAG.
+At the SDK layer, `Scope`'s **capability discovery** scans the filesystem during `refresh()` and brings available knowledge sources (user tools, Skills, MCP, SubAgents) into the candidate set, then assembles them via permission filtering and instantiation. This likewise provides retrieval at the granularity of tools/capabilities, rather than implicit RAG.
 
 The specific retrieval-related tools that may be available (depending on permissions and configuration):
 

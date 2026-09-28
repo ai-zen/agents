@@ -1,6 +1,6 @@
 ---
 title: SDK
-description: @ai-zen/agents-sdk 的公开 API：Provider、能力管线、权限模型、内置工具、插件与任务迁移。
+description: @ai-zen/agents-sdk 的公开 API：Scope、能力管线、权限模型、内置工具、插件与任务迁移。
 outline: deep
 ---
 
@@ -9,24 +9,28 @@ outline: deep
 `@ai-zen/agents-sdk` 是建立在 `@ai-zen/agents-core` 之上的**引擎 / 能力层**，为 CLI / Desktop 提供统一 Agent 运行时。
 
 - **安装**：`npm install @ai-zen/agents-sdk`（依赖 `@ai-zen/agents-core`，以 `workspace:^` 关联）。
-- **设计真相源**：[`packages/sdk/docs/sdk-design.md`](../../packages/sdk/docs/sdk-design.md)。
+- **设计真相源**：[`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md)（旧版 `sdk-design-v0.md` 为历史存档）。
 
-## Provider —— 全局上下文 + 能力管线
+## Scope —— 全局上下文 + 能力装配编排容器
 
-`Provider` 是 SDK 的**唯一入口对象**。持有配置、路径、工作目录、模型工厂与 MCP 管理器，并整合「发现 → 过滤 → 实例化」三阶段。
+`Scope` 是 SDK 的**唯一入口对象**。持有配置、工作目录、Agent 定义目录与一组能力插件（`ScopePlugin`），并整合「发现 → 过滤 → 实例化」三阶段。能力来源（内置/用户工具、Skill、MCP、SubAgent）全部疏散到插件，各自自持。
 
 ```ts
-import { Provider } from "@ai-zen/agents-sdk";
+import { Scope, allInOne } from "@ai-zen/agents-sdk";
 
-const provider = await Provider.create({
+const scope = new Scope({
   config,                 // AppConfig（来自 ConfigManager）
   cwd: "/path/to/workspace",
   agentsDir: "~/.ai-zen/agents",
-  subAgentsPaths: ["~/.ai-zen/sub-agents"],
-  skillsPaths: ["~/.ai-zen/skills"],
-  toolsPaths: ["~/.ai-zen/tools"],
-  mcpPaths: ["~/.ai-zen/mcp.json"],
-});
+}).use(
+  ...allInOne({                       // 恒返回 5 个标准能力插件
+    subAgentsPaths: ["~/.ai-zen/sub-agents"],
+    skillsPaths: ["~/.ai-zen/skills"],
+    toolsPaths: ["~/.ai-zen/tools"],
+    mcpPaths: ["~/.ai-zen/mcp.json"],
+  }),
+);
+await scope.init();                   // 首次能力发现并锁定插件注册
 ```
 
 关键字段与方法：
@@ -36,24 +40,29 @@ const provider = await Provider.create({
 | `config` | 应用配置（端点、模型等） |
 | `cwd` | 当前工作目录 —— 相对路径解析基准，也是 `ToolEnv.cwd` 的来源 |
 | `env` | 工具环境 `{ cwd, config }`，实例化内置工具时注入 |
-| `mcpManager` | MCP 连接管理器（有 MCP 配置时存在） |
-| `async refresh()` | 重新执行全局能力发现（重新扫描文件系统） |
+| `agentsDir` | Agent 定义目录（`createAgent` 用） |
+| `plugins` | 已注册插件（只读视图） |
+| `use(...plugins)` | 注册能力插件（链式、可变参数；须在 `init()` 之前） |
+| `getPluginById(id)` | 按 id 查找插件（供外部或其它插件查询状态） |
+| `async init()` | 首次全局发现，随后锁定插件注册 |
+| `async refresh()` | 重新执行全局能力发现（遍历插件重新扫描文件系统） |
+| `async dispose()` | 逆序释放各插件（如 MCP 断开连接）；与 `init()` 对称 |
 | `filter(definition, options?)` | 阶段 2：按权限 + exclude + `isAvailable` 过滤，返回名称列表 |
 | `instantiate(filtered)` | 阶段 3：名称 → Tool 实例 |
 | `buildTools(definition, options?)` | `filter` + `instantiate` 一步完成 |
 
-每个 `Provider` 对应一个工作目录；多个 Provider 可并行服务不同目录的会话，互不干扰。
+每个 `Scope` 对应一个工作目录；多个 Scope 可并行服务不同目录的会话，互不干扰。
 
 ## createAgent / SdkAgent
 
 ```ts
 import { createAgent } from "@ai-zen/agents-sdk";
 
-const agent = await createAgent(provider, config.defaultAgent ?? "default");
+const agent = await createAgent(scope, config.defaultAgent ?? "default");
 // agent 是 SdkAgent，可直接注册插件、发送消息
 ```
 
-- `SdkAgent extends Agent`（来自 core），额外携带 `provider` 与 `definition`（含权限 `permissions`）。
+- `SdkAgent extends Agent`（来自 core），额外携带 `scope` 与 `definition`（含权限 `permissions`）。
 - 权限统一从 `definition.permissions` 读取，不单独持有。
 
 ## 权限模型
@@ -81,7 +90,7 @@ Agent.permissions
 
 ## 内置工具（20 个类）
 
-所有内置工具都是 `SdkCallbackTool` 子类，由 Provider 用 `ToolEnv` 实例化（每个 Provider 一套实例，注入其 `cwd`）。相对路径一律以 `ToolEnv.cwd` 解析，不依赖全局 `process.cwd()`。
+所有内置工具都是 `SdkCallbackTool` 子类，由 Scope 用 `ToolEnv` 实例化（每个 Scope 一套实例，注入其 `cwd`）。相对路径一律以 `ToolEnv.cwd` 解析，不依赖全局 `process.cwd()`。
 
 | 工具 | 说明 |
 |------|------|
@@ -166,7 +175,7 @@ agent.use(new AutoMigratePlugin({
 
 ## 消费模式（完整）
 
-详见 [`packages/sdk/docs/sdk-design.md`](../../packages/sdk/docs/sdk-design.md) 的「消费模式（完整示例）」与「与 Core 的边界」章节。
+详见 [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md) 的「消费模式（完整示例）」与「与 Core 的边界」章节。
 
 ## 相关文档
 
@@ -174,4 +183,4 @@ agent.use(new AutoMigratePlugin({
 - [架构](architecture.md)
 - [Core API](core.md) —— 运行时底层 API
 - [MCP](mcp.md) —— SDK 的 MCP 连接管理
-- [`packages/sdk/docs/sdk-design.md`](../../packages/sdk/docs/sdk-design.md) —— SDK 设计真相源
+- [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md) —— SDK 设计真相源
