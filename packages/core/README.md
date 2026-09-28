@@ -304,6 +304,8 @@ await agent.init();
 | `onInnerLoopsEnd` | `SendContext` | short-circuit later plugins only |
 | `onToolCall` | `ToolCallContext` | reject the tool, the reason is returned to the LLM |
 | `onUnknownTool` | `UnknownToolContext` | used as the tool result; `undefined` → default hint |
+| `onSubAgentStart` | `SubAgentContext` | reject the delegation; the reason is returned to the LLM as the tool result |
+| `onSubAgentEnd` | `SubAgentContext` | short-circuit later plugins only |
 
 #### HookResult — unified short-circuit semantics
 
@@ -395,9 +397,9 @@ agent.events.on("parsed", (receiver) => {});             // full response parsed
 agent.events.on("error", (error) => {});                 // an error occurred
 agent.events.on("finally", () => {});                    // run finished (success or failure)
 
-// Sub-Agent events
-agent.events.on("sub-agent", ({ agent, ctx }) => {});    // an AgentTool sub-agent started
-agent.events.on("sub-agent-end", ({ agent, ctx }) => {});// sub-agent ended
+// Sub-agent delegation boundaries (payload: agent = host, subAgent = child)
+agent.events.on("sub-agent-start", ({ agent, subAgent, toolCallContext }) => {}); // before the sub-agent runs
+agent.events.on("sub-agent-end", ({ agent, subAgent, toolCallContext }) => {});   // after the sub-agent finished
 ```
 
 ### Aborting

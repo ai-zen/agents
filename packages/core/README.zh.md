@@ -304,6 +304,8 @@ await agent.init();
 | `onInnerLoopsEnd` | `SendContext` | 仅短路后续插件 |
 | `onToolCall` | `ToolCallContext` | 拒绝该工具，原因作为工具结果回给 LLM |
 | `onUnknownTool` | `UnknownToolContext` | 作为工具结果返回；`undefined` 走默认提示 |
+| `onSubAgentStart` | `SubAgentContext` | 拒绝本次委派，原因作为工具结果回给 LLM |
+| `onSubAgentEnd` | `SubAgentContext` | 仅短路后续插件 |
 
 #### HookResult —— 统一的短路语义
 
@@ -395,9 +397,9 @@ agent.events.on("parsed", (receiver) => {});             // 完整响应解析�
 agent.events.on("error", (error) => {});                 // 发生错误
 agent.events.on("finally", () => {});                    // 运行结束（无论成功或失败）
 
-// 子 Agent 事件
-agent.events.on("sub-agent", ({ agent, ctx }) => {});    // AgentTool 子 Agent 启动
-agent.events.on("sub-agent-end", ({ agent, ctx }) => {});// 子 Agent 结束
+// 子 Agent 委派边界（载荷区分主/子 Agent：agent = 主，subAgent = 子）
+agent.events.on("sub-agent-start", ({ agent, subAgent, toolCallContext }) => {}); // 子 Agent 启动前
+agent.events.on("sub-agent-end", ({ agent, subAgent, toolCallContext }) => {});   // 子 Agent 结束后
 ```
 
 ### 中止

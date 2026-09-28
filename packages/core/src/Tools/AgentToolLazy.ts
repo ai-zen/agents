@@ -1,4 +1,4 @@
-import { Agent } from "../Agent.js";
+import { Agent, type SubAgentContext } from "../Agent.js";
 import { AgentNS } from "../AgentNS.js";
 import { ToolCallContext } from "../ToolCallContext.js";
 import { Message } from "../Message.js";
@@ -50,8 +50,16 @@ export class AgentToolLazy implements Tool {
     // 3. 拼接 Assistant 接收者
     agent.append(Message.Assistant());
 
-    // 4. 執行：监听外部中断信号，abort 时联动中止子 Agent
-    ctx.agent.events.emit("sub-agent", { agent, ctx });
+    // 4. 委派边界：onSubAgentStart 钩子（可拒绝本次委派；同时广播 sub-agent-start 事件），
+    //    并监听外部中断信号，abort 时联动中止子 Agent
+    const subCtx: SubAgentContext = {
+      agent: ctx.agent,
+      subAgent: agent,
+      toolCallContext: ctx,
+    };
+    const denied = await ctx.agent.dispatchHook("onSubAgentStart", subCtx);
+    if (denied !== undefined) return denied;
+
     try {
       // 子 Agent 中断联动：外层 abort → agent.abort()
       const onAbort = () => agent.abort();
@@ -64,7 +72,7 @@ export class AgentToolLazy implements Tool {
         ctx.signal?.removeEventListener("abort", onAbort);
       }
     } finally {
-      ctx.agent.events.emit("sub-agent-end", { agent, ctx });
+      await ctx.agent.dispatchHook("onSubAgentEnd", subCtx);
     }
 
     return agent.messages.at(-1)?.content ?? "";

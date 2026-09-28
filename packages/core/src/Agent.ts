@@ -34,6 +34,22 @@ export interface SendContext {
 }
 
 /**
+ * 子 Agent 委派上下文：一次「主 Agent 委派子 Agent」的边界。
+ *
+ * - `agent` 与其余各 ctx 约定一致，指**宿主（主）Agent**，即发起委派、分发本钩子的 Agent；
+ * - `subAgent` 为**子 Agent**实例（onSubAgentStart 时已构建完成、尚未 run；onSubAgentEnd 时已运行结束）；
+ * - `toolCallContext` 为触发本次委派的工具调用上下文（含 parsedArgs / signal / resultMessage）。
+ */
+export interface SubAgentContext {
+  /** 宿主（主）Agent —— 发起委派者 */
+  agent: Agent;
+  /** 子 Agent 实例 */
+  subAgent: Agent;
+  /** 触发本次委派的工具调用上下文 */
+  toolCallContext: ToolCallContext;
+}
+
+/**
  * Agent 插件接口。每个插件单一职责，通过钩子介入 Agent 生命周期。
  *
  * 所有钩子统一「返回值可短路」：返回字符串时短路（各钩子语义见下表），
@@ -50,6 +66,8 @@ export interface SendContext {
  * | `onInnerLoopsEnd` | SendContext | 仅短路后续插件 |
  * | `onToolCall` | ToolCallContext | 拒绝该工具，原因作为工具结果回给 LLM |
  * | `onUnknownTool` | UnknownToolContext | 作为工具结果返回；undefined 走默认提示 |
+ * | `onSubAgentStart` | SubAgentContext | 拒绝本次委派（原因作为工具结果回给 LLM） |
+ * | `onSubAgentEnd` | SubAgentContext | 仅短路后续插件 |
  */
 export interface AgentPlugin {
   /** Agent.init() 时调用，用于异步初始化 */
@@ -78,6 +96,18 @@ export interface AgentPlugin {
    * 返回 undefined = 继续（最终使用 Agent 默认提示，或 SdkAgent 覆盖的智能提示）。
    */
   onUnknownTool?(ctx: UnknownToolContext): HookResult;
+  /**
+   * 子 Agent 委派开始前触发（子 Agent 已构建完成、尚未 run）。
+   * 返回字符串 = 拒绝本次委派（子 Agent 不运行，原因作为工具结果回给 LLM，继续下一轮）；
+   * 返回 undefined = 放行。多个插件按注册顺序调用，任一返回字符串即拒绝（短路）。
+   */
+  onSubAgentStart?(ctx: SubAgentContext): HookResult;
+  /**
+   * 子 Agent 结束后触发（子 Agent 所有轮次完成，含 tool_calls 多轮递归）。
+   * 返回字符串 = 仅短路后续插件（子 Agent 已运行完成，无法撤销）；
+   * 返回 undefined = 放行。
+   */
+  onSubAgentEnd?(ctx: SubAgentContext): HookResult;
 }
 
 /** 钩子名 → kebab-case 事件名（dispatchHook 内 events.emit 使用） */
@@ -90,6 +120,8 @@ const HOOK_EVENTS: Record<string, string> = {
   onInnerLoopsEnd: "inner-loops-end",
   onToolCall: "tool-call",
   onUnknownTool: "unknown-tool",
+  onSubAgentStart: "sub-agent-start",
+  onSubAgentEnd: "sub-agent-end",
 };
 
 interface PendingTask {
@@ -135,11 +167,14 @@ export class Agent extends AgentContext {
    * - 事件监听器（agent.events.on）获得的是非阻塞通知（不影响流程）
    * - 插件钩子（agent.use）获得的是阻塞的可短路回调（可干预流程）
    *
+   * 公开可见：子 Agent 委派边界（`onSubAgentStart` / `onSubAgentEnd`）由发起委派的工具
+   * （`AgentTool` / `AgentToolLazy`）在宿主 Agent 上分发，故此处不设 private。
+   *
    * @returns 短路字符串（undefined 表示全部放行）
    */
-  private async dispatchHook(
+  async dispatchHook(
     hook: keyof AgentPlugin,
-    ctx: SendContext | ToolCallContext | UnknownToolContext,
+    ctx: SendContext | ToolCallContext | UnknownToolContext | SubAgentContext,
   ): Promise<string | undefined> {
     // 非阻塞事件广播（不 await、不短路）
     this.events.emit(HOOK_EVENTS[hook as string], ctx);

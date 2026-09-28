@@ -203,6 +203,8 @@ await agent.init();
 | `onInnerLoopsEnd` | `SendContext` | only short-circuits subsequent plugins |
 | `onToolCall` | `ToolCallContext` | reject that tool; the reason is returned to the LLM as the tool result |
 | `onUnknownTool` | `UnknownToolContext` | return as a tool result; `undefined` falls through to the default hint |
+| `onSubAgentStart` | `SubAgentContext` | reject the delegation; the reason is returned to the LLM as the tool result |
+| `onSubAgentEnd` | `SubAgentContext` | short-circuit later plugins only |
 
 `HookResult = string | void | Promise<string | void>`. Multiple plugins are called in registration order; the first to return a string short-circuits.
 
@@ -223,12 +225,12 @@ agent.events.on("parsed", (receiver) => {});
 agent.events.on("error", (error) => {});
 agent.events.on("finally", () => {});
 
-// Sub-Agent
-agent.events.on("sub-agent", ({ agent, ctx }) => {});
-agent.events.on("sub-agent-end", ({ agent, ctx }) => {});
+// Sub-agent delegation boundaries (payload: agent = host, subAgent = child)
+agent.events.on("sub-agent-start", ({ agent, subAgent, toolCallContext }) => {});
+agent.events.on("sub-agent-end", ({ agent, subAgent, toolCallContext }) => {});
 ```
 
-Event names corresponding to hooks: `before-send` / `after-send` / `inner-loop-start` / `inner-loop-end` / `inner-loops-start` / `inner-loops-end` / `tool-call` / `unknown-tool`.
+Event names corresponding to hooks: `before-send` / `after-send` / `inner-loop-start` / `inner-loop-end` / `inner-loops-start` / `inner-loops-end` / `tool-call` / `unknown-tool` / `sub-agent-start` / `sub-agent-end`.
 
 ## Abort
 

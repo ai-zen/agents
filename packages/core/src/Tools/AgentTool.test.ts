@@ -199,7 +199,7 @@ describe("AgentTool", () => {
       expect(result).toBe('{"temperature":25,"weather":"晴天"}');
     });
 
-    it("子 Agent 执行时应在 agent.events 上触发 sub-agent 事件", async () => {
+    it("子 Agent 执行时应在 agent.events 上触发 sub-agent-start 事件", async () => {
       const tool = new AgentTool({
         function: {
           name: "testFn",
@@ -219,7 +219,7 @@ describe("AgentTool", () => {
       });
 
       const subAgentHandler = vi.fn();
-      agent.events.on("sub-agent", subAgentHandler);
+      agent.events.on("sub-agent-start", subAgentHandler);
 
       const ctx = new ToolCallContext({
         agent,
@@ -230,7 +230,12 @@ describe("AgentTool", () => {
       await tool.exec(ctx);
 
       expect(subAgentHandler).toHaveBeenCalledTimes(1);
-      expect(subAgentHandler.mock.calls[0][0].agent).toBeDefined();
+      // 载荷区分主/子 Agent：agent = 主（宿主），subAgent = 子
+      const payload = subAgentHandler.mock.calls[0][0];
+      expect(payload.agent).toBe(agent);
+      expect(payload.subAgent).toBeInstanceOf(Agent);
+      expect(payload.subAgent).not.toBe(agent);
+      expect(payload.toolCallContext).toBe(ctx);
     });
 
     it("外层 signal abort 时联动中止子 Agent", async () => {
@@ -279,6 +284,108 @@ describe("AgentTool", () => {
 
       // 不应挂起：abort 后子 Agent 被联动中止，exec 能正常 resolve 返回
       await execPromise;
+    });
+  });
+
+  describe("子 Agent 委派边界钩子", () => {
+    function buildTool(client: any) {
+      return new AgentTool({
+        function: {
+          name: "testFn",
+          description: "测试",
+          parameters: { type: "object", properties: {}, required: [] },
+        },
+        client,
+        model: "gpt-4",
+        messages: [Message.User("你好")],
+      });
+    }
+
+    function buildHost(tool: AgentTool) {
+      return new Agent({
+        client: createMockClient(),
+        model: "gpt-4",
+        messages: [Message.System("主助手")],
+        tools: [tool],
+      });
+    }
+
+    function buildCtx(host: Agent) {
+      return new ToolCallContext({
+        agent: host,
+        tool_call: { function: { name: "testFn", arguments: "{}" } },
+        resultMessage: Message.Tool({ id: "1", function: { name: "testFn" } }),
+      });
+    }
+
+    it("onSubAgentStart 放行后正常执行，载荷区分主/子 Agent", async () => {
+      const tool = buildTool(createMockClient("子Agent回复"));
+      const host = buildHost(tool);
+
+      const seen: any[] = [];
+      host.use({ onSubAgentStart: (c) => { seen.push(c); } });
+
+      const ctx = buildCtx(host);
+      const result = await tool.exec(ctx);
+
+      expect(seen).toHaveLength(1);
+      expect(seen[0].agent).toBe(host);
+      expect(seen[0].subAgent).toBeInstanceOf(Agent);
+      expect(seen[0].subAgent).not.toBe(host);
+      expect(seen[0].toolCallContext).toBe(ctx);
+      expect(result).toBe("子Agent回复");
+    });
+
+    it("onSubAgentStart 返回字符串时拒绝委派：子 Agent 不运行、原因作为工具结果", async () => {
+      const subClient = createMockClient("子Agent回复");
+      const tool = buildTool(subClient);
+      const host = buildHost(tool);
+
+      const endHook = vi.fn();
+      host.use({ onSubAgentStart: () => "额度已用尽", onSubAgentEnd: endHook });
+      const eventHandler = vi.fn();
+      host.events.on("sub-agent-start", eventHandler);
+
+      const result = await tool.exec(buildCtx(host));
+
+      expect(result).toBe("额度已用尽");
+      expect(subClient.chat.completions.create).not.toHaveBeenCalled();
+      expect(endHook).not.toHaveBeenCalled();
+      // 即使被拒绝，非阻塞事件依然广播
+      expect(eventHandler).toHaveBeenCalledTimes(1);
+    });
+
+    it("多个插件按注册顺序分发，任一返回字符串即短路", async () => {
+      const tool = buildTool(createMockClient());
+      const host = buildHost(tool);
+
+      const second = vi.fn();
+      host.use({ onSubAgentStart: () => "拒绝A" });
+      host.use({ onSubAgentStart: second });
+
+      const result = await tool.exec(buildCtx(host));
+
+      expect(result).toBe("拒绝A");
+      expect(second).not.toHaveBeenCalled();
+    });
+
+    it("onSubAgentEnd 在子 Agent 完成后触发，返回字符串仅短路后续插件", async () => {
+      const tool = buildTool(createMockClient("子Agent回复"));
+      const host = buildHost(tool);
+
+      const order: string[] = [];
+      const second = vi.fn();
+      // dispatchHook 先广播事件、再按序阻塞调用插件
+      host.events.on("sub-agent-end", () => order.push("event"));
+      host.use({ onSubAgentEnd: () => { order.push("first"); return "结束提示"; } });
+      host.use({ onSubAgentEnd: second });
+
+      const result = await tool.exec(buildCtx(host));
+
+      expect(order).toEqual(["event", "first"]);
+      expect(second).not.toHaveBeenCalled();
+      // 子 Agent 已运行完成，返回字符串不影响工具结果
+      expect(result).toBe("子Agent回复");
     });
   });
 });

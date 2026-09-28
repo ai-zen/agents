@@ -10,7 +10,7 @@ AI-Zen Agents is a **modular LLM Agent framework**, organized as a monorepo via 
 
 - **License**: MIT
 - **npm package**: `@ai-zen/agents-workspace` (workspace root, private); public subpackages are `@ai-zen/agents-core` and `@ai-zen/agents-sdk`
-- **Current versions**: workspace `2.0.0`; `@ai-zen/agents-core` `4.1.0`; `@ai-zen/agents-sdk` `0.9.1`
+- **Current versions**: workspace `2.0.0`; `@ai-zen/agents-core` `4.2.0`; `@ai-zen/agents-sdk` `0.9.1`
 
 ## What this is
 

@@ -203,6 +203,8 @@ await agent.init();
 | `onInnerLoopsEnd` | `SendContext` | 仅短路后续插件 |
 | `onToolCall` | `ToolCallContext` | 拒绝该工具，原因作为工具结果回给 LLM |
 | `onUnknownTool` | `UnknownToolContext` | 作为工具结果返回；`undefined` 走默认提示 |
+| `onSubAgentStart` | `SubAgentContext` | 拒绝本次委派，原因作为工具结果回给 LLM |
+| `onSubAgentEnd` | `SubAgentContext` | 仅短路后续插件 |
 
 `HookResult = string | void | Promise<string | void>`。多个插件按注册顺序调用，首个返回 string 即短路。
 
@@ -223,12 +225,12 @@ agent.events.on("parsed", (receiver) => {});
 agent.events.on("error", (error) => {});
 agent.events.on("finally", () => {});
 
-// 子 Agent
-agent.events.on("sub-agent", ({ agent, ctx }) => {});
-agent.events.on("sub-agent-end", ({ agent, ctx }) => {});
+// 子 Agent 委派边界（载荷区分主/子 Agent：agent = 主，subAgent = 子）
+agent.events.on("sub-agent-start", ({ agent, subAgent, toolCallContext }) => {});
+agent.events.on("sub-agent-end", ({ agent, subAgent, toolCallContext }) => {});
 ```
 
-对应钩子的事件名：`before-send` / `after-send` / `inner-loop-start` / `inner-loop-end` / `inner-loops-start` / `inner-loops-end` / `tool-call` / `unknown-tool`。
+对应钩子的事件名：`before-send` / `after-send` / `inner-loop-start` / `inner-loop-end` / `inner-loops-start` / `inner-loops-end` / `tool-call` / `unknown-tool` / `sub-agent-start` / `sub-agent-end`。
 
 ## 中止
 

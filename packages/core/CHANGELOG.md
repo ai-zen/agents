@@ -1,5 +1,34 @@
 # Changelog
 
+## [4.2.0] - 2026-09-28
+
+### 💥 Breaking Changes
+
+- **Sub-agent events renamed, aligning the phase naming** — `sub-agent` → **`sub-agent-start`**, so the pair now reads `sub-agent-start` / `sub-agent-end`, consistent with the existing `inner-loop-start` / `inner-loop-end` and `inner-loops-start` / `inner-loops-end` phase pairs. Consumers doing `agent.events.on("sub-agent", …)` must rename the event
+- **Sub-agent payload reshaped to distinguish host from child** — the payload changed from `{ agent, ctx }` to `{ agent, subAgent, toolCallContext }`, where `agent` now means the **host (main) agent** — consistent with every other context type in the library — `subAgent` is the child instance, and `toolCallContext` is the tool call that triggered the delegation. Previously the single `agent` field meant the *child*, which contradicted the naming used by `SendContext` / `ToolCallContext`; destructuring consumers must update
+
+### ✨ Added
+
+- **`onSubAgentStart` / `onSubAgentEnd` blocking plugin hooks** — the sub-agent delegation boundaries became first-class hooks dispatched through the single `dispatchHook` entry, so event listeners and plugins receive the **same `SubAgentContext` instance** (previously these were orphan events emitted directly by the tools, unreachable from plugins):
+  - `onSubAgentStart` fires after the child agent is fully constructed (arguments injected) and immediately before it runs. Returning a string **rejects the delegation**: the child never runs, the string is returned to the LLM as the tool result, and the conversation continues to the next round — the same semantics as `onToolCall`
+  - `onSubAgentEnd` fires after the child finished all rounds (including multi-round `tool_calls`), inside `finally`. Returning a string only short-circuits subsequent plugins (the child has already run, so it cannot be undone) — the same semantics as `onAfterSend` / `onInnerLoopEnd`
+  - Both hooks receive `SubAgentContext = { agent, subAgent, toolCallContext }`, giving consumers the injection point for delegated work — e.g. inspecting the child before it runs, or plugging a guard into `ctx.subAgent`. Core still ships **no** token cap, no round cap and no timeout; whether and how to guard cost remains a consumer decision
+- **`SubAgentContext`** type, and `dispatchHook` is now **public** (the delegation hooks are dispatched by the calling tool on the host agent)
+
+### 🔧 Changed
+
+- **Delegation timing unified across both tools** — `AgentTool` used to broadcast *before* argument injection while `AgentToolLazy` broadcast *after*; both now dispatch after the child is fully constructed, immediately before `run()`
+- Hook name ↔ event name mapping is mechanical again: `onSubAgentStart` ↔ `sub-agent-start`, `onSubAgentEnd` ↔ `sub-agent-end`
+
+### 📄 Docs
+
+- Hook tables, event listings and flow docs updated in `packages/core/README.md` / `README.zh.md`, `docs/zh/core.md` / `docs/en/core.md`, and `packages/sdk/docs/sdk-design.md` (§14)
+
+### ✅ Tests
+
+- Core suite: **115 passed, 17 skipped** (was 108 passed) — added 4 `AgentTool` delegation-boundary cases (host/child payload identity, rejection without running the child, plugin short-circuit order, `onSubAgentEnd` semantics) and a **new `AgentToolLazy.test.ts`** with 3 cases (that path previously had no direct test)
+- SDK suite re-checked green: **461 passed, 6 skipped** — zero regressions
+
 ## [4.1.0] - 2026-08-27
 
 ### 💥 Breaking Changes

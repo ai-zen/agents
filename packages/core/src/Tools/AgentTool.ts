@@ -1,4 +1,4 @@
-import { Agent } from "../Agent.js";
+import { Agent, type SubAgentContext } from "../Agent.js";
 import { AgentNS } from "../AgentNS.js";
 import { AgentContext } from "../AgentContext.js";
 import { PickRequired } from "../Common.js";
@@ -50,12 +50,19 @@ export class AgentTool extends AgentContext implements Tool {
       ...this.toAgentConfig(),
     });
 
-    ctx.agent.events.emit("sub-agent", { agent, ctx });
-
     // Inject the arguments into the cloned agent's message list
     agent.messages = AgentTool.injectArgs(agent.messages, ctx.parsedArgs);
 
     // （Assistant 占位由 run 内循环开头统一追加）
+
+    // 委派边界：onSubAgentStart 钩子（可拒绝本次委派；同时广播 sub-agent-start 事件）
+    const subCtx: SubAgentContext = {
+      agent: ctx.agent,
+      subAgent: agent,
+      toolCallContext: ctx,
+    };
+    const denied = await ctx.agent.dispatchHook("onSubAgentStart", subCtx);
+    if (denied !== undefined) return denied;
 
     // Send the agent chat to the server
     try {
@@ -71,7 +78,7 @@ export class AgentTool extends AgentContext implements Tool {
       }
     } finally {
       // 子 Agent 所有轮次完成（包括 tool_calls 多轮递归）后通知
-      ctx.agent.events.emit("sub-agent-end", { agent, ctx });
+      await ctx.agent.dispatchHook("onSubAgentEnd", subCtx);
     }
 
     // Return the last message content of the agent chat as the result

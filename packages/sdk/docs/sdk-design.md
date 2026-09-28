@@ -777,6 +777,16 @@ interface AgentPlugin {
   // 返回 undefined = 放行。多个插件按注册顺序调用，任一返回字符串即拒绝（短路）。
   onUnknownTool?(ctx: UnknownToolContext): HookResult;
   // 返回字符串 = 作为工具结果返回给 LLM；undefined = 走默认提示（SdkAgent 覆盖的智能提示）
+  onSubAgentStart?(ctx: SubAgentContext): HookResult;
+  // 子 Agent 委派前（子 Agent 已构建、尚未 run）：返回字符串 = 拒绝本次委派，原因作为工具结果回给 LLM
+  onSubAgentEnd?(ctx: SubAgentContext): HookResult;
+  // 子 Agent 结束后：返回字符串 = 仅短路后续插件（子 Agent 已运行完成，无法撤销）
+}
+
+interface SubAgentContext {
+  agent: Agent;                        // 主（宿主）Agent —— 发起委派者
+  subAgent: Agent;                     // 子 Agent 实例
+  toolCallContext: ToolCallContext;    // 触发本次委派的工具调用上下文
 }
 ```
 
