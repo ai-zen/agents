@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.3.0] - 2026-09-28
+
+### ✨ Added
+
+- **`AgentToolLazy.messages` is now optional** — when omitted, the initial messages are decided entirely by the `buildAgent` callback instead of being overwritten by a constructor-supplied template. This serves tools whose initial messages depend on runtime arguments (e.g. a skill sub-agent whose system prompt is the SKILL.md content selected by a `skill_id` argument). The `{{key}}` template path is unchanged: pass `messages` and the parsed arguments are injected exactly as before. The "last message must be `User`" validation now applies **only** when `messages` is provided
+
+### 🔧 Changed
+
+- **Redundant `Assistant` placeholder removed from `AgentToolLazy.exec`** — `Agent.run` already appends (or reuses) a pending `Assistant` receiver at the top of each inner loop, so the extra `agent.append(Message.Assistant())` was a no-op. `AgentTool` had already dropped the same line
+
+### ✅ Tests
+
+- Core suite: added 2 `AgentToolLazy` cases — messages omitted (initial messages supplied by `buildAgent` are preserved) and constructor validation (omitted → no last-message check; provided → still requires a trailing `User`)
+
 ## [4.2.0] - 2026-09-28
 
 ### 💥 Breaking Changes

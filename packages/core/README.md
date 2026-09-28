@@ -225,6 +225,8 @@ const tool = new AgentTool({
 #### AgentToolLazy
 Like `AgentTool`, but the sub-Agent is not built at construction time — it is built lazily via a `buildAgent(parsedArgs, ctx)` callback at execution time. This avoids recursive construction issues when building tool lists (SubAgent → build tool list → SubAgent → …).
 
+`messages` is optional: when provided, the child's messages are replaced by the template after `{{variableName}}` injection; when omitted, the child's initial messages are decided entirely by `buildAgent` (useful when they depend on runtime arguments).
+
 ```typescript
 import { AgentToolLazy, Agent, Message } from "@ai-zen/agents-core";
 

@@ -124,4 +124,54 @@ describe("AgentToolLazy 子 Agent 委派边界", () => {
     expect(endEvent).toHaveBeenCalledTimes(1);
     expect(result).toBe("子Agent结果");
   });
+
+  it("省略 messages 时保留 buildAgent 决定的初始消息，不被模板覆盖", async () => {
+    const child = new Agent({
+      client: createMockClient("子Agent结果"),
+      model: "gpt-4",
+      messages: [Message.System("动态提示"), Message.User("动态任务")],
+    });
+    const tool = new AgentToolLazy({
+      function: {
+        name: "lazyFn",
+        description: "测试",
+        parameters: { type: "object", properties: {}, required: [] },
+      },
+      buildAgent: async () => child,
+    });
+    const host = new Agent({
+      client: createMockClient(),
+      model: "gpt-4",
+      messages: [Message.System("主助手")],
+      tools: [tool],
+    });
+
+    const result = await tool.exec(buildCtx(host));
+
+    expect(result).toBe("子Agent结果");
+    // 初始消息保持 buildAgent 的决定（其后仅由 run 追加 Assistant 接收者）
+    expect(child.messages.slice(0, 2).map((m) => m.content)).toEqual([
+      "动态提示",
+      "动态任务",
+    ]);
+  });
+
+  it("省略 messages 时不做末条类型校验；提供模板时仍要求末条为 User", () => {
+    const fn = {
+      name: "lazyFn",
+      description: "测试",
+      parameters: { type: "object", properties: {}, required: [] },
+    };
+    const buildAgent = () => new Agent({ client: createMockClient(), model: "gpt-4" });
+
+    expect(() => new AgentToolLazy({ function: fn, buildAgent })).not.toThrow();
+    expect(
+      () =>
+        new AgentToolLazy({
+          function: fn,
+          messages: [Message.System("非 User 结尾")],
+          buildAgent,
+        }),
+    ).toThrow("must end with a user message");
+  });
 });

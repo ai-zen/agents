@@ -135,7 +135,7 @@ class WeatherTool extends Tool {
 | `CallbackTool` | 用回调函数快速定义工具；回调签名 `(parsedArgs, ctx)` |
 | `CodeTool` | ⚠️ 已弃用。字符串代码工具（`new Function`），缺少类型安全，保留向后兼容 |
 | `AgentTool` | 将子 Agent 暴露为工具；模板消息中的 `{{variable}}` 在调用时替换 |
-| `AgentToolLazy` | 与 `AgentTool` 类似，但在执行时经 `buildAgent(parsedArgs, ctx)` 延迟构建子 Agent，避免递归构建问题 |
+| `AgentToolLazy` | 与 `AgentTool` 类似，但在执行时经 `buildAgent(parsedArgs, ctx)` 延迟构建子 Agent，避免递归构建问题；`messages` 可选，省略时初始消息由 `buildAgent` 决定 |
 | `IndexedSearchTool` | 关键词本地搜索工具；自动从条目关键词中提取 enum |
 
 `CallbackTool` 示例：

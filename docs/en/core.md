@@ -135,7 +135,7 @@ class WeatherTool extends Tool {
 | `CallbackTool` | Quickly define a tool with a callback function; callback signature `(parsedArgs, ctx)` |
 | `CodeTool` | ⚠️ Deprecated. A string-code tool (`new Function`) that lacks type safety; kept for backward compatibility |
 | `AgentTool` | Expose a sub-Agent as a tool; `{{variable}}` placeholders in template messages are replaced at call time |
-| `AgentToolLazy` | Similar to `AgentTool`, but lazily builds the sub-Agent via `buildAgent(parsedArgs, ctx)` at execution time, avoiding recursive build problems |
+| `AgentToolLazy` | Similar to `AgentTool`, but lazily builds the sub-Agent via `buildAgent(parsedArgs, ctx)` at execution time, avoiding recursive build problems; `messages` is optional — when omitted, the initial messages are decided by `buildAgent` |
 | `IndexedSearchTool` | Keyword-based local search tool; automatically extracts an enum from entry keywords |
 
 `CallbackTool` example:

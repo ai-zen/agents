@@ -225,6 +225,8 @@ const tool = new AgentTool({
 #### AgentToolLazy（延迟构建子 Agent 工具）
 与 AgentTool 类似，但子 Agent 不在构造时创建，而是在执行时通过 `buildAgent(parsedArgs, ctx)` 回调延迟构建。可避免构建工具列表时的递归创建问题（SubAgent → 构建工具列表 → SubAgent → …）。
 
+`messages` 为可选：提供时按其 `{{变量名}}` 模板注入 `parsedArgs` 后覆盖子 Agent 的消息；省略时子 Agent 的初始消息完全由 `buildAgent` 决定（适用于初始消息依赖运行时参数的工具）。
+
 ```typescript
 import { AgentToolLazy, Agent, Message } from "@ai-zen/agents-core";
 
