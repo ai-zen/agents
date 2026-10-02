@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.0-alpha.3] - 2026-10-03
+
+### 🔧 Fixed
+
+- **`generateImage` `model` parameter description no longer points at a host-CLI command** — the description used to read "配置中的图片模型可通过 'aiz config show' 查看" (the configured image models can be viewed via `aiz config show`). Since tool descriptions ship inside every request's `tools` payload, that hint propagated into **every layer** of the agent stack: the model would `exec("aiz config show")`, but the CLI resolves a bare `aiz config show` invocation as stdio mode with the instruction `config show` — i.e. a **brand-new agent** — whose own `generateImage` description repeats the very same hint, producing a self-referential recursion that keeps spawning nested agents. The parameter now reads "若指定的模型不存在，本工具会返回当前可用的模型列表" (if the specified model does not exist, this tool returns the list of currently available models), which matches the actual `!imageModel` branch in `call()` and stops the model from shelling out to the host CLI.
+
+### 📄 Docs
+
+- Current-version references in `docs/zh` and `docs/en` updated to `1.0.0-alpha.3`.
+
 ## [1.0.0-alpha.2] - 2026-10-03
 
 ### 🚀 New Features
