@@ -696,7 +696,7 @@ class ConfigManager {
 
 | 常量 | 说明 |
 |------|------|
-| `DEFAULT_APP_CONFIG` | 预置端点（OpenAI / 智谱 / DeepSeek）+ 7 个模型（含视觉模型 `deepseek-v4-flash-vision-exp` / `glm-5v-turbo`，`vision: true`）+ 3 个图片模型 + 默认选项 + `maxToolOutput: 32768` |
+| `DEFAULT_APP_CONFIG` | 预置端点（OpenAI / 智谱 / DeepSeek）+ 8 个模型（含视觉模型 `deepseek-flash` / `glm-5.3-flash` / `glm-5.3-flashx` / `gpt-6.1-sol` 等，`vision: true`）+ 3 个图片模型 + 默认选项 + `maxToolOutput: 32768` |
 | `DEFAULT_AGENT_ID` / `DEFAULT_AGENT_DEFINITION` | 默认 Agent（id=`default`，四维全开，`custom: false`，两条行为规则：一次只问一个问题、可编写 Node.js 脚本执行复杂任务） |
 | `DEFAULT_SUBAGENT_ID` / `DEFAULT_SUBAGENT_DEFINITION` | 默认通用助手 SubAgent（id=`sub-agent-default`，`subagents: deny` 防递归） |
 | `DEFAULT_MCP_CONFIG` | 出厂默认 MCP 服务器（socket-pty 终端），首启写入 `~/.ai-zen/mcp.json`，已存在则不覆盖 |

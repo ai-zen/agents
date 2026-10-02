@@ -120,7 +120,7 @@ async function writeTempImage(): Promise<string> {
 const API_KEY = process.env.DEEPSEEK_API_KEY || "";
 const skip = !API_KEY;
 
-const VISION_MODEL_ID = "deepseek-v4-flash-vision-exp";
+const VISION_MODEL_ID = "deepseek-flash";
 
 const config = {
   defaultModel: VISION_MODEL_ID,
@@ -135,7 +135,7 @@ const config = {
   models: [
     {
       id: VISION_MODEL_ID,
-      name: "DeepSeek V4 Flash Vision Exp",
+      name: "DeepSeek V4.1 Flash",
       endpointId: "deepseek",
       modelName: VISION_MODEL_ID,
       maxContextTokens: 128_000,
@@ -143,10 +143,10 @@ const config = {
       vision: true,
     },
     {
-      id: "deepseek-v4-flash",
-      name: "DeepSeek V4 Flash",
+      id: "deepseek-v4-pro",
+      name: "DeepSeek V4 Pro",
       endpointId: "deepseek",
-      modelName: "deepseek-v4-flash",
+      modelName: "deepseek-v4-pro",
       maxContextTokens: 128_000,
       defaultParams: {},
     },
@@ -196,7 +196,7 @@ describe.runIf(!skip)("viewImage 端到端（真实 DeepSeek API）", () => {
 
     // 非视觉模型 → 不含 viewImage
     const textTools = scope.buildTools(
-      DEFINITION("deepseek-v4-flash", "t", "T"),
+      DEFINITION("deepseek-v4-pro", "t", "T"),
     );
     expect(textTools.map((t) => t.function.name)).not.toContain("viewImage");
   });

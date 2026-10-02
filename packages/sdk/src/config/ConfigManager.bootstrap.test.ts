@@ -240,22 +240,121 @@ describe("ConfigManager.ensureDefaultConfig", () => {
 
     const cfg = await mgr.ensureDefaultConfig();
 
-    expect(cfg.defaultModel).toBe("deepseek-v4-flash");
+    expect(cfg.defaultModel).toBe("deepseek-flash");
     expect(cfg.endpoints.length).toBeGreaterThan(0);
     expect(cfg.models.length).toBeGreaterThan(0);
     expect(cfg.imageModels!.length).toBeGreaterThan(0);
     await expect(fs.access(join(testDir, "config.json"))).resolves.toBeUndefined();
   });
 
-  it("文件已存在 → 返回已有配置，不覆盖", async () => {
+  it("文件已存在 → 保留用户端点，模型清单同步为出厂最新", async () => {
     testDir = await tempDir();
     const mgr = makeManager(testDir);
     await mgr.write({ endpoints: [], models: [], defaultModel: "my-model" });
 
     const cfg = await mgr.ensureDefaultConfig();
 
-    expect(cfg.defaultModel).toBe("my-model");
+    // 端点不属于托管范围，原样保留
     expect(cfg.endpoints).toEqual([]);
+    // 空模型清单被补齐为出厂最新定义
+    expect(cfg.models.map((m) => m.id)).toEqual(DEFAULT_APP_CONFIG.models.map((m) => m.id));
+    // 悬空的 defaultModel 回退到出厂默认
+    expect(cfg.defaultModel).toBe(DEFAULT_APP_CONFIG.defaultModel);
+  });
+
+  it("模型同步：未标 custom 的旧模型被替换为出厂最新定义", async () => {
+    testDir = await tempDir();
+    const mgr = makeManager(testDir);
+    // 模拟历史遗留配置：旧模型未标 custom
+    await mgr.write({
+      endpoints: [{ id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", apiKey: "sk-x" }],
+      models: [
+        { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", endpointId: "deepseek", maxContextTokens: 250_000 },
+      ],
+      defaultModel: "deepseek-v4-flash",
+      defaultMigrationModel: "deepseek-v4-flash",
+    });
+
+    const cfg = await mgr.ensureDefaultConfig();
+
+    // 旧模型被移除，出厂最新模型就位
+    expect(cfg.models.some((m) => m.id === "deepseek-v4-flash")).toBe(false);
+    expect(cfg.models.map((m) => m.id)).toEqual(DEFAULT_APP_CONFIG.models.map((m) => m.id));
+    // 悬空的默认模型 ID 回退到出厂默认
+    expect(cfg.defaultModel).toBe(DEFAULT_APP_CONFIG.defaultModel);
+    expect(cfg.defaultMigrationModel).toBe(DEFAULT_APP_CONFIG.defaultMigrationModel);
+    // 端点未被托管，保持原样
+    expect(cfg.endpoints[0].apiKey).toBe("sk-x");
+    // 已落盘
+    const raw = JSON.parse(await fs.readFile(join(testDir, "config.json"), "utf-8"));
+    expect(raw.models.map((m: { id: string }) => m.id)).toEqual(DEFAULT_APP_CONFIG.models.map((m) => m.id));
+  });
+
+  it("模型同步：custom: true 的模型被完整保留", async () => {
+    testDir = await tempDir();
+    const mgr = makeManager(testDir);
+    await mgr.write({
+      endpoints: [],
+      models: [
+        { id: "my-local-llm", name: "本地模型", endpointId: "local", maxContextTokens: 32_000, custom: true },
+      ],
+      defaultModel: "my-local-llm",
+    });
+
+    const cfg = await mgr.ensureDefaultConfig();
+
+    const mine = cfg.models.find((m) => m.id === "my-local-llm")!;
+    expect(mine.name).toBe("本地模型");
+    expect(mine.maxContextTokens).toBe(32_000);
+    // 出厂模型 + 用户自定义模型共存
+    expect(cfg.models.length).toBe(DEFAULT_APP_CONFIG.models.length + 1);
+    // defaultModel 指向有效模型，保持不变
+    expect(cfg.defaultModel).toBe("my-local-llm");
+  });
+
+  it("模型同步：custom: true 与出厂同 id 时用户版本优先且不重复", async () => {
+    testDir = await tempDir();
+    const mgr = makeManager(testDir);
+    await mgr.write({
+      endpoints: [],
+      models: [
+        { id: "glm-5.3", name: "我的 GLM-5.3", endpointId: "bigmodelcn", maxContextTokens: 999, custom: true },
+      ],
+    });
+
+    const cfg = await mgr.ensureDefaultConfig();
+
+    const glm = cfg.models.filter((m) => m.id === "glm-5.3");
+    expect(glm.length).toBe(1);
+    expect(glm[0].name).toBe("我的 GLM-5.3");
+    expect(glm[0].maxContextTokens).toBe(999);
+  });
+
+  it("图片模型同步：未标 custom 的旧图片模型被替换", async () => {
+    testDir = await tempDir();
+    const mgr = makeManager(testDir);
+    await mgr.write({
+      endpoints: [],
+      models: [],
+      imageModels: [{ id: "old-image-model", name: "Old", endpointId: "x", modelName: "old-image-model" }],
+      defaultImageModel: "old-image-model",
+    });
+
+    const cfg = await mgr.ensureDefaultConfig();
+
+    expect(cfg.imageModels!.map((m) => m.id)).toEqual(DEFAULT_APP_CONFIG.imageModels!.map((m) => m.id));
+    expect(cfg.defaultImageModel).toBe(DEFAULT_APP_CONFIG.defaultImageModel);
+  });
+
+  it("模型同步：重复调用结果稳定（幂等）", async () => {
+    testDir = await tempDir();
+    const mgr = makeManager(testDir);
+
+    const first = await mgr.ensureDefaultConfig();
+    const second = await mgr.ensureDefaultConfig();
+
+    expect(second).toEqual(first);
+    expect(second.models.map((m) => m.id)).toEqual(DEFAULT_APP_CONFIG.models.map((m) => m.id));
   });
 });
 
@@ -309,10 +408,11 @@ describe("ConfigManager.bootstrap", () => {
     await mgr.bootstrap();
 
     // 修改 config
-    await mgr.write({ ...DEFAULT_APP_CONFIG, defaultModel: "my-custom-model" });
+    // 选用出厂清单内的有效模型 ID（悬空 ID 会被同步策略回退）
+    await mgr.write({ ...DEFAULT_APP_CONFIG, defaultModel: "glm-5.3" });
 
     const result = await mgr.bootstrap();
-    expect(result.config.defaultModel).toBe("my-custom-model");
+    expect(result.config.defaultModel).toBe("glm-5.3");
 
     // 已有 mcp.json 不被覆盖
     const mcp = JSON.parse(await fs.readFile(join(testDir, "mcp.json"), "utf-8"));

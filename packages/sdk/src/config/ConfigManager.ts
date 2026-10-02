@@ -70,16 +70,28 @@ export class ConfigManager {
 
   /**
    * 确保 config.json 存在。不存在时写入出厂默认配置 DSL。
+   *
+   * 已存在时执行「出厂模型清单同步」（见 syncManagedModels）：
+   * models / imageModels 中凡是**没有** `custom: true` 的条目一律视为出厂托管，
+   * 会被移除并替换为 DEFAULT_APP_CONFIG 中的最新定义；标了 `custom: true` 的
+   * 条目视为用户自有，原样保留。同步结果与磁盘内容一致时不写盘。
    */
   async ensureDefaultConfig(): Promise<AppConfig> {
+    let existing: AppConfig;
     try {
       await fs.access(this.configPath);
-      return await this.read();
+      existing = await this.read();
     } catch {
       await this.ensureDirs();
       await this.write(DEFAULT_APP_CONFIG);
       return { ...DEFAULT_APP_CONFIG };
     }
+
+    const synced = syncManagedModels(existing);
+    if (JSON.stringify(synced) !== JSON.stringify(existing)) {
+      await this.write(synced);
+    }
+    return synced;
   }
 
   /**
@@ -266,6 +278,43 @@ export class ConfigManager {
     await fs.writeFile(tmpPath, JSON.stringify(data, null, 2) + "\n", "utf-8");
     await fs.rename(tmpPath, path);
   }
+}
+
+/**
+ * 同步出厂托管的模型清单（与默认 Agent 的 custom 机制一致）。
+ *
+ * 规则：
+ * - 未标 `custom: true` 的条目 → 由 SDK 托管，从结果中移除，改用 defaults 中的最新定义；
+ * - 标了 `custom: true` 的条目 → 用户自有，原样保留；与出厂定义同 id 时用户版本优先；
+ * - 默认模型 ID（defaultModel / defaultImageModel / defaultMigrationModel）
+ *   在合并后若已不存在 → 回退到出厂默认，避免悬空引用。
+ *
+ * 端点（endpoints）不参与托管，始终保持用户配置。
+ */
+export function syncManagedModels(config: AppConfig): AppConfig {
+  const pick = <T extends { id: string; custom?: boolean }>(existing: T[] | undefined, defaults: T[]): T[] => {
+    const kept = (existing ?? []).filter((m) => m.custom === true);
+    const keptIds = new Set(kept.map((m) => m.id));
+    // 出厂定义在前，用户自有条目随后；同 id 时用户版本胜出（出厂侧已剔除）
+    return [...defaults.filter((m) => !keptIds.has(m.id)), ...kept];
+  };
+
+  const models = pick(config.models, DEFAULT_APP_CONFIG.models);
+  const imageModels = pick(config.imageModels, DEFAULT_APP_CONFIG.imageModels ?? []);
+
+  const modelIds = new Set(models.map((m) => m.id));
+  const imageIds = new Set(imageModels.map((m) => m.id));
+  const resolve = (id: string | undefined, ids: Set<string>, fallback: string | undefined): string | undefined =>
+    id && ids.has(id) ? id : fallback;
+
+  return {
+    ...config,
+    models,
+    imageModels,
+    defaultModel: resolve(config.defaultModel, modelIds, DEFAULT_APP_CONFIG.defaultModel),
+    defaultImageModel: resolve(config.defaultImageModel, imageIds, DEFAULT_APP_CONFIG.defaultImageModel),
+    defaultMigrationModel: resolve(config.defaultMigrationModel, modelIds, DEFAULT_APP_CONFIG.defaultMigrationModel),
+  };
 }
 
 /**

@@ -20,7 +20,7 @@ afterEach(async () => {
 describe("ConfigManager", () => {
   it("文件不存在时返回出厂默认配置", async () => {
     const cfg = await configManager.read();
-    expect(cfg.defaultModel).toBe("deepseek-v4-flash");
+    expect(cfg.defaultModel).toBe("deepseek-flash");
     expect(cfg.endpoints.length).toBeGreaterThan(0);
     expect(cfg.models.length).toBeGreaterThan(0);
   });

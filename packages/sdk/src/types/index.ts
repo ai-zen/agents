@@ -37,13 +37,27 @@ export interface Model {
   name: string; // 展示名称
   endpointId: string; // 关联 Endpoint.id
   modelName?: string; // 发送给 API 的模型名称（不填则用 id）
-  maxContextTokens: number; // 上下文窗口 token 上限
-  maxContextChars?: number; // 旧版字符数阈值（兼容迁移）
+  /**
+   * 任务迁移（交接）触发阈值 —— **不是**模型的真实上下文窗口。
+   *
+   * AutoMigratePlugin 不估算、不学习：只在 API 响应返回后，用 `usage.prompt_tokens`
+   * 与该值比较，超过即触发交接迁移。建议取模型真实窗口的约 25%，为 response 留出空间。
+   */
+  maxContextTokens: number;
+  /** 旧版字符数阈值（兼容迁移） */
+  maxContextChars?: number;
   defaultParams?: Record<string, unknown>; // 模型默认参数（temperature 等）
   /** 是否支持图片输入（视觉模型）。看图工具（viewImage）仅对视觉模型启用；generateImage 是否返回图片内容块也据此判断 */
   vision?: boolean;
   description?: string; // 描述
   version?: number;
+  /**
+   * 是否用户自定义。
+   *
+   * 为 true 时 SDK 初始化不会用出厂定义替换该模型；缺省（或 false）视为出厂托管，
+   * 初始化时会与 DEFAULT_APP_CONFIG.models 同步（出厂清单为准）。
+   */
+  custom?: boolean;
 }
 
 /** Agent 定义，有 function 字段时为 SubAgent */
@@ -82,6 +96,13 @@ export interface ImageModel {
   defaultSize?: string;
   defaultQuality?: string;
   version?: number;
+  /**
+   * 是否用户自定义。
+   *
+   * 为 true 时 SDK 初始化不会用出厂定义替换该模型；缺省（或 false）视为出厂托管，
+   * 初始化时会与 DEFAULT_APP_CONFIG.imageModels 同步（出厂清单为准）。
+   */
+  custom?: boolean;
 }
 
 /** config.json 结构 */

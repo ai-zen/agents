@@ -21,7 +21,7 @@ const describeIf = hasApiKey ? describe : describe.skip;
 // ==================== 共享资源 ====================
 
 let client: OpenAI;
-const model = "deepseek-v4-flash";
+const model = "deepseek-flash";
 
 beforeAll(() => {
   if (!hasApiKey) return;

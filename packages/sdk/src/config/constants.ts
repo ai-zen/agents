@@ -95,71 +95,101 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       description: "DeepSeek API 端点",
     },
   ],
+  // 模型清单（2026-10-03 依据各厂商官方来源核对）：
+  //   OpenAI   → openai.com 发布公告 / API 目录（platform 文档站对脚本有访问限制）
+  //   智谱     → docs.bigmodel.cn 模型概览/定价 + open.bigmodel.cn/api/paas/v4/models
+  //   DeepSeek → api-docs.deepseek.com 定价页与 News + api.deepseek.com/v1/models
+  //
+  // 更新策略：本清单为「出厂托管」清单。用户 config.json 中凡未标 `custom: true`
+  // 的模型（含 imageModels）在初始化时一律被移除并替换为本清单中的最新定义；
+  // 标了 `custom: true` 的条目视为用户自有，原样保留。实现见
+  // ConfigManager.syncManagedModels。
+  //
+  // maxContextTokens 是「任务迁移（交接）触发阈值」，不是模型的真实上下文窗口：
+  // 迁移判断只看 API 响应返回的 usage.prompt_tokens。窗口 ≥1M 的模型统一取 250K
+  // （约 25%），glm-4.7-flash 窗口仅 200K，取 100K。
   models: [
+    // ---------- OpenAI ----------
     {
-      id: "gpt-5.5",
-      name: "GPT-5.5",
+      id: "gpt-6-astra",
+      name: "GPT-6 Astra",
       endpointId: "openai",
-      modelName: "gpt-5.5",
-      maxContextTokens: 250_000,
-      defaultParams: {},
-      description: "OpenAI 最新旗舰模型，擅长编程与代码调试、在线研究、数据分析",
-    },
-    {
-      id: "glm-5.1",
-      name: "GLM-5.1",
-      endpointId: "bigmodelcn",
-      modelName: "glm-5.1",
-      maxContextTokens: 250_000,
-      defaultParams: {},
-      description: "智谱AI 最新旗舰模型，支持8小时长程Agent任务",
-    },
-    {
-      id: "glm-5v-turbo",
-      name: "GLM-5V-Turbo",
-      endpointId: "bigmodelcn",
-      modelName: "glm-5v-turbo",
+      modelName: "gpt-6-astra",
       maxContextTokens: 250_000,
       defaultParams: {},
       vision: true,
-      description: "智谱AI 多模态Coding基座（支持图片输入）",
+      description: "OpenAI 最强旗舰（2026-09）：高级分析、软件工程、深度研究与科学工作",
+    },
+    {
+      id: "gpt-6.1-sol",
+      name: "GPT-6.1 Sol",
+      endpointId: "openai",
+      modelName: "gpt-6.1-sol",
+      maxContextTokens: 250_000,
+      defaultParams: {},
+      vision: true,
+      description: "OpenAI 最新旗舰（2026-09-29）：Agentic Coding、计算机操作与文档密集型专业任务",
+    },
+    {
+      id: "gpt-6-luna",
+      name: "GPT-6 Luna",
+      endpointId: "openai",
+      modelName: "gpt-6-luna",
+      maxContextTokens: 250_000,
+      defaultParams: {},
+      vision: true,
+      description: "OpenAI GPT-6 系列快速低成本模型：适合高吞吐、低延迟场景",
+    },
+    // ---------- 智谱 BigModel ----------
+    {
+      id: "glm-5.3",
+      name: "GLM-5.3",
+      endpointId: "bigmodelcn",
+      modelName: "glm-5.3",
+      maxContextTokens: 250_000,
+      defaultParams: { thinking: { type: "enabled" }, reasoning_effort: "max" },
+      description: "智谱最新旗舰：复杂软件工程与长程 Agent 任务（强制开启思考，1M 上下文）",
+    },
+    {
+      id: "glm-5.3-flash",
+      name: "GLM-5.3-Flash",
+      endpointId: "bigmodelcn",
+      modelName: "glm-5.3-flash",
+      maxContextTokens: 250_000,
+      defaultParams: { thinking: { type: "enabled" }, reasoning_effort: "max" },
+      vision: true,
+      description: "智谱原生多模态模型（图片/视频/文件）：视觉 Coding，1M 上下文",
+    },
+    {
+      id: "glm-5.3-flashx",
+      name: "GLM-5.3-FlashX",
+      endpointId: "bigmodelcn",
+      modelName: "glm-5.3-flashx",
+      maxContextTokens: 250_000,
+      defaultParams: { thinking: { type: "enabled" }, reasoning_effort: "max" },
+      vision: true,
+      description: "GLM-5.3-Flash 高速版（200 tokens/s），原生多模态",
     },
     {
       id: "glm-4.7-flash",
       name: "GLM-4.7-Flash",
       endpointId: "bigmodelcn",
       modelName: "glm-4.7-flash",
-      maxContextTokens: 250_000,
+      // 该模型真实窗口仅 200K，阈值下调至 100K（约窗口的 50%），留足 response 空间
+      maxContextTokens: 100_000,
       defaultParams: {},
-      description: "智谱AI 免费轻量模型",
+      description: "智谱免费文本模型：200K 上下文，适合轻量任务",
     },
+    // ---------- DeepSeek ----------
     {
-      id: "deepseek-v4-pro",
-      name: "DeepSeek-V4-Pro",
+      id: "deepseek-flash",
+      name: "DeepSeek-V4.1-Flash",
       endpointId: "deepseek",
-      modelName: "deepseek-v4-pro",
-      maxContextTokens: 250_000,
-      defaultParams: { thinking: { type: "disabled" } },
-      description: "DeepSeek 旗舰模型，Agentic Coding开源第一",
-    },
-    {
-      id: "deepseek-v4-flash",
-      name: "DeepSeek-V4-Flash",
-      endpointId: "deepseek",
-      modelName: "deepseek-v4-flash",
-      maxContextTokens: 250_000,
-      defaultParams: { thinking: { type: "enabled" } },
-      description: "DeepSeek 经济高效模型",
-    },
-    {
-      id: "deepseek-v4-flash-vision-exp",
-      name: "DeepSeek-V4-Flash-Vision-Exp",
-      endpointId: "deepseek",
-      modelName: "deepseek-v4-flash-vision-exp",
+      modelName: "deepseek-flash",
       maxContextTokens: 250_000,
       defaultParams: { thinking: { type: "enabled" } },
       vision: true,
-      description: "DeepSeek 视觉实验模型（支持图片/文件输入）",
+      description: "DeepSeek 旗舰（2026-09-10）：552B MoE 非对称架构，原生多模态，1M 上下文",
     },
   ],
   imageModels: [
@@ -186,10 +216,10 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       defaultSize: "1024x1024",
     },
   ],
-  defaultModel: "deepseek-v4-flash",
+  defaultModel: "deepseek-flash",
   defaultImageModel: "cogview-4",
   defaultAgent: "default",
-  defaultMigrationModel: "deepseek-v4-flash",
+  defaultMigrationModel: "deepseek-flash",
   // 工具输出上限（字符数），与 DEFAULT_MAX_TOOL_OUTPUT 保持一致
   maxToolOutput: 32_768,
 };
