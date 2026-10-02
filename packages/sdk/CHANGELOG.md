@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.0.0-alpha.1] - 2026-10-03
+
+### 💥 Breaking Changes
+
+- **Factory model catalog refreshed (verified against vendor sources on 2026-10-03)** — every stale or retired model ID in `DEFAULT_APP_CONFIG.models` is replaced:
+  - **OpenAI**: `gpt-5.5` → `gpt-6-astra` / `gpt-6.1-sol` / `gpt-6-luna`
+  - **Zhipu**: `glm-5.1` / `glm-5v-turbo` → `glm-5.3` / `glm-5.3-flash` / `glm-5.3-flashx`
+  - **DeepSeek**: `deepseek-v4-pro` / `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp` → `deepseek-flash`. The two V4-Flash variants were retired by the vendor, and V4-Pro requests are routed to V4.1-Flash.
+  - Defaults: `defaultModel` / `defaultMigrationModel` move from `deepseek-v4-flash` to `deepseek-flash`.
+- **`Model.maxContextTokens` semantics clarified — it is the task-migration (handoff) trigger threshold, not the model context window** — `AutoMigratePlugin` does not estimate or learn: it only compares `usage.prompt_tokens` from the API response against this value. The previous comment read "上下文窗口 token 上限" ("context window token limit"), which is why values had been filled in with raw window sizes. Values are now ~25% of the real window (250K for ≥1M-window models), except `glm-4.7-flash` (200K window) which uses 100K.
+
+### 🚀 New Features
+
+- **Managed model catalog sync (`custom` opt-out)** — `ConfigManager.ensureDefaultConfig()` now reconciles the factory catalog on every `bootstrap()`. Entries in `models` / `imageModels` that do **not** carry `custom: true` are dropped and replaced by the latest `DEFAULT_APP_CONFIG` definitions; entries marked `custom: true` are treated as user-owned and kept verbatim (user wins on id collision, no duplicates). A dangling `defaultModel` / `defaultImageModel` / `defaultMigrationModel` falls back to the factory default, so no reference is ever left pointing at a removed model. `endpoints` are never managed. The sync is idempotent — it only writes when something actually changed. Implemented in `ConfigManager.syncManagedModels`.
+- **`Model` / `ImageModel` gained an optional `custom?: boolean` field** — marks an entry as user-owned so the factory sync leaves it untouched.
+
+### ✅ Tests
+
+- Added coverage for the model catalog sync: stale non-custom entries replaced, `custom: true` entries preserved, user version winning on id collision without duplication, image models reconciled, dangling default IDs falling back, and idempotency across repeated calls.
+- E2E model IDs updated to the current vendor names (`deepseek-flash`).
+
+### 📄 Docs
+
+- Current-version references in `docs/zh` and `docs/en` updated to `1.0.0-alpha.1`.
+- `DEFAULT_APP_CONFIG` row in `sdk-design-v0.md` updated to the new model catalog.
+
 ## [1.0.0-alpha.0] - 2026-09-30
 
 ### 💥 Breaking Changes
