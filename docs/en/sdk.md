@@ -153,7 +153,7 @@ const { config, agent, subAgent } = await mgr.bootstrap();   // one-shot init (i
 ```
 
 - Preset endpoints (OpenAI / Zhipu / DeepSeek), 7 models (including the vision model `vision: true`), 3 image models, and default options.
-- Factory-default MCP server (`socket-pty`) is written to `~/.ai-zen/mcp.json` on first run; existing files are not overwritten.
+- Factory-default MCP servers (`socket-pty`, `chrome-devtools`) are written to `~/.ai-zen/mcp.json` on first run; existing files are not overwritten.
 - All `ensure*` operations do not overwrite existing files, so user configuration is never lost.
 
 ## Task migration (TaskMigrationService)

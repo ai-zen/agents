@@ -225,12 +225,14 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
 };
 
 // ---------------------------------------------------------------------------
-// 默认 MCP 配置（socket-pty 终端 MCP）
+// 默认 MCP 配置（socket-pty 终端 MCP + chrome-devtools 浏览器调试 MCP）
 // ---------------------------------------------------------------------------
 
 /**
  * SDK 出厂默认 MCP 服务器配置（mcp.json 内容，业界标准格式）。
- * 首次初始化时释放到 ~/.ai-zen/mcp.json，让用户开箱即用 socket-pty 终端能力。
+ * 首次初始化时释放到 ~/.ai-zen/mcp.json，让用户开箱即用：
+ *   - socket-pty       伪终端（pty）能力
+ *   - chrome-devtools  Chrome DevTools 浏览器调试/自动化能力（Google 官方 chrome-devtools-mcp）
  *
  * 若文件已存在则不覆盖（尊重用户已有配置）。
  */
@@ -241,6 +243,12 @@ export const DEFAULT_MCP_CONFIG: { mcpServers: Record<string, unknown> } = {
       command: "npx",
       args: ["-y", "@ai-zen/socket-pty", "mcp"],
       description: "可托管的伪终端（pty）：spawn/read/wait/write/resize/status/kill",
+    },
+    "chrome-devtools": {
+      type: "stdio",
+      command: "npx",
+      args: ["-y", "chrome-devtools-mcp@latest"],
+      description: "Chrome DevTools 浏览器调试与自动化（Google chrome-devtools-mcp）：页面导航、性能追踪、网络与控制台检查、截图等",
     },
   },
 };

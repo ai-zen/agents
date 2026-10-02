@@ -54,7 +54,7 @@ Field descriptions:
 Configuration file paths (decided by each client / `ConfigManager`):
 
 ```
-~/.ai-zen/mcp.json     ← user-level MCP (factory default includes the socket-pty terminal)
+~/.ai-zen/mcp.json     ← user-level MCP (factory default includes the socket-pty terminal and chrome-devtools)
 <project-root>/.mcp.json ← project-shared MCP (can be committed to git)
 ```
 

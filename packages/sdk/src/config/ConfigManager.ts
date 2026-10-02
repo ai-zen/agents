@@ -223,7 +223,7 @@ export class ConfigManager {
   }
 
   /**
-   * 确保 basePath/mcp.json 存在。不存在时写入出厂默认 MCP 配置（含 socket-pty）。
+   * 确保 basePath/mcp.json 存在。不存在时写入出厂默认 MCP 配置（含 socket-pty 与 chrome-devtools）。
    * 已有文件不被覆盖，尊重用户已配置的 MCP 服务器。
    * @returns 返回当前生效的 MCP 配置原始内容
    */

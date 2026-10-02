@@ -54,7 +54,7 @@ MCP 服务器配置格式（`mcp.json`）：
 配置文件路径（由各端 / `ConfigManager` 决定）：
 
 ```
-~/.ai-zen/mcp.json     ← 用户级 MCP（出厂默认含 socket-pty 终端）
+~/.ai-zen/mcp.json     ← 用户级 MCP（出厂默认含 socket-pty 终端、chrome-devtools 浏览器调试）
 项目根/.mcp.json       ← 项目共享 MCP（可提交 git）
 ```
 

@@ -389,11 +389,14 @@ describe("ConfigManager.bootstrap", () => {
     expect(result.subAgent!.id).toBe(DEFAULT_SUBAGENT_ID);
     await expect(fs.access(join(testDir, "sub-agents", `${DEFAULT_SUBAGENT_ID}.json`))).resolves.toBeUndefined();
 
-    // mcp.json — 默认释放含 socket-pty 的配置
+    // mcp.json — 默认释放含 socket-pty、chrome-devtools 的配置
     const mcp = JSON.parse(await fs.readFile(join(testDir, "mcp.json"), "utf-8"));
     expect(mcp.mcpServers["socket-pty"]).toBeTruthy();
     expect(mcp.mcpServers["socket-pty"].command).toBe("npx");
     expect(mcp.mcpServers["socket-pty"].args).toContain("@ai-zen/socket-pty");
+    expect(mcp.mcpServers["chrome-devtools"]).toBeTruthy();
+    expect(mcp.mcpServers["chrome-devtools"].command).toBe("npx");
+    expect(mcp.mcpServers["chrome-devtools"].args.some((a: string) => a.startsWith("chrome-devtools-mcp"))).toBe(true);
 
     // dirs
     for (const sub of ["agents", "sub-agents", "skills", "tools", "mcp-oauth"]) {
@@ -431,7 +434,7 @@ describe("ConfigManager.ensureDefaultMcpConfig", () => {
     if (testDir) await fs.rm(testDir, { recursive: true, force: true });
   });
 
-  it("mcp.json 不存在 → 释放默认配置（含 socket-pty）", async () => {
+  it("mcp.json 不存在 → 释放默认配置（含 socket-pty、chrome-devtools）", async () => {
     testDir = await tempDir();
     const mgr = makeManager(testDir);
 
@@ -439,6 +442,7 @@ describe("ConfigManager.ensureDefaultMcpConfig", () => {
 
     expect(cfg.mcpServers).toBeTruthy();
     expect((cfg.mcpServers as Record<string, any>)["socket-pty"]).toBeTruthy();
+    expect((cfg.mcpServers as Record<string, any>)["chrome-devtools"]).toBeTruthy();
     await expect(fs.access(join(testDir, "mcp.json"))).resolves.toBeUndefined();
   });
 
