@@ -10,7 +10,7 @@ AI-Zen Agents 是一个**模块化的 LLM Agent 框架**，以 pnpm workspace �
 
 - **许可证**：MIT
 - **npm 包**：`@ai-zen/agents-workspace`（workspace 根，私有）；公开子包为 `@ai-zen/agents-core` 与 `@ai-zen/agents-sdk`
-- **当前版本**：workspace `2.0.0`；`@ai-zen/agents-core` `4.3.0`；`@ai-zen/agents-sdk` `1.0.0-alpha.1`
+- **当前版本**：workspace `2.0.0`；`@ai-zen/agents-core` `4.3.0`；`@ai-zen/agents-sdk` `1.0.0-alpha.2`
 
 ## 这是什么
 

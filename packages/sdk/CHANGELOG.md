@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.0.0-alpha.2] - 2026-10-03
+
+### 🚀 New Features
+
+- **`chrome-devtools` added to the factory default MCP config** — `DEFAULT_MCP_CONFIG` now ships two servers instead of one: alongside `socket-pty`, a freshly released `~/.ai-zen/mcp.json` includes `chrome-devtools` (`npx -y chrome-devtools-mcp@latest`, Google's official `chrome-devtools-mcp`), so browser debugging and automation work out of the box — page navigation, performance traces, network and console inspection, screenshots. Existing `mcp.json` files are still never overwritten, so user configurations (including custom flags such as `--executablePath`) are untouched. Defined in `packages/sdk/src/config/constants.ts`, released by `ConfigManager.ensureDefaultMcpConfig()`.
+
+### ✅ Tests
+
+- `ConfigManager.bootstrap.test.ts` now asserts the factory-default `mcp.json` carries both `socket-pty` and `chrome-devtools` (the latter resolved from the `chrome-devtools-mcp` package via `npx`), covering both the `bootstrap()` and `ensureDefaultMcpConfig()` paths.
+
+### 📄 Docs
+
+- Factory-default MCP descriptions in `docs/zh/mcp.md` / `docs/en/mcp.md` and `docs/zh/sdk.md` / `docs/en/sdk.md` now list both `socket-pty` and `chrome-devtools`.
+- Current-version references in `docs/zh` and `docs/en` updated to `1.0.0-alpha.2`.
+
 ## [1.0.0-alpha.1] - 2026-10-03
 
 ### 💥 Breaking Changes
