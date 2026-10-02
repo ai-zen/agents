@@ -31,7 +31,7 @@ export class GenerateImageTool extends SdkCallbackTool {
         model: {
           type: "string",
           description:
-            "图片模型 ID，不指定则使用配置中的默认图片模型。配置中的图片模型可通过 'aiz config show' 查看。",
+            "图片模型 ID，不指定则使用配置中的默认图片模型；若指定的模型不存在，本工具会返回当前可用的模型列表。",
         },
         size: {
           type: "string",
