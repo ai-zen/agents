@@ -2,9 +2,9 @@ import type { SdkCallbackTool } from "./SdkCallbackTool.js";
 import type { ToolEnv } from "../../../types/index.js";
 
 import { CwdTool } from "./CwdTool.js";
-import { ReadFileTool } from "./ReadFileTool.js";
+import { ReadTool } from "./ReadTool.js";
 import { InspectFileTool } from "./InspectFileTool.js";
-import { WriteFileTool } from "./WriteFileTool.js";
+import { WriteTool } from "./WriteTool.js";
 import { ExecTool } from "./ExecTool.js";
 import { MkdirTool } from "./MkdirTool.js";
 import { RmTool } from "./RmTool.js";
@@ -17,7 +17,7 @@ import { RenameTool } from "./RenameTool.js";
 import { CopyTool } from "./CopyTool.js";
 import { BatchEditTool } from "./BatchEditTool.js";
 import { EditTool } from "./EditTool.js";
-import { ExecAsyncTool } from "./ExecAsyncTool.js";
+import { SpawnTool } from "./SpawnTool.js";
 import { SleepTool } from "./SleepTool.js";
 import { ViewImageTool } from "./ViewImageTool.js";
 import { GenerateImageTool } from "./GenerateImageTool.js";
@@ -32,9 +32,9 @@ import { GenerateImageTool } from "./GenerateImageTool.js";
  */
 export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> = [
   CwdTool,
-  ReadFileTool,
+  ReadTool,
   InspectFileTool,
-  WriteFileTool,
+  WriteTool,
   ExecTool,
   MkdirTool,
   RmTool,
@@ -47,7 +47,7 @@ export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> 
   CopyTool,
   BatchEditTool,
   EditTool,
-  ExecAsyncTool,
+  SpawnTool,
   SleepTool,
   ViewImageTool,
   GenerateImageTool,
@@ -55,9 +55,9 @@ export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> 
 
 export {
   CwdTool,
-  ReadFileTool,
+  ReadTool,
   InspectFileTool,
-  WriteFileTool,
+  WriteTool,
   ExecTool,
   MkdirTool,
   RmTool,
@@ -70,7 +70,7 @@ export {
   CopyTool,
   BatchEditTool,
   EditTool,
-  ExecAsyncTool,
+  SpawnTool,
   SleepTool,
   ViewImageTool,
   GenerateImageTool,

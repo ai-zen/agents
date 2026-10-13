@@ -4,7 +4,7 @@ import type { ToolEnv } from "../../../types/index.js";
 import type { AgentNS } from "@ai-zen/agents-core";
 import { DEFAULT_MAX_TOOL_OUTPUT, guardOutput } from "./outputGuard.js";
 
-export class ReadFileTool extends SdkCallbackTool {
+export class ReadTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "read",
     description: "读取文件",

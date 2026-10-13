@@ -17,7 +17,7 @@ export class ExecTool extends SdkCallbackTool {
         },
         timeout: {
           type: "number",
-          description: "超时时间（毫秒），必填。超时后会终止进程；超过该时长仍未完成即视为超时并终止。建议长时间运行的命令使用 exec_async 异步执行。",
+          description: "超时时间（毫秒），必填。超时后会终止进程；超过该时长仍未完成即视为超时并终止。建议长时间运行的命令使用 spawn 异步执行。",
         },
       },
       required: ["command", "timeout"],

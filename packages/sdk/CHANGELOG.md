@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0-alpha.6] - 2026-10-13
+
+### 💥 Breaking Changes
+
+- **`exec_async` renamed to `spawn`** — the tool wraps `child_process.spawn` and returns `{ success, pid, message }`, so the new name matches both the implementation and the "start a process, get its pid" contract. It also pairs cleanly with `exec`: `exec` runs and **waits** (captures output, has a `timeout`), `spawn` starts and **returns immediately**. Permission lists, skill `allowed-tools` and any prompt naming `exec_async` must switch to `spawn`. The behaviour is otherwise unchanged — still shell-parsed, still does **not** capture output (redirect to a file if you need it).
+- **Built-in tool classes renamed to match their new tool names** — `ReadFileTool` → `ReadTool`, `WriteFileTool` → `WriteTool`, `ExecAsyncTool` → `SpawnTool`, with the source files renamed to match. The classes re-exported from `@ai-zen/agents-sdk` change accordingly, so consumers importing them by name must update.
+
 ## [1.0.0-alpha.5] - 2026-10-13
 
 ### 💥 Breaking Changes

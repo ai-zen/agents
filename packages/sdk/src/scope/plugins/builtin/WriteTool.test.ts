@@ -3,22 +3,22 @@ import { readFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
-import { WriteFileTool } from "./WriteFileTool.js";
+import { WriteTool } from "./WriteTool.js";
 import { makeEnv } from "./test-helpers.js";
 
 function tmpDir(): string {
   return join(tmpdir(), randomBytes(8).toString("hex"));
 }
 
-describe("WriteFileTool", () => {
+describe("WriteTool", () => {
   it("工具名称和描述正确", () => {
-    const tool = new WriteFileTool(makeEnv());
+    const tool = new WriteTool(makeEnv());
     expect(tool.function.name).toBe("write");
     expect(tool.function.description).toBe("写入文件");
   });
 
   it("写入文件内容", async () => {
-    const tool = new WriteFileTool(makeEnv());
+    const tool = new WriteTool(makeEnv());
     const dir = tmpDir();
     const filePath = join(dir, "test.txt");
     try {
@@ -34,7 +34,7 @@ describe("WriteFileTool", () => {
   it("相对路径按 env.cwd 解析", async () => {
     const dir = tmpDir();
     try {
-      const tool = new WriteFileTool(makeEnv(dir));
+      const tool = new WriteTool(makeEnv(dir));
       const result = await tool.call({ path: "rel.txt", content: "relative ok" });
       expect(result).toBe("success");
       expect(readFileSync(join(dir, "rel.txt"), "utf-8")).toBe("relative ok");
@@ -45,7 +45,7 @@ describe("WriteFileTool", () => {
   });
 
   it("自动创建不存在的目录", async () => {
-    const tool = new WriteFileTool(makeEnv());
+    const tool = new WriteTool(makeEnv());
     const dir = tmpDir();
     const filePath = join(dir, "sub", "nested", "test.txt");
     try {

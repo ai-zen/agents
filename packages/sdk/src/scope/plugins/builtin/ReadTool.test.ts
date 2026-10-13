@@ -3,7 +3,7 @@ import { writeFileSync, mkdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
-import { ReadFileTool } from "./ReadFileTool.js";
+import { ReadTool } from "./ReadTool.js";
 import { makeEnv } from "./test-helpers.js";
 import type { AppConfig } from "../../../types/index.js";
 
@@ -20,15 +20,15 @@ function cleanUp(filePath: string): void {
   try { unlinkSync(filePath.substring(0, filePath.lastIndexOf("/"))); } catch {}
 }
 
-describe("ReadFileTool", () => {
+describe("ReadTool", () => {
   it("工具名称和描述正确", () => {
-    const tool = new ReadFileTool(makeEnv());
+    const tool = new ReadTool(makeEnv());
     expect(tool.function.name).toBe("read");
     expect(tool.function.description).toBe("读取文件");
   });
 
   it("读取文件内容", async () => {
-    const tool = new ReadFileTool(makeEnv());
+    const tool = new ReadTool(makeEnv());
     const filePath = tmpFile("hello world");
     try {
       const result = await tool.call({ path: filePath });
@@ -44,7 +44,7 @@ describe("ReadFileTool", () => {
     const filePath = join(dir, "rel.txt");
     writeFileSync(filePath, "relative ok", "utf-8");
     try {
-      const tool = new ReadFileTool(makeEnv(dir));
+      const tool = new ReadTool(makeEnv(dir));
       const result = await tool.call({ path: "rel.txt" });
       expect(result).toBe("relative ok");
     } finally {
@@ -54,13 +54,13 @@ describe("ReadFileTool", () => {
   });
 
   it("文件不存在时返回错误信息", async () => {
-    const tool = new ReadFileTool(makeEnv());
+    const tool = new ReadTool(makeEnv());
     const result = await tool.call({ path: "/tmp/not-exists-xxx.txt" });
     expect(result).toContain("ENOENT");
   });
 
   it("超过 300KB 的文件拒绝读取", async () => {
-    const tool = new ReadFileTool(makeEnv());
+    const tool = new ReadTool(makeEnv());
     const filePath = tmpFile("x".repeat(400 * 1024));
     try {
       const result = await tool.call({ path: filePath });
@@ -71,7 +71,7 @@ describe("ReadFileTool", () => {
   });
 
   it("range 按行列范围读取（0-based，-1 表末位）", async () => {
-    const tool = new ReadFileTool(makeEnv());
+    const tool = new ReadTool(makeEnv());
     const filePath = tmpFile("line0\nline1\nline2\nline3");
     try {
       // 第 1 行第 0 列 → 第 2 行末列
@@ -88,7 +88,7 @@ describe("ReadFileTool", () => {
   });
 
   it("输出超过 maxToolOutput 时只警告、不落盘，并提示 range 用法", async () => {
-    const tool = new ReadFileTool(makeEnv(process.cwd(), { maxToolOutput: 10 } as AppConfig));
+    const tool = new ReadTool(makeEnv(process.cwd(), { maxToolOutput: 10 } as AppConfig));
     const filePath = tmpFile("0123456789\nabcdefghij");
     try {
       const result = (await tool.call({ path: filePath })) as string;
@@ -104,7 +104,7 @@ describe("ReadFileTool", () => {
   });
 
   it("range 缩小后的输出未超限时正常返回内容", async () => {
-    const tool = new ReadFileTool(makeEnv(process.cwd(), { maxToolOutput: 10 } as AppConfig));
+    const tool = new ReadTool(makeEnv(process.cwd(), { maxToolOutput: 10 } as AppConfig));
     const filePath = tmpFile("0123456789\nabcdefghij");
     try {
       expect(await tool.call({ path: filePath, range: [0, 0, 0, 4] })).toBe("01234");

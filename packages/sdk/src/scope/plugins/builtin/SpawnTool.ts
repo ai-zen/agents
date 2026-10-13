@@ -3,9 +3,9 @@ import { SdkCallbackTool } from "./SdkCallbackTool.js";
 import type { ToolEnv } from "../../../types/index.js";
 import type { AgentNS } from "@ai-zen/agents-core";
 
-export class ExecAsyncTool extends SdkCallbackTool {
+export class SpawnTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
-    name: "exec_async",
+    name: "spawn",
     description:
       "异步执行命令，启动程序后立即返回，不等待执行结果。适用于启动长期运行的进程（如服务器、监听程序、GUI应用等）或不需要等待结果的命令。注意：该工具本身不捕获命令的输出；若需获取/留存输出，可在命令中使用 shell 重定向写入文件（如 `> /path/file`，支持 `>>` 追加、`|` 管道）。命令经 shell 解析执行。",
     parameters: {

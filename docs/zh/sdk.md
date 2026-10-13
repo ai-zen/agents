@@ -95,7 +95,7 @@ Agent.permissions
 | 工具 | 说明 |
 |------|------|
 | `cwd` / `read` / `inspect_file` / `write` / `mkdir` / `rm` / `glob` / `ls` / `exist` / `rename` / `copy` / `find_text` | 文件系统操作（`read` 可选 `range` 按行列范围读取；`inspect_file` 返回文件结构概况，流式扫描不受 300KB 限制） |
-| `exec` / `exec_async` | 执行命令（`exec` 支持 `timeout`；`exec_async` 异步立即返回，支持 shell 重定向/管道） |
+| `exec` / `spawn` | 执行命令（`exec` 支持 `timeout`；`spawn` 异步立即返回，支持 shell 重定向/管道） |
 | `download_file` | 从 URL 下载并保存 |
 | `batch_edit` / `edit` | 批量 / 单次替换文件文本（`batch_edit` 仅回显未匹配项） |
 | `sleep` | 等待指定毫秒 |

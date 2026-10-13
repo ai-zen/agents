@@ -100,7 +100,7 @@ await scope.dispose(); // 断开 MCP、释放插件资源
 | `inspect_file` | 勘察文件结构概况（行数、列数分布等），流式扫描不受 300KB 限制 |
 | `write` | 写入文件 |
 | `exec` | 执行命令（支持 `timeout` 超时参数；stdout+stderr 超限时分文件落盘 `stdout.log` / `stderr.log`） |
-| `exec_async` | 异步执行命令，启动后立即返回，不等待结果 |
+| `spawn` | 异步执行命令，启动后立即返回，不等待结果 |
 | `mkdir` | 创建目录 |
 | `rm` | 删除文件或目录 |
 | `glob` | 使用 glob 模式扫描查找文件（输出超限落盘 `result.json`） |

@@ -397,9 +397,9 @@ abstract class SdkCallbackTool extends Tool {
 
 ```typescript
 export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> = [
-  CwdTool, ReadFileTool, InspectFileTool, WriteFileTool, ExecTool, MkdirTool, RmTool,
+  CwdTool, ReadTool, InspectFileTool, WriteTool, ExecTool, MkdirTool, RmTool,
   GlobTool, LsTool, ExistTool, FindTextTool, DownloadFileTool,
-  RenameTool, CopyTool, BatchEditTool, EditTool, ExecAsyncTool, SleepTool,
+  RenameTool, CopyTool, BatchEditTool, EditTool, SpawnTool, SleepTool,
   ViewImageTool, GenerateImageTool,
 ];
 ```
@@ -413,7 +413,7 @@ export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> 
 | `inspect_file` | 勘察文件结构概况（`bytes` / `lines` / `chars` / `maxCol` / `lineIndexOfMaxCol` / `avgCol` / `lineEnding`）；流式扫描，不受 300KB 限制；可选 `withColCountMap` 返回行索引→列数映射 |
 | `write` | 写入文件（自动建父目录） |
 | `exec` | 执行命令（`timeout` 必填，超时被终止时返回 `terminated: "timeout"` 明确告知 agent；`cwd` 为 `env.cwd`；stdout+stderr 合计超限时分文件落盘 `stdout.log` / `stderr.log`） |
-| `exec_async` | 异步执行命令，启动后立即返回；全平台经 shell 解析，支持重定向（`>` / `>>`）、管道（`|`）等 shell 语法 |
+| `spawn` | 异步执行命令，启动后立即返回；全平台经 shell 解析，支持重定向（`>` / `>>`）、管道（`|`）等 shell 语法 |
 | `mkdir` | 创建目录（`recursive`） |
 | `rm` | 删除文件或目录 |
 | `glob` | glob 模式扫描（`path` 参数 resolve 到 `env.cwd`；输出超限落盘 `result.json`） |

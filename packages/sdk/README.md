@@ -101,7 +101,7 @@ All built-in tools are classes (extending `SdkCallbackTool`), instantiated by th
 | `inspect_file` | Inspect a file's structural overview (line count, column distribution, etc.); streamed scan, not limited by the 300KB read threshold |
 | `write` | Write a file |
 | `exec` | Execute a command (supports `timeout`; oversized stdout+stderr is dumped to `stdout.log` / `stderr.log`) |
-| `exec_async` | Execute a command asynchronously, returns immediately without waiting |
+| `spawn` | Execute a command asynchronously, returns immediately without waiting |
 | `mkdir` | Create a directory |
 | `rm` | Delete a file or directory |
 | `glob` | Scan and find files using glob patterns (oversized output dumped to `result.json`) |

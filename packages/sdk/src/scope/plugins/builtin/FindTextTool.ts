@@ -18,7 +18,7 @@ interface MatchResult {
 
 /** 默认总匹配数上限 */
 const DEFAULT_MAX_MATCHES = 200;
-/** 默认文件大小上限（字节，与 ReadFileTool 的 300KB 口径一致） */
+/** 默认文件大小上限（字节，与 ReadTool 的 300KB 口径一致） */
 const DEFAULT_MAX_FILE_SIZE = 300 * 1024;
 /** 默认行内容/匹配子串截断长度 */
 const DEFAULT_MAX_LINE_LENGTH = 200;
@@ -123,7 +123,7 @@ export class FindTextTool extends SdkCallbackTool {
         if (signal?.aborted) break; // 中断：stat 后再次检查
 
         if (!stats.isFile()) continue;
-        // 文件过大则跳过（避免撑爆上下文；与 ReadFileTool 300KB 口径一致，但此处为跳过而非报错）
+        // 文件过大则跳过（避免撑爆上下文；与 ReadTool 300KB 口径一致，但此处为跳过而非报错）
         if (stats.size > maxFileSize) continue;
 
         const content = await fsp.readFile(fullPath, "utf-8");

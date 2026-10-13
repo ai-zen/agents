@@ -4,7 +4,7 @@ import { SdkCallbackTool } from "./SdkCallbackTool.js";
 import type { ToolEnv } from "../../../types/index.js";
 import type { AgentNS } from "@ai-zen/agents-core";
 
-export class WriteFileTool extends SdkCallbackTool {
+export class WriteTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "write",
     description: "写入文件",

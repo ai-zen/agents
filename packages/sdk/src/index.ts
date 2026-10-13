@@ -95,9 +95,9 @@ export { UnknownToolHintPlugin } from "./agent-plugins/UnknownToolHintPlugin.js"
 export { BUILTIN_TOOL_CLASSES } from "./scope/plugins/builtin/index.js";
 export {
   CwdTool,
-  ReadFileTool,
+  ReadTool,
   InspectFileTool,
-  WriteFileTool,
+  WriteTool,
   ExecTool,
   MkdirTool,
   RmTool,
@@ -110,7 +110,7 @@ export {
   CopyTool,
   BatchEditTool,
   EditTool,
-  ExecAsyncTool,
+  SpawnTool,
   SleepTool,
 } from "./scope/plugins/builtin/index.js";
 export { GenerateImageTool } from "./scope/plugins/builtin/GenerateImageTool.js";
