@@ -43,7 +43,7 @@ export class LsTool extends SdkCallbackTool {
             outputTooLarge: true,
             warning:
               `输出过大：目录条目共 ${entries.length} 项、${json.length} 字符，超过上限 ${limit} 字符。` +
-              `完整列表已落盘（result.json），可用 readFile 分批读取；` +
+              `完整列表已落盘（result.json），可用 read 分批读取；` +
               `也可改用 glob 按模式筛选。`,
             files: ctx.files,
             chars: json.length,

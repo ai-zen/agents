@@ -94,22 +94,22 @@ All built-in tools are `SdkCallbackTool` subclasses, instantiated by the Scope u
 
 | Tool | Description |
 |------|------|
-| `cwd` / `readFile` / `inspectFile` / `writeFile` / `mkdir` / `rm` / `glob` / `ls` / `exist` / `rename` / `copy` / `findText` | filesystem operations (`readFile` supports an optional `range` for line/column slicing; `inspectFile` returns a structural overview via streamed scan, not limited by the 300KB read threshold) |
+| `cwd` / `read` / `inspect_file` / `write` / `mkdir` / `rm` / `glob` / `ls` / `exist` / `rename` / `copy` / `find_text` | filesystem operations (`read` supports an optional `range` for line/column slicing; `inspect_file` returns a structural overview via streamed scan, not limited by the 300KB read threshold) |
 | `exec` / `exec_async` | run commands (`exec` supports `timeout`; `exec_async` returns asynchronously immediately and supports shell redirect/pipelines) |
-| `downloadFile` | download from a URL and save |
-| `batchEdit` / `edit` | batch / single text replacement in files (`batchEdit` echoes back only unmatched items) |
+| `download_file` | download from a URL and save |
+| `batch_edit` / `edit` | batch / single text replacement in files (`batch_edit` echoes back only unmatched items) |
 | `sleep` | wait a specified number of milliseconds |
 
 Tools injected based on config / model conditions:
 
 | Tool | Injection condition |
 |------|----------|
-| `generateImage` | only when `defaultImageModel` is configured |
-| `viewImage` | only for vision models (the Agent's `modelId` resolves to `Model.vision === true`) |
+| `generate_image` | only when `defaultImageModel` is configured |
+| `view_image` | only for vision models (the Agent's `modelId` resolves to `Model.vision === true`) |
 
 Tool availability is declared by each tool's own `isAvailable(config, definition)` and filtered during the `buildTools` / `filter` stage; the discovery layer does no filtering.
 
-Tool output protection: `AppConfig.maxToolOutput` (in characters, default 32768) is the unified ceiling; on overflow each tool handles it itself — `exec` dumps `stdout.log` / `stderr.log` separately (with head/tail previews per stream), `findText` / `glob` / `ls` dump `result.json` (with a head preview), and `readFile` only warns and suggests batched reads via `range`. Dumps go to `<tmpdir>/ai-zen/tool-output/<tool>-<timestamp>-<random>/`, one directory per call. Note that 300KB is a **read** threshold (whether a file can be read), distinct from the output threshold.
+Tool output protection: `AppConfig.maxToolOutput` (in characters, default 32768) is the unified ceiling; on overflow each tool handles it itself — `exec` dumps `stdout.log` / `stderr.log` separately (with head/tail previews per stream), `find_text` / `glob` / `ls` dump `result.json` (with a head preview), and `read` only warns and suggests batched reads via `range`. Dumps go to `<tmpdir>/ai-zen/tool-output/<tool>-<timestamp>-<random>/`, one directory per call. Note that 300KB is a **read** threshold (whether a file can be read), distinct from the output threshold.
 
 `SdkCallbackTool` abstract base class:
 

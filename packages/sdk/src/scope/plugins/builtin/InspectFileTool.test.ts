@@ -27,7 +27,7 @@ function cleanUp(filePath: string): void {
 describe("InspectFileTool", () => {
   it("工具名称与参数默认值正确", () => {
     const tool = new InspectFileTool(makeEnv());
-    expect(tool.function.name).toBe("inspectFile");
+    expect(tool.function.name).toBe("inspect_file");
     expect(tool.function.description).toContain("结构概况");
     const params = tool.function.parameters as any;
     expect(params.properties.withColCountMap.default).toBe(false);
@@ -125,7 +125,7 @@ describe("InspectFileTool", () => {
     }
   });
 
-  it("不受 readFile 的 300KB 阈值限制（流式扫描大文件）", async () => {
+  it("不受 read 的 300KB 阈值限制（流式扫描大文件）", async () => {
     const tool = new InspectFileTool(makeEnv());
     const filePath = tmpFile("x".repeat(300 * 1024) + "\nyy");
     try {

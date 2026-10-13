@@ -38,7 +38,7 @@ export class ViewImageTool extends SdkCallbackTool {
   }
 
   function: AgentNS.FunctionDefine = {
-    name: "viewImage",
+    name: "view_image",
     description:
       "查看一张图片并分析其内容。传入本地图片路径或 http(s) 图片 URL。本地图片会自动上传（Files API）后引用，网络图片直接引用。不支持本地 URL（如 file:// 协议、指向本机 localhost/127.0.0.1 的 http(s) 地址），本地图片请使用文件路径。适合识别图片文字、描述图片内容、分析图表等。",
     parameters: {
@@ -66,7 +66,7 @@ export class ViewImageTool extends SdkCallbackTool {
     const signal = ctx?.signal;
     const target = input?.path_or_url;
     if (!target || !target.trim()) {
-      return "viewImage 需要提供 path_or_url 参数（本地图片路径或 http(s) URL）。";
+      return "view_image 需要提供 path_or_url 参数（本地图片路径或 http(s) URL）。";
     }
     const value = target.trim();
 

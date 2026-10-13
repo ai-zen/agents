@@ -17,7 +17,7 @@ function tmpDir(): string {
 describe("FindTextTool", () => {
   it("工具名称和描述正确", () => {
     const tool = new FindTextTool(makeEnv());
-    expect(tool.function.name).toBe("findText");
+    expect(tool.function.name).toBe("find_text");
     expect(tool.function.description).toContain("查找文本");
   });
 

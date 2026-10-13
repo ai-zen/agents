@@ -6,7 +6,7 @@ import type { AgentNS } from "@ai-zen/agents-core";
 
 export class WriteFileTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
-    name: "writeFile",
+    name: "write",
     description: "写入文件",
     parameters: {
       type: "object",

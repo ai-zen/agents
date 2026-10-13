@@ -37,7 +37,7 @@ describe("UnknownToolHintPlugin", () => {
     const plugin = new UnknownToolHintPlugin({
       scope: mockScope({ mcpPaths: ["/tmp/mcp.json"] }),
     });
-    const result = plugin.onUnknownTool(ctx("foo", ["readFile"]));
+    const result = plugin.onUnknownTool(ctx("foo", ["read"]));
     expect(result).toContain("call_mcp_tool 权限已被禁用");
   });
 

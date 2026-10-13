@@ -158,11 +158,11 @@ export default {
 
 describe("Scope 能力发现与过滤", () => {
   describe("内置工具（BuiltinToolsScopePlugin）", () => {
-    it("discoverBuiltinTools 全量注册内置工具（含 generateImage / viewImage）", () => {
+    it("discoverBuiltinTools 全量注册内置工具（含 generate_image / view_image）", () => {
       const tools = discoverBuiltinTools({ cwd: tmpDir, config: MIN_CONFIG });
       const names = tools.map((t) => t.function.name);
-      expect(names).toContain("generateImage");
-      expect(names).toContain("viewImage");
+      expect(names).toContain("generate_image");
+      expect(names).toContain("view_image");
       expect(names.length).toBeGreaterThan(15);
     });
 
@@ -170,7 +170,7 @@ describe("Scope 能力发现与过滤", () => {
       const scope = await makeScope();
       const tools = scope.buildTools(makeDef(ALLOW_ALL));
       const names = tools.map((t) => t.function.name);
-      expect(names).toContain("readFile");
+      expect(names).toContain("read");
       expect(names.length).toBeGreaterThan(5);
     });
   });
@@ -217,7 +217,7 @@ describe("Scope 能力发现与过滤", () => {
       writeSkill("code-review", "代码审查");
       const scope = await makeScope({ skillsPaths: [join(tmpDir, "skills")] });
       const result = scope.instantiate({
-        tools: ["load_skill", "call_skill_sub_agent", "readFile"],
+        tools: ["load_skill", "call_skill_sub_agent", "read"],
         subagents: [],
         skills: ["code-review"],
         mcps: [],
@@ -225,13 +225,13 @@ describe("Scope 能力发现与过滤", () => {
       const names = result.map((t) => t.function.name);
       expect(names).toContain("load_skill");
       expect(names).toContain("call_skill_sub_agent");
-      expect(names).toContain("readFile");
+      expect(names).toContain("read");
     });
 
     it("无 skills 时不注册 load_skill / call_skill_sub_agent", async () => {
       const scope = await makeScope();
       const result = scope.instantiate({
-        tools: ["load_skill", "call_skill_sub_agent", "readFile"],
+        tools: ["load_skill", "call_skill_sub_agent", "read"],
         subagents: [],
         skills: [],
         mcps: [],
@@ -239,7 +239,7 @@ describe("Scope 能力发现与过滤", () => {
       const names = result.map((t) => t.function.name);
       expect(names).not.toContain("load_skill");
       expect(names).not.toContain("call_skill_sub_agent");
-      expect(names).toContain("readFile");
+      expect(names).toContain("read");
     });
 
     it("仅有非 subAgent skill 时不注册 call_skill_sub_agent（load_skill 仍注册）", async () => {
@@ -268,7 +268,7 @@ describe("Scope 能力发现与过滤", () => {
     it("无 mcpPaths 时不注册 MCP 工具", async () => {
       const scope = await makeScope();
       const result = scope.instantiate({
-        tools: ["load_mcp", "call_mcp_tool", "read_mcp_resource", "readFile"],
+        tools: ["load_mcp", "call_mcp_tool", "read_mcp_resource", "read"],
         subagents: [],
         skills: [],
         mcps: [],
@@ -314,7 +314,7 @@ describe("Scope 能力发现与过滤", () => {
       writeUserTool("another-tool");
       const scope = await makeScope({ toolsPaths: [join(tmpDir, "tools")] });
       const result = scope.instantiate({
-        tools: ["my-custom-tool", "another-tool", "readFile"],
+        tools: ["my-custom-tool", "another-tool", "read"],
         subagents: [],
         skills: [],
         mcps: [],
@@ -322,7 +322,7 @@ describe("Scope 能力发现与过滤", () => {
       const names = result.map((t) => t.function.name);
       expect(names).toContain("my-custom-tool");
       expect(names).toContain("another-tool");
-      expect(names).toContain("readFile");
+      expect(names).toContain("read");
     });
   });
 
@@ -364,10 +364,10 @@ describe("Scope 能力发现与过滤", () => {
     it("按工具白名单过滤", async () => {
       const scope = await makeScope();
       const result = scope.filter(makeDef({
-        tools: { allow: ["readFile", "writeFile"] },
+        tools: { allow: ["read", "write"] },
       }));
-      expect(result.tools).toContain("readFile");
-      expect(result.tools).toContain("writeFile");
+      expect(result.tools).toContain("read");
+      expect(result.tools).toContain("write");
       expect(result.tools).not.toContain("exec");
     });
 
@@ -381,16 +381,16 @@ describe("Scope 能力发现与过滤", () => {
       }));
       expect(result.tools).not.toContain("exec");
       expect(result.tools).not.toContain("rm");
-      expect(result.tools).toContain("readFile");
+      expect(result.tools).toContain("read");
     });
 
     it("exclude tools 黑名单优先级高于 permissions", async () => {
       const scope = await makeScope();
       const result = scope.filter(makeDef(ALLOW_ALL), {
-        exclude: { tools: ["readFile"] },
+        exclude: { tools: ["read"] },
       });
-      expect(result.tools).not.toContain("readFile");
-      expect(result.tools).toContain("writeFile");
+      expect(result.tools).not.toContain("read");
+      expect(result.tools).toContain("write");
     });
 
     it("exclude subagents 安全预过滤", async () => {
@@ -437,10 +437,10 @@ describe("Scope 能力发现与过滤", () => {
     it("permissions 部分维度缺失时缺失维度按 deny all 处理", async () => {
       const scope = await makeScope();
       const result = scope.filter(makeDef({
-        tools: { allow: ["readFile"] },
+        tools: { allow: ["read"] },
         // skills, mcps, subagents 缺失
       } as AgentPermissions));
-      expect(result.tools).toContain("readFile");
+      expect(result.tools).toContain("read");
       expect(result.skills).toEqual([]);
       expect(result.mcps).toEqual([]);
       expect(result.subagents).toEqual([]);
@@ -474,13 +474,13 @@ describe("Scope 能力发现与过滤", () => {
     it("只实例化过滤后的内置工具", async () => {
       const scope = await makeScope();
       const result = scope.instantiate({
-        tools: ["readFile", "writeFile"],
+        tools: ["read", "write"],
         subagents: [],
         skills: [],
         mcps: [],
       });
       const names = result.map((t) => t.function.name);
-      expect(names).toEqual(["readFile", "writeFile"]);
+      expect(names).toEqual(["read", "write"]);
     });
 
     it("实例化 SubAgent 工具", async () => {
@@ -520,12 +520,12 @@ describe("Scope 能力发现与过滤", () => {
       });
       const tools = scope.buildTools(makeDef(ALLOW_ALL));
       const names = tools.map((t) => t.function.name);
-      expect(names).toContain("readFile");
+      expect(names).toContain("read");
       expect(names).toContain("agent_one");
       expect(names).toContain("load_skill");
     });
 
-    it("buildTools: 非视觉模型剔除 viewImage，视觉模型保留", async () => {
+    it("buildTools: 非视觉模型剔除 view_image，视觉模型保留", async () => {
       const config: AppConfig = {
         defaultModel: "gpt4",
         endpoints: [],
@@ -536,26 +536,26 @@ describe("Scope 能力发现与过滤", () => {
       };
       const scope = await makeScope({ config });
 
-      // 不传 modelId：viewImage 无法确认视觉能力 → 被过滤
+      // 不传 modelId：view_image 无法确认视觉能力 → 被过滤
       const noModel = scope.buildTools(makeDef(ALLOW_ALL));
-      expect(noModel.map((t) => t.function.name)).not.toContain("viewImage");
+      expect(noModel.map((t) => t.function.name)).not.toContain("view_image");
 
-      // 非视觉模型：剔除 viewImage
+      // 非视觉模型：剔除 view_image
       const nonVision = scope.buildTools(makeDef(ALLOW_ALL, "gpt4"));
-      expect(nonVision.map((t) => t.function.name)).not.toContain("viewImage");
+      expect(nonVision.map((t) => t.function.name)).not.toContain("view_image");
 
-      // 视觉模型：保留 viewImage
+      // 视觉模型：保留 view_image
       const vision = scope.buildTools(makeDef(ALLOW_ALL, "vision"));
-      expect(vision.map((t) => t.function.name)).toContain("viewImage");
+      expect(vision.map((t) => t.function.name)).toContain("view_image");
     });
 
-    it("buildTools: generateImage 仅当配置了 defaultImageModel 时可用", async () => {
-      // 未配置图片模型：generateImage 不可用
+    it("buildTools: generate_image 仅当配置了 defaultImageModel 时可用", async () => {
+      // 未配置图片模型：generate_image 不可用
       const scope = await makeScope();
       const noImg = scope.buildTools(makeDef(ALLOW_ALL, "gpt4"));
-      expect(noImg.map((t) => t.function.name)).not.toContain("generateImage");
+      expect(noImg.map((t) => t.function.name)).not.toContain("generate_image");
 
-      // 配置了 defaultImageModel：generateImage 可用
+      // 配置了 defaultImageModel：generate_image 可用
       const imgConfig: AppConfig = {
         defaultModel: "gpt4",
         endpoints: [{ id: "zhipu", name: "智谱", baseUrl: "https://open.bigmodel.cn/api/paas/v4", apiKey: "sk-xxx" }],
@@ -565,7 +565,7 @@ describe("Scope 能力发现与过滤", () => {
       };
       const scope2 = await makeScope({ config: imgConfig });
       const withImg = scope2.buildTools(makeDef(ALLOW_ALL, "gpt4"));
-      expect(withImg.map((t) => t.function.name)).toContain("generateImage");
+      expect(withImg.map((t) => t.function.name)).toContain("generate_image");
     });
 
     it("支持 exclude 选项", async () => {
@@ -606,15 +606,15 @@ describe("Scope 能力发现与过滤", () => {
 
   describe("dedupTools — 去重", () => {
     it("后注册覆盖先注册（用户工具覆盖同名内置工具）", async () => {
-      writeUserTool("readFile");
+      writeUserTool("read");
       const scope = await makeScope({ toolsPaths: [join(tmpDir, "tools")] });
       const result = scope.instantiate({
-        tools: ["readFile"],
+        tools: ["read"],
         subagents: [],
         skills: [],
         mcps: [],
       });
-      const readFiles = result.filter((t) => t.function.name === "readFile");
+      const readFiles = result.filter((t) => t.function.name === "read");
       expect(readFiles).toHaveLength(1);
     });
 
@@ -624,12 +624,12 @@ describe("Scope 能力发现与过滤", () => {
         .use(new BuiltinToolsScopePlugin());
       await scope.init();
       const result = scope.instantiate({
-        tools: ["readFile"],
+        tools: ["read"],
         subagents: [],
         skills: [],
         mcps: [],
       });
-      const readFiles = result.filter((t) => t.function.name === "readFile");
+      const readFiles = result.filter((t) => t.function.name === "read");
       expect(readFiles).toHaveLength(1);
     });
   });

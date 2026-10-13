@@ -25,7 +25,7 @@ const DEFAULT_MAX_LINE_LENGTH = 200;
 
 export class FindTextTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
-    name: "findText",
+    name: "find_text",
     description:
       "查找文本出现的位置，支持普通文本或正则匹配，返回文件名及具体行号、行内容。为避免结果撑爆上下文，默认限制总匹配数、单文件大小与行内容长度，超限会截断并标记 truncated。",
     parameters: {
@@ -127,7 +127,7 @@ export class FindTextTool extends SdkCallbackTool {
         if (stats.size > maxFileSize) continue;
 
         const content = await fsp.readFile(fullPath, "utf-8");
-        if (signal?.aborted) break; // 中断：readFile 后再次检查
+        if (signal?.aborted) break; // 中断：read 后再次检查
 
         const lines = content.split("\n");
         const matches: MatchItem[] = [];
@@ -184,7 +184,7 @@ export class FindTextTool extends SdkCallbackTool {
   private async protect(json: string): Promise<string> {
     const limit = this.env.config.maxToolOutput ?? DEFAULT_MAX_TOOL_OUTPUT;
     return await guardOutput({
-      tool: "findText",
+      tool: "find_text",
       content: json,
       isOverLimit: (text) => text.length > limit,
       dump: (_dir, text) => [{ name: "result.json", content: text }],
@@ -194,7 +194,7 @@ export class FindTextTool extends SdkCallbackTool {
           outputTooLarge: true,
           warning:
             `输出过大：结果共 ${json.length} 字符，超过上限 ${limit} 字符。` +
-            `完整结果已落盘（result.json），可用 readFile 分批读取。`,
+            `完整结果已落盘（result.json），可用 read 分批读取。`,
           files: ctx.files,
           chars: json.length,
           ...preview,

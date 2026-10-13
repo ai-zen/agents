@@ -46,7 +46,7 @@ const tool = new GenerateImageTool(makeEnv(process.cwd(), mockConfig));
 
 describe("GenerateImageTool", () => {
   it("工具名称和描述正确", () => {
-    expect(tool.function.name).toBe("generateImage");
+    expect(tool.function.name).toBe("generate_image");
     expect(tool.function.description).toContain("生成图片");
   });
 
@@ -124,15 +124,15 @@ describe("GenerateImageTool", () => {
     expect(parsed.error).toContain("中断");
   });
 
-  it("生成成功统一返回 JSON 字符串（图片 URL + viewImage/downloadFile 提示）", async () => {
+  it("生成成功统一返回 JSON 字符串（图片 URL + view_image/download_file 提示）", async () => {
     const result = await tool.call({ prompt: "a cat" });
 
     expect(typeof result).toBe("string");
     const parsed = JSON.parse(result);
     expect(parsed.success).toBe(true);
     expect(parsed.images).toEqual([{ index: 0, url: "https://cdn.example/img.png" }]);
-    expect(parsed.note).toContain("viewImage");
-    expect(parsed.note).toContain("downloadFile");
+    expect(parsed.note).toContain("view_image");
+    expect(parsed.note).toContain("download_file");
     expect(mockImagesGenerate).toHaveBeenCalledWith(
       expect.objectContaining({ model: "cogview-4", prompt: "a cat" }),
       expect.anything(),

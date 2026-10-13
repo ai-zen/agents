@@ -11,7 +11,7 @@ interface Replacement {
 
 export class BatchEditTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
-    name: "batchEdit",
+    name: "batch_edit",
     description: "批量编辑文件文本，可以优先使用这个工具对文件进行编辑",
     parameters: {
       type: "object",

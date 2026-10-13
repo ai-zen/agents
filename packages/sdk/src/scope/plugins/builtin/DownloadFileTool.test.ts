@@ -17,7 +17,7 @@ describe("DownloadFileTool", () => {
 
   it("工具名称和描述正确", () => {
     const tool = new DownloadFileTool(makeEnv());
-    expect(tool.function.name).toBe("downloadFile");
+    expect(tool.function.name).toBe("download_file");
     expect(tool.function.description).toContain("下载文件");
   });
 

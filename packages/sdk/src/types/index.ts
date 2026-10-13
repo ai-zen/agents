@@ -47,7 +47,7 @@ export interface Model {
   /** 旧版字符数阈值（兼容迁移） */
   maxContextChars?: number;
   defaultParams?: Record<string, unknown>; // 模型默认参数（temperature 等）
-  /** 是否支持图片输入（视觉模型）。看图工具（viewImage）仅对视觉模型启用；generateImage 是否返回图片内容块也据此判断 */
+  /** 是否支持图片输入（视觉模型）。看图工具（view_image）仅对视觉模型启用；generate_image 是否返回图片内容块也据此判断 */
   vision?: boolean;
   description?: string; // 描述
   version?: number;
@@ -123,7 +123,7 @@ export interface AppConfig {
    *
    * 工具本次输出超过该值时，由工具自身的保护策略处置（落盘或仅警告），
    * 避免超长输出撑爆上下文。仅作用于"输出"，与工具的读取阈值无关
-   * （如 readFile/findText 对 300KB 文件的读取上限）。
+   * （如 read/find_text 对 300KB 文件的读取上限）。
    */
   maxToolOutput?: number;
 }
@@ -134,7 +134,7 @@ export interface AppConfig {
  * 工具环境 — Scope 的能力插件在实例化内置工具时注入的环境信息。
  *
  * cwd 是相对路径解析的基准（每个 Scope 对应一个工作目录）；
- * config 供需要模型/端点配置的工具（如 generateImage）使用。
+ * config 供需要模型/端点配置的工具（如 generate_image）使用。
  */
 export interface ToolEnv {
   /** 当前工作目录 */

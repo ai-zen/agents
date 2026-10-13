@@ -27,7 +27,7 @@
     }
   },
   "permissions": {
-    "tools": { "allow": ["readFile", "writeFile"] },
+    "tools": { "allow": ["read", "write"] },
     "skills": { "allow": ["*"] },
     "subagents": { "deny": ["*"] }
   },

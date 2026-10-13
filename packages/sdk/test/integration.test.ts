@@ -38,7 +38,7 @@ describe("集成：端到端 Agent 组装", () => {
       name: "My Agent",
       messages: [{ role: "system", content: "你是一个专业的代码助手。" }],
       permissions: {
-        tools: { allow: ["readFile", "exec", "glob", "findText"] },
+        tools: { allow: ["read", "exec", "glob", "find_text"] },
         skills: { allow: ["code-review"] },
         mcps: { deny: ["*"] },
         subagents: { allow: ["sub_agent_default"] },
@@ -76,17 +76,17 @@ describe("集成：端到端 Agent 组装", () => {
     const agent = await createAgent(scope, "my-agent");
 
     expect(agent.definition.permissions).toBeDefined();
-    expect(agent.definition.permissions!.tools).toEqual({ allow: ["readFile", "exec", "glob", "findText"] });
+    expect(agent.definition.permissions!.tools).toEqual({ allow: ["read", "exec", "glob", "find_text"] });
 
     expect(agent.messages[0].content).toBe("你是一个专业的代码助手。");
 
     const toolNames = agent.tools.map((t: Tool) => t.function.name);
-    expect(toolNames).toContain("readFile");
+    expect(toolNames).toContain("read");
     expect(toolNames).toContain("exec");
     expect(toolNames).toContain("glob");
-    expect(toolNames).toContain("findText");
+    expect(toolNames).toContain("find_text");
     expect(toolNames).not.toContain("rm");
-    expect(toolNames).not.toContain("writeFile");
+    expect(toolNames).not.toContain("write");
 
     // subagents: allow: ["sub_agent_default"]
     expect(toolNames).toContain("sub_agent_default");

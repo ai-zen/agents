@@ -22,7 +22,7 @@ function cleanUp(filePath: string): void {
 describe("BatchEditTool", () => {
   it("工具名称和描述正确", () => {
     const tool = new BatchEditTool(makeEnv());
-    expect(tool.function.name).toBe("batchEdit");
+    expect(tool.function.name).toBe("batch_edit");
     expect(tool.function.description).toContain("批量编辑文件文本");
   });
 

@@ -17,7 +17,7 @@ export class IndexedSearchTool implements Tool {
     this.type = options.type ?? "function";
     this.entries = options.entries ?? [];
     this.function = {
-      name: "indexedSearch",
+      name: "indexed_search",
       description: `You can use this function to query the following relevant information`,
       parameters: {
         type: "object",

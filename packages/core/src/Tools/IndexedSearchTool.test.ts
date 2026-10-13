@@ -11,8 +11,8 @@ function createMockAgent(): Agent {
 function createMockCtx(agent: Agent, parsedArgs: any): ToolCallContext {
   return new ToolCallContext({
     agent,
-    tool_call: { function: { name: "indexedSearch", arguments: JSON.stringify(parsedArgs) } },
-    resultMessage: Message.Tool({ id: "1", function: { name: "indexedSearch" } }),
+    tool_call: { function: { name: "indexed_search", arguments: JSON.stringify(parsedArgs) } },
+    resultMessage: Message.Tool({ id: "1", function: { name: "indexed_search" } }),
   });
 }
 
@@ -45,8 +45,8 @@ describe("IndexedSearchTool", () => {
     // 模拟 GPT 有时会传入字符串而非数组
     const ctx = new ToolCallContext({
       agent,
-      tool_call: { function: { name: "indexedSearch", arguments: JSON.stringify({ keywords: "weather" }) } },
-      resultMessage: Message.Tool({ id: "1", function: { name: "indexedSearch" } }),
+      tool_call: { function: { name: "indexed_search", arguments: JSON.stringify({ keywords: "weather" }) } },
+      resultMessage: Message.Tool({ id: "1", function: { name: "indexed_search" } }),
     });
 
     const result = await tool.exec(ctx);
@@ -79,7 +79,7 @@ describe("IndexedSearchTool", () => {
 
   it("构造函数应自动生成 function 定义", () => {
     const tool = new IndexedSearchTool({ entries });
-    expect(tool.function.name).toBe("indexedSearch");
+    expect(tool.function.name).toBe("indexed_search");
     expect(tool.function.parameters.properties?.keywords).toBeDefined();
     // 应包含所有唯一关键词作为 enum
     const enumValues = (tool.function.parameters.properties!.keywords as any).items.enum;

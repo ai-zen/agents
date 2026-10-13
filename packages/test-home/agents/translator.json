@@ -9,7 +9,7 @@
     }
   ],
   "permissions": {
-    "tools": { "allow": ["readFile", "writeFile", "exec"] },
+    "tools": { "allow": ["read", "write", "exec"] },
     "skills": { "deny": ["*"] },
     "mcps": { "deny": ["*"] },
     "subagents": { "deny": ["*"] }

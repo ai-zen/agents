@@ -203,7 +203,7 @@ Agent.permissions
 
 典型配置：
 
-- `allow: ["readFile", "exec"]` → 只有这两个可用（白名单）
+- `allow: ["read", "exec"]` → 只有这两个可用（白名单）
 - `deny: ["rm"]` → 除 rm 外全可用（黑名单）
 - `allow: ["*"]` → 全开
 - `deny: ["*"]` → 全关
@@ -798,9 +798,9 @@ export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> 
 | 工具 | 说明 |
 |------|------|
 | `cwd` | 获取当前工作目录（`env.cwd`） |
-| `readFile` | 读取文件（>300KB 拒绝）；可选 `range` 按行列范围读取；输出超限仅警告 |
-| `inspectFile` | 勘察文件结构概况；流式扫描，不受 300KB 限制 |
-| `writeFile` | 写入文件（自动建父目录） |
+| `read` | 读取文件（>300KB 拒绝）；可选 `range` 按行列范围读取；输出超限仅警告 |
+| `inspect_file` | 勘察文件结构概况；流式扫描，不受 300KB 限制 |
+| `write` | 写入文件（自动建父目录） |
 | `exec` | 执行命令（`timeout` 必填）；超限时分文件落盘 `stdout.log` / `stderr.log` |
 | `exec_async` | 异步执行命令，启动后立即返回；全平台经 shell 解析 |
 | `mkdir` | 创建目录（`recursive`） |
@@ -808,22 +808,22 @@ export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> 
 | `glob` | glob 模式扫描；输出超限落盘 `result.json` |
 | `ls` | 列出目录内容；输出超限落盘 |
 | `exist` | 检查文件或目录是否存在 |
-| `findText` | 在文件中搜索文本或正则；输出超限落盘 |
-| `downloadFile` | 从 URL 下载文件并保存 |
+| `find_text` | 在文件中搜索文本或正则；输出超限落盘 |
+| `download_file` | 从 URL 下载文件并保存 |
 | `rename` | 重命名或移动文件/目录 |
 | `copy` | 复制文件或目录 |
-| `batchEdit` | 批量替换文件文本 |
+| `batch_edit` | 批量替换文件文本 |
 | `edit` | 单次替换文件文本 |
 | `sleep` | 等待指定毫秒数 |
-| `generateImage` | 生成图片；`isAvailable` 声明**依赖 `config.defaultImageModel`** |
-| `viewImage` | 查看图片；`isAvailable` 声明**仅视觉模型可用**（`Model.vision === true`） |
+| `generate_image` | 生成图片；`isAvailable` 声明**依赖 `config.defaultImageModel`** |
+| `view_image` | 查看图片；`isAvailable` 声明**仅视觉模型可用**（`Model.vision === true`） |
 
 ### 输出保护（`maxToolOutput` + `guardOutput`）
 
 - **上限配置**：`AppConfig.maxToolOutput`（字符数，缺省 32768）。仅 CONFIG 层可配。
 - **骨架**：`guardOutput({ tool, content, isOverLimit, dump?, buildWarning })`——工具自陈策略，骨架负责判定与落盘。
 - **落盘目录**：`<os.tmpdir()>/ai-zen/tool-output/<tool>-<时间戳>-<随机串>/`。
-- **已接入**：`exec`、`findText` / `glob` / `ls`、`readFile`、`inspectFile`。
+- **已接入**：`exec`、`find_text` / `glob` / `ls`、`read`、`inspect_file`。
 - **读取阈值与输出阈值互相独立**：300KB 是"能否读取"，`maxToolOutput` 是"是否落盘"。
 
 ---

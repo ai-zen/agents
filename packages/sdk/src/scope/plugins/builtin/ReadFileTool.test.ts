@@ -23,7 +23,7 @@ function cleanUp(filePath: string): void {
 describe("ReadFileTool", () => {
   it("工具名称和描述正确", () => {
     const tool = new ReadFileTool(makeEnv());
-    expect(tool.function.name).toBe("readFile");
+    expect(tool.function.name).toBe("read");
     expect(tool.function.description).toBe("读取文件");
   });
 

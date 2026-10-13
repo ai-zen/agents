@@ -131,7 +131,7 @@ export class ExecTool extends SdkCallbackTool {
           outputTooLarge: true,
           warning:
             `输出过大：stdout + stderr 合计 ${result.stdout.length + result.stderr.length} 字符，` +
-            `超过上限 ${limit} 字符。完整内容已分文件落盘（stdout.log / stderr.log），可用 readFile 分批读取。`,
+            `超过上限 ${limit} 字符。完整内容已分文件落盘（stdout.log / stderr.log），可用 read 分批读取。`,
           files: ctx.files,
           stdout: { chars: result.stdout.length, lines: countLines(result.stdout), ...stdout },
           stderr: { chars: result.stderr.length, lines: countLines(result.stderr), ...stderr },

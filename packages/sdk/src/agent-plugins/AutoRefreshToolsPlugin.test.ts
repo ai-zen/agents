@@ -69,7 +69,7 @@ describe("AutoRefreshToolsPlugin", () => {
   });
 
   it("buildTools 的结果赋值给 agent.tools", async () => {
-    const fakeTools = [{ function: { name: "readFile" } }] as any;
+    const fakeTools = [{ function: { name: "read" } }] as any;
     const scope = mockScope();
     scope.buildTools = vi.fn().mockReturnValue(fakeTools);
     const agent = createTestAgent({ scope });
@@ -84,7 +84,7 @@ describe("AutoRefreshToolsPlugin", () => {
 
   it("传入 definition（含 permissions）给 buildTools", async () => {
     const scope = mockScope();
-    const permissions = { tools: { allow: ["readFile"] } };
+    const permissions = { tools: { allow: ["read"] } };
     const agent = createTestAgent({ scope, permissions });
     const plugin = new AutoRefreshToolsPlugin();
     const ctx = { agent, content: "hello", messages: agent.messages };

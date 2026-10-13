@@ -1,9 +1,9 @@
 /**
- * viewImage 端到端测试（需真实 DeepSeek API Key）。
+ * view_image 端到端测试（需真实 DeepSeek API Key）。
  *
  * 覆盖两条真实链路：
  *   1. 工具链路：ViewImageTool 直接调用 → 本地图片经 Files API 上传 → file 内容块（retrieve 验证有效）
- *   2. Agent 链路：视觉模型 Agent 主动调用 viewImage 查看本地图片并描述内容
+ *   2. Agent 链路：视觉模型 Agent 主动调用 view_image 查看本地图片并描述内容
  *
  * 测试图片为测试内实时生成的简单 PNG（白底红圆，Node zlib 编码），
  * 自包含、无二进制资源、不依赖网络下载。
@@ -183,22 +183,22 @@ const DEFINITION = (modelId: string, id: string, name: string) => ({
 // 测试
 // ---------------------------------------------------------------------------
 
-describe.runIf(!skip)("viewImage 端到端（真实 DeepSeek API）", () => {
+describe.runIf(!skip)("view_image 端到端（真实 DeepSeek API）", () => {
   // Scope 装配用例依赖内置工具候选集，先 init 填充
   beforeAll(async () => {
     await scope.init();
   });
 
-  it("Scope 装配：仅视觉模型注入 viewImage", () => {
-    // 视觉模型 → 工具列表含 viewImage
+  it("Scope 装配：仅视觉模型注入 view_image", () => {
+    // 视觉模型 → 工具列表含 view_image
     const visionTools = scope.buildTools(DEFINITION(VISION_MODEL_ID, "v", "V"));
-    expect(visionTools.map((t) => t.function.name)).toContain("viewImage");
+    expect(visionTools.map((t) => t.function.name)).toContain("view_image");
 
-    // 非视觉模型 → 不含 viewImage
+    // 非视觉模型 → 不含 view_image
     const textTools = scope.buildTools(
       DEFINITION("deepseek-v4-pro", "t", "T"),
     );
-    expect(textTools.map((t) => t.function.name)).not.toContain("viewImage");
+    expect(textTools.map((t) => t.function.name)).not.toContain("view_image");
   });
 
   it("工具链路：本地简单图片经 Files API 上传并返回有效 file 块", async () => {
@@ -207,7 +207,7 @@ describe.runIf(!skip)("viewImage 端到端（真实 DeepSeek API）", () => {
       // 从 BUILTIN_TOOL_CLASSES 装配（走真实 env）
       const tool = BUILTIN_TOOL_CLASSES.map(
         (Cls) => new Cls(scope.env),
-      ).find((t) => t.function.name === "viewImage") as ViewImageTool;
+      ).find((t) => t.function.name === "view_image") as ViewImageTool;
 
       const result = await tool.call({ path_or_url: imgPath });
       expect(Array.isArray(result)).toBe(true);
@@ -239,13 +239,13 @@ describe.runIf(!skip)("viewImage 端到端（真实 DeepSeek API）", () => {
     }
   }, 30_000);
 
-  it("Agent 链路：视觉 Agent 调用 viewImage 查看本地图片并描述内容", async () => {
+  it("Agent 链路：视觉 Agent 调用 view_image 查看本地图片并描述内容", async () => {
     const imgPath = await writeTempImage();
     try {
       const model = createModel(scope, VISION_MODEL_ID);
       const viewImageTool = BUILTIN_TOOL_CLASSES.map(
         (Cls) => new Cls(scope.env),
-      ).find((t) => t.function.name === "viewImage")!;
+      ).find((t) => t.function.name === "view_image")!;
 
       const agent = new SdkAgent({
         scope,
@@ -257,21 +257,21 @@ describe.runIf(!skip)("viewImage 端到端（真实 DeepSeek API）", () => {
           {
             role: "system",
             content:
-              "你是一个视觉助手。必须使用 viewImage 工具查看用户给出的图片路径，然后用中文描述图片中的颜色和形状。",
+              "你是一个视觉助手。必须使用 view_image 工具查看用户给出的图片路径，然后用中文描述图片中的颜色和形状。",
           },
         ],
         tools: [viewImageTool],
       });
 
       const messages = await agent.send(
-        `请使用 viewImage 工具查看这张图片：${imgPath}，然后告诉我图片的内容。`,
+        `请使用 view_image 工具查看这张图片：${imgPath}，然后告诉我图片的内容。`,
       );
 
-      // 1. 链路完整性：消息历史中应出现 viewImage 工具调用与工具结果
+      // 1. 链路完整性：消息历史中应出现 view_image 工具调用与工具结果
       const toolCalled = messages.some(
         (m) =>
           m.role === "assistant" &&
-          m.tool_calls?.some((tc) => tc.function?.name === "viewImage"),
+          m.tool_calls?.some((tc) => tc.function?.name === "view_image"),
       );
       const hasToolResult = messages.some(
         (m) => m.role === "tool" || m.role === "function",
@@ -295,7 +295,7 @@ describe.runIf(!skip)("viewImage 端到端（真实 DeepSeek API）", () => {
 });
 
 // 无 API Key 时的占位测试
-describe.skipIf(!skip)("viewImage 端到端（跳过 — 未配置 API Key）", () => {
+describe.skipIf(!skip)("view_image 端到端（跳过 — 未配置 API Key）", () => {
   it("占位", () => {
     expect(true).toBe(true);
   });

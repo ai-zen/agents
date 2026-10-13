@@ -28,8 +28,8 @@ LLM API / MCP servers (openai SDK / @modelcontextprotocol/sdk)
 
 | Package | Version | Responsibility |
 |----|------|------|
-| `@ai-zen/agents-core` | 4.3.1 | `Agent` / `Message` / `Tool` / `ToolCallContext`, plugin mechanism (`AgentPlugin` + `HookResult` + `dispatchHook`), event system |
-| `@ai-zen/agents-sdk` | 1.0.0-alpha.4 | `Scope` global context, capability pipeline (discover → filter → instantiate), permission model, MCP lifecycle, task migration, built-in tools, `ConfigManager` |
+| `@ai-zen/agents-core` | 4.3.2 | `Agent` / `Message` / `Tool` / `ToolCallContext`, plugin mechanism (`AgentPlugin` + `HookResult` + `dispatchHook`), event system |
+| `@ai-zen/agents-sdk` | 1.0.0-alpha.5 | `Scope` global context, capability pipeline (discover → filter → instantiate), permission model, MCP lifecycle, task migration, built-in tools, `ConfigManager` |
 
 > The workspace root package `@ai-zen/agents-workspace` is private and version `2.0.0`. This version number is not consistent with the independent versions of the two public subpackages; it is only used for workspace orchestration.
 

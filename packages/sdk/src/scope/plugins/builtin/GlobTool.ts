@@ -78,7 +78,7 @@ export class GlobTool extends SdkCallbackTool {
           outputTooLarge: true,
           warning:
             `输出过大：匹配结果共 ${json.length} 字符，超过上限 ${limit} 字符。` +
-            `完整结果已落盘（result.json），可用 readFile 分批读取；` +
+            `完整结果已落盘（result.json），可用 read 分批读取；` +
             `也可用更精确的 pattern 或 exclude 缩小范围后重新查找。`,
           files: ctx.files,
           chars: json.length,

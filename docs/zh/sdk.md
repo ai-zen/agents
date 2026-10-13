@@ -94,22 +94,22 @@ Agent.permissions
 
 | 工具 | 说明 |
 |------|------|
-| `cwd` / `readFile` / `inspectFile` / `writeFile` / `mkdir` / `rm` / `glob` / `ls` / `exist` / `rename` / `copy` / `findText` | 文件系统操作（`readFile` 可选 `range` 按行列范围读取；`inspectFile` 返回文件结构概况，流式扫描不受 300KB 限制） |
+| `cwd` / `read` / `inspect_file` / `write` / `mkdir` / `rm` / `glob` / `ls` / `exist` / `rename` / `copy` / `find_text` | 文件系统操作（`read` 可选 `range` 按行列范围读取；`inspect_file` 返回文件结构概况，流式扫描不受 300KB 限制） |
 | `exec` / `exec_async` | 执行命令（`exec` 支持 `timeout`；`exec_async` 异步立即返回，支持 shell 重定向/管道） |
-| `downloadFile` | 从 URL 下载并保存 |
-| `batchEdit` / `edit` | 批量 / 单次替换文件文本（`batchEdit` 仅回显未匹配项） |
+| `download_file` | 从 URL 下载并保存 |
+| `batch_edit` / `edit` | 批量 / 单次替换文件文本（`batch_edit` 仅回显未匹配项） |
 | `sleep` | 等待指定毫秒 |
 
 按配置 / 模型条件注入的工具：
 
 | 工具 | 注入条件 |
 |------|----------|
-| `generateImage` | 仅当配置了 `defaultImageModel` |
-| `viewImage` | 仅视觉模型（该 Agent 的 `modelId` 解析到 `Model.vision === true`） |
+| `generate_image` | 仅当配置了 `defaultImageModel` |
+| `view_image` | 仅视觉模型（该 Agent 的 `modelId` 解析到 `Model.vision === true`） |
 
 工具的可用性由各工具自己的 `isAvailable(config, definition)` 声明，在 `buildTools` / `filter` 阶段过滤；发现层不做任何过滤。
 
-工具输出保护：`AppConfig.maxToolOutput`（字符数，缺省 32768）是输出统一上限，超限时由各工具自行处置——`exec` 分文件落盘 `stdout.log` / `stderr.log`（返回各流头尾预览），`findText` / `glob` / `ls` 落盘 `result.json`（返回头部预览），`readFile` 仅警告并提示用 `range` 分批读取。落盘目录为 `<tmpdir>/ai-zen/tool-output/<工具名>-<时间戳>-<随机串>/`，每次调用独立。注意 300KB 是**读取**阈值（能否读），与输出阈值是两回事。
+工具输出保护：`AppConfig.maxToolOutput`（字符数，缺省 32768）是输出统一上限，超限时由各工具自行处置——`exec` 分文件落盘 `stdout.log` / `stderr.log`（返回各流头尾预览），`find_text` / `glob` / `ls` 落盘 `result.json`（返回头部预览），`read` 仅警告并提示用 `range` 分批读取。落盘目录为 `<tmpdir>/ai-zen/tool-output/<工具名>-<时间戳>-<随机串>/`，每次调用独立。注意 300KB 是**读取**阈值（能否读），与输出阈值是两回事。
 
 `SdkCallbackTool` 抽象基类：
 

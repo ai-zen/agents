@@ -90,7 +90,7 @@ interface Model {
   maxContextTokens: number;      // 上下文窗口 token 上限
   maxContextChars?: number;      // 旧版字符数阈值（兼容迁移）
   defaultParams?: Record<string, unknown>;
-  vision?: boolean;              // 是否支持图片输入（视觉模型）：viewImage 据此启用，generateImage 据此决定返回图片块
+  vision?: boolean;              // 是否支持图片输入（视觉模型）：view_image 据此启用，generate_image 据此决定返回图片块
   description?: string; version?: number;
 }
 
@@ -169,7 +169,7 @@ Agent.permissions
 4. **无命中 = 拒绝**：name 不在 allow 列表 → 拒绝；name 在 deny 列表 → 拒绝
 
 典型配置：
-- `allow: ["readFile", "exec"]` → 只有这两个可用（白名单）
+- `allow: ["read", "exec"]` → 只有这两个可用（白名单）
 - `deny: ["rm"]` → 除 rm 外全可用（黑名单）
 - `allow: ["*"]` → 全开
 - `deny: ["*"]` → 全关
@@ -177,7 +177,7 @@ Agent.permissions
 ### 匹配
 
 - 通配符 `*` 匹配任意字符串
-- `tools` 按工具名称匹配（如 `"rm"`、`"readFile"`）
+- `tools` 按工具名称匹配（如 `"rm"`、`"read"`）
 - `skills` 按 skill id 匹配（如 `"my-skill"`）
 - `mcps` 按 server 名匹配（如 `"github"`、`"postgres"`）
 - `subagents` 按 `function.name` 匹配（如 `"sub_agent_default"`）
@@ -409,9 +409,9 @@ export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> 
 | 工具 | 说明 |
 |------|------|
 | `cwd` | 获取当前工作目录（`env.cwd`） |
-| `readFile` | 读取文件（>300KB 拒绝）；可选 `range: [起始行, 起始列, 结束行, 结束列]` 按行列范围读取（0-based，`-1` 表末位）；输出超限仅警告（不落盘），提示用 `range` 分批读取 |
-| `inspectFile` | 勘察文件结构概况（`bytes` / `lines` / `chars` / `maxCol` / `lineIndexOfMaxCol` / `avgCol` / `lineEnding`）；流式扫描，不受 300KB 限制；可选 `withColCountMap` 返回行索引→列数映射 |
-| `writeFile` | 写入文件（自动建父目录） |
+| `read` | 读取文件（>300KB 拒绝）；可选 `range: [起始行, 起始列, 结束行, 结束列]` 按行列范围读取（0-based，`-1` 表末位）；输出超限仅警告（不落盘），提示用 `range` 分批读取 |
+| `inspect_file` | 勘察文件结构概况（`bytes` / `lines` / `chars` / `maxCol` / `lineIndexOfMaxCol` / `avgCol` / `lineEnding`）；流式扫描，不受 300KB 限制；可选 `withColCountMap` 返回行索引→列数映射 |
+| `write` | 写入文件（自动建父目录） |
 | `exec` | 执行命令（`timeout` 必填，超时被终止时返回 `terminated: "timeout"` 明确告知 agent；`cwd` 为 `env.cwd`；stdout+stderr 合计超限时分文件落盘 `stdout.log` / `stderr.log`） |
 | `exec_async` | 异步执行命令，启动后立即返回；全平台经 shell 解析，支持重定向（`>` / `>>`）、管道（`|`）等 shell 语法 |
 | `mkdir` | 创建目录（`recursive`） |
@@ -419,17 +419,17 @@ export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> 
 | `glob` | glob 模式扫描（`path` 参数 resolve 到 `env.cwd`；输出超限落盘 `result.json`） |
 | `ls` | 列出目录内容（输出超限落盘 `result.json`） |
 | `exist` | 检查文件或目录是否存在 |
-| `findText` | 在文件中搜索文本或正则（输出超限落盘 `result.json`） |
-| `downloadFile` | 从 URL 下载文件并保存 |
+| `find_text` | 在文件中搜索文本或正则（输出超限落盘 `result.json`） |
+| `download_file` | 从 URL 下载文件并保存 |
 | `rename` | 重命名或移动文件/目录 |
 | `copy` | 复制文件或目录 |
-| `batchEdit` | 批量替换文件文本（仅回显未匹配项，成功项只计数） |
+| `batch_edit` | 批量替换文件文本（仅回显未匹配项，成功项只计数） |
 | `edit` | 单次替换文件文本 |
 | `sleep` | 等待指定毫秒数 |
 
 ### 输出保护（`maxToolOutput` + `guardOutput`）
 
-工具输出可能无上限（`exec` 的命令输出、`findText` / `glob` / `ls` 的结果集），故统一设防：
+工具输出可能无上限（`exec` 的命令输出、`find_text` / `glob` / `ls` 的结果集），故统一设防：
 
 - **上限配置**：`AppConfig.maxToolOutput`（字符数，缺省 32768，出厂默认已写入）。仅 CONFIG 层可配，不暴露工具参数、不按 Agent 覆盖。
 - **骨架**：`guardOutput({ tool, content, isOverLimit, dump?, buildWarning })`（`builtin/outputGuard.ts`）——工具自陈策略，骨架只负责判定与落盘，返回 `T | string`：未超限返回 `content` 本身，超限返回 `buildWarning` 生成的字符串。
@@ -438,12 +438,12 @@ export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> 
   - `buildWarning(ctx)`：工具生成返回体（含预览与统计）。
 - **落盘目录**：`<os.tmpdir()>/ai-zen/tool-output/<tool>-<时间戳>-<随机串>/`，每次调用独立目录、互不覆盖、不做自清理（依赖系统对临时目录的策略）；落盘失败不吞异常。
 - **预览**：`headPreview()`（仅头部）/ `headTailPreview()`（头尾各 1000 字符）供工具自行组织预览文本。
-- **已接入**：`exec`（`stdout.log` + `stderr.log`，各流头尾预览）、`findText` / `glob` / `ls`（`result.json` + 头部预览）、`readFile`（超限仅警告、不落盘）。`inspectFile` 明细超限时不落盘，仅返回概况 + 提示。
-- **读取阈值与输出阈值互相独立**：300KB 是"能否读取"（`readFile` / `findText` 的文件大小阈值），`maxToolOutput` 是"是否落盘"。
+- **已接入**：`exec`（`stdout.log` + `stderr.log`，各流头尾预览）、`find_text` / `glob` / `ls`（`result.json` + 头部预览）、`read`（超限仅警告、不落盘）。`inspect_file` 明细超限时不落盘，仅返回概况 + 提示。
+- **读取阈值与输出阈值互相独立**：300KB 是"能否读取"（`read` / `find_text` 的文件大小阈值），`maxToolOutput` 是"是否落盘"。
 
 ### GenerateImageTool — 依赖图片模型配置
 
-`GenerateImageTool` 是 `BUILTIN_TOOL_CLASSES` 的一员（构造签名 `(env: ToolEnv)`），通过 `isAvailable(config, definition)` 声明**依赖 `config.defaultImageModel`**，未配置时由 buildTools 过滤。生成成功后**统一返回字符串**（JSON，含图片 URL 列表 + `viewImage` / `downloadFile` 提示）——生成结果如何处理由模型与上层自由决定，不替模型做「看或不看」的假设：需要看图时模型主动调 `viewImage(URL)`，需要保存用 `downloadFile`。
+`GenerateImageTool` 是 `BUILTIN_TOOL_CLASSES` 的一员（构造签名 `(env: ToolEnv)`），通过 `isAvailable(config, definition)` 声明**依赖 `config.defaultImageModel`**，未配置时由 buildTools 过滤。生成成功后**统一返回字符串**（JSON，含图片 URL 列表 + `view_image` / `download_file` 提示）——生成结果如何处理由模型与上层自由决定，不替模型做「看或不看」的假设：需要看图时模型主动调 `view_image(URL)`，需要保存用 `download_file`。
 
 ### ViewImageTool — 主动查看图片
 
@@ -465,7 +465,7 @@ export function discoverBuiltinTools(env: ToolEnv): Tool[] {
 provider.buildTools(definition, { exclude });
 ```
 
-视觉判断收敛在 `ViewImageTool.isAvailable` 一处（按模型 id 匹配 `Model.vision`）；`generateImage` 统一返回字符串，不判断视觉。`Model.vision` 是唯一视觉能力标记。
+视觉判断收敛在 `ViewImageTool.isAvailable` 一处（按模型 id 匹配 `Model.vision`）；`generate_image` 统一返回字符串，不判断视觉。`Model.vision` 是唯一视觉能力标记。
 
 ## 8. 工具装配流程
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## [4.3.2] - 2026-10-13
+
+### 💥 Breaking Changes
+
+- **`IndexedSearchTool` tool name renamed `indexedSearch` → `indexed_search`** — part of a cross-package effort to unify every LLM-facing tool name on `snake_case`. Since a tool name is the API contract the model sees and is matched **verbatim** by the permission system, any `permissions.allow` / `deny` entry, skill `allowed-tools` token or prompt that names this tool must switch to `indexed_search`. The SDK built-in tools are renamed in the same release — see `@ai-zen/agents-sdk` `1.0.0-alpha.5`.
+
 ## [4.3.1] - 2026-10-13
 
 ### 🔧 Fixed

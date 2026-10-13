@@ -28,14 +28,14 @@ interface ScanResult {
 /**
  * 勘察文件结构概况（行数、每行列数等），不做内容读取。
  *
- * 定位与 readFile 的 range 配套：大文件先看结构（有多少行、每行多长），
- * 再决定 readFile 的读取范围。流式扫描，故不受 readFile 的 300KB 读取阈值限制。
+ * 定位与 read 的 range 配套：大文件先看结构（有多少行、每行多长），
+ * 再决定 read 的读取范围。流式扫描，故不受 read 的 300KB 读取阈值限制。
  */
 export class InspectFileTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
-    name: "inspectFile",
+    name: "inspect_file",
     description:
-      "勘察文件的结构概况：总行数、总字符数、最长行的列数及其行索引、平均列数、行尾类型（LF/CRLF）。可选返回每行的列数映射。适用于在 readFile 之前先了解文件规模，再决定用 range 读取哪一段。仅做流式扫描，不受 readFile 的 300KB 读取阈值限制。",
+      "勘察文件的结构概况：总行数、总字符数、最长行的列数及其行索引、平均列数、行尾类型（LF/CRLF）。可选返回每行的列数映射。适用于在 read 之前先了解文件规模，再决定用 range 读取哪一段。仅做流式扫描，不受 read 的 300KB 读取阈值限制。",
     parameters: {
       type: "object",
       properties: {
@@ -93,7 +93,7 @@ export class InspectFileTool extends SdkCallbackTool {
           warning:
             `行长度明细过大：概况与 colCountMap 合计 ${payload.length} 字符，` +
             `超过上限 ${limit} 字符，未落盘返回。文件规模超出可处理范围，` +
-            `建议改用 findText 定位后再按 range 分段读取。`,
+            `建议改用 find_text 定位后再按 range 分段读取。`,
         });
       }
       return payload;

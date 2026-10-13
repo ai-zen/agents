@@ -39,11 +39,11 @@ const tool = new IndexedSearchTool({
 });
 ```
 
-- 工具名：`indexedSearch`
+- 工具名：`indexed_search`
 - 输入：以条目关键词为 `enum` 的参数（当只有一个关键词时，允许模型误传字符串而非数组，`exec` 内会归一化）。
 - 输出：匹配到条目的 `JSON.stringify` 结果。
 
-它并不做向量相似度或语义检索，仅做**关键词命中匹配**。对于需要文件系统搜索的场景，SDK 另有 `findText` / `glob` 等搜索类内置工具。
+它并不做向量相似度或语义检索，仅做**关键词命中匹配**。对于需要文件系统搜索的场景，SDK 另有 `find_text` / `glob` 等搜索类内置工具。
 
 ## 全局检索能力（SDK）
 
@@ -53,8 +53,8 @@ const tool = new IndexedSearchTool({
 
 | 工具 | 来源 | 说明 |
 |------|------|------|
-| `indexedSearch` | core | 关键词本地搜索（`IndexedSearchTool`） |
-| `glob` / `findText` | SDK 内置 | 文件系统通配扫描 / 文本与正则搜索 |
+| `indexed_search` | core | 关键词本地搜索（`IndexedSearchTool`） |
+| `glob` / `find_text` | SDK 内置 | 文件系统通配扫描 / 文本与正则搜索 |
 | `load_skill` / `call_skill_sub_agent` | SDK 动态 | 按需加载 Skill / 以 Skill 启动子 Agent |
 | `load_mcp` / `call_mcp_tool` / `read_mcp_resource` | SDK 动态 | 按需连接 MCP 服务器并调用其工具 / 资源 |
 

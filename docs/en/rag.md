@@ -39,11 +39,11 @@ const tool = new IndexedSearchTool({
 });
 ```
 
-- Tool name: `indexedSearch`
+- Tool name: `indexed_search`
 - Input: a parameter whose `enum` is the entry keywords (when there is only one keyword, the model is allowed to pass a string instead of an array; `exec` normalizes it).
 - Output: the `JSON.stringify` result of the matched entries.
 
-It does not perform vector similarity or semantic retrieval; it only does **keyword hit matching**. For filesystem-search scenarios, the SDK additionally provides search-oriented built-in tools such as `findText` / `glob`.
+It does not perform vector similarity or semantic retrieval; it only does **keyword hit matching**. For filesystem-search scenarios, the SDK additionally provides search-oriented built-in tools such as `find_text` / `glob`.
 
 ## Global retrieval capability (SDK)
 
@@ -53,8 +53,8 @@ The specific retrieval-related tools that may be available (depending on permiss
 
 | Tool | Source | Description |
 |------|------|------|
-| `indexedSearch` | core | keyword local search (`IndexedSearchTool`) |
-| `glob` / `findText` | SDK built-in | filesystem wildcard scan / text & regex search |
+| `indexed_search` | core | keyword local search (`IndexedSearchTool`) |
+| `glob` / `find_text` | SDK built-in | filesystem wildcard scan / text & regex search |
 | `load_skill` / `call_skill_sub_agent` | SDK dynamic | load a Skill on demand / start a sub-Agent with a Skill |
 | `load_mcp` / `call_mcp_tool` / `read_mcp_resource` | SDK dynamic | connect to an MCP server on demand and call its tools / resources |
 

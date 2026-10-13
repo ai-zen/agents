@@ -6,7 +6,7 @@ import type { AgentNS, ToolCallContext } from "@ai-zen/agents-core";
 
 export class DownloadFileTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
-    name: "downloadFile",
+    name: "download_file",
     description:
       "从 URL 下载文件（图片、PDF 等二进制文件）并保存到本地磁盘。自动从 URL 推断文件名，也可指定保存路径。",
     parameters: {

@@ -98,12 +98,12 @@ describe("端到端：真实文件系统路径", () => {
       expect(config.models.find((m) => m.id === "gpt4")?.maxContextTokens).toBe(500000);
     });
 
-    it("discoverBuiltinTools: 有 imageModels 时包含 generateImage", async () => {
+    it("discoverBuiltinTools: 有 imageModels 时包含 generate_image", async () => {
       await checkPaths();
       const config = await new ConfigManager(TEST_CONFIG).read();
       const tools = discoverBuiltinTools({ cwd: TEST_HOME_DIR, config });
       const names = tools.map((t) => t.function.name);
-      expect(names).toContain("generateImage");
+      expect(names).toContain("generate_image");
       expect(names.length).toBeGreaterThan(15);
     });
 
@@ -245,7 +245,7 @@ describe("端到端：真实文件系统路径", () => {
       await checkPaths();
       const agent = await new AgentRepository(TEST_AGENTS_DIR).read("translator");
       expect(agent).not.toBeNull();
-      expect(agent!.permissions?.tools).toEqual({ allow: ["readFile", "writeFile", "exec"] });
+      expect(agent!.permissions?.tools).toEqual({ allow: ["read", "write", "exec"] });
       expect(agent!.permissions?.skills).toEqual({ deny: ["*"] });
       expect(agent!.permissions?.mcps).toEqual({ deny: ["*"] });
       expect(agent!.permissions?.subagents).toEqual({ deny: ["*"] });
@@ -279,7 +279,7 @@ describe("端到端：真实文件系统路径", () => {
       const tools = scope.buildTools(definition);
 
       const names = tools.map((t) => t.function.name);
-      expect(names).toContain("readFile");
+      expect(names).toContain("read");
       expect(names).toContain("exec");
       expect(names).toContain("sub_agent_default");
       expect(names).toContain("code_reviewer");
@@ -296,8 +296,8 @@ describe("端到端：真实文件系统路径", () => {
       const tools = scope.buildTools(definition);
 
       const names = tools.map((t) => t.function.name);
-      expect(names).toContain("readFile");
-      expect(names).toContain("writeFile");
+      expect(names).toContain("read");
+      expect(names).toContain("write");
       expect(names).toContain("exec");
       expect(names).not.toContain("rm");
       expect(names).not.toContain("load_skill");
@@ -332,12 +332,12 @@ describe("端到端：真实文件系统路径", () => {
 
       // 工具
       const names = agent.tools.map((t: Tool) => t.function.name);
-      expect(names).toContain("readFile");
-      expect(names).toContain("writeFile");
+      expect(names).toContain("read");
+      expect(names).toContain("write");
       expect(names).toContain("exec");
       expect(names).toContain("sub_agent_default");
       expect(names).toContain("load_skill");
-      expect(names).toContain("generateImage"); // 有 imageModels 配置
+      expect(names).toContain("generate_image"); // 有 imageModels 配置
     });
 
     it("从真实路径创建 translator（受限权限）", async () => {
@@ -347,8 +347,8 @@ describe("端到端：真实文件系统路径", () => {
       const agent = await createAgent(scope, "translator");
 
       const names = agent.tools.map((t: Tool) => t.function.name);
-      expect(names).toContain("readFile");
-      expect(names).toContain("writeFile");
+      expect(names).toContain("read");
+      expect(names).toContain("write");
       expect(names).toContain("exec");
       expect(names).not.toContain("rm");
       expect(names).not.toContain("sub_agent_default");

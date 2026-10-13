@@ -3,7 +3,7 @@ import { PermissionEvaluator } from "./PermissionEvaluator.js";
 import type { AgentPermissions } from "../types/index.js";
 
 const candidates = {
-  tools: ["readFile", "exec", "rm"],
+  tools: ["read", "exec", "rm"],
   skills: ["code-review", "deploy"],
   mcps: ["github", "slack"],
   subagents: ["sub_agent_default", "code-reviewer"],
@@ -35,7 +35,7 @@ describe("PermissionEvaluator", () => {
     const evaluator = new PermissionEvaluator(permissions);
     const result = evaluator.filter(candidates);
 
-    expect(result.tools).toEqual(["readFile", "exec", "rm"]);
+    expect(result.tools).toEqual(["read", "exec", "rm"]);
     expect(result.skills).toEqual([]);
     expect(result.mcps).toEqual([]);
     expect(result.subagents).toEqual([]);
@@ -44,7 +44,7 @@ describe("PermissionEvaluator", () => {
   describe("四维度独立过滤", () => {
     it("各维度互不干扰", () => {
       const permissions: AgentPermissions = {
-        tools: { allow: ["readFile", "exec"] },
+        tools: { allow: ["read", "exec"] },
         skills: { allow: ["code-review"] },
         mcps: { deny: ["slack"] },
         subagents: { allow: ["*"] },
@@ -53,7 +53,7 @@ describe("PermissionEvaluator", () => {
       const evaluator = new PermissionEvaluator(permissions);
       const result = evaluator.filter(candidates);
 
-      expect(result.tools).toEqual(["readFile", "exec"]);
+      expect(result.tools).toEqual(["read", "exec"]);
       expect(result.skills).toEqual(["code-review"]);
       expect(result.mcps).toEqual(["github"]);
       expect(result.subagents).toEqual(["sub_agent_default", "code-reviewer"]);
@@ -62,7 +62,7 @@ describe("PermissionEvaluator", () => {
 
   it("抛出异常", () => {
     const permissions: AgentPermissions = {
-      tools: { allow: ["readFile"], deny: ["rm"] },
+      tools: { allow: ["read"], deny: ["rm"] },
     };
 
     const evaluator = new PermissionEvaluator(permissions);

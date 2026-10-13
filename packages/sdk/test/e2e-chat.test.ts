@@ -85,13 +85,13 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
     console.log("AI 回复:", (lastMsg.content as string).slice(0, 100));
   });
 
-  it("带工具调用：readFile 读取自身 package.json", async () => {
+  it("带工具调用：read 读取自身 package.json", async () => {
     const model = createModel(scope, "deepseek-flash");
     const pkgPath = join(__dirname, "..", "package.json");
     const tools = BUILTIN_TOOL_CLASSES
       .map((Cls) => new Cls(scope.env))
       .filter((t) =>
-        ["readFile", "glob", "ls", "cwd"].includes(t.function.name),
+        ["read", "glob", "ls", "cwd"].includes(t.function.name),
       );
 
     const agent = new SdkAgent({
@@ -120,7 +120,7 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
       tools,
     });
 
-    const messages = await agent.send(`请用 readFile 读取 package.json 文件，告诉我这个包的 name 和 version。文件路径: ${pkgPath}`);
+    const messages = await agent.send(`请用 read 读取 package.json 文件，告诉我这个包的 name 和 version。文件路径: ${pkgPath}`);
 
     expect(messages.length).toBeGreaterThan(0);
     const text = messages.map((m) =>

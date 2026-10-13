@@ -97,9 +97,9 @@ All built-in tools are classes (extending `SdkCallbackTool`), instantiated by th
 | Tool | Description |
 |------|-------------|
 | `cwd` | Get the current working directory |
-| `readFile` | Read a file (optional `range` for line/column slicing; oversized output warns and suggests batched reads) |
-| `inspectFile` | Inspect a file's structural overview (line count, column distribution, etc.); streamed scan, not limited by the 300KB read threshold |
-| `writeFile` | Write a file |
+| `read` | Read a file (optional `range` for line/column slicing; oversized output warns and suggests batched reads) |
+| `inspect_file` | Inspect a file's structural overview (line count, column distribution, etc.); streamed scan, not limited by the 300KB read threshold |
+| `write` | Write a file |
 | `exec` | Execute a command (supports `timeout`; oversized stdout+stderr is dumped to `stdout.log` / `stderr.log`) |
 | `exec_async` | Execute a command asynchronously, returns immediately without waiting |
 | `mkdir` | Create a directory |
@@ -107,11 +107,11 @@ All built-in tools are classes (extending `SdkCallbackTool`), instantiated by th
 | `glob` | Scan and find files using glob patterns (oversized output dumped to `result.json`) |
 | `ls` | List directory contents (oversized output dumped to `result.json`) |
 | `exist` | Check whether a file or directory exists |
-| `findText` | Search for text or regex in files (oversized output dumped to `result.json`) |
-| `downloadFile` | Download a file from a URL and save it locally |
+| `find_text` | Search for text or regex in files (oversized output dumped to `result.json`) |
+| `download_file` | Download a file from a URL and save it locally |
 | `rename` | Rename or move a file/directory |
 | `copy` | Copy a file or directory |
-| `batchEdit` | Batch-edit file text (only unmatched items are echoed back; successful ones are counted) |
+| `batch_edit` | Batch-edit file text (only unmatched items are echoed back; successful ones are counted) |
 | `edit` | Edit text in a file |
 | `sleep` | Wait for a specified number of milliseconds |
 
@@ -119,10 +119,10 @@ Conditionally injected based on the active model / config:
 
 | Tool | Injection Condition | Description |
 |------|---------------------|-------------|
-| `generateImage` | Only when `defaultImageModel` is configured | Generate an image from a text description |
-| `viewImage` | Only for vision models (the agent's `modelId` resolves to a model with `vision: true`) | View / analyze an image: local images are auto-uploaded via the Files API, network URLs are referenced directly |
+| `generate_image` | Only when `defaultImageModel` is configured | Generate an image from a text description |
+| `view_image` | Only for vision models (the agent's `modelId` resolves to a model with `vision: true`) | View / analyze an image: local images are auto-uploaded via the Files API, network URLs are referenced directly |
 
-Tool output protection: `AppConfig.maxToolOutput` (in characters, default 32768) is the unified ceiling for tool output. Each tool handles overflow itself — `exec` dumps `stdout.log` / `stderr.log` separately (returning head/tail previews per stream), `findText` / `glob` / `ls` dump `result.json` (returning a head preview), and `readFile` only warns and suggests batched reads via `range`. Dumps go to `<tmpdir>/ai-zen/tool-output/<tool>-<timestamp>-<random>/`, one directory per call, with no self-cleanup. See [`docs/sdk-design-v1.md` §12](docs/sdk-design-v1.md).
+Tool output protection: `AppConfig.maxToolOutput` (in characters, default 32768) is the unified ceiling for tool output. Each tool handles overflow itself — `exec` dumps `stdout.log` / `stderr.log` separately (returning head/tail previews per stream), `find_text` / `glob` / `ls` dump `result.json` (returning a head preview), and `read` only warns and suggests batched reads via `range`. Dumps go to `<tmpdir>/ai-zen/tool-output/<tool>-<timestamp>-<random>/`, one directory per call, with no self-cleanup. See [`docs/sdk-design-v1.md` §12](docs/sdk-design-v1.md).
 
 ## Built-in Plugins
 

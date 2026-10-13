@@ -104,11 +104,11 @@ describe("createCallSkillSubAgentTool", () => {
     return { chat: { completions: { create: vi.fn(async () => stream) } } } as any;
   }
 
-  /** 宿主 Agent：带 read_file 工具，并挂载被测工具（模拟 Provider.instantiate 的结果） */
+  /** 宿主 Agent：带 read 工具，并挂载被测工具（模拟 Provider.instantiate 的结果） */
   function buildHost(tool: AgentToolLazy) {
     const readFileTool = new CallbackTool({
       function: {
-        name: "read_file",
+        name: "read",
         description: "读文件",
         parameters: { type: "object", properties: {}, required: [] },
       },
@@ -183,7 +183,7 @@ describe("createCallSkillSubAgentTool", () => {
     expect(startEvent).toHaveBeenCalledTimes(1);
     expect(captured).toBeDefined();
     // 沿用父 Agent 工具能力，但剔除 call_skill_sub_agent 防自递归
-    expect(captured!.tools.map((t) => t.function.name)).toEqual(["read_file"]);
+    expect(captured!.tools.map((t) => t.function.name)).toEqual(["read"]);
     // 初始消息来自 SKILL.md 与 task 参数
     expect(String(captured!.messages[0].content)).toContain("Git 操作指南");
     expect(captured!.messages[1].content).toBe("提交这些改动");

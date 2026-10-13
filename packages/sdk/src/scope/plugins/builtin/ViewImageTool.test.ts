@@ -43,7 +43,7 @@ afterEach(() => {
 describe("ViewImageTool", () => {
   it("工具名称与描述正确", () => {
     const tool = new ViewImageTool(makeEnv("/ws"));
-    expect(tool.function.name).toBe("viewImage");
+    expect(tool.function.name).toBe("view_image");
     expect(tool.function.description).toContain("查看");
   });
 

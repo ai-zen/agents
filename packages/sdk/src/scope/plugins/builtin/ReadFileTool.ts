@@ -6,7 +6,7 @@ import { DEFAULT_MAX_TOOL_OUTPUT, guardOutput } from "./outputGuard.js";
 
 export class ReadFileTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
-    name: "readFile",
+    name: "read",
     description: "读取文件",
     parameters: {
       type: "object",
@@ -48,7 +48,7 @@ export class ReadFileTool extends SdkCallbackTool {
       // 输出保护：本次返回内容超过上限时只警告、不落盘，并提示用 range 分批读取
       const limit = this.env.config.maxToolOutput ?? DEFAULT_MAX_TOOL_OUTPUT;
       return await guardOutput({
-        tool: "readFile",
+        tool: "read",
         content: output,
         isOverLimit: (text) => text.length > limit,
         buildWarning: () =>

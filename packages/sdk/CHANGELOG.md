@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.0.0-alpha.5] - 2026-10-13
+
+### 💥 Breaking Changes
+
+- **All built-in tool names unified on `snake_case`** — the multi-word tools that used camelCase were renamed. A tool name is the API contract the model sees and is matched **verbatim** by the permission system, so any `permissions.allow` / `deny` list, skill `allowed-tools` entry or prompt that names a tool must be updated:
+
+  | old | new |
+  |---|---|
+  | `readFile` | `read` |
+  | `writeFile` | `write` |
+  | `inspectFile` | `inspect_file` |
+  | `findText` | `find_text` |
+  | `batchEdit` | `batch_edit` |
+  | `downloadFile` | `download_file` |
+  | `generateImage` | `generate_image` |
+  | `viewImage` | `view_image` |
+
+  Single-word tools (`cwd`, `edit`, `glob`, `ls`, `mkdir`, `rm`, `rename`, `copy`, `exec`, `exist`, `sleep`), the already-`snake_case` `exec_async`, the MCP / skill wrapper tools and core's `indexed_search` are unchanged. Tool descriptions and docs were updated in the same pass.
+
+### 🔧 Changed
+
+- **Dependency `@ai-zen/agents-core` bumped to `^4.3.2`** (carries the `indexedSearch` → `indexed_search` rename).
+
+### 📄 Docs
+
+- Current-version references in `docs/zh` and `docs/en` updated to `1.0.0-alpha.5`.
+
 ## [1.0.0-alpha.4] - 2026-10-13
 
 ### 🔧 Changed

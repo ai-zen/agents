@@ -35,7 +35,7 @@ export interface OutputGuardOptions<T> {
   /** 超限判定：上限由工具自行从 config 读取，骨架不传参 */
   isOverLimit: (content: T) => boolean;
   /**
-   * 落盘内容组织（可选）。缺省表示"只警告、不落盘"（如 readFile）。
+   * 落盘内容组织（可选）。缺省表示"只警告、不落盘"（如 read）。
    * 返回的文件按顺序写入本次调用专属的目录。
    */
   dump?: (dir: string, content: T) => GuardDumpFile[] | Promise<GuardDumpFile[]>;
@@ -89,7 +89,7 @@ export interface HeadPreview {
 /**
  * 生成头部预览：最多 size 字符。
  *
- * 适用于结果按出现顺序排列、尾部参考价值低的工具（如 findText）。
+ * 适用于结果按出现顺序排列、尾部参考价值低的工具（如 find_text）。
  */
 export function headPreview(text: string, size = 1000): HeadPreview {
   if (text.length <= size) return { head: text, omitted: 0 };

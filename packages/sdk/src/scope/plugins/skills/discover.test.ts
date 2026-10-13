@@ -201,11 +201,11 @@ metadata:
   it("解析 allowed-tools（空格分隔 → 数组）", () => {
     const fm = parseFrontmatter(`---
 name: my-skill
-allowed-tools: Bash(git:*) Read writeFile
+allowed-tools: Bash(git:*) Read write
 ---
 # Body`);
 
-    expect(fm.allowedTools).toEqual(["Bash(git:*)", "Read", "writeFile"]);
+    expect(fm.allowedTools).toEqual(["Bash(git:*)", "Read", "write"]);
   });
 
   it("allowed-tools 空值时为空数组", () => {

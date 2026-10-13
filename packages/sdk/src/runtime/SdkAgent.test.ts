@@ -83,7 +83,7 @@ describe("SdkAgent", () => {
         id: "t",
         name: "T",
         messages: [],
-        permissions: { tools: { allow: ["readFile"] } },
+        permissions: { tools: { allow: ["read"] } },
         createdAt: "",
         updatedAt: "",
       },
@@ -93,7 +93,7 @@ describe("SdkAgent", () => {
 
     expect(agent.scope).toBe(scope);
     expect(agent.definition.id).toBe("t");
-    expect(agent.definition.permissions?.tools).toEqual({ allow: ["readFile"] });
+    expect(agent.definition.permissions?.tools).toEqual({ allow: ["read"] });
     expect(agent.model).toBe("m");
   });
 

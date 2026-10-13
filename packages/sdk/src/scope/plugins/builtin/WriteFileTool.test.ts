@@ -13,7 +13,7 @@ function tmpDir(): string {
 describe("WriteFileTool", () => {
   it("工具名称和描述正确", () => {
     const tool = new WriteFileTool(makeEnv());
-    expect(tool.function.name).toBe("writeFile");
+    expect(tool.function.name).toBe("write");
     expect(tool.function.description).toBe("写入文件");
   });
 

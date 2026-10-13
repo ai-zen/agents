@@ -6,7 +6,7 @@ import type { AgentDefinition, AppConfig, ToolEnv, ImageModel } from "../../../t
 /**
  * 根据文字描述生成图片。**统一返回字符串**（JSON，含图片 URL 列表）：
  * 生成结果如何处理（查看/下载/转发）由模型与上层自由决定——
- * 需要让模型看图时，模型可主动调用 viewImage(URL)；需要保存时用 downloadFile。
+ * 需要让模型看图时，模型可主动调用 view_image(URL)；需要保存时用 download_file。
  *
  * 依赖 AppConfig 中的 imageModels 和 defaultImageModel 配置（isAvailable 声明），
  * 未配置时由 buildTools 过滤，不暴露给 Agent。
@@ -18,9 +18,9 @@ export class GenerateImageTool extends SdkCallbackTool {
   }
 
   function: AgentNS.FunctionDefine = {
-    name: "generateImage",
+    name: "generate_image",
     description:
-      "根据文字描述生成图片，返回图片 URL 列表（JSON）。如需查看图片内容，请用 viewImage 工具（传入图片 URL）；如需保存到本地，用 downloadFile 下载。",
+      "根据文字描述生成图片，返回图片 URL 列表（JSON）。如需查看图片内容，请用 view_image 工具（传入图片 URL）；如需保存到本地，用 download_file 下载。",
     parameters: {
       type: "object",
       properties: {
@@ -132,8 +132,8 @@ export class GenerateImageTool extends SdkCallbackTool {
         .filter((url): url is string => !!url);
 
       // 统一返回字符串（JSON）：生成结果如何处理（查看/下载/转发）由模型与上层自由决定，
-      // 不替模型做「看或不看」的假设。需要让模型看图 → 模型可主动调用 viewImage(URL)；
-      // 需要保存 → downloadFile 下载。
+      // 不替模型做「看或不看」的假设。需要让模型看图 → 模型可主动调用 view_image(URL)；
+      // 需要保存 → download_file 下载。
       return JSON.stringify(
         {
           success: true,
@@ -141,7 +141,7 @@ export class GenerateImageTool extends SdkCallbackTool {
           modelId: imageModel.id,
           created: result.created,
           images: urls.map((url, i) => ({ index: i, url })),
-          note: "图片临时链接有效期为30天。如需查看图片内容，可用 viewImage 工具（传入图片 URL）；如需保存，可用 downloadFile 下载。",
+          note: "图片临时链接有效期为30天。如需查看图片内容，可用 view_image 工具（传入图片 URL）；如需保存，可用 download_file 下载。",
         },
         null,
         2,

@@ -4,11 +4,11 @@ import { PermissionEvaluator } from "./PermissionEvaluator.js";
 describe("PermissionEvaluator.match", () => {
   describe("allow 模式", () => {
     it("命中 — 精确匹配", () => {
-      expect(PermissionEvaluator.match("readFile", { allow: ["readFile", "exec"] })).toBe(true);
+      expect(PermissionEvaluator.match("read", { allow: ["read", "exec"] })).toBe(true);
     });
 
     it("未命中 — 不在列表中", () => {
-      expect(PermissionEvaluator.match("rm", { allow: ["readFile", "exec"] })).toBe(false);
+      expect(PermissionEvaluator.match("rm", { allow: ["read", "exec"] })).toBe(false);
     });
 
     it("通配符 * 匹配任意", () => {
@@ -16,7 +16,7 @@ describe("PermissionEvaluator.match", () => {
     });
 
     it("通配符在列表中同样生效", () => {
-      expect(PermissionEvaluator.match("rm", { allow: ["readFile", "*"] })).toBe(true);
+      expect(PermissionEvaluator.match("rm", { allow: ["read", "*"] })).toBe(true);
     });
   });
 
@@ -26,7 +26,7 @@ describe("PermissionEvaluator.match", () => {
     });
 
     it("未命中 — 放行", () => {
-      expect(PermissionEvaluator.match("readFile", { deny: ["rm"] })).toBe(true);
+      expect(PermissionEvaluator.match("read", { deny: ["rm"] })).toBe(true);
     });
 
     it("通配符 * 拒绝所有", () => {
