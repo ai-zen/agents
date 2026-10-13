@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.0-alpha.4] - 2026-10-13
+
+### 🔧 Changed
+
+- **Dependency `@ai-zen/agents-core` bumped to `^4.3.1`** (declared as `workspace:^`, expanded to `^4.3.1` at publish time). Pulls in core 4.3.1's fix for interrupted parallel tool rounds — the assistant message carrying `tool_calls` and its results now stay all-in or all-out, so an interrupted parallel tool call no longer leaves orphan `tool` results that the server rejects. `AgentContext` gains `abortedToolRoundStrategy` (default `"fill"`) and `abortedToolRoundReason`; set `agent.abortedToolRoundStrategy = "drop"` to drop the whole round instead
+
+### 📄 Docs
+
+- Current-version references in `docs/zh` and `docs/en` updated to `1.0.0-alpha.4`.
+
 ## [1.0.0-alpha.3] - 2026-10-03
 
 ### 🔧 Fixed

@@ -8,6 +8,7 @@ import { PickRequired } from "./Common.js";
 import { ToolCallContext } from "./ToolCallContext.js";
 import { Message } from "./Message.js";
 import { Tool } from "./Tool.js";
+import { reconcileAbortedToolRounds } from "./AbortedToolRounds.js";
 
 // ---------------------------------------------------------------------------
 // 插件接口
@@ -339,6 +340,15 @@ export class Agent extends AgentContext {
         this.innerLoopTasks.delete(pendingTask);
       }
     }
+
+    // 归一化工具调用轮次：中断/不完整的轮次按策略统一为「整轮进出」，
+    // 保证 assistant（含 tool_calls）与其结果一一配对，避免服务端报错。
+    // 此处所有工具任务已 settled（handleToolCall 内 await Promise.all），无竞态。
+    reconcileAbortedToolRounds(
+      this.messages,
+      this.abortedToolRoundStrategy,
+      this.abortedToolRoundReason,
+    );
 
     // 整组内循环结束：含多轮工具调用，messages 为完整结果（正常/error/abort 均到达此处）
     await this.dispatchHook("onInnerLoopsEnd", sendCtx);

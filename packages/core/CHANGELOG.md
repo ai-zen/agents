@@ -1,5 +1,23 @@
 # Changelog
 
+## [4.3.1] - 2026-10-13
+
+### 🔧 Fixed
+
+- **Interrupted parallel tool rounds are now reconciled as a whole** — `abort()` marks each in-flight message as `Aborted` individually and `formatHistory()` filters by status independently, so neither treated a tool round as a unit. During a parallel tool call that got interrupted, the assistant message carrying `tool_calls` could be dropped while some already-completed tool results were kept — leaving `role:"tool"` orphans with no parent call (or the reverse: fewer results than calls), both rejected by the server. `Agent.run()` now calls the new `reconcileAbortedToolRounds()` once the inner loop has settled (after the `while` loop, before `onInnerLoopsEnd`), keeping each `tool_calls` assistant and its results **all-in or all-out**. Only rounds containing an `Aborted` message are touched; `Error` semantics (e.g. `allowJsonParseError=false`) are unchanged
+
+### ✨ Added
+
+- **`abortedToolRoundStrategy` / `abortedToolRoundReason` on `AgentContext`** — new options (defaults `"fill"` / `"用户中断了会话"`) deciding how an aborted round is reconciled:
+  - `fill` — keep the whole round: restore the assistant to `Completed` and backfill a reason for unfinished/missing results
+  - `drop` — drop the whole round: neither the assistant nor its results are sent to the model
+  Consumers switch behaviour with a single assignment (`agent.abortedToolRoundStrategy = "drop"`), with no change to SDK/CLI constructor signatures
+- **`reconcileAbortedToolRounds()` and the `AbortedToolRoundStrategy` type are now exported from `@ai-zen/agents-core`**
+
+### ✅ Tests
+
+- Added `AbortedToolRounds.test.ts` (7 cases, reconciliation matrix) and 2 end-to-end cases in `Agent.test.ts`. Core suite: **126 passed, 0 failed, 17 skipped**
+
 ## [4.3.0] - 2026-09-28
 
 ### ✨ Added

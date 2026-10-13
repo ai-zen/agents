@@ -4,6 +4,7 @@ import { AgentNS } from "./AgentNS.js";
 import { Message } from "./Message.js";
 import { CallbackTool } from "./Tools/CallbackTool.js";
 import { ToolCallContext } from "./ToolCallContext.js";
+import { DEFAULT_ABORTED_TOOL_ROUND_REASON } from "./AbortedToolRounds.js";
 import type { ChatCompletionChunk } from "openai/resources/chat/completions";
 
 // ---------------------------------------------------------------------------
@@ -1005,6 +1006,100 @@ describe("Agent", () => {
 
       expect((agent as any).innerLoopsTasks.size).toBe(0);
       expect((agent as any).innerLoopTasks.size).toBe(0);
+    });
+  });
+
+  describe("run - 中断轮次归一化（并行工具 + abort）", () => {
+    const included = (m: AgentNS.Message) =>
+      (m.status == undefined || m.status === AgentNS.MessageStatus.Completed) &&
+      !m.omit;
+
+    /** 造一个「快工具 + 挂起至 abort 的慢工具」并行调用、执行中中断的场景 */
+    async function runParallelAbort(strategy?: "fill" | "drop") {
+      let signalSlowStarted!: () => void;
+      const slowStarted = new Promise<void>((r) => {
+        signalSlowStarted = r;
+      });
+
+      const fastTool = new CallbackTool({
+        function: { name: "fast", description: "快", parameters: { type: "object", properties: {} } },
+        callback: () => "FAST",
+      });
+      const slowTool = new CallbackTool({
+        function: { name: "slow", description: "慢", parameters: { type: "object", properties: {} } },
+        callback: async (_args: any, ctx: ToolCallContext) => {
+          signalSlowStarted();
+          await new Promise<void>((resolve) => {
+            if (ctx.signal?.aborted) resolve();
+            else ctx.signal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+          return ""; // 被中断且无结果 → 交由归一化补原因
+        },
+      });
+
+      // 注意：每个 tool_call 单独一个 chunk（parseStreamData 只读 delta.tool_calls[0]）
+      const create = vi.fn(async () =>
+        makeStream([
+          chunk({ tool_calls: [{ index: 0, id: "f", type: "function", function: { name: "fast", arguments: "{}" } }] }),
+          chunk({ tool_calls: [{ index: 1, id: "s", type: "function", function: { name: "slow", arguments: "{}" } }] }),
+          chunk({}, "tool_calls"),
+        ]),
+      );
+      const client = { chat: { completions: { create } } } as any;
+
+      const agent = new Agent({
+        client,
+        model: "gpt-4",
+        messages: [Message.System("助手")],
+        tools: [fastTool, slowTool],
+        ...(strategy ? { abortedToolRoundStrategy: strategy } : {}),
+      });
+      agent.append(Message.Assistant());
+
+      const runPromise = agent.run();
+      await slowStarted;
+      // 等「快工具」先完成，制造「部分结果 Completed、部分仍在途」的中断场景
+      // （这才是会产生孤儿 tool 结果的真实情形）
+      await vi.waitFor(() => {
+        const fast = agent.messages.find((m) => m.tool_call_id === "f");
+        expect(fast?.status).toBe(AgentNS.MessageStatus.Completed);
+      });
+      agent.abort();
+      await runPromise;
+      return agent;
+    }
+
+    it("fill（默认）：assistant 与结果同进同出，无孤儿，N 调用 = N 结果", async () => {
+      const agent = await runParallelAbort();
+
+      const assistant = agent.messages[1]!;
+      expect(assistant.status).toBe(AgentNS.MessageStatus.Completed);
+      expect(assistant.tool_calls).toHaveLength(2);
+
+      const toolResults = agent.messages.filter((m) => m.role === AgentNS.Role.Tool);
+      expect(toolResults).toHaveLength(2);
+      for (const r of toolResults) expect(included(r)).toBe(true);
+
+      expect(toolResults.find((r) => r.tool_call_id === "f")!.content).toBe("FAST");
+      expect(toolResults.find((r) => r.tool_call_id === "s")!.content).toBe(
+        DEFAULT_ABORTED_TOOL_ROUND_REASON,
+      );
+
+      // 关键：发给模型的 history 中，tool_calls 数与 tool 结果数相等（无孤儿）
+      const history = agent.formatHistory() as any[];
+      const histAssistant = history.find((m) => m.tool_calls?.length);
+      const histTools = history.filter((m) => m.role === AgentNS.Role.Tool);
+      expect(histAssistant.tool_calls).toHaveLength(2);
+      expect(histTools).toHaveLength(2);
+    });
+
+    it("drop：整轮出列，不发给模型", async () => {
+      const agent = await runParallelAbort("drop");
+
+      expect(agent.messages[1]!.omit).toBe(true);
+      const history = agent.formatHistory() as any[];
+      expect(history.some((m) => m.tool_calls?.length)).toBe(false);
+      expect(history.filter((m) => m.role === AgentNS.Role.Tool)).toHaveLength(0);
     });
   });
 
