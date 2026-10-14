@@ -1,5 +1,16 @@
 # Changelog
 
+## [4.4.0] - 2026-10-14
+
+### ✨ Added
+
+- **`AgentNS.Message.usage` — per-message token usage** — the token usage of the API response that produced an assistant message is now stamped onto that message (mirrored from `Agent.lastUsage`, written by the final stream chunk). This makes usage **durable and per-round**: it persists with `agent.messages` (conversation archives, agent definitions) and lets consumers sum it across a session for the billing-accurate cumulative consumption (each request resends the full history, so the sum of `prompt_tokens` is the real total). `lastUsage` is unchanged and still means "the most recent response" — used by `ContextGuardPlugin` / `AutoMigratePlugin` for the current-context / threshold check. Only assistant messages carry it; `formatHistory()` keeps its explicit field whitelist, so `usage` is never sent to the model
+
+### ✅ Tests
+
+- `Message.test.ts`: `usage` round-trips through the constructor and is absent by default
+- `Agent.test.ts`: a single round stamps `usage` onto the assistant message (identical to `lastUsage`); a multi-round tool call assigns each round's usage to its own assistant message, and the sum equals the cumulative total
+
 ## [4.3.2] - 2026-10-13
 
 ### 💥 Breaking Changes

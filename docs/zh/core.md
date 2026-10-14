@@ -101,6 +101,19 @@ Message.User([
 
 > 自 core `4.1.0` 起，`AgentNS.Message.id` 为必填。普通对象字面量赋给 `Message` / `Message[]` 将无法编译，请使用上面的工厂方法。
 
+### Message 的 `usage` 字段
+
+产生本条 assistant 消息的那次 API 响应的 token 用量会钉在该消息上（`usage: { prompt_tokens, completion_tokens, total_tokens }`）——由流式响应的最后一个 chunk 写入，与 `Agent.lastUsage` 同源。它随消息一同持久化（会话存档、Agent 定义），故可跨会话保留、可审计。
+
+两种口径各取所需：
+
+| 需求 | 取法 | 语义 |
+|------|------|------|
+| 当前上下文占用 / 是否超限 | `Agent.lastUsage.prompt_tokens` | 最近一次请求，覆盖式（`ContextGuardPlugin` / `AutoMigratePlugin` 据此判定） |
+| 本会话累计消耗（计费） | 本会话全部 assistant 消息的 `usage` 之和 | 每轮请求都会重发完整历史，故求和 = 真实消耗 |
+
+仅 assistant 消息会有该字段；`formatHistory()` 按字段白名单序列化，`usage` 不会被发给模型。
+
 ## Tool（抽象基类）
 
 自定义工具继承 `Tool`，在类体声明 `function` 定义并实现 `exec(ctx)`。

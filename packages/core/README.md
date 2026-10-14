@@ -114,6 +114,8 @@ Message status enum:
 | `Error` | An error occurred |
 | `Aborted` | Aborted |
 
+> Assistant messages also carry the token `usage` of the API response that produced them (`usage: { prompt_tokens, completion_tokens, total_tokens }`, written by the final stream chunk, mirroring `agent.lastUsage`). It persists with the message; summing `usage` over all assistant messages yields the cumulative consumption. Only assistant messages carry it.
+
 ### Tool
 
 Abstract base class that extends the Agent's capabilities. Custom tools must extend `Tool`, declare a `function` definition, and implement the `exec()` method:

@@ -1009,6 +1009,80 @@ describe("Agent", () => {
     });
   });
 
+  describe("run - token 用量（usage）", () => {
+    it("单轮对话后 usage 钉到本轮 assistant 消息上，且与 lastUsage 一致", async () => {
+      const usage = { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 };
+      const client = createMockClient([
+        [chunk({ content: "你好" }), { ...stopChunk(), usage }],
+      ]);
+
+      const agent = new Agent({
+        client,
+        model: "gpt-4",
+        messages: [Message.System("助手")],
+      });
+      agent.append(Message.Assistant());
+
+      await agent.run();
+
+      const assistant = agent.messages.at(-1)!;
+      expect(assistant.role).toBe(AgentNS.Role.Assistant);
+      expect(assistant.usage).toEqual(usage);
+      // lastUsage 保留「最近一次」语义，二者同源
+      expect(agent.lastUsage).toEqual(usage);
+    });
+
+    it("多轮工具调用时每轮 usage 各归其 assistant 消息，求和即累计消耗", async () => {
+      const tool = new CallbackTool({
+        function: {
+          name: "t",
+          description: "测试",
+          parameters: { type: "object", properties: {} },
+        },
+        callback: () => "结果",
+      });
+      const usage1 = { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 };
+      const usage2 = { prompt_tokens: 200, completion_tokens: 30, total_tokens: 230 };
+      const client = createMockClient([
+        [
+          chunk({
+            tool_calls: [
+              { index: 0, id: "1", type: "function", function: { name: "t", arguments: "{}" } },
+            ],
+          }),
+          { ...chunk({}, "tool_calls"), usage: usage1 },
+        ],
+        [chunk({ content: "最终回复" }), { ...stopChunk(), usage: usage2 }],
+      ]);
+
+      const agent = new Agent({
+        client,
+        model: "gpt-4",
+        messages: [Message.System("助手")],
+        tools: [tool],
+      });
+      agent.append(Message.Assistant());
+
+      await agent.run();
+
+      const assistants = agent.messages.filter(
+        (m) => m.role === AgentNS.Role.Assistant,
+      );
+      expect(assistants).toHaveLength(2);
+      expect(assistants[0]!.usage).toEqual(usage1);
+      expect(assistants[1]!.usage).toEqual(usage2);
+
+      // 累计消耗 = 各 assistant 消息 usage 之和
+      const total = assistants.reduce(
+        (sum, m) => sum + (m.usage?.total_tokens ?? 0),
+        0,
+      );
+      expect(total).toBe(usage1.total_tokens + usage2.total_tokens);
+      // lastUsage 仅保留最后一轮
+      expect(agent.lastUsage).toEqual(usage2);
+    });
+  });
+
   describe("run - 中断轮次归一化（并行工具 + abort）", () => {
     const included = (m: AgentNS.Message) =>
       (m.status == undefined || m.status === AgentNS.MessageStatus.Completed) &&

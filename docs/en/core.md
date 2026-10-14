@@ -101,6 +101,19 @@ Message.User([
 
 > Since core `4.1.0`, `AgentNS.Message.id` is required. Assigning a plain object literal to `Message` / `Message[]` will not compile; use the factory methods above.
 
+### `usage` on Message
+
+The token usage of the API response that produced an assistant message is stamped onto that message (`usage: { prompt_tokens, completion_tokens, total_tokens }`) — written by the final stream chunk, mirroring `Agent.lastUsage`. It persists together with the message (conversation archives, agent definitions), so it survives across sessions and stays auditable.
+
+Two readings for two needs:
+
+| Need | How to read | Meaning |
+|------|-------------|---------|
+| Current context size / over-limit check | `Agent.lastUsage.prompt_tokens` | The most recent request, overwritten each round (used by `ContextGuardPlugin` / `AutoMigratePlugin`) |
+| Cumulative consumption (billing) | Sum of `usage` over all assistant messages | Each request resends the full history, so the sum is the real total |
+
+Only assistant messages carry it; `formatHistory()` serializes by an explicit whitelist, so `usage` is never sent to the model.
+
 ## Tool (abstract base class)
 
 To define a custom tool, extend `Tool`, declare the `function` definition in the class body, and implement `exec(ctx)`.

@@ -415,9 +415,14 @@ export class Agent extends AgentContext {
     for await (const chunk of stream) {
       this.events.emit("chunk", chunk);
 
-      // 捕获流式最后一个 chunk 的 usage
+      // 捕获流式最后一个 chunk 的 usage：
+      //   - lastUsage 保留「最近一次请求」语义（覆盖率），供护栏 / 迁移阈值判定与状态栏「当前占用」；
+      //   - 同时钉到本轮 assistant 消息上（与 finish_reason 同处），使用量随消息持久化，
+      //     从而可按消息求和统计累计消耗（计费口径）与审计。
       if (chunk?.usage) {
-        this.lastUsage = chunk.usage as unknown as AgentNS.Usage;
+        const usage = chunk.usage as unknown as AgentNS.Usage;
+        this.lastUsage = usage;
+        receiver.usage = usage;
       }
 
       if (chunk?.choices?.[0]) {

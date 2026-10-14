@@ -114,6 +114,8 @@ Message.Function(functionCall, "执行结果");
 | `Error` | 发生错误 |
 | `Aborted` | 已中止 |
 
+> 助手消息还会带上产生它的那次 API 响应的 token 用量（`usage: { prompt_tokens, completion_tokens, total_tokens }`，由流式最后一个 chunk 写入，与 `agent.lastUsage` 同源）。它随消息持久化，对本会话全部助手消息的 `usage` 求和即累计消耗；仅助手消息会有值。
+
 ### Tool（工具基类）
 
 抽象基类，扩展 Agent 的能力。自定义工具需继承 `Tool`，声明 `function` 定义并实现 `exec()` 方法：

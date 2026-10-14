@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.0-alpha.7] - 2026-10-14
+
+### ⚠️ Dependency
+
+- **`@ai-zen/agents-core` bumped to `^4.4.0`** — picks up `AgentNS.Message.usage` (per-message token usage, stamped from the final stream chunk). No SDK source change; the `workspace:^` range resolves to `^4.4.0` on publish.
+
 ## [1.0.0-alpha.6] - 2026-10-13
 
 ### 💥 Breaking Changes
