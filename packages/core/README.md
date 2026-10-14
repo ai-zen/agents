@@ -114,7 +114,7 @@ Message status enum:
 | `Error` | An error occurred |
 | `Aborted` | Aborted |
 
-> Assistant messages also carry the token `usage` of the API response that produced them (`usage: { prompt_tokens, completion_tokens, total_tokens }`, written by the final stream chunk, mirroring `agent.lastUsage`). It persists with the message; summing `usage` over all assistant messages yields the cumulative consumption. Only assistant messages carry it.
+> Messages carry their attributable token usage: assistant messages have `usage` (their own response, written by the final stream chunk), and tool messages have `subAgentUsage` (the aggregate of an internal delegation such as a sub-agent). Both persist with the message; `sumUsage(agent.messages)` yields the session total (including every sub-agent level).
 
 ### Tool
 

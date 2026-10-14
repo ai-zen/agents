@@ -29,6 +29,98 @@ function createMockClient(responseText = "mock回复") {
   return { chat: { completions: { create } } } as any;
 }
 
+// Helper: mock OpenAI client，最后一帧带 usage
+function createUsageClient(responseText: string, usage: AgentNS.Usage) {
+  const stream = {
+    async *[Symbol.asyncIterator]() {
+      yield {
+        id: "chunk-1",
+        object: "chat.completion.chunk",
+        created: 0,
+        model: "mock",
+        choices: [{ index: 0, delta: { content: responseText }, finish_reason: null }],
+      };
+      yield {
+        id: "chunk-2",
+        object: "chat.completion.chunk",
+        created: 0,
+        model: "mock",
+        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+        usage,
+      };
+    },
+  };
+  const create = vi.fn(async () => stream);
+  return { chat: { completions: { create } } } as any;
+}
+
+// Helper: mock client，第一轮发起一次工具调用（tool_calls），第二轮给出最终答复
+function createDelegatingClient(
+  toolName: string,
+  toolCallId: string,
+  finalText: string,
+  firstUsage: AgentNS.Usage,
+  finalUsage: AgentNS.Usage,
+) {
+  let round = 0;
+  const create = vi.fn(async () => {
+    round++;
+    return {
+      async *[Symbol.asyncIterator]() {
+        if (round === 1) {
+          yield {
+            id: "c1",
+            object: "chat.completion.chunk",
+            created: 0,
+            model: "mock",
+            choices: [
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: toolCallId,
+                      type: "function",
+                      function: { name: toolName, arguments: "{}" },
+                    },
+                  ],
+                },
+                finish_reason: null,
+              },
+            ],
+          };
+          yield {
+            id: "c2",
+            object: "chat.completion.chunk",
+            created: 0,
+            model: "mock",
+            choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+            usage: firstUsage,
+          };
+        } else {
+          yield {
+            id: "c3",
+            object: "chat.completion.chunk",
+            created: 0,
+            model: "mock",
+            choices: [{ index: 0, delta: { content: finalText }, finish_reason: null }],
+          };
+          yield {
+            id: "c4",
+            object: "chat.completion.chunk",
+            created: 0,
+            model: "mock",
+            choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+            usage: finalUsage,
+          };
+        }
+      },
+    };
+  });
+  return { chat: { completions: { create } } } as any;
+}
+
 describe("AgentTool", () => {
   describe("构造函数", () => {
     it("缺少 function 应抛出错误", () => {
@@ -386,6 +478,101 @@ describe("AgentTool", () => {
       expect(second).not.toHaveBeenCalled();
       // 子 Agent 已运行完成，返回字符串不影响工具结果
       expect(result).toBe("子Agent回复");
+    });
+  });
+
+  describe("子 Agent 用量写入结果消息", () => {
+    it("委派结束后把子 Agent 的累计用量钉到工具结果消息的 subAgentUsage", async () => {
+      const usage = {
+        prompt_tokens: 100,
+        completion_tokens: 20,
+        total_tokens: 120,
+      };
+      const tool = new AgentTool({
+        function: {
+          name: "testFn",
+          description: "测试",
+          parameters: { type: "object", properties: {}, required: [] },
+        },
+        client: createUsageClient("子Agent回复", usage),
+        model: "gpt-4",
+        messages: [Message.User("你好")],
+      });
+
+      const host = new Agent({
+        client: createMockClient(),
+        model: "gpt-4",
+        messages: [Message.System("主助手")],
+        tools: [tool],
+      });
+
+      const ctx = new ToolCallContext({
+        agent: host,
+        tool_call: { function: { name: "testFn", arguments: "{}" } },
+        resultMessage: Message.Tool({ id: "1", function: { name: "testFn" } }),
+      });
+
+      await tool.exec(ctx);
+
+      expect(ctx.resultMessage.subAgentUsage).toEqual(usage);
+    });
+  });
+
+  describe("嵌套委派：父能统计到孙级", () => {
+    it("孙级用量经子级的 tool 消息折叠进父级的 tool 消息", async () => {
+      const usageG = { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 };
+      const usageS1 = { prompt_tokens: 20, completion_tokens: 4, total_tokens: 24 };
+      const usageS2 = { prompt_tokens: 30, completion_tokens: 6, total_tokens: 36 };
+
+      // 孙级工具
+      const grandchild = new AgentTool({
+        function: {
+          name: "gc",
+          description: "孙",
+          parameters: { type: "object", properties: {} },
+        },
+        client: createUsageClient("孙结果", usageG),
+        model: "gpt-4",
+        messages: [Message.User("孙任务")],
+      });
+
+      // 子 Agent：第一轮调用 gc，第二轮给出最终答复
+      const subTool = new AgentTool({
+        function: {
+          name: "sub",
+          description: "子",
+          parameters: { type: "object", properties: {} },
+        },
+        client: createDelegatingClient("gc", "gc1", "子最终", usageS1, usageS2),
+        model: "gpt-4",
+        messages: [Message.User("子任务")],
+        tools: [grandchild],
+      });
+
+      const host = new Agent({
+        client: createMockClient(),
+        model: "gpt-4",
+        messages: [Message.System("主")],
+        tools: [subTool],
+      });
+
+      const ctx = new ToolCallContext({
+        agent: host,
+        tool_call: { function: { name: "sub", arguments: "{}" } },
+        resultMessage: Message.Tool({ id: "s1", function: { name: "sub" } }),
+      });
+
+      await subTool.exec(ctx);
+
+      // 父侧 tool 消息 = 子自身（usageS1 + usageS2）+ 孙（usageG），无重无漏
+      expect(ctx.resultMessage.subAgentUsage).toEqual({
+        prompt_tokens:
+          usageS1.prompt_tokens + usageS2.prompt_tokens + usageG.prompt_tokens,
+        completion_tokens:
+          usageS1.completion_tokens + usageS2.completion_tokens + usageG.completion_tokens,
+        total_tokens:
+          usageS1.total_tokens + usageS2.total_tokens + usageG.total_tokens,
+      });
     });
   });
 });

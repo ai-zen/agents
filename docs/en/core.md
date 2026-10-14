@@ -101,18 +101,30 @@ Message.User([
 
 > Since core `4.1.0`, `AgentNS.Message.id` is required. Assigning a plain object literal to `Message` / `Message[]` will not compile; use the factory methods above.
 
-### `usage` on Message
+### `usage` / `subAgentUsage` on Message
 
-The token usage of the API response that produced an assistant message is stamped onto that message (`usage: { prompt_tokens, completion_tokens, total_tokens }`) — written by the final stream chunk, mirroring `Agent.lastUsage`. It persists together with the message (conversation archives, agent definitions), so it survives across sessions and stays auditable.
+A message carries one of two mutually-exclusive, single-meaning token-usage figures:
 
-Two readings for two needs:
+- `usage` — the usage of the message's **own** API response (assistant messages), written by the final stream chunk, mirroring `Agent.lastUsage`;
+- `subAgentUsage` — the aggregate usage of an **internal delegation** performed inside a **tool message** (e.g. a sub-agent), written by the delegation path (`AgentTool` / `AgentToolLazy`) once the sub-agent finishes.
+
+Both persist with the message (conversation archives, agent definitions), so they survive across sessions and stay auditable. **Always sum with `sumUsage(messages)`** — it adds both, so sub-agent cost (including nested levels) is never missed.
+
+```ts
+import { sumUsage } from "@ai-zen/agents-core";
+
+const total = sumUsage(agent.messages); // session total (incl. every sub-agent level)
+```
+
+Three readings for three needs:
 
 | Need | How to read | Meaning |
 |------|-------------|---------|
 | Current context size / over-limit check | `Agent.lastUsage.prompt_tokens` | The most recent request, overwritten each round (used by `ContextGuardPlugin` / `AutoMigratePlugin`) |
-| Cumulative consumption (billing) | Sum of `usage` over all assistant messages | Each request resends the full history, so the sum is the real total |
+| Cumulative consumption (billing) | `sumUsage(agent.messages)` | Per-message sum (own responses + delegations); each request resends the full history, so the sum is the real total |
+| A single message's cost | `message.usage` / `message.subAgentUsage` | own response / internal delegation |
 
-Only assistant messages carry it; `formatHistory()` serializes by an explicit whitelist, so `usage` is never sent to the model.
+`formatHistory()` serializes by an explicit whitelist, so neither `usage` nor `subAgentUsage` is sent to the model.
 
 ## Tool (abstract base class)
 

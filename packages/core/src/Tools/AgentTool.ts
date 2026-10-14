@@ -1,5 +1,6 @@
 import { Agent, type SubAgentContext } from "../Agent.js";
 import { AgentNS } from "../AgentNS.js";
+import { sumUsage } from "../Usage.js";
 import { AgentContext } from "../AgentContext.js";
 import { PickRequired } from "../Common.js";
 import { ToolCallContext } from "../ToolCallContext.js";
@@ -77,6 +78,9 @@ export class AgentTool extends AgentContext implements Tool {
         ctx.signal?.removeEventListener("abort", onAbort);
       }
     } finally {
+      // 把子 Agent（含其孙级）的累计用量钉到本次委派的工具结果消息上，
+      // 使其随消息持久化、并可被 sumUsage() 统一求和
+      ctx.resultMessage.subAgentUsage = sumUsage(agent.messages);
       // 子 Agent 所有轮次完成（包括 tool_calls 多轮递归）后通知
       await ctx.agent.dispatchHook("onSubAgentEnd", subCtx);
     }

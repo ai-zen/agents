@@ -98,6 +98,12 @@ export namespace AgentNS {
      * （每轮请求都会重发完整历史，故求和 = 实际消耗）。
      */
     usage?: Usage;
+    /**
+     * 本条**工具消息**内「内部委派」产生的累计 token 用量（如子 Agent 委派）。
+     * 由委派路径（`AgentTool` / `AgentToolLazy`）在子 Agent 结束后写入，随消息持久化；
+     * 与 `usage`（本条消息自身那次响应）互斥出现。求和请用 `sumUsage()`。
+     */
+    subAgentUsage?: Usage;
     hidden?: boolean;
     omit?: boolean;
   }

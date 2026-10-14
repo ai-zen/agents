@@ -101,18 +101,30 @@ Message.User([
 
 > 自 core `4.1.0` 起，`AgentNS.Message.id` 为必填。普通对象字面量赋给 `Message` / `Message[]` 将无法编译，请使用上面的工厂方法。
 
-### Message 的 `usage` 字段
+### Message 的 `usage` / `subAgentUsage` 字段
 
-产生本条 assistant 消息的那次 API 响应的 token 用量会钉在该消息上（`usage: { prompt_tokens, completion_tokens, total_tokens }`）——由流式响应的最后一个 chunk 写入，与 `Agent.lastUsage` 同源。它随消息一同持久化（会话存档、Agent 定义），故可跨会话保留、可审计。
+一条消息可归因的 token 消耗有两种，**互斥出现**，各自只有一个含义：
 
-两种口径各取所需：
+- `usage` —— 本条**消息自身**那次 API 响应的用量（assistant 消息），由流式响应的最后一个 chunk 写入，与 `Agent.lastUsage` 同源；
+- `subAgentUsage` —— 本条**工具消息**「内部委派」产生的累计用量（tool 消息，如子 Agent），由委派路径（`AgentTool` / `AgentToolLazy`）在子 Agent 结束后写入。
+
+两者都随消息一同持久化（会话存档、Agent 定义），故可跨会话保留、可审计。**求和请一律用 `sumUsage(messages)`**——它同时累加两者，故不会漏算子 Agent（含其孙级）的开销（嵌套自动成立）。
+
+```ts
+import { sumUsage } from "@ai-zen/agents-core";
+
+const total = sumUsage(agent.messages); // 本会话累计（含所有层级的子 Agent）
+```
+
+三种口径各取所需：
 
 | 需求 | 取法 | 语义 |
 |------|------|------|
 | 当前上下文占用 / 是否超限 | `Agent.lastUsage.prompt_tokens` | 最近一次请求，覆盖式（`ContextGuardPlugin` / `AutoMigratePlugin` 据此判定） |
-| 本会话累计消耗（计费） | 本会话全部 assistant 消息的 `usage` 之和 | 每轮请求都会重发完整历史，故求和 = 真实消耗 |
+| 本会话累计消耗（计费） | `sumUsage(agent.messages)` | 逐消息求和（自身响应 + 委派）；每轮重发完整历史，故求和 = 真实消耗 |
+| 单条消息的消耗 | `message.usage` / `message.subAgentUsage` | 自身响应 / 内部委派累计 |
 
-仅 assistant 消息会有该字段；`formatHistory()` 按字段白名单序列化，`usage` 不会被发给模型。
+`formatHistory()` 按字段白名单序列化，`usage` / `subAgentUsage` 都不会发给模型。
 
 ## Tool（抽象基类）
 

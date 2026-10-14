@@ -114,7 +114,7 @@ Message.Function(functionCall, "执行结果");
 | `Error` | 发生错误 |
 | `Aborted` | 已中止 |
 
-> 助手消息还会带上产生它的那次 API 响应的 token 用量（`usage: { prompt_tokens, completion_tokens, total_tokens }`，由流式最后一个 chunk 写入，与 `agent.lastUsage` 同源）。它随消息持久化，对本会话全部助手消息的 `usage` 求和即累计消耗；仅助手消息会有值。
+> 消息会带上可归因的 token 消耗：助手消息的 `usage`（自身那次响应，由流式最后一个 chunk 写入），以及工具消息的 `subAgentUsage`（内部委派——如子 Agent——的累计用量）。两者随消息持久化；用 `sumUsage(agent.messages)` 求和即得本会话累计（含所有层级的子 Agent）。
 
 ### Tool（工具基类）
 

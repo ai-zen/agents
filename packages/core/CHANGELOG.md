@@ -1,5 +1,16 @@
 # Changelog
 
+## [4.5.0] - 2026-10-14
+
+### ✨ Added
+
+- **`AgentNS.Message.subAgentUsage` — per-message delegated token usage** — a tool message now carries the aggregate token usage of any **internal delegation** it performed (e.g. a sub-agent). The delegation path (`AgentTool` / `AgentToolLazy`) stamps it at the `onSubAgentEnd` boundary: `ctx.resultMessage.subAgentUsage = sumUsage(subAgent.messages)`. Because a sub-agent's *own* tool messages already carry their delegations, the fold is recursive — a grandchild sub-agent's usage is included automatically, with no double-counting. This keeps `usage` single-meaning (a message's own response) while making sub-agent cost **durable** (persisted with the conversation, not an in-memory counter) and recountable across sessions. The default SubAgent definition denies `subagents`, so nesting is opt-in.
+- **`sumUsage(messages)` exported from `@ai-zen/agents-core`** — the canonical way to total a message list: it sums both `usage` and `subAgentUsage`, so callers cannot forget the delegated part.
+
+### ✅ Tests
+
+- `Usage.test.ts` (5 cases) for `sumUsage` / `addUsage`; `Message.test.ts` covers the new field; `AgentTool.test.ts` adds a real **nested** delegation (parent → child → grandchild) asserting the parent's tool message folds in the grandchild's usage. Core suite: **136 passed, 17 skipped**.
+
 ## [4.4.0] - 2026-10-14
 
 ### ✨ Added

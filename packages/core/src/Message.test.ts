@@ -48,6 +48,7 @@ describe("Message", () => {
         reasoning_content: "思考中...",
         status: AgentNS.MessageStatus.Pending,
         usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        subAgentUsage: { prompt_tokens: 20, completion_tokens: 8, total_tokens: 28 },
         hidden: true,
         omit: false,
       });
@@ -60,6 +61,11 @@ describe("Message", () => {
         completion_tokens: 5,
         total_tokens: 15,
       });
+      expect(msg.subAgentUsage).toEqual({
+        prompt_tokens: 20,
+        completion_tokens: 8,
+        total_tokens: 28,
+      });
       expect(msg.hidden).toBe(true);
       expect(msg.omit).toBe(false);
     });
@@ -67,6 +73,7 @@ describe("Message", () => {
     it("未传 usage 时应为 undefined（非 assistant / 未收到用量）", () => {
       const msg = Message.User("你好");
       expect(msg.usage).toBeUndefined();
+      expect(msg.subAgentUsage).toBeUndefined();
     });
   });
 
