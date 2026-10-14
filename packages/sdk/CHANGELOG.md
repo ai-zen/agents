@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.0-alpha.8] - 2026-10-14
+
+### ⚠️ Dependency
+
+- **`@ai-zen/agents-core` bumped to `^4.5.0`** — picks up `AgentNS.Message.subAgentUsage` and the `sumUsage()` primitive. The skill sub-agent tool (`call_skill_sub_agent`) is built on `AgentToolLazy`, so it inherits the delegation-boundary stamping with no SDK source change.
+
 ## [1.0.0-alpha.7] - 2026-10-14
 
 ### ⚠️ Dependency
