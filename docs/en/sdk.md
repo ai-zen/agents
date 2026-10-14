@@ -152,7 +152,7 @@ const mgr = new ConfigManager("~/.ai-zen/config.json");
 const { config, agent, subAgent } = await mgr.bootstrap();   // one-shot init (idempotent)
 ```
 
-- Preset endpoints (OpenAI / Zhipu / DeepSeek), 7 models (including the vision model `vision: true`), 3 image models, and default options.
+- Preset endpoints (OpenAI / Zhipu / DeepSeek), 8 models (including vision models with `vision: true`), 3 image models, and default options.
 - Factory-default MCP servers (`socket-pty`, `chrome-devtools`) are written to `~/.ai-zen/mcp.json` on first run; existing files are not overwritten.
 - All `ensure*` operations do not overwrite existing files, so user configuration is never lost.
 

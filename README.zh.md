@@ -79,7 +79,7 @@ TypeScript 核心库，可在 Node.js 和浏览器环境中使用。
 - **内置工具** — 全部类化（`SdkCallbackTool`），由内置工具插件（`BuiltinToolsScopePlugin`）用 `ToolEnv`（cwd + config）实例化；相对路径以 `Scope.cwd` 为基准，不依赖全局 `process.cwd()`；统一输出保护（`maxToolOutput`，超限时按各工具策略落盘或只警告）
 - **MCP** — 完整的连接生命周期管理（连接、重连、OAuth、空闲超时）
 - **Skill** — 发现、frontmatter 解析、惰性加载
-- **插件** — autoMigrate、autoRefreshTools
+- **插件** — autoMigrate、autoRefreshTools、contextGuard、unknownToolHint
 - **Scope + ScopePlugin** — 编排容器（配置 / `cwd` / agentsDir + 三阶段能力管线）+ 可插拔能力来源（经 `allInOne` 装配 5 个标准插件）
 
 [查看 SDK 文档 →](./packages/sdk/docs/sdk-design-v1.md)

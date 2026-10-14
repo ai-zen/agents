@@ -61,10 +61,12 @@ interface AgentContext {
   messages: AgentNS.Message[];             // 消息列表
   tools: Tool[];                           // 工具列表
   allowJsonParseError: boolean;            // 是否允许 JSON 解析错误（默认 true）
+  abortedToolRoundStrategy: AbortedToolRoundStrategy; // 工具轮次被中断时的归一策略（默认 "fill"）
+  abortedToolRoundReason: string;          // fill 策略下未完成工具结果的填充原因（默认「用户中断了会话」）
 }
 ```
 
-构造签名：`{ client, model, modelConfig?, messages?, tools?, allowJsonParseError? }`。
+构造签名：`{ client, model, modelConfig?, messages?, tools?, allowJsonParseError?, abortedToolRoundStrategy?, abortedToolRoundReason? }`。
 
 - `append(message)` —— 追加一条消息并返回它。
 - 扩展应通过 **插件**（`agent.use(plugin)`），而非构造钩子。
@@ -262,6 +264,19 @@ agent.events.on("sub-agent-end", ({ agent, subAgent, toolCallContext }) => {});
 ```ts
 agent.abort();  // 中止当前轮所有进行中的内循环任务
 ```
+
+### 中断的工具轮次（aborted tool rounds）
+
+`abort()` 会把在途消息**各自**标记为 `Aborted`，而 `formatHistory()` 又**按 status 独立过滤**——二者都不把一个工具轮次当作整体。因此一次被中断的**并行工具调用**可能留下「带 `tool_calls` 的 assistant 被剔除、部分已完成的结果仍在」（反向亦成立），这些没有父调用的孤儿 `role:"tool"` 消息会被服务端拒绝。
+
+为此 `Agent.run()` 在内循环结束后调用导出的 `reconcileAbortedToolRounds()`，令每条带 `tool_calls` 的 assistant 与其结果**同进同出**。行为由两个 `AgentContext` 选项决定：
+
+| 选项 | 默认 | 说明 |
+|------|------|------|
+| `abortedToolRoundStrategy` | `"fill"` | `fill` 保留整轮（恢复 assistant 为 `Completed`，给未完成/缺失的结果补原因）；`drop` 整轮丢弃 |
+| `abortedToolRoundReason` | `"用户中断了会话"` | `fill` 策略下未完成工具结果的填充内容 |
+
+仅处理含 `Aborted` 消息的轮次；其它状态（如 `allowJsonParseError=false` 时工具报错标记的 `Error`）语义不变。
 
 ## 相关文档
 

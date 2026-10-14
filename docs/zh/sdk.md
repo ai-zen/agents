@@ -152,7 +152,7 @@ const mgr = new ConfigManager("~/.ai-zen/config.json");
 const { config, agent, subAgent } = await mgr.bootstrap();   // 一键初始化（幂等）
 ```
 
-- 预置端点（OpenAI / 智谱 / DeepSeek）、7 个模型（含视觉模型 `vision: true`）、3 个图片模型、默认选项。
+- 预置端点（OpenAI / 智谱 / DeepSeek）、8 个模型（含视觉模型 `vision: true`）、3 个图片模型、默认选项。
 - 出厂默认 MCP 服务器（`socket-pty`、`chrome-devtools`）首启写入 `~/.ai-zen/mcp.json`，已存在不覆盖。
 - 所有 `ensure*` 操作对已存在文件不覆盖，用户配置永不丢失。
 

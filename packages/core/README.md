@@ -57,6 +57,8 @@ interface AgentContext {
   messages: AgentNS.Message[];       // Message list
   tools: Tool[];                     // Tool list
   allowJsonParseError: boolean;      // Whether JSON parse errors are allowed (default true)
+  abortedToolRoundStrategy: AbortedToolRoundStrategy; // how an interrupted tool round is reconciled (default "fill")
+  abortedToolRoundReason: string;    // reason filled into unfinished tool results under "fill" (default "用户中断了会话")
 }
 ```
 
@@ -411,6 +413,19 @@ agent.events.on("sub-agent-end", ({ agent, subAgent, toolCallContext }) => {}); 
 ```typescript
 agent.abort(); // Abort all in-flight inner-loop tasks of the current round
 ```
+
+#### Aborted tool rounds
+
+`abort()` marks each in-flight message as `Aborted` **individually**, and `formatHistory()` filters by status **independently**, so neither treats a tool round as a unit. An interrupted **parallel** tool call could therefore drop the `tool_calls` assistant while keeping some completed results (or the reverse), leaving orphan `role:"tool"` messages that the server rejects.
+
+To fix this, `Agent.run()` calls the exported `reconcileAbortedToolRounds()` once the inner loop has settled, keeping each `tool_calls` assistant and its results **all-in or all-out**. Two `AgentContext` options drive it:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `abortedToolRoundStrategy` | `"fill"` | `fill` keeps the whole round (restores the assistant to `Completed` and backfills a reason for unfinished/missing results); `drop` discards the whole round |
+| `abortedToolRoundReason` | `"用户中断了会话"` | The reason text filled into unfinished results under `fill` |
+
+Only rounds containing an `Aborted` message are touched; other states (e.g. `Error` from `allowJsonParseError=false`) keep their semantics.
 
 ## More Examples
 

@@ -79,7 +79,7 @@ SDK layer built on top of `@ai-zen/agents-core`, providing shared business logic
 - **Built-in Tools** — All tools are classes (`SdkCallbackTool`), instantiated by the built-in-tools plugin (`BuiltinToolsScopePlugin`) with `ToolEnv` (`cwd` + config) injection; relative paths resolve against `Scope.cwd`, no global `process.cwd()` dependency; unified output protection (`maxToolOutput` — overflow dumped or warned per tool policy)
 - **MCP** — Full connection lifecycle management (connect, reconnect, OAuth, idle timeout)
 - **Skill** — Discovery, frontmatter parsing, lazy loading
-- **Plugins** — autoMigrate, autoRefreshTools
+- **Plugins** — autoMigrate, autoRefreshTools, contextGuard, unknownToolHint
 - **Scope + ScopePlugin** — Orchestration container (config / `cwd` / agentsDir + three-phase capability pipeline) with pluggable capability sources (5 standard plugins via `allInOne`)
 
 [View SDK docs →](./packages/sdk/docs/sdk-design-v1.md)

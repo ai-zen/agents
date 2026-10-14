@@ -913,10 +913,10 @@ class ConfigManager {
 
 | 常量 | 说明 |
 |------|------|
-| `DEFAULT_APP_CONFIG` | 预置端点（OpenAI / 智谱 / DeepSeek）+ 7 个模型（含视觉模型，`vision: true`）+ 3 个图片模型 + 默认选项 + `maxToolOutput: 32768` |
+| `DEFAULT_APP_CONFIG` | 预置端点（OpenAI / 智谱 / DeepSeek）+ 8 个模型（含视觉模型，`vision: true`）+ 3 个图片模型 + 默认选项 + `maxToolOutput: 32768` |
 | `DEFAULT_AGENT_ID` / `DEFAULT_AGENT_DEFINITION` | 默认 Agent（id=`default`，四维全开，`custom: false`） |
 | `DEFAULT_SUBAGENT_ID` / `DEFAULT_SUBAGENT_DEFINITION` | 默认通用助手 SubAgent（id=`sub-agent-default`，`subagents: deny` 防递归） |
-| `DEFAULT_MCP_CONFIG` | 出厂默认 MCP 服务器（socket-pty 终端） |
+| `DEFAULT_MCP_CONFIG` | 出厂默认 MCP 服务器（socket-pty 终端、chrome-devtools 浏览器调试） |
 | `CONFIG_SUB_DIRS` | 标准共享子目录：`agents` / `sub-agents` / `skills` / `tools` / `mcp-oauth` |
 
 设计决策：

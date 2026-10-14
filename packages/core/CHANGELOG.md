@@ -1,5 +1,11 @@
 # Changelog
 
+## [4.5.1] - 2026-10-14
+
+### 📄 Docs
+
+- **Documented the aborted-tool-round options on `AgentContext`** — the `AgentContext` interface and constructor signature in `docs/zh/core.md` and `README{,.zh}.md` omitted `abortedToolRoundStrategy` / `abortedToolRoundReason` (introduced in core 4.3.1). They are now included, along with a new "aborted tool rounds" section explaining what `reconcileAbortedToolRounds()` does (it keeps each `tool_calls` assistant and its results **all-in or all-out**) and the two options (defaults `"fill"` / `"用户中断了会话"`). Docs-only; no runtime change.
+
 ## [4.5.0] - 2026-10-14
 
 ### ✨ Added

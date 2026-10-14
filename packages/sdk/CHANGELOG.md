@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.0-alpha.9] - 2026-10-14
+
+### ⚠️ Dependency
+
+- **`@ai-zen/agents-core` bumped to `^4.5.1`** — docs-only patch; no SDK source change.
+
+### 📄 Docs
+
+- Corrected the factory-defaults description in `docs/sdk-design-v1.md`: the preset **model count is 8** (was 7), and `DEFAULT_MCP_CONFIG` ships **two** servers (`socket-pty` + `chrome-devtools`).
+
 ## [1.0.0-alpha.8] - 2026-10-14
 
 ### ⚠️ Dependency
