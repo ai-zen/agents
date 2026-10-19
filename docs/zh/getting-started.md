@@ -115,7 +115,7 @@ await agent.send("What is the weather like in Beijing and Shanghai today?");
 SDK 提供了一键组装：`ConfigManager`（配置与出厂默认）→ `Scope`（全局上下文 + 能力插件装配）→ `createAgent()`（产出 `SdkAgent`）。
 
 ```ts
-import { Scope, allInOne, createAgent, ConfigManager, AutoMigratePlugin, AutoRefreshToolsPlugin, TaskMigrationService } from "@ai-zen/agents-sdk";
+import { Scope, allInOne, createAgent, ConfigManager, AutoMigratePlugin, AutoRefreshToolsPlugin, ContextGuardPlugin, HandoffService } from "@ai-zen/agents-sdk";
 
 // 1. 初始化配置（幂等，已有文件不覆盖）
 const mgr = new ConfigManager("~/.ai-zen/config.json");
@@ -139,7 +139,7 @@ await scope.init();                    // 首次能力发现，锁定插件注�
 // 3. 创建 Agent 并注册插件
 const agent = await createAgent(scope, config.defaultAgent ?? "default");
 agent.use(new AutoMigratePlugin({
-  service: new TaskMigrationService({ onMigrated: (mctx) => { /* 保存回执 */ } }),
+  service: new HandoffService({ handoffDir: "/work/.ai-zen/handoffs", onMigrated: (mctx) => { /* 保存回执 */ } }),
   maxTokens: 250_000,
 }));
 agent.use(new AutoRefreshToolsPlugin());

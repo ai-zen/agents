@@ -21,7 +21,7 @@ Desktop ──┘                    │
 types         ← pure types, zero business dependencies (incl. ToolEnv)
 config        ← ConfigManager + constants: config.json read/write + directory setup + factory defaults
 crud          ← capability-entity CRUD (Agent definitions; conversations/drafts are persisted by each consumer)
-runtime       ← model factory + Agent assembly + task migration (createModel / createAgent / SdkAgent / TaskMigrationService)
+runtime       ← model factory + Agent assembly + task handoff/migration (createModel / createAgent / SdkAgent / HandoffService / HandoffGuardPlugin)
 scope         ← Scope orchestration container + ScopePlugin contract + PermissionEvaluator / disclosure + plugins/ (5 self-contained capability sources: discovery + tools + plugin)
 agent-plugins ← Agent plugins (autoMigrate, autoRefreshTools, contextGuard, unknownToolHint)
 shared        ← logging, errors
@@ -68,8 +68,9 @@ const scope = new Scope({
 await scope.init();
 
 const agent = await createAgent(scope, "my-agent");
-const migrationService = new TaskMigrationService({ onMigrated }); // migrates via the agent's own model client
-agent.use(new AutoMigratePlugin({ service: migrationService, maxTokens }));
+const handoffService = new HandoffService({ handoffDir: "/work/.ai-zen/handoffs", skillDirs });
+agent.use(new ContextGuardPlugin({ maxTokens, isSuspended: () => handoffService.busy }));
+agent.use(new AutoMigratePlugin({ service: handoffService, maxTokens }));
 agent.use(new AutoRefreshToolsPlugin());
 agent.use(new UnknownToolHintPlugin({ scope }));
 await agent.init();
@@ -128,7 +129,7 @@ Tool output protection: `AppConfig.maxToolOutput` (in characters, default 32768)
 
 | Plugin | Description |
 |--------|-------------|
-| `AutoMigratePlugin` | Automatically triggers task migration when the context overflows; delegates the actual migration to the injected `TaskMigrationService` instance (history handled per `strategy`: default `omit` keeps it auditable, optional `prune` drops it), which reuses the agent's own model client |
+| `AutoMigratePlugin` | Automatically triggers task migration when the context overflows; delegates the actual migration to the injected `HandoffService` (history handled per `strategy`: default `omit` keeps it auditable, optional `prune` drops it). `resolveMode` lets the caller pick the handoff executor or skip the round. Steps aside while `service.busy` to avoid the handoff→migrate→handoff recursion |
 | `AutoRefreshToolsPlugin` | Re-scans the file system before each `send()` to refresh the tool list |
 | `ContextGuardPlugin` | Context safety guard — before each request, throws `ContextOverflowError` (interrupting the conversation) when the previous round's `usage.prompt_tokens` exceeds `maxTokens × ratio` (default 1.5), preventing context runaway from reading oversized files |
 | `UnknownToolHintPlugin` | Smarter unknown-tool hints — when the LLM calls a nonexistent tool, guides it to `call_mcp_tool` / points out permission issues based on MCP config (opt-in via `agent.use`) |

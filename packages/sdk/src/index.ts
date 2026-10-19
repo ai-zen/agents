@@ -63,6 +63,14 @@ export {
   CONFIG_SUB_DIRS,
 } from "./config/ConfigManager.js";
 
+// 出厂资产 — 出厂 Skill（随版本释放到 <basePath>/skills/）
+export {
+  FACTORY_SKILLS,
+  HANDOFF_SKILL_ID,
+  FALLBACK_HANDOFF_TEMPLATE,
+  isCustomSkill,
+} from "./config/factory-skills.js";
+
 // CRUD — 实体仓储（仅 Agent 定义等能力实体）
 export { EntityRepository } from "./shared/EntityRepository.js";
 export { AgentRepository } from "./crud/AgentRepository.js";
@@ -76,16 +84,24 @@ export { McpConnectionManager } from "./scope/plugins/mcp/McpConnectionManager.j
 export type { McpConnectOptions } from "./scope/plugins/mcp/McpConnectionManager.js";
 export { SdkCallbackTool } from "./scope/plugins/builtin/SdkCallbackTool.js";
 export type { SdkCallbackToolOptions } from "./scope/plugins/builtin/SdkCallbackTool.js";
-export { TaskMigrationService } from "./runtime/TaskMigrationService.js";
+export { HandoffService } from "./runtime/HandoffService.js";
 export type {
-  MigrationContext,
+  HandoffContext,
+  HandoffMode,
+  HandoffParams,
+  HandoffServiceOptions,
+  MigrateParams,
   MigrationStrategy,
-  TaskMigrationServiceOptions,
-} from "./runtime/TaskMigrationService.js";
+} from "./runtime/HandoffService.js";
+export { HandoffGuardPlugin } from "./runtime/HandoffGuardPlugin.js";
 
 // 插件
 export { AutoMigratePlugin } from "./agent-plugins/AutoMigratePlugin.js";
-export type { AutoMigrateOptions } from "./agent-plugins/AutoMigratePlugin.js";
+export type {
+  AutoMigrateOptions,
+  AutoMigrateTriggerInfo,
+  AutoMigrateModeResolver,
+} from "./agent-plugins/AutoMigratePlugin.js";
 export { AutoRefreshToolsPlugin } from "./agent-plugins/AutoRefreshToolsPlugin.js";
 export { ContextGuardPlugin } from "./agent-plugins/ContextGuardPlugin.js";
 export type { ContextGuardOptions } from "./agent-plugins/ContextGuardPlugin.js";

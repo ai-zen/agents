@@ -20,7 +20,7 @@ Desktop ──┘                    │
 types         ← 纯类型，零业务依赖（含 ToolEnv 工具环境）
 config        ← ConfigManager + constants：读写 config.json + 目录初始化 + 出厂默认
 crud          ← 能力实体 CRUD（Agent 定义等；会话/草稿已下放给各端自行持久化）
-runtime       ← 模型工厂 + Agent 组装 + 任务迁移（createModel / createAgent / SdkAgent / TaskMigrationService）
+runtime       ← 模型工厂 + Agent 组装 + 任务交接/迁移（createModel / createAgent / SdkAgent / HandoffService / HandoffGuardPlugin）
 scope         ← Scope 编排容器 + ScopePlugin 契约 + PermissionEvaluator / disclosure + plugins/（5 个自包含能力来源：发现 + 工具 + 插件）
 agent-plugins ← Agent 插件（autoMigrate、autoRefreshTools、contextGuard、unknownToolHint）
 shared        ← 日志、错误
@@ -67,8 +67,9 @@ const scope = new Scope({
 await scope.init();
 
 const agent = await createAgent(scope, "my-agent");
-const migrationService = new TaskMigrationService({ onMigrated }); // 迁移复用传入 agent 自身的模型调用
-agent.use(new AutoMigratePlugin({ service: migrationService, maxTokens }));
+const handoffService = new HandoffService({ handoffDir: "/work/.ai-zen/handoffs", skillDirs });
+agent.use(new ContextGuardPlugin({ maxTokens, isSuspended: () => handoffService.busy }));
+agent.use(new AutoMigratePlugin({ service: handoffService, maxTokens }));
 agent.use(new AutoRefreshToolsPlugin());
 agent.use(new UnknownToolHintPlugin({ scope }));
 await agent.init();
@@ -127,7 +128,7 @@ await scope.dispose(); // 断开 MCP、释放插件资源
 
 | 插件 | 说明 |
 |------|------|
-| `AutoMigratePlugin` | 上下文超限时自动触发任务迁移，生成交接文档并追加对话断点（历史按 `strategy` 处理：默认 `omit` 标记保留可审计，可选 `prune` 物理剔除；委托注入的 `TaskMigrationService`，复用 Agent 自身的模型调用） |
+| `AutoMigratePlugin` | 上下文超限时自动触发任务迁移（历史按 `strategy` 处理：默认 `omit` 标记保留可审计，可选 `prune` 物理剔除），委托注入的 `HandoffService`；`resolveMode` 让调用方决定交接执行者或跳过本轮；`service.busy` 期间让行，避免「交接→迁移→交接」递归 |
 | `AutoRefreshToolsPlugin` | 每次 `send()` 前重新扫描文件系统，刷新工具列表 |
 | `ContextGuardPlugin` | 上下文安全护栏 — 每轮发请求前检测上一轮 `usage.prompt_tokens`，超过 `maxTokens × ratio`（默认 1.5，即 +50%）时抛 `ContextOverflowError` 中断对话，防止读入超大文件导致上下文失控 |
 | `UnknownToolHintPlugin` | 未知工具智能提示 — LLM 调用不存在的工具时，根据 MCP 配置引导使用 `call_mcp_tool` / 提示权限问题（调用方显式 `agent.use` 注册） |

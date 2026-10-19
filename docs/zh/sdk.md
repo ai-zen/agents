@@ -138,7 +138,7 @@ abstract class SdkCallbackTool extends Tool {
 
 | 插件 | 说明 |
 |------|------|
-| `AutoMigratePlugin` | 上下文超限时自动触发任务迁移；实际迁移委托给注入的 `TaskMigrationService` |
+| `AutoMigratePlugin` | 上下文超限时自动触发任务迁移；实际流程委托给注入的 `HandoffService`（`resolveMode` 选执行者，`busy` 防递归） |
 | `AutoRefreshToolsPlugin` | 每次 `send()` 前重新刷新工具列表 |
 | `ContextGuardPlugin` | 上下文安全护栏；超硬上限（`maxTokens × ratio`）时在请求前抛 `ContextOverflowError` |
 | `UnknownToolHintPlugin` | 未知工具的 MCP 智能提示（显式 `agent.use` 注册） |
@@ -156,22 +156,37 @@ const { config, agent, subAgent } = await mgr.bootstrap();   // 一键初始化�
 - 出厂默认 MCP 服务器（`socket-pty`、`chrome-devtools`）首启写入 `~/.ai-zen/mcp.json`，已存在不覆盖。
 - 所有 `ensure*` 操作对已存在文件不覆盖，用户配置永不丢失。
 
-## 任务迁移（TaskMigrationService）
+## 任务交接与迁移（HandoffService）
 
-迁移服务只负责「怎么迁移」，复用传入 `agent` 自身模型生成交接文档；`AutoMigratePlugin` 只负责「何时触发」。
+两层，一条管道：
+
+- `handoff()` —— 停工、核实真实状态、写交接文档、校验（失败降级）。**不动会话**；
+- `migrate()` —— `handoff()` 之后按 `strategy` 清历史，并注入一条只含文档路径的断点消息。
+
+文档模板**不在代码里**：来自 `handoff` Skill（`~/.ai-zen/skills/handoff/SKILL.md`），由 `ConfigManager.bootstrap()` 释放并随版本同步（frontmatter 写 `metadata.custom: "true"` 可退出同步）。代码只负责读 Skill、注入、校验文件、读不到时用内置最小兜底模板。
+
+两种执行者：`self`（默认——原 agent 在自己会话里写，上下文与工具完整）与 `summary`（一次独立调用，无工具）。`self` 失败时**单向**降级为 `summary`。
 
 ```ts
-import { TaskMigrationService, AutoMigratePlugin } from "@ai-zen/agents-sdk";
+import { HandoffService, AutoMigratePlugin, ContextGuardPlugin } from "@ai-zen/agents-sdk";
 
-agent.use(new AutoMigratePlugin({
-  service: new TaskMigrationService({ onMigrated: (mctx) => { /* 保存旧历史 */ } }),
-  maxTokens: 250_000,
-}));
+const handoffService = new HandoffService({
+  handoffDir: "/work/.ai-zen/handoffs",
+  skillDirs: ["/work/.ai-zen/skills", "~/.ai-zen/skills"],
+  onHandoff: (hctx) => { /* 存档旧历史（此时已包含交接回合） */ },
+  onMigrated: (hctx) => { hctx.agent.lastUsage = undefined; },
+});
+
+agent.use(new ContextGuardPlugin({ maxTokens: 250_000, isSuspended: () => handoffService.busy }));
+agent.use(new AutoMigratePlugin({ service: handoffService, maxTokens: 250_000 }));
 ```
 
-- 策略 `strategy`：`omit`（默认，标记历史 `omit: true` 保留可审计）/ `prune`（物理剔除）。
-- 在 `migrate()` 单次调用中可覆盖默认策略。
-- 不重建 Agent，只重建消息列表；迁移失败不丢失原消息。
+- 策略 `strategy`：`omit`（默认，历史标记 `omit: true` 保留可审计）/ `prune`（物理剔除）。
+- `service.busy` 期间自动迁移插件让行（防递归），护栏放宽到 `× 2`（交接回合不被误杀，仍保留熔断）。
+- `HandoffGuardPlugin` 仅在交接回合生效：拦截 `edit` / `rm` / `rename` 等，`write` 只放行交接文档（软拒绝，把模型引回正题）。
+- 不重建 Agent，仅重建消息列表；交接失败不会丢原消息。
+
+
 
 ## 消费模式（完整）
 

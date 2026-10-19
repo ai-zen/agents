@@ -1,5 +1,41 @@
 # Changelog
 
+## [1.0.0-alpha.10] - 2026-10-20
+
+### 💥 Breaking Changes
+
+- **`TaskMigrationService` → `HandoffService`，并拆成 `handoff()` / `migrate()` 两层** —— 「交接」（写交接文档）与「迁移」（交接 + 开新会话）此前混在一个方法里，现在概念与 API 一一对应：
+  - `handoff(params)`：停工 → 核实 → 写文档 → 校验（失败降级）。**不改动会话**；
+  - `migrate(params)`：`handoff()` 之后按 `strategy` 清历史并注入断点消息。
+  - 类型随迁：`MigrationContext` → `HandoffContext`（新增 `mode` / `requestedMode` / `handoffPath` / `migrating`），`TaskMigrationServiceOptions` → `HandoffServiceOptions`（新增 `handoffDir` / `mode` / `skillDirs` / `minHandoffBytes`）。
+  - 钩子重命名：`onBeforeMigrate` → `onBeforeHandoff`，新增 `onHandoff`（文档写好、清历史之前）。
+- **交接文档改由「原 agent 在自己会话里写」（`mode: "self"`，默认）**，而非另起一次独立的摘要调用。原实现把历史序列化成 `[role]: content` 后交给一个无工具、无原会话上下文的调用，工具名与调用参数在序列化时全部丢失，写文档的一方也无法核实分支/改动/测试状态，只能靠推演——这是文档质量差的根因。现在的 `self` 回合：原 agent 保留全部上下文与工具，可 `read` / `exec` / `git status` 核实后落盘。
+- **`summary`（旧的独立摘要）保留为逃生模式**，并作为 `self` 失败时的**单向**降级目标（无 `write` 工具 / 文件缺失或过小（重试一次）/ 工具或护栏报错）。反向永不发生——那会在上下文最满的时刻再加一次全量请求。
+- **`AutoMigrateOptions` 新增 `resolveMode`**，把「用谁交接」从插件继承转移到回调：返回 `HandoffMode` 或 `null`（跳过本次迁移）。原 CLI 的 `AutoMigrateConfirmPlugin` 子类因此退化为纯回调。
+
+### ✨ 新增
+
+- **`HandoffGuardPlugin`**：交接回合的一次性工具守卫。只放行 `write` 到交接文档（绝对路径归一后比较），拒绝 `edit` / `batch_edit` / `rm` / `rename` / `mkdir` / `copy`。拒绝返回字符串（软拒绝）而非抛错——抛错会被 core 标记为 Error + `isPreventDefault`，整轮交接直接死。边界如实记录：挡不住 `exec`，它降低误操作概率，不是沙箱。
+- **`ContextGuardPlugin` 新增 `isSuspended` / `suspendedRatio`**：交接回合（`service.busy`）把硬上限从 `× 1.5` 放宽到 `× 2`，既不被误杀又保留熔断。
+- **出厂 Skill 机制**：`ConfigManager.ensureFactorySkills()` 在 `bootstrap()` 中释放 / 同步 `skills/handoff/SKILL.md`。覆盖策略与 `syncManagedModels` 同构——frontmatter 标 `metadata.custom: "true"` 视为用户自有、永不覆盖；否则随版本同步。内容以字符串常量内联在 `config/factory-skills.ts`（`tsc` 直接编译，无需打包非 TS 资源）。
+- **交接模板的唯一真相源改为 Skill**：`HANDOFF_SECTIONS` / `createPrompt()` 已删除，代码只保留「读 Skill → 注入 → 校验文件 → 读不到时用 `FALLBACK_HANDOFF_TEMPLATE`」。Skill 只讲「怎么写」，代码只讲「写到哪、有什么能力」（本体系无模板变量引擎，不发明占位符）。
+- `HandoffService.createHandoffFileName()`（`<YYYYMMDD-HHmmss>-<会话id前8位>.md`）、`createHandoffInstruction()`、`createPostMessages(handoffPath)`（断点**只给路径**，由接手方 `read`）。
+
+### 🔧 修复
+
+- **交接触发的无限递归**：交接回合本身是一次 `send()`，其 `onAfterSend` 会再次进入 `AutoMigratePlugin`。现以 `service.busy` 让行（`handoff()` / `migrate()` 共用一把锁，顺带拒绝重入）。
+- **交接回合被自己触发/被护栏击杀**：交接恰好发生在上下文最满的时刻。除 `busy` 让行外，交接回合开跑前清空 `agent.lastUsage`（纵深防御），并由调用方在迁移后清空（否则护栏拿交接回合用量误杀新会话第一条消息）。
+
+### ✅ 测试
+
+- 新增 `HandoffService.test.ts`（24 例）、`HandoffGuardPlugin.test.ts`（7 例）、`factory-skills.test.ts`（7 例）；重写 `AutoMigratePlugin.test.ts`、`ContextGuardPlugin.test.ts`（新增 `isSuspended` 4 例）。全量 **54 文件 / 525 用例**通过，`tsc --noEmit` 与 `build` 零错误。
+
+### 📄 Docs
+
+- `docs/sdk-design-v1.md` §18 重写为「任务交接（HandoffService）」（两层语义、Template 单一真相源、两种执行者、自交接三道保险、接口、断点只给路径）；§17 插件章节、目录树与消费示例同步。
+- `README.md` / `README.zh.md`、`../docs/{en,zh}/sdk.md`、`architecture.md`、`getting-started.md` 及网站镜像同步。
+
+
 ## [1.0.0-alpha.9] - 2026-10-14
 
 ### ⚠️ Dependency

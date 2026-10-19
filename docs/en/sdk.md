@@ -138,7 +138,7 @@ abstract class SdkCallbackTool extends Tool {
 
 | Plugin | Description |
 |------|------|
-| `AutoMigratePlugin` | Automatically triggers task migration when context overflows; actual migration is delegated to the injected `TaskMigrationService` |
+| `AutoMigratePlugin` | Automatically triggers task migration when context overflows; actual flow is delegated to the injected `HandoffService` (`resolveMode` picks the executor, `busy` prevents recursion) |
 | `AutoRefreshToolsPlugin` | Re-refreshes the tool list before each `send()` |
 | `ContextGuardPlugin` | Context safety guard; throws `ContextOverflowError` before a request when the hard limit (`maxTokens × ratio`) is exceeded |
 | `UnknownToolHintPlugin` | MCP smart hint for unknown tools (registered explicitly via `agent.use`) |
@@ -156,22 +156,35 @@ const { config, agent, subAgent } = await mgr.bootstrap();   // one-shot init (i
 - Factory-default MCP servers (`socket-pty`, `chrome-devtools`) are written to `~/.ai-zen/mcp.json` on first run; existing files are not overwritten.
 - All `ensure*` operations do not overwrite existing files, so user configuration is never lost.
 
-## Task migration (TaskMigrationService)
+## Task handoff and migration (HandoffService)
 
-The migration service only handles "how to migrate", reusing the passed-in `agent`'s own model to generate the handoff document; `AutoMigratePlugin` only handles "when to trigger".
+Two layers, one pipeline:
+
+- `handoff()` — stop the work, verify the real state, write the handoff document, validate it (degrade on failure). **Does not touch the session.**
+- `migrate()` — `handoff()`, then clear history per `strategy` and inject a breakpoint message holding only the document path.
+
+The document template is **not** in the code: it comes from the `handoff` skill (`~/.ai-zen/skills/handoff/SKILL.md`), released and version-synced by `ConfigManager.bootstrap()` (frontmatter `metadata.custom: "true"` opts out). The code only reads the skill, injects it, validates the file, and falls back to a minimal built-in template when the skill is missing.
+
+Two executors: `self` (default — the original agent writes it in-session with full context and tools) and `summary` (one independent call, no tools). `self` degrades to `summary` one-way.
 
 ```ts
-import { TaskMigrationService, AutoMigratePlugin } from "@ai-zen/agents-sdk";
+import { HandoffService, AutoMigratePlugin, ContextGuardPlugin } from "@ai-zen/agents-sdk";
 
-agent.use(new AutoMigratePlugin({
-  service: new TaskMigrationService({ onMigrated: (mctx) => { /* save the old history */ } }),
-  maxTokens: 250_000,
-}));
+const handoffService = new HandoffService({
+  handoffDir: "/work/.ai-zen/handoffs",
+  skillDirs: ["/work/.ai-zen/skills", "~/.ai-zen/skills"],
+  onHandoff: (hctx) => { /* save the old history (now includes the handoff turn) */ },
+  onMigrated: (hctx) => { hctx.agent.lastUsage = undefined; },
+});
+
+agent.use(new ContextGuardPlugin({ maxTokens: 250_000, isSuspended: () => handoffService.busy }));
+agent.use(new AutoMigratePlugin({ service: handoffService, maxTokens: 250_000 }));
 ```
 
 - Strategy `strategy`: `omit` (default, marks history `omit: true` to keep it auditable) / `prune` (physically removes).
-- A single `migrate()` call can override the default strategy.
-- Does not rebuild the Agent, only rebuilds the message list; a failed migration does not lose the original messages.
+- `service.busy` makes the auto-migrate plugin step aside (no recursion) and relaxes the context guard to `× 2` during the handoff turn.
+- `HandoffGuardPlugin` is armed only inside the handoff turn: it blocks `edit` / `rm` / `rename` … and allows `write` only for the handoff file (soft rejections that steer the model back).
+- Does not rebuild the Agent, only rebuilds the message list; a failed handoff does not lose the original messages.
 
 ## Consumption pattern (complete)
 

@@ -69,4 +69,59 @@ describe("ContextGuardPlugin", () => {
     const plugin = new ContextGuardPlugin({ maxTokens: 250_000 });
     await expect(plugin.onInnerLoopStart!(buildCtx(agent))).resolves.toBeUndefined();
   });
+
+  describe("isSuspended（交接回合放宽）", () => {
+    it("处于交接回合时改用 suspendedRatio（默认 2.0）→ 1.5 倍用量不再报错", async () => {
+      // 400_000 > 250_000*1.5=375_000（正常会抛），但 < 250_000*2=500_000
+      const agent = mockAgent({ lastUsage: { prompt_tokens: 400_000 } });
+      const plugin = new ContextGuardPlugin({
+        maxTokens: 250_000,
+        isSuspended: () => true,
+      });
+
+      await expect(plugin.onInnerLoopStart!(buildCtx(agent))).resolves.toBeUndefined();
+    });
+
+    it("交接回合仍保留熔断：超过 suspendedRatio 依旧报错", async () => {
+      const agent = mockAgent({ lastUsage: { prompt_tokens: 600_000 } });
+      const plugin = new ContextGuardPlugin({
+        maxTokens: 250_000,
+        isSuspended: () => true,
+      });
+
+      try {
+        await plugin.onInnerLoopStart!(buildCtx(agent));
+        expect.unreachable("应当抛出异常");
+      } catch (err) {
+        expect(err).toBeInstanceOf(ContextOverflowError);
+        expect((err as ContextOverflowError).ratio).toBe(2);
+        expect((err as ContextOverflowError).threshold).toBe(500_000);
+      }
+    });
+
+    it("支持自定义 suspendedRatio", async () => {
+      const agent = mockAgent({ lastUsage: { prompt_tokens: 450_000 } });
+      const plugin = new ContextGuardPlugin({
+        maxTokens: 250_000,
+        isSuspended: () => true,
+        suspendedRatio: 1.6,
+      });
+
+      await expect(plugin.onInnerLoopStart!(buildCtx(agent))).rejects.toBeInstanceOf(
+        ContextOverflowError,
+      );
+    });
+
+    it("未处于交接回合时保持原 ratio", async () => {
+      const agent = mockAgent({ lastUsage: { prompt_tokens: 400_000 } });
+      const plugin = new ContextGuardPlugin({
+        maxTokens: 250_000,
+        isSuspended: () => false,
+      });
+
+      await expect(plugin.onInnerLoopStart!(buildCtx(agent))).rejects.toBeInstanceOf(
+        ContextOverflowError,
+      );
+    });
+  });
 });

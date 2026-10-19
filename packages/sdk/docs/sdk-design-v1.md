@@ -243,7 +243,7 @@ class PermissionEvaluator {
 types         ← 纯类型，零业务依赖（含 ToolEnv、权限、MCP 类型）
 config        ← ConfigManager + constants：读写 config.json + 目录初始化 + 出厂默认
 crud          ← 能力实体 CRUD（AgentRepository；通用 EntityRepository 在 shared）
-runtime       ← 运行时常驻件：模型工厂 + Agent 组装 + 任务迁移（createModel / createAgent / SdkAgent / TaskMigrationService）
+runtime       ← 运行时常驻件：模型工厂 + Agent 组装 + 任务交接/迁移（createModel / createAgent / SdkAgent / HandoffService / HandoffGuardPlugin）
 scope         ← Scope 编排容器 + ScopePlugin 契约 + PermissionEvaluator + disclosure + plugins/（5 个能力来源，各自自包含「发现 + 工具 + 插件」）
 agent-plugins ← AgentPlugin 插件（autoMigrate、autoRefreshTools、contextGuard、unknownToolHint）
 shared        ← EntityRepository、SdkError、Logger
@@ -266,7 +266,8 @@ runtime/
   createModel.ts              ← createModel(scope, modelId) → { client, model, modelConfig }
   createAgent.ts              ← createAgent(scope, agentId) → SdkAgent
   SdkAgent.ts                 ← SdkAgent（携带 scope + definition；插件机制继承自 Core）
-  TaskMigrationService.ts     ← 任务迁移（实例化服务：migrate 复用传入 agent 的模型调用）
+  HandoffService.ts           ← 任务交接与迁移（handoff() / migrate()；模板来自 handoff Skill）
+  HandoffGuardPlugin.ts       ← 交接回合的一次性工具守卫（拦截「顺手干活」）
 scope/
   Scope.ts                    ← 编排容器
   ScopePlugin.ts              ← ScopePlugin 接口 + ScopeCandidates
@@ -1058,16 +1059,23 @@ class UnknownToolHintPlugin implements AgentPlugin {
 
 ### AutoMigratePlugin
 
-只负责「何时触发」，迁移逻辑委托给注入的 `TaskMigrationService`。
+只负责「何时触发」与「由谁交接」，实际流程委托给注入的 `HandoffService`。
 
 ```typescript
+type AutoMigrateModeResolver = (
+  info: { promptTokens: number; maxTokens: number },
+) => HandoffMode | null | Promise<HandoffMode | null>;
+
 interface AutoMigrateOptions {
-  service: TaskMigrationService;
+  service: HandoffService;
   maxTokens: number;
+  resolveMode?: AutoMigrateModeResolver;   // 返回 null = 跳过本次迁移
 }
 ```
 
-`onAfterSend`：读 `agent.lastUsage?.prompt_tokens` → 超 `maxTokens` 则 `service.migrate({ agent, promptTokens, maxTokens })`。
+`onAfterSend`：`service.busy` → 让行（防递归）；读 `agent.lastUsage?.prompt_tokens` → 超 `maxTokens` 则解析执行者后
+`service.migrate({ agent, promptTokens, maxTokens, mode })`。上层（如 CLI 的选择器）**只需提供 `resolveMode`**，
+不必继承插件。
 
 ### ContextGuardPlugin
 
@@ -1076,7 +1084,9 @@ interface AutoMigrateOptions {
 ```typescript
 interface ContextGuardOptions {
   maxTokens: number;
-  ratio?: number;          // 默认 1.5
+  ratio?: number;             // 默认 1.5
+  isSuspended?: () => boolean; // 交接回合等需要放宽的阶段
+  suspendedRatio?: number;     // 默认 2.0
 }
 ```
 
@@ -1085,54 +1095,114 @@ interface ContextGuardOptions {
 **推荐配合**：
 
 ```typescript
-agent.use(new ContextGuardPlugin({ maxTokens }));                      // >maxTokens×1.5 → 中断报错
-agent.use(new AutoMigratePlugin({
-  service: new TaskMigrationService({ onMigrated }),
+agent.use(new ContextGuardPlugin({
   maxTokens,
-}));                                                                   // [maxTokens, maxTokens×1.5] → 交接迁移
+  isSuspended: () => handoffService.busy,   // 交接回合放宽到 ×2，仍保留熔断
+}));                                        // >maxTokens×ratio → 中断报错
+agent.use(new AutoMigratePlugin({
+  service: handoffService,
+  maxTokens,
+}));                                        // [maxTokens, maxTokens×ratio] → 交接迁移
 ```
 
 ---
 
-## 18. 任务迁移（TaskMigrationService）
+## 18. 任务交接（HandoffService）
 
-迁移服务是**实例化服务**，职责是「怎么迁移」。它**不持有**任何模型调用：`migrate()` 直接复用传入 `agent` 的 `client` / `model` / `modelConfig` 生成交接文档，**无需 Scope、无需独立迁移 Agent**。
+**交接**与**迁移**是两个概念，代码里也是两层：
 
-> **策略开关（`strategy`）**：
-> - **`omit`（默认）**：迁移后不删除历史消息，而是标记 `omit: true`，并追加「对话断点」消息作为新上下文起点。
+| 概念 | 服务方法 | 语义 |
+|------|----------|------|
+| 交接 | `handoff()` | 停工 → 核实 → 写交接文档 → 校验（失败降级）。**不动会话** |
+| 迁移 | `migrate()` | `handoff()` 之后按 `strategy` 清历史 + 注入交接断点（开新会话） |
+
+> **策略开关（`strategy`，只影响 `migrate()`）**：
+> - **`omit`（默认）**：历史消息标记 `omit: true`（留存可审计，不再发给模型），末尾追加断点消息；
 > - **`prune`**：物理剔除历史，只保留 `definition.messages` + 断点消息。
 
+### 模板的唯一真相源：`handoff` Skill
+
+交接文档的结构与书写规则**不在代码里**，而在 `SKILL.md`（出厂释放到 `<basePath>/skills/handoff/SKILL.md`）：
+
+- 出厂内容以字符串常量内联在 `config/factory-skills.ts`（`tsc` 直接编译，无需打包非 TS 资源）；
+- 释放/同步策略与 `syncManagedModels` 同构：frontmatter 标 `metadata.custom: "true"` → 用户自有，永不覆盖；否则每次 `bootstrap()` 同步为最新版本；
+- 代码只做四件事：`readSkill()` 读正文 → 拼「本次交接参数」注入 → 校验文件（存在 + ≥ `minHandoffBytes`）→ 读不到 Skill 时用 `FALLBACK_HANDOFF_TEMPLATE`（保险丝，非第二真相源）。
+- 本体系没有模板变量引擎，故 **Skill 只讲「怎么写」，代码只讲「写到哪、有什么能力」**，二者用拼接组合，不在 Skill 里发明占位符。
+
+### 两种执行者
+
+| `mode` | 谁写 | 能力 | 代价 |
+|--------|------|------|------|
+| `self`（默认） | 原 agent 在自己的会话里写（`agent.send(交接指令)`） | 全部工具，可核实真实状态 | 多 1~2 次全量**输入** |
+| `summary` | 一次独立模型调用（序列化历史为输入，无工具） | 无 | 1 次全量输入 |
+
+`summary` 是**逃生模式**，也是 `self` 失败时的**单向降级**目标（反向永不发生：那会在最危险的时刻再加一次全量请求）。
+
+### 自交接的三道保险（缺一不可）
+
+1. **`busy` 标志**：交接回合本身也是一次 `send()`，其 `onAfterSend` 会再次到达 `AutoMigratePlugin`；
+   不跳过就是「交接触发迁移 → 迁移再交接」死循环。`handoff()` / `migrate()` 共用同一把锁，并顺带拒绝重入。
+2. **护栏放宽而非放行**：`ContextGuardPlugin` 在 `isSuspended()`（= `service.busy`）时用 `suspendedRatio`
+   （默认 2.0）代替 1.5。交接恰好发生在上下文最满的时刻，但熔断仍保留。
+3. **`HandoffGuardPlugin`（一次性）**：交接回合内拒绝 `edit` / `batch_edit` / `rm` / `rename` / `mkdir` / `copy`，
+   `write` 仅在目标路径归一后等于交接文档时放行。拒绝是**软拒绝**（返回字符串作为工具结果），
+   模型能读到引导并转回正题；抛错会被标记为 Error + preventDefault，整轮交接直接死。
+   **边界**：挡不住 `exec`，它降低误操作概率，不是沙箱。`Agent.use()` 无移除 API，故复用同一实例 + `arm()/disarm()`。
+
+### 接口
+
 ```typescript
+type HandoffMode = "self" | "summary";
 type MigrationStrategy = "omit" | "prune";
 
-interface TaskMigrationServiceOptions {
-  strategy?: MigrationStrategy;
-  onBeforeMigrate?: (ctx: MigrationContext) => void | Promise<void>;
-  onMigrated?: (ctx: MigrationContext) => void | Promise<void>;
+interface HandoffServiceOptions {
+  handoffDir?: string;              // 默认 <cwd>/.ai-zen/handoffs
+  mode?: HandoffMode;               // 默认 self
+  strategy?: MigrationStrategy;     // 默认 omit
+  skillDirs?: string[];             // 查找 handoff Skill 的目录（高 → 低）
+  client?; model?; modelConfig?;    // 仅 summary 模式可覆盖，默认回退 agent 自带
+  minHandoffBytes?: number;         // 默认 400
+  onBeforeHandoff?: (ctx: HandoffContext) => void | Promise<void>;
+  onHandoff?: (ctx: HandoffContext) => void | Promise<void>;
+  onMigrated?: (ctx: HandoffContext) => void | Promise<void>;
   logger?: Logger;
 }
 
-interface MigrationContext {
+interface HandoffContext {
   agent: SdkAgent;
+  mode: HandoffMode;                // 实际执行者（降级后可能不同于 requestedMode）
+  requestedMode: HandoffMode;
+  handoffPath: string;
+  handoffDoc?: string;              // 仅 summary 模式有值（self 模式不读盘）
   model: string;
   promptTokens?: number;
   maxTokens?: number;
-  historyText: string;
+  migrating: boolean;               // 钩子据此区分 /handoff 与 /migrate
   messageCountBefore: number;
-  handoffDoc?: string;
+  historyText: string;              // 仅 summary 模式填充
 }
 
-class TaskMigrationService {
-  static readonly HANDOFF_SECTIONS: { breakpoint, completed, pending, memory, files, instructions };
-  static createPrompt(): string;
-  static createPostMessages(handoffDoc: string): AgentNS.Message[];
-  static serializeMessages(messages: AgentNS.Message[]): string;
-  constructor(options?: TaskMigrationServiceOptions);
-  async migrate(params: { agent: SdkAgent; promptTokens?; maxTokens?; strategy? }): Promise<MigrationContext>;
+class HandoffService {
+  static createHandoffFileName(date?, conversationId?): string;      // <YYYYMMDD-HHmmss>-<id前8位>.md
+  static createHandoffInstruction(p): string;                        // [Skill 正文] + [本次交接参数]
+  static createPostMessages(handoffPath): AgentNS.Message[];         // 断点：只给路径
+  static serializeMessages(messages): string;
+  get busy(): boolean;
+  async handoff(params: { agent; mode?; promptTokens?; maxTokens?; conversationId? }): Promise<HandoffContext>;
+  async migrate(params: {...; strategy?}): Promise<HandoffContext>;
 }
 ```
 
-交接文档固定章节：`## 💬 对话断点` / `## ✅ 已完成的任务` / `## 📋 未完成的任务` / `## 🧠 重要记忆` / `## 📁 文件索引` / `## 🔔 接手指令`。
+### 断点消息只给路径
+
+`createPostMessages(handoffPath)` 注入一条 user 消息：**交接文档路径 + 「请先 read 它」**，不内联全文。
+理由：内联会让新会话每轮请求都携带全文；而 `read` 一次的成本与内联相当，只是推迟到真正需要细节时支付。
+
+### 自交接回合的收尾
+
+- 开跑前 `agent.lastUsage = undefined`：护栏与自动迁移都以它为判据，这是纵深防御（`busy` 已是第一道）；
+- 交接结束后 `lastUsage` 由本轮真实响应回填，不恢复旧值；
+- `migrate()` 之后由调用方清空 `lastUsage`（CLI 在 `onMigrated` 做），否则护栏会拿交接回合的用量误杀新会话第一条消息。
 
 ### 上下文计量
 
@@ -1145,7 +1215,7 @@ class TaskMigrationService {
 SDK 不维护 Conversation / Draft 概念，只保留 `AgentNS.Message`。各端自行持久化，可复用 `EntityRepository`：
 
 - 消息状态始终由 `agent.messages` 唯一持有，`send()` 返回后整体取回即可落盘
-- 迁移触发时在 `onBeforeMigrate` 回调中保存完整旧历史
+- 迁移触发时在 `onHandoff` 回调中保存完整旧历史（此时已包含交接回合，可审计）
 - 草稿自动保存属于各端产品逻辑，SDK 不内置
 
 ---
@@ -1172,7 +1242,7 @@ SDK 不维护 Conversation / Draft 概念，只保留 `AgentNS.Message`。各端
 ```typescript
 import {
   Scope, allInOne, createAgent, ConfigManager,
-  AutoMigratePlugin, AutoRefreshToolsPlugin, UnknownToolHintPlugin, TaskMigrationService,
+  AutoMigratePlugin, AutoRefreshToolsPlugin, UnknownToolHintPlugin, HandoffService,
 } from "@ai-zen/agents-sdk";
 
 // 1. 初始化配置（幂等，已有文件不覆盖）
@@ -1196,12 +1266,15 @@ await scope.init();
 
 // 3. 创建 Agent 并注册 AgentPlugin
 const agent = await createAgent(scope, config.defaultAgent ?? "default");
-agent.use(new AutoMigratePlugin({
-  service: new TaskMigrationService({
-    onBeforeMigrate: (mctx) => saveConversation(convId, mctx.agent.messages),
-  }),
-  maxTokens: 250_000,
-}));
+// 交接服务：模板来自 handoff Skill，文档落到项目内
+const handoffService = new HandoffService({
+  handoffDir: "/path/to/workspace-a/.ai-zen/handoffs",
+  skillDirs: ["/path/to/workspace-a/.ai-zen/skills", "~/.ai-zen/skills"],
+  onHandoff: (hctx) => saveConversation(convId, hctx.agent.messages),   // 迁移前存档（含交接回合）
+  onMigrated: (hctx) => { hctx.agent.lastUsage = undefined; },
+});
+agent.use(new ContextGuardPlugin({ maxTokens: 250_000, isSuspended: () => handoffService.busy }));
+agent.use(new AutoMigratePlugin({ service: handoffService, maxTokens: 250_000 }));
 agent.use(new AutoRefreshToolsPlugin());
 await agent.init();
 

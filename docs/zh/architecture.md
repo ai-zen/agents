@@ -29,7 +29,7 @@ LLM API / MCP 服务器（openai SDK / @modelcontextprotocol/sdk）
 | 包 | 版本 | 职责 |
 |----|------|------|
 | `@ai-zen/agents-core` | 4.5.1 | `Agent` / `Message` / `Tool` / `ToolCallContext`、插件机制（`AgentPlugin` + `HookResult` + `dispatchHook`）、事件系统 |
-| `@ai-zen/agents-sdk` | 1.0.0-alpha.9 | `Scope` 全局上下文、能力管线（发现 → 过滤 → 实例化）、权限模型、MCP 生命周期、任务迁移、内置工具、`ConfigManager` |
+| `@ai-zen/agents-sdk` | 1.0.0-alpha.10 | `Scope` 全局上下文、能力管线（发现 → 过滤 → 实例化）、权限模型、MCP 生命周期、任务交接与迁移、内置工具、`ConfigManager` |
 
 > workspace 根包 `@ai-zen/agents-workspace` 为私有，版本 `2.0.0`。该版本号与两个公开子包各自独立的版本并不一致，仅用于 workspace 编排。
 
@@ -39,7 +39,7 @@ LLM API / MCP 服务器（openai SDK / @modelcontextprotocol/sdk）
 types         ← 纯类型，零业务依赖（含 ToolEnv、权限、MCP 类型）
 config        ← ConfigManager + constants：读写 config.json + 目录初始化 + 原子写入 + 出厂默认
 crud          ← 能力实体 CRUD（AgentRepository；通用 EntityRepository 在 shared）
-runtime       ← 运行时常驻件：模型工厂 + Agent 组装 + 任务迁移（createModel / createAgent / SdkAgent / TaskMigrationService）
+runtime       ← 运行时常驻件：模型工厂 + Agent 组装 + 任务交接/迁移（createModel / createAgent / SdkAgent / HandoffService / HandoffGuardPlugin）
 scope         ← Scope 编排容器 + ScopePlugin 契约 + PermissionEvaluator + disclosure + plugins/（5 个能力来源，各自自包含「发现 + 工具 + 插件」）
 agent-plugins ← AgentPlugin 插件（autoMigrate / autoRefreshTools / contextGuard / unknownToolHint）
 shared        ← EntityRepository、SdkError、Logger

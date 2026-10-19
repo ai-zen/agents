@@ -10,6 +10,7 @@ import {
   DEFAULT_MCP_CONFIG,
   CONFIG_SUB_DIRS,
 } from "./constants.js";
+import { FACTORY_SKILLS, isCustomSkill } from "./factory-skills.js";
 
 /**
  * 配置管理器 — 负责配置文件的读写、目录初始化、默认实体创建。
@@ -210,7 +211,49 @@ export class ConfigManager {
     const agent = await this.ensureDefaultAgent();
     const subAgent = await this.ensureDefaultSubAgent();
     await this.ensureDefaultMcpConfig();
+    await this.ensureFactorySkills();
     return { config, agent, subAgent };
+  }
+
+  // -----------------------------------------------------------------------
+  // 出厂 Skill（{basePath}/skills/<id>/SKILL.md）
+  // -----------------------------------------------------------------------
+
+  /**
+   * 释放 / 同步出厂 Skill。
+   *
+   * 覆盖策略与 `syncManagedModels` 同构：
+   *   - 磁盘上不存在 → 写入出厂内容；
+   *   - 存在且 frontmatter 标了 `custom: "true"` → 用户自有，原样保留；
+   *   - 存在但未标 → 视为出厂托管，同步为当前版本内容（内容相同则不写盘）。
+   *
+   * @returns 实际写入的 Skill id 列表（内容未变化 / 用户自有 均不计入）
+   */
+  async ensureFactorySkills(): Promise<string[]> {
+    const written: string[] = [];
+
+    for (const skill of FACTORY_SKILLS) {
+      const dir = join(this.basePath, "skills", skill.id);
+      const file = join(dir, "SKILL.md");
+
+      let existing: string | null = null;
+      try {
+        existing = await fs.readFile(file, "utf-8");
+      } catch {
+        existing = null;
+      }
+
+      // 用户声明自有 → 永不覆盖
+      if (existing != null && isCustomSkill(existing)) continue;
+      // 内容已一致 → 不重复写盘
+      if (existing === skill.content) continue;
+
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(file, skill.content, "utf-8");
+      written.push(skill.id);
+    }
+
+    return written;
   }
 
   // -----------------------------------------------------------------------

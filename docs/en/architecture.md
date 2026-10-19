@@ -29,7 +29,7 @@ LLM API / MCP servers (openai SDK / @modelcontextprotocol/sdk)
 | Package | Version | Responsibility |
 |----|------|------|
 | `@ai-zen/agents-core` | 4.5.1 | `Agent` / `Message` / `Tool` / `ToolCallContext`, plugin mechanism (`AgentPlugin` + `HookResult` + `dispatchHook`), event system |
-| `@ai-zen/agents-sdk` | 1.0.0-alpha.9 | `Scope` global context, capability pipeline (discover → filter → instantiate), permission model, MCP lifecycle, task migration, built-in tools, `ConfigManager` |
+| `@ai-zen/agents-sdk` | 1.0.0-alpha.10 | `Scope` global context, capability pipeline (discover → filter → instantiate), permission model, MCP lifecycle, task handoff & migration, built-in tools, `ConfigManager` |
 
 > The workspace root package `@ai-zen/agents-workspace` is private and version `2.0.0`. This version number is not consistent with the independent versions of the two public subpackages; it is only used for workspace orchestration.
 
@@ -39,7 +39,7 @@ LLM API / MCP servers (openai SDK / @modelcontextprotocol/sdk)
 types         ← pure types, zero business dependencies (includes ToolEnv, permissions, MCP types)
 config        ← ConfigManager + constants: read/write config.json + directory setup + atomic writes + factory defaults
 crud          ← capability entity CRUD (AgentRepository; the generic EntityRepository lives in shared)
-runtime       ← runtime residents: model factory + Agent assembly + task migration (createModel / createAgent / SdkAgent / TaskMigrationService)
+runtime       ← runtime residents: model factory + Agent assembly + task handoff/migration (createModel / createAgent / SdkAgent / HandoffService / HandoffGuardPlugin)
 scope         ← Scope orchestrator + ScopePlugin contract + PermissionEvaluator + disclosure + plugins/ (5 capability sources, each self-contained with discovery + tools + plugin)
 agent-plugins ← AgentPlugin plugins (autoMigrate / autoRefreshTools / contextGuard / unknownToolHint)
 shared        ← EntityRepository, SdkError, Logger

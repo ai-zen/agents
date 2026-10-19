@@ -115,7 +115,7 @@ await agent.send("What is the weather like in Beijing and Shanghai today?");
 The SDK provides one-click assembly: `ConfigManager` (config & factory defaults) → `Scope` (global context + capability-plugin assembly) → `createAgent()` (produces an `SdkAgent`).
 
 ```ts
-import { Scope, allInOne, createAgent, ConfigManager, AutoMigratePlugin, AutoRefreshToolsPlugin, TaskMigrationService } from "@ai-zen/agents-sdk";
+import { Scope, allInOne, createAgent, ConfigManager, AutoMigratePlugin, AutoRefreshToolsPlugin, ContextGuardPlugin, HandoffService } from "@ai-zen/agents-sdk";
 
 // 1. Initialize config (idempotent; existing files are not overwritten)
 const mgr = new ConfigManager("~/.ai-zen/config.json");
@@ -139,7 +139,7 @@ await scope.init();                    // first discovery, then plugin registrat
 // 3. Create an Agent and register plugins
 const agent = await createAgent(scope, config.defaultAgent ?? "default");
 agent.use(new AutoMigratePlugin({
-  service: new TaskMigrationService({ onMigrated: (mctx) => { /* save the receipt */ } }),
+  service: new HandoffService({ handoffDir: "/work/.ai-zen/handoffs", onMigrated: (mctx) => { /* save the receipt */ } }),
   maxTokens: 250_000,
 }));
 agent.use(new AutoRefreshToolsPlugin());
