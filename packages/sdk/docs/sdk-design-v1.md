@@ -573,7 +573,7 @@ instantiate(scope, filtered) {
   const filteredMcps = this.mcps.filter((m) => filtered.mcps.includes(m.id));
   const m = this.mcpManager; const out: Tool[] = [];
   if (allow.has("load_mcp") && m && filteredMcps.length > 0) out.push(createLoadMcpTool(m, filteredMcps));
-  if (allow.has("call_mcp_tool") && m) out.push(createCallMcpTool(m));
+  if (allow.has("call_mcp_tool") && m) out.push(createCallMcpTool(m, scope.env));
   if (allow.has("read_mcp_resource") && m) out.push(createReadMcpResourceTool(m));
   return out;
 }
@@ -695,7 +695,24 @@ MCP 和 Skill 采用**惰性加载**：装配时不直接注册具体工具，�
 ### call_mcp_tool
 
 - 参数：`server` + `tool` + `arguments`
-- 未连接 → "请先使用 load_mcp 连接 'X'"；`isError` → 错误文本
+- 未连接 → "请先使用 load_mcp 连接 'X'"；`isError` → 错误文本（前缀 `❌ 工具执行出错:`）
+- **返回形态**：仅文本 → 纯字符串（与历史行为一致）；含媒体 → 内容块数组，**严格按 MCP `content[]` 原始顺序**逐块映射（不重排、不合并，文本夹在图片中间也保持原位）
+- **内容块映射**（`toMessageSection`）：
+
+  | MCP `content[]` 块 | 归一为 | 去向 |
+  |---|---|---|
+  | `text` | `text` 块 | 正文（受保护） |
+  | `resource`（`resource.text`） | `text` 块 | 正文（受保护） |
+  | `resource_link` | `text` 块（`[资源链接] name · uri · mimeType`） | 正文（受保护） |
+  | 未知类型（如 `tool_use`） | `text` 块（JSON 序列化） | 正文（受保护） |
+  | `image` | `image_url` 块（`data:<mimeType>;base64,...`） | 透传 |
+  | `audio` | `file` 块（`file_data` 内联 data URL） | 透传 |
+  | `resource`（`resource.blob`） | `image/*` → `image_url`；否则 `file` | 透传 |
+
+- **输出保护只作用于文本**：以**全部文本的字符总数**判定（不能逐块判，否则 N 段各 3 万字符都不超限、合起来却能灌爆）。超过 `maxToolOutput`（默认 32768 字符，与内置工具同一配置口径）时，完整文本落盘为 `result.txt`，返回警告 + 头尾预览（`outputTooLarge` / `chars` / `head` / `tail` / `files`）；媒体块**不参与计数、不落盘、不丢弃**
+- **超限时的保序折叠**：只保留**一个**警告文本块占据原首个文本块的位置，其余文本块丢弃（内容已落盘），媒体块原位不动——即使文本夹在两图之间，图片与图注的对应关系也不会被打乱
+- 落盘只写文本正文，不写原始 `result` —— 后者可能含 image 的 base64，落盘等于把几 MB 二进制再抄一遍磁盘
+- `createCallMcpTool(mcpManager, env)` 的 `env` 仅用于读取 `maxToolOutput`，由 `McpScopePlugin.instantiate` 传入 `scope.env`
 
 ### read_mcp_resource
 

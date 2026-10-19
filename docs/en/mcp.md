@@ -119,7 +119,7 @@ MCP tools are **not pre-registered**; instead, "loader tools" are registered, wh
 | Tool | Description |
 |------|------|
 | `load_mcp` | Parameters `server` (enum = all allowed servers, with descriptions) and optional `include_manifest` (default `true`); returns structured JSON `{ tools, resources }`; with `include_manifest=false` it only establishes the connection and returns a summary `{ server, connected, tools: n, resources: n }` without tool/resource definitions (useful when the manifest is already in the context); if already connected, `touch` extends and returns the manifest; if not connected, `mcpManager.connect()` |
-| `call_mcp_tool` | Parameters `server` + `tool` + `arguments`; if not connected, prompts "use load_mcp to connect first"; `isError` → error text |
+| `call_mcp_tool` | Parameters `server` + `tool` + `arguments`; if not connected, prompts "use load_mcp to connect first"; `isError` → error text; **only text is output-guarded** (when the text exceeds `maxToolOutput`, default 32768 chars, the full text is dumped to `result.txt` and only head/tail previews are returned), while images / audio / binary resources pass through untouched as `image_url` / `file` content blocks |
 | `read_mcp_resource` | Parameters `server` + `uri`; returns the resource text content |
 
 Whether these tools are registered is controlled by the `tools` permission dimension (e.g. disabling `call_mcp_tool` cuts off the entire MCP invocation channel).

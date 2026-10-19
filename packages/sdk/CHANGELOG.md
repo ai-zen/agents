@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.0.0-alpha.11] - 2026-10-20
+
+### 💥 Breaking Changes
+
+- **`createCallMcpTool(mcpManager)` → `createCallMcpTool(mcpManager, env: ToolEnv)`** —— 新增的 `env` 只用于读取 `maxToolOutput`，由 `McpScopePlugin.instantiate` 传入 `scope.env`。直接调用该工厂的下游需补第二参。
+
+### ✨ 新增
+
+- **`call_mcp_tool` 输出保护**：MCP 工具是最容易一次吐出上百 KB 甚至上 MB JSON 的通道，此前完全裸返回。现在文本部分超过 `maxToolOutput`（默认 32768 字符）时，完整文本落盘为 `result.txt`，只返回警告 + 头尾预览（`outputTooLarge` / `chars` / `head` / `tail` / `files`）。复用内置工具同一套 `outputGuard` 骨架与同一配置口径，不另立阈值。
+- **媒体内容块原样透传**：`image` → `image_url`（`data:<mimeType>;base64,...`）、`audio` → `file`（`file_data` 内联 data URL）、`resource.blob` 按 mimeType 分流到 `image_url` / `file`。媒体**不参与字符计数、不落盘、不丢弃**——只对文本做保护。
+- **返回形态**：仅文本 → 纯字符串（与历史一致）；含媒体 → 内容块数组。
+
+### 🔧 修复
+
+- **非文本内容块被静默丢弃**：旧实现只取 `type === "text"`，`image` / `audio` / `resource` / `resource_link` 全部被扔掉，模型只知道「有个块没给我」。现在媒体透传、`resource.text` 并入正文、`resource_link` 转为 `[资源链接] name · uri · mimeType` 线索、未知类型（如 `tool_use`）退化为 JSON 文本。
+- **内容块顺序**：严格按 MCP `content[]` 原始顺序逐块映射，文本夹在图片中间也保持原位。超限时只保留一个警告块占据原**首个**文本块的位置，其余文本落盘、媒体原位不动——即使文本夹在两图之间，图注与图片的对应关系也不会被打乱。
+- **判定口径**：用全部文本的字符**总数**判超限，不逐块判（否则 N 段各 3 万字符都不超限、合起来却能灌爆）。
+
+### ✅ 测试
+
+- `mcpTools.test.ts` 38 例（新增内容块映射 8 例、输出保护 4 例、保序 4 例）。全量 **54 文件 / 542 用例**通过，`tsc --noEmit` 与 `build` 零错误。
+
+### 📄 Docs
+
+- `docs/sdk-design-v1.md` §9 `call_mcp_tool` 补充内容块映射表、输出保护口径与超限保序折叠规则；`../docs/{zh,en}/mcp.md` 及网站镜像同步。
+
+
 ## [1.0.0-alpha.10] - 2026-10-20
 
 ### 💥 Breaking Changes

@@ -52,7 +52,7 @@ export class McpScopePlugin implements ScopePlugin {
     };
   }
 
-  instantiate(_scope: Scope, filtered: FilterOutput): Tool[] {
+  instantiate(scope: Scope, filtered: FilterOutput): Tool[] {
     const allow = new Set(filtered.tools);
     const allowedMcps = new Set(filtered.mcps);
     const filteredMcps = this.servers.filter((s) => allowedMcps.has(s.id));
@@ -63,7 +63,8 @@ export class McpScopePlugin implements ScopePlugin {
       result.push(createLoadMcpTool(m, filteredMcps));
     }
     if (allow.has("call_mcp_tool") && m) {
-      result.push(createCallMcpTool(m));
+      // env 供 call_mcp_tool 读取 maxToolOutput，与内置工具共用同一上限口径
+      result.push(createCallMcpTool(m, scope.env));
     }
     if (allow.has("read_mcp_resource") && m) {
       result.push(createReadMcpResourceTool(m));

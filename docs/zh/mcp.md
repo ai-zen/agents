@@ -119,7 +119,7 @@ MCP 的工具**不预先注册**，而是注册「加载器工具」，由 LLM �
 | 工具 | 说明 |
 |------|------|
 | `load_mcp` | 参数 `server`（枚举 = 所有允许的 server，附描述）、可选 `include_manifest`（默认 `true`）；返回结构化 JSON `{ tools, resources }`；`include_manifest=false` 时仅建立连接并返回摘要 `{ server, connected, tools: 数量, resources: 数量 }`，不返回工具 / 资源定义（适用于上下文中已存在该清单的场景）；已连接则 `touch` 续期并返回清单，未连接则 `mcpManager.connect()` |
-| `call_mcp_tool` | 参数 `server` + `tool` + `arguments`；未连接时提示「请先使用 load_mcp 连接」；`isError` → 错误文本 |
+| `call_mcp_tool` | 参数 `server` + `tool` + `arguments`；未连接时提示「请先使用 load_mcp 连接」；`isError` → 错误文本；**仅文本受输出保护**（超过 `maxToolOutput` 默认 32768 字符时完整文本落盘为 `result.txt`，只返回头尾预览），图片 / 音频 / 二进制资源转 `image_url` / `file` 内容块原样透传 |
 | `read_mcp_resource` | 参数 `server` + `uri`；返回资源文本内容 |
 
 这些工具是否注册由 `tools` 权限维度控制（如 `call_mcp_tool` 被禁用则切断整个 MCP 调用通道）。
