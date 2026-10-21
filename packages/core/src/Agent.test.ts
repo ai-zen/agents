@@ -1489,3 +1489,69 @@ describe("Agent", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// 请求参数合并：固定字段不可被 modelConfig 覆盖
+// ---------------------------------------------------------------------------
+
+describe("请求参数（modelConfig 透传）", () => {
+  it("modelConfig 里的非固定字段照常透传（temperature 等）", async () => {
+    const client = createMockClient([[chunk({ content: "ok" }), stopChunk()]]);
+    const agent = new Agent({
+      client,
+      model: "gpt-4",
+      messages: [Message.System("sys")],
+      modelConfig: { temperature: 0.3, reasoning_effort: "high" },
+    });
+
+    await agent.send("hi");
+
+    const body: any = client.chat.completions.create.mock.calls[0][0];
+    expect(body.temperature).toBe(0.3);
+    expect(body.reasoning_effort).toBe("high");
+  });
+
+  it("modelConfig 里的同名键不能改掉框架固定参数", async () => {
+    const client = createMockClient([[chunk({ content: "ok" }), stopChunk()]]);
+    const agent = new Agent({
+      client,
+      model: "gpt-4",
+      messages: [Message.System("sys")],
+      modelConfig: {
+        // 都是框架契约字段，配置里写了也不能生效
+        model: "hijacked",
+        messages: [],
+        tools: [],
+        stream: false,
+        stream_options: {},
+        temperature: 0.1, // 非契约字段：仍应透传
+      },
+    });
+
+    await agent.send("hi");
+
+    const body: any = client.chat.completions.create.mock.calls[0][0];
+    expect(body.model).toBe("gpt-4"); // 仍是 Agent 自己的模型
+    expect(body.stream).toBe(true); // 流式不能被关掉（否则解析崩溃）
+    expect(body.stream_options).toEqual({ include_usage: true });
+    expect(body.tools).toBeUndefined(); // 没注册工具 → undefined，不是配置里的 []
+    expect(body.messages.length).toBeGreaterThan(0); // 历史不能被清空
+    expect(body.temperature).toBe(0.1);
+  });
+
+  it("没有 modelConfig 时请求体只有框架字段", async () => {
+    const client = createMockClient([[chunk({ content: "ok" }), stopChunk()]]);
+    const agent = new Agent({
+      client,
+      model: "gpt-4",
+      messages: [Message.System("sys")],
+    });
+
+    await agent.send("hi");
+
+    const body: any = client.chat.completions.create.mock.calls[0][0];
+    expect(Object.keys(body).sort()).toEqual(
+      ["messages", "model", "stream", "stream_options", "tools"].sort(),
+    );
+  });
+});

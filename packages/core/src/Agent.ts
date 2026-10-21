@@ -281,13 +281,16 @@ export class Agent extends AgentContext {
         // 通过官方 SDK 发起流式对话请求（连接建立后即进入 Writing）
         const stream = (await this.client.chat.completions.create(
           {
+            // 先铺模型参数（temperature 等；可含厂商特有字段，如 DeepSeek thinking），
+            // 再写框架契约 —— **顺序不能反**：model / messages / tools / stream /
+            // stream_options 是框架自己保证的，配置里写同名键也不能把它们改掉
+            // （否则 `stream: false` 之类会直接把流式解析打崩）。
+            ...this.modelConfig,
             model: this.model,
             messages,
             tools,
             stream: true,
             stream_options: { include_usage: true },
-            // 透传模型参数（temperature 等；可含厂商特有字段，如 DeepSeek thinking）
-            ...this.modelConfig,
           } as any,
           { signal: currentController.signal },
         )) as unknown as AsyncIterable<ChatCompletionChunk>;

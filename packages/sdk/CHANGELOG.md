@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0-alpha.16] - 2026-10-22
+
+### 🔧 行为变更（不兼容，向上修复）
+
+- **升级 `@ai-zen/agents-core` 至 `4.5.2`：请求体里的固定字段不再被 `modelParams` 覆盖** —— core 之前把模型参数 spread 在请求体**最后**（`{ model, messages, tools, stream, stream_options, ...modelConfig }`），而 `modelConfig` 来自用户可编辑的 `Model.defaultParams` / `AgentDefinition.modelParams`。一旦其中出现同名键就会静默生效：最惨的是 `stream: false`，它会把流式关掉而调用方仍在按异步流解析，整轮直接失败。现在顺序反过来，固定字段永远胜出，非固定键（`temperature` / `reasoning_effort` / 厂商特有 `thinking` 等）照常透传。
+
+  对本 SDK 的实际影响：`AgentDefinition.modelParams` 里写 `model` / `messages` / `tools` / `stream` / `stream_options` 将不再有任何效果。正常配置（温度、思考参数）不受影响。
+
+### ✅ 测试
+
+- 依赖的 core 侧新增 3 例（非固定键透传、固定键被忽略、无 `modelConfig` 时请求体只含框架字段）。SDK 自身 **57 文件 / 600 例通过**（6 skipped）。
+
 ## [1.0.0-alpha.15] - 2026-10-22
 
 ### 🔧 行为变更（不兼容）

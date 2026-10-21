@@ -1,5 +1,15 @@
 # Changelog
 
+## [4.5.2] - 2026-10-22
+
+### 🐛 Fixed
+
+- **Framework-owned request fields can no longer be overridden by `modelConfig`** — the request body used to be built as `{ model, messages, tools, stream, stream_options, ...this.modelConfig }`, i.e. the model parameters were spread **last**, so a `modelConfig` (which comes from user-editable `Model.defaultParams` / `AgentDefinition.modelParams`) containing any of those keys would silently win. The worst case is `stream: false`: it disables streaming while the caller still expects an async iterable, taking the whole round down. The spread order is now reversed — `...this.modelConfig` first, then the framework contract — so `model` / `messages` / `tools` / `stream` / `stream_options` are always authoritative, while every non-contract key (`temperature`, `top_p`, `reasoning_effort`, vendor-specific `thinking`, …) still passes through untouched.
+
+### ✅ Tests
+
+- `Agent.test.ts`: 3 cases — non-contract keys still pass through; contract keys in `modelConfig` are ignored (`model` stays the Agent's own, `stream` stays `true`, `stream_options` stays `{ include_usage: true }`, `tools` stays `undefined` when none are registered, `messages` is never emptied); with no `modelConfig` the body contains exactly the framework fields. Core suite: **139 passed, 17 skipped**.
+
 ## [4.5.1] - 2026-10-14
 
 ### 📄 Docs
