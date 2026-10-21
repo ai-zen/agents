@@ -92,7 +92,10 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       name: "DeepSeek",
       apiKey: "",
       baseUrl: "https://api.deepseek.com/v1",
-      description: "DeepSeek API 端点",
+      description: "DeepSeek API 端点（支持 Files API：本地文件上传后以 file_id 引用）",
+      // 唯一声明了 Files API 能力的出厂端点；其余端点本地文件走 base64 内联。
+      // 判断依据是能力位而非端点 id，用户自建端点只要声明即可享受上传。
+      capabilities: { filesApi: true },
     },
   ],
   // 模型清单（2026-10-03 依据各厂商官方来源核对）：

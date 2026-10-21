@@ -67,7 +67,7 @@ export class McpScopePlugin implements ScopePlugin {
       result.push(createCallMcpTool(m, scope.env));
     }
     if (allow.has("read_mcp_resource") && m) {
-      result.push(createReadMcpResourceTool(m));
+      result.push(createReadMcpResourceTool(m, scope.env));
     }
     return result;
   }

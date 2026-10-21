@@ -12,7 +12,10 @@ interface Replacement {
 export class BatchEditTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "batch_edit",
-    description: "批量编辑文件文本，可以优先使用这个工具对文件进行编辑",
+    description: [
+      "批量编辑文件文本，可以优先使用这个工具对文件进行编辑。",
+      "对同一个文件的多处修改应在一次调用中全部提交（replacements 数组），而不是并行多次调用 edit——并行编辑同一文件会互相覆盖。",
+    ].join("\n"),
     parameters: {
       type: "object",
       properties: {

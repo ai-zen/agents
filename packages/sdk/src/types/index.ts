@@ -22,6 +22,20 @@ export interface AgentPermissions {
 
 // ---- 核心实体（暂时约定）----
 
+/**
+ * 端点能力声明 —— 决定「本地文件 → 内容块」时走哪条传输路径。
+ *
+ * 之前这段判断硬编码在 ViewImageTool 里（`endpoint.id === "deepseek"`），
+ * 用户改一下端点 id 就失效；改为显式能力位后，新端点只要声明能力即可享受上传。
+ */
+export interface EndpointCapabilities {
+  /**
+   * 是否支持 OpenAI 兼容的 Files API（`POST {baseUrl}/files`，`purpose=user_data`）。
+   * 为 true 时本地文件优先上传并以 `file` 块（file_id）发送；否则走 base64 内联。
+   */
+  filesApi?: boolean;
+}
+
 /** API 端点 */
 export interface Endpoint {
   id: string; // 唯一标识
@@ -29,6 +43,7 @@ export interface Endpoint {
   baseUrl: string; // API 地址
   apiKey: string; // API 密钥（明文，文件权限 600 由用户保证）
   description?: string; // 描述
+  capabilities?: EndpointCapabilities; // 能力声明（可选，缺省视为无特殊能力）
 }
 
 /** 模型配置，绑定一个 Endpoint */

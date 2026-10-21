@@ -1,5 +1,43 @@
 # Changelog
 
+## [1.0.0-alpha.12] - 2026-10-22
+
+### 💥 Breaking Changes
+
+- **`createReadMcpResourceTool(mcpManager)` → `createReadMcpResourceTool(mcpManager, env: ToolEnv)`** —— 与 alpha.11 的 `createCallMcpTool` 对齐：`env` 用于读取 `maxToolOutput` 并解析当前模型绑定的端点。直接调用该工厂的下游需补第二参。
+- **`view_image` 不再依赖 `deepseek` 端点** —— 此前本地图片固定上传到 `id === "deepseek"` 的端点，未配置时直接报「未配置 deepseek 端点，无法上传本地图片」。现在按能力位决定：声明 `capabilities.filesApi` 的端点走上传，其余走 base64 内联，没有 deepseek 也能查看本地图片。返回文案随之变化（含传输方式与降级说明）。
+- **`Endpoint` 新增可选字段 `capabilities`** —— 类型层面非破坏性（可选），但语义重要：缺省视为「无特殊能力」，即不做上传。
+
+### ✨ 新增
+
+- **「本地文件 → 内容块」统一入口 `shared/content-blocks.ts`**。这段逻辑此前散落三处各自为政（`ViewImageTool` 硬编码端点 id、MCP 媒体块归一、CLI 侧再实现一遍），现在收敛为一处：
+  - `fileToContentSection({ source, endpoint, model, signal, maxInlineBytes, deps })` → `{ section, transport, bytes, warning? }`；`source` 支持 `path` / `url` / `data`（`Uint8Array`）/ `base64` 四种来源。
+  - 决策链：http(s) URL → `image_url`；端点有 Files API → 上传得 `file_id`（失败**自动降级**为内联）；其余端点 + 图片 → `image_url` + base64 data URL；其余端点 + 非图片 → `file` 块 + `file_data`；非视觉模型 + 图片 → 文本提示；内联超限且无法上传 → 抛错（不静默塞进请求体）。
+  - 配套：`resolveModelAndEndpoint()`（按发给 API 的模型名反查模型与端点）、`supportsFilesApi()`、`mimeOf()` / `toDataUrl()` / `base64ByteLength()` / `contentHash()`、`clearUploadCache()`、`DEFAULT_MAX_INLINE_BYTES`（8 MiB）。
+  - **已从包入口 `src/index.ts` 导出为公共 API**（`fileToContentSection` / `resolveModelAndEndpoint` / `supportsFilesApi` / `mimeOf` / `toDataUrl` / `base64ByteLength` / `contentHash` / `clearUploadCache` / `MIME_BY_EXT` / `DEFAULT_MAX_INLINE_BYTES`，以及 `FileSource` / `FileToSectionInput` / `FileToSectionResult` / `ContentTransport` / `UploadFn` / `EndpointCapabilities` 类型）。上层应用构造媒体消息时直接复用，不要各自再实现一遍「上传 or 内联」。
+  - 上传缓存：路径来源用「端点 id + 绝对路径 + mtime + size」，内存来源用内容 sha256（同一张图不重复上传），上限 200 条。
+  - `deps.upload` 可注入，便于测试与替换上传实现。
+- **`Endpoint.capabilities.filesApi` 能力位** —— 出厂仅 `deepseek` 标记为 `true`（description 同步说明）。判据从「端点 id 是不是 deepseek」改为能力位，用户自建端点只要声明即可享受上传。
+
+### 🔧 修复
+
+- **MCP 媒体不再一律 base64 内联**：`call_mcp_tool` 的 `image` / `audio` / `resource.blob` 改走统一入口，端点有 Files API 能力时上传后以 `file_id` 发送，请求体不再随历史反复膨胀；转换失败**不丢块**，退化为一条文本说明，避免整个工具调用因媒体问题失败。
+- **`read_mcp_resource` 的二进制资源被静默丢弃**：此前只拼 `contents[].text`，图片 / PDF 等 `blob` 内容直接消失。新增 `resourceToMessageSection()`——注意 `readResource` 的 contents 形如 `{ uri, mimeType?, text|blob }`，**没有 `type` 判别字段**，不能复用 `toMessageSection`（否则文本资源会被 JSON 化）；`blob` 交给统一入口。
+- **`read_mcp_resource` 接入输出保护**：与 `call_mcp_tool` 共用同一套口径——文本超限落盘 `result.txt` 并返回头尾预览，媒体块原位保留；返回形态同样是「仅文本 → 字符串 / 含媒体 → 内容块数组」。
+- **非视觉模型退化**：`Model.vision !== true` 时图片退化为一行文本提示（本地路径来源与 MCP 内存 base64 来源均生效），避免 `image_url` 被服务端 4xx 拒掉。
+- **`edit` 并发护栏**：`edit` / `batch_edit` 工具描述明确「同一文件禁止并行 `edit`，多处修改改用 `batch_edit`，只有不同文件才能并行」——描述层劝阻（不引入运行时锁）。
+
+### ✅ 测试
+
+- 新增 `shared/content-blocks.test.ts` 16 例；`mcpTools.test.ts` 扩展覆盖媒体统一入口、非视觉退化、`read` 超限落盘与混排保序；`ViewImageTool` / `EditTool` / `BatchEditTool` 断言同步到新语义。
+- 全量 **55 文件 / 569 用例**通过（6 skipped），`tsc --noEmit` 与 `build` 零错误。
+
+### 📄 Docs
+
+- `docs/{zh,en}/sdk.md` 新增「本地文件 → 内容块（统一入口）」小节、`Endpoint` 能力位与 MCP 媒体 / 退化 / 输出保护说明。
+- `docs/{zh,en}/mcp.md` 同步 `call_mcp_tool` / `read_mcp_resource` 的媒体传输方式与输出保护口径。
+
+
 ## [1.0.0-alpha.11] - 2026-10-20
 
 ### 💥 Breaking Changes

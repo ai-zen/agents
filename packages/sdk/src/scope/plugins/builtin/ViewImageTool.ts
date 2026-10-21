@@ -1,11 +1,9 @@
-import OpenAI, { toFile } from "openai";
-import { promises as fs } from "node:fs";
 import path from "node:path";
+import { promises as fs } from "node:fs";
 import type { AgentNS, ToolCallContext } from "@ai-zen/agents-core";
 import { SdkCallbackTool } from "./SdkCallbackTool.js";
 import type { AgentDefinition, AppConfig, ToolEnv } from "../../../types/index.js";
-
-const SUPPORTED_EXT = [".jpg", ".jpeg", ".png", ".gif", ".webp"];
+import { fileToContentSection, mimeOf, resolveModelAndEndpoint } from "../../../shared/content-blocks.js";
 
 /**
  * 是否为"本地 URL"——指向本地/回环地址，API 服务商无法下载访问。
@@ -23,11 +21,13 @@ function isLocalUrl(value: string): boolean {
  * buildTools 阶段按声明过滤——非视觉模型不会拿到该工具，故无需运行时重复校验。
  *
  * 输入 `path_or_url`：
- *   - http(s) URL → 直接以 `image_url` 内容块返回，模型直接查看；
- *   - 本地路径 → 自动通过 Files API（DeepSeek）上传，以 `file` 内容块（file_id）返回。
+ *   - http(s) URL → 直接以 `image_url` 内容块返回；
+ *   - 本地路径 → 交给 `fileToContentSection()` 统一处理：
+ *       端点声明 `capabilities.filesApi`（出厂仅 deepseek）→ Files API 上传，`file` 块（file_id）；
+ *       其余端点 → base64 data URL 内联（`image_url`），不再要求必须配置 deepseek。
  *
- * 不使用 base64 内联（本地图片走 Files API，符合 DeepSeek 推荐与 48 MiB 请求体限制）。
- * 依赖配置中的 deepseek 端点（Files API 能力）；URL 场景不依赖上传。
+ * 端点按**当前模型**反查（`ctx.agent.model`），不硬编码端点 id——`file_id` 是端点维度
+ * 资源，传错端点会返回 not found。
  */
 export class ViewImageTool extends SdkCallbackTool {
   /** 仅视觉模型可用：从 definition.modelId 解析当前模型，非视觉模型由 buildTools 过滤 */
@@ -40,7 +40,7 @@ export class ViewImageTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "view_image",
     description:
-      "查看一张图片并分析其内容。传入本地图片路径或 http(s) 图片 URL。本地图片会自动上传（Files API）后引用，网络图片直接引用。不支持本地 URL（如 file:// 协议、指向本机 localhost/127.0.0.1 的 http(s) 地址），本地图片请使用文件路径。适合识别图片文字、描述图片内容、分析图表等。",
+      "查看一张图片并分析其内容。传入本地图片路径或 http(s) 图片 URL。本地图片优先上传（端点支持 Files API 时）否则以 base64 内联引用，网络图片直接引用。不支持本地 URL（如 file:// 协议、指向本机 localhost/127.0.0.1 的 http(s) 地址），本地图片请使用文件路径。适合识别图片文字、描述图片内容、分析图表等。",
     parameters: {
       type: "object",
       properties: {
@@ -70,75 +70,47 @@ export class ViewImageTool extends SdkCallbackTool {
     }
     const value = target.trim();
 
-    // 拒绝服务商无法访问的"本地 URL"：file:// 等本地协议，或指向本机回环地址（localhost/127.0.0.1/[::1]/0.0.0.0）的 http(s) 地址
+    // 拒绝服务商无法访问的"本地 URL"：file:// 等本地协议，或指向本机回环地址的 http(s) 地址
     if (isLocalUrl(value)) {
       return "不支持本地 URL（API 服务商无法下载访问）。本地图片请使用文件路径，而不是本地链接。";
     }
 
+    // 按当前模型定位端点：决定走 Files API 上传还是 base64 内联
+    const { model, endpoint } = resolveModelAndEndpoint(this.env.config, ctx?.agent?.model);
+
     try {
-      // 网络图片：直接返回 image_url 内容块（无需上传）
-      if (/^https?:\/\//i.test(value)) {
-        return [
-          {
-            type: "text",
-            text: `已获取网络图片：${value}`,
-          },
-          { type: "image_url", image_url: { url: value } },
-        ];
+      const isUrl = /^https?:\/\//i.test(value);
+      // 本工具只处理图片：先按扩展名把关，给出比通用入口更贴切的提示
+      if (!isUrl) {
+        const abs = this.resolve(value);
+        // 先 stat 一次，把 ENOENT 变成对人友好的提示（通用入口的报错面向任意文件）
+        try {
+          await fs.stat(abs);
+        } catch {
+          return `本地图片不存在: ${abs}`;
+        }
+        const mime = mimeOf(abs);
+        if (!mime || !mime.startsWith("image/")) {
+          return `不支持的图片格式 "${path.extname(abs) || "(无扩展名)"}"。支持的格式：JPEG、PNG、GIF、WebP。`;
+        }
       }
-
-      // 本地图片：解析路径 + 校验 + Files API 上传
-      const absPath = path.isAbsolute(value)
-        ? value
-        : path.join(this.env.cwd, value);
-
-      let stat;
-      try {
-        stat = await fs.stat(absPath);
-      } catch {
-        return `本地图片不存在: ${absPath}`;
-      }
-      if (!stat.isFile()) {
-        return `"${absPath}" 不是文件。`;
-      }
-
-      const ext = path.extname(absPath).toLowerCase();
-      if (!SUPPORTED_EXT.includes(ext)) {
-        return `不支持的图片格式 "${ext || "(无扩展名)"}"。支持的格式：JPEG、PNG、GIF、WebP。`;
-      }
-
-      // 上传端点：deepseek（Files API 能力）
-      const endpoint = (this.env.config.endpoints ?? []).find(
-        (e) => e.id === "deepseek",
-      );
-      if (!endpoint) {
-        return "未配置 deepseek 端点，无法上传本地图片（Files API）。如需查看本地图片，请先配置 deepseek 端点；网络图片 URL 可直接使用。";
-      }
-      if (!endpoint.apiKey) {
-        return `端点 "${endpoint.name}" 的 API Key 未设置，无法上传本地图片。`;
-      }
-
-      const client = new OpenAI({
-        apiKey: endpoint.apiKey,
-        baseURL: endpoint.baseUrl,
+      const result = await fileToContentSection({
+        source: isUrl ? { url: value } : { path: this.resolve(value) },
+        endpoint,
+        model,
+        signal,
       });
 
-      const file = await toFile(
-        await fs.readFile(absPath),
-        path.basename(absPath),
-      );
-      const uploaded = await client.files.create(
-        { file, purpose: "user_data" },
-        { signal },
-      );
+      const label = isUrl ? `已获取网络图片：${value}` : `已获取本地图片（${path.basename(value)}）`;
+      const how =
+        result.transport === "files-api"
+          ? `，已上传至 Files API（file_id: ${(result.section as { file_id?: string }).file_id ?? "?"}）`
+          : result.transport === "inline"
+            ? `，已按 base64 内联（${(result.bytes / 1024).toFixed(0)} KB）`
+            : "";
+      const extra = result.warning ? `（降级说明：${result.warning}）` : "";
 
-      return [
-        {
-          type: "text",
-          text: `图片已上传（${path.basename(absPath)}），file_id: ${uploaded.id}`,
-        },
-        { type: "file", file_id: uploaded.id },
-      ];
+      return [{ type: "text", text: `${label}${how}${extra}` }, result.section];
     } catch (error: unknown) {
       // 中断（abort）时返回明确的中断结果
       if (signal?.aborted) {

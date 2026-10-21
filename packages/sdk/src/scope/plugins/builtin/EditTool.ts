@@ -18,7 +18,12 @@ function countOccurrences(content: string, text: string): number {
 export class EditTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "edit",
-    description: "编辑文件中的文本，支持精确替换或替换所有匹配项",
+    description: [
+      "编辑文件中的文本，支持精确替换或替换所有匹配项。",
+      "",
+      "并发限制（重要）：同一个文件禁止并行编辑。不要在同一轮回复中对同一路径发起多个 edit 调用——这些调用会各自读取旧内容再写回，后写者覆盖先写者，导致修改丢失或文件被写坏。",
+      "如需对同一个文件施加多处修改，请改用 batch_edit，在一次调用里提交全部替换。只有编辑不同文件时才可以并行调用 edit。",
+    ].join("\n"),
     parameters: {
       type: "object",
       properties: {

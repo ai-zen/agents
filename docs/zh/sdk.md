@@ -97,7 +97,7 @@ Agent.permissions
 | `cwd` / `read` / `inspect_file` / `write` / `mkdir` / `rm` / `glob` / `ls` / `exist` / `rename` / `copy` / `find_text` | 文件系统操作（`read` 可选 `range` 按行列范围读取；`inspect_file` 返回文件结构概况，流式扫描不受 300KB 限制） |
 | `exec` / `spawn` | 执行命令（`exec` 支持 `timeout`；`spawn` 异步立即返回，支持 shell 重定向/管道） |
 | `download_file` | 从 URL 下载并保存 |
-| `batch_edit` / `edit` | 批量 / 单次替换文件文本（`batch_edit` 仅回显未匹配项） |
+| `batch_edit` / `edit` | 批量 / 单次替换文件文本（`batch_edit` 仅回显未匹配项）。**同一文件禁止并行 `edit`**：并行调用会各自读旧内容再写回、互相覆盖；同一文件多处修改请用 `batch_edit` 一次提交，只有不同文件才能并行 `edit` |
 | `sleep` | 等待指定毫秒 |
 
 按配置 / 模型条件注入的工具：
@@ -106,6 +106,30 @@ Agent.permissions
 |------|----------|
 | `generate_image` | 仅当配置了 `defaultImageModel` |
 | `view_image` | 仅视觉模型（该 Agent 的 `modelId` 解析到 `Model.vision === true`） |
+
+### 本地文件 → 内容块（统一入口）
+
+`fileToContentSection()`（`shared/content-blocks.ts`，已从包入口导出）是「文件转内容块」的唯一入口。输入 `{ source, endpoint, model, signal?, maxInlineBytes?, deps? }`，返回 `{ section, transport, bytes, warning? }`；`source` 支持 `path` / `url` / `data`(Uint8Array) / `base64` 四种来源。传输方式据此自动选择：
+
+| 条件 | 结果 |
+|------|------|
+| http(s) URL | `image_url`（不上传、不内联） |
+| 端点声明 `capabilities.filesApi`（出厂仅 `deepseek`） | Files API 上传 → `file` 块（`file_id`）；失败自动降级为 base64 |
+| 其余端点 + 图片 | `image_url` + base64 data URL |
+| 其余端点 + 非图片 | `file` 块 + `file_data`（base64 data URL） |
+| 模型 `vision === false` 且是图片 | 退化为 `text`（只给路径提示） |
+| 内联体积 > `maxInlineBytes`（默认 8 MiB）且无法上传 | 报错（不静默塞进请求体） |
+
+要点：
+
+- **能力判定不再靠端点 id**：旧实现写死 `endpoint.id === "deepseek"`，用户改端点 id 就失效；现改为 `Endpoint.capabilities.filesApi` 能力位，自建端点声明即可享受上传
+- **端点按当前模型反查**（`resolveModelAndEndpoint(config, ctx.agent.model)`）：`file_id` 是端点维度资源，传错端点会 not found
+- **上传缓存**：`端点id + 绝对路径 + mtime + size → file_id`（最多 200 条），同一文件不重复上传
+- `view_image`、`call_mcp_tool`、`read_mcp_resource` 的媒体归一均复用此模块：MCP 返回的图片/二进制不再一律 base64 内联，端点有 Files API 能力时上传为 `file_id`；转换失败退化为文本说明而不是丢掉媒体块
+- 内存来源（MCP 给的 base64）**不做「解码再编码」**：内联时原样透传保证字节级一致，只有真要上传时才解码，缓存键用内容 sha256
+- **非视觉模型自动退化**：`Model.vision !== true` 时图片（含 MCP 返回的）退化为一行文本提示，避免 `image_url` 被服务端 4xx 拒掉
+- `call_mcp_tool` 与 `read_mcp_resource` 共用同一套输出保护：文本超限落盘 `result.txt` 并返回头尾预览，媒体块原位保留
+- **公共 API**：`fileToContentSection` / `resolveModelAndEndpoint` / `supportsFilesApi` / `mimeOf` / `toDataUrl` / `base64ByteLength` / `contentHash` / `clearUploadCache` / `MIME_BY_EXT` / `DEFAULT_MAX_INLINE_BYTES` 均从包入口导出；上层应用（CLI / Desktop）构造媒体消息时直接复用，不要自己判断「上传还是内联」
 
 工具的可用性由各工具自己的 `isAvailable(config, definition)` 声明，在 `buildTools` / `filter` 阶段过滤；发现层不做任何过滤。
 
@@ -127,7 +151,7 @@ abstract class SdkCallbackTool extends Tool {
 
 | 实体 | 说明 | 存储 |
 |------|------|------|
-| `Endpoint` | API 端点（baseUrl + apiKey） | `config.json` |
+| `Endpoint` | API 端点（baseUrl + apiKey + 可选 `capabilities.filesApi`） | `config.json` |
 | `Model` | 模型配置，绑定一个 Endpoint | `config.json` |
 | `ImageModel` | 图片生成模型配置 | `config.json` |
 | `AgentDefinition` | 可对话 AI 人格（提示词、权限、可选工具签名）；有 `function` 即视为 SubAgent；`custom: true` 表示用户自定义（初始化不同步内置提示词） | `agents/*.json` |

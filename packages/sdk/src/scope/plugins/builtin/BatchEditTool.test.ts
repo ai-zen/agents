@@ -26,6 +26,13 @@ describe("BatchEditTool", () => {
     expect(tool.function.description).toContain("批量编辑文件文本");
   });
 
+  it("描述里提示：同一文件的多处修改一次提交，勿并行调用 edit", () => {
+    const tool = new BatchEditTool(makeEnv());
+    const description = tool.function.description ?? "";
+    expect(description).toContain("一次调用");
+    expect(description).toContain("并行");
+  });
+
   it("isReplaceAll 默认值为 false", () => {
     const tool = new BatchEditTool(makeEnv());
     const isReplaceAllDef = tool.function.parameters.properties.replacements.items.properties.isReplaceAll;

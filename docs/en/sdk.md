@@ -97,7 +97,7 @@ All built-in tools are `SdkCallbackTool` subclasses, instantiated by the Scope u
 | `cwd` / `read` / `inspect_file` / `write` / `mkdir` / `rm` / `glob` / `ls` / `exist` / `rename` / `copy` / `find_text` | filesystem operations (`read` supports an optional `range` for line/column slicing; `inspect_file` returns a structural overview via streamed scan, not limited by the 300KB read threshold) |
 | `exec` / `spawn` | run commands (`exec` supports `timeout`; `spawn` returns asynchronously immediately and supports shell redirect/pipelines) |
 | `download_file` | download from a URL and save |
-| `batch_edit` / `edit` | batch / single text replacement in files (`batch_edit` echoes back only unmatched items) |
+| `batch_edit` / `edit` | batch / single text replacement in files (`batch_edit` echoes back only unmatched items). **Never run `edit` calls in parallel on the same file** — each call reads the old content and writes it back, so they overwrite each other; use `batch_edit` to submit all changes to one file in a single call. Parallel `edit` is only safe across different files |
 | `sleep` | wait a specified number of milliseconds |
 
 Tools injected based on config / model conditions:
@@ -106,6 +106,30 @@ Tools injected based on config / model conditions:
 |------|----------|
 | `generate_image` | only when `defaultImageModel` is configured |
 | `view_image` | only for vision models (the Agent's `modelId` resolves to `Model.vision === true`) |
+
+### Local file → content block (single entry point)
+
+`fileToContentSection()` (in `shared/content-blocks.ts`, exported from the package entry) is the only entry point for turning a file into a content block. It takes `{ source, endpoint, model, signal?, maxInlineBytes?, deps? }` and returns `{ section, transport, bytes, warning? }`; `source` accepts four shapes — `path` / `url` / `data` (Uint8Array) / `base64`. The transport is chosen automatically:
+
+| Condition | Result |
+|---|---|
+| http(s) URL | `image_url` (no upload, no inlining) |
+| Endpoint declares `capabilities.filesApi` (only `deepseek` ships with it) | Upload via Files API → `file` block (`file_id`); falls back to base64 on failure |
+| Other endpoints + image | `image_url` with a base64 data URL |
+| Other endpoints + non-image | `file` block with `file_data` (base64 data URL) |
+| Model has `vision === false` and the file is an image | Degrades to `text` (path hint only) |
+| Inline payload > `maxInlineBytes` (default 8 MiB) and no upload capability | Error (never silently stuffed into the request) |
+
+Notes:
+
+- **Capability is no longer inferred from the endpoint id**: the old code hard-coded `endpoint.id === "deepseek"` and broke as soon as a user renamed the endpoint. It is now an explicit `Endpoint.capabilities.filesApi` flag
+- **The endpoint is resolved from the current model** (`resolveModelAndEndpoint(config, ctx.agent.model)`): `file_id` is an endpoint-scoped resource, so uploading to the wrong endpoint yields not-found
+- **Upload cache**: `endpoint id + absolute path + mtime + size → file_id` (max 200 entries), so the same file is not uploaded twice
+- `view_image`, `call_mcp_tool` and `read_mcp_resource` all normalise media through this module: images/binary from MCP are no longer always inlined as base64 — endpoints with Files API capability get a `file_id`; a failed conversion degrades to a text note instead of dropping the media block
+- In-memory sources (base64 provided by MCP) are **never decoded and re-encoded**: inline passthrough keeps the bytes identical, decoding only happens when an upload is actually needed, and the cache key is a sha256 of the content
+- **Non-vision models degrade automatically**: when `Model.vision !== true`, images (including those returned by MCP) become a one-line text note, so `image_url` blocks are never rejected with a 4xx
+- `call_mcp_tool` and `read_mcp_resource` share the same output guard: oversized text is dumped to `result.txt` and only a head/tail preview is returned, while media blocks stay in place
+- **Public API**: `fileToContentSection` / `resolveModelAndEndpoint` / `supportsFilesApi` / `mimeOf` / `toDataUrl` / `base64ByteLength` / `contentHash` / `clearUploadCache` / `MIME_BY_EXT` / `DEFAULT_MAX_INLINE_BYTES` are all exported from the package entry, so upper-layer apps (CLI / Desktop) reuse them instead of re-deciding "upload or inline" on their own
 
 Tool availability is declared by each tool's own `isAvailable(config, definition)` and filtered during the `buildTools` / `filter` stage; the discovery layer does no filtering.
 
@@ -127,7 +151,7 @@ abstract class SdkCallbackTool extends Tool {
 
 | Entity | Description | Storage |
 |------|------|------|
-| `Endpoint` | API endpoint (baseUrl + apiKey) | `config.json` |
+| `Endpoint` | API endpoint (baseUrl + apiKey + optional `capabilities.filesApi`) | `config.json` |
 | `Model` | Model configuration, bound to one Endpoint | `config.json` |
 | `ImageModel` | Image-generation model configuration | `config.json` |
 | `AgentDefinition` | an interactive AI persona (prompt, permissions, optional tool signatures); having a `function` makes it a SubAgent; `custom: true` marks it as user-defined (init skips syncing built-in prompts) | `agents/*.json` |

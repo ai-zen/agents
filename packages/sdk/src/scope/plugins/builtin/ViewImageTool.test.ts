@@ -23,16 +23,26 @@ import { makeEnv } from "./test-helpers.js";
 import type { AppConfig } from "../../../types/index.js";
 
 const deepseekConfig: AppConfig = {
-  defaultModel: "m1",
+  defaultModel: "ds-vision",
   endpoints: [
     {
       id: "deepseek",
       name: "DeepSeek",
       apiKey: "sk-test",
       baseUrl: "https://api.deepseek.com/v1",
+      capabilities: { filesApi: true },
     },
   ],
-  models: [],
+  models: [
+    {
+      id: "ds-vision",
+      name: "DS Vision",
+      endpointId: "deepseek",
+      modelName: "ds-vision",
+      maxContextTokens: 1000,
+      vision: true,
+    },
+  ] as AppConfig["models"],
 };
 
 afterEach(() => {
@@ -145,15 +155,21 @@ describe("ViewImageTool", () => {
     }
   });
 
-  it("未配置 deepseek 端点时本地上传返回错误（URL 场景不受影响）", async () => {
+  it("未声明 Files API 能力的端点：本地图片改走 base64 内联（不再需要 deepseek）", async () => {
     const dir = await fs.mkdtemp(join(tmpdir(), "viewimg-"));
     const imgPath = join(dir, "a.png");
-    await fs.writeFile(imgPath, Buffer.from([1]));
+    await fs.writeFile(imgPath, Buffer.from([1, 2, 3]));
 
     try {
+      // 没有任何端点/模型配置 → 无上传能力 → 降级为 base64
       const tool = new ViewImageTool(makeEnv(dir, {} as AppConfig));
       const local = await tool.call({ path_or_url: "a.png" });
-      expect(local).toContain("未配置 deepseek 端点");
+      const sections = local as any[];
+      expect(sections[0].type).toBe("text");
+      expect(sections[0].text).toContain("base64");
+      expect(sections[1].type).toBe("image_url");
+      expect(sections[1].image_url.url).toMatch(/^data:image\/png;base64,/);
+      expect(mockFilesCreate).not.toHaveBeenCalled();
 
       const url = await tool.call({ path_or_url: "https://example.com/a.png" });
       expect(url).toEqual([

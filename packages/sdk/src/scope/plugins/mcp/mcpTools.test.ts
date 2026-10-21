@@ -1,9 +1,75 @@
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
+
+// Files API 上传走 OpenAI SDK：用 mock 顶掉，避免测试真的发网络请求
+const { mockFilesCreate, mockToFile } = vi.hoisted(() => ({
+  mockFilesCreate: vi.fn(),
+  mockToFile: vi.fn(async (data: unknown, filename: string) => ({ data, filename })),
+}));
+
+vi.mock("openai", () => ({
+  default: class MockOpenAI {
+    files = { create: mockFilesCreate };
+  },
+  toFile: mockToFile,
+}));
+
 import { createLoadMcpTool, createCallMcpTool, createReadMcpResourceTool } from "./mcpTools.js";
 import type { McpConnectionManager } from "./McpConnectionManager.js";
 import type { AppConfig, McpServerConfig, ToolEnv } from "../../../types/index.js";
+import { clearUploadCache } from "../../../shared/content-blocks.js";
+
+/** 带 Files API 能力的端点 + 视觉模型（用于验证上传路径） */
+function filesApiConfig(): Partial<AppConfig> {
+  return {
+    defaultModel: "ds-vision",
+    endpoints: [
+      {
+        id: "deepseek",
+        name: "DeepSeek",
+        baseUrl: "https://api.deepseek.com/v1",
+        apiKey: "sk-test",
+        capabilities: { filesApi: true },
+      },
+    ],
+    models: [
+      {
+        id: "ds-vision",
+        name: "DS Vision",
+        endpointId: "deepseek",
+        modelName: "ds-vision",
+        maxContextTokens: 1000,
+        vision: true,
+      },
+    ] as AppConfig["models"],
+  };
+}
+
+/** 纯文本模型配置（未声明 vision）：用于验证媒体退化 */
+function textOnlyConfig(): Partial<AppConfig> {
+  return {
+    defaultModel: "ds-chat",
+    endpoints: [
+      {
+        id: "deepseek",
+        name: "DeepSeek",
+        baseUrl: "https://api.deepseek.com/v1",
+        apiKey: "sk-test",
+        capabilities: { filesApi: true },
+      },
+    ],
+    models: [
+      { id: "ds-chat", name: "DS Chat", endpointId: "deepseek", modelName: "ds-chat", maxContextTokens: 1000 },
+    ] as AppConfig["models"],
+  };
+}
+
+beforeEach(() => {
+  clearUploadCache();
+  mockFilesCreate.mockReset();
+  mockFilesCreate.mockResolvedValue({ id: "file-mcp-1" });
+});
 
 /** 构造测试用 ToolEnv（config 可按需覆盖，如 maxToolOutput） */
 function makeEnv(config: Partial<AppConfig> = {}): ToolEnv {
@@ -326,7 +392,7 @@ describe("createCallMcpTool", () => {
       );
       const result = await tool.callback({ server: "github", tool: "speak", arguments: {} });
       expect(result).toEqual([
-        { type: "file", file_data: "data:audio/mpeg;base64,DDDD" },
+        { type: "file", file_data: "data:audio/mpeg;base64,DDDD", filename: expect.stringMatching(/^mcp-media-\d+\.mp3$/) },
       ]);
     });
 
@@ -364,7 +430,49 @@ describe("createCallMcpTool", () => {
       );
       const result = await tool.callback({ server: "github", tool: "read", arguments: {} });
       expect(result).toEqual([
-        { type: "file", file_data: "data:application/pdf;base64,FFFF" },
+        { type: "file", file_data: "data:application/pdf;base64,FFFF", filename: expect.stringMatching(/^mcp-media-\d+\.pdf$/) },
+      ]);
+    });
+
+    it("端点声明 Files API 能力时，MCP 图片上传为 file 块（不再 base64 内联）", async () => {
+      const tool = createCallMcpTool(
+        managerWithContent([{ type: "image", data: "AAAA", mimeType: "image/png" }]),
+        makeEnv(filesApiConfig()),
+      );
+      const result = await tool.callback({ server: "github", tool: "shot", arguments: {} });
+      expect(result).toEqual([{ type: "file", file_id: "file-mcp-1" }]);
+      expect(mockFilesCreate).toHaveBeenCalledTimes(1);
+    });
+
+    it("同一张图（相同字节）重复调用只上传一次（内容哈希缓存）", async () => {
+      const manager = managerWithContent([{ type: "image", data: "AAAA", mimeType: "image/png" }]);
+      const tool = createCallMcpTool(manager, makeEnv(filesApiConfig()));
+      await tool.callback({ server: "github", tool: "shot", arguments: {} });
+      await tool.callback({ server: "github", tool: "shot", arguments: {} });
+      expect(mockFilesCreate).toHaveBeenCalledTimes(1);
+    });
+
+    it("非视觉模型时 MCP 图片退化为文本提示（避免 4xx），且不上传", async () => {
+      const tool = createCallMcpTool(
+        managerWithContent([{ type: "image", data: "AAAA", mimeType: "image/png" }]),
+        makeEnv(textOnlyConfig()),
+      );
+      const result = await tool.callback({ server: "github", tool: "shot", arguments: {} });
+      // 唯一的内容块是文本 → 按既有契约退化为字符串
+      expect(typeof result).toBe("string");
+      expect(result as string).toContain("不支持图片输入");
+      expect(mockFilesCreate).not.toHaveBeenCalled();
+    });
+
+    it("上传失败时降级为 base64 内联，媒体块不丢", async () => {
+      mockFilesCreate.mockRejectedValueOnce(new Error("boom"));
+      const tool = createCallMcpTool(
+        managerWithContent([{ type: "image", data: "AAAA", mimeType: "image/png" }]),
+        makeEnv(filesApiConfig()),
+      );
+      const result = await tool.callback({ server: "github", tool: "shot", arguments: {} });
+      expect(result).toEqual([
+        { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
       ]);
     });
 
@@ -585,7 +693,7 @@ describe("createCallMcpTool", () => {
 describe("createReadMcpResourceTool", () => {
   it("工具名称和参数正确", () => {
     const manager = mockManager();
-    const tool = createReadMcpResourceTool(manager);
+    const tool = createReadMcpResourceTool(manager, makeEnv());
     expect(tool.function.name).toBe("read_mcp_resource");
     expect(tool.function.parameters.required).toContain("server");
     expect(tool.function.parameters.required).toContain("uri");
@@ -595,7 +703,7 @@ describe("createReadMcpResourceTool", () => {
     const manager = mockManager({
       getState: vi.fn(() => "disconnected" as const),
     });
-    const tool = createReadMcpResourceTool(manager);
+    const tool = createReadMcpResourceTool(manager, makeEnv());
     const result = await tool.callback({ server: "github", uri: "file:///README.md" });
     expect(result).toContain("请先使用 load_mcp");
   });
@@ -610,7 +718,7 @@ describe("createReadMcpResourceTool", () => {
       getState: vi.fn(() => "connected" as const),
       getClient: vi.fn(() => mockClient),
     });
-    const tool = createReadMcpResourceTool(manager);
+    const tool = createReadMcpResourceTool(manager, makeEnv());
     const result = await tool.callback({ server: "github", uri: "file:///README.md" });
     expect(result).toBe("# 文档内容");
   });
@@ -623,10 +731,97 @@ describe("createReadMcpResourceTool", () => {
       getState: vi.fn(() => "connected" as const),
       getClient: vi.fn(() => mockClient),
     });
-    const tool = createReadMcpResourceTool(manager);
+    const tool = createReadMcpResourceTool(manager, makeEnv());
     const result = await tool.callback({ server: "github", uri: "file:///missing" });
     expect(result).toContain("失败");
     expect(result).toContain("资源不存在");
+  });
+
+  it("二进制资源不再被丢弃：无上传能力时内联为 image_url", async () => {
+    const mockClient = {
+      readResource: vi.fn().mockResolvedValue({
+        contents: [{ uri: "file:///p.png", mimeType: "image/png", blob: "GGGG" }],
+      }),
+    };
+    const manager = mockManager({
+      getState: vi.fn(() => "connected" as const),
+      getClient: vi.fn(() => mockClient),
+    });
+    const tool = createReadMcpResourceTool(manager, makeEnv());
+    const result = await tool.callback({ server: "github", uri: "file:///p.png" });
+    expect(result).toEqual([
+      { type: "image_url", image_url: { url: "data:image/png;base64,GGGG" } },
+    ]);
+  });
+
+  it("端点声明 Files API 能力时，资源图片上传为 file 块", async () => {
+    const mockClient = {
+      readResource: vi.fn().mockResolvedValue({
+        contents: [{ uri: "file:///p.png", mimeType: "image/png", blob: "GGGG" }],
+      }),
+    };
+    const manager = mockManager({
+      getState: vi.fn(() => "connected" as const),
+      getClient: vi.fn(() => mockClient),
+    });
+    const tool = createReadMcpResourceTool(manager, makeEnv(filesApiConfig()));
+    const result = await tool.callback({ server: "github", uri: "file:///p.png" });
+    expect(result).toEqual([{ type: "file", file_id: "file-mcp-1" }]);
+    expect(mockFilesCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("文本资源超限时落盘 result.txt 并只返回头尾预览（与 call_mcp_tool 同一闸门）", async () => {
+    const long = "x".repeat(500);
+    const tool = createReadMcpResourceTool(
+      mockManager({
+        getState: vi.fn(() => "connected" as const),
+        getClient: vi.fn(() => ({
+          readResource: vi.fn().mockResolvedValue({
+            contents: [{ uri: "file:///big.txt", mimeType: "text/plain", text: long }],
+          }),
+        })),
+      }),
+      makeEnv({ maxToolOutput: 50 } as Partial<AppConfig>),
+    );
+    const result = await tool.callback({ server: "github", uri: "file:///big.txt" });
+    expect(typeof result).toBe("string");
+    expect(result as string).toContain("输出过大");
+    expect(result as string).toContain("result.txt");
+  });
+
+  it("文本与二进制混排时保持原序，且纯文本仍返回字符串", async () => {
+    const mockClient = {
+      readResource: vi.fn().mockResolvedValue({
+        contents: [
+          { uri: "file:///a.txt", mimeType: "text/plain", text: "第一段" },
+          { uri: "file:///p.png", mimeType: "image/png", blob: "GGGG" },
+          { uri: "file:///b.txt", mimeType: "text/plain", text: "第二段" },
+        ],
+      }),
+    };
+    const manager = mockManager({
+      getState: vi.fn(() => "connected" as const),
+      getClient: vi.fn(() => mockClient),
+    });
+    const tool = createReadMcpResourceTool(manager, makeEnv());
+    const mixed = (await tool.callback({ server: "github", uri: "file:///x" })) as any[];
+    expect(mixed.map((s) => s.type)).toEqual(["text", "image_url", "text"]);
+
+    const textOnly = createReadMcpResourceTool(
+      mockManager({
+        getState: vi.fn(() => "connected" as const),
+        getClient: vi.fn(() => ({
+          readResource: vi.fn().mockResolvedValue({
+            contents: [
+              { uri: "file:///a.txt", text: "甲" },
+              { uri: "file:///b.txt", text: "乙" },
+            ],
+          }),
+        })),
+      }),
+      makeEnv(),
+    );
+    expect(await textOnly.callback({ server: "github", uri: "file:///y" })).toBe("甲\n乙");
   });
 });
 
@@ -660,7 +855,7 @@ describe("signal 透传", () => {
       getState: vi.fn(() => "connected" as const),
       getClient: vi.fn(() => mockClient),
     });
-    const tool = createReadMcpResourceTool(manager);
+    const tool = createReadMcpResourceTool(manager, makeEnv());
     const controller = new AbortController();
     await tool.callback(
       { server: "github", uri: "file:///README.md" },

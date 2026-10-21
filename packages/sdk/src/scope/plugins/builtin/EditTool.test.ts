@@ -26,6 +26,15 @@ describe("EditTool", () => {
     expect(tool.function.description).toContain("编辑文件中的文本");
   });
 
+  it("描述里禁止并行编辑同一文件，并指向 batch_edit", () => {
+    const tool = new EditTool(makeEnv());
+    const description = tool.function.description ?? "";
+    expect(description).toContain("同一个文件禁止并行编辑");
+    expect(description).toContain("batch_edit");
+    // 不同文件允许并行，别把限制写得过头
+    expect(description).toContain("不同文件");
+  });
+
   it("isReplaceAll 默认值为 false", () => {
     const tool = new EditTool(makeEnv());
     const isReplaceAllDef = tool.function.parameters.properties.isReplaceAll;

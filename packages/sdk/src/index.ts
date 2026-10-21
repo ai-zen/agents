@@ -3,6 +3,7 @@ export type {
   PermissionPolicy,
   AgentPermissions,
   Endpoint,
+  EndpointCapabilities,
   Model,
   ImageModel,
   AgentDefinition,
@@ -74,6 +75,27 @@ export {
 // CRUD — 实体仓储（仅 Agent 定义等能力实体）
 export { EntityRepository } from "./shared/EntityRepository.js";
 export { AgentRepository } from "./crud/AgentRepository.js";
+
+// 文件 → 内容块（统一入口）— 上层应用构造媒体消息时请走这里，不要自己判断上传还是内联
+export {
+  fileToContentSection,
+  resolveModelAndEndpoint,
+  supportsFilesApi,
+  mimeOf,
+  toDataUrl,
+  base64ByteLength,
+  contentHash,
+  clearUploadCache,
+  MIME_BY_EXT,
+  DEFAULT_MAX_INLINE_BYTES,
+} from "./shared/content-blocks.js";
+export type {
+  FileSource,
+  FileToSectionInput,
+  FileToSectionResult,
+  ContentTransport,
+  UploadFn,
+} from "./shared/content-blocks.js";
 
 // 运行时
 export { createModel } from "./runtime/createModel.js";
