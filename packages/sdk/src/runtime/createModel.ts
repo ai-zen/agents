@@ -1,5 +1,7 @@
 import OpenAI from "openai";
 import type { Scope } from "../scope/Scope.js";
+import type { AgentDefinition } from "../types/index.js";
+import { resolveModelParams } from "../shared/reasoning.js";
 
 /**
  * Agent 模型装配结果：openai SDK client + 模型名 + 模型参数。
@@ -19,8 +21,16 @@ export interface AgentModel {
  *
  * 端点（baseUrl / apiKey）来自 config.endpoints，发送给 API 的模型名 = modelName || id。
  * 任何 OpenAI 兼容端点（OpenAI / 智谱 BigModel / DeepSeek 等）均可通过 baseURL 接入。
+ *
+ * `overrides.reasoningEffort` 是 **Agent 级覆盖**（`AgentDefinition.reasoningEffort`）：
+ * 同一个模型可以给不同 Agent 配不同思考强度，而模型自身的 `defaultParams` 不变。
+ * 写入方式按模型的 `reasoning` 能力声明决定（见 `shared/reasoning.ts`）。
  */
-export function createModel(scope: Scope, modelId: string): AgentModel {
+export function createModel(
+  scope: Scope,
+  modelId: string,
+  overrides?: Pick<AgentDefinition, "reasoningEffort">,
+): AgentModel {
   const config = scope.config;
   const modelConfig = config.models.find((m) => m.id === modelId);
   if (!modelConfig) throw new Error(`模型 "${modelId}" 不存在`);
@@ -46,6 +56,7 @@ export function createModel(scope: Scope, modelId: string): AgentModel {
   return {
     client,
     model: apiModelName,
-    modelConfig: modelConfig.defaultParams,
+    // 档位覆盖在这里生效：未声明 reasoningEffort 时原样返回模型 defaultParams
+    modelConfig: resolveModelParams(modelConfig, overrides),
   };
 }

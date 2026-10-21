@@ -97,6 +97,18 @@ export type {
   UploadFn,
 } from "./shared/content-blocks.js";
 
+// 思考强度（reasoning effort）— 能力声明、可用档位与参数写入
+export {
+  applyReasoningEffort,
+  capabilityOf,
+  isReasoningEffort,
+  modelAllowedEfforts,
+  modelEfforts,
+  readReasoningEffort,
+  resolveModelParams,
+  resolveReasoningEffort,
+} from "./shared/reasoning.js";
+
 // 运行时
 export { createModel } from "./runtime/createModel.js";
 export { SdkAgent } from "./runtime/SdkAgent.js";

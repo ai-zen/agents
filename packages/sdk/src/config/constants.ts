@@ -108,9 +108,20 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
   // 标了 `custom: true` 的条目视为用户自有，原样保留。实现见
   // ConfigManager.syncManagedModels。
   //
-  // maxContextTokens 是「任务迁移（交接）触发阈值」，不是模型的真实上下文窗口：
-  // 迁移判断只看 API 响应返回的 usage.prompt_tokens。窗口 ≥1M 的模型统一取 250K
-  // （约 25%），glm-4.7-flash 窗口仅 200K，取 100K。
+  // tokenThresholds 的两条线都与模型的真实上下文窗口无关：
+  //   handoff（软线，交接触发）与 guard（硬线，请求前强行阻断）。
+  // 出厂取值：窗口 ≥1M 的模型统一 handoff=250K / guard=375K（约窗口的 25% / 37.5%），
+  // glm-4.7-flash 窗口仅 200K，取 handoff=100K / guard=150K。
+  //
+  // reasoning（思考强度能力）按厂商官方文档声明，**不要推测**：
+  //   OpenAI   → openai-node 的 Shared.ReasoningEffort（none/minimal/low/medium/high/xhigh/max）；
+  //              关闭用 reasoning_effort:"none"（OpenAI 没有 thinking 参数，写它会被当未知参数）
+  //   DeepSeek → api-docs.deepseek.com/guides/thinking_mode：可调 low/high/max；
+  //              关闭用 thinking.type:"disabled"；默认开思考且默认 effort=high
+  //   智谱     → docs.bigmodel.cn/cn/guide/capabilities/thinking：GLM-5.3 系**只认**
+  //              low/high/max（其余输入报错），且不再支持关闭思考（传 disabled 会报错）；
+  //              GLM-4.7 强制思考且无 reasoning_effort 参数（仅 5.2+ 支持）
+  // 未声明 reasoning 的模型 = 不可调档，`modelAllowedEfforts()` 返回空数组。
   models: [
     // ---------- OpenAI ----------
     {
@@ -118,9 +129,10 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       name: "GPT-6 Astra",
       endpointId: "openai",
       modelName: "gpt-6-astra",
-      maxContextTokens: 250_000,
+      tokenThresholds: { handoff: 250_000, guard: 375_000 },
       defaultParams: {},
       vision: true,
+      reasoning: { efforts: ["minimal", "low", "medium", "high"], disable: "effort-none" },
       description: "OpenAI 最强旗舰（2026-09）：高级分析、软件工程、深度研究与科学工作",
     },
     {
@@ -128,9 +140,10 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       name: "GPT-6.1 Sol",
       endpointId: "openai",
       modelName: "gpt-6.1-sol",
-      maxContextTokens: 250_000,
+      tokenThresholds: { handoff: 250_000, guard: 375_000 },
       defaultParams: {},
       vision: true,
+      reasoning: { efforts: ["minimal", "low", "medium", "high"], disable: "effort-none" },
       description: "OpenAI 最新旗舰（2026-09-29）：Agentic Coding、计算机操作与文档密集型专业任务",
     },
     {
@@ -138,9 +151,10 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       name: "GPT-6 Luna",
       endpointId: "openai",
       modelName: "gpt-6-luna",
-      maxContextTokens: 250_000,
+      tokenThresholds: { handoff: 250_000, guard: 375_000 },
       defaultParams: {},
       vision: true,
+      reasoning: { efforts: ["minimal", "low", "medium", "high"], disable: "effort-none" },
       description: "OpenAI GPT-6 系列快速低成本模型：适合高吞吐、低延迟场景",
     },
     // ---------- 智谱 BigModel ----------
@@ -149,8 +163,9 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       name: "GLM-5.3",
       endpointId: "bigmodelcn",
       modelName: "glm-5.3",
-      maxContextTokens: 250_000,
+      tokenThresholds: { handoff: 250_000, guard: 375_000 },
       defaultParams: { thinking: { type: "enabled" }, reasoning_effort: "max" },
+      reasoning: { efforts: ["low", "high", "max"] },
       description: "智谱最新旗舰：复杂软件工程与长程 Agent 任务（强制开启思考，1M 上下文）",
     },
     {
@@ -158,9 +173,10 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       name: "GLM-5.3-Flash",
       endpointId: "bigmodelcn",
       modelName: "glm-5.3-flash",
-      maxContextTokens: 250_000,
+      tokenThresholds: { handoff: 250_000, guard: 375_000 },
       defaultParams: { thinking: { type: "enabled" }, reasoning_effort: "max" },
       vision: true,
+      reasoning: { efforts: ["low", "high", "max"] },
       description: "智谱原生多模态模型（图片/视频/文件）：视觉 Coding，1M 上下文",
     },
     {
@@ -168,9 +184,10 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       name: "GLM-5.3-FlashX",
       endpointId: "bigmodelcn",
       modelName: "glm-5.3-flashx",
-      maxContextTokens: 250_000,
+      tokenThresholds: { handoff: 250_000, guard: 375_000 },
       defaultParams: { thinking: { type: "enabled" }, reasoning_effort: "max" },
       vision: true,
+      reasoning: { efforts: ["low", "high", "max"] },
       description: "GLM-5.3-Flash 高速版（200 tokens/s），原生多模态",
     },
     {
@@ -179,8 +196,9 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       endpointId: "bigmodelcn",
       modelName: "glm-4.7-flash",
       // 该模型真实窗口仅 200K，阈值下调至 100K（约窗口的 50%），留足 response 空间
-      maxContextTokens: 100_000,
+      tokenThresholds: { handoff: 100_000, guard: 150_000 },
       defaultParams: {},
+      reasoning: { efforts: [] },
       description: "智谱免费文本模型：200K 上下文，适合轻量任务",
     },
     // ---------- DeepSeek ----------
@@ -189,9 +207,10 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       name: "DeepSeek-V4.1-Flash",
       endpointId: "deepseek",
       modelName: "deepseek-flash",
-      maxContextTokens: 250_000,
+      tokenThresholds: { handoff: 250_000, guard: 375_000 },
       defaultParams: { thinking: { type: "enabled" } },
       vision: true,
+      reasoning: { efforts: ["low", "high", "max"], disable: "thinking" },
       description: "DeepSeek 旗舰（2026-09-10）：552B MoE 非对称架构，原生多模态，1M 上下文",
     },
   ],

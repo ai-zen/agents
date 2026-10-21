@@ -39,7 +39,7 @@ const deepseekConfig: AppConfig = {
       name: "DS Vision",
       endpointId: "deepseek",
       modelName: "ds-vision",
-      maxContextTokens: 1000,
+      tokenThresholds: { handoff: 1000, guard: 1500 },
       vision: true,
     },
   ] as AppConfig["models"],
@@ -186,8 +186,8 @@ describe("ViewImageTool", () => {
       ...deepseekConfig,
       defaultModel: "m1",
       models: [
-        { id: "v1", name: "V", endpointId: "deepseek", modelName: "v1", maxContextTokens: 1000, vision: true },
-        { id: "m1", name: "M", endpointId: "deepseek", modelName: "m1", maxContextTokens: 1000 },
+        { id: "v1", name: "V", endpointId: "deepseek", modelName: "v1", tokenThresholds: { handoff: 1000, guard: 1500 }, vision: true },
+        { id: "m1", name: "M", endpointId: "deepseek", modelName: "m1", tokenThresholds: { handoff: 1000, guard: 1500 } },
       ],
     };
     const tool = new ViewImageTool(makeEnv("/ws", config));

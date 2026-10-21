@@ -11,6 +11,7 @@ import {
   CONFIG_SUB_DIRS,
 } from "./constants.js";
 import { FACTORY_SKILLS, isCustomSkill } from "./factory-skills.js";
+import { migrateConfig } from "./migrate.js";
 
 /**
  * 配置管理器 — 负责配置文件的读写、目录初始化、默认实体创建。
@@ -30,12 +31,22 @@ export class ConfigManager {
 
   /**
    * 读取配置。文件不存在时返回出厂默认配置。
+   *
+   * 读到即**迁移**（`config/migrate.ts`）：上层拿到的永远是当前字段形状，
+   * 旧字段（`maxContextTokens` / `maxContextChars`）不会漏到调用方。
+   * 迁移结果不在这里落盘——落盘只在 `ensureDefaultConfig()` 做一次。
    */
   async read(): Promise<AppConfig> {
+    const raw = await this.readRaw();
+    return raw ? migrateConfig(raw).config : { ...DEFAULT_APP_CONFIG };
+  }
+
+  /** 读磁盘原文（不做任何迁移/同步），供 `ensureDefaultConfig()` 对比写盘用 */
+  private async readRaw(): Promise<AppConfig | null> {
     try {
       await fs.access(this.configPath);
     } catch {
-      return { ...DEFAULT_APP_CONFIG };
+      return null;
     }
     const raw = await fs.readFile(this.configPath, "utf-8");
     return JSON.parse(raw) as AppConfig;
@@ -78,18 +89,17 @@ export class ConfigManager {
    * 条目视为用户自有，原样保留。同步结果与磁盘内容一致时不写盘。
    */
   async ensureDefaultConfig(): Promise<AppConfig> {
-    let existing: AppConfig;
-    try {
-      await fs.access(this.configPath);
-      existing = await this.read();
-    } catch {
+    const onDisk = await this.readRaw();
+    if (!onDisk) {
       await this.ensureDirs();
       await this.write(DEFAULT_APP_CONFIG);
       return { ...DEFAULT_APP_CONFIG };
     }
 
-    const synced = syncManagedModels(existing);
-    if (JSON.stringify(synced) !== JSON.stringify(existing)) {
+    // 先迁移历史字段，再同步出厂模型清单；两者结果与磁盘原文不同才写盘
+    const migrated = migrateConfig(onDisk).config;
+    const synced = syncManagedModels(migrated);
+    if (JSON.stringify(synced) !== JSON.stringify(onDisk)) {
       await this.write(synced);
     }
     return synced;

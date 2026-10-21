@@ -9,8 +9,8 @@ const log = getLogger();
 export interface AutoMigrateTriggerInfo {
   /** 当前 prompt token 用量 */
   promptTokens: number;
-  /** 上下文阈值（当前模型的 maxContextTokens） */
-  maxTokens: number;
+  /** 交接阈值（当前模型的 tokenThresholds.handoff） */
+  handoffTokens: number;
 }
 
 /**
@@ -28,7 +28,7 @@ export interface AutoMigrateOptions {
   /** 交接服务实例（持有交接前后钩子；编排 handoff / migrate 两条链路） */
   service: HandoffService;
   /** 触发迁移的上下文阈值 */
-  maxTokens: number;
+  handoffTokens: number;
   /**
    * 执行者解析（可选）。上层可在此弹确认框、读用户偏好，
    * 或直接返回 `null` 表达「本次不迁移」——**无需**再继承本插件。
@@ -39,14 +39,14 @@ export interface AutoMigrateOptions {
 /**
  * 自动迁移插件 —— 只负责「何时触发」，实际迁移统一委托给持有的 `HandoffService`。
  *
- * 当 `usage.prompt_tokens` 超过 maxTokens 时触发迁移：
+ * 当 `usage.prompt_tokens` 超过 handoffTokens 时触发迁移：
  *
  * ```ts
  * agent.use(new AutoMigratePlugin({
  *   service: handoffService,
- *   maxTokens: 250_000,
- *   resolveMode: async ({ promptTokens, maxTokens }) =>
- *     (await askUser(promptTokens, maxTokens)) ? "self" : null,
+ *   handoffTokens: 250_000,
+ *   resolveMode: async ({ promptTokens, handoffTokens }) =>
+ *     (await askUser(promptTokens, handoffTokens)) ? "self" : null,
  * }));
  * ```
  *
@@ -64,22 +64,22 @@ export class AutoMigratePlugin implements AgentPlugin {
 
   async onAfterSend(ctx: SendContext): Promise<void> {
     const agent = ctx.agent as SdkAgent;
-    const { service, maxTokens, resolveMode } = this.options;
+    const { service, handoffTokens, resolveMode } = this.options;
 
     // 交接/迁移进行中：让行（防递归）
     if (service.busy) return;
 
     const promptTokens = agent.lastUsage?.prompt_tokens;
     if (promptTokens == null) return;
-    if (promptTokens <= maxTokens) return;
+    if (promptTokens <= handoffTokens) return;
 
     try {
       const mode = resolveMode
-        ? await resolveMode({ promptTokens, maxTokens })
+        ? await resolveMode({ promptTokens, handoffTokens })
         : undefined;
       if (mode === null) return; // 用户选择跳过本次迁移
 
-      await service.migrate({ agent, promptTokens, maxTokens, mode: mode ?? undefined });
+      await service.migrate({ agent, promptTokens, handoffTokens, mode: mode ?? undefined });
     } catch (err: any) {
       log.error(`[autoMigrate] 迁移失败: ${err?.message ?? err}`);
     }

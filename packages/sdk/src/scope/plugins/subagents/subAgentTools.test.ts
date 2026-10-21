@@ -16,7 +16,7 @@ function mockScope(): Scope {
     config: {
       defaultModel: "gpt4",
       endpoints: [{ id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1", apiKey: "sk-test" }],
-      models: [{ id: "gpt4", name: "GPT-4", endpointId: "openai", modelName: "gpt-4", maxContextTokens: 128000 }],
+      models: [{ id: "gpt4", name: "GPT-4", endpointId: "openai", modelName: "gpt-4", tokenThresholds: { handoff: 128000, guard: 192000 } }],
     },
     filter: vi.fn(() => ({ tools: [], subagents: [], skills: [], mcps: [] })),
     instantiate: vi.fn(() => []),

@@ -39,7 +39,7 @@ function filesApiConfig(): Partial<AppConfig> {
         name: "DS Vision",
         endpointId: "deepseek",
         modelName: "ds-vision",
-        maxContextTokens: 1000,
+        tokenThresholds: { handoff: 1000, guard: 1500 },
         vision: true,
       },
     ] as AppConfig["models"],
@@ -60,7 +60,7 @@ function textOnlyConfig(): Partial<AppConfig> {
       },
     ],
     models: [
-      { id: "ds-chat", name: "DS Chat", endpointId: "deepseek", modelName: "ds-chat", maxContextTokens: 1000 },
+      { id: "ds-chat", name: "DS Chat", endpointId: "deepseek", modelName: "ds-chat", tokenThresholds: { handoff: 1000, guard: 1500 } },
     ] as AppConfig["models"],
   };
 }

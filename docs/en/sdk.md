@@ -147,14 +147,65 @@ abstract class SdkCallbackTool extends Tool {
 }
 ```
 
+## Reasoning effort
+
+Effort levels are **not** a global enum: every endpoint accepts a different value set, and even the same vendor differs per model (Zhipu GLM-5.3 errors out on `medium`). So the capability is declared on the **model** (to avoid 4xx), while the chosen level lives on the **Agent** (the same model can serve different personas at different intensities).
+
+| Layer | Field | Purpose |
+|----|------|------|
+| Model | `Model.reasoning: { efforts, disable? }` | Physical capability ceiling (taken from vendor docs, never guessed) |
+| Agent | `AgentDefinition.reasoningEffort?: ReasoningEffort` | This Agent's actual level, overriding the model's `defaultParams` |
+
+Factory declarations (per vendor docs):
+
+| Endpoint | Adjustable levels | Can thinking be disabled? |
+|------|---------|-------------|
+| DeepSeek (`/guides/thinking_mode`) | `low` / `high` / `max` | Yes: `thinking.type = "disabled"` |
+| Zhipu GLM-5.3 / 5.3-FLASH / 5.3-FLASHX | `low` / `high` / `max` (**anything else errors**) | **No**: sending `disabled` errors out |
+| Zhipu GLM-4.7 | Not adjustable (`efforts: []`) | No (forced thinking, no `reasoning_effort` parameter) |
+| OpenAI (`Shared.ReasoningEffort`) | `minimal` / `low` / `medium` / `high` | Yes: `reasoning_effort = "none"` |
+
+The write shape follows `disable`:
+
+- `disable: "thinking"` → maintain both `thinking.type` and `reasoning_effort` (DeepSeek)
+- `disable: "effort-none"` → write **only** `reasoning_effort` (OpenAI has no `thinking` param; sending it is treated as an unknown argument)
+- no `disable` declared → write only `reasoning_effort`; `off` throws (Zhipu 5.3 series)
+
+Public API (all exported from the package entry):
+
+| Function | Purpose |
+|------|------|
+| `resolveReasoningEffort(model, definition)` | effective level (Agent wins; invalid falls back to the model default) |
+| `resolveModelParams(model, definition)` | apply the Agent override onto model params (used by `createModel`) |
+| `applyReasoningEffort(params, model, effort)` | write according to the capability declaration; throws on invalid levels |
+| `modelEfforts` / `modelAllowedEfforts` / `readReasoningEffort` / `isReasoningEffort` / `capabilityOf` | capability and current-state readers |
+
+Types: `ReasoningEffort` (`off` / `none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`) and `ReasoningCapability`.
+
+The third argument of `createModel(scope, modelId, { reasoningEffort })` is passed by `createAgent` from `definition.reasoningEffort` — so the same model can serve different Agents at different intensities (coding Agent `max`, casual chat Agent `low`) while the model's own `defaultParams` stay untouched.
+
+## Context thresholds (`tokenThresholds`)
+
+`Model.tokenThresholds` has two lines, both **absolute values** (what you write is what is used, no multiplier):
+
+| Field | Meaning | Consumer |
+|------|------|--------|
+| `handoff` | Soft line: after a response, `usage.prompt_tokens` above it triggers a task handoff | `AutoMigratePlugin` |
+| `guard` | Hard line: before each request, usage above it throws `ContextOverflowError` and aborts the round | `ContextGuardPlugin` |
+
+- `guard` should be clearly larger than `handoff` (factory value is `handoff × 1.5`, written as an integer) so the handoff round has room for 1–2 extra requests
+- Neither value is the model's real context window: the window is a vendor fact, the thresholds are our policy for "what happens when usage reaches this line"
+- Want it looser? Change the number. Making them absolute is exactly so the safety boundary is predictable instead of being implicitly multiplied by a ratio (the old `ratio` / `suspendedRatio` are gone)
+- Legacy fields `maxContextTokens` (single value) and `maxContextChars` (character-based, dropped) are migrated by `ConfigManager.read()`: the former becomes `handoff`, the latter is folded into tokens via `floor(chars / 4)`, `guard` is filled in once at 1.5×, and the old keys are deleted; `ensureDefaultConfig()` only writes when it detects a difference
+
 ## Core entity types
 
 | Entity | Description | Storage |
 |------|------|------|
 | `Endpoint` | API endpoint (baseUrl + apiKey + optional `capabilities.filesApi`) | `config.json` |
-| `Model` | Model configuration, bound to one Endpoint | `config.json` |
+| `Model` | Model configuration, bound to one Endpoint, may declare `reasoning` (effort capability ceiling) | `config.json` |
 | `ImageModel` | Image-generation model configuration | `config.json` |
-| `AgentDefinition` | an interactive AI persona (prompt, permissions, optional tool signatures); having a `function` makes it a SubAgent; `custom: true` marks it as user-defined (init skips syncing built-in prompts) | `agents/*.json` |
+| `AgentDefinition` | an interactive AI persona (prompt, permissions, optional tool signatures, optional effort field `reasoningEffort`); having a `function` makes it a SubAgent; `custom: true` marks it as user-defined (init skips syncing built-in prompts) | `agents/*.json` |
 | `ToolEnv` | `{ cwd, config }`, injected when constructing built-in tools | in-memory |
 | `SdkCallbackTool` | abstract base class for built-in tools | in-memory |
 

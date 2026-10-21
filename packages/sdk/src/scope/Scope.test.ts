@@ -530,8 +530,8 @@ describe("Scope 能力发现与过滤", () => {
         defaultModel: "gpt4",
         endpoints: [],
         models: [
-          { id: "gpt4", name: "GPT-4", endpointId: "ep", modelName: "gpt4", maxContextTokens: 100000 },
-          { id: "vision", name: "Vision", endpointId: "ep", modelName: "vision-1", maxContextTokens: 100000, vision: true },
+          { id: "gpt4", name: "GPT-4", endpointId: "ep", modelName: "gpt4", tokenThresholds: { handoff: 100000, guard: 150000 } },
+          { id: "vision", name: "Vision", endpointId: "ep", modelName: "vision-1", tokenThresholds: { handoff: 100000, guard: 150000 }, vision: true },
         ],
       };
       const scope = await makeScope({ config });
@@ -559,7 +559,7 @@ describe("Scope 能力发现与过滤", () => {
       const imgConfig: AppConfig = {
         defaultModel: "gpt4",
         endpoints: [{ id: "zhipu", name: "智谱", baseUrl: "https://open.bigmodel.cn/api/paas/v4", apiKey: "sk-xxx" }],
-        models: [{ id: "gpt4", name: "GPT-4", endpointId: "zhipu", maxContextTokens: 500000 }],
+        models: [{ id: "gpt4", name: "GPT-4", endpointId: "zhipu", tokenThresholds: { handoff: 500000, guard: 750000 } }],
         imageModels: [{ id: "cogview", name: "CogView", endpointId: "zhipu", modelName: "cogview-4" }],
         defaultImageModel: "cogview",
       };

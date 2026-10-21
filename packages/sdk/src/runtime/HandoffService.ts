@@ -45,7 +45,7 @@ export interface HandoffContext {
   /** 当前 prompt token 用量（自动迁移时由插件提供；手动触发可省略） */
   promptTokens?: number;
   /** 上下文阈值（自动迁移时由插件提供；手动触发可省略） */
-  maxTokens?: number;
+  handoffTokens?: number;
   /** 本次是否会在交接后开新会话（`migrate()` 为 true，`handoff()` 为 false）。钩子据此区分两种语义 */
   migrating: boolean;
   /** 交接前消息总数 */
@@ -93,7 +93,7 @@ export interface HandoffParams {
   /** 当前 prompt token 用量（可选，仅透传给钩子） */
   promptTokens?: number;
   /** 上下文阈值（可选，仅透传给钩子） */
-  maxTokens?: number;
+  handoffTokens?: number;
   /** 会话 id（可选，用于交接文件名，便于回溯） */
   conversationId?: string;
 }
@@ -339,7 +339,7 @@ export class HandoffService {
     params: HandoffParams,
     migrating: boolean,
   ): Promise<HandoffContext> {
-    const { agent, promptTokens, maxTokens, conversationId } = params;
+    const { agent, promptTokens, handoffTokens, conversationId } = params;
     const requestedMode = params.mode ?? this.defaultMode;
     const handoffPath = join(
       this.handoffDirPath,
@@ -356,7 +356,7 @@ export class HandoffService {
       handoffPath,
       model,
       promptTokens,
-      maxTokens,
+      handoffTokens,
       migrating,
       messageCountBefore,
       historyText: "",
@@ -399,7 +399,7 @@ export class HandoffService {
       handoffDoc,
       model,
       promptTokens,
-      maxTokens,
+      handoffTokens,
       migrating,
       messageCountBefore,
       historyText,

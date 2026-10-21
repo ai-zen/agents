@@ -17,33 +17,23 @@ export class SdkError extends Error {
 
 /**
  * 上下文超限错误。由 ContextGuardPlugin 在请求前抛出，用于中断对话。
- * 触发条件通常是上下文 token 用量远超阈值（如读入超大文件），
+ * 触发条件通常是上下文 token 用量超过硬线（如读入超大文件），
  * 继续对话已无意义且会持续放大费用/延迟，故由上层捕获后向用户显式报错。
  */
 export class ContextOverflowError extends Error {
   /** 触发中断时的刚用量（usage.prompt_tokens） */
   public readonly promptTokens: number;
-  /** 配置的告警阈值（maxTokens） */
-  public readonly maxTokens: number;
-  /** 实际生效的硬上限（maxTokens × ratio，越界即中断） */
-  public readonly threshold: number;
-  /** 超出比例（如 1.2 表示 20%） */
-  public readonly ratio: number;
+  /** 被越过的强行阻断阈值（`tokenThresholds.guard`，绝对值） */
+  public readonly guardTokens: number;
 
-  constructor(
-    promptTokens: number,
-    maxTokens: number,
-    ratio: number,
-  ) {
-    const threshold = maxTokens * ratio;
+  constructor(promptTokens: number, guardTokens: number) {
     super(
-      `🛑 上下文严重超限：已用 ${promptTokens} token，超过硬上限 ${threshold}（${Math.round((ratio - 1) * 100)}%，配置上限 ${maxTokens}）。` +
-        `当前对话可能因读入超大文件而失控，已中断，请检查并重新开始。`,
+      `🛑 上下文严重超限：已用 ${promptTokens} token，超过阻断阈值 ${guardTokens}。` +
+        `当前对话可能因读入超大文件而失控，已中断，请检查并重新开始。` +
+        `（如确需更长上下文，请调高 config.json 中该模型的 tokenThresholds.guard。）`,
     );
     this.name = "ContextOverflowError";
     this.promptTokens = promptTokens;
-    this.maxTokens = maxTokens;
-    this.threshold = threshold;
-    this.ratio = ratio;
+    this.guardTokens = guardTokens;
   }
 }

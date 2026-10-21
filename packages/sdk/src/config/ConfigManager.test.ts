@@ -32,7 +32,7 @@ describe("ConfigManager", () => {
         { id: "e1", name: "OpenAI", baseUrl: "https://api.openai.com", apiKey: "sk-xxx" },
       ],
       models: [
-        { id: "m1", name: "GPT-4", endpointId: "e1", maxContextTokens: 500000 },
+        { id: "m1", name: "GPT-4", endpointId: "e1", tokenThresholds: { handoff: 500000, guard: 750000 } },
       ],
     };
     await configManager.write(data);

@@ -34,7 +34,7 @@ const mockConfig: AppConfig = {
     { id: "bigmodelcn", name: "BigModelCN", apiKey: "test-key", baseUrl: "https://open.bigmodel.cn/api/paas/v4" },
   ],
   models: [
-    { id: "gpt4", name: "GPT-4", endpointId: "bigmodelcn", maxContextTokens: 500000 },
+    { id: "gpt4", name: "GPT-4", endpointId: "bigmodelcn", tokenThresholds: { handoff: 500000, guard: 750000 } },
   ],
   imageModels: [
     { id: "cogview-4", name: "CogView-4", endpointId: "bigmodelcn", modelName: "cogview-4", defaultSize: "1024x1024" },

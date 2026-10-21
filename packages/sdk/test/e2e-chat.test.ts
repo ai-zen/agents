@@ -42,7 +42,7 @@ const config = {
       name: "DeepSeek V4.1 Flash",
       endpointId: "deepseek",
       modelName: "deepseek-flash",
-      maxContextTokens: 128_000,
+      tokenThresholds: { handoff: 128_000, guard: 192000 },
       defaultParams: {},
     },
   ],

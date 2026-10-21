@@ -1,5 +1,47 @@
 # Changelog
 
+## [1.0.0-alpha.13] - 2026-10-22
+
+### 💥 Breaking Changes
+
+- **`Model.maxContextTokens` / `maxContextChars` → `Model.tokenThresholds: { handoff, guard }`** —— 旧名字一直在误导（它既不是上下文窗口，也不是单一概念）。现在拆成两条**绝对值**：
+  - `handoff`：软线，响应返回后 `prompt_tokens` 超过它触发任务交接（`AutoMigratePlugin`）；
+  - `guard`：硬线，请求前用量超过它抛 `ContextOverflowError` 中断本轮（`ContextGuardPlugin`）。
+  - `maxContextChars` 直接淘汰（字符口径早于 token 口径，两者并存只会让「按哪个判」长期含糊）。
+  - 迁移由 `config/migrate.ts` 完成，`ConfigManager.read()` 读到即迁、`ensureDefaultConfig()` 检测差异才写盘：`maxContextTokens` → `handoff`，`maxContextChars` → `floor(/4)`，缺 `guard` 时按 1.5 倍折算一次（保持迁移前行为），旧键随即删除。
+- **`ContextGuardPlugin` 的 `ratio` / `suspendedRatio` / `isSuspended` 全部删除** —— 它们只是「相对阈值」的产物。现在 `new ContextGuardPlugin({ guardTokens })` 一个绝对数就够：想调松就把数字改大。代价是**交接回合不再有 2.0 倍的额外放宽**，若需要该缓冲请把 `guard` 配得更大（出厂取 `handoff × 1.5`，并写成整数）。
+- **`ContextOverflowError(promptTokens, guardTokens)`** —— 去掉 `maxTokens` / `ratio` / `threshold` 三个派生字段，改为直接暴露被越过的 `guardTokens`。
+- **`AutoMigratePlugin` 的 `maxTokens` → `handoffTokens`**，`AutoMigrateTriggerInfo.maxTokens` → `handoffTokens`，`HandoffService` 的 `HandoffParams.maxTokens` / `HandoffContext.maxTokens` → `handoffTokens`（仅字段改名，语义不变：交接阈值）。
+
+### ✨ 新增
+
+- **思考强度（reasoning effort）能力位** —— 档位此前完全没有建模，CLI 只能手改 `defaultParams`，而各家端点接受的值域并不相同（智谱 GLM-5.3 系对 `medium` 直接报错、对 `thinking.type = "disabled"` 也报错）。现在分三层：
+  - `Model.reasoning: { efforts: ReasoningEffort[], disable?: "thinking" | "effort-none" }` —— **物理能力上限**，按厂商官方文档声明（防 400）；
+  - `AgentDefinition.reasoningEffort?: ReasoningEffort` —— 该 Agent 的实际档位，在 `createModel` 阶段覆盖模型 `defaultParams`。于是同一模型可以给不同 Agent 配不同强度（编程 Agent `max`、闲聊 Agent `low`、闲聊小号 `off`）。
+  - 刻意**没有**做 Agent 侧的档位白名单（`reasoningEfforts`）：它解决的是伪需求（真正会 400 的是端点能力，那已由模型声明兜住），却引入「差一个 s」的命名陷阱与一层交集规则。
+- **`shared/reasoning.ts`**（公共 API，均从包入口导出）：`resolveReasoningEffort()`、`resolveModelParams()`、`applyReasoningEffort()`（按声明写入，非法档位抛错）、`modelEfforts()` / `modelAllowedEfforts()` / `readReasoningEffort()` / `isReasoningEffort()` / `capabilityOf()`，以及 `ReasoningEffort` / `ReasoningCapability` 类型。
+- **写入形态由声明决定**：`disable: "thinking"` → 同时维护 `thinking.type` 与 `reasoning_effort`（DeepSeek）；`disable: "effort-none"` → 只写 `reasoning_effort`（OpenAI 没有 `thinking` 参数，写它会被当未知参数）；未声明 `disable` → 只写 `reasoning_effort`，`off` 直接抛错（智谱 5.3 系）。
+- **出厂模型按官方文档声明能力**（依据已写入 `constants.ts` 注释）：
+  - `deepseek-flash` → `low/high/max`，可关闭（`api-docs.deepseek.com/guides/thinking_mode`）
+  - `glm-5.3` / `glm-5.3-flash` / `glm-5.3-flashx` → `low/high/max`，**不可关闭**（`docs.bigmodel.cn/cn/guide/capabilities/thinking`）
+  - `glm-4.7-flash` → 不可调（强制思考，`reasoning_effort` 仅 5.2+ 支持）
+  - `gpt-6-astra` / `gpt-6.1-sol` / `gpt-6-luna` → `minimal/low/medium/high`，可用 `reasoning_effort: "none"` 关闭
+  - 未声明的模型一律视为不可调档，不推测
+
+### 🔧 变更
+
+- **`createModel(scope, modelId)` → `createModel(scope, modelId, overrides?: Pick<AgentDefinition, "reasoningEffort">)`** —— 新增的可选第三参由 `createAgent` 传入 `definition.reasoningEffort`。不传时行为与以前完全一致（原样返回模型 `defaultParams`）。
+
+### ✅ 测试
+
+- 新增 `shared/reasoning.test.ts` 22 例：能力声明与出厂清单一致性、`off` 只对有 `disable` 的模型开放、GLM-5.3 设 `medium` 与 `off` 均抛错、OpenAI 永不写 `thinking` 键、往返一致性、Agent 覆盖与回退。
+- 新增 `config/migrate.test.ts` 13 例：旧字段迁移（tokens / chars / 两者 / 都无 / 脏值）、`guard` 折算、已是新形状时不迁移、不改入参、部分迁移时未变条目保持同一引用。
+- 全量 **57 文件 / 599 用例** 通过（6 skipped），`tsc --noEmit` 与 `build` 零错误。
+
+### 📄 Docs
+
+- `docs/{zh,en}/sdk.md` 新增「思考强度（reasoning effort）」小节（三层模型、出厂声明表、写入形态、公共 API），核心实体表补充 `Model.reasoning` 与 Agent 的两个档位字段。
+
 ## [1.0.0-alpha.12] - 2026-10-22
 
 ### 💥 Breaking Changes

@@ -147,14 +147,65 @@ abstract class SdkCallbackTool extends Tool {
 }
 ```
 
+## 思考强度（reasoning effort）
+
+档位**不是**全局统一枚举：各端点接受的值域不同，同一家不同型号也不同（智谱 GLM-5.3 系对 `medium` 直接报错）。所以能力声明在**模型**上（防 400），档位值存在 **Agent** 上（同一模型可给不同人格配不同强度）。
+
+| 层 | 字段 | 作用 |
+|----|------|------|
+| 模型 | `Model.reasoning: { efforts, disable? }` | 物理能力上限（厂商官方文档口径，不推测） |
+| Agent | `AgentDefinition.reasoningEffort?: ReasoningEffort` | 该 Agent 的实际档位，覆盖模型 `defaultParams` 里的对应参数 |
+
+出厂声明（依据官方文档）：
+
+| 端点 | 可调档位 | 能否关闭思考 |
+|------|---------|-------------|
+| DeepSeek（`/guides/thinking_mode`） | `low` / `high` / `max` | 能：`thinking.type = "disabled"` |
+| 智谱 GLM-5.3 / 5.3-FLASH / 5.3-FLASHX | `low` / `high` / `max`（**其余输入报错**） | **不能**：传 `disabled` 会报错 |
+| 智谱 GLM-4.7 | 不可调（`efforts: []`） | 不能（强制思考，且无 `reasoning_effort` 参数） |
+| OpenAI（`Shared.ReasoningEffort`） | `minimal` / `low` / `medium` / `high` | 能：`reasoning_effort = "none"` |
+
+写入形态由 `disable` 决定：
+
+- `disable: "thinking"` → 同时维护 `thinking.type` 与 `reasoning_effort`（DeepSeek）
+- `disable: "effort-none"` → **只写** `reasoning_effort`（OpenAI 没有 `thinking` 参数，写它会被当未知参数）
+- 未声明 `disable` → 只写 `reasoning_effort`，传 `off` 直接抛错（智谱 5.3 系）
+
+公共 API（均从包入口导出）：
+
+| 函数 | 作用 |
+|------|------|
+| `resolveReasoningEffort(model, definition)` | 实际生效档位（Agent 优先，非法则回退模型默认） |
+| `resolveModelParams(model, definition)` | 把 Agent 档位覆盖应用到模型参数（`createModel` 用） |
+| `applyReasoningEffort(params, model, effort)` | 按能力声明写入，非法档位抛错 |
+| `modelEfforts` / `modelAllowedEfforts` / `readReasoningEffort` / `isReasoningEffort` / `capabilityOf` | 能力与现状读取 |
+
+类型：`ReasoningEffort`（`off` / `none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`）、`ReasoningCapability`。
+
+`createModel(scope, modelId, { reasoningEffort })` 的第三参由 `createAgent` 从 `definition.reasoningEffort` 传入 —— 同一个模型可以给不同 Agent 配不同强度（编程 Agent `max`、闲聊 Agent `low`），而模型自身的 `defaultParams` 保持不变。
+
+## 上下文阈值（tokenThresholds）
+
+`Model.tokenThresholds` 有两条线，都是**绝对值**（配置里写多少就是多少，不乘任何系数）：
+
+| 字段 | 语义 | 消费方 |
+|------|------|--------|
+| `handoff` | 软线：响应返回后 `usage.prompt_tokens` 超过它 → 触发任务交接 | `AutoMigratePlugin` |
+| `guard` | 硬线：每次请求**前**用量超过它 → 抛 `ContextOverflowError` 中断本轮 | `ContextGuardPlugin` |
+
+- `guard` 应当明显大于 `handoff`（出厂取 `handoff × 1.5` 并**写成整数**），给交接回合额外的 1~2 次请求留余量
+- 两条线都与「模型的真实上下文窗口」无关：窗口是厂商事实，阈值是我们对「用量到了怎么办」的策略
+- 想调松就调大数字——改成绝对值就是为了让安全边界可预测，而不是隐式乘以某个 ratio（旧的 `ratio` / `suspendedRatio` 已删除）
+- 历史字段 `maxContextTokens`（单值）与 `maxContextChars`（字符口径已淘汰）由 `ConfigManager.read()` 读取时迁移：前者成为 `handoff`，后者按 `floor(chars / 4)` 折成 tokens，`guard` 按 1.5 倍补一次，旧键随即删除；`ensureDefaultConfig()` 检测到差异才写盘
+
 ## 核心实体类型
 
 | 实体 | 说明 | 存储 |
 |------|------|------|
 | `Endpoint` | API 端点（baseUrl + apiKey + 可选 `capabilities.filesApi`） | `config.json` |
-| `Model` | 模型配置，绑定一个 Endpoint | `config.json` |
+| `Model` | 模型配置，绑定一个 Endpoint，可声明 `reasoning`（思考强度能力上限） | `config.json` |
 | `ImageModel` | 图片生成模型配置 | `config.json` |
-| `AgentDefinition` | 可对话 AI 人格（提示词、权限、可选工具签名）；有 `function` 即视为 SubAgent；`custom: true` 表示用户自定义（初始化不同步内置提示词） | `agents/*.json` |
+| `AgentDefinition` | 可对话 AI 人格（提示词、权限、可选工具签名、可选思考档位 `reasoningEffort`）；有 `function` 即视为 SubAgent；`custom: true` 表示用户自定义（初始化不同步内置提示词） | `agents/*.json` |
 | `ToolEnv` | `{ cwd, config }`，内置工具构造时注入 | 内存态 |
 | `SdkCallbackTool` | 内置工具抽象基类 | 内存态 |
 

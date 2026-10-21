@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { AutoMigratePlugin } from "./AutoMigratePlugin.js";
 import type { HandoffService } from "../runtime/HandoffService.js";
 
-const MAX_TOKENS = 50_000;
+const MAX_HANDOFF_TOKENS = 50_000;
 
 /** 最小服务替身：只暴露插件用到的 `busy` 与 `migrate` */
 function stubService(options: { busy?: boolean } = {}) {
@@ -31,7 +31,7 @@ function createPlugin(options: {
 }): AutoMigratePlugin {
   return new AutoMigratePlugin({
     service: options.service,
-    maxTokens: MAX_TOKENS,
+    handoffTokens: MAX_HANDOFF_TOKENS,
     resolveMode: options.resolveMode,
   });
 }
@@ -52,25 +52,25 @@ describe("AutoMigratePlugin", () => {
     expect(migrate).not.toHaveBeenCalled();
   });
 
-  it("promptTokens <= maxTokens 时不迁移", async () => {
+  it("promptTokens <= handoffTokens 时不迁移", async () => {
     const { service, migrate } = stubService();
-    await createPlugin({ service }).onAfterSend(buildCtx(MAX_TOKENS));
+    await createPlugin({ service }).onAfterSend(buildCtx(MAX_HANDOFF_TOKENS));
     expect(migrate).not.toHaveBeenCalled();
   });
 
   it("超阈值时委托 service.migrate，并透传用量", async () => {
     const { service, migrate } = stubService();
-    await createPlugin({ service }).onAfterSend(buildCtx(MAX_TOKENS + 1));
+    await createPlugin({ service }).onAfterSend(buildCtx(MAX_HANDOFF_TOKENS + 1));
 
     expect(migrate).toHaveBeenCalledTimes(1);
     expect(migrate).toHaveBeenCalledWith(
-      expect.objectContaining({ promptTokens: MAX_TOKENS + 1, maxTokens: MAX_TOKENS }),
+      expect.objectContaining({ promptTokens: MAX_HANDOFF_TOKENS + 1, handoffTokens: MAX_HANDOFF_TOKENS }),
     );
   });
 
   it("未提供 resolveMode 时不指定执行者（由服务默认值决定）", async () => {
     const { service, migrate } = stubService();
-    await createPlugin({ service }).onAfterSend(buildCtx(MAX_TOKENS + 1));
+    await createPlugin({ service }).onAfterSend(buildCtx(MAX_HANDOFF_TOKENS + 1));
 
     expect(migrate.mock.calls[0][0].mode).toBeUndefined();
   });
@@ -79,11 +79,11 @@ describe("AutoMigratePlugin", () => {
     const { service, migrate } = stubService();
     const resolveMode = vi.fn(async () => "summary" as const);
 
-    await createPlugin({ service, resolveMode }).onAfterSend(buildCtx(MAX_TOKENS + 1));
+    await createPlugin({ service, resolveMode }).onAfterSend(buildCtx(MAX_HANDOFF_TOKENS + 1));
 
     expect(resolveMode).toHaveBeenCalledWith({
-      promptTokens: MAX_TOKENS + 1,
-      maxTokens: MAX_TOKENS,
+      promptTokens: MAX_HANDOFF_TOKENS + 1,
+      handoffTokens: MAX_HANDOFF_TOKENS,
     });
     expect(migrate.mock.calls[0][0].mode).toBe("summary");
   });
@@ -92,7 +92,7 @@ describe("AutoMigratePlugin", () => {
     const { service, migrate } = stubService();
     const resolveMode = vi.fn(async () => null);
 
-    await createPlugin({ service, resolveMode }).onAfterSend(buildCtx(MAX_TOKENS + 1));
+    await createPlugin({ service, resolveMode }).onAfterSend(buildCtx(MAX_HANDOFF_TOKENS + 1));
 
     expect(migrate).not.toHaveBeenCalled();
   });
@@ -101,7 +101,7 @@ describe("AutoMigratePlugin", () => {
     const { service, migrate } = stubService({ busy: true });
     const resolveMode = vi.fn(async () => "self" as const);
 
-    await createPlugin({ service, resolveMode }).onAfterSend(buildCtx(MAX_TOKENS + 1));
+    await createPlugin({ service, resolveMode }).onAfterSend(buildCtx(MAX_HANDOFF_TOKENS + 1));
 
     expect(resolveMode).not.toHaveBeenCalled();
     expect(migrate).not.toHaveBeenCalled();
@@ -112,7 +112,7 @@ describe("AutoMigratePlugin", () => {
     migrate.mockRejectedValueOnce(new Error("boom"));
 
     await expect(
-      createPlugin({ service }).onAfterSend(buildCtx(MAX_TOKENS + 1)),
+      createPlugin({ service }).onAfterSend(buildCtx(MAX_HANDOFF_TOKENS + 1)),
     ).resolves.toBeUndefined();
   });
 });

@@ -14,9 +14,9 @@ const baseConfig: AppConfig = {
     { id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", apiKey: "sk-ds" },
   ],
   models: [
-    { id: "gpt4", name: "GPT-4", endpointId: "openai", modelName: "gpt-4", maxContextTokens: 128000 },
-    { id: "gpt4-no-modelname", name: "GPT-4 No Name", endpointId: "openai", maxContextTokens: 128000 },
-    { id: "ds-v3", name: "DeepSeek V3", endpointId: "deepseek", modelName: "deepseek-v3", maxContextTokens: 64000, defaultParams: { temperature: 0.7 } },
+    { id: "gpt4", name: "GPT-4", endpointId: "openai", modelName: "gpt-4", tokenThresholds: { handoff: 128000, guard: 192000 } },
+    { id: "gpt4-no-modelname", name: "GPT-4 No Name", endpointId: "openai", tokenThresholds: { handoff: 128000, guard: 192000 } },
+    { id: "ds-v3", name: "DeepSeek V3", endpointId: "deepseek", modelName: "deepseek-v3", tokenThresholds: { handoff: 64000, guard: 96000 }, defaultParams: { temperature: 0.7 } },
   ],
 };
 
@@ -36,7 +36,7 @@ describe("createModel", () => {
     const badConfig: AppConfig = {
       defaultModel: "bad",
       endpoints: [],
-      models: [{ id: "bad", name: "Bad", endpointId: "missing-ep", maxContextTokens: 1000 }],
+      models: [{ id: "bad", name: "Bad", endpointId: "missing-ep", tokenThresholds: { handoff: 1000, guard: 1500 } }],
     };
     expect(() => createModel(mockScope(badConfig), "bad")).toThrow("未配置");
   });
@@ -45,7 +45,7 @@ describe("createModel", () => {
     const noKeyConfig: AppConfig = {
       defaultModel: "no-key",
       endpoints: [{ id: "no-key-ep", name: "No Key", baseUrl: "https://example.com/v1", apiKey: "" }],
-      models: [{ id: "no-key", name: "No Key Model", endpointId: "no-key-ep", maxContextTokens: 1000 }],
+      models: [{ id: "no-key", name: "No Key Model", endpointId: "no-key-ep", tokenThresholds: { handoff: 1000, guard: 1500 } }],
     };
     expect(() => createModel(mockScope(noKeyConfig), "no-key")).toThrow(
       "API Key 未设置",
@@ -73,7 +73,7 @@ describe("createModel", () => {
     const noEpConfig: AppConfig = {
       defaultModel: "m",
       endpoints: [],
-      models: [{ id: "m", name: "M", endpointId: "ep", maxContextTokens: 1000 }],
+      models: [{ id: "m", name: "M", endpointId: "ep", tokenThresholds: { handoff: 1000, guard: 1500 } }],
     };
     expect(() => createModel(mockScope(noEpConfig), "m")).toThrow("未配置");
   });

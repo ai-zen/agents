@@ -95,7 +95,7 @@ describe("端到端：真实文件系统路径", () => {
       expect(config.endpoints).toHaveLength(2);
       expect(config.models).toHaveLength(3);
       expect(config.imageModels).toHaveLength(1);
-      expect(config.models.find((m) => m.id === "gpt4")?.maxContextTokens).toBe(500000);
+      expect(config.models.find((m) => m.id === "gpt4")?.tokenThresholds.handoff).toBe(500000);
     });
 
     it("discoverBuiltinTools: 有 imageModels 时包含 generate_image", async () => {

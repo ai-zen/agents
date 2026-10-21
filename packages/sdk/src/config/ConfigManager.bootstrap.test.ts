@@ -269,7 +269,7 @@ describe("ConfigManager.ensureDefaultConfig", () => {
     await mgr.write({
       endpoints: [{ id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", apiKey: "sk-x" }],
       models: [
-        { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", endpointId: "deepseek", maxContextTokens: 250_000 },
+        { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", endpointId: "deepseek", tokenThresholds: { handoff: 250_000, guard: 375000 } },
       ],
       defaultModel: "deepseek-v4-flash",
       defaultMigrationModel: "deepseek-v4-flash",
@@ -296,7 +296,7 @@ describe("ConfigManager.ensureDefaultConfig", () => {
     await mgr.write({
       endpoints: [],
       models: [
-        { id: "my-local-llm", name: "本地模型", endpointId: "local", maxContextTokens: 32_000, custom: true },
+        { id: "my-local-llm", name: "本地模型", endpointId: "local", tokenThresholds: { handoff: 32_000, guard: 48000 }, custom: true },
       ],
       defaultModel: "my-local-llm",
     });
@@ -305,7 +305,7 @@ describe("ConfigManager.ensureDefaultConfig", () => {
 
     const mine = cfg.models.find((m) => m.id === "my-local-llm")!;
     expect(mine.name).toBe("本地模型");
-    expect(mine.maxContextTokens).toBe(32_000);
+    expect(mine.tokenThresholds.handoff).toBe(32_000);
     // 出厂模型 + 用户自定义模型共存
     expect(cfg.models.length).toBe(DEFAULT_APP_CONFIG.models.length + 1);
     // defaultModel 指向有效模型，保持不变
@@ -318,7 +318,7 @@ describe("ConfigManager.ensureDefaultConfig", () => {
     await mgr.write({
       endpoints: [],
       models: [
-        { id: "glm-5.3", name: "我的 GLM-5.3", endpointId: "bigmodelcn", maxContextTokens: 999, custom: true },
+        { id: "glm-5.3", name: "我的 GLM-5.3", endpointId: "bigmodelcn", tokenThresholds: { handoff: 999, guard: 1498 }, custom: true },
       ],
     });
 
@@ -327,7 +327,7 @@ describe("ConfigManager.ensureDefaultConfig", () => {
     const glm = cfg.models.filter((m) => m.id === "glm-5.3");
     expect(glm.length).toBe(1);
     expect(glm[0].name).toBe("我的 GLM-5.3");
-    expect(glm[0].maxContextTokens).toBe(999);
+    expect(glm[0].tokenThresholds.handoff).toBe(999);
   });
 
   it("图片模型同步：未标 custom 的旧图片模型被替换", async () => {
