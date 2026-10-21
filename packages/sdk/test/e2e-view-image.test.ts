@@ -123,7 +123,6 @@ const skip = !API_KEY;
 const VISION_MODEL_ID = "deepseek-flash";
 
 const config = {
-  defaultModel: VISION_MODEL_ID,
   endpoints: [
     {
       id: "deepseek",

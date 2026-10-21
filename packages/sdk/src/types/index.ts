@@ -153,7 +153,13 @@ export interface AgentDefinition {
   name: string; // 展示名称
   description?: string; // 简短描述（列表展示用）
   messages: AgentNS.Message[]; // 预设对话（至少一条 system）
-  modelId?: string; // 指定模型，不填用默认
+  /**
+   * 绑定模型 id —— **运行期唯一真相源**。
+   *
+   * 缺省即「无模型可用」，`createAgent` 会直接报错；不存在配置层的 `defaultModel`
+   * 兜底，也不存在会话级的模型记录。要换模型就改这里（`/model` 写的就是它）。
+   */
+  modelId?: string;
   /**
    * Agent 级模型参数覆盖，浅合并进模型的 `defaultParams`。
    *
@@ -205,7 +211,6 @@ export interface ImageModel {
 
 /** config.json 结构 */
 export interface AppConfig {
-  defaultModel?: string; // 默认模型 id
   endpoints: Endpoint[];
   models: Model[];
   /** 图片生成模型列表 */

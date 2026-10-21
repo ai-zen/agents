@@ -126,9 +126,6 @@ export function resolveModelAndEndpoint(
     : undefined;
   if (byApiName) return { model: byApiName, endpoint: findEndpoint(byApiName.endpointId) };
 
-  const fallback = models.find((m) => m.id === config.defaultModel);
-  if (fallback) return { model: fallback, endpoint: findEndpoint(fallback.endpointId) };
-
   return { endpoint: null };
 }
 

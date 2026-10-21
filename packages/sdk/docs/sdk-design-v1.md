@@ -100,7 +100,7 @@ openai SDK client（baseURL + apiKey）──> Agent（client + model + modelCon
 
 ```typescript
 interface AppConfig {
-  defaultModel?: string;          // 默认模型 id
+  // 注意：这里没有 defaultModel —— 模型的真相源是 AgentDefinition.modelId
   endpoints: Endpoint[];
   models: Model[];
   imageModels?: ImageModel[];     // 图片生成模型列表
@@ -139,7 +139,7 @@ interface AgentDefinition {
   name: string;                  // 展示名称
   description?: string;
   messages: AgentNS.Message[];   // 预设对话（至少一条 system）
-  modelId?: string;              // 指定模型，不填用默认
+  modelId?: string;              // 绑定模型 —— 运行期唯一真相源；缺失即报错，无默认回退
   permissions?: AgentPermissions;
 
   // 以下有则视为 SubAgent

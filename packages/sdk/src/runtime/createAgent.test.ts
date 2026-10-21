@@ -19,7 +19,6 @@ afterEach(async () => {
 });
 
 const config: AppConfig = {
-  defaultModel: "gpt4",
   endpoints: [
     { id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com", apiKey: "sk-xxx" },
   ],
@@ -47,6 +46,7 @@ async function writeAgentFile(id: string, def: Partial<AgentDefinition> = {}) {
   const agent: AgentDefinition = {
     id,
     name: id,
+    modelId: "gpt4",
     messages: [{ role: AgentNS.Role.System, content: "You are helpful." }],
     permissions: { tools: { allow: ["*"] }, skills: { allow: ["*"] }, mcps: { allow: ["*"] }, subagents: { allow: ["*"] } },
     createdAt: new Date().toISOString(),
@@ -139,6 +139,22 @@ describe("createAgent", () => {
     // 会话消息独立累积
     expect(agent.messages).toHaveLength(templateCount + 2);
     expect(agent.messages).not.toBe(agent.definition.messages);
+  });
+
+  it("Agent 未绑定模型（缺 modelId）时直接报错，不做任何隐式回退", async () => {
+    const agentsDir = join(dir, "agents");
+    await fs.mkdir(agentsDir, { recursive: true });
+    const def: AgentDefinition = {
+      id: "no-model",
+      name: "No Model",
+      messages: [{ role: AgentNS.Role.System, content: "hi" }],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    await fs.writeFile(join(agentsDir, "no-model.json"), JSON.stringify(def, null, 2));
+
+    const scope = await makeScope();
+    await expect(createAgent(scope, "no-model")).rejects.toThrow(/未绑定模型/);
   });
 
   it("Agent 定义缺少 messages 字段时也能正常创建（空值兜底）", async () => {

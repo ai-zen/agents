@@ -111,7 +111,6 @@ describe("migrateConfig", () => {
 
   it("无需迁移时返回原对象（避免无谓写盘）", () => {
     const config = {
-      defaultModel: "m",
       endpoints: [],
       models: [legacyModel({ tokenThresholds: { handoff: 1, guard: 2 } })],
     } as unknown as AppConfig;
@@ -120,10 +119,23 @@ describe("migrateConfig", () => {
     expect(result.config).toBe(config);
   });
 
+  it("清除已废弃的 config.defaultModel", () => {
+    const config = {
+      defaultModel: "m",
+      endpoints: [],
+      models: [legacyModel({ tokenThresholds: { handoff: 1, guard: 2 } })],
+    } as unknown as AppConfig;
+    const result = migrateConfig(config);
+    expect(result.changed).toBe(true);
+    expect("defaultModel" in result.config).toBe(false);
+    // 原始对象不被就地改（Scope 可能持有它的引用）
+    expect("defaultModel" in config).toBe(true);
+  });
+
   it("只迁移部分模型时，未变的条目保持同一引用", () => {
     const ok = legacyModel({ tokenThresholds: { handoff: 1, guard: 2 } });
     const bad = legacyModel({ maxContextTokens: 100_000 });
-    const config = { defaultModel: "m", endpoints: [], models: [ok, bad] } as unknown as AppConfig;
+    const config = { endpoints: [], models: [ok, bad] } as unknown as AppConfig;
 
     const result = migrateConfig(config);
     expect(result.changed).toBe(true);

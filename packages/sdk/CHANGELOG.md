@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.0.0-alpha.17] - 2026-10-22
+
+### 🔧 行为变更（不兼容）
+
+- **模型的唯一真相源改为 `AgentDefinition.modelId`，`AppConfig.defaultModel` 删除** —— 此前模型有两处来源：Agent 定义里的 `modelId` 优先，缺失时回退 `config.defaultModel`。而 CLI 等客户端还会在**会话存档**里另记一份模型名用于展示。三份值一旦分叉，就会出现「界面写着 DeepSeek、请求却发给 GLM」的静默错位：用户看到 401 却怎么切都切不回来（切换命令按显示层判断「已经是当前模型」直接返回，实际模型从未改变）。现在：
+  - `AppConfig` 删除 `defaultModel` 字段，出厂配置同步删除；`migrateConfig` 会把磁盘上的旧字段**清掉**（一次性，写入后不再出现）；
+  - `createAgent` 只读 `definition.modelId`，**缺失直接报错**，不再有任何隐式回退；
+  - `ViewImageTool.isAvailable` / `resolveModelAndEndpoint` 同步去掉 `defaultModel` 兜底，反查不到即视为「无端点」，让调用方走降级路径而不是猜一个模型。
+- **`DEFAULT_AGENT_DEFINITION.modelId = "deepseek-flash"`（新增导出 `DEFAULT_MODEL_ID`）** —— 出厂默认 Agent 自带模型 ID，装完即用，不再依赖配置层的默认值。
+- **升级兼容：`ensureDefaultAgent()` 会为缺 `modelId` 的历史 Agent 补上** —— 优先沿用老的 `config.defaultModel`（若该模型仍在清单里），否则回落到出厂 `deepseek-flash`，因此升级不会改变用户正在用的模型。
+
+### ✅ 测试
+
+- 全量 **57 文件 / 602 例通过**（6 skipped）。
+- 新增/改写重点：`createAgent` 缺 `modelId` 必须抛错、`ensureDefaultAgent` 补齐并落盘、`migrateConfig` 清除废弃字段且不就地改原对象、`resolveModelAndEndpoint` 未命中返回 `null` 端点、MCP / 图片工具按 `ctx.agent.model` 反查端点（不再靠默认模型兜底）。
+
 ## [1.0.0-alpha.16] - 2026-10-22
 
 ### 🔧 行为变更（不兼容，向上修复）

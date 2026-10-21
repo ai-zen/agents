@@ -27,7 +27,6 @@ const API_KEY = process.env.DEEPSEEK_API_KEY || "";
 const skip = !API_KEY;
 
 const config = {
-  defaultModel: "deepseek-flash",
   endpoints: [
     {
       id: "deepseek",

@@ -21,6 +21,9 @@ export class ConfigManager {
   readonly configPath: string;
   readonly basePath: string;
 
+  /** 当前配置里的模型 id 集合（bootstrap 时填充，供默认 Agent 校验 modelId） */
+  private knownModelIds: Set<string> = new Set();
+
   constructor(configPath: string) {
     this.configPath = configPath;
     this.basePath = dirname(configPath);
@@ -109,30 +112,53 @@ export class ConfigManager {
   /**
    * 确保 basePath/agents/default.json 存在。
    *
-   * - default.json 已存在且 custom === true → 用户声明为自定义，原样返回，不做任何改动
-   * - default.json 已存在且 custom !== true → 仅同步出厂提示词（messages），
-   *   其余字段（name/permissions/modelId 等）保留；提示词一致时不写盘
-   * - agents/ 为空 → 写入默认 Agent
+   * - default.json 已存在且 custom === true → 用户声明为自定义，不替换提示词（缺 modelId 仍补）
+   * - default.json 已存在且 custom !== true → 同步出厂提示词（messages），
+   *   其余字段（name/permissions 等）保留；提示词与 modelId 都一致时不写盘
+   * - agents/ 为空 → 写入默认 Agent（含 modelId）
    * - 已有其他 Agent → 返回 null
+   *
+   * 模型真相源只有 `AgentDefinition.modelId`：这里保证默认 Agent **一定有** modelId，
+   * 运行期不再有任何 `config.defaultModel` 兜底。
+   *
+   * @param legacyDefaultModel 老配置里的 `config.defaultModel`。仅在 Agent **既无 modelId**
+   *   且该模型仍在模型清单里时用它补齐，让升级不改变用户实际在用的模型；之后
+   *   这个字段就彻底不存在了。
    */
-  async ensureDefaultAgent(): Promise<AgentDefinition | null> {
+  async ensureDefaultAgent(legacyDefaultModel?: string): Promise<AgentDefinition | null> {
     const agentsDir = join(this.basePath, "agents");
     const defaultPath = join(agentsDir, `${DEFAULT_AGENT_ID}.json`);
+    const fallbackModelId =
+      legacyDefaultModel && this.knownModelIds.has(legacyDefaultModel)
+        ? legacyDefaultModel
+        : DEFAULT_AGENT_DEFINITION.modelId;
 
     try {
       const existing = JSON.parse(await fs.readFile(defaultPath, "utf-8")) as AgentDefinition;
 
-      // 用户声明为自定义 → 完全跳过替换
-      if (existing.custom === true) return existing;
+      // 缺 modelId → 补上（历史配置升级路径）
+      const withModel: AgentDefinition = existing.modelId
+        ? existing
+        : { ...existing, modelId: fallbackModelId };
+      const modelPatched = !existing.modelId;
+
+      // 用户声明为自定义 → 不替换提示词，但补上的 modelId 要落盘
+      if (withModel.custom === true) {
+        if (modelPatched) {
+          await fs.writeFile(defaultPath, JSON.stringify(withModel, null, 2), "utf-8");
+        }
+        return withModel;
+      }
 
       // 仅同步提示词；内容一致则不写盘、不动时间戳
       const messages = DEFAULT_AGENT_DEFINITION.messages;
-      if (sameMessages(existing.messages ?? [], messages)) return existing;
+      const sameMsgs = sameMessages(withModel.messages ?? [], messages);
+      if (sameMsgs && !modelPatched) return withModel;
 
       const updated: AgentDefinition = {
-        ...existing,
+        ...withModel,
         messages,
-        updatedAt: new Date().toISOString(),
+        updatedAt: sameMsgs ? withModel.updatedAt : new Date().toISOString(),
       };
       await fs.writeFile(defaultPath, JSON.stringify(updated, null, 2), "utf-8");
       return updated;
@@ -218,8 +244,12 @@ export class ConfigManager {
     subAgent: AgentDefinition | null;
   }> {
     await this.ensureDirs();
+    // 迁移前读一次磁盘原文：只为了拿旧的 `defaultModel`（字段已从类型里移除），
+    // 让升级不改变用户原本在用的模型
+    const raw = (await this.readRaw()) as unknown as { defaultModel?: string } | null;
     const config = await this.ensureDefaultConfig();
-    const agent = await this.ensureDefaultAgent();
+    this.knownModelIds = new Set((config.models ?? []).map((m) => m.id));
+    const agent = await this.ensureDefaultAgent(raw?.defaultModel);
     const subAgent = await this.ensureDefaultSubAgent();
     await this.ensureDefaultMcpConfig();
     await this.ensureFactorySkills();
@@ -412,8 +442,10 @@ export class ConfigManager {
  * 规则：
  * - 未标 `custom: true` 的条目 → 由 SDK 托管，从结果中移除，改用 defaults 中的最新定义；
  * - 标了 `custom: true` 的条目 → 用户自有，原样保留；与出厂定义同 id 时用户版本优先；
- * - 默认模型 ID（defaultModel / defaultImageModel / defaultMigrationModel）
+ * - 默认模型 ID（defaultImageModel / defaultMigrationModel）
  *   在合并后若已不存在 → 回退到出厂默认，避免悬空引用。
+ *
+ * 注意 `defaultModel` 已不再存在：模型真相源是 `AgentDefinition.modelId`。
  *
  * 端点（endpoints）不参与托管，始终保持用户配置。
  */
@@ -437,7 +469,6 @@ export function syncManagedModels(config: AppConfig): AppConfig {
     ...config,
     models,
     imageModels,
-    defaultModel: resolve(config.defaultModel, modelIds, DEFAULT_APP_CONFIG.defaultModel),
     defaultImageModel: resolve(config.defaultImageModel, imageIds, DEFAULT_APP_CONFIG.defaultImageModel),
     defaultMigrationModel: resolve(config.defaultMigrationModel, modelIds, DEFAULT_APP_CONFIG.defaultMigrationModel),
   };
@@ -461,6 +492,7 @@ function sameMessages(a: AgentDefinition["messages"], b: AgentDefinition["messag
 export {
   DEFAULT_AGENT_ID,
   DEFAULT_AGENT_DEFINITION,
+  DEFAULT_MODEL_ID,
   DEFAULT_SUBAGENT_ID,
   DEFAULT_SUBAGENT_DEFINITION,
   DEFAULT_APP_CONFIG,

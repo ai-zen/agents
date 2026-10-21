@@ -32,7 +32,7 @@ function isLocalUrl(value: string): boolean {
 export class ViewImageTool extends SdkCallbackTool {
   /** 仅视觉模型可用：从 definition.modelId 解析当前模型，非视觉模型由 buildTools 过滤 */
   isAvailable(config: AppConfig, definition: AgentDefinition): boolean {
-    const modelId = definition.modelId ?? config.defaultModel;
+    const modelId = definition.modelId;
     const model = (config.models ?? []).find((m) => m.id === modelId);
     return model?.vision === true;
   }

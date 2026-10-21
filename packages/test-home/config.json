@@ -1,5 +1,4 @@
 {
-  "defaultModel": "gpt4",
   "endpoints": [
     {
       "id": "openai",

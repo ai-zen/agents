@@ -91,7 +91,8 @@ describe("端到端：真实文件系统路径", () => {
     it("config.json 可正常读取", async () => {
       await checkPaths();
       const config = await new ConfigManager(TEST_CONFIG).read();
-      expect(config.defaultModel).toBe("gpt4");
+      // 模型真相源在 Agent 定义上，config.json 不再有 defaultModel
+      expect("defaultModel" in config).toBe(false);
       expect(config.endpoints).toHaveLength(2);
       expect(config.models).toHaveLength(3);
       expect(config.imageModels).toHaveLength(1);

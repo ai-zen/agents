@@ -21,8 +21,12 @@ export async function createAgent(
   const definition = await new AgentRepository(scope.agentsDir).read(agentId);
   if (!definition) throw new Error(`Agent "${agentId}" 不存在`);
 
-  const modelId = definition.modelId ?? scope.config.defaultModel;
-  if (!modelId) throw new Error("未指定模型且无默认模型");
+  const modelId = definition.modelId;
+  if (!modelId) {
+    throw new Error(
+      `Agent "${agentId}" 未绑定模型（缺少 modelId）。请在配置里给它指定一个模型。`,
+    );
+  }
 
   const { client, model, modelConfig } = createModel(scope, modelId, definition.modelParams);
 

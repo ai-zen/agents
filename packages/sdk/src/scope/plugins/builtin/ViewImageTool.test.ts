@@ -22,8 +22,13 @@ import { ViewImageTool } from "./ViewImageTool.js";
 import { makeEnv } from "./test-helpers.js";
 import type { AppConfig } from "../../../types/index.js";
 
+/**
+ * 工具运行上下文：端点按 `ctx.agent.model` 反查（`file_id` 是端点维度资源）。
+ * 配置层已无 `defaultModel`，所以测试必须显式传当前模型名。
+ */
+const visionCtx = { agent: { model: "ds-vision" } } as any;
+
 const deepseekConfig: AppConfig = {
-  defaultModel: "ds-vision",
   endpoints: [
     {
       id: "deepseek",
@@ -102,7 +107,7 @@ describe("ViewImageTool", () => {
 
     try {
       const tool = new ViewImageTool(makeEnv(dir, deepseekConfig));
-      const result = await tool.call({ path_or_url: "cat.png" });
+      const result = await tool.call({ path_or_url: "cat.png" }, visionCtx);
 
       expect(mockToFile).toHaveBeenCalledWith(expect.any(Buffer), "cat.png");
       expect(mockFilesCreate).toHaveBeenCalledWith(
@@ -127,7 +132,7 @@ describe("ViewImageTool", () => {
 
     try {
       const tool = new ViewImageTool(makeEnv(dir, deepseekConfig));
-      const result = await tool.call({ path_or_url: imgPath });
+      const result = await tool.call({ path_or_url: imgPath }, visionCtx);
       expect(result).toContainEqual({ type: "file", file_id: "file-api-abc" });
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
@@ -181,10 +186,9 @@ describe("ViewImageTool", () => {
     }
   });
 
-  it("isAvailable: 仅视觉模型为 true（definition.modelId 或默认模型）", () => {
+  it("isAvailable: 仅当 Agent 绑定的模型是视觉模型时为 true", () => {
     const config: AppConfig = {
       ...deepseekConfig,
-      defaultModel: "m1",
       models: [
         { id: "v1", name: "V", endpointId: "deepseek", modelName: "v1", tokenThresholds: { handoff: 1000, guard: 1500 }, vision: true },
         { id: "m1", name: "M", endpointId: "deepseek", modelName: "m1", tokenThresholds: { handoff: 1000, guard: 1500 } },
@@ -204,7 +208,7 @@ describe("ViewImageTool", () => {
     expect(tool.isAvailable!(config, def("v1") as any)).toBe(true);
     // 显式指定非视觉模型 → 不可用
     expect(tool.isAvailable!(config, def("m1") as any)).toBe(false);
-    // 未指定模型 → 用默认模型（m1，非视觉）→ 不可用
+    // 未指定模型 → 不可用（模型真相源在 Agent 定义上，无隐式默认）
     expect(tool.isAvailable!(config, def() as any)).toBe(false);
   });
 

@@ -19,7 +19,6 @@ afterEach(() => {
 });
 
 const config: AppConfig = {
-  defaultModel: "gpt4",
   endpoints: [
     { id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com", apiKey: "sk-xxx" },
   ],
@@ -36,6 +35,7 @@ describe("集成：端到端 Agent 组装", () => {
     const agentDef: AgentDefinition = {
       id: "my-agent",
       name: "My Agent",
+      modelId: "gpt4",
       messages: [{ role: "system", content: "你是一个专业的代码助手。" }],
       permissions: {
         tools: { allow: ["read", "exec", "glob", "find_text"] },

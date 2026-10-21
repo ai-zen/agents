@@ -9,11 +9,28 @@
     }
   ],
   "permissions": {
-    "tools": { "allow": ["*"] },
-    "skills": { "allow": ["*"] },
-    "mcps": { "allow": ["*"] },
-    "subagents": { "allow": ["*"] }
+    "tools": {
+      "allow": [
+        "*"
+      ]
+    },
+    "skills": {
+      "allow": [
+        "*"
+      ]
+    },
+    "mcps": {
+      "allow": [
+        "*"
+      ]
+    },
+    "subagents": {
+      "allow": [
+        "*"
+      ]
+    }
   },
   "createdAt": "2025-01-01T00:00:00.000Z",
-  "updatedAt": "2025-01-01T00:00:00.000Z"
+  "updatedAt": "2025-01-01T00:00:00.000Z",
+  "modelId": "gpt4"
 }

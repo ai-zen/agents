@@ -69,7 +69,7 @@ openai SDK client（baseURL + apiKey）──> Agent（client + model + modelCon
 
 ```typescript
 interface AppConfig {
-  defaultModel?: string;        // 默认模型 id
+  // 注意：这里没有 defaultModel —— 模型的真相源是 AgentDefinition.modelId
   endpoints: Endpoint[];
   models: Model[];
   imageModels?: ImageModel[];   // 图片生成模型列表
@@ -108,7 +108,7 @@ interface AgentDefinition {
   name: string;                  // 展示名称
   description?: string;
   messages: AgentNS.Message[];   // 预设对话（至少一条 system）
-  modelId?: string;              // 指定模型，不填用默认
+  modelId?: string;              // 绑定模型 —— 运行期唯一真相源；缺失即报错，无默认回退
   permissions?: AgentPermissions;
 
   // 以下有则视为 SubAgent
@@ -447,7 +447,7 @@ export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> 
 
 ### ViewImageTool — 主动查看图片
 
-`ViewImageTool` 让 Agent 主动查看/分析一张图片。它是 `BUILTIN_TOOL_CLASSES` 的一员，通过 `isAvailable(config, definition)` **声明仅视觉模型可用**（从 `definition.modelId ?? config.defaultModel` 解析模型，检查 `Model.vision === true`），buildTools/filter 直接透传 config + definition 后按声明过滤（非视觉模型在工具列表层面剔除，无需运行时重复校验）：
+`ViewImageTool` 让 Agent 主动查看/分析一张图片。它是 `BUILTIN_TOOL_CLASSES` 的一员，通过 `isAvailable(config, definition)` **声明仅视觉模型可用**（从 `definition.modelId` 解析模型，检查 `Model.vision === true`；定义未绑定模型即视为不可用），buildTools/filter 直接透传 config + definition 后按声明过滤（非视觉模型在工具列表层面剔除，无需运行时重复校验）：
 
 - 输入 `path_or_url`：
   - **http(s) URL** → 直接返回 `[{ type: "image_url", image_url: { url } }]`，模型直接查看；

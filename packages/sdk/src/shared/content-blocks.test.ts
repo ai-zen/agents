@@ -56,19 +56,19 @@ describe("基础工具函数", () => {
     expect(supportsFilesApi(undefined)).toBe(false);
   });
 
-  it("resolveModelAndEndpoint 按「发给 API 的模型名」反查，未命中回退默认模型", () => {
+  it("resolveModelAndEndpoint 按「发给 API 的模型名」反查；未命中返回 null 端点", () => {
     const config = {
       endpoints: [deepseek, openai],
       models: [
         { id: "deepseek-flash", name: "DS", endpointId: "deepseek", modelName: "deepseek-flash", vision: true },
         { id: "gpt-x", name: "GPT", endpointId: "openai" },
       ],
-      defaultModel: "deepseek-flash",
     } as unknown as AppConfig;
 
     expect(resolveModelAndEndpoint(config, "gpt-x").endpoint?.id).toBe("openai");
-    expect(resolveModelAndEndpoint(config, "unknown").endpoint?.id).toBe("deepseek");
-    expect(resolveModelAndEndpoint({ ...config, defaultModel: "nope" } as AppConfig, "unknown").endpoint).toBeNull();
+    // 未命中 → 不做任何隐式回退（模型真相源在 Agent 定义上，配置层无默认模型）
+    expect(resolveModelAndEndpoint(config, "unknown").endpoint).toBeNull();
+    expect(resolveModelAndEndpoint(config, undefined).endpoint).toBeNull();
   });
 });
 

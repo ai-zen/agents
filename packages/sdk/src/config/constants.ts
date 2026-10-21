@@ -8,11 +8,21 @@ import type { AgentDefinition, AppConfig } from "../types/index.js";
 /** 默认 Agent ID */
 export const DEFAULT_AGENT_ID = "default";
 
+/**
+ * 出厂默认模型 id。
+ *
+ * 模型的**唯一真相源是 `AgentDefinition.modelId`**：配置里不再有 `defaultModel`，
+ * 会话存档里也不记模型。这个常量只用于给出厂默认 Agent 填一个初始值。
+ */
+export const DEFAULT_MODEL_ID = "deepseek-flash";
+
 /** 默认 Agent 定义（不含时间戳） */
 export const DEFAULT_AGENT_DEFINITION: Omit<AgentDefinition, "createdAt" | "updatedAt"> = {
   id: DEFAULT_AGENT_ID,
   name: "默认助手",
   description: "默认的 AI 助手，适用于日常问答和任务执行。",
+  // 模型写在 Agent 定义上，是运行期唯一真相源（无 config.defaultModel 兜底）
+  modelId: DEFAULT_MODEL_ID,
   messages: [
     Message.System(`你是一个幽默风趣、严谨可靠的智能助手，请用中文回复。当前操作系统：${process.platform}。
 
@@ -233,7 +243,6 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       defaultSize: "1024x1024",
     },
   ],
-  defaultModel: "deepseek-flash",
   defaultImageModel: "cogview-4",
   defaultAgent: "default",
   defaultMigrationModel: "deepseek-flash",

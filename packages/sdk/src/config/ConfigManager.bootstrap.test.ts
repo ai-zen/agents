@@ -240,7 +240,6 @@ describe("ConfigManager.ensureDefaultConfig", () => {
 
     const cfg = await mgr.ensureDefaultConfig();
 
-    expect(cfg.defaultModel).toBe("deepseek-flash");
     expect(cfg.endpoints.length).toBeGreaterThan(0);
     expect(cfg.models.length).toBeGreaterThan(0);
     expect(cfg.imageModels!.length).toBeGreaterThan(0);
@@ -250,7 +249,7 @@ describe("ConfigManager.ensureDefaultConfig", () => {
   it("文件已存在 → 保留用户端点，模型清单同步为出厂最新", async () => {
     testDir = await tempDir();
     const mgr = makeManager(testDir);
-    await mgr.write({ endpoints: [], models: [], defaultModel: "my-model" });
+    await mgr.write({ endpoints: [], models: [] });
 
     const cfg = await mgr.ensureDefaultConfig();
 
@@ -258,8 +257,6 @@ describe("ConfigManager.ensureDefaultConfig", () => {
     expect(cfg.endpoints).toEqual([]);
     // 空模型清单被补齐为出厂最新定义
     expect(cfg.models.map((m) => m.id)).toEqual(DEFAULT_APP_CONFIG.models.map((m) => m.id));
-    // 悬空的 defaultModel 回退到出厂默认
-    expect(cfg.defaultModel).toBe(DEFAULT_APP_CONFIG.defaultModel);
   });
 
   it("模型同步：未标 custom 的旧模型被替换为出厂最新定义", async () => {
@@ -271,7 +268,6 @@ describe("ConfigManager.ensureDefaultConfig", () => {
       models: [
         { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", endpointId: "deepseek", tokenThresholds: { handoff: 250_000, guard: 375000 } },
       ],
-      defaultModel: "deepseek-v4-flash",
       defaultMigrationModel: "deepseek-v4-flash",
     });
 
@@ -280,8 +276,6 @@ describe("ConfigManager.ensureDefaultConfig", () => {
     // 旧模型被移除，出厂最新模型就位
     expect(cfg.models.some((m) => m.id === "deepseek-v4-flash")).toBe(false);
     expect(cfg.models.map((m) => m.id)).toEqual(DEFAULT_APP_CONFIG.models.map((m) => m.id));
-    // 悬空的默认模型 ID 回退到出厂默认
-    expect(cfg.defaultModel).toBe(DEFAULT_APP_CONFIG.defaultModel);
     expect(cfg.defaultMigrationModel).toBe(DEFAULT_APP_CONFIG.defaultMigrationModel);
     // 端点未被托管，保持原样
     expect(cfg.endpoints[0].apiKey).toBe("sk-x");
@@ -298,7 +292,6 @@ describe("ConfigManager.ensureDefaultConfig", () => {
       models: [
         { id: "my-local-llm", name: "本地模型", endpointId: "local", tokenThresholds: { handoff: 32_000, guard: 48000 }, custom: true },
       ],
-      defaultModel: "my-local-llm",
     });
 
     const cfg = await mgr.ensureDefaultConfig();
@@ -308,8 +301,6 @@ describe("ConfigManager.ensureDefaultConfig", () => {
     expect(mine.tokenThresholds.handoff).toBe(32_000);
     // 出厂模型 + 用户自定义模型共存
     expect(cfg.models.length).toBe(DEFAULT_APP_CONFIG.models.length + 1);
-    // defaultModel 指向有效模型，保持不变
-    expect(cfg.defaultModel).toBe("my-local-llm");
   });
 
   it("模型同步：custom: true 与出厂同 id 时用户版本优先且不重复", async () => {
@@ -376,13 +367,15 @@ describe("ConfigManager.bootstrap", () => {
     const result = await mgr.bootstrap();
 
     // config
-    expect(result.config.defaultModel).toBeTruthy();
     await expect(fs.access(join(testDir, "config.json"))).resolves.toBeUndefined();
 
-    // agent
+    // agent —— 必须带出厂 modelId（模型的唯一真相源）
     expect(result.agent).not.toBeNull();
     expect(result.agent!.id).toBe("default");
+    expect(result.agent!.modelId).toBe(DEFAULT_AGENT_DEFINITION.modelId);
     await expect(fs.access(join(testDir, "agents", "default.json"))).resolves.toBeUndefined();
+    const agentOnDisk = JSON.parse(await fs.readFile(join(testDir, "agents", "default.json"), "utf-8"));
+    expect(agentOnDisk.modelId).toBe(DEFAULT_AGENT_DEFINITION.modelId);
 
     // subAgent
     expect(result.subAgent).not.toBeNull();
@@ -411,11 +404,10 @@ describe("ConfigManager.bootstrap", () => {
     await mgr.bootstrap();
 
     // 修改 config
-    // 选用出厂清单内的有效模型 ID（悬空 ID 会被同步策略回退）
-    await mgr.write({ ...DEFAULT_APP_CONFIG, defaultModel: "glm-5.3" });
+    await mgr.write({ ...DEFAULT_APP_CONFIG, defaultMigrationModel: "glm-5.3" });
 
     const result = await mgr.bootstrap();
-    expect(result.config.defaultModel).toBe("glm-5.3");
+    expect(result.config.defaultMigrationModel).toBe("glm-5.3");
 
     // 已有 mcp.json 不被覆盖
     const mcp = JSON.parse(await fs.readFile(join(testDir, "mcp.json"), "utf-8"));

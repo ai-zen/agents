@@ -20,14 +20,14 @@ afterEach(async () => {
 describe("ConfigManager", () => {
   it("文件不存在时返回出厂默认配置", async () => {
     const cfg = await configManager.read();
-    expect(cfg.defaultModel).toBe("deepseek-flash");
     expect(cfg.endpoints.length).toBeGreaterThan(0);
     expect(cfg.models.length).toBeGreaterThan(0);
+    // 模型真相源在 Agent 定义上，不再有 config.defaultModel
+    expect("defaultModel" in cfg).toBe(false);
   });
 
   it("正常读取 JSON 配置", async () => {
     const data: AppConfig = {
-      defaultModel: "m1",
       endpoints: [
         { id: "e1", name: "OpenAI", baseUrl: "https://api.openai.com", apiKey: "sk-xxx" },
       ],
@@ -38,7 +38,6 @@ describe("ConfigManager", () => {
     await configManager.write(data);
 
     const cfg = await configManager.read();
-    expect(cfg.defaultModel).toBe("m1");
     expect(cfg.endpoints).toHaveLength(1);
     expect(cfg.models).toHaveLength(1);
   });

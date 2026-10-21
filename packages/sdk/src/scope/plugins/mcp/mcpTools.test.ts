@@ -23,7 +23,6 @@ import { clearUploadCache } from "../../../shared/content-blocks.js";
 /** 带 Files API 能力的端点 + 视觉模型（用于验证上传路径） */
 function filesApiConfig(): Partial<AppConfig> {
   return {
-    defaultModel: "ds-vision",
     endpoints: [
       {
         id: "deepseek",
@@ -49,7 +48,6 @@ function filesApiConfig(): Partial<AppConfig> {
 /** 纯文本模型配置（未声明 vision）：用于验证媒体退化 */
 function textOnlyConfig(): Partial<AppConfig> {
   return {
-    defaultModel: "ds-chat",
     endpoints: [
       {
         id: "deepseek",
@@ -75,6 +73,15 @@ beforeEach(() => {
 function makeEnv(config: Partial<AppConfig> = {}): ToolEnv {
   return { cwd: "/tmp", config: config as AppConfig };
 }
+
+/**
+ * 工具运行上下文：模型名来自 `ctx.agent.model`（= Model.modelName ?? id）。
+ *
+ * 端点必须按当前模型反查（`file_id` 是端点维度资源），所以测试也必须把 ctx 传进去；
+ * 配置层已无 `defaultModel`，不能再靠隐式回退找端点。
+ */
+const visionCtx = { agent: { model: "ds-vision" } } as any;
+const chatCtx = { agent: { model: "ds-chat" } } as any;
 
 function mockManager(overrides?: Partial<McpConnectionManager>): McpConnectionManager {
   return {
@@ -439,7 +446,7 @@ describe("createCallMcpTool", () => {
         managerWithContent([{ type: "image", data: "AAAA", mimeType: "image/png" }]),
         makeEnv(filesApiConfig()),
       );
-      const result = await tool.callback({ server: "github", tool: "shot", arguments: {} });
+      const result = await tool.callback({ server: "github", tool: "shot", arguments: {} }, visionCtx);
       expect(result).toEqual([{ type: "file", file_id: "file-mcp-1" }]);
       expect(mockFilesCreate).toHaveBeenCalledTimes(1);
     });
@@ -447,8 +454,8 @@ describe("createCallMcpTool", () => {
     it("同一张图（相同字节）重复调用只上传一次（内容哈希缓存）", async () => {
       const manager = managerWithContent([{ type: "image", data: "AAAA", mimeType: "image/png" }]);
       const tool = createCallMcpTool(manager, makeEnv(filesApiConfig()));
-      await tool.callback({ server: "github", tool: "shot", arguments: {} });
-      await tool.callback({ server: "github", tool: "shot", arguments: {} });
+      await tool.callback({ server: "github", tool: "shot", arguments: {} }, visionCtx);
+      await tool.callback({ server: "github", tool: "shot", arguments: {} }, visionCtx);
       expect(mockFilesCreate).toHaveBeenCalledTimes(1);
     });
 
@@ -457,7 +464,7 @@ describe("createCallMcpTool", () => {
         managerWithContent([{ type: "image", data: "AAAA", mimeType: "image/png" }]),
         makeEnv(textOnlyConfig()),
       );
-      const result = await tool.callback({ server: "github", tool: "shot", arguments: {} });
+      const result = await tool.callback({ server: "github", tool: "shot", arguments: {} }, chatCtx);
       // 唯一的内容块是文本 → 按既有契约退化为字符串
       expect(typeof result).toBe("string");
       expect(result as string).toContain("不支持图片输入");
@@ -470,7 +477,7 @@ describe("createCallMcpTool", () => {
         managerWithContent([{ type: "image", data: "AAAA", mimeType: "image/png" }]),
         makeEnv(filesApiConfig()),
       );
-      const result = await tool.callback({ server: "github", tool: "shot", arguments: {} });
+      const result = await tool.callback({ server: "github", tool: "shot", arguments: {} }, visionCtx);
       expect(result).toEqual([
         { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
       ]);
@@ -765,7 +772,7 @@ describe("createReadMcpResourceTool", () => {
       getClient: vi.fn(() => mockClient),
     });
     const tool = createReadMcpResourceTool(manager, makeEnv(filesApiConfig()));
-    const result = await tool.callback({ server: "github", uri: "file:///p.png" });
+    const result = await tool.callback({ server: "github", uri: "file:///p.png" }, visionCtx);
     expect(result).toEqual([{ type: "file", file_id: "file-mcp-1" }]);
     expect(mockFilesCreate).toHaveBeenCalledTimes(1);
   });

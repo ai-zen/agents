@@ -127,6 +127,9 @@ export function migrateModelReasoning(model: Model): { model: Model; changed: bo
 /**
  * 迁移整个配置。只处理对话模型（`models`）——
  * 图片模型（`imageModels`）既没有上下文阈值、也没有思考概念。
+ *
+ * 同时清除已废弃的 `defaultModel`：模型的真相源已改为 `AgentDefinition.modelId`，
+ * 配置级默认值连同字段一起消失（旧值先由 `ConfigManager.bootstrap()` 搬到默认 Agent 上）。
  */
 export function migrateConfig(config: AppConfig): { config: AppConfig; changed: boolean } {
   let changed = false;
@@ -136,6 +139,14 @@ export function migrateConfig(config: AppConfig): { config: AppConfig; changed: 
     if (thresholds.changed || reasoning.changed) changed = true;
     return reasoning.model;
   });
+
+  const next = { ...config, models } as AppConfig & { defaultModel?: unknown };
+  // 已废弃字段：不参与运行，也不允许再写回磁盘
+  if ("defaultModel" in next) {
+    delete next.defaultModel;
+    changed = true;
+  }
+
   if (!changed) return { config, changed };
-  return { config: { ...config, models }, changed };
+  return { config: next, changed };
 }
