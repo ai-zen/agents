@@ -1,163 +1,176 @@
 /**
- * 思考强度（reasoning effort）—— 能力声明、可用档位与参数写入的唯一实现
+ * 思考预设（reasoning presets）—— 档位读取、校验与参数写入的唯一实现
  *
- * 为什么要有这一层：档位不是全局统一枚举，各端点接受的值域**互不相同**，而且
- * 同一家不同型号也不同（智谱文档原文）：
+ * ## 为什么是「表」而不是「字段」
  *
- * | 端点 | 官方依据 | 可调档位 | 能否关闭 |
- * |------|---------|---------|---------|
- * | DeepSeek | `/guides/thinking_mode` | `low / high / max` | 能，`thinking.type = "disabled"` |
- * | 智谱 GLM-5.3 系 | `/cn/guide/capabilities/thinking` | `low / high / max`（**其余报错**） | **不能**，传 disabled 直接报错 |
- * | 智谱 GLM-5.2 | 同上 | `none / minimal / low / medium / high / xhigh / max` | 能（`none` 或 `disabled`） |
- * | OpenAI | `openai-node` 的 `Shared.ReasoningEffort` | `minimal / low / medium / high`（枚举含 none/xhigh/max） | 能，`reasoning_effort = "none"` |
+ * 档位不是全局统一枚举：各端点接受的值域互不相同，同一家不同型号也不同
+ * （见 `config/reasoning-presets.ts` 的文档表）。所以本模块不判断「厂商是谁」，
+ * 只做一件事：**在模型关联的那张策略表里查档位、写补丁**。
  *
- * 所以「能力声明在模型上，Agent 只能收窄」，写入时按声明选择表达方式，
- * 绝不把端点不认的值发出去。
+ * 于是三个问题都变成查表，不需要任何 if/else 分支：
+ *   1. 可选档位有哪些？      → `Object.keys(preset.levels)`
+ *   2. 能不能关闭思考？      → 表里有没有 `off` 键
+ *   3. 哪些参数键属于思考？  → 所有补丁里出现过的键的并集（写入前先剔除）
+ *
+ * 第 3 条是关键：有了它，从 `max` 切到 `off` 不会残留上一档的参数，而代码里
+ * 一个键名都不必硬编码（`thinking` / `reasoning_effort` 只出现在策略表里）。
  */
 
 import type {
   AgentDefinition,
   Model,
-  ReasoningCapability,
-  ReasoningEffort,
+  ReasoningPreset,
+  ReasoningPresets,
 } from "../types/index.js";
-
-/** `defaultParams` 里承载开关的键 */
-const THINKING_KEY = "thinking";
-/** `defaultParams` 里承载档位的键 */
-const EFFORT_KEY = "reasoning_effort";
-
-const KNOWN_EFFORTS: readonly ReasoningEffort[] = [
-  "off",
-  "none",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-];
-
-/** 是否为合法档位值 */
-export function isReasoningEffort(value: unknown): value is ReasoningEffort {
-  return typeof value === "string" && (KNOWN_EFFORTS as readonly string[]).includes(value);
+/** 安全取自有属性（策略名源自用户配置，可能是 `constructor` / `__proto__` 等） */
+function own<T>(bag: Record<string, T> | undefined, key: string): T | undefined {
+  if (!bag || !Object.prototype.hasOwnProperty.call(bag, key)) return undefined;
+  return bag[key];
 }
 
-/** 模型的能力声明（缺省 = 不可调档） */
-export function capabilityOf(model?: Model | null): ReasoningCapability | undefined {
-  return model?.reasoning;
+/** 结构化相等 —— 补丁是纯 JSON，逐层比对即可 */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const leftKeys = Object.keys(left);
+  if (leftKeys.length !== Object.keys(right).length) return false;
+  return leftKeys.every(
+    (k) => Object.prototype.hasOwnProperty.call(right, k) && sameValue(left[k], right[k]),
+  );
 }
 
 /**
- * 模型可调的档位（不含 `off`）。
+ * 模型关联的策略（未声明 `reasoningPreset`、或名字在表里不存在 → `undefined`）。
  *
- * 未声明能力的模型返回空数组 —— 不猜、不给默认值，避免把非法参数发给服务端。
+ * 名字不存在时**不猜、不兜底**：宁可视作不可调档，也不把来路不明的参数发给服务端。
  */
-export function modelEfforts(model?: Model | null): ReasoningEffort[] {
-  return [...(capabilityOf(model)?.efforts ?? [])];
+export function presetOf(
+  model?: Model | null,
+  presets?: ReasoningPresets | null,
+): ReasoningPreset | undefined {
+  const name = model?.reasoningPreset;
+  if (!name) return undefined;
+  return own(presets ?? undefined, name);
 }
 
 /**
- * 模型允许的全部取值（含 `off`）。
+ * 模型可选的全部档位（顺序 = 策略表声明顺序）。
  *
- * `off` 只在声明了 `disable` 方式时出现：没有合法表达式时，「关闭思考」这个选项
- * 本身就不该出现在菜单里。
+ * 不再区分「档位」与「关闭」：表里的键就是菜单里的项。未关联策略 → 空数组。
  */
-export function modelAllowedEfforts(model?: Model | null): ReasoningEffort[] {
-  const capability = capabilityOf(model);
-  if (!capability) return [];
-  return capability.disable ? ["off", ...capability.efforts] : [...capability.efforts];
-}
-
-function thinkingType(params?: Record<string, unknown> | null): string | undefined {
-  const thinking = params?.[THINKING_KEY];
-  if (typeof thinking !== "object" || thinking === null) return undefined;
-  const type = (thinking as { type?: unknown }).type;
-  return typeof type === "string" ? type : undefined;
+export function modelLevels(
+  model?: Model | null,
+  presets?: ReasoningPresets | null,
+): string[] {
+  const preset = presetOf(model, presets);
+  if (!preset) return [];
+  return Object.keys(preset.levels ?? {});
 }
 
 /**
- * 从 `defaultParams` 读当前档位。
+ * 「思考参数键」的全集 —— **整张策略表**里任何补丁出现过的键。
  *
- * 返回 `undefined` 表示「没有显式档位」：可能是模型默认开思考但没写 effort
- * （DeepSeek 出厂配置就是 `{thinking:{type:"enabled"}}`），也可能压根没有思考参数。
- * 展示层要区分这两种情况，请配合 `capabilityOf()` 判断。
+ * 用整张表而非单个策略，是为了让换策略时不留残渣：模型从 `deepseek` 改挂 `openai`
+ * 时，旧策略写进去的 `thinking` 也必须被清掉（OpenAI 不认这个参数，带着就 400）。
+ * 好处依旧：键名一个都不用在代码里硬编码，全部由表声明。
+ */
+function ownedKeys(presets: ReasoningPresets | null | undefined): Set<string> {
+  const keys = new Set<string>();
+  for (const preset of Object.values(presets ?? {})) {
+    for (const patch of Object.values(preset?.levels ?? {})) {
+      for (const key of Object.keys(patch ?? {})) keys.add(key);
+    }
+  }
+  return keys;
+}
+
+/**
+ * 反查当前档位：参数里命中哪个补丁的键值，就是哪一档。
+ *
+ * 与 `applyReasoningEffort()` 互为逆运算，两边共用同一张表。
+ * 多张补丁同时命中时取**最具体**的那个（键最多的），键数相同取先声明的。
+ *
+ * 返回 `undefined` = 参数不完整匹配任何档位（例如 DeepSeek 出厂只写了
+ * `thinking: { type: "enabled" }` 而没写 effort），展示层应视为「跟随模型默认」。
  */
 export function readReasoningEffort(
+  model?: Model | null,
+  presets?: ReasoningPresets | null,
   params?: Record<string, unknown> | null,
-): ReasoningEffort | undefined {
-  if (thinkingType(params) === "disabled") return "off";
-  const raw = params?.[EFFORT_KEY];
-  if (typeof raw !== "string") return undefined;
-  // `none` 与 `off` 语义一致（都表示不思考），统一归一为 off，避免菜单里出现两个「关」
-  if (raw === "none") return "off";
-  return isReasoningEffort(raw) ? raw : undefined;
+): string | undefined {
+  const preset = presetOf(model, presets);
+  if (!preset) return undefined;
+  // 显式传 null = 「没有参数」，不回落模型默认；不传才读模型默认
+  const actual = params === undefined ? model?.defaultParams : params;
+  if (!actual) return undefined;
+
+  let best: string | undefined;
+  let bestSize = 0;
+  for (const [level, patch] of Object.entries(preset.levels ?? {})) {
+    const keys = Object.keys(patch ?? {});
+    if (keys.length === 0 || keys.length <= bestSize) continue;
+    if (!keys.every((k) => sameValue(actual[k], (patch as Record<string, unknown>)[k]))) continue;
+    best = level;
+    bestSize = keys.length;
+  }
+  return best;
 }
 
 /**
- * 按档位生成新的 `defaultParams`（不改入参）。
+ * 把档位写成请求参数（不改入参）。
  *
- * 三种写入形态，取决于模型声明：
- * - `disable: "thinking"` → 同时维护 `thinking.type` 与 `reasoning_effort`
- * - `disable: "effort-none"` → 只写 `reasoning_effort`（OpenAI 不认 `thinking` 键，
- *   对它写 `thinking` 会被当作未知参数拒绝）
- * - 未声明 `disable`（如 GLM-5.3 系）→ 只写 `reasoning_effort`，传 `off` 直接抛错
+ * 写入方式 = **先剔除思考参数键的旧值，再合并新补丁**。这样 `max` → `off` 不会残留
+ * 上一档的 `reasoning_effort`，模型换策略也不会反刍旧策略的参数，而「哪些键属于思考」
+ * 由策略表自己声明，代码零硬编码。
  *
- * @throws 当档位为 `off` 而模型不支持关闭思考，或档位不在模型能力范围内
+ * @throws 模型未关联策略、或策略里没有该档位（绝不静默降级：档位写错必须当场发现）
  */
 export function applyReasoningEffort(
-  params: Record<string, unknown> | undefined | null,
   model: Model | null | undefined,
-  effort: ReasoningEffort,
+  presets: ReasoningPresets | null | undefined,
+  level: string,
+  params?: Record<string, unknown> | null,
 ): Record<string, unknown> {
-  const capability = capabilityOf(model);
-  const next: Record<string, unknown> = { ...(params ?? {}) };
-
-  if (effort === "off") {
-    if (capability?.disable === "thinking") {
-      next[THINKING_KEY] = { type: "disabled" };
-      delete next[EFFORT_KEY];
-      return next;
-    }
-    if (capability?.disable === "effort-none") {
-      next[EFFORT_KEY] = "none";
-      // 不在 OpenAI 的请求里塞 thinking：那是未知参数
-      delete next[THINKING_KEY];
-      return next;
-    }
-    throw new Error(`模型 "${model?.id ?? "(未知)"}" 不支持关闭思考`);
-  }
-
-  if (!capability) {
-    throw new Error(`模型 "${model?.id ?? "(未知)"}" 未声明思考能力，无法设置档位`);
-  }
-  if (!capability.efforts.includes(effort)) {
+  const id = model?.id ?? "(未知)";
+  const name = model?.reasoningPreset;
+  const preset = presetOf(model, presets);
+  if (!preset) {
     throw new Error(
-      `模型 "${model?.id ?? "(未知)"}" 不支持档位 "${effort}"（可选：${capability.efforts.join(" / ")}）`,
+      name
+        ? `模型 "${id}" 关联的思考策略 "${name}" 不存在（检查 reasoning-presets.json）`
+        : `模型 "${id}" 未关联思考策略（reasoningPreset），无法设置档位`,
     );
   }
 
-  if (capability.disable === "thinking") {
-    next[THINKING_KEY] = { type: "enabled" };
+  const patch = own(preset.levels, level);
+  if (!patch) {
+    throw new Error(
+      `策略 "${name}" 没有档位 "${level}"（可选：${Object.keys(preset.levels).join(" / ")}）`,
+    );
   }
-  next[EFFORT_KEY] = effort;
-  return next;
+
+  const owned = ownedKeys(presets);
+  const base = params === undefined ? model?.defaultParams : params;
+  const kept = Object.entries(base ?? {}).filter(([key]) => !owned.has(key));
+  return { ...Object.fromEntries(kept), ...patch };
 }
 
 /**
- * 解析某 Agent 的实际档位：Agent 声明优先，否则看模型默认参数。
+ * 解析某 Agent 的实际档位：Agent 声明优先，否则反查模型默认参数。
+ *
+ * 声明了但策略里没有这一档 → 退化为模型默认（宁可忽略设置，也不发非法参数）。
  */
 export function resolveReasoningEffort(
   model?: Model | null,
+  presets?: ReasoningPresets | null,
   definition?: Pick<AgentDefinition, "reasoningEffort"> | null,
-): ReasoningEffort | undefined {
+): string | undefined {
   const declared = definition?.reasoningEffort;
-  if (declared) {
-    // 声明了但模型不支持 → 退化为模型默认，避免把非法值发给服务端
-    const allowed = modelAllowedEfforts(model);
-    if (allowed.length === 0 || allowed.includes(declared)) return declared;
-  }
-  return readReasoningEffort(model?.defaultParams);
+  if (declared && modelLevels(model, presets).includes(declared)) return declared;
+  return readReasoningEffort(model, presets);
 }
 
 /**
@@ -167,12 +180,12 @@ export function resolveReasoningEffort(
  */
 export function resolveModelParams(
   model?: Model | null,
+  presets?: ReasoningPresets | null,
   definition?: Pick<AgentDefinition, "reasoningEffort"> | null,
 ): Record<string, unknown> | undefined {
   const declared = definition?.reasoningEffort;
   if (!declared) return model?.defaultParams;
-  const allowed = modelAllowedEfforts(model);
-  // 模型不支持声明值：宁可保持模型默认，也不发非法参数
-  if (allowed.length === 0 || !allowed.includes(declared)) return model?.defaultParams;
-  return applyReasoningEffort(model?.defaultParams, model, declared);
+  // 模型没关联策略、或策略里没这一档：保持模型默认，绝不发非法参数
+  if (!modelLevels(model, presets).includes(declared)) return model?.defaultParams;
+  return applyReasoningEffort(model, presets, declared);
 }

@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.0.0-alpha.14] - 2026-10-22
+
+### 🔧 行为变更（不兼容）
+
+- **思考能力声明从「模型字段」改为「策略表」** —— alpha.13 那版用 `Model.reasoning: { efforts, disable? }` 表达厂商差异，结果三处结构性缺陷：`disable` 一词双义（既指关闭方式又指能力）、`off` 靠拼接而非声明（`disable ? ["off", ...efforts] : efforts`）、用全局 `ReasoningEffort` 枚举假装各家档位等价。现在改为**档位 → 请求参数补丁**的声明式表：
+  - 新增 `<basePath>/reasoning-presets.json`（与 `config.json` 同级），出厂内容见 `config/reasoning-presets.ts`；
+  - `Model.reasoning?` → **`Model.reasoningPreset?: string`**（引用策略名；缺省 = 不可调档）；
+  - `AgentDefinition.reasoningEffort` 类型 `ReasoningEffort` → **`string`**（档位名由策略表定义，不再用假枚举假装统一）；
+  - 删除 `ReasoningEffort` / `ReasoningCapability` 类型与 `capabilityOf` / `modelEfforts` / `modelAllowedEfforts` / `isReasoningEffort` 函数；
+  - 函数签名统一以 `(model, presets, …)` 开头：`readReasoningEffort(model, presets, params?)`、`applyReasoningEffort(model, presets, level, params?)`、`resolveReasoningEffort(model, presets, definition?)`、`resolveModelParams(model, presets, definition?)`；
+  - `Scope` 新增 `reasoningPresets`（与 `config` 平级注入，不做全局单例）。
+
+  换来三个结构性保证，全部来自表的形状、代码零分支：① 可选档位 = `Object.keys(levels)`；② 能否关闭思考 = 表里有没有 `off` 键；③ 「哪些参数键属于思考」= 整张表出现过的键的并集（写入前按此剔除旧值，`max` → `off` 不再残留 `reasoning_effort`，模型换策略也不会反刍上一套参数）。
+
+- **`applyReasoningEffort` 的档位校验更严** —— 策略里没有该档位直接抛错（旧版对未声明能力的模型给的是「不支持档位」文案），错误信息带上策略名与可选档位列表。
+
+### 🚀 新功能
+
+- **`ConfigManager.readReasoningPresets()` / `ensureReasoningPresets()`** —— 策略表的读写与出厂同步。同步粒度**到单个策略**，规则与出厂模型同步同构：文件缺失即写种子；`custom: true` 的策略冻结；未标的用出厂版覆盖；用户自建的非出厂策略永远保留。`bootstrap()` 会自动调用。文件缺失或损坏时 `readReasoningPresets()` 回落到出厂种子，不让上层拿到空表。
+- **`presetOf(model, presets)` / `modelLevels(model, presets)`** —— 策略查找与可选档位读取（`modelLevels` 取代旧的 `modelEfforts` + `modelAllowedEfforts` 两个函数：`off` 现在只是表里的一行，没有「档位」与「关闭」的二分）。
+- **包入口补导出 `TokenThresholds` / `ReasoningPatch` / `ReasoningPreset` / `ReasoningPresets`** —— alpha.13 漏了这几个类型的导出（原 `7b10196` 补丁并入本版本）。
+
+### ✅ 测试
+
+- `src/shared/reasoning.test.ts` 重写（26 例）：出厂表协议事实（OpenAI 表无 `thinking` 键、`zhipu-5.3` 表无 `off`、DeepSeek 用 `thinking.type` 关闭）、可调档位 = 表的键、反查取最具体匹配、写入剔除旧键、往返一致、Agent 声明非法回退模型默认、原型链污染名字（`constructor`）不生效。
+- `src/config/reasoning-presets.test.ts` 新增（11 例）：落盘位置、首次释放、幂等不写盘、未标 `custom` 被覆盖、标了 `custom` 冻结、用户自建策略保留、损坏/数组内容回落种子、`bootstrap()` 顺带释放。
+
+### 📄 文档
+
+- `docs/{zh,en}/sdk.md`：「思考强度」章节重写为「思考预设（reasoning presets）」，含策略表结构、出厂策略对照表、三个结构性保证、新 API 表与 `Scope` 注入示例。
+- 顺手修掉 alpha.13 之后就过期的示例：`ContextGuardPlugin({ maxTokens, isSuspended })` → `{ guardTokens }`、`AutoMigratePlugin({ maxTokens })` → `{ handoffTokens }`、「交接回合护栏放宽 × 2」的旧描述。
+
 ## [1.0.0-alpha.13] - 2026-10-22
 
 ### 💥 Breaking Changes

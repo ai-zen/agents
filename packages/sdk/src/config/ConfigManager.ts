@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
-import type { AppConfig, AgentDefinition } from "../types/index.js";
+import type { AppConfig, AgentDefinition, ReasoningPresets } from "../types/index.js";
 import {
   DEFAULT_AGENT_ID,
   DEFAULT_AGENT_DEFINITION,
@@ -11,6 +11,10 @@ import {
   CONFIG_SUB_DIRS,
 } from "./constants.js";
 import { FACTORY_SKILLS, isCustomSkill } from "./factory-skills.js";
+import {
+  FACTORY_REASONING_PRESETS,
+  REASONING_PRESETS_FILE,
+} from "./reasoning-presets.js";
 import { migrateConfig } from "./migrate.js";
 
 /**
@@ -222,7 +226,83 @@ export class ConfigManager {
     const subAgent = await this.ensureDefaultSubAgent();
     await this.ensureDefaultMcpConfig();
     await this.ensureFactorySkills();
+    await this.ensureReasoningPresets();
     return { config, agent, subAgent };
+  }
+
+  // -----------------------------------------------------------------------
+  // 思考策略表（{basePath}/reasoning-presets.json）
+  // -----------------------------------------------------------------------
+
+  /** 策略表文件路径（与 config.json 同级） */
+  get reasoningPresetsPath(): string {
+    return join(this.basePath, REASONING_PRESETS_FILE);
+  }
+
+  /**
+   * 读取思考策略表。
+   *
+   * 文件缺失或无法解析时返回出厂种子（内存值，不写盘）——保证调用方永远拿到可用的表：
+   * 用户误删文件后仍能正常选档位，下次 `ensureReasoningPresets()` 会重新释放。
+   */
+  async readReasoningPresets(): Promise<ReasoningPresets> {
+    try {
+      const raw = await fs.readFile(this.reasoningPresetsPath, "utf-8");
+      const parsed = JSON.parse(raw) as ReasoningPresets;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    } catch {
+      // 缺失或损坏 → 回落出厂种子
+    }
+    return { ...FACTORY_REASONING_PRESETS };
+  }
+
+  /**
+   * 释放 / 同步出厂思考策略。
+   *
+   * 覆盖策略与 `syncManagedModels` 同构，**按策略逐个判断**（粒度到单个策略）：
+   *   - 文件不存在 → 写入出厂种子；
+   *   - 某策略标了 `custom: true` → 用户自有，原样保留；
+   *   - 某策略未标 → 用出厂版覆盖该策略（内容相同则不写盘）；
+   *   - 用户自建的非出厂策略 → 始终保留。
+   *
+   * @returns 实际写入的策略名列表（未变化 / 用户自有 均不计入）
+   */
+  async ensureReasoningPresets(): Promise<string[]> {
+    let onDisk: ReasoningPresets | null = null;
+    try {
+      onDisk = JSON.parse(await fs.readFile(this.reasoningPresetsPath, "utf-8")) as ReasoningPresets;
+    } catch {
+      onDisk = null;
+    }
+
+    if (!onDisk || typeof onDisk !== "object" || Array.isArray(onDisk)) {
+      await fs.mkdir(this.basePath, { recursive: true });
+      await fs.writeFile(
+        this.reasoningPresetsPath,
+        JSON.stringify(FACTORY_REASONING_PRESETS, null, 2),
+        "utf-8",
+      );
+      return Object.keys(FACTORY_REASONING_PRESETS);
+    }
+
+    const next: ReasoningPresets = { ...onDisk };
+    const written: string[] = [];
+    for (const [name, preset] of Object.entries(FACTORY_REASONING_PRESETS)) {
+      const existing = onDisk[name];
+      if (existing?.custom === true) continue; // 用户改过 → 冻结
+      if (JSON.stringify(existing) === JSON.stringify(preset)) continue; // 已是最新
+      next[name] = preset;
+      written.push(name);
+    }
+
+    if (written.length > 0) {
+      await fs.writeFile(
+        this.reasoningPresetsPath,
+        JSON.stringify(next, null, 2),
+        "utf-8",
+      );
+    }
+    return written;
   }
 
   // -----------------------------------------------------------------------

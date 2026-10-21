@@ -6,8 +6,9 @@ export type {
   EndpointCapabilities,
   Model,
   TokenThresholds,
-  ReasoningEffort,
-  ReasoningCapability,
+  ReasoningPatch,
+  ReasoningPreset,
+  ReasoningPresets,
   ImageModel,
   AgentDefinition,
   AppConfig,
@@ -75,6 +76,12 @@ export {
   isCustomSkill,
 } from "./config/factory-skills.js";
 
+// 出厂资产 — 出厂思考策略（随版本释放到 <basePath>/reasoning-presets.json）
+export {
+  FACTORY_REASONING_PRESETS,
+  REASONING_PRESETS_FILE,
+} from "./config/reasoning-presets.js";
+
 // CRUD — 实体仓储（仅 Agent 定义等能力实体）
 export { EntityRepository } from "./shared/EntityRepository.js";
 export { AgentRepository } from "./crud/AgentRepository.js";
@@ -100,13 +107,11 @@ export type {
   UploadFn,
 } from "./shared/content-blocks.js";
 
-// 思考强度（reasoning effort）— 能力声明、可用档位与参数写入
+// 思考预设（reasoning presets）— 档位读取、校验与参数写入
 export {
   applyReasoningEffort,
-  capabilityOf,
-  isReasoningEffort,
-  modelAllowedEfforts,
-  modelEfforts,
+  modelLevels,
+  presetOf,
   readReasoningEffort,
   resolveModelParams,
   resolveReasoningEffort,

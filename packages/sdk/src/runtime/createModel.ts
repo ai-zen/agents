@@ -24,7 +24,8 @@ export interface AgentModel {
  *
  * `overrides.reasoningEffort` 是 **Agent 级覆盖**（`AgentDefinition.reasoningEffort`）：
  * 同一个模型可以给不同 Agent 配不同思考强度，而模型自身的 `defaultParams` 不变。
- * 写入方式按模型的 `reasoning` 能力声明决定（见 `shared/reasoning.ts`）。
+ * 档位如何翻译成请求参数，由 `scope.reasoningPresets` 里该模型引用的策略表决定
+ * （见 `shared/reasoning.ts`）。
  */
 export function createModel(
   scope: Scope,
@@ -57,6 +58,6 @@ export function createModel(
     client,
     model: apiModelName,
     // 档位覆盖在这里生效：未声明 reasoningEffort 时原样返回模型 defaultParams
-    modelConfig: resolveModelParams(modelConfig, overrides),
+    modelConfig: resolveModelParams(modelConfig, scope.reasoningPresets, overrides),
   };
 }

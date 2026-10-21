@@ -147,42 +147,78 @@ abstract class SdkCallbackTool extends Tool {
 }
 ```
 
-## 思考强度（reasoning effort）
+## 思考预设（reasoning presets）
 
-档位**不是**全局统一枚举：各端点接受的值域不同，同一家不同型号也不同（智谱 GLM-5.3 系对 `medium` 直接报错）。所以能力声明在**模型**上（防 400），档位值存在 **Agent** 上（同一模型可给不同人格配不同强度）。
+档位**不是**全局统一枚举：各端点接受的值域不同，同一家不同型号也不同（智谱 GLM-5.3 系对 `medium` 直接报错、对 `thinking.type = "disabled"` 也报错）。所以协议差异**全部写进一张策略表**，模型只记「用哪套策略」，Agent 只记「选哪一档」。
 
-| 层 | 字段 | 作用 |
+| 层 | 位置 | 作用 |
 |----|------|------|
-| 模型 | `Model.reasoning: { efforts, disable? }` | 物理能力上限（厂商官方文档口径，不推测） |
-| Agent | `AgentDefinition.reasoningEffort?: ReasoningEffort` | 该 Agent 的实际档位，覆盖模型 `defaultParams` 里的对应参数 |
+| 策略表 | `~/.ai-zen/reasoning-presets.json` | 档位名 → 请求参数补丁（厂商协议知识） |
+| 模型 | `Model.reasoningPreset?: string` | 引用策略名；缺省 = 不可调档 |
+| Agent | `AgentDefinition.reasoningEffort?: string` | 该 Agent 的档位，必须是策略表里的键 |
 
-出厂声明（依据官方文档）：
+```json
+{
+  "zhipu-5.3": {
+    "levels": {
+      "low":  { "thinking": { "type": "enabled" }, "reasoning_effort": "low" },
+      "high": { "thinking": { "type": "enabled" }, "reasoning_effort": "high" },
+      "max":  { "thinking": { "type": "enabled" }, "reasoning_effort": "max" }
+    }
+  }
+}
+```
 
-| 端点 | 可调档位 | 能否关闭思考 |
-|------|---------|-------------|
-| DeepSeek（`/guides/thinking_mode`） | `low` / `high` / `max` | 能：`thinking.type = "disabled"` |
-| 智谱 GLM-5.3 / 5.3-FLASH / 5.3-FLASHX | `low` / `high` / `max`（**其余输入报错**） | **不能**：传 `disabled` 会报错 |
-| 智谱 GLM-4.7 | 不可调（`efforts: []`） | 不能（强制思考，且无 `reasoning_effort` 参数） |
-| OpenAI（`Shared.ReasoningEffort`） | `minimal` / `low` / `medium` / `high` | 能：`reasoning_effort = "none"` |
+出厂策略（依据官方文档，**不要凭印象改**）：
 
-写入形态由 `disable` 决定：
+| 策略 | 可调档位 | 能否关闭思考 | 依据 |
+|------|---------|-------------|------|
+| `openai` | `minimal` / `low` / `medium` / `high` / `off` | 能：`reasoning_effort = "none"` | `openai-node` 的 `Shared.ReasoningEffort` |
+| `zhipu-5.3` | `low` / `high` / `max`（**其余输入报错**） | **不能**：表里没有 `off` 键 | `docs.bigmodel.cn` 思考能力 |
+| `deepseek` | `low` / `high` / `max` / `off` | 能：`thinking.type = "disabled"` | `api-docs.deepseek.com` 思考模式 |
 
-- `disable: "thinking"` → 同时维护 `thinking.type` 与 `reasoning_effort`（DeepSeek）
-- `disable: "effort-none"` → **只写** `reasoning_effort`（OpenAI 没有 `thinking` 参数，写它会被当未知参数）
-- 未声明 `disable` → 只写 `reasoning_effort`，传 `off` 直接抛错（智谱 5.3 系）
+三个结构性保证，全部来自「表的形状」，代码里没有任何 if/else 分支：
 
-公共 API（均从包入口导出）：
+1. **可选档位** = `Object.keys(levels)` —— 不存在「菜单里有、发出去报错」的档位；
+2. **能否关闭思考** = 表里有没有 `off` 键；
+3. **哪些参数键属于思考** = 整张表里出现过的键的并集 —— 写入前先按此剔除旧值，于是 `max` → `off` 不会残留 `reasoning_effort`，模型换策略也不会反刍上一套参数。
+
+公共 API（均从包入口导出，`presets` 就是 `readReasoningPresets()` 的结果）：
 
 | 函数 | 作用 |
 |------|------|
-| `resolveReasoningEffort(model, definition)` | 实际生效档位（Agent 优先，非法则回退模型默认） |
-| `resolveModelParams(model, definition)` | 把 Agent 档位覆盖应用到模型参数（`createModel` 用） |
-| `applyReasoningEffort(params, model, effort)` | 按能力声明写入，非法档位抛错 |
-| `modelEfforts` / `modelAllowedEfforts` / `readReasoningEffort` / `isReasoningEffort` / `capabilityOf` | 能力与现状读取 |
+| `presetOf(model, presets)` | 取模型关联的策略（名字不存在 → `undefined`，不猜不兜底） |
+| `modelLevels(model, presets)` | 可选档位（顺序 = 表声明顺序） |
+| `readReasoningEffort(model, presets, params?)` | 反查当前档位（取最具体的匹配；不完整匹配 → `undefined`） |
+| `applyReasoningEffort(model, presets, level, params?)` | 写入档位，策略里没有该档位直接抛错 |
+| `resolveReasoningEffort(model, presets, definition?)` | 实际生效档位（Agent 优先，非法则回退模型默认） |
+| `resolveModelParams(model, presets, definition?)` | 应用 Agent 覆盖（`createModel` 用） |
 
-类型：`ReasoningEffort`（`off` / `none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`）、`ReasoningCapability`。
+类型：`ReasoningPresets` / `ReasoningPreset` / `ReasoningPatch`。
 
-`createModel(scope, modelId, { reasoningEffort })` 的第三参由 `createAgent` 从 `definition.reasoningEffort` 传入 —— 同一个模型可以给不同 Agent 配不同强度（编程 Agent `max`、闲聊 Agent `low`），而模型自身的 `defaultParams` 保持不变。
+策略表要**显式注入 Scope**（与 `config` 平级，不做全局单例）：
+
+```ts
+const mgr = new ConfigManager("~/.ai-zen/config.json");
+const { config } = await mgr.bootstrap();
+const reasoningPresets = await mgr.readReasoningPresets();
+const scope = new Scope({ config, agentsDir, reasoningPresets });
+```
+
+`createModel(scope, modelId, { reasoningEffort })` 的第三参由 `createAgent` 从 `definition.reasoningEffort` 传入 —— 同一个模型可以给不同 Agent 配不同强度（编程 Agent `max`、小说 Agent `high`、闲聊 Agent `off`），而模型自身的 `defaultParams` 保持不变。
+
+### 策略表的释放与同步
+
+`bootstrap()` 会调用 `ensureReasoningPresets()`，规则与出厂模型同步同构、**粒度到单个策略**：
+
+- 文件不存在 → 写入出厂种子；
+- 某策略标了 `custom: true` → 用户自有，原样保留（SDK 升级不覆盖）；
+- 某策略未标 → 用出厂版覆盖该策略（内容相同则不写盘）；
+- 用户自建的非出厂策略 → 始终保留。
+
+于是厂商新增档位或新接入端点时，改这份 JSON 即可（或等 SDK 发版自动同步），不必动代码。文件缺失或损坏时 `readReasoningPresets()` 回落到出厂种子，不会让上层拿到空表。
+
+> **策略名是稳定标识**：`config.json` 里写着它，改名等同破坏性变更。命名按协议族（`openai` / `zhipu-5.3` / `deepseek`）而不是型号，同族多型号共用一个。
 
 ## 上下文阈值（tokenThresholds）
 
@@ -203,7 +239,7 @@ abstract class SdkCallbackTool extends Tool {
 | 实体 | 说明 | 存储 |
 |------|------|------|
 | `Endpoint` | API 端点（baseUrl + apiKey + 可选 `capabilities.filesApi`） | `config.json` |
-| `Model` | 模型配置，绑定一个 Endpoint，可声明 `reasoning`（思考强度能力上限） | `config.json` |
+| `Model` | 模型配置，绑定一个 Endpoint，可用 `reasoningPreset` 引用思考策略 | `config.json` |
 | `ImageModel` | 图片生成模型配置 | `config.json` |
 | `AgentDefinition` | 可对话 AI 人格（提示词、权限、可选工具签名、可选思考档位 `reasoningEffort`）；有 `function` 即视为 SubAgent；`custom: true` 表示用户自定义（初始化不同步内置提示词） | `agents/*.json` |
 | `ToolEnv` | `{ cwd, config }`，内置工具构造时注入 | 内存态 |
@@ -215,7 +251,7 @@ abstract class SdkCallbackTool extends Tool {
 |------|------|
 | `AutoMigratePlugin` | 上下文超限时自动触发任务迁移；实际流程委托给注入的 `HandoffService`（`resolveMode` 选执行者，`busy` 防递归） |
 | `AutoRefreshToolsPlugin` | 每次 `send()` 前重新刷新工具列表 |
-| `ContextGuardPlugin` | 上下文安全护栏；超硬上限（`maxTokens × ratio`）时在请求前抛 `ContextOverflowError` |
+| `ContextGuardPlugin` | 上下文安全护栏；请求**前**用量超过 `guardTokens` 时抛 `ContextOverflowError` |
 | `UnknownToolHintPlugin` | 未知工具的 MCP 智能提示（显式 `agent.use` 注册） |
 
 ## ConfigManager 与出厂默认
@@ -252,12 +288,12 @@ const handoffService = new HandoffService({
   onMigrated: (hctx) => { hctx.agent.lastUsage = undefined; },
 });
 
-agent.use(new ContextGuardPlugin({ maxTokens: 250_000, isSuspended: () => handoffService.busy }));
-agent.use(new AutoMigratePlugin({ service: handoffService, maxTokens: 250_000 }));
+agent.use(new ContextGuardPlugin({ guardTokens: 375_000, isSuspended: () => handoffService.busy }));
+agent.use(new AutoMigratePlugin({ service: handoffService, handoffTokens: 250_000 }));
 ```
 
 - 策略 `strategy`：`omit`（默认，历史标记 `omit: true` 保留可审计）/ `prune`（物理剔除）。
-- `service.busy` 期间自动迁移插件让行（防递归），护栏放宽到 `× 2`（交接回合不被误杀，仍保留熔断）。
+- `service.busy` 期间自动迁移插件让行（防递归）；护栏的放宽靠把 `guard` 配得足够大（出厂 `handoff × 1.5`），不再有隐式倍数。
 - `HandoffGuardPlugin` 仅在交接回合生效：拦截 `edit` / `rm` / `rename` 等，`write` 只放行交接文档（软拒绝，把模型引回正题）。
 - 不重建 Agent，仅重建消息列表；交接失败不会丢原消息。
 

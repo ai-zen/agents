@@ -36,46 +36,39 @@ export interface EndpointCapabilities {
   filesApi?: boolean;
 }
 
-// ---- 思考强度（reasoning effort）----
+// ---- 思考预设（reasoning presets）----
 
 /**
- * 思考强度档位 —— 各端点官方枚举的**并集**，不含各家不认的值。
+ * 单个档位的请求参数补丁 —— 原样合并进模型请求参数。
  *
- * OpenAI（`openai-node` 的 `Shared.ReasoningEffort`）：`none | minimal | low | medium | high | xhigh | max`
- * DeepSeek（`/guides/thinking_mode`）：`low | high | max`（另接受 minimal/medium/xhigh/ultra 并做映射）
- * 智谱 GLM-5.3 系（`/cn/guide/capabilities/thinking`）：`low | high | max`，**其余值直接报错**
- * 智谱 GLM-5.2：`none | minimal | low | medium | high | xhigh | max`
- *
- * `off` 是本 SDK 的语义值（「关闭思考」），对接时按 `ReasoningCapability.disable` 选择表达方式。
- * 它与 `none` 不重复：`none` 是端点自己认的档位值，`off` 是「没有档位、彻底不思考」。
+ * 各家协议差异全部关在补丁里，SDK 不解释、不硬编码任何键名：
+ *   OpenAI   → `{ reasoning_effort: "high" }`（没有 `thinking` 参数）
+ *   DeepSeek → `{ thinking: { type: "enabled" }, reasoning_effort: "high" }`
+ *   关闭     → `{ reasoning_effort: "none" }` 或 `{ thinking: { type: "disabled" } }`
  */
-export type ReasoningEffort =
-  | "off"
-  | "none"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh"
-  | "max";
+export type ReasoningPatch = Record<string, unknown>;
 
 /**
- * 模型/端点的思考能力声明（**物理上限**，来自厂商官方文档）。
+ * 一个具名思考策略：档位名 → 参数补丁。
  *
- * 刻意不推断、不猜：未声明的模型视为「不可调档」，`/think` 不会列任何选项——
- * 发一个端点不认的值会被直接报错（智谱 5.3 系原文「其余输入将报错」）。
+ * `levels` 的键集合**就是**该策略的全部可选档位 —— 没有单独的「能否关闭思考」字段：
+ * 表里有 `off` 键就能关，没有就不能（如智谱 GLM-5.3 系，官方原文「其余输入将报错」）。
  */
-export interface ReasoningCapability {
-  /** 型号真实接受的档位（不含 `off`）；空数组 = 支持思考但不可调档 */
-  efforts: ReasoningEffort[];
-  /**
-   * 关闭思考的表达方式：
-   * - `thinking` → `thinking: { type: "disabled" }`（DeepSeek / GLM-5.2）
-   * - `effort-none` → `reasoning_effort: "none"`（OpenAI / GLM-5.2）
-   * - 缺省 → 不支持关闭（如 GLM-5.3 系，传 disabled 会报错）
-   */
-  disable?: "thinking" | "effort-none";
+export interface ReasoningPreset {
+  /** 用户改过 → SDK 初始化不再覆盖该策略（与 `Model.custom` 同构） */
+  custom?: boolean;
+  /** 档位名 → 参数补丁 */
+  levels: Record<string, ReasoningPatch>;
 }
+
+/**
+ * 思考策略表 —— `<basePath>/reasoning-presets.json` 的结构，出厂内容见
+ * `config/reasoning-presets.ts`。
+ *
+ * 键是策略名，由 `Model.reasoningPreset` 引用。**策略名一旦发布即视为稳定标识**
+ * （用户配置文件里写着它），改名等同破坏性变更。
+ */
+export type ReasoningPresets = Record<string, ReasoningPreset>;
 
 /** API 端点 */
 export interface Endpoint {
@@ -121,12 +114,13 @@ export interface Model {
   tokenThresholds: TokenThresholds;
   defaultParams?: Record<string, unknown>; // 模型默认参数（temperature 等）
   /**
-   * 思考强度能力（按厂商官方文档声明）。缺省视为不可调档。
+   * 思考策略名，引用 `reasoning-presets.json` 里的键。缺省视为不可调档。
    *
-   * Agent 用 `AgentDefinition.reasoningEffort` 在这个范围内选一档；
-   * 超出范围的值不会发给服务端（`resolveModelParams()` 会退回模型默认）。
+   * 为什么只存名字不存整张表：档位细节属于**厂商协议知识**，跟 SDK 版本一起演进；
+   * 配置只需要记录「这个型号套用哪套协议」。名字指向同目录下的策略表文件，
+   * 用户看得见、改得动，不必等 SDK 发版。
    */
-  reasoning?: ReasoningCapability;
+  reasoningPreset?: string;
   /** 是否支持图片输入（视觉模型）。看图工具（view_image）仅对视觉模型启用；generate_image 是否返回图片内容块也据此判断 */
   vision?: boolean;
   description?: string; // 描述
@@ -148,12 +142,15 @@ export interface AgentDefinition {
   messages: AgentNS.Message[]; // 预设对话（至少一条 system）
   modelId?: string; // 指定模型，不填用默认
   /**
-   * 该 Agent 的思考档位（可选），覆盖模型 `defaultParams` 里的对应参数。
+   * 该 Agent 的思考档位（可选），必须是该模型策略表 `levels` 里的键。
    *
    * 有了它，同一个模型可以给不同 Agent 配不同强度（编程 Agent `max`、闲聊 Agent `low`），
    * 而模型本身的默认参数保持不变。未声明时沿用模型默认。
+   *
+   * 类型是 `string` 而非联合类型：档位名由策略表定义，各家本就不同名，
+   * 用一个全局枚举假装统一只会把厂商差异藏进字段里。合法性在运行时按表校验。
    */
-  reasoningEffort?: ReasoningEffort;
+  reasoningEffort?: string;
   permissions?: AgentPermissions;
 
   // 以下有则视为 SubAgent

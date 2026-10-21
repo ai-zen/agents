@@ -147,42 +147,78 @@ abstract class SdkCallbackTool extends Tool {
 }
 ```
 
-## Reasoning effort
+## Reasoning presets
 
-Effort levels are **not** a global enum: every endpoint accepts a different value set, and even the same vendor differs per model (Zhipu GLM-5.3 errors out on `medium`). So the capability is declared on the **model** (to avoid 4xx), while the chosen level lives on the **Agent** (the same model can serve different personas at different intensities).
+Effort levels are **not** a global enum: every endpoint accepts a different value set, and even the same vendor differs per model (Zhipu GLM-5.3 errors out on `medium`, and on `thinking.type = "disabled"` too). So all protocol differences live in **one preset table**: the model only records which preset it uses, and the Agent only records which level it picks.
 
-| Layer | Field | Purpose |
+| Layer | Location | Purpose |
 |----|------|------|
-| Model | `Model.reasoning: { efforts, disable? }` | Physical capability ceiling (taken from vendor docs, never guessed) |
-| Agent | `AgentDefinition.reasoningEffort?: ReasoningEffort` | This Agent's actual level, overriding the model's `defaultParams` |
+| Preset table | `~/.ai-zen/reasoning-presets.json` | level name → request-parameter patch (vendor protocol knowledge) |
+| Model | `Model.reasoningPreset?: string` | references a preset name; absent = not adjustable |
+| Agent | `AgentDefinition.reasoningEffort?: string` | this Agent's level; must be a key in the preset |
 
-Factory declarations (per vendor docs):
+```json
+{
+  "zhipu-5.3": {
+    "levels": {
+      "low":  { "thinking": { "type": "enabled" }, "reasoning_effort": "low" },
+      "high": { "thinking": { "type": "enabled" }, "reasoning_effort": "high" },
+      "max":  { "thinking": { "type": "enabled" }, "reasoning_effort": "max" }
+    }
+  }
+}
+```
 
-| Endpoint | Adjustable levels | Can thinking be disabled? |
-|------|---------|-------------|
-| DeepSeek (`/guides/thinking_mode`) | `low` / `high` / `max` | Yes: `thinking.type = "disabled"` |
-| Zhipu GLM-5.3 / 5.3-FLASH / 5.3-FLASHX | `low` / `high` / `max` (**anything else errors**) | **No**: sending `disabled` errors out |
-| Zhipu GLM-4.7 | Not adjustable (`efforts: []`) | No (forced thinking, no `reasoning_effort` parameter) |
-| OpenAI (`Shared.ReasoningEffort`) | `minimal` / `low` / `medium` / `high` | Yes: `reasoning_effort = "none"` |
+Factory presets (per vendor docs — **do not change from memory**):
 
-The write shape follows `disable`:
+| Preset | Adjustable levels | Can thinking be disabled? | Source |
+|------|---------|-------------|------|
+| `openai` | `minimal` / `low` / `medium` / `high` / `off` | Yes: `reasoning_effort = "none"` | `Shared.ReasoningEffort` in `openai-node` |
+| `zhipu-5.3` | `low` / `high` / `max` (**anything else errors**) | **No**: the table has no `off` key | `docs.bigmodel.cn` thinking guide |
+| `deepseek` | `low` / `high` / `max` / `off` | Yes: `thinking.type = "disabled"` | `api-docs.deepseek.com` thinking mode |
 
-- `disable: "thinking"` → maintain both `thinking.type` and `reasoning_effort` (DeepSeek)
-- `disable: "effort-none"` → write **only** `reasoning_effort` (OpenAI has no `thinking` param; sending it is treated as an unknown argument)
-- no `disable` declared → write only `reasoning_effort`; `off` throws (Zhipu 5.3 series)
+Three structural guarantees, all derived from the **shape of the table** — no if/else branches anywhere:
 
-Public API (all exported from the package entry):
+1. **Adjustable levels** = `Object.keys(levels)` — there can be no option that is offered but rejected by the endpoint;
+2. **Whether thinking can be disabled** = whether the table has an `off` key;
+3. **Which parameter keys belong to reasoning** = the union of keys across the whole table — old values are stripped before merging, so `max` → `off` leaves no stale `reasoning_effort`, and switching a model to another preset never re-feeds the previous preset's parameters.
+
+Public API (all exported from the package entry; `presets` is whatever `readReasoningPresets()` returned):
 
 | Function | Purpose |
 |------|------|
-| `resolveReasoningEffort(model, definition)` | effective level (Agent wins; invalid falls back to the model default) |
-| `resolveModelParams(model, definition)` | apply the Agent override onto model params (used by `createModel`) |
-| `applyReasoningEffort(params, model, effort)` | write according to the capability declaration; throws on invalid levels |
-| `modelEfforts` / `modelAllowedEfforts` / `readReasoningEffort` / `isReasoningEffort` / `capabilityOf` | capability and current-state readers |
+| `presetOf(model, presets)` | the model's preset (unknown name → `undefined`; never guessed) |
+| `modelLevels(model, presets)` | adjustable levels (declaration order) |
+| `readReasoningEffort(model, presets, params?)` | reverse lookup of the current level (most specific match; partial match → `undefined`) |
+| `applyReasoningEffort(model, presets, level, params?)` | write a level; throws if the preset has no such level |
+| `resolveReasoningEffort(model, presets, definition?)` | effective level (Agent wins; invalid falls back to the model default) |
+| `resolveModelParams(model, presets, definition?)` | apply the Agent override onto model params (used by `createModel`) |
 
-Types: `ReasoningEffort` (`off` / `none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`) and `ReasoningCapability`.
+Types: `ReasoningPresets` / `ReasoningPreset` / `ReasoningPatch`.
 
-The third argument of `createModel(scope, modelId, { reasoningEffort })` is passed by `createAgent` from `definition.reasoningEffort` — so the same model can serve different Agents at different intensities (coding Agent `max`, casual chat Agent `low`) while the model's own `defaultParams` stay untouched.
+The table must be **injected into Scope explicitly** (sibling of `config`, not a global singleton):
+
+```ts
+const mgr = new ConfigManager("~/.ai-zen/config.json");
+const { config } = await mgr.bootstrap();
+const reasoningPresets = await mgr.readReasoningPresets();
+const scope = new Scope({ config, agentsDir, reasoningPresets });
+```
+
+The third argument of `createModel(scope, modelId, { reasoningEffort })` is passed by `createAgent` from `definition.reasoningEffort` — so the same model can serve different Agents at different intensities (coding Agent `max`, novel-writing Agent `high`, casual chat Agent `off`) while the model's own `defaultParams` stay untouched.
+
+### Releasing and syncing the preset table
+
+`bootstrap()` calls `ensureReasoningPresets()`. The rule mirrors factory-model syncing and is **per preset**:
+
+- file missing → write the factory seed;
+- a preset marked `custom: true` → owned by the user, left untouched (SDK upgrades won't overwrite it);
+- a preset without that mark → overwritten with the factory version (no write when identical);
+- user-created presets outside the factory set → always kept.
+
+So when a vendor adds a level or you onboard a new endpoint, edit this JSON (or wait for an SDK release to sync it) — no code change needed. If the file is missing or corrupt, `readReasoningPresets()` falls back to the factory seed instead of handing an empty table upwards.
+
+> **Preset names are stable identifiers**: `config.json` references them, so renaming is a breaking change. Name by protocol family (`openai` / `zhipu-5.3` / `deepseek`), not by model, so sibling models share one preset.
 
 ## Context thresholds (`tokenThresholds`)
 
@@ -203,7 +239,7 @@ The third argument of `createModel(scope, modelId, { reasoningEffort })` is pass
 | Entity | Description | Storage |
 |------|------|------|
 | `Endpoint` | API endpoint (baseUrl + apiKey + optional `capabilities.filesApi`) | `config.json` |
-| `Model` | Model configuration, bound to one Endpoint, may declare `reasoning` (effort capability ceiling) | `config.json` |
+| `Model` | Model configuration, bound to one Endpoint; `reasoningPreset` references a reasoning preset | `config.json` |
 | `ImageModel` | Image-generation model configuration | `config.json` |
 | `AgentDefinition` | an interactive AI persona (prompt, permissions, optional tool signatures, optional effort field `reasoningEffort`); having a `function` makes it a SubAgent; `custom: true` marks it as user-defined (init skips syncing built-in prompts) | `agents/*.json` |
 | `ToolEnv` | `{ cwd, config }`, injected when constructing built-in tools | in-memory |
@@ -215,7 +251,7 @@ The third argument of `createModel(scope, modelId, { reasoningEffort })` is pass
 |------|------|
 | `AutoMigratePlugin` | Automatically triggers task migration when context overflows; actual flow is delegated to the injected `HandoffService` (`resolveMode` picks the executor, `busy` prevents recursion) |
 | `AutoRefreshToolsPlugin` | Re-refreshes the tool list before each `send()` |
-| `ContextGuardPlugin` | Context safety guard; throws `ContextOverflowError` before a request when the hard limit (`maxTokens × ratio`) is exceeded |
+| `ContextGuardPlugin` | Context safety guard; throws `ContextOverflowError` before a request when usage exceeds `guardTokens` |
 | `UnknownToolHintPlugin` | MCP smart hint for unknown tools (registered explicitly via `agent.use`) |
 
 ## ConfigManager and factory defaults
@@ -252,12 +288,12 @@ const handoffService = new HandoffService({
   onMigrated: (hctx) => { hctx.agent.lastUsage = undefined; },
 });
 
-agent.use(new ContextGuardPlugin({ maxTokens: 250_000, isSuspended: () => handoffService.busy }));
-agent.use(new AutoMigratePlugin({ service: handoffService, maxTokens: 250_000 }));
+agent.use(new ContextGuardPlugin({ guardTokens: 375_000, isSuspended: () => handoffService.busy }));
+agent.use(new AutoMigratePlugin({ service: handoffService, handoffTokens: 250_000 }));
 ```
 
 - Strategy `strategy`: `omit` (default, marks history `omit: true` to keep it auditable) / `prune` (physically removes).
-- `service.busy` makes the auto-migrate plugin step aside (no recursion) and relaxes the context guard to `× 2` during the handoff turn.
+- `service.busy` makes the auto-migrate plugin step aside (no recursion); extra headroom comes from setting `guard` large enough (factory value `handoff × 1.5`), there is no implicit multiplier anymore.
 - `HandoffGuardPlugin` is armed only inside the handoff turn: it blocks `edit` / `rm` / `rename` … and allows `write` only for the handoff file (soft rejections that steer the model back).
 - Does not rebuild the Agent, only rebuilds the message list; a failed handoff does not lose the original messages.
 
