@@ -78,3 +78,71 @@ describe("createModel", () => {
     expect(() => createModel(mockScope(noEpConfig), "m")).toThrow("未配置");
   });
 });
+
+describe("createModel：Agent 级参数覆盖（浅合并，SDK 不解释键名）", () => {
+  const cfg: AppConfig = {
+    defaultModel: "glm",
+    endpoints: [{ id: "ep", name: "EP", baseUrl: "https://e/v1", apiKey: "k" }],
+    models: [
+      {
+        id: "glm",
+        name: "GLM",
+        endpointId: "ep",
+        tokenThresholds: { handoff: 1000, guard: 1500 },
+        defaultParams: { thinking: { type: "enabled" }, reasoning_effort: "max", temperature: 0.3 },
+      },
+      {
+        id: "bare",
+        name: "Bare",
+        endpointId: "ep",
+        tokenThresholds: { handoff: 1000, guard: 1500 },
+      },
+    ],
+  };
+
+  it("无覆盖 → 原样返回模型的 defaultParams", () => {
+    expect(createModel(mockScope(cfg), "glm").modelConfig).toEqual({
+      thinking: { type: "enabled" },
+      reasoning_effort: "max",
+      temperature: 0.3,
+    });
+  });
+
+  it("空覆盖 → 等同于无覆盖（不凭空造空对象）", () => {
+    expect(createModel(mockScope(cfg), "glm", {}).modelConfig).toEqual({
+      thinking: { type: "enabled" },
+      reasoning_effort: "max",
+      temperature: 0.3,
+    });
+    expect(createModel(mockScope(cfg), "bare", {}).modelConfig).toBeUndefined();
+  });
+
+  it("有覆盖 → 浅合并：同名键被覆盖，其它键保留", () => {
+    expect(
+      createModel(mockScope(cfg), "glm", { thinking: { type: "disabled" }, reasoning_effort: "low" })
+        .modelConfig,
+    ).toEqual({ thinking: { type: "disabled" }, reasoning_effort: "low", temperature: 0.3 });
+  });
+
+  it("模型没有 defaultParams 时，覆盖即全部参数", () => {
+    expect(createModel(mockScope(cfg), "bare", { reasoning_effort: "high" }).modelConfig).toEqual({
+      reasoning_effort: "high",
+    });
+  });
+
+  it("合并是浅层的：嵌套对象整体替换，不做深合并", () => {
+    // 档位补丁整块替换 thinking，绝不残留上一个档位里多出来的子键
+    const model = createModel(mockScope(cfg), "glm", { thinking: { budget_tokens: 1024 } });
+    expect(model.modelConfig!.thinking).toEqual({ budget_tokens: 1024 });
+    expect((model.modelConfig!.thinking as Record<string, unknown>).type).toBeUndefined();
+  });
+
+  it("两个 Agent 用同一模型、各配一套参数，互不影响", () => {
+    const a = createModel(mockScope(cfg), "glm", { reasoning_effort: "high" });
+    const b = createModel(mockScope(cfg), "glm", { reasoning_effort: "off" });
+    expect(a.modelConfig!.reasoning_effort).toBe("high");
+    expect(b.modelConfig!.reasoning_effort).toBe("off");
+    // 模型自身配置未被污染
+    expect(cfg.models[0]!.defaultParams!.reasoning_effort).toBe("max");
+  });
+});

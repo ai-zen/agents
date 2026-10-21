@@ -3,6 +3,7 @@ import type { AppConfig, Model } from "../types/index.js";
 import {
   DEFAULT_HANDOFF_THRESHOLD,
   migrateConfig,
+  migrateModelReasoning,
   migrateModelThresholds,
 } from "./migrate.js";
 
@@ -131,5 +132,78 @@ describe("migrateConfig", () => {
       handoff: 100_000,
       guard: 150_000,
     });
+  });
+});
+
+describe("migrateModelReasoning：reasoning → reasoningPreset", () => {
+  it("标了 custom 的出厂模型：删旧字段并按同 id 补回策略名（否则默默失去调档能力）", () => {
+    const model = legacyModel({
+      id: "glm-5.3",
+      custom: true,
+      tokenThresholds: { handoff: 1, guard: 2 },
+      reasoning: { efforts: ["low", "high", "max"] },
+    });
+    const { model: next, changed } = migrateModelReasoning(model);
+    expect(changed).toBe(true);
+    expect(raw(next)).not.toHaveProperty("reasoning");
+    expect(next.reasoningPreset).toBe("zhipu-5.3");
+  });
+
+  it("id 不在出厂清单 → 只删旧字段，不瞎猜策略", () => {
+    const model = legacyModel({
+      id: "my-own-model",
+      custom: true,
+      tokenThresholds: { handoff: 1, guard: 2 },
+      reasoning: { efforts: ["low", "high"] },
+    });
+    const { model: next } = migrateModelReasoning(model);
+    expect(raw(next)).not.toHaveProperty("reasoning");
+    expect(next.reasoningPreset).toBeUndefined();
+  });
+
+  it("已有 reasoningPreset → 保留用户选择，只清旧字段", () => {
+    const model = legacyModel({
+      id: "glm-5.3",
+      reasoningPreset: "openai",
+      reasoning: { efforts: ["low", "high", "max"] },
+    });
+    const { model: next } = migrateModelReasoning(model);
+    expect(next.reasoningPreset).toBe("openai");
+    expect(raw(next)).not.toHaveProperty("reasoning");
+  });
+
+  it("没有旧字段 → 不动（用户主动删掉 preset 后不会被反复补回）", () => {
+    const model = legacyModel({ id: "glm-5.3", custom: true });
+    const result = migrateModelReasoning(model);
+    expect(result.changed).toBe(false);
+    expect(result.model).toBe(model);
+    expect(model.reasoningPreset).toBeUndefined();
+  });
+
+  it("不改入参", () => {
+    const model = legacyModel({
+      id: "deepseek-flash",
+      reasoning: { efforts: ["low", "high", "max"], disable: "thinking" },
+    });
+    const before = JSON.stringify(model);
+    migrateModelReasoning(model);
+    expect(JSON.stringify(model)).toBe(before);
+  });
+
+  it("migrateConfig 同时处理阈值与思考字段", () => {
+    const model = legacyModel({
+      id: "deepseek-flash",
+      custom: true,
+      maxContextTokens: 250_000,
+      reasoning: { efforts: ["low", "high", "max"], disable: "thinking" },
+    });
+    const config = { defaultModel: "m", endpoints: [], models: [model] } as unknown as AppConfig;
+
+    const result = migrateConfig(config);
+    expect(result.changed).toBe(true);
+    const out = raw(result.config.models![0]!);
+    expect(out.tokenThresholds).toEqual({ handoff: 250_000, guard: 375_000 });
+    expect(out).not.toHaveProperty("reasoning");
+    expect(out.reasoningPreset).toBe("deepseek");
   });
 });

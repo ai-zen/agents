@@ -11,10 +11,7 @@ import {
   CONFIG_SUB_DIRS,
 } from "./constants.js";
 import { FACTORY_SKILLS, isCustomSkill } from "./factory-skills.js";
-import {
-  FACTORY_REASONING_PRESETS,
-  REASONING_PRESETS_FILE,
-} from "./reasoning-presets.js";
+import { FACTORY_REASONING_PRESETS, REASONING_PRESETS_FILE } from "./reasoning-presets.js";
 import { migrateConfig } from "./migrate.js";
 
 /**
@@ -243,7 +240,7 @@ export class ConfigManager {
    * 读取思考策略表。
    *
    * 文件缺失或无法解析时返回出厂种子（内存值，不写盘）——保证调用方永远拿到可用的表：
-   * 用户误删文件后仍能正常选档位，下次 `ensureReasoningPresets()` 会重新释放。
+   * 用户误删文件后客户端仍能正常选档位，下次 `ensureReasoningPresets()` 会重新释放。
    */
   async readReasoningPresets(): Promise<ReasoningPresets> {
     try {
@@ -296,11 +293,7 @@ export class ConfigManager {
     }
 
     if (written.length > 0) {
-      await fs.writeFile(
-        this.reasoningPresetsPath,
-        JSON.stringify(next, null, 2),
-        "utf-8",
-      );
+      await fs.writeFile(this.reasoningPresetsPath, JSON.stringify(next, null, 2), "utf-8");
     }
     return written;
   }

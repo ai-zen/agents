@@ -24,10 +24,7 @@ export async function createAgent(
   const modelId = definition.modelId ?? scope.config.defaultModel;
   if (!modelId) throw new Error("未指定模型且无默认模型");
 
-  const { client, model, modelConfig } = createModel(scope, modelId, {
-    // Agent 级思考档位覆盖（未声明时为 undefined，行为与以前一致）
-    reasoningEffort: definition.reasoningEffort,
-  });
+  const { client, model, modelConfig } = createModel(scope, modelId, definition.modelParams);
 
   const tools = scope.buildTools(definition, {
     exclude: {

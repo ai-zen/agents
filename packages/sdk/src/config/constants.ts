@@ -113,10 +113,11 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
   // 出厂取值：窗口 ≥1M 的模型统一 handoff=250K / guard=375K（约窗口的 25% / 37.5%），
   // glm-4.7-flash 窗口仅 200K，取 handoff=100K / guard=150K。
   //
-  // reasoningPreset：思考策略名，引用 `<basePath>/reasoning-presets.json` 里的键
-  // （出厂内容见 `config/reasoning-presets.ts`，档位的协议差异全部写在表里）。
-  // 不写这个字段 = 不可调档（如 GLM-4.7 强制思考且无 reasoning_effort 参数）。
-  // 新接入端点时先在策略表里加一张表，再在这里引用它的名字。
+  // reasoningPreset：应用层元数据，**SDK 不解释**（既不参与请求参数生成，也不影响运行行为）。
+  // 它由客户端（如 CLI）自己定义含义：指向哪张思考档位表、`/think` 能选哪几档。
+  // 之所以留在出厂定义里：字段声明与行为消费是两件事，出厂模型需要把它带上，
+  // 否则 `syncManagedModels` 会用出厂定义整块覆盖并抹掉应用声明的值。
+  // 不写这个字段 = 应用层视作「不可调档」（如 GLM-4.7 强制思考且无 reasoning_effort 参数）。
   models: [
     // ---------- OpenAI ----------
     {

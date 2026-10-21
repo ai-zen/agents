@@ -6,6 +6,7 @@ export type {
   EndpointCapabilities,
   Model,
   TokenThresholds,
+  ModelParams,
   ReasoningPatch,
   ReasoningPreset,
   ReasoningPresets,
@@ -76,7 +77,8 @@ export {
   isCustomSkill,
 } from "./config/factory-skills.js";
 
-// 出厂资产 — 出厂思考策略（随版本释放到 <basePath>/reasoning-presets.json）
+// 出厂资产 — 思考策略表（随版本释放到 <basePath>/reasoning-presets.json）
+// 表是跨客户端共享的「定义 + 出厂默认」，SDK 不拿它生成请求参数
 export {
   FACTORY_REASONING_PRESETS,
   REASONING_PRESETS_FILE,
@@ -106,16 +108,6 @@ export type {
   ContentTransport,
   UploadFn,
 } from "./shared/content-blocks.js";
-
-// 思考预设（reasoning presets）— 档位读取、校验与参数写入
-export {
-  applyReasoningEffort,
-  modelLevels,
-  presetOf,
-  readReasoningEffort,
-  resolveModelParams,
-  resolveReasoningEffort,
-} from "./shared/reasoning.js";
 
 // 运行时
 export { createModel } from "./runtime/createModel.js";

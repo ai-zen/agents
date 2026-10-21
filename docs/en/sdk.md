@@ -147,78 +147,46 @@ abstract class SdkCallbackTool extends Tool {
 }
 ```
 
-## Reasoning presets
+## Model parameter overrides (`modelParams`)
 
-Effort levels are **not** a global enum: every endpoint accepts a different value set, and even the same vendor differs per model (Zhipu GLM-5.3 errors out on `medium`, and on `thinking.type = "disabled"` too). So all protocol differences live in **one preset table**: the model only records which preset it uses, and the Agent only records which level it picks.
+The SDK has exactly one rule for model parameters: **shallow merge, no interpretation**.
 
-| Layer | Location | Purpose |
+```ts
+// effective params = model defaults + Agent-level override
+{ ...model.defaultParams, ...definition.modelParams }
+```
+
+| Layer | Field | Purpose |
 |----|------|------|
-| Preset table | `~/.ai-zen/reasoning-presets.json` | level name → request-parameter patch (vendor protocol knowledge) |
-| Model | `Model.reasoningPreset?: string` | references a preset name; absent = not adjustable |
-| Agent | `AgentDefinition.reasoningEffort?: string` | this Agent's level; must be a key in the preset |
+| Model | `Model.defaultParams?: ModelParams` | model default request params (may include vendor-specific keys like `thinking`) |
+| Agent | `AgentDefinition.modelParams?: ModelParams` | this Agent's override, shallow-merged onto the model params |
+
+The SDK **interprets no keys at all**: it does not know `thinking` / `reasoning_effort`, nor what a "reasoning level" is. The merge is shallow (nested objects are replaced wholesale), so switching levels never leaves stale sub-keys behind.
+
+The third argument of `createModel(scope, modelId, overrides?)` is that override, passed by `createAgent` from `definition.modelParams`; a SubAgent with its own `modelId` applies its own `modelParams` too. So the same model can serve different Agents with different parameters (coding Agent `reasoning_effort: "max"`, casual chat Agent `{ thinking: { type: "disabled" } }`) while the model's own `defaultParams` stay untouched.
+
+### Then who owns "reasoning levels"?
+
+Split in two, along the "data vs behavior" line:
+
+- **The table (data) lives in the SDK**: the `ReasoningPresets` type, the factory content `FACTORY_REASONING_PRESETS`, and `ConfigManager.readReasoningPresets()` / `ensureReasoningPresets()`. For a practical reason — knowledge like "Zhipu 5.3 only accepts `low/high/max`, sending `disabled` errors out" should not be re-written by every client. The table is a **shared asset across CLI, desktop, …**.
+- **Using the table (behavior) lives in the client**: read the table → restrict the selectable levels → **write** the chosen level's patch into `AgentDefinition.modelParams`. At runtime the SDK only merges once — **no lookup, no derivation**.
 
 ```json
+// ~/.ai-zen/reasoning-presets.json — next to config.json, editable and extensible
 {
   "zhipu-5.3": {
     "levels": {
       "low":  { "thinking": { "type": "enabled" }, "reasoning_effort": "low" },
-      "high": { "thinking": { "type": "enabled" }, "reasoning_effort": "high" },
       "max":  { "thinking": { "type": "enabled" }, "reasoning_effort": "max" }
     }
   }
 }
 ```
 
-Factory presets (per vendor docs — **do not change from memory**):
+`Model.reasoningPreset?: string` is a model's reference to one preset; clients use it to decide which levels to offer. **The SDK never uses it to build request parameters** — it only guarantees the field is read, written and factory-synced along with the model config (factory models must carry it, otherwise `syncManagedModels` would wipe it during whole-entry replacement).
 
-| Preset | Adjustable levels | Can thinking be disabled? | Source |
-|------|---------|-------------|------|
-| `openai` | `minimal` / `low` / `medium` / `high` / `off` | Yes: `reasoning_effort = "none"` | `Shared.ReasoningEffort` in `openai-node` |
-| `zhipu-5.3` | `low` / `high` / `max` (**anything else errors**) | **No**: the table has no `off` key | `docs.bigmodel.cn` thinking guide |
-| `deepseek` | `low` / `high` / `max` / `off` | Yes: `thinking.type = "disabled"` | `api-docs.deepseek.com` thinking mode |
-
-Three structural guarantees, all derived from the **shape of the table** — no if/else branches anywhere:
-
-1. **Adjustable levels** = `Object.keys(levels)` — there can be no option that is offered but rejected by the endpoint;
-2. **Whether thinking can be disabled** = whether the table has an `off` key;
-3. **Which parameter keys belong to reasoning** = the union of keys across the whole table — old values are stripped before merging, so `max` → `off` leaves no stale `reasoning_effort`, and switching a model to another preset never re-feeds the previous preset's parameters.
-
-Public API (all exported from the package entry; `presets` is whatever `readReasoningPresets()` returned):
-
-| Function | Purpose |
-|------|------|
-| `presetOf(model, presets)` | the model's preset (unknown name → `undefined`; never guessed) |
-| `modelLevels(model, presets)` | adjustable levels (declaration order) |
-| `readReasoningEffort(model, presets, params?)` | reverse lookup of the current level (most specific match; partial match → `undefined`) |
-| `applyReasoningEffort(model, presets, level, params?)` | write a level; throws if the preset has no such level |
-| `resolveReasoningEffort(model, presets, definition?)` | effective level (Agent wins; invalid falls back to the model default) |
-| `resolveModelParams(model, presets, definition?)` | apply the Agent override onto model params (used by `createModel`) |
-
-Types: `ReasoningPresets` / `ReasoningPreset` / `ReasoningPatch`.
-
-The table must be **injected into Scope explicitly** (sibling of `config`, not a global singleton):
-
-```ts
-const mgr = new ConfigManager("~/.ai-zen/config.json");
-const { config } = await mgr.bootstrap();
-const reasoningPresets = await mgr.readReasoningPresets();
-const scope = new Scope({ config, agentsDir, reasoningPresets });
-```
-
-The third argument of `createModel(scope, modelId, { reasoningEffort })` is passed by `createAgent` from `definition.reasoningEffort` — so the same model can serve different Agents at different intensities (coding Agent `max`, novel-writing Agent `high`, casual chat Agent `off`) while the model's own `defaultParams` stay untouched.
-
-### Releasing and syncing the preset table
-
-`bootstrap()` calls `ensureReasoningPresets()`. The rule mirrors factory-model syncing and is **per preset**:
-
-- file missing → write the factory seed;
-- a preset marked `custom: true` → owned by the user, left untouched (SDK upgrades won't overwrite it);
-- a preset without that mark → overwritten with the factory version (no write when identical);
-- user-created presets outside the factory set → always kept.
-
-So when a vendor adds a level or you onboard a new endpoint, edit this JSON (or wait for an SDK release to sync it) — no code change needed. If the file is missing or corrupt, `readReasoningPresets()` falls back to the factory seed instead of handing an empty table upwards.
-
-> **Preset names are stable identifiers**: `config.json` references them, so renaming is a breaking change. Name by protocol family (`openai` / `zhipu-5.3` / `deepseek`), not by model, so sibling models share one preset.
+Why split this way: `low` / `high` / `max` / `off` are **product semantics, not protocol facts** (the same word can mean different things across vendors), while the only objective thing the SDK knows is what the request parameters look like — and `defaultParams` already carries that. Hence **configuration is the fact**: the client expands a level at write time, and nobody needs to derive anything afterwards.
 
 ## Context thresholds (`tokenThresholds`)
 
@@ -239,9 +207,9 @@ So when a vendor adds a level or you onboard a new endpoint, edit this JSON (or 
 | Entity | Description | Storage |
 |------|------|------|
 | `Endpoint` | API endpoint (baseUrl + apiKey + optional `capabilities.filesApi`) | `config.json` |
-| `Model` | Model configuration, bound to one Endpoint; `reasoningPreset` references a reasoning preset | `config.json` |
+| `Model` | Model configuration, bound to one Endpoint; `reasoningPreset` is application-level metadata the SDK does not interpret | `config.json` |
 | `ImageModel` | Image-generation model configuration | `config.json` |
-| `AgentDefinition` | an interactive AI persona (prompt, permissions, optional tool signatures, optional effort field `reasoningEffort`); having a `function` makes it a SubAgent; `custom: true` marks it as user-defined (init skips syncing built-in prompts) | `agents/*.json` |
+| `AgentDefinition` | an interactive AI persona (prompt, permissions, optional tool signatures, optional parameter overrides `modelParams`); having a `function` makes it a SubAgent; `custom: true` marks it as user-defined (init skips syncing built-in prompts) | `agents/*.json` |
 | `ToolEnv` | `{ cwd, config }`, injected when constructing built-in tools | in-memory |
 | `SdkCallbackTool` | abstract base class for built-in tools | in-memory |
 

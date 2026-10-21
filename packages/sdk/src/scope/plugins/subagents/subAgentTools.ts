@@ -34,7 +34,8 @@ export function createSubAgentTool(
       let model: string;
       let modelConfig: Record<string, unknown> | undefined;
       if (def.modelId) {
-        const m = createModel(scope, def.modelId);
+        // SubAgent 可声明自己的模型与参数覆盖（与主 Agent 同一套规则：直接合并）
+        const m = createModel(scope, def.modelId, def.modelParams);
         client = m.client;
         model = m.model;
         modelConfig = m.modelConfig;

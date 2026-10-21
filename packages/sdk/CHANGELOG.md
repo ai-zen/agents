@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.0.0-alpha.15] - 2026-10-22
+
+### 🔧 行为变更（不兼容）
+
+- **SDK 不再「消费」思考档位，只保留表本身** —— alpha.14 把「档位 → 请求参数」的整套解析塞进了 SDK 运行时：`applyReasoningEffort` / `modelLevels` / `resolveReasoningEffort` / `resolveModelParams`，还要 `Scope.reasoningPresets` 注入、Agent 上存档位名、运行时查表拼参数。但 `low` / `high` / `max` / `off` 是**产品语义，不是协议事实**，SDK 唯一客观知道的是「请求参数长什么样」——那本来就由 `defaultParams` 承载。现在：
+  - **删除 `shared/reasoning.ts` 的全部 API**（`applyReasoningEffort` / `modelLevels` / `presetOf` / `readReasoningEffort` / `resolveReasoningEffort` / `resolveModelParams`）以及 `Scope.reasoningPresets`；
+  - **保留**思考预设的**定义与出厂内容**（`ReasoningPresets` / `ReasoningPreset` / `ReasoningPatch` 类型、`config/reasoning-presets.ts`、`ConfigManager.readReasoningPresets()` / `ensureReasoningPresets()`）—— 它是 CLI / 桌面端等客户端**共享的资产**（「智谱 5.3 只认 low/high/max」这种知识不该被每个客户端各写一遍），但那只是**数据**，SDK 不拿它生成请求参数。
+- **`AgentDefinition.reasoningEffort` → `AgentDefinition.modelParams?: ModelParams`** —— Agent 级覆盖从「档位名」变成「具体参数」。客户端读到表、拿档位补丁，在**写入配置时**就把它展开存进 `modelParams` 里。于是**配置即事实**：运行期不查表、不推导。
+- **`createModel(scope, modelId, overrides?: ModelParams)`** —— 第三参从 `Pick<AgentDefinition, "reasoningEffort">` 变成裸的参数对象，内部只有一行：
+  ```ts
+  modelConfig = { ...model.defaultParams, ...overrides };
+  ```
+  浅合并（嵌套对象整体替换），没有覆盖时原样返回 `defaultParams`。SDK 从此不解释任何键名，也不知道 `thinking` / `reasoning_effort` 是什么。SubAgent 指定独立 `modelId` 时同样应用自己的 `modelParams`。
+- **`Model.reasoningPreset` 保留**，语义改为「引用策略表的键」，供客户端判断该模型能选哪几档；SDK 只保证它能随模型配置一起读写与出厂同步，不消费。
+
+### 🐛 修复
+
+- **迁移 `Model.reasoning` 旧字段（alpha.13 遗留）** —— 未标 `custom` 的模型会被出厂定义整块覆盖，但**标了 `custom: true` 的会原地保留**，于是留下一个无人认识的 `reasoning`，同时因为缺 `reasoningPreset` 而被客户端判定为「不可调档」。`ConfigManager.read()` 现在会删掉该旧字段，并按同 id 的出厂模型补回 `reasoningPreset`；id 不在出厂清单的（真·自建模型）只删不补。只处理「旧字段存在」这一种情况，用户后续主动删掉 `reasoningPreset` 不会被反复补回来。
+
+### ✅ 测试
+
+- `src/runtime/createModel.test.ts` 新增 6 例锁住合并语义：无覆盖原样返回、空覆盖等同无覆盖、同名键覆盖而其它键保留、模型无 `defaultParams` 时覆盖即全部、**浅合并不做深合并**（换档位不残留旧子键）、两个 Agent 各配一套互不影响。
+- `src/config/migrate.test.ts` 新增 6 例（19 例合计）。
+- 删除 `src/shared/reasoning.test.ts`（26 例，运行时解析已移除）；`src/config/reasoning-presets.test.ts`（11 例）保留 —— 表还在 SDK。
+- 全量 **57 文件 / 600 例通过**（6 skipped）。
+
 ## [1.0.0-alpha.14] - 2026-10-22
 
 ### 🔧 行为变更（不兼容）

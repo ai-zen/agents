@@ -1,19 +1,35 @@
 import OpenAI from "openai";
 import type { Scope } from "../scope/Scope.js";
-import type { AgentDefinition } from "../types/index.js";
-import { resolveModelParams } from "../shared/reasoning.js";
+import type { ModelParams } from "../types/index.js";
 
 /**
  * Agent 模型装配结果：openai SDK client + 模型名 + 模型参数。
  * Agent 构造时直接消费此结构。
  */
 export interface AgentModel {
-  /** openai 官方 SDK 客户端 */
+  /** openai SDK 客户端 */
   client: OpenAI;
   /** 发送给 API 的模型名 */
   model: string;
-  /** 模型参数（defaultParams），透传给 API（可含厂商特有字段，如 DeepSeek thinking） */
-  modelConfig?: Record<string, unknown>;
+  /** 模型参数，透传给 API（可含厂商特有字段，如 DeepSeek thinking） */
+  modelConfig?: ModelParams;
+}
+
+/**
+ * 参数覆盖 —— 浅合并，一行。
+ *
+ * 这是 SDK 对「模型参数」的唯一处理逻辑：不解释键名、不做档位推导、不知道厂商差异。
+ * 需要多层次语义（如「思考档位」）的应用，应该在**写配置时**就把档位展开成具体参数，
+ * 存进 `Model.defaultParams` / `AgentDefinition.modelParams`，运行期不再查表。
+ *
+ * 没有覆盖时返回原对象（保持 `undefined` 语义，避免凭空塞一个空对象）。
+ */
+function mergeParams(
+  base: ModelParams | undefined,
+  overrides: ModelParams | undefined,
+): ModelParams | undefined {
+  if (!overrides || Object.keys(overrides).length === 0) return base;
+  return { ...base, ...overrides };
 }
 
 /**
@@ -22,15 +38,13 @@ export interface AgentModel {
  * 端点（baseUrl / apiKey）来自 config.endpoints，发送给 API 的模型名 = modelName || id。
  * 任何 OpenAI 兼容端点（OpenAI / 智谱 BigModel / DeepSeek 等）均可通过 baseURL 接入。
  *
- * `overrides.reasoningEffort` 是 **Agent 级覆盖**（`AgentDefinition.reasoningEffort`）：
- * 同一个模型可以给不同 Agent 配不同思考强度，而模型自身的 `defaultParams` 不变。
- * 档位如何翻译成请求参数，由 `scope.reasoningPresets` 里该模型引用的策略表决定
- * （见 `shared/reasoning.ts`）。
+ * `overrides` 是 **Agent 级参数覆盖**（`AgentDefinition.modelParams`）：
+ * 同一个模型可以给不同 Agent 配不同参数，而模型自身的 `defaultParams` 保持不变。
  */
 export function createModel(
   scope: Scope,
   modelId: string,
-  overrides?: Pick<AgentDefinition, "reasoningEffort">,
+  overrides?: ModelParams,
 ): AgentModel {
   const config = scope.config;
   const modelConfig = config.models.find((m) => m.id === modelId);
@@ -57,7 +71,6 @@ export function createModel(
   return {
     client,
     model: apiModelName,
-    // 档位覆盖在这里生效：未声明 reasoningEffort 时原样返回模型 defaultParams
-    modelConfig: resolveModelParams(modelConfig, scope.reasoningPresets, overrides),
+    modelConfig: mergeParams(modelConfig.defaultParams, overrides),
   };
 }

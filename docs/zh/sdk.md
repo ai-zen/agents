@@ -147,78 +147,46 @@ abstract class SdkCallbackTool extends Tool {
 }
 ```
 
-## 思考预设（reasoning presets）
+## 模型参数覆盖（modelParams）
 
-档位**不是**全局统一枚举：各端点接受的值域不同，同一家不同型号也不同（智谱 GLM-5.3 系对 `medium` 直接报错、对 `thinking.type = "disabled"` 也报错）。所以协议差异**全部写进一张策略表**，模型只记「用哪套策略」，Agent 只记「选哪一档」。
+SDK 对「模型参数」只有一条逻辑：**浅合并，不解释**。
 
-| 层 | 位置 | 作用 |
+```ts
+// 生效参数 = 模型默认参数 + Agent 级覆盖
+{ ...model.defaultParams, ...definition.modelParams }
+```
+
+| 层 | 字段 | 作用 |
 |----|------|------|
-| 策略表 | `~/.ai-zen/reasoning-presets.json` | 档位名 → 请求参数补丁（厂商协议知识） |
-| 模型 | `Model.reasoningPreset?: string` | 引用策略名；缺省 = 不可调档 |
-| Agent | `AgentDefinition.reasoningEffort?: string` | 该 Agent 的档位，必须是策略表里的键 |
+| 模型 | `Model.defaultParams?: ModelParams` | 模型默认请求参数（可含厂商特有字段，如 `thinking`） |
+| Agent | `AgentDefinition.modelParams?: ModelParams` | 该 Agent 的覆盖，浅合并进模型参数 |
+
+SDK **不解释任何键名**：既不知道 `thinking` / `reasoning_effort`，也不知道什么叫「思考档位」。合并是浅层的（嵌套对象整体替换），所以换档位时不会残留旧子键。
+
+`createModel(scope, modelId, overrides?)` 的第三参就是这份覆盖，由 `createAgent` 从 `definition.modelParams` 传入；SubAgent 指定独立 `modelId` 时同样应用自己的 `modelParams`。于是同一个模型可以给不同 Agent 配不同参数（编程 Agent `reasoning_effort: "max"`、闲聊 Agent `{ thinking: { type: "disabled" } }`），而模型自身的 `defaultParams` 不动。
+
+### 那「思考档位」归谁
+
+分两半，边界是「数据 vs 行为」：
+
+- **表（数据）在 SDK**：`ReasoningPresets` 类型、出厂内容 `FACTORY_REASONING_PRESETS`、`ConfigManager.readReasoningPresets()` / `ensureReasoningPresets()`。理由很实际——「智谱 5.3 只认 `low/high/max`、传 `disabled` 会报错」这种知识不该被 CLI、桌面端各写一遍。表是**跨客户端共享的资产**。
+- **用表（行为）在客户端**：读表 → 限制可选档位 → 把选中档位的补丁**写进** `AgentDefinition.modelParams`。运行期 SDK 只做一次浅合并，**不查表、不推导**。
 
 ```json
+// ~/.ai-zen/reasoning-presets.json —— 与 config.json 同级，用户可改可加
 {
   "zhipu-5.3": {
     "levels": {
       "low":  { "thinking": { "type": "enabled" }, "reasoning_effort": "low" },
-      "high": { "thinking": { "type": "enabled" }, "reasoning_effort": "high" },
       "max":  { "thinking": { "type": "enabled" }, "reasoning_effort": "max" }
     }
   }
 }
 ```
 
-出厂策略（依据官方文档，**不要凭印象改**）：
+`Model.reasoningPreset?: string` 是模型对某张策略的引用，客户端据此判断「这个模型能选哪几档」。**SDK 不拿它生成请求参数**，只保证它随模型配置一起读写与出厂同步（出厂模型需要带上它，否则 `syncManagedModels` 整块覆盖时会抹掉）。
 
-| 策略 | 可调档位 | 能否关闭思考 | 依据 |
-|------|---------|-------------|------|
-| `openai` | `minimal` / `low` / `medium` / `high` / `off` | 能：`reasoning_effort = "none"` | `openai-node` 的 `Shared.ReasoningEffort` |
-| `zhipu-5.3` | `low` / `high` / `max`（**其余输入报错**） | **不能**：表里没有 `off` 键 | `docs.bigmodel.cn` 思考能力 |
-| `deepseek` | `low` / `high` / `max` / `off` | 能：`thinking.type = "disabled"` | `api-docs.deepseek.com` 思考模式 |
-
-三个结构性保证，全部来自「表的形状」，代码里没有任何 if/else 分支：
-
-1. **可选档位** = `Object.keys(levels)` —— 不存在「菜单里有、发出去报错」的档位；
-2. **能否关闭思考** = 表里有没有 `off` 键；
-3. **哪些参数键属于思考** = 整张表里出现过的键的并集 —— 写入前先按此剔除旧值，于是 `max` → `off` 不会残留 `reasoning_effort`，模型换策略也不会反刍上一套参数。
-
-公共 API（均从包入口导出，`presets` 就是 `readReasoningPresets()` 的结果）：
-
-| 函数 | 作用 |
-|------|------|
-| `presetOf(model, presets)` | 取模型关联的策略（名字不存在 → `undefined`，不猜不兜底） |
-| `modelLevels(model, presets)` | 可选档位（顺序 = 表声明顺序） |
-| `readReasoningEffort(model, presets, params?)` | 反查当前档位（取最具体的匹配；不完整匹配 → `undefined`） |
-| `applyReasoningEffort(model, presets, level, params?)` | 写入档位，策略里没有该档位直接抛错 |
-| `resolveReasoningEffort(model, presets, definition?)` | 实际生效档位（Agent 优先，非法则回退模型默认） |
-| `resolveModelParams(model, presets, definition?)` | 应用 Agent 覆盖（`createModel` 用） |
-
-类型：`ReasoningPresets` / `ReasoningPreset` / `ReasoningPatch`。
-
-策略表要**显式注入 Scope**（与 `config` 平级，不做全局单例）：
-
-```ts
-const mgr = new ConfigManager("~/.ai-zen/config.json");
-const { config } = await mgr.bootstrap();
-const reasoningPresets = await mgr.readReasoningPresets();
-const scope = new Scope({ config, agentsDir, reasoningPresets });
-```
-
-`createModel(scope, modelId, { reasoningEffort })` 的第三参由 `createAgent` 从 `definition.reasoningEffort` 传入 —— 同一个模型可以给不同 Agent 配不同强度（编程 Agent `max`、小说 Agent `high`、闲聊 Agent `off`），而模型自身的 `defaultParams` 保持不变。
-
-### 策略表的释放与同步
-
-`bootstrap()` 会调用 `ensureReasoningPresets()`，规则与出厂模型同步同构、**粒度到单个策略**：
-
-- 文件不存在 → 写入出厂种子；
-- 某策略标了 `custom: true` → 用户自有，原样保留（SDK 升级不覆盖）；
-- 某策略未标 → 用出厂版覆盖该策略（内容相同则不写盘）；
-- 用户自建的非出厂策略 → 始终保留。
-
-于是厂商新增档位或新接入端点时，改这份 JSON 即可（或等 SDK 发版自动同步），不必动代码。文件缺失或损坏时 `readReasoningPresets()` 回落到出厂种子，不会让上层拿到空表。
-
-> **策略名是稳定标识**：`config.json` 里写着它，改名等同破坏性变更。命名按协议族（`openai` / `zhipu-5.3` / `deepseek`）而不是型号，同族多型号共用一个。
+为什么这么切：`low` / `high` / `max` / `off` 是**产品语义，不是协议事实**（同一个词在不同厂商含义都可能不同），而 SDK 唯一客观知道的是「请求参数长什么样」——那个东西 `defaultParams` 本来就承载了。于是**配置即事实**：客户端在写配置那一刻就把档位展开，之后谁都不需要再推导。
 
 ## 上下文阈值（tokenThresholds）
 
@@ -239,9 +207,9 @@ const scope = new Scope({ config, agentsDir, reasoningPresets });
 | 实体 | 说明 | 存储 |
 |------|------|------|
 | `Endpoint` | API 端点（baseUrl + apiKey + 可选 `capabilities.filesApi`） | `config.json` |
-| `Model` | 模型配置，绑定一个 Endpoint，可用 `reasoningPreset` 引用思考策略 | `config.json` |
+| `Model` | 模型配置，绑定一个 Endpoint；`reasoningPreset` 为应用层元数据（SDK 不解释） | `config.json` |
 | `ImageModel` | 图片生成模型配置 | `config.json` |
-| `AgentDefinition` | 可对话 AI 人格（提示词、权限、可选工具签名、可选思考档位 `reasoningEffort`）；有 `function` 即视为 SubAgent；`custom: true` 表示用户自定义（初始化不同步内置提示词） | `agents/*.json` |
+| `AgentDefinition` | 可对话 AI 人格（提示词、权限、可选工具签名、可选参数覆盖 `modelParams`）；有 `function` 即视为 SubAgent；`custom: true` 表示用户自定义（初始化不同步内置提示词） | `agents/*.json` |
 | `ToolEnv` | `{ cwd, config }`，内置工具构造时注入 | 内存态 |
 | `SdkCallbackTool` | 内置工具抽象基类 | 内存态 |
 

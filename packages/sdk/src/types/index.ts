@@ -36,17 +36,26 @@ export interface EndpointCapabilities {
   filesApi?: boolean;
 }
 
+// ---- 模型参数覆盖 ----
+
+/**
+ * 模型请求参数（`defaultParams` / `modelParams` 的形状）。
+ *
+ * 含厂商特有字段（`thinking` / `reasoning_effort` 等），SDK **原样透传**、不解释。
+ */
+export type ModelParams = Record<string, unknown>;
+
 // ---- 思考预设（reasoning presets）----
 
 /**
- * 单个档位的请求参数补丁 —— 原样合并进模型请求参数。
+ * 单个档位的请求参数补丁。
  *
- * 各家协议差异全部关在补丁里，SDK 不解释、不硬编码任何键名：
+ * 各家协议差异全部关在补丁里，不硬编码任何键名：
  *   OpenAI   → `{ reasoning_effort: "high" }`（没有 `thinking` 参数）
  *   DeepSeek → `{ thinking: { type: "enabled" }, reasoning_effort: "high" }`
  *   关闭     → `{ reasoning_effort: "none" }` 或 `{ thinking: { type: "disabled" } }`
  */
-export type ReasoningPatch = Record<string, unknown>;
+export type ReasoningPatch = ModelParams;
 
 /**
  * 一个具名思考策略：档位名 → 参数补丁。
@@ -65,8 +74,12 @@ export interface ReasoningPreset {
  * 思考策略表 —— `<basePath>/reasoning-presets.json` 的结构，出厂内容见
  * `config/reasoning-presets.ts`。
  *
- * 键是策略名，由 `Model.reasoningPreset` 引用。**策略名一旦发布即视为稳定标识**
- * （用户配置文件里写着它），改名等同破坏性变更。
+ * 这份表是 **CLI / 桌面端等客户端共享的资产**：它定义「有哪些档位、每档写什么参数」，
+ * 由 `Model.reasoningPreset` 引用。客户端据此限制可选强度、把选中的档位展开成参数
+ * 写进 `AgentDefinition.modelParams`。
+ *
+ * **SDK 自身不消费它生成请求参数**：参数合并只是 `{...defaultParams, ...modelParams}`
+ * 一次浅合并（见 `createModel`）。表在这里只负责「定义 + 出厂默认 + 读写」。
  */
 export type ReasoningPresets = Record<string, ReasoningPreset>;
 
@@ -114,11 +127,11 @@ export interface Model {
   tokenThresholds: TokenThresholds;
   defaultParams?: Record<string, unknown>; // 模型默认参数（temperature 等）
   /**
-   * 思考策略名，引用 `reasoning-presets.json` 里的键。缺省视为不可调档。
+   * 思考策略名，引用 `reasoning-presets.json` 里的键。
    *
-   * 为什么只存名字不存整张表：档位细节属于**厂商协议知识**，跟 SDK 版本一起演进；
-   * 配置只需要记录「这个型号套用哪套协议」。名字指向同目录下的策略表文件，
-   * 用户看得见、改得动，不必等 SDK 发版。
+   * 它是**跨客户端共享的元数据**：CLI / 桌面端据此判断这个模型能选哪几档。
+   * SDK 不拿它去生成请求参数（那条路只有 `defaultParams` + `modelParams` 浅合并），
+   * 只保证该字段能随模型配置一起读写与出厂同步。
    */
   reasoningPreset?: string;
   /** 是否支持图片输入（视觉模型）。看图工具（view_image）仅对视觉模型启用；generate_image 是否返回图片内容块也据此判断 */
@@ -142,15 +155,16 @@ export interface AgentDefinition {
   messages: AgentNS.Message[]; // 预设对话（至少一条 system）
   modelId?: string; // 指定模型，不填用默认
   /**
-   * 该 Agent 的思考档位（可选），必须是该模型策略表 `levels` 里的键。
+   * Agent 级模型参数覆盖，浅合并进模型的 `defaultParams`。
    *
-   * 有了它，同一个模型可以给不同 Agent 配不同强度（编程 Agent `max`、闲聊 Agent `low`），
-   * 而模型本身的默认参数保持不变。未声明时沿用模型默认。
+   * SDK 只做 `{ ...model.defaultParams, ...modelParams }`，不解释任何键名、不做
+   * 档位推导、不知道厂商差异。於是「配置即事实」：应用（如 CLI）在**写入配置时**就把
+   * 档位展开成具体参数存在这里，运行时不再查表。
    *
-   * 类型是 `string` 而非联合类型：档位名由策略表定义，各家本就不同名，
-   * 用一个全局枚举假装统一只会把厂商差异藏进字段里。合法性在运行时按表校验。
+   * 于是同一个模型可以给不同 Agent 配不同强度（编程 Agent `reasoning_effort: "max"`、
+   * 闲聊 Agent `{ thinking: { type: "disabled" } }`），而模型自身的 `defaultParams` 不动。
    */
-  reasoningEffort?: string;
+  modelParams?: ModelParams;
   permissions?: AgentPermissions;
 
   // 以下有则视为 SubAgent

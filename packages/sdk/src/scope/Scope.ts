@@ -1,5 +1,5 @@
 import type { Tool } from "@ai-zen/agents-core";
-import type { AppConfig, AgentDefinition, ReasoningPresets, ToolEnv } from "../types/index.js";
+import type { AppConfig, AgentDefinition, ToolEnv } from "../types/index.js";
 import { PermissionEvaluator } from "./PermissionEvaluator.js";
 import type { ScopePlugin } from "./ScopePlugin.js";
 
@@ -69,28 +69,14 @@ export class Scope {
   /** Agent 定义目录（createAgent 用） */
   readonly agentsDir: string;
 
-  /**
-   * 思考策略表（`<basePath>/reasoning-presets.json`）。
-   *
-   * 与 `config` 平级、同样由调用方加载后注入：`createModel` 靠它把 Agent 的
-   * `reasoningEffort` 翻译成具体请求参数。不传则视为「无任何可选档位」。
-   */
-  readonly reasoningPresets: ReasoningPresets;
-
   /** 已注册的插件 */
   private _plugins: ScopePlugin[] = [];
 
   /** 是否已 init（init 之后禁止再 use） */
   private _initialized = false;
 
-  constructor(options: {
-    config: AppConfig;
-    agentsDir: string;
-    cwd?: string;
-    reasoningPresets?: ReasoningPresets;
-  }) {
+  constructor(options: { config: AppConfig; agentsDir: string; cwd?: string }) {
     this.config = options.config;
-    this.reasoningPresets = options.reasoningPresets ?? {};
     this.cwd = options.cwd ?? process.cwd();
     this.env = { cwd: this.cwd, config: this.config };
     this.agentsDir = options.agentsDir;

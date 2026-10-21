@@ -8,6 +8,12 @@
  *    `handoff`（交接阈值，软线）与 `guard`（强行阻断阈值，硬线）。
  *    `maxContextChars` 是 token 口径之前的历史遗留，按 `floor(chars / 4)` 折成 tokens
  *    （与旧代码的回退算法一致）后并入 `handoff`。
+ * 2. **`Model.reasoning` → `Model.reasoningPreset`**
+ *    alpha.13 曾用 `reasoning: { efforts, disable? }` 在模型上声明思考能力，后来改成
+ *    「引用策略表里的名字」。未标 `custom` 的模型会被出厂定义整块覆盖，但**标了 `custom`
+ *    的模型会原地保留**，于是留下一个无人认识的 `reasoning` 死字段，同时因为缺
+ *    `reasoningPreset` 而默默失去调档能力。这里删掉旧字段，并按**同 id 的出厂模型**
+ *    补上正确的策略名（同一 id 即同一厂商型号，协议能力不会因用户改过参数而变）。
  *
  * 迁移时机：`ConfigManager.read()` 读出即迁（内存里永远是当前形状）；
  * 落盘由 `ensureDefaultConfig()` 负责 —— 它比较迁移结果与磁盘原文，不同才写回，
@@ -15,6 +21,7 @@
  */
 
 import type { AppConfig, Model, TokenThresholds } from "../types/index.js";
+import { DEFAULT_APP_CONFIG } from "./constants.js";
 
 /** 当前字段名 */
 export const TOKEN_THRESHOLDS_KEY = "tokenThresholds";
@@ -22,6 +29,7 @@ export const TOKEN_THRESHOLDS_KEY = "tokenThresholds";
 /** 已淘汰的旧字段名（仅迁移代码认识它们） */
 export const LEGACY_TOKEN_FIELD = "maxContextTokens";
 export const LEGACY_CHARS_FIELD = "maxContextChars";
+export const LEGACY_REASONING_FIELD = "reasoning";
 
 /**
  * 旧数据缺失阈值时的交接阈值兜底。
@@ -36,6 +44,7 @@ export const DEFAULT_HANDOFF_THRESHOLD = 128_000;
 type LegacyModel = Model & {
   [LEGACY_TOKEN_FIELD]?: unknown;
   [LEGACY_CHARS_FIELD]?: unknown;
+  [LEGACY_REASONING_FIELD]?: unknown;
   /** 中间版本曾用过的单值字段（未发布，仅防御性兼容） */
   tokenThreshold?: unknown;
 };
@@ -94,15 +103,38 @@ export function migrateModelThresholds(model: Model): { model: Model; changed: b
 }
 
 /**
+ * 迁移单个模型的思考能力声明：`reasoning` → `reasoningPreset`。
+ *
+ * 只处理「旧字段存在」这一种情况：字段一旦落盘消失，用户后续主动删掉
+ * `reasoningPreset`（表示「这个模型我不想调档」）就不会被反复补回来。
+ */
+export function migrateModelReasoning(model: Model): { model: Model; changed: boolean } {
+  const source = model as unknown as Record<string, unknown>;
+  if (!(LEGACY_REASONING_FIELD in source)) return { model, changed: false };
+
+  const next: Record<string, unknown> = { ...source };
+  delete next[LEGACY_REASONING_FIELD];
+
+  // 同 id 的出厂模型能告诉我们「这个型号属于哪套协议」
+  if (next.reasoningPreset === undefined) {
+    const factory = (DEFAULT_APP_CONFIG.models ?? []).find((item) => item.id === model.id);
+    if (factory?.reasoningPreset) next.reasoningPreset = factory.reasoningPreset;
+  }
+
+  return { model: next as unknown as Model, changed: true };
+}
+
+/**
  * 迁移整个配置。只处理对话模型（`models`）——
- * 图片模型（`imageModels`）从来没有上下文阈值概念。
+ * 图片模型（`imageModels`）既没有上下文阈值、也没有思考概念。
  */
 export function migrateConfig(config: AppConfig): { config: AppConfig; changed: boolean } {
   let changed = false;
   const models = (config.models ?? []).map((model) => {
-    const result = migrateModelThresholds(model);
-    if (result.changed) changed = true;
-    return result.model;
+    const thresholds = migrateModelThresholds(model);
+    const reasoning = migrateModelReasoning(thresholds.model);
+    if (thresholds.changed || reasoning.changed) changed = true;
+    return reasoning.model;
   });
   if (!changed) return { config, changed };
   return { config: { ...config, models }, changed };
