@@ -6,6 +6,7 @@ import {
   DEFAULT_ABORTED_TOOL_ROUND_REASON,
   type AbortedToolRoundStrategy,
 } from "./AbortedToolRounds.js";
+import { type AbortedMessageStrategy } from "./AbortedMessages.js";
 
 export interface UnknownToolContext {
   toolCall: AgentNS.ToolCall;
@@ -16,11 +17,12 @@ export interface UnknownToolContext {
  * AgentContext — 所有 Agent 的基类，持有核心配置。
  *
  * 构造签名：`{ client, model, modelConfig?, messages?, tools?, allowJsonParseError?,
- *          abortedToolRoundStrategy?, abortedToolRoundReason? }`
+ *          abortedToolRoundStrategy?, abortedToolRoundReason?, abortedMessageStrategy? }`
  * - `client`：openai 官方 SDK 实例（提供与 LLM API 的连接）
  * - `model`：发送给 API 的模型名
  * - `modelConfig`：模型参数（temperature 等），透传给 API；可含厂商特有字段（如 DeepSeek `thinking`）
  * - `abortedToolRoundStrategy`：工具轮次被中断（或结果不完整）时的归一策略（默认 `fill`）
+ * - `abortedMessageStrategy`：被中断的 assistant 消息（内容/思考）是否保留（默认 `drop`）
  *
  * 扩展方式：通过 `Agent.use(plugin)` 注册插件，不再提供 onXxx 构造钩子。
  */
@@ -42,6 +44,14 @@ export class AgentContext {
   abortedToolRoundStrategy: AbortedToolRoundStrategy;
   /** `fill` 策略下，未完成工具结果的填充原因 */
   abortedToolRoundReason: string;
+  /**
+   * 被中断的 assistant 消息（已输出的内容 / 思考）如何处置：
+   * - `drop`：不保留（默认）—— Aborted 消息不进下一轮上下文
+   * - `keep`：保留已输出的部分 —— 恢复为 Completed，模型下一轮能接着往下说
+   *
+   * 只管**不带工具调用**的消息；工具轮次由 `abortedToolRoundStrategy` 决定。
+   */
+  abortedMessageStrategy: AbortedMessageStrategy;
 
   constructor(options: PickRequired<AgentContext, "client" | "model">) {
     if (!options.client) throw new Error("AgentContext must have a client");
@@ -56,6 +66,7 @@ export class AgentContext {
       options.abortedToolRoundStrategy ?? "fill";
     this.abortedToolRoundReason =
       options.abortedToolRoundReason ?? DEFAULT_ABORTED_TOOL_ROUND_REASON;
+    this.abortedMessageStrategy = options.abortedMessageStrategy ?? "drop";
   }
 
   /**

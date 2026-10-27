@@ -64,6 +64,7 @@ const agent = await createAgent(scope, config.defaultAgent ?? "default");
 
 - `SdkAgent extends Agent`（来自 core），额外携带 `scope` 与 `definition`（含权限 `permissions`）。
 - 权限统一从 `definition.permissions` 读取，不单独持有。
+- 第三个参数（可选）用于透传中断行为：`createAgent(scope, agentId, { abortedMessageStrategy: "keep" })` 让**被中断的思考/内容保留**在下一轮上下文中（默认 `drop`）；另有 `abortedToolRoundStrategy` / `abortedToolRoundReason` 控制工具轮次。详见 [`core.md`](core.md) 的「中断的思考与内容」一节。
 
 ## 权限模型
 

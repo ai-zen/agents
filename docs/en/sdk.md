@@ -64,6 +64,7 @@ const agent = await createAgent(scope, config.defaultAgent ?? "default");
 
 - `SdkAgent extends Agent` (from core), additionally carrying `scope` and `definition` (including `permissions`).
 - Permissions are read uniformly from `definition.permissions`, not held separately.
+- The optional third argument passes interrupt behaviour through: `createAgent(scope, agentId, { abortedMessageStrategy: "keep" })` keeps the **partial reasoning/content of an aborted turn** in the next context (default `drop`); `abortedToolRoundStrategy` / `abortedToolRoundReason` control tool rounds. See the "Aborted messages" section in [`core.md`](core.md).
 
 ## Permission model
 

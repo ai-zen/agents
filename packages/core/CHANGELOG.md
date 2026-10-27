@@ -1,5 +1,21 @@
 # Changelog
 
+## [4.5.3] - 2026-10-27
+
+### ✨ Added
+
+- **`abortedMessageStrategy` on `AgentContext` (default `"drop"`)** — controls what happens to an assistant message that `abort()` cut off mid-stream. Previously such messages kept `status: "aborted"`, and `formatHistory()` only lets `undefined | "completed"` through, so everything the model had already produced — `reasoning_content` and `content` alike — was dropped from the next request. The model started over as if it had never spoken, while the user still saw the half-finished sentence on screen.
+  - `"drop"` (default): unchanged behaviour — aborted messages stay out of the history.
+  - `"keep"`: an aborted assistant message that actually produced something (`content`, `reasoning_content`, or a non-empty multimodal content array) is restored to `completed`, so the model can pick up where it left off on the next turn.
+  - Messages carrying `tool_calls` / `function_call` are **not** handled here — they remain with `reconcileAbortedToolRounds()` / `abortedToolRoundStrategy`, which must keep each round all-in or all-out to satisfy the "N tool_calls ⇒ N results" server constraint. Aborted messages that produced nothing at all, and messages already marked `omit`, are left untouched.
+  - Applied inside `run()` right after `reconcileAbortedToolRounds()`, via the new exported helper `reconcileAbortedMessages()` (new module `AbortedMessages.ts`).
+
+### ✅ Tests
+
+- New `AbortedMessages.test.ts` (9 cases): `drop` leaves the status untouched; `keep` restores `completed` and preserves both `content` and `reasoning_content`; reasoning-only messages are kept; empty / whitespace-only messages are still dropped; tool-call messages are skipped; `omit` messages are not revived; multimodal content arrays count as content; idempotency; completed / pending messages untouched.
+- `Agent.test.ts`: 2 end-to-end cases — a stream that emits reasoning + content and then hangs is aborted; with `keep` the partial assistant appears in `formatHistory()`, with `drop` it does not (while the message object still holds the text for the UI to render).
+- Core suite: **150 passed, 17 skipped**.
+
 ## [4.5.2] - 2026-10-22
 
 ### 🐛 Fixed

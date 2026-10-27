@@ -114,6 +114,7 @@ export { createModel } from "./runtime/createModel.js";
 export { SdkAgent } from "./runtime/SdkAgent.js";
 export type { AgentPlugin, SendContext } from "./runtime/SdkAgent.js";
 export { createAgent } from "./runtime/createAgent.js";
+export type { CreateAgentOptions } from "./runtime/createAgent.js";
 export { McpConnectionManager } from "./scope/plugins/mcp/McpConnectionManager.js";
 export type { McpConnectOptions } from "./scope/plugins/mcp/McpConnectionManager.js";
 export { SdkCallbackTool } from "./scope/plugins/builtin/SdkCallbackTool.js";

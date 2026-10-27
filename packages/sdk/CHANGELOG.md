@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.0.0-alpha.20] - 2026-10-27
+
+### ✨ 新增
+
+- **`createAgent(scope, agentId, options?)` 新增第三参，把中断相关策略透传出来** —— 此前 SDK 完全没有暴露 core 的 `abortedToolRoundStrategy` / `abortedToolRoundReason`，调用方只能吃默认值。本轮一并接出三个字段（新增导出类型 `CreateAgentOptions`，`SdkAgent` 构造参数同步支持）：
+  - `abortedToolRoundStrategy?: "drop" | "fill"` —— 工具轮次被中断（或结果不完整）时的归一策略（core 默认 `fill`）；
+  - `abortedToolRoundReason?: string` —— `fill` 策略下未完成工具结果的填充原因；
+  - `abortedMessageStrategy?: "drop" | "keep"` —— **新增能力**：被中断的 assistant 已输出的内容 / 思考是否保留（core 默认 `drop`）。传 `keep` 后，用户中断时那半句话仍会进入下一轮上下文，模型能接着往下说，而不是「失忆重来」；带工具调用的轮次仍由 `abortedToolRoundStrategy` 决定，不受影响。
+
+### 🔧 依赖
+
+- 升级 `@ai-zen/agents-core` 至 `4.5.3`（新增 `abortedMessageStrategy` 与 `reconcileAbortedMessages()`）。
+
+### ✅ 测试
+
+- 全量 **57 文件 / 602 例通过**（6 skipped）。
+
 ## [1.0.0-alpha.19] - 2026-10-27
 
 ### 🐛 修复

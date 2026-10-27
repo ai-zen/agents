@@ -1,6 +1,11 @@
 import type OpenAI from "openai";
 import { Agent } from "@ai-zen/agents-core";
-import type { AgentNS, Tool } from "@ai-zen/agents-core";
+import type {
+  AbortedMessageStrategy,
+  AbortedToolRoundStrategy,
+  AgentNS,
+  Tool,
+} from "@ai-zen/agents-core";
 import type { AgentDefinition } from "../types/index.js";
 import type { Scope } from "../scope/Scope.js";
 
@@ -34,6 +39,12 @@ export class SdkAgent extends Agent {
     messages?: AgentNS.Message[];
     tools?: Tool[];
     allowJsonParseError?: boolean;
+    /** 工具轮次被中断时的归一策略（core 默认 `fill`） */
+    abortedToolRoundStrategy?: AbortedToolRoundStrategy;
+    /** `fill` 策略下未完成工具结果的填充原因 */
+    abortedToolRoundReason?: string;
+    /** 被中断的 assistant（内容/思考）是否保留（core 默认 `drop`） */
+    abortedMessageStrategy?: AbortedMessageStrategy;
   }) {
     super({
       client: params.client,
@@ -42,6 +53,9 @@ export class SdkAgent extends Agent {
       messages: params.messages,
       tools: params.tools,
       allowJsonParseError: params.allowJsonParseError,
+      abortedToolRoundStrategy: params.abortedToolRoundStrategy,
+      abortedToolRoundReason: params.abortedToolRoundReason,
+      abortedMessageStrategy: params.abortedMessageStrategy,
     });
     this.scope = params.scope;
     this.definition = params.definition;

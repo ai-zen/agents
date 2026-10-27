@@ -3,6 +3,22 @@ import { AgentRepository } from "../crud/AgentRepository.js";
 import { SdkAgent } from "./SdkAgent.js";
 import type { Scope } from "../scope/Scope.js";
 import { createModel } from "./createModel.js";
+import type { AbortedMessageStrategy, AbortedToolRoundStrategy } from "@ai-zen/agents-core";
+
+/**
+ * `createAgent` 的可选行为开关（不传则全部沿用 core 默认值）。
+ */
+export interface CreateAgentOptions {
+  /** 工具轮次被中断（或结果不完整）时的归一策略（core 默认 `fill`） */
+  abortedToolRoundStrategy?: AbortedToolRoundStrategy;
+  /** `fill` 策略下，未完成工具结果的填充原因 */
+  abortedToolRoundReason?: string;
+  /**
+   * 被中断的 assistant 消息（已输出的内容 / 思考）如何处置（core 默认 `drop`）。
+   * 传 `keep` 可让模型在下一轮接着半截往下说，而不是忘掉自己说过什么。
+   */
+  abortedMessageStrategy?: AbortedMessageStrategy;
+}
 
 /**
  * 从磁盘创建 Agent。
@@ -17,6 +33,7 @@ import { createModel } from "./createModel.js";
 export async function createAgent(
   scope: Scope,
   agentId: string,
+  options: CreateAgentOptions = {},
 ): Promise<SdkAgent> {
   const definition = await new AgentRepository(scope.agentsDir).read(agentId);
   if (!definition) throw new Error(`Agent "${agentId}" 不存在`);
@@ -51,6 +68,10 @@ export async function createAgent(
     // 快照后，运行时改动只作用于会话副本，模板保持纯净。
     messages: [...(definition.messages ?? [])] as AgentNS.Message[],
     tools,
+    // 中断相关策略：不传则由 core 取默认值（工具轮次 fill / 消息保留 drop）
+    abortedToolRoundStrategy: options.abortedToolRoundStrategy,
+    abortedToolRoundReason: options.abortedToolRoundReason,
+    abortedMessageStrategy: options.abortedMessageStrategy,
   });
 
   return agent;

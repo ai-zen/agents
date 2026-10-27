@@ -890,6 +890,61 @@ describe("Agent", () => {
       expect(true).toBe(true);
     });
 
+    /** 构造「先输出一段思考与内容、随后挂起等 abort」的流 */
+    function partialThenHang() {
+      const create = vi.fn(async (_body: any, options: any) => {
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield chunk({ reasoning_content: "让我想想…" });
+            yield chunk({ content: "答案是 4" });
+            await new Promise<void>((resolve) => {
+              if (options.signal.aborted) resolve();
+              else options.signal.addEventListener("abort", () => resolve(), { once: true });
+            });
+          },
+        };
+      });
+      return { chat: { completions: { create } } } as any;
+    }
+
+    /** 中断已经输出一部分内容的会话 */
+    async function abortAfterPartial(strategy: "drop" | "keep") {
+      const agent = new Agent({
+        client: partialThenHang(),
+        model: "gpt-4",
+        messages: [Message.System("助手")],
+        abortedMessageStrategy: strategy,
+      });
+      agent.append(Message.Assistant());
+
+      const runPromise = agent.run();
+      await new Promise((r) => setTimeout(r, 60));
+      agent.abort();
+      await runPromise;
+      return agent;
+    }
+
+    it("abortedMessageStrategy=keep：中断前的思考与内容保留进历史", async () => {
+      const agent = await abortAfterPartial("keep");
+      const history = agent.formatHistory();
+      const assistant = history.find((m: any) => m.role === AgentNS.Role.Assistant);
+
+      expect(assistant).toBeDefined();
+      expect(assistant!.content).toBe("答案是 4");
+      expect(assistant!.reasoning_content).toBe("让我想想…");
+    });
+
+    it("abortedMessageStrategy=drop（默认）：中断前的思考与内容不保留", async () => {
+      const agent = await abortAfterPartial("drop");
+      const history = agent.formatHistory();
+
+      expect(history.some((m: any) => m.role === AgentNS.Role.Assistant)).toBe(false);
+      // 但消息对象上内容仍在（供 UI 展示），只是不进历史
+      const last = agent.messages.at(-1)!;
+      expect(last.content).toBe("答案是 4");
+      expect(last.status).toBe(AgentNS.MessageStatus.Aborted);
+    });
+
     it("abort 只影响当前轮，已完成轮次保持 Completed", async () => {
       const tool = new CallbackTool({
         function: {

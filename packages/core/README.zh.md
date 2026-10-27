@@ -59,6 +59,7 @@ interface AgentContext {
   allowJsonParseError: boolean;      // 是否允许 JSON 解析错误（默认 true）
   abortedToolRoundStrategy: AbortedToolRoundStrategy; // 工具轮次被中断时的归一策略（默认 "fill"）
   abortedToolRoundReason: string;    // fill 策略下未完成工具结果的填充原因（默认「用户中断了会话」）
+  abortedMessageStrategy: AbortedMessageStrategy; // 被中断的 assistant（内容/思考）是否保留（默认 "drop"）
 }
 ```
 
@@ -426,6 +427,23 @@ agent.abort(); // 中止当前轮所有进行中的内循环任务
 | `abortedToolRoundReason` | `"用户中断了会话"` | `fill` 策略下未完成工具结果的填充内容 |
 
 仅处理含 `Aborted` 消息的轮次；其它状态（如 `allowJsonParseError=false` 时工具报错标记的 `Error`）语义不变。
+
+#### 中断的思考与内容（aborted messages）
+
+工具轮次有 `reconcileAbortedToolRounds()` 兜底，但**纯思考 / 纯文本**消息此前无人过问：它们的 `status` 停在 `Aborted`，而 `formatHistory()` 只放行 `undefined | Completed`，于是模型已经吐出来的 `reasoning_content` 与 `content` 在下一轮请求里**整条消失** —— 用户在屏幕上看到的半句话，模型自己完全不记得。
+
+为此 `Agent.run()` 在 `reconcileAbortedToolRounds()` **之后**调用导出的 `reconcileAbortedMessages()`，由 `abortedMessageStrategy` 决定去留：
+
+| 选项 | 默认 | 说明 |
+|------|------|------|
+| `abortedMessageStrategy` | `"drop"` | `drop` 不保留（既有行为）；`keep` 把**确有输出**的被中断 assistant 恢复为 `Completed`，使已输出的内容/思考进入下一轮上下文 |
+
+`keep` 的边界：
+
+- **带 `tool_calls` / `function_call` 的消息不归它管**，仍由 `abortedToolRoundStrategy` 决定——否则会造出「有调用无结果」的非法历史；
+- **一个字都没输出**（`content` 与 `reasoning_content` 均为空白、多模态数组为空）的被中断消息仍会丢弃，避免空 assistant 消息污染上下文；
+- 已被置 `omit` 的消息不会被复活；
+- `reasoning_content` 会随 `keep` 一并回传，个别厂商对思维链回传有额外约束时，请自行清空该字段。
 
 ## 更多示例
 

@@ -9,6 +9,7 @@ import { ToolCallContext } from "./ToolCallContext.js";
 import { Message } from "./Message.js";
 import { Tool } from "./Tool.js";
 import { reconcileAbortedToolRounds } from "./AbortedToolRounds.js";
+import { reconcileAbortedMessages } from "./AbortedMessages.js";
 
 // ---------------------------------------------------------------------------
 // 插件接口
@@ -352,6 +353,11 @@ export class Agent extends AgentContext {
       this.abortedToolRoundStrategy,
       this.abortedToolRoundReason,
     );
+
+    // 被中断的 assistant（不带工具调用）按策略决定去留：`keep` 时保留已输出的内容/思考，
+    // 让模型下一轮能接着半截往下说（`drop` 即既有行为：Aborted 消息不进历史）。
+    // 必须排在工具轮次归一之后：带 `tool_calls` 的消息已由上一个函数处理，此处只收尾纯内容消息。
+    reconcileAbortedMessages(this.messages, this.abortedMessageStrategy);
 
     // 整组内循环结束：含多轮工具调用，messages 为完整结果（正常/error/abort 均到达此处）
     await this.dispatchHook("onInnerLoopsEnd", sendCtx);

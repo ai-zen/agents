@@ -59,6 +59,7 @@ interface AgentContext {
   allowJsonParseError: boolean;      // Whether JSON parse errors are allowed (default true)
   abortedToolRoundStrategy: AbortedToolRoundStrategy; // how an interrupted tool round is reconciled (default "fill")
   abortedToolRoundReason: string;    // reason filled into unfinished tool results under "fill" (default "用户中断了会话")
+  abortedMessageStrategy: AbortedMessageStrategy; // whether an aborted assistant's partial content/reasoning is kept (default "drop")
 }
 ```
 
@@ -426,6 +427,23 @@ To fix this, `Agent.run()` calls the exported `reconcileAbortedToolRounds()` onc
 | `abortedToolRoundReason` | `"用户中断了会话"` | The reason text filled into unfinished results under `fill` |
 
 Only rounds containing an `Aborted` message are touched; other states (e.g. `Error` from `allowJsonParseError=false`) keep their semantics.
+
+#### Aborted messages (reasoning & content)
+
+Tool rounds have `reconcileAbortedToolRounds()`, but **pure reasoning / plain text** messages had nobody looking after them: their `status` stayed `Aborted`, and `formatHistory()` only lets `undefined | Completed` through — so whatever the model had already streamed (`reasoning_content` and `content`) vanished from the next request entirely. The user saw a half-finished sentence on screen while the model had no memory of saying it.
+
+`Agent.run()` therefore calls the exported `reconcileAbortedMessages()` **after** `reconcileAbortedToolRounds()`, driven by:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `abortedMessageStrategy` | `"drop"` | `drop` keeps the previous behaviour (nothing is kept); `keep` restores an aborted assistant that actually produced output to `Completed`, so the partial content/reasoning enters the next context |
+
+Boundaries of `keep`:
+
+- Messages carrying `tool_calls` / `function_call` are **not** its business — they stay with `abortedToolRoundStrategy`; reviving them here would create illegal "call without result" history;
+- Messages that produced **nothing** (both `content` and `reasoning_content` blank, empty multimodal array) are still dropped, so no empty assistant message pollutes the context;
+- Messages already marked `omit` are never revived;
+- `reasoning_content` is sent back along with `keep` — vendors with extra constraints on replaying chain-of-thought should clear that field first.
 
 ## More Examples
 
