@@ -8,7 +8,6 @@ import type { McpConnectionManager } from "./McpConnectionManager.js";
 import type { Endpoint, McpServerConfig, McpServerManifest, Model, ToolEnv } from "../../../types/index.js";
 
 const EMPTY_HINT = "（当前没有可用的 MCP 服务器，请联系用户添加）";
-const log = getLogger();
 
 /**
  * 创建 load_mcp 工具。
@@ -84,7 +83,7 @@ export function createLoadMcpTool(
 
       // 静默模式：只回吐摘要（清单仍留在管理器内，供 call_mcp_tool 使用）
       if (!includeManifest) {
-        log.info(
+        getLogger().info(
           `[load_mcp] ${serverName}: 已连接（未披露清单：工具 ${manifest.tools.length} 个，资源 ${manifest.resources.length} 个）`,
         );
         return JSON.stringify({
@@ -95,7 +94,7 @@ export function createLoadMcpTool(
         });
       }
 
-      log.info(`[load_mcp] ${serverName}:\n${JSON.stringify(manifest, null, 2)}`);
+      getLogger().info(`[load_mcp] ${serverName}:\n${JSON.stringify(manifest, null, 2)}`);
       return JSON.stringify({ tools: manifest.tools, resources: manifest.resources });
     },
   });

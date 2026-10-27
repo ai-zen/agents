@@ -2,8 +2,6 @@ import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { getLogger } from "../../../shared/logger.js";
 
-const log = getLogger();
-
 // ---- 类型 ----
 
 export interface Frontmatter {
@@ -119,7 +117,7 @@ async function readSkillFromPath(skillId: string, skillMdPath: string, silent?: 
     if (!silent) {
       const errors = validateSkill(skillId, fm);
       for (const err of errors) {
-        log.warn(`[skills] ${err.skillId}: ${err.field} — ${err.message}`);
+        getLogger().warn(`[skills] ${err.skillId}: ${err.field} — ${err.message}`);
       }
     }
 

@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.0.0-alpha.19] - 2026-10-27
+
+### 🐛 修复
+
+- **日志不再绕过 `getLogger()`：`[load_mcp]` 等日志会直接打到宿主终端** —— 4 个模块此前在**模块顶层**执行 `const log = getLogger()`，而 `getLogger()` 当时返回的是 `{ info: console.log, ... }`。模块求值那一刻，`console.log` 的**函数引用**就被冻进了常量；此后宿主调用 `setLogger()` 换掉的是内部 `currentLogger` 变量，**改不动已经抓走的引用**。后果：宿主怎么接管日志都没用 —— CLI 的 Ink TUI 里加载 MCP 时，`load_mcp` 会把整份 tools / resources 清单直接砸在渲染区外面，把界面撕成乱码。
+
+  现在 4 处全部改为**运行时取 logger**（`getLogger().info(...)` 等），`setLogger()` 立即生效：
+
+  - `scope/plugins/mcp/mcpTools.ts` —— `[load_mcp]` 两条 info（摘要 + 完整清单）；
+  - `scope/plugins/skills/discover.ts` —— `[skills]` 一条 warn；
+  - `agent-plugins/AutoMigratePlugin.ts` —— `[autoMigrate]` 一条 error；
+  - `scope/plugins/skills/skillTools.ts` —— 顶层快照**从未被调用**（死代码），连同 `getLogger` import 一并删除。
+
+  至此 SDK 内 10 处日志调用全部经由 `getLogger()` 这一个出口，宿主 `setLogger()` 换什么就走什么，不再存在 console 旁路。
+
+### ✅ 测试
+
+- 全量 **57 文件 / 602 例通过**（6 skipped）。
+- 端到端对照验证：同一段「先求值模块 → 再 `setLogger` → 调用 `load_mcp`」的代码，旧版日志直写 stdout、日志文件为空；新版 stdout 干净、日志完整落盘。
+
 ## [1.0.0-alpha.18] - 2026-10-22
 
 ### 🔧 行为变更（不兼容）

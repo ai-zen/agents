@@ -3,8 +3,6 @@ import type { HandoffMode, HandoffService } from "../runtime/HandoffService.js";
 import { getLogger } from "../shared/logger.js";
 import { SdkAgent } from "../runtime/SdkAgent.js";
 
-const log = getLogger();
-
 /** 触发迁移时的用量信息（供执行者选择、确认文案使用） */
 export interface AutoMigrateTriggerInfo {
   /** 当前 prompt token 用量 */
@@ -81,7 +79,7 @@ export class AutoMigratePlugin implements AgentPlugin {
 
       await service.migrate({ agent, promptTokens, handoffTokens, mode: mode ?? undefined });
     } catch (err: any) {
-      log.error(`[autoMigrate] 迁移失败: ${err?.message ?? err}`);
+      getLogger().error(`[autoMigrate] 迁移失败: ${err?.message ?? err}`);
     }
   }
 }

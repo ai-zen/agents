@@ -2,11 +2,8 @@ import { CallbackTool, Agent, AgentToolLazy, Message, type ToolCallContext } fro
 import type { SkillInfo } from "./discover.js";
 import { createDisclosureParam } from "../../disclosure.js";
 import { readSkill } from "./discover.js";
-import { getLogger } from "../../../shared/logger.js";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
-
-const log = getLogger();
 
 const EMPTY_HINT = "（当前没有可用的 Skill，请联系用户添加）";
 
