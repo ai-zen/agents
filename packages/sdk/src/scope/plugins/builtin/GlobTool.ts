@@ -8,7 +8,7 @@ export class GlobTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "glob",
     description:
-      "使用 glob 模式递归扫描和查找文件。这是进行文件系统搜索的首选工具，功能远优于简单的 'ls' 列表命令。当你需要查找特定类型的文件、遍历目录树或需要排除特定文件时，请优先使用此函数。",
+      "Recursively scan for and find files using a glob pattern. This is the preferred tool for file system searches, far better than a plain 'ls' listing. Prefer this tool when you need to find files of a specific type, walk a directory tree, or exclude specific files.",
     parameters: {
       type: "object",
       properties: {
@@ -77,9 +77,9 @@ export class GlobTool extends SdkCallbackTool {
         return JSON.stringify({
           outputTooLarge: true,
           warning:
-            `输出过大：匹配结果共 ${json.length} 字符，超过上限 ${limit} 字符。` +
-            `完整结果已落盘（result.json），可用 read 分批读取；` +
-            `也可用更精确的 pattern 或 exclude 缩小范围后重新查找。`,
+            `Output too large: the matches total ${json.length} characters, exceeding the limit of ${limit} characters. ` +
+            `The full result has been written to disk (result.json) and can be read in chunks with read; ` +
+            `alternatively, narrow the scope with a more precise pattern or exclude and search again.`,
           files: ctx.files,
           chars: json.length,
           ...preview,

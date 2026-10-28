@@ -20,27 +20,27 @@ export class GenerateImageTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "generate_image",
     description:
-      "根据文字描述生成图片，返回图片 URL 列表（JSON）。如需查看图片内容，请用 view_image 工具（传入图片 URL）；如需保存到本地，用 download_file 下载。",
+      "Generate an image from a text description and return a list of image URLs (JSON). To inspect the image content, use the view_image tool (pass the image URL); to save it locally, use download_file.",
     parameters: {
       type: "object",
       properties: {
         prompt: {
           type: "string",
-          description: "所需图像的文本描述，应详细描述画面内容、风格、构图等",
+          description: "Text description of the desired image; describe the subject, style, composition and other details",
         },
         model: {
           type: "string",
           description:
-            "图片模型 ID，不指定则使用配置中的默认图片模型；若指定的模型不存在，本工具会返回当前可用的模型列表。",
+            "Image model ID. Defaults to the configured default image model; if the given model does not exist, this tool returns the list of currently available models.",
         },
         size: {
           type: "string",
           description:
-            '图片尺寸。不指定则使用模型的默认尺寸。cogview系列: 1024x1024, 768x1344, 864x1152, 1344x768, 1152x864, 1440x720, 720x1440。glm-image: 1280x1280, 1568x1056, 1056x1568, 1472x1088, 1088x1472, 1728x960, 960x1728。',
+            'Image size. Defaults to the model default size. cogview series: 1024x1024, 768x1344, 864x1152, 1344x768, 1152x864, 1440x720, 720x1440. glm-image: 1280x1280, 1568x1056, 1056x1568, 1472x1088, 1088x1472, 1728x960, 960x1728.',
         },
         quality: {
           type: "string",
-          description: "图像质量。hd: 精细(约20秒), standard: 快速(约5-10秒)",
+          description: "Image quality. hd: fine (about 20 seconds), standard: fast (about 5-10 seconds)",
           enum: ["hd", "standard"],
         },
       },
@@ -66,7 +66,7 @@ export class GenerateImageTool extends SdkCallbackTool {
     try {
       const prompt = input.prompt;
       if (!prompt || !prompt.trim()) {
-        return JSON.stringify({ success: false, error: "prompt 不能为空" });
+        return JSON.stringify({ success: false, error: "prompt must not be empty" });
       }
 
       const config = this.env.config;
@@ -76,7 +76,7 @@ export class GenerateImageTool extends SdkCallbackTool {
       if (!imageModels || imageModels.length === 0) {
         return JSON.stringify({
           success: false,
-          error: "未配置图片生成模型。请在配置中添加 imageModels。",
+          error: "No image generation model configured. Add imageModels to the configuration.",
         });
       }
 
@@ -88,7 +88,7 @@ export class GenerateImageTool extends SdkCallbackTool {
       if (!imageModel) {
         return JSON.stringify({
           success: false,
-          error: `图片模型 "${modelId}" 不存在。可用的图片模型: ${imageModels.map((m) => m.id).join(", ")}`,
+          error: `Image model "${modelId}" does not exist. Available image models: ${imageModels.map((m) => m.id).join(", ")}`,
         });
       }
 
@@ -98,13 +98,13 @@ export class GenerateImageTool extends SdkCallbackTool {
       if (!endpoint) {
         return JSON.stringify({
           success: false,
-          error: `图片模型 "${imageModel.name}" 对应的端点 "${imageModel.endpointId}" 未配置`,
+          error: `Endpoint "${imageModel.endpointId}" for image model "${imageModel.name}" is not configured`,
         });
       }
       if (!endpoint.apiKey) {
         return JSON.stringify({
           success: false,
-          error: `端点 "${endpoint.name}" 的 API Key 未设置`,
+          error: `API Key for endpoint "${endpoint.name}" is not set`,
         });
       }
 
@@ -141,7 +141,7 @@ export class GenerateImageTool extends SdkCallbackTool {
           modelId: imageModel.id,
           created: result.created,
           images: urls.map((url, i) => ({ index: i, url })),
-          note: "图片临时链接有效期为30天。如需查看图片内容，可用 view_image 工具（传入图片 URL）；如需保存，可用 download_file 下载。",
+          note: "Image links are temporary and expire after 30 days. To inspect the image content, use the view_image tool (pass the image URL); to save it, use download_file.",
         },
         null,
         2,
@@ -152,12 +152,12 @@ export class GenerateImageTool extends SdkCallbackTool {
         return JSON.stringify({
           success: false,
           aborted: true,
-          error: "图片生成被中断（aborted）",
+          error: "Image generation aborted",
         });
       }
       return JSON.stringify({
         success: false,
-        error: error instanceof Error ? error.message : "图片生成失败",
+        error: error instanceof Error ? error.message : "Image generation failed",
       });
     }
   }

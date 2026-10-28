@@ -5,7 +5,7 @@ import { readSkill } from "./discover.js";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 
-const EMPTY_HINT = "（当前没有可用的 Skill，请联系用户添加）";
+const EMPTY_HINT = "(No Skills are currently available, please ask the user to add one)";
 
 /**
  * 创建 load_skill 工具。
@@ -16,18 +16,18 @@ export function createLoadSkillTool(
   filteredSkills: SkillInfo[],
 ): CallbackTool {
   const ids = filteredSkills.map((s) => s.id);
-  const param = createDisclosureParam(ids, "选择一个 Skill", EMPTY_HINT);
+  const param = createDisclosureParam(ids, "Select a Skill", EMPTY_HINT);
 
   // 拼接各 skill 的描述供 LLM 参考
   const skillDescriptions = filteredSkills
-    .map((s) => `  - ${s.id}: ${s.description || "无描述"}`)
+    .map((s) => `  - ${s.id}: ${s.description || "No description"}`)
     .join("\n");
-  const skillIdDescription = `${param.description}\n\n各 Skill 说明：\n${skillDescriptions || "  无可用 Skill"}`;
+  const skillIdDescription = `${param.description}\n\nSkill descriptions:\n${skillDescriptions || "  No Skills available"}`;
 
   return new CallbackTool({
     function: {
       name: "load_skill",
-      description: "加载指定 Skill 的完整指导文档。Skill 是预制的专业指导，加载后展开到上下文中。",
+      description: "Load the full guidance document of a Skill. A Skill is pre-authored expert guidance that is expanded into the context once loaded.",
       parameters: {
         type: "object",
         properties: {
@@ -45,7 +45,7 @@ export function createLoadSkillTool(
       const skillId = input.skill_id as string;
       const skill = await readSkill(skillDirs, skillId);
       if (!skill) {
-        return `❌ Skill "${skillId}" 不存在，请确认名称是否正确`;
+        return `❌ Skill "${skillId}" not found, please verify the name`;
       }
 
       // 扫描 skill 目录下的文件列表
@@ -56,18 +56,18 @@ export function createLoadSkillTool(
           const suffix = e.isDirectory() ? "/" : "";
           return `  - ${e.name}${suffix}`;
         });
-        fileList = `\n\nSkill 目录文件列表：\n${files.join("\n")}`;
+        fileList = `\n\nSkill directory files:\n${files.join("\n")}`;
       } catch {
         fileList = "";
       }
 
       return [
-        `Skill "${skillId}" 已加载：`,
+        `Skill "${skillId}" loaded:`,
         ``,
-        `Skill 目录路径: ${skill.dirPath}`,
+        `Skill directory path: ${skill.dirPath}`,
         fileList,
         ``,
-        `--- Skill 内容开始 ---`,
+        `--- Skill content starts ---`,
         skill.content,
       ].join("\n");
     },
@@ -90,18 +90,18 @@ export function createCallSkillSubAgentTool(
   // 只保留支持子 Agent 模式的 skill
   const subAgentSkills = filteredSkills.filter((s) => s.subAgent);
   const ids = subAgentSkills.map((s) => s.id);
-  const param = createDisclosureParam(ids, "选择一个 Skill（支持子 Agent）", EMPTY_HINT);
+  const param = createDisclosureParam(ids, "Select a Skill that supports SubAgent mode", EMPTY_HINT);
 
   // 拼接各 skill 的描述供 LLM 参考
   const skillDescriptions = subAgentSkills
-    .map((s) => `  - ${s.id}: ${s.description || "无描述"}`)
+    .map((s) => `  - ${s.id}: ${s.description || "No description"}`)
     .join("\n");
-  const skillIdDescription = `${param.description}\n\n各 Skill 说明：\n${skillDescriptions || "  无可用 Skill"}`;
+  const skillIdDescription = `${param.description}\n\nSkill descriptions:\n${skillDescriptions || "  No Skills available"}`;
 
   return new AgentToolLazy({
     function: {
       name: "call_skill_sub_agent",
-      description: "将任务委派给指定的 Skill 子 Agent，由其独立完成并返回结果。",
+      description: "Delegate a task to the specified Skill SubAgent, which completes it independently and returns the result.",
       parameters: {
         type: "object",
         properties: {
@@ -112,7 +112,7 @@ export function createCallSkillSubAgentTool(
           },
           task: {
             type: "string",
-            description: "要委派给子 Agent 完成的任务描述",
+            description: "Task description to delegate to the SubAgent",
           },
         },
         required: ["skill_id", "task"],
@@ -129,11 +129,11 @@ export function createCallSkillSubAgentTool(
       const task = parsedArgs.task as string;
       const skill = await readSkill(skillDirs, skillId);
       if (!skill) {
-        throw new Error(`❌ Skill "${skillId}" 不存在，请确认名称是否正确`);
+        throw new Error(`❌ Skill "${skillId}" not found, please verify the name`);
       }
       if (!skill.subAgent) {
         throw new Error(
-          `Skill "${skillId}" 不支持子 Agent 模式，请使用 load_skill 加载指导后自行处理`,
+          `Skill "${skillId}" does not support SubAgent mode, use load_skill to load its guidance and handle the task yourself`,
         );
       }
 

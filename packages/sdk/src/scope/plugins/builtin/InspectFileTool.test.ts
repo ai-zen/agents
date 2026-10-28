@@ -28,7 +28,7 @@ describe("InspectFileTool", () => {
   it("工具名称与参数默认值正确", () => {
     const tool = new InspectFileTool(makeEnv());
     expect(tool.function.name).toBe("inspect_file");
-    expect(tool.function.description).toContain("结构概况");
+    expect(tool.function.description).toContain("structural overview");
     const params = tool.function.parameters as any;
     expect(params.properties.withColCountMap.default).toBe(false);
     expect(params.required).toEqual(["path"]);
@@ -147,7 +147,7 @@ describe("InspectFileTool", () => {
       const parsed = JSON.parse(result as string);
 
       expect(parsed.colCountMapOmitted).toBe(true);
-      expect(parsed.warning).toContain("超过上限 100 字符");
+      expect(parsed.warning).toContain("exceeding the limit of 100 characters");
       expect(parsed.colCountMap).toBeUndefined();
       // 概况仍然可用
       expect(parsed.lines).toBe(20);
@@ -165,7 +165,7 @@ describe("InspectFileTool", () => {
     mkdirSync(dir, { recursive: true });
     try {
       const result = await tool.call({ path: dir });
-      expect(result).toContain("不是文件");
+      expect(result).toContain("is not a file");
     } finally {
       try {
         unlinkSync(dir);

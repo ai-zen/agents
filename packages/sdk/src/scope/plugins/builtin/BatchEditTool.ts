@@ -13,34 +13,34 @@ export class BatchEditTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "batch_edit",
     description: [
-      "批量编辑文件文本，可以优先使用这个工具对文件进行编辑。",
-      "对同一个文件的多处修改应在一次调用中全部提交（replacements 数组），而不是并行多次调用 edit——并行编辑同一文件会互相覆盖。",
+      "Edit text in a file in batches. Prefer this tool when making edits to a file.",
+      "Submit all changes to the same file in a single call (the replacements array) instead of calling edit in parallel multiple times — parallel edits to the same file overwrite each other.",
     ].join("\n"),
     parameters: {
       type: "object",
       properties: {
         path: {
           type: "string",
-          description: "文件路径",
+          description: "File path",
         },
         replacements: {
           type: "array",
-          description: "要替换的文本数组",
+          description: "Array of replacements",
           items: {
             type: "object",
             properties: {
               oldText: {
                 type: "string",
-                description: "要替换的文本",
+                description: "Text to replace",
               },
               newText: {
                 type: "string",
-                description: "替换后的文本",
+                description: "Replacement text",
               },
               isReplaceAll: {
                 type: "boolean",
                 description:
-                  "是否替换所有匹配的文本（默认仅替换首次匹配）。使用此功能前应确保你提供的 oldText 足够精确，避免误替换",
+                  "Whether to replace all matches (by default only the first match is replaced). Make sure the oldText you provide is precise enough to avoid unintended replacements",
                 default: false,
               },
             },
@@ -73,7 +73,7 @@ export class BatchEditTool extends SdkCallbackTool {
           failed.push({
             oldText: replacement.oldText,
             newText: replacement.newText,
-            reason: "文件中未精确匹配到要替换的文本",
+            reason: "No exact match found for the text to replace",
           });
           continue;
         }

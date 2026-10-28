@@ -14,7 +14,7 @@ describe("WriteTool", () => {
   it("工具名称和描述正确", () => {
     const tool = new WriteTool(makeEnv());
     expect(tool.function.name).toBe("write");
-    expect(tool.function.description).toBe("写入文件");
+    expect(tool.function.description).toBe("Write a file");
   });
 
   it("写入文件内容", async () => {

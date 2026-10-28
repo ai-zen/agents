@@ -9,7 +9,7 @@ describe("ExecTool", () => {
   it("工具名称和描述正确", () => {
     const tool = new ExecTool(makeEnv());
     expect(tool.function.name).toBe("exec");
-    expect(tool.function.description).toBe("执行命令");
+    expect(tool.function.description).toBe("Execute a shell command");
     const params = tool.function.parameters as Record<string, unknown>;
     expect(params.properties).toHaveProperty("timeout");
     // timeout 必须声明为必填
@@ -103,7 +103,7 @@ describe("ExecTool", () => {
     const parsed = JSON.parse(result as string);
 
     expect(parsed.outputTooLarge).toBe(true);
-    expect(parsed.warning).toContain("超过上限 1000 字符");
+    expect(parsed.warning).toContain("exceeds the limit of 1000 characters");
 
     // 完整内容分文件落盘
     const stdoutPath = parsed.files["stdout.log"];

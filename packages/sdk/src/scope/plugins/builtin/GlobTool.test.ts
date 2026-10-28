@@ -18,7 +18,7 @@ describe("GlobTool", () => {
   it("工具名称和描述正确", () => {
     const tool = new GlobTool(makeEnv());
     expect(tool.function.name).toBe("glob");
-    expect(tool.function.description).toContain("扫描和查找文件");
+    expect(tool.function.description).toContain("scan for and find files");
   });
 
   it("查找匹配的文件", async () => {
@@ -107,7 +107,7 @@ describe("GlobTool", () => {
       const parsed = JSON.parse(result as string);
 
       expect(parsed.outputTooLarge).toBe(true);
-      expect(parsed.warning).toContain("超过上限 100 字符");
+      expect(parsed.warning).toContain("exceeding the limit of 100 characters");
 
       // 完整结果落盘
       const dumped = JSON.parse(readFileSync(parsed.files["result.json"], "utf-8"));

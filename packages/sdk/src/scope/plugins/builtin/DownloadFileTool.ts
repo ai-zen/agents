@@ -8,18 +8,18 @@ export class DownloadFileTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "download_file",
     description:
-      "从 URL 下载文件（图片、PDF 等二进制文件）并保存到本地磁盘。自动从 URL 推断文件名，也可指定保存路径。",
+      "Download a file from a URL (images, PDFs and other binary files) and save it to the local disk. The file name is inferred from the URL, or you can specify the save path.",
     parameters: {
       type: "object",
       properties: {
         url: {
           type: "string",
-          description: "文件下载链接",
+          description: "URL to download the file from",
         },
         outputPath: {
           type: "string",
           description:
-            "保存路径（可选）。可以是目录或完整文件路径。不指定则下载到当前工作目录，自动从 URL 推断文件名。",
+            "Save path (optional). May be a directory or a full file path. If omitted, the file is saved to the current working directory with the file name inferred from the URL.",
         },
       },
       required: ["url"],
@@ -40,7 +40,7 @@ export class DownloadFileTool extends SdkCallbackTool {
 
     try {
       const url = input.url;
-      if (!url) throw new Error("url 不能为空");
+      if (!url) throw new Error("url must not be empty");
 
       if (input.outputPath) {
         savePath = this.resolve(input.outputPath);
@@ -60,7 +60,7 @@ export class DownloadFileTool extends SdkCallbackTool {
 
       const response = await fetch(url, { signal });
       if (!response.ok) {
-        throw new Error(`下载失败: HTTP ${response.status} ${response.statusText}`);
+        throw new Error(`Download failed: HTTP ${response.status} ${response.statusText}`);
       }
 
       const contentType = response.headers.get("content-type") || "";
@@ -76,7 +76,7 @@ export class DownloadFileTool extends SdkCallbackTool {
         filePath: path.resolve(savePath),
         fileSize: `${fileSizeKB} KB`,
         contentType,
-        note: "文件已保存到本地",
+        note: "File saved to local disk",
       });
     } catch (error: any) {
       // 中断（abort）时清理可能残留的半成品文件
@@ -85,12 +85,12 @@ export class DownloadFileTool extends SdkCallbackTool {
         return JSON.stringify({
           success: false,
           aborted: true,
-          error: "下载被中断（aborted）",
+          error: "Download aborted",
         });
       }
       return JSON.stringify({
         success: false,
-        error: error?.message || "下载失败",
+        error: error?.message || "Download failed",
       });
     }
   }

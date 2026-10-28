@@ -24,7 +24,7 @@ describe("ReadTool", () => {
   it("工具名称和描述正确", () => {
     const tool = new ReadTool(makeEnv());
     expect(tool.function.name).toBe("read");
-    expect(tool.function.description).toBe("读取文件");
+    expect(tool.function.description).toBe("Read a file");
   });
 
   it("读取文件内容", async () => {
@@ -64,7 +64,7 @@ describe("ReadTool", () => {
     const filePath = tmpFile("x".repeat(400 * 1024));
     try {
       const result = await tool.call({ path: filePath });
-      expect(result).toContain("文件过大");
+      expect(result).toContain("File too large");
     } finally {
       cleanUp(filePath);
     }
@@ -92,10 +92,10 @@ describe("ReadTool", () => {
     const filePath = tmpFile("0123456789\nabcdefghij");
     try {
       const result = (await tool.call({ path: filePath })) as string;
-      expect(result).toContain("超过上限 10 字符");
-      expect(result).toContain("未落盘");
+      expect(result).toContain("exceeding the limit of 10 characters");
+      expect(result).toContain("not written to disk");
       expect(result).toContain("range");
-      expect(result).toContain("2 行");
+      expect(result).toContain("2 lines");
       // 只警告：不返回落盘路径
       expect(result).not.toContain("files");
     } finally {

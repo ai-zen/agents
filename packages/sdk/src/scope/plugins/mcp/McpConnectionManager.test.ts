@@ -120,25 +120,25 @@ describe("McpConnectionManager", () => {
     // 使用默认构造（无 factory）来测试校验逻辑，因为 mock 工厂会绕过校验
     const rawManager = new McpConnectionManager();
     const badConfig: McpServerConfig = { id: "bad", name: "Bad", transport: "stdio" };
-    await expect(rawManager.connect("bad", badConfig)).rejects.toThrow("缺少 command");
+    await expect(rawManager.connect("bad", badConfig)).rejects.toThrow("missing command");
   });
 
   it("http 缺少 url 时抛出错误", async () => {
     const rawManager = new McpConnectionManager();
     const badConfig: McpServerConfig = { id: "bad", name: "Bad", transport: "http" };
-    await expect(rawManager.connect("bad", badConfig)).rejects.toThrow("缺少 url");
+    await expect(rawManager.connect("bad", badConfig)).rejects.toThrow("missing url");
   });
 
   it("sse 缺少 url 时抛出错误", async () => {
     const rawManager = new McpConnectionManager();
     const badConfig: McpServerConfig = { id: "bad", transport: "sse" };
-    await expect(rawManager.connect("bad", badConfig)).rejects.toThrow("缺少 url");
+    await expect(rawManager.connect("bad", badConfig)).rejects.toThrow("missing url");
   });
 
   it("不支持的 transport 类型时抛出错误", async () => {
     const rawManager = new McpConnectionManager();
     const badConfig = { transport: "websocket" } as any;
-    await expect(rawManager.connect("bad", badConfig)).rejects.toThrow("不支持");
+    await expect(rawManager.connect("bad", badConfig)).rejects.toThrow("Unsupported MCP transport");
   });
 
   // ---- 获取 Client ----

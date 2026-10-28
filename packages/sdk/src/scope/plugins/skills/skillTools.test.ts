@@ -50,11 +50,11 @@ describe("createLoadSkillTool", () => {
   it("Skill 不存在时返回错误", async () => {
     const tool = createLoadSkillTool(skillDirs, skills);
     const result = await tool.callback.call({ agent: null }, { skill_id: "non-existent" });
-    expect(result).toContain("不存在");
+    expect(result).toContain("not found");
   });
 
   it("成功加载 Skill 返回完整内容与路径信息", async () => {
-    writeSkill("git", "# Git 操作指南\n\n## 提交代码\n使用 git commit");
+    writeSkill("git", "# Git operations guide\n\n## Committing code\nUse git commit");
     const tool = createLoadSkillTool(skillDirs, skills);
     const agent = new Agent({
       client: {} as any,
@@ -64,10 +64,10 @@ describe("createLoadSkillTool", () => {
     });
 
     const result = await tool.callback.call({ agent }, { skill_id: "git" });
-    expect(result).toContain("已加载");
-    expect(result).toContain("Skill 目录路径:");
-    expect(result).toContain("Git 操作指南");
-    expect(result).toContain("Skill 内容开始");
+    expect(result).toContain("loaded");
+    expect(result).toContain("Skill directory path:");
+    expect(result).toContain("Git operations guide");
+    expect(result).toContain("Skill content starts");
     // 不再注入 system message
     const injected = agent.messages.find((m) => String(m.content).includes("Skill"));
     expect(injected).toBeUndefined();
@@ -82,7 +82,7 @@ describe("createCallSkillSubAgentTool", () => {
   ] as unknown as SkillInfo[];
 
   /** mock 流式客户端：子 Agent run 时返回固定文本 */
-  function createMockClient(responseText = "子Agent结果") {
+  function createMockClient(responseText = "sub-agent result") {
     const stream = {
       async *[Symbol.asyncIterator]() {
         yield {
@@ -149,7 +149,7 @@ describe("createCallSkillSubAgentTool", () => {
     const host = buildHost(tool);
     await expect(
       tool.exec(buildCtx(host, { skill_id: "non-existent", task: "do something" })),
-    ).rejects.toThrow("不存在");
+    ).rejects.toThrow("not found");
   });
 
   it("Skill 不支持子 Agent 模式时抛出错误", async () => {
@@ -158,11 +158,11 @@ describe("createCallSkillSubAgentTool", () => {
     const host = buildHost(tool);
     await expect(
       tool.exec(buildCtx(host, { skill_id: "plain", task: "do something" })),
-    ).rejects.toThrow("不支持子 Agent");
+    ).rejects.toThrow("does not support SubAgent mode");
   });
 
   it("委派边界：分发 onSubAgentStart 与 sub-agent-start，子 Agent 沿用父工具集并剔除 call_skill_sub_agent", async () => {
-    writeSkill("git", "# Git 操作指南\n\n## 提交代码\n使用 git commit", { subAgent: true });
+    writeSkill("git", "# Git operations guide\n\n## Committing code\nUse git commit", { subAgent: true });
     const tool = createCallSkillSubAgentTool(skillDirs, subAgentSkills);
     const host = buildHost(tool);
 
@@ -176,16 +176,16 @@ describe("createCallSkillSubAgentTool", () => {
     host.events.on("sub-agent-start", startEvent);
 
     const result = await tool.exec(
-      buildCtx(host, { skill_id: "git", task: "提交这些改动" }),
+      buildCtx(host, { skill_id: "git", task: "commit these changes" }),
     );
 
-    expect(result).toBe("子Agent结果");
+    expect(result).toBe("sub-agent result");
     expect(startEvent).toHaveBeenCalledTimes(1);
     expect(captured).toBeDefined();
     // 沿用父 Agent 工具能力，但剔除 call_skill_sub_agent 防自递归
     expect(captured!.tools.map((t) => t.function.name)).toEqual(["read"]);
     // 初始消息来自 SKILL.md 与 task 参数
-    expect(String(captured!.messages[0].content)).toContain("Git 操作指南");
-    expect(captured!.messages[1].content).toBe("提交这些改动");
+    expect(String(captured!.messages[0].content)).toContain("Git operations guide");
+    expect(captured!.messages[1].content).toBe("commit these changes");
   });
 });

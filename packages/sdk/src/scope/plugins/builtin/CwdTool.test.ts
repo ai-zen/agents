@@ -6,7 +6,7 @@ describe("CwdTool", () => {
   it("工具名称和描述正确", () => {
     const tool = new CwdTool(makeEnv());
     expect(tool.function.name).toBe("cwd");
-    expect(tool.function.description).toContain("当前工作目录");
+    expect(tool.function.description).toContain("current working directory");
   });
 
   it("返回 env.cwd（而非 process.cwd）", async () => {

@@ -37,7 +37,7 @@ export type MigrationStrategy = "omit" | "prune";
  */
 export class HandoffAbortedError extends Error {
   constructor() {
-    super("交接已取消");
+    super("Handoff cancelled");
     this.name = "HandoffAbortedError";
   }
 }
@@ -252,15 +252,15 @@ export class HandoffService {
     const { skillContent, handoffPath, toolsAvailable } = params;
     const tail = toolsAvailable
       ? [
-          "请立即开始撰写，并用 write 工具把完整文档写入上面给出的路径（路径原样使用，不要改名、不要换目录）。",
-          "写完后用 read 回读一次确认完整，然后只回一句不超过 40 字的确认，**不要复述文档内容**。",
+          "Start writing now: use the write tool to put the complete document at the path given above (use the path exactly as given, do not rename it and do not move it to another directory).",
+          "After writing, read it back once with the read tool to confirm it is complete, then reply with a single confirmation of no more than 40 words, **do not restate the document content**.",
         ]
       : [
-          "请直接输出完整文档正文：不要任何解释、不要用代码块包裹，调用方会自行落盘。",
+          "Output the complete document body directly: no explanations, do not wrap it in a code block, the caller will persist it to disk itself.",
         ];
 
     return [
-      "你现在要为本轮对话编写一份任务交接文档。以下是必须遵守的交接规范。",
+      "You are now to write a task handoff document for this conversation. The following handoff rules are mandatory.",
       "",
       "---",
       "",
@@ -268,12 +268,12 @@ export class HandoffService {
       "",
       "---",
       "",
-      "## 本次交接参数",
-      `- 交接文档绝对路径：${handoffPath}`,
-      `- 工具能力：${
+      "## Handoff parameters",
+      `- Handoff document absolute path: ${handoffPath}`,
+      `- Tools available: ${
         toolsAvailable
-          ? "可用（read / exec 等，请据此核实真实状态）"
-          : "不可用（你无法核实磁盘，状态类信息一律写「⚠️ 未核实」，禁止推测）"
+          ? "yes (read / exec, etc., use them to verify the actual state)"
+          : "no (you cannot inspect the disk, so for any state information always write '⚠️ Unverified', never speculate)"
       }`,
       "",
       ...tail,
@@ -288,10 +288,10 @@ export class HandoffService {
    */
   static createPostMessages(handoffPath: string): AgentNS.Message[] {
     const content = [
-      "上一轮对话已交接，交接文档保存在：",
+      "The previous conversation has been handed off, the handoff document is saved at:",
       handoffPath,
       "",
-      "请先用 read 工具读取该文件，理解上下文与未完成事项后，再继续协助用户完成任务。",
+      "Read that file first with the read tool, and once you understand the context and the unfinished work, continue helping the user with the task.",
     ].join("\n");
 
     return [Message.User(content)];
@@ -365,7 +365,7 @@ export class HandoffService {
 
   /** 串行化 + 防重入：交接与迁移共用同一把锁 */
   private async withBusy<T>(fn: () => Promise<T>): Promise<T> {
-    if (this._busy) throw new Error("交接流程已在进行中，请等待当前交接完成");
+    if (this._busy) throw new Error("A handoff is already in progress, wait for it to finish");
     this._busy = true;
     try {
       return await fn();
@@ -460,7 +460,7 @@ export class HandoffService {
 
     if (mode === "self" && !this.supportsSelfHandoff(agent)) {
       this.logger.warn(
-        "[handoff] agent 不具备 write 工具或 send 能力，降级为独立摘要模式",
+        "[handoff] agent has no write tool or send capability, falling back to standalone summary mode",
       );
       mode = "summary";
     }
@@ -468,7 +468,7 @@ export class HandoffService {
     if (mode === "self") {
       const ok = await this.runSelfHandoff(agent, handoffPath, signal);
       if (!ok) {
-        this.logger.warn("[handoff] 自交接失败，降级为独立摘要模式");
+        this.logger.warn("[handoff] self handoff failed, falling back to standalone summary mode");
         mode = "summary";
       }
     }
@@ -555,11 +555,11 @@ export class HandoffService {
 
       if (await this.isHandoffFileReady(handoffPath)) return true;
 
-      this.logger.warn(`[handoff] 交接文档缺失或过小，重试一次：${handoffPath}`);
+      this.logger.warn(`[handoff] handoff document missing or too small, retrying once: ${handoffPath}`);
       await agent.send(
         [
-          `交接文档不存在或内容过少，无法交付：${handoffPath}`,
-          "请立即用 write 工具把**完整**交接文档写入该路径（路径原样使用），不要做其他任何事。",
+          `The handoff document does not exist or is too small to deliver: ${handoffPath}`,
+          "Use the write tool right now to write the **complete** handoff document to that path (use the path exactly as given) and do nothing else.",
         ].join("\n"),
       );
       this.throwIfAborted(signal);
@@ -570,7 +570,7 @@ export class HandoffService {
         await this.discardPartialFile(handoffPath, existedBefore);
         throw new HandoffAbortedError();
       }
-      this.logger.error(`[handoff] 自交接回合失败：${err?.message ?? err}`);
+      this.logger.error(`[handoff] self handoff round failed: ${err?.message ?? err}`);
       return false;
     } finally {
       guard.disarm();
@@ -613,7 +613,7 @@ export class HandoffService {
 
     const handoffDoc = response.choices[0]?.message?.content;
     if (!handoffDoc || !handoffDoc.trim()) {
-      throw new Error("未能生成任务交接文档");
+      throw new Error("Failed to generate the handoff document");
     }
     return handoffDoc;
   }
@@ -640,7 +640,7 @@ export class HandoffService {
       if (skill?.content?.trim()) return skill.content;
     }
     this.logger.warn(
-      `[handoff] 未找到 ${HANDOFF_SKILL_ID} Skill，使用内置兜底模板（路径：${this.skillDirs.join(", ") || "未配置"}）`,
+      `[handoff] ${HANDOFF_SKILL_ID} skill not found, using the built-in fallback template (paths: ${this.skillDirs.join(", ") || "none configured"})`,
     );
     return FALLBACK_HANDOFF_TEMPLATE;
   }
@@ -664,7 +664,7 @@ export class HandoffService {
     try {
       await hook(ctx);
     } catch (err: any) {
-      this.logger.error(`[handoff] 钩子执行失败: ${err?.message ?? err}`);
+      this.logger.error(`[handoff] hook execution failed: ${err?.message ?? err}`);
     }
   }
 }

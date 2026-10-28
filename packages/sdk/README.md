@@ -136,6 +136,19 @@ Interrupt strategies live in the config: `AppConfig.abortedMessageStrategy` (`ke
 | `ContextGuardPlugin` | Context safety guard — before each request, throws `ContextOverflowError` (interrupting the conversation) when the previous round's `usage.prompt_tokens` exceeds `maxTokens × ratio` (default 1.5), preventing context runaway from reading oversized files |
 | `UnknownToolHintPlugin` | Smarter unknown-tool hints — when the LLM calls a nonexistent tool, guides it to `call_mcp_tool` / points out permission issues based on MCP config (opt-in via `agent.use`) |
 
+## Language
+
+The SDK is **English-only**: every model-facing and user-facing string — tool schema descriptions, factory prompts, runtime-injected guidance, tool results, error messages, factory catalog data — is a fixed English literal. There is no locale field, no message catalog, and no runtime language switch. UI language belongs entirely to each consumer (the CLI's `i18n/`, the Desktop's language setting).
+
+This is a performance boundary, not a convenience choice — **SDK behaviour and performance must not vary by the user's language**:
+
+- **Thresholds are absolute.** `Model.tokenThresholds.handoff` / `guard` and `AppConfig.maxToolOutput` are absolute token / character counts. A localized tool schema is a different token count, so handoff and context-guard would trip at *different amounts of real content* for the same `config.json` — same config, different behaviour per language.
+- **Schema cost is paid every turn.** Description text is re-sent with every request, so a token delta is a standing cost in request size, context usage and spend rather than a one-off.
+- **Cache prefixes stop being comparable.** Prompt caching matches on the prefix; letting language into the SDK multiplies the prefix shapes of one code path and removes the single variable that benchmarks rely on.
+- **Diagnosis needs one shape.** Performance data, bug reproductions and tool-call success rates have to be comparable across users; once behaviour drifts with locale, every conclusion needs a "what language are you on?" qualifier first.
+
+Following the user's language is handled by one language-neutral instruction in the factory system prompt — `Always reply in the same language the user writes in.` — which adapts per **message** rather than per installation, and needs no locale plumbing in the SDK. Full rationale: [`docs/sdk-design-v1.md` §1](docs/sdk-design-v1.md).
+
 ## Design Principles
 
 See the project-root [`PRINCIPLES.md`](../../PRINCIPLES.md):

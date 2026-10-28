@@ -6,13 +6,13 @@ import type { AgentNS } from "@ai-zen/agents-core";
 export class ExistTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "exist",
-    description: "检查文件或目录是否存在",
+    description: "Check whether a file or directory exists",
     parameters: {
       type: "object",
       properties: {
         path: {
           type: "string",
-          description: "文件或目录路径",
+          description: "File or directory path",
         },
       },
       required: ["path"],

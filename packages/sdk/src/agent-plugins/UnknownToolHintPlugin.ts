@@ -24,7 +24,7 @@ export class UnknownToolHintPlugin implements AgentPlugin {
   }
 
   onUnknownTool(ctx: UnknownToolContext): string | undefined {
-    const toolName = ctx.toolCall.function?.name ?? "未知";
+    const toolName = ctx.toolCall.function?.name ?? "unknown";
     const mcpPlugin = this.scope.getPluginById<McpScopePlugin>(
       McpScopePlugin.ID,
     );
@@ -34,11 +34,11 @@ export class UnknownToolHintPlugin implements AgentPlugin {
     );
 
     if (hasMcpConfig && !hasCallMcpTool) {
-      return `工具 "${toolName}" 不存在。当前有 MCP 服务器配置，但 call_mcp_tool 权限已被禁用，如需使用 MCP 工具请调整权限。`;
+      return `Tool "${toolName}" does not exist. An MCP server is configured, but the call_mcp_tool permission is disabled — adjust permissions if you need to use MCP tools.`;
     }
     if (hasMcpConfig && hasCallMcpTool) {
-      return `工具 "${toolName}" 不存在。如果要调用 MCP 工具，请使用 call_mcp_tool。`;
+      return `Tool "${toolName}" does not exist. To call MCP tools, use call_mcp_tool.`;
     }
-    return `工具 "${toolName}" 不存在。`;
+    return `Tool "${toolName}" does not exist.`;
   }
 }

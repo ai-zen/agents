@@ -18,7 +18,7 @@ describe("DownloadFileTool", () => {
   it("工具名称和描述正确", () => {
     const tool = new DownloadFileTool(makeEnv());
     expect(tool.function.name).toBe("download_file");
-    expect(tool.function.description).toContain("下载文件");
+    expect(tool.function.description).toContain("Download a file from a URL");
   });
 
   it("url 为空时返回错误", async () => {
@@ -26,7 +26,7 @@ describe("DownloadFileTool", () => {
     const result = await tool.call({ url: "" });
     const parsed = JSON.parse(result as string);
     expect(parsed.success).toBe(false);
-    expect(parsed.error).toContain("不能为空");
+    expect(parsed.error).toContain("must not be empty");
   });
 
   it("HTTP 请求失败时返回错误", async () => {

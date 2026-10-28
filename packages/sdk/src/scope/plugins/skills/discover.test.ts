@@ -102,14 +102,14 @@ describe("discoverSkills", () => {
   it("多路径：同名 skill 靠前路径优先（先到先得）", async () => {
     const dir2 = mkdtempSync(join(tmpdir(), "ai-zen-discovery2-"));
     try {
-      writeSkill("shared-skill", "shared-skill", "From dir1（高优先级）");
+      writeSkill("shared-skill", "shared-skill", "From dir1 (higher priority)");
       mkdirSync(join(dir2, "shared-skill"), { recursive: true });
-      writeFileSync(join(dir2, "shared-skill", "SKILL.md"), `---\nname: shared-skill\ndescription: From dir2（低优先级）\n---\n# shared-skill`);
+      writeFileSync(join(dir2, "shared-skill", "SKILL.md"), `---\nname: shared-skill\ndescription: From dir2 (lower priority)\n---\n# shared-skill`);
 
       const result = await discoverSkills([dir, dir2]);
       expect(result).toHaveLength(1);
       // dir 在前（高优先级），应优先
-      expect(result[0].description).toBe("From dir1（高优先级）");
+      expect(result[0].description).toBe("From dir1 (higher priority)");
     } finally {
       rmSync(dir2, { recursive: true, force: true });
     }
@@ -125,14 +125,14 @@ describe("parseFrontmatter", () => {
 
   it("解析 name、description、sub-agent", () => {
     const fm = parseFrontmatter(`---
-name: 测试技能
-description: 测试描述
+name: test-skill
+description: A test description
 sub-agent: true
 ---
 # 正文`);
 
-    expect(fm.name).toBe("测试技能");
-    expect(fm.description).toBe("测试描述");
+    expect(fm.name).toBe("test-skill");
+    expect(fm.description).toBe("A test description");
     expect(fm.subAgent).toBe(true);
   });
 
@@ -268,7 +268,7 @@ describe("validateSkill", () => {
 
   it("非法：name 为空", () => {
     const errors = validateSkill("my-skill", { name: "", description: "desc" });
-    expect(errors).toContainEqual({ skillId: "my-skill", field: "name", message: "必须存在且非空" });
+    expect(errors).toContainEqual({ skillId: "my-skill", field: "name", message: "Must be present and non-empty" });
   });
 
   it("非法：name 含有大写字母", () => {
@@ -299,7 +299,7 @@ describe("validateSkill", () => {
 
   it("非法：name 与目录名不一致", () => {
     const errors = validateSkill("actual-dir", { name: "different-name", description: "desc" });
-    expect(errors.some((e) => e.field === "name" && e.message.includes("不一致"))).toBe(true);
+    expect(errors.some((e) => e.field === "name" && e.message.includes("does not match"))).toBe(true);
   });
 
   // ---- description 校验 ----
@@ -396,14 +396,14 @@ name: plain-skill
     const skillDir = join(dir, "my-skill");
     mkdirSync(skillDir, { recursive: true });
     writeFileSync(join(skillDir, "SKILL.md"), `---
-name: 我的技能
-description: 中文名也可读
+name: My Skill
+description: Non-conforming name is still readable
 ---
 # Body`);
 
     const skill = await readSkill([dir], "my-skill");
     expect(skill).not.toBeNull();
-    expect(skill!.name).toBe("我的技能");
+    expect(skill!.name).toBe("My Skill");
   });
 
   it("多路径查找：在第一个路径找到即返回（先到先得）", async () => {

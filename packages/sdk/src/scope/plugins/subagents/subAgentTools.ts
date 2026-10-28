@@ -16,7 +16,7 @@ export function createSubAgentTool(
   scope: Scope,
 ): Tool {
   if (!def.function) {
-    throw new Error(`Agent "${def.id}" 没有 function 字段，不能作为 SubAgent 工具`);
+    throw new Error(`Agent "${def.id}" has no function field, so it cannot be used as a SubAgent tool`);
   }
 
   const selfName = def.function.name;
@@ -43,7 +43,7 @@ export function createSubAgentTool(
         const parent = ctx.agent;
         if (!parent) {
           throw new Error(
-            `SubAgent "${selfName}" 未指定 modelId，且父 Agent 没有可复用的模型`,
+            `SubAgent "${selfName}" does not specify a modelId, and the parent Agent has no reusable model`,
           );
         }
         client = parent.client;

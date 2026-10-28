@@ -203,27 +203,27 @@ export function validateSkill(skillId: string, fm: Frontmatter): SkillValidation
   const errors: SkillValidationError[] = [];
 
   if (!fm.name || fm.name.length === 0) {
-    errors.push({ skillId, field: "name", message: "必须存在且非空" });
+    errors.push({ skillId, field: "name", message: "Must be present and non-empty" });
   } else {
     if (fm.name.length > 64) {
-      errors.push({ skillId, field: "name", message: `超过 64 字符（当前 ${fm.name.length}）` });
+      errors.push({ skillId, field: "name", message: `Exceeds 64 characters (currently ${fm.name.length})` });
     }
     if (!VALID_NAME_RE.test(fm.name)) {
-      errors.push({ skillId, field: "name", message: `"${fm.name}" 不符合规范：仅允许小写字母、数字、连字符，且不能首尾或连续连字符` });
+      errors.push({ skillId, field: "name", message: `"${fm.name}" is not valid: only lowercase letters, digits and hyphens are allowed, and it must not start, end or contain consecutive hyphens` });
     }
     if (fm.name !== skillId) {
-      errors.push({ skillId, field: "name", message: `"${fm.name}" 与目录名 "${skillId}" 不一致` });
+      errors.push({ skillId, field: "name", message: `"${fm.name}" does not match the directory name "${skillId}"` });
     }
   }
 
   if (!fm.description || fm.description.length === 0) {
-    errors.push({ skillId, field: "description", message: "必须存在且非空" });
+    errors.push({ skillId, field: "description", message: "Must be present and non-empty" });
   } else if (fm.description.length > 1024) {
-    errors.push({ skillId, field: "description", message: `超过 1024 字符（当前 ${fm.description.length}）` });
+    errors.push({ skillId, field: "description", message: `Exceeds 1024 characters (currently ${fm.description.length})` });
   }
 
   if (fm.compatibility && fm.compatibility.length > 500) {
-    errors.push({ skillId, field: "compatibility", message: `超过 500 字符（当前 ${fm.compatibility.length}）` });
+    errors.push({ skillId, field: "compatibility", message: `Exceeds 500 characters (currently ${fm.compatibility.length})` });
   }
 
   return errors;

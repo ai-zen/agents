@@ -7,19 +7,19 @@ import { DEFAULT_MAX_TOOL_OUTPUT, guardOutput } from "./outputGuard.js";
 export class ReadTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "read",
-    description: "读取文件",
+    description: "Read a file",
     parameters: {
       type: "object",
       properties: {
         path: {
           type: "string",
-          description: "文件路径",
+          description: "File path",
         },
         range: {
           type: "array",
           description:
-            "读取范围 [起始行, 起始列, 结束行, 结束列]，行列均从 0 开始，-1 表示末位；" +
-            "例如 [0, 0, 100, -1] 表示从第 0 行第 0 列读到第 100 行最后一列。省略则读取整个文件。",
+            "Read range [startLine, startCol, endLine, endCol]; rows and columns are 0-based, -1 means the last position. " +
+            "For example, [0, 0, 100, -1] reads from line 0, column 0 through the last column of line 100; omit it to read the whole file.",
           items: {
             type: "number",
           },
@@ -40,7 +40,7 @@ export class ReadTool extends SdkCallbackTool {
       const stats = await fsp.stat(filePath);
       // 读取阈值：文件过大时拒绝读取（与输出阈值 maxToolOutput 无关）
       if (stats.size > 300 * 1024) {
-        throw new Error(`文件过大，无法读取，当前文件大小 ${stats.size} 字节`);
+        throw new Error(`File too large to read: ${stats.size} bytes`);
       }
       const content = await fsp.readFile(filePath, "utf-8");
       const output = input.range ? sliceByRange(content, input.range) : content;
@@ -52,9 +52,9 @@ export class ReadTool extends SdkCallbackTool {
         content: output,
         isOverLimit: (text) => text.length > limit,
         buildWarning: () =>
-          `读取内容过大：本次输出 ${output.length} 字符，超过上限 ${limit} 字符，未落盘。` +
-          `文件共 ${countLines(content)} 行、${content.length} 字符，` +
-          `请用 range 参数分范围读取（形如 [起始行, 起始列, 结束行, 结束列]，行列从 0 开始，-1 表示末位）。`,
+          `Output too large: this read returned ${output.length} characters, exceeding the limit of ${limit} characters; not written to disk. ` +
+          `The file has ${countLines(content)} lines and ${content.length} characters. ` +
+          `Use the range parameter to read it in chunks (format [startLine, startCol, endLine, endCol], 0-based, -1 means the last position).`,
       });
     } catch (error: any) {
       return error?.message;

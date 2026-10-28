@@ -86,8 +86,8 @@ describe("ConfigManager.ensureDefaultAgent", () => {
 
     const customContent = {
       id: DEFAULT_AGENT_ID,
-      name: "我自定义的名字",
-      messages: [{ role: "system" as any, content: "自定义提示词" }],
+      name: "My Custom Name",
+      messages: [{ role: "system" as any, content: "Custom prompt" }],
       createdAt: "2024-01-01T00:00:00.000Z",
       updatedAt: "2024-01-01T00:00:00.000Z",
       permissions: { tools: { deny: ["*"] } },
@@ -99,13 +99,13 @@ describe("ConfigManager.ensureDefaultAgent", () => {
 
     const raw = JSON.parse(await fs.readFile(join(agentsDir, `${DEFAULT_AGENT_ID}.json`), "utf-8"));
     // 非 messages 字段保留
-    expect(raw.name).toBe("我自定义的名字");
+    expect(raw.name).toBe("My Custom Name");
     expect(raw.permissions.tools).toEqual({ deny: ["*"] });
     expect(raw.createdAt).toBe("2024-01-01T00:00:00.000Z");
     // 提示词已同步为出厂内容，updatedAt 刷新
     expect(raw.messages[0].content).toBe(DEFAULT_AGENT_DEFINITION.messages[0].content);
     expect(raw.updatedAt).not.toBe("2024-01-01T00:00:00.000Z");
-    expect(result.name).toBe("我自定义的名字");
+    expect(result.name).toBe("My Custom Name");
   });
 
   it("custom: true → 完全跳过提示词同步", async () => {
@@ -115,9 +115,9 @@ describe("ConfigManager.ensureDefaultAgent", () => {
 
     const customContent = {
       id: DEFAULT_AGENT_ID,
-      name: "我自定义的名字",
+      name: "My Custom Name",
       custom: true,
-      messages: [{ role: "system" as any, content: "我的自定义提示词" }],
+      messages: [{ role: "system" as any, content: "My custom prompt" }],
       createdAt: "2024-01-01T00:00:00.000Z",
       updatedAt: "2024-01-01T00:00:00.000Z",
     };
@@ -127,9 +127,9 @@ describe("ConfigManager.ensureDefaultAgent", () => {
     const result = (await mgr.ensureDefaultAgent())!;
 
     const raw = JSON.parse(await fs.readFile(join(agentsDir, `${DEFAULT_AGENT_ID}.json`), "utf-8"));
-    expect(raw.messages[0].content).toBe("我的自定义提示词");
+    expect(raw.messages[0].content).toBe("My custom prompt");
     expect(raw.updatedAt).toBe("2024-01-01T00:00:00.000Z");
-    expect(result.messages[0].content).toBe("我的自定义提示词");
+    expect(result.messages[0].content).toBe("My custom prompt");
   });
 
   it("提示词与出厂一致 → 不写盘、updatedAt 不变", async () => {
@@ -190,7 +190,7 @@ describe("ConfigManager.ensureDefaultSubAgent", () => {
 
     const custom = {
       id: DEFAULT_SUBAGENT_ID,
-      name: "我自定义的",
+      name: "My Custom SubAgent",
       messages: [],
       function: { name: "custom_func", description: "", parameters: { type: "object", properties: {}, required: [] } },
       createdAt: "2024-01-01T00:00:00.000Z",
@@ -202,7 +202,7 @@ describe("ConfigManager.ensureDefaultSubAgent", () => {
     const result = await mgr.ensureDefaultSubAgent();
 
     expect(result).not.toBeNull();
-    expect(result!.name).toBe("我自定义的");
+    expect(result!.name).toBe("My Custom SubAgent");
     expect(result!.function!.name).toBe("custom_func");
   });
 
@@ -290,14 +290,14 @@ describe("ConfigManager.ensureDefaultConfig", () => {
     await mgr.write({
       endpoints: [],
       models: [
-        { id: "my-local-llm", name: "本地模型", endpointId: "local", tokenThresholds: { handoff: 32_000, guard: 48000 }, custom: true },
+        { id: "my-local-llm", name: "Local Model", endpointId: "local", tokenThresholds: { handoff: 32_000, guard: 48000 }, custom: true },
       ],
     });
 
     const cfg = await mgr.ensureDefaultConfig();
 
     const mine = cfg.models.find((m) => m.id === "my-local-llm")!;
-    expect(mine.name).toBe("本地模型");
+    expect(mine.name).toBe("Local Model");
     expect(mine.tokenThresholds.handoff).toBe(32_000);
     // 出厂模型 + 用户自定义模型共存
     expect(cfg.models.length).toBe(DEFAULT_APP_CONFIG.models.length + 1);
@@ -309,7 +309,7 @@ describe("ConfigManager.ensureDefaultConfig", () => {
     await mgr.write({
       endpoints: [],
       models: [
-        { id: "glm-5.3", name: "我的 GLM-5.3", endpointId: "bigmodelcn", tokenThresholds: { handoff: 999, guard: 1498 }, custom: true },
+        { id: "glm-5.3", name: "My GLM-5.3", endpointId: "bigmodelcn", tokenThresholds: { handoff: 999, guard: 1498 }, custom: true },
       ],
     });
 
@@ -317,7 +317,7 @@ describe("ConfigManager.ensureDefaultConfig", () => {
 
     const glm = cfg.models.filter((m) => m.id === "glm-5.3");
     expect(glm.length).toBe(1);
-    expect(glm[0].name).toBe("我的 GLM-5.3");
+    expect(glm[0].name).toBe("My GLM-5.3");
     expect(glm[0].tokenThresholds.handoff).toBe(999);
   });
 

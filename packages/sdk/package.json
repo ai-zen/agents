@@ -1,10 +1,19 @@
 {
   "name": "@ai-zen/agents-sdk",
-  "version": "1.0.0-alpha.22",
+  "version": "1.0.0-alpha.23",
   "description": "AI-Zen Agents SDK — shared business logic for CLI and Desktop",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ai-zen/agents.git",
+    "directory": "packages/sdk"
+  },
+  "homepage": "https://github.com/ai-zen/agents/tree/main/packages/sdk#readme",
+  "bugs": {
+    "url": "https://github.com/ai-zen/agents/issues"
+  },
   "scripts": {
     "clean": "rimraf ./dist",
     "prebuild": "npm run clean",

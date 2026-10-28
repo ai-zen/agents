@@ -6,17 +6,17 @@ import type { AgentNS } from "@ai-zen/agents-core";
 export class RenameTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "rename",
-    description: "重命名或移动文件/目录（相当于 mv 命令）",
+    description: "Rename or move a file/directory (equivalent to the mv command)",
     parameters: {
       type: "object",
       properties: {
         oldPath: {
           type: "string",
-          description: "原路径",
+          description: "Original path",
         },
         newPath: {
           type: "string",
-          description: "新路径",
+          description: "New path",
         },
       },
       required: ["oldPath", "newPath"],

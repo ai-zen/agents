@@ -7,7 +7,7 @@ import { getLogger } from "../../../shared/logger.js";
 import type { McpConnectionManager } from "./McpConnectionManager.js";
 import type { Endpoint, McpServerConfig, McpServerManifest, Model, ToolEnv } from "../../../types/index.js";
 
-const EMPTY_HINT = "（当前没有可用的 MCP 服务器，请联系用户添加）";
+const EMPTY_HINT = "(No MCP servers available, ask the user to add one)";
 
 /**
  * 创建 load_mcp 工具。
@@ -25,19 +25,19 @@ export function createLoadMcpTool(
   }
 
   const ids = filteredMcps.map((s) => s.id);
-  const param = createDisclosureParam(ids, "选择一个 MCP 服务器", EMPTY_HINT);
+  const param = createDisclosureParam(ids, "MCP server name", EMPTY_HINT);
 
   // 拼接各 MCP 服务器的描述供 LLM 参考（对齐 load_skill 的处理方式）
   const mcpDescriptions = filteredMcps
-    .map((s) => `  - ${s.id}: ${s.description || "无描述"}`)
+    .map((s) => `  - ${s.id}: ${s.description || "No description"}`)
     .join("\n");
-  const serverIdDescription = `${param.description}\n\n各 MCP 服务器说明：\n${mcpDescriptions || "  无可用 MCP 服务器"}`;
+  const serverIdDescription = `${param.description}\n\nAvailable MCP servers:\n${mcpDescriptions || "  No MCP servers available"}`;
 
   return new CallbackTool({
     function: {
       name: "load_mcp",
       description:
-        "连接到指定 MCP 服务器，获取其可用工具和资源列表。可用 include_manifest=false 仅建立连接、不返回清单（适用于上文中已有该清单的场景）。",
+        "Connect to the specified MCP server and get the list of tools and resources it exposes. Pass include_manifest=false to only establish the connection without returning the manifest (useful when the manifest is already in context).",
       parameters: {
         type: "object",
         properties: {
@@ -49,7 +49,7 @@ export function createLoadMcpTool(
           include_manifest: {
             type: "boolean",
             description:
-              "是否返回该服务器的完整能力清单（工具与资源）。可选，默认 true。若你的上文中已存在该清单（例如本会话早前加载过，而进程重启后连接已失效），可设为 false 仅建立连接、只返回摘要，以节省上下文 token",
+              "Whether to return the server's full capability manifest (tools and resources). Optional, defaults to true. If the manifest is already in your context (for example it was loaded earlier in this session but the connection was dropped after a process restart), set it to false to only establish the connection and return a summary, saving context tokens",
             default: true,
           },
         },
@@ -61,7 +61,7 @@ export function createLoadMcpTool(
       const serverName = input.server as string;
       const config = configMap.get(serverName);
       if (!config) {
-        return `❌ MCP 服务器 "${serverName}" 不存在`;
+        return `❌ MCP server "${serverName}" is not configured`;
       }
 
       // 披露开关：默认返回完整清单；显式传 false 时仅建立连接、只返回摘要
@@ -77,14 +77,14 @@ export function createLoadMcpTool(
         try {
           manifest = await mcpManager.connect(serverName, config);
         } catch (error: any) {
-          return `无法连接到 "${serverName}": ${error?.message ?? error}`;
+          return `Failed to connect to "${serverName}": ${error?.message ?? error}`;
         }
       }
 
       // 静默模式：只回吐摘要（清单仍留在管理器内，供 call_mcp_tool 使用）
       if (!includeManifest) {
         getLogger().info(
-          `[load_mcp] ${serverName}: 已连接（未披露清单：工具 ${manifest.tools.length} 个，资源 ${manifest.resources.length} 个）`,
+          `[load_mcp] ${serverName}: connected (manifest not disclosed: ${manifest.tools.length} tools, ${manifest.resources.length} resources)`,
         );
         return JSON.stringify({
           server: serverName,
@@ -159,7 +159,7 @@ async function mediaSection(
   } catch (error: any) {
     return {
       type: "text",
-      text: `[媒体] 无法转换（${mime}）：${error?.message ?? error}`,
+      text: `[media] Failed to convert (${mime}): ${error?.message ?? error}`,
     };
   }
 }
@@ -208,12 +208,12 @@ async function toMessageSection(block: any, media: MediaContext): Promise<AgentN
         const mime = r.mimeType ?? "application/octet-stream";
         return await mediaSection(r.blob, mime, media);
       }
-      return { type: "text", text: `[资源] ${r.uri ?? "(未知 URI)"}` };
+      return { type: "text", text: `[resource] ${r.uri ?? "(unknown URI)"}` };
     }
 
     case "resource_link": {
       const parts = [block.name, block.uri, block.mimeType].filter(Boolean);
-      return { type: "text", text: `[资源链接] ${parts.join(" · ")}` };
+      return { type: "text", text: `[resource_link] ${parts.join(" · ")}` };
     }
 
     case "text":
@@ -256,8 +256,8 @@ async function protectCallOutput(
         outputTooLarge: true,
         isError: isError || undefined,
         warning:
-          `文本输出过大：共 ${chars} 字符，超过上限 ${limit} 字符。` +
-          `完整文本已落盘（result.txt），可用 read 分批读取。`,
+          `Text output too large: ${chars} characters, exceeding the limit of ${limit} characters. ` +
+          `The full text has been written to disk (result.txt); use read to page through it.`,
         files: ctx.files,
         chars,
         ...preview,
@@ -285,9 +285,9 @@ async function protectCallOutput(
 
   // 未超限：无媒体 → 纯字符串；有媒体 → 原序块数组
   const hasMedia = sections.some((s) => s.type !== "text");
-  if (!hasMedia) return isError ? `❌ 工具执行出错:\n${fullText}` : fullText;
+  if (!hasMedia) return isError ? `❌ Tool execution failed:\n${fullText}` : fullText;
   return isError
-    ? [{ type: "text", text: "❌ 工具执行出错:" }, ...sections]
+    ? [{ type: "text", text: "❌ Tool execution failed:" }, ...sections]
     : sections;
 }
 
@@ -309,13 +309,13 @@ export function createCallMcpTool(
     function: {
       name: "call_mcp_tool",
       description:
-        "调用已连接 MCP 服务器上的指定工具。需先通过 load_mcp 连接服务器。文本输出过大时会落盘并只返回头尾预览；图片、音频等媒体会保留：端点支持 Files API 时上传后以 file_id 引用，否则 base64 内联。",
+        "Call a tool exposed by a connected MCP server. Connect the server with load_mcp first. Large text output is written to disk and only a head/tail preview is returned; images, audio and other media are preserved: uploaded and referenced by file_id when the endpoint supports the Files API, otherwise inlined as base64.",
       parameters: {
         type: "object",
         properties: {
-          server: { type: "string", description: "MCP 服务器名称" },
-          tool: { type: "string", description: "工具名称" },
-          arguments: { type: "object", description: "工具参数" },
+          server: { type: "string", description: "MCP server name" },
+          tool: { type: "string", description: "Tool name" },
+          arguments: { type: "object", description: "Tool arguments" },
         },
         required: ["server", "tool", "arguments"],
         additionalProperties: false,
@@ -325,12 +325,12 @@ export function createCallMcpTool(
       const serverName = input.server as string;
       const state = mcpManager.getState(serverName);
       if (state !== "connected") {
-        return `请先使用 load_mcp 连接 "${serverName}"`;
+        return `Call load_mcp to connect "${serverName}" first`;
       }
 
       const client = mcpManager.getClient(serverName);
       if (!client) {
-        return `MCP 服务器 "${serverName}" 的客户端不可用`;
+        return `MCP server "${serverName}" client is not available`;
       }
 
       try {
@@ -372,7 +372,7 @@ export function createCallMcpTool(
 
         return await protectCallOutput({ sections, fullText, chars, isError }, env);
       } catch (error: any) {
-        return `❌ 调用 "${input.tool}" 失败: ${error?.message ?? error}`;
+        return `❌ Failed to call "${input.tool}": ${error?.message ?? error}`;
       }
     },
   });
@@ -389,12 +389,12 @@ export function createReadMcpResourceTool(
     function: {
       name: "read_mcp_resource",
       description:
-        "读取已连接 MCP 服务器上的指定资源（文档、数据、图片等）。文本原样返回；图片等媒体按端点能力上传（file_id）或 base64 内联，不会被丢弃。",
+        "Read a resource (document, data, image, etc.) from a connected MCP server. Text is returned as-is; images and other media are uploaded (file_id) or inlined as base64 depending on endpoint capabilities, and are never dropped.",
       parameters: {
         type: "object",
         properties: {
-          server: { type: "string", description: "MCP 服务器名称" },
-          uri: { type: "string", description: "资源 URI" },
+          server: { type: "string", description: "MCP server name" },
+          uri: { type: "string", description: "Resource URI" },
         },
         required: ["server", "uri"],
         additionalProperties: false,
@@ -404,12 +404,12 @@ export function createReadMcpResourceTool(
       const serverName = input.server as string;
       const state = mcpManager.getState(serverName);
       if (state !== "connected") {
-        return `请先使用 load_mcp 连接 "${serverName}"`;
+        return `Call load_mcp to connect "${serverName}" first`;
       }
 
       const client = mcpManager.getClient(serverName);
       if (!client) {
-        return `MCP 服务器 "${serverName}" 的客户端不可用`;
+        return `MCP server "${serverName}" client is not available`;
       }
 
       try {
@@ -446,7 +446,7 @@ export function createReadMcpResourceTool(
         const chars = textSections.reduce((n, section) => n + section.text.length, 0);
         return await protectCallOutput({ sections, fullText, chars, isError: false }, env);
       } catch (error: any) {
-        return `❌ 读取资源 "${input.uri}" 失败: ${error?.message ?? error}`;
+        return `❌ Failed to read resource "${input.uri}": ${error?.message ?? error}`;
       }
     },
   });

@@ -23,16 +23,16 @@ describe("EditTool", () => {
   it("工具名称和描述正确", () => {
     const tool = new EditTool(makeEnv());
     expect(tool.function.name).toBe("edit");
-    expect(tool.function.description).toContain("编辑文件中的文本");
+    expect(tool.function.description).toContain("Edit text in a file");
   });
 
   it("描述里禁止并行编辑同一文件，并指向 batch_edit", () => {
     const tool = new EditTool(makeEnv());
     const description = tool.function.description ?? "";
-    expect(description).toContain("同一个文件禁止并行编辑");
+    expect(description).toContain("never edit the same file in parallel");
     expect(description).toContain("batch_edit");
     // 不同文件允许并行，别把限制写得过头
-    expect(description).toContain("不同文件");
+    expect(description).toContain("different files");
   });
 
   it("isReplaceAll 默认值为 false", () => {
@@ -77,7 +77,7 @@ describe("EditTool", () => {
     try {
       const result = await tool.call({ path: filePath, oldText: "hello", newText: "hi", isReplaceAll: false });
       const parsed = JSON.parse(result as string);
-      expect(parsed.result).toContain("警告");
+      expect(parsed.result).toContain("Warning");
       expect(parsed.matchCount).toBe(2);
       expect(parsed.replacedCount).toBe(1);
       expect(readFileSync(filePath, "utf-8")).toBe("hi world, hello universe");
@@ -92,7 +92,7 @@ describe("EditTool", () => {
     try {
       const result = await tool.call({ path: filePath, oldText: "not-exists", newText: "hi" });
       const parsed = JSON.parse(result as string);
-      expect(parsed.result).toBe("文件中未精确匹配到要替换的文本");
+      expect(parsed.result).toBe("No exact match found for the text to replace");
       expect(parsed.matchCount).toBe(0);
       expect(readFileSync(filePath, "utf-8")).toBe("hello world");
     } finally {

@@ -30,7 +30,7 @@ describe("UnknownToolHintPlugin", () => {
   it("无 MCP 配置时提示工具不存在", () => {
     const plugin = new UnknownToolHintPlugin({ scope: mockScope() });
     const result = plugin.onUnknownTool(ctx("foo", []));
-    expect(result).toBe('工具 "foo" 不存在。');
+    expect(result).toBe('Tool "foo" does not exist.');
   });
 
   it("有 MCP 配置但 call_mcp_tool 不可用时提示权限问题", () => {
@@ -38,7 +38,7 @@ describe("UnknownToolHintPlugin", () => {
       scope: mockScope({ mcpPaths: ["/tmp/mcp.json"] }),
     });
     const result = plugin.onUnknownTool(ctx("foo", ["read"]));
-    expect(result).toContain("call_mcp_tool 权限已被禁用");
+    expect(result).toContain("call_mcp_tool permission is disabled");
   });
 
   it("有 MCP 配置且 call_mcp_tool 可用时提示使用 call_mcp_tool", () => {
@@ -46,7 +46,7 @@ describe("UnknownToolHintPlugin", () => {
       scope: mockScope({ mcpPaths: ["/tmp/mcp.json"] }),
     });
     const result = plugin.onUnknownTool(ctx("foo", ["call_mcp_tool"]));
-    expect(result).toContain("请使用 call_mcp_tool");
+    expect(result).toContain("use call_mcp_tool");
   });
 
   it("无 MCP 配置时不提示 MCP 相关内容", () => {

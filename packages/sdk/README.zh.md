@@ -135,6 +135,19 @@ await scope.dispose(); // 断开 MCP、释放插件资源
 | `ContextGuardPlugin` | 上下文安全护栏 — 每轮发请求前检测上一轮 `usage.prompt_tokens`，超过 `maxTokens × ratio`（默认 1.5，即 +50%）时抛 `ContextOverflowError` 中断对话，防止读入超大文件导致上下文失控 |
 | `UnknownToolHintPlugin` | 未知工具智能提示 — LLM 调用不存在的工具时，根据 MCP 配置引导使用 `call_mcp_tool` / 提示权限问题（调用方显式 `agent.use` 注册） |
 
+## 语言
+
+SDK 是 **English-only**：所有面向模型与面向用户的文案（工具 schema 描述、出厂提示词、运行期注入语、工具返回值、错误信息、出厂 catalog 数据）都是**固定英文字面量**。没有 locale 字段、没有语言包、没有运行期切换。界面语言完全属于各端（CLI 的 `i18n/`、Desktop 的语言设置）。
+
+这是**性能边界**，不是图省事 —— **SDK 的行为与性能不得随用户语言变化**：
+
+- **阈值是绝对量。** `Model.tokenThresholds.handoff` / `guard` 与 `AppConfig.maxToolOutput` 都以 token / 字符的绝对值为判据。工具 schema 换个语言就是另一组 token 数 —— 交接与上下文阻断会在**不同的实际内容量**上触发。同一份 `config.json` 在不同语言下跑出不同行为。
+- **schema 成本每轮都付。** 描述文字随每次请求重发，token 差异是摊在每一轮上的持续开销，会改变请求体积、上下文占用与费用，而不是一次性成本。
+- **缓存前缀不再可比。** prompt 缓存按前缀匹配；语言一旦进入 SDK，同一条代码路径就有了多个前缀形态，基准测试失去单一变量。
+- **基准与排查需要单一形态。** 性能数据、bug 复现、工具调用成功率都要能横向比较；行为若随 locale 漂移，任何结论都得先问「你是什么语言」。
+
+「模型跟随用户语言」由一条语言中立的 system prompt 指令承担 —— `Always reply in the same language the user writes in.` —— 按**每条消息**自适应，比按安装实例绑定 locale 更准确，也不需要 SDK 参与。完整论述见 [`docs/sdk-design-v1.md` §1](docs/sdk-design-v1.md)。
+
 ## 设计原则
 
 参见项目根 [`PRINCIPLES.md`](../../PRINCIPLES.md)：

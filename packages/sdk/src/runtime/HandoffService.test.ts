@@ -14,18 +14,18 @@ import { FALLBACK_HANDOFF_TEMPLATE } from "../config/factory-skills.js";
 const SKILL_CONTENT = [
   "---",
   "name: handoff",
-  "description: 测试用交接 Skill",
+  "description: Test handoff skill",
   "---",
   "",
-  "# 测试交接规范",
+  "# Test handoff standards",
   "",
-  "## 💬 对话断点",
-  "## 🔔 接手第一步",
+  "## 💬 Conversation Breakpoint",
+  "## 🔔 First Step for the Next Agent",
 ].join("\n");
 
 /** 生成足够大的交接文档正文（默认超过 400 字节阈值） */
 function docContent(padding = 600): string {
-  return `## 💬 对话断点\n上一轮的断点内容\n## 🔔 接手第一步\n- 跑 npm test\n${"x".repeat(padding)}`;
+  return `## 💬 Conversation Breakpoint\nBreakpoint content from the previous round\n## 🔔 First Step for the Next Agent\n- run npm test\n${"x".repeat(padding)}`;
 }
 
 interface FakeAgentOptions {
@@ -53,8 +53,8 @@ class FakeAgent {
   constructor(public options: FakeAgentOptions = {}) {
     this.messages = options.messages ?? [
       { role: "system", content: "You are a helper." },
-      { role: "user", content: "帮我做任务 A" },
-      { role: "assistant", content: "好的，已开始" },
+      { role: "user", content: "help me do task A" },
+      { role: "assistant", content: "ok, started" },
     ];
     this.definition = { messages: options.definitionMessages ?? [this.messages[0]] };
     this.tools =
@@ -84,7 +84,7 @@ class FakeAgent {
     await this.options.onSend?.(content, this.sent.length, this);
     // 模拟 core：追加 user 指令 + assistant 回执
     this.messages.push({ role: "user", content });
-    this.messages.push({ role: "assistant", content: "交接文档已写入。" });
+    this.messages.push({ role: "assistant", content: "Handoff document written." });
     return this.messages;
   }
 }
@@ -139,12 +139,12 @@ describe("HandoffService 静态工具", () => {
       toolsAvailable: true,
     });
 
-    expect(prompt).toContain("# 测试交接规范");
-    expect(prompt).toContain("## 本次交接参数");
+    expect(prompt).toContain("# Test handoff standards");
+    expect(prompt).toContain("## Handoff parameters");
     expect(prompt).toContain("/tmp/handoffs/a.md");
-    expect(prompt).toContain("工具能力：可用");
-    expect(prompt).toContain("write 工具");
-    expect(prompt).toContain("不要复述文档内容");
+    expect(prompt).toContain("Tools available: yes");
+    expect(prompt).toContain("write tool");
+    expect(prompt).toContain("do not restate the document content");
   });
 
   it("createHandoffInstruction 无工具时要求直接输出正文并禁止推测", () => {
@@ -154,10 +154,10 @@ describe("HandoffService 静态工具", () => {
       toolsAvailable: false,
     });
 
-    expect(prompt).toContain("工具能力：不可用");
-    expect(prompt).toContain("⚠️ 未核实");
-    expect(prompt).toContain("直接输出完整文档正文");
-    expect(prompt).not.toContain("用 write 工具");
+    expect(prompt).toContain("Tools available: no");
+    expect(prompt).toContain("⚠️ Unverified");
+    expect(prompt).toContain("Output the complete document body directly");
+    expect(prompt).not.toContain("write tool");
   });
 
   it("createPostMessages 只给路径并要求先 read", () => {
@@ -168,7 +168,7 @@ describe("HandoffService 静态工具", () => {
     expect(messages[0].content).toContain("/tmp/handoffs/x.md");
     expect(messages[0].content).toContain("read");
     // 不再内联全文
-    expect(messages[0].content).not.toContain("## 💬 对话断点");
+    expect(messages[0].content).not.toContain("## 💬 Conversation Breakpoint");
   });
 
   it("serializeMessages 序列化为 [role]: content", () => {
@@ -192,7 +192,7 @@ describe("handoff", () => {
       onSend: async (_content, _call, self) => {
         // 模拟 agent 用 write 工具落盘
         const [userMsg] = self.sent;
-        const path = userMsg.match(/交接文档绝对路径：(.+)/)![1].trim();
+        const path = userMsg.match(/Handoff document absolute path: (.+)/)![1].trim();
         await fs.writeFile(path, docContent(), "utf-8");
       },
     });
@@ -218,7 +218,7 @@ describe("handoff", () => {
     });
     const agent = new FakeAgent({
       onSend: async (_c, _n, self) => {
-        const path = self.sent[0].match(/交接文档绝对路径：(.+)/)![1].trim();
+        const path = self.sent[0].match(/Handoff document absolute path: (.+)/)![1].trim();
         await fs.writeFile(path, docContent(), "utf-8");
       },
     });
@@ -227,7 +227,7 @@ describe("handoff", () => {
 
     // 读不到 Skill → 兜底模板（保险丝）
     expect(agent.sent[0]).toContain(FALLBACK_HANDOFF_TEMPLATE.split("\n")[0]);
-    expect(agent.sent[0]).toContain("## 🔔 接手第一步");
+    expect(agent.sent[0]).toContain("## 🔔 First Step for the Next Agent");
   });
 
   it("self 模式：读得到 Skill 时使用 Skill 正文", async () => {
@@ -239,14 +239,14 @@ describe("handoff", () => {
     const { service } = await makeService({ skillDirs: [skillRoot] });
     const agent = new FakeAgent({
       onSend: async (_c, _n, self) => {
-        const path = self.sent[0].match(/交接文档绝对路径：(.+)/)![1].trim();
+        const path = self.sent[0].match(/Handoff document absolute path: (.+)/)![1].trim();
         await fs.writeFile(path, docContent(), "utf-8");
       },
     });
 
     await service.handoff({ agent: asAgent(agent) });
 
-    expect(agent.sent[0]).toContain("# 测试交接规范");
+    expect(agent.sent[0]).toContain("# Test handoff standards");
     expect(agent.sent[0]).not.toContain(FALLBACK_HANDOFF_TEMPLATE.split("\n")[0] + "\n");
   });
 
@@ -271,8 +271,8 @@ describe("handoff", () => {
     const { service } = await makeService();
     const agent = new FakeAgent({
       onSend: async (_c, _n, self) => {
-        const path = self.sent[0].match(/交接文档绝对路径：(.+)/)![1].trim();
-        await fs.writeFile(path, "太短", "utf-8");
+        const path = self.sent[0].match(/Handoff document absolute path: (.+)/)![1].trim();
+        await fs.writeFile(path, "too short", "utf-8");
       },
     });
 
@@ -283,7 +283,7 @@ describe("handoff", () => {
     expect(ctx.mode).toBe("summary");
     // summary 由服务调用模型并落盘
     expect(agent.client.chat.completions.create).toHaveBeenCalledTimes(1);
-    expect(ctx.handoffDoc).toContain("## 💬 对话断点");
+    expect(ctx.handoffDoc).toContain("## 💬 Conversation Breakpoint");
     const written = await fs.readFile(ctx.handoffPath, "utf-8");
     expect(written).toBe(ctx.handoffDoc);
   });
@@ -301,11 +301,11 @@ describe("handoff", () => {
 
   it("交接回合前清空 lastUsage（护栏/自动迁移的纵深防御）", async () => {
     const { service } = await makeService();
-    let usageAtSend: unknown = "未执行";
+    let usageAtSend: unknown = "not executed";
     const agent = new FakeAgent({
       onSend: async (_c, _n, self) => {
         usageAtSend = self.lastUsage;
-        const path = self.sent[0].match(/交接文档绝对路径：(.+)/)![1].trim();
+        const path = self.sent[0].match(/Handoff document absolute path: (.+)/)![1].trim();
         await fs.writeFile(path, docContent(), "utf-8");
       },
     });
@@ -321,7 +321,7 @@ describe("handoff", () => {
       onSend: async (_c, _n, self) => {
         const guard = self.plugins.find((p) => p instanceof HandoffGuardPlugin);
         expect(guard?.armed).toBe(true);
-        const path = self.sent[0].match(/交接文档绝对路径：(.+)/)![1].trim();
+        const path = self.sent[0].match(/Handoff document absolute path: (.+)/)![1].trim();
         await fs.writeFile(path, docContent(), "utf-8");
       },
     });
@@ -343,7 +343,7 @@ describe("handoff", () => {
     });
 
     await expect(service.handoff({ agent: asAgent(agent) })).rejects.toThrow(
-      "未能生成任务交接文档",
+      "Failed to generate the handoff document",
     );
   });
 
@@ -360,7 +360,7 @@ describe("handoff", () => {
     const ctx = await service.handoff({ agent: asAgent(agent) });
 
     expect(ctx.mode).toBe("summary"); // 因为文件没写出来 → 降级
-    await expect(nested).rejects.toThrow("交接流程已在进行中");
+    await expect(nested).rejects.toThrow("A handoff is already in progress");
   });
 
   it("handoff 时 migrating 为 false（不改动会话语义）", async () => {
@@ -372,7 +372,7 @@ describe("handoff", () => {
     });
     const agent = new FakeAgent({
       onSend: async (_c, _n, self) => {
-        const path = self.sent[0].match(/交接文档绝对路径：(.+)/)![1].trim();
+        const path = self.sent[0].match(/Handoff document absolute path: (.+)/)![1].trim();
         await fs.writeFile(path, docContent(), "utf-8");
       },
     });
@@ -385,7 +385,7 @@ describe("handoff", () => {
   it("busy 在流程结束后复位", async () => {    const { service } = await makeService();
     const agent = new FakeAgent({
       onSend: async (_c, _n, self) => {
-        const path = self.sent[0].match(/交接文档绝对路径：(.+)/)![1].trim();
+        const path = self.sent[0].match(/Handoff document absolute path: (.+)/)![1].trim();
         await fs.writeFile(path, docContent(), "utf-8");
       },
     });
@@ -406,7 +406,7 @@ describe("migrate", () => {
   function selfAgent(): FakeAgent {
     return new FakeAgent({
       onSend: async (_c, _n, self) => {
-        const path = self.sent[0].match(/交接文档绝对路径：(.+)/)![1].trim();
+        const path = self.sent[0].match(/Handoff document absolute path: (.+)/)![1].trim();
         await fs.writeFile(path, docContent(), "utf-8");
       },
     });
@@ -507,8 +507,8 @@ describe("migrate", () => {
 
     expect(ctx.mode).toBe("summary");
     const written = await fs.readFile(ctx.handoffPath, "utf-8");
-    expect(written).toContain("## 💬 对话断点");
-    expect(agent.messages.at(-1)!.content).not.toContain("## 💬 对话断点");
+    expect(written).toContain("## 💬 Conversation Breakpoint");
+    expect(agent.messages.at(-1)!.content).not.toContain("## 💬 Conversation Breakpoint");
   });
 });
 
@@ -568,8 +568,8 @@ describe("取消（AbortSignal）", () => {
     const agent = new FakeAgent({
       onSend: async (content) => {
         // 模型已经用 write 工具落了半截内容，然后被取消
-        const path = /交接文档绝对路径：(.+)/.exec(content)![1]!.trim();
-        await fs.writeFile(path, "## 💬 对话断点\n只写了一半", "utf-8");
+        const path = /Handoff document absolute path: (.+)/.exec(content)![1]!.trim();
+        await fs.writeFile(path, "## 💬 Conversation Breakpoint\nonly half written", "utf-8");
         ac.abort();
       },
     });
@@ -593,7 +593,7 @@ describe("取消（AbortSignal）", () => {
     ).rejects.toThrow(HandoffAbortedError);
 
     // 断点消息没有被注入
-    expect(agent.messages.at(-1)!.content).not.toContain("上一轮对话已交接");
+    expect(agent.messages.at(-1)!.content).not.toContain("The previous conversation has been handed off");
     expect(agent.messages.length).toBeGreaterThanOrEqual(before);
   });
 

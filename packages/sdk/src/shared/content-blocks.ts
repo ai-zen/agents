@@ -204,7 +204,7 @@ export async function fileToContentSection(input: FileToSectionInput): Promise<F
   if ("url" in source) {
     if (!isRemoteUrl(source.url)) {
       throw new Error(
-        `不支持本地 URL（${source.url}）：API 服务商无法访问。本地文件请传文件路径，而不是本地链接。`,
+        `Unsupported local URL (${source.url}): the API provider cannot access it. For local files pass a file path, not a local link`,
       );
     }
     return {
@@ -227,10 +227,10 @@ export async function fileToContentSection(input: FileToSectionInput): Promise<F
   if ("path" in source) {
     absPath = path.isAbsolute(source.path) ? source.path : path.resolve(source.path);
     const st = await fs.stat(absPath);
-    if (!st.isFile()) throw new Error(`"${absPath}" 不是文件。`);
+    if (!st.isFile()) throw new Error(`"${absPath}" is not a file`);
     const inferred = mimeOf(absPath);
     if (!inferred) {
-      throw new Error(`不支持的文件类型："${absPath}"（已知类型：${Object.keys(MIME_BY_EXT).join(" ")}）`);
+      throw new Error(`Unsupported file type: "${absPath}" (known types: ${Object.keys(MIME_BY_EXT).join(" ")})`);
     }
     mime = inferred;
     stat = { mtimeMs: st.mtimeMs, size: st.size };
@@ -265,10 +265,10 @@ export async function fileToContentSection(input: FileToSectionInput): Promise<F
   if (isImage && model && model.vision !== true) {
     const label = absPath ?? filename;
     return {
-      section: textSection(`[图片] ${label}（当前模型不支持图片输入，如需查看请改用视觉模型）`),
+      section: textSection(`[Image] ${label} (the current model does not support image input; use a vision-capable model to view it)`),
       transport: "text",
       bytes: byteLength,
-      warning: "当前模型不支持图片输入，已退化为文本提示",
+      warning: "The current model does not support image input; degraded to a text hint",
     };
   }
 
@@ -297,16 +297,16 @@ export async function fileToContentSection(input: FileToSectionInput): Promise<F
       };
     } catch (error: any) {
       if (signal?.aborted) throw error;
-      warning = `上传 Files API 失败，已改为 base64 内联：${error?.message ?? error}`;
+      warning = `Files API upload failed, falling back to base64 inline: ${error?.message ?? error}`;
     }
   }
 
   // ---- 5. 内联（base64 data URL）----
   if (byteLength > maxInline) {
     throw new Error(
-      `文件体积 ${(byteLength / 1024 / 1024).toFixed(1)} MiB 超过内联上限 ` +
-        `${(maxInline / 1024 / 1024).toFixed(1)} MiB，且端点未声明 Files API 能力` +
-        `（capabilities.filesApi），无法发送。`,
+      `File size ${(byteLength / 1024 / 1024).toFixed(1)} MiB exceeds the inline limit of ` +
+        `${(maxInline / 1024 / 1024).toFixed(1)} MiB and the endpoint does not declare the Files API capability ` +
+        `(capabilities.filesApi), so it cannot be sent`,
     );
   }
   // base64 来源直接透传，不重新编码（保证字节级一致，也省一次编解码）

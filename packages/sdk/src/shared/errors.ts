@@ -28,9 +28,9 @@ export class ContextOverflowError extends Error {
 
   constructor(promptTokens: number, guardTokens: number) {
     super(
-      `🛑 上下文严重超限：已用 ${promptTokens} token，超过阻断阈值 ${guardTokens}。` +
-        `当前对话可能因读入超大文件而失控，已中断，请检查并重新开始。` +
-        `（如确需更长上下文，请调高 config.json 中该模型的 tokenThresholds.guard。）`,
+      `🛑 Context critically over the limit: ${promptTokens} tokens used, above the blocking threshold of ${guardTokens}.` +
+        ` The conversation may have run away after reading an oversized file, so it has been interrupted — please inspect and start over.` +
+        ` (If you really need a longer context, raise tokenThresholds.guard for this model in config.json.)`,
     );
     this.name = "ContextOverflowError";
     this.promptTokens = promptTokens;

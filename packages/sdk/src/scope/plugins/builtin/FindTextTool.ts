@@ -27,7 +27,7 @@ export class FindTextTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "find_text",
     description:
-      "查找文本出现的位置，支持普通文本或正则匹配，返回文件名及具体行号、行内容。为避免结果撑爆上下文，默认限制总匹配数、单文件大小与行内容长度，超限会截断并标记 truncated。",
+      "Find where text occurs, supporting plain text or regex matching; returns file names with line numbers and line content. To avoid blowing up the context, the total match count, per-file size and line content length are limited by default, and results beyond the limits are truncated and marked truncated.",
     parameters: {
       type: "object",
       properties: {
@@ -41,30 +41,30 @@ export class FindTextTool extends SdkCallbackTool {
         },
         text: {
           type: "string",
-          description: "要查找的文本（与 regex 二选一）",
+          description: "Text to search for (mutually exclusive with regex)",
         },
         regex: {
           type: "string",
-          description: "正则表达式（与 text 二选一，例如 \\bconst\\s+\\w+）",
+          description: "Regular expression (mutually exclusive with text, e.g. \\bconst\\s+\\w+)",
         },
         exclude: {
           type: "array",
-          description: "要排除的 glob 模式数组",
+          description: "Array of glob patterns to exclude",
           items: {
             type: "string",
           },
         },
         maxMatches: {
           type: "number",
-          description: "总匹配数上限，默认 200",
+          description: "Maximum total matches (default 200)",
         },
         maxFileSize: {
           type: "number",
-          description: "单文件大小上限（字节），超过则跳过该文件，默认 307200（300KB）",
+          description: "Maximum file size in bytes; larger files are skipped (default 307200, i.e. 300KB)",
         },
         maxLineLength: {
           type: "number",
-          description: "行内容与匹配子串的截断长度，默认 200",
+          description: "Truncation length for line content and matched substrings (default 200)",
         },
       },
       required: ["path", "pattern"],
@@ -96,7 +96,7 @@ export class FindTextTool extends SdkCallbackTool {
       const regexStr = input.regex;
 
       if (!text && !regexStr) {
-        return "请提供 text 或 regex 参数";
+        return "Provide either the text or the regex parameter";
       }
 
       const regex = regexStr ? new RegExp(regexStr) : null;
@@ -193,8 +193,8 @@ export class FindTextTool extends SdkCallbackTool {
         return JSON.stringify({
           outputTooLarge: true,
           warning:
-            `输出过大：结果共 ${json.length} 字符，超过上限 ${limit} 字符。` +
-            `完整结果已落盘（result.json），可用 read 分批读取。`,
+            `Output too large: the results total ${json.length} characters, exceeding the limit of ${limit} characters. ` +
+            `The full result has been written to disk (result.json) and can be read in chunks with read.`,
           files: ctx.files,
           chars: json.length,
           ...preview,

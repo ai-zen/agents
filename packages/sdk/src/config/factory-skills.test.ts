@@ -46,8 +46,8 @@ describe("ConfigManager.ensureFactorySkills", () => {
 
     const content = await fs.readFile(skillFile(HANDOFF_SKILL_ID), "utf-8");
     expect(content).toContain("name: handoff");
-    expect(content).toContain("## 💬 对话断点");
-    expect(content).toContain("## 🔔 接手第一步");
+    expect(content).toContain("## 💬 Conversation Breakpoint");
+    expect(content).toContain("## 🔔 First Step for the Next Agent");
   });
 
   it("内容未变化时不重复写盘", async () => {
@@ -65,7 +65,7 @@ describe("ConfigManager.ensureFactorySkills", () => {
     await fs.mkdir(join(dir, "skills", HANDOFF_SKILL_ID), { recursive: true });
     await fs.writeFile(
       skillFile(HANDOFF_SKILL_ID),
-      '---\nname: handoff\ndescription: 老版本\nmetadata:\n  custom: "false"\n---\n旧正文',
+      '---\nname: handoff\ndescription: old version\nmetadata:\n  custom: "false"\n---\nold body',
       "utf-8",
     );
 

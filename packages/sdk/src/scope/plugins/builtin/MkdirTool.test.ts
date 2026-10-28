@@ -14,7 +14,7 @@ describe("MkdirTool", () => {
   it("工具名称和描述正确", () => {
     const tool = new MkdirTool(makeEnv());
     expect(tool.function.name).toBe("mkdir");
-    expect(tool.function.description).toBe("创建目录");
+    expect(tool.function.description).toBe("Create a directory");
   });
 
   it("创建单层目录", async () => {

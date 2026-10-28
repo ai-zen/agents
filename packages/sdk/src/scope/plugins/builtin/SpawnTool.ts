@@ -7,22 +7,22 @@ export class SpawnTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "spawn",
     description:
-      "异步执行命令，启动程序后立即返回，不等待执行结果。适用于启动长期运行的进程（如服务器、监听程序、GUI应用等）或不需要等待结果的命令。注意：该工具本身不捕获命令的输出；若需获取/留存输出，可在命令中使用 shell 重定向写入文件（如 `> /path/file`，支持 `>>` 追加、`|` 管道）。命令经 shell 解析执行。",
+      "Spawn a command asynchronously and return immediately without waiting for the result. Use it for long-running processes (servers, watchers, GUI apps, etc.) or commands whose result you do not need to wait for. Note: this tool does not capture the command's output itself; to retain or inspect output, use shell redirection to a file inside the command (e.g. `> /path/file`; `>>` append and `|` pipes are supported). The command is parsed and executed by the shell.",
     parameters: {
       type: "object",
       properties: {
         command: {
           type: "string",
-          description: "要执行的命令（含参数）",
+          description: "Command to execute (including arguments)",
         },
         cwd: {
           type: "string",
-          description: "工作目录（可选，默认当前工作目录）",
+          description: "Working directory (optional, defaults to the current working directory)",
         },
         detached: {
           type: "boolean",
           description:
-            "是否完全脱离当前进程组（可选，默认 false）。设为 true 时，即使当前 Agent 进程退出，启动的程序仍会继续运行。适用于需要独立运行的守护进程或 GUI 程序。",
+            "Whether to fully detach from the current process group (optional, defaults to false). When true, the spawned program keeps running even after the current Agent process exits. Use it for daemons or GUI programs that must run independently.",
         },
       },
       required: ["command"],
@@ -58,7 +58,7 @@ export class SpawnTool extends SdkCallbackTool {
           JSON.stringify({
             success: false,
             pid: null,
-            message: `启动失败: ${err.message}`,
+            message: `Failed to start: ${err.message}`,
           }),
         );
       });
@@ -70,7 +70,7 @@ export class SpawnTool extends SdkCallbackTool {
           JSON.stringify({
             success: true,
             pid: child.pid ?? null,
-            message: `进程已启动 (PID: ${child.pid ?? "unknown"})`,
+            message: `Process started (PID: ${child.pid ?? "unknown"})`,
           }),
         );
       });
@@ -85,8 +85,8 @@ export class SpawnTool extends SdkCallbackTool {
             exitCode: code,
             message:
               code === null
-                ? `进程已退出 (PID: ${child.pid ?? "unknown"})`
-                : `进程已退出 (PID: ${child.pid ?? "unknown"}, 退出码: ${code})`,
+                ? `Process exited (PID: ${child.pid ?? "unknown"})`
+                : `Process exited (PID: ${child.pid ?? "unknown"}, exit code: ${code})`,
           }),
         );
       });
@@ -98,7 +98,7 @@ export class SpawnTool extends SdkCallbackTool {
           JSON.stringify({
             success: true,
             pid: child.pid ?? null,
-            message: `进程已启动 (PID: ${child.pid ?? "unknown"})`,
+            message: `Process started (PID: ${child.pid ?? "unknown"})`,
           }),
         );
       }, 500);

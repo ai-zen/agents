@@ -18,7 +18,7 @@ describe("FindTextTool", () => {
   it("工具名称和描述正确", () => {
     const tool = new FindTextTool(makeEnv());
     expect(tool.function.name).toBe("find_text");
-    expect(tool.function.description).toContain("查找文本");
+    expect(tool.function.description).toContain("Find where text occurs");
   });
 
   it("普通文本查找", async () => {
@@ -59,7 +59,7 @@ describe("FindTextTool", () => {
   it("未提供 text 和 regex 时返回提示", async () => {
     const tool = new FindTextTool(makeEnv());
     const result = await tool.call({ path: "/tmp", pattern: "*.txt" });
-    expect(result).toContain("请提供 text 或 regex");
+    expect(result).toContain("Provide either the text or the regex");
   });
 
   it("默认排除 node_modules", async () => {
@@ -161,7 +161,7 @@ describe("FindTextTool", () => {
       const parsed = JSON.parse(result as string);
 
       expect(parsed.outputTooLarge).toBe(true);
-      expect(parsed.warning).toContain("超过上限 100 字符");
+      expect(parsed.warning).toContain("exceeding the limit of 100 characters");
 
       // 完整结果落盘
       const dumped = JSON.parse(readFileSync(parsed.files["result.json"], "utf-8"));

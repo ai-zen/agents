@@ -97,8 +97,8 @@ function mockManager(overrides?: Partial<McpConnectionManager>): McpConnectionMa
 }
 
 const mcps: McpServerConfig[] = [
-  { id: "github", name: "GitHub", description: "GitHub 文件与仓库工具", transport: "stdio", command: "gh" },
-  { id: "slack", name: "Slack", description: "Slack 消息工具", transport: "http", url: "https://slack.example.com" },
+  { id: "github", name: "GitHub", description: "GitHub file and repository tools", transport: "stdio", command: "gh" },
+  { id: "slack", name: "Slack", description: "Slack messaging tools", transport: "http", url: "https://slack.example.com" },
 ];
 
 describe("createLoadMcpTool", () => {
@@ -114,23 +114,23 @@ describe("createLoadMcpTool", () => {
     expect(tool.function.parameters.required).not.toContain("include_manifest");
     // description 透传进参数描述，供 LLM 参考（对齐 load_skill）
     const serverDesc = tool.function.parameters.properties.server.description as string;
-    expect(serverDesc).toContain("github: GitHub 文件与仓库工具");
-    expect(serverDesc).toContain("slack: Slack 消息工具");
-    expect(serverDesc).toContain("各 MCP 服务器说明");
+    expect(serverDesc).toContain("github: GitHub file and repository tools");
+    expect(serverDesc).toContain("slack: Slack messaging tools");
+    expect(serverDesc).toContain("Available MCP servers");
   });
 
   it("服务器不存在时返回错误", async () => {
     const manager = mockManager();
     const tool = createLoadMcpTool(manager, mcps);
     const result = await tool.callback({ server: "non-existent" });
-    expect(result).toContain("不存在");
+    expect(result).toContain("is not configured");
   });
 
   it("已连接时直接返回 JSON 清单（不含 prompts）", async () => {
     const manifest = {
-      tools: [{ name: "echo", description: "回显", inputSchema: { type: "object", properties: {} } }],
-      resources: [{ uri: "file:///data", name: "数据文件", description: "数据文件" }],
-      prompts: [{ name: "greet", description: "问候" }],
+      tools: [{ name: "echo", description: "Echo", inputSchema: { type: "object", properties: {} } }],
+      resources: [{ uri: "file:///data", name: "Data file", description: "Data file" }],
+      prompts: [{ name: "greet", description: "Greeting" }],
     };
     const manager = mockManager({
       getState: vi.fn(() => "connected" as const),
@@ -147,7 +147,7 @@ describe("createLoadMcpTool", () => {
 
   it("未连接时调用 connect 并返回 JSON（不含 prompts）", async () => {
     const manifest = {
-      tools: [{ name: "list", description: "列出文件", inputSchema: { type: "object", properties: {} } }],
+      tools: [{ name: "list", description: "List files", inputSchema: { type: "object", properties: {} } }],
       resources: [],
     };
     const manager = mockManager({
@@ -168,21 +168,21 @@ describe("createLoadMcpTool", () => {
     const manager = mockManager({
       getState: vi.fn(() => "disconnected" as const),
       getManifest: vi.fn(() => undefined),
-      connect: vi.fn().mockRejectedValue(new Error("连接超时")),
+      connect: vi.fn().mockRejectedValue(new Error("Connection timed out")),
     });
     const tool = createLoadMcpTool(manager, mcps);
     const result = await tool.callback({ server: "github" });
-    expect(result).toContain("无法连接");
-    expect(result).toContain("连接超时");
+    expect(result).toContain("Failed to connect");
+    expect(result).toContain("Connection timed out");
   });
 
   it("include_manifest=false 且未连接时仅建连并返回摘要（不含工具定义）", async () => {
     const manifest = {
       tools: [
-        { name: "echo", description: "回显", inputSchema: { type: "object", properties: {} } },
-        { name: "sum", description: "求和", inputSchema: { type: "object", properties: {} } },
+        { name: "echo", description: "Echo", inputSchema: { type: "object", properties: {} } },
+        { name: "sum", description: "Sum", inputSchema: { type: "object", properties: {} } },
       ],
-      resources: [{ uri: "file:///data", name: "数据文件" }],
+      resources: [{ uri: "file:///data", name: "Data file" }],
     };
     const manager = mockManager({
       getState: vi.fn(() => "disconnected" as const),
@@ -208,7 +208,7 @@ describe("createLoadMcpTool", () => {
   it("include_manifest=false 且已连接时返回摘要，不重复建连", async () => {
     const manifest = {
       tools: [
-        { name: "echo", description: "回显", inputSchema: { type: "object", properties: {} } },
+        { name: "echo", description: "Echo", inputSchema: { type: "object", properties: {} } },
       ],
       resources: [],
     };
@@ -232,9 +232,9 @@ describe("createLoadMcpTool", () => {
   it("显式 include_manifest=true 时返回完整清单（同默认）", async () => {
     const manifest = {
       tools: [
-        { name: "echo", description: "回显", inputSchema: { type: "object", properties: {} } },
+        { name: "echo", description: "Echo", inputSchema: { type: "object", properties: {} } },
       ],
-      resources: [{ uri: "file:///data", name: "数据文件" }],
+      resources: [{ uri: "file:///data", name: "Data file" }],
     };
     const manager = mockManager({
       getState: vi.fn(() => "disconnected" as const),
@@ -254,13 +254,13 @@ describe("createLoadMcpTool", () => {
     const manager = mockManager({
       getState: vi.fn(() => "disconnected" as const),
       getManifest: vi.fn(() => undefined),
-      connect: vi.fn().mockRejectedValue(new Error("连接超时")),
+      connect: vi.fn().mockRejectedValue(new Error("Connection timed out")),
     });
     const tool = createLoadMcpTool(manager, mcps);
     const result = await tool.callback({ server: "github", include_manifest: false });
 
-    expect(result).toContain("无法连接");
-    expect(result).toContain("连接超时");
+    expect(result).toContain("Failed to connect");
+    expect(result).toContain("Connection timed out");
     expect(result).not.toContain("connected");
   });
 });
@@ -281,7 +281,7 @@ describe("createCallMcpTool", () => {
     });
     const tool = createCallMcpTool(manager, makeEnv());
     const result = await tool.callback({ server: "github", tool: "echo", arguments: {} });
-    expect(result).toContain("请先使用 load_mcp");
+    expect(result).toContain("Call load_mcp to connect");
   });
 
   it("客户端不可用时返回错误", async () => {
@@ -291,7 +291,7 @@ describe("createCallMcpTool", () => {
     });
     const tool = createCallMcpTool(manager, makeEnv());
     const result = await tool.callback({ server: "github", tool: "echo", arguments: {} });
-    expect(result).toContain("不可用");
+    expect(result).toContain("is not available");
   });
 
   it("成功调用工具返回结果", async () => {
@@ -321,7 +321,7 @@ describe("createCallMcpTool", () => {
     const mockClient = {
       callTool: vi.fn().mockResolvedValue({
         isError: true,
-        content: [{ type: "text", text: "权限不足" }],
+        content: [{ type: "text", text: "Permission denied" }],
       }),
     };
     const manager = mockManager({
@@ -330,8 +330,8 @@ describe("createCallMcpTool", () => {
     });
     const tool = createCallMcpTool(manager, makeEnv());
     const result = await tool.callback({ server: "github", tool: "write", arguments: {} });
-    expect(result).toContain("工具执行出错");
-    expect(result).toContain("权限不足");
+    expect(result).toContain("Tool execution failed");
+    expect(result).toContain("Permission denied");
   });
 
   it("调用时返回非 text 内容", async () => {
@@ -355,7 +355,7 @@ describe("createCallMcpTool", () => {
 
   it("调用失败时返回错误信息", async () => {
     const mockClient = {
-      callTool: vi.fn().mockRejectedValue(new Error("网络错误")),
+      callTool: vi.fn().mockRejectedValue(new Error("Network error")),
     };
     const manager = mockManager({
       getState: vi.fn(() => "connected" as const),
@@ -363,8 +363,8 @@ describe("createCallMcpTool", () => {
     });
     const tool = createCallMcpTool(manager, makeEnv());
     const result = await tool.callback({ server: "github", tool: "echo", arguments: {} });
-    expect(result).toContain("失败");
-    expect(result).toContain("网络错误");
+    expect(result).toContain("Failed to call");
+    expect(result).toContain("Network error");
   });
 
   describe("内容块映射", () => {
@@ -380,14 +380,14 @@ describe("createCallMcpTool", () => {
     it("文本与图片混排：首块为文本，图片块原样透传", async () => {
       const tool = createCallMcpTool(
         managerWithContent([
-          { type: "text", text: "截图如下" },
+          { type: "text", text: "Screenshot below" },
           { type: "image", data: "BBBB", mimeType: "image/jpeg" },
         ]),
         makeEnv(),
       );
       const result = await tool.callback({ server: "github", tool: "shot", arguments: {} });
       expect(result).toEqual([
-        { type: "text", text: "截图如下" },
+        { type: "text", text: "Screenshot below" },
         { type: "image_url", image_url: { url: "data:image/jpeg;base64,BBBB" } },
       ]);
     });
@@ -406,13 +406,13 @@ describe("createCallMcpTool", () => {
     it("resource.text 并入正文（纯文本时仍返回字符串）", async () => {
       const tool = createCallMcpTool(
         managerWithContent([
-          { type: "text", text: "前缀" },
-          { type: "resource", resource: { uri: "file:///a.md", mimeType: "text/markdown", text: "# 内容" } },
+          { type: "text", text: "Prefix" },
+          { type: "resource", resource: { uri: "file:///a.md", mimeType: "text/markdown", text: "# Content" } },
         ]),
         makeEnv(),
       );
       const result = await tool.callback({ server: "github", tool: "read", arguments: {} });
-      expect(result).toBe("前缀\n# 内容");
+      expect(result).toBe("Prefix\n# Content");
     });
 
     it("resource.blob 按 mimeType 分流：图片走 image_url", async () => {
@@ -467,7 +467,7 @@ describe("createCallMcpTool", () => {
       const result = await tool.callback({ server: "github", tool: "shot", arguments: {} }, chatCtx);
       // 唯一的内容块是文本 → 按既有契约退化为字符串
       expect(typeof result).toBe("string");
-      expect(result as string).toContain("不支持图片输入");
+      expect(result as string).toContain("does not support image input");
       expect(mockFilesCreate).not.toHaveBeenCalled();
     });
 
@@ -486,12 +486,12 @@ describe("createCallMcpTool", () => {
     it("resource_link 转为文本线索", async () => {
       const tool = createCallMcpTool(
         managerWithContent([
-          { type: "resource_link", name: "报告", uri: "file:///r.md", mimeType: "text/markdown" },
+          { type: "resource_link", name: "Report", uri: "file:///r.md", mimeType: "text/markdown" },
         ]),
         makeEnv(),
       );
       const result = await tool.callback({ server: "github", tool: "list", arguments: {} });
-      expect(result).toBe("[资源链接] 报告 · file:///r.md · text/markdown");
+      expect(result).toBe("[resource_link] Report · file:///r.md · text/markdown");
     });
 
     it("未知类型退化为 JSON 文本，不丢弃", async () => {
@@ -507,7 +507,7 @@ describe("createCallMcpTool", () => {
       const tool = createCallMcpTool(
         managerWithContent([
           { type: "image", data: "AAAA", mimeType: "image/png" },
-          { type: "text", text: "上面的图" },
+          { type: "text", text: "The image above" },
           { type: "image", data: "BBBB", mimeType: "image/png" },
         ]),
         makeEnv(),
@@ -515,7 +515,7 @@ describe("createCallMcpTool", () => {
       const result = await tool.callback({ server: "github", tool: "shot", arguments: {} });
       expect(result).toEqual([
         { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
-        { type: "text", text: "上面的图" },
+        { type: "text", text: "The image above" },
         { type: "image_url", image_url: { url: "data:image/png;base64,BBBB" } },
       ]);
     });
@@ -523,11 +523,11 @@ describe("createCallMcpTool", () => {
     it("文本与图片交错时逐块保持原序（不合并、不重排）", async () => {
       const tool = createCallMcpTool(
         managerWithContent([
-          { type: "text", text: "图1：" },
+          { type: "text", text: "Image 1:" },
           { type: "image", data: "A", mimeType: "image/png" },
-          { type: "text", text: "图2：" },
+          { type: "text", text: "Image 2:" },
           { type: "image", data: "B", mimeType: "image/png" },
-          { type: "text", text: "完" },
+          { type: "text", text: "Done" },
         ]),
         makeEnv(),
       );
@@ -539,9 +539,9 @@ describe("createCallMcpTool", () => {
         "image_url",
         "text",
       ]);
-      expect(result[0].text).toBe("图1：");
-      expect(result[2].text).toBe("图2：");
-      expect(result[4].text).toBe("完");
+      expect(result[0].text).toBe("Image 1:");
+      expect(result[2].text).toBe("Image 2:");
+      expect(result[4].text).toBe("Done");
     });
 
     it("文本交叠落盘时，警告占据首个文本块的位置，其余文本块并到它身上", async () => {
@@ -712,13 +712,13 @@ describe("createReadMcpResourceTool", () => {
     });
     const tool = createReadMcpResourceTool(manager, makeEnv());
     const result = await tool.callback({ server: "github", uri: "file:///README.md" });
-    expect(result).toContain("请先使用 load_mcp");
+    expect(result).toContain("Call load_mcp to connect");
   });
 
   it("成功读取资源", async () => {
     const mockClient = {
       readResource: vi.fn().mockResolvedValue({
-        contents: [{ text: "# 文档内容" }],
+        contents: [{ text: "# Document content" }],
       }),
     };
     const manager = mockManager({
@@ -727,12 +727,12 @@ describe("createReadMcpResourceTool", () => {
     });
     const tool = createReadMcpResourceTool(manager, makeEnv());
     const result = await tool.callback({ server: "github", uri: "file:///README.md" });
-    expect(result).toBe("# 文档内容");
+    expect(result).toBe("# Document content");
   });
 
   it("读取失败时返回错误", async () => {
     const mockClient = {
-      readResource: vi.fn().mockRejectedValue(new Error("资源不存在")),
+      readResource: vi.fn().mockRejectedValue(new Error("Resource not found")),
     };
     const manager = mockManager({
       getState: vi.fn(() => "connected" as const),
@@ -740,8 +740,8 @@ describe("createReadMcpResourceTool", () => {
     });
     const tool = createReadMcpResourceTool(manager, makeEnv());
     const result = await tool.callback({ server: "github", uri: "file:///missing" });
-    expect(result).toContain("失败");
-    expect(result).toContain("资源不存在");
+    expect(result).toContain("Failed to read");
+    expect(result).toContain("Resource not found");
   });
 
   it("二进制资源不再被丢弃：无上传能力时内联为 image_url", async () => {
@@ -792,7 +792,7 @@ describe("createReadMcpResourceTool", () => {
     );
     const result = await tool.callback({ server: "github", uri: "file:///big.txt" });
     expect(typeof result).toBe("string");
-    expect(result as string).toContain("输出过大");
+    expect(result as string).toContain("Text output too large");
     expect(result as string).toContain("result.txt");
   });
 
@@ -800,9 +800,9 @@ describe("createReadMcpResourceTool", () => {
     const mockClient = {
       readResource: vi.fn().mockResolvedValue({
         contents: [
-          { uri: "file:///a.txt", mimeType: "text/plain", text: "第一段" },
+          { uri: "file:///a.txt", mimeType: "text/plain", text: "First paragraph" },
           { uri: "file:///p.png", mimeType: "image/png", blob: "GGGG" },
-          { uri: "file:///b.txt", mimeType: "text/plain", text: "第二段" },
+          { uri: "file:///b.txt", mimeType: "text/plain", text: "Second paragraph" },
         ],
       }),
     };
@@ -820,15 +820,15 @@ describe("createReadMcpResourceTool", () => {
         getClient: vi.fn(() => ({
           readResource: vi.fn().mockResolvedValue({
             contents: [
-              { uri: "file:///a.txt", text: "甲" },
-              { uri: "file:///b.txt", text: "乙" },
+              { uri: "file:///a.txt", text: "A" },
+              { uri: "file:///b.txt", text: "B" },
             ],
           }),
         })),
       }),
       makeEnv(),
     );
-    expect(await textOnly.callback({ server: "github", uri: "file:///y" })).toBe("甲\n乙");
+    expect(await textOnly.callback({ server: "github", uri: "file:///y" })).toBe("A\nB");
   });
 });
 

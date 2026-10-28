@@ -7,17 +7,18 @@ import { DEFAULT_MAX_TOOL_OUTPUT, guardOutput, headTailPreview } from "./outputG
 export class ExecTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "exec",
-    description: "执行命令",
+    description: "Execute a shell command",
     parameters: {
       type: "object",
       properties: {
         command: {
           type: "string",
-          description: "要执行的命令",
+          description: "Command to execute",
         },
         timeout: {
           type: "number",
-          description: "超时时间（毫秒），必填。超时后会终止进程；超过该时长仍未完成即视为超时并终止。建议长时间运行的命令使用 spawn 异步执行。",
+          description:
+            "Timeout in milliseconds (required). The process is killed on timeout. For long-running commands, prefer spawn to run them asynchronously.",
         },
       },
       required: ["command", "timeout"],
@@ -39,7 +40,7 @@ export class ExecTool extends SdkCallbackTool {
     // 运行时双校验：timeout 必填且必须为正数
     if (typeof timeout !== "number" || !Number.isFinite(timeout) || timeout <= 0) {
       throw new Error(
-        `exec: 参数 timeout 为必填项，且必须是正数（毫秒），当前值: ${JSON.stringify(timeout)}`,
+        `exec: timeout is required and must be a positive number (milliseconds), got: ${JSON.stringify(timeout)}`,
       );
     }
 
@@ -56,7 +57,7 @@ export class ExecTool extends SdkCallbackTool {
       if (signal?.aborted) {
         resolve({
           stdout: "",
-          stderr: "进程已中断（aborted）",
+          stderr: "Process aborted",
           exitCode: null,
           killed: true,
           terminated: "aborted",
@@ -103,7 +104,7 @@ export class ExecTool extends SdkCallbackTool {
         // 即便 exec 回调因信号处理而未能及时触发，也立即返回中断结果，避免挂起
         settle({
           stdout: "",
-          stderr: "进程已中断（aborted）",
+          stderr: "Process aborted",
           exitCode: null,
           killed: true,
           terminated: "aborted",
@@ -130,8 +131,8 @@ export class ExecTool extends SdkCallbackTool {
         return JSON.stringify({
           outputTooLarge: true,
           warning:
-            `输出过大：stdout + stderr 合计 ${result.stdout.length + result.stderr.length} 字符，` +
-            `超过上限 ${limit} 字符。完整内容已分文件落盘（stdout.log / stderr.log），可用 read 分批读取。`,
+            `Output too large: stdout + stderr total ${result.stdout.length + result.stderr.length} characters, ` +
+            `exceeds the limit of ${limit} characters. Full content was written to separate files (stdout.log / stderr.log); use read to fetch it in chunks`,
           files: ctx.files,
           stdout: { chars: result.stdout.length, lines: countLines(result.stdout), ...stdout },
           stderr: { chars: result.stderr.length, lines: countLines(result.stderr), ...stderr },

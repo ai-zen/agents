@@ -59,7 +59,7 @@ describe("ViewImageTool", () => {
   it("工具名称与描述正确", () => {
     const tool = new ViewImageTool(makeEnv("/ws"));
     expect(tool.function.name).toBe("view_image");
-    expect(tool.function.description).toContain("查看");
+    expect(tool.function.description).toContain("View an image and analyze its content");
   });
 
   it("URL 输入时直接返回 image_url 内容块（不上传）", async () => {
@@ -69,7 +69,7 @@ describe("ViewImageTool", () => {
     });
 
     expect(result).toEqual([
-      { type: "text", text: "已获取网络图片：https://example.com/a.jpg" },
+      { type: "text", text: "Fetched remote image: https://example.com/a.jpg" },
       { type: "image_url", image_url: { url: "https://example.com/a.jpg" } },
     ]);
     expect(mockFilesCreate).not.toHaveBeenCalled();
@@ -85,17 +85,17 @@ describe("ViewImageTool", () => {
   ])("本地 URL 拒绝：%s", async (_label, url) => {
     const tool = new ViewImageTool(makeEnv("/ws"));
     const result = await tool.call({ path_or_url: url });
-    expect(result).toContain("不支持本地 URL");
+    expect(result).toContain("Local URLs are not supported");
     expect(mockFilesCreate).not.toHaveBeenCalled();
   });
 
   it("参数说明中声明了不支持本地 URL", () => {
     const tool = new ViewImageTool(makeEnv("/ws"));
-    expect(tool.function.description).toContain("不支持本地 URL");
+    expect(tool.function.description).toContain("Local URLs are not supported");
     const paramDesc =
       (tool.function.parameters.properties.path_or_url as { description?: string })
         .description ?? "";
-    expect(paramDesc).toContain("不支持本地 URL");
+    expect(paramDesc).toContain("Local URLs are not supported");
   });
 
   it("本地图片自动通过 Files API 上传并返回 file 内容块", async () => {
@@ -142,7 +142,7 @@ describe("ViewImageTool", () => {
   it("本地文件不存在时返回错误", async () => {
     const tool = new ViewImageTool(makeEnv("/ws", deepseekConfig));
     const result = await tool.call({ path_or_url: "missing.png" });
-    expect(result).toContain("不存在");
+    expect(result).toContain("not found");
   });
 
   it("不支持的图片格式返回错误", async () => {
@@ -153,7 +153,7 @@ describe("ViewImageTool", () => {
     try {
       const tool = new ViewImageTool(makeEnv(dir, deepseekConfig));
       const result = await tool.call({ path_or_url: "note.txt" });
-      expect(result).toContain("不支持的图片格式");
+      expect(result).toContain("Unsupported image format");
       expect(mockFilesCreate).not.toHaveBeenCalled();
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
@@ -178,7 +178,7 @@ describe("ViewImageTool", () => {
 
       const url = await tool.call({ path_or_url: "https://example.com/a.png" });
       expect(url).toEqual([
-        { type: "text", text: "已获取网络图片：https://example.com/a.png" },
+        { type: "text", text: "Fetched remote image: https://example.com/a.png" },
         { type: "image_url", image_url: { url: "https://example.com/a.png" } },
       ]);
     } finally {

@@ -29,7 +29,7 @@ describe("createModel", () => {
   });
 
   it("modelId 不存在时报错", () => {
-    expect(() => createModel(mockScope(baseConfig), "non-existent")).toThrow("不存在");
+    expect(() => createModel(mockScope(baseConfig), "non-existent")).toThrow("not found");
   });
 
   it("endpointId 找不到时报错", () => {
@@ -38,7 +38,7 @@ describe("createModel", () => {
       endpoints: [],
       models: [{ id: "bad", name: "Bad", endpointId: "missing-ep", tokenThresholds: { handoff: 1000, guard: 1500 } }],
     };
-    expect(() => createModel(mockScope(badConfig), "bad")).toThrow("未配置");
+    expect(() => createModel(mockScope(badConfig), "bad")).toThrow("is not configured");
   });
 
   it("endpoint apiKey 为空时抛出明确错误", () => {
@@ -48,7 +48,7 @@ describe("createModel", () => {
       models: [{ id: "no-key", name: "No Key Model", endpointId: "no-key-ep", tokenThresholds: { handoff: 1000, guard: 1500 } }],
     };
     expect(() => createModel(mockScope(noKeyConfig), "no-key")).toThrow(
-      "API Key 未设置",
+      'API key for endpoint "No Key" is not set',
     );
   });
 
@@ -66,7 +66,7 @@ describe("createModel", () => {
 
   it("空 models 数组时报错", () => {
     const emptyConfig: AppConfig = { defaultModel: "none", endpoints: [], models: [] };
-    expect(() => createModel(mockScope(emptyConfig), "none")).toThrow("不存在");
+    expect(() => createModel(mockScope(emptyConfig), "none")).toThrow("not found");
   });
 
   it("空 endpoints 数组时报错", () => {
@@ -75,7 +75,7 @@ describe("createModel", () => {
       endpoints: [],
       models: [{ id: "m", name: "M", endpointId: "ep", tokenThresholds: { handoff: 1000, guard: 1500 } }],
     };
-    expect(() => createModel(mockScope(noEpConfig), "m")).toThrow("未配置");
+    expect(() => createModel(mockScope(noEpConfig), "m")).toThrow("is not configured");
   });
 });
 

@@ -6,21 +6,21 @@ import type { AgentNS } from "@ai-zen/agents-core";
 export class CopyTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "copy",
-    description: "复制文件或目录（相当于 cp 命令）",
+    description: "Copy a file or directory (equivalent to the cp command)",
     parameters: {
       type: "object",
       properties: {
         src: {
           type: "string",
-          description: "源路径",
+          description: "Source path",
         },
         dest: {
           type: "string",
-          description: "目标路径",
+          description: "Destination path",
         },
         recursive: {
           type: "boolean",
-          description: "是否递归复制目录，复制目录时需设为 true",
+          description: "Whether to copy directories recursively; must be true when copying a directory",
         },
       },
       required: ["src", "dest"],

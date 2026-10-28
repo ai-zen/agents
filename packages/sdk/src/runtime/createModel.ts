@@ -48,16 +48,16 @@ export function createModel(
 ): AgentModel {
   const config = scope.config;
   const modelConfig = config.models.find((m) => m.id === modelId);
-  if (!modelConfig) throw new Error(`模型 "${modelId}" 不存在`);
+  if (!modelConfig) throw new Error(`Model "${modelId}" not found`);
 
   const endpointConfig = config.endpoints.find(
     (e) => e.id === modelConfig.endpointId,
   );
   if (!endpointConfig)
-    throw new Error(`端点 "${modelConfig.endpointId}" 未配置`);
+    throw new Error(`Endpoint "${modelConfig.endpointId}" is not configured`);
 
   if (!endpointConfig.apiKey) {
-    throw new Error(`端点 "${endpointConfig.name}" 的 API Key 未设置`);
+    throw new Error(`API key for endpoint "${endpointConfig.name}" is not set`);
   }
 
   const client = new OpenAI({

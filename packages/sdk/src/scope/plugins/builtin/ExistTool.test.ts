@@ -10,7 +10,7 @@ describe("ExistTool", () => {
   it("工具名称和描述正确", () => {
     const tool = new ExistTool(makeEnv());
     expect(tool.function.name).toBe("exist");
-    expect(tool.function.description).toBe("检查文件或目录是否存在");
+    expect(tool.function.description).toBe("Check whether a file or directory exists");
   });
 
   it("存在的文件返回 true", async () => {

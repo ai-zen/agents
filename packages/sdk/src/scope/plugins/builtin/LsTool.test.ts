@@ -17,7 +17,7 @@ describe("LsTool", () => {
   it("工具名称和描述正确", () => {
     const tool = new LsTool(makeEnv());
     expect(tool.function.name).toBe("ls");
-    expect(tool.function.description).toBe("列出目录");
+    expect(tool.function.description).toBe("List a directory");
   });
 
   it("列出目录内容", async () => {
@@ -66,8 +66,8 @@ describe("LsTool", () => {
       const parsed = JSON.parse(result as string);
 
       expect(parsed.outputTooLarge).toBe(true);
-      expect(parsed.warning).toContain("超过上限 100 字符");
-      expect(parsed.warning).toContain("30 项");
+      expect(parsed.warning).toContain("exceeding the limit of 100 characters");
+      expect(parsed.warning).toContain("30 directory entries");
 
       const dumped = JSON.parse(readFileSync(parsed.files["result.json"], "utf-8"));
       expect(dumped.length).toBe(30);

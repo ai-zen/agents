@@ -79,7 +79,7 @@ export class AutoMigratePlugin implements AgentPlugin {
 
       await service.migrate({ agent, promptTokens, handoffTokens, mode: mode ?? undefined });
     } catch (err: any) {
-      getLogger().error(`[autoMigrate] 迁移失败: ${err?.message ?? err}`);
+      getLogger().error(`[autoMigrate] migration failed: ${err?.message ?? err}`);
     }
   }
 }

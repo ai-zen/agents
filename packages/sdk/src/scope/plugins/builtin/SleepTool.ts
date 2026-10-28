@@ -8,13 +8,13 @@ export class SleepTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "sleep",
     description:
-      "等待指定的时间（毫秒）。用于需要延迟执行的场景，例如等待其他操作完成、操作间隔控制等。注意：过长的等待时间会影响响应速度，建议不超过 30000 毫秒（30 秒）。",
+      "Wait for the specified time in milliseconds. Use it when a delay is needed, for example to wait for another operation to finish or to space out actions. Note: long waits slow down responses; keep it at or below 30000 milliseconds (30 seconds).",
     parameters: {
       type: "object",
       properties: {
         ms: {
           type: "number",
-          description: "等待的毫秒数（1 秒 = 1000 毫秒）。建议不超过 30000（30 秒）。",
+          description: "Milliseconds to wait (1 second = 1000 milliseconds). Values above 30000 (30 seconds) are not recommended.",
         },
       },
       required: ["ms"],
@@ -32,7 +32,7 @@ export class SleepTool extends SdkCallbackTool {
     if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) {
       return JSON.stringify({
         success: false,
-        error: "ms 必须是正整数",
+        error: "ms must be a positive integer",
       });
     }
 
@@ -40,7 +40,7 @@ export class SleepTool extends SdkCallbackTool {
       // 超过 5 分钟给出警告
       return JSON.stringify({
         success: false,
-        error: `等待时间 ${ms}ms 过长，建议不超过 300000ms（5 分钟）。如需长时间等待请分段执行。`,
+        error: `Wait time ${ms}ms is too long, keep it at or below 300000ms (5 minutes). For longer waits, split them into shorter steps`,
       });
     }
 
@@ -66,7 +66,7 @@ export class SleepTool extends SdkCallbackTool {
       return JSON.stringify({
         success: false,
         aborted: true,
-        error: "等待被中断（aborted）",
+        error: "Wait aborted",
       });
     }
 
@@ -74,7 +74,7 @@ export class SleepTool extends SdkCallbackTool {
       success: true,
       waitedMs: ms,
       waitedSeconds: (ms / 1000).toFixed(1),
-      message: `已等待 ${ms}ms（${(ms / 1000).toFixed(1)} 秒）`,
+      message: `Waited ${ms}ms (${(ms / 1000).toFixed(1)} seconds)`,
     });
   }
 }

@@ -6,17 +6,17 @@ import type { AgentNS } from "@ai-zen/agents-core";
 export class RmTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "rm",
-    description: "删除文件或目录",
+    description: "Delete a file or directory",
     parameters: {
       type: "object",
       properties: {
         path: {
           type: "string",
-          description: "文件或目录路径",
+          description: "File or directory path",
         },
         recursive: {
           type: "boolean",
-          description: "是否递归删除子目录",
+          description: "Whether to delete subdirectories recursively",
         },
       },
       required: ["path"],

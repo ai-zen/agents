@@ -63,11 +63,11 @@ export class HandoffGuardPlugin implements AgentPlugin {
       if (typeof raw === "string" && resolvePath(this.cwd, raw) === handoffPath) {
         return;
       }
-      return `交接回合只允许写交接文档：${handoffPath}（write 的 path 请原样使用该路径），请立即开始撰写。`;
+      return `During the handoff round the only allowed write is the handoff document: ${handoffPath} (pass that path to write exactly as given), start writing now.`;
     }
 
     if (HandoffGuardPlugin.WRITE_TOOLS.has(name)) {
-      return `交接回合禁止修改工作区（${name}）：你的唯一任务是把交接文档写入 ${handoffPath}。`;
+      return `Modifying the workspace is not allowed during the handoff round (${name}): your only task is to write the handoff document to ${handoffPath}.`;
     }
 
     return;

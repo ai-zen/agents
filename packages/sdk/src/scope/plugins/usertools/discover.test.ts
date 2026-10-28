@@ -105,13 +105,13 @@ describe("discoverUserTools", () => {
   it("多路径：同名工具靠前路径优先（先到先得）", async () => {
     const dir2 = mkdtempSync(join(tmpdir(), "ai-zen-usertools2-"));
     try {
-      writeTool("shared.mjs", simpleToolCode("shared_tool", "From first path（高优先级）"));
-      writeFileSync(join(dir2, "shared.js"), simpleToolCode("shared_tool", "From second path（低优先级）"));
+      writeTool("shared.mjs", simpleToolCode("shared_tool", "From first path (higher priority)"));
+      writeFileSync(join(dir2, "shared.js"), simpleToolCode("shared_tool", "From second path (lower priority)"));
 
       const result = await discoverUserTools([dir, dir2]);
       expect(result).toHaveLength(1);
       // dir 在前（高优先级），应优先
-      expect(result[0].function.description).toBe("From first path（高优先级）");
+      expect(result[0].function.description).toBe("From first path (higher priority)");
     } finally {
       rmSync(dir2, { recursive: true, force: true });
     }

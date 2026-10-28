@@ -40,12 +40,12 @@ export async function createAgent(
   options: CreateAgentOptions = {},
 ): Promise<SdkAgent> {
   const definition = await new AgentRepository(scope.agentsDir).read(agentId);
-  if (!definition) throw new Error(`Agent "${agentId}" 不存在`);
+  if (!definition) throw new Error(`Agent "${agentId}" not found`);
 
   const modelId = definition.modelId;
   if (!modelId) {
     throw new Error(
-      `Agent "${agentId}" 未绑定模型（缺少 modelId）。请在配置里给它指定一个模型。`,
+      `Agent "${agentId}" has no model bound (modelId is missing). Assign a model to it in the config`,
     );
   }
 

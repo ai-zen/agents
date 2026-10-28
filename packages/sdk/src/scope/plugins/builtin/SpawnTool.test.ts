@@ -9,7 +9,7 @@ describe("SpawnTool", () => {
   it("工具名称和描述正确", () => {
     const tool = new SpawnTool(makeEnv());
     expect(tool.function.name).toBe("spawn");
-    expect(tool.function.description).toContain("异步执行命令");
+    expect(tool.function.description).toContain("Spawn a command asynchronously");
     expect(tool.function.parameters).toBeDefined();
     const params = tool.function.parameters as Record<string, unknown>;
     expect(params.properties).toHaveProperty("command");
@@ -24,7 +24,7 @@ describe("SpawnTool", () => {
     const parsed = JSON.parse(result as string);
     expect(parsed.success).toBe(true);
     expect(parsed.pid).toBeGreaterThanOrEqual(0);
-    expect(parsed.message).toContain("进程已启动");
+    expect(parsed.message).toContain("Process started");
   });
 
   it("未指定 cwd 时使用 env.cwd", async () => {

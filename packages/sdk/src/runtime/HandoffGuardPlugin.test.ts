@@ -37,7 +37,7 @@ describe("HandoffGuardPlugin", () => {
     const rejection = guard.onToolCall(toolCall("write", { path: "src/a.ts" }));
 
     expect(typeof rejection).toBe("string");
-    expect(rejection).toContain("只允许写交接文档");
+    expect(rejection).toContain("only allowed write is the handoff document");
     expect(rejection).toContain(HANDOFF);
   });
 
@@ -47,7 +47,7 @@ describe("HandoffGuardPlugin", () => {
 
     for (const name of ["edit", "batch_edit", "rm", "rename", "mkdir", "copy"]) {
       const rejection = guard.onToolCall(toolCall(name, { path: HANDOFF }));
-      expect(rejection).toContain("禁止修改工作区");
+      expect(rejection).toContain("Modifying the workspace is not allowed");
     }
   });
 

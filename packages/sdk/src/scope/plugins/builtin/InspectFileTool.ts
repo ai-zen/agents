@@ -35,18 +35,18 @@ export class InspectFileTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "inspect_file",
     description:
-      "勘察文件的结构概况：总行数、总字符数、最长行的列数及其行索引、平均列数、行尾类型（LF/CRLF）。可选返回每行的列数映射。适用于在 read 之前先了解文件规模，再决定用 range 读取哪一段。仅做流式扫描，不受 read 的 300KB 读取阈值限制。",
+      "Inspect a file's structural overview: total lines, total characters, the longest line's column count and its line index, average column count, and line ending type (LF/CRLF). Optionally returns a per-line column count map. Useful for sizing up a file before reading it, so you can decide which range to read. Streaming scan only, not subject to the 300KB read threshold of read.",
     parameters: {
       type: "object",
       properties: {
         path: {
           type: "string",
-          description: "文件路径",
+          description: "File path",
         },
         withColCountMap: {
           type: "boolean",
           description:
-            "是否返回每行列数映射（对象：行索引 → 列数，行索引从 0 开始）。默认 false。行数很多时该映射可能过大，此时将只返回概况字段。",
+            "Whether to return a per-line column count map (object: line index → column count, line index is 0-based). Default false. When there are many lines the map may be too large; in that case only the overview fields are returned.",
           default: false,
         },
       },
@@ -64,7 +64,7 @@ export class InspectFileTool extends SdkCallbackTool {
       const filePath = this.resolve(input.path);
       const stats = await fsp.stat(filePath);
       if (!stats.isFile()) {
-        return `"${filePath}" 不是文件`;
+        return `"${filePath}" is not a file`;
       }
 
       const withColCountMap = input.withColCountMap ?? false;
@@ -91,9 +91,9 @@ export class InspectFileTool extends SdkCallbackTool {
           ...summary,
           colCountMapOmitted: true,
           warning:
-            `行长度明细过大：概况与 colCountMap 合计 ${payload.length} 字符，` +
-            `超过上限 ${limit} 字符，未落盘返回。文件规模超出可处理范围，` +
-            `建议改用 find_text 定位后再按 range 分段读取。`,
+            `Line length details too large: overview plus colCountMap total ${payload.length} characters, ` +
+            `exceeding the limit of ${limit} characters; not written to disk. The file is beyond the supported size, ` +
+            `so use find_text to locate the target and then read it in chunks by range.`,
         });
       }
       return payload;

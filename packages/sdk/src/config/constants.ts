@@ -19,15 +19,15 @@ export const DEFAULT_MODEL_ID = "deepseek-flash";
 /** 默认 Agent 定义（不含时间戳） */
 export const DEFAULT_AGENT_DEFINITION: Omit<AgentDefinition, "createdAt" | "updatedAt"> = {
   id: DEFAULT_AGENT_ID,
-  name: "默认助手",
-  description: "默认的 AI 助手，适用于日常问答和任务执行。",
+  name: "Default Assistant",
+  description: "The default AI assistant, suited for everyday Q&A and task execution.",
   // 模型写在 Agent 定义上，是运行期唯一真相源（无 config.defaultModel 兜底）
   modelId: DEFAULT_MODEL_ID,
   messages: [
-    Message.System(`你是一个幽默风趣、严谨可靠的智能助手，请用中文回复。当前操作系统：${process.platform}。
+    Message.System(`You are a witty, rigorous and reliable assistant. Always reply in the same language the user writes in. Current operating system: ${process.platform}.
 
-一、需要用户决策时，一次只问一个问题。
-二、当前对话基于 Node.js 驱动，你可以编写 Node.js 脚本执行复杂任务，并通过 exec 工具运行。`),
+1. When user input is needed for a decision, ask only one question at a time.
+2. This session runs on Node.js — you can write Node.js scripts to carry out complex tasks and run them via the exec tool.`),
   ],
   // 出厂默认 Agent：custom 为 false，SDK 初始化时会同步出厂提示词（用户设为 true 则跳过）
   custom: false,
@@ -49,10 +49,10 @@ export const DEFAULT_SUBAGENT_ID = "sub-agent-default";
 /** 默认 SubAgent 定义（不含时间戳） */
 export const DEFAULT_SUBAGENT_DEFINITION: Omit<AgentDefinition, "createdAt" | "updatedAt"> = {
   id: DEFAULT_SUBAGENT_ID,
-  name: "通用助手",
-  description: "一个通用的子 Agent，擅长独立完成各类任务。",
+  name: "General Assistant",
+  description: "A general-purpose sub-agent that is good at completing all kinds of tasks independently.",
   messages: [
-    Message.System("你是一个通用助手子 Agent，被父 Agent 委派来独立完成具体任务。请根据给定的任务描述，主动调用你的工具（文件读写、执行命令、搜索等）来分析和完成任务。完成任务后直接返回结果，不需要解释你的思考过程。\n\n⚠️ 强制性要求：\n1. 如果任务描述中存在任何不明确、模糊或缺失的信息（包括但不限于具体目标、文件路径、约束条件、预期产出等），你必须直接拒绝执行，并明确列出哪些信息不明确或缺失，要求父 Agent 提供更完整的任务上下文。不得自行假设、猜测或脑补任何信息。\n2. 如果任务描述中存在自相矛盾的信息（如相互冲突的要求、不一致的文件路径、矛盾的约束条件等），你必须及时指出矛盾之处，并要求父 Agent 澄清后再执行。"),
+    Message.System("You are a general-purpose assistant sub-agent, delegated by a parent agent to independently complete a specific task. Based on the given task description, proactively call your tools (file read/write, command execution, search, etc.) to analyze and complete the task. When the task is done, return the result directly; there is no need to explain your thinking process.\n\n⚠️ Mandatory requirements:\n1. If anything in the task description is unclear, vague or missing (including but not limited to the specific goal, file paths, constraints, expected deliverables, etc.), you MUST refuse to execute immediately and explicitly list what is unclear or missing, asking the parent agent to provide more complete task context. Do not assume, guess or make up any information on your own.\n2. If the task description contains contradictory information (such as mutually conflicting requirements, inconsistent file paths, contradictory constraints, etc.), you MUST point out the contradiction promptly and require the parent agent to clarify before executing."),
     Message.User("{{task}}"),
   ],
   permissions: {
@@ -64,11 +64,11 @@ export const DEFAULT_SUBAGENT_DEFINITION: Omit<AgentDefinition, "createdAt" | "u
   function: {
     name: "sub_agent_default",
     description:
-      "通用子 Agent，可独立完成各类任务。⚠️ 委派任务时必须提供完整的任务上下文，包括所有必要的背景信息、文件路径、具体要求和约束条件，任何信息不明确将导致子 Agent 拒绝执行并要求补充信息。",
+      "General-purpose sub-agent that can independently complete all kinds of tasks. ⚠️ When delegating a task you must provide complete task context, including all necessary background information, file paths, specific requirements and constraints; any unclear information will cause the sub-agent to refuse execution and ask for more information.",
     parameters: {
       type: "object",
       properties: {
-        task: { type: "string", description: "完整的任务描述，必须包含所有必要的背景、目标、约束条件和上下文信息。任何不明确的信息将导致子 Agent 拒绝执行。" },
+        task: { type: "string", description: "Complete task description; must include all necessary background, goals, constraints and context. Any unclear information will cause the sub-agent to refuse execution." },
       },
       required: ["task"],
       additionalProperties: false,
@@ -88,21 +88,21 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       name: "OpenAI",
       apiKey: "",
       baseUrl: "https://api.openai.com/v1",
-      description: "OpenAI API 端点",
+      description: "OpenAI API endpoint",
     },
     {
       id: "bigmodelcn",
-      name: "BigModelCN (智谱AI)",
+      name: "BigModelCN (Zhipu AI)",
       apiKey: "",
       baseUrl: "https://open.bigmodel.cn/api/paas/v4",
-      description: "智谱AI大模型端点",
+      description: "Zhipu AI large-model endpoint",
     },
     {
       id: "deepseek",
       name: "DeepSeek",
       apiKey: "",
       baseUrl: "https://api.deepseek.com/v1",
-      description: "DeepSeek API 端点（支持 Files API：本地文件上传后以 file_id 引用）",
+      description: "DeepSeek API endpoint (supports the Files API: local files are uploaded and then referenced by file_id)",
       // 唯一声明了 Files API 能力的出厂端点；其余端点本地文件走 base64 内联。
       // 判断依据是能力位而非端点 id，用户自建端点只要声明即可享受上传。
       capabilities: { filesApi: true },
@@ -139,7 +139,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       defaultParams: {},
       vision: true,
       reasoningPreset: "openai",
-      description: "OpenAI 最强旗舰（2026-09）：高级分析、软件工程、深度研究与科学工作",
+      description: "OpenAI flagship (2026-09): advanced analysis, software engineering, deep research and scientific work",
     },
     {
       id: "gpt-6.1-sol",
@@ -150,7 +150,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       defaultParams: {},
       vision: true,
       reasoningPreset: "openai",
-      description: "OpenAI 最新旗舰（2026-09-29）：Agentic Coding、计算机操作与文档密集型专业任务",
+      description: "OpenAI latest flagship (2026-09-29): agentic coding, computer operation and document-intensive professional tasks",
     },
     {
       id: "gpt-6-luna",
@@ -161,7 +161,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       defaultParams: {},
       vision: true,
       reasoningPreset: "openai",
-      description: "OpenAI GPT-6 系列快速低成本模型：适合高吞吐、低延迟场景",
+      description: "OpenAI GPT-6 series fast, low-cost model: suited for high-throughput, low-latency scenarios",
     },
     // ---------- 智谱 BigModel ----------
     {
@@ -172,7 +172,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       tokenThresholds: { handoff: 250_000, guard: 375_000 },
       defaultParams: { thinking: { type: "enabled" }, reasoning_effort: "max" },
       reasoningPreset: "zhipu-5.3",
-      description: "智谱最新旗舰：复杂软件工程与长程 Agent 任务（强制开启思考，1M 上下文）",
+      description: "Zhipu latest flagship: complex software engineering and long-horizon agent tasks (thinking always on, 1M context)",
     },
     {
       id: "glm-5.3-flash",
@@ -183,7 +183,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       defaultParams: { thinking: { type: "enabled" }, reasoning_effort: "max" },
       vision: true,
       reasoningPreset: "zhipu-5.3",
-      description: "智谱原生多模态模型（图片/视频/文件）：视觉 Coding，1M 上下文",
+      description: "Zhipu native multimodal model (image/video/file): visual coding, 1M context",
     },
     {
       id: "glm-5.3-flashx",
@@ -194,7 +194,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       defaultParams: { thinking: { type: "enabled" }, reasoning_effort: "max" },
       vision: true,
       reasoningPreset: "zhipu-5.3",
-      description: "GLM-5.3-Flash 高速版（200 tokens/s），原生多模态",
+      description: "GLM-5.3-Flash high-speed edition (200 tokens/s), native multimodal",
     },
     {
       id: "glm-4.7-flash",
@@ -204,7 +204,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       // 该模型真实窗口仅 200K，阈值下调至 100K（约窗口的 50%），留足 response 空间
       tokenThresholds: { handoff: 100_000, guard: 150_000 },
       defaultParams: {},
-      description: "智谱免费文本模型：200K 上下文，适合轻量任务",
+      description: "Zhipu free text model: 200K context, suited for lightweight tasks",
     },
     // ---------- DeepSeek ----------
     {
@@ -216,7 +216,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       defaultParams: { thinking: { type: "enabled" } },
       vision: true,
       reasoningPreset: "deepseek",
-      description: "DeepSeek 旗舰（2026-09-10）：552B MoE 非对称架构，原生多模态，1M 上下文",
+      description: "DeepSeek flagship (2026-09-10): 552B MoE asymmetric architecture, native multimodal, 1M context",
     },
   ],
   imageModels: [
@@ -273,13 +273,13 @@ export const DEFAULT_MCP_CONFIG: { mcpServers: Record<string, unknown> } = {
       type: "stdio",
       command: "npx",
       args: ["-y", "@ai-zen/socket-pty", "mcp"],
-      description: "可托管的伪终端（pty）：spawn/read/wait/write/resize/status/kill",
+      description: "Manageable pseudo-terminal (pty): spawn/read/wait/write/resize/status/kill",
     },
     "chrome-devtools": {
       type: "stdio",
       command: "npx",
       args: ["-y", "chrome-devtools-mcp@latest"],
-      description: "Chrome DevTools 浏览器调试与自动化（Google chrome-devtools-mcp）：页面导航、性能追踪、网络与控制台检查、截图等",
+      description: "Chrome DevTools browser debugging and automation (Google chrome-devtools-mcp): page navigation, performance tracing, network and console inspection, screenshots, etc.",
     },
   },
 };

@@ -47,21 +47,21 @@ const tool = new GenerateImageTool(makeEnv(process.cwd(), mockConfig));
 describe("GenerateImageTool", () => {
   it("工具名称和描述正确", () => {
     expect(tool.function.name).toBe("generate_image");
-    expect(tool.function.description).toContain("生成图片");
+    expect(tool.function.description).toContain("Generate an image from a text description");
   });
 
   it("prompt 为空时返回错误", async () => {
     const result = await tool.call({ prompt: "" });
     const parsed = JSON.parse(result);
     expect(parsed.success).toBe(false);
-    expect(parsed.error).toContain("不能为空");
+    expect(parsed.error).toContain("must not be empty");
   });
 
   it("prompt 只有空白字符时返回错误", async () => {
     const result = await tool.call({ prompt: "   " });
     const parsed = JSON.parse(result);
     expect(parsed.success).toBe(false);
-    expect(parsed.error).toContain("不能为空");
+    expect(parsed.error).toContain("must not be empty");
   });
 
   it("未配置图片模型时返回友好错误", async () => {
@@ -74,14 +74,14 @@ describe("GenerateImageTool", () => {
     const result = await emptyTool.call({ prompt: "a cat" });
     const parsed = JSON.parse(result);
     expect(parsed.success).toBe(false);
-    expect(parsed.error).toContain("未配置图片生成模型");
+    expect(parsed.error).toContain("No image generation model configured");
   });
 
   it("指定的模型 ID 不存在时返回友好错误", async () => {
     const result = await tool.call({ prompt: "a cat", model: "non-existent-model" });
     const parsed = JSON.parse(result);
     expect(parsed.success).toBe(false);
-    expect(parsed.error).toContain("不存在");
+    expect(parsed.error).toContain("does not exist");
   });
 
   it("端点未配置时返回友好错误", async () => {
@@ -98,7 +98,7 @@ describe("GenerateImageTool", () => {
     const result = await noEpTool.call({ prompt: "a cat" });
     const parsed = JSON.parse(result);
     expect(parsed.success).toBe(false);
-    expect(parsed.error).toContain("未配置");
+    expect(parsed.error).toContain("is not configured");
   });
 
   it("图片生成被中断（abort）时返回 aborted 结果", async () => {
@@ -121,7 +121,7 @@ describe("GenerateImageTool", () => {
     const parsed = JSON.parse(result);
     expect(parsed.success).toBe(false);
     expect(parsed.aborted).toBe(true);
-    expect(parsed.error).toContain("中断");
+    expect(parsed.error).toContain("Image generation aborted");
   });
 
   it("生成成功统一返回 JSON 字符串（图片 URL + view_image/download_file 提示）", async () => {

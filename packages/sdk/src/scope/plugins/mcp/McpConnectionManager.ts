@@ -206,7 +206,7 @@ export class McpConnectionManager {
           inputSchema: t.inputSchema as Record<string, unknown>,
         }));
       } catch (err: unknown) {
-        getLogger().error(`[McpConnectionManager] 获取 "${name}" 工具列表失败: ${(err as Error)?.message ?? err}`);
+        getLogger().error(`[McpConnectionManager] Failed to list tools for "${name}": ${(err as Error)?.message ?? err}`);
       }
     }
 
@@ -220,7 +220,7 @@ export class McpConnectionManager {
           mimeType: r.mimeType,
         }));
       } catch (err: unknown) {
-        getLogger().error(`[McpConnectionManager] 获取 "${name}" 资源列表失败: ${(err as Error)?.message ?? err}`);
+        getLogger().error(`[McpConnectionManager] Failed to list resources for "${name}": ${(err as Error)?.message ?? err}`);
       }
     }
 
@@ -232,7 +232,7 @@ export class McpConnectionManager {
           description: p.description,
         }));
       } catch (err: unknown) {
-        getLogger().error(`[McpConnectionManager] 获取 "${name}" 提示列表失败: ${(err as Error)?.message ?? err}`);
+        getLogger().error(`[McpConnectionManager] Failed to list prompts for "${name}": ${(err as Error)?.message ?? err}`);
       }
     }
 
@@ -258,7 +258,7 @@ export class McpConnectionManager {
 
     if (config.transport === "stdio") {
       if (!config.command) {
-        throw new Error(`MCP stdio server 缺少 command`);
+        throw new Error(`MCP stdio server is missing command`);
       }
       return new StdioClientTransport({
         command: config.command,
@@ -270,7 +270,7 @@ export class McpConnectionManager {
     // http 使用 Streamable HTTP 传输（POST + 可选 SSE 流）
     if (config.transport === "http") {
       if (!config.url) {
-        throw new Error(`MCP http server 缺少 url`);
+        throw new Error(`MCP http server is missing url`);
       }
       return new StreamableHTTPClientTransport(new URL(config.url), {
         requestInit: config.headers ? { headers: config.headers } : undefined,
@@ -280,14 +280,14 @@ export class McpConnectionManager {
     // sse 使用旧版 HTTP+SSE 传输（GET 建立 SSE 流，POST 发送消息）
     if (config.transport === "sse") {
       if (!config.url) {
-        throw new Error(`MCP sse server 缺少 url`);
+        throw new Error(`MCP sse server is missing url`);
       }
       return new SSEClientTransport(new URL(config.url), {
         requestInit: config.headers ? { headers: config.headers } : undefined,
       });
     }
 
-    throw new Error(`不支持的 MCP transport 类型: ${(config as any).transport}`);
+    throw new Error(`Unsupported MCP transport type: ${(config as any).transport}`);
   }
 
   // ---- 断开 ----

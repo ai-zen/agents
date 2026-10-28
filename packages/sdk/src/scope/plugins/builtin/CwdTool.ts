@@ -5,7 +5,7 @@ import type { AgentNS } from "@ai-zen/agents-core";
 export class CwdTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "cwd",
-    description: "获取当前工作目录 cwd",
+    description: "Get the current working directory (cwd)",
     parameters: {
       type: "object",
       properties: {},

@@ -19,29 +19,29 @@ export class EditTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "edit",
     description: [
-      "编辑文件中的文本，支持精确替换或替换所有匹配项。",
+      "Edit text in a file, supporting exact replacement or replacing all matches.",
       "",
-      "并发限制（重要）：同一个文件禁止并行编辑。不要在同一轮回复中对同一路径发起多个 edit 调用——这些调用会各自读取旧内容再写回，后写者覆盖先写者，导致修改丢失或文件被写坏。",
-      "如需对同一个文件施加多处修改，请改用 batch_edit，在一次调用里提交全部替换。只有编辑不同文件时才可以并行调用 edit。",
+      "Concurrency limit (important): never edit the same file in parallel. Do not issue multiple edit calls for the same path within one reply — each call reads the old content and writes it back, so the later write overwrites the earlier one, losing changes or corrupting the file.",
+      "To apply multiple changes to one file, use batch_edit instead and submit all replacements in a single call. Only edit different files in parallel.",
     ].join("\n"),
     parameters: {
       type: "object",
       properties: {
         path: {
           type: "string",
-          description: "文件路径",
+          description: "File path",
         },
         oldText: {
           type: "string",
-          description: "要替换的文本",
+          description: "Text to replace",
         },
         newText: {
           type: "string",
-          description: "替换后的文本",
+          description: "Replacement text",
         },
         isReplaceAll: {
           type: "boolean",
-          description: "是否替换所有匹配的文本（默认 false，仅替换首次匹配）。使用此功能前应确保你提供的 oldText 足够精确，避免误替换",
+          description: "Whether to replace all matches (default false, only the first match is replaced). Make sure the oldText you provide is precise enough to avoid unintended replacements",
           default: false,
         },
       },
@@ -67,7 +67,7 @@ export class EditTool extends SdkCallbackTool {
 
       if (count === 0) {
         return JSON.stringify({
-          result: "文件中未精确匹配到要替换的文本",
+          result: "No exact match found for the text to replace",
           matchCount: 0,
         });
       }
@@ -80,7 +80,7 @@ export class EditTool extends SdkCallbackTool {
 
       if (!isReplaceAll && count > 1) {
         return JSON.stringify({
-          result: `警告：未开启替换所有（isReplaceAll=false），但文本 "${oldText}" 在文件中出现了 ${count} 次，仅替换了首次匹配。如果希望替换所有匹配，请将 isReplaceAll 设为 true`,
+          result: `Warning: replace-all is off (isReplaceAll=false), but the text "${oldText}" occurs ${count} times in the file; only the first match was replaced. Set isReplaceAll to true to replace all matches`,
           matchCount: count,
           replacedCount: 1,
         });

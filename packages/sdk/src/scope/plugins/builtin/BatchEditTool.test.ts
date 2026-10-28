@@ -23,14 +23,14 @@ describe("BatchEditTool", () => {
   it("工具名称和描述正确", () => {
     const tool = new BatchEditTool(makeEnv());
     expect(tool.function.name).toBe("batch_edit");
-    expect(tool.function.description).toContain("批量编辑文件文本");
+    expect(tool.function.description).toContain("Edit text in a file in batches");
   });
 
   it("描述里提示：同一文件的多处修改一次提交，勿并行调用 edit", () => {
     const tool = new BatchEditTool(makeEnv());
     const description = tool.function.description ?? "";
-    expect(description).toContain("一次调用");
-    expect(description).toContain("并行");
+    expect(description).toContain("single call");
+    expect(description).toContain("in parallel");
   });
 
   it("isReplaceAll 默认值为 false", () => {
@@ -76,7 +76,7 @@ describe("BatchEditTool", () => {
       expect(parsed.result).toBe("partial");
       expect(parsed.replacedCount).toBe(0);
       expect(parsed.failed[0].oldText).toBe("not-exists");
-      expect(parsed.failed[0].reason).toContain("未精确匹配");
+      expect(parsed.failed[0].reason).toContain("No exact match");
       expect(readFileSync(filePath, "utf-8")).toBe("hello world");
     } finally {
       cleanUp(filePath);

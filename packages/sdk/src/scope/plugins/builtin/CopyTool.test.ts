@@ -16,7 +16,7 @@ describe("CopyTool", () => {
   it("工具名称和描述正确", () => {
     const tool = new CopyTool(makeEnv());
     expect(tool.function.name).toBe("copy");
-    expect(tool.function.description).toContain("复制");
+    expect(tool.function.description).toContain("Copy a file or directory");
   });
 
   it("复制文件", async () => {

@@ -102,7 +102,7 @@ export class Scope {
    */
   use(...plugins: ScopePlugin[]): this {
     if (this._initialized) {
-      throw new Error("Scope.use() 必须在 init() 之前调用");
+      throw new Error("Scope.use() must be called before init()");
     }
     for (const plugin of plugins) {
       this._plugins.push(plugin);

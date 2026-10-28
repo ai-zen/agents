@@ -52,7 +52,7 @@ describe("createSubAgentTool", () => {
   it("Agent 没有 function 字段时抛出错误", () => {
     const def = sampleDef("no-func", "no_func");
     delete def.function;
-    expect(() => createSubAgentTool(def, mockScope())).toThrow("没有 function");
+    expect(() => createSubAgentTool(def, mockScope())).toThrow("has no function field");
   });
 
   it("SubAgent 有独立 modelId 时使用独立模型", () => {

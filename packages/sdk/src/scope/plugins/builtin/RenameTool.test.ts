@@ -16,7 +16,7 @@ describe("RenameTool", () => {
   it("工具名称和描述正确", () => {
     const tool = new RenameTool(makeEnv());
     expect(tool.function.name).toBe("rename");
-    expect(tool.function.description).toContain("重命名");
+    expect(tool.function.description).toContain("Rename");
   });
 
   it("重命名文件", async () => {

@@ -86,7 +86,7 @@ describe("fileToContentSection：传输方式选择", () => {
 
   it("本地 URL（file://）直接抛错", async () => {
     await expect(fileToContentSection({ source: { url: "file:///tmp/a.png" } })).rejects.toThrow(
-      /不支持本地 URL/,
+      /Unsupported local URL/,
     );
   });
 
@@ -126,7 +126,7 @@ describe("fileToContentSection：传输方式选择", () => {
     const r = await fileToContentSection({ source: { path: file }, endpoint: deepseek, deps: { upload } });
 
     expect(r.transport).toBe("inline");
-    expect(r.warning).toMatch(/上传 Files API 失败/);
+    expect(r.warning).toMatch(/Files API upload failed/);
     const section = r.section as { type: string; image_url: { url: string } };
     expect(section.type).toBe("image_url");
     expect(section.image_url.url.startsWith("data:image/png;base64,")).toBe(true);
@@ -157,7 +157,7 @@ describe("fileToContentSection：传输方式选择", () => {
     const r = await fileToContentSection({ source: { path: file }, endpoint: openai, model });
     expect(r.transport).toBe("text");
     expect((r.section as any).text).toContain(file);
-    expect(r.warning).toMatch(/不支持图片输入/);
+    expect(r.warning).toMatch(/does not support image input/);
   });
 
   it("非视觉模型：内存来源（base64 / data）也退化为文本提示", async () => {
@@ -191,7 +191,7 @@ describe("fileToContentSection：传输方式选择", () => {
     const file = await tmpImage("0123456789");
     await expect(
       fileToContentSection({ source: { path: file }, endpoint: openai, maxInlineBytes: 4 }),
-    ).rejects.toThrow(/超过内联上限/);
+    ).rejects.toThrow(/exceeds the inline limit/);
   });
 
   it("文件不存在 / 非文件 / 未知扩展名分别报错", async () => {
@@ -200,7 +200,7 @@ describe("fileToContentSection：传输方式选择", () => {
     ).rejects.toThrow();
 
     const bad = await tmpImage("x", ".exe");
-    await expect(fileToContentSection({ source: { path: bad } })).rejects.toThrow(/不支持的文件类型/);
+    await expect(fileToContentSection({ source: { path: bad } })).rejects.toThrow(/Unsupported file type/);
   });
 
   it("内存字节来源（MCP 场景）也能转换", async () => {

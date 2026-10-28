@@ -60,7 +60,7 @@ export class PermissionEvaluator {
 
   private validatePolicy(policy: PermissionPolicy): void {
     if ("allow" in policy && "deny" in policy) {
-      throw new Error("权限维度不能同时配置 allow 和 deny");
+      throw new Error("A permission dimension cannot set both allow and deny");
     }
   }
 }

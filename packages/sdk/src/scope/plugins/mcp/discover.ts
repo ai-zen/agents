@@ -86,7 +86,7 @@ export async function discoverMcpServers(paths: string[]): Promise<McpServerConf
         items.push(normalized);
       }
     } catch (err: unknown) {
-      getLogger().warn(`[sdk] 解析 MCP 配置失败: ${path} — ${(err as Error)?.message ?? err}`);
+      getLogger().warn(`[sdk] Failed to parse MCP config: ${path} — ${(err as Error)?.message ?? err}`);
     }
   }
 

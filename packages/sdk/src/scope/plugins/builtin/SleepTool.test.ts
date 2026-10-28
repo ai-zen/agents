@@ -15,7 +15,7 @@ describe("SleepTool", () => {
   it("工具名称和描述正确", () => {
     const tool = new SleepTool(makeEnv());
     expect(tool.function.name).toBe("sleep");
-    expect(tool.function.description).toContain("等待");
+    expect(tool.function.description).toContain("Wait for the specified time");
     const params = tool.function.parameters as Record<string, unknown>;
     expect(params.properties).toHaveProperty("ms");
     expect(params.required).toEqual(["ms"]);
@@ -50,7 +50,7 @@ describe("SleepTool", () => {
     const result = await tool.call({ ms: -1 });
     const parsed = JSON.parse(result as string);
     expect(parsed.success).toBe(false);
-    expect(parsed.error).toContain("正整数");
+    expect(parsed.error).toContain("positive integer");
   });
 
   it("非数字 ms 返回错误", async () => {
@@ -65,7 +65,7 @@ describe("SleepTool", () => {
     const result = await tool.call({ ms: 600_000 });
     const parsed = JSON.parse(result as string);
     expect(parsed.success).toBe(false);
-    expect(parsed.error).toContain("过长");
+    expect(parsed.error).toContain("too long");
   });
 
   it("等待中被 abort 时提前返回 aborted 结果", async () => {

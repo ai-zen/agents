@@ -16,7 +16,7 @@ describe("RmTool", () => {
   it("工具名称和描述正确", () => {
     const tool = new RmTool(makeEnv());
     expect(tool.function.name).toBe("rm");
-    expect(tool.function.description).toBe("删除文件或目录");
+    expect(tool.function.description).toBe("Delete a file or directory");
   });
 
   it("删除文件", async () => {

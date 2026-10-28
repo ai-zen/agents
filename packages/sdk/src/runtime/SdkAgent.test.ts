@@ -195,7 +195,7 @@ describe("SdkAgent", () => {
       agent.use({
         onToolCall: (ctx) =>
           ctx.tool_call.function?.name === "blockedTool"
-            ? "插件拒绝：不允许"
+            ? "Plugin rejected: not allowed"
             : undefined,
       });
 
@@ -203,7 +203,7 @@ describe("SdkAgent", () => {
 
       expect(denyTool.callback).not.toHaveBeenCalled();
       const toolResult = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
-      expect(toolResult.content).toContain("插件拒绝");
+      expect(toolResult.content).toContain("Plugin rejected");
     });
 
     it("插件 onToolCall 收到同一个 ToolCallContext 实例", async () => {

@@ -34,15 +34,15 @@ describe("discoverSubAgents", () => {
   });
 
   it("发现所有 SubAgent（返回完整 AgentDefinition）", async () => {
-    writeAgentFile("agent-a", "sub_agent_default", "通用助手");
-    writeAgentFile("agent-b", "code-reviewer", "代码审查");
+    writeAgentFile("agent-a", "sub_agent_default", "General helper");
+    writeAgentFile("agent-b", "code-reviewer", "Code review");
 
     const result = await discoverSubAgents([dir]);
     expect(result).toHaveLength(2);
     expect(result.map((a) => a.function!.name)).toEqual(["sub_agent_default", "code-reviewer"]);
     // 应包含完整定义
     expect(result[0].messages).toBeDefined();
-    expect(result[0].function!.description).toBe("通用助手");
+    expect(result[0].function!.description).toBe("General helper");
   });
 
   it("跳过无 function 字段的普通 Agent", async () => {
@@ -99,12 +99,12 @@ describe("discoverSubAgents", () => {
   it("多路径：同名 function.name 靠前路径优先（先到先得）", async () => {
     const dir2 = mkdtempSync(join(tmpdir(), "ai-zen-discovery2-"));
     try {
-      writeAgentFile("agent-a", "shared_func", "From dir1（高优先级）");
+      writeAgentFile("agent-a", "shared_func", "From dir1 (higher priority)");
       const agentB: AgentDefinition = {
         id: "agent-b",
         name: "agent-b",
         messages: [{ role: AgentNS.Role.System, content: "Hi" }],
-        function: { name: "shared_func", description: "From dir2（低优先级）", parameters: { type: "object", properties: {}, required: [] } },
+        function: { name: "shared_func", description: "From dir2 (lower priority)", parameters: { type: "object", properties: {}, required: [] } },
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -114,7 +114,7 @@ describe("discoverSubAgents", () => {
       expect(result).toHaveLength(1);
       expect(result[0].function!.name).toBe("shared_func");
       // dir 在前（高优先级），应优先
-      expect(result[0].function!.description).toBe("From dir1（高优先级）");
+      expect(result[0].function!.description).toBe("From dir1 (higher priority)");
     } finally {
       rmSync(dir2, { recursive: true, force: true });
     }

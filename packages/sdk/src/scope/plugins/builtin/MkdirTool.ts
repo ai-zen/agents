@@ -6,17 +6,17 @@ import type { AgentNS } from "@ai-zen/agents-core";
 export class MkdirTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "mkdir",
-    description: "创建目录",
+    description: "Create a directory",
     parameters: {
       type: "object",
       properties: {
         path: {
           type: "string",
-          description: "目录路径",
+          description: "Directory path",
         },
         recursive: {
           type: "boolean",
-          description: "是否递归创建子目录",
+          description: "Whether to create parent directories recursively",
         },
       },
       required: ["path"],

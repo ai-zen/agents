@@ -80,7 +80,7 @@ async function loadToolFile(filepath: string, silent?: boolean): Promise<Tool | 
     return normalizeToolExport({ default: exported }, filepath, silent);
   } catch (err: any) {
     if (!silent) {
-      getLogger().error(`[usertools] 加载工具文件失败: ${filepath} — ${err?.message ?? err}`);
+      getLogger().error(`[usertools] Failed to load tool file: ${filepath} — ${err?.message ?? err}`);
     }
     return null;
   }
@@ -123,7 +123,7 @@ function normalizeToolExport(exported: any, filepath: string, silent?: boolean):
   }
 
   if (!silent) {
-    getLogger().error(`[usertools] 无法识别的工具格式: ${filepath}`);
+    getLogger().error(`[usertools] Unrecognized tool format: ${filepath}`);
   }
   return null;
 }

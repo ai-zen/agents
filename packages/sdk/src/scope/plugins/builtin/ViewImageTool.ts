@@ -40,14 +40,14 @@ export class ViewImageTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
     name: "view_image",
     description:
-      "查看一张图片并分析其内容。传入本地图片路径或 http(s) 图片 URL。本地图片优先上传（端点支持 Files API 时）否则以 base64 内联引用，网络图片直接引用。不支持本地 URL（如 file:// 协议、指向本机 localhost/127.0.0.1 的 http(s) 地址），本地图片请使用文件路径。适合识别图片文字、描述图片内容、分析图表等。",
+      "View an image and analyze its content. Pass a local image path or an http(s) image URL. Local images are uploaded when the endpoint supports the Files API and are otherwise referenced as inline base64; remote images are referenced directly. Local URLs are not supported (such as the file:// protocol, or http(s) addresses pointing to localhost/127.0.0.1 on this machine); use a file path for local images. Suitable for reading text in images, describing image content and analyzing charts.",
     parameters: {
       type: "object",
       properties: {
         path_or_url: {
           type: "string",
           description:
-            "本地图片路径（相对/绝对）或 http(s) 图片 URL。支持的格式：JPEG、PNG、GIF、WebP。不支持本地 URL（如 file:// 协议、指向本机 localhost/127.0.0.1 的 http(s) 地址），本地图片请使用文件路径。",
+            "Local image path (relative or absolute) or an http(s) image URL. Supported formats: JPEG, PNG, GIF, WebP. Local URLs are not supported (such as the file:// protocol, or http(s) addresses pointing to localhost/127.0.0.1 on this machine); use a file path for local images.",
         },
       },
       required: ["path_or_url"],
@@ -66,13 +66,13 @@ export class ViewImageTool extends SdkCallbackTool {
     const signal = ctx?.signal;
     const target = input?.path_or_url;
     if (!target || !target.trim()) {
-      return "view_image 需要提供 path_or_url 参数（本地图片路径或 http(s) URL）。";
+      return "view_image requires the path_or_url parameter (a local image path or an http(s) URL)";
     }
     const value = target.trim();
 
     // 拒绝服务商无法访问的"本地 URL"：file:// 等本地协议，或指向本机回环地址的 http(s) 地址
     if (isLocalUrl(value)) {
-      return "不支持本地 URL（API 服务商无法下载访问）。本地图片请使用文件路径，而不是本地链接。";
+      return "Local URLs are not supported (the API provider cannot download them). Use a file path for local images, not a local link";
     }
 
     // 按当前模型定位端点：决定走 Files API 上传还是 base64 内联
@@ -87,11 +87,11 @@ export class ViewImageTool extends SdkCallbackTool {
         try {
           await fs.stat(abs);
         } catch {
-          return `本地图片不存在: ${abs}`;
+          return `Local image not found: ${abs}`;
         }
         const mime = mimeOf(abs);
         if (!mime || !mime.startsWith("image/")) {
-          return `不支持的图片格式 "${path.extname(abs) || "(无扩展名)"}"。支持的格式：JPEG、PNG、GIF、WebP。`;
+          return `Unsupported image format "${path.extname(abs) || "(no extension)"}". Supported formats: JPEG, PNG, GIF, WebP`;
         }
       }
       const result = await fileToContentSection({
@@ -101,22 +101,22 @@ export class ViewImageTool extends SdkCallbackTool {
         signal,
       });
 
-      const label = isUrl ? `已获取网络图片：${value}` : `已获取本地图片（${path.basename(value)}）`;
+      const label = isUrl ? `Fetched remote image: ${value}` : `Fetched local image (${path.basename(value)})`;
       const how =
         result.transport === "files-api"
-          ? `，已上传至 Files API（file_id: ${(result.section as { file_id?: string }).file_id ?? "?"}）`
+          ? `, uploaded to the Files API (file_id: ${(result.section as { file_id?: string }).file_id ?? "?"})`
           : result.transport === "inline"
-            ? `，已按 base64 内联（${(result.bytes / 1024).toFixed(0)} KB）`
+            ? `, inlined as base64 (${(result.bytes / 1024).toFixed(0)} KB)`
             : "";
-      const extra = result.warning ? `（降级说明：${result.warning}）` : "";
+      const extra = result.warning ? ` (fallback: ${result.warning})` : "";
 
       return [{ type: "text", text: `${label}${how}${extra}` }, result.section];
     } catch (error: unknown) {
       // 中断（abort）时返回明确的中断结果
       if (signal?.aborted) {
-        return "图片查看被中断（aborted）";
+        return "Image view aborted";
       }
-      return `查看图片失败: ${error instanceof Error ? error.message : String(error)}`;
+      return `Failed to view image: ${error instanceof Error ? error.message : String(error)}`;
     }
   }
 }

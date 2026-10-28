@@ -154,7 +154,7 @@ describe("createAgent", () => {
     await fs.writeFile(join(agentsDir, "no-model.json"), JSON.stringify(def, null, 2));
 
     const scope = await makeScope();
-    await expect(createAgent(scope, "no-model")).rejects.toThrow(/未绑定模型/);
+    await expect(createAgent(scope, "no-model")).rejects.toThrow(/has no model bound/);
   });
 
   it("Agent 定义缺少 messages 字段时也能正常创建（空值兜底）", async () => {    await writeAgentFile("my-agent", { messages: undefined });
