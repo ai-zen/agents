@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { discoverUserTools } from "./discover.js";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Tool, CallbackTool } from "@ai-zen/agents-core";
+import { setLogger } from "../../../shared/logger.js";
 
 let dir: string;
 
@@ -17,6 +18,17 @@ afterEach(() => {
 
 function writeTool(filename: string, code: string) {
   writeFileSync(join(dir, filename), code);
+}
+
+/** 把 SDK logger 换成采集器：拒绝原因走 logger，不走任何回调 API */
+function captureLogs(): Array<[string, string]> {
+  const logs: Array<[string, string]> = [];
+  setLogger({
+    info: (m) => logs.push(["info", m]),
+    warn: (m) => logs.push(["warn", m]),
+    error: (m) => logs.push(["error", m]),
+  });
+  return logs;
 }
 
 // 辅助：生成一个简单的 ESM 工具文件内容（适用于 .js 和 .mjs）
@@ -279,5 +291,92 @@ export async function exec(args) {
     const result = await discoverUserTools([dir]);
     // 同名文件只加载先遇到的那个（按文件名排序，shared.js 排在 shared.mjs 前）
     expect(result).toHaveLength(1);
+  });
+});
+
+// ==================================================================
+// 宿主护栏：tools/ 目录里的「坏文件」不能伤到宿主
+// ==================================================================
+//
+// 起因是一次真实事故：用户把一次性开发脚本（无参数时 `process.exit(2)`）放进
+// tools 目录，于是每次启动都在初始化途中被脚本杀掉；另有脚本在顶层直接写 PNG。
+// 这一组用例把四类危害逐个钉住。
+describe("discoverUserTools —— 坏文件不能伤到宿主", () => {
+  it("没有 export 的文件：跳过且**不执行**（顶层副作用不会发生）", async () => {
+    const marker = join(dir, "executed.marker");
+    writeTool(
+      "cli-script.mjs",
+      `import { writeFileSync } from "node:fs";\n` +
+        `writeFileSync(${JSON.stringify(marker)}, "ran");\n` +
+        `console.log("顶层副作用");\n`,
+    );
+    const logs = captureLogs();
+
+    const result = await discoverUserTools([dir]);
+
+    expect(result).toEqual([]);
+    // 关键：连求值的机会都不给，副作用根本没发生
+    expect(existsSync(marker)).toBe(false);
+    const warned = logs.filter(([level]) => level === "warn");
+    expect(warned).toHaveLength(1);
+    expect(warned[0]![1]).toContain("cli-script.mjs");
+    expect(warned[0]![1]).toContain("no `export`");
+  });
+
+  it("顶层 process.exit()：抑制成异常，宿主不退出，后续文件照常加载", async () => {
+    // 有 export → 能过静态预检 → 必须靠执行期护栏兜住
+    writeTool("a-fatal.mjs", `export default {};\nprocess.exit(2);\n`);
+    writeTool("z-good.mjs", simpleToolCode("good_tool", "Good tool"));
+    const logs = captureLogs();
+
+    const result = await discoverUserTools([dir]);
+
+    // 能走到这里就说明宿主还活着
+    expect(result.map((t) => t.function.name)).toEqual(["good_tool"]);
+    const failed = logs.filter(([level]) => level === "error");
+    expect(failed).toHaveLength(1);
+    expect(failed[0]![1]).toContain("a-fatal.mjs");
+    expect(failed[0]![1]).toContain("process.exit(2)");
+  });
+
+  it("顶层 console.log：不写 stdout（宿主的界面），改写 stderr", async () => {
+    writeTool("chatty.mjs", `console.log("SHOULD_NOT_REACH_STDOUT");\nexport default {};\n`);
+    // 生产实现里护栏把 console.log 指到 console.error（→ stderr）；vitest 自己也接管了
+    // console，所以这里断言「出口」而不是「绑定」：stdout 一个字没收到、error 收到了。
+    const outSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await discoverUserTools([dir], { silent: true });
+      const stdoutText = outSpy.mock.calls.map((c) => String(c[0])).join("");
+      expect(stdoutText).not.toContain("SHOULD_NOT_REACH_STDOUT");
+      expect(errSpy.mock.calls.flat().join(" ")).toContain("SHOULD_NOT_REACH_STDOUT");
+    } finally {
+      outSpy.mockRestore();
+      errSpy.mockRestore();
+    }
+  });
+
+  it("顶层 await 永不 settle：超时放弃，不拖死启动", async () => {
+    writeTool("hangs.mjs", `await new Promise(() => {});\nexport default {};\n`);
+    const logs = captureLogs();
+    const t0 = Date.now();
+
+    const result = await discoverUserTools([dir], { importTimeoutMs: 100 });
+
+    expect(result).toEqual([]);
+    expect(Date.now() - t0).toBeLessThan(3000);
+    const failed = logs.filter(([level]) => level === "error");
+    expect(failed[0]![1]).toContain("timed out");
+  });
+
+  it("护栏用完即还原：process.exit / console.log 变回原函数（宿主还能退出）", async () => {
+    writeTool("ok.mjs", simpleToolCode("ok_tool", "ok"));
+    const realExit = process.exit;
+    const realLog = console.log;
+
+    await discoverUserTools([dir], { silent: true });
+
+    expect(process.exit).toBe(realExit);
+    expect(console.log).toBe(realLog);
   });
 });

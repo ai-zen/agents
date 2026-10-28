@@ -1,5 +1,67 @@
 # Changelog
 
+## [1.0.0-alpha.24] - 2026-10-29
+
+> User tool files can no longer damage the host. `tools/` holds code that the SDK
+> **evaluates in-process**, so a stray script in that directory used to be able to
+> kill the process, hang startup, or silently rewrite project files.
+
+### 💥 Breaking Changes
+
+- **`tools/` is now explicitly a trusted-extension directory.** Files there are
+  still `import()`-ed in-process, so the SDK cannot sandbox them: a top-level
+  synchronous infinite loop or a native `process.kill()` still takes the host
+  down. Anything untrusted belongs in an MCP server, which is the out-of-process
+  extension path. This is documented in `discover.ts` next to the guards.
+
+### 🛡️ Fixed — user tool loading is now fail-safe
+
+Real-world incident that motivated this release: a one-off developer script
+(`process.exit(2)` when called without arguments) was dropped into
+`.ai-zen/tools/`. Every startup imported it during session creation, so the CLI
+process was killed mid-initialization and the last drawn frame stayed on screen —
+it looked like a hang. Another script in the same directory rewrote PNG assets at
+module top level on every startup. All four such files are now skipped or
+neutralised.
+
+- **Static pre-check: files without `export` are never evaluated.** A module with
+  no `export` cannot export a `Tool`, so `normalizeToolExport()` was already going
+  to discard it — the only difference is that the old code found out *after*
+  evaluating it, i.e. after the side effects had happened. Reading the source
+  first costs one `fs.readFile` and buys complete immunity from that class of
+  file. Read failures fail open (the file is still imported) so an unreadable but
+  valid tool is never silently dropped.
+- **`process.exit` / `process.abort` are suppressed during evaluation.** They are
+  swapped for a thrown `UserToolExitError`, which lands in the existing
+  `try/catch` and rejects just that one file. The originals are restored in a
+  `finally` — the guard must never outlive the import, or the host itself could
+  not exit. What was saved is the *current* value, not the value at module load,
+  so nested/concurrent discoveries restore correctly.
+- **`console.log` / `info` / `debug` are redirected to stderr while evaluating.**
+  stdout belongs to the host's UI; a tool file writing to it tears an Ink frame
+  apart. This is also why the stray scripts visibly corrupted the TUI.
+- **Per-file import timeout (`importTimeoutMs`, default 5000).** A module whose
+  top-level `await` never settles no longer blocks startup. A timeout only stops
+  *waiting* — ESM evaluation cannot be cancelled, so the module may still finish
+  later; this is stated at the call site rather than pretended away.
+
+### 🔧 Changed
+
+- Rejections are reported through `getLogger().warn/error` (previously the
+  failure path logged at `error` only). No new notification API was added: hosts
+  that want these on screen should tee their `Logger`, which is a single hook that
+  covers every SDK subsystem at once instead of one callback per feature.
+
+### ✅ Tests
+
+- `discover.test.ts` 16 → 21 cases. The five new ones pin each hazard: a file
+  without `export` is skipped **without being evaluated** (asserted via a
+  side-effect marker file), a top-level `process.exit(2)` neither kills the host
+  nor prevents later files from loading, top-level `console.log` does not reach
+  stdout, a never-settling top-level `await` times out, and `process.exit` /
+  `console.log` are restored afterwards.
+- Full suite: 57 files / 617 passed / 6 skipped.
+
 ## [1.0.0-alpha.23] - 2026-10-29
 
 > The SDK is now English-only. Every model-facing and user-facing string is a
