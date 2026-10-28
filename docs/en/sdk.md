@@ -245,7 +245,7 @@ Two layers, one pipeline:
 
 The document template is **not** in the code: it comes from the `handoff` skill (`~/.ai-zen/skills/handoff/SKILL.md`), released and version-synced by `ConfigManager.bootstrap()` (frontmatter `metadata.custom: "true"` opts out). The code only reads the skill, injects it, validates the file, and falls back to a minimal built-in template when the skill is missing.
 
-Two executors: `self` (default — the original agent writes it in-session with full context and tools) and `summary` (one independent call, no tools). `self` degrades to `summary` one-way.
+Two executors: `self` (default — the original agent writes it in-session with full context and tools) and `summary` (one independent call, no tools). `self` degrades to `summary` one-way on failure (**except on cancellation**, see below).
 
 ```ts
 import { HandoffService, AutoMigratePlugin, ContextGuardPlugin } from "@ai-zen/agents-sdk";
@@ -262,6 +262,7 @@ agent.use(new AutoMigratePlugin({ service: handoffService, handoffTokens: 250_00
 ```
 
 - Strategy `strategy`: `omit` (default, marks history `omit: true` to keep it auditable) / `prune` (physically removes).
+- **Cancellable**: `handoff()` / `migrate()` accept `signal?: AbortSignal`; cancellation throws `HandoffAbortedError` — **no degradation, no retry** — and discards the half-written document. A cancelled `migrate()` leaves the session history untouched. Don't rely on `agent.abort()` alone: `summary` runs an independent model request (out of reach), and a `self` abort is misread as "the model never wrote the document", burning two extra rounds.
 - `service.busy` makes the auto-migrate plugin step aside (no recursion); extra headroom comes from setting `guard` large enough (factory value `handoff × 1.5`), there is no implicit multiplier anymore.
 - `HandoffGuardPlugin` is armed only inside the handoff turn: it blocks `edit` / `rm` / `rename` … and allows `write` only for the handoff file (soft rejections that steer the model back).
 - Does not rebuild the Agent, only rebuilds the message list; a failed handoff does not lose the original messages.

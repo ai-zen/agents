@@ -245,7 +245,7 @@ const { config, agent, subAgent } = await mgr.bootstrap();   // 一键初始化�
 
 文档模板**不在代码里**：来自 `handoff` Skill（`~/.ai-zen/skills/handoff/SKILL.md`），由 `ConfigManager.bootstrap()` 释放并随版本同步（frontmatter 写 `metadata.custom: "true"` 可退出同步）。代码只负责读 Skill、注入、校验文件、读不到时用内置最小兜底模板。
 
-两种执行者：`self`（默认——原 agent 在自己会话里写，上下文与工具完整）与 `summary`（一次独立调用，无工具）。`self` 失败时**单向**降级为 `summary`。
+两种执行者：`self`（默认——原 agent 在自己会话里写，上下文与工具完整）与 `summary`（一次独立调用，无工具）。`self` 失败时**单向**降级为 `summary`（**取消除外**，见下）。
 
 ```ts
 import { HandoffService, AutoMigratePlugin, ContextGuardPlugin } from "@ai-zen/agents-sdk";
@@ -262,6 +262,7 @@ agent.use(new AutoMigratePlugin({ service: handoffService, handoffTokens: 250_00
 ```
 
 - 策略 `strategy`：`omit`（默认，历史标记 `omit: true` 保留可审计）/ `prune`（物理剔除）。
+- **可取消**：`handoff()` / `migrate()` 接受 `signal?: AbortSignal`，取消时抛 `HandoffAbortedError`——**不降级、不重试**，并清掉写了一半的文档；`migrate()` 被取消则不会改动会话历史。别只依赖 `agent.abort()`：`summary` 走的是独立模型请求（够不到），`self` 的中止又会被误判成「模型没写出文档」而多跑两轮。
 - `service.busy` 期间自动迁移插件让行（防递归）；护栏的放宽靠把 `guard` 配得足够大（出厂 `handoff × 1.5`），不再有隐式倍数。
 - `HandoffGuardPlugin` 仅在交接回合生效：拦截 `edit` / `rm` / `rename` 等，`write` 只放行交接文档（软拒绝，把模型引回正题）。
 - 不重建 Agent，仅重建消息列表；交接失败不会丢原消息。

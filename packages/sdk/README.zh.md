@@ -20,7 +20,7 @@ Desktop ──┘                    │
 types         ← 纯类型，零业务依赖（含 ToolEnv 工具环境）
 config        ← ConfigManager + constants：读写 config.json + 目录初始化 + 出厂默认
 crud          ← 能力实体 CRUD（Agent 定义等；会话/草稿已下放给各端自行持久化）
-runtime       ← 模型工厂 + Agent 组装 + 任务交接/迁移（createModel / createAgent / SdkAgent / HandoffService / HandoffGuardPlugin）
+runtime       ← 模型工厂 + Agent 组装 + 任务交接/迁移（可 `AbortSignal` 取消；createModel / createAgent / SdkAgent / HandoffService / HandoffGuardPlugin）
 scope         ← Scope 编排容器 + ScopePlugin 契约 + PermissionEvaluator / disclosure + plugins/（5 个自包含能力来源：发现 + 工具 + 插件）
 agent-plugins ← Agent 插件（autoMigrate、autoRefreshTools、contextGuard、unknownToolHint）
 shared        ← 日志、错误

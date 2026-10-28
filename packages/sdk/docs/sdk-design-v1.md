@@ -1133,6 +1133,11 @@ agent.use(new AutoMigratePlugin({
 | 交接 | `handoff()` | 停工 → 核实 → 写交接文档 → 校验（失败降级）。**不动会话** |
 | 迁移 | `migrate()` | `handoff()` 之后按 `strategy` 清历史 + 注入交接断点（开新会话） |
 
+> **取消（`signal?: AbortSignal`）**：两个方法都接受取消信号。取消时抛 `HandoffAbortedError`——
+> **不降级、不重试**，并删掉写了一半的文档；`migrate()` 被取消则不改动会话历史。
+> 别只依赖 `agent.abort()`：`summary` 走的是独立模型请求（够不到），`self` 的中止又会被
+> 文件校验误判成「模型没写出文档」而重试 + 降级，反而多烧两轮全量输入。
+
 > **策略开关（`strategy`，只影响 `migrate()`）**：
 > - **`omit`（默认）**：历史消息标记 `omit: true`（留存可审计，不再发给模型），末尾追加断点消息；
 > - **`prune`**：物理剔除历史，只保留 `definition.messages` + 断点消息。
@@ -1193,7 +1198,7 @@ interface HandoffContext {
   handoffDoc?: string;              // 仅 summary 模式有值（self 模式不读盘）
   model: string;
   promptTokens?: number;
-  maxTokens?: number;
+  handoffTokens?: number;
   migrating: boolean;               // 钩子据此区分 /handoff 与 /migrate
   messageCountBefore: number;
   historyText: string;              // 仅 summary 模式填充
@@ -1205,7 +1210,7 @@ class HandoffService {
   static createPostMessages(handoffPath): AgentNS.Message[];         // 断点：只给路径
   static serializeMessages(messages): string;
   get busy(): boolean;
-  async handoff(params: { agent; mode?; promptTokens?; maxTokens?; conversationId? }): Promise<HandoffContext>;
+  async handoff(params: { agent; mode?; promptTokens?; handoffTokens?; conversationId?; signal? }): Promise<HandoffContext>;
   async migrate(params: {...; strategy?}): Promise<HandoffContext>;
 }
 ```

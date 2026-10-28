@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.0.0-alpha.21] - 2026-10-28
+
+### ✨ 新增
+
+- **交接/迁移支持取消（`AbortSignal`）** —— 此前 `handoff()` / `migrate()` 一旦开始就没有任何中止手段，宿主按 Ctrl+C 也停不下来：
+  - `summary` 模式的独立模型请求根本没有任何取消点；
+  - `self` 模式能被 `agent.abort()` 打断，但中止后被误判成「模型没写出文档」，于是重试一轮、再降级 `summary` 再跑一轮——用户以为取消了，实际多烧两轮全量输入。
+
+  现在 `HandoffParams` 新增 `signal?: AbortSignal`，两个执行者都认它：
+
+  - `summary`：`signal` 作为 **RequestOptions（第二参数）** 传给 `chat.completions.create`，请求会真的被中断；
+  - `self`：每个 `agent.send()` 之后**主动检查** `aborted`（因为 `abort()` 不抛错），取消即抛 `HandoffAbortedError`，**不重试、不降级**；
+  - `runHandoff()` 在阶段之间加取消点；`migrate()` 被取消时**不改动会话历史**（不会留下「已迁移」的假象）。
+
+- **导出 `HandoffAbortedError`** —— 取消单独成类型，调用方才能把「用户按了 Ctrl+C」与「交接真的失败」分开处理：前者静默收尾，后者才该报错。
+
+### 🐛 修复
+
+- **取消后清掉写了一半的交接文档** —— 只删本次新建的（同名旧文件不碰）。半成品比没有更糟：下一轮接手方会把它当成真实交接读进去。
+
+### ✅ 测试
+
+- 全量 **57 文件 / 608 例通过**（6 skipped）。
+- `HandoffService.test.ts` **24 → 30 例**：signal 透传 RequestOptions、summary 取消不落盘、self 取消不重试不降级、半成品清理、migrate 取消不改历史、未取消时不误伤正常路径。
+- 破坏性验证：删掉 `self` 的取消检查 → 「不重试、不降级」用例红。
+
 ## [1.0.0-alpha.20] - 2026-10-27
 
 ### ✨ 新增

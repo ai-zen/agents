@@ -21,7 +21,7 @@ Desktop ──┘                    │
 types         ← pure types, zero business dependencies (incl. ToolEnv)
 config        ← ConfigManager + constants: config.json read/write + directory setup + factory defaults
 crud          ← capability-entity CRUD (Agent definitions; conversations/drafts are persisted by each consumer)
-runtime       ← model factory + Agent assembly + task handoff/migration (createModel / createAgent / SdkAgent / HandoffService / HandoffGuardPlugin)
+runtime       ← model factory + Agent assembly + task handoff/migration (cancellable via `AbortSignal`; createModel / createAgent / SdkAgent / HandoffService / HandoffGuardPlugin)
 scope         ← Scope orchestration container + ScopePlugin contract + PermissionEvaluator / disclosure + plugins/ (5 self-contained capability sources: discovery + tools + plugin)
 agent-plugins ← Agent plugins (autoMigrate, autoRefreshTools, contextGuard, unknownToolHint)
 shared        ← logging, errors
