@@ -27,6 +27,36 @@ export type HandoffMode = "self" | "summary";
 export type MigrationStrategy = "omit" | "prune";
 
 /**
+ * 交接被调用方取消（`AbortSignal` 触发）。
+ *
+ * 单独成类型而不是复用 `Error`，原因有两个：
+ *   - 调用方（如 TUI）要把「用户按了 Ctrl+C」与「交接真的失败了」区分开 ——
+ *     前者应静默收尾并提示「已取消」，后者才该报错；
+ *   - 它**不可降级**：`self` 被取消后绝不能退到 `summary` 再跑一遍。
+ *     把「用户中止」当成「模型没写出文档」，会白白多烧一轮全量输入。
+ */
+export class HandoffAbortedError extends Error {
+  constructor() {
+    super("交接已取消");
+    this.name = "HandoffAbortedError";
+  }
+}
+
+/**
+ * 错误是否来自取消。
+ *
+ * 两条路径都要认：
+ *   - 调用方传了 `signal` 且已 `aborted`（`agent.abort()` 就是这种情况 ——
+ *     它**不抛错**，core 层把消息标记成 Aborted 后正常返回）；
+ *   - OpenAI SDK 在请求被 abort 时抛的 `APIUserAbortError`（`name` 为 `AbortError`）。
+ */
+function isAbortError(err: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return true;
+  const name = (err as { name?: string } | null)?.name;
+  return name === "AbortError" || name === "APIUserAbortError";
+}
+
+/**
  * 一次交接的完整上下文 —— 贯穿「交接前 → 写文档 → 迁移后」，供钩子与调用方使用。
  */
 export interface HandoffContext {
@@ -96,6 +126,15 @@ export interface HandoffParams {
   handoffTokens?: number;
   /** 会话 id（可选，用于交接文件名，便于回溯） */
   conversationId?: string;
+  /**
+   * 取消信号（可选）。触发后交接**立即停止且不降级**，抛 {@link HandoffAbortedError}。
+   *
+   * 两种执行者都要认它：
+   *   - `summary`：直接作为 `chat.completions.create` 的 RequestOptions 传下去，
+   *     请求会真的被中断（否则该请求根本无从取消）；
+   *   - `self`：`agent.abort()` 不抛错，所以每个 `send()` 之后要主动检查 `aborted`。
+   */
+  signal?: AbortSignal;
 }
 
 /** `migrate()` 参数 */
@@ -281,7 +320,7 @@ export class HandoffService {
    * 用户可继续让 agent 打磨这份文档（重写同一路径即可）。
    */
   async handoff(params: HandoffParams): Promise<HandoffContext> {
-    return this.withBusy(() => this.runHandoff(params, false));
+    return this.withBusy(() => this.runCatchingAbort(params, false));
   }
 
   /**
@@ -293,7 +332,7 @@ export class HandoffService {
    */
   async migrate(params: MigrateParams): Promise<HandoffContext> {
     return this.withBusy(async () => {
-      const ctx = await this.runHandoff(params, true);
+      const ctx = await this.runCatchingAbort(params, true);
       const { agent } = ctx;
       const strategy = params.strategy ?? this.defaultStrategy;
       const breakpointMessages = HandoffService.createPostMessages(ctx.handoffPath);
@@ -335,11 +374,61 @@ export class HandoffService {
     }
   }
 
+  /**
+   * 把底层各种「取消」形态统一成 {@link HandoffAbortedError}。
+   *
+   * 取消可能从三处冒上来：`self` 回合后的主动检查（已是 HandoffAbortedError）、
+   * `summary` 请求被 abort 时 OpenAI SDK 抛的 `APIUserAbortError`、以及
+   * `readSkillContent` 这类前置 await 期间被取消。调用方只需要认一个类型。
+   */
+  private async runCatchingAbort(
+    params: HandoffParams,
+    migrating: boolean,
+  ): Promise<HandoffContext> {
+    try {
+      return await this.runHandoff(params, migrating);
+    } catch (err) {
+      if (err instanceof HandoffAbortedError) throw err;
+      if (isAbortError(err, params.signal)) throw new HandoffAbortedError();
+      throw err;
+    }
+  }
+
+  /** 取消点检查：每跨过一个阶段就确认一次，避免取消后继续往下一步冲 */
+  private throwIfAborted(signal?: AbortSignal): void {
+    if (signal?.aborted) throw new HandoffAbortedError();
+  }
+
+  private async fileExists(path: string): Promise<boolean> {
+    try {
+      await fs.access(path);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 取消后清掉半成品文档。
+   *
+   * 只删「本次新建」的文件：交接文件名含时间戳，正常不会撞已有文件，但调用方也
+   * 可以把 `handoffDir` 指向人工目录；不管怎样都不该删掉别人的文件。
+   * 留着半成品更糟 —— 下一轮接手方会把不完整的内容当成真实交接读进去。
+   */
+  private async discardPartialFile(path: string, existedBefore: boolean): Promise<void> {
+    if (existedBefore) return;
+    try {
+      await fs.unlink(path);
+    } catch {
+      /* 文件本就没写出来：忽略 */
+    }
+  }
+
   private async runHandoff(
     params: HandoffParams,
     migrating: boolean,
   ): Promise<HandoffContext> {
-    const { agent, promptTokens, handoffTokens, conversationId } = params;
+    const { agent, promptTokens, handoffTokens, conversationId, signal } = params;
     const requestedMode = params.mode ?? this.defaultMode;
     const handoffPath = join(
       this.handoffDirPath,
@@ -362,6 +451,7 @@ export class HandoffService {
       historyText: "",
     };
     await this.safeHook(this.onBeforeHandoff, beforeCtx);
+    this.throwIfAborted(signal);
 
     // ---- 执行者：self 优先，失败/不可用则单向降级 summary ----
     let mode = requestedMode;
@@ -376,7 +466,7 @@ export class HandoffService {
     }
 
     if (mode === "self") {
-      const ok = await this.runSelfHandoff(agent, handoffPath);
+      const ok = await this.runSelfHandoff(agent, handoffPath, signal);
       if (!ok) {
         this.logger.warn("[handoff] 自交接失败，降级为独立摘要模式");
         mode = "summary";
@@ -387,9 +477,12 @@ export class HandoffService {
       historyText = HandoffService.serializeMessages(
         agent.messages.filter((m) => !m.omit),
       );
-      handoffDoc = await this.generateSummary(agent, historyText, handoffPath);
+      handoffDoc = await this.generateSummary(agent, historyText, handoffPath, signal);
       await this.writeHandoffFile(handoffPath, handoffDoc);
     }
+
+    // 最后一道取消点：即使两步都跑完，只要期间被取消就不能算成功
+    this.throwIfAborted(signal);
 
     const ctx: HandoffContext = {
       agent,
@@ -421,11 +514,23 @@ export class HandoffService {
    * 失败判定（任一成立即视为失败，交由上层单向降级 summary）：
    *   - 文件不存在 / 小于阈值；
    *   - 模型/工具链抛错（例如没有权限、被护栏中断）。
+   *
+   * **取消不算失败**：`signal` 已触发时抛 {@link HandoffAbortedError}，既不走
+   * 「文件没写好→重试一次」也不降级 summary。 这条分支必须显式写：
+   * `agent.abort()` 不抛错（core 把消息标记为 Aborted 后正常返回），否则「用户
+   * 按了 Ctrl+C」会被下面的文件校验误判成「模型没写出文档」，于是重试一轮、再降级
+   * 一轮 —— 用户以为取消了，实际多烧了两轮全量输入。
    */
-  private async runSelfHandoff(agent: SdkAgent, handoffPath: string): Promise<boolean> {
+  private async runSelfHandoff(
+    agent: SdkAgent,
+    handoffPath: string,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
     const guard = this.ensureGuard(agent);
     const skillContent = await this.readSkillContent();
     const cwd = (agent as { scope?: { cwd?: string } }).scope?.cwd ?? process.cwd();
+    // 取消时只删本次新建的文件，不碰本已存在的同名文件
+    const existedBefore = await this.fileExists(handoffPath);
 
     /*
      * 清空 lastUsage 再开跑：
@@ -445,6 +550,8 @@ export class HandoffService {
           toolsAvailable: true,
         }),
       );
+      // `agent.abort()` 不抛错，必须主动检查（见方法注释）
+      this.throwIfAborted(signal);
 
       if (await this.isHandoffFileReady(handoffPath)) return true;
 
@@ -455,9 +562,14 @@ export class HandoffService {
           "请立即用 write 工具把**完整**交接文档写入该路径（路径原样使用），不要做其他任何事。",
         ].join("\n"),
       );
+      this.throwIfAborted(signal);
 
       return await this.isHandoffFileReady(handoffPath);
     } catch (err: any) {
+      if (isAbortError(err, signal)) {
+        await this.discardPartialFile(handoffPath, existedBefore);
+        throw new HandoffAbortedError();
+      }
       this.logger.error(`[handoff] 自交接回合失败：${err?.message ?? err}`);
       return false;
     } finally {
@@ -470,27 +582,34 @@ export class HandoffService {
     agent: SdkAgent,
     historyText: string,
     handoffPath: string,
+    signal?: AbortSignal,
   ): Promise<string> {
     const client = this.client ?? agent.client;
     const model = this.model ?? agent.model;
     const modelConfig = this.modelConfig ?? agent.modelConfig;
     const skillContent = await this.readSkillContent();
+    this.throwIfAborted(signal);
 
-    const response = await client.chat.completions.create({
-      model,
-      ...(modelConfig ?? {}),
-      messages: [
-        {
-          role: "system",
-          content: HandoffService.createHandoffInstruction({
-            skillContent,
-            handoffPath,
-            toolsAvailable: false,
-          }),
-        },
-        { role: "user", content: historyText },
-      ],
-    });
+    // `signal` 走 RequestOptions（第二参数），与 `core/Agent.ts` 调用模型时一致：
+    // 放在 body 里不会被 OpenAI SDK 当成取消信号。
+    const response = await client.chat.completions.create(
+      {
+        model,
+        ...(modelConfig ?? {}),
+        messages: [
+          {
+            role: "system",
+            content: HandoffService.createHandoffInstruction({
+              skillContent,
+              handoffPath,
+              toolsAvailable: false,
+            }),
+          },
+          { role: "user", content: historyText },
+        ],
+      },
+      signal ? { signal } : undefined,
+    );
 
     const handoffDoc = response.choices[0]?.message?.content;
     if (!handoffDoc || !handoffDoc.trim()) {

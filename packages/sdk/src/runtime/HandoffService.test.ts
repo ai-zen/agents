@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HandoffService } from "./HandoffService.js";
+import { HandoffAbortedError, HandoffService } from "./HandoffService.js";
 import { HandoffGuardPlugin } from "./HandoffGuardPlugin.js";
 import { FALLBACK_HANDOFF_TEMPLATE } from "../config/factory-skills.js";
 
@@ -50,7 +50,7 @@ class FakeAgent {
   plugins: any[] = [];
   client: any;
 
-  constructor(private options: FakeAgentOptions = {}) {
+  constructor(public options: FakeAgentOptions = {}) {
     this.messages = options.messages ?? [
       { role: "system", content: "You are a helper." },
       { role: "user", content: "帮我做任务 A" },
@@ -509,5 +509,102 @@ describe("migrate", () => {
     const written = await fs.readFile(ctx.handoffPath, "utf-8");
     expect(written).toContain("## 💬 对话断点");
     expect(agent.messages.at(-1)!.content).not.toContain("## 💬 对话断点");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 取消（AbortSignal）—— 用户按 Ctrl+C 必须真的停下，且**不降级、不重试**
+// ---------------------------------------------------------------------------
+
+describe("取消（AbortSignal）", () => {
+  /** 造一个「请求一开始就被取消」的 OpenAI 错误（与 SDK 抛的形态一致） */
+  const abortError = () => Object.assign(new Error("Request was aborted."), { name: "APIUserAbortError" });
+
+  it("summary 模式把 signal 作为 RequestOptions 传给模型请求", async () => {
+    const { service } = await makeService();
+    const agent = new FakeAgent({ writeTool: false });
+    const ac = new AbortController();
+
+    await service.handoff({ agent: asAgent(agent), mode: "summary", signal: ac.signal });
+
+    // 第二个参数才是 RequestOptions；放进 body 不会被 SDK 当成取消信号
+    const [, requestOptions] = agent.client.chat.completions.create.mock.calls[0]!;
+    expect(requestOptions).toEqual({ signal: ac.signal });
+  });
+
+  it("summary 请求被取消 → 抛 HandoffAbortedError（不是普通失败），且不落盘", async () => {
+    const { service, dir } = await makeService();
+    const agent = new FakeAgent({ writeTool: false });
+    agent.client.chat.completions.create.mockRejectedValueOnce(abortError());
+    const ac = new AbortController();
+    ac.abort();
+
+    await expect(
+      service.handoff({ agent: asAgent(agent), mode: "summary", signal: ac.signal }),
+    ).rejects.toThrow(HandoffAbortedError);
+
+    expect(await fs.readdir(dir)).toEqual([]);
+  });
+
+  it("self 模式被取消：不重试、不降级 summary（这正是 Ctrl+C 无效的根因）", async () => {
+    const { service } = await makeService();
+    const ac = new AbortController();
+    // 真机形态：`agent.abort()` 不抛错，send 正常返回，但文档没写出来
+    const agent = new FakeAgent({ onSend: () => void ac.abort() });
+
+    await expect(
+      service.handoff({ agent: asAgent(agent), mode: "self", signal: ac.signal }),
+    ).rejects.toThrow(HandoffAbortedError);
+
+    // 只发送了一轮：取消不能被当成「文档没写好」而触发重试
+    expect(agent.sent).toHaveLength(1);
+    // 一路降到 summary 会再发一次模型请求——必须没有
+    expect(agent.client.chat.completions.create).not.toHaveBeenCalled();
+  });
+
+  it("self 模式被取消后删掉写了一半的文档", async () => {
+    const { service, dir } = await makeService();
+    const ac = new AbortController();
+    const agent = new FakeAgent({
+      onSend: async (content) => {
+        // 模型已经用 write 工具落了半截内容，然后被取消
+        const path = /交接文档绝对路径：(.+)/.exec(content)![1]!.trim();
+        await fs.writeFile(path, "## 💬 对话断点\n只写了一半", "utf-8");
+        ac.abort();
+      },
+    });
+
+    await expect(
+      service.handoff({ agent: asAgent(agent), mode: "self", signal: ac.signal }),
+    ).rejects.toThrow(HandoffAbortedError);
+
+    // 半成品必须清掉：否则下一轮接手方会把不完整内容当成真实交接读进去
+    expect(await fs.readdir(dir)).toEqual([]);
+  });
+
+  it("migrate 被取消后不改动会话历史（不能留下已迁移的假象）", async () => {
+    const { service } = await makeService({ strategy: "prune" });
+    const ac = new AbortController();
+    const agent = new FakeAgent({ onSend: () => void ac.abort() });
+    const before = agent.messages.length;
+
+    await expect(
+      service.migrate({ agent: asAgent(agent), signal: ac.signal }),
+    ).rejects.toThrow(HandoffAbortedError);
+
+    // 断点消息没有被注入
+    expect(agent.messages.at(-1)!.content).not.toContain("上一轮对话已交接");
+    expect(agent.messages.length).toBeGreaterThanOrEqual(before);
+  });
+
+  it("signal 存在但未取消时行为不变（防止误伤正常路径）", async () => {
+    const { service } = await makeService();
+    const agent = new FakeAgent();
+    const ac = new AbortController();
+
+    const ctx = await service.handoff({ agent: asAgent(agent), mode: "summary", signal: ac.signal });
+
+    expect(ctx.mode).toBe("summary");
+    expect(existsSync(ctx.handoffPath)).toBe(true);
   });
 });
