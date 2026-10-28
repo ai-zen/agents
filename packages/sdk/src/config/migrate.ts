@@ -128,8 +128,11 @@ export function migrateModelReasoning(model: Model): { model: Model; changed: bo
  * 迁移整个配置。只处理对话模型（`models`）——
  * 图片模型（`imageModels`）既没有上下文阈值、也没有思考概念。
  *
- * 同时清除已废弃的 `defaultModel`：模型的真相源已改为 `AgentDefinition.modelId`，
- * 配置级默认值连同字段一起消失（旧值先由 `ConfigManager.bootstrap()` 搬到默认 Agent 上）。
+ * 同时做两件字段级收敛：
+ * - 清除已废弃的 `defaultModel`（模型真相源已改为 `AgentDefinition.modelId`）；
+ * - 补齐中断策略（`abortedMessageStrategy` / `abortedToolRoundStrategy`）：把缺失或
+ *   非法值写成出厂默认。这样「配置即事实」——文件里写着的就是运行时用的，不再需要
+ *   使用方各自 `?? "keep"` 地兵分两路兜底。
  */
 export function migrateConfig(config: AppConfig): { config: AppConfig; changed: boolean } {
   let changed = false;
@@ -147,6 +150,34 @@ export function migrateConfig(config: AppConfig): { config: AppConfig; changed: 
     changed = true;
   }
 
+  if (normalizeAbortStrategies(next)) changed = true;
+
   if (!changed) return { config, changed };
   return { config: next, changed };
+}
+
+/** 合法的中断策略取值（与 core 的枚举一致） */
+export const ABORTED_MESSAGE_STRATEGIES = ["keep", "drop"] as const;
+export const ABORTED_TOOL_ROUND_STRATEGIES = ["fill", "drop"] as const;
+
+/** 缺失 / 非法 → 出厂默认；返回是否有改动（直接改写传入对象） */
+export function normalizeAbortStrategies(config: AppConfig): boolean {
+  let changed = false;
+  if (
+    !ABORTED_MESSAGE_STRATEGIES.includes(
+      config.abortedMessageStrategy as (typeof ABORTED_MESSAGE_STRATEGIES)[number],
+    )
+  ) {
+    config.abortedMessageStrategy = DEFAULT_APP_CONFIG.abortedMessageStrategy;
+    changed = true;
+  }
+  if (
+    !ABORTED_TOOL_ROUND_STRATEGIES.includes(
+      config.abortedToolRoundStrategy as (typeof ABORTED_TOOL_ROUND_STRATEGIES)[number],
+    )
+  ) {
+    config.abortedToolRoundStrategy = DEFAULT_APP_CONFIG.abortedToolRoundStrategy;
+    changed = true;
+  }
+  return changed;
 }

@@ -113,6 +113,8 @@ describe("migrateConfig", () => {
     const config = {
       endpoints: [],
       models: [legacyModel({ tokenThresholds: { handoff: 1, guard: 2 } })],
+      abortedMessageStrategy: "keep",
+      abortedToolRoundStrategy: "fill",
     } as unknown as AppConfig;
     const result = migrateConfig(config);
     expect(result.changed).toBe(false);
@@ -144,6 +146,36 @@ describe("migrateConfig", () => {
       handoff: 100_000,
       guard: 150_000,
     });
+  });
+  it("补齐缺失的中断策略，原对象不被就地改", () => {
+    const config = { endpoints: [], models: [] } as unknown as AppConfig;
+    const result = migrateConfig(config);
+    expect(result.changed).toBe(true);
+    expect(result.config.abortedMessageStrategy).toBe("keep");
+    expect(result.config.abortedToolRoundStrategy).toBe("fill");
+    expect(config.abortedMessageStrategy).toBeUndefined();
+  });
+
+  it("中断策略非法 → 改写成出厂默认；合法值原样保留", () => {
+    const bad = migrateConfig({
+      endpoints: [],
+      models: [],
+      abortedMessageStrategy: "nope",
+      abortedToolRoundStrategy: "fill",
+    } as unknown as AppConfig);
+    expect(bad.changed).toBe(true);
+    expect(bad.config.abortedMessageStrategy).toBe("keep");
+    expect(bad.config.abortedToolRoundStrategy).toBe("fill");
+
+    const kept = migrateConfig({
+      endpoints: [],
+      models: [],
+      abortedMessageStrategy: "drop",
+      abortedToolRoundStrategy: "drop",
+    } as unknown as AppConfig);
+    expect(kept.changed).toBe(false);
+    expect(kept.config.abortedMessageStrategy).toBe("drop");
+    expect(kept.config.abortedToolRoundStrategy).toBe("drop");
   });
 });
 

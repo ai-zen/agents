@@ -64,7 +64,7 @@ const agent = await createAgent(scope, config.defaultAgent ?? "default");
 
 - `SdkAgent extends Agent`（来自 core），额外携带 `scope` 与 `definition`（含权限 `permissions`）。
 - 权限统一从 `definition.permissions` 读取，不单独持有。
-- 第三个参数（可选）用于透传中断行为：`createAgent(scope, agentId, { abortedMessageStrategy: "keep" })` 让**被中断的思考/内容保留**在下一轮上下文中（默认 `drop`）；另有 `abortedToolRoundStrategy` / `abortedToolRoundReason` 控制工具轮次。详见 [`core.md`](core.md) 的「中断的思考与内容」一节。
+- 第三个参数（可选）用于透传中断行为；**不传则取 `scope.config` 里的同名配置**：`createAgent(scope, agentId, { abortedMessageStrategy: "keep" })` 让**被中断的思考/内容保留**在下一轮上下文中；另有 `abortedToolRoundStrategy` / `abortedToolRoundReason` 控制工具轮次。优先级：**显式参数 > `scope.config` > core 默认值**。详见 [`core.md`](core.md) 的「中断的思考与内容」一节。
 
 ## 权限模型
 
@@ -233,6 +233,7 @@ const { config, agent, subAgent } = await mgr.bootstrap();   // 一键初始化�
 ```
 
 - 预置端点（OpenAI / 智谱 / DeepSeek）、8 个模型（含视觉模型 `vision: true`）、3 个图片模型、默认选项。
+- **中断策略写在配置里**：`abortedMessageStrategy`（出厂 `keep`——中断后模型能接着半截往下说）与 `abortedToolRoundStrategy`（出厂 `fill`——整轮进出，`tool_calls` 与结果必须配对）。`ConfigManager.read()` 会把缺失或非法的值补成出厂默认，所以文件里写着的就是运行时用的，各端不必自己兜底。
 - 出厂默认 MCP 服务器（`socket-pty`、`chrome-devtools`）首启写入 `~/.ai-zen/mcp.json`，已存在不覆盖。
 - 所有 `ensure*` 操作对已存在文件不覆盖，用户配置永不丢失。
 

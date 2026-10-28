@@ -3,7 +3,11 @@
 // 来源：docs/sdk-design.md §1-§3
 // ============================================================
 
-import type { AgentNS } from "@ai-zen/agents-core";
+import type {
+  AgentNS,
+  AbortedMessageStrategy,
+  AbortedToolRoundStrategy,
+} from "@ai-zen/agents-core";
 
 // ---- 权限（已定稿）----
 
@@ -229,6 +233,29 @@ export interface AppConfig {
    * （如 read/find_text 对 300KB 文件的读取上限）。
    */
   maxToolOutput?: number;
+
+  /**
+   * 被中断的 assistant 消息（已输出的思考 / 正文）如何处置。
+   *
+   * - `keep`：保留已输出的部分（恢复为 `Completed`）—— 模型下一轮能接着半截往下说，
+   *   不会「失忆重来」。**出厂默认**。
+   * - `drop`：丢弃（保持 `Aborted`，不进下一轮上下文）。core 的库级默认。
+   *
+   * 只管**不带工具调用**的消息；工具轮次由 {@link abortedToolRoundStrategy} 决定。
+   * 缺省时由 `createAgent()` 回落 core 默认值（`drop`），出厂配置已写 `keep`。
+   */
+  abortedMessageStrategy?: AbortedMessageStrategy;
+
+  /**
+   * 被中断 / 结果不完整的工具轮次如何归一。
+   *
+   * - `fill`：保留整轮（assistant 恢复为 `Completed`，未完成的结果补原因）——**出厂默认**，
+   *   服务端要求「N 个 tool_calls 对 N 条结果」，整轮进出才不会报错。
+   * - `drop`：整轮出列（assistant 与其结果都不发给模型）。
+   *
+   * 缺省时由 `createAgent()` 回落 core 默认值（`fill`）。
+   */
+  abortedToolRoundStrategy?: AbortedToolRoundStrategy;
 }
 
 // ---- 工具环境 ----

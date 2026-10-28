@@ -248,6 +248,11 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
   defaultMigrationModel: "deepseek-flash",
   // 工具输出上限（字符数），与 DEFAULT_MAX_TOOL_OUTPUT 保持一致
   maxToolOutput: 32_768,
+  // 中断策略：出厂取「保留已输出的内容」—— 中断后模型能接着半截往下说，
+  // 而不是「失忆重来」（core 的库级默认是 drop，产品层认为那是坑）；
+  // 工具轮次保持整轮进出（fill），服务端要求 tool_calls 与结果一一配对。
+  abortedMessageStrategy: "keep",
+  abortedToolRoundStrategy: "fill",
 };
 
 // ---------------------------------------------------------------------------

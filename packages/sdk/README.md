@@ -125,6 +125,8 @@ Conditionally injected based on the active model / config:
 
 Tool output protection: `AppConfig.maxToolOutput` (in characters, default 32768) is the unified ceiling for tool output. Each tool handles overflow itself — `exec` dumps `stdout.log` / `stderr.log` separately (returning head/tail previews per stream), `find_text` / `glob` / `ls` dump `result.json` (returning a head preview), and `read` only warns and suggests batched reads via `range`. Dumps go to `<tmpdir>/ai-zen/tool-output/<tool>-<timestamp>-<random>/`, one directory per call, with no self-cleanup. See [`docs/sdk-design-v1.md` §12](docs/sdk-design-v1.md).
 
+Interrupt strategies live in the config: `AppConfig.abortedMessageStrategy` (`keep` / `drop`, factory `keep` — the model can continue the half-sentence after an interrupt) and `AppConfig.abortedToolRoundStrategy` (`fill` / `drop`, factory `fill` — whole rounds go in or out, because `tool_calls` must pair with results). `createAgent()` reads them from `scope.config` when no explicit option is passed, keeping a single source of truth.
+
 ## Built-in Plugins
 
 | Plugin | Description |

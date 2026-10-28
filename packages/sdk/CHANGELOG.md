@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.0.0-alpha.22] - 2026-10-28
+
+> 中断策略（`abortedMessageStrategy` / `abortedToolRoundStrategy`）从「调用方各自传参」
+> 升级为**配置项**：写进 `config.json`，`createAgent()` 自动读取。
+
+### ✨ 新增
+
+- **`AppConfig` 新增两个策略字段**（`types/index.ts`）：
+  - `abortedMessageStrategy?: "keep" | "drop"` —— 被中断的 assistant 已输出的思考 / 正文是否保留。`keep` 让模型下一轮能接着半截往下说，不再「失忆重来」。
+  - `abortedToolRoundStrategy?: "fill" | "drop"` —— 被中断 / 结果不完整的工具轮次如何归一。`fill` 整轮保留并给未完成结果补原因，保证 `tool_calls` 与结果一一配对。
+- **出厂默认写 `keep` + `fill`**（`DEFAULT_APP_CONFIG`）：`keep` 是产品层结论（core 的库级默认仍是 `drop`），`fill` 与 core 默认一致、无行为变化。
+- **`createAgent()` 从 `scope.config` 取策略**：优先级为「显式参数 > `scope.config` > core 默认值」。上游（CLI / Desktop）不必自己读配置再转一道参数，子 Agent 创建时也自然继承同一份策略。
+- **配置迁移补齐策略字段**（`migrateConfig`）：缺失或非法的 `abortedMessageStrategy` / `abortedToolRoundStrategy` 一律写回出厂默认（`changed` 置真，`ensureDefaultConfig()` 会落盘一次）。于是「配置文件里写着的就是运行时用的」，各端不再需要 `?? "keep"` 式兜底。
+
+### ✅ 测试
+
+- 全量 **57 文件 / 612 例通过**（6 skipped，alpha.21 时 608 例）。
+- `migrate.test.ts` 20 → 22 例：补齐缺失策略、非法值改写、合法值原样保留且 `changed=false`；原「无需迁移返回原对象」用例补上策略字段。
+- `createAgent.test.ts` 6 → 8 例：策略取自 `scope.config`、显式参数覆盖配置、config 未写时回落 core 默认（`drop` / `fill`）。
+
 ## [1.0.0-alpha.21] - 2026-10-28
 
 ### ✨ 新增

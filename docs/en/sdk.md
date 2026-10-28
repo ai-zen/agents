@@ -64,7 +64,7 @@ const agent = await createAgent(scope, config.defaultAgent ?? "default");
 
 - `SdkAgent extends Agent` (from core), additionally carrying `scope` and `definition` (including `permissions`).
 - Permissions are read uniformly from `definition.permissions`, not held separately.
-- The optional third argument passes interrupt behaviour through: `createAgent(scope, agentId, { abortedMessageStrategy: "keep" })` keeps the **partial reasoning/content of an aborted turn** in the next context (default `drop`); `abortedToolRoundStrategy` / `abortedToolRoundReason` control tool rounds. See the "Aborted messages" section in [`core.md`](core.md).
+- The optional third argument passes interrupt behaviour through; **when omitted it is taken from `scope.config`**: `createAgent(scope, agentId, { abortedMessageStrategy: "keep" })` keeps the **partial reasoning/content of an aborted turn** in the next context; `abortedToolRoundStrategy` / `abortedToolRoundReason` control tool rounds. Precedence: **explicit option > `scope.config` > core default**. See the "Aborted messages" section in [`core.md`](core.md).
 
 ## Permission model
 
@@ -233,6 +233,7 @@ const { config, agent, subAgent } = await mgr.bootstrap();   // one-shot init (i
 ```
 
 - Preset endpoints (OpenAI / Zhipu / DeepSeek), 8 models (including vision models with `vision: true`), 3 image models, and default options.
+- **Interrupt strategies live in the config**: `abortedMessageStrategy` (factory `keep` — the model can continue the half-sentence after an interrupt) and `abortedToolRoundStrategy` (factory `fill` — whole rounds go in or out, since `tool_calls` must pair with results). `ConfigManager.read()` fills missing or invalid values with the factory defaults, so what the file says is what runs and no consumer needs its own fallback.
 - Factory-default MCP servers (`socket-pty`, `chrome-devtools`) are written to `~/.ai-zen/mcp.json` on first run; existing files are not overwritten.
 - All `ensure*` operations do not overwrite existing files, so user configuration is never lost.
 

@@ -124,6 +124,8 @@ await scope.dispose(); // 断开 MCP、释放插件资源
 
 工具输出保护：`AppConfig.maxToolOutput`（字符数，缺省 32768）是工具输出的统一上限，超限时由各工具自行处置——`exec` 分文件落盘 `stdout.log` / `stderr.log`（返回各流头尾预览），`find_text` / `glob` / `ls` 落盘 `result.json`（返回头部预览），`read` 仅警告并提示用 `range` 分批读取。落盘目录为 `<tmpdir>/ai-zen/tool-output/<工具名>-<时间戳>-<随机串>/`，每次调用独立、不自清理。详见 [`docs/sdk-design-v1.md` §12](docs/sdk-design-v1.md)。
 
+中断策略进配置：`AppConfig.abortedMessageStrategy`（`keep` / `drop`，出厂 `keep`——中断后模型能接着半截往下说）与 `AppConfig.abortedToolRoundStrategy`（`fill` / `drop`，出厂 `fill`——整轮进出，`tool_calls` 必须与结果配对）。`createAgent()` 不传参数时直接取 `scope.config`，于是策略只有一个真相源。
+
 ## 内置插件
 
 | 插件 | 说明 |

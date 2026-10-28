@@ -157,8 +157,7 @@ describe("createAgent", () => {
     await expect(createAgent(scope, "no-model")).rejects.toThrow(/未绑定模型/);
   });
 
-  it("Agent 定义缺少 messages 字段时也能正常创建（空值兜底）", async () => {
-    await writeAgentFile("my-agent", { messages: undefined });
+  it("Agent 定义缺少 messages 字段时也能正常创建（空值兜底）", async () => {    await writeAgentFile("my-agent", { messages: undefined });
 
     const scope = await makeScope();
     const agent = await createAgent(scope, "my-agent");
@@ -168,5 +167,37 @@ describe("createAgent", () => {
     expect(agent.messages).toHaveLength(1);
     // definition.messages 为 undefined 时不应抛错（createAgent 已用 ?? [] 兜底）
     expect(agent.definition.messages).toBeUndefined();
+  });
+
+  it("中断策略取自 scope.config；显式参数优先", async () => {
+    await writeAgentFile("my-agent");
+    const scope = new Scope({
+      config: {
+        ...config,
+        abortedMessageStrategy: "drop",
+        abortedToolRoundStrategy: "drop",
+      },
+      agentsDir: join(dir, "agents"),
+      cwd: dir,
+    }).use(...allInOne());
+    await scope.init();
+
+    const agent = await createAgent(scope, "my-agent");
+    expect(agent.abortedMessageStrategy).toBe("drop");
+    expect(agent.abortedToolRoundStrategy).toBe("drop");
+
+    // 显式参数覆盖配置（个别端要临时换策略时不必改文件）
+    const overridden = await createAgent(scope, "my-agent", { abortedMessageStrategy: "keep" });
+    expect(overridden.abortedMessageStrategy).toBe("keep");
+    expect(overridden.abortedToolRoundStrategy).toBe("drop");
+  });
+
+  it("scope.config 没写策略时回落 core 默认（消息 drop / 工具轮次 fill）", async () => {
+    await writeAgentFile("my-agent");
+    const scope = await makeScope();
+    const agent = await createAgent(scope, "my-agent");
+
+    expect(agent.abortedMessageStrategy).toBe("drop");
+    expect(agent.abortedToolRoundStrategy).toBe("fill");
   });
 });

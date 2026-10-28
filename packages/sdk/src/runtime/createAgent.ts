@@ -6,7 +6,10 @@ import { createModel } from "./createModel.js";
 import type { AbortedMessageStrategy, AbortedToolRoundStrategy } from "@ai-zen/agents-core";
 
 /**
- * `createAgent` 的可选行为开关（不传则全部沿用 core 默认值）。
+ * `createAgent` 的可选行为开关。
+ *
+ * 不传时先取 `scope.config`（`config.json`）里的同名配置，再往下才是 core 默认值：
+ * 中断策略属于**产品配置**，调用方不该自己读配置再转一道参数。
  */
 export interface CreateAgentOptions {
   /** 工具轮次被中断（或结果不完整）时的归一策略（core 默认 `fill`） */
@@ -14,8 +17,9 @@ export interface CreateAgentOptions {
   /** `fill` 策略下，未完成工具结果的填充原因 */
   abortedToolRoundReason?: string;
   /**
-   * 被中断的 assistant 消息（已输出的内容 / 思考）如何处置（core 默认 `drop`）。
-   * 传 `keep` 可让模型在下一轮接着半截往下说，而不是忘掉自己说过什么。
+   * 被中断的 assistant 消息（已输出的内容 / 思考）如何处置（未传时取 `scope.config`，
+   * 再缺则用 core 默认 `drop`）。
+   * `keep` 可让模型在下一轮接着半截往下说，而不是忘掉自己说过什么。
    */
   abortedMessageStrategy?: AbortedMessageStrategy;
 }
@@ -68,10 +72,14 @@ export async function createAgent(
     // 快照后，运行时改动只作用于会话副本，模板保持纯净。
     messages: [...(definition.messages ?? [])] as AgentNS.Message[],
     tools,
-    // 中断相关策略：不传则由 core 取默认值（工具轮次 fill / 消息保留 drop）
-    abortedToolRoundStrategy: options.abortedToolRoundStrategy,
+    // 中断相关策略：**显式参数 > `scope.config` > core 默认值**。
+    // 中间那一层是「配置即事实」：策略写在 `config.json` 里，各端（CLI / Desktop）
+    // 不必自己读配置再转成参数，子 Agent 创建时也能自然继承同一份策略。
+    abortedToolRoundStrategy:
+      options.abortedToolRoundStrategy ?? scope.config?.abortedToolRoundStrategy,
     abortedToolRoundReason: options.abortedToolRoundReason,
-    abortedMessageStrategy: options.abortedMessageStrategy,
+    abortedMessageStrategy:
+      options.abortedMessageStrategy ?? scope.config?.abortedMessageStrategy,
   });
 
   return agent;

@@ -108,6 +108,8 @@ interface AppConfig {
   defaultAgent?: string;          // 默认 Agent ID
   defaultMigrationModel?: string; // 默认迁移模型 ID
   maxToolOutput?: number;         // 工具输出上限（字符数，缺省 32768）
+  abortedMessageStrategy?: "keep" | "drop";   // 中断时已输出的思考/正文是否保留（出厂 keep）
+  abortedToolRoundStrategy?: "fill" | "drop"; // 中断的工具轮次如何归一（出厂 fill）
 }
 
 interface Endpoint {
@@ -931,7 +933,7 @@ class ConfigManager {
 
 | 常量 | 说明 |
 |------|------|
-| `DEFAULT_APP_CONFIG` | 预置端点（OpenAI / 智谱 / DeepSeek）+ 8 个模型（含视觉模型，`vision: true`）+ 3 个图片模型 + 默认选项 + `maxToolOutput: 32768` |
+| `DEFAULT_APP_CONFIG` | 预置端点（OpenAI / 智谱 / DeepSeek）+ 8 个模型（含视觉模型，`vision: true`）+ 3 个图片模型 + 默认选项 + `maxToolOutput: 32768` + 中断策略（`abortedMessageStrategy: "keep"` / `abortedToolRoundStrategy: "fill"`） |
 | `DEFAULT_AGENT_ID` / `DEFAULT_AGENT_DEFINITION` | 默认 Agent（id=`default`，四维全开，`custom: false`） |
 | `DEFAULT_SUBAGENT_ID` / `DEFAULT_SUBAGENT_DEFINITION` | 默认通用助手 SubAgent（id=`sub-agent-default`，`subagents: deny` 防递归） |
 | `DEFAULT_MCP_CONFIG` | 出厂默认 MCP 服务器（socket-pty 终端、chrome-devtools 浏览器调试） |
