@@ -124,6 +124,7 @@ Agent.permissions
 要点：
 
 - **能力判定不再靠端点 id**：旧实现写死 `endpoint.id === "deepseek"`，用户改端点 id 就失效；现改为 `Endpoint.capabilities.filesApi` 能力位，自建端点声明即可享受上传
+- **能力位缺失时会按出厂补上**：端点不参与出厂托管（`syncManagedModels` 只托管模型），所以 alpha.12 之前写下的配置其 `deepseek` 端点没有 `capabilities`，能力位恒为 `false`、本地媒体静默退化为内联。`migrateConfig()` 现在会补齐**整体缺失**的 `capabilities`（取同 id 出厂端点）：用户显式写的 `false` 与自建端点一律不动
 - **端点按当前模型反查**（`resolveModelAndEndpoint(config, ctx.agent.model)`）：`file_id` 是端点维度资源，传错端点会 not found
 - **上传缓存**：`端点id + 绝对路径 + mtime + size → file_id`（最多 200 条），同一文件不重复上传
 - `view_image`、`call_mcp_tool`、`read_mcp_resource` 的媒体归一均复用此模块：MCP 返回的图片/二进制不再一律 base64 内联，端点有 Files API 能力时上传为 `file_id`；转换失败退化为文本说明而不是丢掉媒体块

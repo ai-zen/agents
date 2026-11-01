@@ -251,3 +251,64 @@ describe("migrateModelReasoning：reasoning → reasoningPreset", () => {
     expect(out.reasoningPreset).toBe("deepseek");
   });
 });
+
+describe("normalizeEndpointCapabilities：补齐端点缺失的能力位", () => {
+  const endpoint = (fields: Record<string, unknown>) =>
+    ({ id: "deepseek", name: "DeepSeek", apiKey: "sk-x", baseUrl: "https://api.deepseek.com/v1", ...fields }) as any;
+
+  /** 中断策略显式给足：否则 normalizeAbortStrategies 自己就会把 changed 置 true，干扰断言 */
+  const configOf = (endpoints: any[]) =>
+    ({
+      endpoints,
+      models: [],
+      imageModels: [],
+      abortedMessageStrategy: "keep",
+      abortedToolRoundStrategy: "fill",
+    }) as unknown as AppConfig;
+
+  it("老配置里 deepseek 缺 capabilities → 按出厂补上 filesApi（alpha.12 之前的老用户）", () => {
+    const { config, changed } = migrateConfig(configOf([endpoint({})]));
+    expect(changed).toBe(true);
+    expect(config.endpoints[0]!.capabilities).toEqual({ filesApi: true });
+  });
+
+  it("用户显式写了 filesApi: false → 绝不覆盖（那是明确表态）", () => {
+    const { config, changed } = migrateConfig(configOf([endpoint({ capabilities: { filesApi: false } })]));
+    expect(config.endpoints[0]!.capabilities).toEqual({ filesApi: false });
+    expect(changed).toBe(false);
+  });
+
+  it("capabilities 已存在（哪怕空对象）→ 一个字段都不动", () => {
+    const { config, changed } = migrateConfig(configOf([endpoint({ capabilities: {} })]));
+    expect(config.endpoints[0]!.capabilities).toEqual({});
+    expect(changed).toBe(false);
+  });
+
+  it("用户自建端点（id 不在出厂清单）→ 不动（猜错会把上传打到不存在的 /files）", () => {
+    const { config, changed } = migrateConfig(
+      configOf([endpoint({ id: "my-own", name: "Mine", baseUrl: "https://example.test/v1" })]),
+    );
+    expect(config.endpoints[0]!.capabilities).toBeUndefined();
+    expect(changed).toBe(false);
+  });
+
+  it("出厂也没有能力的端点（如 openai）→ 不凭空造能力位", () => {
+    const { config, changed } = migrateConfig(configOf([endpoint({ id: "openai", name: "OpenAI" })]));
+    expect(config.endpoints[0]!.capabilities).toBeUndefined();
+    expect(changed).toBe(false);
+  });
+
+  it("幂等：补过一次之后再跑就不再有改动（迁移只发生一次）", () => {
+    const first = migrateConfig(configOf([endpoint({})]));
+    expect(first.changed).toBe(true);
+    const second = migrateConfig(first.config);
+    expect(second.changed).toBe(false);
+    expect(second.config.endpoints[0]!.capabilities).toEqual({ filesApi: true });
+  });
+
+  it("不把副作用浇到调用方手里的旧对象上", () => {
+    const original = endpoint({});
+    migrateConfig(configOf([original]));
+    expect(original.capabilities).toBeUndefined();
+  });
+});

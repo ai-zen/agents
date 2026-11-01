@@ -1,3 +1,37 @@
+## [1.0.0-alpha.25] - 2026-10-31
+
+> Endpoint capability bits are now backfilled on migration. Since alpha.12 the
+> `capabilities.filesApi` bit decides whether local media is uploaded (Files API) or
+> inlined as base64 — but endpoints are never factory-managed, and migration did not
+> touch them either, so any config written before alpha.12 kept `deepseek` without the
+> bit. For those users the promised "deepseek goes through the Files API" never took
+> effect: images, `view_image` and MCP media silently degraded to base64 inline, and
+> the request body grew with every turn of history.
+
+### 🛡️ Fixed — `Endpoint.capabilities` is backfilled when missing
+
+- **`normalizeEndpointCapabilities()`** (in `config/migrate.ts`, wired into
+  `migrateConfig()`) fills in `capabilities` **only when the whole field is absent**,
+  taking the values from the factory endpoint with the same id. Nothing else is touched:
+  - an endpoint that already has `capabilities` — even `{}` or `{"filesApi": false}` — is
+    left byte-for-byte alone; an explicit `false` is a decision, not a gap;
+  - endpoints whose id is not in the factory list (user-built) are left alone, because
+    guessing would send uploads to a `/files` endpoint that may not exist.
+- The migration lands on disk through the usual `ensureDefaultConfig()` path, so it runs
+  exactly once per config: a second start finds nothing to change.
+- Verified end to end against a legacy-shaped config: `deepseek` gains
+  `{ filesApi: true }` in memory **and** on disk, a user-written `filesApi: false` on
+  `openai` survives, a self-built endpoint stays untouched, and the second start does not
+  rewrite the file.
+
+### ✅ Tests
+
+- `migrate.test.ts` +7: backfill on a legacy config, explicit `false` respected,
+  existing-but-empty `capabilities` untouched, user-built endpoint untouched, factory
+  endpoint without the bit untouched, idempotency, and "no side effects on the caller's
+  object".
+- Full suite: **57 files / 624 tests passing** (6 skipped), `tsc --noEmit` clean.
+
 # Changelog
 
 ## [1.0.0-alpha.24] - 2026-10-29

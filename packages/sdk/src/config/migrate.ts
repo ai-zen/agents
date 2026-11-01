@@ -15,6 +15,8 @@
  *    `reasoningPreset` 而默默失去调档能力。这里删掉旧字段，并按**同 id 的出厂模型**
  *    补上正确的策略名（同一 id 即同一厂商型号，协议能力不会因用户改过参数而变）。
  *
+ * 另有一类「缺省值缺位」的迁移：`Endpoint.capabilities`（见 `normalizeEndpointCapabilities`）。
+ *
  * 迁移时机：`ConfigManager.read()` 读出即迁（内存里永远是当前形状）；
  * 落盘由 `ensureDefaultConfig()` 负责 —— 它比较迁移结果与磁盘原文，不同才写回，
  * 因此迁移只发生一次，且不会在每次启动时无谓地改写文件。
@@ -143,7 +145,12 @@ export function migrateConfig(config: AppConfig): { config: AppConfig; changed: 
     return reasoning.model;
   });
 
-  const next = { ...config, models } as AppConfig & { defaultModel?: unknown };
+  const next = {
+    ...config,
+    models,
+    // 端点数组浅拷贝：能力位补齐会改元素，不把副作用浇到调用方手里的旧对象上
+    endpoints: (config.endpoints ?? []).map((endpoint) => ({ ...endpoint })),
+  } as AppConfig & { defaultModel?: unknown };
   // 已废弃字段：不参与运行，也不允许再写回磁盘
   if ("defaultModel" in next) {
     delete next.defaultModel;
@@ -151,6 +158,7 @@ export function migrateConfig(config: AppConfig): { config: AppConfig; changed: 
   }
 
   if (normalizeAbortStrategies(next)) changed = true;
+  if (normalizeEndpointCapabilities(next)) changed = true;
 
   if (!changed) return { config, changed };
   return { config: next, changed };
@@ -177,6 +185,46 @@ export function normalizeAbortStrategies(config: AppConfig): boolean {
     )
   ) {
     config.abortedToolRoundStrategy = DEFAULT_APP_CONFIG.abortedToolRoundStrategy;
+    changed = true;
+  }
+  return changed;
+}
+
+/**
+ * 补齐端点**缺失**的能力位声明（`Endpoint.capabilities`）。
+ *
+ * ## 这个问题是怎么来的
+ *
+ * `capabilities.filesApi` 是 alpha.12 才引入的能力位 —— 同一版把 `view_image` 的判定
+ * 从「端点 id 是不是 `deepseek`」改成「看这一位」，并只给**出厂 deepseek** 打了 `true`。
+ * 但端点**不参与出厂托管**（`ConfigManager.syncManagedModels` 明写「保持用户配置」），
+ * 迁移此前也完全不碰 `endpoints` —— 于是 alpha.12 之前就已写下的配置，其 deepseek
+ * 端点永远缺 `capabilities`，`supportsFilesApi()` 恒为 `false`：
+ *
+ *   · 出厂承诺的「deepseek 走 Files API」对这些用户从未生效；
+ *   · 而且**全程静默** —— 「未声明能力位」和「缺 apiKey」两个分支都不发 warning，
+ *     图片 / `view_image` / MCP 媒体就悄悄退化成 base64 内联，请求体随历史膨胀。
+ *
+ * 这是「默认值缺位」，不是「用户选择」，所以由迁移补 —— 与模型清单不同，端点本身仍然
+ * 归用户所有，我们只往**空位**里放出厂默认。
+ *
+ * ## 边界：只补整体缺失，绝不覆盖
+ *
+ * - `capabilities` **整体缺失** → 按**同 id 的出厂端点**补上整块；
+ * - `capabilities` 已存在（哪怕是 `{}`、哪怕写着 `filesApi: false`）→ 一个字段都不动：
+ *   用户已经表过态，`false` 就是「我不走 Files API」；
+ * - 端点 id 不在出厂清单（用户自建）→ 不动：我们不知道它是否真有 `/files`，
+ *   猜错会把上传请求打到不存在的接口上。
+ *
+ * @returns 是否有改动（直接改写传入对象）
+ */
+export function normalizeEndpointCapabilities(config: AppConfig): boolean {
+  let changed = false;
+  for (const endpoint of config.endpoints ?? []) {
+    if (endpoint.capabilities != null) continue;
+    const factory = (DEFAULT_APP_CONFIG.endpoints ?? []).find((item) => item.id === endpoint.id);
+    if (!factory?.capabilities) continue;
+    endpoint.capabilities = { ...factory.capabilities };
     changed = true;
   }
   return changed;

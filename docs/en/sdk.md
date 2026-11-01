@@ -124,6 +124,7 @@ Tools injected based on config / model conditions:
 Notes:
 
 - **Capability is no longer inferred from the endpoint id**: the old code hard-coded `endpoint.id === "deepseek"` and broke as soon as a user renamed the endpoint. It is now an explicit `Endpoint.capabilities.filesApi` flag
+- **Missing capability bits are backfilled from the factory definition**: endpoints are not factory-managed (`syncManagedModels` only manages models), so any config written before alpha.12 kept `deepseek` without `capabilities` — the bit stayed `false` and local media silently degraded to inline. `migrateConfig()` now fills in a **wholly missing** `capabilities` object from the factory endpoint with the same id; an explicit `false` and user-built endpoints are never touched
 - **The endpoint is resolved from the current model** (`resolveModelAndEndpoint(config, ctx.agent.model)`): `file_id` is an endpoint-scoped resource, so uploading to the wrong endpoint yields not-found
 - **Upload cache**: `endpoint id + absolute path + mtime + size → file_id` (max 200 entries), so the same file is not uploaded twice
 - `view_image`, `call_mcp_tool` and `read_mcp_resource` all normalise media through this module: images/binary from MCP are no longer always inlined as base64 — endpoints with Files API capability get a `file_id`; a failed conversion degrades to a text note instead of dropping the media block
