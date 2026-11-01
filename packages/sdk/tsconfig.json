@@ -9,7 +9,10 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    // 显式声明全局类型：TypeScript 7 不再自动从 node_modules/@types 收集（至少在本仓的
+    // pnpm 软链布局下收不到），不写这行 "node:fs"/"process" 全是 TS2591。
+    "types": ["node"]
   },
   "include": ["src"],
   "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.test.tsx"]

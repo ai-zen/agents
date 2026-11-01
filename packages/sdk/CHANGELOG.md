@@ -32,6 +32,19 @@
   object".
 - Full suite: **57 files / 624 tests passing** (6 skipped), `tsc --noEmit` clean.
 
+### 🔧 Toolchain — TypeScript 5.9.3 → 7.0.2
+
+- **`packages/sdk/tsconfig.json`**: added `"types": ["node"]`. TypeScript 7 no longer
+  picks global types up from `node_modules/@types` automatically (at least under this
+  repo's pnpm symlink layout), so `"node:fs"` / `process` / `Buffer` all turn into
+  `TS2591`. Naming the types explicitly is also what `@ai-zen/cli` already does.
+- **`packages/core/tsconfig.json`**: `moduleResolution: "Node"` → `"Bundler"`. The
+  `node10` resolution mode was **removed** in TypeScript 7 (`TS5108`); `Bundler` is the
+  closest equivalent for a package compiled with `module: ESNext`.
+- Verified after the upgrade: `tsc --noEmit` clean for both packages, both `build`
+  scripts succeed, core **150 passed / 17 skipped**, sdk **624 passed / 6 skipped**
+  (unchanged), and `dist/index.js` still loads at runtime (84 exports).
+
 # Changelog
 
 ## [1.0.0-alpha.24] - 2026-10-29
