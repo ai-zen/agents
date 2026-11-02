@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -8,11 +8,18 @@ import { makeEnv } from "./test-helpers.js";
 import type { ToolCallContext } from "@ai-zen/agents-core";
 
 const mockFetch = vi.fn();
-vi.stubGlobal("fetch", mockFetch);
 
+// 全局 stub 必须在文件范围内完成 stub/unstub：`isolate: false` 下同一进程的所有测试文件
+// 共用全局对象，顶层 `vi.stubGlobal("fetch", …)` 会泄漏给后续文件（例如让别的文件里的
+// 真实网络探测失败）。
 describe("DownloadFileTool", () => {
   beforeEach(() => {
     mockFetch.mockReset();
+    vi.stubGlobal("fetch", mockFetch);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("工具名称和描述正确", () => {

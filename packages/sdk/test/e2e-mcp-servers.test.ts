@@ -58,8 +58,12 @@ async function checkSseAvailable(): Promise<boolean> {
 describe("MCP 真实服务器 — stdio", () => {
   let manager: McpConnectionManager;
 
-  beforeAll(() => {
+  // 连接放在 beforeAll：每个用例自己建连接会让结果依赖执行顺序
+  // （`--sequence.shuffle` 打乱用例顺序时，「调用 greet」可能排在连接之前）。
+  // `connect` 对已连接的 server 返回同一清单，用例内再调一次是幂等的。
+  beforeAll(async () => {
     manager = new McpConnectionManager();
+    await manager.connect("test-stdio", stdioConfig);
   });
 
   afterAll(async () => {
@@ -134,6 +138,7 @@ describe("MCP 真实服务器 — SSE", () => {
     sseAvailable = await checkSseAvailable();
     if (sseAvailable) {
       manager = new McpConnectionManager();
+      await manager.connect("test-sse", sseConfig);
     }
   });
 
