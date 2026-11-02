@@ -80,3 +80,50 @@ describe("AgentRepository", () => {
     await expect(repo.delete("nonexistent")).resolves.not.toThrow();
   });
 });
+
+/**
+ * 实体 id 不得逃出仓储目录（L2 / L31）。
+ *
+ * 用**两级**临时目录：`root/agents` 是仓储目录，逃逸产物只会落到 `root` 下，
+ * 断言能看见它，也不会污染 `/tmp` 根目录。
+ */
+describe("AgentRepository：id 逃不出目录", () => {
+  let root: string;
+  let repo: AgentRepository;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(join(tmpdir(), "ai-zen-entity-traversal-"));
+    repo = new AgentRepository(join(root, "agents"));
+  });
+
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("`../` 逃逸被拦，且没有文件被写到目录外", async () => {
+    await expect(repo.write({ ...sampleAgent("x"), id: "../escaped" })).rejects.toThrow(/id/i);
+    await expect(fs.access(join(root, "escaped.json"))).rejects.toThrow();
+  });
+
+  it("兄弟目录前缀绕过（`<dir>-evil`）同样拦得住", async () => {
+    // 裸 `startsWith(root)` 会放行：`<root>/agents-evil/x.json` 以 `<root>/agents` 开头
+    await expect(repo.write({ ...sampleAgent("x"), id: "../agents-evil/x" })).rejects.toThrow(/id/i);
+    await expect(fs.access(join(root, "agents-evil"))).rejects.toThrow();
+  });
+
+  it("read / delete 与 write 同一道门（都走 `path()`）", async () => {
+    await expect(repo.read("../x")).rejects.toThrow(/id/i);
+    await expect(repo.delete("../x")).rejects.toThrow(/id/i);
+  });
+
+  it("绝对路径被拦（必须是 `resolve` 而不是 `join`）", async () => {
+    await expect(repo.read("/etc/passwd")).rejects.toThrow(/id/i);
+  });
+
+  it("正常 id 不受影响", async () => {
+    await repo.write(sampleAgent("ok"));
+    expect((await repo.read("ok"))?.id).toBe("ok");
+    await repo.delete("ok");
+    expect(await repo.read("ok")).toBeNull();
+  });
+});

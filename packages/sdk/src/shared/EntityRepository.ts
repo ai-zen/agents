@@ -1,5 +1,5 @@
 import { promises as fs } from "node:fs";
-import { join } from "node:path";
+import { resolve, sep } from "node:path";
 
 /**
  * 通用实体仓储 — 对磁盘 JSON 文件的 CRUD 操作。
@@ -12,9 +12,23 @@ import { join } from "node:path";
 export class EntityRepository<T extends { id: string }> {
   constructor(private dir: string) {}
 
-  /** 获取实体的文件路径 */
+  /**
+   * 获取实体的文件路径；`id` 必须落在本仓储目录内，否则抛错。
+   *
+   * 这是**唯一**的落盘口（read / write / delete 全走这里，`list()` 的 id 来自
+   * `readdir` 的单层文件名、不可能逃逸），所以校验放这里读写删天然自洽。
+   *
+   * 两个细节都是必需的：
+   *   - 用 `resolve` 而不是 `join`：只有 `resolve` 会把绝对路径（`/etc/passwd`）归一化拦下；
+   *   - 比较 `root + sep` 而不是裸 `startsWith(root)`：`<root>-evil/x` 也以 `<root>` 开头。
+   */
   protected path(id: string): string {
-    return join(this.dir, `${id}.json`);
+    const root = resolve(this.dir);
+    const target = resolve(root, `${id}.json`);
+    if (!target.startsWith(root + sep)) {
+      throw new Error(`Invalid entity id: ${JSON.stringify(id)}`);
+    }
+    return target;
   }
 
   /** 列出目录下所有实体（跳过解析失败的文件） */
