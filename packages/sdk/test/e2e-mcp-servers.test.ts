@@ -87,7 +87,10 @@ describe("MCP 真实服务器 — stdio", () => {
     });
 
     const content = (result as any).content ?? [];
-    const text = content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n");
+    const text = content
+      .filter((c: any) => c.type === "text")
+      .map((c: any) => c.text)
+      .join("\n");
     expect(text).toBe("你好，测试！");
   });
 
@@ -101,7 +104,10 @@ describe("MCP 真实服务器 — stdio", () => {
     });
 
     const content = (result as any).content ?? [];
-    const text = content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n");
+    const text = content
+      .filter((c: any) => c.type === "text")
+      .map((c: any) => c.text)
+      .join("\n");
     expect(text).toBe("42");
   });
 
@@ -158,7 +164,10 @@ describe("MCP 真实服务器 — SSE", () => {
     });
 
     const content = (result as any).content ?? [];
-    const text = content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n");
+    const text = content
+      .filter((c: any) => c.type === "text")
+      .map((c: any) => c.text)
+      .join("\n");
     expect(text).toBe("ECHO: Hello SSE!");
   });
 
@@ -173,7 +182,10 @@ describe("MCP 真实服务器 — SSE", () => {
     });
 
     const content = (result as any).content ?? [];
-    const text = content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n");
+    const text = content
+      .filter((c: any) => c.type === "text")
+      .map((c: any) => c.text)
+      .join("\n");
     expect(text).toBe("579");
   });
 

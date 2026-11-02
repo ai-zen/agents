@@ -3,11 +3,7 @@ import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ConfigManager } from "./ConfigManager.js";
-import {
-  FACTORY_SKILLS,
-  HANDOFF_SKILL_ID,
-  isCustomSkill,
-} from "./factory-skills.js";
+import { FACTORY_SKILLS, HANDOFF_SKILL_ID, isCustomSkill } from "./factory-skills.js";
 
 let dir: string;
 let manager: ConfigManager;
@@ -36,7 +32,7 @@ describe("isCustomSkill", () => {
   });
 
   it("只检查 frontmatter，正文里的 custom: true 不生效", () => {
-    expect(isCustomSkill('---\nname: x\n---\n示例：\ncustom: true')).toBe(false);
+    expect(isCustomSkill("---\nname: x\n---\n示例：\ncustom: true")).toBe(false);
   });
 });
 

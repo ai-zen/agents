@@ -32,7 +32,12 @@ describe("ConfigManager", () => {
         { id: "e1", name: "OpenAI", baseUrl: "https://api.openai.com", apiKey: "sk-xxx" },
       ],
       models: [
-        { id: "m1", name: "GPT-4", endpointId: "e1", tokenThresholds: { handoff: 500000, guard: 750000 } },
+        {
+          id: "m1",
+          name: "GPT-4",
+          endpointId: "e1",
+          tokenThresholds: { handoff: 500000, guard: 750000 },
+        },
       ],
     };
     await configManager.write(data);
@@ -49,9 +54,7 @@ describe("ConfigManager", () => {
 
   it("写入并再次读取一致", async () => {
     const data: AppConfig = {
-      endpoints: [
-        { id: "e1", name: "Test", baseUrl: "https://test.com", apiKey: "key" },
-      ],
+      endpoints: [{ id: "e1", name: "Test", baseUrl: "https://test.com", apiKey: "key" }],
       models: [],
     };
 
@@ -63,9 +66,7 @@ describe("ConfigManager", () => {
   it("覆盖已有配置", async () => {
     await fs.writeFile(join(dir, "config.json"), JSON.stringify({ endpoints: [], models: [] }));
     await configManager.write({
-      endpoints: [
-        { id: "new", name: "New", baseUrl: "https://new.com", apiKey: "k" },
-      ],
+      endpoints: [{ id: "new", name: "New", baseUrl: "https://new.com", apiKey: "k" }],
       models: [],
     });
 

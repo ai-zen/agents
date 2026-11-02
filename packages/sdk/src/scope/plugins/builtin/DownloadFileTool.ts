@@ -31,10 +31,7 @@ export class DownloadFileTool extends SdkCallbackTool {
     super({ env });
   }
 
-  async call(
-    input: { url: string; outputPath?: string },
-    ctx?: ToolCallContext,
-  ): Promise<string> {
+  async call(input: { url: string; outputPath?: string }, ctx?: ToolCallContext): Promise<string> {
     const signal = ctx?.signal;
     let savePath: string | undefined;
 

@@ -1,4 +1,10 @@
-import { CallbackTool, Agent, AgentToolLazy, Message, type ToolCallContext } from "@ai-zen/agents-core";
+import {
+  CallbackTool,
+  Agent,
+  AgentToolLazy,
+  Message,
+  type ToolCallContext,
+} from "@ai-zen/agents-core";
 import type { SkillInfo } from "./discover.js";
 import { createDisclosureParam } from "../../disclosure.js";
 import { readSkill } from "./discover.js";
@@ -27,7 +33,8 @@ export function createLoadSkillTool(
   return new CallbackTool({
     function: {
       name: "load_skill",
-      description: "Load the full guidance document of a Skill. A Skill is pre-authored expert guidance that is expanded into the context once loaded.",
+      description:
+        "Load the full guidance document of a Skill. A Skill is pre-authored expert guidance that is expanded into the context once loaded.",
       parameters: {
         type: "object",
         properties: {
@@ -90,7 +97,11 @@ export function createCallSkillSubAgentTool(
   // 只保留支持子 Agent 模式的 skill
   const subAgentSkills = filteredSkills.filter((s) => s.subAgent);
   const ids = subAgentSkills.map((s) => s.id);
-  const param = createDisclosureParam(ids, "Select a Skill that supports SubAgent mode", EMPTY_HINT);
+  const param = createDisclosureParam(
+    ids,
+    "Select a Skill that supports SubAgent mode",
+    EMPTY_HINT,
+  );
 
   // 拼接各 skill 的描述供 LLM 参考
   const skillDescriptions = subAgentSkills
@@ -101,7 +112,8 @@ export function createCallSkillSubAgentTool(
   return new AgentToolLazy({
     function: {
       name: "call_skill_sub_agent",
-      description: "Delegate a task to the specified Skill SubAgent, which completes it independently and returns the result.",
+      description:
+        "Delegate a task to the specified Skill SubAgent, which completes it independently and returns the result.",
       parameters: {
         type: "object",
         properties: {
@@ -139,9 +151,7 @@ export function createCallSkillSubAgentTool(
 
       // 沿用父 Agent 的工具能力（不做权限过滤），剔除自身以防自递归
       const parentAgent = ctx.agent;
-      const tools = parentAgent.tools.filter(
-        (t) => t.function.name !== "call_skill_sub_agent",
-      );
+      const tools = parentAgent.tools.filter((t) => t.function.name !== "call_skill_sub_agent");
 
       return new Agent({
         client: parentAgent.client,

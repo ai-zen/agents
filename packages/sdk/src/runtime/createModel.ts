@@ -41,20 +41,13 @@ function mergeParams(
  * `overrides` 是 **Agent 级参数覆盖**（`AgentDefinition.modelParams`）：
  * 同一个模型可以给不同 Agent 配不同参数，而模型自身的 `defaultParams` 保持不变。
  */
-export function createModel(
-  scope: Scope,
-  modelId: string,
-  overrides?: ModelParams,
-): AgentModel {
+export function createModel(scope: Scope, modelId: string, overrides?: ModelParams): AgentModel {
   const config = scope.config;
   const modelConfig = config.models.find((m) => m.id === modelId);
   if (!modelConfig) throw new Error(`Model "${modelId}" not found`);
 
-  const endpointConfig = config.endpoints.find(
-    (e) => e.id === modelConfig.endpointId,
-  );
-  if (!endpointConfig)
-    throw new Error(`Endpoint "${modelConfig.endpointId}" is not configured`);
+  const endpointConfig = config.endpoints.find((e) => e.id === modelConfig.endpointId);
+  if (!endpointConfig) throw new Error(`Endpoint "${modelConfig.endpointId}" is not configured`);
 
   if (!endpointConfig.apiKey) {
     throw new Error(`API key for endpoint "${endpointConfig.name}" is not set`);

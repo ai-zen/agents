@@ -30,7 +30,9 @@ describe("RmTool", () => {
     expect(result).toBe("success");
     expect(existsSync(filePath)).toBe(false);
 
-    try { unlinkSync(dir); } catch {}
+    try {
+      unlinkSync(dir);
+    } catch {}
   });
 
   it("递归删除目录", async () => {
@@ -54,7 +56,9 @@ describe("RmTool", () => {
     const result = await tool.call({ path: dir });
     expect(result).not.toBe("success");
 
-    try { await tool.call({ path: dir, recursive: true }); } catch {}
+    try {
+      await tool.call({ path: dir, recursive: true });
+    } catch {}
   });
 
   it("删除不存在的路径返回错误", async () => {

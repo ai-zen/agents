@@ -33,10 +33,6 @@ describe("logger 全局单例", () => {
     logger.warn("careful");
     logger.error("boom");
 
-    expect(lines).toEqual([
-      "INFO: hello",
-      "WARN: careful",
-      "ERROR: boom",
-    ]);
+    expect(lines).toEqual(["INFO: hello", "WARN: careful", "ERROR: boom"]);
   });
 });

@@ -23,16 +23,23 @@ const config: AppConfig = {
     { id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com", apiKey: "sk-xxx" },
   ],
   models: [
-    { id: "gpt4", name: "GPT-4", endpointId: "openai", tokenThresholds: { handoff: 500000, guard: 750000 } },
+    {
+      id: "gpt4",
+      name: "GPT-4",
+      endpointId: "openai",
+      tokenThresholds: { handoff: 500000, guard: 750000 },
+    },
   ],
 };
 
-async function makeScope(opts: {
-  subAgentsPaths?: string[];
-  skillsPaths?: string[];
-  toolsPaths?: string[];
-  mcpPaths?: string[];
-} = {}): Promise<Scope> {
+async function makeScope(
+  opts: {
+    subAgentsPaths?: string[];
+    skillsPaths?: string[];
+    toolsPaths?: string[];
+    mcpPaths?: string[];
+  } = {},
+): Promise<Scope> {
   const scope = new Scope({ config, agentsDir: join(dir, "agents"), cwd: dir }).use(
     ...allInOne(opts),
   );
@@ -48,7 +55,12 @@ async function writeAgentFile(id: string, def: Partial<AgentDefinition> = {}) {
     name: id,
     modelId: "gpt4",
     messages: [{ role: AgentNS.Role.System, content: "You are helpful." }],
-    permissions: { tools: { allow: ["*"] }, skills: { allow: ["*"] }, mcps: { allow: ["*"] }, subagents: { allow: ["*"] } },
+    permissions: {
+      tools: { allow: ["*"] },
+      skills: { allow: ["*"] },
+      mcps: { allow: ["*"] },
+      subagents: { allow: ["*"] },
+    },
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     ...def,
@@ -66,7 +78,11 @@ async function writeSubAgent(id: string, functionName: string) {
       { role: AgentNS.Role.System, content: "You are a sub-agent." },
       { role: AgentNS.Role.User, content: "{{task}}" },
     ],
-    function: { name: functionName, description: "A sub-agent", parameters: { type: "object", properties: {}, required: [] } },
+    function: {
+      name: functionName,
+      description: "A sub-agent",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -76,7 +92,10 @@ async function writeSubAgent(id: string, functionName: string) {
 async function writeSkill(id: string, description: string) {
   const skillDir = join(dir, "skills", id);
   await fs.mkdir(skillDir, { recursive: true });
-  await fs.writeFile(join(skillDir, "SKILL.md"), `---\nname: ${id}\ndescription: ${description}\n---\n# ${id}`);
+  await fs.writeFile(
+    join(skillDir, "SKILL.md"),
+    `---\nname: ${id}\ndescription: ${description}\n---\n# ${id}`,
+  );
 }
 
 async function writeMcpConfig(servers: Record<string, unknown>) {
@@ -157,7 +176,8 @@ describe("createAgent", () => {
     await expect(createAgent(scope, "no-model")).rejects.toThrow(/has no model bound/);
   });
 
-  it("Agent 定义缺少 messages 字段时也能正常创建（空值兜底）", async () => {    await writeAgentFile("my-agent", { messages: undefined });
+  it("Agent 定义缺少 messages 字段时也能正常创建（空值兜底）", async () => {
+    await writeAgentFile("my-agent", { messages: undefined });
 
     const scope = await makeScope();
     const agent = await createAgent(scope, "my-agent");

@@ -14,11 +14,7 @@ function mockScope() {
   };
 }
 
-function createTestAgent(opts?: {
-  scope?: any;
-  permissions?: any;
-  definition?: any;
-}): SdkAgent {
+function createTestAgent(opts?: { scope?: any; permissions?: any; definition?: any }): SdkAgent {
   const messages: any[] = [{ role: "system", content: "You are a helper." }];
   return new SdkAgent({
     scope: opts?.scope ?? (mockScope() as any),
@@ -117,7 +113,11 @@ describe("AutoRefreshToolsPlugin", () => {
         id: "my-agent",
         name: "My Agent",
         messages: [{ role: "system", content: "You are helpful." }],
-        function: { name: "my_agent_func", description: "", parameters: { type: "object", properties: {}, required: [] } },
+        function: {
+          name: "my_agent_func",
+          description: "",
+          parameters: { type: "object", properties: {}, required: [] },
+        },
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       },

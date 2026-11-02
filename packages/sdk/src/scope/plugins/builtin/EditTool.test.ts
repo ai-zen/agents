@@ -15,8 +15,12 @@ function tmpFile(content: string): string {
 }
 
 function cleanUp(filePath: string): void {
-  try { unlinkSync(filePath); } catch {}
-  try { unlinkSync(filePath.substring(0, filePath.lastIndexOf("/"))); } catch {}
+  try {
+    unlinkSync(filePath);
+  } catch {}
+  try {
+    unlinkSync(filePath.substring(0, filePath.lastIndexOf("/")));
+  } catch {}
 }
 
 describe("EditTool", () => {
@@ -60,7 +64,12 @@ describe("EditTool", () => {
     const tool = new EditTool(makeEnv());
     const filePath = tmpFile("hello world, hello universe");
     try {
-      const result = await tool.call({ path: filePath, oldText: "hello", newText: "hi", isReplaceAll: true });
+      const result = await tool.call({
+        path: filePath,
+        oldText: "hello",
+        newText: "hi",
+        isReplaceAll: true,
+      });
       const parsed = JSON.parse(result as string);
       expect(parsed.result).toBe("success");
       expect(parsed.matchCount).toBe(2);
@@ -75,7 +84,12 @@ describe("EditTool", () => {
     const tool = new EditTool(makeEnv());
     const filePath = tmpFile("hello world, hello universe");
     try {
-      const result = await tool.call({ path: filePath, oldText: "hello", newText: "hi", isReplaceAll: false });
+      const result = await tool.call({
+        path: filePath,
+        oldText: "hello",
+        newText: "hi",
+        isReplaceAll: false,
+      });
       const parsed = JSON.parse(result as string);
       expect(parsed.result).toContain("Warning");
       expect(parsed.matchCount).toBe(2);
@@ -102,7 +116,11 @@ describe("EditTool", () => {
 
   it("文件不存在时返回错误信息", async () => {
     const tool = new EditTool(makeEnv());
-    const result = await tool.call({ path: "/tmp/not-exists-file-12345.txt", oldText: "a", newText: "b" });
+    const result = await tool.call({
+      path: "/tmp/not-exists-file-12345.txt",
+      oldText: "a",
+      newText: "b",
+    });
     expect(typeof result).toBe("string");
     expect(result).toContain("ENOENT");
   });

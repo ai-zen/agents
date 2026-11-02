@@ -31,8 +31,12 @@ describe("RenameTool", () => {
       expect(existsSync(oldPath)).toBe(false);
       expect(existsSync(newPath)).toBe(true);
     } finally {
-      try { unlinkSync(newPath); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(newPath);
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -45,8 +49,12 @@ describe("RenameTool", () => {
       expect(result).toBe("success");
       expect(existsSync(join(dir, "new.txt"))).toBe(true);
     } finally {
-      try { unlinkSync(join(dir, "new.txt")); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(join(dir, "new.txt"));
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -64,9 +72,15 @@ describe("RenameTool", () => {
       expect(existsSync(oldPath)).toBe(false);
       expect(existsSync(newPath)).toBe(true);
     } finally {
-      try { unlinkSync(newPath); } catch {}
-      try { unlinkSync(subDir); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(newPath);
+      } catch {}
+      try {
+        unlinkSync(subDir);
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 

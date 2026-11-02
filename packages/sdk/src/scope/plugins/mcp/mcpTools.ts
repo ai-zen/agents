@@ -1,11 +1,21 @@
 import { CallbackTool } from "@ai-zen/agents-core";
-import { fileToContentSection, resolveModelAndEndpoint, toDataUrl } from "../../../shared/content-blocks.js";
+import {
+  fileToContentSection,
+  resolveModelAndEndpoint,
+  toDataUrl,
+} from "../../../shared/content-blocks.js";
 import type { AgentNS, ToolCallContext } from "@ai-zen/agents-core";
 import { createDisclosureParam } from "../../disclosure.js";
 import { DEFAULT_MAX_TOOL_OUTPUT, guardOutput, headTailPreview } from "../builtin/outputGuard.js";
 import { getLogger } from "../../../shared/logger.js";
 import type { McpConnectionManager } from "./McpConnectionManager.js";
-import type { Endpoint, McpServerConfig, McpServerManifest, Model, ToolEnv } from "../../../types/index.js";
+import type {
+  Endpoint,
+  McpServerConfig,
+  McpServerManifest,
+  Model,
+  ToolEnv,
+} from "../../../types/index.js";
 
 const EMPTY_HINT = "(No MCP servers available, ask the user to add one)";
 
@@ -112,7 +122,6 @@ interface McpCallOutput {
   isError: boolean;
 }
 
-
 /** 媒体转换所需的上下文：端点决定能否上传，模型决定是否看得见图 */
 interface MediaContext {
   endpoint?: Endpoint | null;
@@ -190,7 +199,10 @@ async function resourceToMessageSection(
  * 媒体类（image / audio / resource.blob）经 `mediaSection()` → `fileToContentSection()`：
  * 端点支持 Files API 时上传为 `file` 块，否则 base64 内联——图片不进字符闸门，也不丢弃。
  */
-async function toMessageSection(block: any, media: MediaContext): Promise<AgentNS.MessageContentSection> {
+async function toMessageSection(
+  block: any,
+  media: MediaContext,
+): Promise<AgentNS.MessageContentSection> {
   switch (block?.type) {
     case "image":
       return await mediaSection(block.data, block.mimeType ?? "image/png", media);
@@ -286,9 +298,7 @@ async function protectCallOutput(
   // 未超限：无媒体 → 纯字符串；有媒体 → 原序块数组
   const hasMedia = sections.some((s) => s.type !== "text");
   if (!hasMedia) return isError ? `❌ Tool execution failed:\n${fullText}` : fullText;
-  return isError
-    ? [{ type: "text", text: "❌ Tool execution failed:" }, ...sections]
-    : sections;
+  return isError ? [{ type: "text", text: "❌ Tool execution failed:" }, ...sections] : sections;
 }
 
 /**
@@ -301,10 +311,7 @@ async function protectCallOutput(
  *
  * env 仅用于读取 maxToolOutput（文本输出保护上限），与内置工具口径一致。
  */
-export function createCallMcpTool(
-  mcpManager: McpConnectionManager,
-  env: ToolEnv,
-): CallbackTool {
+export function createCallMcpTool(mcpManager: McpConnectionManager, env: ToolEnv): CallbackTool {
   return new CallbackTool({
     function: {
       name: "call_mcp_tool",
@@ -352,7 +359,12 @@ export function createCallMcpTool(
         if (contents.length === 0) {
           const json = JSON.stringify(result);
           return await protectCallOutput(
-            { sections: [{ type: "text", text: json }], fullText: json, chars: json.length, isError },
+            {
+              sections: [{ type: "text", text: json }],
+              fullText: json,
+              chars: json.length,
+              isError,
+            },
             env,
           );
         }
@@ -432,7 +444,12 @@ export function createReadMcpResourceTool(
         if (sections.length === 0) {
           const json = JSON.stringify(result);
           return await protectCallOutput(
-            { sections: [{ type: "text", text: json }], fullText: json, chars: json.length, isError: false },
+            {
+              sections: [{ type: "text", text: json }],
+              fullText: json,
+              chars: json.length,
+              isError: false,
+            },
             env,
           );
         }

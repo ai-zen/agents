@@ -4,7 +4,11 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { getLogger } from "../../../shared/logger.js";
-import type { McpServerConfig, McpServerManifest, McpConnectionState } from "../../../types/index.js";
+import type {
+  McpServerConfig,
+  McpServerManifest,
+  McpConnectionState,
+} from "../../../types/index.js";
 
 // ---------------------------------------------------------------------------
 // McpConnectionManager
@@ -105,7 +109,8 @@ export class McpConnectionManager {
       return this.servers.get(name)?.manifest ?? this.throwNotConnected(name);
     }
 
-    const timeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT[config.transport] ?? 5 * 60 * 1000;
+    const timeoutMs =
+      options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT[config.transport] ?? 5 * 60 * 1000;
     const pendingPromise = this.connectWithRetry(name, config, options, 0);
 
     this.servers.set(name, {
@@ -181,10 +186,7 @@ export class McpConnectionManager {
     const transport = this.createTransport(config);
     const client = this._clientFactory
       ? this._clientFactory()
-      : new Client(
-          { name: "ai-zen-agents", version: "0.1.0" },
-          { capabilities: {} },
-        );
+      : new Client({ name: "ai-zen-agents", version: "0.1.0" }, { capabilities: {} });
 
     await client.connect(transport);
 
@@ -206,7 +208,9 @@ export class McpConnectionManager {
           inputSchema: t.inputSchema as Record<string, unknown>,
         }));
       } catch (err: unknown) {
-        getLogger().error(`[McpConnectionManager] Failed to list tools for "${name}": ${(err as Error)?.message ?? err}`);
+        getLogger().error(
+          `[McpConnectionManager] Failed to list tools for "${name}": ${(err as Error)?.message ?? err}`,
+        );
       }
     }
 
@@ -220,7 +224,9 @@ export class McpConnectionManager {
           mimeType: r.mimeType,
         }));
       } catch (err: unknown) {
-        getLogger().error(`[McpConnectionManager] Failed to list resources for "${name}": ${(err as Error)?.message ?? err}`);
+        getLogger().error(
+          `[McpConnectionManager] Failed to list resources for "${name}": ${(err as Error)?.message ?? err}`,
+        );
       }
     }
 
@@ -232,7 +238,9 @@ export class McpConnectionManager {
           description: p.description,
         }));
       } catch (err: unknown) {
-        getLogger().error(`[McpConnectionManager] Failed to list prompts for "${name}": ${(err as Error)?.message ?? err}`);
+        getLogger().error(
+          `[McpConnectionManager] Failed to list prompts for "${name}": ${(err as Error)?.message ?? err}`,
+        );
       }
     }
 
@@ -336,7 +344,10 @@ export class McpConnectionManager {
 
   // ---- 内部 ----
 
-  private scheduleTimeout(name: string, timeoutMs: number): ReturnType<typeof setTimeout> | undefined {
+  private scheduleTimeout(
+    name: string,
+    timeoutMs: number,
+  ): ReturnType<typeof setTimeout> | undefined {
     if (timeoutMs <= 0) return undefined;
     const timer = setTimeout(() => {
       this.disconnect(name);

@@ -118,7 +118,10 @@ describe("discoverUserTools", () => {
     const dir2 = mkdtempSync(join(tmpdir(), "ai-zen-usertools2-"));
     try {
       writeTool("shared.mjs", simpleToolCode("shared_tool", "From first path (higher priority)"));
-      writeFileSync(join(dir2, "shared.js"), simpleToolCode("shared_tool", "From second path (lower priority)"));
+      writeFileSync(
+        join(dir2, "shared.js"),
+        simpleToolCode("shared_tool", "From second path (lower priority)"),
+      );
 
       const result = await discoverUserTools([dir, dir2]);
       expect(result).toHaveLength(1);
@@ -130,7 +133,9 @@ describe("discoverUserTools", () => {
   });
 
   it("支持 CallbackTool 格式（{ function, callback }）", async () => {
-    writeTool("callback-tool.mjs", `
+    writeTool(
+      "callback-tool.mjs",
+      `
 export default {
   function: {
     name: "my_callback",
@@ -141,7 +146,8 @@ export default {
     return "callback result: " + JSON.stringify(args);
   }
 };
-`);
+`,
+    );
 
     const result = await discoverUserTools([dir]);
     expect(result).toHaveLength(1);
@@ -159,7 +165,9 @@ export default {
   });
 
   it(".js 工具 exec 方法可正常调用", async () => {
-    writeTool("adder.js", `
+    writeTool(
+      "adder.js",
+      `
 export default {
   function: {
     name: "adder",
@@ -177,7 +185,8 @@ export default {
     return (args.a + args.b).toString();
   }
 };
-`);
+`,
+    );
 
     const result = await discoverUserTools([dir]);
     expect(result).toHaveLength(1);
@@ -191,7 +200,9 @@ export default {
   });
 
   it(".mjs 工具 exec 方法可正常调用", async () => {
-    writeTool("mjs-adder.mjs", `
+    writeTool(
+      "mjs-adder.mjs",
+      `
 export default {
   function: {
     name: "mjs_adder",
@@ -209,7 +220,8 @@ export default {
     return String(args.a + args.b);
   }
 };
-`);
+`,
+    );
 
     const result = await discoverUserTools([dir]);
     expect(result).toHaveLength(1);
@@ -227,7 +239,9 @@ export default {
   });
 
   it("加载 .mjs 文件（export default）", async () => {
-    writeTool("mjs-tool.mjs", `
+    writeTool(
+      "mjs-tool.mjs",
+      `
 export default {
   function: {
     name: "mjs_tool",
@@ -238,7 +252,8 @@ export default {
     return "from esm";
   }
 };
-`);
+`,
+    );
 
     const result = await discoverUserTools([dir]);
     expect(result).toHaveLength(1);
@@ -247,7 +262,9 @@ export default {
   });
 
   it("加载 .js 文件（export default）", async () => {
-    writeTool("js-tool.js", `
+    writeTool(
+      "js-tool.js",
+      `
 export default {
   function: {
     name: "js_tool",
@@ -258,7 +275,8 @@ export default {
     return "from js";
   }
 };
-`);
+`,
+    );
 
     const result = await discoverUserTools([dir]);
     expect(result).toHaveLength(1);
@@ -267,7 +285,9 @@ export default {
   });
 
   it("加载 .mjs 文件（export 具名）", async () => {
-    writeTool("named-export.mjs", `
+    writeTool(
+      "named-export.mjs",
+      `
 export const toolFn = {
   name: "named_export_tool",
   description: "Tool with named export",
@@ -276,7 +296,8 @@ export const toolFn = {
 export async function exec(args) {
   return "from named export";
 }
-`);
+`,
+    );
 
     const result = await discoverUserTools([dir]);
     // 具名 export，mod.default 为 undefined，mod 本身是命名空间对象
@@ -285,7 +306,10 @@ export async function exec(args) {
   });
 
   it("同名 .js 和 .mjs 文件不冲突（只加载一个）", async () => {
-    writeTool("shared.mjs", `export default { function: { name: "shared", description: "from .mjs", parameters: { type: "object", properties: {}, required: [] } }, exec: async () => "mjs" };`);
+    writeTool(
+      "shared.mjs",
+      `export default { function: { name: "shared", description: "from .mjs", parameters: { type: "object", properties: {}, required: [] } }, exec: async () => "mjs" };`,
+    );
     writeTool("shared.js", simpleToolCode("shared", "from .js"));
 
     const result = await discoverUserTools([dir]);

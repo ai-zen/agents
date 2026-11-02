@@ -25,7 +25,9 @@ describe("MkdirTool", () => {
       expect(result).toBe("success");
       expect(existsSync(dir)).toBe(true);
     } finally {
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -38,8 +40,12 @@ describe("MkdirTool", () => {
       expect(result).toBe("success");
       expect(existsSync(join(base, "sub"))).toBe(true);
     } finally {
-      try { unlinkSync(join(base, "sub")); } catch {}
-      try { unlinkSync(base); } catch {}
+      try {
+        unlinkSync(join(base, "sub"));
+      } catch {}
+      try {
+        unlinkSync(base);
+      } catch {}
     }
   });
 
@@ -52,10 +58,18 @@ describe("MkdirTool", () => {
       expect(result).toBe("success");
       expect(existsSync(nested)).toBe(true);
     } finally {
-      try { unlinkSync(join(base, "a", "b", "c")); } catch {}
-      try { unlinkSync(join(base, "a", "b")); } catch {}
-      try { unlinkSync(join(base, "a")); } catch {}
-      try { unlinkSync(base); } catch {}
+      try {
+        unlinkSync(join(base, "a", "b", "c"));
+      } catch {}
+      try {
+        unlinkSync(join(base, "a", "b"));
+      } catch {}
+      try {
+        unlinkSync(join(base, "a"));
+      } catch {}
+      try {
+        unlinkSync(base);
+      } catch {}
     }
   });
 

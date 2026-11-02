@@ -20,7 +20,8 @@ export class CopyTool extends SdkCallbackTool {
         },
         recursive: {
           type: "boolean",
-          description: "Whether to copy directories recursively; must be true when copying a directory",
+          description:
+            "Whether to copy directories recursively; must be true when copying a directory",
         },
       },
       required: ["src", "dest"],

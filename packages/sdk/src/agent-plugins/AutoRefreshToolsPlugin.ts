@@ -17,9 +17,7 @@ export class AutoRefreshToolsPlugin implements AgentPlugin {
 
     agent.tools = agent.scope.buildTools(agent.definition, {
       exclude: {
-        subagents: agent.definition.function?.name
-          ? [agent.definition.function.name]
-          : undefined,
+        subagents: agent.definition.function?.name ? [agent.definition.function.name] : undefined,
       },
     });
   }

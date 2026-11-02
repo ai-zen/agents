@@ -24,9 +24,7 @@ describe("HandoffGuardPlugin", () => {
 
     expect(guard.onToolCall(toolCall("write", { path: HANDOFF }))).toBeUndefined();
     expect(
-      guard.onToolCall(
-        toolCall("write", { path: ".ai-zen/handoffs/20260101-000000-abcd1234.md" }),
-      ),
+      guard.onToolCall(toolCall("write", { path: ".ai-zen/handoffs/20260101-000000-abcd1234.md" })),
     ).toBeUndefined();
   });
 

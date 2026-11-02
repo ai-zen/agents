@@ -206,7 +206,11 @@ async function loadToolFile(
   opts: DiscoverUserToolsOptions,
 ): Promise<Tool | null> {
   if (!(await mayExportTool(filepath))) {
-    reportReject(filepath, "no `export` in source — not a tool module, skipped without evaluating", opts);
+    reportReject(
+      filepath,
+      "no `export` in source — not a tool module, skipped without evaluating",
+      opts,
+    );
     return null;
   }
 
@@ -215,7 +219,10 @@ async function loadToolFile(
   importingFile = filepath;
   try {
     const url = `${pathToFileURL(filepath).href}?t=${Date.now()}`;
-    const mod = (await importWithTimeout(url, opts.importTimeoutMs ?? DEFAULT_IMPORT_TIMEOUT_MS)) as {
+    const mod = (await importWithTimeout(
+      url,
+      opts.importTimeoutMs ?? DEFAULT_IMPORT_TIMEOUT_MS,
+    )) as {
       default?: unknown;
     };
 
@@ -257,7 +264,12 @@ function normalizeToolExport(exported: any, filepath: string, silent?: boolean):
   }
 
   // 情况 3：{ function, exec } 格式 → 适配为 CallbackTool
-  if (target && typeof target === "object" && target.function && typeof target.exec === "function") {
+  if (
+    target &&
+    typeof target === "object" &&
+    target.function &&
+    typeof target.exec === "function"
+  ) {
     return new CallbackTool({
       function: target.function,
       callback: target.exec,
@@ -265,7 +277,12 @@ function normalizeToolExport(exported: any, filepath: string, silent?: boolean):
   }
 
   // 情况 4：{ function, callback } 格式 → 适配为 CallbackTool
-  if (target && typeof target === "object" && target.function && typeof target.callback === "function") {
+  if (
+    target &&
+    typeof target === "object" &&
+    target.function &&
+    typeof target.callback === "function"
+  ) {
     return new CallbackTool({
       function: target.function,
       callback: target.callback,

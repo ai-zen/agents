@@ -52,8 +52,7 @@ function createTestAgent(opts?: {
   tools?: any[];
   scope?: any;
 }): SdkAgent {
-  const messages =
-    opts?.messages ?? [{ role: AgentNS.Role.System, content: "You are a helper." }];
+  const messages = opts?.messages ?? [{ role: AgentNS.Role.System, content: "You are a helper." }];
   return new SdkAgent({
     scope: opts?.scope ?? mockScope(),
     definition: {
@@ -108,8 +107,16 @@ describe("SdkAgent", () => {
     it("依次调用所有插件的 onInit", async () => {
       const agent = createTestAgent();
       const order: number[] = [];
-      const p1: AgentPlugin = { onInit: vi.fn(async () => { order.push(1); }) };
-      const p2: AgentPlugin = { onInit: vi.fn(async () => { order.push(2); }) };
+      const p1: AgentPlugin = {
+        onInit: vi.fn(async () => {
+          order.push(1);
+        }),
+      };
+      const p2: AgentPlugin = {
+        onInit: vi.fn(async () => {
+          order.push(2);
+        }),
+      };
 
       agent.use(p1);
       agent.use(p2);
@@ -121,7 +128,9 @@ describe("SdkAgent", () => {
     it("插件 onInit 抛错时 init 抛出错误", async () => {
       const agent = createTestAgent();
       const plugin: AgentPlugin = {
-        onInit: async () => { throw new Error("Init failed"); },
+        onInit: async () => {
+          throw new Error("Init failed");
+        },
       };
       agent.use(plugin);
       await expect(agent.init()).rejects.toThrow("Init failed");
@@ -135,8 +144,12 @@ describe("SdkAgent", () => {
       const callOrder: string[] = [];
 
       agent.use({
-        onBeforeSend: async () => { callOrder.push("beforeSend"); },
-        onAfterSend: async () => { callOrder.push("afterSend"); },
+        onBeforeSend: async () => {
+          callOrder.push("beforeSend");
+        },
+        onAfterSend: async () => {
+          callOrder.push("afterSend");
+        },
       });
 
       await agent.send("hello");
@@ -162,9 +175,21 @@ describe("SdkAgent", () => {
     it("多个插件按注册顺序执行钩子", async () => {
       const agent = createTestAgent();
       const order: number[] = [];
-      agent.use({ onBeforeSend: async () => { order.push(1); } });
-      agent.use({ onBeforeSend: async () => { order.push(2); } });
-      agent.use({ onBeforeSend: async () => { order.push(3); } });
+      agent.use({
+        onBeforeSend: async () => {
+          order.push(1);
+        },
+      });
+      agent.use({
+        onBeforeSend: async () => {
+          order.push(2);
+        },
+      });
+      agent.use({
+        onBeforeSend: async () => {
+          order.push(3);
+        },
+      });
 
       await agent.send("hi");
 
@@ -185,7 +210,16 @@ describe("SdkAgent", () => {
 
       const client = createMockClient([
         [
-          chunk({ tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "blockedTool", arguments: "{}" } }] }),
+          chunk({
+            tool_calls: [
+              {
+                index: 0,
+                id: "1",
+                type: "function",
+                function: { name: "blockedTool", arguments: "{}" },
+              },
+            ],
+          }),
           chunk({}, "tool_calls"),
         ],
         [chunk({ content: "已处理" }), stopChunk()],
@@ -223,7 +257,16 @@ describe("SdkAgent", () => {
 
       const client = createMockClient([
         [
-          chunk({ tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "okTool", arguments: "{}" } }] }),
+          chunk({
+            tool_calls: [
+              {
+                index: 0,
+                id: "1",
+                type: "function",
+                function: { name: "okTool", arguments: "{}" },
+              },
+            ],
+          }),
           chunk({}, "tool_calls"),
         ],
         [chunk({ content: "完成" }), stopChunk()],

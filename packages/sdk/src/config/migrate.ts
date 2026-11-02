@@ -41,7 +41,6 @@ export const LEGACY_REASONING_FIELD = "reasoning";
  */
 export const DEFAULT_HANDOFF_THRESHOLD = 128_000;
 
-
 /** 旧形状的模型条目（运行时才需要认识这些字段） */
 type LegacyModel = Model & {
   [LEGACY_TOKEN_FIELD]?: unknown;
@@ -74,20 +73,21 @@ function readThresholds(value: unknown): Partial<TokenThresholds> {
  */
 export function migrateModelThresholds(model: Model): { model: Model; changed: boolean } {
   const source = model as LegacyModel;
-  const current = readThresholds((source as unknown as Record<string, unknown>)[TOKEN_THRESHOLDS_KEY]);
+  const current = readThresholds(
+    (source as unknown as Record<string, unknown>)[TOKEN_THRESHOLDS_KEY],
+  );
   const legacyTokens = toPositiveInt(source[LEGACY_TOKEN_FIELD]);
   const legacyChars = toPositiveInt(source[LEGACY_CHARS_FIELD]);
   const legacySingle = toPositiveInt(source.tokenThreshold);
 
   const hasLegacy =
-    LEGACY_TOKEN_FIELD in source ||
-    LEGACY_CHARS_FIELD in source ||
-    "tokenThreshold" in source;
+    LEGACY_TOKEN_FIELD in source || LEGACY_CHARS_FIELD in source || "tokenThreshold" in source;
   const complete = current.handoff !== undefined && current.guard !== undefined;
 
   if (!hasLegacy && complete) return { model, changed: false };
 
-  const fromChars = legacyChars !== undefined ? Math.max(1, Math.floor(legacyChars / 4)) : undefined;
+  const fromChars =
+    legacyChars !== undefined ? Math.max(1, Math.floor(legacyChars / 4)) : undefined;
   const handoff =
     current.handoff ?? legacyTokens ?? fromChars ?? legacySingle ?? DEFAULT_HANDOFF_THRESHOLD;
   // 旧数据里没有 guard 这一项：按重构前 ContextGuardPlugin 的默认 ratio（1.5）折算一次，

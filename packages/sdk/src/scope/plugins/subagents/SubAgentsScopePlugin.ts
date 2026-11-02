@@ -29,9 +29,7 @@ export class SubAgentsScopePlugin implements ScopePlugin {
 
   candidates(): ScopeCandidates {
     return {
-      subagents: this.subagents
-        .filter((d) => d.function)
-        .map((d) => d.function!.name),
+      subagents: this.subagents.filter((d) => d.function).map((d) => d.function!.name),
     };
   }
 

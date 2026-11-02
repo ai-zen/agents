@@ -53,9 +53,7 @@ export async function createAgent(
 
   const tools = scope.buildTools(definition, {
     exclude: {
-      subagents: definition.function?.name
-        ? [definition.function.name]
-        : undefined,
+      subagents: definition.function?.name ? [definition.function.name] : undefined,
     },
   });
 
@@ -78,8 +76,7 @@ export async function createAgent(
     abortedToolRoundStrategy:
       options.abortedToolRoundStrategy ?? scope.config?.abortedToolRoundStrategy,
     abortedToolRoundReason: options.abortedToolRoundReason,
-    abortedMessageStrategy:
-      options.abortedMessageStrategy ?? scope.config?.abortedMessageStrategy,
+    abortedMessageStrategy: options.abortedMessageStrategy ?? scope.config?.abortedMessageStrategy,
   });
 
   return agent;

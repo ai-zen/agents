@@ -25,10 +25,7 @@ function buildCtx(promptTokens?: number): any {
   };
 }
 
-function createPlugin(options: {
-  service: HandoffService;
-  resolveMode?: any;
-}): AutoMigratePlugin {
+function createPlugin(options: { service: HandoffService; resolveMode?: any }): AutoMigratePlugin {
   return new AutoMigratePlugin({
     service: options.service,
     handoffTokens: MAX_HANDOFF_TOKENS,
@@ -64,7 +61,10 @@ describe("AutoMigratePlugin", () => {
 
     expect(migrate).toHaveBeenCalledTimes(1);
     expect(migrate).toHaveBeenCalledWith(
-      expect.objectContaining({ promptTokens: MAX_HANDOFF_TOKENS + 1, handoffTokens: MAX_HANDOFF_TOKENS }),
+      expect.objectContaining({
+        promptTokens: MAX_HANDOFF_TOKENS + 1,
+        handoffTokens: MAX_HANDOFF_TOKENS,
+      }),
     );
   });
 

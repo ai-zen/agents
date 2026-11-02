@@ -68,7 +68,13 @@ describe("ConfigManager.ensureDefaultAgent", () => {
     await fs.mkdir(agentsDir, { recursive: true });
     await fs.writeFile(
       join(agentsDir, "my-agent.json"),
-      JSON.stringify({ id: "my-agent", name: "My Agent", messages: [], createdAt: "", updatedAt: "" }),
+      JSON.stringify({
+        id: "my-agent",
+        name: "My Agent",
+        messages: [],
+        createdAt: "",
+        updatedAt: "",
+      }),
     );
 
     const mgr = makeManager(testDir);
@@ -92,7 +98,10 @@ describe("ConfigManager.ensureDefaultAgent", () => {
       updatedAt: "2024-01-01T00:00:00.000Z",
       permissions: { tools: { deny: ["*"] } },
     };
-    await fs.writeFile(join(agentsDir, `${DEFAULT_AGENT_ID}.json`), JSON.stringify(customContent, null, 2));
+    await fs.writeFile(
+      join(agentsDir, `${DEFAULT_AGENT_ID}.json`),
+      JSON.stringify(customContent, null, 2),
+    );
 
     const mgr = makeManager(testDir);
     const result = (await mgr.ensureDefaultAgent())!;
@@ -121,7 +130,10 @@ describe("ConfigManager.ensureDefaultAgent", () => {
       createdAt: "2024-01-01T00:00:00.000Z",
       updatedAt: "2024-01-01T00:00:00.000Z",
     };
-    await fs.writeFile(join(agentsDir, `${DEFAULT_AGENT_ID}.json`), JSON.stringify(customContent, null, 2));
+    await fs.writeFile(
+      join(agentsDir, `${DEFAULT_AGENT_ID}.json`),
+      JSON.stringify(customContent, null, 2),
+    );
 
     const mgr = makeManager(testDir);
     const result = (await mgr.ensureDefaultAgent())!;
@@ -192,7 +204,11 @@ describe("ConfigManager.ensureDefaultSubAgent", () => {
       id: DEFAULT_SUBAGENT_ID,
       name: "My Custom SubAgent",
       messages: [],
-      function: { name: "custom_func", description: "", parameters: { type: "object", properties: {}, required: [] } },
+      function: {
+        name: "custom_func",
+        description: "",
+        parameters: { type: "object", properties: {}, required: [] },
+      },
       createdAt: "2024-01-01T00:00:00.000Z",
       updatedAt: "2024-01-01T00:00:00.000Z",
     };
@@ -264,9 +280,21 @@ describe("ConfigManager.ensureDefaultConfig", () => {
     const mgr = makeManager(testDir);
     // 模拟历史遗留配置：旧模型未标 custom
     await mgr.write({
-      endpoints: [{ id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", apiKey: "sk-x" }],
+      endpoints: [
+        {
+          id: "deepseek",
+          name: "DeepSeek",
+          baseUrl: "https://api.deepseek.com/v1",
+          apiKey: "sk-x",
+        },
+      ],
       models: [
-        { id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", endpointId: "deepseek", tokenThresholds: { handoff: 250_000, guard: 375000 } },
+        {
+          id: "deepseek-v4-flash",
+          name: "DeepSeek V4 Flash",
+          endpointId: "deepseek",
+          tokenThresholds: { handoff: 250_000, guard: 375000 },
+        },
       ],
       defaultMigrationModel: "deepseek-v4-flash",
     });
@@ -281,7 +309,9 @@ describe("ConfigManager.ensureDefaultConfig", () => {
     expect(cfg.endpoints[0].apiKey).toBe("sk-x");
     // 已落盘
     const raw = JSON.parse(await fs.readFile(join(testDir, "config.json"), "utf-8"));
-    expect(raw.models.map((m: { id: string }) => m.id)).toEqual(DEFAULT_APP_CONFIG.models.map((m) => m.id));
+    expect(raw.models.map((m: { id: string }) => m.id)).toEqual(
+      DEFAULT_APP_CONFIG.models.map((m) => m.id),
+    );
   });
 
   it("模型同步：custom: true 的模型被完整保留", async () => {
@@ -290,7 +320,13 @@ describe("ConfigManager.ensureDefaultConfig", () => {
     await mgr.write({
       endpoints: [],
       models: [
-        { id: "my-local-llm", name: "Local Model", endpointId: "local", tokenThresholds: { handoff: 32_000, guard: 48000 }, custom: true },
+        {
+          id: "my-local-llm",
+          name: "Local Model",
+          endpointId: "local",
+          tokenThresholds: { handoff: 32_000, guard: 48000 },
+          custom: true,
+        },
       ],
     });
 
@@ -309,7 +345,13 @@ describe("ConfigManager.ensureDefaultConfig", () => {
     await mgr.write({
       endpoints: [],
       models: [
-        { id: "glm-5.3", name: "My GLM-5.3", endpointId: "bigmodelcn", tokenThresholds: { handoff: 999, guard: 1498 }, custom: true },
+        {
+          id: "glm-5.3",
+          name: "My GLM-5.3",
+          endpointId: "bigmodelcn",
+          tokenThresholds: { handoff: 999, guard: 1498 },
+          custom: true,
+        },
       ],
     });
 
@@ -327,13 +369,17 @@ describe("ConfigManager.ensureDefaultConfig", () => {
     await mgr.write({
       endpoints: [],
       models: [],
-      imageModels: [{ id: "old-image-model", name: "Old", endpointId: "x", modelName: "old-image-model" }],
+      imageModels: [
+        { id: "old-image-model", name: "Old", endpointId: "x", modelName: "old-image-model" },
+      ],
       defaultImageModel: "old-image-model",
     });
 
     const cfg = await mgr.ensureDefaultConfig();
 
-    expect(cfg.imageModels!.map((m) => m.id)).toEqual(DEFAULT_APP_CONFIG.imageModels!.map((m) => m.id));
+    expect(cfg.imageModels!.map((m) => m.id)).toEqual(
+      DEFAULT_APP_CONFIG.imageModels!.map((m) => m.id),
+    );
     expect(cfg.defaultImageModel).toBe(DEFAULT_APP_CONFIG.defaultImageModel);
   });
 
@@ -374,13 +420,17 @@ describe("ConfigManager.bootstrap", () => {
     expect(result.agent!.id).toBe("default");
     expect(result.agent!.modelId).toBe(DEFAULT_AGENT_DEFINITION.modelId);
     await expect(fs.access(join(testDir, "agents", "default.json"))).resolves.toBeUndefined();
-    const agentOnDisk = JSON.parse(await fs.readFile(join(testDir, "agents", "default.json"), "utf-8"));
+    const agentOnDisk = JSON.parse(
+      await fs.readFile(join(testDir, "agents", "default.json"), "utf-8"),
+    );
     expect(agentOnDisk.modelId).toBe(DEFAULT_AGENT_DEFINITION.modelId);
 
     // subAgent
     expect(result.subAgent).not.toBeNull();
     expect(result.subAgent!.id).toBe(DEFAULT_SUBAGENT_ID);
-    await expect(fs.access(join(testDir, "sub-agents", `${DEFAULT_SUBAGENT_ID}.json`))).resolves.toBeUndefined();
+    await expect(
+      fs.access(join(testDir, "sub-agents", `${DEFAULT_SUBAGENT_ID}.json`)),
+    ).resolves.toBeUndefined();
 
     // mcp.json — 默认释放含 socket-pty、chrome-devtools 的配置
     const mcp = JSON.parse(await fs.readFile(join(testDir, "mcp.json"), "utf-8"));
@@ -389,7 +439,11 @@ describe("ConfigManager.bootstrap", () => {
     expect(mcp.mcpServers["socket-pty"].args).toContain("@ai-zen/socket-pty");
     expect(mcp.mcpServers["chrome-devtools"]).toBeTruthy();
     expect(mcp.mcpServers["chrome-devtools"].command).toBe("npx");
-    expect(mcp.mcpServers["chrome-devtools"].args.some((a: string) => a.startsWith("chrome-devtools-mcp"))).toBe(true);
+    expect(
+      mcp.mcpServers["chrome-devtools"].args.some((a: string) =>
+        a.startsWith("chrome-devtools-mcp"),
+      ),
+    ).toBe(true);
 
     // dirs
     for (const sub of ["agents", "sub-agents", "skills", "tools", "mcp-oauth"]) {

@@ -72,9 +72,7 @@ export class AutoMigratePlugin implements AgentPlugin {
     if (promptTokens <= handoffTokens) return;
 
     try {
-      const mode = resolveMode
-        ? await resolveMode({ promptTokens, handoffTokens })
-        : undefined;
+      const mode = resolveMode ? await resolveMode({ promptTokens, handoffTokens }) : undefined;
       if (mode === null) return; // 用户选择跳过本次迁移
 
       await service.migrate({ agent, promptTokens, handoffTokens, mode: mode ?? undefined });

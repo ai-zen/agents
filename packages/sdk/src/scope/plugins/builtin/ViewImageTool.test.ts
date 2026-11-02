@@ -93,8 +93,8 @@ describe("ViewImageTool", () => {
     const tool = new ViewImageTool(makeEnv("/ws"));
     expect(tool.function.description).toContain("Local URLs are not supported");
     const paramDesc =
-      (tool.function.parameters.properties.path_or_url as { description?: string })
-        .description ?? "";
+      (tool.function.parameters.properties.path_or_url as { description?: string }).description ??
+      "";
     expect(paramDesc).toContain("Local URLs are not supported");
   });
 
@@ -190,8 +190,21 @@ describe("ViewImageTool", () => {
     const config: AppConfig = {
       ...deepseekConfig,
       models: [
-        { id: "v1", name: "V", endpointId: "deepseek", modelName: "v1", tokenThresholds: { handoff: 1000, guard: 1500 }, vision: true },
-        { id: "m1", name: "M", endpointId: "deepseek", modelName: "m1", tokenThresholds: { handoff: 1000, guard: 1500 } },
+        {
+          id: "v1",
+          name: "V",
+          endpointId: "deepseek",
+          modelName: "v1",
+          tokenThresholds: { handoff: 1000, guard: 1500 },
+          vision: true,
+        },
+        {
+          id: "m1",
+          name: "M",
+          endpointId: "deepseek",
+          modelName: "m1",
+          tokenThresholds: { handoff: 1000, guard: 1500 },
+        },
       ],
     };
     const tool = new ViewImageTool(makeEnv("/ws", config));

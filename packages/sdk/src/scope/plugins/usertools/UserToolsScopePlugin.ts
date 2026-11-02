@@ -22,10 +22,7 @@ export class UserToolsScopePlugin implements ScopePlugin {
     this.paths = options?.paths ?? [];
   }
 
-  async discover(
-    scope: Scope,
-    options?: { silent?: boolean },
-  ): Promise<void> {
+  async discover(scope: Scope, options?: { silent?: boolean }): Promise<void> {
     const dirs = this.paths.map((p) => (isAbsolute(p) ? p : join(scope.cwd, p)));
     this.tools = await discoverUserTools(dirs, options);
   }

@@ -14,9 +14,27 @@ const baseConfig: AppConfig = {
     { id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", apiKey: "sk-ds" },
   ],
   models: [
-    { id: "gpt4", name: "GPT-4", endpointId: "openai", modelName: "gpt-4", tokenThresholds: { handoff: 128000, guard: 192000 } },
-    { id: "gpt4-no-modelname", name: "GPT-4 No Name", endpointId: "openai", tokenThresholds: { handoff: 128000, guard: 192000 } },
-    { id: "ds-v3", name: "DeepSeek V3", endpointId: "deepseek", modelName: "deepseek-v3", tokenThresholds: { handoff: 64000, guard: 96000 }, defaultParams: { temperature: 0.7 } },
+    {
+      id: "gpt4",
+      name: "GPT-4",
+      endpointId: "openai",
+      modelName: "gpt-4",
+      tokenThresholds: { handoff: 128000, guard: 192000 },
+    },
+    {
+      id: "gpt4-no-modelname",
+      name: "GPT-4 No Name",
+      endpointId: "openai",
+      tokenThresholds: { handoff: 128000, guard: 192000 },
+    },
+    {
+      id: "ds-v3",
+      name: "DeepSeek V3",
+      endpointId: "deepseek",
+      modelName: "deepseek-v3",
+      tokenThresholds: { handoff: 64000, guard: 96000 },
+      defaultParams: { temperature: 0.7 },
+    },
   ],
 };
 
@@ -36,7 +54,14 @@ describe("createModel", () => {
     const badConfig: AppConfig = {
       defaultModel: "bad",
       endpoints: [],
-      models: [{ id: "bad", name: "Bad", endpointId: "missing-ep", tokenThresholds: { handoff: 1000, guard: 1500 } }],
+      models: [
+        {
+          id: "bad",
+          name: "Bad",
+          endpointId: "missing-ep",
+          tokenThresholds: { handoff: 1000, guard: 1500 },
+        },
+      ],
     };
     expect(() => createModel(mockScope(badConfig), "bad")).toThrow("is not configured");
   });
@@ -44,8 +69,17 @@ describe("createModel", () => {
   it("endpoint apiKey 为空时抛出明确错误", () => {
     const noKeyConfig: AppConfig = {
       defaultModel: "no-key",
-      endpoints: [{ id: "no-key-ep", name: "No Key", baseUrl: "https://example.com/v1", apiKey: "" }],
-      models: [{ id: "no-key", name: "No Key Model", endpointId: "no-key-ep", tokenThresholds: { handoff: 1000, guard: 1500 } }],
+      endpoints: [
+        { id: "no-key-ep", name: "No Key", baseUrl: "https://example.com/v1", apiKey: "" },
+      ],
+      models: [
+        {
+          id: "no-key",
+          name: "No Key Model",
+          endpointId: "no-key-ep",
+          tokenThresholds: { handoff: 1000, guard: 1500 },
+        },
+      ],
     };
     expect(() => createModel(mockScope(noKeyConfig), "no-key")).toThrow(
       'API key for endpoint "No Key" is not set',
@@ -73,7 +107,9 @@ describe("createModel", () => {
     const noEpConfig: AppConfig = {
       defaultModel: "m",
       endpoints: [],
-      models: [{ id: "m", name: "M", endpointId: "ep", tokenThresholds: { handoff: 1000, guard: 1500 } }],
+      models: [
+        { id: "m", name: "M", endpointId: "ep", tokenThresholds: { handoff: 1000, guard: 1500 } },
+      ],
     };
     expect(() => createModel(mockScope(noEpConfig), "m")).toThrow("is not configured");
   });
@@ -119,8 +155,10 @@ describe("createModel：Agent 级参数覆盖（浅合并，SDK 不解释键名�
 
   it("有覆盖 → 浅合并：同名键被覆盖，其它键保留", () => {
     expect(
-      createModel(mockScope(cfg), "glm", { thinking: { type: "disabled" }, reasoning_effort: "low" })
-        .modelConfig,
+      createModel(mockScope(cfg), "glm", {
+        thinking: { type: "disabled" },
+        reasoning_effort: "low",
+      }).modelConfig,
     ).toEqual({ thinking: { type: "disabled" }, reasoning_effort: "low", temperature: 0.3 });
   });
 

@@ -35,10 +35,18 @@ describe("GlobTool", () => {
       expect(files).toContain("b.ts");
       expect(files).not.toContain("c.js");
     } finally {
-      try { unlinkSync(join(dir, "a.ts")); } catch {}
-      try { unlinkSync(join(dir, "b.ts")); } catch {}
-      try { unlinkSync(join(dir, "c.js")); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(join(dir, "a.ts"));
+      } catch {}
+      try {
+        unlinkSync(join(dir, "b.ts"));
+      } catch {}
+      try {
+        unlinkSync(join(dir, "c.js"));
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -51,8 +59,12 @@ describe("GlobTool", () => {
       const files = JSON.parse(result as string);
       expect(files).toContain("x.js");
     } finally {
-      try { unlinkSync(join(dir, "x.js")); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(join(dir, "x.js"));
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -69,10 +81,18 @@ describe("GlobTool", () => {
       expect(files).toContain("index.js");
       expect(files).not.toContain("node_modules/pkg.js");
     } finally {
-      try { unlinkSync(join(dir, "index.js")); } catch {}
-      try { unlinkSync(join(dir, "node_modules", "pkg.js")); } catch {}
-      try { unlinkSync(join(dir, "node_modules")); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(join(dir, "index.js"));
+      } catch {}
+      try {
+        unlinkSync(join(dir, "node_modules", "pkg.js"));
+      } catch {}
+      try {
+        unlinkSync(join(dir, "node_modules"));
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -83,16 +103,19 @@ describe("GlobTool", () => {
     controller.abort();
     try {
       writeFileSync(join(dir, "a.ts"), "", "utf-8");
-      const result = await tool.call(
-        { path: dir, pattern: "*.ts" },
-        { signal: controller.signal } as unknown as ToolCallContext,
-      );
+      const result = await tool.call({ path: dir, pattern: "*.ts" }, {
+        signal: controller.signal,
+      } as unknown as ToolCallContext);
       const parsed = JSON.parse(result as string);
       expect(parsed.aborted).toBe(true);
       expect(Array.isArray(parsed.files)).toBe(true);
     } finally {
-      try { unlinkSync(join(dir, "a.ts")); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(join(dir, "a.ts"));
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -115,8 +138,13 @@ describe("GlobTool", () => {
       expect(parsed.chars).toBeGreaterThan(100);
       expect(typeof parsed.head).toBe("string");
     } finally {
-      for (const name of names) try { unlinkSync(join(dir, name)); } catch {}
-      try { unlinkSync(dir); } catch {}
+      for (const name of names)
+        try {
+          unlinkSync(join(dir, name));
+        } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -130,8 +158,12 @@ describe("GlobTool", () => {
       expect(Array.isArray(parsed)).toBe(true);
       expect(parsed).toContain("a.ts");
     } finally {
-      try { unlinkSync(join(dir, "a.ts")); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(join(dir, "a.ts"));
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 });

@@ -23,8 +23,12 @@ describe("ExistTool", () => {
       const result = await tool.call({ path: filePath });
       expect(result).toBe("true");
     } finally {
-      try { unlinkSync(filePath); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(filePath);
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -37,8 +41,12 @@ describe("ExistTool", () => {
       expect(await tool.call({ path: "rel.txt" })).toBe("true");
       expect(await tool.call({ path: "missing.txt" })).toBe("false");
     } finally {
-      try { unlinkSync(join(dir, "rel.txt")); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(join(dir, "rel.txt"));
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -56,7 +64,9 @@ describe("ExistTool", () => {
       const result = await tool.call({ path: dir });
       expect(result).toBe("true");
     } finally {
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 });

@@ -60,7 +60,13 @@ describe("基础工具函数", () => {
     const config = {
       endpoints: [deepseek, openai],
       models: [
-        { id: "deepseek-flash", name: "DS", endpointId: "deepseek", modelName: "deepseek-flash", vision: true },
+        {
+          id: "deepseek-flash",
+          name: "DS",
+          endpointId: "deepseek",
+          modelName: "deepseek-flash",
+          vision: true,
+        },
         { id: "gpt-x", name: "GPT", endpointId: "openai" },
       ],
     } as unknown as AppConfig;
@@ -80,7 +86,10 @@ describe("fileToContentSection：传输方式选择", () => {
       deps: { upload: vi.fn() },
     });
     expect(r.transport).toBe("url");
-    expect(r.section).toEqual({ type: "image_url", image_url: { url: "https://example.com/a.png" } });
+    expect(r.section).toEqual({
+      type: "image_url",
+      image_url: { url: "https://example.com/a.png" },
+    });
     expect(r.bytes).toBe(0);
   });
 
@@ -93,7 +102,11 @@ describe("fileToContentSection：传输方式选择", () => {
   it("端点支持 Files API：上传并返回 file 块（file_id）", async () => {
     const upload = vi.fn(async () => "file-from-api");
     const file = await tmpImage();
-    const r = await fileToContentSection({ source: { path: file }, endpoint: deepseek, deps: { upload } });
+    const r = await fileToContentSection({
+      source: { path: file },
+      endpoint: deepseek,
+      deps: { upload },
+    });
 
     expect(upload).toHaveBeenCalledTimes(1);
     expect(r.transport).toBe("files-api");
@@ -123,7 +136,11 @@ describe("fileToContentSection：传输方式选择", () => {
       throw new Error("boom");
     });
     const file = await tmpImage();
-    const r = await fileToContentSection({ source: { path: file }, endpoint: deepseek, deps: { upload } });
+    const r = await fileToContentSection({
+      source: { path: file },
+      endpoint: deepseek,
+      deps: { upload },
+    });
 
     expect(r.transport).toBe("inline");
     expect(r.warning).toMatch(/Files API upload failed/);
@@ -200,7 +217,9 @@ describe("fileToContentSection：传输方式选择", () => {
     ).rejects.toThrow();
 
     const bad = await tmpImage("x", ".exe");
-    await expect(fileToContentSection({ source: { path: bad } })).rejects.toThrow(/Unsupported file type/);
+    await expect(fileToContentSection({ source: { path: bad } })).rejects.toThrow(
+      /Unsupported file type/,
+    );
   });
 
   it("内存字节来源（MCP 场景）也能转换", async () => {

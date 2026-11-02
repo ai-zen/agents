@@ -163,8 +163,7 @@ const DEFINITION = (modelId: string, id: string, name: string) => ({
   messages: [
     {
       role: "system" as const,
-      content:
-        "你是一个视觉助手。查看图片后，用中文简洁描述图片中的颜色和形状，不要多余解释。",
+      content: "你是一个视觉助手。查看图片后，用中文简洁描述图片中的颜色和形状，不要多余解释。",
     },
   ],
   modelId,
@@ -194,9 +193,7 @@ describe.runIf(!skip)("view_image 端到端（真实 DeepSeek API）", () => {
     expect(visionTools.map((t) => t.function.name)).toContain("view_image");
 
     // 非视觉模型 → 不含 view_image
-    const textTools = scope.buildTools(
-      DEFINITION("deepseek-v4-pro", "t", "T"),
-    );
+    const textTools = scope.buildTools(DEFINITION("deepseek-v4-pro", "t", "T"));
     expect(textTools.map((t) => t.function.name)).not.toContain("view_image");
   });
 
@@ -204,17 +201,16 @@ describe.runIf(!skip)("view_image 端到端（真实 DeepSeek API）", () => {
     const imgPath = await writeTempImage();
     try {
       // 从 BUILTIN_TOOL_CLASSES 装配（走真实 env）
-      const tool = BUILTIN_TOOL_CLASSES.map(
-        (Cls) => new Cls(scope.env),
-      ).find((t) => t.function.name === "view_image") as ViewImageTool;
+      const tool = BUILTIN_TOOL_CLASSES.map((Cls) => new Cls(scope.env)).find(
+        (t) => t.function.name === "view_image",
+      ) as ViewImageTool;
 
       const result = await tool.call({ path_or_url: imgPath });
       expect(Array.isArray(result)).toBe(true);
 
       const sections = result as Array<Record<string, unknown>>;
       const fileSection = sections.find((s) => s.type === "file") as
-        | { file_id: string }
-        | undefined;
+        { file_id: string } | undefined;
       expect(fileSection).toBeDefined();
       expect(fileSection!.file_id).toMatch(/^file-/);
 
@@ -242,9 +238,9 @@ describe.runIf(!skip)("view_image 端到端（真实 DeepSeek API）", () => {
     const imgPath = await writeTempImage();
     try {
       const model = createModel(scope, VISION_MODEL_ID);
-      const viewImageTool = BUILTIN_TOOL_CLASSES.map(
-        (Cls) => new Cls(scope.env),
-      ).find((t) => t.function.name === "view_image")!;
+      const viewImageTool = BUILTIN_TOOL_CLASSES.map((Cls) => new Cls(scope.env)).find(
+        (t) => t.function.name === "view_image",
+      )!;
 
       const agent = new SdkAgent({
         scope,
@@ -269,21 +265,17 @@ describe.runIf(!skip)("view_image 端到端（真实 DeepSeek API）", () => {
       // 1. 链路完整性：消息历史中应出现 view_image 工具调用与工具结果
       const toolCalled = messages.some(
         (m) =>
-          m.role === "assistant" &&
-          m.tool_calls?.some((tc) => tc.function?.name === "view_image"),
+          m.role === "assistant" && m.tool_calls?.some((tc) => tc.function?.name === "view_image"),
       );
-      const hasToolResult = messages.some(
-        (m) => m.role === "tool" || m.role === "function",
-      );
+      const hasToolResult = messages.some((m) => m.role === "tool" || m.role === "function");
       expect(toolCalled).toBe(true);
       expect(hasToolResult).toBe(true);
 
       // 2. 最终回复非空且描述了图片内容（红色圆形）
       const lastMsg = messages[messages.length - 1];
       expect(lastMsg.role).toBe("assistant");
-      const content = typeof lastMsg.content === "string"
-        ? lastMsg.content
-        : JSON.stringify(lastMsg.content);
+      const content =
+        typeof lastMsg.content === "string" ? lastMsg.content : JSON.stringify(lastMsg.content);
       expect(content.length).toBeGreaterThan(0);
       expect(content).toMatch(/红|圆|red|circle/i);
       console.log("视觉回复:", content.slice(0, 200));

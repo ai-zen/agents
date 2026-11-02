@@ -2,10 +2,7 @@ import type { Tool } from "@ai-zen/agents-core";
 import { isAbsolute, join } from "node:path";
 import type { SkillInfo } from "./discover.js";
 import { discoverSkills } from "./discover.js";
-import {
-  createCallSkillSubAgentTool,
-  createLoadSkillTool,
-} from "./skillTools.js";
+import { createCallSkillSubAgentTool, createLoadSkillTool } from "./skillTools.js";
 import type { Scope, FilterOutput } from "../../Scope.js";
 import type { ScopeCandidates, ScopePlugin } from "../../ScopePlugin.js";
 
@@ -31,10 +28,7 @@ export class SkillsScopePlugin implements ScopePlugin {
     this.paths = options?.paths ?? [];
   }
 
-  async discover(
-    scope: Scope,
-    options?: { silent?: boolean },
-  ): Promise<void> {
+  async discover(scope: Scope, options?: { silent?: boolean }): Promise<void> {
     this.dirs = this.paths.map((p) => (isAbsolute(p) ? p : join(scope.cwd, p)));
     this.skills = await discoverSkills(this.dirs, options);
   }
@@ -56,10 +50,7 @@ export class SkillsScopePlugin implements ScopePlugin {
       result.push(createLoadSkillTool(this.dirs, filteredSkills));
     }
     // call_skill_sub_agent：只要有支持子 Agent 的 skill 就注册
-    if (
-      allow.has("call_skill_sub_agent") &&
-      filteredSkills.some((s) => s.subAgent)
-    ) {
+    if (allow.has("call_skill_sub_agent") && filteredSkills.some((s) => s.subAgent)) {
       result.push(createCallSkillSubAgentTool(this.dirs, filteredSkills));
     }
     return result;

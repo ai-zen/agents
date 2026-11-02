@@ -46,10 +46,7 @@ export abstract class SdkCallbackTool extends Tool {
    * 工具核心逻辑（由子类实现，参数为 parsedArgs）。
    * 可选第二参 ctx：透传完整 ToolCallContext，需中止能力（signal）的工具自行读取。
    */
-  abstract call(
-    input: unknown,
-    ctx?: ToolCallContext,
-  ): unknown | Promise<unknown>;
+  abstract call(input: unknown, ctx?: ToolCallContext): unknown | Promise<unknown>;
 
   /** 桥接 core 的 Tool.exec：解析参数 → call → 序列化/透传内容块 */
   async exec(ctx: ToolCallContext): Promise<AgentNS.MessageContent> {

@@ -33,7 +33,10 @@ function normalizeConfig(id: string, raw: Record<string, unknown>): McpServerCon
  * 归一化 transport 取值。
  * 不填时自动推断：有 command→stdio，有 url→http。
  */
-function normalizeTransport(type: string, raw: Record<string, unknown>): McpServerConfig["transport"] | null {
+function normalizeTransport(
+  type: string,
+  raw: Record<string, unknown>,
+): McpServerConfig["transport"] | null {
   if (type === "stdio") return "stdio";
   if (type === "http") return "http";
   if (type === "sse") return "sse";
@@ -86,7 +89,9 @@ export async function discoverMcpServers(paths: string[]): Promise<McpServerConf
         items.push(normalized);
       }
     } catch (err: unknown) {
-      getLogger().warn(`[sdk] Failed to parse MCP config: ${path} — ${(err as Error)?.message ?? err}`);
+      getLogger().warn(
+        `[sdk] Failed to parse MCP config: ${path} — ${(err as Error)?.message ?? err}`,
+      );
     }
   }
 

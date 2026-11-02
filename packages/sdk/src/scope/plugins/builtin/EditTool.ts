@@ -41,7 +41,8 @@ export class EditTool extends SdkCallbackTool {
         },
         isReplaceAll: {
           type: "boolean",
-          description: "Whether to replace all matches (default false, only the first match is replaced). Make sure the oldText you provide is precise enough to avoid unintended replacements",
+          description:
+            "Whether to replace all matches (default false, only the first match is replaced). Make sure the oldText you provide is precise enough to avoid unintended replacements",
           default: false,
         },
       },
@@ -54,7 +55,12 @@ export class EditTool extends SdkCallbackTool {
     super({ env });
   }
 
-  async call(input: { path: string; oldText: string; newText: string; isReplaceAll?: boolean }): Promise<string> {
+  async call(input: {
+    path: string;
+    oldText: string;
+    newText: string;
+    isReplaceAll?: boolean;
+  }): Promise<string> {
     try {
       const filePath = this.resolve(input.path);
       const oldText = input.oldText;

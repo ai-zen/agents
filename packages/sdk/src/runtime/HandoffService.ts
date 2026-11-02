@@ -302,8 +302,7 @@ export class HandoffService {
     return messages
       .map((m) => {
         const role = m.role ?? "unknown";
-        const content =
-          typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+        const content = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
         return `[${role}]: ${content}`;
       })
       .join("\n\n");
@@ -341,10 +340,7 @@ export class HandoffService {
         // 浅拷贝模板消息，避免污染 definition.messages 引用的对象
         agent.messages = [...agent.definition.messages, ...breakpointMessages];
       } else {
-        const preserveCount = Math.min(
-          agent.definition.messages.length,
-          agent.messages.length,
-        );
+        const preserveCount = Math.min(agent.definition.messages.length, agent.messages.length);
         agent.messages = [
           ...agent.messages.map((m, i) => ({
             ...m,
@@ -424,10 +420,7 @@ export class HandoffService {
     }
   }
 
-  private async runHandoff(
-    params: HandoffParams,
-    migrating: boolean,
-  ): Promise<HandoffContext> {
+  private async runHandoff(params: HandoffParams, migrating: boolean): Promise<HandoffContext> {
     const { agent, promptTokens, handoffTokens, conversationId, signal } = params;
     const requestedMode = params.mode ?? this.defaultMode;
     const handoffPath = join(
@@ -474,9 +467,7 @@ export class HandoffService {
     }
 
     if (mode === "summary") {
-      historyText = HandoffService.serializeMessages(
-        agent.messages.filter((m) => !m.omit),
-      );
+      historyText = HandoffService.serializeMessages(agent.messages.filter((m) => !m.omit));
       handoffDoc = await this.generateSummary(agent, historyText, handoffPath, signal);
       await this.writeHandoffFile(handoffPath, handoffDoc);
     }
@@ -555,7 +546,9 @@ export class HandoffService {
 
       if (await this.isHandoffFileReady(handoffPath)) return true;
 
-      this.logger.warn(`[handoff] handoff document missing or too small, retrying once: ${handoffPath}`);
+      this.logger.warn(
+        `[handoff] handoff document missing or too small, retrying once: ${handoffPath}`,
+      );
       await agent.send(
         [
           `The handoff document does not exist or is too small to deliver: ${handoffPath}`,
@@ -624,7 +617,9 @@ export class HandoffService {
     await fs.writeFile(handoffPath, content, "utf-8");
   }
 
-  /** 交接文档是否可用：文件存在且不小于阈值（不读内容，避免二次读取） */  private async isHandoffFileReady(handoffPath: string): Promise<boolean> {
+  /** 交接文档是否可用：文件存在且不小于阈值（不读内容，避免二次读取） */ private async isHandoffFileReady(
+    handoffPath: string,
+  ): Promise<boolean> {
     try {
       const stat = await fs.stat(handoffPath);
       return stat.isFile() && stat.size >= this.minHandoffBytes;

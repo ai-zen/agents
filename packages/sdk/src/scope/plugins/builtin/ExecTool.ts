@@ -30,10 +30,7 @@ export class ExecTool extends SdkCallbackTool {
     super({ env });
   }
 
-  async call(
-    input: { command: string; timeout: number },
-    ctx?: ToolCallContext,
-  ): Promise<string> {
+  async call(input: { command: string; timeout: number }, ctx?: ToolCallContext): Promise<string> {
     const command = input.command;
     const { timeout } = input;
 
@@ -80,23 +77,17 @@ export class ExecTool extends SdkCallbackTool {
         resolve(value);
       };
 
-      child = exec(
-        command,
-        { cwd: this.env.cwd, timeout },
-        (error, stdout, stderr) => {
-          const killed = error?.killed ?? false;
-          const terminated = killed
-            ? (signal?.aborted ? "aborted" : "timeout")
-            : undefined;
-          settle({
-            stdout,
-            stderr,
-            exitCode: error?.code ?? (error ? 1 : null),
-            killed,
-            terminated,
-          });
-        },
-      );
+      child = exec(command, { cwd: this.env.cwd, timeout }, (error, stdout, stderr) => {
+        const killed = error?.killed ?? false;
+        const terminated = killed ? (signal?.aborted ? "aborted" : "timeout") : undefined;
+        settle({
+          stdout,
+          stderr,
+          exitCode: error?.code ?? (error ? 1 : null),
+          killed,
+          terminated,
+        });
+      });
 
       // 中断：kill 子进程，令其尽快结束
       const onAbort = () => {

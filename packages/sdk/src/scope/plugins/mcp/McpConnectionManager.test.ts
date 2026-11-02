@@ -12,7 +12,9 @@ const mockClient = {
     prompts: {},
   }),
   listTools: vi.fn().mockResolvedValue({
-    tools: [{ name: "test-tool", description: "a tool", inputSchema: { type: "object", properties: {} } }],
+    tools: [
+      { name: "test-tool", description: "a tool", inputSchema: { type: "object", properties: {} } },
+    ],
   }),
   listResources: vi.fn().mockResolvedValue({ resources: [] }),
   listPrompts: vi.fn().mockResolvedValue({ prompts: [] }),
@@ -60,7 +62,13 @@ describe("McpConnectionManager", () => {
     mockClient.connect.mockResolvedValue(undefined);
     mockClient.close.mockResolvedValue(undefined);
     mockClient.listTools.mockResolvedValue({
-      tools: [{ name: "test-tool", description: "a tool", inputSchema: { type: "object", properties: {} } }],
+      tools: [
+        {
+          name: "test-tool",
+          description: "a tool",
+          inputSchema: { type: "object", properties: {} },
+        },
+      ],
     });
     mockClient.listResources.mockResolvedValue({ resources: [] });
     mockClient.listPrompts.mockResolvedValue({ prompts: [] });
@@ -211,7 +219,12 @@ describe("McpConnectionManager", () => {
     expect(manager.getState("github")).toBe("connected");
     expect(manager.getState("slack")).toBe("disconnected");
 
-    await manager.connect("slack", { id: "slack", name: "Slack", transport: "http", url: "https://slack.example.com" });
+    await manager.connect("slack", {
+      id: "slack",
+      name: "Slack",
+      transport: "http",
+      url: "https://slack.example.com",
+    });
     expect(manager.getState("github")).toBe("connected");
     expect(manager.getState("slack")).toBe("connected");
 

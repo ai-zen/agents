@@ -26,7 +26,8 @@ export class GenerateImageTool extends SdkCallbackTool {
       properties: {
         prompt: {
           type: "string",
-          description: "Text description of the desired image; describe the subject, style, composition and other details",
+          description:
+            "Text description of the desired image; describe the subject, style, composition and other details",
         },
         model: {
           type: "string",
@@ -36,11 +37,12 @@ export class GenerateImageTool extends SdkCallbackTool {
         size: {
           type: "string",
           description:
-            'Image size. Defaults to the model default size. cogview series: 1024x1024, 768x1344, 864x1152, 1344x768, 1152x864, 1440x720, 720x1440. glm-image: 1280x1280, 1568x1056, 1056x1568, 1472x1088, 1088x1472, 1728x960, 960x1728.',
+            "Image size. Defaults to the model default size. cogview series: 1024x1024, 768x1344, 864x1152, 1344x768, 1152x864, 1440x720, 720x1440. glm-image: 1280x1280, 1568x1056, 1056x1568, 1472x1088, 1088x1472, 1728x960, 960x1728.",
         },
         quality: {
           type: "string",
-          description: "Image quality. hd: fine (about 20 seconds), standard: fast (about 5-10 seconds)",
+          description:
+            "Image quality. hd: fine (about 20 seconds), standard: fast (about 5-10 seconds)",
           enum: ["hd", "standard"],
         },
       },
@@ -92,9 +94,7 @@ export class GenerateImageTool extends SdkCallbackTool {
         });
       }
 
-      const endpoint = config.endpoints.find(
-        (e) => e.id === imageModel.endpointId,
-      );
+      const endpoint = config.endpoints.find((e) => e.id === imageModel.endpointId);
       if (!endpoint) {
         return JSON.stringify({
           success: false,
@@ -121,8 +121,7 @@ export class GenerateImageTool extends SdkCallbackTool {
           model: modelName,
           prompt: prompt.trim(),
           size: input.size || imageModel.defaultSize || undefined,
-          quality:
-            input.quality || imageModel.defaultQuality || undefined,
+          quality: input.quality || imageModel.defaultQuality || undefined,
         } as any,
         { signal },
       );

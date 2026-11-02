@@ -12,9 +12,7 @@ import type {
 // ---- 权限（已定稿）----
 
 /** 单维度权限策略：allow 或 deny 互斥 */
-export type PermissionPolicy =
-  | { allow: string[] }
-  | { deny: string[] };
+export type PermissionPolicy = { allow: string[] } | { deny: string[] };
 
 /** Agent 四维度权限 */
 export interface AgentPermissions {
@@ -321,17 +319,17 @@ export interface McpServerConfig {
 
 /** 图标（MCP 规范 §Icons） */
 export interface McpIcon {
-  src: string;             // HTTP/HTTPS URL 或 data: URI
-  mimeType?: string;       // 如 "image/png"
-  sizes?: string[];        // 如 ["48x48"]、["any"]
+  src: string; // HTTP/HTTPS URL 或 data: URI
+  mimeType?: string; // 如 "image/png"
+  sizes?: string[]; // 如 ["48x48"]、["any"]
   theme?: "light" | "dark";
 }
 
 /** 注解（MCP 规范 §Annotations） */
 export interface McpAnnotations {
   audience?: ("user" | "assistant")[];
-  priority?: number;       // 0.0-1.0
-  lastModified?: string;   // ISO 8601
+  priority?: number; // 0.0-1.0
+  lastModified?: string; // ISO 8601
 }
 
 // ---- MCP Server Manifest ----
@@ -345,35 +343,37 @@ export interface McpServerManifest {
 
 /** 工具定义（MCP 规范 §Tools） */
 export interface McpToolDef {
-  name: string;                      // 唯一标识
-  title?: string;                    // 展示名称
-  description: string;               // 功能描述
-  icons?: McpIcon[];                 // UI 图标
-  inputSchema: Record<string, unknown>;  // 参数 JSON Schema（原 parameters）
+  name: string; // 唯一标识
+  title?: string; // 展示名称
+  description: string; // 功能描述
+  icons?: McpIcon[]; // UI 图标
+  inputSchema: Record<string, unknown>; // 参数 JSON Schema（原 parameters）
   outputSchema?: Record<string, unknown>; // 输出 JSON Schema
-  annotations?: McpAnnotations;      // 行为元数据
-  execution?: {                      // 任务增强执行
+  annotations?: McpAnnotations; // 行为元数据
+  execution?: {
+    // 任务增强执行
     taskSupport?: "forbidden" | "optional" | "required";
   };
 }
 
 /** 资源定义（MCP 规范 §Resources） */
 export interface McpResourceDef {
-  uri: string;                       // 资源 URI
-  name: string;                      // 展示名称
-  description?: string;              // 描述
-  mimeType?: string;                 // MIME 类型
-  size?: number;                     // 字节大小
+  uri: string; // 资源 URI
+  name: string; // 展示名称
+  description?: string; // 描述
+  mimeType?: string; // MIME 类型
+  size?: number; // 字节大小
   icons?: McpIcon[];
   annotations?: McpAnnotations;
 }
 
 /** 提示模板定义（MCP 规范 §Prompts） */
 export interface McpPromptDef {
-  name: string;                      // 唯一标识
-  title?: string;                    // 展示名称
-  description?: string;              // 描述
-  arguments?: {                      // 参数列表
+  name: string; // 唯一标识
+  title?: string; // 展示名称
+  description?: string; // 描述
+  arguments?: {
+    // 参数列表
     name: string;
     description?: string;
     required?: boolean;

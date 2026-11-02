@@ -26,8 +26,12 @@ describe("WriteTool", () => {
       expect(result).toBe("success");
       expect(readFileSync(filePath, "utf-8")).toBe("hello world");
     } finally {
-      try { unlinkSync(filePath); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(filePath);
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -39,8 +43,12 @@ describe("WriteTool", () => {
       expect(result).toBe("success");
       expect(readFileSync(join(dir, "rel.txt"), "utf-8")).toBe("relative ok");
     } finally {
-      try { unlinkSync(join(dir, "rel.txt")); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(join(dir, "rel.txt"));
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -53,10 +61,18 @@ describe("WriteTool", () => {
       expect(result).toBe("success");
       expect(readFileSync(filePath, "utf-8")).toBe("nested");
     } finally {
-      try { unlinkSync(filePath); } catch {}
-      try { unlinkSync(join(dir, "sub", "nested")); } catch {}
-      try { unlinkSync(join(dir, "sub")); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(filePath);
+      } catch {}
+      try {
+        unlinkSync(join(dir, "sub", "nested"));
+      } catch {}
+      try {
+        unlinkSync(join(dir, "sub"));
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 });

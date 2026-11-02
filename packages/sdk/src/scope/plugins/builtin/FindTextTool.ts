@@ -60,7 +60,8 @@ export class FindTextTool extends SdkCallbackTool {
         },
         maxFileSize: {
           type: "number",
-          description: "Maximum file size in bytes; larger files are skipped (default 307200, i.e. 300KB)",
+          description:
+            "Maximum file size in bytes; larger files are skipped (default 307200, i.e. 300KB)",
         },
         maxLineLength: {
           type: "number",

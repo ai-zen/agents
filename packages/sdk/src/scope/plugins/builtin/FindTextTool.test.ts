@@ -34,8 +34,12 @@ describe("FindTextTool", () => {
       expect(parsed[0].matches[0].line).toBe(1);
       expect(parsed[0].matches[1].line).toBe(3);
     } finally {
-      try { unlinkSync(join(dir, "test.txt")); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(join(dir, "test.txt"));
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -51,8 +55,12 @@ describe("FindTextTool", () => {
       expect(parsed[0].matches[0].match).toBe("const");
       expect(parsed[0].matches[1].match).toBe("let");
     } finally {
-      try { unlinkSync(join(dir, "code.ts")); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(join(dir, "code.ts"));
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -75,10 +83,18 @@ describe("FindTextTool", () => {
       expect(parsed.length).toBe(1);
       expect(parsed[0].file).toBe("index.js");
     } finally {
-      try { unlinkSync(join(dir, "index.js")); } catch {}
-      try { unlinkSync(join(dir, "node_modules", "pkg.js")); } catch {}
-      try { unlinkSync(join(dir, "node_modules")); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(join(dir, "index.js"));
+      } catch {}
+      try {
+        unlinkSync(join(dir, "node_modules", "pkg.js"));
+      } catch {}
+      try {
+        unlinkSync(join(dir, "node_modules"));
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -89,16 +105,19 @@ describe("FindTextTool", () => {
     controller.abort();
     try {
       writeFileSync(join(dir, "a.js"), "hello world", "utf-8");
-      const result = await tool.call(
-        { path: dir, pattern: "*.js", text: "hello" },
-        { signal: controller.signal } as unknown as ToolCallContext,
-      );
+      const result = await tool.call({ path: dir, pattern: "*.js", text: "hello" }, {
+        signal: controller.signal,
+      } as unknown as ToolCallContext);
       const parsed = JSON.parse(result as string);
       expect(parsed.aborted).toBe(true);
       expect(Array.isArray(parsed.results)).toBe(true);
     } finally {
-      try { unlinkSync(join(dir, "a.js")); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(join(dir, "a.js"));
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -114,8 +133,12 @@ describe("FindTextTool", () => {
       expect(parsed.results.length).toBe(1);
       expect(parsed.results[0].matches.length).toBe(2);
     } finally {
-      try { unlinkSync(join(dir, "data.txt")); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(join(dir, "data.txt"));
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -125,14 +148,25 @@ describe("FindTextTool", () => {
     try {
       writeFileSync(join(dir, "small.txt"), "needle", "utf-8");
       writeFileSync(join(dir, "big.txt"), "needle" + "a".repeat(100), "utf-8");
-      const result = await tool.call({ path: dir, pattern: "*.txt", text: "needle", maxFileSize: 10 });
+      const result = await tool.call({
+        path: dir,
+        pattern: "*.txt",
+        text: "needle",
+        maxFileSize: 10,
+      });
       const parsed = JSON.parse(result as string);
       expect(parsed.length).toBe(1);
       expect(parsed[0].file).toBe("small.txt");
     } finally {
-      try { unlinkSync(join(dir, "small.txt")); } catch {}
-      try { unlinkSync(join(dir, "big.txt")); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(join(dir, "small.txt"));
+      } catch {}
+      try {
+        unlinkSync(join(dir, "big.txt"));
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -141,12 +175,21 @@ describe("FindTextTool", () => {
     const dir = tmpDir();
     try {
       writeFileSync(join(dir, "data.txt"), "abcdefghij_needle_rest_of_long_line", "utf-8");
-      const result = await tool.call({ path: dir, pattern: "*.txt", text: "needle", maxLineLength: 10 });
+      const result = await tool.call({
+        path: dir,
+        pattern: "*.txt",
+        text: "needle",
+        maxLineLength: 10,
+      });
       const parsed = JSON.parse(result as string);
       expect(parsed[0].matches[0].content).toBe("abcdefghij…");
     } finally {
-      try { unlinkSync(join(dir, "data.txt")); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(join(dir, "data.txt"));
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -174,8 +217,12 @@ describe("FindTextTool", () => {
       expect(parsed.omitted).toBeGreaterThan(0);
       expect(parsed.tail).toBeUndefined();
     } finally {
-      try { unlinkSync(join(dir, "data.txt")); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(join(dir, "data.txt"));
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -189,8 +236,12 @@ describe("FindTextTool", () => {
       expect(Array.isArray(parsed)).toBe(true);
       expect(parsed[0].matches.length).toBe(1);
     } finally {
-      try { unlinkSync(join(dir, "data.txt")); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(join(dir, "data.txt"));
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 });

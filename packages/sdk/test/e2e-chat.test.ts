@@ -87,11 +87,9 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
   it("带工具调用：read 读取自身 package.json", async () => {
     const model = createModel(scope, "deepseek-flash");
     const pkgPath = join(__dirname, "..", "package.json");
-    const tools = BUILTIN_TOOL_CLASSES
-      .map((Cls) => new Cls(scope.env))
-      .filter((t) =>
-        ["read", "glob", "ls", "cwd"].includes(t.function.name),
-      );
+    const tools = BUILTIN_TOOL_CLASSES.map((Cls) => new Cls(scope.env)).filter((t) =>
+      ["read", "glob", "ls", "cwd"].includes(t.function.name),
+    );
 
     const agent = new SdkAgent({
       scope,
@@ -119,12 +117,14 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
       tools,
     });
 
-    const messages = await agent.send(`请用 read 读取 package.json 文件，告诉我这个包的 name 和 version。文件路径: ${pkgPath}`);
+    const messages = await agent.send(
+      `请用 read 读取 package.json 文件，告诉我这个包的 name 和 version。文件路径: ${pkgPath}`,
+    );
 
     expect(messages.length).toBeGreaterThan(0);
-    const text = messages.map((m) =>
-      typeof m.content === "string" ? m.content : JSON.stringify(m.content),
-    ).join("\n");
+    const text = messages
+      .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+      .join("\n");
 
     // 至少提到了包名
     expect(text).toMatch(/@ai-zen\/agents-sdk|agents-sdk/);
@@ -138,18 +138,14 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
       definition: {
         id: "test-multi",
         name: "Test Multi",
-        messages: [
-          { role: "system", content: "你是一个助手。记住用户说的信息。" },
-        ],
+        messages: [{ role: "system", content: "你是一个助手。记住用户说的信息。" }],
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       },
       client: model.client,
       model: model.model,
       modelConfig: model.modelConfig,
-      messages: [
-        { role: "system", content: "你是一个助手。记住用户说的信息。" },
-      ],
+      messages: [{ role: "system", content: "你是一个助手。记住用户说的信息。" }],
     });
 
     // 第一轮

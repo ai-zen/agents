@@ -40,9 +40,7 @@ export class EntityRepository<T extends { id: string }> {
     }
 
     const entries = await fs.readdir(this.dir);
-    const ids = entries
-      .filter((f) => f.endsWith(".json"))
-      .map((f) => f.replace(/\.json$/, ""));
+    const ids = entries.filter((f) => f.endsWith(".json")).map((f) => f.replace(/\.json$/, ""));
 
     const entities: T[] = [];
     for (const id of ids) {

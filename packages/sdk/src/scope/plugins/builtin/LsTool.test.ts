@@ -32,9 +32,15 @@ describe("LsTool", () => {
       expect(files).toContain("a.txt");
       expect(files).toContain("b.txt");
     } finally {
-      try { unlinkSync(join(dir, "a.txt")); } catch {}
-      try { unlinkSync(join(dir, "b.txt")); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(join(dir, "a.txt"));
+      } catch {}
+      try {
+        unlinkSync(join(dir, "b.txt"));
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -45,7 +51,9 @@ describe("LsTool", () => {
       const result = await tool.call({ path: dir });
       expect(JSON.parse(result as string)).toEqual([]);
     } finally {
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -73,8 +81,13 @@ describe("LsTool", () => {
       expect(dumped.length).toBe(30);
       expect(typeof parsed.head).toBe("string");
     } finally {
-      for (const name of names) try { unlinkSync(join(dir, name)); } catch {}
-      try { unlinkSync(dir); } catch {}
+      for (const name of names)
+        try {
+          unlinkSync(join(dir, name));
+        } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -86,8 +99,12 @@ describe("LsTool", () => {
       const result = await tool.call({ path: dir });
       expect(JSON.parse(result as string)).toContain("a.txt");
     } finally {
-      try { unlinkSync(join(dir, "a.txt")); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(join(dir, "a.txt"));
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 });

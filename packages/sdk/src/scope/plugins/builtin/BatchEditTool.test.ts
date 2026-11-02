@@ -15,8 +15,12 @@ function tmpFile(content: string): string {
 }
 
 function cleanUp(filePath: string): void {
-  try { unlinkSync(filePath); } catch {}
-  try { unlinkSync(filePath.substring(0, filePath.lastIndexOf("/"))); } catch {}
+  try {
+    unlinkSync(filePath);
+  } catch {}
+  try {
+    unlinkSync(filePath.substring(0, filePath.lastIndexOf("/")));
+  } catch {}
 }
 
 describe("BatchEditTool", () => {
@@ -35,7 +39,8 @@ describe("BatchEditTool", () => {
 
   it("isReplaceAll 默认值为 false", () => {
     const tool = new BatchEditTool(makeEnv());
-    const isReplaceAllDef = tool.function.parameters.properties.replacements.items.properties.isReplaceAll;
+    const isReplaceAllDef =
+      tool.function.parameters.properties.replacements.items.properties.isReplaceAll;
     expect(isReplaceAllDef.default).toBe(false);
   });
 
@@ -43,7 +48,10 @@ describe("BatchEditTool", () => {
     const tool = new BatchEditTool(makeEnv());
     const filePath = tmpFile("hello world, hello universe");
     try {
-      const result = await tool.call({ path: filePath, replacements: [{ oldText: "hello", newText: "hi" }] });
+      const result = await tool.call({
+        path: filePath,
+        replacements: [{ oldText: "hello", newText: "hi" }],
+      });
       const parsed = JSON.parse(result as string);
       expect(parsed.result).toBe("success");
       expect(parsed.replacedCount).toBe(1);
@@ -57,7 +65,10 @@ describe("BatchEditTool", () => {
     const tool = new BatchEditTool(makeEnv());
     const filePath = tmpFile("hello world, hello universe");
     try {
-      const result = await tool.call({ path: filePath, replacements: [{ oldText: "hello", newText: "hi", isReplaceAll: true }] });
+      const result = await tool.call({
+        path: filePath,
+        replacements: [{ oldText: "hello", newText: "hi", isReplaceAll: true }],
+      });
       const parsed = JSON.parse(result as string);
       expect(parsed.result).toBe("success");
       expect(parsed.replacedCount).toBe(1);
@@ -71,7 +82,10 @@ describe("BatchEditTool", () => {
     const tool = new BatchEditTool(makeEnv());
     const filePath = tmpFile("hello world");
     try {
-      const result = await tool.call({ path: filePath, replacements: [{ oldText: "not-exists", newText: "hi" }] });
+      const result = await tool.call({
+        path: filePath,
+        replacements: [{ oldText: "not-exists", newText: "hi" }],
+      });
       const parsed = JSON.parse(result as string);
       expect(parsed.result).toBe("partial");
       expect(parsed.replacedCount).toBe(0);
@@ -87,7 +101,14 @@ describe("BatchEditTool", () => {
     const tool = new BatchEditTool(makeEnv());
     const filePath = tmpFile("a b c");
     try {
-      const result = await tool.call({ path: filePath, replacements: [{ oldText: "a", newText: "x" }, { oldText: "b", newText: "y" }, { oldText: "c", newText: "z" }] });
+      const result = await tool.call({
+        path: filePath,
+        replacements: [
+          { oldText: "a", newText: "x" },
+          { oldText: "b", newText: "y" },
+          { oldText: "c", newText: "z" },
+        ],
+      });
       const parsed = JSON.parse(result as string);
       expect(parsed.result).toBe("success");
       expect(parsed.replacedCount).toBe(3);
@@ -99,7 +120,10 @@ describe("BatchEditTool", () => {
 
   it("文件不存在时返回错误信息", async () => {
     const tool = new BatchEditTool(makeEnv());
-    const result = await tool.call({ path: "/tmp/not-exists-file-12345.txt", replacements: [{ oldText: "a", newText: "b" }] });
+    const result = await tool.call({
+      path: "/tmp/not-exists-file-12345.txt",
+      replacements: [{ oldText: "a", newText: "b" }],
+    });
     expect(typeof result).toBe("string");
     expect(result).toContain("ENOENT");
   });
@@ -143,7 +167,7 @@ describe("BatchEditTool", () => {
       expect(parsed.failed[0].oldText).toBe("not-exists");
       expect(parsed.failed[0].newText).toBe("y");
       // 成功项（a → x）不被回显
-      expect(result).not.toContain("\"oldText\":\"a\"");
+      expect(result).not.toContain('"oldText":"a"');
       expect(readFileSync(filePath, "utf-8")).toBe("x b");
     } finally {
       cleanUp(filePath);

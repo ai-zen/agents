@@ -119,7 +119,7 @@ export function resolveModelAndEndpoint(
 ): { model?: Model; endpoint?: Endpoint | null } {
   const models = config.models ?? [];
   const endpoints = config.endpoints ?? [];
-  const findEndpoint = (id?: string) => (id ? endpoints.find((e) => e.id === id) ?? null : null);
+  const findEndpoint = (id?: string) => (id ? (endpoints.find((e) => e.id === id) ?? null) : null);
 
   const byApiName = apiModelName
     ? models.find((m) => (m.modelName ?? m.id) === apiModelName)
@@ -154,7 +154,11 @@ export function contentHash(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function cacheKey(endpoint: Endpoint, absPath: string, stat: { mtimeMs: number; size: number }): string {
+function cacheKey(
+  endpoint: Endpoint,
+  absPath: string,
+  stat: { mtimeMs: number; size: number },
+): string {
   return `${endpoint.id}\u0000${absPath}\u0000${stat.mtimeMs}\u0000${stat.size}`;
 }
 
@@ -196,7 +200,9 @@ function textSection(text: string): AgentNS.MessageContentSection {
  * - 本地文件不存在 / 不是文件 / 扩展名不支持
  * - 需要内联但体积超过上限，且端点不支持上传
  */
-export async function fileToContentSection(input: FileToSectionInput): Promise<FileToSectionResult> {
+export async function fileToContentSection(
+  input: FileToSectionInput,
+): Promise<FileToSectionResult> {
   const { source, endpoint, model, signal } = input;
   const maxInline = input.maxInlineBytes ?? DEFAULT_MAX_INLINE_BYTES;
 
@@ -230,7 +236,9 @@ export async function fileToContentSection(input: FileToSectionInput): Promise<F
     if (!st.isFile()) throw new Error(`"${absPath}" is not a file`);
     const inferred = mimeOf(absPath);
     if (!inferred) {
-      throw new Error(`Unsupported file type: "${absPath}" (known types: ${Object.keys(MIME_BY_EXT).join(" ")})`);
+      throw new Error(
+        `Unsupported file type: "${absPath}" (known types: ${Object.keys(MIME_BY_EXT).join(" ")})`,
+      );
     }
     mime = inferred;
     stat = { mtimeMs: st.mtimeMs, size: st.size };
@@ -265,7 +273,9 @@ export async function fileToContentSection(input: FileToSectionInput): Promise<F
   if (isImage && model && model.vision !== true) {
     const label = absPath ?? filename;
     return {
-      section: textSection(`[Image] ${label} (the current model does not support image input; use a vision-capable model to view it)`),
+      section: textSection(
+        `[Image] ${label} (the current model does not support image input; use a vision-capable model to view it)`,
+      ),
       transport: "text",
       bytes: byteLength,
       warning: "The current model does not support image input; degraded to a text hint",
@@ -275,9 +285,10 @@ export async function fileToContentSection(input: FileToSectionInput): Promise<F
   // ---- 4. 端点支持 Files API：上传（带缓存），失败降级内联 ----
   let warning: string | undefined;
   if (supportsFilesApi(endpoint) && endpoint?.apiKey) {
-    const key = absPath && stat
-      ? cacheKey(endpoint, absPath, stat)
-      : contentCacheKey(endpoint, contentHash(ensureBytes()));
+    const key =
+      absPath && stat
+        ? cacheKey(endpoint, absPath, stat)
+        : contentCacheKey(endpoint, contentHash(ensureBytes()));
     const cached = uploadCache.get(key);
     if (cached) {
       return {

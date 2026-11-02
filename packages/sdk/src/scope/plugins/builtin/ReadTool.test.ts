@@ -16,8 +16,12 @@ function tmpFile(content: string): string {
 }
 
 function cleanUp(filePath: string): void {
-  try { unlinkSync(filePath); } catch {}
-  try { unlinkSync(filePath.substring(0, filePath.lastIndexOf("/"))); } catch {}
+  try {
+    unlinkSync(filePath);
+  } catch {}
+  try {
+    unlinkSync(filePath.substring(0, filePath.lastIndexOf("/")));
+  } catch {}
 }
 
 describe("ReadTool", () => {
@@ -48,8 +52,12 @@ describe("ReadTool", () => {
       const result = await tool.call({ path: "rel.txt" });
       expect(result).toBe("relative ok");
     } finally {
-      try { unlinkSync(filePath); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(filePath);
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 

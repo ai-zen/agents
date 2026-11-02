@@ -77,13 +77,15 @@ afterEach(() => {
 });
 
 /** 构造一个装配了标准插件（allInOne）并完成发现的 Scope */
-async function makeScope(opts: {
-  config?: AppConfig;
-  subAgentsPaths?: string[];
-  skillsPaths?: string[];
-  toolsPaths?: string[];
-  mcpPaths?: string[];
-} = {}): Promise<Scope> {
+async function makeScope(
+  opts: {
+    config?: AppConfig;
+    subAgentsPaths?: string[];
+    skillsPaths?: string[];
+    toolsPaths?: string[];
+    mcpPaths?: string[];
+  } = {},
+): Promise<Scope> {
   const scope = new Scope({
     config: opts.config ?? MIN_CONFIG,
     agentsDir: "",
@@ -363,9 +365,11 @@ describe("Scope 能力发现与过滤", () => {
 
     it("按工具白名单过滤", async () => {
       const scope = await makeScope();
-      const result = scope.filter(makeDef({
-        tools: { allow: ["read", "write"] },
-      }));
+      const result = scope.filter(
+        makeDef({
+          tools: { allow: ["read", "write"] },
+        }),
+      );
       expect(result.tools).toContain("read");
       expect(result.tools).toContain("write");
       expect(result.tools).not.toContain("exec");
@@ -373,12 +377,14 @@ describe("Scope 能力发现与过滤", () => {
 
     it("按工具黑名单过滤", async () => {
       const scope = await makeScope();
-      const result = scope.filter(makeDef({
-        tools: { deny: ["exec", "rm"] },
-        skills: { allow: ["*"] },
-        mcps: { allow: ["*"] },
-        subagents: { allow: ["*"] },
-      }));
+      const result = scope.filter(
+        makeDef({
+          tools: { deny: ["exec", "rm"] },
+          skills: { allow: ["*"] },
+          mcps: { allow: ["*"] },
+          subagents: { allow: ["*"] },
+        }),
+      );
       expect(result.tools).not.toContain("exec");
       expect(result.tools).not.toContain("rm");
       expect(result.tools).toContain("read");
@@ -416,7 +422,10 @@ describe("Scope 能力发现与过滤", () => {
     });
 
     it("exclude mcps 安全预过滤", async () => {
-      writeMcpJson({ github: { transport: "stdio", command: "gh" }, slack: { transport: "stdio", command: "slack" } });
+      writeMcpJson({
+        github: { transport: "stdio", command: "gh" },
+        slack: { transport: "stdio", command: "slack" },
+      });
       const scope = await makeScope({ mcpPaths: [join(tmpDir, "mcp.json")] });
       const result = scope.filter(makeDef(ALLOW_ALL), {
         exclude: { mcps: ["github"] },
@@ -436,10 +445,12 @@ describe("Scope 能力发现与过滤", () => {
 
     it("permissions 部分维度缺失时缺失维度按 deny all 处理", async () => {
       const scope = await makeScope();
-      const result = scope.filter(makeDef({
-        tools: { allow: ["read"] },
-        // skills, mcps, subagents 缺失
-      } as AgentPermissions));
+      const result = scope.filter(
+        makeDef({
+          tools: { allow: ["read"] },
+          // skills, mcps, subagents 缺失
+        } as AgentPermissions),
+      );
       expect(result.tools).toContain("read");
       expect(result.skills).toEqual([]);
       expect(result.mcps).toEqual([]);
@@ -530,8 +541,21 @@ describe("Scope 能力发现与过滤", () => {
         defaultModel: "gpt4",
         endpoints: [],
         models: [
-          { id: "gpt4", name: "GPT-4", endpointId: "ep", modelName: "gpt4", tokenThresholds: { handoff: 100000, guard: 150000 } },
-          { id: "vision", name: "Vision", endpointId: "ep", modelName: "vision-1", tokenThresholds: { handoff: 100000, guard: 150000 }, vision: true },
+          {
+            id: "gpt4",
+            name: "GPT-4",
+            endpointId: "ep",
+            modelName: "gpt4",
+            tokenThresholds: { handoff: 100000, guard: 150000 },
+          },
+          {
+            id: "vision",
+            name: "Vision",
+            endpointId: "ep",
+            modelName: "vision-1",
+            tokenThresholds: { handoff: 100000, guard: 150000 },
+            vision: true,
+          },
         ],
       };
       const scope = await makeScope({ config });
@@ -558,9 +582,25 @@ describe("Scope 能力发现与过滤", () => {
       // 配置了 defaultImageModel：generate_image 可用
       const imgConfig: AppConfig = {
         defaultModel: "gpt4",
-        endpoints: [{ id: "zhipu", name: "智谱", baseUrl: "https://open.bigmodel.cn/api/paas/v4", apiKey: "sk-xxx" }],
-        models: [{ id: "gpt4", name: "GPT-4", endpointId: "zhipu", tokenThresholds: { handoff: 500000, guard: 750000 } }],
-        imageModels: [{ id: "cogview", name: "CogView", endpointId: "zhipu", modelName: "cogview-4" }],
+        endpoints: [
+          {
+            id: "zhipu",
+            name: "智谱",
+            baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+            apiKey: "sk-xxx",
+          },
+        ],
+        models: [
+          {
+            id: "gpt4",
+            name: "GPT-4",
+            endpointId: "zhipu",
+            tokenThresholds: { handoff: 500000, guard: 750000 },
+          },
+        ],
+        imageModels: [
+          { id: "cogview", name: "CogView", endpointId: "zhipu", modelName: "cogview-4" },
+        ],
         defaultImageModel: "cogview",
       };
       const scope2 = await makeScope({ config: imgConfig });

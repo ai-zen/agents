@@ -41,11 +41,7 @@ export { discoverUserTools } from "./scope/plugins/usertools/discover.js";
 
 // Scope — 全局上下文 + 能力装配编排容器
 export { Scope } from "./scope/Scope.js";
-export type {
-  FilterOutput,
-  ExcludeOptions,
-  FilterOptions,
-} from "./scope/Scope.js";
+export type { FilterOutput, ExcludeOptions, FilterOptions } from "./scope/Scope.js";
 
 // ScopePlugin — 能力插件契约 + 标准插件
 export type { ScopePlugin, ScopeCandidates } from "./scope/ScopePlugin.js";
@@ -79,10 +75,7 @@ export {
 
 // 出厂资产 — 思考策略表（随版本释放到 <basePath>/reasoning-presets.json）
 // 表是跨客户端共享的「定义 + 出厂默认」，SDK 不拿它生成请求参数
-export {
-  FACTORY_REASONING_PRESETS,
-  REASONING_PRESETS_FILE,
-} from "./config/reasoning-presets.js";
+export { FACTORY_REASONING_PRESETS, REASONING_PRESETS_FILE } from "./config/reasoning-presets.js";
 
 // CRUD — 实体仓储（仅 Agent 定义等能力实体）
 export { EntityRepository } from "./shared/EntityRepository.js";
@@ -166,8 +159,15 @@ export {
 } from "./scope/plugins/builtin/index.js";
 export { GenerateImageTool } from "./scope/plugins/builtin/GenerateImageTool.js";
 export { ViewImageTool } from "./scope/plugins/builtin/ViewImageTool.js";
-export { createLoadSkillTool, createCallSkillSubAgentTool } from "./scope/plugins/skills/skillTools.js";
-export { createLoadMcpTool, createCallMcpTool, createReadMcpResourceTool } from "./scope/plugins/mcp/mcpTools.js";
+export {
+  createLoadSkillTool,
+  createCallSkillSubAgentTool,
+} from "./scope/plugins/skills/skillTools.js";
+export {
+  createLoadMcpTool,
+  createCallMcpTool,
+  createReadMcpResourceTool,
+} from "./scope/plugins/mcp/mcpTools.js";
 export { createSubAgentTool } from "./scope/plugins/subagents/subAgentTools.js";
 
 // 共享

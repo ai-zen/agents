@@ -297,7 +297,9 @@ export class ConfigManager {
   async ensureReasoningPresets(): Promise<string[]> {
     let onDisk: ReasoningPresets | null = null;
     try {
-      onDisk = JSON.parse(await fs.readFile(this.reasoningPresetsPath, "utf-8")) as ReasoningPresets;
+      onDisk = JSON.parse(
+        await fs.readFile(this.reasoningPresetsPath, "utf-8"),
+      ) as ReasoningPresets;
     } catch {
       onDisk = null;
     }
@@ -408,7 +410,9 @@ export class ConfigManager {
       return { mcpServers: {} };
     }
     try {
-      return JSON.parse(await fs.readFile(mcpPath, "utf-8")) as { mcpServers: Record<string, unknown> };
+      return JSON.parse(await fs.readFile(mcpPath, "utf-8")) as {
+        mcpServers: Record<string, unknown>;
+      };
     } catch {
       return { mcpServers: {} };
     }
@@ -450,7 +454,10 @@ export class ConfigManager {
  * 端点（endpoints）不参与托管，始终保持用户配置。
  */
 export function syncManagedModels(config: AppConfig): AppConfig {
-  const pick = <T extends { id: string; custom?: boolean }>(existing: T[] | undefined, defaults: T[]): T[] => {
+  const pick = <T extends { id: string; custom?: boolean }>(
+    existing: T[] | undefined,
+    defaults: T[],
+  ): T[] => {
     const kept = (existing ?? []).filter((m) => m.custom === true);
     const keptIds = new Set(kept.map((m) => m.id));
     // 出厂定义在前，用户自有条目随后；同 id 时用户版本胜出（出厂侧已剔除）
@@ -462,15 +469,26 @@ export function syncManagedModels(config: AppConfig): AppConfig {
 
   const modelIds = new Set(models.map((m) => m.id));
   const imageIds = new Set(imageModels.map((m) => m.id));
-  const resolve = (id: string | undefined, ids: Set<string>, fallback: string | undefined): string | undefined =>
-    id && ids.has(id) ? id : fallback;
+  const resolve = (
+    id: string | undefined,
+    ids: Set<string>,
+    fallback: string | undefined,
+  ): string | undefined => (id && ids.has(id) ? id : fallback);
 
   return {
     ...config,
     models,
     imageModels,
-    defaultImageModel: resolve(config.defaultImageModel, imageIds, DEFAULT_APP_CONFIG.defaultImageModel),
-    defaultMigrationModel: resolve(config.defaultMigrationModel, modelIds, DEFAULT_APP_CONFIG.defaultMigrationModel),
+    defaultImageModel: resolve(
+      config.defaultImageModel,
+      imageIds,
+      DEFAULT_APP_CONFIG.defaultImageModel,
+    ),
+    defaultMigrationModel: resolve(
+      config.defaultMigrationModel,
+      modelIds,
+      DEFAULT_APP_CONFIG.defaultMigrationModel,
+    ),
   };
 }
 

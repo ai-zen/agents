@@ -382,7 +382,8 @@ describe("handoff", () => {
     expect(migrating).toBe(false);
   });
 
-  it("busy 在流程结束后复位", async () => {    const { service } = await makeService();
+  it("busy 在流程结束后复位", async () => {
+    const { service } = await makeService();
     const agent = new FakeAgent({
       onSend: async (_c, _n, self) => {
         const path = self.sent[0].match(/Handoff document absolute path: (.+)/)![1].trim();
@@ -518,7 +519,8 @@ describe("migrate", () => {
 
 describe("取消（AbortSignal）", () => {
   /** 造一个「请求一开始就被取消」的 OpenAI 错误（与 SDK 抛的形态一致） */
-  const abortError = () => Object.assign(new Error("Request was aborted."), { name: "APIUserAbortError" });
+  const abortError = () =>
+    Object.assign(new Error("Request was aborted."), { name: "APIUserAbortError" });
 
   it("summary 模式把 signal 作为 RequestOptions 传给模型请求", async () => {
     const { service } = await makeService();
@@ -588,12 +590,14 @@ describe("取消（AbortSignal）", () => {
     const agent = new FakeAgent({ onSend: () => void ac.abort() });
     const before = agent.messages.length;
 
-    await expect(
-      service.migrate({ agent: asAgent(agent), signal: ac.signal }),
-    ).rejects.toThrow(HandoffAbortedError);
+    await expect(service.migrate({ agent: asAgent(agent), signal: ac.signal })).rejects.toThrow(
+      HandoffAbortedError,
+    );
 
     // 断点消息没有被注入
-    expect(agent.messages.at(-1)!.content).not.toContain("The previous conversation has been handed off");
+    expect(agent.messages.at(-1)!.content).not.toContain(
+      "The previous conversation has been handed off",
+    );
     expect(agent.messages.length).toBeGreaterThanOrEqual(before);
   });
 
@@ -602,7 +606,11 @@ describe("取消（AbortSignal）", () => {
     const agent = new FakeAgent();
     const ac = new AbortController();
 
-    const ctx = await service.handoff({ agent: asAgent(agent), mode: "summary", signal: ac.signal });
+    const ctx = await service.handoff({
+      agent: asAgent(agent),
+      mode: "summary",
+      signal: ac.signal,
+    });
 
     expect(ctx.mode).toBe("summary");
     expect(existsSync(ctx.handoffPath)).toBe(true);

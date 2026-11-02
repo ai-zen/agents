@@ -30,9 +30,15 @@ describe("CopyTool", () => {
       expect(result).toBe("success");
       expect(readFileSync(dest, "utf-8")).toBe("content");
     } finally {
-      try { unlinkSync(dest); } catch {}
-      try { unlinkSync(src); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(dest);
+      } catch {}
+      try {
+        unlinkSync(src);
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -50,15 +56,33 @@ describe("CopyTool", () => {
       expect(readFileSync(join(destDir, "a.txt"), "utf-8")).toBe("a");
       expect(readFileSync(join(destDir, "sub", "b.txt"), "utf-8")).toBe("b");
     } finally {
-      try { unlinkSync(join(destDir, "sub", "b.txt")); } catch {}
-      try { unlinkSync(join(destDir, "a.txt")); } catch {}
-      try { unlinkSync(join(destDir, "sub")); } catch {}
-      try { unlinkSync(destDir); } catch {}
-      try { unlinkSync(join(srcDir, "sub", "b.txt")); } catch {}
-      try { unlinkSync(join(srcDir, "a.txt")); } catch {}
-      try { unlinkSync(join(srcDir, "sub")); } catch {}
-      try { unlinkSync(srcDir); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(join(destDir, "sub", "b.txt"));
+      } catch {}
+      try {
+        unlinkSync(join(destDir, "a.txt"));
+      } catch {}
+      try {
+        unlinkSync(join(destDir, "sub"));
+      } catch {}
+      try {
+        unlinkSync(destDir);
+      } catch {}
+      try {
+        unlinkSync(join(srcDir, "sub", "b.txt"));
+      } catch {}
+      try {
+        unlinkSync(join(srcDir, "a.txt"));
+      } catch {}
+      try {
+        unlinkSync(join(srcDir, "sub"));
+      } catch {}
+      try {
+        unlinkSync(srcDir);
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -74,9 +98,15 @@ describe("CopyTool", () => {
       expect(typeof result).toBe("string");
       expect(result).not.toBe("success");
     } finally {
-      try { unlinkSync(join(srcDir, "a.txt")); } catch {}
-      try { unlinkSync(srcDir); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(join(srcDir, "a.txt"));
+      } catch {}
+      try {
+        unlinkSync(srcDir);
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 });

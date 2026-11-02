@@ -54,13 +54,20 @@ describe("DownloadFileTool", () => {
 
     const tool = new DownloadFileTool(makeEnv());
     const dir = join(tmpdir(), randomBytes(8).toString("hex"));
-    const result = await tool.call({ url: "https://example.com/image.png", outputPath: join(dir, "test.png") });
+    const result = await tool.call({
+      url: "https://example.com/image.png",
+      outputPath: join(dir, "test.png"),
+    });
     const parsed = JSON.parse(result as string);
     expect(parsed.success).toBe(true);
     expect(parsed.contentType).toBe("image/png");
 
-    try { unlinkSync(join(dir, "test.png")); } catch {}
-    try { unlinkSync(dir); } catch {}
+    try {
+      unlinkSync(join(dir, "test.png"));
+    } catch {}
+    try {
+      unlinkSync(dir);
+    } catch {}
   });
 
   it("outputPath 为目录时自动拼接文件名", async () => {
@@ -80,8 +87,12 @@ describe("DownloadFileTool", () => {
       expect(parsed.success).toBe(true);
       expect(parsed.filePath).toContain("file.txt");
     } finally {
-      try { unlinkSync(join(dir, "file.txt")); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(join(dir, "file.txt"));
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -102,8 +113,12 @@ describe("DownloadFileTool", () => {
       expect(parsed.success).toBe(true);
       expect(parsed.filePath).toContain("dl.txt");
     } finally {
-      try { unlinkSync(join(dir, "dl.txt")); } catch {}
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(join(dir, "dl.txt"));
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 
@@ -131,9 +146,13 @@ describe("DownloadFileTool", () => {
       expect(parsed.success).toBe(false);
       expect(parsed.aborted).toBe(true);
       // 半成品文件不应残留
-      await expect(import("fs/promises").then((f) => f.stat(join(dir, "aborted.png")))).rejects.toThrow();
+      await expect(
+        import("fs/promises").then((f) => f.stat(join(dir, "aborted.png"))),
+      ).rejects.toThrow();
     } finally {
-      try { unlinkSync(dir); } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
     }
   });
 });

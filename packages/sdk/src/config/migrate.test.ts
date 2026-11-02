@@ -142,7 +142,9 @@ describe("migrateConfig", () => {
     const result = migrateConfig(config);
     expect(result.changed).toBe(true);
     expect(result.config.models![0]).toBe(ok);
-    expect((result.config.models![1] as unknown as Record<string, unknown>).tokenThresholds).toEqual({
+    expect(
+      (result.config.models![1] as unknown as Record<string, unknown>).tokenThresholds,
+    ).toEqual({
       handoff: 100_000,
       guard: 150_000,
     });
@@ -254,7 +256,13 @@ describe("migrateModelReasoning：reasoning → reasoningPreset", () => {
 
 describe("normalizeEndpointCapabilities：补齐端点缺失的能力位", () => {
   const endpoint = (fields: Record<string, unknown>) =>
-    ({ id: "deepseek", name: "DeepSeek", apiKey: "sk-x", baseUrl: "https://api.deepseek.com/v1", ...fields }) as any;
+    ({
+      id: "deepseek",
+      name: "DeepSeek",
+      apiKey: "sk-x",
+      baseUrl: "https://api.deepseek.com/v1",
+      ...fields,
+    }) as any;
 
   /** 中断策略显式给足：否则 normalizeAbortStrategies 自己就会把 changed 置 true，干扰断言 */
   const configOf = (endpoints: any[]) =>
@@ -273,7 +281,9 @@ describe("normalizeEndpointCapabilities：补齐端点缺失的能力位", () =>
   });
 
   it("用户显式写了 filesApi: false → 绝不覆盖（那是明确表态）", () => {
-    const { config, changed } = migrateConfig(configOf([endpoint({ capabilities: { filesApi: false } })]));
+    const { config, changed } = migrateConfig(
+      configOf([endpoint({ capabilities: { filesApi: false } })]),
+    );
     expect(config.endpoints[0]!.capabilities).toEqual({ filesApi: false });
     expect(changed).toBe(false);
   });
@@ -293,7 +303,9 @@ describe("normalizeEndpointCapabilities：补齐端点缺失的能力位", () =>
   });
 
   it("出厂也没有能力的端点（如 openai）→ 不凭空造能力位", () => {
-    const { config, changed } = migrateConfig(configOf([endpoint({ id: "openai", name: "OpenAI" })]));
+    const { config, changed } = migrateConfig(
+      configOf([endpoint({ id: "openai", name: "OpenAI" })]),
+    );
     expect(config.endpoints[0]!.capabilities).toBeUndefined();
     expect(changed).toBe(false);
   });

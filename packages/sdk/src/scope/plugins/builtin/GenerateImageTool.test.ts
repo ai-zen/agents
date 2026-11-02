@@ -31,13 +31,29 @@ afterEach(() => {
 const mockConfig: AppConfig = {
   defaultModel: "gpt4",
   endpoints: [
-    { id: "bigmodelcn", name: "BigModelCN", apiKey: "test-key", baseUrl: "https://open.bigmodel.cn/api/paas/v4" },
+    {
+      id: "bigmodelcn",
+      name: "BigModelCN",
+      apiKey: "test-key",
+      baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+    },
   ],
   models: [
-    { id: "gpt4", name: "GPT-4", endpointId: "bigmodelcn", tokenThresholds: { handoff: 500000, guard: 750000 } },
+    {
+      id: "gpt4",
+      name: "GPT-4",
+      endpointId: "bigmodelcn",
+      tokenThresholds: { handoff: 500000, guard: 750000 },
+    },
   ],
   imageModels: [
-    { id: "cogview-4", name: "CogView-4", endpointId: "bigmodelcn", modelName: "cogview-4", defaultSize: "1024x1024" },
+    {
+      id: "cogview-4",
+      name: "CogView-4",
+      endpointId: "bigmodelcn",
+      modelName: "cogview-4",
+      defaultSize: "1024x1024",
+    },
   ],
   defaultImageModel: "cogview-4",
 };
@@ -114,10 +130,9 @@ describe("GenerateImageTool", () => {
     const controller = new AbortController();
     controller.abort();
 
-    const result = await tool.call(
-      { prompt: "a cat" },
-      { signal: controller.signal } as unknown as ToolCallContext,
-    );
+    const result = await tool.call({ prompt: "a cat" }, {
+      signal: controller.signal,
+    } as unknown as ToolCallContext);
     const parsed = JSON.parse(result);
     expect(parsed.success).toBe(false);
     expect(parsed.aborted).toBe(true);

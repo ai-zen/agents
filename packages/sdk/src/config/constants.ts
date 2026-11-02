@@ -50,9 +50,12 @@ export const DEFAULT_SUBAGENT_ID = "sub-agent-default";
 export const DEFAULT_SUBAGENT_DEFINITION: Omit<AgentDefinition, "createdAt" | "updatedAt"> = {
   id: DEFAULT_SUBAGENT_ID,
   name: "General Assistant",
-  description: "A general-purpose sub-agent that is good at completing all kinds of tasks independently.",
+  description:
+    "A general-purpose sub-agent that is good at completing all kinds of tasks independently.",
   messages: [
-    Message.System("You are a general-purpose assistant sub-agent, delegated by a parent agent to independently complete a specific task. Based on the given task description, proactively call your tools (file read/write, command execution, search, etc.) to analyze and complete the task. When the task is done, return the result directly; there is no need to explain your thinking process.\n\n⚠️ Mandatory requirements:\n1. If anything in the task description is unclear, vague or missing (including but not limited to the specific goal, file paths, constraints, expected deliverables, etc.), you MUST refuse to execute immediately and explicitly list what is unclear or missing, asking the parent agent to provide more complete task context. Do not assume, guess or make up any information on your own.\n2. If the task description contains contradictory information (such as mutually conflicting requirements, inconsistent file paths, contradictory constraints, etc.), you MUST point out the contradiction promptly and require the parent agent to clarify before executing."),
+    Message.System(
+      "You are a general-purpose assistant sub-agent, delegated by a parent agent to independently complete a specific task. Based on the given task description, proactively call your tools (file read/write, command execution, search, etc.) to analyze and complete the task. When the task is done, return the result directly; there is no need to explain your thinking process.\n\n⚠️ Mandatory requirements:\n1. If anything in the task description is unclear, vague or missing (including but not limited to the specific goal, file paths, constraints, expected deliverables, etc.), you MUST refuse to execute immediately and explicitly list what is unclear or missing, asking the parent agent to provide more complete task context. Do not assume, guess or make up any information on your own.\n2. If the task description contains contradictory information (such as mutually conflicting requirements, inconsistent file paths, contradictory constraints, etc.), you MUST point out the contradiction promptly and require the parent agent to clarify before executing.",
+    ),
     Message.User("{{task}}"),
   ],
   permissions: {
@@ -68,7 +71,11 @@ export const DEFAULT_SUBAGENT_DEFINITION: Omit<AgentDefinition, "createdAt" | "u
     parameters: {
       type: "object",
       properties: {
-        task: { type: "string", description: "Complete task description; must include all necessary background, goals, constraints and context. Any unclear information will cause the sub-agent to refuse execution." },
+        task: {
+          type: "string",
+          description:
+            "Complete task description; must include all necessary background, goals, constraints and context. Any unclear information will cause the sub-agent to refuse execution.",
+        },
       },
       required: ["task"],
       additionalProperties: false,
@@ -102,7 +109,8 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       name: "DeepSeek",
       apiKey: "",
       baseUrl: "https://api.deepseek.com/v1",
-      description: "DeepSeek API endpoint (supports the Files API: local files are uploaded and then referenced by file_id)",
+      description:
+        "DeepSeek API endpoint (supports the Files API: local files are uploaded and then referenced by file_id)",
       // 唯一声明了 Files API 能力的出厂端点；其余端点本地文件走 base64 内联。
       // 判断依据是能力位而非端点 id，用户自建端点只要声明即可享受上传。
       capabilities: { filesApi: true },
@@ -139,7 +147,8 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       defaultParams: {},
       vision: true,
       reasoningPreset: "openai",
-      description: "OpenAI flagship (2026-09): advanced analysis, software engineering, deep research and scientific work",
+      description:
+        "OpenAI flagship (2026-09): advanced analysis, software engineering, deep research and scientific work",
     },
     {
       id: "gpt-6.1-sol",
@@ -150,7 +159,8 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       defaultParams: {},
       vision: true,
       reasoningPreset: "openai",
-      description: "OpenAI latest flagship (2026-09-29): agentic coding, computer operation and document-intensive professional tasks",
+      description:
+        "OpenAI latest flagship (2026-09-29): agentic coding, computer operation and document-intensive professional tasks",
     },
     {
       id: "gpt-6-luna",
@@ -161,7 +171,8 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       defaultParams: {},
       vision: true,
       reasoningPreset: "openai",
-      description: "OpenAI GPT-6 series fast, low-cost model: suited for high-throughput, low-latency scenarios",
+      description:
+        "OpenAI GPT-6 series fast, low-cost model: suited for high-throughput, low-latency scenarios",
     },
     // ---------- 智谱 BigModel ----------
     {
@@ -172,7 +183,8 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       tokenThresholds: { handoff: 250_000, guard: 375_000 },
       defaultParams: { thinking: { type: "enabled" }, reasoning_effort: "max" },
       reasoningPreset: "zhipu-5.3",
-      description: "Zhipu latest flagship: complex software engineering and long-horizon agent tasks (thinking always on, 1M context)",
+      description:
+        "Zhipu latest flagship: complex software engineering and long-horizon agent tasks (thinking always on, 1M context)",
     },
     {
       id: "glm-5.3-flash",
@@ -216,7 +228,8 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
       defaultParams: { thinking: { type: "enabled" } },
       vision: true,
       reasoningPreset: "deepseek",
-      description: "DeepSeek flagship (2026-09-10): 552B MoE asymmetric architecture, native multimodal, 1M context",
+      description:
+        "DeepSeek flagship (2026-09-10): 552B MoE asymmetric architecture, native multimodal, 1M context",
     },
   ],
   imageModels: [
@@ -279,7 +292,8 @@ export const DEFAULT_MCP_CONFIG: { mcpServers: Record<string, unknown> } = {
       type: "stdio",
       command: "npx",
       args: ["-y", "chrome-devtools-mcp@latest"],
-      description: "Chrome DevTools browser debugging and automation (Google chrome-devtools-mcp): page navigation, performance tracing, network and console inspection, screenshots, etc.",
+      description:
+        "Chrome DevTools browser debugging and automation (Google chrome-devtools-mcp): page navigation, performance tracing, network and console inspection, screenshots, etc.",
     },
   },
 };
@@ -296,10 +310,4 @@ export const DEFAULT_MCP_CONFIG: { mcpServers: Record<string, unknown> } = {
  *   ~/.ai-zen/cli/          ← CLI 运行时
  *   ~/.ai-zen/desktop/      ← Desktop 运行时（未来）
  */
-export const CONFIG_SUB_DIRS = [
-  "agents",
-  "sub-agents",
-  "skills",
-  "tools",
-  "mcp-oauth",
-] as const;
+export const CONFIG_SUB_DIRS = ["agents", "sub-agents", "skills", "tools", "mcp-oauth"] as const;

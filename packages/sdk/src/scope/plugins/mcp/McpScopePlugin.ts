@@ -1,11 +1,7 @@
 import type { Tool } from "@ai-zen/agents-core";
 import { isAbsolute, join } from "node:path";
 import { discoverMcpServers } from "./discover.js";
-import {
-  createCallMcpTool,
-  createLoadMcpTool,
-  createReadMcpResourceTool,
-} from "./mcpTools.js";
+import { createCallMcpTool, createLoadMcpTool, createReadMcpResourceTool } from "./mcpTools.js";
 import { McpConnectionManager } from "./McpConnectionManager.js";
 import type { McpServerConfig } from "../../../types/index.js";
 import type { Scope, FilterOutput } from "../../Scope.js";
@@ -31,8 +27,7 @@ export class McpScopePlugin implements ScopePlugin {
 
   constructor(options?: { paths?: string[] }) {
     this.paths = options?.paths ?? [];
-    this.mcpManager =
-      this.paths.length > 0 ? new McpConnectionManager() : undefined;
+    this.mcpManager = this.paths.length > 0 ? new McpConnectionManager() : undefined;
   }
 
   async discover(scope: Scope): Promise<void> {

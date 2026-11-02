@@ -23,7 +23,12 @@ const config: AppConfig = {
     { id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com", apiKey: "sk-xxx" },
   ],
   models: [
-    { id: "gpt4", name: "GPT-4", endpointId: "openai", tokenThresholds: { handoff: 500000, guard: 750000 } },
+    {
+      id: "gpt4",
+      name: "GPT-4",
+      endpointId: "openai",
+      tokenThresholds: { handoff: 500000, guard: 750000 },
+    },
   ],
 };
 
@@ -52,10 +57,19 @@ describe("集成：端到端 Agent 组装", () => {
     const subAgentsDir = join(dir, "sub-agents");
     mkdirSync(subAgentsDir, { recursive: true });
     const saDef: AgentDefinition = {
-      id: "ga", name: "ga",
-      messages: [{ role: "system", content: "Hi" }, { role: "user", content: "{{task}}" }],
-      function: { name: "sub_agent_default", description: "", parameters: { type: "object", properties: {}, required: [] } },
-      createdAt: "2025-01-01T00:00:00Z", updatedAt: "2025-01-01T00:00:00Z",
+      id: "ga",
+      name: "ga",
+      messages: [
+        { role: "system", content: "Hi" },
+        { role: "user", content: "{{task}}" },
+      ],
+      function: {
+        name: "sub_agent_default",
+        description: "",
+        parameters: { type: "object", properties: {}, required: [] },
+      },
+      createdAt: "2025-01-01T00:00:00Z",
+      updatedAt: "2025-01-01T00:00:00Z",
     };
     writeFileSync(join(subAgentsDir, "ga.json"), JSON.stringify(saDef));
 
@@ -63,7 +77,10 @@ describe("集成：端到端 Agent 组装", () => {
     const skillsDir = join(dir, "skills");
     mkdirSync(skillsDir, { recursive: true });
     mkdirSync(join(skillsDir, "code-review"), { recursive: true });
-    writeFileSync(join(skillsDir, "code-review", "SKILL.md"), "---\nname: code-review\ndescription: 代码审查\n---\n# Code Review");
+    writeFileSync(
+      join(skillsDir, "code-review", "SKILL.md"),
+      "---\nname: code-review\ndescription: 代码审查\n---\n# Code Review",
+    );
 
     const scope = new Scope({ config, agentsDir }).use(
       ...allInOne({
@@ -76,7 +93,9 @@ describe("集成：端到端 Agent 组装", () => {
     const agent = await createAgent(scope, "my-agent");
 
     expect(agent.definition.permissions).toBeDefined();
-    expect(agent.definition.permissions!.tools).toEqual({ allow: ["read", "exec", "glob", "find_text"] });
+    expect(agent.definition.permissions!.tools).toEqual({
+      allow: ["read", "exec", "glob", "find_text"],
+    });
 
     expect(agent.messages[0].content).toBe("你是一个专业的代码助手。");
 

@@ -21,7 +21,11 @@ function writeAgentFile(id: string, functionName: string, description = "") {
     id,
     name: id,
     messages: [{ role: AgentNS.Role.System, content: "You are helpful." }],
-    function: { name: functionName, description, parameters: { type: "object", properties: {}, required: [] } },
+    function: {
+      name: functionName,
+      description,
+      parameters: { type: "object", properties: {}, required: [] },
+    },
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -82,7 +86,11 @@ describe("discoverSubAgents", () => {
         id: "agent-b",
         name: "agent-b",
         messages: [{ role: AgentNS.Role.System, content: "Hi" }],
-        function: { name: "code-reviewer", description: "代码审查", parameters: { type: "object", properties: {}, required: [] } },
+        function: {
+          name: "code-reviewer",
+          description: "代码审查",
+          parameters: { type: "object", properties: {}, required: [] },
+        },
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -104,7 +112,11 @@ describe("discoverSubAgents", () => {
         id: "agent-b",
         name: "agent-b",
         messages: [{ role: AgentNS.Role.System, content: "Hi" }],
-        function: { name: "shared_func", description: "From dir2 (lower priority)", parameters: { type: "object", properties: {}, required: [] } },
+        function: {
+          name: "shared_func",
+          description: "From dir2 (lower priority)",
+          parameters: { type: "object", properties: {}, required: [] },
+        },
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };

@@ -26,9 +26,7 @@ export class BuiltinToolsScopePlugin implements ScopePlugin {
     const tools = this.tools
       .filter((t) => {
         const isAvailable = (
-          t as
-            | { isAvailable?: (config: AppConfig, def: AgentDefinition) => boolean }
-            | undefined
+          t as { isAvailable?: (config: AppConfig, def: AgentDefinition) => boolean } | undefined
         )?.isAvailable;
         return isAvailable ? isAvailable(scope.config, definition) : true;
       })

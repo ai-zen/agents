@@ -107,7 +107,9 @@ describe("AgentRepository：id 逃不出目录", () => {
 
   it("兄弟目录前缀绕过（`<dir>-evil`）同样拦得住", async () => {
     // 裸 `startsWith(root)` 会放行：`<root>/agents-evil/x.json` 以 `<root>/agents` 开头
-    await expect(repo.write({ ...sampleAgent("x"), id: "../agents-evil/x" })).rejects.toThrow(/id/i);
+    await expect(repo.write({ ...sampleAgent("x"), id: "../agents-evil/x" })).rejects.toThrow(
+      /id/i,
+    );
     await expect(fs.access(join(root, "agents-evil"))).rejects.toThrow();
   });
 

@@ -43,7 +43,10 @@ export interface SkillInfo {
  * 按优先级从高到低传入路径列表，同名 skill 靠前的路径优先（先到先得）。
  * 解析 YAML frontmatter 中的 name 和 description，同时校验合规。
  */
-export async function discoverSkills(paths: string[], options?: { silent?: boolean }): Promise<SkillInfo[]> {
+export async function discoverSkills(
+  paths: string[],
+  options?: { silent?: boolean },
+): Promise<SkillInfo[]> {
   const silent = options?.silent ?? false;
   const seen = new Set<string>();
   const items: SkillInfo[] = [];
@@ -91,7 +94,11 @@ export async function discoverSkills(paths: string[], options?: { silent?: boole
  * 按优先级从高到低传入路径列表，靠前的路径优先（先到先得）。
  * 返回 null 如果 skill 在所有目录中都不存在或 SKILL.md 不可读。
  */
-export async function readSkill(skillDirs: string[], skillId: string, options?: { silent?: boolean }): Promise<SkillInfo | null> {
+export async function readSkill(
+  skillDirs: string[],
+  skillId: string,
+  options?: { silent?: boolean },
+): Promise<SkillInfo | null> {
   const silent = options?.silent ?? false;
   for (const dir of skillDirs) {
     const candidate = join(dir, skillId, "SKILL.md");
@@ -107,7 +114,11 @@ export async function readSkill(skillDirs: string[], skillId: string, options?: 
 
 // ---- 内部 ----
 
-async function readSkillFromPath(skillId: string, skillMdPath: string, silent?: boolean): Promise<SkillInfo | null> {
+async function readSkillFromPath(
+  skillId: string,
+  skillMdPath: string,
+  silent?: boolean,
+): Promise<SkillInfo | null> {
   try {
     const content = await fs.readFile(skillMdPath, "utf-8");
     const fm = parseFrontmatter(content);
@@ -173,12 +184,24 @@ export function parseFrontmatter(content: string): Frontmatter {
       const key = kv[1];
       const val = kv[2].trim();
       switch (key) {
-        case "name": result.name = val; break;
-        case "description": result.description = val; break;
-        case "sub-agent": result.subAgent = val === "true"; break;
-        case "license": result.license = val; break;
-        case "compatibility": result.compatibility = val; break;
-        case "allowed-tools": result.allowedTools = val ? val.split(/\s+/).filter(Boolean) : []; break;
+        case "name":
+          result.name = val;
+          break;
+        case "description":
+          result.description = val;
+          break;
+        case "sub-agent":
+          result.subAgent = val === "true";
+          break;
+        case "license":
+          result.license = val;
+          break;
+        case "compatibility":
+          result.compatibility = val;
+          break;
+        case "allowed-tools":
+          result.allowedTools = val ? val.split(/\s+/).filter(Boolean) : [];
+          break;
       }
     }
     i++;
@@ -206,24 +229,44 @@ export function validateSkill(skillId: string, fm: Frontmatter): SkillValidation
     errors.push({ skillId, field: "name", message: "Must be present and non-empty" });
   } else {
     if (fm.name.length > 64) {
-      errors.push({ skillId, field: "name", message: `Exceeds 64 characters (currently ${fm.name.length})` });
+      errors.push({
+        skillId,
+        field: "name",
+        message: `Exceeds 64 characters (currently ${fm.name.length})`,
+      });
     }
     if (!VALID_NAME_RE.test(fm.name)) {
-      errors.push({ skillId, field: "name", message: `"${fm.name}" is not valid: only lowercase letters, digits and hyphens are allowed, and it must not start, end or contain consecutive hyphens` });
+      errors.push({
+        skillId,
+        field: "name",
+        message: `"${fm.name}" is not valid: only lowercase letters, digits and hyphens are allowed, and it must not start, end or contain consecutive hyphens`,
+      });
     }
     if (fm.name !== skillId) {
-      errors.push({ skillId, field: "name", message: `"${fm.name}" does not match the directory name "${skillId}"` });
+      errors.push({
+        skillId,
+        field: "name",
+        message: `"${fm.name}" does not match the directory name "${skillId}"`,
+      });
     }
   }
 
   if (!fm.description || fm.description.length === 0) {
     errors.push({ skillId, field: "description", message: "Must be present and non-empty" });
   } else if (fm.description.length > 1024) {
-    errors.push({ skillId, field: "description", message: `Exceeds 1024 characters (currently ${fm.description.length})` });
+    errors.push({
+      skillId,
+      field: "description",
+      message: `Exceeds 1024 characters (currently ${fm.description.length})`,
+    });
   }
 
   if (fm.compatibility && fm.compatibility.length > 500) {
-    errors.push({ skillId, field: "compatibility", message: `Exceeds 500 characters (currently ${fm.compatibility.length})` });
+    errors.push({
+      skillId,
+      field: "compatibility",
+      message: `Exceeds 500 characters (currently ${fm.compatibility.length})`,
+    });
   }
 
   return errors;

@@ -25,13 +25,9 @@ export class UnknownToolHintPlugin implements AgentPlugin {
 
   onUnknownTool(ctx: UnknownToolContext): string | undefined {
     const toolName = ctx.toolCall.function?.name ?? "unknown";
-    const mcpPlugin = this.scope.getPluginById<McpScopePlugin>(
-      McpScopePlugin.ID,
-    );
+    const mcpPlugin = this.scope.getPluginById<McpScopePlugin>(McpScopePlugin.ID);
     const hasMcpConfig = mcpPlugin?.hasConfig() ?? false;
-    const hasCallMcpTool = ctx.availableTools.some(
-      (t) => t.function.name === "call_mcp_tool",
-    );
+    const hasCallMcpTool = ctx.availableTools.some((t) => t.function.name === "call_mcp_tool");
 
     if (hasMcpConfig && !hasCallMcpTool) {
       return `Tool "${toolName}" does not exist. An MCP server is configured, but the call_mcp_tool permission is disabled — adjust permissions if you need to use MCP tools.`;

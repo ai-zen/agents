@@ -62,10 +62,9 @@ describe("ExecTool", () => {
     const controller = new AbortController();
 
     const start = Date.now();
-    const promise = tool.call(
-      { command: cmd, timeout: 30_000 },
-      { signal: controller.signal } as unknown as ToolCallContext,
-    );
+    const promise = tool.call({ command: cmd, timeout: 30_000 }, {
+      signal: controller.signal,
+    } as unknown as ToolCallContext);
     await new Promise((r) => setTimeout(r, 200)); // 让进程先启动
     controller.abort(); // 中断
 
@@ -84,10 +83,9 @@ describe("ExecTool", () => {
     const controller = new AbortController();
     controller.abort();
 
-    const result = await tool.call(
-      { command: "echo should_not_run", timeout: 5000 },
-      { signal: controller.signal } as unknown as ToolCallContext,
-    );
+    const result = await tool.call({ command: "echo should_not_run", timeout: 5000 }, {
+      signal: controller.signal,
+    } as unknown as ToolCallContext);
     const parsed = JSON.parse(result as string);
     expect(parsed.killed).toBe(true);
     expect(parsed.terminated).toBe("aborted");

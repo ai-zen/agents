@@ -3,3 +3,6 @@ dist
 coverage
 pnpm-lock.yaml
 package-lock.json
+
+# Markdown 不纳入 prettier：表格对齐无法关闭，且 docs/ 下多为上游规范原文
+*.md

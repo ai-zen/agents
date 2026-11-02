@@ -162,7 +162,9 @@ describe("createCallSkillSubAgentTool", () => {
   });
 
   it("委派边界：分发 onSubAgentStart 与 sub-agent-start，子 Agent 沿用父工具集并剔除 call_skill_sub_agent", async () => {
-    writeSkill("git", "# Git operations guide\n\n## Committing code\nUse git commit", { subAgent: true });
+    writeSkill("git", "# Git operations guide\n\n## Committing code\nUse git commit", {
+      subAgent: true,
+    });
     const tool = createCallSkillSubAgentTool(skillDirs, subAgentSkills);
     const host = buildHost(tool);
 

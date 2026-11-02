@@ -4,7 +4,6 @@ import type { ToolEnv } from "../../../types/index.js";
 import type { AgentNS, ToolCallContext } from "@ai-zen/agents-core";
 
 export class SleepTool extends SdkCallbackTool {
-
   function: AgentNS.FunctionDefine = {
     name: "sleep",
     description:
@@ -14,7 +13,8 @@ export class SleepTool extends SdkCallbackTool {
       properties: {
         ms: {
           type: "number",
-          description: "Milliseconds to wait (1 second = 1000 milliseconds). Values above 30000 (30 seconds) are not recommended.",
+          description:
+            "Milliseconds to wait (1 second = 1000 milliseconds). Values above 30000 (30 seconds) are not recommended.",
         },
       },
       required: ["ms"],
@@ -55,10 +55,14 @@ export class SleepTool extends SdkCallbackTool {
       }
       const timer = setTimeout(resolve, ms);
       if (signal) {
-        signal.addEventListener("abort", () => {
-          clearTimeout(timer);
-          resolve();
-        }, { once: true });
+        signal.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer);
+            resolve();
+          },
+          { once: true },
+        );
       }
     });
 

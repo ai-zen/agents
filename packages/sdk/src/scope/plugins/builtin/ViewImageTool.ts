@@ -3,7 +3,11 @@ import { promises as fs } from "node:fs";
 import type { AgentNS, ToolCallContext } from "@ai-zen/agents-core";
 import { SdkCallbackTool } from "./SdkCallbackTool.js";
 import type { AgentDefinition, AppConfig, ToolEnv } from "../../../types/index.js";
-import { fileToContentSection, mimeOf, resolveModelAndEndpoint } from "../../../shared/content-blocks.js";
+import {
+  fileToContentSection,
+  mimeOf,
+  resolveModelAndEndpoint,
+} from "../../../shared/content-blocks.js";
 
 /**
  * 是否为"本地 URL"——指向本地/回环地址，API 服务商无法下载访问。
@@ -101,7 +105,9 @@ export class ViewImageTool extends SdkCallbackTool {
         signal,
       });
 
-      const label = isUrl ? `Fetched remote image: ${value}` : `Fetched local image (${path.basename(value)})`;
+      const label = isUrl
+        ? `Fetched remote image: ${value}`
+        : `Fetched local image (${path.basename(value)})`;
       const how =
         result.transport === "files-api"
           ? `, uploaded to the Files API (file_id: ${(result.section as { file_id?: string }).file_id ?? "?"})`

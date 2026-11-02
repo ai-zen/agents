@@ -58,7 +58,13 @@ function textOnlyConfig(): Partial<AppConfig> {
       },
     ],
     models: [
-      { id: "ds-chat", name: "DS Chat", endpointId: "deepseek", modelName: "ds-chat", tokenThresholds: { handoff: 1000, guard: 1500 } },
+      {
+        id: "ds-chat",
+        name: "DS Chat",
+        endpointId: "deepseek",
+        modelName: "ds-chat",
+        tokenThresholds: { handoff: 1000, guard: 1500 },
+      },
     ] as AppConfig["models"],
   };
 }
@@ -97,8 +103,20 @@ function mockManager(overrides?: Partial<McpConnectionManager>): McpConnectionMa
 }
 
 const mcps: McpServerConfig[] = [
-  { id: "github", name: "GitHub", description: "GitHub file and repository tools", transport: "stdio", command: "gh" },
-  { id: "slack", name: "Slack", description: "Slack messaging tools", transport: "http", url: "https://slack.example.com" },
+  {
+    id: "github",
+    name: "GitHub",
+    description: "GitHub file and repository tools",
+    transport: "stdio",
+    command: "gh",
+  },
+  {
+    id: "slack",
+    name: "Slack",
+    description: "Slack messaging tools",
+    transport: "http",
+    url: "https://slack.example.com",
+  },
 ];
 
 describe("createLoadMcpTool", () => {
@@ -128,7 +146,9 @@ describe("createLoadMcpTool", () => {
 
   it("已连接时直接返回 JSON 清单（不含 prompts）", async () => {
     const manifest = {
-      tools: [{ name: "echo", description: "Echo", inputSchema: { type: "object", properties: {} } }],
+      tools: [
+        { name: "echo", description: "Echo", inputSchema: { type: "object", properties: {} } },
+      ],
       resources: [{ uri: "file:///data", name: "Data file", description: "Data file" }],
       prompts: [{ name: "greet", description: "Greeting" }],
     };
@@ -147,7 +167,13 @@ describe("createLoadMcpTool", () => {
 
   it("未连接时调用 connect 并返回 JSON（不含 prompts）", async () => {
     const manifest = {
-      tools: [{ name: "list", description: "List files", inputSchema: { type: "object", properties: {} } }],
+      tools: [
+        {
+          name: "list",
+          description: "List files",
+          inputSchema: { type: "object", properties: {} },
+        },
+      ],
       resources: [],
     };
     const manager = mockManager({
@@ -305,7 +331,11 @@ describe("createCallMcpTool", () => {
       getClient: vi.fn(() => mockClient),
     });
     const tool = createCallMcpTool(manager, makeEnv());
-    const result = await tool.callback({ server: "github", tool: "echo", arguments: { message: "hello" } });
+    const result = await tool.callback({
+      server: "github",
+      tool: "echo",
+      arguments: { message: "hello" },
+    });
     expect(result).toBe("hello world");
     expect(mockClient.callTool).toHaveBeenCalledWith(
       {
@@ -399,7 +429,11 @@ describe("createCallMcpTool", () => {
       );
       const result = await tool.callback({ server: "github", tool: "speak", arguments: {} });
       expect(result).toEqual([
-        { type: "file", file_data: "data:audio/mpeg;base64,DDDD", filename: expect.stringMatching(/^mcp-media-\d+\.mp3$/) },
+        {
+          type: "file",
+          file_data: "data:audio/mpeg;base64,DDDD",
+          filename: expect.stringMatching(/^mcp-media-\d+\.mp3$/),
+        },
       ]);
     });
 
@@ -407,7 +441,10 @@ describe("createCallMcpTool", () => {
       const tool = createCallMcpTool(
         managerWithContent([
           { type: "text", text: "Prefix" },
-          { type: "resource", resource: { uri: "file:///a.md", mimeType: "text/markdown", text: "# Content" } },
+          {
+            type: "resource",
+            resource: { uri: "file:///a.md", mimeType: "text/markdown", text: "# Content" },
+          },
         ]),
         makeEnv(),
       );
@@ -418,7 +455,10 @@ describe("createCallMcpTool", () => {
     it("resource.blob 按 mimeType 分流：图片走 image_url", async () => {
       const tool = createCallMcpTool(
         managerWithContent([
-          { type: "resource", resource: { uri: "file:///p.png", mimeType: "image/png", blob: "EEEE" } },
+          {
+            type: "resource",
+            resource: { uri: "file:///p.png", mimeType: "image/png", blob: "EEEE" },
+          },
         ]),
         makeEnv(),
       );
@@ -431,13 +471,20 @@ describe("createCallMcpTool", () => {
     it("resource.blob 非图片时走 file 块", async () => {
       const tool = createCallMcpTool(
         managerWithContent([
-          { type: "resource", resource: { uri: "file:///a.pdf", mimeType: "application/pdf", blob: "FFFF" } },
+          {
+            type: "resource",
+            resource: { uri: "file:///a.pdf", mimeType: "application/pdf", blob: "FFFF" },
+          },
         ]),
         makeEnv(),
       );
       const result = await tool.callback({ server: "github", tool: "read", arguments: {} });
       expect(result).toEqual([
-        { type: "file", file_data: "data:application/pdf;base64,FFFF", filename: expect.stringMatching(/^mcp-media-\d+\.pdf$/) },
+        {
+          type: "file",
+          file_data: "data:application/pdf;base64,FFFF",
+          filename: expect.stringMatching(/^mcp-media-\d+\.pdf$/),
+        },
       ]);
     });
 
@@ -446,7 +493,10 @@ describe("createCallMcpTool", () => {
         managerWithContent([{ type: "image", data: "AAAA", mimeType: "image/png" }]),
         makeEnv(filesApiConfig()),
       );
-      const result = await tool.callback({ server: "github", tool: "shot", arguments: {} }, visionCtx);
+      const result = await tool.callback(
+        { server: "github", tool: "shot", arguments: {} },
+        visionCtx,
+      );
       expect(result).toEqual([{ type: "file", file_id: "file-mcp-1" }]);
       expect(mockFilesCreate).toHaveBeenCalledTimes(1);
     });
@@ -464,7 +514,10 @@ describe("createCallMcpTool", () => {
         managerWithContent([{ type: "image", data: "AAAA", mimeType: "image/png" }]),
         makeEnv(textOnlyConfig()),
       );
-      const result = await tool.callback({ server: "github", tool: "shot", arguments: {} }, chatCtx);
+      const result = await tool.callback(
+        { server: "github", tool: "shot", arguments: {} },
+        chatCtx,
+      );
       // 唯一的内容块是文本 → 按既有契约退化为字符串
       expect(typeof result).toBe("string");
       expect(result as string).toContain("does not support image input");
@@ -477,7 +530,10 @@ describe("createCallMcpTool", () => {
         managerWithContent([{ type: "image", data: "AAAA", mimeType: "image/png" }]),
         makeEnv(filesApiConfig()),
       );
-      const result = await tool.callback({ server: "github", tool: "shot", arguments: {} }, visionCtx);
+      const result = await tool.callback(
+        { server: "github", tool: "shot", arguments: {} },
+        visionCtx,
+      );
       expect(result).toEqual([
         { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
       ]);
@@ -531,14 +587,12 @@ describe("createCallMcpTool", () => {
         ]),
         makeEnv(),
       );
-      const result = (await tool.callback({ server: "github", tool: "shot", arguments: {} })) as any[];
-      expect(result.map((s) => s.type)).toEqual([
-        "text",
-        "image_url",
-        "text",
-        "image_url",
-        "text",
-      ]);
+      const result = (await tool.callback({
+        server: "github",
+        tool: "shot",
+        arguments: {},
+      })) as any[];
+      expect(result.map((s) => s.type)).toEqual(["text", "image_url", "text", "image_url", "text"]);
       expect(result[0].text).toBe("Image 1:");
       expect(result[2].text).toBe("Image 2:");
       expect(result[4].text).toBe("Done");
@@ -554,7 +608,11 @@ describe("createCallMcpTool", () => {
         ]),
         makeEnv({ maxToolOutput: 1000 }),
       );
-      const result = (await tool.callback({ server: "github", tool: "dump", arguments: {} })) as any[];
+      const result = (await tool.callback({
+        server: "github",
+        tool: "dump",
+        arguments: {},
+      })) as any[];
 
       // 仍是 3 块，图片原位不动，警告落在原来的第 2 位
       expect(result).toHaveLength(3);
@@ -578,7 +636,11 @@ describe("createCallMcpTool", () => {
         ]),
         makeEnv({ maxToolOutput: 1000 }),
       );
-      const result = (await tool.callback({ server: "github", tool: "dump", arguments: {} })) as any[];
+      const result = (await tool.callback({
+        server: "github",
+        tool: "dump",
+        arguments: {},
+      })) as any[];
       // 两段文本合并为一个警告块，图片夹在中间
       expect(result).toHaveLength(2);
       expect(result[0].type).toBe("text");
@@ -843,10 +905,9 @@ describe("signal 透传", () => {
     });
     const tool = createCallMcpTool(manager, makeEnv());
     const controller = new AbortController();
-    await tool.callback(
-      { server: "github", tool: "echo", arguments: { message: "hi" } },
-      { signal: controller.signal } as any,
-    );
+    await tool.callback({ server: "github", tool: "echo", arguments: { message: "hi" } }, {
+      signal: controller.signal,
+    } as any);
     expect(mockClient.callTool).toHaveBeenCalledWith(
       expect.objectContaining({ name: "echo" }),
       undefined,
@@ -864,10 +925,9 @@ describe("signal 透传", () => {
     });
     const tool = createReadMcpResourceTool(manager, makeEnv());
     const controller = new AbortController();
-    await tool.callback(
-      { server: "github", uri: "file:///README.md" },
-      { signal: controller.signal } as any,
-    );
+    await tool.callback({ server: "github", uri: "file:///README.md" }, {
+      signal: controller.signal,
+    } as any);
     expect(mockClient.readResource).toHaveBeenCalledWith(
       { uri: "file:///README.md" },
       { signal: controller.signal },

@@ -88,7 +88,10 @@ describe("discoverSkills", () => {
       writeSkill("skill-a", "skill-a", "Skill A from dir1");
       // dir2 放另一批
       mkdirSync(join(dir2, "skill-b"), { recursive: true });
-      writeFileSync(join(dir2, "skill-b", "SKILL.md"), `---\nname: skill-b\ndescription: Skill B from dir2\n---\n# skill-b`);
+      writeFileSync(
+        join(dir2, "skill-b", "SKILL.md"),
+        `---\nname: skill-b\ndescription: Skill B from dir2\n---\n# skill-b`,
+      );
 
       const result = await discoverSkills([dir, dir2]);
       expect(result).toHaveLength(2);
@@ -104,7 +107,10 @@ describe("discoverSkills", () => {
     try {
       writeSkill("shared-skill", "shared-skill", "From dir1 (higher priority)");
       mkdirSync(join(dir2, "shared-skill"), { recursive: true });
-      writeFileSync(join(dir2, "shared-skill", "SKILL.md"), `---\nname: shared-skill\ndescription: From dir2 (lower priority)\n---\n# shared-skill`);
+      writeFileSync(
+        join(dir2, "shared-skill", "SKILL.md"),
+        `---\nname: shared-skill\ndescription: From dir2 (lower priority)\n---\n# shared-skill`,
+      );
 
       const result = await discoverSkills([dir, dir2]);
       expect(result).toHaveLength(1);
@@ -257,18 +263,28 @@ describe("validateSkill", () => {
   });
 
   it("合法 name：多段连字符", () => {
-    const errors = validateSkill("code-review-tool", { name: "code-review-tool", description: "desc" });
+    const errors = validateSkill("code-review-tool", {
+      name: "code-review-tool",
+      description: "desc",
+    });
     expect(errors).toEqual([]);
   });
 
   it("合法 name：数字", () => {
-    const errors = validateSkill("data-analyzer-v2", { name: "data-analyzer-v2", description: "desc" });
+    const errors = validateSkill("data-analyzer-v2", {
+      name: "data-analyzer-v2",
+      description: "desc",
+    });
     expect(errors).toEqual([]);
   });
 
   it("非法：name 为空", () => {
     const errors = validateSkill("my-skill", { name: "", description: "desc" });
-    expect(errors).toContainEqual({ skillId: "my-skill", field: "name", message: "Must be present and non-empty" });
+    expect(errors).toContainEqual({
+      skillId: "my-skill",
+      field: "name",
+      message: "Must be present and non-empty",
+    });
   });
 
   it("非法：name 含有大写字母", () => {
@@ -299,13 +315,18 @@ describe("validateSkill", () => {
 
   it("非法：name 与目录名不一致", () => {
     const errors = validateSkill("actual-dir", { name: "different-name", description: "desc" });
-    expect(errors.some((e) => e.field === "name" && e.message.includes("does not match"))).toBe(true);
+    expect(errors.some((e) => e.field === "name" && e.message.includes("does not match"))).toBe(
+      true,
+    );
   });
 
   // ---- description 校验 ----
 
   it("合法 description 无错误", () => {
-    const errors = validateSkill("my-skill", { name: "my-skill", description: "A valid description" });
+    const errors = validateSkill("my-skill", {
+      name: "my-skill",
+      description: "A valid description",
+    });
     expect(errors).toEqual([]);
   });
 
@@ -323,13 +344,21 @@ describe("validateSkill", () => {
   // ---- compatibility 校验 ----
 
   it("合法 compatibility 无错误", () => {
-    const errors = validateSkill("my-skill", { name: "my-skill", description: "desc", compatibility: "requires git" });
+    const errors = validateSkill("my-skill", {
+      name: "my-skill",
+      description: "desc",
+      compatibility: "requires git",
+    });
     expect(errors).toEqual([]);
   });
 
   it("非法：compatibility 超过 500 字符", () => {
     const longCompat = "x".repeat(501);
-    const errors = validateSkill("my-skill", { name: "my-skill", description: "desc", compatibility: longCompat });
+    const errors = validateSkill("my-skill", {
+      name: "my-skill",
+      description: "desc",
+      compatibility: longCompat,
+    });
     expect(errors.some((e) => e.field === "compatibility")).toBe(true);
   });
 
@@ -350,7 +379,9 @@ describe("readSkill", () => {
   it("读取完整 Skill 内容与元数据", async () => {
     const skillDir = join(dir, "my-skill");
     mkdirSync(skillDir, { recursive: true });
-    writeFileSync(join(skillDir, "SKILL.md"), `---
+    writeFileSync(
+      join(skillDir, "SKILL.md"),
+      `---
 name: my-skill
 description: A test skill
 license: MIT
@@ -358,7 +389,8 @@ sub-agent: true
 ---
 # Skill Body
 
-Full content here.`);
+Full content here.`,
+    );
 
     const skill = await readSkill([dir], "my-skill");
 
@@ -383,10 +415,13 @@ Full content here.`);
   it("sub-agent 未声明时 subAgent 为 false", async () => {
     const skillDir = join(dir, "plain-skill");
     mkdirSync(skillDir, { recursive: true });
-    writeFileSync(join(skillDir, "SKILL.md"), `---
+    writeFileSync(
+      join(skillDir, "SKILL.md"),
+      `---
 name: plain-skill
 ---
-# Body`);
+# Body`,
+    );
 
     const skill = await readSkill([dir], "plain-skill");
     expect(skill!.subAgent).toBe(false);
@@ -395,11 +430,14 @@ name: plain-skill
   it("name 不符合规范时仍可读取（校验为警告）", async () => {
     const skillDir = join(dir, "my-skill");
     mkdirSync(skillDir, { recursive: true });
-    writeFileSync(join(skillDir, "SKILL.md"), `---
+    writeFileSync(
+      join(skillDir, "SKILL.md"),
+      `---
 name: My Skill
 description: Non-conforming name is still readable
 ---
-# Body`);
+# Body`,
+    );
 
     const skill = await readSkill([dir], "my-skill");
     expect(skill).not.toBeNull();
@@ -411,7 +449,10 @@ description: Non-conforming name is still readable
     try {
       const skillDir = join(dir, "my-skill");
       mkdirSync(skillDir, { recursive: true });
-      writeFileSync(join(skillDir, "SKILL.md"), `---\nname: my-skill\ndescription: From dir1\n---\n# Body`);
+      writeFileSync(
+        join(skillDir, "SKILL.md"),
+        `---\nname: my-skill\ndescription: From dir1\n---\n# Body`,
+      );
 
       const skill = await readSkill([dir, dir2], "my-skill");
       expect(skill).not.toBeNull();
@@ -426,7 +467,10 @@ description: Non-conforming name is still readable
     try {
       const skillDir = join(dir2, "my-skill");
       mkdirSync(skillDir, { recursive: true });
-      writeFileSync(join(skillDir, "SKILL.md"), `---\nname: my-skill\ndescription: From dir2\n---\n# Body`);
+      writeFileSync(
+        join(skillDir, "SKILL.md"),
+        `---\nname: my-skill\ndescription: From dir2\n---\n# Body`,
+      );
 
       const skill = await readSkill([dir, dir2], "my-skill");
       expect(skill).not.toBeNull();
