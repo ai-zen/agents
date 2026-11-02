@@ -1,24 +1,16 @@
 import { beforeEach, describe, it, expect, vi } from "vitest";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
-
-// Files API 上传走 OpenAI SDK：用 mock 顶掉，避免测试真的发网络请求
-const { mockFilesCreate, mockToFile } = vi.hoisted(() => ({
-  mockFilesCreate: vi.fn(),
-  mockToFile: vi.fn(async (data: unknown, filename: string) => ({ data, filename })),
-}));
-
-vi.mock("openai", () => ({
-  default: class MockOpenAI {
-    files = { create: mockFilesCreate };
-  },
-  toFile: mockToFile,
-}));
-
 import { createLoadMcpTool, createCallMcpTool, createReadMcpResourceTool } from "./mcpTools.js";
 import type { McpConnectionManager } from "./McpConnectionManager.js";
-import type { AppConfig, McpServerConfig, ToolEnv } from "../../../types/index.js";
+import type { AppConfig, McpServerConfig, ToolEnv, UploadFn } from "../../../types/index.js";
 import { clearUploadCache } from "../../../shared/content-blocks.js";
+
+/**
+ * Files API 上传走依赖注入（`ToolEnv.deps.upload`）：不 mock "openai" 模块，
+ * 既不会真的发网络请求，也不受 `isolate: false` 下模块缓存共享的影响。
+ */
+const mockUpload = vi.fn<UploadFn>();
 
 /** 带 Files API 能力的端点 + 视觉模型（用于验证上传路径） */
 function filesApiConfig(): Partial<AppConfig> {
@@ -71,13 +63,13 @@ function textOnlyConfig(): Partial<AppConfig> {
 
 beforeEach(() => {
   clearUploadCache();
-  mockFilesCreate.mockReset();
-  mockFilesCreate.mockResolvedValue({ id: "file-mcp-1" });
+  mockUpload.mockReset();
+  mockUpload.mockResolvedValue("file-mcp-1");
 });
 
-/** 构造测试用 ToolEnv（config 可按需覆盖，如 maxToolOutput） */
+/** 构造测试用 ToolEnv（config 可按需覆盖，如 maxToolOutput；出网依赖已注入） */
 function makeEnv(config: Partial<AppConfig> = {}): ToolEnv {
-  return { cwd: "/tmp", config: config as AppConfig };
+  return { cwd: "/tmp", config: config as AppConfig, deps: { upload: mockUpload } };
 }
 
 /**
@@ -498,7 +490,7 @@ describe("createCallMcpTool", () => {
         visionCtx,
       );
       expect(result).toEqual([{ type: "file", file_id: "file-mcp-1" }]);
-      expect(mockFilesCreate).toHaveBeenCalledTimes(1);
+      expect(mockUpload).toHaveBeenCalledTimes(1);
     });
 
     it("同一张图（相同字节）重复调用只上传一次（内容哈希缓存）", async () => {
@@ -506,7 +498,7 @@ describe("createCallMcpTool", () => {
       const tool = createCallMcpTool(manager, makeEnv(filesApiConfig()));
       await tool.callback({ server: "github", tool: "shot", arguments: {} }, visionCtx);
       await tool.callback({ server: "github", tool: "shot", arguments: {} }, visionCtx);
-      expect(mockFilesCreate).toHaveBeenCalledTimes(1);
+      expect(mockUpload).toHaveBeenCalledTimes(1);
     });
 
     it("非视觉模型时 MCP 图片退化为文本提示（避免 4xx），且不上传", async () => {
@@ -521,11 +513,11 @@ describe("createCallMcpTool", () => {
       // 唯一的内容块是文本 → 按既有契约退化为字符串
       expect(typeof result).toBe("string");
       expect(result as string).toContain("does not support image input");
-      expect(mockFilesCreate).not.toHaveBeenCalled();
+      expect(mockUpload).not.toHaveBeenCalled();
     });
 
     it("上传失败时降级为 base64 内联，媒体块不丢", async () => {
-      mockFilesCreate.mockRejectedValueOnce(new Error("boom"));
+      mockUpload.mockRejectedValueOnce(new Error("boom"));
       const tool = createCallMcpTool(
         managerWithContent([{ type: "image", data: "AAAA", mimeType: "image/png" }]),
         makeEnv(filesApiConfig()),
@@ -836,7 +828,7 @@ describe("createReadMcpResourceTool", () => {
     const tool = createReadMcpResourceTool(manager, makeEnv(filesApiConfig()));
     const result = await tool.callback({ server: "github", uri: "file:///p.png" }, visionCtx);
     expect(result).toEqual([{ type: "file", file_id: "file-mcp-1" }]);
-    expect(mockFilesCreate).toHaveBeenCalledTimes(1);
+    expect(mockUpload).toHaveBeenCalledTimes(1);
   });
 
   it("文本资源超限时落盘 result.txt 并只返回头尾预览（与 call_mcp_tool 同一闸门）", async () => {

@@ -103,6 +103,8 @@ export class ViewImageTool extends SdkCallbackTool {
         endpoint,
         model,
         signal,
+        // 出网动作走注入的 deps（缺省时 content-blocks 自己调 OpenAI SDK）
+        deps: this.env.deps,
       });
 
       const label = isUrl

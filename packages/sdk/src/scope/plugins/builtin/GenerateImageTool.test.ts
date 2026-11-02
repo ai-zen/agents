@@ -1,31 +1,20 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { GenerateImageTool } from "./GenerateImageTool.js";
 import { makeEnv } from "./test-helpers.js";
-import type { AppConfig } from "../../../types/index.js";
+import type { AppConfig, GenerateImageFn } from "../../../types/index.js";
 import type { ToolCallContext } from "@ai-zen/agents-core";
 
-// mock openai：images.generate 成功返回一张图；aborted signal 时抛 AbortError（兼容 abort 测试）
-const { mockImagesGenerate } = vi.hoisted(() => ({
-  mockImagesGenerate: vi.fn(async (_body: unknown, opts?: { signal?: AbortSignal }) => {
-    if (opts?.signal?.aborted) {
-      throw new DOMException("The operation was aborted", "AbortError");
-    }
-    return { created: 123, data: [{ url: "https://cdn.example/img.png" }] };
-  }),
-}));
-
-vi.mock("openai", () => ({
-  default: class MockOpenAI {
-    images = { generate: mockImagesGenerate };
-  },
-}));
-
-const mockFetch = vi.fn();
+// 出网动作走依赖注入（ToolEnv.deps），不再 mock "openai" 模块：
+// 默认返回一张图；signal 已 abort 时抛 AbortError（配合中止测试）
+const mockImagesGenerate = vi.fn<GenerateImageFn>(async ({ signal }) => {
+  if (signal?.aborted) {
+    throw new DOMException("The operation was aborted", "AbortError");
+  }
+  return { created: 123, data: [{ url: "https://cdn.example/img.png" }] };
+});
 
 afterEach(() => {
-  mockFetch.mockReset();
-  mockImagesGenerate.mockClear();
-  vi.unstubAllGlobals();
+  mockImagesGenerate.mockReset();
 });
 
 const mockConfig: AppConfig = {
@@ -58,7 +47,9 @@ const mockConfig: AppConfig = {
   defaultImageModel: "cogview-4",
 };
 
-const tool = new GenerateImageTool(makeEnv(process.cwd(), mockConfig));
+const tool = new GenerateImageTool(
+  makeEnv(process.cwd(), mockConfig, { generateImage: mockImagesGenerate }),
+);
 
 describe("GenerateImageTool", () => {
   it("工具名称和描述正确", () => {
@@ -118,15 +109,6 @@ describe("GenerateImageTool", () => {
   });
 
   it("图片生成被中断（abort）时返回 aborted 结果", async () => {
-    // mock fetch：收到已 aborted 的 signal 时抛 AbortError
-    mockFetch.mockImplementation(async (url: string, init?: any) => {
-      if (init?.signal?.aborted) {
-        throw new DOMException("The operation was aborted", "AbortError");
-      }
-      throw new Error("should not reach here");
-    });
-    vi.stubGlobal("fetch", mockFetch);
-
     const controller = new AbortController();
     controller.abort();
 
@@ -149,8 +131,12 @@ describe("GenerateImageTool", () => {
     expect(parsed.note).toContain("view_image");
     expect(parsed.note).toContain("download_file");
     expect(mockImagesGenerate).toHaveBeenCalledWith(
-      expect.objectContaining({ model: "cogview-4", prompt: "a cat" }),
-      expect.anything(),
+      expect.objectContaining({
+        model: "cogview-4",
+        prompt: "a cat",
+        size: "1024x1024",
+        endpoint: expect.objectContaining({ id: "bigmodelcn" }),
+      }),
     );
   });
 });

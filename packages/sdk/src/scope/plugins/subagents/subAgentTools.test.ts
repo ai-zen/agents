@@ -4,12 +4,8 @@ import { createSubAgentTool } from "./subAgentTools.js";
 import type { Scope } from "../../Scope.js";
 import type { AgentDefinition } from "../../../types/index.js";
 
-vi.mock("../../runtime/createModel.js", () => ({
-  createModel: vi.fn().mockReturnValue({
-    createCompletion: vi.fn(),
-    createStream: vi.fn(),
-  }),
-}));
+// 不需要 mock `runtime/createModel.js`：`buildAgent` 是惰性的，构造阶段不会真的建模型；
+// 而模块级 mock 在 `isolate: false` 下会因模块缓存共享而时灵时不灵。
 
 function mockScope(): Scope {
   return {

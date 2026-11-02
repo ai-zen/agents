@@ -1,5 +1,5 @@
 import type { Tool } from "@ai-zen/agents-core";
-import type { AppConfig, AgentDefinition, ToolEnv } from "../types/index.js";
+import type { AppConfig, AgentDefinition, ToolEnv, ToolEnvDeps } from "../types/index.js";
 import { PermissionEvaluator } from "./PermissionEvaluator.js";
 import type { ScopePlugin } from "./ScopePlugin.js";
 
@@ -75,10 +75,18 @@ export class Scope {
   /** 是否已 init（init 之后禁止再 use） */
   private _initialized = false;
 
-  constructor(options: { config: AppConfig; agentsDir: string; cwd?: string }) {
+  constructor(options: {
+    config: AppConfig;
+    agentsDir: string;
+    cwd?: string;
+    /** 出网/外部依赖的注入点（缺省全部走真实 OpenAI SDK），会透传到 ToolEnv.deps */
+    deps?: ToolEnvDeps;
+  }) {
     this.config = options.config;
     this.cwd = options.cwd ?? process.cwd();
-    this.env = { cwd: this.cwd, config: this.config };
+    this.env = options.deps
+      ? { cwd: this.cwd, config: this.config, deps: options.deps }
+      : { cwd: this.cwd, config: this.config };
     this.agentsDir = options.agentsDir;
   }
 

@@ -14,6 +14,8 @@ export type {
   AgentDefinition,
   AppConfig,
   ToolEnv,
+  ToolEnvDeps,
+  GenerateImageFn,
   McpIcon,
   McpAnnotations,
   McpToolDef,

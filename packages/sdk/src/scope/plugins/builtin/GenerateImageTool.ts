@@ -1,7 +1,28 @@
 import OpenAI from "openai";
 import type { AgentNS, ToolCallContext } from "@ai-zen/agents-core";
 import { SdkCallbackTool } from "./SdkCallbackTool.js";
-import type { AgentDefinition, AppConfig, ToolEnv, ImageModel } from "../../../types/index.js";
+import type {
+  AgentDefinition,
+  AppConfig,
+  ToolEnv,
+  ImageModel,
+  GenerateImageFn,
+} from "../../../types/index.js";
+
+/** 默认图片生成实现：走 OpenAI SDK 的 `images.generate`（任何 OpenAI 兼容端点均可） */
+const defaultGenerateImage: GenerateImageFn = async ({
+  endpoint,
+  model,
+  prompt,
+  size,
+  quality,
+  signal,
+}) => {
+  const client = new OpenAI({ apiKey: endpoint.apiKey, baseURL: endpoint.baseUrl });
+  // 厂商特有字段（size / quality）用 any 透传
+  const result = await client.images.generate({ model, prompt, size, quality } as any, { signal });
+  return { created: result.created, data: (result.data ?? []) as { url?: string }[] };
+};
 
 /**
  * 根据文字描述生成图片。**统一返回字符串**（JSON，含图片 URL 列表）：
@@ -108,27 +129,20 @@ export class GenerateImageTool extends SdkCallbackTool {
         });
       }
 
-      const client = new OpenAI({
-        apiKey: endpoint.apiKey,
-        baseURL: endpoint.baseUrl,
-      });
-
       const modelName = input.model || imageModel.modelName;
 
-      // 通过官方 SDK 生成图片（厂商特有字段如 size/quality 用 any 透传）
-      const result = await client.images.generate(
-        {
-          model: modelName,
-          prompt: prompt.trim(),
-          size: input.size || imageModel.defaultSize || undefined,
-          quality: input.quality || imageModel.defaultQuality || undefined,
-        } as any,
-        { signal },
-      );
+      // 出网动作走注入的 deps（缺省时用 OpenAI SDK），测试无需 mock openai 模块
+      const generateImage = this.env.deps?.generateImage ?? defaultGenerateImage;
+      const result = await generateImage({
+        endpoint,
+        model: modelName,
+        prompt: prompt.trim(),
+        size: input.size || imageModel.defaultSize || undefined,
+        quality: input.quality || imageModel.defaultQuality || undefined,
+        signal,
+      });
 
-      const urls = ((result.data ?? []) as { url?: string }[])
-        .map((img) => img.url)
-        .filter((url): url is string => !!url);
+      const urls = (result.data ?? []).map((img) => img.url).filter((url): url is string => !!url);
 
       // 统一返回字符串（JSON）：生成结果如何处理（查看/下载/转发）由模型与上层自由决定，
       // 不替模型做「看或不看」的假设。需要让模型看图 → 模型可主动调用 view_image(URL)；

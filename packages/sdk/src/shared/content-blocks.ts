@@ -23,7 +23,10 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { AgentNS } from "@ai-zen/agents-core";
-import type { AppConfig, Endpoint, Model } from "../types/index.js";
+import type { AppConfig, Endpoint, Model, ToolEnvDeps, UploadFn } from "../types/index.js";
+
+/** 上传函数类型（定义在 types，此处再导出方便既有引用） */
+export type { UploadFn };
 
 /** 扩展名 → MIME。图片走视觉通道，其余走 `file` 块 */
 export const MIME_BY_EXT: Record<string, string> = {
@@ -76,14 +79,6 @@ export type FileSource =
   /** 已经是 base64 的字节（MCP 等协议给的就是 base64）：内联时原样透传，不做解码再编码 */
   | { base64: string; mime: string; filename?: string };
 
-/** Files API 上传函数签名（可注入，便于测试与替换实现） */
-export type UploadFn = (input: {
-  endpoint: Endpoint;
-  data: Uint8Array;
-  filename: string;
-  signal?: AbortSignal;
-}) => Promise<string>;
-
 export interface FileToSectionInput {
   source: FileSource;
   /** 当前模型所用端点：决定能否走 Files API */
@@ -93,8 +88,8 @@ export interface FileToSectionInput {
   signal?: AbortSignal;
   /** 覆盖内联体积上限 */
   maxInlineBytes?: number;
-  /** 依赖注入（测试用），默认走 OpenAI SDK 的 Files API */
-  deps?: { upload?: UploadFn };
+  /** 依赖注入（测试 / 宿主用），缺省走 OpenAI SDK 的 Files API */
+  deps?: ToolEnvDeps;
 }
 
 export interface FileToSectionResult {

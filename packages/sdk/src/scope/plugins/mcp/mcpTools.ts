@@ -15,6 +15,7 @@ import type {
   McpServerManifest,
   Model,
   ToolEnv,
+  ToolEnvDeps,
 } from "../../../types/index.js";
 
 const EMPTY_HINT = "(No MCP servers available, ask the user to add one)";
@@ -127,6 +128,8 @@ interface MediaContext {
   endpoint?: Endpoint | null;
   model?: Model | null;
   signal?: AbortSignal;
+  /** 出网动作的注入点（缺省走真实 OpenAI SDK） */
+  deps?: ToolEnvDeps;
 }
 
 /** MIME → 文件名后缀（仅用于上传时给文件一个好名字） */
@@ -163,6 +166,7 @@ async function mediaSection(
       endpoint: media.endpoint,
       model: media.model,
       signal: media.signal,
+      deps: media.deps,
     });
     return section;
   } catch (error: any) {
@@ -371,7 +375,12 @@ export function createCallMcpTool(mcpManager: McpConnectionManager, env: ToolEnv
 
         // 按当前模型定位端点：决定媒体走 Files API 上传还是 base64 内联
         const { model, endpoint } = resolveModelAndEndpoint(env.config, ctx?.agent?.model);
-        const mediaContext: MediaContext = { endpoint, model, signal: ctx?.signal };
+        const mediaContext: MediaContext = {
+          endpoint,
+          model,
+          signal: ctx?.signal,
+          deps: env.deps,
+        };
         // Promise.all 保序：文本与媒体的相对位置不变
         const sections = await Promise.all(
           contents.map((block) => toMessageSection(block, mediaContext)),
@@ -433,7 +442,12 @@ export function createReadMcpResourceTool(
 
         const contents: any[] = result?.contents ?? [];
         const { model, endpoint } = resolveModelAndEndpoint(env.config, ctx?.agent?.model);
-        const mediaContext: MediaContext = { endpoint, model, signal: ctx?.signal };
+        const mediaContext: MediaContext = {
+          endpoint,
+          model,
+          signal: ctx?.signal,
+          deps: env.deps,
+        };
         // 与 call_mcp_tool 同一套映射：文本归一为 text 块，媒体按端点能力上传或内联，
         // 不再把二进制资源（图片 / PDF）静默丢掉。
         const sections = await Promise.all(

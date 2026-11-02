@@ -3,24 +3,13 @@ import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-const { mockFilesCreate, mockToFile } = vi.hoisted(() => ({
-  mockFilesCreate: vi.fn(),
-  mockToFile: vi.fn(async (data: unknown, filename: string) => ({
-    data,
-    filename,
-  })),
-}));
-
-vi.mock("openai", () => ({
-  default: class MockOpenAI {
-    files = { create: mockFilesCreate };
-  },
-  toFile: mockToFile,
-}));
-
 import { ViewImageTool } from "./ViewImageTool.js";
 import { makeEnv } from "./test-helpers.js";
-import type { AppConfig } from "../../../types/index.js";
+import type { AppConfig, UploadFn } from "../../../types/index.js";
+
+/** 上传走依赖注入（ToolEnv.deps.upload），不 mock "openai" 模块 */
+const mockUpload = vi.fn<UploadFn>();
+const uploadDeps = { upload: mockUpload };
 
 /**
  * 工具运行上下文：端点按 `ctx.agent.model` 反查（`file_id` 是端点维度资源）。
@@ -51,8 +40,7 @@ const deepseekConfig: AppConfig = {
 };
 
 afterEach(() => {
-  mockFilesCreate.mockReset();
-  mockToFile.mockReset();
+  mockUpload.mockReset();
 });
 
 describe("ViewImageTool", () => {
@@ -72,7 +60,7 @@ describe("ViewImageTool", () => {
       { type: "text", text: "Fetched remote image: https://example.com/a.jpg" },
       { type: "image_url", image_url: { url: "https://example.com/a.jpg" } },
     ]);
-    expect(mockFilesCreate).not.toHaveBeenCalled();
+    expect(mockUpload).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -86,7 +74,7 @@ describe("ViewImageTool", () => {
     const tool = new ViewImageTool(makeEnv("/ws"));
     const result = await tool.call({ path_or_url: url });
     expect(result).toContain("Local URLs are not supported");
-    expect(mockFilesCreate).not.toHaveBeenCalled();
+    expect(mockUpload).not.toHaveBeenCalled();
   });
 
   it("参数说明中声明了不支持本地 URL", () => {
@@ -99,21 +87,21 @@ describe("ViewImageTool", () => {
   });
 
   it("本地图片自动通过 Files API 上传并返回 file 内容块", async () => {
-    mockFilesCreate.mockResolvedValue({ id: "file-api-12345" });
+    mockUpload.mockResolvedValue("file-api-12345");
 
     const dir = await fs.mkdtemp(join(tmpdir(), "viewimg-"));
     const imgPath = join(dir, "cat.png");
     await fs.writeFile(imgPath, Buffer.from([1, 2, 3]));
 
     try {
-      const tool = new ViewImageTool(makeEnv(dir, deepseekConfig));
+      const tool = new ViewImageTool(makeEnv(dir, deepseekConfig, uploadDeps));
       const result = await tool.call({ path_or_url: "cat.png" }, visionCtx);
 
-      expect(mockToFile).toHaveBeenCalledWith(expect.any(Buffer), "cat.png");
-      expect(mockFilesCreate).toHaveBeenCalledWith(
-        expect.objectContaining({ purpose: "user_data" }),
-        expect.anything(),
-      );
+      expect(mockUpload).toHaveBeenCalledTimes(1);
+      const uploadArgs = mockUpload.mock.calls[0][0];
+      expect(uploadArgs.endpoint.id).toBe("deepseek");
+      expect(uploadArgs.filename).toBe("cat.png");
+      expect(Array.from(uploadArgs.data)).toEqual([1, 2, 3]);
       expect(result).toEqual([
         { type: "text", text: expect.stringContaining("file-api-12345") },
         { type: "file", file_id: "file-api-12345" },
@@ -124,14 +112,14 @@ describe("ViewImageTool", () => {
   });
 
   it("本地绝对路径也可上传", async () => {
-    mockFilesCreate.mockResolvedValue({ id: "file-api-abc" });
+    mockUpload.mockResolvedValue("file-api-abc");
 
     const dir = await fs.mkdtemp(join(tmpdir(), "viewimg-"));
     const imgPath = join(dir, "pic.jpeg");
     await fs.writeFile(imgPath, Buffer.from([1]));
 
     try {
-      const tool = new ViewImageTool(makeEnv(dir, deepseekConfig));
+      const tool = new ViewImageTool(makeEnv(dir, deepseekConfig, uploadDeps));
       const result = await tool.call({ path_or_url: imgPath }, visionCtx);
       expect(result).toContainEqual({ type: "file", file_id: "file-api-abc" });
     } finally {
@@ -154,7 +142,7 @@ describe("ViewImageTool", () => {
       const tool = new ViewImageTool(makeEnv(dir, deepseekConfig));
       const result = await tool.call({ path_or_url: "note.txt" });
       expect(result).toContain("Unsupported image format");
-      expect(mockFilesCreate).not.toHaveBeenCalled();
+      expect(mockUpload).not.toHaveBeenCalled();
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
@@ -174,7 +162,7 @@ describe("ViewImageTool", () => {
       expect(sections[0].text).toContain("base64");
       expect(sections[1].type).toBe("image_url");
       expect(sections[1].image_url.url).toMatch(/^data:image\/png;base64,/);
-      expect(mockFilesCreate).not.toHaveBeenCalled();
+      expect(mockUpload).not.toHaveBeenCalled();
 
       const url = await tool.call({ path_or_url: "https://example.com/a.png" });
       expect(url).toEqual([

@@ -159,6 +159,24 @@ export default {
 // ==================================================================
 
 describe("Scope 能力发现与过滤", () => {
+  describe("ToolEnv / deps", () => {
+    it("deps 透传到 env（工具因此可以不 mock openai 模块）", () => {
+      const upload = async () => "file-x";
+      const scope = new Scope({
+        config: MIN_CONFIG,
+        agentsDir: "",
+        cwd: tmpDir,
+        deps: { upload },
+      });
+      expect(scope.env.deps?.upload).toBe(upload);
+    });
+
+    it("未传 deps 时 env 不带 deps（缺省走真实 OpenAI SDK）", () => {
+      const scope = new Scope({ config: MIN_CONFIG, agentsDir: "", cwd: tmpDir });
+      expect(scope.env.deps).toBeUndefined();
+    });
+  });
+
   describe("内置工具（BuiltinToolsScopePlugin）", () => {
     it("discoverBuiltinTools 全量注册内置工具（含 generate_image / view_image）", () => {
       const tools = discoverBuiltinTools({ cwd: tmpDir, config: MIN_CONFIG });

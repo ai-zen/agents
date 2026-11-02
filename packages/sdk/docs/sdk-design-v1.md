@@ -188,10 +188,24 @@ interface ToolEnv {
   cwd: string;
   /** 应用配置（端点、模型、图片模型等） */
   config: AppConfig;
+  /** 出网依赖注入点（缺省全部走真实 OpenAI SDK） */
+  deps?: ToolEnvDeps;
+}
+
+interface ToolEnvDeps {
+  /** 上传文件到端点 Files API，默认 `POST {baseUrl}/files` */
+  upload?: UploadFn;
+  /** 调用端点生成图片，默认 `client.images.generate` */
+  generateImage?: GenerateImageFn;
 }
 ```
 
 `ToolEnv` 在**工具构造时注入**，是工具获取环境信息的唯一来源。工具逻辑不反查 Agent / 全局状态。
+
+**为什么有 `deps`**：工具里的出网动作（Files API 上传、图片生成）全部收敛到这两个函数上，
+而不是让业务代码各自 `new OpenAI()`。这样测试只需注入假实现，**不必 `vi.mock("openai")`**——
+模块级 mock 在 `isolate: false` 的共享模块图里不可靠（谁先把真实 SDK 拉进缓存，后注册的 mock 就失效），
+而 `isolate: false` 正是测试总耗时从 ~14.9s 降到 ~3.5s 的关键。
 
 ### 权限类型
 

@@ -259,6 +259,44 @@ export interface AppConfig {
 // ---- 工具环境 ----
 
 /**
+ * Files API 上传函数签名（默认实现走 OpenAI SDK 的 `POST {baseUrl}/files`）。
+ *
+ * 出网动作做成可注入的依赖，而不是让测试去 mock `openai` 模块：模块级 mock 在
+ * `isolate: false` 的共享模块图里会因加载顺序失效（谁先把真实 SDK 拉进缓存，
+ * 后注册的 mock 就再也不生效）。
+ */
+export type UploadFn = (input: {
+  endpoint: Endpoint;
+  data: Uint8Array;
+  filename: string;
+  signal?: AbortSignal;
+}) => Promise<string>;
+
+/** 图片生成函数签名（默认实现走 OpenAI SDK 的 `images.generate`） */
+export type GenerateImageFn = (input: {
+  endpoint: Endpoint;
+  /** 发给端点的图片模型名（`ImageModel.modelName ?? id`） */
+  model: string;
+  prompt: string;
+  size?: string;
+  quality?: string;
+  signal?: AbortSignal;
+}) => Promise<{ created?: number; data?: { url?: string }[] }>;
+
+/**
+ * 外部依赖注入点 — 所有出网动作的唯一出口。
+ *
+ * 缺省（不传）时全部走真实 OpenAI SDK；测试与宿主（CLI / Desktop）可按需替换，
+ * 这样业务代码里的网络调用不再需要 `vi.mock("openai")` 之类打穿模块图的技巧。
+ */
+export interface ToolEnvDeps {
+  /** 上传文件到端点 Files API，默认 `POST {baseUrl}/files`（purpose=user_data） */
+  upload?: UploadFn;
+  /** 调用端点生成图片，默认 `client.images.generate` */
+  generateImage?: GenerateImageFn;
+}
+
+/**
  * 工具环境 — Scope 的能力插件在实例化内置工具时注入的环境信息。
  *
  * cwd 是相对路径解析的基准（每个 Scope 对应一个工作目录）；
@@ -269,6 +307,8 @@ export interface ToolEnv {
   cwd: string;
   /** 应用配置 */
   config: AppConfig;
+  /** 外部依赖注入点（默认全部走真实 OpenAI SDK） */
+  deps?: ToolEnvDeps;
 }
 
 // ---- MCP（已定稿，来自 docs/sdk-design.md §7）----
