@@ -1,4 +1,4 @@
-## [1.0.0-alpha.25] - 2026-10-31
+## [1.0.0-alpha.25] - 2026-11-02
 
 > Endpoint capability bits are now backfilled on migration. Since alpha.12 the
 > `capabilities.filesApi` bit decides whether local media is uploaded (Files API) or
@@ -7,6 +7,10 @@
 > bit. For those users the promised "deepseek goes through the Files API" never took
 > effect: images, `view_image` and MCP media silently degraded to base64 inline, and
 > the request body grew with every turn of history.
+>
+> Alongside it, entity ids are now confined to their repository directory: a hostile id
+> could previously make `AgentRepository` read / write / delete JSON files outside of
+> `agents/`.
 
 ### 🛡️ Fixed — `Endpoint.capabilities` is backfilled when missing
 
@@ -24,13 +28,36 @@
   `openai` survives, a self-built endpoint stays untouched, and the second start does not
   rewrite the file.
 
+### 🔒 Fixed — entity ids can no longer escape their repository directory
+
+- **`EntityRepository.path()`** now validates the resolved target:
+  `resolve()` + a `root + sep` prefix check, instead of `join(dir, `${id}.json`)`.
+  - A bare `startsWith(root)` would not have been enough: `../agents-evil/x` normalizes to
+    `<root>-evil/x.json`, which still *starts with* `<root>`.
+  - `join` cannot normalize absolute paths, so `/etc/passwd` used to land in
+    `<dir>/etc/passwd.json`; `resolve` catches it.
+- The check lives in `path()` rather than in `write()` / `delete()`: `read`, `write` and
+  `delete` all go through it, and `list()` only ever passes single-segment names coming
+  from `readdir`, so it cannot break listing — one gate, read/write/delete consistent.
+- Affected callers that pass a user-supplied id straight through: `AgentRepository`
+  (agent / sub-agent definitions) and the CLI's conversation repository (`/save`, `/load`).
+  A hostile id now fails loudly (`Invalid entity id: …`) instead of writing outside the
+  directory.
+- Known and accepted: `a/../b` normalizes back inside `<root>/b.json` and is therefore
+  still allowed — the only remaining effect is overwriting another definition, and
+  `config.json` is out of reach.
+
 ### ✅ Tests
 
+- `AgentRepository.test.ts` +5: `../escaped` rejected *and* no file written outside,
+  `../agents-evil/x` rejected, `read` / `delete` share the same gate, absolute path
+  rejected, normal id unaffected. Uses a two-level temp directory so an escape would land
+  inside the test's own tmpdir instead of `/tmp`.
 - `migrate.test.ts` +7: backfill on a legacy config, explicit `false` respected,
   existing-but-empty `capabilities` untouched, user-built endpoint untouched, factory
   endpoint without the bit untouched, idempotency, and "no side effects on the caller's
   object".
-- Full suite: **57 files / 624 tests passing** (6 skipped), `tsc --noEmit` clean.
+- Full suite: **57 files / 629 tests passing** (6 skipped), `tsc --noEmit` clean.
 
 ### 🔧 Toolchain — TypeScript 5.9.3 → 7.0.2
 
@@ -43,7 +70,8 @@
   closest equivalent for a package compiled with `module: ESNext`.
 - Verified after the upgrade: `tsc --noEmit` clean for both packages, both `build`
   scripts succeed, core **150 passed / 17 skipped**, sdk **624 passed / 6 skipped**
-  (unchanged), and `dist/index.js` still loads at runtime (84 exports).
+  at that point (629 after the entity-id hardening above), and `dist/index.js` still
+  loads at runtime (84 exports).
 
 # Changelog
 
