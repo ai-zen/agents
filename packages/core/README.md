@@ -117,7 +117,7 @@ Message status enum:
 | `Error` | An error occurred |
 | `Aborted` | Aborted |
 
-> Messages carry their attributable token usage: assistant messages have `usage` (their own response, written by the final stream chunk), and tool messages have `subAgentUsage` (the aggregate of an internal delegation such as a sub-agent). Both persist with the message; `sumUsage(agent.messages)` yields the session total (including every sub-agent level).
+> Messages carry their attributable token usage: assistant messages have `usage` (their own response, written by the final stream chunk), and tool messages have `subAgentUsage` (the aggregate of an internal delegation such as a sub-agent). Both persist with the message; `sumUsage(agent.messages)` yields the session total (including every sub-agent level). `agent.lastUsage` is a **read-only derived** value — it reads the most recent non-`omit` assistant message's `usage` instead of keeping a second copy, so it follows `messages` when a plugin replaces them.
 
 ### Tool
 
@@ -370,7 +370,8 @@ send(content)
         │     └── onInnerLoopEnd hook
         ├── onInnerLoopsEnd hook
         └── returns this.messages
-  └── onAfterSend hook
+  ├── onAfterSend hook (may replace this.messages, e.g. a migration)
+  └── returns this.messages (taken AFTER the hook, so replacements are visible)
 ```
 
 ### Tool Call Handling

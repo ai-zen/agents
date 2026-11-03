@@ -1,5 +1,53 @@
 # Changelog
 
+## [4.5.4] - 2026-11-03
+
+> Two state bugs that only bite "normal usage", both found by a code review of the
+> SDK above this package.
+>
+> `send()` used to hand back a `messages` snapshot taken *before* `onAfterSend`,
+> which is the exact hook the docs (and the SDK's own migration plugin) use to swap
+> the conversation. So a migration replaced `messages`, and the caller still saved
+> the old session.
+>
+> `lastUsage` was a second copy of a fact that already lives on the messages. After
+> a migration replaced them, the copy went stale and the context guard killed the
+> fresh session with the old, oversized usage.
+
+### 🛡️ Fixed — `send()` returns the messages *after* `onAfterSend`
+
+- `send()` now ends with `await this.run(ctx); await dispatchHook("onAfterSend",
+  ctx); return this.messages;`. Previously it captured `const result = await
+  this.run(ctx)` first, dispatched the hook, and returned `result` — a snapshot
+  taken before any plugin could replace the array.
+- `run()`'s only exit has always been `return this.messages`, so the promise
+  shape and identity are unchanged for every caller that does not replace
+  `messages` in a hook.
+
+### 🛡️ Fixed — `lastUsage` is a read-only derived value
+
+- The `lastUsage?: AgentNS.Usage` field and the `this.lastUsage = usage` write in
+  `parseStreamData()` are gone. The usage was already pinned onto the assistant
+  message (`receiver.usage`) — the same fact, stored twice, and the copies could
+  diverge.
+- `get lastUsage()` now scans `messages` backwards for the most recent assistant
+  message that is not `omit` and carries `usage`. No setter: assignment throws
+  `TypeError`, which is intended — nothing should be patching usage data to steer
+  another component. Components that must step aside (a context guard during a
+  handoff turn, say) should expose their own "suspended" switch and decide for
+  themselves.
+- Behaviour that follows: replacing `messages` (migration, `prune`) makes
+  `lastUsage` reflect the new conversation immediately, with no cleanup call.
+
+### ✅ Tests
+
+- `Agent.test.ts`: `send()` returns the post-hook `messages` (a plugin replaces
+  them in `onAfterSend`); `lastUsage` follows a replaced `messages`; it skips
+  `omit` messages and messages without `usage`; assigning to it throws.
+- Existing `lastUsage` assertions were kept as-is: they assert the same values,
+  and passing them confirms the getter is a faithful replacement for the field.
+- Core suite: **154 passed, 17 skipped** (integration tests need an API key).
+
 ## [4.5.3] - 2026-10-27
 
 ### ✨ Added

@@ -117,7 +117,7 @@ Message.Function(functionCall, "执行结果");
 | `Error` | 发生错误 |
 | `Aborted` | 已中止 |
 
-> 消息会带上可归因的 token 消耗：助手消息的 `usage`（自身那次响应，由流式最后一个 chunk 写入），以及工具消息的 `subAgentUsage`（内部委派——如子 Agent——的累计用量）。两者随消息持久化；用 `sumUsage(agent.messages)` 求和即得本会话累计（含所有层级的子 Agent）。
+> 消息会带上可归因的 token 消耗：助手消息的 `usage`（自身那次响应，由流式最后一个 chunk 写入），以及工具消息的 `subAgentUsage`（内部委派——如子 Agent——的累计用量）。两者随消息持久化；用 `sumUsage(agent.messages)` 求和即得本会话累计（含所有层级的子 Agent）。`agent.lastUsage` 是**只读派生值**：读最近一条未 `omit` 助手消息的 `usage`，不再另存一份，故插件替换 `messages` 后会自动跟随。
 
 ### Tool（工具基类）
 
@@ -370,7 +370,8 @@ send(content)
         │     └── onInnerLoopEnd 钩子
         ├── onInnerLoopsEnd 钩子
         └── 返回 this.messages
-  └── onAfterSend 钩子
+  ├── onAfterSend 钩子（可整体替换 this.messages，如迁移）
+  └── 返回 this.messages（在钩子之后取，替换结果对调用方可见）
 ```
 
 ### 工具调用处理
