@@ -1,3 +1,37 @@
+## [1.0.0] - 2026-11-03
+
+> First stable release. The whole `1.0.0-alpha.x` line — up to and including `alpha.26` — is
+> folded into this version: nothing was dropped, no alpha behaviour was reverted. What changes
+> with the version number is the promise, not the code. The documented surface (`Scope`,
+> `ScopePlugin`, `allInOne()`, the built-in tools, `ConfigManager`, the entity repositories) is
+> now frozen: from here on a breaking change needs a major bump, so a `^1.0.0` range is safe to
+> depend on. Anything still marked as internal in the docs may move without notice.
+>
+> Requires `@ai-zen/agents-core@^4.5.4`.
+>
+> The per-release history of the alpha line is preserved below, unedited, because those entries
+> are the only place where the reasoning behind each fix is written down.
+
+### 📌 What to know before upgrading from the alpha line
+
+- **`send()` returns after the hooks, not before them** (`agents-core` 4.5.4) — code that
+  inspected `messages` right after `await send()` now sees the post-hook state, which is what
+  was actually sent.
+- **`lastUsage` is read-only and derived from `messages`** — assigning to it is a type error
+  rather than a silently ignored write. Anything that used to reset it by hand should drop
+  that code; replacing `messages` is enough.
+- **Tool results tell the truth** about exit codes, truncation, "started" vs "succeeded", and
+  permissions that were declared but not enforced. A tool call that used to report success
+  while doing nothing is now a failure — this is the one category that may surface as a new
+  error in existing prompts.
+- **Entity ids cannot escape their directory** — `EntityRepository` validates the resolved path
+  against the repository root, so `../x` and absolute ids are rejected.
+
+### 🧪 Tests
+
+- 628 unit cases in 53 files, plus 36 integration / e2e cases (6 skipped — they need real API
+  keys). `tsc --noEmit` is clean for both the production and the test config.
+
 ## [1.0.0-alpha.26] - 2026-11-03
 
 > A full review of this package (ledger committed as `docs/code-review-ledger.md`)
