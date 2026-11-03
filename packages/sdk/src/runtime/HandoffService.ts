@@ -124,8 +124,6 @@ export interface HandoffParams {
   promptTokens?: number;
   /** 上下文阈值（可选，仅透传给钩子） */
   handoffTokens?: number;
-  /** 会话 id（可选，用于交接文件名，便于回溯） */
-  conversationId?: string;
   /**
    * 取消信号（可选）。触发后交接**立即停止且不降级**，抛 {@link HandoffAbortedError}。
    *
@@ -226,15 +224,17 @@ export class HandoffService {
   // ==================================================================
 
   /**
-   * 交接文件名：`<YYYYMMDD-HHmmss>-<会话id前8位>.md`（本地时间，便于人眼归档）。
+   * 交接文件名：`<YYYYMMDD-HHmmss>.md`（本地时间，便于人眼归档）。
+   *
+   * 只有到秒的时间戳。同一秒内两次交接会撞名 —— 不做去重兜底：同一时刻并发交接
+   * 本来就是调用方该避免的事，加随机后缀只会让文件名更难认。
    */
-  static createHandoffFileName(date: Date = new Date(), conversationId?: string): string {
+  static createHandoffFileName(date: Date = new Date()): string {
     const p = (n: number) => String(n).padStart(2, "0");
     const stamp =
       `${date.getFullYear()}${p(date.getMonth() + 1)}${p(date.getDate())}` +
       `-${p(date.getHours())}${p(date.getMinutes())}${p(date.getSeconds())}`;
-    const suffix = conversationId ? `-${conversationId.slice(0, 8)}` : "";
-    return `${stamp}${suffix}.md`;
+    return `${stamp}.md`;
   }
 
   /**
@@ -336,11 +336,15 @@ export class HandoffService {
       const strategy = params.strategy ?? this.defaultStrategy;
       const breakpointMessages = HandoffService.createPostMessages(ctx.handoffPath);
 
+      // 交接回合可能已经把 messages 换成新会话，definition 也可能是手写的（没有 messages）：
+      // 这里按空模板处理，好让报错落在"模型该补的配置"上，而不是原生 TypeError
+      const templateMessages = agent.definition.messages ?? [];
+
       if (strategy === "prune") {
         // 浅拷贝模板消息，避免污染 definition.messages 引用的对象
-        agent.messages = [...agent.definition.messages, ...breakpointMessages];
+        agent.messages = [...templateMessages, ...breakpointMessages];
       } else {
-        const preserveCount = Math.min(agent.definition.messages.length, agent.messages.length);
+        const preserveCount = Math.min(templateMessages.length, agent.messages.length);
         agent.messages = [
           ...agent.messages.map((m, i) => ({
             ...m,
@@ -421,12 +425,9 @@ export class HandoffService {
   }
 
   private async runHandoff(params: HandoffParams, migrating: boolean): Promise<HandoffContext> {
-    const { agent, promptTokens, handoffTokens, conversationId, signal } = params;
+    const { agent, promptTokens, handoffTokens, signal } = params;
     const requestedMode = params.mode ?? this.defaultMode;
-    const handoffPath = join(
-      this.handoffDirPath,
-      HandoffService.createHandoffFileName(new Date(), conversationId),
-    );
+    const handoffPath = join(this.handoffDirPath, HandoffService.createHandoffFileName(new Date()));
     const model = this.model ?? agent.model;
     const messageCountBefore = agent.messages.length;
 

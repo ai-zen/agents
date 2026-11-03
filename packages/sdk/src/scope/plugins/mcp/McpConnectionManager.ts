@@ -34,9 +34,19 @@ interface ConnectionEntry {
   cancelRetryWait?: (err: Error) => void;
 }
 
+/**
+ * 建连超时缺省值（毫秒）。
+ *
+ * 没有上限时，配置错误的 SSE / HTTP 端点会让 `load_mcp` 永久挂起（SSE 在服务端不发
+ * 响应头时尤其如此，fetch 只对建链有兜底，对"连上了但永不回话"没有）。与请求超时同口径。
+ */
+const DEFAULT_CONNECT_TIMEOUT_MS = 60_000;
+
 export interface McpConnectOptions {
-  /** 空闲超时（毫秒），默认 stdio: 30min, http: 5min */
+  /** 空闲超时（毫秒），默认 stdio: 30min, http/sse: 5min */
   idleTimeoutMs?: number;
+  /** 建连超时（毫秒），默认 60s；超时即断开并抛错，避免工具永久挂起 */
+  connectTimeoutMs?: number;
   /** 失败时自动重连 */
   autoReconnect?: boolean;
   /** 最大重试次数，默认 3 */
@@ -120,9 +130,15 @@ export class McpConnectionManager {
       cancelled: false,
     });
 
+    const connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+
     try {
-      await pendingPromise;
+      await this.withConnectTimeout(name, pendingPromise, connectTimeoutMs);
       const entry = this.servers.get(name)!;
+      // 建连期间被 disconnect()/dispose()：不要复活连接
+      if (entry.cancelled || entry.state === "disconnected") {
+        throw new Error(`Connection to "${name}" was cancelled`);
+      }
       this.servers.set(name, {
         ...entry,
         state: "connected",
@@ -137,6 +153,37 @@ export class McpConnectionManager {
         this.servers.set(name, { state: "error" });
       }
       throw err;
+    }
+  }
+
+  /** 给建连套上超时：超时即取消连接并清掉半成品状态 */
+  private async withConnectTimeout(
+    name: string,
+    promise: Promise<void>,
+    timeoutMs: number,
+  ): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        reject(
+          new Error(
+            `MCP server "${name}" connection timed out after ${timeoutMs}ms (check the transport config: command/url/headers)`,
+          ),
+        );
+      }, timeoutMs);
+      timer.unref?.();
+    });
+
+    try {
+      await Promise.race([promise, timeout]);
+    } catch (err) {
+      if (String((err as Error)?.message ?? "").includes("timed out")) {
+        // 取消挂着的建连，并清掉它可能建好的资源
+        await this.disconnect(name).catch(() => {});
+      }
+      throw err;
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
@@ -245,6 +292,29 @@ export class McpConnectionManager {
     }
 
     const entry = this.servers.get(name) ?? { state: "connecting" as const };
+
+    // 建连期间被 disconnect()/dispose()（启动即退出是正常序列）：关掉刚建好的资源，
+    // 绝不写回 connected，否则连接会"复活"、stdio 子进程也再没人关。
+    if (entry.cancelled) {
+      await this.closeQuietly(client, transport);
+      throw new Error(`Connection to "${name}" was cancelled`);
+    }
+
+    // 断线检测：运行期 transport 关掉时把状态标回 disconnected，避免 load_mcp / 状态栏
+    // 一直展示过期清单（不做自动重连：重连策略属于上层）。
+    const prevOnClose = transport.onclose;
+    transport.onclose = () => {
+      prevOnClose?.();
+      this.markDisconnected(name);
+    };
+    const prevOnError = transport.onerror;
+    transport.onerror = (error: Error) => {
+      prevOnError?.(error);
+      getLogger().error(
+        `[McpConnectionManager] Transport error for "${name}": ${error?.message ?? error}`,
+      );
+    };
+
     this.servers.set(name, {
       ...entry,
       state: "connected",
@@ -253,6 +323,25 @@ export class McpConnectionManager {
       manifest,
       cancelled: false,
     });
+  }
+
+  /** 静默关闭连接资源（断开/取消路径共用） */
+  private async closeQuietly(client?: Client, transport?: Transport): Promise<void> {
+    try {
+      await client?.close();
+    } catch {}
+    try {
+      await transport?.close();
+    } catch {}
+  }
+
+  /** 运行期断线：标记 disconnected 并记日志（已在连接状态才处理，避免重复日志） */
+  private markDisconnected(name: string): void {
+    const entry = this.servers.get(name);
+    if (!entry || entry.state !== "connected") return;
+    getLogger().error(`[McpConnectionManager] MCP server "${name}" disconnected`);
+    this.clearTimeout(name);
+    this.servers.set(name, { state: "disconnected" });
   }
 
   /**
@@ -318,14 +407,20 @@ export class McpConnectionManager {
 
     this.clearTimeout(name);
 
-    try {
-      await entry.client?.close();
-      await entry.transport?.close();
-    } catch {
-      // 断开失败也清理状态
-    }
+    // 断开失败也清理状态。注意保留 `cancelled`：建连中的 await 回来后要据此放弃写入。
+    await this.closeQuietly(entry.client, entry.transport);
 
-    this.servers.set(name, { state: "disconnected" });
+    this.servers.set(name, {
+      ...entry,
+      state: "disconnected",
+      client: undefined,
+      transport: undefined,
+      manifest: undefined,
+      pendingPromise: undefined,
+      timeoutTimer: undefined,
+      retryTimer: undefined,
+      cancelRetryWait: undefined,
+    });
   }
 
   async disconnectAll(): Promise<void> {

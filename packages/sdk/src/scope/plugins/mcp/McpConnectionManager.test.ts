@@ -302,3 +302,78 @@ describe("McpConnectionManager", () => {
     expect(manager.getState("github")).toBe("disconnected");
   });
 });
+
+describe("生命周期边界（启动即退出 / 断线 / 建连超时）", () => {
+  it("建连过程中 disconnect()：连接不复活，资源被关闭", async () => {
+    let releaseConnect!: () => void;
+    mockClient.connect.mockImplementation(
+      () => new Promise<void>((resolve) => (releaseConnect = resolve)),
+    );
+
+    const manager = new McpConnectionManager(
+      () => mockTransport as any,
+      () => mockClient as any,
+    );
+
+    const connecting = manager.connect("srv", stdioConfig);
+    // 建连进行中（客户端 connect 还没返回）就断开一次
+    await manager.disconnect("srv");
+    releaseConnect();
+
+    await expect(connecting).rejects.toThrow(/cancelled/);
+    expect(manager.getState("srv")).toBe("disconnected");
+    // 半成品资源必须被关掉，否则 stdio 子进程留成孤儿
+    expect(mockClient.close).toHaveBeenCalled();
+    expect(mockTransport.close).toHaveBeenCalled();
+  });
+
+  it("运行期 transport 关闭时状态标回 disconnected（不做自动重连）", async () => {
+    mockClient.connect.mockResolvedValue(undefined);
+    const manager = new McpConnectionManager(
+      () => mockTransport as any,
+      () => mockClient as any,
+    );
+
+    await manager.connect("srv", stdioConfig);
+    expect(manager.getState("srv")).toBe("connected");
+
+    // 模拟底层 SSE / stdio 流断开
+    (mockTransport as any).onclose?.();
+
+    expect(manager.getState("srv")).toBe("disconnected");
+    expect(manager.getClient("srv")).toBeUndefined();
+  });
+
+  it("建连超时会断开并抛错，不会永久挂起", async () => {
+    // connect 永不返回
+    mockClient.connect.mockImplementation(() => new Promise<void>(() => {}));
+
+    const manager = new McpConnectionManager(
+      () => mockTransport as any,
+      () => mockClient as any,
+    );
+
+    await expect(manager.connect("srv", httpConfig, { connectTimeoutMs: 50 })).rejects.toThrow(
+      /timed out after 50ms/,
+    );
+    expect(manager.getState("srv")).toBe("disconnected");
+  });
+
+  it("transport error 回调会被接管，不影响既有处理", async () => {
+    mockClient.connect.mockResolvedValue(undefined);
+    const prevOnError = vi.fn();
+    (mockTransport as any).onerror = prevOnError;
+
+    const manager = new McpConnectionManager(
+      () => mockTransport as any,
+      () => mockClient as any,
+    );
+    await manager.connect("srv", stdioConfig);
+
+    (mockTransport as any).onerror?.(new Error("boom"));
+    expect(prevOnError).toHaveBeenCalled();
+
+    delete (mockTransport as any).onclose;
+    delete (mockTransport as any).onerror;
+  });
+});

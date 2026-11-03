@@ -119,15 +119,7 @@ afterEach(async () => {
 // ---------------------------------------------------------------------------
 
 describe("HandoffService 静态工具", () => {
-  it("createHandoffFileName 生成 <时间戳>-<会话id前8位>.md", () => {
-    const name = HandoffService.createHandoffFileName(
-      new Date(2026, 0, 2, 3, 4, 5),
-      "abcdef1234567890",
-    );
-    expect(name).toBe("20260102-030405-abcdef12.md");
-  });
-
-  it("createHandoffFileName 无会话 id 时只有时间戳", () => {
+  it("createHandoffFileName 只用到秒的时间戳（无会话 id 后缀）", () => {
     const name = HandoffService.createHandoffFileName(new Date(2026, 0, 2, 3, 4, 5));
     expect(name).toBe("20260102-030405.md");
   });
@@ -197,13 +189,12 @@ describe("handoff", () => {
       },
     });
 
-    const ctx = await service.handoff({ agent: asAgent(agent), conversationId: "conv-1" });
+    const ctx = await service.handoff({ agent: asAgent(agent) });
 
     expect(ctx.mode).toBe("self");
     expect(ctx.requestedMode).toBe("self");
     expect(existsSync(ctx.handoffPath)).toBe(true);
     expect(ctx.handoffPath.startsWith(dir)).toBe(true);
-    expect(ctx.handoffPath.endsWith("-conv-1.md")).toBe(true);
     // self 模式不读盘 → handoffDoc 为空
     expect(ctx.handoffDoc).toBeUndefined();
     // 会话未切换：历史仍在，且多出交接回合
@@ -426,6 +417,19 @@ describe("migrate", () => {
     expect(breakpoint.content).toContain(ctx.handoffPath);
     expect(breakpoint.content).toContain("read");
     expect(breakpoint.omit).toBeFalsy();
+  });
+
+  it("definition 没有 messages 时按空模板处理（不抛原生 TypeError）", async () => {
+    const { service } = await makeService({ strategy: "prune" });
+    const agent = selfAgent();
+    // 手写的 definition 可能根本没有 messages；交接回合此时已跑完，
+    // 抛 TypeError 对调用方毫无可操作性
+    agent.definition = {} as unknown as { messages: any[] };
+
+    const ctx = await service.migrate({ agent: asAgent(agent) });
+
+    expect(agent.messages).toHaveLength(1); // 只剩交接断点
+    expect(agent.messages[0]!.content).toContain(ctx.handoffPath);
   });
 
   it("omit（默认）：历史标记 omit，断点不标记", async () => {
