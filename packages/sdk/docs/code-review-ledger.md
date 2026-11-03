@@ -121,6 +121,6 @@
 | 2. 工具层 | `d88e708` | #1 #1b #4 #6 #7 #9a-c #10 #11 #13 全部落地。过程中发现 `child_process.exec()` 会**忽略 `detached`**（Node 26 实测），故 `exec` 改用 `spawn(shell, detached)` 自收流，超时才能 `kill(-pid)` 回收整组 |
 | 3. 权限 | `56a5c08` | skill / MCP server 均按 Scope 白名单校验，负向用例覆盖 deny 场景 |
 | 4. 运行时 | `55567c7` | #19 #20a #22a-c。**#19 的台账前提有误**：`conversationId` 并非无人传（SDK 测试与 CLI 都在传），维护者裁定仍按原方案删除（"后缀没有任何意义，而且会话的名称尤其可能乱七八糟"） |
-| 5. CLI 跟进 | `1840f0d`（`ai-zen/cli` 仓） | 删除 `agent.lastUsage = undefined`；接线 `isSuspended: () => handoffService.busy`；删除 `conversationId` 传参。验证时需把本地 `agents-{core,sdk}` 临时链接进 CLI（CLI 依赖的是已发布的 alpha.25），**SDK 发布下一个 alpha 后需同步升依赖** |
+| 5. CLI 跟进 | `1840f0d`（`ai-zen/cli` 仓） | 删除 `agent.lastUsage = undefined`；接线 `isSuspended: () => handoffService.busy`；删除 `conversationId` 传参。已发布 `@ai-zen/agents-core@4.5.4` + `@ai-zen/agents-sdk@1.0.0-alpha.26`，CLI 依赖同步升到 alpha.26 / ^4.5.4（`5da63fd`），并在真实发布产物上重跑 799 测试 |
 | 6. 工程门禁 | `6cf8f30` | `tsconfig.test.json` + `pretest`；默认套件收窄；e2e 通配。实测清理 **234** 个测试类型错误（比台账记的 211 多，因为 review 期间又新增了用例） |
 | 7. 文档 | 本次提交 | 8 处漂移全部对齐，另补 `shared/content-blocks.ts` 的设计说明与本节行为变更 |
