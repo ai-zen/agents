@@ -1,3 +1,137 @@
+## [1.0.0-alpha.26] - 2026-11-03
+
+> A full review of this package (ledger committed as `docs/code-review-ledger.md`)
+> turned up 24 defects that bite in ordinary use. 14 candidate findings were
+> dropped on purpose: the model is not an attacker, the tool layer is not a
+> security boundary, and an error string returned by a tool is a legitimate
+> result. What stayed is everything a normal session trips over: a tool call that
+> freezes the process, a silent file corruption, a silent data loss, a "success"
+> that never happened, permission rules that were declared but not enforced.
+>
+> Two of the fixes live elsewhere: `@ai-zen/agents-core@4.5.4` (`send()` return
+> timing, `lastUsage` as a derived value) and a following `ai-zen/cli` release
+> (guard hand-off and dependency bump).
+
+### 🛡️ Fixed — a tool call that froze the whole process
+
+- **`edit` with an empty `oldText`** spun forever in `countOccurrences()`
+  (`indexOf("", pos)` returns `pos`, `pos += 0` never advances). It blocked the
+  event loop, so `abort()` could not help — one agent froze every session in the
+  process. Empty `oldText` is now rejected before anything else; `batch_edit`
+  treats it as a failed replacement instead of stalling the batch.
+
+### 🛡️ Fixed — `edit` / `batch_edit` silently rewrote the replacement text
+
+- `content.replace(oldText, newText)` treats `$&`, `` $` ``, `$'` and `$$` inside
+  `newText` as replacement patterns. Writing `cost: $& ($$)` produced `cost: PRICE
+  ($)` — a corrupted file reported as `success`. Both tools now use the callback
+  form of the replacer, where the return value is always taken literally. The
+  shared logic moved to `builtin/textEdit.ts`.
+- `batch_edit` keeps its cascading semantics (each replacement applies to the
+  result of the previous one) but now says so in its description; the "no match"
+  reason explains that matching happens against the post-previous-replacements
+  content, and `replacedCount` is the actual number of replacements (it used to
+  report `1` for `isReplaceAll`).
+
+### 🛡️ Fixed — `download_file` could delete an existing file, and had no limits
+
+- On abort it ran `rm(savePath, { force: true })`. With the old
+  buffer-then-write design the abort could only happen before the single
+  `writeFile`, so the only file that branch could ever delete was one that
+  already existed at that path. The branch is gone; an interrupted download now
+  reports what happened and never touches the file.
+- The body is written as a stream instead of `arrayBuffer()` (a 200 MB file used
+  to cost ~650 MB of heap).
+- **New required `timeout` parameter** (milliseconds, same convention as `exec`):
+  `fetch` only bounds the response headers, the body could stream forever.
+
+### 🛡️ Fixed — `exec` lied about exit codes, leaked orphans, and truncated silently
+
+- Successful commands reported `exitCode: null`, which reads as "did not finish
+  normally". Now `0`.
+- `child_process.exec()` **ignores `detached`** (verified on Node 26), so the
+  timeout only killed the shell and grandchildren survived as orphans. `exec` now
+  uses `spawn(shell, detached)` with its own stream collection and kills the whole
+  process group (`kill(-pid)`); on Windows it falls back to killing the child.
+  When the child exited but a descendant still holds the stdio pipes, the tool
+  drains what arrived and returns instead of hanging until the timeout.
+- `maxBuffer` is set explicitly (16 MB) and truncation is reported as
+  `truncated` + a truthful note, instead of returning
+  `ERR_CHILD_PROCESS_STDIO_MAXBUFFER` as the "exit code" while claiming the full
+  content had been written to disk.
+
+### 🛡️ Fixed — `spawn` reported failures as success
+
+- Its `exit` listener was removed by `removeAllListeners()`, so a command that
+  failed immediately (`exit 3`, missing binary, syntax error) came back as
+  `success: true`. The field is now `started`, with an explicit note that this
+  tool does not track the exit status — use `exec` for that.
+
+### 🛡️ Fixed — `glob` / `find_text` answered "no files" for a bad base directory
+
+- A non-existent or non-directory `path` silently returned `[]` (`ls` raises
+  `ENOENT` in the same situation). Both tools now validate the base directory and
+  say so; the implicit `**/node_modules/**` default for `exclude` is documented in
+  the parameter description.
+
+### 🛡️ Fixed — `generate_image` returned `success: true` with no images
+
+- Only `url` entries were collected, so an endpoint that returns `b64_json`
+  produced `{ success: true, images: [] }`. Base64 payloads are now decoded,
+  written to `<tmp>/ai-zen/generated-images/` (extension sniffed from the magic
+  bytes) and returned as a local path; a response with neither field is a
+  failure.
+
+### 🛡️ Fixed — `permissions` were declared but not enforced
+
+- `load_skill` / `call_skill_sub_agent` only used `filteredSkills` to build the
+  `enum`; the callback read from the full skill directory, so a denied skill
+  could be loaded by naming it (and `../..` escaped the directory entirely). Both
+  now validate `skill_id` against the filtered set.
+- `call_mcp_tool` / `read_mcp_resource` only checked "is this server connected".
+  The connection manager is shared across the Scope, so any server connected by
+  one agent was callable by every agent. Both tools receive the filtered server
+  list and validate against it.
+
+### 🛡️ Fixed — runtime edges around handoff and MCP
+
+- Handoff file names dropped the `conversationId` suffix (and the parameter with
+  it): session names are hand-edited and would only make the file name noisier.
+- `migrate()` reads `definition.messages ?? []` — a hand-written definition
+  without `messages` used to throw a raw `TypeError` after the handoff turn had
+  already run.
+- MCP: a `disconnect()` during connect no longer resurrects the connection (and
+  closes the resources it built); a transport that closes at runtime marks the
+  server `disconnected` instead of leaving a stale manifest behind; connecting
+  has a 60 s timeout (`connectTimeoutMs`) instead of hanging `load_mcp` forever
+  on a misconfigured endpoint.
+- `ContextGuardPlugin` gained `isSuspended?: () => boolean`. Handoff/migration
+  turns are started precisely when the context is fullest; the guard now steps
+  aside for them itself, and `HandoffService` no longer clears usage data to make
+  that happen ("whoever imposes the limit lifts it").
+
+### 🧪 Engineering
+
+- Tests are now type-checked: new `tsconfig.test.json`, `pretest` runs it. 234
+  type errors had accumulated (including real drift: `defaultModel` removed,
+  `maxTokens` → `handoffTokens`, `McpServerConfig.name` removed,
+  `AgentDefinition.messages` must be `Message` instances). All cleared.
+- `npm test` no longer pulls in `test/e2e-*.test.ts`: those need an API key, real
+  network, or a local MCP server, and `prepublishOnly` hangs off that command.
+  Scripts now mirror the CLI: `test` / `test:e2e` / `test:all`.
+- Default suite: **628 passed** (53 files). E2E: **36 passed, 6 skipped**.
+
+### 📖 Docs
+
+- Aligned 8 drifts: `ContextGuardPlugin({ guardTokens, isSuspended })` (no
+  `maxTokens`, no `ratio`, no `suspendedRatio` — the threshold is absolute),
+  `AutoMigratePlugin({ handoffTokens })`, `AutoMigrateModeResolver`'s
+  `info.handoffTokens`, `Model.tokenThresholds` instead of `maxContextTokens`,
+  `Endpoint.capabilities`, the `content-blocks` module in the directory tree and
+  the module layering, plus a new "file → content block" section describing the
+  transport decision table, upload cache, degradation rules and the `deps.upload`
+  injection point.
+
 ## [1.0.0-alpha.25] - 2026-11-02
 
 > Endpoint capability bits are now backfilled on migration. Since alpha.12 the
