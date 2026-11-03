@@ -3,6 +3,7 @@ import { SdkCallbackTool } from "./SdkCallbackTool.js";
 import type { ToolEnv } from "../../../types/index.js";
 import type { AgentNS, ToolCallContext } from "@ai-zen/agents-core";
 import { DEFAULT_MAX_TOOL_OUTPUT, guardOutput, headPreview } from "./outputGuard.js";
+import { checkBaseDirectory } from "./searchBase.js";
 
 export class GlobTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
@@ -22,7 +23,8 @@ export class GlobTool extends SdkCallbackTool {
         },
         exclude: {
           type: "array",
-          description: "glob pattern to exclude",
+          description:
+            'Glob patterns to exclude. When omitted, defaults to ["**/node_modules/**"]; pass an explicit list to override.',
           items: {
             type: "string",
           },
@@ -44,6 +46,10 @@ export class GlobTool extends SdkCallbackTool {
     const signal = ctx?.signal;
     try {
       const cwd = input.path ? this.resolve(input.path) : this.env.cwd;
+      // 基目录不存在/不是目录时明确报错：静默返回 [] 会被模型当成「文件不存在」
+      const baseError = await checkBaseDirectory(cwd);
+      if (baseError) return baseError;
+
       const result: string[] = [];
       for await (const file of fsp.glob(input.pattern, {
         exclude: input.exclude || ["**/node_modules/**"],

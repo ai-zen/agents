@@ -244,4 +244,43 @@ describe("FindTextTool", () => {
       } catch {}
     }
   });
+
+  it("基目录不存在时报错，而不是返回空数组", async () => {
+    const tool = new FindTextTool(makeEnv());
+    const result = await tool.call({
+      path: "/tmp/definitely-not-exists-98765",
+      pattern: "*.ts",
+      text: "needle",
+    });
+    expect(typeof result).toBe("string");
+    expect(result).toContain("does not exist");
+  });
+
+  it("基路径是文件而非目录时报错", async () => {
+    const tool = new FindTextTool(makeEnv());
+    const dir = tmpDir();
+    try {
+      writeFileSync(join(dir, "a.txt"), "needle", "utf-8");
+      const result = await tool.call({
+        path: join(dir, "a.txt"),
+        pattern: "*.txt",
+        text: "needle",
+      });
+      expect(typeof result).toBe("string");
+      expect(result).toContain("Not a directory");
+    } finally {
+      try {
+        unlinkSync(join(dir, "a.txt"));
+      } catch {}
+      try {
+        unlinkSync(dir);
+      } catch {}
+    }
+  });
+
+  it("exclude 未指定时默认排除 node_modules（描述里写明）", async () => {
+    const tool = new FindTextTool(makeEnv());
+    const exclude = tool.function.parameters.properties.exclude;
+    expect(exclude.description).toContain("node_modules");
+  });
 });

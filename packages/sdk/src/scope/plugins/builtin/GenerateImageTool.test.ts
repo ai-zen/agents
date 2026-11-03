@@ -139,4 +139,38 @@ describe("GenerateImageTool", () => {
       }),
     );
   });
+
+  it("端点只返回 b64_json 时落盘并给出本地路径（不再 success:true + images:[]）", async () => {
+    // 1x1 PNG
+    const png =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    mockImagesGenerate.mockResolvedValueOnce({ created: 1, data: [{ b64_json: png }] });
+
+    const result = await tool.call({ prompt: "a cat" });
+    const parsed = JSON.parse(result);
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.images).toHaveLength(1);
+    expect(parsed.images[0].url).toBeUndefined();
+    expect(parsed.images[0].filePath).toMatch(/\.png$/);
+    expect(parsed.note).toContain("base64");
+
+    // 真的写出了图片字节
+    const { readFileSync, unlinkSync } = await import("node:fs");
+    const bytes = readFileSync(parsed.images[0].filePath);
+    expect(bytes.length).toBeGreaterThan(50);
+    expect(bytes.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
+    unlinkSync(parsed.images[0].filePath);
+  });
+
+  it("端点既无 url 也无 b64_json 时返回失败，而不是假成功", async () => {
+    mockImagesGenerate.mockResolvedValueOnce({ created: 1, data: [{}] });
+
+    const result = await tool.call({ prompt: "a cat" });
+    const parsed = JSON.parse(result);
+
+    expect(parsed.success).toBe(false);
+    expect(parsed.images).toEqual([]);
+    expect(parsed.error).toContain("no image");
+  });
 });

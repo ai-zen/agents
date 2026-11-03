@@ -37,6 +37,13 @@ describe("BatchEditTool", () => {
     expect(description).toContain("in parallel");
   });
 
+  it("描述里提示：替换按顺序级联（后一条作用于前一条的结果）", () => {
+    const tool = new BatchEditTool(makeEnv());
+    const description = tool.function.description ?? "";
+    expect(description).toContain("applied in order");
+    expect(description).toContain("previous");
+  });
+
   it("isReplaceAll 默认值为 false", () => {
     const tool = new BatchEditTool(makeEnv());
     const isReplaceAllDef =
@@ -71,7 +78,7 @@ describe("BatchEditTool", () => {
       });
       const parsed = JSON.parse(result as string);
       expect(parsed.result).toBe("success");
-      expect(parsed.replacedCount).toBe(1);
+      expect(parsed.replacedCount).toBe(2);
       expect(readFileSync(filePath, "utf-8")).toBe("hi world, hi universe");
     } finally {
       cleanUp(filePath);
@@ -169,6 +176,46 @@ describe("BatchEditTool", () => {
       // 成功项（a → x）不被回显
       expect(result).not.toContain('"oldText":"a"');
       expect(readFileSync(filePath, "utf-8")).toBe("x b");
+    } finally {
+      cleanUp(filePath);
+    }
+  });
+
+  it("oldText 为空串时计入失败项，其余替换照常生效", async () => {
+    const tool = new BatchEditTool(makeEnv());
+    const filePath = tmpFile("a b");
+    try {
+      const result = (await tool.call({
+        path: filePath,
+        replacements: [
+          { oldText: "", newText: "X" },
+          { oldText: "a", newText: "y" },
+        ],
+      })) as string;
+      const parsed = JSON.parse(result);
+      expect(parsed.result).toBe("partial");
+      expect(parsed.replacedCount).toBe(1);
+      expect(parsed.failed).toHaveLength(1);
+      expect(parsed.failed[0].reason).toContain("oldText must not be empty");
+      expect(readFileSync(filePath, "utf-8")).toBe("y b");
+    } finally {
+      cleanUp(filePath);
+    }
+  });
+
+  it("newText 里的 $& / $$ 按字面量写入，不被当成替换模式", async () => {
+    const tool = new BatchEditTool(makeEnv());
+    const filePath = tmpFile("a b");
+    try {
+      const result = (await tool.call({
+        path: filePath,
+        replacements: [
+          { oldText: "a", newText: "A$&" },
+          { oldText: "b", newText: "B$$" },
+        ],
+      })) as string;
+      expect(JSON.parse(result).result).toBe("success");
+      expect(readFileSync(filePath, "utf-8")).toBe("A$& B$$");
     } finally {
       cleanUp(filePath);
     }

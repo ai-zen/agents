@@ -1,5 +1,6 @@
 import * as fsp from "fs/promises";
 import { SdkCallbackTool } from "./SdkCallbackTool.js";
+import { replaceText } from "./textEdit.js";
 import type { ToolEnv } from "../../../types/index.js";
 import type { AgentNS } from "@ai-zen/agents-core";
 
@@ -15,6 +16,7 @@ export class BatchEditTool extends SdkCallbackTool {
     description: [
       "Edit text in a file in batches. Prefer this tool when making edits to a file.",
       "Submit all changes to the same file in a single call (the replacements array) instead of calling edit in parallel multiple times — parallel edits to the same file overwrite each other.",
+      "Replacements are applied in order, each on the result of the previous one: a later oldText is matched against the content already produced by the earlier replacements.",
     ].join("\n"),
     parameters: {
       type: "object",
@@ -69,20 +71,35 @@ export class BatchEditTool extends SdkCallbackTool {
       const failed: { oldText: string; newText: string; reason: string }[] = [];
 
       for (const replacement of input.replacements) {
-        if (!newContent.includes(replacement.oldText)) {
+        // 空串会匹配每一个位置，不是有意义的编辑，单独拒绝
+        if (replacement.oldText === "") {
           failed.push({
             oldText: replacement.oldText,
             newText: replacement.newText,
-            reason: "No exact match found for the text to replace",
+            reason: "oldText must not be empty",
           });
           continue;
         }
-        if (replacement.isReplaceAll) {
-          newContent = newContent.replaceAll(replacement.oldText, replacement.newText);
-        } else {
-          newContent = newContent.replace(replacement.oldText, replacement.newText);
+
+        const { content: nextContent, replacedCount: count } = replaceText(
+          newContent,
+          replacement.oldText,
+          replacement.newText,
+          replacement.isReplaceAll ?? false,
+        );
+
+        if (count === 0) {
+          failed.push({
+            oldText: replacement.oldText,
+            newText: replacement.newText,
+            reason:
+              "No exact match found for this oldText (matched against the content after the previous replacements in this batch)",
+          });
+          continue;
         }
-        replacedCount++;
+
+        newContent = nextContent;
+        replacedCount += count;
       }
       await fsp.writeFile(filePath, newContent);
 

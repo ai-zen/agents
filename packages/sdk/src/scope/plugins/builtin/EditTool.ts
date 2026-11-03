@@ -1,19 +1,8 @@
 import * as fsp from "fs/promises";
 import { SdkCallbackTool } from "./SdkCallbackTool.js";
+import { countOccurrences, replaceText } from "./textEdit.js";
 import type { ToolEnv } from "../../../types/index.js";
 import type { AgentNS } from "@ai-zen/agents-core";
-
-function countOccurrences(content: string, text: string): number {
-  let count = 0;
-  let pos = 0;
-  while (true) {
-    pos = content.indexOf(text, pos);
-    if (pos === -1) break;
-    count++;
-    pos += text.length;
-  }
-  return count;
-}
 
 export class EditTool extends SdkCallbackTool {
   function: AgentNS.FunctionDefine = {
@@ -69,6 +58,15 @@ export class EditTool extends SdkCallbackTool {
 
       const content = await fsp.readFile(filePath, "utf-8");
 
+      // 空串会匹配每一个位置（不是一个有意义的编辑），直接拒绝
+      if (oldText === "") {
+        return JSON.stringify({
+          result: "oldText must not be empty",
+          matchCount: 0,
+          replacedCount: 0,
+        });
+      }
+
       const count = countOccurrences(content, oldText);
 
       if (count === 0) {
@@ -78,24 +76,27 @@ export class EditTool extends SdkCallbackTool {
         });
       }
 
-      const newContent = isReplaceAll
-        ? content.replaceAll(oldText, newText)
-        : content.replace(oldText, newText);
+      const { content: nextContent, replacedCount } = replaceText(
+        content,
+        oldText,
+        newText,
+        isReplaceAll,
+      );
 
-      await fsp.writeFile(filePath, newContent);
+      await fsp.writeFile(filePath, nextContent);
 
       if (!isReplaceAll && count > 1) {
         return JSON.stringify({
           result: `Warning: replace-all is off (isReplaceAll=false), but the text "${oldText}" occurs ${count} times in the file; only the first match was replaced. Set isReplaceAll to true to replace all matches`,
           matchCount: count,
-          replacedCount: 1,
+          replacedCount,
         });
       }
 
       return JSON.stringify({
         result: "success",
         matchCount: count,
-        replacedCount: isReplaceAll ? count : 1,
+        replacedCount,
       });
     } catch (error: any) {
       return error?.message;

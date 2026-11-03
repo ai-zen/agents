@@ -1,4 +1,8 @@
 import OpenAI from "openai";
+import * as fsp from "fs/promises";
+import * as os from "os";
+import * as path from "path";
+import { randomBytes } from "crypto";
 import type { AgentNS, ToolCallContext } from "@ai-zen/agents-core";
 import { SdkCallbackTool } from "./SdkCallbackTool.js";
 import type {
@@ -21,7 +25,11 @@ const defaultGenerateImage: GenerateImageFn = async ({
   const client = new OpenAI({ apiKey: endpoint.apiKey, baseURL: endpoint.baseUrl });
   // 厂商特有字段（size / quality）用 any 透传
   const result = await client.images.generate({ model, prompt, size, quality } as any, { signal });
-  return { created: result.created, data: (result.data ?? []) as { url?: string }[] };
+  return {
+    created: result.created,
+    // 有的端点只返回 b64_json，两类字段都原样带出去，由调用方决定怎么落地
+    data: (result.data ?? []) as { url?: string; b64_json?: string }[],
+  };
 };
 
 /**
@@ -142,19 +150,45 @@ export class GenerateImageTool extends SdkCallbackTool {
         signal,
       });
 
-      const urls = (result.data ?? []).map((img) => img.url).filter((url): url is string => !!url);
+      // 逐个收集：有 url 的直接给链接；只有 b64_json 的端点则落盘后给本地路径。
+      // 只看 url 会把「只返回 b64_json 的模型」变成 success: true + images: []（假成功）。
+      const images: { index: number; url?: string; filePath?: string }[] = [];
+      for (const [index, item] of (result.data ?? []).entries()) {
+        if (item.url) {
+          images.push({ index, url: item.url });
+          continue;
+        }
+        if (item.b64_json) {
+          images.push({ index, filePath: await saveBase64Image(item.b64_json) });
+        }
+      }
+
+      if (images.length === 0) {
+        return JSON.stringify({
+          success: false,
+          model: imageModel.name,
+          modelId: imageModel.id,
+          created: result.created,
+          images: [],
+          error:
+            "The endpoint returned no image: neither `url` nor `b64_json` was present in the response",
+        });
+      }
 
       // 统一返回字符串（JSON）：生成结果如何处理（查看/下载/转发）由模型与上层自由决定，
-      // 不替模型做「看或不看」的假设。需要让模型看图 → 模型可主动调用 view_image(URL)；
+      // 不替模型做「看或不看」的假设。需要让模型看图 → 模型可主动调用 view_image；
       // 需要保存 → download_file 下载。
+      const hasUrl = images.some((img) => img.url);
       return JSON.stringify(
         {
           success: true,
           model: imageModel.name,
           modelId: imageModel.id,
           created: result.created,
-          images: urls.map((url, i) => ({ index: i, url })),
-          note: "Image links are temporary and expire after 30 days. To inspect the image content, use the view_image tool (pass the image URL); to save it, use download_file.",
+          images,
+          note: hasUrl
+            ? "Image links are temporary and expire after 30 days. To inspect the image content, use the view_image tool (pass the image URL); to save it, use download_file."
+            : "The endpoint returned base64 images; they were written to local files, so use view_image with the filePath to inspect them.",
         },
         null,
         2,
@@ -174,4 +208,40 @@ export class GenerateImageTool extends SdkCallbackTool {
       });
     }
   }
+}
+
+/** 依据 base64 头部字节判断图片扩展名（判断不了就当 png） */
+function imageExtension(buffer: Buffer): string {
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"))) {
+    return "png";
+  }
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return "jpg";
+  }
+  if (buffer.length >= 6 && buffer.subarray(0, 3).toString("latin1") === "GIF") return "gif";
+  if (
+    buffer.length >= 12 &&
+    buffer.subarray(0, 4).toString("latin1") === "RIFF" &&
+    buffer.subarray(8, 12).toString("latin1") === "WEBP"
+  ) {
+    return "webp";
+  }
+  return "png";
+}
+
+/**
+ * 把 `b64_json` 写成本地文件，返回绝对路径。
+ *
+ * 落盘到系统临时目录下的独立子目录（与工具输出落盘同一习惯），不污染工作目录。
+ */
+async function saveBase64Image(b64: string): Promise<string> {
+  const buffer = Buffer.from(b64, "base64");
+  const dir = path.join(os.tmpdir(), "ai-zen", "generated-images");
+  await fsp.mkdir(dir, { recursive: true });
+  const filePath = path.join(
+    dir,
+    `image-${Date.now()}-${randomBytes(4).toString("hex")}.${imageExtension(buffer)}`,
+  );
+  await fsp.writeFile(filePath, buffer);
+  return filePath;
 }

@@ -124,4 +124,36 @@ describe("EditTool", () => {
     expect(typeof result).toBe("string");
     expect(result).toContain("ENOENT");
   });
+
+  it("oldText 为空串时直接拒绝（不进入替换、不卡死）", async () => {
+    const tool = new EditTool(makeEnv());
+    const filePath = tmpFile("hello world");
+    try {
+      const result = await tool.call({ path: filePath, oldText: "", newText: "X" });
+      const parsed = JSON.parse(result as string);
+      expect(parsed.result).toContain("oldText must not be empty");
+      expect(parsed.replacedCount).toBe(0);
+      expect(readFileSync(filePath, "utf-8")).toBe("hello world");
+    } finally {
+      cleanUp(filePath);
+    }
+  });
+
+  it("newText 里的 $& / $' / $$ 按字面量写入，不被当成替换模式", async () => {
+    const tool = new EditTool(makeEnv());
+    const filePath = tmpFile("PRICE = 0");
+    try {
+      // 注意：这些字符若被 String.replace 当作替换模式展开，写入内容就会变形
+      const literal = "cost: $& ($' $$)";
+      const result = await tool.call({
+        path: filePath,
+        oldText: "0",
+        newText: literal,
+      });
+      expect(JSON.parse(result as string).result).toBe("success");
+      expect(readFileSync(filePath, "utf-8")).toBe(`PRICE = ${literal}`);
+    } finally {
+      cleanUp(filePath);
+    }
+  });
 });

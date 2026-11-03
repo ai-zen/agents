@@ -281,7 +281,15 @@ export type GenerateImageFn = (input: {
   size?: string;
   quality?: string;
   signal?: AbortSignal;
-}) => Promise<{ created?: number; data?: { url?: string }[] }>;
+}) => Promise<{
+  created?: number;
+  /**
+   * 端点返回的图片列表。二选一：
+   *   - `url`：临时图片链接（多数厂商）；
+   *   - `b64_json`：base64 内联（部分模型只返回它），由工具落盘后给出本地路径。
+   */
+  data?: { url?: string; b64_json?: string }[];
+}>;
 
 /**
  * 外部依赖注入点 — 所有出网动作的唯一出口。

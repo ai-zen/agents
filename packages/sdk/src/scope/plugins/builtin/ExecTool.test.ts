@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "fs";
+import { readFileSync, unlinkSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
+import { randomBytes } from "crypto";
 import { ExecTool } from "./ExecTool.js";
 import { makeEnv } from "./test-helpers.js";
 import type { ToolCallContext } from "@ai-zen/agents-core";
@@ -115,8 +118,8 @@ describe("ExecTool", () => {
     expect(parsed.stdout.tail).toBe("a".repeat(1000));
     expect(parsed.stdout.omitted).toBe(1000);
 
-    // 原有字段保留（成功场景下 exitCode 沿用既有语义为 null）
-    expect(parsed.exitCode).toBeNull();
+    // 成功场景 exitCode 为 0（原先恒为 null，模型会误判命令未正常结束）
+    expect(parsed.exitCode).toBe(0);
     expect(parsed.killed).toBe(false);
   });
 
@@ -129,4 +132,54 @@ describe("ExecTool", () => {
     expect(parsed.files).toBeUndefined();
     expect(parsed.outputTooLarge).toBeUndefined();
   });
+
+  it("正常结束时 exitCode 为 0，非零退出码如实返回", async () => {
+    const tool = new ExecTool(makeEnv());
+
+    const ok = JSON.parse((await tool.call({ command: "echo hi", timeout: 5000 })) as string);
+    expect(ok.exitCode).toBe(0);
+    expect(ok.killed).toBe(false);
+
+    const failed = JSON.parse((await tool.call({ command: "exit 7", timeout: 5000 })) as string);
+    expect(failed.exitCode).toBe(7);
+    expect(failed.killed).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32")("超时后整组回收：后台孙进程不会被留成孤儿", async () => {
+    const tool = new ExecTool(makeEnv());
+    const pidFile = join(tmpdir(), `exec-grandchild-${randomBytes(6).toString("hex")}.pid`);
+    // sh -c 'sleep 30 & ...; wait'：sleep 是孙进程，只 kill shell 会把它留成孤儿
+    const command = `sh -c 'sleep 30 & echo $! > ${pidFile}; wait'`;
+
+    try {
+      const parsed = JSON.parse((await tool.call({ command, timeout: 300 })) as string);
+      expect(parsed.terminated).toBe("timeout");
+
+      const grandchildPid = Number(readFileSync(pidFile, "utf-8").trim());
+      expect(grandchildPid).toBeGreaterThan(0);
+
+      // 给内核一点时间完成回收
+      await new Promise((r) => setTimeout(r, 300));
+      expect(() => process.kill(grandchildPid, 0)).toThrow();
+    } finally {
+      try {
+        unlinkSync(pidFile);
+      } catch {}
+    }
+  });
+
+  it("输出达到 maxBuffer 时如实标注截断，不再谎称完整", async () => {
+    const tool = new ExecTool(makeEnv(process.cwd(), { maxToolOutput: 100_000_000 } as AppConfig));
+    // 17MB > MAX_BUFFER(16MB)：exec 会在上限处杀掉进程，尾部内容必然丢失
+    const result = await tool.call({
+      command: `node -e "process.stdout.write('a'.repeat(17 * 1024 * 1024))"`,
+      timeout: 60_000,
+    });
+    const parsed = JSON.parse(result as string);
+
+    expect(parsed.truncated).toBe(true);
+    expect(parsed.truncationNote).toContain("truncated");
+    // 截断场景不再把字符串错误码当 exitCode 返回
+    expect(typeof parsed.exitCode === "number" || parsed.exitCode === null).toBe(true);
+  }, 120_000);
 });

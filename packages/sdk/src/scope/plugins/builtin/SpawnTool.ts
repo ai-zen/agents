@@ -39,7 +39,13 @@ export class SpawnTool extends SdkCallbackTool {
     const cwd = input.cwd ? this.resolve(input.cwd) : this.env.cwd;
     const detached = input.detached ?? false;
 
-    // 统一走 shell：允许 shell 语法（重定向 > / >>、管道 | 等）
+    /**
+     * 本工具只回答「进程是否已启动」，**不跟踪退出状态**。
+     *
+     * 它 spawn 后立刻返回，输出也走 `stdio: "ignore"` 丢弃；因此命令不存在、语法错误、
+     * 脚本起来就崩这类「早退失败」在这里一律看不见 —— 以前会把它们报成 `success: true`，
+     * 现在如实命名为 `started`，并在 note 里说清。需要成败/输出/退出码请用 exec。
+     */
     return new Promise<string>((resolve) => {
       const child = spawn(command, [], {
         cwd,
@@ -50,69 +56,36 @@ export class SpawnTool extends SdkCallbackTool {
       });
 
       let resolved = false;
-
-      child.on("error", (err) => {
+      let timer: NodeJS.Timeout | undefined;
+      const done = (payload: Record<string, unknown>) => {
         if (resolved) return;
         resolved = true;
-        resolve(
-          JSON.stringify({
-            success: false,
-            pid: null,
-            message: `Failed to start: ${err.message}`,
-          }),
-        );
+        if (timer) clearTimeout(timer);
+        resolve(JSON.stringify(payload));
+      };
+
+      const startedPayload = () => ({
+        started: true,
+        pid: child.pid ?? null,
+        message: `Process started (PID: ${child.pid ?? "unknown"})`,
+        note: "This tool only reports that the process was started; it does not track the exit status. Use exec if you need the exit code or the output.",
+      });
+
+      child.on("error", (err) => {
+        done({ started: false, pid: null, message: `Failed to start: ${err.message}` });
       });
 
       child.on("spawn", () => {
-        if (resolved) return;
-        resolved = true;
-        resolve(
-          JSON.stringify({
-            success: true,
-            pid: child.pid ?? null,
-            message: `Process started (PID: ${child.pid ?? "unknown"})`,
-          }),
-        );
+        child.unref();
+        done(startedPayload());
       });
 
-      child.on("exit", (code) => {
-        if (resolved) return;
-        resolved = true;
-        resolve(
-          JSON.stringify({
-            success: code === 0,
-            pid: child.pid ?? null,
-            exitCode: code,
-            message:
-              code === null
-                ? `Process exited (PID: ${child.pid ?? "unknown"})`
-                : `Process exited (PID: ${child.pid ?? "unknown"}, exit code: ${code})`,
-          }),
-        );
-      });
-
-      const timeout = setTimeout(() => {
-        if (resolved) return;
-        resolved = true;
-        resolve(
-          JSON.stringify({
-            success: true,
-            pid: child.pid ?? null,
-            message: `Process started (PID: ${child.pid ?? "unknown"})`,
-          }),
-        );
+      // 兜底：`spawn` 事件理论上必然触发，这里保证工具不会挂住
+      timer = setTimeout(() => {
+        child.unref();
+        done(startedPayload());
       }, 500);
-
-      const cleanup = () => {
-        clearTimeout(timeout);
-        child.removeAllListeners();
-      };
-
-      child.on("spawn", cleanup);
-      child.on("error", cleanup);
-      child.on("exit", cleanup);
-
-      child.unref();
+      timer.unref?.();
     });
   }
 }

@@ -4,6 +4,7 @@ import { SdkCallbackTool } from "./SdkCallbackTool.js";
 import type { ToolEnv } from "../../../types/index.js";
 import type { AgentNS, ToolCallContext } from "@ai-zen/agents-core";
 import { DEFAULT_MAX_TOOL_OUTPUT, guardOutput, headPreview } from "./outputGuard.js";
+import { checkBaseDirectory } from "./searchBase.js";
 
 interface MatchItem {
   line: number;
@@ -49,7 +50,8 @@ export class FindTextTool extends SdkCallbackTool {
         },
         exclude: {
           type: "array",
-          description: "Array of glob patterns to exclude",
+          description:
+            'Array of glob patterns to exclude. When omitted, defaults to ["**/node_modules/**"]; pass an explicit list to override.',
           items: {
             type: "string",
           },
@@ -92,6 +94,10 @@ export class FindTextTool extends SdkCallbackTool {
     const signal = ctx?.signal;
     try {
       const cwd = input.path ? this.resolve(input.path) : this.env.cwd;
+      // 基目录不存在/不是目录时明确报错：静默返回 [] 会被模型当成「没找到匹配」
+      const baseError = await checkBaseDirectory(cwd);
+      if (baseError) return baseError;
+
       const result: MatchResult[] = [];
       const text = input.text;
       const regexStr = input.regex;

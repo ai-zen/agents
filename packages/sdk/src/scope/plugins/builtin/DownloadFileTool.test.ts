@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdirSync, unlinkSync } from "fs";
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "fs";
+import { readFile } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
@@ -8,6 +9,45 @@ import { makeEnv } from "./test-helpers.js";
 import type { ToolCallContext } from "@ai-zen/agents-core";
 
 const mockFetch = vi.fn();
+
+/** 造一个 web ReadableStream（模拟 response.body） */
+function streamOf(chunks: string[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
+}
+
+/** 造一个成功的 mock Response */
+function okResponse(contentType: string, body: ReadableStream<Uint8Array> | null) {
+  return {
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    headers: { get: () => contentType },
+    body,
+  };
+}
+
+function tmpDir(): string {
+  const dir = join(tmpdir(), randomBytes(8).toString("hex"));
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function cleanUpDir(dir: string, ...files: string[]): void {
+  for (const file of files) {
+    try {
+      unlinkSync(join(dir, file));
+    } catch {}
+  }
+  try {
+    unlinkSync(dir);
+  } catch {}
+}
 
 // 全局 stub 必须在文件范围内完成 stub/unstub：`isolate: false` 下同一进程的所有测试文件
 // 共用全局对象，顶层 `vi.stubGlobal("fetch", …)` 会泄漏给后续文件（例如让别的文件里的
@@ -28,12 +68,27 @@ describe("DownloadFileTool", () => {
     expect(tool.function.description).toContain("Download a file from a URL");
   });
 
-  it("url 为空时返回错误", async () => {
+  it("timeout 声明为必填参数", () => {
     const tool = new DownloadFileTool(makeEnv());
-    const result = await tool.call({ url: "" });
-    const parsed = JSON.parse(result as string);
-    expect(parsed.success).toBe(false);
-    expect(parsed.error).toContain("must not be empty");
+    const params = tool.function.parameters as Record<string, unknown>;
+    expect(params.properties).toHaveProperty("timeout");
+    const required = (params.required as string[]) ?? [];
+    expect(required).toContain("timeout");
+  });
+
+  it("缺失或非法 timeout 时抛出异常", async () => {
+    const tool = new DownloadFileTool(makeEnv());
+    await expect(tool.call({ url: "https://example.com/a.png" } as never)).rejects.toThrow(
+      /timeout/,
+    );
+    await expect(tool.call({ url: "https://example.com/a.png", timeout: 0 })).rejects.toThrow(
+      /timeout/,
+    );
+  });
+
+  it("url 为空时抛出异常", async () => {
+    const tool = new DownloadFileTool(makeEnv());
+    await expect(tool.call({ url: "", timeout: 5000 })).rejects.toThrow(/url must not be empty/);
   });
 
   it("HTTP 请求失败时返回错误", async () => {
@@ -42,124 +97,141 @@ describe("DownloadFileTool", () => {
       status: 404,
       statusText: "Not Found",
       headers: { get: () => "" },
+      body: null,
     });
 
     const tool = new DownloadFileTool(makeEnv());
-    const result = await tool.call({ url: "https://example.com/not-found" });
+    const result = await tool.call({ url: "https://example.com/not-found", timeout: 5000 });
     const parsed = JSON.parse(result as string);
     expect(parsed.success).toBe(false);
     expect(parsed.error).toContain("HTTP 404");
   });
 
-  it("成功下载文件", async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      status: 200,
-      headers: { get: () => "image/png" },
-      arrayBuffer: async () => Buffer.from("fake-image-data"),
-    });
+  it("成功下载文件（流式写盘）", async () => {
+    mockFetch.mockResolvedValue(okResponse("image/png", streamOf(["fake-", "image-", "data"])));
 
     const tool = new DownloadFileTool(makeEnv());
-    const dir = join(tmpdir(), randomBytes(8).toString("hex"));
-    const result = await tool.call({
-      url: "https://example.com/image.png",
-      outputPath: join(dir, "test.png"),
-    });
-    const parsed = JSON.parse(result as string);
-    expect(parsed.success).toBe(true);
-    expect(parsed.contentType).toBe("image/png");
-
+    const dir = tmpDir();
     try {
-      unlinkSync(join(dir, "test.png"));
-    } catch {}
-    try {
-      unlinkSync(dir);
-    } catch {}
+      const result = await tool.call({
+        url: "https://example.com/image.png",
+        outputPath: join(dir, "test.png"),
+        timeout: 5000,
+      });
+      const parsed = JSON.parse(result as string);
+      expect(parsed.success).toBe(true);
+      expect(parsed.contentType).toBe("image/png");
+      expect(await readFile(join(dir, "test.png"), "utf-8")).toBe("fake-image-data");
+    } finally {
+      cleanUpDir(dir, "test.png");
+    }
   });
 
   it("outputPath 为目录时自动拼接文件名", async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      status: 200,
-      headers: { get: () => "text/plain" },
-      arrayBuffer: async () => Buffer.from("data"),
-    });
+    mockFetch.mockResolvedValue(okResponse("text/plain", streamOf(["data"])));
 
     const tool = new DownloadFileTool(makeEnv());
-    const dir = join(tmpdir(), randomBytes(8).toString("hex"));
-    mkdirSync(dir, { recursive: true });
+    const dir = tmpDir();
     try {
-      const result = await tool.call({ url: "https://example.com/file.txt", outputPath: dir });
+      const result = await tool.call({
+        url: "https://example.com/file.txt",
+        outputPath: dir,
+        timeout: 5000,
+      });
       const parsed = JSON.parse(result as string);
       expect(parsed.success).toBe(true);
       expect(parsed.filePath).toContain("file.txt");
     } finally {
-      try {
-        unlinkSync(join(dir, "file.txt"));
-      } catch {}
-      try {
-        unlinkSync(dir);
-      } catch {}
+      cleanUpDir(dir, "file.txt");
     }
   });
 
   it("未指定 outputPath 时保存到 env.cwd", async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      status: 200,
-      headers: { get: () => "text/plain" },
-      arrayBuffer: async () => Buffer.from("data"),
-    });
+    mockFetch.mockResolvedValue(okResponse("text/plain", streamOf(["data"])));
 
-    const dir = join(tmpdir(), randomBytes(8).toString("hex"));
-    mkdirSync(dir, { recursive: true });
+    const dir = tmpDir();
     try {
       const tool = new DownloadFileTool(makeEnv(dir));
-      const result = await tool.call({ url: "https://example.com/dl.txt" });
+      const result = await tool.call({ url: "https://example.com/dl.txt", timeout: 5000 });
       const parsed = JSON.parse(result as string);
       expect(parsed.success).toBe(true);
       expect(parsed.filePath).toContain("dl.txt");
     } finally {
-      try {
-        unlinkSync(join(dir, "dl.txt"));
-      } catch {}
-      try {
-        unlinkSync(dir);
-      } catch {}
+      cleanUpDir(dir, "dl.txt");
     }
   });
 
-  it("下载被中断（abort）时返回 aborted 并清理半成品", async () => {
-    // fetch 收到 signal，abort 时抛 AbortError
-    mockFetch.mockImplementation(async (url: string, init?: any) => {
-      if (init?.signal?.aborted) {
-        throw new DOMException("The operation was aborted", "AbortError");
-      }
-      throw new Error("should not reach here");
-    });
+  it("response 无 body 时返回错误，不留下空文件", async () => {
+    mockFetch.mockResolvedValue(okResponse("text/plain", null));
 
-    const dir = join(tmpdir(), randomBytes(8).toString("hex"));
-    mkdirSync(dir, { recursive: true });
+    const tool = new DownloadFileTool(makeEnv());
+    const dir = tmpDir();
+    try {
+      const result = await tool.call({
+        url: "https://example.com/empty.txt",
+        outputPath: join(dir, "empty.txt"),
+        timeout: 5000,
+      });
+      const parsed = JSON.parse(result as string);
+      expect(parsed.success).toBe(false);
+      expect(parsed.error).toContain("no body");
+      expect(existsSync(join(dir, "empty.txt"))).toBe(false);
+    } finally {
+      cleanUpDir(dir, "empty.txt");
+    }
+  });
+
+  it("中断（abort）不删除调用前已存在的文件", async () => {
+    // 一个保存着用户数据的同名文件
+    const dir = tmpDir();
+    const target = join(dir, "keep.png");
+    writeFileSync(target, "USER'S IMPORTANT DATA", "utf-8");
+
+    mockFetch.mockRejectedValue(new DOMException("The operation was aborted", "AbortError"));
+
     const controller = new AbortController();
     controller.abort();
 
     try {
       const tool = new DownloadFileTool(makeEnv(dir));
       const result = await tool.call(
-        { url: "https://example.com/aborted.png", outputPath: join(dir, "aborted.png") },
+        { url: "https://example.com/keep.png", outputPath: target, timeout: 5000 },
         { signal: controller.signal } as unknown as ToolCallContext,
       );
       const parsed = JSON.parse(result as string);
       expect(parsed.success).toBe(false);
       expect(parsed.aborted).toBe(true);
-      // 半成品文件不应残留
-      await expect(
-        import("fs/promises").then((f) => f.stat(join(dir, "aborted.png"))),
-      ).rejects.toThrow();
+
+      // 关键：本次一个字节都没写，原文件必须原封不动
+      expect(await readFile(target, "utf-8")).toBe("USER'S IMPORTANT DATA");
     } finally {
-      try {
-        unlinkSync(dir);
-      } catch {}
+      cleanUpDir(dir, "keep.png");
+    }
+  });
+
+  it("超过 timeout 时中止下载（fetch 自身对响应体没有时限）", async () => {
+    mockFetch.mockImplementation(
+      (_url: string, init: any) =>
+        new Promise((_resolve, reject) => {
+          init.signal.addEventListener("abort", () => reject(init.signal.reason));
+        }),
+    );
+
+    const tool = new DownloadFileTool(makeEnv());
+    const dir = tmpDir();
+    const start = Date.now();
+    try {
+      const result = await tool.call({
+        url: "https://example.com/slow.bin",
+        outputPath: join(dir, "slow.bin"),
+        timeout: 150,
+      });
+      const parsed = JSON.parse(result as string);
+      expect(parsed.success).toBe(false);
+      expect(parsed.error).toContain("timeout after 150ms");
+      expect(Date.now() - start).toBeLessThan(5000);
+    } finally {
+      cleanUpDir(dir, "slow.bin");
     }
   });
 });
