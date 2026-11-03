@@ -299,7 +299,7 @@ describe("handoff", () => {
     expect(existsSync(ctx.handoffPath)).toBe(true);
   });
 
-  it("交接回合前清空 lastUsage（护栏/自动迁移的纵深防御）", async () => {
+  it("交接回合不改写 lastUsage（护栏让行由 isSuspended 负责）", async () => {
     const { service } = await makeService();
     let usageAtSend: unknown = "not executed";
     const agent = new FakeAgent({
@@ -312,7 +312,8 @@ describe("handoff", () => {
 
     await service.handoff({ agent: asAgent(agent) });
 
-    expect(usageAtSend).toBeUndefined();
+    // lastUsage 是从 messages 派生的只读值，交接不再去动它
+    expect(usageAtSend).toEqual({ prompt_tokens: 999 });
   });
 
   it("交接回合期间守卫 armed，结束后 disarm", async () => {

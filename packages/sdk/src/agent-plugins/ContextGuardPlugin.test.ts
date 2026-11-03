@@ -64,4 +64,34 @@ describe("ContextGuardPlugin", () => {
     const lenient = new ContextGuardPlugin({ guardTokens: 500_000 });
     await expect(lenient.onInnerLoopStart!(buildCtx(agent))).resolves.toBeUndefined();
   });
+
+  it("isSuspended 返回 true 时让行（交接/迁移回合）", async () => {
+    const agent = mockAgent({ lastUsage: { prompt_tokens: 400_000 } });
+    let busy = true;
+    const plugin = new ContextGuardPlugin({
+      guardTokens: 375_000,
+      isSuspended: () => busy,
+    });
+
+    // 交接回合：上下文最满，但不应该被打回
+    await expect(plugin.onInnerLoopStart!(buildCtx(agent))).resolves.toBeUndefined();
+
+    // 让行结束后恢复硬线
+    busy = false;
+    await expect(plugin.onInnerLoopStart!(buildCtx(agent))).rejects.toBeInstanceOf(
+      ContextOverflowError,
+    );
+  });
+
+  it("isSuspended 为 false 或未提供时照常判定", async () => {
+    const agent = mockAgent({ lastUsage: { prompt_tokens: 400_000 } });
+
+    const notSuspended = new ContextGuardPlugin({
+      guardTokens: 375_000,
+      isSuspended: () => false,
+    });
+    await expect(notSuspended.onInnerLoopStart!(buildCtx(agent))).rejects.toBeInstanceOf(
+      ContextOverflowError,
+    );
+  });
 });

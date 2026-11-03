@@ -524,13 +524,11 @@ export class HandoffService {
     const existedBefore = await this.fileExists(handoffPath);
 
     /*
-     * 清空 lastUsage 再开跑：
-     *   - 护栏（ContextGuardPlugin）在每轮请求前用 lastUsage 判定严重超限，
-     *     而交接恰好发生在上下文最满的时刻；
-     *   - AutoMigratePlugin 也会读它。busy 已能让两者让行，这里再清一次是纵深防御。
-     * 交接回合结束后 lastUsage 由本轮真实响应用量回填，无需恢复旧值。
+     * 交接回合的护栏让行由 `ContextGuardPlugin.isSuspended` 负责（接线为
+     * `() => handoffService.busy`），这里不再去改写用量数据：
+     *   - `lastUsage` 是从 `messages` 派生的只读值，本就不可写；
+     *   - 「谁做限制谁放宽」—— 限制在护栏自己身上，放宽也必须写在护栏的选项里。
      */
-    agent.lastUsage = undefined;
     guard.arm(handoffPath, cwd);
 
     try {

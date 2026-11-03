@@ -1136,6 +1136,69 @@ describe("Agent", () => {
       // lastUsage 仅保留最后一轮
       expect(agent.lastUsage).toEqual(usage2);
     });
+
+    it("lastUsage 是派生值：跟随 messages 变化，不独立存储", async () => {
+      const usage = { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 };
+      const client = createMockClient([
+        [chunk({ content: "你好" }), { ...stopChunk(), usage }],
+      ]);
+
+      const agent = new Agent({
+        client,
+        model: "gpt-4",
+        messages: [Message.System("助手")],
+      });
+      agent.append(Message.Assistant());
+
+      expect(agent.lastUsage).toBeUndefined();
+
+      await agent.run();
+      expect(agent.lastUsage).toEqual(usage);
+
+      // 迁移：整体替换 messages 后自动跟随，无需手动清理
+      const migrated = { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 };
+      agent.messages = [
+        Message.System("新会话"),
+        new Message({
+          role: AgentNS.Role.Assistant,
+          content: "接手",
+          usage: migrated,
+        }),
+      ];
+      expect(agent.lastUsage).toEqual(migrated);
+    });
+
+    it("lastUsage 跳过 omit 的与不带 usage 的 assistant 消息", () => {
+      const agent = new Agent({ client: {} as any, model: "gpt-4" });
+      const usage1 = { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 };
+      const usage2 = { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 };
+      const a1 = new Message({ role: AgentNS.Role.Assistant, usage: usage1 });
+      const a2 = new Message({ role: AgentNS.Role.Assistant, usage: usage2 });
+      // 末条被 omit（如迁移时排除）→ 不计入
+      const omitted = new Message({
+        role: AgentNS.Role.Assistant,
+        usage: usage1,
+        omit: true,
+      });
+
+      agent.messages = [Message.System("助手"), a1, a2, omitted];
+      expect(agent.lastUsage).toEqual(usage2);
+
+      // 末条 assistant 无 usage（如中断未收到 usage chunk）→ 回落到上一条有 usage 的
+      const aborted = new Message({
+        role: AgentNS.Role.Assistant,
+        status: AgentNS.MessageStatus.Aborted,
+      });
+      agent.messages = [Message.System("助手"), a1, aborted];
+      expect(agent.lastUsage).toEqual(usage1);
+    });
+
+    it("lastUsage 只读：赋值抛 TypeError（无 setter）", () => {
+      const agent = new Agent({ client: {} as any, model: "gpt-4" });
+      expect(() => {
+        (agent as any).lastUsage = { prompt_tokens: 1 };
+      }).toThrow(TypeError);
+    });
   });
 
   describe("run - 中断轮次归一化（并行工具 + abort）", () => {
@@ -1396,6 +1459,35 @@ describe("Agent", () => {
 
       await agent.send("hi");
       expect(agent.isHasPendingMessage).toBe(false);
+    });
+
+    it("onAfterSend 替换 messages 后，返回值是新会话而非钩子前的快照", async () => {
+      const client = createMockClient([
+        [chunk({ content: "旧会话回复" }), stopChunk()],
+      ]);
+
+      const agent = new Agent({
+        client,
+        model: "gpt-4",
+        messages: [Message.System("助手")],
+      });
+
+      // 模拟迁移插件：在 onAfterSend 里用新会话整体替换 messages
+      agent.use({
+        onAfterSend(sendCtx) {
+          sendCtx.agent.messages = [
+            Message.System("新会话"),
+            Message.User("迁移摘要"),
+            Message.Assistant("已接手"),
+          ];
+        },
+      });
+
+      const result = await agent.send("hi");
+
+      expect(result).toBe(agent.messages);
+      expect(result).toHaveLength(3);
+      expect(result[1]!.content).toBe("迁移摘要");
     });
   });
 

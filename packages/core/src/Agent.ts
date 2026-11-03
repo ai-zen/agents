@@ -134,14 +134,32 @@ interface PendingTask {
 export class Agent extends AgentContext {
   events = new EventBus();
 
-  /** 最近一次 API 响应的 token 用量 */
-  lastUsage?: AgentNS.Usage;
-
   /** 已注册的插件列表 */
   private _plugins: AgentPlugin[] = [];
 
   constructor(options: PickRequired<AgentContext, "client" | "model">) {
     super(options);
+  }
+
+  /**
+   * 最近一次 API 响应的 token 用量。
+   *
+   * **派生值，不是独立状态**：取 `messages` 中最近一条未 `omit`、带 `usage` 的 assistant 消息。
+   * 用量本就随消息持久化，此处只是读最后一条，故迁移 / 替换 `messages` 后自动跟随，
+   * 不会出现「字段与消息各存一份、改了一处另一处过期」的问题。只读，无 setter。
+   */
+  get lastUsage(): AgentNS.Usage | undefined {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const message = this.messages[i]!;
+      if (
+        message.role === AgentNS.Role.Assistant &&
+        !message.omit &&
+        message.usage
+      ) {
+        return message.usage;
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -424,14 +442,11 @@ export class Agent extends AgentContext {
     for await (const chunk of stream) {
       this.events.emit("chunk", chunk);
 
-      // 捕获流式最后一个 chunk 的 usage：
-      //   - lastUsage 保留「最近一次请求」语义（覆盖率），供护栏 / 迁移阈值判定与状态栏「当前占用」；
-      //   - 同时钉到本轮 assistant 消息上（与 finish_reason 同处），使用量随消息持久化，
-      //     从而可按消息求和统计累计消耗（计费口径）与审计。
+      // 捕获流式最后一个 chunk 的 usage：钉到本轮 assistant 消息上（与 finish_reason 同处），
+      // 使用量随消息持久化，从而可按消息求和统计累计消耗（计费口径）与审计。
+      // 「最近一次用量」（`lastUsage`）由该字段派生，不再单独存一份。
       if (chunk?.usage) {
-        const usage = chunk.usage as unknown as AgentNS.Usage;
-        this.lastUsage = usage;
-        receiver.usage = usage;
+        receiver.usage = chunk.usage as unknown as AgentNS.Usage;
       }
 
       if (chunk?.choices?.[0]) {
@@ -736,11 +751,12 @@ export class Agent extends AgentContext {
     this.append(Message.User(content));
 
     // Run the chat：Assistant 占位由 run 内循环开头统一追加。
-    const result = await this.run(ctx);
+    await this.run(ctx);
 
-    // onAfterSend 钩子：可做迁移、保存等后处理
+    // onAfterSend 钩子：可做迁移、保存等后处理（如替换 this.messages 重开会话），
+    // 故返回值必须在钩子之后取，不能用 run() 的快照。
     await this.dispatchHook("onAfterSend", ctx);
 
-    return result;
+    return this.messages;
   }
 }

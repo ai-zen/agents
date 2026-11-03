@@ -93,7 +93,8 @@ export namespace AgentNS {
     finish_reason?: FinishReason;
     /**
      * 产生本条 assistant 消息的那次 API 响应的 token 用量。
-     * 由流式响应的最后一个 chunk 写入（与 `Agent.lastUsage` 同源）；仅 assistant 消息会有值。
+     * 由流式响应的最后一个 chunk 写入；仅 assistant 消息会有值。
+     * `Agent.lastUsage`（最近一次用量）即由本字段派生，不存在第二份拷贝。
      * 将本会话全部 assistant 消息的 `usage` 求和，即计费口径的累计消耗
      * （每轮请求都会重发完整历史，故求和 = 实际消耗）。
      */

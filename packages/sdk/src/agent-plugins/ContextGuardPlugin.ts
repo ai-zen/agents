@@ -9,6 +9,14 @@ export interface ContextGuardOptions {
    * 想调松就把它调大，「安全边界写多少就是多少」比「隐式乘以某个系数」可预测得多。
    */
   guardTokens: number;
+  /**
+   * 临时让行：返回 `true` 时本轮不做超限判定（默认 `false`）。
+   *
+   * 用于交接/迁移回合 —— 那些回合本身就是「上下文已满」时才发起的，若不放宽必定被打回。
+   * 语义是「谁做限制谁放宽」：限制在护栏自己身上，放宽也必须由护栏自己表达，
+   * 而不是由调用方去改写用量数据。典型接线：`isSuspended: () => handoffService.busy`。
+   */
+  isSuspended?: () => boolean;
 }
 
 /**
@@ -24,18 +32,28 @@ export interface ContextGuardOptions {
  *
  * ```ts
  * const { handoff, guard } = config.models[i].tokenThresholds;
- * agent.use(new ContextGuardPlugin({ guardTokens: guard }));
+ * agent.use(
+ *   new ContextGuardPlugin({
+ *     guardTokens: guard,
+ *     isSuspended: () => handoffService.busy, // 交接回合让行
+ *   }),
+ * );
  * agent.use(new AutoMigratePlugin({ service: handoffService, handoffTokens: handoff }));
  * ```
  */
 export class ContextGuardPlugin implements AgentPlugin {
   private readonly guardTokens: number;
+  private readonly isSuspended?: () => boolean;
 
   constructor(options: ContextGuardOptions) {
     this.guardTokens = options.guardTokens;
+    this.isSuspended = options.isSuspended;
   }
 
   async onInnerLoopStart(ctx: SendContext): Promise<void> {
+    // 交接/迁移回合让行（见 `isSuspended`）
+    if (this.isSuspended?.()) return;
+
     const promptTokens = ctx.agent.lastUsage?.prompt_tokens;
     // 首轮请求前尚无用量数据，跳过（只能在发出首轮请求、拿到 usage 后才有据可查）
     if (promptTokens == null) return;
