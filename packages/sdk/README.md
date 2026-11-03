@@ -24,7 +24,7 @@ crud          ← capability-entity CRUD (Agent definitions; conversations/draft
 runtime       ← model factory + Agent assembly + task handoff/migration (cancellable via `AbortSignal`; createModel / createAgent / SdkAgent / HandoffService / HandoffGuardPlugin)
 scope         ← Scope orchestration container + ScopePlugin contract + PermissionEvaluator / disclosure + plugins/ (5 self-contained capability sources: discovery + tools + plugin)
 agent-plugins ← Agent plugins (autoMigrate, autoRefreshTools, contextGuard, unknownToolHint)
-shared        ← logging, errors
+shared        ← content blocks (file → content block transport), entity repository, logging, errors
 ```
 
 Dependency direction: `agent-plugins → runtime → scope`; `runtime → scope / crud / shared / types`, `scope → types / shared`. Upper layers depend on lower layers.
@@ -69,8 +69,8 @@ await scope.init();
 
 const agent = await createAgent(scope, "my-agent");
 const handoffService = new HandoffService({ handoffDir: "/work/.ai-zen/handoffs", skillDirs });
-agent.use(new ContextGuardPlugin({ maxTokens, isSuspended: () => handoffService.busy }));
-agent.use(new AutoMigratePlugin({ service: handoffService, maxTokens }));
+agent.use(new ContextGuardPlugin({ guardTokens, isSuspended: () => handoffService.busy }));
+agent.use(new AutoMigratePlugin({ service: handoffService, handoffTokens }));
 agent.use(new AutoRefreshToolsPlugin());
 agent.use(new UnknownToolHintPlugin({ scope }));
 await agent.init();
@@ -131,9 +131,9 @@ Interrupt strategies live in the config: `AppConfig.abortedMessageStrategy` (`ke
 
 | Plugin | Description |
 |--------|-------------|
-| `AutoMigratePlugin` | Automatically triggers task migration when the context overflows; delegates the actual migration to the injected `HandoffService` (history handled per `strategy`: default `omit` keeps it auditable, optional `prune` drops it). `resolveMode` lets the caller pick the handoff executor or skip the round. Steps aside while `service.busy` to avoid the handoff→migrate→handoff recursion |
+| `AutoMigratePlugin` | Automatically triggers task migration when `usage.prompt_tokens` exceeds `handoffTokens`; delegates the actual migration to the injected `HandoffService` (history handled per `strategy`: default `omit` keeps it auditable, optional `prune` drops it). `resolveMode` lets the caller pick the handoff executor or skip the round. Steps aside while `service.busy` to avoid the handoff→migrate→handoff recursion |
 | `AutoRefreshToolsPlugin` | Re-scans the file system before each `send()` to refresh the tool list |
-| `ContextGuardPlugin` | Context safety guard — before each request, throws `ContextOverflowError` (interrupting the conversation) when the previous round's `usage.prompt_tokens` exceeds `maxTokens × ratio` (default 1.5), preventing context runaway from reading oversized files |
+| `ContextGuardPlugin` | Context safety guard — before each request, throws `ContextOverflowError` (interrupting the conversation) when the previous round's `usage.prompt_tokens` exceeds `guardTokens` (an absolute value: no multiplier, no looser tier), preventing context runaway from reading oversized files. `isSuspended()` lets the guard itself step aside for handoff/migration turns |
 | `UnknownToolHintPlugin` | Smarter unknown-tool hints — when the LLM calls a nonexistent tool, guides it to `call_mcp_tool` / points out permission issues based on MCP config (opt-in via `agent.use`) |
 
 ## Language

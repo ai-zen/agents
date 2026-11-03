@@ -3,7 +3,7 @@
 > 版本：2026-11-03（review 当日）
 > 范围：`packages/sdk` 全量（8.1k 行生产代码 + 57 个测试文件）+ 关联 `packages/core`；跨仓影响记录到 CLI
 > 方法：8 个并行 subagent 分区审查 → 汇总人逐条复核关键结论（读源码 + 跑探针）→ 与维护者逐条定性 → 本文档
-> 状态：**全部条目已定性，尚未开始改代码**（除 review 前已完成的依赖注入 / `isolate: false` 改造）
+> 状态：**7 个阶段全部执行完毕**（2026-11-03），收紧后的验收标准已达成；各阶段提交与偏差见「六、执行结果」
 
 ---
 
@@ -110,3 +110,17 @@
 | `packages/sdk` | 主体改动 | 本仓内改 |
 | `ai-zen/cli`（本地 `/home/ubuntu/projects/ai-zen/cli`） | `agent.lastUsage = undefined` 赋值会编译报错 / 运行时 `TypeError`；交接回合需 `isSuspended` 才不会被打回 | 阶段 5 跟进 |
 | `ai-zen/desktop` | 不写不读 `lastUsage`，无需改 | — |
+
+---
+
+## 六、执行结果
+
+| 阶段 | 提交 | 结果与偏差 |
+|---|---|---|
+| 1. core | `e5e709b` | `send()` 末尾返回 `this.messages`；`lastUsage` 改为只读派生 getter（删字段与写入点）。SDK 侧同步删除 `HandoffService` 清 `lastUsage` 的那行，并给 `ContextGuardPlugin` 加 `isSuspended`（#20b 的 SDK 半边跟着阶段 1 一起落地，否则 SDK 编译不过） |
+| 2. 工具层 | `d88e708` | #1 #1b #4 #6 #7 #9a-c #10 #11 #13 全部落地。过程中发现 `child_process.exec()` 会**忽略 `detached`**（Node 26 实测），故 `exec` 改用 `spawn(shell, detached)` 自收流，超时才能 `kill(-pid)` 回收整组 |
+| 3. 权限 | `56a5c08` | skill / MCP server 均按 Scope 白名单校验，负向用例覆盖 deny 场景 |
+| 4. 运行时 | `55567c7` | #19 #20a #22a-c。**#19 的台账前提有误**：`conversationId` 并非无人传（SDK 测试与 CLI 都在传），维护者裁定仍按原方案删除（"后缀没有任何意义，而且会话的名称尤其可能乱七八糟"） |
+| 5. CLI 跟进 | `1840f0d`（`ai-zen/cli` 仓） | 删除 `agent.lastUsage = undefined`；接线 `isSuspended: () => handoffService.busy`；删除 `conversationId` 传参。验证时需把本地 `agents-{core,sdk}` 临时链接进 CLI（CLI 依赖的是已发布的 alpha.25），**SDK 发布下一个 alpha 后需同步升依赖** |
+| 6. 工程门禁 | `6cf8f30` | `tsconfig.test.json` + `pretest`；默认套件收窄；e2e 通配。实测清理 **234** 个测试类型错误（比台账记的 211 多，因为 review 期间又新增了用例） |
+| 7. 文档 | 本次提交 | 8 处漂移全部对齐，另补 `shared/content-blocks.ts` 的设计说明与本节行为变更 |

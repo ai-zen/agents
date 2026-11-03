@@ -105,7 +105,7 @@ openai SDK client（baseURL + apiKey）──> Agent（client + model + modelCon
 | 实体 | 说明 | 存储 |
 |------|------|------|
 | **Endpoint** | API 端点，含 baseUrl + apiKey | `config.json` |
-| **Model** | 模型配置，绑定一个 Endpoint + 默认参数 + maxContextTokens | `config.json` |
+| **Model** | 模型配置，绑定一个 Endpoint + 默认参数 + `tokenThresholds`（交接软线 / 阻断硬线） | `config.json` |
 | **ImageModel** | 图片生成模型配置，绑定一个 Endpoint | `config.json` |
 | **Agent** | 可对话的 AI 人格，含提示词、权限、可选工具签名 | `agents/*.json` |
 | **SubAgent** | 特殊 Agent：有 `function` 字段，可被其他 Agent 作为工具调用 | `sub-agents/*.json` |
@@ -139,15 +139,20 @@ interface AppConfig {
 interface Endpoint {
   id: string; baseUrl: string; apiKey: string;
   name: string; description?: string;
+  /** 能力声明：决定「本地文件 → 内容块」走上传还是内联（见 §12「文件 → 内容块」） */
+  capabilities?: { filesApi?: boolean };
 }
 
 interface Model {
   id: string; name: string; endpointId: string;
   modelName?: string;             // 发送给 API 的模型名（不填用 id）
-  maxContextTokens: number;       // 上下文窗口 token 上限
-  maxContextChars?: number;       // 旧版字符数阈值（兼容迁移）
+  tokenThresholds: {              // 用量阈值（绝对值），**不是**模型窗口
+    handoff: number;              // 软线：超过 → 触发交接/迁移
+    guard: number;                // 硬线：请求前超过 → 中断并报错
+  };
   defaultParams?: Record<string, unknown>;
   vision?: boolean;               // 是否支持图片输入（视觉模型）
+  reasoningPreset?: string;       // 引用 reasoning-presets.json 的策略名
   description?: string; version?: number;
 }
 
@@ -345,6 +350,7 @@ agent-plugins/                ← AgentPlugin 插件
   ContextGuardPlugin.ts       ← 严重超限安全护栏
   UnknownToolHintPlugin.ts    ← 未知工具的 MCP 智能提示（调用方显式注册）
 shared/
+  content-blocks.ts           ← 文件/媒体 → 内容块（传输决策表、上传缓存、内联上限、退化规则）
   EntityRepository.ts         ← 通用 JSON 仓储
   errors.ts                   ← SdkError / ContextOverflowError
   logger.ts                   ← getLogger / setLogger
@@ -859,22 +865,41 @@ export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> 
 | `read` | 读取文件（>300KB 拒绝）；可选 `range` 按行列范围读取；输出超限仅警告 |
 | `inspect_file` | 勘察文件结构概况；流式扫描，不受 300KB 限制 |
 | `write` | 写入文件（自动建父目录） |
-| `exec` | 执行命令（`timeout` 必填）；超限时分文件落盘 `stdout.log` / `stderr.log` |
-| `spawn` | 异步执行命令，启动后立即返回；全平台经 shell 解析 |
+| `exec` | 执行命令（`timeout` 必填）；成功时 `exitCode: 0`，超时/中断按**进程组** SIGKILL（`detached` + `kill(-pid)`，孙进程不残留）；`maxBuffer` 16MB，截断时如实标注 `truncated`；超限时分文件落盘 `stdout.log` / `stderr.log` |
+| `spawn` | 异步执行命令，启动后立即返回；全平台经 shell 解析；返回 `started`（**不跟踪退出状态**，要看成败请用 `exec`） |
 | `mkdir` | 创建目录（`recursive`） |
 | `rm` | 删除文件或目录 |
-| `glob` | glob 模式扫描；输出超限落盘 `result.json` |
+| `glob` | glob 模式扫描；基目录不存在/非目录时明确报错（不再静默返回 `[]`）；`exclude` 缺省为 `**/node_modules/**`；输出超限落盘 `result.json` |
 | `ls` | 列出目录内容；输出超限落盘 |
 | `exist` | 检查文件或目录是否存在 |
-| `find_text` | 在文件中搜索文本或正则；输出超限落盘 |
-| `download_file` | 从 URL 下载文件并保存 |
+| `find_text` | 在文件中搜索文本或正则；基目录校验同 `glob`；输出超限落盘 |
+| `download_file` | 从 URL 下载文件并保存（`timeout` 必填，流式写盘，不整块进内存）；不删除任何已存在的文件 |
 | `rename` | 重命名或移动文件/目录 |
 | `copy` | 复制文件或目录 |
-| `batch_edit` | 批量替换文件文本 |
-| `edit` | 单次替换文件文本 |
+| `batch_edit` | 批量替换文件文本（按顺序**级联**，后一条作用于前一条的结果；`replacedCount` 为实际替换次数） |
+| `edit` | 单次替换文件文本（空 `oldText` 拒绝；替换值按字面量写入，`$&` 等不被展开） |
 | `sleep` | 等待指定毫秒数 |
-| `generate_image` | 生成图片；`isAvailable` 声明**依赖 `config.defaultImageModel`** |
+| `generate_image` | 生成图片（端点返回 `url` 给链接，只返回 `b64_json` 时落盘到 `<tmp>/ai-zen/generated-images/` 并给本地路径；两者都没有则 `success: false`）；`isAvailable` 声明**依赖 `config.defaultImageModel`** |
 | `view_image` | 查看图片；`isAvailable` 声明**仅视觉模型可用**（`Model.vision === true`） |
+
+### 文件 → 内容块（`shared/content-blocks.ts`）
+
+「本地文件 / 媒体怎么发给模型」的唯一决策点。此前这段判断硬编码在 `ViewImageTool` 里
+（`endpoint.id === "deepseek"`），换个端点 id 就失效；现在改为**显式能力位 + 传输决策表**：
+
+| 输入 | 端点能力 | 传输方式 |
+|------|----------|----------|
+| 远程 URL（`http(s)`） | 任意 | `image_url` 直接引用，不下载 |
+| 本地文件 | `capabilities.filesApi: true` | 上传 Files API → 以 `file` 块（`file_id`）发送 |
+| 本地文件 | 无 `filesApi` | base64 内联（受内联上限约束，超限报错而非静默截断） |
+| 文本类内容 | 任意 | 归一为 `text` 块 |
+
+要点：
+
+- **上传缓存**按端点维度存（`endpoint.id` + 绝对路径 / 内容哈希），同一张图重复调用只上传一次；
+- **上传失败降级**为 base64 内联，媒体块不丢；非视觉模型退化为文本提示，避免必然 4xx；
+- **出网动作走注入**：`ToolEnvDeps.upload`（默认实现是 `POST {baseUrl}/files`），测试与宿主不需要打穿模块图；
+- 调用方：`ViewImageTool`、`call_mcp_tool` / `read_mcp_resource` 的媒体块，以及 `FileContentSection`（`file_id` / `file_data`）。
 
 ### 输出保护（`maxToolOutput` + `guardOutput`）
 
@@ -1071,7 +1096,8 @@ interface AgentPlugin {
 }
 ```
 
-`send()` 流程：`onBeforeSend` → `super.send()`（内含内循环及其钩子）→ `onAfterSend`，返回 `this.messages`。
+`send()` 流程：`onBeforeSend` → `super.send()`（内含内循环及其钩子）→ `onAfterSend` → **返回 `this.messages`**。
+返回值必须在 `onAfterSend` 之后取：迁移类插件会在钩子里整体替换 `messages`，取快照会让调用方拿到旧会话。
 
 ---
 
@@ -1120,18 +1146,18 @@ class UnknownToolHintPlugin implements AgentPlugin {
 
 ```typescript
 type AutoMigrateModeResolver = (
-  info: { promptTokens: number; maxTokens: number },
+  info: { promptTokens: number; handoffTokens: number },
 ) => HandoffMode | null | Promise<HandoffMode | null>;
 
 interface AutoMigrateOptions {
   service: HandoffService;
-  maxTokens: number;
+  handoffTokens: number;                   // 软线（绝对值），与 model.tokenThresholds.handoff 同源
   resolveMode?: AutoMigrateModeResolver;   // 返回 null = 跳过本次迁移
 }
 ```
 
-`onAfterSend`：`service.busy` → 让行（防递归）；读 `agent.lastUsage?.prompt_tokens` → 超 `maxTokens` 则解析执行者后
-`service.migrate({ agent, promptTokens, maxTokens, mode })`。上层（如 CLI 的选择器）**只需提供 `resolveMode`**，
+`onAfterSend`：`service.busy` → 让行（防递归）；读 `agent.lastUsage?.prompt_tokens` → 超 `handoffTokens` 则解析执行者后
+`service.migrate({ agent, promptTokens, handoffTokens, mode })`。上层（如 CLI 的选择器）**只需提供 `resolveMode`**，
 不必继承插件。
 
 ### ContextGuardPlugin
@@ -1140,26 +1166,26 @@ interface AutoMigrateOptions {
 
 ```typescript
 interface ContextGuardOptions {
-  maxTokens: number;
-  ratio?: number;             // 默认 1.5
-  isSuspended?: () => boolean; // 交接回合等需要放宽的阶段
-  suspendedRatio?: number;     // 默认 2.0
+  guardTokens: number;          // 硬线（绝对值）：上一轮用量 > 它即中断，没有倍数、没有放宽档
+  isSuspended?: () => boolean;  // 返回 true 时本轮不做判定（交接/迁移回合让行）
 }
 ```
 
-`onInnerLoopStart`：`promptTokens > maxTokens × ratio` → 抛 `ContextOverflowError`。
+`onInnerLoopStart`：`isSuspended?.()` 为真 → 直接放行；否则 `promptTokens > guardTokens` → 抛 `ContextOverflowError`。
+
+两条线都是绝对值，`guard` 必须明显大于 `handoff`，中间的差值就是交接回合那几次额外请求的余量。
 
 **推荐配合**：
 
 ```typescript
 agent.use(new ContextGuardPlugin({
-  maxTokens,
-  isSuspended: () => handoffService.busy,   // 交接回合放宽到 ×2，仍保留熔断
-}));                                        // >maxTokens×ratio → 中断报错
+  guardTokens: guard,
+  isSuspended: () => handoffService.busy,   // 交接/迁移回合让行（谁做限制谁放宽）
+}));                                        // > guardTokens → 中断报错
 agent.use(new AutoMigratePlugin({
   service: handoffService,
-  maxTokens,
-}));                                        // [maxTokens, maxTokens×ratio] → 交接迁移
+  handoffTokens: handoff,
+}));                                        // > handoffTokens → 交接迁移
 ```
 
 ---
@@ -1204,8 +1230,9 @@ agent.use(new AutoMigratePlugin({
 
 1. **`busy` 标志**：交接回合本身也是一次 `send()`，其 `onAfterSend` 会再次到达 `AutoMigratePlugin`；
    不跳过就是「交接触发迁移 → 迁移再交接」死循环。`handoff()` / `migrate()` 共用同一把锁，并顺带拒绝重入。
-2. **护栏放宽而非放行**：`ContextGuardPlugin` 在 `isSuspended()`（= `service.busy`）时用 `suspendedRatio`
-   （默认 2.0）代替 1.5。交接恰好发生在上下文最满的时刻，但熔断仍保留。
+2. **护栏自己让行**：`ContextGuardPlugin` 在 `isSuspended()`（接线为 `() => service.busy`）为真时跳过本轮判定 ——
+   交接恰好发生在上下文最满的时刻，不放宽必定被打回。语义是「谁做限制谁放宽」：限制写在护栏的选项里，
+   放宽也只能写在护栏的选项里，**不许去改用量数据**（`lastUsage` 已是只读派生值）。
 3. **`HandoffGuardPlugin`（一次性）**：交接回合内拒绝 `edit` / `batch_edit` / `rm` / `rename` / `mkdir` / `copy`，
    `write` 仅在目标路径归一后等于交接文档时放行。拒绝是**软拒绝**（返回字符串作为工具结果），
    模型能读到引导并转回正题；抛错会被标记为 Error + preventDefault，整轮交接直接死。
@@ -1245,15 +1272,20 @@ interface HandoffContext {
 }
 
 class HandoffService {
-  static createHandoffFileName(date?, conversationId?): string;      // <YYYYMMDD-HHmmss>-<id前8位>.md
+  static createHandoffFileName(date?): string;                      // <YYYYMMDD-HHmmss>.md（本地时间，人眼可读）
   static createHandoffInstruction(p): string;                        // [Skill 正文] + [本次交接参数]
   static createPostMessages(handoffPath): AgentNS.Message[];         // 断点：只给路径
   static serializeMessages(messages): string;
   get busy(): boolean;
-  async handoff(params: { agent; mode?; promptTokens?; handoffTokens?; conversationId?; signal? }): Promise<HandoffContext>;
+  async handoff(params: { agent; mode?; promptTokens?; handoffTokens?; signal? }): Promise<HandoffContext>;
   async migrate(params: {...; strategy?}): Promise<HandoffContext>;
 }
 ```
+
+### 交接文件名
+
+`<YYYYMMDD-HHmmss>.md`，只有到秒的时间戳，不带会话 id 后缀：会话名往往是人手改的、且
+「同一秒内并发交接」本就是调用方该避免的事，为它加随机后缀只会让文件名更难认。
 
 ### 断点消息只给路径
 
@@ -1262,13 +1294,13 @@ class HandoffService {
 
 ### 自交接回合的收尾
 
-- 开跑前 `agent.lastUsage = undefined`：护栏与自动迁移都以它为判据，这是纵深防御（`busy` 已是第一道）；
-- 交接结束后 `lastUsage` 由本轮真实响应回填，不恢复旧值；
-- `migrate()` 之后由调用方清空 `lastUsage`（CLI 在 `onMigrated` 做），否则护栏会拿交接回合的用量误杀新会话第一条消息。
+- 交接回合的护栏让行由 `ContextGuardPlugin.isSuspended`（`() => service.busy`）负责，服务本身不碰用量数据；
+- `agent.lastUsage` 是**只读派生值**（最近一条未 `omit`、带 `usage` 的 assistant 消息），从消息里读，不单独存一份；
+- `migrate()` 换掉 `messages` 之后，`lastUsage` 自然就没有旧用量了 —— 不需要（也不允许）手动清空。
 
 ### 上下文计量
 
-不估算、不学习。**只在 API 响应后，用 `usage.prompt_tokens` 做迁移判断**。`Model.maxContextTokens` 设为模型窗口约 25%，留足 response 空间。
+不估算、不学习。**只在 API 响应后，用 `usage.prompt_tokens` 做迁移判断**。`Model.tokenThresholds.handoff` 设为模型窗口约 25%，`guard` 再明显高出一档，留足 response 空间。
 
 ---
 
@@ -1333,10 +1365,10 @@ const handoffService = new HandoffService({
   handoffDir: "/path/to/workspace-a/.ai-zen/handoffs",
   skillDirs: ["/path/to/workspace-a/.ai-zen/skills", "~/.ai-zen/skills"],
   onHandoff: (hctx) => saveConversation(convId, hctx.agent.messages),   // 迁移前存档（含交接回合）
-  onMigrated: (hctx) => { hctx.agent.lastUsage = undefined; },
+  // 迁移后不用清 lastUsage：它是从 messages 派生的只读值，换掉 messages 即失效
 });
-agent.use(new ContextGuardPlugin({ maxTokens: 250_000, isSuspended: () => handoffService.busy }));
-agent.use(new AutoMigratePlugin({ service: handoffService, maxTokens: 250_000 }));
+agent.use(new ContextGuardPlugin({ guardTokens: 375_000, isSuspended: () => handoffService.busy }));
+agent.use(new AutoMigratePlugin({ service: handoffService, handoffTokens: 250_000 }));
 agent.use(new AutoRefreshToolsPlugin());
 await agent.init();
 

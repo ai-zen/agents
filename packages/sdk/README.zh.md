@@ -23,7 +23,7 @@ crud          ← 能力实体 CRUD（Agent 定义等；会话/草稿已下放�
 runtime       ← 模型工厂 + Agent 组装 + 任务交接/迁移（可 `AbortSignal` 取消；createModel / createAgent / SdkAgent / HandoffService / HandoffGuardPlugin）
 scope         ← Scope 编排容器 + ScopePlugin 契约 + PermissionEvaluator / disclosure + plugins/（5 个自包含能力来源：发现 + 工具 + 插件）
 agent-plugins ← Agent 插件（autoMigrate、autoRefreshTools、contextGuard、unknownToolHint）
-shared        ← 日志、错误
+shared        ← 内容块（文件 → 内容块的传输决策）、实体仓储、日志、错误
 ```
 
 依赖方向：`agent-plugins → runtime → scope`；`runtime → scope / crud / shared / types`，`scope → types / shared`。上层依赖下层，反之不行。
@@ -68,8 +68,8 @@ await scope.init();
 
 const agent = await createAgent(scope, "my-agent");
 const handoffService = new HandoffService({ handoffDir: "/work/.ai-zen/handoffs", skillDirs });
-agent.use(new ContextGuardPlugin({ maxTokens, isSuspended: () => handoffService.busy }));
-agent.use(new AutoMigratePlugin({ service: handoffService, maxTokens }));
+agent.use(new ContextGuardPlugin({ guardTokens, isSuspended: () => handoffService.busy }));
+agent.use(new AutoMigratePlugin({ service: handoffService, handoffTokens }));
 agent.use(new AutoRefreshToolsPlugin());
 agent.use(new UnknownToolHintPlugin({ scope }));
 await agent.init();
@@ -88,7 +88,7 @@ await scope.dispose(); // 断开 MCP、释放插件资源
 | `scope` | ✅ 已实现 — Scope + ScopePlugin + 5 个标准插件（builtin / user-tools / skills / mcp / subagents）+ allInOne |
 | `runtime` | ✅ 已实现 — createAgent、MCP 连接管理、任务迁移 |
 | `agent-plugins` | ✅ 已实现 — AutoMigratePlugin / AutoRefreshToolsPlugin / ContextGuardPlugin / UnknownToolHintPlugin |
-| `shared` | ✅ 已实现 — SdkError + 可注入 Logger |
+| `shared` | ✅ 已实现 — 内容块传输决策（`content-blocks`）+ 实体仓储 + SdkError + 可注入 Logger |
 
 ## 内置工具
 
@@ -132,7 +132,7 @@ await scope.dispose(); // 断开 MCP、释放插件资源
 |------|------|
 | `AutoMigratePlugin` | 上下文超限时自动触发任务迁移（历史按 `strategy` 处理：默认 `omit` 标记保留可审计，可选 `prune` 物理剔除），委托注入的 `HandoffService`；`resolveMode` 让调用方决定交接执行者或跳过本轮；`service.busy` 期间让行，避免「交接→迁移→交接」递归 |
 | `AutoRefreshToolsPlugin` | 每次 `send()` 前重新扫描文件系统，刷新工具列表 |
-| `ContextGuardPlugin` | 上下文安全护栏 — 每轮发请求前检测上一轮 `usage.prompt_tokens`，超过 `maxTokens × ratio`（默认 1.5，即 +50%）时抛 `ContextOverflowError` 中断对话，防止读入超大文件导致上下文失控 |
+| `ContextGuardPlugin` | 上下文安全护栏 — 每轮发请求前检测上一轮 `usage.prompt_tokens`，超过 `guardTokens`（绝对值：没有倍数、没有放宽档）时抛 `ContextOverflowError` 中断对话，防止读入超大文件导致上下文失控。`isSuspended()` 让护栏自己在交接/迁移回合让行 |
 | `UnknownToolHintPlugin` | 未知工具智能提示 — LLM 调用不存在的工具时，根据 MCP 配置引导使用 `call_mcp_tool` / 提示权限问题（调用方显式 `agent.use` 注册） |
 
 ## 语言
