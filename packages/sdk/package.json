@@ -21,11 +21,10 @@
     "prepublishOnly": "node scripts/check-publish-tool.mjs && npm test && npm run build",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "pretest": "tsc --noEmit",
+    "pretest": "tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
-    "test:integration": "npm run pretest && vitest run --config vitest.integration.config.ts",
     "test:e2e": "npm run pretest && vitest run --config vitest.e2e.config.ts",
-    "test:all": "npm run pretest && vitest run && vitest run --config vitest.integration.config.ts && vitest run --config vitest.e2e.config.ts"
+    "test:all": "npm run pretest && vitest run && npm run build && vitest run --config vitest.e2e.config.ts"
   },
   "keywords": [
     "ai",

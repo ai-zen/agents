@@ -280,7 +280,7 @@ describe("FindTextTool", () => {
 
   it("exclude 未指定时默认排除 node_modules（描述里写明）", async () => {
     const tool = new FindTextTool(makeEnv());
-    const exclude = tool.function.parameters.properties.exclude;
+    const exclude = (tool.function.parameters.properties as any).exclude;
     expect(exclude.description).toContain("node_modules");
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { Agent, AgentNS } from "@ai-zen/agents-core";
+import { Agent, AgentNS, Message } from "@ai-zen/agents-core";
 import { createSubAgentTool } from "./subAgentTools.js";
 import type { Scope } from "../../Scope.js";
 import type { AgentDefinition } from "../../../types/index.js";
@@ -10,7 +10,6 @@ import type { AgentDefinition } from "../../../types/index.js";
 function mockScope(): Scope {
   return {
     config: {
-      defaultModel: "gpt4",
       endpoints: [
         { id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1", apiKey: "sk-test" },
       ],
@@ -33,10 +32,7 @@ function sampleDef(id: string, functionName: string): AgentDefinition {
   return {
     id,
     name: id,
-    messages: [
-      { role: AgentNS.Role.System, content: "You are a sub-agent." },
-      { role: AgentNS.Role.User, content: "{{task}}" },
-    ],
+    messages: [Message.System("You are a sub-agent."), Message.User("{{task}}")],
     function: {
       name: functionName,
       description: `Sub-agent ${functionName}`,

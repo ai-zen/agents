@@ -3,25 +3,26 @@ import path from "node:path";
 import { SdkCallbackTool } from "./SdkCallbackTool.js";
 import { makeEnv } from "./test-helpers.js";
 import type { ToolEnv } from "../../../types/index.js";
-import type { ToolCallContext } from "@ai-zen/agents-core";
+import type { AgentNS, ToolCallContext } from "@ai-zen/agents-core";
 
 class TestTool extends SdkCallbackTool {
-  function = {
-    name: "test_tool",
-    description: "test",
-    parameters: {
-      type: "object",
-      properties: {},
-      required: [],
-    },
-  };
-
-  private fn: (input: any) => unknown;
+  declare function: AgentNS.FunctionDefine;
 
   constructor(env: ToolEnv, fn: (input: any) => unknown) {
     super({ env });
+    this.function = {
+      name: "test_tool",
+      description: "test",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    };
     this.fn = fn;
   }
+
+  private fn: (input: any) => unknown;
 
   call(input: any): unknown {
     return this.fn(input);

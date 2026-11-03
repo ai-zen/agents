@@ -5,7 +5,7 @@ import { Scope } from "../scope/Scope.js";
 import { McpScopePlugin } from "../scope/plugins/mcp/McpScopePlugin.js";
 import type { AppConfig } from "../types/index.js";
 
-const MIN_CONFIG: AppConfig = { defaultModel: "m", endpoints: [], models: [] };
+const MIN_CONFIG: AppConfig = { endpoints: [], models: [] };
 
 /** 构造带（或不带）MCP 插件的 Scope */
 function mockScope(opts?: { mcpPaths?: string[] }): Scope {
@@ -19,10 +19,17 @@ function mockScope(opts?: { mcpPaths?: string[] }): Scope {
 function ctx(toolName: string, availableTools: string[]): UnknownToolContext {
   return {
     toolCall: { function: { name: toolName } },
-    availableTools: availableTools.map((name) => ({
-      type: "function" as const,
-      function: { name, description: "", parameters: { type: "object" as const, properties: {} } },
-    })),
+    availableTools: availableTools.map(
+      (name) =>
+        ({
+          type: "function",
+          function: {
+            name,
+            description: "",
+            parameters: { type: "object", properties: {} },
+          },
+        }) as any,
+    ),
   };
 }
 

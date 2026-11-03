@@ -5,7 +5,8 @@ import { allInOne } from "../src/scope/plugins/allInOne.js";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { AgentDefinition, AppConfig } from "../src/types";
+import type { AgentDefinition, AppConfig } from "../src/types/index.js";
+import { Message } from "@ai-zen/agents-core";
 import type { Tool } from "@ai-zen/agents-core";
 
 let dir: string;
@@ -41,7 +42,7 @@ describe("集成：端到端 Agent 组装", () => {
       id: "my-agent",
       name: "My Agent",
       modelId: "gpt4",
-      messages: [{ role: "system", content: "你是一个专业的代码助手。" }],
+      messages: [Message.System("你是一个专业的代码助手。")],
       permissions: {
         tools: { allow: ["read", "exec", "glob", "find_text"] },
         skills: { allow: ["code-review"] },
@@ -59,10 +60,7 @@ describe("集成：端到端 Agent 组装", () => {
     const saDef: AgentDefinition = {
       id: "ga",
       name: "ga",
-      messages: [
-        { role: "system", content: "Hi" },
-        { role: "user", content: "{{task}}" },
-      ],
+      messages: [Message.System("Hi"), Message.User("{{task}}")],
       function: {
         name: "sub_agent_default",
         description: "",

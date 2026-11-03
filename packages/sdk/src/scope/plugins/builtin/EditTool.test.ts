@@ -41,7 +41,7 @@ describe("EditTool", () => {
 
   it("isReplaceAll 默认值为 false", () => {
     const tool = new EditTool(makeEnv());
-    const isReplaceAllDef = tool.function.parameters.properties.isReplaceAll;
+    const isReplaceAllDef = (tool.function.parameters.properties as any).isReplaceAll;
     expect(isReplaceAllDef.default).toBe(false);
   });
 

@@ -479,7 +479,7 @@ describe("migrate", () => {
     });
     const agent = selfAgent();
 
-    await service.migrate({ agent: asAgent(agent), promptTokens: 80, maxTokens: 50 });
+    await service.migrate({ agent: asAgent(agent), promptTokens: 80, handoffTokens: 50 });
 
     expect(order).toEqual(["before", "handoff", "migrated"]);
   });

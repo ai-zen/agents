@@ -11,7 +11,7 @@ import { discoverMcpServers } from "../src/scope/plugins/mcp/discover.js";
 import { discoverBuiltinTools } from "../src/scope/plugins/builtin/discover.js";
 import { SdkAgent } from "../src/runtime/SdkAgent.js";
 import { AutoRefreshToolsPlugin } from "../src/agent-plugins/AutoRefreshToolsPlugin.js";
-import type { AgentDefinition } from "../src/types";
+import type { AgentDefinition } from "../src/types/index.js";
 import type { Tool } from "@ai-zen/agents-core";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";

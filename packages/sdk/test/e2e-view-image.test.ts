@@ -15,6 +15,8 @@
  */
 
 import { describe, it, expect, beforeAll } from "vitest";
+import { Message } from "@ai-zen/agents-core";
+import type { AgentDefinition } from "../src/types/index.js";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { promises as fs } from "node:fs";
@@ -157,14 +159,13 @@ const scope = new Scope({
   agentsDir: join(tmpdir(), "ai-zen-e2e-view-image", "agents"),
 }).use(...allInOne());
 
-const DEFINITION = (modelId: string, id: string, name: string) => ({
+const DEFINITION = (modelId: string, id: string, name: string): AgentDefinition => ({
   id,
   name,
   messages: [
-    {
-      role: "system" as const,
-      content: "你是一个视觉助手。查看图片后，用中文简洁描述图片中的颜色和形状，不要多余解释。",
-    },
+    Message.System(
+      "你是一个视觉助手。查看图片后，用中文简洁描述图片中的颜色和形状，不要多余解释。",
+    ),
   ],
   modelId,
   permissions: {
@@ -208,7 +209,7 @@ describe.runIf(!skip)("view_image 端到端（真实 DeepSeek API）", () => {
       const result = await tool.call({ path_or_url: imgPath });
       expect(Array.isArray(result)).toBe(true);
 
-      const sections = result as Array<Record<string, unknown>>;
+      const sections = result as unknown as Array<Record<string, unknown>>;
       const fileSection = sections.find((s) => s.type === "file") as
         { file_id: string } | undefined;
       expect(fileSection).toBeDefined();
@@ -249,11 +250,9 @@ describe.runIf(!skip)("view_image 端到端（真实 DeepSeek API）", () => {
         model: model.model,
         modelConfig: model.modelConfig,
         messages: [
-          {
-            role: "system",
-            content:
-              "你是一个视觉助手。必须使用 view_image 工具查看用户给出的图片路径，然后用中文描述图片中的颜色和形状。",
-          },
+          Message.System(
+            "你是一个视觉助手。必须使用 view_image 工具查看用户给出的图片路径，然后用中文描述图片中的颜色和形状。",
+          ),
         ],
         tools: [viewImageTool],
       });

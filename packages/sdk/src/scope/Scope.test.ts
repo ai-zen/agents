@@ -5,7 +5,7 @@ import { BuiltinToolsScopePlugin } from "./plugins/builtin/BuiltinToolsScopePlug
 import { discoverBuiltinTools } from "./plugins/builtin/discover.js";
 import type { AppConfig, AgentPermissions } from "../types/index.js";
 import type { AgentDefinition } from "../types/index.js";
-import { AgentNS, Tool } from "@ai-zen/agents-core";
+import { AgentNS, Tool, Message } from "@ai-zen/agents-core";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -31,7 +31,6 @@ function makeTool(name: string): Tool {
 }
 
 const MIN_CONFIG: AppConfig = {
-  defaultModel: "gpt4",
   endpoints: [],
   models: [],
 };
@@ -55,7 +54,7 @@ function makeDef(permissions?: AgentPermissions, modelId?: string): AgentDefinit
   return {
     id: "t",
     name: "T",
-    messages: [{ role: AgentNS.Role.System, content: "You are helpful." }],
+    messages: [Message.System("You are helpful.")],
     permissions,
     modelId,
     createdAt: new Date().toISOString(),
@@ -108,10 +107,7 @@ function writeSubAgent(id: string, functionName: string) {
   const def: AgentDefinition = {
     id,
     name: id,
-    messages: [
-      { role: AgentNS.Role.System, content: "You are a sub-agent." },
-      { role: AgentNS.Role.User, content: "{{task}}" },
-    ],
+    messages: [Message.System("You are a sub-agent."), Message.User("{{task}}")],
     function: {
       name: functionName,
       description: `Sub-agent ${functionName}`,
@@ -211,7 +207,7 @@ describe("Scope 能力发现与过滤", () => {
       const def: AgentDefinition = {
         id: "normal-agent",
         name: "Normal",
-        messages: [{ role: AgentNS.Role.System, content: "You are helpful." }],
+        messages: [Message.System("You are helpful.")],
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -556,7 +552,6 @@ describe("Scope 能力发现与过滤", () => {
 
     it("buildTools: 非视觉模型剔除 view_image，视觉模型保留", async () => {
       const config: AppConfig = {
-        defaultModel: "gpt4",
         endpoints: [],
         models: [
           {
@@ -599,7 +594,6 @@ describe("Scope 能力发现与过滤", () => {
 
       // 配置了 defaultImageModel：generate_image 可用
       const imgConfig: AppConfig = {
-        defaultModel: "gpt4",
         endpoints: [
           {
             id: "zhipu",

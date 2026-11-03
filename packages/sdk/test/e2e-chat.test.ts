@@ -11,6 +11,7 @@
  */
 
 import { describe, it, expect } from "vitest";
+import { Message } from "@ai-zen/agents-core";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Scope } from "../src/scope/Scope.js";
@@ -64,14 +65,14 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
       definition: {
         id: "test",
         name: "Test",
-        messages: [{ role: "system", content: "你是一个简洁的助手，用一句话回复。" }],
+        messages: [Message.System("你是一个简洁的助手，用一句话回复。")],
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       },
       client: model.client,
       model: model.model,
       modelConfig: model.modelConfig,
-      messages: [{ role: "system", content: "你是一个简洁的助手，用一句话回复。" }],
+      messages: [Message.System("你是一个简洁的助手，用一句话回复。")],
     });
 
     const messages = await agent.send("请说'你好，世界'");
@@ -97,10 +98,9 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
         id: "test-tool",
         name: "Test Tool",
         messages: [
-          {
-            role: "system",
-            content: `你是一个助手，可以用工具。当前项目根目录在 ${join(__dirname, "..")}。调用工具完成任务后直接返回结果，不要多余解释。`,
-          },
+          Message.System(
+            `你是一个助手，可以用工具。当前项目根目录在 ${join(__dirname, "..")}。调用工具完成任务后直接返回结果，不要多余解释。`,
+          ),
         ],
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -109,10 +109,9 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
       model: model.model,
       modelConfig: model.modelConfig,
       messages: [
-        {
-          role: "system",
-          content: `你是一个助手，可以用工具。当前项目根目录在 ${join(__dirname, "..")}。调用工具完成任务后直接返回结果，不要多余解释。`,
-        },
+        Message.System(
+          `你是一个助手，可以用工具。当前项目根目录在 ${join(__dirname, "..")}。调用工具完成任务后直接返回结果，不要多余解释。`,
+        ),
       ],
       tools,
     });
@@ -138,14 +137,14 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
       definition: {
         id: "test-multi",
         name: "Test Multi",
-        messages: [{ role: "system", content: "你是一个助手。记住用户说的信息。" }],
+        messages: [Message.System("你是一个助手。记住用户说的信息。")],
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       },
       client: model.client,
       model: model.model,
       modelConfig: model.modelConfig,
-      messages: [{ role: "system", content: "你是一个助手。记住用户说的信息。" }],
+      messages: [Message.System("你是一个助手。记住用户说的信息。")],
     });
 
     // 第一轮

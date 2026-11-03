@@ -72,7 +72,7 @@ describe("AutoMigratePlugin", () => {
     const { service, migrate } = stubService();
     await createPlugin({ service }).onAfterSend(buildCtx(MAX_HANDOFF_TOKENS + 1));
 
-    expect(migrate.mock.calls[0][0].mode).toBeUndefined();
+    expect((migrate.mock.calls[0] as any[])[0].mode).toBeUndefined();
   });
 
   it("resolveMode 返回的执行者被透传给 service.migrate", async () => {
@@ -85,7 +85,7 @@ describe("AutoMigratePlugin", () => {
       promptTokens: MAX_HANDOFF_TOKENS + 1,
       handoffTokens: MAX_HANDOFF_TOKENS,
     });
-    expect(migrate.mock.calls[0][0].mode).toBe("summary");
+    expect((migrate.mock.calls[0] as any[])[0].mode).toBe("summary");
   });
 
   it("resolveMode 返回 null 时跳过本次迁移", async () => {

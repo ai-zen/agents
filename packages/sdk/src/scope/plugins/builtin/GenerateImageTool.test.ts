@@ -18,7 +18,6 @@ afterEach(() => {
 });
 
 const mockConfig: AppConfig = {
-  defaultModel: "gpt4",
   endpoints: [
     {
       id: "bigmodelcn",
@@ -73,7 +72,6 @@ describe("GenerateImageTool", () => {
 
   it("未配置图片模型时返回友好错误", async () => {
     const emptyConfig: AppConfig = {
-      defaultModel: "gpt4",
       endpoints: [],
       models: [],
     };
@@ -93,7 +91,6 @@ describe("GenerateImageTool", () => {
 
   it("端点未配置时返回友好错误", async () => {
     const noEndpointConfig: AppConfig = {
-      defaultModel: "gpt4",
       endpoints: [],
       models: [],
       imageModels: [

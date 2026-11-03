@@ -54,7 +54,7 @@ async function writeAgentFile(id: string, def: Partial<AgentDefinition> = {}) {
     id,
     name: id,
     modelId: "gpt4",
-    messages: [{ role: AgentNS.Role.System, content: "You are helpful." }],
+    messages: [Message.System("You are helpful.")],
     permissions: {
       tools: { allow: ["*"] },
       skills: { allow: ["*"] },
@@ -74,10 +74,7 @@ async function writeSubAgent(id: string, functionName: string) {
   const agent: AgentDefinition = {
     id,
     name: id,
-    messages: [
-      { role: AgentNS.Role.System, content: "You are a sub-agent." },
-      { role: AgentNS.Role.User, content: "{{task}}" },
-    ],
+    messages: [Message.System("You are a sub-agent."), Message.User("{{task}}")],
     function: {
       name: functionName,
       description: "A sub-agent",
@@ -166,7 +163,7 @@ describe("createAgent", () => {
     const def: AgentDefinition = {
       id: "no-model",
       name: "No Model",
-      messages: [{ role: AgentNS.Role.System, content: "hi" }],
+      messages: [Message.System("hi")],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };

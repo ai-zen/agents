@@ -8,7 +8,6 @@ function mockScope(config: AppConfig): Scope {
 }
 
 const baseConfig: AppConfig = {
-  defaultModel: "gpt4",
   endpoints: [
     { id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1", apiKey: "sk-test" },
     { id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", apiKey: "sk-ds" },
@@ -52,7 +51,6 @@ describe("createModel", () => {
 
   it("endpointId 找不到时报错", () => {
     const badConfig: AppConfig = {
-      defaultModel: "bad",
       endpoints: [],
       models: [
         {
@@ -68,7 +66,6 @@ describe("createModel", () => {
 
   it("endpoint apiKey 为空时抛出明确错误", () => {
     const noKeyConfig: AppConfig = {
-      defaultModel: "no-key",
       endpoints: [
         { id: "no-key-ep", name: "No Key", baseUrl: "https://example.com/v1", apiKey: "" },
       ],
@@ -99,13 +96,12 @@ describe("createModel", () => {
   });
 
   it("空 models 数组时报错", () => {
-    const emptyConfig: AppConfig = { defaultModel: "none", endpoints: [], models: [] };
+    const emptyConfig: AppConfig = { endpoints: [], models: [] };
     expect(() => createModel(mockScope(emptyConfig), "none")).toThrow("not found");
   });
 
   it("空 endpoints 数组时报错", () => {
     const noEpConfig: AppConfig = {
-      defaultModel: "m",
       endpoints: [],
       models: [
         { id: "m", name: "M", endpointId: "ep", tokenThresholds: { handoff: 1000, guard: 1500 } },
@@ -117,7 +113,6 @@ describe("createModel", () => {
 
 describe("createModel：Agent 级参数覆盖（浅合并，SDK 不解释键名）", () => {
   const cfg: AppConfig = {
-    defaultModel: "glm",
     endpoints: [{ id: "ep", name: "EP", baseUrl: "https://e/v1", apiKey: "k" }],
     models: [
       {

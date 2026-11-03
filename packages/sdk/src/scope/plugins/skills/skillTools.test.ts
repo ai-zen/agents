@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { Agent, AgentToolLazy, CallbackTool, Message, ToolCallContext } from "@ai-zen/agents-core";
 import { createLoadSkillTool, createCallSkillSubAgentTool } from "./skillTools.js";
 import type { SkillInfo } from "./discover.js";
-import type { Capabilities } from "../Capabilities.js";
 
 let tmpDir: string;
 let skillDirs: string[];
@@ -34,23 +33,40 @@ function writeSkill(id: string, content: string, options?: { subAgent?: boolean 
   writeFileSync(join(dir, "SKILL.md"), frontmatter + content);
 }
 
-const skills: { id: string; description: string }[] = [
-  { id: "git", description: "Git 版本控制" },
-  { id: "docker", description: "Docker 容器管理" },
+/** 造 SkillInfo 夹具（只关心 id/description/subAgent，其余取占位值） */
+function skillInfo(id: string, overrides: Partial<SkillInfo> = {}): SkillInfo {
+  return {
+    id,
+    name: id,
+    description: `Skill ${id}`,
+    subAgent: false,
+    content: "",
+    dirPath: "",
+    ...overrides,
+  };
+}
+
+const skills: SkillInfo[] = [
+  skillInfo("git", { description: "Git 版本控制" }),
+  skillInfo("docker", { description: "Docker 容器管理" }),
 ];
+
+/** 测试视角：load_skill 的回调一定存在，且只关心输入参数 */
+const loadSkill = (tool: { callback?: any }) => (args: Record<string, unknown>) =>
+  tool.callback!.call({ agent: null }, args);
 
 describe("createLoadSkillTool", () => {
   it("工具名称和参数正确", () => {
     const tool = createLoadSkillTool(skillDirs, skills);
     expect(tool.function.name).toBe("load_skill");
-    expect(tool.function.parameters.properties.skill_id.enum).toEqual(["git", "docker"]);
-    expect(tool.function.parameters.required).toContain("skill_id");
+    expect((tool.function.parameters.properties as any).skill_id.enum).toEqual(["git", "docker"]);
+    expect((tool.function.parameters as any).required).toContain("skill_id");
   });
 
   it("Skill 在允许列表内但磁盘上没有时返回 not found", async () => {
     const tool = createLoadSkillTool(skillDirs, skills);
     // git 在 filteredSkills 里，但没写到磁盘
-    const result = await tool.callback.call({ agent: null }, { skill_id: "git" });
+    const result = await loadSkill(tool)({ skill_id: "git" });
     expect(result).toContain("not found");
   });
 
@@ -59,14 +75,14 @@ describe("createLoadSkillTool", () => {
     writeSkill("secret", "# SECRET BODY\nconfidential instructions");
     const tool = createLoadSkillTool(skillDirs, [skills[0]!]); // 只允许 git
 
-    const result = await tool.callback.call({ agent: null }, { skill_id: "secret" });
+    const result = await loadSkill(tool)({ skill_id: "secret" });
     expect(result).toContain("not available");
     expect(result).not.toContain("SECRET BODY");
   });
 
   it("越界的 skill_id（../ 穿越）一律拒绝", async () => {
     const tool = createLoadSkillTool(skillDirs, skills);
-    const result = await tool.callback.call({ agent: null }, { skill_id: "../../etc" });
+    const result = await loadSkill(tool)({ skill_id: "../../etc" });
     expect(result).toContain("not available");
   });
 
@@ -76,11 +92,11 @@ describe("createLoadSkillTool", () => {
     const agent = new Agent({
       client: {} as any,
       model: "test",
-      messages: [{ role: "system", content: "你是一个助手" }],
+      messages: [Message.System("你是一个助手")],
       tools: [],
     });
 
-    const result = await tool.callback.call({ agent }, { skill_id: "git" });
+    const result = await tool.callback!({ skill_id: "git" }, { agent } as any);
     expect(result).toContain("loaded");
     expect(result).toContain("Skill directory path:");
     expect(result).toContain("Git operations guide");
@@ -93,10 +109,10 @@ describe("createLoadSkillTool", () => {
 
 describe("createCallSkillSubAgentTool", () => {
   /** 仅 subAgent: true 的 Skill 进入枚举 */
-  const subAgentSkills = [
-    { id: "git", description: "Git 版本控制", subAgent: true },
-    { id: "docker", description: "Docker 容器管理", subAgent: true },
-  ] as unknown as SkillInfo[];
+  const subAgentSkills: SkillInfo[] = [
+    skillInfo("git", { description: "Git 版本控制", subAgent: true }),
+    skillInfo("docker", { description: "Docker 容器管理", subAgent: true }),
+  ];
 
   /** mock 流式客户端：子 Agent run 时返回固定文本 */
   function createMockClient(responseText = "sub-agent result") {
@@ -152,8 +168,8 @@ describe("createCallSkillSubAgentTool", () => {
   it("工具名称与参数契约保持不变", () => {
     const tool = createCallSkillSubAgentTool(skillDirs, subAgentSkills);
     expect(tool.function.name).toBe("call_skill_sub_agent");
-    expect(tool.function.parameters.required).toContain("skill_id");
-    expect(tool.function.parameters.required).toContain("task");
+    expect((tool.function.parameters as any).required).toContain("skill_id");
+    expect((tool.function.parameters as any).required).toContain("task");
   });
 
   it("由 AgentToolLazy 承载，以复用统一的委派边界", () => {
@@ -185,7 +201,7 @@ describe("createCallSkillSubAgentTool", () => {
     writeSkill("plain", "# 普通 Skill");
     const tool = createCallSkillSubAgentTool(skillDirs, [
       ...subAgentSkills,
-      { id: "plain", description: "普通", subAgent: true },
+      skillInfo("plain", { description: "普通", subAgent: true }),
     ]);
     const host = buildHost(tool);
     await expect(

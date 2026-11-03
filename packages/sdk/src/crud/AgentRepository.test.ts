@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { AgentNS } from "@ai-zen/agents-core";
+import { AgentNS, Message } from "@ai-zen/agents-core";
 import { AgentRepository } from "./AgentRepository.js";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
@@ -22,7 +22,7 @@ function sampleAgent(id: string): AgentDefinition {
   return {
     id,
     name: `Agent ${id}`,
-    messages: [{ role: AgentNS.Role.System, content: "You are helpful." }],
+    messages: [Message.System("You are helpful.")],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };

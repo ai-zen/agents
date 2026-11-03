@@ -1,0 +1,14 @@
+{
+  // 测试代码的类型检查配置：`tsconfig.json` 把 **/*.test.ts 排除在生产构建之外，
+  // 于是测试里对 SDK 的调用长期不参与类型检查（实测积压 200+ 个错误，含
+  // `defaultModel` 已删、`maxTokens`→`handoffTokens` 已改名这类真实漂移）。
+  // 这里单独一份：包含 src + test，只做 noEmit 检查，不产出任何文件。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // 测试同时引用 src 与 test，根目录必须是包根，否则会被 rootDir=./src 拒绝
+    "rootDir": "."
+  },
+  "include": ["src", "test"],
+  "exclude": ["node_modules", "dist"]
+}

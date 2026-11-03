@@ -81,8 +81,8 @@ describe("ViewImageTool", () => {
     const tool = new ViewImageTool(makeEnv("/ws"));
     expect(tool.function.description).toContain("Local URLs are not supported");
     const paramDesc =
-      (tool.function.parameters.properties.path_or_url as { description?: string }).description ??
-      "";
+      ((tool.function.parameters.properties as any).path_or_url as { description?: string })
+        .description ?? "";
     expect(paramDesc).toContain("Local URLs are not supported");
   });
 

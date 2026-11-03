@@ -12,6 +12,6 @@ describe("CwdTool", () => {
   it("返回 env.cwd（而非 process.cwd）", async () => {
     const cwd = "/tmp/workspace-a";
     const tool = new CwdTool(makeEnv(cwd));
-    expect(await tool.call({})).toBe(cwd);
+    expect(await tool.call()).toBe(cwd);
   });
 });

@@ -29,7 +29,6 @@ const mockTransport = {
 
 const stdioConfig: McpServerConfig = {
   id: "test-stdio",
-  name: "Test Stdio",
   transport: "stdio",
   command: "node",
   args: ["server.js"],
@@ -37,7 +36,6 @@ const stdioConfig: McpServerConfig = {
 
 const httpConfig: McpServerConfig = {
   id: "test-http",
-  name: "Test HTTP",
   transport: "http",
   url: "https://mcp.example.com",
 };
@@ -127,13 +125,13 @@ describe("McpConnectionManager", () => {
   it("stdio 缺少 command 时抛出错误", async () => {
     // 使用默认构造（无 factory）来测试校验逻辑，因为 mock 工厂会绕过校验
     const rawManager = new McpConnectionManager();
-    const badConfig: McpServerConfig = { id: "bad", name: "Bad", transport: "stdio" };
+    const badConfig: McpServerConfig = { id: "bad", transport: "stdio" };
     await expect(rawManager.connect("bad", badConfig)).rejects.toThrow("missing command");
   });
 
   it("http 缺少 url 时抛出错误", async () => {
     const rawManager = new McpConnectionManager();
-    const badConfig: McpServerConfig = { id: "bad", name: "Bad", transport: "http" };
+    const badConfig: McpServerConfig = { id: "bad", transport: "http" };
     await expect(rawManager.connect("bad", badConfig)).rejects.toThrow("missing url");
   });
 
@@ -221,7 +219,6 @@ describe("McpConnectionManager", () => {
 
     await manager.connect("slack", {
       id: "slack",
-      name: "Slack",
       transport: "http",
       url: "https://slack.example.com",
     });

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { AgentNS } from "@ai-zen/agents-core";
+import { AgentNS, Message } from "@ai-zen/agents-core";
 import { discoverSubAgents } from "./discover.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -20,7 +20,7 @@ function writeAgentFile(id: string, functionName: string, description = "") {
   const agent: AgentDefinition = {
     id,
     name: id,
-    messages: [{ role: AgentNS.Role.System, content: "You are helpful." }],
+    messages: [Message.System("You are helpful.")],
     function: {
       name: functionName,
       description,
@@ -54,7 +54,7 @@ describe("discoverSubAgents", () => {
     const plain: AgentDefinition = {
       id: "plain-agent",
       name: "普通 Agent",
-      messages: [{ role: AgentNS.Role.System, content: "Hi" }],
+      messages: [Message.System("Hi")],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -85,7 +85,7 @@ describe("discoverSubAgents", () => {
       const agentB: AgentDefinition = {
         id: "agent-b",
         name: "agent-b",
-        messages: [{ role: AgentNS.Role.System, content: "Hi" }],
+        messages: [Message.System("Hi")],
         function: {
           name: "code-reviewer",
           description: "代码审查",
@@ -111,7 +111,7 @@ describe("discoverSubAgents", () => {
       const agentB: AgentDefinition = {
         id: "agent-b",
         name: "agent-b",
-        messages: [{ role: AgentNS.Role.System, content: "Hi" }],
+        messages: [Message.System("Hi")],
         function: {
           name: "shared_func",
           description: "From dir2 (lower priority)",

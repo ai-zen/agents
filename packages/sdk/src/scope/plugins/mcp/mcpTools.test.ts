@@ -84,13 +84,24 @@ const chatCtx = { agent: { model: "ds-chat" } } as any;
 /** 测试默认放开全部 server；白名单校验本身另有用例覆盖 */
 const ALL_MCP_IDS = (): string[] => mcps.map((m) => m.id);
 
-const callMcpTool = (manager: McpConnectionManager, env: ToolEnv = makeEnv()) =>
-  createCallMcpTool(manager, env, ALL_MCP_IDS());
+/** 测试视角的工具：callback 一定存在（`CallbackTool.callback` 在类型上是可选的），ctx 可省略 */
+type TestTool = {
+  function: any;
+  callback: (args: any, ctx?: any) => Promise<any>;
+};
 
-const readResourceTool = (manager: McpConnectionManager, env: ToolEnv = makeEnv()) =>
-  createReadMcpResourceTool(manager, env, ALL_MCP_IDS());
+const asTestTool = (tool: unknown): TestTool => tool as TestTool;
 
-function mockManager(overrides?: Partial<McpConnectionManager>): McpConnectionManager {
+const loadMcpTool = (manager: McpConnectionManager, servers = mcps): TestTool =>
+  asTestTool(createLoadMcpTool(manager, servers));
+
+const callMcpTool = (manager: McpConnectionManager, env: ToolEnv = makeEnv()): TestTool =>
+  asTestTool(createCallMcpTool(manager, env, ALL_MCP_IDS()));
+
+const readResourceTool = (manager: McpConnectionManager, env: ToolEnv = makeEnv()): TestTool =>
+  asTestTool(createReadMcpResourceTool(manager, env, ALL_MCP_IDS()));
+
+function mockManager(overrides?: Record<string, any>): McpConnectionManager {
   return {
     connect: vi.fn(),
     disconnect: vi.fn(),
@@ -106,14 +117,12 @@ function mockManager(overrides?: Partial<McpConnectionManager>): McpConnectionMa
 const mcps: McpServerConfig[] = [
   {
     id: "github",
-    name: "GitHub",
     description: "GitHub file and repository tools",
     transport: "stdio",
     command: "gh",
   },
   {
     id: "slack",
-    name: "Slack",
     description: "Slack messaging tools",
     transport: "http",
     url: "https://slack.example.com",
@@ -123,16 +132,16 @@ const mcps: McpServerConfig[] = [
 describe("createLoadMcpTool", () => {
   it("工具名称和参数正确", () => {
     const manager = mockManager();
-    const tool = createLoadMcpTool(manager, mcps);
+    const tool = loadMcpTool(manager);
     expect(tool.function.name).toBe("load_mcp");
-    expect(tool.function.parameters.properties.server.enum).toEqual(["github", "slack"]);
+    expect((tool.function.parameters.properties as any).server.enum).toEqual(["github", "slack"]);
     expect(tool.function.parameters.required).toContain("server");
     // 披露开关：可选参数，默认 true（不改变既有契约）
-    expect(tool.function.parameters.properties.include_manifest.type).toBe("boolean");
-    expect(tool.function.parameters.properties.include_manifest.default).toBe(true);
+    expect((tool.function.parameters.properties as any).include_manifest.type).toBe("boolean");
+    expect((tool.function.parameters.properties as any).include_manifest.default).toBe(true);
     expect(tool.function.parameters.required).not.toContain("include_manifest");
     // description 透传进参数描述，供 LLM 参考（对齐 load_skill）
-    const serverDesc = tool.function.parameters.properties.server.description as string;
+    const serverDesc = (tool.function.parameters.properties as any).server.description as string;
     expect(serverDesc).toContain("github: GitHub file and repository tools");
     expect(serverDesc).toContain("slack: Slack messaging tools");
     expect(serverDesc).toContain("Available MCP servers");
@@ -140,7 +149,7 @@ describe("createLoadMcpTool", () => {
 
   it("服务器不存在时返回错误", async () => {
     const manager = mockManager();
-    const tool = createLoadMcpTool(manager, mcps);
+    const tool = loadMcpTool(manager);
     const result = await tool.callback({ server: "non-existent" });
     expect(result).toContain("is not configured");
   });
@@ -157,7 +166,7 @@ describe("createLoadMcpTool", () => {
       getState: vi.fn(() => "connected" as const),
       getManifest: vi.fn(() => manifest),
     });
-    const tool = createLoadMcpTool(manager, mcps);
+    const tool = loadMcpTool(manager);
     const result = await tool.callback({ server: "github" });
     const parsed = JSON.parse(result);
     expect(parsed.tools).toEqual(manifest.tools);
@@ -182,7 +191,7 @@ describe("createLoadMcpTool", () => {
       getManifest: vi.fn(() => undefined),
       connect: vi.fn().mockResolvedValue(manifest),
     });
-    const tool = createLoadMcpTool(manager, mcps);
+    const tool = loadMcpTool(manager);
     const result = await tool.callback({ server: "github" });
     const parsed = JSON.parse(result);
     expect(parsed.tools).toEqual(manifest.tools);
@@ -197,7 +206,7 @@ describe("createLoadMcpTool", () => {
       getManifest: vi.fn(() => undefined),
       connect: vi.fn().mockRejectedValue(new Error("Connection timed out")),
     });
-    const tool = createLoadMcpTool(manager, mcps);
+    const tool = loadMcpTool(manager);
     const result = await tool.callback({ server: "github" });
     expect(result).toContain("Failed to connect");
     expect(result).toContain("Connection timed out");
@@ -216,7 +225,7 @@ describe("createLoadMcpTool", () => {
       getManifest: vi.fn(() => undefined),
       connect: vi.fn().mockResolvedValue(manifest),
     });
-    const tool = createLoadMcpTool(manager, mcps);
+    const tool = loadMcpTool(manager);
     const result = await tool.callback({ server: "github", include_manifest: false });
 
     expect(manager.connect).toHaveBeenCalledWith("github", mcps[0]);
@@ -243,7 +252,7 @@ describe("createLoadMcpTool", () => {
       getState: vi.fn(() => "connected" as const),
       getManifest: vi.fn(() => manifest),
     });
-    const tool = createLoadMcpTool(manager, mcps);
+    const tool = loadMcpTool(manager);
     const result = await tool.callback({ server: "github", include_manifest: false });
 
     expect(manager.connect).not.toHaveBeenCalled();
@@ -268,7 +277,7 @@ describe("createLoadMcpTool", () => {
       getManifest: vi.fn(() => undefined),
       connect: vi.fn().mockResolvedValue(manifest),
     });
-    const tool = createLoadMcpTool(manager, mcps);
+    const tool = loadMcpTool(manager);
     const result = await tool.callback({ server: "github", include_manifest: true });
     const parsed = JSON.parse(result);
 
@@ -283,7 +292,7 @@ describe("createLoadMcpTool", () => {
       getManifest: vi.fn(() => undefined),
       connect: vi.fn().mockRejectedValue(new Error("Connection timed out")),
     });
-    const tool = createLoadMcpTool(manager, mcps);
+    const tool = loadMcpTool(manager);
     const result = await tool.callback({ server: "github", include_manifest: false });
 
     expect(result).toContain("Failed to connect");
@@ -945,7 +954,7 @@ describe("权限白名单（filteredMcps）", () => {
     });
 
     // 只允许 github；slack 在别的 Agent 里连上了，对本 Scope 必须不可见
-    const tool = createCallMcpTool(manager, makeEnv(), ["github"]);
+    const tool = asTestTool(createCallMcpTool(manager, makeEnv(), ["github"]));
     const result = await tool.callback({ server: "slack", tool: "post", arguments: {} });
 
     expect(String(result)).toContain("is not available here");
@@ -960,7 +969,7 @@ describe("权限白名单（filteredMcps）", () => {
       getClient: vi.fn(() => ({ readResource })),
     });
 
-    const tool = createReadMcpResourceTool(manager, makeEnv(), ["github"]);
+    const tool = asTestTool(createReadMcpResourceTool(manager, makeEnv(), ["github"]));
     const result = await tool.callback({ server: "slack", uri: "file:///secret.txt" });
 
     expect(String(result)).toContain("is not available here");
@@ -969,7 +978,7 @@ describe("权限白名单（filteredMcps）", () => {
 
   it("白名单内的 server 行为不变（仍按连接状态提示）", async () => {
     const manager = mockManager({ getState: vi.fn(() => "disconnected" as const) });
-    const tool = createCallMcpTool(manager, makeEnv(), ["github"]);
+    const tool = asTestTool(createCallMcpTool(manager, makeEnv(), ["github"]));
 
     const result = await tool.callback({ server: "github", tool: "x", arguments: {} });
     expect(String(result)).toContain('Call load_mcp to connect "github" first');

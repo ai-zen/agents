@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { AgentNS, Tool } from "@ai-zen/agents-core";
+import { AgentNS, Tool, Message } from "@ai-zen/agents-core";
 import type { AgentPlugin } from "@ai-zen/agents-core";
 import { SdkAgent } from "./SdkAgent.js";
 import { CallbackTool } from "@ai-zen/agents-core";
@@ -52,13 +52,13 @@ function createTestAgent(opts?: {
   tools?: any[];
   scope?: any;
 }): SdkAgent {
-  const messages = opts?.messages ?? [{ role: AgentNS.Role.System, content: "You are a helper." }];
+  const messages = opts?.messages ?? [Message.System("You are a helper.")];
   return new SdkAgent({
     scope: opts?.scope ?? mockScope(),
     definition: {
       id: "test-agent",
       name: "Test Agent",
-      messages: [{ role: AgentNS.Role.System, content: "You are a helper." }],
+      messages: [Message.System("You are a helper.")],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     },

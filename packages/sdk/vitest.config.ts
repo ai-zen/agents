@@ -13,7 +13,10 @@ dotenv.config({ path: ".env.local" });
  */
 export default defineConfig({
   test: {
-    include: ["src/**/*.test.ts", "test/**/*.test.ts"],
+    // 默认套件只收「不依赖仓库外夹具 / 真实 API / 本机服务」的用例：
+    // e2e-*.test.ts 需要 API Key、真实网络或本机 MCP 服务，放到 `npm run test:e2e`。
+    // 干净 clone 上 `npm test`（以及挂在它后面的 prepublishOnly）必须只取决于仓库内容。
+    include: ["src/**/*.test.ts", "test/integration.test.ts"],
     isolate: false,
   },
 });
