@@ -81,6 +81,15 @@ function makeEnv(config: Partial<AppConfig> = {}): ToolEnv {
 const visionCtx = { agent: { model: "ds-vision" } } as any;
 const chatCtx = { agent: { model: "ds-chat" } } as any;
 
+/** 测试默认放开全部 server；白名单校验本身另有用例覆盖 */
+const ALL_MCP_IDS = (): string[] => mcps.map((m) => m.id);
+
+const callMcpTool = (manager: McpConnectionManager, env: ToolEnv = makeEnv()) =>
+  createCallMcpTool(manager, env, ALL_MCP_IDS());
+
+const readResourceTool = (manager: McpConnectionManager, env: ToolEnv = makeEnv()) =>
+  createReadMcpResourceTool(manager, env, ALL_MCP_IDS());
+
 function mockManager(overrides?: Partial<McpConnectionManager>): McpConnectionManager {
   return {
     connect: vi.fn(),
@@ -286,7 +295,7 @@ describe("createLoadMcpTool", () => {
 describe("createCallMcpTool", () => {
   it("工具名称和参数正确", () => {
     const manager = mockManager();
-    const tool = createCallMcpTool(manager, makeEnv());
+    const tool = callMcpTool(manager, makeEnv());
     expect(tool.function.name).toBe("call_mcp_tool");
     expect(tool.function.parameters.required).toContain("server");
     expect(tool.function.parameters.required).toContain("tool");
@@ -297,7 +306,7 @@ describe("createCallMcpTool", () => {
     const manager = mockManager({
       getState: vi.fn(() => "disconnected" as const),
     });
-    const tool = createCallMcpTool(manager, makeEnv());
+    const tool = callMcpTool(manager, makeEnv());
     const result = await tool.callback({ server: "github", tool: "echo", arguments: {} });
     expect(result).toContain("Call load_mcp to connect");
   });
@@ -307,7 +316,7 @@ describe("createCallMcpTool", () => {
       getState: vi.fn(() => "connected" as const),
       getClient: vi.fn(() => null),
     });
-    const tool = createCallMcpTool(manager, makeEnv());
+    const tool = callMcpTool(manager, makeEnv());
     const result = await tool.callback({ server: "github", tool: "echo", arguments: {} });
     expect(result).toContain("is not available");
   });
@@ -322,7 +331,7 @@ describe("createCallMcpTool", () => {
       getState: vi.fn(() => "connected" as const),
       getClient: vi.fn(() => mockClient),
     });
-    const tool = createCallMcpTool(manager, makeEnv());
+    const tool = callMcpTool(manager, makeEnv());
     const result = await tool.callback({
       server: "github",
       tool: "echo",
@@ -350,7 +359,7 @@ describe("createCallMcpTool", () => {
       getState: vi.fn(() => "connected" as const),
       getClient: vi.fn(() => mockClient),
     });
-    const tool = createCallMcpTool(manager, makeEnv());
+    const tool = callMcpTool(manager, makeEnv());
     const result = await tool.callback({ server: "github", tool: "write", arguments: {} });
     expect(result).toContain("Tool execution failed");
     expect(result).toContain("Permission denied");
@@ -366,7 +375,7 @@ describe("createCallMcpTool", () => {
       getState: vi.fn(() => "connected" as const),
       getClient: vi.fn(() => mockClient),
     });
-    const tool = createCallMcpTool(manager, makeEnv());
+    const tool = callMcpTool(manager, makeEnv());
     const result = await tool.callback({ server: "github", tool: "draw", arguments: {} });
     // 图片不丢弃：转 image_url 内容块返回；无 mimeType 时缺省 image/png
     expect(Array.isArray(result)).toBe(true);
@@ -383,7 +392,7 @@ describe("createCallMcpTool", () => {
       getState: vi.fn(() => "connected" as const),
       getClient: vi.fn(() => mockClient),
     });
-    const tool = createCallMcpTool(manager, makeEnv());
+    const tool = callMcpTool(manager, makeEnv());
     const result = await tool.callback({ server: "github", tool: "echo", arguments: {} });
     expect(result).toContain("Failed to call");
     expect(result).toContain("Network error");
@@ -400,7 +409,7 @@ describe("createCallMcpTool", () => {
     }
 
     it("文本与图片混排：首块为文本，图片块原样透传", async () => {
-      const tool = createCallMcpTool(
+      const tool = callMcpTool(
         managerWithContent([
           { type: "text", text: "Screenshot below" },
           { type: "image", data: "BBBB", mimeType: "image/jpeg" },
@@ -415,7 +424,7 @@ describe("createCallMcpTool", () => {
     });
 
     it("音频转 file 块（file_data 内联 data URL）", async () => {
-      const tool = createCallMcpTool(
+      const tool = callMcpTool(
         managerWithContent([{ type: "audio", data: "DDDD", mimeType: "audio/mpeg" }]),
         makeEnv(),
       );
@@ -430,7 +439,7 @@ describe("createCallMcpTool", () => {
     });
 
     it("resource.text 并入正文（纯文本时仍返回字符串）", async () => {
-      const tool = createCallMcpTool(
+      const tool = callMcpTool(
         managerWithContent([
           { type: "text", text: "Prefix" },
           {
@@ -445,7 +454,7 @@ describe("createCallMcpTool", () => {
     });
 
     it("resource.blob 按 mimeType 分流：图片走 image_url", async () => {
-      const tool = createCallMcpTool(
+      const tool = callMcpTool(
         managerWithContent([
           {
             type: "resource",
@@ -461,7 +470,7 @@ describe("createCallMcpTool", () => {
     });
 
     it("resource.blob 非图片时走 file 块", async () => {
-      const tool = createCallMcpTool(
+      const tool = callMcpTool(
         managerWithContent([
           {
             type: "resource",
@@ -481,7 +490,7 @@ describe("createCallMcpTool", () => {
     });
 
     it("端点声明 Files API 能力时，MCP 图片上传为 file 块（不再 base64 内联）", async () => {
-      const tool = createCallMcpTool(
+      const tool = callMcpTool(
         managerWithContent([{ type: "image", data: "AAAA", mimeType: "image/png" }]),
         makeEnv(filesApiConfig()),
       );
@@ -495,14 +504,14 @@ describe("createCallMcpTool", () => {
 
     it("同一张图（相同字节）重复调用只上传一次（内容哈希缓存）", async () => {
       const manager = managerWithContent([{ type: "image", data: "AAAA", mimeType: "image/png" }]);
-      const tool = createCallMcpTool(manager, makeEnv(filesApiConfig()));
+      const tool = callMcpTool(manager, makeEnv(filesApiConfig()));
       await tool.callback({ server: "github", tool: "shot", arguments: {} }, visionCtx);
       await tool.callback({ server: "github", tool: "shot", arguments: {} }, visionCtx);
       expect(mockUpload).toHaveBeenCalledTimes(1);
     });
 
     it("非视觉模型时 MCP 图片退化为文本提示（避免 4xx），且不上传", async () => {
-      const tool = createCallMcpTool(
+      const tool = callMcpTool(
         managerWithContent([{ type: "image", data: "AAAA", mimeType: "image/png" }]),
         makeEnv(textOnlyConfig()),
       );
@@ -518,7 +527,7 @@ describe("createCallMcpTool", () => {
 
     it("上传失败时降级为 base64 内联，媒体块不丢", async () => {
       mockUpload.mockRejectedValueOnce(new Error("boom"));
-      const tool = createCallMcpTool(
+      const tool = callMcpTool(
         managerWithContent([{ type: "image", data: "AAAA", mimeType: "image/png" }]),
         makeEnv(filesApiConfig()),
       );
@@ -532,7 +541,7 @@ describe("createCallMcpTool", () => {
     });
 
     it("resource_link 转为文本线索", async () => {
-      const tool = createCallMcpTool(
+      const tool = callMcpTool(
         managerWithContent([
           { type: "resource_link", name: "Report", uri: "file:///r.md", mimeType: "text/markdown" },
         ]),
@@ -543,7 +552,7 @@ describe("createCallMcpTool", () => {
     });
 
     it("未知类型退化为 JSON 文本，不丢弃", async () => {
-      const tool = createCallMcpTool(
+      const tool = callMcpTool(
         managerWithContent([{ type: "tool_use", name: "x", id: "1", input: {} }]),
         makeEnv(),
       );
@@ -552,7 +561,7 @@ describe("createCallMcpTool", () => {
     });
 
     it("文本不在首块时顺序完整保留（图片在前也不拎到前面）", async () => {
-      const tool = createCallMcpTool(
+      const tool = callMcpTool(
         managerWithContent([
           { type: "image", data: "AAAA", mimeType: "image/png" },
           { type: "text", text: "The image above" },
@@ -569,7 +578,7 @@ describe("createCallMcpTool", () => {
     });
 
     it("文本与图片交错时逐块保持原序（不合并、不重排）", async () => {
-      const tool = createCallMcpTool(
+      const tool = callMcpTool(
         managerWithContent([
           { type: "text", text: "Image 1:" },
           { type: "image", data: "A", mimeType: "image/png" },
@@ -592,7 +601,7 @@ describe("createCallMcpTool", () => {
 
     it("文本交叠落盘时，警告占据首个文本块的位置，其余文本块并到它身上", async () => {
       const big = "z".repeat(50_000);
-      const tool = createCallMcpTool(
+      const tool = callMcpTool(
         managerWithContent([
           { type: "image", data: "HEAD", mimeType: "image/png" },
           { type: "text", text: big },
@@ -620,7 +629,7 @@ describe("createCallMcpTool", () => {
 
     it("多次文本超限时只保留一个警告块（其余文本已落盘）", async () => {
       const big = "q".repeat(30_000);
-      const tool = createCallMcpTool(
+      const tool = callMcpTool(
         managerWithContent([
           { type: "text", text: big },
           { type: "image", data: "MID", mimeType: "image/png" },
@@ -646,7 +655,7 @@ describe("createCallMcpTool", () => {
 
     it("文本超限时只保护文本，图片仍原样透传", async () => {
       const big = "z".repeat(50_000);
-      const tool = createCallMcpTool(
+      const tool = callMcpTool(
         managerWithContent([
           { type: "text", text: big },
           { type: "image", data: "GGGG", mimeType: "image/png" },
@@ -693,7 +702,7 @@ describe("createCallMcpTool", () => {
 
     it("超过 maxToolOutput 时落盘 result.txt 并只返回头尾预览", async () => {
       const big = "x".repeat(50_000);
-      const tool = createCallMcpTool(managerReturning(big), makeEnv({ maxToolOutput: 1000 }));
+      const tool = callMcpTool(managerReturning(big), makeEnv({ maxToolOutput: 1000 }));
       const raw = (await tool.callback({
         server: "github",
         tool: "dump",
@@ -718,14 +727,14 @@ describe("createCallMcpTool", () => {
     });
 
     it("未超过上限时原样返回，不落盘", async () => {
-      const tool = createCallMcpTool(managerReturning("hello"), makeEnv({ maxToolOutput: 1000 }));
+      const tool = callMcpTool(managerReturning("hello"), makeEnv({ maxToolOutput: 1000 }));
       const result = await tool.callback({ server: "github", tool: "echo", arguments: {} });
       expect(result).toBe("hello");
     });
 
     it("缺省 maxToolOutput 时以 DEFAULT_MAX_TOOL_OUTPUT 为上限（32768）", async () => {
       const atLimit = "y".repeat(32_768);
-      const tool = createCallMcpTool(managerReturning(atLimit), makeEnv());
+      const tool = callMcpTool(managerReturning(atLimit), makeEnv());
       const result = (await tool.callback({
         server: "github",
         tool: "dump",
@@ -737,7 +746,7 @@ describe("createCallMcpTool", () => {
 
     it("超限且 isError 时警告体保留 isError 标记", async () => {
       const big = "e".repeat(50_000);
-      const tool = createCallMcpTool(
+      const tool = callMcpTool(
         managerReturning(big, { isError: true }),
         makeEnv({ maxToolOutput: 1000 }),
       );
@@ -754,7 +763,7 @@ describe("createCallMcpTool", () => {
 describe("createReadMcpResourceTool", () => {
   it("工具名称和参数正确", () => {
     const manager = mockManager();
-    const tool = createReadMcpResourceTool(manager, makeEnv());
+    const tool = readResourceTool(manager, makeEnv());
     expect(tool.function.name).toBe("read_mcp_resource");
     expect(tool.function.parameters.required).toContain("server");
     expect(tool.function.parameters.required).toContain("uri");
@@ -764,7 +773,7 @@ describe("createReadMcpResourceTool", () => {
     const manager = mockManager({
       getState: vi.fn(() => "disconnected" as const),
     });
-    const tool = createReadMcpResourceTool(manager, makeEnv());
+    const tool = readResourceTool(manager, makeEnv());
     const result = await tool.callback({ server: "github", uri: "file:///README.md" });
     expect(result).toContain("Call load_mcp to connect");
   });
@@ -779,7 +788,7 @@ describe("createReadMcpResourceTool", () => {
       getState: vi.fn(() => "connected" as const),
       getClient: vi.fn(() => mockClient),
     });
-    const tool = createReadMcpResourceTool(manager, makeEnv());
+    const tool = readResourceTool(manager, makeEnv());
     const result = await tool.callback({ server: "github", uri: "file:///README.md" });
     expect(result).toBe("# Document content");
   });
@@ -792,7 +801,7 @@ describe("createReadMcpResourceTool", () => {
       getState: vi.fn(() => "connected" as const),
       getClient: vi.fn(() => mockClient),
     });
-    const tool = createReadMcpResourceTool(manager, makeEnv());
+    const tool = readResourceTool(manager, makeEnv());
     const result = await tool.callback({ server: "github", uri: "file:///missing" });
     expect(result).toContain("Failed to read");
     expect(result).toContain("Resource not found");
@@ -808,7 +817,7 @@ describe("createReadMcpResourceTool", () => {
       getState: vi.fn(() => "connected" as const),
       getClient: vi.fn(() => mockClient),
     });
-    const tool = createReadMcpResourceTool(manager, makeEnv());
+    const tool = readResourceTool(manager, makeEnv());
     const result = await tool.callback({ server: "github", uri: "file:///p.png" });
     expect(result).toEqual([
       { type: "image_url", image_url: { url: "data:image/png;base64,GGGG" } },
@@ -825,7 +834,7 @@ describe("createReadMcpResourceTool", () => {
       getState: vi.fn(() => "connected" as const),
       getClient: vi.fn(() => mockClient),
     });
-    const tool = createReadMcpResourceTool(manager, makeEnv(filesApiConfig()));
+    const tool = readResourceTool(manager, makeEnv(filesApiConfig()));
     const result = await tool.callback({ server: "github", uri: "file:///p.png" }, visionCtx);
     expect(result).toEqual([{ type: "file", file_id: "file-mcp-1" }]);
     expect(mockUpload).toHaveBeenCalledTimes(1);
@@ -833,7 +842,7 @@ describe("createReadMcpResourceTool", () => {
 
   it("文本资源超限时落盘 result.txt 并只返回头尾预览（与 call_mcp_tool 同一闸门）", async () => {
     const long = "x".repeat(500);
-    const tool = createReadMcpResourceTool(
+    const tool = readResourceTool(
       mockManager({
         getState: vi.fn(() => "connected" as const),
         getClient: vi.fn(() => ({
@@ -864,11 +873,11 @@ describe("createReadMcpResourceTool", () => {
       getState: vi.fn(() => "connected" as const),
       getClient: vi.fn(() => mockClient),
     });
-    const tool = createReadMcpResourceTool(manager, makeEnv());
+    const tool = readResourceTool(manager, makeEnv());
     const mixed = (await tool.callback({ server: "github", uri: "file:///x" })) as any[];
     expect(mixed.map((s) => s.type)).toEqual(["text", "image_url", "text"]);
 
-    const textOnly = createReadMcpResourceTool(
+    const textOnly = readResourceTool(
       mockManager({
         getState: vi.fn(() => "connected" as const),
         getClient: vi.fn(() => ({
@@ -895,7 +904,7 @@ describe("signal 透传", () => {
       getState: vi.fn(() => "connected" as const),
       getClient: vi.fn(() => mockClient),
     });
-    const tool = createCallMcpTool(manager, makeEnv());
+    const tool = callMcpTool(manager, makeEnv());
     const controller = new AbortController();
     await tool.callback({ server: "github", tool: "echo", arguments: { message: "hi" } }, {
       signal: controller.signal,
@@ -915,7 +924,7 @@ describe("signal 透传", () => {
       getState: vi.fn(() => "connected" as const),
       getClient: vi.fn(() => mockClient),
     });
-    const tool = createReadMcpResourceTool(manager, makeEnv());
+    const tool = readResourceTool(manager, makeEnv());
     const controller = new AbortController();
     await tool.callback({ server: "github", uri: "file:///README.md" }, {
       signal: controller.signal,
@@ -924,5 +933,45 @@ describe("signal 透传", () => {
       { uri: "file:///README.md" },
       { signal: controller.signal },
     );
+  });
+});
+
+describe("权限白名单（filteredMcps）", () => {
+  it("未在 filteredMcps 内的 server 即使已连接也不能调用工具", async () => {
+    const callTool = vi.fn();
+    const manager = mockManager({
+      getState: vi.fn(() => "connected" as const),
+      getClient: vi.fn(() => ({ callTool })),
+    });
+
+    // 只允许 github；slack 在别的 Agent 里连上了，对本 Scope 必须不可见
+    const tool = createCallMcpTool(manager, makeEnv(), ["github"]);
+    const result = await tool.callback({ server: "slack", tool: "post", arguments: {} });
+
+    expect(String(result)).toContain("is not available here");
+    expect(callTool).not.toHaveBeenCalled();
+    expect(manager.getClient).not.toHaveBeenCalled();
+  });
+
+  it("未在 filteredMcps 内的 server 也不能读资源", async () => {
+    const readResource = vi.fn();
+    const manager = mockManager({
+      getState: vi.fn(() => "connected" as const),
+      getClient: vi.fn(() => ({ readResource })),
+    });
+
+    const tool = createReadMcpResourceTool(manager, makeEnv(), ["github"]);
+    const result = await tool.callback({ server: "slack", uri: "file:///secret.txt" });
+
+    expect(String(result)).toContain("is not available here");
+    expect(readResource).not.toHaveBeenCalled();
+  });
+
+  it("白名单内的 server 行为不变（仍按连接状态提示）", async () => {
+    const manager = mockManager({ getState: vi.fn(() => "disconnected" as const) });
+    const tool = createCallMcpTool(manager, makeEnv(), ["github"]);
+
+    const result = await tool.callback({ server: "github", tool: "x", arguments: {} });
+    expect(String(result)).toContain('Call load_mcp to connect "github" first');
   });
 });

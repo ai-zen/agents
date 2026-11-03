@@ -51,6 +51,7 @@ export class McpScopePlugin implements ScopePlugin {
     const allow = new Set(filtered.tools);
     const allowedMcps = new Set(filtered.mcps);
     const filteredMcps = this.servers.filter((s) => allowedMcps.has(s.id));
+    const mcps = filteredMcps.map((s) => s.id);
     const m = this.mcpManager;
 
     const result: Tool[] = [];
@@ -58,11 +59,12 @@ export class McpScopePlugin implements ScopePlugin {
       result.push(createLoadMcpTool(m, filteredMcps));
     }
     if (allow.has("call_mcp_tool") && m) {
-      // env 供 call_mcp_tool 读取 maxToolOutput，与内置工具共用同一上限口径
-      result.push(createCallMcpTool(m, scope.env));
+      // env 供 call_mcp_tool 读取 maxToolOutput，与内置工具共用同一上限口径；
+      // filteredMcps 是权限白名单（连接管理器全局共享，必须按 Scope 过滤）
+      result.push(createCallMcpTool(m, scope.env, mcps));
     }
     if (allow.has("read_mcp_resource") && m) {
-      result.push(createReadMcpResourceTool(m, scope.env));
+      result.push(createReadMcpResourceTool(m, scope.env, mcps));
     }
     return result;
   }

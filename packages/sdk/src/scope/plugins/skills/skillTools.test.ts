@@ -47,10 +47,27 @@ describe("createLoadSkillTool", () => {
     expect(tool.function.parameters.required).toContain("skill_id");
   });
 
-  it("Skill 不存在时返回错误", async () => {
+  it("Skill 在允许列表内但磁盘上没有时返回 not found", async () => {
     const tool = createLoadSkillTool(skillDirs, skills);
-    const result = await tool.callback.call({ agent: null }, { skill_id: "non-existent" });
+    // git 在 filteredSkills 里，但没写到磁盘
+    const result = await tool.callback.call({ agent: null }, { skill_id: "git" });
     expect(result).toContain("not found");
+  });
+
+  it("被权限过滤掉的 Skill 即使磁盘上有也加载不到", async () => {
+    // secret 有完整正文，但不在 filteredSkills 里（例如被 skills.deny 挡掉）
+    writeSkill("secret", "# SECRET BODY\nconfidential instructions");
+    const tool = createLoadSkillTool(skillDirs, [skills[0]!]); // 只允许 git
+
+    const result = await tool.callback.call({ agent: null }, { skill_id: "secret" });
+    expect(result).toContain("not available");
+    expect(result).not.toContain("SECRET BODY");
+  });
+
+  it("越界的 skill_id（../ 穿越）一律拒绝", async () => {
+    const tool = createLoadSkillTool(skillDirs, skills);
+    const result = await tool.callback.call({ agent: null }, { skill_id: "../../etc" });
+    expect(result).toContain("not available");
   });
 
   it("成功加载 Skill 返回完整内容与路径信息", async () => {
@@ -144,17 +161,32 @@ describe("createCallSkillSubAgentTool", () => {
     expect(tool).toBeInstanceOf(AgentToolLazy);
   });
 
-  it("Skill 不存在时抛出错误", async () => {
+  it("Skill 在允许列表内但磁盘上没有时抛出 not found", async () => {
     const tool = createCallSkillSubAgentTool(skillDirs, subAgentSkills);
     const host = buildHost(tool);
+    // git 在列表里但没落盘
     await expect(
-      tool.exec(buildCtx(host, { skill_id: "non-existent", task: "do something" })),
+      tool.exec(buildCtx(host, { skill_id: "git", task: "do something" })),
     ).rejects.toThrow("not found");
   });
 
+  it("被权限过滤掉的 Skill 不能被点名启动子 Agent", async () => {
+    writeSkill("secret", "# 机密技能", { subAgent: true });
+    const tool = createCallSkillSubAgentTool(skillDirs, subAgentSkills); // 不含 secret
+    const host = buildHost(tool);
+    await expect(
+      tool.exec(buildCtx(host, { skill_id: "secret", task: "do something" })),
+    ).rejects.toThrow("not available");
+  });
+
   it("Skill 不支持子 Agent 模式时抛出错误", async () => {
+    // 磁盘上的 frontmatter 没有 sub-agent: true，而发现结果声称支持（后改的 frontmatter）：
+    // 以磁盘为准，明确告知模型改用 load_skill 自己处理
     writeSkill("plain", "# 普通 Skill");
-    const tool = createCallSkillSubAgentTool(skillDirs, subAgentSkills);
+    const tool = createCallSkillSubAgentTool(skillDirs, [
+      ...subAgentSkills,
+      { id: "plain", description: "普通", subAgent: true },
+    ]);
     const host = buildHost(tool);
     await expect(
       tool.exec(buildCtx(host, { skill_id: "plain", task: "do something" })),

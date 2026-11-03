@@ -22,6 +22,7 @@ export function createLoadSkillTool(
   filteredSkills: SkillInfo[],
 ): CallbackTool {
   const ids = filteredSkills.map((s) => s.id);
+  const allowedIds = new Set(ids);
   const param = createDisclosureParam(ids, "Select a Skill", EMPTY_HINT);
 
   // 拼接各 skill 的描述供 LLM 参考
@@ -50,6 +51,12 @@ export function createLoadSkillTool(
     },
     callback: async function (input: Record<string, unknown>): Promise<string> {
       const skillId = input.skill_id as string;
+      // 权限白名单：`filteredSkills` 才是本 Scope 允许的技能。
+      // 只靠枚举 + 描述里列名字不算限制（deny 的技能照样能被点名加载），
+      // 顺带堵掉 "../../etc" 这类越出 skillDirs 的 id。
+      if (!allowedIds.has(skillId)) {
+        return `❌ Skill "${skillId}" is not available here. Available skills: ${ids.join(", ") || "(none)"}`;
+      }
       const skill = await readSkill(skillDirs, skillId);
       if (!skill) {
         return `❌ Skill "${skillId}" not found, please verify the name`;
@@ -97,6 +104,7 @@ export function createCallSkillSubAgentTool(
   // 只保留支持子 Agent 模式的 skill
   const subAgentSkills = filteredSkills.filter((s) => s.subAgent);
   const ids = subAgentSkills.map((s) => s.id);
+  const allowedIds = new Set(ids);
   const param = createDisclosureParam(
     ids,
     "Select a Skill that supports SubAgent mode",
@@ -139,6 +147,12 @@ export function createCallSkillSubAgentTool(
     ): Promise<Agent> => {
       const skillId = parsedArgs.skill_id as string;
       const task = parsedArgs.task as string;
+      // 与 load_skill 同一白名单口径：被权限过滤掉的技能不能被点名启动
+      if (!allowedIds.has(skillId)) {
+        throw new Error(
+          `❌ Skill "${skillId}" is not available here. Available SubAgent skills: ${ids.join(", ") || "(none)"}`,
+        );
+      }
       const skill = await readSkill(skillDirs, skillId);
       if (!skill) {
         throw new Error(`❌ Skill "${skillId}" not found, please verify the name`);

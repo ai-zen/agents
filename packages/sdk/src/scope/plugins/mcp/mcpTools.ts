@@ -315,7 +315,16 @@ async function protectCallOutput(
  *
  * env 仅用于读取 maxToolOutput（文本输出保护上限），与内置工具口径一致。
  */
-export function createCallMcpTool(mcpManager: McpConnectionManager, env: ToolEnv): CallbackTool {
+export function createCallMcpTool(
+  mcpManager: McpConnectionManager,
+  env: ToolEnv,
+  filteredMcps: string[],
+): CallbackTool {
+  // 权限白名单：`filteredMcps` 是本 Scope 允许的 server。
+  // 连接管理器是全局共享的，只按"是否 connected"判断会让任一 Agent 连上的 server 对其他 Scope 敞开。
+  const allowed = new Set(filteredMcps);
+  const allowList = filteredMcps.join(", ") || "(none)";
+
   return new CallbackTool({
     function: {
       name: "call_mcp_tool",
@@ -334,6 +343,10 @@ export function createCallMcpTool(mcpManager: McpConnectionManager, env: ToolEnv
     },
     callback: async (input, ctx): Promise<AgentNS.MessageContent> => {
       const serverName = input.server as string;
+      if (!allowed.has(serverName)) {
+        return `❌ MCP server "${serverName}" is not available here. Available servers: ${allowList}`;
+      }
+
       const state = mcpManager.getState(serverName);
       if (state !== "connected") {
         return `Call load_mcp to connect "${serverName}" first`;
@@ -405,7 +418,12 @@ export function createCallMcpTool(mcpManager: McpConnectionManager, env: ToolEnv
 export function createReadMcpResourceTool(
   mcpManager: McpConnectionManager,
   env: ToolEnv,
+  filteredMcps: string[],
 ): CallbackTool {
+  // 与 call_mcp_tool 同一白名单口径（见该工具的说明）
+  const allowed = new Set(filteredMcps);
+  const allowList = filteredMcps.join(", ") || "(none)";
+
   return new CallbackTool({
     function: {
       name: "read_mcp_resource",
@@ -423,6 +441,10 @@ export function createReadMcpResourceTool(
     },
     callback: async (input, ctx): Promise<AgentNS.MessageContent> => {
       const serverName = input.server as string;
+      if (!allowed.has(serverName)) {
+        return `❌ MCP server "${serverName}" is not available here. Available servers: ${allowList}`;
+      }
+
       const state = mcpManager.getState(serverName);
       if (state !== "connected") {
         return `Call load_mcp to connect "${serverName}" first`;
