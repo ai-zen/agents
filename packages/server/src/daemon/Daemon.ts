@@ -134,8 +134,29 @@ export class Daemon {
     this.server = server;
 
     await new Promise<void>((resolve, reject) => {
-      const onError = (error: Error) => reject(error);
-      server.once("error", onError);
+      /**
+       * 请求的端口被占 → 退回系统分配（只退一次）。
+       *
+       * 8790 是给「人手敲 `agents-server serve`」的默认值，不是身份 —— 客户端的端口永远来自
+       * 发现文件（`server.json`）。而**同一台机器上可能有好几个守护进程**：测试 / 脚本各自
+       * 一个 `AI_ZEN_DIR`、多用户，以及一次 `ai "…"` 在另一个目录里刚拉起的那个。
+       *
+       * 抢不到就整个起不来的代价与「端口好记」完全不成比例：客户端那边看到的是
+       * `server did not become reachable within 10000ms`（`ensureServer` 在等一个永远
+       * 不会写的发现文件），而真正的原因被 `stdio: "ignore"` 吞掉了。
+       */
+      const onError = (error: NodeJS.ErrnoException) => {
+        if (error.code === "EADDRINUSE" && this.requestedPort !== 0) {
+          server.listen({ host: this.host, port: 0 }, () => {
+            server.off("error", onError);
+            resolve();
+          });
+          return;
+        }
+        reject(error);
+      };
+      // 用 `on` 而不是 `once`：退回系统分配之后还可能再错一次，那一次必须走到 reject
+      server.on("error", onError);
       server.listen({ host: this.host, port: this.requestedPort }, () => {
         server.off("error", onError);
         resolve();

@@ -77,6 +77,21 @@ describe("Daemon 启动与发现", () => {
     const instance = new Daemon({ aiZenDir: dir, host: "0.0.0.0", port: 0, version: "t" });
     await expect(instance.start()).rejects.toThrow(/loopback/);
   });
+
+  it("请求的端口被占 → 退回系统分配（多个 AI_ZEN_DIR 同时跑得起）", async () => {
+    const first = await startDaemon();
+    const other = mkdtempSync(join(tmpdir(), "aiz-daemon-port-"));
+    const second = new Daemon({ aiZenDir: other, port: first.port, version: "0.1.0-test" });
+    try {
+      await second.start();
+      // 8790 拿不到不是错误：客户端的端口永远从自己那个发现文件读
+      expect(second.port).not.toBe(first.port);
+      expect((await readDescriptor(other))?.port).toBe(second.port);
+    } finally {
+      await second.stop("test");
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("握手", () => {
