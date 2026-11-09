@@ -83,28 +83,54 @@ business logic.
 
 `src/protocol/sessions.ts` is the wire contract for sessions — method names, params and the
 session events (`session.phase`, `message.delta`, `turn.end`, `session.notice`,
-`session.idChanged`). `src/service/session/
+`session.idChanged`, `session.question`, `session.subAgent.*`). `src/service/session/
 SessionManager.ts` implements the live-session registry and the SDK-event → protocol-event
 translation; `src/service/agent/` assembles the agent (config + Scope + capability
 discovery) per workspace; `src/daemon/sessionHandlers.ts` registers `workspace.resolve` /
-`workspace.files` / `events.watch` / `session.create` / `session.send` / `session.cancel` /
-`session.list` / `session.listSaved` / `session.last` / `session.attach` /
-`session.subAgent.snapshot` / `session.answer` / `session.handoff` / `session.migrate`
-on a `Daemon`, and `src/cli.ts` wires all of it.
+`workspace.files` / `events.watch` / `session.create` / `session.attach` / `session.send` /
+`session.cancel` / `session.list` / `session.listSaved` / `session.last` /
+`session.subAgent.snapshot` / `session.question`+`session.answer` / `session.reload` /
+`session.setAgent` / `session.close` / `session.keepAlive.set` / `session.handoff` /
+`session.migrate` on a `Daemon`, and `src/cli.ts` wires all of it.
 
 Agent assembly is **per workspace**: one Scope (one set of MCP connections and tool
 discovery) is shared by every session in the same workspace, and never shared across
 workspaces — project-level skills / tools / mcp hang off the workspace path.
 
-### The workspace owns the cwd
+Two plugins are installed regardless of the model's token thresholds: `AutoRefreshToolsPlugin`
+(re-discovers capabilities so a server/skill/tool added mid-session becomes visible) and the
+sub-agent guard installer. The refresh timing is a global config knob
+(`autoRefreshTools`: `inner-loop-start` — default, before every request — / `outer-loop-start`
+— once per turn — / `off`), because it trades freshness against one capability scan per
+request. Guard / auto-migration come *after* that check: they only apply when the model
+declares `tokenThresholds`, and returning early on "no thresholds" must not silently disable
+tool refresh too.
 
-`workspace.resolve` takes an **optional** path. Send none and the server answers with *its
-own* working directory — the `--workspace` flag, else the directory the daemon was started
-from; the resolved value is logged at startup, so "who decided this directory" is always
-answerable from the log. That is the only correct behaviour once the client and the server
-are different machines: a laptop's cwd is a directory the server may not even have. The
-handler never reads the process cwd itself — the composition root resolves the default once
-and injects it as `defaultWorkspacePath`.
+### The workspace owns the cwd — and the agent's tool cwd
+
+`workspace.resolve` takes an **optional** path, and who sends it depends on where the server
+runs:
+
+- **Client on the same machine (loopback)** — the client sends its own working directory. That
+  is the user's actual intent ("I typed `ai` in this project") and it is what makes "reuse or
+  create *this* directory's workspace, then resume its last conversation" work. The client only
+  says *"I would like this directory"*; the server still normalises it, and the client keeps the
+  **returned** path (`reset()` relies on it to open the next session in the same workspace).
+- **Remote server** — nothing is sent, and the server answers with *its own* working directory:
+  the `--workspace` flag, else the directory the daemon was started from (logged at startup, so
+  "who decided this directory" is always answerable from the log). A laptop's cwd is a directory
+  the server may not even have.
+
+The handler never reads the process cwd itself — the composition root resolves the default once
+and injects it as `defaultWorkspacePath`. The *client* makes the same call for project-scoped
+`mcp.json` (`src/server-client/local-host.ts` is the single judge), because two separate
+judgements would eventually disagree: the session in project A, the MCP config read from
+somewhere else.
+
+**The workspace path must reach `Scope` as its `cwd`.** `Scope` defaults to the *process's*
+current directory, which on a daemon is wherever it happened to be spawned — one missing
+argument gives you `@`-completion listing workspace B's files while `exec pwd` and every
+relative read/write land in directory A. `AgentPaths.workspacePath` exists for exactly this.
 
 `workspace.files` returns the candidate list behind the client's `@`-completion. Entries are
 relative to the workspace root, `/`-separated, and carry `dir` so the client knows whether to
@@ -137,18 +163,82 @@ concurrent turns would interleave their deltas under each other's ids.
 ### Asking the client something: `session.question`
 
 Some decisions belong to the user, not to the server — auto-migration's "who writes the handoff
-document" (`self` | `summary` | skip) is one. The server emits
-`session.question { questionId, kind, ... }` and waits for `session.answer { questionId, mode }`.
+document" (`self` | `summary` | skip) is the first one. The event is deliberately **generic**:
 
-Three rules make it safe, and each has a reason:
+```
+session.question { questionId, kind, input, options?, params, allowSkip, fallback }
+session.answer   { questionId, choice: string | null }
+```
 
-- **Nobody watching ⇒ don't ask.** With no event subscribers the question is invisible, so the
-  default is used. Asking a question no one can see only wedges the turn.
+- `kind` says *what* is being asked; the client looks up its own wording (`kind + option id`)
+  and its own picker. Adding a second kind is a client-side table entry, no protocol change.
+- `params` carries whatever the client needs to render a title (today `{ promptTokens,
+  handoffTokens }`) — a bag, not fixed fields, because the next question will want others.
+- `fallback` is **what the server will use when nobody answers** (timeout, no watcher, or a
+  client that does not know this `kind`). The asking party supplies it: only it knows which way
+  is safe. For handoff-mode it is `null` = *do nothing*: deciding whether to migrate on the
+  user's behalf is exactly the kind of overreach this API exists to avoid. (The old CLI
+  defaulted to `self` when nobody could be asked; that is gone on purpose — the hard guard
+  still interrupts a turn that grows past the limit.)
+
+Three rules make waiting safe, and each has a reason:
+
+- **Nobody watching ⇒ don't ask.** With no event subscribers the question is invisible, so
+  `fallback` is returned immediately. Asking a question no one can see only wedges the turn.
 - **Register before emitting.** Handlers run synchronously, so a fast client may answer inside
   the same event-loop tick.
-- **Wait, but with a deadline** (`askTimeoutMs`, 5 min by default). "The human is away, so we
-  wait forever" is fine in a modal TUI; in a daemon it means a session stuck as busy forever —
-  and `send` on it is refused with `turn-busy` the whole time.
+- **Wait, but with a deadline** (`askTimeoutMs`, 5 min by default), and **clear the table on all
+  three exits** (answered / timed out / released by `releaseQuestions`). "Not in the table" is
+  the single test for "this answer came too late".
+
+`releaseQuestions` resolves each pending question with **its own** `fallback` — not with one
+shared value: "the turn is over" says nothing about what the user wanted.
+
+### Not archiving is a bug: per-turn persistence
+
+`settleTurn` writes the session to the archive **before** `turn.end`, then emits. The order is
+the whole point: once a client sees `turn.end` it treats the turn as finished, so a session
+missing from disk at that moment means "quit and come back and nothing happened". This is what
+the old `ConversationPersistPlugin` did on every `onInnerLoopEnd`.
+
+Three details:
+
+- **No user message ⇒ no write.** Otherwise `/load` fills up with empty sessions.
+- **`send` / `handoff` set the flag; `migrate` must not.** `migrate` archives the *full* history
+  before pruning; a second write at settle time would overwrite it with the pruned version.
+- **A failed write is a notice (`persistFailed`), not an exception.** The settle path has no
+  caller left to throw to, and "you thought it was saved" is the worst failure shape there is.
+
+### Keep-alive: who decides a session may be dropped
+
+A session outlives its clients, but it must not live forever. The rule is one line:
+
+> After `turn.end` has been emitted, a session that is **not in the keep-alive set** is closed.
+
+- `session.keepAlive.set { sessionId, on }` (idempotent). `on: false` while idle closes the
+  session **immediately** — waiting for the next `turn.end` would mean waiting forever, because
+  an idle session never produces one.
+- **New sessions start in the set.** The two mistakes are not equally bad: forgetting to
+  release leaks a few megabytes, forgetting to claim drops the session the user is looking at.
+- The set lives in **server memory**, per session; it is not persisted and not tied to a
+  client identity. A TUI keeps exactly one session in it and maintains it automatically at the
+  single place where it switches sessions; a future desktop / web shell may expose it as a
+  user-managed pin list. Nothing in the server hard-codes "one at a time" — that constraint is
+  a property of the TUI's usage, not of the protocol.
+- **Closing is cheap and lossless**: the archive was written before `turn.end`, so a closed
+  session is re-hydrated by `session.attach` straight from disk.
+- `session.list` reports `keepAlive` so a client can tell the two apart.
+
+### `session.setAgent`: same conversation, different agent
+
+Agent identity belongs to the server (the agent runs there), so `/agent` cannot be done by
+re-mounting a screen with a different `agentId` — `attach` returns a live session *as is* and
+ignores that field, which is how "switched!" could be shown while the next turn still ran the
+old agent. `session.setAgent` rebuilds the agent from the new definition, keeps
+`agent.messages`, updates the session's `agentId`, and **writes the session once** (the archive
+records `agentId`; skipping the write makes the next `attach` load the old agent back). It does
+**not** invalidate the Scope: the Scope holds config and capability discovery, which are not
+agent-specific, and invalidating it would evict every other session in the workspace.
 
 ### Sub-agents: a tool, not a session
 
@@ -221,6 +311,11 @@ Three things are worth knowing before touching it:
   which logs and continues — a failed archive inside a hook would let the prune destroy the
   history anyway. Archive / prune / adopt are three ordered statements in
   `SessionManager.migrate()`, each free to fail loudly.
+- **Progress is notices, not sentences.** `handoffWriting` / `handoffAutoDetected` /
+  `migrationDegraded` / `handoffPath` / `handoffArchived` / `handoffMigrated` +
+  `handoffMigratedHint` / `migrationSkipped`. The last three are easy to lose: the old CLI
+  produced them as text through `HandoffService.log()`, and a text channel is exactly what
+  gets dropped server-side (the server emits no prose).
 
 ## Config and agent definitions
 
@@ -276,6 +371,10 @@ test with two or three fakes and nothing else.
 | `cli/src/agent-creator.ts` (config + Scope + capability discovery) | `src/service/agent/` |
 | `cli/src/config.ts` + `cli/src/agents-store.ts` (config / MCP / agent definition I/O) | `src/service/config/` + `src/protocol/config.ts` |
 | `cli/src/tui/file-index.ts` (`@` completion, scanning the client's disk) | `src/service/workspace/FileIndex.ts` |
+| `cli/src/model-switch.ts` (write `AgentDefinition.modelId` + clear thinking params) | `SessionAgentFactory.setModel` (`agent.model.set`) |
+| `cli/src/conversation-persist-plugin.ts` (per-turn autosave) | `SessionManager.settleTurn` + `writeSession` |
+| `cli/src/auto-migrate-confirm.ts` (the three-way picker's server half) | `SessionManager.askQuestion` (`session.question` / `session.answer`) |
+| — | `session.keepAlive.set` / `session.close` / `session.setAgent`, the keep-alive reclaimer |
 | `cli/src/sub-agent-guard-plugin.ts` | `sdk/src/agent-plugins/SubAgentGuardInstallerPlugin.ts` |
 | `cli/src/handoff-service.ts` (the hooks around the SDK's handoff flow) | `src/service/handoff/` |
 | — | `src/protocol/` frames, message and session shapes |
