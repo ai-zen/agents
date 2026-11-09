@@ -18,6 +18,8 @@ function createTestAgent(opts?: { scope?: any; permissions?: any; definition?: a
   const messages: any[] = [{ role: "system", content: "You are a helper." }];
   return new SdkAgent({
     scope: opts?.scope ?? (mockScope() as any),
+    // 与真件同形：模型解析的档位（手工装配的假件等价于「模型写在定义上」那一档）
+    modelLevel: "agent",
     definition: opts?.definition ?? {
       id: "test-agent",
       name: "Test Agent",

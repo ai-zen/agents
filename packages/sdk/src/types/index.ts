@@ -160,10 +160,11 @@ export interface AgentDefinition {
   description?: string; // 简短描述（列表展示用）
   messages: AgentNS.Message[]; // 预设对话（至少一条 system）
   /**
-   * 绑定模型 id —— **运行期唯一真相源**。
+   * 绑定模型 id —— 三级解析的**第二级**（`createAgent` 里唯一一处实现）：
+   * `会话级覆盖 > 本字段 > AppConfig.defaultModel`。
    *
-   * 缺省即「无模型可用」，`createAgent` 会直接报错；不存在配置层的 `defaultModel`
-   * 兜底，也不存在会话级的模型记录。要换模型就改这里（`/model` 写的就是它）。
+   * 日常在用的模型写在这里（`/model --agent` 写的就是它）；缺省时不再直接报错，
+   * 而是落到配置层的兜底模型 —— 三级都空时 `createAgent` 才报错（带上 agentId）。
    */
   modelId?: string;
   /**
@@ -225,6 +226,18 @@ export interface AppConfig {
   defaultImageModel?: string;
   /** 默认 Agent ID（CLI/Desktop 使用） */
   defaultAgent?: string;
+  /**
+   * 全局兜底模型 id —— 三级解析的**最后一级**（解析顺序的唯一实现在 SDK 的
+   * `createAgent` / `resolveModel`）：`会话级覆盖 > AgentDefinition.modelId > 本字段`。
+   *
+   * 它不是主真相源：日常在用的模型写在 **Agent 定义** 上，这里只在 Agent **没绑模型**
+   * 时兜底（用户清掉了某个 Agent 的 `modelId`，仍希望整个应用有个能跑的模型）。
+   * 三级都拿不到时 `createAgent` 直接报错并带上 agentId —— 绝不静默挑一个出厂模型
+   * 顶上（那会变成「界面写着 A、请求和账单落在 B」）。
+   *
+   * 出厂配置**不写**这个字段：出厂默认 Agent 自带 `modelId`，兜底层留给用户自己声明。
+   */
+  defaultModel?: string;
   /** 默认迁移模型 ID */
   defaultMigrationModel?: string;
   /**

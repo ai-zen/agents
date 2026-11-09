@@ -11,8 +11,10 @@ export const DEFAULT_AGENT_ID = "default";
 /**
  * 出厂默认模型 id。
  *
- * 模型的**唯一真相源是 `AgentDefinition.modelId`**：配置里不再有 `defaultModel`，
- * 会话存档里也不记模型。这个常量只用于给出厂默认 Agent 填一个初始值。
+ * 模型按三级解析（`会话级覆盖 > AgentDefinition.modelId > AppConfig.defaultModel`，
+ * 唯一实现在 `runtime/resolveModel.ts`）。出厂配置里**只有**默认 Agent 定义绑了模型，
+ * `defaultModel` 刻意留空：兜底层是给用户声明「我清空 Agent 的 modelId 之后用哪个」的，
+ * 出厂就填上等于替用户做了这个决定。这个常量只用于给出厂默认 Agent 填初始值。
  */
 export const DEFAULT_MODEL_ID = "deepseek-flash";
 
@@ -21,7 +23,8 @@ export const DEFAULT_AGENT_DEFINITION: Omit<AgentDefinition, "createdAt" | "upda
   id: DEFAULT_AGENT_ID,
   name: "Default Assistant",
   description: "The default AI assistant, suited for everyday Q&A and task execution.",
-  // 模型写在 Agent 定义上，是运行期唯一真相源（无 config.defaultModel 兜底）
+  // 模型写在 Agent 定义上（三级解析的第二级，也是最常生效的那一级）；
+  // 配置层的 `defaultModel` 只是 Agent 没绑模型时的兜底，出厂不预置
   modelId: DEFAULT_MODEL_ID,
   messages: [
     Message.System(`You are a witty, rigorous and reliable assistant. Always reply in the same language the user writes in. Current operating system: ${process.platform}.

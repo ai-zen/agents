@@ -55,6 +55,8 @@ function createTestAgent(opts?: {
   const messages = opts?.messages ?? [Message.System("You are a helper.")];
   return new SdkAgent({
     scope: opts?.scope ?? mockScope(),
+    // 与真件同形：模型解析的档位（手工装配的假件等价于「模型写在定义上」那一档）
+    modelLevel: "agent",
     definition: {
       id: "test-agent",
       name: "Test Agent",
@@ -78,6 +80,7 @@ describe("SdkAgent", () => {
     const scope = mockScope();
     const agent = new SdkAgent({
       scope,
+      modelLevel: "agent",
       definition: {
         id: "t",
         name: "T",

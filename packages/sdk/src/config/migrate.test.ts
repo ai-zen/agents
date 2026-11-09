@@ -121,17 +121,32 @@ describe("migrateConfig", () => {
     expect(result.config).toBe(config);
   });
 
-  it("清除已废弃的 config.defaultModel", () => {
+  it("保留 config.defaultModel（三级解析的全局兜底层，不能再清掉）", () => {
     const config = {
       defaultModel: "m",
       endpoints: [],
       models: [legacyModel({ tokenThresholds: { handoff: 1, guard: 2 } })],
+      // 中断策略齐了，这份配置就没别的要迁的了（见下一条断言）
+      abortedMessageStrategy: "keep",
+      abortedToolRoundStrategy: "fill",
     } as unknown as AppConfig;
     const result = migrateConfig(config);
+    // 这个字段现在就是「兜底模型」本身，没有任何字段要搬：老配置里写着的值原样活着
+    expect(result.config.defaultModel).toBe("m");
+    // 除此之外没什么可迁的 → 不触发写盘（避免每次启动都重写 config.json）
+    expect(result.changed).toBe(false);
+  });
+
+  it("老配置里的 defaultModel 不会被迁移顺手删掉（升级不丢用户配的兜底模型）", () => {
+    const config = {
+      defaultModel: "m",
+      endpoints: [],
+      models: [legacyModel({ maxContextTokens: 250_000 })],
+    } as unknown as AppConfig;
+    const result = migrateConfig(config);
+    // 同一份配置里既有老字段要迁、也有兜底模型要留：迁移只动它该动的
     expect(result.changed).toBe(true);
-    expect("defaultModel" in result.config).toBe(false);
-    // 原始对象不被就地改（Scope 可能持有它的引用）
-    expect("defaultModel" in config).toBe(true);
+    expect(result.config.defaultModel).toBe("m");
   });
 
   it("只迁移部分模型时，未变的条目保持同一引用", () => {

@@ -415,7 +415,7 @@ describe("ConfigManager.bootstrap", () => {
     // config
     await expect(fs.access(join(testDir, "config.json"))).resolves.toBeUndefined();
 
-    // agent —— 必须带出厂 modelId（模型的唯一真相源）
+    // agent —— 必须带出厂 modelId（三级解析的第二级；出厂配置不写 defaultModel 兜底）
     expect(result.agent).not.toBeNull();
     expect(result.agent!.id).toBe("default");
     expect(result.agent!.modelId).toBe(DEFAULT_AGENT_DEFINITION.modelId);

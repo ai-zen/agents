@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { AgentNS, Message } from "@ai-zen/agents-core";
 import { createAgent } from "./createAgent.js";
+import { AgentRepository } from "../crud/AgentRepository.js";
 import { Scope } from "../scope/Scope.js";
 import { allInOne } from "../scope/plugins/allInOne.js";
 import { promises as fs } from "node:fs";
@@ -29,6 +30,13 @@ const config: AppConfig = {
       endpointId: "openai",
       tokenThresholds: { handoff: 500000, guard: 750000 },
     },
+    // 三级解析要用到第二个模型（会话级覆盖 / 全局兜底各取一个，才能看出谁赢）
+    {
+      id: "gpt4-mini",
+      name: "GPT-4 mini",
+      endpointId: "openai",
+      tokenThresholds: { handoff: 400000, guard: 600000 },
+    },
   ],
 };
 
@@ -38,11 +46,15 @@ async function makeScope(
     skillsPaths?: string[];
     toolsPaths?: string[];
     mcpPaths?: string[];
+    /** 覆盖/追加配置（三级解析的用例要看 `defaultModel`） */
+    config?: Partial<AppConfig>;
   } = {},
 ): Promise<Scope> {
-  const scope = new Scope({ config, agentsDir: join(dir, "agents"), cwd: dir }).use(
-    ...allInOne(opts),
-  );
+  const scope = new Scope({
+    config: { ...config, ...opts.config },
+    agentsDir: join(dir, "agents"),
+    cwd: dir,
+  }).use(...allInOne(opts));
   await scope.init();
   return scope;
 }
@@ -157,7 +169,7 @@ describe("createAgent", () => {
     expect(agent.messages).not.toBe(agent.definition.messages);
   });
 
-  it("Agent 未绑定模型（缺 modelId）时直接报错，不做任何隐式回退", async () => {
+  it("Agent 未绑定模型（且无全局兜底）时报错，带上 agentId、不隐式回退", async () => {
     const agentsDir = join(dir, "agents");
     await fs.mkdir(agentsDir, { recursive: true });
     const def: AgentDefinition = {
@@ -170,7 +182,52 @@ describe("createAgent", () => {
     await fs.writeFile(join(agentsDir, "no-model.json"), JSON.stringify(def, null, 2));
 
     const scope = await makeScope();
-    await expect(createAgent(scope, "no-model")).rejects.toThrow(/has no model bound/);
+    // 带上 agentId：同一条错误在服务端日志里必须能指出是哪份定义没绑模型
+    await expect(createAgent(scope, "no-model")).rejects.toThrow(/Agent "no-model" has no model/);
+  });
+
+  it("会话级覆盖优先：传了 options.modelId 就用它，Agent 定义不被改写", async () => {
+    await writeAgentFile("my-agent", { modelId: "gpt4" });
+    const scope = await makeScope();
+
+    const agent = await createAgent(scope, "my-agent", { modelId: "gpt4-mini" });
+
+    // 运行期看到的就是覆盖后的模型（状态栏 / 阀值 / 插件都读 definition.modelId）
+    expect(agent.definition.modelId).toBe("gpt4-mini");
+    expect(agent.modelLevel).toBe("session");
+    // 磁盘上的定义一个字没动：覆盖只属于这一段会话
+    const onDisk = await new AgentRepository(join(dir, "agents")).read("my-agent");
+    expect(onDisk!.modelId).toBe("gpt4");
+  });
+
+  it("没会话级覆盖时用 Agent 定义（全局兜底不该越位）", async () => {
+    await writeAgentFile("my-agent", { modelId: "gpt4" });
+    const scope = await makeScope({ config: { defaultModel: "gpt4-mini" } });
+
+    const agent = await createAgent(scope, "my-agent");
+
+    expect(agent.definition.modelId).toBe("gpt4");
+    expect(agent.modelLevel).toBe("agent");
+  });
+
+  it("Agent 定义没绑模型时用 config.defaultModel 兜底", async () => {
+    await writeAgentFile("my-agent", { modelId: undefined });
+    const scope = await makeScope({ config: { defaultModel: "gpt4-mini" } });
+
+    const agent = await createAgent(scope, "my-agent");
+
+    expect(agent.definition.modelId).toBe("gpt4-mini");
+    expect(agent.modelLevel).toBe("global");
+  });
+
+  it("会话级覆盖与全局兜底同时在场时取会话级（三级顺序不许乱）", async () => {
+    await writeAgentFile("my-agent", { modelId: undefined });
+    const scope = await makeScope({ config: { defaultModel: "gpt4-mini" } });
+
+    const agent = await createAgent(scope, "my-agent", { modelId: "gpt4" });
+
+    expect(agent.definition.modelId).toBe("gpt4");
+    expect(agent.modelLevel).toBe("session");
   });
 
   it("Agent 定义缺少 messages 字段时也能正常创建（空值兜底）", async () => {

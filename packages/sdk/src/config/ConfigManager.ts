@@ -118,19 +118,20 @@ export class ConfigManager {
    * - agents/ 为空 → 写入默认 Agent（含 modelId）
    * - 已有其他 Agent → 返回 null
    *
-   * 模型真相源只有 `AgentDefinition.modelId`：这里保证默认 Agent **一定有** modelId，
-   * 运行期不再有任何 `config.defaultModel` 兜底。
+   * 模型按三级解析（`会话级覆盖 > AgentDefinition.modelId > AppConfig.defaultModel`）。
+   * 这里只负责把默认 Agent 的 `modelId` 补齐 —— 历史版本曾没有 config 层的兜底，
+   * 那些 Agent 定义完全可能缺 `modelId`，而用户当时在用的是 `config.defaultModel`。
    *
-   * @param legacyDefaultModel 老配置里的 `config.defaultModel`。仅在 Agent **既无 modelId**
-   *   且该模型仍在模型清单里时用它补齐，让升级不改变用户实际在用的模型；之后
-   *   这个字段就彻底不存在了。
+   * @param defaultModel 配置里的 `defaultModel`（三级解析的兜底那一级）。仅在默认 Agent
+   *   **既无 modelId** 且该模型仍在模型清单里时用它补齐，让升级不改变用户实际在用的模型。
+   *   注意它不是「永远生效的兜底」：Agent 自己绑了模型就轮不到它（见 `resolveModel`）。
    */
-  async ensureDefaultAgent(legacyDefaultModel?: string): Promise<AgentDefinition | null> {
+  async ensureDefaultAgent(defaultModel?: string): Promise<AgentDefinition | null> {
     const agentsDir = join(this.basePath, "agents");
     const defaultPath = join(agentsDir, `${DEFAULT_AGENT_ID}.json`);
     const fallbackModelId =
-      legacyDefaultModel && this.knownModelIds.has(legacyDefaultModel)
-        ? legacyDefaultModel
+      defaultModel && this.knownModelIds.has(defaultModel)
+        ? defaultModel
         : DEFAULT_AGENT_DEFINITION.modelId;
 
     try {
@@ -244,12 +245,12 @@ export class ConfigManager {
     subAgent: AgentDefinition | null;
   }> {
     await this.ensureDirs();
-    // 迁移前读一次磁盘原文：只为了拿旧的 `defaultModel`（字段已从类型里移除），
-    // 让升级不改变用户原本在用的模型
-    const raw = (await this.readRaw()) as unknown as { defaultModel?: string } | null;
+    // 先把配置读到当前形状（内含迁移），再从里面取 `defaultModel` 去补默认 Agent 的模型：
+    // 早先这里是直接读磁盘原文，只因为那时 `defaultModel` 已从类型里删掉 —— 现在它是
+    // 正式字段（三级解析的兜底），不必再绕过 `read()`。
     const config = await this.ensureDefaultConfig();
     this.knownModelIds = new Set((config.models ?? []).map((m) => m.id));
-    const agent = await this.ensureDefaultAgent(raw?.defaultModel);
+    const agent = await this.ensureDefaultAgent(config.defaultModel);
     const subAgent = await this.ensureDefaultSubAgent();
     await this.ensureDefaultMcpConfig();
     await this.ensureFactorySkills();
@@ -449,7 +450,9 @@ export class ConfigManager {
  * - 默认模型 ID（defaultImageModel / defaultMigrationModel）
  *   在合并后若已不存在 → 回退到出厂默认，避免悬空引用。
  *
- * 注意 `defaultModel` 已不再存在：模型真相源是 `AgentDefinition.modelId`。
+ * `defaultModel`（三级解析的全局兜底）**不在这里校验、也不在这里改写**：它指向一个已被删掉
+ * 的模型时，`createAgent` 会在真要跑的时候报 `Model "x" not found` —— 那时用户看得见自己
+ * 刚删了什么；而在这里默默换成别的模型，只会让「我明明没改它」变成一宗悬案。
  *
  * 端点（endpoints）不参与托管，始终保持用户配置。
  */

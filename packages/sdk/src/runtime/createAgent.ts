@@ -3,6 +3,8 @@ import { AgentRepository } from "../crud/AgentRepository.js";
 import { SdkAgent } from "./SdkAgent.js";
 import type { Scope } from "../scope/Scope.js";
 import { createModel } from "./createModel.js";
+import { resolveModel } from "./resolveModel.js";
+import type { AgentDefinition } from "../types/index.js";
 import type { AbortedMessageStrategy, AbortedToolRoundStrategy } from "@ai-zen/agents-core";
 
 /**
@@ -22,16 +24,28 @@ export interface CreateAgentOptions {
    * `keep` 可让模型在下一轮接着半截往下说，而不是忘掉自己说过什么。
    */
   abortedMessageStrategy?: AbortedMessageStrategy;
+  /**
+   * **会话级**模型覆盖（三级解析的第一级）。
+   *
+   * 只有「这一段会话」该换模型时才传（服务端从 `SessionRecord.modelId` 取，`/model`
+   * 不带作用级别的写法写的就是它）。不传就落到 Agent 定义，再落到 `config.defaultModel`。
+   *
+   * 为什么由调用方传、而不是 SDK 自己去读会话存档：本层不认识会话（它只认识 Scope 与
+   * Agent 定义），会话存档是服务端的财产。**解析顺序仍只在这里实现**（见 `resolveModel`）。
+   */
+  modelId?: string;
 }
 
 /**
  * 从磁盘创建 Agent。
  *
  * 通过 Scope 获取已发现的能力，读取 Agent 定义，过滤并实例化工具，产出 SdkAgent。
+ * 模型按 **会话级覆盖 > Agent 定义 > 全局兜底** 解析（唯一实现：`resolveModel`）。
  *
  * ```ts
  * const agent = await createAgent(scope, "my-agent");
- * // agent 是 SdkAgent，可直接注册插件、发送消息
+ * // 这一段会话临时换个模型（不动 Agent 定义）
+ * const scoped = await createAgent(scope, "my-agent", { modelId: "gpt-6-astra" });
  * ```
  */
 export async function createAgent(
@@ -39,17 +53,35 @@ export async function createAgent(
   agentId: string,
   options: CreateAgentOptions = {},
 ): Promise<SdkAgent> {
-  const definition = await new AgentRepository(scope.agentsDir).read(agentId);
-  if (!definition) throw new Error(`Agent "${agentId}" not found`);
+  const stored = await new AgentRepository(scope.agentsDir).read(agentId);
+  if (!stored) throw new Error(`Agent "${agentId}" not found`);
 
-  const modelId = definition.modelId;
-  if (!modelId) {
+  const resolved = resolveModel({
+    sessionModelId: options.modelId,
+    agentModelId: stored.modelId,
+    defaultModel: scope.config?.defaultModel,
+  });
+  // 三级都没有就是**真的没有模型**：不静默挑一个出厂模型顶上 —— 用户会以为自己在用
+  // 配置里那个，实际请求（和账单）落在别的模型上。带上 agentId 是因为同一条错误在
+  // 服务端日志里必须能指出是哪份定义没绑。
+  if (!resolved) {
     throw new Error(
-      `Agent "${agentId}" has no model bound (modelId is missing). Assign a model to it in the config`,
+      `Agent "${agentId}" has no model bound: no session override, no "modelId" in its definition, ` +
+        `and no "defaultModel" in the config`,
     );
   }
 
-  const { client, model, modelConfig } = createModel(scope, modelId, definition.modelParams);
+  // 生效的模型写进**这一份**（内存里的）定义：运行期所有读 `definition.modelId` 的地方
+  // —— 状态栏快照、上下文阈值（`tokenThresholds`）、插件 —— 必须看到同一个模型，否则
+  // 就又回到「界面写着 A、请求发给 B」。磁盘上的定义一个字都不动：会话级覆盖只属于这一段
+  // 会话，落盘走的是会话存档的 `modelId`（见服务端 `SessionManager.recordOf`）。
+  const definition: AgentDefinition = { ...stored, modelId: resolved.modelId };
+
+  const { client, model, modelConfig } = createModel(
+    scope,
+    resolved.modelId,
+    definition.modelParams,
+  );
 
   const tools = scope.buildTools(definition, {
     exclude: {
@@ -63,6 +95,8 @@ export async function createAgent(
     client,
     model,
     modelConfig,
+    // 合出来的是哪一级，客户端要把「当前生效档」标在选择器上
+    modelLevel: resolved.level,
     // 在 createAgent 层做模板快照（拷贝），隔离 definition.messages 的引用。
     // AgentContext.messages 是 mutable 运行时数组，若直接把 definition.messages
     // 传入，对话期间 append() 会反向污染 Agent 定义模板——definition.messages

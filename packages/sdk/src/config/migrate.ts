@@ -17,6 +17,15 @@
  *
  * 另有一类「缺省值缺位」的迁移：`Endpoint.capabilities`（见 `normalizeEndpointCapabilities`）。
  *
+ * ## `defaultModel` 是**反例**：这一版不再删它
+ *
+ * alpha.17 曾把 `defaultModel` 当成废弃字段整块清掉（当时模型的唯一真相源改成
+ * `AgentDefinition.modelId`）；现在模型解析改成三级，它反过来成了**全局兜底层**
+ * （`会话级覆盖 > Agent 定义 > 本字段`，唯一实现在 `runtime/resolveModel.ts`）。
+ * 字段名没变，所以这里**什么都不用搬**：老配置里写着的 `defaultModel` 原样保留、
+ * 继续生效。绝对不能再清 —— 清掉等于用户升级一次就静默丢一次自己配的兜底模型，
+ * 而这属于「默认值缺位」里最坏的一种：丢的是用户明确填过的值。
+ *
  * 迁移时机：`ConfigManager.read()` 读出即迁（内存里永远是当前形状）；
  * 落盘由 `ensureDefaultConfig()` 负责 —— 它比较迁移结果与磁盘原文，不同才写回，
  * 因此迁移只发生一次，且不会在每次启动时无谓地改写文件。
@@ -131,7 +140,8 @@ export function migrateModelReasoning(model: Model): { model: Model; changed: bo
  * 图片模型（`imageModels`）既没有上下文阈值、也没有思考概念。
  *
  * 同时做两件字段级收敛：
- * - 清除已废弃的 `defaultModel`（模型真相源已改为 `AgentDefinition.modelId`）；
+ * - **保留** `defaultModel`（三级解析的全局兜底层，见文件头）：它不在这里被删、
+ *   也不在这里被补 —— 用户没配就没有兜底层，`createAgent` 会给出明确报错；
  * - 补齐中断策略（`abortedMessageStrategy` / `abortedToolRoundStrategy`）：把缺失或
  *   非法值写成出厂默认。这样「配置即事实」——文件里写着的就是运行时用的，不再需要
  *   使用方各自 `?? "keep"` 地兵分两路兜底。
@@ -150,12 +160,7 @@ export function migrateConfig(config: AppConfig): { config: AppConfig; changed: 
     models,
     // 端点数组浅拷贝：能力位补齐会改元素，不把副作用浇到调用方手里的旧对象上
     endpoints: (config.endpoints ?? []).map((endpoint) => ({ ...endpoint })),
-  } as AppConfig & { defaultModel?: unknown };
-  // 已废弃字段：不参与运行，也不允许再写回磁盘
-  if ("defaultModel" in next) {
-    delete next.defaultModel;
-    changed = true;
-  }
+  } as AppConfig;
 
   if (normalizeAbortStrategies(next)) changed = true;
   if (normalizeEndpointCapabilities(next)) changed = true;

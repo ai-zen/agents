@@ -124,7 +124,9 @@ openai SDK client（baseURL + apiKey）──> Agent（client + model + modelCon
 
 ```typescript
 interface AppConfig {
-  // 注意：这里没有 defaultModel —— 模型的真相源是 AgentDefinition.modelId
+  // defaultModel = 三级解析的兜底层（会话级覆盖 > AgentDefinition.modelId > 本字段），
+  // 只在 Agent 没绑模型时生效；解析唯一实现在 runtime/resolveModel.ts
+  defaultModel?: string;
   endpoints: Endpoint[];
   models: Model[];
   imageModels?: ImageModel[];     // 图片生成模型列表
@@ -170,7 +172,7 @@ interface AgentDefinition {
   name: string;                  // 展示名称
   description?: string;
   messages: AgentNS.Message[];   // 预设对话（至少一条 system）
-  modelId?: string;              // 绑定模型 —— 运行期唯一真相源；缺失即报错，无默认回退
+  modelId?: string;              // 绑定模型 —— 三级解析的第二级（会话级覆盖 > 本字段 > config.defaultModel）
   permissions?: AgentPermissions;
 
   // 以下有则视为 SubAgent
