@@ -88,8 +88,9 @@ SessionManager.ts` implements the live-session registry and the SDK-event → pr
 translation; `src/service/agent/` assembles the agent (config + Scope + capability
 discovery) per workspace; `src/daemon/sessionHandlers.ts` registers `workspace.resolve` /
 `workspace.files` / `events.watch` / `session.create` / `session.send` / `session.cancel` /
-`session.list` / `session.listSaved` / `session.last` / `session.handoff` /
-`session.migrate` on a `Daemon`, and `src/cli.ts` wires all of it.
+`session.list` / `session.listSaved` / `session.last` / `session.attach` /
+`session.subAgent.snapshot` / `session.answer` / `session.handoff` / `session.migrate`
+on a `Daemon`, and `src/cli.ts` wires all of it.
 
 Agent assembly is **per workspace**: one Scope (one set of MCP connections and tool
 discovery) is shared by every session in the same workspace, and never shared across
@@ -118,6 +119,50 @@ Two details are load-bearing:
 - **Ancestor directories are synthesized** (`src/tui/chat.tsx` → `src`, `src/tui`). Without
   them the menu cannot be drilled into (`@src/` → keep listing), so it is a capability
   difference, not list padding.
+
+### Two rounds, one session: `create` vs `attach`
+
+`session.create` means **a new session** — if the id is already live it refuses
+(`session-exists`), so that a client cannot silently take over a turn that is running.
+`session.attach` means **that existing session**: live → join it, on disk → reload it from the
+archive (`session-missing` if neither). The distinction exists because a session outlives its
+clients: closing the terminal only drops the event subscription, while the session (and its
+Agent and MCP connections) keeps running. Resuming "the last conversation" therefore arrives at
+a *live* id — routing that through `create` is what used to make resume impossible.
+
+`send` has a matching guard: while a turn is in flight, a second `send` is rejected with
+`turn-busy`. Events are attributed by reading `session.turnId` **at emit time**, so two
+concurrent turns would interleave their deltas under each other's ids.
+
+### Asking the client something: `session.question`
+
+Some decisions belong to the user, not to the server — auto-migration's "who writes the handoff
+document" (`self` | `summary` | skip) is one. The server emits
+`session.question { questionId, kind, ... }` and waits for `session.answer { questionId, mode }`.
+
+Three rules make it safe, and each has a reason:
+
+- **Nobody watching ⇒ don't ask.** With no event subscribers the question is invisible, so the
+  default is used. Asking a question no one can see only wedges the turn.
+- **Register before emitting.** Handlers run synchronously, so a fast client may answer inside
+  the same event-loop tick.
+- **Wait, but with a deadline** (`askTimeoutMs`, 5 min by default). "The human is away, so we
+  wait forever" is fine in a modal TUI; in a daemon it means a session stuck as busy forever —
+  and `send` on it is refused with `turn-busy` the whole time.
+
+### Sub-agents: a tool, not a session
+
+Delegated sub-agents are *tool calls* (`AgentTool` / `AgentToolLazy`), and the protocol treats
+them that way: `session.subAgent.started` / `.ended` carry a per-turn `index` (the label) and a
+stable `subAgentId` (the client's selection key), `message.delta` grows an optional `subAgentId`,
+and `session.subAgent.snapshot` returns that sub-agent's own transcript. Two invariants:
+
+- **A sub-agent's deltas never move the main phase.** While a sub-agent runs, the main agent is
+  waiting for the delegating tool to return; the phase must stay "waiting for tool X".
+- **They only live for the current turn.** The registry is cleared when the turn settles (and on
+  `reload` / re-key / close), matching what the client shows: a sub-agent is worth looking at
+  while it runs, and its transcript is otherwise history. One exception: the *id* counter is not
+  reset, so a client's stale selection can never attach to the next turn's `sub-1`.
 
 ### Notices: two channels, on one wire
 
