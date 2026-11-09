@@ -333,6 +333,12 @@ function apiModelOf(agent: AgentLike): string {
  * 主 Agent 与子 Agent 共用这一份取法：两边刷的是同一条 SDK 事件（`chunk-parsed`），
  * 形状一模一样，写两份只会在某天 SDK 改字段时漂成一半对一半错。
  */
+/** 流末 chunk 的真实产物 token 数（`stream_options.include_usage`）；没有就是 undefined */
+function completionOf(chunk: any): number | undefined {
+  const value = chunk?.usage?.completion_tokens;
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
 function deltaOf(chunk: any): { text: string; reasoning: string } {
   const delta = chunk?.choices?.[0]?.delta;
   const text = typeof delta?.content === "string" ? delta.content : "";
@@ -1185,13 +1191,16 @@ export class SessionManager {
       this.emitPhase(session);
 
       const { text, reasoning } = deltaOf(chunk);
-      if (!text && !reasoning) return;
+      const completionTokens = completionOf(chunk);
+      // 只带 usage 的收尾 chunk 也要出去：客户端靠它校准速率（否则 tok/s 一直是估算值）
+      if (!text && !reasoning && completionTokens === undefined) return;
       this.emit({
         event: SESSION_EVENTS.delta,
         sessionId: session.id,
         turnId: session.turnId,
         text,
         reasoning,
+        ...(completionTokens === undefined ? {} : { usage: { completionTokens } }),
       });
     };
 

@@ -638,6 +638,13 @@ export type MessageDeltaEvent = {
    * 于是老客户端不改也能继续把主对话读对。
    */
   subAgentId?: string;
+  /**
+   * 真实用量（流末 chunk 才有）：客户端用它校准本轮速率。
+   *
+   * 一条「只带 usage」的增量也会因此推出去（`text`/`reasoning` 都是空串）—— 不带它，
+   * 状态栏的 tok/s 就只能靠估算（按字符折算，中文偏差不小）。
+   */
+  usage?: { completionTokens: number };
 };
 
 /**

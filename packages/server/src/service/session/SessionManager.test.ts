@@ -398,19 +398,26 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
     expect(pick("turn.end").at(-1)!.ok).toBe(true);
   });
 
-  it("正文与推理增量分别上报；只带 usage 的收尾 chunk 不发 delta", async () => {
+  it("正文与推理增量分别上报；只带 usage 的收尾 chunk 只带用量、不带正文", async () => {
     const { sessionId } = await create();
     manager.send(sessionId, "hi");
 
     agent.fire("chunk-parsed", chunk({ reasoning_content: "想…" }));
     agent.fire("chunk-parsed", chunk({ content: "答案" }));
+    // 只有 total_tokens、没有 completion_tokens：没有可校准的东西，不上报（免得一串空增量）
     agent.fire("chunk-parsed", { choices: [{ delta: {}, finish_reason: "stop" }], usage: { total_tokens: 9 } });
+    // 带 completion_tokens 的收尾 chunk：正文为空也要出去，状态栏的 tok/s 靠它校准
+    agent.fire("chunk-parsed", {
+      choices: [{ delta: {}, finish_reason: "stop" }],
+      usage: { completion_tokens: 42, total_tokens: 51 },
+    });
 
     expect(pick("message.delta").map((e) => [e.text, e.reasoning])).toEqual([
       ["", "想…"],
       ["答案", ""],
-      // 第三个 chunk 没有任何内容 → 不上报（否则客户端会收到一串空增量）
+      ["", ""],
     ]);
+    expect(pick("message.delta").at(-1)!.usage).toEqual({ completionTokens: 42 });
   });
 
   it("本轮带工具调用：streamEnded 之后进 tool-waiting，并报出全部工具名", async () => {
