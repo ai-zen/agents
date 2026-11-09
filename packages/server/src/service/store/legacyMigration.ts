@@ -82,9 +82,6 @@ function toSessionRecord(id: string, legacy: any): SessionRecord<unknown> {
     id,
     agentId: typeof legacy?.agentId === "string" && legacy.agentId ? legacy.agentId : "default",
     messages: Array.isArray(legacy?.messages) ? legacy.messages : [],
-    ...(typeof legacy?.lastPromptTokens === "number"
-      ? { lastPromptTokens: legacy.lastPromptTokens }
-      : {}),
   };
 }
 

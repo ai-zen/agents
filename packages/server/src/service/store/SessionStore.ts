@@ -25,8 +25,6 @@ export interface SessionRecord<Message = unknown> {
   id: string;
   agentId: string;
   messages: Message[];
-  /** 最近一轮的提示词 token 数（TUI 状态栏用，读不到就是 undefined） */
-  lastPromptTokens?: number;
 }
 
 export interface SessionStore<Message = unknown> {
