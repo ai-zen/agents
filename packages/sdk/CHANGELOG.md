@@ -1,3 +1,43 @@
+## [1.1.0] - 2026-11-09
+
+> Cancelling a handoff now means "go back to how it was". Before this release `Ctrl+C` only
+> stopped the work: the handoff turn — a multi-KB skill instruction, its tool results and the
+> acknowledgement — stayed in `agent.messages`, so the CLI showed it in the transcript, `↑`
+> history offered it back as a draft, and the next request resent it as conversation history.
+>
+> Worse, on the auto-migration path the interrupt was not honoured at all: `AutoMigratePlugin`
+> drives `migrate()` directly, so a caller-supplied `signal` never reached the service. The
+> aborted `self` round was then read as "the model never wrote the document", burning one retry
+> and one `summary` round — and then migrating anyway.
+>
+> Requires `@ai-zen/agents-core@^4.5.4`. Not a breaking change: the defaults of `handoff()` /
+> `migrate()` are untouched and an external `signal` keeps working.
+
+### ✨ Cancellation belongs to the service
+
+- **`HandoffService.abort()` (new public method)** — the service owns the cancel handle of the
+  run it is executing and merges it with any caller-supplied `signal` (`AbortSignal.any`), so
+  `/handoff`, `/migrate` **and auto-migration** share one switch. On an idle service it is a
+  no-op (`null` handle), which is what keeps a stale `abort()` from "succeeding" silently later.
+- **Cancel means roll back** — `agent.messages` is truncated back to the length it had before
+  the handoff turn, a document created by this run is deleted, and `HandoffAbortedError` is
+  thrown. No retry, no degradation, no migration. The cleanup lives in one place so it also
+  covers the state that no per-stage `catch` used to see: document written, not yet validated.
+- **Commit point** — once the document passes validation (`isHandoffFileReady`) the run is
+  committed: saving the old conversation, pruning history and persisting the new session no
+  longer react to cancellation. Stopping there would leave a third state ("user cancelled, old
+  conversation archived, history already pruned"), which is worse than finishing.
+- **A cancelled auto-migration is no longer logged as a failure** — `AutoMigratePlugin`
+  swallows `HandoffAbortedError` instead of writing "migration failed" through the logger
+  (default `console.error`, i.e. a torn frame in a TUI).
+
+### 🧪 Tests
+
+- 635 unit cases in 53 files — 7 new: service-side `abort()`, message rollback, document removal
+  after a late cancel, commit-point semantics, idle `abort()` as a no-op, a `summary` request
+  interrupted through the service handle, and the silent cancel in the plugin. `tsc --noEmit`
+  is clean for both the production and the test config.
+
 ## [1.0.0] - 2026-11-03
 
 > First stable release. The whole `1.0.0-alpha.x` line — up to and including `alpha.26` — is
