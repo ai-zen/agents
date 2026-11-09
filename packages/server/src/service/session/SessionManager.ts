@@ -7,7 +7,8 @@
  * （阶段、正文增量、轮次收尾）、按阶段算出「谁还在跑」。
  *
  * 不管：Agent 怎么装配（配置、Scope、工具发现）——那由**组装根**通过 `createAgent`
- * 注入；也不管存档（那是 `SessionStore` 与客户端的落盘插件的事）。
+ * 注入。存档只经 `SessionStore` 端口读写（`save` / `saveAs` / `last` / `rollback` / `listSaved`
+ * 与每轮收尾的 `writeSession`）：格式、位置、目录布局都由那个端口决定，本类不碰文件。
  * 这条边界是为了让本文件可测：给一个假 Agent 就能跑完整个事件流程，不需要网络。
  *
  * ## 为什么事件出口是 `subscribe()` 而不是构造参数
@@ -158,10 +159,10 @@ export interface CreateAgentInput {
   resolveMode?: (info: AutoMigrateTriggerInfo) => Promise<HandoffMode | null>;
 }
 
-/** `create()` 的入参：`agentId` / `sessionId` 都可省，前者补 `default`，后者由服务端分配 */
 /** attach 的入参：`sessionId` 必填（语义就是「别给我开新的」） */
 export type SessionAttachInput = SessionCreateInput & { sessionId: string };
 
+/** `create()` 的入参：`agentId` / `sessionId` 都可省，前者补 `default`，后者由服务端分配 */
 export interface SessionCreateInput {
   workspaceId: string;
   path: string;
@@ -352,18 +353,18 @@ function apiModelOf(agent: AgentLike): string {
   return typeof model === "string" ? model : "";
 }
 
-/**
- * 从一片 OpenAI 风格的流式 chunk 里取出正文与推理增量。
- *
- * 主 Agent 与子 Agent 共用这一份取法：两边刷的是同一条 SDK 事件（`chunk-parsed`），
- * 形状一模一样，写两份只会在某天 SDK 改字段时漂成一半对一半错。
- */
 /** 流末 chunk 的真实产物 token 数（`stream_options.include_usage`）；没有就是 undefined */
 function completionOf(chunk: any): number | undefined {
   const value = chunk?.usage?.completion_tokens;
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+/**
+ * 从一片 OpenAI 风格的流式 chunk 里取出正文与推理增量。
+ *
+ * 主 Agent 与子 Agent 共用这一份取法：两边刷的是同一条 SDK 事件（`chunk-parsed`），
+ * 形状一模一样，写两份只会在某天 SDK 改字段时漂成一半对一半错。
+ */
 function deltaOf(chunk: any): { text: string; reasoning: string } {
   const delta = chunk?.choices?.[0]?.delta;
   const text = typeof delta?.content === "string" ? delta.content : "";
@@ -555,18 +556,17 @@ export class SessionManager {
   /**
    * 问客户端「这次自动迁移用哪种方式交接」；返回 `null` = 用户选择不交接。
    *
-   * 这是把进程内 TUI 的三选一（自己写 / 独立摘要 / 不交接）搬到线上。谁来写交接文档是
+   * 这是把旧版 TUI 的三选一（自己写 / 独立摘要 / 不交接）搬到线上。谁来写交接文档是
    * **用户的决定**（保真 vs 便宜、要不要现在就走），服务端替他选 `self`，等于把他没有的
    * 能力当成他的选择 —— 这正是「基础交互被前后端分离改掉」的那类回归。
    *
-   * 四个决定，每条都有代价：
-   *   1. **没人在看就不问**：问题发出去没人看得见（客户端已退出，而会话仍在服务端活着），
-   *      等一个不会来的答案，只是把这一轮挂死；
-   *   2. 先登记再发事件：事件是同步推给订阅者的，客户端可能在同一轮事件循环里就回了
-   *      `session.answer`；先发后登记会让那条回答撞上「表里没有这个 id」；
-   *   3. **等，但有时限**（见 `ASK_TIMEOUT_MS`）：进程内「人不在就一直等」的等价物是
-   *      「一整段会话永久 busy」，远程不能这么干；
-   *   4. 无论怎么结束都要清表：留着的条目会让下一次回答认领一个已经没人等的 promise。
+   * 本方法只负责两件事：把触发时的两个数（`promptTokens` / `handoffTokens`）交给
+   * {@link askQuestion}，并把答案翻译成 `HandoffMode | null`。提问本身的四条约束
+   * （没人在看就不问 / 先登记再发 / 有时限 / 三个出口都清表）在 `askQuestion` 里，
+   * 不在这里重写一遍——那是一处会与实现无关地漂的副本。
+   *
+   * 兜底是 `null`（本次不交接）而不是 `self`：迁移要不要现在做，是用户的决定；服务端替他
+   * 选 `self`，等于把「用户没有的能力」当成「用户的选择」。上下文继续长由硬线护栏兜。
    */
   private async askHandoffMode(
     session: LiveSession,
@@ -1398,23 +1398,19 @@ export class SessionManager {
   }
 
   /**
-   * 清空子 Agent 列表与两个计数器。
+   * 清空子 Agent 列表与展示序号。
    *
    * 为什么要清：子 Agent 是「内循环里工具调用的产物」，**只活在当前一轮**。一轮结束后
    * 主 Agent 已给出最终答案，子 Agent 只剩历史价值；留着会让栏目标签停在一段已经过去
-   * 的对话上，而且下一轮的第一个子 Agent 会顶着上一轮的序号出现。`reload`（换了 Agent）、
-   * `adopt`（换了会话 id）、`close` 同理：旧条目上的实例已不再被任何东西引用。
-   */
-  /**
-   * 清空栏目。与 CLI 侧逐条对齐：
+   * 的对话上，而且下一轮的第一个子 Agent 会顶着上一轮的序号出现。`reload` / `setAgent`
+   * （换了 Agent）、`adopt`（换了会话 id：迁移 / 另存为）、`close` 同理：旧条目上的实例
+   * 已不再被任何东西引用。
    *
+   * 两个计数器只有一个归零：
    *   - **展示序号归零**：下一轮又是「子AGENT1」（用户看到的是「这一轮的第三个」）；
-   *   - **id 序号不归零**：`subAgentId` 是客户端选中态与 React key 的锚点，让它跨轮复用得
-   *     到同一个值，就会出现「上一轮残留的选中 id 突然接到新一轮的 sub-1 上」。id 不带
+   *   - **id 序号不归零**：`subAgentId` 是客户端选中态与 React key 的锚点，让它跨轮复用
+   *     得到同一个值，就会出现「上一轮残留的选中 id 突然接到新一轮的 sub-1 上」。id 不带
    *     展示含义，多递增几次没有成本。
-   *
-   * 清空时机与 CLI 的 `clearSubAgents()` 调用点一一对应：一轮结束（那边的 `send()`
-   * `finally`）、`reload`、迁移换 id、`close`。
    */
   private clearSubAgents(session: LiveSession): void {
     session.subAgents.clear();

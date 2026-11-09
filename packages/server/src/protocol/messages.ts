@@ -8,11 +8,13 @@
  * 三类帧：
  *   1. 握手：客户端先发 `hello`，服务端回 `hello` 的回执。**没有例外**——即使当前还没
  *      鉴权，也必须先握手，否则"将来加鉴权"就得改所有客户端的建连逻辑。
- *   2. 请求/响应：`{ id, method, params }` → `{ id, ok, result | error }`。
+ *   2. 请求/响应：`{ id, method, params }` → `{ id, ok, result | error }`。**本版只有一个
+ *      方向**：客户端发、服务端回。
  *   3. 事件：服务端主动推，无 `id`，不等回。
  *
- * 双向性：服务端也可以用 `{ id, method }` 向客户端发请求（如自动迁移的三选一）。
- * 请求 id 由**发起方**分配，两个方向的 id 空间互相独立（各发各的，不共享计数器）。
+ * 服务端需要「问客户端一件事」时走的**不是**请求帧，而是「事件问 + 方法答」
+ * （`session.question` → `session.answer`）：这样帧层的 `id` 空间只有一方在分配，
+ * 不必处理两个方向撞号。理由见 `sessions.ts` 里 `SESSION_EVENTS.question` 的注释。
  */
 
 /** 协议版本：任何不兼容的字段变化都要 +1 */
@@ -46,7 +48,7 @@ export interface HelloResponse {
   };
 }
 
-/** 请求帧（两个方向通用） */
+/** 请求帧（客户端 → 服务端；见文件头的「本版只有一个方向」） */
 export interface RequestFrame {
   id: number;
   method: string;

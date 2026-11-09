@@ -6,8 +6,10 @@
  * - **没有鉴权**：因为只绑 `127.0.0.1`。`start()` 里对 host 做了断言 —— 未鉴权的端口一旦
  *   能被非本机访问，等于把 `exec`（远程执行）送给整个局域网。要对外必须先做鉴权，没有"先
  *   开着再说"的中间态。
- * - **没有会话**：本版只提供 `ping` / `status` / `shutdown` 三个方法，会话相关方法由
- *   调用方通过 `handlers` 注入。骨架先立住，业务再长进来。
+ * - **只有三个自带方法**：`ping` / `status` / `shutdown`（它们在任何命名空间之外，
+ *   因为它们是「活着吗 / 你是谁 / 可以关了吗」这三个问题）。其余方法全部由组装根注入：
+ *   `session.*` / `workspace.*` / `events.watch`（`protocol/sessions.ts`）、`config.*` /
+ *   `agent.*`（`protocol/config.ts`）。本类只管「字节流 → 帧 → 方法调用」，不认识业务。
  * - **握手不省**：即使现在不鉴权，首帧也必须 `hello`。将来加 token/公钥时只改握手内容，
  *   不动所有客户端的建连逻辑。
  *
@@ -47,7 +49,7 @@ export interface Connection {
   /**
    * 这条连接断开时的回调；返回取消注册的函数。
    *
-   * 订阅类方法（如 `session.watch`）靠它在断开时退订：不退订就会给一条已经 destroy 的
+   * 订阅类方法（如 `events.watch`）靠它在断开时退订：不退订就会给一条已经 destroy 的
    * socket 一直写帧，而 `write` 在 Node 里是不报错的 —— 泄漏是安静的。
    */
   onClose(listener: () => void): () => void;

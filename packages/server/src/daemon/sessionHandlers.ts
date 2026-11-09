@@ -322,16 +322,14 @@ function optionalMode(params: unknown): HandoffMode | undefined {
 }
 
 /**
- * 回答自动迁移提问的执行者：`self` / `summary` / `null` 三选一。
- *
- * 与 `optionalMode` 分开而不是复用：那里「没给」是合法的（用默认执行者），这里
- * 「没给」不合法 —— `null` 已经是「不交接」那个选项，`undefined` 只能是调用方写错了。
- */
-/**
  * 回答的载荷：`choice`（选项 id）或 `null`（跳过）。
  *
  * 这一层**不判**哪个 id 对某个 `kind` 合法 —— 那是提问方的事（`kind` 与选项都是它给的）。
  * 只保证形状：非空字符串或 `null`，别的一律 `bad-params`。
+ *
+ * 与 `optionalMode` 分开而不是复用，是因为两者对「没给」的态度相反：那里缺省是合法的
+ * （用 `self`），这里缺省不合法 —— `null` 已经代表「跳过」这个明确选择，`undefined`
+ * 只能是调用方漏了字段。
  */
 function requireChoice(params: unknown): string | null {
   const value = field(params, "choice");
