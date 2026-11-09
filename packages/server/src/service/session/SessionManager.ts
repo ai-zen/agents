@@ -20,7 +20,7 @@ import { PhaseTracker, pendingToolCalls, type PhaseInfo } from "../progress/Phas
 import type { SessionRef, SessionStore } from "../store/SessionStore.js";
 import { EventHub } from "../events/EventHub.js";
 import { SessionHandoff, isHandoffAborted, type HandoffAgentLike } from "../handoff/SessionHandoff.js";
-import type { MessageContent } from "../../protocol/sessions.js";
+import type { MessageContent, SubAgentSnapshotResult } from "../../protocol/sessions.js";
 import {
   SESSION_EVENTS,
   type HandoffMode,
@@ -55,6 +55,39 @@ export interface AgentLike {
     on(event: string, handler: (payload: any) => void): void;
     off(event: string, handler: (payload: any) => void): void;
   };
+}
+
+/**
+ * 被委派出去的子 Agent 在本层需要的那两面：**它自己的**对话与**它自己的**事件流。
+ *
+ * 与 `AgentLike` 同一个理由（结构性类型、`*Like` 后缀）：SDK 的子 Agent 天然满足它，
+ * 本包不必为此把 core 的类型体系拖进来，测试也能用一个最小的假件驱动整个流程。
+ */
+export interface SubAgentLike {
+  messages: unknown[];
+  events: {
+    on(event: string, handler: (payload: any) => void): void;
+  };
+}
+
+/**
+ * 一个子 Agent 在会话层的条目。
+ *
+ * `agent` 字段**只在本层用**（取 `messages`、挂事件监听），不进协议：客户端拿到的
+ * 是数据（`SubAgentSnapshotResult.messages`），不是对象 —— 远程时这个实例根本不在
+ * 客户端那边。
+ */
+interface SubAgentEntry {
+  id: string;
+  index: number;
+  agent: SubAgentLike;
+  /**
+   * 三态，可变：`running` → `done` / `failed`。
+   *
+   * **`failed` 是终态**：出错之后 SDK 还会发 `sub-agent-end`，那条路径必须先看这个
+   * 字段再决定是否发 `ended{done}`，否则真实的失败会在界面上变成「跑完了」。
+   */
+  status: "running" | "done" | "failed";
 }
 
 export interface CreateAgentInput {
@@ -141,6 +174,19 @@ interface LiveSession {
   settleDeferred: boolean;
   /** 交接服务（首次交接时创建；持有取消句柄，见 `handoffOf`） */
   handoff: SessionHandoff | null;
+  /**
+   * 本轮的子 Agent（subAgentId → 条目）。
+   *
+   * 生命周期**只到本轮结束**：一轮结束后主 Agent 已给出最终答案，子 Agent 只剩历史
+   * 价值，留着会让栏目标签永远停在上一轮；`reload` / `adopt` / `close` 换了 Agent 或
+   * 换了会话 id，也一并清（它们换的是同一段会话的「底座」，旧条目上的实例已不再被
+   * 任何东西引用）。清空地集中在 `clearSubAgents`。
+   */
+  subAgents: Map<string, SubAgentEntry>;
+  /** 展示序号（本轮内从 1 起，每轮归零：标签回到「子AGENT1」） */
+  subAgentSeq: number;
+  /** id 序号（与展示序号分开：id 要稳定且不带含义，见 `onSubStart` 的注释） */
+  subAgentIdSeq: number;
   detach: () => void;
 }
 
@@ -194,6 +240,32 @@ function apiModelOf(agent: AgentLike): string {
   return typeof model === "string" ? model : "";
 }
 
+/**
+ * 从一片 OpenAI 风格的流式 chunk 里取出正文与推理增量。
+ *
+ * 主 Agent 与子 Agent 共用这一份取法：两边刷的是同一条 SDK 事件（`chunk-parsed`），
+ * 形状一模一样，写两份只会在某天 SDK 改字段时漂成一半对一半错。
+ */
+function deltaOf(chunk: any): { text: string; reasoning: string } {
+  const delta = chunk?.choices?.[0]?.delta;
+  const text = typeof delta?.content === "string" ? delta.content : "";
+  const reasoning = typeof delta?.reasoning_content === "string" ? delta.reasoning_content : "";
+  return { text, reasoning };
+}
+
+/**
+ * 按**实例**找回它的条目。
+ *
+ * `sub-agent-end` / `error` 的载荷是实例而不是 id（SDK 侧就这么给），而协议里的 id 是
+ * 本层分配的 —— 两边得在这里对上。
+ */
+function subAgentEntryOf(session: LiveSession, subAgent: SubAgentLike): SubAgentEntry | undefined {
+  for (const entry of session.subAgents.values()) {
+    if (entry.agent === subAgent) return entry;
+  }
+  return undefined;
+}
+
 export class SessionManager {
   private readonly createAgent: (input: CreateAgentInput) => Promise<AgentLike>;
   private readonly nextSessionId: () => string;
@@ -228,6 +300,27 @@ export class SessionManager {
       phase: this.visiblePhase(session),
       messages: [...session.agent.messages],
       ...(session.agent.lastUsage !== undefined ? { lastUsage: session.agent.lastUsage } : {}),
+    };
+  }
+
+  /**
+   * 取某个子 Agent 到目前为止的完整对话（客户端切到该栏目时对齐用）。
+   *
+   * 找不到会话是 `unknown-session`（与其它方法同一口径）；会话在、但那轮已经结束
+   * （条目已被 `clearSubAgents` 清掉）是 `sub-agent-missing` —— 后者不是“服务端出错”，
+   * 子 Agent 本来就只活在当前一轮（参见 `SubAgentEntry` 的生命周期注释），客户端该做的
+   * 是把栏目收回去，不是重试。
+   */
+  async subAgentSnapshot(sessionId: string, subAgentId: string): Promise<SubAgentSnapshotResult> {
+    const session = this.require(sessionId);
+    const entry = session.subAgents.get(subAgentId);
+    if (!entry) throw codedError("sub-agent-missing", `no such sub-agent: ${subAgentId}`);
+    return {
+      subAgentId: entry.id,
+      index: entry.index,
+      status: entry.status,
+      // 复制一份：服务端是真相源，客户端别拿一个会跟着流式追加变动的数组
+      messages: [...entry.agent.messages],
     };
   }
 
@@ -428,6 +521,8 @@ export class SessionManager {
     session.turnFailed = null;
     session.turnSettled = true;
     session.phase.reset();
+    // 换了 Agent：旧子 Agent 实例连同它们的对话一起退场（它们属于旧底座）
+    this.clearSubAgents(session);
     session.detach = this.attachEvents(session);
 
     return await this.snapshot(sessionId);
@@ -585,6 +680,9 @@ export class SessionManager {
       turnSettled: true,
       settleDeferred: false,
       handoff: null,
+      subAgents: new Map(),
+      subAgentSeq: 0,
+      subAgentIdSeq: 0,
       detach: () => {},
     };
     session.detach = this.attachEvents(session);
@@ -699,6 +797,8 @@ export class SessionManager {
     if (!session) return false;
     session.handoff?.abort();
     session.detach();
+    // 会话已经不存在了：不留任何指向它的残留（子 Agent 里的实例也跟着退场）
+    this.clearSubAgents(session);
     this.sessions.delete(sessionId);
     return true;
   }
@@ -730,9 +830,7 @@ export class SessionManager {
       session.phase.delta(chunk);
       this.emitPhase(session);
 
-      const delta = chunk?.choices?.[0]?.delta;
-      const text = typeof delta?.content === "string" ? delta.content : "";
-      const reasoning = typeof delta?.reasoning_content === "string" ? delta.reasoning_content : "";
+      const { text, reasoning } = deltaOf(chunk);
       if (!text && !reasoning) return;
       this.emit({
         event: SESSION_EVENTS.delta,
@@ -761,10 +859,89 @@ export class SessionManager {
 
     const onFinally = () => this.settleTurn(session);
 
+    /**
+     * 一个子 Agent 开始了（core 的 `AgentTool` / `AgentToolLazy` 在委派边界广播）。
+     *
+     * 两个计数器分开：`index` 是**展示序号**（本轮内从 1 起，栏目标签直接印它），
+     * `subAgentId` 是**稳定标识**（客户端拿它当选中态与 React key）。分开的理由是它们
+     * 回答不同的问题 —— 「用户看到的第几栏」与「是哪一次委派」，合并成一个数字就会变成
+     * 「id 带上了展示含义」，改一次展示就得动一次 id。两者都只在**本轮**内唯一：一轮
+     * 结束时列表与计数器一起归零（见 `clearSubAgents`），而客户端也在 `turn.end` 上
+     * 清自己的列表，所以下一轮的 `sub-1` 不会被任何遗留的选中态认领。
+     *
+     * 子 Agent 自己的事件流只挂两条，且 **`chunk-parsed` 绝不碰 `session.phase`**：
+     * 此刻主 Agent 正在等发起委派的那个工具（如 `call_skill_sub_agent`）返回，阶段
+     * 应停在「等待 xxx 返回」；子 Agent 的思考 / 输出是工具内部的事，拿它的 delta 去改
+     * 主阶段会让界面变成「输出中」，正好盖掉用户最需要知道的那句话。
+     *
+     * 这里挂的监听**不用**在 `sub-agent-end` 撤销：子 Agent 实例是「每次委派新建」的
+     * （core 的 `AgentTool.exec()` 里 `new Agent(...)`、`AgentToolLazy.exec()` 里
+     * `buildAgent(...)`），随本次 run 结束回收，监听器跟着走 —— 与 CLI 侧同一个理由。
+     */
+    const onSubStart = ({ subAgent }: { subAgent: SubAgentLike }) => {
+      const entry: SubAgentEntry = {
+        id: `sub-${++session.subAgentIdSeq}`,
+        index: ++session.subAgentSeq,
+        agent: subAgent,
+        status: "running",
+      };
+      session.subAgents.set(entry.id, entry);
+      this.emit({
+        event: SESSION_EVENTS.subAgentStarted,
+        sessionId: session.id,
+        turnId: session.turnId,
+        subAgentId: entry.id,
+        index: entry.index,
+      });
+
+      /** 子 Agent 的正文增量：只带 `subAgentId` 推给客户端，不推进主阶段（理由见上） */
+      const onSubChunk = (receiver: any) => {
+        const { text, reasoning } = deltaOf(receiver?.chunk ?? receiver);
+        if (!text && !reasoning) return;
+        this.emit({
+          event: SESSION_EVENTS.delta,
+          sessionId: session.id,
+          turnId: session.turnId,
+          subAgentId: entry.id,
+          text,
+          reasoning,
+        });
+      };
+
+      /**
+       * 子 Agent 出错：标签标 `failed`，错误原文送进通知栏。
+       *
+       * 先填字段再发事件：之后 SDK 还会发 `sub-agent-end`，而那条路径只在状态仍是
+       * `running` 时才置 `done` —— **`failed` 不被 `done` 覆盖**的安全网就挂在那里。
+       */
+      const onSubError = (error: any) => {
+        entry.status = "failed";
+        this.notice(session.id, {
+          level: "error",
+          code: "subAgentFailed",
+          params: { index: entry.index, message: error?.message ?? String(error) },
+        });
+        this.emitSubAgentEnded(session, entry);
+      };
+
+      subAgent.events.on("chunk-parsed", onSubChunk);
+      subAgent.events.on("error", onSubError);
+    };
+
+    const onSubEnd = ({ subAgent }: { subAgent: SubAgentLike }) => {
+      const entry = subAgentEntryOf(session, subAgent);
+      // 只把「还在跑」的置为完成：失败已由 `error` 监听标成 failed，不能被这里覆盖
+      if (!entry || entry.status !== "running") return;
+      entry.status = "done";
+      this.emitSubAgentEnded(session, entry);
+    };
+
     events.on("open", onOpen);
     events.on("chunk-parsed", onChunk);
     events.on("parsed", onParsed);
     events.on("tool-call-end", onToolCallEnd);
+    events.on("sub-agent-start", onSubStart);
+    events.on("sub-agent-end", onSubEnd);
     events.on("error", onError);
     events.on("finally", onFinally);
 
@@ -773,9 +950,53 @@ export class SessionManager {
       events.off("chunk-parsed", onChunk);
       events.off("parsed", onParsed);
       events.off("tool-call-end", onToolCallEnd);
+      events.off("sub-agent-start", onSubStart);
+      events.off("sub-agent-end", onSubEnd);
       events.off("error", onError);
       events.off("finally", onFinally);
     };
+  }
+
+  /**
+   * 把一个子 Agent 的终态发给客户端。
+   *
+   * 状态取**条目上的那个**（调用方在发之前已经写好）：`running` 走不到这里 ——
+   * 收尾只有两处（`error` 置 failed、`sub-agent-end` 仅在 running 时置 done）。
+   * 只信一处状态，事件与快照才不会一个说 done、一个说 failed。
+   */
+  private emitSubAgentEnded(session: LiveSession, entry: SubAgentEntry): void {
+    const status = entry.status === "failed" ? "failed" : "done";
+    this.emit({
+      event: SESSION_EVENTS.subAgentEnded,
+      sessionId: session.id,
+      turnId: session.turnId,
+      subAgentId: entry.id,
+      status,
+    });
+  }
+
+  /**
+   * 清空子 Agent 列表与两个计数器。
+   *
+   * 为什么要清：子 Agent 是「内循环里工具调用的产物」，**只活在当前一轮**。一轮结束后
+   * 主 Agent 已给出最终答案，子 Agent 只剩历史价值；留着会让栏目标签停在一段已经过去
+   * 的对话上，而且下一轮的第一个子 Agent 会顶着上一轮的序号出现。`reload`（换了 Agent）、
+   * `adopt`（换了会话 id）、`close` 同理：旧条目上的实例已不再被任何东西引用。
+   */
+  /**
+   * 清空栏目。与 CLI 侧逐条对齐：
+   *
+   *   - **展示序号归零**：下一轮又是「子AGENT1」（用户看到的是「这一轮的第三个」）；
+   *   - **id 序号不归零**：`subAgentId` 是客户端选中态与 React key 的锚点，让它跨轮复用得
+   *     到同一个值，就会出现「上一轮残留的选中 id 突然接到新一轮的 sub-1 上」。id 不带
+   *     展示含义，多递增几次没有成本。
+   *
+   * 清空时机与 CLI 的 `clearSubAgents()` 调用点一一对应：一轮结束（那边的 `send()`
+   * `finally`）、`reload`、迁移换 id、`close`。
+   */
+  private clearSubAgents(session: LiveSession): void {
+    session.subAgents.clear();
+    session.subAgentSeq = 0;
   }
 
   /** 失败即收尾（`error` 之后 SDK 仍会发 `finally`，靠 `turnSettled` 去重） */
@@ -789,6 +1010,10 @@ export class SessionManager {
     // 交接/迁移进行中：这一轮的收尾归方法自己的 promise（见 `settleDeferred`）
     if (session.settleDeferred) return;
     session.turnSettled = true;
+
+    // 一轮结束：子 Agent 列表跟着消失（只活当前一轮，理由见 `clearSubAgents`）。
+    // 清在 `turn.end` 之前：客户端收到收尾事件时再去要子 Agent 快照，拿不到才是对的。
+    this.clearSubAgents(session);
 
     session.phase.reset();
     this.emitPhase(session);
@@ -910,6 +1135,8 @@ export class SessionManager {
     this.sessions.delete(previousId);
     session.id = nextId;
     this.sessions.set(nextId, session);
+    // 换 id = 这是新的一段会话：上一段里的子 Agent 不该跟着过来
+    this.clearSubAgents(session);
     this.emit({ event: SESSION_EVENTS.idChanged, from: previousId, sessionId: nextId });
     return nextId;
   }

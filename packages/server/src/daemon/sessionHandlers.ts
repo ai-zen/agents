@@ -35,6 +35,7 @@ import {
   type SessionSaveResult,
   type SessionSendResult,
   type SessionSnapshotResult,
+  type SubAgentSnapshotResult,
   type WorkspaceFilesResult,
   type WorkspaceResolveResult,
 } from "../protocol/sessions.js";
@@ -177,6 +178,19 @@ export function createSessionHandlers(options: SessionHandlerOptions): Record<st
 
     [SESSION_METHODS.reload]: async (params): Promise<SessionSnapshotResult> => {
       return await manager.reload(requireString(params, "sessionId"));
+    },
+
+    /**
+     * 某个子 Agent 到目前为止的完整对话。
+     *
+     * 子 Agent 只活在当前一轮（见 `SessionManager.clearSubAgents`）：轮次过去后这个 id 就
+     * 不存在了，所以带 `sub-agent-missing` 码报错，而不是回一份空对话。
+     */
+    [SESSION_METHODS.subAgentSnapshot]: async (params): Promise<SubAgentSnapshotResult> => {
+      return await manager.subAgentSnapshot(
+        requireString(params, "sessionId"),
+        requireString(params, "subAgentId"),
+      );
     },
 
     [SESSION_METHODS.save]: async (params): Promise<SessionSaveResult> => {

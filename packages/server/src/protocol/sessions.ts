@@ -79,6 +79,8 @@ export const SESSION_METHODS = {
   handoff: "session.handoff",
   /** 交接 + 开新会话：写文档、剔历史、**换 sessionId** */
   migrate: "session.migrate",
+  /** 取某个子 Agent 到目前为止的完整对话（客户端切到该栏目时对齐用） */
+  subAgentSnapshot: "session.subAgent.snapshot",
 } as const;
 
 /**
@@ -128,6 +130,10 @@ export const SESSION_EVENTS = {
    * 客户端拿 `from === 自己当前 id` 就能认领。
    */
   idChanged: "session.idChanged",
+  /** 一个子 Agent 开始（本轮内 index 从 1 起；subAgentId 稳定，客户端拿它归增量 / 当选中态） */
+  subAgentStarted: "session.subAgent.started",
+  /** 一个子 Agent 结束：done = 正常跑完，failed = 抛错（**一旦 failed 就不再变**） */
+  subAgentEnded: "session.subAgent.ended",
   /** 全局通知（不绑会话） */
   globalNotice: "global.notice",
 } as const;
@@ -440,6 +446,28 @@ export interface SessionRollbackResult {
   /** 撤回之后剩下的全部消息（客户端直接重渲染，不用再要一次快照） */
   messages: unknown[];
 }
+
+/**
+ * 取某个子 Agent 到目前为止的完整对话。
+ *
+ * 为什么不走「客户端自己从事件流里攒」：客户端可能是在子 Agent 已经跑了一半时才切到
+ * 那个栏目的（甚至是从没收到过 `started` 的连接），攒出来的只能是半截。服务端是唯一
+ * 真相源 —— 与 `session.snapshot` 同一个理由。
+ */
+export interface SubAgentSnapshotParams {
+  sessionId: string;
+  subAgentId: string;
+}
+
+export interface SubAgentSnapshotResult {
+  subAgentId: string;
+  /** 本轮内从 1 起（与栏目标签的序号一致） */
+  index: number;
+  status: "running" | "done" | "failed";
+  /** 它到目前为止的完整对话（从第 0 条起，服务端原样给，不解释形状） */
+  messages: unknown[];
+}
+
 // ==================== 事件 ====================
 //
 // 这些写成 `type` 而不是 `interface`：`interface` 不会隐式获得索引签名，于是
@@ -462,6 +490,43 @@ export type MessageDeltaEvent = {
   text: string;
   /** 推理增量（推理模型才有） */
   reasoning: string;
+  /**
+   * 有它就属于那个**子 Agent**，没有就是主 Agent。
+   *
+   * 一条增量通道同时承载两层对话，靠这个字段分流；缺省（不等于空串）表示主 Agent，
+   * 于是老客户端不改也能继续把主对话读对。
+   */
+  subAgentId?: string;
+};
+
+/**
+ * 一个子 Agent 开始了。
+ *
+ * `index` 是**展示用的序号**（本轮内从 1 起，栏目标签「子AGENT1」直接印它）；
+ * `subAgentId` 是**稳定标识**（客户端拿它当选中态与 React key）。两者分开是因为它们
+ * 回答不同的问题：「用户看到的第几栏」与「是哪一次委派」。`index` 每轮都会重来，所以
+ * 它不能当 id 用；反过来，id 带上展示含义之后，改一次标签就得动一次 id。
+ */
+export type SubAgentStartedEvent = {
+  event: typeof SESSION_EVENTS.subAgentStarted;
+  sessionId: string;
+  turnId: number;
+  subAgentId: string;
+  index: number;
+};
+
+/**
+ * 一个子 Agent 结束了。
+ *
+ * `failed` 是**终态**：出错之后即便 SDK 还会发结束事件，也绝不能改回 `done` ——
+ * 否则界面上一个真的失败了的子任务会显示成成功。
+ */
+export type SubAgentEndedEvent = {
+  event: typeof SESSION_EVENTS.subAgentEnded;
+  sessionId: string;
+  turnId: number;
+  subAgentId: string;
+  status: "done" | "failed";
 };
 
 export type TurnEndEvent = {
@@ -499,6 +564,8 @@ export const SESSION_NOTICE_CODES = {
   handoffPath: "handoffPath",
   /** 迁移前把旧会话存进了存档（`params.sessionId` 是**旧**会话） */
   handoffArchived: "handoffArchived",
+  /** 子 Agent 出错（`params.message` 是原始错误文本；`params.index` 是本轮序号） */
+  subAgentFailed: "subAgentFailed",
 } as const;
 
 /** 全局通知的 code 表（同上：只增不改语义） */
@@ -537,4 +604,6 @@ export type ServerEvent =
   | TurnEndEvent
   | SessionNoticeEvent
   | GlobalNoticeEvent
-  | SessionIdChangedEvent;
+  | SessionIdChangedEvent
+  | SubAgentStartedEvent
+  | SubAgentEndedEvent;

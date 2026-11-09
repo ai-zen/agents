@@ -60,6 +60,7 @@ export { EventHub } from "./service/events/EventHub.js";
 export {
   SessionManager,
   type AgentLike,
+  type SubAgentLike,
   type CreateAgentInput,
   type SessionAttachInput,
   type SessionCreateInput,
@@ -121,6 +122,10 @@ export {
   type SessionHandoffParams,
   type SessionHandoffResult,
   type SessionIdChangedEvent,
+  type SubAgentStartedEvent,
+  type SubAgentEndedEvent,
+  type SubAgentSnapshotParams,
+  type SubAgentSnapshotResult,
   type SessionMigrateParams,
   type SessionMigrateResult,
   type TurnEndEvent,

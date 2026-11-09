@@ -66,6 +66,26 @@ class FakeAgent implements AgentLike {
   }
 }
 
+/**
+ * 假的子 Agent —— 照 `FakeAgent` 的最小实现来：会话层只从它身上取两样，
+ * 自己的 `messages`（快照用）与自己 `events`（挂监听用）。
+ */
+class FakeSubAgent {
+  messages: any[] = [];
+  private readonly handlers = new Map<string, Set<(payload: any) => void>>();
+  readonly events = {
+    on: (event: string, handler: (payload: any) => void) => {
+      if (!this.handlers.has(event)) this.handlers.set(event, new Set());
+      this.handlers.get(event)!.add(handler);
+    },
+  };
+
+  /** 驱动一条子 Agent 自己的事件（`chunk-parsed` / `error`…） */
+  fire(event: string, payload?: unknown): void {
+    for (const handler of this.handlers.get(event) ?? []) handler(payload);
+  }
+}
+
 let agent: FakeAgent;
 let manager: SessionManager;
 let events: ServerEvent[];
@@ -343,6 +363,153 @@ describe("SessionManager：订阅", () => {
     expect(agent.handlerCount()).toBe(0);
     expect(manager.list("ws-1")).toEqual([]);
     expect(manager.cancel(sessionId)).toEqual({ cancelled: false });
+  });
+});
+
+/**
+ * 子 Agent 栏目 —— 行为对齐 CLI 的 `onSubStart` / `onSubEnd`：序号、三态、增量分流、
+ * 「只活当前一轮」。每条用例都对着一个会被后人改坏的点。
+ */
+describe("SessionManager：子 Agent（栏目）", () => {
+  it("sub-agent-start → session.subAgent.started：index 从 1 起，id 是 sub-1 / sub-2", async () => {
+    const { sessionId } = await create();
+    manager.send(sessionId, "hi");
+
+    agent.fire("sub-agent-start", { subAgent: new FakeSubAgent() });
+    agent.fire("sub-agent-start", { subAgent: new FakeSubAgent() });
+
+    expect(pick("session.subAgent.started")).toEqual([
+      { event: "session.subAgent.started", sessionId, turnId: 1, subAgentId: "sub-1", index: 1 },
+      { event: "session.subAgent.started", sessionId, turnId: 1, subAgentId: "sub-2", index: 2 },
+    ]);
+  });
+
+  it("子 Agent 的增量带 subAgentId 推给客户端，且**一行都不碰主阶段**", async () => {
+    const { sessionId } = await create();
+    manager.send(sessionId, "hi");
+    const sub = new FakeSubAgent();
+    agent.fire("sub-agent-start", { subAgent: sub });
+
+    // 主 Agent 此刻停在「等待委派工具返回」
+    agent.fire("parsed", {
+      message: {
+        role: "assistant",
+        tool_calls: [{ id: "a", function: { name: "call_skill_sub_agent" } }],
+      },
+    });
+    const phasesBefore = pick("session.phase").length;
+
+    sub.fire("chunk-parsed", { choices: [{ delta: { reasoning_content: "想…" } }] });
+    sub.fire("chunk-parsed", { choices: [{ delta: { content: "子" } }] });
+
+    expect(pick("message.delta").slice(-2)).toEqual([
+      { event: "message.delta", sessionId, turnId: 1, subAgentId: "sub-1", text: "", reasoning: "想…" },
+      { event: "message.delta", sessionId, turnId: 1, subAgentId: "sub-1", text: "子", reasoning: "" },
+    ]);
+    // 回归保护：拿子 Agent 的 delta 去改主阶段，界面会从「等待 xxx 返回」变成「输出中」
+    expect(pick("session.phase")).toHaveLength(phasesBefore);
+    expect(manager.list("ws-1")[0]!.phase).toMatchObject({
+      kind: "tool-waiting",
+      tools: ["call_skill_sub_agent"],
+    });
+  });
+
+  it("sub-agent-end → session.subAgent.ended{done}", async () => {
+    const { sessionId } = await create();
+    manager.send(sessionId, "hi");
+    const sub = new FakeSubAgent();
+    agent.fire("sub-agent-start", { subAgent: sub });
+
+    agent.fire("sub-agent-end", { subAgent: sub });
+
+    expect(pick("session.subAgent.ended")).toEqual([
+      { event: "session.subAgent.ended", sessionId, turnId: 1, subAgentId: "sub-1", status: "done" },
+    ]);
+    expect((await manager.subAgentSnapshot(sessionId, "sub-1")).status).toBe("done");
+  });
+
+  it("子 Agent 出错：ended{failed} + 一条 notice；随后的 sub-agent-end 不能把它改成 done", async () => {
+    const { sessionId } = await create();
+    manager.send(sessionId, "hi");
+    const sub = new FakeSubAgent();
+    agent.fire("sub-agent-start", { subAgent: sub });
+
+    sub.fire("error", new Error("模型 500"));
+
+    expect(pick("session.subAgent.ended")).toEqual([
+      { event: "session.subAgent.ended", sessionId, turnId: 1, subAgentId: "sub-1", status: "failed" },
+    ]);
+    // 错误原文进 params.message：服务端不产文案，客户端查自己的 i18n 表
+    expect(pick("session.notice")).toEqual([
+      {
+        event: "session.notice",
+        sessionId,
+        level: "error",
+        code: "subAgentFailed",
+        params: { index: 1, message: "模型 500" },
+      },
+    ]);
+
+    // 出错优先：SDK 随后还会发 sub-agent-end，这里绝不能把它报成「跑完了」
+    agent.fire("sub-agent-end", { subAgent: sub });
+    expect(pick("session.subAgent.ended")).toHaveLength(1);
+    expect((await manager.subAgentSnapshot(sessionId, "sub-1")).status).toBe("failed");
+  });
+
+  it("一轮结束（finally）就清空：subAgentSnapshot 报 sub-agent-missing", async () => {
+    const { sessionId } = await create();
+    manager.send(sessionId, "hi");
+    const sub = new FakeSubAgent();
+    agent.fire("sub-agent-start", { subAgent: sub });
+    expect((await manager.subAgentSnapshot(sessionId, "sub-1")).status).toBe("running");
+
+    agent.fire("finally");
+
+    await expect(manager.subAgentSnapshot(sessionId, "sub-1")).rejects.toMatchObject({
+      code: "sub-agent-missing",
+    });
+
+    // 展示序号归零（下一轮又是「子AGENT1」），但 id 不归零 —— 与 CLI 一致：
+    // id 是客户端选中态的锚点，跨轮复用会让上一轮残留的选中态接到新一轮的 sub-1 上
+    manager.send(sessionId, "再来一轮");
+    agent.fire("sub-agent-start", { subAgent: new FakeSubAgent() });
+    expect(pick("session.subAgent.started").at(-1)).toMatchObject({
+      turnId: 2,
+      subAgentId: "sub-2",
+      index: 1,
+    });
+  });
+
+  it("subAgentSnapshot 给的是这个子 Agent 自己的对话（与主会话互不干扰）", async () => {
+    const { sessionId } = await create();
+    manager.send(sessionId, "hi");
+    agent.messages = [{ role: "user", content: "主线的事" }];
+    const sub = new FakeSubAgent();
+    sub.messages = [
+      { role: "user", content: "子任务" },
+      { role: "assistant", content: "子答复" },
+    ];
+    agent.fire("sub-agent-start", { subAgent: sub });
+
+    expect(await manager.subAgentSnapshot(sessionId, "sub-1")).toEqual({
+      subAgentId: "sub-1",
+      index: 1,
+      status: "running",
+      messages: [
+        { role: "user", content: "子任务" },
+        { role: "assistant", content: "子答复" },
+      ],
+    });
+    expect((await manager.snapshot(sessionId)).messages).toEqual([{ role: "user", content: "主线的事" }]);
+  });
+
+  it("未知会话 → unknown-session；未知子 Agent → sub-agent-missing", async () => {
+    const { sessionId } = await create();
+
+    await expect(manager.subAgentSnapshot("chat_404", "sub-1")).rejects.toThrow(/unknown session/);
+    await expect(manager.subAgentSnapshot(sessionId, "sub-9")).rejects.toMatchObject({
+      code: "sub-agent-missing",
+    });
   });
 });
 

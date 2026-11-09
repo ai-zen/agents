@@ -61,6 +61,25 @@ class FakeAgent implements AgentLike {
   }
 }
 
+/**
+ * 假的子 Agent：会话层只从它身上取 `messages`（快照）与 `events`（挂监听）。
+ * 父 Agent 的事件载荷只需要一个 `{ subAgent }`，所以这里不实现 send / abort。
+ */
+class FakeSubAgent {
+  messages: any[] = [];
+  private readonly handlers = new Map<string, Set<(payload: any) => void>>();
+  readonly events = {
+    on: (event: string, handler: (payload: any) => void) => {
+      if (!this.handlers.has(event)) this.handlers.set(event, new Set());
+      this.handlers.get(event)!.add(handler);
+    },
+  };
+
+  fire(event: string, payload?: unknown): void {
+    for (const handler of this.handlers.get(event) ?? []) handler(payload);
+  }
+}
+
 let dir: string;
 /** 客户端不带工作目录时用的那个（组装根注入，真进程里是服务端自己的 cwd） */
 let defaultWorkspacePath: string;
@@ -225,6 +244,44 @@ describe("会话处理器（真 socket）", () => {
     const phaseReset = (await client!.next()) as any;
     expect(phaseReset.phase).toBeNull();
     expect(await client!.next()).toMatchObject({ event: "turn.end", ok: true, turnId: 1 });
+  });
+
+  it("session.subAgent.snapshot 走通；未知子 Agent → sub-agent-missing 错误帧", async () => {
+    await startDaemon();
+    const created = (await client!.call(SESSION_METHODS.create, {
+      workspaceId: "ws-1",
+      path: dir,
+    })) as { sessionId: string };
+    await client!.call(SESSION_METHODS.send, { sessionId: created.sessionId, content: "帮我查两处" });
+
+    const sub = new FakeSubAgent();
+    sub.messages = [{ role: "user", content: "子任务" }];
+    agent.fire("sub-agent-start", { subAgent: sub });
+
+    expect(
+      await client!.call(SESSION_METHODS.subAgentSnapshot, {
+        sessionId: created.sessionId,
+        subAgentId: "sub-1",
+      }),
+    ).toEqual({
+      subAgentId: "sub-1",
+      index: 1,
+      status: "running",
+      messages: [{ role: "user", content: "子任务" }],
+    });
+
+    // 子 Agent 只活在当前一轮：不存在的 id 带码报错，不回一份空对话
+    await expect(
+      client!.call(SESSION_METHODS.subAgentSnapshot, {
+        sessionId: created.sessionId,
+        subAgentId: "sub-404",
+      }),
+    ).rejects.toThrow(/sub-agent-missing/);
+    // 参数缺失同样是 bad-params，且连接还能继续用
+    await expect(
+      client!.call(SESSION_METHODS.subAgentSnapshot, { sessionId: created.sessionId }),
+    ).rejects.toThrow(/bad-params/);
+    expect(await client!.call("ping")).toEqual({ pong: true });
   });
 
   it("session.list 报出活着的会话与当前阶段", async () => {
