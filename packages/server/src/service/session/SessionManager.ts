@@ -19,10 +19,14 @@
 import { PhaseTracker, pendingToolCalls, type PhaseInfo } from "../progress/PhaseTracker.js";
 import type { SessionRef, SessionStore } from "../store/SessionStore.js";
 import { EventHub } from "../events/EventHub.js";
+import { SessionHandoff, isHandoffAborted, type HandoffAgentLike } from "../handoff/SessionHandoff.js";
 import {
   SESSION_EVENTS,
+  type HandoffMode,
   type NoticeLevel,
   type ServerEvent,
+  type SessionHandoffResult,
+  type SessionMigrateResult,
   type SessionNoticeCode,
   type SessionSnapshotResult,
   type SessionSummary,
@@ -91,6 +95,11 @@ export interface SessionManagerOptions {
    * 这样**全局通知**也能走同一条推送线。
    */
   hub?: EventHub;
+  /**
+   * 交接需要的路径根（`aiZenDir` / `homeDir`）。不注入则 `handoff` / `migrate` 明确报
+   * `no-handoff` —— 交接要读磁盘上的 `handoff` Skill，本层不自己猜路径。
+   */
+  handoff?: { aiZenDir: string; homeDir: string };
 }
 
 interface LiveSession {
@@ -105,6 +114,15 @@ interface LiveSession {
   /** 本轮是否已经出过错（`error` 与 `finally` 都会到，收尾只报一次） */
   turnFailed: { code: string; message: string } | null;
   turnSettled: boolean;
+  /**
+   * 这一轮的收尾由交接/迁移方法自己负责（见 `settleTurn`）。
+   *
+   * 交接回合本身也是一次 `agent.send()`，SDK 会照常发 `finally`；不拦一下，
+   * `self` 模式会在文档还没校验、历史还没剔除时就宣布本轮结束。
+   */
+  settleDeferred: boolean;
+  /** 交接服务（首次交接时创建；持有取消句柄，见 `handoffOf`） */
+  handoff: SessionHandoff | null;
   detach: () => void;
 }
 
@@ -126,11 +144,22 @@ function codedError(code: string, message: string): Error & { code: string } {
   return error as Error & { code: string };
 }
 
+/**
+ * 会话管理器只持有 Agent「能跑一轮」那一面（`AgentLike`，为了能用假件测完整个事件流）；
+ * 交接需要更宽的那面（定义模板、工具表、`use()`）—— 同一个对象，只是视图不同。
+ *
+ * 收在这里而不是散在调用点：这一句在说「真件必须满足交接的要求」，散开就成了隐式约定。
+ */
+function asHandoffAgent(agent: AgentLike): HandoffAgentLike {
+  return agent as unknown as HandoffAgentLike;
+}
+
 export class SessionManager {
   private readonly createAgent: (input: CreateAgentInput) => Promise<AgentLike>;
   private readonly nextSessionId: () => string;
   private readonly storeFactory: SessionManagerOptions["storeFor"];
   private readonly invalidateScope: SessionManagerOptions["invalidateScope"];
+  private readonly handoffOptions: SessionManagerOptions["handoff"];
   private readonly sessions = new Map<string, LiveSession>();
   private readonly hub: EventHub;
   /** 自建的 hub 由自己清理；外面传进来的归外面管 */
@@ -141,6 +170,7 @@ export class SessionManager {
     this.nextSessionId = options.nextSessionId ?? defaultNextSessionId;
     this.storeFactory = options.storeFor;
     this.invalidateScope = options.invalidateScope;
+    this.handoffOptions = options.handoff;
     this.hub = options.hub ?? new EventHub();
     this.ownsHub = !options.hub;
   }
@@ -168,6 +198,87 @@ export class SessionManager {
     await store.write({ id: session.id, agentId: session.agentId, messages: session.agent.messages });
     await store.setLastSession(session.id);
     return { saved: true, sessionId: session.id };
+  }
+
+  /**
+   * 只产出交接文档（`/handoff`）：写文档，**不动会话**（不换 id、不剔历史）。
+   *
+   * 和 `send()` 一样按「一轮」记账：先把 `turnId` 进一格，交接回合的阶段与增量就都
+   * 归在这一轮上，客户端不用另开一套「非对话回合」的渲染。区别只在收尾由本方法负责
+   * （`settleDeferred`）—— 否则文档还没校验完，SDK 的 `finally` 就已宣布本轮结束。
+   */
+  async handoff(sessionId: string, mode?: HandoffMode): Promise<SessionHandoffResult> {
+    const session = this.requireIdle(sessionId);
+    this.beginTurn(session);
+    session.settleDeferred = true;
+    try {
+      const outcome = await this.handoffOf(session).handoff(asHandoffAgent(session.agent), mode);
+      return {
+        sessionId: session.id,
+        handoffPath: outcome.handoffPath,
+        mode: outcome.mode,
+        messages: [...session.agent.messages],
+      };
+    } catch (error) {
+      throw this.failHandoff(session, error);
+    } finally {
+      session.settleDeferred = false;
+      this.settleTurn(session);
+    }
+  }
+
+  /**
+   * 交接 + 开新会话（`/migrate`）：写文档、剔除历史、**换 sessionId**。
+   *
+   * 三步顺序是定死的：
+   *   1. 先把旧会话存进存档（**交接回合之前**的完整历史）。存不下去就在这里打住，
+   *      此时内存里什么都还没动；反过来「先 prune 再存」则是文档写了、历史没了；
+   *   2. 交接（SDK 负责：写文档、校验、降级、剔除历史、注入断点）；
+   *   3. 收尾（发在旧 id 上）→ 换 id 并落盘新会话。
+   *
+   * 第 3 步把「收尾」放在「换 id」之前：客户端先看到旧会话这一轮结束，再收到响应里的
+   * 新 id，两次`session.phase`/`turn.end` 的 `sessionId` 才不会指向一个它还不知情的会话。
+   */
+  async migrate(sessionId: string, mode?: HandoffMode): Promise<SessionMigrateResult> {
+    const session = this.requireIdle(sessionId);
+    const store = await this.storeFor(session.workspaceId);
+    // 迁移必须能存档：prune 之后旧历史只存在于存档里（内存里只剩模板 + 断点）
+    if (!store) throw codedError("no-store", `no session store for workspace ${session.workspaceId}`);
+
+    this.beginTurn(session);
+    session.settleDeferred = true;
+    try {
+      const previousId = session.id;
+      await store.write({
+        id: previousId,
+        agentId: session.agentId,
+        messages: [...session.agent.messages],
+      });
+      await store.setLastSession(previousId);
+      this.notice(previousId, {
+        level: "info",
+        code: "handoffArchived",
+        params: { sessionId: previousId },
+      });
+
+      const outcome = await this.handoffOf(session).migrate(asHandoffAgent(session.agent), mode);
+
+      session.settleDeferred = false;
+      this.settleTurn(session);
+
+      const nextId = await this.adopt(session, store);
+      return {
+        sessionId: nextId,
+        handoffPath: outcome.handoffPath,
+        mode: outcome.mode,
+        messages: [...session.agent.messages],
+      };
+    } catch (error) {
+      throw this.failHandoff(session, error);
+    } finally {
+      session.settleDeferred = false;
+      this.settleTurn(session);
+    }
   }
 
   /**
@@ -292,6 +403,8 @@ export class SessionManager {
       phase: new PhaseTracker(),
       turnFailed: null,
       turnSettled: true,
+      settleDeferred: false,
+      handoff: null,
       detach: () => {},
     };
     session.detach = this.attachEvents(session);
@@ -307,12 +420,11 @@ export class SessionManager {
    */
   send(sessionId: string, content: string): { turnId: number } {
     const session = this.require(sessionId);
-    session.turnId += 1;
-    session.turnFailed = null;
-    session.turnSettled = false;
-
-    session.phase.connecting();
-    this.emitPhase(session);
+    // 交接/迁移进行中：再起一轮会同用一个 `turnId`，事件没任何办法归轮
+    if (session.settleDeferred) {
+      throw codedError("handoff-in-flight", `session ${sessionId} is handing off`);
+    }
+    this.beginTurn(session);
 
     void session.agent.send(content).catch((error: any) => {
       // `send()` 自己抛错（不是事件通道里的 error）：当作本轮失败收尾
@@ -327,6 +439,9 @@ export class SessionManager {
   cancel(sessionId: string): { cancelled: boolean } {
     const session = this.sessions.get(sessionId);
     if (!session) return { cancelled: false };
+    // 先掐交接：它挂在模型请求/工具上，服务自己持有的那个句柄是唯一入口；
+    // `agent.abort()` 负责立即断正在流的那一轮（两者都要，顺序与 CLI 一致）
+    session.handoff?.abort();
     session.agent.abort();
     return { cancelled: true };
   }
@@ -352,6 +467,7 @@ export class SessionManager {
   close(sessionId: string): boolean {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
+    session.handoff?.abort();
     session.detach();
     this.sessions.delete(sessionId);
     return true;
@@ -359,7 +475,10 @@ export class SessionManager {
 
   /** 收摊：摘掉所有事件、清空会话（守护进程退出时调用） */
   dispose(): void {
-    for (const session of this.sessions.values()) session.detach();
+    for (const session of this.sessions.values()) {
+      session.handoff?.abort();
+      session.detach();
+    }
     this.sessions.clear();
     if (this.ownsHub) this.hub.clear();
   }
@@ -437,6 +556,8 @@ export class SessionManager {
 
   private settleTurn(session: LiveSession): void {
     if (session.turnSettled) return;
+    // 交接/迁移进行中：这一轮的收尾归方法自己的 promise（见 `settleDeferred`）
+    if (session.settleDeferred) return;
     session.turnSettled = true;
 
     session.phase.reset();
@@ -484,6 +605,101 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) throw codedError("unknown-session", `unknown session: ${sessionId}`);
     return session;
+  }
+
+  /**
+   * 开一轮：报新 `turnId`、清失败标记、进入 `connecting`。
+   *
+   * `send` 与 `handoff`/`migrate` 共用：交接回合也要算一轮，事件才能归轮。
+   */
+  private beginTurn(session: LiveSession): void {
+    session.turnId += 1;
+    session.turnFailed = null;
+    session.turnSettled = false;
+    session.phase.connecting();
+    this.emitPhase(session);
+  }
+
+  /**
+   * 交接的前提：这段会话得处于空闲、且真的有过对话。
+   *
+   * 两条都是「不满足就说不」而不是兜底：正在跑一轮时交接，两边的消息会同时往
+   * `agent.messages` 里塞；空会话交接到的是模板消息，白烧一次模型调用。
+   */
+  private requireIdle(sessionId: string): LiveSession {
+    const session = this.require(sessionId);
+    if (!session.turnSettled) {
+      throw codedError("turn-in-flight", `session ${sessionId} has a turn in flight`);
+    }
+    const hasUserMessage = session.agent.messages.some(
+      (message) => (message as { role?: unknown } | null)?.role === "user",
+    );
+    if (!hasUserMessage) {
+      throw codedError("nothing-to-handoff", `session ${sessionId} has no user message yet`);
+    }
+    return session;
+  }
+
+  /**
+   * 这段会话的交接服务（按需创建，一个会话一个实例）。
+   *
+   * 实例跨调用复用而不是每次新建：它持有 `busy` 与取消句柄（`session.cancel` 扳的就是
+   * 它），SDK 侧按 Agent 注册的交接守卫也不该每次调用都重新挂一遍。
+   */
+  private handoffOf(session: LiveSession): SessionHandoff {
+    if (!this.handoffOptions) {
+      throw codedError("no-handoff", "handoff is not configured on this server");
+    }
+    session.handoff ??= new SessionHandoff({
+      ...this.handoffOptions,
+      workspacePath: session.path,
+      notice: (notice) => this.notice(session.id, notice),
+    });
+    return session.handoff;
+  }
+
+  /**
+   * 迁移后换 id：新会话立即落盘，再把活会话从旧键挪到新键。
+   *
+   * 顺序是「先写盘、再换键」：写失败时注册表还在旧 id 上，客户端收到的错误与它看到的
+   * 状态才一致；反过来会出现「响应说迁移失败、会话其实已经改名」这种谁也修不了的状态。
+   */
+  private async adopt(session: LiveSession, store: SessionStore): Promise<string> {
+    const previousId = session.id;
+    const nextId = this.nextSessionId();
+    if (this.sessions.has(nextId)) {
+      throw codedError("session-exists", `session already exists: ${nextId}`);
+    }
+
+    await store.write({ id: nextId, agentId: session.agentId, messages: session.agent.messages });
+    await store.setLastSession(nextId);
+
+    this.sessions.delete(previousId);
+    session.id = nextId;
+    // `turnId` 是会话内编号：新会话从第 1 轮起（收尾已在换 id 之前发了）
+    session.turnId = 0;
+    this.sessions.set(nextId, session);
+    return nextId;
+  }
+
+  /**
+   * 交接/迁移失败（含用户取消）：记下本轮失败并让调用方决定怎么报。
+   *
+   * 取消不是失败：SDK 已经把会话回退到交接前（截掉交接回合、删掉半成品文档），
+   * 这里只发一条 `turnAborted` 通知，把机器可判的 `handoff-aborted` 回给客户端。
+   */
+  private failHandoff(session: LiveSession, error: unknown): unknown {
+    if (isHandoffAborted(error)) {
+      this.notice(session.id, { level: "info", code: "turnAborted" });
+      session.turnFailed = { code: "aborted", message: "handoff cancelled" };
+      return codedError("handoff-aborted", "handoff cancelled");
+    }
+    const failure = error as { code?: unknown; message?: unknown } | null;
+    session.turnFailed = {
+      code: typeof failure?.code === "string" ? failure.code : "internal",
+      message: typeof failure?.message === "string" ? failure.message : String(error),
+    };
+    return error;
   }
 
   /** 存档工厂：没注入则续接与 save 都不可用 */

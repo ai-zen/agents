@@ -13,14 +13,28 @@ import { join } from "node:path";
 import { Daemon } from "./Daemon.js";
 import { createSessionHandlers } from "./sessionHandlers.js";
 import { SessionManager, type AgentLike } from "../service/session/SessionManager.js";
+import { FileSessionStore } from "../service/store/FileSessionStore.js";
 import { encodeFrame, FrameDecoder } from "../protocol/frames.js";
 import { PROTOCOL_VERSION } from "../protocol/messages.js";
 import { EVENT_METHODS, SESSION_METHODS } from "../protocol/sessions.js";
 
+/** 交接文档正文：SDK 有 400 字节的有效性阈值 */
+const DOC = `# 交接\n\n${"- 桩\n".repeat(80)}`;
+
 class FakeAgent implements AgentLike {
-  messages: unknown[] = [];
+  messages: any[] = [];
   sent: string[] = [];
   aborted = 0;
+  /** 交接要用的那几面（真件是 SDK 的 `SdkAgent`）：无 write 工具 → 走摘要模式 */
+  definition = { messages: [{ role: "system", content: "模板" }] };
+  tools: Array<{ function?: { name?: string } }> = [];
+  model = "m";
+  modelConfig: Record<string, unknown> = {};
+  client: unknown = {
+    chat: { completions: { create: async () => ({ choices: [{ message: { content: DOC } }] }) } },
+  };
+  scope = { cwd: "/work/proj" };
+  use(_plugin: unknown): void {}
   private readonly handlers = new Map<string, Set<(payload: any) => void>>();
   readonly events = {
     on: (event: string, handler: (payload: any) => void) => {
@@ -52,7 +66,15 @@ let client: TestClient | null = null;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "aiz-session-handlers-"));
   agent = new FakeAgent();
-  manager = new SessionManager({ createAgent: async () => agent });
+  let counter = 0;
+  manager = new SessionManager({
+    createAgent: async () => agent,
+    // 默认 id 只精确到秒：同一秒里 create 再 migrate 会撞名，用例要确定性
+    nextSessionId: () => `chat_${++counter}`,
+    storeFor: (workspaceId) => new FileSessionStore({ rootDir: join(dir, "workspaces", workspaceId) }),
+    // 交接要读 `handoff` Skill、写 `<工作区>/.ai-zen/handoffs`
+    handoff: { aiZenDir: join(dir, "ai-zen"), homeDir: dir },
+  });
 });
 
 afterEach(async () => {
@@ -160,6 +182,84 @@ describe("会话处理器（真 socket）", () => {
     expect(await client!.call(SESSION_METHODS.cancel, { sessionId: "sess_404" })).toEqual({
       cancelled: false,
     });
+  });
+
+  it("session.handoff：返回文档路径与执行者，进度作为事件推过连接", async () => {
+    await startDaemon();
+    await client!.call(EVENT_METHODS.watch);
+    const created = (await client!.call(SESSION_METHODS.create, {
+      workspaceId: "ws-1",
+      path: dir,
+    })) as { sessionId: string };
+    agent.messages = [{ role: "user", content: "任务" }];
+
+    const result = (await client!.call(SESSION_METHODS.handoff, {
+      sessionId: created.sessionId,
+    })) as any;
+
+    expect(result.sessionId).toBe(created.sessionId); // 不换 id
+    expect(result.mode).toBe("summary");
+    expect(result.handoffPath.startsWith(join(dir, ".ai-zen", "handoffs"))).toBe(true);
+    expect(result.messages).toEqual([{ role: "user", content: "任务" }]);
+
+    // 交接按「一轮」记账：先报 connecting，中间是三条通知，最后收尾
+    expect(await client!.next()).toMatchObject({
+      event: "session.phase",
+      sessionId: created.sessionId,
+      turnId: 1,
+      phase: { kind: "connecting" },
+    });
+    const notices: any[] = [];
+    for (let i = 0; i < 3; i++) notices.push(await client!.next());
+    expect(notices.map((notice) => notice.event)).toEqual([
+      "session.notice",
+      "session.notice",
+      "session.notice",
+    ]);
+    expect(notices.map((notice) => notice.code)).toEqual([
+      "handoffWriting",
+      "migrationDegraded",
+      "handoffPath",
+    ]);
+    // 通知里没有任何给人看的句子（客户端查自己的 i18n 表）
+    expect(notices[0].params).toEqual({ mode: "self" });
+  });
+
+  it("session.migrate：旧会话入档、新会话落盘、旧 id 退场", async () => {
+    await startDaemon();
+    const created = (await client!.call(SESSION_METHODS.create, {
+      workspaceId: "ws-1",
+      path: dir,
+    })) as { sessionId: string };
+    agent.messages = [{ role: "user", content: "旧任务" }];
+
+    const result = (await client!.call(SESSION_METHODS.migrate, {
+      sessionId: created.sessionId,
+    })) as any;
+
+    expect(result.sessionId).not.toBe(created.sessionId);
+    // 活会话换了键：旧 id 不在列表里了
+    const listed = (await client!.call(SESSION_METHODS.list, { workspaceId: "ws-1" })) as any;
+    expect(listed.sessions.map((session: any) => session.sessionId)).toEqual([result.sessionId]);
+    // 旧会话与新会话都在存档里（旧的是交接前那份完整历史）
+    const saved = (await client!.call(SESSION_METHODS.listSaved, { workspaceId: "ws-1" })) as any;
+    expect(saved.sessions.map((ref: any) => ref.id).sort()).toEqual(
+      [created.sessionId, result.sessionId].sort(),
+    );
+  });
+
+  it("session.handoff 的 mode 只认两个取值：别的原样回 bad-params", async () => {
+    await startDaemon();
+    const created = (await client!.call(SESSION_METHODS.create, {
+      workspaceId: "ws-1",
+      path: dir,
+    })) as { sessionId: string };
+
+    await expect(
+      client!.call(SESSION_METHODS.handoff, { sessionId: created.sessionId, mode: "auto" }),
+    ).rejects.toThrow(/bad-params/);
+    // 连接还能继续用
+    expect(await client!.call("ping")).toEqual({ pong: true });
   });
 });
 

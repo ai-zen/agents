@@ -50,6 +50,10 @@ export const SESSION_METHODS = {
   snapshot: "session.snapshot",
   /** 把当前会话写进工作区存档（并把它设为「上一轮会话」） */
   save: "session.save",
+  /** 只产出交接文档：写文档，**不动会话**（不换 id、不剔历史） */
+  handoff: "session.handoff",
+  /** 交接 + 开新会话：写文档、剔历史、**换 sessionId** */
+  migrate: "session.migrate",
 } as const;
 
 /**
@@ -209,6 +213,47 @@ export interface SessionListSavedParams {
   workspaceId: string;
 }
 
+/**
+ * 交接文档的执行者。
+ *
+ *   - `self`：原 Agent 在自己的会话里停工后写（默认）。上下文完整、能核实真实状态；
+ *     代价是多 1~2 次全量输入；
+ *   - `summary`：一次独立模型调用把历史摘要成文档（无工具、无原会话上下文）。
+ *     便宜、确定，但保真度低 —— 是**逃生模式**，也是 `self` 失败后的单向降级目标。
+ *
+ * 由服务端按 SDK 的 `HandoffMode` 定义，不直接引用 SDK 类型：协议是线上契约，
+ * 客户端（将来的浏览器 / 手机）不该为了一个枚举去装 SDK。
+ */
+export type HandoffMode = "self" | "summary";
+
+export interface SessionHandoffParams {
+  sessionId: string;
+  /** 本次执行者；缺省 `self` */
+  mode?: HandoffMode;
+}
+
+/**
+ * 一次交接的结果。`handoff` 与 `migrate` 共用（迁移就多一件事：`sessionId` 变了）。
+ *
+ * 为什么连 `messages` 一起回：交接回合会往会话里追加消息、迁移则把历史剔成
+ * 「模板 + 交接断点」。客户端拿这一份直接重渲染，不必再要一次快照（两次往返之间
+ * 还会有事件插进来）。
+ */
+export interface SessionHandoffResult {
+  /** 交接之后的会话 id：`handoff` 不变，`migrate` 是**新会话**的 id */
+  sessionId: string;
+  /** 交接文档绝对路径（在服务端的工作区里，客户端未必能直接打开） */
+  handoffPath: string;
+  /** **实际**使用的执行者：请求 `self` 但降级时会与入参不同 */
+  mode: HandoffMode;
+  /** 交接之后的消息（客户端直接重渲染） */
+  messages: unknown[];
+}
+
+export interface SessionMigrateParams extends SessionHandoffParams {}
+
+export interface SessionMigrateResult extends SessionHandoffResult {}
+
 export interface SessionListSavedResult {
   /** 只有 id：列表不解析存档内容 */
   sessions: SessionRef[];
@@ -283,6 +328,12 @@ export const SESSION_NOTICE_CODES = {
   migrationDegraded: "migrationDegraded",
   /** 本轮被中止 */
   turnAborted: "turnAborted",
+  /** 开始写交接文档（`params.mode` 是请求的执行者） */
+  handoffWriting: "handoffWriting",
+  /** 交接文档落在这个路径（`params.path`） */
+  handoffPath: "handoffPath",
+  /** 迁移前把旧会话存进了存档（`params.sessionId` 是**旧**会话） */
+  handoffArchived: "handoffArchived",
 } as const;
 
 /** 全局通知的 code 表（同上：只增不改语义） */

@@ -1,4 +1,8 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { promises as fs } from "node:fs";
+import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SessionManager, type AgentLike } from "./SessionManager.js";
 import type { SessionRecord, SessionStore } from "../store/SessionStore.js";
 import type { ServerEvent } from "../../protocol/sessions.js";
@@ -15,6 +19,20 @@ class FakeAgent implements AgentLike {
   aborted = 0;
   /** 让 `send()` 挂住：用来证明 manager.send 不等一轮跑完 */
   holdSend: Promise<void> | null = null;
+
+  /**
+   * 交接要用到的那几面（真件是 SDK 的 `SdkAgent`，声明见 `HandoffAgentLike`）。
+   * 默认无 `write` 工具 → 交接走「独立摘要」，不触网。
+   */
+  definition = { messages: [{ role: "system", content: "模板" }] };
+  tools: Array<{ function?: { name?: string } }> = [];
+  model = "m";
+  modelConfig: Record<string, unknown> = {};
+  client: unknown = {
+    chat: { completions: { create: async () => ({ choices: [{ message: { content: DOC } }] }) } },
+  };
+  scope = { cwd: "/work/proj" };
+  use(_plugin: unknown): void {}
 
   private readonly handlers = new Map<string, Set<(payload: any) => void>>();
   readonly events = {
@@ -51,6 +69,9 @@ let agent: FakeAgent;
 let manager: SessionManager;
 let events: ServerEvent[];
 let sessionCounter = 0;
+
+/** 交接文档正文：SDK 有 400 字节的有效性阈值（与 `SessionHandoff.test.ts` 同一个理由） */
+const DOC = `# 交接文档\n\n${"- 桩内容\n".repeat(80)}`;
 
 beforeEach(() => {
   agent = new FakeAgent();
@@ -544,5 +565,172 @@ describe("SessionManager：通知（两个通道）", () => {
     hub.publish({ event: "global.notice", level: "warn", code: "mcpUnavailable" });
 
     expect(mine).toEqual([{ event: "global.notice", level: "warn", code: "mcpUnavailable" }]);
+  });
+});
+
+describe("SessionManager：交接 / 迁移", () => {
+  let store: MemoryStore;
+  let workspace: string;
+  let handoffManager: SessionManager;
+
+  beforeEach(async () => {
+    store = new MemoryStore();
+    workspace = await fs.mkdtemp(join(tmpdir(), "aiz-session-migrate-"));
+    handoffManager = new SessionManager({
+      createAgent: async () => agent,
+      nextSessionId: () => `chat_${++sessionCounter}`,
+      storeFor: () => store,
+      // 交接要读磁盘上的 `handoff` Skill、写 `<工作区>/.ai-zen/handoffs`
+      handoff: { aiZenDir: join(workspace, "ai-zen"), homeDir: join(workspace, "home") },
+    });
+    events = [];
+    sessionCounter = 0;
+    handoffManager.subscribe((event) => events.push(event));
+  });
+
+  afterEach(async () => {
+    await fs.rm(workspace, { recursive: true, force: true });
+  });
+
+  /** 开一个「已经聊过两轮」的会话（交接要求会话里有真实对话） */
+  const openChatted = async () => {
+    const { sessionId } = await handoffManager.create({ workspaceId: "ws-1", path: workspace });
+    agent.messages = [
+      { role: "user", content: "旧任务" },
+      { role: "assistant", content: "旧答复" },
+    ];
+    return sessionId;
+  };
+
+  /**
+   * 挂住的摘要请求（只认取消）：用来把会话停在「交接进行中」那个状态。
+   *
+   * 必须响应 `signal`：不响应的话 `cancel()` 掐不断它，用例只能干等到超时。
+   */
+  const hangingSummary = () => ({
+    chat: {
+      completions: {
+        create: (_body: unknown, options?: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            options?.signal?.addEventListener("abort", () =>
+              reject(Object.assign(new Error("Request was aborted"), { name: "AbortError" })),
+            );
+          }),
+      },
+    },
+  });
+
+  it("handoff：只写文档，id / 存档 / 历史都不动", async () => {
+    const sessionId = await openChatted();
+    const before = [...agent.messages];
+
+    const result = await handoffManager.handoff(sessionId);
+
+    expect(result.sessionId).toBe(sessionId); // 不换 id
+    expect(existsSync(result.handoffPath)).toBe(true);
+    expect(result.handoffPath.startsWith(join(workspace, ".ai-zen", "handoffs"))).toBe(true);
+    expect(agent.messages).toEqual(before); // 摘要模式不碰消息
+    expect(store.records.size).toBe(0); // 不存档（那是 /save 与 migrate 的事）
+  });
+
+  it("migrate：先存旧会话、再剔历史、最后换 id（收尾发在旧 id 上）", async () => {
+    const sessionId = await openChatted();
+
+    const result = await handoffManager.migrate(sessionId);
+
+    // 新会话：id 变了，轮次从 0 起（这一轮的收尾已在换 id 之前发过）
+    expect(result.sessionId).not.toBe(sessionId);
+    expect(handoffManager.list("ws-1")).toEqual([
+      { sessionId: result.sessionId, workspaceId: "ws-1", agentId: "default", turnId: 0, phase: null },
+    ]);
+    // 旧 id 已退场
+    expect(handoffManager.list("ws-1").map((item) => item.sessionId)).not.toContain(sessionId);
+
+    // 旧会话进了存档（含完整历史：prune 之前存下去的）
+    expect(store.records.get(sessionId)!.messages).toEqual([
+      { role: "user", content: "旧任务" },
+      { role: "assistant", content: "旧答复" },
+    ]);
+    // 新会话也立即落盘了：模板 + 交接断点，指针指过去
+    expect(store.records.get(result.sessionId)!.messages).toEqual(agent.messages);
+    expect((await store.lastSession())!.id).toBe(result.sessionId);
+
+    // 收尾事件的 sessionId 是**旧** id：客户端先看到那一轮结束，再从响应里拿到新 id
+    const end = pick("turn.end").at(-1)!;
+    expect(end).toMatchObject({ sessionId, ok: true });
+  });
+
+  it("迁移的进度是 `session.notice`：存档 / 写文档 / 文档路径（都不带文案）", async () => {
+    const sessionId = await openChatted();
+
+    await handoffManager.migrate(sessionId);
+
+    const notices = pick("session.notice");
+    expect(notices.map((notice) => notice.code)).toEqual([
+      "handoffArchived",
+      "handoffWriting",
+      "migrationDegraded", // 假 Agent 无 write 工具 → 摘要模式，服务端如实报降级
+      "handoffPath",
+    ]);
+    expect(notices[0]!.params).toEqual({ sessionId }); // 存档的是**旧**会话
+  });
+
+  it("一轮还在跑时交接：报 turn-in-flight（两条链路同用一个 turnId 就没法归轮了）", async () => {
+    const sessionId = await openChatted();
+    agent.holdSend = new Promise<void>(() => {}); // 这一轮永不结束
+    handoffManager.send(sessionId, "跑着");
+
+    await expect(handoffManager.handoff(sessionId)).rejects.toThrow(/turn in flight/);
+    await expect(handoffManager.migrate(sessionId)).rejects.toThrow(/turn in flight/);
+  });
+
+  it("没有用户消息的会话不给交接：报 nothing-to-handoff（不白烧一次模型调用）", async () => {
+    const { sessionId } = await handoffManager.create({ workspaceId: "ws-1", path: workspace });
+
+    await expect(handoffManager.handoff(sessionId)).rejects.toThrow(/no user message/);
+  });
+
+  it("交接进行中不接受新一轮 send：报 handoff-in-flight", async () => {
+    const sessionId = await openChatted();
+    agent.client = hangingSummary();
+
+    const pending = handoffManager.handoff(sessionId);
+    await new Promise((resolve) => setTimeout(resolve, 0)); // 跑到「等模型」那一步
+
+    expect(() => handoffManager.send(sessionId, "插一条")).toThrow(/is handing off/);
+    handoffManager.cancel(sessionId);
+    await expect(pending).rejects.toThrow(/handoff cancelled/);
+  });
+
+  it("cancel 真的能掐断交接：报 handoff-aborted + turnAborted 通知，会话留在旧 id 上", async () => {
+    const sessionId = await openChatted();
+    agent.client = hangingSummary();
+
+    const pending = handoffManager.migrate(sessionId);
+    await new Promise((resolve) => setTimeout(resolve, 0)); // 跑到「等模型」那一步
+    handoffManager.cancel(sessionId);
+
+    await expect(pending).rejects.toMatchObject({ code: "handoff-aborted" });
+    // 取消不是失败：本轮以 ok:false 收尾，另有一条「已取消」的对话内通知
+    expect(pick("turn.end").at(-1)).toMatchObject({ sessionId, ok: false, error: { code: "aborted" } });
+    expect(pick("session.notice").map((notice) => notice.code)).toContain("turnAborted");
+    // 迁移没做成：会话还在旧 id 上（旧会话已存档，但历史没被剔除）
+    expect(handoffManager.list("ws-1").map((item) => item.sessionId)).toEqual([sessionId]);
+    expect(agent.messages).toHaveLength(2);
+  });
+
+  it("迁移必须有存档：没注入 store 就明确报 no-store，且一条消息都不动", async () => {
+    const { sessionId } = await manager.create({ workspaceId: "ws-1", path: workspace });
+    agent.messages = [{ role: "user", content: "任务" }];
+
+    await expect(manager.migrate(sessionId)).rejects.toThrow(/no session store/);
+    expect(agent.messages).toEqual([{ role: "user", content: "任务" }]);
+  });
+
+  it("服务器没配交接路径：报 no-handoff（不自己猜 Skill 在哪）", async () => {
+    const { sessionId } = await manager.create({ workspaceId: "ws-1", path: workspace });
+    agent.messages = [{ role: "user", content: "任务" }];
+
+    await expect(manager.handoff(sessionId)).rejects.toThrow(/handoff is not configured/);
   });
 });

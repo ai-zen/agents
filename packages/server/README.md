@@ -82,8 +82,8 @@ three session events (`session.phase`, `message.delta`, `turn.end`). `src/servic
 SessionManager.ts` implements the live-session registry and the SDK-event → protocol-event
 translation; `src/service/agent/` assembles the agent (config + Scope + capability
 discovery) per workspace; `src/daemon/sessionHandlers.ts` registers `workspace.resolve` /
-`events.watch` / `session.create` / `session.send` / `session.cancel` / `session.list` on a
-`Daemon`, and `src/cli.ts` wires all of it.
+`events.watch` / `session.create` / `session.send` / `session.cancel` / `session.list` /
+`session.handoff` / `session.migrate` on a `Daemon`, and `src/cli.ts` wires all of it.
 
 Agent assembly is **per workspace**: one Scope (one set of MCP connections and tool
 discovery) is shared by every session in the same workspace, and never shared across
@@ -115,6 +115,28 @@ Two design points worth keeping:
 - Events carry **facts, never sentences** (`{ kind, tools }`, not "等待工具返回…"), so one
   server can serve a Chinese terminal and an English browser at the same time.
 
+### Handoff: two methods, one round each
+
+`session.handoff` writes a handoff document; `session.migrate` writes it **and opens a new
+session**. The flow itself (stop → read the `handoff` skill → write → validate → degrade
+`self` → `summary` → prune history → inject the breakpoint) lives in the SDK; this package
+only adds the server-side effects: documents under `<workspace>/.ai-zen/handoffs/`,
+notices instead of sentences, and the session-id switch.
+
+Three things are worth knowing before touching it:
+
+- **`migrate` changes `sessionId`.** The old id is archived first (before pruning, so the
+  full history survives), the handoff round is settled **on the old id**, and only then does
+  the live session move to the new key. A client sees `turn.end` for the session it knows,
+  and learns the new id from the method result.
+- **Both are one round.** They bump `turnId` like `send` does, so phase/delta events belong
+  to a real turn; the settling is owned by the method's promise (`settleDeferred`), because
+  the SDK also emits `finally` for the handoff round itself.
+- **Nothing is archived by hooks.** `HandoffService` runs its hooks through `safeHook`,
+  which logs and continues — a failed archive inside a hook would let the prune destroy the
+  history anyway. Archive / prune / adopt are three ordered statements in
+  `SessionManager.migrate()`, each free to fail loudly.
+
 ## Two hard constraints (machine-checkable)
 
 1. **No UI stack here.** The package boundary is the process boundary — `ink`, `react` and
@@ -143,6 +165,7 @@ test with two or three fakes and nothing else.
 | `cli/src/session-store.ts` + 旧 `session-pointer.ts` | `src/service/store/` (port + file impl + legacy migration) |
 | project paths derived from `cwd` | `src/service/workspace/workspace.ts` |
 | `cli/src/agent-creator.ts` (config + Scope + capability discovery) | `src/service/agent/` |
+| `cli/src/handoff-service.ts` (the hooks around the SDK's handoff flow) | `src/service/handoff/` |
 | — | `src/protocol/` frames, message and session shapes |
 | — | `src/daemon/` listener, handshake, discovery file, session handlers |
 | — | `src/service/session/SessionManager.ts` (live sessions + event fan-out) |

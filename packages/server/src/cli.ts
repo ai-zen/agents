@@ -199,10 +199,8 @@ async function main(): Promise<number> {
 
   // 组装根：这里把「路径 + 进程环境」解析成值，再注入给下面的对象。
   // 会话装配（配置 / Scope / 工具发现）全在 agents-server 内部，本进程只负责接线。
-  const agentFactory = new SessionAgentFactory({
-    aiZenDir: args.aiZenDir,
-    homeDir: process.env.HOME || process.env.USERPROFILE || homedir(),
-  });
+  const homeDir = process.env.HOME || process.env.USERPROFILE || homedir();
+  const agentFactory = new SessionAgentFactory({ aiZenDir: args.aiZenDir, homeDir });
   const workspacesRoot = join(args.aiZenDir, "workspaces");
   // 一条事件出口：会话事件与全局通知共用（客户端只需一次订阅）
   const hub = new EventHub();
@@ -213,6 +211,8 @@ async function main(): Promise<number> {
     storeFor: (workspaceId) => new FileSessionStore({ rootDir: join(workspacesRoot, workspaceId) }),
     // 配置/定义变了要连带丢掉 Scope（它持有配置快照）
     invalidateScope: (workspacePath) => agentFactory.invalidate(workspacePath),
+    // 交接要读磁盘上的 `handoff` Skill、写 `<工作区>/.ai-zen/handoffs`：路径根由这里给
+    handoff: { aiZenDir: args.aiZenDir, homeDir },
   });
 
   const daemon = new Daemon({

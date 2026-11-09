@@ -12,10 +12,13 @@ import type { SessionManager } from "../service/session/SessionManager.js";
 import {
   EVENT_METHODS,
   SESSION_METHODS,
+  type HandoffMode,
   type SessionCancelResult,
   type SessionCreateResult,
+  type SessionHandoffResult,
   type SessionListResult,
   type SessionListSavedResult,
+  type SessionMigrateResult,
   type SessionRollbackResult,
   type SessionReloadParams,
   type SessionSaveResult,
@@ -93,6 +96,21 @@ export function createSessionHandlers(options: SessionHandlerOptions): Record<st
     [SESSION_METHODS.save]: async (params): Promise<SessionSaveResult> => {
       return await manager.save(requireString(params, "sessionId"));
     },
+
+    /**
+     * 交接两个方法的耗时是分钟级的（`self` 模式要跑一到两个完整回合）。
+     *
+     * 守护进程对方法调用不设超时（帧层只管字节），所以这里不需要“先回执、结果走事件”
+     * 那一套（那是 `session.send` 的做法）；进度会作为 `session.notice` 与
+     * `session.phase` / `message.delta` 事件先到，客户端不必等回执才知道在动。
+     */
+    [SESSION_METHODS.handoff]: async (params): Promise<SessionHandoffResult> => {
+      return await manager.handoff(requireString(params, "sessionId"), optionalMode(params));
+    },
+
+    [SESSION_METHODS.migrate]: async (params): Promise<SessionMigrateResult> => {
+      return await manager.migrate(requireString(params, "sessionId"), optionalMode(params));
+    },
   };
 }
 
@@ -118,6 +136,16 @@ function optionalString(params: unknown, field: string): string | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "string" || value.length === 0) {
     throw badParams(`invalid "${field}"`);
+  }
+  return value;
+}
+
+/** 交接执行者：只有两个取值，别的值不猜（猜错了要么多烧一轮全量输入，要么写不出文档） */
+function optionalMode(params: unknown): HandoffMode | undefined {
+  const value = (params as Record<string, unknown> | null | undefined)?.["mode"];
+  if (value === undefined || value === null) return undefined;
+  if (value !== "self" && value !== "summary") {
+    throw badParams(`invalid "mode" (expected self | summary)`);
   }
   return value;
 }

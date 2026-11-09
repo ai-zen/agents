@@ -54,6 +54,14 @@ export {
 export { createSessionHandlers, type SessionHandlerOptions } from "./daemon/sessionHandlers.js";
 export { createAgentHandlers, type AgentHandlerOptions } from "./daemon/agentHandlers.js";
 export {
+  SessionHandoff,
+  isHandoffAborted,
+  type HandoffAgentLike,
+  type HandoffOutcome,
+  type SessionHandoffNotice,
+  type SessionHandoffOptions,
+} from "./service/handoff/SessionHandoff.js";
+export {
   AGENT_METHODS,
   EVENT_METHODS,
   SESSION_EVENTS,
@@ -85,9 +93,14 @@ export {
   type SessionNoticeEvent,
   type GlobalNoticeCode,
   type GlobalNoticeEvent,
+  type HandoffMode,
   type NoticeLevel,
   GLOBAL_NOTICE_CODES,
   SESSION_NOTICE_CODES,
+  type SessionHandoffParams,
+  type SessionHandoffResult,
+  type SessionMigrateParams,
+  type SessionMigrateResult,
   type TurnEndEvent,
   type WorkspaceResolveParams,
   type WorkspaceResolveResult,
