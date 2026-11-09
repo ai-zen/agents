@@ -88,7 +88,15 @@ export const AGENT_METHODS = {
 
 /** `config.get` 的结果。`config` 的形状 = SDK 的 `AppConfig`，协议层不解释 */
 export interface ConfigGetResult {
+  /** 形状 = SDK 的 `AppConfig`，协议层不解释 */
   config: unknown;
+  /**
+   * `config.json` 在**服务端**的位置（配置中心的菜单会印它）。
+   *
+   * 与 `ConfigMcpGetResult.path` 同一个理由：客户端的 `~/.ai-zen/config.json` 与服务端
+   * 那份不是一个文件，两机部署时更可能根本不存在 —— 客户端算不出来，只能由服务端回。
+   */
+  path: string;
 }
 
 export interface ConfigSaveParams {
@@ -132,8 +140,15 @@ export interface ConfigMcpGetParams {
  * 前者客户端渲染成一行警告，后者是网络/参数层面的事。
  *
  * 「文件不存在」不算坏：那是正常的空配置（`ok:true` + 空的 `mcpServers`）。
+ *
+ * ## 为什么带 `path`
+ *
+ * 编辑屏要在副标题里告诉用户「你改的是哪个文件」。那个路径是**服务端**的磁盘事实
+ * （客户端的 `~/.ai-zen/mcp.json` 与它根本不是一个文件，两机部署时更可能根本不存在），
+ * 所以只能由服务端回。两个分支都带：文件坏了的时候，用户更需要知道坏的是哪个。
  */
-export type ConfigMcpGetResult = { ok: true; config: unknown } | { ok: false; error: string };
+export type ConfigMcpGetResult =
+  { ok: true; config: unknown; path: string } | { ok: false; error: string; path: string };
 
 export interface ConfigMcpSaveParams {
   scope: McpScope;

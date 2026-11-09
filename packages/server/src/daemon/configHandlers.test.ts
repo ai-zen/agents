@@ -59,9 +59,11 @@ async function call(method: string, params?: unknown): Promise<unknown> {
 }
 
 describe("config.get / config.save", () => {
-  it("config.get 回出厂默认配置", async () => {
-    const result = (await call(CONFIG_METHODS.get)) as { config: AppConfig };
+  it("config.get 回出厂默认配置 + 那份文件在服务端的位置", async () => {
+    const result = (await call(CONFIG_METHODS.get)) as { config: AppConfig; path: string };
     expect(result.config.models.length).toBeGreaterThan(0);
+    // 配置中心的菜单要印它：客户端的 config.json 不是这个文件
+    expect(result.path).toBe(join(root, "config.json"));
   });
 
   it("config.save 落盘后 config.get 读得回来", async () => {
@@ -162,9 +164,11 @@ describe("config.mcp.get / config.mcp.save", () => {
     await expect(call(CONFIG_METHODS.mcpSave, { scope: "global", config })).resolves.toEqual({
       saved: true,
     });
+    // 结果里带**服务端**那个文件的路径：编辑屏要印它（客户端的 mcp.json 不是这个文件）
     await expect(call(CONFIG_METHODS.mcpGet, { scope: "global" })).resolves.toEqual({
       ok: true,
       config,
+      path: join(root, "mcp.json"),
     });
   });
 
@@ -183,6 +187,6 @@ describe("config.mcp.get / config.mcp.save", () => {
     expect(() => statSync(join(projectPath, ".ai-zen", "mcp.json"))).not.toThrow();
     await expect(
       call(CONFIG_METHODS.mcpGet, { scope: "project", workspaceId: workspace.id }),
-    ).resolves.toEqual({ ok: true, config });
+    ).resolves.toEqual({ ok: true, config, path: join(projectPath, ".ai-zen", "mcp.json") });
   });
 });

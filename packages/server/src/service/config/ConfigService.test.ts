@@ -92,10 +92,11 @@ describe("全局配置", () => {
 });
 
 describe("MCP 配置（global）", () => {
-  it("文件不存在 = 正常空配置", async () => {
+  it("文件不存在 = 正常空配置（带那个文件的路径）", async () => {
     await expect(service.mcpGet({ scope: "global" })).resolves.toEqual({
       ok: true,
       config: { mcpServers: {} },
+      path: join(root, "mcp.json"),
     });
   });
 
@@ -121,7 +122,11 @@ describe("MCP 配置（global）", () => {
     const config = { mcpServers: { pty: { command: "npx", args: ["socket-pty"] } } };
 
     await expect(service.mcpSave({ scope: "global", config })).resolves.toEqual({ saved: true });
-    await expect(service.mcpGet({ scope: "global" })).resolves.toEqual({ ok: true, config });
+    await expect(service.mcpGet({ scope: "global" })).resolves.toEqual({
+      ok: true,
+      config,
+      path: join(root, "mcp.json"),
+    });
   });
 });
 
@@ -147,6 +152,7 @@ describe("MCP 配置（project：路径要靠 workspaceId 找回工作区）", (
     await expect(service.mcpGet({ scope: "project", workspaceId: workspace.id })).resolves.toEqual({
       ok: true,
       config: { mcpServers: { local: { command: "node" } } },
+      path: join(projectPath, ".ai-zen", "mcp.json"),
     });
   });
 

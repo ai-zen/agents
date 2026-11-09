@@ -103,7 +103,7 @@ export class ConfigService {
   /** 读全局配置（缺失时 SDK 回出厂默认；旧字段在读取时就被迁移掉） */
   async get(): Promise<ConfigGetResult> {
     const config = await new ConfigManager(this.options.configFile).read();
-    return { config };
+    return { config, path: this.options.configFile };
   }
 
   /**
@@ -165,24 +165,27 @@ export class ConfigService {
     try {
       raw = await fs.readFile(path, "utf-8");
     } catch (cause: unknown) {
-      if (codeOf(cause) === "ENOENT") return { ok: true, config: { mcpServers: {} } };
+      if (codeOf(cause) === "ENOENT") return { ok: true, config: { mcpServers: {} }, path };
       // 权限、是个目录……这些不是「文件坏了」，但也只是把原因交给编辑屏
-      return { ok: false, error: messageOf(cause) };
+      return { ok: false, error: messageOf(cause), path };
     }
 
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
     } catch (cause: unknown) {
-      return { ok: false, error: messageOf(cause) };
+      return { ok: false, error: messageOf(cause), path };
     }
 
     // 顶层不是对象（`null` / 数组 / 数字）就没法当配置编辑，如实报成坏文件
-    if (!isRecord(parsed)) return { ok: false, error: "top-level JSON value is not an object" };
+    if (!isRecord(parsed)) {
+      return { ok: false, error: "top-level JSON value is not an object", path };
+    }
     // 缺 `mcpServers` 与「空配置」在产品上是同一件事：编辑屏按它遍历服务器列表
     return {
       ok: true,
       config: { mcpServers: isRecord(parsed.mcpServers) ? parsed.mcpServers : {} },
+      path,
     };
   }
 
