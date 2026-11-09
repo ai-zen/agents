@@ -44,6 +44,13 @@ export interface Connection {
   send(event: EventFrame): void;
   /** 关闭连接（不给客户端任何"再见"帧） */
   close(): void;
+  /**
+   * 这条连接断开时的回调；返回取消注册的函数。
+   *
+   * 订阅类方法（如 `session.watch`）靠它在断开时退订：不退订就会给一条已经 destroy 的
+   * socket 一直写帧，而 `write` 在 Node 里是不报错的 —— 泄漏是安静的。
+   */
+  onClose(listener: () => void): () => void;
 }
 
 export interface DaemonOptions {
@@ -186,6 +193,7 @@ export class Daemon {
     const id = this.nextConnectionId++;
     const decoder = new FrameDecoder();
     let handshaken = false;
+    const closeListeners = new Set<() => void>();
 
     socket.setEncoding("utf-8");
     this.connections.add(socket);
@@ -197,6 +205,10 @@ export class Daemon {
         if (!socket.destroyed) socket.write(encodeFrame(event));
       },
       close: () => socket.destroy(),
+      onClose: (listener) => {
+        closeListeners.add(listener);
+        return () => closeListeners.delete(listener);
+      },
     };
 
     const fail = (code: string, message: string) => {
@@ -261,6 +273,8 @@ export class Daemon {
 
     socket.on("close", () => {
       this.connections.delete(socket);
+      for (const listener of closeListeners) listener();
+      closeListeners.clear();
       this.log("info", `conn#${id} closed (open: ${this.connections.size})`);
       this.armIdleTimer();
     });

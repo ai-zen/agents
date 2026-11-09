@@ -1,0 +1,299 @@
+/**
+ * 会话管理器 —— 服务端「活着的会话」与**事件流**的源头。
+ *
+ * ## 它管什么、不管什么
+ *
+ * 管：会话的创建/关闭、一轮对话的编号（`turnId`）、把 SDK 的事件翻译成协议事件
+ * （阶段、正文增量、轮次收尾）、按阶段算出「谁还在跑」。
+ *
+ * 不管：Agent 怎么装配（配置、Scope、工具发现）——那由**组装根**通过 `createAgent`
+ * 注入；也不管存档（那是 `ConversationStore` 与客户端的落盘插件的事）。
+ * 这条边界是为了让本文件可测：给一个假 Agent 就能跑完整个事件流程，不需要网络。
+ *
+ * ## 为什么事件出口是 `subscribe()` 而不是构造参数
+ *
+ * 一个会话可能被多个客户端看（终端 + 桌面端同时连）。广播是管理器的职责，
+ * 「推给哪条连接」是守护进程的职责（它知道谁连着）。
+ */
+
+import { PhaseTracker, pendingToolCalls, type PhaseInfo } from "../progress/PhaseTracker.js";
+import {
+  SESSION_EVENTS,
+  type SessionEvent,
+  type SessionSummary,
+} from "../../protocol/sessions.js";
+
+/**
+ * 会话里那个 Agent 的最小面。
+ *
+ * 结构性类型（不是 SDK 的 `Agent`）：SDK 的 Agent 天然满足它，本包也不必把
+ * core 的类型体系拖进来 —— 与 `PhaseMessageLike` 同一个理由。
+ */
+export interface SessionAgent {
+  readonly messages: unknown[];
+  send(input: string): Promise<void>;
+  abort(): void;
+  events: {
+    on(event: string, handler: (payload: any) => void): void;
+    off(event: string, handler: (payload: any) => void): void;
+  };
+}
+
+export interface CreateSessionAgentInput {
+  workspaceId: string;
+  /** 工作区路径（Agent 的 cwd：工具、相对路径都以它为基准） */
+  path: string;
+  agentId: string;
+}
+
+/** `create()` 的入参：`agentId` 可省，装配时都补成 `default` */
+export interface SessionCreateInput {
+  workspaceId: string;
+  path: string;
+  agentId?: string;
+}
+
+export interface SessionManagerOptions {
+  /** 造一个能跑一轮对话的 Agent。装配细节全在注入方，本包不碰配置与 Scope */
+  createAgent: (input: CreateSessionAgentInput) => Promise<SessionAgent>;
+}
+
+interface LiveSession {
+  id: string;
+  workspaceId: string;
+  agentId: string;
+  agent: SessionAgent;
+  turnId: number;
+  phase: PhaseTracker;
+  /** 本轮是否已经出过错（`error` 与 `finally` 都会到，收尾只报一次） */
+  turnFailed: { code: string; message: string } | null;
+  turnSettled: boolean;
+  detach: () => void;
+}
+
+export class SessionManager {
+  private readonly createAgent: (input: CreateSessionAgentInput) => Promise<SessionAgent>;
+  private readonly sessions = new Map<string, LiveSession>();
+  private readonly listeners = new Set<(event: SessionEvent) => void>();
+  private nextSessionNumber = 1;
+
+  constructor(options: SessionManagerOptions) {
+    this.createAgent = options.createAgent;
+  }
+
+  /** 订阅事件；返回取消订阅的函数（连接断开时调用） */
+  subscribe(listener: (event: SessionEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  async create(input: SessionCreateInput): Promise<{ sessionId: string; agentId: string }> {
+    const agentId = input.agentId || "default";
+    const agent = await this.createAgent({ workspaceId: input.workspaceId, path: input.path, agentId });
+    const sessionId = `sess_${this.nextSessionNumber++}`;
+
+    const session: LiveSession = {
+      id: sessionId,
+      workspaceId: input.workspaceId,
+      agentId,
+      agent,
+      turnId: 0,
+      phase: new PhaseTracker(),
+      turnFailed: null,
+      turnSettled: true,
+      detach: () => {},
+    };
+    session.detach = this.attachEvents(session);
+    this.sessions.set(sessionId, session);
+    return { sessionId, agentId };
+  }
+
+  /**
+   * 开始一轮：立刻返回 `turnId`，结果与过程全部走事件。
+   *
+   * 不 `await agent.send()` 的原因见协议文件头：一轮可能跑几分钟，等它回来客户端
+   * 就没东西可渲染。失败也走事件（`turn.end` 带 `ok:false`），不靠这一个 promise。
+   */
+  send(sessionId: string, content: string): { turnId: number } {
+    const session = this.require(sessionId);
+    session.turnId += 1;
+    session.turnFailed = null;
+    session.turnSettled = false;
+
+    session.phase.connecting();
+    this.emitPhase(session);
+
+    void session.agent.send(content).catch((error: any) => {
+      // `send()` 自己抛错（不是事件通道里的 error）：当作本轮失败收尾
+      this.failTurn(session, {
+        code: error?.code ?? "internal",
+        message: error?.message ?? String(error),
+      });
+    });
+    return { turnId: session.turnId };
+  }
+
+  cancel(sessionId: string): { cancelled: boolean } {
+    const session = this.sessions.get(sessionId);
+    if (!session) return { cancelled: false };
+    session.agent.abort();
+    return { cancelled: true };
+  }
+
+  list(): SessionSummary[] {
+    return [...this.sessions.values()].map((session) => ({
+      sessionId: session.id,
+      workspaceId: session.workspaceId,
+      agentId: session.agentId,
+      turnId: session.turnId,
+      phase: this.visiblePhase(session),
+    }));
+  }
+
+  close(sessionId: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    session.detach();
+    this.sessions.delete(sessionId);
+    return true;
+  }
+
+  /** 收摊：摘掉所有事件、清空会话（守护进程退出时调用） */
+  dispose(): void {
+    for (const session of this.sessions.values()) session.detach();
+    this.sessions.clear();
+    this.listeners.clear();
+  }
+
+  // ==================================================================
+  // SDK 事件 → 协议事件
+  // ==================================================================
+
+  private attachEvents(session: LiveSession): () => void {
+    const { events } = session.agent;
+
+    const onOpen = () => {
+      session.phase.opened();
+      this.emitPhase(session);
+    };
+
+    const onChunk = (receiver: any) => {
+      const chunk = receiver?.chunk ?? receiver;
+      session.phase.delta(chunk);
+      this.emitPhase(session);
+
+      const delta = chunk?.choices?.[0]?.delta;
+      const text = typeof delta?.content === "string" ? delta.content : "";
+      const reasoning = typeof delta?.reasoning_content === "string" ? delta.reasoning_content : "";
+      if (!text && !reasoning) return;
+      this.emit({
+        event: SESSION_EVENTS.delta,
+        sessionId: session.id,
+        turnId: session.turnId,
+        text,
+        reasoning,
+      });
+    };
+
+    const onParsed = (receiver: any) => {
+      session.phase.streamEnded(receiver?.message ?? receiver);
+      this.emitPhase(session);
+    };
+
+    // 工具跑完一个就报一次：并行时先完成的那个从「等待」里消失，
+    // 否则界面会一直念着已经结束的工具名
+    const onToolCallEnd = () => this.emitPhase(session);
+
+    const onError = (error: any) => {
+      this.failTurn(session, {
+        code: error?.code ?? "internal",
+        message: error?.message ?? String(error),
+      });
+    };
+
+    const onFinally = () => this.settleTurn(session);
+
+    events.on("open", onOpen);
+    events.on("chunk-parsed", onChunk);
+    events.on("parsed", onParsed);
+    events.on("tool-call-end", onToolCallEnd);
+    events.on("error", onError);
+    events.on("finally", onFinally);
+
+    return () => {
+      events.off("open", onOpen);
+      events.off("chunk-parsed", onChunk);
+      events.off("parsed", onParsed);
+      events.off("tool-call-end", onToolCallEnd);
+      events.off("error", onError);
+      events.off("finally", onFinally);
+    };
+  }
+
+  /** 失败即收尾（`error` 之后 SDK 仍会发 `finally`，靠 `turnSettled` 去重） */
+  private failTurn(session: LiveSession, failure: { code: string; message: string }): void {
+    session.turnFailed = failure;
+    this.settleTurn(session);
+  }
+
+  private settleTurn(session: LiveSession): void {
+    if (session.turnSettled) return;
+    session.turnSettled = true;
+
+    session.phase.reset();
+    this.emitPhase(session);
+    this.emit({
+      event: SESSION_EVENTS.turnEnd,
+      sessionId: session.id,
+      turnId: session.turnId,
+      ok: session.turnFailed === null,
+      ...(session.turnFailed ? { error: session.turnFailed } : {}),
+    });
+  }
+
+  // ==================================================================
+  // 内部
+  // ==================================================================
+
+  /**
+   * 对外报的阶段要**再筛一遍**「谁还在跑」。
+   *
+   * 状态机只知道「这一轮都调了哪些工具」，而工具是并发跑的：结果消息一到终态，
+   * 那个名字就该从等待里消失。不做这一步，界面会一直念着已经跑完的工具。
+   */
+  private visiblePhase(session: LiveSession): PhaseInfo | null {
+    const phase = session.phase.phase;
+    if (!phase || phase.kind !== "tool-waiting" || !phase.calls) return phase;
+    const pending = pendingToolCalls(phase.calls, session.agent.messages as any[]);
+    return { ...phase, tools: pending.map((call) => call.name) };
+  }
+
+  private emitPhase(session: LiveSession): void {
+    this.emit({
+      event: SESSION_EVENTS.phase,
+      sessionId: session.id,
+      turnId: session.turnId,
+      phase: this.visiblePhase(session),
+    });
+  }
+
+  private emit(event: SessionEvent): void {
+    for (const listener of this.listeners) {
+      try {
+        listener(event);
+      } catch {
+        // 一个订阅方（某条连接）写失败不该影响别的客户端收到事件
+      }
+    }
+  }
+
+  private require(sessionId: string): LiveSession {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      const error = new Error(`unknown session: ${sessionId}`) as Error & { code?: string };
+      error.code = "unknown-session";
+      throw error;
+    }
+    return session;
+  }
+}

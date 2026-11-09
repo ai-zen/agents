@@ -60,9 +60,9 @@ describe("ensureWorkspace", () => {
     expect(JSON.parse(readFileSync(recordPath, "utf-8")).path).toBe("/traced");
   });
 
-  it("相对路径先 resolve 成绝对路径再算 id", async () => {
-    const workspace = await ensureWorkspace({ workspacesRoot: root, path: "." });
-    expect(workspace.path).toBe(process.cwd());
-    expect(workspace.id).toBe(workspaceIdFor(process.cwd()));
+  it("路径先规范化再算 id（`/a/b/../c` 与 `/a/c` 是同一个工作区）", async () => {
+    const workspace = await ensureWorkspace({ workspacesRoot: root, path: "/a/b/../c" });
+    expect(workspace.path).toBe("/a/c");
+    expect(workspace.id).toBe(workspaceIdFor("/a/c"));
   });
 });

@@ -1,0 +1,139 @@
+/**
+ * 会话层线上契约 —— 方法名、参数/结果、事件名。
+ *
+ * 与 `messages.ts` 的分工：那边定义**帧**（怎么在一条连接上运字节），这边定义**会话**
+ * （在帧里说什么）。客户端只认这里的字面量与类型，服务端实现不得私自约定别的字段。
+ *
+ * ## 为什么事件是「事实」而不是「文案」
+ *
+ * 事件载荷只有可判别的枚举与数据（阶段 kind、工具名、正文字符串）。渲染成
+ * 「连接中…」还是「Connecting…」由客户端决定 —— 否则一个服务端同时接中文终端和英文
+ * 浏览器时，只能挑一个语言撒谎。
+ *
+ * ## 为什么 `send` 立刻返回 `turnId`
+ *
+ * 一轮对话可能跑几分钟，中间要推几十上百条事件。若 `send` 等到跑完才回，客户端就没有
+ * 任何东西可渲染，超时也没法定（工具执行动辄数分钟）。所以：`send` 只确认「这一轮开始了」，
+ * 后续全部走事件；`turnId` 用来把事件归到具体的一轮（用户可能中途连按两次）。
+ */
+
+import type { PhaseInfo } from "../service/progress/PhaseTracker.js";
+
+/** 方法名（服务端注册与客户端调用共用同一份字面量，避免两边各写一份字符串） */
+export const SESSION_METHODS = {
+  /** 路径 → 工作区身份（建目录、写 `workspace.json`） */
+  workspaceResolve: "workspace.resolve",
+  /** 订阅事件：调用方这条连接开始收 `session.*` 事件 */
+  watch: "session.watch",
+  create: "session.create",
+  send: "session.send",
+  cancel: "session.cancel",
+  /** 进程内活着的会话（不是盘上的存档） */
+  list: "session.list",
+} as const;
+
+/** 事件名（服务端主动推，无 `id`，不等回执） */
+export const SESSION_EVENTS = {
+  /** 生成阶段变化（六态 + 工具名） */
+  phase: "session.phase",
+  /** 正文 / 推理增量 */
+  delta: "message.delta",
+  /** 一轮结束（成功或失败） */
+  turnEnd: "turn.end",
+} as const;
+
+// ==================== 方法参数与结果 ====================
+
+export interface WorkspaceResolveParams {
+  /** 工作目录的绝对路径（服务端负责规范化与建目录） */
+  path: string;
+}
+
+export interface WorkspaceResolveResult {
+  workspaceId: string;
+  /** 规范化之后的绝对路径 */
+  path: string;
+}
+
+export interface SessionCreateParams {
+  workspaceId: string;
+  /**
+   * 工作区路径。客户端刚从 `workspace.resolve` 拿到，原样带回来 ——
+   * 这一版没有鉴权，服务端不去校验 id 与 path 是否配对；等鉴权落地时，校验点在
+   * 这里（客户端不该有能力决定自己跑在哪个目录）。
+   */
+  path: string;
+  /** 用哪个 Agent（缺省 `default`） */
+  agentId?: string;
+}
+
+export interface SessionCreateResult {
+  sessionId: string;
+  agentId: string;
+}
+
+export interface SessionSendParams {
+  sessionId: string;
+  content: string;
+}
+
+export interface SessionSendResult {
+  /** 本轮编号（从 1 开始，每轮 +1）：事件靠它归轮 */
+  turnId: number;
+}
+
+export interface SessionCancelParams {
+  sessionId: string;
+}
+
+export interface SessionCancelResult {
+  cancelled: boolean;
+}
+
+export interface SessionSummary {
+  sessionId: string;
+  workspaceId: string;
+  agentId: string;
+  turnId: number;
+  /** 当前阶段；空闲为 null */
+  phase: PhaseInfo | null;
+}
+
+export interface SessionListResult {
+  sessions: SessionSummary[];
+}
+
+// ==================== 事件 ====================
+//
+// 这些写成 `type` 而不是 `interface`：`interface` 不会隐式获得索引签名，于是
+// 无法直接传给 `Connection.send(event: EventFrame)`（`EventFrame` 带 `[key: string]: unknown`）。
+// 写成类型别名则天然兼容，不需要在发送处加一次 `as` 断言。
+
+export type SessionPhaseEvent = {
+  event: typeof SESSION_EVENTS.phase;
+  sessionId: string;
+  turnId: number;
+  /** null = 本轮已收尾、回到空闲 */
+  phase: PhaseInfo | null;
+};
+
+export type MessageDeltaEvent = {
+  event: typeof SESSION_EVENTS.delta;
+  sessionId: string;
+  turnId: number;
+  /** 正文增量（只带推理内容时为空串） */
+  text: string;
+  /** 推理增量（推理模型才有） */
+  reasoning: string;
+};
+
+export type TurnEndEvent = {
+  event: typeof SESSION_EVENTS.turnEnd;
+  sessionId: string;
+  turnId: number;
+  ok: boolean;
+  /** 失败时的机器可判原因 */
+  error?: { code: string; message: string };
+};
+
+export type SessionEvent = SessionPhaseEvent | MessageDeltaEvent | TurnEndEvent;

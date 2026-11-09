@@ -42,6 +42,34 @@ export {
 } from "./service/store/legacyMigration.js";
 export { ensureWorkspace, workspaceIdFor, type Workspace } from "./service/workspace/workspace.js";
 
+// ---- 会话编排与事件（服务端真正「跑一轮对话」的那一层） ----
+export {
+  SessionManager,
+  type CreateSessionAgentInput,
+  type SessionAgent,
+  type SessionCreateInput,
+  type SessionManagerOptions,
+} from "./service/session/SessionManager.js";
+export { createSessionHandlers, type SessionHandlerOptions } from "./daemon/sessionHandlers.js";
+export {
+  SESSION_EVENTS,
+  SESSION_METHODS,
+  type MessageDeltaEvent,
+  type SessionCancelParams,
+  type SessionCancelResult,
+  type SessionCreateParams,
+  type SessionCreateResult,
+  type SessionEvent,
+  type SessionListResult,
+  type SessionPhaseEvent,
+  type SessionSendParams,
+  type SessionSendResult,
+  type SessionSummary,
+  type TurnEndEvent,
+  type WorkspaceResolveParams,
+  type WorkspaceResolveResult,
+} from "./protocol/sessions.js";
+
 // ---- 守护进程与协议（客户端只需要协议类型 + Daemon 用于进程内嵌入/测试） ----
 export { Daemon, type Connection, type DaemonOptions, type MethodHandler } from "./daemon/Daemon.js";
 export {
