@@ -52,6 +52,30 @@ export interface SubAgentContext {
 }
 
 /**
+ * 单个工具调用结束（结果已定型）的事件载荷 —— `tool-call-end`。
+ *
+ * 为何需要这个事件：一轮里的并行工具是 `Promise.all` 跑的，`finally` 只在**整轮**
+ * 结束后发一次。于是「edit 已经回来了、只剩 exec 在跑」这个中间状态外界根本观测不到，
+ * 任何按「正在等谁」展示的界面都只好把整轮的工具名一起报出来，在用户看来就是「明明
+ * 在等 exec，却写着 edit」。本事件每个工具各发一次，谁先跑完谁先发。
+ *
+ * 与 `onToolCall`（事件名 `tool-call`，执行**前**的拦截点）成对，方向相反。
+ */
+export interface ToolCallEndContext {
+  /** 宿主 Agent */
+  agent: Agent;
+  /** 本次调用（含 `index` / `id` / `function.name`） */
+  toolCall: AgentNS.ToolCall;
+  /**
+   * 已定型的结果消息（`role: "tool"`）。
+   *
+   * `status` 是最终值：`completed` / `error` / `aborted`（被 `abort()` 中止的工具
+   * 即使跑完也不算成功）。消费方直接读它，不必再回 `agent.messages` 里反查。
+   */
+  result: AgentNS.Message;
+}
+
+/**
  * Agent 插件接口。每个插件单一职责，通过钩子介入 Agent 生命周期。
  *
  * 所有钩子统一「返回值可短路」：返回字符串时短路（各钩子语义见下表），
@@ -618,12 +642,22 @@ export class Agent extends AgentContext {
         this.innerLoopTasks.add(toolTask);
 
         /** 工具执行完成：若该任务已被 abort（abort 后工具仍会跑完），保持 Aborted 不被覆盖；
-         *  任务完成即从当前轮活跃集合移除 */
+         *  任务完成即从当前轮活跃集合移除。
+         *
+         *  发射 `tool-call-end` 放在这里（而不是各个 return 前）：它既是**唯一**的结果定型点
+         *  （`status` 在这里才被 clamp 成 Aborted），又躺在每个工具自己的闭包里，天然
+         *  per-tool —— 并行时谁先跑完谁先发，不必等 `Promise.all` 收齐。 */
         const markResult = (status: AgentNS.MessageStatus) => {
           resultReceiver.status = toolTask.controller.signal.aborted
             ? AgentNS.MessageStatus.Aborted
             : status;
           this.innerLoopTasks.delete(toolTask);
+          // 载荷里的状态取**已 clamp** 的 `resultReceiver.status`：被中止的工具不能报成 completed
+          this.events.emit("tool-call-end", {
+            agent: this,
+            toolCall: task,
+            result: resultReceiver,
+          } satisfies ToolCallEndContext);
         };
 
         try {

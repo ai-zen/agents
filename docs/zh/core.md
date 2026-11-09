@@ -253,12 +253,24 @@ agent.events.on("parsed", (receiver) => {});
 agent.events.on("error", (error) => {});
 agent.events.on("finally", () => {});
 
+// 单个工具结束（结果已定型）：每个工具各发一次，并行时谁先跑完谁先发
+agent.events.on("tool-call-end", ({ agent, toolCall, result }) => {});
+
 // 子 Agent 委派边界（载荷区分主/子 Agent：agent = 主，subAgent = 子）
 agent.events.on("sub-agent-start", ({ agent, subAgent, toolCallContext }) => {});
 agent.events.on("sub-agent-end", ({ agent, subAgent, toolCallContext }) => {});
 ```
 
 对应钩子的事件名：`before-send` / `after-send` / `inner-loop-start` / `inner-loop-end` / `inner-loops-start` / `inner-loops-end` / `tool-call` / `unknown-tool` / `sub-agent-start` / `sub-agent-end`。
+
+`tool-call` 与 `tool-call-end` 是一对，方向相反，别混用：
+
+| 事件 | 时机 | 载荷 |
+|------|------|------|
+| `tool-call` | 该工具**执行前**（`onToolCall` 钩子的事实事件，同一批插件可在此拒绝执行） | `ToolCallContext` |
+| `tool-call-end` | 该工具**结果已定型**（`completed` / `error` / `aborted`） | `ToolCallEndContext`：`agent` + `toolCall` + `result` |
+
+`tool-call-end` 不是钩子事件（没有对应的 `onToolCallEnd`），它只发给监听者。它解决的是一轮并行工具里「某个工具先结束」的**中间状态**：`finally` 只在整轮收齐后发一次，光靠它无法回答「现在还在等谁」。
 
 ## 中止
 

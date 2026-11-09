@@ -250,12 +250,25 @@ agent.events.on("parsed", (receiver) => {});
 agent.events.on("error", (error) => {});
 agent.events.on("finally", () => {});
 
+// A single tool finishing (its result is final): once per tool, and in a parallel
+// round whichever finishes first emits first
+agent.events.on("tool-call-end", ({ agent, toolCall, result }) => {});
+
 // Sub-agent delegation boundaries (payload: agent = host, subAgent = child)
 agent.events.on("sub-agent-start", ({ agent, subAgent, toolCallContext }) => {});
 agent.events.on("sub-agent-end", ({ agent, subAgent, toolCallContext }) => {});
 ```
 
 Event names corresponding to hooks: `before-send` / `after-send` / `inner-loop-start` / `inner-loop-end` / `inner-loops-start` / `inner-loops-end` / `tool-call` / `unknown-tool` / `sub-agent-start` / `sub-agent-end`.
+
+`tool-call` and `tool-call-end` are a pair pointing in opposite directions — do not confuse them:
+
+| Event | When | Payload |
+|-------|------|---------|
+| `tool-call` | **Before** that tool runs (the fact-event of the `onToolCall` hook; plugins may reject it) | `ToolCallContext` |
+| `tool-call-end` | That tool's **result is final** (`completed` / `error` / `aborted`) | `ToolCallEndContext`: `agent` + `toolCall` + `result` |
+
+`tool-call-end` is not a hook event (there is no `onToolCallEnd`); it is only broadcast to listeners. It exists for the **intermediate state** of a parallel round: `finally` fires once, after the whole round settles, so it cannot answer "what am I still waiting for".
 
 ## Abort
 

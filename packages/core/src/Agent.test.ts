@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { Agent } from "./Agent.js";
+import type { ToolCallEndContext } from "./Agent.js";
 import { AgentNS } from "./AgentNS.js";
 import { Message } from "./Message.js";
 import { CallbackTool } from "./Tools/CallbackTool.js";
@@ -305,6 +306,118 @@ describe("Agent", () => {
       const toolResults = agent.messages.filter((m) => m.role === AgentNS.Role.Tool);
       expect(toolResults).toHaveLength(1);
       expect(toolResults[0].content).toBe("12:00:00");
+    });
+
+    it("并行工具：每个工具各发一次 tool-call-end，快者先发（不必等本轮收齐）", async () => {
+      const client = createMockClient([
+        [
+          chunk({
+            tool_calls: [
+              { index: 0, id: "1", type: "function", function: { name: "slowTool", arguments: "{}" } },
+            ],
+          }),
+          // 每个 delta 只带一个下标（真机形态）：core 也只按 `tool_calls[0]` 收一个
+          chunk({
+            tool_calls: [
+              { index: 1, id: "2", type: "function", function: { name: "fastTool", arguments: "{}" } },
+            ],
+          }),
+          chunk({}, "tool_calls"),
+        ],
+        [chunk({ content: "都跑完了" }), stopChunk()],
+      ]);
+
+      let releaseSlow: () => void = () => {};
+      const slowTool = new CallbackTool({
+        function: {
+          name: "slowTool",
+          description: "慢工具",
+          parameters: { type: "object", properties: {} },
+        },
+        callback: () =>
+          new Promise<string>((resolve) => {
+            releaseSlow = () => resolve("慢结果");
+          }),
+      });
+      const fastTool = new CallbackTool({
+        function: {
+          name: "fastTool",
+          description: "快工具",
+          parameters: { type: "object", properties: {} },
+        },
+        callback: () => "快结果",
+      });
+
+      const agent = new Agent({
+        client,
+        model: "gpt-4",
+        messages: [Message.System("助手")],
+        tools: [slowTool, fastTool],
+      });
+
+      const ended: string[] = [];
+      agent.events.on("tool-call-end", ({ toolCall, result }: ToolCallEndContext) => {
+        ended.push(`${toolCall.function!.name}:${result.status}`);
+        // 载荷直接带定型后的结果消息，消费方不必回 messages 里反查
+        expect(result.role).toBe(AgentNS.Role.Tool);
+        expect(result.tool_call_id).toBe(toolCall.id);
+      });
+
+      const done = agent.run();
+      // 快工具已落地、慢工具还挂着 —— 这正是「一轮只发一次 finally」给不了的中间状态
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(ended).toEqual(["fastTool:completed"]);
+
+      releaseSlow();
+      await done;
+
+      expect(ended).toEqual(["fastTool:completed", "slowTool:completed"]);
+    });
+
+    it("被 abort 的工具：tool-call-end 报 aborted（clamp 之后的值）", async () => {
+      const client = createMockClient([
+        [
+          chunk({
+            tool_calls: [
+              { index: 0, id: "1", type: "function", function: { name: "hangingTool", arguments: "{}" } },
+            ],
+          }),
+          chunk({}, "tool_calls"),
+        ],
+      ]);
+
+      const hangingTool = new CallbackTool({
+        function: {
+          name: "hangingTool",
+          description: "一真挂着，直到被中止",
+          parameters: { type: "object", properties: {} },
+        },
+        // 真机形态：工具自己监听 ctx.signal，中止后正常返回
+        callback: (_args, ctx) =>
+          new Promise<string>((resolve) => {
+            ctx.signal.addEventListener("abort", () => resolve("被中止"), { once: true });
+          }),
+      });
+
+      const agent = new Agent({
+        client,
+        model: "gpt-4",
+        messages: [Message.System("助手")],
+        tools: [hangingTool],
+      });
+
+      const ended: string[] = [];
+      agent.events.on("tool-call-end", ({ result }: ToolCallEndContext) => {
+        ended.push(String(result.status));
+      });
+
+      const done = agent.run();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      agent.abort();
+      await done;
+
+      // 工具本身「跑完了」（返回了字符串），但被 abort 过的不能报成 completed
+      expect(ended).toEqual([AgentNS.MessageStatus.Aborted]);
     });
 
     it("应支持多轮工具调用（3轮以上）", async () => {
