@@ -67,15 +67,21 @@ let defaultWorkspacePath: string;
 let daemon: Daemon | null = null;
 let agent: FakeAgent;
 let manager: SessionManager;
+/** `createAgent` 收到的入参（断言「这一段会话跑在哪个路径上」） */
+let agentInputs: Array<{ workspaceId: string; path: string; agentId?: string }>;
 let client: TestClient | null = null;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "aiz-session-handlers-"));
   defaultWorkspacePath = join(dir, "default-ws");
   agent = new FakeAgent();
+  agentInputs = [];
   let counter = 0;
   manager = new SessionManager({
-    createAgent: async () => agent,
+    createAgent: async (input) => {
+      agentInputs.push(input);
+      return agent;
+    },
     // 默认 id 只精确到秒：同一秒里 create 再 migrate 会撞名，用例要确定性
     nextSessionId: () => `chat_${++counter}`,
     storeFor: (workspaceId) => new FileSessionStore({ rootDir: join(dir, "workspaces", workspaceId) }),
@@ -443,3 +449,73 @@ class TestClient {
     this.socket.destroy();
   }
 }
+
+describe("会话创建：path 可缺省，sessionId 必须被尊重", () => {
+  it("不带 path：用 workspace.json 记的路径（客户端不需要知道目录在哪）", async () => {
+    await startDaemon();
+    // 先认一个工作区，让服务端手上有一份 workspace.json
+    const workspace = (await client!.call(WORKSPACE_METHODS.resolve, {
+      path: join(dir, "proj-a"),
+    })) as { workspaceId: string; path: string };
+
+    const created = (await client!.call(SESSION_METHODS.create, {
+      workspaceId: workspace.workspaceId,
+    })) as { sessionId: string };
+
+    expect(created.sessionId).toBeTruthy();
+    // Agent 是被**服务端**反查出来的路径装配的，不是客户端递上来的
+    expect(agentInputs.at(-1)).toMatchObject({ path: workspace.path });
+  });
+
+  it("不带 path 又是个服务端不认识的工作区：报 workspace-not-found，不静默造目录", async () => {
+    await startDaemon();
+    await expect(client!.call(SESSION_METHODS.create, { workspaceId: "ws-unknown" })).rejects.toThrow(
+      /workspace-not-found/,
+    );
+  });
+
+  it("带了 sessionId 就沿用它，并把存档里的消息装进 Agent（续接 / `/load` 的根）", async () => {
+    await startDaemon();
+    const workspaceId = "ws-resume";
+    const store = new FileSessionStore({ rootDir: join(dir, "workspaces", workspaceId) });
+    // 存档里的 agentId 也要被沿用：客户端只给一个 id
+    await store.write({ id: "chat_old", agentId: "reviewer", messages: [{ role: "user", content: "旧对话" }] });
+
+    const created = (await client!.call(SESSION_METHODS.create, {
+      workspaceId,
+      path: "/work/proj-resume",
+      sessionId: "chat_old",
+    })) as { sessionId: string; agentId: string };
+
+    expect(created.sessionId).toBe("chat_old");
+    expect(created.agentId).toBe("reviewer");
+    expect(agent.messages).toEqual([{ role: "user", content: "旧对话" }]);
+  });
+});
+
+describe("session.attach：会话活得比连接久", () => {
+  it("活着的会话直接接上（不再报 session-exists）", async () => {
+    await startDaemon();
+    const created = (await client!.call(SESSION_METHODS.create, {
+      workspaceId: "ws-1",
+      path: join(dir, "proj-a"),
+    })) as { sessionId: string; agentId: string };
+
+    // 「接着上次」走的就是这条：客户端只给 id，服务端知道它还在内存里
+    const attached = await client!.call(SESSION_METHODS.attach, {
+      workspaceId: "ws-1",
+      path: join(dir, "proj-a"),
+      sessionId: created.sessionId,
+    });
+
+    expect(attached).toEqual(created);
+    expect(manager.list("ws-1")).toHaveLength(1);
+  });
+
+  it("内存与盘上都没有这个 id → session-missing（不悄悄开一段空的）", async () => {
+    await startDaemon();
+    await expect(
+      client!.call(SESSION_METHODS.attach, { workspaceId: "ws-1", path: dir, sessionId: "chat_gone" }),
+    ).rejects.toThrow(/session-missing|no such session/);
+  });
+});

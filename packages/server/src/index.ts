@@ -61,6 +61,7 @@ export {
   SessionManager,
   type AgentLike,
   type CreateAgentInput,
+  type SessionAttachInput,
   type SessionCreateInput,
   type SessionManagerOptions,
 } from "./service/session/SessionManager.js";
@@ -81,6 +82,8 @@ export {
   SESSION_METHODS,
   WORKSPACE_METHODS,
   type MessageDeltaEvent,
+  type SessionAttachParams,
+  type SessionAttachResult,
   type SessionCancelParams,
   type SessionCancelResult,
   type SessionCreateParams,

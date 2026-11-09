@@ -21,6 +21,7 @@ import {
   WORKSPACE_METHODS,
   type HandoffMode,
   type MessageContent,
+  type SessionAttachResult,
   type SessionCancelResult,
   type SessionCreateResult,
   type SessionHandoffResult,
@@ -56,6 +57,19 @@ export function createSessionHandlers(options: SessionHandlerOptions): Record<st
   const { manager, workspacesRoot, defaultWorkspacePath } = options;
   const fileIndex = options.fileIndex ?? new FileIndex();
 
+  /**
+   * 工作区 id → 服务端路径。
+   *
+   * 只给 id 的调用（`workspace.files`、不带 `path` 的 `session.create`）都走这里：
+   * 路径是**服务端**的磁盘事实，客户端只持有 id。反查不到就带码报错，绝不给个默认值
+   * 往下走 —— 那种“看起来成功”的失败最难查。
+   */
+  const workspacePathOf = async (workspaceId: string): Promise<string> => {
+    const workspace = await readWorkspace({ workspacesRoot, id: workspaceId });
+    if (!workspace) throw codedError("workspace-not-found", `unknown workspace: ${workspaceId}`);
+    return workspace.path;
+  };
+
   return {
     /**
      * 路径 → 工作区身份。
@@ -79,11 +93,7 @@ export function createSessionHandlers(options: SessionHandlerOptions): Record<st
      */
     [WORKSPACE_METHODS.files]: async (params): Promise<WorkspaceFilesResult> => {
       const workspaceId = requireString(params, "workspaceId");
-      const workspace = await readWorkspace({ workspacesRoot, id: workspaceId });
-      if (!workspace) {
-        throw codedError("workspace-not-found", `unknown workspace: ${workspaceId}`);
-      }
-      return { entries: await fileIndex.list(workspace.path) };
+      return { entries: await fileIndex.list(await workspacePathOf(workspaceId)) };
     },
 
     /**
@@ -99,11 +109,35 @@ export function createSessionHandlers(options: SessionHandlerOptions): Record<st
       return { watching: true };
     },
 
+    /**
+     * 开会话。
+     *
+     * `path` 可以不给：工作区 id 本来就能反查出路径（`workspace.json`），客户端再抄一遍
+     * 路径只是多一个会漂的副本，而且它抄的是**自己**那边的路径 —— 两机时那个路径在服务端
+     * 根本不存在。这与 `workspace.resolve` 的 `path` 可选是同一个口径：cwd 归服务端。
+     */
     [SESSION_METHODS.create]: async (params): Promise<SessionCreateResult> => {
       const workspaceId = requireString(params, "workspaceId");
-      const path = requireString(params, "path");
+      const path = optionalString(params, "path") ?? (await workspacePathOf(workspaceId));
       const agentId = optionalString(params, "agentId");
-      return await manager.create({ workspaceId, path, agentId });
+      const sessionId = optionalString(params, "sessionId");
+      return await manager.create({ workspaceId, path, agentId, sessionId });
+    },
+
+    /**
+     * 接上一段已有会话（`create` 的新建语义不动：id 撞了仍然拒绝）。
+     *
+     * 客户端只会递 id —— 那段会话此刻在不在内存里、还是只在盘上，它无从判断。
+     */
+    [SESSION_METHODS.attach]: async (params): Promise<SessionAttachResult> => {
+      const workspaceId = requireString(params, "workspaceId");
+      const path = optionalString(params, "path") ?? (await workspacePathOf(workspaceId));
+      return await manager.attach({
+        workspaceId,
+        path,
+        sessionId: requireString(params, "sessionId"),
+        agentId: optionalString(params, "agentId"),
+      });
     },
 
     [SESSION_METHODS.send]: (params): SessionSendResult => {

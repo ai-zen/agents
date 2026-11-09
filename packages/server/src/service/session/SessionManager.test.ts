@@ -976,3 +976,92 @@ describe("SessionManager：自动迁移（SDK 插件在一轮内部触发）", (
     await expect(bareHook!()).rejects.toThrow(/no session store|not configured/);
   });
 });
+
+describe("SessionManager：attach（会话活得比连接久）", () => {
+  it("接一个还活着的会话：返回同一个 id / agentId，不另装一个 Agent", async () => {
+    let created = 0;
+    const m = new SessionManager({
+      createAgent: async () => {
+        created++;
+        return agent;
+      },
+      nextSessionId: () => `chat_${++sessionCounter}`,
+    });
+    const first = await m.create({ workspaceId: "ws-1", path: "/work/proj", sessionId: "chat_keep" });
+
+    // 客户端退出只退订阅，会话仍在服务端活着 —— 「接着上次」走的就是这条
+    const again = await m.attach({ workspaceId: "ws-1", path: "/work/proj", sessionId: "chat_keep" });
+
+    expect(again).toEqual({ sessionId: "chat_keep", agentId: first.agentId });
+    expect(created).toBe(1); // 没有再装配一套 Agent（那会多一套 MCP 连接与工具发现）
+    expect(m.list("ws-1")).toHaveLength(1);
+  });
+
+  it("接一个活着的会话：消息仍是它当前的，不被存档覆盖", async () => {
+    const store = new FileSessionStore({ rootDir: join(tmpdir(), `aiz-attach-${Date.now()}-${Math.random()}`) });
+    const m = new SessionManager({
+      createAgent: async () => agent,
+      nextSessionId: () => `chat_${++sessionCounter}`,
+      storeFor: () => store,
+    });
+    const first = await m.create({ workspaceId: "ws-1", path: "/p", sessionId: "chat_live" });
+    agent.messages = [{ role: "user", content: "当前对话" }];
+    // 存档里是**旧**内容（上次落盘时的样子）
+    await store.write({ id: "chat_live", agentId: "default", messages: [{ role: "user", content: "旧" }] });
+
+    await m.attach({ workspaceId: "ws-1", path: "/p", sessionId: first.sessionId });
+
+    expect(agent.messages).toEqual([{ role: "user", content: "当前对话" }]);
+  });
+
+  it("接一段只在盘上的会话：从存档装配 Agent 并装回消息", async () => {
+    const store = new FileSessionStore({ rootDir: join(tmpdir(), `aiz-attach2-${Date.now()}-${Math.random()}`) });
+    const m = new SessionManager({
+      createAgent: async () => agent,
+      nextSessionId: () => `chat_${++sessionCounter}`,
+      storeFor: () => store,
+    });
+    await store.write({ id: "chat_disk", agentId: "reviewer", messages: [{ role: "user", content: "旧对话" }] });
+
+    const attached = await m.attach({ workspaceId: "ws-1", path: "/p", sessionId: "chat_disk" });
+
+    expect(attached).toMatchObject({ sessionId: "chat_disk", agentId: "reviewer" });
+    expect(agent.messages).toEqual([{ role: "user", content: "旧对话" }]);
+  });
+
+  it("内存和盘上都没有这个 id：报 session-missing（绝不悄悄开一段空的）", async () => {
+    const store = new FileSessionStore({ rootDir: join(tmpdir(), `aiz-attach3-${Date.now()}-${Math.random()}`) });
+    const m = new SessionManager({ createAgent: async () => agent, storeFor: () => store });
+
+    await expect(m.attach({ workspaceId: "ws-1", path: "/p", sessionId: "chat_gone" })).rejects.toThrow(
+      /session-missing|no such session/,
+    );
+  });
+
+  it("自动分配的 id 撞车：换一个后缀（同一秒开两段是常态，不是错误）", async () => {
+    // 生成器恒回同一个 id：第二次必须自己找空位，而不是把用户挡在门外
+    const m = new SessionManager({ createAgent: async () => agent, nextSessionId: () => "chat_same" });
+    const first = await m.create({ workspaceId: "ws-1", path: "/p" });
+    const second = await m.create({ workspaceId: "ws-1", path: "/p" });
+
+    expect(first.sessionId).toBe("chat_same");
+    expect(second.sessionId).toBe("chat_same_2");
+    expect(m.list("ws-1")).toHaveLength(2);
+  });
+
+  it("自动分配的 id 撞上**盘上的**存档：也不覆盖，换一个", async () => {
+    const store = new FileSessionStore({ rootDir: join(tmpdir(), `aiz-free-${Date.now()}-${Math.random()}`) });
+    await store.write({ id: "chat_same", agentId: "default", messages: [{ role: "user", content: "别人的对话" }] });
+    const m = new SessionManager({
+      createAgent: async () => agent,
+      nextSessionId: () => "chat_same",
+      storeFor: () => store,
+    });
+
+    const created = await m.create({ workspaceId: "ws-1", path: "/p" });
+
+    expect(created.sessionId).toBe("chat_same_2");
+    // 旧存档原封不动
+    expect((await store.read("chat_same"))?.messages).toEqual([{ role: "user", content: "别人的对话" }]);
+  });
+});

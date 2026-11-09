@@ -49,6 +49,14 @@ export const WORKSPACE_METHODS = {
 /** 会话方法名（服务端注册与客户端调用共用同一份字面量，避免两边各写一份字符串） */
 export const SESSION_METHODS = {
   create: "session.create",
+  /**
+   * 接上一段**已经存在**的会话（活着就接、盘上有就装回来）。
+   *
+   * 与 `create` 分开的理由见 `SessionManager.attach`：会话的存活期比客户端连接长，
+   * 「接着上次」如果复用 `create`，会撞在它「id 撞了就拒绝」的语义上 —— 用户看到的是
+   * 「打不开自己上一轮会话」。`create` 的不静默顶掉语义**不动**，两个动作各说各的。
+   */
+  attach: "session.attach",
   send: "session.send",
   cancel: "session.cancel",
   /** 某个工作区下活着的会话（不是盘上的存档） */
@@ -169,15 +177,18 @@ export interface WorkspaceFilesResult {
 export interface SessionCreateParams {
   workspaceId: string;
   /**
-   * 工作区路径。客户端刚从 `workspace.resolve` 拿到，原样带回来 ——
-   * 这一版没有鉴权，服务端不去校验 id 与 path 是否配对；等鉴权落地时，校验点在
-   * 这里（客户端不该有能力决定自己跑在哪个目录）。
+   * 工作区路径。**可选**：不给就由服务端按 `workspaceId` 反查（`workspace.json`）。
+   *
+   * 为什么干脆不该给：路径是服务端的磁盘事实，而客户端手上那份是**它自己**那边的路径 ——
+   * 两机部署时那个路径在服务端可能根本不存在。客户端只持有 id，这才叫 cwd 归服务端。
+   * 留这个口子是为了兼容「同一个路径想跑两遍」以外的旧调用，等鉴权落地时它会彻底消失：
+   * 客户端不该有能力决定自己跑在哪个目录。
    */
-  path: string;
+  path?: string;
   /** 用哪个 Agent（缺省 `default`；**续接已有存档时不给就沿用存档里记的那个**） */
   agentId?: string;
   /**
-   * 会话 id。**不给则服务端分配**。
+   * 会话 id。**不给则服务端分配**（给了就用它，存档里同 id 的记录会被装进 Agent）。
    *
    * 活会话与盘上存档共用同一个 id（存档就是这段会话的落盘形态）：续接已有存档时
    * 客户端把它带进来；新会话留空，由服务端按同一套格式生成。
@@ -204,6 +215,23 @@ export interface SessionLastResult {
    */
   sessionId: string | null;
 }
+
+/**
+ * 接上一段已有会话。
+ *
+ * `sessionId` 必填：attach 的语义就是「我知道是哪一段，别给我开新的」。它可能在内存里活着
+ * （客户端刚崩、会话还在跑），也可能只在存档里 —— 客户端无从判断，所以判断放在服务端。
+ */
+export interface SessionAttachParams {
+  workspaceId: string;
+  sessionId: string;
+  /** 同 `create`：可省，省了由服务端按 `workspaceId` 反查 */
+  path?: string;
+  /** 只在「存档里没有这个 id」时无关；活着的会话以自己的 `agentId` 为准 */
+  agentId?: string;
+}
+
+export type SessionAttachResult = SessionCreateResult;
 
 export interface SessionSendParams {
   sessionId: string;

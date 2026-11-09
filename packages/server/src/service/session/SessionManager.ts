@@ -77,6 +77,9 @@ export interface CreateAgentInput {
 }
 
 /** `create()` 的入参：`agentId` / `sessionId` 都可省，前者补 `default`，后者由服务端分配 */
+/** attach 的入参：`sessionId` 必填（语义就是「别给我开新的」） */
+export type SessionAttachInput = SessionCreateInput & { sessionId: string };
+
 export interface SessionCreateInput {
   workspaceId: string;
   path: string;
@@ -531,16 +534,31 @@ export class SessionManager {
   }
 
   async create(input: SessionCreateInput): Promise<{ sessionId: string; agentId: string }> {
-    const sessionId = input.sessionId || this.nextSessionId();
-    if (this.sessions.has(sessionId)) {
-      throw codedError("session-exists", `session already exists: ${sessionId}`);
-    }
-
-    // 续接：这个 id 在工作区存档里有记录，就把它的消息装进 Agent。
-    // 服务端是唯一真相源 —— 客户端只给 id，不搬消息。
     const store = await this.storeFor(input.workspaceId);
-    const record = store ? await store.read(sessionId) : null;
 
+    /**
+     * id 从哪来，决定了撞车怎么办 —— 这是两件不同的事。
+     *
+     *   - **客户端指定**（`/load`、续接）：撞了就报 `session-exists`。那是不静默顶掉
+     *     正在跑的会话的那条规矩，同时也防止覆盖同名存档。
+     *   - **服务端分配**：`nextSessionId()` 只精确到秒，同一秒里开两段一定会撞 ——
+     *     启动后立刻 `/new`、或两个前端同时开会话，都是常见路径。撞了就该换一个：
+     *     分配器找空位是**本职**，不是错误。把它报成错误等于把实现细节漏给用户
+     *     （现象是「打不开新会话」，而且是偶发的、看时辰的）。
+     */
+    let sessionId: string;
+    let record: Awaited<ReturnType<SessionStore["read"]>> = null;
+    if (input.sessionId) {
+      sessionId = input.sessionId;
+      if (this.sessions.has(sessionId)) {
+        throw codedError("session-exists", `session already exists: ${sessionId}`);
+      }
+      // 续接：这个 id 在工作区存档里有记录，就把它的消息装进 Agent。
+      // 服务端是唯一真相源 —— 客户端只给 id，不搬消息。
+      record = store ? await store.read(sessionId) : null;
+    } else {
+      sessionId = await this.freeSessionId(this.nextSessionId(), store);
+    }
     // Agent 也跟着存档走：`/load` 只拿到一个 id（列表不解析存档内容），
     // 存档里记着这段会话是哪个 Agent 跑的 —— 不传就沿用它，而不是默默换成 `default`。
     const agentId = input.agentId || record?.agentId || "default";
@@ -572,6 +590,56 @@ export class SessionManager {
     session.detach = this.attachEvents(session);
     this.sessions.set(sessionId, session);
     return { sessionId, agentId };
+  }
+
+  /**
+   * 从 `base` 开始找一个没被占用的会话 id（`base`、`base_2`、`base_3`…）。
+   *
+   * 「被占用」有两种：内存里活着，或盘上已有同名存档（覆盖存档比撞内存更坏 —— 那是
+   * 悄悄毁掉别人一段对话）。所以两个都要看。
+   */
+  private async freeSessionId(base: string, store: SessionStore | null | undefined): Promise<string> {
+    let candidate = base;
+    for (let suffix = 2; ; suffix++) {
+      const alive = this.sessions.has(candidate);
+      const archived = store ? (await store.read(candidate)) !== null : false;
+      if (!alive && !archived) return candidate;
+      candidate = `${base}_${suffix}`;
+    }
+  }
+
+  /**
+   * 接上一段**已经存在**的会话 —— 活着就接上，盘上有就从存档装回来。
+   *
+   * ## 为什么不能拿 `create` 顶替
+   *
+   * 会话的存活期比客户端连接长：客户端退出（关终端、断网）只退订阅，会话连同 Agent 与
+   * MCP 连接仍在服务端活着。`create` 对活着的 id 是**拒绝**（不静默顶掉正在跑的会话，
+   * 那条语义仍然成立），于是「接着上次」这条最常用的启动路径会直接撞在 `session-exists`
+   * 上 —— 用户看到的是「打不开自己上一轮会话」。把内部不一致泄露成使用障碍，是这类错误
+   * 最不该有的形态。
+   *
+   * 所以两个动作分开：`create` = 我要一段**新的**；`attach` = 我要这段**已有的**。
+   * 「已有的」判断必须由服务端做：客户端只持有 id，它无法知道那段会话此刻在不在内存里、
+   * 还是只在盘上。
+   *
+   * 接上一个活着的会话是安全的：客户端拿到 id 之后本来就要拉一份快照，事件是按连接分发
+   * 的，两边看到的是同一份真相。真正需要额外约定的只有「两个客户端同时往同一段会话发言」
+   * （`send` 目前不拒绝第二个调用者），那是另一件事。
+   *
+   * 既不在内存、又不在盘上 → `session-missing`：什么都不接，绝不悄悄开一段空的。
+   */
+  async attach(input: SessionAttachInput): Promise<{ sessionId: string; agentId: string }> {
+    const live = this.sessions.get(input.sessionId);
+    if (live) return { sessionId: live.id, agentId: live.agentId };
+
+    const store = await this.storeFor(input.workspaceId);
+    const record = store ? await store.read(input.sessionId) : null;
+    if (!record) {
+      throw codedError("session-missing", `no such session: ${input.sessionId}`);
+    }
+    // 走 create 的装配路径：它会按存档里的 agentId 装配 Agent 并把消息装进去
+    return await this.create({ ...input, sessionId: input.sessionId });
   }
 
   /**
