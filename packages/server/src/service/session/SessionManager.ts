@@ -17,7 +17,7 @@
  */
 
 import { PhaseTracker, pendingToolCalls, type PhaseInfo } from "../progress/PhaseTracker.js";
-import type { SessionStore } from "../store/SessionStore.js";
+import type { SessionRef, SessionStore } from "../store/SessionStore.js";
 import {
   SESSION_EVENTS,
   type SessionEvent,
@@ -147,6 +147,50 @@ export class SessionManager {
     await store.write({ id: session.id, agentId: session.agentId, messages: session.agent.messages });
     await store.setLastSession(session.id);
     return { saved: true, sessionId: session.id };
+  }
+
+  /** 某个工作区下已存档的会话（按写入时间倒序，只有 id） */
+  async listSaved(workspaceId: string): Promise<SessionRef[]> {
+    const store = await this.storeFor(workspaceId);
+    if (!store) throw codedError("no-store", `no session store for workspace ${workspaceId}`);
+    return await store.list();
+  }
+
+  /**
+   * 撤回：删掉 `index` 起的消息，**并立即落盘**。
+   *
+   * 落盘不是可选项：只改内存的话，存档里仍留着被撤回的消息，下次 `/load` 或重启
+   * 就“复活”（TUI 时代踩过这个坑）。所以先确认有存档可写，再动消息 —— 避免
+   * “改了一半、存不下去”。
+   */
+  async rollback(
+    sessionId: string,
+    index: number,
+  ): Promise<{ removed: number; prompt: string; messages: unknown[] }> {
+    const session = this.require(sessionId);
+    const store = await this.storeFor(session.workspaceId);
+    if (!store) throw codedError("no-store", `no session store for workspace ${session.workspaceId}`);
+
+    const messages = session.agent.messages;
+    if (!Number.isInteger(index) || index < 0 || index >= messages.length) {
+      throw codedError("bad-index", `index ${index} is out of range (0..${messages.length - 1})`);
+    }
+
+    const removedMessages = messages.splice(index);
+    session.agent.messages = messages;
+    await store.write({ id: session.id, agentId: session.agentId, messages });
+    await store.setLastSession(session.id);
+
+    // 预填输入框用：被删掉的第一条用户消息（原文，不做任何“备注剥离”）
+    const firstUser = removedMessages.find(
+      (message) => (message as { role?: unknown } | null)?.role === "user",
+    ) as { content?: unknown } | undefined;
+
+    return {
+      removed: removedMessages.length,
+      prompt: typeof firstUser?.content === "string" ? firstUser.content : "",
+      messages: [...messages],
+    };
   }
 
   /** 订阅事件；返回取消订阅的函数（连接断开时调用） */

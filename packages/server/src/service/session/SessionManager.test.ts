@@ -412,3 +412,67 @@ describe("SessionManager：快照 / 存档 / 续接", () => {
     await expect(manager.save("chat_x")).rejects.toThrow(/no session store/);
   });
 });
+
+describe("SessionManager：存档列表与撤回", () => {
+  let store: MemoryStore;
+  let withStore: SessionManager;
+
+  beforeEach(() => {
+    store = new MemoryStore();
+    withStore = new SessionManager({
+      createAgent: async () => agent,
+      nextSessionId: () => "chat_fixed",
+      storeFor: () => store,
+    });
+  });
+
+  it("listSaved 只列盘上的存档（活着的会话不等于已存档）", async () => {
+    await store.write({ id: "chat_old", agentId: "default", messages: [] });
+    await withStore.create({ workspaceId: "ws-1", path: "/p" });
+    await withStore.save("chat_fixed");
+
+    expect((await withStore.listSaved("ws-1")).map((ref) => ref.id)).toEqual(["chat_old", "chat_fixed"]);
+  });
+
+  it("撤回：从 index 起删掉、立即落盘、指针跟着走", async () => {
+    await withStore.create({ workspaceId: "ws-1", path: "/p" });
+    agent.messages = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "第一个问题" },
+      { role: "assistant", content: "答" },
+      { role: "user", content: "第二个问题" },
+      { role: "assistant", content: "答2" },
+    ];
+
+    const result = await withStore.rollback("chat_fixed", 3);
+
+    expect(result.removed).toBe(2);
+    expect(result.prompt).toBe("第二个问题");
+    expect(result.messages).toEqual([
+      { role: "system", content: "sys" },
+      { role: "user", content: "第一个问题" },
+      { role: "assistant", content: "答" },
+    ]);
+    // 内存与存档一致：被撤回的不会在下次 /load 里“复活”
+    expect(agent.messages).toHaveLength(3);
+    expect(store.records.get("chat_fixed")!.messages).toHaveLength(3);
+    expect((await store.lastSession())?.id).toBe("chat_fixed");
+  });
+
+  it("下标越界 → bad-index，且消息一条都不动", async () => {
+    await withStore.create({ workspaceId: "ws-1", path: "/p" });
+    agent.messages = [{ role: "user", content: "只有一条" }];
+
+    await expect(withStore.rollback("chat_fixed", 5)).rejects.toThrow(/out of range/);
+    await expect(withStore.rollback("chat_fixed", -1)).rejects.toThrow(/out of range/);
+    expect(agent.messages).toHaveLength(1);
+  });
+
+  it("没有存档时不改内存（避免“改了一半存不下去”）", async () => {
+    await manager.create({ workspaceId: "ws-1", path: "/p", sessionId: "chat_x" });
+    agent.messages = [{ role: "user", content: "a" }, { role: "user", content: "b" }];
+
+    await expect(manager.rollback("chat_x", 1)).rejects.toThrow(/no session store/);
+    expect(agent.messages).toHaveLength(2);
+  });
+});

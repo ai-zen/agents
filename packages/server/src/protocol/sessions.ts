@@ -18,6 +18,7 @@
  */
 
 import type { PhaseInfo } from "../service/progress/PhaseTracker.js";
+import type { SessionRef } from "../service/store/SessionStore.js";
 
 /**
  * 词汇表（名字就这三个，不再多造）：
@@ -39,6 +40,10 @@ export const SESSION_METHODS = {
   cancel: "session.cancel",
   /** 某个工作区下活着的会话（不是盘上的存档） */
   list: "session.list",
+  /** 某个工作区下**已存档**的会话（`/load` 的选择器用），按写入时间倒序 */
+  listSaved: "session.listSaved",
+  /** 撤回：删掉下标起的消息，并立即落盘 */
+  rollback: "session.rollback",
   /** 整份快照：客户端（重）连上来时一次拿全，不用自己拼事件 */
   snapshot: "session.snapshot",
   /** 把当前会话写进工作区存档（并把它设为「上一轮会话」） */
@@ -158,6 +163,34 @@ export interface SessionSaveResult {
 
 export interface SessionListResult {
   sessions: SessionSummary[];
+}
+
+export interface SessionListSavedParams {
+  workspaceId: string;
+}
+
+export interface SessionListSavedResult {
+  /** 只有 id：列表不解析存档内容 */
+  sessions: SessionRef[];
+}
+
+export interface SessionRollbackParams {
+  sessionId: string;
+  /** 从这个下标起（含）删掉 */
+  index: number;
+}
+
+export interface SessionRollbackResult {
+  /** 删掉了多少条 */
+  removed: number;
+  /**
+   * 被删掉的第一条用户消息的**原始**文本（客户端可拿去预填输入框）。
+   *
+   * 服务端不剥「工作目录备注」那类装饰：那是客户端拼进去的，也该由客户端还原。
+   */
+  prompt: string;
+  /** 撤回之后剩下的全部消息（客户端直接重渲染，不用再要一次快照） */
+  messages: unknown[];
 }
 // ==================== 事件 ====================
 //

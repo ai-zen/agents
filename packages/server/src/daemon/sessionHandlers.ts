@@ -15,6 +15,8 @@ import {
   type SessionCancelResult,
   type SessionCreateResult,
   type SessionListResult,
+  type SessionListSavedResult,
+  type SessionRollbackResult,
   type SessionSaveResult,
   type SessionSendResult,
   type SessionSnapshotResult,
@@ -71,6 +73,14 @@ export function createSessionHandlers(options: SessionHandlerOptions): Record<st
       return { sessions: manager.list(requireString(params, "workspaceId")) };
     },
 
+    [SESSION_METHODS.listSaved]: async (params): Promise<SessionListSavedResult> => {
+      return { sessions: await manager.listSaved(requireString(params, "workspaceId")) };
+    },
+
+    [SESSION_METHODS.rollback]: async (params): Promise<SessionRollbackResult> => {
+      return await manager.rollback(requireString(params, "sessionId"), requireNumber(params, "index"));
+    },
+
     [SESSION_METHODS.snapshot]: async (params): Promise<SessionSnapshotResult> => {
       return await manager.snapshot(requireString(params, "sessionId"));
     },
@@ -85,6 +95,14 @@ export function createSessionHandlers(options: SessionHandlerOptions): Record<st
 function requireString(params: unknown, field: string): string {
   const value = (params as Record<string, unknown> | null | undefined)?.[field];
   if (typeof value !== "string" || value.length === 0) {
+    throw badParams(`missing or invalid "${field}"`);
+  }
+  return value;
+}
+
+function requireNumber(params: unknown, field: string): number {
+  const value = (params as Record<string, unknown> | null | undefined)?.[field];
+  if (typeof value !== "number" || !Number.isInteger(value)) {
     throw badParams(`missing or invalid "${field}"`);
   }
   return value;
