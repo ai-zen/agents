@@ -28,7 +28,7 @@ export interface AgentPaths {
   /**
    * 工作区根 —— **Agent 的 cwd**（工具相对路径的基准）。
    *
-   * 它必须从这里递出去：`Scope` 的 `cwd` 缺省取 `process.cwd()`，而服务端进程的 cwd
+   * 它必须从这里递出去：`Scope` 的 `cwd` 缺省取**进程的当前目录**，而服务端进程的 cwd
    * 是守护进程**被拉起时**的目录，与调用方要跑的那个工作区毫无关系。少传这一层的后果
    * 很安静：`@` 补全列的是工作区 B 的文件，`exec pwd` 与 `read src/x.ts` 却落在目录 A。
    */

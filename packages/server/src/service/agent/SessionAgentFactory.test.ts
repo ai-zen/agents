@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { SessionAgentFactory } from "./SessionAgentFactory.js";
 import {
   AutoMigratePlugin,
+  AutoRefreshToolsPlugin,
   ContextGuardPlugin,
   ContextOverflowError,
   SubAgentGuardInstallerPlugin,
@@ -28,8 +29,10 @@ const fakeAgent: AgentLike = {
   messages: [],
   send: async () => {},
   abort: () => {},
+  // 装配方总会装「工具刷新」插件（它与阈值无关），所以假件必须有这一面
+  use: () => {},
   events: { on: () => {}, off: () => {} },
-};
+} as unknown as AgentLike;
 
 const config = { endpoints: [], models: [], defaultAgent: "default" } as never;
 
@@ -352,7 +355,7 @@ describe("SessionAgentFactory：按模型阈值装护栏与自动迁移", () => 
       isHandoffBusy: () => false,
     });
 
-    expect(plugins).toHaveLength(3); // ContextGuardPlugin + SubAgentGuardInstallerPlugin + AutoMigratePlugin
+    expect(plugins).toHaveLength(4); // 工具刷新 + ContextGuardPlugin + SubAgentGuardInstallerPlugin + AutoMigratePlugin
     // 子 Agent 的硬线：阈值必须与主 Agent **同源**（同一个 `guardTokens`），另拍一个数就是两套护栏
     const installer = plugins.find((plugin) => plugin instanceof SubAgentGuardInstallerPlugin) as any;
     expect(installer).toBeDefined();
@@ -471,12 +474,14 @@ describe("SessionAgentFactory：按模型阈值装护栏与自动迁移", () => 
 
     await factory.create({ workspaceId: "ws", path: "/p", agentId: "default" });
 
-    expect(plugins).toHaveLength(2);
+    expect(plugins).toHaveLength(3); // 工具刷新 + 两个护栏
+    expect(plugins.some((plugin) => plugin instanceof AutoRefreshToolsPlugin)).toBe(true);
+    expect(plugins.some((plugin) => plugin instanceof ContextGuardPlugin)).toBe(true);
     expect(plugins.some((plugin) => plugin instanceof ContextGuardPlugin)).toBe(true);
     expect(plugins.some((plugin) => plugin instanceof SubAgentGuardInstallerPlugin)).toBe(true);
   });
 
-  it("模型没配阈值：一个插件都不装（不凭直觉拍一个数）", async () => {
+  it("模型没配阈值：护栏一个都不装（不凭直觉拍一个数），但工具刷新照装", async () => {
     const { agent, plugins } = recordingAgent();
     const factory = factoryWith(
       { endpoints: [], models: [{ id: "m" }], defaultAgent: "default" },
@@ -486,6 +491,35 @@ describe("SessionAgentFactory：按模型阈值装护栏与自动迁移", () => 
 
     await factory.create({ workspaceId: "ws", path: "/p", agentId: "default", autoMigrate: async () => {} });
 
+    // 工具刷新与阈值无关（它是「会话中新装的能力什么时候生效」），所以只剩它
+    expect(plugins).toHaveLength(1);
+    expect(plugins[0]).toBeInstanceOf(AutoRefreshToolsPlugin);
+  });
+
+  it("`autoRefreshTools: off`：连工具刷新都不装（只靠 /reload）", async () => {
+    const { agent, plugins } = recordingAgent();
+    const factory = factoryWith(
+      { endpoints: [], models: [], defaultAgent: "default", autoRefreshTools: "off" },
+      agent,
+      {},
+    );
+
+    await factory.create({ workspaceId: "ws", path: "/p", agentId: "default" });
+
     expect(plugins).toHaveLength(0);
+  });
+
+  it("`autoRefreshTools: outer-loop-start`：档位原样传给插件", async () => {
+    const { agent, plugins } = recordingAgent();
+    const factory = factoryWith(
+      { endpoints: [], models: [], defaultAgent: "default", autoRefreshTools: "outer-loop-start" },
+      agent,
+      {},
+    );
+
+    await factory.create({ workspaceId: "ws", path: "/p", agentId: "default" });
+
+    const refresh = plugins.find((plugin) => plugin instanceof AutoRefreshToolsPlugin) as any;
+    expect(refresh.when).toBe("outer-loop-start");
   });
 });

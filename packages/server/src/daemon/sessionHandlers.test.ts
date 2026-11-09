@@ -455,15 +455,18 @@ describe("会话处理器（真 socket）", () => {
       event: "session.question",
       sessionId: created.sessionId,
       kind: "handoff-mode",
-      promptTokens: 999,
-      handoffTokens: 500,
+      input: "select",
+      options: ["self", "summary"],
+      allowSkip: true,
+      fallback: null,
+      params: { promptTokens: 999, handoffTokens: 500 },
     });
 
     expect(
       await client!.call(SESSION_METHODS.answer, {
         sessionId: created.sessionId,
         questionId: question.questionId,
-        mode: "summary",
+        choice: "summary",
       }),
     ).toEqual({ answered: true });
     await migrated;
@@ -474,7 +477,7 @@ describe("会话处理器（真 socket）", () => {
     expect(listed.sessions[0].sessionId).not.toBe(created.sessionId);
   });
 
-  it("session.answer 参数错 → bad-params（mode 缺失不等于「不交接」：那是 null）", async () => {
+  it("session.answer 参数错 → bad-params（choice 缺失不等于「跳过」：那是 null）", async () => {
     await startDaemon();
     const created = (await client!.call(SESSION_METHODS.create, {
       workspaceId: "ws-1",
@@ -482,13 +485,13 @@ describe("会话处理器（真 socket）", () => {
     })) as { sessionId: string };
 
     await expect(
-      client!.call(SESSION_METHODS.answer, { sessionId: created.sessionId, mode: "self" }),
+      client!.call(SESSION_METHODS.answer, { sessionId: created.sessionId, choice: "self" }),
     ).rejects.toThrow(/bad-params/);
     await expect(
       client!.call(SESSION_METHODS.answer, {
         sessionId: created.sessionId,
         questionId: "q-1",
-        mode: "auto",
+        choice: "",
       }),
     ).rejects.toThrow(/bad-params/);
     // 连接还能继续用
@@ -507,7 +510,7 @@ describe("会话处理器（真 socket）", () => {
       await client!.call(SESSION_METHODS.answer, {
         sessionId: created.sessionId,
         questionId: "q-404",
-        mode: null,
+        choice: null,
       }),
     ).toEqual({ answered: false });
     expect(await client!.call("ping")).toEqual({ pong: true });

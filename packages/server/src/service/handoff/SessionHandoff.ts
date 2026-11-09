@@ -124,6 +124,18 @@ export class SessionHandoff {
         }
         notice({ level: "info", code: "handoffPath", params: { path: ctx.handoffPath } });
       },
+      /**
+       * 迁移落地（新会话已经换好 id、历史已剔除）。
+       *
+       * 两条与旧版逐字一致：一条「迁移完成（共 n 条消息）」+ 一条「新助手会先读交接文档」。
+       * 为什么现在才接：旧版这两句是 CLI 侧 `handoff-service.ts` 用 `log(text)` 打的，
+       * 而服务端不产文案 —— 文本通道在这里被丢弃，于是它俩一度静默。code 早就该补。
+       */
+      onMigrated: (ctx: HandoffContext) => {
+        const count = (ctx.agent as { messages?: unknown[] } | undefined)?.messages?.length ?? 0;
+        notice({ level: "info", code: "handoffMigrated", params: { n: count } });
+        notice({ level: "info", code: "handoffMigratedHint" });
+      },
     });
   }
 

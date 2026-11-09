@@ -32,6 +32,7 @@ import {
   type SessionHandoffResult,
   type SessionMigrateResult,
   type SessionNoticeCode,
+  type SessionQuestionKind,
   type SessionSnapshotResult,
   type SessionSummary,
 } from "../../protocol/sessions.js";
@@ -91,6 +92,27 @@ interface SubAgentEntry {
    * 字段再决定是否发 `ended{done}`，否则真实的失败会在界面上变成「跑完了」。
    */
   status: "running" | "done" | "failed";
+}
+
+/**
+ * 一次提问的规格（服务端 → 客户端）。
+ *
+ * 字段与协议里的 `SessionQuestionEvent` 一一对应，只多了 `fallback` 的语义收口：
+ * 它是「没人答/答不了时服务端自己用什么收场」，由提问方给（哪条路安全只有它知道）。
+ */
+export interface AskQuestionSpec {
+  kind: SessionQuestionKind;
+  input: "select" | "text";
+  options?: readonly string[];
+  params?: Record<string, unknown>;
+  allowSkip?: boolean;
+  fallback: string | null;
+}
+
+/** 一个挂着等回答的提问（`resolve` 收场，`fallback` 是没人答时的取值） */
+interface PendingQuestion {
+  resolve: (choice: string | null) => void;
+  fallback: string | null;
 }
 
 export interface CreateAgentInput {
@@ -239,7 +261,7 @@ interface LiveSession {
    * 仍用 Map 是因为「过期的回答一律拒」这条判定靠它：认领时按 id 查表，查不到就是来晚了
    * （超时 / 已答过 / 会话已收），而那三种情况对客户端是同一件事 —— 不必重试。
    */
-  questions: Map<string, (mode: HandoffMode | null) => void>;
+  questions: Map<string, PendingQuestion>;
   /** 提问序号（只在会话内递增）：认领靠它的而不是轮次，一轮里可以问不止一次 */
   questionSeq: number;
   detach: () => void;
@@ -508,38 +530,84 @@ export class SessionManager {
     session: LiveSession,
     info: AutoMigrateTriggerInfo,
   ): Promise<HandoffMode | null> {
-    // 1) 没有客户端在看就不要问（理由见上）
-    if (this.hub.watcherCount() === 0) return "self";
+    const choice = await this.askQuestion(session, {
+      kind: "handoff-mode",
+      input: "select",
+      // 选项 id 就是 `HandoffMode` 的字面量：文案由客户端按 `kind + id` 查词典
+      options: ["self", "summary"],
+      params: { promptTokens: info.promptTokens, handoffTokens: info.handoffTokens },
+      allowSkip: true,
+      // **兜底是「什么都不做」**：迁移要不要现在做、用哪种方式，是用户的决定。服务端替他
+      // 选 `self`，等于把「用户没有的能力」当成「用户的选择」。（旧版在无人可问时默认
+      // `self` 自动迁移，这条已经按产品决定改掉：不迁移，上下文继续长由硬线护栏兜。）
+      fallback: null,
+    });
+
+    if (choice === "self" || choice === "summary") return choice;
+
+    // 跳过（用户选的 / 兜底走到这儿）：说一句「本次没迁」，否则用户只会看到上下文继续涨
+    this.noticeIfAlive(session, {
+      level: "info",
+      code: "migrationSkipped",
+    });
+    return null;
+  }
+
+  /**
+   * 问客户端一个问题，等它的答案（`session.answer`）。
+   *
+   * 四条规矩都写在这一个方法里，因为它们是**提问**这件事本身的约束（不是交接的）：
+   *
+   * 1. **没人在看就不问**：返回 `fallback`。发出去没人看得见，等一个不会来的答案只是
+   *    把这一轮挂死（客户端已退出，而会话仍在服务端活着）。
+   * 2. **先登记再发事件**：事件同步推给订阅者，客户端可能在同一轮事件循环里就答了 ——
+   *    先发后登记会让那条回答撞上「表里没有这个 id」。
+   * 3. **等，但有时限**（`askTimeoutMs`）：到点用 `fallback` 收场，不留悬挂的一轮。
+   * 4. **三条出口都清表**（答了 / 超时 / 被 `releaseQuestions` 放行）：清表是「来晚了」
+   *    的唯一判据；不清就会让迟到的回答重复生效。
+   */
+  private async askQuestion(session: LiveSession, spec: AskQuestionSpec): Promise<string | null> {
+    if (this.hub.watcherCount() === 0) return spec.fallback;
 
     const questionId = `q-${++session.questionSeq}`;
-    // 2) 先登记再发事件（理由见上）
-    const answer = new Promise<HandoffMode | null>((resolve) => {
-      session.questions.set(questionId, resolve);
+    const answer = new Promise<string | null>((resolve) => {
+      session.questions.set(questionId, { resolve, fallback: spec.fallback });
     });
 
     this.emit({
       event: SESSION_EVENTS.question,
       sessionId: session.id,
       questionId,
-      kind: "handoff-mode",
-      promptTokens: info.promptTokens,
-      handoffTokens: info.handoffTokens,
+      kind: spec.kind,
+      input: spec.input,
+      ...(spec.options ? { options: spec.options } : {}),
+      params: spec.params ?? {},
+      allowSkip: spec.allowSkip ?? false,
+      fallback: spec.fallback,
     });
 
-    // 3) 等回答，但有时限：超时按默认执行者接着走，与「没人在看」同一个落点
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const timedOut = new Promise<HandoffMode>((resolve) => {
-      timer = setTimeout(() => resolve("self"), this.askTimeoutMs);
+    const timedOut = new Promise<string | null>((resolve) => {
+      timer = setTimeout(() => resolve(spec.fallback), this.askTimeoutMs);
     });
     try {
       return await Promise.race([answer, timedOut]);
     } finally {
-      // 4) 三条出口（答了 / 超时 / 被 `releaseQuestions` 放行）都走这里：清定时器 + 清表。
-      //    清表必须无条件做 —— 「表里查不到 = 这个问题已经不在了」是 `answer()` 唯一的判定
       clearTimeout(timer);
       session.questions.delete(questionId);
     }
   }
+
+  /**
+   * 发一条会话内通知，但会话可能已经不在（提问方被放行后继续跑的那一刻常见）。
+   *
+   * 不是在吞错 `notice()` 的错误：「会话已经没了」对这条路径是**正常结局**，而不是异常。
+   */
+  private noticeIfAlive(session: LiveSession, notice: { level: NoticeLevel; code: SessionNoticeCode; params?: Record<string, unknown> }): void {
+    if (!this.sessions.has(session.id)) return;
+    this.notice(session.id, notice);
+  }
+
 
   /**
    * 把挂着的提问全部按默认执行者放行。
@@ -552,12 +620,14 @@ export class SessionManager {
    * 按默认执行者继续，与「没有客户端在看」同一口径。真到了迁移那一步，如果会话已经不在，
    * `autoMigrate` 会自己打住。
    */
-  private releaseQuestions(session: LiveSession, mode: HandoffMode = "self"): void {
+  private releaseQuestions(session: LiveSession): void {
     if (session.questions.size === 0) return;
     // 先清表再 resolve：resolve 会让提问方继续跑（可能立即发起新的提问）
     const pending = [...session.questions.values()];
     session.questions.clear();
-    for (const resolve of pending) resolve(mode);
+    // 每个问题按**它自己的**兜底收场。用统一值会出事：交接类问题的兜底是「什么都不做」，
+    // 而“流程结束了”并不意味着用户表达了「这次不交接」以外的东西 —— 由提问方决定。
+    for (const question of pending) question.resolve(question.fallback);
   }
 
   /**
@@ -1015,14 +1085,14 @@ export class SessionManager {
    *     “操作失败”里卡一辈子，而实际上服务端早就自己继续跑了；
    *   - 认领成功 → `{ answered: true }`，`askHandoffMode` 那边随之继续。
    */
-  answer(sessionId: string, questionId: string, mode: HandoffMode | null): { answered: boolean } {
+  answer(sessionId: string, questionId: string, choice: string | null): { answered: boolean } {
     const session = this.require(sessionId);
-    const resolve = session.questions.get(questionId);
-    if (!resolve) return { answered: false };
+    const pending = session.questions.get(questionId);
+    if (!pending) return { answered: false };
     // 先摘表再 resolve：同一个 questionId 的第二次回答必须落进「来晚了」那条分支，
     // 而不是把同一个问题答两遍（第二遍的 promise 已经没人等了）
     session.questions.delete(questionId);
-    resolve(mode);
+    pending.resolve(choice);
     return { answered: true };
   }
 

@@ -308,19 +308,35 @@ export type SessionIdChangedEvent = {
 /**
  * 服务端向客户端提问（见 `SESSION_EVENTS.question` 的「为什么」）。
  *
- * 载荷只有可判别的事实：`kind` 说明问的是哪件事，两个 token 数是**触发上下文**
- * —— 客户端选择器的标题要显示「已用 X / 上限 Y」，这个数只有服务端手里有（用量是
- * Agent 那边的事实），客户端自己算不出来，服务端也不替它拼成一句文案。
+ * 载荷只说四件可判别的事实，**一个字幕都不产**：问的是哪一类（`kind`，客户端据此查
+ * 自己的词典与分派表）、能怎么答（`input` / `options`）、渲染标题要哪些数（`params`）、
+ * 不答/答不了时服务端会怎么做（`fallback`）。
  */
 export type SessionQuestionEvent = {
   event: typeof SESSION_EVENTS.question;
   sessionId: string;
   /** 本次提问的 id（回答时带回来；服务端据此认领，过期的回答一律拒） */
   questionId: string;
+  /** 哪一类问题 —— 客户端按它查自己的词典（标题 / 选项文案）与分派表 */
   kind: SessionQuestionKind;
-  /** 触发上下文（客户端选择器的标题要显示「已用 X / 上限 Y」） */
-  promptTokens: number;
-  handoffTokens: number;
+  /** 怎么答：选一个（今天的形态）还是填一个值（留的口子，客服端可以暂不实现） */
+  input: "select" | "text";
+  /** `input:"select"` 时的选项 id 列表；文案在客户端（`kind + id`） */
+  options?: readonly string[];
+  /**
+   * 渲染标题要用的事实（今天的交接类问题：`{ promptTokens, handoffTokens }`）。
+   *
+   * 走一个通用袋子而不是固定字段：换一个问题就换里面的内容，协议不用改几次。
+   */
+  params: Record<string, unknown>;
+  /** 用户能不能「不答」（今天的交接类问题可以 = 「不交接」） */
+  allowSkip: boolean;
+  /**
+   * 服务端等不到答案时会用的取值。
+   *
+   * **客户端不认识这个 `kind` 时也直接用它** —— 哪条路安全只有服务端知道。
+   */
+  fallback: string | null;
 };
 
 export interface SessionCancelParams {
@@ -507,8 +523,12 @@ export type SessionQuestionKind = "handoff-mode";
 export interface SessionAnswerParams {
   sessionId: string;
   questionId: string;
-  /** `null` = 用户选择「不交接」（跳过本次迁移） */
-  mode: HandoffMode | null;
+  /**
+   * 选中的选项 id；`null` = 跳过（仅当 `allowSkip`）。
+   *
+   * 叫 `choice` 而不是具体业务名：「问什么」由 `kind` 说，回答只负责「选了哪个」。
+   */
+  choice: string | null;
 }
 
 export interface SessionAnswerResult {
@@ -671,8 +691,6 @@ export type NoticeLevel = "info" | "warn" | "error";
 export const SESSION_NOTICE_CODES = {
   /** 会话落盘失败（用户以为存了，其实没存） */
   persistFailed: "persistFailed",
-  /** 工具执行失败 */
-  toolFailed: "toolFailed",
   /** 交接/迁移降级（请求的执行者与实际执行者不一致） */
   migrationDegraded: "migrationDegraded",
   /** 本轮被中止 */
@@ -685,6 +703,12 @@ export const SESSION_NOTICE_CODES = {
   handoffPath: "handoffPath",
   /** 迁移前把旧会话存进了存档（`params.sessionId` 是**旧**会话） */
   handoffArchived: "handoffArchived",
+  /** 迁移完成、新会话已开启（`params.n` 是新会话第一条上下文的消息数） */
+  handoffMigrated: "handoffMigrated",
+  /** 紧跟在 `handoffMigrated` 后面那条补充（新助手会先读交接文档） */
+  handoffMigratedHint: "handoffMigratedHint",
+  /** 用户在提问里选了「不交接」/ 没人答 → 本次跳过迁移 */
+  migrationSkipped: "migrationSkipped",
   /** 子 Agent 出错（`params.message` 是原始错误文本；`params.index` 是本轮序号） */
   subAgentFailed: "subAgentFailed",
 } as const;

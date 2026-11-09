@@ -24,6 +24,7 @@ import {
   AgentRepository,
   allInOne,
   AutoMigratePlugin,
+  AutoRefreshToolsPlugin,
   ConfigManager,
   ContextGuardPlugin,
   createAgent as sdkCreateAgent,
@@ -151,11 +152,21 @@ export class SessionAgentFactory {
    * 没配阈值就一个都不装：不给阈值还拦，等于凭直觉拍一个数。
    */
   private installPlugins(agent: AgentLike, scope: Scope, input: CreateAgentInput): void {
+    const sdkAgent = agent as unknown as SdkAgent;
+
+    /**
+     * 工具清单刷新：**与阈值无关**，所以装在下面那个早退之前。
+     *
+     * 档位来自全局配置（`autoRefreshTools`，缺省 `inner-loop-start` = 旧版行为）；
+     * `off` 就不装 —— 那时只有 `/reload`（它重建 Agent 时会丢掉缓存的 Scope）能刷。
+     */
+    const when = scope.config.autoRefreshTools ?? "inner-loop-start";
+    if (when !== "off") sdkAgent.use(new AutoRefreshToolsPlugin({ when }));
+
     const modelId = (agent as unknown as SdkAgent).definition?.modelId;
     const thresholds = (scope.config.models ?? []).find((model) => model.id === modelId)?.tokenThresholds;
     if (!thresholds) return;
 
-    const sdkAgent = agent as unknown as SdkAgent;
     sdkAgent.use(
       new ContextGuardPlugin({
         guardTokens: thresholds.guard,
@@ -257,7 +268,7 @@ async function defaultCreateAgent(scope: Scope, agentId: string): Promise<AgentL
 /**
  * 默认装配：与 CLI 侧那段 Scope 装配同一套优先级，只是路径由调用方给。
  *
- * `cwd` 必须显式给工作区路径：`Scope` 的缺省值是 `process.cwd()`，而服务端进程的 cwd
+ * `cwd` 必须显式给工作区路径：`Scope` 的缺省值是**进程的当前目录**，而服务端进程的 cwd
  * 是守护进程被拉起时的目录 —— 工具的相对路径、交接护栏的基准都取它，于是「会话在工作区 B、
  * `exec pwd` 却在目录 A」。这条曾经就是这么错的（`agentPaths` 的注释一直写着
  * 「工作区根是 Agent 的 cwd」，但那个字段根本没往 Scope 递）。

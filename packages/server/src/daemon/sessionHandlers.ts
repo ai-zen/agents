@@ -173,7 +173,7 @@ export function createSessionHandlers(options: SessionHandlerOptions): Record<st
       return manager.answer(
         requireString(params, "sessionId"),
         requireString(params, "questionId"),
-        requireAnswerMode(params),
+        requireChoice(params),
       );
     },
 
@@ -315,10 +315,16 @@ function optionalMode(params: unknown): HandoffMode | undefined {
  * 与 `optionalMode` 分开而不是复用：那里「没给」是合法的（用默认执行者），这里
  * 「没给」不合法 —— `null` 已经是「不交接」那个选项，`undefined` 只能是调用方写错了。
  */
-function requireAnswerMode(params: unknown): HandoffMode | null {
-  const value = field(params, "mode");
+/**
+ * 回答的载荷：`choice`（选项 id）或 `null`（跳过）。
+ *
+ * 这一层**不判**哪个 id 对某个 `kind` 合法 —— 那是提问方的事（`kind` 与选项都是它给的）。
+ * 只保证形状：非空字符串或 `null`，别的一律 `bad-params`。
+ */
+function requireChoice(params: unknown): string | null {
+  const value = field(params, "choice");
   if (value === null) return null;
-  if (value === "self" || value === "summary") return value;
-  throw badParams(`invalid "mode" (expected self | summary | null)`);
+  if (typeof value === "string" && value.length > 0) return value;
+  throw badParams(`invalid "choice" (expected option id | null)`);
 }
 

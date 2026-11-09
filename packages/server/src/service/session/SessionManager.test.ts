@@ -926,7 +926,7 @@ describe("SessionManager：通知（两个通道）", () => {
   });
 
   it("会话不存在时不发（否则客户端收到一条没有归属的通知）", () => {
-    expect(() => manager.notice("chat_404", { level: "info", code: "toolFailed" })).toThrow(
+    expect(() => manager.notice("chat_404", { level: "info", code: "handoffPath" })).toThrow(
       /unknown session/,
     );
     expect(pick("session.notice")).toEqual([]);
@@ -1064,6 +1064,9 @@ describe("SessionManager：交接 / 迁移", () => {
       "handoffWriting",
       "migrationDegraded", // 假 Agent 无 write 工具 → 摘要模式，服务端如实报降级
       "handoffPath",
+      // 迁移落地后的两条（与旧版逐字一致：一条「完成 + 条数」，一条「新助手会先读文档」）
+      "handoffMigrated",
+      "handoffMigratedHint",
     ]);
     expect(notices[0]!.params).toEqual({ sessionId }); // 存档的是**旧**会话
   });
@@ -1405,9 +1408,14 @@ describe("SessionManager：自动迁移用哪种方式交接，由客户端回�
       event: "session.question",
       sessionId,
       kind: "handoff-mode",
+      // 能怎么答：两个选项 + 允许「不交接」
+      input: "select",
+      options: ["self", "summary"],
+      allowSkip: true,
+      // 兜底是「什么都不做」：没人答就跳过这次迁移（不是替用户选 self）
+      fallback: null,
       // 选择器的标题要显示「已用 X / 上限 Y」：这两个数只有服务端手里有
-      promptTokens: 999,
-      handoffTokens: 500,
+      params: { promptTokens: 999, handoffTokens: 500 },
     });
     expect(questions[0].questionId).toMatch(/^q-\d+$/);
 
@@ -1454,7 +1462,7 @@ describe("SessionManager：自动迁移用哪种方式交接，由客户端回�
     expect(store.records.size).toBe(0);
   });
 
-  it("没有客户端在看：不问（问了没人答），直接按默认执行者 self 迁移", async () => {
+  it("没有客户端在看：不问，按兜底「什么都不做」跳过迁移（说一句 migrationSkipped）", async () => {
     // 独立的一套：hub 上一个订阅者都没有 —— 客户端已退出，而会话仍在服务端活着
     const silentHub = new RecordingHub();
     const silent = assemble({ hub: silentHub, askTimeoutMs: 30_000 });
@@ -1470,15 +1478,15 @@ describe("SessionManager：自动迁移用哪种方式交接，由客户端回�
     const notices = silentHub.published.filter(
       (event): event is Extract<ServerEvent, { event: "session.notice" }> => event.event === "session.notice",
     );
-    // 默认执行者 self：FakeAgent 没有 write 工具 → 请求 self 会降级成 summary（多一条降级通知）
-    expect(notices.some((notice) => notice.code === "handoffWriting" && notice.params?.mode === "self")).toBe(true);
-    expect(notices.some((notice) => notice.code === "migrationDegraded")).toBe(true);
-    // 迁移照常发生
-    expect(silentHub.published.filter((event) => event.event === "session.idChanged")).toHaveLength(1);
-    expect(silent.manager.list("ws-1").map((item) => item.sessionId)).not.toEqual([sessionId]);
+    // 兜底 = 什么都不做：**不迁移**（旧版这里的默认是 self 自动迁移，按产品决定改掉了）
+    expect(notices.some((notice) => notice.code === "handoffWriting")).toBe(false);
+    expect(notices.some((notice) => notice.code === "migrationSkipped")).toBe(true);
+    expect(silentHub.published.filter((event) => event.event === "session.idChanged")).toHaveLength(0);
+    // 会话原封不动
+    expect(silent.manager.list("ws-1").map((item) => item.sessionId)).toEqual([sessionId]);
   });
 
-  it("没人回答（超时）：按默认 self 继续，并把挂着的提问清掉", async () => {
+  it("没人回答（超时）：按兜底跳过迁移，并把挂着的提问清掉", async () => {
     // 超时注入成 10ms：等 5 分钟才能验证的用例只能靠 sleep(300000)，那是把「超时」测成「时钟」
     const fastHub = new RecordingHub();
     fastHub.subscribe((event) => events.push(event));
@@ -1490,14 +1498,18 @@ describe("SessionManager：自动迁移用哪种方式交接，由客户端回�
     const pending = triggerAutoMigrate(fast.hooks);
     const question = pick("session.question")[0];
 
-    await pending; // 不回答：等它自己按超时继续
+    await pending; // 不回答：等它自己按超时收场
 
     const notices = pick("session.notice");
-    expect(notices.some((notice) => notice.code === "handoffWriting" && notice.params?.mode === "self")).toBe(true);
-    expect(pick("session.idChanged")).toHaveLength(1);
-    // 表已清：这个问题现在谁也答不了（会话已换 id，拿新 id 答也只能是「来晚了」）
-    const nextId = fast.manager.list("ws-1")[0].sessionId;
-    expect(fast.manager.answer(nextId, question.questionId, "summary")).toEqual({ answered: false });
+    // 超时与「没人在看」同一个落点：兜底 = 什么都不做
+    expect(notices.some((notice) => notice.code === "handoffWriting")).toBe(false);
+    expect(notices.some((notice) => notice.code === "migrationSkipped")).toBe(true);
+    expect(pick("session.idChanged")).toHaveLength(0);
+    // 表已清：这个问题现在谁也答不了（迟到的回答只能是「来晚了」）
+    const remaining = fast.manager.list("ws-1")[0]!.sessionId;
+    expect(fast.manager.answer(remaining, question.questionId, "summary")).toEqual({
+      answered: false,
+    });
   });
 
   it("answer 一个不存在的会话：unknown-session（拿错 id 是调用方的错，不是「来晚了」）", () => {
