@@ -48,6 +48,21 @@ describe("EventHub", () => {
     expect(survivor).toEqual([phase]);
   });
 
+  it("watcherCount 报出当前订阅者数量（没人看的时候不能向客户端提问）", () => {
+    // 基线：`beforeEach` 已经订了一个
+    expect(hub.watcherCount()).toBe(1);
+
+    const off = hub.subscribe(() => {});
+    expect(hub.watcherCount()).toBe(2);
+
+    // 客户端断开 = 退订：会话层据此判断「问题发出去有没有人看得见」
+    off();
+    expect(hub.watcherCount()).toBe(1);
+
+    hub.clear();
+    expect(hub.watcherCount()).toBe(0);
+  });
+
   it("clear 断掉全部订阅（关停时用）", () => {
     hub.clear();
     hub.publish(phase);

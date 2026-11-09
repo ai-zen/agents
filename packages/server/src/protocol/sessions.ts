@@ -59,6 +59,14 @@ export const SESSION_METHODS = {
   attach: "session.attach",
   send: "session.send",
   cancel: "session.cancel",
+  /**
+   * 回答服务端提出的问题（目前只有自动迁移的「用哪种方式交接」）。
+   *
+   * 为什么是个**方法**而不是事件：提问要一个确定的答案，而且提问方（服务端）在等它
+   * —— 单向事件只能承载「事实」，承载不了「往返」。问题本身仍走事件（见
+   * `SESSION_EVENTS.question`），因为它的方向是服务端 → 客户端。
+   */
+  answer: "session.answer",
   /** 某个工作区下活着的会话（不是盘上的存档） */
   list: "session.list",
   /** 某个工作区下**已存档**的会话（`/load` 的选择器用），按写入时间倒序 */
@@ -119,6 +127,17 @@ export const SESSION_EVENTS = {
   turnEnd: "turn.end",
   /** 对话内通知（绑会话） */
   notice: "session.notice",
+  /**
+   * 服务端向客户端提问：**需要用户决定的事，服务端不替用户选**。
+   *
+   * 与通知的区别是它要一个回答（有 `questionId`），且服务端那一侧正等着它：自动迁移
+   * 「用哪种方式交接」原本是 TUI 进程内的一个三选一，前后端分离之后必须原样回到用户手上
+   * —— 否则服务端就是替用户做了「保真还是便宜」这个决定。
+   *
+   * 回答走 `session.answer`；答案来晚了（超时 / 会话已收）服务端回 `answered: false`，
+   * 不报错（那不是参数错）。
+   */
+  question: "session.question",
   /**
    * 会话换了 id（迁移 / 另存为）。
    *
@@ -263,6 +282,24 @@ export type SessionIdChangedEvent = {
   sessionId: string;
 };
 
+/**
+ * 服务端向客户端提问（见 `SESSION_EVENTS.question` 的「为什么」）。
+ *
+ * 载荷只有可判别的事实：`kind` 说明问的是哪件事，两个 token 数是**触发上下文**
+ * —— 客户端选择器的标题要显示「已用 X / 上限 Y」，这个数只有服务端手里有（用量是
+ * Agent 那边的事实），客户端自己算不出来，服务端也不替它拼成一句文案。
+ */
+export type SessionQuestionEvent = {
+  event: typeof SESSION_EVENTS.question;
+  sessionId: string;
+  /** 本次提问的 id（回答时带回来；服务端据此认领，过期的回答一律拒） */
+  questionId: string;
+  kind: SessionQuestionKind;
+  /** 触发上下文（客户端选择器的标题要显示「已用 X / 上限 Y」） */
+  promptTokens: number;
+  handoffTokens: number;
+};
+
 export interface SessionCancelParams {
   sessionId: string;
 }
@@ -394,6 +431,33 @@ export type MessageContent = string | MessageContentBlock[];
  * 客户端（将来的浏览器 / 手机）不该为了一个枚举去装 SDK。
  */
 export type HandoffMode = "self" | "summary";
+
+/**
+ * 服务端提问的种类。
+ *
+ * 只增不改语义（与通知 code 表同一条规矩）：客户端按 `kind` 决定弹哪个选择器，
+ * 改一个旧值的含义等于让老客户端渲染成别的东西。
+ */
+export type SessionQuestionKind = "handoff-mode";
+
+/**
+ * 回答一次提问。
+ *
+ * `questionId` 必填且必须原样带回来：服务端靠它认领，**过期的回答一律拒**（见
+ * `SessionAnswerResult.answered`）—— 用户在超时之后才点的那个选项，不该作用于
+ * 一段已经继续跑下去的会话。
+ */
+export interface SessionAnswerParams {
+  sessionId: string;
+  questionId: string;
+  /** `null` = 用户选择「不交接」（跳过本次迁移） */
+  mode: HandoffMode | null;
+}
+
+export interface SessionAnswerResult {
+  /** `false` = 这个问题已经不在了（超时 / 会话已收）：客户端不必重试 */
+  answered: boolean;
+}
 
 export interface SessionHandoffParams {
   sessionId: string;
@@ -605,5 +669,6 @@ export type ServerEvent =
   | SessionNoticeEvent
   | GlobalNoticeEvent
   | SessionIdChangedEvent
+  | SessionQuestionEvent
   | SubAgentStartedEvent
   | SubAgentEndedEvent;

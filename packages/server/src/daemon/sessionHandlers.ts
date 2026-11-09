@@ -11,7 +11,7 @@
  */
 
 import type { Connection, MethodHandler } from "./Daemon.js";
-import { badParams, codedError, optionalString, requireNumber, requireString } from "./params.js";
+import { badParams, codedError, field, optionalString, requireNumber, requireString } from "./params.js";
 import { ensureWorkspace, readWorkspace } from "../service/workspace/workspace.js";
 import { FileIndex } from "../service/workspace/FileIndex.js";
 import type { SessionManager } from "../service/session/SessionManager.js";
@@ -21,6 +21,7 @@ import {
   WORKSPACE_METHODS,
   type HandoffMode,
   type MessageContent,
+  type SessionAnswerResult,
   type SessionAttachResult,
   type SessionCancelResult,
   type SessionCreateResult,
@@ -151,6 +152,21 @@ export function createSessionHandlers(options: SessionHandlerOptions): Record<st
       return manager.cancel(requireString(params, "sessionId"));
     },
 
+    /**
+     * 回答服务端提出的问题（目前只有自动迁移的「用哪种方式交接」）。
+     *
+     * 三个字段都是必填的：`mode` 不给不等于「不交接」—— 「不交接」是一个明确的选择，
+     * 用 `null` 表达；字段缺失是调用方漏了东西（或客户端版本对不上），当场拒比默默按
+     * `null` 处理安全得多（后者会让用户的会话在无提示的情况下不迁移）。
+     */
+    [SESSION_METHODS.answer]: (params): SessionAnswerResult => {
+      return manager.answer(
+        requireString(params, "sessionId"),
+        requireString(params, "questionId"),
+        requireAnswerMode(params),
+      );
+    },
+
     [SESSION_METHODS.list]: (params): SessionListResult => {
       return { sessions: manager.list(requireString(params, "workspaceId")) };
     },
@@ -254,5 +270,18 @@ function optionalMode(params: unknown): HandoffMode | undefined {
     throw badParams(`invalid "mode" (expected self | summary)`);
   }
   return value;
+}
+
+/**
+ * 回答自动迁移提问的执行者：`self` / `summary` / `null` 三选一。
+ *
+ * 与 `optionalMode` 分开而不是复用：那里「没给」是合法的（用默认执行者），这里
+ * 「没给」不合法 —— `null` 已经是「不交接」那个选项，`undefined` 只能是调用方写错了。
+ */
+function requireAnswerMode(params: unknown): HandoffMode | null {
+  const value = field(params, "mode");
+  if (value === null) return null;
+  if (value === "self" || value === "summary") return value;
+  throw badParams(`invalid "mode" (expected self | summary | null)`);
 }
 

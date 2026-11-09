@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Daemon } from "./Daemon.js";
 import { createSessionHandlers } from "./sessionHandlers.js";
-import { SessionManager, type AgentLike } from "../service/session/SessionManager.js";
+import { SessionManager, type AgentLike, type CreateAgentInput } from "../service/session/SessionManager.js";
 import { FileSessionStore } from "../service/store/FileSessionStore.js";
 import { encodeFrame, FrameDecoder } from "../protocol/frames.js";
 import { PROTOCOL_VERSION } from "../protocol/messages.js";
@@ -86,8 +86,8 @@ let defaultWorkspacePath: string;
 let daemon: Daemon | null = null;
 let agent: FakeAgent;
 let manager: SessionManager;
-/** `createAgent` 收到的入参（断言「这一段会话跑在哪个路径上」） */
-let agentInputs: Array<{ workspaceId: string; path: string; agentId?: string }>;
+/** `createAgent` 收到的入参（断言「这一段会话跑在哪个路径上」，以及那两个会话层钩子） */
+let agentInputs: CreateAgentInput[];
 let client: TestClient | null = null;
 
 beforeEach(() => {
@@ -430,6 +430,86 @@ describe("会话处理器（真 socket）", () => {
       client!.call(SESSION_METHODS.handoff, { sessionId: created.sessionId, mode: "auto" }),
     ).rejects.toThrow(/bad-params/);
     // 连接还能继续用
+    expect(await client!.call("ping")).toEqual({ pong: true });
+  });
+
+  it("session.answer：提问以事件推过连接，回答之后服务端那一轮继续跑（迁移用的是用户选的 mode）", async () => {
+    await startDaemon();
+    await client!.call(EVENT_METHODS.watch);
+    const created = (await client!.call(SESSION_METHODS.create, {
+      workspaceId: "ws-1",
+      path: dir,
+    })) as { sessionId: string };
+    agent.messages = [{ role: "user", content: "旧任务" }];
+
+    // 走「插件 → 会话层」那条路：会话层拿到的那两个钩子就是装配时给的
+    const input = agentInputs.at(-1)!;
+    const migrated = (async () => {
+      const mode = await input.resolveMode!({ promptTokens: 999, handoffTokens: 500 });
+      if (mode === null) return;
+      await input.autoMigrate!(mode);
+    })();
+
+    const question = (await client!.next()) as any;
+    expect(question).toMatchObject({
+      event: "session.question",
+      sessionId: created.sessionId,
+      kind: "handoff-mode",
+      promptTokens: 999,
+      handoffTokens: 500,
+    });
+
+    expect(
+      await client!.call(SESSION_METHODS.answer, {
+        sessionId: created.sessionId,
+        questionId: question.questionId,
+        mode: "summary",
+      }),
+    ).toEqual({ answered: true });
+    await migrated;
+
+    // 旧 id 退场、新 id 登场：迁移真的按用户的选择发生了
+    const listed = (await client!.call(SESSION_METHODS.list, { workspaceId: "ws-1" })) as any;
+    expect(listed.sessions).toHaveLength(1);
+    expect(listed.sessions[0].sessionId).not.toBe(created.sessionId);
+  });
+
+  it("session.answer 参数错 → bad-params（mode 缺失不等于「不交接」：那是 null）", async () => {
+    await startDaemon();
+    const created = (await client!.call(SESSION_METHODS.create, {
+      workspaceId: "ws-1",
+      path: dir,
+    })) as { sessionId: string };
+
+    await expect(
+      client!.call(SESSION_METHODS.answer, { sessionId: created.sessionId, mode: "self" }),
+    ).rejects.toThrow(/bad-params/);
+    await expect(
+      client!.call(SESSION_METHODS.answer, {
+        sessionId: created.sessionId,
+        questionId: "q-1",
+        mode: "auto",
+      }),
+    ).rejects.toThrow(/bad-params/);
+    // 连接还能继续用
+    expect(await client!.call("ping")).toEqual({ pong: true });
+  });
+
+  it("session.answer 回答一个已经不在的问题 → answered:false（来晚了，不是错）", async () => {
+    await startDaemon();
+    const created = (await client!.call(SESSION_METHODS.create, {
+      workspaceId: "ws-1",
+      path: dir,
+    })) as { sessionId: string };
+
+    // 超时 / 已答过 / 会话已收，对客户端都是同一件事：不用重试
+    expect(
+      await client!.call(SESSION_METHODS.answer, {
+        sessionId: created.sessionId,
+        questionId: "q-404",
+        mode: null,
+      }),
+    ).toEqual({ answered: false });
     expect(await client!.call("ping")).toEqual({ pong: true });
   });
 });

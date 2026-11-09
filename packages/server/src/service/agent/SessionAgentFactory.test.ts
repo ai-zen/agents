@@ -348,6 +348,50 @@ describe("SessionAgentFactory：按模型阈值装护栏与自动迁移", () => 
     expect(migrated).toBe(1);
   });
 
+  it("resolveMode 透传给 AutoMigratePlugin，用户选的执行者真的到得了会话层", async () => {
+    const { agent, plugins } = recordingAgent();
+    const used: Array<string | undefined> = [];
+    const factory = factoryWith(guardedConfig, agent, {});
+
+    await factory.create({
+      workspaceId: "ws",
+      path: "/p",
+      agentId: "default",
+      // 会话层提供：它会向客户端提问（session.question）并等回答
+      resolveMode: async () => "summary",
+      autoMigrate: async (mode) => {
+        used.push(mode);
+      },
+      isHandoffBusy: () => false,
+    });
+
+    const autoMigrate = plugins.find((plugin) => plugin instanceof AutoMigratePlugin) as any;
+    await autoMigrate.onAfterSend({ agent });
+    // 关键：`mode` 不能在插件 → 会话层这一跳丢掉，否则用户只是弹了个框
+    expect(used).toEqual(["summary"]);
+  });
+
+  it("用户在提问里选「不交接」：插件跳过本次迁移", async () => {
+    const { agent, plugins } = recordingAgent();
+    const used: Array<string | undefined> = [];
+    const factory = factoryWith(guardedConfig, agent, {});
+
+    await factory.create({
+      workspaceId: "ws",
+      path: "/p",
+      agentId: "default",
+      resolveMode: async () => null,
+      autoMigrate: async (mode) => {
+        used.push(mode);
+      },
+      isHandoffBusy: () => false,
+    });
+
+    const autoMigrate = plugins.find((plugin) => plugin instanceof AutoMigratePlugin) as any;
+    await autoMigrate.onAfterSend({ agent });
+    expect(used).toEqual([]);
+  });
+
   it("交接中让行：传给安装器的 isSuspended 就是 isHandoffBusy（驱动子 Agent 硬线验证）", async () => {
     const { agent, plugins } = recordingAgent();
     let busy = true;

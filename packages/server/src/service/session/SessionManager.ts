@@ -20,6 +20,9 @@ import { PhaseTracker, pendingToolCalls, type PhaseInfo } from "../progress/Phas
 import type { SessionRef, SessionStore } from "../store/SessionStore.js";
 import { EventHub } from "../events/EventHub.js";
 import { SessionHandoff, isHandoffAborted, type HandoffAgentLike } from "../handoff/SessionHandoff.js";
+// 只借**类型**：自动迁移触发上下文的形状真相源在 SDK 的插件里，本层再抄一份就是
+// 第二份会漂移的规则（`import type` 编译后会被擦掉，不构成运行期依赖）。
+import type { AutoMigrateTriggerInfo } from "@ai-zen/agents-sdk";
 import type { MessageContent, SubAgentSnapshotResult } from "../../protocol/sessions.js";
 import {
   SESSION_EVENTS,
@@ -105,8 +108,18 @@ export interface CreateAgentInput {
    * 自动迁移的落地动作（**会话层提供**：存档、换 id、事件都在它手里）。
    *
    * 不给就不装自动迁移：没有交接能力时该让硬线拦，而不是让 SDK 去调一个不存在的服务。
+   *
+   * `mode` 是用户在 `session.question` 里选的执行者：`resolveMode` 只回答「用哪种方式」，
+   * 真正动手的是这里 —— 中间那一跳把它丢掉，用户的选择就只是弹了个框。
    */
-  autoMigrate?: () => Promise<void>;
+  autoMigrate?: (mode?: HandoffMode) => Promise<void>;
+  /**
+   * 自动迁移的执行者解析（**会话层提供**：它会向客户端提问并等回答）。
+   *
+   * 不提供就用交接服务自己的默认执行者（`self`）：那是兜底，不是产品决策 ——
+   * 有客户端在看时，谁来写交接文档必须由用户决定。
+   */
+  resolveMode?: (info: AutoMigrateTriggerInfo) => Promise<HandoffMode | null>;
 }
 
 /** `create()` 的入参：`agentId` / `sessionId` 都可省，前者补 `default`，后者由服务端分配 */
@@ -151,6 +164,13 @@ export interface SessionManagerOptions {
    * `no-handoff` —— 交接要读磁盘上的 `handoff` Skill，本层不自己猜路径。
    */
   handoff?: { aiZenDir: string; homeDir: string };
+  /**
+   * 等客户端回答「自动迁移用哪种方式」的上限（毫秒），缺省 `ASK_TIMEOUT_MS`（5 分钟）。
+   *
+   * 之所以可注入：等 5 分钟才能验证的用例只能靠 `sleep(300000)`，那是把「超时」这件事
+   * 测成「时钟」。理由见 `askHandoffMode`（为什么必须有时限）。
+   */
+  askTimeoutMs?: number;
 }
 
 interface LiveSession {
@@ -187,6 +207,16 @@ interface LiveSession {
   subAgentSeq: number;
   /** id 序号（与展示序号分开：id 要稳定且不带含义，见 `onSubStart` 的注释） */
   subAgentIdSeq: number;
+  /**
+   * 等客户端回答的问题（`questionId` → resolve）。
+   *
+   * 一个会话同一时刻只会有 0 或 1 个（自动迁移是串行的：`settleDeferred` 占着坑），
+   * 仍用 Map 是因为「过期的回答一律拒」这条判定靠它：认领时按 id 查表，查不到就是来晚了
+   * （超时 / 已答过 / 会话已收），而那三种情况对客户端是同一件事 —— 不必重试。
+   */
+  questions: Map<string, (mode: HandoffMode | null) => void>;
+  /** 提问序号（只在会话内递增）：认领靠它的而不是轮次，一轮里可以问不止一次 */
+  questionSeq: number;
   detach: () => void;
 }
 
@@ -207,6 +237,16 @@ function codedError(code: string, message: string): Error & { code: string } {
   error.code = code;
   return error as Error & { code: string };
 }
+
+/**
+ * 等客户端回答「自动迁移用哪种方式交接」的上限：5 分钟。
+ *
+ * 进程内（TUI）是「人不在就一直等」：那一等只挂在自己终端上，用户回来接着选就行。
+ * 远程模式完全不同 —— 提问之后这一段会话就在等答案，等多久就等于把它晾多久：用户
+ * 看到的是「发不出下一条消息」（`turn-busy`），而且永远等不到这一轮的收尾。所以必须
+ * 有个上限：5 分钟足够人从别的窗口回来点一下，又不至于把会话晾到没法用。
+ */
+const ASK_TIMEOUT_MS = 300_000;
 
 /**
  * 会话管理器只持有 Agent「能跑一轮」那一面（`AgentLike`，为了能用假件测完整个事件流）；
@@ -272,6 +312,8 @@ export class SessionManager {
   private readonly storeFactory: SessionManagerOptions["storeFor"];
   private readonly invalidateScope: SessionManagerOptions["invalidateScope"];
   private readonly handoffOptions: SessionManagerOptions["handoff"];
+  /** 等客户端回答的时限（可注入，缺省见 `ASK_TIMEOUT_MS`） */
+  private readonly askTimeoutMs: number;
   private readonly sessions = new Map<string, LiveSession>();
   private readonly hub: EventHub;
   /** 自建的 hub 由自己清理；外面传进来的归外面管 */
@@ -283,6 +325,7 @@ export class SessionManager {
     this.storeFactory = options.storeFor;
     this.invalidateScope = options.invalidateScope;
     this.handoffOptions = options.handoff;
+    this.askTimeoutMs = options.askTimeoutMs ?? ASK_TIMEOUT_MS;
     this.hub = options.hub ?? new EventHub();
     this.ownsHub = !options.hub;
   }
@@ -375,12 +418,17 @@ export class SessionManager {
    *
    * 必须能存档：prune 之后旧历史只存在于存档里，存不下去就别动手。
    *
+   * `mode` 是客户端在 `session.question` 里选的执行者。它必须从这条路径传下去：
+   * `resolveMode` 只回答「用哪种方式」，真正动手的是这里 —— 而插件手里的 `service`
+   * 是个 stub（见 `SessionAgentFactory.installPlugins`），不在这一跳把 mode 捞回来，
+   * 用户在弹框里的选择就只是个框。不传则用交接服务的默认执行者（`self`）。
+   *
    * 这里**不**加「已有一轮在跑就拒绝」那条判断（`send` 的 `turn-busy` / `requireIdle`
    * 的 `turn-in-flight`）：它天生运行在**一轮内部**（插件在 `onAfterSend` 里调），
    * `turnSettled` 必然为 false —— 照搬那条判断会把自动迁移整个废掉。它挡并发靠的是
    * 下面的 `settleDeferred` 占坑。
    */
-  private async autoMigrate(sessionId: string): Promise<void> {
+  private async autoMigrate(sessionId: string, mode?: HandoffMode): Promise<void> {
     const session = this.sessions.get(sessionId);
     // 交接已在跑（插件自己的 `busy` 检查漏了一次）：不重复迁移，也不报错
     if (!session || session.settleDeferred) return;
@@ -408,11 +456,83 @@ export class SessionManager {
         params: { sessionId: previousId },
       });
 
-      await this.handoffOf(session).migrate(asHandoffAgent(session.agent));
+      await this.handoffOf(session).migrate(asHandoffAgent(session.agent), mode);
       await this.adopt(session, store);
     } finally {
       session.settleDeferred = false;
     }
+  }
+
+  /**
+   * 问客户端「这次自动迁移用哪种方式交接」；返回 `null` = 用户选择不交接。
+   *
+   * 这是把进程内 TUI 的三选一（自己写 / 独立摘要 / 不交接）搬到线上。谁来写交接文档是
+   * **用户的决定**（保真 vs 便宜、要不要现在就走），服务端替他选 `self`，等于把他没有的
+   * 能力当成他的选择 —— 这正是「基础交互被前后端分离改掉」的那类回归。
+   *
+   * 四个决定，每条都有代价：
+   *   1. **没人在看就不问**：问题发出去没人看得见（客户端已退出，而会话仍在服务端活着），
+   *      等一个不会来的答案，只是把这一轮挂死；
+   *   2. 先登记再发事件：事件是同步推给订阅者的，客户端可能在同一轮事件循环里就回了
+   *      `session.answer`；先发后登记会让那条回答撞上「表里没有这个 id」；
+   *   3. **等，但有时限**（见 `ASK_TIMEOUT_MS`）：进程内「人不在就一直等」的等价物是
+   *      「一整段会话永久 busy」，远程不能这么干；
+   *   4. 无论怎么结束都要清表：留着的条目会让下一次回答认领一个已经没人等的 promise。
+   */
+  private async askHandoffMode(
+    session: LiveSession,
+    info: AutoMigrateTriggerInfo,
+  ): Promise<HandoffMode | null> {
+    // 1) 没有客户端在看就不要问（理由见上）
+    if (this.hub.watcherCount() === 0) return "self";
+
+    const questionId = `q-${++session.questionSeq}`;
+    // 2) 先登记再发事件（理由见上）
+    const answer = new Promise<HandoffMode | null>((resolve) => {
+      session.questions.set(questionId, resolve);
+    });
+
+    this.emit({
+      event: SESSION_EVENTS.question,
+      sessionId: session.id,
+      questionId,
+      kind: "handoff-mode",
+      promptTokens: info.promptTokens,
+      handoffTokens: info.handoffTokens,
+    });
+
+    // 3) 等回答，但有时限：超时按默认执行者接着走，与「没人在看」同一个落点
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<HandoffMode>((resolve) => {
+      timer = setTimeout(() => resolve("self"), this.askTimeoutMs);
+    });
+    try {
+      return await Promise.race([answer, timedOut]);
+    } finally {
+      // 4) 三条出口（答了 / 超时 / 被 `releaseQuestions` 放行）都走这里：清定时器 + 清表。
+      //    清表必须无条件做 —— 「表里查不到 = 这个问题已经不在了」是 `answer()` 唯一的判定
+      clearTimeout(timer);
+      session.questions.delete(questionId);
+    }
+  }
+
+  /**
+   * 把挂着的提问全部按默认执行者放行。
+   *
+   * 什么时候需要它：会话被关了（`close` / `dispose`）、或这一轮已经收尾 —— 这两种情况下
+   * 不会再有回答进来，而 `askHandoffMode` 那边还挂着一个 promise。不放行它，那一轮就要
+   * 白等到 5 分钟超时，期间这段会话一直占着闸门（后面的 `send` 全报 `turn-busy`）。
+   *
+   * 用 `self` 而不是「跳过」：关闭/收尾是**流程**结束了，不是用户表达了「这次不交接」；
+   * 按默认执行者继续，与「没有客户端在看」同一口径。真到了迁移那一步，如果会话已经不在，
+   * `autoMigrate` 会自己打住。
+   */
+  private releaseQuestions(session: LiveSession, mode: HandoffMode = "self"): void {
+    if (session.questions.size === 0) return;
+    // 先清表再 resolve：resolve 会让提问方继续跑（可能立即发起新的提问）
+    const pending = [...session.questions.values()];
+    session.questions.clear();
+    for (const resolve of pending) resolve(mode);
   }
 
   /**
@@ -518,7 +638,9 @@ export class SessionManager {
       agentId: session.agentId,
       // 重建后插件要接回同一套让行/自动迁移：它们也是 Agent 装配的一部分
       isHandoffBusy: () => session.settleDeferred,
-      autoMigrate: () => this.autoMigrate(session.id),
+      autoMigrate: (mode) => this.autoMigrate(session.id, mode),
+      // 重建不影响「用哪种方式交接」这件事：它仍然得由客户端回答
+      resolveMode: (info) => this.askHandoffMode(session, info),
     });
     agent.messages = messages;
 
@@ -662,6 +784,13 @@ export class SessionManager {
     // Agent 也跟着存档走：`/load` 只拿到一个 id（列表不解析存档内容），
     // 存档里记着这段会话是哪个 Agent 跑的 —— 不传就沿用它，而不是默默换成 `default`。
     const agentId = input.agentId || record?.agentId || "default";
+    /**
+     * 装配钩子里要用到**会话对象**（提问发在它的 id 上、回答认领它的问题表），而这一刻
+     * 会话还没造完、更没进 `sessions` 表。用一个稍后赋值的局部变量把它带进闭包 —— 与上面
+     * 那几个用局部 `sessionId` 的钩子是同一个理由：装配先于注册，而这些钩子只会在会话
+     * 真正跑起来之后被调到（那时 `session` 早已就位）。
+     */
+    let session: LiveSession;
     const agent = await this.createAgent({
       workspaceId: input.workspaceId,
       path: input.path,
@@ -669,11 +798,13 @@ export class SessionManager {
       // 交接/迁移中让护栏让行：此刻这段会话还没注册（返回 false），正好
       isHandoffBusy: () => this.sessions.get(sessionId)?.settleDeferred ?? false,
       // 自动迁移：SDK 的插件在**一轮内部**触发，落地动作必须回到会话层
-      autoMigrate: () => this.autoMigrate(sessionId),
+      autoMigrate: (mode) => this.autoMigrate(sessionId, mode),
+      // 谁来写交接文档由用户在 `session.question` 里定（会话层向客户端提问并等回答）
+      resolveMode: (info) => this.askHandoffMode(session, info),
     });
     if (record && record.messages.length > 0) agent.messages = [...record.messages];
 
-    const session: LiveSession = {
+    session = {
       id: sessionId,
       workspaceId: input.workspaceId,
       path: input.path,
@@ -688,6 +819,8 @@ export class SessionManager {
       subAgents: new Map(),
       subAgentSeq: 0,
       subAgentIdSeq: 0,
+      questions: new Map(),
+      questionSeq: 0,
       detach: () => {},
     };
     session.detach = this.attachEvents(session);
@@ -790,6 +923,27 @@ export class SessionManager {
     return { turnId: session.turnId };
   }
 
+  /**
+   * 回答服务端提出的问题（`session.answer`）。
+   *
+   * 三种结果各有含义，不能混：
+   *   - 会话不存在 → `unknown-session`：调用方拿错了 id；
+   *   - 问题不在表里 → `{ answered: false }`：**不是参数错，是来晚了**（超时 / 已经答过 /
+   *     会话已收）。客户端把选择器收掉就好，不重试、不报错 —— 把它报成错误，用户会在
+   *     “操作失败”里卡一辈子，而实际上服务端早就自己继续跑了；
+   *   - 认领成功 → `{ answered: true }`，`askHandoffMode` 那边随之继续。
+   */
+  answer(sessionId: string, questionId: string, mode: HandoffMode | null): { answered: boolean } {
+    const session = this.require(sessionId);
+    const resolve = session.questions.get(questionId);
+    if (!resolve) return { answered: false };
+    // 先摘表再 resolve：同一个 questionId 的第二次回答必须落进「来晚了」那条分支，
+    // 而不是把同一个问题答两遍（第二遍的 promise 已经没人等了）
+    session.questions.delete(questionId);
+    resolve(mode);
+    return { answered: true };
+  }
+
   cancel(sessionId: string): { cancelled: boolean } {
     const session = this.sessions.get(sessionId);
     if (!session) return { cancelled: false };
@@ -822,6 +976,8 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
     session.handoff?.abort();
+    // 会话已经收了：挂着的提问不会再有答案 —— 放行它，别让提问方白等到超时
+    this.releaseQuestions(session);
     session.detach();
     // 会话已经不存在了：不留任何指向它的残留（子 Agent 里的实例也跟着退场）
     this.clearSubAgents(session);
@@ -833,6 +989,7 @@ export class SessionManager {
   dispose(): void {
     for (const session of this.sessions.values()) {
       session.handoff?.abort();
+      this.releaseQuestions(session);
       session.detach();
     }
     this.sessions.clear();
@@ -1036,6 +1193,11 @@ export class SessionManager {
     // 交接/迁移进行中：这一轮的收尾归方法自己的 promise（见 `settleDeferred`）
     if (session.settleDeferred) return;
     session.turnSettled = true;
+
+    // 这一轮已经收尾：它提的问不会再有答案了（客户端在等的是 `turn.end`，不是这个选择器）。
+    // 不在这里兜底放行，提问方就要挂到超时 —— 而它一直占着闸门，后面的 `send` 全报
+    // `turn-busy`。放在发 `turn.end` 之前：两个事件的先后与「收尾已定」一致。
+    this.releaseQuestions(session);
 
     // 一轮结束：子 Agent 列表跟着消失（只活当前一轮，理由见 `clearSubAgents`）。
     // 清在 `turn.end` 之前：客户端收到收尾事件时再去要子 Agent 快照，拿不到才是对的。
