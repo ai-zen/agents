@@ -98,6 +98,21 @@ describe("SessionAgentFactory", () => {
     expect(scopes[1]!.paths.skillsDirs[0]).toBe(join("/work/b", ".ai-zen", "skills"));
   });
 
+  /**
+   * 工作区路径必须递到装配方：它是 `Scope` 的 cwd（工具相对路径的基准）。
+   *
+   * `agentPaths` 的注释一直写着「工作区根是 Agent 的 cwd」，但这个字段曾经只用来拼
+   * 项目级 skills / tools / mcp 路径，**没往 `Scope` 递** —— 于是服务端进程的 cwd
+   * （守护进程被拉起时的目录）成了工具的相对路径基准。这条用例钉的就是那个字段。
+   */
+  it("工作区路径随 paths 一起交给装配方（`Scope` 的 cwd 靠它，否则工具落到守护进程目录）", async () => {
+    const { factory, scopes } = makeFactory();
+
+    await factory.create({ workspaceId: "ws", path: "/work/proj", agentId: "default" });
+
+    expect(scopes[0]!.paths.workspacePath).toBe("/work/proj");
+  });
+
   it("并发建同一工作区的会话：只初始化一次（缓存的是 Promise）", async () => {
     const { factory, calls } = makeFactory();
 

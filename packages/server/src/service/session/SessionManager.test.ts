@@ -10,6 +10,15 @@ import type { HandoffMode, ServerEvent } from "../../protocol/sessions.js";
 import { EventHub } from "../events/EventHub.js";
 
 /**
+ * 等一轮真正收尾。
+ *
+ * 收尾是**异步**的：`settleTurn` 先落盘、再发 `turn.end`（顺序是那条需求的全部意义）。
+ * 所以驱动完 `finally` 之后要等一拍再断言，否则测的是「还没写完」而不是「没发」
+ * —— 这与本仓「等条件成立」的约定同一个意思，只是这里的条件就是「异步收尾跑完」。
+ */
+const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+/**
  * 假 Agent —— 只实现会话管理器用到的那一小面（结构类型），
  * 事件由测试手动驱动，于是「SDK 的时序」在测试里是**可编程**的，不依赖网络与真实模型。
  */
@@ -243,6 +252,7 @@ describe("SessionManager：turnId 与「不等一轮跑完」", () => {
     // 先让第一轮收尾（SDK 的 `finally`）再起下一轮：并行两轮会被 `turn-busy` 挡住
     // （事件靠 `turnId` 的当前值归轮，两轮并行必然串号，见 `send` 的注释）
     agent.fire("finally");
+    await settled();
 
     expect(manager.send(sessionId, "第二轮").turnId).toBe(2);
     agent.fire("open");
@@ -328,6 +338,7 @@ describe("SessionManager：并发守卫（一轮在跑时不再起第二轮）",
   it("该轮收尾（finally）之后 send 恢复正常：turnId 变 2", async () => {
     const { sessionId } = await hangTurn();
     agent.fire("finally");
+    await settled();
     expect(pick("turn.end").at(-1)).toMatchObject({ turnId: 1, ok: true });
 
     expect(guarded.send(sessionId, "第二轮")).toEqual({ turnId: 2 });
@@ -359,6 +370,7 @@ describe("SessionManager：并发守卫（一轮在跑时不再起第二轮）",
     expect(agent.aborted).toBe(1);
     // 中止只负责掐断，收尾仍由 SDK 的 `finally` 落地（会话层不替它宣布结束）
     agent.fire("finally");
+    await settled();
     expect(pick("turn.end").at(-1)).toMatchObject({ turnId: 1 });
 
     expect(guarded.send(sessionId, "再来一轮")).toEqual({ turnId: 2 });
@@ -381,6 +393,7 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
     agent.fire("parsed", { message: { role: "assistant", content: "你好" } });
     // 不带工具调用：状态机不改阶段，由 finally 归零
     agent.fire("finally");
+    await settled();
     expect(manager.list("ws-1")[0]!.phase).toBeNull();
     expect(pick("turn.end").at(-1)!.ok).toBe(true);
   });
@@ -446,6 +459,7 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
 
     agent.fire("error", Object.assign(new Error("超时"), { code: "timeout" }));
     agent.fire("finally");
+    await settled();
 
     const ends = pick("turn.end");
     expect(ends).toHaveLength(1);
@@ -590,6 +604,7 @@ describe("SessionManager：子 Agent（栏目）", () => {
     expect((await manager.subAgentSnapshot(sessionId, "sub-1")).status).toBe("running");
 
     agent.fire("finally");
+    await settled();
 
     await expect(manager.subAgentSnapshot(sessionId, "sub-1")).rejects.toMatchObject({
       code: "sub-agent-missing",
@@ -963,7 +978,7 @@ describe("SessionManager：交接 / 迁移", () => {
     return sessionId;
   };
 
-  it("handoff：只写文档，id / 存档 / 历史都不动", async () => {
+  it("handoff：只写文档，不换 id、不剔历史；交接回合本身照常落盘", async () => {
     const sessionId = await openChatted();
     const before = [...agent.messages];
 
@@ -973,7 +988,34 @@ describe("SessionManager：交接 / 迁移", () => {
     expect(existsSync(result.handoffPath)).toBe(true);
     expect(result.handoffPath.startsWith(join(workspace, ".ai-zen", "handoffs"))).toBe(true);
     expect(agent.messages).toEqual(before); // 摘要模式不碰消息
-    expect(store.records.size).toBe(0); // 不存档（那是 /save 与 migrate 的事）
+    // 交接回合（指令 + 回执）留在会话里，而「每轮 turn.end 前落盘」对它同样成立：
+    // 用户 `/handoff` 完直接退出，回来时这一段必须在存档里（旧版由
+    // `ConversationPersistPlugin.onInnerLoopEnd` 承担同一件事）。
+    expect([...store.records.keys()]).toEqual([sessionId]);
+  });
+
+  it("每轮收尾自动落盘：`turn.end` 之前写进存档，并把「本工作区上一轮」指过去", async () => {
+    const { sessionId } = await handoffManager.create({ workspaceId: "ws-1", path: workspace });
+    handoffManager.send(sessionId, "第一句");
+    agent.messages = [
+      { role: "user", content: "第一句" },
+      { role: "assistant", content: "答" },
+    ];
+    agent.fire("finally");
+    await settled();
+
+    // 这条就是「聊完退出、再 `ai` 接着上次」的全部机制：没有它，`session.last` 永远是空。
+    expect(store.records.get(sessionId)!.messages).toHaveLength(2);
+    expect(await store.lastSession()).toMatchObject({ id: sessionId });
+  });
+
+  it("空会话不落盘：`/load` 列表里不该出现一串空会话", async () => {
+    const { sessionId } = await handoffManager.create({ workspaceId: "ws-1", path: workspace });
+    handoffManager.send(sessionId, "hi"); // 只有 system 消息，没有用户消息
+    agent.fire("finally");
+    await settled();
+
+    expect(store.records.size).toBe(0);
   });
 
   it("migrate：先存旧会话、再剔历史、最后换 id（收尾发在旧 id 上）", async () => {
@@ -1097,6 +1139,7 @@ describe("SessionManager：另存为（/save <名字>）", () => {
     saveManager.send("chat_next", "留档");
     agent.fire("open");
     agent.fire("finally");
+    await settled();
 
     const result = await saveManager.saveAs("chat_next", "chat_debug_login");
 

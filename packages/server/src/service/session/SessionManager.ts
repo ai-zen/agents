@@ -192,6 +192,16 @@ interface LiveSession {
    * `self` 模式会在文档还没校验、历史还没剔除时就宣布本轮结束。
    */
   settleDeferred: boolean;
+  /**
+   * 这一轮收尾时要不要把会话写进存档（见 `settleTurn` 的第 1 步）。
+   *
+   * 只由「会产生对话内容」的回合置位：`send` / `handoff`。
+   * `migrate` **不能**置位——它在交接前已经把**完整历史**存进旧 id，之后才把消息剔除；
+   * 如果收尾时再无条件写一次，写下去的会是被 prune 过的版本，把刚存好的完整存档盖掉。
+   * `autoMigrate` 反过来是安全的：它跑在 `send` 的那一轮里，收尾时 id 已经换成新的，
+   * 写下去的就是新会话的开场（与旧版 `onMigrated` 里那次落盘同一个效果）。
+   */
+  persistOnSettle: boolean;
   /** 交接服务（首次交接时创建；持有取消句柄，见 `handoffOf`） */
   handoff: SessionHandoff | null;
   /**
@@ -546,6 +556,9 @@ export class SessionManager {
     const session = this.requireIdle(sessionId);
     this.beginTurn(session);
     session.settleDeferred = true;
+    // 交接回合也算对话内容（指令 + 工具调用 + 回执都会留在 messages 里）：收尾时落盘。
+    // `migrate` 不置位：它自己已在交接前存过完整历史，再写一次会把 prune 后的版本盖上去。
+    session.persistOnSettle = true;
     try {
       const outcome = await this.handoffOf(session).handoff(asHandoffAgent(session.agent), mode);
       return {
@@ -558,7 +571,7 @@ export class SessionManager {
       throw this.failHandoff(session, error);
     } finally {
       session.settleDeferred = false;
-      this.settleTurn(session);
+      await this.settleTurn(session);
     }
   }
 
@@ -603,7 +616,9 @@ export class SessionManager {
       const outcome = await this.handoffOf(session).migrate(asHandoffAgent(session.agent), mode);
 
       session.settleDeferred = false;
-      this.settleTurn(session);
+      // 收尾必须 **await**：它发的是**旧 id** 的 `turn.end`，而下一行就把 id 换掉了。
+      // 不等它跑完，客户端可能先收到新 id 的响应，再收一条指向旧会话的收尾事件。
+      await this.settleTurn(session);
 
       const nextId = await this.adopt(session, store);
       return {
@@ -616,7 +631,7 @@ export class SessionManager {
       throw this.failHandoff(session, error);
     } finally {
       session.settleDeferred = false;
-      this.settleTurn(session);
+      await this.settleTurn(session);
     }
   }
 
@@ -815,6 +830,7 @@ export class SessionManager {
       turnFailed: null,
       turnSettled: true,
       settleDeferred: false,
+      persistOnSettle: false,
       handoff: null,
       subAgents: new Map(),
       subAgentSeq: 0,
@@ -912,6 +928,8 @@ export class SessionManager {
     }
 
     this.beginTurn(session);
+    // 这一轮会产生对话内容：收尾时写进存档（`turn.end` 之前）
+    session.persistOnSettle = true;
 
     void session.agent.send(content).catch((error: any) => {
       // `send()` 自己抛错（不是事件通道里的 error）：当作本轮失败收尾
@@ -1040,7 +1058,9 @@ export class SessionManager {
       });
     };
 
-    const onFinally = () => this.settleTurn(session);
+    const onFinally = () => {
+      void this.settleTurn(session);
+    };
 
     /**
      * 一个子 Agent 开始了（core 的 `AgentTool` / `AgentToolLazy` 在委派边界广播）。
@@ -1185,14 +1205,69 @@ export class SessionManager {
   /** 失败即收尾（`error` 之后 SDK 仍会发 `finally`，靠 `turnSettled` 去重） */
   private failTurn(session: LiveSession, failure: { code: string; message: string }): void {
     session.turnFailed = failure;
-    this.settleTurn(session);
+    void this.settleTurn(session);
   }
 
-  private settleTurn(session: LiveSession): void {
+  /**
+   * 把会话写进存档（并更新「本工作区上一轮会话」指针）。
+   *
+   * 两条规矩与旧版 `ConversationPersistPlugin` 逐字对齐：
+   *   - **尚无用户消息就不写**：否则 `/load` 列表里会出现一串空会话；
+   *   - 写失败不抛（那是收尾路径）：转成 `persistFailed` 通知给用户，因为「以为存了、
+   *     其实没存」是最坏的失败形态——用户会在下次 `ai` 发现对话不翼而飞。
+   */
+  private async writeSession(session: LiveSession): Promise<void> {
+    const messages = session.agent.messages as Array<{ role?: unknown }>;
+    if (!messages.some((message) => message?.role === "user")) return;
+    const store = await this.storeFor(session.workspaceId);
+    // 没注入存档：这条路径本来就不支持落盘（与 `save` 的 `no-store` 同口径，
+    // 但这里是收尾路径，不报错）
+    if (!store) return;
+    try {
+      await store.write({ id: session.id, agentId: session.agentId, messages });
+      await store.setLastSession(session.id);
+    } catch (error: any) {
+      this.notice(session.id, {
+        level: "error",
+        code: "persistFailed",
+        params: { error: error?.message ?? String(error) },
+      });
+    }
+  }
+
+  /** 收尾时按标记落盘（为什么只有 `send` / `handoff` 置位，见 `persistOnSettle`） */
+  private async writeOnSettle(session: LiveSession): Promise<void> {
+    if (!session.persistOnSettle) return;
+    session.persistOnSettle = false;
+    await this.writeSession(session);
+  }
+
+  /**
+   * 收尾一轮。
+   *
+   * 五步的顺序是定死的，每一步都有人依赖它：
+   *
+   *   1. **先落盘**（带用户消息的回合）：`turn.end` 一到，客户端就认为这一轮结束、内容
+   *      已经定型；此时存档里还没有它，退出 TUI 再进来就「什么都没发生」。旧版的
+   *      `ConversationPersistPlugin` 干的就是这一步（每轮 `onInnerLoopEnd`），搬到服务端
+   *      之后一度漏了——于是「聊完退出、再 `ai` 是新会话」。
+   *   2. 放行挂着的提问：不会再有答案了。
+   *   3. 清子 Agent 栏目：它只活当前一轮。
+   *   4. 阶段归零并广播：界面据此把 spinner 收起来。
+   *   5. 发 `turn.end`。
+   *
+   * `turnSettled` 在入口就置位（重复调用直接返回）：落盘是异步的，不先置位就会写两遍。
+   * 代价是「已置位、`turn.end` 未发」之间有个微窗口，此时再 `send`/`migrate` 不会被拦——
+   * 但客户端要拿到 `turn.end` 才会发下一轮，这个窗口在协议上摸不到。
+   */
+  private async settleTurn(session: LiveSession): Promise<void> {
     if (session.turnSettled) return;
     // 交接/迁移进行中：这一轮的收尾归方法自己的 promise（见 `settleDeferred`）
     if (session.settleDeferred) return;
     session.turnSettled = true;
+
+    // 1) 落盘：`turn.end` 之前写完，存档与事件里的「这一轮」才是同一个东西
+    await this.writeOnSettle(session);
 
     // 这一轮已经收尾：它提的问不会再有答案了（客户端在等的是 `turn.end`，不是这个选择器）。
     // 不在这里兜底放行，提问方就要挂到超时 —— 而它一直占着闸门，后面的 `send` 全报
