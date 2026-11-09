@@ -313,12 +313,15 @@ describe("会话处理器（真 socket）", () => {
       sessions: any[];
     };
     expect(listed.sessions).toHaveLength(1);
+    // 列表条目只说「侧栏渲染需要的事」；`turnId` 不在里面（那是事件过滤用的，
+    // 客户端自己发过一条就知道），所以这里只断言展示相关的字段 + 阶段
     expect(listed.sessions[0]).toMatchObject({
       sessionId: created.sessionId,
-      workspaceId: "ws-1",
-      turnId: 1,
+      agentId: "default",
+      live: true,
       phase: { kind: "connecting" },
     });
+    expect(typeof listed.sessions[0].updatedAt).toBe("string");
   });
 
   it("未知会话 → unknown-session 错误帧；cancel 未知会话回 false（不是错）", async () => {
@@ -426,12 +429,16 @@ describe("会话处理器（真 socket）", () => {
     })) as any;
 
     expect(result.sessionId).not.toBe(created.sessionId);
-    // 活会话换了键：旧 id 不在列表里了
-    const listed = (await client!.call(SESSION_METHODS.list, { workspaceId: "ws-1" })) as any;
-    expect(listed.sessions.map((session: any) => session.sessionId)).toEqual([result.sessionId]);
-    // 旧会话与新会话都在存档里（旧的是交接前那份完整历史）
-    const saved = (await client!.call(SESSION_METHODS.listSaved, { workspaceId: "ws-1" })) as any;
-    expect(saved.sessions.map((ref: any) => ref.id).sort()).toEqual(
+    // 活会话换了键：旧 id 不再是活会话（但它作为存档仍在列表里）
+    const live = (await client!.call(SESSION_METHODS.list, {
+      workspaceId: "ws-1",
+      includeSaved: false,
+    })) as any;
+    expect(live.sessions.map((session: any) => session.sessionId)).toEqual([result.sessionId]);
+    // 旧会话与新会话都在存档里（旧的是交接前那份完整历史）—— 列表是合并视图，
+    // 所以这里按 id 集合断言，不看 `live`
+    const saved = (await client!.call(SESSION_METHODS.list, { workspaceId: "ws-1" })) as any;
+    expect(saved.sessions.map((session: any) => session.sessionId).sort()).toEqual(
       [created.sessionId, result.sessionId].sort(),
     );
   });
@@ -488,10 +495,14 @@ describe("会话处理器（真 socket）", () => {
     ).toEqual({ answered: true });
     await migrated;
 
-    // 旧 id 退场、新 id 登场：迁移真的按用户的选择发生了
-    const listed = (await client!.call(SESSION_METHODS.list, { workspaceId: "ws-1" })) as any;
+    // 旧 id 退场、新 id 登场：迁移真的按用户的选择发生了（旧那段已入档，所以只看活会话）
+    const listed = (await client!.call(SESSION_METHODS.list, {
+      workspaceId: "ws-1",
+      includeSaved: false,
+    })) as any;
     expect(listed.sessions).toHaveLength(1);
     expect(listed.sessions[0].sessionId).not.toBe(created.sessionId);
+    expect(listed.sessions[0].live).toBe(true);
   });
 
   it("session.answer 参数错 → bad-params（choice 缺失不等于「跳过」：那是 null）", async () => {
@@ -677,7 +688,7 @@ describe("session.attach：会话活得比连接久", () => {
     });
 
     expect(attached).toEqual(created);
-    expect(manager.list("ws-1")).toHaveLength(1);
+    expect(await manager.list("ws-1")).toHaveLength(1);
   });
 
   it("内存与盘上都没有这个 id → session-missing（不悄悄开一段空的）", async () => {
@@ -703,9 +714,12 @@ describe("session.attach：会话活得比连接久", () => {
  */
 describe("会话跟着连接走：断开后按宽限期回收（不靠客户端发帧）", () => {
   /** 轮询到条件成立（禁止固定 sleep：等的是「服务端做完这件事」，不是「过了多久」） */
-  const waitFor = async (condition: () => boolean, timeoutMs = 3000): Promise<void> => {
+  const waitFor = async (
+    condition: () => boolean | Promise<boolean>,
+    timeoutMs = 3000,
+  ): Promise<void> => {
     const deadline = Date.now() + timeoutMs;
-    while (!condition()) {
+    while (!(await condition())) {
       if (Date.now() > deadline) throw new Error("condition not met within timeout");
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
@@ -740,14 +754,67 @@ describe("会话跟着连接走：断开后按宽限期回收（不靠客户端�
       conn.close();
 
       // ② 宽限期内它还在：这正是「重连能接回正在跑的那一轮」的依据
-      await waitFor(() => idle.list("ws-hold").length === 1);
-      expect(idle.list("ws-hold").map((item) => item.sessionId)).toEqual([created.sessionId]);
+      await waitFor(async () => (await idle.list("ws-hold")).length === 1);
+      expect((await idle.list("ws-hold")).map((item) => item.sessionId)).toEqual([
+        created.sessionId,
+      ]);
 
       // ③ 到点：没人看着 → 收（不需要谁来通知）
-      await waitFor(() => idle.list("ws-hold").length === 0);
+      await waitFor(async () => (await idle.list("ws-hold")).length === 0);
     } finally {
       await instance.stop("test teardown");
       idle.dispose();
     }
+  });
+});
+
+/** 改名与删除：两条都是"侧栏动作"，必须能对**盘上的存档**做（不必先进内存） */
+describe("session.rename / session.remove（真 socket）", () => {
+  it("rename 改 title 不动 id；remove 之后列表与存档都没了", async () => {
+    await startDaemon();
+    const created = (await client!.call(SESSION_METHODS.create, {
+      workspaceId: "ws-1",
+      path: join(dir, "proj-title"),
+    })) as { sessionId: string };
+
+    const renamed = await client!.call(SESSION_METHODS.rename, {
+      workspaceId: "ws-1",
+      sessionId: created.sessionId,
+      title: "重构会话",
+    });
+    expect(renamed).toEqual({ sessionId: created.sessionId, title: "重构会话" });
+
+    const listed = (await client!.call(SESSION_METHODS.list, { workspaceId: "ws-1" })) as any;
+    expect(listed.sessions).toHaveLength(1);
+    expect(listed.sessions[0]).toMatchObject({ sessionId: created.sessionId, title: "重构会话" });
+
+    expect(
+      await client!.call(SESSION_METHODS.remove, {
+        workspaceId: "ws-1",
+        sessionId: created.sessionId,
+      }),
+    ).toEqual({ removed: true });
+
+    const after = (await client!.call(SESSION_METHODS.list, { workspaceId: "ws-1" })) as any;
+    expect(after.sessions).toEqual([]);
+    // 幂等
+    expect(
+      await client!.call(SESSION_METHODS.remove, {
+        workspaceId: "ws-1",
+        sessionId: created.sessionId,
+      }),
+    ).toEqual({ removed: false });
+  });
+
+  it("rename 参数缺 title → bad-params（不静默当空名字）", async () => {
+    await startDaemon();
+    const created = (await client!.call(SESSION_METHODS.create, {
+      workspaceId: "ws-1",
+      path: join(dir, "proj-title2"),
+    })) as { sessionId: string };
+
+    await expect(
+      client!.call(SESSION_METHODS.rename, { workspaceId: "ws-1", sessionId: created.sessionId }),
+    ).rejects.toThrow(/bad-params/);
   });
 });

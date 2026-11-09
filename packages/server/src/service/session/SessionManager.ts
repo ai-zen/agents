@@ -7,7 +7,7 @@
  * （阶段、正文增量、轮次收尾）、按阶段算出「谁还在跑」。
  *
  * 不管：Agent 怎么装配（配置、Scope、工具发现）——那由**组装根**通过 `createAgent`
- * 注入。存档只经 `SessionStore` 端口读写（`save` / `saveAs` / `last` / `rollback` / `listSaved`
+ * 注入。存档只经 `SessionStore` 端口读写（`save` / `saveAs` / `last` / `rollback` / `list`
  * 与每轮收尾的 `writeSession`）：格式、位置、目录布局都由那个端口决定，本类不碰文件。
  * 这条边界是为了让本文件可测：给一个假 Agent 就能跑完整个事件流程，不需要网络。
  *
@@ -36,7 +36,8 @@
  */
 
 import { PhaseTracker, pendingToolCalls, type PhaseInfo } from "../progress/PhaseTracker.js";
-import type { SessionRef, SessionStore } from "../store/SessionStore.js";
+import { compareSessionEntries } from "../store/SessionStore.js";
+import type { SessionRecord, SessionRef, SessionStore } from "../store/SessionStore.js";
 import { EventHub } from "../events/EventHub.js";
 import {
   SessionHandoff,
@@ -69,7 +70,9 @@ import {
   type SessionSaveAsResult,
   type SessionSaveResult,
   type SessionSnapshotResult,
-  type SessionSummary,
+  type SessionListEntry,
+  type SessionRenameResult,
+  type SessionRemoveResult,
 } from "../../protocol/sessions.js";
 
 /**
@@ -313,6 +316,22 @@ interface LiveSession {
    */
   keepAlive: boolean;
   /**
+   * 展示名（与 `id` 是两个事实：id 是身份，它是名字，改了不动 id）。
+   *
+   * `undefined` = 还没起过名：客户端拿首条用户消息兑底，服务端的自动标题也只在这种
+   * 情况下写（不覆盖手改，见 `autoTitle`）。
+   */
+  title?: string;
+  /**
+   * 会话级模型覆盖（三级解析的最内层）：本字段 > `AgentDefinition.modelId` > `AppConfig.defaultModel`。
+   *
+   * 之所以不直接改写 `agent.modelConfig`：它是**这段会话**的意思，不该抹到 Agent 定义上
+   * （那会改动所有用同一个 Agent 的会话）。换 Agent 时会被清掉（见 `setAgent`）。
+   */
+  modelId?: string;
+  /** 最后一次活动的时刻（ISO）：列表排序与「运行中」的判断都不靠文件系统 */
+  updatedAt: string;
+  /**
    * 此刻看着这段会话的连接（不透明的连接 id）。
    *
    * 用 `Set` 而不是一个 id：一段会话被终端与桌面端**同时**看着是常态，谁先走都不该
@@ -549,11 +568,7 @@ export class SessionManager {
     if (!store)
       throw codedError("no-store", `no session store for workspace ${session.workspaceId}`);
 
-    await store.write({
-      id: session.id,
-      agentId: session.agentId,
-      messages: session.agent.messages,
-    });
+    await store.write(this.recordOf(session));
     // `setAsLast:false` 是一次性调用的归档（`ai --save`）：存下来是为了事后翻看，
     // 但「本工作区上一轮会话」仍该是用户真正聊过的那一段。
     if (options.setAsLast !== false) await store.setLastSession(session.id);
@@ -577,7 +592,7 @@ export class SessionManager {
     }
 
     const previousId = session.id;
-    await store.write({ id, agentId: session.agentId, messages: session.agent.messages });
+    await store.write(this.recordOf(session, session.agent.messages, id));
     await store.setLastSession(id);
     if (id !== previousId) await store.remove(previousId);
 
@@ -627,11 +642,7 @@ export class SessionManager {
         throw codedError("no-store", `no session store for workspace ${session.workspaceId}`);
       }
 
-      await store.write({
-        id: previousId,
-        agentId: session.agentId,
-        messages: [...session.agent.messages],
-      });
+      await store.write(this.recordOf(session, [...session.agent.messages], previousId));
       await store.setLastSession(previousId);
       this.notice(previousId, {
         level: "info",
@@ -821,11 +832,7 @@ export class SessionManager {
     session.settleDeferred = true;
     try {
       const previousId = session.id;
-      await store.write({
-        id: previousId,
-        agentId: session.agentId,
-        messages: [...session.agent.messages],
-      });
+      await store.write(this.recordOf(session, [...session.agent.messages], previousId));
       await store.setLastSession(previousId);
       this.notice(previousId, {
         level: "info",
@@ -938,11 +945,118 @@ export class SessionManager {
     return await this.snapshot(sessionId);
   }
 
-  /** 某个工作区下已存档的会话（按写入时间倒序，只有 id） */
-  async listSaved(workspaceId: string): Promise<SessionRef[]> {
-    const store = await this.storeFor(workspaceId);
-    if (!store) throw codedError("no-store", `no session store for workspace ${workspaceId}`);
-    return await store.list();
+  /**
+   * 某个工作区的会话清单：盘上的存档 ∪ 内存里的活会话。
+   *
+   * ## 为什么合并成一条（原来是 `list` + `listSaved`）
+   *
+   * 侧栏是**一个**列表：既要全部历史，又要「这段正在跑」。分两条时两边各缺一半（活会话
+   * 有 phase、没标题；存档有历史、只有 id），客户端得自己拼，还会拼出「同一段会话出现
+   * 两次」。合并后**一段会话在列表里只有一条**，`live` 说它此刻在不在内存里。
+   *
+   * `includeSaved: false` = 只看活会话（少读一次磁盘）。
+   */
+  async list(
+    workspaceId: string,
+    options: { includeSaved?: boolean } = {},
+  ): Promise<SessionListEntry[]> {
+    const byId = new Map<string, SessionListEntry>();
+
+    if (options.includeSaved !== false) {
+      const store = await this.storeFor(workspaceId);
+      // 没有存档不算错：活会话仍然列得出来（与 `listSaved` 的 `no-store` 不同口径——
+      // 那条是「我要存档却不能给」，这条是「预览全部」，少一半总比报错有用）
+      for (const entry of (await store?.list()) ?? []) {
+        byId.set(entry.id, {
+          sessionId: entry.id,
+          agentId: entry.agentId,
+          ...(entry.title !== undefined ? { title: entry.title } : {}),
+          ...(entry.modelId !== undefined ? { modelId: entry.modelId } : {}),
+          messageCount: entry.messageCount,
+          updatedAt: entry.updatedAt,
+          live: false,
+          phase: null,
+        });
+      }
+    }
+
+    // 活会话覆盖同名存档条目：内存里那份才是**此刻**的事实（可能多一整轮还没落盘）
+    for (const session of this.sessions.values()) {
+      if (session.workspaceId !== workspaceId) continue;
+      byId.set(session.id, {
+        sessionId: session.id,
+        agentId: session.agentId,
+        ...(session.title !== undefined ? { title: session.title } : {}),
+        ...(session.modelId !== undefined ? { modelId: session.modelId } : {}),
+        messageCount: session.agent.messages.length,
+        updatedAt: session.updatedAt,
+        live: true,
+        phase: this.visiblePhase(session),
+      });
+    }
+
+    return [...byId.values()].sort((a, b) =>
+      compareSessionEntries(
+        { id: a.sessionId, updatedAt: a.updatedAt },
+        { id: b.sessionId, updatedAt: b.updatedAt },
+      ),
+    );
+  }
+
+  /**
+   * 改显示名 —— **不动 id**。
+   *
+   * 与 `saveAs` 是两件事：那个是「另存为」（换 id、旧档删掉），这个是改名字。
+   * 目标可以只是盘上的存档（桌面的侧栏里改名不该要求先 attach 进内存）。
+   *
+   * 改名也算一次修改：`updatedAt` 跟着刷新（侧栏会把它排到最前）。
+   */
+  async rename(input: {
+    workspaceId: string;
+    sessionId: string;
+    title: string;
+  }): Promise<SessionRenameResult> {
+    const title = input.title.trim();
+    if (!title) throw codedError("bad-params", "title must not be empty");
+
+    const session = this.sessions.get(input.sessionId);
+    if (session) {
+      session.title = title;
+      const store = await this.storeFor(session.workspaceId);
+      if (store) await store.write(this.recordOf(session));
+      return { sessionId: session.id, title };
+    }
+
+    const store = await this.storeFor(input.workspaceId);
+    if (!store) throw codedError("no-store", `no session store for ${input.workspaceId}`);
+    const record = await store.read(input.sessionId);
+    if (!record) throw codedError("session-missing", `no such session: ${input.sessionId}`);
+    record.title = title;
+    await store.write(record);
+    return { sessionId: record.id, title };
+  }
+
+  /**
+   * 删一段会话（**物理删存档**）。
+   *
+   * 幂等：本来就不存在回 `removed: false`（与 `agent.remove` 同一口径，不当错误）。
+   *
+   * 三条边界：
+   *   1. 内存里有就先 `close()` —— 摘事件、摘子 Agent。那条正在跑的轮会继续跑完，但**不再
+   *      写档**（`detach()` 之后 `settleTurn` 不会再跑）：用户说要删的东西不该跑完又写回来；
+   *   2. 「上一轮会话」指针**不动** —— `last()` 发现目标存档不在了会回 `null`（客户端走
+   *      新会话），不需要在这里做第二套清理；
+   *   3. 只删本工作区的：`storeFor(workspaceId)` 就属于那一个工作区，不存在“删错地方”。
+   */
+  async remove(input: { workspaceId: string; sessionId: string }): Promise<SessionRemoveResult> {
+    const store = await this.storeFor(input.workspaceId);
+    const session = this.sessions.get(input.sessionId);
+    const archived = store ? await store.exists(input.sessionId) : false;
+    if (!session && !archived) return { removed: false };
+
+    if (session) this.close(input.sessionId);
+    if (archived && store) await store.remove(input.sessionId);
+    return { removed: true };
   }
 
   /**
@@ -998,7 +1112,7 @@ export class SessionManager {
 
     const removedMessages = messages.splice(index);
     session.agent.messages = messages;
-    await store.write({ id: session.id, agentId: session.agentId, messages });
+    await store.write(this.recordOf(session, messages));
     await store.setLastSession(session.id);
 
     // 预填输入框用：被删掉的第一条用户消息（原文，不做任何“备注剥离”）
@@ -1096,6 +1210,10 @@ export class SessionManager {
       persistOnSettle: false,
       autoPersist: input.persist !== false,
       keepAlive: true,
+      // 续接已有存档时把它自己的名字与模型覆盖带回来；新会话两个都空
+      ...(record?.title !== undefined ? { title: record.title } : {}),
+      ...(record?.modelId !== undefined ? { modelId: record.modelId } : {}),
+      updatedAt: new Date().toISOString(),
       holders: new Set(),
       reclaimCancel: null,
       reclaimOnSettle: false,
@@ -1241,25 +1359,6 @@ export class SessionManager {
     session.handoff?.abort();
     session.agent.abort();
     return { cancelled: true };
-  }
-
-  /**
-   * 列出某个工作区下活着的会话。
-   *
-   * `workspaceId` 必填：会话是工作区的**下级对象**，不提供「跨工作区全量列」——
-   * 那种调用要么是调用方漏了上下文，要么就是在把一个工作区的界面喂另一个工作区的数据。
-   */
-  list(workspaceId: string): SessionSummary[] {
-    return [...this.sessions.values()]
-      .filter((session) => session.workspaceId === workspaceId)
-      .map((session) => ({
-        sessionId: session.id,
-        workspaceId: session.workspaceId,
-        agentId: session.agentId,
-        turnId: session.turnId,
-        phase: this.visiblePhase(session),
-        keepAlive: session.keepAlive,
-      }));
   }
 
   close(sessionId: string): SessionCloseResult {
@@ -1554,7 +1653,7 @@ export class SessionManager {
     // 但这里是收尾路径，不报错）
     if (!store) return;
     try {
-      await store.write({ id: session.id, agentId: session.agentId, messages });
+      await store.write(this.recordOf(session, messages));
       await store.setLastSession(session.id);
     } catch (error: any) {
       this.notice(session.id, {
@@ -1696,7 +1795,34 @@ export class SessionManager {
     return !session.turnSettled;
   }
 
-  /** 真的活着 = 「客户端说要」∧「有连接在看」。两个分开的真相源，判据只能取合取 */
+  /**
+   * 存档的形状**只有这一处定义**。
+   *
+   * 所有写档路径（`save` / `saveAs` / 每轮收尾 / 交接前归档 / 迁移换 id / 撤回）都从这里
+   * 取，漏一个字段就是一类数据丢失：`title` 漏了 → 改过的名字下次写档被抹掉；`modelId`
+   * 漏了 → 会话级模型覆盖在下一轮悄悄失效。
+   *
+   * 顺手刷新 `updatedAt`：它是「最后一次活动」的唯一来源（列表排序与侧栏都读它）。
+   * 写在这里而不是每个调用点，理由同上——一处定义。
+   */
+  private recordOf(
+    session: LiveSession,
+    messages: unknown[] = session.agent.messages,
+    id: string = session.id,
+  ): SessionRecord {
+    session.updatedAt = new Date().toISOString();
+    return {
+      id,
+      agentId: session.agentId,
+      messages,
+      ...(session.title !== undefined ? { title: session.title } : {}),
+      ...(session.modelId !== undefined ? { modelId: session.modelId } : {}),
+    };
+  }
+
+  /**
+   * 真的活着 = 「客户端说要」∧「有连接在看」。两个分开的真相源，判据只能取合取
+   */
   private isHeld(session: LiveSession): boolean {
     return session.keepAlive && session.holders.size > 0;
   }
@@ -1804,7 +1930,7 @@ export class SessionManager {
       throw codedError("session-exists", `session already exists: ${nextId}`);
     }
 
-    await store.write({ id: nextId, agentId: session.agentId, messages: session.agent.messages });
+    await store.write(this.recordOf(session, session.agent.messages, nextId));
     await store.setLastSession(nextId);
 
     this.sessions.delete(previousId);

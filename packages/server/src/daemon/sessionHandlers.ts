@@ -36,8 +36,10 @@ import {
   type SessionCreateResult,
   type SessionHandoffResult,
   type SessionLastResult,
+  type SessionListEntry,
   type SessionListResult,
-  type SessionListSavedResult,
+  type SessionRenameResult,
+  type SessionRemoveResult,
   type SessionMigrateResult,
   type SessionRollbackResult,
   type SessionReloadParams,
@@ -201,12 +203,33 @@ export function createSessionHandlers(
       );
     },
 
-    [SESSION_METHODS.list]: (params): SessionListResult => {
-      return { sessions: manager.list(requireString(params, "workspaceId")) };
+    /**
+     * 某个工作区的会话清单：盘上的存档 ∪ 内存里的活会话（一条不重）。
+     *
+     * 以前是两条（`list` 只给活会话 / `listSaved` 只给 id）：侧栏得自己拼，还会把同一段
+     * 拼成两条。合成一条后**一段会话在列表里只有一个条目**。
+     */
+    [SESSION_METHODS.list]: async (params): Promise<SessionListResult> => {
+      const workspaceId = requireString(params, "workspaceId");
+      const includeSaved = optionalBoolean(params, "includeSaved");
+      return { sessions: await manager.list(workspaceId, { includeSaved }) };
     },
 
-    [SESSION_METHODS.listSaved]: async (params): Promise<SessionListSavedResult> => {
-      return { sessions: await manager.listSaved(requireString(params, "workspaceId")) };
+    /** 改显示名（不动 id；目标可以只是盘上的存档） */
+    [SESSION_METHODS.rename]: async (params): Promise<SessionRenameResult> => {
+      return await manager.rename({
+        workspaceId: requireString(params, "workspaceId"),
+        sessionId: requireString(params, "sessionId"),
+        title: requireString(params, "title"),
+      });
+    },
+
+    /** 删一段会话（物理删存档；幂等） */
+    [SESSION_METHODS.remove]: async (params): Promise<SessionRemoveResult> => {
+      return await manager.remove({
+        workspaceId: requireString(params, "workspaceId"),
+        sessionId: requireString(params, "sessionId"),
+      });
     },
 
     /**

@@ -88,7 +88,7 @@ SessionManager.ts` implements the live-session registry and the SDK-event → pr
 translation; `src/service/agent/` assembles the agent (config + Scope + capability
 discovery) per workspace; `src/daemon/sessionHandlers.ts` registers `workspace.resolve` /
 `workspace.files` / `events.watch` / `session.create` / `session.attach` / `session.send` /
-`session.cancel` / `session.list` / `session.listSaved` / `session.last` /
+`session.cancel` / `session.list` / `session.rename` / `session.remove` / `session.last` /
 `session.subAgent.snapshot` / `session.question`+`session.answer` / `session.reload` /
 `session.setAgent` / `session.close` / `session.keepAlive.set` / `session.handoff` /
 `session.migrate` on a `Daemon`, and `src/cli.ts` wires all of it.
@@ -261,7 +261,43 @@ required:
   a property of the TUI's usage, not of the protocol.
 - **Closing is cheap and lossless**: the archive was written before `turn.end`, so a closed
   session is re-hydrated by `session.attach` straight from disk.
-- `session.list` reports `keepAlive` so a client can tell the two apart.
+- `session.list` reports `live` (in server memory right now) — the old `keepAlive` field was the
+  client's *declaration*, not a fact, and the list no longer carries it.
+
+### The list is one list: `session.list { workspaceId, includeSaved? }`
+
+A sidebar needs **all** sessions and, for each, whether it is running right now. That used to be
+two methods (`session.list` = live sessions with a phase; `session.listSaved` = archived ids
+only), so a client had to stitch them together — and could stitch the same session twice.
+Now there is one method and one entry per session:
+
+```
+{ sessionId, agentId, title?, modelId?, messageCount, updatedAt, live, phase }
+```
+
+- **No message bodies.** The store keeps a per-session sidecar (`<id>.meta.json`) with exactly
+  these counters, written together with the archive; listing reads the sidecar and never parses
+  history. Archives written before the sidecar existed are read once and back-filled.
+- **`includeSaved: false`** = live sessions only (no disk read).
+- **Order** is `updatedAt` descending, ties broken by id descending — two sessions created in
+  the same millisecond must not swap places on every refresh.
+
+### `title` vs `id`
+
+`id` is the identity (archive filename, `session.idChanged`, the resume pointer all point at it).
+`title` is the name a human reads; renaming never moves the id. `session.rename { workspaceId,
+sessionId, title }` works on archived sessions too (it does not require an `attach` first), and
+`session.saveAs` — "save this conversation under another id" — carries the title along.
+
+The same split applies to workspaces (`id` + `title`); `name` is kept for things whose `name`
+*is* the identifier (a skill's frontmatter `name`, an `mcp.json` server key, and the SDK's
+`AgentDefinition` / `Endpoint` / `Model`, which predate this rule).
+
+### `session.remove`
+
+Deletes the archive (and its sidecar). Idempotent: `removed: false` when it was not there — same
+idiom as `agent.remove`. A live session is closed first, so a turn still running finishes in the
+background but **never writes the archive back**: what the user deleted must not reappear.
 
 ### `session.setAgent`: same conversation, different agent
 

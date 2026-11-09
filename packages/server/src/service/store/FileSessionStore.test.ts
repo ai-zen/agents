@@ -33,25 +33,65 @@ describe("FileSessionStore", () => {
     expect(readFileSync(join(root, "sessions", "chat_1.json"), "utf-8")).toContain("chat_1");
   });
 
-  it("写完不留 .tmp，且 list 不会把它当会话", async () => {
+  it("写完不留 .tmp，且 .meta.json 不会被当成第二段会话", async () => {
     await store.write(sample);
     expect(() => readFileSync(join(root, "sessions", "chat_1.json.tmp"))).toThrow();
+    // 清单自己的文件名也以 `.json` 结尾：list 必须先认它，否则一段会话会出两条
     expect((await store.list()).map((c) => c.id)).toEqual(["chat_1"]);
   });
 
-  it("list 按文件 mtime 倒序（不解析内容）", async () => {
-    await store.write({ ...sample, id: "chat_old" });
-    await store.write({ ...sample, id: "chat_mid" });
-    await store.write({ ...sample, id: "chat_new" });
+  it("老存档没有清单：list 读一次、补一份，updatedAt 取正文 mtime", async () => {
+    mkdirSync(join(root, "sessions"), { recursive: true });
+    const base = Date.now() / 1000 - 1000;
+    for (const [id, offset] of [
+      ["chat_old", 1],
+      ["chat_mid", 2],
+      ["chat_new", 3],
+    ] as const) {
+      // 直接写文件（绕过 write）：模拟搬迁前留下的、没有清单的存档
+      writeFileSync(
+        join(root, "sessions", `${id}.json`),
+        JSON.stringify({ ...sample, id }),
+        "utf-8",
+      );
+      utimesSync(join(root, "sessions", `${id}.json`), base + offset, base + offset);
+    }
 
-    const base = Date.now() / 1000;
-    const touch = (id: string, seconds: number) =>
-      utimesSync(join(root, "sessions", `${id}.json`), base - 100 + seconds, base - 100 + seconds);
-    touch("chat_new", 3);
-    touch("chat_mid", 2);
-    touch("chat_old", 1);
-
+    // 倒序：最近写的在前（排序读的是清单，不是每次现算）
     expect((await store.list()).map((c) => c.id)).toEqual(["chat_new", "chat_mid", "chat_old"]);
+    // 补出来的清单确实落了盘：下一次列表不再需要解析正文
+    expect(readFileSync(join(root, "sessions", "chat_old.meta.json"), "utf-8")).toContain(
+      "chat_old",
+    );
+    expect((await store.list()).map((c) => c.id)).toEqual(["chat_new", "chat_mid", "chat_old"]);
+  });
+
+  it("清单跟着正文走：messageCount / title / modelId / updatedAt 都能从列表拿到", async () => {
+    await store.write({
+      ...sample,
+      title: "重构会话",
+      modelId: "gpt-6-astra",
+      messages: ["a", "b", "c"],
+    });
+
+    const [entry] = await store.list();
+    expect(entry).toMatchObject({
+      id: "chat_1",
+      agentId: "default",
+      title: "重构会话",
+      modelId: "gpt-6-astra",
+      messageCount: 3,
+    });
+    expect(Date.parse(entry!.updatedAt)).toBeGreaterThan(0);
+  });
+
+  it("重写只刷新清单，不会把 title 弄丢", async () => {
+    await store.write({ ...sample, title: "名字" });
+    await store.write({ ...sample, title: "名字", messages: ["a", "b"] });
+
+    const [entry] = await store.list();
+    expect(entry!.title).toBe("名字");
+    expect(entry!.messageCount).toBe(2);
   });
 
   it("list 在没有会话目录时返回空数组", async () => {
@@ -68,11 +108,12 @@ describe("FileSessionStore", () => {
     expect(await store.read("nope")).toBeNull(); // 根本不存在
   });
 
-  it("remove / exists", async () => {
+  it("remove / exists：正文与清单一起删（不留幽灵条目）", async () => {
     await store.write(sample);
     expect(await store.exists("chat_1")).toBe(true);
     await store.remove("chat_1");
     expect(await store.exists("chat_1")).toBe(false);
+    expect(await store.list()).toEqual([]);
     await store.remove("chat_1"); // 幂等：再删一次不抛
   });
 

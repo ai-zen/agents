@@ -208,16 +208,17 @@ describe("SessionManager：会话生命周期", () => {
     expect(first.sessionId).toBe("chat_1");
     expect(first.agentId).toBe("default");
     expect(second.sessionId).toBe("chat_2");
-    expect(manager.list("ws-1").map((s) => s.sessionId)).toEqual(["chat_1", "chat_2"]);
+    // 列表按 `updatedAt` 倒序：最后动的在最前（侧栏就是按这个排的）
+    expect((await manager.list("ws-1")).map((s) => s.sessionId)).toEqual(["chat_2", "chat_1"]);
   });
 
   it("list 按工作区过滤：会话是 workspace 的下级对象，不跨父容器列", async () => {
     await manager.create({ workspaceId: "ws-1", path: "/a" });
     await manager.create({ workspaceId: "ws-2", path: "/b" });
 
-    expect(manager.list("ws-1").map((s) => s.sessionId)).toEqual(["chat_1"]);
-    expect(manager.list("ws-2").map((s) => s.sessionId)).toEqual(["chat_2"]);
-    expect(manager.list("ws-404")).toEqual([]);
+    expect((await manager.list("ws-1")).map((s) => s.sessionId)).toEqual(["chat_1"]);
+    expect((await manager.list("ws-2")).map((s) => s.sessionId)).toEqual(["chat_2"]);
+    expect(await manager.list("ws-404")).toEqual([]);
   });
 
   it("默认 id 是存档格式 `chat_YYYY_MM_DD_HH_mm_ss`（活会话与存档共用同一个 id）", async () => {
@@ -233,7 +234,9 @@ describe("SessionManager：会话生命周期", () => {
       sessionId: "chat_2026_11_01_10_00_00",
     });
     expect(sessionId).toBe("chat_2026_11_01_10_00_00");
-    expect(manager.list("ws-1").map((s) => s.sessionId)).toContain("chat_2026_11_01_10_00_00");
+    expect((await manager.list("ws-1")).map((s) => s.sessionId)).toContain(
+      "chat_2026_11_01_10_00_00",
+    );
   });
 
   it("同一个 id 开第二次：报 session-exists（不静默顶掉正在跑的会话）", async () => {
@@ -242,7 +245,7 @@ describe("SessionManager：会话生命周期", () => {
       manager.create({ workspaceId: "ws-1", path: "/p", sessionId: "chat_dup" }),
     ).rejects.toThrow(/already exists/);
     // 第一个不受影响
-    expect(manager.list("ws-1").map((s) => s.sessionId)).toEqual([first.sessionId]);
+    expect((await manager.list("ws-1")).map((s) => s.sessionId)).toEqual([first.sessionId]);
   });
 
   it("create 把 workspaceId / path / agentId 原样交给装配方", async () => {
@@ -278,7 +281,7 @@ describe("SessionManager：会话生命周期", () => {
 
     manager.close(sessionId);
     expect(agent.handlerCount()).toBe(0);
-    expect(manager.list("ws-1")).toEqual([]);
+    expect(await manager.list("ws-1")).toEqual([]);
 
     agent.fire("open");
     expect(events).toEqual([]);
@@ -387,8 +390,8 @@ describe("SessionManager：并发守卫（一轮在跑时不再起第二轮）",
     expect(error.code).toBe("turn-busy");
     expect(error.message).toMatch(/already has a turn in flight/);
 
-    // 号没被消耗：list 里仍是 1，第二轮一次都没交给 Agent，也没有带 turnId=2 的 phase
-    expect(guarded.list("ws-1").map((item) => item.turnId)).toEqual([1]);
+    // 号没被消耗：快照里仍是 1，第二轮一次都没交给 Agent，也没有带 turnId=2 的 phase
+    expect((await guarded.snapshot(sessionId)).turnId).toBe(1);
     expect(agent.sent).toEqual(["第一轮"]);
     expect(pick("session.phase").every((event) => event.turnId === 1)).toBe(true);
   });
@@ -401,7 +404,7 @@ describe("SessionManager：并发守卫（一轮在跑时不再起第二轮）",
 
     expect(guarded.send(sessionId, "第二轮")).toEqual({ turnId: 2 });
     expect(agent.sent).toEqual(["第一轮", "第二轮"]);
-    expect(guarded.list("ws-1").map((item) => item.turnId)).toEqual([2]);
+    expect((await guarded.snapshot(sessionId)).turnId).toBe(2);
   });
 
   it("交接进行中 send 报 handoff-in-flight（不是 turn-busy）：更准的原因先说", async () => {
@@ -440,19 +443,19 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
     const { sessionId } = await create();
     manager.send(sessionId, "hi");
 
-    expect(manager.list("ws-1")[0]!.phase).toEqual({ kind: "connecting" }); // send 当下就报出去了
+    expect((await manager.list("ws-1"))[0]!.phase).toEqual({ kind: "connecting" }); // send 当下就报出去了
 
     agent.fire("open");
-    expect(manager.list("ws-1")[0]!.phase).toEqual({ kind: "queued" });
+    expect((await manager.list("ws-1"))[0]!.phase).toEqual({ kind: "queued" });
 
     fireChunk(agent, chunk({ content: "你" }));
-    expect(manager.list("ws-1")[0]!.phase).toEqual({ kind: "streaming" });
+    expect((await manager.list("ws-1"))[0]!.phase).toEqual({ kind: "streaming" });
 
     agent.fire("parsed", { message: { role: "assistant", content: "你好" } });
     // 不带工具调用：状态机不改阶段，由 finally 归零
     agent.fire("finally");
     await settled();
-    expect(manager.list("ws-1")[0]!.phase).toBeNull();
+    expect((await manager.list("ws-1"))[0]!.phase).toBeNull();
     expect(pick("turn.end").at(-1)!.ok).toBe(true);
   });
 
@@ -486,7 +489,7 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
     manager.send(sessionId, "hi");
 
     fireChunk(agent, chunk({ tool_calls: [{ index: 0, function: { name: "exec" } }] }));
-    expect(manager.list("ws-1")[0]!.phase).toEqual({ kind: "tool-calling", tool: "exec" });
+    expect((await manager.list("ws-1"))[0]!.phase).toEqual({ kind: "tool-calling", tool: "exec" });
 
     agent.fire("parsed", {
       message: {
@@ -497,7 +500,7 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
         ],
       },
     });
-    expect(manager.list("ws-1")[0]!.phase).toMatchObject({
+    expect((await manager.list("ws-1"))[0]!.phase).toMatchObject({
       kind: "tool-waiting",
       tools: ["exec", "edit"],
     });
@@ -521,7 +524,10 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
     agent.messages.push({ role: "tool", tool_call_id: "b", status: "pending" });
     agent.fire("tool-call-end", { id: "a" });
 
-    expect(manager.list("ws-1")[0]!.phase).toMatchObject({ kind: "tool-waiting", tools: ["edit"] });
+    expect((await manager.list("ws-1"))[0]!.phase).toMatchObject({
+      kind: "tool-waiting",
+      tools: ["edit"],
+    });
   });
 
   it("error 与 finally 都会到：turn.end 只发一次，且带上错误", async () => {
@@ -535,7 +541,7 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
     const ends = pick("turn.end");
     expect(ends).toHaveLength(1);
     expect(ends[0]).toMatchObject({ ok: false, error: { code: "timeout", message: "超时" } });
-    expect(manager.list("ws-1")[0]!.phase).toBeNull();
+    expect((await manager.list("ws-1"))[0]!.phase).toBeNull();
   });
 });
 
@@ -572,7 +578,7 @@ describe("SessionManager：订阅", () => {
     manager.dispose();
 
     expect(agent.handlerCount()).toBe(0);
-    expect(manager.list("ws-1")).toEqual([]);
+    expect(await manager.list("ws-1")).toEqual([]);
     expect(manager.cancel(sessionId)).toEqual({ cancelled: false });
   });
 });
@@ -633,7 +639,7 @@ describe("SessionManager：子 Agent（栏目）", () => {
     ]);
     // 回归保护：拿子 Agent 的 delta 去改主阶段，界面会从「等待 xxx 返回」变成「输出中」
     expect(pick("session.phase")).toHaveLength(phasesBefore);
-    expect(manager.list("ws-1")[0]!.phase).toMatchObject({
+    expect((await manager.list("ws-1"))[0]!.phase).toMatchObject({
       kind: "tool-waiting",
       tools: ["call_skill_sub_agent"],
     });
@@ -757,18 +763,34 @@ describe("SessionManager：子 Agent（栏目）", () => {
 class MemoryStore implements SessionStore {
   readonly records = new Map<string, SessionRecord>();
   pointer: string | null = null;
+  /** 每个 id 的最后写入时刻（真件把这个落在清单里，见 `FileSessionStore`） */
+  private readonly written = new Map<string, string>();
 
   async list() {
-    return [...this.records.keys()].map((id) => ({ id }));
+    return [...this.records.keys()]
+      .map((id) => {
+        const record = this.records.get(id)!;
+        return {
+          id,
+          agentId: record.agentId,
+          ...(record.title !== undefined ? { title: record.title } : {}),
+          ...(record.modelId !== undefined ? { modelId: record.modelId } : {}),
+          messageCount: record.messages.length,
+          updatedAt: this.written.get(id) ?? "",
+        };
+      })
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
   }
   async read(id: string) {
     return this.records.get(id) ?? null;
   }
   async write(record: SessionRecord) {
     this.records.set(record.id, record);
+    this.written.set(record.id, new Date(Date.now() + this.written.size).toISOString());
   }
   async remove(id: string) {
     this.records.delete(id);
+    this.written.delete(id);
   }
   async exists(id: string) {
     return this.records.has(id);
@@ -860,15 +882,19 @@ describe("SessionManager：存档列表与撤回", () => {
     });
   });
 
-  it("listSaved 只列盘上的存档（活着的会话不等于已存档）", async () => {
+  it("list 合并存档与活会话：活的那条带 `live`，盘上的那条没有", async () => {
     await store.write({ id: "chat_old", agentId: "default", messages: [] });
     await withStore.create({ workspaceId: "ws-1", path: "/p" });
     await withStore.save("chat_fixed");
 
-    expect((await withStore.listSaved("ws-1")).map((ref) => ref.id)).toEqual([
-      "chat_old",
-      "chat_fixed",
-    ]);
+    const listed = await withStore.list("ws-1");
+    expect(listed.map((entry) => entry.sessionId).sort()).toEqual(["chat_fixed", "chat_old"]);
+    expect(listed.find((entry) => entry.sessionId === "chat_fixed")!.live).toBe(true);
+    expect(listed.find((entry) => entry.sessionId === "chat_old")!.live).toBe(false);
+    // `includeSaved:false` 只看活会话
+    expect((await withStore.list("ws-1", { includeSaved: false })).map((e) => e.sessionId)).toEqual(
+      ["chat_fixed"],
+    );
   });
 
   it("撤回：从 index 起删掉、立即落盘、指针跟着走", async () => {
@@ -1178,19 +1204,16 @@ describe("SessionManager：交接 / 迁移", () => {
 
     // 新会话：id 变了，轮次从 0 起（这一轮的收尾已在换 id 之前发过）
     expect(result.sessionId).not.toBe(sessionId);
-    expect(handoffManager.list("ws-1")).toEqual([
-      {
-        sessionId: result.sessionId,
-        workspaceId: "ws-1",
-        agentId: "default",
-        turnId: 1,
-        phase: null,
-        // 新会话缺省在保活区里（与新建会话同一条规则）
-        keepAlive: true,
-      },
+    // 活会话只剩新的这一段（旧那段已入档，所以这里只看活会话）
+    expect(await handoffManager.list("ws-1", { includeSaved: false })).toMatchObject([
+      { sessionId: result.sessionId, agentId: "default", live: true, phase: null },
     ]);
     // 旧 id 已退场
-    expect(handoffManager.list("ws-1").map((item) => item.sessionId)).not.toContain(sessionId);
+    // 旧 id 不再是活会话（它作为存档仍在列表里，那是刻意的：历史得能翻回去）
+    expect(
+      (await handoffManager.list("ws-1", { includeSaved: false })).map((item) => item.sessionId),
+    ).not.toContain(sessionId);
+    expect((await handoffManager.list("ws-1")).map((item) => item.sessionId)).toContain(sessionId);
 
     // 旧会话进了存档（含完整历史：prune 之前存下去的）
     expect(store.records.get(sessionId)!.messages).toEqual([
@@ -1268,7 +1291,7 @@ describe("SessionManager：交接 / 迁移", () => {
     });
     expect(pick("session.notice").map((notice) => notice.code)).toContain("turnAborted");
     // 迁移没做成：会话还在旧 id 上（旧会话已存档，但历史没被剔除）
-    expect(handoffManager.list("ws-1").map((item) => item.sessionId)).toEqual([sessionId]);
+    expect((await handoffManager.list("ws-1")).map((item) => item.sessionId)).toEqual([sessionId]);
     expect(agent.messages).toHaveLength(2);
   });
 
@@ -1317,16 +1340,10 @@ describe("SessionManager：另存为（/save <名字>）", () => {
       { role: "user", content: "留档" },
     ]);
     expect((await store.lastSession())!.id).toBe("chat_debug_login");
-    // 同一段对话换个名字：轮次编号不清零
-    expect(saveManager.list("ws-1")).toEqual([
-      {
-        sessionId: "chat_debug_login",
-        workspaceId: "ws-1",
-        agentId: "default",
-        turnId: 1,
-        phase: null,
-        keepAlive: true,
-      },
+    // 同一段对话换个名字：轮次编号不清零（轮次不在列表里，看快照）
+    expect((await saveManager.snapshot("chat_debug_login")).turnId).toBe(1);
+    expect(await saveManager.list("ws-1")).toMatchObject([
+      { sessionId: "chat_debug_login", agentId: "default", live: true, phase: null },
     ]);
   });
 
@@ -1335,7 +1352,11 @@ describe("SessionManager：另存为（/save <名字>）", () => {
     await saveManager.create({ workspaceId: "ws-1", path: "/p", sessionId: "chat_b" });
 
     await expect(saveManager.saveAs("chat_a", "chat_b")).rejects.toThrow(/already exists/);
-    expect(saveManager.list("ws-1").map((item) => item.sessionId)).toEqual(["chat_a", "chat_b"]);
+    // 倒序（同毫秒时按 id 倒序）
+    expect((await saveManager.list("ws-1")).map((item) => item.sessionId)).toEqual([
+      "chat_b",
+      "chat_a",
+    ]);
     expect(store.records.size).toBe(0);
   });
 
@@ -1435,8 +1456,8 @@ describe("SessionManager：自动迁移（SDK 插件在一轮内部触发）", (
     // 旧会话进存档（prune 之前的完整历史）
     expect(store.records.get(sessionId)!.messages).toEqual([{ role: "user", content: "旧任务" }]);
     // 活会话换键，新会话里只剩「模板 + 交接断点」
-    const live = auto.list("ws-1");
-    expect(live.map((item) => item.sessionId)).toEqual(["chat_2"]);
+    const aliveNow = await auto.list("ws-1", { includeSaved: false });
+    expect(aliveNow.map((item) => item.sessionId)).toEqual(["chat_2"]);
     expect(JSON.stringify(store.records.get("chat_2")!.messages)).not.toContain("旧任务");
     // 客户端没有响应可接：换 id 只能靠事件
     expect(pick("session.idChanged")).toEqual([
@@ -1451,7 +1472,7 @@ describe("SessionManager：自动迁移（SDK 插件在一轮内部触发）", (
     await Promise.all([hook!(), hook!()]);
 
     expect(pick("session.idChanged")).toHaveLength(1);
-    expect(auto.list("ws-1")).toHaveLength(1);
+    expect(await auto.list("ws-1", { includeSaved: false })).toHaveLength(1);
   });
 
   it("没配存档：报 no-store（prune 之后历史只剩存档一份，存不下去就别动手）", async () => {
@@ -1621,7 +1642,7 @@ describe("SessionManager：自动迁移用哪种方式交接，由客户端回�
     await pending;
 
     expect(pick("session.idChanged")).toEqual([]);
-    expect(auto.list("ws-1").map((item) => item.sessionId)).toEqual([sessionId]);
+    expect((await auto.list("ws-1")).map((item) => item.sessionId)).toEqual([sessionId]);
     // 什么都没发生：连旧会话都没进存档（那是迁移的第一步）
     expect(store.records.size).toBe(0);
   });
@@ -1650,7 +1671,7 @@ describe("SessionManager：自动迁移用哪种方式交接，由客户端回�
       0,
     );
     // 会话原封不动
-    expect(silent.manager.list("ws-1").map((item) => item.sessionId)).toEqual([sessionId]);
+    expect((await silent.manager.list("ws-1")).map((item) => item.sessionId)).toEqual([sessionId]);
   });
 
   it("没人回答（超时）：按兜底跳过迁移，并把挂着的提问清掉", async () => {
@@ -1673,7 +1694,7 @@ describe("SessionManager：自动迁移用哪种方式交接，由客户端回�
     expect(notices.some((notice) => notice.code === "migrationSkipped")).toBe(true);
     expect(pick("session.idChanged")).toHaveLength(0);
     // 表已清：这个问题现在谁也答不了（迟到的回答只能是「来晚了」）
-    const remaining = fast.manager.list("ws-1")[0]!.sessionId;
+    const remaining = (await fast.manager.list("ws-1"))[0]!.sessionId;
     expect(fast.manager.answer(remaining, question.questionId, "summary")).toEqual({
       answered: false,
     });
@@ -1714,7 +1735,7 @@ describe("SessionManager：attach（会话活得比连接久）", () => {
 
     expect(again).toEqual({ sessionId: "chat_keep", agentId: first.agentId });
     expect(created).toBe(1); // 没有再装配一套 Agent（那会多一套 MCP 连接与工具发现）
-    expect(m.list("ws-1")).toHaveLength(1);
+    expect(await m.list("ws-1")).toHaveLength(1);
   });
 
   it("接一个活着的会话：消息仍是它当前的，不被存档覆盖", async () => {
@@ -1777,7 +1798,7 @@ describe("SessionManager：attach（会话活得比连接久）", () => {
 
     expect(first.sessionId).toBe("chat_same");
     expect(second.sessionId).toBe("chat_same_2");
-    expect(m.list("ws-1")).toHaveLength(2);
+    expect(await m.list("ws-1")).toHaveLength(2);
   });
 
   it("自动分配的 id 撞上**盘上的**存档：也不覆盖，换一个", async () => {
@@ -1845,8 +1866,10 @@ describe("SessionManager：保活区 / 换 Agent / 关闭", () => {
 
     await runTurn(sessionId);
 
-    expect(live.list("ws-1").map((item) => item.sessionId)).toEqual([sessionId]);
-    expect(live.list("ws-1")[0]!.keepAlive).toBe(true);
+    expect((await live.list("ws-1")).map((item) => item.sessionId)).toEqual([sessionId]);
+    // 列表里的 `live` 就是“此刻在服务端内存里”（旧版这里是 `keepAlive` —— 那是客户端的
+    // 声明，不是事实；并列的 `live` 才是事实）
+    expect((await live.list("ws-1"))[0]!.live).toBe(true);
   });
 
   it("移出保活且空闲：当场回收（不用等下一次 turn.end），存档留着", async () => {
@@ -1855,8 +1878,8 @@ describe("SessionManager：保活区 / 换 Agent / 关闭", () => {
 
     expect(live.keepAliveSet(sessionId, false)).toEqual({ sessionId, keepAlive: false });
 
-    // 活会话没了
-    expect(live.list("ws-1")).toEqual([]);
+    // 活会话没了（存档还在，所以只看活会话）
+    expect(await live.list("ws-1", { includeSaved: false })).toEqual([]);
     // 存档还在：`attach` 能把这段装回来（这一条就是「点回来内容不少」的依据）
     expect(store.records.get(sessionId)!.messages).toHaveLength(2);
   });
@@ -1868,14 +1891,16 @@ describe("SessionManager：保活区 / 换 Agent / 关闭", () => {
     agent.messages = [{ role: "user", content: "长任务" }];
     live.keepAliveSet(sessionId, false);
     // 正在跑的一轮不能被收掉：那比多占几兆内存严重
-    expect(live.list("ws-1").map((item) => item.sessionId)).toEqual([sessionId]);
+    expect(
+      (await live.list("ws-1", { includeSaved: false })).map((item) => item.sessionId),
+    ).toEqual([sessionId]);
 
     agent.messages.push({ role: "assistant", content: "答" });
     agent.fire("finally");
     await settled();
 
-    expect(live.list("ws-1")).toEqual([]);
-    expect(store.records.get(sessionId)).toBeDefined();
+    // 收尾之后回收（存档还在，所以只看活会话）
+    expect(await live.list("ws-1", { includeSaved: false })).toEqual([]);
   });
 
   it("setAgent：换 Agent、保留消息、存档里的 agentId 跟着换、旧事件摘掉", async () => {
@@ -1892,7 +1917,7 @@ describe("SessionManager：保活区 / 换 Agent / 关闭", () => {
     expect(agent.handlerCount()).toBe(handlersBefore);
     // 存档里的 agentId 必须跟上：不写的话下次 attach 会按旧 Agent 装回来
     expect(store.records.get(sessionId)!.agentId).toBe("coder");
-    expect(live.list("ws-1")[0]!.agentId).toBe("coder");
+    expect((await live.list("ws-1"))[0]!.agentId).toBe("coder");
   });
 
   it("setAgent：已经是这个 Agent 就不重建（重建只会丢掉工具发现的热状态）", async () => {
@@ -1948,7 +1973,7 @@ describe("SessionManager：活着 = 保活 ∧ 有持有者（宽限期回收）
   });
 
   const open = async () => (await live.create({ workspaceId: "ws-1", path: "/p" })).sessionId;
-  const alive = () => live.list("ws-1").length;
+  const alive = async () => (await live.list("ws-1")).length;
 
   it("声明了保活、但连接全断了：宽限期内留着，到点才收", async () => {
     const sessionId = await open();
@@ -1956,11 +1981,11 @@ describe("SessionManager：活着 = 保活 ∧ 有持有者（宽限期回收）
 
     live.dropHolder(sessionId, 1);
     // 宽限期还没到：重连还有机会接回这一段（这就是它存在的全部理由）
-    expect(alive()).toBe(1);
+    expect(await alive()).toBe(1);
 
     clock.tick();
     // 到点再判一次：没人要 → 收（存档早在每轮收尾写好了）
-    expect(alive()).toBe(0);
+    expect(await alive()).toBe(0);
   });
 
   it("宽限期内又接回来：倒计时作废，到点也不收", async () => {
@@ -1971,7 +1996,7 @@ describe("SessionManager：活着 = 保活 ∧ 有持有者（宽限期回收）
     live.registerHolder(sessionId, 2); // 重连后的新连接
     clock.tick();
 
-    expect(alive()).toBe(1);
+    expect(await alive()).toBe(1);
   });
 
   it("两个客户端同看一段：走一个不收，最后一个走了才开始计时", async () => {
@@ -1981,11 +2006,11 @@ describe("SessionManager：活着 = 保活 ∧ 有持有者（宽限期回收）
 
     live.dropHolder(sessionId, 1);
     clock.tick();
-    expect(alive()).toBe(1);
+    expect(await alive()).toBe(1);
 
     live.dropHolder(sessionId, 2);
     clock.tick();
-    expect(alive()).toBe(0);
+    expect(await alive()).toBe(0);
   });
 
   it("到点时这一轮还在跑：不打断，收尾之后才收", async () => {
@@ -1997,7 +2022,7 @@ describe("SessionManager：活着 = 保活 ∧ 有持有者（宽限期回收）
 
     clock.tick();
     // 一轮中途被收 = 那一轮的产出与存档一起丢（detach 之后 settleTurn 不再跑），只能延后
-    expect(alive()).toBe(1);
+    expect(await alive()).toBe(1);
 
     agent.holdSend = null;
     agent.messages = [
@@ -2007,7 +2032,7 @@ describe("SessionManager：活着 = 保活 ∧ 有持有者（宽限期回收）
     agent.fire("finally");
     await settled();
 
-    expect(alive()).toBe(0);
+    expect(await alive()).toBe(0);
   });
 
   it("客户端明确放手（keepAlive:false）：不等宽限期，连接还在也当场收", async () => {
@@ -2016,7 +2041,7 @@ describe("SessionManager：活着 = 保活 ∧ 有持有者（宽限期回收）
 
     live.keepAliveSet(sessionId, false);
 
-    expect(alive()).toBe(0);
+    expect(await alive()).toBe(0);
   });
 
   it("倒计时已经起跑后，段内再收尾一轮也不会把窗口往后推", async () => {
@@ -2055,5 +2080,138 @@ describe("SessionManager：活着 = 保活 ∧ 有持有者（宽限期回收）
     live.dispose();
 
     expect(clock.pending()).toHaveLength(0);
+  });
+});
+
+/**
+ * `title` 与 `id` 是两个事实：id 是身份（存档文件名、指针、idChanged 都指它），
+ * title 是给人看的名字，改了不动 id。`remove` 是另一个动作（物理删档）。
+ *
+ * 桌面端的侧栏要的正是这两件事：改名（不跳 id）与删除。
+ */
+describe("SessionManager：标题与删除（id 与 title 分开）", () => {
+  let store: MemoryStore;
+  let titled: SessionManager;
+
+  beforeEach(() => {
+    store = new MemoryStore();
+    titled = new SessionManager({
+      createAgent: async () => agent,
+      nextSessionId: () => "chat_titled",
+      storeFor: () => store,
+    });
+  });
+
+  /** 造一段「已存档、不在内存里」的会话（侧栏里最常见的那种） */
+  const archiveOnly = async (): Promise<string> => {
+    const { sessionId } = await titled.create({ workspaceId: "ws-1", path: "/p" });
+    agent.messages = [{ role: "user", content: "留档" }];
+    await titled.save(sessionId);
+    titled.close(sessionId);
+    return sessionId;
+  };
+
+  it("改活会话的名字：id 不动，存档与列表都跟上", async () => {
+    const { sessionId } = await titled.create({ workspaceId: "ws-1", path: "/p" });
+
+    expect(await titled.rename({ workspaceId: "ws-1", sessionId, title: "  重构会话  " })).toEqual({
+      sessionId,
+      title: "重构会话",
+    });
+
+    // id 没变（换 id 是 `saveAs` 干的事）
+    expect((await titled.list("ws-1")).map((entry) => entry.sessionId)).toEqual([sessionId]);
+    expect((await titled.list("ws-1"))[0]!.title).toBe("重构会话");
+    // 存档里也写下来了：下次 attach 装回来的还是这个名字
+    expect(store.records.get(sessionId)!.title).toBe("重构会话");
+  });
+
+  it("只改盘上的存档：不需要先 attach 进内存", async () => {
+    const sessionId = await archiveOnly();
+
+    await titled.rename({ workspaceId: "ws-1", sessionId, title: "旧会话" });
+
+    expect(store.records.get(sessionId)!.title).toBe("旧会话");
+    expect((await titled.list("ws-1", { includeSaved: false })).length).toBe(0); // 它仍是存档，不是活会话
+  });
+
+  it("续接时把 title 带回来（同名 store 里已有）", async () => {
+    const sessionId = await archiveOnly();
+    await titled.rename({ workspaceId: "ws-1", sessionId, title: "带回来" });
+
+    await titled.attach({ workspaceId: "ws-1", path: "/p", sessionId });
+
+    expect((await titled.list("ws-1"))[0]!.title).toBe("带回来");
+  });
+
+  it("空标题 → bad-params；不存在的会话 → session-missing", async () => {
+    const { sessionId } = await titled.create({ workspaceId: "ws-1", path: "/p" });
+
+    await expect(
+      titled.rename({ workspaceId: "ws-1", sessionId, title: "   " }),
+    ).rejects.toMatchObject({ code: "bad-params" });
+    await expect(
+      titled.rename({ workspaceId: "ws-1", sessionId: "chat_404", title: "x" }),
+    ).rejects.toMatchObject({ code: "session-missing" });
+  });
+
+  it("saveAs 换 id 时把 title 一起带走（否则改过的名字会在另存为时丢掉）", async () => {
+    const { sessionId } = await titled.create({ workspaceId: "ws-1", path: "/p" });
+    await titled.rename({ workspaceId: "ws-1", sessionId, title: "名字" });
+
+    const result = await titled.saveAs(sessionId, "chat_renamed");
+
+    expect(store.records.get("chat_renamed")!.title).toBe("名字");
+    expect(store.records.has(sessionId)).toBe(false);
+  });
+
+  it("删活会话：内存里没了、存档也没了", async () => {
+    const { sessionId } = await titled.create({ workspaceId: "ws-1", path: "/p" });
+    await titled.save(sessionId);
+
+    expect(await titled.remove({ workspaceId: "ws-1", sessionId })).toEqual({ removed: true });
+
+    expect(await titled.list("ws-1")).toEqual([]);
+    expect(store.records.has(sessionId)).toBe(false);
+  });
+
+  it("删只存在于盘上的存档", async () => {
+    const sessionId = await archiveOnly();
+
+    expect(await titled.remove({ workspaceId: "ws-1", sessionId })).toEqual({ removed: true });
+    expect(store.records.has(sessionId)).toBe(false);
+  });
+
+  it("删正在跑的一轮：先把会话摘掉，那一轮跑完也不再写档", async () => {
+    const { sessionId } = await titled.create({ workspaceId: "ws-1", path: "/p" });
+    titled.send(sessionId, "长任务");
+
+    expect(await titled.remove({ workspaceId: "ws-1", sessionId })).toEqual({ removed: true });
+    expect(await titled.list("ws-1")).toEqual([]);
+
+    // 那一轮照常在后台跑完；`settleTurn` 已经不挂了（detach 过），所以不会把存档写回来
+    agent.messages = [
+      { role: "user", content: "长任务" },
+      { role: "assistant", content: "答" },
+    ];
+    agent.fire("finally");
+    await settled();
+
+    expect(store.records.has(sessionId)).toBe(false);
+  });
+
+  it("删不存在的会话：removed:false（幂等，不当错误）", async () => {
+    expect(await titled.remove({ workspaceId: "ws-1", sessionId: "chat_404" })).toEqual({
+      removed: false,
+    });
+  });
+
+  it("删掉「上一轮会话」指针指着的那段：指针不动，last() 自己回 null", async () => {
+    const { sessionId } = await titled.create({ workspaceId: "ws-1", path: "/p" });
+    await titled.save(sessionId);
+
+    await titled.remove({ workspaceId: "ws-1", sessionId });
+
+    expect(await titled.last("ws-1")).toEqual({ sessionId: null });
   });
 });

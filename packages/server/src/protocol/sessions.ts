@@ -18,7 +18,6 @@
  */
 
 import type { PhaseInfo } from "../service/progress/PhaseTracker.js";
-import type { SessionRef } from "../service/store/SessionStore.js";
 
 /**
  * 词汇表（名字就这三个，不再多造）：
@@ -67,10 +66,12 @@ export const SESSION_METHODS = {
    * `SESSION_EVENTS.question`），因为它的方向是服务端 → 客户端。
    */
   answer: "session.answer",
-  /** 某个工作区下活着的会话（不是盘上的存档） */
+  /** 某个工作区下的会话清单（盘上的存档 ∪ 内存里的活会话，一条不重） */
   list: "session.list",
-  /** 某个工作区下**已存档**的会话（`/load` 的选择器用），按写入时间倒序 */
-  listSaved: "session.listSaved",
+  /** 改显示名（**不动 id**；与“另存为” `saveAs` 是两件事） */
+  rename: "session.rename",
+  /** 删一段会话（物理删存档，幂等） */
+  remove: "session.remove",
   /** 某个工作区「上一轮会话」的指针（只有 id；客户端拿它走续接） */
   last: "session.last",
   /** 撤回：删掉下标起的消息，并立即落盘 */
@@ -361,21 +362,37 @@ export interface SessionCancelResult {
 export interface SessionListParams {
   /** 会话属于工作区，列会话必须指明是哪个工作区的（不提供"全局列"） */
   workspaceId: string;
+  /** 只列内存里的活会话（`false` = 不读磁盘）；缺省 `true` */
+  includeSaved?: boolean;
 }
 
-export interface SessionSummary {
+/**
+ * 列表里的一条 —— 侧栏渲染它的全部所需，**不包含消息正文**。
+ *
+ * ## 为什么要 `live` + `phase`
+ *
+ * 侧栏是一个列表：既要全部历史，又要「这段正在跑」。以前这是两条方法（`session.list`
+ * 只给活会话、`session.listSaved` 只给 id），客户端得自己拼，还会把同一段拼成两条。
+ *
+ * ## 为什么没有 `keepAlive` / `turnId`
+ *
+ * `turnId` 是**事件过滤**用的序号，客户端只在自己发过一条之后才需要它；`keepAlive` 是
+ * 服务端的回收内政 —— 两者都与“列表里展示什么”无关，要它们自己去 `snapshot`。
+ */
+export interface SessionListEntry {
   sessionId: string;
-  workspaceId: string;
   agentId: string;
-  turnId: number;
-  /** 当前阶段；空闲为 null */
+  /** 展示名；缺省 = 还没起过名，客户端拿首条消息兑底 */
+  title?: string;
+  /** 会话级模型覆盖（三级解析的最内层）；缺省 = 跟着 Agent 定义 */
+  modelId?: string;
+  messageCount: number;
+  /** 最后一次活动（ISO）：列表就按它倒序 */
+  updatedAt: string;
+  /** 此刻在服务端内存里（能收发、可能有轮在跑） */
+  live: boolean;
+  /** 当前阶段；不在跑为 `null`（`live:false` 时恒为 `null`） */
   phase: PhaseInfo | null;
-  /**
-   * 是否在保活区里（`turn.end` 之后不被回收的就是它们）。
-   *
-   * 客户端靠它「区分」：将来 desktop / web 的 pin 列表直接读这个字段，不用另走一条查询。
-   */
-  keepAlive: boolean;
 }
 
 /** 一屏所需的全部事实：客户端拿它直接渲染，不必先从事件流里攒 */
@@ -469,12 +486,34 @@ export interface SessionSaveAsResult {
 }
 
 export interface SessionListResult {
-  sessions: SessionSummary[];
+  sessions: SessionListEntry[];
 }
 
-/** 已存档会话的列表查询（同样只看工作区） */
-export interface SessionListSavedParams {
+/** 改显示名（**不动 id**） */
+export interface SessionRenameParams {
+  /**
+   * 顺带指明工作区：目标可能只是**盘上的存档**（还没进内存），而这种会话只能靠
+   * `workspaceId` 找到它那个存档目录 —— 与 `remove` 同一个理由。
+   */
   workspaceId: string;
+  sessionId: string;
+  title: string;
+}
+
+export interface SessionRenameResult {
+  sessionId: string;
+  title: string;
+}
+
+/** 删一段会话（物理删存档；幂等） */
+export interface SessionRemoveParams {
+  workspaceId: string;
+  sessionId: string;
+}
+
+export interface SessionRemoveResult {
+  /** 本来就不存在是 `false`（不当错误，与 `agent.remove` 同一口径） */
+  removed: boolean;
 }
 
 /**
@@ -572,11 +611,6 @@ export type SessionMigrateParams = SessionHandoffParams;
 
 /** 迁移的结果与 `handoff` 同形 —— 差别只在 `sessionId` 是**新的**那一段 */
 export type SessionMigrateResult = SessionHandoffResult;
-
-export interface SessionListSavedResult {
-  /** 只有 id：列表不解析存档内容 */
-  sessions: SessionRef[];
-}
 
 export interface SessionRollbackParams {
   sessionId: string;
