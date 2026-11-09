@@ -1,5 +1,4 @@
 import type { AgentDefinition } from "../../../types/index.js";
-import { Tool } from "@ai-zen/agents-core";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 

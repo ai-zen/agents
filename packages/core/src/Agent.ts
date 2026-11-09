@@ -1,5 +1,4 @@
 import EventBus from "@ai-zen/event-bus";
-import OpenAI from "openai";
 import type { ChatCompletionChunk } from "openai/resources/chat/completions";
 import { AgentNS } from "./AgentNS.js";
 import { AgentContext } from "./AgentContext.js";

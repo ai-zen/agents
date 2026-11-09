@@ -9,7 +9,6 @@ import type { SkillInfo } from "./discover.js";
 import { createDisclosureParam } from "../../disclosure.js";
 import { readSkill } from "./discover.js";
 import { promises as fs } from "node:fs";
-import { join } from "node:path";
 
 const EMPTY_HINT = "(No Skills are currently available, please ask the user to add one)";
 

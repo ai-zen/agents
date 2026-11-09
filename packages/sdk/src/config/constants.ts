@@ -1,4 +1,4 @@
-import { AgentNS, Message } from "@ai-zen/agents-core";
+import { Message } from "@ai-zen/agents-core";
 import type { AgentDefinition, AppConfig } from "../types/index.js";
 
 // ---------------------------------------------------------------------------
