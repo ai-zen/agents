@@ -438,6 +438,39 @@ export class SessionManager {
   }
 
   /**
+   * 某个工作区「上一轮会话」的指针 —— **只回 id**，且这个 id 必须是**盘上真有的存档**。
+   *
+   * 客户端拿它决定「新会话」还是「续接」：有 id 就原样塞进
+   * `create({ workspaceId, sessionId })`。agentId 不在这里回：`create()` 已经实现了
+   * 「调用方不给就从存档里取」（`input.agentId || record?.agentId`），再回一份就是
+   * 第二份会漂移的真相。
+   *
+   * ## 为什么还读一次存档，而不是直接回指针
+   *
+   * 指针会过期：用户在别处 `/save <新名字>`（另存为会删旧档）、或手删了会话文件，指针
+   * 仍然指着那个已经不存在的 id。而 `create()` 对「存档里没有这个 id」的定义是
+   * **不报错、静默开一段空会话** —— 直接回指针的后果是：客户端以为在续接，用户看到
+   * 的却是一段历史全空的新对话（「我明明接着上次，结果全没了」）。两害相权，
+   * **宁可让客户端开一段新会话，也不能把它领进一段空会话**：新会话至少是诚实的。
+   *
+   * 代价是多一次落盘读。但它落在常见路径上本来就要发生的那次读上：客户端拿到 id 后
+   * 立刻 `session.create`，`create()` 会读同一份存档 —— 这次读只是把那次提前了，
+   * 算不上额外开销（指针为空 / 存档注定要删时更是省了一次白跑）。
+   *
+   * 没有指针、或指针指向的存档已不在时都回 `null`（客户端据此走新会话）；连存档都没
+   * 注入时明确报 `no-store`，与 `listSaved` / `save` 同一口径 —— 不假装「这个工作区
+   * 没有上一轮」。
+   */
+  async last(workspaceId: string): Promise<{ sessionId: string | null }> {
+    const store = await this.storeFor(workspaceId);
+    if (!store) throw codedError("no-store", `no session store for workspace ${workspaceId}`);
+    const pointer = await store.lastSession();
+    if (!pointer) return { sessionId: null };
+    const record = await store.read(pointer.id);
+    return { sessionId: record ? pointer.id : null };
+  }
+
+  /**
    * 撤回：删掉 `index` 起的消息，**并立即落盘**。
    *
    * 落盘不是可选项：只改内存的话，存档里仍留着被撤回的消息，下次 `/load` 或重启

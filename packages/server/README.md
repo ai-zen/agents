@@ -27,6 +27,7 @@ grep -rn "agents-server" packages/sdk/src packages/core/src   # must be empty
 agents-server                      # foreground on 127.0.0.1:8790
 agents-server --port 0             # let the OS pick a free port
 agents-server --idle-timeout 1800000   # exit after 30 min with no connections
+agents-server --workspace ~/proj   # default workspace when the client sends none
 agents-server status               # print the discovery file + liveness
 agents-server stop                 # ask the running one to shut down
 ```
@@ -86,12 +87,37 @@ session events (`session.phase`, `message.delta`, `turn.end`, `session.notice`,
 SessionManager.ts` implements the live-session registry and the SDK-event → protocol-event
 translation; `src/service/agent/` assembles the agent (config + Scope + capability
 discovery) per workspace; `src/daemon/sessionHandlers.ts` registers `workspace.resolve` /
-`events.watch` / `session.create` / `session.send` / `session.cancel` / `session.list` /
-`session.handoff` / `session.migrate` on a `Daemon`, and `src/cli.ts` wires all of it.
+`workspace.files` / `events.watch` / `session.create` / `session.send` / `session.cancel` /
+`session.list` / `session.listSaved` / `session.last` / `session.handoff` /
+`session.migrate` on a `Daemon`, and `src/cli.ts` wires all of it.
 
 Agent assembly is **per workspace**: one Scope (one set of MCP connections and tool
 discovery) is shared by every session in the same workspace, and never shared across
 workspaces — project-level skills / tools / mcp hang off the workspace path.
+
+### The workspace owns the cwd
+
+`workspace.resolve` takes an **optional** path. Send none and the server answers with *its
+own* working directory — the `--workspace` flag, else the directory the daemon was started
+from; the resolved value is logged at startup, so "who decided this directory" is always
+answerable from the log. That is the only correct behaviour once the client and the server
+are different machines: a laptop's cwd is a directory the server may not even have. The
+handler never reads the process cwd itself — the composition root resolves the default once
+and injects it as `defaultWorkspacePath`.
+
+`workspace.files` returns the candidate list behind the client's `@`-completion. Entries are
+relative to the workspace root, `/`-separated, and carry `dir` so the client knows whether to
+append a trailing `/`. It is produced from **the server's** disk: `git ls-files -co
+--exclude-standard` first (one call gives tracked + untracked *and* respects `.gitignore`),
+`fs.glob` as the fallback for non-repos, 15s TTL cache keyed by workspace root, 20k entry cap.
+Two details are load-bearing:
+
+- **The root comes from the `workspace.json` record, never from the client.** The client only
+  sends `workspaceId`; the id is a hash and cannot be reversed into a path, so the record is
+  the only way back. A `workspaceId` that would escape the workspaces root is rejected.
+- **Ancestor directories are synthesized** (`src/tui/chat.tsx` → `src`, `src/tui`). Without
+  them the menu cannot be drilled into (`@src/` → keep listing), so it is a capability
+  difference, not list padding.
 
 ### Notices: two channels, on one wire
 
@@ -138,7 +164,11 @@ Three things are worth knowing before touching it:
   the SDK also emits `finally` for the handoff round itself.
 - **Auto-migration mutates a turn that is already running.** When the model declares
   `tokenThresholds`, the factory installs `ContextGuardPlugin` (hard line, suspended while a
-  handoff is in flight) and `AutoMigratePlugin` (soft line). The soft line fires *inside*
+  handoff is in flight) and `AutoMigratePlugin` (soft line). The same `thresholds.guard` also
+  feeds `SubAgentGuardInstallerPlugin`, which re-installs the guard on every delegated
+  sub-agent from `onSubAgentStart` — a sub-agent is a fresh `new Agent()` that inherits no
+  plugins and runs through `run()` (so `onBeforeSend` / `onAfterSend` never fire for it), and
+  it recursively installs itself so grandchildren are covered too. The soft line fires *inside*
   `send()`, so it must not open a new turn and must not settle the outer one; it archives,
   prunes, re-keys and then emits `session.idChanged` — that event is the only way a client
   learns about a new id when no request is in flight.
@@ -146,6 +176,30 @@ Three things are worth knowing before touching it:
   which logs and continues — a failed archive inside a hook would let the prune destroy the
   history anyway. Archive / prune / adopt are three ordered statements in
   `SessionManager.migrate()`, each free to fail loudly.
+
+## Config and agent definitions
+
+`src/protocol/config.ts` is the contract for everything that changes **global** state and
+belongs to no session: the config centre (`config.get` / `config.save` /
+`config.reasoningPresets`, `config.mcp.get` / `config.mcp.save` scoped `global` | `project`)
+and agent definitions (`agent.list` / `get` / `save` / `remove`, next to the older
+`agent.model.set`). `ConfigService` wraps the SDK's `ConfigManager` / `AgentRepository`; every
+path (`config.json`, `agents/`, `sub-agents/`, `mcp.json`, workspaces root) is injected by the
+composition root.
+
+Why this layer exists at all: the config centre used to read and write the **client's** disk.
+With both ends on one machine that looks fine and fails silently — the UI reports success
+while the server's agents keep using the old model. Three deliberate choices:
+
+- **Payloads are `unknown`.** The shape of `AppConfig` / `AgentDefinition` belongs to the SDK;
+  a browser client should not have to install it to read a config. `unknown` becomes a real
+  type at exactly one boundary — the handler — so the assertions live in one auditable place.
+- **`config.save` is a whole-document overwrite.** No `syncManagedModels` on the write path:
+  that is `bootstrap()`'s job, and re-syncing inside a save would silently revert the models
+  the user just edited.
+- **`agent.get` takes an optional `kind`.** The same id in `agents/` and `sub-agents/` is
+  normal (both are called `default`), so a two-pane UI must say which pool it means; without
+  it the lookup is top-level first, then sub-agent.
 
 ## Two hard constraints (machine-checkable)
 
@@ -175,6 +229,9 @@ test with two or three fakes and nothing else.
 | `cli/src/session-store.ts` + 旧 `session-pointer.ts` | `src/service/store/` (port + file impl + legacy migration) |
 | project paths derived from `cwd` | `src/service/workspace/workspace.ts` |
 | `cli/src/agent-creator.ts` (config + Scope + capability discovery) | `src/service/agent/` |
+| `cli/src/config.ts` + `cli/src/agents-store.ts` (config / MCP / agent definition I/O) | `src/service/config/` + `src/protocol/config.ts` |
+| `cli/src/tui/file-index.ts` (`@` completion, scanning the client's disk) | `src/service/workspace/FileIndex.ts` |
+| `cli/src/sub-agent-guard-plugin.ts` | `sdk/src/agent-plugins/SubAgentGuardInstallerPlugin.ts` |
 | `cli/src/handoff-service.ts` (the hooks around the SDK's handoff flow) | `src/service/handoff/` |
 | — | `src/protocol/` frames, message and session shapes |
 | — | `src/daemon/` listener, handshake, discovery file, session handlers |

@@ -7,7 +7,7 @@
  * 与 `src/daemon/` 里一律不读全局（可用 README 的 grep 检验）。
  *
  * 子命令：
- *   agents-server [serve] [--port N] [--idle-timeout MS]   前台启动（默认 8790）
+ *   agents-server [serve] [--port N] [--idle-timeout MS] [--workspace PATH]  前台启动（默认 8790）
  *   agents-server status                                   打印发现文件与存活状态
  *   agents-server stop                                     让在跑的那个收摊
  */
@@ -18,6 +18,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Daemon } from "./daemon/Daemon.js";
 import { createAgentHandlers } from "./daemon/agentHandlers.js";
+import { createConfigHandlers } from "./daemon/configHandlers.js";
 import { createSessionHandlers } from "./daemon/sessionHandlers.js";
 import {
   descriptorPath,
@@ -28,6 +29,7 @@ import {
 import { encodeFrame, FrameDecoder } from "./protocol/frames.js";
 import { PROTOCOL_VERSION } from "./protocol/messages.js";
 import { SessionAgentFactory } from "./service/agent/SessionAgentFactory.js";
+import { ConfigService } from "./service/config/ConfigService.js";
 import { EventHub } from "./service/events/EventHub.js";
 import { SessionManager } from "./service/session/SessionManager.js";
 import { FileSessionStore } from "./service/store/FileSessionStore.js";
@@ -39,6 +41,8 @@ interface Args {
   port: number;
   host: string;
   idleTimeoutMs: number;
+  /** 客户端不指定工作目录时用哪个（`--workspace`，缺省为启动本进程时的目录） */
+  defaultWorkspace: string;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -60,12 +64,16 @@ function parseArgs(argv: string[]): Args {
   const port = Number(readFlag(rest, "--port") ?? 8790);
   const host = readFlag(rest, "--host") ?? "127.0.0.1";
   const idleTimeoutMs = Number(readFlag(rest, "--idle-timeout") ?? 0);
+  // cwd 归属服务端：客户端不发工作目录时用它。缺省取本进程的 cwd —— 这是「谁把服务端
+  // 拉起来的、当时他在哪个目录」的答案，所以下面启动日志里会把它打出来（否则用户报
+  // 「`@` 补全列出来的全是不认识的目录」时，无从判断是谁决定的目录）。
+  const defaultWorkspace = readFlag(rest, "--workspace") ?? process.cwd();
 
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error(`bad --port: ${port}`);
   if (!Number.isFinite(idleTimeoutMs) || idleTimeoutMs < 0) {
     throw new Error(`bad --idle-timeout: ${idleTimeoutMs}`);
   }
-  return { command, aiZenDir, port, host, idleTimeoutMs };
+  return { command, aiZenDir, port, host, idleTimeoutMs, defaultWorkspace };
 }
 
 /** 取 `--flag value` 的值（同时支持 `--flag=value`） */
@@ -202,6 +210,16 @@ async function main(): Promise<number> {
   const homeDir = process.env.HOME || process.env.USERPROFILE || homedir();
   const agentFactory = new SessionAgentFactory({ aiZenDir: args.aiZenDir, homeDir });
   const workspacesRoot = join(args.aiZenDir, "workspaces");
+  // 配置与 Agent 定义的管理面（客户端配置中心用）：路径在这里解析成值再注入，
+  // `service/` 里一律不读全局（配置根、Agent 目录、MCP 文件、工作区根都是）
+  const configService = new ConfigService({
+    configFile: join(args.aiZenDir, "config.json"),
+    agentsDir: join(args.aiZenDir, "agents"),
+    subAgentsDir: join(args.aiZenDir, "sub-agents"),
+    globalMcpFile: join(args.aiZenDir, "mcp.json"),
+    workspacesRoot,
+  });
+  log("info", `default workspace: ${args.defaultWorkspace}`);
   // 一条事件出口：会话事件与全局通知共用（客户端只需一次订阅）
   const hub = new EventHub();
   const sessions = new SessionManager({
@@ -223,8 +241,13 @@ async function main(): Promise<number> {
     idleTimeoutMs: args.idleTimeoutMs,
     log,
     handlers: {
-      ...createSessionHandlers({ manager: sessions, workspacesRoot }),
-      ...createAgentHandlers({ factory: agentFactory }),
+      ...createSessionHandlers({
+        manager: sessions,
+        workspacesRoot,
+        defaultWorkspacePath: args.defaultWorkspace,
+      }),
+      ...createAgentHandlers({ factory: agentFactory, config: configService }),
+      ...createConfigHandlers({ config: configService }),
     },
     onStopped: (reason) => {
       log("info", `exit (${reason})`);

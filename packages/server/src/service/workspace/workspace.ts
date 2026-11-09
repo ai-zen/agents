@@ -44,6 +44,39 @@ export function workspaceIdFor(path: string): string {
 }
 
 /**
+ * 由 `workspaceId` 找回工作区（读 `workspace.json`；没有这个工作区时返回 `null`）。
+ *
+ * ## 为什么需要「反查」
+ *
+ * 客户端只带 `workspaceId` 的调用（`workspace.files`、`session.last` 等）拿不到路径：
+ * 路径是**服务端**的磁盘事实，客户端知道的只是 id。而 id 是哈希派生的（`workspaceIdFor`），
+ * 光看 id 推不回路径 —— `workspace.json` 就是为此留的那张纸。
+ *
+ * 返回 `null` 而不是抛错：调用方（处理器）要把它变成带 code 的协议错误，
+ * 「有没有这个工作区」是调用方的判断，不是本函数的异常语义。
+ */
+export async function readWorkspace(options: {
+  workspacesRoot: string;
+  id: string;
+}): Promise<Workspace | null> {
+  // id 直接来自客户端参数（`workspaceId`），必须先挡住逃出 workspacesRoot 的写法。
+  // 与 `FileSessionStore` 里挡会话 id 同一个理由、同一处判断：`join()` 不认 `..`。
+  if (!isSafeId(options.id)) return null;
+
+  const rootDir = join(options.workspacesRoot, options.id);
+  try {
+    const parsed = JSON.parse(await fs.readFile(join(rootDir, "workspace.json"), "utf-8")) as {
+      path?: unknown;
+    };
+    // 形状不对（旧版残留、手改坏）一律当作没有，不猜
+    if (typeof parsed?.path !== "string" || parsed.path.length === 0) return null;
+    return { id: options.id, path: parsed.path, rootDir };
+  } catch {
+    return null; // 没有这个工作区（目录或记录不存在 / 读不动）
+  }
+}
+
+/**
  * 确保工作区目录存在，返回它的身份与位置。
  *
  * 会建 `<rootDir>/` 并写下 `workspace.json`（已存在就不动它：那份记录是**首次**
@@ -70,4 +103,9 @@ export async function ensureWorkspace(options: {
   }
 
   return { id, path: absolute, rootDir };
+}
+
+/** 工作区 id 只做目录名用：不许带分隔符、不许是 `.` / `..`（子目录不是工作区的概念） */
+function isSafeId(id: string): boolean {
+  return id.length > 0 && id !== "." && id !== ".." && !id.includes("/") && !id.includes("\\");
 }

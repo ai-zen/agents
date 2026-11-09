@@ -40,7 +40,20 @@ export {
   type LegacyMigrationOptions,
   type LegacyMigrationResult,
 } from "./service/store/legacyMigration.js";
-export { ensureWorkspace, workspaceIdFor, type Workspace } from "./service/workspace/workspace.js";
+export {
+  ensureWorkspace,
+  readWorkspace,
+  workspaceIdFor,
+  type Workspace,
+} from "./service/workspace/workspace.js";
+export {
+  FileIndex,
+  DEFAULT_EXCLUDES,
+  INDEX_TTL_MS,
+  MAX_ENTRIES,
+  SCAN_TIMEOUT_MS,
+  type FileIndexDeps,
+} from "./service/workspace/FileIndex.js";
 export { EventHub } from "./service/events/EventHub.js";
 
 // ---- 会话编排与事件（服务端真正「跑一轮对话」的那一层） ----
@@ -66,6 +79,7 @@ export {
   EVENT_METHODS,
   SESSION_EVENTS,
   SESSION_METHODS,
+  WORKSPACE_METHODS,
   type MessageDeltaEvent,
   type SessionCancelParams,
   type SessionCancelResult,
@@ -107,9 +121,39 @@ export {
   type SessionMigrateParams,
   type SessionMigrateResult,
   type TurnEndEvent,
+  type SessionLastParams,
+  type SessionLastResult,
+  type WorkspaceFilesParams,
+  type WorkspaceFileEntry,
+  type WorkspaceFilesResult,
   type WorkspaceResolveParams,
   type WorkspaceResolveResult,
 } from "./protocol/sessions.js";
+
+// ---- 配置与管理面（客户端的配置中心要用；不属于某一段会话，所以不在 session.* 下） ----
+export {
+  CONFIG_METHODS,
+  AGENT_ADMIN_METHODS,
+  type AgentGetParams,
+  type AgentGetResult,
+  type AgentKind,
+  type AgentListResult,
+  type AgentRemoveParams,
+  type AgentRemoveResult,
+  type AgentSaveParams,
+  type AgentSaveResult,
+  type ConfigGetResult,
+  type ConfigMcpGetParams,
+  type ConfigMcpGetResult,
+  type ConfigMcpSaveParams,
+  type ConfigMcpSaveResult,
+  type ConfigReasoningPresetsResult,
+  type ConfigSaveParams,
+  type ConfigSaveResult,
+  type McpScope,
+} from "./protocol/config.js";
+export { ConfigService, type ConfigServiceOptions } from "./service/config/ConfigService.js";
+export { createConfigHandlers, type ConfigHandlerOptions } from "./daemon/configHandlers.js";
 
 // ---- 守护进程与协议（客户端只需要协议类型 + Daemon 用于进程内嵌入/测试） ----
 export { Daemon, type Connection, type DaemonOptions, type MethodHandler } from "./daemon/Daemon.js";

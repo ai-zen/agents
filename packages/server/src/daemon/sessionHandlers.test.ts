@@ -1,13 +1,17 @@
 /**
- * 会话处理器 —— 走真 socket 的接线测试。
+ * 处理器接线测试 —— 走真 socket。
  *
- * 业务逻辑在 `SessionManager.test.ts` 里用假 Agent 测透了；这里只证明一件事：
- * **事件真的能从服务端推过连接**，以及参数错会原样回给客户端。
+ * 业务逻辑在 `SessionManager.test.ts` 里用假 Agent 测透了；这里只证明三件事：
+ * **事件真的能从服务端推过连接**、参数错会原样回给客户端、以及 `workspace.*` 里的
+ * 「根目录来自工作区参数」真的生效（`workspace.files` 扫的是服务端自己的磁盘）。
+ *
+ * `workspace.files` 那个用例用真实临时目录（假件证明不了「扫的是哪个目录」），
+ * 其余一律注入。
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createConnection, type Socket } from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Daemon } from "./Daemon.js";
@@ -16,7 +20,7 @@ import { SessionManager, type AgentLike } from "../service/session/SessionManage
 import { FileSessionStore } from "../service/store/FileSessionStore.js";
 import { encodeFrame, FrameDecoder } from "../protocol/frames.js";
 import { PROTOCOL_VERSION } from "../protocol/messages.js";
-import { EVENT_METHODS, SESSION_METHODS } from "../protocol/sessions.js";
+import { EVENT_METHODS, SESSION_METHODS, WORKSPACE_METHODS } from "../protocol/sessions.js";
 
 /** 交接文档正文：SDK 有 400 字节的有效性阈值 */
 const DOC = `# 交接\n\n${"- 桩\n".repeat(80)}`;
@@ -58,6 +62,8 @@ class FakeAgent implements AgentLike {
 }
 
 let dir: string;
+/** 客户端不带工作目录时用的那个（组装根注入，真进程里是服务端自己的 cwd） */
+let defaultWorkspacePath: string;
 let daemon: Daemon | null = null;
 let agent: FakeAgent;
 let manager: SessionManager;
@@ -65,6 +71,7 @@ let client: TestClient | null = null;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "aiz-session-handlers-"));
+  defaultWorkspacePath = join(dir, "default-ws");
   agent = new FakeAgent();
   let counter = 0;
   manager = new SessionManager({
@@ -93,7 +100,11 @@ async function startDaemon(): Promise<void> {
     aiZenDir: dir,
     port: 0,
     version: "0.1.0-test",
-    handlers: createSessionHandlers({ manager, workspacesRoot: join(dir, "workspaces") }),
+    handlers: createSessionHandlers({
+      manager,
+      workspacesRoot: join(dir, "workspaces"),
+      defaultWorkspacePath,
+    }),
   });
   await instance.start();
   daemon = instance;
@@ -101,21 +112,78 @@ async function startDaemon(): Promise<void> {
   await client.handshake();
 }
 
-describe("会话处理器（真 socket）", () => {
+describe("工作区处理器（真 socket）", () => {
   it("workspace.resolve 建目录并回 workspaceId", async () => {
     await startDaemon();
-    const result = await client!.call(SESSION_METHODS.workspaceResolve, { path: "/work/proj-a" });
+    const result = await client!.call(WORKSPACE_METHODS.resolve, { path: "/work/proj-a" });
     expect(result).toMatchObject({ path: "/work/proj-a" });
     expect((result as { workspaceId: string }).workspaceId).toMatch(/^proj-a-[0-9a-f]{8}$/);
   });
 
-  it("参数缺失 → bad-params 错误帧（不是崩掉连接）", async () => {
+  it("workspace.resolve 不带 path：用服务端默认工作区（cwd 归属服务端）", async () => {
     await startDaemon();
-    await expect(client!.call(SESSION_METHODS.workspaceResolve, {})).rejects.toThrow(/bad-params/);
+    // 连 params 都不传：客户端不需要知道目录在哪
+    const result = (await client!.call(WORKSPACE_METHODS.resolve)) as { workspaceId: string; path: string };
+
+    expect(result.path).toBe(defaultWorkspacePath);
+    expect(result.workspaceId).toMatch(/^default-ws-[0-9a-f]{8}$/);
+  });
+
+  it("参数错 → bad-params 错误帧（不是崩掉连接）", async () => {
+    await startDaemon();
+    // `path` 是可选的，但给了就得是字符串
+    await expect(client!.call(WORKSPACE_METHODS.resolve, { path: 42 })).rejects.toThrow(/bad-params/);
+    await expect(client!.call(WORKSPACE_METHODS.files, {})).rejects.toThrow(/bad-params/);
+    await expect(client!.call(SESSION_METHODS.last, {})).rejects.toThrow(/bad-params/);
     // 连接还能继续用
     expect(await client!.call("ping")).toEqual({ pong: true });
   });
 
+  it("workspace.files 扫的是**服务端**磁盘：按 workspaceId 找回根目录再列条目", async () => {
+    await startDaemon();
+    const projectRoot = join(dir, "proj");
+    mkdirSync(join(projectRoot, "src"), { recursive: true });
+    writeFileSync(join(projectRoot, "src", "chat.tsx"), "");
+    writeFileSync(join(projectRoot, "README.md"), "");
+
+    const workspace = (await client!.call(WORKSPACE_METHODS.resolve, { path: projectRoot })) as {
+      workspaceId: string;
+    };
+    const listed = (await client!.call(WORKSPACE_METHODS.files, {
+      workspaceId: workspace.workspaceId,
+    })) as { entries: Array<{ path: string; dir: boolean }> };
+
+    const files = listed.entries.filter((entry) => !entry.dir).map((entry) => entry.path).sort();
+    expect(files).toEqual(["README.md", "src/chat.tsx"]);
+  });
+
+  it("workspace.files 的未知工作区 → workspace-not-found（不是空清单）", async () => {
+    await startDaemon();
+    await expect(
+      client!.call(WORKSPACE_METHODS.files, { workspaceId: "nope-00000000" }),
+    ).rejects.toThrow(/workspace-not-found/);
+    expect(await client!.call("ping")).toEqual({ pong: true });
+  });
+
+  it("session.last：没有指针回 null，存档之后回那段会话的 id", async () => {
+    await startDaemon();
+    expect(await client!.call(SESSION_METHODS.last, { workspaceId: "ws-1" })).toEqual({
+      sessionId: null,
+    });
+
+    const created = (await client!.call(SESSION_METHODS.create, {
+      workspaceId: "ws-1",
+      path: dir,
+    })) as { sessionId: string };
+    await client!.call(SESSION_METHODS.save, { sessionId: created.sessionId });
+
+    expect(await client!.call(SESSION_METHODS.last, { workspaceId: "ws-1" })).toEqual({
+      sessionId: created.sessionId,
+    });
+  });
+});
+
+describe("会话处理器（真 socket）", () => {
   it("watch 之后：create / send 的进展以事件帧推到这条连接上", async () => {
     await startDaemon();
     await client!.call(EVENT_METHODS.watch);

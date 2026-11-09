@@ -136,6 +136,8 @@ export { AutoRefreshToolsPlugin } from "./agent-plugins/AutoRefreshToolsPlugin.j
 export { ContextGuardPlugin } from "./agent-plugins/ContextGuardPlugin.js";
 export type { ContextGuardOptions } from "./agent-plugins/ContextGuardPlugin.js";
 export { UnknownToolHintPlugin } from "./agent-plugins/UnknownToolHintPlugin.js";
+export { SubAgentGuardInstallerPlugin } from "./agent-plugins/SubAgentGuardInstallerPlugin.js";
+export type { SubAgentGuardOptions } from "./agent-plugins/SubAgentGuardInstallerPlugin.js";
 
 // 工具 — 内置工具类 + 动态工具工厂
 export { BUILTIN_TOOL_CLASSES } from "./scope/plugins/builtin/index.js";

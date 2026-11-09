@@ -4,19 +4,27 @@
  * 这一层很薄：**只做参数校验 + 把事件接到调用方的连接上**。业务在 `SessionManager`，
  * 帧在 `Daemon`。分开的理由是可测性：管理器用假 Agent 就能测完整个事件流程，
  * 这里靠真 socket 测一次接线即可。
+ *
+ * `workspace.*` 也挂在这里：工作区是会话的父容器，两者的服务端入口本来就是同一个
+ * （一个守护进程、一份 `workspacesRoot`）—— 为了两个方法名去另开一个 handler 文件，
+ * 只会让组装要多接一次线、多传一份同样的路径参数。
  */
 
 import type { Connection, MethodHandler } from "./Daemon.js";
-import { ensureWorkspace } from "../service/workspace/workspace.js";
+import { badParams, codedError, optionalString, requireNumber, requireString } from "./params.js";
+import { ensureWorkspace, readWorkspace } from "../service/workspace/workspace.js";
+import { FileIndex } from "../service/workspace/FileIndex.js";
 import type { SessionManager } from "../service/session/SessionManager.js";
 import {
   EVENT_METHODS,
   SESSION_METHODS,
+  WORKSPACE_METHODS,
   type HandoffMode,
   type MessageContent,
   type SessionCancelResult,
   type SessionCreateResult,
   type SessionHandoffResult,
+  type SessionLastResult,
   type SessionListResult,
   type SessionListSavedResult,
   type SessionMigrateResult,
@@ -26,6 +34,7 @@ import {
   type SessionSaveResult,
   type SessionSendResult,
   type SessionSnapshotResult,
+  type WorkspaceFilesResult,
   type WorkspaceResolveResult,
 } from "../protocol/sessions.js";
 
@@ -33,16 +42,48 @@ export interface SessionHandlerOptions {
   manager: SessionManager;
   /** `<aiZenDir>/workspaces`（组装根算好传进来，本层不读全局路径） */
   workspacesRoot: string;
+  /** 客户端没指定工作目录时用它（组装根注入，通常是服务端进程的 cwd） */
+  defaultWorkspacePath: string;
+  /**
+   * 工作区文件索引（`workspace.files` 用）。不注入则自建一个真实实现的。
+   *
+   * 之所以留成可注入：清单来自**服务端磁盘**，接线测试不该为了验证一条路径去造真实文件树。
+   */
+  fileIndex?: FileIndex;
 }
 
 export function createSessionHandlers(options: SessionHandlerOptions): Record<string, MethodHandler> {
-  const { manager, workspacesRoot } = options;
+  const { manager, workspacesRoot, defaultWorkspacePath } = options;
+  const fileIndex = options.fileIndex ?? new FileIndex();
 
   return {
-    [SESSION_METHODS.workspaceResolve]: async (params): Promise<WorkspaceResolveResult> => {
-      const path = requireString(params, "path");
+    /**
+     * 路径 → 工作区身份。
+     *
+     * `path` 缺省时用服务端自己的工作目录：**cwd 归属服务端**。客户端把自己进程的
+     * 当前工作目录送上来，等于让客户端替服务端决定会话跑在哪个目录（TUI 连远端
+     * 服务端时，那个目录在服务端很可能根本不存在）。本层也不去读进程级全局，
+     * 缺省值由组装根注入。
+     */
+    [WORKSPACE_METHODS.resolve]: async (params): Promise<WorkspaceResolveResult> => {
+      const path = optionalString(params, "path") ?? defaultWorkspacePath;
       const workspace = await ensureWorkspace({ workspacesRoot, path });
       return { workspaceId: workspace.id, path: workspace.path };
+    },
+
+    /**
+     * 某个工作区的文件清单（客户端 `@` 补全用）。
+     *
+     * 只收 `workspaceId`：根目录是**服务端的磁盘事实**，靠 `workspace.json` 反查，
+     * 不接受调用方递来的路径 —— 否则补全扫的就是别人机器上的目录。
+     */
+    [WORKSPACE_METHODS.files]: async (params): Promise<WorkspaceFilesResult> => {
+      const workspaceId = requireString(params, "workspaceId");
+      const workspace = await readWorkspace({ workspacesRoot, id: workspaceId });
+      if (!workspace) {
+        throw codedError("workspace-not-found", `unknown workspace: ${workspaceId}`);
+      }
+      return { entries: await fileIndex.list(workspace.path) };
     },
 
     /**
@@ -83,6 +124,15 @@ export function createSessionHandlers(options: SessionHandlerOptions): Record<st
       return { sessions: await manager.listSaved(requireString(params, "workspaceId")) };
     },
 
+    /**
+     * 某个工作区「上一轮会话」的指针（只有 id；客户端拿它走续接）。
+     *
+     * 指针指向的存档已不在（改名 / 手删）时回 `null` —— 取舍见 `SessionManager.last`。
+     */
+    [SESSION_METHODS.last]: async (params): Promise<SessionLastResult> => {
+      return await manager.last(requireString(params, "workspaceId"));
+    },
+
     [SESSION_METHODS.rollback]: async (params): Promise<SessionRollbackResult> => {
       return await manager.rollback(requireString(params, "sessionId"), requireNumber(params, "index"));
     },
@@ -120,23 +170,6 @@ export function createSessionHandlers(options: SessionHandlerOptions): Record<st
   };
 }
 
-/** 取必填字符串参数；缺失/类型不对 → 带 `bad-params` 码的错（守护进程原样回给客户端） */
-function requireString(params: unknown, field: string): string {
-  const value = (params as Record<string, unknown> | null | undefined)?.[field];
-  if (typeof value !== "string" || value.length === 0) {
-    throw badParams(`missing or invalid "${field}"`);
-  }
-  return value;
-}
-
-function requireNumber(params: unknown, field: string): number {
-  const value = (params as Record<string, unknown> | null | undefined)?.[field];
-  if (typeof value !== "number" || !Number.isInteger(value)) {
-    throw badParams(`missing or invalid "${field}"`);
-  }
-  return value;
-}
-
 /**
  * 消息内容：非空文本，或非空的「文本 / 图片」内容块数组。
  *
@@ -165,15 +198,6 @@ function isContentBlock(block: unknown): boolean {
   return false;
 }
 
-function optionalString(params: unknown, field: string): string | undefined {
-  const value = (params as Record<string, unknown> | null | undefined)?.[field];
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== "string" || value.length === 0) {
-    throw badParams(`invalid "${field}"`);
-  }
-  return value;
-}
-
 /** 交接执行者：只有两个取值，别的值不猜（猜错了要么多烧一轮全量输入，要么写不出文档） */
 function optionalMode(params: unknown): HandoffMode | undefined {
   const value = (params as Record<string, unknown> | null | undefined)?.["mode"];
@@ -184,8 +208,3 @@ function optionalMode(params: unknown): HandoffMode | undefined {
   return value;
 }
 
-function badParams(message: string): Error & { code: string } {
-  const error = new Error(message) as Error & { code?: string };
-  error.code = "bad-params";
-  return error as Error & { code: string };
-}

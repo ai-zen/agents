@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionAgentFactory } from "./SessionAgentFactory.js";
+import { AutoMigratePlugin, ContextGuardPlugin, SubAgentGuardInstallerPlugin } from "@ai-zen/agents-sdk";
 import type { AgentPaths } from "./agentPaths.js";
 import type { AgentLike } from "../session/SessionManager.js";
 
@@ -331,9 +332,14 @@ describe("SessionAgentFactory：按模型阈值装护栏与自动迁移", () => 
       isHandoffBusy: () => false,
     });
 
-    expect(plugins).toHaveLength(2); // ContextGuardPlugin + AutoMigratePlugin
-    // 真的跑一次插件的触发钩子：用量 999 > 软线 100 → 交给会话层
-    await plugins[1].onAfterSend({ agent });
+    expect(plugins).toHaveLength(3); // ContextGuardPlugin + SubAgentGuardInstallerPlugin + AutoMigratePlugin
+    // 子 Agent 的硬线：阈值必须与主 Agent **同源**（同一个 `guardTokens`），另拍一个数就是两套护栏
+    const installer = plugins.find((plugin) => plugin instanceof SubAgentGuardInstallerPlugin) as any;
+    expect(installer).toBeDefined();
+    expect(installer.guardTokens).toBe(200);
+    // 真的跑一次自动迁移的触发钩子：用量 999 > 软线 100 → 交给会话层
+    const autoMigrate = plugins.find((plugin) => plugin instanceof AutoMigratePlugin) as any;
+    await autoMigrate.onAfterSend({ agent });
     expect(migrated).toBe(1);
   });
 
@@ -353,21 +359,24 @@ describe("SessionAgentFactory：按模型阈值装护栏与自动迁移", () => 
       isHandoffBusy: () => busy,
     });
 
-    await plugins[1].onAfterSend({ agent });
+    const autoMigrate = plugins.find((plugin) => plugin instanceof AutoMigratePlugin) as any;
+    await autoMigrate.onAfterSend({ agent });
     expect(migrated).toBe(0);
 
     busy = false;
-    await plugins[1].onAfterSend({ agent });
+    await autoMigrate.onAfterSend({ agent });
     expect(migrated).toBe(1);
   });
 
-  it("不传 autoMigrate：只装护栏（没有交接能力就别装作能迁）", async () => {
+  it("不传 autoMigrate：只装两个护栏（没有交接能力就别装作能迁）", async () => {
     const { agent, plugins } = recordingAgent();
     const factory = factoryWith(guardedConfig, agent, {});
 
     await factory.create({ workspaceId: "ws", path: "/p", agentId: "default" });
 
-    expect(plugins).toHaveLength(1);
+    expect(plugins).toHaveLength(2);
+    expect(plugins.some((plugin) => plugin instanceof ContextGuardPlugin)).toBe(true);
+    expect(plugins.some((plugin) => plugin instanceof SubAgentGuardInstallerPlugin)).toBe(true);
   });
 
   it("模型没配阈值：一个插件都不装（不凭直觉拍一个数）", async () => {

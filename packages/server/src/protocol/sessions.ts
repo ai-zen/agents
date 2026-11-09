@@ -28,13 +28,26 @@ import type { SessionRef } from "../service/store/SessionStore.js";
  *   turn       session 里的一轮 `send → 结束`，用 `turnId` 归轮
  *
  * `session.*` 只用于「对一个会话做事」。不属于某个会话的动作不往这个命名空间里塞：
- * 例如「订阅事件」是**连接级**的（`events.watch`），跟具体会话无关。
+ * 例如「订阅事件」是**连接级**的（`events.watch`），跟具体会话无关；工作区是会话的
+ * **父容器**，它的事归 `workspace.*`（见 `WORKSPACE_METHODS`）。
  */
+
+/**
+ * 工作区方法名（服务端注册与客户端调用共用同一份字面量）。
+ *
+ * 为什么要跟 `SESSION_METHODS` 分开：工作区是会话的父容器，两个层级的动作混在一个
+ * 常量表里，调用点就得靠眼力分辨「这一步是在认容器，还是在对一段会话做事」。分开之后
+ * **线上方法名一个字没变**（仍是 `workspace.resolve`）—— 客户端只改引用的常量名。
+ */
+export const WORKSPACE_METHODS = {
+  /** 路径 → 工作区身份（建目录、写 workspace.json） */
+  resolve: "workspace.resolve",
+  /** 某个工作区的文件清单（客户端 `@` 补全用；扫的是服务端磁盘） */
+  files: "workspace.files",
+} as const;
 
 /** 会话方法名（服务端注册与客户端调用共用同一份字面量，避免两边各写一份字符串） */
 export const SESSION_METHODS = {
-  /** 路径 → 工作区身份（建目录、写 `workspace.json`） */
-  workspaceResolve: "workspace.resolve",
   create: "session.create",
   send: "session.send",
   cancel: "session.cancel",
@@ -42,6 +55,8 @@ export const SESSION_METHODS = {
   list: "session.list",
   /** 某个工作区下**已存档**的会话（`/load` 的选择器用），按写入时间倒序 */
   listSaved: "session.listSaved",
+  /** 某个工作区「上一轮会话」的指针（只有 id；客户端拿它走续接） */
+  last: "session.last",
   /** 撤回：删掉下标起的消息，并立即落盘 */
   rollback: "session.rollback",
   /** 按磁盘上的（新）配置与 Agent 定义重建 Agent，**保留消息** */
@@ -112,14 +127,43 @@ export const SESSION_EVENTS = {
 // ==================== 方法参数与结果 ====================
 
 export interface WorkspaceResolveParams {
-  /** 工作目录的绝对路径（服务端负责规范化与建目录） */
-  path: string;
+  /**
+   * 工作目录的绝对路径（服务端负责规范化与建目录）。
+   *
+   * **可选**：cwd 归属服务端 —— 客户端（终端 / 桌面 / 将来的浏览器）不指定时，用服务端
+   * 进程的工作目录（由组装根注入，不是这一层去读进程级全局）。不带参数的 `workspace.resolve`
+   * 才是「我的工作区在哪」这个问题的正解：客户端把自己进程的当前工作目录送上来，等于让
+   * 客户端替服务端决定会话跑在哪个目录。
+   */
+  path?: string;
 }
 
 export interface WorkspaceResolveResult {
   workspaceId: string;
   /** 规范化之后的绝对路径 */
   path: string;
+}
+
+export interface WorkspaceFilesParams {
+  workspaceId: string;
+}
+
+/**
+ * 与客户端 `PathEntry` 逐字对齐：`dir` 决定补全后是否补一个 `/`。
+ *
+ * 清单里**既有文件、也有它们的祖先目录**（目录条目排在文件之前），不仅是一堆文件路径：
+ * 客户端靠 `dir: true` 渲染“可继续往里钻”的目录行、并在选中后补上末尾的 `/`。
+ * 只给文件的话，远程模式下“钻目录”这个能力就不存在了。
+ */
+export interface WorkspaceFileEntry {
+  /** 相对工作区根目录的路径，`/` 分隔，不带 `./` 前缀 */
+  path: string;
+  /** 是否目录（目录条目的 `path` 不带末尾 `/`，那个斜杠由客户端插入时补） */
+  dir: boolean;
+}
+
+export interface WorkspaceFilesResult {
+  entries: WorkspaceFileEntry[];
 }
 
 export interface SessionCreateParams {
@@ -144,6 +188,21 @@ export interface SessionCreateParams {
 export interface SessionCreateResult {
   sessionId: string;
   agentId: string;
+}
+
+export interface SessionLastParams {
+  workspaceId: string;
+}
+
+export interface SessionLastResult {
+  /**
+   * 上一轮会话的 id。
+   *
+   * 两种情况下为 `null`，客户端一律走新会话：没有指针，以及**指针指向的存档已经不在了**
+   * （改名 / 手删）。后者不能直接回 id —— `session.create` 对“存档里没这个 id”是静默开
+   * 一段空会话，用户会以为历史丢了。
+   */
+  sessionId: string | null;
 }
 
 export interface SessionSendParams {

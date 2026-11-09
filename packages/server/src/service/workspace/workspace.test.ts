@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensureWorkspace, workspaceIdFor } from "./workspace.js";
+import { ensureWorkspace, readWorkspace, workspaceIdFor } from "./workspace.js";
 
 let root: string;
 
@@ -64,5 +64,34 @@ describe("ensureWorkspace", () => {
     const workspace = await ensureWorkspace({ workspacesRoot: root, path: "/a/b/../c" });
     expect(workspace.path).toBe("/a/c");
     expect(workspace.id).toBe(workspaceIdFor("/a/c"));
+  });
+});
+
+describe("readWorkspace：由 id 反查路径", () => {
+  it("读 workspace.json 拿回身份与位置（id 是哈希派生的，光看 id 推不回路径）", async () => {
+    const created = await ensureWorkspace({ workspacesRoot: root, path: "/home/ubuntu/proj" });
+
+    expect(await readWorkspace({ workspacesRoot: root, id: created.id })).toEqual(created);
+  });
+
+  it("没有这个工作区 → null（不抛：回何种错误是调用方的判断）", async () => {
+    expect(await readWorkspace({ workspacesRoot: root, id: "nope-00000000" })).toBeNull();
+  });
+
+  it("id 来自客户端参数：带路径分隔符 / `.` / `..` 一律当没有（不许逃出 workspacesRoot）", async () => {
+    expect(await readWorkspace({ workspacesRoot: root, id: ".." })).toBeNull();
+    expect(await readWorkspace({ workspacesRoot: root, id: "a/b" })).toBeNull();
+    expect(await readWorkspace({ workspacesRoot: root, id: "" })).toBeNull();
+  });
+
+  it("记录写坏 / 没记 path → null（形状不对一律当作没有，不猜）", async () => {
+    const created = await ensureWorkspace({ workspacesRoot: root, path: "/tmp/proj" });
+    writeFileSync(
+      join(created.rootDir, "workspace.json"),
+      JSON.stringify({ schema: 1, id: created.id, path: 42 }),
+      "utf-8",
+    );
+
+    expect(await readWorkspace({ workspacesRoot: root, id: created.id })).toBeNull();
   });
 });

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SessionManager, type AgentLike } from "./SessionManager.js";
+import { FileSessionStore } from "../store/FileSessionStore.js";
 import type { SessionRecord, SessionStore } from "../store/SessionStore.js";
 import type { ServerEvent } from "../../protocol/sessions.js";
 import { EventHub } from "../events/EventHub.js";
@@ -500,6 +501,69 @@ describe("SessionManager：存档列表与撤回", () => {
 
     await expect(manager.rollback("chat_x", 1)).rejects.toThrow(/no session store/);
     expect(agent.messages).toHaveLength(2);
+  });
+});
+
+describe("SessionManager：上一轮会话指针（session.last）", () => {
+  let store: MemoryStore;
+  let withStore: SessionManager;
+
+  beforeEach(() => {
+    store = new MemoryStore();
+    withStore = new SessionManager({
+      createAgent: async () => agent,
+      nextSessionId: () => "chat_fixed",
+      storeFor: () => store,
+    });
+  });
+
+  it("没有指针 → 空 id（客户端据此走新会话）", async () => {
+    expect(await withStore.last("ws-1")).toEqual({ sessionId: null });
+  });
+
+  it("存档把指针指过去之后，只回 id（agentId 由 create 从存档里取，不在这里回第二份）", async () => {
+    await withStore.create({ workspaceId: "ws-1", path: "/p" });
+    await withStore.save("chat_fixed");
+
+    expect(await withStore.last("ws-1")).toEqual({ sessionId: "chat_fixed" });
+  });
+
+  it("指针跟着最新的存档走（另存为之后指向新 id）", async () => {
+    await withStore.create({ workspaceId: "ws-1", path: "/p" });
+    await withStore.saveAs("chat_fixed", "chat_renamed");
+
+    expect(await withStore.last("ws-1")).toEqual({ sessionId: "chat_renamed" });
+  });
+
+  it("指针指向的存档已被删 → 回 null（宁可开新会话，也不能把客户端领进一段空会话）", async () => {
+    // 这条必须用**真存盘**：要证的正是「指针文件还在、它指着的那份存档没了」；
+    // 内存存档的 remove 只是从一个 Map 里删键，证明不了指针会过期。
+    const root = await fs.mkdtemp(join(tmpdir(), "aiz-last-pointer-"));
+    const store = new FileSessionStore({ rootDir: root });
+    const diskManager = new SessionManager({
+      createAgent: async () => agent,
+      nextSessionId: () => "chat_disk",
+      storeFor: () => store,
+    });
+    try {
+      await diskManager.create({ workspaceId: "ws-1", path: "/p" });
+      await diskManager.save("chat_disk");
+      expect(await diskManager.last("ws-1")).toEqual({ sessionId: "chat_disk" });
+
+      // 模拟「用户在别处 /save 改名 / 手删了文件」：存档没了，指针还指着那个 id
+      await fs.rm(join(root, "sessions", "chat_disk.json"));
+      expect((await store.lastSession())?.id).toBe("chat_disk");
+
+      // 回 null 而不是这个 id：客户端会去 create，而 create 对缺失存档是静默开空会话
+      expect(await diskManager.last("ws-1")).toEqual({ sessionId: null });
+    } finally {
+      diskManager.dispose();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("没注入存档：明确报 no-store（不假装这个工作区没有上一轮）", async () => {
+    await expect(manager.last("ws-1")).rejects.toThrow(/no session store/);
   });
 });
 

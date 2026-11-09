@@ -29,6 +29,7 @@ import {
   createAgent as sdkCreateAgent,
   Scope,
   SdkAgent,
+  SubAgentGuardInstallerPlugin,
   type AgentDefinition,
   type AppConfig,
   type HandoffService,
@@ -160,8 +161,11 @@ export class SessionAgentFactory {
         isSuspended: input.isHandoffBusy,
       }),
     );
-    // 子 Agent 的硬线（CLI 的 `SubAgentGuardInstallerPlugin`）暂时没装：它还在 CLI 仓，
-    // 搬进 SDK 才能在这里复用。现状是主 Agent 有硬线、委派出去的子 Agent 没有。
+    // 子 Agent 的硬线：子 Agent 是新 `new Agent()` 出来的，不继承主 Agent 的插件；
+    // 而且它走 `run()` 而非 `send()`（`onBeforeSend`/`onAfterSend` 不触发），所以只能在
+    // `onSubAgentStart` 钩子里现场装配。阈值与主 Agent 同源（同一个 `thresholds.guard`），
+    // 本插件会递归安插自身，孙级自动覆盖。
+    sdkAgent.use(new SubAgentGuardInstallerPlugin({ guardTokens: thresholds.guard }));
 
     const autoMigrate = input.autoMigrate;
     if (autoMigrate) {
