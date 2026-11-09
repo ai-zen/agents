@@ -153,6 +153,8 @@ export interface SessionCreateInput {
   path: string;
   agentId?: string;
   sessionId?: string;
+  /** 每轮收尾是否自动落盘（缺省 `true`）；`false` 见协议里 `SessionCreateParams.persist` */
+  persist?: boolean;
 }
 
 export interface SessionManagerOptions {
@@ -227,6 +229,15 @@ interface LiveSession {
    * 那次收尾不能触发回收（那时会话正要换 id）。
    */
   persistOnSettle: boolean;
+  /**
+   * 会话级的「自动落盘」策略：每轮收尾要不要写存档。
+   *
+   * 与上面那个**每轮**的 `persistOnSettle` 是两件事，别混：
+   *   · `persistOnSettle` —— 这一轮该不该写（`migrate` 的中场收尾不写）；
+   *   · `autoPersist` —— 这段会话值不值得写（一次性调用根本不进存档）。
+   * 两个都为真才落盘。`false` 时想留档只有显式 `save`（CLI 的 `ai --save`）。
+   */
+  autoPersist: boolean;
   /**
    * 保活区标记：`true` = 这一轮跑完之后仍然留着（有人正在关注它）。
    *
@@ -421,13 +432,18 @@ export class SessionManager {
   }
 
   /** 把当前会话写进工作区存档，并把它设为「上一轮会话」 */
-  async save(sessionId: string): Promise<{ saved: boolean; sessionId: string }> {
+  async save(
+    sessionId: string,
+    options: { setAsLast?: boolean } = {},
+  ): Promise<{ saved: boolean; sessionId: string }> {
     const session = this.require(sessionId);
     const store = await this.storeFor(session.workspaceId);
     if (!store) throw codedError("no-store", `no session store for workspace ${session.workspaceId}`);
 
     await store.write({ id: session.id, agentId: session.agentId, messages: session.agent.messages });
-    await store.setLastSession(session.id);
+    // `setAsLast:false` 是一次性调用的归档（`ai --save`）：存下来是为了事后翻看，
+    // 但「本工作区上一轮会话」仍该是用户真正聊过的那一段。
+    if (options.setAsLast !== false) await store.setLastSession(session.id);
     return { saved: true, sessionId: session.id };
   }
 
@@ -970,6 +986,7 @@ export class SessionManager {
       turnSettled: true,
       settleDeferred: false,
       persistOnSettle: false,
+      autoPersist: input.persist !== false,
       keepAlive: true,
       handoff: null,
       subAgents: new Map(),
@@ -1379,6 +1396,9 @@ export class SessionManager {
    *     其实没存」是最坏的失败形态——用户会在下次 `ai` 发现对话不翼而飞。
    */
   private async writeSession(session: LiveSession): Promise<void> {
+    // 一次性会话（`persist:false`）：这一轮属于某次脚本调用，不在存档里留痕，也不挪
+    // 「上一轮会话」指针 —— 否则下次 `ai` 会续接到一条管道结果上。
+    if (!session.autoPersist) return;
     const messages = session.agent.messages as Array<{ role?: unknown }>;
     if (!messages.some((message) => message?.role === "user")) return;
     const store = await this.storeFor(session.workspaceId);

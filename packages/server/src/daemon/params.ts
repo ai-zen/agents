@@ -70,6 +70,22 @@ export function requireBoolean(params: unknown, name: string): boolean {
 }
 
 /**
+ * 取可选布尔参数（`session.create` 的 `persist` / `session.save` 的 `setAsLast`）。
+ *
+ * 缺省 `undefined` = 「没给」，由服务层按各自的旧行为取值 —— 不是 `false`。
+ * 与 {@link requireBoolean} 一样不用 `Boolean(x)`：字符串 `"false"` 会变成 `true`，
+ * 而这两个参数的错法都会静默写错存档。
+ */
+export function optionalBoolean(params: unknown, name: string): boolean | undefined {
+  const value = field(params, name);
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "boolean") {
+    throw badParams(`invalid "${name}"`);
+  }
+  return value;
+}
+
+/**
  * 取可选字符串参数。
  *
  * `undefined` 与 `null` 都当「没给」（JSON 里两者都是「这个字段没内容」）；给了就必须是

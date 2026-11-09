@@ -15,6 +15,7 @@ import {
   badParams,
   codedError,
   field,
+  optionalBoolean,
   optionalString,
   requireBoolean,
   requireNumber,
@@ -133,7 +134,9 @@ export function createSessionHandlers(options: SessionHandlerOptions): Record<st
       const path = optionalString(params, "path") ?? (await workspacePathOf(workspaceId));
       const agentId = optionalString(params, "agentId");
       const sessionId = optionalString(params, "sessionId");
-      return await manager.create({ workspaceId, path, agentId, sessionId });
+      // `persist:false` = 一次性调用（`ai "…"`）：不自动落盘、不挪「上一轮会话」指针
+      const persist = optionalBoolean(params, "persist");
+      return await manager.create({ workspaceId, path, agentId, sessionId, persist });
     },
 
     /**
@@ -247,7 +250,10 @@ export function createSessionHandlers(options: SessionHandlerOptions): Record<st
     },
 
     [SESSION_METHODS.save]: async (params): Promise<SessionSaveResult> => {
-      return await manager.save(requireString(params, "sessionId"));
+      // `setAsLast:false` = 一次性调用的归档（`ai --save`）：写档但不篡改续接指针
+      return await manager.save(requireString(params, "sessionId"), {
+        setAsLast: optionalBoolean(params, "setAsLast"),
+      });
     },
 
     [SESSION_METHODS.saveAs]: async (params): Promise<SessionSaveAsResult> => {

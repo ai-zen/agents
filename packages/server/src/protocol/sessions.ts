@@ -242,6 +242,18 @@ export interface SessionCreateParams {
    * 客户端把它带进来；新会话留空，由服务端按同一套格式生成。
    */
   sessionId?: string;
+  /**
+   * 每轮收尾是否把会话写进工作区存档（缺省 `true` = 一直以来的行为）。
+   *
+   * `false` 是给**一次性调用**用的（`ai "…"`、`cat f | ai` 这类管道场景）：那段会话
+   * 属于这一次提问，不该在 `workspaces/<id>/sessions/` 里留档，更不该把「本工作区上一轮
+   * 会话」指针挪过去 —— 否则用户下次进 TUI，续接到的是一条脚本调用的结果。想留档只有
+   * 一条路：显式 `session.save`（CLI 侧就是 `ai --save`）。
+   *
+   * 它只管**自动落盘**，不改变其余语义：会话照样是活会话（`turn.end` 之后按保活区回收）、
+   * 照样能 `save` / `saveAs`、迁移照样写档。
+   */
+  persist?: boolean;
 }
 
 export interface SessionCreateResult {
@@ -443,6 +455,13 @@ export interface SessionKeepAliveSetResult {
 
 export interface SessionSaveParams {
   sessionId: string;
+  /**
+   * 是否同时把「本工作区上一轮会话」指针指向它（缺省 `true`）。
+   *
+   * `false` 给一次性调用的归档用（`ai --save`）：留着是为了事后翻看，但下次 `ai` 不该
+   * 续接到一条管道结果上 —— 连着跑几条 `cat … | ai --save` 之后，`ai` 会续到最后一条。
+   */
+  setAsLast?: boolean;
 }
 
 export interface SessionSaveResult {

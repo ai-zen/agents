@@ -209,6 +209,26 @@ Three details:
 - **A failed write is a notice (`persistFailed`), not an exception.** The settle path has no
   caller left to throw to, and "you thought it was saved" is the worst failure shape there is.
 
+#### One-off sessions opt out: `session.create { persist: false }`
+
+Per-turn persistence is right for a conversation, wrong for a *single question*. `ai "…"` (the
+CLI's pipe mode) asks one thing and exits; archiving it would leave a session in `/load` and,
+worse, move the workspace's "last session" pointer — the next TUI launch would resume a script's
+output. So `session.create` takes `persist?: boolean` (default `true`): with `false` the settle
+path skips the write and never touches the pointer. Everything else still holds — it is a live
+session (keep-alive applies), `save` / `saveAs` / migration still write to disk when called.
+
+The two flags are deliberately separate things and must not be conflated:
+
+| flag | scope | question it answers |
+|---|---|---|
+| `persistOnSettle` | one turn | does *this* turn get written (`migrate`'s mid-turn settle says no) |
+| `persist` / `autoPersist` | the session | is *this conversation* worth archiving at all |
+
+Archiving a one-off run is an explicit act, and it also must not steal the resume pointer:
+`session.save { sessionId, setAsLast?: boolean }` (default `true`, i.e. the TUI's `/save`)
+writes the file and leaves `last-session.json` alone when `false`.
+
 ### Keep-alive: who decides a session may be dropped
 
 A session outlives its clients, but it must not live forever. The rule is one line:

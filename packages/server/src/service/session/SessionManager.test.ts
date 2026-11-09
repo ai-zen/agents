@@ -1025,6 +1025,50 @@ describe("SessionManager：交接 / 迁移", () => {
     expect(store.records.size).toBe(0);
   });
 
+  it("persist:false 的一次性会话：跑完不留存档、也不篡改「上次聊到哪儿」", async () => {
+    const { sessionId } = await handoffManager.create({
+      workspaceId: "ws-1",
+      path: workspace,
+      persist: false,
+    });
+    handoffManager.send(sessionId, "脚本里问一句");
+    agent.messages = [
+      { role: "user", content: "脚本里问一句" },
+      { role: "assistant", content: "答" },
+    ];
+    agent.fire("finally");
+    await settled();
+
+    // `ai "…"` 的全部要求：这一轮确实跑完了（`turn.end` 已发），但工作区里什么都没变
+    expect(events.some((event) => event.event === "turn.end")).toBe(true);
+    expect(store.records.size).toBe(0);
+    expect(await store.lastSession()).toBeNull();
+  });
+
+  it("persist:false 仍可显式归档；`setAsLast:false` 只写档、不挪指针", async () => {
+    const { sessionId } = await handoffManager.create({
+      workspaceId: "ws-1",
+      path: workspace,
+      persist: false,
+    });
+    agent.messages = [{ role: "user", content: "留一份" }];
+
+    await handoffManager.save(sessionId, { setAsLast: false });
+
+    // 存档在（`ai --save` 要能事后翻看），但下次 `ai` 不该续接到它上面
+    expect(store.records.get(sessionId)!.messages).toHaveLength(1);
+    expect(await store.lastSession()).toBeNull();
+  });
+
+  it("save 缺省仍然把指针挪过去（TUI 的 `/save`）", async () => {
+    const { sessionId } = await handoffManager.create({ workspaceId: "ws-1", path: workspace });
+    agent.messages = [{ role: "user", content: "留档" }];
+
+    await handoffManager.save(sessionId);
+
+    expect((await store.lastSession())?.id).toBe(sessionId);
+  });
+
   it("migrate：先存旧会话、再剔历史、最后换 id（收尾发在旧 id 上）", async () => {
     const sessionId = await openChatted();
 
