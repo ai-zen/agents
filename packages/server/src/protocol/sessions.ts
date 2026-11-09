@@ -567,9 +567,11 @@ export interface SessionHandoffResult {
   messages: unknown[];
 }
 
-export interface SessionMigrateParams extends SessionHandoffParams {}
+/** 交接 + 开新会话：入参与 `handoff` 逐字相同（都是「用哪种执行者」） */
+export type SessionMigrateParams = SessionHandoffParams;
 
-export interface SessionMigrateResult extends SessionHandoffResult {}
+/** 迁移的结果与 `handoff` 同形 —— 差别只在 `sessionId` 是**新的**那一段 */
+export type SessionMigrateResult = SessionHandoffResult;
 
 export interface SessionListSavedResult {
   /** 只有 id：列表不解析存档内容 */

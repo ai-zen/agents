@@ -40,6 +40,7 @@ import {
   writeDescriptor,
   type ServerDescriptor,
 } from "./discovery.js";
+import { isLoopbackHost } from "./host.js";
 
 /** 方法处理函数：拿参数、返回结果；抛错则回 `ok:false` */
 export type MethodHandler = (params: unknown, connection: Connection) => Promise<unknown> | unknown;
@@ -80,7 +81,8 @@ export interface DaemonOptions {
   onStopped?: (reason: string) => void;
 }
 
-const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
+/** 拒绝启动时给用户看的那句话里的地址说明（判据本身的实现在 `host.ts`） */
+const LOOPBACK_HOSTS_NOTE = "127.0.0.0/8 / ::1 / localhost";
 
 export class Daemon {
   private readonly options: DaemonOptions;
@@ -131,10 +133,10 @@ export class Daemon {
 
   /** 启动：监听 → 写发现文件 → 挂空闲计时器 */
   async start(): Promise<ServerDescriptor> {
-    if (!LOOPBACK_HOSTS.has(this.host)) {
+    if (!isLoopbackHost(this.host)) {
       throw new Error(
         `refusing to listen on ${this.host}: this build has no authentication yet, ` +
-          `so it is restricted to loopback (127.0.0.1 / ::1 / localhost)`,
+          `so it is restricted to loopback (${LOOPBACK_HOSTS_NOTE})`,
       );
     }
 

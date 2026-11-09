@@ -192,6 +192,7 @@ export {
   writeDescriptor,
   type ServerDescriptor,
 } from "./daemon/discovery.js";
+export { isLoopbackHost } from "./daemon/host.js";
 export {
   encodeFrame,
   FrameDecoder,
