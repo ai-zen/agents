@@ -67,7 +67,9 @@ class FakeAgent {
     this.client = {
       chat: {
         completions: {
-          create: vi.fn(async () => ({
+          // 形参与真实的 `create(body, options)` 同形：第二个参数是 RequestOptions，
+          // 取消信号就靠它递下去
+          create: vi.fn(async (_body?: unknown, _options?: { signal?: AbortSignal }) => ({
             choices: [{ message: { content: docContent() } }],
           })),
         },
@@ -527,16 +529,41 @@ describe("取消（AbortSignal）", () => {
   const abortError = () =>
     Object.assign(new Error("Request was aborted."), { name: "APIUserAbortError" });
 
-  it("summary 模式把 signal 作为 RequestOptions 传给模型请求", async () => {
+  it("summary 模式把取消信号作为 RequestOptions 传给模型请求", async () => {
     const { service } = await makeService();
     const agent = new FakeAgent({ writeTool: false });
     const ac = new AbortController();
 
     await service.handoff({ agent: asAgent(agent), mode: "summary", signal: ac.signal });
 
-    // 第二个参数才是 RequestOptions；放进 body 不会被 SDK 当成取消信号
+    // 第二个参数才是 RequestOptions；放进 body 不会被 SDK 当成取消信号。
+    // 传下去的是「服务句柄 + 调用方 signal」的合集，不是调用方那个对象本身
     const [, requestOptions] = agent.client.chat.completions.create.mock.calls[0]!;
-    expect(requestOptions).toEqual({ signal: ac.signal });
+    const passed = (requestOptions as { signal?: AbortSignal }).signal;
+    expect(passed).toBeInstanceOf(AbortSignal);
+    ac.abort();
+    expect(passed!.aborted).toBe(true);
+  });
+
+  it("summary 请求进行中被服务 abort() 拦住 → 请求 signal 触发、不落盘", async () => {
+    const { service, dir } = await makeService();
+    const agent = new FakeAgent({ writeTool: false });
+    let seen: AbortSignal | undefined;
+    agent.client.chat.completions.create.mockImplementationOnce(
+      async (_body?: unknown, options?: { signal?: AbortSignal }) => {
+        seen = options?.signal;
+        service.abort();
+        throw abortError();
+      },
+    );
+
+    await expect(service.handoff({ agent: asAgent(agent), mode: "summary" })).rejects.toThrow(
+      HandoffAbortedError,
+    );
+
+    // 自动迁移这条路没有外部 signal，只有服务自身的句柄能中止这次请求
+    expect(seen?.aborted).toBe(true);
+    expect(await fs.readdir(dir)).toEqual([]);
   });
 
   it("summary 请求被取消 → 抛 HandoffAbortedError（不是普通失败），且不落盘", async () => {
@@ -589,21 +616,93 @@ describe("取消（AbortSignal）", () => {
     expect(await fs.readdir(dir)).toEqual([]);
   });
 
-  it("migrate 被取消后不改动会话历史（不能留下已迁移的假象）", async () => {
-    const { service } = await makeService({ strategy: "prune" });
+  it("migrate 被取消后回到交接前：历史逐条不变、不留断点、不留文档", async () => {
+    const { service, dir } = await makeService({ strategy: "prune" });
     const ac = new AbortController();
     const agent = new FakeAgent({ onSend: () => void ac.abort() });
-    const before = agent.messages.length;
+    const before = JSON.parse(JSON.stringify(agent.messages));
 
     await expect(service.migrate({ agent: asAgent(agent), signal: ac.signal })).rejects.toThrow(
       HandoffAbortedError,
     );
 
-    // 断点消息没有被注入
-    expect(agent.messages.at(-1)!.content).not.toContain(
-      "The previous conversation has been handed off",
+    // 断点消息没有被注入，交接回合也没留在历史里
+    expect(agent.messages).toEqual(before);
+    expect(await fs.readdir(dir)).toEqual([]);
+  });
+
+  it("服务自身的 abort() 就能取消（自动迁移这条路递不进 signal）", async () => {
+    const { service, dir } = await makeService();
+    // 自动迁移由 AutoMigratePlugin 直接调 migrate()，调用方没有 signal 可传，
+    // 服务不自己持有取消句柄的话，Ctrl+C 会被当成「文档没写出来」→ 重试 → 降级
+    const agent = new FakeAgent({ onSend: () => service.abort() });
+
+    await expect(service.handoff({ agent: asAgent(agent) })).rejects.toThrow(HandoffAbortedError);
+
+    expect(agent.sent).toHaveLength(1);
+    expect(agent.client.chat.completions.create).not.toHaveBeenCalled();
+    expect(agent.messages).toHaveLength(3);
+    expect(await fs.readdir(dir)).toEqual([]);
+  });
+
+  it("取消后 agent.messages 逐条回到交接前（不留半截交接回合）", async () => {
+    const { service } = await makeService();
+    const ac = new AbortController();
+    const agent = new FakeAgent({ onSend: () => void ac.abort() });
+    const before = JSON.parse(JSON.stringify(agent.messages));
+
+    await expect(service.handoff({ agent: asAgent(agent), signal: ac.signal })).rejects.toThrow(
+      HandoffAbortedError,
     );
-    expect(agent.messages.length).toBeGreaterThanOrEqual(before);
+
+    // 交接指令（几 KB 的 Skill 正文）必须一并消失：否则下一次请求会把它当历史再发一遍，
+    // `↑` 翻历史也能把它翻出来
+    expect(agent.messages).toEqual(before);
+  });
+
+  it("summary 文档已落盘后才被取消：文档同样删掉（不留半成品）", async () => {
+    const { service, dir } = await makeService();
+    const agent = new FakeAgent({ writeTool: false });
+    const ac = new AbortController();
+    // 请求本身成功返回，取消在「已生成、已落盘」之后生效：最后一道取消点拦住它
+    agent.client.chat.completions.create.mockImplementationOnce(async () => {
+      ac.abort();
+      return { choices: [{ message: { content: docContent() } }] };
+    });
+
+    await expect(
+      service.handoff({ agent: asAgent(agent), mode: "summary", signal: ac.signal }),
+    ).rejects.toThrow(HandoffAbortedError);
+
+    expect(await fs.readdir(dir)).toEqual([]);
+  });
+
+  it("提交点之后（文档已校验通过）的取消不再打断迁移", async () => {
+    const ac = new AbortController();
+    // onHandoff 只在文档通过校验后触发 = 提交点：此后停下会留下「已存档但未剔除」的
+    // 第三种状态，比让迁移做完更糟，所以这里只验「迁移照常完成」
+    const { service } = await makeService({ strategy: "prune", onHandoff: () => ac.abort() });
+    const agent = new FakeAgent({
+      onSend: async (_c, _n, self) => {
+        const path = self.sent[0].match(/Handoff document absolute path: (.+)/)![1].trim();
+        await fs.writeFile(path, docContent(), "utf-8");
+      },
+    });
+
+    const ctx = await service.migrate({ agent: asAgent(agent), signal: ac.signal });
+
+    expect(existsSync(ctx.handoffPath)).toBe(true);
+    expect(agent.messages).toHaveLength(2);
+  });
+
+  it("没有进行中的交接时 abort() 是 no-op（不污染下一次交接）", async () => {
+    const { service } = await makeService();
+    const agent = new FakeAgent();
+
+    service.abort();
+
+    const ctx = await service.handoff({ agent: asAgent(agent), mode: "summary" });
+    expect(existsSync(ctx.handoffPath)).toBe(true);
   });
 
   it("signal 存在但未取消时行为不变（防止误伤正常路径）", async () => {

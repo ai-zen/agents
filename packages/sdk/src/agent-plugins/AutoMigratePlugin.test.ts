@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { AutoMigratePlugin } from "./AutoMigratePlugin.js";
+import { HandoffAbortedError } from "../runtime/HandoffService.js";
 import type { HandoffService } from "../runtime/HandoffService.js";
+import { setLogger } from "../shared/logger.js";
 
 const MAX_HANDOFF_TOKENS = 50_000;
 
@@ -114,5 +116,20 @@ describe("AutoMigratePlugin", () => {
     await expect(
       createPlugin({ service }).onAfterSend(buildCtx(MAX_HANDOFF_TOKENS + 1)),
     ).resolves.toBeUndefined();
+  });
+
+  it("用户取消不记 error 日志（默认 logger 是 console.error，TUI 下会撕画面）", async () => {
+    const { service, migrate } = stubService();
+    migrate.mockRejectedValueOnce(new HandoffAbortedError());
+    const errors: string[] = [];
+    // 全局 logger 是模块级状态：必须在 finally 里复原，否则本文件的其它用例会继承它
+    setLogger({ info: () => {}, warn: () => {}, error: (m) => errors.push(m) });
+    try {
+      await createPlugin({ service }).onAfterSend(buildCtx(MAX_HANDOFF_TOKENS + 1));
+    } finally {
+      setLogger({ info: console.log, warn: console.warn, error: console.error });
+    }
+
+    expect(errors).toEqual([]);
   });
 });

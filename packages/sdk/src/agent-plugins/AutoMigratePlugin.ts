@@ -1,4 +1,5 @@
 import type { AgentPlugin, SendContext } from "@ai-zen/agents-core";
+import { HandoffAbortedError } from "../runtime/HandoffService.js";
 import type { HandoffMode, HandoffService } from "../runtime/HandoffService.js";
 import { getLogger } from "../shared/logger.js";
 import { SdkAgent } from "../runtime/SdkAgent.js";
@@ -77,6 +78,9 @@ export class AutoMigratePlugin implements AgentPlugin {
 
       await service.migrate({ agent, promptTokens, handoffTokens, mode: mode ?? undefined });
     } catch (err: any) {
+      // 用户主动取消不是失败：服务已把会话退回交接前，这里再报错只会在界面上
+      // 凭空多一条「迁移失败」（默认 logger 是 console.error，TUI 下直接撕画面）
+      if (err instanceof HandoffAbortedError) return;
       getLogger().error(`[autoMigrate] migration failed: ${err?.message ?? err}`);
     }
   }

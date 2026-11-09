@@ -264,7 +264,7 @@ agent.use(new AutoMigratePlugin({ service: handoffService, handoffTokens: 250_00
 ```
 
 - 策略 `strategy`：`omit`（默认，历史标记 `omit: true` 保留可审计）/ `prune`（物理剔除）。
-- **可取消**：`handoff()` / `migrate()` 接受 `signal?: AbortSignal`，取消时抛 `HandoffAbortedError`——**不降级、不重试**，并清掉写了一半的文档；`migrate()` 被取消则不会改动会话历史。别只依赖 `agent.abort()`：`summary` 走的是独立模型请求（够不到），`self` 的中止又会被误判成「模型没写出文档」而多跑两轮。
+- **可取消**：取消入口是服务自己的 `service.abort()`（同时接受 `signal?: AbortSignal`，两者任一触发即取消）。取消时抛 `HandoffAbortedError`：**不降级、不重试、不迁移**，并把会话退回交接前的状态 —— 交接回合追加的消息全部截掉、本次新建的交接文档删掉。取消句柄必须由服务持有：自动迁移由 `AutoMigratePlugin` 直接驱动，调用方根本没有机会把 `signal` 递进来。别只依赖 `agent.abort()`：`summary` 走的是独立模型请求（够不到），`self` 的中止又会被误判成「模型没写出文档」而多跑两轮。文档通过校验（`isHandoffFileReady`）之后是**提交点**，此后的取消不再生效（否则会留下「旧会话已存档、历史已剔除」的第三种状态）。
 - `service.busy` 期间自动迁移插件让行（防递归）；护栏的放宽靠把 `guard` 配得足够大（出厂 `handoff × 1.5`），不再有隐式倍数。
 - `HandoffGuardPlugin` 仅在交接回合生效：拦截 `edit` / `rm` / `rename` 等，`write` 只放行交接文档（软拒绝，把模型引回正题）。
 - 不重建 Agent，仅重建消息列表；交接失败不会丢原消息。

@@ -57,6 +57,17 @@ function isAbortError(err: unknown, signal?: AbortSignal): boolean {
 }
 
 /**
+ * 合并两条取消信号：任一触发即视为取消。
+ *
+ * 服务自身的 `abort()`（见 {@link HandoffService.abort}）与调用方传入的 `signal`
+ * 都要认：前者是自动迁移唯一的取消入口（那条链路调用方递不进 signal），后者留给
+ * 「外层还有自己的超时 / 取消」的调用方。
+ */
+function mergeSignals(own: AbortSignal, external?: AbortSignal): AbortSignal {
+  return external ? AbortSignal.any([own, external]) : own;
+}
+
+/**
  * 一次交接的完整上下文 —— 贯穿「交接前 → 写文档 → 迁移后」，供钩子与调用方使用。
  */
 export interface HandoffContext {
@@ -154,6 +165,11 @@ export interface MigrateParams extends HandoffParams {
  * 重入：`handoff()` 与 `migrate()` 共用 `busy` 标志。交接回合本身也是一次 `send()`，
  * 若不在 busy 期间让 `AutoMigratePlugin` / `ContextGuardPlugin` 让行，就会「交接触发迁移、
  * 迁移再触发交接」无限递归，或在最满的时刻被护栏直接击杀。
+ *
+ * 取消：取消句柄由服务自己持有（{@link HandoffService.abort}），而不是只认调用方传进来的
+ * `signal` —— 自动迁移由 `AutoMigratePlugin` 直接驱动，调用方根本没有机会把 signal 递进来，
+ * 只认外部 signal 的后果是「自动迁移期间按 Ctrl+C 会被当成『文档没写出来』，于是重试一轮、
+ * 再降级 summary 一轮，最后照样迁移」。取消后一律回到交接前的状态（见 {@link HandoffService.restoreBeforeHandoff}）。
  */
 export class HandoffService {
   /** 交接文档兜底模板（仅在读不到 Skill 时使用） */
@@ -174,6 +190,13 @@ export class HandoffService {
 
   /** 交接/迁移进行中标志（插件据此让行） */
   private _busy = false;
+  /**
+   * 当前这次交接/迁移的取消句柄（`null` = 没有进行中的交接）。
+   *
+   * 三条链路（`/handoff`、`/migrate`、自动迁移）共用同一个开关：前两条还有调用方能
+   * 传 `signal`，自动迁移没有 —— 句柄放在服务里，三者的取消语义才不会各不相同。
+   */
+  private abortController: AbortController | null = null;
   /** 交接回合的工具守卫（同一实例复用 + arm/disarm，避免插件数组无限增长） */
   private guard?: HandoffGuardPlugin;
   /** 已注册过守卫的 agent（每个 agent 只 use 一次） */
@@ -313,13 +336,28 @@ export class HandoffService {
   // ==================================================================
 
   /**
+   * 取消进行中的交接/迁移（用户按 Ctrl+C）。没有进行中的交接时是 no-op。
+   *
+   * 边界：本方法只保证「停下 + 回退」——不再重试、不降级 summary、不迁移，并把会话
+   * 退回交接前。**它不负责立刻掐断正在跑的模型请求**：`self` 模式的回合是
+   * `agent.send()`，调用方通常要同时 `agent.abort()`（TUI 就是这么做的）；`summary`
+   * 模式的那次请求拿的是本服务合并出的 signal，会被真正中断。
+   */
+  abort(): void {
+    this.abortController?.abort();
+  }
+
+  /**
    * 只产出交接文档，**不改动会话**（`/handoff`）。
    *
    * 不清理历史：交接回合（指令 + 工具调用 + 回执）会留在 `agent.messages` 里，
-   * 用户可继续让 agent 打磨这份文档（重写同一路径即可）。
+   * 用户可继续让 agent 打磨这份文档（重写同一路径即可）。被取消时相反：整个交接
+   * 回合从 `agent.messages` 里截掉，本次新建的文档也不留。
    */
   async handoff(params: HandoffParams): Promise<HandoffContext> {
-    return this.withBusy(() => this.runCatchingAbort(params, false));
+    return this.withBusy((own) =>
+      this.runHandoff({ ...params, signal: mergeSignals(own, params.signal) }, false),
+    );
   }
 
   /**
@@ -330,8 +368,14 @@ export class HandoffService {
    *   - `prune`：物理剔除历史，只留 `definition.messages` + 交接断点。
    */
   async migrate(params: MigrateParams): Promise<HandoffContext> {
-    return this.withBusy(async () => {
-      const ctx = await this.runCatchingAbort(params, true);
+    return this.withBusy(async (own) => {
+      // 拿到 ctx 即「已提交」：文档已通过校验，取消不再生效（见 runHandoff 末尾的取消点）。
+      // 在 prune 之前再拦一次取消会留下第三种状态 ——「用户点了取消，旧会话却已存档、
+      // 历史却已剔除」，比让迁移做完更糟
+      const ctx = await this.runHandoff(
+        { ...params, signal: mergeSignals(own, params.signal) },
+        true,
+      );
       const { agent } = ctx;
       const strategy = params.strategy ?? this.defaultStrategy;
       const breakpointMessages = HandoffService.createPostMessages(ctx.handoffPath);
@@ -363,34 +407,22 @@ export class HandoffService {
   // 内部
   // ==================================================================
 
-  /** 串行化 + 防重入：交接与迁移共用同一把锁 */
-  private async withBusy<T>(fn: () => Promise<T>): Promise<T> {
+  /**
+   * 串行化 + 防重入：交接与迁移共用同一把锁，也共用同一个取消句柄。
+   *
+   * 句柄与 `busy` 同寿命：`finally` 里清掉，否则下一次 `abort()` 会往一个已结束的
+   * controller 上发出无意义的 abort（看起来「取消成功」，实际什么都没发生）。
+   */
+  private async withBusy<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
     if (this._busy) throw new Error("A handoff is already in progress, wait for it to finish");
     this._busy = true;
+    const controller = new AbortController();
+    this.abortController = controller;
     try {
-      return await fn();
+      return await fn(controller.signal);
     } finally {
       this._busy = false;
-    }
-  }
-
-  /**
-   * 把底层各种「取消」形态统一成 {@link HandoffAbortedError}。
-   *
-   * 取消可能从三处冒上来：`self` 回合后的主动检查（已是 HandoffAbortedError）、
-   * `summary` 请求被 abort 时 OpenAI SDK 抛的 `APIUserAbortError`、以及
-   * `readSkillContent` 这类前置 await 期间被取消。调用方只需要认一个类型。
-   */
-  private async runCatchingAbort(
-    params: HandoffParams,
-    migrating: boolean,
-  ): Promise<HandoffContext> {
-    try {
-      return await this.runHandoff(params, migrating);
-    } catch (err) {
-      if (err instanceof HandoffAbortedError) throw err;
-      if (isAbortError(err, params.signal)) throw new HandoffAbortedError();
-      throw err;
+      if (this.abortController === controller) this.abortController = null;
     }
   }
 
@@ -424,74 +456,116 @@ export class HandoffService {
     }
   }
 
+  /**
+   * 跑完一次交接（"/handoff" 与 "/migrate" 共用），取消时**由本方法统一回退**。
+   *
+   * 为什么回退只写在这一处：取消可能从任何一个阶段冒出来（`self` 回合后的主动检查、
+   * `summary` 请求被 abort、前置的 `readSkillContent`），分散到各自的 catch 里就会
+   * 漏掉「文档已落盘但还没校验通过」这种半成品状态。这里一次拿全三件事：
+   * 交接前的消息条数、文档路径、以及「文档本就不存在」这个事实。
+   *
+   * 取消形态有两类，都要认：{@link HandoffAbortedError}（主动检查）与底层 abort 错误
+   * （OpenAI 的 `APIUserAbortError`）。调用方只需要认前者。
+   */
   private async runHandoff(params: HandoffParams, migrating: boolean): Promise<HandoffContext> {
     const { agent, promptTokens, handoffTokens, signal } = params;
     const requestedMode = params.mode ?? this.defaultMode;
     const handoffPath = join(this.handoffDirPath, HandoffService.createHandoffFileName(new Date()));
     const model = this.model ?? agent.model;
     const messageCountBefore = agent.messages.length;
+    // 只删「本次新建」的文档：交接文件名含时间戳，正常不会撞已有文件，但调用方也可以
+    // 把 `handoffDir` 指向人工目录，不管怎样都不该删掉别人的文件
+    const existedBefore = await this.fileExists(handoffPath);
 
-    // 迁移前上下文（不含文档，语义固定）
-    const beforeCtx: HandoffContext = {
-      agent,
-      mode: requestedMode,
-      requestedMode,
-      handoffPath,
-      model,
-      promptTokens,
-      handoffTokens,
-      migrating,
-      messageCountBefore,
-      historyText: "",
-    };
-    await this.safeHook(this.onBeforeHandoff, beforeCtx);
-    this.throwIfAborted(signal);
+    try {
+      // 迁移前上下文（不含文档，语义固定）
+      const beforeCtx: HandoffContext = {
+        agent,
+        mode: requestedMode,
+        requestedMode,
+        handoffPath,
+        model,
+        promptTokens,
+        handoffTokens,
+        migrating,
+        messageCountBefore,
+        historyText: "",
+      };
+      await this.safeHook(this.onBeforeHandoff, beforeCtx);
+      this.throwIfAborted(signal);
 
-    // ---- 执行者：self 优先，失败/不可用则单向降级 summary ----
-    let mode = requestedMode;
-    let handoffDoc: string | undefined;
-    let historyText = "";
+      // ---- 执行者：self 优先，失败/不可用则单向降级 summary ----
+      let mode = requestedMode;
+      let handoffDoc: string | undefined;
+      let historyText = "";
 
-    if (mode === "self" && !this.supportsSelfHandoff(agent)) {
-      this.logger.warn(
-        "[handoff] agent has no write tool or send capability, falling back to standalone summary mode",
-      );
-      mode = "summary";
-    }
-
-    if (mode === "self") {
-      const ok = await this.runSelfHandoff(agent, handoffPath, signal);
-      if (!ok) {
-        this.logger.warn("[handoff] self handoff failed, falling back to standalone summary mode");
+      if (mode === "self" && !this.supportsSelfHandoff(agent)) {
+        this.logger.warn(
+          "[handoff] agent has no write tool or send capability, falling back to standalone summary mode",
+        );
         mode = "summary";
       }
+
+      if (mode === "self") {
+        const ok = await this.runSelfHandoff(agent, handoffPath, signal);
+        if (!ok) {
+          this.logger.warn(
+            "[handoff] self handoff failed, falling back to standalone summary mode",
+          );
+          mode = "summary";
+        }
+      }
+
+      if (mode === "summary") {
+        historyText = HandoffService.serializeMessages(agent.messages.filter((m) => !m.omit));
+        handoffDoc = await this.generateSummary(agent, historyText, handoffPath, signal);
+        await this.writeHandoffFile(handoffPath, handoffDoc);
+      }
+
+      // 最后一道取消点：即使两步都跑完，只要期间被取消就不能算成功。跨过这一步就是
+      // 「已提交」——之后的 `onHandoff` 钩子（存旧会话等）与迁移收尾不再响应取消
+      this.throwIfAborted(signal);
+
+      const ctx: HandoffContext = {
+        agent,
+        mode,
+        requestedMode,
+        handoffPath,
+        handoffDoc,
+        model,
+        promptTokens,
+        handoffTokens,
+        migrating,
+        messageCountBefore,
+        historyText,
+      };
+
+      await this.safeHook(this.onHandoff, ctx);
+      return ctx;
+    } catch (err) {
+      if (!(err instanceof HandoffAbortedError) && !isAbortError(err, signal)) throw err;
+      await this.restoreBeforeHandoff({ agent, messageCountBefore, handoffPath, existedBefore });
+      throw new HandoffAbortedError();
     }
+  }
 
-    if (mode === "summary") {
-      historyText = HandoffService.serializeMessages(agent.messages.filter((m) => !m.omit));
-      handoffDoc = await this.generateSummary(agent, historyText, handoffPath, signal);
-      await this.writeHandoffFile(handoffPath, handoffDoc);
-    }
-
-    // 最后一道取消点：即使两步都跑完，只要期间被取消就不能算成功
-    this.throwIfAborted(signal);
-
-    const ctx: HandoffContext = {
-      agent,
-      mode,
-      requestedMode,
-      handoffPath,
-      handoffDoc,
-      model,
-      promptTokens,
-      handoffTokens,
-      migrating,
-      messageCountBefore,
-      historyText,
-    };
-
-    await this.safeHook(this.onHandoff, ctx);
-    return ctx;
+  /**
+   * 取消后回到交接前的状态：把交接回合追加的消息全部截掉，并删掉本次新建的文档。
+   *
+   * 为什么必须截消息：`self` 模式的交接回合是「一条几 KB 的 Skill 指令 user 消息 +
+   * 工具结果 + 回执」，留在 `agent.messages` 里既让用户看到半段无关对话，也让下一次
+   * 请求把它当历史再发一遍（`↑` 翻历史还会把它翻出来）。`agent.messages` 是唯一真相源，
+   * 截回原长度之后，转录、历史、用量全都自动复位，不需要第二处补偿。
+   */
+  private async restoreBeforeHandoff(params: {
+    agent: SdkAgent;
+    messageCountBefore: number;
+    handoffPath: string;
+    existedBefore: boolean;
+  }): Promise<void> {
+    const { agent, messageCountBefore, handoffPath, existedBefore } = params;
+    if (agent.messages.length > messageCountBefore) agent.messages.splice(messageCountBefore);
+    await this.discardPartialFile(handoffPath, existedBefore);
   }
 
   /** 自交接是否可用：需要 `write` 工具 + `send` 能力 */
@@ -512,6 +586,9 @@ export class HandoffService {
    * `agent.abort()` 不抛错（core 把消息标记为 Aborted 后正常返回），否则「用户
    * 按了 Ctrl+C」会被下面的文件校验误判成「模型没写出文档」，于是重试一轮、再降级
    * 一轮 —— 用户以为取消了，实际多烧了两轮全量输入。
+   *
+   * 取消的善后（删文档、截消息）不在这里做：交给 {@link runHandoff} 的 catch 一处处理，
+   * 因为「文档已写出但还没校验」的取消根本进不到本方法的 catch。
    */
   private async runSelfHandoff(
     agent: SdkAgent,
@@ -521,8 +598,6 @@ export class HandoffService {
     const guard = this.ensureGuard(agent);
     const skillContent = await this.readSkillContent();
     const cwd = (agent as { scope?: { cwd?: string } }).scope?.cwd ?? process.cwd();
-    // 取消时只删本次新建的文件，不碰本已存在的同名文件
-    const existedBefore = await this.fileExists(handoffPath);
 
     /*
      * 交接回合的护栏让行由 `ContextGuardPlugin.isSuspended` 负责（接线为
@@ -558,10 +633,7 @@ export class HandoffService {
 
       return await this.isHandoffFileReady(handoffPath);
     } catch (err: any) {
-      if (isAbortError(err, signal)) {
-        await this.discardPartialFile(handoffPath, existedBefore);
-        throw new HandoffAbortedError();
-      }
+      if (isAbortError(err, signal)) throw new HandoffAbortedError();
       this.logger.error(`[handoff] self handoff round failed: ${err?.message ?? err}`);
       return false;
     } finally {
