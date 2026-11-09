@@ -4,7 +4,7 @@
  *   旧：`<aiZenDir>/cli/conversations/<id>.json`      所有工作目录混放，靠记录里的 `cwd` 归属
  *       `<aiZenDir>/cli/last-session.json`            `{ sessions: { <cwd>: { id, updatedAt } } }`
  *
- *   新：`<aiZenDir>/workspaces/<workspaceId>/conversations/<id>.json`
+ *   新：`<aiZenDir>/workspaces/<workspaceId>/sessions/<id>.json`
  *       `<aiZenDir>/workspaces/<workspaceId>/last-session.json`   `{ version, id, updatedAt }`
  *
  * ## 三条纪律
@@ -19,13 +19,13 @@
 
 import { promises as fs, type Dirent } from "node:fs";
 import { join, relative } from "node:path";
-import { FileConversationStore } from "./FileConversationStore.js";
-import type { Conversation } from "./ConversationStore.js";
+import { FileSessionStore } from "./FileSessionStore.js";
+import type { SessionRecord } from "./SessionStore.js";
 import { ensureWorkspace } from "../workspace/workspace.js";
 
 export interface LegacyMigrationOptions {
   /** 旧的会话目录（`<aiZenDir>/cli/conversations`） */
-  legacyConversationsDir: string;
+  legacySessionsDir: string;
   /** 旧的指针文件（`<aiZenDir>/cli/last-session.json`） */
   legacyPointerFile: string;
   /** 新的工作区父目录（`<aiZenDir>/workspaces`） */
@@ -43,13 +43,13 @@ export interface LegacyMigrationResult {
   unattributed: string[];
 }
 
-export async function migrateLegacyConversations(
+export async function migrateLegacySessions(
   options: LegacyMigrationOptions,
 ): Promise<LegacyMigrationResult> {
   const result: LegacyMigrationResult = { moved: 0, pointers: 0, unattributed: [] };
 
-  for (const source of await collectConversationFiles(options.legacyConversationsDir)) {
-    const legacy = await readLegacyConversation(source.absolute);
+  for (const source of await collectSessionFiles(options.legacySessionsDir)) {
+    const legacy = await readLegacySession(source.absolute);
     const cwd = typeof legacy?.cwd === "string" && legacy.cwd ? legacy.cwd : null;
     if (!cwd) {
       // 没有归属信息：留住原文件，报出来（人还能自己认领）
@@ -58,8 +58,8 @@ export async function migrateLegacyConversations(
     }
 
     const workspace = await ensureWorkspace({ workspacesRoot: options.workspacesRoot, path: cwd });
-    const store = new FileConversationStore({ rootDir: workspace.rootDir });
-    await store.write(toConversation(source.id, legacy));
+    const store = new FileSessionStore({ rootDir: workspace.rootDir });
+    await store.write(toSessionRecord(source.id, legacy));
     await fs.rm(source.absolute, { force: true });
 
     result.moved++;
@@ -67,7 +67,7 @@ export async function migrateLegacyConversations(
   }
 
   result.pointers = await migratePointerFile(options);
-  await removeDirIfEmpty(options.legacyConversationsDir);
+  await removeDirIfEmpty(options.legacySessionsDir);
   return result;
 }
 
@@ -77,7 +77,7 @@ export async function migrateLegacyConversations(
  * 白名单的好处是已废弃的 `cwd` / `modelId` 不可能漏过来 —— 搬过去之后，会话内容里
  * 再也查不到一个和事实已经无关的目录路径。
  */
-function toConversation(id: string, legacy: any): Conversation<unknown> {
+function toSessionRecord(id: string, legacy: any): SessionRecord<unknown> {
   return {
     id,
     agentId: typeof legacy?.agentId === "string" && legacy.agentId ? legacy.agentId : "default",
@@ -116,7 +116,7 @@ async function migratePointerFile(options: LegacyMigrationOptions): Promise<numb
     if (typeof id !== "string" || !id) continue;
 
     const workspace = await ensureWorkspace({ workspacesRoot: options.workspacesRoot, path: cwd });
-    const store = new FileConversationStore({ rootDir: workspace.rootDir });
+    const store = new FileSessionStore({ rootDir: workspace.rootDir });
     // 会话没搬过去 / 早被删了：不写指针，免得下次续接到空
     if (!(await store.exists(id))) continue;
     await store.setLastSession(id);
@@ -134,7 +134,7 @@ interface CollectedFile {
 }
 
 /** 找出旧目录下所有会话文件（递归：`/save 项目/a` 会产生子目录） */
-async function collectConversationFiles(dir: string): Promise<CollectedFile[]> {
+async function collectSessionFiles(dir: string): Promise<CollectedFile[]> {
   const collected: CollectedFile[] = [];
 
   async function walk(current: string): Promise<void> {
@@ -160,7 +160,7 @@ async function collectConversationFiles(dir: string): Promise<CollectedFile[]> {
   return collected;
 }
 
-async function readLegacyConversation(path: string): Promise<any | null> {
+async function readLegacySession(path: string): Promise<any | null> {
   try {
     return JSON.parse(await fs.readFile(path, "utf-8"));
   } catch {

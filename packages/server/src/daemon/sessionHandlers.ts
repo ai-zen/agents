@@ -10,6 +10,7 @@ import type { Connection, MethodHandler } from "./Daemon.js";
 import { ensureWorkspace } from "../service/workspace/workspace.js";
 import type { SessionManager } from "../service/session/SessionManager.js";
 import {
+  EVENT_METHODS,
   SESSION_METHODS,
   type SessionCancelResult,
   type SessionCreateResult,
@@ -35,12 +36,13 @@ export function createSessionHandlers(options: SessionHandlerOptions): Record<st
     },
 
     /**
-     * 订阅事件：这条连接开始收 `session.*` 事件。
+     * 订阅事件：这条连接开始收事件。
      *
-     * 订阅挂在**连接**上而不是会话上：一个会话可能被多个客户端看（终端 + 桌面端），
-     * 而每个客户端的连断互不相干。连接断开时自动退订（`onClose`）。
+     * 归在 `events.*` 而不是 `session.*`：订阅是**连接级**的，跟某个具体会话无关
+     * （一个连接可以同时看多个会话的事件）。一个会话可能被多个客户端看（终端 + 桌面端），
+     * 而每个客户端的连断互不相干 —— 连接断开时自动退订（`onClose`）。
      */
-    [SESSION_METHODS.watch]: (_params, connection: Connection) => {
+    [EVENT_METHODS.watch]: (_params, connection: Connection) => {
       const unsubscribe = manager.subscribe((event) => connection.send(event));
       connection.onClose(unsubscribe);
       return { watching: true };
@@ -63,8 +65,8 @@ export function createSessionHandlers(options: SessionHandlerOptions): Record<st
       return manager.cancel(requireString(params, "sessionId"));
     },
 
-    [SESSION_METHODS.list]: (): SessionListResult => {
-      return { sessions: manager.list() };
+    [SESSION_METHODS.list]: (params): SessionListResult => {
+      return { sessions: manager.list(requireString(params, "workspaceId")) };
     },
   };
 }

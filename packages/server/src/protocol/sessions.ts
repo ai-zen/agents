@@ -19,17 +19,32 @@
 
 import type { PhaseInfo } from "../service/progress/PhaseTracker.js";
 
-/** 方法名（服务端注册与客户端调用共用同一份字面量，避免两边各写一份字符串） */
+/**
+ * 词汇表（名字就这三个，不再多造）：
+ *
+ *   workspace  工作目录（会话的父容器）
+ *   session    **与某个 Agent 进行的一段会话**，属于某个 workspace；有 id，可以活着也可以已落盘
+ *   turn       session 里的一轮 `send → 结束`，用 `turnId` 归轮
+ *
+ * `session.*` 只用于「对一个会话做事」。不属于某个会话的动作不往这个命名空间里塞：
+ * 例如「订阅事件」是**连接级**的（`events.watch`），跟具体会话无关。
+ */
+
+/** 会话方法名（服务端注册与客户端调用共用同一份字面量，避免两边各写一份字符串） */
 export const SESSION_METHODS = {
   /** 路径 → 工作区身份（建目录、写 `workspace.json`） */
   workspaceResolve: "workspace.resolve",
-  /** 订阅事件：调用方这条连接开始收 `session.*` 事件 */
-  watch: "session.watch",
   create: "session.create",
   send: "session.send",
   cancel: "session.cancel",
-  /** 进程内活着的会话（不是盘上的存档） */
+  /** 某个工作区下活着的会话（不是盘上的存档） */
   list: "session.list",
+} as const;
+
+/** 连接级方法（与某个会话无关，所以不放在 `session.*` 里） */
+export const EVENT_METHODS = {
+  /** 让**这条连接**开始收事件（事件是服务端主动推、无 `id`、不等回执） */
+  watch: "events.watch",
 } as const;
 
 /** 事件名（服务端主动推，无 `id`，不等回执） */
@@ -88,6 +103,11 @@ export interface SessionCancelParams {
 
 export interface SessionCancelResult {
   cancelled: boolean;
+}
+
+export interface SessionListParams {
+  /** 会话属于工作区，列会话必须指明是哪个工作区的（不提供"全局列"） */
+  workspaceId: string;
 }
 
 export interface SessionSummary {

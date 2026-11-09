@@ -3,7 +3,7 @@
  *
  * 纯逻辑：不依赖 React / Ink / i18n / SDK。**文案不在这里**——本包是服务端，产出的必须
  * 是可跨端传输的事实（`kind` + 工具名），渲染成「连接中…」还是「Connecting…」由客户端决定。
- * 这条分工与 `conversation-commands/registry.ts` 存 `descriptionKey` 不存文案是同一个道理。
+ * 这条分工与 `session-commands/registry.ts` 存 `descriptionKey` 不存文案是同一个道理。
  *
  * | 阶段 | 判据 | 用户真正关心什么 |
  * |------|------|------------------|

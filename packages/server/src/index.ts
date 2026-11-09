@@ -29,14 +29,14 @@ export {
 
 // ---- 会话存储与工作区（服务端的产品数据层） ----
 export {
-  type Conversation,
-  type ConversationStore,
-  type ConversationSummary,
+  type SessionRecord,
+  type SessionStore,
+  type SessionRef,
   type SessionPointer,
-} from "./service/store/ConversationStore.js";
-export { FileConversationStore, type FileConversationStoreOptions } from "./service/store/FileConversationStore.js";
+} from "./service/store/SessionStore.js";
+export { FileSessionStore, type FileSessionStoreOptions } from "./service/store/FileSessionStore.js";
 export {
-  migrateLegacyConversations,
+  migrateLegacySessions,
   type LegacyMigrationOptions,
   type LegacyMigrationResult,
 } from "./service/store/legacyMigration.js";
@@ -45,13 +45,14 @@ export { ensureWorkspace, workspaceIdFor, type Workspace } from "./service/works
 // ---- 会话编排与事件（服务端真正「跑一轮对话」的那一层） ----
 export {
   SessionManager,
-  type CreateSessionAgentInput,
-  type SessionAgent,
+  type AgentLike,
+  type CreateAgentInput,
   type SessionCreateInput,
   type SessionManagerOptions,
 } from "./service/session/SessionManager.js";
 export { createSessionHandlers, type SessionHandlerOptions } from "./daemon/sessionHandlers.js";
 export {
+  EVENT_METHODS,
   SESSION_EVENTS,
   SESSION_METHODS,
   type MessageDeltaEvent,
@@ -60,6 +61,7 @@ export {
   type SessionCreateParams,
   type SessionCreateResult,
   type SessionEvent,
+  type SessionListParams,
   type SessionListResult,
   type SessionPhaseEvent,
   type SessionSendParams,

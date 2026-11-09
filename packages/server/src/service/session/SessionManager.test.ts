@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { SessionManager, type SessionAgent } from "./SessionManager.js";
+import { SessionManager, type AgentLike } from "./SessionManager.js";
 import type { SessionEvent } from "../../protocol/sessions.js";
 
 /**
  * 假 Agent —— 只实现会话管理器用到的那一小面（结构类型），
  * 事件由测试手动驱动，于是「SDK 的时序」在测试里是**可编程**的，不依赖网络与真实模型。
  */
-class FakeAgent implements SessionAgent {
+class FakeAgent implements AgentLike {
   messages: any[] = [];
   sent: string[] = [];
   aborted = 0;
@@ -72,7 +72,16 @@ describe("SessionManager：会话生命周期", () => {
     expect(first.sessionId).toBe("sess_1");
     expect(first.agentId).toBe("default");
     expect(second.sessionId).toBe("sess_2");
-    expect(manager.list().map((s) => s.sessionId)).toEqual(["sess_1", "sess_2"]);
+    expect(manager.list("ws-1").map((s) => s.sessionId)).toEqual(["sess_1", "sess_2"]);
+  });
+
+  it("list 按工作区过滤：会话是 workspace 的下级对象，不跨父容器列", async () => {
+    await manager.create({ workspaceId: "ws-1", path: "/a" });
+    await manager.create({ workspaceId: "ws-2", path: "/b" });
+
+    expect(manager.list("ws-1").map((s) => s.sessionId)).toEqual(["sess_1"]);
+    expect(manager.list("ws-2").map((s) => s.sessionId)).toEqual(["sess_2"]);
+    expect(manager.list("ws-404")).toEqual([]);
   });
 
   it("create 把 workspaceId / path / agentId 原样交给装配方", async () => {
@@ -104,7 +113,7 @@ describe("SessionManager：会话生命周期", () => {
 
     manager.close(sessionId);
     expect(agent.handlerCount()).toBe(0);
-    expect(manager.list()).toEqual([]);
+    expect(manager.list("ws-1")).toEqual([]);
 
     agent.fire("open");
     expect(events).toEqual([]);
@@ -155,18 +164,18 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
     const { sessionId } = await create();
     manager.send(sessionId, "hi");
 
-    expect(manager.list()[0]!.phase).toEqual({ kind: "connecting" }); // send 当下就报出去了
+    expect(manager.list("ws-1")[0]!.phase).toEqual({ kind: "connecting" }); // send 当下就报出去了
 
     agent.fire("open");
-    expect(manager.list()[0]!.phase).toEqual({ kind: "queued" });
+    expect(manager.list("ws-1")[0]!.phase).toEqual({ kind: "queued" });
 
     agent.fire("chunk-parsed", chunk({ content: "你" }));
-    expect(manager.list()[0]!.phase).toEqual({ kind: "streaming" });
+    expect(manager.list("ws-1")[0]!.phase).toEqual({ kind: "streaming" });
 
     agent.fire("parsed", { message: { role: "assistant", content: "你好" } });
     // 不带工具调用：状态机不改阶段，由 finally 归零
     agent.fire("finally");
-    expect(manager.list()[0]!.phase).toBeNull();
+    expect(manager.list("ws-1")[0]!.phase).toBeNull();
     expect(pick("turn.end").at(-1)!.ok).toBe(true);
   });
 
@@ -190,7 +199,7 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
     manager.send(sessionId, "hi");
 
     agent.fire("chunk-parsed", chunk({ tool_calls: [{ index: 0, function: { name: "exec" } }] }));
-    expect(manager.list()[0]!.phase).toEqual({ kind: "tool-calling", tool: "exec" });
+    expect(manager.list("ws-1")[0]!.phase).toEqual({ kind: "tool-calling", tool: "exec" });
 
     agent.fire("parsed", {
       message: {
@@ -201,7 +210,7 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
         ],
       },
     });
-    expect(manager.list()[0]!.phase).toMatchObject({ kind: "tool-waiting", tools: ["exec", "edit"] });
+    expect(manager.list("ws-1")[0]!.phase).toMatchObject({ kind: "tool-waiting", tools: ["exec", "edit"] });
   });
 
   it("工具跑完一个就从等待里消失（并行时不会一直念着已完成的那个）", async () => {
@@ -222,7 +231,7 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
     agent.messages.push({ role: "tool", tool_call_id: "b", status: "pending" });
     agent.fire("tool-call-end", { id: "a" });
 
-    expect(manager.list()[0]!.phase).toMatchObject({ kind: "tool-waiting", tools: ["edit"] });
+    expect(manager.list("ws-1")[0]!.phase).toMatchObject({ kind: "tool-waiting", tools: ["edit"] });
   });
 
   it("error 与 finally 都会到：turn.end 只发一次，且带上错误", async () => {
@@ -235,7 +244,7 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
     const ends = pick("turn.end");
     expect(ends).toHaveLength(1);
     expect(ends[0]).toMatchObject({ ok: false, error: { code: "timeout", message: "超时" } });
-    expect(manager.list()[0]!.phase).toBeNull();
+    expect(manager.list("ws-1")[0]!.phase).toBeNull();
   });
 });
 
@@ -272,7 +281,7 @@ describe("SessionManager：订阅", () => {
     manager.dispose();
 
     expect(agent.handlerCount()).toBe(0);
-    expect(manager.list()).toEqual([]);
+    expect(manager.list("ws-1")).toEqual([]);
     expect(manager.cancel(sessionId)).toEqual({ cancelled: false });
   });
 });

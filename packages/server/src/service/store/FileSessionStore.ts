@@ -1,7 +1,7 @@
 /**
  * 文件式会话存储 —— 一个工作区一个目录，目录结构固定为：
  *
- *   <rootDir>/conversations/<id>.json   每个会话一个文件，写盘原子
+ *   <rootDir>/sessions/<id>.json        每个会话一个文件，写盘原子
  *   <rootDir>/last-session.json         「本工作区上一轮会话」指针（单指针）
  *
  * 与搬迁前的差别（`<aiZenDir>/cli/conversations` + 一份按 cwd 分键的 map 指针）：
@@ -14,28 +14,28 @@
 
 import { promises as fs } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
-import type { Conversation, ConversationStore, ConversationSummary, SessionPointer } from "./ConversationStore.js";
+import type { SessionRecord, SessionStore, SessionRef, SessionPointer } from "./SessionStore.js";
 
-export interface FileConversationStoreOptions {
+export interface FileSessionStoreOptions {
   /** 工作区根目录（`<aiZenDir>/workspaces/<workspaceId>`），内部布局见文件头 */
   rootDir: string;
 }
 
 const POINTER_VERSION = 1;
 
-export class FileConversationStore<Message = unknown> implements ConversationStore<Message> {
-  private readonly conversationsDir: string;
+export class FileSessionStore<Message = unknown> implements SessionStore<Message> {
+  private readonly sessionsDir: string;
   private readonly pointerFile: string;
 
-  constructor(options: FileConversationStoreOptions) {
-    this.conversationsDir = join(options.rootDir, "conversations");
+  constructor(options: FileSessionStoreOptions) {
+    this.sessionsDir = join(options.rootDir, "sessions");
     this.pointerFile = join(options.rootDir, "last-session.json");
   }
 
-  async list(): Promise<ConversationSummary[]> {
+  async list(): Promise<SessionRef[]> {
     let files: string[];
     try {
-      files = await fs.readdir(this.conversationsDir);
+      files = await fs.readdir(this.sessionsDir);
     } catch {
       return []; // 新工作区：会话目录还没建
     }
@@ -45,7 +45,7 @@ export class FileConversationStore<Message = unknown> implements ConversationSto
       if (!file.endsWith(".json")) continue; // 顺带滤掉写盘中的 `.json.tmp`
       const id = file.slice(0, -".json".length);
       try {
-        const stat = await fs.stat(join(this.conversationsDir, file));
+        const stat = await fs.stat(join(this.sessionsDir, file));
         entries.push({ id, mtime: stat.mtimeMs });
       } catch {
         // readdir 与 stat 之间被别的进程删掉：跳过即可，不该让 `/load` 崩
@@ -55,9 +55,9 @@ export class FileConversationStore<Message = unknown> implements ConversationSto
     return entries.map((entry) => ({ id: entry.id }));
   }
 
-  async read(id: string): Promise<Conversation<Message> | null> {
+  async read(id: string): Promise<SessionRecord<Message> | null> {
     try {
-      const parsed = JSON.parse(await fs.readFile(this.pathOf(id), "utf-8")) as Conversation<Message>;
+      const parsed = JSON.parse(await fs.readFile(this.pathOf(id), "utf-8")) as SessionRecord<Message>;
       // 形状不对（旧版残留、手改坏）一律当作没有，不猜
       if (!parsed || typeof parsed.id !== "string" || !Array.isArray(parsed.messages)) return null;
       return parsed;
@@ -73,11 +73,11 @@ export class FileConversationStore<Message = unknown> implements ConversationSto
    * 读回来解析失败 —— 整段历史就此丢失。会话文件可达数 MB，写入窗口并不小；
    * 同文件系统内 rename 是原子操作，任何时刻读到的要么是旧文件、要么是完整新文件。
    */
-  async write(conversation: Conversation<Message>): Promise<void> {
-    const target = this.pathOf(conversation.id);
+  async write(record: SessionRecord<Message>): Promise<void> {
+    const target = this.pathOf(record.id);
     await fs.mkdir(dirname(target), { recursive: true });
     const tmp = `${target}.tmp`;
-    await fs.writeFile(tmp, JSON.stringify(conversation, null, 2), "utf-8");
+    await fs.writeFile(tmp, JSON.stringify(record, null, 2), "utf-8");
     await fs.rename(tmp, target);
   }
 
@@ -114,7 +114,7 @@ export class FileConversationStore<Message = unknown> implements ConversationSto
 
   private pathOf(id: string): string {
     assertSafeId(id);
-    return join(this.conversationsDir, `${id}.json`);
+    return join(this.sessionsDir, `${id}.json`);
   }
 }
 
@@ -132,5 +132,5 @@ function assertSafeId(id: string): void {
     isAbsolute(id) ||
     id.includes("\\") ||
     segments.some((segment) => segment === "" || segment === "." || segment === "..");
-  if (unsafe) throw new Error(`invalid conversation id: ${JSON.stringify(id)}`);
+  if (unsafe) throw new Error(`invalid session id: ${JSON.stringify(id)}`);
 }

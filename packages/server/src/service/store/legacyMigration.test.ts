@@ -2,21 +2,21 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { migrateLegacyConversations } from "./legacyMigration.js";
-import { FileConversationStore } from "./FileConversationStore.js";
+import { migrateLegacySessions } from "./legacyMigration.js";
+import { FileSessionStore } from "./FileSessionStore.js";
 import { workspaceIdFor } from "../workspace/workspace.js";
 
 let aiZenDir: string;
-let legacyConversationsDir: string;
+let legacySessionsDir: string;
 let legacyPointerFile: string;
 let workspacesRoot: string;
 
 beforeEach(() => {
   aiZenDir = mkdtempSync(join(tmpdir(), "aiz-migrate-"));
-  legacyConversationsDir = join(aiZenDir, "cli", "conversations");
+  legacySessionsDir = join(aiZenDir, "cli", "conversations");
   legacyPointerFile = join(aiZenDir, "cli", "last-session.json");
   workspacesRoot = join(aiZenDir, "workspaces");
-  mkdirSync(legacyConversationsDir, { recursive: true });
+  mkdirSync(legacySessionsDir, { recursive: true });
 });
 
 afterEach(() => {
@@ -33,17 +33,17 @@ function writeLegacy(id: string, cwd: string | undefined, extra: Record<string, 
     ...(cwd ? { cwd } : {}),
     ...extra,
   };
-  writeFileSync(join(legacyConversationsDir, `${id}.json`), JSON.stringify(body), "utf-8");
+  writeFileSync(join(legacySessionsDir, `${id}.json`), JSON.stringify(body), "utf-8");
 }
 
-function storeFor(path: string): FileConversationStore {
-  return new FileConversationStore({ rootDir: join(workspacesRoot, workspaceIdFor(path)) });
+function storeFor(path: string): FileSessionStore {
+  return new FileSessionStore({ rootDir: join(workspacesRoot, workspaceIdFor(path)) });
 }
 
 const migrate = () =>
-  migrateLegacyConversations({ legacyConversationsDir, legacyPointerFile, workspacesRoot });
+  migrateLegacySessions({ legacySessionsDir, legacyPointerFile, workspacesRoot });
 
-describe("migrateLegacyConversations", () => {
+describe("migrateLegacySessions", () => {
   it("按记录里的 cwd 归位到各自的工作区，并洗掉已废弃字段", async () => {
     writeLegacy("chat_a", "/work/proj-a");
     writeLegacy("chat_b", "/work/proj-b");
@@ -97,21 +97,21 @@ describe("migrateLegacyConversations", () => {
 
     expect(result.moved).toBe(0);
     expect(result.unattributed).toEqual(["chat_orphan"]);
-    expect(existsSync(join(legacyConversationsDir, "chat_orphan.json"))).toBe(true);
-    expect(existsSync(legacyConversationsDir)).toBe(true); // 非空，旧目录留着
+    expect(existsSync(join(legacySessionsDir, "chat_orphan.json"))).toBe(true);
+    expect(existsSync(legacySessionsDir)).toBe(true); // 非空，旧目录留着
   });
 
   it("内容坏掉的会话也原地不动", async () => {
-    writeFileSync(join(legacyConversationsDir, "chat_broken.json"), '{"id":"chat_broken"', "utf-8");
+    writeFileSync(join(legacySessionsDir, "chat_broken.json"), '{"id":"chat_broken"', "utf-8");
     const result = await migrate();
     expect(result.unattributed).toEqual(["chat_broken"]);
-    expect(existsSync(join(legacyConversationsDir, "chat_broken.json"))).toBe(true);
+    expect(existsSync(join(legacySessionsDir, "chat_broken.json"))).toBe(true);
   });
 
   it("子目录里的会话（`/save 项目/a`）也搬", async () => {
-    mkdirSync(join(legacyConversationsDir, "项目"), { recursive: true });
+    mkdirSync(join(legacySessionsDir, "项目"), { recursive: true });
     writeFileSync(
-      join(legacyConversationsDir, "项目", "a.json"),
+      join(legacySessionsDir, "项目", "a.json"),
       JSON.stringify({ id: "项目/a", agentId: "default", messages: [], cwd: "/work/proj-a" }),
       "utf-8",
     );
@@ -124,7 +124,7 @@ describe("migrateLegacyConversations", () => {
   it("搬空之后旧目录消失；再跑一次是空操作（幂等）", async () => {
     writeLegacy("chat_a", "/work/proj-a");
     await migrate();
-    expect(existsSync(legacyConversationsDir)).toBe(false);
+    expect(existsSync(legacySessionsDir)).toBe(false);
 
     const again = await migrate();
     expect(again).toEqual({ moved: 0, pointers: 0, unattributed: [] });
@@ -135,8 +135,8 @@ describe("migrateLegacyConversations", () => {
   it("本来就什么都没有：不报错、不建工作区", async () => {
     const fresh = mkdtempSync(join(tmpdir(), "aiz-migrate-empty-"));
     try {
-      const result = await migrateLegacyConversations({
-        legacyConversationsDir: join(fresh, "cli", "conversations"),
+      const result = await migrateLegacySessions({
+        legacySessionsDir: join(fresh, "cli", "conversations"),
         legacyPointerFile: join(fresh, "cli", "last-session.json"),
         workspacesRoot: join(fresh, "workspaces"),
       });

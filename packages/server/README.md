@@ -80,7 +80,7 @@ business logic.
 `src/protocol/sessions.ts` is the wire contract for sessions — method names, params and the
 three session events (`session.phase`, `message.delta`, `turn.end`). `src/service/session/
 SessionManager.ts` implements the live-session registry and the SDK-event → protocol-event
-translation; `src/daemon/sessionHandlers.ts` registers `workspace.resolve` / `session.watch` /
+translation; `src/daemon/sessionHandlers.ts` registers `workspace.resolve` / `events.watch` /
 `session.create` / `session.send` / `session.cancel` / `session.list` on a `Daemon`.
 
 **They are not registered in `src/cli.ts` yet**: sessions need an agent to run, and agent
@@ -121,7 +121,7 @@ test with two or three fakes and nothing else.
 | Source (CLI) | Here |
 |---|---|
 | `cli/src/tui/phase.ts` (state machine only) | `src/service/progress/PhaseTracker.ts` |
-| `cli/src/conversation-repository.ts` + `session-pointer.ts` | `src/service/store/` (port + file impl + legacy migration) |
+| `cli/src/session-store.ts` + 旧 `session-pointer.ts` | `src/service/store/` (port + file impl + legacy migration) |
 | project paths derived from `cwd` | `src/service/workspace/workspace.ts` |
 | — | `src/protocol/` frames, message and session shapes |
 | — | `src/daemon/` listener, handshake, discovery file, session handlers |

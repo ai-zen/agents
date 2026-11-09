@@ -12,12 +12,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Daemon } from "./Daemon.js";
 import { createSessionHandlers } from "./sessionHandlers.js";
-import { SessionManager, type SessionAgent } from "../service/session/SessionManager.js";
+import { SessionManager, type AgentLike } from "../service/session/SessionManager.js";
 import { encodeFrame, FrameDecoder } from "../protocol/frames.js";
 import { PROTOCOL_VERSION } from "../protocol/messages.js";
-import { SESSION_METHODS } from "../protocol/sessions.js";
+import { EVENT_METHODS, SESSION_METHODS } from "../protocol/sessions.js";
 
-class FakeAgent implements SessionAgent {
+class FakeAgent implements AgentLike {
   messages: unknown[] = [];
   sent: string[] = [];
   aborted = 0;
@@ -96,7 +96,7 @@ describe("会话处理器（真 socket）", () => {
 
   it("watch 之后：create / send 的进展以事件帧推到这条连接上", async () => {
     await startDaemon();
-    await client!.call(SESSION_METHODS.watch);
+    await client!.call(EVENT_METHODS.watch);
 
     const created = (await client!.call(SESSION_METHODS.create, {
       workspaceId: "ws-1",
@@ -139,7 +139,9 @@ describe("会话处理器（真 socket）", () => {
     })) as { sessionId: string };
     await client!.call(SESSION_METHODS.send, { sessionId: created.sessionId, content: "hi" });
 
-    const listed = (await client!.call(SESSION_METHODS.list)) as { sessions: any[] };
+    const listed = (await client!.call(SESSION_METHODS.list, { workspaceId: "ws-1" })) as {
+      sessions: any[];
+    };
     expect(listed.sessions).toHaveLength(1);
     expect(listed.sessions[0]).toMatchObject({
       sessionId: created.sessionId,

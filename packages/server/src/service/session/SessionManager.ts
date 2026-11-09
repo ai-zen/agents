@@ -7,7 +7,7 @@
  * （阶段、正文增量、轮次收尾）、按阶段算出「谁还在跑」。
  *
  * 不管：Agent 怎么装配（配置、Scope、工具发现）——那由**组装根**通过 `createAgent`
- * 注入；也不管存档（那是 `ConversationStore` 与客户端的落盘插件的事）。
+ * 注入；也不管存档（那是 `SessionStore` 与客户端的落盘插件的事）。
  * 这条边界是为了让本文件可测：给一个假 Agent 就能跑完整个事件流程，不需要网络。
  *
  * ## 为什么事件出口是 `subscribe()` 而不是构造参数
@@ -24,12 +24,14 @@ import {
 } from "../../protocol/sessions.js";
 
 /**
- * 会话里那个 Agent 的最小面。
+ * 能跑一轮对话的 Agent 的最小面。
  *
  * 结构性类型（不是 SDK 的 `Agent`）：SDK 的 Agent 天然满足它，本包也不必把
- * core 的类型体系拖进来 —— 与 `PhaseMessageLike` 同一个理由。
+ * core 的类型体系拖进来 —— 与本包 `PhaseMessageLike` 同一个理由、同一个 `*Like` 后缀。
+ *
+ * 不叫 `SessionAgent`：那读起来像「一种 Agent」，而它只是 Agent 的一个**面**（能跑会话）。
  */
-export interface SessionAgent {
+export interface AgentLike {
   readonly messages: unknown[];
   send(input: string): Promise<void>;
   abort(): void;
@@ -39,7 +41,7 @@ export interface SessionAgent {
   };
 }
 
-export interface CreateSessionAgentInput {
+export interface CreateAgentInput {
   workspaceId: string;
   /** 工作区路径（Agent 的 cwd：工具、相对路径都以它为基准） */
   path: string;
@@ -55,14 +57,14 @@ export interface SessionCreateInput {
 
 export interface SessionManagerOptions {
   /** 造一个能跑一轮对话的 Agent。装配细节全在注入方，本包不碰配置与 Scope */
-  createAgent: (input: CreateSessionAgentInput) => Promise<SessionAgent>;
+  createAgent: (input: CreateAgentInput) => Promise<AgentLike>;
 }
 
 interface LiveSession {
   id: string;
   workspaceId: string;
   agentId: string;
-  agent: SessionAgent;
+  agent: AgentLike;
   turnId: number;
   phase: PhaseTracker;
   /** 本轮是否已经出过错（`error` 与 `finally` 都会到，收尾只报一次） */
@@ -72,7 +74,7 @@ interface LiveSession {
 }
 
 export class SessionManager {
-  private readonly createAgent: (input: CreateSessionAgentInput) => Promise<SessionAgent>;
+  private readonly createAgent: (input: CreateAgentInput) => Promise<AgentLike>;
   private readonly sessions = new Map<string, LiveSession>();
   private readonly listeners = new Set<(event: SessionEvent) => void>();
   private nextSessionNumber = 1;
@@ -140,14 +142,22 @@ export class SessionManager {
     return { cancelled: true };
   }
 
-  list(): SessionSummary[] {
-    return [...this.sessions.values()].map((session) => ({
-      sessionId: session.id,
-      workspaceId: session.workspaceId,
-      agentId: session.agentId,
-      turnId: session.turnId,
-      phase: this.visiblePhase(session),
-    }));
+  /**
+   * 列出某个工作区下活着的会话。
+   *
+   * `workspaceId` 必填：会话是工作区的**下级对象**，不提供「跨工作区全量列」——
+   * 那种调用要么是调用方漏了上下文，要么就是在把一个工作区的界面喂另一个工作区的数据。
+   */
+  list(workspaceId: string): SessionSummary[] {
+    return [...this.sessions.values()]
+      .filter((session) => session.workspaceId === workspaceId)
+      .map((session) => ({
+        sessionId: session.id,
+        workspaceId: session.workspaceId,
+        agentId: session.agentId,
+        turnId: session.turnId,
+        phase: this.visiblePhase(session),
+      }));
   }
 
   close(sessionId: string): boolean {

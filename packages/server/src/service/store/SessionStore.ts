@@ -2,16 +2,16 @@
  * 会话存储的**端口** —— 服务端唯一一类「产品数据」的存取契约。
  *
  * 为什么端口里没有 `workspaceId`：一个 store 实例就属于一个工作区（构造时绑定，
- * 见 `FileConversationStore`）。工作区将来是一等对象，它的标识与生命周期由
+ * 见 `FileSessionStore`）。工作区将来是一等对象，它的标识与生命周期由
  * `workspace.ts` 决定，不摊到每个方法参数上——否则每个调用点都要重复说一遍
  * 「我在哪个工作区」，说漏一次就读到别人的会话。
  *
  * 为什么 `messages` 是泛型：本包不依赖 `@ai-zen/agents-core`（依赖面纪律），
- * 但会话内容是 core 的 `Message`。客户端用 `Conversation<AgentNS.Message>`
+ * 但会话内容是 core 的 `Message`。客户端用 `SessionRecord<AgentNS.Message>`
  * 拿到完整类型，服务端本身只把它们当**不透明载荷**搬运（它确实从不看内容）。
  */
 
-export interface ConversationSummary {
+export interface SessionRef {
   id: string;
 }
 
@@ -21,7 +21,7 @@ export interface SessionPointer {
   updatedAt: string;
 }
 
-export interface Conversation<Message = unknown> {
+export interface SessionRecord<Message = unknown> {
   id: string;
   agentId: string;
   messages: Message[];
@@ -29,12 +29,12 @@ export interface Conversation<Message = unknown> {
   lastPromptTokens?: number;
 }
 
-export interface ConversationStore<Message = unknown> {
+export interface SessionStore<Message = unknown> {
   /** 按「最后写入时间」倒序（用文件 mtime，不解析内容）：`/load` 列表用 */
-  list(): Promise<ConversationSummary[]>;
-  read(id: string): Promise<Conversation<Message> | null>;
+  list(): Promise<SessionRef[]>;
+  read(id: string): Promise<SessionRecord<Message> | null>;
   /** 原子写：进程被杀不会留下半截 JSON */
-  write(conversation: Conversation<Message>): Promise<void>;
+  write(record: SessionRecord<Message>): Promise<void>;
   remove(id: string): Promise<void>;
   /** 只 `access`，不解析内容（`/save <名字>` 的重名判断用） */
   exists(id: string): Promise<boolean>;
