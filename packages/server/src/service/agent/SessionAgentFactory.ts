@@ -23,11 +23,15 @@ import { existsSync } from "node:fs";
 import {
   AgentRepository,
   allInOne,
+  AutoMigratePlugin,
   ConfigManager,
+  ContextGuardPlugin,
   createAgent as sdkCreateAgent,
   Scope,
+  SdkAgent,
   type AgentDefinition,
   type AppConfig,
+  type HandoffService,
 } from "@ai-zen/agents-sdk";
 import { agentPaths, globalAgentPaths, type AgentPaths } from "./agentPaths.js";
 import type { AgentLike, CreateAgentInput } from "../session/SessionManager.js";
@@ -61,7 +65,9 @@ export class SessionAgentFactory {
     // 始终从磁盘读 Agent 定义（含 permissions / 工具配置）；中断策略不传，取
     // `scope.config`，于是配置中心改完 invalidate 一下就生效
     const build = this.options.createAgent ?? defaultCreateAgent;
-    return await build(scope, input.agentId);
+    const agent = await build(scope, input.agentId);
+    this.installPlugins(agent, scope, input);
+    return agent;
   }
 
   /**
@@ -130,6 +136,52 @@ export class SessionAgentFactory {
   // ==================================================================
   // 内部
   // ==================================================================
+
+  /**
+   * 按当前模型的 `tokenThresholds` 装护栏 / 自动迁移 —— 与 CLI 同一套策略。
+   *
+   * 为什么在装配方而不是会话层：阈值挂在**模型**上（`config.models[].tokenThresholds`），
+   * 而模型是 Agent 定义的一部分；会话层刻意不认识配置与 SDK 插件。
+   *
+   * 两个让行开关都由会话层给：
+   *   - `isSuspended`：交接回合本身就是「上下文最满」的时刻，硬线必须让行；
+   *   - `autoMigrate`：真的迁移要跑在会话层（存档、换 id 在它手里），插件只负责"何时"。
+   * 没配阈值就一个都不装：不给阈值还拦，等于凭直觉拍一个数。
+   */
+  private installPlugins(agent: AgentLike, scope: Scope, input: CreateAgentInput): void {
+    const modelId = (agent as unknown as SdkAgent).definition?.modelId;
+    const thresholds = (scope.config.models ?? []).find((model) => model.id === modelId)?.tokenThresholds;
+    if (!thresholds) return;
+
+    const sdkAgent = agent as unknown as SdkAgent;
+    sdkAgent.use(
+      new ContextGuardPlugin({
+        guardTokens: thresholds.guard,
+        isSuspended: input.isHandoffBusy,
+      }),
+    );
+    // 子 Agent 的硬线（CLI 的 `SubAgentGuardInstallerPlugin`）暂时没装：它还在 CLI 仓，
+    // 搬进 SDK 才能在这里复用。现状是主 Agent 有硬线、委派出去的子 Agent 没有。
+
+    const autoMigrate = input.autoMigrate;
+    if (autoMigrate) {
+      sdkAgent.use(
+        new AutoMigratePlugin({
+          // 插件只认 `busy` 与 `migrate()`：这里给的是**会话层**的实现，不是裸的
+          // `HandoffService` —— 否则存档与换 id 会静默跳过
+          service: {
+            get busy() {
+              return input.isHandoffBusy?.() ?? false;
+            },
+            migrate: () => autoMigrate(),
+          } as unknown as HandoffService,
+          handoffTokens: thresholds.handoff,
+          // 远程模式暂时不问“用哪种方式”：协议里还没有“向客户端提问”的往返。
+          // 不给 `resolveMode` 就用服务的默认执行者（self，失败单向降级 summary）。
+        }),
+      );
+    }
+  }
 
   private scopeFor(workspacePath: string): Promise<Scope> {
     const cached = this.scopes.get(workspacePath);

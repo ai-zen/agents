@@ -148,7 +148,11 @@ describe("SessionManager：会话生命周期", () => {
       },
     });
     await spyManager.create({ workspaceId: "ws-9", path: "/p", agentId: "coder" });
-    expect(seen).toEqual([{ workspaceId: "ws-9", path: "/p", agentId: "coder" }]);
+    // 除三个身份字段，还会带上两个钩子（护栏让行 / 自动迁移），它们必须指向会话层
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ workspaceId: "ws-9", path: "/p", agentId: "coder" });
+    expect((seen[0] as { isHandoffBusy?: unknown }).isHandoffBusy).toBeTypeOf("function");
+    expect((seen[0] as { autoMigrate?: unknown }).autoMigrate).toBeTypeOf("function");
   });
 
   it("cancel 转发给 agent.abort；未知会话返回 cancelled:false", async () => {
@@ -641,7 +645,7 @@ describe("SessionManager：交接 / 迁移", () => {
     // 新会话：id 变了，轮次从 0 起（这一轮的收尾已在换 id 之前发过）
     expect(result.sessionId).not.toBe(sessionId);
     expect(handoffManager.list("ws-1")).toEqual([
-      { sessionId: result.sessionId, workspaceId: "ws-1", agentId: "default", turnId: 0, phase: null },
+      { sessionId: result.sessionId, workspaceId: "ws-1", agentId: "default", turnId: 1, phase: null },
     ]);
     // 旧 id 已退场
     expect(handoffManager.list("ws-1").map((item) => item.sessionId)).not.toContain(sessionId);
@@ -812,7 +816,8 @@ describe("SessionManager：续接时 Agent 也跟着存档走（/load 只给 id�
     const created = await resuming.create({ workspaceId: "ws-1", path: "/p", sessionId: "chat_coder" });
 
     expect(created.agentId).toBe("coder");
-    expect(seen).toEqual([{ workspaceId: "ws-1", path: "/p", agentId: "coder" }]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ workspaceId: "ws-1", path: "/p", agentId: "coder" });
   });
 
   it("显式传了就听调用方的（新会话没存档时仍回 default）", async () => {
@@ -829,5 +834,77 @@ describe("SessionManager：续接时 Agent 也跟着存档走（/load 只给 id�
     await fresh.create({ workspaceId: "ws-1", path: "/p", agentId: "coder" });
     await fresh.create({ workspaceId: "ws-1", path: "/p2" });
     expect(seen).toEqual(["coder", "default"]);
+  });
+});
+
+describe("SessionManager：自动迁移（SDK 插件在一轮内部触发）", () => {
+  let store: MemoryStore;
+  let workspace: string;
+  let hook: (() => Promise<void>) | undefined;
+  let auto: SessionManager;
+  let counter = 0;
+
+  beforeEach(async () => {
+    store = new MemoryStore();
+    workspace = await fs.mkdtemp(join(tmpdir(), "aiz-auto-migrate-"));
+    counter = 0;
+    hook = undefined;
+    auto = new SessionManager({
+      // 装配方拿到的那两个钩子就是会话层提供的：这里把 autoMigrate 留存下来直接调
+      createAgent: async (input) => {
+        hook = input.autoMigrate;
+        return agent;
+      },
+      nextSessionId: () => `chat_${++counter}`,
+      storeFor: () => store,
+      handoff: { aiZenDir: join(workspace, "ai-zen"), homeDir: workspace },
+    });
+    events = [];
+    auto.subscribe((event) => events.push(event));
+  });
+
+  afterEach(async () => {
+    await fs.rm(workspace, { recursive: true, force: true });
+  });
+
+  it("落地动作：先存旧会话 → 剔历史 → 换 id → 发 session.idChanged", async () => {
+    const { sessionId } = await auto.create({ workspaceId: "ws-1", path: workspace });
+    agent.messages = [{ role: "user", content: "旧任务" }];
+
+    await hook!();
+
+    // 旧会话进存档（prune 之前的完整历史）
+    expect(store.records.get(sessionId)!.messages).toEqual([{ role: "user", content: "旧任务" }]);
+    // 活会话换键，新会话里只剩「模板 + 交接断点」
+    const live = auto.list("ws-1");
+    expect(live.map((item) => item.sessionId)).toEqual(["chat_2"]);
+    expect(JSON.stringify(store.records.get("chat_2")!.messages)).not.toContain("旧任务");
+    // 客户端没有响应可接：换 id 只能靠事件
+    expect(pick("session.idChanged")).toEqual([
+      { event: "session.idChanged", from: sessionId, sessionId: "chat_2" },
+    ]);
+  });
+
+  it("迁移进行中再次触发：让行（并发两次只迁一次）", async () => {
+    await auto.create({ workspaceId: "ws-1", path: workspace });
+    agent.messages = [{ role: "user", content: "旧任务" }];
+
+    await Promise.all([hook!(), hook!()]);
+
+    expect(pick("session.idChanged")).toHaveLength(1);
+    expect(auto.list("ws-1")).toHaveLength(1);
+  });
+
+  it("没配存档：报 no-store（prune 之后历史只剩存档一份，存不下去就别动手）", async () => {
+    let bareHook: (() => Promise<void>) | undefined;
+    const bare = new SessionManager({
+      createAgent: async (input) => {
+        bareHook = input.autoMigrate;
+        return agent;
+      },
+    });
+    await bare.create({ workspaceId: "ws-1", path: "/p" });
+
+    await expect(bareHook!()).rejects.toThrow(/no session store|not configured/);
   });
 });

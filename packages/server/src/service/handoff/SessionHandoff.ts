@@ -100,7 +100,17 @@ export class SessionHandoff {
       // 交接模板的唯一真相源是磁盘上的 `handoff` Skill（可被项目级覆盖）
       skillDirs: paths.skillsDirs.filter((dir) => existsSync(dir)),
       onBeforeHandoff: (ctx: HandoffContext) => {
-        // 自动迁移（按阈值触发）还没接到服务端，这里只有手动口径
+        // 自动迁移（用量超阈值触发）与手动 `/handoff` 是两种语义：前者的「何时」不是用户
+        // 决定的，得让它知道「上下文快满了，正在交接」，否则只会看到会话自己换了话题
+        const { promptTokens, handoffTokens } = ctx;
+        if (promptTokens != null && handoffTokens != null) {
+          notice({
+            level: "info",
+            code: "handoffAutoDetected",
+            params: { used: promptTokens, limit: handoffTokens, mode: ctx.requestedMode },
+          });
+          return;
+        }
         notice({ level: "info", code: "handoffWriting", params: { mode: ctx.requestedMode } });
       },
       onHandoff: (ctx: HandoffContext) => {

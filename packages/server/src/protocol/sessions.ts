@@ -94,6 +94,17 @@ export const SESSION_EVENTS = {
   turnEnd: "turn.end",
   /** 对话内通知（绑会话） */
   notice: "session.notice",
+  /**
+   * 会话换了 id（迁移 / 另存为）。
+   *
+   * 服务端可以在**一轮进行中**换 id（自动迁移就是如此）：这时客户端没有任何请求
+   * 可以拿来“拿到新 id”，所以必须有一条事件说清楚 —— 否则它会在旧 id 上等一个
+   * 永远不会到的 `turn.end`。
+   *
+   * 载荷用 `from` 而不是 `sessionId` 标识“这条是说哪段会话的”（那个 id 已经不存在了），
+   * 客户端拿 `from === 自己当前 id` 就能认领。
+   */
+  idChanged: "session.idChanged",
   /** 全局通知（不绑会话） */
   globalNotice: "global.notice",
 } as const;
@@ -144,6 +155,20 @@ export interface SessionSendResult {
   /** 本轮编号（从 1 开始，每轮 +1）：事件靠它归轮 */
   turnId: number;
 }
+
+/**
+ * 会话 id 变化事件。
+ *
+ * 迁移（`session.migrate`）与另存为（`session.saveAs`）都会换 id，自动迁移还会在
+ * **一轮进行中**换 —— 客户端靠这条事件把之后的请求与事件过滤切到新 id 上。
+ */
+export type SessionIdChangedEvent = {
+  event: typeof SESSION_EVENTS.idChanged;
+  /** 旧 id（客户端用 `from === 当前 id` 认领这条） */
+  from: string;
+  /** 新 id */
+  sessionId: string;
+};
 
 export interface SessionCancelParams {
   sessionId: string;
@@ -351,6 +376,8 @@ export const SESSION_NOTICE_CODES = {
   turnAborted: "turnAborted",
   /** 开始写交接文档（`params.mode` 是请求的执行者） */
   handoffWriting: "handoffWriting",
+  /** 自动迁移被触发（`params` 带 `used` / `limit` / `mode`） */
+  handoffAutoDetected: "handoffAutoDetected",
   /** 交接文档落在这个路径（`params.path`） */
   handoffPath: "handoffPath",
   /** 迁移前把旧会话存进了存档（`params.sessionId` 是**旧**会话） */
@@ -392,4 +419,5 @@ export type ServerEvent =
   | MessageDeltaEvent
   | TurnEndEvent
   | SessionNoticeEvent
-  | GlobalNoticeEvent;
+  | GlobalNoticeEvent
+  | SessionIdChangedEvent;

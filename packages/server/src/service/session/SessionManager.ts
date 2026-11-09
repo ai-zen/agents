@@ -59,6 +59,18 @@ export interface CreateAgentInput {
   /** 工作区路径（Agent 的 cwd：工具、相对路径都以它为基准） */
   path: string;
   agentId: string;
+  /**
+   * 交接/迁移进行中？装配方据此接上 `ContextGuardPlugin.isSuspended`。
+   *
+   * 不接的话，交接回合本身就是「上下文最满」的时刻，会被硬线直接掐死。
+   */
+  isHandoffBusy?: () => boolean;
+  /**
+   * 自动迁移的落地动作（**会话层提供**：存档、换 id、事件都在它手里）。
+   *
+   * 不给就不装自动迁移：没有交接能力时该让硬线拦，而不是让 SDK 去调一个不存在的服务。
+   */
+  autoMigrate?: () => Promise<void>;
 }
 
 /** `create()` 的入参：`agentId` / `sessionId` 都可省，前者补 `default`，后者由服务端分配 */
@@ -235,7 +247,56 @@ export class SessionManager {
     this.sessions.delete(previousId);
     session.id = id;
     this.sessions.set(id, session);
+    if (id !== previousId) {
+      this.emit({ event: SESSION_EVENTS.idChanged, from: previousId, sessionId: id });
+    }
     return { saved: true, sessionId: id };
+  }
+
+  /**
+   * 自动迁移 —— 由 SDK 的 `AutoMigratePlugin` 在**一轮内部**（`onAfterSend`）触发。
+   *
+   * 与手动 `migrate()` 的三点不同：
+   *   1. **不新开一轮**（外面那一轮还没结束，`turnId` 不动）；
+   *   2. 收尾仍归外面那一轮 —— 这里只把 `settleDeferred` 拿住，避免嵌套交接回合的
+   *      SDK `finally` 把整轮提前结束；
+   *   3. 没有返回值可给：客户端靠 `session.idChanged` 事件得知换了 id。
+   *
+   * 必须能存档：prune 之后旧历史只存在于存档里，存不下去就别动手。
+   */
+  private async autoMigrate(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    // 交接已在跑（插件自己的 `busy` 检查漏了一次）：不重复迁移，也不报错
+    if (!session || session.settleDeferred) return;
+
+    // 先占坑再 await：下面每一条 await 都是让出点，并发进来的第二次调用会看到
+    // `settleDeferred` 已经为真 —— 不占坑就是「两个迁移同时跑」，SDK 那边会直接抛
+    // “A handoff is already in progress”
+    session.settleDeferred = true;
+    const previousId = session.id;
+    try {
+      const store = await this.storeFor(session.workspaceId);
+      if (!store) {
+        throw codedError("no-store", `no session store for workspace ${session.workspaceId}`);
+      }
+
+      await store.write({
+        id: previousId,
+        agentId: session.agentId,
+        messages: [...session.agent.messages],
+      });
+      await store.setLastSession(previousId);
+      this.notice(previousId, {
+        level: "info",
+        code: "handoffArchived",
+        params: { sessionId: previousId },
+      });
+
+      await this.handoffOf(session).migrate(asHandoffAgent(session.agent));
+      await this.adopt(session, store);
+    } finally {
+      session.settleDeferred = false;
+    }
   }
 
   /**
@@ -273,6 +334,10 @@ export class SessionManager {
    *      此时内存里什么都还没动；反过来「先 prune 再存」则是文档写了、历史没了；
    *   2. 交接（SDK 负责：写文档、校验、降级、剔除历史、注入断点）；
    *   3. 收尾（发在旧 id 上）→ 换 id 并落盘新会话。
+   *
+   * `turnId` 是**会话内**的轮次编号，换 id 后继续递增 —— 不清零。不清零是因为自动迁移
+   * 发生在**一轮内部**：那一轮还没收尾，把计数归零会让它的 `turn.end` 带一个客户端
+   * 从没见过的编号（它会在旧轮次上一直等下去）。
    *
    * 第 3 步把「收尾」放在「换 id」之前：客户端先看到旧会话这一轮结束，再收到响应里的
    * 新 id，两次`session.phase`/`turn.end` 的 `sessionId` 才不会指向一个它还不知情的会话。
@@ -335,6 +400,9 @@ export class SessionManager {
       workspaceId: session.workspaceId,
       path: session.path,
       agentId: session.agentId,
+      // 重建后插件要接回同一套让行/自动迁移：它们也是 Agent 装配的一部分
+      isHandoffBusy: () => session.settleDeferred,
+      autoMigrate: () => this.autoMigrate(session.id),
     });
     agent.messages = messages;
 
@@ -428,7 +496,15 @@ export class SessionManager {
     // Agent 也跟着存档走：`/load` 只拿到一个 id（列表不解析存档内容），
     // 存档里记着这段会话是哪个 Agent 跑的 —— 不传就沿用它，而不是默默换成 `default`。
     const agentId = input.agentId || record?.agentId || "default";
-    const agent = await this.createAgent({ workspaceId: input.workspaceId, path: input.path, agentId });
+    const agent = await this.createAgent({
+      workspaceId: input.workspaceId,
+      path: input.path,
+      agentId,
+      // 交接/迁移中让护栏让行：此刻这段会话还没注册（返回 false），正好
+      isHandoffBusy: () => this.sessions.get(sessionId)?.settleDeferred ?? false,
+      // 自动迁移：SDK 的插件在**一轮内部**触发，落地动作必须回到会话层
+      autoMigrate: () => this.autoMigrate(sessionId),
+    });
     if (record && record.messages.length > 0) agent.messages = [...record.messages];
 
     const session: LiveSession = {
@@ -701,6 +777,9 @@ export class SessionManager {
    *
    * 顺序是「先写盘、再换键」：写失败时注册表还在旧 id 上，客户端收到的错误与它看到的
    * 状态才一致；反过来会出现「响应说迁移失败、会话其实已经改名」这种谁也修不了的状态。
+   *
+   * 换完发 `session.idChanged`：自动迁移发生在一轮内部，客户端没有响应可接，
+   * 只能靠这条事件把后续请求与事件过滤切到新 id。
    */
   private async adopt(session: LiveSession, store: SessionStore): Promise<string> {
     const previousId = session.id;
@@ -714,9 +793,8 @@ export class SessionManager {
 
     this.sessions.delete(previousId);
     session.id = nextId;
-    // `turnId` 是会话内编号：新会话从第 1 轮起（收尾已在换 id 之前发了）
-    session.turnId = 0;
     this.sessions.set(nextId, session);
+    this.emit({ event: SESSION_EVENTS.idChanged, from: previousId, sessionId: nextId });
     return nextId;
   }
 

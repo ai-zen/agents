@@ -6,10 +6,11 @@ import { SessionAgentFactory } from "./SessionAgentFactory.js";
 import type { AgentPaths } from "./agentPaths.js";
 import type { AgentLike } from "../session/SessionManager.js";
 
-/** 假 Scope：工厂只用它的 `dispose()` */
+/** 假 Scope：工厂只用它的 `dispose()` 与 `config`（装阈值插件时读） */
 function fakeScope(label: string) {
   return {
     label,
+    config,
     disposed: false,
     async dispose() {
       this.disposed = true;
@@ -277,5 +278,108 @@ describe("SessionAgentFactory.setModel（换模型 = 写 Agent 定义）", () =>
 
     await expect(factory.setModel({ agentId: "default", modelId: "nope" })).rejects.toThrow(/unknown model/);
     await expect(factory.setModel({ agentId: "ghost", modelId: "m1" })).rejects.toThrow(/unknown agent/);
+  });
+});
+
+describe("SessionAgentFactory：按模型阈值装护栏与自动迁移", () => {
+  /** 有阈值的配置：`handoff` 软线 100 / `guard` 硬线 200 */
+  const guardedConfig = {
+    endpoints: [],
+    models: [{ id: "m", tokenThresholds: { handoff: 100, guard: 200 } }],
+    defaultAgent: "default",
+  };
+
+  /** 记录 `use()` 收到哪些插件，并带上 `lastUsage`（自动迁移看它） */
+  function recordingAgent() {
+    const plugins: any[] = [];
+    return {
+      plugins,
+      agent: {
+        messages: [],
+        definition: { modelId: "m" },
+        lastUsage: { prompt_tokens: 999 } as unknown,
+        send: async () => {},
+        abort: () => {},
+        use: (plugin: unknown) => plugins.push(plugin),
+        events: { on: () => {}, off: () => {} },
+      } as unknown as AgentLike,
+    };
+  }
+
+  function factoryWith(configValue: unknown, agent: AgentLike, hooks: Record<string, unknown>) {
+    return new SessionAgentFactory({
+      aiZenDir: join(dir, "zen"),
+      homeDir: "/home/u",
+      loadConfig: async () => configValue as never,
+      createScope: async () => ({ config: configValue, dispose: async () => {} }) as never,
+      createAgent: async () => agent,
+    });
+  }
+
+  it("有阈值：护栏与自动迁移都装上，自动迁移真的回到会话层", async () => {
+    const { agent, plugins } = recordingAgent();
+    let migrated = 0;
+    const factory = factoryWith(guardedConfig, agent, {});
+
+    await factory.create({
+      workspaceId: "ws",
+      path: "/p",
+      agentId: "default",
+      autoMigrate: async () => {
+        migrated += 1;
+      },
+      isHandoffBusy: () => false,
+    });
+
+    expect(plugins).toHaveLength(2); // ContextGuardPlugin + AutoMigratePlugin
+    // 真的跑一次插件的触发钩子：用量 999 > 软线 100 → 交给会话层
+    await plugins[1].onAfterSend({ agent });
+    expect(migrated).toBe(1);
+  });
+
+  it("交接进行中让行：插件不触发（否则「交接触发迁移」无限递归）", async () => {
+    const { agent, plugins } = recordingAgent();
+    let migrated = 0;
+    let busy = true;
+    const factory = factoryWith(guardedConfig, agent, {});
+
+    await factory.create({
+      workspaceId: "ws",
+      path: "/p",
+      agentId: "default",
+      autoMigrate: async () => {
+        migrated += 1;
+      },
+      isHandoffBusy: () => busy,
+    });
+
+    await plugins[1].onAfterSend({ agent });
+    expect(migrated).toBe(0);
+
+    busy = false;
+    await plugins[1].onAfterSend({ agent });
+    expect(migrated).toBe(1);
+  });
+
+  it("不传 autoMigrate：只装护栏（没有交接能力就别装作能迁）", async () => {
+    const { agent, plugins } = recordingAgent();
+    const factory = factoryWith(guardedConfig, agent, {});
+
+    await factory.create({ workspaceId: "ws", path: "/p", agentId: "default" });
+
+    expect(plugins).toHaveLength(1);
+  });
+
+  it("模型没配阈值：一个插件都不装（不凭直觉拍一个数）", async () => {
+    const { agent, plugins } = recordingAgent();
+    const factory = factoryWith(
+      { endpoints: [], models: [{ id: "m" }], defaultAgent: "default" },
+      agent,
+      {},
+    );
+
+    await factory.create({ workspaceId: "ws", path: "/p", agentId: "default", autoMigrate: async () => {} });
+
+    expect(plugins).toHaveLength(0);
   });
 });

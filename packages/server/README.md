@@ -78,7 +78,8 @@ business logic.
 ## Session layer
 
 `src/protocol/sessions.ts` is the wire contract for sessions — method names, params and the
-three session events (`session.phase`, `message.delta`, `turn.end`). `src/service/session/
+session events (`session.phase`, `message.delta`, `turn.end`, `session.notice`,
+`session.idChanged`). `src/service/session/
 SessionManager.ts` implements the live-session registry and the SDK-event → protocol-event
 translation; `src/service/agent/` assembles the agent (config + Scope + capability
 discovery) per workspace; `src/daemon/sessionHandlers.ts` registers `workspace.resolve` /
@@ -132,6 +133,12 @@ Three things are worth knowing before touching it:
 - **Both are one round.** They bump `turnId` like `send` does, so phase/delta events belong
   to a real turn; the settling is owned by the method's promise (`settleDeferred`), because
   the SDK also emits `finally` for the handoff round itself.
+- **Auto-migration mutates a turn that is already running.** When the model declares
+  `tokenThresholds`, the factory installs `ContextGuardPlugin` (hard line, suspended while a
+  handoff is in flight) and `AutoMigratePlugin` (soft line). The soft line fires *inside*
+  `send()`, so it must not open a new turn and must not settle the outer one; it archives,
+  prunes, re-keys and then emits `session.idChanged` — that event is the only way a client
+  learns about a new id when no request is in flight.
 - **Nothing is archived by hooks.** `HandoffService` runs its hooks through `safeHook`,
   which logs and continues — a failed archive inside a hook would let the prune destroy the
   history anyway. Archive / prune / adopt are three ordered statements in

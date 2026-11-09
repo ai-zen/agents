@@ -101,6 +101,7 @@ export {
   SESSION_NOTICE_CODES,
   type SessionHandoffParams,
   type SessionHandoffResult,
+  type SessionIdChangedEvent,
   type SessionMigrateParams,
   type SessionMigrateResult,
   type TurnEndEvent,
