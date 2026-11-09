@@ -43,6 +43,7 @@
     "openai": "^7.5.0"
   },
   "devDependencies": {
+    "@ai-zen/agents-testing": "workspace:*",
     "@types/node": "^24.12.2",
     "dotenv": "^17.4.2",
     "prettier": "^3.9.5",

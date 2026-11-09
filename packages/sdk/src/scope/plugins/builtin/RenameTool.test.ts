@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { existsSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
@@ -32,10 +32,10 @@ describe("RenameTool", () => {
       expect(existsSync(newPath)).toBe(true);
     } finally {
       try {
-        unlinkSync(newPath);
+        rmSync(newPath, { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -50,10 +50,10 @@ describe("RenameTool", () => {
       expect(existsSync(join(dir, "new.txt"))).toBe(true);
     } finally {
       try {
-        unlinkSync(join(dir, "new.txt"));
+        rmSync(join(dir, "new.txt"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -73,13 +73,13 @@ describe("RenameTool", () => {
       expect(existsSync(newPath)).toBe(true);
     } finally {
       try {
-        unlinkSync(newPath);
+        rmSync(newPath, { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(subDir);
+        rmSync(subDir, { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });

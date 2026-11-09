@@ -1,10 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { writeFileSync, mkdirSync, unlinkSync, readFileSync } from "fs";
-import { join } from "path";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { dirname, join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
 import { FindTextTool } from "./FindTextTool.js";
 import { makeEnv } from "./test-helpers.js";
+import { cleanupDumpDir } from "../../../test-support/tool-output.js";
 import type { ToolCallContext } from "@ai-zen/agents-core";
 import type { AppConfig } from "../../../types/index.js";
 
@@ -35,10 +36,10 @@ describe("FindTextTool", () => {
       expect(parsed[0].matches[1].line).toBe(3);
     } finally {
       try {
-        unlinkSync(join(dir, "test.txt"));
+        rmSync(join(dir, "test.txt"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -56,10 +57,10 @@ describe("FindTextTool", () => {
       expect(parsed[0].matches[1].match).toBe("let");
     } finally {
       try {
-        unlinkSync(join(dir, "code.ts"));
+        rmSync(join(dir, "code.ts"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -84,16 +85,16 @@ describe("FindTextTool", () => {
       expect(parsed[0].file).toBe("index.js");
     } finally {
       try {
-        unlinkSync(join(dir, "index.js"));
+        rmSync(join(dir, "index.js"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(join(dir, "node_modules", "pkg.js"));
+        rmSync(join(dir, "node_modules", "pkg.js"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(join(dir, "node_modules"));
+        rmSync(join(dir, "node_modules"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -113,10 +114,10 @@ describe("FindTextTool", () => {
       expect(Array.isArray(parsed.results)).toBe(true);
     } finally {
       try {
-        unlinkSync(join(dir, "a.js"));
+        rmSync(join(dir, "a.js"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -134,10 +135,10 @@ describe("FindTextTool", () => {
       expect(parsed.results[0].matches.length).toBe(2);
     } finally {
       try {
-        unlinkSync(join(dir, "data.txt"));
+        rmSync(join(dir, "data.txt"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -159,13 +160,13 @@ describe("FindTextTool", () => {
       expect(parsed[0].file).toBe("small.txt");
     } finally {
       try {
-        unlinkSync(join(dir, "small.txt"));
+        rmSync(join(dir, "small.txt"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(join(dir, "big.txt"));
+        rmSync(join(dir, "big.txt"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -185,10 +186,10 @@ describe("FindTextTool", () => {
       expect(parsed[0].matches[0].content).toBe("abcdefghij…");
     } finally {
       try {
-        unlinkSync(join(dir, "data.txt"));
+        rmSync(join(dir, "data.txt"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -196,6 +197,7 @@ describe("FindTextTool", () => {
   it("输出超过 maxToolOutput 时落盘 result.json 并返回警告与头尾预览", async () => {
     const tool = new FindTextTool(makeEnv(process.cwd(), { maxToolOutput: 100 } as AppConfig));
     const dir = tmpDir();
+    let dumpPath: string | undefined;
     try {
       const lines = Array.from({ length: 30 }, (_, i) => `needle-${i}`).join("\n");
       writeFileSync(join(dir, "data.txt"), lines, "utf-8");
@@ -207,21 +209,23 @@ describe("FindTextTool", () => {
       expect(parsed.warning).toContain("exceeding the limit of 100 characters");
 
       // 完整结果落盘
+      dumpPath = dirname(parsed.files["result.json"]);
       const dumped = JSON.parse(readFileSync(parsed.files["result.json"], "utf-8"));
       expect(dumped[0].file).toBe("data.txt");
       expect(dumped[0].matches.length).toBe(30);
-
       expect(parsed.chars).toBeGreaterThan(100);
       // 仅头部预览
       expect(typeof parsed.head).toBe("string");
       expect(parsed.omitted).toBeGreaterThan(0);
       expect(parsed.tail).toBeUndefined();
     } finally {
+      // 工具真的往 <tmp>/ai-zen/tool-output/ 写了一勺，用例要自己擦
+      if (dumpPath) cleanupDumpDir(dumpPath);
       try {
-        unlinkSync(join(dir, "data.txt"));
+        rmSync(join(dir, "data.txt"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -237,10 +241,10 @@ describe("FindTextTool", () => {
       expect(parsed[0].matches.length).toBe(1);
     } finally {
       try {
-        unlinkSync(join(dir, "data.txt"));
+        rmSync(join(dir, "data.txt"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -270,10 +274,10 @@ describe("FindTextTool", () => {
       expect(result).toContain("Not a directory");
     } finally {
       try {
-        unlinkSync(join(dir, "a.txt"));
+        rmSync(join(dir, "a.txt"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });

@@ -1,10 +1,11 @@
 import { beforeEach, describe, it, expect, vi } from "vitest";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createLoadMcpTool, createCallMcpTool, createReadMcpResourceTool } from "./mcpTools.js";
 import type { McpConnectionManager } from "./McpConnectionManager.js";
 import type { AppConfig, McpServerConfig, ToolEnv, UploadFn } from "../../../types/index.js";
 import { clearUploadCache } from "../../../shared/content-blocks.js";
+import { cleanupDumpDir } from "../../../test-support/tool-output.js";
 
 /**
  * Files API 上传走依赖注入（`ToolEnv.deps.upload`）：不 mock "openai" 模块，
@@ -633,7 +634,7 @@ describe("createCallMcpTool", () => {
       const warned = JSON.parse(result[1].text);
       expect(warned.outputTooLarge).toBe(true);
       expect(warned.chars).toBe(50_000);
-      rmSync(dirname(warned.files["result.txt"]), { recursive: true, force: true });
+      cleanupDumpDir(dirname(warned.files["result.txt"]));
     });
 
     it("多次文本超限时只保留一个警告块（其余文本已落盘）", async () => {
@@ -659,7 +660,7 @@ describe("createCallMcpTool", () => {
       const warned = JSON.parse(result[0].text);
       expect(warned.chars).toBe(60_000);
       expect(readFileSync(warned.files["result.txt"], "utf-8")).toHaveLength(60_001); // 两段 + 换行
-      rmSync(dirname(warned.files["result.txt"]), { recursive: true, force: true });
+      cleanupDumpDir(dirname(warned.files["result.txt"]));
     });
 
     it("文本超限时只保护文本，图片仍原样透传", async () => {
@@ -693,7 +694,7 @@ describe("createCallMcpTool", () => {
         image_url: { url: "data:image/png;base64,GGGG" },
       });
 
-      rmSync(dirname(warned.files["result.txt"]), { recursive: true, force: true });
+      cleanupDumpDir(dirname(warned.files["result.txt"]));
     });
   });
 
@@ -732,7 +733,7 @@ describe("createCallMcpTool", () => {
       const file = parsed.files["result.txt"];
       expect(existsSync(file)).toBe(true);
       expect(readFileSync(file, "utf-8")).toHaveLength(50_000);
-      rmSync(dirname(file), { recursive: true, force: true });
+      cleanupDumpDir(dirname(file));
     });
 
     it("未超过上限时原样返回，不落盘", async () => {
@@ -764,7 +765,7 @@ describe("createCallMcpTool", () => {
       );
       expect(parsed.outputTooLarge).toBe(true);
       expect(parsed.isError).toBe(true);
-      rmSync(dirname(parsed.files["result.txt"]), { recursive: true, force: true });
+      cleanupDumpDir(dirname(parsed.files["result.txt"]));
     });
   });
 });
@@ -866,6 +867,12 @@ describe("createReadMcpResourceTool", () => {
     expect(typeof result).toBe("string");
     expect(result as string).toContain("Text output too large");
     expect(result as string).toContain("result.txt");
+    // 这条同样真的落了盘（只断言「警告里有 result.txt」不够），所以要自己擦
+    cleanupDumpDir(
+      dirname(
+        (JSON.parse(result as string) as { files: Record<string, string> }).files["result.txt"],
+      ),
+    );
   });
 
   it("文本与二进制混排时保持原序，且纯文本仍返回字符串", async () => {

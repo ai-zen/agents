@@ -1,10 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, unlinkSync } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
 import { ExecTool } from "./ExecTool.js";
 import { makeEnv } from "./test-helpers.js";
+import { cleanupDumpDir } from "../../../test-support/tool-output.js";
 import type { ToolCallContext } from "@ai-zen/agents-core";
 import type { AppConfig } from "../../../types/index.js";
 
@@ -121,6 +122,8 @@ describe("ExecTool", () => {
     // 成功场景 exitCode 为 0（原先恒为 null，模型会误判命令未正常结束）
     expect(parsed.exitCode).toBe(0);
     expect(parsed.killed).toBe(false);
+
+    cleanupDumpDir(dirname(stdoutPath));
   });
 
   it("输出未超过 maxToolOutput 时按原结构返回，不落盘", async () => {

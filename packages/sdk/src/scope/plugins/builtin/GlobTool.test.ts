@@ -1,10 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
-import { join } from "path";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { dirname, join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
 import { GlobTool } from "./GlobTool.js";
 import { makeEnv } from "./test-helpers.js";
+import { cleanupDumpDir } from "../../../test-support/tool-output.js";
 import type { ToolCallContext } from "@ai-zen/agents-core";
 import type { AppConfig } from "../../../types/index.js";
 
@@ -36,16 +37,16 @@ describe("GlobTool", () => {
       expect(files).not.toContain("c.js");
     } finally {
       try {
-        unlinkSync(join(dir, "a.ts"));
+        rmSync(join(dir, "a.ts"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(join(dir, "b.ts"));
+        rmSync(join(dir, "b.ts"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(join(dir, "c.js"));
+        rmSync(join(dir, "c.js"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -60,10 +61,10 @@ describe("GlobTool", () => {
       expect(files).toContain("x.js");
     } finally {
       try {
-        unlinkSync(join(dir, "x.js"));
+        rmSync(join(dir, "x.js"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -82,16 +83,16 @@ describe("GlobTool", () => {
       expect(files).not.toContain("node_modules/pkg.js");
     } finally {
       try {
-        unlinkSync(join(dir, "index.js"));
+        rmSync(join(dir, "index.js"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(join(dir, "node_modules", "pkg.js"));
+        rmSync(join(dir, "node_modules", "pkg.js"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(join(dir, "node_modules"));
+        rmSync(join(dir, "node_modules"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -111,10 +112,10 @@ describe("GlobTool", () => {
       expect(Array.isArray(parsed.files)).toBe(true);
     } finally {
       try {
-        unlinkSync(join(dir, "a.ts"));
+        rmSync(join(dir, "a.ts"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -123,6 +124,7 @@ describe("GlobTool", () => {
     const tool = new GlobTool(makeEnv(process.cwd(), { maxToolOutput: 100 } as AppConfig));
     const dir = tmpDir();
     const names = Array.from({ length: 30 }, (_, i) => `f${i}.ts`);
+    let dumpPath: string | undefined;
     try {
       for (const name of names) writeFileSync(join(dir, name), "", "utf-8");
 
@@ -133,17 +135,20 @@ describe("GlobTool", () => {
       expect(parsed.warning).toContain("exceeding the limit of 100 characters");
 
       // 完整结果落盘
+      dumpPath = dirname(parsed.files["result.json"]);
       const dumped = JSON.parse(readFileSync(parsed.files["result.json"], "utf-8"));
       expect(dumped.length).toBe(30);
       expect(parsed.chars).toBeGreaterThan(100);
       expect(typeof parsed.head).toBe("string");
     } finally {
+      // 工具真的往 <tmp>/ai-zen/tool-output/ 写了一勺，用例要自己擦
+      if (dumpPath) cleanupDumpDir(dumpPath);
       for (const name of names)
         try {
-          unlinkSync(join(dir, name));
+          rmSync(join(dir, name), { recursive: true, force: true });
         } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -159,10 +164,10 @@ describe("GlobTool", () => {
       expect(parsed).toContain("a.ts");
     } finally {
       try {
-        unlinkSync(join(dir, "a.ts"));
+        rmSync(join(dir, "a.ts"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -184,10 +189,10 @@ describe("GlobTool", () => {
       expect(result).toContain("Not a directory");
     } finally {
       try {
-        unlinkSync(join(dir, "a.txt"));
+        rmSync(join(dir, "a.txt"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });

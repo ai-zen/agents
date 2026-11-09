@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync, unlinkSync } from "fs";
+import { readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
@@ -27,10 +27,10 @@ describe("WriteTool", () => {
       expect(readFileSync(filePath, "utf-8")).toBe("hello world");
     } finally {
       try {
-        unlinkSync(filePath);
+        rmSync(filePath, { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -44,10 +44,10 @@ describe("WriteTool", () => {
       expect(readFileSync(join(dir, "rel.txt"), "utf-8")).toBe("relative ok");
     } finally {
       try {
-        unlinkSync(join(dir, "rel.txt"));
+        rmSync(join(dir, "rel.txt"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -62,16 +62,16 @@ describe("WriteTool", () => {
       expect(readFileSync(filePath, "utf-8")).toBe("nested");
     } finally {
       try {
-        unlinkSync(filePath);
+        rmSync(filePath, { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(join(dir, "sub", "nested"));
+        rmSync(join(dir, "sub", "nested"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(join(dir, "sub"));
+        rmSync(join(dir, "sub"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });

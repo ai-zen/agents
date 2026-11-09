@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { writeFileSync, mkdirSync, unlinkSync } from "fs";
+import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
@@ -24,10 +24,10 @@ describe("ExistTool", () => {
       expect(result).toBe("true");
     } finally {
       try {
-        unlinkSync(filePath);
+        rmSync(filePath, { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -42,10 +42,10 @@ describe("ExistTool", () => {
       expect(await tool.call({ path: "missing.txt" })).toBe("false");
     } finally {
       try {
-        unlinkSync(join(dir, "rel.txt"));
+        rmSync(join(dir, "rel.txt"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -65,7 +65,7 @@ describe("ExistTool", () => {
       expect(result).toBe("true");
     } finally {
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { writeFileSync, mkdirSync, unlinkSync } from "fs";
+import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
@@ -17,10 +17,10 @@ function tmpFile(content: string): string {
 
 function cleanUp(filePath: string): void {
   try {
-    unlinkSync(filePath);
+    rmSync(filePath, { recursive: true, force: true });
   } catch {}
   try {
-    unlinkSync(filePath.substring(0, filePath.lastIndexOf("/")));
+    rmSync(filePath.substring(0, filePath.lastIndexOf("/")), { recursive: true, force: true });
   } catch {}
 }
 
@@ -168,7 +168,7 @@ describe("InspectFileTool", () => {
       expect(result).toContain("is not a file");
     } finally {
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });

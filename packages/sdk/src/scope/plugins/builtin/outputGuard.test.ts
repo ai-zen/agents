@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { existsSync, readFileSync } from "fs";
+import { dirname } from "path";
 import { tmpdir } from "os";
+import { cleanupDumpDir } from "../../../test-support/tool-output.js";
 import {
   DEFAULT_MAX_TOOL_OUTPUT,
   guardOutput,
@@ -49,6 +51,8 @@ describe("outputGuard", () => {
     expect(filePath.startsWith(tmpdir())).toBe(true);
     expect(filePath).toContain("ai-zen");
     expect(filePath).toContain("unit-");
+    // 真的是往盘上写的（这条用例要证的就是落盘），所以必须真收
+    cleanupDumpDir(dirname(filePath));
   });
 
   it("超限但未提供 dump 时只警告、不落盘", async () => {
@@ -77,6 +81,8 @@ describe("outputGuard", () => {
     const first = await run();
     const second = await run();
     expect(first).not.toBe(second);
+    cleanupDumpDir(dirname(first));
+    cleanupDumpDir(dirname(second));
   });
 
   it("落盘文件内容与 dump 顺序一致", async () => {
@@ -95,6 +101,7 @@ describe("outputGuard", () => {
     expect(Object.keys(files)).toEqual(["stdout.log", "stderr.log"]);
     expect(readFileSync(files["stdout.log"], "utf-8")).toBe("OUT");
     expect(readFileSync(files["stderr.log"], "utf-8")).toBe("ERR");
+    cleanupDumpDir(dirname(files["stdout.log"]));
   });
 
   describe("headPreview", () => {

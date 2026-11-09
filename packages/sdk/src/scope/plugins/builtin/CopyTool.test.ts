@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
@@ -31,13 +31,13 @@ describe("CopyTool", () => {
       expect(readFileSync(dest, "utf-8")).toBe("content");
     } finally {
       try {
-        unlinkSync(dest);
+        rmSync(dest, { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(src);
+        rmSync(src, { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -57,31 +57,31 @@ describe("CopyTool", () => {
       expect(readFileSync(join(destDir, "sub", "b.txt"), "utf-8")).toBe("b");
     } finally {
       try {
-        unlinkSync(join(destDir, "sub", "b.txt"));
+        rmSync(join(destDir, "sub", "b.txt"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(join(destDir, "a.txt"));
+        rmSync(join(destDir, "a.txt"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(join(destDir, "sub"));
+        rmSync(join(destDir, "sub"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(destDir);
+        rmSync(destDir, { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(join(srcDir, "sub", "b.txt"));
+        rmSync(join(srcDir, "sub", "b.txt"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(join(srcDir, "a.txt"));
+        rmSync(join(srcDir, "a.txt"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(join(srcDir, "sub"));
+        rmSync(join(srcDir, "sub"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(srcDir);
+        rmSync(srcDir, { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -99,13 +99,13 @@ describe("CopyTool", () => {
       expect(result).not.toBe("success");
     } finally {
       try {
-        unlinkSync(join(srcDir, "a.txt"));
+        rmSync(join(srcDir, "a.txt"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(srcDir);
+        rmSync(srcDir, { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });

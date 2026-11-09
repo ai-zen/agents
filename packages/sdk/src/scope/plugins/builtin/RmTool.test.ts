@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { existsSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
@@ -31,7 +31,7 @@ describe("RmTool", () => {
     expect(existsSync(filePath)).toBe(false);
 
     try {
-      unlinkSync(dir);
+      rmSync(dir, { recursive: true, force: true });
     } catch {}
   });
 

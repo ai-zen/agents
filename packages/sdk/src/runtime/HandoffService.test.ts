@@ -206,8 +206,11 @@ describe("handoff", () => {
   });
 
   it("self 模式：注入给 agent 的指令含 Skill 正文（而非代码内固定章节）", async () => {
+    // 也要登记：`makeDir()` 造的就该由 `dirs` 统一收，漏一个就是一个跑不掉的 /tmp 目录
+    const missingSkillDir = await makeDir();
+    dirs.push(missingSkillDir);
     const { service } = await makeService({
-      skillDirs: [join(await makeDir(), "nope")], // 不存在 → 走兜底
+      skillDirs: [join(missingSkillDir, "nope")], // 不存在 → 走兜底
     });
     const agent = new FakeAgent({
       onSend: async (_c, _n, self) => {

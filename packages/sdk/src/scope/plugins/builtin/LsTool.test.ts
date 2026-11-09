@@ -1,10 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
-import { join } from "path";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { dirname, join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
 import { LsTool } from "./LsTool.js";
 import { makeEnv } from "./test-helpers.js";
+import { cleanupDumpDir } from "../../../test-support/tool-output.js";
 import type { AppConfig } from "../../../types/index.js";
 
 function tmpDir(): string {
@@ -33,13 +34,13 @@ describe("LsTool", () => {
       expect(files).toContain("b.txt");
     } finally {
       try {
-        unlinkSync(join(dir, "a.txt"));
+        rmSync(join(dir, "a.txt"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(join(dir, "b.txt"));
+        rmSync(join(dir, "b.txt"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -52,7 +53,7 @@ describe("LsTool", () => {
       expect(JSON.parse(result as string)).toEqual([]);
     } finally {
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -67,6 +68,7 @@ describe("LsTool", () => {
     const tool = new LsTool(makeEnv(process.cwd(), { maxToolOutput: 100 } as AppConfig));
     const dir = tmpDir();
     const names = Array.from({ length: 30 }, (_, i) => `f${i}.txt`);
+    let dumpPath: string | undefined;
     try {
       for (const name of names) writeFileSync(join(dir, name), "", "utf-8");
 
@@ -77,16 +79,19 @@ describe("LsTool", () => {
       expect(parsed.warning).toContain("exceeding the limit of 100 characters");
       expect(parsed.warning).toContain("30 directory entries");
 
+      dumpPath = dirname(parsed.files["result.json"]);
       const dumped = JSON.parse(readFileSync(parsed.files["result.json"], "utf-8"));
       expect(dumped.length).toBe(30);
       expect(typeof parsed.head).toBe("string");
     } finally {
+      // 工具真的往 <tmp>/ai-zen/tool-output/ 写了一勺，用例要自己擦
+      if (dumpPath) cleanupDumpDir(dumpPath);
       for (const name of names)
         try {
-          unlinkSync(join(dir, name));
+          rmSync(join(dir, name), { recursive: true, force: true });
         } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -100,10 +105,10 @@ describe("LsTool", () => {
       expect(JSON.parse(result as string)).toContain("a.txt");
     } finally {
       try {
-        unlinkSync(join(dir, "a.txt"));
+        rmSync(join(dir, "a.txt"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });

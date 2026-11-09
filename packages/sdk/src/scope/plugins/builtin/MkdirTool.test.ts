@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { existsSync, mkdirSync, unlinkSync } from "fs";
+import { existsSync, mkdirSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
@@ -26,7 +26,7 @@ describe("MkdirTool", () => {
       expect(existsSync(dir)).toBe(true);
     } finally {
       try {
-        unlinkSync(dir);
+        rmSync(dir, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -41,10 +41,10 @@ describe("MkdirTool", () => {
       expect(existsSync(join(base, "sub"))).toBe(true);
     } finally {
       try {
-        unlinkSync(join(base, "sub"));
+        rmSync(join(base, "sub"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(base);
+        rmSync(base, { recursive: true, force: true });
       } catch {}
     }
   });
@@ -59,16 +59,16 @@ describe("MkdirTool", () => {
       expect(existsSync(nested)).toBe(true);
     } finally {
       try {
-        unlinkSync(join(base, "a", "b", "c"));
+        rmSync(join(base, "a", "b", "c"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(join(base, "a", "b"));
+        rmSync(join(base, "a", "b"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(join(base, "a"));
+        rmSync(join(base, "a"), { recursive: true, force: true });
       } catch {}
       try {
-        unlinkSync(base);
+        rmSync(base, { recursive: true, force: true });
       } catch {}
     }
   });

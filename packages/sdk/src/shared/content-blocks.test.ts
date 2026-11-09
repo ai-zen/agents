@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { promises as fs } from "node:fs";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
@@ -29,8 +30,16 @@ const openai: Endpoint = {
   apiKey: "sk-test",
 };
 
+/** 本文件造过的临时目录：`afterEach` 里收掉（不收就是每次跑都往 /tmp 加几个） */
+const tempDirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
 async function tmpImage(content = "PNGDATA", ext = ".png"): Promise<string> {
   const dir = join(tmpdir(), randomBytes(8).toString("hex"));
+  tempDirs.push(dir);
   await fs.mkdir(dir, { recursive: true });
   const file = join(dir, `img${ext}`);
   await fs.writeFile(file, content);

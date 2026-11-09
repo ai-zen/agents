@@ -112,6 +112,19 @@ let manager: SessionManager;
 let events: ServerEvent[];
 let sessionCounter = 0;
 
+/** 用例自己造的存档根：统一在 `afterEach` 收掉（漏一个就是一个跑不掉的 /tmp 目录） */
+const tempRoots: string[] = [];
+
+function tempRoot(prefix: string): string {
+  const dir = join(tmpdir(), `${prefix}-${Date.now()}-${Math.random()}`);
+  tempRoots.push(dir);
+  return dir;
+}
+
+afterEach(async () => {
+  for (const dir of tempRoots.splice(0)) await fs.rm(dir, { recursive: true, force: true });
+});
+
 /** 交接文档正文：SDK 有 400 字节的有效性阈值（与 `SessionHandoff.test.ts` 同一个理由） */
 const DOC = `# 交接文档\n\n${"- 桩内容\n".repeat(80)}`;
 
@@ -1606,7 +1619,7 @@ describe("SessionManager：attach（会话活得比连接久）", () => {
   });
 
   it("接一个活着的会话：消息仍是它当前的，不被存档覆盖", async () => {
-    const store = new FileSessionStore({ rootDir: join(tmpdir(), `aiz-attach-${Date.now()}-${Math.random()}`) });
+    const store = new FileSessionStore({ rootDir: tempRoot("aiz-attach") });
     const m = new SessionManager({
       createAgent: async () => agent,
       nextSessionId: () => `chat_${++sessionCounter}`,
@@ -1623,7 +1636,7 @@ describe("SessionManager：attach（会话活得比连接久）", () => {
   });
 
   it("接一段只在盘上的会话：从存档装配 Agent 并装回消息", async () => {
-    const store = new FileSessionStore({ rootDir: join(tmpdir(), `aiz-attach2-${Date.now()}-${Math.random()}`) });
+    const store = new FileSessionStore({ rootDir: tempRoot("aiz-attach2") });
     const m = new SessionManager({
       createAgent: async () => agent,
       nextSessionId: () => `chat_${++sessionCounter}`,
@@ -1638,7 +1651,7 @@ describe("SessionManager：attach（会话活得比连接久）", () => {
   });
 
   it("内存和盘上都没有这个 id：报 session-missing（绝不悄悄开一段空的）", async () => {
-    const store = new FileSessionStore({ rootDir: join(tmpdir(), `aiz-attach3-${Date.now()}-${Math.random()}`) });
+    const store = new FileSessionStore({ rootDir: tempRoot("aiz-attach3") });
     const m = new SessionManager({ createAgent: async () => agent, storeFor: () => store });
 
     await expect(m.attach({ workspaceId: "ws-1", path: "/p", sessionId: "chat_gone" })).rejects.toThrow(
@@ -1658,7 +1671,7 @@ describe("SessionManager：attach（会话活得比连接久）", () => {
   });
 
   it("自动分配的 id 撞上**盘上的**存档：也不覆盖，换一个", async () => {
-    const store = new FileSessionStore({ rootDir: join(tmpdir(), `aiz-free-${Date.now()}-${Math.random()}`) });
+    const store = new FileSessionStore({ rootDir: tempRoot("aiz-free") });
     await store.write({ id: "chat_same", agentId: "default", messages: [{ role: "user", content: "别人的对话" }] });
     const m = new SessionManager({
       createAgent: async () => agent,

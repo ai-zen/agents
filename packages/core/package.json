@@ -21,6 +21,7 @@
   "author": "LZQCN",
   "license": "MIT",
   "devDependencies": {
+    "@ai-zen/agents-testing": "workspace:*",
     "@types/json-schema": "^7.0.15",
     "dotenv": "^17.4.2",
     "rimraf": "^6.0.0",
