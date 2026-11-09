@@ -281,3 +281,32 @@ describe("Agent 定义", () => {
     );
   });
 });
+
+describe("ConfigService：bootstrap 由服务端负责", () => {
+  it("空目录 bootstrap 之后：默认 Agent / 子 Agent 都在，配置也是出厂的", async () => {
+    // 客户端不再碰本机配置目录，所以“首次启动就有默认 Agent”只能由服务端保证 ——
+    // 否则新机器上第一个 `agent.list` 拿到空列表，TUI 连启动都过不去
+    expect((await service.listAgents()).agents).toEqual([]);
+
+    await service.bootstrap();
+
+    const listed = await service.listAgents();
+    expect(listed.agents.map((agent) => (agent as AgentDefinition).id)).toContain("default");
+    expect(listed.subAgents.length).toBeGreaterThan(0);
+    // 默认 Agent 必须绑着出厂模型，否则 createAgent 一开会话就报“未绑定模型”
+    expect((listed.agents[0] as AgentDefinition).modelId).toBeTruthy();
+    expect(((await service.get()).config as AppConfig).models?.length).toBeGreaterThan(0);
+  });
+
+  it("bootstrap 幂等：跑两次不会把用户的改动冲掉", async () => {
+    await service.bootstrap();
+    const before = await service.listAgents();
+    const first = before.agents[0] as AgentDefinition;
+    await service.saveAgent("agent", { ...first, name: "我改过的名字" });
+
+    await service.bootstrap();
+
+    const after = (await service.listAgents()).agents.find((agent) => (agent as AgentDefinition).id === first.id);
+    expect((after as AgentDefinition).name).toBe("我改过的名字");
+  });
+});

@@ -219,6 +219,10 @@ async function main(): Promise<number> {
     globalMcpFile: join(args.aiZenDir, "mcp.json"),
     workspacesRoot,
   });
+  // 配置根初始化：默认 Agent / 子 Agent / 出厂模型与策略表都由**服务端**释放。
+  // 客户端不再碰本机配置目录，所以“首次启动就有默认 Agent”只能在这里保证 ——
+  // 否则新机器上第一个 `agent.list` 拿到空列表，TUI 连启动都过不去（`app.noAgents`）。
+  await configService.bootstrap();
   log("info", `default workspace: ${args.defaultWorkspace}`);
   // 一条事件出口：会话事件与全局通知共用（客户端只需一次订阅）
   const hub = new EventHub();
