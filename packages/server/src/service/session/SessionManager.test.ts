@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { SessionManager, type AgentLike } from "./SessionManager.js";
+import type { SessionRecord, SessionStore } from "../store/SessionStore.js";
 import type { SessionEvent } from "../../protocol/sessions.js";
 
 /**
@@ -8,6 +9,7 @@ import type { SessionEvent } from "../../protocol/sessions.js";
  */
 class FakeAgent implements AgentLike {
   messages: any[] = [];
+  lastUsage: unknown = undefined;
   sent: string[] = [];
   aborted = 0;
   /** 让 `send()` 挂住：用来证明 manager.send 不等一轮跑完 */
@@ -314,5 +316,99 @@ describe("SessionManager：订阅", () => {
     expect(agent.handlerCount()).toBe(0);
     expect(manager.list("ws-1")).toEqual([]);
     expect(manager.cancel(sessionId)).toEqual({ cancelled: false });
+  });
+});
+
+/** 内存存档：续接与 save 的用例不需要碰磁盘 */
+class MemoryStore implements SessionStore {
+  readonly records = new Map<string, SessionRecord>();
+  pointer: string | null = null;
+
+  async list() {
+    return [...this.records.keys()].map((id) => ({ id }));
+  }
+  async read(id: string) {
+    return this.records.get(id) ?? null;
+  }
+  async write(record: SessionRecord) {
+    this.records.set(record.id, record);
+  }
+  async remove(id: string) {
+    this.records.delete(id);
+  }
+  async exists(id: string) {
+    return this.records.has(id);
+  }
+  async lastSession() {
+    return this.pointer ? { id: this.pointer, updatedAt: "" } : null;
+  }
+  async setLastSession(id: string) {
+    this.pointer = id;
+  }
+}
+
+describe("SessionManager：快照 / 存档 / 续接", () => {
+  let store: MemoryStore;
+  let withStore: SessionManager;
+
+  beforeEach(() => {
+    store = new MemoryStore();
+    withStore = new SessionManager({
+      createAgent: async () => agent,
+      nextSessionId: () => "chat_fixed",
+      storeFor: () => store,
+    });
+  });
+
+  it("snapshot 一次给出消息 / 阶段 / 轮次 / 用量（客户端不必自己攒事件）", async () => {
+    await withStore.create({ workspaceId: "ws-1", path: "/p" });
+    agent.messages.push({ role: "user", content: "你好" });
+    agent.lastUsage = { promptTokens: 3, completionTokens: 5 };
+    withStore.send("chat_fixed", "你好");
+
+    const snapshot = await withStore.snapshot("chat_fixed");
+    expect(snapshot).toMatchObject({
+      sessionId: "chat_fixed",
+      workspaceId: "ws-1",
+      agentId: "default",
+      turnId: 1,
+      phase: { kind: "connecting" },
+      messages: [{ role: "user", content: "你好" }],
+      lastUsage: { promptTokens: 3, completionTokens: 5 },
+    });
+  });
+
+  it("save 把当前消息写进工作区存档，并把「上一轮会话」指过去", async () => {
+    await withStore.create({ workspaceId: "ws-1", path: "/p" });
+    agent.messages.push({ role: "user", content: "留档" });
+
+    expect(await withStore.save("chat_fixed")).toEqual({ saved: true, sessionId: "chat_fixed" });
+    expect(store.records.get("chat_fixed")).toEqual({
+      id: "chat_fixed",
+      agentId: "default",
+      messages: [{ role: "user", content: "留档" }],
+    });
+    expect((await store.lastSession())?.id).toBe("chat_fixed");
+  });
+
+  it("续接：id 在工作区存档里存在时，Agent 直接带着那份消息起来", async () => {
+    await store.write({
+      id: "chat_old",
+      agentId: "default",
+      messages: [{ role: "user", content: "上次聊到这儿" }] as never,
+    });
+
+    await withStore.create({ workspaceId: "ws-1", path: "/p", sessionId: "chat_old" });
+    expect(agent.messages).toEqual([{ role: "user", content: "上次聊到这儿" }]);
+  });
+
+  it("没有存档时开同 id：不报错，就当新会话（空消息）", async () => {
+    await withStore.create({ workspaceId: "ws-1", path: "/p", sessionId: "chat_new" });
+    expect(agent.messages).toEqual([]);
+  });
+
+  it("没注入存档：save 明确报 no-store（而不是假装存了）", async () => {
+    await manager.create({ workspaceId: "ws-1", path: "/p", sessionId: "chat_x" });
+    await expect(manager.save("chat_x")).rejects.toThrow(/no session store/);
   });
 });

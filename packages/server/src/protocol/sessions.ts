@@ -39,6 +39,10 @@ export const SESSION_METHODS = {
   cancel: "session.cancel",
   /** 某个工作区下活着的会话（不是盘上的存档） */
   list: "session.list",
+  /** 整份快照：客户端（重）连上来时一次拿全，不用自己拼事件 */
+  snapshot: "session.snapshot",
+  /** 把当前会话写进工作区存档（并把它设为「上一轮会话」） */
+  save: "session.save",
 } as const;
 
 /** 连接级方法（与某个会话无关，所以不放在 `session.*` 里） */
@@ -126,10 +130,35 @@ export interface SessionSummary {
   phase: PhaseInfo | null;
 }
 
+/** 一屏所需的全部事实：客户端拿它直接渲染，不必先从事件流里攒 */
+export interface SessionSnapshotParams {
+  sessionId: string;
+}
+
+export interface SessionSnapshotResult {
+  sessionId: string;
+  workspaceId: string;
+  agentId: string;
+  turnId: number;
+  phase: PhaseInfo | null;
+  /** 当前完整消息列表（服务端是唯一真相源） */
+  messages: unknown[];
+  /** 最近一轮用量（Agent 提供才带；客户端不知道就别显示） */
+  lastUsage?: unknown;
+}
+
+export interface SessionSaveParams {
+  sessionId: string;
+}
+
+export interface SessionSaveResult {
+  saved: boolean;
+  sessionId: string;
+}
+
 export interface SessionListResult {
   sessions: SessionSummary[];
 }
-
 // ==================== 事件 ====================
 //
 // 这些写成 `type` 而不是 `interface`：`interface` 不会隐式获得索引签名，于是

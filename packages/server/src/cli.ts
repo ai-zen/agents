@@ -28,6 +28,7 @@ import { encodeFrame, FrameDecoder } from "./protocol/frames.js";
 import { PROTOCOL_VERSION } from "./protocol/messages.js";
 import { SessionAgentFactory } from "./service/agent/SessionAgentFactory.js";
 import { SessionManager } from "./service/session/SessionManager.js";
+import { FileSessionStore } from "./service/store/FileSessionStore.js";
 import { SERVER_NAME, SERVER_VERSION } from "./version.js";
 
 interface Args {
@@ -200,8 +201,11 @@ async function main(): Promise<number> {
     aiZenDir: args.aiZenDir,
     homeDir: process.env.HOME || process.env.USERPROFILE || homedir(),
   });
+  const workspacesRoot = join(args.aiZenDir, "workspaces");
   const sessions = new SessionManager({
     createAgent: (input) => agentFactory.create(input),
+    // 每个工作区一份存档：续接与 session.save 都走它
+    storeFor: (workspaceId) => new FileSessionStore({ rootDir: join(workspacesRoot, workspaceId) }),
   });
 
   const daemon = new Daemon({
@@ -213,7 +217,7 @@ async function main(): Promise<number> {
     log,
     handlers: createSessionHandlers({
       manager: sessions,
-      workspacesRoot: join(args.aiZenDir, "workspaces"),
+      workspacesRoot,
     }),
     onStopped: (reason) => {
       log("info", `exit (${reason})`);

@@ -15,7 +15,9 @@ import {
   type SessionCancelResult,
   type SessionCreateResult,
   type SessionListResult,
+  type SessionSaveResult,
   type SessionSendResult,
+  type SessionSnapshotResult,
   type WorkspaceResolveResult,
 } from "../protocol/sessions.js";
 
@@ -67,6 +69,14 @@ export function createSessionHandlers(options: SessionHandlerOptions): Record<st
 
     [SESSION_METHODS.list]: (params): SessionListResult => {
       return { sessions: manager.list(requireString(params, "workspaceId")) };
+    },
+
+    [SESSION_METHODS.snapshot]: async (params): Promise<SessionSnapshotResult> => {
+      return await manager.snapshot(requireString(params, "sessionId"));
+    },
+
+    [SESSION_METHODS.save]: async (params): Promise<SessionSaveResult> => {
+      return await manager.save(requireString(params, "sessionId"));
     },
   };
 }

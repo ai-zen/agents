@@ -17,9 +17,11 @@
  */
 
 import { PhaseTracker, pendingToolCalls, type PhaseInfo } from "../progress/PhaseTracker.js";
+import type { SessionStore } from "../store/SessionStore.js";
 import {
   SESSION_EVENTS,
   type SessionEvent,
+  type SessionSnapshotResult,
   type SessionSummary,
 } from "../../protocol/sessions.js";
 
@@ -32,7 +34,10 @@ import {
  * 不叫 `SessionAgent`：那读起来像「一种 Agent」，而它只是 Agent 的一个**面**（能跑会话）。
  */
 export interface AgentLike {
-  readonly messages: unknown[];
+  /** 当前消息列表。**可写**：续接存档时由会话管理器整体换成存档里的那份 */
+  messages: unknown[];
+  /** 最近一轮用量（SDK 的 Agent 有；假件可以不给） */
+  readonly lastUsage?: unknown;
   /** 返回本轮产出（SDK 返回 `Message[]`）；会话管理器不看它，进展走事件 */
   send(input: string): Promise<unknown>;
   abort(): void;
@@ -67,6 +72,12 @@ export interface SessionManagerOptions {
    * 一个 id，续接时不会出现「内存叫 sess_3、盘上叫 chat_2026…」这种两套编号。
    */
   nextSessionId?: () => string;
+  /**
+   * 某个工作区的会话存档（续接与 `session.save` 用）。不注入则两者都不可用。
+   *
+   * 注入成**函数**而不是实例：一个进程服务多个工作区，每个工作区一份存档。
+   */
+  storeFor?: (workspaceId: string) => SessionStore | Promise<SessionStore>;
 }
 
 interface LiveSession {
@@ -93,15 +104,49 @@ function defaultNextSessionId(): string {
   return `chat_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "_")}`;
 }
 
+/** 带机器可判别 code 的错误（守护进程原样回给客户端） */
+function codedError(code: string, message: string): Error & { code: string } {
+  const error = new Error(message) as Error & { code?: string };
+  error.code = code;
+  return error as Error & { code: string };
+}
+
 export class SessionManager {
   private readonly createAgent: (input: CreateAgentInput) => Promise<AgentLike>;
   private readonly nextSessionId: () => string;
+  private readonly storeFactory: SessionManagerOptions["storeFor"];
   private readonly sessions = new Map<string, LiveSession>();
   private readonly listeners = new Set<(event: SessionEvent) => void>();
 
   constructor(options: SessionManagerOptions) {
     this.createAgent = options.createAgent;
     this.nextSessionId = options.nextSessionId ?? defaultNextSessionId;
+    this.storeFactory = options.storeFor;
+  }
+
+  /** 整份快照：客户端（重）连上来时一次拿全，不用先从事件流里攒 */
+  async snapshot(sessionId: string): Promise<SessionSnapshotResult> {
+    const session = this.require(sessionId);
+    return {
+      sessionId: session.id,
+      workspaceId: session.workspaceId,
+      agentId: session.agentId,
+      turnId: session.turnId,
+      phase: this.visiblePhase(session),
+      messages: [...session.agent.messages],
+      ...(session.agent.lastUsage !== undefined ? { lastUsage: session.agent.lastUsage } : {}),
+    };
+  }
+
+  /** 把当前会话写进工作区存档，并把它设为「上一轮会话」 */
+  async save(sessionId: string): Promise<{ saved: boolean; sessionId: string }> {
+    const session = this.require(sessionId);
+    const store = await this.storeFor(session.workspaceId);
+    if (!store) throw codedError("no-store", `no session store for workspace ${session.workspaceId}`);
+
+    await store.write({ id: session.id, agentId: session.agentId, messages: session.agent.messages });
+    await store.setLastSession(session.id);
+    return { saved: true, sessionId: session.id };
   }
 
   /** 订阅事件；返回取消订阅的函数（连接断开时调用） */
@@ -114,12 +159,18 @@ export class SessionManager {
     const agentId = input.agentId || "default";
     const sessionId = input.sessionId || this.nextSessionId();
     if (this.sessions.has(sessionId)) {
-      const error = new Error(`session already exists: ${sessionId}`) as Error & { code?: string };
-      error.code = "session-exists";
-      throw error;
+      throw codedError("session-exists", `session already exists: ${sessionId}`);
     }
 
     const agent = await this.createAgent({ workspaceId: input.workspaceId, path: input.path, agentId });
+
+    // 续接：这个 id 的工作区存档里有记录，就把它的消息装进 Agent。
+    // 服务端是唯一真相源 —— 客户端只给 id，不搬消息。
+    const store = await this.storeFor(input.workspaceId);
+    if (store) {
+      const record = await store.read(sessionId);
+      if (record && record.messages.length > 0) agent.messages = [...record.messages];
+    }
 
     const session: LiveSession = {
       id: sessionId,
@@ -326,11 +377,12 @@ export class SessionManager {
 
   private require(sessionId: string): LiveSession {
     const session = this.sessions.get(sessionId);
-    if (!session) {
-      const error = new Error(`unknown session: ${sessionId}`) as Error & { code?: string };
-      error.code = "unknown-session";
-      throw error;
-    }
+    if (!session) throw codedError("unknown-session", `unknown session: ${sessionId}`);
     return session;
+  }
+
+  /** 存档工厂：没注入则续接与 save 都不可用 */
+  private async storeFor(workspaceId: string): Promise<SessionStore | undefined> {
+    return this.storeFactory ? await this.storeFactory(workspaceId) : undefined;
   }
 }
