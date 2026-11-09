@@ -96,6 +96,8 @@ export {
   type GlobalNoticeCode,
   type GlobalNoticeEvent,
   type HandoffMode,
+  type MessageContent,
+  type MessageContentBlock,
   type NoticeLevel,
   GLOBAL_NOTICE_CODES,
   SESSION_NOTICE_CODES,

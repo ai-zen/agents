@@ -184,6 +184,46 @@ describe("会话处理器（真 socket）", () => {
     });
   });
 
+  it("session.send 收「文本 + 图片」内容块：服务端不解释，原样交给 Agent", async () => {
+    await startDaemon();
+    const created = (await client!.call(SESSION_METHODS.create, {
+      workspaceId: "ws-1",
+      path: dir,
+    })) as { sessionId: string };
+    const content = [
+      { type: "text", text: "看看这张图" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,AAA" } },
+    ];
+
+    const sent = (await client!.call(SESSION_METHODS.send, {
+      sessionId: created.sessionId,
+      content,
+    })) as { turnId: number };
+
+    expect(sent.turnId).toBe(1);
+    // 原样到达 Agent：服务端不在中间改内容块
+    expect(agent.sent).toEqual([content]);
+  });
+
+  it("不认识的内容块 → bad-params（放过去只会在端点那边变成更难懂的 400）", async () => {
+    await startDaemon();
+    const created = (await client!.call(SESSION_METHODS.create, {
+      workspaceId: "ws-1",
+      path: dir,
+    })) as { sessionId: string };
+
+    await expect(
+      client!.call(SESSION_METHODS.send, {
+        sessionId: created.sessionId,
+        content: [{ type: "video", url: "x" }],
+      }),
+    ).rejects.toThrow(/bad-params/);
+    await expect(
+      client!.call(SESSION_METHODS.send, { sessionId: created.sessionId, content: [] }),
+    ).rejects.toThrow(/bad-params/);
+    expect(agent.sent).toEqual([]);
+  });
+
   it("session.handoff：返回文档路径与执行者，进度作为事件推过连接", async () => {
     await startDaemon();
     await client!.call(EVENT_METHODS.watch);

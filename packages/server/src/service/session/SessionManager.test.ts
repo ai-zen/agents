@@ -788,11 +788,15 @@ describe("SessionManager：另存为（/save <名字>）", () => {
     expect(store.records.size).toBe(0);
   });
 
-  it("快照带上 Agent 绑定的模型 id（状态栏的真相在定义里，不在会话里）", async () => {
+  it("快照带上 Agent 绑定的模型 id 与实发模型名（客户端拼图片内容块要用后者反查端点）", async () => {
     await saveManager.create({ workspaceId: "ws-1", path: "/p" });
     (agent as unknown as { definition: { modelId?: string } }).definition.modelId = "test-model";
+    (agent as unknown as { model?: string }).model = "vendor/test-model-v2";
 
-    expect((await saveManager.snapshot("chat_next")).modelId).toBe("test-model");
+    const snapshot = await saveManager.snapshot("chat_next");
+    expect(snapshot.modelId).toBe("test-model");
+    // 配了别名时两者不同；客户端不能拿 modelId 当 apiModel 用
+    expect(snapshot.apiModel).toBe("vendor/test-model-v2");
   });
 });
 

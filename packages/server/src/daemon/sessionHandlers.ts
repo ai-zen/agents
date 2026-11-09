@@ -13,6 +13,7 @@ import {
   EVENT_METHODS,
   SESSION_METHODS,
   type HandoffMode,
+  type MessageContent,
   type SessionCancelResult,
   type SessionCreateResult,
   type SessionHandoffResult,
@@ -66,7 +67,7 @@ export function createSessionHandlers(options: SessionHandlerOptions): Record<st
 
     [SESSION_METHODS.send]: (params): SessionSendResult => {
       const sessionId = requireString(params, "sessionId");
-      const content = requireString(params, "content");
+      const content = requireContent(params);
       return manager.send(sessionId, content);
     },
 
@@ -134,6 +135,34 @@ function requireNumber(params: unknown, field: string): number {
     throw badParams(`missing or invalid "${field}"`);
   }
   return value;
+}
+
+/**
+ * 消息内容：非空文本，或非空的「文本 / 图片」内容块数组。
+ *
+ * 只校验形状，**不看内容**（服务端不解释它）。不认识的块类型当场拒：放过去只会
+ * 在模型端点那边变成一条更难懂的 400。
+ */
+function requireContent(params: unknown): MessageContent {
+  const value = (params as Record<string, unknown> | null | undefined)?.["content"];
+  if (typeof value === "string" && value.length > 0) return value;
+  if (Array.isArray(value) && value.length > 0 && value.every(isContentBlock)) return value;
+  throw badParams(`missing or invalid "content"`);
+}
+
+function isContentBlock(block: unknown): boolean {
+  const item = block as {
+    type?: unknown;
+    text?: unknown;
+    image_url?: { url?: unknown };
+    file_id?: unknown;
+    file_data?: unknown;
+  } | null;
+  if (item?.type === "text") return typeof item.text === "string";
+  if (item?.type === "image_url") return typeof item.image_url?.url === "string";
+  // `file`：`file_id`（已上传）与 `file_data`（base64 内联）至少要有一个
+  if (item?.type === "file") return typeof item.file_id === "string" || typeof item.file_data === "string";
+  return false;
 }
 
 function optionalString(params: unknown, field: string): string | undefined {

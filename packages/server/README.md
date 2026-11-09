@@ -68,8 +68,11 @@ WebSocket text frames and stdio, and can be driven by hand with `nc`:
 | `{ id, ok, result \| error }` | both | reply to the above |
 | `{ event, ... }` | server → client (later: both) | unsolicited, no reply expected |
 
-Binary payloads (images, oversized tool output) are meant to travel through an
-`artifact.*` method pair rather than being inlined into text frames.
+Images currently ride inside `session.send` as OpenAI-compatible content blocks (`text` /
+`image_url` / `file`) — base64 inlined, so the client must keep the whole frame under
+`MAX_FRAME_BYTES` (8 MiB); an oversized frame is a protocol error and kills the connection.
+The long-term answer is an `artifact.*` method pair (bytes over a side channel), at which
+point the content-block assembly moves here, to the side that knows the endpoint and model.
 
 Built-in methods: `ping`, `status`, `shutdown`. Everything else is injected by the
 composition root through `DaemonOptions.handlers`, so the daemon skeleton stays free of

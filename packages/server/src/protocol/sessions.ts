@@ -148,7 +148,7 @@ export interface SessionCreateResult {
 
 export interface SessionSendParams {
   sessionId: string;
-  content: string;
+  content: MessageContent;
 }
 
 export interface SessionSendResult {
@@ -208,6 +208,14 @@ export interface SessionSnapshotResult {
    * 空串（客户端不显示），服务端不替它猜一个。
    */
   modelId: string;
+  /**
+   * 实发模型名（端点上真正写的那个名字）。
+   *
+   * 与 `modelId`（配置里的身份）不一定相同：用户可以在配置里给模型起别名。客户端拼
+   * 图片内容块时要按**实发名**反查端点与视觉能力（`file_id` 是端点维度资源），所以它
+   * 是个必要的事实，不是元数据。
+   */
+  apiModel: string;
   turnId: number;
   phase: PhaseInfo | null;
   /** 当前完整消息列表（服务端是唯一真相源） */
@@ -258,6 +266,28 @@ export interface SessionListResult {
 export interface SessionListSavedParams {
   workspaceId: string;
 }
+
+/**
+ * 用户消息的内容：纯文本，或「文本 + 图片」的内容块数组。
+ *
+ * 服务端**不解释**它 —— 与它对待 `messages` 一样，原样交给 Agent。内容块该怎么拼
+ * （内联 data URL 还是 Files API 的 `file_id`）取决于端点能力与模型是否支持视觉，
+ * 那是**客户端**在有配置、有实发模型名的情况下做的决定；服务端再判断一遍只会多出
+ * 第二份会漂移的规则。
+ *
+ * 形状就是 OpenAI 兼容的那种内容块（模型端点要的原样结构）：
+ *   - `text`：文本段；
+ *   - `image_url`：内联 data URL（带可选的 `detail` 档位）；
+ *   - `file`：Files API 引用 —— `file_id`（已上传）或 `file_data`（base64 内联）。
+ *
+ * 将来的二进制旁路（`artifact.*`）会让客户端只传字节、由服务端转换。
+ */
+export type MessageContentBlock =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string; detail?: string } }
+  | { type: "file"; file_id?: string; file_data?: string; filename?: string };
+
+export type MessageContent = string | MessageContentBlock[];
 
 /**
  * 交接文档的执行者。

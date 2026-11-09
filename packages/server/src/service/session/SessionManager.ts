@@ -20,6 +20,7 @@ import { PhaseTracker, pendingToolCalls, type PhaseInfo } from "../progress/Phas
 import type { SessionRef, SessionStore } from "../store/SessionStore.js";
 import { EventHub } from "../events/EventHub.js";
 import { SessionHandoff, isHandoffAborted, type HandoffAgentLike } from "../handoff/SessionHandoff.js";
+import type { MessageContent } from "../../protocol/sessions.js";
 import {
   SESSION_EVENTS,
   type HandoffMode,
@@ -45,8 +46,10 @@ export interface AgentLike {
   messages: unknown[];
   /** 最近一轮用量（SDK 的 Agent 有；假件可以不给） */
   readonly lastUsage?: unknown;
+  /** 实发模型名（快照会把它带给客户端拼图片内容块；假件可以不给） */
+  readonly model?: string;
   /** 返回本轮产出（SDK 返回 `Message[]`）；会话管理器不看它，进展走事件 */
-  send(input: string): Promise<unknown>;
+  send(input: MessageContent): Promise<unknown>;
   abort(): void;
   events: {
     on(event: string, handler: (payload: any) => void): void;
@@ -177,6 +180,17 @@ function modelIdOf(agent: AgentLike): string {
   return typeof definition?.modelId === "string" ? definition.modelId : "";
 }
 
+/**
+ * Agent 实际发给端点的模型名（`modelName ?? id` 解析之后的值）。
+ *
+ * 客户端拼图片内容块时要按它反查端点与视觉能力：`file_id` 是端点维度资源，
+ * 用配置里的 `modelId` 反查在“配了别名”时会落空。
+ */
+function apiModelOf(agent: AgentLike): string {
+  const model = (agent as { model?: unknown }).model;
+  return typeof model === "string" ? model : "";
+}
+
 export class SessionManager {
   private readonly createAgent: (input: CreateAgentInput) => Promise<AgentLike>;
   private readonly nextSessionId: () => string;
@@ -206,6 +220,7 @@ export class SessionManager {
       workspaceId: session.workspaceId,
       agentId: session.agentId,
       modelId: modelIdOf(session.agent),
+      apiModel: apiModelOf(session.agent),
       turnId: session.turnId,
       phase: this.visiblePhase(session),
       messages: [...session.agent.messages],
@@ -532,7 +547,7 @@ export class SessionManager {
    * 不 `await agent.send()` 的原因见协议文件头：一轮可能跑几分钟，等它回来客户端
    * 就没东西可渲染。失败也走事件（`turn.end` 带 `ok:false`），不靠这一个 promise。
    */
-  send(sessionId: string, content: string): { turnId: number } {
+  send(sessionId: string, content: MessageContent): { turnId: number } {
     const session = this.require(sessionId);
     // 交接/迁移进行中：再起一轮会同用一个 `turnId`，事件没任何办法归轮
     if (session.settleDeferred) {
