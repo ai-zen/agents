@@ -51,7 +51,9 @@ export {
   type SessionManagerOptions,
 } from "./service/session/SessionManager.js";
 export { createSessionHandlers, type SessionHandlerOptions } from "./daemon/sessionHandlers.js";
+export { createAgentHandlers, type AgentHandlerOptions } from "./daemon/agentHandlers.js";
 export {
+  AGENT_METHODS,
   EVENT_METHODS,
   SESSION_EVENTS,
   SESSION_METHODS,
@@ -62,11 +64,14 @@ export {
   type SessionCreateResult,
   type SessionEvent,
   type SessionListParams,
+  type AgentSetModelParams,
+  type AgentSetModelResult,
   type SessionListResult,
   type SessionListSavedParams,
   type SessionListSavedResult,
   type SessionRollbackParams,
   type SessionRollbackResult,
+  type SessionReloadParams,
   type SessionSaveParams,
   type SessionSaveResult,
   type SessionSnapshotParams,

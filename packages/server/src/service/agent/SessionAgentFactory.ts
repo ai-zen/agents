@@ -21,13 +21,15 @@
 
 import { existsSync } from "node:fs";
 import {
+  AgentRepository,
   allInOne,
   ConfigManager,
   createAgent as sdkCreateAgent,
   Scope,
+  type AgentDefinition,
   type AppConfig,
 } from "@ai-zen/agents-sdk";
-import { agentPaths, type AgentPaths } from "./agentPaths.js";
+import { agentPaths, globalAgentPaths, type AgentPaths } from "./agentPaths.js";
 import type { AgentLike, CreateAgentInput } from "../session/SessionManager.js";
 
 export interface SessionAgentFactoryOptions {
@@ -88,6 +90,41 @@ export class SessionAgentFactory {
   /** 收摊：释放全部 Scope（守护进程退出时调用） */
   async dispose(): Promise<void> {
     await this.invalidate();
+  }
+
+  /**
+   * 换模型：把 `modelId` 写进 **Agent 定义**（真相源），并清空模型相关的思考参数。
+   *
+   * 为什么是 Agent 定义而不是会话：会话不记模型（`SessionRecord` 没有 `modelId`），
+   * 运行期只读 `definition.modelId`。写在别处就会出现「状态栏 A、实际发 B」。
+   * 代价是它影响所有用这个 Agent 的会话 —— 所以这是个 **agent 级**方法，不是 `session.*`。
+   *
+   * 清空 `modelParams` 是必须的：旧模型的思考档位对新模型可能非法
+   * （如 GLM 不接受 `thinking.disabled`）；清掉让目标模型走自己的 defaultParams。
+   */
+  async setModel(input: { agentId: string; modelId: string }): Promise<{ agentId: string; modelId: string }> {
+    const { configFile, agentsDir } = globalAgentPaths({
+      aiZenDir: this.options.aiZenDir,
+      homeDir: this.options.homeDir,
+    });
+    const config = await this.readConfig(configFile);
+
+    const model = (config.models ?? []).find((item) => item.id === input.modelId);
+    if (!model) throw codedError("unknown-model", `unknown model: ${input.modelId}`);
+
+    const repository = new AgentRepository(agentsDir);
+    const definition = await repository.read(input.agentId);
+    if (!definition) throw codedError("unknown-agent", `unknown agent: ${input.agentId}`);
+
+    const next: AgentDefinition = {
+      ...definition,
+      modelId: input.modelId,
+      updatedAt: new Date().toISOString(),
+    };
+    delete next.modelParams;
+    await repository.write(next);
+
+    return { agentId: input.agentId, modelId: input.modelId };
   }
 
   // ==================================================================
@@ -161,4 +198,11 @@ async function defaultCreateScope(input: { config: AppConfig; paths: AgentPaths 
 /** 只保留真实存在的路径：不存在的不参与发现（也不该在候选里多一行） */
 function existing(paths: string[]): string[] {
   return paths.filter((path) => existsSync(path));
+}
+
+/** 带机器可判别 code 的错误（守护进程原样回给客户端） */
+function codedError(code: string, message: string): Error & { code: string } {
+  const error = new Error(message) as Error & { code?: string };
+  error.code = code;
+  return error as Error & { code: string };
 }

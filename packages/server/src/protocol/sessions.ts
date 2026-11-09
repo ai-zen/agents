@@ -44,10 +44,22 @@ export const SESSION_METHODS = {
   listSaved: "session.listSaved",
   /** 撤回：删掉下标起的消息，并立即落盘 */
   rollback: "session.rollback",
+  /** 按磁盘上的（新）配置与 Agent 定义重建 Agent，**保留消息** */
+  reload: "session.reload",
   /** 整份快照：客户端（重）连上来时一次拿全，不用自己拼事件 */
   snapshot: "session.snapshot",
   /** 把当前会话写进工作区存档（并把它设为「上一轮会话」） */
   save: "session.save",
+} as const;
+
+/**
+ * Agent 级方法：改的是**全局的 Agent 定义**，影响所有用这个 Agent 的会话。
+ *
+ * 因此不挂在 `session.*` 下（那个命名空间只放"对某一段会话做事"的方法）。
+ */
+export const AGENT_METHODS = {
+  /** 换模型：写 `AgentDefinition.modelId` 并清空思考参数 */
+  setModel: "agent.model.set",
 } as const;
 
 /** 连接级方法（与某个会话无关，所以不放在 `session.*` 里） */
@@ -150,6 +162,20 @@ export interface SessionSnapshotResult {
   messages: unknown[];
   /** 最近一轮用量（Agent 提供才带；客户端不知道就别显示） */
   lastUsage?: unknown;
+}
+
+export interface AgentSetModelParams {
+  agentId: string;
+  modelId: string;
+}
+
+export interface AgentSetModelResult {
+  agentId: string;
+  modelId: string;
+}
+
+export interface SessionReloadParams {
+  sessionId: string;
 }
 
 export interface SessionSaveParams {

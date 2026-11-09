@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionAgentFactory } from "./SessionAgentFactory.js";
@@ -214,5 +214,68 @@ describe("SessionAgentFactory（默认装配，真 SDK / 真磁盘）", () => {
     } finally {
       await factory.dispose();
     }
+  });
+});
+
+describe("SessionAgentFactory.setModel（换模型 = 写 Agent 定义）", () => {
+  /** 造一份带两个模型的配置 + 一个带思考参数的 Agent 定义 */
+  function seed(): { aiZenDir: string } {
+    const aiZenDir = join(dir, "zen");
+    mkdirSync(join(aiZenDir, "agents"), { recursive: true });
+    writeFileSync(
+      join(aiZenDir, "config.json"),
+      JSON.stringify({
+        endpoints: [{ id: "e", name: "E", baseUrl: "http://127.0.0.1:9/v1", apiKey: "k" }],
+        models: [
+          { id: "m1", name: "M1", endpointId: "e", tokenThresholds: { handoff: 1, guard: 2 }, custom: true },
+          { id: "m2", name: "M2", endpointId: "e", tokenThresholds: { handoff: 1, guard: 2 }, custom: true },
+        ],
+        defaultAgent: "default",
+        version: 4,
+      }),
+    );
+    writeFileSync(
+      join(aiZenDir, "agents", "default.json"),
+      JSON.stringify({
+        id: "default",
+        name: "默认",
+        modelId: "m1",
+        modelParams: { thinking: { type: "disabled" } },
+        permissions: { exec: "allow" },
+        messages: [{ role: "system", content: "sys" }],
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    return { aiZenDir };
+  }
+
+  const readDefinition = (aiZenDir: string) =>
+    JSON.parse(readFileSync(join(aiZenDir, "agents", "default.json"), "utf-8"));
+
+  it("写 modelId、清空思考参数、其它字段一个不丢", async () => {
+    const { aiZenDir } = seed();
+    const factory = new SessionAgentFactory({ aiZenDir, homeDir: dir });
+
+    expect(await factory.setModel({ agentId: "default", modelId: "m2" })).toEqual({
+      agentId: "default",
+      modelId: "m2",
+    });
+
+    const definition = readDefinition(aiZenDir);
+    expect(definition.modelId).toBe("m2");
+    // 旧模型的思考档位对新模型可能非法：必须清掉
+    expect(definition).not.toHaveProperty("modelParams");
+    // 权限与提示词是用户的，不能被"换模型"顺手抹掉
+    expect(definition.permissions).toEqual({ exec: "allow" });
+    expect(definition.messages).toHaveLength(1);
+  });
+
+  it("未知模型 → unknown-model；未知 Agent → unknown-agent", async () => {
+    const { aiZenDir } = seed();
+    const factory = new SessionAgentFactory({ aiZenDir, homeDir: dir });
+
+    await expect(factory.setModel({ agentId: "default", modelId: "nope" })).rejects.toThrow(/unknown model/);
+    await expect(factory.setModel({ agentId: "ghost", modelId: "m1" })).rejects.toThrow(/unknown agent/);
   });
 });

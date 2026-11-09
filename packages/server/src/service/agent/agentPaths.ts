@@ -41,10 +41,10 @@ export function agentPaths(input: AgentPathsInput): AgentPaths {
   const project = join(input.workspacePath, ".ai-zen");
   const projectAgents = join(input.workspacePath, ".agents");
   const userAgents = join(input.homeDir, ".agents");
+  const global = globalAgentPaths(input);
 
   return {
-    configFile: join(input.aiZenDir, "config.json"),
-    agentsDir: join(input.aiZenDir, "agents"),
+    ...global,
     subAgentsDirs: [join(project, "sub-agents"), join(input.aiZenDir, "sub-agents")],
     skillsDirs: [
       join(project, "skills"),
@@ -60,5 +60,21 @@ export function agentPaths(input: AgentPathsInput): AgentPaths {
       join(input.aiZenDir, "mcp.json"),
       join(userAgents, "mcp.json"),
     ],
+  };
+}
+
+/**
+ * 与工作区无关的那几项：配置与 Agent 定义。
+ *
+ * 单独抽出来是因为改 Agent 定义（`/model` 写 `modelId`）不需要工作区 —— 它改的是
+ * 全局的那份定义，影响的是所有用这个 Agent 的会话。
+ */
+export function globalAgentPaths(input: { aiZenDir: string; homeDir: string }): {
+  configFile: string;
+  agentsDir: string;
+} {
+  return {
+    configFile: join(input.aiZenDir, "config.json"),
+    agentsDir: join(input.aiZenDir, "agents"),
   };
 }

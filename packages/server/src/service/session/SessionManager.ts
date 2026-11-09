@@ -78,11 +78,18 @@ export interface SessionManagerOptions {
    * 注入成**函数**而不是实例：一个进程服务多个工作区，每个工作区一份存档。
    */
   storeFor?: (workspaceId: string) => SessionStore | Promise<SessionStore>;
+  /**
+   * 让装配方丢掉某个工作区缓存的 Scope（配置可能已变）。
+   * 不注入则 `reload()` 仍会重建 Agent，但沿用旧 Scope —— 端点凭据这类改动不会生效。
+   */
+  invalidateScope?: (workspacePath: string) => Promise<void>;
 }
 
 interface LiveSession {
   id: string;
   workspaceId: string;
+  /** 工作区路径：重建 Agent（reload）时要再交给装配方 */
+  path: string;
   agentId: string;
   agent: AgentLike;
   turnId: number;
@@ -115,6 +122,7 @@ export class SessionManager {
   private readonly createAgent: (input: CreateAgentInput) => Promise<AgentLike>;
   private readonly nextSessionId: () => string;
   private readonly storeFactory: SessionManagerOptions["storeFor"];
+  private readonly invalidateScope: SessionManagerOptions["invalidateScope"];
   private readonly sessions = new Map<string, LiveSession>();
   private readonly listeners = new Set<(event: SessionEvent) => void>();
 
@@ -122,6 +130,7 @@ export class SessionManager {
     this.createAgent = options.createAgent;
     this.nextSessionId = options.nextSessionId ?? defaultNextSessionId;
     this.storeFactory = options.storeFor;
+    this.invalidateScope = options.invalidateScope;
   }
 
   /** 整份快照：客户端（重）连上来时一次拿全，不用先从事件流里攒 */
@@ -147,6 +156,34 @@ export class SessionManager {
     await store.write({ id: session.id, agentId: session.agentId, messages: session.agent.messages });
     await store.setLastSession(session.id);
     return { saved: true, sessionId: session.id };
+  }
+
+  /**
+   * 按磁盘上的（新）配置与 Agent 定义重建 Agent，**保留当前消息**。
+   *
+   * 用在「`/config` 改了端点凭据」「`agent.model.set` 换了模型」之后：Scope 持有配置
+   * 快照，不连带重建就还是旧的那份（CLI 时代 `resetScope()` 的存在就是这个原因）。
+   */
+  async reload(sessionId: string): Promise<SessionSnapshotResult> {
+    const session = this.require(sessionId);
+    const messages = [...session.agent.messages];
+
+    session.detach();
+    await this.invalidateScope?.(session.path);
+    const agent = await this.createAgent({
+      workspaceId: session.workspaceId,
+      path: session.path,
+      agentId: session.agentId,
+    });
+    agent.messages = messages;
+
+    session.agent = agent;
+    session.turnFailed = null;
+    session.turnSettled = true;
+    session.phase.reset();
+    session.detach = this.attachEvents(session);
+
+    return await this.snapshot(sessionId);
   }
 
   /** 某个工作区下已存档的会话（按写入时间倒序，只有 id） */
@@ -219,6 +256,7 @@ export class SessionManager {
     const session: LiveSession = {
       id: sessionId,
       workspaceId: input.workspaceId,
+      path: input.path,
       agentId,
       agent,
       turnId: 0,

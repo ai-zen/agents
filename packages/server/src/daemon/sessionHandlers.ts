@@ -17,6 +17,7 @@ import {
   type SessionListResult,
   type SessionListSavedResult,
   type SessionRollbackResult,
+  type SessionReloadParams,
   type SessionSaveResult,
   type SessionSendResult,
   type SessionSnapshotResult,
@@ -83,6 +84,10 @@ export function createSessionHandlers(options: SessionHandlerOptions): Record<st
 
     [SESSION_METHODS.snapshot]: async (params): Promise<SessionSnapshotResult> => {
       return await manager.snapshot(requireString(params, "sessionId"));
+    },
+
+    [SESSION_METHODS.reload]: async (params): Promise<SessionSnapshotResult> => {
+      return await manager.reload(requireString(params, "sessionId"));
     },
 
     [SESSION_METHODS.save]: async (params): Promise<SessionSaveResult> => {

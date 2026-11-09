@@ -17,6 +17,7 @@ import { createConnection, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Daemon } from "./daemon/Daemon.js";
+import { createAgentHandlers } from "./daemon/agentHandlers.js";
 import { createSessionHandlers } from "./daemon/sessionHandlers.js";
 import {
   descriptorPath,
@@ -206,6 +207,8 @@ async function main(): Promise<number> {
     createAgent: (input) => agentFactory.create(input),
     // 每个工作区一份存档：续接与 session.save 都走它
     storeFor: (workspaceId) => new FileSessionStore({ rootDir: join(workspacesRoot, workspaceId) }),
+    // 配置/定义变了要连带丢掉 Scope（它持有配置快照）
+    invalidateScope: (workspacePath) => agentFactory.invalidate(workspacePath),
   });
 
   const daemon = new Daemon({
@@ -215,10 +218,10 @@ async function main(): Promise<number> {
     version: SERVER_VERSION,
     idleTimeoutMs: args.idleTimeoutMs,
     log,
-    handlers: createSessionHandlers({
-      manager: sessions,
-      workspacesRoot,
-    }),
+    handlers: {
+      ...createSessionHandlers({ manager: sessions, workspacesRoot }),
+      ...createAgentHandlers({ factory: agentFactory }),
+    },
     onStopped: (reason) => {
       log("info", `exit (${reason})`);
       // 留一点时间让 stdout 刷出去，然后退出（进程是被 detach 的，不会有人替我们退出）

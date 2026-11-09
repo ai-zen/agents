@@ -476,3 +476,37 @@ describe("SessionManager：存档列表与撤回", () => {
     expect(agent.messages).toHaveLength(2);
   });
 });
+
+describe("SessionManager：reload（按新配置重建 Agent，保留消息）", () => {
+  it("保留消息、重建 Agent、并让装配方丢掉旧 Scope", async () => {
+    const invalidated: string[] = [];
+    const agents: FakeAgent[] = [];
+    const reloadable = new SessionManager({
+      createAgent: async () => {
+        const fresh = new FakeAgent();
+        agents.push(fresh);
+        return fresh;
+      },
+      nextSessionId: () => "chat_fixed",
+      invalidateScope: async (workspacePath) => {
+        invalidated.push(workspacePath);
+      },
+    });
+
+    const captured: SessionEvent[] = [];
+    reloadable.subscribe((event) => captured.push(event));
+
+    await reloadable.create({ workspaceId: "ws-1", path: "/work/proj" });
+    agents[0]!.messages = [{ role: "user", content: "上下文要留住" }];
+
+    const snapshot = await reloadable.reload("chat_fixed");
+
+    expect(agents).toHaveLength(2); // 真的重建了
+    expect(invalidated).toEqual(["/work/proj"]); // 旧 Scope 被丢掉（配置可能已变）
+    expect(snapshot.messages).toEqual([{ role: "user", content: "上下文要留住" }]);
+    // 旧 Agent 的事件已摘掉，新 Agent 的事件接上了
+    expect(agents[0]!.handlerCount()).toBe(0);
+    agents[1]!.fire("open");
+    expect(captured.at(-1)).toMatchObject({ event: "session.phase", phase: { kind: "queued" } });
+  });
+});
