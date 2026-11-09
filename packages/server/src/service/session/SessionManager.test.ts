@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SessionManager, type AgentLike } from "./SessionManager.js";
+import { SessionManager, type AgentLike, type CreateAgentInput } from "./SessionManager.js";
 import { FileSessionStore } from "../store/FileSessionStore.js";
 import type { SessionRecord, SessionStore } from "../store/SessionStore.js";
 import type { HandoffMode, ServerEvent } from "../../protocol/sessions.js";
@@ -64,6 +64,8 @@ class FakeAgent implements AgentLike {
    * 默认无 `write` 工具 → 交接走「独立摘要」，不触网。
    */
   definition = { messages: [{ role: "system", content: "模板" }] };
+  /** 三级解析的档位（真件由 `createAgent` 给；假件手装配，等价于「写在定义上」那一档） */
+  modelLevel: "agent" | "session" | "global" = "agent";
   tools: Array<{ function?: { name?: string } }> = [];
   model = "m";
   modelConfig: Record<string, unknown> = {};
@@ -1945,6 +1947,182 @@ describe("SessionManager：保活区 / 换 Agent / 关闭", () => {
     expect(live.close(sessionId)).toEqual({ closed: true });
     expect(live.close(sessionId)).toEqual({ closed: false });
     expect(store.records.get(sessionId)!.messages).toHaveLength(2);
+  });
+});
+
+/**
+ * 会话级模型覆盖（`session.model.set`）—— 三级解析最内层的那一级。
+ *
+ * 真正的解析顺序在 SDK（`resolveModel`），所以这里的假装配方只做一件事：**照着入参里
+ * 那个会话级覆盖回填**（有覆盖算 session 档、没有算 agent 档）。这样断言的是服务端这一侧
+ * 的责任 —— 有没有把覆盖递进去、有没有落进存档、换 Agent 时有没有清掉 —— 而不是把 SDK 的
+ * 解析顺序在服务端再测一遍（那种“测两遍”正是两份实现的开端）。
+ */
+describe("SessionManager：会话级模型覆盖（session.model.set）", () => {
+  let store: MemoryStore;
+  let live: SessionManager;
+  /** 每次装配的入参（断言递进去的会话级覆盖） */
+  let inputs: CreateAgentInput[];
+  /** 最近造出来的那个 Agent（假件里 `send` / `finally` 要打在它身上） */
+  let latest: FakeAgent;
+
+  /** 假 Agent：`definition.modelId` 与 `modelLevel` 都跟着入参走，与真件的解析结果同形 */
+  const buildAgent = (modelId?: string): FakeAgent => {
+    const next = new FakeAgent();
+    next.modelLevel = modelId ? "session" : "agent";
+    (next as unknown as { definition: { modelId?: string } }).definition.modelId =
+      modelId ?? "m-agent";
+    return next;
+  };
+
+  beforeEach(() => {
+    store = new MemoryStore();
+    inputs = [];
+    sessionCounter = 0;
+    live = new SessionManager({
+      createAgent: async (input) => {
+        inputs.push(input);
+        latest = buildAgent(input.modelId);
+        return latest;
+      },
+      nextSessionId: () => `chat_${++sessionCounter}`,
+      storeFor: () => store,
+    });
+    events = [];
+    live.subscribe((event) => events.push(event));
+  });
+
+  /** 跑完一轮（带用户消息）并等收尾落地：只有带用户消息的会话才会写存档 */
+  const runTurn = async (sessionId: string, text = "问一句") => {
+    live.send(sessionId, text);
+    latest.messages = [
+      { role: "user", content: text },
+      { role: "assistant", content: "答" },
+    ];
+    latest.fire("finally");
+    await settled();
+  };
+
+  it("setModel：覆盖递给装配方、保留消息、快照回生效模型与档位", async () => {
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    await runTurn(sessionId);
+
+    const snapshot = await live.setModel(sessionId, "m-session");
+
+    // 会话级覆盖被原样递进装配（解析本身在 SDK，本层只递这一级）
+    expect(inputs.at(-1)!.modelId).toBe("m-session");
+    expect(snapshot.modelId).toBe("m-session");
+    expect(snapshot.modelLevel).toBe("session");
+    expect(snapshot.messages).toHaveLength(2); // 换模型不动对话
+  });
+
+  it("setModel：覆盖写进存档（列表里也看得见），下一次发轮落盘不会把它抹掉", async () => {
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    await runTurn(sessionId);
+
+    await live.setModel(sessionId, "m-session");
+
+    expect(store.records.get(sessionId)!.modelId).toBe("m-session");
+    expect((await live.list("ws-1"))[0]!.modelId).toBe("m-session");
+
+    // 再跑一轮：收尾的写档走同一份 `recordOf`，覆盖还在
+    await runTurn(sessionId, "第二问");
+    expect(store.records.get(sessionId)!.modelId).toBe("m-session");
+  });
+
+  it("setModel：续接（重启后 attach）把覆盖带回来，快照仍是 session 档", async () => {
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    await runTurn(sessionId);
+    await live.setModel(sessionId, "m-session");
+
+    // 换一个管理器 + 同一份存档 = 服务端重启
+    const restarted = new SessionManager({
+      createAgent: async (input) => {
+        inputs.push(input);
+        return buildAgent(input.modelId);
+      },
+      storeFor: () => store,
+    });
+    const attached = await restarted.attach({ workspaceId: "ws-1", path: "/p", sessionId });
+
+    expect(attached.sessionId).toBe(sessionId);
+    expect(inputs.at(-1)!.modelId).toBe("m-session");
+    const snapshot = await restarted.snapshot(sessionId);
+    expect(snapshot.modelId).toBe("m-session");
+    expect(snapshot.modelLevel).toBe("session");
+  });
+
+  it("setModel：装配失败（模型/端点被删）时会话原样不动，覆盖不落盘", async () => {
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    await runTurn(sessionId);
+    const before = await live.snapshot(sessionId);
+
+    // 真实原因是 SDK 的 `createModel` 抛错（模型不在清单里 / 端点没 Key）
+    const failing = new SessionManager({
+      createAgent: async (input) => {
+        if (input.modelId) throw new Error('Model "gone" not found');
+        latest = buildAgent();
+        return latest;
+      },
+      nextSessionId: () => `chat_${++sessionCounter}`,
+      storeFor: () => store,
+    });
+    // 让「同一段会话」活在 failing 这个管理器上
+    await failing.attach({ workspaceId: "ws-1", path: "/p", sessionId });
+
+    await expect(failing.setModel(sessionId, "gone")).rejects.toThrow(/not found/);
+    // 覆盖没落、Agent 没换：用户只是点了个选择器，不该留下一段起不来的存档
+    const after = await failing.snapshot(sessionId);
+    expect(after.modelId).toBe(before.modelId);
+    expect(after.modelLevel).toBe("agent");
+    expect(store.records.get(sessionId)!.modelId).toBeUndefined();
+  });
+
+  it("setModel：一轮在跑时拒绝（旧 Agent 正流着的增量会全丢在没人听的实例上）", async () => {
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    live.send(sessionId, "跑着");
+
+    await expect(live.setModel(sessionId, "m-session")).rejects.toMatchObject({
+      code: "turn-in-flight",
+    });
+    expect((await live.snapshot(sessionId)).modelLevel).toBe("agent");
+  });
+
+  it("setAgent：清掉会话级覆盖 —— 换 Agent 是更强的动作，模型跟着新定义走", async () => {
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    await runTurn(sessionId);
+    await live.setModel(sessionId, "m-session");
+
+    const snapshot = await live.setAgent(sessionId, "coder");
+
+    // 这次装配**不能**再带覆盖（带了就是让上一任的临时模型继续生效）
+    expect(inputs.at(-1)!.modelId).toBeUndefined();
+    expect(snapshot.agentId).toBe("coder");
+    expect(snapshot.modelId).toBe("m-agent");
+    expect(snapshot.modelLevel).toBe("agent");
+    // 存档里也得清掉：否则下次 attach 又把旧覆盖装回来
+    expect(store.records.get(sessionId)!.modelId).toBeUndefined();
+  });
+
+  it("reload：会话级覆盖原样带进重建（重读配置不该悄悄丢掉这段会话的选择）", async () => {
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    await runTurn(sessionId);
+    await live.setModel(sessionId, "m-session");
+
+    const snapshot = await live.reload(sessionId);
+
+    expect(inputs.at(-1)!.modelId).toBe("m-session");
+    expect(snapshot.modelId).toBe("m-session");
+    expect(snapshot.modelLevel).toBe("session");
+  });
+
+  it("没有覆盖时快照报 agent 档（跟着 Agent 定义，不是 session）", async () => {
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+
+    const snapshot = await live.snapshot(sessionId);
+
+    expect(snapshot.modelId).toBe("m-agent");
+    expect(snapshot.modelLevel).toBe("agent");
   });
 });
 

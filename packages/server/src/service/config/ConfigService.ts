@@ -50,6 +50,7 @@ import type {
   ConfigReasoningPresetsResult,
   ConfigSaveResult,
   ConfigSetDefaultAgentResult,
+  ConfigSetDefaultModelResult,
   McpScope,
 } from "../../protocol/config.js";
 
@@ -141,6 +142,24 @@ export class ConfigService {
   async reasoningPresets(): Promise<ConfigReasoningPresetsResult> {
     const presets = await new ConfigManager(this.options.configFile).readReasoningPresets();
     return { presets };
+  }
+
+  /**
+   * 换「全局兜底模型」—— **只写 `defaultModel` 一个字段**（三级解析的最后一级）。
+   *
+   * 与 `setDefaultAgent` 逐条同理由：不是让客户端「读整份 → 改一个字段 → 整份写回」
+   * （多客户端并存时后保存的那个会抹掉对方刚改的字段），而且只写这一位就不会碰到
+   * 模型清单 / 端点 / 其他默认值。
+   *
+   * 同样**不校验** `modelId` 在不在模型清单里：那是客户端切换前的链路校验
+   * （模型存在 → 端点有 Key）的事，服务端再查一遍就是第二份会漂的规则；真要写错了，
+   * `createAgent` 会在用的时候报 `Model "x" not found`，用户看得见自己写了什么。
+   */
+  async setDefaultModel(modelId: string): Promise<ConfigSetDefaultModelResult> {
+    const manager = new ConfigManager(this.options.configFile);
+    const config = await manager.read();
+    await manager.write({ ...config, defaultModel: modelId });
+    return { modelId };
   }
 
   // ==================================================================

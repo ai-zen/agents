@@ -99,6 +99,15 @@ export const SESSION_METHODS = {
    */
   setAgent: "session.setAgent",
   /**
+   * 换**这一段会话**的模型：写会话存档的 `modelId`（三级解析的最内层）并重建 Agent。
+   *
+   * 与 `agent.model.set` 的形状刻意一样、作用域刻意不同：那个改的是**全局的** Agent 定义
+   * （影响所有用它的会话），这个只改这一段（`/model` 不带作用级别的写法走这条）。
+   * 两个动作都得存在：「我这次用官网上那个模型跑」（会话级）与「我以后默认用它」（定义级）
+   * 是两件事，合并成一个只能靠参数开关分叉，调用方就得猜自己改的是哪一份。
+   */
+  modelSet: "session.model.set",
+  /**
    * 关闭一段会话：摘事件、让出 Agent 与 Scope 引用，**不删存档**。
    *
    * 只在**明确要求**时关（`/close` 这条命令、以及自动回收的判定）；连接断开不算 ——
@@ -395,6 +404,14 @@ export interface SessionListEntry {
   phase: PhaseInfo | null;
 }
 
+/**
+ * 模型的三级解析顺序（从内到外）。
+ *
+ * 值只在这里声明一次，服务端用它标注快照；SDK 自己那份叫 `ModelLevel`，两边的值
+ * **逐字一致**，理由同 `HandoffMode` 的双声明（协议不引用 SDK 类型）。
+ */
+export type ModelLevel = "session" | "agent" | "global";
+
 /** 一屏所需的全部事实：客户端拿它直接渲染，不必先从事件流里攒 */
 export interface SessionSnapshotParams {
   sessionId: string;
@@ -405,12 +422,25 @@ export interface SessionSnapshotResult {
   workspaceId: string;
   agentId: string;
   /**
-   * 当前 Agent 绑定的模型 id（状态栏显示用）。
+   * **生效的**模型 id（状态栏显示用）—— 三级解析的结果，不是某一级的原始值：
+   * `会话级覆盖 > AgentDefinition.modelId > AppConfig.defaultModel`（唯一实现：SDK 的
+   * `resolveModel`）。
    *
-   * 真相源是 `AgentDefinition.modelId`，不是会话 —— 会话不记模型。定义里没绑模型时为
-   * 空串（客户端不显示），服务端不替它猜一个。
+   * 为什么必须给「解析后」的那个值：客户端拿它画状态栏、拼图片内容块，而**实际发出去的
+   * 请求用的就是它**；给某一级的原始值，就会出现「界面写着 A、请求发给 B」。
+   * 三级都拿不到模型时这条会话根本装不起来（服务端报错），所以这里恒非空。
    */
   modelId: string;
+  /**
+   * 上面那个 `modelId` 来自哪一级。
+   *
+   * 客户端（`/model` 选择器）要标「当前生效的是哪一档」。档位只能在**解析发生的地方**
+   * 算出来（服务端从 SDK 的解析结果里拿），客户端再推一遍 `??` 链就是第二份会漂的实现。
+   *
+   * 与 SDK 的 `ModelLevel` 逐字一致，但不引用它的类型 —— 理由同 `HandoffMode`：
+   * 协议是线上契约，客户端不该为了一个枚举去装 SDK。
+   */
+  modelLevel: ModelLevel;
   /**
    * 实发模型名（端点上真正写的那个名字）。
    *
@@ -437,6 +467,20 @@ export interface SessionSetAgentParams {
 }
 
 export type SessionSetAgentResult = SessionSnapshotResult;
+
+/**
+ * 换这一段会话的模型（`session.model.set`）。
+ *
+ * `modelId` 必填且必须非空：它会被写进存档并成为**这段会话**实际在用的模型。想「回到跟着
+ * Agent 定义走」不走这条（那是 `session.setAgent` 的副作用，或者开一段新会话）。
+ */
+export interface SessionModelSetParams {
+  sessionId: string;
+  modelId: string;
+}
+
+/** 与 `session.setAgent` 同形：改完就回一份新快照，客户端不用再要一次 */
+export type SessionModelSetResult = SessionSnapshotResult;
 
 export interface SessionCloseParams {
   sessionId: string;

@@ -268,6 +268,19 @@ export function createSessionHandlers(
       );
     },
 
+    /**
+     * 换**这一段会话**的模型（`/model <id>`）：写会话存档的 `modelId` 并重建 Agent。
+     *
+     * 模型是否在配置里、端点有没有 Key：由装配方（SDK 的 `createModel`）在重建时判定
+     * —— 这一层只保证参数齐。失败时会话原样不动（见 `SessionManager.setModel`）。
+     */
+    [SESSION_METHODS.modelSet]: async (params): Promise<SessionSnapshotResult> => {
+      return await manager.setModel(
+        requireString(params, "sessionId"),
+        requireString(params, "modelId"),
+      );
+    },
+
     /** 明确关闭一段会话（幂等：本来就没在跑时回 `closed:false`，不当错误） */
     [SESSION_METHODS.close]: (params): SessionCloseResult => {
       return manager.close(requireString(params, "sessionId"));

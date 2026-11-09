@@ -91,6 +91,37 @@ describe("全局配置", () => {
   });
 });
 
+describe("全局兜底模型（setDefaultModel：只写一个字段）", () => {
+  it("写进 config.json 的 defaultModel，其它字段一个不动", async () => {
+    const before = (await service.get()).config as AppConfig;
+    // 先放一个「对方的改动」：窄方法不许把它抹掉（多客户端并存时就靠这条）
+    await service.save({ ...before, maxToolOutput: 4321, defaultAgent: "coder" });
+
+    await expect(service.setDefaultModel("gpt-6-astra")).resolves.toEqual({
+      modelId: "gpt-6-astra",
+    });
+
+    const after = (await service.get()).config as AppConfig;
+    expect(after.defaultModel).toBe("gpt-6-astra");
+    expect(after.maxToolOutput).toBe(4321);
+    expect(after.defaultAgent).toBe("coder");
+    expect(after.models).toEqual(before.models);
+    // 落盘的就是可读 JSON：这条字段确实写进了那个文件（不是只活在内存里）
+    expect(JSON.parse(readFileSync(join(root, "config.json"), "utf-8")).defaultModel).toBe(
+      "gpt-6-astra",
+    );
+  });
+
+  it("不校验模型存不存在（那是客户端切换前的链路校验；写错了由 createAgent 在用时报）", async () => {
+    await expect(service.setDefaultModel("not-a-model")).resolves.toEqual({
+      modelId: "not-a-model",
+    });
+    expect((await service.get()).config as AppConfig).toMatchObject({
+      defaultModel: "not-a-model",
+    });
+  });
+});
+
 describe("MCP 配置（global）", () => {
   it("文件不存在 = 正常空配置（带那个文件的路径）", async () => {
     await expect(service.mcpGet({ scope: "global" })).resolves.toEqual({

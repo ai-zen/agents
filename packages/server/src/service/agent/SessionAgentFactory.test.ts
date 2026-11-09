@@ -102,6 +102,40 @@ describe("SessionAgentFactory", () => {
   });
 
   /**
+   * 会话级模型覆盖只是**递进去**，解析在 SDK。
+   *
+   * 这条钉的是「服务端不做第二份解析」：工厂把 `input.modelId` 原样交给装配方
+   * （SDK 的 `createAgent` 拿到它才去 `resolveModel`）。服务端若自己先按
+   * `会话级 > 定义 > 全局` 算一遍，就会有两个算法，而它们漂移的那天表现为
+   * 「状态栏写着 A、请求发给 B」。
+   */
+  it("会话级模型覆盖原样递给装配方（解析在 SDK，不在这里）", async () => {
+    const seen: Array<{ modelId?: string }> = [];
+    const factory = new SessionAgentFactory({
+      aiZenDir: join(dir, "zen"),
+      homeDir: "/home/u",
+      loadConfig: async () => config,
+      createScope: async ({ paths }) => ({ ...fakeScope("s"), paths }) as never,
+      createAgent: async (_scope, _agentId, options) => {
+        seen.push(options);
+        return fakeAgent;
+      },
+    });
+
+    await factory.create({ workspaceId: "ws", path: "/work/proj", agentId: "default" });
+    await factory.create({
+      workspaceId: "ws",
+      path: "/work/proj",
+      agentId: "default",
+      modelId: "gpt-6-astra",
+    });
+
+    // 没覆盖的会话：一个字段都不塞（否则 SDK 会把 `undefined` 当成「有人覆盖了」）
+    expect(seen[0]).toEqual({ modelId: undefined });
+    expect(seen[1]).toEqual({ modelId: "gpt-6-astra" });
+  });
+
+  /**
    * 工作区路径必须递到装配方：它是 `Scope` 的 cwd（工具相对路径的基准）。
    *
    * `agentPaths` 的注释一直写着「工作区根是 Agent 的 cwd」，但这个字段曾经只用来拼

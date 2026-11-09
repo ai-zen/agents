@@ -35,6 +35,8 @@ class FakeAgent implements AgentLike {
   aborted = 0;
   /** 交接要用的那几面（真件是 SDK 的 `SdkAgent`）：无 write 工具 → 走摘要模式 */
   definition = { messages: [{ role: "system", content: "模板" }] };
+  /** 三级解析的档位（真件由 `createAgent` 给；假件手装配，等价于「写在定义上」那一档） */
+  modelLevel: "agent" | "session" | "global" = "agent";
   tools: Array<{ function?: { name?: string } }> = [];
   model = "m";
   modelConfig: Record<string, unknown> = {};
@@ -103,6 +105,11 @@ beforeEach(() => {
   manager = new SessionManager({
     createAgent: async (input) => {
       agentInputs.push(input);
+      // 假件照抄真件的形状：SDK 会把三级解析的结果写进它交给 Agent 的那份定义
+      // （服务端只是把「会话级覆盖」递进去）。这里按入参原样回填 —— 假件不替 SDK 做解析。
+      (agent as unknown as { definition: { modelId?: string } }).definition.modelId =
+        input.modelId ?? "m-definition";
+      agent.modelLevel = input.modelId ? "session" : "agent";
       return agent;
     },
     // 默认 id 只精确到秒：同一秒里 create 再 migrate 会撞名，用例要确定性
@@ -669,6 +676,43 @@ describe("会话创建：path 可缺省，sessionId 必须被尊重", () => {
     expect(created.sessionId).toBe("chat_old");
     expect(created.agentId).toBe("reviewer");
     expect(agent.messages).toEqual([{ role: "user", content: "旧对话" }]);
+  });
+});
+
+/**
+ * `session.model.set`：会话级模型覆盖，走真 socket 验一次接线。
+ *
+ * 业务（落盘、换 Agent 时清掉、失败时不落）在 `SessionManager.test.ts` 里测透了；这里只钉
+ * 「参数验过之后原样进了服务层」与「回的是新快照」。
+ */
+describe("session.model.set（真 socket）", () => {
+  it("改这一段会话的模型：回新快照（生效模型 + 档位），装配方收到会话级覆盖", async () => {
+    await startDaemon();
+    const created = (await client!.call(SESSION_METHODS.create, {
+      workspaceId: "ws-1",
+      path: dir,
+    })) as { sessionId: string };
+
+    const snapshot = (await client!.call(SESSION_METHODS.modelSet, {
+      sessionId: created.sessionId,
+      modelId: "gpt-6-astra",
+    })) as { modelId: string; modelLevel: string; sessionId: string };
+
+    expect(snapshot.sessionId).toBe(created.sessionId);
+    expect(snapshot.modelId).toBe("gpt-6-astra");
+    expect(snapshot.modelLevel).toBe("session");
+    // 服务端只把「会话级覆盖」递给装配方，解析顺序不在这一层（假 Agent 原样回填）
+    expect(agentInputs.at(-1)!.modelId).toBe("gpt-6-astra");
+  });
+
+  it("缺 sessionId / modelId → bad-params（空串不是「没给」）", async () => {
+    await startDaemon();
+    await expect(client!.call(SESSION_METHODS.modelSet, { modelId: "m" })).rejects.toThrow(
+      /bad-params/,
+    );
+    await expect(
+      client!.call(SESSION_METHODS.modelSet, { sessionId: "chat_1", modelId: "" }),
+    ).rejects.toThrow(/bad-params/);
   });
 });
 

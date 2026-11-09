@@ -130,6 +130,31 @@ describe("config.defaultAgent.set", () => {
   });
 });
 
+describe("config.defaultModel.set", () => {
+  it("只改 defaultModel：其余字段原样保留，回写入后的 id", async () => {
+    const current = ((await call(CONFIG_METHODS.get)) as { config: AppConfig }).config;
+    const before = { models: current.models, endpoints: current.endpoints };
+
+    await expect(call(CONFIG_METHODS.defaultModelSet, { modelId: "gpt-6-astra" })).resolves.toEqual(
+      { modelId: "gpt-6-astra" },
+    );
+
+    const after = ((await call(CONFIG_METHODS.get)) as { config: AppConfig }).config;
+    // 三级解析的兜底层（`会话级覆盖 > 定义 > 全局`）：窄方法只动它这一位
+    expect(after.defaultModel).toBe("gpt-6-astra");
+    expect({ models: after.models, endpoints: after.endpoints }).toEqual(before);
+  });
+
+  it("缺 modelId / 空串 → bad-params（空串不是「没配」，是写坏了）", async () => {
+    await expect(call(CONFIG_METHODS.defaultModelSet, {})).rejects.toMatchObject({
+      code: "bad-params",
+    });
+    await expect(call(CONFIG_METHODS.defaultModelSet, { modelId: "" })).rejects.toMatchObject({
+      code: "bad-params",
+    });
+  });
+});
+
 describe("config.mcp.get / config.mcp.save", () => {
   it("缺 scope 或取值不认识 → bad-params（不替客户端猜 global）", async () => {
     await expect(call(CONFIG_METHODS.mcpGet, {})).rejects.toMatchObject({ code: "bad-params" });

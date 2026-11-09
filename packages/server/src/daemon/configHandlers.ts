@@ -32,6 +32,7 @@ import {
   type ConfigReasoningPresetsResult,
   type ConfigSaveResult,
   type ConfigSetDefaultAgentResult,
+  type ConfigSetDefaultModelResult,
   type McpScope,
 } from "../protocol/config.js";
 
@@ -57,6 +58,11 @@ export function createConfigHandlers(options: ConfigHandlerOptions): Record<stri
     /** 换默认 Agent：**只写一个字段**，不读整份也不写回整份（见 `ConfigService.setDefaultAgent`） */
     [CONFIG_METHODS.defaultAgentSet]: async (params): Promise<ConfigSetDefaultAgentResult> => {
       return await config.setDefaultAgent(requireString(params, "agentId"));
+    },
+
+    /** 换全局兜底模型：窄方法，理由与上面那条逐条相同（`/model --global` 用） */
+    [CONFIG_METHODS.defaultModelSet]: async (params): Promise<ConfigSetDefaultModelResult> => {
+      return await config.setDefaultModel(requireString(params, "modelId"));
     },
 
     [CONFIG_METHODS.mcpGet]: async (params): Promise<ConfigMcpGetResult> => {

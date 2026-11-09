@@ -53,6 +53,17 @@ export const CONFIG_METHODS = {
    * 在多客户端（终端 + 桌面端）并存时就是丢更新 —— 后保存的那个把对方刚改的字段抹掉。
    */
   defaultAgentSet: "config.defaultAgent.set",
+  /**
+   * 换「全局兜底模型」：只写 `defaultModel` 一个字段（`/model --global` 用）。
+   *
+   * 与 `defaultAgentSet` / `agent.model.set` 同一个理由：让它成为窄方法，而不是让客户端
+   * 「读整份 → 改一个字段 → 整份写回」—— 多客户端（终端 + 桌面端）并存时，后保存的那个
+   * 会把对方刚改的字段抹掉。
+   *
+   * 它只动**兜底那一级**（三级解析：`会话级覆盖 > AgentDefinition.modelId > 本字段`）：
+   * 已经绑了模型的 Agent 一个都不受影响。
+   */
+  defaultModelSet: "config.defaultModel.set",
   /** 读某个作用域的 MCP 配置 */
   mcpGet: "config.mcp.get",
   /** 整份写回某个作用域的 MCP 配置 */
@@ -120,6 +131,16 @@ export interface ConfigSetDefaultAgentParams {
 export interface ConfigSetDefaultAgentResult {
   /** 写入之后的默认 Agent（与入参相同；回一份让客户端不必再读一遍配置） */
   agentId: string;
+}
+
+/** 换全局兜底模型的入参：一个 id，没有别的字段 */
+export interface ConfigSetDefaultModelParams {
+  modelId: string;
+}
+
+export interface ConfigSetDefaultModelResult {
+  /** 写入之后的兜底模型（与入参相同；回一份让客户端不必再读一遍配置） */
+  modelId: string;
 }
 
 /** MCP 配置的作用域：全局（配置根下） / 项目（工作区里的 `.ai-zen/`） */

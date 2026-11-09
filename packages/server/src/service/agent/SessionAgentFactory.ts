@@ -48,8 +48,12 @@ export interface SessionAgentFactoryOptions {
   loadConfig?: (configFile: string) => Promise<AppConfig>;
   /** 注入：建并初始化 Scope；默认 SDK `Scope` + `allInOne` */
   createScope?: (input: { config: AppConfig; paths: AgentPaths }) => Promise<Scope>;
-  /** 注入：从一个 Scope 里造出 Agent；默认 SDK `createAgent` */
-  createAgent?: (scope: Scope, agentId: string) => Promise<AgentLike>;
+  /** 注入：从一个 Scope 里造出 Agent；默认 SDK `createAgent`（可选参数是三级解析的会话级覆盖） */
+  createAgent?: (
+    scope: Scope,
+    agentId: string,
+    options: { modelId?: string },
+  ) => Promise<AgentLike>;
 }
 
 export class SessionAgentFactory {
@@ -68,7 +72,9 @@ export class SessionAgentFactory {
     // 始终从磁盘读 Agent 定义（含 permissions / 工具配置）；中断策略不传，取
     // `scope.config`，于是配置中心改完 invalidate 一下就生效
     const build = this.options.createAgent ?? defaultCreateAgent;
-    const agent = await build(scope, input.agentId);
+    // 模型解析（会话级覆盖 > 定义 > 全局兜底）发生在 SDK 里：这里只把**会话级的那个覆盖**
+    // 递进去，不在服务端再算一遍 —— 两处各算一遍就会出现「状态栏 A、实际发 B」。
+    const agent = await build(scope, input.agentId, { modelId: input.modelId });
     this.installPlugins(agent, scope, input);
     return agent;
   }
@@ -102,11 +108,11 @@ export class SessionAgentFactory {
   }
 
   /**
-   * 换模型：把 `modelId` 写进 **Agent 定义**（真相源），并清空模型相关的思考参数。
+   * 换模型：把 `modelId` 写进 **Agent 定义**（`agent.model.set`），并清空模型相关的思考参数。
    *
-   * 为什么是 Agent 定义而不是会话：会话不记模型（`SessionRecord` 没有 `modelId`），
-   * 运行期只读 `definition.modelId`。写在别处就会出现「状态栏 A、实际发 B」。
-   * 代价是它影响所有用这个 Agent 的会话 —— 所以这是个 **agent 级**方法，不是 `session.*`。
+   * 为什么是 Agent 定义而不是会话：这条方法的意思是「**以后**用这个 Agent 就跑这个模型」，
+   * 所以它按定义生效（影响所有用这个 Agent 的会话）。只改一段会话是另一条路
+   * （`session.model.set` → 会话存档的 `modelId`，三级解析的最内层）—— 两个意思两个方法。
    *
    * 清空 `modelParams` 是必须的：旧模型的思考档位对新模型可能非法
    * （如 GLM 不接受 `thinking.disabled`）；清掉让目标模型走自己的 defaultParams。
@@ -166,6 +172,9 @@ export class SessionAgentFactory {
     const when = scope.config.autoRefreshTools ?? "inner-loop-start";
     if (when !== "off") sdkAgent.use(new AutoRefreshToolsPlugin({ when }));
 
+    // 阀值挂在**模型**上，所以这里要的是「实际在用的那个模型」：SDK 已把三级解析的结果
+    // 写进它交给 Agent 的定义（`definition.modelId`），会话级覆盖也包含在内。
+    // 读定义里声明的那个值就会变成「跑了 A 模型、按 B 模型的阀值拦」，上下文早就崩了。
     const modelId = (agent as unknown as SdkAgent).definition?.modelId;
     const thresholds = (scope.config.models ?? []).find(
       (model) => model.id === modelId,
@@ -266,8 +275,12 @@ export class SessionAgentFactory {
 }
 
 /** 默认：从 Scope 造 Agent（SDK 的 `createAgent`；中断策略取 `scope.config`） */
-async function defaultCreateAgent(scope: Scope, agentId: string): Promise<AgentLike> {
-  return await sdkCreateAgent(scope, agentId);
+async function defaultCreateAgent(
+  scope: Scope,
+  agentId: string,
+  options: { modelId?: string },
+): Promise<AgentLike> {
+  return await sdkCreateAgent(scope, agentId, options);
 }
 
 /**

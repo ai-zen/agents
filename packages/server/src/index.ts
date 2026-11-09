@@ -115,6 +115,9 @@ export {
   type SessionSaveAsParams,
   type SessionSaveAsResult,
   type SessionSnapshotResult,
+  type ModelLevel,
+  type SessionModelSetParams,
+  type SessionModelSetResult,
   type SessionPhaseEvent,
   type SessionQuestionEvent,
   type SessionQuestionKind,
@@ -174,6 +177,8 @@ export {
   type ConfigSaveResult,
   type ConfigSetDefaultAgentParams,
   type ConfigSetDefaultAgentResult,
+  type ConfigSetDefaultModelParams,
+  type ConfigSetDefaultModelResult,
   type McpScope,
 } from "./protocol/config.js";
 export { ConfigService, type ConfigServiceOptions } from "./service/config/ConfigService.js";

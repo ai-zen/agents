@@ -47,7 +47,11 @@ import {
 // 只借**类型**：自动迁移触发上下文的形状真相源在 SDK 的插件里，本层再抄一份就是
 // 第二份会漂移的规则（`import type` 编译后会被擦掉，不构成运行期依赖）。
 import type { AutoMigrateTriggerInfo } from "@ai-zen/agents-sdk";
-import type { MessageContent, SubAgentSnapshotResult } from "../../protocol/sessions.js";
+import type {
+  MessageContent,
+  ModelLevel,
+  SubAgentSnapshotResult,
+} from "../../protocol/sessions.js";
 import {
   SESSION_EVENTS,
   SESSION_NOTICE_CODES,
@@ -90,6 +94,13 @@ export interface AgentLike {
   readonly lastUsage?: unknown;
   /** 实发模型名（快照会把它带给客户端拼图片内容块；假件可以不给） */
   readonly model?: string;
+  /**
+   * 生效模型来自哪一级（SDK 解析出来的档位，快照原样透传给客户端）。
+   *
+   * **必填**：这一位没有「缺省档」可言 —— 猜一个就能让选择器把「当前生效」标错，
+   * 而那种错没人会怀疑。假件照抄真件给一个值（它们本来就该与真件同形）。
+   */
+  readonly modelLevel: ModelLevel;
   /** 返回本轮产出（SDK 返回 `Message[]`）；会话管理器不看它，进展走事件 */
   send(input: MessageContent): Promise<unknown>;
   abort(): void;
@@ -168,6 +179,15 @@ export interface CreateAgentInput {
   /** 工作区路径（Agent 的 cwd：工具、相对路径都以它为基准） */
   path: string;
   agentId: string;
+  /**
+   * **会话级**模型覆盖（`LiveSession.modelId`）。
+   *
+   * 本层只负责「把这一段会话的覆盖递进去」，**不在这里做任何解析**：三级顺序
+   * （`会话级 > Agent 定义 > 全局兜底`）的唯一实现在 SDK 的 `resolveModel`（由
+   * `createAgent` 调用）。两边各写一份，就会出现「服务端算出来的模型 ≠ Agent 实际在用的
+   * 模型」—— 那正是「界面写着 A、请求发给 B」的根源。
+   */
+  modelId?: string;
   /**
    * 交接/迁移进行中？装配方据此接上 `ContextGuardPlugin.isSuspended`。
    *
@@ -441,14 +461,26 @@ function asHandoffAgent(agent: AgentLike): HandoffAgentLike {
 }
 
 /**
- * 当前 Agent 绑定的模型 id。
+ * 当前 Agent **实际在用**的模型 id。
  *
- * 真相源是 Agent 定义（`definition.modelId`），不是会话 —— 会话不记模型；
- * 与会话相关但不在 `AgentLike` 里，所以还是「同一个对象、更宽的视图」。
+ * SDK 把三级解析的结果写进它交给 Agent 的那份定义（`definition.modelId`），所以
+ * 这里读到的就是真正在跑的模型 —— 不是某一级的原始值。与会话相关但不在 `AgentLike` 里，
+ * 所以还是「同一个对象、更宽的视图」。
  */
 function modelIdOf(agent: AgentLike): string {
   const definition = (agent as { definition?: { modelId?: unknown } }).definition;
   return typeof definition?.modelId === "string" ? definition.modelId : "";
+}
+
+/**
+ * 生效模型来自哪一级（会话 / Agent 定义 / 全局兜底）。
+ *
+ * 同样来自 SDK 的解析副产品：本层不知道 `config.defaultModel`（它不读配置），也不应该
+ * 再推一遍顺序。档位与 `modelIdOf` 同源（都来自 `createAgent` 那一次解析），
+ * 所以状态栏的「哪个模型」和选择器的「哪一档」永远说得是同一件事。
+ */
+function modelLevelOf(agent: AgentLike): ModelLevel {
+  return agent.modelLevel;
 }
 
 /**
@@ -531,7 +563,9 @@ export class SessionManager {
       sessionId: session.id,
       workspaceId: session.workspaceId,
       agentId: session.agentId,
+      // 生效模型 + 它来自哪一级：两者都是 SDK 解析结果的透传（见 `modelIdOf` / `modelLevelOf`）
       modelId: modelIdOf(session.agent),
+      modelLevel: modelLevelOf(session.agent),
       apiModel: apiModelOf(session.agent),
       turnId: session.turnId,
       phase: this.visiblePhase(session),
@@ -884,27 +918,44 @@ export class SessionManager {
     // 已经是这个 Agent：不重建（重建会丢掉工具发现的热状态，没任何好处）
     if (session.agentId === agentId) return await this.snapshot(sessionId);
 
-    const messages = [...session.agent.messages];
-    session.detach();
-    const agent = await this.createAgent({
-      workspaceId: session.workspaceId,
-      path: session.path,
-      agentId,
-      isHandoffBusy: () => session.settleDeferred,
-      autoMigrate: (mode) => this.autoMigrate(session.id, mode),
-      resolveMode: (info) => this.askHandoffMode(session, info),
-    });
-    agent.messages = messages;
-
-    session.agent = agent;
+    // 换 Agent 是**比换模型更强**的动作：模型跟着新定义走，会话级覆盖必须清掉。
+    // 不清的话，上一任 Agent 的临时模型会跟着新 Agent 继续用 —— 用户换的是「谁来干」，
+    // 却连带把「用什么模型」也留在了上一任的临时选择上，而且看不出来。
+    // 这里先把覆盖从**这次装配**里摘掉（不传 `modelId`），切换成功后才真清字段：
+    // 装配失败（新定义不存在 / 端点缺 Key）时会话原样还在，覆盖也还在。
+    const agent = await this.buildAgent(session, { agentId });
     session.agentId = agentId;
-    session.turnFailed = null;
-    session.turnSettled = true;
-    session.phase.reset();
-    // 换了 Agent：旧子 Agent 实例连同它们的对话一起退场（它们属于旧底座）
-    this.clearSubAgents(session);
-    session.detach = this.attachEvents(session);
+    delete session.modelId;
+    this.adoptAgent(session, agent);
 
+    // 存档里记着 `agentId`：不写就会在下次 `attach` 时按旧 Agent 装回来
+    await this.writeSession(session);
+
+    return await this.snapshot(sessionId);
+  }
+
+  /**
+   * 换**这一段会话**的模型（`session.model.set`）：写会话级覆盖、按它重建 Agent、落盘一次。
+   *
+   * 为什么落在会话上而不是 Agent 定义上：`/model <id>` 的意思是「这次用它」。写进定义会
+   * 影响所有用这个 Agent 的会话（另一个终端里的对话会莫名其妙换了模型）。反过来，
+   * 「以后默认用它」由 `agent.model.set` 负责 —— 两个动作两个方法，客户端不必猜。
+   *
+   * 装配顺序是「先按新模型造出 Agent，成功了才落覆盖」：端点缺 Key、模型被删掉这类失败
+   * 发生在 `createAgent` 里，此时会话必须原样不动 —— 否则用户会留下一段指向坏模型的存档，
+   * 下次 `attach` 直接起不来（而且他刚刚只是点了个选择器）。
+   */
+  async setModel(sessionId: string, modelId: string): Promise<SessionSnapshotResult> {
+    const session = this.require(sessionId);
+    if (this.isTurnInFlight(session)) {
+      throw codedError("turn-in-flight", `session ${sessionId} has a turn in flight`);
+    }
+
+    const agent = await this.buildAgent(session, { agentId: session.agentId, modelId });
+    session.modelId = modelId;
+    this.adoptAgent(session, agent);
+
+    // 覆盖属于存档的一份事实（`SessionRecord.modelId`）：不写，重启 / `attach` 就丢
     await this.writeSession(session);
 
     return await this.snapshot(sessionId);
@@ -915,23 +966,61 @@ export class SessionManager {
    *
    * 用在「`/config` 改了端点凭据」「`agent.model.set` 换了模型」之后：Scope 持有配置
    * 快照，不连带重建就还是旧的那份（CLI 时代 `resetScope()` 的存在就是这个原因）。
+   *
+   * 会话级模型覆盖原样带进这次重建：它是这段会话的一部分，不该因为「重新读了一次配置」
+   * 就被悄悄丢掉（真正该丢它的是 `setAgent`）。
    */
   async reload(sessionId: string): Promise<SessionSnapshotResult> {
     const session = this.require(sessionId);
-    const messages = [...session.agent.messages];
 
-    session.detach();
+    // 配置可能变了：先丢掉这个工作区缓存的 Scope（端点凭据、模型清单都在它手里）
     await this.invalidateScope?.(session.path);
-    const agent = await this.createAgent({
+    const agent = await this.buildAgent(session, {
+      agentId: session.agentId,
+      ...(session.modelId !== undefined ? { modelId: session.modelId } : {}),
+    });
+    this.adoptAgent(session, agent);
+
+    return await this.snapshot(sessionId);
+  }
+
+  /**
+   * 造一个 Agent —— `setAgent` / `setModel` / `reload` 三条路共用这一份装配参数。
+   *
+   * 三处的差别只在**入参**（换 id / 换模型覆盖 / 什么都不换），而装配要接的那些钩子
+   * （让行、自动迁移、提问）一个字都不该不一样：各写一份的那天，就会有一条路忘了接
+   * 自动迁移，表现为「换完模型之后上下文旅满就不再迁移了」。
+   *
+   * 模型解析**不在这里做**：`modelId` 只是把会话级覆盖递进去，顺序由 SDK 的
+   * `resolveModel` 决定（本层不知道 `config.defaultModel`、也不该再推一遍）。
+   */
+  private async buildAgent(
+    session: LiveSession,
+    input: { agentId: string; modelId?: string },
+  ): Promise<AgentLike> {
+    return await this.createAgent({
       workspaceId: session.workspaceId,
       path: session.path,
-      agentId: session.agentId,
-      // 重建后插件要接回同一套让行/自动迁移：它们也是 Agent 装配的一部分
+      agentId: input.agentId,
+      ...(input.modelId !== undefined ? { modelId: input.modelId } : {}),
+      // 交接/迁移中让护栏让行：此刻这段会话还没注册（返回 false），正好
       isHandoffBusy: () => session.settleDeferred,
+      // 自动迁移：SDK 的插件在**一轮内部**触发，落地动作必须回到会话层
       autoMigrate: (mode) => this.autoMigrate(session.id, mode),
-      // 重建不影响「用哪种方式交接」这件事：它仍然得由客户端回答
+      // 谁来写交接文档由用户在 `session.question` 里定（会话层向客户端提问并等回答）
       resolveMode: (info) => this.askHandoffMode(session, info),
     });
+  }
+
+  /**
+   * 把新造的 Agent 接上：**保留消息**、摘旧事件监听、重挂监听、清空子 Agent 栏目。
+   *
+   * 与前一步成对使用（先 `buildAgent` 造好，成功了再 `adoptAgent` 切换）：造失败时旧
+   * Agent 还在原位、监听也还挂着，会话不会变成一段「谁也不认识的」半死状态。
+   */
+  private adoptAgent(session: LiveSession, agent: AgentLike): void {
+    const messages = [...session.agent.messages];
+    session.detach();
     agent.messages = messages;
 
     session.agent = agent;
@@ -941,8 +1030,6 @@ export class SessionManager {
     // 换了 Agent：旧子 Agent 实例连同它们的对话一起退场（它们属于旧底座）
     this.clearSubAgents(session);
     session.detach = this.attachEvents(session);
-
-    return await this.snapshot(sessionId);
   }
 
   /**
@@ -1187,6 +1274,9 @@ export class SessionManager {
       workspaceId: input.workspaceId,
       path: input.path,
       agentId,
+      // 续接时把存档里的**会话级模型覆盖**带回来（三级解析最内层的那一级）：
+      // 覆盖是本层的财产，解析在 SDK（本层不重复一遍顺序）
+      ...(record?.modelId !== undefined ? { modelId: record.modelId } : {}),
       // 交接/迁移中让护栏让行：此刻这段会话还没注册（返回 false），正好
       isHandoffBusy: () => this.sessions.get(sessionId)?.settleDeferred ?? false,
       // 自动迁移：SDK 的插件在**一轮内部**触发，落地动作必须回到会话层
