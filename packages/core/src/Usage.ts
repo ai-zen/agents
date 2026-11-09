@@ -32,9 +32,7 @@ export function addUsage(a: AgentNS.Usage, b: AgentNS.Usage): AgentNS.Usage {
  * 嵌套自动成立：子 Agent 自身的工具消息也携带 `subAgentUsage`，故对子 Agent 的
  * `messages` 调用本函数即天然含孙级。对父 Agent 的 `messages` 调用即得整棵委派树的累计。
  */
-export function sumUsage(
-  messages: readonly AgentNS.Message[],
-): AgentNS.Usage {
+export function sumUsage(messages: readonly AgentNS.Message[]): AgentNS.Usage {
   let acc = { ...ZERO_USAGE };
   for (const message of messages) {
     if (message.usage) acc = addUsage(acc, message.usage);

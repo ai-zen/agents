@@ -160,9 +160,9 @@ describe("MCP 配置（project：路径要靠 workspaceId 找回工作区）", (
   });
 
   it("工作区记录不存在 / 记录坏了 → unknown-workspace", async () => {
-    await expect(service.mcpGet({ scope: "project", workspaceId: "nope-12345678" })).rejects.toMatchObject(
-      { code: "unknown-workspace" },
-    );
+    await expect(
+      service.mcpGet({ scope: "project", workspaceId: "nope-12345678" }),
+    ).rejects.toMatchObject({ code: "unknown-workspace" });
 
     mkdirSync(join(workspacesRoot, "broken-12345678"), { recursive: true });
     writeFileSync(join(workspacesRoot, "broken-12345678", "workspace.json"), "{oops", "utf-8");
@@ -306,7 +306,9 @@ describe("ConfigService：bootstrap 由服务端负责", () => {
 
     await service.bootstrap();
 
-    const after = (await service.listAgents()).agents.find((agent) => (agent as AgentDefinition).id === first.id);
+    const after = (await service.listAgents()).agents.find(
+      (agent) => (agent as AgentDefinition).id === first.id,
+    );
     expect((after as AgentDefinition).name).toBe("我改过的名字");
   });
 });

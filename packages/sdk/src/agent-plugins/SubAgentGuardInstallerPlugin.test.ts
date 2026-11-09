@@ -22,16 +22,11 @@ function createSubAgentStub() {
 
 /** 取桩上 `use()` 收到的插件类名序列 */
 function installedNames(use: ReturnType<typeof vi.fn>): string[] {
-  return use.mock.calls.map(
-    (call: unknown[]) => (call[0] as object).constructor.name,
-  );
+  return use.mock.calls.map((call: unknown[]) => (call[0] as object).constructor.name);
 }
 
 /** 从桩上 `use()` 收到的插件里按类型取一个（取不到就当场炸，不留静默通过） */
-function pluginOf<T>(
-  use: ReturnType<typeof vi.fn>,
-  type: new (...args: never[]) => T,
-): T {
+function pluginOf<T>(use: ReturnType<typeof vi.fn>, type: new (...args: never[]) => T): T {
   const found = use.mock.calls
     .map((call: unknown[]) => call[0] as object)
     .find((plugin) => plugin instanceof type);
@@ -72,10 +67,7 @@ function setUsage(agent: Agent, promptTokens: number): void {
 }
 
 /** 构造委派上下文 */
-function createSubAgentCtx(
-  subAgent: Agent,
-  host: Agent = {} as Agent,
-): SubAgentContext {
+function createSubAgentCtx(subAgent: Agent, host: Agent = {} as Agent): SubAgentContext {
   return {
     agent: host,
     subAgent,
@@ -93,10 +85,7 @@ describe("SubAgentGuardInstallerPlugin", () => {
     const result = installer.onSubAgentStart(createSubAgentCtx(subAgent));
 
     expect(result).toBeUndefined();
-    expect(installedNames(use)).toEqual([
-      "ContextGuardPlugin",
-      "SubAgentGuardInstallerPlugin",
-    ]);
+    expect(installedNames(use)).toEqual(["ContextGuardPlugin", "SubAgentGuardInstallerPlugin"]);
   });
 
   it("安插后对子 Agent 立即生效（无需 init）：用量超硬上限即中断", async () => {
@@ -166,15 +155,9 @@ describe("SubAgentGuardInstallerPlugin", () => {
     installer.onSubAgentStart(createSubAgentCtx(child));
 
     const { subAgent: grandChild, use } = createSubAgentStub();
-    await child.dispatchHook(
-      "onSubAgentStart",
-      createSubAgentCtx(grandChild, child),
-    );
+    await child.dispatchHook("onSubAgentStart", createSubAgentCtx(grandChild, child));
 
-    expect(installedNames(use)).toEqual([
-      "ContextGuardPlugin",
-      "SubAgentGuardInstallerPlugin",
-    ]);
+    expect(installedNames(use)).toEqual(["ContextGuardPlugin", "SubAgentGuardInstallerPlugin"]);
   });
 
   it("交接中让行：isSuspended 为 true 时子 Agent 不拦，翻成 false 立刻恢复拦截", async () => {
@@ -214,10 +197,7 @@ describe("SubAgentGuardInstallerPlugin", () => {
 
     // 孙级：捕获挂到它身上的插件（不真跑请求）
     const { subAgent: grandChild, use } = createSubAgentStub();
-    await child.dispatchHook(
-      "onSubAgentStart",
-      createSubAgentCtx(grandChild, child),
-    );
+    await child.dispatchHook("onSubAgentStart", createSubAgentCtx(grandChild, child));
 
     const grandGuard = pluginOf(use, ContextGuardPlugin);
     await expect(
@@ -225,22 +205,18 @@ describe("SubAgentGuardInstallerPlugin", () => {
     ).resolves.toBeUndefined();
 
     suspended = false;
-    await expect(
-      grandGuard.onInnerLoopStart(overLimitSendCtx(HARD_LIMIT)),
-    ).rejects.toThrow(ContextOverflowError);
+    await expect(grandGuard.onInnerLoopStart(overLimitSendCtx(HARD_LIMIT))).rejects.toThrow(
+      ContextOverflowError,
+    );
 
     // 再往下一层（曾孙）：递归出的安装器本身也得带着让行，否则缺口只是往下挪一层
     suspended = true;
     const grandInstaller = pluginOf(use, SubAgentGuardInstallerPlugin);
     const { subAgent: greatGrandChild, use: greatUse } = createSubAgentStub();
-    grandInstaller.onSubAgentStart(
-      createSubAgentCtx(greatGrandChild, grandChild),
-    );
+    grandInstaller.onSubAgentStart(createSubAgentCtx(greatGrandChild, grandChild));
 
     await expect(
-      pluginOf(greatUse, ContextGuardPlugin).onInnerLoopStart(
-        overLimitSendCtx(HARD_LIMIT),
-      ),
+      pluginOf(greatUse, ContextGuardPlugin).onInnerLoopStart(overLimitSendCtx(HARD_LIMIT)),
     ).resolves.toBeUndefined();
   });
 });

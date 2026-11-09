@@ -16,7 +16,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Daemon } from "./Daemon.js";
 import { createSessionHandlers } from "./sessionHandlers.js";
-import { SessionManager, type AgentLike, type CreateAgentInput } from "../service/session/SessionManager.js";
+import {
+  SessionManager,
+  type AgentLike,
+  type CreateAgentInput,
+} from "../service/session/SessionManager.js";
 import { FileSessionStore } from "../service/store/FileSessionStore.js";
 import { encodeFrame, FrameDecoder } from "../protocol/frames.js";
 import { PROTOCOL_VERSION } from "../protocol/messages.js";
@@ -103,7 +107,8 @@ beforeEach(() => {
     },
     // 默认 id 只精确到秒：同一秒里 create 再 migrate 会撞名，用例要确定性
     nextSessionId: () => `chat_${++counter}`,
-    storeFor: (workspaceId) => new FileSessionStore({ rootDir: join(dir, "workspaces", workspaceId) }),
+    storeFor: (workspaceId) =>
+      new FileSessionStore({ rootDir: join(dir, "workspaces", workspaceId) }),
     // 交接要读 `handoff` Skill、写 `<工作区>/.ai-zen/handoffs`
     handoff: { aiZenDir: join(dir, "ai-zen"), homeDir: dir },
   });
@@ -148,7 +153,10 @@ describe("工作区处理器（真 socket）", () => {
   it("workspace.resolve 不带 path：用服务端默认工作区（cwd 归属服务端）", async () => {
     await startDaemon();
     // 连 params 都不传：客户端不需要知道目录在哪
-    const result = (await client!.call(WORKSPACE_METHODS.resolve)) as { workspaceId: string; path: string };
+    const result = (await client!.call(WORKSPACE_METHODS.resolve)) as {
+      workspaceId: string;
+      path: string;
+    };
 
     expect(result.path).toBe(defaultWorkspacePath);
     expect(result.workspaceId).toMatch(/^default-ws-[0-9a-f]{8}$/);
@@ -157,7 +165,9 @@ describe("工作区处理器（真 socket）", () => {
   it("参数错 → bad-params 错误帧（不是崩掉连接）", async () => {
     await startDaemon();
     // `path` 是可选的，但给了就得是字符串
-    await expect(client!.call(WORKSPACE_METHODS.resolve, { path: 42 })).rejects.toThrow(/bad-params/);
+    await expect(client!.call(WORKSPACE_METHODS.resolve, { path: 42 })).rejects.toThrow(
+      /bad-params/,
+    );
     await expect(client!.call(WORKSPACE_METHODS.files, {})).rejects.toThrow(/bad-params/);
     await expect(client!.call(SESSION_METHODS.last, {})).rejects.toThrow(/bad-params/);
     // 连接还能继续用
@@ -178,7 +188,10 @@ describe("工作区处理器（真 socket）", () => {
       workspaceId: workspace.workspaceId,
     })) as { entries: Array<{ path: string; dir: boolean }> };
 
-    const files = listed.entries.filter((entry) => !entry.dir).map((entry) => entry.path).sort();
+    const files = listed.entries
+      .filter((entry) => !entry.dir)
+      .map((entry) => entry.path)
+      .sort();
     expect(files).toEqual(["README.md", "src/chat.tsx"]);
   });
 
@@ -253,7 +266,10 @@ describe("会话处理器（真 socket）", () => {
       workspaceId: "ws-1",
       path: dir,
     })) as { sessionId: string };
-    await client!.call(SESSION_METHODS.send, { sessionId: created.sessionId, content: "帮我查两处" });
+    await client!.call(SESSION_METHODS.send, {
+      sessionId: created.sessionId,
+      content: "帮我查两处",
+    });
 
     const sub = new FakeSubAgent();
     sub.messages = [{ role: "user", content: "子任务" }];
@@ -525,7 +541,10 @@ class TestClient {
   private closed = false;
   private nextRequestId = 1;
 
-  private constructor(private readonly socket: Socket, private readonly decoder: FrameDecoder) {}
+  private constructor(
+    private readonly socket: Socket,
+    private readonly decoder: FrameDecoder,
+  ) {}
 
   static async connect(port: number): Promise<TestClient> {
     const socket = createConnection({ host: "127.0.0.1", port });
@@ -560,7 +579,11 @@ class TestClient {
 
   async handshake(): Promise<void> {
     this.socket.write(
-      encodeFrame({ kind: "hello", protocol: PROTOCOL_VERSION, client: { name: "test", version: "0" } }),
+      encodeFrame({
+        kind: "hello",
+        protocol: PROTOCOL_VERSION,
+        client: { name: "test", version: "0" },
+      }),
     );
     expect(await this.next()).toMatchObject({ kind: "hello", ok: true });
   }
@@ -610,9 +633,9 @@ describe("会话创建：path 可缺省，sessionId 必须被尊重", () => {
 
   it("不带 path 又是个服务端不认识的工作区：报 workspace-not-found，不静默造目录", async () => {
     await startDaemon();
-    await expect(client!.call(SESSION_METHODS.create, { workspaceId: "ws-unknown" })).rejects.toThrow(
-      /workspace-not-found/,
-    );
+    await expect(
+      client!.call(SESSION_METHODS.create, { workspaceId: "ws-unknown" }),
+    ).rejects.toThrow(/workspace-not-found/);
   });
 
   it("带了 sessionId 就沿用它，并把存档里的消息装进 Agent（续接 / `/load` 的根）", async () => {
@@ -620,7 +643,11 @@ describe("会话创建：path 可缺省，sessionId 必须被尊重", () => {
     const workspaceId = "ws-resume";
     const store = new FileSessionStore({ rootDir: join(dir, "workspaces", workspaceId) });
     // 存档里的 agentId 也要被沿用：客户端只给一个 id
-    await store.write({ id: "chat_old", agentId: "reviewer", messages: [{ role: "user", content: "旧对话" }] });
+    await store.write({
+      id: "chat_old",
+      agentId: "reviewer",
+      messages: [{ role: "user", content: "旧对话" }],
+    });
 
     const created = (await client!.call(SESSION_METHODS.create, {
       workspaceId,
@@ -656,7 +683,11 @@ describe("session.attach：会话活得比连接久", () => {
   it("内存与盘上都没有这个 id → session-missing（不悄悄开一段空的）", async () => {
     await startDaemon();
     await expect(
-      client!.call(SESSION_METHODS.attach, { workspaceId: "ws-1", path: dir, sessionId: "chat_gone" }),
+      client!.call(SESSION_METHODS.attach, {
+        workspaceId: "ws-1",
+        path: dir,
+        sessionId: "chat_gone",
+      }),
     ).rejects.toThrow(/session-missing|no such session/);
   });
 });

@@ -34,7 +34,10 @@ export {
   type SessionRef,
   type SessionPointer,
 } from "./service/store/SessionStore.js";
-export { FileSessionStore, type FileSessionStoreOptions } from "./service/store/FileSessionStore.js";
+export {
+  FileSessionStore,
+  type FileSessionStoreOptions,
+} from "./service/store/FileSessionStore.js";
 export {
   migrateLegacySessions,
   type LegacyMigrationOptions,
@@ -174,7 +177,12 @@ export { ConfigService, type ConfigServiceOptions } from "./service/config/Confi
 export { createConfigHandlers, type ConfigHandlerOptions } from "./daemon/configHandlers.js";
 
 // ---- 守护进程与协议（客户端只需要协议类型 + Daemon 用于进程内嵌入/测试） ----
-export { Daemon, type Connection, type DaemonOptions, type MethodHandler } from "./daemon/Daemon.js";
+export {
+  Daemon,
+  type Connection,
+  type DaemonOptions,
+  type MethodHandler,
+} from "./daemon/Daemon.js";
 export {
   descriptorPath,
   isProcessAlive,

@@ -28,7 +28,11 @@ afterEach(async () => {
 
 /** 造一个真的 `openai` 客户端，指向假端点（key 是假的，请求根本到不了真厂商） */
 async function startAgent(): Promise<{ agent: Agent; llm: FakeLlm }> {
-  const fake = await startFakeLlm({ reply: REPLY, chunks: 3, usage: { prompt: 12, completion: 5 } });
+  const fake = await startFakeLlm({
+    reply: REPLY,
+    chunks: 3,
+    usage: { prompt: 12, completion: 5 },
+  });
   llm = fake;
   const client = new OpenAI({ apiKey: "sk-fake", baseURL: fake.baseUrl });
   const agent = new Agent({

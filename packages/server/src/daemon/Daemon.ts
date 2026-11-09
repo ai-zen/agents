@@ -241,7 +241,14 @@ export class Daemon {
 
     const fail = (code: string, message: string) => {
       this.log("warn", `conn#${id} rejected: ${code} ${message}`);
-      if (!socket.destroyed) socket.write(encodeFrame({ kind: "hello", ok: false, error: { code, message } } satisfies HelloResponse));
+      if (!socket.destroyed)
+        socket.write(
+          encodeFrame({
+            kind: "hello",
+            ok: false,
+            error: { code, message },
+          } satisfies HelloResponse),
+        );
       socket.destroy();
     };
 
@@ -291,7 +298,10 @@ export class Daemon {
 
         if (!isRequestFrame(frame)) {
           socket.write(
-            encodeFrame({ ok: false, error: { code: "bad-frame", message: "expected a request frame" } }),
+            encodeFrame({
+              ok: false,
+              error: { code: "bad-frame", message: "expected a request frame" },
+            }),
           );
           continue;
         }
@@ -320,7 +330,11 @@ export class Daemon {
   ): Promise<void> {
     const handler = this.handlers.get(method);
     if (!handler) {
-      writeIfOpen(socket, { id, ok: false, error: { code: "unknown-method", message: `unknown method: ${method}` } });
+      writeIfOpen(socket, {
+        id,
+        ok: false,
+        error: { code: "unknown-method", message: `unknown method: ${method}` },
+      });
       return;
     }
     try {

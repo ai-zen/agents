@@ -36,10 +36,7 @@ describe("sumUsage", () => {
   });
 
   it("忽略既无 usage 也无 subAgentUsage 的消息", () => {
-    const messages = [
-      Message.User("你好"),
-      Message.Assistant("无用量"),
-    ] as AgentNS.Message[];
+    const messages = [Message.User("你好"), Message.Assistant("无用量")] as AgentNS.Message[];
     expect(sumUsage(messages)).toEqual(ZERO_USAGE);
   });
 

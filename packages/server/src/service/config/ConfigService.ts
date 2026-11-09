@@ -161,7 +161,10 @@ export class ConfigService {
     // 顶层不是对象（`null` / 数组 / 数字）就没法当配置编辑，如实报成坏文件
     if (!isRecord(parsed)) return { ok: false, error: "top-level JSON value is not an object" };
     // 缺 `mcpServers` 与「空配置」在产品上是同一件事：编辑屏按它遍历服务器列表
-    return { ok: true, config: { mcpServers: isRecord(parsed.mcpServers) ? parsed.mcpServers : {} } };
+    return {
+      ok: true,
+      config: { mcpServers: isRecord(parsed.mcpServers) ? parsed.mcpServers : {} },
+    };
   }
 
   /** 整份写回某个作用域的 MCP 配置（原子写；父目录按需创建） */

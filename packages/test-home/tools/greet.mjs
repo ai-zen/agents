@@ -7,13 +7,13 @@ export default {
       properties: {
         name: {
           type: "string",
-          description: "要问候的人名"
-        }
+          description: "要问候的人名",
+        },
       },
-      required: ["name"]
-    }
+      required: ["name"],
+    },
   },
-  exec: async function(args) {
+  exec: async function (args) {
     return `你好，${args.name}！欢迎使用 AI-Zen Agents！`;
-  }
+  },
 };

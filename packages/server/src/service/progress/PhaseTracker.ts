@@ -17,12 +17,7 @@
 
 /** 生成阶段（见文件头表格） */
 export type PhaseKind =
-  | "connecting"
-  | "queued"
-  | "thinking"
-  | "tool-calling"
-  | "tool-waiting"
-  | "streaming";
+  "connecting" | "queued" | "thinking" | "tool-calling" | "tool-waiting" | "streaming";
 
 /** 一次工具调用的最小身份：`id` 用来和结果消息配对，`name` 用来展示 */
 export interface ToolCallRef {

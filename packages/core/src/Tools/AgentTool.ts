@@ -13,9 +13,7 @@ export class AgentTool extends AgentContext implements Tool {
   type: "function";
   function: AgentNS.FunctionDefine;
 
-  constructor(
-    options: PickRequired<AgentTool, "function" | "client" | "model">,
-  ) {
+  constructor(options: PickRequired<AgentTool, "function" | "client" | "model">) {
     if (!options.function) throw new Error("AgentTool must have a function");
     if (options.messages?.at(-1)?.role != AgentNS.Role.User) {
       throw new Error("AgentTool must end with a user message.");
@@ -95,10 +93,7 @@ export class AgentTool extends AgentContext implements Tool {
    * @param valueMap - The record containing key-value pairs for replacement.
    * @returns {string} The replaced string.
    */
-  static replaceStringWithValues(
-    template: string,
-    valueMap: Record<string, any>,
-  ): string {
+  static replaceStringWithValues(template: string, valueMap: Record<string, any>): string {
     const regex = /{{\s?(\w+)\s?}}/g;
 
     const replacedString = template.replace(regex, (_, key) => {

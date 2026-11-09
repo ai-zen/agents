@@ -160,10 +160,7 @@ describe("AgentTool", () => {
         },
         client,
         model: "gpt-4",
-        messages: [
-          Message.System("你是天气助手"),
-          Message.User("请告诉我 {{ city }} 的天气"),
-        ],
+        messages: [Message.System("你是天气助手"), Message.User("请告诉我 {{ city }} 的天气")],
       });
 
       expect(tool.function.name).toBe("getWeather");
@@ -182,18 +179,15 @@ describe("AgentTool", () => {
     });
 
     it("未提供的变量应保持原样", () => {
-      const result = AgentTool.replaceStringWithValues(
-        "你好 {{ name }}",
-        {},
-      );
+      const result = AgentTool.replaceStringWithValues("你好 {{ name }}", {});
       expect(result).toBe("你好 {{ name }}");
     });
 
     it("变量名支持大小写和下划线", () => {
-      const result = AgentTool.replaceStringWithValues(
-        "{{user_name}} 今年 {{ age }} 岁",
-        { user_name: "李四", age: "25" },
-      );
+      const result = AgentTool.replaceStringWithValues("{{user_name}} 今年 {{ age }} 岁", {
+        user_name: "李四",
+        age: "25",
+      });
       expect(result).toBe("李四 今年 25 岁");
     });
   });
@@ -205,11 +199,10 @@ describe("AgentTool", () => {
         Message.User("请告诉我 {{ city }} 在 {{ date }} 的天气"),
       ];
 
-      const result = AgentTool.injectArgs.call(
-        { constructor: { name: "AgentTool" } },
-        messages,
-        { city: "北京", date: "2024-01-15" },
-      );
+      const result = AgentTool.injectArgs.call({ constructor: { name: "AgentTool" } }, messages, {
+        city: "北京",
+        date: "2024-01-15",
+      });
 
       expect(result[0].content).toBe("你是天气助手");
       expect(result[1].content).toBe("请告诉我 北京 在 2024-01-15 的天气");
@@ -219,11 +212,7 @@ describe("AgentTool", () => {
       const originalContent = "请告诉我 {{ city }} 的天气";
       const messages = [Message.User(originalContent)];
 
-      AgentTool.injectArgs.call(
-        { constructor: { name: "AgentTool" } },
-        messages,
-        { city: "上海" },
-      );
+      AgentTool.injectArgs.call({ constructor: { name: "AgentTool" } }, messages, { city: "上海" });
 
       expect(messages[0].content).toBe(originalContent);
     });
@@ -235,11 +224,9 @@ describe("AgentTool", () => {
       ];
       const messages = [Message.User(sections)];
 
-      const result = AgentTool.injectArgs.call(
-        { constructor: { name: "AgentTool" } },
-        messages,
-        { city: "广州" },
-      );
+      const result = AgentTool.injectArgs.call({ constructor: { name: "AgentTool" } }, messages, {
+        city: "广州",
+      });
 
       expect(Array.isArray(result[0].content)).toBe(true);
       expect((result[0].content as AgentNS.MessageContentSection[])[0].type).toBe("text");
@@ -415,7 +402,11 @@ describe("AgentTool", () => {
       const host = buildHost(tool);
 
       const seen: any[] = [];
-      host.use({ onSubAgentStart: (c) => { seen.push(c); } });
+      host.use({
+        onSubAgentStart: (c) => {
+          seen.push(c);
+        },
+      });
 
       const ctx = buildCtx(host);
       const result = await tool.exec(ctx);
@@ -469,7 +460,12 @@ describe("AgentTool", () => {
       const second = vi.fn();
       // dispatchHook 先广播事件、再按序阻塞调用插件
       host.events.on("sub-agent-end", () => order.push("event"));
-      host.use({ onSubAgentEnd: () => { order.push("first"); return "结束提示"; } });
+      host.use({
+        onSubAgentEnd: () => {
+          order.push("first");
+          return "结束提示";
+        },
+      });
       host.use({ onSubAgentEnd: second });
 
       const result = await tool.exec(buildCtx(host));
@@ -566,12 +562,10 @@ describe("AgentTool", () => {
 
       // 父侧 tool 消息 = 子自身（usageS1 + usageS2）+ 孙（usageG），无重无漏
       expect(ctx.resultMessage.subAgentUsage).toEqual({
-        prompt_tokens:
-          usageS1.prompt_tokens + usageS2.prompt_tokens + usageG.prompt_tokens,
+        prompt_tokens: usageS1.prompt_tokens + usageS2.prompt_tokens + usageG.prompt_tokens,
         completion_tokens:
           usageS1.completion_tokens + usageS2.completion_tokens + usageG.completion_tokens,
-        total_tokens:
-          usageS1.total_tokens + usageS2.total_tokens + usageG.total_tokens,
+        total_tokens: usageS1.total_tokens + usageS2.total_tokens + usageG.total_tokens,
       });
     });
   });

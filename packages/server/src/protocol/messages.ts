@@ -86,9 +86,9 @@ export function isRequestFrame(frame: unknown): frame is RequestFrame {
   const value = frame as Partial<RequestFrame> | null | undefined;
   return Boolean(
     value &&
-      typeof value.id === "number" &&
-      Number.isFinite(value.id) &&
-      typeof value.method === "string" &&
-      value.method.length > 0,
+    typeof value.id === "number" &&
+    Number.isFinite(value.id) &&
+    typeof value.method === "string" &&
+    value.method.length > 0,
   );
 }

@@ -108,7 +108,11 @@ describe("握手", () => {
   it("协议版本不符 → version-mismatch（不做竭力兼容）", async () => {
     await startDaemon();
     const client = await connect();
-    client.send({ kind: "hello", protocol: PROTOCOL_VERSION + 1, client: { name: "t", version: "t" } });
+    client.send({
+      kind: "hello",
+      protocol: PROTOCOL_VERSION + 1,
+      client: { name: "t", version: "t" },
+    });
     const frame: any = await client.next();
     expect(frame.ok).toBe(false);
     expect(frame.error.code).toBe("version-mismatch");
@@ -264,7 +268,11 @@ class TestClient {
   }
 
   async handshake(): Promise<any> {
-    this.send({ kind: "hello", protocol: PROTOCOL_VERSION, client: { name: "test", version: "0" } });
+    this.send({
+      kind: "hello",
+      protocol: PROTOCOL_VERSION,
+      client: { name: "test", version: "0" },
+    });
     return await this.next();
   }
 

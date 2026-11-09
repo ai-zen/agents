@@ -33,7 +33,11 @@ describe("AgentContext", () => {
     const tool1 = new (class extends Tool {
       constructor() {
         super();
-        this.function = { name: "fn1", description: "", parameters: { type: "object", properties: {} } };
+        this.function = {
+          name: "fn1",
+          description: "",
+          parameters: { type: "object", properties: {} },
+        };
       }
       async exec() {
         return "ok";
@@ -81,5 +85,4 @@ describe("AgentContext", () => {
     const ctx = new AgentContext({ client: {} as any, model: "gpt-4" });
     expect(ctx.allowJsonParseError).toBe(true);
   });
-
 });

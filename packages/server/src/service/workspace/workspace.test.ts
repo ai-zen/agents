@@ -54,7 +54,11 @@ describe("ensureWorkspace", () => {
   it("已存在就不重写记录（首次认定的路径不该被悄悄改写）", async () => {
     const first = await ensureWorkspace({ workspacesRoot: root, path: "/tmp/proj" });
     const recordPath = join(first.rootDir, "workspace.json");
-    writeFileSync(recordPath, JSON.stringify({ schema: 1, id: first.id, path: "/traced", createdAt: "x" }), "utf-8");
+    writeFileSync(
+      recordPath,
+      JSON.stringify({ schema: 1, id: first.id, path: "/traced", createdAt: "x" }),
+      "utf-8",
+    );
 
     await ensureWorkspace({ workspacesRoot: root, path: "/tmp/proj" });
     expect(JSON.parse(readFileSync(recordPath, "utf-8")).path).toBe("/traced");

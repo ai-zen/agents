@@ -32,7 +32,10 @@ export function descriptorPath(aiZenDir: string): string {
 }
 
 /** 原子写：先写 `.tmp` 再 rename，避免客户端读到半个 JSON */
-export async function writeDescriptor(aiZenDir: string, descriptor: ServerDescriptor): Promise<void> {
+export async function writeDescriptor(
+  aiZenDir: string,
+  descriptor: ServerDescriptor,
+): Promise<void> {
   const file = descriptorPath(aiZenDir);
   await fs.mkdir(dirname(file), { recursive: true });
   const tmp = file + ".tmp";

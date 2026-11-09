@@ -185,7 +185,12 @@ function getResponse(msg) {
         id,
         result: {
           resources: [
-            { uri: "sse-test://welcome", name: "Welcome", description: "欢迎消息", mimeType: "text/plain" },
+            {
+              uri: "sse-test://welcome",
+              name: "Welcome",
+              description: "欢迎消息",
+              mimeType: "text/plain",
+            },
           ],
         },
       };
@@ -197,7 +202,11 @@ function getResponse(msg) {
       return { jsonrpc: "2.0", id, result: {} };
 
     default:
-      return { jsonrpc: "2.0", id, error: { code: -32601, message: `Method not found: ${method}` } };
+      return {
+        jsonrpc: "2.0",
+        id,
+        error: { code: -32601, message: `Method not found: ${method}` },
+      };
   }
 }
 

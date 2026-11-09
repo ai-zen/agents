@@ -17,10 +17,7 @@ afterEach(async () => {
 });
 
 /** 轮询到条件成立（不固定 sleep；超时就抛，不让用例挂死） */
-async function until(
-  condition: () => boolean,
-  timeoutMs = 2000,
-): Promise<void> {
+async function until(condition: () => boolean, timeoutMs = 2000): Promise<void> {
   const deadline = performance.now() + timeoutMs;
   while (!condition()) {
     if (performance.now() > deadline) throw new Error("等待条件成立超时");
@@ -67,13 +64,9 @@ describe("startFakeLlm：流式分支", () => {
       content: "",
     });
     // 正文分 4 片拼起来等于答复（片数 > 1 才谈得上「流式」）
-    const text = frames
-      .map((frame) => frame.choices[0].delta.content ?? "")
-      .join("");
+    const text = frames.map((frame) => frame.choices[0].delta.content ?? "").join("");
     expect(text).toBe("一二三四五六七八");
-    expect(
-      frames.filter((frame) => frame.choices[0].delta.content).length,
-    ).toBe(4);
+    expect(frames.filter((frame) => frame.choices[0].delta.content).length).toBe(4);
     // 收尾片：正文空、有 finish_reason、有 usage（`stream_options.include_usage` 要的）
     const last = frames.at(-1)!;
     expect(last.choices[0].delta).toEqual({});
@@ -141,8 +134,7 @@ describe("startFakeLlm：非流式分支", () => {
     });
 
     // 轮询到「请求已经到了端点」：此刻响应必然还在延迟窗口里
-    while (llm.requests.length === 0)
-      await new Promise((resolve) => setTimeout(resolve, 1));
+    while (llm.requests.length === 0) await new Promise((resolve) => setTimeout(resolve, 1));
     expect(settled).toBe(false);
 
     const json = await pending;

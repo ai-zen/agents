@@ -5,7 +5,12 @@ import { Agent } from "../Agent.js";
 import { Message } from "../Message.js";
 
 function createMockAgent(): Agent {
-  return new Agent({ client: {} as any, model: "gpt-4", messages: [Message.System("test")], tools: [] });
+  return new Agent({
+    client: {} as any,
+    model: "gpt-4",
+    messages: [Message.System("test")],
+    tools: [],
+  });
 }
 
 function createMockCtx(agent: Agent, parsedArgs: any): ToolCallContext {
@@ -45,7 +50,9 @@ describe("IndexedSearchTool", () => {
     // 模拟 GPT 有时会传入字符串而非数组
     const ctx = new ToolCallContext({
       agent,
-      tool_call: { function: { name: "indexed_search", arguments: JSON.stringify({ keywords: "weather" }) } },
+      tool_call: {
+        function: { name: "indexed_search", arguments: JSON.stringify({ keywords: "weather" }) },
+      },
       resultMessage: Message.Tool({ id: "1", function: { name: "indexed_search" } }),
     });
 

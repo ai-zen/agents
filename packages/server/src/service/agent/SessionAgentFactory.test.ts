@@ -157,9 +157,9 @@ describe("SessionAgentFactory", () => {
   it("Scope 建失败不缓存：下一次还会重试", async () => {
     const { factory, calls } = makeFactory({ failFirstScopeBuild: true });
 
-    await expect(factory.create({ workspaceId: "ws", path: "/work/proj", agentId: "default" })).rejects.toThrow(
-      /scope boom/,
-    );
+    await expect(
+      factory.create({ workspaceId: "ws", path: "/work/proj", agentId: "default" }),
+    ).rejects.toThrow(/scope boom/);
     await expect(
       factory.create({ workspaceId: "ws", path: "/work/proj", agentId: "default" }),
     ).resolves.toBeTruthy();
@@ -174,7 +174,9 @@ describe("SessionAgentFactory", () => {
     await factory.dispose();
 
     expect(scopes.every((scope) => scope.disposed)).toBe(true);
-    expect(await factory.create({ workspaceId: "a", path: "/work/a", agentId: "default" })).toBe(fakeAgent);
+    expect(await factory.create({ workspaceId: "a", path: "/work/a", agentId: "default" })).toBe(
+      fakeAgent,
+    );
   });
 });
 
@@ -228,7 +230,11 @@ describe("SessionAgentFactory（默认装配，真 SDK / 真磁盘）", () => {
 
     const factory = new SessionAgentFactory({ aiZenDir, homeDir: dir });
     try {
-      const agent = await factory.create({ workspaceId: "ws", path: workspace, agentId: "default" });
+      const agent = await factory.create({
+        workspaceId: "ws",
+        path: workspace,
+        agentId: "default",
+      });
       // 结构面齐全 = 会话管理器能驱动它（具体行为由 SDK 自己的测试管）
       expect(Array.isArray(agent.messages)).toBe(true);
       expect(typeof agent.send).toBe("function");
@@ -252,8 +258,20 @@ describe("SessionAgentFactory.setModel（换模型 = 写 Agent 定义）", () =>
       JSON.stringify({
         endpoints: [{ id: "e", name: "E", baseUrl: "http://127.0.0.1:9/v1", apiKey: "k" }],
         models: [
-          { id: "m1", name: "M1", endpointId: "e", tokenThresholds: { handoff: 1, guard: 2 }, custom: true },
-          { id: "m2", name: "M2", endpointId: "e", tokenThresholds: { handoff: 1, guard: 2 }, custom: true },
+          {
+            id: "m1",
+            name: "M1",
+            endpointId: "e",
+            tokenThresholds: { handoff: 1, guard: 2 },
+            custom: true,
+          },
+          {
+            id: "m2",
+            name: "M2",
+            endpointId: "e",
+            tokenThresholds: { handoff: 1, guard: 2 },
+            custom: true,
+          },
         ],
         defaultAgent: "default",
         version: 4,
@@ -300,8 +318,12 @@ describe("SessionAgentFactory.setModel（换模型 = 写 Agent 定义）", () =>
     const { aiZenDir } = seed();
     const factory = new SessionAgentFactory({ aiZenDir, homeDir: dir });
 
-    await expect(factory.setModel({ agentId: "default", modelId: "nope" })).rejects.toThrow(/unknown model/);
-    await expect(factory.setModel({ agentId: "ghost", modelId: "m1" })).rejects.toThrow(/unknown agent/);
+    await expect(factory.setModel({ agentId: "default", modelId: "nope" })).rejects.toThrow(
+      /unknown model/,
+    );
+    await expect(factory.setModel({ agentId: "ghost", modelId: "m1" })).rejects.toThrow(
+      /unknown agent/,
+    );
   });
 });
 
@@ -357,7 +379,9 @@ describe("SessionAgentFactory：按模型阈值装护栏与自动迁移", () => 
 
     expect(plugins).toHaveLength(4); // 工具刷新 + ContextGuardPlugin + SubAgentGuardInstallerPlugin + AutoMigratePlugin
     // 子 Agent 的硬线：阈值必须与主 Agent **同源**（同一个 `guardTokens`），另拍一个数就是两套护栏
-    const installer = plugins.find((plugin) => plugin instanceof SubAgentGuardInstallerPlugin) as any;
+    const installer = plugins.find(
+      (plugin) => plugin instanceof SubAgentGuardInstallerPlugin,
+    ) as any;
     expect(installer).toBeDefined();
     expect(installer.guardTokens).toBe(200);
     // 真的跑一次自动迁移的触发钩子：用量 999 > 软线 100 → 交给会话层
@@ -422,7 +446,9 @@ describe("SessionAgentFactory：按模型阈值装护栏与自动迁移", () => 
       isHandoffBusy: () => busy,
     });
 
-    const installer = plugins.find((plugin) => plugin instanceof SubAgentGuardInstallerPlugin) as any;
+    const installer = plugins.find(
+      (plugin) => plugin instanceof SubAgentGuardInstallerPlugin,
+    ) as any;
     // 假子 Agent：只捕获安装器装进去的插件（服务端只管「装进去的是谁」，行为仍归 SDK）
     const subPlugins: any[] = [];
     installer.onSubAgentStart({
@@ -489,7 +515,12 @@ describe("SessionAgentFactory：按模型阈值装护栏与自动迁移", () => 
       {},
     );
 
-    await factory.create({ workspaceId: "ws", path: "/p", agentId: "default", autoMigrate: async () => {} });
+    await factory.create({
+      workspaceId: "ws",
+      path: "/p",
+      agentId: "default",
+      autoMigrate: async () => {},
+    });
 
     // 工具刷新与阈值无关（它是「会话中新装的能力什么时候生效」），所以只剩它
     expect(plugins).toHaveLength(1);

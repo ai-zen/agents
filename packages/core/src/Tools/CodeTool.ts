@@ -34,10 +34,7 @@ export class CodeTool implements Tool {
       // Construct a new parameter object based on the function parameters definition
       // Make sure that the parameter object does not have any missing keys, as missing keys may cause "x is not defined" errors during execution
       const wideArgs = Object.fromEntries(
-        Object.keys(this.function.parameters.properties!).map((key) => [
-          key,
-          ctx.parsedArgs[key],
-        ])
+        Object.keys(this.function.parameters.properties!).map((key) => [key, ctx.parsedArgs[key]]),
       );
 
       // Create a new function and execute it

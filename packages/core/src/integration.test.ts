@@ -137,9 +137,7 @@ describeIf("集成测试 - DeepSeek API", () => {
 
         await agent.send("北京今天天气怎么样？");
 
-        const toolMessages = agent.messages.filter(
-          (m) => m.role === AgentNS.Role.Tool,
-        );
+        const toolMessages = agent.messages.filter((m) => m.role === AgentNS.Role.Tool);
         expect(toolMessages.length).toBeGreaterThan(0);
         expect(toolMessages[0].content).toContain("北京");
         expect(toolMessages[0].content).toContain("25°C");
@@ -187,8 +185,7 @@ describeIf("集成测试 - DeepSeek API", () => {
         await agent.send("请计算 123 + 456 等于多少？");
 
         const toolMessages = agent.messages.filter(
-          (m) =>
-            m.role === AgentNS.Role.Tool || m.role === AgentNS.Role.Function,
+          (m) => m.role === AgentNS.Role.Tool || m.role === AgentNS.Role.Function,
         );
         expect(toolMessages.length).toBeGreaterThan(0);
         expect(toolMessages[0].content).toContain("579");
@@ -243,9 +240,7 @@ describeIf("集成测试 - DeepSeek API", () => {
 
         await agent.send("北京和上海的天气怎么样？");
 
-        const toolMessages = agent.messages.filter(
-          (m) => m.role === AgentNS.Role.Tool,
-        );
+        const toolMessages = agent.messages.filter((m) => m.role === AgentNS.Role.Tool);
         expect(toolMessages.length).toBeGreaterThanOrEqual(2);
 
         const allToolContent = toolMessages.map((m) => m.content).join(" ");
@@ -300,9 +295,7 @@ describeIf("集成测试 - DeepSeek API", () => {
 
         await agent.send("请帮我执行系统更新操作。");
 
-        const toolMessages = agent.messages.filter(
-          (m) => m.role === AgentNS.Role.Tool,
-        );
+        const toolMessages = agent.messages.filter((m) => m.role === AgentNS.Role.Tool);
         expect(toolMessages.length).toBeGreaterThan(0);
         expect(toolMessages[0].content).toContain("确认");
 
@@ -365,9 +358,7 @@ describeIf("集成测试 - DeepSeek API", () => {
         expect(lastMsg.status).toBe(AgentNS.MessageStatus.Completed);
         expect((lastMsg.content as string).length).toBeGreaterThan(0);
 
-        const toolMessages = agent.messages.filter(
-          (m) => m.role === AgentNS.Role.Tool,
-        );
+        const toolMessages = agent.messages.filter((m) => m.role === AgentNS.Role.Tool);
         expect(toolMessages.length).toBeGreaterThan(0);
       },
       TIMEOUT,
@@ -437,9 +428,7 @@ describeIf("集成测试 - DeepSeek API", () => {
         expect(lastMsg.role).toBe(AgentNS.Role.Assistant);
         expect(lastMsg.status).toBe(AgentNS.MessageStatus.Completed);
 
-        const toolMessages = agent.messages.filter(
-          (m) => m.role === AgentNS.Role.Tool,
-        );
+        const toolMessages = agent.messages.filter((m) => m.role === AgentNS.Role.Tool);
         expect(toolMessages.length).toBeGreaterThan(0);
       },
       TIMEOUT,
@@ -483,11 +472,7 @@ describeIf("集成测试 - DeepSeek API", () => {
         const agent = new Agent({
           client,
           model,
-          messages: [
-            Message.System(
-              "你是一个AI助手，请用中文回复。请回复一篇5000字的文章。",
-            ),
-          ],
+          messages: [Message.System("你是一个AI助手，请用中文回复。请回复一篇5000字的文章。")],
         });
 
         const sendPromise = agent.send("请写一篇5000字的文章，内容要详细。");
@@ -541,9 +526,7 @@ describeIf("集成测试 - DeepSeek API", () => {
 
         await agent.send("请回显数字 42。");
 
-        const toolMessages = agent.messages.filter(
-          (m) => m.role === AgentNS.Role.Tool,
-        );
+        const toolMessages = agent.messages.filter((m) => m.role === AgentNS.Role.Tool);
         expect(toolMessages.length).toBeGreaterThan(0);
         expect(toolMessages[0].content).toContain("42");
       },
@@ -589,9 +572,7 @@ describeIf("集成测试 - DeepSeek API", () => {
 
         await agent.send("中国和法国的首都分别是什么？");
 
-        const toolMessages = agent.messages.filter(
-          (m) => m.role === AgentNS.Role.Tool,
-        );
+        const toolMessages = agent.messages.filter((m) => m.role === AgentNS.Role.Tool);
         expect(toolMessages.length).toBeGreaterThanOrEqual(2);
 
         const allContent = toolMessages.map((m) => m.content).join(" ");
@@ -650,9 +631,7 @@ describeIf("集成测试 - DeepSeek API", () => {
         const secondUsage = agent.lastUsage!;
 
         // 第二轮 prompt_tokens 应该 > 第一轮（因为包含了历史消息）
-        expect(secondUsage.prompt_tokens).toBeGreaterThan(
-          firstUsage.prompt_tokens,
-        );
+        expect(secondUsage.prompt_tokens).toBeGreaterThan(firstUsage.prompt_tokens);
         // lastUsage 已更新为最新一轮
         expect(secondUsage).not.toEqual(firstUsage);
       },
@@ -683,9 +662,7 @@ describeIf("集成测试 - DeepSeek API", () => {
           client,
           model,
           messages: [
-            Message.System(
-              "你是一个天气助手，必须使用 get_weather 工具查询天气。请用中文回复。",
-            ),
+            Message.System("你是一个天气助手，必须使用 get_weather 工具查询天气。请用中文回复。"),
           ],
           tools: [weatherTool],
         });
@@ -698,9 +675,7 @@ describeIf("集成测试 - DeepSeek API", () => {
         expect(agent.lastUsage!.total_tokens).toBeGreaterThan(0);
 
         // 确认工具确实被调用了
-        const toolMessages = agent.messages.filter(
-          (m) => m.role === AgentNS.Role.Tool,
-        );
+        const toolMessages = agent.messages.filter((m) => m.role === AgentNS.Role.Tool);
         expect(toolMessages.length).toBeGreaterThan(0);
       },
       TIMEOUT,
@@ -712,9 +687,7 @@ describeIf("集成测试 - DeepSeek API", () => {
         const agent = new Agent({
           client,
           model,
-          messages: [
-            Message.System("你是一个AI助手，请用中文回复。"),
-          ],
+          messages: [Message.System("你是一个AI助手，请用中文回复。")],
         });
 
         // 先完成一轮正常对话，确保 lastUsage 有值

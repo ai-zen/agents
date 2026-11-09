@@ -111,7 +111,10 @@ export class SessionAgentFactory {
    * 清空 `modelParams` 是必须的：旧模型的思考档位对新模型可能非法
    * （如 GLM 不接受 `thinking.disabled`）；清掉让目标模型走自己的 defaultParams。
    */
-  async setModel(input: { agentId: string; modelId: string }): Promise<{ agentId: string; modelId: string }> {
+  async setModel(input: {
+    agentId: string;
+    modelId: string;
+  }): Promise<{ agentId: string; modelId: string }> {
     const { configFile, agentsDir } = globalAgentPaths({
       aiZenDir: this.options.aiZenDir,
       homeDir: this.options.homeDir,
@@ -164,7 +167,9 @@ export class SessionAgentFactory {
     if (when !== "off") sdkAgent.use(new AutoRefreshToolsPlugin({ when }));
 
     const modelId = (agent as unknown as SdkAgent).definition?.modelId;
-    const thresholds = (scope.config.models ?? []).find((model) => model.id === modelId)?.tokenThresholds;
+    const thresholds = (scope.config.models ?? []).find(
+      (model) => model.id === modelId,
+    )?.tokenThresholds;
     if (!thresholds) return;
 
     sdkAgent.use(

@@ -19,7 +19,11 @@
 import { PhaseTracker, pendingToolCalls, type PhaseInfo } from "../progress/PhaseTracker.js";
 import type { SessionRef, SessionStore } from "../store/SessionStore.js";
 import { EventHub } from "../events/EventHub.js";
-import { SessionHandoff, isHandoffAborted, type HandoffAgentLike } from "../handoff/SessionHandoff.js";
+import {
+  SessionHandoff,
+  isHandoffAborted,
+  type HandoffAgentLike,
+} from "../handoff/SessionHandoff.js";
 // 只借**类型**：自动迁移触发上下文的形状真相源在 SDK 的插件里，本层再抄一份就是
 // 第二份会漂移的规则（`import type` 编译后会被擦掉，不构成运行期依赖）。
 import type { AutoMigrateTriggerInfo } from "@ai-zen/agents-sdk";
@@ -448,9 +452,14 @@ export class SessionManager {
   ): Promise<{ saved: boolean; sessionId: string }> {
     const session = this.require(sessionId);
     const store = await this.storeFor(session.workspaceId);
-    if (!store) throw codedError("no-store", `no session store for workspace ${session.workspaceId}`);
+    if (!store)
+      throw codedError("no-store", `no session store for workspace ${session.workspaceId}`);
 
-    await store.write({ id: session.id, agentId: session.agentId, messages: session.agent.messages });
+    await store.write({
+      id: session.id,
+      agentId: session.agentId,
+      messages: session.agent.messages,
+    });
     // `setAsLast:false` 是一次性调用的归档（`ai --save`）：存下来是为了事后翻看，
     // 但「本工作区上一轮会话」仍该是用户真正聊过的那一段。
     if (options.setAsLast !== false) await store.setLastSession(session.id);
@@ -466,7 +475,8 @@ export class SessionManager {
   async saveAs(sessionId: string, id: string): Promise<{ saved: boolean; sessionId: string }> {
     const session = this.require(sessionId);
     const store = await this.storeFor(session.workspaceId);
-    if (!store) throw codedError("no-store", `no session store for workspace ${session.workspaceId}`);
+    if (!store)
+      throw codedError("no-store", `no session store for workspace ${session.workspaceId}`);
     // 目标 id 已被另一段活会话占着：不静默顶掉它
     if (id !== session.id && this.sessions.has(id)) {
       throw codedError("session-exists", `session already exists: ${id}`);
@@ -635,11 +645,13 @@ export class SessionManager {
    *
    * 不是在吞错 `notice()` 的错误：「会话已经没了」对这条路径是**正常结局**，而不是异常。
    */
-  private noticeIfAlive(session: LiveSession, notice: { level: NoticeLevel; code: SessionNoticeCode; params?: Record<string, unknown> }): void {
+  private noticeIfAlive(
+    session: LiveSession,
+    notice: { level: NoticeLevel; code: SessionNoticeCode; params?: Record<string, unknown> },
+  ): void {
     if (!this.sessions.has(session.id)) return;
     this.notice(session.id, notice);
   }
-
 
   /**
    * 把挂着的提问全部按默认执行者放行。
@@ -712,7 +724,8 @@ export class SessionManager {
     const session = this.requireIdle(sessionId);
     const store = await this.storeFor(session.workspaceId);
     // 迁移必须能存档：prune 之后旧历史只存在于存档里（内存里只剩模板 + 断点）
-    if (!store) throw codedError("no-store", `no session store for workspace ${session.workspaceId}`);
+    if (!store)
+      throw codedError("no-store", `no session store for workspace ${session.workspaceId}`);
 
     this.beginTurn(session);
     session.settleDeferred = true;
@@ -888,7 +901,8 @@ export class SessionManager {
   ): Promise<{ removed: number; prompt: string; messages: unknown[] }> {
     const session = this.require(sessionId);
     const store = await this.storeFor(session.workspaceId);
-    if (!store) throw codedError("no-store", `no session store for workspace ${session.workspaceId}`);
+    if (!store)
+      throw codedError("no-store", `no session store for workspace ${session.workspaceId}`);
 
     const messages = session.agent.messages;
     if (!Number.isInteger(index) || index < 0 || index >= messages.length) {
@@ -1017,7 +1031,10 @@ export class SessionManager {
    * 「被占用」有两种：内存里活着，或盘上已有同名存档（覆盖存档比撞内存更坏 —— 那是
    * 悄悄毁掉别人一段对话）。所以两个都要看。
    */
-  private async freeSessionId(base: string, store: SessionStore | null | undefined): Promise<string> {
+  private async freeSessionId(
+    base: string,
+    store: SessionStore | null | undefined,
+  ): Promise<string> {
     let candidate = base;
     for (let suffix = 2; ; suffix++) {
       const alive = this.sessions.has(candidate);

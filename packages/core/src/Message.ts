@@ -106,9 +106,7 @@ export class Message implements AgentNS.Message {
  * - 无 crypto 的老环境降级为「时间戳 + 随机数」组合，保证会话内唯一即可
  */
 function generateMessageId(): string {
-  const c = (
-    globalThis as { crypto?: { randomUUID?: () => string } }
-  ).crypto;
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
   if (typeof c?.randomUUID === "function") {
     return c.randomUUID();
   }

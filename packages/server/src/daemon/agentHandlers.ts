@@ -121,4 +121,3 @@ function requireDefinition(params: unknown): AgentDefinition {
   }
   return value as AgentDefinition;
 }
-

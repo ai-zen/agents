@@ -57,7 +57,9 @@ export class FileSessionStore<Message = unknown> implements SessionStore<Message
 
   async read(id: string): Promise<SessionRecord<Message> | null> {
     try {
-      const parsed = JSON.parse(await fs.readFile(this.pathOf(id), "utf-8")) as SessionRecord<Message>;
+      const parsed = JSON.parse(
+        await fs.readFile(this.pathOf(id), "utf-8"),
+      ) as SessionRecord<Message>;
       // 形状不对（旧版残留、手改坏）一律当作没有，不猜
       if (!parsed || typeof parsed.id !== "string" || !Array.isArray(parsed.messages)) return null;
       return parsed;
@@ -96,9 +98,14 @@ export class FileSessionStore<Message = unknown> implements SessionStore<Message
 
   async lastSession(): Promise<SessionPointer | null> {
     try {
-      const parsed = JSON.parse(await fs.readFile(this.pointerFile, "utf-8")) as Partial<SessionPointer>;
+      const parsed = JSON.parse(
+        await fs.readFile(this.pointerFile, "utf-8"),
+      ) as Partial<SessionPointer>;
       if (typeof parsed?.id !== "string" || !parsed.id) return null;
-      return { id: parsed.id, updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : "" };
+      return {
+        id: parsed.id,
+        updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : "",
+      };
     } catch {
       return null;
     }

@@ -92,7 +92,10 @@ interface CacheEntry {
  * 是要发给客户端的条目，只数文件会让实际条数翻好几倍 —— 深层路径的每一级前缀都是一个
  * 目录。
  */
-export function fromGitList(names: readonly string[], maxEntries: number = MAX_ENTRIES): WorkspaceFileEntry[] {
+export function fromGitList(
+  names: readonly string[],
+  maxEntries: number = MAX_ENTRIES,
+): WorkspaceFileEntry[] {
   const dirs = new Set<string>();
   const files: string[] = [];
   for (const raw of names) {

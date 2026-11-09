@@ -24,7 +24,11 @@ afterEach(() => {
 });
 
 /** 造一份旧格式会话（带已废弃的 cwd / modelId） */
-function writeLegacy(id: string, cwd: string | undefined, extra: Record<string, unknown> = {}): void {
+function writeLegacy(
+  id: string,
+  cwd: string | undefined,
+  extra: Record<string, unknown> = {},
+): void {
   const body: Record<string, unknown> = {
     id,
     agentId: "default",

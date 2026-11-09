@@ -26,9 +26,7 @@ export class IndexedSearchTool implements Tool {
             description: "Enter the keywords you want to search",
             type: "array",
             items: {
-              enum: Array.from(
-                new Set(options.entries.map((x) => x.keywords).flat())
-              ),
+              enum: Array.from(new Set(options.entries.map((x) => x.keywords).flat())),
             },
           },
         },

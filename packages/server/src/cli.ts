@@ -135,7 +135,11 @@ async function callRunning(
         const value = frame as any;
         if (value?.kind === "hello") {
           if (!value.ok) {
-            done(() => reject(new Error(`handshake failed: ${value.error?.code} ${value.error?.message ?? ""}`)));
+            done(() =>
+              reject(
+                new Error(`handshake failed: ${value.error?.code} ${value.error?.message ?? ""}`),
+              ),
+            );
             return;
           }
           socket.write(encodeFrame({ id: 1, method }));
@@ -195,7 +199,9 @@ async function main(): Promise<number> {
         return 1;
       } catch (error: any) {
         // 进程在但连不上：可能是别人的端口被占，或它正处在启动/收尾；两种都不该默默双开
-        console.error(`a live pid ${existing.pid} holds the descriptor but is not answering: ${error?.message ?? error}`);
+        console.error(
+          `a live pid ${existing.pid} holds the descriptor but is not answering: ${error?.message ?? error}`,
+        );
         return 1;
       }
     }

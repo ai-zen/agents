@@ -63,7 +63,11 @@ describe("AgentToolLazy 子 Agent 委派边界", () => {
     });
 
     const seen: any[] = [];
-    host.use({ onSubAgentStart: (c) => { seen.push(c); } });
+    host.use({
+      onSubAgentStart: (c) => {
+        seen.push(c);
+      },
+    });
 
     const ctx = buildCtx(host);
     const result = await tool.exec(ctx);
@@ -150,10 +154,7 @@ describe("AgentToolLazy 子 Agent 委派边界", () => {
 
     expect(result).toBe("子Agent结果");
     // 初始消息保持 buildAgent 的决定（其后仅由 run 追加 Assistant 接收者）
-    expect(child.messages.slice(0, 2).map((m) => m.content)).toEqual([
-      "动态提示",
-      "动态任务",
-    ]);
+    expect(child.messages.slice(0, 2).map((m) => m.content)).toEqual(["动态提示", "动态任务"]);
   });
 
   it("省略 messages 时不做末条类型校验；提供模板时仍要求末条为 User", () => {

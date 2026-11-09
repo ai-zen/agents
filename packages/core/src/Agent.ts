@@ -174,11 +174,7 @@ export class Agent extends AgentContext {
   get lastUsage(): AgentNS.Usage | undefined {
     for (let i = this.messages.length - 1; i >= 0; i--) {
       const message = this.messages[i]!;
-      if (
-        message.role === AgentNS.Role.Assistant &&
-        !message.omit &&
-        message.usage
-      ) {
+      if (message.role === AgentNS.Role.Assistant && !message.omit && message.usage) {
         return message.usage;
       }
     }
@@ -266,9 +262,7 @@ export class Agent extends AgentContext {
   async run(ctx?: SendContext) {
     // 空消息校验：至少需要一条消息（如 send 追加的 User 消息）
     if (!this.messages.length) {
-      throw new Error(
-        "You need to send at least one message as a receive message",
-      );
+      throw new Error("You need to send at least one message as a receive message");
     }
 
     // 直接 run() 时的兜底上下文
@@ -337,15 +331,12 @@ export class Agent extends AgentContext {
           { signal: currentController.signal },
         )) as unknown as AsyncIterable<ChatCompletionChunk>;
 
-        (currentReceiver as AgentNS.Message).status =
-          AgentNS.MessageStatus.Writing;
+        (currentReceiver as AgentNS.Message).status = AgentNS.MessageStatus.Writing;
         this.events.emit("open");
 
         await this.parseStreamData(currentReceiver, stream);
 
-        const receiverStatus = currentReceiver.status as
-          | AgentNS.MessageStatus
-          | undefined;
+        const receiverStatus = currentReceiver.status as AgentNS.MessageStatus | undefined;
         if (
           receiverStatus === AgentNS.MessageStatus.Aborted ||
           receiverStatus === AgentNS.MessageStatus.Error
@@ -434,16 +425,13 @@ export class Agent extends AgentContext {
     return this.messages
       .filter(
         (message) =>
-          (message.status == undefined ||
-            message.status == AgentNS.MessageStatus.Completed) &&
+          (message.status == undefined || message.status == AgentNS.MessageStatus.Completed) &&
           !message.omit,
       )
       .map((message) => ({
         role: message.role,
         content: message.content,
-        function_call: message.function_call
-          ? message.function_call
-          : undefined,
+        function_call: message.function_call ? message.function_call : undefined,
         tool_calls: message.tool_calls?.length ? message.tool_calls : undefined,
         tool_call_id: message.tool_call_id ?? undefined,
         reasoning_content: message.reasoning_content ?? undefined,
@@ -458,10 +446,7 @@ export class Agent extends AgentContext {
    * 注意：SDK 类型未声明 DeepSeek 等厂商特有的 reasoning_content 字段，
    * 此处按 any 处理以兼容思维链增量。
    */
-  async parseStreamData(
-    receiver: AgentNS.Message,
-    stream: AsyncIterable<ChatCompletionChunk>,
-  ) {
+  async parseStreamData(receiver: AgentNS.Message, stream: AsyncIterable<ChatCompletionChunk>) {
     for await (const chunk of stream) {
       this.events.emit("chunk", chunk);
 
@@ -498,18 +483,14 @@ export class Agent extends AgentContext {
               }
 
               if ("image_url" in deltaSection) {
-                const currentSection = receiver.content[
-                  index
-                ] as AgentNS.ImageUrlContentSection;
+                const currentSection = receiver.content[index] as AgentNS.ImageUrlContentSection;
                 currentSection["type"] = "image_url";
                 currentSection["image_url"] ??= { url: "" };
                 currentSection["image_url"].url += deltaSection.image_url;
               }
 
               if ("text" in deltaSection) {
-                const currentSection = receiver.content[
-                  index
-                ] as AgentNS.TextContentSection;
+                const currentSection = receiver.content[index] as AgentNS.TextContentSection;
                 currentSection["type"] = "text";
                 currentSection["text"] ??= "";
                 currentSection["text"] += deltaSection.text;
@@ -550,8 +531,7 @@ export class Agent extends AgentContext {
             }
 
             if (deltaToolCall.function?.name) {
-              receiver.tool_calls[index]["function"]!["name"] =
-                deltaToolCall.function.name;
+              receiver.tool_calls[index]["function"]!["name"] = deltaToolCall.function.name;
             }
 
             if (deltaToolCall.function?.arguments) {
@@ -661,9 +641,7 @@ export class Agent extends AgentContext {
 
         try {
           const matchedTool: Tool | undefined = this.tools.find(
-            (tool) =>
-              tool.function.name == task.function!.name &&
-              tool.type == "function",
+            (tool) => tool.function.name == task.function!.name && tool.type == "function",
           );
 
           // 统一上下文：一个类贯穿「拦截决策 → 执行」，onToolCall 与 Tool.exec 收同一实例。
@@ -700,10 +678,7 @@ export class Agent extends AgentContext {
               toolCall: task,
               availableTools: [...this.tools],
             });
-            resultReceiver.content =
-              hint !== undefined
-                ? hint
-                : this.defaultUnknownTool(task);
+            resultReceiver.content = hint !== undefined ? hint : this.defaultUnknownTool(task);
           } else {
             resultReceiver.content = await matchedTool.exec(ctx);
           }

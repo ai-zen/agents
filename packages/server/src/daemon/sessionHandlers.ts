@@ -66,7 +66,9 @@ export interface SessionHandlerOptions {
   fileIndex?: FileIndex;
 }
 
-export function createSessionHandlers(options: SessionHandlerOptions): Record<string, MethodHandler> {
+export function createSessionHandlers(
+  options: SessionHandlerOptions,
+): Record<string, MethodHandler> {
   const { manager, workspacesRoot, defaultWorkspacePath } = options;
   const fileIndex = options.fileIndex ?? new FileIndex();
 
@@ -198,7 +200,10 @@ export function createSessionHandlers(options: SessionHandlerOptions): Record<st
     },
 
     [SESSION_METHODS.rollback]: async (params): Promise<SessionRollbackResult> => {
-      return await manager.rollback(requireString(params, "sessionId"), requireNumber(params, "index"));
+      return await manager.rollback(
+        requireString(params, "sessionId"),
+        requireNumber(params, "index"),
+      );
     },
 
     [SESSION_METHODS.snapshot]: async (params): Promise<SessionSnapshotResult> => {
@@ -301,7 +306,8 @@ function isContentBlock(block: unknown): boolean {
   if (item?.type === "text") return typeof item.text === "string";
   if (item?.type === "image_url") return typeof item.image_url?.url === "string";
   // `file`：`file_id`（已上传）与 `file_data`（base64 内联）至少要有一个
-  if (item?.type === "file") return typeof item.file_id === "string" || typeof item.file_data === "string";
+  if (item?.type === "file")
+    return typeof item.file_id === "string" || typeof item.file_data === "string";
   return false;
 }
 
@@ -333,4 +339,3 @@ function requireChoice(params: unknown): string | null {
   if (typeof value === "string" && value.length > 0) return value;
   throw badParams(`invalid "choice" (expected option id | null)`);
 }
-

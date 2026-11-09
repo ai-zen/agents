@@ -34,8 +34,14 @@ describe("agentPaths", () => {
 
   it("子 Agent 与工具：项目级在前", () => {
     const paths = agentPaths(base);
-    expect(paths.subAgentsDirs).toEqual([join("/work/proj", ".ai-zen", "sub-agents"), join("/zen", "sub-agents")]);
-    expect(paths.toolsDirs).toEqual([join("/work/proj", ".ai-zen", "tools"), join("/zen", "tools")]);
+    expect(paths.subAgentsDirs).toEqual([
+      join("/work/proj", ".ai-zen", "sub-agents"),
+      join("/zen", "sub-agents"),
+    ]);
+    expect(paths.toolsDirs).toEqual([
+      join("/work/proj", ".ai-zen", "tools"),
+      join("/zen", "tools"),
+    ]);
   });
 
   it("换个工作区就换一套项目级路径，全局那几层不变", () => {

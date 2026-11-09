@@ -89,15 +89,15 @@ describe("Agent", () => {
     });
 
     it("缺少 client 时应抛出错误", () => {
-      expect(
-        () => new Agent({ client: undefined as any, model: "gpt-4" }),
-      ).toThrow("AgentContext must have a client");
+      expect(() => new Agent({ client: undefined as any, model: "gpt-4" })).toThrow(
+        "AgentContext must have a client",
+      );
     });
 
     it("缺少 model 时应抛出错误", () => {
-      expect(
-        () => new Agent({ client: {} as any, model: undefined as any }),
-      ).toThrow("AgentContext must have a model");
+      expect(() => new Agent({ client: {} as any, model: undefined as any })).toThrow(
+        "AgentContext must have a model",
+      );
     });
   });
 
@@ -156,9 +156,7 @@ describe("Agent", () => {
 
   describe("run - 基本流", () => {
     it("应正常完成一次简单对话", async () => {
-      const client = createMockClient([
-        [chunk({ content: "你好！我是助手。" }), stopChunk()],
-      ]);
+      const client = createMockClient([[chunk({ content: "你好！我是助手。" }), stopChunk()]]);
 
       const agent = new Agent({
         client,
@@ -178,9 +176,7 @@ describe("Agent", () => {
     });
 
     it("最后一条消息非 Assistant 时 run 应自动追加 Assistant 并正常执行", async () => {
-      const client = createMockClient([
-        [chunk({ content: "收到" }), stopChunk()],
-      ]);
+      const client = createMockClient([[chunk({ content: "收到" }), stopChunk()]]);
 
       const agent = new Agent({
         client,
@@ -205,9 +201,7 @@ describe("Agent", () => {
     });
 
     it("finish_reason 为 Length 时应正常结束", async () => {
-      const client = createMockClient([
-        [chunk({ content: "内容被截断" }), chunk({}, "length")],
-      ]);
+      const client = createMockClient([[chunk({ content: "内容被截断" }), chunk({}, "length")]]);
 
       const agent = new Agent({
         client,
@@ -248,9 +242,7 @@ describe("Agent", () => {
     });
 
     it("没有工具调用时不再继续对话", async () => {
-      const client = createMockClient([
-        [chunk({ content: "最终回复" }), stopChunk()],
-      ]);
+      const client = createMockClient([[chunk({ content: "最终回复" }), stopChunk()]]);
 
       const agent = new Agent({
         client,
@@ -270,12 +262,14 @@ describe("Agent", () => {
       const client = createMockClient([
         [
           chunk({
-            tool_calls: [{
-              index: 0,
-              id: "1",
-              type: "function",
-              function: { name: "getTime", arguments: "{}" },
-            }],
+            tool_calls: [
+              {
+                index: 0,
+                id: "1",
+                type: "function",
+                function: { name: "getTime", arguments: "{}" },
+              },
+            ],
           }),
           chunk({}, "tool_calls"),
         ],
@@ -313,13 +307,23 @@ describe("Agent", () => {
         [
           chunk({
             tool_calls: [
-              { index: 0, id: "1", type: "function", function: { name: "slowTool", arguments: "{}" } },
+              {
+                index: 0,
+                id: "1",
+                type: "function",
+                function: { name: "slowTool", arguments: "{}" },
+              },
             ],
           }),
           // 每个 delta 只带一个下标（真机形态）：core 也只按 `tool_calls[0]` 收一个
           chunk({
             tool_calls: [
-              { index: 1, id: "2", type: "function", function: { name: "fastTool", arguments: "{}" } },
+              {
+                index: 1,
+                id: "2",
+                type: "function",
+                function: { name: "fastTool", arguments: "{}" },
+              },
             ],
           }),
           chunk({}, "tool_calls"),
@@ -379,7 +383,12 @@ describe("Agent", () => {
         [
           chunk({
             tool_calls: [
-              { index: 0, id: "1", type: "function", function: { name: "hangingTool", arguments: "{}" } },
+              {
+                index: 0,
+                id: "1",
+                type: "function",
+                function: { name: "hangingTool", arguments: "{}" },
+              },
             ],
           }),
           chunk({}, "tool_calls"),
@@ -441,11 +450,19 @@ describe("Agent", () => {
 
       const client = createMockClient([
         [
-          chunk({ tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "toolA", arguments: "{}" } }] }),
+          chunk({
+            tool_calls: [
+              { index: 0, id: "1", type: "function", function: { name: "toolA", arguments: "{}" } },
+            ],
+          }),
           chunk({}, "tool_calls"),
         ],
         [
-          chunk({ tool_calls: [{ index: 0, id: "2", type: "function", function: { name: "toolB", arguments: "{}" } }] }),
+          chunk({
+            tool_calls: [
+              { index: 0, id: "2", type: "function", function: { name: "toolB", arguments: "{}" } },
+            ],
+          }),
           chunk({}, "tool_calls"),
         ],
         [chunk({ content: "最终结果" }), stopChunk()],
@@ -485,7 +502,16 @@ describe("Agent", () => {
 
       const client = createMockClient([
         [
-          chunk({ tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "stopTool", arguments: "{}" } }] }),
+          chunk({
+            tool_calls: [
+              {
+                index: 0,
+                id: "1",
+                type: "function",
+                function: { name: "stopTool", arguments: "{}" },
+              },
+            ],
+          }),
           chunk({}, "tool_calls"),
         ],
       ]);
@@ -522,7 +548,16 @@ describe("Agent", () => {
 
       const client = createMockClient([
         [
-          chunk({ tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "parseTest", arguments: "{invalid}" } }] }),
+          chunk({
+            tool_calls: [
+              {
+                index: 0,
+                id: "1",
+                type: "function",
+                function: { name: "parseTest", arguments: "{invalid}" },
+              },
+            ],
+          }),
           chunk({}, "tool_calls"),
         ],
         [chunk({ content: "已修正参数" }), stopChunk()],
@@ -562,7 +597,16 @@ describe("Agent", () => {
 
       const client = createMockClient([
         [
-          chunk({ tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "parseTest", arguments: "{invalid}" } }] }),
+          chunk({
+            tool_calls: [
+              {
+                index: 0,
+                id: "1",
+                type: "function",
+                function: { name: "parseTest", arguments: "{invalid}" },
+              },
+            ],
+          }),
           chunk({}, "tool_calls"),
         ],
       ]);
@@ -597,7 +641,16 @@ describe("Agent", () => {
 
       const client = createMockClient([
         [
-          chunk({ tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "errorTool", arguments: "{}" } }] }),
+          chunk({
+            tool_calls: [
+              {
+                index: 0,
+                id: "1",
+                type: "function",
+                function: { name: "errorTool", arguments: "{}" },
+              },
+            ],
+          }),
           chunk({}, "tool_calls"),
         ],
         [chunk({ content: "错误已处理" }), stopChunk()],
@@ -635,7 +688,16 @@ describe("Agent", () => {
 
       const client = createMockClient([
         [
-          chunk({ tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "errorTool", arguments: "{}" } }] }),
+          chunk({
+            tool_calls: [
+              {
+                index: 0,
+                id: "1",
+                type: "function",
+                function: { name: "errorTool", arguments: "{}" },
+              },
+            ],
+          }),
           chunk({}, "tool_calls"),
         ],
       ]);
@@ -659,7 +721,16 @@ describe("Agent", () => {
     it("没有匹配到工具时应返回未知工具提示并继续", async () => {
       const client = createMockClient([
         [
-          chunk({ tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "unknownTool", arguments: "{}" } }] }),
+          chunk({
+            tool_calls: [
+              {
+                index: 0,
+                id: "1",
+                type: "function",
+                function: { name: "unknownTool", arguments: "{}" },
+              },
+            ],
+          }),
           chunk({}, "tool_calls"),
         ],
         [chunk({ content: "好的，我知道这个工具不可用" }), stopChunk()],
@@ -685,7 +756,16 @@ describe("Agent", () => {
       it("设置同步 onUnknownTool 时，未知工具调用应返回自定义内容并继续对话", async () => {
         const client = createMockClient([
           [
-            chunk({ tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "noSuchTool", arguments: "{}" } }] }),
+            chunk({
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "1",
+                  type: "function",
+                  function: { name: "noSuchTool", arguments: "{}" },
+                },
+              ],
+            }),
             chunk({}, "tool_calls"),
           ],
           [chunk({ content: "我知道了" }), stopChunk()],
@@ -716,7 +796,16 @@ describe("Agent", () => {
       it("未设置 onUnknownTool 时使用默认提示", async () => {
         const client = createMockClient([
           [
-            chunk({ tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "unknownTool", arguments: "{}" } }] }),
+            chunk({
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "1",
+                  type: "function",
+                  function: { name: "unknownTool", arguments: "{}" },
+                },
+              ],
+            }),
             chunk({}, "tool_calls"),
           ],
           [chunk({ content: "好的" }), stopChunk()],
@@ -750,7 +839,16 @@ describe("Agent", () => {
 
         const client = createMockClient([
           [
-            chunk({ tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "sensitiveTool", arguments: "{}" } }] }),
+            chunk({
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "1",
+                  type: "function",
+                  function: { name: "sensitiveTool", arguments: "{}" },
+                },
+              ],
+            }),
             chunk({}, "tool_calls"),
           ],
           [chunk({ content: "好的，我不执行该敏感操作" }), stopChunk()],
@@ -763,8 +861,7 @@ describe("Agent", () => {
           tools: [tool],
         });
         agent.use({
-          onToolCall: (ctx) =>
-            `工具 ${ctx.tool_call.function?.name} 被拒绝：需要用户授权`,
+          onToolCall: (ctx) => `工具 ${ctx.tool_call.function?.name} 被拒绝：需要用户授权`,
         });
 
         agent.append(Message.Assistant());
@@ -792,7 +889,16 @@ describe("Agent", () => {
 
         const client = createMockClient([
           [
-            chunk({ tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "safeTool", arguments: "{}" } }] }),
+            chunk({
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "1",
+                  type: "function",
+                  function: { name: "safeTool", arguments: "{}" },
+                },
+              ],
+            }),
             chunk({}, "tool_calls"),
           ],
           [chunk({ content: "已处理" }), stopChunk()],
@@ -835,7 +941,16 @@ describe("Agent", () => {
 
         const client = createMockClient([
           [
-            chunk({ tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "sharedCtx", arguments: "{}" } }] }),
+            chunk({
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "1",
+                  type: "function",
+                  function: { name: "sharedCtx", arguments: "{}" },
+                },
+              ],
+            }),
             chunk({}, "tool_calls"),
           ],
           [chunk({ content: "完成" }), stopChunk()],
@@ -888,8 +1003,26 @@ describe("Agent", () => {
 
         const client = createMockClient([
           [
-            chunk({ tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "denyTool", arguments: "{}" } }] }),
-            chunk({ tool_calls: [{ index: 1, id: "2", type: "function", function: { name: "allowTool", arguments: "{}" } }] }),
+            chunk({
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "1",
+                  type: "function",
+                  function: { name: "denyTool", arguments: "{}" },
+                },
+              ],
+            }),
+            chunk({
+              tool_calls: [
+                {
+                  index: 1,
+                  id: "2",
+                  type: "function",
+                  function: { name: "allowTool", arguments: "{}" },
+                },
+              ],
+            }),
             chunk({}, "tool_calls"),
           ],
           [chunk({ content: "已分别处理" }), stopChunk()],
@@ -1073,7 +1206,16 @@ describe("Agent", () => {
         if (callCount === 0) {
           callCount++;
           return makeStream([
-            chunk({ tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "getTime", arguments: "{}" } }] }),
+            chunk({
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "1",
+                  type: "function",
+                  function: { name: "getTime", arguments: "{}" },
+                },
+              ],
+            }),
             chunk({}, "tool_calls"),
           ]);
         }
@@ -1120,13 +1262,24 @@ describe("Agent", () => {
 
       let callCount = 0;
       let resolveSecond!: () => void;
-      const secondStarted = new Promise<void>((r) => { resolveSecond = r; });
+      const secondStarted = new Promise<void>((r) => {
+        resolveSecond = r;
+      });
 
       const create = vi.fn(async (_body: any, options: any) => {
         if (callCount === 0) {
           callCount++;
           return makeStream([
-            chunk({ tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "getTime", arguments: "{}" } }] }),
+            chunk({
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "1",
+                  type: "function",
+                  function: { name: "getTime", arguments: "{}" },
+                },
+              ],
+            }),
             chunk({}, "tool_calls"),
           ]);
         }
@@ -1159,9 +1312,7 @@ describe("Agent", () => {
     });
 
     it("单轮 run 结束后 innerLoopsTasks 与 innerLoopTasks 均清空", async () => {
-      const client = createMockClient([
-        [chunk({ content: "你好" }), stopChunk()],
-      ]);
+      const client = createMockClient([[chunk({ content: "你好" }), stopChunk()]]);
 
       const agent = new Agent({
         client,
@@ -1180,9 +1331,7 @@ describe("Agent", () => {
   describe("run - token 用量（usage）", () => {
     it("单轮对话后 usage 钉到本轮 assistant 消息上，且与 lastUsage 一致", async () => {
       const usage = { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 };
-      const client = createMockClient([
-        [chunk({ content: "你好" }), { ...stopChunk(), usage }],
-      ]);
+      const client = createMockClient([[chunk({ content: "你好" }), { ...stopChunk(), usage }]]);
 
       const agent = new Agent({
         client,
@@ -1233,18 +1382,13 @@ describe("Agent", () => {
 
       await agent.run();
 
-      const assistants = agent.messages.filter(
-        (m) => m.role === AgentNS.Role.Assistant,
-      );
+      const assistants = agent.messages.filter((m) => m.role === AgentNS.Role.Assistant);
       expect(assistants).toHaveLength(2);
       expect(assistants[0]!.usage).toEqual(usage1);
       expect(assistants[1]!.usage).toEqual(usage2);
 
       // 累计消耗 = 各 assistant 消息 usage 之和
-      const total = assistants.reduce(
-        (sum, m) => sum + (m.usage?.total_tokens ?? 0),
-        0,
-      );
+      const total = assistants.reduce((sum, m) => sum + (m.usage?.total_tokens ?? 0), 0);
       expect(total).toBe(usage1.total_tokens + usage2.total_tokens);
       // lastUsage 仅保留最后一轮
       expect(agent.lastUsage).toEqual(usage2);
@@ -1252,9 +1396,7 @@ describe("Agent", () => {
 
     it("lastUsage 是派生值：跟随 messages 变化，不独立存储", async () => {
       const usage = { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 };
-      const client = createMockClient([
-        [chunk({ content: "你好" }), { ...stopChunk(), usage }],
-      ]);
+      const client = createMockClient([[chunk({ content: "你好" }), { ...stopChunk(), usage }]]);
 
       const agent = new Agent({
         client,
@@ -1316,8 +1458,7 @@ describe("Agent", () => {
 
   describe("run - 中断轮次归一化（并行工具 + abort）", () => {
     const included = (m: AgentNS.Message) =>
-      (m.status == undefined || m.status === AgentNS.MessageStatus.Completed) &&
-      !m.omit;
+      (m.status == undefined || m.status === AgentNS.MessageStatus.Completed) && !m.omit;
 
     /** 造一个「快工具 + 挂起至 abort 的慢工具」并行调用、执行中中断的场景 */
     async function runParallelAbort(strategy?: "fill" | "drop") {
@@ -1327,11 +1468,19 @@ describe("Agent", () => {
       });
 
       const fastTool = new CallbackTool({
-        function: { name: "fast", description: "快", parameters: { type: "object", properties: {} } },
+        function: {
+          name: "fast",
+          description: "快",
+          parameters: { type: "object", properties: {} },
+        },
         callback: () => "FAST",
       });
       const slowTool = new CallbackTool({
-        function: { name: "slow", description: "慢", parameters: { type: "object", properties: {} } },
+        function: {
+          name: "slow",
+          description: "慢",
+          parameters: { type: "object", properties: {} },
+        },
         callback: async (_args: any, ctx: ToolCallContext) => {
           signalSlowStarted();
           await new Promise<void>((resolve) => {
@@ -1345,8 +1494,16 @@ describe("Agent", () => {
       // 注意：每个 tool_call 单独一个 chunk（parseStreamData 只读 delta.tool_calls[0]）
       const create = vi.fn(async () =>
         makeStream([
-          chunk({ tool_calls: [{ index: 0, id: "f", type: "function", function: { name: "fast", arguments: "{}" } }] }),
-          chunk({ tool_calls: [{ index: 1, id: "s", type: "function", function: { name: "slow", arguments: "{}" } }] }),
+          chunk({
+            tool_calls: [
+              { index: 0, id: "f", type: "function", function: { name: "fast", arguments: "{}" } },
+            ],
+          }),
+          chunk({
+            tool_calls: [
+              { index: 1, id: "s", type: "function", function: { name: "slow", arguments: "{}" } },
+            ],
+          }),
           chunk({}, "tool_calls"),
         ]),
       );
@@ -1410,9 +1567,7 @@ describe("Agent", () => {
 
   describe("run - 事件系统", () => {
     it("应触发 inner-loop-start、open、parsed、finally 事件", async () => {
-      const client = createMockClient([
-        [chunk({ content: "回复" }), stopChunk()],
-      ]);
+      const client = createMockClient([[chunk({ content: "回复" }), stopChunk()]]);
 
       const agent = new Agent({
         client,
@@ -1457,7 +1612,16 @@ describe("Agent", () => {
 
       const client = createMockClient([
         [
-          chunk({ tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "testTool", arguments: "{}" } }] }),
+          chunk({
+            tool_calls: [
+              {
+                index: 0,
+                id: "1",
+                type: "function",
+                function: { name: "testTool", arguments: "{}" },
+              },
+            ],
+          }),
           chunk({}, "tool_calls"),
         ],
         [chunk({ content: "最终回复" }), stopChunk()],
@@ -1484,9 +1648,7 @@ describe("Agent", () => {
     });
 
     it("整组内循环事件 inner-loops-start/end 一次 run 各触发一次", async () => {
-      const client = createMockClient([
-        [chunk({ content: "回复" }), stopChunk()],
-      ]);
+      const client = createMockClient([[chunk({ content: "回复" }), stopChunk()]]);
 
       const agent = new Agent({
         client,
@@ -1539,9 +1701,7 @@ describe("Agent", () => {
 
   describe("send", () => {
     it("应自动创建 User + Assistant 消息并运行", async () => {
-      const client = createMockClient([
-        [chunk({ content: "这是回复" }), stopChunk()],
-      ]);
+      const client = createMockClient([[chunk({ content: "这是回复" }), stopChunk()]]);
 
       const agent = new Agent({
         client,
@@ -1560,9 +1720,7 @@ describe("Agent", () => {
     });
 
     it("send 后 isHasPendingMessage 应为 false", async () => {
-      const client = createMockClient([
-        [chunk({ content: "ok" }), stopChunk()],
-      ]);
+      const client = createMockClient([[chunk({ content: "ok" }), stopChunk()]]);
 
       const agent = new Agent({
         client,
@@ -1575,9 +1733,7 @@ describe("Agent", () => {
     });
 
     it("onAfterSend 替换 messages 后，返回值是新会话而非钩子前的快照", async () => {
-      const client = createMockClient([
-        [chunk({ content: "旧会话回复" }), stopChunk()],
-      ]);
+      const client = createMockClient([[chunk({ content: "旧会话回复" }), stopChunk()]]);
 
       const agent = new Agent({
         client,
@@ -1614,9 +1770,7 @@ describe("Agent", () => {
     });
 
     it("send 应触发 onBeforeSend / onAfterSend 插件钩子", async () => {
-      const client = createMockClient([
-        [chunk({ content: "ok" }), stopChunk()],
-      ]);
+      const client = createMockClient([[chunk({ content: "ok" }), stopChunk()]]);
 
       const agent = new Agent({
         client,
@@ -1650,7 +1804,16 @@ describe("Agent", () => {
 
       const client = createMockClient([
         [
-          chunk({ tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "dynamicTool", arguments: "{}" } }] }),
+          chunk({
+            tool_calls: [
+              {
+                index: 0,
+                id: "1",
+                type: "function",
+                function: { name: "dynamicTool", arguments: "{}" },
+              },
+            ],
+          }),
           chunk({}, "tool_calls"),
         ],
         [chunk({ content: "完成" }), stopChunk()],
@@ -1675,9 +1838,7 @@ describe("Agent", () => {
     });
 
     it("onInnerLoopStart/End 插件钩子应每轮触发", async () => {
-      const client = createMockClient([
-        [chunk({ content: "ok" }), stopChunk()],
-      ]);
+      const client = createMockClient([[chunk({ content: "ok" }), stopChunk()]]);
 
       const agent = new Agent({
         client,
@@ -1707,7 +1868,16 @@ describe("Agent", () => {
 
       const client = createMockClient([
         [
-          chunk({ tool_calls: [{ index: 0, id: "1", type: "function", function: { name: "blockedTool", arguments: "{}" } }] }),
+          chunk({
+            tool_calls: [
+              {
+                index: 0,
+                id: "1",
+                type: "function",
+                function: { name: "blockedTool", arguments: "{}" },
+              },
+            ],
+          }),
           chunk({}, "tool_calls"),
         ],
         [chunk({ content: "已处理拒绝" }), stopChunk()],
@@ -1722,9 +1892,7 @@ describe("Agent", () => {
 
       agent.use({
         onToolCall: (ctx) =>
-          ctx.tool_call.function?.name === "blockedTool"
-            ? "插件拒绝：不允许"
-            : undefined,
+          ctx.tool_call.function?.name === "blockedTool" ? "插件拒绝：不允许" : undefined,
       });
 
       await agent.send("hi");

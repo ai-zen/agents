@@ -79,8 +79,9 @@ function definition(id: string, extra: Partial<AgentDefinition> = {}): AgentDefi
 
 describe("agent.model.set（原有方法，语义不变）", () => {
   it("转交给装配层，参数原样", async () => {
-    await expect(call(AGENT_METHODS.setModel, { agentId: "default", modelId: "glm-5.3" })).resolves
-      .toEqual({ agentId: "default", modelId: "glm-5.3" });
+    await expect(
+      call(AGENT_METHODS.setModel, { agentId: "default", modelId: "glm-5.3" }),
+    ).resolves.toEqual({ agentId: "default", modelId: "glm-5.3" });
     expect(setModelCalls).toEqual([{ agentId: "default", modelId: "glm-5.3" }]);
   });
 

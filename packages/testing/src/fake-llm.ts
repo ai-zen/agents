@@ -91,9 +91,7 @@ const MODEL = "fake-model";
 const DEFAULT_USAGE = { prompt: 21, completion: 7 };
 
 /** 起一个假端点（端口由系统分配，避免与真实服务端抢 8790） */
-export async function startFakeLlm(
-  options: FakeLlmOptions = {},
-): Promise<FakeLlm> {
+export async function startFakeLlm(options: FakeLlmOptions = {}): Promise<FakeLlm> {
   const requests: FakeLlmRequest[] = [];
   const server = createServer((request, response) => {
     void handle(request, response);
@@ -102,10 +100,7 @@ export async function startFakeLlm(
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address() as AddressInfo;
 
-  async function handle(
-    request: IncomingMessage,
-    response: any,
-  ): Promise<void> {
+  async function handle(request: IncomingMessage, response: any): Promise<void> {
     // 客户端在响应写完之前取消（慢响应 + abort 的用例）时，socket 已关，再写会抛
     // ERR_STREAM_DESTROYED。那不是故障，正是那些用例要的结果，不该让它掀掉测试进程。
     response.on("error", () => {});
@@ -140,9 +135,7 @@ export async function startFakeLlm(
     if (parsed?.stream === true) await streamOut(response, reply);
     else {
       if (options.jsonDelayMs) {
-        await new Promise((resolve) =>
-          setTimeout(resolve, options.jsonDelayMs),
-        );
+        await new Promise((resolve) => setTimeout(resolve, options.jsonDelayMs));
         // 等的时候客户端已经取消：这条请求到此为止（请求体仍留在 `requests` 里）
         if (response.destroyed || response.writableEnded) {
           record.aborted = true;
@@ -249,8 +242,7 @@ export function splitReply(reply: string, count: number): string[] {
   if (count <= 1 || reply.length <= 1) return [reply];
   const size = Math.ceil(reply.length / count);
   const pieces: string[] = [];
-  for (let at = 0; at < reply.length; at += size)
-    pieces.push(reply.slice(at, at + size));
+  for (let at = 0; at < reply.length; at += size) pieces.push(reply.slice(at, at + size));
   return pieces;
 }
 

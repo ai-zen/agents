@@ -42,7 +42,9 @@ describe("PhaseTracker", () => {
   it("收到 tool_calls → tool-calling，并记住工具名", () => {
     const tracker = new PhaseTracker();
     tracker.opened();
-    tracker.delta(chunk({ tool_calls: [{ index: 0, function: { name: "read_file", arguments: "" } }] }));
+    tracker.delta(
+      chunk({ tool_calls: [{ index: 0, function: { name: "read_file", arguments: "" } }] }),
+    );
     expect(tracker.phase).toEqual({ kind: "tool-calling", tool: "read_file" });
   });
 
@@ -59,7 +61,11 @@ describe("PhaseTracker", () => {
     tracker.opened();
     tracker.delta(chunk({ tool_calls: [{ index: 0, function: { name: "grep" } }] }));
     tracker.streamEnded({ tool_calls: [{ function: { name: "grep" } }] });
-    expect(tracker.phase).toEqual({ kind: "tool-waiting", tools: ["grep"], calls: [{ name: "grep" }] });
+    expect(tracker.phase).toEqual({
+      kind: "tool-waiting",
+      tools: ["grep"],
+      calls: [{ name: "grep" }],
+    });
   });
 
   it("并行工具：流结束时记下**全部**调用（不是只记第一个）", () => {

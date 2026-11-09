@@ -18,10 +18,7 @@ function isToolResult(m: AgentNS.Message): boolean {
 
 /** 该消息是否会被 `formatHistory` 纳入（status 未定义或 Completed，且未 omit） */
 function isIncluded(m: AgentNS.Message): boolean {
-  return (
-    (m.status == undefined || m.status === AgentNS.MessageStatus.Completed) &&
-    !m.omit
-  );
+  return (m.status == undefined || m.status === AgentNS.MessageStatus.Completed) && !m.omit;
 }
 
 /** 工具调用的匹配键：优先 `tool_call_id`，缺失时退化为 `fn:<name>`（兼容 function_call） */
@@ -109,12 +106,10 @@ export function reconcileAbortedToolRounds(
 
     const assistantIncluded = isIncluded(assistant);
     const anyResultIncluded = present.some(isIncluded);
-    const allResultsIncluded =
-      present.length === calls.length && present.every(isIncluded);
+    const allResultsIncluded = present.length === calls.length && present.every(isIncluded);
 
     const inconsistent =
-      (assistantIncluded && !allResultsIncluded) ||
-      (!assistantIncluded && anyResultIncluded);
+      (assistantIncluded && !allResultsIncluded) || (!assistantIncluded && anyResultIncluded);
     if (!inconsistent) continue;
 
     if (strategy === "drop") {

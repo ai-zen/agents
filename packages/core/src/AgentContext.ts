@@ -62,8 +62,7 @@ export class AgentContext {
     this.messages = options.messages ?? [];
     this.tools = options.tools ?? [];
     this.allowJsonParseError = options.allowJsonParseError ?? true;
-    this.abortedToolRoundStrategy =
-      options.abortedToolRoundStrategy ?? "fill";
+    this.abortedToolRoundStrategy = options.abortedToolRoundStrategy ?? "fill";
     this.abortedToolRoundReason =
       options.abortedToolRoundReason ?? DEFAULT_ABORTED_TOOL_ROUND_REASON;
     this.abortedMessageStrategy = options.abortedMessageStrategy ?? "drop";

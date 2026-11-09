@@ -89,4 +89,3 @@ function requireScope(params: unknown): McpScope {
   }
   return value;
 }
-

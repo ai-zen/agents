@@ -31,7 +31,10 @@ describe("fromGitList：git 的文件清单 → 「文件 + 祖先目录」条�
   it("共用祖先目录只出现一次（两个文件同属 `src/tui`，`Set` 去重）", () => {
     const entries = fromGitList(["src/tui/chat.tsx", "src/tui/input.tsx"]);
 
-    expect(entries.filter((entry) => entry.dir).map((entry) => entry.path)).toEqual(["src/tui", "src"]);
+    expect(entries.filter((entry) => entry.dir).map((entry) => entry.path)).toEqual([
+      "src/tui",
+      "src",
+    ]);
     expect(entries.filter((entry) => !entry.dir).map((entry) => entry.path)).toEqual([
       "src/tui/chat.tsx",
       "src/tui/input.tsx",
@@ -214,10 +217,18 @@ describe("FileIndex：真实磁盘（fs.glob 兜底）", () => {
     const index = new FileIndex({ runGit: async () => null });
     const entries = await index.list(project);
 
-    const files = entries.filter((entry) => !entry.dir).map((entry) => entry.path).sort();
+    const files = entries
+      .filter((entry) => !entry.dir)
+      .map((entry) => entry.path)
+      .sort();
     expect(files).toEqual(["README.md", "src/ui/button.tsx"]);
     expect(entries.some((entry) => entry.path.startsWith("./"))).toBe(false);
     // 兜底那条路本来就拿得到 dirent，顺手带上目录（`dir: true` 决定补全后加不加 `/`）
-    expect(entries.filter((entry) => entry.dir).map((entry) => entry.path).sort()).toEqual(["src", "src/ui"]);
+    expect(
+      entries
+        .filter((entry) => entry.dir)
+        .map((entry) => entry.path)
+        .sort(),
+    ).toEqual(["src", "src/ui"]);
   });
 });

@@ -108,9 +108,7 @@ export interface ConfigMcpGetParams {
  *
  * 「文件不存在」不算坏：那是正常的空配置（`ok:true` + 空的 `mcpServers`）。
  */
-export type ConfigMcpGetResult =
-  | { ok: true; config: unknown }
-  | { ok: false; error: string };
+export type ConfigMcpGetResult = { ok: true; config: unknown } | { ok: false; error: string };
 
 export interface ConfigMcpSaveParams {
   scope: McpScope;

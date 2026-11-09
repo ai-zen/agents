@@ -72,9 +72,7 @@ export namespace AgentNS {
   }
 
   export type MessageContentSection =
-    | ImageUrlContentSection
-    | TextContentSection
-    | FileContentSection;
+    ImageUrlContentSection | TextContentSection | FileContentSection;
 
   export type MessageContent = string | MessageContentSection[];
 

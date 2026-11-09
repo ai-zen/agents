@@ -1,3 +1,4 @@
+# 与 `packages/sdk/.prettierignore` 曾经的条目一致：整个工作区共用一份
 node_modules
 dist
 coverage

@@ -1,8 +1,5 @@
 import { CallbackTool } from "@ai-zen/agents-core";
-import {
-  fileToContentSection,
-  resolveModelAndEndpoint,
-} from "../../../shared/content-blocks.js";
+import { fileToContentSection, resolveModelAndEndpoint } from "../../../shared/content-blocks.js";
 import type { AgentNS } from "@ai-zen/agents-core";
 import { createDisclosureParam } from "../../disclosure.js";
 import { DEFAULT_MAX_TOOL_OUTPUT, guardOutput, headTailPreview } from "../builtin/outputGuard.js";

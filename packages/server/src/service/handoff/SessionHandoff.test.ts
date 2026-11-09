@@ -140,7 +140,9 @@ describe("SessionHandoff：文档落在工作区里", () => {
     // prune：模板 1 条 + 交接断点 1 条
     expect(agent.messages).toHaveLength(2);
     expect(agent.messages[0]).toEqual({ role: "system", content: "模板" });
-    expect(String((agent.messages[1] as { content: string }).content)).toContain(outcome.handoffPath);
+    expect(String((agent.messages[1] as { content: string }).content)).toContain(
+      outcome.handoffPath,
+    );
     // 旧历史真的没了（不是靠 `omit` 标记藏着）
     expect(JSON.stringify(agent.messages)).not.toContain("旧任务");
   });

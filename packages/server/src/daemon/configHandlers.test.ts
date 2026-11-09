@@ -67,8 +67,9 @@ describe("config.get / config.save", () => {
   it("config.save 落盘后 config.get 读得回来", async () => {
     const current = ((await call(CONFIG_METHODS.get)) as { config: AppConfig }).config;
 
-    await expect(call(CONFIG_METHODS.save, { config: { ...current, maxToolOutput: 777 } })).resolves
-      .toEqual({ saved: true });
+    await expect(
+      call(CONFIG_METHODS.save, { config: { ...current, maxToolOutput: 777 } }),
+    ).resolves.toEqual({ saved: true });
 
     const after = ((await call(CONFIG_METHODS.get)) as { config: AppConfig }).config;
     expect(after.maxToolOutput).toBe(777);
