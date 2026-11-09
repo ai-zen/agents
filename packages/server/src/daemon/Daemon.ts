@@ -86,7 +86,8 @@ export class Daemon {
   private readonly startedAt = new Date();
   private nextConnectionId = 1;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
-  private stopping = false;
+  /** 收摊中的 Promise：并发调用要**等它收完**，而不是拿到一个立刻完成的空响应 */
+  private stopping: Promise<void> | null = null;
 
   constructor(options: DaemonOptions) {
     this.options = options;
@@ -165,8 +166,14 @@ export class Daemon {
 
   /** 停止：拒新连接 → 关掉现有连接 → 删发现文件 */
   async stop(reason: string): Promise<void> {
-    if (this.stopping) return;
-    this.stopping = true;
+    // 已经有人在收摊：把同一个 Promise 交出去。
+    // 以前这里直接 `return`，于是「客户端发 shutdown」与「进程收信号」撞车时，
+    // 后来的那个调用方拿到的是「已经停了」的假象 —— 而发现文件这时可能还没删。
+    this.stopping ??= this.doStop(reason);
+    return await this.stopping;
+  }
+
+  private async doStop(reason: string): Promise<void> {
     this.clearIdleTimer();
 
     for (const socket of this.connections) socket.destroy();

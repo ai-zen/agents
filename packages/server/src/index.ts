@@ -102,3 +102,10 @@ export {
   type ResultFrame,
 } from "./protocol/messages.js";
 export { SERVER_NAME, SERVER_VERSION } from "./version.js";
+
+// ---- Agent 装配（会话「能跑」的一环：配置 + Scope + 能力发现） ----
+export { agentPaths, type AgentPaths, type AgentPathsInput } from "./service/agent/agentPaths.js";
+export {
+  SessionAgentFactory,
+  type SessionAgentFactoryOptions,
+} from "./service/agent/SessionAgentFactory.js";

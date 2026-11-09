@@ -17,6 +17,7 @@ import { createConnection, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Daemon } from "./daemon/Daemon.js";
+import { createSessionHandlers } from "./daemon/sessionHandlers.js";
 import {
   descriptorPath,
   isProcessAlive,
@@ -25,6 +26,8 @@ import {
 } from "./daemon/discovery.js";
 import { encodeFrame, FrameDecoder } from "./protocol/frames.js";
 import { PROTOCOL_VERSION } from "./protocol/messages.js";
+import { SessionAgentFactory } from "./service/agent/SessionAgentFactory.js";
+import { SessionManager } from "./service/session/SessionManager.js";
 import { SERVER_NAME, SERVER_VERSION } from "./version.js";
 
 interface Args {
@@ -190,6 +193,17 @@ async function main(): Promise<number> {
   }
 
   const log = await openLog(args.aiZenDir);
+
+  // 组装根：这里把「路径 + 进程环境」解析成值，再注入给下面的对象。
+  // 会话装配（配置 / Scope / 工具发现）全在 agents-server 内部，本进程只负责接线。
+  const agentFactory = new SessionAgentFactory({
+    aiZenDir: args.aiZenDir,
+    homeDir: process.env.HOME || process.env.USERPROFILE || homedir(),
+  });
+  const sessions = new SessionManager({
+    createAgent: (input) => agentFactory.create(input),
+  });
+
   const daemon = new Daemon({
     aiZenDir: args.aiZenDir,
     host: args.host,
@@ -197,6 +211,10 @@ async function main(): Promise<number> {
     version: SERVER_VERSION,
     idleTimeoutMs: args.idleTimeoutMs,
     log,
+    handlers: createSessionHandlers({
+      manager: sessions,
+      workspacesRoot: join(args.aiZenDir, "workspaces"),
+    }),
     onStopped: (reason) => {
       log("info", `exit (${reason})`);
       // 留一点时间让 stdout 刷出去，然后退出（进程是被 detach 的，不会有人替我们退出）
@@ -208,9 +226,14 @@ async function main(): Promise<number> {
   // 前台启动时把端口打到 stdout：客户端/脚本靠它拿到系统分配的端口
   console.log(JSON.stringify({ name: SERVER_NAME, ...descriptor }));
 
-  const shutdown = (signal: string) => void daemon.stop(`signal ${signal}`);
-  process.on("SIGINT", () => shutdown("SIGINT"));
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  const shutdown = async (signal: string) => {
+    // 先收会话（断掉 MCP 连接），再停守护进程 —— 反过来会把还没收完的连接晾在 socket 上
+    sessions.dispose();
+    await agentFactory.dispose();
+    await daemon.stop(`signal ${signal}`);
+  };
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
   return 0;
 }
 

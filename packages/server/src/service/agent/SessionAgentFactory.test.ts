@@ -1,0 +1,218 @@
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { SessionAgentFactory } from "./SessionAgentFactory.js";
+import type { AgentPaths } from "./agentPaths.js";
+import type { AgentLike } from "../session/SessionManager.js";
+
+/** 假 Scope：工厂只用它的 `dispose()` */
+function fakeScope(label: string) {
+  return {
+    label,
+    disposed: false,
+    async dispose() {
+      this.disposed = true;
+    },
+  };
+}
+
+const fakeAgent: AgentLike = {
+  messages: [],
+  send: async () => {},
+  abort: () => {},
+  events: { on: () => {}, off: () => {} },
+};
+
+const config = { endpoints: [], models: [], defaultAgent: "default" } as never;
+
+let dir: string;
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "aiz-agent-factory-"));
+});
+
+afterEach(() => {
+  rmSync(dir, { recursive: true, force: true });
+});
+
+/** 造一个全部外部依赖都被替身的工厂，并记录调用次数 */
+function makeFactory(overrides: { failFirstScopeBuild?: boolean } = {}) {
+  const calls = { loadConfig: 0, createScope: 0, createAgent: 0 };
+  const scopes: Array<ReturnType<typeof fakeScope> & { paths: AgentPaths }> = [];
+  let failuresLeft = overrides.failFirstScopeBuild ? 1 : 0;
+
+  const factory = new SessionAgentFactory({
+    aiZenDir: join(dir, "zen"),
+    homeDir: "/home/u",
+    loadConfig: async () => {
+      calls.loadConfig++;
+      return config;
+    },
+    createScope: async ({ paths }) => {
+      calls.createScope++;
+      if (failuresLeft > 0) {
+        failuresLeft--;
+        throw new Error("scope boom");
+      }
+      const scope = { ...fakeScope(`scope-${calls.createScope}`), paths };
+      scopes.push(scope);
+      return scope as never;
+    },
+    createAgent: async () => {
+      calls.createAgent++;
+      return fakeAgent;
+    },
+  });
+
+  return { factory, calls, scopes };
+}
+
+describe("SessionAgentFactory", () => {
+  it("同一工作区的多个会话共用同一个 Scope（否则每会话一套 MCP 连接）", async () => {
+    const { factory, calls, scopes } = makeFactory();
+
+    await factory.create({ workspaceId: "ws", path: "/work/proj", agentId: "default" });
+    await factory.create({ workspaceId: "ws", path: "/work/proj", agentId: "coder" });
+
+    expect(calls.createScope).toBe(1);
+    expect(calls.createAgent).toBe(2); // 会话各自的 Agent 还是要各造一个
+    expect(scopes[0]!.disposed).toBe(false);
+  });
+
+  it("不同工作区各建一个 Scope（项目级 skills / tools 不同，不能混）", async () => {
+    const { factory, calls, scopes } = makeFactory();
+
+    await factory.create({ workspaceId: "a", path: "/work/a", agentId: "default" });
+    await factory.create({ workspaceId: "b", path: "/work/b", agentId: "default" });
+
+    expect(calls.createScope).toBe(2);
+    expect(scopes[0]!.paths.skillsDirs[0]).toBe(join("/work/a", ".ai-zen", "skills"));
+    expect(scopes[1]!.paths.skillsDirs[0]).toBe(join("/work/b", ".ai-zen", "skills"));
+  });
+
+  it("并发建同一工作区的会话：只初始化一次（缓存的是 Promise）", async () => {
+    const { factory, calls } = makeFactory();
+
+    await Promise.all([
+      factory.create({ workspaceId: "ws", path: "/work/proj", agentId: "default" }),
+      factory.create({ workspaceId: "ws", path: "/work/proj", agentId: "default" }),
+      factory.create({ workspaceId: "ws", path: "/work/proj", agentId: "default" }),
+    ]);
+
+    expect(calls.createScope).toBe(1);
+  });
+
+  it("配置改了：invalidate 之后重建，并释放旧 Scope", async () => {
+    const { factory, calls, scopes } = makeFactory();
+
+    await factory.create({ workspaceId: "ws", path: "/work/proj", agentId: "default" });
+    await factory.invalidate("/work/proj");
+    expect(scopes[0]!.disposed).toBe(true);
+
+    await factory.create({ workspaceId: "ws", path: "/work/proj", agentId: "default" });
+    expect(calls.createScope).toBe(2);
+    expect(calls.loadConfig).toBe(2); // 配置是重新读的，不是缓存的旧值
+  });
+
+  it("invalidate(某个工作区) 不影响别的工作区", async () => {
+    const { factory, calls, scopes } = makeFactory();
+
+    await factory.create({ workspaceId: "a", path: "/work/a", agentId: "default" });
+    await factory.create({ workspaceId: "b", path: "/work/b", agentId: "default" });
+    await factory.invalidate("/work/a");
+
+    expect(scopes[0]!.disposed).toBe(true);
+    expect(scopes[1]!.disposed).toBe(false);
+
+    await factory.create({ workspaceId: "b", path: "/work/b", agentId: "default" });
+    expect(calls.createScope).toBe(2); // b 还是复用
+  });
+
+  it("Scope 建失败不缓存：下一次还会重试", async () => {
+    const { factory, calls } = makeFactory({ failFirstScopeBuild: true });
+
+    await expect(factory.create({ workspaceId: "ws", path: "/work/proj", agentId: "default" })).rejects.toThrow(
+      /scope boom/,
+    );
+    await expect(
+      factory.create({ workspaceId: "ws", path: "/work/proj", agentId: "default" }),
+    ).resolves.toBeTruthy();
+    expect(calls.createScope).toBe(2);
+  });
+
+  it("dispose 释放全部 Scope", async () => {
+    const { factory, scopes } = makeFactory();
+
+    await factory.create({ workspaceId: "a", path: "/work/a", agentId: "default" });
+    await factory.create({ workspaceId: "b", path: "/work/b", agentId: "default" });
+    await factory.dispose();
+
+    expect(scopes.every((scope) => scope.disposed)).toBe(true);
+    expect(await factory.create({ workspaceId: "a", path: "/work/a", agentId: "default" })).toBe(fakeAgent);
+  });
+});
+
+describe("SessionAgentFactory（默认装配，真 SDK / 真磁盘）", () => {
+  it("给一份带端点与模型的配置，能造出可用的 Agent", async () => {
+    const aiZenDir = join(dir, "zen");
+    const workspace = join(dir, "proj");
+    mkdirSync(join(aiZenDir, "agents"), { recursive: true });
+    mkdirSync(workspace, { recursive: true });
+
+    writeFileSync(
+      join(aiZenDir, "config.json"),
+      JSON.stringify(
+        {
+          endpoints: [
+            { id: "local", name: "Local", baseUrl: "http://127.0.0.1:1/v1", apiKey: "sk-test" },
+          ],
+          models: [
+            {
+              id: "test-model",
+              name: "Test",
+              endpointId: "local",
+              tokenThresholds: { handoff: 100_000, guard: 150_000 },
+              custom: true,
+            },
+          ],
+          defaultAgent: "default",
+          version: 4,
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+    writeFileSync(
+      join(aiZenDir, "agents", "default.json"),
+      JSON.stringify(
+        {
+          id: "default",
+          name: "默认",
+          modelId: "test-model",
+          messages: [{ role: "system", content: "hi" }],
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const factory = new SessionAgentFactory({ aiZenDir, homeDir: dir });
+    try {
+      const agent = await factory.create({ workspaceId: "ws", path: workspace, agentId: "default" });
+      // 结构面齐全 = 会话管理器能驱动它（具体行为由 SDK 自己的测试管）
+      expect(Array.isArray(agent.messages)).toBe(true);
+      expect(typeof agent.send).toBe("function");
+      expect(typeof agent.abort).toBe("function");
+      expect(typeof agent.events.on).toBe("function");
+      // 系统提示来自磁盘上的 Agent 定义
+      expect(String((agent.messages[0] as { content?: unknown })?.content ?? "")).toContain("hi");
+    } finally {
+      await factory.dispose();
+    }
+  });
+});

@@ -1,0 +1,164 @@
+/**
+ * 在服务端把一个 Agent 装配起来 —— 会话真正「能跑」的那一环。
+ *
+ * ## Scope 为什么要按工作区缓存
+ *
+ * Scope 装着能力发现的结果与 **MCP 连接**（每个 server 是一个子进程/连接）。两件事
+ * 必须同时成立：
+ *   - 同一个工作区的多个会话必须**共用**一个 Scope —— 否则每开一个会话就多一套 MCP
+ *     连接与工具发现（CLI 时代缓存单例就是为了这个）；
+ *   - 不同工作区**不能共用** —— 项目级 skills / tools / mcp 都挂在工作区路径上，
+ *     共用等于把 A 项目的工具塞给 B 项目。
+ * 所以缓存键是工作区路径，值是 **Promise**（并发建会话时共享同一次初始化，避免穿透
+ * 建出两个 Scope）。
+ *
+ * ## 配置读取
+ *
+ * `bootstrap()` 只在进程内每个配置文件上跑一次（`models` 出厂同步、默认 Agent 落盘），
+ * 之后每次取 Scope 都重新 `read()` —— 于是改了 `config.json` 再 `invalidate()` 就能生效，
+ * 与 CLI 的 `/reload` 语义一致。
+ */
+
+import { existsSync } from "node:fs";
+import {
+  allInOne,
+  ConfigManager,
+  createAgent as sdkCreateAgent,
+  Scope,
+  type AppConfig,
+} from "@ai-zen/agents-sdk";
+import { agentPaths, type AgentPaths } from "./agentPaths.js";
+import type { AgentLike, CreateAgentInput } from "../session/SessionManager.js";
+
+export interface SessionAgentFactoryOptions {
+  /** 配置根（`~/.ai-zen`） */
+  aiZenDir: string;
+  /** 用户主目录（`~/.agents` 的位置） */
+  homeDir: string;
+  /** 注入：读配置；默认 SDK `ConfigManager`（首次 bootstrap，之后每次重新 read） */
+  loadConfig?: (configFile: string) => Promise<AppConfig>;
+  /** 注入：建并初始化 Scope；默认 SDK `Scope` + `allInOne` */
+  createScope?: (input: { config: AppConfig; paths: AgentPaths }) => Promise<Scope>;
+  /** 注入：从一个 Scope 里造出 Agent；默认 SDK `createAgent` */
+  createAgent?: (scope: Scope, agentId: string) => Promise<AgentLike>;
+}
+
+export class SessionAgentFactory {
+  private readonly options: SessionAgentFactoryOptions;
+  private readonly scopes = new Map<string, Promise<Scope>>();
+  /** 每个配置文件只在进程内 bootstrap 一次（出厂模型同步、默认 Agent 落盘） */
+  private readonly bootstrapped = new Map<string, Promise<void>>();
+
+  constructor(options: SessionAgentFactoryOptions) {
+    this.options = options;
+  }
+
+  /** 给会话管理器用：造一个能跑一轮对话的 Agent */
+  async create(input: CreateAgentInput): Promise<AgentLike> {
+    const scope = await this.scopeFor(input.path);
+    // 始终从磁盘读 Agent 定义（含 permissions / 工具配置）；中断策略不传，取
+    // `scope.config`，于是配置中心改完 invalidate 一下就生效
+    const build = this.options.createAgent ?? defaultCreateAgent;
+    return await build(scope, input.agentId);
+  }
+
+  /**
+   * 丢掉某个工作区（或全部）的 Scope —— 配置变更后调用。
+   *
+   * 同步从缓存里摘掉，便于并发调用方立刻拿到新实例；再异步释放旧的（断开 MCP）。
+   */
+  async invalidate(workspacePath?: string): Promise<void> {
+    const targets = workspacePath ? [workspacePath] : [...this.scopes.keys()];
+    const pending = targets.map((key) => {
+      const scope = this.scopes.get(key);
+      this.scopes.delete(key);
+      return scope;
+    });
+    await Promise.all(
+      pending.map(async (scope) => {
+        try {
+          await (await scope)?.dispose();
+        } catch {
+          // 释放失败不影响后续重建
+        }
+      }),
+    );
+  }
+
+  /** 收摊：释放全部 Scope（守护进程退出时调用） */
+  async dispose(): Promise<void> {
+    await this.invalidate();
+  }
+
+  // ==================================================================
+  // 内部
+  // ==================================================================
+
+  private scopeFor(workspacePath: string): Promise<Scope> {
+    const cached = this.scopes.get(workspacePath);
+    if (cached) return cached;
+
+    const created = this.buildScope(workspacePath).catch((error) => {
+      // 失败不缓存：否则一次瞬时故障会让这个工作区永久失能
+      this.scopes.delete(workspacePath);
+      throw error;
+    });
+    this.scopes.set(workspacePath, created);
+    return created;
+  }
+
+  private async buildScope(workspacePath: string): Promise<Scope> {
+    const paths = agentPaths({
+      aiZenDir: this.options.aiZenDir,
+      workspacePath,
+      homeDir: this.options.homeDir,
+    });
+
+    const config = await this.readConfig(paths.configFile);
+    const scope = await (this.options.createScope ?? defaultCreateScope)({ config, paths });
+    return scope;
+  }
+
+  private async readConfig(configFile: string): Promise<AppConfig> {
+    if (this.options.loadConfig) return await this.options.loadConfig(configFile);
+
+    if (!this.bootstrapped.has(configFile)) {
+      this.bootstrapped.set(
+        configFile,
+        new ConfigManager(configFile)
+          .bootstrap()
+          .then(() => undefined)
+          .catch((error) => {
+            this.bootstrapped.delete(configFile);
+            throw error;
+          }),
+      );
+    }
+    await this.bootstrapped.get(configFile);
+    return await new ConfigManager(configFile).read();
+  }
+}
+
+/** 默认：从 Scope 造 Agent（SDK 的 `createAgent`；中断策略取 `scope.config`） */
+async function defaultCreateAgent(scope: Scope, agentId: string): Promise<AgentLike> {
+  return await sdkCreateAgent(scope, agentId);
+}
+
+/** 默认装配：与 CLI 侧那段 Scope 装配同一套优先级，只是路径由调用方给 */
+async function defaultCreateScope(input: { config: AppConfig; paths: AgentPaths }): Promise<Scope> {
+  const scope = new Scope({ config: input.config, agentsDir: input.paths.agentsDir }).use(
+    ...allInOne({
+      subAgentsPaths: existing(input.paths.subAgentsDirs),
+      skillsPaths: existing(input.paths.skillsDirs),
+      toolsPaths: existing(input.paths.toolsDirs),
+      mcpPaths: existing(input.paths.mcpConfigs),
+    }),
+  );
+  await scope.init();
+  return scope;
+}
+
+/** 只保留真实存在的路径：不存在的不参与发现（也不该在候选里多一行） */
+function existing(paths: string[]): string[] {
+  return paths.filter((path) => existsSync(path));
+}

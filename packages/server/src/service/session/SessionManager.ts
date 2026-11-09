@@ -33,7 +33,8 @@ import {
  */
 export interface AgentLike {
   readonly messages: unknown[];
-  send(input: string): Promise<void>;
+  /** 返回本轮产出（SDK 返回 `Message[]`）；会话管理器不看它，进展走事件 */
+  send(input: string): Promise<unknown>;
   abort(): void;
   events: {
     on(event: string, handler: (payload: any) => void): void;

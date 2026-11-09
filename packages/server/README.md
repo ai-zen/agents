@@ -75,18 +75,19 @@ Built-in methods: `ping`, `status`, `shutdown`. Everything else is injected by t
 composition root through `DaemonOptions.handlers`, so the daemon skeleton stays free of
 business logic.
 
-## Session layer (protocol ready, not yet wired into the bin)
+## Session layer
 
 `src/protocol/sessions.ts` is the wire contract for sessions — method names, params and the
 three session events (`session.phase`, `message.delta`, `turn.end`). `src/service/session/
 SessionManager.ts` implements the live-session registry and the SDK-event → protocol-event
-translation; `src/daemon/sessionHandlers.ts` registers `workspace.resolve` / `events.watch` /
-`session.create` / `session.send` / `session.cancel` / `session.list` on a `Daemon`.
+translation; `src/service/agent/` assembles the agent (config + Scope + capability
+discovery) per workspace; `src/daemon/sessionHandlers.ts` registers `workspace.resolve` /
+`events.watch` / `session.create` / `session.send` / `session.cancel` / `session.list` on a
+`Daemon`, and `src/cli.ts` wires all of it.
 
-**They are not registered in `src/cli.ts` yet**: sessions need an agent to run, and agent
-assembly (config, Scope, tool discovery) still lives in the CLI. The handlers are wired in
-tests against a fake agent, so the event line is proven end-to-end (real socket, real
-frames) and the remaining step is to hand the daemon a `createAgent` implementation.
+Agent assembly is **per workspace**: one Scope (one set of MCP connections and tool
+discovery) is shared by every session in the same workspace, and never shared across
+workspaces — project-level skills / tools / mcp hang off the workspace path.
 
 Two design points worth keeping:
 
@@ -123,6 +124,7 @@ test with two or three fakes and nothing else.
 | `cli/src/tui/phase.ts` (state machine only) | `src/service/progress/PhaseTracker.ts` |
 | `cli/src/session-store.ts` + 旧 `session-pointer.ts` | `src/service/store/` (port + file impl + legacy migration) |
 | project paths derived from `cwd` | `src/service/workspace/workspace.ts` |
+| `cli/src/agent-creator.ts` (config + Scope + capability discovery) | `src/service/agent/` |
 | — | `src/protocol/` frames, message and session shapes |
 | — | `src/daemon/` listener, handshake, discovery file, session handlers |
 | — | `src/service/session/SessionManager.ts` (live sessions + event fan-out) |
