@@ -83,6 +83,8 @@ export {
   type SessionReloadParams,
   type SessionSaveParams,
   type SessionSaveResult,
+  type SessionSaveAsParams,
+  type SessionSaveAsResult,
   type SessionSnapshotParams,
   type SessionSnapshotResult,
   type SessionPhaseEvent,

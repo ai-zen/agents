@@ -154,6 +154,17 @@ function asHandoffAgent(agent: AgentLike): HandoffAgentLike {
   return agent as unknown as HandoffAgentLike;
 }
 
+/**
+ * 当前 Agent 绑定的模型 id。
+ *
+ * 真相源是 Agent 定义（`definition.modelId`），不是会话 —— 会话不记模型；
+ * 与会话相关但不在 `AgentLike` 里，所以还是「同一个对象、更宽的视图」。
+ */
+function modelIdOf(agent: AgentLike): string {
+  const definition = (agent as { definition?: { modelId?: unknown } }).definition;
+  return typeof definition?.modelId === "string" ? definition.modelId : "";
+}
+
 export class SessionManager {
   private readonly createAgent: (input: CreateAgentInput) => Promise<AgentLike>;
   private readonly nextSessionId: () => string;
@@ -182,6 +193,7 @@ export class SessionManager {
       sessionId: session.id,
       workspaceId: session.workspaceId,
       agentId: session.agentId,
+      modelId: modelIdOf(session.agent),
       turnId: session.turnId,
       phase: this.visiblePhase(session),
       messages: [...session.agent.messages],
@@ -198,6 +210,32 @@ export class SessionManager {
     await store.write({ id: session.id, agentId: session.agentId, messages: session.agent.messages });
     await store.setLastSession(session.id);
     return { saved: true, sessionId: session.id };
+  }
+
+  /**
+   * 另存为指定 id（`/save <名字>`）：写新档、删旧档、活会话换键。
+   *
+   * 与 {`migrate`} 的区别：这是**同一段对话**换个名字，所以 `turnId` 不动；
+   * 删旧档是必须的 —— 同一份对话在 `/load` 列表里出现两条，用户分不清哪条是新的。
+   */
+  async saveAs(sessionId: string, id: string): Promise<{ saved: boolean; sessionId: string }> {
+    const session = this.require(sessionId);
+    const store = await this.storeFor(session.workspaceId);
+    if (!store) throw codedError("no-store", `no session store for workspace ${session.workspaceId}`);
+    // 目标 id 已被另一段活会话占着：不静默顶掉它
+    if (id !== session.id && this.sessions.has(id)) {
+      throw codedError("session-exists", `session already exists: ${id}`);
+    }
+
+    const previousId = session.id;
+    await store.write({ id, agentId: session.agentId, messages: session.agent.messages });
+    await store.setLastSession(id);
+    if (id !== previousId) await store.remove(previousId);
+
+    this.sessions.delete(previousId);
+    session.id = id;
+    this.sessions.set(id, session);
+    return { saved: true, sessionId: id };
   }
 
   /**
@@ -377,21 +415,21 @@ export class SessionManager {
   }
 
   async create(input: SessionCreateInput): Promise<{ sessionId: string; agentId: string }> {
-    const agentId = input.agentId || "default";
     const sessionId = input.sessionId || this.nextSessionId();
     if (this.sessions.has(sessionId)) {
       throw codedError("session-exists", `session already exists: ${sessionId}`);
     }
 
-    const agent = await this.createAgent({ workspaceId: input.workspaceId, path: input.path, agentId });
-
-    // 续接：这个 id 的工作区存档里有记录，就把它的消息装进 Agent。
+    // 续接：这个 id 在工作区存档里有记录，就把它的消息装进 Agent。
     // 服务端是唯一真相源 —— 客户端只给 id，不搬消息。
     const store = await this.storeFor(input.workspaceId);
-    if (store) {
-      const record = await store.read(sessionId);
-      if (record && record.messages.length > 0) agent.messages = [...record.messages];
-    }
+    const record = store ? await store.read(sessionId) : null;
+
+    // Agent 也跟着存档走：`/load` 只拿到一个 id（列表不解析存档内容），
+    // 存档里记着这段会话是哪个 Agent 跑的 —— 不传就沿用它，而不是默默换成 `default`。
+    const agentId = input.agentId || record?.agentId || "default";
+    const agent = await this.createAgent({ workspaceId: input.workspaceId, path: input.path, agentId });
+    if (record && record.messages.length > 0) agent.messages = [...record.messages];
 
     const session: LiveSession = {
       id: sessionId,

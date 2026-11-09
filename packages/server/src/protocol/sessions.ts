@@ -50,6 +50,8 @@ export const SESSION_METHODS = {
   snapshot: "session.snapshot",
   /** 把当前会话写进工作区存档（并把它设为「上一轮会话」） */
   save: "session.save",
+  /** 另存为指定 id：写新档、删旧档、活会话跟着换键（`/save <名字>`） */
+  saveAs: "session.saveAs",
   /** 只产出交接文档：写文档，**不动会话**（不换 id、不剔历史） */
   handoff: "session.handoff",
   /** 交接 + 开新会话：写文档、剔历史、**换 sessionId** */
@@ -117,7 +119,7 @@ export interface SessionCreateParams {
    * 这里（客户端不该有能力决定自己跑在哪个目录）。
    */
   path: string;
-  /** 用哪个 Agent（缺省 `default`） */
+  /** 用哪个 Agent（缺省 `default`；**续接已有存档时不给就沿用存档里记的那个**） */
   agentId?: string;
   /**
    * 会话 id。**不给则服务端分配**。
@@ -174,6 +176,13 @@ export interface SessionSnapshotResult {
   sessionId: string;
   workspaceId: string;
   agentId: string;
+  /**
+   * 当前 Agent 绑定的模型 id（状态栏显示用）。
+   *
+   * 真相源是 `AgentDefinition.modelId`，不是会话 —— 会话不记模型。定义里没绑模型时为
+   * 空串（客户端不显示），服务端不替它猜一个。
+   */
+  modelId: string;
   turnId: number;
   phase: PhaseInfo | null;
   /** 当前完整消息列表（服务端是唯一真相源） */
@@ -202,6 +211,18 @@ export interface SessionSaveParams {
 
 export interface SessionSaveResult {
   saved: boolean;
+  sessionId: string;
+}
+
+export interface SessionSaveAsParams {
+  sessionId: string;
+  /** 新 id（客户端给的名字，如 `chat_debug_login`） */
+  id: string;
+}
+
+export interface SessionSaveAsResult {
+  saved: boolean;
+  /** 另存之后的新 id：之后的请求都得用它（旧 id 已退场） */
   sessionId: string;
 }
 

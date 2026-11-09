@@ -734,3 +734,100 @@ describe("SessionManager：交接 / 迁移", () => {
     await expect(manager.handoff(sessionId)).rejects.toThrow(/handoff is not configured/);
   });
 });
+
+describe("SessionManager：另存为（/save <名字>）", () => {
+  let store: MemoryStore;
+  let saveManager: SessionManager;
+
+  beforeEach(() => {
+    store = new MemoryStore();
+    saveManager = new SessionManager({
+      createAgent: async () => agent,
+      nextSessionId: () => "chat_next",
+      storeFor: () => store,
+    });
+  });
+
+  it("写新档、删旧档、活会话换键，但 turnId 不动（这是同一段对话）", async () => {
+    await saveManager.create({ workspaceId: "ws-1", path: "/p" });
+    agent.messages = [{ role: "user", content: "留档" }];
+    saveManager.send("chat_next", "留档");
+    agent.fire("open");
+    agent.fire("finally");
+
+    const result = await saveManager.saveAs("chat_next", "chat_debug_login");
+
+    expect(result).toEqual({ saved: true, sessionId: "chat_debug_login" });
+    expect(store.records.has("chat_next")).toBe(false); // 旧档不留：/load 里分不清哪条是新的
+    expect(store.records.get("chat_debug_login")!.messages).toEqual([
+      { role: "user", content: "留档" },
+    ]);
+    expect((await store.lastSession())!.id).toBe("chat_debug_login");
+    // 同一段对话换个名字：轮次编号不清零
+    expect(saveManager.list("ws-1")).toEqual([
+      {
+        sessionId: "chat_debug_login",
+        workspaceId: "ws-1",
+        agentId: "default",
+        turnId: 1,
+        phase: null,
+      },
+    ]);
+  });
+
+  it("目标 id 已被另一段活会话占着：报 session-exists，旧档不动", async () => {
+    await saveManager.create({ workspaceId: "ws-1", path: "/p", sessionId: "chat_a" });
+    await saveManager.create({ workspaceId: "ws-1", path: "/p", sessionId: "chat_b" });
+
+    await expect(saveManager.saveAs("chat_a", "chat_b")).rejects.toThrow(/already exists/);
+    expect(saveManager.list("ws-1").map((item) => item.sessionId)).toEqual(["chat_a", "chat_b"]);
+    expect(store.records.size).toBe(0);
+  });
+
+  it("快照带上 Agent 绑定的模型 id（状态栏的真相在定义里，不在会话里）", async () => {
+    await saveManager.create({ workspaceId: "ws-1", path: "/p" });
+    (agent as unknown as { definition: { modelId?: string } }).definition.modelId = "test-model";
+
+    expect((await saveManager.snapshot("chat_next")).modelId).toBe("test-model");
+  });
+});
+
+describe("SessionManager：续接时 Agent 也跟着存档走（/load 只给 id）", () => {
+  it("不传 agentId 时沿用存档里记的那个，而不是默默换成 default", async () => {
+    const store = new MemoryStore();
+    await store.write({
+      id: "chat_coder",
+      agentId: "coder",
+      messages: [{ role: "user", content: "上次是 coder 跑的" }] as never,
+    });
+    const seen: unknown[] = [];
+    const resuming = new SessionManager({
+      createAgent: async (input) => {
+        seen.push(input);
+        return agent;
+      },
+      storeFor: () => store,
+    });
+
+    const created = await resuming.create({ workspaceId: "ws-1", path: "/p", sessionId: "chat_coder" });
+
+    expect(created.agentId).toBe("coder");
+    expect(seen).toEqual([{ workspaceId: "ws-1", path: "/p", agentId: "coder" }]);
+  });
+
+  it("显式传了就听调用方的（新会话没存档时仍回 default）", async () => {
+    const seen: string[] = [];
+    let counter = 0;
+    const fresh = new SessionManager({
+      createAgent: async (input) => {
+        seen.push(input.agentId);
+        return agent;
+      },
+      nextSessionId: () => `chat_${++counter}`,
+    });
+
+    await fresh.create({ workspaceId: "ws-1", path: "/p", agentId: "coder" });
+    await fresh.create({ workspaceId: "ws-1", path: "/p2" });
+    expect(seen).toEqual(["coder", "default"]);
+  });
+});
