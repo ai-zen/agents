@@ -41,6 +41,7 @@ export {
   type LegacyMigrationResult,
 } from "./service/store/legacyMigration.js";
 export { ensureWorkspace, workspaceIdFor, type Workspace } from "./service/workspace/workspace.js";
+export { EventHub } from "./service/events/EventHub.js";
 
 // ---- 会话编排与事件（服务端真正「跑一轮对话」的那一层） ----
 export {
@@ -62,7 +63,7 @@ export {
   type SessionCancelResult,
   type SessionCreateParams,
   type SessionCreateResult,
-  type SessionEvent,
+  type ServerEvent,
   type SessionListParams,
   type AgentSetModelParams,
   type AgentSetModelResult,
@@ -80,6 +81,13 @@ export {
   type SessionSendParams,
   type SessionSendResult,
   type SessionSummary,
+  type SessionNoticeCode,
+  type SessionNoticeEvent,
+  type GlobalNoticeCode,
+  type GlobalNoticeEvent,
+  type NoticeLevel,
+  GLOBAL_NOTICE_CODES,
+  SESSION_NOTICE_CODES,
   type TurnEndEvent,
   type WorkspaceResolveParams,
   type WorkspaceResolveResult,

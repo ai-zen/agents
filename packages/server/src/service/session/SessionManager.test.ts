@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { SessionManager, type AgentLike } from "./SessionManager.js";
 import type { SessionRecord, SessionStore } from "../store/SessionStore.js";
-import type { SessionEvent } from "../../protocol/sessions.js";
+import type { ServerEvent } from "../../protocol/sessions.js";
+import { EventHub } from "../events/EventHub.js";
 
 /**
  * 假 Agent —— 只实现会话管理器用到的那一小面（结构类型），
@@ -48,7 +49,7 @@ class FakeAgent implements AgentLike {
 
 let agent: FakeAgent;
 let manager: SessionManager;
-let events: SessionEvent[];
+let events: ServerEvent[];
 let sessionCounter = 0;
 
 beforeEach(() => {
@@ -66,8 +67,8 @@ beforeEach(() => {
 const create = () => manager.create({ workspaceId: "ws-1", path: "/work/proj", agentId: "default" });
 
 /** 取某个事件名下的全部事件 */
-const pick = <T extends SessionEvent["event"]>(name: T) =>
-  events.filter((event) => event.event === name) as Extract<SessionEvent, { event: T }>[];
+const pick = <T extends ServerEvent["event"]>(name: T) =>
+  events.filter((event) => event.event === name) as Extract<ServerEvent, { event: T }>[];
 
 /** 模拟 OpenAI 风格的一个流式 chunk */
 const chunk = (delta: Record<string, unknown>) => ({ choices: [{ delta }] });
@@ -283,7 +284,7 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
 
 describe("SessionManager：订阅", () => {
   it("取消订阅后不再收到事件", async () => {
-    const mine: SessionEvent[] = [];
+    const mine: ServerEvent[] = [];
     const unsubscribe = manager.subscribe((event) => mine.push(event));
     const { sessionId } = await create();
     manager.send(sessionId, "hi");
@@ -296,7 +297,7 @@ describe("SessionManager：订阅", () => {
   });
 
   it("一个订阅方抛错不影响其他订阅方收到事件", async () => {
-    const survivor: SessionEvent[] = [];
+    const survivor: ServerEvent[] = [];
     manager.subscribe(() => {
       throw new Error("这条连接写失败了");
     });
@@ -493,7 +494,7 @@ describe("SessionManager：reload（按新配置重建 Agent，保留消息）",
       },
     });
 
-    const captured: SessionEvent[] = [];
+    const captured: ServerEvent[] = [];
     reloadable.subscribe((event) => captured.push(event));
 
     await reloadable.create({ workspaceId: "ws-1", path: "/work/proj" });
@@ -508,5 +509,40 @@ describe("SessionManager：reload（按新配置重建 Agent，保留消息）",
     expect(agents[0]!.handlerCount()).toBe(0);
     agents[1]!.fire("open");
     expect(captured.at(-1)).toMatchObject({ event: "session.phase", phase: { kind: "queued" } });
+  });
+});
+
+describe("SessionManager：通知（两个通道）", () => {
+  it("notice 发的是**对话内**通知：带 sessionId，绑在那段会话上", async () => {
+    const { sessionId } = await create();
+    manager.notice(sessionId, { level: "error", code: "persistFailed", params: { error: "磁盘满" } });
+
+    expect(pick("session.notice")).toEqual([
+      {
+        event: "session.notice",
+        sessionId,
+        level: "error",
+        code: "persistFailed",
+        params: { error: "磁盘满" },
+      },
+    ]);
+  });
+
+  it("会话不存在时不发（否则客户端收到一条没有归属的通知）", () => {
+    expect(() => manager.notice("chat_404", { level: "info", code: "toolFailed" })).toThrow(
+      /unknown session/,
+    );
+    expect(pick("session.notice")).toEqual([]);
+  });
+
+  it("全局通知走同一个 hub，不带 sessionId（不归属于任何会话）", () => {
+    const hub = new EventHub();
+    const withHub = new SessionManager({ createAgent: async () => agent, hub });
+    const mine: ServerEvent[] = [];
+    withHub.subscribe((event) => mine.push(event));
+
+    hub.publish({ event: "global.notice", level: "warn", code: "mcpUnavailable" });
+
+    expect(mine).toEqual([{ event: "global.notice", level: "warn", code: "mcpUnavailable" }]);
   });
 });

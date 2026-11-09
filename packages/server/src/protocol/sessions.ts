@@ -68,7 +68,17 @@ export const EVENT_METHODS = {
   watch: "events.watch",
 } as const;
 
-/** 事件名（服务端主动推，无 `id`，不等回执） */
+/**
+ * 事件名（服务端主动推，无 `id`，不等回执）。
+ *
+ * 命名空间写的是**作用范围**，所以通知天然分两个通道：
+ *   - `session.notice`：对话内通知，绑在某一段会话上（落盘失败、工具失败、迁移降级…），
+ *     跟着会话走 —— 切到别的会话就不该还挂在那儿；
+ *   - `global.notice`：全局通知，不属于任何会话（服务本身的事），切会话也不该消失。
+ *
+ * 将来若出现「属于某个工作区但不属于某段会话」的通知，再加 `workspace.notice`，
+ * 不用回头改这两个的语义。
+ */
 export const SESSION_EVENTS = {
   /** 生成阶段变化（六态 + 工具名） */
   phase: "session.phase",
@@ -76,6 +86,10 @@ export const SESSION_EVENTS = {
   delta: "message.delta",
   /** 一轮结束（成功或失败） */
   turnEnd: "turn.end",
+  /** 对话内通知（绑会话） */
+  notice: "session.notice",
+  /** 全局通知（不绑会话） */
+  globalNotice: "global.notice",
 } as const;
 
 // ==================== 方法参数与结果 ====================
@@ -251,4 +265,59 @@ export type TurnEndEvent = {
   error?: { code: string; message: string };
 };
 
-export type SessionEvent = SessionPhaseEvent | MessageDeltaEvent | TurnEndEvent;
+/** 通知级别：只要客户端能据此选颜色/语气，不要更细的语义 */
+export type NoticeLevel = "info" | "warn" | "error";
+
+/**
+ * 对话内通知的 code 表。
+ *
+ * **只增不改语义**：code 一旦发出去就是协议的一部分，改了等于客户端文案失配。
+ * 客户端按 `notice.<code>` 查自己的 i18n 表渲染 —— 服务端不产文案。
+ */
+export const SESSION_NOTICE_CODES = {
+  /** 会话落盘失败（用户以为存了，其实没存） */
+  persistFailed: "persistFailed",
+  /** 工具执行失败 */
+  toolFailed: "toolFailed",
+  /** 交接/迁移降级（请求的执行者与实际执行者不一致） */
+  migrationDegraded: "migrationDegraded",
+  /** 本轮被中止 */
+  turnAborted: "turnAborted",
+} as const;
+
+/** 全局通知的 code 表（同上：只增不改语义） */
+export const GLOBAL_NOTICE_CODES = {
+  /** MCP server 连不上 */
+  mcpUnavailable: "mcpUnavailable",
+  /** 存档目录不可用（读/写失败） */
+  storeUnavailable: "storeUnavailable",
+} as const;
+
+export type SessionNoticeCode = (typeof SESSION_NOTICE_CODES)[keyof typeof SESSION_NOTICE_CODES];
+export type GlobalNoticeCode = (typeof GLOBAL_NOTICE_CODES)[keyof typeof GLOBAL_NOTICE_CODES];
+
+/** 对话内通知：与某一段会话绑定 */
+export type SessionNoticeEvent = {
+  event: typeof SESSION_EVENTS.notice;
+  sessionId: string;
+  level: NoticeLevel;
+  code: SessionNoticeCode;
+  /** 文案里的可变部分（客户端代入自己的模板） */
+  params?: Record<string, unknown>;
+};
+
+/** 全局通知：不属于任何会话，切会话也不该消失 */
+export type GlobalNoticeEvent = {
+  event: typeof SESSION_EVENTS.globalNotice;
+  level: NoticeLevel;
+  code: GlobalNoticeCode;
+  params?: Record<string, unknown>;
+};
+
+/** 服务端能推给客户端的全部事件 */
+export type ServerEvent =
+  | SessionPhaseEvent
+  | MessageDeltaEvent
+  | TurnEndEvent
+  | SessionNoticeEvent
+  | GlobalNoticeEvent;

@@ -28,6 +28,7 @@ import {
 import { encodeFrame, FrameDecoder } from "./protocol/frames.js";
 import { PROTOCOL_VERSION } from "./protocol/messages.js";
 import { SessionAgentFactory } from "./service/agent/SessionAgentFactory.js";
+import { EventHub } from "./service/events/EventHub.js";
 import { SessionManager } from "./service/session/SessionManager.js";
 import { FileSessionStore } from "./service/store/FileSessionStore.js";
 import { SERVER_NAME, SERVER_VERSION } from "./version.js";
@@ -203,7 +204,10 @@ async function main(): Promise<number> {
     homeDir: process.env.HOME || process.env.USERPROFILE || homedir(),
   });
   const workspacesRoot = join(args.aiZenDir, "workspaces");
+  // 一条事件出口：会话事件与全局通知共用（客户端只需一次订阅）
+  const hub = new EventHub();
   const sessions = new SessionManager({
+    hub,
     createAgent: (input) => agentFactory.create(input),
     // 每个工作区一份存档：续接与 session.save 都走它
     storeFor: (workspaceId) => new FileSessionStore({ rootDir: join(workspacesRoot, workspaceId) }),

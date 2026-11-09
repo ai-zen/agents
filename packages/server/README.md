@@ -89,6 +89,24 @@ Agent assembly is **per workspace**: one Scope (one set of MCP connections and t
 discovery) is shared by every session in the same workspace, and never shared across
 workspaces — project-level skills / tools / mcp hang off the workspace path.
 
+### Notices: two channels, on one wire
+
+Events carry **facts, never sentences**, and notices are no exception: a notice is
+`{ level, code, params? }` — the client looks up `notice.<code>` in its own i18n table.
+Codes are protocol (`SESSION_NOTICE_CODES` / `GLOBAL_NOTICE_CODES`): add new ones, never
+repurpose an existing one.
+
+The channel is the **namespace**, not a field:
+
+| Event | Bound to | Rendered where |
+|---|---|---|
+| `session.notice` | a session (`sessionId` is required) | inside the conversation — disappears when you switch away |
+| `global.notice` | nothing | app-level (status bar / banner) — must survive session switches |
+
+Both go through the same `EventHub`, so a client needs **one** subscription. A
+`workspace.notice` is the natural third if a notice ever belongs to a workspace but to no
+particular session — adding it does not change these two.
+
 Two design points worth keeping:
 
 - `session.send` returns `{ turnId }` **immediately**; everything else arrives as events.

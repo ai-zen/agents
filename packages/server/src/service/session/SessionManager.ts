@@ -18,9 +18,12 @@
 
 import { PhaseTracker, pendingToolCalls, type PhaseInfo } from "../progress/PhaseTracker.js";
 import type { SessionRef, SessionStore } from "../store/SessionStore.js";
+import { EventHub } from "../events/EventHub.js";
 import {
   SESSION_EVENTS,
-  type SessionEvent,
+  type NoticeLevel,
+  type ServerEvent,
+  type SessionNoticeCode,
   type SessionSnapshotResult,
   type SessionSummary,
 } from "../../protocol/sessions.js";
@@ -83,6 +86,11 @@ export interface SessionManagerOptions {
    * 不注入则 `reload()` 仍会重建 Agent，但沿用旧 Scope —— 端点凭据这类改动不会生效。
    */
   invalidateScope?: (workspacePath: string) => Promise<void>;
+  /**
+   * 事件出口。不注入则自建一个（单测方便）；组装根会传自己的，
+   * 这样**全局通知**也能走同一条推送线。
+   */
+  hub?: EventHub;
 }
 
 interface LiveSession {
@@ -124,13 +132,17 @@ export class SessionManager {
   private readonly storeFactory: SessionManagerOptions["storeFor"];
   private readonly invalidateScope: SessionManagerOptions["invalidateScope"];
   private readonly sessions = new Map<string, LiveSession>();
-  private readonly listeners = new Set<(event: SessionEvent) => void>();
+  private readonly hub: EventHub;
+  /** 自建的 hub 由自己清理；外面传进来的归外面管 */
+  private readonly ownsHub: boolean;
 
   constructor(options: SessionManagerOptions) {
     this.createAgent = options.createAgent;
     this.nextSessionId = options.nextSessionId ?? defaultNextSessionId;
     this.storeFactory = options.storeFor;
     this.invalidateScope = options.invalidateScope;
+    this.hub = options.hub ?? new EventHub();
+    this.ownsHub = !options.hub;
   }
 
   /** 整份快照：客户端（重）连上来时一次拿全，不用先从事件流里攒 */
@@ -231,9 +243,26 @@ export class SessionManager {
   }
 
   /** 订阅事件；返回取消订阅的函数（连接断开时调用） */
-  subscribe(listener: (event: SessionEvent) => void): () => void {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
+  subscribe(listener: (event: ServerEvent) => void): () => void {
+    return this.hub.subscribe(listener);
+  }
+
+  /**
+   * 发一条**对话内**通知（绑会话）。
+   *
+   * 会话不存在就直接抛：发一条没有归属的通知，客户端既贴不到会话上、也没法清理。
+   * 全局通知不归这里管 —— 那是服务本身的事，由组装根直接往 hub 里发。
+   */
+  notice(
+    sessionId: string,
+    notice: { level: NoticeLevel; code: SessionNoticeCode; params?: Record<string, unknown> },
+  ): void {
+    const session = this.require(sessionId);
+    this.hub.publish({
+      event: SESSION_EVENTS.notice,
+      sessionId: session.id,
+      ...notice,
+    });
   }
 
   async create(input: SessionCreateInput): Promise<{ sessionId: string; agentId: string }> {
@@ -332,7 +361,7 @@ export class SessionManager {
   dispose(): void {
     for (const session of this.sessions.values()) session.detach();
     this.sessions.clear();
-    this.listeners.clear();
+    if (this.ownsHub) this.hub.clear();
   }
 
   // ==================================================================
@@ -447,14 +476,8 @@ export class SessionManager {
     });
   }
 
-  private emit(event: SessionEvent): void {
-    for (const listener of this.listeners) {
-      try {
-        listener(event);
-      } catch {
-        // 一个订阅方（某条连接）写失败不该影响别的客户端收到事件
-      }
-    }
+  private emit(event: ServerEvent): void {
+    this.hub.publish(event);
   }
 
   private require(sessionId: string): LiveSession {
