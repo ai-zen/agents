@@ -96,6 +96,38 @@ describe("config.reasoningPresets", () => {
   });
 });
 
+describe("config.defaultAgent.set", () => {
+  it("只改 defaultAgent：其余字段原样保留，回写入后的 id", async () => {
+    const current = ((await call(CONFIG_METHODS.get)) as { config: AppConfig }).config;
+    const before = {
+      models: current.models,
+      endpoints: current.endpoints,
+      maxToolOutput: current.maxToolOutput,
+    };
+
+    await expect(call(CONFIG_METHODS.defaultAgentSet, { agentId: "coder" })).resolves.toEqual({
+      agentId: "coder",
+    });
+
+    const after = ((await call(CONFIG_METHODS.get)) as { config: AppConfig }).config;
+    expect(after.defaultAgent).toBe("coder");
+    // 窄方法的全部意义：别的字段一个都不动（整份写回会抹掉并发修改）
+    expect({ models: after.models, endpoints: after.endpoints }).toEqual({
+      models: before.models,
+      endpoints: before.endpoints,
+    });
+  });
+
+  it("缺 agentId / 空串 → bad-params", async () => {
+    await expect(call(CONFIG_METHODS.defaultAgentSet, {})).rejects.toMatchObject({
+      code: "bad-params",
+    });
+    await expect(call(CONFIG_METHODS.defaultAgentSet, { agentId: "" })).rejects.toMatchObject({
+      code: "bad-params",
+    });
+  });
+});
+
 describe("config.mcp.get / config.mcp.save", () => {
   it("缺 scope 或取值不认识 → bad-params（不替客户端猜 global）", async () => {
     await expect(call(CONFIG_METHODS.mcpGet, {})).rejects.toMatchObject({ code: "bad-params" });

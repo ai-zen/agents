@@ -49,6 +49,7 @@ import type {
   ConfigMcpSaveResult,
   ConfigReasoningPresetsResult,
   ConfigSaveResult,
+  ConfigSetDefaultAgentResult,
   McpScope,
 } from "../../protocol/config.js";
 
@@ -116,6 +117,24 @@ export class ConfigService {
   async save(config: AppConfig): Promise<ConfigSaveResult> {
     await new ConfigManager(this.options.configFile).write(config);
     return { saved: true };
+  }
+
+  /**
+   * 换「默认 Agent」—— **只写 `defaultAgent` 一个字段**。
+   *
+   * 为什么不是让客户端「读出整份 → 改一个字段 → 整份写回」：终端与桌面端并存时，两边
+   * 各持有自己的快照，后保存的那个会把对方刚改的字段抹掉。`agent.model.set` 早就按这个
+   * 理由做成了窄方法，这条同理。
+   *
+   * 只写一个字段也意味着**不校验** `agentId` 是否存在：那是客户端切换前的链路校验
+   * （Agent 存在 → 绑了模型 → 模型在 → 端点有 Key）的职责，服务端再查一遍就是第二份会
+   * 漂的规则。这里只保证配置里那个字段被原样改掉。
+   */
+  async setDefaultAgent(agentId: string): Promise<ConfigSetDefaultAgentResult> {
+    const manager = new ConfigManager(this.options.configFile);
+    const config = await manager.read();
+    await manager.write({ ...config, defaultAgent: agentId });
+    return { agentId };
   }
 
   /** 读思考策略表（文件缺失或损坏时 SDK 回落出厂种子，不写盘） */

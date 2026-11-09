@@ -21,7 +21,7 @@
  */
 
 import type { MethodHandler } from "./Daemon.js";
-import { badParams, field, optionalString, requireObject } from "./params.js";
+import { badParams, field, optionalString, requireObject, requireString } from "./params.js";
 import type { ConfigService } from "../service/config/ConfigService.js";
 import type { AppConfig } from "@ai-zen/agents-sdk";
 import {
@@ -31,6 +31,7 @@ import {
   type ConfigMcpSaveResult,
   type ConfigReasoningPresetsResult,
   type ConfigSaveResult,
+  type ConfigSetDefaultAgentResult,
   type McpScope,
 } from "../protocol/config.js";
 
@@ -51,6 +52,11 @@ export function createConfigHandlers(options: ConfigHandlerOptions): Record<stri
 
     [CONFIG_METHODS.reasoningPresets]: async (): Promise<ConfigReasoningPresetsResult> => {
       return await config.reasoningPresets();
+    },
+
+    /** 换默认 Agent：**只写一个字段**，不读整份也不写回整份（见 `ConfigService.setDefaultAgent`） */
+    [CONFIG_METHODS.defaultAgentSet]: async (params): Promise<ConfigSetDefaultAgentResult> => {
+      return await config.setDefaultAgent(requireString(params, "agentId"));
     },
 
     [CONFIG_METHODS.mcpGet]: async (params): Promise<ConfigMcpGetResult> => {

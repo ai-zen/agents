@@ -170,6 +170,8 @@ export {
   type ConfigReasoningPresetsResult,
   type ConfigSaveParams,
   type ConfigSaveResult,
+  type ConfigSetDefaultAgentParams,
+  type ConfigSetDefaultAgentResult,
   type McpScope,
 } from "./protocol/config.js";
 export { ConfigService, type ConfigServiceOptions } from "./service/config/ConfigService.js";

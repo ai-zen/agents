@@ -46,6 +46,13 @@ export const CONFIG_METHODS = {
   save: "config.save",
   /** 读思考策略表（`<配置根>/reasoning-presets.json`，缺失/损坏时由 SDK 回落出厂种子） */
   reasoningPresets: "config.reasoningPresets",
+  /**
+   * 换「默认 Agent」：只写 `defaultAgent` 一个字段（`/agent` 用）。
+   *
+   * 与 `agent.model.set` 同一个理由：让客户端「读整份 → 改一个字段 → 整份写回」，
+   * 在多客户端（终端 + 桌面端）并存时就是丢更新 —— 后保存的那个把对方刚改的字段抹掉。
+   */
+  defaultAgentSet: "config.defaultAgent.set",
   /** 读某个作用域的 MCP 配置 */
   mcpGet: "config.mcp.get",
   /** 整份写回某个作用域的 MCP 配置 */
@@ -95,6 +102,16 @@ export interface ConfigSaveResult {
 export interface ConfigReasoningPresetsResult {
   /** 形状 = SDK 的 `ReasoningPresets`（策略名 → 档位表），协议层不解释 */
   presets: unknown;
+}
+
+/** 换默认 Agent 的入参：一个 id，没有别的字段 */
+export interface ConfigSetDefaultAgentParams {
+  agentId: string;
+}
+
+export interface ConfigSetDefaultAgentResult {
+  /** 写入之后的默认 Agent（与入参相同；回一份让客户端不必再读一遍配置） */
+  agentId: string;
 }
 
 /** MCP 配置的作用域：全局（配置根下） / 项目（工作区里的 `.ai-zen/`） */
