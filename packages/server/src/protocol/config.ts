@@ -53,19 +53,27 @@ export const CONFIG_METHODS = {
 } as const;
 
 /**
- * Agent 定义的增删改查（**管理面**）。
+ * Agent 定义的方法 —— **一个命名空间一张表**。
  *
- * 与 `AGENT_METHODS.setModel`（`agent.model.set`）分开的理由不是命名美学：
- * `setModel` 是「改这一个 Agent 的一个字段」，请求形状被收窄成两个 id；而这里是
- * 「整份定义的读写」—— 客户端配置中心里那张编辑屏要的就是原样整份（含 `messages`、
- * `permissions` 等），协议不能替它挑字段。两种粒度混在一个方法里，只能靠参数里加
- * `patch: true` 这类开关来区分，那是给调用方制造分叉。
+ * 五条方法对客户端来说是同一个 `agent.*`，所以不该被拆到两个文件、两个常量名里。
+ * 曾经的写法是 `setModel` 单独占着 `AGENT_METHODS`、其余四条叫 `AGENT_ADMIN_METHODS`——
+ * 而「admin」没划出任何真实边界：两边改的都是**全局的** Agent 定义（不挂在 `session.*` 下
+ * 的理由是同一个：它们影响所有用这个 Agent 的会话）。
+ *
+ * 真正的差别在**粒度**，写在各条注释里：单字段改一条，整份定义读写四条。粒度硬塞进
+ * 一条方法只能靠 `patch: true` 这类开关区分，那是给调用方制造分叉 —— 所以方法保持分开，
+ * 只是不再分成两个命名空间。
  */
-export const AGENT_ADMIN_METHODS = {
-  /** 列全部 Agent 定义（顶层 + 子 Agent 两路，客户端配置中心分两栏展示） */
+export const AGENT_METHODS = {
+  /** 换模型：写 `AgentDefinition.modelId` 并清空与新模型不兼容的思考参数（**一个字段**） */
+  setModel: "agent.model.set",
+  /** 列全部 Agent 定义（顶层 + 子 Agent 两路，配置中心分两栏展示） */
   list: "agent.list",
+  /** 按 id 取一份定义（`kind` 缺省时顶层优先；不存在回 `null`，不是错） */
   get: "agent.get",
+  /** 整份写回一份定义（`id` 决定文件名） */
   save: "agent.save",
+  /** 删一份定义（本来就不存在回 `removed: false`，不当错误） */
   remove: "agent.remove",
 } as const;
 
@@ -121,6 +129,18 @@ export interface ConfigMcpSaveResult {
 }
 
 // ==================== Agent 定义（管理面） ====================
+
+/** 换模型：两个 id，没有第三个字段（思考参数由服务端根据新模型清掉） */
+export interface AgentSetModelParams {
+  agentId: string;
+  modelId: string;
+}
+
+export interface AgentSetModelResult {
+  agentId: string;
+  /** 写完之后的模型 id（与入参相同；回一份是为了让客户端不必再读一遍定义） */
+  modelId: string;
+}
 
 /** 两类 Agent 定义：顶层 Agent 与子 Agent 各占一个目录 */
 export type AgentKind = "agent" | "subagent";

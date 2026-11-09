@@ -3,12 +3,8 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  SessionHandoff,
-  isHandoffAborted,
-  type HandoffAgentLike,
-  type SessionHandoffNotice,
-} from "./SessionHandoff.js";
+import type { NoticePayload } from "../../protocol/sessions.js";
+import { SessionHandoff, isHandoffAborted, type HandoffAgentLike } from "./SessionHandoff.js";
 
 /**
  * 交接的服务端包装 —— 测的是**包装**，不是 SDK 的交接流程。
@@ -86,7 +82,7 @@ function makeAgent(options: FakeAgentOptions = {}): HandoffAgentLike {
   return agent;
 }
 
-function makeService(notices: SessionHandoffNotice[] = []): SessionHandoff {
+function makeService(notices: NoticePayload[] = []): SessionHandoff {
   return new SessionHandoff({
     // Skill 目录故意指向不存在的路径：走 SDK 的兜底模板，用例不依赖磁盘上的 Skill
     aiZenDir: join(workspace, "ai-zen"),
@@ -150,7 +146,7 @@ describe("SessionHandoff：文档落在工作区里", () => {
 
 describe("SessionHandoff：通知只带事实，不产文案", () => {
   it("进度与结果都是一条 `code + params`（客户端查自己的 i18n 表）", async () => {
-    const notices: SessionHandoffNotice[] = [];
+    const notices: NoticePayload[] = [];
     const agent = makeAgent({ writeTool: true });
     agent.messages = [{ role: "user", content: "任务" }];
 
@@ -167,7 +163,7 @@ describe("SessionHandoff：通知只带事实，不产文案", () => {
   });
 
   it("self 写不出文档 → 降级摘要，并明确报「降级」", async () => {
-    const notices: SessionHandoffNotice[] = [];
+    const notices: NoticePayload[] = [];
     const agent = makeAgent({ writeTool: true, writesFile: false });
     agent.messages = [{ role: "user", content: "任务" }];
 

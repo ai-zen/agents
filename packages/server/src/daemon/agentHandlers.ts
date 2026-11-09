@@ -5,7 +5,7 @@
  * 这个 Agent 的会话，不是"对某一段会话做事"。混进 `session.*` 会让调用方以为它只影响
  * 当前会话 —— 那种误解在"切换模型后另一个窗口也变了"时才被发现。
  *
- * 本文件两类方法，粒度不同（见 `protocol/config.ts` 里 `AGENT_ADMIN_METHODS` 的注释）：
+ * 本文件两类方法，粒度不同（见 `protocol/config.ts` 里 `AGENT_METHODS` 的注释）：
  *
  *   - `agent.model.set`：**改一个字段**（`/model` 用）。请求形状被收窄成两个 id，
  *     实现挂在装配层 `SessionAgentFactory.setModel`（它要顺带清掉与新模型不兼容的
@@ -22,14 +22,14 @@ import { badParams, field, requireString } from "./params.js";
 import type { SessionAgentFactory } from "../service/agent/SessionAgentFactory.js";
 import type { ConfigService } from "../service/config/ConfigService.js";
 import type { AgentDefinition } from "@ai-zen/agents-sdk";
-import { AGENT_METHODS, type AgentSetModelResult } from "../protocol/sessions.js";
 import {
-  AGENT_ADMIN_METHODS,
+  AGENT_METHODS,
   type AgentGetResult,
   type AgentKind,
   type AgentListResult,
   type AgentRemoveResult,
   type AgentSaveResult,
+  type AgentSetModelResult,
 } from "../protocol/config.js";
 
 export interface AgentHandlerOptions {
@@ -49,19 +49,19 @@ export function createAgentHandlers(options: AgentHandlerOptions): Record<string
       return await factory.setModel({ agentId, modelId });
     },
 
-    [AGENT_ADMIN_METHODS.list]: async (): Promise<AgentListResult> => {
+    [AGENT_METHODS.list]: async (): Promise<AgentListResult> => {
       return await config.listAgents();
     },
 
-    [AGENT_ADMIN_METHODS.get]: async (params): Promise<AgentGetResult> => {
+    [AGENT_METHODS.get]: async (params): Promise<AgentGetResult> => {
       return await config.getAgent({ id: requireString(params, "id"), kind: optionalKind(params) });
     },
 
-    [AGENT_ADMIN_METHODS.save]: async (params): Promise<AgentSaveResult> => {
+    [AGENT_METHODS.save]: async (params): Promise<AgentSaveResult> => {
       return await config.saveAgent(requireKind(params), requireDefinition(params));
     },
 
-    [AGENT_ADMIN_METHODS.remove]: async (params): Promise<AgentRemoveResult> => {
+    [AGENT_METHODS.remove]: async (params): Promise<AgentRemoveResult> => {
       return await config.removeAgent(requireKind(params), requireString(params, "id"));
     },
   };

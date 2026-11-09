@@ -1884,8 +1884,8 @@ describe("SessionManager：保活区 / 换 Agent / 关闭", () => {
     const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
     await runTurn(sessionId);
 
-    expect(live.close(sessionId)).toBe(true);
-    expect(live.close(sessionId)).toBe(false);
+    expect(live.close(sessionId)).toEqual({ closed: true });
+    expect(live.close(sessionId)).toEqual({ closed: false });
     expect(store.records.get(sessionId)!.messages).toHaveLength(2);
   });
 });

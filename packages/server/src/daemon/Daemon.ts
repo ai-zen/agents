@@ -22,6 +22,12 @@
 import { createServer, type Server, type Socket } from "node:net";
 import { encodeFrame, FrameDecoder, ProtocolError } from "../protocol/frames.js";
 import {
+  DAEMON_METHODS,
+  type DaemonStatusResult,
+  type PingResult,
+  type ShutdownResult,
+} from "../protocol/daemon.js";
+import {
   isHelloRequest,
   isRequestFrame,
   PROTOCOL_VERSION,
@@ -97,9 +103,9 @@ export class Daemon {
     this.requestedPort = options.port ?? 8790;
 
     // 自带方法：足够让客户端判断"活着"、"是不是我这个版本"、"能不能让我关掉"
-    this.handlers.set("ping", () => ({ pong: true }));
-    this.handlers.set("status", () => this.status());
-    this.handlers.set("shutdown", () => {
+    this.handlers.set(DAEMON_METHODS.ping, (): PingResult => ({ pong: true }));
+    this.handlers.set(DAEMON_METHODS.status, () => this.status());
+    this.handlers.set(DAEMON_METHODS.shutdown, (): ShutdownResult => {
       // 先让响应发出去，再收摊（一个 tick 之后再停，见 stop() 的注释）
       setTimeout(() => void this.stop("client requested"), 0);
       return { stopping: true };
@@ -381,7 +387,7 @@ export class Daemon {
   // 内部
   // ==================================================================
 
-  private status() {
+  private status(): DaemonStatusResult {
     return {
       version: this.options.version,
       protocol: PROTOCOL_VERSION,

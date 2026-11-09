@@ -31,13 +31,25 @@ import type { AutoMigrateTriggerInfo } from "@ai-zen/agents-sdk";
 import type { MessageContent, SubAgentSnapshotResult } from "../../protocol/sessions.js";
 import {
   SESSION_EVENTS,
+  SESSION_NOTICE_CODES,
   type HandoffMode,
   type NoticeLevel,
+  type NoticePayload,
   type ServerEvent,
+  type SessionAnswerResult,
+  type SessionAttachResult,
+  type SessionCancelResult,
+  type SessionCloseResult,
+  type SessionCreateResult,
   type SessionHandoffResult,
+  type SessionKeepAliveSetResult,
+  type SessionLastResult,
   type SessionMigrateResult,
   type SessionNoticeCode,
   type SessionQuestionKind,
+  type SessionRollbackResult,
+  type SessionSaveAsResult,
+  type SessionSaveResult,
   type SessionSnapshotResult,
   type SessionSummary,
 } from "../../protocol/sessions.js";
@@ -447,10 +459,7 @@ export class SessionManager {
   }
 
   /** 把当前会话写进工作区存档，并把它设为「上一轮会话」 */
-  async save(
-    sessionId: string,
-    options: { setAsLast?: boolean } = {},
-  ): Promise<{ saved: boolean; sessionId: string }> {
+  async save(sessionId: string, options: { setAsLast?: boolean } = {}): Promise<SessionSaveResult> {
     const session = this.require(sessionId);
     const store = await this.storeFor(session.workspaceId);
     if (!store)
@@ -473,7 +482,7 @@ export class SessionManager {
    * 与 {`migrate`} 的区别：这是**同一段对话**换个名字，所以 `turnId` 不动；
    * 删旧档是必须的 —— 同一份对话在 `/load` 列表里出现两条，用户分不清哪条是新的。
    */
-  async saveAs(sessionId: string, id: string): Promise<{ saved: boolean; sessionId: string }> {
+  async saveAs(sessionId: string, id: string): Promise<SessionSaveAsResult> {
     const session = this.require(sessionId);
     const store = await this.storeFor(session.workspaceId);
     if (!store)
@@ -542,7 +551,7 @@ export class SessionManager {
       await store.setLastSession(previousId);
       this.notice(previousId, {
         level: "info",
-        code: "handoffArchived",
+        code: SESSION_NOTICE_CODES.handoffArchived,
         params: { sessionId: previousId },
       });
 
@@ -590,7 +599,7 @@ export class SessionManager {
     // 跳过（用户选的 / 兜底走到这儿）：说一句「本次没迁」，否则用户只会看到上下文继续涨
     this.noticeIfAlive(session, {
       level: "info",
-      code: "migrationSkipped",
+      code: SESSION_NOTICE_CODES.migrationSkipped,
     });
     return null;
   }
@@ -645,10 +654,7 @@ export class SessionManager {
    *
    * 不是在吞错 `notice()` 的错误：「会话已经没了」对这条路径是**正常结局**，而不是异常。
    */
-  private noticeIfAlive(
-    session: LiveSession,
-    notice: { level: NoticeLevel; code: SessionNoticeCode; params?: Record<string, unknown> },
-  ): void {
+  private noticeIfAlive(session: LiveSession, notice: NoticePayload): void {
     if (!this.sessions.has(session.id)) return;
     this.notice(session.id, notice);
   }
@@ -739,7 +745,7 @@ export class SessionManager {
       await store.setLastSession(previousId);
       this.notice(previousId, {
         level: "info",
-        code: "handoffArchived",
+        code: SESSION_NOTICE_CODES.handoffArchived,
         params: { sessionId: previousId },
       });
 
@@ -879,7 +885,7 @@ export class SessionManager {
    * 注入时明确报 `no-store`，与 `listSaved` / `save` 同一口径 —— 不假装「这个工作区
    * 没有上一轮」。
    */
-  async last(workspaceId: string): Promise<{ sessionId: string | null }> {
+  async last(workspaceId: string): Promise<SessionLastResult> {
     const store = await this.storeFor(workspaceId);
     if (!store) throw codedError("no-store", `no session store for workspace ${workspaceId}`);
     const pointer = await store.lastSession();
@@ -895,10 +901,7 @@ export class SessionManager {
    * 就“复活”（TUI 时代踩过这个坑）。所以先确认有存档可写，再动消息 —— 避免
    * “改了一半、存不下去”。
    */
-  async rollback(
-    sessionId: string,
-    index: number,
-  ): Promise<{ removed: number; prompt: string; messages: unknown[] }> {
+  async rollback(sessionId: string, index: number): Promise<SessionRollbackResult> {
     const session = this.require(sessionId);
     const store = await this.storeFor(session.workspaceId);
     if (!store)
@@ -937,10 +940,7 @@ export class SessionManager {
    * 会话不存在就直接抛：发一条没有归属的通知，客户端既贴不到会话上、也没法清理。
    * 全局通知不归这里管 —— 那是服务本身的事，由组装根直接往 hub 里发。
    */
-  notice(
-    sessionId: string,
-    notice: { level: NoticeLevel; code: SessionNoticeCode; params?: Record<string, unknown> },
-  ): void {
+  notice(sessionId: string, notice: NoticePayload): void {
     const session = this.require(sessionId);
     this.hub.publish({
       event: SESSION_EVENTS.notice,
@@ -949,7 +949,7 @@ export class SessionManager {
     });
   }
 
-  async create(input: SessionCreateInput): Promise<{ sessionId: string; agentId: string }> {
+  async create(input: SessionCreateInput): Promise<SessionCreateResult> {
     const store = await this.storeFor(input.workspaceId);
 
     /**
@@ -1065,7 +1065,7 @@ export class SessionManager {
    *
    * 既不在内存、又不在盘上 → `session-missing`：什么都不接，绝不悄悄开一段空的。
    */
-  async attach(input: SessionAttachInput): Promise<{ sessionId: string; agentId: string }> {
+  async attach(input: SessionAttachInput): Promise<SessionAttachResult> {
     const live = this.sessions.get(input.sessionId);
     if (live) return { sessionId: live.id, agentId: live.agentId };
 
@@ -1135,7 +1135,7 @@ export class SessionManager {
    *     “操作失败”里卡一辈子，而实际上服务端早就自己继续跑了；
    *   - 认领成功 → `{ answered: true }`，`askHandoffMode` 那边随之继续。
    */
-  answer(sessionId: string, questionId: string, choice: string | null): { answered: boolean } {
+  answer(sessionId: string, questionId: string, choice: string | null): SessionAnswerResult {
     const session = this.require(sessionId);
     const pending = session.questions.get(questionId);
     if (!pending) return { answered: false };
@@ -1146,7 +1146,7 @@ export class SessionManager {
     return { answered: true };
   }
 
-  cancel(sessionId: string): { cancelled: boolean } {
+  cancel(sessionId: string): SessionCancelResult {
     const session = this.sessions.get(sessionId);
     if (!session) return { cancelled: false };
     // 先掐交接：它挂在模型请求/工具上，服务自己持有的那个句柄是唯一入口；
@@ -1175,9 +1175,9 @@ export class SessionManager {
       }));
   }
 
-  close(sessionId: string): boolean {
+  close(sessionId: string): SessionCloseResult {
     const session = this.sessions.get(sessionId);
-    if (!session) return false;
+    if (!session) return { closed: false };
     session.handoff?.abort();
     // 会话已经收了：挂着的提问不会再有答案 —— 放行它，别让提问方白等到超时
     this.releaseQuestions(session);
@@ -1185,7 +1185,7 @@ export class SessionManager {
     // 会话已经不存在了：不留任何指向它的残留（子 Agent 里的实例也跟着退场）
     this.clearSubAgents(session);
     this.sessions.delete(sessionId);
-    return true;
+    return { closed: true };
   }
 
   /**
@@ -1197,7 +1197,7 @@ export class SessionManager {
    * 一轮还在跑时不动它：用户可能刚切走但又想回来，而“正在跑的一轮”中途被收掉比多占
    * 几兆内存严重。那一轮自己收尾时还会再按保活区判一次（见 `settleTurn`）。
    */
-  keepAliveSet(sessionId: string, on: boolean): { sessionId: string; keepAlive: boolean } {
+  keepAliveSet(sessionId: string, on: boolean): SessionKeepAliveSetResult {
     const session = this.require(sessionId);
     session.keepAlive = on;
     if (!on && session.turnSettled && !session.settleDeferred) {
@@ -1340,7 +1340,7 @@ export class SessionManager {
         entry.status = "failed";
         this.notice(session.id, {
           level: "error",
-          code: "subAgentFailed",
+          code: SESSION_NOTICE_CODES.subAgentFailed,
           params: { index: entry.index, message: error?.message ?? String(error) },
         });
         this.emitSubAgentEnded(session, entry);
@@ -1447,7 +1447,7 @@ export class SessionManager {
     } catch (error: any) {
       this.notice(session.id, {
         level: "error",
-        code: "persistFailed",
+        code: SESSION_NOTICE_CODES.persistFailed,
         params: { error: error?.message ?? String(error) },
       });
     }
@@ -1650,7 +1650,7 @@ export class SessionManager {
    */
   private failHandoff(session: LiveSession, error: unknown): unknown {
     if (isHandoffAborted(error)) {
-      this.notice(session.id, { level: "info", code: "turnAborted" });
+      this.notice(session.id, { level: "info", code: SESSION_NOTICE_CODES.turnAborted });
       session.turnFailed = { code: "aborted", message: "handoff cancelled" };
       return codedError("handoff-aborted", "handoff cancelled");
     }

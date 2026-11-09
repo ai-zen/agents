@@ -76,11 +76,9 @@ export {
   isHandoffAborted,
   type HandoffAgentLike,
   type HandoffOutcome,
-  type SessionHandoffNotice,
   type SessionHandoffOptions,
 } from "./service/handoff/SessionHandoff.js";
 export {
-  AGENT_METHODS,
   EVENT_METHODS,
   SESSION_EVENTS,
   SESSION_METHODS,
@@ -96,8 +94,7 @@ export {
   type SessionCreateResult,
   type ServerEvent,
   type SessionListParams,
-  type AgentSetModelParams,
-  type AgentSetModelResult,
+  type SessionSnapshotParams,
   type SessionListResult,
   type SessionListSavedParams,
   type SessionListSavedResult,
@@ -114,7 +111,6 @@ export {
   type SessionSaveResult,
   type SessionSaveAsParams,
   type SessionSaveAsResult,
-  type SessionSnapshotParams,
   type SessionSnapshotResult,
   type SessionPhaseEvent,
   type SessionQuestionEvent,
@@ -130,6 +126,7 @@ export {
   type MessageContent,
   type MessageContentBlock,
   type NoticeLevel,
+  type NoticePayload,
   GLOBAL_NOTICE_CODES,
   SESSION_NOTICE_CODES,
   type SessionHandoffParams,
@@ -154,7 +151,7 @@ export {
 // ---- 配置与管理面（客户端的配置中心要用；不属于某一段会话，所以不在 session.* 下） ----
 export {
   CONFIG_METHODS,
-  AGENT_ADMIN_METHODS,
+  AGENT_METHODS,
   type AgentGetParams,
   type AgentGetResult,
   type AgentKind,
@@ -163,6 +160,8 @@ export {
   type AgentRemoveResult,
   type AgentSaveParams,
   type AgentSaveResult,
+  type AgentSetModelParams,
+  type AgentSetModelResult,
   type ConfigGetResult,
   type ConfigMcpGetParams,
   type ConfigMcpGetResult,
@@ -211,6 +210,12 @@ export {
   type ResultFrame,
 } from "./protocol/messages.js";
 export { SERVER_NAME, SERVER_VERSION } from "./version.js";
+export {
+  DAEMON_METHODS,
+  type DaemonStatusResult,
+  type PingResult,
+  type ShutdownResult,
+} from "./protocol/daemon.js";
 
 // ---- Agent 装配（会话「能跑」的一环：配置 + Scope + 能力发现） ----
 export { agentPaths, type AgentPaths, type AgentPathsInput } from "./service/agent/agentPaths.js";

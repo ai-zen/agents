@@ -31,7 +31,11 @@ import {
   type SdkAgent,
   type HandoffContext,
 } from "@ai-zen/agents-sdk";
-import type { HandoffMode, NoticeLevel, SessionNoticeCode } from "../../protocol/sessions.js";
+import {
+  SESSION_NOTICE_CODES,
+  type HandoffMode,
+  type NoticePayload,
+} from "../../protocol/sessions.js";
 import { agentPaths } from "../agent/agentPaths.js";
 
 /**
@@ -68,12 +72,6 @@ export interface HandoffOutcome {
   mode: HandoffMode;
 }
 
-export interface SessionHandoffNotice {
-  level: NoticeLevel;
-  code: SessionNoticeCode;
-  params?: Record<string, unknown>;
-}
-
 export interface SessionHandoffOptions {
   /** 配置根（`~/.ai-zen`）：`handoff` Skill 的全局候选目录在这里面 */
   aiZenDir: string;
@@ -82,7 +80,7 @@ export interface SessionHandoffOptions {
   /** 工作区路径：文档落 `<path>/.ai-zen/handoffs`，Skill 也先在项目里找 */
   workspacePath: string;
   /** 发一条对话内通知（会话层转成 `session.notice`；本层不产文案） */
-  notice: (notice: SessionHandoffNotice) => void;
+  notice: (notice: NoticePayload) => void;
 }
 
 export class SessionHandoff {
@@ -106,23 +104,31 @@ export class SessionHandoff {
         if (promptTokens != null && handoffTokens != null) {
           notice({
             level: "info",
-            code: "handoffAutoDetected",
+            code: SESSION_NOTICE_CODES.handoffAutoDetected,
             params: { used: promptTokens, limit: handoffTokens, mode: ctx.requestedMode },
           });
           return;
         }
-        notice({ level: "info", code: "handoffWriting", params: { mode: ctx.requestedMode } });
+        notice({
+          level: "info",
+          code: SESSION_NOTICE_CODES.handoffWriting,
+          params: { mode: ctx.requestedMode },
+        });
       },
       onHandoff: (ctx: HandoffContext) => {
         // 请求 self 却降级到 summary：用户得知道文档质量是打折的
         if (ctx.mode !== ctx.requestedMode) {
           notice({
             level: "warn",
-            code: "migrationDegraded",
+            code: SESSION_NOTICE_CODES.migrationDegraded,
             params: { requested: ctx.requestedMode, mode: ctx.mode },
           });
         }
-        notice({ level: "info", code: "handoffPath", params: { path: ctx.handoffPath } });
+        notice({
+          level: "info",
+          code: SESSION_NOTICE_CODES.handoffPath,
+          params: { path: ctx.handoffPath },
+        });
       },
       /**
        * 迁移落地（新会话已经换好 id、历史已剔除）。
@@ -133,8 +139,12 @@ export class SessionHandoff {
        */
       onMigrated: (ctx: HandoffContext) => {
         const count = (ctx.agent as { messages?: unknown[] } | undefined)?.messages?.length ?? 0;
-        notice({ level: "info", code: "handoffMigrated", params: { n: count } });
-        notice({ level: "info", code: "handoffMigratedHint" });
+        notice({
+          level: "info",
+          code: SESSION_NOTICE_CODES.handoffMigrated,
+          params: { n: count },
+        });
+        notice({ level: "info", code: SESSION_NOTICE_CODES.handoffMigratedHint });
       },
     });
   }

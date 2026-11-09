@@ -195,11 +195,11 @@ describe("工作区处理器（真 socket）", () => {
     expect(files).toEqual(["README.md", "src/chat.tsx"]);
   });
 
-  it("workspace.files 的未知工作区 → workspace-not-found（不是空清单）", async () => {
+  it("workspace.files 的未知工作区 → unknown-workspace（不是空清单）", async () => {
     await startDaemon();
     await expect(
       client!.call(WORKSPACE_METHODS.files, { workspaceId: "nope-00000000" }),
-    ).rejects.toThrow(/workspace-not-found/);
+    ).rejects.toThrow(/unknown-workspace/);
     expect(await client!.call("ping")).toEqual({ pong: true });
   });
 
@@ -631,11 +631,11 @@ describe("会话创建：path 可缺省，sessionId 必须被尊重", () => {
     expect(agentInputs.at(-1)).toMatchObject({ path: workspace.path });
   });
 
-  it("不带 path 又是个服务端不认识的工作区：报 workspace-not-found，不静默造目录", async () => {
+  it("不带 path 又是个服务端不认识的工作区：报 unknown-workspace，不静默造目录", async () => {
     await startDaemon();
     await expect(
       client!.call(SESSION_METHODS.create, { workspaceId: "ws-unknown" }),
-    ).rejects.toThrow(/workspace-not-found/);
+    ).rejects.toThrow(/unknown-workspace/);
   });
 
   it("带了 sessionId 就沿用它，并把存档里的消息装进 Agent（续接 / `/load` 的根）", async () => {

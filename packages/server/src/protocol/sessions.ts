@@ -115,16 +115,8 @@ export const SESSION_METHODS = {
 } as const;
 
 /**
- * Agent 级方法：改的是**全局的 Agent 定义**，影响所有用这个 Agent 的会话。
- *
- * 因此不挂在 `session.*` 下（那个命名空间只放"对某一段会话做事"的方法）。
+ * 连接级方法（与某个会话无关，所以不放在 `session.*` 里）
  */
-export const AGENT_METHODS = {
-  /** 换模型：写 `AgentDefinition.modelId` 并清空思考参数 */
-  setModel: "agent.model.set",
-} as const;
-
-/** 连接级方法（与某个会话无关，所以不放在 `session.*` 里） */
 export const EVENT_METHODS = {
   /** 让**这条连接**开始收事件（事件是服务端主动推、无 `id`、不等回执） */
   watch: "events.watch",
@@ -200,6 +192,7 @@ export interface WorkspaceResolveResult {
   path: string;
 }
 
+/** 文件清单只看工作区 id：根目录靠 `workspace.json` 反查，不接受调用方递路径 */
 export interface WorkspaceFilesParams {
   workspaceId: string;
 }
@@ -261,6 +254,7 @@ export interface SessionCreateResult {
   agentId: string;
 }
 
+/** 「本工作区上一轮会话」的指针查询（只有工作区维度，不涉某一段会话） */
 export interface SessionLastParams {
   workspaceId: string;
 }
@@ -356,6 +350,11 @@ export interface SessionCancelParams {
 }
 
 export interface SessionCancelResult {
+  /**
+   * `false` = 这段会话本来就不在（幂等：客户端对一段已经退场的会话按 Esc 不该算错）。
+   *
+   * 与 `close` 的 `closed` 同一口径；区别是 `cancel` **不销毁会话**，只拦本轮。
+   */
   cancelled: boolean;
 }
 
@@ -411,20 +410,9 @@ export interface SessionSnapshotResult {
   lastUsage?: unknown;
 }
 
-export interface AgentSetModelParams {
-  agentId: string;
-  modelId: string;
-}
-
-export interface AgentSetModelResult {
-  agentId: string;
-  modelId: string;
-}
-
 export interface SessionReloadParams {
   sessionId: string;
 }
-
 /** 换 Agent：`agentId` 必须是已存在的 Agent 定义（否则 `unknown-agent`） */
 export interface SessionSetAgentParams {
   sessionId: string;
@@ -441,7 +429,6 @@ export interface SessionCloseResult {
   /** `false` = 这段会话本来就没在跑（幂等：客户端可以重复调） */
   closed: boolean;
 }
-
 export interface SessionKeepAliveSetParams {
   sessionId: string;
   /** `true` = 放进保活区，`false` = 移出 */
@@ -485,6 +472,7 @@ export interface SessionListResult {
   sessions: SessionSummary[];
 }
 
+/** 已存档会话的列表查询（同样只看工作区） */
 export interface SessionListSavedParams {
   workspaceId: string;
 }
@@ -590,7 +578,7 @@ export interface SessionListSavedResult {
 
 export interface SessionRollbackParams {
   sessionId: string;
-  /** 从这个下标起（含）删掉 */
+  /** 从这个下标起（含）删掉；越界回 `bad-index`（不静默截断） */
   index: number;
 }
 
@@ -767,6 +755,14 @@ export type GlobalNoticeEvent = {
   code: GlobalNoticeCode;
   params?: Record<string, unknown>;
 };
+
+/**
+ * 一条通知的**载荷**：`level` + `code` + `params`，不含「属于哪段会话」与事件名。
+ *
+ * 抽出来是因为三处都在说同一件事：协议里的 `SessionNoticeEvent`、会话层的
+ * `notice()` / `noticeIfAlive()`、交接服务的通知出口。少声明一份，就少一处会漂的形状。
+ */
+export type NoticePayload = Omit<SessionNoticeEvent, "event" | "sessionId">;
 
 /** 服务端能推给客户端的全部事件 */
 export type ServerEvent =

@@ -81,7 +81,7 @@ export function createSessionHandlers(
    */
   const workspacePathOf = async (workspaceId: string): Promise<string> => {
     const workspace = await readWorkspace({ workspacesRoot, id: workspaceId });
-    if (!workspace) throw codedError("workspace-not-found", `unknown workspace: ${workspaceId}`);
+    if (!workspace) throw codedError("unknown-workspace", `unknown workspace: ${workspaceId}`);
     return workspace.path;
   };
 
@@ -228,7 +228,7 @@ export function createSessionHandlers(
 
     /** 明确关闭一段会话（幂等：本来就没在跑时回 `closed:false`，不当错误） */
     [SESSION_METHODS.close]: (params): SessionCloseResult => {
-      return { closed: manager.close(requireString(params, "sessionId")) };
+      return manager.close(requireString(params, "sessionId"));
     },
 
     /**

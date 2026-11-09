@@ -27,6 +27,7 @@ import {
   removeDescriptor,
 } from "./daemon/discovery.js";
 import { encodeFrame, FrameDecoder } from "./protocol/frames.js";
+import { DAEMON_METHODS } from "./protocol/daemon.js";
 import { PROTOCOL_VERSION } from "./protocol/messages.js";
 import { SessionAgentFactory } from "./service/agent/SessionAgentFactory.js";
 import { ConfigService } from "./service/config/ConfigService.js";
@@ -164,9 +165,10 @@ async function main(): Promise<number> {
       console.log(`no server running (no descriptor at ${descriptorPath(args.aiZenDir)})`);
       return 1;
     }
-    const alive = isProcessAlive(descriptor.pid);
-    console.log(JSON.stringify({ ...descriptor, alive }, null, 2));
-    return alive ? 0 : 1;
+    const running = isProcessAlive(descriptor.pid);
+    // 字段名与 `ai --server-status` 对齐：同一个问题（服务端在不在）只用一个名字
+    console.log(JSON.stringify({ ...descriptor, running }, null, 2));
+    return running ? 0 : 1;
   }
 
   if (args.command === "stop") {
@@ -181,7 +183,7 @@ async function main(): Promise<number> {
       console.log("stale descriptor cleaned (process was gone)");
       return 0;
     }
-    await callRunning(descriptor.host, descriptor.port, "shutdown");
+    await callRunning(descriptor.host, descriptor.port, DAEMON_METHODS.shutdown);
     console.log(`stopped server on ${descriptor.host}:${descriptor.port} (pid ${descriptor.pid})`);
     return 0;
   }
@@ -192,7 +194,7 @@ async function main(): Promise<number> {
   if (existing) {
     if (isProcessAlive(existing.pid)) {
       try {
-        await callRunning(existing.host, existing.port, "ping", 800);
+        await callRunning(existing.host, existing.port, DAEMON_METHODS.ping, 800);
         console.error(
           `already running on ${existing.host}:${existing.port} (pid ${existing.pid}, v${existing.version})`,
         );
