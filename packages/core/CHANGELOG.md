@@ -1,5 +1,34 @@
 # Changelog
 
+## [4.5.5] - 2026-11-09
+
+> One new event, added because a round of parallel tools is otherwise unobservable from the
+> outside. Tools in one round run under `Promise.all`, and `finally` is emitted once, after the
+> whole round settles — so "the `edit` call already came back, only `exec` is still running" was
+> a state no consumer could see. Any UI that says _what it is waiting for_ was therefore forced
+> to name the whole set.
+
+### ✨ Added — `tool-call-end`
+
+- Emitted once per tool call, the moment its result is final (`completed` / `error` /
+  `aborted`), so in a parallel round whichever tool finishes first emits first.
+- Payload is `ToolCallEndContext`: `{ agent, toolCall, result }`. `result` is the finalized
+  `role: "tool"` message, so listeners do not have to look it up in `agent.messages`; its
+  `status` is the **clamped** value (a tool that finished after `abort()` reports `aborted`, not
+  `completed`).
+- Emitted from the single result-finalizing point inside `handleToolCall`, so every branch —
+  rejected by a plugin, argument parse failure, unknown tool, normal return, thrown error — is
+  covered by one call site.
+- It is a plain event, not a hook: there is no `onToolCallEnd`, and nothing can be short-circuited
+  after execution. It pairs with `tool-call` (the fact-event of `onToolCall`, emitted *before*
+  execution).
+
+### 🧪 Tests
+
+- Two new cases in `Agent.test.ts`: a parallel round where the fast tool reports while the slow
+  one is still running (proving per-tool granularity), and an aborted tool reporting `aborted`
+  rather than `completed`.
+
 ## [4.5.4] - 2026-11-03
 
 > Two state bugs that only bite "normal usage", both found by a code review of the
