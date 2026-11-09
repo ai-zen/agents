@@ -1026,7 +1026,15 @@ describe("SessionManager：交接 / 迁移", () => {
     // 新会话：id 变了，轮次从 0 起（这一轮的收尾已在换 id 之前发过）
     expect(result.sessionId).not.toBe(sessionId);
     expect(handoffManager.list("ws-1")).toEqual([
-      { sessionId: result.sessionId, workspaceId: "ws-1", agentId: "default", turnId: 1, phase: null },
+      {
+        sessionId: result.sessionId,
+        workspaceId: "ws-1",
+        agentId: "default",
+        turnId: 1,
+        phase: null,
+        // 新会话缺省在保活区里（与新建会话同一条规则）
+        keepAlive: true,
+      },
     ]);
     // 旧 id 已退场
     expect(handoffManager.list("ws-1").map((item) => item.sessionId)).not.toContain(sessionId);
@@ -1157,6 +1165,7 @@ describe("SessionManager：另存为（/save <名字>）", () => {
         agentId: "default",
         turnId: 1,
         phase: null,
+        keepAlive: true,
       },
     ]);
   });
@@ -1587,5 +1596,119 @@ describe("SessionManager：attach（会话活得比连接久）", () => {
     expect(created.sessionId).toBe("chat_same_2");
     // 旧存档原封不动
     expect((await store.read("chat_same"))?.messages).toEqual([{ role: "user", content: "别人的对话" }]);
+  });
+});
+
+describe("SessionManager：保活区 / 换 Agent / 关闭", () => {
+  let store: MemoryStore;
+  let live: SessionManager;
+  /** 每次 `createAgent` 收到的 agentId（换 Agent 时用它断言真的重建了） */
+  let built: string[];
+
+  beforeEach(() => {
+    store = new MemoryStore();
+    built = [];
+    live = new SessionManager({
+      createAgent: async (input) => {
+        built.push(input.agentId);
+        return agent;
+      },
+      nextSessionId: () => `chat_${++sessionCounter}`,
+      storeFor: () => store,
+    });
+    events = [];
+    live.subscribe((event) => events.push(event));
+    sessionCounter = 0;
+  });
+
+  /** 跑完一轮（含用户消息）并等收尾真正落地 */
+  const runTurn = async (sessionId: string, text = "问一句") => {
+    live.send(sessionId, text);
+    agent.messages = [
+      { role: "user", content: text },
+      { role: "assistant", content: "答" },
+    ];
+    agent.fire("finally");
+    await settled();
+  };
+
+  it("新会话缺省在保活区：一轮跑完不会被收掉", async () => {
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+
+    await runTurn(sessionId);
+
+    expect(live.list("ws-1").map((item) => item.sessionId)).toEqual([sessionId]);
+    expect(live.list("ws-1")[0]!.keepAlive).toBe(true);
+  });
+
+  it("移出保活且空闲：当场回收（不用等下一次 turn.end），存档留着", async () => {
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    await runTurn(sessionId);
+
+    expect(live.keepAliveSet(sessionId, false)).toEqual({ sessionId, keepAlive: false });
+
+    // 活会话没了
+    expect(live.list("ws-1")).toEqual([]);
+    // 存档还在：`attach` 能把这段装回来（这一条就是「点回来内容不少」的依据）
+    expect(store.records.get(sessionId)!.messages).toHaveLength(2);
+  });
+
+  it("一轮还在跑时移出保活：不打断它，turn.end 收尾时才回收", async () => {
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+
+    live.send(sessionId, "长任务");
+    agent.messages = [{ role: "user", content: "长任务" }];
+    live.keepAliveSet(sessionId, false);
+    // 正在跑的一轮不能被收掉：那比多占几兆内存严重
+    expect(live.list("ws-1").map((item) => item.sessionId)).toEqual([sessionId]);
+
+    agent.messages.push({ role: "assistant", content: "答" });
+    agent.fire("finally");
+    await settled();
+
+    expect(live.list("ws-1")).toEqual([]);
+    expect(store.records.get(sessionId)).toBeDefined();
+  });
+
+  it("setAgent：换 Agent、保留消息、存档里的 agentId 跟着换、旧事件摘掉", async () => {
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    await runTurn(sessionId);
+    const handlersBefore = agent.handlerCount();
+
+    const snapshot = await live.setAgent(sessionId, "coder");
+
+    expect(built).toEqual(["default", "coder"]);
+    expect(snapshot.agentId).toBe("coder");
+    expect(snapshot.messages).toHaveLength(2); // 消息一条不丢
+    // 旧 Agent 的事件已摘掉、新的一份挂上了（与 reload 同一套）
+    expect(agent.handlerCount()).toBe(handlersBefore);
+    // 存档里的 agentId 必须跟上：不写的话下次 attach 会按旧 Agent 装回来
+    expect(store.records.get(sessionId)!.agentId).toBe("coder");
+    expect(live.list("ws-1")[0]!.agentId).toBe("coder");
+  });
+
+  it("setAgent：已经是这个 Agent 就不重建（重建只会丢掉工具发现的热状态）", async () => {
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p", agentId: "coder" });
+
+    await live.setAgent(sessionId, "coder");
+
+    expect(built).toEqual(["coder"]);
+  });
+
+  it("setAgent：一轮在跑时拒绝（旧 Agent 正流着的增量会全丢在没人听的实例上）", async () => {
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    live.send(sessionId, "跑着");
+
+    await expect(live.setAgent(sessionId, "coder")).rejects.toMatchObject({ code: "turn-in-flight" });
+    expect(built).toEqual(["default"]);
+  });
+
+  it("close：幂等、不删存档；未知会话回 false", async () => {
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    await runTurn(sessionId);
+
+    expect(live.close(sessionId)).toBe(true);
+    expect(live.close(sessionId)).toBe(false);
+    expect(store.records.get(sessionId)!.messages).toHaveLength(2);
   });
 });

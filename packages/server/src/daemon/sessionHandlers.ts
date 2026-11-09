@@ -11,7 +11,15 @@
  */
 
 import type { Connection, MethodHandler } from "./Daemon.js";
-import { badParams, codedError, field, optionalString, requireNumber, requireString } from "./params.js";
+import {
+  badParams,
+  codedError,
+  field,
+  optionalString,
+  requireBoolean,
+  requireNumber,
+  requireString,
+} from "./params.js";
 import { ensureWorkspace, readWorkspace } from "../service/workspace/workspace.js";
 import { FileIndex } from "../service/workspace/FileIndex.js";
 import type { SessionManager } from "../service/session/SessionManager.js";
@@ -32,6 +40,8 @@ import {
   type SessionMigrateResult,
   type SessionRollbackResult,
   type SessionReloadParams,
+  type SessionCloseResult,
+  type SessionKeepAliveSetResult,
   type SessionSaveAsResult,
   type SessionSaveResult,
   type SessionSendResult,
@@ -194,6 +204,33 @@ export function createSessionHandlers(options: SessionHandlerOptions): Record<st
 
     [SESSION_METHODS.reload]: async (params): Promise<SessionSnapshotResult> => {
       return await manager.reload(requireString(params, "sessionId"));
+    },
+
+    /**
+     * 换 Agent：同一段对话、换一个 Agent 继续（保留消息）。
+     *
+     * `agentId` 是否真存在由装配方判定（它读定义）；这一层只保证参数齐。
+     */
+    [SESSION_METHODS.setAgent]: async (params): Promise<SessionSnapshotResult> => {
+      return await manager.setAgent(
+        requireString(params, "sessionId"),
+        requireString(params, "agentId"),
+      );
+    },
+
+    /** 明确关闭一段会话（幂等：本来就没在跑时回 `closed:false`，不当错误） */
+    [SESSION_METHODS.close]: (params): SessionCloseResult => {
+      return { closed: manager.close(requireString(params, "sessionId")) };
+    },
+
+    /**
+     * 保活区开关：`on:false` 且会话空闲时当场回收。
+     *
+     * 不存在的会话报 `unknown-session`（`manager.keepAliveSet` 里），**不**静默当成功：
+     * 那说明客户端手里的 id 已经没了，它该重新 `attach`，而不是以为「放在保活区里了」。
+     */
+    [SESSION_METHODS.keepAliveSet]: (params): SessionKeepAliveSetResult => {
+      return manager.keepAliveSet(requireString(params, "sessionId"), requireBoolean(params, "on"));
     },
 
     /**

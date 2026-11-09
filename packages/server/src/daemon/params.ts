@@ -56,6 +56,20 @@ export function requireNumber(params: unknown, name: string): number {
 }
 
 /**
+ * 取必填布尔参数（`session.keepAlive.set` 的 `on`）。
+ *
+ * 不用 `Boolean(x)`：那样 `"false"` 会变成 `true`，「传错了」与「传了 false」就分不开 ——
+ * 而保活标记传错的后果是会话被静默回收。
+ */
+export function requireBoolean(params: unknown, name: string): boolean {
+  const value = field(params, name);
+  if (typeof value !== "boolean") {
+    throw badParams(`missing or invalid "${name}"`);
+  }
+  return value;
+}
+
+/**
  * 取可选字符串参数。
  *
  * `undefined` 与 `null` 都当「没给」（JSON 里两者都是「这个字段没内容」）；给了就必须是

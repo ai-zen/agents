@@ -89,6 +89,29 @@ export const SESSION_METHODS = {
   migrate: "session.migrate",
   /** 取某个子 Agent 到目前为止的完整对话（客户端切到该栏目时对齐用） */
   subAgentSnapshot: "session.subAgent.snapshot",
+  /**
+   * 换 Agent：按新定义重建 Agent、**保留消息**、更新会话的 `agentId`。
+   *
+   * 为什么要一条方法：Agent 身份归服务端（Agent 跑在它那边），而 `/agent` 是「同一段
+   * 对话换个 Agent 继续」。客户端自己搬消息重建会话是另一条路 —— 那条路要求服务端接受
+   * 客户端递来的历史，与「服务端是唯一真相源」直接冲突。
+   */
+  setAgent: "session.setAgent",
+  /**
+   * 关闭一段会话：摘事件、让出 Agent 与 Scope 引用，**不删存档**。
+   *
+   * 只在**明确要求**时关（`/close` 这条命令、以及自动回收的判定）；连接断开不算 ——
+   * 会话的存活期比连接长，关掉终端只退订阅，服务端那一轮仍会跑完。
+   */
+  close: "session.close",
+  /**
+   * 保活区开关（每段会话一个标记，幂等）。
+   *
+   * `on: true` = 「这段我现在要，别回收」；`on: false` = 「我不管了，跑完就收」。
+   * 回收判据就一条：`turn.end` 收尾之后仍不在保活区 → 关闭（存档已在收尾前写好，
+   * 所以再点回来 `attach` 能从盘上装回来）。
+   */
+  keepAliveSet: "session.keepAlive.set",
 } as const;
 
 /**
@@ -320,6 +343,12 @@ export interface SessionSummary {
   turnId: number;
   /** 当前阶段；空闲为 null */
   phase: PhaseInfo | null;
+  /**
+   * 是否在保活区里（`turn.end` 之后不被回收的就是它们）。
+   *
+   * 客户端靠它「区分」：将来 desktop / web 的 pin 列表直接读这个字段，不用另走一条查询。
+   */
+  keepAlive: boolean;
 }
 
 /** 一屏所需的全部事实：客户端拿它直接渲染，不必先从事件流里攒 */
@@ -366,6 +395,34 @@ export interface AgentSetModelResult {
 
 export interface SessionReloadParams {
   sessionId: string;
+}
+
+/** 换 Agent：`agentId` 必须是已存在的 Agent 定义（否则 `unknown-agent`） */
+export interface SessionSetAgentParams {
+  sessionId: string;
+  agentId: string;
+}
+
+export type SessionSetAgentResult = SessionSnapshotResult;
+
+export interface SessionCloseParams {
+  sessionId: string;
+}
+
+export interface SessionCloseResult {
+  /** `false` = 这段会话本来就没在跑（幂等：客户端可以重复调） */
+  closed: boolean;
+}
+
+export interface SessionKeepAliveSetParams {
+  sessionId: string;
+  /** `true` = 放进保活区，`false` = 移出 */
+  on: boolean;
+}
+
+export interface SessionKeepAliveSetResult {
+  sessionId: string;
+  keepAlive: boolean;
 }
 
 export interface SessionSaveParams {

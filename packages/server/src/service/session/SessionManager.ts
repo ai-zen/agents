@@ -200,8 +200,23 @@ interface LiveSession {
    * 如果收尾时再无条件写一次，写下去的会是被 prune 过的版本，把刚存好的完整存档盖掉。
    * `autoMigrate` 反过来是安全的：它跑在 `send` 的那一轮里，收尾时 id 已经换成新的，
    * 写下去的就是新会话的开场（与旧版 `onMigrated` 里那次落盘同一个效果）。
+   *
+   * 同一条标记也是「这一轮真正的终点」的判据，所以回收判定也挂在它上：`migrate` 中场
+   * 那次收尾不能触发回收（那时会话正要换 id）。
    */
   persistOnSettle: boolean;
+  /**
+   * 保活区标记：`true` = 这一轮跑完之后仍然留着（有人正在关注它）。
+   *
+   * **新会话缺省在保活区里**，这是故意的：两种漏法的代价不对称 ——
+   *   · 客户端忘了 `on:false`（切走 / 退出时没发）→ 会话多占几兆内存，泄漏；
+   *   · 客户端忘了 `on:true`（刚开会话还没来得及声明）→ 用户正看着的那段被回收掉。
+   * 后者是数据/体验事故，前者只是不够省。所以「默认留着，客户端不看了才放手」。
+   *
+   * 回收判据只有一条：`turn.end` 收尾之后为 `false` → 关闭。存档在收尾前就写好了，
+   * 所以被回收的会话「点回来」只是从盘上重新装一次，不丢内容。
+   */
+  keepAlive: boolean;
   /** 交接服务（首次交接时创建；持有取消句柄，见 `handoffOf`） */
   handoff: SessionHandoff | null;
   /**
@@ -636,6 +651,54 @@ export class SessionManager {
   }
 
   /**
+   * 换 Agent（`session.setAgent`）：按新定义重建、**保留消息**、更新 `agentId`、落盘一次。
+   *
+   * Agent 身份在服务端手里（Agent 就在这边跑），所以这是唯一能让「同一段对话换个 Agent
+   * 继续」的办法：客户端把消息搬到一个新会话去，等于要求服务端接受客户端递来的历史，
+   * 与「服务端是唯一真相源」直接冲突。
+   *
+   * 与 `reload` 的差别只有两件事：`agentId` 变了、多落一次盘（存档里记着 `agentId`，
+   * 不写就会在下次 `attach` 时按旧 Agent 装回来）。**不重建 Scope**：Scope 里是配置与
+   * 能力发现的结果，与 Agent 定义无关，而 `invalidateScope` 会连带踢掉同工作区的其它会话。
+   *
+   * 一轮在跑时拒绝（`turn-in-flight`）：换 Agent 会 `detach` 旧事件、换掉 `agent`，
+   * 而旧 Agent 正流着的增量会全部丢在一个没人听的实例上。
+   */
+  async setAgent(sessionId: string, agentId: string): Promise<SessionSnapshotResult> {
+    const session = this.require(sessionId);
+    if (this.isTurnInFlight(session)) {
+      throw codedError("turn-in-flight", `session ${sessionId} has a turn in flight`);
+    }
+    // 已经是这个 Agent：不重建（重建会丢掉工具发现的热状态，没任何好处）
+    if (session.agentId === agentId) return await this.snapshot(sessionId);
+
+    const messages = [...session.agent.messages];
+    session.detach();
+    const agent = await this.createAgent({
+      workspaceId: session.workspaceId,
+      path: session.path,
+      agentId,
+      isHandoffBusy: () => session.settleDeferred,
+      autoMigrate: (mode) => this.autoMigrate(session.id, mode),
+      resolveMode: (info) => this.askHandoffMode(session, info),
+    });
+    agent.messages = messages;
+
+    session.agent = agent;
+    session.agentId = agentId;
+    session.turnFailed = null;
+    session.turnSettled = true;
+    session.phase.reset();
+    // 换了 Agent：旧子 Agent 实例连同它们的对话一起退场（它们属于旧底座）
+    this.clearSubAgents(session);
+    session.detach = this.attachEvents(session);
+
+    await this.writeSession(session);
+
+    return await this.snapshot(sessionId);
+  }
+
+  /**
    * 按磁盘上的（新）配置与 Agent 定义重建 Agent，**保留当前消息**。
    *
    * 用在「`/config` 改了端点凭据」「`agent.model.set` 换了模型」之后：Scope 持有配置
@@ -831,6 +894,7 @@ export class SessionManager {
       turnSettled: true,
       settleDeferred: false,
       persistOnSettle: false,
+      keepAlive: true,
       handoff: null,
       subAgents: new Map(),
       subAgentSeq: 0,
@@ -987,6 +1051,7 @@ export class SessionManager {
         agentId: session.agentId,
         turnId: session.turnId,
         phase: this.visiblePhase(session),
+        keepAlive: session.keepAlive,
       }));
   }
 
@@ -1001,6 +1066,24 @@ export class SessionManager {
     this.clearSubAgents(session);
     this.sessions.delete(sessionId);
     return true;
+  }
+
+  /**
+   * 保活区开关（`session.keepAlive.set`）：`on:false` 且在空闲时当场回收。
+   *
+   * 为什么移出保活要**当场**判定一次：回收的另一半挂在 `turn.end` 上，而一段空闲会话
+   * 不会再有下一次 `turn.end` —— 只等那里，它就永远不会被收。
+   *
+   * 一轮还在跑时不动它：用户可能刚切走但又想回来，而“正在跑的一轮”中途被收掉比多占
+   * 几兆内存严重。那一轮自己收尾时还会再按保活区判一次（见 `settleTurn`）。
+   */
+  keepAliveSet(sessionId: string, on: boolean): { sessionId: string; keepAlive: boolean } {
+    const session = this.require(sessionId);
+    session.keepAlive = on;
+    if (!on && session.turnSettled && !session.settleDeferred) {
+      this.close(sessionId);
+    }
+    return { sessionId, keepAlive: on };
   }
 
   /** 收摊：摘掉所有事件、清空会话（守护进程退出时调用） */
@@ -1265,6 +1348,9 @@ export class SessionManager {
     // 交接/迁移进行中：这一轮的收尾归方法自己的 promise（见 `settleDeferred`）
     if (session.settleDeferred) return;
     session.turnSettled = true;
+    // 本地记住「这一轮是不是客户端发起的正常回合」：`writeOnSettle` 会把标记消耗掉，
+    // 而下面那个回收判定还要用它（`migrate` 的中场收尾不能触发回收）。
+    const clientTurn = session.persistOnSettle;
 
     // 1) 落盘：`turn.end` 之前写完，存档与事件里的「这一轮」才是同一个东西
     await this.writeOnSettle(session);
@@ -1287,6 +1373,12 @@ export class SessionManager {
       ok: session.turnFailed === null,
       ...(session.turnFailed ? { error: session.turnFailed } : {}),
     });
+
+    // 6) 回收：跑完又不在保活区 → 关掉（存档已在第 1 步写好，再点回来 `attach`
+    //    从盘上装回来）。放在 `turn.end` **之后**：客户端拿到的最后一条事件仍然是
+    //    「这一轮结束了」，而不是一个已经被摘掉的会话。
+    //    只对客户端发起的正常回合判定 —— `migrate` 的中场收尾紧接着要换 id。
+    if (clientTurn && !session.keepAlive) this.close(session.id);
   }
 
   // ==================================================================
