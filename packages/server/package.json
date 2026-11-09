@@ -1,0 +1,50 @@
+{
+  "name": "@ai-zen/agents-server",
+  "version": "0.1.0",
+  "description": "AI-Zen Agents Server — session/workspace service shared by CLI and Desktop",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ai-zen/agents.git",
+    "directory": "packages/server"
+  },
+  "homepage": "https://github.com/ai-zen/agents/tree/main/packages/server#readme",
+  "bugs": {
+    "url": "https://github.com/ai-zen/agents/issues"
+  },
+  "scripts": {
+    "clean": "rimraf ./dist",
+    "prebuild": "npm run clean",
+    "build": "tsc",
+    "prepublishOnly": "node scripts/check-publish-tool.mjs && npm test && npm run build",
+    "pretest": "tsc --noEmit -p tsconfig.test.json",
+    "test": "vitest run",
+    "test:all": "npm run pretest && vitest run && npm run build"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "server",
+    "session",
+    "workspace",
+    "llm"
+  ],
+  "author": "LZQCN",
+  "license": "MIT",
+  "dependencies": {
+    "@ai-zen/agents-sdk": "workspace:^"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.2",
+    "rimraf": "^6.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vitest": "^5.1.0"
+  },
+  "files": [
+    "dist",
+    "CHANGELOG.md"
+  ]
+}

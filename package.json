@@ -6,7 +6,8 @@
   "scripts": {
     "build-core": "pnpm --filter @ai-zen/agents-core build",
     "build-sdk": "pnpm --filter @ai-zen/agents-sdk build",
-    "test": "pnpm --filter @ai-zen/agents-core test && pnpm --filter @ai-zen/agents-sdk test"
+    "build-server": "pnpm --filter @ai-zen/agents-server build",
+    "test": "pnpm --filter @ai-zen/agents-core test && pnpm --filter @ai-zen/agents-sdk test && pnpm --filter @ai-zen/agents-server test"
   },
   "keywords": [],
   "author": "LZQCN",
