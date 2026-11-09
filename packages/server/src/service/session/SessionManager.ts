@@ -374,6 +374,11 @@ export class SessionManager {
    *   3. 没有返回值可给：客户端靠 `session.idChanged` 事件得知换了 id。
    *
    * 必须能存档：prune 之后旧历史只存在于存档里，存不下去就别动手。
+   *
+   * 这里**不**加「已有一轮在跑就拒绝」那条判断（`send` 的 `turn-busy` / `requireIdle`
+   * 的 `turn-in-flight`）：它天生运行在**一轮内部**（插件在 `onAfterSend` 里调），
+   * `turnSettled` 必然为 false —— 照搬那条判断会把自动迁移整个废掉。它挡并发靠的是
+   * 下面的 `settleDeferred` 占坑。
    */
   private async autoMigrate(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
@@ -722,8 +727,8 @@ export class SessionManager {
    * 还是只在盘上。
    *
    * 接上一个活着的会话是安全的：客户端拿到 id 之后本来就要拉一份快照，事件是按连接分发
-   * 的，两边看到的是同一份真相。真正需要额外约定的只有「两个客户端同时往同一段会话发言」
-   * （`send` 目前不拒绝第二个调用者），那是另一件事。
+   * 的，两边看到的是同一份真相。两个客户端可以**同时看**，但不能**同时发言**：一轮还在跑
+   * 时 `send` 直接报 `turn-busy`（理由见 `send` 的注释）。
    *
    * 既不在内存、又不在盘上 → `session-missing`：什么都不接，绝不悄悄开一段空的。
    */
@@ -748,10 +753,31 @@ export class SessionManager {
    */
   send(sessionId: string, content: MessageContent): { turnId: number } {
     const session = this.require(sessionId);
-    // 交接/迁移进行中：再起一轮会同用一个 `turnId`，事件没任何办法归轮
+
+    // 交接/迁移进行中：再起一轮会同用一个 `turnId`，事件没任何办法归轮。
+    //
+    // 这条**必须排在下面那条之前**：交接期间 `turnSettled` 也是 false，顺序反了的话
+    // 交接那一次会被报成 `turn-busy`，客户端就拿不到「正在交接」这个更准的原因
+    // （两者对客户端是不同的事：前者等一会儿再发，后者可能要等一整份交接文档）。
     if (session.settleDeferred) {
       throw codedError("handoff-in-flight", `session ${sessionId} is handing off`);
     }
+
+    // 已有一轮在跑就拒绝。
+    //
+    // 为什么必须挡：事件是靠 `session.turnId` 的**当前值**归轮的 —— 增量与收尾都在发出
+    // 的那一刻才读它，而 `beginTurn` 直接 `turnId += 1`。真放第二轮进来，第一轮后半段的
+    // 增量就会被贴上第二轮的编号，两条链路的 `turn.end` 也各自对不上，界面互相串轮。
+    // 这不是理论风险：`attach` 之后「同一段会话被两个客户端看」是常态（客户端退出后会话
+    // 仍活着，另一个客户端接上；或两个终端同看），谁多点一下就是两轮并行。
+    //
+    // 为什么拒绝而不是排队：`send` 的语义是「**现在**开始一轮」——它的返回值就是这一轮的
+    // 编号，调用方拿到它就会用这个编号过滤事件。排队会让语义变成「稍后」，调用方手里的
+    // 编号与它此刻看到的状态不再对应；该不该等、等多久，是客户端的决定，服务端不替它做。
+    if (this.isTurnInFlight(session)) {
+      throw codedError("turn-busy", `session ${sessionId} already has a turn in flight`);
+    }
+
     this.beginTurn(session);
 
     void session.agent.send(content).catch((error: any) => {
@@ -1076,6 +1102,17 @@ export class SessionManager {
   }
 
   /**
+   * 是否已经有一轮在跑（`beginTurn` 置 false、`settleTurn` 置 true，新建的会话是 true）。
+   *
+   * 只此一处判断：`send`、`handoff`/`migrate`（经 `requireIdle`）挡的是**同一个状态**，
+   * 各写一份 `!session.turnSettled` 迟早会漂成两套口径（比如哪天这一轮多了一种「未收尾」
+   * 的形态，只改到其中一处）。文案与 code 仍按各自场景给：`turn-busy` / `turn-in-flight`。
+   */
+  private isTurnInFlight(session: LiveSession): boolean {
+    return !session.turnSettled;
+  }
+
+  /**
    * 交接的前提：这段会话得处于空闲、且真的有过对话。
    *
    * 两条都是「不满足就说不」而不是兜底：正在跑一轮时交接，两边的消息会同时往
@@ -1083,7 +1120,7 @@ export class SessionManager {
    */
   private requireIdle(sessionId: string): LiveSession {
     const session = this.require(sessionId);
-    if (!session.turnSettled) {
+    if (this.isTurnInFlight(session)) {
       throw codedError("turn-in-flight", `session ${sessionId} has a turn in flight`);
     }
     const hasUserMessage = session.agent.messages.some(

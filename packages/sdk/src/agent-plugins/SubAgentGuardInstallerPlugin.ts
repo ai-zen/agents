@@ -16,9 +16,15 @@
  * 该列表，故在钩子内安插对**本次 run 立即生效**（无需 init；AgentTool 也不会调用子 Agent 的
  * init）。
  *
- * 约束口径（与主 Agent 一致，仅此一项）：把主 Agent 同款的 `ContextGuardPlugin` 装到子 Agent 上
+ * 约束口径（与主 Agent 同款，一项不落）：把主 Agent 同款的 `ContextGuardPlugin` 装到子 Agent 上
  * —— 同一个 `guardTokens`（当前模型的 `tokenThresholds.guard`），使「请求前用量超过硬线即中断」
+ * 对子 Agent 同样成立；同一个 `isSuspended`（会话层的交接/迁移让行判断），使「交接回合让行」
  * 对子 Agent 同样成立。
+ *
+ * 为什么让行判断也必须透传：交接回合本身就是上下文最满的时刻 —— 主 Agent 那颗护栏靠
+ * `isSuspended` 让行才不至于「交接触发拦截 → 拦截又触发交接」地打转。子 Agent 若只带阈值、
+ * 不带让行，就会在交接中派出去的子任务上照拦，护栏比主 Agent 还严一档；递归安插时更是层层
+ * 都要带上，否则孙级又会把让行丢掉（同一个缺口往下挪一层而已）。
  * **不设**轮次上限，**不设**工具调用次数上限。
  *
  * 中断语义：抛错即结束子 Agent 的 run；异常经 `AgentTool` 的 finally（分发 onSubAgentEnd）
@@ -39,29 +45,48 @@ import { ContextGuardPlugin } from "./ContextGuardPlugin.js";
 export interface SubAgentGuardOptions {
   /** 强行阻断阈值；与主 Agent 同源（当前模型的 `tokenThresholds.guard`） */
   guardTokens: number;
+  /**
+   * 让行判断（与主 Agent 的 `ContextGuardPlugin` 同一个来源）。
+   * 交接回合本身就是上下文最满的时刻，硬线必须让行 —— 否则「交接触发拦截 → 拦截
+   * 又触发交接」形成死循环。子 Agent 也必须遵守同一判断，否则交接中派出去的子任务
+   * 会被自己的硬线打断。
+   */
+  isSuspended?: () => boolean;
 }
 
 /**
  * 子 Agent 护栏安装器（装在**宿主 Agent** 上）。
  *
- * 每次委派边界把 `ContextGuardPlugin` 装到子 Agent 身上（阈值与主 Agent 相同），并递归安插
- * 自身，使子 Agent 再委派（孙级）时同样受约束。始终返回 undefined，永不拒绝委派——是否中断
- * 由 `ContextGuardPlugin` 按阈值决定。
+ * 每次委派边界把 `ContextGuardPlugin` 装到子 Agent 身上（阈值与让行判断都与主 Agent 相同），
+ * 并递归安插自身，使子 Agent 再委派（孙级）时同样受约束。始终返回 undefined，永不拒绝委派
+ * ——是否中断由 `ContextGuardPlugin` 按阈值决定。
  */
 export class SubAgentGuardInstallerPlugin implements AgentPlugin {
   private readonly guardTokens: number;
+  /** 让行判断按**引用**存下：它读的是「此刻是否在交接」，不是装配那一刻的快照 */
+  private readonly isSuspended?: () => boolean;
 
   constructor(options: SubAgentGuardOptions) {
     this.guardTokens = options.guardTokens;
+    this.isSuspended = options.isSuspended;
   }
 
   onSubAgentStart({ subAgent }: SubAgentContext): void {
-    // 与主 Agent 完全同款：同一个 guardTokens 绝对阈值
-    subAgent.use(new ContextGuardPlugin({ guardTokens: this.guardTokens }));
-
-    // 传染到孙级：子 Agent 若再委派，其子 Agent 同样被安插
+    // 与主 Agent 完全同款：同一个 guardTokens 绝对阈值 + 同一个让行判断
     subAgent.use(
-      new SubAgentGuardInstallerPlugin({ guardTokens: this.guardTokens }),
+      new ContextGuardPlugin({
+        guardTokens: this.guardTokens,
+        isSuspended: this.isSuspended,
+      }),
+    );
+
+    // 传染到孙级：子 Agent 若再委派，其子 Agent 同样被安插。
+    // 让行判断也必须跟着递归走，否则只差一层就把「交接中让行」丢了。
+    subAgent.use(
+      new SubAgentGuardInstallerPlugin({
+        guardTokens: this.guardTokens,
+        isSuspended: this.isSuspended,
+      }),
     );
   }
 }

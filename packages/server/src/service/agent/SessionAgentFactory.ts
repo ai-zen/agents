@@ -163,9 +163,18 @@ export class SessionAgentFactory {
     );
     // 子 Agent 的硬线：子 Agent 是新 `new Agent()` 出来的，不继承主 Agent 的插件；
     // 而且它走 `run()` 而非 `send()`（`onBeforeSend`/`onAfterSend` 不触发），所以只能在
-    // `onSubAgentStart` 钩子里现场装配。阈值与主 Agent 同源（同一个 `thresholds.guard`），
-    // 本插件会递归安插自身，孙级自动覆盖。
-    sdkAgent.use(new SubAgentGuardInstallerPlugin({ guardTokens: thresholds.guard }));
+    // `onSubAgentStart` 钩子里现场装配。阈值与让行判断都必须与主 Agent 同源（同一个
+    // `thresholds.guard` + 同一个 `input.isHandoffBusy`），本插件会递归安插自身，孙级自动覆盖。
+    //
+    // 为什么让行也必须传下去：交接回合本身就是上下文最满的时刻，主 Agent 让行而子 Agent
+    // 照拦，等于交接中派出去的子任务被自己的硬线打断（甚至「交接触发拦截 → 拦截又触发
+    // 交接」地打转）。传函数而不是布尔值：它反映的是**当时**是否在交接。
+    sdkAgent.use(
+      new SubAgentGuardInstallerPlugin({
+        guardTokens: thresholds.guard,
+        isSuspended: input.isHandoffBusy,
+      }),
+    );
 
     const autoMigrate = input.autoMigrate;
     if (autoMigrate) {

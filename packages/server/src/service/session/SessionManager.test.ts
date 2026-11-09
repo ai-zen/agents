@@ -115,6 +115,24 @@ const pick = <T extends ServerEvent["event"]>(name: T) =>
 /** 模拟 OpenAI 风格的一个流式 chunk */
 const chunk = (delta: Record<string, unknown>) => ({ choices: [{ delta }] });
 
+/**
+ * 挂住的摘要请求（只认取消）：用来把会话停在「交接进行中」那个状态。
+ *
+ * 必须响应 `signal`：不响应的话 `cancel()` 掐不断它，用例只能干等到超时。
+ */
+const hangingSummary = () => ({
+  chat: {
+    completions: {
+      create: (_body: unknown, options?: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener("abort", () =>
+            reject(Object.assign(new Error("Request was aborted"), { name: "AbortError" })),
+          );
+        }),
+    },
+  },
+});
+
 describe("SessionManager：会话生命周期", () => {
   it("create 之后能在 list 里看到它（id 递增、agentId 缺省 default）", async () => {
     const first = await create();
@@ -222,6 +240,10 @@ describe("SessionManager：turnId 与「不等一轮跑完」", () => {
     agent.fire("open");
     expect(pick("session.phase").at(-1)!.turnId).toBe(1);
 
+    // 先让第一轮收尾（SDK 的 `finally`）再起下一轮：并行两轮会被 `turn-busy` 挡住
+    // （事件靠 `turnId` 的当前值归轮，两轮并行必然串号，见 `send` 的注释）
+    agent.fire("finally");
+
     expect(manager.send(sessionId, "第二轮").turnId).toBe(2);
     agent.fire("open");
     expect(pick("session.phase").at(-1)!.turnId).toBe(2);
@@ -236,6 +258,110 @@ describe("SessionManager：turnId 与「不等一轮跑完」", () => {
     const end = pick("turn.end").at(-1)!;
     expect(end.ok).toBe(false);
     expect(end.error).toEqual({ code: "net", message: "boom" });
+  });
+});
+
+/**
+ * 并发守卫：同一段会话不并行两轮。
+ *
+ * 场景是真实的：`attach` 之后会话活得比连接久，两个客户端（两个终端）可能同时看着同一段
+ * 会话。没有守卫时第二个 `send` 直接把 `turnId += 1`，第一轮后半段的增量与它的收尾就被
+ * 贴在第二轮的编号上 —— 这里断言的正是「第二个调用被拒，且一个号都没被消耗」。
+ *
+ * 用真的交接链路（存档 + `handoff` 路径）：顺序那条用例必须让会话**真的**停在「交接
+ * 进行中」，否则测的就不是顺序。
+ */
+describe("SessionManager：并发守卫（一轮在跑时不再起第二轮）", () => {
+  let store: MemoryStore;
+  let workspace: string;
+  let guarded: SessionManager;
+
+  beforeEach(async () => {
+    store = new MemoryStore();
+    workspace = await fs.mkdtemp(join(tmpdir(), "aiz-turn-guard-"));
+    guarded = new SessionManager({
+      createAgent: async () => agent,
+      nextSessionId: () => `chat_${++sessionCounter}`,
+      storeFor: () => store,
+      handoff: { aiZenDir: join(workspace, "ai-zen"), homeDir: workspace },
+    });
+    events = [];
+    sessionCounter = 0;
+    guarded.subscribe((event) => events.push(event));
+  });
+
+  afterEach(async () => {
+    await fs.rm(workspace, { recursive: true, force: true });
+  });
+
+  /** 抓同步抛出的错：客户端是按 `code` 分支的，不靠文案 */
+  const catchSync = (run: () => unknown) => {
+    try {
+      run();
+    } catch (error) {
+      return error as { code?: string; message?: string };
+    }
+    throw new Error("expected to throw");
+  };
+
+  /** 起一轮但永不收尾：`holdSend` 一直悬着，SDK 的 `finally` 也不会来 */
+  const hangTurn = async () => {
+    const { sessionId } = await guarded.create({ workspaceId: "ws-1", path: workspace });
+    agent.holdSend = new Promise<void>(() => {});
+    return { sessionId, turnId: guarded.send(sessionId, "第一轮").turnId };
+  };
+
+  it("一轮在跑时再 send：报 turn-busy，且第二个 turnId 没有被消耗", async () => {
+    const { sessionId, turnId } = await hangTurn();
+    expect(turnId).toBe(1);
+
+    const error = catchSync(() => guarded.send(sessionId, "插一条"));
+    expect(error.code).toBe("turn-busy");
+    expect(error.message).toMatch(/already has a turn in flight/);
+
+    // 号没被消耗：list 里仍是 1，第二轮一次都没交给 Agent，也没有带 turnId=2 的 phase
+    expect(guarded.list("ws-1").map((item) => item.turnId)).toEqual([1]);
+    expect(agent.sent).toEqual(["第一轮"]);
+    expect(pick("session.phase").every((event) => event.turnId === 1)).toBe(true);
+  });
+
+  it("该轮收尾（finally）之后 send 恢复正常：turnId 变 2", async () => {
+    const { sessionId } = await hangTurn();
+    agent.fire("finally");
+    expect(pick("turn.end").at(-1)).toMatchObject({ turnId: 1, ok: true });
+
+    expect(guarded.send(sessionId, "第二轮")).toEqual({ turnId: 2 });
+    expect(agent.sent).toEqual(["第一轮", "第二轮"]);
+    expect(guarded.list("ws-1").map((item) => item.turnId)).toEqual([2]);
+  });
+
+  it("交接进行中 send 报 handoff-in-flight（不是 turn-busy）：更准的原因先说", async () => {
+    const { sessionId } = await guarded.create({ workspaceId: "ws-1", path: workspace });
+    agent.messages = [{ role: "user", content: "旧任务" }];
+    agent.client = hangingSummary();
+
+    const pending = guarded.handoff(sessionId);
+    await new Promise((resolve) => setTimeout(resolve, 0)); // 跑到「等模型」那一步
+
+    // 交接期间 `turnSettled` 也是 false：两条守卫顺序反了，这里就会变成 turn-busy
+    const error = catchSync(() => guarded.send(sessionId, "插一条"));
+    expect(error.code).toBe("handoff-in-flight");
+    expect(error.message).toMatch(/is handing off/);
+
+    guarded.cancel(sessionId);
+    await expect(pending).rejects.toThrow(/handoff cancelled/);
+  });
+
+  it("中止（cancel + 驱动 finally）之后 send 恢复：abort 不会把守卫卡死", async () => {
+    const { sessionId } = await hangTurn();
+
+    expect(guarded.cancel(sessionId)).toEqual({ cancelled: true });
+    expect(agent.aborted).toBe(1);
+    // 中止只负责掐断，收尾仍由 SDK 的 `finally` 落地（会话层不替它宣布结束）
+    agent.fire("finally");
+    expect(pick("turn.end").at(-1)).toMatchObject({ turnId: 1 });
+
+    expect(guarded.send(sessionId, "再来一轮")).toEqual({ turnId: 2 });
   });
 });
 
@@ -836,24 +962,6 @@ describe("SessionManager：交接 / 迁移", () => {
     ];
     return sessionId;
   };
-
-  /**
-   * 挂住的摘要请求（只认取消）：用来把会话停在「交接进行中」那个状态。
-   *
-   * 必须响应 `signal`：不响应的话 `cancel()` 掐不断它，用例只能干等到超时。
-   */
-  const hangingSummary = () => ({
-    chat: {
-      completions: {
-        create: (_body: unknown, options?: { signal?: AbortSignal }) =>
-          new Promise((_resolve, reject) => {
-            options?.signal?.addEventListener("abort", () =>
-              reject(Object.assign(new Error("Request was aborted"), { name: "AbortError" })),
-            );
-          }),
-      },
-    },
-  });
 
   it("handoff：只写文档，id / 存档 / 历史都不动", async () => {
     const sessionId = await openChatted();

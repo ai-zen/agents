@@ -3,7 +3,12 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionAgentFactory } from "./SessionAgentFactory.js";
-import { AutoMigratePlugin, ContextGuardPlugin, SubAgentGuardInstallerPlugin } from "@ai-zen/agents-sdk";
+import {
+  AutoMigratePlugin,
+  ContextGuardPlugin,
+  ContextOverflowError,
+  SubAgentGuardInstallerPlugin,
+} from "@ai-zen/agents-sdk";
 import type { AgentPaths } from "./agentPaths.js";
 import type { AgentLike } from "../session/SessionManager.js";
 
@@ -341,6 +346,39 @@ describe("SessionAgentFactory：按模型阈值装护栏与自动迁移", () => 
     const autoMigrate = plugins.find((plugin) => plugin instanceof AutoMigratePlugin) as any;
     await autoMigrate.onAfterSend({ agent });
     expect(migrated).toBe(1);
+  });
+
+  it("交接中让行：传给安装器的 isSuspended 就是 isHandoffBusy（驱动子 Agent 硬线验证）", async () => {
+    const { agent, plugins } = recordingAgent();
+    let busy = true;
+    const factory = factoryWith(guardedConfig, agent, {});
+
+    await factory.create({
+      workspaceId: "ws",
+      path: "/p",
+      agentId: "default",
+      isHandoffBusy: () => busy,
+    });
+
+    const installer = plugins.find((plugin) => plugin instanceof SubAgentGuardInstallerPlugin) as any;
+    // 假子 Agent：只捕获安装器装进去的插件（服务端只管「装进去的是谁」，行为仍归 SDK）
+    const subPlugins: any[] = [];
+    installer.onSubAgentStart({
+      agent,
+      subAgent: { use: (plugin: unknown) => subPlugins.push(plugin) },
+      toolCallContext: {},
+    });
+    const subGuard = subPlugins.find((plugin) => plugin instanceof ContextGuardPlugin) as any;
+    expect(subGuard).toBeDefined();
+
+    // 记录用的 agent 用量 999 > 硬线 200：不让行就必定抛
+    // 交接进行中 → 子 Agent 的硬线必须让行，否则交接中派出去的子任务会被自己的硬线打断
+    // （甚至「交接触发拦截 → 拦截又触发交接」地打转）
+    await expect(subGuard.onInnerLoopStart({ agent })).resolves.toBeUndefined();
+
+    // 交接结束 → 同一颗插件立刻恢复拦截（说明拿到的是函数，不是装配时的快照）
+    busy = false;
+    await expect(subGuard.onInnerLoopStart({ agent })).rejects.toThrow(ContextOverflowError);
   });
 
   it("交接进行中让行：插件不触发（否则「交接触发迁移」无限递归）", async () => {
