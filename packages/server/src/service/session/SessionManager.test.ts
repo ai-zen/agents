@@ -44,13 +44,13 @@ class FakeAgent implements AgentLike {
   scope = { cwd: "/work/proj" };
   use(_plugin: unknown): void {}
 
-  private readonly handlers = new Map<string, Set<(payload: any) => void>>();
+  private readonly handlers = new Map<string, Set<(...args: any[]) => void>>();
   readonly events = {
-    on: (event: string, handler: (payload: any) => void) => {
+    on: (event: string, handler: (...args: any[]) => void) => {
       if (!this.handlers.has(event)) this.handlers.set(event, new Set());
       this.handlers.get(event)!.add(handler);
     },
-    off: (event: string, handler: (payload: any) => void) => {
+    off: (event: string, handler: (...args: any[]) => void) => {
       this.handlers.get(event)?.delete(handler);
     },
   };
@@ -64,8 +64,8 @@ class FakeAgent implements AgentLike {
     this.aborted++;
   }
 
-  fire(event: string, payload?: unknown): void {
-    for (const handler of this.handlers.get(event) ?? []) handler(payload);
+  fire(event: string, ...args: unknown[]): void {
+    for (const handler of this.handlers.get(event) ?? []) handler(...args);
   }
 
   handlerCount(): number {
@@ -81,18 +81,30 @@ class FakeAgent implements AgentLike {
  */
 class FakeSubAgent {
   messages: any[] = [];
-  private readonly handlers = new Map<string, Set<(payload: any) => void>>();
+  private readonly handlers = new Map<string, Set<(...args: any[]) => void>>();
   readonly events = {
-    on: (event: string, handler: (payload: any) => void) => {
+    on: (event: string, handler: (...args: any[]) => void) => {
       if (!this.handlers.has(event)) this.handlers.set(event, new Set());
       this.handlers.get(event)!.add(handler);
     },
   };
 
   /** 驱动一条子 Agent 自己的事件（`chunk-parsed` / `error`…） */
-  fire(event: string, payload?: unknown): void {
-    for (const handler of this.handlers.get(event) ?? []) handler(payload);
+  fire(event: string, ...args: unknown[]): void {
+    for (const handler of this.handlers.get(event) ?? []) handler(...args);
   }
+}
+
+/**
+ * 按 **core 的真实契约**发一片 chunk。
+ *
+ * `chunk-parsed` 是两参：`(receiver, chunk)` —— 第一个是那条正在拼的 assistant 消息，
+ * 第二个才是原始 chunk。以前这里按单参发（`fire("chunk-parsed", chunk)`），正好满足了
+ * 服务端那条“两种形状都认”的写法，于是一个「正文增量永远推不出去」的真 bug 躲过了一整轮
+ * 单测（详见 `onChunk` 的注释）。假件的形状必须与真件一致。
+ */
+function fireChunk(target: { fire: (event: string, ...args: unknown[]) => void }, chunk: unknown): void {
+  target.fire("chunk-parsed", { role: "assistant" }, chunk);
 }
 
 let agent: FakeAgent;
@@ -387,7 +399,7 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
     agent.fire("open");
     expect(manager.list("ws-1")[0]!.phase).toEqual({ kind: "queued" });
 
-    agent.fire("chunk-parsed", chunk({ content: "你" }));
+    fireChunk(agent, chunk({ content: "你" }));
     expect(manager.list("ws-1")[0]!.phase).toEqual({ kind: "streaming" });
 
     agent.fire("parsed", { message: { role: "assistant", content: "你好" } });
@@ -402,12 +414,12 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
     const { sessionId } = await create();
     manager.send(sessionId, "hi");
 
-    agent.fire("chunk-parsed", chunk({ reasoning_content: "想…" }));
-    agent.fire("chunk-parsed", chunk({ content: "答案" }));
+    fireChunk(agent, chunk({ reasoning_content: "想…" }));
+    fireChunk(agent, chunk({ content: "答案" }));
     // 只有 total_tokens、没有 completion_tokens：没有可校准的东西，不上报（免得一串空增量）
-    agent.fire("chunk-parsed", { choices: [{ delta: {}, finish_reason: "stop" }], usage: { total_tokens: 9 } });
+    fireChunk(agent, { choices: [{ delta: {}, finish_reason: "stop" }], usage: { total_tokens: 9 } });
     // 带 completion_tokens 的收尾 chunk：正文为空也要出去，状态栏的 tok/s 靠它校准
-    agent.fire("chunk-parsed", {
+    fireChunk(agent, {
       choices: [{ delta: {}, finish_reason: "stop" }],
       usage: { completion_tokens: 42, total_tokens: 51 },
     });
@@ -424,7 +436,7 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
     const { sessionId } = await create();
     manager.send(sessionId, "hi");
 
-    agent.fire("chunk-parsed", chunk({ tool_calls: [{ index: 0, function: { name: "exec" } }] }));
+    fireChunk(agent, chunk({ tool_calls: [{ index: 0, function: { name: "exec" } }] }));
     expect(manager.list("ws-1")[0]!.phase).toEqual({ kind: "tool-calling", tool: "exec" });
 
     agent.fire("parsed", {
@@ -546,8 +558,8 @@ describe("SessionManager：子 Agent（栏目）", () => {
     });
     const phasesBefore = pick("session.phase").length;
 
-    sub.fire("chunk-parsed", { choices: [{ delta: { reasoning_content: "想…" } }] });
-    sub.fire("chunk-parsed", { choices: [{ delta: { content: "子" } }] });
+    fireChunk(sub, { choices: [{ delta: { reasoning_content: "想…" } }] });
+    fireChunk(sub, { choices: [{ delta: { content: "子" } }] });
 
     expect(pick("message.delta").slice(-2)).toEqual([
       { event: "message.delta", sessionId, turnId: 1, subAgentId: "sub-1", text: "", reasoning: "想…" },

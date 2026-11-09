@@ -39,13 +39,13 @@ class FakeAgent implements AgentLike {
   };
   scope = { cwd: "/work/proj" };
   use(_plugin: unknown): void {}
-  private readonly handlers = new Map<string, Set<(payload: any) => void>>();
+  private readonly handlers = new Map<string, Set<(...args: any[]) => void>>();
   readonly events = {
-    on: (event: string, handler: (payload: any) => void) => {
+    on: (event: string, handler: (...args: any[]) => void) => {
       if (!this.handlers.has(event)) this.handlers.set(event, new Set());
       this.handlers.get(event)!.add(handler);
     },
-    off: (event: string, handler: (payload: any) => void) => {
+    off: (event: string, handler: (...args: any[]) => void) => {
       this.handlers.get(event)?.delete(handler);
     },
   };
@@ -56,8 +56,8 @@ class FakeAgent implements AgentLike {
   abort(): void {
     this.aborted++;
   }
-  fire(event: string, payload?: unknown): void {
-    for (const handler of this.handlers.get(event) ?? []) handler(payload);
+  fire(event: string, ...args: unknown[]): void {
+    for (const handler of this.handlers.get(event) ?? []) handler(...args);
   }
 }
 
@@ -67,16 +67,16 @@ class FakeAgent implements AgentLike {
  */
 class FakeSubAgent {
   messages: any[] = [];
-  private readonly handlers = new Map<string, Set<(payload: any) => void>>();
+  private readonly handlers = new Map<string, Set<(...args: any[]) => void>>();
   readonly events = {
-    on: (event: string, handler: (payload: any) => void) => {
+    on: (event: string, handler: (...args: any[]) => void) => {
       if (!this.handlers.has(event)) this.handlers.set(event, new Set());
       this.handlers.get(event)!.add(handler);
     },
   };
 
-  fire(event: string, payload?: unknown): void {
-    for (const handler of this.handlers.get(event) ?? []) handler(payload);
+  fire(event: string, ...args: unknown[]): void {
+    for (const handler of this.handlers.get(event) ?? []) handler(...args);
   }
 }
 
@@ -235,7 +235,8 @@ describe("会话处理器（真 socket）", () => {
     });
 
     // 正文增量与轮次收尾
-    agent.fire("chunk-parsed", { choices: [{ delta: { content: "答" } }] });
+    // `chunk-parsed` 是两参：`(receiver, chunk)` —— 第二个才是原始 chunk
+    agent.fire("chunk-parsed", {}, { choices: [{ delta: { content: "答" } }] });
     const phaseAfterDelta = (await client!.next()) as any;
     expect(phaseAfterDelta).toMatchObject({ event: "session.phase", phase: { kind: "streaming" } });
     expect(await client!.next()).toMatchObject({ event: "message.delta", text: "答" });

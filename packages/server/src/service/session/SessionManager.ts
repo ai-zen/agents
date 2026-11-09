@@ -55,9 +55,18 @@ export interface AgentLike {
   /** 返回本轮产出（SDK 返回 `Message[]`）；会话管理器不看它，进展走事件 */
   send(input: MessageContent): Promise<unknown>;
   abort(): void;
+  /**
+   * SDK 的事件流（`@ai-zen/event-bus`）。
+   *
+   * 载荷是**多参**的，而且每个事件不一样：`chunk-parsed` 是 `(receiver, chunk)`，
+   * `sub-agent-start` 是 `({ subAgent })`，`open` / `finally` 没有载荷。这里写 `(...args)`
+   * 而不是 `(payload)` 是故意的：曾经它就是 `(payload: any) => void`，于是监听器只收一个
+   * 参数也能过编译 —— 而那个参数是**消息**，不是 chunk，正文增量于是一条也发不出去
+   * （详见 `attachEvents` 里 `onChunk` 的注释）。类型说诚实话，比它“好用”重要。
+   */
   events: {
-    on(event: string, handler: (payload: any) => void): void;
-    off(event: string, handler: (payload: any) => void): void;
+    on(event: string, handler: (...args: any[]) => void): void;
+    off(event: string, handler: (...args: any[]) => void): void;
   };
 }
 
@@ -70,7 +79,8 @@ export interface AgentLike {
 export interface SubAgentLike {
   messages: unknown[];
   events: {
-    on(event: string, handler: (payload: any) => void): void;
+    // 同 `AgentLike.events`：载荷是多参的（`chunk-parsed` = `(receiver, chunk)`）
+    on(event: string, handler: (...args: any[]) => void): void;
   };
 }
 
@@ -1202,8 +1212,20 @@ export class SessionManager {
       this.emitPhase(session);
     };
 
-    const onChunk = (receiver: any) => {
-      const chunk = receiver?.chunk ?? receiver;
+    /**
+     * 正文 / 推理增量：**第二个参数才是 chunk**。
+     *
+     * core 的 `Agent.parseStreamData` 发的是 `emit("chunk-parsed", receiver, chunk)`（两个
+     * 参数）：第一个是那条正在拼的 assistant 消息，第二个才是这一片原始 chunk。这里曾经写成
+     * `(receiver) => deltaOf(receiver?.chunk ?? receiver)` —— 拿到的永远是**消息本身**，
+     * `choices[0].delta` 恒空，于是主 Agent 与子 Agent 的正文增量**一条都推不出去**（界面只能
+     * 等 `turn.end` 之后靠快照一次性刷出来）；唯一漏过去的是流末那片（core 把 `usage` 挂在消息
+     * 上，`completionOf(消息)` 恰好读得到），也正是它让这个 bug 看起来像“偶尔掉了”。
+     *
+     * 单测当时没抓住：假 Agent 是按**单参**形状 fire 的，恰好喂饱了 `receiver?.chunk ?? receiver`
+     * 那条“两种形状都认”的兼容写法。假件的形状必须照拄真件的形状，否则它测的是想象。
+     */
+    const onChunk = (_receiver: unknown, chunk: any) => {
       session.phase.delta(chunk);
       this.emitPhase(session);
 
@@ -1277,8 +1299,9 @@ export class SessionManager {
       });
 
       /** 子 Agent 的正文增量：只带 `subAgentId` 推给客户端，不推进主阶段（理由见上） */
-      const onSubChunk = (receiver: any) => {
-        const { text, reasoning } = deltaOf(receiver?.chunk ?? receiver);
+      const onSubChunk = (_receiver: unknown, chunk: any) => {
+        // 同上：第二个参数才是 chunk（`chunk-parsed` 是两参，见 `onChunk`）
+        const { text, reasoning } = deltaOf(chunk);
         if (!text && !reasoning) return;
         this.emit({
           event: SESSION_EVENTS.delta,
