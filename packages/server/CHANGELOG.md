@@ -16,11 +16,24 @@ parallel implementations of the same session logic.
 - `service/progress/PhaseTracker` — the six-state generation phase machine
   (`connecting` / `queued` / `thinking` / `tool-calling` / `tool-waiting` / `streaming`) and
   `pendingToolCalls()`, moved out of the CLI.
+- `protocol/` — transport-agnostic JSON-lines framing (`FrameDecoder` with a hard 8 MiB frame
+  cap) and the single source of truth for wire shapes: a mandatory `hello` handshake carrying
+  `protocol`, request/response frames with per-direction id spaces, and unsolicited events.
+- `daemon/` — a resident listener bound to loopback, a mandatory handshake, and a discovery
+  file (`<aiZenDir>/run/server.json`) carrying `pid` / `version` / `protocol` so clients can
+  distinguish "crashed leftover" from "a different build is running" before connecting.
+- `agents-server` bin: `serve` (default) / `status` / `stop`, single-instance protection, logs
+  appended to `<aiZenDir>/logs/server.log`.
 
 ### Design notes
 
-- **No i18n here.** The machine emits facts (`{ kind, tools }`); turning them into
-  "Waiting for edit, exec…" stays in the client. Same rule as
-  `conversation-commands/registry.ts` storing `descriptionKey` instead of text.
-- **No process-wide state.** Constructible with nothing but arguments, so tests need no
-  temp `AI_ZEN_DIR`, no `refreshPaths()`, no `setLocale()`.
+- **No authentication in this version, therefore loopback only.** `Daemon.start()` throws on
+  any non-loopback host. The service can execute shell commands; an unauthenticated listener
+  reachable from the network hands a shell to the LAN. The handshake exists anyway (and is
+  mandatory) so that adding tokens/keys later touches the handshake payload only, not every
+  client's connection logic.
+- **No i18n here.** The phase machine emits facts (`{ kind, tools }`); turning them into
+  "Waiting for edit, exec…" stays in the client.
+- **No process-wide state.** Everything is constructor-injected; the only file allowed to read
+  `AI_ZEN_DIR` / `HOME` is the `cli.ts` composition root, which immediately turns them into
+  values.

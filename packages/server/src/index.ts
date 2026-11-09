@@ -14,6 +14,7 @@
  *   1. 本包**不得**依赖任何 UI 栈（ink / react / 终端库）——包边界就是进程边界；
  *   2. 本包**不得**读进程级全局（当前工作目录、全局配置路径、全局 locale）——
  *      一切从构造参数来，否则「局部可实例化」和「一个进程服务多个工作区」同时破产。
+ *      唯一例外是 `src/cli.ts`（组装根）：它允许读 env/argv，但必须当场转成注入值。
  *      （该检查的正则写在 README 里；这里刻意不把字面量写进源码，否则 grep 会命中注释本身。）
  */
 
@@ -25,3 +26,34 @@ export {
   type PhaseMessageLike,
   type ToolCallRef,
 } from "./service/progress/PhaseTracker.js";
+
+// ---- 守护进程与协议（客户端只需要协议类型 + Daemon 用于进程内嵌入/测试） ----
+export { Daemon, type Connection, type DaemonOptions, type MethodHandler } from "./daemon/Daemon.js";
+export {
+  descriptorPath,
+  isProcessAlive,
+  readDescriptor,
+  removeDescriptor,
+  writeDescriptor,
+  type ServerDescriptor,
+} from "./daemon/discovery.js";
+export {
+  encodeFrame,
+  FrameDecoder,
+  MAX_FRAME_BYTES,
+  ProtocolError,
+  type ProtocolErrorCode,
+} from "./protocol/frames.js";
+export {
+  PROTOCOL_VERSION,
+  isHelloRequest,
+  isRequestFrame,
+  type EventFrame,
+  type ErrorFrame,
+  type HelloRequest,
+  type HelloResponse,
+  type RequestFrame,
+  type ResponseFrame,
+  type ResultFrame,
+} from "./protocol/messages.js";
+export { SERVER_NAME, SERVER_VERSION } from "./version.js";

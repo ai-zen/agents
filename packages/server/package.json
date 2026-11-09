@@ -5,6 +5,9 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
+  "bin": {
+    "agents-server": "dist/cli.js"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ai-zen/agents.git",
