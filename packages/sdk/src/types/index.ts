@@ -8,6 +8,10 @@ import type {
   AbortedMessageStrategy,
   AbortedToolRoundStrategy,
 } from "@ai-zen/agents-core";
+import type { AutoRefreshWhen } from "../agent-plugins/AutoRefreshToolsPlugin.js";
+
+/** 工具刷新的三个档位（`off` = 不装插件，由装配方判） */
+export type AutoRefreshToolsWhen = AutoRefreshWhen | "off";
 
 // ---- 权限（已定稿）----
 
@@ -254,6 +258,18 @@ export interface AppConfig {
    * 缺省时由 `createAgent()` 回落 core 默认值（`fill`）。
    */
   abortedToolRoundStrategy?: AbortedToolRoundStrategy;
+
+  /**
+   * 每轮刷新工具清单（MCP server / skill / 用户工具）的时机。
+   *
+   * - `inner-loop-start`：`onInnerLoopStart`，**每次请求前**刷（每次工具回合都能看见新装的
+   *   能力）。**出厂默认**，与旧版行为等价；
+   * - `outer-loop-start`：`onBeforeSend`，整个 `send()` 开头刷一次，要等下一轮才生效，开销最小；
+   * - `off`：不刷，只靠 `/reload`。
+   *
+   * 缺省（`undefined`）按 `inner-loop-start` 算 —— 装配方读它时不要写「undefined 就不装」。
+   */
+  autoRefreshTools?: AutoRefreshToolsWhen;
 }
 
 // ---- 工具环境 ----

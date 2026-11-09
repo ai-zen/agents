@@ -132,7 +132,10 @@ export type {
   AutoMigrateTriggerInfo,
   AutoMigrateModeResolver,
 } from "./agent-plugins/AutoMigratePlugin.js";
-export { AutoRefreshToolsPlugin } from "./agent-plugins/AutoRefreshToolsPlugin.js";
+export {
+  AutoRefreshToolsPlugin,
+  type AutoRefreshWhen,
+} from "./agent-plugins/AutoRefreshToolsPlugin.js";
 export { ContextGuardPlugin } from "./agent-plugins/ContextGuardPlugin.js";
 export type { ContextGuardOptions } from "./agent-plugins/ContextGuardPlugin.js";
 export { UnknownToolHintPlugin } from "./agent-plugins/UnknownToolHintPlugin.js";
