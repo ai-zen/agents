@@ -85,6 +85,21 @@ export function createSessionHandlers(
     return workspace.path;
   };
 
+  /**
+   * 「这条连接要看着这段会话」—— 登记它，断线时自动摘掉。
+   *
+   * 为什么要在**这里**接（而不是让客户端发一帧）：`keepAlive` 是客户端声明的意图，
+   * 而“连接还在不在”只有传输层知道。两者合起来才是「真的活着」（见 `SessionManager`
+   * 文件头的判据一节）—— 只靠声明的话，一个被 `kill -9` 的客户端会让那段会话永久留在
+   * 内存里（那一帧永远发不出来）。
+   *
+   * 登记与摘除都不抛错：会话已经被别的路径收掉是常态，那时目的已经达成。
+   */
+  const holdSession = (manager: SessionManager, connection: Connection, sessionId: string) => {
+    manager.registerHolder(sessionId, connection.id);
+    connection.onClose(() => manager.dropHolder(sessionId, connection.id));
+  };
+
   return {
     /**
      * 路径 → 工作区身份。
@@ -131,14 +146,16 @@ export function createSessionHandlers(
      * 路径只是多一个会漂的副本，而且它抄的是**自己**那边的路径 —— 两机时那个路径在服务端
      * 根本不存在。这与 `workspace.resolve` 的 `path` 可选是同一个口径：cwd 归服务端。
      */
-    [SESSION_METHODS.create]: async (params): Promise<SessionCreateResult> => {
+    [SESSION_METHODS.create]: async (params, connection): Promise<SessionCreateResult> => {
       const workspaceId = requireString(params, "workspaceId");
       const path = optionalString(params, "path") ?? (await workspacePathOf(workspaceId));
       const agentId = optionalString(params, "agentId");
       const sessionId = optionalString(params, "sessionId");
       // `persist:false` = 一次性调用（`ai "…"`）：不自动落盘、不挪「上一轮会话」指针
       const persist = optionalBoolean(params, "persist");
-      return await manager.create({ workspaceId, path, agentId, sessionId, persist });
+      const result = await manager.create({ workspaceId, path, agentId, sessionId, persist });
+      holdSession(manager, connection, result.sessionId);
+      return result;
     },
 
     /**
@@ -146,15 +163,17 @@ export function createSessionHandlers(
      *
      * 客户端只会递 id —— 那段会话此刻在不在内存里、还是只在盘上，它无从判断。
      */
-    [SESSION_METHODS.attach]: async (params): Promise<SessionAttachResult> => {
+    [SESSION_METHODS.attach]: async (params, connection): Promise<SessionAttachResult> => {
       const workspaceId = requireString(params, "workspaceId");
       const path = optionalString(params, "path") ?? (await workspacePathOf(workspaceId));
-      return await manager.attach({
+      const result = await manager.attach({
         workspaceId,
         path,
         sessionId: requireString(params, "sessionId"),
         agentId: optionalString(params, "agentId"),
       });
+      holdSession(manager, connection, result.sessionId);
+      return result;
     },
 
     [SESSION_METHODS.send]: (params): SessionSendResult => {

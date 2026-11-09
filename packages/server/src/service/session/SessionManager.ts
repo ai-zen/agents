@@ -15,6 +15,24 @@
  *
  * 一个会话可能被多个客户端看（终端 + 桌面端同时连）。广播是管理器的职责，
  * 「推给哪条连接」是守护进程的职责（它知道谁连着）。
+ *
+ * ## 「活着」的判据：`keepAlive ∧ 有持有者`
+ *
+ * 两个**不同来源**的事实，缺一不可：
+ *
+ *   · `keepAlive`  —— 客户端**声明**的意图（切走 / 退出时收回）。它靠一帧 `keepAlive.set`
+ *     传过来，而**崩溃的进程发不出这一帧**；
+ *   · `holders`    —— 此刻**真有一条连接在看着它**。连接断开是内核保证的（进程被
+ *     `kill -9`、崩溃、断电都会让那条 socket 消失），不需要客户端配合。
+ *
+ * 只认前者，就会出现「声明了保活、然后进程被硬杀」→ 标记永远停在 `true` → 会话连同
+ * 它占的 Agent 与消息历史永久留在内存里（本包在 loopback 上跑，唯一的回收时机是重启
+ * 守护进程）。只认后者，则「同一条连接换了会话」（`/new`、`/load`）无从表达，还会把
+ * 客户端明确说要放手的那一段一直留着。
+ *
+ * 所以判据是合取：**声明了要 ∧ 确实有人看着** ⇒ 才留着。其余一律走同一条回收路径
+ * （见 `scheduleReclaim`）：先等一段宽限期（`DEFAULT_SESSION_IDLE_TIMEOUT_MS`），到点
+ * 再判一次 —— 宽限期是给断线重连留的窗口，不是给「没人要」的会话续命。
  */
 
 import { PhaseTracker, pendingToolCalls, type PhaseInfo } from "../progress/PhaseTracker.js";
@@ -222,6 +240,20 @@ export interface SessionManagerOptions {
    * 测成「时钟」。理由见 `askHandoffMode`（为什么必须有时限）。
    */
   askTimeoutMs?: number;
+  /**
+   * 「没人看着之后还留多久」（毫秒），缺省 {@link DEFAULT_SESSION_IDLE_TIMEOUT_MS}（60 秒）。
+   *
+   * 只对 `keepAlive` 仍为 `true` 的会话生效：`keepAlive:false` 是客户端明确放手，宽限期
+   * 取 0（等价于「空闲就当场收」）。`0` 表示不等待，与那一路径同一个含义。
+   */
+  sessionIdleTimeoutMs?: number;
+  /**
+   * 倒计时实现（注入只为测试）。
+   *
+   * 回收判定是**时间**驱动的，而等 60 秒才能断言的用例只能靠 `sleep` —— 那是把「宽限期」
+   * 测成「时钟」。注入一个假计时器，用例就能手动「让它到点」，断言的是判定本身。
+   */
+  schedule?: (ms: number, run: () => void) => () => void;
 }
 
 interface LiveSession {
@@ -266,17 +298,39 @@ interface LiveSession {
    */
   autoPersist: boolean;
   /**
-   * 保活区标记：`true` = 这一轮跑完之后仍然留着（有人正在关注它）。
+   * 保活区标记：`true` = 客户端说「我还要这一段」。
    *
    * **新会话缺省在保活区里**，这是故意的：两种漏法的代价不对称 ——
    *   · 客户端忘了 `on:false`（切走 / 退出时没发）→ 会话多占几兆内存，泄漏；
    *   · 客户端忘了 `on:true`（刚开会话还没来得及声明）→ 用户正看着的那段被回收掉。
    * 后者是数据/体验事故，前者只是不够省。所以「默认留着，客户端不看了才放手」。
    *
-   * 回收判据只有一条：`turn.end` 收尾之后为 `false` → 关闭。存档在收尾前就写好了，
-   * 所以被回收的会话「点回来」只是从盘上重新装一次，不丢内容。
+   * 但它**不是**活着与否的全部依据：必须同时有持有者（`holders`），否则这条声明没有
+   * 人兑现（进程崩了、连接断了）—— 那时走宽限期回收，见文件头「「活着」的判据」。
+   * 断言这一点的实测（改这条判据**之前**）：把连接 `destroy()` 掉（不发任何帧），
+   * `session.list` 里那段仍在，只有 `keepAlive.set{on:false}` 才会当场收 —— 也就是说，
+   * 那时只有客户端发帧才能回收。
    */
   keepAlive: boolean;
+  /**
+   * 此刻看着这段会话的连接（不透明的连接 id）。
+   *
+   * 用 `Set` 而不是一个 id：一段会话被终端与桌面端**同时**看着是常态，谁先走都不该
+   * 影响另一个。id 的类型留在 `number` 而不是 daemon 的 `Connection` —— `service/`
+   * 不认识传输层，会话层只需要「若干个互不相干的身份」。
+   *
+   * 与 `keepAlive` 合起来才是「活着」，见文件头的判据一节。
+   */
+  holders: Set<number>;
+  /** 正在跑的回收倒计时（取消函数）；`null` = 没在计时 */
+  reclaimCancel: (() => void) | null;
+  /**
+   * 倒计时到点时这一轮还在跑：等它收尾再收（见 `reclaimNow`）。
+   *
+   * 必须记下来而不是「到点直接什么都不做」：一轮中途被收的代价是那一轮的产出与存档
+   * 一起丢（`detach()` 之后 `settleTurn` 不再跑），所以只能延后，不能取消。
+   */
+  reclaimOnSettle: boolean;
   /** 交接服务（首次交接时创建；持有取消句柄，见 `handoffOf`） */
   handoff: SessionHandoff | null;
   /**
@@ -332,6 +386,30 @@ function codedError(code: string, message: string): Error & { code: string } {
  * 有个上限：5 分钟足够人从别的窗口回来点一下，又不至于把会话晾到没法用。
  */
 const ASK_TIMEOUT_MS = 300_000;
+
+/**
+ * 「最后一个看着它的人也走了」之后还留多久：60 秒。
+ *
+ * 下界是**重连最坏耗时**：客户端三次尝试，每次含 `ensureServer` 的 10s 超时，再加
+ * 100ms / 300ms 退避，约 30s。低于它就会出现最难解释的一种现象 —— 客户端正在重连，
+ * 而服务端已经把会话按「没人要」收掉了。
+ *
+ * 上界是**崩溃后多占的内存**：每段会话只占一个 Agent 与它的消息数组（MCP 连接按工作区
+ * 共享，`Scope` 缓存住，不随会话数增加）。60s 在两头都很松。
+ */
+export const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 60_000;
+
+/**
+ * 默认的倒计时实现。
+ *
+ * `unref()` 是必须的：一个「等 60 秒再回收」的计时器不该成为进程不退出的理由（守护进程
+ * 的空闲退出、测试进程的结束都靠事件循环空了才成立）。
+ */
+const defaultSchedule = (ms: number, run: () => void): (() => void) => {
+  const timer = setTimeout(run, ms);
+  timer.unref?.();
+  return () => clearTimeout(timer);
+};
 
 /**
  * 会话管理器只持有 Agent「能跑一轮」那一面（`AgentLike`，为了能用假件测完整个事件流）；
@@ -407,6 +485,10 @@ export class SessionManager {
   private readonly askTimeoutMs: number;
   private readonly sessions = new Map<string, LiveSession>();
   private readonly hub: EventHub;
+  /** 「没人看着之后还留多久」（宽限期，见文件头的判据） */
+  private readonly sessionIdleTimeoutMs: number;
+  /** 倒计时实现（可注入：时间驱动的判定得能手动“到点”） */
+  private readonly schedule: (ms: number, run: () => void) => () => void;
   /** 自建的 hub 由自己清理；外面传进来的归外面管 */
   private readonly ownsHub: boolean;
 
@@ -417,6 +499,8 @@ export class SessionManager {
     this.invalidateScope = options.invalidateScope;
     this.handoffOptions = options.handoff;
     this.askTimeoutMs = options.askTimeoutMs ?? ASK_TIMEOUT_MS;
+    this.sessionIdleTimeoutMs = options.sessionIdleTimeoutMs ?? DEFAULT_SESSION_IDLE_TIMEOUT_MS;
+    this.schedule = options.schedule ?? defaultSchedule;
     this.hub = options.hub ?? new EventHub();
     this.ownsHub = !options.hub;
   }
@@ -1012,6 +1096,9 @@ export class SessionManager {
       persistOnSettle: false,
       autoPersist: input.persist !== false,
       keepAlive: true,
+      holders: new Set(),
+      reclaimCancel: null,
+      reclaimOnSettle: false,
       handoff: null,
       subAgents: new Map(),
       subAgentSeq: 0,
@@ -1178,6 +1265,8 @@ export class SessionManager {
   close(sessionId: string): SessionCloseResult {
     const session = this.sessions.get(sessionId);
     if (!session) return { closed: false };
+    // 会话没了，倒计时也就没有意义：留着它就是一条会在若干秒后向已删会话伸手的回调
+    this.cancelReclaim(session);
     session.handoff?.abort();
     // 会话已经收了：挂着的提问不会再有答案 —— 放行它，别让提问方白等到超时
     this.releaseQuestions(session);
@@ -1189,26 +1278,49 @@ export class SessionManager {
   }
 
   /**
-   * 保活区开关（`session.keepAlive.set`）：`on:false` 且在空闲时当场回收。
+   * 登记一个持有者（某条连接说「我要这一段」）。
    *
-   * 为什么移出保活要**当场**判定一次：回收的另一半挂在 `turn.end` 上，而一段空闲会话
-   * 不会再有下一次 `turn.end` —— 只等那里，它就永远不会被收。
+   * 为什么需要客户端说两次（`create`/`attach` 加这一句）：`attach` 的返回值只说「接上了」，
+   * 而「我要一直看着它」是另一个事实 —— 传输层知道那条连接什么时候断，会话层不知道。
+   * 由**处理层**（`sessionHandlers`）在 `attach`/`create` 成功后登记，并挂上
+   * `connection.onClose(→ dropHolder)`：两个方向都不需要客户端额外发帧。
+   */
+  registerHolder(sessionId: string, holder: number): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return; // 会话已经不在了：没什么可保的
+    session.holders.add(holder);
+    // 有人接回来了：宽限期作废（不管是还没到点，还是已经到点但这一轮还在跑）
+    this.cancelReclaim(session);
+    session.reclaimOnSettle = false;
+  }
+
+  /** 摘掉一个持有者（那条连接断了）；最后一个走了就开始计时 */
+  dropHolder(sessionId: string, holder: number): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return; // 已经被别的路径收掉了：目的已经达成
+    session.holders.delete(holder);
+    this.scheduleReclaim(session);
+  }
+
+  /**
+   * 保活区开关（`session.keepAlive.set`）：客户端说「我还要」或「我不看了」。
    *
-   * 一轮还在跑时不动它：用户可能刚切走但又想回来，而“正在跑的一轮”中途被收掉比多占
-   * 几兆内存严重。那一轮自己收尾时还会再按保活区判一次（见 `settleTurn`）。
+   * 它只改**声明**，不直接决定回收：两个方向都交给同一条判定
+   * （`scheduleReclaim`）。`on:false` 且空闲时宽限期取 0 → 当场回收；一轮还在跑时
+   * 不动它（用户可能刚切走又想回来，而正在跑的一轮中途被收掉比多占几兆内存严重），
+   * 那一轮收尾时再按同一条判定收（见 `settleTurn`）。
    */
   keepAliveSet(sessionId: string, on: boolean): SessionKeepAliveSetResult {
     const session = this.require(sessionId);
     session.keepAlive = on;
-    if (!on && session.turnSettled && !session.settleDeferred) {
-      this.close(sessionId);
-    }
+    this.scheduleReclaim(session);
     return { sessionId, keepAlive: on };
   }
 
   /** 收摊：摘掉所有事件、清空会话（守护进程退出时调用） */
   dispose(): void {
     for (const session of this.sessions.values()) {
+      this.cancelReclaim(session);
       session.handoff?.abort();
       this.releaseQuestions(session);
       session.detach();
@@ -1509,11 +1621,19 @@ export class SessionManager {
       ...(session.turnFailed ? { error: session.turnFailed } : {}),
     });
 
-    // 6) 回收：跑完又不在保活区 → 关掉（存档已在第 1 步写好，再点回来 `attach`
-    //    从盘上装回来）。放在 `turn.end` **之后**：客户端拿到的最后一条事件仍然是
-    //    「这一轮结束了」，而不是一个已经被摘掉的会话。
+    // 6) 回收：这一轮收完，重判一次「还有没有人要它」（存档已在第 1 步写好，再点回来
+    //    `attach` 从盘上装回来）。放在 `turn.end` **之后**：客户端拿到的最后一条事件仍然
+    //    是「这一轮结束了」，而不是一个已经被摘掉的会话。
     //    只对客户端发起的正常回合判定 —— `migrate` 的中场收尾紧接着要换 id。
-    if (clientTurn && !session.keepAlive) this.close(session.id);
+    if (clientTurn) {
+      if (session.reclaimOnSettle) {
+        // 宽限期在那一轮还在跑的时候就到了：已经延后过一次，现在收尾就收
+        this.close(session.id);
+      } else {
+        // 同一条判定再算一次：`keepAlive:false` 的宽限期是 0，等同于「当场收」
+        this.scheduleReclaim(session);
+      }
+    }
   }
 
   // ==================================================================
@@ -1574,6 +1694,60 @@ export class SessionManager {
    */
   private isTurnInFlight(session: LiveSession): boolean {
     return !session.turnSettled;
+  }
+
+  /** 真的活着 = 「客户端说要」∧「有连接在看」。两个分开的真相源，判据只能取合取 */
+  private isHeld(session: LiveSession): boolean {
+    return session.keepAlive && session.holders.size > 0;
+  }
+
+  /**
+   * 进入回收倒计时（幂等）。
+   *
+   * 幂等是必须的：`turn.end` 每轮都会调一次，而重挂一次就等于把窗口一直往后推 ——
+   * 一段没人要的会话会被它自己的历史拖住（聊了 100 轮就多留 100 个宽限期）。
+   */
+  private scheduleReclaim(session: LiveSession): void {
+    if (this.isHeld(session)) {
+      this.cancelReclaim(session);
+      session.reclaimOnSettle = false;
+      return;
+    }
+    // 客户端已经放手（`keepAlive:false`）→ 宽限期 0：空闲就当场收，跑着就跑完收
+    if (!session.keepAlive) {
+      this.reclaimNow(session);
+      return;
+    }
+    if (session.reclaimCancel) return;
+    session.reclaimCancel = this.schedule(this.sessionIdleTimeoutMs, () => {
+      session.reclaimCancel = null;
+      this.reclaimNow(session);
+    });
+  }
+
+  /**
+   * 到点（或宽限期为 0）时**再判一次**。
+   *
+   * 三条出口：期间有人接回来了（取消）/ 这一轮还在跑（等它收尾）/ 都不成立（收）。
+   * 「到点再判一次」而不是「到点就收」不是防御性代码：一次断线重连里，`attach` 可能恰好
+   * 紧接着计时器回调执行，只比它晚一个 tick —— 那时收掉会话，就是把“正在重连的客户端”
+   * 关在门外。
+   */
+  private reclaimNow(session: LiveSession): void {
+    this.cancelReclaim(session);
+    if (this.isHeld(session)) return;
+    if (this.isTurnInFlight(session) || session.settleDeferred) {
+      // 一轮中途被收 = 那一轮的产出与存档一起丢（`detach()` 之后 `settleTurn` 不再跑）
+      session.reclaimOnSettle = true;
+      return;
+    }
+    this.close(session.id);
+  }
+
+  private cancelReclaim(session: LiveSession): void {
+    const cancel = session.reclaimCancel;
+    session.reclaimCancel = null;
+    cancel?.();
   }
 
   /**

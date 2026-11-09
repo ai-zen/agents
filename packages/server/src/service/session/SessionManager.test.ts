@@ -19,6 +19,35 @@ import { EventHub } from "../events/EventHub.js";
 const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /**
+ * 假倒计时：把「到点」变成一个可以手动触发的动作。
+ *
+ * 回收判定是**时间**驱动的，而宽限期缺省 60 秒：真等它就只能 `sleep`，那是把「宽限期」
+ * 测成「时钟」—— 断言的应该是「到点时怎么判」，不是「60 秒是不是 60 秒」。
+ * 与 `ensure-server.ts` 注入 `waitBeforeRetry` 是同一个理由。
+ */
+function fakeClock() {
+  const entries: Array<{ run: () => void; cancelled: boolean }> = [];
+  return {
+    schedule: (_ms: number, run: () => void) => {
+      const entry = { run, cancelled: false };
+      entries.push(entry);
+      return () => {
+        entry.cancelled = true;
+      };
+    },
+    /** 还活着的倒计时（已取消 / 已到点过的不算） */
+    pending: () => entries.filter((entry) => !entry.cancelled),
+    /** 全部到点 */
+    tick: () => {
+      for (const entry of entries.filter((item) => !item.cancelled)) {
+        entry.cancelled = true;
+        entry.run();
+      }
+    },
+  };
+}
+
+/**
  * 假 Agent —— 只实现会话管理器用到的那一小面（结构类型），
  * 事件由测试手动驱动，于是「SDK 的时序」在测试里是**可编程**的，不依赖网络与真实模型。
  */
@@ -1779,6 +1808,8 @@ describe("SessionManager：保活区 / 换 Agent / 关闭", () => {
   let live: SessionManager;
   /** 每次 `createAgent` 收到的 agentId（换 Agent 时用它断言真的重建了） */
   let built: string[];
+  /** 回收的宽限期用假时钟：断言「到点时怎么判」，不等 60 秒 */
+  const clock = fakeClock();
 
   beforeEach(() => {
     store = new MemoryStore();
@@ -1790,6 +1821,7 @@ describe("SessionManager：保活区 / 换 Agent / 关闭", () => {
       },
       nextSessionId: () => `chat_${++sessionCounter}`,
       storeFor: () => store,
+      schedule: clock.schedule,
     });
     events = [];
     live.subscribe((event) => events.push(event));
@@ -1807,8 +1839,9 @@ describe("SessionManager：保活区 / 换 Agent / 关闭", () => {
     await settled();
   };
 
-  it("新会话缺省在保活区：一轮跑完不会被收掉", async () => {
+  it("新会话缺省在保活区：有连接看着时一轮跑完不会被收掉", async () => {
     const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    live.registerHolder(sessionId, 1);
 
     await runTurn(sessionId);
 
@@ -1887,5 +1920,140 @@ describe("SessionManager：保活区 / 换 Agent / 关闭", () => {
     expect(live.close(sessionId)).toEqual({ closed: true });
     expect(live.close(sessionId)).toEqual({ closed: false });
     expect(store.records.get(sessionId)!.messages).toHaveLength(2);
+  });
+});
+
+/**
+ * 「活着」的判据：`keepAlive ∧ 有持有者`。
+ *
+ * 这组用例锁的是分离改造后最容易漏的一条：**崩溃的客户端发不出「我不要了」那一帧**。
+ * 只认 `keepAlive` 的旧判据下，一段会话在客户端被 `kill -9` 之后会永久留在内存里
+ * （唯一的回收时机是重启守护进程）。这里补上「连接还在不在」这另一半事实，并把
+ * 「没人看着之后还能留多久」交给宽限期。
+ */
+describe("SessionManager：活着 = 保活 ∧ 有持有者（宽限期回收）", () => {
+  let clock: ReturnType<typeof fakeClock>;
+  let live: SessionManager;
+
+  beforeEach(() => {
+    clock = fakeClock();
+    sessionCounter = 0;
+    live = new SessionManager({
+      createAgent: async () => agent,
+      nextSessionId: () => `chat_${++sessionCounter}`,
+      schedule: clock.schedule,
+    });
+    events = [];
+    live.subscribe((event) => events.push(event));
+  });
+
+  const open = async () => (await live.create({ workspaceId: "ws-1", path: "/p" })).sessionId;
+  const alive = () => live.list("ws-1").length;
+
+  it("声明了保活、但连接全断了：宽限期内留着，到点才收", async () => {
+    const sessionId = await open();
+    live.registerHolder(sessionId, 1);
+
+    live.dropHolder(sessionId, 1);
+    // 宽限期还没到：重连还有机会接回这一段（这就是它存在的全部理由）
+    expect(alive()).toBe(1);
+
+    clock.tick();
+    // 到点再判一次：没人要 → 收（存档早在每轮收尾写好了）
+    expect(alive()).toBe(0);
+  });
+
+  it("宽限期内又接回来：倒计时作废，到点也不收", async () => {
+    const sessionId = await open();
+    live.registerHolder(sessionId, 1);
+    live.dropHolder(sessionId, 1);
+
+    live.registerHolder(sessionId, 2); // 重连后的新连接
+    clock.tick();
+
+    expect(alive()).toBe(1);
+  });
+
+  it("两个客户端同看一段：走一个不收，最后一个走了才开始计时", async () => {
+    const sessionId = await open();
+    live.registerHolder(sessionId, 1);
+    live.registerHolder(sessionId, 2);
+
+    live.dropHolder(sessionId, 1);
+    clock.tick();
+    expect(alive()).toBe(1);
+
+    live.dropHolder(sessionId, 2);
+    clock.tick();
+    expect(alive()).toBe(0);
+  });
+
+  it("到点时这一轮还在跑：不打断，收尾之后才收", async () => {
+    const sessionId = await open();
+    live.registerHolder(sessionId, 1);
+    agent.holdSend = new Promise<void>(() => {}); // 一轮挂住，不落定
+    live.send(sessionId, "长任务");
+    live.dropHolder(sessionId, 1);
+
+    clock.tick();
+    // 一轮中途被收 = 那一轮的产出与存档一起丢（detach 之后 settleTurn 不再跑），只能延后
+    expect(alive()).toBe(1);
+
+    agent.holdSend = null;
+    agent.messages = [
+      { role: "user", content: "长任务" },
+      { role: "assistant", content: "答" },
+    ];
+    agent.fire("finally");
+    await settled();
+
+    expect(alive()).toBe(0);
+  });
+
+  it("客户端明确放手（keepAlive:false）：不等宽限期，连接还在也当场收", async () => {
+    const sessionId = await open();
+    live.registerHolder(sessionId, 1);
+
+    live.keepAliveSet(sessionId, false);
+
+    expect(alive()).toBe(0);
+  });
+
+  it("倒计时已经起跑后，段内再收尾一轮也不会把窗口往后推", async () => {
+    const sessionId = await open();
+    live.registerHolder(sessionId, 1);
+    live.dropHolder(sessionId, 1); // 倒计时开始（服务端手头还有一轮正在跑、即将收尾）
+    expect(clock.pending()).toHaveLength(1);
+
+    live.send(sessionId, "问");
+    agent.messages = [{ role: "user", content: "问" }];
+    agent.fire("finally");
+    await settled();
+
+    // 收尾时又判一次，但幂等：还是那一个倒计时，没有重挂（否则聊得越多留得越久）
+    expect(clock.pending()).toHaveLength(1);
+  });
+
+  it("close 之后倒计时随之取消（不会向已删会话伸手）", async () => {
+    const sessionId = await open();
+    live.registerHolder(sessionId, 1);
+    live.dropHolder(sessionId, 1);
+    expect(clock.pending()).toHaveLength(1);
+
+    live.close(sessionId);
+
+    expect(clock.pending()).toHaveLength(0);
+  });
+
+  it("dispose 时把倒计时全部取消", async () => {
+    const first = await open();
+    const second = await open();
+    live.dropHolder(first, 1);
+    live.dropHolder(second, 1);
+    expect(clock.pending()).toHaveLength(2);
+
+    live.dispose();
+
+    expect(clock.pending()).toHaveLength(0);
   });
 });

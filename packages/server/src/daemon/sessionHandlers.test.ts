@@ -691,3 +691,63 @@ describe("session.attach：会话活得比连接久", () => {
     ).rejects.toThrow(/session-missing|no such session/);
   });
 });
+
+/**
+ * 「活着」的另一半事实：连接还在不在。
+ *
+ * 业务判定（`keepAlive ∧ 有持有者`、宽限期、到点再判一次）在 `SessionManager.test.ts` 里
+ * 用假时钟测透了。这里只证明**接线**：`create` / `attach` 真的把这条连接登记成了持有者，
+ * 而它断开时服务端自己能摘掉 —— 全程**不需要客户端发任何帧**。
+ *
+ * 这一段必须用真计时器：宽限期设成 200ms、轮询到它生效，与「判定本身」是两件事。
+ */
+describe("会话跟着连接走：断开后按宽限期回收（不靠客户端发帧）", () => {
+  /** 轮询到条件成立（禁止固定 sleep：等的是「服务端做完这件事」，不是「过了多久」） */
+  const waitFor = async (condition: () => boolean, timeoutMs = 3000): Promise<void> => {
+    const deadline = Date.now() + timeoutMs;
+    while (!condition()) {
+      if (Date.now() > deadline) throw new Error("condition not met within timeout");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  };
+
+  it("连接突然断开（一个字节都不发）：宽限期内还活，到点收；期间 attach 得到同一段", async () => {
+    const idle = new SessionManager({
+      createAgent: async () => agent,
+      nextSessionId: () => "chat_hold",
+      sessionIdleTimeoutMs: 200,
+    });
+    const instance = new Daemon({
+      aiZenDir: join(dir, "ai-zen-hold"),
+      port: 0,
+      version: "0.1.0-test",
+      handlers: createSessionHandlers({
+        manager: idle,
+        workspacesRoot: join(dir, "workspaces"),
+        defaultWorkspacePath,
+      }),
+    });
+    await instance.start();
+    try {
+      const conn = await TestClient.connect(instance.port);
+      await conn.handshake();
+      const created = (await conn.call(SESSION_METHODS.create, {
+        workspaceId: "ws-hold",
+        path: join(dir, "proj-hold"),
+      })) as { sessionId: string };
+
+      // ① 断线：socket 直接关掉，不发 keepAlive.set（等价于进程被 kill -9 / 掉网）
+      conn.close();
+
+      // ② 宽限期内它还在：这正是「重连能接回正在跑的那一轮」的依据
+      await waitFor(() => idle.list("ws-hold").length === 1);
+      expect(idle.list("ws-hold").map((item) => item.sessionId)).toEqual([created.sessionId]);
+
+      // ③ 到点：没人看着 → 收（不需要谁来通知）
+      await waitFor(() => idle.list("ws-hold").length === 0);
+    } finally {
+      await instance.stop("test teardown");
+      idle.dispose();
+    }
+  });
+});

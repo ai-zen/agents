@@ -231,16 +231,30 @@ writes the file and leaves `last-session.json` alone when `false`.
 
 ### Keep-alive: who decides a session may be dropped
 
-A session outlives its clients, but it must not live forever. The rule is one line:
+A session outlives its clients, but it must not live forever. Two facts decide it, and both are
+required:
 
-> After `turn.end` has been emitted, a session that is **not in the keep-alive set** is closed.
+> A session stays only while the client **declares** it wants it (`keepAlive`) **and** at least
+> one connection is actually watching it (`holders`). Otherwise it is reclaimed after a grace
+> period.
 
-- `session.keepAlive.set { sessionId, on }` (idempotent). `on: false` while idle closes the
-  session **immediately** — waiting for the next `turn.end` would mean waiting forever, because
-  an idle session never produces one.
-- **New sessions start in the set.** The two mistakes are not equally bad: forgetting to
-  release leaks a few megabytes, forgetting to claim drops the session the user is looking at.
-- The set lives in **server memory**, per session; it is not persisted and not tied to a
+- `keepAlive` is a **declaration** sent over the wire (`session.keepAlive.set`) — and a crashed
+  process never gets to send it. Used alone, it means a `kill -9`ed client pins its session (and
+  the agent plus message history behind it) in memory until the daemon restarts.
+- `holders` is what the transport knows for free: `session.create` / `session.attach` register
+  the calling connection, and that connection's close removes it. No frame, no client
+  cooperation — the kernel guarantees the close (fin/rst on exit, crash or `kill -9`).
+- `session.keepAlive.set { sessionId, on }` (idempotent). `on: false` makes the grace period
+  **zero**: an idle session is closed immediately; one mid-turn is closed when that turn settles
+  (dropping it mid-turn loses the turn's output *and* its archive).
+- **New sessions start claimed.** The two mistakes are not equally bad: forgetting to release
+  leaks a few megabytes, forgetting to claim drops the session the user is looking at.
+- When the last holder of a claimed session goes away, the session gets a grace period
+  (`DEFAULT_SESSION_IDLE_TIMEOUT_MS`, 60 s, `--session-idle-timeout`). It must cover the client's
+  reconnect budget (~30 s worst case), otherwise a reconnecting client finds the session already
+  reclaimed. The deadline **re-checks** the rule, so an `attach` arriving inside the window just
+  cancels it, and a turn still running at the deadline defers the close to `turn.end`.
+- The flag lives in **server memory**, per session; it is not persisted and not tied to a
   client identity. A TUI keeps exactly one session in it and maintains it automatically at the
   single place where it switches sessions; a future desktop / web shell may expose it as a
   user-managed pin list. Nothing in the server hard-codes "one at a time" — that constraint is
@@ -394,7 +408,7 @@ test with two or three fakes and nothing else.
 | `cli/src/model-switch.ts` (write `AgentDefinition.modelId` + clear thinking params) | `SessionAgentFactory.setModel` (`agent.model.set`) |
 | `cli/src/conversation-persist-plugin.ts` (per-turn autosave) | `SessionManager.settleTurn` + `writeSession` |
 | `cli/src/auto-migrate-confirm.ts` (the three-way picker's server half) | `SessionManager.askQuestion` (`session.question` / `session.answer`) |
-| — | `session.keepAlive.set` / `session.close` / `session.setAgent`, the keep-alive reclaimer |
+| — | `session.keepAlive.set` / `session.close` / `session.setAgent`, the keep-alive + holder reclaimer (`SessionManager.scheduleReclaim`) |
 | `cli/src/sub-agent-guard-plugin.ts` | `sdk/src/agent-plugins/SubAgentGuardInstallerPlugin.ts` |
 | `cli/src/handoff-service.ts` (the hooks around the SDK's handoff flow) | `src/service/handoff/` |
 | — | `src/protocol/` frames, message and session shapes |

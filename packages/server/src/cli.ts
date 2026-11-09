@@ -7,7 +7,8 @@
  * 与 `src/daemon/` 里一律不读全局（可用 README 的 grep 检验）。
  *
  * 子命令：
- *   agents-server [serve] [--port N] [--idle-timeout MS] [--workspace PATH]  前台启动（默认 8790）
+ *   agents-server [serve] [--port N] [--idle-timeout MS] [--session-idle-timeout MS] [--workspace PATH]
+ *                                                         前台启动（默认 8790）
  *   agents-server status                                   打印发现文件与存活状态
  *   agents-server stop                                     让在跑的那个收摊
  */
@@ -32,7 +33,10 @@ import { PROTOCOL_VERSION } from "./protocol/messages.js";
 import { SessionAgentFactory } from "./service/agent/SessionAgentFactory.js";
 import { ConfigService } from "./service/config/ConfigService.js";
 import { EventHub } from "./service/events/EventHub.js";
-import { SessionManager } from "./service/session/SessionManager.js";
+import {
+  SessionManager,
+  DEFAULT_SESSION_IDLE_TIMEOUT_MS,
+} from "./service/session/SessionManager.js";
 import { FileSessionStore } from "./service/store/FileSessionStore.js";
 import { SERVER_NAME, SERVER_VERSION } from "./version.js";
 
@@ -42,6 +46,15 @@ interface Args {
   port: number;
   host: string;
   idleTimeoutMs: number;
+  /**
+   * 「最后一个看着它的客户端也走了」之后还留多久（`--session-idle-timeout`）。
+   *
+   * 与上面的 `idleTimeoutMs` 是**两件事**，名字里都有 idle，但对象不同：
+   *   · `idleTimeoutMs`     —— 整个守护进程：一个连接都没有了，多久后退出；
+   *   · `sessionIdleTimeoutMs` —— 单段会话：没人看着了，多久后回收（存档已在每轮收尾写好）。
+   * 断线重连要在后者那个窗口里完成，所以它的缺省值不能低于重连预算（见常量注释）。
+   */
+  sessionIdleTimeoutMs: number;
   /** 客户端不指定工作目录时用哪个（`--workspace`，缺省为启动本进程时的目录） */
   defaultWorkspace: string;
 }
@@ -65,6 +78,9 @@ function parseArgs(argv: string[]): Args {
   const port = Number(readFlag(rest, "--port") ?? 8790);
   const host = readFlag(rest, "--host") ?? "127.0.0.1";
   const idleTimeoutMs = Number(readFlag(rest, "--idle-timeout") ?? 0);
+  const sessionIdleTimeoutMs = Number(
+    readFlag(rest, "--session-idle-timeout") ?? DEFAULT_SESSION_IDLE_TIMEOUT_MS,
+  );
   // cwd 归属服务端：客户端不发工作目录时用它。缺省取本进程的 cwd —— 这是「谁把服务端
   // 拉起来的、当时他在哪个目录」的答案，所以下面启动日志里会把它打出来（否则用户报
   // 「`@` 补全列出来的全是不认识的目录」时，无从判断是谁决定的目录）。
@@ -74,7 +90,10 @@ function parseArgs(argv: string[]): Args {
   if (!Number.isFinite(idleTimeoutMs) || idleTimeoutMs < 0) {
     throw new Error(`bad --idle-timeout: ${idleTimeoutMs}`);
   }
-  return { command, aiZenDir, port, host, idleTimeoutMs, defaultWorkspace };
+  if (!Number.isFinite(sessionIdleTimeoutMs) || sessionIdleTimeoutMs < 0) {
+    throw new Error(`bad --session-idle-timeout: ${sessionIdleTimeoutMs}`);
+  }
+  return { command, aiZenDir, port, host, idleTimeoutMs, sessionIdleTimeoutMs, defaultWorkspace };
 }
 
 /** 取 `--flag value` 的值（同时支持 `--flag=value`） */
@@ -243,6 +262,8 @@ async function main(): Promise<number> {
     invalidateScope: (workspacePath) => agentFactory.invalidate(workspacePath),
     // 交接要读磁盘上的 `handoff` Skill、写 `<工作区>/.ai-zen/handoffs`：路径根由这里给
     handoff: { aiZenDir: args.aiZenDir, homeDir },
+    // 没人看着的会话多久后回收（断线重连的窗口就在这个值里）
+    sessionIdleTimeoutMs: args.sessionIdleTimeoutMs,
   });
 
   const daemon = new Daemon({
