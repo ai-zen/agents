@@ -80,6 +80,13 @@ export interface SessionCreateParams {
   path: string;
   /** 用哪个 Agent（缺省 `default`） */
   agentId?: string;
+  /**
+   * 会话 id。**不给则服务端分配**。
+   *
+   * 活会话与盘上存档共用同一个 id（存档就是这段会话的落盘形态）：续接已有存档时
+   * 客户端把它带进来；新会话留空，由服务端按同一套格式生成。
+   */
+  sessionId?: string;
 }
 
 export interface SessionCreateResult {

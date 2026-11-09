@@ -49,16 +49,24 @@ export interface CreateAgentInput {
   agentId: string;
 }
 
-/** `create()` 的入参：`agentId` 可省，装配时都补成 `default` */
+/** `create()` 的入参：`agentId` / `sessionId` 都可省，前者补 `default`，后者由服务端分配 */
 export interface SessionCreateInput {
   workspaceId: string;
   path: string;
   agentId?: string;
+  sessionId?: string;
 }
 
 export interface SessionManagerOptions {
   /** 造一个能跑一轮对话的 Agent。装配细节全在注入方，本包不碰配置与 Scope */
   createAgent: (input: CreateAgentInput) => Promise<AgentLike>;
+  /**
+   * 新会话的 id 生成器（客户端没指定时用）。
+   *
+   * 默认按与存档文件名同一套格式：`chat_YYYY_MM_DD_HH_mm_ss` —— 活会话与存档共用
+   * 一个 id，续接时不会出现「内存叫 sess_3、盘上叫 chat_2026…」这种两套编号。
+   */
+  nextSessionId?: () => string;
 }
 
 interface LiveSession {
@@ -74,14 +82,26 @@ interface LiveSession {
   detach: () => void;
 }
 
+/**
+ * 默认的会话 id：`chat_YYYY_MM_DD_HH_mm_ss`。
+ *
+ * 与存档文件名的格式一致（同一个 id 既标识内存里的会话，也是落盘的文件名）。
+ * 同一秒内连开两个会话会撞 id —— 撞了就由 `create()` 回 `session-exists`，
+ * 不靠“再猜一个后缀”掩盖（客户端本来就会带上自己的 id）。
+ */
+function defaultNextSessionId(): string {
+  return `chat_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "_")}`;
+}
+
 export class SessionManager {
   private readonly createAgent: (input: CreateAgentInput) => Promise<AgentLike>;
+  private readonly nextSessionId: () => string;
   private readonly sessions = new Map<string, LiveSession>();
   private readonly listeners = new Set<(event: SessionEvent) => void>();
-  private nextSessionNumber = 1;
 
   constructor(options: SessionManagerOptions) {
     this.createAgent = options.createAgent;
+    this.nextSessionId = options.nextSessionId ?? defaultNextSessionId;
   }
 
   /** 订阅事件；返回取消订阅的函数（连接断开时调用） */
@@ -92,8 +112,14 @@ export class SessionManager {
 
   async create(input: SessionCreateInput): Promise<{ sessionId: string; agentId: string }> {
     const agentId = input.agentId || "default";
+    const sessionId = input.sessionId || this.nextSessionId();
+    if (this.sessions.has(sessionId)) {
+      const error = new Error(`session already exists: ${sessionId}`) as Error & { code?: string };
+      error.code = "session-exists";
+      throw error;
+    }
+
     const agent = await this.createAgent({ workspaceId: input.workspaceId, path: input.path, agentId });
-    const sessionId = `sess_${this.nextSessionNumber++}`;
 
     const session: LiveSession = {
       id: sessionId,

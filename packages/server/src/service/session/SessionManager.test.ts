@@ -47,11 +47,17 @@ class FakeAgent implements AgentLike {
 let agent: FakeAgent;
 let manager: SessionManager;
 let events: SessionEvent[];
+let sessionCounter = 0;
 
 beforeEach(() => {
   agent = new FakeAgent();
-  manager = new SessionManager({ createAgent: async () => agent });
+  manager = new SessionManager({
+    createAgent: async () => agent,
+    // 确定性 id：用例断言的是“哪个是哪个”，不是时间戳本身
+    nextSessionId: () => `chat_${++sessionCounter}`,
+  });
   events = [];
+  sessionCounter = 0;
   manager.subscribe((event) => events.push(event));
 });
 
@@ -69,19 +75,44 @@ describe("SessionManager：会话生命周期", () => {
     const first = await create();
     const second = await manager.create({ workspaceId: "ws-1", path: "/work/proj" });
 
-    expect(first.sessionId).toBe("sess_1");
+    expect(first.sessionId).toBe("chat_1");
     expect(first.agentId).toBe("default");
-    expect(second.sessionId).toBe("sess_2");
-    expect(manager.list("ws-1").map((s) => s.sessionId)).toEqual(["sess_1", "sess_2"]);
+    expect(second.sessionId).toBe("chat_2");
+    expect(manager.list("ws-1").map((s) => s.sessionId)).toEqual(["chat_1", "chat_2"]);
   });
 
   it("list 按工作区过滤：会话是 workspace 的下级对象，不跨父容器列", async () => {
     await manager.create({ workspaceId: "ws-1", path: "/a" });
     await manager.create({ workspaceId: "ws-2", path: "/b" });
 
-    expect(manager.list("ws-1").map((s) => s.sessionId)).toEqual(["sess_1"]);
-    expect(manager.list("ws-2").map((s) => s.sessionId)).toEqual(["sess_2"]);
+    expect(manager.list("ws-1").map((s) => s.sessionId)).toEqual(["chat_1"]);
+    expect(manager.list("ws-2").map((s) => s.sessionId)).toEqual(["chat_2"]);
     expect(manager.list("ws-404")).toEqual([]);
+  });
+
+  it("默认 id 是存档格式 `chat_YYYY_MM_DD_HH_mm_ss`（活会话与存档共用同一个 id）", async () => {
+    const raw = new SessionManager({ createAgent: async () => agent });
+    const { sessionId } = await raw.create({ workspaceId: "ws-1", path: "/p" });
+    expect(sessionId).toMatch(/^chat_\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2}$/);
+  });
+
+  it("客户端指定 id（续接已有存档）时原样使用", async () => {
+    const { sessionId } = await manager.create({
+      workspaceId: "ws-1",
+      path: "/work/proj",
+      sessionId: "chat_2026_11_01_10_00_00",
+    });
+    expect(sessionId).toBe("chat_2026_11_01_10_00_00");
+    expect(manager.list("ws-1").map((s) => s.sessionId)).toContain("chat_2026_11_01_10_00_00");
+  });
+
+  it("同一个 id 开第二次：报 session-exists（不静默顶掉正在跑的会话）", async () => {
+    const first = await manager.create({ workspaceId: "ws-1", path: "/p", sessionId: "chat_dup" });
+    await expect(
+      manager.create({ workspaceId: "ws-1", path: "/p", sessionId: "chat_dup" }),
+    ).rejects.toThrow(/already exists/);
+    // 第一个不受影响
+    expect(manager.list("ws-1").map((s) => s.sessionId)).toEqual([first.sessionId]);
   });
 
   it("create 把 workspaceId / path / agentId 原样交给装配方", async () => {
