@@ -27,6 +27,21 @@ export {
   type ToolCallRef,
 } from "./service/progress/PhaseTracker.js";
 
+// ---- 会话存储与工作区（服务端的产品数据层） ----
+export {
+  type Conversation,
+  type ConversationStore,
+  type ConversationSummary,
+  type SessionPointer,
+} from "./service/store/ConversationStore.js";
+export { FileConversationStore, type FileConversationStoreOptions } from "./service/store/FileConversationStore.js";
+export {
+  migrateLegacyConversations,
+  type LegacyMigrationOptions,
+  type LegacyMigrationResult,
+} from "./service/store/legacyMigration.js";
+export { ensureWorkspace, workspaceIdFor, type Workspace } from "./service/workspace/workspace.js";
+
 // ---- 守护进程与协议（客户端只需要协议类型 + Daemon 用于进程内嵌入/测试） ----
 export { Daemon, type Connection, type DaemonOptions, type MethodHandler } from "./daemon/Daemon.js";
 export {
