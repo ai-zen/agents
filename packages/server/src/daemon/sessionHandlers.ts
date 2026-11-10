@@ -6,8 +6,20 @@
  * 这里靠真 socket 测一次接线即可。
  *
  * `workspace.*` 也挂在这里：工作区是会话的父容器，两者的服务端入口本来就是同一个
- * （一个守护进程、一份 `workspacesRoot`）—— 为了两个方法名去另开一个 handler 文件，
+ * （一个守护进程、一份 `workspacesRoot`）—— 为了几个方法名去另开一个 handler 文件，
  * 只会让组装要多接一次线、多传一份同样的路径参数。
+ *
+ * ## 谁要求「工作区路径还在」，谁不要求
+ *
+ * 路径是**记录里的一条事实**，目录随时会被 `mv` / `rm`。本层只在一处要求它还在：
+ * **开会话**（`session.create`）。理由见 `requireWorkspacePath` —— 悄悄 `mkdir` 出一个
+ * 空目录让人以为在续接，是最坏的失败形态。
+ *
+ * 只读 / 认身份的那些方法**不要求**路径存在：`workspace.resolve` / `list` / `rename` /
+ * `remove` 认的是记录（恰恰要在目录不在了的时候还能用，才能修好它）；
+ * `session.attach` / `last` / `list` / `snapshot` 等读的是历史，历史在
+ * `workspaces/<id>/sessions/` 里，与那个工作目录在不在无关 —— 让它们因为路径缺失而
+ * 失败，等于把「目录被挪了」升级成「历史打不开了」。
  */
 
 import type { Connection, MethodHandler } from "./Daemon.js";
@@ -21,7 +33,15 @@ import {
   requireNumber,
   requireString,
 } from "./params.js";
-import { ensureWorkspace, readWorkspace } from "../service/workspace/workspace.js";
+import {
+  ensureWorkspace,
+  listWorkspaces,
+  readWorkspace,
+  relocateWorkspace,
+  removeWorkspace,
+  renameWorkspace,
+  requireWorkspacePath,
+} from "../service/workspace/workspace.js";
 import { FileIndex } from "../service/workspace/FileIndex.js";
 import type { SessionManager } from "../service/session/SessionManager.js";
 import {
@@ -52,6 +72,10 @@ import {
   type SessionSnapshotResult,
   type SubAgentSnapshotResult,
   type WorkspaceFilesResult,
+  type WorkspaceListResult,
+  type WorkspaceRelocateResult,
+  type WorkspaceRemoveResult,
+  type WorkspaceRenameResult,
   type WorkspaceResolveResult,
 } from "../protocol/sessions.js";
 
@@ -111,6 +135,10 @@ export function createSessionHandlers(
      * 当前工作目录送上来，等于让客户端替服务端决定会话跑在哪个目录（TUI 连远端
      * 服务端时，那个目录在服务端很可能根本不存在）。本层也不去读进程级全局，
      * 缺省值由组装根注入。
+     *
+     * 路径此刻不存在也照常认（不报错）：这条问的是「这个目录是哪个工作区」，而不是
+     * 「能不能在这里开会话」（后者是 `session.create` 的事）。用户 `mv` 完目录后客户端
+     * 还是会拿旧路径或新路径来问，答案必须是那个**已经存在的** id，否则历史就找不回来了。
      */
     [WORKSPACE_METHODS.resolve]: async (params): Promise<WorkspaceResolveResult> => {
       const path = optionalString(params, "path") ?? defaultWorkspacePath;
@@ -127,6 +155,64 @@ export function createSessionHandlers(
     [WORKSPACE_METHODS.files]: async (params): Promise<WorkspaceFilesResult> => {
       const workspaceId = requireString(params, "workspaceId");
       return { entries: await fileIndex.list(await workspacePathOf(workspaceId)) };
+    },
+
+    /**
+     * 盘上全部工作区（客户端启动时的侧栏）。
+     *
+     * 不带参数：工作区表是服务端盘上的全部事实，没有「按调用方过滤」这回事 ——
+     * 一个连接服务于谁的工作区，与它能不能看见这些工作区无关（同一台机器上的
+     * 终端与桌面端看到的是同一份）。顺序由 `listWorkspaces` 定死，客户端不重排。
+     */
+    [WORKSPACE_METHODS.list]: async (): Promise<WorkspaceListResult> => {
+      return { workspaces: await listWorkspaces({ workspacesRoot }) };
+    },
+
+    /**
+     * 改工作区的显示名：**不动 id、不动 path**。
+     *
+     * 目标可以是一条「路径已经不在了」的记录 —— 这正是它有用的场景之一（目录被挪了，
+     * 先给这个工作区起个名字，等下再 `relocate`）。
+     */
+    [WORKSPACE_METHODS.rename]: async (params): Promise<WorkspaceRenameResult> => {
+      return await renameWorkspace({
+        workspacesRoot,
+        id: requireString(params, "workspaceId"),
+        title: requireString(params, "title"),
+      });
+    },
+
+    /**
+     * 删一个工作区：**连它的全部会话一起**（整个 `workspaces/<id>/` 目录，含
+     * `sessions/` 与「上一轮会话」指针）。
+     *
+     * 为什么还要关掉内存里的活会话：目录删了、会话还在跑的话，它下一轮收尾会把存档
+     * 写回来（`FileSessionStore.write` 自己会 `mkdir`），刚删掉的工作区就**部分复活**了
+     * ——「连它的全部会话一起删」就不能只是删盘上的文件。`close` 之后那条轮跑完也不再写档。
+     *
+     * 幂等：目录本来就不在 → `removed:false`，不当错误。
+     */
+    [WORKSPACE_METHODS.remove]: async (params): Promise<WorkspaceRemoveResult> => {
+      const workspaceId = requireString(params, "workspaceId");
+      const result = await removeWorkspace({ workspacesRoot, id: workspaceId });
+      for (const entry of await manager.list(workspaceId, { includeSaved: false })) {
+        manager.close(entry.sessionId);
+      }
+      return result;
+    },
+
+    /**
+     * 把工作区搬到新目录（**id 不变**）—— 目录改名 / 移动之后把历史接回来的唯一入口。
+     *
+     * 参数校验之外的三条判定（新路径必须存在、不能与别的工作区撞、id 不动）都在
+     * `relocateWorkspace` 里：它们要碰磁盘，且与 `session.create` 的前置判断是同一条。
+     */
+    [WORKSPACE_METHODS.relocate]: async (params): Promise<WorkspaceRelocateResult> => {
+      return await relocateWorkspace({
+        workspacesRoot,
+        id: requireString(params, "workspaceId"),
+        path: requireString(params, "path"),
+      });
     },
 
     /**
@@ -152,6 +238,18 @@ export function createSessionHandlers(
     [SESSION_METHODS.create]: async (params, connection): Promise<SessionCreateResult> => {
       const workspaceId = requireString(params, "workspaceId");
       const path = optionalString(params, "path") ?? (await workspacePathOf(workspaceId));
+      /**
+       * 路径不在了就**明确报错**（`workspace-path-missing`，message 里带 path），
+       * 绝不替用户 `mkdir`：否则用户以为在接着上次聊，其实进了另一个空目录 ——
+       * 历史还在 `<workspaceId>/sessions/` 里，但它此刻属于一条已经不存在的路径。
+       *
+       * 两条入口都过这一关：客户端递 path 的（旧调用），以及只给 `workspaceId` 由服务端
+       * 反查路径的。判断只有 `requireWorkspacePath` 一处，`workspace.relocate` 用它同一个。
+       *
+       * `session.attach` 故意**不**要求路径存在：它读的是历史，历史与目录在不在无关
+       * （见文件头「谁要求工作区路径还在」）。
+       */
+      await requireWorkspacePath(path);
       const agentId = optionalString(params, "agentId");
       const sessionId = optionalString(params, "sessionId");
       // `persist:false` = 一次性调用（`ai "…"`）：不自动落盘、不挪「上一轮会话」指针

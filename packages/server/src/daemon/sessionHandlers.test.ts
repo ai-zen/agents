@@ -11,7 +11,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createConnection, type Socket } from "node:net";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Daemon } from "./Daemon.js";
@@ -90,6 +90,19 @@ class FakeSubAgent {
 let dir: string;
 /** 客户端不带工作目录时用的那个（组装根注入，真进程里是服务端自己的 cwd） */
 let defaultWorkspacePath: string;
+
+/**
+ * 造一个真实存在的工作区目录。
+ *
+ * `session.create` 现在**要求**工作区路径存在（目录缺失时它报 `workspace-path-missing`，
+ * 绝不替用户 `mkdir`），所以用例里递给它的路径必须先真的在盘上。
+ */
+function workDir(name: string): string {
+  const path = join(dir, name);
+  mkdirSync(path, { recursive: true });
+  return path;
+}
+
 let daemon: Daemon | null = null;
 let agent: FakeAgent;
 let manager: SessionManager;
@@ -100,6 +113,7 @@ let client: TestClient | null = null;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "aiz-session-handlers-"));
   defaultWorkspacePath = join(dir, "default-ws");
+  mkdirSync(defaultWorkspacePath, { recursive: true });
   agent = new FakeAgent();
   agentInputs = [];
   let counter = 0;
@@ -236,7 +250,7 @@ describe("会话处理器（真 socket）", () => {
 
     const created = (await client!.call(SESSION_METHODS.create, {
       workspaceId: "ws-1",
-      path: "/work/proj-a",
+      path: workDir("proj-a"),
     })) as { sessionId: string; agentId: string };
     expect(created.agentId).toBe("default");
 
@@ -313,7 +327,7 @@ describe("会话处理器（真 socket）", () => {
     await startDaemon();
     const created = (await client!.call(SESSION_METHODS.create, {
       workspaceId: "ws-1",
-      path: "/p",
+      path: workDir("proj-list"),
     })) as { sessionId: string };
     await client!.call(SESSION_METHODS.send, { sessionId: created.sessionId, content: "hi" });
 
@@ -681,7 +695,7 @@ describe("会话创建：path 可缺省，sessionId 必须被尊重", () => {
     await startDaemon();
     // 先认一个工作区，让服务端手上有一份 workspace.json
     const workspace = (await client!.call(WORKSPACE_METHODS.resolve, {
-      path: join(dir, "proj-a"),
+      path: workDir("proj-a"),
     })) as { workspaceId: string; path: string };
 
     const created = (await client!.call(SESSION_METHODS.create, {
@@ -713,7 +727,7 @@ describe("会话创建：path 可缺省，sessionId 必须被尊重", () => {
 
     const created = (await client!.call(SESSION_METHODS.create, {
       workspaceId,
-      path: "/work/proj-resume",
+      path: workDir("proj-resume"),
       sessionId: "chat_old",
     })) as { sessionId: string; agentId: string };
 
@@ -765,13 +779,13 @@ describe("session.attach：会话活得比连接久", () => {
     await startDaemon();
     const created = (await client!.call(SESSION_METHODS.create, {
       workspaceId: "ws-1",
-      path: join(dir, "proj-a"),
+      path: workDir("proj-a"),
     })) as { sessionId: string; agentId: string };
 
     // 「接着上次」走的就是这条：客户端只给 id，服务端知道它还在内存里
     const attached = await client!.call(SESSION_METHODS.attach, {
       workspaceId: "ws-1",
-      path: join(dir, "proj-a"),
+      path: workDir("proj-a"),
       sessionId: created.sessionId,
     });
 
@@ -835,7 +849,7 @@ describe("会话跟着连接走：断开后按宽限期回收（不靠客户端�
       await conn.handshake();
       const created = (await conn.call(SESSION_METHODS.create, {
         workspaceId: "ws-hold",
-        path: join(dir, "proj-hold"),
+        path: workDir("proj-hold"),
       })) as { sessionId: string };
 
       // ① 断线：socket 直接关掉，不发 keepAlive.set（等价于进程被 kill -9 / 掉网）
@@ -862,7 +876,7 @@ describe("session.rename / session.remove（真 socket）", () => {
     await startDaemon();
     const created = (await client!.call(SESSION_METHODS.create, {
       workspaceId: "ws-1",
-      path: join(dir, "proj-title"),
+      path: workDir("proj-title"),
     })) as { sessionId: string };
 
     const renamed = await client!.call(SESSION_METHODS.rename, {
@@ -898,11 +912,265 @@ describe("session.rename / session.remove（真 socket）", () => {
     await startDaemon();
     const created = (await client!.call(SESSION_METHODS.create, {
       workspaceId: "ws-1",
-      path: join(dir, "proj-title2"),
+      path: workDir("proj-title2"),
     })) as { sessionId: string };
 
     await expect(
       client!.call(SESSION_METHODS.rename, { workspaceId: "ws-1", sessionId: created.sessionId }),
     ).rejects.toThrow(/bad-params/);
+  });
+});
+
+/**
+ * 工作区是一等对象：有名字、id 冻结、可重定位。
+ *
+ * 这一组用例都在回答同一个问题：**用户把项目目录 `mv` 走之后，那些会话还在不在**。
+ * 它们必须用真目录（`mkdtemp`）与真 `rename` —— 假件证明不了「盘上那份记录指向哪里」。
+ */
+describe("工作区：id 冻结 / list / rename / remove / relocate（真 socket）", () => {
+  /** 认一个工作区（客户端启动第一句就是它） */
+  const resolveOf = async (path: string) =>
+    (await client!.call(WORKSPACE_METHODS.resolve, { path })) as {
+      workspaceId: string;
+      path: string;
+    };
+  const createIn = async (workspaceId: string) =>
+    (await client!.call(SESSION_METHODS.create, { workspaceId })) as { sessionId: string };
+
+  it("目录改名后历史不丢：mv → relocate → 会话还在 → 新路径 resolve 回到同一个 id", async () => {
+    await startDaemon();
+    const before = workDir("proj-old");
+    const workspace = await resolveOf(before);
+    const created = await createIn(workspace.workspaceId);
+    await client!.call(SESSION_METHODS.save, { sessionId: created.sessionId });
+
+    // ① 用户在自己终端里 `mv ~/proj-old ~/proj-new`（服务端当然不知道）
+    const after = join(dir, "proj-new");
+    renameSync(before, after);
+
+    // ② 侧栏看得见「这个工作区的目录不在了」：记录与历史都还在，只是路径失效
+    const listed = (await client!.call(WORKSPACE_METHODS.list)) as { workspaces: any[] };
+    expect(listed.workspaces).toEqual([
+      expect.objectContaining({
+        workspaceId: workspace.workspaceId,
+        path: before,
+        pathExists: false,
+      }),
+    ]);
+
+    // ③ 开会话被明确拒绝（message 里带 path），绝不替用户 mkdir 出一个空目录
+    await expect(
+      client!.call(SESSION_METHODS.create, { workspaceId: workspace.workspaceId }),
+    ).rejects.toThrow(new RegExp(`workspace-path-missing.*${before}`));
+    expect(existsSync(before)).toBe(false);
+
+    // ④ 修复：客户端拿旧 id 把记录指到新路径
+    expect(
+      await client!.call(WORKSPACE_METHODS.relocate, {
+        workspaceId: workspace.workspaceId,
+        path: after,
+      }),
+    ).toEqual({ workspaceId: workspace.workspaceId, path: after });
+
+    // ⑤ 历史还在：会话列表照旧（这就是「挪个目录，历史就没了」不再发生）
+    const sessions = (await client!.call(SESSION_METHODS.list, {
+      workspaceId: workspace.workspaceId,
+    })) as { sessions: any[] };
+    expect(sessions.sessions.map((item) => item.sessionId)).toEqual([created.sessionId]);
+
+    // ⑥ 用户在新目录里重启客户端：resolve(新路径) 还是同一个 id（快路径不命中 → 慢路径）
+    expect((await resolveOf(after)).workspaceId).toBe(workspace.workspaceId);
+
+    // ⑦ 那段会话能接回来（「历史没丢」的最终证明）
+    const resumed = (await client!.call(SESSION_METHODS.attach, {
+      workspaceId: workspace.workspaceId,
+      sessionId: created.sessionId,
+    })) as { sessionId: string };
+    expect(resumed.sessionId).toBe(created.sessionId);
+  });
+
+  it("workspace.list：顺序确定（同一份盘两次调用一致），pathExists 跟着目录生死", async () => {
+    await startDaemon();
+    const keep = workDir("keep");
+    const doomed = workDir("doomed");
+    const kept = await resolveOf(keep);
+    const lost = await resolveOf(doomed);
+    // 改个名字让顺序与创建顺序不同（顺序按显示名，不按创建先后）
+    await client!.call(WORKSPACE_METHODS.rename, {
+      workspaceId: lost.workspaceId,
+      title: "0-最先",
+    });
+
+    const first = (await client!.call(WORKSPACE_METHODS.list)) as { workspaces: any[] };
+    expect(first.workspaces.map((item) => item.workspaceId)).toEqual([
+      lost.workspaceId,
+      kept.workspaceId,
+    ]);
+    expect(first.workspaces.every((item) => item.pathExists)).toBe(true);
+
+    rmSync(doomed, { recursive: true });
+
+    const second = (await client!.call(WORKSPACE_METHODS.list)) as { workspaces: any[] };
+    expect(second.workspaces).toEqual([
+      expect.objectContaining({
+        workspaceId: lost.workspaceId,
+        title: "0-最先",
+        pathExists: false,
+      }),
+      expect.objectContaining({ workspaceId: kept.workspaceId, pathExists: true }),
+    ]);
+    // 顺序不抖：只有 `pathExists` 变了
+    expect(second.workspaces.map((item) => item.workspaceId)).toEqual(
+      first.workspaces.map((item) => item.workspaceId),
+    );
+  });
+
+  it("workspace.rename：只改 title（id / path 不动）；空标题与缺字段都是 bad-params", async () => {
+    await startDaemon();
+    const path = workDir("proj-title");
+    const workspace = await resolveOf(path);
+
+    expect(
+      await client!.call(WORKSPACE_METHODS.rename, {
+        workspaceId: workspace.workspaceId,
+        title: "重构现场",
+      }),
+    ).toEqual({ workspaceId: workspace.workspaceId, title: "重构现场" });
+
+    // id 与 path 一个字都没动：同一个路径拿回来的还是同一个 id
+    expect((await resolveOf(path)).workspaceId).toBe(workspace.workspaceId);
+    const listed = (await client!.call(WORKSPACE_METHODS.list)) as { workspaces: any[] };
+    expect(
+      listed.workspaces.find((item) => item.workspaceId === workspace.workspaceId),
+    ).toMatchObject({
+      title: "重构现场",
+      path,
+    });
+
+    await expect(
+      client!.call(WORKSPACE_METHODS.rename, {
+        workspaceId: workspace.workspaceId,
+        title: "",
+      }),
+    ).rejects.toThrow(/bad-params/);
+    await expect(
+      client!.call(WORKSPACE_METHODS.rename, { workspaceId: workspace.workspaceId }),
+    ).rejects.toThrow(/bad-params/);
+    // 未知工作区不是 bad-params（参数是对的，东西不在）
+    await expect(
+      client!.call(WORKSPACE_METHODS.rename, { workspaceId: "nope-00000000", title: "x" }),
+    ).rejects.toThrow(/unknown-workspace/);
+  });
+
+  it("workspace.remove：整个目录（含 sessions）被删、活会话跟着退场、幂等 removed:false", async () => {
+    await startDaemon();
+    const workspace = await resolveOf(workDir("proj-rm"));
+    const created = await createIn(workspace.workspaceId);
+    await client!.call(SESSION_METHODS.save, { sessionId: created.sessionId });
+
+    const rootDir = join(dir, "workspaces", workspace.workspaceId);
+    expect(existsSync(join(rootDir, "sessions", `${created.sessionId}.json`))).toBe(true);
+
+    expect(
+      await client!.call(WORKSPACE_METHODS.remove, { workspaceId: workspace.workspaceId }),
+    ).toEqual({
+      removed: true,
+    });
+    expect(existsSync(rootDir)).toBe(false);
+
+    // 活会话也得退场：不然它下一轮收尾会把存档写回来（`FileSessionStore.write` 自己 mkdir），
+    // 刚删掉的工作区就部分复活了
+    const live = (await client!.call(SESSION_METHODS.list, {
+      workspaceId: workspace.workspaceId,
+      includeSaved: false,
+    })) as { sessions: any[] };
+    expect(live.sessions).toEqual([]);
+
+    // 幂等：本来就不在了
+    expect(
+      await client!.call(WORKSPACE_METHODS.remove, { workspaceId: workspace.workspaceId }),
+    ).toEqual({
+      removed: false,
+    });
+  });
+
+  it("workspace.relocate：新路径不存在 → workspace-path-missing 且没被创建；被别人占着 → workspace-exists", async () => {
+    await startDaemon();
+    const workspace = await resolveOf(workDir("owner"));
+
+    const missing = join(dir, "not-there");
+    await expect(
+      client!.call(WORKSPACE_METHODS.relocate, {
+        workspaceId: workspace.workspaceId,
+        path: missing,
+      }),
+    ).rejects.toThrow(/workspace-path-missing/);
+    expect(existsSync(missing)).toBe(false); // 服务端不替用户 mkdir
+
+    // 同一个目录不能有两份记录：会话会在两个 id 下各长一份
+    const taken = workDir("taken");
+    const occupant = await resolveOf(taken);
+    await expect(
+      client!.call(WORKSPACE_METHODS.relocate, { workspaceId: workspace.workspaceId, path: taken }),
+    ).rejects.toThrow(/workspace-exists/);
+    // 记录一个都没动
+    const listed = (await client!.call(WORKSPACE_METHODS.list)) as { workspaces: any[] };
+    expect(
+      listed.workspaces.find((item) => item.workspaceId === workspace.workspaceId),
+    ).toMatchObject({ path: join(dir, "owner") });
+    expect(
+      listed.workspaces.find((item) => item.workspaceId === occupant.workspaceId),
+    ).toMatchObject({
+      path: taken,
+    });
+  });
+
+  it("session.create 的路径缺失 → workspace-path-missing（那条路带 path 也一样），且不 mkdir", async () => {
+    await startDaemon();
+    const missing = join(dir, "never-existed");
+    await expect(
+      client!.call(SESSION_METHODS.create, { workspaceId: "ws-x", path: missing }),
+    ).rejects.toThrow(new RegExp(`workspace-path-missing.*${missing}`));
+    expect(existsSync(missing)).toBe(false);
+    // 连接还能继续用
+    expect(await client!.call("ping")).toEqual({ pong: true });
+  });
+
+  it("路径缺失只挡开会话：attach / last / list 照旧（历史在存档里，与目录在不在无关）", async () => {
+    await startDaemon();
+    const path = workDir("proj-vanish");
+    const workspace = await resolveOf(path);
+    const created = await createIn(workspace.workspaceId);
+    await client!.call(SESSION_METHODS.save, { sessionId: created.sessionId });
+    // 收掉活会话，逼 attach 走「从存档装回来」那条路
+    expect(await client!.call(SESSION_METHODS.close, { sessionId: created.sessionId })).toEqual({
+      closed: true,
+    });
+
+    // 用户把项目目录整个删了
+    rmSync(path, { recursive: true });
+
+    expect(
+      await client!.call(SESSION_METHODS.last, { workspaceId: workspace.workspaceId }),
+    ).toEqual({
+      sessionId: created.sessionId,
+    });
+    const listed = (await client!.call(SESSION_METHODS.list, {
+      workspaceId: workspace.workspaceId,
+    })) as { sessions: any[] };
+    expect(listed.sessions.map((item) => item.sessionId)).toEqual([created.sessionId]);
+    expect(
+      (
+        (await client!.call(SESSION_METHODS.attach, {
+          workspaceId: workspace.workspaceId,
+          sessionId: created.sessionId,
+        })) as { sessionId: string }
+      ).sessionId,
+    ).toBe(created.sessionId);
+
+    // 但开会话仍然拒绝 —— 同一个前提的两种待遇，差别只在「会不会真的动那个目录」
+    await expect(
+      client!.call(SESSION_METHODS.create, { workspaceId: workspace.workspaceId }),
+    ).rejects.toThrow(/workspace-path-missing/);
   });
 });

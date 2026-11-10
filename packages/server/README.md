@@ -87,7 +87,8 @@ session events (`session.phase`, `message.delta`, `turn.end`, `session.notice`,
 SessionManager.ts` implements the live-session registry and the SDK-event → protocol-event
 translation; `src/service/agent/` assembles the agent (config + Scope + capability
 discovery) per workspace; `src/daemon/sessionHandlers.ts` registers `workspace.resolve` /
-`workspace.files` / `events.watch` / `session.create` / `session.attach` / `session.send` /
+`workspace.files` / `workspace.list` / `workspace.rename` / `workspace.remove` /
+`workspace.relocate` / `events.watch` / `session.create` / `session.attach` / `session.send` /
 `session.cancel` / `session.list` / `session.rename` / `session.remove` / `session.last` /
 `session.subAgent.snapshot` / `session.question`+`session.answer` / `session.reload` /
 `session.setAgent` / `session.close` / `session.keepAlive.set` / `session.handoff` /
@@ -131,6 +132,66 @@ somewhere else.
 current directory, which on a daemon is wherever it happened to be spawned — one missing
 argument gives you `@`-completion listing workspace B's files while `exec pwd` and every
 relative read/write land in directory A. `AgentPaths.workspacePath` exists for exactly this.
+
+### The workspace is a first-class object: named, id frozen, relocatable
+
+`<aiZenDir>/workspaces/<workspaceId>/workspace.json` is the identity, and the id is **assigned
+once and frozen** (`{ schema, id, path, title?, createdAt }`). `workspaceIdFor(path)`
+(`<dirname>-<sha256(path)[0..8]>`) is only the *candidate* for the first assignment:
+
+1. **fast path** — the record behind `workspaceIdFor(path)` exists **and** its `path` matches →
+   use it. One file read, no directory scan; this is what a client startup hits.
+2. **slow path** — otherwise scan `<workspacesRoot>` for a record whose `path` is this path and
+   reuse **that** id. This is the only way back in after `mv ~/proj ~/proj2` (the frozen id is no
+   longer `workspaceIdFor(currentPath)`), i.e. it is what keeps "renamed a directory ⇒ history
+   gone" from happening.
+3. **new** — neither matched → write a record with the derived id (shape unchanged). If that id
+   is already held by *another* path (which relocation makes reachable, since ids no longer
+   follow paths), take the next free one (`<id>-2`, …) instead of overwriting the record.
+
+The path is compared only after `resolve()`, so relative paths, trailing slashes and `..` all
+converge on one workspace.
+
+Lifecycle methods, and the one place the path must still exist:
+
+- `workspace.list` → `{ workspaceId, title?, path, pathExists }[]`, sorted by display name
+  (`title ?? basename(path)`) then id — a total order, so two calls never disagree. `pathExists:
+  false` means the directory was renamed/deleted/moved and the client should offer a repair.
+- `workspace.rename` changes **only** `title` (id and path untouched; empty title is
+  `bad-params`) — same name and meaning as `session.rename`.
+- `workspace.relocate` rewrites `path`, keeping the id, so the sessions under that id become
+  reachable again. The new path must already exist (`workspace-path-missing` — the server never
+  `mkdir`s for the user) and must not be claimed by another record (`workspace-exists`).
+- `workspace.remove` deletes `<workspacesRoot>/<id>/` **including `sessions/` and the pointer** —
+  "delete this workspace and all its conversations" — and closes the live sessions of that
+  workspace (otherwise their next turn would write the archive back and partly resurrect it).
+  Idempotent: `removed: false` when it was not there.
+
+`session.create` is the **only** method that requires the path to exist: with the directory gone
+it fails with `workspace-path-missing` (message carries the path) instead of quietly creating an
+empty directory the user would mistake for "resumed my project". Read-only methods
+(`session.attach` / `last` / `list` / `snapshot`, and `workspace.resolve` / `list` / `rename` /
+`remove`) keep working: history lives in `workspaces/<id>/sessions/`, which has nothing to do
+with whether that working directory still exists — and those are exactly the methods needed to
+repair the record.
+
+### Repairing a broken workspace is the **client's** job (deliberate)
+
+When `workspace.list` reports `pathExists: false`, the server deliberately does **not** try to
+guess where the directory went — not by basename, not by inode, not by "it looked like the same
+project". The contract is:
+
+- a GUI (desktop) shows the row with a warning and asks the user to **pick the new path**
+  (`workspace.relocate`) or to **re-create the folder** at the recorded path (after which
+  `pathExists` is true again and nothing else needs to happen);
+- a CLI does **not** handle it at all: its workspace is `cwd`, the user typing `ai` in a moved
+  directory is indistinguishable from a genuinely new project, and a wrong guess would silently
+  attach someone's history to an unrelated directory — which is worse than an empty session.
+
+Auto-detection was considered and rejected: inode identity only holds within one filesystem
+(a copy+delete move breaks it), network filesystems may not keep it stable, and "the basename
+looks the same" is a prediction, not a fact. One row that says "broken, fix me" is honest;
+a silent wrong answer is not.
 
 `workspace.files` returns the candidate list behind the client's `@`-completion. Entries are
 relative to the workspace root, `/`-separated, and carry `dir` so the client knows whether to

@@ -45,7 +45,12 @@ export {
 } from "./service/store/legacyMigration.js";
 export {
   ensureWorkspace,
+  listWorkspaces,
   readWorkspace,
+  relocateWorkspace,
+  removeWorkspace,
+  renameWorkspace,
+  requireWorkspacePath,
   workspaceIdFor,
   type Workspace,
 } from "./service/workspace/workspace.js";
@@ -160,8 +165,16 @@ export {
   type WorkspaceFilesParams,
   type WorkspaceFileEntry,
   type WorkspaceFilesResult,
+  type WorkspaceListResult,
+  type WorkspaceRelocateParams,
+  type WorkspaceRelocateResult,
+  type WorkspaceRemoveParams,
+  type WorkspaceRemoveResult,
+  type WorkspaceRenameParams,
+  type WorkspaceRenameResult,
   type WorkspaceResolveParams,
   type WorkspaceResolveResult,
+  type WorkspaceSummary,
 } from "./protocol/sessions.js";
 
 // ---- 配置与管理面（客户端的配置中心要用；不属于某一段会话，所以不在 session.* 下） ----

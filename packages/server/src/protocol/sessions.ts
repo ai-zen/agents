@@ -39,10 +39,37 @@ import type { PhaseInfo } from "../service/progress/PhaseTracker.js";
  * **线上方法名一个字没变**（仍是 `workspace.resolve`）—— 客户端只改引用的常量名。
  */
 export const WORKSPACE_METHODS = {
-  /** 路径 → 工作区身份（建目录、写 workspace.json） */
+  /**
+   * 路径 → 工作区身份（首次见到这个路径时写 `workspace.json`）。
+   *
+   * 幂等：同一个路径反复调，永远得到同一个 `workspaceId` —— id 首次分配后**冻结**，
+   * 目录改名也不会变（要靠 `relocate` 显式搬，见那边的注释）。
+   */
   resolve: "workspace.resolve",
   /** 某个工作区的文件清单（客户端 `@` 补全用；扫的是服务端磁盘） */
   files: "workspace.files",
+  /**
+   * 盘上全部工作区（带 `pathExists`）。
+   *
+   * 客户端启动时的侧栏要用它：只看自己 cwd 那一个工作区的话，用户 `mv` 完目录就再也
+   * 看不到旧工作区 —— 而它（连同历史）还在盘上。
+   */
+  list: "workspace.list",
+  /** 改显示名（**不动 id、不动 path**；与 `session.rename` 同名同义） */
+  rename: "workspace.rename",
+  /**
+   * 删一个工作区 —— **连它的全部会话一起**（整个 `workspaces/<id>/` 目录）。
+   *
+   * 幂等：本来就没有 → `removed:false`（与 `agent.remove` / `session.remove` 同一口径）。
+   */
+  remove: "workspace.remove",
+  /**
+   * 把记录的 path 改到新目录（**id 不变**）。
+   *
+   * 这是「目录改名之后历史不丢」的入口：`mv` 之后调用方拿旧 id 调它，之后对新路径
+   * `resolve` 就会回到同一个 id。
+   */
+  relocate: "workspace.relocate",
 } as const;
 
 /** 会话方法名（服务端注册与客户端调用共用同一份字面量，避免两边各写一份字符串） */
@@ -234,6 +261,74 @@ export interface WorkspaceFileEntry {
 
 export interface WorkspaceFilesResult {
   entries: WorkspaceFileEntry[];
+}
+
+/**
+ * 列表里的一行 —— 侧栏「你有这几个项目」的全部所需。
+ *
+ * ## 为什么带 `pathExists`
+ *
+ * `path` 是**记录里写着**的那条路径（冻结的），而目录本身随时可能被 `mv` / `rm`。
+ * 两者不一致是常态而不是异常：`mv ~/proj ~/proj2` 之后记录还指着 `~/proj`。
+ * 客户端需要知道这件事才能提示用户「去修一下」（`relocate` 到新路径，或者删掉它），
+ * 而不是让这个工作区在列表里静默失踪 —— 那等于「挪个目录，历史就没了」再来一次。
+ */
+export interface WorkspaceSummary {
+  workspaceId: string;
+  /** 缺省 = 还没起过名，客户端用 `path` 的 basename 兜底 */
+  title?: string;
+  /** 记录里写着的工作区绝对路径 */
+  path: string;
+  /** 记录着的这个目录此刻还在不在（`false` = 被改名/删除/移动了，客户端要提示用户修复） */
+  pathExists: boolean;
+}
+
+/**
+ * `workspace.list` 不带参数：工作区表是服务端盘上的**全部**事实，不按调用方过滤。
+ *
+ * 顺序由服务端定死（见 `listWorkspaces`：显示名码位序，同名再按 id），客户端不必重排。
+ */
+export interface WorkspaceListResult {
+  workspaces: WorkspaceSummary[];
+}
+
+/** 改工作区的显示名（只改 `title`：id 与 path 一个字都不动） */
+export interface WorkspaceRenameParams {
+  workspaceId: string;
+  title: string;
+}
+
+export interface WorkspaceRenameResult {
+  workspaceId: string;
+  title: string;
+}
+
+/** 删一个工作区：`workspaceId` 就是它的目录名，删的是整个 `workspaces/<id>/` */
+export interface WorkspaceRemoveParams {
+  workspaceId: string;
+}
+
+export interface WorkspaceRemoveResult {
+  /** 本来就不存在是 `false`（不当错误，与 `agent.remove` / `session.remove` 同一口径） */
+  removed: boolean;
+}
+
+/**
+ * 把工作区搬到一个新目录（目录改名 / 移动之后用这条把历史接回来）。
+ *
+ * 只改记录里的 `path`：`workspaceId` 不变，`sessions/` 不动 —— 会话属于工作区，不属于
+ * 路径。
+ */
+export interface WorkspaceRelocateParams {
+  workspaceId: string;
+  /** 新路径（服务端规范化后使用）。必须**已存在**：服务端不替用户建目录 */
+  path: string;
+}
+
+export interface WorkspaceRelocateResult {
+  workspaceId: string;
+  /** 规范化之后的绝对路径 */
+  path: string;
 }
 
 export interface SessionCreateParams {
