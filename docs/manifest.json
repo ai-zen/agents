@@ -2,8 +2,8 @@
   "name": "agents",
   "npm": "@ai-zen/agents-workspace",
   "description": {
-    "zh": "AI-Zen Agents — 模块化 LLM Agent 框架 monorepo（core + sdk）：插件驱动的 Agent 运行时、能力管线、检索工具与 MCP 支持。",
-    "en": "AI-Zen Agents — a modular LLM Agent framework monorepo (core + sdk): plugin-driven Agent runtime, capability pipeline, retrieval tools, and MCP support."
+    "zh": "AI-Zen Agents — 模块化 LLM Agent 框架 monorepo（core + sdk + server + client）：插件驱动的 Agent 运行时、能力管线、常驻服务端与 MCP 支持。",
+    "en": "AI-Zen Agents — a modular LLM Agent framework monorepo (core + sdk + server + client): plugin-driven Agent runtime, capability pipeline, a resident server, and MCP support."
   },
   "version": "2.0.0",
   "docsRoot": "docs",
