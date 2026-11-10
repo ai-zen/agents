@@ -20,284 +20,56 @@
  *      一切从构造参数来，否则「局部可实例化」和「一个进程服务多个工作区」同时破产。
  *      唯一例外是 `src/cli.ts`（组装根）：它允许读 env/argv，但必须当场转成注入值。
  *      （该检查的正则写在 README 里；这里刻意不把字面量写进源码，否则 grep 会命中注释本身。）
+ *
+ * ## 桶为什么是 `export *`
+ *
+ * 这里原来是 ~150 行手工列举：一半是把协议包的符号抄一遍，一半是把各模块的符号抄一遍。
+ * 手工列举的问题不是难写，是**会漏**：加了一个导出却忘了加进桶，症状是「包里的东西
+ * import 不到」—— 而那种错在写代码那一刻完全不显眼。改成 `export *` 之后，模块的公开面
+ * 就是包的公开面，两者不可能漂。
+ *
+ * `export *` 撞上**重名会编译失败**，这恰恰是它比手工列举强的地方：手工列举时重名被
+ * 后者静默覆盖，谁也不会发现。
+ *
+ * 唯一的例外是 `./daemon/wire.js`：它的 `socketWire` 适配器**刻意不导出**（外部实现者
+ * 各有各的底层，抄不到它；要给本包接一种新传输，只需按 `Wire` 接口写一份），所以那里
+ * 用显式具名导出。这是「选择不导出」，不是重名。
  */
 
-export {
-  PhaseTracker,
-  pendingToolCalls,
-  type PhaseMessageLike,
-} from "./service/progress/PhaseTracker.js";
-// 阶段**形状**（`PhaseInfo` / `PhaseKind` / `ToolCallRef`）由协议包拥有 —— 它们是线上载荷，
-// 不是服务端内部状态机的一部分（见 `@ai-zen/agents-protocol` 的 `phase.ts`）。这里只做转出，
-// 让既有调用方（`@ai-zen/agents-server` 的用者）不必改 import。
-export type { PhaseInfo, PhaseKind, ToolCallRef } from "@ai-zen/agents-protocol";
+export * from "@ai-zen/agents-protocol";
 
-// ---- 会话存储与工作区（服务端的产品数据层） ----
-export {
-  type SessionRecord,
-  type SessionStore,
-  type SessionRef,
-  type SessionPointer,
-} from "./service/store/SessionStore.js";
-export {
-  FileSessionStore,
-  type FileSessionStoreOptions,
-} from "./service/store/FileSessionStore.js";
-export {
-  migrateLegacySessions,
-  type LegacyMigrationOptions,
-  type LegacyMigrationResult,
-} from "./service/store/legacyMigration.js";
-export {
-  ensureWorkspace,
-  listWorkspaces,
-  readWorkspace,
-  relocateWorkspace,
-  removeWorkspace,
-  renameWorkspace,
-  requireWorkspacePath,
-  workspaceIdFor,
-  type Workspace,
-} from "./service/workspace/workspace.js";
-export {
-  FileIndex,
-  DEFAULT_EXCLUDES,
-  INDEX_TTL_MS,
-  MAX_ENTRIES,
-  SCAN_TIMEOUT_MS,
-  type FileIndexDeps,
-} from "./service/workspace/FileIndex.js";
-export { EventHub } from "./service/events/EventHub.js";
+// ---- 机理件（无业务语义） ----
+export * from "./version.js";
+export * from "./lib/phase.js";
+export * from "./lib/events.js";
 
-// ---- 会话编排与事件（服务端真正「跑一轮对话」的那一层） ----
-export {
-  SessionManager,
-  type AgentLike,
-  type SubAgentLike,
-  type CreateAgentInput,
-  type SessionAttachInput,
-  type SessionCreateInput,
-  type SessionManagerOptions,
-} from "./service/session/SessionManager.js";
-export { createSessionHandlers, type SessionHandlerOptions } from "./daemon/sessionHandlers.js";
-export { createAgentHandlers, type AgentHandlerOptions } from "./daemon/agentHandlers.js";
-export {
-  SessionHandoff,
-  isHandoffAborted,
-  type HandoffAgentLike,
-  type HandoffOutcome,
-  type SessionHandoffOptions,
-} from "./service/handoff/SessionHandoff.js";
-// 自动标题：生成器（只发那一次请求）与会话层（时机 / 落盘 / 事件 / 超时）分开导出，
-// 组装根要的是前者，测会话层要的是后者的注入点
-export {
-  createAutoTitle,
-  type AutoTitleFn,
-  type AutoTitleOptions,
-  type AutoTitleRequest,
-} from "./service/session/AutoTitle.js";
-export {
-  EVENT_METHODS,
-  SESSION_EVENTS,
-  SERVER_EVENTS,
-  SESSION_METHODS,
-  WORKSPACE_METHODS,
-  DEFAULT_MIGRATION_STRATEGY,
-  type SessionEvent,
-  type SessionDeltaEvent,
-  type SessionAnswerParams,
-  type SessionAnswerResult,
-  type SessionAttachParams,
-  type SessionAttachResult,
-  type SessionCancelParams,
-  type SessionCancelResult,
-  type SessionCreateParams,
-  type SessionCreateResult,
-  type ServerEvent,
-  type SessionListParams,
-  type SessionSnapshotParams,
-  type SessionListEntry,
-  type SessionListResult,
-  type SessionRenameParams,
-  type SessionRenameResult,
-  type SessionRemoveParams,
-  type SessionRemoveResult,
-  type SessionRollbackParams,
-  type SessionRollbackResult,
-  type SessionReloadParams,
-  type SessionSetAgentParams,
-  type SessionSetAgentResult,
-  type SessionCloseParams,
-  type SessionCloseResult,
-  type SessionKeepAliveSetParams,
-  type SessionKeepAliveSetResult,
-  type SessionSaveParams,
-  type SessionSaveResult,
-  type SessionSaveAsParams,
-  type SessionSaveAsResult,
-  type SessionSnapshotResult,
-  type ModelLevel,
-  type MigrationStrategy,
-  type ModelParams,
-  type Message,
-  type Usage,
-  type SessionToolCallsEvent,
-  type SessionMessageAppendedEvent,
-  type ToolCallState,
-  type SessionModelSetParams,
-  type SessionModelSetResult,
-  type SessionModelParamsSetParams,
-  type SessionModelParamsSetResult,
-  type SessionPhaseEvent,
-  type SessionQuestionEvent,
-  type SessionQuestionKind,
-  type SessionSendParams,
-  type SessionSendResult,
-  type SessionNoticeCode,
-  type SessionNoticeEvent,
-  type GlobalNoticeCode,
-  type ServerNoticeEvent,
-  type HandoffMode,
-  type MessageContent,
-  type MessageContentBlock,
-  type NoticeLevel,
-  type NoticePayload,
-  GLOBAL_NOTICE_CODES,
-  SESSION_NOTICE_CODES,
-  type SessionHandoffParams,
-  type SessionHandoffResult,
-  type SessionIdChangedEvent,
-  type SessionTitleChangedEvent,
-  type SessionSubAgentStartedEvent,
-  type SessionSubAgentEndedEvent,
-  type SubAgentSnapshotParams,
-  type SubAgentSnapshotResult,
-  type SessionMigrateParams,
-  type SessionMigrateResult,
-  type SessionTurnEndEvent,
-  type SessionLastParams,
-  type SessionLastResult,
-  type WorkspaceFilesParams,
-  type WorkspaceFileEntry,
-  type WorkspaceFilesResult,
-  type WorkspaceListResult,
-  type WorkspaceRelocateParams,
-  type WorkspaceRelocateResult,
-  type WorkspaceRemoveParams,
-  type WorkspaceRemoveResult,
-  type WorkspaceRenameParams,
-  type WorkspaceRenameResult,
-  type WorkspaceResolveParams,
-  type WorkspaceResolveResult,
-  type WorkspaceSummary,
-} from "@ai-zen/agents-protocol";
+// ---- 会话：注册表与生命周期、事件翻译、存档、提问、自动标题 ----
+export * from "./domain/session/SessionManager.js";
+export * from "./domain/session/EventBridge.js";
+export * from "./domain/session/Persistence.js";
+export * from "./domain/session/QuestionBroker.js";
+export * from "./domain/session/LiveSession.js";
+export * from "./domain/session/AutoTitle.js";
+export * from "./domain/session/store/SessionStore.js";
+export * from "./domain/session/store/FileSessionStore.js";
 
-// ---- 配置与管理面（客户端的配置中心要用；不属于某一段会话，所以不在 session.* 下） ----
-export {
-  CONFIG_METHODS,
-  AGENT_METHODS,
-  type AgentGetParams,
-  type AgentGetResult,
-  type AgentKind,
-  type AgentListResult,
-  type AgentRemoveParams,
-  type AgentRemoveResult,
-  type AgentSaveParams,
-  type AgentSaveResult,
-  type AgentSetModelParams,
-  type AgentSetModelResult,
-  type ConfigGetResult,
-  type ConfigMcpGetParams,
-  type ConfigMcpGetResult,
-  type ConfigMcpSaveParams,
-  type ConfigMcpSaveResult,
-  type ConfigReasoningPresetsResult,
-  type ConfigSaveParams,
-  type ConfigSaveResult,
-  type ConfigSetDefaultAgentParams,
-  type ConfigSetDefaultAgentResult,
-  type ConfigSetDefaultModelParams,
-  type ConfigSetDefaultModelResult,
-  type McpScope,
-} from "@ai-zen/agents-protocol";
-export { ConfigService, type ConfigServiceOptions } from "./service/config/ConfigService.js";
-export { createConfigHandlers, type ConfigHandlerOptions } from "./daemon/configHandlers.js";
+// ---- 其它业务对象 ----
+export * from "./domain/workspace/workspace.js";
+export * from "./domain/workspace/FileIndex.js";
+export * from "./domain/config/ConfigService.js";
+export * from "./domain/asset/AssetService.js";
+export * from "./domain/handoff/SessionHandoff.js";
+export * from "./domain/agent/agentPaths.js";
+export * from "./domain/agent/SessionAgentFactory.js";
 
-// ---- 资产清单（只读；不属于某段会话，也不是配置字段，故单开一个命名空间） ----
-export {
-  ASSET_METHODS,
-  type AssetKind,
-  type AssetListParams,
-  type AssetListResult,
-  type AssetScope,
-  type AssetSummary,
-} from "@ai-zen/agents-protocol";
-export { AssetService, type AssetServiceOptions } from "./service/asset/AssetService.js";
-export { createAssetHandlers, type AssetHandlerOptions } from "./daemon/assetHandlers.js";
-
-// ---- 守护进程与协议（客户端只需要协议类型 + Daemon 用于进程内嵌入/测试） ----
-export {
-  Daemon,
-  type Connection,
-  type DaemonOptions,
-  type MethodHandler,
-} from "./daemon/Daemon.js";
+// ---- 传输与接线 ----
+export * from "./daemon/Daemon.js";
 // `Wire` 属于公开面：要给服务端接一种新传输（WebSocket / stdio）的人，必须能**在包外**
 // 按这个接口写一个实现，再把每条连接交给 `Daemon.handleConnection()`。它刻意不在
 // `@ai-zen/agents-protocol` 里 —— 协议面是「线上长什么样」，`Wire` 是「本进程里怎么把它递进来」，
 // 是服务端的内部接缝，只是因为「实现者可能在别的包里」才必须可 import。
-// （适配器 `socketWire` 不导出：外部实现者各有各的底层，抄不到它；net 那一路的样板
-// 就在 `src/daemon/wire.ts` 里。）
 export type { Wire } from "./daemon/wire.js";
-export {
-  descriptorPath,
-  isProcessAlive,
-  readDescriptor,
-  removeDescriptor,
-  writeDescriptor,
-  type ServerDescriptor,
-} from "@ai-zen/agents-protocol";
-export { isLoopbackHost } from "@ai-zen/agents-protocol";
-export {
-  encodeFrame,
-  FrameDecoder,
-  MAX_FRAME_BYTES,
-  ProtocolError,
-  type ProtocolErrorCode,
-} from "@ai-zen/agents-protocol";
-export {
-  PROTOCOL_VERSION,
-  isHelloRequest,
-  isRequestFrame,
-  type EventFrame,
-  type ErrorFrame,
-  type HelloRequest,
-  type HelloResponse,
-  type RequestFrame,
-  type ResponseFrame,
-  type ResultFrame,
-} from "@ai-zen/agents-protocol";
-export { SERVER_NAME, SERVER_VERSION } from "./version.js";
-export {
-  DAEMON_METHODS,
-  type DaemonStatusResult,
-  type PingResult,
-  type ShutdownResult,
-} from "@ai-zen/agents-protocol";
-
-// ---- Agent 装配（会话「能跑」的一环：配置 + Scope + 能力发现） ----
-export {
-  agentPaths,
-  assetDirs,
-  globalAgentPaths,
-  globalSkillsDirs,
-  globalToolsDirs,
-  projectSkillsDirs,
-  projectToolsDirs,
-  type AgentPaths,
-  type AgentPathsInput,
-} from "./service/agent/agentPaths.js";
-export {
-  SessionAgentFactory,
-  type SessionAgentFactoryOptions,
-} from "./service/agent/SessionAgentFactory.js";
+export * from "./daemon/sessionHandlers.js";
+export * from "./daemon/agentHandlers.js";
+export * from "./daemon/configHandlers.js";
+export * from "./daemon/assetHandlers.js";

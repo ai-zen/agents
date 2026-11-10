@@ -25,7 +25,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Daemon, type DaemonOptions, type MethodHandler } from "./Daemon.js";
 import { socketWire, type Wire } from "./wire.js";
-import { EventHub } from "../service/events/EventHub.js";
+import { EventHub } from "../lib/events.js";
 import { encodeFrame, FrameDecoder } from "@ai-zen/agents-protocol";
 import { PROTOCOL_VERSION } from "@ai-zen/agents-protocol";
 import { SESSION_EVENTS } from "@ai-zen/agents-protocol";

@@ -19,8 +19,8 @@
 
 import type { MethodHandler } from "./Daemon.js";
 import { badParams, field, requireString } from "./params.js";
-import type { SessionAgentFactory } from "../service/agent/SessionAgentFactory.js";
-import type { ConfigService } from "../service/config/ConfigService.js";
+import type { SessionAgentFactory } from "../domain/agent/SessionAgentFactory.js";
+import type { ConfigService } from "../domain/config/ConfigService.js";
 import type { AgentDefinition } from "@ai-zen/agents-sdk";
 import {
   AGENT_METHODS,

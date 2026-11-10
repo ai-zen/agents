@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { EventHub } from "./EventHub.js";
+import { EventHub } from "./events.js";
 import { SESSION_EVENTS, SERVER_EVENTS, type ServerEvent } from "@ai-zen/agents-protocol";
 
 let hub: EventHub;

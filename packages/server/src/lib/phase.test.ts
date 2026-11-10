@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { PhaseTracker, pendingToolCalls } from "./PhaseTracker.js";
+import { PhaseTracker, pendingToolCalls } from "./phase.js";
 
 /** 构造一个流式 chunk（只带关心字段，其余留空） */
 const chunk = (delta: Record<string, unknown>) => ({ choices: [{ delta }] });

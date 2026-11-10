@@ -20,8 +20,8 @@ import {
   SessionManager,
   type AgentLike,
   type CreateAgentInput,
-} from "../service/session/SessionManager.js";
-import { FileSessionStore } from "../service/store/FileSessionStore.js";
+} from "../domain/session/SessionManager.js";
+import { FileSessionStore } from "../domain/session/store/FileSessionStore.js";
 import { encodeFrame, FrameDecoder } from "@ai-zen/agents-protocol";
 import { PROTOCOL_VERSION } from "@ai-zen/agents-protocol";
 import { EVENT_METHODS, SESSION_METHODS, WORKSPACE_METHODS } from "@ai-zen/agents-protocol";
@@ -852,7 +852,7 @@ describe("session.attach：会话活得比连接久", () => {
 /**
  * 「活着」的另一半事实：连接还在不在。
  *
- * 业务判定（`keepAlive ∧ 有持有者`、宽限期、到点再判一次）在 `SessionManager.test.ts` 里
+ * 业务判定（持有者、宽限期、到点再判一次）在 `SessionManager.test.ts` 里
  * 用假时钟测透了。这里只证明**接线**：`create` / `attach` 真的把这条连接登记成了持有者，
  * 而它断开时服务端自己能摘掉 —— 全程**不需要客户端发任何帧**。
  *
@@ -896,7 +896,7 @@ describe("会话跟着连接走：断开后按宽限期回收（不靠客户端�
         path: workDir("proj-hold"),
       })) as { sessionId: string };
 
-      // ① 断线：socket 直接关掉，不发 keepAlive.set（等价于进程被 kill -9 / 掉网）
+      // ① 断线：socket 直接关掉，一个字节都不发（等价于进程被 kill -9 / 掉网）
       conn.close();
 
       // ② 宽限期内它还在：这正是「重连能接回正在跑的那一轮」的依据

@@ -3,8 +3,8 @@
  * `agents-server` 命令行入口 —— 组装根。
  *
  * 本文件是**唯一**允许读进程级环境的地方（`AI_ZEN_DIR` / `HOME` / `argv`），因为它是
- * composition root：所有路径在这里解析成值，再以参数注入给下面的对象。`src/service/`
- * 与 `src/daemon/` 里一律不读全局（可用 README 的 grep 检验）。
+ * composition root：所有路径在这里解析成值，再以参数注入给下面的对象。`src/domain/`、
+ * `src/lib/` 与 `src/daemon/` 里一律不读全局（可用 README 的 grep 检验）。
  *
  * 子命令：
  *   agents-server [serve] [--port N] [--idle-timeout MS] [--session-idle-timeout MS] [--workspace PATH]
@@ -29,19 +29,19 @@ import {
   readDescriptor,
   removeDescriptor,
 } from "@ai-zen/agents-protocol";
-import { SessionAgentFactory } from "./service/agent/SessionAgentFactory.js";
-import { AssetService } from "./service/asset/AssetService.js";
-import { globalAgentPaths } from "./service/agent/agentPaths.js";
-import { ConfigService } from "./service/config/ConfigService.js";
-import { createAutoTitle } from "./service/session/AutoTitle.js";
-import { EventHub } from "./service/events/EventHub.js";
+import { SessionAgentFactory } from "./domain/agent/SessionAgentFactory.js";
+import { AssetService } from "./domain/asset/AssetService.js";
+import { globalAgentPaths } from "./domain/agent/agentPaths.js";
+import { ConfigService } from "./domain/config/ConfigService.js";
+import { createAutoTitle } from "./domain/session/AutoTitle.js";
+import { EventHub } from "./lib/events.js";
 import type { AgentDefinition, AppConfig } from "@ai-zen/agents-sdk";
 import { resolveModel } from "@ai-zen/agents-sdk";
 import {
   SessionManager,
   DEFAULT_SESSION_IDLE_TIMEOUT_MS,
-} from "./service/session/SessionManager.js";
-import { FileSessionStore } from "./service/store/FileSessionStore.js";
+} from "./domain/session/SessionManager.js";
+import { FileSessionStore } from "./domain/session/store/FileSessionStore.js";
 import { SERVER_NAME, SERVER_VERSION } from "./version.js";
 
 interface Args {
@@ -207,7 +207,7 @@ async function main(): Promise<number> {
   // 下面的 ConfigService 与会话层的自动标题拿的是同一个值
   const { configFile, agentsDir } = globalAgentPaths({ aiZenDir: args.aiZenDir, homeDir });
   // 配置与 Agent 定义的管理面（客户端配置中心用）：路径在这里解析成值再注入，
-  // `service/` 里一律不读全局（配置根、Agent 目录、MCP 文件、工作区根都是）
+  // `domain/` 里一律不读全局（配置根、Agent 目录、MCP 文件、工作区根都是）
   const configService = new ConfigService({
     configFile,
     agentsDir,

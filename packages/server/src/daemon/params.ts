@@ -56,25 +56,13 @@ export function requireNumber(params: unknown, name: string): number {
 }
 
 /**
- * 取必填布尔参数（`session.keepAlive.set` 的 `on`）。
- *
- * 不用 `Boolean(x)`：那样 `"false"` 会变成 `true`，「传错了」与「传了 false」就分不开 ——
- * 而保活标记传错的后果是会话被静默回收。
- */
-export function requireBoolean(params: unknown, name: string): boolean {
-  const value = field(params, name);
-  if (typeof value !== "boolean") {
-    throw badParams(`missing or invalid "${name}"`);
-  }
-  return value;
-}
-
-/**
  * 取可选布尔参数（`session.create` 的 `persist` / `session.save` 的 `setAsLast`）。
  *
  * 缺省 `undefined` = 「没给」，由服务层按各自的旧行为取值 —— 不是 `false`。
- * 与 {@link requireBoolean} 一样不用 `Boolean(x)`：字符串 `"false"` 会变成 `true`，
- * 而这两个参数的错法都会静默写错存档。
+ * 不用 `Boolean(x)`：那样字符串 `"false"` 会变成 `true`，而这两个参数的错法都会静默写错存档。
+ *
+ * （这里曾经还有一个「必填布尔」的兄弟函数，唯一的用户是那条已被删掉的保活方法；
+ * 随它一起删了 —— 留着一个没有调用点的校验函数，下一个人就会以为某条路径还在用它。）
  */
 export function optionalBoolean(params: unknown, name: string): boolean | undefined {
   const value = field(params, name);

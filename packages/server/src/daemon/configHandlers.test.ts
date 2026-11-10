@@ -17,9 +17,9 @@ import { join } from "node:path";
 import type { AppConfig } from "@ai-zen/agents-sdk";
 import type { Connection, MethodHandler } from "./Daemon.js";
 import { createConfigHandlers } from "./configHandlers.js";
-import { ConfigService } from "../service/config/ConfigService.js";
+import { ConfigService } from "../domain/config/ConfigService.js";
 import { CONFIG_METHODS } from "@ai-zen/agents-protocol";
-import { ensureWorkspace } from "../service/workspace/workspace.js";
+import { ensureWorkspace } from "../domain/workspace/workspace.js";
 
 let root: string;
 let workspacesRoot: string;

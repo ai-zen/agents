@@ -13,7 +13,7 @@ import { join } from "node:path";
 import type { AgentDefinition } from "@ai-zen/agents-sdk";
 import type { Connection, MethodHandler } from "./Daemon.js";
 import { createAgentHandlers } from "./agentHandlers.js";
-import { ConfigService } from "../service/config/ConfigService.js";
+import { ConfigService } from "../domain/config/ConfigService.js";
 import { AGENT_METHODS } from "@ai-zen/agents-protocol";
 
 let root: string;

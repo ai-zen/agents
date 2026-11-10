@@ -22,7 +22,7 @@
 
 import type { MethodHandler } from "./Daemon.js";
 import { badParams, field, optionalString, requireObject, requireString } from "./params.js";
-import type { ConfigService } from "../service/config/ConfigService.js";
+import type { ConfigService } from "../domain/config/ConfigService.js";
 import type { AppConfig } from "@ai-zen/agents-sdk";
 import {
   CONFIG_METHODS,

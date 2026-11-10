@@ -45,7 +45,7 @@ by structure — and that is the whole reason the protocol became its own packag
 - **core** — Owns: the conversation runtime (`Agent` / `Message` / `Tool` / `ToolCallContext`, the plugin and event system). Does not own: permissions, the filesystem, configuration, persistence — its `src/` imports no `node:*` builtin module at all. Its only dependencies are `openai` and `@ai-zen/event-bus`.
 - **sdk** — Owns: the business capability layer. Capability pipeline (discover → filter → instantiate), permission model, MCP lifecycle, task handoff and migration, built-in tools, `ConfigManager`. Depends on `@ai-zen/agents-core`, `@modelcontextprotocol/sdk`, `dayjs`, `openai`. Does not own: processes and connections, session archives, workspaces, or anything about what a client looks like.
 - **protocol** — Owns: the **wire contract** between the two processes. How to find each other (the shape and atomic I/O of `<aiZenDir>/run/server.json`), how to talk (JSON-lines frame codec, the `hello` handshake, `callOnce`), and what shapes travel (method tables, event tables, param/result types, the error-code table, `PhaseInfo`, the type exit for the data model). Does not own: any business judgement, any state machine, any UI concept — no line here knows how a session stays alive, only what it looks like **on the wire**.
-- **server** — Owns: session orchestration (`SessionManager`), archives (`FileSessionStore`), workspaces (`service/workspace/workspace.ts`), server-side reads/writes of configuration and agent definitions (`ConfigService`), the asset listing (`AssetService`), the event outlet (`EventHub`), and the `Daemon` that puts all of it on one TCP connection. Its `dependencies` hold two entries: `@ai-zen/agents-sdk` and `@ai-zen/agents-protocol`. Does not own: any UI stack (no ink / react / terminal library — the package boundary is the process boundary), and no process-level globals (cwd / global config path / global locale). Both hard constraints are in the header comment of `packages/server/src/index.ts`; the only exception is the composition root `src/cli.ts`.
+- **server** — Owns: session orchestration (`domain/session/SessionManager`, with event translation / archives / questions as three separate classes: `EventBridge` / `Persistence` / `QuestionBroker`), archives (`FileSessionStore`), workspaces (`domain/workspace/workspace.ts`), server-side reads/writes of configuration and agent definitions (`ConfigService`), the asset listing (`AssetService`), the event outlet (`EventHub` in `lib/events.ts`), and the `Daemon` that puts all of it on one TCP connection. Its `dependencies` hold two entries: `@ai-zen/agents-sdk` and `@ai-zen/agents-protocol`. Does not own: any UI stack (no ink / react / terminal library — the package boundary is the process boundary), and no process-level globals (cwd / global config path / global locale). Both hard constraints are in the header comment of `packages/server/src/index.ts`; the only exception is the composition root `src/cli.ts`.
 - **client** — Owns: **everything** that has to happen on the client side between a front end and the server: service discovery and spawning, one TCP connection, two facades (sessions, config), two judgements (whether to hand up the cwd, what state the server is in). Its `dependencies` hold **exactly one** entry: `@ai-zen/agents-protocol`. Does not own: the server implementation (`Daemon` / `SessionManager` / agent assembly), and it reads no process-level globals.
 - **CLI / desktop main** — Owns: rendering and input. Both depend only on `@ai-zen/agents-client` (plus protocol types).
 
@@ -60,7 +60,7 @@ This can be checked with grep (commands come from `packages/server/README.md` an
 
 ### Agent assembly is per workspace
 
-Inside `server`, one workspace shares one `Scope` (one set of MCP connections and one capability discovery), and it is **never shared across workspaces** — the cache key is the workspace path and the value is a `Promise` (concurrent session creation shares one initialization). Both halves have a reason: splitting per session would add one set of MCP connections per session, while sharing across workspaces would hand project A's project-level skills / tools / mcp to project B. See the header comment of `packages/server/src/service/agent/SessionAgentFactory.ts`.
+Inside `server`, one workspace shares one `Scope` (one set of MCP connections and one capability discovery), and it is **never shared across workspaces** — the cache key is the workspace path and the value is a `Promise` (concurrent session creation shares one initialization). Both halves have a reason: splitting per session would add one set of MCP connections per session, while sharing across workspaces would hand project A's project-level skills / tools / mcp to project B. See the header comment of `packages/server/src/domain/agent/SessionAgentFactory.ts`.
 
 ## Server process model
 
@@ -100,29 +100,42 @@ This is not a placeholder: this build has **no authentication**, and the server 
 
 ### Division of labour inside the process
 
-- `src/cli.ts` is the **composition root**: the only place allowed to read env / argv (`AI_ZEN_DIR`, `HOME`, command-line flags). It resolves paths into values and injects them; `src/service/` and `src/daemon/` read no globals.
-- `src/daemon/` handles only "byte stream → frame → method call": `Daemon` itself carries just `ping` / `status` / `shutdown`, and the rest of the method table is injected by the composition root through `DaemonOptions.handlers`.
-- `src/service/` is the business side: session orchestration, archives, workspaces, configuration, assets, events.
+- `src/cli.ts` is the **composition root**: the only place allowed to read env / argv (`AI_ZEN_DIR`, `HOME`, command-line flags). It resolves paths into values and injects them; `src/domain/`, `src/lib/` and `src/daemon/` read no globals.
+- `src/daemon/` handles only "byte stream → frame → method call": `Daemon` itself carries just `ping` / `status` / `shutdown`, and the rest of the method table is injected by the composition root through `DaemonOptions.handlers`. This layer does **no business orchestration** — it validates parameter shapes and wires things up; any decision that needs to read another object belongs to `domain/` (e.g. "removing a workspace must close its live sessions" is now `SessionManager.closeWorkspace`).
+- `src/domain/` holds the business objects, **one subdirectory each**: `session/` (the session: registry and lifecycle, event translation, archives, questions, auto-title), `workspace/`, `agent/`, `config/`, `asset/`, `handoff/`.
+- `src/lib/` holds **generic parts with no business semantics**: `phase.ts` (the generation-phase state machine `PhaseTracker`), `events.ts` (connection fan-out `EventHub`). They know nothing about sessions, archives or the handshake, so they do not belong in `domain/`.
 - the wire contract is **not** in this package — it lives in `@ai-zen/agents-protocol` (next section), which this package only depends on.
+
+```
+packages/server/src/
+  domain/       business objects, one subdirectory each
+    session/      SessionManager + EventBridge + Persistence + QuestionBroker
+                  (+ the LiveSession shape, AutoTitle, store/ archive port and implementation)
+    workspace/  agent/  config/  asset/  handoff/
+  lib/          generic parts: phase.ts (PhaseTracker), events.ts (EventHub)
+  daemon/       transport and wiring: Daemon / wire / params / *Handlers
+  cli.ts        composition root (the only reader of env / argv)
+  index.ts      the package barrel (`export *`; a name clash fails the build — that is the point)
+```
 
 The two idle timeouts are different things: `--idle-timeout` covers the whole daemon (no connections left — exit after that long; off by default), `--session-idle-timeout` covers a single session (nobody watching it any more — reclaim it after that long).
 
 Logs go to `<aiZenDir>/logs/server.log`: the daemon is spawned detached by a client, so it must never write to the client's terminal.
 
-## The protocol surface: 45 methods / 12 events
+## The protocol surface: 44 methods / 12 events
 
-Method names and event names are `as const` tables shared by client and server. **Counting rule**: count the entries in those tables — one method-name literal is one method; parameter and result types do not count; the three built-in methods (`ping` / `status` / `shutdown`) **do** count as methods (they are called after the handshake like any other, they are merely implemented by `Daemon` itself); notice codes (`SESSION_NOTICE_CODES` / `GLOBAL_NOTICE_CODES`) do not count as events — they are enums inside the payload of `session.notice` / `server.notice`.
+Method names and event names are `as const` tables shared by client and server. **Counting rule**: count the entries in those tables — one method-name literal is one method; parameter and result types do not count; the three built-in methods (`ping` / `status` / `shutdown`) **do** count as methods (they are called after the handshake like any other, they are merely implemented by `Daemon` itself); notice codes (`SESSION_NOTICE_CODES` / `SERVER_NOTICE_CODES`) do not count as events — they are enums inside the payload of `session.notice` / `server.notice`.
 
 | Namespace | Count | Defined in |
 |-----------|-------|------------|
 | `workspace.*` | 6 | `WORKSPACE_METHODS` in `sessions.ts` |
-| `session.*` | 22 | `SESSION_METHODS` in `sessions.ts` |
+| `session.*` | 21 | `SESSION_METHODS` in `sessions.ts` |
 | `events.watch` | 1 | `EVENT_METHODS` in `sessions.ts` (connection-level, belongs to no session) |
 | `config.*` | 7 | `CONFIG_METHODS` in `config.ts` |
 | `agent.*` | 5 | `AGENT_METHODS` in `config.ts` |
 | `asset.*` | 1 | `ASSET_METHODS` in `assets.ts` |
 | Built-ins `ping` / `status` / `shutdown` | 3 | `DAEMON_METHODS` in `daemon.ts` |
-| **Total** | **45** | |
+| **Total** | **44** | |
 
 There are **12** events, in two tables inside `sessions.ts`: `SESSION_EVENTS` (11 entries, every value starts with `session.`) — `session.phase`, `session.delta`, `session.toolCalls`, `session.messageAppended`, `session.turnEnd`, `session.notice`, `session.question`, `session.idChanged`, `session.titleChanged`, `session.subAgent.started`, `session.subAgent.ended`; and `SERVER_EVENTS` (1 entry) — `server.notice`.
 
@@ -244,15 +257,15 @@ The config root is written as `<aiZenDir>`: the `--ai-zen-dir` flag, else `AI_ZE
 
 | Path | Contents | Source |
 |------|----------|--------|
-| `<aiZenDir>/config.json` | Global configuration (shape = the SDK's `AppConfig`) | `globalAgentPaths` in `service/agent/agentPaths.ts` |
+| `<aiZenDir>/config.json` | Global configuration (shape = the SDK's `AppConfig`) | `globalAgentPaths` in `domain/agent/agentPaths.ts` |
 | `<aiZenDir>/agents/` | Top-level agent definitions (one JSON per entity) | Same; `CONFIG_SUB_DIRS` in `sdk/src/config/constants.ts` |
 | `<aiZenDir>/sub-agents/` | Sub-agent definitions | `subAgentsDir` injected into `ConfigService` in `src/cli.ts`; same `CONFIG_SUB_DIRS` |
 | `<aiZenDir>/skills/` | Global skills | `globalSkillsDirs` in `agentPaths.ts`; `CONFIG_SUB_DIRS` |
 | `<aiZenDir>/tools/` | Global user tools | `globalToolsDirs` in `agentPaths.ts`; `CONFIG_SUB_DIRS` |
 | `<aiZenDir>/mcp-oauth/` | MCP OAuth credential directory | `CONFIG_SUB_DIRS` in `sdk/src/config/constants.ts` |
 | `<aiZenDir>/mcp.json` | Global MCP configuration | `globalMcpFile` injected into `ConfigService` in `src/cli.ts`; the tail of `mcpConfigs` in `agentPaths.ts` |
-| `<aiZenDir>/workspaces/<workspaceId>/workspace.json` | Workspace identity and location (the id is frozen) | `service/workspace/workspace.ts` |
-| `<aiZenDir>/workspaces/<workspaceId>/sessions/<id>.json` | One session archive (body plus metadata, atomic write) | `service/store/FileSessionStore.ts` |
+| `<aiZenDir>/workspaces/<workspaceId>/workspace.json` | Workspace identity and location (the id is frozen) | `domain/workspace/workspace.ts` |
+| `<aiZenDir>/workspaces/<workspaceId>/sessions/<id>.json` | One session archive (body plus metadata, atomic write) | `domain/session/store/FileSessionStore.ts` |
 | `<aiZenDir>/workspaces/<workspaceId>/sessions/<id>.meta.json` | The listing sidecar for that session (no body) | Same |
 | `<aiZenDir>/workspaces/<workspaceId>/last-session.json` | "The last session of this workspace" pointer | Same |
 | `<aiZenDir>/run/server.json` | Service discovery file | `descriptorPath` in `@ai-zen/agents-protocol`'s `discovery.ts` |

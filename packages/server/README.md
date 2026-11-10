@@ -111,15 +111,18 @@ scenario on both.
 `@ai-zen/agents-protocol` (`sessions.ts`) is the wire contract for sessions — method names, params and the
 session events (`session.phase`, `session.delta`, `session.toolCalls`, `session.messageAppended`,
 `session.turnEnd`, `session.notice`, `session.idChanged`, `session.titleChanged`, `session.question`,
-`session.subAgent.*`). `src/service/session/
-SessionManager.ts` implements the live-session registry and the SDK-event → protocol-event
-translation; `src/service/agent/` assembles the agent (config + Scope + capability
+`session.subAgent.*`). `src/domain/session/` holds the session as four collaborating classes:
+`SessionManager.ts` (live-session registry, holders/reclaiming, turn lifecycle, catalogue,
+handoff), `EventBridge.ts` (SDK events → protocol events), `Persistence.ts` (the archive shape
+and every write path), `QuestionBroker.ts` (server → client questions). `src/lib/` holds the
+business-free parts (`phase.ts` = phase state machine, `events.ts` = connection fan-out).
+`src/domain/agent/` assembles the agent (config + Scope + capability
 discovery) per workspace; `src/daemon/sessionHandlers.ts` registers `workspace.resolve` /
 `workspace.files` / `workspace.list` / `workspace.rename` / `workspace.remove` /
 `workspace.relocate` / `events.watch` / `session.create` / `session.attach` / `session.send` /
 `session.cancel` / `session.list` / `session.rename` / `session.remove` / `session.last` /
 `session.subAgent.snapshot` / `session.question`+`session.answer` / `session.reload` /
-`session.setAgent` / `session.close` / `session.keepAlive.set` / `session.handoff` /
+`session.setAgent` / `session.close` / `session.handoff` /
 `session.migrate` on a `Daemon`, and `src/cli.ts` wires all of it.
 
 Agent assembly is **per workspace**: one Scope (one set of MCP connections and tool
@@ -356,40 +359,34 @@ Archiving a one-off run is an explicit act, and it also must not steal the resum
 `session.save { sessionId, setAsLast?: boolean }` (default `true`, i.e. the TUI's `/save`)
 writes the file and leaves `last-session.json` alone when `false`.
 
-### Keep-alive: who decides a session may be dropped
+### Who decides a session may be dropped
 
-A session outlives its clients, but it must not live forever. Two facts decide it, and both are
-required:
+A session outlives its clients, but it must not live forever. One fact decides it:
 
-> A session stays only while the client **declares** it wants it (`keepAlive`) **and** at least
-> one connection is actually watching it (`holders`). Otherwise it is reclaimed after a grace
-> period.
+> A session stays only while at least one connection is actually watching it (`holders`).
+> When the last holder goes away it is reclaimed after a grace period (`session.close`
+> reclaims it immediately).
 
-- `keepAlive` is a **declaration** sent over the wire (`session.keepAlive.set`) — and a crashed
-  process never gets to send it. Used alone, it means a `kill -9`ed client pins its session (and
-  the agent plus message history behind it) in memory until the daemon restarts.
 - `holders` is what the transport knows for free: `session.create` / `session.attach` register
   the calling connection, and that connection's close removes it. No frame, no client
   cooperation — the kernel guarantees the close (fin/rst on exit, crash or `kill -9`).
-- `session.keepAlive.set { sessionId, on }` (idempotent). `on: false` makes the grace period
-  **zero**: an idle session is closed immediately; one mid-turn is closed when that turn settles
-  (dropping it mid-turn loses the turn's output *and* its archive).
-- **New sessions start claimed.** The two mistakes are not equally bad: forgetting to release
-  leaks a few megabytes, forgetting to claim drops the session the user is looking at.
-- When the last holder of a claimed session goes away, the session gets a grace period
-  (`DEFAULT_SESSION_IDLE_TIMEOUT_MS`, 60 s, `--session-idle-timeout`). It must cover the client's
-  reconnect budget (~30 s worst case), otherwise a reconnecting client finds the session already
-  reclaimed. The deadline **re-checks** the rule, so an `attach` arriving inside the window just
-  cancels it, and a turn still running at the deadline defers the close to `session.turnEnd`.
-- The flag lives in **server memory**, per session; it is not persisted and not tied to a
-  client identity. A TUI keeps exactly one session in it and maintains it automatically at the
-  single place where it switches sessions; a future desktop / web shell may expose it as a
-  user-managed pin list. Nothing in the server hard-codes "one at a time" — that constraint is
-  a property of the TUI's usage, not of the protocol.
+- There used to be a second, *declared* fact (`session.keepAlive.set`, a per-session flag the
+  client had to send over the wire, ANDed with `holders`). It was removed because a crashed
+  process never gets to send that frame: used as a necessary condition, a `kill -9`ed client
+  pinned its session (and the agent plus message history behind it) in memory until the daemon
+  restarted — exactly the case the other half of the rule already covered.
+- When the last holder goes away the session gets a grace period (`DEFAULT_SESSION_IDLE_TIMEOUT_MS`,
+  60 s, `--session-idle-timeout`). It must cover the client's reconnect budget (~30 s worst case),
+  otherwise a reconnecting client finds the session already reclaimed. The deadline **re-checks**
+  the rule, so an `attach` arriving inside the window just cancels it, and a turn still running at
+  the deadline defers the close to `session.turnEnd`.
+- `session.close { sessionId }` is the **only** explicit way to say "I am done with this one" and
+  it reclaims immediately (idempotent, `closed: false` when it was not live). A one-shot call
+  (`ai "…"`) ends with it, otherwise every invocation would leave a live session behind until
+  the grace period expires.
 - **Closing is cheap and lossless**: the archive was written before `session.turnEnd`, so a closed
   session is re-hydrated by `session.attach` straight from disk.
-- `session.list` reports `live` (in server memory right now) — the old `keepAlive` field was the
-  client's *declaration*, not a fact, and the list no longer carries it.
+- `session.list` reports `live` (in server memory right now) — a fact, not a client declaration.
 
 ### The list is one list: `session.list { workspaceId, includeSaved? }`
 
@@ -678,21 +675,21 @@ test with two or three fakes and nothing else.
 
 | Source (CLI) | Here |
 |---|---|
-| `cli/src/tui/phase.ts` (state machine only) | `src/service/progress/PhaseTracker.ts` |
-| `cli/src/session-store.ts` + 旧 `session-pointer.ts` | `src/service/store/` (port + file impl + legacy migration) |
-| project paths derived from `cwd` | `src/service/workspace/workspace.ts` |
-| `cli/src/agent-creator.ts` (config + Scope + capability discovery) | `src/service/agent/` |
-| `cli/src/config.ts` + `cli/src/agents-store.ts` (config / MCP / agent definition I/O) | `src/service/config/` + `@ai-zen/agents-protocol` (`config.ts`) |
-| `cli/src/tui/file-index.ts` (`@` completion, scanning the client's disk) | `src/service/workspace/FileIndex.ts` |
+| `cli/src/tui/phase.ts` (state machine only) | `src/lib/phase.ts` (`PhaseTracker`) |
+| `cli/src/session-store.ts` + 旧 `session-pointer.ts` | `src/domain/session/store/` (port + file impl) |
+| project paths derived from `cwd` | `src/domain/workspace/workspace.ts` |
+| `cli/src/agent-creator.ts` (config + Scope + capability discovery) | `src/domain/agent/` |
+| `cli/src/config.ts` + `cli/src/agents-store.ts` (config / MCP / agent definition I/O) | `src/domain/config/` + `@ai-zen/agents-protocol` (`config.ts`) |
+| `cli/src/tui/file-index.ts` (`@` completion, scanning the client's disk) | `src/domain/workspace/FileIndex.ts` |
 | `cli/src/model-switch.ts` (write `AgentDefinition.modelId` + clear thinking params) | `SessionAgentFactory.setModel` (`agent.model.set`) |
 | `cli/src/conversation-persist-plugin.ts` (per-turn autosave) | `SessionManager.settleTurn` + `writeSession` |
 | `cli/src/auto-migrate-confirm.ts` (the three-way picker's server half) | `SessionManager.askQuestion` (`session.question` / `session.answer`) |
-| — | `session.keepAlive.set` / `session.close` / `session.setAgent`, the keep-alive + holder reclaimer (`SessionManager.scheduleReclaim`) |
+| — | `session.close` / `session.setAgent`, the holder reclaimer (`SessionManager.scheduleReclaim`) |
 | `cli/src/sub-agent-guard-plugin.ts` | `sdk/src/agent-plugins/SubAgentGuardInstallerPlugin.ts` |
-| `cli/src/handoff-service.ts` (the hooks around the SDK's handoff flow) | `src/service/handoff/` |
+| `cli/src/handoff-service.ts` (the hooks around the SDK's handoff flow) | `src/domain/handoff/` |
 | — | the whole `@ai-zen/agents-protocol` package (frames, messages, session shapes, error codes) |
 | — | `src/daemon/` listener, handshake, discovery file, session handlers |
-| — | `src/service/session/SessionManager.ts` (live sessions + event fan-out) |
+| — | `src/domain/session/` (live sessions, event translation, archives, questions) + `src/lib/events.ts` (fan-out) |
 
 Text/formatting stays client-side on purpose: this layer emits facts
 (`{ kind, tools }`), not sentences.

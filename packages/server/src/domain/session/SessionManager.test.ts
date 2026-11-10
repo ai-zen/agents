@@ -1,310 +1,43 @@
+/**
+ * 会话管理器自己的用例：注册表、持有者与回收、一轮的生命周期、目录、交接。
+ *
+ * 事件翻译（`EventBridge`）、存档读写（`Persistence`）、提问（`QuestionBroker`）的
+ * 用例按归属搬到了各自旁边 —— 原来它们全压在 3600 行的这一个文件里，谁也不知道
+ * 「改存档要跑哪几条」。
+ *
+ * 共用脚手架（假 Agent / 假存档 / 假时钟）在 `SessionTestSupport.ts`。
+ */
+
 import { promises as fs } from "node:fs";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SessionManager, type AgentLike, type CreateAgentInput } from "./SessionManager.js";
-import { FileSessionStore } from "../store/FileSessionStore.js";
-import type { SessionRecord, SessionStore } from "../store/SessionStore.js";
-import type {
-  HandoffMode,
-  Message,
-  ServerEvent,
-  SessionListEntry,
-  Usage,
-} from "@ai-zen/agents-protocol";
+import { SessionManager, type CreateAgentInput } from "./SessionManager.js";
+import { FileSessionStore } from "./store/FileSessionStore.js";
+import type { Message, ServerEvent, SessionListEntry } from "@ai-zen/agents-protocol";
 import type { AutoTitleRequest } from "./AutoTitle.js";
-import { EventHub } from "../events/EventHub.js";
+import { EventHub } from "../../lib/events.js";
 import { resolveModel } from "@ai-zen/agents-sdk";
+import {
+  settled,
+  fakeClock,
+  FakeAgent,
+  storedMessage,
+  tempRoot,
+  pick,
+  hangingSummary,
+  MemoryStore,
+  create,
+  agent,
+  manager,
+  events,
+  counter,
+  resetEvents,
+  useSessionKit,
+} from "./SessionTestSupport.js";
 
-/**
- * 等一轮真正收尾。
- *
- * 收尾是**异步**的：`settleTurn` 先落盘、再发 `session.turnEnd`（顺序是那条需求的全部意义）。
- * 所以驱动完 `finally` 之后要等一拍再断言，否则测的是「还没写完」而不是「没发」
- * —— 这与本仓「等条件成立」的约定同一个意思，只是这里的条件就是「异步收尾跑完」。
- */
-const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
-
-/**
- * 假倒计时：把「到点」变成一个可以手动触发的动作。
- *
- * 回收判定是**时间**驱动的，而宽限期缺省 60 秒：真等它就只能 `sleep`，那是把「宽限期」
- * 测成「时钟」—— 断言的应该是「到点时怎么判」，不是「60 秒是不是 60 秒」。
- * 与 `ensure-server.ts` 注入 `waitBeforeRetry` 是同一个理由。
- */
-function fakeClock() {
-  const entries: Array<{ run: () => void; cancelled: boolean }> = [];
-  return {
-    schedule: (_ms: number, run: () => void) => {
-      const entry = { run, cancelled: false };
-      entries.push(entry);
-      return () => {
-        entry.cancelled = true;
-      };
-    },
-    /** 还活着的倒计时（已取消 / 已到点过的不算） */
-    pending: () => entries.filter((entry) => !entry.cancelled),
-    /** 全部到点 */
-    tick: () => {
-      for (const entry of entries.filter((item) => !item.cancelled)) {
-        entry.cancelled = true;
-        entry.run();
-      }
-    },
-  };
-}
-
-/**
- * 假 Agent —— 只实现会话管理器用到的那一小面（结构类型），
- * 事件由测试手动驱动，于是「SDK 的时序」在测试里是**可编程**的，不依赖网络与真实模型。
- */
-class FakeAgent implements AgentLike {
-  messages: any[] = [];
-  lastUsage: any = undefined;
-  sent: string[] = [];
-  aborted = 0;
-  /** 让 `send()` 挂住：用来证明 manager.send 不等一轮跑完 */
-  holdSend: Promise<void> | null = null;
-
-  /**
-   * 交接要用到的那几面（真件是 SDK 的 `SdkAgent`，声明见 `HandoffAgentLike`）。
-   * 默认无 `write` 工具 → 交接走「独立摘要」，不触网。
-   */
-  definition = { messages: [{ role: "system", content: "模板" }] };
-  /** 三级解析的档位（真件由 `createAgent` 给；假件手装配，等价于「写在定义上」那一档） */
-  modelLevel: "agent" | "session" | "global" = "agent";
-  tools: Array<{ function?: { name?: string } }> = [];
-  model = "m";
-  modelConfig: Record<string, unknown> = {};
-  client: unknown = {
-    chat: { completions: { create: async () => ({ choices: [{ message: { content: DOC } }] }) } },
-  };
-  scope = { cwd: "/work/proj" };
-  use(_plugin: unknown): void {}
-
-  private readonly handlers = new Map<string, Set<(...args: any[]) => void>>();
-  readonly events = {
-    on: (event: string, handler: (...args: any[]) => void) => {
-      if (!this.handlers.has(event)) this.handlers.set(event, new Set());
-      this.handlers.get(event)!.add(handler);
-    },
-    off: (event: string, handler: (...args: any[]) => void) => {
-      this.handlers.get(event)?.delete(handler);
-    },
-  };
-
-  send(input: string): Promise<void> {
-    this.sent.push(input);
-    return this.holdSend ?? Promise.resolve();
-  }
-
-  abort(): void {
-    this.aborted++;
-  }
-
-  fire(event: string, ...args: unknown[]): void {
-    for (const handler of this.handlers.get(event) ?? []) handler(...args);
-  }
-
-  handlerCount(): number {
-    let total = 0;
-    for (const set of this.handlers.values()) total += set.size;
-    return total;
-  }
-}
-
-/**
- * 假的子 Agent —— 照 `FakeAgent` 的最小实现来：会话层只从它身上取两样，
- * 自己的 `messages`（快照用）与自己 `events`（挂监听用）。
- */
-class FakeSubAgent {
-  messages: any[] = [];
-  private readonly handlers = new Map<string, Set<(...args: any[]) => void>>();
-  readonly events = {
-    on: (event: string, handler: (...args: any[]) => void) => {
-      if (!this.handlers.has(event)) this.handlers.set(event, new Set());
-      this.handlers.get(event)!.add(handler);
-    },
-  };
-
-  /** 驱动一条子 Agent 自己的事件（`chunk-parsed` / `error`…） */
-  fire(event: string, ...args: unknown[]): void {
-    for (const handler of this.handlers.get(event) ?? []) handler(...args);
-  }
-}
-
-/**
- * 按 **core 的真实契约**发一片 chunk。
- *
- * `chunk-parsed` 是两参：`(receiver, chunk)` —— 第一个是那条正在拼的 assistant 消息，
- * 第二个才是原始 chunk。以前这里按单参发（`fire("chunk-parsed", chunk)`），正好满足了
- * 服务端那条“两种形状都认”的写法，于是一个「正文增量永远推不出去」的真 bug 躲过了一整轮
- * 单测（详见 `onChunk` 的注释）。假件的形状必须与真件一致。
- */
-function fireChunk(
-  target: { fire: (event: string, ...args: unknown[]) => void },
-  chunk: unknown,
-): void {
-  target.fire("chunk-parsed", { role: "assistant" }, chunk);
-}
-
-/**
- * 造一条**存档里的**消息（`SessionRecord<Message>`）。
- *
- * 存档正文的形状现在是协议转出的 core `Message` —— `role` 是 core 的 `Role` 枚举，
- * 而用例只关心「这是一条 user 消息」。收窄只发生在这里（一处），
- * 免得每条用例都写一遍 `as`；运行期不校验（存档本来就是 JSON，读回来就是这个形状）。
- */
-function storedMessage(role: "user" | "assistant" | "system", content: string): Message {
-  return { id: `m_${role}`, role: role as Message["role"], content };
-}
-
-let agent: FakeAgent;
-let manager: SessionManager;
-let events: ServerEvent[];
-let sessionCounter = 0;
-
-/** 用例自己造的存档根：统一在 `afterEach` 收掉（漏一个就是一个跑不掉的 /tmp 目录） */
-const tempRoots: string[] = [];
-
-function tempRoot(prefix: string): string {
-  const dir = join(tmpdir(), `${prefix}-${Date.now()}-${Math.random()}`);
-  tempRoots.push(dir);
-  return dir;
-}
-
-afterEach(async () => {
-  for (const dir of tempRoots.splice(0)) await fs.rm(dir, { recursive: true, force: true });
-});
-
-/** 交接文档正文：SDK 有 400 字节的有效性阈值（与 `SessionHandoff.test.ts` 同一个理由） */
-const DOC = `# 交接文档\n\n${"- 桩内容\n".repeat(80)}`;
-
-beforeEach(() => {
-  agent = new FakeAgent();
-  manager = new SessionManager({
-    createAgent: async () => agent,
-    // 确定性 id：用例断言的是“哪个是哪个”，不是时间戳本身
-    nextSessionId: () => `chat_${++sessionCounter}`,
-  });
-  events = [];
-  sessionCounter = 0;
-  manager.subscribe((event) => events.push(event));
-});
-
-const create = () =>
-  manager.create({ workspaceId: "ws-1", path: "/work/proj", agentId: "default" });
-
-/** 取某个事件名下的全部事件 */
-const pick = <T extends ServerEvent["event"]>(name: T) =>
-  events.filter((event) => event.event === name) as Extract<ServerEvent, { event: T }>[];
-
-/** 模拟 OpenAI 风格的一个流式 chunk */
-const chunk = (delta: Record<string, unknown>) => ({ choices: [{ delta }] });
-
-/**
- * 按**真件的两层**驱动一片工具调用 chunk。
- *
- * 真件（`packages/core/src/Agent.ts` 的 `parseStreamData`）做两件事，缺一不可：
- *   1. 就地把它拼进 `receiver.tool_calls[index]`（名字只在本下标的第一片里给，参数逐片
- *      `+=`）；
- *   2. 然后才 `emit("chunk-parsed", receiver, chunk)` —— **第一个参数是那条正在拼的消息**，
- *      第二个才是这一片原始 chunk。
- *
- * 所以这里也让同一个 `receiver` 逐片累积：每片手搓一个「已经拼好」的消息喂进去，测出来的
- * 就只是「测试自己拼得对」，而服务端真去读 `receiver` 还是真去解析 chunk 都分辨不出来
- * （`onChunk` 上方那段注释记的就是这么躲过一整轮单测的 bug）。
- */
-function fireToolCall(
-  target: { fire: (event: string, ...args: unknown[]) => void },
-  receiver: any,
-  index: number,
-  fragment: { id?: string; name?: string; arguments: string },
-): void {
-  const deltaCall: Record<string, unknown> = {
-    index,
-    type: "function",
-    ...(fragment.id === undefined ? {} : { id: fragment.id }),
-    function: {
-      ...(fragment.name === undefined ? {} : { name: fragment.name }),
-      arguments: fragment.arguments,
-    },
-  };
-
-  // —— 第 1 步：照 core 的样子拼进 receiver
-  receiver.tool_calls ??= [];
-  const call = (receiver.tool_calls[index] ??= { index, function: { name: "", arguments: "" } });
-  if (fragment.id !== undefined) call.id = fragment.id;
-  if (fragment.name !== undefined) call.function.name = fragment.name;
-  call.function.arguments += fragment.arguments;
-
-  // —— 第 2 步：两参 fire（receiver, chunk）
-  target.fire("chunk-parsed", receiver, chunk({ tool_calls: [deltaCall] }));
-}
-
-/** 一条正在拼的 assistant 消息（真件里就是 `AgentNS.Message`） */
-const assembling = () => ({ role: "assistant" as const });
-
-/**
- * 一条工具结果消息 —— 照**真件**（`packages/core/src/Message.ts` 的 `Message.Tool`）：
- *
- *     new Message({ role: "tool", tool_call_id, name, content, status: Pending })
- *
- * 关键在于它在工具**执行前**就被 `append` 进 `agent.messages`（`Agent.handleToolCall` 的
- * `Promise.all` 里，每个任务的第一个动作就是 `this.append(Message.Tool(task))`），那一刻
- * 正文还没有、`status` 是 `pending`；跑完才由 `markResult` 就地翻成终态。
- */
-const toolResult = (toolCallId: string, name: string, content = "") => ({
-  role: "tool" as const,
-  tool_call_id: toolCallId,
-  name,
-  content,
-  status: "pending",
-});
-
-/**
- * 按 **core 的真实契约**驱动一次「某个工具跑完了」（`tool-call-end`）。
- *
- * 真件是 `Agent.handleToolCall` 里的 `markResult`（`packages/core/src/Agent.ts`），它做两件事：
- *   1. 把 `resultReceiver.status` 翻成终态（被 abort 的一律 clamp 成 `aborted`）；
- *   2. `this.events.emit("tool-call-end", { agent, toolCall, result })` —— **三个字段**，
- *      `result` 就是刚定型的那条消息本身（`ToolCallEndContext`）。
- *
- * 这条事件在过去那组用例里是按 `{ id }` 这种自造形状 fire 的（`onToolCallEnd` 当时不读
- * 载荷，所以形状错了也一直是绿的，连第三个字段叫什么都不会有人发现）。假件的形状必须
- * 照抄真件：`tool-call-end` 的载荷形状就是「结果消息从哪来」这件事的契约。
- */
-function fireToolCallEnd(
-  agent_: FakeAgent,
-  result: any,
-  status: "completed" | "error" | "aborted" = "completed",
-): void {
-  result.status = status;
-  agent_.fire("tool-call-end", {
-    agent: agent_,
-    toolCall: { id: result.tool_call_id, type: "function", function: { name: result.name } },
-    result,
-  });
-}
-
-/**
- * 挂住的摘要请求（只认取消）：用来把会话停在「交接进行中」那个状态。
- *
- * 必须响应 `signal`：不响应的话 `cancel()` 掐不断它，用例只能干等到超时。
- */
-const hangingSummary = () => ({
-  chat: {
-    completions: {
-      create: (_body: unknown, options?: { signal?: AbortSignal }) =>
-        new Promise((_resolve, reject) => {
-          options?.signal?.addEventListener("abort", () =>
-            reject(Object.assign(new Error("Request was aborted"), { name: "AbortError" })),
-          );
-        }),
-    },
-  },
-});
+useSessionKit();
 
 describe("SessionManager：会话生命周期", () => {
   it("create 之后能在 list 里看到它（id 递增、agentId 缺省 default）", async () => {
@@ -437,7 +170,6 @@ describe("SessionManager：turnId 与「不等一轮跑完」", () => {
     expect(end.error).toEqual({ code: "net", message: "boom" });
   });
 });
-
 /**
  * 并发守卫：同一段会话不并行两轮。
  *
@@ -458,12 +190,12 @@ describe("SessionManager：并发守卫（一轮在跑时不再起第二轮）",
     workspace = await fs.mkdtemp(join(tmpdir(), "aiz-turn-guard-"));
     guarded = new SessionManager({
       createAgent: async () => agent,
-      nextSessionId: () => `chat_${++sessionCounter}`,
+      nextSessionId: () => `chat_${++counter.value}`,
       storeFor: () => store,
       handoff: { aiZenDir: join(workspace, "ai-zen"), homeDir: workspace },
     });
-    events = [];
-    sessionCounter = 0;
+    resetEvents();
+    counter.value = 0;
     guarded.subscribe((event) => events.push(event));
   });
 
@@ -544,347 +276,6 @@ describe("SessionManager：并发守卫（一轮在跑时不再起第二轮）",
   });
 });
 
-describe("SessionManager：SDK 事件 → 协议事件", () => {
-  it("六态按 SDK 时序推进：open → queued，正文 delta → streaming，parsed 收尾", async () => {
-    const { sessionId } = await create();
-    manager.send(sessionId, "hi");
-
-    expect((await manager.list("ws-1"))[0]!.phase).toEqual({ kind: "connecting" }); // send 当下就报出去了
-
-    agent.fire("open");
-    expect((await manager.list("ws-1"))[0]!.phase).toEqual({ kind: "queued" });
-
-    fireChunk(agent, chunk({ content: "你" }));
-    expect((await manager.list("ws-1"))[0]!.phase).toEqual({ kind: "streaming" });
-
-    agent.fire("parsed", { message: { role: "assistant", content: "你好" } });
-    // 不带工具调用：状态机不改阶段，由 finally 归零
-    agent.fire("finally");
-    await settled();
-    expect((await manager.list("ws-1"))[0]!.phase).toBeNull();
-    expect(pick("session.turnEnd").at(-1)!.ok).toBe(true);
-  });
-
-  it("正文与推理增量分别上报；只带 usage 的收尾 chunk 只带用量、不带正文", async () => {
-    const { sessionId } = await create();
-    manager.send(sessionId, "hi");
-
-    fireChunk(agent, chunk({ reasoning_content: "想…" }));
-    fireChunk(agent, chunk({ content: "答案" }));
-    // 只有 total_tokens、没有 completion_tokens：没有可校准的东西，不上报（免得一串空增量）
-    fireChunk(agent, {
-      choices: [{ delta: {}, finish_reason: "stop" }],
-      usage: { total_tokens: 9 },
-    });
-    // 带 completion_tokens 的收尾 chunk：正文为空也要出去，状态栏的 tok/s 靠它校准
-    fireChunk(agent, {
-      choices: [{ delta: {}, finish_reason: "stop" }],
-      usage: { completion_tokens: 42, total_tokens: 51 },
-    });
-
-    expect(pick("session.delta").map((e) => [e.text, e.reasoning])).toEqual([
-      ["", "想…"],
-      ["答案", ""],
-      ["", ""],
-    ]);
-    expect(pick("session.delta").at(-1)!.usage).toEqual({ completionTokens: 42 });
-  });
-
-  it("本轮带工具调用：streamEnded 之后进 tool-waiting，并报出全部工具名", async () => {
-    const { sessionId } = await create();
-    manager.send(sessionId, "hi");
-
-    fireChunk(agent, chunk({ tool_calls: [{ index: 0, function: { name: "exec" } }] }));
-    expect((await manager.list("ws-1"))[0]!.phase).toEqual({ kind: "tool-calling", tool: "exec" });
-
-    agent.fire("parsed", {
-      message: {
-        role: "assistant",
-        tool_calls: [
-          { id: "a", function: { name: "exec" } },
-          { id: "b", function: { name: "edit" } },
-        ],
-      },
-    });
-    expect((await manager.list("ws-1"))[0]!.phase).toMatchObject({
-      kind: "tool-waiting",
-      tools: ["exec", "edit"],
-    });
-  });
-
-  it("工具跑完一个就从等待里消失（并行时不会一直念着已完成的那个）", async () => {
-    const { sessionId } = await create();
-    manager.send(sessionId, "hi");
-    agent.fire("parsed", {
-      message: {
-        role: "assistant",
-        tool_calls: [
-          { id: "a", function: { name: "exec" } },
-          { id: "b", function: { name: "edit" } },
-        ],
-      },
-    });
-
-    // SDK 在工具执行**前**就以 pending 追加结果消息，跑完翻成终态
-    const done = toolResult("a", "exec", "已跑完");
-    agent.messages.push(done);
-    agent.messages.push(toolResult("b", "edit"));
-    // 按真件形状 fire（`{ agent, toolCall, result }`）：这一带曾经发的是自造的 `{ id }`，
-    // 载荷错了也没人发现，因为当时的处理函数不读它 —— 见 `fireToolCallEnd`
-    fireToolCallEnd(agent, done);
-
-    expect((await manager.list("ws-1"))[0]!.phase).toMatchObject({
-      kind: "tool-waiting",
-      tools: ["edit"],
-    });
-  });
-
-  it("error 与 finally 都会到：session.turnEnd 只发一次，且带上错误", async () => {
-    const { sessionId } = await create();
-    manager.send(sessionId, "hi");
-
-    agent.fire("error", Object.assign(new Error("超时"), { code: "timeout" }));
-    agent.fire("finally");
-    await settled();
-
-    const ends = pick("session.turnEnd");
-    expect(ends).toHaveLength(1);
-    expect(ends[0]).toMatchObject({ ok: false, error: { code: "timeout", message: "超时" } });
-    expect((await manager.list("ws-1"))[0]!.phase).toBeNull();
-  });
-});
-
-/**
- * 工具调用的组装态（`session.toolCalls`）—— 客户端在流式期间画工具卡片的唯一依据。
- *
- * 这一组盯的是「服务端搬的是**哪一份**真相」：core 已经把工具调用拼进了那条正在拼的
- * assistant 消息（`chunk-parsed` 的第一个参数），服务端只该把它转出去。所以每条用例都按
- * 真件形状两参 fire，并且让同一个 receiver 逐片长大（见 `fireToolCall`）。
- */
-describe("SessionManager：工具调用的组装态（session.toolCalls）", () => {
-  it("流式期间就把工具调用推上线：名字与参数都是组装后的内容", async () => {
-    const { sessionId } = await create();
-    manager.send(sessionId, "hi");
-    const receiver = assembling();
-
-    fireToolCall(agent, receiver, 0, { id: "call_1", name: "exec", arguments: '{"command":"ls' });
-    fireToolCall(agent, receiver, 0, { arguments: ' -la"}' });
-
-    const calls = pick("session.toolCalls");
-    expect(calls.length).toBeGreaterThan(0);
-    expect(calls.at(-1)!.turnId).toBe(1);
-    expect(calls.at(-1)!.toolCalls).toEqual([
-      { index: 0, id: "call_1", name: "exec", arguments: '{"command":"ls -la"}' },
-    ]);
-  });
-
-  it("给的是组装态而不是增片：第二片到达后参数是完整的，不是只有新的一段", async () => {
-    const { sessionId } = await create();
-    manager.send(sessionId, "hi");
-    const receiver = assembling();
-
-    fireToolCall(agent, receiver, 0, { id: "call_1", name: "read_file", arguments: '{"path":' });
-    const first = pick("session.toolCalls").at(-1)!.toolCalls[0]!.arguments;
-
-    fireToolCall(agent, receiver, 0, { arguments: '"a.txt"}' });
-    const second = pick("session.toolCalls").at(-1)!.toolCalls[0]!.arguments;
-
-    expect(first).toBe('{"path":');
-    // 不是 '"a.txt"}'（只有新的那一段），而是两片拼起来的那一份
-    expect(second).toBe('{"path":"a.txt"}');
-  });
-
-  it("参数没变的重复 chunk 不再发（否则客户端每帧重渲染）", async () => {
-    const { sessionId } = await create();
-    manager.send(sessionId, "hi");
-    const receiver = assembling();
-
-    fireToolCall(agent, receiver, 0, { id: "call_1", name: "read_file", arguments: '{"path":"a"' });
-    const before = pick("session.toolCalls").length;
-
-    // 同一下标再来一遍、参数片段为空：组装结果一个字没变
-    fireToolCall(agent, receiver, 0, { id: "call_1", arguments: "" });
-    // 只带 usage 的收尾片：连 tool_calls 都没有
-    fireChunk(agent, {
-      choices: [{ delta: {}, finish_reason: "stop" }],
-      usage: { completion_tokens: 3 },
-    });
-
-    expect(pick("session.toolCalls")).toHaveLength(before);
-  });
-
-  it("一轮收尾后状态清零：上一轮的调用既不挡住、也不混进新一轮", async () => {
-    const { sessionId } = await create();
-    manager.send(sessionId, "第一轮");
-    fireToolCall(agent, assembling(), 0, {
-      id: "call_1",
-      name: "exec",
-      arguments: '{"command":"ls"}',
-    });
-    expect(pick("session.toolCalls").at(-1)!.turnId).toBe(1);
-
-    agent.fire("finally");
-    await settled();
-
-    // 第二轮拼出来的 id、名字、参数与第一轮**逐字相同**（同一句话重试、同一个脚本再跑一次
-    // 就会这样）：影子没清的话这一片会被当成「没变化」，整轮连一张工具卡片都发不出去
-    expect(manager.send(sessionId, "第二轮").turnId).toBe(2);
-    fireToolCall(agent, assembling(), 0, {
-      id: "call_1",
-      name: "exec",
-      arguments: '{"command":"ls"}',
-    });
-    expect(pick("session.toolCalls").map((event) => event.turnId)).toEqual([1, 2]);
-    // 只有本轮组装出来的那一个：上一轮那份没有被叠进来（载荷是组装态，不是累计账本）
-    expect(pick("session.toolCalls").at(-1)!.toolCalls).toEqual([
-      { index: 0, id: "call_1", name: "exec", arguments: '{"command":"ls"}' },
-    ]);
-
-    // 第三轮换个工具：载荷整份换掉，上一轮的 exec 不会跟着留下来
-    agent.fire("finally");
-    await settled();
-    expect(manager.send(sessionId, "第三轮").turnId).toBe(3);
-    fireToolCall(agent, assembling(), 0, {
-      id: "call_9",
-      name: "read_file",
-      arguments: '{"path":"b"}',
-    });
-    expect(pick("session.toolCalls").at(-1)!.toolCalls).toEqual([
-      { index: 0, id: "call_9", name: "read_file", arguments: '{"path":"b"}' },
-    ]);
-  });
-});
-
-/**
- * 工具结果消息（`session.messageAppended`）—— 工具跑完一个就推一条，不等一轮结束。
- *
- * 这一组盯的是**时机与身份**：推的是哪一条消息（刚定型的工具结果）、什么时候推（`tool-call-end`
- * 那一刻，不是 `session.turnEnd` 之后）、以及推第几次（同一条只推一次，跨轮不串）。每条用例都按真件
- * 的形状摆布 `agent.messages`：结果消息在执行**前**就以 `pending` 追加、跑完才翻终态。
- */
-describe("SessionManager：工具结果消息（session.messageAppended）", () => {
-  /** 事件里推出去的那几条消息（按顺序），只取判定身份要用的字段 */
-  const appended = () =>
-    pick("session.messageAppended").map((event) => event.message as Record<string, any>);
-
-  it("工具一跑完就把结果消息推上线：不必等 session.turnEnd，推的就是那一条", async () => {
-    const { sessionId } = await create();
-    manager.send(sessionId, "hi");
-
-    const message = toolResult("call_1", "exec", "总用量 12");
-    agent.messages.push(message);
-    fireToolCallEnd(agent, message);
-
-    const events = pick("session.messageAppended");
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ sessionId, turnId: 1 });
-    // 推的是**那一条**：tool_call_id 与正文都对得上（服务端只搬运，不重新包装）
-    expect(events[0]!.message).toEqual({
-      role: "tool",
-      tool_call_id: "call_1",
-      name: "exec",
-      content: "总用量 12",
-      status: "completed",
-    });
-    // 此刻这一轮还没收尾 —— 这正是这条事件存在的理由（快照要等到 session.turnEnd 之后）
-    expect(pick("session.turnEnd")).toHaveLength(0);
-  });
-
-  it("同一条结果不会推第二次：没有新消息就不发", async () => {
-    const { sessionId } = await create();
-    manager.send(sessionId, "hi");
-
-    const message = toolResult("call_1", "exec", "ok");
-    agent.messages.push(message);
-    fireToolCallEnd(agent, message);
-    expect(appended()).toHaveLength(1);
-
-    // 再 fire 一次、消息表一个字没变：没有「新追加的」可推
-    fireToolCallEnd(agent, message);
-    expect(appended()).toHaveLength(1);
-  });
-
-  it("并行/连续多个工具：各推一次，顺序与追加顺序一致", async () => {
-    const { sessionId } = await create();
-    manager.send(sessionId, "hi");
-
-    const first = toolResult("call_1", "exec", "第一次");
-    agent.messages.push(first);
-    fireToolCallEnd(agent, first);
-
-    const second = toolResult("call_2", "edit", "第二次");
-    agent.messages.push(second);
-    fireToolCallEnd(agent, second);
-
-    expect(appended().map((message) => message.tool_call_id)).toEqual(["call_1", "call_2"]);
-    expect(appended().map((message) => message.content)).toEqual(["第一次", "第二次"]);
-  });
-
-  it("只推工具结果：同一批里的 assistant 消息不推（它由 session.delta + 占位消息在画）", async () => {
-    const { sessionId } = await create();
-    manager.send(sessionId, "hi");
-
-    // 一轮里前面那个内层循环已经说完的正文（`status: completed`，不是拼装中）：客户端手上
-    // 早就有了这一条。它会出现在 `agent.messages` 里，但绝不该从这条通道再推一遍 ——
-    // 否则同一条消息有了两种表示，收尾还得对账「哪一份才是真的」。
-    agent.messages.push({ role: "assistant", content: "我来看一下", status: "completed" });
-    const message = toolResult("call_1", "exec", "ok");
-    agent.messages.push(message);
-    fireToolCallEnd(agent, message);
-
-    expect(appended()).toHaveLength(1);
-    expect(appended()[0]!.role).toBe("tool");
-    expect(appended()[0]!.tool_call_id).toBe("call_1");
-  });
-
-  it("不跨轮泄漏：上一轮推过的消息既不再推，也不挡住下一轮的第一条", async () => {
-    const { sessionId } = await create();
-    manager.send(sessionId, "第一轮");
-    const first = toolResult("call_1", "exec", "第一轮结果");
-    agent.messages.push(first);
-    fireToolCallEnd(agent, first);
-    expect(appended()).toHaveLength(1);
-
-    agent.fire("finally");
-    await settled();
-
-    expect(manager.send(sessionId, "第二轮").turnId).toBe(2);
-    const second = toolResult("call_2", "read_file", "第二轮结果");
-    agent.messages.push(second);
-    fireToolCallEnd(agent, second);
-
-    // 第二轮那条照推（没被上一轮的水位挡掉），上一轮那条也没被重推（清空成空集就会漏成
-    // ["call_1","call_1","call_2"]）
-    expect(appended().map((message) => message.tool_call_id)).toEqual(["call_1", "call_2"]);
-    expect(pick("session.messageAppended").at(-1)!.turnId).toBe(2);
-  });
-
-  it("并行时先跑完的先推；还没定型的那条等它自己跑完，不会被当成结果提前推出去", async () => {
-    const { sessionId } = await create();
-    manager.send(sessionId, "hi");
-
-    // 真件的顺序：两个工具的结果消息在**执行前**就都追加好了（core 在 `Promise.all` 的
-    // map 里同步 append），所以「先完成的那条」往往排在**后面**，前面那条还是 pending、
-    // 正文空（这条顺序是实跑 core 确认的，见 `Message.Tool` 与 `handleToolCall`）
-    const slow = toolResult("call_1", "exec");
-    const fast = toolResult("call_2", "read_file");
-    agent.messages.push(slow, fast);
-
-    // 快工具跑完：正文在这一刻才落（core 的 `resultReceiver.content = await tool.exec(ctx)`），
-    // 随后 `markResult` 翻状态并 fire
-    fast.content = "快结果";
-    fireToolCallEnd(agent, fast, "completed");
-    // 只推快的那条，且是定型后的正文；慢的那条此刻正文还是空的，不能提前推
-    expect(appended().map((message) => message.tool_call_id)).toEqual(["call_2"]);
-    expect(appended()[0]!.content).toBe("快结果");
-
-    slow.content = "慢结果";
-    fireToolCallEnd(agent, slow, "completed");
-    expect(appended().map((message) => message.tool_call_id)).toEqual(["call_2", "call_1"]);
-    expect(appended().map((message) => message.content)).toEqual(["快结果", "慢结果"]);
-  });
-});
-
 describe("SessionManager：订阅", () => {
   it("取消订阅后不再收到事件", async () => {
     const mine: ServerEvent[] = [];
@@ -924,246 +315,13 @@ describe("SessionManager：订阅", () => {
 });
 
 /**
- * 子 Agent 栏目 —— 行为对齐 CLI 的 `onSubStart` / `onSubEnd`：序号、三态、增量分流、
- * 「只活当前一轮」。每条用例都对着一个会被后人改坏的点。
+ * 快照：客户端（重）连上来时一次拿全，不必先从事件流里攒。
+ *
+ * 原来它与「存档 / 续接」同在一个 describe 里（都靠一个注入了假存档的管理器）。拆开之后
+ * 存档那半边（save / 续接回来的消息）归 `Persistence.test.ts` —— 这里只留快照本身：
+ * 它验的是「一屏要的事实都在」，与存档无关，只是顺手共用同一个假存档的装配。
  */
-describe("SessionManager：子 Agent（栏目）", () => {
-  it("sub-agent-start → session.subAgent.started：index 从 1 起，id 是 sub-1 / sub-2", async () => {
-    const { sessionId } = await create();
-    manager.send(sessionId, "hi");
-
-    agent.fire("sub-agent-start", { subAgent: new FakeSubAgent() });
-    agent.fire("sub-agent-start", { subAgent: new FakeSubAgent() });
-
-    expect(pick("session.subAgent.started")).toEqual([
-      { event: "session.subAgent.started", sessionId, turnId: 1, subAgentId: "sub-1", index: 1 },
-      { event: "session.subAgent.started", sessionId, turnId: 1, subAgentId: "sub-2", index: 2 },
-    ]);
-  });
-
-  it("子 Agent 的增量带 subAgentId 推给客户端，且**一行都不碰主阶段**", async () => {
-    const { sessionId } = await create();
-    manager.send(sessionId, "hi");
-    const sub = new FakeSubAgent();
-    agent.fire("sub-agent-start", { subAgent: sub });
-
-    // 主 Agent 此刻停在「等待委派工具返回」
-    agent.fire("parsed", {
-      message: {
-        role: "assistant",
-        tool_calls: [{ id: "a", function: { name: "call_skill_sub_agent" } }],
-      },
-    });
-    const phasesBefore = pick("session.phase").length;
-
-    fireChunk(sub, { choices: [{ delta: { reasoning_content: "想…" } }] });
-    fireChunk(sub, { choices: [{ delta: { content: "子" } }] });
-
-    expect(pick("session.delta").slice(-2)).toEqual([
-      {
-        event: "session.delta",
-        sessionId,
-        turnId: 1,
-        subAgentId: "sub-1",
-        text: "",
-        reasoning: "想…",
-      },
-      {
-        event: "session.delta",
-        sessionId,
-        turnId: 1,
-        subAgentId: "sub-1",
-        text: "子",
-        reasoning: "",
-      },
-    ]);
-    // 回归保护：拿子 Agent 的 delta 去改主阶段，界面会从「等待 xxx 返回」变成「输出中」
-    expect(pick("session.phase")).toHaveLength(phasesBefore);
-    expect((await manager.list("ws-1"))[0]!.phase).toMatchObject({
-      kind: "tool-waiting",
-      tools: ["call_skill_sub_agent"],
-    });
-  });
-
-  it("sub-agent-end → session.subAgent.ended{done}", async () => {
-    const { sessionId } = await create();
-    manager.send(sessionId, "hi");
-    const sub = new FakeSubAgent();
-    agent.fire("sub-agent-start", { subAgent: sub });
-
-    agent.fire("sub-agent-end", { subAgent: sub });
-
-    expect(pick("session.subAgent.ended")).toEqual([
-      {
-        event: "session.subAgent.ended",
-        sessionId,
-        turnId: 1,
-        subAgentId: "sub-1",
-        status: "done",
-      },
-    ]);
-    expect((await manager.subAgentSnapshot(sessionId, "sub-1")).status).toBe("done");
-  });
-
-  it("子 Agent 出错：ended{failed} + 一条 notice；随后的 sub-agent-end 不能把它改成 done", async () => {
-    const { sessionId } = await create();
-    manager.send(sessionId, "hi");
-    const sub = new FakeSubAgent();
-    agent.fire("sub-agent-start", { subAgent: sub });
-
-    sub.fire("error", new Error("模型 500"));
-
-    expect(pick("session.subAgent.ended")).toEqual([
-      {
-        event: "session.subAgent.ended",
-        sessionId,
-        turnId: 1,
-        subAgentId: "sub-1",
-        status: "failed",
-      },
-    ]);
-    // 错误原文进 params.message：服务端不产文案，客户端查自己的 i18n 表
-    expect(pick("session.notice")).toEqual([
-      {
-        event: "session.notice",
-        sessionId,
-        level: "error",
-        code: "subAgentFailed",
-        params: { index: 1, message: "模型 500" },
-      },
-    ]);
-
-    // 出错优先：SDK 随后还会发 sub-agent-end，这里绝不能把它报成「跑完了」
-    agent.fire("sub-agent-end", { subAgent: sub });
-    expect(pick("session.subAgent.ended")).toHaveLength(1);
-    expect((await manager.subAgentSnapshot(sessionId, "sub-1")).status).toBe("failed");
-  });
-
-  it("一轮结束（finally）就清空：subAgentSnapshot 报 sub-agent-missing", async () => {
-    const { sessionId } = await create();
-    manager.send(sessionId, "hi");
-    const sub = new FakeSubAgent();
-    agent.fire("sub-agent-start", { subAgent: sub });
-    expect((await manager.subAgentSnapshot(sessionId, "sub-1")).status).toBe("running");
-
-    agent.fire("finally");
-    await settled();
-
-    await expect(manager.subAgentSnapshot(sessionId, "sub-1")).rejects.toMatchObject({
-      code: "sub-agent-missing",
-    });
-
-    // 展示序号归零（下一轮又是「子AGENT1」），但 id 不归零 —— 与 CLI 一致：
-    // id 是客户端选中态的锚点，跨轮复用会让上一轮残留的选中态接到新一轮的 sub-1 上
-    manager.send(sessionId, "再来一轮");
-    agent.fire("sub-agent-start", { subAgent: new FakeSubAgent() });
-    expect(pick("session.subAgent.started").at(-1)).toMatchObject({
-      turnId: 2,
-      subAgentId: "sub-2",
-      index: 1,
-    });
-  });
-
-  it("subAgentSnapshot 给的是这个子 Agent 自己的对话（与主会话互不干扰）", async () => {
-    const { sessionId } = await create();
-    manager.send(sessionId, "hi");
-    agent.messages = [{ role: "user", content: "主线的事" }];
-    const sub = new FakeSubAgent();
-    sub.messages = [
-      { role: "user", content: "子任务" },
-      { role: "assistant", content: "子答复" },
-    ];
-    agent.fire("sub-agent-start", { subAgent: sub });
-
-    expect(await manager.subAgentSnapshot(sessionId, "sub-1")).toEqual({
-      subAgentId: "sub-1",
-      index: 1,
-      status: "running",
-      messages: [
-        { role: "user", content: "子任务" },
-        { role: "assistant", content: "子答复" },
-      ],
-    });
-    expect((await manager.snapshot(sessionId)).messages).toEqual([
-      { role: "user", content: "主线的事" },
-    ]);
-  });
-
-  it("未知会话 → unknown-session；未知子 Agent → sub-agent-missing", async () => {
-    const { sessionId } = await create();
-
-    await expect(manager.subAgentSnapshot("chat_404", "sub-1")).rejects.toThrow(/unknown session/);
-    await expect(manager.subAgentSnapshot(sessionId, "sub-9")).rejects.toMatchObject({
-      code: "sub-agent-missing",
-    });
-  });
-});
-
-/** 内存存档：续接与 save 的用例不需要碰磁盘 */
-class MemoryStore implements SessionStore<Message> {
-  readonly records = new Map<string, SessionRecord<Message>>();
-  pointer: string | null = null;
-  /** 每个 id 的最后写入时刻（真件把这个落在清单里，见 `FileSessionStore`） */
-  private readonly written = new Map<string, string>();
-
-  async list() {
-    return [...this.records.keys()]
-      .map((id) => {
-        const record = this.records.get(id)!;
-        return {
-          id,
-          agentId: record.agentId,
-          ...(record.title !== undefined ? { title: record.title } : {}),
-          ...(record.modelId !== undefined ? { modelId: record.modelId } : {}),
-          messageCount: record.messages.length,
-          updatedAt: this.written.get(id) ?? "",
-        };
-      })
-      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
-  }
-  /**
-   * 单条清单 —— 行为照抄真件（`FileSessionStore.entry`）：`list()` 里没有这一条就 `null`，
-   * `write()` 之后能读到同一条。假件只存一份内存表，从 `list()` 里取那一条就是同一个语义
-   * —— 关键是别在这里造出与 `list()` 不一致的第二个值。
-   */
-  async entry(id: string) {
-    const listed = await this.list();
-    return listed.find((item) => item.id === id) ?? null;
-  }
-  async read(id: string) {
-    return this.records.get(id) ?? null;
-  }
-  /**
-   * 直接摆一段存档（`updatedAt` 由调用方指定）。
-   *
-   * 真件里这个时间来自写入那一刻维护的清单（`<id>.meta.json`），假件照同一件事给一个
-   * 缝：需要「最后一次活动是很久以前」的用例，不能靠 `write()` 之后再等 —— 那测到的是
-   * 时钟，不是「续接有没有改写它」。
-   */
-  seed(record: SessionRecord<Message>, updatedAt: string) {
-    this.records.set(record.id, record);
-    this.written.set(record.id, updatedAt);
-  }
-  async write(record: SessionRecord<Message>) {
-    this.records.set(record.id, record);
-    this.written.set(record.id, new Date(Date.now() + this.written.size).toISOString());
-  }
-  async remove(id: string) {
-    this.records.delete(id);
-    this.written.delete(id);
-  }
-  async exists(id: string) {
-    return this.records.has(id);
-  }
-  async lastSession() {
-    return this.pointer ? { id: this.pointer, updatedAt: "" } : null;
-  }
-  async setLastSession(id: string) {
-    this.pointer = id;
-  }
-}
-
-describe("SessionManager：快照 / 存档 / 续接", () => {
+describe("SessionManager：快照（一屏要的全部事实，不必自己攒事件）", () => {
   let store: MemoryStore;
   let withStore: SessionManager;
 
@@ -1192,177 +350,6 @@ describe("SessionManager：快照 / 存档 / 续接", () => {
       messages: [{ role: "user", content: "你好" }],
       lastUsage: { promptTokens: 3, completionTokens: 5 },
     });
-  });
-
-  it("save 把当前消息写进工作区存档，并把「上一轮会话」指过去", async () => {
-    await withStore.create({ workspaceId: "ws-1", path: "/p" });
-    agent.messages.push({ role: "user", content: "留档" });
-
-    expect(await withStore.save("chat_fixed")).toEqual({ saved: true, sessionId: "chat_fixed" });
-    expect(store.records.get("chat_fixed")).toEqual({
-      id: "chat_fixed",
-      agentId: "default",
-      messages: [{ role: "user", content: "留档" }],
-    });
-    expect((await store.lastSession())?.id).toBe("chat_fixed");
-  });
-
-  it("续接：id 在工作区存档里存在时，Agent 直接带着那份消息起来", async () => {
-    await store.write({
-      id: "chat_old",
-      agentId: "default",
-      messages: [{ role: "user", content: "上次聊到这儿" }] as never,
-    });
-
-    await withStore.create({ workspaceId: "ws-1", path: "/p", sessionId: "chat_old" });
-    expect(agent.messages).toEqual([{ role: "user", content: "上次聊到这儿" }]);
-  });
-
-  it("没有存档时开同 id：不报错，就当新会话（空消息）", async () => {
-    await withStore.create({ workspaceId: "ws-1", path: "/p", sessionId: "chat_new" });
-    expect(agent.messages).toEqual([]);
-  });
-
-  it("没注入存档：save 明确报 no-store（而不是假装存了）", async () => {
-    await manager.create({ workspaceId: "ws-1", path: "/p", sessionId: "chat_x" });
-    await expect(manager.save("chat_x")).rejects.toThrow(/no session store/);
-  });
-});
-
-describe("SessionManager：存档列表与撤回", () => {
-  let store: MemoryStore;
-  let withStore: SessionManager;
-
-  beforeEach(() => {
-    store = new MemoryStore();
-    withStore = new SessionManager({
-      createAgent: async () => agent,
-      nextSessionId: () => "chat_fixed",
-      storeFor: () => store,
-    });
-  });
-
-  it("list 合并存档与活会话：活的那条带 `live`，盘上的那条没有", async () => {
-    await store.write({ id: "chat_old", agentId: "default", messages: [] });
-    await withStore.create({ workspaceId: "ws-1", path: "/p" });
-    await withStore.save("chat_fixed");
-
-    const listed = await withStore.list("ws-1");
-    expect(listed.map((entry) => entry.sessionId).sort()).toEqual(["chat_fixed", "chat_old"]);
-    expect(listed.find((entry) => entry.sessionId === "chat_fixed")!.live).toBe(true);
-    expect(listed.find((entry) => entry.sessionId === "chat_old")!.live).toBe(false);
-    // `includeSaved:false` 只看活会话
-    expect((await withStore.list("ws-1", { includeSaved: false })).map((e) => e.sessionId)).toEqual(
-      ["chat_fixed"],
-    );
-  });
-
-  it("撤回：从 index 起删掉、立即落盘、指针跟着走", async () => {
-    await withStore.create({ workspaceId: "ws-1", path: "/p" });
-    agent.messages = [
-      { role: "system", content: "sys" },
-      { role: "user", content: "第一个问题" },
-      { role: "assistant", content: "答" },
-      { role: "user", content: "第二个问题" },
-      { role: "assistant", content: "答2" },
-    ];
-
-    const result = await withStore.rollback("chat_fixed", 3);
-
-    expect(result.removed).toBe(2);
-    expect(result.prompt).toBe("第二个问题");
-    expect(result.messages).toEqual([
-      { role: "system", content: "sys" },
-      { role: "user", content: "第一个问题" },
-      { role: "assistant", content: "答" },
-    ]);
-    // 内存与存档一致：被撤回的不会在下次 /load 里“复活”
-    expect(agent.messages).toHaveLength(3);
-    expect(store.records.get("chat_fixed")!.messages).toHaveLength(3);
-    expect((await store.lastSession())?.id).toBe("chat_fixed");
-  });
-
-  it("下标越界 → bad-index，且消息一条都不动", async () => {
-    await withStore.create({ workspaceId: "ws-1", path: "/p" });
-    agent.messages = [{ role: "user", content: "只有一条" }];
-
-    await expect(withStore.rollback("chat_fixed", 5)).rejects.toThrow(/out of range/);
-    await expect(withStore.rollback("chat_fixed", -1)).rejects.toThrow(/out of range/);
-    expect(agent.messages).toHaveLength(1);
-  });
-
-  it("没有存档时不改内存（避免“改了一半存不下去”）", async () => {
-    await manager.create({ workspaceId: "ws-1", path: "/p", sessionId: "chat_x" });
-    agent.messages = [
-      { role: "user", content: "a" },
-      { role: "user", content: "b" },
-    ];
-
-    await expect(manager.rollback("chat_x", 1)).rejects.toThrow(/no session store/);
-    expect(agent.messages).toHaveLength(2);
-  });
-});
-
-describe("SessionManager：上一轮会话指针（session.last）", () => {
-  let store: MemoryStore;
-  let withStore: SessionManager;
-
-  beforeEach(() => {
-    store = new MemoryStore();
-    withStore = new SessionManager({
-      createAgent: async () => agent,
-      nextSessionId: () => "chat_fixed",
-      storeFor: () => store,
-    });
-  });
-
-  it("没有指针 → 空 id（客户端据此走新会话）", async () => {
-    expect(await withStore.last("ws-1")).toEqual({ sessionId: null });
-  });
-
-  it("存档把指针指过去之后，只回 id（agentId 由 create 从存档里取，不在这里回第二份）", async () => {
-    await withStore.create({ workspaceId: "ws-1", path: "/p" });
-    await withStore.save("chat_fixed");
-
-    expect(await withStore.last("ws-1")).toEqual({ sessionId: "chat_fixed" });
-  });
-
-  it("指针跟着最新的存档走（另存为之后指向新 id）", async () => {
-    await withStore.create({ workspaceId: "ws-1", path: "/p" });
-    await withStore.saveAs("chat_fixed", "chat_renamed");
-
-    expect(await withStore.last("ws-1")).toEqual({ sessionId: "chat_renamed" });
-  });
-
-  it("指针指向的存档已被删 → 回 null（宁可开新会话，也不能把客户端领进一段空会话）", async () => {
-    // 这条必须用**真存盘**：要证的正是「指针文件还在、它指着的那份存档没了」；
-    // 内存存档的 remove 只是从一个 Map 里删键，证明不了指针会过期。
-    const root = await fs.mkdtemp(join(tmpdir(), "aiz-last-pointer-"));
-    const store = new FileSessionStore<Message>({ rootDir: root });
-    const diskManager = new SessionManager({
-      createAgent: async () => agent,
-      nextSessionId: () => "chat_disk",
-      storeFor: () => store,
-    });
-    try {
-      await diskManager.create({ workspaceId: "ws-1", path: "/p" });
-      await diskManager.save("chat_disk");
-      expect(await diskManager.last("ws-1")).toEqual({ sessionId: "chat_disk" });
-
-      // 模拟「用户在别处 /save 改名 / 手删了文件」：存档没了，指针还指着那个 id
-      await fs.rm(join(root, "sessions", "chat_disk.json"));
-      expect((await store.lastSession())?.id).toBe("chat_disk");
-
-      // 回 null 而不是这个 id：客户端会去 create，而 create 对缺失存档是静默开空会话
-      expect(await diskManager.last("ws-1")).toEqual({ sessionId: null });
-    } finally {
-      diskManager.dispose();
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("没注入存档：明确报 no-store（不假装这个工作区没有上一轮）", async () => {
-    await expect(manager.last("ws-1")).rejects.toThrow(/no session store/);
   });
 });
 
@@ -1449,13 +436,13 @@ describe("SessionManager：交接 / 迁移", () => {
     workspace = await fs.mkdtemp(join(tmpdir(), "aiz-session-migrate-"));
     handoffManager = new SessionManager({
       createAgent: async () => agent,
-      nextSessionId: () => `chat_${++sessionCounter}`,
+      nextSessionId: () => `chat_${++counter.value}`,
       storeFor: () => store,
       // 交接要读磁盘上的 `handoff` Skill、写 `<工作区>/.ai-zen/handoffs`
       handoff: { aiZenDir: join(workspace, "ai-zen"), homeDir: join(workspace, "home") },
     });
-    events = [];
-    sessionCounter = 0;
+    resetEvents();
+    counter.value = 0;
     handoffManager.subscribe((event) => events.push(event));
   });
 
@@ -1671,128 +658,6 @@ describe("SessionManager：交接 / 迁移", () => {
   });
 });
 
-describe("SessionManager：另存为（/save <名字>）", () => {
-  let store: MemoryStore;
-  let saveManager: SessionManager;
-
-  beforeEach(() => {
-    store = new MemoryStore();
-    saveManager = new SessionManager({
-      createAgent: async () => agent,
-      nextSessionId: () => "chat_next",
-      storeFor: () => store,
-    });
-  });
-
-  it("写新档、删旧档、活会话换键，但 turnId 不动（这是同一段对话）", async () => {
-    await saveManager.create({ workspaceId: "ws-1", path: "/p" });
-    agent.messages = [{ role: "user", content: "留档" }];
-    saveManager.send("chat_next", "留档");
-    agent.fire("open");
-    agent.fire("finally");
-    await settled();
-
-    const result = await saveManager.saveAs("chat_next", "chat_debug_login");
-
-    expect(result).toEqual({ saved: true, sessionId: "chat_debug_login" });
-    expect(store.records.has("chat_next")).toBe(false); // 旧档不留：/load 里分不清哪条是新的
-    expect(store.records.get("chat_debug_login")!.messages).toEqual([
-      { role: "user", content: "留档" },
-    ]);
-    expect((await store.lastSession())!.id).toBe("chat_debug_login");
-    // 同一段对话换个名字：轮次编号不清零（轮次不在列表里，看快照）
-    expect((await saveManager.snapshot("chat_debug_login")).turnId).toBe(1);
-    expect(await saveManager.list("ws-1")).toMatchObject([
-      { sessionId: "chat_debug_login", agentId: "default", live: true, phase: null },
-    ]);
-  });
-
-  it("另存为把会话级模型参数一起带走（存档形状只在 `recordOf` 一处定义，漏一个字段就是一类数据丢失）", async () => {
-    await saveManager.create({ workspaceId: "ws-1", path: "/p" });
-    agent.messages = [{ role: "user", content: "留档" }];
-    saveManager.send("chat_next", "留档");
-    agent.fire("open");
-    agent.fire("finally");
-    await settled();
-    await saveManager.setModelParams("chat_next", { reasoning_effort: "high" });
-
-    await saveManager.saveAs("chat_next", "chat_debug_login");
-
-    expect(store.records.get("chat_debug_login")!.modelParams).toEqual({
-      reasoning_effort: "high",
-    });
-  });
-
-  it("目标 id 已被另一段活会话占着：报 session-exists，旧档不动", async () => {
-    await saveManager.create({ workspaceId: "ws-1", path: "/p", sessionId: "chat_a" });
-    await saveManager.create({ workspaceId: "ws-1", path: "/p", sessionId: "chat_b" });
-
-    await expect(saveManager.saveAs("chat_a", "chat_b")).rejects.toThrow(/already exists/);
-    // 倒序（同毫秒时按 id 倒序）
-    expect((await saveManager.list("ws-1")).map((item) => item.sessionId)).toEqual([
-      "chat_b",
-      "chat_a",
-    ]);
-    expect(store.records.size).toBe(0);
-  });
-
-  it("快照带上 Agent 绑定的模型 id 与实发模型名（客户端拼图片内容块要用后者反查端点）", async () => {
-    await saveManager.create({ workspaceId: "ws-1", path: "/p" });
-    (agent as unknown as { definition: { modelId?: string } }).definition.modelId = "test-model";
-    (agent as unknown as { model?: string }).model = "vendor/test-model-v2";
-
-    const snapshot = await saveManager.snapshot("chat_next");
-    expect(snapshot.modelId).toBe("test-model");
-    // 配了别名时两者不同；客户端不能拿 modelId 当 apiModel 用
-    expect(snapshot.apiModel).toBe("vendor/test-model-v2");
-  });
-});
-
-describe("SessionManager：续接时 Agent 也跟着存档走（/load 只给 id）", () => {
-  it("不传 agentId 时沿用存档里记的那个，而不是默默换成 default", async () => {
-    const store = new MemoryStore();
-    await store.write({
-      id: "chat_coder",
-      agentId: "coder",
-      messages: [{ role: "user", content: "上次是 coder 跑的" }] as never,
-    });
-    const seen: unknown[] = [];
-    const resuming = new SessionManager({
-      createAgent: async (input) => {
-        seen.push(input);
-        return agent;
-      },
-      storeFor: () => store,
-    });
-
-    const created = await resuming.create({
-      workspaceId: "ws-1",
-      path: "/p",
-      sessionId: "chat_coder",
-    });
-
-    expect(created.agentId).toBe("coder");
-    expect(seen).toHaveLength(1);
-    expect(seen[0]).toMatchObject({ workspaceId: "ws-1", path: "/p", agentId: "coder" });
-  });
-
-  it("显式传了就听调用方的（新会话没存档时仍回 default）", async () => {
-    const seen: string[] = [];
-    let counter = 0;
-    const fresh = new SessionManager({
-      createAgent: async (input) => {
-        seen.push(input.agentId);
-        return agent;
-      },
-      nextSessionId: () => `chat_${++counter}`,
-    });
-
-    await fresh.create({ workspaceId: "ws-1", path: "/p", agentId: "coder" });
-    await fresh.create({ workspaceId: "ws-1", path: "/p2" });
-    expect(seen).toEqual(["coder", "default"]);
-  });
-});
-
 describe("SessionManager：自动迁移（SDK 插件在一轮内部触发）", () => {
   let store: MemoryStore;
   let workspace: string;
@@ -1815,7 +680,7 @@ describe("SessionManager：自动迁移（SDK 插件在一轮内部触发）", (
       storeFor: () => store,
       handoff: { aiZenDir: join(workspace, "ai-zen"), homeDir: workspace },
     });
-    events = [];
+    resetEvents();
     auto.subscribe((event) => events.push(event));
   });
 
@@ -1865,227 +730,6 @@ describe("SessionManager：自动迁移（SDK 插件在一轮内部触发）", (
   });
 });
 
-/**
- * 录事件的 hub：即使**一个订阅者都没有**也把事件记下来。
- *
- * 为什么非得要它：「没人在看时不提问」这条靠普通订阅是测不出来的 —— 一订上，
- * `watcherCount()` 就不是 0 了。本类只多记一份，**不改** `watcherCount()` 的语义
- * （那正是被测的东西）。
- */
-class RecordingHub extends EventHub {
-  readonly published: ServerEvent[] = [];
-
-  publish(event: ServerEvent): void {
-    this.published.push(event);
-    super.publish(event);
-  }
-}
-
-describe("SessionManager：自动迁移用哪种方式交接，由客户端回答（session.question）", () => {
-  /** 装配方收到的两个钩子 —— 就是「SDK 插件 → 会话层」那条路的两端 */
-  interface Hooks {
-    autoMigrate?: (mode?: HandoffMode) => Promise<void>;
-    resolveMode?: (info: {
-      promptTokens: number;
-      handoffTokens: number;
-    }) => Promise<HandoffMode | null>;
-  }
-
-  let store: MemoryStore;
-  let workspace: string;
-  let hub: RecordingHub;
-  let hooks: Hooks;
-  let auto: SessionManager;
-  /** 用例里另外造的管理器：统一在 afterEach 收掉 */
-  let extras: SessionManager[];
-  let counter = 0;
-
-  /**
-   * 造一个把两个钩子收起来的会话层。
-   *
-   * `hub` 决定「有没有客户端在看」，`askTimeoutMs` 是超时（用例不能等 5 分钟）。
-   */
-  function assemble(options: { hub?: EventHub; askTimeoutMs?: number } = {}) {
-    const captured: Hooks = {};
-    const manager = new SessionManager({
-      createAgent: async (input) => {
-        captured.autoMigrate = input.autoMigrate;
-        captured.resolveMode = input.resolveMode;
-        return agent;
-      },
-      nextSessionId: () => `chat_${++counter}`,
-      storeFor: () => store,
-      handoff: { aiZenDir: join(workspace, "ai-zen"), homeDir: workspace },
-      ...options,
-    });
-    return { manager, hooks: captured };
-  }
-
-  /**
-   * 走一遍 SDK 插件 `onAfterSend` 的那两步：先问「用哪种方式交接」，用户选不交接
-   * （`null`）就直接返回，否则才让会话层动手迁移。
-   *
-   * 为什么直接调这两个钩子而不是装上真的 `AutoMigratePlugin`：这里测的是会话层
-   * 「怎么问、怎么等、怎么认领」，插件本身的触发时机不在本用例的范围内（那边由
-   * `SessionAgentFactory.test.ts` 用真插件测）。
-   */
-  async function triggerAutoMigrate(
-    target: Hooks,
-    info = { promptTokens: 999, handoffTokens: 500 },
-  ): Promise<void> {
-    const mode = await target.resolveMode!(info);
-    if (mode === null) return;
-    await target.autoMigrate!(mode);
-  }
-
-  beforeEach(async () => {
-    store = new MemoryStore();
-    workspace = await fs.mkdtemp(join(tmpdir(), "aiz-ask-mode-"));
-    counter = 0;
-    extras = [];
-    hub = new RecordingHub();
-    const assembled = assemble({ hub });
-    auto = assembled.manager;
-    hooks = assembled.hooks;
-    // 模拟「有客户端在看」：订阅了才谈得上向客户端提问
-    events = [];
-    auto.subscribe((event) => events.push(event));
-  });
-
-  afterEach(async () => {
-    for (const manager of extras) manager.dispose();
-    await fs.rm(workspace, { recursive: true, force: true });
-  });
-
-  it("有客户端在看：触发时先问「用哪种方式交接」，带上触发上下文（两个 token 数）", async () => {
-    const { sessionId } = await auto.create({ workspaceId: "ws-1", path: workspace });
-    agent.messages = [{ role: "user", content: "旧任务" }];
-
-    const pending = triggerAutoMigrate(hooks);
-
-    const questions = pick("session.question");
-    expect(questions).toHaveLength(1);
-    expect(questions[0]).toMatchObject({
-      event: "session.question",
-      sessionId,
-      kind: "handoff-mode",
-      // 能怎么答：两个选项 + 允许「不交接」
-      input: "select",
-      options: ["self", "summary"],
-      allowSkip: true,
-      // 兜底是「什么都不做」：没人答就跳过这次迁移（不是替用户选 self）
-      fallback: null,
-      // 选择器的标题要显示「已用 X / 上限 Y」：这两个数只有服务端手里有
-      params: { promptTokens: 999, handoffTokens: 500 },
-    });
-    expect(questions[0].questionId).toMatch(/^q-\d+$/);
-
-    // 不回答的话这一轮就悬着（并占用迁移的并发闸门）：用例自己把它收掉
-    expect(auto.answer(sessionId, questions[0].questionId, "self")).toEqual({ answered: true });
-    await pending;
-  });
-
-  it("回答 summary：交接那条路径收到的就是 summary，同一个问题不能再答一次", async () => {
-    const { sessionId } = await auto.create({ workspaceId: "ws-1", path: workspace });
-    agent.messages = [{ role: "user", content: "旧任务" }];
-
-    const pending = triggerAutoMigrate(hooks);
-    const question = pick("session.question")[0];
-
-    expect(auto.answer(sessionId, question.questionId, "summary")).toEqual({ answered: true });
-    // 同一个 questionId 再答一次：来晚了 —— 不抛错、也不用重试（服务端已经继续跑了）
-    expect(auto.answer(sessionId, question.questionId, "self")).toEqual({ answered: false });
-    await pending;
-
-    // 交接服务收到的「请求执行者」就是用户选的那个：请求 self 时会降级到 summary 并多一条
-    // `migrationDegraded`，这里没有 —— 说明请求的本来就是 summary，不是默认值碰巧一样
-    const notices = pick("session.notice");
-    expect(
-      notices.filter((notice) => notice.code === "handoffWriting").map((notice) => notice.params),
-    ).toEqual([{ mode: "summary" }]);
-    expect(notices.some((notice) => notice.code === "migrationDegraded")).toBe(false);
-    // 迁移真的发生了（换 id 走事件）
-    expect(pick("session.idChanged")).toHaveLength(1);
-  });
-
-  it("回答 null（用户选「不交接」）：跳过本次迁移 —— 会话 id 不变，也没有 idChanged", async () => {
-    const { sessionId } = await auto.create({ workspaceId: "ws-1", path: workspace });
-    agent.messages = [{ role: "user", content: "旧任务" }];
-
-    const pending = triggerAutoMigrate(hooks);
-    const question = pick("session.question")[0];
-    expect(auto.answer(sessionId, question.questionId, null)).toEqual({ answered: true });
-    await pending;
-
-    expect(pick("session.idChanged")).toEqual([]);
-    expect((await auto.list("ws-1")).map((item) => item.sessionId)).toEqual([sessionId]);
-    // 什么都没发生：连旧会话都没进存档（那是迁移的第一步）
-    expect(store.records.size).toBe(0);
-  });
-
-  it("没有客户端在看：不问，按兜底「什么都不做」跳过迁移（说一句 migrationSkipped）", async () => {
-    // 独立的一套：hub 上一个订阅者都没有 —— 客户端已退出，而会话仍在服务端活着
-    const silentHub = new RecordingHub();
-    const silent = assemble({ hub: silentHub, askTimeoutMs: 30_000 });
-    extras.push(silent.manager);
-    const { sessionId } = await silent.manager.create({ workspaceId: "ws-1", path: workspace });
-    agent.messages = [{ role: "user", content: "旧任务" }];
-
-    // 全程没人回答却能跑完：若真问了，这一句会挂到 30 秒超时（用例先超时失败）
-    await triggerAutoMigrate(silent.hooks);
-
-    expect(silentHub.watcherCount()).toBe(0);
-    expect(silentHub.published.filter((event) => event.event === "session.question")).toEqual([]);
-    const notices = silentHub.published.filter(
-      (event): event is Extract<ServerEvent, { event: "session.notice" }> =>
-        event.event === "session.notice",
-    );
-    // 兜底 = 什么都不做：**不迁移**（旧版这里的默认是 self 自动迁移，按产品决定改掉了）
-    expect(notices.some((notice) => notice.code === "handoffWriting")).toBe(false);
-    expect(notices.some((notice) => notice.code === "migrationSkipped")).toBe(true);
-    expect(silentHub.published.filter((event) => event.event === "session.idChanged")).toHaveLength(
-      0,
-    );
-    // 会话原封不动
-    expect((await silent.manager.list("ws-1")).map((item) => item.sessionId)).toEqual([sessionId]);
-  });
-
-  it("没人回答（超时）：按兜底跳过迁移，并把挂着的提问清掉", async () => {
-    // 超时注入成 10ms：等 5 分钟才能验证的用例只能靠 sleep(300000)，那是把「超时」测成「时钟」
-    const fastHub = new RecordingHub();
-    fastHub.subscribe((event) => events.push(event));
-    const fast = assemble({ hub: fastHub, askTimeoutMs: 10 });
-    extras.push(fast.manager);
-    await fast.manager.create({ workspaceId: "ws-1", path: workspace });
-    agent.messages = [{ role: "user", content: "旧任务" }];
-
-    const pending = triggerAutoMigrate(fast.hooks);
-    const question = pick("session.question")[0];
-
-    await pending; // 不回答：等它自己按超时收场
-
-    const notices = pick("session.notice");
-    // 超时与「没人在看」同一个落点：兜底 = 什么都不做
-    expect(notices.some((notice) => notice.code === "handoffWriting")).toBe(false);
-    expect(notices.some((notice) => notice.code === "migrationSkipped")).toBe(true);
-    expect(pick("session.idChanged")).toHaveLength(0);
-    // 表已清：这个问题现在谁也答不了（迟到的回答只能是「来晚了」）
-    const remaining = (await fast.manager.list("ws-1"))[0]!.sessionId;
-    expect(fast.manager.answer(remaining, question.questionId, "summary")).toEqual({
-      answered: false,
-    });
-  });
-
-  it("answer 一个不存在的会话：unknown-session（拿错 id 是调用方的错，不是「来晚了」）", () => {
-    expect(() => auto.answer("sess_404", "q-1", "self")).toThrow(/unknown session/);
-    try {
-      auto.answer("sess_404", "q-1", "self");
-    } catch (error) {
-      expect((error as { code?: string }).code).toBe("unknown-session");
-    }
-  });
-});
-
 describe("SessionManager：attach（会话活得比连接久）", () => {
   it("接一个还活着的会话：返回同一个 id / agentId，不另装一个 Agent", async () => {
     let created = 0;
@@ -2094,7 +738,7 @@ describe("SessionManager：attach（会话活得比连接久）", () => {
         created++;
         return agent;
       },
-      nextSessionId: () => `chat_${++sessionCounter}`,
+      nextSessionId: () => `chat_${++counter.value}`,
     });
     const first = await m.create({
       workspaceId: "ws-1",
@@ -2118,7 +762,7 @@ describe("SessionManager：attach（会话活得比连接久）", () => {
     const store = new FileSessionStore<Message>({ rootDir: tempRoot("aiz-attach") });
     const m = new SessionManager({
       createAgent: async () => agent,
-      nextSessionId: () => `chat_${++sessionCounter}`,
+      nextSessionId: () => `chat_${++counter.value}`,
       storeFor: () => store,
     });
     const first = await m.create({ workspaceId: "ws-1", path: "/p", sessionId: "chat_live" });
@@ -2139,7 +783,7 @@ describe("SessionManager：attach（会话活得比连接久）", () => {
     const store = new FileSessionStore<Message>({ rootDir: tempRoot("aiz-attach2") });
     const m = new SessionManager({
       createAgent: async () => agent,
-      nextSessionId: () => `chat_${++sessionCounter}`,
+      nextSessionId: () => `chat_${++counter.value}`,
       storeFor: () => store,
     });
     await store.write({
@@ -2200,124 +844,7 @@ describe("SessionManager：attach（会话活得比连接久）", () => {
   });
 });
 
-describe("SessionManager：续接不是一次活动（updatedAt）", () => {
-  let store: MemoryStore;
-  let withStore: SessionManager;
-  /** 一段老会话的「最后一次活动」：一个确定的旧时刻（不是「刚刚」） */
-  const ARCHIVED_AT = "2024-03-05T06:07:08.900Z";
-
-  /** 轮询到条件成立（等待一律这么写，不固定 sleep） */
-  const until = async (
-    condition: () => boolean | Promise<boolean>,
-    timeoutMs = 2000,
-  ): Promise<void> => {
-    const deadline = performance.now() + timeoutMs;
-    while (!(await condition())) {
-      if (performance.now() > deadline) throw new Error("等待条件成立超时");
-      await new Promise((resolve) => setTimeout(resolve, 1));
-    }
-  };
-
-  beforeEach(() => {
-    store = new MemoryStore();
-    withStore = new SessionManager({
-      createAgent: async () => agent,
-      nextSessionId: () => "chat_live",
-      storeFor: () => store,
-    });
-    events = [];
-    withStore.subscribe((event) => events.push(event));
-  });
-
-  /** 摆一段「上次聊到这儿」的存档，并把它的最后活动时间定在 `updatedAt` */
-  const archive = (id = "chat_old", updatedAt = ARCHIVED_AT) =>
-    store.seed(
-      { id, agentId: "default", messages: [{ role: "user", content: "上次聊到这儿" }] as never },
-      updatedAt,
-    );
-
-  /** `session.list` 里这一条的 `updatedAt`（客户端看到的就是这个值） */
-  const listedAt = async (sessionId: string) => {
-    const listed = await withStore.list("ws-1");
-    const entry = listed.find((item) => item.sessionId === sessionId);
-    if (!entry) throw new Error(`list 里没有 ${sessionId}`);
-    return entry;
-  };
-
-  it("续接（attach）一段存档：`updatedAt` 仍是存档里那个旧时刻", async () => {
-    archive();
-    // 另一段更近的会话：用来断言「打开一段老会话」不会把它顶到列表最前
-    archive("chat_newer", "2024-06-07T08:09:10.000Z");
-
-    await withStore.attach({ workspaceId: "ws-1", path: "/p", sessionId: "chat_old" });
-
-    const entry = await listedAt("chat_old");
-    // 本缺陷的回归保护：以前这里是「现在」，于是侧栏里点开一段老会话就把它顶到最前、
-    // 时间显示成「现在」。这一条红 = 那次「查看」又在改写「最后一次活动」
-    expect(entry.live).toBe(true);
-    expect(entry.updatedAt).toBe(ARCHIVED_AT);
-    // 顺序也照旧（排序唯一读的就是这个时间）
-    expect((await withStore.list("ws-1")).map((item) => item.sessionId)).toEqual([
-      "chat_newer",
-      "chat_old",
-    ]);
-  });
-
-  it("`/load` 那条入口（create 带已有 id）同样不改时间", async () => {
-    archive();
-
-    // CLI 的 `/load` 走的是这条路：同一个装配逻辑，不是另一套续接
-    await withStore.create({ workspaceId: "ws-1", path: "/p", sessionId: "chat_old" });
-
-    expect((await listedAt("chat_old")).updatedAt).toBe(ARCHIVED_AT);
-  });
-
-  it("新建会话（没有存档可带回来）：`updatedAt` 是「现在」", async () => {
-    const startedAt = new Date().toISOString();
-
-    const { sessionId } = await withStore.create({ workspaceId: "ws-1", path: "/p" });
-
-    // 不用 sleep：比「测试开始之前」晚就够了 —— 断言的是「用的是现在，不是存档里的」，
-    // 不是时钟精度
-    const entry = await listedAt(sessionId);
-    expect(Date.parse(entry.updatedAt)).toBeGreaterThanOrEqual(Date.parse(startedAt));
-  });
-
-  it("续接之后真的跑一轮并落盘：`updatedAt` 才变成更新的值", async () => {
-    archive();
-    await withStore.attach({ workspaceId: "ws-1", path: "/p", sessionId: "chat_old" });
-    expect((await listedAt("chat_old")).updatedAt).toBe(ARCHIVED_AT);
-
-    withStore.send("chat_old", "又聊了一句");
-    agent.messages = [
-      { role: "user", content: "上次聊到这儿" },
-      { role: "assistant", content: "答" },
-      { role: "user", content: "又聊了一句" },
-    ];
-    agent.fire("finally");
-    // 收尾是异步的（先落盘、再 `session.turnEnd`）：等到那个时间真的变新为止
-    await until(
-      async () => Date.parse((await listedAt("chat_old")).updatedAt) > Date.parse(ARCHIVED_AT),
-    );
-
-    // 落盘那一刻才是「一次活动」：`recordOf` 刷新时间那条不能被修没
-    expect(store.records.get("chat_old")!.messages).toHaveLength(3);
-  });
-
-  it("续接之后立刻 save：`updatedAt` 变新（保存本身就是一次活动）", async () => {
-    archive();
-    await withStore.attach({ workspaceId: "ws-1", path: "/p", sessionId: "chat_old" });
-    expect((await listedAt("chat_old")).updatedAt).toBe(ARCHIVED_AT);
-
-    await withStore.save("chat_old");
-
-    expect(Date.parse((await listedAt("chat_old")).updatedAt)).toBeGreaterThan(
-      Date.parse(ARCHIVED_AT),
-    );
-  });
-});
-
-describe("SessionManager：保活区 / 换 Agent / 关闭", () => {
+describe("SessionManager：持有者 / 换 Agent / 关闭", () => {
   let store: MemoryStore;
   let live: SessionManager;
   /** 每次 `createAgent` 收到的 agentId（换 Agent 时用它断言真的重建了） */
@@ -2333,13 +860,13 @@ describe("SessionManager：保活区 / 换 Agent / 关闭", () => {
         built.push(input.agentId);
         return agent;
       },
-      nextSessionId: () => `chat_${++sessionCounter}`,
+      nextSessionId: () => `chat_${++counter.value}`,
       storeFor: () => store,
       schedule: clock.schedule,
     });
-    events = [];
+    resetEvents();
     live.subscribe((event) => events.push(event));
-    sessionCounter = 0;
+    counter.value = 0;
   });
 
   /** 跑完一轮（含用户消息）并等收尾真正落地 */
@@ -2353,36 +880,45 @@ describe("SessionManager：保活区 / 换 Agent / 关闭", () => {
     await settled();
   };
 
-  it("新会话缺省在保活区：有连接看着时一轮跑完不会被收掉", async () => {
+  it("有连接看着这一段：一轮跑完不会被收掉", async () => {
     const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
     live.registerHolder(sessionId, 1);
 
     await runTurn(sessionId);
 
     expect((await live.list("ws-1")).map((item) => item.sessionId)).toEqual([sessionId]);
-    // 列表里的 `live` 就是“此刻在服务端内存里”（旧版这里是 `keepAlive` —— 那是客户端的
-    // 声明，不是事实；并列的 `live` 才是事实）
+    // 列表里的 `live` 就是“此刻在服务端内存里”（事实）。判据只有持有者一条，
+    // 不再有客户端上报的那个声明位
     expect((await live.list("ws-1"))[0]!.live).toBe(true);
   });
 
-  it("移出保活且空闲：当场回收（不用等下一次 session.turnEnd），存档留着", async () => {
+  it("持有者全走了、空闲：不当场收，宽限期到点才收（存档留着，attach 装得回来）", async () => {
     const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    live.registerHolder(sessionId, 1);
     await runTurn(sessionId);
 
-    expect(live.keepAliveSet(sessionId, false)).toEqual({ sessionId, keepAlive: false });
+    live.dropHolder(sessionId, 1);
+    // 宽限期里还在：删线重连需要它（这就是宽限期存在的全部理由）
+    expect((await live.list("ws-1", { includeSaved: false })).map((i) => i.sessionId)).toEqual([
+      sessionId,
+    ]);
 
-    // 活会话没了（存档还在，所以只看活会话）
+    clock.tick();
+
+    // 活会话没了（存档还在）
     expect(await live.list("ws-1", { includeSaved: false })).toEqual([]);
     // 存档还在：`attach` 能把这段装回来（这一条就是「点回来内容不少」的依据）
     expect(store.records.get(sessionId)!.messages).toHaveLength(2);
   });
 
-  it("一轮还在跑时移出保活：不打断它，session.turnEnd 收尾时才回收", async () => {
+  it("一轮还在跑时持有者全走了：不打断它，session.turnEnd 收尾时才回收", async () => {
     const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    live.registerHolder(sessionId, 1);
 
     live.send(sessionId, "长任务");
     agent.messages = [{ role: "user", content: "长任务" }];
-    live.keepAliveSet(sessionId, false);
+    live.dropHolder(sessionId, 1);
+    clock.tick();
     // 正在跑的一轮不能被收掉：那比多占几兆内存严重
     expect(
       (await live.list("ws-1", { includeSaved: false })).map((item) => item.sessionId),
@@ -2440,7 +976,6 @@ describe("SessionManager：保活区 / 换 Agent / 关闭", () => {
     expect(store.records.get(sessionId)!.messages).toHaveLength(2);
   });
 });
-
 /**
  * 会话级模型覆盖（`session.model.set`）—— 三级解析最内层的那一级。
  *
@@ -2469,17 +1004,17 @@ describe("SessionManager：会话级模型覆盖（session.model.set）", () => 
   beforeEach(() => {
     store = new MemoryStore();
     inputs = [];
-    sessionCounter = 0;
+    counter.value = 0;
     live = new SessionManager({
       createAgent: async (input) => {
         inputs.push(input);
         latest = buildAgent(input.modelId);
         return latest;
       },
-      nextSessionId: () => `chat_${++sessionCounter}`,
+      nextSessionId: () => `chat_${++counter.value}`,
       storeFor: () => store,
     });
-    events = [];
+    resetEvents();
     live.subscribe((event) => events.push(event));
   });
 
@@ -2555,7 +1090,7 @@ describe("SessionManager：会话级模型覆盖（session.model.set）", () => 
         latest = buildAgent();
         return latest;
       },
-      nextSessionId: () => `chat_${++sessionCounter}`,
+      nextSessionId: () => `chat_${++counter.value}`,
       storeFor: () => store,
     });
     // 让「同一段会话」活在 failing 这个管理器上
@@ -2616,7 +1151,6 @@ describe("SessionManager：会话级模型覆盖（session.model.set）", () => 
     expect(snapshot.modelLevel).toBe("agent");
   });
 });
-
 /**
  * 会话级模型参数（`session.modelParams.set`）—— 与 `session.model.set` **同一级**的那一份。
  *
@@ -2668,17 +1202,17 @@ describe("SessionManager：会话级模型参数（session.modelParams.set）", 
     store = new MemoryStore();
     inputs = [];
     agentDefParams = undefined;
-    sessionCounter = 0;
+    counter.value = 0;
     live = new SessionManager({
       createAgent: async (input) => {
         inputs.push(input);
         latest = buildAgent(input);
         return latest;
       },
-      nextSessionId: () => `chat_${++sessionCounter}`,
+      nextSessionId: () => `chat_${++counter.value}`,
       storeFor: () => store,
     });
-    events = [];
+    resetEvents();
     live.subscribe((event) => events.push(event));
   });
 
@@ -2869,7 +1403,7 @@ describe("SessionManager：会话级模型参数（session.modelParams.set）", 
         ).definition.modelId = "m-default";
         return next;
       },
-      nextSessionId: () => `chat_${++sessionCounter}`,
+      nextSessionId: () => `chat_${++counter.value}`,
       storeFor: () => store,
     });
     const { sessionId } = await globalLive.create({ workspaceId: "ws-1", path: "/p" });
@@ -2882,7 +1416,6 @@ describe("SessionManager：会话级模型参数（session.modelParams.set）", 
     expect("modelParamsLevel" in snapshot).toBe(false);
   });
 });
-
 /**
  * 清单里的生效模型（`effectiveModelId` / `effectiveModelLevel`）。
  *
@@ -2934,7 +1467,7 @@ describe("SessionManager：清单里的生效模型（effectiveModelId / effecti
         inputs.push(input);
         return buildAgent(input.modelId);
       },
-      nextSessionId: () => `chat_${++sessionCounter}`,
+      nextSessionId: () => `chat_${++counter.value}`,
       storeFor: () => store,
       resolveSessionModel: withResolver ? resolveSessionModel : undefined,
     });
@@ -2946,7 +1479,7 @@ describe("SessionManager：清单里的生效模型（effectiveModelId / effecti
     store = new MemoryStore();
     inputs = [];
     calls = [];
-    sessionCounter = 0;
+    counter.value = 0;
     // 出厂形态：Agent 定义自己绑了模型，全局兜底另有一个（定义没绑时才轮到它）
     definitions = new Map([["default", { modelId: "m-agent" }]]);
     config = { defaultModel: "m-global" };
@@ -3066,35 +1599,37 @@ describe("SessionManager：清单里的生效模型（effectiveModelId / effecti
     expect(calls).toHaveLength(2);
   });
 });
-
 /**
- * 「活着」的判据：`keepAlive ∧ 有持有者`。
+ * 「活着」的判据：**有持有者**（唯一一条），以及它对应的两条退出路。
  *
  * 这组用例锁的是分离改造后最容易漏的一条：**崩溃的客户端发不出「我不要了」那一帧**。
- * 只认 `keepAlive` 的旧判据下，一段会话在客户端被 `kill -9` 之后会永久留在内存里
- * （唯一的回收时机是重启守护进程）。这里补上「连接还在不在」这另一半事实，并把
- * 「没人看着之后还能留多久」交给宽限期。
+ * 判据只取持有者，因为它是内核保证的事实：进程被 `kill -9` 时 socket 就没了。
+ * 「没人看着之后还能留多久」交给宽限期（给删线重连留的窗口）。
+ *
+ * 原来这里还有第五个来源：客户端主动上报的那个声明位（与持有者取合取）。它被删了，
+ * 理由写在 `SessionManager` 文件头；用例也从「声明为假 → 当场收」改成了
+ * 「显式 `session.close` → 当场收」—— 后者是删掉声明之后**唯一**的当场回收手段。
  */
-describe("SessionManager：活着 = 保活 ∧ 有持有者（宽限期回收）", () => {
+describe("SessionManager：活着 = 有持有者（宽限期回收）", () => {
   let clock: ReturnType<typeof fakeClock>;
   let live: SessionManager;
 
   beforeEach(() => {
     clock = fakeClock();
-    sessionCounter = 0;
+    counter.value = 0;
     live = new SessionManager({
       createAgent: async () => agent,
-      nextSessionId: () => `chat_${++sessionCounter}`,
+      nextSessionId: () => `chat_${++counter.value}`,
       schedule: clock.schedule,
     });
-    events = [];
+    resetEvents();
     live.subscribe((event) => events.push(event));
   });
 
   const open = async () => (await live.create({ workspaceId: "ws-1", path: "/p" })).sessionId;
   const alive = async () => (await live.list("ws-1")).length;
 
-  it("声明了保活、但连接全断了：宽限期内留着，到点才收", async () => {
+  it("最后一个持有者走了：宽限期内留着，到点才收", async () => {
     const sessionId = await open();
     live.registerHolder(sessionId, 1);
 
@@ -3154,11 +1689,11 @@ describe("SessionManager：活着 = 保活 ∧ 有持有者（宽限期回收）
     expect(await alive()).toBe(0);
   });
 
-  it("客户端明确放手（keepAlive:false）：不等宽限期，连接还在也当场收", async () => {
+  it("显式 session.close：不等宽限期，持有者还在也当场收", async () => {
     const sessionId = await open();
     live.registerHolder(sessionId, 1);
 
-    live.keepAliveSet(sessionId, false);
+    expect(live.close(sessionId)).toEqual({ closed: true });
 
     expect(await alive()).toBe(0);
   });
@@ -3201,7 +1736,6 @@ describe("SessionManager：活着 = 保活 ∧ 有持有者（宽限期回收）
     expect(clock.pending()).toHaveLength(0);
   });
 });
-
 /**
  * `title` 与 `id` 是两个事实：id 是身份（存档文件名、指针、idChanged 都指它），
  * title 是给人看的名字，改了不动 id。`remove` 是另一个动作（物理删档）。
@@ -3365,7 +1899,7 @@ describe("SessionManager：自动标题（第一轮 session.turnEnd 之后异步
         return await reply(request);
       },
     });
-    events = [];
+    resetEvents();
     titleManager.subscribe((event) => events.push(event));
   });
 
@@ -3490,7 +2024,7 @@ describe("SessionManager：自动标题（第一轮 session.turnEnd 之后异步
           request.signal?.addEventListener("abort", () => reject(new Error("aborted")));
         }),
     });
-    events = [];
+    resetEvents();
     timed.subscribe((event) => events.push(event));
     const { sessionId } = await timed.create({ workspaceId: "ws-1", path: "/p" });
 
@@ -3524,7 +2058,7 @@ describe("SessionManager：迁移策略（omit 与 prune 是两种结局，不�
       storeFor: () => store,
       handoff: { aiZenDir: join(workspace, "ai-zen"), homeDir: workspace },
     });
-    events = [];
+    resetEvents();
     strategyManager.subscribe((event) => events.push(event));
   });
 

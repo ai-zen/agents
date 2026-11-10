@@ -43,7 +43,7 @@ AI-Zen Agents 是一个 **pnpm monorepo**（工作区根 `@ai-zen/agents-workspa
 - **core** —— 管：对话运行时（`Agent` / `Message` / `Tool` / `ToolCallContext`、插件与事件系统）。不管：权限、文件系统、配置、持久化——它的 `src/` 里没有任何 `node:*` 内置模块的导入。依赖只有 `openai` 与 `@ai-zen/event-bus`。
 - **sdk** —— 管：业务能力层。能力管线（发现 → 过滤 → 实例化）、权限模型、MCP 生命周期、任务交接与迁移、内置工具、`ConfigManager`。依赖 `@ai-zen/agents-core`、`@modelcontextprotocol/sdk`、`dayjs`、`openai`。不管：进程与连接、会话存档、工作区、任何「客户端长什么样」的事。
 - **protocol** —— 管：两进程之间的**线上契约**。怎么找到对方（`<aiZenDir>/run/server.json` 的形状与原子读写）、怎么说话（JSON-lines 帧编解码、`hello` 握手、`callOnce`）、说什么形状（方法名表、事件名表、参数/结果类型、错误码表、`PhaseInfo`、数据模型的类型出口）。不管：任何业务判断、任何状态机、任何 UI 概念 —— 这里没有一行代码知道「会话该怎么存活」，只有它**在线上的样子**。
-- **server** —— 管：会话编排（`SessionManager`）、存档（`FileSessionStore`）、工作区（`service/workspace/workspace.ts`）、配置与 Agent 定义的服务端读写（`ConfigService`）、资产清单（`AssetService`）、事件出口（`EventHub`），以及把这一切接到一条 TCP 连接上的 `Daemon`。`dependencies` 是 `@ai-zen/agents-sdk` 与 `@ai-zen/agents-protocol` 两项。不管：UI 栈（不依赖 ink / react / 终端库——包边界就是进程边界）、进程级全局（cwd / 全局配置路径 / 全局 locale）。这两条硬约束写在 `packages/server/src/index.ts` 的文件头，唯一例外是组装根 `src/cli.ts`。
+- **server** —— 管：会话编排（`domain/session/SessionManager`，事件翻译 / 存档 / 提问三块各是一个类：`EventBridge` / `Persistence` / `QuestionBroker`）、存档（`FileSessionStore`）、工作区（`domain/workspace/workspace.ts`）、配置与 Agent 定义的服务端读写（`ConfigService`）、资产清单（`AssetService`）、事件出口（`lib/events.ts` 的 `EventHub`），以及把这一切接到一条 TCP 连接上的 `Daemon`。`dependencies` 是 `@ai-zen/agents-sdk` 与 `@ai-zen/agents-protocol` 两项。不管：UI 栈（不依赖 ink / react / 终端库——包边界就是进程边界）、进程级全局（cwd / 全局配置路径 / 全局 locale）。这两条硬约束写在 `packages/server/src/index.ts` 的文件头，唯一例外是组装根 `src/cli.ts`。
 - **client** —— 管：一个前端到服务端之间**全部**需要在客户端发生的事：服务发现与拉起、一条 TCP 连接、会话与配置两张门面、两个判据（要不要把 cwd 递上去、服务端现在什么状态）。`dependencies` **只有** `@ai-zen/agents-protocol`。不管：服务端实现（`Daemon` / `SessionManager` / 装配），也不读进程级全局。
 - **CLI / 桌面端 main** —— 管：渲染与输入。两者都只依赖 `@ai-zen/agents-client`（以及协议类型）。
 
@@ -58,7 +58,7 @@ AI-Zen Agents 是一个 **pnpm monorepo**（工作区根 `@ai-zen/agents-workspa
 
 ### Agent 装配按工作区
 
-`server` 里一个工作区共用一个 `Scope`（一套 MCP 连接与一次工具发现），**不跨工作区共用**——缓存键是工作区路径，值是 `Promise`（并发建会话共享同一次初始化）。理由是两头的：同工作区分开装会每个会话多一套 MCP 连接；跨工作区共用则会把 A 项目的项目级 skills / tools / mcp 塞给 B 项目。见 `packages/server/src/service/agent/SessionAgentFactory.ts` 文件头。
+`server` 里一个工作区共用一个 `Scope`（一套 MCP 连接与一次工具发现），**不跨工作区共用**——缓存键是工作区路径，值是 `Promise`（并发建会话共享同一次初始化）。理由是两头的：同工作区分开装会每个会话多一套 MCP 连接；跨工作区共用则会把 A 项目的项目级 skills / tools / mcp 塞给 B 项目。见 `packages/server/src/domain/agent/SessionAgentFactory.ts` 文件头。
 
 ## 服务端进程模型
 
@@ -98,29 +98,42 @@ AI-Zen Agents 是一个 **pnpm monorepo**（工作区根 `@ai-zen/agents-workspa
 
 ### 进程内的分工
 
-- `src/cli.ts` 是**组装根**：唯一允许读 env / argv 的地方（`AI_ZEN_DIR`、`HOME`、命令行参数），把路径解析成值后注入给下面的对象。`src/service/` 与 `src/daemon/` 一律不读全局。
-- `src/daemon/` 只管「字节流 → 帧 → 方法调用」：`Daemon` 自己只带 `ping` / `status` / `shutdown` 三个方法，其余方法表由组装根通过 `DaemonOptions.handlers` 注入。
-- `src/service/` 是业务：会话编排、存档、工作区、配置、资产、事件。
+- `src/cli.ts` 是**组装根**：唯一允许读 env / argv 的地方（`AI_ZEN_DIR`、`HOME`、命令行参数），把路径解析成值后注入给下面的对象。`src/domain/`、`src/lib/` 与 `src/daemon/` 一律不读全局。
+- `src/daemon/` 只管「字节流 → 帧 → 方法调用」：`Daemon` 自己只带 `ping` / `status` / `shutdown` 三个方法，其余方法表由组装根通过 `DaemonOptions.handlers` 注入。方法表这一层**不做业务编排** —— 它只验参数形状、接线；需要读别的对象再决定做什么的判定属于 `domain/`（例：「删工作区要连带关活会话」下沉成了 `SessionManager.closeWorkspace`）。
+- `src/domain/` 是业务对象，**每个子目录一个**：`session/`（会话：注册表与生命周期、事件翻译、存档、提问、自动标题）、`workspace/`、`agent/`、`config/`、`asset/`、`handoff/`。
+- `src/lib/` 是**无业务语义的通用零件**：`phase.ts`（生成阶段状态机 `PhaseTracker`）、`events.ts`（连接扇出 `EventHub`）。它们不认识会话、存档与握手，所以不进 `domain/`。
 - 线上契约不在本包里 —— 它在**独立的** `@ai-zen/agents-protocol`（见下一节），本包只依赖它。
+
+```
+packages/server/src/
+  domain/       业务对象，每个子目录一个
+    session/      SessionManager + EventBridge + Persistence + QuestionBroker
+                  （+ LiveSession 形状、AutoTitle、store/ 存档端口与实现）
+    workspace/  agent/  config/  asset/  handoff/
+  lib/          无业务语义的通用零件：phase.ts（PhaseTracker）、events.ts（EventHub）
+  daemon/       传输与接线：Daemon / wire / params / *Handlers
+  cli.ts        组装根（唯一读 env / argv 的地方）
+  index.ts      包对外桶（`export *`，撞名会编译失败——那正是提醒）
+```
 
 两个 idle 是两个不同的东西：`--idle-timeout` 是整个守护进程（一个连接都没有了，多久后退出，缺省不退出），`--session-idle-timeout` 是单段会话（没人看着了，多久后回收）。
 
 日志写 `<aiZenDir>/logs/server.log`：守护进程是客户端 detached 拉起的，绝不能往客户端终端写。
 
-## 协议面：45 个方法 / 12 个事件
+## 协议面：44 个方法 / 12 个事件
 
-方法名与事件名都是 `as const` 常量表，客户端与服务端共用同一份字面量。**统计口径**：数这些表里的条目——一个方法名字面量算一条；参数 / 结果类型不算；三个内置方法（`ping` / `status` / `shutdown`）**算**方法（它们和其它方法一样要握手后才能调，只是由 `Daemon` 自己实现）；通知码（`SESSION_NOTICE_CODES` / `GLOBAL_NOTICE_CODES`）不算事件，它们是 `session.notice` / `server.notice` 载荷里的枚举。
+方法名与事件名都是 `as const` 常量表，客户端与服务端共用同一份字面量。**统计口径**：数这些表里的条目——一个方法名字面量算一条；参数 / 结果类型不算；三个内置方法（`ping` / `status` / `shutdown`）**算**方法（它们和其它方法一样要握手后才能调，只是由 `Daemon` 自己实现）；通知码（`SESSION_NOTICE_CODES` / `SERVER_NOTICE_CODES`）不算事件，它们是 `session.notice` / `server.notice` 载荷里的枚举。
 
 | 命名空间 | 条数 | 定义处 |
 |----------|------|--------|
 | `workspace.*` | 6 | `sessions.ts` 的 `WORKSPACE_METHODS` |
-| `session.*` | 22 | `sessions.ts` 的 `SESSION_METHODS` |
+| `session.*` | 21 | `sessions.ts` 的 `SESSION_METHODS` |
 | `events.watch` | 1 | `sessions.ts` 的 `EVENT_METHODS`（连接级，不属于任何会话） |
 | `config.*` | 7 | `config.ts` 的 `CONFIG_METHODS` |
 | `agent.*` | 5 | `config.ts` 的 `AGENT_METHODS` |
 | `asset.*` | 1 | `assets.ts` 的 `ASSET_METHODS` |
 | 内置 `ping` / `status` / `shutdown` | 3 | `daemon.ts` 的 `DAEMON_METHODS` |
-| **合计** | **45** | |
+| **合计** | **44** | |
 
 事件共 **12** 条，分两张表：`sessions.ts` 的 `SESSION_EVENTS`（11 条，值全部以 `session.` 开头）—— `session.phase`、`session.delta`、`session.toolCalls`、`session.messageAppended`、`session.turnEnd`、`session.notice`、`session.question`、`session.idChanged`、`session.titleChanged`、`session.subAgent.started`、`session.subAgent.ended`；以及同一个文件的 `SERVER_EVENTS`（1 条）—— `server.notice`。
 
@@ -228,15 +241,15 @@ node -e 'console.log(Object.keys(require("./packages/client/package.json").depen
 
 | 路径 | 内容 | 出处 |
 |------|------|------|
-| `<aiZenDir>/config.json` | 全局配置（形状 = SDK 的 `AppConfig`） | `service/agent/agentPaths.ts` 的 `globalAgentPaths` |
+| `<aiZenDir>/config.json` | 全局配置（形状 = SDK 的 `AppConfig`） | `domain/agent/agentPaths.ts` 的 `globalAgentPaths` |
 | `<aiZenDir>/agents/` | 顶层 Agent 定义（一实体一 JSON） | 同上；`sdk/src/config/constants.ts` 的 `CONFIG_SUB_DIRS` |
 | `<aiZenDir>/sub-agents/` | 子 Agent 定义 | `src/cli.ts` 注入 `ConfigService` 的 `subAgentsDir`；同上 `CONFIG_SUB_DIRS` |
 | `<aiZenDir>/skills/` | 全局 Skill | `agentPaths.ts` 的 `globalSkillsDirs`；`CONFIG_SUB_DIRS` |
 | `<aiZenDir>/tools/` | 全局用户工具 | `agentPaths.ts` 的 `globalToolsDirs`；`CONFIG_SUB_DIRS` |
 | `<aiZenDir>/mcp-oauth/` | MCP OAuth 凭据目录 | `sdk/src/config/constants.ts` 的 `CONFIG_SUB_DIRS` |
 | `<aiZenDir>/mcp.json` | 全局 MCP 配置 | `src/cli.ts` 注入 `ConfigService` 的 `globalMcpFile`；`agentPaths.ts` 的 `mcpConfigs` 末段 |
-| `<aiZenDir>/workspaces/<workspaceId>/workspace.json` | 工作区身份与位置（id 冻结） | `service/workspace/workspace.ts` |
-| `<aiZenDir>/workspaces/<workspaceId>/sessions/<id>.json` | 会话存档（正文 + 元数据，原子写） | `service/store/FileSessionStore.ts` |
+| `<aiZenDir>/workspaces/<workspaceId>/workspace.json` | 工作区身份与位置（id 冻结） | `domain/workspace/workspace.ts` |
+| `<aiZenDir>/workspaces/<workspaceId>/sessions/<id>.json` | 会话存档（正文 + 元数据，原子写） | `domain/session/store/FileSessionStore.ts` |
 | `<aiZenDir>/workspaces/<workspaceId>/sessions/<id>.meta.json` | 该会话的列表清单（无正文） | 同上 |
 | `<aiZenDir>/workspaces/<workspaceId>/last-session.json` | 「本工作区上一轮会话」指针 | 同上 |
 | `<aiZenDir>/run/server.json` | 服务发现文件 | `@ai-zen/agents-protocol` 的 `discovery.ts` 中 `descriptorPath` |

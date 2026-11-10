@@ -20,7 +20,6 @@ import {
   type SessionCloseResult,
   type SessionCreateResult,
   type SessionHandoffResult,
-  type SessionKeepAliveSetResult,
   type SessionListResult,
   type SessionLastResult,
   type SessionMigrateResult,
@@ -202,21 +201,14 @@ export class RemoteSessions {
     });
   }
 
-  /** 明确关闭一段会话（幂等：不在跑时回 `closed:false`，不当错误） */
+  /**
+   * 明确关闭一段会话（幂等：不在跑时回 `closed:false`，不当错误）。
+   *
+   * 它是「我不看这段了」的**唯一**显式表达（服务端在持有者消失后自己按宽限期收）：
+   * 一次性调用（`ai "…"`）跑完就该让服务端当场把这段会话还回去。
+   */
   async close(sessionId: string): Promise<SessionCloseResult> {
     return await this.client.call<SessionCloseResult>(SESSION_METHODS.close, { sessionId });
-  }
-
-  /**
-   * 保活区开关：`on:false` 且会话空闲时服务端**当场**回收它（存档留着，下次 `attach` 装回来）。
-   *
-   * 新会话缺省在保活区里（服务端默认），所以客户端只需要在「不看了」时发 `false`。
-   */
-  async keepAliveSet(sessionId: string, on: boolean): Promise<SessionKeepAliveSetResult> {
-    return await this.client.call<SessionKeepAliveSetResult>(SESSION_METHODS.keepAliveSet, {
-      sessionId,
-      on,
-    });
   }
 
   /**

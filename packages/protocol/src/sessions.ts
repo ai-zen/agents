@@ -148,20 +148,15 @@ export const SESSION_METHODS = {
    */
   modelParamsSet: "session.modelParams.set",
   /**
-   * 关闭一段会话：摘事件、让出 Agent 与 Scope 引用，**不删存档**。
+   * 关闭一段会话：摘事件、让出 Agent 与 Scope 引用，**不删存档**，**当场回收**。
    *
-   * 只在**明确要求**时关（`/close` 这条命令、以及自动回收的判定）；连接断开不算 ——
-   * 会话的存活期比连接长，关掉终端只退订阅，服务端那一轮仍会跑完。
+   * 它是「我不看这段了」的**唯一**显式表达（自动回收不靠它：持有者没了就由服务端按宽限期
+   * 收）。连接断开**不算** —— 会话的存活期比连接长，关掉终端只退订阅，服务端那一轮仍会跑完。
+   *
+   * 为什么要有它而不是只靠宽限期：一次性调用（`ai "…"`）跑完就该让服务端当场把那段会话
+   * 还回去，否则在 shell 里高频调用会一段段堆到宽限期才释放。
    */
   close: "session.close",
-  /**
-   * 保活区开关（每段会话一个标记，幂等）。
-   *
-   * `on: true` = 「这段我现在要，别回收」；`on: false` = 「我不管了，跑完就收」。
-   * 回收判据就一条：`session.turnEnd` 收尾之后仍不在保活区 → 关闭（存档已在收尾前写好，
-   * 所以再点回来 `attach` 能从盘上装回来）。
-   */
-  keepAliveSet: "session.keepAlive.set",
 } as const;
 
 /**
@@ -430,7 +425,7 @@ export interface SessionCreateParams {
    * 会话」指针挪过去 —— 否则用户下次进 TUI，续接到的是一条脚本调用的结果。想留档只有
    * 一条路：显式 `session.save`（CLI 侧就是 `ai --save`）。
    *
-   * 它只管**自动落盘**，不改变其余语义：会话照样是活会话（`session.turnEnd` 之后按保活区回收）、
+   * 它只管**自动落盘**，不改变其余语义：会话照样是活会话（没人看着之后按宽限期回收）、
    * 照样能 `save` / `saveAs`、迁移照样写档。
    */
   persist?: boolean;
@@ -573,10 +568,11 @@ export interface SessionListParams {
  * 侧栏是一个列表：既要全部历史，又要「这段正在跑」。以前这是两条方法（`session.list`
  * 只给活会话、`session.listSaved` 只给 id），客户端得自己拼，还会把同一段拼成两条。
  *
- * ## 为什么没有 `keepAlive` / `turnId`
+ * ## 为什么没有 `turnId`
  *
- * `turnId` 是**事件过滤**用的序号，客户端只在自己发过一条之后才需要它；`keepAlive` 是
- * 服务端的回收内政 —— 两者都与“列表里展示什么”无关，要它们自己去 `snapshot`。
+ * 它是**事件过滤**用的序号，客户端只在自己发过一条之后才需要它 —— 与“列表里展示什么”
+ * 无关，要它自己去 `snapshot`。同理，服务端「这段会话还能活多久」是它的内政，不进协议
+ * （客户端如果要它，说明契约里又混进了服务端的回收策略）。
  */
 export interface SessionListEntry {
   sessionId: string;
@@ -763,17 +759,6 @@ export interface SessionCloseResult {
   /** `false` = 这段会话本来就没在跑（幂等：客户端可以重复调） */
   closed: boolean;
 }
-export interface SessionKeepAliveSetParams {
-  sessionId: string;
-  /** `true` = 放进保活区，`false` = 移出 */
-  on: boolean;
-}
-
-export interface SessionKeepAliveSetResult {
-  sessionId: string;
-  keepAlive: boolean;
-}
-
 export interface SessionSaveParams {
   sessionId: string;
   /**
@@ -1183,11 +1168,13 @@ export const SESSION_NOTICE_CODES = {
 /**
  * 服务端通知的 code 表（`server.notice` 载荷里的枚举；同上：只增不改语义）。
  *
- * 名字里的 `GLOBAL` 是历史叫法（那条事件原先叫 `global.notice`）。改名时**没有连表一起改**：
- * 这些码是客户端 i18n 表的键（`notice.<code>`），改名字面量等于让所有客户端的词典失效，
- * 而它们值一个字没变 —— 表名跟着改只带来迁移成本，不带来任何约束。
+ * 名字跟事件表走（`SERVER_EVENTS` ↔ `SERVER_NOTICE_CODES` ↔ `ServerNoticeCode`）：
+ * 曾经是事件叫 `global.notice`、码表叫 `GLOBAL_NOTICE_CODES`，而拆分之后事件成了
+ * `server.notice` —— 一张表叫 SERVER、旁边的码表还叫 GLOBAL，读的人只能靠猜两者是不是
+ * 同一件事。**表的 key 改的是类型名，不是 code 的字面量**（那些是客户端 i18n 表的键，
+ * 改字面量等于让词典失效），所以这次改名对线上零影响。
  */
-export const GLOBAL_NOTICE_CODES = {
+export const SERVER_NOTICE_CODES = {
   /** MCP server 连不上 */
   mcpUnavailable: "mcpUnavailable",
   /** 存档目录不可用（读/写失败） */
@@ -1195,7 +1182,7 @@ export const GLOBAL_NOTICE_CODES = {
 } as const;
 
 export type SessionNoticeCode = (typeof SESSION_NOTICE_CODES)[keyof typeof SESSION_NOTICE_CODES];
-export type GlobalNoticeCode = (typeof GLOBAL_NOTICE_CODES)[keyof typeof GLOBAL_NOTICE_CODES];
+export type ServerNoticeCode = (typeof SERVER_NOTICE_CODES)[keyof typeof SERVER_NOTICE_CODES];
 
 /** 对话内通知：与某一段会话绑定 */
 export type SessionNoticeEvent = {
@@ -1211,7 +1198,7 @@ export type SessionNoticeEvent = {
 export type ServerNoticeEvent = {
   event: typeof SERVER_EVENTS.notice;
   level: NoticeLevel;
-  code: GlobalNoticeCode;
+  code: ServerNoticeCode;
   params?: Record<string, unknown>;
 };
 

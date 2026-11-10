@@ -7,6 +7,12 @@
  *
  * 订阅方是连接，不是会话：一条连接可以同时看多个会话的事件，事件载荷里带 `sessionId`，
  * 由客户端决定贴在哪（对话内的贴会话，全局的贴状态栏）。
+ *
+ * ## 为什么它住在 `lib/`
+ *
+ * 它是“把一条事件扇出去”这件机理，没有任何业务判断 —— 唯一的“业务”是 `watcherCount()`
+ * （没人看着就不提问），而那条判定的用户在 `QuestionBroker` 手里（见 `target-architecture.md`
+ * 里“别合并 EventHub”那一条）。所以它与 `phase.ts` 同归 `lib/`，不进 `domain/`。
  */
 
 import type { ServerEvent } from "@ai-zen/agents-protocol";

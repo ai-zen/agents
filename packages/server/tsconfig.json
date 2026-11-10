@@ -14,5 +14,7 @@
     "types": ["node"]
   },
   "include": ["src"],
-  "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.test.tsx"]
+  // `*TestSupport.ts` 是用例共用的脚手架（假 Agent / 假存档 / 假时钟），只被 `*.test.ts`
+  // import。它必须和用例一起被排除在产物之外 —— 否则 dist 里会带上一份测试代码。
+  "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.test.tsx", "**/*TestSupport.ts"]
 }

@@ -20,6 +20,16 @@
  * `session.attach` / `last` / `list` / `snapshot` 等读的是历史，历史在
  * `workspaces/<id>/sessions/` 里，与那个工作目录在不在无关 —— 让它们因为路径缺失而
  * 失败，等于把「目录被挪了」升级成「历史打不开了」。
+ *
+ * ## 本层不做业务编排
+ *
+ * 一条判定落在本层的依据是「它只跟参数有关」：字段齐不齐、形状对不对、该不该要求路径
+ * 存在。只要它需要**读别的对象再决定做什么**，那就是业务，归 `domain/`。
+ *
+ * 曾经有一条越界的：`workspace.remove` 在本层先 `removeWorkspace()`，再遍历
+ * `manager.list()` 把活会话一个个 `close()` —— 这是「删工作区要连带关掉它的活会话」这条
+ * 业务规则的第二个实现点，而且它拿不到 `SessionManager` 内部现成的会话表（得先列一遍）。
+ * 现在下沉成 `manager.closeWorkspace(workspaceId)`，handler 只留两行。
  */
 
 import type { Connection, MethodHandler } from "./Daemon.js";
@@ -28,7 +38,6 @@ import {
   field,
   optionalBoolean,
   optionalString,
-  requireBoolean,
   requireNumber,
   requireString,
 } from "./params.js";
@@ -40,9 +49,9 @@ import {
   removeWorkspace,
   renameWorkspace,
   requireWorkspacePath,
-} from "../service/workspace/workspace.js";
-import { FileIndex } from "../service/workspace/FileIndex.js";
-import type { SessionManager } from "../service/session/SessionManager.js";
+} from "../domain/workspace/workspace.js";
+import { FileIndex } from "../domain/workspace/FileIndex.js";
+import type { SessionManager } from "../domain/session/SessionManager.js";
 import {
   EVENT_METHODS,
   SESSION_METHODS,
@@ -64,7 +73,6 @@ import {
   type SessionRollbackResult,
   type SessionReloadParams,
   type SessionCloseResult,
-  type SessionKeepAliveSetResult,
   type SessionSaveAsResult,
   type SessionSaveResult,
   type SessionSendResult,
@@ -116,10 +124,9 @@ export function createSessionHandlers(
   /**
    * 「这条连接要看着这段会话」—— 登记它，断线时自动摘掉。
    *
-   * 为什么要在**这里**接（而不是让客户端发一帧）：`keepAlive` 是客户端声明的意图，
-   * 而“连接还在不在”只有传输层知道。两者合起来才是「真的活着」（见 `SessionManager`
-   * 文件头的判据一节）—— 只靠声明的话，一个被 `kill -9` 的客户端会让那段会话永久留在
-   * 内存里（那一帧永远发不出来）。
+   * 为什么要在**这里**接：会话层的「活着」判据就是「有没有持有者」（见 `SessionManager`
+   * 文件头的规则一节），而「连接还在不在」只有传输层知道。声明式的上报（客户端主动发
+   * 一帧）被删过一次：崩溃的进程发不出那一帧，而 socket 消失是内核保证的。
    *
    * 登记与摘除都不抛错：会话已经被别的路径收掉是常态，那时目的已经达成。
    */
@@ -187,18 +194,18 @@ export function createSessionHandlers(
      * 删一个工作区：**连它的全部会话一起**（整个 `workspaces/<id>/` 目录，含
      * `sessions/` 与「上一轮会话」指针）。
      *
-     * 为什么还要关掉内存里的活会话：目录删了、会话还在跑的话，它下一轮收尾会把存档
-     * 写回来（`FileSessionStore.write` 自己会 `mkdir`），刚删掉的工作区就**部分复活**了
-     * ——「连它的全部会话一起删」就不能只是删盘上的文件。`close` 之后那条轮跑完也不再写档。
+     * 两件事分在两处：「删盘上的目录（含存档）」是工作区的业务（`removeWorkspace`），
+     * 「关掉内存里的活会话」是会话的业务（`manager.closeWorkspace`）。以前它们都写在
+     * 本层，于是「删工作区时要连带关会话」这条规则只有本层知道 —— 而它真正的理由在会话
+     * 那一侧：被删目录里的活会话下一轮收尾会把存档写回来（`FileSessionStore.write` 自己
+     * 会 `mkdir`），刚删掉的工作区就**部分复活**了。
      *
      * 幂等：目录本来就不在 → `removed:false`，不当错误。
      */
     [WORKSPACE_METHODS.remove]: async (params): Promise<WorkspaceRemoveResult> => {
       const workspaceId = requireString(params, "workspaceId");
       const result = await removeWorkspace({ workspacesRoot, id: workspaceId });
-      for (const entry of await manager.list(workspaceId, { includeSaved: false })) {
-        manager.close(entry.sessionId);
-      }
+      manager.closeWorkspace(workspaceId);
       return result;
     },
 
@@ -398,16 +405,6 @@ export function createSessionHandlers(
     /** 明确关闭一段会话（幂等：本来就没在跑时回 `closed:false`，不当错误） */
     [SESSION_METHODS.close]: (params): SessionCloseResult => {
       return manager.close(requireString(params, "sessionId"));
-    },
-
-    /**
-     * 保活区开关：`on:false` 且会话空闲时当场回收。
-     *
-     * 不存在的会话报 `unknown-session`（`manager.keepAliveSet` 里），**不**静默当成功：
-     * 那说明客户端手里的 id 已经没了，它该重新 `attach`，而不是以为「放在保活区里了」。
-     */
-    [SESSION_METHODS.keepAliveSet]: (params): SessionKeepAliveSetResult => {
-      return manager.keepAliveSet(requireString(params, "sessionId"), requireBoolean(params, "on"));
     },
 
     /**

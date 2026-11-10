@@ -1,15 +1,28 @@
 /**
- * 会话管理器 —— 服务端「活着的会话」与**事件流**的源头。
+ * 会话管理器 —— 服务端「活着的会话」的**注册表与生命周期**。
  *
- * ## 它管什么、不管什么
+ * ## 它现在管什么（拆完之后）
  *
- * 管：会话的创建/关闭、一轮对话的编号（`turnId`）、把 SDK 的事件翻译成协议事件
- * （阶段、正文增量、轮次收尾）、按阶段算出「谁还在跑」。
+ * 这个类原来有 2600 行、12 个并列职责。按「谁拥有 `LiveSession` 的哪些字段」拆成四块：
  *
- * 不管：Agent 怎么装配（配置、Scope、工具发现）——那由**组装根**通过 `createAgent`
- * 注入。存档只经 `SessionStore` 端口读写（`save` / `saveAs` / `last` / `rollback` / `list`
- * 与每轮收尾的 `writeSession`）：格式、位置、目录布局都由那个端口决定，本类不碰文件。
- * 这条边界是为了让本文件可测：给一个假 Agent 就能跑完整个事件流程，不需要网络。
+ *   · `EventBridge`     —— SDK 事件 → 协议事件（含流式影子：工具调用 / 已推消息 / 子 Agent 栏目）
+ *   · `Persistence`     —— 存档的形状与写盘（`recordOf` 是那一处的唯一定义）
+ *   · `QuestionBroker`  —— 服务端向客户端提问与等回答
+ *   · **本类**          —— 注册表（`sessions`）、持有者与回收、一轮的生命周期
+ *                          （`beginTurn` / `settleTurn` / `failTurn`）、目录
+ *                          （`list` / `last` / `archivedModelOf` / `rename` / `remove` /
+ *                          `rollback`）、交接（`handoff` / `migrate` / `autoMigrate`）、
+ *                          以及 `create` / `attach` / `close` / `dispose`
+ *
+ * 留下这五组东西，是因为它们说的是同一件事：**我正在管的那批会话**。而前三块各自都能
+ * 在一段会话对象上独立工作（不需要注册表），所以它们是注入进来的协作者，不是继承。
+ *
+ * ## 不管什么
+ *
+ * 不管 Agent 怎么装配（配置、Scope、工具发现）——那由**组装根**通过 `createAgent`
+ * 注入。也不碰文件：存档只经 `SessionStore` 端口（由 `Persistence` 持有），格式、位置、
+ * 目录布局都由那个端口决定。这条边界是为了让本文件可测：给一个假 Agent 就能跑完整个
+ * 事件流程，不需要网络。
  *
  * 同理，**本层不读配置**：凡要「配置 + Agent 定义」才能算出来的东西（自动标题、清单里
  * 存档条目的生效模型）都由组装根注入成窄函数（`SessionManagerOptions` 里的 `autoTitle` /
@@ -21,40 +34,50 @@
  * 一个会话可能被多个客户端看（终端 + 桌面端同时连）。广播是管理器的职责，
  * 「推给哪条连接」是守护进程的职责（它知道谁连着）。
  *
- * ## 「活着」的判据：`keepAlive ∧ 有持有者`
+ * ## 「活着」的判据：只有一条 —— **有持有者**
  *
- * 两个**不同来源**的事实，缺一不可：
+ * 会话寿命规则就三句：
  *
- *   · `keepAlive`  —— 客户端**声明**的意图（切走 / 退出时收回）。它靠一帧 `keepAlive.set`
- *     传过来，而**崩溃的进程发不出这一帧**；
- *   · `holders`    —— 此刻**真有一条连接在看着它**。连接断开是内核保证的（进程被
- *     `kill -9`、崩溃、断电都会让那条 socket 消失），不需要客户端配合。
+ *   1. 连接上有持有者（`holders` 非空）→ 活着；
+ *   2. 持有者全没了 → 等一段宽限期（`DEFAULT_SESSION_IDLE_TIMEOUT_MS`）后回收；
+ *   3. `session.close` → 立刻回收（存档在每轮收尾已经写好，`attach` 装得回来）。
  *
- * 只认前者，就会出现「声明了保活、然后进程被硬杀」→ 标记永远停在 `true` → 会话连同
- * 它占的 Agent 与消息历史永久留在内存里（本包在 loopback 上跑，唯一的回收时机是重启
- * 守护进程）。只认后者，则「同一条连接换了会话」（`/new`、`/load`）无从表达，还会把
- * 客户端明确说要放手的那一段一直留着。
+ * `holders` 是**此刻真有一条连接在看着它**：由传输层登记（`registerHolder`），连接断开时
+ * 摘掉（`dropHolder`，挂在 `connection.onClose` 上）。它不需要客户端配合 —— 连接消失是
+ * 内核保证的（进程被 `kill -9`、崩溃、断电都会让那条 socket 消失）。
  *
- * 所以判据是合取：**声明了要 ∧ 确实有人看着** ⇒ 才留着。其余一律走同一条回收路径
- * （见 `scheduleReclaim`）：先等一段宽限期（`DEFAULT_SESSION_IDLE_TIMEOUT_MS`），到点
- * 再判一次 —— 宽限期是给断线重连留的窗口，不是给「没人要」的会话续命。
+ * ## 为什么不再要客户端上报意图
+ *
+ * 这里原来还有一个由客户端**上报**的「保活声明」标记（协议里那条保活方法），语义是
+ * 「这段我还要 / 我不要了」，判据是它**与**持有者的合取。删掉它的理由正是不需要它：
+ *
+ *   · 崩溃的进程发不出那一帧 —— 声明会永远停在「要」，会话连同它占的 Agent 与消息历史
+ *     永久留在内存里（本包在 loopback 上跑，唯一的回收时机是重启守护进程）；
+ *   · 而持有者是**内核保证**的事实，同样的崩溃恰好把它清干净。
+ *
+ * 也就是说：两个事实里只有一个在「最难的情况」下还成立，那就不该要两个 —— 判据取合取
+ * 只是把不可靠的那个当成了必要条件。删掉之后，「我不看这段了」只剩一个显式表达
+ * （`session.close`），「我崩了」由内核兜 —— 两条路都不依赖客户端记得发帧。
+ *
+ * 代价（记账，不说成「行为不变」）：一次性调用（`ai "…"`）与 TUI 的 `/new` 过去靠那帧
+ * 「我不要了」当场让服务端回收，现在它们要么显式 `session.close`，要么留到宽限期到点。
+ * 宽限期是给断线重连留的窗口，不是给「没人要」的会话续命。
  */
 
-import {
-  PhaseTracker,
-  pendingToolCalls,
-  FINISHED_STATUSES,
-  type PhaseMessageLike,
-} from "../progress/PhaseTracker.js";
-import { compareSessionEntries } from "../store/SessionStore.js";
-import type { SessionRecord, SessionRef, SessionStore } from "../store/SessionStore.js";
-import { EventHub } from "../events/EventHub.js";
+import { PhaseTracker } from "../../lib/phase.js";
+import { compareSessionEntries } from "./store/SessionStore.js";
+import type { SessionRecord, SessionStore } from "./store/SessionStore.js";
+import { EventHub } from "../../lib/events.js";
 import {
   SessionHandoff,
   isHandoffAborted,
   type HandoffAgentLike,
 } from "../handoff/SessionHandoff.js";
 import type { AutoTitleFn } from "./AutoTitle.js";
+import { EventBridge, ToolCallReporter } from "./EventBridge.js";
+import { Persistence } from "./Persistence.js";
+import { QuestionBroker } from "./QuestionBroker.js";
+import type { AgentLike, LiveSession, SubAgentLike } from "./LiveSession.js";
 // `resolveModelParams` 是**运行期**依赖：参数该取哪一层只有 SDK 那一处实现
 // （`packages/sdk/src/runtime/resolveModel.ts`）。快照要报「当前生效的参数」，就得问
 // 它 —— 本层再写一遍「哪一档取哪一份」，就是让同一个 `switch` 存在两份的第二天。
@@ -66,10 +89,8 @@ import type {
   Message,
   MessageContent,
   ModelLevel,
-  PhaseInfo,
+  SessionListEntry,
   SubAgentSnapshotResult,
-  ToolCallState,
-  Usage,
 } from "@ai-zen/agents-protocol";
 import {
   SESSION_EVENTS,
@@ -77,7 +98,6 @@ import {
   DEFAULT_MIGRATION_STRATEGY,
   type HandoffMode,
   type MigrationStrategy,
-  type NoticeLevel,
   type NoticePayload,
   type ServerEvent,
   type SessionAnswerResult,
@@ -86,117 +106,22 @@ import {
   type SessionCloseResult,
   type SessionCreateResult,
   type SessionHandoffResult,
-  type SessionKeepAliveSetResult,
   type SessionLastResult,
   type SessionMigrateResult,
-  type SessionNoticeCode,
-  type SessionQuestionKind,
+  type SessionRenameResult,
+  type SessionRemoveResult,
   type SessionRollbackResult,
   type SessionSaveAsResult,
   type SessionSaveResult,
   type SessionSnapshotResult,
-  type SessionListEntry,
-  type SessionRenameResult,
-  type SessionRemoveResult,
 } from "@ai-zen/agents-protocol";
 // 值导入（不是 `import type`）：`codedError` 与错误码表是**运行期**的东西。
 // 它们原先是本文件的一份本地拷贝，六份逐字相同 —— 现在只有协议那一份。
 import { ERROR_CODES, codedError } from "@ai-zen/agents-protocol";
 
-/**
- * 能跑一轮对话的 Agent 的最小面。
- *
- * 结构性类型（不是 SDK 的 `Agent`）：SDK 的 Agent 天然满足它，本包也不必把
- * core 的类型体系拖进来 —— 与本包 `PhaseMessageLike` 同一个理由、同一个 `*Like` 后缀。
- *
- * 不叫 `SessionAgent`：那读起来像「一种 Agent」，而它只是 Agent 的一个**面**（能跑会话）。
- */
-export interface AgentLike {
-  /** 当前消息列表。**可写**：续接存档时由会话管理器整体换成存档里的那份 */
-  messages: Message[];
-  /** 最近一轮用量（SDK 的 Agent 有；假件可以不给） */
-  readonly lastUsage?: Usage;
-  /** 实发模型名（快照会把它带给客户端拼图片内容块；假件可以不给） */
-  readonly model?: string;
-  /**
-   * 生效模型来自哪一级（SDK 解析出来的档位，快照原样透传给客户端）。
-   *
-   * **必填**：这一位没有「缺省档」可言 —— 猜一个就能让选择器把「当前生效」标错，
-   * 而那种错没人会怀疑。假件照抄真件给一个值（它们本来就该与真件同形）。
-   */
-  readonly modelLevel: ModelLevel;
-  /** 返回本轮产出（SDK 返回 `Message[]`）；会话管理器不看它，进展走事件 */
-  send(input: MessageContent): Promise<unknown>;
-  abort(): void;
-  /**
-   * SDK 的事件流（`@ai-zen/event-bus`）。
-   *
-   * 载荷是**多参**的，而且每个事件不一样：`chunk-parsed` 是 `(receiver, chunk)`，
-   * `sub-agent-start` 是 `({ subAgent })`，`open` / `finally` 没有载荷。这里写 `(...args)`
-   * 而不是 `(payload)` 是故意的：曾经它就是 `(payload: any) => void`，于是监听器只收一个
-   * 参数也能过编译 —— 而那个参数是**消息**，不是 chunk，正文增量于是一条也发不出去
-   * （详见 `attachEvents` 里 `onChunk` 的注释）。类型说诚实话，比它“好用”重要。
-   */
-  events: {
-    on(event: string, handler: (...args: any[]) => void): void;
-    off(event: string, handler: (...args: any[]) => void): void;
-  };
-}
-
-/**
- * 被委派出去的子 Agent 在本层需要的那两面：**它自己的**对话与**它自己的**事件流。
- *
- * 与 `AgentLike` 同一个理由（结构性类型、`*Like` 后缀）：SDK 的子 Agent 天然满足它，
- * 本包不必为此把 core 的类型体系拖进来，测试也能用一个最小的假件驱动整个流程。
- */
-export interface SubAgentLike {
-  messages: Message[];
-  events: {
-    // 同 `AgentLike.events`：载荷是多参的（`chunk-parsed` = `(receiver, chunk)`）
-    on(event: string, handler: (...args: any[]) => void): void;
-  };
-}
-
-/**
- * 一个子 Agent 在会话层的条目。
- *
- * `agent` 字段**只在本层用**（取 `messages`、挂事件监听），不进协议：客户端拿到的
- * 是数据（`SubAgentSnapshotResult.messages`），不是对象 —— 远程时这个实例根本不在
- * 客户端那边。
- */
-interface SubAgentEntry {
-  id: string;
-  index: number;
-  agent: SubAgentLike;
-  /**
-   * 三态，可变：`running` → `done` / `failed`。
-   *
-   * **`failed` 是终态**：出错之后 SDK 还会发 `sub-agent-end`，那条路径必须先看这个
-   * 字段再决定是否发 `ended{done}`，否则真实的失败会在界面上变成「跑完了」。
-   */
-  status: "running" | "done" | "failed";
-}
-
-/**
- * 一次提问的规格（服务端 → 客户端）。
- *
- * 字段与协议里的 `SessionQuestionEvent` 一一对应，只多了 `fallback` 的语义收口：
- * 它是「没人答/答不了时服务端自己用什么收场」，由提问方给（哪条路安全只有它知道）。
- */
-export interface AskQuestionSpec {
-  kind: SessionQuestionKind;
-  input: "select" | "text";
-  options?: readonly string[];
-  params?: Record<string, unknown>;
-  allowSkip?: boolean;
-  fallback: string | null;
-}
-
-/** 一个挂着等回答的提问（`resolve` 收场，`fallback` 是没人答时的取值） */
-interface PendingQuestion {
-  resolve: (choice: string | null) => void;
-  fallback: string | null;
-}
+// 形状与最小面住在 `LiveSession.ts`（四个类共用）；这里转出去，是因为它们一直是本模块
+// 公开面的一部分（`SessionAgentFactory` 与另一些包的测试按这个路径 import）。
+export type { AgentLike, SubAgentLike, AskQuestionSpec } from "./LiveSession.js";
 
 export interface CreateAgentInput {
   workspaceId: string;
@@ -273,10 +198,7 @@ export interface SessionManagerOptions {
    * 某个工作区的会话存档（续接与 `session.save` 用）。不注入则两者都不可用。
    *
    * 注入成**函数**而不是实例：一个进程服务多个工作区，每个工作区一份存档。
-   *
-   * 泛型参数写 `Message`：存档里的正文就是协议转出的那个 `Message`（`SessionSnapshotResult.messages`
-   * 用的也是它）。以前这里是不带参数的 `SessionStore`（正文 = `unknown`），于是每处「把存档
-   * 读回来装上 Agent」都得写一次断言 —— 那些断言就是「协议与存档两份形状」的缝隙。
+   * 细节见 `PersistenceOptions.storeFor`（本类只是把它转给存档那一块）。
    */
   storeFor?: (workspaceId: string) => SessionStore<Message> | Promise<SessionStore<Message>>;
   /**
@@ -298,14 +220,15 @@ export interface SessionManagerOptions {
    * 等客户端回答「自动迁移用哪种方式」的上限（毫秒），缺省 `ASK_TIMEOUT_MS`（5 分钟）。
    *
    * 之所以可注入：等 5 分钟才能验证的用例只能靠 `sleep(300000)`，那是把「超时」这件事
-   * 测成「时钟」。理由见 `askHandoffMode`（为什么必须有时限）。
+   * 测成「时钟」。理由见 `QuestionBroker.askHandoffMode`（为什么必须有时限）。
    */
   askTimeoutMs?: number;
   /**
-   * 「没人看着之后还留多久」（毫秒），缺省 {@link DEFAULT_SESSION_IDLE_TIMEOUT_MS}（60 秒）。
+   * 「最后一个持有者走了之后还留多久」（毫秒），缺省 {@link DEFAULT_SESSION_IDLE_TIMEOUT_MS}
+   * （60 秒）。
    *
-   * 只对 `keepAlive` 仍为 `true` 的会话生效：`keepAlive:false` 是客户端明确放手，宽限期
-   * 取 0（等价于「空闲就当场收」）。`0` 表示不等待，与那一路径同一个含义。
+   * `0` 表示不等待（持有者一走就收）：只在测试与「一次性调用、且不想用 `session.close`」
+   * 的部署里说得通 —— 它把断线重连的窗口也一起取消了。
    */
   sessionIdleTimeoutMs?: number;
   /**
@@ -366,161 +289,6 @@ export interface SessionManagerOptions {
   }>;
 }
 
-interface LiveSession {
-  id: string;
-  workspaceId: string;
-  /** 工作区路径：重建 Agent（reload）时要再交给装配方 */
-  path: string;
-  agentId: string;
-  agent: AgentLike;
-  turnId: number;
-  phase: PhaseTracker;
-  /**
-   * 本轮工具调用的**上报去重器**（只记上一次报出去的是什么，不是真相源）。
-   *
-   * 与 `phase` 并排放在会话上、而不是做成 `attachEvents` 的闭包变量：闭包在换 Agent 时
-   * 会随重挂一起消失（`adoptAgent`），看起来也够用；但**一轮收尾**（`settleTurn`）没有
-   * 闭包可清，影子就会滑到下一轮去当「上一次」。放在会话上，归零才有一个共同的落点
-   * （见 `resetStreamState`）。
-   */
-  toolCalls: ToolCallReporter;
-  /**
-   * 本轮**已经推上线**的消息（按消息身份记，不是「推到第几条」）。
-   *
-   * 为什么必须是集合而不是一个下标：core 在工具**执行前**就把结果消息追加进
-   * `agent.messages`（`Message.Tool` → `status: "pending"`、正文空），跑完才就地翻成终态；
-   * 并行时先完成的那条于是往往排在**后面**。一个只增不减的下标会在「先推了下标 3」之后
-   * 把下标 2 当成已经推过 —— 那条真正跑完的慢工具结果就再也发不出去。
-   * 同理它也顶得住 `rollback`（`splice` 截断消息表）：按下标记会在截断后指到别的消息上，
-   * 按身份记不会。
-   *
-   * 与 `toolCalls` 并排放在会话上、而不是做成 `attachEvents` 的闭包变量：理由逐字相同
-   * （换 Agent 时闭包随重挂消失，而一轮收尾没有闭包可清），归零的落点也必须是同一个
-   * （见 `resetStreamState`）。
-   */
-  pushedMessages: Set<unknown>;
-  /** 本轮是否已经出过错（`error` 与 `finally` 都会到，收尾只报一次） */
-  turnFailed: { code: string; message: string } | null;
-  turnSettled: boolean;
-  /**
-   * 这一轮的收尾由交接/迁移方法自己负责（见 `settleTurn`）。
-   *
-   * 交接回合本身也是一次 `agent.send()`，SDK 会照常发 `finally`；不拦一下，
-   * `self` 模式会在文档还没校验、历史还没剔除时就宣布本轮结束。
-   */
-  settleDeferred: boolean;
-  /**
-   * 这一轮收尾时要不要把会话写进存档（见 `settleTurn` 的第 1 步）。
-   *
-   * 只由「会产生对话内容」的回合置位：`send` / `handoff`。
-   * `migrate` **不能**置位——它在交接前已经把**完整历史**存进旧 id，之后才把消息剔除；
-   * 如果收尾时再无条件写一次，写下去的会是被 prune 过的版本，把刚存好的完整存档盖掉。
-   * `autoMigrate` 反过来是安全的：它跑在 `send` 的那一轮里，收尾时 id 已经换成新的，
-   * 写下去的就是新会话的开场（与旧版 `onMigrated` 里那次落盘同一个效果）。
-   *
-   * 同一条标记也是「这一轮真正的终点」的判据，所以回收判定也挂在它上：`migrate` 中场
-   * 那次收尾不能触发回收（那时会话正要换 id）。
-   */
-  persistOnSettle: boolean;
-  /**
-   * 会话级的「自动落盘」策略：每轮收尾要不要写存档。
-   *
-   * 与上面那个**每轮**的 `persistOnSettle` 是两件事，别混：
-   *   · `persistOnSettle` —— 这一轮该不该写（`migrate` 的中场收尾不写）；
-   *   · `autoPersist` —— 这段会话值不值得写（一次性调用根本不进存档）。
-   * 两个都为真才落盘。`false` 时想留档只有显式 `save`（CLI 的 `ai --save`）。
-   */
-  autoPersist: boolean;
-  /**
-   * 保活区标记：`true` = 客户端说「我还要这一段」。
-   *
-   * **新会话缺省在保活区里**，这是故意的：两种漏法的代价不对称 ——
-   *   · 客户端忘了 `on:false`（切走 / 退出时没发）→ 会话多占几兆内存，泄漏；
-   *   · 客户端忘了 `on:true`（刚开会话还没来得及声明）→ 用户正看着的那段被回收掉。
-   * 后者是数据/体验事故，前者只是不够省。所以「默认留着，客户端不看了才放手」。
-   *
-   * 但它**不是**活着与否的全部依据：必须同时有持有者（`holders`），否则这条声明没有
-   * 人兑现（进程崩了、连接断了）—— 那时走宽限期回收，见文件头「「活着」的判据」。
-   * 断言这一点的实测（改这条判据**之前**）：把连接 `destroy()` 掉（不发任何帧），
-   * `session.list` 里那段仍在，只有 `keepAlive.set{on:false}` 才会当场收 —— 也就是说，
-   * 那时只有客户端发帧才能回收。
-   */
-  keepAlive: boolean;
-  /**
-   * 展示名（与 `id` 是两个事实：id 是身份，它是名字，改了不动 id）。
-   *
-   * `undefined` = 还没起过名：客户端拿首条用户消息兑底，服务端的自动标题也只在这种
-   * 情况下写（不覆盖手改，见 `autoTitle`）。
-   */
-  title?: string;
-  /**
-   * 会话级模型覆盖（三级解析的最内层）：本字段 > `AgentDefinition.modelId` > `AppConfig.defaultModel`。
-   *
-   * 之所以不直接改写 `agent.modelConfig`：它是**这段会话**的意思，不该抹到 Agent 定义上
-   * （那会改动所有用同一个 Agent 的会话）。换 Agent 时会被清掉（见 `setAgent`）。
-   */
-  modelId?: string;
-  /**
-   * 会话级模型**参数**覆盖（与上面那个 `modelId` 同一级）。
-   *
-   * 不透明载荷：本包不解释键名，只当数据搬（存档 ↔ 内存 ↔ 装配方），与 `messages` 同一
-   * 口径。什么时候它真正生效由 SDK 按档位决定（`resolveModelParams`）—— 参数跟着「模型
-   * 来自哪一级」走，模型来自 Agent 定义 / 全局兜底时这一份**不参与**合并（会话级模型配上
-   * 定义级参数，等于把旧模型的 `thinking` 发给新模型，端点回 400）。
-   *
-   * 换模型（`setModel`）与换 Agent（`setAgent`）都会清掉它：目标模型不一定接受旧参数，
-   * 与 `agent.model.set` 清思考参数同一个理由。
-   */
-  modelParams?: unknown;
-  /** 最后一次活动的时刻（ISO）：列表排序与「运行中」的判断都不靠文件系统 */
-  updatedAt: string;
-  /**
-   * 此刻看着这段会话的连接（不透明的连接 id）。
-   *
-   * 用 `Set` 而不是一个 id：一段会话被终端与桌面端**同时**看着是常态，谁先走都不该
-   * 影响另一个。id 的类型留在 `number` 而不是 daemon 的 `Connection` —— `service/`
-   * 不认识传输层，会话层只需要「若干个互不相干的身份」。
-   *
-   * 与 `keepAlive` 合起来才是「活着」，见文件头的判据一节。
-   */
-  holders: Set<number>;
-  /** 正在跑的回收倒计时（取消函数）；`null` = 没在计时 */
-  reclaimCancel: (() => void) | null;
-  /**
-   * 倒计时到点时这一轮还在跑：等它收尾再收（见 `reclaimNow`）。
-   *
-   * 必须记下来而不是「到点直接什么都不做」：一轮中途被收的代价是那一轮的产出与存档
-   * 一起丢（`detach()` 之后 `settleTurn` 不再跑），所以只能延后，不能取消。
-   */
-  reclaimOnSettle: boolean;
-  /** 交接服务（首次交接时创建；持有取消句柄，见 `handoffOf`） */
-  handoff: SessionHandoff | null;
-  /**
-   * 本轮的子 Agent（subAgentId → 条目）。
-   *
-   * 生命周期**只到本轮结束**：一轮结束后主 Agent 已给出最终答案，子 Agent 只剩历史
-   * 价值，留着会让栏目标签永远停在上一轮；`reload` / `adopt` / `close` 换了 Agent 或
-   * 换了会话 id，也一并清（它们换的是同一段会话的「底座」，旧条目上的实例已不再被
-   * 任何东西引用）。清空地集中在 `clearSubAgents`。
-   */
-  subAgents: Map<string, SubAgentEntry>;
-  /** 展示序号（本轮内从 1 起，每轮归零：标签回到「子AGENT1」） */
-  subAgentSeq: number;
-  /** id 序号（与展示序号分开：id 要稳定且不带含义，见 `onSubStart` 的注释） */
-  subAgentIdSeq: number;
-  /**
-   * 等客户端回答的问题（`questionId` → resolve）。
-   *
-   * 一个会话同一时刻只会有 0 或 1 个（自动迁移是串行的：`settleDeferred` 占着坑），
-   * 仍用 Map 是因为「过期的回答一律拒」这条判定靠它：认领时按 id 查表，查不到就是来晚了
-   * （超时 / 已答过 / 会话已收），而那三种情况对客户端是同一件事 —— 不必重试。
-   */
-  questions: Map<string, PendingQuestion>;
-  /** 提问序号（只在会话内递增）：认领靠它的而不是轮次，一轮里可以问不止一次 */
-  questionSeq: number;
-  detach: () => void;
-}
-
 /**
  * 默认的会话 id：`chat_YYYY_MM_DD_HH_mm_ss`。
  *
@@ -541,16 +309,6 @@ function defaultNextSessionId(): string {
 function isTitled(session: LiveSession): boolean {
   return Boolean(session.title?.trim());
 }
-
-/**
- * 等客户端回答「自动迁移用哪种方式交接」的上限：5 分钟。
- *
- * 进程内（TUI）是「人不在就一直等」：那一等只挂在自己终端上，用户回来接着选就行。
- * 远程模式完全不同 —— 提问之后这一段会话就在等答案，等多久就等于把它晾多久：用户
- * 看到的是「发不出下一条消息」（`turn-busy`），而且永远等不到这一轮的收尾。所以必须
- * 有个上限：5 分钟足够人从别的窗口回来点一下，又不至于把会话晾到没法用。
- */
-const ASK_TIMEOUT_MS = 300_000;
 
 /**
  * 「最后一个看着它的人也走了」之后还留多久：60 秒。
@@ -646,129 +404,14 @@ function apiModelOf(agent: AgentLike): string {
   return typeof model === "string" ? model : "";
 }
 
-/** 流末 chunk 的真实产物 token 数（`stream_options.include_usage`）；没有就是 undefined */
-function completionOf(chunk: any): number | undefined {
-  const value = chunk?.usage?.completion_tokens;
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-/**
- * 从一片 OpenAI 风格的流式 chunk 里取出正文与推理增量。
- *
- * 主 Agent 与子 Agent 共用这一份取法：两边刷的是同一条 SDK 事件（`chunk-parsed`），
- * 形状一模一样，写两份只会在某天 SDK 改字段时漂成一半对一半错。
- */
-function deltaOf(chunk: any): { text: string; reasoning: string } {
-  const delta = chunk?.choices?.[0]?.delta;
-  const text = typeof delta?.content === "string" ? delta.content : "";
-  const reasoning = typeof delta?.reasoning_content === "string" ? delta.reasoning_content : "";
-  return { text, reasoning };
-}
-
-/**
- * 从 core 那条**正在拼的 assistant 消息**里取出工具调用的组装态。
- *
- * 为什么读第一个参数（receiver）而不是去解析 chunk：组装早就做完了。core 的
- * `Agent.parseStreamData` 每消费一片就**就地**把 delta 拼进 `receiver`，然后才
- * `emit("chunk-parsed", receiver, chunk)`（`packages/core/src/Agent.ts`）。在这里再解析
- * 一遍 chunk，等于把 core 已经做过的拼装重做一份，而且半截 JSON 还得自己接 —— 正是
- * 本项目反复栽过的「第二份实现」。
- *
- * 读到的形状（同上一行引用处，逐字）：
- *
- *     receiver.tool_calls[index] = {
- *       index, id?, type?,
- *       function: { name, arguments },   // arguments 是**累积到此刻**的字符串
- *     }
- *
- * 两个已知的中间态，都按空值处理（不是兜底，是形状本来如此）：
- *   - 名字与参数分几片到达：core 只在本下标的第一个 delta 里见到名字，后续只带参数片段；
- *   - core 建对象时写的是 `{ ...默认值, ...delta.function }`，但同一行后面又摊了一次
- *     `...deltaToolCall`，于是头一片里的 `function` 可能是**这一片的子集**（只有 name、
- *     没有 arguments，或者反过来）—— 缺哪一半都有可能。
- */
-function toolCallsOf(receiver: unknown): ToolCallState[] {
-  const raw = (receiver as any)?.tool_calls;
-  if (!Array.isArray(raw)) return [];
-  const calls: ToolCallState[] = [];
-  for (const call of raw) {
-    // 空位只可能出现在装配中的数组上；跳过比崩掉诚实（这一轮的工具卡片少画一张，
-    // 下一片到达时它照样补上）
-    if (!call) continue;
-    calls.push({
-      index: call.index,
-      name: typeof call.function?.name === "string" ? call.function.name : "",
-      ...(typeof call.id === "string" ? { id: call.id } : {}),
-      arguments: typeof call.function?.arguments === "string" ? call.function.arguments : "",
-    });
-  }
-  return calls;
-}
-
-/**
- * 工具调用的**上报去重器** —— 只记「上一次报出去的是什么」，不是真相源。
- *
- * 为什么需要它：参数边流边长，而 chunk 的粒度跟内容无关 —— 一个只带 `id` 的片、一个只带
- * `usage` 的收尾片、重连后重放的同一片，都会走到上报点。每片都发一次全量，客户端就要按帧
- * 重渲染那张工具卡片（一条长参数能把界面拖成幻灯片）。
- *
- * 为什么判据这么便宜：组装**只追加**（core 那边是 `arguments += …`），所以「变了没有」
- * 等价于「个数变了、某个名字变了、某个 id 变了，或某个参数串的**长度**变了」。把参数串整个
- * 比一遍（`JSON.stringify`）既慢又没必要 —— 它只会往长里长。这条等价关系的前提是 core 的
- * 追加式组装，那边哪天改成覆盖式重写，这里得跟着看。
- */
-class ToolCallReporter {
-  /** 上一次报出去的形状（只留判据要用的四个字段） */
-  private reported: ToolCallState[] = [];
-
-  /** 有没有变化？有就顺手记成新的「上一次」，调用方据此决定发不发 */
-  update(next: readonly ToolCallState[]): boolean {
-    const last = this.reported;
-    const changed =
-      next.length !== last.length ||
-      next.some((call, i) => {
-        const prev = last[i]!;
-        return (
-          call.index !== prev.index ||
-          call.name !== prev.name ||
-          call.id !== prev.id ||
-          call.arguments.length !== prev.arguments.length
-        );
-      });
-    if (changed) this.reported = next.map((call) => ({ ...call }));
-    return changed;
-  }
-
-  /** 一轮结束：影子清零（与 `PhaseTracker.reset()` 同一个时机，见 `resetStreamState`） */
-  reset(): void {
-    this.reported = [];
-  }
-}
-
-/**
- * 按**实例**找回它的条目。
- *
- * `sub-agent-end` / `error` 的载荷是实例而不是 id（SDK 侧就这么给），而协议里的 id 是
- * 本层分配的 —— 两边得在这里对上。
- */
-function subAgentEntryOf(session: LiveSession, subAgent: SubAgentLike): SubAgentEntry | undefined {
-  for (const entry of session.subAgents.values()) {
-    if (entry.agent === subAgent) return entry;
-  }
-  return undefined;
-}
-
 export class SessionManager {
   private readonly createAgent: (input: CreateAgentInput) => Promise<AgentLike>;
   private readonly nextSessionId: () => string;
-  private readonly storeFactory: SessionManagerOptions["storeFor"];
   private readonly invalidateScope: SessionManagerOptions["invalidateScope"];
   private readonly handoffOptions: SessionManagerOptions["handoff"];
-  /** 等客户端回答的时限（可注入，缺省见 `ASK_TIMEOUT_MS`） */
-  private readonly askTimeoutMs: number;
   private readonly sessions = new Map<string, LiveSession>();
   private readonly hub: EventHub;
-  /** 「没人看着之后还留多久」（宽限期，见文件头的判据） */
+  /** 「没人看着之后还留多久」（宽限期，见文件头的规则） */
   private readonly sessionIdleTimeoutMs: number;
   /** 倒计时实现（可注入：时间驱动的判定得能手动“到点”） */
   private readonly schedule: (ms: number, run: () => void) => () => void;
@@ -780,14 +423,18 @@ export class SessionManager {
   private readonly resolveSessionModel: SessionManagerOptions["resolveSessionModel"];
   /** 自建的 hub 由自己清理；外面传进来的归外面管 */
   private readonly ownsHub: boolean;
+  /** SDK 事件 → 协议事件的翻译（含流式影子与子 Agent 栏目） */
+  private readonly events: EventBridge;
+  /** 存档的形状与写盘 */
+  private readonly store: Persistence;
+  /** 向客户端提问与等回答 */
+  private readonly questions: QuestionBroker;
 
   constructor(options: SessionManagerOptions) {
     this.createAgent = options.createAgent;
     this.nextSessionId = options.nextSessionId ?? defaultNextSessionId;
-    this.storeFactory = options.storeFor;
     this.invalidateScope = options.invalidateScope;
     this.handoffOptions = options.handoff;
-    this.askTimeoutMs = options.askTimeoutMs ?? ASK_TIMEOUT_MS;
     this.sessionIdleTimeoutMs = options.sessionIdleTimeoutMs ?? DEFAULT_SESSION_IDLE_TIMEOUT_MS;
     this.schedule = options.schedule ?? defaultSchedule;
     this.autoTitleFn = options.autoTitle;
@@ -795,6 +442,31 @@ export class SessionManager {
     this.resolveSessionModel = options.resolveSessionModel;
     this.hub = options.hub ?? new EventHub();
     this.ownsHub = !options.hub;
+
+    // 三块协作者只拿**函数**，不拿本类的实例：它们不该能调 `close()`、`list()` 这类动作
+    // （那会把「谁负责什么」重新搅回一起，也把拆出来的意义抹掉）。
+    this.events = new EventBridge({
+      hub: this.hub,
+      // 收尾与失败是**会话层**的规则（落盘、发 `session.turnEnd`、判回收），事件桥只转达
+      // 「SDK 说完了 / SDK 报错了」这两个事实
+      settleTurn: (session) => void this.settleTurn(session),
+      failTurn: (session, failure) => this.failTurn(session, failure),
+      notice: (sessionId, notice) => this.notice(sessionId, notice),
+    });
+    this.store = new Persistence({
+      ...(options.storeFor ? { storeFor: options.storeFor } : {}),
+      nextSessionId: this.nextSessionId,
+      isLive: (sessionId) => this.sessions.has(sessionId),
+      notice: (sessionId, notice) => this.notice(sessionId, notice),
+    });
+    this.questions = new QuestionBroker({
+      hub: this.hub,
+      ...(options.askTimeoutMs !== undefined ? { askTimeoutMs: options.askTimeoutMs } : {}),
+      // 按**实例**判活（不只是「表里有这个 id」）：换过 id 之后旧对象还在内存里跑完这一轮，
+      // 但它已经不是「当前的这段会话」了
+      isLive: (session) => this.sessions.get(session.id) === session,
+      notice: (sessionId, notice) => this.notice(sessionId, notice),
+    });
   }
 
   /**
@@ -827,7 +499,7 @@ export class SessionManager {
       ...(modelParams !== undefined ? { modelParams, modelParamsLevel: level } : {}),
       apiModel: apiModelOf(session.agent),
       turnId: session.turnId,
-      phase: this.visiblePhase(session),
+      phase: this.events.phaseOf(session),
       messages: [...session.agent.messages],
       ...(session.agent.lastUsage !== undefined ? { lastUsage: session.agent.lastUsage } : {}),
     };
@@ -856,19 +528,7 @@ export class SessionManager {
 
   /** 把当前会话写进工作区存档，并把它设为「上一轮会话」 */
   async save(sessionId: string, options: { setAsLast?: boolean } = {}): Promise<SessionSaveResult> {
-    const session = this.require(sessionId);
-    const store = await this.storeFor(session.workspaceId);
-    if (!store)
-      throw codedError(
-        ERROR_CODES.noStore,
-        `no session store for workspace ${session.workspaceId}`,
-      );
-
-    await store.write(this.recordOf(session));
-    // `setAsLast:false` 是一次性调用的归档（`ai --save`）：存下来是为了事后翻看，
-    // 但「本工作区上一轮会话」仍该是用户真正聊过的那一段。
-    if (options.setAsLast !== false) await store.setLastSession(session.id);
-    return { saved: true, sessionId: session.id };
+    return await this.store.save(this.require(sessionId), options);
   }
 
   /**
@@ -876,32 +536,37 @@ export class SessionManager {
    *
    * 与 {`migrate`} 的区别：这是**同一段对话**换个名字，所以 `turnId` 不动；
    * 删旧档是必须的 —— 同一份对话在 `/load` 列表里出现两条，用户分不清哪条是新的。
+   *
+   * 两半分居两处：写新档 / 删旧档 / 挪指针在 `Persistence.saveAs`（存档侧），换键在
+   * `rekey`（注册表侧）。撞上另一段活会话的 `session-exists` 在存档侧就抛了 —— 那时
+   * 盘上什么都没动。
    */
   async saveAs(sessionId: string, id: string): Promise<SessionSaveAsResult> {
     const session = this.require(sessionId);
-    const store = await this.storeFor(session.workspaceId);
-    if (!store)
-      throw codedError(
-        ERROR_CODES.noStore,
-        `no session store for workspace ${session.workspaceId}`,
-      );
-    // 目标 id 已被另一段活会话占着：不静默顶掉它
-    if (id !== session.id && this.sessions.has(id)) {
-      throw codedError(ERROR_CODES.sessionExists, `session already exists: ${id}`);
-    }
-
     const previousId = session.id;
-    await store.write(this.recordOf(session, session.agent.messages, id));
-    await store.setLastSession(id);
-    if (id !== previousId) await store.remove(previousId);
+    const result = await this.store.saveAs(session, id);
+    this.rekey(session, previousId, id);
+    return result;
+  }
 
+  /**
+   * 活会话换了 id：**注册表与客户端可见的那一半**。
+   *
+   * 三件事必须一起做：注册表换键（旧 id 立刻 `unknown-session`）、清子 Agent 栏目（旧条目
+   * 属于上一段）、发 `session.idChanged`（自动迁移发生在一轮内部，客户端没有响应可接，
+   * 只能靠这条事件把后续请求与事件过滤切到新 id）。
+   *
+   * 换键的是**同一个对象**：会话不是「新建一段」，所以 `turnId`、消息、holders 都跟着走。
+   */
+  private rekey(session: LiveSession, previousId: string, nextId: string): void {
     this.sessions.delete(previousId);
-    session.id = id;
-    this.sessions.set(id, session);
-    if (id !== previousId) {
-      this.emit({ event: SESSION_EVENTS.idChanged, from: previousId, sessionId: id });
+    session.id = nextId;
+    this.sessions.set(nextId, session);
+    // 换 id = 这是新的一段会话：上一段里的子 Agent 不该跟着过来
+    this.events.clearSubAgents(session);
+    if (nextId !== previousId) {
+      this.emit({ event: SESSION_EVENTS.idChanged, from: previousId, sessionId: nextId });
     }
-    return { saved: true, sessionId: id };
   }
 
   /**
@@ -936,16 +601,9 @@ export class SessionManager {
     session.settleDeferred = true;
     const previousId = session.id;
     try {
-      const store = await this.storeFor(session.workspaceId);
-      if (!store) {
-        throw codedError(
-          ERROR_CODES.noStore,
-          `no session store for workspace ${session.workspaceId}`,
-        );
-      }
+      const store = await this.store.requireStore(session.workspaceId);
 
-      await store.write(this.recordOf(session, [...session.agent.messages], previousId));
-      await store.setLastSession(previousId);
+      await this.store.archive(session, previousId, store);
       this.notice(previousId, {
         level: "info",
         code: SESSION_NOTICE_CODES.handoffArchived,
@@ -957,128 +615,11 @@ export class SessionManager {
         mode,
         DEFAULT_MIGRATION_STRATEGY,
       );
-      await this.adopt(session, store);
+      const nextId = await this.store.adopt(session, store);
+      this.rekey(session, previousId, nextId);
     } finally {
       session.settleDeferred = false;
     }
-  }
-
-  /**
-   * 问客户端「这次自动迁移用哪种方式交接」；返回 `null` = 用户选择不交接。
-   *
-   * 这是把旧版 TUI 的三选一（自己写 / 独立摘要 / 不交接）搬到线上。谁来写交接文档是
-   * **用户的决定**（保真 vs 便宜、要不要现在就走），服务端替他选 `self`，等于把他没有的
-   * 能力当成他的选择 —— 这正是「基础交互被前后端分离改掉」的那类回归。
-   *
-   * 本方法只负责两件事：把触发时的两个数（`promptTokens` / `handoffTokens`）交给
-   * {@link askQuestion}，并把答案翻译成 `HandoffMode | null`。提问本身的四条约束
-   * （没人在看就不问 / 先登记再发 / 有时限 / 三个出口都清表）在 `askQuestion` 里，
-   * 不在这里重写一遍——那是一处会与实现无关地漂的副本。
-   *
-   * 兜底是 `null`（本次不交接）而不是 `self`：迁移要不要现在做，是用户的决定；服务端替他
-   * 选 `self`，等于把「用户没有的能力」当成「用户的选择」。上下文继续长由硬线护栏兜。
-   */
-  private async askHandoffMode(
-    session: LiveSession,
-    info: AutoMigrateTriggerInfo,
-  ): Promise<HandoffMode | null> {
-    const choice = await this.askQuestion(session, {
-      kind: "handoff-mode",
-      input: "select",
-      // 选项 id 就是 `HandoffMode` 的字面量：文案由客户端按 `kind + id` 查词典
-      options: ["self", "summary"],
-      params: { promptTokens: info.promptTokens, handoffTokens: info.handoffTokens },
-      allowSkip: true,
-      // **兜底是「什么都不做」**：迁移要不要现在做、用哪种方式，是用户的决定。服务端替他
-      // 选 `self`，等于把「用户没有的能力」当成「用户的选择」。（旧版在无人可问时默认
-      // `self` 自动迁移，这条已经按产品决定改掉：不迁移，上下文继续长由硬线护栏兜。）
-      fallback: null,
-    });
-
-    if (choice === "self" || choice === "summary") return choice;
-
-    // 跳过（用户选的 / 兜底走到这儿）：说一句「本次没迁」，否则用户只会看到上下文继续涨
-    this.noticeIfAlive(session, {
-      level: "info",
-      code: SESSION_NOTICE_CODES.migrationSkipped,
-    });
-    return null;
-  }
-
-  /**
-   * 问客户端一个问题，等它的答案（`session.answer`）。
-   *
-   * 四条规矩都写在这一个方法里，因为它们是**提问**这件事本身的约束（不是交接的）：
-   *
-   * 1. **没人在看就不问**：返回 `fallback`。发出去没人看得见，等一个不会来的答案只是
-   *    把这一轮挂死（客户端已退出，而会话仍在服务端活着）。
-   * 2. **先登记再发事件**：事件同步推给订阅者，客户端可能在同一轮事件循环里就答了 ——
-   *    先发后登记会让那条回答撞上「表里没有这个 id」。
-   * 3. **等，但有时限**（`askTimeoutMs`）：到点用 `fallback` 收场，不留悬挂的一轮。
-   * 4. **三条出口都清表**（答了 / 超时 / 被 `releaseQuestions` 放行）：清表是「来晚了」
-   *    的唯一判据；不清就会让迟到的回答重复生效。
-   */
-  private async askQuestion(session: LiveSession, spec: AskQuestionSpec): Promise<string | null> {
-    if (this.hub.watcherCount() === 0) return spec.fallback;
-
-    const questionId = `q-${++session.questionSeq}`;
-    const answer = new Promise<string | null>((resolve) => {
-      session.questions.set(questionId, { resolve, fallback: spec.fallback });
-    });
-
-    this.emit({
-      event: SESSION_EVENTS.question,
-      sessionId: session.id,
-      questionId,
-      kind: spec.kind,
-      input: spec.input,
-      ...(spec.options ? { options: spec.options } : {}),
-      params: spec.params ?? {},
-      allowSkip: spec.allowSkip ?? false,
-      fallback: spec.fallback,
-    });
-
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timedOut = new Promise<string | null>((resolve) => {
-      timer = setTimeout(() => resolve(spec.fallback), this.askTimeoutMs);
-    });
-    try {
-      return await Promise.race([answer, timedOut]);
-    } finally {
-      clearTimeout(timer);
-      session.questions.delete(questionId);
-    }
-  }
-
-  /**
-   * 发一条会话内通知，但会话可能已经不在（提问方被放行后继续跑的那一刻常见）。
-   *
-   * 不是在吞错 `notice()` 的错误：「会话已经没了」对这条路径是**正常结局**，而不是异常。
-   */
-  private noticeIfAlive(session: LiveSession, notice: NoticePayload): void {
-    if (!this.sessions.has(session.id)) return;
-    this.notice(session.id, notice);
-  }
-
-  /**
-   * 把挂着的提问全部按默认执行者放行。
-   *
-   * 什么时候需要它：会话被关了（`close` / `dispose`）、或这一轮已经收尾 —— 这两种情况下
-   * 不会再有回答进来，而 `askHandoffMode` 那边还挂着一个 promise。不放行它，那一轮就要
-   * 白等到 5 分钟超时，期间这段会话一直占着闸门（后面的 `send` 全报 `turn-busy`）。
-   *
-   * 用 `self` 而不是「跳过」：关闭/收尾是**流程**结束了，不是用户表达了「这次不交接」；
-   * 按默认执行者继续，与「没有客户端在看」同一口径。真到了迁移那一步，如果会话已经不在，
-   * `autoMigrate` 会自己打住。
-   */
-  private releaseQuestions(session: LiveSession): void {
-    if (session.questions.size === 0) return;
-    // 先清表再 resolve：resolve 会让提问方继续跑（可能立即发起新的提问）
-    const pending = [...session.questions.values()];
-    session.questions.clear();
-    // 每个问题按**它自己的**兜底收场。用统一值会出事：交接类问题的兜底是「什么都不做」，
-    // 而“流程结束了”并不意味着用户表达了「这次不交接」以外的东西 —— 由提问方决定。
-    for (const question of pending) question.resolve(question.fallback);
   }
 
   /**
@@ -1143,14 +684,7 @@ export class SessionManager {
     strategy: MigrationStrategy = DEFAULT_MIGRATION_STRATEGY,
   ): Promise<SessionMigrateResult> {
     const session = this.requireIdle(sessionId);
-    const store = await this.storeFor(session.workspaceId);
-    // 迁移必须能存档：prune 之后旧历史只存在于存档里（内存里只剩模板 + 断点）；omit 的
-    // 「旧消息不再发给模型」这条事实也只能靠存档记住（否则 attach 回来又是一份干净历史）
-    if (!store)
-      throw codedError(
-        ERROR_CODES.noStore,
-        `no session store for workspace ${session.workspaceId}`,
-      );
+    const store = await this.store.requireStore(session.workspaceId);
 
     this.beginTurn(session);
     session.settleDeferred = true;
@@ -1160,8 +694,7 @@ export class SessionManager {
     try {
       const previousId = session.id;
       if (strategy === "prune") {
-        await store.write(this.recordOf(session, [...session.agent.messages], previousId));
-        await store.setLastSession(previousId);
+        await this.store.archive(session, previousId, store);
         this.notice(previousId, {
           level: "info",
           code: SESSION_NOTICE_CODES.handoffArchived,
@@ -1181,7 +714,11 @@ export class SessionManager {
       await this.settleTurn(session);
 
       // 换 id 只属于 prune（理由见方法注释）：omit 下 `session.id` 原样返回
-      const nextId = strategy === "prune" ? await this.adopt(session, store) : session.id;
+      let nextId = session.id;
+      if (strategy === "prune") {
+        nextId = await this.store.adopt(session, store);
+        this.rekey(session, previousId, nextId);
+      }
       return {
         sessionId: nextId,
         handoffPath: outcome.handoffPath,
@@ -1231,7 +768,7 @@ export class SessionManager {
     this.adoptAgent(session, agent);
 
     // 存档里记着 `agentId`：不写就会在下次 `attach` 时按旧 Agent 装回来
-    await this.writeSession(session);
+    await this.store.write(session);
 
     return await this.snapshot(sessionId);
   }
@@ -1271,7 +808,7 @@ export class SessionManager {
     this.adoptAgent(session, agent);
 
     // 覆盖属于存档的一份事实（`SessionRecord.modelId`）：不写，重启 / `attach` 就丢
-    await this.writeSession(session);
+    await this.store.write(session);
 
     return await this.snapshot(sessionId);
   }
@@ -1307,7 +844,7 @@ export class SessionManager {
     this.adoptAgent(session, agent);
 
     // 与 `setModel` 同一个理由：不落盘，重启 / `attach` 回来就退回定义那份参数
-    await this.writeSession(session);
+    await this.store.write(session);
 
     return await this.snapshot(sessionId);
   }
@@ -1363,7 +900,7 @@ export class SessionManager {
       // 自动迁移：SDK 的插件在**一轮内部**触发，落地动作必须回到会话层
       autoMigrate: (mode) => this.autoMigrate(session.id, mode),
       // 谁来写交接文档由用户在 `session.question` 里定（会话层向客户端提问并等回答）
-      resolveMode: (info) => this.askHandoffMode(session, info),
+      resolveMode: (info) => this.questions.askHandoffMode(session, info),
     });
   }
 
@@ -1381,10 +918,10 @@ export class SessionManager {
     session.agent = agent;
     session.turnFailed = null;
     session.turnSettled = true;
-    this.resetStreamState(session);
+    this.events.resetStreamState(session);
     // 换了 Agent：旧子 Agent 实例连同它们的对话一起退场（它们属于旧底座）
-    this.clearSubAgents(session);
-    session.detach = this.attachEvents(session);
+    this.events.clearSubAgents(session);
+    session.detach = this.events.attach(session);
   }
 
   /**
@@ -1407,6 +944,12 @@ export class SessionManager {
    *     `modelLevelOf` 读的是那次解析的产物，与 `snapshot` 报的是同一件事实；
    *   · 存档条目 —— 只有 `SessionRecord`，没有实例，只能问注入的 `resolveSessionModel`
    *     （本层不读配置）。没注入 / 解析失败就省掉这两个字段，那一条照旧列出。
+   *
+   * ## 性能（这条路径挂在「点开会话」上，别让它退化成每条一次 IO）
+   *
+   * 存档那一侧**只读一次清单**（`store.list()`），解析缓存按 `agentId + 会话级覆盖`
+   * 在本次调用内去重；活会话那一侧直接读内存。所以成本是「一次 `list()` + 每种
+   * agentId/覆盖组合一次解析」，与会话条数无关。
    */
   async list(
     workspaceId: string,
@@ -1429,8 +972,8 @@ export class SessionManager {
     const resolvedModels = new Map<string, { modelId: string; level: ModelLevel } | null>();
 
     if (options.includeSaved !== false) {
-      const store = await this.storeFor(workspaceId);
-      // 没有存档不算错：活会话仍然列得出来（与 `listSaved` 的 `no-store` 不同口径——
+      const store = await this.store.store(workspaceId);
+      // 没有存档不算错：活会话仍然列得出来（与 `last` 的 `no-store` 不同口径——
       // 那条是「我要存档却不能给」，这条是「预览全部」，少一半总比报错有用）
       for (const entry of (await store?.list()) ?? []) {
         const resolved = await this.archivedModelOf(entry, resolvedModels);
@@ -1470,7 +1013,7 @@ export class SessionManager {
         messageCount: session.agent.messages.length,
         updatedAt: session.updatedAt,
         live: true,
-        phase: this.visiblePhase(session),
+        phase: this.events.phaseOf(session),
       });
     }
 
@@ -1533,12 +1076,12 @@ export class SessionManager {
     const session = this.sessions.get(input.sessionId);
     if (session) {
       session.title = title;
-      const store = await this.storeFor(session.workspaceId);
-      if (store) await store.write(this.recordOf(session));
+      const store = await this.store.store(session.workspaceId);
+      if (store) await store.write(this.store.recordOf(session));
       return { sessionId: session.id, title };
     }
 
-    const store = await this.storeFor(input.workspaceId);
+    const store = await this.store.store(input.workspaceId);
     if (!store) throw codedError(ERROR_CODES.noStore, `no session store for ${input.workspaceId}`);
     const record = await store.read(input.sessionId);
     if (!record)
@@ -1561,7 +1104,7 @@ export class SessionManager {
    *   3. 只删本工作区的：`storeFor(workspaceId)` 就属于那一个工作区，不存在“删错地方”。
    */
   async remove(input: { workspaceId: string; sessionId: string }): Promise<SessionRemoveResult> {
-    const store = await this.storeFor(input.workspaceId);
+    const store = await this.store.store(input.workspaceId);
     const session = this.sessions.get(input.sessionId);
     const archived = store ? await store.exists(input.sessionId) : false;
     if (!session && !archived) return { removed: false };
@@ -1592,13 +1135,11 @@ export class SessionManager {
    * 算不上额外开销（指针为空 / 存档注定要删时更是省了一次白跑）。
    *
    * 没有指针、或指针指向的存档已不在时都回 `null`（客户端据此走新会话）；连存档都没
-   * 注入时明确报 `no-store`，与 `listSaved` / `save` 同一口径 —— 不假装「这个工作区
+   * 注入时明确报 `no-store`，与 `save` / `rollback` 同一口径 —— 不假装「这个工作区
    * 没有上一轮」。
    */
   async last(workspaceId: string): Promise<SessionLastResult> {
-    const store = await this.storeFor(workspaceId);
-    if (!store)
-      throw codedError(ERROR_CODES.noStore, `no session store for workspace ${workspaceId}`);
+    const store = await this.store.requireStore(workspaceId);
     const pointer = await store.lastSession();
     if (!pointer) return { sessionId: null };
     const record = await store.read(pointer.id);
@@ -1614,12 +1155,7 @@ export class SessionManager {
    */
   async rollback(sessionId: string, index: number): Promise<SessionRollbackResult> {
     const session = this.require(sessionId);
-    const store = await this.storeFor(session.workspaceId);
-    if (!store)
-      throw codedError(
-        ERROR_CODES.noStore,
-        `no session store for workspace ${session.workspaceId}`,
-      );
+    const store = await this.store.requireStore(session.workspaceId);
 
     const messages = session.agent.messages;
     if (!Number.isInteger(index) || index < 0 || index >= messages.length) {
@@ -1631,7 +1167,7 @@ export class SessionManager {
 
     const removedMessages = messages.splice(index);
     session.agent.messages = messages;
-    await store.write(this.recordOf(session, messages));
+    await store.write(this.store.recordOf(session, messages));
     await store.setLastSession(session.id);
 
     // 预填输入框用：被删掉的第一条用户消息（原文，不做任何“备注剥离”）
@@ -1665,7 +1201,7 @@ export class SessionManager {
   }
 
   async create(input: SessionCreateInput): Promise<SessionCreateResult> {
-    const store = await this.storeFor(input.workspaceId);
+    const store = await this.store.store(input.workspaceId);
 
     /**
      * id 从哪来，决定了撞车怎么办 —— 这是两件不同的事。
@@ -1723,7 +1259,7 @@ export class SessionManager {
       // 自动迁移：SDK 的插件在**一轮内部**触发，落地动作必须回到会话层
       autoMigrate: (mode) => this.autoMigrate(sessionId, mode),
       // 谁来写交接文档由用户在 `session.question` 里定（会话层向客户端提问并等回答）
-      resolveMode: (info) => this.askHandoffMode(session, info),
+      resolveMode: (info) => this.questions.askHandoffMode(session, info),
     });
     if (record && record.messages.length > 0) agent.messages = [...record.messages];
 
@@ -1744,7 +1280,6 @@ export class SessionManager {
       settleDeferred: false,
       persistOnSettle: false,
       autoPersist: input.persist !== false,
-      keepAlive: true,
       // 续接已有存档时把它自己的名字与模型覆盖带回来；新会话三个都空
       ...(record?.title !== undefined ? { title: record.title } : {}),
       ...(record?.modelId !== undefined ? { modelId: record.modelId } : {}),
@@ -1780,7 +1315,7 @@ export class SessionManager {
       questionSeq: 0,
       detach: () => {},
     };
-    session.detach = this.attachEvents(session);
+    session.detach = this.events.attach(session);
     this.sessions.set(sessionId, session);
     return { sessionId, agentId };
   }
@@ -1793,7 +1328,7 @@ export class SessionManager {
    */
   private async freeSessionId(
     base: string,
-    store: SessionStore | null | undefined,
+    store: SessionStore<Message> | null | undefined,
   ): Promise<string> {
     let candidate = base;
     for (let suffix = 2; ; suffix++) {
@@ -1829,7 +1364,7 @@ export class SessionManager {
     const live = this.sessions.get(input.sessionId);
     if (live) return { sessionId: live.id, agentId: live.agentId };
 
-    const store = await this.storeFor(input.workspaceId);
+    const store = await this.store.store(input.workspaceId);
     const record = store ? await store.read(input.sessionId) : null;
     if (!record) {
       throw codedError(ERROR_CODES.sessionMissing, `no such session: ${input.sessionId}`);
@@ -1894,16 +1429,12 @@ export class SessionManager {
    *     会话已收）。客户端把选择器收掉就好，不重试、不报错 —— 把它报成错误，用户会在
    *     “操作失败”里卡一辈子，而实际上服务端早就自己继续跑了；
    *   - 认领成功 → `{ answered: true }`，`askHandoffMode` 那边随之继续。
+   *
+   * 认领的判定在 `QuestionBroker`（清表是「来晚了」的唯一判据，那一处实现）；
+   * 本方法只负责「先确认会话存在」—— 「拿错 id」与「来晚了」必须是两个不同的答案。
    */
   answer(sessionId: string, questionId: string, choice: string | null): SessionAnswerResult {
-    const session = this.require(sessionId);
-    const pending = session.questions.get(questionId);
-    if (!pending) return { answered: false };
-    // 先摘表再 resolve：同一个 questionId 的第二次回答必须落进「来晚了」那条分支，
-    // 而不是把同一个问题答两遍（第二遍的 promise 已经没人等了）
-    session.questions.delete(questionId);
-    pending.resolve(choice);
-    return { answered: true };
+    return this.questions.answer(this.require(sessionId), questionId, choice);
   }
 
   cancel(sessionId: string): SessionCancelResult {
@@ -1923,10 +1454,10 @@ export class SessionManager {
     this.cancelReclaim(session);
     session.handoff?.abort();
     // 会话已经收了：挂着的提问不会再有答案 —— 放行它，别让提问方白等到超时
-    this.releaseQuestions(session);
+    this.questions.release(session);
     session.detach();
     // 会话已经不存在了：不留任何指向它的残留（子 Agent 里的实例也跟着退场）
-    this.clearSubAgents(session);
+    this.events.clearSubAgents(session);
     this.sessions.delete(sessionId);
     return { closed: true };
   }
@@ -1938,6 +1469,8 @@ export class SessionManager {
    * 而「我要一直看着它」是另一个事实 —— 传输层知道那条连接什么时候断，会话层不知道。
    * 由**处理层**（`sessionHandlers`）在 `attach`/`create` 成功后登记，并挂上
    * `connection.onClose(→ dropHolder)`：两个方向都不需要客户端额外发帧。
+   *
+   * 这是「活着」的**唯一**来源（见文件头的规则）：所以它也是回收倒计时的取消点。
    */
   registerHolder(sessionId: string, holder: number): void {
     const session = this.sessions.get(sessionId);
@@ -1957,18 +1490,24 @@ export class SessionManager {
   }
 
   /**
-   * 保活区开关（`session.keepAlive.set`）：客户端说「我还要」或「我不看了」。
+   * 关掉一个工作区下**全部**活会话（删工作区时用）。
    *
-   * 它只改**声明**，不直接决定回收：两个方向都交给同一条判定
-   * （`scheduleReclaim`）。`on:false` 且空闲时宽限期取 0 → 当场回收；一轮还在跑时
-   * 不动它（用户可能刚切走又想回来，而正在跑的一轮中途被收掉比多占几兆内存严重），
-   * 那一轮收尾时再按同一条判定收（见 `settleTurn`）。
+   * 为什么这条归本类而不是归 handler：它需要知道「哪些会话是活的」，而那是本类的注册表。
+   * 曾经写在 `sessionHandlers` 里（先 `list(workspaceId, {includeSaved:false})` 再逐个
+   * `close()`），两个后果都不好：一是**业务规则跑到传输层**去了（handler 只该验参数与接线），
+   * 二是那次 `list()` 白白拼了一整套 `SessionListEntry`（生效模型、消息条数、阶段）只为了
+   * 拿一串 id —— 而这类会话恰恰是「正要被删掉的」，取那些字段一点用都没有。
+   *
+   * 为什么非要关：目录删了、会话还在跑的话，它下一轮收尾会把存档写回来
+   * （`FileSessionStore.write` 自己会 `mkdir`），刚删掉的工作区就**部分复活**了。
+   * `close()` 之后那条轮跑完也不再写档。
+   *
+   * 幂等：本来就没有活会话时什么都不做。
    */
-  keepAliveSet(sessionId: string, on: boolean): SessionKeepAliveSetResult {
-    const session = this.require(sessionId);
-    session.keepAlive = on;
-    this.scheduleReclaim(session);
-    return { sessionId, keepAlive: on };
+  closeWorkspace(workspaceId: string): void {
+    for (const session of [...this.sessions.values()]) {
+      if (session.workspaceId === workspaceId) this.close(session.id);
+    }
   }
 
   /** 收摊：摘掉所有事件、清空会话（守护进程退出时调用） */
@@ -1976,7 +1515,7 @@ export class SessionManager {
     for (const session of this.sessions.values()) {
       this.cancelReclaim(session);
       session.handoff?.abort();
-      this.releaseQuestions(session);
+      this.questions.release(session);
       session.detach();
     }
     this.sessions.clear();
@@ -1984,255 +1523,8 @@ export class SessionManager {
   }
 
   // ==================================================================
-  // SDK 事件 → 协议事件
+  // 内部
   // ==================================================================
-
-  private attachEvents(session: LiveSession): () => void {
-    const { events } = session.agent;
-
-    const onOpen = () => {
-      session.phase.opened();
-      this.emitPhase(session);
-    };
-
-    /**
-     * 正文 / 推理增量：**第二个参数才是 chunk**。
-     *
-     * core 的 `Agent.parseStreamData` 发的是 `emit("chunk-parsed", receiver, chunk)`（两个
-     * 参数）：第一个是那条正在拼的 assistant 消息，第二个才是这一片原始 chunk。这里曾经写成
-     * `(receiver) => deltaOf(receiver?.chunk ?? receiver)` —— 拿到的永远是**消息本身**，
-     * `choices[0].delta` 恒空，于是主 Agent 与子 Agent 的正文增量**一条都推不出去**（界面只能
-     * 等 `session.turnEnd` 之后靠快照一次性刷出来）；唯一漏过去的是流末那片（core 把 `usage` 挂在消息
-     * 上，`completionOf(消息)` 恰好读得到），也正是它让这个 bug 看起来像“偶尔掉了”。
-     *
-     * 单测当时没抓住：假 Agent 是按**单参**形状 fire 的，恰好喂饱了 `receiver?.chunk ?? receiver`
-     * 那条“两种形状都认”的兼容写法。假件的形状必须照拄真件的形状，否则它测的是想象。
-     */
-    const onChunk = (receiver: unknown, chunk: any) => {
-      session.phase.delta(chunk);
-      this.emitPhase(session);
-      // 工具调用的组装态：读的是第一个参数（`receiver`），不是 `chunk` —— 理由见 `toolCallsOf`。
-      // 它让客户端在流式期间就能画出工具卡片，不必等 `session.turnEnd` 之后那份快照。
-      this.emitToolCalls(session, receiver);
-
-      const { text, reasoning } = deltaOf(chunk);
-      const completionTokens = completionOf(chunk);
-      // 只带 usage 的收尾 chunk 也要出去：客户端靠它校准速率（否则 tok/s 一直是估算值）
-      if (!text && !reasoning && completionTokens === undefined) return;
-      this.emit({
-        event: SESSION_EVENTS.delta,
-        sessionId: session.id,
-        turnId: session.turnId,
-        text,
-        reasoning,
-        ...(completionTokens === undefined ? {} : { usage: { completionTokens } }),
-      });
-    };
-
-    const onParsed = (receiver: any) => {
-      session.phase.streamEnded(receiver?.message ?? receiver);
-      this.emitPhase(session);
-    };
-
-    // 工具跑完一个就报一次：并行时先完成的那个从「等待」里消失，
-    // 否则界面会一直念着已经结束的工具名。
-    // 同一刻顺手把**刚定型的那条结果消息**推上线：core 就在这一刻把 `status` 翻成终态
-    // （`markResult` 是唯一的结果定型点），再往后拖就只有等到轮末的快照了。
-    const onToolCallEnd = () => {
-      this.emitPhase(session);
-      this.emitAppendedMessages(session);
-    };
-
-    const onError = (error: any) => {
-      this.failTurn(session, {
-        code: error?.code ?? "internal",
-        message: error?.message ?? String(error),
-      });
-    };
-
-    const onFinally = () => {
-      void this.settleTurn(session);
-    };
-
-    /**
-     * 一个子 Agent 开始了（core 的 `AgentTool` / `AgentToolLazy` 在委派边界广播）。
-     *
-     * 两个计数器分开：`index` 是**展示序号**（本轮内从 1 起，栏目标签直接印它），
-     * `subAgentId` 是**稳定标识**（客户端拿它当选中态与 React key）。分开的理由是它们
-     * 回答不同的问题 —— 「用户看到的第几栏」与「是哪一次委派」，合并成一个数字就会变成
-     * 「id 带上了展示含义」，改一次展示就得动一次 id。两者都只在**本轮**内唯一：一轮
-     * 结束时列表与计数器一起归零（见 `clearSubAgents`），而客户端也在 `session.turnEnd` 上
-     * 清自己的列表，所以下一轮的 `sub-1` 不会被任何遗留的选中态认领。
-     *
-     * 子 Agent 自己的事件流只挂两条，且 **`chunk-parsed` 绝不碰 `session.phase`**：
-     * 此刻主 Agent 正在等发起委派的那个工具（如 `call_skill_sub_agent`）返回，阶段
-     * 应停在「等待 xxx 返回」；子 Agent 的思考 / 输出是工具内部的事，拿它的 delta 去改
-     * 主阶段会让界面变成「输出中」，正好盖掉用户最需要知道的那句话。
-     *
-     * 这里挂的监听**不用**在 `sub-agent-end` 撤销：子 Agent 实例是「每次委派新建」的
-     * （core 的 `AgentTool.exec()` 里 `new Agent(...)`、`AgentToolLazy.exec()` 里
-     * `buildAgent(...)`），随本次 run 结束回收，监听器跟着走 —— 与 CLI 侧同一个理由。
-     */
-    const onSubStart = ({ subAgent }: { subAgent: SubAgentLike }) => {
-      const entry: SubAgentEntry = {
-        id: `sub-${++session.subAgentIdSeq}`,
-        index: ++session.subAgentSeq,
-        agent: subAgent,
-        status: "running",
-      };
-      session.subAgents.set(entry.id, entry);
-      this.emit({
-        event: SESSION_EVENTS.subAgentStarted,
-        sessionId: session.id,
-        turnId: session.turnId,
-        subAgentId: entry.id,
-        index: entry.index,
-      });
-
-      /** 子 Agent 的正文增量：只带 `subAgentId` 推给客户端，不推进主阶段（理由见上） */
-      const onSubChunk = (_receiver: unknown, chunk: any) => {
-        // 同上：第二个参数才是 chunk（`chunk-parsed` 是两参，见 `onChunk`）
-        const { text, reasoning } = deltaOf(chunk);
-        if (!text && !reasoning) return;
-        this.emit({
-          event: SESSION_EVENTS.delta,
-          sessionId: session.id,
-          turnId: session.turnId,
-          subAgentId: entry.id,
-          text,
-          reasoning,
-        });
-      };
-
-      /**
-       * 子 Agent 出错：标签标 `failed`，错误原文送进通知栏。
-       *
-       * 先填字段再发事件：之后 SDK 还会发 `sub-agent-end`，而那条路径只在状态仍是
-       * `running` 时才置 `done` —— **`failed` 不被 `done` 覆盖**的安全网就挂在那里。
-       */
-      const onSubError = (error: any) => {
-        entry.status = "failed";
-        this.notice(session.id, {
-          level: "error",
-          code: SESSION_NOTICE_CODES.subAgentFailed,
-          params: { index: entry.index, message: error?.message ?? String(error) },
-        });
-        this.emitSubAgentEnded(session, entry);
-      };
-
-      subAgent.events.on("chunk-parsed", onSubChunk);
-      subAgent.events.on("error", onSubError);
-    };
-
-    const onSubEnd = ({ subAgent }: { subAgent: SubAgentLike }) => {
-      const entry = subAgentEntryOf(session, subAgent);
-      // 只把「还在跑」的置为完成：失败已由 `error` 监听标成 failed，不能被这里覆盖
-      if (!entry || entry.status !== "running") return;
-      entry.status = "done";
-      this.emitSubAgentEnded(session, entry);
-    };
-
-    events.on("open", onOpen);
-    events.on("chunk-parsed", onChunk);
-    events.on("parsed", onParsed);
-    events.on("tool-call-end", onToolCallEnd);
-    events.on("sub-agent-start", onSubStart);
-    events.on("sub-agent-end", onSubEnd);
-    events.on("error", onError);
-    events.on("finally", onFinally);
-
-    return () => {
-      events.off("open", onOpen);
-      events.off("chunk-parsed", onChunk);
-      events.off("parsed", onParsed);
-      events.off("tool-call-end", onToolCallEnd);
-      events.off("sub-agent-start", onSubStart);
-      events.off("sub-agent-end", onSubEnd);
-      events.off("error", onError);
-      events.off("finally", onFinally);
-    };
-  }
-
-  /**
-   * 把一个子 Agent 的终态发给客户端。
-   *
-   * 状态取**条目上的那个**（调用方在发之前已经写好）：`running` 走不到这里 ——
-   * 收尾只有两处（`error` 置 failed、`sub-agent-end` 仅在 running 时置 done）。
-   * 只信一处状态，事件与快照才不会一个说 done、一个说 failed。
-   */
-  private emitSubAgentEnded(session: LiveSession, entry: SubAgentEntry): void {
-    const status = entry.status === "failed" ? "failed" : "done";
-    this.emit({
-      event: SESSION_EVENTS.subAgentEnded,
-      sessionId: session.id,
-      turnId: session.turnId,
-      subAgentId: entry.id,
-      status,
-    });
-  }
-
-  /**
-   * 清空子 Agent 列表与展示序号。
-   *
-   * 为什么要清：子 Agent 是「内循环里工具调用的产物」，**只活在当前一轮**。一轮结束后
-   * 主 Agent 已给出最终答案，子 Agent 只剩历史价值；留着会让栏目标签停在一段已经过去
-   * 的对话上，而且下一轮的第一个子 Agent 会顶着上一轮的序号出现。`reload` / `setAgent`
-   * （换了 Agent）、`adopt`（换了会话 id：迁移 / 另存为）、`close` 同理：旧条目上的实例
-   * 已不再被任何东西引用。
-   *
-   * 两个计数器只有一个归零：
-   *   - **展示序号归零**：下一轮又是「子AGENT1」（用户看到的是「这一轮的第三个」）；
-   *   - **id 序号不归零**：`subAgentId` 是客户端选中态与 React key 的锚点，让它跨轮复用
-   *     得到同一个值，就会出现「上一轮残留的选中 id 突然接到新一轮的 sub-1 上」。id 不带
-   *     展示含义，多递增几次没有成本。
-   */
-  private clearSubAgents(session: LiveSession): void {
-    session.subAgents.clear();
-    session.subAgentSeq = 0;
-  }
-
-  /** 失败即收尾（`error` 之后 SDK 仍会发 `finally`，靠 `turnSettled` 去重） */
-  private failTurn(session: LiveSession, failure: { code: string; message: string }): void {
-    session.turnFailed = failure;
-    void this.settleTurn(session);
-  }
-
-  /**
-   * 把会话写进存档（并更新「本工作区上一轮会话」指针）。
-   *
-   * 两条规矩与旧版 `ConversationPersistPlugin` 逐字对齐：
-   *   - **尚无用户消息就不写**：否则 `/load` 列表里会出现一串空会话；
-   *   - 写失败不抛（那是收尾路径）：转成 `persistFailed` 通知给用户，因为「以为存了、
-   *     其实没存」是最坏的失败形态——用户会在下次 `ai` 发现对话不翼而飞。
-   */
-  private async writeSession(session: LiveSession): Promise<void> {
-    // 一次性会话（`persist:false`）：这一轮属于某次脚本调用，不在存档里留痕，也不挪
-    // 「上一轮会话」指针 —— 否则下次 `ai` 会续接到一条管道结果上。
-    if (!session.autoPersist) return;
-    const messages = session.agent.messages;
-    if (!messages.some((message) => message?.role === "user")) return;
-    const store = await this.storeFor(session.workspaceId);
-    // 没注入存档：这条路径本来就不支持落盘（与 `save` 的 `no-store` 同口径，
-    // 但这里是收尾路径，不报错）
-    if (!store) return;
-    try {
-      await store.write(this.recordOf(session, messages));
-      await store.setLastSession(session.id);
-    } catch (error: any) {
-      this.notice(session.id, {
-        level: "error",
-        code: SESSION_NOTICE_CODES.persistFailed,
-        params: { error: error?.message ?? String(error) },
-      });
-    }
-  }
-
-  /** 收尾时按标记落盘（为什么只有 `send` / `handoff` 置位，见 `persistOnSettle`） */
-  private async writeOnSettle(session: LiveSession): Promise<void> {
-    if (!session.persistOnSettle) return;
-    session.persistOnSettle = false;
-    await this.writeSession(session);
-  }
 
   /**
    * 收尾一轮。
@@ -2251,6 +1543,10 @@ export class SessionManager {
    * `turnSettled` 在入口就置位（重复调用直接返回）：落盘是异步的，不先置位就会写两遍。
    * 代价是「已置位、`session.turnEnd` 未发」之间有个微窗口，此时再 `send`/`migrate` 不会被拦——
    * 但客户端要拿到 `session.turnEnd` 才会发下一轮，这个窗口在协议上摸不到。
+   *
+   * **两个标记别混**：`persistOnSettle`（这一轮该不该写档）与 `reclaimOnSettle`（这段会话
+   * 该不该在收尾时被收掉）是两件事，各有各的来源；混成一个就会出现「迁移的中场收尾把会话
+   * 收了」或「该写的档没写」这类只有特定路径才发作的错。
    */
   private async settleTurn(session: LiveSession): Promise<void> {
     if (session.turnSettled) return;
@@ -2262,19 +1558,19 @@ export class SessionManager {
     const clientTurn = session.persistOnSettle;
 
     // 1) 落盘：`session.turnEnd` 之前写完，存档与事件里的「这一轮」才是同一个东西
-    await this.writeOnSettle(session);
+    await this.store.writeOnSettle(session);
 
     // 这一轮已经收尾：它提的问不会再有答案了（客户端在等的是 `session.turnEnd`，不是这个选择器）。
     // 不在这里兜底放行，提问方就要挂到超时 —— 而它一直占着闸门，后面的 `send` 全报
     // `turn-busy`。放在发 `session.turnEnd` 之前：两个事件的先后与「收尾已定」一致。
-    this.releaseQuestions(session);
+    this.questions.release(session);
 
     // 一轮结束：子 Agent 列表跟着消失（只活当前一轮，理由见 `clearSubAgents`）。
     // 清在 `session.turnEnd` 之前：客户端收到收尾事件时再去要子 Agent 快照，拿不到才是对的。
-    this.clearSubAgents(session);
+    this.events.clearSubAgents(session);
 
-    this.resetStreamState(session);
-    this.emitPhase(session);
+    this.events.resetStreamState(session);
+    this.events.emitPhase(session);
     this.emit({
       event: SESSION_EVENTS.turnEnd,
       sessionId: session.id,
@@ -2292,7 +1588,7 @@ export class SessionManager {
         // 宽限期在那一轮还在跑的时候就到了：已经延后过一次，现在收尾就收
         this.close(session.id);
       } else {
-        // 同一条判定再算一次：`keepAlive:false` 的宽限期是 0，等同于「当场收」
+        // 同一条判定再算一次（幂等：宽限期在收尾之前就已经起跑时不会重挂）
         this.scheduleReclaim(session);
       }
     }
@@ -2300,9 +1596,15 @@ export class SessionManager {
     // 7) 自动标题（只在第一轮、只在还没有名字时；**不 await**：`session.turnEnd` 已经发出去了，
     //    标题是之后的事 —— 卡的是一行展示用的名字，一行都不能拖住下一轮对话）。
     //
-    //    放在回收判定**之后**：回收可能当场关掉会话（`keepAlive:false`），那时就不必
+    //    放在回收判定**之后**：回收可能当场关掉会话（`reclaimOnSettle` 那一路），那时就不必
     //    为了一个已经退场的会话再发一次模型请求（`autoTitle` 里也会再确认一次）。
     if (session.turnId === 1) void this.autoTitle(session);
+  }
+
+  /** 失败即收尾（`error` 之后 SDK 仍会发 `finally`，靠 `turnSettled` 去重） */
+  private failTurn(session: LiveSession, failure: { code: string; message: string }): void {
+    session.turnFailed = failure;
+    void this.settleTurn(session);
   }
 
   /**
@@ -2320,7 +1622,7 @@ export class SessionManager {
    *
    * 起名不是用户要求的事：失败（无 Key / 网络 / 端点报错 / 超时）就该像没发生过 ——
    * 推一条「起名失败」的通知只会让人以为出了故障，而且无人可据此做任何事。所以异常在
-   * 这里吞掉，标题留空（客户端依旧用首条消息兑底）。
+   * 这里吞掉，标题留空（客户端依旧用首条消息兜底）。
    *
    * ## 绝不覆盖用户的名字
    *
@@ -2361,124 +1663,8 @@ export class SessionManager {
     session.title = title;
     // 走现有的存档写入路径：标题是会话存档里的一份事实，另开一条写档路径就是第二处
     // 「存档里都有什么」（`recordOf` 漏一个字段就是一类数据丢失）
-    await this.writeSession(session);
+    await this.store.write(session);
     this.emit({ event: SESSION_EVENTS.titleChanged, sessionId: session.id, title });
-  }
-
-  // ==================================================================
-  // 内部
-  // ==================================================================
-
-  /**
-   * 对外报的阶段要**再筛一遍**「谁还在跑」。
-   *
-   * 状态机只知道「这一轮都调了哪些工具」，而工具是并发跑的：结果消息一到终态，
-   * 那个名字就该从等待里消失。不做这一步，界面会一直念着已经跑完的工具。
-   */
-  private visiblePhase(session: LiveSession): PhaseInfo | null {
-    const phase = session.phase.phase;
-    if (!phase || phase.kind !== "tool-waiting" || !phase.calls) return phase;
-    const pending = pendingToolCalls(phase.calls, session.agent.messages as any[]);
-    return { ...phase, tools: pending.map((call) => call.name) };
-  }
-
-  private emitPhase(session: LiveSession): void {
-    this.emit({
-      event: SESSION_EVENTS.phase,
-      sessionId: session.id,
-      turnId: session.turnId,
-      phase: this.visiblePhase(session),
-    });
-  }
-
-  /**
-   * 把本轮工具调用的**组装态**推上线（`session.toolCalls`）。
-   *
-   * 为什么另起一条事件而不塞进 `session.delta`：`delta` 是文本流（每片的语义是「再加这
-   * 一段」），工具调用是组装态（每次给的是「到现在为止是什么」）。两种语义混在一条事件
-   * 里，客户端就得靠猜这个字段该接还是该替。
-   *
-   * 为什么发全量而不是增片：core 已经替我们拼好了（见 `toolCallsOf`），再让客户端攒一遍
-   * 片段，就是把同一个拼装在两个仓库里各写一份。
-   *
-   * 只发**变化了的**帧：判据在 `ToolCallReporter.update`（个数 / 名字 / id / 参数长度），
-   * 不做全串比较。
-   */
-  private emitToolCalls(session: LiveSession, receiver: unknown): void {
-    const toolCalls = toolCallsOf(receiver);
-    // 空集合不是一次「变化」：这条 receiver 上此刻还没有工具调用（纯正文的片、只带 usage
-    // 的收尾片、以及一轮里**下一个**内层循环刚开始时的空消息），把它当成「工具调用被清空
-    // 了」发出去，客户端会把刚画好的卡片抹掉。真正的归零只有一处：`resetStreamState`。
-    if (toolCalls.length === 0) return;
-    if (!session.toolCalls.update(toolCalls)) return;
-    this.emit({
-      event: SESSION_EVENTS.toolCalls,
-      sessionId: session.id,
-      turnId: session.turnId,
-      toolCalls,
-    });
-  }
-
-  /**
-   * 把**刚刚定型**的工具结果消息逐条推上线（`session.messageAppended`）。
-   *
-   * 为什么不能只靠 `session.delta`：那条事件的语义是**正文增量**（「再往后接这一段」），
-   * 而工具结果是一条**完整消息** —— `role: "tool"` + `tool_call_id`（与 `session.toolCalls`
-   * 里那次调用配对的身份）+ 定型后的正文。`tool_call_id` 不在任何一段正文里，客户端拿增量
-   * 拼不出来；硬拼就得自己包装一条「工具结果」，那是同一条消息的第二份表示。
-   *
-   * 为什么要逐条推、不等快照：`session.snapshot` 要等 `session.turnEnd` 之后才拿得到，而一个长
-   * 轮次里工具能跑好几分钟 —— 用户盯着参数卡片，看不到它跑出了什么。core 那边结果本来就是
-   * 逐条定型的（`tool-call-end` 每个工具各发一次，谁先跑完谁先发），这里只是把那一刻已经
-   * 定型的消息顺手转出去。
-   *
-   * 为什么只推 `role === "tool"`：流式中的 assistant 消息还在拼，客户端已经在用
-   * `session.delta` + 占位消息画它了；再从这条通道推一遍，同一条消息就有了两种表示
-   * （增量拼出来的那份和这条快照），收尾时还要对账「哪一份才是真的」。工具结果没有这个
-   * 问题：它推出去时已经定型，也没有别的通道在画它。
-   *
-   * 为什么判据是「定型了吗」而不是「下标越过游标了」：core 在工具**执行前**就把结果消息
-   * 追加进 `agent.messages`（`Message.Tool` → `status: "pending"`、正文为空），跑完才就地
-   * 翻成终态 —— 于是并行时先完成的那条往往排在**后面**，它前面那条还在 `pending`。只按下标
-   * 往后推会把还在跑的那条（正文空）当成结果发出去（客户端画出一张空卡片，等它真跑完时
-   * 游标已经越过它，那张卡片再也不会被补上）；反过来「等前面那条跑完再往后推」又会让先
-   * 完成的结果干等后完成的那个。所以两条判据：**已定型**（`FINISHED_STATUSES`，与
-   * `visiblePhase` 判「谁还在跑」用的是同一份）+ **推过没有**（`session.pushedMessages`）。
-   */
-  private emitAppendedMessages(session: LiveSession): void {
-    for (const message of session.agent.messages) {
-      if (session.pushedMessages.has(message)) continue;
-      const { role, status } = message as PhaseMessageLike;
-      // 只推工具结果（理由见上）：assistant 消息此刻还在流里，`session.delta` 在画它
-      if (role !== "tool") continue;
-      // 还没定型：等它自己那次 `tool-call-end` —— 此刻它正文还是空的
-      if (!FINISHED_STATUSES.has(status ?? "")) continue;
-      session.pushedMessages.add(message);
-      this.emit({
-        event: SESSION_EVENTS.messageAppended,
-        sessionId: session.id,
-        turnId: session.turnId,
-        message,
-      });
-    }
-  }
-
-  /**
-   * 一轮的**流式状态**归零：阶段 + 工具调用的去重影子 + 「哪些消息已经推过」。
-   *
-   * 为什么三件事合成一个动作：它们必须同进同退。只清阶段不清影子，下一轮若拼出来的名字
-   * 与参数与上一轮逐字相同（同一句话重试、同一个脚本再跑一次），去重判据会认为「没变」，
-   * 那整轮的工具卡片一张都不会出现 —— 一个只在重复劳动时才出现的 bug，碰上了也很难相信。
-   * 写成一个动作，就不存在「改到一处、漏掉另一处」的形态。
-   *
-   * 消息游标归位用的是**以当前消息表为基线**（`new Set(messages)`）而不是 `clear()`：
-   * 清空之后下一轮第一次推就会把整段历史当成「刚追加的」重推一遍 —— 那是「跨轮泄漏」的
-   * 另一面（上一轮的东西漏到下一轮），而不是解药。
-   */
-  private resetStreamState(session: LiveSession): void {
-    session.phase.reset();
-    session.toolCalls.reset();
-    session.pushedMessages = new Set(session.agent.messages);
   }
 
   private emit(event: ServerEvent): void {
@@ -2501,7 +1687,7 @@ export class SessionManager {
     session.turnFailed = null;
     session.turnSettled = false;
     session.phase.connecting();
-    this.emitPhase(session);
+    this.events.emitPhase(session);
   }
 
   /**
@@ -2516,37 +1702,10 @@ export class SessionManager {
   }
 
   /**
-   * 存档的形状**只有这一处定义**。
-   *
-   * 所有写档路径（`save` / `saveAs` / 每轮收尾 / 交接前归档 / 迁移换 id / 撤回）都从这里
-   * 取，漏一个字段就是一类数据丢失：`title` 漏了 → 改过的名字下次写档被抹掉；`modelId`
-   * 漏了 → 会话级模型覆盖在下一轮悄悄失效；`modelParams` 漏了 → 会话级参数在下一轮
-   * 悄悄退回 Agent 定义那份（配给另一个模型的参数）。
-   *
-   * 顺手刷新 `updatedAt`：它是「最后一次活动」的唯一来源（列表排序与侧栏都读它）。
-   * 写在这里而不是每个调用点，理由同上——一处定义。
-   */
-  private recordOf(
-    session: LiveSession,
-    messages: Message[] = session.agent.messages,
-    id: string = session.id,
-  ): SessionRecord<Message> {
-    session.updatedAt = new Date().toISOString();
-    return {
-      id,
-      agentId: session.agentId,
-      messages,
-      ...(session.title !== undefined ? { title: session.title } : {}),
-      ...(session.modelId !== undefined ? { modelId: session.modelId } : {}),
-      ...(session.modelParams !== undefined ? { modelParams: session.modelParams } : {}),
-    };
-  }
-
-  /**
-   * 真的活着 = 「客户端说要」∧「有连接在看」。两个分开的真相源，判据只能取合取
+   * 真的活着 = 此刻有一条连接在看着它。判据只有这一个来源，见文件头的规则一节
    */
   private isHeld(session: LiveSession): boolean {
-    return session.keepAlive && session.holders.size > 0;
+    return session.holders.size > 0;
   }
 
   /**
@@ -2559,11 +1718,6 @@ export class SessionManager {
     if (this.isHeld(session)) {
       this.cancelReclaim(session);
       session.reclaimOnSettle = false;
-      return;
-    }
-    // 客户端已经放手（`keepAlive:false`）→ 宽限期 0：空闲就当场收，跑着就跑完收
-    if (!session.keepAlive) {
-      this.reclaimNow(session);
       return;
     }
     if (session.reclaimCancel) return;
@@ -2640,34 +1794,6 @@ export class SessionManager {
   }
 
   /**
-   * 迁移后换 id：新会话立即落盘，再把活会话从旧键挪到新键。
-   *
-   * 顺序是「先写盘、再换键」：写失败时注册表还在旧 id 上，客户端收到的错误与它看到的
-   * 状态才一致；反过来会出现「响应说迁移失败、会话其实已经改名」这种谁也修不了的状态。
-   *
-   * 换完发 `session.idChanged`：自动迁移发生在一轮内部，客户端没有响应可接，
-   * 只能靠这条事件把后续请求与事件过滤切到新 id。
-   */
-  private async adopt(session: LiveSession, store: SessionStore): Promise<string> {
-    const previousId = session.id;
-    const nextId = this.nextSessionId();
-    if (this.sessions.has(nextId)) {
-      throw codedError(ERROR_CODES.sessionExists, `session already exists: ${nextId}`);
-    }
-
-    await store.write(this.recordOf(session, session.agent.messages, nextId));
-    await store.setLastSession(nextId);
-
-    this.sessions.delete(previousId);
-    session.id = nextId;
-    this.sessions.set(nextId, session);
-    // 换 id = 这是新的一段会话：上一段里的子 Agent 不该跟着过来
-    this.clearSubAgents(session);
-    this.emit({ event: SESSION_EVENTS.idChanged, from: previousId, sessionId: nextId });
-    return nextId;
-  }
-
-  /**
    * 交接/迁移失败（含用户取消）：记下本轮失败并让调用方决定怎么报。
    *
    * 取消不是失败：SDK 已经把会话回退到交接前（截掉交接回合、删掉半成品文档），
@@ -2685,10 +1811,5 @@ export class SessionManager {
       message: typeof failure?.message === "string" ? failure.message : String(error),
     };
     return error;
-  }
-
-  /** 存档工厂：没注入则续接与 save 都不可用 */
-  private async storeFor(workspaceId: string): Promise<SessionStore<Message> | undefined> {
-    return this.storeFactory ? await this.storeFactory(workspaceId) : undefined;
   }
 }
