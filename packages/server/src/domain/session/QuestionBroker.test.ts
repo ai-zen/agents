@@ -28,7 +28,7 @@ import {
 
 useSessionKit();
 
-describe("SessionManager：自动迁移用哪种方式交接，由客户端回答（session.question）", () => {
+describe("SessionManager：自动迁移用哪种方式交接，由客户端回答（session-question）", () => {
   /** 装配方收到的两个钩子 —— 就是「SDK 插件 → 会话层」那条路的两端 */
   interface Hooks {
     autoMigrate?: (mode?: HandoffMode) => Promise<void>;
@@ -110,10 +110,10 @@ describe("SessionManager：自动迁移用哪种方式交接，由客户端回�
 
     const pending = triggerAutoMigrate(hooks);
 
-    const questions = pick("session.question");
+    const questions = pick("session-question");
     expect(questions).toHaveLength(1);
     expect(questions[0]).toMatchObject({
-      event: "session.question",
+      event: "session-question",
       sessionId,
       kind: "handoff-mode",
       // 能怎么答：两个选项 + 允许「不交接」
@@ -137,7 +137,7 @@ describe("SessionManager：自动迁移用哪种方式交接，由客户端回�
     agent.messages = [{ role: "user", content: "旧任务" }];
 
     const pending = triggerAutoMigrate(hooks);
-    const question = pick("session.question")[0];
+    const question = pick("session-question")[0];
 
     expect(auto.answer(sessionId, question.questionId, "summary")).toEqual({ answered: true });
     // 同一个 questionId 再答一次：来晚了 —— 不抛错、也不用重试（服务端已经继续跑了）
@@ -146,13 +146,13 @@ describe("SessionManager：自动迁移用哪种方式交接，由客户端回�
 
     // 交接服务收到的「请求执行者」就是用户选的那个：请求 self 时会降级到 summary 并多一条
     // `migrationDegraded`，这里没有 —— 说明请求的本来就是 summary，不是默认值碰巧一样
-    const notices = pick("session.notice");
+    const notices = pick("session-notice");
     expect(
       notices.filter((notice) => notice.code === "handoffWriting").map((notice) => notice.params),
     ).toEqual([{ mode: "summary" }]);
     expect(notices.some((notice) => notice.code === "migrationDegraded")).toBe(false);
     // 迁移真的发生了（换 id 走事件）
-    expect(pick("session.idChanged")).toHaveLength(1);
+    expect(pick("session-id-changed")).toHaveLength(1);
   });
 
   it("回答 null（用户选「不交接」）：跳过本次迁移 —— 会话 id 不变，也没有 idChanged", async () => {
@@ -160,11 +160,11 @@ describe("SessionManager：自动迁移用哪种方式交接，由客户端回�
     agent.messages = [{ role: "user", content: "旧任务" }];
 
     const pending = triggerAutoMigrate(hooks);
-    const question = pick("session.question")[0];
+    const question = pick("session-question")[0];
     expect(auto.answer(sessionId, question.questionId, null)).toEqual({ answered: true });
     await pending;
 
-    expect(pick("session.idChanged")).toEqual([]);
+    expect(pick("session-id-changed")).toEqual([]);
     expect((await auto.list("ws-1")).map((item) => item.sessionId)).toEqual([sessionId]);
     // 什么都没发生：连旧会话都没进存档（那是迁移的第一步）
     expect(store.records.size).toBe(0);
@@ -182,17 +182,17 @@ describe("SessionManager：自动迁移用哪种方式交接，由客户端回�
     await triggerAutoMigrate(silent.hooks);
 
     expect(silentHub.watcherCount()).toBe(0);
-    expect(silentHub.published.filter((event) => event.event === "session.question")).toEqual([]);
+    expect(silentHub.published.filter((event) => event.event === "session-question")).toEqual([]);
     const notices = silentHub.published.filter(
-      (event): event is Extract<ServerEvent, { event: "session.notice" }> =>
-        event.event === "session.notice",
+      (event): event is Extract<ServerEvent, { event: "session-notice" }> =>
+        event.event === "session-notice",
     );
     // 兜底 = 什么都不做：**不迁移**（旧版这里的默认是 self 自动迁移，按产品决定改掉了）
     expect(notices.some((notice) => notice.code === "handoffWriting")).toBe(false);
     expect(notices.some((notice) => notice.code === "migrationSkipped")).toBe(true);
-    expect(silentHub.published.filter((event) => event.event === "session.idChanged")).toHaveLength(
-      0,
-    );
+    expect(
+      silentHub.published.filter((event) => event.event === "session-id-changed"),
+    ).toHaveLength(0);
     // 会话原封不动
     expect((await silent.manager.list("ws-1")).map((item) => item.sessionId)).toEqual([sessionId]);
   });
@@ -207,15 +207,15 @@ describe("SessionManager：自动迁移用哪种方式交接，由客户端回�
     agent.messages = [{ role: "user", content: "旧任务" }];
 
     const pending = triggerAutoMigrate(fast.hooks);
-    const question = pick("session.question")[0];
+    const question = pick("session-question")[0];
 
     await pending; // 不回答：等它自己按超时收场
 
-    const notices = pick("session.notice");
+    const notices = pick("session-notice");
     // 超时与「没人在看」同一个落点：兜底 = 什么都不做
     expect(notices.some((notice) => notice.code === "handoffWriting")).toBe(false);
     expect(notices.some((notice) => notice.code === "migrationSkipped")).toBe(true);
-    expect(pick("session.idChanged")).toHaveLength(0);
+    expect(pick("session-id-changed")).toHaveLength(0);
     // 表已清：这个问题现在谁也答不了（迟到的回答只能是「来晚了」）
     const remaining = (await fast.manager.list("ws-1"))[0]!.sessionId;
     expect(fast.manager.answer(remaining, question.questionId, "summary")).toEqual({

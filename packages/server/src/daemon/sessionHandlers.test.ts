@@ -263,23 +263,30 @@ describe("会话处理器（真 socket）", () => {
 
     // send 当下就会有一条 phase（connecting）
     expect(await client!.next()).toMatchObject({
-      event: "session.phase",
+      event: "session-phase",
       sessionId: created.sessionId,
       turnId: 1,
       phase: { kind: "connecting" },
     });
 
     // 正文增量与轮次收尾
-    // `chunk-parsed` 是两参：`(receiver, chunk)` —— 第二个才是原始 chunk
-    agent.fire("chunk-parsed", {}, { choices: [{ delta: { content: "答" } }] });
+    // `chunk-parsed` 是两参：`(receiver, chunk)` —— 第二个才是原始 chunk。
+    // 一片 chunk 出四条帧，顺序是硬的：原始片（core `chunk`）→ 解析结果
+    // （core `chunk-parsed`）→ 派生出来的阶段与工具调用组装态。
+    // core 是先发 `chunk` 再解析（`Agent.parseStreamData`），所以假件也按这个顺序 fire。
+    const piece = { choices: [{ delta: { content: "答" } }] };
+    agent.fire("chunk", piece);
+    agent.fire("chunk-parsed", {}, piece);
+    expect(await client!.next()).toMatchObject({ event: "chunk", turnId: 1 });
+    expect(await client!.next()).toMatchObject({ event: "chunk-parsed", text: "答" });
     const phaseAfterDelta = (await client!.next()) as any;
-    expect(phaseAfterDelta).toMatchObject({ event: "session.phase", phase: { kind: "streaming" } });
-    expect(await client!.next()).toMatchObject({ event: "session.delta", text: "答" });
+    expect(phaseAfterDelta).toMatchObject({ event: "session-phase", phase: { kind: "streaming" } });
 
     agent.fire("finally");
+    expect(await client!.next()).toMatchObject({ event: "finally", turnId: 1 });
     const phaseReset = (await client!.next()) as any;
     expect(phaseReset.phase).toBeNull();
-    expect(await client!.next()).toMatchObject({ event: "session.turnEnd", ok: true, turnId: 1 });
+    expect(await client!.next()).toMatchObject({ event: "session-turn-end", ok: true, turnId: 1 });
   });
 
   it("session.subAgent.snapshot 走通；未知子 Agent → sub-agent-missing 错误帧", async () => {
@@ -417,7 +424,7 @@ describe("会话处理器（真 socket）", () => {
 
     // 交接按「一轮」记账：先报 connecting，中间是三条通知，最后收尾
     expect(await client!.next()).toMatchObject({
-      event: "session.phase",
+      event: "session-phase",
       sessionId: created.sessionId,
       turnId: 1,
       phase: { kind: "connecting" },
@@ -425,9 +432,9 @@ describe("会话处理器（真 socket）", () => {
     const notices: any[] = [];
     for (let i = 0; i < 3; i++) notices.push(await client!.next());
     expect(notices.map((notice) => notice.event)).toEqual([
-      "session.notice",
-      "session.notice",
-      "session.notice",
+      "session-notice",
+      "session-notice",
+      "session-notice",
     ]);
     expect(notices.map((notice) => notice.code)).toEqual([
       "handoffWriting",
@@ -501,7 +508,7 @@ describe("会话处理器（真 socket）", () => {
 
     expect(result.sessionId).toBe(created.sessionId);
     // 没换 id，就没有 idChanged 事件（客户端不会把后面的请求切到另一个 id 上）
-    expect(seen.filter((event) => event.event === "session.idChanged")).toEqual([]);
+    expect(seen.filter((event) => event.event === "session-id-changed")).toEqual([]);
     const saved = (await client!.call(SESSION_METHODS.list, { workspaceId: "ws-1" })) as any;
     expect(saved.sessions.map((session: any) => session.sessionId)).toEqual([created.sessionId]);
     // 旧消息还在，只是标了不再发送
@@ -541,7 +548,7 @@ describe("会话处理器（真 socket）", () => {
 
     const question = (await client!.next()) as any;
     expect(question).toMatchObject({
-      event: "session.question",
+      event: "session-question",
       sessionId: created.sessionId,
       kind: "handoff-mode",
       input: "select",

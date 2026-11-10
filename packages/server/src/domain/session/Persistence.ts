@@ -14,7 +14,7 @@
  * ## 不管什么
  *
  * 不管**注册表**：换 id（`saveAs` / `adopt`）在本类里只做「写新档、挪指针、删旧档」，
- * 把活会话从旧键挪到新键、清子 Agent、发 `session.idChanged` 都是会话层的事
+ * 把活会话从旧键挪到新键、清子 Agent、发 `session-id-changed` 都是会话层的事
  * （`SessionManager.rekey`）。所以本类只借两个只读事实进来：`isLive`（这个 id 有没有
  * 活会话占着）与 `nextSessionId`（新 id 从哪来）。
  *

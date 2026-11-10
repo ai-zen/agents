@@ -3,9 +3,13 @@
  *
  * ## 管什么
  *
- * 把 Agent（`agent.events`）发出来的东西翻成线上事件：阶段（`session.phase`）、正文增量
- * （`session.delta`）、工具调用的组装态（`session.toolCalls`）、刚定型的工具结果
- * （`session.messageAppended`）、子 Agent 栏目的起止（`session.subAgent.*`）。
+ * 把 Agent（`agent.events`）发出来的东西翻成线上事件，两块：
+ *
+ *   1. **原样转达** core 的 9 条（`AGENT_EVENTS`：`open` / `chunk` / `chunk-parsed` /
+ *      `parsed` / `tool-call-end` / `error` / `finally` / `sub-agent-start` /
+ *      `sub-agent-end`）—— 名字与时机都照抄 core，一行不改；
+ *   2. **派生**服务端自己的那几条（`SESSION_EVENTS`）：阶段（`session-phase`）、
+ *      本轮工具调用的组装态（`session-tool-calls`）。
  *
  * 顺带管 `LiveSession` 上的**流式影子**（`toolCalls` 去重器 / `pushedMessages` /
  * `subAgents` 表与两个序号）—— 它们只服务于「这一轮推过什么」，归零必须同进同退
@@ -14,7 +18,7 @@
  * ## 不管什么
  *
  * 不管「一轮什么时候算结束」。SDK 的 `finally` 只说明**它**说完了，收尾（落盘、发
- * `session.turnEnd`、判回收）是 `SessionManager` 的事 —— 所以那两个动作是**注入的**
+ * `session-turn-end`、判回收）是 `SessionManager` 的事 —— 所以那两个动作是**注入的**
  * （`settleTurn` / `failTurn`），本类只负责把事件转过去。
  *
  * ## 为什么它能单独成一个类
@@ -27,6 +31,7 @@
 import { FINISHED_STATUSES, pendingToolCalls, type PhaseMessageLike } from "../../lib/phase.js";
 import type { EventHub } from "../../lib/events.js";
 import {
+  AGENT_EVENTS,
   SESSION_EVENTS,
   SESSION_NOTICE_CODES,
   type NoticePayload,
@@ -101,7 +106,7 @@ function toolCallsOf(receiver: unknown): ToolCallState[] {
  * 工具调用的**上报去重器** —— 只记「上一次报出去的是什么」，不是真相源。
  *
  * 为什么需要它：参数边流边长，而 chunk 的粒度跟内容无关 —— 一个只带 `id` 的片、一个只带
- * `usage` 的收尾片、重连后重放的同一片，都会走到上报点。每片都发一次全量，客户端就要按帧
+ * `usage` 的收尾片，都会走到上报点。每片都发一次全量，客户端就要按帧
  * 重渲染那张工具卡片（一条长参数能把界面拖成幻灯片）。
  *
  * 为什么判据这么便宜：组装**只追加**（core 那边是 `arguments += …`），所以「变了没有」
@@ -156,7 +161,7 @@ export interface EventBridgeOptions {
   /**
    * 一轮收尾（SDK 的 `finally`）。
    *
-   * 注入而不是自己调用：收尾要落盘、发 `session.turnEnd`、判回收，全是会话层的规则
+   * 注入而不是自己调用：收尾要落盘、发 `session-turn-end`、判回收，全是会话层的规则
    * （见 `SessionManager.settleTurn`）。本类只认得「SDK 说这一轮完了」这个事实。
    */
   settleTurn: (session: LiveSession) => void;
@@ -183,66 +188,118 @@ export class EventBridge {
     const { events } = session.agent;
 
     const onOpen = () => {
+      // core `open`：请求发出去之前那一刻。名字与时机都照抄 core —— 客户端今天不用它，
+      // 但「一轮开始了」是 core 的公开事实，线上就该有这一条（用不用是客户端的事）。
+      this.emit({
+        event: AGENT_EVENTS.open,
+        sessionId: session.id,
+        turnId: session.turnId,
+      });
       session.phase.opened();
       this.emitPhase(session);
     };
 
     /**
-     * 正文 / 推理增量：**第二个参数才是 chunk**。
+     * 一片 chunk 的解析结果（core `chunk-parsed`）→ 正文增量（`chunk-parsed`）。
+     * 同一片的原始 chunk 由 {@link onRawChunk} 在**解析之前**单独发。
+     * **第二个参数才是 chunk**。
      *
      * core 的 `Agent.parseStreamData` 发的是 `emit("chunk-parsed", receiver, chunk)`（两个
      * 参数）：第一个是那条正在拼的 assistant 消息，第二个才是这一片原始 chunk。这里曾经写成
      * `(receiver) => deltaOf(receiver?.chunk ?? receiver)` —— 拿到的永远是**消息本身**，
      * `choices[0].delta` 恒空，于是主 Agent 与子 Agent 的正文增量**一条都推不出去**（界面只能
-     * 等 `session.turnEnd` 之后靠快照一次性刷出来）；唯一漏过去的是流末那片（core 把 `usage` 挂在消息
+     * 等 `session-turn-end` 之后靠快照一次性刷出来）；唯一漏过去的是流末那片（core 把 `usage` 挂在消息
      * 上，`completionOf(消息)` 恰好读得到），也正是它让这个 bug 看起来像“偶尔掉了”。
      *
      * 单测当时没抓住：假 Agent 是按**单参**形状 fire 的，恰好喂饱了 `receiver?.chunk ?? receiver`
      * 那条“两种形状都认”的兼容写法。假件的形状必须照抄真件的形状，否则它测的是想象。
      */
     const onChunk = (receiver: unknown, chunk: any) => {
+      // ① 同一片的解析结果（core `chunk-parsed`）：正文 / 推理增量。
       session.phase.delta(chunk);
-      this.emitPhase(session);
-      // 工具调用的组装态：读的是第一个参数（`receiver`），不是 `chunk` —— 理由见 `toolCallsOf`。
-      // 它让客户端在流式期间就能画出工具卡片，不必等 `session.turnEnd` 之后那份快照。
-      this.emitToolCalls(session, receiver);
-
       const { text, reasoning } = deltaOf(chunk);
       const completionTokens = completionOf(chunk);
       // 只带 usage 的收尾 chunk 也要出去：客户端靠它校准速率（否则 tok/s 一直是估算值）
-      if (!text && !reasoning && completionTokens === undefined) return;
+      if (text || reasoning || completionTokens !== undefined) {
+        this.emit({
+          event: AGENT_EVENTS.chunkParsed,
+          sessionId: session.id,
+          turnId: session.turnId,
+          text,
+          reasoning,
+          ...(completionTokens === undefined ? {} : { usage: { completionTokens } }),
+        });
+      }
+
+      // ② 派生：阶段 + 工具调用的组装态。
+      // 组装态读的是第一个参数（`receiver`），不是 `chunk` —— 理由见 `toolCallsOf`。
+      // 它让客户端在流式期间就能画出工具卡片，不必等 `session-turn-end` 之后那份快照。
+      this.emitPhase(session);
+      this.emitToolCalls(session, receiver);
+    };
+
+    /**
+     * 原始 chunk（core `chunk`）：在 core 解析这一片**之前**发。
+     *
+     * 单独挂而不再在 `onChunk` 里发：那样只能覆盖「解析成功」的片，而 core 的 `chunk` 在
+     * 解析之前就已经发出去了 —— 解析抛错的那一片，事件照样发生过，线上不该少这一条。
+     * 载荷原样搬这一片（厂商形状，协议不解释，见 `AgentChunkEvent`）。
+     */
+    const onRawChunk = (chunk: any) => {
       this.emit({
-        event: SESSION_EVENTS.delta,
+        event: AGENT_EVENTS.chunk,
         sessionId: session.id,
         turnId: session.turnId,
-        text,
-        reasoning,
-        ...(completionTokens === undefined ? {} : { usage: { completionTokens } }),
+        chunk,
       });
     };
 
     const onParsed = (receiver: any) => {
+      // core `parsed`：流结束、receiver 定稿。此后这一轮的正文不再变。
+      this.emit({
+        event: AGENT_EVENTS.parsed,
+        sessionId: session.id,
+        turnId: session.turnId,
+      });
       session.phase.streamEnded(receiver?.message ?? receiver);
       this.emitPhase(session);
     };
 
     // 工具跑完一个就报一次：并行时先完成的那个从「等待」里消失，
     // 否则界面会一直念着已经结束的工具名。
-    // 同一刻顺手把**刚定型的那条结果消息**推上线：core 就在这一刻把 `status` 翻成终态
-    // （`markResult` 是唯一的结果定型点），再往后拖就只有等到轮末的快照了。
+    // 同一刻顺手把**刚定型的那条结果消息**推上线（core `tool-call-end` 就是「结果定了」
+    // 那一刻，`markResult` 是唯一的结果定型点），再往后拖就只有等到轮末的快照了。
     const onToolCallEnd = () => {
-      this.emitPhase(session);
       this.emitAppendedMessages(session);
+      this.emitPhase(session);
     };
 
     const onError = (error: any) => {
-      this.options.failTurn(session, {
+      const failure = {
         code: error?.code ?? "internal",
         message: error?.message ?? String(error),
+      };
+      // core `error` 先上线，再走 `failTurn`（它发的是 `session-turn-end`）：顺序恒为
+      // `error` → `finally` → `session-turn-end`，别把这份错误只留在收尾事件里 ——
+      // 两者的时机不同（后者要等落盘）。
+      this.emit({
+        event: AGENT_EVENTS.error,
+        sessionId: session.id,
+        turnId: session.turnId,
+        error: failure,
       });
+      this.options.failTurn(session, failure);
     };
 
     const onFinally = () => {
+      // core `finally`：它只说「core 这一侧说完了」，落盘 / 换 id / 回收判定都还没做。
+      // 所以这条与 `session-turn-end` 是两条事件，`finally` 先发（`settleTurn` 里发的是
+      // 后者）。
+      this.emit({
+        event: AGENT_EVENTS.finally,
+        sessionId: session.id,
+        turnId: session.turnId,
+      });
       this.options.settleTurn(session);
     };
 
@@ -253,10 +310,10 @@ export class EventBridge {
      * `subAgentId` 是**稳定标识**（客户端拿它当选中态与 React key）。分开的理由是它们
      * 回答不同的问题 —— 「用户看到的第几栏」与「是哪一次委派」，合并成一个数字就会变成
      * 「id 带上了展示含义」，改一次展示就得动一次 id。两者都只在**本轮**内唯一：一轮
-     * 结束时列表与计数器一起归零（见 `clearSubAgents`），而客户端也在 `session.turnEnd` 上
+     * 结束时列表与计数器一起归零（见 `clearSubAgents`），而客户端也在 `session-turn-end` 上
      * 清自己的列表，所以下一轮的 `sub-1` 不会被任何遗留的选中态认领。
      *
-     * 子 Agent 自己的事件流只挂两条，且 **`chunk-parsed` 绝不碰 `session.phase`**：
+     * 子 Agent 自己的事件流只挂两条，且 **`chunk-parsed` 绝不碰 `session-phase`**：
      * 此刻主 Agent 正在等发起委派的那个工具（如 `call_skill_sub_agent`）返回，阶段
      * 应停在「等待 xxx 返回」；子 Agent 的思考 / 输出是工具内部的事，拿它的 delta 去改
      * 主阶段会让界面变成「输出中」，正好盖掉用户最需要知道的那句话。
@@ -274,7 +331,7 @@ export class EventBridge {
       };
       session.subAgents.set(entry.id, entry);
       this.emit({
-        event: SESSION_EVENTS.subAgentStarted,
+        event: AGENT_EVENTS.subAgentStart,
         sessionId: session.id,
         turnId: session.turnId,
         subAgentId: entry.id,
@@ -287,7 +344,7 @@ export class EventBridge {
         const { text, reasoning } = deltaOf(chunk);
         if (!text && !reasoning) return;
         this.emit({
-          event: SESSION_EVENTS.delta,
+          event: AGENT_EVENTS.chunkParsed,
           sessionId: session.id,
           turnId: session.turnId,
           subAgentId: entry.id,
@@ -325,6 +382,7 @@ export class EventBridge {
     };
 
     events.on("open", onOpen);
+    events.on("chunk", onRawChunk);
     events.on("chunk-parsed", onChunk);
     events.on("parsed", onParsed);
     events.on("tool-call-end", onToolCallEnd);
@@ -335,6 +393,7 @@ export class EventBridge {
 
     return () => {
       events.off("open", onOpen);
+      events.off("chunk", onRawChunk);
       events.off("chunk-parsed", onChunk);
       events.off("parsed", onParsed);
       events.off("tool-call-end", onToolCallEnd);
@@ -351,7 +410,7 @@ export class EventBridge {
    * 状态机只知道「这一轮都调了哪些工具」，而工具是并发跑的：结果消息一到终态，
    * 那个名字就该从等待里消失。不做这一步，界面会一直念着已经跑完的工具。
    *
-   * 快照（`session.snapshot`）、清单（`session.list`）与 `session.phase` 三处报的必须是
+   * 快照（`session.snapshot`）、清单（`session.list`）与 `session-phase` 三处报的必须是
    * **同一个**阶段，所以只有这一处实现。
    */
   phaseOf(session: LiveSession): PhaseInfo | null {
@@ -371,9 +430,9 @@ export class EventBridge {
   }
 
   /**
-   * 把本轮工具调用的**组装态**推上线（`session.toolCalls`）。
+   * 把本轮工具调用的**组装态**推上线（`session-tool-calls`）。
    *
-   * 为什么另起一条事件而不塞进 `session.delta`：`delta` 是文本流（每片的语义是「再加这
+   * 为什么另起一条事件而不塞进 `chunk-parsed`：那条是文本流（每片的语义是「再加这
    * 一段」），工具调用是组装态（每次给的是「到现在为止是什么」）。两种语义混在一条事件
    * 里，客户端就得靠猜这个字段该接还是该替。
    *
@@ -399,20 +458,20 @@ export class EventBridge {
   }
 
   /**
-   * 把**刚刚定型**的工具结果消息逐条推上线（`session.messageAppended`）。
+   * 把**刚刚定型**的工具结果消息逐条推上线（core `tool-call-end`）。
    *
-   * 为什么不能只靠 `session.delta`：那条事件的语义是**正文增量**（「再往后接这一段」），
-   * 而工具结果是一条**完整消息** —— `role: "tool"` + `tool_call_id`（与 `session.toolCalls`
+   * 为什么不能只靠 `chunk-parsed`：那条事件的语义是**正文增量**（「再往后接这一段」），
+   * 而工具结果是一条**完整消息** —— `role: "tool"` + `tool_call_id`（与 `session-tool-calls`
    * 里那次调用配对的身份）+ 定型后的正文。`tool_call_id` 不在任何一段正文里，客户端拿增量
    * 拼不出来；硬拼就得自己包装一条「工具结果」，那是同一条消息的第二份表示。
    *
-   * 为什么要逐条推、不等快照：`session.snapshot` 要等 `session.turnEnd` 之后才拿得到，而一个长
+   * 为什么要逐条推、不等快照：`session.snapshot` 要等 `session-turn-end` 之后才拿得到，而一个长
    * 轮次里工具能跑好几分钟 —— 用户盯着参数卡片，看不到它跑出了什么。core 那边结果本来就是
    * 逐条定型的（`tool-call-end` 每个工具各发一次，谁先跑完谁先发），这里只是把那一刻已经
    * 定型的消息顺手转出去。
    *
    * 为什么只推 `role === "tool"`：流式中的 assistant 消息还在拼，客户端已经在用
-   * `session.delta` + 占位消息画它了；再从这条通道推一遍，同一条消息就有了两种表示
+   * `chunk-parsed` + 占位消息画它了；再从这条通道推一遍，同一条消息就有了两种表示
    * （增量拼出来的那份和这条快照），收尾时还要对账「哪一份才是真的」。工具结果没有这个
    * 问题：它推出去时已经定型，也没有别的通道在画它。
    *
@@ -428,13 +487,13 @@ export class EventBridge {
     for (const message of session.agent.messages) {
       if (session.pushedMessages.has(message)) continue;
       const { role, status } = message as PhaseMessageLike;
-      // 只推工具结果（理由见上）：assistant 消息此刻还在流里，`session.delta` 在画它
+      // 只推工具结果（理由见上）：assistant 消息此刻还在流里，`chunk-parsed` 在画它
       if (role !== "tool") continue;
       // 还没定型：等它自己那次 `tool-call-end` —— 此刻它正文还是空的
       if (!FINISHED_STATUSES.has(status ?? "")) continue;
       session.pushedMessages.add(message);
       this.emit({
-        event: SESSION_EVENTS.messageAppended,
+        event: AGENT_EVENTS.toolCallEnd,
         sessionId: session.id,
         turnId: session.turnId,
         message,
@@ -452,7 +511,7 @@ export class EventBridge {
   emitSubAgentEnded(session: LiveSession, entry: SubAgentEntry): void {
     const status = entry.status === "failed" ? "failed" : "done";
     this.emit({
-      event: SESSION_EVENTS.subAgentEnded,
+      event: AGENT_EVENTS.subAgentEnd,
       sessionId: session.id,
       turnId: session.turnId,
       subAgentId: entry.id,

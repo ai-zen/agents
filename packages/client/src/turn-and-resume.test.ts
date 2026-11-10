@@ -10,7 +10,7 @@
  * 数由用例指定。于是一条完整链路可以**确定地**断言：
  *
  *   1. 正文是**流式**拼出来的（多片 delta 拼起来等于答复）；
- *   2. 每轮 `session.turnEnd` 之前把会话写进 `workspaces/<id>/sessions/` 并把指针挪过去 ——
+ *   2. 每轮 `session-turn-end` 之前把会话写进 `workspaces/<id>/sessions/` 并把指针挪过去 ——
  *      这就是「聊完退出、再 `ai` 接着上次」的全部机制；
  *   3. 把服务端整个换掉（模拟守护进程重启）之后，`attach` 能从存档把这段会话装回来。
  *
@@ -29,6 +29,7 @@ import {
   FileSessionStore,
   SessionAgentFactory,
   SessionManager,
+  AGENT_EVENTS,
   EVENT_METHODS,
   SESSION_EVENTS,
   type ServerEvent,
@@ -121,13 +122,13 @@ async function shutdown(): Promise<void> {
 async function runTurn(sessionId: string, prompt: string): Promise<ServerEvent[]> {
   const seen: ServerEvent[] = [];
   const offs = [
-    client!.on(SESSION_EVENTS.delta, (event) => seen.push(event)),
+    client!.on(AGENT_EVENTS.chunkParsed, (event) => seen.push(event)),
     client!.on(SESSION_EVENTS.turnEnd, (event) => seen.push(event)),
   ];
   try {
     const { turnId } = await sessions.send(sessionId, prompt);
     await waitFor(() =>
-      seen.some((event) => event.event === "session.turnEnd" && event.turnId === turnId),
+      seen.some((event) => event.event === "session-turn-end" && event.turnId === turnId),
     );
     return seen;
   } finally {
@@ -142,14 +143,14 @@ describe("一轮真跑（真 SDK + 流式 HTTP）", () => {
 
     const events = await runTurn(sessionId, "你好");
 
-    const deltas = events.filter((event) => event.event === "session.delta");
+    const deltas = events.filter((event) => event.event === "chunk-parsed");
     // 4 片 + 收尾那一片只带 usage（正文为空）—— 至少得有 2 片正文才算「流式」
     const streamed = deltas.map((event) => event.text).join("");
     expect(deltas.length).toBeGreaterThan(1);
     expect(streamed).toBe(REPLY);
     // 流末 chunk 的真实产物 token 数被带了出来（状态栏速率靠它校准）
     expect(deltas.some((event) => event.usage?.completionTokens === 7)).toBe(true);
-    expect(events.at(-1)).toMatchObject({ event: "session.turnEnd", ok: true });
+    expect(events.at(-1)).toMatchObject({ event: "session-turn-end", ok: true });
 
     // 服务端那份快照才是真相：最后一条是已完成的 assistant，正文就是答复
     const snapshot = await sessions.snapshot(sessionId);
@@ -157,7 +158,7 @@ describe("一轮真跑（真 SDK + 流式 HTTP）", () => {
     expect(llm.requests.at(-1)!.body.stream).toBe(true);
   });
 
-  it("每轮 session.turnEnd 之前落盘：存档写进工作区，指针指向它", async () => {
+  it("每轮 session-turn-end 之前落盘：存档写进工作区，指针指向它", async () => {
     await boot();
     const workspace = await sessions.resolveWorkspace(workspaceDir);
     const { sessionId } = await sessions.open({ path: workspaceDir, agentId: "default" });

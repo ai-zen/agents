@@ -1,8 +1,8 @@
 # @ai-zen/agents-client
 
 到 `agents-server` 的**连接层**：服务发现与拉起、帧编解码、会话与配置门面。
-CLI（TUI）与 Desktop（main）共用同一份实现 —— 以前它住在 `cli/src/server-client/`，
-桌面端要接入就只能抄一遍，而抄出来的两份会在 `hello` 握手、重连、错误码上慢慢分叉。
+CLI（TUI）与 Desktop（main）共用同一份实现：两个前端各写一份，就会在 `hello` 握手、
+重连、错误码上慢慢分叉。
 
 ## 包里有什么
 
@@ -10,7 +10,7 @@ CLI（TUI）与 Desktop（main）共用同一份实现 —— 以前它住在 `c
 
 | 文件 | 脏/纯 | 职责 |
 |---|---|---|
-| `transport/connection.ts` | 脏 | **一个进程一条连接**（`ServerConnection`）：每次取用都判活、断了就重建、重建后重放 `events.watch`、断线与就绪都往上说 |
+| `transport/connection.ts` | 脏 | **一个进程一条连接**（`ServerConnection`）：每次取用都判活、断了就重建、重建后在新连接上重新订阅 `events.watch`、断线与就绪都往上说 |
 | `socket-server-client.ts` | 脏 | 一条 TCP + JSON-lines 连接：`hello` 握手、在飞调用、事件分发、断开通知 |
 | `ensure-server.ts` | 脏 | 读 `<aiZenDir>/run/server.json`；探活（`callOnce` 问一句 `ping`）失败就 detached 拉起 `agents-server serve`，轮询到 `ping` 通 |
 | `session/channel.ts` | 脏 | **一条会话的 I/O**（`SessionChannel`）：订阅、请求、重连（三条不变式）、重新 `attach`、`close` 当场回收 |

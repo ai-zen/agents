@@ -95,7 +95,7 @@ export interface SessionStreamState {
   /**
    * 当前这段会话的 id。
    *
-   * 它**跟着 `session.idChanged` 走**：自动迁移会在一轮进行中换 id，而之后所有事件都用新
+   * 它**跟着 `session-id-changed` 走**：自动迁移会在一轮进行中换 id，而之后所有事件都用新
    * id 认领 —— 状态里没有它，前端就得自己再存一份（然后又是一个会漂的副本）。
    */
   sessionId: string;
@@ -177,7 +177,7 @@ function placeholder(): Message {
   return { role: ROLE.Assistant, content: "" } as Message;
 }
 
-/** `session.toolCalls` 的扁平载荷 → 消息里的嵌套形状（与 core 的 `ToolCall` 同形） */
+/** `session-tool-calls` 的扁平载荷 → 消息里的嵌套形状（与 core 的 `ToolCall` 同形） */
 function toToolCall(call: ToolCallState): ToolCall {
   return {
     index: call.index,
@@ -239,7 +239,7 @@ export class SessionStream {
    * 开始一轮。
    *
    * 它只做三件事：记下等的是哪一轮、把终态 `failed` 复位、把状态标成 `streaming`。
-   * **不动**拼接态与消息：`session.delta` 完全可能**比 `session.send` 的回执先到**
+   * **不动**拼接态与消息：`chunk-parsed` 完全可能**比 `session.send` 的回执先到**
    * （服务端先推 `connecting` 再回 `turnId`），那时正文已经在拼了 —— 在这里清掉拼接态，
    * 那几片字就会在屏幕上裂成两条消息。
    *
@@ -293,7 +293,7 @@ export class SessionStream {
   }
 
   /**
-   * 这一轮失败了（`turn.end{ok:false}` / 会话在断线期间没了）。
+   * 这一轮失败了（`session-turn-end{ok:false}` / 会话在断线期间没了）。
    *
    * `failed` 是**终态**：之后的 `settle()` / `applySnapshot()` 之外的任何动作都不许把它
    * 擦成成功。拼接态就地丢掉（这一轮不会再有增量了），消息保留 —— 已经流出来的字是用户
@@ -355,7 +355,7 @@ export class SessionStream {
   }
 
   /**
-   * 一条**已经定型**的工具结果消息上线（`session.messageAppended`）。
+   * 一条**已经定型**的工具结果消息上线（`tool-call-end`）。
    *
    * 原样搬进列表、不拼装、不补字段：它与收尾快照里的那条是同一份东西。同一个
    * `tool_call_id` 已经在了就**替换**（事件的多次投递 / 快照先到都会走到这儿），
@@ -377,7 +377,7 @@ export class SessionStream {
 
   /** 一个子 Agent 开工（`index` / `id` 都是服务端给的，客户端编不出来） */
   subAgentStarted(event: { subAgentId: string; index: number }): void {
-    // 幂等：重连之后事件可能被重放，重复登记会多出一个空栏目
+    // 幂等：同一条 started 可能到两次（同一条连接上重复订阅就会这样），重复登记会多出一个空栏目
     if (this.value.subAgents.some((view) => view.id === event.subAgentId)) return;
     const view: SubAgentView = {
       id: event.subAgentId,
@@ -453,7 +453,7 @@ export class SessionStream {
     this.replaceSubAgent(index, { ...view, status: event.status });
   }
 
-  /** 清空栏目（`turn.end` / 换会话 / 换基线时同一动作） */
+  /** 清空栏目（`session-turn-end` / 换会话 / 换基线时同一动作） */
   clearSubAgents(): void {
     if (this.value.subAgents.length === 0) return;
     this.subAgentStreams.clear();
@@ -463,10 +463,10 @@ export class SessionStream {
   // ==================== 换 id / 换基线 / 阶段 ====================
 
   /**
-   * 会话换 id（`session.idChanged`：迁移 / 另存为 / **一轮进行中的自动迁移**）。
+   * 会话换 id（`session-id-changed`：迁移 / 另存为 / **一轮进行中的自动迁移**）。
    *
    * 只换 id 与清栏目：**不动**在飞的那一轮（`turnId` / `status` / 拼接态）—— 迁移发生在
-   * 一轮内部，那一轮的 `turn.end` 会从新 id 上来，这里把它丢了就永远等不到了。
+   * 一轮内部，那一轮的 `session-turn-end` 会从新 id 上来，这里把它丢了就永远等不到了。
    * 消息由调用方随后 `applySnapshot()` 对齐（迁移把历史剔成了「模板 + 断点」）。
    */
   applyIdChanged(sessionId: string): void {
@@ -490,7 +490,7 @@ export class SessionStream {
    *
    * 合并规则有一条早退分支（本地正文与推理都为空 → 原样返回快照，见
    * `mergeStreamedSnapshot`）：此刻拼接态的那条临时消息**根本不在**返回的列表里，而
-   * 「长度 - 1」是服务端那条的下标。这条路径真实可达：`session.toolCalls` 会建立一条正文为空
+   * 「长度 - 1」是服务端那条的下标。这条路径真实可达：`session-tool-calls` 会建立一条正文为空
    * 的流式态（工具调用是这条响应的一部分，正文还没开始），此时断线重连、服务端还在跑，
    * 下一片正文就会被写到服务端最后一条上 —— 而它往往是**工具结果**（`role:"tool"`）。
    * 那条消息被改写成 assistant，工具结果静默消失；用户消息同理会被顶掉。

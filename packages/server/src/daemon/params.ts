@@ -60,9 +60,6 @@ export function requireNumber(params: unknown, name: string): number {
  *
  * 缺省 `undefined` = 「没给」，由服务层按各自的旧行为取值 —— 不是 `false`。
  * 不用 `Boolean(x)`：那样字符串 `"false"` 会变成 `true`，而这两个参数的错法都会静默写错存档。
- *
- * （这里曾经还有一个「必填布尔」的兄弟函数，唯一的用户是那条已被删掉的保活方法；
- * 随它一起删了 —— 留着一个没有调用点的校验函数，下一个人就会以为某条路径还在用它。）
  */
 export function optionalBoolean(params: unknown, name: string): boolean | undefined {
   const value = field(params, name);

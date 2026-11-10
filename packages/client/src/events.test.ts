@@ -14,6 +14,7 @@ import {
   createSessionHandlers,
   EventHub,
   SessionManager,
+  AGENT_EVENTS,
   SESSION_EVENTS,
   SERVER_EVENTS,
   EVENT_METHODS,
@@ -111,7 +112,7 @@ describe("SocketServerClient.on（服务端推的事件）", () => {
     const client = await start();
     const received: ServerEvent[] = [];
     client.on(SESSION_EVENTS.phase, (event) => received.push(event));
-    client.on(SESSION_EVENTS.delta, (event) => received.push(event));
+    client.on(AGENT_EVENTS.chunkParsed, (event) => received.push(event));
     client.on(SESSION_EVENTS.turnEnd, (event) => received.push(event));
 
     await client.call(EVENT_METHODS.watch);
@@ -132,7 +133,7 @@ describe("SocketServerClient.on（服务端推的事件）", () => {
       .map((event) => (event as { phase: { kind?: string } | null }).phase?.kind ?? null);
     expect(kinds).toEqual(["connecting", "queued", "streaming", null]);
 
-    const deltas = received.filter((event) => event.event === SESSION_EVENTS.delta);
+    const deltas = received.filter((event) => event.event === AGENT_EVENTS.chunkParsed);
     expect(deltas).toHaveLength(1);
     expect(deltas[0]).toMatchObject({ text: "答", reasoning: "", turnId: 1 });
 
@@ -196,13 +197,13 @@ describe("两个通知通道", () => {
     }
 
     expect(notices[0]).toMatchObject({
-      event: "session.notice",
+      event: "session-notice",
       sessionId: created.sessionId,
       level: "error",
       code: "persistFailed",
     });
     expect(notices[1]).toMatchObject({
-      event: "server.notice",
+      event: "server-notice",
       level: "warn",
       code: "mcpUnavailable",
     });

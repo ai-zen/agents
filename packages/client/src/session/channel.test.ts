@@ -195,7 +195,7 @@ function newManager(): SessionManager {
     nextSessionId: () => `chat_${++counter}`,
     storeFor: (workspaceId) =>
       new FileSessionStore({ rootDir: join(dir, "workspaces", workspaceId) }),
-    // 自动迁移要用交接服务（`session.idChanged` 只从这条路上发）：不配的话服务端会回
+    // 自动迁移要用交接服务（`session-id-changed` 只从这条路上发）：不配的话服务端会回
     // `no-handoff`，而「客户端能不能跟上新 id」根本不是那一层的错
     handoff: { aiZenDir: join(dir, "ai-zen"), homeDir: dir },
   });
@@ -428,7 +428,7 @@ describe("SessionChannel：换一段会话时的轮次账", () => {
    * `saveAs` 的注释写得很直白：「这是同一段对话换个名字，所以 `turnId` 不动」。所以：
    *   · 换键之后 `send()` 拿到的不是 1 而是 2（编号真的跟着走了）；
    *   · 换键**之前**已经收尾的那一轮，账必须还在 —— 清掉它的人会让 `waitForTurn(1)` 永久挂住
-   *     （服务端那一轮确实结束了，`turn.end` 不会再来一遍）。
+   *     （服务端那一轮确实结束了，`session-turn-end` 不会再来一遍）。
    */
   it("adopt（saveAs 换键）**不**清账：轮次编号跟着走，已收尾的那一轮仍然算数", async () => {
     const opened = await open();
@@ -617,7 +617,7 @@ describe("SessionChannel：断线重连的三条不变式", () => {
     const turnId = await opened.send("长任务");
     await waitFor(() => agent.sent.length === 1);
     const pending = watch(opened.waitForTurn(turnId));
-    // 假 Agent **不** fire finally：那一轮的 turn.end 就丢在断线里
+    // 假 Agent **不** fire finally：那一轮的 session-turn-end 就丢在断线里
 
     await restartServer();
     releasePort();
@@ -672,19 +672,19 @@ describe("SessionChannel：断线重连的三条不变式", () => {
 
 describe("SessionChannel：换 id 与快照里的「还在跑」（P4 会立刻踩到的三条）", () => {
   /**
-   * 与服务端在一轮内部换 id（自动迁移）有关的那条：`turn.end` 从**新** id 上来。
+   * 与服务端在一轮内部换 id（自动迁移）有关的那条：`session-turn-end` 从**新** id 上来。
    *
    * 为什么必须有用例钉住：id 是事件过滤的判据，而过滤读的是状态里的那一份 —— 不跟着换，
-   * 客户端就会在旧 id 上等一个永远不会到的 `turn.end`，界面永久停在「生成中」。
+   * 客户端就会在旧 id 上等一个永远不会到的 `session-turn-end`，界面永久停在「生成中」。
    */
-  it("一轮内部自动迁移（session.idChanged）：turn.end 从新 id 上来，waitForTurn 照样落定", async () => {
+  it("一轮内部自动迁移（session-id-changed）：session-turn-end 从新 id 上来，waitForTurn 照样落定", async () => {
     const opened = await open();
     agent.messages = [{ role: "user", content: "旧任务" }];
     const turnId = await opened.send("继续");
     await waitFor(() => agent.sent.length === 1);
     const pending = watch(opened.waitForTurn(turnId));
 
-    // 服务端这一侧：自动迁移（存档 + prune + 换 id），`session.idChanged` 随之发出
+    // 服务端这一侧：自动迁移（存档 + prune + 换 id），`session-id-changed` 随之发出
     await (manager as unknown as { autoMigrate(id: string): Promise<void> }).autoMigrate(
       opened.sessionId,
     );

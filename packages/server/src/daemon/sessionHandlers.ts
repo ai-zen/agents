@@ -435,8 +435,8 @@ export function createSessionHandlers(
      * 交接两个方法的耗时是分钟级的（`self` 模式要跑一到两个完整回合）。
      *
      * 守护进程对方法调用不设超时（帧层只管字节），所以这里不需要“先回执、结果走事件”
-     * 那一套（那是 `session.send` 的做法）；进度会作为 `session.notice` 与
-     * `session.phase` / `session.delta` 事件先到，客户端不必等回执才知道在动。
+     * 那一套（那是 `session.send` 的做法）；进度会作为 `session-notice` 与
+     * `session-phase` / `chunk-parsed` 事件先到，客户端不必等回执才知道在动。
      */
     [SESSION_METHODS.handoff]: async (params): Promise<SessionHandoffResult> => {
       return await manager.handoff(requireString(params, "sessionId"), optionalMode(params));

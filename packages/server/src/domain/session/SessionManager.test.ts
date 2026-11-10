@@ -147,7 +147,7 @@ describe("SessionManager：turnId 与「不等一轮跑完」", () => {
     const { sessionId } = await create();
     expect(manager.send(sessionId, "第一轮").turnId).toBe(1);
     agent.fire("open");
-    expect(pick("session.phase").at(-1)!.turnId).toBe(1);
+    expect(pick("session-phase").at(-1)!.turnId).toBe(1);
 
     // 先让第一轮收尾（SDK 的 `finally`）再起下一轮：并行两轮会被 `turn-busy` 挡住
     // （事件靠 `turnId` 的当前值归轮，两轮并行必然串号，见 `send` 的注释）
@@ -156,16 +156,16 @@ describe("SessionManager：turnId 与「不等一轮跑完」", () => {
 
     expect(manager.send(sessionId, "第二轮").turnId).toBe(2);
     agent.fire("open");
-    expect(pick("session.phase").at(-1)!.turnId).toBe(2);
+    expect(pick("session-phase").at(-1)!.turnId).toBe(2);
   });
 
-  it("agent.send() 自己抛错 → 本轮以 session.turnEnd(ok:false) 收尾", async () => {
+  it("agent.send() 自己抛错 → 本轮以 session-turn-end(ok:false) 收尾", async () => {
     const { sessionId } = await create();
     agent.holdSend = Promise.reject(Object.assign(new Error("boom"), { code: "net" }));
     manager.send(sessionId, "x");
     await new Promise((resolve) => setTimeout(resolve, 0)); // 让 rejection 落地
 
-    const end = pick("session.turnEnd").at(-1)!;
+    const end = pick("session-turn-end").at(-1)!;
     expect(end.ok).toBe(false);
     expect(end.error).toEqual({ code: "net", message: "boom" });
   });
@@ -231,14 +231,14 @@ describe("SessionManager：并发守卫（一轮在跑时不再起第二轮）",
     // 号没被消耗：快照里仍是 1，第二轮一次都没交给 Agent，也没有带 turnId=2 的 phase
     expect((await guarded.snapshot(sessionId)).turnId).toBe(1);
     expect(agent.sent).toEqual(["第一轮"]);
-    expect(pick("session.phase").every((event) => event.turnId === 1)).toBe(true);
+    expect(pick("session-phase").every((event) => event.turnId === 1)).toBe(true);
   });
 
   it("该轮收尾（finally）之后 send 恢复正常：turnId 变 2", async () => {
     const { sessionId } = await hangTurn();
     agent.fire("finally");
     await settled();
-    expect(pick("session.turnEnd").at(-1)).toMatchObject({ turnId: 1, ok: true });
+    expect(pick("session-turn-end").at(-1)).toMatchObject({ turnId: 1, ok: true });
 
     expect(guarded.send(sessionId, "第二轮")).toEqual({ turnId: 2 });
     expect(agent.sent).toEqual(["第一轮", "第二轮"]);
@@ -270,7 +270,7 @@ describe("SessionManager：并发守卫（一轮在跑时不再起第二轮）",
     // 中止只负责掐断，收尾仍由 SDK 的 `finally` 落地（会话层不替它宣布结束）
     agent.fire("finally");
     await settled();
-    expect(pick("session.turnEnd").at(-1)).toMatchObject({ turnId: 1 });
+    expect(pick("session-turn-end").at(-1)).toMatchObject({ turnId: 1 });
 
     expect(guarded.send(sessionId, "再来一轮")).toEqual({ turnId: 2 });
   });
@@ -383,7 +383,7 @@ describe("SessionManager：reload（按新配置重建 Agent，保留消息）",
     // 旧 Agent 的事件已摘掉，新 Agent 的事件接上了
     expect(agents[0]!.handlerCount()).toBe(0);
     agents[1]!.fire("open");
-    expect(captured.at(-1)).toMatchObject({ event: "session.phase", phase: { kind: "queued" } });
+    expect(captured.at(-1)).toMatchObject({ event: "session-phase", phase: { kind: "queued" } });
   });
 });
 
@@ -396,9 +396,9 @@ describe("SessionManager：通知（两个通道）", () => {
       params: { error: "磁盘满" },
     });
 
-    expect(pick("session.notice")).toEqual([
+    expect(pick("session-notice")).toEqual([
       {
-        event: "session.notice",
+        event: "session-notice",
         sessionId,
         level: "error",
         code: "persistFailed",
@@ -411,7 +411,7 @@ describe("SessionManager：通知（两个通道）", () => {
     expect(() => manager.notice("chat_404", { level: "info", code: "handoffPath" })).toThrow(
       /unknown session/,
     );
-    expect(pick("session.notice")).toEqual([]);
+    expect(pick("session-notice")).toEqual([]);
   });
 
   it("全局通知走同一个 hub，不带 sessionId（不归属于任何会话）", () => {
@@ -420,9 +420,9 @@ describe("SessionManager：通知（两个通道）", () => {
     const mine: ServerEvent[] = [];
     withHub.subscribe((event) => mine.push(event));
 
-    hub.publish({ event: "server.notice", level: "warn", code: "mcpUnavailable" });
+    hub.publish({ event: "server-notice", level: "warn", code: "mcpUnavailable" });
 
-    expect(mine).toEqual([{ event: "server.notice", level: "warn", code: "mcpUnavailable" }]);
+    expect(mine).toEqual([{ event: "server-notice", level: "warn", code: "mcpUnavailable" }]);
   });
 });
 
@@ -470,13 +470,13 @@ describe("SessionManager：交接 / 迁移", () => {
     expect(existsSync(result.handoffPath)).toBe(true);
     expect(result.handoffPath.startsWith(join(workspace, ".ai-zen", "handoffs"))).toBe(true);
     expect(agent.messages).toEqual(before); // 摘要模式不碰消息
-    // 交接回合（指令 + 回执）留在会话里，而「每轮 session.turnEnd 前落盘」对它同样成立：
+    // 交接回合（指令 + 回执）留在会话里，而「每轮 session-turn-end 前落盘」对它同样成立：
     // 用户 `/handoff` 完直接退出，回来时这一段必须在存档里（旧版由
     // `ConversationPersistPlugin.onInnerLoopEnd` 承担同一件事）。
     expect([...store.records.keys()]).toEqual([sessionId]);
   });
 
-  it("每轮收尾自动落盘：`session.turnEnd` 之前写进存档，并把「本工作区上一轮」指过去", async () => {
+  it("每轮收尾自动落盘：`session-turn-end` 之前写进存档，并把「本工作区上一轮」指过去", async () => {
     const { sessionId } = await handoffManager.create({ workspaceId: "ws-1", path: workspace });
     handoffManager.send(sessionId, "第一句");
     agent.messages = [
@@ -514,8 +514,8 @@ describe("SessionManager：交接 / 迁移", () => {
     agent.fire("finally");
     await settled();
 
-    // `ai "…"` 的全部要求：这一轮确实跑完了（`session.turnEnd` 已发），但工作区里什么都没变
-    expect(events.some((event) => event.event === "session.turnEnd")).toBe(true);
+    // `ai "…"` 的全部要求：这一轮确实跑完了（`session-turn-end` 已发），但工作区里什么都没变
+    expect(events.some((event) => event.event === "session-turn-end")).toBe(true);
     expect(store.records.size).toBe(0);
     expect(await store.lastSession()).toBeNull();
   });
@@ -572,16 +572,16 @@ describe("SessionManager：交接 / 迁移", () => {
     expect((await store.lastSession())!.id).toBe(result.sessionId);
 
     // 收尾事件的 sessionId 是**旧** id：客户端先看到那一轮结束，再从响应里拿到新 id
-    const end = pick("session.turnEnd").at(-1)!;
+    const end = pick("session-turn-end").at(-1)!;
     expect(end).toMatchObject({ sessionId, ok: true });
   });
 
-  it("迁移的进度是 `session.notice`：存档 / 写文档 / 文档路径（都不带文案）", async () => {
+  it("迁移的进度是 `session-notice`：存档 / 写文档 / 文档路径（都不带文案）", async () => {
     const sessionId = await openChatted();
 
     await handoffManager.migrate(sessionId);
 
-    const notices = pick("session.notice");
+    const notices = pick("session-notice");
     expect(notices.map((notice) => notice.code)).toEqual([
       "handoffArchived",
       "handoffWriting",
@@ -631,12 +631,12 @@ describe("SessionManager：交接 / 迁移", () => {
 
     await expect(pending).rejects.toMatchObject({ code: "handoff-aborted" });
     // 取消不是失败：本轮以 ok:false 收尾，另有一条「已取消」的对话内通知
-    expect(pick("session.turnEnd").at(-1)).toMatchObject({
+    expect(pick("session-turn-end").at(-1)).toMatchObject({
       sessionId,
       ok: false,
       error: { code: "aborted" },
     });
-    expect(pick("session.notice").map((notice) => notice.code)).toContain("turnAborted");
+    expect(pick("session-notice").map((notice) => notice.code)).toContain("turnAborted");
     // 迁移没做成：会话还在旧 id 上（旧会话已存档，但历史没被剔除）
     expect((await handoffManager.list("ws-1")).map((item) => item.sessionId)).toEqual([sessionId]);
     expect(agent.messages).toHaveLength(2);
@@ -688,7 +688,7 @@ describe("SessionManager：自动迁移（SDK 插件在一轮内部触发）", (
     await fs.rm(workspace, { recursive: true, force: true });
   });
 
-  it("落地动作：先存旧会话 → 剔历史 → 换 id → 发 session.idChanged", async () => {
+  it("落地动作：先存旧会话 → 剔历史 → 换 id → 发 session-id-changed", async () => {
     const { sessionId } = await auto.create({ workspaceId: "ws-1", path: workspace });
     agent.messages = [{ role: "user", content: "旧任务" }];
 
@@ -701,8 +701,8 @@ describe("SessionManager：自动迁移（SDK 插件在一轮内部触发）", (
     expect(aliveNow.map((item) => item.sessionId)).toEqual(["chat_2"]);
     expect(JSON.stringify(store.records.get("chat_2")!.messages)).not.toContain("旧任务");
     // 客户端没有响应可接：换 id 只能靠事件
-    expect(pick("session.idChanged")).toEqual([
-      { event: "session.idChanged", from: sessionId, sessionId: "chat_2" },
+    expect(pick("session-id-changed")).toEqual([
+      { event: "session-id-changed", from: sessionId, sessionId: "chat_2" },
     ]);
   });
 
@@ -712,7 +712,7 @@ describe("SessionManager：自动迁移（SDK 插件在一轮内部触发）", (
 
     await Promise.all([hook!(), hook!()]);
 
-    expect(pick("session.idChanged")).toHaveLength(1);
+    expect(pick("session-id-changed")).toHaveLength(1);
     expect(await auto.list("ws-1", { includeSaved: false })).toHaveLength(1);
   });
 
@@ -911,7 +911,7 @@ describe("SessionManager：持有者 / 换 Agent / 关闭", () => {
     expect(store.records.get(sessionId)!.messages).toHaveLength(2);
   });
 
-  it("一轮还在跑时持有者全走了：不打断它，session.turnEnd 收尾时才回收", async () => {
+  it("一轮还在跑时持有者全走了：不打断它，session-turn-end 收尾时才回收", async () => {
     const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
     live.registerHolder(sessionId, 1);
 
@@ -1869,7 +1869,7 @@ describe("SessionManager：标题与删除（id 与 title 分开）", () => {
   });
 });
 
-describe("SessionManager：自动标题（第一轮 session.turnEnd 之后异步起名）", () => {
+describe("SessionManager：自动标题（第一轮 session-turn-end 之后异步起名）", () => {
   let store: MemoryStore;
   let titleManager: SessionManager;
   /** 注入缝：这一份就是用例的「模型」。调用记录 = 服务端到底发了什么 */
@@ -1905,15 +1905,15 @@ describe("SessionManager：自动标题（第一轮 session.turnEnd 之后异步
 
   /** 跑一轮（把消息造出来再驱动 `finally`），等到这一轮真的收尾 */
   const runTurn = async (sessionId: string, content = "帮我把迁移改成 omit") => {
-    const before = pick("session.turnEnd").length;
+    const before = pick("session-turn-end").length;
     titleManager.send(sessionId, content);
     agent.messages.push({ role: "user", content });
     agent.messages.push({ role: "assistant", content: "好" });
     agent.fire("finally");
-    await until(() => pick("session.turnEnd").length > before);
+    await until(() => pick("session-turn-end").length > before);
   };
 
-  it("命名不阻塞收尾：`session.turnEnd` 先到，标题与事件随后才来", async () => {
+  it("命名不阻塞收尾：`session-turn-end` 先到，标题与事件随后才来", async () => {
     // 假件照抄真件的形状：SDK 会把三级解析的结果写进它交给 Agent 的那份定义
     (agent as unknown as { definition: { modelId?: string } }).definition.modelId = "m-live";
     const { sessionId } = await titleManager.create({ workspaceId: "ws-1", path: "/p" });
@@ -1924,7 +1924,7 @@ describe("SessionManager：自动标题（第一轮 session.turnEnd 之后异步
     await runTurn(sessionId);
 
     // 这一轮已经结束、客户端已经在等下一轮了 —— 而标题还在路上
-    expect(pick("session.titleChanged")).toEqual([]);
+    expect(pick("session-title-changed")).toEqual([]);
     expect(calls).toHaveLength(1);
     // 用哪个模型由会话层给：装配方（注入的函数）不知道这一段生效的是哪个模型
     expect(calls[0]!.modelId).toBe("m-live");
@@ -1936,10 +1936,10 @@ describe("SessionManager：自动标题（第一轮 session.turnEnd 之后异步
     ]);
 
     release("迁移策略改造");
-    await until(() => pick("session.titleChanged").length === 1);
+    await until(() => pick("session-title-changed").length === 1);
 
-    expect(pick("session.titleChanged")[0]).toEqual({
-      event: "session.titleChanged",
+    expect(pick("session-title-changed")[0]).toEqual({
+      event: "session-title-changed",
       sessionId,
       title: "迁移策略改造",
     });
@@ -1959,7 +1959,7 @@ describe("SessionManager：自动标题（第一轮 session.turnEnd 之后异步
 
     expect(calls).toEqual([]); // 连一次模型调用都不该有
     expect(store.records.get(sessionId)!.title).toBe("我的名字");
-    expect(pick("session.titleChanged")).toEqual([]);
+    expect(pick("session-title-changed")).toEqual([]);
   });
 
   it("拿到结果时用户已经改过名：模型的名字让位（那几秒里用户才是对的）", async () => {
@@ -1975,14 +1975,14 @@ describe("SessionManager：自动标题（第一轮 session.turnEnd 之后异步
     await settled();
 
     expect(store.records.get(sessionId)!.title).toBe("用户的名字");
-    expect(pick("session.titleChanged")).toEqual([]);
+    expect(pick("session-title-changed")).toEqual([]);
   });
 
   it("同一段会话只生成一次：第二轮不再发请求", async () => {
     const { sessionId } = await titleManager.create({ workspaceId: "ws-1", path: "/p" });
 
     await runTurn(sessionId);
-    await until(() => pick("session.titleChanged").length === 1);
+    await until(() => pick("session-title-changed").length === 1);
     await runTurn(sessionId, "再问一句");
     await settled();
 
@@ -2000,11 +2000,11 @@ describe("SessionManager：自动标题（第一轮 session.turnEnd 之后异步
     await settled();
 
     // 用户从没要求「起名」这件事：它失败就该像没发生过
-    expect(pick("session.titleChanged")).toEqual([]);
-    expect(pick("session.notice")).toEqual([]);
+    expect(pick("session-title-changed")).toEqual([]);
+    expect(pick("session-notice")).toEqual([]);
     expect(store.records.get(sessionId)!.title).toBeUndefined();
     // 这一轮照样结束了（失败的是标题，不是对话）
-    expect(pick("session.turnEnd").at(-1)).toMatchObject({ sessionId, ok: true });
+    expect(pick("session-turn-end").at(-1)).toMatchObject({ sessionId, ok: true });
 
     // 第二轮不重试（"不许重试轰炸"）
     await runTurn(sessionId, "再问一句");
@@ -2033,11 +2033,11 @@ describe("SessionManager：自动标题（第一轮 session.turnEnd 之后异步
     agent.fire("finally");
 
     // 等到「这一轮已收尾」与「标题请求已被超时取消」两件事都成立
-    await until(() => pick("session.turnEnd").length === 1);
-    await until(() => pick("session.titleChanged").length === 0 && store.records.has(sessionId));
+    await until(() => pick("session-turn-end").length === 1);
+    await until(() => pick("session-title-changed").length === 0 && store.records.has(sessionId));
     await settled();
 
-    expect(pick("session.titleChanged")).toEqual([]);
+    expect(pick("session-title-changed")).toEqual([]);
     expect(store.records.get(sessionId)!.title).toBeUndefined();
   });
 });
@@ -2093,7 +2093,7 @@ describe("SessionManager：迁移策略（omit 与 prune 是两种结局，不�
 
     // 还是同一段会话：内容没变（只是旧消息不再发给模型），没有理由换个身份
     expect(result.sessionId).toBe(sessionId);
-    expect(pick("session.idChanged")).toEqual([]);
+    expect(pick("session-id-changed")).toEqual([]);
 
     // 历史留着（可审计 / 可回放），标的是「不再发送」；模板不动，末尾追加交接断点
     const messages = agent.messages as Array<Record<string, unknown>>;
@@ -2109,10 +2109,10 @@ describe("SessionManager：迁移策略（omit 与 prune 是两种结局，不�
 
     // `turnId` 继续累加（迁移本身也是一轮），收尾事件仍在同一个 id 上
     expect((await strategyManager.snapshot(sessionId)).turnId).toBe(2);
-    expect(pick("session.turnEnd").at(-1)).toMatchObject({ sessionId, ok: true });
+    expect(pick("session-turn-end").at(-1)).toMatchObject({ sessionId, ok: true });
 
     // 不再有「旧会话已另存」那条通知：它根本没有被另存成一段
-    expect(pick("session.notice").map((notice) => notice.code)).toEqual([
+    expect(pick("session-notice").map((notice) => notice.code)).toEqual([
       "handoffWriting",
       "migrationDegraded", // 假 Agent 无 write 工具 → 摘要模式
       "handoffPath",
@@ -2127,8 +2127,8 @@ describe("SessionManager：迁移策略（omit 与 prune 是两种结局，不�
     const result = await strategyManager.migrate(sessionId, undefined, "prune");
 
     expect(result.sessionId).not.toBe(sessionId);
-    expect(pick("session.idChanged")).toEqual([
-      { event: "session.idChanged", from: sessionId, sessionId: result.sessionId },
+    expect(pick("session-id-changed")).toEqual([
+      { event: "session-id-changed", from: sessionId, sessionId: result.sessionId },
     ]);
     // 两份存档：旧的是交接前的完整历史，新的是「模板 + 交接断点」
     expect(store.records.get(sessionId)!.messages).toEqual([
@@ -2138,7 +2138,7 @@ describe("SessionManager：迁移策略（omit 与 prune 是两种结局，不�
     ]);
     expect(JSON.stringify(store.records.get(result.sessionId)!.messages)).not.toContain("旧任务");
     // 旧会话存档里的通知仍然先说「已存档」（这一条 prune 才有意义）
-    expect(pick("session.notice")[0]).toMatchObject({
+    expect(pick("session-notice")[0]).toMatchObject({
       code: "handoffArchived",
       params: { sessionId },
     });

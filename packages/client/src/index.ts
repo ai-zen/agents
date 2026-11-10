@@ -6,7 +6,7 @@
  *
  * | 层 | 文件 | 职责 |
  * |---|---|---|
- * | 传输 | `transport/connection.ts` | **一个进程一条连接**（`ServerConnection`）：发现/拉起、断线重建、`events.watch` 重放、断线与就绪的上报 |
+ * | 传输 | `transport/connection.ts` | **一个进程一条连接**（`ServerConnection`）：发现/拉起、断线重建、在新连接上重新订阅 `events.watch`、断线与就绪的上报 |
  * | 传输 | `socket-server-client.ts` | 一条 TCP + JSON-lines + `hello` 握手 + 在飞调用 + 事件分发 |
  * | 传输 | `ensure-server.ts` | 读发现文件并探活，探不到就 detached 拉起一个 `agents-server serve` |
  * | 脏 | `session/channel.ts` | **一条会话的 I/O**（`SessionChannel`）：订阅、请求、重连三条不变式、重新 `attach` |

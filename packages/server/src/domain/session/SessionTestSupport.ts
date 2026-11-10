@@ -41,7 +41,7 @@ import { resolveModel } from "@ai-zen/agents-sdk";
 /**
  * 等一轮真正收尾。
  *
- * 收尾是**异步**的：`settleTurn` 先落盘、再发 `session.turnEnd`（顺序是那条需求的全部意义）。
+ * 收尾是**异步**的：`settleTurn` 先落盘、再发 `session-turn-end`（顺序是那条需求的全部意义）。
  * 所以驱动完 `finally` 之后要等一拍再断言，否则测的是「还没写完」而不是「没发」
  * —— 这与本仓「等条件成立」的约定同一个意思，只是这里的条件就是「异步收尾跑完」。
  */
@@ -158,15 +158,21 @@ export class FakeSubAgent {
 /**
  * 按 **core 的真实契约**发一片 chunk。
  *
- * `chunk-parsed` 是两参：`(receiver, chunk)` —— 第一个是那条正在拼的 assistant 消息，
- * 第二个才是原始 chunk。以前这里按单参发（`fire("chunk-parsed", chunk)`），正好满足了
- * 服务端那条“两种形状都认”的写法，于是一个「正文增量永远推不出去」的真 bug 躲过了一整轮
- * 单测（详见 `onChunk` 的注释）。假件的形状必须与真件一致。
+ * 真件是**两条**事件、而且是这个顺序（`packages/core/src/Agent.ts` 的 `parseStreamData`）：
+ *   1. `emit("chunk", chunk)` —— 原始片到建，早于解析；
+ *   2. 解析完才 `emit("chunk-parsed", receiver, chunk)` —— 两参，第一个是那条正在拼的
+ *      assistant 消息，第二个才是原始 chunk。
+ *
+ * 两件事都必须照抄。历史上这里按单参发（`fire("chunk-parsed", chunk)`），正好满足了服务端
+ * 那条“两种形状都认”的写法，于是一个「正文增量永远推不出去」的真 bug 躲过了一整轮单测；
+ * 另外漏发 `chunk` 会让「原始事件照原时机上线」这件事在用例里凭空成立（详见 `onChunk` 与
+ * `onRawChunk` 的注释）。假件的形状必须与真件一致。
  */
 export function fireChunk(
   target: { fire: (event: string, ...args: unknown[]) => void },
   chunk: unknown,
 ): void {
+  target.fire("chunk", chunk);
   target.fire("chunk-parsed", { role: "assistant" }, chunk);
 }
 
@@ -212,10 +218,11 @@ export const chunk = (delta: Record<string, unknown>) => ({ choices: [{ delta }]
 /**
  * 按**真件的两层**驱动一片工具调用 chunk。
  *
- * 真件（`packages/core/src/Agent.ts` 的 `parseStreamData`）做两件事，缺一不可：
- *   1. 就地把它拼进 `receiver.tool_calls[index]`（名字只在本下标的第一片里给，参数逐片
+ * 真件（`packages/core/src/Agent.ts` 的 `parseStreamData`）做三件事，缺一不可：
+ *   1. `emit("chunk", chunk)` —— 原始片到建；
+ *   2. 就地把它拼进 `receiver.tool_calls[index]`（名字只在本下标的第一片里给，参数逐片
  *      `+=`）；
- *   2. 然后才 `emit("chunk-parsed", receiver, chunk)` —— **第一个参数是那条正在拼的消息**，
+ *   3. 然后才 `emit("chunk-parsed", receiver, chunk)` —— **第一个参数是那条正在拼的消息**，
  *      第二个才是这一片原始 chunk。
  *
  * 所以这里也让同一个 `receiver` 逐片累积：每片手搓一个「已经拼好」的消息喂进去，测出来的
@@ -238,15 +245,19 @@ export function fireToolCall(
     },
   };
 
-  // —— 第 1 步：照 core 的样子拼进 receiver
+  // —— 第 1 步：原始片先上线（core `chunk`，早于解析）
+  const raw = chunk({ tool_calls: [deltaCall] });
+  target.fire("chunk", raw);
+
+  // —— 第 2 步：照 core 的样子拼进 receiver
   receiver.tool_calls ??= [];
   const call = (receiver.tool_calls[index] ??= { index, function: { name: "", arguments: "" } });
   if (fragment.id !== undefined) call.id = fragment.id;
   if (fragment.name !== undefined) call.function.name = fragment.name;
   call.function.arguments += fragment.arguments;
 
-  // —— 第 2 步：两参 fire（receiver, chunk）
-  target.fire("chunk-parsed", receiver, chunk({ tool_calls: [deltaCall] }));
+  // —— 第 3 步：两参 fire（receiver, chunk）
+  target.fire("chunk-parsed", receiver, raw);
 }
 
 /** 一条正在拼的 assistant 消息（真件里就是 `AgentNS.Message`） */

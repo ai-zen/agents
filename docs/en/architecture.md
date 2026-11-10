@@ -1,6 +1,6 @@
 ---
 title: Architecture
-description: Five packages and two applications, their one-way dependency direction, what each layer owns and refuses, a 44-method / 12-event protocol surface, why the protocol is its own package, the client's transport/facade/session layers, the server's directory layout, the single rule behind a session's lifetime, the four parts of SessionManager, the <aiZenDir> on-disk layout, build/test order, what this round of refactoring changed, and the gaps that remain.
+description: Five packages and two applications, their one-way dependency direction, what each layer owns and refuses, a 44-method / 17-event protocol surface, why the protocol is its own package, the client's transport/facade/session layers, the server's directory layout, the single rule behind a session's lifetime, the four parts of SessionManager, the <aiZenDir> on-disk layout, build/test order, what this round of refactoring changed, and the gaps that remain.
 outline: deep
 ---
 
@@ -97,9 +97,9 @@ Why that deserves a hard property: the shape of `Message` is both the on-disk fo
 | `cli` (separate repo) | Rendering and input (ink), slash commands and the session layer, drawing the state of a `SessionStream` | Session orchestration, archives, workspaces, config writes — those live on the server. It depends on `client`, plus `sdk` / `core` (the app needs business types such as `AgentDefinition` and **runtime enums** such as `Role` / `MessageStatus`) |
 | `desktop main` (separate repo) | Application-level facts (`app.getVersion()` as `clientInfo`), spawning the server, subscribing to events and turning that state over to the renderer | The server implementation itself. Its event translator is now a thin adapter over `SessionStream` |
 
-## The protocol surface: 44 methods / 12 events
+## The protocol surface: 44 methods / 17 events
 
-Method names and event names are `as const` tables shared by client and server. **Counting rule**: count the entries in those tables — one method-name literal is one method; parameter and result types do not count; the three built-in methods (`ping` / `status` / `shutdown`) **do** count (they are called after the handshake like any other, they are merely implemented by `Daemon` itself); notice codes (`SESSION_NOTICE_CODES` / `SERVER_NOTICE_CODES`) do not count as events — they are enums inside the payload of `session.notice` / `server.notice`.
+Method names and event names are `as const` tables shared by client and server. **Counting rule**: count the entries in those tables — one method-name literal is one method; parameter and result types do not count; the three built-in methods (`ping` / `status` / `shutdown`) **do** count (they are called after the handshake like any other, they are merely implemented by `Daemon` itself); notice codes (`SESSION_NOTICE_CODES` / `SERVER_NOTICE_CODES`) do not count as events — they are enums inside the payload of `session-notice` / `server-notice`.
 
 | Namespace | Count | Defined in |
 |-----------|-------|------------|
@@ -112,21 +112,24 @@ Method names and event names are `as const` tables shared by client and server. 
 | Built-ins `ping` / `status` / `shutdown` | 3 | `DAEMON_METHODS` in `daemon.ts` |
 | **Total** | **44** | |
 
-There are **12** events, in two tables, both in `sessions.ts`:
+There are **17** events, in three tables, all in `sessions.ts`:
 
-| Table | Count | Event names |
-|-------|-------|-------------|
-| `SESSION_EVENTS` | 11 | `session.phase`, `session.delta`, `session.toolCalls`, `session.messageAppended`, `session.turnEnd`, `session.notice`, `session.question`, `session.idChanged`, `session.titleChanged`, `session.subAgent.started`, `session.subAgent.ended` |
-| `SERVER_EVENTS` | 1 | `server.notice` |
-| **Total** | **12** | |
+| Table | Count | Event names | Meaning |
+|-------|-------|-------------|---------|
+| `AGENT_EVENTS` | 9 | `open`, `chunk`, `chunk-parsed`, `parsed`, `tool-call-end`, `error`, `finally`, `sub-agent-start`, `sub-agent-end` | Values are verbatim core `Agent.events` names, and they fire at core's own moments |
+| `SESSION_EVENTS` | 7 | `session-phase`, `session-tool-calls`, `session-turn-end`, `session-notice`, `session-question`, `session-id-changed`, `session-title-changed` | Derived by the server / actions of the server itself |
+| `SERVER_EVENTS` | 1 | `server-notice` | The server's own notice (belongs to no session) |
+| **Total** | **17** | | |
 
 Five properties that matter at this level:
 
 - Event payloads carry **facts** only (a phase kind, a tool name, a piece of text), never wording — turning them into "Connecting…" or "连接中…" is the client's job.
-- `session.delta` is a **text stream** (each frame appends), while `session.toolCalls` is **assembly state** (each frame says "this is what it looks like now"). Different semantics stay in different events; one event carrying both would leave the client guessing which fields append and which replace.
-- `session.messageAppended` carries **one complete message** (a tool result: `role: "tool"` + `tool_call_id` + content) and goes out one message at a time instead of waiting for a snapshot: core finalises tool results one by one, while a snapshot is only available after `session.turnEnd` — and on a long turn the user stares at the argument card for minutes.
+- The nine `AGENT_EVENTS` are core's own names (`open` / `chunk` / `chunk-parsed` / `parsed` / `tool-call-end` / `error` / `finally` / `sub-agent-start` / `sub-agent-end`); the server forwards each one at the very moment core emits it, without renaming anything. `open` / `chunk` / `parsed` / `error` / `finally` are unused by today's client but are still sent — the protocol surface is core's public fact, and whether to use it is the client's business.
+- The timing is hard: `chunk` precedes `chunk-parsed` for the same piece; `error` precedes `finally`; `finally` precedes `session-turn-end` (which only goes out after the server has written the archive, swapped ids and run the reclaim check). `finally` and `session-turn-end` are **two different events**, not a rename of one another.
+- `chunk-parsed` is a **text stream** (each frame appends), while `session-tool-calls` is **assembly state** (each frame says "this is what it looks like now"). Different semantics stay in different events; one event carrying both would leave the client guessing which fields append and which replace.
+- `tool-call-end` carries **one complete message** (a tool result: `role: "tool"` + `tool_call_id` + content) and goes out one message at a time instead of waiting for a snapshot: core finalises tool results one by one, while a snapshot is only available after `session-turn-end` — and on a long turn the user stares at the argument card for minutes.
 - `send` returns a `turnId` immediately and everything afterwards travels as events: a turn can run for minutes, and a request that only answered at the end would leave the client with nothing to render.
-- Namespaces follow **what the method acts on**: `workspace.*` acts on the container, `session.*` on one conversation, `events.watch` belongs to the connection, and `asset.*` is read-only (assets are the user's filesystem; changing them is a different action). Events follow the same rule: `session.*` are **session events** (their payload carries `sessionId`), `server.notice` is the **server's own notice** (it belongs to no session and must survive switching sessions) — the prefix alone tells you which table to look at, with no list to memorise.
+- Namespaces follow **what the method acts on**: `workspace.*` acts on the container, `session.*` on one conversation, `events.watch` belongs to the connection, and `asset.*` is read-only (assets are the user's filesystem; changing them is a different action). Events follow the same rule: the `session-` prefix marks **session events** (derived by the server or actions of the server itself, payload carries `sessionId`), `server-notice` is the **server's own notice** (it belongs to no session and must survive switching sessions), and the nine `AGENT_EVENTS` describe **what happens to one Agent** (their names are core's names) — the name alone tells you which table to look at, with no list to memorise.
 
 The parameters, results and semantics of each method and event are **not** copied here — that is what `packages/server/README.md` is for. This document gives the classification and the size only.
 
@@ -154,7 +157,7 @@ Inside the package the split is by "dirty / pure" and by responsibility. Whateve
 
 | Layer | File | Responsibility |
 |---|---|---|
-| **Transport** | `transport/connection.ts` (`ServerConnection`) | **One connection per process**: every use checks `closed`, rebuilds when dead, replays `events.watch` after a rebuild, reports both disconnects and readiness upwards (`onClose` / `onOpen`). It does **not** retry — retrying is a session-layer rule |
+| **Transport** | `transport/connection.ts` (`ServerConnection`) | **One connection per process**: every use checks `closed`, rebuilds when dead, re-subscribes to `events.watch` on the new connection, reports both disconnects and readiness upwards (`onClose` / `onOpen`). It does **not** retry — retrying is a session-layer rule |
 | | `ensure-server.ts` | Reads `<aiZenDir>/run/server.json`; if liveness (`callOnce` asking `ping`) fails it spawns `agents-server serve` detached and polls until `ping` answers. It is the **only** place in the package that knows about `agents-server` (deployment strategy, not a layer) |
 | | `socket-server-client.ts` | One TCP + JSON-lines connection: `hello` handshake, in-flight calls, event dispatch, disconnect notification |
 | **Facade** | `facade/sessions.ts` (`RemoteSessions`, 27) | Typed thin wrapper over `session.*` (21) + `workspace.*` (6) |
@@ -168,7 +171,7 @@ One more pure piece sits at the package root: `stream-merge.ts` (`mergeStreamedS
 
 **Why the cut is where it is**: this block **is not presentation**. It decides whether the answer on screen comes up short, whether a failed sub-task is shown as a success, and whether the turn is actually over — three front ends would all get it wrong, and all get it wrong the same way. The pure/dirty boundary (`SessionStream` / `SessionChannel`) is the same cut as `PhaseTracker` (pure) / `SessionManager` (dirty): the pure one can be unit-tested, the dirty one only wires things up.
 
-`SessionStream` has no `send()` and no "wait for this turn": **waiting happens in `SessionChannel.waitForTurn(turnId)`**. `turn.end` can land before the reply to `send()`, so folding both into one promise would require keeping a record of "turns already settled" inside it — which is exactly what `waitForTurn` does.
+`SessionStream` has no `send()` and no "wait for this turn": **waiting happens in `SessionChannel.waitForTurn(turnId)`**. `session-turn-end` can land before the reply to `send()`, so folding both into one promise would require keeping a record of "turns already settled" inside it — which is exactly what `waitForTurn` does.
 
 ### Three hard constraints (each machine-checkable)
 
@@ -257,7 +260,7 @@ Logs go to `<aiZenDir>/logs/server.log`: the daemon is spawned detached by a cli
 
 That is all of it, and **there is no second judgement**.
 
-`holders` means "at this moment one connection is actually watching it": the transport registers it (`session.create` / `session.attach` register the calling connection) and removes it when that connection closes (hooked on `connection.onClose`). It requires no cooperation from the client — the disappearance of a connection is **guaranteed by the kernel** (a `kill -9`, a crash or a power cut all take that socket away). The grace period is `DEFAULT_SESSION_IDLE_TIMEOUT_MS` (60 s, `--session-idle-timeout`), long enough to cover the client's worst-case reconnect budget; at the deadline the rule is **re-checked**, so an `attach` arriving inside the window merely cancels the reclaim, and a turn still running pushes it to `session.turnEnd`.
+`holders` means "at this moment one connection is actually watching it": the transport registers it (`session.create` / `session.attach` register the calling connection) and removes it when that connection closes (hooked on `connection.onClose`). It requires no cooperation from the client — the disappearance of a connection is **guaranteed by the kernel** (a `kill -9`, a crash or a power cut all take that socket away). The grace period is `DEFAULT_SESSION_IDLE_TIMEOUT_MS` (60 s, `--session-idle-timeout`), long enough to cover the client's worst-case reconnect budget; at the deadline the rule is **re-checked**, so an `attach` arriving inside the window merely cancels the reclaim, and a turn still running pushes it to `session-turn-end`.
 
 **Why there is no client-reported "keep-alive intent"**: that design used the conjunction of "the declared intent **and** a holder", and of those two facts only one survives the hardest case — a crashed process cannot send that frame, so the declaration stays at "keep it" forever and the session, together with its Agent and message history, pins itself in memory (this package runs on loopback, so the only reclaiming event would be a daemon restart); whereas a holder is a kernel-guaranteed fact that the very same crash cleans up. Taking the conjunction just made the unreliable half a necessary condition. The single "why" for this decision is the header of `SessionManager.ts`.
 
@@ -303,7 +306,7 @@ The config root is written as `<aiZenDir>`: the `--ai-zen-dir` flag, else `AI_ZE
 | `<aiZenDir>/run/server.json` | Service discovery file | `descriptorPath` in `@ai-zen/agents-protocol`'s `discovery.ts` |
 | `<aiZenDir>/logs/server.log` | Daemon log (appended) | `openLog` in `src/cli.ts` |
 
-There is **no per-front-end directory** under `<aiZenDir>`: a session belongs to a **workspace**, and the CLI and the desktop app share one set of data. The pointer is not keyed by cwd either — the workspace is the partition key, so it is a single pointer (`last-session.json`). The script that migrated the old layout is gone; see "What this round of refactoring changed".
+There is **no per-front-end directory** under `<aiZenDir>`: a session belongs to a **workspace**, and the CLI and the desktop app share one set of data. The pointer is not keyed by cwd either — the workspace is the partition key, so it is a single pointer (`last-session.json`).
 
 A `workspaceId` looks like `<normalised directory name>-<first 8 hex of sha256(absolute path)>`, e.g. `/home/ubuntu/projects/ai-zen/cli` → `cli-3f9a1c2b`. It is only a **candidate for the first assignment** and is frozen once assigned: after an `mv` the id stays the same and the recorded path has to be rewritten explicitly with `workspace.relocate`, otherwise history dies the moment a directory is renamed (header of `workspace.ts`).
 
@@ -332,32 +335,13 @@ Which gives these operating rules:
 - **`pnpm test` explicitly builds `testing` / `server` / `client`** (the last two bring `protocol` along); the artifacts of `core` / `sdk` must already exist from `build-core` / `build-sdk`, or the packages that depend on them fail to resolve during `pretest` (`tsc --noEmit`) and `vitest`. The client's test cases start a **real Daemon**, so `server`'s `dist` must be there too.
 - To run one package's tests: `pnpm --filter @ai-zen/agents-server test` (same precondition: upstream `dist` present).
 
-## What this round of refactoring changed
-
-This section is **a historical ledger**: what was deleted, what moved where, written in the past tense. Every section above describes the present only, so the names that appear here are **evidence that they once existed**, not claims that they still do.
-
-| Action | Content |
-|---|---|
-| New package | `@ai-zen/agents-protocol` — the only addition among the five packages |
-| The move | The contract moved out of the server package into the new one: the server's `./protocol` subpath was removed, its `exports` shrank from "an extra opening" to `.` + `./package.json`, `server` / `client` were repointed at the new package, and client's `dependencies` went from 4 entries to 1 |
-| Reverse dependency removed | `PhaseInfo` / `PhaseKind` / `ToolCallRef` moved from the server's phase state machine into the protocol (the protocol used to `import type` a server-internal state machine — the direction was wrong) |
-| One intent, one expression | The client-reported keep-alive declaration `session.keepAlive.set` was deleted (payload `{ sessionId, keepAlive: boolean }`), together with `SessionManager`'s keep-alive field and the keep-alive methods on `RemoteSessions`; a session's lifetime collapsed to the single "holder" rule. The method count went 45 → 44 |
-| Error codes consolidated | Six byte-identical copies of `codedError` in the server were deleted in favour of `ERROR_CODES` + `codedError` / `isCodedError` / `codeOf` in the protocol; the client no longer writes error-code literals |
-| Event names and table split | `message.delta` → `session.delta`, `turn.end` → `session.turnEnd`, `global.notice` → `server.notice`; `SESSION_EVENTS` and `SERVER_EVENTS` split apart, and `GLOBAL_NOTICE_CODES` → `SERVER_NOTICE_CODES` along with them |
-| No more `unknown` in the protocol | `messages: unknown[]` / `modelParams: unknown` / `message: unknown` became named types (re-exported from core at the type level), so a client no longer has to import core just to read one message |
-| Server directories rearranged | The flat `service/` was split by nature into `domain/` (business objects) + `lib/` (business-free parts) + `daemon/` (transport and wiring) |
-| `SessionManager` split | From ~2600 lines and 12 parallel responsibilities into four classes plus a shape file, cut by "who owns which fields of `LiveSession`" (see "The four parts of `SessionManager`"); the test cases moved into four files by ownership rather than being copied |
-| New client session layer | `transport/` + `facade/` + `session/`, pulling the "state machine for one turn" out of the applications and into the package (the CLI and the desktop app each had their own copy) |
-| Facades completed | `RemoteSessions` covers 21 session methods + 6 workspace methods, `RemoteConfig` covers 13; the session-level model actions moved back from the config facet to the session one; coverage is nailed down by a type-level test case |
-| Dead code deleted | `legacyMigration` (zero call sites) and the empty `packages/cli/` shell (the CLI had long since moved to its own repository) |
-
 ## Known gaps / unfinished
 
 - **The desktop main process already uses `SessionStream`** (`desktop@49c82c1`; `events.ts` went from 838 to 665 lines): the hand-written delta accumulation, sub-agent merging, whole-snapshot replacement on settle and `failed` terminal check are all gone. What remains is "feed the event in / map it out to `ChatStreamEvent`". The two pieces **not** moved are desktop-only facts, not duplication: ① the body of the `user` event (the protocol never pushes user messages); ② the id of the placeholder assistant message (render's `v-for` key needs one, and the state machine deliberately gives streamed messages no id).
 - **`SessionStream` is still missing three exits** (each of which forces a small, commented workaround in the desktop `events.ts`): ① a stable id for the streamed message (main now mints one per turn); ② a public way to *discard* a session's accumulated stream (main now swaps in a fresh `new SessionStream()`); ③ `applySnapshot` does not align `state.turnId` (main compares against the snapshot itself to detect a stale slot).
 - **Method-table naming is not uniform**: `EVENT_METHODS` (singular) against the other five method tables (plural). Purely a naming matter, and renaming it touches two call sites.
 - **`Role` / `MessageStatus` are `enum`s in core (runtime values)**, so **applications** (CLI / desktop) depending on core is legitimate. Making applications depend on the protocol alone would mean dropping the data vocabulary into a lower-level package — judged not worth it this round, so not done.
-- **The server README's handler list lags behind the protocol**: the "registers …" paragraph in `packages/server/README.md` is missing six session methods (`session.snapshot` / `session.rollback` / `session.save` / `session.saveAs` / `session.model.set` / `session.modelParams.set`) and lists the *event* `session.question` as if it were a method. The README still needs fixing; the sole source of truth for that list is `SESSION_METHODS`.
+- **The server README's handler list lags behind the protocol**: the "registers …" paragraph in `packages/server/README.md` is missing six session methods (`session.snapshot` / `session.rollback` / `session.save` / `session.saveAs` / `session.model.set` / `session.modelParams.set`) and lists the *event* `session-question` as if it were a method. The README still needs fixing; the sole source of truth for that list is `SESSION_METHODS`.
 - **A comment in `packages/sdk/src/config/constants.ts` still describes per-front-end runtime directories** (`~/.ai-zen/<front-end>/`), which contradicts the current rule that sessions belong to workspaces and `config.json` lives under `<aiZenDir>`.
 - **If the settle snapshot fails** (connection dropped, session just reclaimed), the desktop still pushes `error` — same as before the refactor: the local approximation of that message has no stable id, so it cannot ride inside `done`. Someone should confirm in a real window that the error bar appears and the input box recovers.
 

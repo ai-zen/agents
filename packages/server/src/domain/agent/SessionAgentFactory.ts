@@ -221,12 +221,12 @@ export class SessionAgentFactory {
               return input.isHandoffBusy?.() ?? false;
             },
             // `mode` 必须原样递下去：`resolveMode` 只回答「用哪种方式」，迁移本体在会话层
-            // —— 中间这一跳把它丢掉的话，用户在 `session.question` 里的选择就白选了
+            // —— 中间这一跳把它丢掉的话，用户在 `session-question` 里的选择就白选了
             migrate: (params?: { mode?: HandoffMode }) => autoMigrate(params?.mode),
           } as unknown as HandoffService,
           handoffTokens: thresholds.handoff,
           // 谁来写交接文档由**用户**定：`resolveMode` 回到会话层，由它向客户端提问
-          // （`session.question`）并等回答。不传（别的组装方）就用交接服务的默认执行者
+          // （`session-question`）并等回答。不传（别的组装方）就用交接服务的默认执行者
           // —— 那是这一层的兜底，不是产品决策。
           //
           // 注意不要跟 CLI 的 `createAutoMigratePlugin` 那一套搞混：`shouldConfirm` /

@@ -114,9 +114,11 @@ scenario on both.
 ## Session layer
 
 `@ai-zen/agents-protocol` (`sessions.ts`) is the wire contract for sessions — method names, params and the
-session events (`session.phase`, `session.delta`, `session.toolCalls`, `session.messageAppended`,
-`session.turnEnd`, `session.notice`, `session.idChanged`, `session.titleChanged`, `session.question`,
-`session.subAgent.*`). `src/domain/session/` holds the session as four collaborating classes:
+events, in three tables: `AGENT_EVENTS` (core's own nine: `open`, `chunk`, `chunk-parsed`, `parsed`,
+`tool-call-end`, `error`, `finally`, `sub-agent-start`, `sub-agent-end`), `SESSION_EVENTS`
+(`session-phase`, `session-tool-calls`, `session-turn-end`, `session-notice`, `session-question`,
+`session-id-changed`, `session-title-changed`) and `SERVER_EVENTS` (`server-notice`).
+`src/domain/session/` holds the session as four collaborating classes:
 `SessionManager.ts` (live-session registry, holders/reclaiming, turn lifecycle, catalogue,
 handoff), `EventBridge.ts` (SDK events → protocol events), `Persistence.ts` (the archive shape
 and every write path), `QuestionBroker.ts` (server → client questions). `src/lib/` holds the
@@ -126,7 +128,7 @@ discovery) per workspace; `src/daemon/sessionHandlers.ts` registers `workspace.r
 `workspace.files` / `workspace.list` / `workspace.rename` / `workspace.remove` /
 `workspace.relocate` / `events.watch` / `session.create` / `session.attach` / `session.send` /
 `session.cancel` / `session.list` / `session.rename` / `session.remove` / `session.last` /
-`session.subAgent.snapshot` / `session.question`+`session.answer` / `session.reload` /
+`session.subAgent.snapshot` / `session-question`+`session.answer` / `session.reload` /
 `session.setAgent` / `session.close` / `session.handoff` /
 `session.migrate` on a `Daemon`, and `src/cli.ts` wires all of it.
 
@@ -295,13 +297,13 @@ Two things worth knowing about `modelParams`:
   `modelLevel`: the pair exists so a client can show "this value" and "set at this level"
   together without inferring one from the other.
 
-### Asking the client something: `session.question`
+### Asking the client something: `session-question`
 
 Some decisions belong to the user, not to the server — auto-migration's "who writes the handoff
 document" (`self` | `summary` | skip) is the first one. The event is deliberately **generic**:
 
 ```
-session.question { questionId, kind, input, options?, params, allowSkip, fallback }
+session-question { questionId, kind, input, options?, params, allowSkip, fallback }
 session.answer   { questionId, choice: string | null }
 ```
 
@@ -331,8 +333,8 @@ shared value: "the turn is over" says nothing about what the user wanted.
 
 ### Not archiving is a bug: per-turn persistence
 
-`settleTurn` writes the session to the archive **before** `session.turnEnd`, then emits. The order is
-the whole point: once a client sees `session.turnEnd` it treats the turn as finished, so a session
+`settleTurn` writes the session to the archive **before** `session-turn-end`, then emits. The order is
+the whole point: once a client sees `session-turn-end` it treats the turn as finished, so a session
 missing from disk at that moment means "quit and come back and nothing happened". This is what
 the old `ConversationPersistPlugin` did on every `onInnerLoopEnd`.
 
@@ -376,21 +378,21 @@ A session outlives its clients, but it must not live forever. One fact decides i
 - `holders` is what the transport knows for free: `session.create` / `session.attach` register
   the calling connection, and that connection's close removes it. No frame, no client
   cooperation — the kernel guarantees the close (fin/rst on exit, crash or `kill -9`).
-- There used to be a second, *declared* fact (`session.keepAlive.set`, a per-session flag the
-  client had to send over the wire, ANDed with `holders`). It was removed because a crashed
-  process never gets to send that frame: used as a necessary condition, a `kill -9`ed client
-  pinned its session (and the agent plus message history behind it) in memory until the daemon
-  restarted — exactly the case the other half of the rule already covered.
+- `holders` is the *only* fact that decides lifetime. There is deliberately no declared
+  counterpart: a flag the client had to send over the wire would be ANDed with `holders`, and a
+  crashed process never gets to send that frame — used as a necessary condition, a `kill -9`ed
+  client would pin its session (and the agent plus message history behind it) in memory until the
+  daemon restarted, which is exactly the case `holders` already covers.
 - When the last holder goes away the session gets a grace period (`DEFAULT_SESSION_IDLE_TIMEOUT_MS`,
   60 s, `--session-idle-timeout`). It must cover the client's reconnect budget (~30 s worst case),
   otherwise a reconnecting client finds the session already reclaimed. The deadline **re-checks**
   the rule, so an `attach` arriving inside the window just cancels it, and a turn still running at
-  the deadline defers the close to `session.turnEnd`.
+  the deadline defers the close to `session-turn-end`.
 - `session.close { sessionId }` is the **only** explicit way to say "I am done with this one" and
   it reclaims immediately (idempotent, `closed: false` when it was not live). A one-shot call
   (`ai "…"`) ends with it, otherwise every invocation would leave a live session behind until
   the grace period expires.
-- **Closing is cheap and lossless**: the archive was written before `session.turnEnd`, so a closed
+- **Closing is cheap and lossless**: the archive was written before `session-turn-end`, so a closed
   session is re-hydrated by `session.attach` straight from disk.
 - `session.list` reports `live` (in server memory right now) — a fact, not a client declaration.
 
@@ -448,7 +450,7 @@ still returned (an archive can easily outlive the definition it was created unde
 
 ### `title` vs `id`
 
-`id` is the identity (archive filename, `session.idChanged`, the resume pointer all point at it).
+`id` is the identity (archive filename, `session-id-changed`, the resume pointer all point at it).
 `title` is the name a human reads; renaming never moves the id. `session.rename { workspaceId,
 sessionId, title }` works on archived sessions too (it does not require an `attach` first), and
 `session.saveAs` — "save this conversation under another id" — carries the title along.
@@ -460,7 +462,7 @@ The same split applies to workspaces (`id` + `title`); `name` is kept for things
 ### Automatic titles
 
 After the **first** turn of a session settles, the server asks a model for a name and writes it
-into the archive; `session.titleChanged` tells clients about it (`session.turnEnd` is already out — the
+into the archive; `session-title-changed` tells clients about it (`session-turn-end` is already out — the
 name never blocks anything). Three limits, each of them deliberate: it only runs when the title
 is still empty (**a hand-renamed title is never overwritten**), it runs at most once per session
 (failure just leaves the title empty — no retries, no error notice), and it is bounded by a 10s
@@ -487,8 +489,8 @@ agent-specific, and invalidating it would evict every other session in the works
 ### Sub-agents: a tool, not a session
 
 Delegated sub-agents are *tool calls* (`AgentTool` / `AgentToolLazy`), and the protocol treats
-them that way: `session.subAgent.started` / `.ended` carry a per-turn `index` (the label) and a
-stable `subAgentId` (the client's selection key), `session.delta` grows an optional `subAgentId`,
+them that way: `sub-agent-start` / `sub-agent-end` carry a per-turn `index` (the label) and a
+stable `subAgentId` (the client's selection key), `chunk-parsed` grows an optional `subAgentId`,
 and `session.subAgent.snapshot` returns that sub-agent's own transcript. Two invariants:
 
 - **A sub-agent's deltas never move the main phase.** While a sub-agent runs, the main agent is
@@ -498,18 +500,46 @@ and `session.subAgent.snapshot` returns that sub-agent's own transcript. Two inv
   while it runs, and its transcript is otherwise history. One exception: the *id* counter is not
   reset, so a client's stale selection can never attach to the next turn's `sub-1`.
 
+### The agent's own events go out verbatim: same names, same moments
+
+Nine of the seventeen events are core's own (`AGENT_EVENTS`) and the server forwards them
+**unchanged**, at the moment core emits them — renaming them on the wire would mean keeping a
+translation table across protocol, server and client, and a table only ever drifts:
+
+| Event | Fired by the server when |
+|---|---|
+| `open` | core `open` — the request is about to go out, once per inner loop |
+| `chunk` | core `chunk` — one raw chunk arrived, **before** it is parsed |
+| `chunk-parsed` | core `chunk-parsed` — that chunk is parsed and `receiver` updated in place |
+| `parsed` | core `parsed` — the stream ended, `receiver` is final |
+| `tool-call-end` | core `tool-call-end` — one tool result is final (payload: that message) |
+| `error` | core `error` — the turn failed, **before** `finally` |
+| `finally` | core `finally` — core is done with the turn |
+| `sub-agent-start` / `sub-agent-end` | core's delegation boundary |
+
+`open` / `chunk` / `parsed` / `error` / `finally` are unused by today's clients and are still
+sent: they are core's public facts, and a client that later wants them (a "started" timestamp, a
+raw-chunk debug pane) must not need a server change. Payloads are minimal by design — `{ sessionId,
+turnId }`, plus `chunk` for the raw piece (vendor shape, the protocol does not interpret it) and a
+flattened `{ code, message }` for `error` (`Error` instances cannot go on the wire).
+
+Two timings are part of the contract: for one piece, `chunk` precedes `chunk-parsed`; and a failed
+turn goes `error` → `finally` → `session-turn-end`. **`finally` and `session-turn-end` are two
+different events**: the former only says core is done, the latter goes out after the archive is
+written, ids are swapped and the reclaim check has run (`SessionManager.settleTurn`).
+
 ### Tool calls during streaming: assembly state, not deltas
 
-`session.toolCalls` carries **the current turn's tool calls as they stand right now**:
+`session-tool-calls` carries **the current turn's tool calls as they stand right now**:
 `{ sessionId, turnId, toolCalls: [{ index, name, id?, arguments }] }`, where `arguments` is the
 JSON string assembled so far (not valid JSON until the call is finished). It goes out **while
 the stream is still open**, so a client can draw the tool card as the arguments arrive instead
-of waiting for the `session.snapshot` that follows `session.turnEnd`. Main agent only — sub-agents
+of waiting for the `session.snapshot` that follows `session-turn-end`. Main agent only — sub-agents
 have their own channel and never move this one.
 
-Why a separate event instead of another field on `session.delta`:
+Why a separate event instead of another field on `chunk-parsed`:
 
-- `session.delta` is a **text stream**: every frame means "append this". Tool calls are
+- `chunk-parsed` is a **text stream**: every frame means "append this". Tool calls are
   **assembly state**: every frame means "this is what it looks like now". Two semantics in one
   event force every client to guess whether a field appends or replaces — and the symptom of
   guessing wrong is arguments spliced twice.
@@ -532,23 +562,23 @@ Two server-side rules:
 
 ### Tool results during streaming: one complete message, the moment each tool settles
 
-`session.messageAppended` carries `{ sessionId, turnId, message }`, where `message` is **the
+`tool-call-end` carries `{ sessionId, turnId, message }`, where `message` is **the
 message itself** — today a tool result (`role: "tool"` + `tool_call_id` + content). It goes out
-the moment that tool finishes (core's `tool-call-end`), not at `session.turnEnd`. Main agent only;
+the moment that tool finishes (core's `tool-call-end`), not at `session-turn-end`. Main agent only;
 sub-agents have their own channel.
 
-Why not just `session.delta`:
+Why not just `chunk-parsed`:
 
-- `session.delta` is a **text stream** (every frame means "append this"). A tool result is a
+- `chunk-parsed` is a **text stream** (every frame means "append this"). A tool result is a
   **complete message**, and its identity — `tool_call_id`, the pairing with a card drawn from
-  `session.toolCalls` — is not inside any piece of text. A client that only had deltas would have
+  `session-tool-calls` — is not inside any piece of text. A client that only had deltas would have
   to invent a message shape of its own, which is a second representation of the same thing.
-- Why not wait for the snapshot: `session.snapshot` is only available after `session.turnEnd`, and a
+- Why not wait for the snapshot: `session.snapshot` is only available after `session-turn-end`, and a
   turn can run for minutes — the user stares at the argument card without ever seeing what the
   tool produced. Core already settles results one at a time (one `tool-call-end` per tool,
   fastest first); holding them to the end of the turn buys nothing.
 - Why **only** tool results: a streaming assistant message is still being assembled, and the
-  client is already drawing it from `session.delta` plus a placeholder message. Pushing it here
+  client is already drawing it from `chunk-parsed` plus a placeholder message. Pushing it here
   as well gives one message two representations, which then have to be reconciled. A tool result
   has neither problem: it is final when it goes out, and nothing else is drawing it.
 
@@ -577,8 +607,8 @@ The channel is the **namespace**, not a field:
 
 | Event | Bound to | Rendered where |
 |---|---|---|
-| `session.notice` | a session (`sessionId` is required) | inside the conversation — disappears when you switch away |
-| `server.notice` | nothing | app-level (status bar / banner) — must survive session switches |
+| `session-notice` | a session (`sessionId` is required) | inside the conversation — disappears when you switch away |
+| `server-notice` | nothing | app-level (status bar / banner) — must survive session switches |
 
 Both go through the same `EventHub`, so a client needs **one** subscription. A
 `workspace.notice` is the natural third if a notice ever belongs to a workspace but to no
@@ -621,7 +651,7 @@ Three things are worth knowing before touching it:
   plugins and runs through `run()` (so `onBeforeSend` / `onAfterSend` never fire for it), and
   it recursively installs itself so grandchildren are covered too. The soft line fires *inside*
   `send()`, so it must not open a new turn and must not settle the outer one; it archives,
-  prunes, re-keys and then emits `session.idChanged` — that event is the only way a client
+  prunes, re-keys and then emits `session-id-changed` — that event is the only way a client
   learns about a new id when no request is in flight.
 - **Nothing is archived by hooks.** `HandoffService` runs its hooks through `safeHook`,
   which logs and continues — a failed archive inside a hook would let the prune destroy the
@@ -691,7 +721,7 @@ test with two or three fakes and nothing else.
 | `cli/src/tui/file-index.ts` (`@` completion, scanning the client's disk) | `src/domain/workspace/FileIndex.ts` |
 | `cli/src/model-switch.ts` (write `AgentDefinition.modelId` + clear thinking params) | `SessionAgentFactory.setModel` (`agent.model.set`) |
 | `cli/src/conversation-persist-plugin.ts` (per-turn autosave) | `SessionManager.settleTurn` + `writeSession` |
-| `cli/src/auto-migrate-confirm.ts` (the three-way picker's server half) | `SessionManager.askQuestion` (`session.question` / `session.answer`) |
+| `cli/src/auto-migrate-confirm.ts` (the three-way picker's server half) | `SessionManager.askQuestion` (`session-question` / `session.answer`) |
 | — | `session.close` / `session.setAgent`, the holder reclaimer (`SessionManager.scheduleReclaim`) |
 | `cli/src/sub-agent-guard-plugin.ts` | `sdk/src/agent-plugins/SubAgentGuardInstallerPlugin.ts` |
 | `cli/src/handoff-service.ts` (the hooks around the SDK's handoff flow) | `src/domain/handoff/` |

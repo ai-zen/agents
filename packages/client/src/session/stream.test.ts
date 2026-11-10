@@ -83,7 +83,7 @@ describe("SessionStream：正文增量与收尾对账", () => {
     expect(stream.state.phase).toEqual({ kind: "streaming" });
   });
 
-  it("turn.end 用服务端快照整份对账：服务端有、本地拼不出来的字段都补上", () => {
+  it("session-turn-end 用服务端快照整份对账：服务端有、本地拼不出来的字段都补上", () => {
     // 出自同一条用例：「收尾后是服务端那份权威消息（连 reasoning_content 都在），不是本地拼的近似」
     const stream = streaming();
     stream.applyDelta({ text: "答完了" });
@@ -276,8 +276,8 @@ describe("SessionStream：子 Agent 栏目", () => {
     expect(stream.state.subAgents.map((view) => view.status)).toEqual(["done", "failed"]);
   });
 
-  it("只活当前一轮：turn.end 清空栏目（与进程内实现的 `finally` 等价）", () => {
-    // 出自「只活当前一轮：turn.end 清空列表」
+  it("只活当前一轮：session-turn-end 清空栏目（与进程内实现的 `finally` 等价）", () => {
+    // 出自「只活当前一轮：session-turn-end 清空列表」
     const stream = streaming();
     stream.subAgentStarted({ subAgentId: "s1", index: 1 });
     stream.subAgentDelta({ subAgentId: "s1", text: "跑到一半" });
@@ -287,7 +287,7 @@ describe("SessionStream：子 Agent 栏目", () => {
     expect(stream.state.subAgents).toEqual([]);
   });
 
-  it("重复的 started 不会多出一个空栏目（重连之后事件可能被重放）", () => {
+  it("重复的 started 不会多出一个空栏目（同一事件可能到达两次）", () => {
     const stream = streaming();
     stream.subAgentStarted({ subAgentId: "s1", index: 1 });
     stream.subAgentStarted({ subAgentId: "s1", index: 1 });
@@ -298,7 +298,7 @@ describe("SessionStream：子 Agent 栏目", () => {
 
 describe("SessionStream：换 id", () => {
   it("idChanged 只换 id 与清栏目，**不动**在飞的那一轮（迁移发生在一轮内部）", () => {
-    // 出自「服务端在一轮内部换 id（自动迁移）」：不跟着换就会在旧 id 上等一个永远不到的 turn.end
+    // 出自「服务端在一轮内部换 id（自动迁移）」：不跟着换就会在旧 id 上等一个永远不到的 session-turn-end
     const stream = streaming();
     stream.setPhase({ kind: "streaming" });
     stream.subAgentStarted({ subAgentId: "s1", index: 1 });
@@ -307,7 +307,7 @@ describe("SessionStream：换 id", () => {
 
     expect(stream.state.sessionId).toBe("chat_2");
     expect(stream.state.subAgents).toEqual([]);
-    // 这一轮的 turn.end 会从新 id 上来：丢失 turnId / status 就等于再也等不到它
+    // 这一轮的 session-turn-end 会从新 id 上来：丢失 turnId / status 就等于再也等不到它
     expect(stream.state.turnId).toBe(1);
     expect(stream.state.status).toBe("streaming");
     expect(stream.state.phase).toEqual({ kind: "streaming" });
@@ -354,7 +354,7 @@ describe("SessionStream：重连对齐（applySnapshot）", () => {
   it("一轮跑到一半断线重连：已拼出的正文留在**同一条**消息上，后续增量接着拼", () => {
     // CLI 那份实现在这里有一处静默丢字：`applySnapshot` 把消息整份换掉，而拼接态还指着
     // 已经被换下去的那条消息对象 —— 之后的增量全写在一个不在列表里的对象上，
-    // 屏幕要等到 turn.end 才补回来。合并规则让它们收敛回同一条。
+    // 屏幕要等到 session-turn-end 才补回来。合并规则让它们收敛回同一条。
     const stream = streaming();
     stream.applyDelta({ text: "一半" });
 
@@ -376,7 +376,7 @@ describe("SessionStream：重连对齐（applySnapshot）", () => {
    * 早退分支（`mergeStreamedSnapshot` 在「本地正文与推理都为空」时原样返回快照）之后，
    * 拼接态的那条临时消息**不在**返回的消息列表里 —— 调用方不能拿「列表长度 - 1」当它的下标。
    *
-   * 这条路径是真实可达的：`session.toolCalls` 会建立一条**正文为空**的流式态（工具调用是
+   * 这条路径是真实可达的：`session-tool-calls` 会建立一条**正文为空**的流式态（工具调用是
    * 这条响应的一部分，正文还没开始），此时断线重连、服务端还在跑（`phase !== null`），
    * 下一片正文到达就会写到「服务端最后一条」上 —— 而那一条往往是**工具结果**。
    */

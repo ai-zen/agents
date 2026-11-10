@@ -48,7 +48,7 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
     agent.fire("finally");
     await settled();
     expect((await manager.list("ws-1"))[0]!.phase).toBeNull();
-    expect(pick("session.turnEnd").at(-1)!.ok).toBe(true);
+    expect(pick("session-turn-end").at(-1)!.ok).toBe(true);
   });
 
   it("正文与推理增量分别上报；只带 usage 的收尾 chunk 只带用量、不带正文", async () => {
@@ -68,12 +68,12 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
       usage: { completion_tokens: 42, total_tokens: 51 },
     });
 
-    expect(pick("session.delta").map((e) => [e.text, e.reasoning])).toEqual([
+    expect(pick("chunk-parsed").map((e) => [e.text, e.reasoning])).toEqual([
       ["", "想…"],
       ["答案", ""],
       ["", ""],
     ]);
-    expect(pick("session.delta").at(-1)!.usage).toEqual({ completionTokens: 42 });
+    expect(pick("chunk-parsed").at(-1)!.usage).toEqual({ completionTokens: 42 });
   });
 
   it("本轮带工具调用：streamEnded 之后进 tool-waiting，并报出全部工具名", async () => {
@@ -125,7 +125,7 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
     });
   });
 
-  it("error 与 finally 都会到：session.turnEnd 只发一次，且带上错误", async () => {
+  it("error 与 finally 都会到：session-turn-end 只发一次，且带上错误", async () => {
     const { sessionId } = await create();
     manager.send(sessionId, "hi");
 
@@ -133,20 +133,74 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
     agent.fire("finally");
     await settled();
 
-    const ends = pick("session.turnEnd");
+    const ends = pick("session-turn-end");
     expect(ends).toHaveLength(1);
     expect(ends[0]).toMatchObject({ ok: false, error: { code: "timeout", message: "超时" } });
     expect((await manager.list("ws-1"))[0]!.phase).toBeNull();
   });
+
+  /**
+   * core 原名的那几条里，客户端**今天用不到**的也要真的发出去。
+   *
+   * 这条盯的是「协议面写了的就得真发」：`open` / `parsed` / `finally` 在客户端没有任何
+   * 处理函数，很容易在服务端被“嫌多余”而漏掉——而它们一旦不发，协议里那几条就成了谎话
+   * （其余客户端拿它们做别的事时，永远收不到）。
+   */
+  it("core 原名的事件一条不少：open / chunk / parsed / finally（名字与载荷就是 core 那一份）", async () => {
+    const { sessionId } = await create();
+    manager.send(sessionId, "hi");
+
+    const piece = chunk({ content: "你" });
+    agent.fire("open");
+    fireChunk(agent, piece);
+    agent.fire("parsed", { message: { role: "assistant", content: "你好" } });
+    agent.fire("finally");
+    await settled();
+
+    expect(pick("open")).toEqual([{ event: "open", sessionId, turnId: 1 }]);
+    // `chunk` 带的是 core 给的那一片**原样**（厂商形状，协议不解释）
+    expect(pick("chunk")).toEqual([{ event: "chunk", sessionId, turnId: 1, chunk: piece }]);
+    expect(pick("parsed")).toEqual([{ event: "parsed", sessionId, turnId: 1 }]);
+    expect(pick("finally")).toEqual([{ event: "finally", sessionId, turnId: 1 }]);
+    // 这一轮没出错：`error` 一条都不该有（别把“没出错”也发成一条）
+    expect(pick("error")).toHaveLength(0);
+  });
+
+  /**
+   * 三条时机约束是协议的一部分（客户端按它们排事实）：同一片 `chunk` 先于 `chunk-parsed`；
+   * `error` 先于 `finally`；`finally` 先于 `session-turn-end`（后者要等落盘）。
+   */
+  it("时机顺序：chunk → chunk-parsed；error → finally → session-turn-end", async () => {
+    const { sessionId } = await create();
+    manager.send(sessionId, "hi");
+
+    fireChunk(agent, chunk({ content: "答" }));
+    const names = events.map((event) => event.event);
+    expect(names.indexOf("chunk")).toBeGreaterThanOrEqual(0);
+    expect(names.indexOf("chunk")).toBeLessThan(names.indexOf("chunk-parsed"));
+
+    agent.fire("error", Object.assign(new Error("超时"), { code: "timeout" }));
+    agent.fire("finally");
+    await settled();
+
+    const tail = events
+      .map((event) => event.event)
+      .filter((name) => name === "error" || name === "finally" || name === "session-turn-end");
+    expect(tail).toEqual(["error", "finally", "session-turn-end"]);
+    // Error 实例不能上线：摊成 `{ code, message }` 两个字段
+    expect(pick("error")).toEqual([
+      { event: "error", sessionId, turnId: 1, error: { code: "timeout", message: "超时" } },
+    ]);
+  });
 });
 /**
- * 工具调用的组装态（`session.toolCalls`）—— 客户端在流式期间画工具卡片的唯一依据。
+ * 工具调用的组装态（`session-tool-calls`）—— 客户端在流式期间画工具卡片的唯一依据。
  *
  * 这一组盯的是「服务端搬的是**哪一份**真相」：core 已经把工具调用拼进了那条正在拼的
  * assistant 消息（`chunk-parsed` 的第一个参数），服务端只该把它转出去。所以每条用例都按
  * 真件形状两参 fire，并且让同一个 receiver 逐片长大（见 `fireToolCall`）。
  */
-describe("SessionManager：工具调用的组装态（session.toolCalls）", () => {
+describe("SessionManager：工具调用的组装态（session-tool-calls）", () => {
   it("流式期间就把工具调用推上线：名字与参数都是组装后的内容", async () => {
     const { sessionId } = await create();
     manager.send(sessionId, "hi");
@@ -155,7 +209,7 @@ describe("SessionManager：工具调用的组装态（session.toolCalls）", () 
     fireToolCall(agent, receiver, 0, { id: "call_1", name: "exec", arguments: '{"command":"ls' });
     fireToolCall(agent, receiver, 0, { arguments: ' -la"}' });
 
-    const calls = pick("session.toolCalls");
+    const calls = pick("session-tool-calls");
     expect(calls.length).toBeGreaterThan(0);
     expect(calls.at(-1)!.turnId).toBe(1);
     expect(calls.at(-1)!.toolCalls).toEqual([
@@ -169,10 +223,10 @@ describe("SessionManager：工具调用的组装态（session.toolCalls）", () 
     const receiver = assembling();
 
     fireToolCall(agent, receiver, 0, { id: "call_1", name: "read_file", arguments: '{"path":' });
-    const first = pick("session.toolCalls").at(-1)!.toolCalls[0]!.arguments;
+    const first = pick("session-tool-calls").at(-1)!.toolCalls[0]!.arguments;
 
     fireToolCall(agent, receiver, 0, { arguments: '"a.txt"}' });
-    const second = pick("session.toolCalls").at(-1)!.toolCalls[0]!.arguments;
+    const second = pick("session-tool-calls").at(-1)!.toolCalls[0]!.arguments;
 
     expect(first).toBe('{"path":');
     // 不是 '"a.txt"}'（只有新的那一段），而是两片拼起来的那一份
@@ -185,7 +239,7 @@ describe("SessionManager：工具调用的组装态（session.toolCalls）", () 
     const receiver = assembling();
 
     fireToolCall(agent, receiver, 0, { id: "call_1", name: "read_file", arguments: '{"path":"a"' });
-    const before = pick("session.toolCalls").length;
+    const before = pick("session-tool-calls").length;
 
     // 同一下标再来一遍、参数片段为空：组装结果一个字没变
     fireToolCall(agent, receiver, 0, { id: "call_1", arguments: "" });
@@ -195,7 +249,7 @@ describe("SessionManager：工具调用的组装态（session.toolCalls）", () 
       usage: { completion_tokens: 3 },
     });
 
-    expect(pick("session.toolCalls")).toHaveLength(before);
+    expect(pick("session-tool-calls")).toHaveLength(before);
   });
 
   it("一轮收尾后状态清零：上一轮的调用既不挡住、也不混进新一轮", async () => {
@@ -206,7 +260,7 @@ describe("SessionManager：工具调用的组装态（session.toolCalls）", () 
       name: "exec",
       arguments: '{"command":"ls"}',
     });
-    expect(pick("session.toolCalls").at(-1)!.turnId).toBe(1);
+    expect(pick("session-tool-calls").at(-1)!.turnId).toBe(1);
 
     agent.fire("finally");
     await settled();
@@ -219,9 +273,9 @@ describe("SessionManager：工具调用的组装态（session.toolCalls）", () 
       name: "exec",
       arguments: '{"command":"ls"}',
     });
-    expect(pick("session.toolCalls").map((event) => event.turnId)).toEqual([1, 2]);
+    expect(pick("session-tool-calls").map((event) => event.turnId)).toEqual([1, 2]);
     // 只有本轮组装出来的那一个：上一轮那份没有被叠进来（载荷是组装态，不是累计账本）
-    expect(pick("session.toolCalls").at(-1)!.toolCalls).toEqual([
+    expect(pick("session-tool-calls").at(-1)!.toolCalls).toEqual([
       { index: 0, id: "call_1", name: "exec", arguments: '{"command":"ls"}' },
     ]);
 
@@ -234,24 +288,23 @@ describe("SessionManager：工具调用的组装态（session.toolCalls）", () 
       name: "read_file",
       arguments: '{"path":"b"}',
     });
-    expect(pick("session.toolCalls").at(-1)!.toolCalls).toEqual([
+    expect(pick("session-tool-calls").at(-1)!.toolCalls).toEqual([
       { index: 0, id: "call_9", name: "read_file", arguments: '{"path":"b"}' },
     ]);
   });
 });
 /**
- * 工具结果消息（`session.messageAppended`）—— 工具跑完一个就推一条，不等一轮结束。
+ * 工具结果消息（`tool-call-end`）—— 工具跑完一个就推一条，不等一轮结束。
  *
  * 这一组盯的是**时机与身份**：推的是哪一条消息（刚定型的工具结果）、什么时候推（`tool-call-end`
- * 那一刻，不是 `session.turnEnd` 之后）、以及推第几次（同一条只推一次，跨轮不串）。每条用例都按真件
+ * 那一刻，不是 `session-turn-end` 之后）、以及推第几次（同一条只推一次，跨轮不串）。每条用例都按真件
  * 的形状摆布 `agent.messages`：结果消息在执行**前**就以 `pending` 追加、跑完才翻终态。
  */
-describe("SessionManager：工具结果消息（session.messageAppended）", () => {
+describe("SessionManager：工具结果消息（tool-call-end）", () => {
   /** 事件里推出去的那几条消息（按顺序），只取判定身份要用的字段 */
-  const appended = () =>
-    pick("session.messageAppended").map((event) => event.message as Record<string, any>);
+  const appended = () => pick("tool-call-end").map((event) => event.message as Record<string, any>);
 
-  it("工具一跑完就把结果消息推上线：不必等 session.turnEnd，推的就是那一条", async () => {
+  it("工具一跑完就把结果消息推上线：不必等 session-turn-end，推的就是那一条", async () => {
     const { sessionId } = await create();
     manager.send(sessionId, "hi");
 
@@ -259,7 +312,7 @@ describe("SessionManager：工具结果消息（session.messageAppended）", () 
     agent.messages.push(message);
     fireToolCallEnd(agent, message);
 
-    const events = pick("session.messageAppended");
+    const events = pick("tool-call-end");
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ sessionId, turnId: 1 });
     // 推的是**那一条**：tool_call_id 与正文都对得上（服务端只搬运，不重新包装）
@@ -270,8 +323,8 @@ describe("SessionManager：工具结果消息（session.messageAppended）", () 
       content: "总用量 12",
       status: "completed",
     });
-    // 此刻这一轮还没收尾 —— 这正是这条事件存在的理由（快照要等到 session.turnEnd 之后）
-    expect(pick("session.turnEnd")).toHaveLength(0);
+    // 此刻这一轮还没收尾 —— 这正是这条事件存在的理由（快照要等到 session-turn-end 之后）
+    expect(pick("session-turn-end")).toHaveLength(0);
   });
 
   it("同一条结果不会推第二次：没有新消息就不发", async () => {
@@ -304,7 +357,7 @@ describe("SessionManager：工具结果消息（session.messageAppended）", () 
     expect(appended().map((message) => message.content)).toEqual(["第一次", "第二次"]);
   });
 
-  it("只推工具结果：同一批里的 assistant 消息不推（它由 session.delta + 占位消息在画）", async () => {
+  it("只推工具结果：同一批里的 assistant 消息不推（它由 chunk-parsed + 占位消息在画）", async () => {
     const { sessionId } = await create();
     manager.send(sessionId, "hi");
 
@@ -340,7 +393,7 @@ describe("SessionManager：工具结果消息（session.messageAppended）", () 
     // 第二轮那条照推（没被上一轮的水位挡掉），上一轮那条也没被重推（清空成空集就会漏成
     // ["call_1","call_1","call_2"]）
     expect(appended().map((message) => message.tool_call_id)).toEqual(["call_1", "call_2"]);
-    expect(pick("session.messageAppended").at(-1)!.turnId).toBe(2);
+    expect(pick("tool-call-end").at(-1)!.turnId).toBe(2);
   });
 
   it("并行时先跑完的先推；还没定型的那条等它自己跑完，不会被当成结果提前推出去", async () => {
@@ -373,16 +426,16 @@ describe("SessionManager：工具结果消息（session.messageAppended）", () 
  * 「只活当前一轮」。每条用例都对着一个会被后人改坏的点。
  */
 describe("SessionManager：子 Agent（栏目）", () => {
-  it("sub-agent-start → session.subAgent.started：index 从 1 起，id 是 sub-1 / sub-2", async () => {
+  it("sub-agent-start → sub-agent-start：index 从 1 起，id 是 sub-1 / sub-2", async () => {
     const { sessionId } = await create();
     manager.send(sessionId, "hi");
 
     agent.fire("sub-agent-start", { subAgent: new FakeSubAgent() });
     agent.fire("sub-agent-start", { subAgent: new FakeSubAgent() });
 
-    expect(pick("session.subAgent.started")).toEqual([
-      { event: "session.subAgent.started", sessionId, turnId: 1, subAgentId: "sub-1", index: 1 },
-      { event: "session.subAgent.started", sessionId, turnId: 1, subAgentId: "sub-2", index: 2 },
+    expect(pick("sub-agent-start")).toEqual([
+      { event: "sub-agent-start", sessionId, turnId: 1, subAgentId: "sub-1", index: 1 },
+      { event: "sub-agent-start", sessionId, turnId: 1, subAgentId: "sub-2", index: 2 },
     ]);
   });
 
@@ -399,14 +452,14 @@ describe("SessionManager：子 Agent（栏目）", () => {
         tool_calls: [{ id: "a", function: { name: "call_skill_sub_agent" } }],
       },
     });
-    const phasesBefore = pick("session.phase").length;
+    const phasesBefore = pick("session-phase").length;
 
     fireChunk(sub, { choices: [{ delta: { reasoning_content: "想…" } }] });
     fireChunk(sub, { choices: [{ delta: { content: "子" } }] });
 
-    expect(pick("session.delta").slice(-2)).toEqual([
+    expect(pick("chunk-parsed").slice(-2)).toEqual([
       {
-        event: "session.delta",
+        event: "chunk-parsed",
         sessionId,
         turnId: 1,
         subAgentId: "sub-1",
@@ -414,7 +467,7 @@ describe("SessionManager：子 Agent（栏目）", () => {
         reasoning: "想…",
       },
       {
-        event: "session.delta",
+        event: "chunk-parsed",
         sessionId,
         turnId: 1,
         subAgentId: "sub-1",
@@ -423,14 +476,14 @@ describe("SessionManager：子 Agent（栏目）", () => {
       },
     ]);
     // 回归保护：拿子 Agent 的 delta 去改主阶段，界面会从「等待 xxx 返回」变成「输出中」
-    expect(pick("session.phase")).toHaveLength(phasesBefore);
+    expect(pick("session-phase")).toHaveLength(phasesBefore);
     expect((await manager.list("ws-1"))[0]!.phase).toMatchObject({
       kind: "tool-waiting",
       tools: ["call_skill_sub_agent"],
     });
   });
 
-  it("sub-agent-end → session.subAgent.ended{done}", async () => {
+  it("sub-agent-end → sub-agent-end{done}", async () => {
     const { sessionId } = await create();
     manager.send(sessionId, "hi");
     const sub = new FakeSubAgent();
@@ -438,9 +491,9 @@ describe("SessionManager：子 Agent（栏目）", () => {
 
     agent.fire("sub-agent-end", { subAgent: sub });
 
-    expect(pick("session.subAgent.ended")).toEqual([
+    expect(pick("sub-agent-end")).toEqual([
       {
-        event: "session.subAgent.ended",
+        event: "sub-agent-end",
         sessionId,
         turnId: 1,
         subAgentId: "sub-1",
@@ -458,9 +511,9 @@ describe("SessionManager：子 Agent（栏目）", () => {
 
     sub.fire("error", new Error("模型 500"));
 
-    expect(pick("session.subAgent.ended")).toEqual([
+    expect(pick("sub-agent-end")).toEqual([
       {
-        event: "session.subAgent.ended",
+        event: "sub-agent-end",
         sessionId,
         turnId: 1,
         subAgentId: "sub-1",
@@ -468,9 +521,9 @@ describe("SessionManager：子 Agent（栏目）", () => {
       },
     ]);
     // 错误原文进 params.message：服务端不产文案，客户端查自己的 i18n 表
-    expect(pick("session.notice")).toEqual([
+    expect(pick("session-notice")).toEqual([
       {
-        event: "session.notice",
+        event: "session-notice",
         sessionId,
         level: "error",
         code: "subAgentFailed",
@@ -480,7 +533,7 @@ describe("SessionManager：子 Agent（栏目）", () => {
 
     // 出错优先：SDK 随后还会发 sub-agent-end，这里绝不能把它报成「跑完了」
     agent.fire("sub-agent-end", { subAgent: sub });
-    expect(pick("session.subAgent.ended")).toHaveLength(1);
+    expect(pick("sub-agent-end")).toHaveLength(1);
     expect((await manager.subAgentSnapshot(sessionId, "sub-1")).status).toBe("failed");
   });
 
@@ -502,7 +555,7 @@ describe("SessionManager：子 Agent（栏目）", () => {
     // id 是客户端选中态的锚点，跨轮复用会让上一轮残留的选中态接到新一轮的 sub-1 上
     manager.send(sessionId, "再来一轮");
     agent.fire("sub-agent-start", { subAgent: new FakeSubAgent() });
-    expect(pick("session.subAgent.started").at(-1)).toMatchObject({
+    expect(pick("sub-agent-start").at(-1)).toMatchObject({
       turnId: 2,
       subAgentId: "sub-2",
       index: 1,

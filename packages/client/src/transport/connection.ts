@@ -88,7 +88,7 @@ export class ServerConnection {
   private watched: ServerClient | null = null;
   /** 正在订阅中的那一次（并发 `watch()` 只发一帧） */
   private watching: Promise<void> | null = null;
-  /** 有人要过 `events.watch`：重建连接后自动重放它 */
+  /** 有人订阅过事件：重建连接后在这条新连接上重新订阅（订阅是按连接登记的） */
   private watchWanted = false;
   /** 当前连接的「断了」订阅（换连接时整条换掉） */
   private offClose: (() => void) | null = null;
@@ -129,8 +129,11 @@ export class ServerConnection {
   /**
    * 让这条连接开始收事件（服务端按连接登记推送）。
    *
-   * 幂等：同一条连接上重复调用不会再发帧（重复订阅 = 每个事件到达 N 次）。连接换了之后
-   * 自动重放 —— 调用方只表达**意图**（「我要收事件」），不负责「连接换了你记得重订」。
+   * 幂等：同一条连接上重复调用不会再发帧。服务端每收到一帧就给这条连接登记一个订阅者，
+   * 同一条连接订两次 = 每个事件收到两份。
+   *
+   * 订阅是**连接级**的：换一条连接就等于没订过（新连接默认什么都不推），所以重建连接时会
+   * 在新连接上重新订阅一次。调用方只表达**意图**（「我要收事件」），不必自己盯着连接换没换。
    */
   async watch(): Promise<void> {
     this.watchWanted = true;
@@ -144,10 +147,10 @@ export class ServerConnection {
   }
 
   /**
-   * 订阅「一条**新**连接就绪」（建好并且已经重放过 `events.watch`）。
+   * 订阅「一条**新**连接就绪」（建好，并且已经在这条连接上重新订阅过事件）。
    *
    * 用途是「连接换了一条，你手里那些状态该重新对齐了」（会话要 `attach`、缓存要作废）。
-   * 放在 `watch` 重放之后：监听者拿到的连接一定是已经在收事件的，不必自己再订一遍。
+   * 放在重新订阅之后：监听者拿到的连接一定已经在收事件，不必自己再订一遍。
    */
   onOpen(listener: () => void): () => void {
     this.openListeners.add(listener);
@@ -176,7 +179,7 @@ export class ServerConnection {
     const attempt = (async () => {
       const client = await this.makeConnection();
       this.install(client);
-      // 重放订阅：新连接默认什么都不推（服务端是按连接登记的）
+      // 重新订阅：订阅按连接登记，新连接默认什么都不推
       if (this.watchWanted) {
         await client.call(EVENT_METHODS.watch);
         this.watched = client;

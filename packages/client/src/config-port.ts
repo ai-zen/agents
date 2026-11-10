@@ -163,7 +163,7 @@ export interface RemoteConfigPortDeps {
  *
  * 它以前自己缓存、自己判 `closed`、自己重建 —— 那是 D8 那个 bug 的第三份实现（桌面端
  * 是第二份，CLI 手传 `configPort` 是第一份）。现在全归 {@link ServerConnection}：
- * 每次取用都判活，断了就重建（并且把 `events.watch` 重放上去）。
+ * 每次取用都判活，断了就重建（并在新连接上重新订阅 `events.watch`）。
  *
  * ## 为什么工作区 id 也在这层解析
  *

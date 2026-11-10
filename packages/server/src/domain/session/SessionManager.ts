@@ -46,18 +46,17 @@
  * 摘掉（`dropHolder`，挂在 `connection.onClose` 上）。它不需要客户端配合 —— 连接消失是
  * 内核保证的（进程被 `kill -9`、崩溃、断电都会让那条 socket 消失）。
  *
- * ## 为什么不再要客户端上报意图
+ * ## 为什么不要客户端上报意图
  *
- * 这里原来还有一个由客户端**上报**的「保活声明」标记（协议里那条保活方法），语义是
- * 「这段我还要 / 我不要了」，判据是它**与**持有者的合取。删掉它的理由正是不需要它：
+ * 一个由客户端**上报**的「保活声明」会把判据变成它**与**持有者的合取，而两个事实里只有
+ * 一个在「最难的情况」下还成立：
  *
  *   · 崩溃的进程发不出那一帧 —— 声明会永远停在「要」，会话连同它占的 Agent 与消息历史
  *     永久留在内存里（本包在 loopback 上跑，唯一的回收时机是重启守护进程）；
  *   · 而持有者是**内核保证**的事实，同样的崩溃恰好把它清干净。
  *
- * 也就是说：两个事实里只有一个在「最难的情况」下还成立，那就不该要两个 —— 判据取合取
- * 只是把不可靠的那个当成了必要条件。删掉之后，「我不看这段了」只剩一个显式表达
- * （`session.close`），「我崩了」由内核兜 —— 两条路都不依赖客户端记得发帧。
+ * 判据取合取就是把不可靠的那个当成了必要条件。所以只有持有者一条：「我不看这段了」
+ * 只剩一个显式表达（`session.close`），「我崩了」由内核兜 —— 两条路都不依赖客户端记得发帧。
  *
  * 代价（记账，不说成「行为不变」）：一次性调用（`ai "…"`）与 TUI 的 `/new` 过去靠那帧
  * 「我不要了」当场让服务端回收，现在它们要么显式 `session.close`，要么留到宽限期到点。
@@ -158,7 +157,7 @@ export interface CreateAgentInput {
    *
    * 不给就不装自动迁移：没有交接能力时该让硬线拦，而不是让 SDK 去调一个不存在的服务。
    *
-   * `mode` 是用户在 `session.question` 里选的执行者：`resolveMode` 只回答「用哪种方式」，
+   * `mode` 是用户在 `session-question` 里选的执行者：`resolveMode` 只回答「用哪种方式」，
    * 真正动手的是这里 —— 中间那一跳把它丢掉，用户的选择就只是弹了个框。
    */
   autoMigrate?: (mode?: HandoffMode) => Promise<void>;
@@ -447,7 +446,7 @@ export class SessionManager {
     // （那会把「谁负责什么」重新搅回一起，也把拆出来的意义抹掉）。
     this.events = new EventBridge({
       hub: this.hub,
-      // 收尾与失败是**会话层**的规则（落盘、发 `session.turnEnd`、判回收），事件桥只转达
+      // 收尾与失败是**会话层**的规则（落盘、发 `session-turn-end`、判回收），事件桥只转达
       // 「SDK 说完了 / SDK 报错了」这两个事实
       settleTurn: (session) => void this.settleTurn(session),
       failTurn: (session, failure) => this.failTurn(session, failure),
@@ -553,7 +552,7 @@ export class SessionManager {
    * 活会话换了 id：**注册表与客户端可见的那一半**。
    *
    * 三件事必须一起做：注册表换键（旧 id 立刻 `unknown-session`）、清子 Agent 栏目（旧条目
-   * 属于上一段）、发 `session.idChanged`（自动迁移发生在一轮内部，客户端没有响应可接，
+   * 属于上一段）、发 `session-id-changed`（自动迁移发生在一轮内部，客户端没有响应可接，
    * 只能靠这条事件把后续请求与事件过滤切到新 id）。
    *
    * 换键的是**同一个对象**：会话不是「新建一段」，所以 `turnId`、消息、holders 都跟着走。
@@ -576,11 +575,11 @@ export class SessionManager {
    *   1. **不新开一轮**（外面那一轮还没结束，`turnId` 不动）；
    *   2. 收尾仍归外面那一轮 —— 这里只把 `settleDeferred` 拿住，避免嵌套交接回合的
    *      SDK `finally` 把整轮提前结束；
-   *   3. 没有返回值可给：客户端靠 `session.idChanged` 事件得知换了 id。
+   *   3. 没有返回值可给：客户端靠 `session-id-changed` 事件得知换了 id。
    *
    * 必须能存档：prune 之后旧历史只存在于存档里，存不下去就别动手。
    *
-   * `mode` 是客户端在 `session.question` 里选的执行者。它必须从这条路径传下去：
+   * `mode` 是客户端在 `session-question` 里选的执行者。它必须从这条路径传下去：
    * `resolveMode` 只回答「用哪种方式」，真正动手的是这里 —— 而插件手里的 `service`
    * 是个 stub（见 `SessionAgentFactory.installPlugins`），不在这一跳把 mode 捞回来，
    * 用户在弹框里的选择就只是个框。不传则用交接服务的默认执行者（`self`）。
@@ -670,13 +669,13 @@ export class SessionManager {
    *     （用户会以为旧会话被另存成了一段）；
    *   - **不换 id**：内容没变（只是旧消息不再发给模型），它还是同一段对话。换 id 会让
    *     刚聊过的那一段在侧栏里凭空消失，存档里多一条不知道从哪来的幽灵。于是也不发
-   *     `session.idChanged`；
-   *   - 落盘改由收尾负责（`persistOnSettle`）：`session.turnEnd` 之前写完，存档里那份就是
+   *     `session-id-changed`；
+   *   - 落盘改由收尾负责（`persistOnSettle`）：`session-turn-end` 之前写完，存档里那份就是
    *     带 `omit` 标记的完整历史 —— 下次 `attach` 装回来，旧消息仍然不会发给模型。
    *
    * 两条路共用的部分：`turnId` 是**会话内**的轮次编号，不因迁移清零；收尾在 `prune` 下
    * 必须 `await` 且发生在换 id **之前** —— 客户端先看到旧会话这一轮结束，再收到响应里
-   * 的新 id，两次 `session.phase` / `session.turnEnd` 的 `sessionId` 才不指一个它还不知道的会话。
+   * 的新 id，两次 `session-phase` / `session-turn-end` 的 `sessionId` 才不指一个它还不知道的会话。
    */
   async migrate(
     sessionId: string,
@@ -709,7 +708,7 @@ export class SessionManager {
       );
 
       session.settleDeferred = false;
-      // 收尾必须 **await**：它发的是收尾那一刻 id 的 `session.turnEnd`，而下一行可能就把 id
+      // 收尾必须 **await**：它发的是收尾那一刻 id 的 `session-turn-end`，而下一行可能就把 id
       // 换掉了。不等它跑完，客户端可能先收到新 id 的响应，再收一条指向旧会话的收尾事件。
       await this.settleTurn(session);
 
@@ -899,7 +898,7 @@ export class SessionManager {
       isHandoffBusy: () => session.settleDeferred,
       // 自动迁移：SDK 的插件在**一轮内部**触发，落地动作必须回到会话层
       autoMigrate: (mode) => this.autoMigrate(session.id, mode),
-      // 谁来写交接文档由用户在 `session.question` 里定（会话层向客户端提问并等回答）
+      // 谁来写交接文档由用户在 `session-question` 里定（会话层向客户端提问并等回答）
       resolveMode: (info) => this.questions.askHandoffMode(session, info),
     });
   }
@@ -1258,7 +1257,7 @@ export class SessionManager {
       isHandoffBusy: () => this.sessions.get(sessionId)?.settleDeferred ?? false,
       // 自动迁移：SDK 的插件在**一轮内部**触发，落地动作必须回到会话层
       autoMigrate: (mode) => this.autoMigrate(sessionId, mode),
-      // 谁来写交接文档由用户在 `session.question` 里定（会话层向客户端提问并等回答）
+      // 谁来写交接文档由用户在 `session-question` 里定（会话层向客户端提问并等回答）
       resolveMode: (info) => this.questions.askHandoffMode(session, info),
     });
     if (record && record.messages.length > 0) agent.messages = [...record.messages];
@@ -1377,7 +1376,7 @@ export class SessionManager {
    * 开始一轮：立刻返回 `turnId`，结果与过程全部走事件。
    *
    * 不 `await agent.send()` 的原因见协议文件头：一轮可能跑几分钟，等它回来客户端
-   * 就没东西可渲染。失败也走事件（`session.turnEnd` 带 `ok:false`），不靠这一个 promise。
+   * 就没东西可渲染。失败也走事件（`session-turn-end` 带 `ok:false`），不靠这一个 promise。
    */
   send(sessionId: string, content: MessageContent): { turnId: number } {
     const session = this.require(sessionId);
@@ -1395,7 +1394,7 @@ export class SessionManager {
     //
     // 为什么必须挡：事件是靠 `session.turnId` 的**当前值**归轮的 —— 增量与收尾都在发出
     // 的那一刻才读它，而 `beginTurn` 直接 `turnId += 1`。真放第二轮进来，第一轮后半段的
-    // 增量就会被贴上第二轮的编号，两条链路的 `session.turnEnd` 也各自对不上，界面互相串轮。
+    // 增量就会被贴上第二轮的编号，两条链路的 `session-turn-end` 也各自对不上，界面互相串轮。
     // 这不是理论风险：`attach` 之后「同一段会话被两个客户端看」是常态（客户端退出后会话
     // 仍活着，另一个客户端接上；或两个终端同看），谁多点一下就是两轮并行。
     //
@@ -1407,7 +1406,7 @@ export class SessionManager {
     }
 
     this.beginTurn(session);
-    // 这一轮会产生对话内容：收尾时写进存档（`session.turnEnd` 之前）
+    // 这一轮会产生对话内容：收尾时写进存档（`session-turn-end` 之前）
     session.persistOnSettle = true;
 
     void session.agent.send(content).catch((error: any) => {
@@ -1531,18 +1530,18 @@ export class SessionManager {
    *
    * 五步的顺序是定死的，每一步都有人依赖它：
    *
-   *   1. **先落盘**（带用户消息的回合）：`session.turnEnd` 一到，客户端就认为这一轮结束、内容
+   *   1. **先落盘**（带用户消息的回合）：`session-turn-end` 一到，客户端就认为这一轮结束、内容
    *      已经定型；此时存档里还没有它，退出 TUI 再进来就「什么都没发生」。旧版的
    *      `ConversationPersistPlugin` 干的就是这一步（每轮 `onInnerLoopEnd`），搬到服务端
    *      之后一度漏了——于是「聊完退出、再 `ai` 是新会话」。
    *   2. 放行挂着的提问：不会再有答案了。
    *   3. 清子 Agent 栏目：它只活当前一轮。
    *   4. 阶段归零并广播：界面据此把 spinner 收起来。
-   *   5. 发 `session.turnEnd`。
+   *   5. 发 `session-turn-end`。
    *
    * `turnSettled` 在入口就置位（重复调用直接返回）：落盘是异步的，不先置位就会写两遍。
-   * 代价是「已置位、`session.turnEnd` 未发」之间有个微窗口，此时再 `send`/`migrate` 不会被拦——
-   * 但客户端要拿到 `session.turnEnd` 才会发下一轮，这个窗口在协议上摸不到。
+   * 代价是「已置位、`session-turn-end` 未发」之间有个微窗口，此时再 `send`/`migrate` 不会被拦——
+   * 但客户端要拿到 `session-turn-end` 才会发下一轮，这个窗口在协议上摸不到。
    *
    * **两个标记别混**：`persistOnSettle`（这一轮该不该写档）与 `reclaimOnSettle`（这段会话
    * 该不该在收尾时被收掉）是两件事，各有各的来源；混成一个就会出现「迁移的中场收尾把会话
@@ -1557,16 +1556,16 @@ export class SessionManager {
     // 而下面那个回收判定还要用它（`migrate` 的中场收尾不能触发回收）。
     const clientTurn = session.persistOnSettle;
 
-    // 1) 落盘：`session.turnEnd` 之前写完，存档与事件里的「这一轮」才是同一个东西
+    // 1) 落盘：`session-turn-end` 之前写完，存档与事件里的「这一轮」才是同一个东西
     await this.store.writeOnSettle(session);
 
-    // 这一轮已经收尾：它提的问不会再有答案了（客户端在等的是 `session.turnEnd`，不是这个选择器）。
+    // 这一轮已经收尾：它提的问不会再有答案了（客户端在等的是 `session-turn-end`，不是这个选择器）。
     // 不在这里兜底放行，提问方就要挂到超时 —— 而它一直占着闸门，后面的 `send` 全报
-    // `turn-busy`。放在发 `session.turnEnd` 之前：两个事件的先后与「收尾已定」一致。
+    // `turn-busy`。放在发 `session-turn-end` 之前：两个事件的先后与「收尾已定」一致。
     this.questions.release(session);
 
     // 一轮结束：子 Agent 列表跟着消失（只活当前一轮，理由见 `clearSubAgents`）。
-    // 清在 `session.turnEnd` 之前：客户端收到收尾事件时再去要子 Agent 快照，拿不到才是对的。
+    // 清在 `session-turn-end` 之前：客户端收到收尾事件时再去要子 Agent 快照，拿不到才是对的。
     this.events.clearSubAgents(session);
 
     this.events.resetStreamState(session);
@@ -1580,7 +1579,7 @@ export class SessionManager {
     });
 
     // 6) 回收：这一轮收完，重判一次「还有没有人要它」（存档已在第 1 步写好，再点回来
-    //    `attach` 从盘上装回来）。放在 `session.turnEnd` **之后**：客户端拿到的最后一条事件仍然
+    //    `attach` 从盘上装回来）。放在 `session-turn-end` **之后**：客户端拿到的最后一条事件仍然
     //    是「这一轮结束了」，而不是一个已经被摘掉的会话。
     //    只对客户端发起的正常回合判定 —— `migrate` 的中场收尾紧接着要换 id。
     if (clientTurn) {
@@ -1593,7 +1592,7 @@ export class SessionManager {
       }
     }
 
-    // 7) 自动标题（只在第一轮、只在还没有名字时；**不 await**：`session.turnEnd` 已经发出去了，
+    // 7) 自动标题（只在第一轮、只在还没有名字时；**不 await**：`session-turn-end` 已经发出去了，
     //    标题是之后的事 —— 卡的是一行展示用的名字，一行都不能拖住下一轮对话）。
     //
     //    放在回收判定**之后**：回收可能当场关掉会话（`reclaimOnSettle` 那一路），那时就不必
@@ -1711,7 +1710,7 @@ export class SessionManager {
   /**
    * 进入回收倒计时（幂等）。
    *
-   * 幂等是必须的：`session.turnEnd` 每轮都会调一次，而重挂一次就等于把窗口一直往后推 ——
+   * 幂等是必须的：`session-turn-end` 每轮都会调一次，而重挂一次就等于把窗口一直往后推 ——
    * 一段没人要的会话会被它自己的历史拖住（聊了 100 轮就多留 100 个宽限期）。
    */
   private scheduleReclaim(session: LiveSession): void {

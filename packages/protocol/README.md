@@ -23,7 +23,7 @@
 |---|---|
 | `frames.ts` | JSON-lines 帧编解码（`encodeFrame` / `FrameDecoder`）、单帧上限、`ProtocolError` |
 | `messages.ts` | 握手与请求/响应帧的形状（`hello` / `RequestFrame` / `ResponseFrame`）、`PROTOCOL_VERSION` |
-| `sessions.ts` | `session.*` / `workspace.*` / `events.watch` 的方法名与载荷；**两张事件表**（`SESSION_EVENTS` 11 条 + `SERVER_EVENTS` 1 条） |
+| `sessions.ts` | `session.*` / `workspace.*` / `events.watch` 的方法名与载荷；**三张事件表**（`AGENT_EVENTS` 9 条 = core 原名 + `SESSION_EVENTS` 7 条 + `SERVER_EVENTS` 1 条） |
 | `config.ts` | `config.*` / `agent.*` 的方法名与载荷 |
 | `assets.ts` | `asset.*`（只读资产清单） |
 | `daemon.ts` | 内置方法 `ping` / `status` / `shutdown` |

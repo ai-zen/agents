@@ -344,8 +344,8 @@ export class RemoteSessions {
   /**
    * 只产出交接文档（`/handoff`）：会话 id 不变、历史不动。
    *
-   * 进度（`handoffWriting` / `handoffPath` / 降级）走 `session.notice`，流式正文走
-   * `session.delta` —— 这个方法可能要跑一两分钟，等回执期间界面靠事件渲染。
+   * 进度（`handoffWriting` / `handoffPath` / 降级）走 `session-notice`，流式正文走
+   * `chunk-parsed` —— 这个方法可能要跑一两分钟，等回执期间界面靠事件渲染。
    */
   async handoff(sessionId: string, mode?: HandoffMode): Promise<SessionHandoffResult> {
     return await this.client.call<SessionHandoffResult>(SESSION_METHODS.handoff, {
@@ -375,7 +375,7 @@ export class RemoteSessions {
   /**
    * 某个子 Agent 到目前为止的完整对话（Agent 栏目切过去时对齐用）。
    *
-   * 子 Agent 只活在当前一轮：`session.turnEnd` 之后服务端会丢弃它，这条调用会报
+   * 子 Agent 只活在当前一轮：`session-turn-end` 之后服务端会丢弃它，这条调用会报
    * `sub-agent-missing` —— 那不是服务端出错，客户端该做的是把栏目收回去。
    */
   async subAgentSnapshot(sessionId: string, subAgentId: string): Promise<SubAgentSnapshotResult> {

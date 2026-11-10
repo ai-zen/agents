@@ -13,7 +13,7 @@
  *   3. 事件：服务端主动推，无 `id`，不等回。
  *
  * 服务端需要「问客户端一件事」时走的**不是**请求帧，而是「事件问 + 方法答」
- * （`session.question` → `session.answer`）：这样帧层的 `id` 空间只有一方在分配，
+ * （`session-question` → `session.answer`）：这样帧层的 `id` 空间只有一方在分配，
  * 不必处理两个方向撞号。理由见 `sessions.ts` 里 `SESSION_EVENTS.question` 的注释。
  */
 

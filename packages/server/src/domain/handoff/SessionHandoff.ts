@@ -82,7 +82,7 @@ export interface SessionHandoffOptions {
   homeDir: string;
   /** 工作区路径：文档落 `<path>/.ai-zen/handoffs`，Skill 也先在项目里找 */
   workspacePath: string;
-  /** 发一条对话内通知（会话层转成 `session.notice`；本层不产文案） */
+  /** 发一条对话内通知（会话层转成 `session-notice`；本层不产文案） */
   notice: (notice: NoticePayload) => void;
 }
 

@@ -14,11 +14,11 @@
  * 目前唯一跑通过的实现，每一条都是踩出来的：
  *
  * 1. **在飞的那一轮不能永远挂着。** 界面用 `await waitForTurn()` 包着 busy 状态与输入禁用，
- *    而 `await` 的落定靠同一 `turnId` 的 `turn.end`。断线时那条 socket 上的一切都扔了，
- *    `turn.end` 可能就丢在里面 —— promise 永不落定 = 永久卡在「生成中」，比直接报错更糟。
+ *    而 `await` 的落定靠同一 `turnId` 的 `session-turn-end`。断线时那条 socket 上的一切都扔了，
+ *    `session-turn-end` 可能就丢在里面 —— promise 永不落定 = 永久卡在「生成中」，比直接报错更糟。
  *    判据是重连后那份快照：`phase !== null` 说明服务端还在跑（事件会继续来，接着等）；
  *    `phase === null` 说明那一轮在我们不在线的时候结束了，快照里的消息就是结果 ——
- *    用**与 `turn.end` 完全相同**的那条收尾路径落定（同一个 `finishTurn`，不另造一套
+ *    用**与 `session-turn-end` 完全相同**的那条收尾路径落定（同一个 `finishTurn`，不另造一套
  *    「重连专用」的状态机）。
  * 2. **重连有终点**：最多 3 次、递增退避，全失败就回到「连接断了」的既有行为（在飞的调用
  *    以连接错误失败、之后的调用也失败）。不无限重试、不静默吞掉。
@@ -31,15 +31,14 @@
  *
  * 会话 id 会在一轮**进行中**变（自动迁移）。之后的事件用的是新 id，所以过滤判据必须跟着
  * 状态里的 id 走（`this.stream.state.sessionId`），不能缓存一份副本 —— 缓存那份就是
- * 「客户端在旧 id 上等一个永远不会到的 `turn.end`」，界面永久卡在生成中。
- * `session.idChanged` 是唯一的例外：它的载荷用 `from` 说「这段会话现在叫什么」，
+ * 「客户端在旧 id 上等一个永远不会到的 `session-turn-end`」，界面永久卡在生成中。
+ * `session-id-changed` 是唯一的例外：它的载荷用 `from` 说「这段会话现在叫什么」，
  * 所以它按 `event.from` 认领（旧 id 已经不存在了，用 `sessionId` 过滤永远不命中）。
  *
  * ## 谁负责生命周期
  *
  * 连接**不是**它的（一个进程一条，见 `ServerConnection`），会话**是**它的：
- * `close()` 会 `session.close()` 让服务端当场回收。删掉保活声明之后这是「我不看这段了」
- * 的唯一显式表达，而一条长连接不会因为切换会话而消失 —— 不主动收，内存峰值会随
+ * `close()` 会 `session.close()` 让服务端当场回收。这是「我不看这段了」的唯一显式表达，而一条长连接不会因为切换会话而消失 —— 不主动收，内存峰值会随
  * `/new` 的次数线性增长，直到服务端宽限期到点。
  *
  * ## 工作区身份：包里给的是**答案**，不是意图
@@ -59,10 +58,12 @@
  */
 
 import {
+  AGENT_EVENTS,
   ERROR_CODES,
   SERVER_EVENTS,
   SESSION_EVENTS,
   codeOf,
+  type AgentChunkParsedEvent,
   type HandoffMode,
   type MessageContent,
   type MigrationStrategy,
@@ -70,7 +71,6 @@ import {
   type NoticePayload,
   type ServerEvent,
   type ServerNoticeEvent,
-  type SessionDeltaEvent,
   type SessionListResult,
   type SessionModelParamsSetResult,
   type SessionModelSetResult,
@@ -127,7 +127,7 @@ export interface SessionChannelPolicy {
    * 「每片的字符数 + 流末的真实 completionTokens + 墙钟」算出来，而**墙钟不属于状态机**
    * （那会让 `SessionStream` 不再是纯的）。所以原始增量在这里漏一手给应用，状态机自己不碰。
    */
-  onDelta?: (event: SessionDeltaEvent) => void;
+  onDelta?: (event: AgentChunkParsedEvent) => void;
 }
 
 /**
@@ -215,7 +215,7 @@ export class SessionChannel {
   private disposed = false;
 
   /**
-   * 本轮等待中的 `turn.end`（`waitForTurn()` 的 promise 靠它落地）。
+   * 本轮等待中的 `session-turn-end`（`waitForTurn()` 的 promise 靠它落地）。
    *
    * `reject` 给「连不回来」那条路用：连不上时这一轮只能以**连接错误**失败，不能让 promise
    * 永远悬着（界面靠它恢复输入）。
@@ -225,7 +225,7 @@ export class SessionChannel {
     resolve: () => void;
     reject: (error: Error) => void;
   } | null = null;
-  /** 最近一次收到的 `turn.end` 的轮次：挡住「事件比回执先到」那种竞态 */
+  /** 最近一次收到的 `session-turn-end` 的轮次：挡住「事件比回执先到」那种竞态 */
   private lastEndedTurn = 0;
 
   constructor(deps: SessionChannelDeps) {
@@ -238,7 +238,7 @@ export class SessionChannel {
     this.offClose = this.connection.onClose(() => this.handleClose());
   }
 
-  /** 这段会话的 id（唯一真相在状态里：`session.idChanged` 会让它变） */
+  /** 这段会话的 id（唯一真相在状态里：`session-id-changed` 会让它变） */
   get sessionId(): string {
     return this.stream.state.sessionId;
   }
@@ -281,7 +281,7 @@ export class SessionChannel {
    * 连上服务端并打开（或续接）一段会话。
    *
    * 三处顺序是必须的：
-   *  · **先订阅事件再 attach**：接上之后服务端可能立刻推 `session.phase`，晚一步就会漏掉
+   *  · **先订阅事件再 attach**：接上之后服务端可能立刻推 `session-phase`，晚一步就会漏掉
    *    开头的阶段（屏幕停在上一个状态不动）；
    *  · **`events.watch` 先于 attach**：订阅是连接级的，没订阅的连接收不到任何事件；
    *  · **最后拉一次快照**：续接时的历史也在这份快照里（服务端 `session.create` 已经把存档
@@ -298,7 +298,7 @@ export class SessionChannel {
      * 界面于是以为这一轮已经结束，刚发出去的那一轮的收尾再也无人认领。
      *
      * 挂着的 promise 一并落定（`resolveTurn`）：它等的那一轮属于**上一段**会话，换走之后
-     * 它的 `turn.end` 永远不会从新会话上来 —— 留着它就是一条永挂的 promise（界面永久
+     * 它的 `session-turn-end` 永远不会从新会话上来 —— 留着它就是一条永挂的 promise（界面永久
      * 待在 「生成中」）。与 `close()` 对同一个局面的处理一致。
      *
      * 注意**不在这里清轮次账的是 `adopt()`**：`saveAs` / `migrate` 换的只是**键**，服务端
@@ -359,7 +359,7 @@ export class SessionChannel {
    * 开始一轮，返回 `turnId`。
    *
    * 它**不等**这一轮结束：`await send() → await waitForTurn(turnId)` 两步分开，是因为
-   * `turn.end` 有可能先于 `send()` 的回执落地（事件是推的），两件事合成一个 promise
+   * `session-turn-end` 有可能先于 `send()` 的回执落地（事件是推的），两件事合成一个 promise
    * 就得在里面记一份「已经收尾过的轮次」才能不挂死 —— 那正是 `waitForTurn` 干的事。
    *
    * 同步拒绝（`turn-busy` / `handoff-in-flight` / 连接已断）原样抛出：那是调用方该告诉
@@ -374,7 +374,7 @@ export class SessionChannel {
   /**
    * 等这一轮结束（收尾之后才 resolve）。界面用 `busy` 状态与输入禁用全靠它。
    *
-   * 事件可能**比回执先到**（一轮太快时连 `turn.end` 都可能在 `send()` 返回之前落地），
+   * 事件可能**比回执先到**（一轮太快时连 `session-turn-end` 都可能在 `send()` 返回之前落地），
    * 所以先看 `lastEndedTurn` 再挂 promise。连不回来时它会 reject —— 这一轮已经不可能
    * 结束了，界面必须能恢复输入。
    */
@@ -389,7 +389,7 @@ export class SessionChannel {
   /**
    * 中止本轮（Ctrl+C）：只取消这一轮，不退出。
    *
-   * 失败不报：这只是「请求服务端掐掉本轮」，随后 `turn.end` 照样会来；而会话已经不在
+   * 失败不报：这只是「请求服务端掐掉本轮」，随后 `session-turn-end` 照样会来；而会话已经不在
    * （`cancelled:false` / `unknown-session`）时目的也已经达成。
    */
   async abort(): Promise<void> {
@@ -434,7 +434,7 @@ export class SessionChannel {
    * 交接 + 开新会话（`/migrate`）：返回交接文档的路径（在**服务端**的工作区里）。
    *
    * `strategy` 缺省 `prune`，那会换 id，所以必须走 {@link adopt}：不换的话这一轮的
-   * `turn.end` 会从新 id 上来，状态机还在旧 id 上等 —— 界面永久卡在「生成中」。
+   * `session-turn-end` 会从新 id 上来，状态机还在旧 id 上等 —— 界面永久卡在「生成中」。
    * `omit` 不换 id（`adopt` 于是只是重取一次快照），这也是为什么换不换 id 由**返回值**
    * 决定，而不是由这里再判一次 `strategy`：两个判据迟早会有一个落单。
    *
@@ -579,7 +579,7 @@ export class SessionChannel {
    *
    * 服务端在好几个动作里会换掉活会话的键（`saveAs`、`migrate` 的 `prune`）。状态机里的 id
    * 不跟着换，之后到达的事件就全被过滤掉 —— 症状正是设计文档点名的那条：「在旧 id 上等一个
-   * 永远不来的 `turn.end`，界面永久生成中」。把它收成一个方法，调用方就不必记得「换完 id
+   * 永远不来的 `session-turn-end`，界面永久生成中」。把它收成一个方法，调用方就不必记得「换完 id
    * 还得通知状态机」（P4 自己 `new RemoteSessions(...)` 时就会忘）。
    *
    * 两步的顺序是必须的：先 `applyIdChanged`（此后的事件按新 id 认领），再拉快照（迁移把
@@ -603,6 +603,11 @@ export class SessionChannel {
    */
   private wire(client: ServerClient): Array<() => void> {
     const offs: Array<() => void> = [];
+    // 订阅范围就是下面这些：状态机真正会用的那几条。core 原名的那几条里 `open` / `chunk` /
+    // `parsed` / `error` / `finally` 也会到这条连接上（服务端在 core 的时机照发），客户端
+    // 此刻**不需要**它们 —— 不订阅就是「收到了忽略」：帧层照样解析、类型上照样认识（它们在
+    // `ServerEvent` 里），只是没有处理函数。将来要用（比如拿 `open` 起一个「已经开始」的
+    // 计时）在这里加一条即可，协议面不用再改。
     const mine = <E extends ServerEvent["event"]>(
       event: E,
       handler: (payload: Extract<ServerEvent, { event: E }>) => void,
@@ -621,7 +626,7 @@ export class SessionChannel {
       this.notify(event.phase === null);
     });
 
-    mine(SESSION_EVENTS.delta, (event) => {
+    mine(AGENT_EVENTS.chunkParsed, (event) => {
       // 「本轮的生成速率」靠原始增量算（含子 Agent 的：那些 token 也是真从网络来的）
       this.policy.onDelta?.(event);
       if (event.subAgentId) {
@@ -647,7 +652,7 @@ export class SessionChannel {
     });
 
     // 一条已经定型的工具结果：原样搬进消息列表，不拼装（它就是服务端手里那条）
-    mine(SESSION_EVENTS.messageAppended, (event) => {
+    mine(AGENT_EVENTS.toolCallEnd, (event) => {
       this.stream.applyMessageAppended(event.message);
       this.notify(true);
     });
@@ -658,10 +663,10 @@ export class SessionChannel {
      * `started` 说明它已经在跑，服务端此刻可能已经有内容（任务描述、上一轮工具调用）。
      * 首次通常只是一条空占位，但这一下让「中途接上连接」与「增量先于快照到达」都收敛到
      * 同一份数据上（合并规则见包里的 `mergeStreamedSnapshot`，由状态机执行）。
-     * 失败不升级成通知：这次拉取只是「把已有内容补上」，增量照样拼、`turn.end` 照样清，
+     * 失败不升级成通知：这次拉取只是「把已有内容补上」，增量照样拼、`session-turn-end` 照样清，
      * 连接真断了会有别的信号。
      */
-    mine(SESSION_EVENTS.subAgentStarted, (event) => {
+    mine(AGENT_EVENTS.subAgentStart, (event) => {
       this.stream.subAgentStarted(event);
       void this.syncSubAgent(event.subAgentId).catch(() => {});
       // 标签立刻上屏（「它开跑了」这件事不该等一个往返）
@@ -669,7 +674,7 @@ export class SessionChannel {
     });
 
     // 子 Agent 收尾：只改状态（正文由增量与快照负责，这里不再拉一次）
-    mine(SESSION_EVENTS.subAgentEnded, (event) => {
+    mine(AGENT_EVENTS.subAgentEnd, (event) => {
       this.stream.subAgentEnded(event);
       this.notify(true);
     });
@@ -698,7 +703,7 @@ export class SessionChannel {
      *
      * 这里没有 `mine()` 那层过滤：它的载荷说的是「`from` 那段会话现在叫 `sessionId` 了」，
      * 旧 id 已经不存在，所以用 `from` 认领。不跟着换的后果很硬：自动迁移发生在一轮内部，
-     * 客户端会在旧 id 上等一个永远不会到的 `turn.end`，界面就永久卡在「生成中」。
+     * 客户端会在旧 id 上等一个永远不会到的 `session-turn-end`，界面就永久卡在「生成中」。
      */
     offs.push(
       client.on(SESSION_EVENTS.idChanged, (event) => {
@@ -732,7 +737,7 @@ export class SessionChannel {
    * ## `lastEndedTurn` 为什么在末尾才置位
    *
    * 它是 `waitForTurn()` 的「已收尾」判据，所以只有**消息真的换成快照之后**才算数：开头就
-   * 置位的话，一轮非常短时（`turn.end` 比 `send` 的**回执**先到）调用会立刻返回，而这里
+   * 置位的话，一轮非常短时（`session-turn-end` 比 `send` 的**回执**先到）调用会立刻返回，而这里
    * 那份快照还在路上 —— 调用方紧接着读消息拿到的是空数组（CLI 实测踩过：stdio 会因此
    * 打印「模型没回答」）。
    */
@@ -770,7 +775,7 @@ export class SessionChannel {
   /**
    * 让等着的 `waitForTurn()` 以错失败。
    *
-   * 「连不回来」那条路用它：那一轮的 `turn.end` 已经不可能到达了，而 promise 不能永远悬着
+   * 「连不回来」那条路用它：那一轮的 `session-turn-end` 已经不可能到达了，而 promise 不能永远悬着
    * （界面靠它恢复输入）。错误走的就是既有的那条渠道 —— 与 socket 断开时在飞调用被拒同一个
    * 口径，不新造一套。只动 `pendingTurn`：本地消息、阶段一概不碰。
    */
@@ -904,7 +909,7 @@ export class SessionChannel {
     // 手上的连接原封不动（还是那条断掉的），不会留下半接上的状态。
     let snapshot: SessionSnapshotResult;
     try {
-      // 幂等：连接换了之后它已经把 `events.watch` 重放上去了，这里只是重复表达意图
+      // 在这条（新的）连接上订阅事件。重复调用无害：这条连接上次已订过就是空操作
       await this.connection.watch();
       // 接回**同一段**会话：活着就接上（Agent 与 MCP 连接都还在），盘上有就装回来。
       // id 用**此刻**的状态里的那个 —— 断线期间若它变了（自动迁移），接回来的该是新的那段
@@ -935,7 +940,7 @@ export class SessionChannel {
 
     if (snapshot.phase === null) {
       /**
-       * 服务端已经空闲：那一轮的 `turn.end` 丢在断线里了。
+       * 服务端已经空闲：那一轮的 `session-turn-end` 丢在断线里了。
        *
        * 用**与真事件完全相同**的收尾路径（同一个 `finishTurn`），只是快照用刚拿到的那份 ——
        * 它就是这一轮的结果，按成功落定。`turnId` 取两者较大值：服务端重启后轮次计数从 0

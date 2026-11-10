@@ -1,6 +1,6 @@
 ---
 title: 架构
-description: 五个包与两个应用的分层与单向依赖、每层管什么不管什么、协议面 44 个方法 / 12 个事件、协议为什么独立成包、client 的传输/门面/会话三层、server 的目录、会话寿命的唯一规则、SessionManager 的四件、<aiZenDir> 落盘布局、构建测试顺序，以及这一轮重构改了什么。
+description: 五个包与两个应用的分层与单向依赖、每层管什么不管什么、协议面 44 个方法 / 17 个事件、协议为什么独立成包、client 的传输/门面/会话三层、server 的目录、会话寿命的唯一规则、SessionManager 的四件、<aiZenDir> 落盘布局与构建测试顺序。
 outline: deep
 ---
 
@@ -97,9 +97,9 @@ grep -rn '@ai-zen/agents-core' packages/client/src --include=*.ts | grep -v '\.t
 | `cli`（独立仓） | 渲染与输入（ink）、斜杠命令与会话层、把 `SessionStream` 的状态画出来 | 会话编排、存档、工作区、配置写入 —— 那些都在服务端。它依赖 `client`，另加 `sdk` / `core`（应用要用 `AgentDefinition` 这类业务类型与 `Role` / `MessageStatus` 这类**运行期 enum**） |
 | `desktop main`（独立仓） | 应用级事实（`app.getVersion()` 当 `clientInfo`）、拉起服务端、订阅事件并把状态转给 renderer | 服务端实现本身。它今天还持有一份**自己的**会话状态机（见「已知缺口 / 未完成」） |
 
-## 协议面：44 个方法 / 12 个事件
+## 协议面：44 个方法 / 17 个事件
 
-方法名与事件名都是 `as const` 常量表，客户端与服务端共用同一份字面量。**统计口径**：数这些表里的条目 —— 一个方法名字面量算一条；参数 / 结果类型不算；三个内置方法（`ping` / `status` / `shutdown`）**算**方法（它们和其它方法一样要握手后才能调，只是由 `Daemon` 自己实现）；通知码（`SESSION_NOTICE_CODES` / `SERVER_NOTICE_CODES`）不算事件，它们是 `session.notice` / `server.notice` 载荷里的枚举。
+方法名与事件名都是 `as const` 常量表，客户端与服务端共用同一份字面量。**统计口径**：数这些表里的条目 —— 一个方法名字面量算一条；参数 / 结果类型不算；三个内置方法（`ping` / `status` / `shutdown`）**算**方法（它们和其它方法一样要握手后才能调，只是由 `Daemon` 自己实现）；通知码（`SESSION_NOTICE_CODES` / `SERVER_NOTICE_CODES`）不算事件，它们是 `session-notice` / `server-notice` 载荷里的枚举。
 
 | 命名空间 | 条数 | 定义处 |
 |----------|------|--------|
@@ -112,21 +112,24 @@ grep -rn '@ai-zen/agents-core' packages/client/src --include=*.ts | grep -v '\.t
 | 内置 `ping` / `status` / `shutdown` | 3 | `daemon.ts` 的 `DAEMON_METHODS` |
 | **合计** | **44** | |
 
-事件共 **12** 条，分两张表，都在 `sessions.ts`：
+事件共 **17** 条，分三张表，都在 `sessions.ts`：
 
-| 表 | 条数 | 事件名 |
-|----|------|--------|
-| `SESSION_EVENTS` | 11 | `session.phase`、`session.delta`、`session.toolCalls`、`session.messageAppended`、`session.turnEnd`、`session.notice`、`session.question`、`session.idChanged`、`session.titleChanged`、`session.subAgent.started`、`session.subAgent.ended` |
-| `SERVER_EVENTS` | 1 | `server.notice` |
-| **合计** | **12** | |
+| 表 | 条数 | 事件名 | 定义 |
+|----|------|--------|------|
+| `AGENT_EVENTS` | 9 | `open`、`chunk`、`chunk-parsed`、`parsed`、`tool-call-end`、`error`、`finally`、`sub-agent-start`、`sub-agent-end` | 值逐字等于 core `Agent.events` 的原名，时机也照抄 core |
+| `SESSION_EVENTS` | 7 | `session-phase`、`session-tool-calls`、`session-turn-end`、`session-notice`、`session-question`、`session-id-changed`、`session-title-changed` | 服务端派生 / 服务端自己的动作 |
+| `SERVER_EVENTS` | 1 | `server-notice` | 服务端自己的通知（不属于任何会话） |
+| **合计** | **17** | | |
 
 五条与本文件有关的性质：
 
 - 事件载荷只装**事实**（阶段 kind、工具名、正文字符串），不装文案——渲染成哪种语言由客户端决定。
-- `session.delta` 是**文本流**（每片追加），`session.toolCalls` 是**组装态**（每次给「到现在为止是什么」）：语义不同就不合进一条事件，否则客户端得猜哪个字段该接、哪个该替。
-- `session.messageAppended` 推的是**一条完整消息**（工具结果：`role: "tool"` + `tool_call_id` + 正文），逐条推、不等快照：工具结果在 core 里是逐个定型的，快照却要等 `session.turnEnd`，长轮次里用户会盯着参数卡片等好几分钟。
+- `AGENT_EVENTS` 的 9 条是 core 的原名（`open` / `chunk` / `chunk-parsed` / `parsed` / `tool-call-end` / `error` / `finally` / `sub-agent-start` / `sub-agent-end`），服务端在 core 发它的**同一刻**原样转上线，一条不改名。其中 `open` / `chunk` / `parsed` / `error` / `finally` 客户端今天用不到，但照样发 —— 协议面是 core 的公开事实，用不用是客户端的事。
+- 时机是硬的：同一片 `chunk` 早于 `chunk-parsed`；`error` 早于 `finally`；`finally` 早于 `session-turn-end`（后者是服务端落盘、换 id、回收判定都做完之后）。`finally` 与 `session-turn-end` 是**两条不同的事件**，不是改名关系。
+- `chunk-parsed` 是**文本流**（每片追加），`session-tool-calls` 是**组装态**（每次给「到现在为止是什么」）：语义不同就不合进一条事件，否则客户端得猜哪个字段该接、哪个该替。
+- `tool-call-end` 推的是**一条完整消息**（工具结果：`role: "tool"` + `tool_call_id` + 正文），逐条推、不等快照：工具结果在 core 里是逐个定型的，快照却要等 `session-turn-end`，长轮次里用户会盯着参数卡片等好几分钟。
 - `send` 立刻返回 `turnId`，一轮的后续全部走事件：一轮可能跑几分钟，等它跑完再回，客户端就没有任何东西可渲染。
-- 命名空间按**作用对象**分：`workspace.*` 是对容器做事，`session.*` 是对一段会话做事，`events.watch` 是连接级的，`asset.*` 只读（资产是用户的文件系统，改它是另一个动作）。事件同理：`session.*` 是**会话事件**（载荷里有 `sessionId`），`server.notice` 是**服务端自己的通知**（不属于任何会话，切会话也不该消失）—— 前缀就能判断该看哪张表，不必背清单。
+- 命名空间按**作用对象**分：`workspace.*` 是对容器做事，`session.*` 是对一段会话做事，`events.watch` 是连接级的，`asset.*` 只读（资产是用户的文件系统，改它是另一个动作）。事件同理：`session-` 前缀是**会话事件**（服务端派生或服务端自己的动作，载荷里有 `sessionId`），`server-notice` 是**服务端自己的通知**（不属于任何会话，切会话也不该消失），`AGENT_EVENTS` 那 9 条说的是**一个 Agent 身上发生了什么**（名字就是 core 的名字）—— 看一眼名字就知道该看哪张表，不必背清单。
 
 每个方法/事件的入参、出参与语义**不在这里抄**——那是 `packages/server/README.md` 的事。这里只给分类与规模。
 
@@ -154,7 +157,7 @@ grep -rn '@ai-zen/agents-core' packages/client/src --include=*.ts | grep -v '\.t
 
 | 层 | 文件 | 职责 |
 |---|---|---|
-| **传输** | `transport/connection.ts`（`ServerConnection`） | **一个进程一条连接**：每次取用都判 `closed`、断了就重建、重建后重放 `events.watch`、断线与就绪都往上说（`onClose` / `onOpen`）。它**不重试** —— 重试是会话层的规则 |
+| **传输** | `transport/connection.ts`（`ServerConnection`） | **一个进程一条连接**：每次取用都判 `closed`、断了就重建、重建后在新连接上重新订阅 `events.watch`、断线与就绪都往上说（`onClose` / `onOpen`）。它**不重试** —— 重试是会话层的规则 |
 | | `ensure-server.ts` | 读 `<aiZenDir>/run/server.json`；探活（`callOnce` 问一句 `ping`）失败就 detached 拉起 `agents-server serve`，轮询到 `ping` 通。它是包里**唯一**知道 `agents-server` 的地方（部署策略，不是分层） |
 | | `socket-server-client.ts` | 一条 TCP + JSON-lines 连接：`hello` 握手、在飞调用、事件分发、断开通知 |
 | **门面** | `facade/sessions.ts`（`RemoteSessions`，27 条） | `session.*`(21) + `workspace.*`(6) 的类型化薄封装 |
@@ -168,7 +171,7 @@ grep -rn '@ai-zen/agents-core' packages/client/src --include=*.ts | grep -v '\.t
 
 **为什么这么切**：这一块**不是展示**。它决定「屏幕上的答案会不会凭空短一截」「子任务失败会不会被显示成成功」「这一轮到底结束没有」—— 三个前端都会错、且会错得一样。一纯一脏的分界（`SessionStream` / `SessionChannel`）与 `PhaseTracker`（纯）/ `SessionManager`（脏）那一刀是同一条道理：纯的那个可以直接单测，脏的那个只做接线。
 
-`SessionStream` 不给 `send()`，也不给「等这一轮」：**「等这一轮」在 `SessionChannel.waitForTurn(turnId)`**。因为 `turn.end` 有可能先于 `send()` 的回执落地，把两件事合成一个 promise 就得在里面记一份「已经收尾过的轮次」才能不挂死 —— 那正是 `waitForTurn` 干的事。
+`SessionStream` 不给 `send()`，也不给「等这一轮」：**「等这一轮」在 `SessionChannel.waitForTurn(turnId)`**。因为 `session-turn-end` 有可能先于 `send()` 的回执落地，把两件事合成一个 promise 就得在里面记一份「已经收尾过的轮次」才能不挂死 —— 那正是 `waitForTurn` 干的事。
 
 ### 三条硬约束（都能用命令检验）
 
@@ -257,7 +260,7 @@ packages/server/src/
 
 就这样三条，**没有第二个判据**。
 
-`holders` 是「此刻真有一条连接在看着它」：由传输层登记（`session.create` / `session.attach` 登记调用方那条连接），连接断开时摘掉（挂在 `connection.onClose` 上）。它不需要客户端配合 —— 连接消失是**内核保证的**（进程被 `kill -9`、崩溃、断电都会让那条 socket 消失）。宽限期是 `DEFAULT_SESSION_IDLE_TIMEOUT_MS`（60 s，`--session-idle-timeout`），够覆盖客户端最坏情况下的重连预算；到点时会**重新判一遍**规则，所以窗口内到达的 `attach` 只是取消这次回收，而还在跑的一轮会把回收推到 `session.turnEnd`。
+`holders` 是「此刻真有一条连接在看着它」：由传输层登记（`session.create` / `session.attach` 登记调用方那条连接），连接断开时摘掉（挂在 `connection.onClose` 上）。它不需要客户端配合 —— 连接消失是**内核保证的**（进程被 `kill -9`、崩溃、断电都会让那条 socket 消失）。宽限期是 `DEFAULT_SESSION_IDLE_TIMEOUT_MS`（60 s，`--session-idle-timeout`），够覆盖客户端最坏情况下的重连预算；到点时会**重新判一遍**规则，所以窗口内到达的 `attach` 只是取消这次回收，而还在跑的一轮会把回收推到 `session-turn-end`。
 
 **为什么没有「客户端上报的保活意图」**：那种设计的判据是「上报的意图 **与** 持有者的合取」，而两个事实里只有一个在**最难的情况**下还成立 —— 崩溃的进程发不出那一帧，声明会永远停在「要」，会话连同它占的 Agent 与消息历史永久留在内存里（本包跑在回环上，唯一的回收时机是重启守护进程）；而持有者是内核保证的事实，同样的崩溃恰好把它清干净。取合取只是把不可靠的那个当成了必要条件。这条理由的唯一「为什么」现场是 `SessionManager.ts` 的文件头。
 
@@ -303,7 +306,7 @@ packages/server/src/
 | `<aiZenDir>/run/server.json` | 服务发现文件 | `@ai-zen/agents-protocol` 的 `discovery.ts` 中 `descriptorPath` |
 | `<aiZenDir>/logs/server.log` | 守护进程日志（追加写） | `src/cli.ts` 的 `openLog` |
 
-`<aiZenDir>` 下**没有按前端分家的目录**：会话属于**工作区**，CLI 与桌面端共享同一份数据。指针也不按 cwd 分键 —— 工作区自己就是分区键，所以它是单指针（`last-session.json`）。老布局的搬迁脚本已经删掉，见「这一轮重构改了什么」。
+`<aiZenDir>` 下**没有按前端分家的目录**：会话属于**工作区**，CLI 与桌面端共享同一份数据。指针也不按 cwd 分键 —— 工作区自己就是分区键，所以它是单指针（`last-session.json`）。
 
 `workspaceId` 的形状是 `<目录名规范化>-<sha256(绝对路径) 前 8 位>`，例如 `/home/ubuntu/projects/ai-zen/cli` → `cli-3f9a1c2b`。它只是**首次分配**时的候选，分配之后冻结：`mv` 之后 id 不变，要靠 `workspace.relocate` 显式改记录里的 path，否则历史会「挪个目录就没了」（`workspace.ts` 文件头）。
 
@@ -332,30 +335,11 @@ packages/server/src/
 - **`pnpm test` 显式构建 `testing` / `server` / `client`**（后两者连带 `protocol`）；`core` / `sdk` 的产物必须事先由 `build-core` / `build-sdk` 备好，否则依赖它们的包会在 `pretest`（`tsc --noEmit`）与 `vitest` 阶段解析不到。client 的用例会起**真 Daemon**，所以 `server` 的 `dist` 也必须在。
 - 只跑单个包的用例：`pnpm --filter @ai-zen/agents-server test`（前提同上：它的上游 `dist` 在）。
 
-## 这一轮重构改了什么
-
-这一节是**历史账**：它记的是「删掉了什么、从哪搬到哪」，用过去时写。上面所有章节只写现状，所以这里出现的名字都是**曾经在这里的证据**，而不是它们还在。
-
-| 动作 | 内容 |
-|---|---|
-| 新包 | `@ai-zen/agents-protocol` —— 五个包里唯一新增的那一个 |
-| 搬家 | 契约从服务端包内搬进新包：服务端那个 `./protocol` 子路径被删除，`exports` 从「多开一个口子」收成 `.` + `./package.json`；`server` / `client` 全部改指新包；client 的 `dependencies` 从 4 项收敛到 1 项 |
-| 反向依赖修掉 | `PhaseInfo` / `PhaseKind` / `ToolCallRef` 从服务端的阶段状态机搬进协议（原先协议反向 `import type` 服务端内部状态机，方向是错的） |
-| 一个意图一种表达 | 删掉客户端上报的保活声明 `session.keepAlive.set`（它的载荷是 `{ sessionId, keepAlive: boolean }`），连同 `SessionManager` 的保活字段与 `RemoteSessions` 上的保活方法；会话寿命收敛成「持有者」一条规则。方法数 45 → 44 |
-| 错误码收口 | 服务端六份逐字相同的 `codedError` 拷贝删掉，改成协议里的 `ERROR_CODES` + `codedError` / `isCodedError` / `codeOf`；客户端不再写字面量错误码 |
-| 事件命名与拆表 | `message.delta` → `session.delta`、`turn.end` → `session.turnEnd`、`global.notice` → `server.notice`；`SESSION_EVENTS` 与 `SERVER_EVENTS` 拆开，连带 `GLOBAL_NOTICE_CODES` → `SERVER_NOTICE_CODES` |
-| 协议不再说 `unknown` | `messages: unknown[]` / `modelParams: unknown` / `message: unknown` 换成具名类型（从 core 类型级转出），客户端因此不必再 import core 才能读一条消息 |
-| 服务端目录重排 | 平铺的 `service/` 按性质拆成 `domain/`（业务对象）+ `lib/`（无业务语义的零件）+ `daemon/`（传输与接线） |
-| `SessionManager` 拆分 | 从 2600 来行、12 个并列职责，按「谁拥有 `LiveSession` 的哪些字段」拆成四个类 + 一份形状文件（见「`SessionManager` 的四件」）；用例按归属搬成四个文件，不复制 |
-| 客户端新增会话层 | `transport/` + `facade/` + `session/` 三层，把「一轮之内的状态机」从应用里收进包（原先 CLI 与桌面端各写一遍） |
-| 门面补全 | `RemoteSessions` 覆盖 21 个会话方法 + 6 个工作区方法，`RemoteConfig` 覆盖 13 个；会话级模型动作从配置面挪回会话面；覆盖度由类型级用例钉死 |
-| 删死代码 | `legacyMigration`（零调用点）、`packages/cli/` 空壳（CLI 早已搬到独立仓） |
-
 ## 已知缺口 / 未完成
 
 - **桌面端 main 已经用上 `SessionStream`**（`desktop@49c82c1`，`events.ts` 838 → 665 行）：手写的增量累积、子 Agent 合并、收尾整份替换、`failed` 判定全部删了，只剩「喂事件 / 映射成 `ChatStreamEvent`」。留着没搬的两块**是桌面端独有的事实**，不是重复：① `user` 事件的正文（协议不推用户消息）；② 占位 assistant 消息的 id（render 的 `v-for` key 需要它，而状态机刻意不给流式消息编 id）。
 - **`SessionStream` 还差三个出口**（桌面端因为缺它们各留了一小段 workaround，都在 `events.ts` 里且有注释）：① 流式消息的稳定 id（现在 main 自己按 `一轮一个` 编）；② 「丢掉某段会话的拼接态」的公开入口（现在靠 `new SessionStream()` 整台替换）；③ `applySnapshot` 不对齐 `state.turnId`（现在 main 自己拿快照比对残影）。
-- **服务端 README 的 handler 清单落后于协议**：`packages/server/README.md` 里那段「registers …」漏了 6 条会话方法（`session.snapshot` / `session.rollback` / `session.save` / `session.saveAs` / `session.model.set` / `session.modelParams.set`），还把事件 `session.question` 当方法列了出来。README 本身待改，清单的唯一真相是 `SESSION_METHODS`。
+- **服务端 README 的 handler 清单落后于协议**：`packages/server/README.md` 里那段「registers …」漏了 6 条会话方法（`session.snapshot` / `session.rollback` / `session.save` / `session.saveAs` / `session.model.set` / `session.modelParams.set`），还把事件 `session-question` 当方法列了出来。README 本身待改，清单的唯一真相是 `SESSION_METHODS`。
 - **方法表命名不同构**：`EVENT_METHODS`（单数）与其余五张方法表（复数）不一致。纯命名问题，改它要动两处引用。
 - **`Role` / `MessageStatus` 是 core 的 `enum`（运行期值）**，所以**应用**（CLI / 桌面端）依赖 core 是正当的。若要让应用也只依赖协议，得把数据词汇落到底层包 —— 本轮判定不划算，不做。
 - **`packages/sdk/src/config/constants.ts` 的注释仍在描述按前端分家的运行时目录**（`~/.ai-zen/<前端>/`），与「会话属于工作区、`config.json` 在 `<aiZenDir>` 下」的现状不符。

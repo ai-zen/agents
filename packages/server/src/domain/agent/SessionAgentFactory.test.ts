@@ -433,7 +433,7 @@ describe("SessionAgentFactory：按模型阈值装护栏与自动迁移", () => 
       workspaceId: "ws",
       path: "/p",
       agentId: "default",
-      // 会话层提供：它会向客户端提问（session.question）并等回答
+      // 会话层提供：它会向客户端提问（session-question）并等回答
       resolveMode: async () => "summary",
       autoMigrate: async (mode) => {
         used.push(mode);

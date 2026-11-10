@@ -437,7 +437,7 @@ describe("SessionManager：续接不是一次活动（updatedAt）", () => {
       { role: "user", content: "又聊了一句" },
     ];
     agent.fire("finally");
-    // 收尾是异步的（先落盘、再 `session.turnEnd`）：等到那个时间真的变新为止
+    // 收尾是异步的（先落盘、再 `session-turn-end`）：等到那个时间真的变新为止
     await until(
       async () => Date.parse((await listedAt("chat_old")).updatedAt) > Date.parse(ARCHIVED_AT),
     );
