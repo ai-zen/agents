@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   Daemon,
   createAgentHandlers,
@@ -18,14 +18,16 @@ import {
   FileSessionStore,
   SessionAgentFactory,
   SessionManager,
+  EVENT_METHODS,
   SESSION_EVENTS,
   type AgentLike,
   type ModelLevel,
   type ServerEvent,
 } from "@ai-zen/agents-server";
-import { SocketServerClient } from "./socket-server-client.js";
+import { SocketServerClient } from "../socket-server-client.js";
 import { RemoteSessions } from "./sessions.js";
-import type { ClientInfo } from "./types.js";
+import { SESSION_METHODS } from "@ai-zen/agents-protocol";
+import type { ClientInfo, ServerClient } from "../types.js";
 
 class FakeAgent implements AgentLike {
   messages: any[] = [];
@@ -112,6 +114,14 @@ function seedAgentDefinition(): void {
         {
           id: "test-model",
           name: "Test",
+          endpointId: "e",
+          tokenThresholds: { handoff: 1, guard: 2 },
+          custom: true,
+        },
+        // 会话级换模型要有第二个可选项（`session.model.set` 对不存在的模型报 `unknown-model`）
+        {
+          id: "alt-model",
+          name: "Alt",
           endpointId: "e",
           tokenThresholds: { handoff: 1, guard: 2 },
           custom: true,
@@ -289,7 +299,7 @@ describe("RemoteSessions", () => {
     connection!.on(SESSION_EVENTS.phase, (event) => received.push(event));
     connection!.on(SESSION_EVENTS.turnEnd, (event) => received.push(event));
 
-    await sessions.watch();
+    await connection!.call(EVENT_METHODS.watch);
     const { sessionId } = await sessions.open({ path: join(dir, "proj") });
     await sessions.send(sessionId, "你好");
 
@@ -487,5 +497,150 @@ describe("RemoteSessions：续接只靠 id（客户端不搬消息）", () => {
     const { sessionId } = await sessions.open({ path: join(dir, "proj") });
     await sessions.save(sessionId);
     expect(await sessions.last(workspace.workspaceId)).toEqual({ sessionId });
+  });
+});
+
+// ==================================================================
+// D6：门面 100% 覆盖 —— 补齐的那几条（原本客户端只能裸调协议）
+// ==================================================================
+
+describe("RemoteSessions：会话目录（rename / remove）", () => {
+  it("rename 只改显示名（不动 id）；remove 物理删存档且幂等", async () => {
+    await start();
+    const workspace = await sessions.resolveWorkspace(join(dir, "proj"));
+    const { sessionId } = await sessions.open({ path: join(dir, "proj") });
+    await sessions.save(sessionId);
+
+    expect(await sessions.rename(workspace.workspaceId, sessionId, "改个名")).toEqual({
+      sessionId,
+      title: "改个名",
+    });
+    const renamed = (await sessions.list(workspace.workspaceId)).sessions;
+    expect(renamed.map((entry) => entry.sessionId)).toEqual([sessionId]); // id 没变
+    expect(renamed[0]!.title).toBe("改个名");
+
+    expect(await sessions.remove(workspace.workspaceId, sessionId)).toEqual({ removed: true });
+    expect((await sessions.list(workspace.workspaceId)).sessions).toEqual([]);
+    // 幂等：本来就没有回 `removed:false`，不当错误（与 `agent.remove` 同一口径）
+    expect(await sessions.remove(workspace.workspaceId, sessionId)).toEqual({ removed: false });
+  });
+});
+
+/**
+ * 一条**记下「调了什么」**的假连接。
+ *
+ * 真 daemon 那几条验的是**语义**（写进哪一层、回什么），这里验的是**拼装**：方法名与参数
+ * 由门面这一处决定，而「换模型顺手把参数也清了」「改参数把模型也改了」这类错误在真 daemon
+ * 上完全看不出来（两边都是成功的写）。所以两条一起钉。
+ */
+function recordingClient(calls: Array<{ method: string; params?: unknown }>): ServerClient {
+  return {
+    address: { host: "127.0.0.1", port: 0 },
+    closed: false,
+    async call<T>(method: string, params?: unknown): Promise<T> {
+      calls.push({ method, params });
+      return {} as T;
+    },
+    on: () => () => {},
+    close: () => {},
+    onClose: () => () => {},
+  };
+}
+
+describe("RemoteSessions：会话级模型（session.model.set / modelParams.set）", () => {
+  it("写的是**这一段**会话的存档，并回一份新快照（客户端不必再要一次）", async () => {
+    await start();
+    const workspace = await sessions.resolveWorkspace(join(dir, "proj"));
+    const { sessionId } = await sessions.open({ path: join(dir, "proj") });
+    const entryOf = async () =>
+      (await sessions.list(workspace.workspaceId)).sessions.find((e) => e.sessionId === sessionId)!;
+
+    // 回的是这一段会话的快照（`sessionId` 对得上，客户端不必再要一次）
+    expect((await sessions.modelSet(sessionId, "alt-model")).sessionId).toBe(sessionId);
+    // 覆盖落在**会话**存档里（不是 Agent 定义：那会影响所有用它的会话）
+    expect((await entryOf()).modelId).toBe("alt-model");
+
+    await sessions.modelParamsSet(sessionId, { reasoning_effort: "high" });
+    // 改参数不该动模型（两者是同一级的两份事实）
+    expect((await entryOf()).modelId).toBe("alt-model");
+    // `null` = 清掉这一层覆盖（回到模型出厂参数），不是「没给」，同样是一次成功的写
+    expect((await sessions.modelParamsSet(sessionId, null)).sessionId).toBe(sessionId);
+  });
+
+  it("线上的那一步：方法名与参数由门面拼（两层各写一遍就是这个 bug 的来源）", async () => {
+    const calls: Array<{ method: string; params?: unknown }> = [];
+    const facade = new RemoteSessions(recordingClient(calls));
+
+    await facade.modelSet("chat_1", "alt-model");
+    await facade.modelParamsSet("chat_1", { reasoning_effort: "high" });
+    await facade.modelParamsSet("chat_1", null);
+
+    expect(calls).toEqual([
+      {
+        method: SESSION_METHODS.modelSet,
+        params: { sessionId: "chat_1", modelId: "alt-model" },
+      },
+      {
+        method: SESSION_METHODS.modelParamsSet,
+        params: { sessionId: "chat_1", modelParams: { reasoning_effort: "high" } },
+      },
+      // `null` 必须**在**参数里（JSON 里丢掉的字段与「没给」无法区分，而「清掉」是明确意图）
+      {
+        method: SESSION_METHODS.modelParamsSet,
+        params: { sessionId: "chat_1", modelParams: null },
+      },
+    ]);
+  });
+});
+
+describe("RemoteSessions：工作区（list / rename / relocate / remove）", () => {
+  it("列全部工作区；改名不动 id/path；relocate 把记录的 path 挪到新目录", async () => {
+    await start();
+    // 目录得真的存在：`session.create` 拒绝不存在的路径（服务端不替用户建目录）
+    mkdirSync(join(dir, "a"), { recursive: true });
+    mkdirSync(join(dir, "b"), { recursive: true });
+    const a = await sessions.resolveWorkspace(join(dir, "a"));
+    const b = await sessions.resolveWorkspace(join(dir, "b"));
+
+    const listed = (await sessions.listWorkspaces()).workspaces;
+    expect(listed.map((workspace) => workspace.workspaceId).sort()).toEqual(
+      [a.workspaceId, b.workspaceId].sort(),
+    );
+    // `pathExists` 是「这个工作区还能不能用」的判据（目录被 mv/rm 之后为 false）
+    expect(listed.every((workspace) => workspace.pathExists)).toBe(true);
+
+    expect(await sessions.renameWorkspace(a.workspaceId, "项目 A")).toEqual({
+      workspaceId: a.workspaceId,
+      title: "项目 A",
+    });
+    const renamed = (await sessions.listWorkspaces()).workspaces.find(
+      (workspace) => workspace.workspaceId === a.workspaceId,
+    )!;
+    expect(renamed.title).toBe("项目 A");
+    expect(renamed.path).toBe(a.path); // 改名不动 path
+
+    // relocate：`mv` 之后拿旧 id 把历史接回新目录（新路径必须已存在，服务端不替用户建）
+    const moved = join(dir, "a-moved");
+    mkdirSync(moved, { recursive: true });
+    expect(await sessions.relocateWorkspace(a.workspaceId, moved)).toEqual({
+      workspaceId: a.workspaceId,
+      path: resolve(moved),
+    });
+    // 对新路径 resolve 回到**同一个** id（id 冻结，路径可变）
+    expect((await sessions.resolveWorkspace(moved)).workspaceId).toBe(a.workspaceId);
+  });
+
+  it("remove 连它的会话一起删（幂等）", async () => {
+    await start();
+    mkdirSync(join(dir, "b"), { recursive: true });
+    const b = await sessions.resolveWorkspace(join(dir, "b"));
+    await sessions.open({ path: join(dir, "b") });
+    expect((await sessions.list(b.workspaceId)).sessions).toHaveLength(1);
+
+    expect(await sessions.removeWorkspace(b.workspaceId)).toEqual({ removed: true });
+    expect((await sessions.listWorkspaces()).workspaces.map((w) => w.workspaceId)).not.toContain(
+      b.workspaceId,
+    );
+    expect(await sessions.removeWorkspace(b.workspaceId)).toEqual({ removed: false });
   });
 });

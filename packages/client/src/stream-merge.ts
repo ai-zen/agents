@@ -28,8 +28,12 @@ import type { Message } from "@ai-zen/agents-protocol";
  * 为什么不用枚举本身：协议只**转出类型**、不转出 `Role`（它是运行期有对象的值，转出就等于
  * 把 core 拖进本包的运行期依赖图）。值写错编译器会拦 —— `Message["role"]` 与该字面量不
  * 重叠时报 TS2367；用例那边又用真的 `AgentNS.Role.Assistant` 造数据，两处一起把这个值钉死。
+ *
+ * 导出是给同目录之外的纯状态机（`session/stream.ts`）用的：它也必须在运行期知道「哪条是
+ * assistant」，而本包不能为了一个字符串去 import core。**这份镜像只许有一份** —— 所以它在
+ * 这里导出，而不是在那边再抄一遍。
  */
-const ROLE = { Assistant: "assistant" } as const;
+export const ROLE = { Assistant: "assistant" } as const;
 
 /**
  * 本地拼接状态（一段流式内容一条）。
@@ -66,9 +70,13 @@ export interface StreamedAssistant {
  * ## 规则
  *
  * 1. 本地没有增量 → 直接用快照（大多数情况：刚开始时还没有字）。
- * 2. 快照末尾那条 assistant 的正文是本地累计正文的**前缀** → 它们是同一段（core 在流式
- *    开始前就把占位消息追加进了 `messages`，之后就地改它）。取本地的（更全），并让后续
- *    增量继续拼在这一条上 —— 否则同一段会被拆成两条消息在屏幕上闪。
+ * 2. 快照末尾那条 assistant 的正文与本地累计正文**互为前缀** → 它们是同一段（core 在流式
+ *    开始前就把占位消息追加进了 `messages`，之后就地改它）。取信息多的那份，并让后续
+ *    增量继续拼在这一条上 —— 否则同一段会被拆成两条消息在屏幕上闪。两个方向都要认：
+ *      · 本地是快照的后缀（`stream.text.startsWith(tailText)`）：本地更全，取本地的；
+ *      · 本地是快照的前缀（`tailText.startsWith(stream.text)`）：**快照更全**，取快照那条。
+ *    只认第一个方向时，第二个方向会一路落到第 3 条的对不上分支，屏幕上末尾多出一条
+ *    内容为「答」的 assistant 消息（一轮里前半句上屏两遍）。
  * 3. 否则快照末尾不是「正在拼的那一段」：用「服务端已知 assistant 正文按序拼接」对齐，只接
  *    上多出来的尾巴 ——
  *      · 本地以它开头：那截尾巴是快照序列化之后才到的新一段，接在后面；
@@ -90,11 +98,34 @@ export function mergeStreamedSnapshot(
   const tailText =
     tail && tail.role === ROLE.Assistant && typeof tail.content === "string" ? tail.content : null;
 
-  // 规则 2：同一段，本地更全
+  // 规则 2 的第一个方向：同一段，本地更全
   if (tailText !== null && stream.text.startsWith(tailText)) {
     const merged = withAssistantText(tail!, stream.text, stream.reasoning);
     base[base.length - 1] = merged;
     return { messages: base, stream: { ...stream, message: merged } };
+  }
+
+  /**
+   * 规则 2 的第二个方向：同一段，**服务端更全**（本地只是它的一段前缀）。
+   *
+   * 为什么必须有这一支：本地的「答」的每个字都在快照的「答完了」里，所以丢掉本地不会
+   * 丢内容；但**识别不出**这层关系就会掉到第 3 条的对不上分支 —— 那一支为了「宁可重复
+   * 也不吞字」会把本地那半句整段追加成第二条 assistant 消息，屏幕上一轮里出现「答完了」
+   * 后面又跟一条「答」。缺这一支时它并不报错，只在重连 / 快照比增量慢这类时序里显形。
+   *
+   * 拼接态**接着指向快照那条**（不是丢掉）：快照只是这一刻的副本，这一段还在流，下一片
+   * 增量得拼在同一条上 —— 指回 null 会让 `applyDelta` 另起一条消息，把一段答案在屏幕上
+   * 裂成两段（那正是规则 2 想避免的事）。推理取两者更长的：它与正文同帧到达但可能**先到**，
+   * 本地那份比快照长时吞掉它同样是丢内容。
+   */
+  if (tailText !== null && tailText.startsWith(stream.text)) {
+    const snapshotReasoning =
+      typeof tail!.reasoning_content === "string" ? tail!.reasoning_content : "";
+    const reasoning =
+      snapshotReasoning.length >= stream.reasoning.length ? snapshotReasoning : stream.reasoning;
+    const merged = withAssistantText(tail!, tailText, reasoning);
+    base[base.length - 1] = merged;
+    return { messages: base, stream: { message: merged, text: tailText, reasoning } };
   }
 
   // 规则 3：对齐「服务端已知的 assistant 正文」，只接上多出来的那截
@@ -115,8 +146,15 @@ export function mergeStreamedSnapshot(
   return { messages: [...base, appended], stream: { ...stream, message: appended, text: rest } };
 }
 
-/** 写一条 assistant 消息的正文/推理，其余字段（`tool_calls` 等）原样保留 */
-function withAssistantText(message: Message, text: string, reasoning: string): Message {
+/**
+ * 写一条 assistant 消息的正文/推理，其余字段（`tool_calls` 等）原样保留。
+ *
+ * 导出是给 `session/stream.ts` 用的：它也必须在增量到达时把正文写回那条临时消息上，
+ * 而那段逻辑曾经在两边各占 7 行（`withText` / `withAssistantText`）。两份拷贝的漂移
+ * 方向很难看：只要一边忘了带 `reasoning_content`，推理模型的「想」就会在其中一个前端上
+ * 整段消失，而且只在推理模型上显形。所以只留一份，放在这份合并规则旁边。
+ */
+export function withAssistantText(message: Message, text: string, reasoning: string): Message {
   const next = { ...message, role: ROLE.Assistant, content: text } as Message;
   if (reasoning) next.reasoning_content = reasoning;
   return next;

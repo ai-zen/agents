@@ -12,11 +12,22 @@
  * 所以把「配置面」收成一个接口，**只有一个实现**：`createRemoteConfigPort()` —— 走服务端的
  * `config.*` / `agent.*`，落盘发生在服务端。
  *
- * 曾经还有第二个实现（`createLocalConfigPort()`，包一层本地函数给进程内模式用）。会话执行
- * 搬到服务端之后进程内模式没有了，它也就没有调用方 —— 一起删掉，需要时看 git 历史。
+ * ## 它和 `facade/config.ts`（`RemoteConfig`）的分工
  *
- * 方法签名刻意与那些本地函数**逐字对齐**（`readConfig` 之类），这样调用点只换注入值，
- * 不换写法：`deps.config.readConfig()` 读的就是同一件事（只是问在服务端）。
+ * `RemoteConfig` 是**协议的一比一封装**（线上形状原样进出，`config` 是 `unknown`）；
+ * 这里是**应用侧的端口**：签名与那些本地函数逐字对齐（`readConfig` 之类），并把线上的
+ * `unknown` 兑现成应用真正要用的类型（`AppConfig` / `ReasoningPresets` / `AgentStore`）。
+ * 于是调用点只换注入值，不换写法。
+ *
+ * 两层共用的那部分（方法名、参数拼装）只在门面（`RemoteConfig` / `RemoteSessions`）里写一次
+ * （包括工作区的解析 —— 那条以前是裸调 `client.call(...)`）：本文件不 import 任何「方法名
+ * 常量表」（那类常量的名字都以 METHODS 结尾），于是「同一件事两处拼参数」在这里无从发生。
+ *
+ * ## 会话级模型动作**不在**这里
+ *
+ * `session.model.set` / `session.modelParams.set` 曾经挂在这个接口上（读起来像配置）。
+ * 但它们的**作用对象是一段会话**，所以搬去了 `RemoteSessions.modelSet` /
+ * `modelParamsSet`（D6）。判据见 `facade/config.ts` 的文件头：作用对象是不是某一段会话。
  *
  * ## MCP 的「项目作用域」为什么不传路径
  *
@@ -25,34 +36,17 @@
  * 是同一个答案 —— 客户端再抄一份路径过去，就又多了一份会漂的真相。
  */
 
-import {
-  AGENT_METHODS,
-  CONFIG_METHODS,
-  SESSION_METHODS,
-  WORKSPACE_METHODS,
-  type AgentListResult,
-  type AgentRemoveParams,
-  type AgentSaveParams,
-  type ConfigGetResult,
-  type ConfigMcpGetResult,
-  type ConfigMcpSaveParams,
-  type ConfigReasoningPresetsResult,
-  type ConfigSaveParams,
-  type ConfigSetDefaultAgentParams,
-  type ConfigSetDefaultModelParams,
-  type SessionModelParamsSetParams,
-  type SessionModelSetParams,
-  type WorkspaceResolveResult,
-  type AgentKind,
-} from "@ai-zen/agents-protocol";
+import { type AgentKind } from "@ai-zen/agents-protocol";
 // 只取类型：`AppConfig` / `AgentDefinition` / `ReasoningPresets` 是配置与定义在两端的
 // 共同形状，而**线上**刻意不认识 SDK（`config.get` 的 `config` 在协议里是 `unknown`）。
-// `import type` 在产物里被整体擦除，所以本包的运行期依赖图仍然只有 `./protocol` + node 内置
+// `import type` 在产物里被整体擦除，所以本包的运行期依赖图仍然只有协议包 + node 内置
 // —— 桌面端 main 打包时不会因此拖进 sdk（验证命令见 README）。
 import type { AgentDefinition, AppConfig, ReasoningPresets } from "@ai-zen/agents-sdk";
-import { ensureServer } from "./ensure-server.js";
+import { RemoteConfig } from "./facade/config.js";
+import { RemoteSessions } from "./facade/sessions.js";
 import { clientWorkspacePath } from "./local-host.js";
 import type { McpConfig, McpReadResult, McpScope } from "./mcp.js";
+import { ServerConnection } from "./transport/connection.js";
 import type { ClientInfo, ServerClient } from "./types.js";
 
 /**
@@ -112,28 +106,6 @@ export interface ConfigPort {
    */
   setModel(agentId: string, modelId: string): Promise<void>;
   /**
-   * 换**这一段会话**的模型（`session.model.set`）：只写这段会话存档里的 `modelId`。
-   *
-   * 为什么不并进 {@link setModel}：那是「以后用这个 Agent 就跑这个模型」（写定义，影响
-   * 所有用它的会话），这个是「这次用它」（只影响这一段）。两个意思两个方法 —— 合成一个
-   * 就只能靠参数开关分叉，调用方得猜自己改的是哪一份。
-   */
-  setSessionModel(sessionId: string, modelId: string): Promise<void>;
-  /**
-   * 写**这一段会话**的模型参数覆盖（`session.modelParams.set`）。
-   *
-   * 为什么需要它与 {@link setSessionModel} 并存：参数跟着「模型来自哪一级」走。模型是本段
-   * 会话换的，参数就必须也写在这一段（写进定义会影响别的会话，而且那一层的参数在本段会话
-   * 根本不生效）。`null` = 清掉覆盖、回到模型出厂参数。
-   *
-   * 形状交给服务端当**不透明载荷**存（与存档里的 `messages` 同一口径）：这里只负责把算好
-   * 的参数送上去。
-   */
-  setSessionModelParams(
-    sessionId: string,
-    modelParams: Record<string, unknown> | null,
-  ): Promise<void>;
-  /**
    * 换**全局兜底模型**（`config.defaultModel`）—— 三级解析的最后一级。
    *
    * 同样是窄方法（只写一个字段）：整份写回在多客户端（终端 + 桌面端）并存时会抹掉对方
@@ -147,19 +119,26 @@ export interface ConfigPort {
 // ==================================================================
 
 export interface RemoteConfigPortDeps {
-  /** 注入连接（测试用）；不给则首次调用时自动 ensureServer + 连接 */
+  /**
+   * 共享一条连接（组装根通常传这个）：与对话走**同一条** —— 一个进程一条连接（D8）。
+   *
+   * 不给时这里自己建一条（`client` / `connect` / `aiZenDir` + `clientInfo` 三选一），
+   * 于是「配置面在会话之前就要用」的场景（启动预检）不必先开一段会话。
+   */
+  connection?: ServerConnection;
+  /** 注入一条现成连接（测试用）；生命周期归调用方，不重建 */
   client?: ServerClient;
-  /** 注入「拿连接」的函数（可选，二者取一） */
+  /** 注入「拿连接」的函数（可选，与 `client` 二者取一） */
   connect?: () => Promise<ServerClient>;
   /**
    * 自动拉起服务端所需的两个事实：配置根与服务端可执行文件的位置。
    *
-   * 只在不给 `client` / `connect` 时才需要。为什么不在包内读 `AI_ZEN_DIR` 这个 env：
-   * 本包是**库**，读进程级全局就再也改不了目录（测试、多实例、桌面端的可配置数据目录
-   * 全都会撞上它）。由组装根（CLI 的 `config.ts` / 桌面端 main）读一次 env 再递进来。
+   * 只在不给 `connection` / `client` / `connect` 时才需要。为什么不在包内读 `AI_ZEN_DIR`
+   * 这个 env：本包是**库**，读进程级全局就再也改不了目录（测试、多实例、桌面端的可配置
+   * 数据目录全都会撞上它）。由组装根（CLI 的 `config.ts` / 桌面端 main）读一次 env 再递进来。
    */
   aiZenDir?: string;
-  /** 握手时自称的身份（同样只在不给连接时用到）：应用名 + 版本号 */
+  /** 握手时自称的身份（同样只在自己建连时用到）：应用名 + 版本号 */
   clientInfo?: ClientInfo;
   /**
    * 项目作用域的路径来源（缺省：按 loopback 判据取客户端 cwd，见 `local-host.ts`）。
@@ -178,10 +157,13 @@ export interface RemoteConfigPortDeps {
  * 配置面是**应用级**的，它可能在会话建立之前就要用：启动时的凭据预检（「有没有可用
  * 的端点 / 模型」）走的就是这里，而那一刻用户还没开任何会话。所以不能在构造时就把连接
  * 建起来（`createRemoteConfigPort()` 甚至可能在整个进程里一次都没被调用到），而是第一次
- * 真正要读配置时才建；建好之后缓存复用，一条连接服务后续所有读写。
+ * 真正要读配置时才建；建好之后复用，一条连接服务后续所有读写。
  *
- * 连接死了（服务端重启、网络断）不必再来问一次：下次调用发现它已关闭就重建一条
- * —— 这正是「TUI 常驻、服务端可以随时重启」那个使用形态。
+ * ## 「连接死了怎么办」不再是这一层的事
+ *
+ * 它以前自己缓存、自己判 `closed`、自己重建 —— 那是 D8 那个 bug 的第三份实现（桌面端
+ * 是第二份，CLI 手传 `configPort` 是第一份）。现在全归 {@link ServerConnection}：
+ * 每次取用都判活，断了就重建（并且把 `events.watch` 重放上去）。
  *
  * ## 为什么工作区 id 也在这层解析
  *
@@ -198,44 +180,28 @@ export interface RemoteConfigPortDeps {
  * 而那串 code 正是排查与提示的依据。
  */
 export function createRemoteConfigPort(deps: RemoteConfigPortDeps = {}): ConfigPort {
-  /** 缓存的连接：`null` = 还没建过（或上次建失败） */
-  let cached: ServerClient | null = null;
-  /** 正在建的那条连接：并发调用只建一条，不是每人一条 */
-  let pendingConnect: Promise<ServerClient> | null = null;
+  const connection =
+    deps.connection ??
+    new ServerConnection({
+      ...(deps.client ? { client: deps.client } : {}),
+      ...(deps.connect ? { connect: deps.connect } : {}),
+      ...(deps.aiZenDir ? { aiZenDir: deps.aiZenDir } : {}),
+      ...(deps.clientInfo ? { clientInfo: deps.clientInfo } : {}),
+    });
+
   /**
-   * 项目作用域要的 `workspaceId`（promise 而不是值：并发调用只问服务端一次）。
+   * 项目作用域的 `workspaceId`（promise 而不是值：并发调用只问服务端一次）。
    * 换连接时作废 —— 新连接可能是另一个服务端，它的工作区不一定还是同一个。
    */
   let cachedWorkspaceId: Promise<string> | null = null;
+  // 连接换了 = 可能换了服务端：缓存的答案不能再沿用（这就是 `onOpen` 的用途）
+  connection.onOpen(() => {
+    cachedWorkspaceId = null;
+  });
 
-  /** 拿连接：注入的优先，其次自己建；建好缓存，关了重建 */
-  const connection = async (): Promise<ServerClient> => {
-    /**
-     * 注入的连接由调用方负责生命周期：它在测试里指向测试 Daemon，我们变不出第二条，
-     * 所以即便它已经关了也照原样交出去 —— 让 `call()` 如实报「连接已关闭」，
-     * 而不是在这里凭空换一条来路不明的连接。
-     */
-    if (deps.client) return deps.client;
-
-    if (cached && !isClosed(cached)) return cached;
-    if (!pendingConnect) {
-      pendingConnect = makeConnection(deps).then(
-        (client) => {
-          cached = client;
-          pendingConnect = null;
-          // 换了一条连接 = 可能换了服务端：工作区 id 不能再沿用旧的
-          cachedWorkspaceId = null;
-          return client;
-        },
-        (error: unknown) => {
-          // 建连失败不缓存：下次调用重试（否则一次瞬时故障会让进程永久失能）
-          pendingConnect = null;
-          throw error;
-        },
-      );
-    }
-    return await pendingConnect;
-  };
+  /** 每次调用都重新取连接、重新建一个门面：门面本身无状态，连接换了它自然跟着换 */
+  const withConfig = async <T>(run: (config: RemoteConfig) => Promise<T>): Promise<T> =>
+    await run(new RemoteConfig(await connection.client()));
 
   const resolveWorkspacePath = (client: ServerClient): string | undefined =>
     deps.workspacePath ? deps.workspacePath() : clientWorkspacePath(client.address.host);
@@ -246,14 +212,16 @@ export function createRemoteConfigPort(deps: RemoteConfigPortDeps = {}): ConfigP
    * 路径按与开会话**同一套判据**给（{@link clientWorkspacePath}）：本地递客户端 cwd、
    * 远端不递。分成两套判断就会出现「会话在 A 项目、项目级 mcp.json 读的却是别处」——
    * 用户改完那屏以为生效了，实际改到了与本会话无关的文件里。
-   *
-   * 缓存它是因为同一个进程的 cwd 不变（换连接时由 `connection()` 作废）。
    */
-  const projectWorkspaceId = async (client: ServerClient): Promise<string> => {
+  const projectWorkspaceId = async (): Promise<string> => {
     if (!cachedWorkspaceId) {
+      const client = await connection.client();
       const path = resolveWorkspacePath(client);
-      cachedWorkspaceId = client
-        .call<WorkspaceResolveResult>(WORKSPACE_METHODS.resolve, path ? { path } : {})
+      // 走门面（`RemoteSessions.resolveWorkspace`）而不是裸调 `client.call(...)`：
+      // 方法名与参数拼装只在门面里写一次 —— 本文件连一个方法表常量都不 import（见文件头）。
+      // 不给 path 就是「服务端自己的默认工作区」：远端部署时这才是唯一有意义的问法。
+      cachedWorkspaceId = new RemoteSessions(client)
+        .resolveWorkspace(path)
         .then((resolved) => resolved.workspaceId)
         .catch((error: unknown) => {
           // 问不到就别记着：一次瞬时故障不该让这个进程永久以为「没有工作区」
@@ -264,38 +232,30 @@ export function createRemoteConfigPort(deps: RemoteConfigPortDeps = {}): ConfigP
     return await cachedWorkspaceId;
   };
 
-  /** 每个方法都重新 `connection()`：连接换了一条时，这里自然用上新的那条 */
-  const call = async <T>(method: string, params?: unknown): Promise<T> => {
-    const client = await connection();
-    return await client.call<T>(method, params);
-  };
-
   return {
     readConfig: async () => {
-      const result = await call<ConfigGetResult>(CONFIG_METHODS.get);
+      const result = await withConfig((config) => config.get());
       // 协议层刻意不解释 `config` 的形状（线上契约不认识 SDK），到这一层才回收成 AppConfig
       return result.config as AppConfig;
     },
 
     readConfigFile: async () => {
-      const result = await call<ConfigGetResult>(CONFIG_METHODS.get);
+      const result = await withConfig((config) => config.get());
       return { config: result.config as AppConfig, path: result.path };
     },
 
     saveConfig: async (config) => {
-      const params: ConfigSaveParams = { config };
-      await call(CONFIG_METHODS.save, params);
+      await withConfig((facade) => facade.save(config));
     },
 
     readReasoningPresets: async () => {
-      const result = await call<ConfigReasoningPresetsResult>(CONFIG_METHODS.reasoningPresets);
+      const result = await withConfig((config) => config.reasoningPresets());
       return result.presets as ReasoningPresets;
     },
 
     /** 换默认 Agent：一条窄方法，**不**读整份再写回（见接口上的注释） */
     setDefaultAgent: async (agentId) => {
-      const params: ConfigSetDefaultAgentParams = { agentId };
-      await call(CONFIG_METHODS.defaultAgentSet, params);
+      await withConfig((config) => config.defaultAgentSet(agentId));
     },
 
     /**
@@ -306,118 +266,59 @@ export function createRemoteConfigPort(deps: RemoteConfigPortDeps = {}): ConfigP
      * 不是一次调用失败，所以这里原样返回、不抛错。
      */
     readMcpConfig: async (scope = "global") => {
-      const client = await connection();
-      const params = {
-        scope,
-        // project 作用域才需要工作区：global 就是配置根下那一个文件
-        ...(scope === "project" ? { workspaceId: await projectWorkspaceId(client) } : {}),
-      };
-      const result = await client.call<ConfigMcpGetResult>(CONFIG_METHODS.mcpGet, params);
+      const workspaceId = scope === "project" ? await projectWorkspaceId() : undefined;
+      const result = await withConfig((config) =>
+        config.mcpGet({
+          scope,
+          // project 作用域才需要工作区：global 就是配置根下那一个文件
+          ...(workspaceId !== undefined ? { workspaceId } : {}),
+        }),
+      );
       return result as McpReadResult;
     },
 
     writeMcpConfig: async (config, scope = "global") => {
-      const client = await connection();
-      const params: ConfigMcpSaveParams = {
-        scope,
-        config,
-        ...(scope === "project" ? { workspaceId: await projectWorkspaceId(client) } : {}),
-      };
-      await client.call(CONFIG_METHODS.mcpSave, params);
+      const workspaceId = scope === "project" ? await projectWorkspaceId() : undefined;
+      await withConfig((facade) =>
+        facade.mcpSave({
+          scope,
+          config,
+          ...(workspaceId !== undefined ? { workspaceId } : {}),
+        }),
+      );
     },
 
     /**
      * Agent 定义快照 + 读写能力。
      *
-     * 写/删刻意走 `call()` 而不是复用上面那次 `list` 拿到的连接：这两个动作可能在很久
-     * 之后才发生（用户编辑完才点保存），那时连接可能已经重建过了。
+     * 写/删刻意重新走一次 `withConfig` 而不是复用上面那次 `list` 拿到的门面：这两个动作
+     * 可能在很久之后才发生（用户编辑完才点保存），那时连接可能已经重建过了。
      */
     readAgentStore: async () => {
-      const listed = await call<AgentListResult>(AGENT_METHODS.list);
+      const listed = await withConfig((config) => config.agentList());
       return {
         agents: listed.agents as AgentDefinition[],
         subAgents: listed.subAgents as AgentDefinition[],
         save: async (kind: AgentKind, definition: AgentDefinition) => {
-          const params: AgentSaveParams = { kind, definition };
-          await call(AGENT_METHODS.save, params);
+          await withConfig((config) => config.agentSave({ kind, definition }));
         },
         remove: async (kind: AgentKind, id: string) => {
-          const params: AgentRemoveParams = { kind, id };
-          await call(AGENT_METHODS.remove, params);
+          await withConfig((config) => config.agentRemove({ kind, id }));
         },
       };
     },
 
     /**
-     * 换模型：服务端 `agent.model.set`（写
-     * `definition.modelId` 并清空思考参数），客户端不再自己做一遍 —— 否则「换模型即
-     * 重置思考强度」就有了两份实现。
+     * 换模型：服务端 `agent.model.set`（写 `definition.modelId` 并清空思考参数），
+     * 客户端不再自己做一遍 —— 否则「换模型即重置思考强度」就有了两份实现。
      */
     setModel: async (agentId, modelId) => {
-      await call(AGENT_METHODS.setModel, { agentId, modelId });
-    },
-
-    /**
-     * 换这一段会话的模型：服务端 `session.model.set`（写存档、重建 Agent、回新快照）。
-     *
-     * 快照这一层用不上：紧接着的 `session.reload()` 会再要一份（它同时刷新消息与
-     * 状态栏）。少一层返回值，就少一份「谁负责更新界面」的分叉。
-     */
-    setSessionModel: async (sessionId, modelId) => {
-      const params: SessionModelSetParams = { sessionId, modelId };
-      await call(SESSION_METHODS.modelSet, params);
-    },
-
-    /**
-     * 写这一段会话的模型参数（服务端 `session.modelParams.set`）：写存档、重建 Agent。
-     *
-     * 同样不取快照：紧接着的 `session.reload()` 会再要一份（它同时刷新消息与状态栏）。
-     */
-    setSessionModelParams: async (sessionId, modelParams) => {
-      const params: SessionModelParamsSetParams = { sessionId, modelParams };
-      await call(SESSION_METHODS.modelParamsSet, params);
+      await withConfig((config) => config.agentSetModel(agentId, modelId));
     },
 
     /** 换全局兜底模型：一条窄方法，**不**读整份再写回（见接口上的注释） */
     setDefaultModel: async (modelId) => {
-      const params: ConfigSetDefaultModelParams = { modelId };
-      await call(CONFIG_METHODS.defaultModelSet, params);
+      await withConfig((config) => config.defaultModelSet(modelId));
     },
   };
-}
-
-/**
- * 默认的连接来源：有服务端就上，没有就拉起一个（见 `ensure-server.ts`）。
- *
- * ## 为什么它需要两个注入值
- *
- * `aiZenDir`（配置根）与 `clientInfo`（握手自报身份）都是**应用级**事实：前者是
- * 「这台机器上 ai-zen 的数据在哪」，后者是「我是谁、哪个版本」。本包是库，两者都不该由它
- * 拍板 —— 以前这里直接读 `AI_ZEN_DIR` 与 `CLI_VERSION`，包一沉下去就会变成「桌面端拉起
- * 服务端时自称是 CLI」。
- *
- * ## 为什么缺参数是「查的时候才报」
- *
- * 只在**真要自己建一条连接**时才会调到这里（注入了 `client` / `connect` 的调用方永远
- * 不会经过）。放在构造时报错就要求「只是想注入一条连接」的人也得凑齐两个用不上的参数。
- */
-async function makeConnection(deps: RemoteConfigPortDeps): Promise<ServerClient> {
-  if (deps.connect) return await deps.connect();
-  const { aiZenDir, clientInfo } = deps;
-  if (!aiZenDir || !clientInfo) {
-    throw new Error(
-      "createRemoteConfigPort 需要 connect，或者 aiZenDir + clientInfo（不注入时就不知道怎么拉起服务端）",
-    );
-  }
-  return (await ensureServer({ aiZenDir, clientInfo })).client;
-}
-
-/**
- * 连接是否已经死了。
- *
- * 直接读端口上的 `closed`（见 `types.ts` 的 `ServerClient`）—— **不做结构化探测**：
- * 存活标志就在契约里，这是为了不让调用方去摸 `SocketServerClient` 的私有字段才放上去的。
- */
-function isClosed(client: ServerClient): boolean {
-  return client.closed;
 }

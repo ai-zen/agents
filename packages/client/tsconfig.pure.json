@@ -1,0 +1,41 @@
+{
+  // 「纯边界」的**机制**，而不是文件头里的一句约定。
+  //
+  // 为什么需要它：`session/stream.ts` 现在是纯的（零 I/O、零 timers、零进程级全局），
+  // 但此前没有任何东西守着它 —— 谁往里 import 一个 daemon、socket 或配置读写，`tsc` 照样
+  // 编过。而「纯」一旦破了，这一层就再也无法用「喂几个事件、看状态」的方式测（那正是它
+  // 被从两个前端里提出来、单独成一份的全部理由）。
+  //
+  // 怎么守：只 include 纯的那几个文件，并把「绝不该出现在纯状态机 import 图里」的包在
+  // `paths` 里映射到一个**存在、但什么都不导出**的声明文件（`./pure-boundary.d.ts`）——
+  // 一旦有人 import 它们，`tsc` 立刻报 TS2305「模块没有导出成员」。
+  //
+  // 为什么不直接映射到不存在的文件：`paths` 的替换**失败之后会回落到 node_modules**（实测
+  // `tsc --traceResolution` 能看到那一步），于是「找不到模块」根本不会发生 —— 那就是一条
+  // 永远绿的假门禁。空数组更不行（TS 7 直接报 TS5066）。
+  //
+  // 故意不放行 `@ai-zen/agents-server`（daemon / 存档 / 会话管理都在那）、`agents-sdk`
+  // （配置读写、模型客户端）与 `agents-testing`（假 LLM / 假时钟）：它们任何一个进图，
+  // 就说明这一层开始有 I/O 或 timers 了。
+  //
+  // 允许的：`@ai-zen/agents-protocol`（纯类型 + 方法名常量）与 `@ai-zen/agents-core`
+  // （用例要用**真的** `AgentNS.Role` 造数据，把镜像值钉死）、`vitest`。三条白名单之外
+  // 的新依赖都会在这里变红 —— 那时候该问的是「这层还纯吗」，而不是「把它加进白名单」。
+  //
+  // 另一道保险（同伴，不是重复）：`src/session/pure-boundary.test.ts` 把 `stream.ts` 的
+  // import 清单整段扫一遍、断言只允许白名单 —— 它连「只取副作用」那种形状也抓。
+  "extends": "./tsconfig.test.json",
+  "compilerOptions": {
+    "paths": {
+      "@ai-zen/agents-server": ["./pure-boundary.d.ts"],
+      "@ai-zen/agents-sdk": ["./pure-boundary.d.ts"],
+      "@ai-zen/agents-testing": ["./pure-boundary.d.ts"]
+    }
+  },
+  "include": [
+    "src/session/stream.ts",
+    "src/session/stream.test.ts",
+    "src/session/pure-boundary.test.ts",
+    "src/stream-merge.ts"
+  ]
+}

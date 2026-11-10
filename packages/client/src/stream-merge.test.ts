@@ -76,6 +76,37 @@ describe("流式增量与服务端快照的合并（竞态）", () => {
 
     expect(merged.messages).toHaveLength(2);
     expect(merged.messages[1]!.content).toBe("答完了");
+    // 反向的那一支（本地是快照的**后缀**）：同一段，后续增量接着拼在这一条上
+    expect(merged.stream!.message).toBe(merged.messages[1]);
+    expect(merged.stream!.text).toBe("答完了");
+  });
+
+  it("快照那份比本地新：本地只是它的一段前缀 → 取快照那条，不许多出一条「答」", () => {
+    // 规则 2 原先只覆盖「本地更全」那个方向。反方向（本地拼到「答」，而快照里已经是
+    // 「答完了」：这期间增量没被本地收到 —— 重连、或快照请求比增量晚回来但服务端更快）
+    // 会同时不命中规则 2 与规则 3 的任何一分支，落到「宁可重复也不吞字」的兜底上，
+    // 于是屏幕上末尾多出一条内容为「答」的 assistant 消息。
+    const snapshot = [user("任务"), assistant("答完了")];
+    const merged = mergeStreamedSnapshot(snapshot, streamOf("答"));
+
+    expect(merged.messages).toHaveLength(2);
+    expect(merged.messages[1]!.content).toBe("答完了");
+    // 本地那半句是**过时的前缀**（它的每个字都在快照里），丢掉不会丢内容
+    expect(merged.stream!.message).toBe(merged.messages[1]);
+    expect(merged.stream!.text).toBe("答完了");
+  });
+
+  it("规则 2 的两个方向互相对称：谁更全就留谁，两个方向都只有一条 assistant", () => {
+    // 两条用例各自钉住一支，这一条钉的是「两支的判断条件真的是同一条前缀关系」——
+    // 只补一支时它必红（另一支会多出一条消息）。
+    for (const [local, tail] of [
+      ["答完了", "答"],
+      ["答", "答完了"],
+    ] as const) {
+      const merged = mergeStreamedSnapshot([user("任务"), assistant(tail)], streamOf(local));
+      expect(merged.messages).toHaveLength(2);
+      expect(merged.messages[1]!.content).toBe("答完了");
+    }
   });
 
   it("服务端已经收下这段（当前没有在流的 assistant）：不重复追加", () => {

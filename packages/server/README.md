@@ -564,7 +564,7 @@ Two server-side rules:
 
 Events carry **facts, never sentences**, and notices are no exception: a notice is
 `{ level, code, params? }` — the client looks up `notice.<code>` in its own i18n table.
-Codes are protocol (`SESSION_NOTICE_CODES` / `GLOBAL_NOTICE_CODES`): add new ones, never
+Codes are protocol (`SESSION_NOTICE_CODES` / `SERVER_NOTICE_CODES`): add new ones, never
 repurpose an existing one.
 
 The channel is the **namespace**, not a field:

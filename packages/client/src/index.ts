@@ -2,17 +2,21 @@
  * `@ai-zen/agents-client` —— 一个前端（CLI / 桌面端 / 将来的其它）到 `agents-server`
  * 之间**全部**需要在客户端这边发生的事。
  *
- * ## 包里有什么（五件）
+ * ## 包里有什么（按「脏 / 纯」分层）
  *
- *   1. **服务发现与拉起**（`ensure-server.ts`）：读 `<aiZenDir>/run/server.json`，探活失败就
- *      detached 拉一个 `agents-server serve`，再轮询到能 `ping` 通；
- *   2. **一条连接**（`socket-server-client.ts`）：TCP + JSON-lines + `hello` 握手 + 在飞调用
- *      + 事件分发 + 断开通知；
- *   3. **两张门面**（`sessions.ts` / `config-port.ts`）：把 `call("session.xxx")` 那种字符串
- *      调用收成带类型的方法，上层不写方法名、不拼参数；
- *   4. **两个判据**（`local-host.ts` / `status.ts`）：工作目录该不该递上去、服务端现在什么状态；
- *   5. **一份合并规则**（`stream-merge.ts`）：「本地流式增量」与「服务端快照」怎么拼（纯函数，
- *      与传输无关 —— 两个前端在同一个时序压力下都要用它，抄两份就会漂）。
+ * | 层 | 文件 | 职责 |
+ * |---|---|---|
+ * | 传输 | `transport/connection.ts` | **一个进程一条连接**（`ServerConnection`）：发现/拉起、断线重建、`events.watch` 重放、断线与就绪的上报 |
+ * | 传输 | `socket-server-client.ts` | 一条 TCP + JSON-lines + `hello` 握手 + 在飞调用 + 事件分发 |
+ * | 传输 | `ensure-server.ts` | 读发现文件并探活，探不到就 detached 拉起一个 `agents-server serve` |
+ * | 脏 | `session/channel.ts` | **一条会话的 I/O**（`SessionChannel`）：订阅、请求、重连三条不变式、重新 `attach` |
+ * | 纯 | `session/stream.ts` | **一轮之内的状态机**（`SessionStream`）：零 I/O、零 UI、零 timers |
+ * | 纯 | `stream-merge.ts` | 「本地流式增量 vs 服务端快照」怎么拼（`mergeStreamedSnapshot`） |
+ * | 纯 | `session/errors.ts` | 「这段会话还在不在」的唯一判据 |
+ * | 门面 | `facade/sessions.ts` | `session.*`(21) + `workspace.*`(6)，**100% 覆盖**（类型级用例钉着） |
+ * | 门面 | `facade/config.ts` | `config.*`(7) + `agent.*`(5) + `asset.*`(1)，同样 100% 覆盖 |
+ * | 应用端口 | `config-port.ts` | 配置面（`ConfigPort`）：把线上形状兑现成 `AppConfig` / `AgentStore` 这些应用类型 |
+ * | 判据 | `local-host.ts` / `status.ts` / `mcp.ts` | 工作目录该不该递上去、服务端现在什么状态、`mcp.json` 的形状 |
  *
  * ## 为什么协议也从这里转出
  *
@@ -37,15 +41,29 @@
 export * from "./types.js";
 export * from "./socket-server-client.js";
 export * from "./ensure-server.js";
-export * from "./sessions.js";
-export * from "./config-port.js";
 export * from "./status.js";
 export * from "./local-host.js";
 export * from "./mcp.js";
 
-// 「本地流式增量 vs 服务端快照」的合并规则（`mergeStreamedSnapshot` / `StreamedAssistant`）。
-// 它是公开面的一部分：两个前端都要在同一个时序压力下做同一件事（快照比第一批增量还慢），
-// 而这份规则只该有一份 —— 前端各写一遍就会在「宁可重复也不吞字」这类边界上分叉。
+// 传输层：一个进程一条连接（D8）。会话层不自己建连接，只借它说话
+// —— 「断了就重建 + 重新 events.watch」只在这一处发生
+export * from "./transport/connection.js";
+
+// 会话层：一纯一脏。纯的那个（状态机）可以在单测里直接跑完一轮，
+// 脏的那个（通道）只负责接线与重连 —— 这条边界就是「会话状态机终于能被测」的全部凭据
+export * from "./session/stream.js";
+export * from "./session/channel.js";
+export * from "./session/errors.js";
+
+// 门面：方法名集合 === 协议方法表 key 集合（类型级用例见 `facade/coverage.test-d.ts`）
+export * from "./facade/sessions.js";
+export * from "./facade/config.js";
+export * from "./config-port.js";
+
+// 「本地流式增量 vs 服务端快照」的合并规则（`mergeStreamedSnapshot` / `StreamedAssistant` / `ROLE`）。
+// 它是公开面的一部分：会话状态机与两个前端都要在同一个时序压力下做同一件事
+// （快照比第一批增量还慢），而这份规则只该有一份 —— 各写一遍就会在「宁可重复也不吞字」
+// 这类边界上分叉。
 export * from "./stream-merge.js";
 
 // 协议面（方法名常量 / 结果类型 / 帧编解码）原样转出，理由见文件头

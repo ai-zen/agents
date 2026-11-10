@@ -29,12 +29,13 @@ import {
   FileSessionStore,
   SessionAgentFactory,
   SessionManager,
+  EVENT_METHODS,
   SESSION_EVENTS,
   type ServerEvent,
 } from "@ai-zen/agents-server";
 import type { ClientInfo } from "./types.js";
 import { SocketServerClient } from "./socket-server-client.js";
-import { RemoteSessions } from "./sessions.js";
+import { RemoteSessions } from "./facade/sessions.js";
 import { startFakeLlm, type FakeLlm } from "@ai-zen/agents-testing";
 
 const clientInfo: ClientInfo = { name: "@ai-zen/cli", version: "0.0.0-test" };
@@ -100,7 +101,8 @@ async function boot(): Promise<void> {
     client: clientInfo,
   });
   sessions = new RemoteSessions(client);
-  await sessions.watch();
+  // `events.watch` 是**连接级**的（D8 之后归 `ServerConnection`）：这里直接发那一帧
+  await client.call(EVENT_METHODS.watch);
 }
 
 /** 关掉这一套（模拟守护进程重启：内存全丢，只剩盘上的东西） */

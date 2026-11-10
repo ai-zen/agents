@@ -144,10 +144,14 @@ export function codeOf(value: unknown): ErrorCode | undefined;
 
 ### D5 — 删掉那条「保活声明」方法：会话寿命只留一条规则
 
-> **实现状态：P2 已落地。** 协议里那条保活方法、`SessionManager` 的保活字段与方法、客户端的
-> 门面方法与 handler 接线全部删除；`grep -rn keepAlive packages/{server,protocol,client}/src`
-> 为空。本文从此不再写出那个方法名 —— 文档里一个已经被删掉的方法名，是下一个人「以为它还在」
-> 的唯一来源。
+> **实现状态：P2 已落地。** 协议里的 `session.keepAlive.set`、`SessionManager` 的 `keepAlive` 字段与
+> `keepAliveSet()` 方法、客户端的 `RemoteSessions.keepAliveSet`、handler 接线全部删除；
+> `grep -rn keepAlive packages/{server,protocol,client}/src` 为空。
+>
+> **历史账（保留原名，不许为了 grep 好看而抹掉）**：被删的那个方法叫 `session.keepAlive.set`，
+> 载荷是 `{ sessionId, keepAlive: boolean }`。写下它的名字，是因为下一个读到「三种表达」这句话的人
+> 需要知道那第三种到底叫什么；已经删掉的东西写在重构文档里不是「以为它还在」，而是**它曾经在这里的证据**。
+> 相应地，§4 的门禁只扫 `src/`，**不扫 `docs/`**。
 
 **为什么**：现在"我不再看这段会话了"有三种表达，其中 `session.close` **零调用方**（只有测试在调），
 那条保活声明则把"服务端要不要占内存"这件**服务端内政**写进了客户端契约，还要求客户端在崩溃前
@@ -175,6 +179,24 @@ export function codeOf(value: unknown): ErrorCode | undefined;
 
 **保留的等价性**：TUI「切走一段会话，它留在内存里」由服务端宽限期继续提供，且不再依赖客户端「记得说」。
 
+### D5 × D8 的交叉后果（**这条是正确性问题，不是文案问题**）
+
+删掉保活声明之后，「持有者」成了唯一的活命判据。于是：
+
+| 情形 | 切换前 | 现在（P2 之后） | P4 之后（D8 一条长连接） |
+|---|---|---|---|
+| TUI `/new`、`/load` 切走 | 发一帧保活=false → 服务端当场收 | 连接仍在 → **持有者还在 → 宽限期不生效** | 同左，而且更确定（连接根本不重连） |
+| TUI 退出 | `client.close()` → drivers 消失 | 正常回收 | 正常回收 |
+| `ai "…"` 一次性 | 同一帧 → 当场收 | **泄漏到宽限期** | 同左 |
+
+⇒ 两条硬要求进 **P4**：
+1. `stdio` 的 `finally` 里 `await session.close()`（否则每次管道调用留一段活会话）；
+2. TUI 切会话（`/new`、`/load`、`rollback` 后重挂载）时**主动 `await session.close()` 旧会话**，
+   否则**内存峰值随 `/new` 次数线性增长，直到宽限期才回落**。
+
+这条交叉后果在原设计里没被算到 —— 当时以为「持有者」会自动跟着切会话走，实际它跟的是**连接**，
+而 D8 恰好把「切会话就重连」这件意外的好事去掉了。
+
 ### D6 — 门面必须 100% 覆盖，且由类型保证
 
 **为什么**：`RemoteSessions` 只覆盖 16/22 个会话方法、2/6 个工作区方法，会话级模型动作还挂在
@@ -198,20 +220,27 @@ export function codeOf(value: unknown): ErrorCode | undefined;
 - `stream.ts` → `SessionStream`：**零 I/O、零 UI 框架**的纯状态机
   ```ts
   class SessionStream {
-    readonly state: SessionStreamState;      // messages / phase / subAgents / turnId / model / usage / status
+    readonly state: SessionStreamState;       // messages / phase / subAgents / turnId / model / usage / status
+    onChange(listener): () => void;           // 单一变更通知（合帧由调用方决定）；**返回解绑函数**
     beginTurn(turnId): void;
     applyDelta(d): void;                      // 正文增量累积
     applyToolCalls(calls): void;              // 组装态整份替换
     applyMessageAppended(msg): void;
-    subAgentStarted / subAgentDelta / subAgentEnded / clearSubAgents
+    subAgentStarted / subAgentDelta / subAgentEnded / subAgentSnapshot / clearSubAgents
     settle(snapshot): void;                   // 收尾：mergeStreamedSnapshot 整份对账
+    failTurn(failure): void;                  // `failed` 是终态（只有新一轮 / 换基线能清）
     applyIdChanged(id): void;
-    resolveQuestion(event, policy): string | null;   // policy 由应用注入
-    readonly changed: () => void;             // 单一变更通知（合帧由调用方决定）
+    applySnapshot(snapshot): void;            // 换基线（首屏 / 重连 / 换会话）
+    setPhase(phase): void;
   }
   ```
-- `channel.ts` → `SessionChannel`：一条会话的订阅/请求/重连 + 重新 `attach`（**唯一有 I/O 的那一半**）。
-- `merge-stream.ts`、`agent-view.ts`、`error-category.ts` 同目录，全部纯函数。
+- `channel.ts` → `SessionChannel`：一条会话的订阅/请求/**重连** + 重新 `attach`（**唯一有 I/O 的那一半**）。
+  **服务端的提问在它身上答**（`answerChoice(event)` → `session.answer`）：纯状态机不能有 Promise 回调，
+  `SessionStream` 上因此没有 `resolveQuestion`。
+- 纯件散在包的**根与 `session/`**：`stream-merge.ts`（`mergeStreamedSnapshot`，合并规则的唯一实现，
+  前端与应用都要显式用它，所以放根上导出）、`session/errors.ts`（「这段会话还在不在」的唯一判据）。
+  **没有** `agent-view.ts` 这种东西 —— 子 Agent 栏目是 `SessionStreamState.subAgents` 里的一份数据
+  （每个 `SubAgentView` 带 id / 序号 / 消息 / 三态），不是另写的一套视图层。
 
 **为什么拆两个**：一纯一脏。纯的那个可以直接单测（现在 TUI 的状态机只能靠 ink 渲染反推），
 脏的那个只做接线。同一条理由适用于 `PhaseTracker`（纯）与 `SessionManager`（脏）。
@@ -223,11 +252,29 @@ export function codeOf(value: unknown): ErrorCode | undefined;
 3. **单飞**（正在重连就不再起第二个）。
 若这三条不进包，P4 不许删 CLI 自己的那份实现。
 
-**`SessionStream` 不给 `send()`**：它只有 `beginTurn` / `settle` / `changed`。但**应用侧的「等这一轮」
-必须留在会话层**（`session.ts` 的 `waitForTurn(turnId)`）：TUI 的 `busy`、输入禁用、`/clear` 的时机全靠它，
-而 `turn.end` 有可能先于 `send()` 的回执落地。**别把它删掉让界面自己等。**
+**`SessionStream` 不给 `send()`**：它只有 `beginTurn` / `settle` / `failTurn` / `onChange`。而**「等这一轮」
+在 `SessionChannel.waitForTurn(turnId)`**（应用侧只剩一个 `await`，`busy` 与输入禁用读它的状态）：TUI 的
+`busy`、输入禁用、`/clear` 的时机全靠它，而 `turn.end` 有可能先于 `send()` 的回执落地。**别把它删掉让界面自己等。**
 
 **`drafts`（输入框的 ↑ 历史）不进 `SessionStream`**：它是 `messages` 的纯派生，由界面自己算。
+
+**落地记录（P3.1：补 P4b 暴露的四处缺口）** —— 本节上面那份签名清单原先有三处写错了，已按代码改齐，
+记账在这里（都是「文档看起来对、代码里根本没有这个成员」的形状，靠读文档写不出来）：
+
+| 原文档写的 | 实际 | 为什么 |
+|---|---|---|
+| `SessionStream.resolveQuestion(event, policy)` | `SessionChannel.answerChoice`（私有）→ `session.answer` | 纯状态机不能有 Promise 回调（那会把它变成「等一个外部答案」的脏件） |
+| `readonly changed: () => void` | `onChange(listener) => unsubscribe` | 必须能解绑：换通道 / 卸载时旧订阅摘不掉就是泄漏，且会把事件拼进上一段会话 |
+| `merge-stream.ts` / `agent-view.ts` / `error-category.ts` | `stream-merge.ts` / `session/errors.ts`（**没有** `agent-view.ts`） | 子 Agent 栏目是状态里的一份数据，不是一套视图层 |
+
+同轮补掉的四处**行为**缺口（都在 `packages/client` 里，不动应用）：
+1. `mergeStreamedSnapshot` 的规则 2 补上对称的一支（本地是快照的**前缀**时取快照那条）—— 只认一个方向时
+   「本地拼到「答」、快照是「答完了」」会让末尾多出一条「答」；
+2. `SessionChannel.open()` 清空轮次账（`lastEndedTurn` / `pendingTurn`）—— 同一条通道上换一段会话时，
+   新会话的 `turnId` 从 1 起，不清账则 `waitForTurn(1)` 立即返回、界面以为这一轮已经结束；
+3. `SessionChannel` 补 `setModel` / `setModelParams` 两个会话级动作（不换 id，**不**走 `adopt`）；
+4. `SessionChannel` 对外只读暴露 `path` / `workspaceId`（它们是**服务端规范化后的答案**，不是应用记的
+   「当初请求的那个 path」）。
 
 ### D8 — `ServerConnection` 进 client 包：一个进程一条连接
 
@@ -235,7 +282,14 @@ export function codeOf(value: unknown): ErrorCode | undefined;
 桌面靠 `pending ??=` 缓存（且建成后永不复查 `closed` → daemon 重启即永久失能）。同一个问题两套土办法。
 
 **怎么做**：`transport/connection.ts` 导出 `ServerConnection`：
-- `client()`：注入优先 → `ensureServer` → 缓存；**查 `closed`，断了就重建并重新 `events.watch`**；
+- `client()`：**注入的连接优先**（注入了就永不重建 —— 我们变不出第二条）→ 自己建（缓存还活着就复用）→
+  **查 `closed`，断了就重建并重新 `events.watch`**；
+- **自己建连的两个必填项：`aiZenDir` + `clientInfo`**（另一条路是 `connect`：给了它就不需要这两样）。
+  库**不读 env / argv**（读了就再也改不了目录），两者缺一个 `client()` 直接抛
+  `ServerConnection 需要 connect，或者 aiZenDir + clientInfo`。**这正是 CLI 的 `createServerConnection()` 存在的唯一理由**：
+  它是组装根，在那里读一次 `AI_ZEN_DIR`、拿一次自己包的版本号，再递进来；包里不做这件事；
+- `watch()` 幂等（每条连接只发一帧 `events.watch`：多发一帧服务端就多登记一个订阅者，事件到达 N 次）；
+  断线 / 就绪分别从 `onClose` / `onOpen` 往上报（「连接换了一条」这件事必须让每个会话各自听见）；
 - 订阅者（`SessionChannel`）通过它拿连接，不自己建。
 
 ### D9 — `protocol` 提供 `callOnce`，三份重复收敛成一份
@@ -395,7 +449,11 @@ node scripts/check-imports.mjs dist/commands/index.js dist/session.js dist/stdio
 
 ```bash
 # 1. client 不依赖 server（D1；ensure-server 是唯一例外，见 D1）
-test -z "$(grep -rn 'agents-server' packages/client/src --include=*.ts | grep -v '\.test\.' | grep -v 'ensure-server\.ts')"
+#    最后那一段 `grep -v '^\S*:[0-9]*: \*'` 滤掉**注释行**（行首是 ` *`）：
+#    `client/src/index.ts` 的文件头散文中说了一句「到 agents-server 之间……」，
+#    那是描述而不是 import —— 不滤就会把这行当成依赖，判据第一条永远假红。
+#    修的是命令，不是注释：门禁只该扫代码行。
+test -z "$(grep -rn 'agents-server' packages/client/src --include=*.ts | grep -v '\.test\.' | grep -v 'ensure-server\.ts' | grep -v '^\S*:[0-9]*: \*')"
 node -e 'const d=require("./packages/client/package.json").dependencies; if(Object.keys(d).join()!=="@ai-zen/agents-protocol") throw new Error(Object.keys(d).join())'
 
 # 2. protocol 运行期零第三方依赖（D1）：滤掉相对路径后必须为空
@@ -430,7 +488,10 @@ test -z "$(grep -rn 'messages: unknown\|modelParams: unknown\|message: unknown' 
 
 外加三条**结构保证**（不是 grep，是编译期）：
 - 门面 key 集合 == 方法表 key 集合（D6 的类型级用例）；
-- `SessionStream` 的全部用例不 import 任何 daemon / socket（纯）；
+- `SessionStream` 的全部用例不 import 任何 daemon / socket（纯）——**P3 已落地成机制**：
+  `packages/client/tsconfig.pure.json` 只 `include` 那三个纯文件，`paths` 里把
+  `@ai-zen/agents-server` / `agents-sdk` / `agents-testing` 指到空数组（一旦有人 import 就
+  TS2307），并挂在 `pretest` 里；
 - CLI 的 `session/`、`commands/` 不 import `tui/`（D11，可用 tsconfig `paths` + 一条 import 检查用例）。
 
 ---
