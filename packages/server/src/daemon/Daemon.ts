@@ -39,7 +39,7 @@ import {
   removeDescriptor,
   writeDescriptor,
   type ServerDescriptor,
-} from "./discovery.js";
+} from "../protocol/discovery.js";
 import { isLoopbackHost } from "./host.js";
 
 /** 方法处理函数：拿参数、返回结果；抛错则回 `ok:false` */

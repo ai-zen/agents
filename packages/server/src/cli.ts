@@ -27,7 +27,7 @@ import {
   isProcessAlive,
   readDescriptor,
   removeDescriptor,
-} from "./daemon/discovery.js";
+} from "./protocol/discovery.js";
 import { encodeFrame, FrameDecoder } from "./protocol/frames.js";
 import { DAEMON_METHODS } from "./protocol/daemon.js";
 import { PROTOCOL_VERSION } from "./protocol/messages.js";
