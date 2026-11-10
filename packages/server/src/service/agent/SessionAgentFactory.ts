@@ -35,6 +35,7 @@ import {
   type AppConfig,
   type HandoffMode,
   type HandoffService,
+  type ModelParams,
 } from "@ai-zen/agents-sdk";
 import { agentPaths, globalAgentPaths, type AgentPaths } from "./agentPaths.js";
 import type { AgentLike, CreateAgentInput } from "../session/SessionManager.js";
@@ -48,11 +49,11 @@ export interface SessionAgentFactoryOptions {
   loadConfig?: (configFile: string) => Promise<AppConfig>;
   /** 注入：建并初始化 Scope；默认 SDK `Scope` + `allInOne` */
   createScope?: (input: { config: AppConfig; paths: AgentPaths }) => Promise<Scope>;
-  /** 注入：从一个 Scope 里造出 Agent；默认 SDK `createAgent`（可选参数是三级解析的会话级覆盖） */
+  /** 注入：从一个 Scope 里造出 Agent；默认 SDK `createAgent`（两个可选参数是三级解析的会话级覆盖） */
   createAgent?: (
     scope: Scope,
     agentId: string,
-    options: { modelId?: string },
+    options: { modelId?: string; modelParams?: ModelParams },
   ) => Promise<AgentLike>;
 }
 
@@ -72,9 +73,15 @@ export class SessionAgentFactory {
     // 始终从磁盘读 Agent 定义（含 permissions / 工具配置）；中断策略不传，取
     // `scope.config`，于是配置中心改完 invalidate 一下就生效
     const build = this.options.createAgent ?? defaultCreateAgent;
-    // 模型解析（会话级覆盖 > 定义 > 全局兜底）发生在 SDK 里：这里只把**会话级的那个覆盖**
-    // 递进去，不在服务端再算一遍 —— 两处各算一遍就会出现「状态栏 A、实际发 B」。
-    const agent = await build(scope, input.agentId, { modelId: input.modelId });
+    // 模型解析（会话级覆盖 > 定义 > 全局兜底）与**参数取哪一级**都发生在 SDK 里：
+    // 这里只把**会话级的两个覆盖**递进去，不在服务端再算一遍 —— 两处各算一遍就会出现
+    // 「状态栏 A、实际发 B」。
+    // `modelParams` 在本包是不透明载荷（`unknown`，与 `messages` 同一口径），到了 SDK
+    // 边界才收回成参数类型：它是什么键只有写它的客户端和读它的 SDK 知道。
+    const agent = await build(scope, input.agentId, {
+      modelId: input.modelId,
+      modelParams: input.modelParams as ModelParams | undefined,
+    });
     this.installPlugins(agent, scope, input);
     return agent;
   }
@@ -278,7 +285,7 @@ export class SessionAgentFactory {
 async function defaultCreateAgent(
   scope: Scope,
   agentId: string,
-  options: { modelId?: string },
+  options: { modelId?: string; modelParams?: ModelParams },
 ): Promise<AgentLike> {
   return await sdkCreateAgent(scope, agentId, options);
 }

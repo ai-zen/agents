@@ -135,6 +135,18 @@ export const SESSION_METHODS = {
    */
   modelSet: "session.model.set",
   /**
+   * 改**这一段会话**的模型**参数**（`/think` 在会话级模型下写的那一层）。
+   *
+   * 为什么与 `modelSet` 分开：两者是同一级（会话级）的两份事实，但语义完全不同 ——
+   * 「换模型」会连带清掉参数（新模型不一定接受旧参数），改参数不该动模型。合成一条就只能
+   * 靠参数开关分叉，调用方得猜自己改的是哪一份。
+   *
+   * 为什么只有会话级有这条：参数跟着「模型来自哪一级」走。参数落在 Agent 定义上时走
+   * `agent.save`（今天的行为）；模型来自全局兜底时**没有任何一层可写**（全局那一级只有
+   * `config.defaultModel`），客户端自己就拒了（见 CLI 的 `/think`）。
+   */
+  modelParamsSet: "session.modelParams.set",
+  /**
    * 关闭一段会话：摘事件、让出 Agent 与 Scope 引用，**不删存档**。
    *
    * 只在**明确要求**时关（`/close` 这条命令、以及自动回收的判定）；连接断开不算 ——
@@ -600,6 +612,26 @@ export interface SessionModelSetParams {
 
 /** 与 `session.setAgent` 同形：改完就回一份新快照，客户端不用再要一次 */
 export type SessionModelSetResult = SessionSnapshotResult;
+
+/**
+ * 改这一段会话的**模型参数**（`session.modelParams.set`）。
+ *
+ * 载荷是**不透明的**：协议不解释键名（那是核心资产、也因厂商而异）。与 `SessionRecord`
+ * 里的 `modelParams` 同一口径 —— 服务端只负责原样搬进存档并递给装配方。
+ */
+export interface SessionModelParamsSetParams {
+  sessionId: string;
+  /**
+   * 这一层的参数覆盖（原样存、原样交回 SDK 做浅合并）。
+   *
+   * `null` = **清掉**这一层的覆盖，回到模型出厂参数。为什么不用「不传字段」表示清除：
+   * JSON 里丢掉的字段与「没给」无法区分，而「清掉」是一个明确的意图（`/think default`）。
+   */
+  modelParams: unknown;
+}
+
+/** 与 `session.model.set` 同形：改完就回一份新快照（客户端不用再要一次） */
+export type SessionModelParamsSetResult = SessionSnapshotResult;
 
 export interface SessionCloseParams {
   sessionId: string;

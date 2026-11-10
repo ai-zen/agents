@@ -380,6 +380,20 @@ export function createSessionHandlers(
       );
     },
 
+    /**
+     * 写**这一段会话**的模型参数覆盖（`/think` 在会话级模型下写的那一层）。
+     *
+     * 只验 `sessionId`：`modelParams` 是**不透明载荷**（协议不解释键名，也不该在这里
+     * 替客户端判断它长得对不对）。`null` 是合法值（= 清掉覆盖，回到模型出厂参数），
+     * 所以不能拿 `requireString` 那类必填判定去卡它。
+     */
+    [SESSION_METHODS.modelParamsSet]: async (params): Promise<SessionSnapshotResult> => {
+      return await manager.setModelParams(
+        requireString(params, "sessionId"),
+        field(params, "modelParams"),
+      );
+    },
+
     /** 明确关闭一段会话（幂等：本来就没在跑时回 `closed:false`，不当错误） */
     [SESSION_METHODS.close]: (params): SessionCloseResult => {
       return manager.close(requireString(params, "sessionId"));

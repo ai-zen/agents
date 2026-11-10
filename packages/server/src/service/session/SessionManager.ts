@@ -192,6 +192,16 @@ export interface CreateAgentInput {
    */
   modelId?: string;
   /**
+   * **会话级**模型参数覆盖（`LiveSession.modelParams`）—— 与上面那个 `modelId` 同一级。
+   *
+   * 不透明载荷（与 `messages` / 存档里的 `modelParams` 同一口径）：本包不解释它的键名，
+   * 只负责把它递到装配方，再由 SDK 按档位决定用不用（`resolveModelParams`）。
+   *
+   * 它**只在模型来自会话级时生效**：会话级模型 + 定义级参数那种组合会把旧模型的思考
+   * 参数发给新模型（端点 400），所以决定权在 SDK 那一处，不在这里。
+   */
+  modelParams?: unknown;
+  /**
    * 交接/迁移进行中？装配方据此接上 `ContextGuardPlugin.isSuspended`。
    *
    * 不接的话，交接回合本身就是「上下文最满」的时刻，会被硬线直接掐死。
@@ -370,6 +380,18 @@ interface LiveSession {
    * （那会改动所有用同一个 Agent 的会话）。换 Agent 时会被清掉（见 `setAgent`）。
    */
   modelId?: string;
+  /**
+   * 会话级模型**参数**覆盖（与上面那个 `modelId` 同一级）。
+   *
+   * 不透明载荷：本包不解释键名，只当数据搬（存档 ↔ 内存 ↔ 装配方），与 `messages` 同一
+   * 口径。什么时候它真正生效由 SDK 按档位决定（`resolveModelParams`）—— 参数跟着「模型
+   * 来自哪一级」走，模型来自 Agent 定义 / 全局兜底时这一份**不参与**合并（会话级模型配上
+   * 定义级参数，等于把旧模型的 `thinking` 发给新模型，端点回 400）。
+   *
+   * 换模型（`setModel`）与换 Agent（`setAgent`）都会清掉它：目标模型不一定接受旧参数，
+   * 与 `agent.model.set` 清思考参数同一个理由。
+   */
+  modelParams?: unknown;
   /** 最后一次活动的时刻（ISO）：列表排序与「运行中」的判断都不靠文件系统 */
   updatedAt: string;
   /**
@@ -997,11 +1019,13 @@ export class SessionManager {
     // 换 Agent 是**比换模型更强**的动作：模型跟着新定义走，会话级覆盖必须清掉。
     // 不清的话，上一任 Agent 的临时模型会跟着新 Agent 继续用 —— 用户换的是「谁来干」，
     // 却连带把「用什么模型」也留在了上一任的临时选择上，而且看不出来。
-    // 这里先把覆盖从**这次装配**里摘掉（不传 `modelId`），切换成功后才真清字段：
+    // 参数同理（同一级的那一份）：新模型的参数不一定合法，而它已经和旧模型的覆盖绑在一起。
+    // 这里先把两样覆盖从**这次装配**里摘掉（都不传），切换成功后才真清字段：
     // 装配失败（新定义不存在 / 端点缺 Key）时会话原样还在，覆盖也还在。
     const agent = await this.buildAgent(session, { agentId });
     session.agentId = agentId;
     delete session.modelId;
+    delete session.modelParams;
     this.adoptAgent(session, agent);
 
     // 存档里记着 `agentId`：不写就会在下次 `attach` 时按旧 Agent 装回来
@@ -1027,11 +1051,60 @@ export class SessionManager {
       throw codedError("turn-in-flight", `session ${sessionId} has a turn in flight`);
     }
 
-    const agent = await this.buildAgent(session, { agentId: session.agentId, modelId });
+    // 换到**别的**模型就清掉会话级参数：旧参数是配给旧模型的（GLM 不接受
+    // `thinking.disabled` 这类），带过去就是端点 400 —— 与 `agent.model.set` 清思考参数
+    // 同一个理由。比较的是**生效模型**（当前参数属于它）而不是会话级覆盖：目标与生效值
+    // 相同时模型根本没换，参数继续有效，不该被这一次“重设”抹掉。
+    const sameModel = modelIdOf(session.agent) === modelId;
+    const agent = await this.buildAgent(session, {
+      agentId: session.agentId,
+      modelId,
+      // 只有模型没换时才把参数带进这次装配；带着旧参数换模型，就是让 SDK 把它们发给新模型
+      ...(sameModel && session.modelParams !== undefined
+        ? { modelParams: session.modelParams }
+        : {}),
+    });
     session.modelId = modelId;
+    if (!sameModel) delete session.modelParams;
     this.adoptAgent(session, agent);
 
     // 覆盖属于存档的一份事实（`SessionRecord.modelId`）：不写，重启 / `attach` 就丢
+    await this.writeSession(session);
+
+    return await this.snapshot(sessionId);
+  }
+
+  /**
+   * 写**这一段会话**的模型参数覆盖（`session.modelParams.set`）：重建 Agent、落盘一次。
+   *
+   * 为什么落在会话上而不是 Agent 定义上：`/think` 的目标层跟着**模型来自哪一级**走
+   * （见 SDK 的 `resolveModelParams`）。模型是本段会话换的，参数就必须写在这一段 ——
+   * 写进定义会影响所有用这个 Agent 的会话，而且下一段会话里那份参数碰不到一起。
+   *
+   * `null` = 清掉覆盖（回到模型出厂参数）：JSON 没有 `undefined`，所以「清除」只能由它
+   * 表达。
+   *
+   * 装配顺序与 `setModel` 一致：先按新参数造出 Agent，成功了才落覆盖 —— 参数导致装配
+   * 失败（模型不认识这些字段、端点缺 Key）时会话必须原样不动。
+   */
+  async setModelParams(sessionId: string, modelParams: unknown): Promise<SessionSnapshotResult> {
+    const session = this.require(sessionId);
+    if (this.isTurnInFlight(session)) {
+      throw codedError("turn-in-flight", `session ${sessionId} has a turn in flight`);
+    }
+
+    // `null` = 清掉覆盖：这次装配干脆不带参数（与「从来没设过」同一条路），存档里也删掉
+    const overrides = modelParams ?? undefined;
+    const agent = await this.buildAgent(session, {
+      agentId: session.agentId,
+      ...(session.modelId !== undefined ? { modelId: session.modelId } : {}),
+      ...(overrides !== undefined ? { modelParams: overrides } : {}),
+    });
+    if (overrides === undefined) delete session.modelParams;
+    else session.modelParams = overrides;
+    this.adoptAgent(session, agent);
+
+    // 与 `setModel` 同一个理由：不落盘，重启 / `attach` 回来就退回定义那份参数
     await this.writeSession(session);
 
     return await this.snapshot(sessionId);
@@ -1054,6 +1127,7 @@ export class SessionManager {
     const agent = await this.buildAgent(session, {
       agentId: session.agentId,
       ...(session.modelId !== undefined ? { modelId: session.modelId } : {}),
+      ...(session.modelParams !== undefined ? { modelParams: session.modelParams } : {}),
     });
     this.adoptAgent(session, agent);
 
@@ -1072,13 +1146,16 @@ export class SessionManager {
    */
   private async buildAgent(
     session: LiveSession,
-    input: { agentId: string; modelId?: string },
+    input: { agentId: string; modelId?: string; modelParams?: unknown },
   ): Promise<AgentLike> {
     return await this.createAgent({
       workspaceId: session.workspaceId,
       path: session.path,
       agentId: input.agentId,
       ...(input.modelId !== undefined ? { modelId: input.modelId } : {}),
+      // 参数覆盖也一并递下去（不透明载荷）。只有模型来自会话级时它才真正生效：
+      // 取哪一份由 SDK 的 `resolveModelParams` 按档位决定，本层不参与这个判断。
+      ...(input.modelParams !== undefined ? { modelParams: input.modelParams } : {}),
       // 交接/迁移中让护栏让行：此刻这段会话还没注册（返回 false），正好
       isHandoffBusy: () => session.settleDeferred,
       // 自动迁移：SDK 的插件在**一轮内部**触发，落地动作必须回到会话层
@@ -1351,8 +1428,10 @@ export class SessionManager {
       path: input.path,
       agentId,
       // 续接时把存档里的**会话级模型覆盖**带回来（三级解析最内层的那一级）：
-      // 覆盖是本层的财产，解析在 SDK（本层不重复一遍顺序）
+      // 覆盖是本层的财产，解析在 SDK（本层不重复一遍顺序）。参数与它同级，一起带回来
+      // —— 只带模型不带参数，参数就会退回 Agent 定义那份（配给另一个模型的）。
       ...(record?.modelId !== undefined ? { modelId: record.modelId } : {}),
+      ...(record?.modelParams !== undefined ? { modelParams: record.modelParams } : {}),
       // 交接/迁移中让护栏让行：此刻这段会话还没注册（返回 false），正好
       isHandoffBusy: () => this.sessions.get(sessionId)?.settleDeferred ?? false,
       // 自动迁移：SDK 的插件在**一轮内部**触发，落地动作必须回到会话层
@@ -1376,9 +1455,10 @@ export class SessionManager {
       persistOnSettle: false,
       autoPersist: input.persist !== false,
       keepAlive: true,
-      // 续接已有存档时把它自己的名字与模型覆盖带回来；新会话两个都空
+      // 续接已有存档时把它自己的名字与模型覆盖带回来；新会话三个都空
       ...(record?.title !== undefined ? { title: record.title } : {}),
       ...(record?.modelId !== undefined ? { modelId: record.modelId } : {}),
+      ...(record?.modelParams !== undefined ? { modelParams: record.modelParams } : {}),
       updatedAt: new Date().toISOString(),
       holders: new Set(),
       reclaimCancel: null,
@@ -2033,7 +2113,8 @@ export class SessionManager {
    *
    * 所有写档路径（`save` / `saveAs` / 每轮收尾 / 交接前归档 / 迁移换 id / 撤回）都从这里
    * 取，漏一个字段就是一类数据丢失：`title` 漏了 → 改过的名字下次写档被抹掉；`modelId`
-   * 漏了 → 会话级模型覆盖在下一轮悄悄失效。
+   * 漏了 → 会话级模型覆盖在下一轮悄悄失效；`modelParams` 漏了 → 会话级参数在下一轮
+   * 悄悄退回 Agent 定义那份（配给另一个模型的参数）。
    *
    * 顺手刷新 `updatedAt`：它是「最后一次活动」的唯一来源（列表排序与侧栏都读它）。
    * 写在这里而不是每个调用点，理由同上——一处定义。
@@ -2050,6 +2131,7 @@ export class SessionManager {
       messages,
       ...(session.title !== undefined ? { title: session.title } : {}),
       ...(session.modelId !== undefined ? { modelId: session.modelId } : {}),
+      ...(session.modelParams !== undefined ? { modelParams: session.modelParams } : {}),
     };
   }
 

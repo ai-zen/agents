@@ -71,6 +71,17 @@ export interface SessionRecord<Message = unknown> {
    * 留空 = 跟着 Agent 走（不是“没有模型”）。
    */
   modelId?: string;
+  /**
+   * 会话级模型**参数**覆盖（与上面的 `modelId` 是同一级）。
+   *
+   * 与 `messages` 同一口径：本包不认识 core 的类型，当**不透明载荷**搬运 —— 键名是什么、
+   * 哪家厂商的字段全由客户端（写）与 SDK（装配时收回去）决定，服务端只负责别把它丢了。
+   *
+   * 为什么要存档级字段：参数跟着「模型来自哪一级」走，会话级换了模型之后生效的是这一份；
+   * 不落盘的话，`attach` 回来就退化成 Agent 定义那份参数 —— 而那是配给**另一个**模型的
+   * （旧模型的思考参数发给新模型 = 端点 400）。
+   */
+  modelParams?: unknown;
 }
 
 export interface SessionStore<Message = unknown> {

@@ -133,6 +133,8 @@ export {
   type MigrationStrategy,
   type SessionModelSetParams,
   type SessionModelSetResult,
+  type SessionModelParamsSetParams,
+  type SessionModelParamsSetResult,
   type SessionPhaseEvent,
   type SessionQuestionEvent,
   type SessionQuestionKind,

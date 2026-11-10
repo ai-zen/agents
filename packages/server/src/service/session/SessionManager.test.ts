@@ -1350,6 +1350,22 @@ describe("SessionManager：另存为（/save <名字>）", () => {
     ]);
   });
 
+  it("另存为把会话级模型参数一起带走（存档形状只在 `recordOf` 一处定义，漏一个字段就是一类数据丢失）", async () => {
+    await saveManager.create({ workspaceId: "ws-1", path: "/p" });
+    agent.messages = [{ role: "user", content: "留档" }];
+    saveManager.send("chat_next", "留档");
+    agent.fire("open");
+    agent.fire("finally");
+    await settled();
+    await saveManager.setModelParams("chat_next", { reasoning_effort: "high" });
+
+    await saveManager.saveAs("chat_next", "chat_debug_login");
+
+    expect(store.records.get("chat_debug_login")!.modelParams).toEqual({
+      reasoning_effort: "high",
+    });
+  });
+
   it("目标 id 已被另一段活会话占着：报 session-exists，旧档不动", async () => {
     await saveManager.create({ workspaceId: "ws-1", path: "/p", sessionId: "chat_a" });
     await saveManager.create({ workspaceId: "ws-1", path: "/p", sessionId: "chat_b" });
@@ -2128,6 +2144,168 @@ describe("SessionManager：会话级模型覆盖（session.model.set）", () => 
 });
 
 /**
+ * 会话级模型参数（`session.modelParams.set`）—— 与 `session.model.set` **同一级**的那一份。
+ *
+ * 这里断言的是服务端这一侧的责任：参数有没有被原样递进装配、有没有落进存档、`attach`
+ * 回来还在不在、换模型 / 换 Agent 有没有清掉、`recordOf` 有没有把它带进 saveAs 与迁移。
+ * 「参数只在模型来自会话级时才生效」由 SDK 的 `resolveModelParams` 决定（见
+ * `resolveModel.test.ts` / `createAgent.test.ts`），服务端不重复推一遍这个规则 —— 那正是
+ * 两份实现的开端（与上面那个 describe 同一个理由）。
+ */
+describe("SessionManager：会话级模型参数（session.modelParams.set）", () => {
+  let store: MemoryStore;
+  let live: SessionManager;
+  /** 每次装配的入参（断言递进去的会话级覆盖） */
+  let inputs: CreateAgentInput[];
+  /** 最近造出来的那个 Agent（假件里 `send` / `finally` 要打在它身上） */
+  let latest: FakeAgent;
+
+  /**
+   * 假 Agent：`definition.modelId` 与 `modelLevel` 都跟着入参走，与真件的解析结果同形
+   * （真件由 `createAgent` 把生效模型写进定义、并给出档位）。
+   */
+  const buildAgent = (input: CreateAgentInput): FakeAgent => {
+    const next = new FakeAgent();
+    next.modelLevel = input.modelId ? "session" : "agent";
+    (next as unknown as { definition: { modelId?: string } }).definition.modelId =
+      input.modelId ?? "m-agent";
+    return next;
+  };
+
+  beforeEach(() => {
+    store = new MemoryStore();
+    inputs = [];
+    sessionCounter = 0;
+    live = new SessionManager({
+      createAgent: async (input) => {
+        inputs.push(input);
+        latest = buildAgent(input);
+        return latest;
+      },
+      nextSessionId: () => `chat_${++sessionCounter}`,
+      storeFor: () => store,
+    });
+    events = [];
+    live.subscribe((event) => events.push(event));
+  });
+
+  /** 跑完一轮（带用户消息）并等收尾落地：只有带用户消息的会话才会写存档 */
+  const runTurn = async (sessionId: string, text = "问一句") => {
+    live.send(sessionId, text);
+    latest.messages = [
+      { role: "user", content: text },
+      { role: "assistant", content: "答" },
+    ];
+    latest.fire("finally");
+    await settled();
+  };
+
+  it("写会话级参数：装配方收到它、存档里看得见、快照仍是会话级那一档", async () => {
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    await runTurn(sessionId);
+    // 先让模型也来自会话级：参数只有在这一档才真正生效（跨级不混合由 SDK 把关）
+    await live.setModel(sessionId, "m-session");
+
+    const snapshot = await live.setModelParams(sessionId, { reasoning_effort: "high" });
+
+    expect(inputs.at(-1)!.modelId).toBe("m-session");
+    expect(inputs.at(-1)!.modelParams).toEqual({ reasoning_effort: "high" });
+    expect(store.records.get(sessionId)!.modelParams).toEqual({ reasoning_effort: "high" });
+    // 快照确认重建走的是同一档会话级覆盖（参数没把模型顶掉）
+    expect(snapshot.modelId).toBe("m-session");
+    expect(snapshot.modelLevel).toBe("session");
+    expect(snapshot.messages).toHaveLength(2); // 改参数不动对话
+  });
+
+  it("再跑一轮：每轮落盘走同一份 recordOf，参数不会被抹掉", async () => {
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    await runTurn(sessionId);
+    await live.setModelParams(sessionId, { reasoning_effort: "high" });
+
+    await runTurn(sessionId, "第二问");
+
+    expect(store.records.get(sessionId)!.modelParams).toEqual({ reasoning_effort: "high" });
+    // reload（重读配置 / 改别的设置）也要把它带回来
+    await live.reload(sessionId);
+    expect(inputs.at(-1)!.modelParams).toEqual({ reasoning_effort: "high" });
+  });
+
+  it("attach 续接：参数从存档回到装配（只带模型不带参数就退回定义那份了）", async () => {
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    await runTurn(sessionId);
+    await live.setModelParams(sessionId, { reasoning_effort: "high" });
+
+    // 换一个管理器 + 同一份存档 = 服务端重启
+    const restarted = new SessionManager({
+      createAgent: async (input) => {
+        inputs.push(input);
+        return buildAgent(input);
+      },
+      storeFor: () => store,
+    });
+    await restarted.attach({ workspaceId: "ws-1", path: "/p", sessionId });
+
+    expect(inputs.at(-1)!.modelParams).toEqual({ reasoning_effort: "high" });
+  });
+
+  it("null = 清掉这一层的覆盖（回到模型出厂参数），存档里也不留", async () => {
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    await runTurn(sessionId);
+    await live.setModelParams(sessionId, { reasoning_effort: "high" });
+
+    await live.setModelParams(sessionId, null);
+
+    expect(inputs.at(-1)!.modelParams).toBeUndefined();
+    expect(store.records.get(sessionId)!.modelParams).toBeUndefined();
+  });
+
+  it("一轮在跑时拒绝（旧 Agent 正流着的增量会全丢在没人听的实例上）", async () => {
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    live.send(sessionId, "跑着");
+
+    await expect(
+      live.setModelParams(sessionId, { reasoning_effort: "high" }),
+    ).rejects.toMatchObject({ code: "turn-in-flight" });
+  });
+
+  it("换到**别的**模型就清掉参数（旧参数是配给旧模型的，带过去就是端点 400）", async () => {
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    await runTurn(sessionId);
+    await live.setModelParams(sessionId, { reasoning_effort: "high" });
+
+    await live.setModel(sessionId, "m-session");
+
+    // 这次装配不能再带旧参数（带了就是让 SDK 把它们发给新模型）
+    expect(inputs.at(-1)!.modelId).toBe("m-session");
+    expect(inputs.at(-1)!.modelParams).toBeUndefined();
+    expect(store.records.get(sessionId)!.modelParams).toBeUndefined();
+  });
+
+  it("模型没换（目标 = 生效模型）时保留参数：那不是「换模型」，没有理由丢用户的设置", async () => {
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    await runTurn(sessionId);
+    // 生效模型是定义上的 m-agent（没有会话级覆盖）
+    await live.setModelParams(sessionId, { reasoning_effort: "high" });
+
+    await live.setModel(sessionId, "m-agent");
+
+    expect(inputs.at(-1)!.modelParams).toEqual({ reasoning_effort: "high" });
+    expect(store.records.get(sessionId)!.modelParams).toEqual({ reasoning_effort: "high" });
+  });
+
+  it("setAgent 清掉参数 —— 换 Agent 是更强的动作，参数跟模型一起走新定义", async () => {
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    await runTurn(sessionId);
+    await live.setModelParams(sessionId, { reasoning_effort: "high" });
+
+    await live.setAgent(sessionId, "coder");
+
+    expect(inputs.at(-1)!.modelParams).toBeUndefined();
+    expect(store.records.get(sessionId)!.modelParams).toBeUndefined();
+  });
+});
+
+/**
  * 「活着」的判据：`keepAlive ∧ 有持有者`。
  *
  * 这组用例锁的是分离改造后最容易漏的一条：**崩溃的客户端发不出「我不要了」那一帧**。
@@ -2667,6 +2845,35 @@ describe("SessionManager：迁移策略（omit 与 prune 是两种结局，不�
     expect(pick("session.notice")[0]).toMatchObject({
       code: "handoffArchived",
       params: { sessionId },
+    });
+  });
+
+  /**
+   * 迁移两条分支都要把会话级模型参数带进存档（`recordOf` 是存档形状的唯一出处）。
+   *
+   * 这条特别容易漏在 `omit` 上：它不换 id、看起来「什么都没动」，于是有人以为存档也不用
+   * 重写 —— 但参数是 `recordOf` 拼出来的，漏了它下一次 `attach` 就退回 Agent 定义那份
+   * （配给另一个模型的参数）。
+   */
+  it("omit：会话级模型参数跟着存档走（迁移不丢参数）", async () => {
+    const sessionId = await openChatted();
+    await strategyManager.setModelParams(sessionId, { reasoning_effort: "high" });
+
+    const result = await strategyManager.migrate(sessionId, undefined, "omit");
+
+    expect(result.sessionId).toBe(sessionId);
+    expect(store.records.get(sessionId)!.modelParams).toEqual({ reasoning_effort: "high" });
+  });
+
+  it("prune：旧段与新的那段都带着会话级模型参数（同一段对话的两份存档）", async () => {
+    const sessionId = await openChatted();
+    await strategyManager.setModelParams(sessionId, { reasoning_effort: "high" });
+
+    const result = await strategyManager.migrate(sessionId, undefined, "prune");
+
+    expect(store.records.get(sessionId)!.modelParams).toEqual({ reasoning_effort: "high" });
+    expect(store.records.get(result.sessionId)!.modelParams).toEqual({
+      reasoning_effort: "high",
     });
   });
 });

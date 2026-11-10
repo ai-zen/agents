@@ -774,6 +774,50 @@ describe("session.model.set（真 socket）", () => {
   });
 });
 
+/**
+ * `session.modelParams.set`：会话级模型参数，走真 socket 验一次接线。
+ *
+ * 业务（落盘、换模型 / 换 Agent 时清掉）在 `SessionManager.test.ts` 里测透了；这里只钉
+ * 「不透明载荷原样进了服务层」与「回的是新快照」。
+ */
+describe("session.modelParams.set（真 socket）", () => {
+  it("写会话级参数：装配方收到它、回新快照", async () => {
+    await startDaemon();
+    const created = (await client!.call(SESSION_METHODS.create, {
+      workspaceId: "ws-1",
+      path: dir,
+    })) as { sessionId: string };
+
+    const snapshot = (await client!.call(SESSION_METHODS.modelParamsSet, {
+      sessionId: created.sessionId,
+      modelParams: { reasoning_effort: "high" },
+    })) as { sessionId: string; modelId: string };
+
+    expect(snapshot.sessionId).toBe(created.sessionId);
+    // 服务端只把这一级的覆盖递给装配方（它不解释键名，也不在这里解析档位）
+    expect(agentInputs.at(-1)!.modelParams).toEqual({ reasoning_effort: "high" });
+  });
+
+  it("缺 sessionId → bad-params；`null` 是合法值（= 清掉覆盖）", async () => {
+    await startDaemon();
+    const created = (await client!.call(SESSION_METHODS.create, {
+      workspaceId: "ws-1",
+      path: dir,
+    })) as { sessionId: string };
+
+    await expect(client!.call(SESSION_METHODS.modelParamsSet, { modelParams: {} })).rejects.toThrow(
+      /bad-params/,
+    );
+
+    // `null` 不能被参数校验拦掉：它是「清除」的唯一表达方式
+    await client!.call(SESSION_METHODS.modelParamsSet, {
+      sessionId: created.sessionId,
+      modelParams: null,
+    });
+    expect(agentInputs.at(-1)!.modelParams).toBeUndefined();
+  });
+});
+
 describe("session.attach：会话活得比连接久", () => {
   it("活着的会话直接接上（不再报 session-exists）", async () => {
     await startDaemon();
