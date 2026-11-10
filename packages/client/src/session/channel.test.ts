@@ -16,7 +16,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -500,6 +500,71 @@ describe("SessionChannel：会话级模型动作（转发，不换 id）", () =>
     expect(cleared.sessionId).toBe(id);
     expect(opened.sessionId).toBe(id);
     expect(cleared.modelParams).toBeUndefined();
+  });
+});
+
+/**
+ * 动作选项的**透传**。
+ *
+ * 这一类缺口全是同一个形状：门面上有选项、channel 上被吞掉。它比「少一个方法」更难发现 ——
+ * 调用方写了 `{ setAsLast: false }` / `"omit"` 照样编译通过，行为却悄悄按缺省值发生，而
+ * 缺省值恰好是「更常见的那一个」（写档就挪指针 / 迁移就换 id），所以没人会当场撞见，
+ * 直到用户说「我明明只是存了一份，下一次 `ai` 怎么接到管道输出上了」。
+ *
+ * 所以每一条都用**服务端那一侧的事实**断言（指针 / id），不看 channel 自己的返回值 ——
+ * 吞掉选项时返回值照样是 `saved: true`，那是它最容易骗人的地方。
+ */
+describe("SessionChannel：动作选项的透传", () => {
+  it("save({ setAsLast: false })：写档，但不挪「本工作区上一轮会话」指针", async () => {
+    const first = await open();
+    // 缺省（`setAsLast` 不传）就是 `true`：这一段成为续接目标。它同时是下面那条断言的对照 ——
+    // 没有它，「指针没变」可能只是因为指针压根没被写过
+    await first.save();
+    const firstId = first.sessionId;
+    const workspaceId = first.workspaceId!;
+    expect((await (await sessionsOf()).last(workspaceId)).sessionId).toBe(firstId);
+
+    // 同一连接上的另一条 channel：`ai "…" --save` 这条一次性调用路径的形状
+    // （它拿到的就是一条 channel，没有自己的门面）
+    const second = new SessionChannel({ connection });
+    await second.open({ path: workspaceDir, agentId: "default" });
+    const secondId = second.sessionId;
+    expect(secondId).not.toBe(firstId);
+
+    expect(await second.save({ setAsLast: false })).toBe(secondId);
+
+    // 档真的写了（事后翻得到）：`sessions/<id>.json` 就在盘上
+    expect(existsSync(join(dir, "workspaces", workspaceId, "sessions", `${secondId}.json`))).toBe(
+      true,
+    );
+    // 而续接指针**一点没动** —— 下次 `ai` 接的仍是用户真正聊过的那一段
+    expect((await (await sessionsOf()).last(workspaceId)).sessionId).toBe(firstId);
+
+    // 对照：同一个方法不传选项时指针会跟着走（证明上面那条不是「指针根本不动」）
+    await second.save();
+    expect((await (await sessionsOf()).last(workspaceId)).sessionId).toBe(secondId);
+
+    await second.close();
+  });
+
+  it("migrate 的 strategy：`omit` 不换 id（缺省 `prune` 会换）", async () => {
+    const opened = await open();
+    // 真 Agent 的消息以模板（system）开头，SDK 的 `omit` 就是按「前 N 条是模板」判的
+    agent.messages = [
+      { role: "system", content: "模板" },
+      { role: "user", content: "旧任务" },
+      { role: "assistant", content: "旧答复" },
+    ];
+    const before = opened.sessionId;
+
+    const handoffPath = await opened.migrate(undefined, "omit");
+
+    // 文档真的落盘了（路径是服务端给的，不是包里拼的）
+    expect(existsSync(handoffPath)).toBe(true);
+    // 同一个 id：`omit` 的语义是「同一段会话、旧消息不再发送」。`strategy` 被 channel 吞掉时
+    // 服务端按缺省 `prune` 走 —— 结果是**换了 id**，而调用方看不出是谁丢的。
+    expect(opened.sessionId).toBe(before);
+    expect(opened.stream.state.sessionId).toBe(before);
   });
 });
 

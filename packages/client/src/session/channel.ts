@@ -65,6 +65,7 @@ import {
   codeOf,
   type HandoffMode,
   type MessageContent,
+  type MigrationStrategy,
   type ModelParams,
   type NoticePayload,
   type ServerEvent,
@@ -434,9 +435,15 @@ export class SessionChannel {
    *
    * `strategy` 缺省 `prune`，那会换 id，所以必须走 {@link adopt}：不换的话这一轮的
    * `turn.end` 会从新 id 上来，状态机还在旧 id 上等 —— 界面永久卡在「生成中」。
+   * `omit` 不换 id（`adopt` 于是只是重取一次快照），这也是为什么换不换 id 由**返回值**
+   * 决定，而不是由这里再判一次 `strategy`：两个判据迟早会有一个落单。
+   *
+   * `strategy` 必须从这里透传下去（与 {@link save} 的 `setAsLast` 同一个道理）：它是
+   * 「这一迁移算什么」的唯一开关，而调用方手里只有 channel —— 门面上有、channel 上吞掉，
+   * 症状就是「传了 `omit` 却一样换了 id」，且看不出是谁丢的。
    */
-  async migrate(mode?: HandoffMode): Promise<string> {
-    const result = await this.sessions!.migrate(this.sessionId, mode);
+  async migrate(mode?: HandoffMode, strategy?: MigrationStrategy): Promise<string> {
+    const result = await this.sessions!.migrate(this.sessionId, mode, strategy);
     await this.adopt(result.sessionId);
     return result.handoffPath;
   }
@@ -524,9 +531,20 @@ export class SessionChannel {
     return result.prompt;
   }
 
-  /** 落盘当前会话（缺省同时设为「本工作区上一轮会话」），返回它落盘时用的 id */
-  async save(): Promise<string> {
-    return (await this.sessions!.save(this.sessionId)).sessionId;
+  /**
+   * 落盘当前会话（缺省同时把它设为「本工作区上一轮会话」），返回它落盘时用的 id。
+   *
+   * `setAsLast: false` 是**一次性调用的归档**（`ai "…" --save`）：写档但**不**挪续接指针 ——
+   * 否则连着跑几条 `cat … | ai --save` 之后，下次 `ai` 会续接到最后一条管道结果上。
+   *
+   * 选项必须从这里透传，因为**调用方手里只有 channel**（它知道「当前这一段是哪个 id」），
+   * 而 `RemoteSessions` 是「按 id 说话」的无状态门面。不透传的后果不是「少一个参数」，
+   * 而是逼调用方在应用里 `new RemoteSessions(await connection.client())` 现取一次门面 ——
+   * 参数拼装仍然只有包里一份，但「当前 id」与「门面」两个来源在应用里又成了一个会漂的配对
+   * （P4 的一次性调用路径当年就是这么绕过去的）。
+   */
+  async save(options: { setAsLast?: boolean } = {}): Promise<string> {
+    return (await this.sessions!.save(this.sessionId, options)).sessionId;
   }
 
   /**
