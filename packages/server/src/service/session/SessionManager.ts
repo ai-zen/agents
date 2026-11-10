@@ -1548,6 +1548,8 @@ export class SessionManager {
      */
     let sessionId: string;
     let record: Awaited<ReturnType<SessionStore["read"]>> = null;
+    /** 续接时存档自己的「最后一次活动」（没有存档 / 清单里没有 → `undefined`） */
+    let archivedUpdatedAt: string | undefined;
     if (input.sessionId) {
       sessionId = input.sessionId;
       if (this.sessions.has(sessionId)) {
@@ -1556,6 +1558,13 @@ export class SessionManager {
       // 续接：这个 id 在工作区存档里有记录，就把它的消息装进 Agent。
       // 服务端是唯一真相源 —— 客户端只给 id，不搬消息。
       record = store ? await store.read(sessionId) : null;
+      // 这个时间只住在 store 的清单里（`SessionEntry.updatedAt`，写入那一刻记下的），
+      // 正文（`SessionRecord`）里没有它 —— 所以只能问 store，别在这里算一个「现在」，
+      // 也别去拿文件系统时间凑：那都是给同一件事实造第二份真相。
+      // `store.entry()` 是 `list()` 的单条版本：只读那一条清单（别再 `list().find()` ——
+      // 那是为了一个字段扫一遍整个会话目录，存档越多「点开会话」越慢）。
+      const entry = record && store ? await store.entry(sessionId) : null;
+      archivedUpdatedAt = entry?.updatedAt || undefined;
     } else {
       sessionId = await this.freeSessionId(this.nextSessionId(), store);
     }
@@ -1605,7 +1614,26 @@ export class SessionManager {
       ...(record?.title !== undefined ? { title: record.title } : {}),
       ...(record?.modelId !== undefined ? { modelId: record.modelId } : {}),
       ...(record?.modelParams !== undefined ? { modelParams: record.modelParams } : {}),
-      updatedAt: new Date().toISOString(),
+      /**
+       * 「最后一次活动」= **谁改动了这段会话**（落盘那一刻，见 `recordOf`），
+       * 不是 **谁看了一眼**。
+       *
+       * 为什么要说这句：`attach` / `/load` 是复用这条路来续接存档的，而「打开一段历史
+       * 会话」不是一次活动 —— 存档里那个时间说的是「用户最后一次跟它说话是什么时候」。
+       * 无条件写「现在」的后果是两头都中：侧栏里点开一段老会话，它就顶到列表最前、
+       * 时间显示成「现在」；紧接着下一次落盘还会把这个错时间写进存档，「最后一次活动」
+       * 这个事实就被一次「查看」永久污染了。
+       *
+       * 怎么做：与上面三个字段同一个写法 —— **有（续接了存档）就带回来**，只有真的新建
+       * 的会话才用「现在」。真正的一次活动仍然由 `recordOf` 刷新，那条不用动。
+       *
+       * 为什么写错不会红：打开会话、看列表、看时间这三个界面读的是同一个值（刚被刷成
+       * 「现在」的那个），三处**自洽地显示同一个错值**，谁也不跟谁矛盾，所以只能靠用例
+       * 锁住（见 `SessionManager.test.ts` 的「续接不是一次活动」）。
+       */
+      ...(archivedUpdatedAt !== undefined
+        ? { updatedAt: archivedUpdatedAt }
+        : { updatedAt: new Date().toISOString() }),
       holders: new Set(),
       reclaimCancel: null,
       reclaimOnSettle: false,

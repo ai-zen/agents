@@ -785,8 +785,28 @@ class MemoryStore implements SessionStore {
       })
       .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
   }
+  /**
+   * 单条清单 —— 行为照抄真件（`FileSessionStore.entry`）：`list()` 里没有这一条就 `null`，
+   * `write()` 之后能读到同一条。假件只存一份内存表，从 `list()` 里取那一条就是同一个语义
+   * —— 关键是别在这里造出与 `list()` 不一致的第二个值。
+   */
+  async entry(id: string) {
+    const listed = await this.list();
+    return listed.find((item) => item.id === id) ?? null;
+  }
   async read(id: string) {
     return this.records.get(id) ?? null;
+  }
+  /**
+   * 直接摆一段存档（`updatedAt` 由调用方指定）。
+   *
+   * 真件里这个时间来自写入那一刻维护的清单（`<id>.meta.json`），假件照同一件事给一个
+   * 缝：需要「最后一次活动是很久以前」的用例，不能靠 `write()` 之后再等 —— 那测到的是
+   * 时钟，不是「续接有没有改写它」。
+   */
+  seed(record: SessionRecord, updatedAt: string) {
+    this.records.set(record.id, record);
+    this.written.set(record.id, updatedAt);
   }
   async write(record: SessionRecord) {
     this.records.set(record.id, record);
@@ -1841,6 +1861,123 @@ describe("SessionManager：attach（会话活得比连接久）", () => {
     expect((await store.read("chat_same"))?.messages).toEqual([
       { role: "user", content: "别人的对话" },
     ]);
+  });
+});
+
+describe("SessionManager：续接不是一次活动（updatedAt）", () => {
+  let store: MemoryStore;
+  let withStore: SessionManager;
+  /** 一段老会话的「最后一次活动」：一个确定的旧时刻（不是「刚刚」） */
+  const ARCHIVED_AT = "2024-03-05T06:07:08.900Z";
+
+  /** 轮询到条件成立（等待一律这么写，不固定 sleep） */
+  const until = async (
+    condition: () => boolean | Promise<boolean>,
+    timeoutMs = 2000,
+  ): Promise<void> => {
+    const deadline = performance.now() + timeoutMs;
+    while (!(await condition())) {
+      if (performance.now() > deadline) throw new Error("等待条件成立超时");
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+  };
+
+  beforeEach(() => {
+    store = new MemoryStore();
+    withStore = new SessionManager({
+      createAgent: async () => agent,
+      nextSessionId: () => "chat_live",
+      storeFor: () => store,
+    });
+    events = [];
+    withStore.subscribe((event) => events.push(event));
+  });
+
+  /** 摆一段「上次聊到这儿」的存档，并把它的最后活动时间定在 `updatedAt` */
+  const archive = (id = "chat_old", updatedAt = ARCHIVED_AT) =>
+    store.seed(
+      { id, agentId: "default", messages: [{ role: "user", content: "上次聊到这儿" }] as never },
+      updatedAt,
+    );
+
+  /** `session.list` 里这一条的 `updatedAt`（客户端看到的就是这个值） */
+  const listedAt = async (sessionId: string) => {
+    const listed = await withStore.list("ws-1");
+    const entry = listed.find((item) => item.sessionId === sessionId);
+    if (!entry) throw new Error(`list 里没有 ${sessionId}`);
+    return entry;
+  };
+
+  it("续接（attach）一段存档：`updatedAt` 仍是存档里那个旧时刻", async () => {
+    archive();
+    // 另一段更近的会话：用来断言「打开一段老会话」不会把它顶到列表最前
+    archive("chat_newer", "2024-06-07T08:09:10.000Z");
+
+    await withStore.attach({ workspaceId: "ws-1", path: "/p", sessionId: "chat_old" });
+
+    const entry = await listedAt("chat_old");
+    // 本缺陷的回归保护：以前这里是「现在」，于是侧栏里点开一段老会话就把它顶到最前、
+    // 时间显示成「现在」。这一条红 = 那次「查看」又在改写「最后一次活动」
+    expect(entry.live).toBe(true);
+    expect(entry.updatedAt).toBe(ARCHIVED_AT);
+    // 顺序也照旧（排序唯一读的就是这个时间）
+    expect((await withStore.list("ws-1")).map((item) => item.sessionId)).toEqual([
+      "chat_newer",
+      "chat_old",
+    ]);
+  });
+
+  it("`/load` 那条入口（create 带已有 id）同样不改时间", async () => {
+    archive();
+
+    // CLI 的 `/load` 走的是这条路：同一个装配逻辑，不是另一套续接
+    await withStore.create({ workspaceId: "ws-1", path: "/p", sessionId: "chat_old" });
+
+    expect((await listedAt("chat_old")).updatedAt).toBe(ARCHIVED_AT);
+  });
+
+  it("新建会话（没有存档可带回来）：`updatedAt` 是「现在」", async () => {
+    const startedAt = new Date().toISOString();
+
+    const { sessionId } = await withStore.create({ workspaceId: "ws-1", path: "/p" });
+
+    // 不用 sleep：比「测试开始之前」晚就够了 —— 断言的是「用的是现在，不是存档里的」，
+    // 不是时钟精度
+    const entry = await listedAt(sessionId);
+    expect(Date.parse(entry.updatedAt)).toBeGreaterThanOrEqual(Date.parse(startedAt));
+  });
+
+  it("续接之后真的跑一轮并落盘：`updatedAt` 才变成更新的值", async () => {
+    archive();
+    await withStore.attach({ workspaceId: "ws-1", path: "/p", sessionId: "chat_old" });
+    expect((await listedAt("chat_old")).updatedAt).toBe(ARCHIVED_AT);
+
+    withStore.send("chat_old", "又聊了一句");
+    agent.messages = [
+      { role: "user", content: "上次聊到这儿" },
+      { role: "assistant", content: "答" },
+      { role: "user", content: "又聊了一句" },
+    ];
+    agent.fire("finally");
+    // 收尾是异步的（先落盘、再 `turn.end`）：等到那个时间真的变新为止
+    await until(
+      async () => Date.parse((await listedAt("chat_old")).updatedAt) > Date.parse(ARCHIVED_AT),
+    );
+
+    // 落盘那一刻才是「一次活动」：`recordOf` 刷新时间那条不能被修没
+    expect(store.records.get("chat_old")!.messages).toHaveLength(3);
+  });
+
+  it("续接之后立刻 save：`updatedAt` 变新（保存本身就是一次活动）", async () => {
+    archive();
+    await withStore.attach({ workspaceId: "ws-1", path: "/p", sessionId: "chat_old" });
+    expect((await listedAt("chat_old")).updatedAt).toBe(ARCHIVED_AT);
+
+    await withStore.save("chat_old");
+
+    expect(Date.parse((await listedAt("chat_old")).updatedAt)).toBeGreaterThan(
+      Date.parse(ARCHIVED_AT),
+    );
   });
 });
 

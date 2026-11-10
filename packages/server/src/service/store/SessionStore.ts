@@ -91,6 +91,20 @@ export interface SessionStore<Message = unknown> {
    * 返回的是 {@link SessionEntry}（无正文）：这个接口存在的意义就是**列表不解大 JSON**。
    */
   list(): Promise<SessionEntry[]>;
+  /**
+   * **一条**会话的清单 —— `list()` 的单条版本：同一个清单来源，同样在清单缺失时从正文
+   * mtime 回填。它给出的字段必须与 `list()` 里同一条**逐字段一致**。
+   *
+   * 为什么需要单条读法：续接（`attach` / `/load`）只要一条记录的时间，却去 `list()` 里
+   * 找它 —— 那是「为了一个字段做一次全表扫描」，代价随存档条数线性增长（1000 段会话上
+   * `list()` 实测 ~78ms，而「在侧栏点开一段会话」是最热的路径）。
+   *
+   * 为什么强调与 `list()` 同源：这两处读到的是**同一个事实** —— 列表里显示的时间，与续接
+   * 时沿用下来的时间。哪天它们各自回填各自的，就成了两个真相。
+   *
+   * 没有这一条 → `null`（与 `list()` 里「没有这项」同义，不是错误）。
+   */
+  entry(id: string): Promise<SessionEntry | null>;
   read(id: string): Promise<SessionRecord<Message> | null>;
   /** 原子写：进程被杀不会留下半截 JSON。同时更新列表清单（`messageCount` / `updatedAt`） */
   write(record: SessionRecord<Message>): Promise<void>;

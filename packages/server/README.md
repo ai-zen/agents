@@ -407,6 +407,10 @@ Now there is one method and one entry per session:
 - **`includeSaved: false`** = live sessions only (no disk read).
 - **Order** is `updatedAt` descending, ties broken by id descending — two sessions created in
   the same millisecond must not swap places on every refresh.
+- **`updatedAt` is the time of the last *change*, not of the last *look*.** It is stamped where the
+  archive is written, so `session.attach` / opening a session from a sidebar is **not** an
+  activity: a continued session keeps the archived value, and only an actual archive write moves
+  it. (The client reads it from this one field — no second copy anywhere.)
 
 ### `modelId` vs `effectiveModelId`: two facts, one response
 

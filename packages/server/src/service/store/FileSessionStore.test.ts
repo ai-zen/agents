@@ -85,6 +85,69 @@ describe("FileSessionStore", () => {
     expect(Date.parse(entry!.updatedAt)).toBeGreaterThan(0);
   });
 
+  it("entry 是 list 的单条版本：同一条逐字段一致（不能出现两个真相）", async () => {
+    await store.write({
+      ...sample,
+      title: "重构会话",
+      modelId: "gpt-6-astra",
+      messages: ["a", "b", "c"],
+    });
+    await store.write({ ...sample, id: "chat_2", messages: ["x"] });
+
+    const listed = (await store.list()).find((item) => item.id === "chat_1");
+    // `toEqual`（而非 `toMatchObject`）：多一个字段、少一个字段都算不一致 ——
+    // 侧栏显示的时间与续接时沿用下来的时间必须是同一个值
+    expect(await store.entry("chat_1")).toEqual(listed);
+    expect(await store.entry("chat_1")).toEqual({
+      id: "chat_1",
+      agentId: "default",
+      title: "重构会话",
+      modelId: "gpt-6-astra",
+      messageCount: 3,
+      updatedAt: listed!.updatedAt,
+    });
+  });
+
+  it("entry：没有这一段就回 null（与 list 里没有它同义，不是错误）", async () => {
+    // 会话目录还没建：真实路径（续接一个不存在的工作区里的存档）
+    expect(await store.entry("chat_1")).toBeNull();
+
+    await store.write(sample);
+    expect(await store.entry("chat_nope")).toBeNull();
+  });
+
+  it("清单缺失：entry 从正文 mtime 回填，与 list 的回填逐字段一致", async () => {
+    await store.write({ ...sample, id: "chat_a", title: "先问 entry", messages: ["a", "b"] });
+    await store.write({ ...sample, id: "chat_b", title: "先问 list" });
+    // 定死 mtime 再删清单：模拟「搬迁前写的 / 清单被手删」的老存档
+    const base = Math.floor(Date.now() / 1000) - 500;
+    for (const [id, offset] of [
+      ["chat_a", 1],
+      ["chat_b", 2],
+    ] as const) {
+      const path = join(root, "sessions", `${id}.json`);
+      utimesSync(path, base + offset, base + offset);
+      rmSync(join(root, "sessions", `${id}.meta.json`));
+    }
+
+    // 一条先问 entry、一条先问 list：两条回填路径必须落在同一份值上
+    const viaEntry = await store.entry("chat_a");
+    const viaList = (await store.list()).find((item) => item.id === "chat_b");
+
+    expect(viaEntry).toEqual({
+      id: "chat_a",
+      agentId: "default",
+      title: "先问 entry",
+      messageCount: 2,
+      updatedAt: new Date((base + 1) * 1000).toISOString(),
+    });
+    expect(await store.entry("chat_b")).toEqual(viaList);
+    // 回填落了盘：下一次不再解析正文
+    expect(readFileSync(join(root, "sessions", "chat_a.meta.json"), "utf-8")).toContain(
+      "先问 entry",
+    );
+  });
+
   it("重写只刷新清单，不会把 title 弄丢", async () => {
     await store.write({ ...sample, title: "名字" });
     await store.write({ ...sample, title: "名字", messages: ["a", "b"] });

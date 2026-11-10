@@ -86,6 +86,21 @@ export class FileSessionStore<Message = unknown> implements SessionStore<Message
     return [...entries.values()].sort(compareSessionEntries);
   }
 
+  /**
+   * 一条会话的清单 —— `list()` 的单条版本：同一个清单文件，同一条回填路径。
+   *
+   * 为什么不照 `list()` 再筛一遍：`list()` 要 readdir 整个会话目录、逐条读清单，为了知道
+   * **一条**记录的时间付一次全表扫描（1000 段存档时 ~78ms）。这里只碰 `<id>.meta.json`
+   * 这一个文件，与存档条数无关。
+   *
+   * 为什么与 `list()` 一样允许回填：老存档（搬迁前写的 / 清单被手删）本来就没有清单，
+   * 只看 `<id>.meta.json` 的话，续接会拿到 `null`（时间退回「现在」），而侧栏里同一段会话
+   * 仍显示 mtime —— 同一个事实两个值，正是要避开的那种。
+   */
+  async entry(id: string): Promise<SessionEntry | null> {
+    return (await this.readMeta(id)) ?? (await this.backfillMeta(id));
+  }
+
   /** 读清单；不存在或形状不对 → `null`（老存档本来就没有，不是错误） */
   private async readMeta(id: string): Promise<SessionEntry | null> {
     try {
