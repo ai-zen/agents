@@ -31,7 +31,9 @@ import { encodeFrame, FrameDecoder } from "./protocol/frames.js";
 import { DAEMON_METHODS } from "./protocol/daemon.js";
 import { PROTOCOL_VERSION } from "./protocol/messages.js";
 import { SessionAgentFactory } from "./service/agent/SessionAgentFactory.js";
+import { globalAgentPaths } from "./service/agent/agentPaths.js";
 import { ConfigService } from "./service/config/ConfigService.js";
+import { createAutoTitle } from "./service/session/AutoTitle.js";
 import { EventHub } from "./service/events/EventHub.js";
 import {
   SessionManager,
@@ -237,11 +239,14 @@ async function main(): Promise<number> {
   const homeDir = process.env.HOME || process.env.USERPROFILE || homedir();
   const agentFactory = new SessionAgentFactory({ aiZenDir: args.aiZenDir, homeDir });
   const workspacesRoot = join(args.aiZenDir, "workspaces");
+  // 配置与管理面共用的两个全局路径（`config.json` / `agents`）：只在这里算一次，
+  // 下面的 ConfigService 与会话层的自动标题拿的是同一个值
+  const { configFile, agentsDir } = globalAgentPaths({ aiZenDir: args.aiZenDir, homeDir });
   // 配置与 Agent 定义的管理面（客户端配置中心用）：路径在这里解析成值再注入，
   // `service/` 里一律不读全局（配置根、Agent 目录、MCP 文件、工作区根都是）
   const configService = new ConfigService({
-    configFile: join(args.aiZenDir, "config.json"),
-    agentsDir: join(args.aiZenDir, "agents"),
+    configFile,
+    agentsDir,
     subAgentsDir: join(args.aiZenDir, "sub-agents"),
     globalMcpFile: join(args.aiZenDir, "mcp.json"),
     workspacesRoot,
@@ -267,6 +272,10 @@ async function main(): Promise<number> {
     handoff: { aiZenDir: args.aiZenDir, homeDir },
     // 没人看着的会话多久后回收（断线重连的窗口就在这个值里）
     sessionIdleTimeoutMs: args.sessionIdleTimeoutMs,
+    // 自动标题：第一轮之后异步让模型起个名。开关（`autoTitle`）与用哪个模型
+    // （`defaultMigrationModel`）都要读配置，所以注入的是「函数」而不是一个布尔值 ——
+    // 会话层不读配置，而这里只给它一个 `config.json` 路径
+    autoTitle: createAutoTitle({ configFile }),
   });
 
   const daemon = new Daemon({

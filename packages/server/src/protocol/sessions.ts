@@ -174,6 +174,17 @@ export const SESSION_EVENTS = {
    * 客户端拿 `from === 自己当前 id` 就能认领。
    */
   idChanged: "session.idChanged",
+  /**
+   * 会话的显示名变了（今天只有服务端的自动标题会发）。
+   *
+   * 为什么必须有这条事件：自动标题发生在 `turn.end` **之后**的异步动作里，客户端手上
+   * 没有任何请求可以拿来「拿到新名字」—— 没有它，侧栏会一直用首条消息兑底命名，
+   * 直到用户手动刷新一次列表（而在那之前，用户会以为这功能没生效）。
+   *
+   * 客户端可以完全不理它（它只是一条展示用的名字）；手工改名（`session.rename`）**不**
+   * 发它：那条请求的响应里已经有新名字了。
+   */
+  titleChanged: "session.titleChanged",
   /** 一个子 Agent 开始（本轮内 index 从 1 起；subAgentId 稳定，客户端拿它归增量 / 当选中态） */
   subAgentStarted: "session.subAgent.started",
   /** 一个子 Agent 结束：done = 正常跑完，failed = 抛错（**一旦 failed 就不再变**） */
@@ -319,6 +330,19 @@ export type SessionIdChangedEvent = {
   from: string;
   /** 新 id */
   sessionId: string;
+};
+
+/**
+ * 会话改名的通知（见 `SESSION_EVENTS.titleChanged`）。
+ *
+ * 载荷只有两个事实：哪段会话、新名字是什么。**不带「谁起的」** —— 客户端不需要为
+ * 名字的来源分支出两套渲染，而「自动起的名字不该反过来覆盖用户手改」是服务端的判定
+ * （它手里才有那一刻的真相），不是客户端该参与的决定。
+ */
+export type SessionTitleChangedEvent = {
+  event: typeof SESSION_EVENTS.titleChanged;
+  sessionId: string;
+  title: string;
 };
 
 /**
@@ -852,6 +876,7 @@ export type ServerEvent =
   | SessionNoticeEvent
   | GlobalNoticeEvent
   | SessionIdChangedEvent
+  | SessionTitleChangedEvent
   | SessionQuestionEvent
   | SubAgentStartedEvent
   | SubAgentEndedEvent;

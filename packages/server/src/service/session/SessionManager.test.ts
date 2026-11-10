@@ -7,6 +7,7 @@ import { SessionManager, type AgentLike, type CreateAgentInput } from "./Session
 import { FileSessionStore } from "../store/FileSessionStore.js";
 import type { SessionRecord, SessionStore } from "../store/SessionStore.js";
 import type { HandoffMode, ServerEvent } from "../../protocol/sessions.js";
+import type { AutoTitleRequest } from "./AutoTitle.js";
 import { EventHub } from "../events/EventHub.js";
 
 /**
@@ -2391,5 +2392,178 @@ describe("SessionManager：标题与删除（id 与 title 分开）", () => {
     await titled.remove({ workspaceId: "ws-1", sessionId });
 
     expect(await titled.last("ws-1")).toEqual({ sessionId: null });
+  });
+});
+
+describe("SessionManager：自动标题（第一轮 turn.end 之后异步起名）", () => {
+  let store: MemoryStore;
+  let titleManager: SessionManager;
+  /** 注入缝：这一份就是用例的「模型」。调用记录 = 服务端到底发了什么 */
+  let calls: AutoTitleRequest[];
+  /** 每次调用回什么（`null` = 模型给了个空名字；抛 = 无 key / 网络 / 超时那一类失败） */
+  let reply: (request: AutoTitleRequest) => Promise<string | null>;
+
+  /** 轮询到条件成立（等待一律这么写，不固定 sleep） */
+  const until = async (condition: () => boolean, timeoutMs = 2000): Promise<void> => {
+    const deadline = performance.now() + timeoutMs;
+    while (!condition()) {
+      if (performance.now() > deadline) throw new Error("等待条件成立超时");
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+  };
+
+  beforeEach(() => {
+    store = new MemoryStore();
+    calls = [];
+    reply = async () => "迁移策略改造";
+    titleManager = new SessionManager({
+      createAgent: async () => agent,
+      nextSessionId: () => "chat_title",
+      storeFor: () => store,
+      autoTitle: async (request) => {
+        calls.push(request);
+        return await reply(request);
+      },
+    });
+    events = [];
+    titleManager.subscribe((event) => events.push(event));
+  });
+
+  /** 跑一轮（把消息造出来再驱动 `finally`），等到这一轮真的收尾 */
+  const runTurn = async (sessionId: string, content = "帮我把迁移改成 omit") => {
+    const before = pick("turn.end").length;
+    titleManager.send(sessionId, content);
+    agent.messages.push({ role: "user", content });
+    agent.messages.push({ role: "assistant", content: "好" });
+    agent.fire("finally");
+    await until(() => pick("turn.end").length > before);
+  };
+
+  it("命名不阻塞收尾：`turn.end` 先到，标题与事件随后才来", async () => {
+    // 假件照抄真件的形状：SDK 会把三级解析的结果写进它交给 Agent 的那份定义
+    (agent as unknown as { definition: { modelId?: string } }).definition.modelId = "m-live";
+    const { sessionId } = await titleManager.create({ workspaceId: "ws-1", path: "/p" });
+
+    let release!: (title: string) => void;
+    reply = () => new Promise<string>((resolve) => (release = resolve));
+
+    await runTurn(sessionId);
+
+    // 这一轮已经结束、客户端已经在等下一轮了 —— 而标题还在路上
+    expect(pick("session.titleChanged")).toEqual([]);
+    expect(calls).toHaveLength(1);
+    // 用哪个模型由会话层给：装配方（注入的函数）不知道这一段生效的是哪个模型
+    expect(calls[0]!.modelId).toBe("m-live");
+    // 交给生成器的是这一段会话的**当前消息**（它只读，别指望它去挑角色 —— 挑角色是
+    // AutoTitle 的事，见 `AutoTitle.test.ts`）
+    expect(calls[0]!.messages.map((m) => (m as { role: string }).role)).toEqual([
+      "user",
+      "assistant",
+    ]);
+
+    release("迁移策略改造");
+    await until(() => pick("session.titleChanged").length === 1);
+
+    expect(pick("session.titleChanged")[0]).toEqual({
+      event: "session.titleChanged",
+      sessionId,
+      title: "迁移策略改造",
+    });
+    // 写进存档（走的是每轮落盘那条路径里的同一份 record），列表也拿得到
+    expect(store.records.get(sessionId)!.title).toBe("迁移策略改造");
+    expect((await titleManager.list("ws-1", { includeSaved: false }))[0]!.title).toBe(
+      "迁移策略改造",
+    );
+  });
+
+  it("绝不覆盖用户手改的名字：已经有了就不发请求", async () => {
+    const { sessionId } = await titleManager.create({ workspaceId: "ws-1", path: "/p" });
+    await titleManager.rename({ workspaceId: "ws-1", sessionId, title: "我的名字" });
+
+    await runTurn(sessionId);
+    await settled();
+
+    expect(calls).toEqual([]); // 连一次模型调用都不该有
+    expect(store.records.get(sessionId)!.title).toBe("我的名字");
+    expect(pick("session.titleChanged")).toEqual([]);
+  });
+
+  it("拿到结果时用户已经改过名：模型的名字让位（那几秒里用户才是对的）", async () => {
+    const { sessionId } = await titleManager.create({ workspaceId: "ws-1", path: "/p" });
+    let release!: (title: string) => void;
+    reply = () => new Promise<string>((resolve) => (release = resolve));
+
+    await runTurn(sessionId);
+    await until(() => calls.length === 1);
+    // 请求还在路上时用户改了名字
+    await titleManager.rename({ workspaceId: "ws-1", sessionId, title: "用户的名字" });
+    release("模型的名字");
+    await settled();
+
+    expect(store.records.get(sessionId)!.title).toBe("用户的名字");
+    expect(pick("session.titleChanged")).toEqual([]);
+  });
+
+  it("同一段会话只生成一次：第二轮不再发请求", async () => {
+    const { sessionId } = await titleManager.create({ workspaceId: "ws-1", path: "/p" });
+
+    await runTurn(sessionId);
+    await until(() => pick("session.titleChanged").length === 1);
+    await runTurn(sessionId, "再问一句");
+    await settled();
+
+    expect(calls).toHaveLength(1);
+  });
+
+  it("生成失败静默留空：不发事件、不推错误通知、也不重试", async () => {
+    const { sessionId } = await titleManager.create({ workspaceId: "ws-1", path: "/p" });
+    let fail!: (error: Error) => void;
+    reply = () => new Promise<string>((_resolve, reject) => (fail = reject));
+
+    await runTurn(sessionId);
+    await until(() => calls.length === 1);
+    fail(new Error('API key for endpoint "EP" is not set'));
+    await settled();
+
+    // 用户从没要求「起名」这件事：它失败就该像没发生过
+    expect(pick("session.titleChanged")).toEqual([]);
+    expect(pick("session.notice")).toEqual([]);
+    expect(store.records.get(sessionId)!.title).toBeUndefined();
+    // 这一轮照样结束了（失败的是标题，不是对话）
+    expect(pick("turn.end").at(-1)).toMatchObject({ sessionId, ok: true });
+
+    // 第二轮不重试（"不许重试轰炸"）
+    await runTurn(sessionId, "再问一句");
+    await settled();
+    expect(calls).toHaveLength(1);
+  });
+
+  it("硬超时：到点就取消那次请求，标题留空（时限可注入，用例不等 10 秒）", async () => {
+    const timed = new SessionManager({
+      createAgent: async () => agent,
+      nextSessionId: () => "chat_title",
+      storeFor: () => store,
+      autoTitleTimeoutMs: 20,
+      // 照抄真件：请求挂住，直到 signal 触发才认输（`completeOnce` 就是这么断的）
+      autoTitle: (request) =>
+        new Promise<string | null>((_resolve, reject) => {
+          request.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        }),
+    });
+    events = [];
+    timed.subscribe((event) => events.push(event));
+    const { sessionId } = await timed.create({ workspaceId: "ws-1", path: "/p" });
+
+    timed.send(sessionId, "第一句");
+    agent.messages.push({ role: "user", content: "第一句" });
+    agent.fire("finally");
+
+    // 等到「这一轮已收尾」与「标题请求已被超时取消」两件事都成立
+    await until(() => pick("turn.end").length === 1);
+    await until(() => pick("session.titleChanged").length === 0 && store.records.has(sessionId));
+    await settled();
+
+    expect(pick("session.titleChanged")).toEqual([]);
+    expect(store.records.get(sessionId)!.title).toBeUndefined();
   });
 });

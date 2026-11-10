@@ -44,6 +44,7 @@ import {
   isHandoffAborted,
   type HandoffAgentLike,
 } from "../handoff/SessionHandoff.js";
+import type { AutoTitleFn } from "./AutoTitle.js";
 // 只借**类型**：自动迁移触发上下文的形状真相源在 SDK 的插件里，本层再抄一份就是
 // 第二份会漂移的规则（`import type` 编译后会被擦掉，不构成运行期依赖）。
 import type { AutoMigrateTriggerInfo } from "@ai-zen/agents-sdk";
@@ -277,6 +278,24 @@ export interface SessionManagerOptions {
    * 测成「时钟」。注入一个假计时器，用例就能手动「让它到点」，断言的是判定本身。
    */
   schedule?: (ms: number, run: () => void) => () => void;
+  /**
+   * 自动给还没有名字的会话起一个标题（不注入 = 不做这件事）。
+   *
+   * 为什么是注入而不是本层自己去调模型：**选模型要读配置**（`autoTitle` 开关、
+   * `defaultMigrationModel`），而本层不读配置、也不认识端点与 Key。注入方是组装根手里
+   * 那个 `createAutoTitle`（它只拿一个 `config.json` 路径就能干活）。
+   *
+   * 接口刻意窄成「模型 id + 消息 + 取消信号 → 名字」：会话对象、落盘、事件、超时、
+   * 不覆盖手改名全在本层 —— 那边（`AutoTitle.ts`）只负责发那一次请求。
+   */
+  autoTitle?: AutoTitleFn;
+  /**
+   * 等标题的上限（毫秒），缺省 {@link AUTO_TITLE_TIMEOUT_MS}（10 秒）。
+   *
+   * 可注入的理与 `askTimeoutMs` 完全一样：等 10 秒才能验证「超时之后什么都没发生」的
+   * 用例只能靠 `sleep(10000)`，那是把「超时」测成「时钟」。
+   */
+  autoTitleTimeoutMs?: number;
 }
 
 interface LiveSession {
@@ -417,6 +436,16 @@ function codedError(code: string, message: string): Error & { code: string } {
 }
 
 /**
+ * 这一段会话有没有名字。
+ *
+ * 空串算没名字：`session.rename` 已经拒绝空标题，剩下的空串只可能来自手改坏的存档 ——
+ * 把它当成「用户起过名」会让一句空话永久挡在自动标题前面。
+ */
+function isTitled(session: LiveSession): boolean {
+  return Boolean(session.title?.trim());
+}
+
+/**
  * 等客户端回答「自动迁移用哪种方式交接」的上限：5 分钟。
  *
  * 进程内（TUI）是「人不在就一直等」：那一等只挂在自己终端上，用户回来接着选就行。
@@ -437,6 +466,16 @@ const ASK_TIMEOUT_MS = 300_000;
  * 共享，`Scope` 缓存住，不随会话数增加）。60s 在两头都很松。
  */
 export const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 60_000;
+
+/**
+ * 自动标题那次模型调用的硬超时：10 秒。
+ *
+ * 它不是「等到就好了」的宽容值，而是一个上限：起名是一次几十 token 的小请求，10 秒还没
+ * 回来就只可能是端点卡了 / 网不通。而它挂在**会话**上 —— 不设上限的话，一个挂住的请求
+ * 会连着 `AbortController` 与消息拷贝一起挂到进程结束（用户看不出来，只是内存与连接慢慢
+ * 涨）。到点就取消，标题留空，什么也不说。
+ */
+const AUTO_TITLE_TIMEOUT_MS = 10_000;
 
 /**
  * 默认的倒计时实现。
@@ -540,6 +579,10 @@ export class SessionManager {
   private readonly sessionIdleTimeoutMs: number;
   /** 倒计时实现（可注入：时间驱动的判定得能手动“到点”） */
   private readonly schedule: (ms: number, run: () => void) => () => void;
+  /** 自动标题（不注入 = 不做；见 `SessionManagerOptions.autoTitle`） */
+  private readonly autoTitleFn: AutoTitleFn | undefined;
+  /** 等标题的上限（可注入，缺省见 `AUTO_TITLE_TIMEOUT_MS`） */
+  private readonly autoTitleTimeoutMs: number;
   /** 自建的 hub 由自己清理；外面传进来的归外面管 */
   private readonly ownsHub: boolean;
 
@@ -552,6 +595,8 @@ export class SessionManager {
     this.askTimeoutMs = options.askTimeoutMs ?? ASK_TIMEOUT_MS;
     this.sessionIdleTimeoutMs = options.sessionIdleTimeoutMs ?? DEFAULT_SESSION_IDLE_TIMEOUT_MS;
     this.schedule = options.schedule ?? defaultSchedule;
+    this.autoTitleFn = options.autoTitle;
+    this.autoTitleTimeoutMs = options.autoTitleTimeoutMs ?? AUTO_TITLE_TIMEOUT_MS;
     this.hub = options.hub ?? new EventHub();
     this.ownsHub = !options.hub;
   }
@@ -1823,6 +1868,73 @@ export class SessionManager {
         this.scheduleReclaim(session);
       }
     }
+
+    // 7) 自动标题（只在第一轮、只在还没有名字时；**不 await**：`turn.end` 已经发出去了，
+    //    标题是之后的事 —— 卡的是一行展示用的名字，一行都不能拖住下一轮对话）。
+    //
+    //    放在回收判定**之后**：回收可能当场关掉会话（`keepAlive:false`），那时就不必
+    //    为了一个已经退场的会话再发一次模型请求（`autoTitle` 里也会再确认一次）。
+    if (session.turnId === 1) void this.autoTitle(session);
+  }
+
+  /**
+   * 自动给这一段会话起名（异步、可失败、失败静默）。
+   *
+   * ## 什么时候做
+   *
+   * 只在**第一轮**之后（`turnId === 1`）做，于是「同一段会话只生成一次」是这条判断的
+   * 副产品，而不是另一个计数器：`turnId` 在同一段会话内只增不复位，一次会话里只会等于 1
+   * 一次。续接的会话 `turnId` 从 0 重新开始，于是「从没起过名就接了回来」会再试一次
+   * —— 那不算重试：它第一轮时服务端可能被回收了，而此刻用户手上确实需要个名字。
+   * 失败也**不重试**：下一轮 `turnId` 已经不是 1。
+   *
+   * ## 为什么不阻塞、不报告
+   *
+   * 起名不是用户要求的事：失败（无 Key / 网络 / 端点报错 / 超时）就该像没发生过 ——
+   * 推一条「起名失败」的通知只会让人以为出了故障，而且无人可据此做任何事。所以异常在
+   * 这里吞掉，标题留空（客户端依旧用首条消息兑底）。
+   *
+   * ## 绝不覆盖用户的名字
+   *
+   * 进门前看一次、拿到结果再看一次（中间隔着一次模型请求，用户完全可能在这几秒里
+   * `session.rename`）：名字一旦有了，就是用户的。
+   */
+  private async autoTitle(session: LiveSession): Promise<void> {
+    const generate = this.autoTitleFn;
+    if (!generate) return;
+    if (isTitled(session)) return;
+    // 已在收尾的回收里退场：存档已定稿，不再为一个不存在的会话发请求
+    if (this.sessions.get(session.id) !== session) return;
+
+    // 取消信号两边都接：超时（本层）与队列里的 `AbortController` 让那次 HTTP 请求真的断掉，
+    // 而不是“跑完之后再假装没发生”
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.autoTitleTimeoutMs);
+    let title: string | null;
+    try {
+      title = await generate({
+        // 只有本层知道「这一段生效的模型是哪个」（三级解析的副产品，见 `modelIdOf`）
+        modelId: modelIdOf(session.agent),
+        messages: [...session.agent.messages],
+        signal: controller.signal,
+      });
+    } catch {
+      // 无 key / 网络 / 超时 / 端点报错：静默留空。不重试、不推通知（理由见方法注释）
+      return;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!title) return;
+
+    // await 之后世界可能已经变了（会话关了 / 被回收了 / 用户在这几秒里手改了名字）
+    if (this.sessions.get(session.id) !== session) return;
+    if (isTitled(session)) return;
+
+    session.title = title;
+    // 走现有的存档写入路径：标题是会话存档里的一份事实，另开一条写档路径就是第二处
+    // 「存档里都有什么」（`recordOf` 漏一个字段就是一类数据丢失）
+    await this.writeSession(session);
+    this.emit({ event: SESSION_EVENTS.titleChanged, sessionId: session.id, title });
   }
 
   // ==================================================================

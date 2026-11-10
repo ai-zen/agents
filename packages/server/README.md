@@ -83,7 +83,7 @@ business logic.
 
 `src/protocol/sessions.ts` is the wire contract for sessions — method names, params and the
 session events (`session.phase`, `message.delta`, `turn.end`, `session.notice`,
-`session.idChanged`, `session.question`, `session.subAgent.*`). `src/service/session/
+`session.idChanged`, `session.titleChanged`, `session.question`, `session.subAgent.*`). `src/service/session/
 SessionManager.ts` implements the live-session registry and the SDK-event → protocol-event
 translation; `src/service/agent/` assembles the agent (config + Scope + capability
 discovery) per workspace; `src/daemon/sessionHandlers.ts` registers `workspace.resolve` /
@@ -292,6 +292,16 @@ sessionId, title }` works on archived sessions too (it does not require an `atta
 The same split applies to workspaces (`id` + `title`); `name` is kept for things whose `name`
 *is* the identifier (a skill's frontmatter `name`, an `mcp.json` server key, and the SDK's
 `AgentDefinition` / `Endpoint` / `Model`, which predate this rule).
+
+### Automatic titles
+
+After the **first** turn of a session settles, the server asks a model for a name and writes it
+into the archive; `session.titleChanged` tells clients about it (`turn.end` is already out — the
+name never blocks anything). Three limits, each of them deliberate: it only runs when the title
+is still empty (**a hand-renamed title is never overwritten**), it runs at most once per session
+(failure just leaves the title empty — no retries, no error notice), and it is bounded by a 10s
+timeout. The model is `AppConfig.defaultMigrationModel` when configured, otherwise the session's
+effective model. `AppConfig.autoTitle: false` turns the whole thing off (a missing field means on).
 
 ### `session.remove`
 

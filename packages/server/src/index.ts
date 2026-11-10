@@ -78,6 +78,14 @@ export {
   type HandoffOutcome,
   type SessionHandoffOptions,
 } from "./service/handoff/SessionHandoff.js";
+// 自动标题：生成器（只发那一次请求）与会话层（时机 / 落盘 / 事件 / 超时）分开导出，
+// 组装根要的是前者，测会话层要的是后者的注入点
+export {
+  createAutoTitle,
+  type AutoTitleFn,
+  type AutoTitleOptions,
+  type AutoTitleRequest,
+} from "./service/session/AutoTitle.js";
 export {
   EVENT_METHODS,
   SESSION_EVENTS,
@@ -137,6 +145,7 @@ export {
   type SessionHandoffParams,
   type SessionHandoffResult,
   type SessionIdChangedEvent,
+  type SessionTitleChangedEvent,
   type SubAgentStartedEvent,
   type SubAgentEndedEvent,
   type SubAgentSnapshotParams,
