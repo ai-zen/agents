@@ -15,6 +15,7 @@ CLI（TUI）与 Desktop（main）共用同一份实现 —— 以前它住在 `c
 | `status.ts` | `--server-status` 背后的只读诊断（不拉起） |
 | `local-host.ts` | 「服务端是不是在这台机器上」→ 决定要不要把客户端 cwd 当工作区递上去 |
 | `mcp.ts` | `mcp.json` 的形状（类型；读写归服务端） |
+| `stream-merge.ts` | 「本地流式增量」与「服务端快照」的合并规则（`mergeStreamedSnapshot`，纯函数、与传输无关） |
 | 协议 | `@ai-zen/agents-server/protocol` 原样转出：方法名常量、结果类型、帧编解码、发现文件形状 |
 
 ## 三条硬约束（都能用 grep 检验）
@@ -40,7 +41,8 @@ grep -hoE '^import .* from "[^"]+";' dist/*.js | sed 's/.*from "//;s/";//' | sor
 
 期望输出只有 `@ai-zen/agents-server/protocol`、同级相对路径、`node:*` 三类。
 `@ai-zen/agents-sdk` 只会以 `import type` 出现在 `dist/*.d.ts` 里（`AppConfig` /
-`AgentDefinition` / `ReasoningPresets` 是配置与定义在两端的**共同形状**），产物里已被擦除。
+`AgentDefinition` / `ReasoningPresets` 是配置与定义在两端的**共同形状**）；`@ai-zen/agents-core`
+同理，只为 `AgentNS.Message` / `AgentNS.Role` 的类型（`stream-merge.ts`）。两者在产物里都已被擦除。
 
 > 检查命令必须锚在行首的 `^import`。不锚的话，本包文档注释里那句 `import type … from
 > "@ai-zen/agents-sdk"` 会被自己 grep 到，得出「拖了 sdk」的错误结论 —— 这一步实际踩过。
