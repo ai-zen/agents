@@ -8,7 +8,11 @@
  *
  *   @ai-zen/cli ─────┐
  *                    ├──→ @ai-zen/agents-server ──→ @ai-zen/agents-sdk ──→ @ai-zen/agents-core
- *   desktop/main ────┘
+ *   desktop/main ────┘              │                                               ↑
+ *                                   └──→ @ai-zen/agents-protocol ─────→ (仅类型) ──┘
+ *
+ * 线上契约在**独立的包**里（`@ai-zen/agents-protocol`），不在本包：客户端只依赖那个包，
+ * 于是「客户端不拖进服务端实现」是结构保证的，不靠纪律。
  *
  * 两条硬约束（可用 grep 检验，命令见 README）：
  *   1. 本包**不得**依赖任何 UI 栈（ink / react / 终端库）——包边界就是进程边界；
@@ -21,11 +25,12 @@
 export {
   PhaseTracker,
   pendingToolCalls,
-  type PhaseInfo,
-  type PhaseKind,
   type PhaseMessageLike,
-  type ToolCallRef,
 } from "./service/progress/PhaseTracker.js";
+// 阶段**形状**（`PhaseInfo` / `PhaseKind` / `ToolCallRef`）由协议包拥有 —— 它们是线上载荷，
+// 不是服务端内部状态机的一部分（见 `@ai-zen/agents-protocol` 的 `phase.ts`）。这里只做转出，
+// 让既有调用方（`@ai-zen/agents-server` 的用者）不必改 import。
+export type { PhaseInfo, PhaseKind, ToolCallRef } from "@ai-zen/agents-protocol";
 
 // ---- 会话存储与工作区（服务端的产品数据层） ----
 export {
@@ -94,10 +99,12 @@ export {
 export {
   EVENT_METHODS,
   SESSION_EVENTS,
+  SERVER_EVENTS,
   SESSION_METHODS,
   WORKSPACE_METHODS,
   DEFAULT_MIGRATION_STRATEGY,
-  type MessageDeltaEvent,
+  type SessionEvent,
+  type SessionDeltaEvent,
   type SessionAnswerParams,
   type SessionAnswerResult,
   type SessionAttachParams,
@@ -131,6 +138,12 @@ export {
   type SessionSnapshotResult,
   type ModelLevel,
   type MigrationStrategy,
+  type ModelParams,
+  type Message,
+  type Usage,
+  type SessionToolCallsEvent,
+  type SessionMessageAppendedEvent,
+  type ToolCallState,
   type SessionModelSetParams,
   type SessionModelSetResult,
   type SessionModelParamsSetParams,
@@ -143,7 +156,7 @@ export {
   type SessionNoticeCode,
   type SessionNoticeEvent,
   type GlobalNoticeCode,
-  type GlobalNoticeEvent,
+  type ServerNoticeEvent,
   type HandoffMode,
   type MessageContent,
   type MessageContentBlock,
@@ -155,13 +168,13 @@ export {
   type SessionHandoffResult,
   type SessionIdChangedEvent,
   type SessionTitleChangedEvent,
-  type SubAgentStartedEvent,
-  type SubAgentEndedEvent,
+  type SessionSubAgentStartedEvent,
+  type SessionSubAgentEndedEvent,
   type SubAgentSnapshotParams,
   type SubAgentSnapshotResult,
   type SessionMigrateParams,
   type SessionMigrateResult,
-  type TurnEndEvent,
+  type SessionTurnEndEvent,
   type SessionLastParams,
   type SessionLastResult,
   type WorkspaceFilesParams,
@@ -177,7 +190,7 @@ export {
   type WorkspaceResolveParams,
   type WorkspaceResolveResult,
   type WorkspaceSummary,
-} from "./protocol/sessions.js";
+} from "@ai-zen/agents-protocol";
 
 // ---- 配置与管理面（客户端的配置中心要用；不属于某一段会话，所以不在 session.* 下） ----
 export {
@@ -206,7 +219,7 @@ export {
   type ConfigSetDefaultModelParams,
   type ConfigSetDefaultModelResult,
   type McpScope,
-} from "./protocol/config.js";
+} from "@ai-zen/agents-protocol";
 export { ConfigService, type ConfigServiceOptions } from "./service/config/ConfigService.js";
 export { createConfigHandlers, type ConfigHandlerOptions } from "./daemon/configHandlers.js";
 
@@ -218,7 +231,7 @@ export {
   type AssetListResult,
   type AssetScope,
   type AssetSummary,
-} from "./protocol/assets.js";
+} from "@ai-zen/agents-protocol";
 export { AssetService, type AssetServiceOptions } from "./service/asset/AssetService.js";
 export { createAssetHandlers, type AssetHandlerOptions } from "./daemon/assetHandlers.js";
 
@@ -231,7 +244,7 @@ export {
 } from "./daemon/Daemon.js";
 // `Wire` 属于公开面：要给服务端接一种新传输（WebSocket / stdio）的人，必须能**在包外**
 // 按这个接口写一个实现，再把每条连接交给 `Daemon.handleConnection()`。它刻意不在
-// `protocol/` 里 —— 协议面是「线上长什么样」，`Wire` 是「本进程里怎么把它递进来」，
+// `@ai-zen/agents-protocol` 里 —— 协议面是「线上长什么样」，`Wire` 是「本进程里怎么把它递进来」，
 // 是服务端的内部接缝，只是因为「实现者可能在别的包里」才必须可 import。
 // （适配器 `socketWire` 不导出：外部实现者各有各的底层，抄不到它；net 那一路的样板
 // 就在 `src/daemon/wire.ts` 里。）
@@ -243,15 +256,15 @@ export {
   removeDescriptor,
   writeDescriptor,
   type ServerDescriptor,
-} from "./protocol/discovery.js";
-export { isLoopbackHost } from "./protocol/host.js";
+} from "@ai-zen/agents-protocol";
+export { isLoopbackHost } from "@ai-zen/agents-protocol";
 export {
   encodeFrame,
   FrameDecoder,
   MAX_FRAME_BYTES,
   ProtocolError,
   type ProtocolErrorCode,
-} from "./protocol/frames.js";
+} from "@ai-zen/agents-protocol";
 export {
   PROTOCOL_VERSION,
   isHelloRequest,
@@ -263,14 +276,14 @@ export {
   type RequestFrame,
   type ResponseFrame,
   type ResultFrame,
-} from "./protocol/messages.js";
+} from "@ai-zen/agents-protocol";
 export { SERVER_NAME, SERVER_VERSION } from "./version.js";
 export {
   DAEMON_METHODS,
   type DaemonStatusResult,
   type PingResult,
   type ShutdownResult,
-} from "./protocol/daemon.js";
+} from "@ai-zen/agents-protocol";
 
 // ---- Agent 装配（会话「能跑」的一环：配置 + Scope + 能力发现） ----
 export {

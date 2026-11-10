@@ -22,10 +22,10 @@ import {
   type CreateAgentInput,
 } from "../service/session/SessionManager.js";
 import { FileSessionStore } from "../service/store/FileSessionStore.js";
-import { encodeFrame, FrameDecoder } from "../protocol/frames.js";
-import { PROTOCOL_VERSION } from "../protocol/messages.js";
-import { EVENT_METHODS, SESSION_METHODS, WORKSPACE_METHODS } from "../protocol/sessions.js";
-import type { ServerEvent } from "../protocol/sessions.js";
+import { encodeFrame, FrameDecoder } from "@ai-zen/agents-protocol";
+import { PROTOCOL_VERSION } from "@ai-zen/agents-protocol";
+import { EVENT_METHODS, SESSION_METHODS, WORKSPACE_METHODS } from "@ai-zen/agents-protocol";
+import type { ServerEvent } from "@ai-zen/agents-protocol";
 
 /** 交接文档正文：SDK 有 400 字节的有效性阈值 */
 const DOC = `# 交接\n\n${"- 桩\n".repeat(80)}`;
@@ -274,12 +274,12 @@ describe("会话处理器（真 socket）", () => {
     agent.fire("chunk-parsed", {}, { choices: [{ delta: { content: "答" } }] });
     const phaseAfterDelta = (await client!.next()) as any;
     expect(phaseAfterDelta).toMatchObject({ event: "session.phase", phase: { kind: "streaming" } });
-    expect(await client!.next()).toMatchObject({ event: "message.delta", text: "答" });
+    expect(await client!.next()).toMatchObject({ event: "session.delta", text: "答" });
 
     agent.fire("finally");
     const phaseReset = (await client!.next()) as any;
     expect(phaseReset.phase).toBeNull();
-    expect(await client!.next()).toMatchObject({ event: "turn.end", ok: true, turnId: 1 });
+    expect(await client!.next()).toMatchObject({ event: "session.turnEnd", ok: true, turnId: 1 });
   });
 
   it("session.subAgent.snapshot 走通；未知子 Agent → sub-agent-missing 错误帧", async () => {

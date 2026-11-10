@@ -52,7 +52,8 @@ import type {
   ConfigSetDefaultAgentResult,
   ConfigSetDefaultModelResult,
   McpScope,
-} from "../../protocol/config.js";
+} from "@ai-zen/agents-protocol";
+import { ERROR_CODES, codedError } from "@ai-zen/agents-protocol";
 
 export interface ConfigServiceOptions {
   /** `<配置根>/config.json` */
@@ -210,7 +211,7 @@ export class ConfigService {
     try {
       raw = await fs.readFile(path, "utf-8");
     } catch (cause: unknown) {
-      if (codeOf(cause) === "ENOENT") return { ok: true, config: { mcpServers: {} }, path };
+      if (fsCodeOf(cause) === "ENOENT") return { ok: true, config: { mcpServers: {} }, path };
       // 权限、是个目录……这些不是「文件坏了」，但也只是把原因交给编辑屏
       return { ok: false, error: messageOf(cause), path };
     }
@@ -331,7 +332,7 @@ export class ConfigService {
     const workspaceId = input.workspaceId;
     if (!workspaceId) {
       // 缺参数是**调用方**的错，且可判别（与 `bad-params` 分开：那个是协议层形状错）
-      throw codedError("workspace-required", "project scope needs a workspaceId");
+      throw codedError(ERROR_CODES.workspaceRequired, "project scope needs a workspaceId");
     }
     // 工作区路径只能反查：id 是哈希派生的，光看 id 推不回目录（也不该在协议里给路径）
     const workspace = await readWorkspace({
@@ -339,7 +340,8 @@ export class ConfigService {
       id: workspaceId,
     });
     // `null` 涵盖「没这个工作区」「记录坏了」「id 想逃出 workspaces 根」三种
-    if (!workspace) throw codedError("unknown-workspace", `unknown workspace: ${workspaceId}`);
+    if (!workspace)
+      throw codedError(ERROR_CODES.unknownWorkspace, `unknown workspace: ${workspaceId}`);
     return join(workspace.path, ".ai-zen", "mcp.json");
   }
 }
@@ -352,14 +354,14 @@ function messageOf(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-function codeOf(cause: unknown): string | undefined {
+/**
+ * 取系统错误的 `code`（`ENOENT` / `EACCES` 这类）。
+ *
+ * 名字不叫 `codeOf`：协议包导出的 `codeOf` 读的是**本项目的错误码表**（`ERROR_CODES`，
+ * 也就是帧里那个 `code`），这里读的是 Node 的 errno 字符串 —— 两个概念同名会让人以为
+ * 能互换。
+ */
+function fsCodeOf(cause: unknown): string | undefined {
   const code = (cause as { code?: unknown } | null)?.code;
   return typeof code === "string" ? code : undefined;
-}
-
-/** 带机器可判别 code 的错误（守护进程原样回给客户端） */
-function codedError(code: string, message: string): Error & { code: string } {
-  const error = new Error(message) as Error & { code?: string };
-  error.code = code;
-  return error as Error & { code: string };
 }

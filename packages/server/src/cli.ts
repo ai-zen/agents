@@ -14,7 +14,6 @@
  */
 
 import { promises as fs } from "node:fs";
-import { createConnection, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Daemon } from "./daemon/Daemon.js";
@@ -23,14 +22,13 @@ import { createAssetHandlers } from "./daemon/assetHandlers.js";
 import { createConfigHandlers } from "./daemon/configHandlers.js";
 import { createSessionHandlers } from "./daemon/sessionHandlers.js";
 import {
+  DAEMON_METHODS,
+  callOnce,
   descriptorPath,
   isProcessAlive,
   readDescriptor,
   removeDescriptor,
-} from "./protocol/discovery.js";
-import { encodeFrame, FrameDecoder } from "./protocol/frames.js";
-import { DAEMON_METHODS } from "./protocol/daemon.js";
-import { PROTOCOL_VERSION } from "./protocol/messages.js";
+} from "@ai-zen/agents-protocol";
 import { SessionAgentFactory } from "./service/agent/SessionAgentFactory.js";
 import { AssetService } from "./service/asset/AssetService.js";
 import { globalAgentPaths } from "./service/agent/agentPaths.js";
@@ -122,62 +120,24 @@ async function openLog(aiZenDir: string): Promise<(level: string, message: strin
   };
 }
 
-/** 连上在跑的服务端，做一次握手 + 一次方法调用（stop / status 用） */
+/**
+ * 连上在跑的服务端问一句（`stop` / 单实例检查用）。
+ *
+ * 手搓 socket + 手搓解码这一段曾经在这里有 55 行：建连、发 `hello`、等回执、发请求、
+ * 认 `id`、超时、销毁。它与客户端 `status.ts`、`ensure-server.ts` 里的探活是**同一件事的
+ * 第三份实现** —— 现在它只有协议包里的一份（`callOnce`），三处都调它。
+ *
+ * 身份仍然署名本进程：`client` 是排查时最有用的一条事实（服务端日志里写着谁连的）。
+ */
 async function callRunning(
   host: string,
   port: number,
   method: string,
   timeoutMs = 2000,
 ): Promise<unknown> {
-  return await new Promise((resolve, reject) => {
-    const socket: Socket = createConnection({ host, port });
-    const decoder = new FrameDecoder();
-    let handled = false;
-    const timer = setTimeout(() => {
-      socket.destroy();
-      reject(new Error(`timeout after ${timeoutMs}ms calling ${method}`));
-    }, timeoutMs);
-
-    const done = (fn: () => void) => {
-      if (handled) return;
-      handled = true;
-      clearTimeout(timer);
-      socket.destroy();
-      fn();
-    };
-
-    socket.setEncoding("utf-8");
-    socket.on("connect", () => {
-      socket.write(
-        encodeFrame({
-          kind: "hello",
-          protocol: PROTOCOL_VERSION,
-          client: { name: "agents-server-cli", version: SERVER_VERSION },
-        }),
-      );
-    });
-    socket.on("data", (chunk: string) => {
-      for (const frame of decoder.push(chunk)) {
-        const value = frame as any;
-        if (value?.kind === "hello") {
-          if (!value.ok) {
-            done(() =>
-              reject(
-                new Error(`handshake failed: ${value.error?.code} ${value.error?.message ?? ""}`),
-              ),
-            );
-            return;
-          }
-          socket.write(encodeFrame({ id: 1, method }));
-          continue;
-        }
-        if (typeof value?.id === "number") {
-          if (value.ok) done(() => resolve(value.result));
-          else done(() => reject(new Error(`${value.error?.code}: ${value.error?.message}`)));
-        }
-      }
-    });
-    socket.on("error", (error) => done(() => reject(error)));
+  return await callOnce({ host, port }, method, undefined, {
+    timeoutMs,
+    client: { name: "agents-server-cli", version: SERVER_VERSION },
   });
 }
 

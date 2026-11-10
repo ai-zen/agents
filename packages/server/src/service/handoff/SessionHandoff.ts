@@ -38,7 +38,7 @@ import {
   type HandoffMode,
   type MigrationStrategy,
   type NoticePayload,
-} from "../../protocol/sessions.js";
+} from "@ai-zen/agents-protocol";
 import { agentPaths } from "../agent/agentPaths.js";
 
 /**

@@ -25,7 +25,7 @@ import {
   type HelloResponse,
   type ResponseFrame,
   type ServerEvent,
-} from "@ai-zen/agents-server/protocol";
+} from "@ai-zen/agents-protocol";
 import type { CallOptions, ClientInfo, ServerAddress, ServerClient } from "./types.js";
 
 interface PendingCall {

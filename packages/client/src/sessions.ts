@@ -2,7 +2,7 @@
  * 会话层的方法门面 —— 把 `ServerClient.call("session.xxx", …)` 收成带类型的方法。
  *
  * 为什么要这一层：`ServerClient.call` 的 `params` 是 `unknown`，逐处手写方法名与
- * 参数形状等于把线上契约抄一遍。这里每个方法都对着 `@ai-zen/agents-server` 的类型，
+ * 参数形状等于把线上契约抄一遍。这里每个方法都对着 `@ai-zen/agents-protocol` 的类型，
  * 协议改了这边编译不过，而不是运行期才 500。
  *
  * 它是**无状态**的薄封装（只持有连接）：TUI 拿到一个实例就能开/发/存/取快照。
@@ -32,7 +32,7 @@ import {
   type SubAgentSnapshotResult,
   type WorkspaceResolveResult,
   type WorkspaceFilesResult,
-} from "@ai-zen/agents-server/protocol";
+} from "@ai-zen/agents-protocol";
 import type { ServerClient } from "./types.js";
 
 /** 开一个会话要多说几句，单独成类型，避免调用点各拼一份 */
@@ -106,7 +106,7 @@ export class RemoteSessions {
   /**
    * 某个子 Agent 到目前为止的完整对话（Agent 栏目切过去时对齐用）。
    *
-   * 子 Agent 只活在当前一轮：`turn.end` 之后服务端会丢弃它，这条调用会报
+   * 子 Agent 只活在当前一轮：`session.turnEnd` 之后服务端会丢弃它，这条调用会报
    * `sub-agent-missing` —— 那不是服务端出错，客户端该做的是把栏目收回去。
    */
   async subAgentSnapshot(sessionId: string, subAgentId: string): Promise<SubAgentSnapshotResult> {
@@ -151,7 +151,7 @@ export class RemoteSessions {
    * 开始一轮；返回 `turnId`，过程与结果都走事件。
    *
    * `content` 可以是纯文本，也可以是「文本 + 图片」的内容块数组 —— 服务端不解释它，
-   * 原样交给 Agent（内容块怎么拼是客户端的事，见 `protocol/sessions.ts`）。
+   * 原样交给 Agent（内容块怎么拼是客户端的事，见 `@ai-zen/agents-protocol` 的 `sessions.ts`）。
    */
   async send(sessionId: string, content: MessageContent): Promise<SessionSendResult> {
     return await this.client.call<SessionSendResult>(SESSION_METHODS.send, { sessionId, content });
@@ -245,7 +245,7 @@ export class RemoteSessions {
    * 只产出交接文档（`/handoff`）：会话 id 不变、历史不动。
    *
    * 进度（`handoffWriting` / `handoffPath` / 降级）走 `session.notice`，流式正文走
-   * `message.delta` —— 这个方法可能要跑一两分钟，等回执期间界面靠事件渲染。
+   * `session.delta` —— 这个方法可能要跑一两分钟，等回执期间界面靠事件渲染。
    */
   async handoff(sessionId: string, mode?: HandoffMode): Promise<SessionHandoffResult> {
     return await this.client.call<SessionHandoffResult>(SESSION_METHODS.handoff, {

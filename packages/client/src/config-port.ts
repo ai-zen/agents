@@ -44,7 +44,7 @@ import {
   type SessionModelSetParams,
   type WorkspaceResolveResult,
   type AgentKind,
-} from "@ai-zen/agents-server/protocol";
+} from "@ai-zen/agents-protocol";
 // 只取类型：`AppConfig` / `AgentDefinition` / `ReasoningPresets` 是配置与定义在两端的
 // 共同形状，而**线上**刻意不认识 SDK（`config.get` 的 `config` 在协议里是 `unknown`）。
 // `import type` 在产物里被整体擦除，所以本包的运行期依赖图仍然只有 `./protocol` + node 内置

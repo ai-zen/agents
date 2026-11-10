@@ -5,7 +5,7 @@
  * 这个 Agent 的会话，不是"对某一段会话做事"。混进 `session.*` 会让调用方以为它只影响
  * 当前会话 —— 那种误解在"切换模型后另一个窗口也变了"时才被发现。
  *
- * 本文件两类方法，粒度不同（见 `protocol/config.ts` 里 `AGENT_METHODS` 的注释）：
+ * 本文件两类方法，粒度不同（见 `@ai-zen/agents-protocol` 里 `AGENT_METHODS` 的注释）：
  *
  *   - `agent.model.set`：**改一个字段**（`/model` 用）。请求形状被收窄成两个 id，
  *     实现挂在装配层 `SessionAgentFactory.setModel`（它要顺带清掉与新模型不兼容的
@@ -30,7 +30,7 @@ import {
   type AgentRemoveResult,
   type AgentSaveResult,
   type AgentSetModelResult,
-} from "../protocol/config.js";
+} from "@ai-zen/agents-protocol";
 
 export interface AgentHandlerOptions {
   /** 只需装配层的 `setModel`（写入 Agent 定义），不必把整个工厂交出去 */

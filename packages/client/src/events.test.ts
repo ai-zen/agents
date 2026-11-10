@@ -15,6 +15,7 @@ import {
   EventHub,
   SessionManager,
   SESSION_EVENTS,
+  SERVER_EVENTS,
   EVENT_METHODS,
   SESSION_METHODS,
   type AgentLike,
@@ -25,7 +26,7 @@ import { SocketServerClient } from "./socket-server-client.js";
 import type { ClientInfo } from "./types.js";
 
 class FakeAgent implements AgentLike {
-  messages: unknown[] = [];
+  messages: any[] = [];
   /** 三级解析的档位（真件由 SDK 的 `createAgent` 给；假件照抄这一位） */
   modelLevel: ModelLevel = "agent";
   private readonly handlers = new Map<string, Set<(...args: any[]) => void>>();
@@ -179,7 +180,7 @@ describe("两个通知通道", () => {
     const client = await start();
     const notices: ServerEvent[] = [];
     client.on(SESSION_EVENTS.notice, (event) => notices.push(event));
-    client.on(SESSION_EVENTS.globalNotice, (event) => notices.push(event));
+    client.on(SERVER_EVENTS.notice, (event) => notices.push(event));
 
     await client.call(EVENT_METHODS.watch);
     const created = await client.call<{ sessionId: string }>(SESSION_METHODS.create, {
@@ -188,7 +189,7 @@ describe("两个通知通道", () => {
     });
 
     manager!.notice(created.sessionId, { level: "error", code: "persistFailed" });
-    hub.publish({ event: SESSION_EVENTS.globalNotice, level: "warn", code: "mcpUnavailable" });
+    hub.publish({ event: SERVER_EVENTS.notice, level: "warn", code: "mcpUnavailable" });
 
     for (let i = 0; i < 100 && notices.length < 2; i++) {
       await new Promise((resolve) => setTimeout(resolve, 5));
@@ -201,7 +202,7 @@ describe("两个通知通道", () => {
       code: "persistFailed",
     });
     expect(notices[1]).toMatchObject({
-      event: "global.notice",
+      event: "server.notice",
       level: "warn",
       code: "mcpUnavailable",
     });

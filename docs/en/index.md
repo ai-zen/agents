@@ -52,14 +52,19 @@ agents/
 CLI / desktop main
         │
         ▼
-@ai-zen/agents-client  ──►  @ai-zen/agents-server/protocol
-                                        │ (the other entry of the same package)
-                                        ▼
+@ai-zen/agents-client  ──►  @ai-zen/agents-protocol  ◄──  @ai-zen/agents-server
+     (connection layer)     (wire contract: method/event    (session orchestration /
+                             names, payloads, error codes,   archives / workspaces)
+                             frames, discovery)
+                                            ▲
+                                            │ (types only)
 @ai-zen/agents-server  ──►  @ai-zen/agents-sdk  ──►  @ai-zen/agents-core  ──►  official openai SDK
   (session orchestration / archives / workspaces)  (capability pipeline / Scope / MCP)  (Agent runtime)
 ```
 
-The dependency direction is one-way, never reversed: `core ← sdk ← server`, `server/protocol ← client`, `client ← CLI / desktop main`. See [Architecture](architecture.md).
+The dependency direction is one-way, never reversed: `core ← sdk ← server`, `protocol ← server` and
+`protocol ← client` (**there is no edge between client and server**), `client ← CLI / desktop main`.
+See [Architecture](architecture.md).
 
 ## Quick start
 

@@ -5,40 +5,15 @@
  * 是可跨端传输的事实（`kind` + 工具名），渲染成「连接中…」还是「Connecting…」由客户端决定。
  * 这条分工与 `session-commands/registry.ts` 存 `descriptionKey` 不存文案是同一个道理。
  *
- * | 阶段 | 判据 | 用户真正关心什么 |
- * |------|------|------------------|
- * | `connecting` | `onInnerLoopStart`（请求即将发出）→ `open`（响应头到达） | 是不是网络卡住了 |
- * | `queued` | `open` 之后、首个内容 chunk 之前 | 服务端排队 / 冷启动，还没开始吐字 |
- * | `thinking` | 收到 `reasoning_content` delta | 推理模型中 |
- * | `tool-calling` | 收到 `tool_calls` delta（正在拼参数） | 模型在决定调哪个工具 |
- * | `tool-waiting` | 流结束且本轮带工具调用 | 工具在跑，模型没在跑 |
- * | `streaming` | 收到 `content` delta | 正在输出正文 |
+ * ## 形状在协议包里，状态机在这里
+ *
+ * `PhaseKind` / `PhaseInfo` / `ToolCallRef` 搬到 `@ai-zen/agents-protocol` 了 —— 它们是
+ * **线上载荷的形状**（快照与 `session.phase` 都在传），不能由服务端某个内部状态机拥有。
+ * 本文件只剩**实现**：六态怎么判定、按 index 记工具名、从流末消息里取出全部调用。
+ * 客户端不需要这个类（它收到的是判定好的 `kind`）。
  */
 
-/** 生成阶段（见文件头表格） */
-export type PhaseKind =
-  "connecting" | "queued" | "thinking" | "tool-calling" | "tool-waiting" | "streaming";
-
-/** 一次工具调用的最小身份：`id` 用来和结果消息配对，`name` 用来展示 */
-export interface ToolCallRef {
-  id?: string;
-  name: string;
-}
-
-export interface PhaseInfo {
-  kind: PhaseKind;
-  /** 工具名（`tool-calling` 时有值：正在拼参数的那一个） */
-  tool?: string;
-  /**
-   * 还在等的工具名（`tool-waiting` 时有值）。
-   *
-   * 存数组而不是单个名字：并行工具只报第一个就是「在等 exec 却说 edit」的由来。
-   * 由读取方（`ChatSession.phase`）按结果状态筛过一遍，这里是「仍在跑」的那几个。
-   */
-  tools?: string[];
-  /** `tool-waiting` 时这一轮的全部调用（带 id），供读取方按状态筛选 */
-  calls?: ToolCallRef[];
-}
+import type { PhaseInfo, PhaseKind, ToolCallRef } from "@ai-zen/agents-protocol";
 
 /**
  * 结果消息里能表示「这个工具已经结束」的状态（其余一律视为仍在跑）。

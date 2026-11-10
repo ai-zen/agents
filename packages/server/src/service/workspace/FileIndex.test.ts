@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FileIndex, INDEX_TTL_MS, fromGitList, type FileIndexDeps } from "./FileIndex.js";
-import type { WorkspaceFileEntry } from "../../protocol/sessions.js";
+import type { WorkspaceFileEntry } from "@ai-zen/agents-protocol";
 
 describe("fromGitList：git 的文件清单 → 「文件 + 祖先目录」条目", () => {
   it("从每个文件反推祖先目录：`dir: true` 条目排在文件之前（客户端靠它渲染可钻的目录行）", () => {

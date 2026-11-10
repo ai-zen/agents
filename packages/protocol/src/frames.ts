@@ -14,9 +14,15 @@
 /** 单帧上限：8 MiB。超了直接判协议错误，不做"尽力截断" */
 export const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 
-/** 帧编码：对象 → 一行文本（含结尾换行） */
-export function encodeFrame(message: unknown): string {
-  return JSON.stringify(message) + "\n";
+/**
+ * 帧编码：对象 → 一行文本（含结尾换行）。
+ *
+ * 参数叫 `frame` 而不是「一条消息」：它就是「要被编码的那个帧对象」，与对话消息毫无关系
+ * —— 后者现在是具名类型（`Message`）。两个概念共用一个词，会让「载荷里不许有匿名的
+ * 对话消息」那条 grep 检查误报。
+ */
+export function encodeFrame(frame: unknown): string {
+  return JSON.stringify(frame) + "\n";
 }
 
 /**

@@ -37,6 +37,7 @@ import {
   type HandoffService,
   type ModelParams,
 } from "@ai-zen/agents-sdk";
+import { ERROR_CODES, codedError } from "@ai-zen/agents-protocol";
 import { agentPaths, globalAgentPaths, type AgentPaths } from "./agentPaths.js";
 import type { AgentLike, CreateAgentInput } from "../session/SessionManager.js";
 
@@ -135,11 +136,11 @@ export class SessionAgentFactory {
     const config = await this.readConfig(configFile);
 
     const model = (config.models ?? []).find((item) => item.id === input.modelId);
-    if (!model) throw codedError("unknown-model", `unknown model: ${input.modelId}`);
+    if (!model) throw codedError(ERROR_CODES.unknownModel, `unknown model: ${input.modelId}`);
 
     const repository = new AgentRepository(agentsDir);
     const definition = await repository.read(input.agentId);
-    if (!definition) throw codedError("unknown-agent", `unknown agent: ${input.agentId}`);
+    if (!definition) throw codedError(ERROR_CODES.unknownAgent, `unknown agent: ${input.agentId}`);
 
     const next: AgentDefinition = {
       ...definition,
@@ -318,11 +319,4 @@ async function defaultCreateScope(input: { config: AppConfig; paths: AgentPaths 
 /** 只保留真实存在的路径：不存在的不参与发现（也不该在候选里多一行） */
 function existing(paths: string[]): string[] {
   return paths.filter((path) => existsSync(path));
-}
-
-/** 带机器可判别 code 的错误（守护进程原样回给客户端） */
-function codedError(code: string, message: string): Error & { code: string } {
-  const error = new Error(message) as Error & { code?: string };
-  error.code = code;
-  return error as Error & { code: string };
 }

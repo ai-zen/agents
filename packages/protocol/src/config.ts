@@ -23,8 +23,8 @@
  * 焊在一起：SDK 改一次内部类型，所有客户端都得跟着发版。所以：
  *
  *   - `config` / `presets` / `agent` / `definition` 一律是 `unknown`：形状由 SDK 定义并演进，
- *     协议层**不解释**（与 `sessions.ts` 的 `messages: unknown[]` / `lastUsage?: unknown`
- *     是同一口径 —— 那里已经开过这个先例）；
+ *     协议层**不解释**（消息形状是唯一的例外：它是落盘格式、也是 core 的数据模型，所以
+ *     `sessions.ts` 用 `model.ts` 转出的具名类型，不再当 `unknown` 搬运）；
  *   - 只有**协议自己必须收窄**的东西才在这里写死类型（`McpScope`、`kind`），因为它们是
  *     「客户端要能自己拼出请求」的最小词汇表，不写死就没法校验；
  *   - 唯一一处「形状写进了协议」的是 `config.mcp.get` 的 `{ ok, error }` 联合 —— 那不是

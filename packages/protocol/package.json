@@ -1,0 +1,48 @@
+{
+  "name": "@ai-zen/agents-protocol",
+  "version": "0.1.0",
+  "description": "AI-Zen Agents Protocol — 两进程之间的线上契约：怎么找到对方 / 怎么说话 / 说什么形状",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ai-zen/agents.git",
+    "directory": "packages/protocol"
+  },
+  "homepage": "https://github.com/ai-zen/agents/tree/main/packages/protocol#readme",
+  "bugs": {
+    "url": "https://github.com/ai-zen/agents/issues"
+  },
+  "scripts": {
+    "clean": "rimraf ./dist",
+    "prebuild": "npm run clean",
+    "build": "tsc",
+    "pretest": "tsc --noEmit -p tsconfig.test.json",
+    "test": "vitest run",
+    "test:all": "npm run pretest && vitest run && npm run build"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "protocol",
+    "contract",
+    "wire"
+  ],
+  "author": "LZQCN",
+  "license": "MIT",
+  "dependencies": {
+    "@ai-zen/agents-core": "workspace:^"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.2",
+    "rimraf": "^6.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vitest": "^5.1.0"
+  },
+  "files": [
+    "dist",
+    "CHANGELOG.md"
+  ]
+}

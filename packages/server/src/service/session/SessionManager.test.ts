@@ -6,7 +6,13 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SessionManager, type AgentLike, type CreateAgentInput } from "./SessionManager.js";
 import { FileSessionStore } from "../store/FileSessionStore.js";
 import type { SessionRecord, SessionStore } from "../store/SessionStore.js";
-import type { HandoffMode, ServerEvent, SessionListEntry } from "../../protocol/sessions.js";
+import type {
+  HandoffMode,
+  Message,
+  ServerEvent,
+  SessionListEntry,
+  Usage,
+} from "@ai-zen/agents-protocol";
 import type { AutoTitleRequest } from "./AutoTitle.js";
 import { EventHub } from "../events/EventHub.js";
 import { resolveModel } from "@ai-zen/agents-sdk";
@@ -14,7 +20,7 @@ import { resolveModel } from "@ai-zen/agents-sdk";
 /**
  * 等一轮真正收尾。
  *
- * 收尾是**异步**的：`settleTurn` 先落盘、再发 `turn.end`（顺序是那条需求的全部意义）。
+ * 收尾是**异步**的：`settleTurn` 先落盘、再发 `session.turnEnd`（顺序是那条需求的全部意义）。
  * 所以驱动完 `finally` 之后要等一拍再断言，否则测的是「还没写完」而不是「没发」
  * —— 这与本仓「等条件成立」的约定同一个意思，只是这里的条件就是「异步收尾跑完」。
  */
@@ -55,7 +61,7 @@ function fakeClock() {
  */
 class FakeAgent implements AgentLike {
   messages: any[] = [];
-  lastUsage: unknown = undefined;
+  lastUsage: any = undefined;
   sent: string[] = [];
   aborted = 0;
   /** 让 `send()` 挂住：用来证明 manager.send 不等一轮跑完 */
@@ -141,6 +147,17 @@ function fireChunk(
   chunk: unknown,
 ): void {
   target.fire("chunk-parsed", { role: "assistant" }, chunk);
+}
+
+/**
+ * 造一条**存档里的**消息（`SessionRecord<Message>`）。
+ *
+ * 存档正文的形状现在是协议转出的 core `Message` —— `role` 是 core 的 `Role` 枚举，
+ * 而用例只关心「这是一条 user 消息」。收窄只发生在这里（一处），
+ * 免得每条用例都写一遍 `as`；运行期不校验（存档本来就是 JSON，读回来就是这个形状）。
+ */
+function storedMessage(role: "user" | "assistant" | "system", content: string): Message {
+  return { id: `m_${role}`, role: role as Message["role"], content };
 }
 
 let agent: FakeAgent;
@@ -409,13 +426,13 @@ describe("SessionManager：turnId 与「不等一轮跑完」", () => {
     expect(pick("session.phase").at(-1)!.turnId).toBe(2);
   });
 
-  it("agent.send() 自己抛错 → 本轮以 turn.end(ok:false) 收尾", async () => {
+  it("agent.send() 自己抛错 → 本轮以 session.turnEnd(ok:false) 收尾", async () => {
     const { sessionId } = await create();
     agent.holdSend = Promise.reject(Object.assign(new Error("boom"), { code: "net" }));
     manager.send(sessionId, "x");
     await new Promise((resolve) => setTimeout(resolve, 0)); // 让 rejection 落地
 
-    const end = pick("turn.end").at(-1)!;
+    const end = pick("session.turnEnd").at(-1)!;
     expect(end.ok).toBe(false);
     expect(end.error).toEqual({ code: "net", message: "boom" });
   });
@@ -489,7 +506,7 @@ describe("SessionManager：并发守卫（一轮在跑时不再起第二轮）",
     const { sessionId } = await hangTurn();
     agent.fire("finally");
     await settled();
-    expect(pick("turn.end").at(-1)).toMatchObject({ turnId: 1, ok: true });
+    expect(pick("session.turnEnd").at(-1)).toMatchObject({ turnId: 1, ok: true });
 
     expect(guarded.send(sessionId, "第二轮")).toEqual({ turnId: 2 });
     expect(agent.sent).toEqual(["第一轮", "第二轮"]);
@@ -521,7 +538,7 @@ describe("SessionManager：并发守卫（一轮在跑时不再起第二轮）",
     // 中止只负责掐断，收尾仍由 SDK 的 `finally` 落地（会话层不替它宣布结束）
     agent.fire("finally");
     await settled();
-    expect(pick("turn.end").at(-1)).toMatchObject({ turnId: 1 });
+    expect(pick("session.turnEnd").at(-1)).toMatchObject({ turnId: 1 });
 
     expect(guarded.send(sessionId, "再来一轮")).toEqual({ turnId: 2 });
   });
@@ -545,7 +562,7 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
     agent.fire("finally");
     await settled();
     expect((await manager.list("ws-1"))[0]!.phase).toBeNull();
-    expect(pick("turn.end").at(-1)!.ok).toBe(true);
+    expect(pick("session.turnEnd").at(-1)!.ok).toBe(true);
   });
 
   it("正文与推理增量分别上报；只带 usage 的收尾 chunk 只带用量、不带正文", async () => {
@@ -565,12 +582,12 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
       usage: { completion_tokens: 42, total_tokens: 51 },
     });
 
-    expect(pick("message.delta").map((e) => [e.text, e.reasoning])).toEqual([
+    expect(pick("session.delta").map((e) => [e.text, e.reasoning])).toEqual([
       ["", "想…"],
       ["答案", ""],
       ["", ""],
     ]);
-    expect(pick("message.delta").at(-1)!.usage).toEqual({ completionTokens: 42 });
+    expect(pick("session.delta").at(-1)!.usage).toEqual({ completionTokens: 42 });
   });
 
   it("本轮带工具调用：streamEnded 之后进 tool-waiting，并报出全部工具名", async () => {
@@ -622,7 +639,7 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
     });
   });
 
-  it("error 与 finally 都会到：turn.end 只发一次，且带上错误", async () => {
+  it("error 与 finally 都会到：session.turnEnd 只发一次，且带上错误", async () => {
     const { sessionId } = await create();
     manager.send(sessionId, "hi");
 
@@ -630,7 +647,7 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
     agent.fire("finally");
     await settled();
 
-    const ends = pick("turn.end");
+    const ends = pick("session.turnEnd");
     expect(ends).toHaveLength(1);
     expect(ends[0]).toMatchObject({ ok: false, error: { code: "timeout", message: "超时" } });
     expect((await manager.list("ws-1"))[0]!.phase).toBeNull();
@@ -742,7 +759,7 @@ describe("SessionManager：工具调用的组装态（session.toolCalls）", () 
  * 工具结果消息（`session.messageAppended`）—— 工具跑完一个就推一条，不等一轮结束。
  *
  * 这一组盯的是**时机与身份**：推的是哪一条消息（刚定型的工具结果）、什么时候推（`tool-call-end`
- * 那一刻，不是 `turn.end` 之后）、以及推第几次（同一条只推一次，跨轮不串）。每条用例都按真件
+ * 那一刻，不是 `session.turnEnd` 之后）、以及推第几次（同一条只推一次，跨轮不串）。每条用例都按真件
  * 的形状摆布 `agent.messages`：结果消息在执行**前**就以 `pending` 追加、跑完才翻终态。
  */
 describe("SessionManager：工具结果消息（session.messageAppended）", () => {
@@ -750,7 +767,7 @@ describe("SessionManager：工具结果消息（session.messageAppended）", () 
   const appended = () =>
     pick("session.messageAppended").map((event) => event.message as Record<string, any>);
 
-  it("工具一跑完就把结果消息推上线：不必等 turn.end，推的就是那一条", async () => {
+  it("工具一跑完就把结果消息推上线：不必等 session.turnEnd，推的就是那一条", async () => {
     const { sessionId } = await create();
     manager.send(sessionId, "hi");
 
@@ -769,8 +786,8 @@ describe("SessionManager：工具结果消息（session.messageAppended）", () 
       content: "总用量 12",
       status: "completed",
     });
-    // 此刻这一轮还没收尾 —— 这正是这条事件存在的理由（快照要等到 turn.end 之后）
-    expect(pick("turn.end")).toHaveLength(0);
+    // 此刻这一轮还没收尾 —— 这正是这条事件存在的理由（快照要等到 session.turnEnd 之后）
+    expect(pick("session.turnEnd")).toHaveLength(0);
   });
 
   it("同一条结果不会推第二次：没有新消息就不发", async () => {
@@ -803,7 +820,7 @@ describe("SessionManager：工具结果消息（session.messageAppended）", () 
     expect(appended().map((message) => message.content)).toEqual(["第一次", "第二次"]);
   });
 
-  it("只推工具结果：同一批里的 assistant 消息不推（它由 message.delta + 占位消息在画）", async () => {
+  it("只推工具结果：同一批里的 assistant 消息不推（它由 session.delta + 占位消息在画）", async () => {
     const { sessionId } = await create();
     manager.send(sessionId, "hi");
 
@@ -942,9 +959,9 @@ describe("SessionManager：子 Agent（栏目）", () => {
     fireChunk(sub, { choices: [{ delta: { reasoning_content: "想…" } }] });
     fireChunk(sub, { choices: [{ delta: { content: "子" } }] });
 
-    expect(pick("message.delta").slice(-2)).toEqual([
+    expect(pick("session.delta").slice(-2)).toEqual([
       {
-        event: "message.delta",
+        event: "session.delta",
         sessionId,
         turnId: 1,
         subAgentId: "sub-1",
@@ -952,7 +969,7 @@ describe("SessionManager：子 Agent（栏目）", () => {
         reasoning: "想…",
       },
       {
-        event: "message.delta",
+        event: "session.delta",
         sessionId,
         turnId: 1,
         subAgentId: "sub-1",
@@ -1083,8 +1100,8 @@ describe("SessionManager：子 Agent（栏目）", () => {
 });
 
 /** 内存存档：续接与 save 的用例不需要碰磁盘 */
-class MemoryStore implements SessionStore {
-  readonly records = new Map<string, SessionRecord>();
+class MemoryStore implements SessionStore<Message> {
+  readonly records = new Map<string, SessionRecord<Message>>();
   pointer: string | null = null;
   /** 每个 id 的最后写入时刻（真件把这个落在清单里，见 `FileSessionStore`） */
   private readonly written = new Map<string, string>();
@@ -1123,11 +1140,11 @@ class MemoryStore implements SessionStore {
    * 缝：需要「最后一次活动是很久以前」的用例，不能靠 `write()` 之后再等 —— 那测到的是
    * 时钟，不是「续接有没有改写它」。
    */
-  seed(record: SessionRecord, updatedAt: string) {
+  seed(record: SessionRecord<Message>, updatedAt: string) {
     this.records.set(record.id, record);
     this.written.set(record.id, updatedAt);
   }
-  async write(record: SessionRecord) {
+  async write(record: SessionRecord<Message>) {
     this.records.set(record.id, record);
     this.written.set(record.id, new Date(Date.now() + this.written.size).toISOString());
   }
@@ -1321,7 +1338,7 @@ describe("SessionManager：上一轮会话指针（session.last）", () => {
     // 这条必须用**真存盘**：要证的正是「指针文件还在、它指着的那份存档没了」；
     // 内存存档的 remove 只是从一个 Map 里删键，证明不了指针会过期。
     const root = await fs.mkdtemp(join(tmpdir(), "aiz-last-pointer-"));
-    const store = new FileSessionStore({ rootDir: root });
+    const store = new FileSessionStore<Message>({ rootDir: root });
     const diskManager = new SessionManager({
       createAgent: async () => agent,
       nextSessionId: () => "chat_disk",
@@ -1416,9 +1433,9 @@ describe("SessionManager：通知（两个通道）", () => {
     const mine: ServerEvent[] = [];
     withHub.subscribe((event) => mine.push(event));
 
-    hub.publish({ event: "global.notice", level: "warn", code: "mcpUnavailable" });
+    hub.publish({ event: "server.notice", level: "warn", code: "mcpUnavailable" });
 
-    expect(mine).toEqual([{ event: "global.notice", level: "warn", code: "mcpUnavailable" }]);
+    expect(mine).toEqual([{ event: "server.notice", level: "warn", code: "mcpUnavailable" }]);
   });
 });
 
@@ -1466,13 +1483,13 @@ describe("SessionManager：交接 / 迁移", () => {
     expect(existsSync(result.handoffPath)).toBe(true);
     expect(result.handoffPath.startsWith(join(workspace, ".ai-zen", "handoffs"))).toBe(true);
     expect(agent.messages).toEqual(before); // 摘要模式不碰消息
-    // 交接回合（指令 + 回执）留在会话里，而「每轮 turn.end 前落盘」对它同样成立：
+    // 交接回合（指令 + 回执）留在会话里，而「每轮 session.turnEnd 前落盘」对它同样成立：
     // 用户 `/handoff` 完直接退出，回来时这一段必须在存档里（旧版由
     // `ConversationPersistPlugin.onInnerLoopEnd` 承担同一件事）。
     expect([...store.records.keys()]).toEqual([sessionId]);
   });
 
-  it("每轮收尾自动落盘：`turn.end` 之前写进存档，并把「本工作区上一轮」指过去", async () => {
+  it("每轮收尾自动落盘：`session.turnEnd` 之前写进存档，并把「本工作区上一轮」指过去", async () => {
     const { sessionId } = await handoffManager.create({ workspaceId: "ws-1", path: workspace });
     handoffManager.send(sessionId, "第一句");
     agent.messages = [
@@ -1510,8 +1527,8 @@ describe("SessionManager：交接 / 迁移", () => {
     agent.fire("finally");
     await settled();
 
-    // `ai "…"` 的全部要求：这一轮确实跑完了（`turn.end` 已发），但工作区里什么都没变
-    expect(events.some((event) => event.event === "turn.end")).toBe(true);
+    // `ai "…"` 的全部要求：这一轮确实跑完了（`session.turnEnd` 已发），但工作区里什么都没变
+    expect(events.some((event) => event.event === "session.turnEnd")).toBe(true);
     expect(store.records.size).toBe(0);
     expect(await store.lastSession()).toBeNull();
   });
@@ -1568,7 +1585,7 @@ describe("SessionManager：交接 / 迁移", () => {
     expect((await store.lastSession())!.id).toBe(result.sessionId);
 
     // 收尾事件的 sessionId 是**旧** id：客户端先看到那一轮结束，再从响应里拿到新 id
-    const end = pick("turn.end").at(-1)!;
+    const end = pick("session.turnEnd").at(-1)!;
     expect(end).toMatchObject({ sessionId, ok: true });
   });
 
@@ -1627,7 +1644,7 @@ describe("SessionManager：交接 / 迁移", () => {
 
     await expect(pending).rejects.toMatchObject({ code: "handoff-aborted" });
     // 取消不是失败：本轮以 ok:false 收尾，另有一条「已取消」的对话内通知
-    expect(pick("turn.end").at(-1)).toMatchObject({
+    expect(pick("session.turnEnd").at(-1)).toMatchObject({
       sessionId,
       ok: false,
       error: { code: "aborted" },
@@ -2098,7 +2115,7 @@ describe("SessionManager：attach（会话活得比连接久）", () => {
   });
 
   it("接一个活着的会话：消息仍是它当前的，不被存档覆盖", async () => {
-    const store = new FileSessionStore({ rootDir: tempRoot("aiz-attach") });
+    const store = new FileSessionStore<Message>({ rootDir: tempRoot("aiz-attach") });
     const m = new SessionManager({
       createAgent: async () => agent,
       nextSessionId: () => `chat_${++sessionCounter}`,
@@ -2110,7 +2127,7 @@ describe("SessionManager：attach（会话活得比连接久）", () => {
     await store.write({
       id: "chat_live",
       agentId: "default",
-      messages: [{ role: "user", content: "旧" }],
+      messages: [storedMessage("user", "旧")],
     });
 
     await m.attach({ workspaceId: "ws-1", path: "/p", sessionId: first.sessionId });
@@ -2119,7 +2136,7 @@ describe("SessionManager：attach（会话活得比连接久）", () => {
   });
 
   it("接一段只在盘上的会话：从存档装配 Agent 并装回消息", async () => {
-    const store = new FileSessionStore({ rootDir: tempRoot("aiz-attach2") });
+    const store = new FileSessionStore<Message>({ rootDir: tempRoot("aiz-attach2") });
     const m = new SessionManager({
       createAgent: async () => agent,
       nextSessionId: () => `chat_${++sessionCounter}`,
@@ -2128,17 +2145,17 @@ describe("SessionManager：attach（会话活得比连接久）", () => {
     await store.write({
       id: "chat_disk",
       agentId: "reviewer",
-      messages: [{ role: "user", content: "旧对话" }],
+      messages: [storedMessage("user", "旧对话")],
     });
 
     const attached = await m.attach({ workspaceId: "ws-1", path: "/p", sessionId: "chat_disk" });
 
     expect(attached).toMatchObject({ sessionId: "chat_disk", agentId: "reviewer" });
-    expect(agent.messages).toEqual([{ role: "user", content: "旧对话" }]);
+    expect(agent.messages).toEqual([storedMessage("user", "旧对话")]);
   });
 
   it("内存和盘上都没有这个 id：报 session-missing（绝不悄悄开一段空的）", async () => {
-    const store = new FileSessionStore({ rootDir: tempRoot("aiz-attach3") });
+    const store = new FileSessionStore<Message>({ rootDir: tempRoot("aiz-attach3") });
     const m = new SessionManager({ createAgent: async () => agent, storeFor: () => store });
 
     await expect(
@@ -2161,11 +2178,11 @@ describe("SessionManager：attach（会话活得比连接久）", () => {
   });
 
   it("自动分配的 id 撞上**盘上的**存档：也不覆盖，换一个", async () => {
-    const store = new FileSessionStore({ rootDir: tempRoot("aiz-free") });
+    const store = new FileSessionStore<Message>({ rootDir: tempRoot("aiz-free") });
     await store.write({
       id: "chat_same",
       agentId: "default",
-      messages: [{ role: "user", content: "别人的对话" }],
+      messages: [storedMessage("user", "别人的对话")],
     });
     const m = new SessionManager({
       createAgent: async () => agent,
@@ -2178,7 +2195,7 @@ describe("SessionManager：attach（会话活得比连接久）", () => {
     expect(created.sessionId).toBe("chat_same_2");
     // 旧存档原封不动
     expect((await store.read("chat_same"))?.messages).toEqual([
-      { role: "user", content: "别人的对话" },
+      storedMessage("user", "别人的对话"),
     ]);
   });
 });
@@ -2278,7 +2295,7 @@ describe("SessionManager：续接不是一次活动（updatedAt）", () => {
       { role: "user", content: "又聊了一句" },
     ];
     agent.fire("finally");
-    // 收尾是异步的（先落盘、再 `turn.end`）：等到那个时间真的变新为止
+    // 收尾是异步的（先落盘、再 `session.turnEnd`）：等到那个时间真的变新为止
     await until(
       async () => Date.parse((await listedAt("chat_old")).updatedAt) > Date.parse(ARCHIVED_AT),
     );
@@ -2348,7 +2365,7 @@ describe("SessionManager：保活区 / 换 Agent / 关闭", () => {
     expect((await live.list("ws-1"))[0]!.live).toBe(true);
   });
 
-  it("移出保活且空闲：当场回收（不用等下一次 turn.end），存档留着", async () => {
+  it("移出保活且空闲：当场回收（不用等下一次 session.turnEnd），存档留着", async () => {
     const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
     await runTurn(sessionId);
 
@@ -2360,7 +2377,7 @@ describe("SessionManager：保活区 / 换 Agent / 关闭", () => {
     expect(store.records.get(sessionId)!.messages).toHaveLength(2);
   });
 
-  it("一轮还在跑时移出保活：不打断它，turn.end 收尾时才回收", async () => {
+  it("一轮还在跑时移出保活：不打断它，session.turnEnd 收尾时才回收", async () => {
     const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
 
     live.send(sessionId, "长任务");
@@ -3318,7 +3335,7 @@ describe("SessionManager：标题与删除（id 与 title 分开）", () => {
   });
 });
 
-describe("SessionManager：自动标题（第一轮 turn.end 之后异步起名）", () => {
+describe("SessionManager：自动标题（第一轮 session.turnEnd 之后异步起名）", () => {
   let store: MemoryStore;
   let titleManager: SessionManager;
   /** 注入缝：这一份就是用例的「模型」。调用记录 = 服务端到底发了什么 */
@@ -3354,15 +3371,15 @@ describe("SessionManager：自动标题（第一轮 turn.end 之后异步起名�
 
   /** 跑一轮（把消息造出来再驱动 `finally`），等到这一轮真的收尾 */
   const runTurn = async (sessionId: string, content = "帮我把迁移改成 omit") => {
-    const before = pick("turn.end").length;
+    const before = pick("session.turnEnd").length;
     titleManager.send(sessionId, content);
     agent.messages.push({ role: "user", content });
     agent.messages.push({ role: "assistant", content: "好" });
     agent.fire("finally");
-    await until(() => pick("turn.end").length > before);
+    await until(() => pick("session.turnEnd").length > before);
   };
 
-  it("命名不阻塞收尾：`turn.end` 先到，标题与事件随后才来", async () => {
+  it("命名不阻塞收尾：`session.turnEnd` 先到，标题与事件随后才来", async () => {
     // 假件照抄真件的形状：SDK 会把三级解析的结果写进它交给 Agent 的那份定义
     (agent as unknown as { definition: { modelId?: string } }).definition.modelId = "m-live";
     const { sessionId } = await titleManager.create({ workspaceId: "ws-1", path: "/p" });
@@ -3453,7 +3470,7 @@ describe("SessionManager：自动标题（第一轮 turn.end 之后异步起名�
     expect(pick("session.notice")).toEqual([]);
     expect(store.records.get(sessionId)!.title).toBeUndefined();
     // 这一轮照样结束了（失败的是标题，不是对话）
-    expect(pick("turn.end").at(-1)).toMatchObject({ sessionId, ok: true });
+    expect(pick("session.turnEnd").at(-1)).toMatchObject({ sessionId, ok: true });
 
     // 第二轮不重试（"不许重试轰炸"）
     await runTurn(sessionId, "再问一句");
@@ -3482,7 +3499,7 @@ describe("SessionManager：自动标题（第一轮 turn.end 之后异步起名�
     agent.fire("finally");
 
     // 等到「这一轮已收尾」与「标题请求已被超时取消」两件事都成立
-    await until(() => pick("turn.end").length === 1);
+    await until(() => pick("session.turnEnd").length === 1);
     await until(() => pick("session.titleChanged").length === 0 && store.records.has(sessionId));
     await settled();
 
@@ -3558,7 +3575,7 @@ describe("SessionManager：迁移策略（omit 与 prune 是两种结局，不�
 
     // `turnId` 继续累加（迁移本身也是一轮），收尾事件仍在同一个 id 上
     expect((await strategyManager.snapshot(sessionId)).turnId).toBe(2);
-    expect(pick("turn.end").at(-1)).toMatchObject({ sessionId, ok: true });
+    expect(pick("session.turnEnd").at(-1)).toMatchObject({ sessionId, ok: true });
 
     // 不再有「旧会话已另存」那条通知：它根本没有被另存成一段
     expect(pick("session.notice").map((notice) => notice.code)).toEqual([

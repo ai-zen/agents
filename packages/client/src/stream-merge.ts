@@ -15,18 +15,19 @@
  * 之后的增量该继续往哪条上拼」。不碰 socket、不读时钟、不留状态、不抛错 —— 因此不挑剔调用方
  * 是 TUI 还是 Electron 主进程，也能被单测直接钉住时序（这条竞态靠真 socket 复现不了，要凑）。
  *
- * 它对 core 只 `import type`：产物 `dist/*.js` 里没有 `@ai-zen/agents-core`（见 README
- * 「产物的运行期依赖图必须闭合」那条）。
+ * 消息形状从协议包拿（`Message`）：协议是数据模型的**唯一出口**，客户端不再直接去 core 里
+ * 捞类型（D12）。类型在产物里被抹掉，所以运行期依赖图仍然只有 `@ai-zen/agents-protocol` +
+ * `node:*`（见 README「产物的运行期依赖图必须闭合」）。
  */
 
-import type { AgentNS } from "@ai-zen/agents-core";
+import type { Message } from "@ai-zen/agents-protocol";
 
 /**
- * `AgentNS.Role.Assistant` 的同值镜像。
+ * `Role.Assistant` 的同值镜像。
  *
- * 为什么不用枚举本身：本包对 core 只 `import type`（见文件头），枚举对象是运行期的东西，
- * type-only import 取不到它。值写错编译器会拦 —— `Role` 与该字面量不重叠时报 TS2367；
- * 用例那边又用真的 `AgentNS.Role.Assistant` 造数据，两处一起把这个值钉死。
+ * 为什么不用枚举本身：协议只**转出类型**、不转出 `Role`（它是运行期有对象的值，转出就等于
+ * 把 core 拖进本包的运行期依赖图）。值写错编译器会拦 —— `Message["role"]` 与该字面量不
+ * 重叠时报 TS2367；用例那边又用真的 `AgentNS.Role.Assistant` 造数据，两处一起把这个值钉死。
  */
 const ROLE = { Assistant: "assistant" } as const;
 
@@ -40,7 +41,7 @@ const ROLE = { Assistant: "assistant" } as const;
  */
 export interface StreamedAssistant {
   /** 临时消息：同时也是调用方消息列表里的那一条（增量就地改它，屏幕才跟得上） */
-  message: AgentNS.Message;
+  message: Message;
   /** 累计正文（= `message.content`，单独存一份，省得每次从联合类型里往外捞） */
   text: string;
   /** 累计推理内容（推理模型才有） */
@@ -79,9 +80,9 @@ export interface StreamedAssistant {
  * （要凑时序），而它恰恰是最容易写错的那十几行。
  */
 export function mergeStreamedSnapshot(
-  snapshot: readonly AgentNS.Message[],
+  snapshot: readonly Message[],
   stream: StreamedAssistant | null,
-): { messages: AgentNS.Message[]; stream: StreamedAssistant | null } {
+): { messages: Message[]; stream: StreamedAssistant | null } {
   const base = [...snapshot];
   if (!stream || (!stream.text && !stream.reasoning)) return { messages: base, stream };
 
@@ -107,7 +108,7 @@ export function mergeStreamedSnapshot(
     ? stream.text.slice(confirmed.length)
     : stream.text;
   const appended = withAssistantText(
-    { role: ROLE.Assistant, content: "" } as AgentNS.Message,
+    { role: ROLE.Assistant, content: "" } as Message,
     rest,
     stream.reasoning,
   );
@@ -115,12 +116,8 @@ export function mergeStreamedSnapshot(
 }
 
 /** 写一条 assistant 消息的正文/推理，其余字段（`tool_calls` 等）原样保留 */
-function withAssistantText(
-  message: AgentNS.Message,
-  text: string,
-  reasoning: string,
-): AgentNS.Message {
-  const next = { ...message, role: ROLE.Assistant, content: text } as AgentNS.Message;
+function withAssistantText(message: Message, text: string, reasoning: string): Message {
+  const next = { ...message, role: ROLE.Assistant, content: text } as Message;
   if (reasoning) next.reasoning_content = reasoning;
   return next;
 }

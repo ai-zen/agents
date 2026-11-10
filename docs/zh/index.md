@@ -52,14 +52,16 @@ agents/
 CLI / 桌面端 main
         │
         ▼
-@ai-zen/agents-client  ──►  @ai-zen/agents-server/protocol
-                                        │（同一个包的另一条出口）
-                                        ▼
+@ai-zen/agents-client  ──►  @ai-zen/agents-protocol  ◄──  @ai-zen/agents-server
+        （连接层）                  （线上契约：方法/事件名、载荷、错误码、帧、发现）    （会话编排 / 存档 / 工作区）
+                                            ▲
+                                            │（只取类型）
 @ai-zen/agents-server  ──►  @ai-zen/agents-sdk  ──►  @ai-zen/agents-core  ──►  openai 官方 SDK
  （会话编排 / 存档 / 工作区）    （能力管线 / Scope / MCP）    （Agent 运行时）
 ```
 
-依赖方向单向，永不反向：`core ← sdk ← server`，`server/protocol ← client`，`client ← CLI / 桌面端 main`。详见 [架构](architecture.md)。
+依赖方向单向，永不反向：`core ← sdk ← server`，`protocol ← server` 与 `protocol ← client`
+（**client 与 server 之间没有边**），`client ← CLI / 桌面端 main`。详见 [架构](architecture.md)。
 
 ## 快速开始
 

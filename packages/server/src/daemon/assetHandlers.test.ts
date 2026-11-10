@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createAssetHandlers } from "./assetHandlers.js";
-import { ASSET_METHODS } from "../protocol/assets.js";
+import { ASSET_METHODS } from "@ai-zen/agents-protocol";
 import { AssetService } from "../service/asset/AssetService.js";
 import { ensureWorkspace } from "../service/workspace/workspace.js";
 import type { Connection } from "./Daemon.js";

@@ -11,8 +11,8 @@
 
 import type { MethodHandler } from "./Daemon.js";
 import { badParams, field, optionalString } from "./params.js";
-import type { AssetListResult, AssetKind, AssetScope } from "../protocol/assets.js";
-import { ASSET_METHODS } from "../protocol/assets.js";
+import type { AssetListResult, AssetKind, AssetScope } from "@ai-zen/agents-protocol";
+import { ASSET_METHODS } from "@ai-zen/agents-protocol";
 import type { AssetService } from "../service/asset/AssetService.js";
 
 export interface AssetHandlerOptions {

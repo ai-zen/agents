@@ -97,7 +97,7 @@ Today's only implementation is **TCP**: `start()` wraps each `net.Socket` with
 `socketWire()` and passes it to `Daemon.handleConnection(wire)`. WebSocket is **not
 implemented** — there is no `ws` dependency and no WS listener in this package. Adding one
 means (1) a new `Wire` implementation over `ws` text frames and (2) a listener that calls
-`daemon.handleConnection(wire)` per connection; `Daemon` and `src/protocol/` do not change.
+`daemon.handleConnection(wire)` per connection; `Daemon` and `@ai-zen/agents-protocol` do not change.
 Authentication stays unsolved either way: the loopback assertion lives in the listener, not
 in the `Wire`.
 
@@ -108,9 +108,9 @@ scenario on both.
 
 ## Session layer
 
-`src/protocol/sessions.ts` is the wire contract for sessions — method names, params and the
-session events (`session.phase`, `message.delta`, `session.toolCalls`, `session.messageAppended`,
-`turn.end`, `session.notice`, `session.idChanged`, `session.titleChanged`, `session.question`,
+`@ai-zen/agents-protocol` (`sessions.ts`) is the wire contract for sessions — method names, params and the
+session events (`session.phase`, `session.delta`, `session.toolCalls`, `session.messageAppended`,
+`session.turnEnd`, `session.notice`, `session.idChanged`, `session.titleChanged`, `session.question`,
 `session.subAgent.*`). `src/service/session/
 SessionManager.ts` implements the live-session registry and the SDK-event → protocol-event
 translation; `src/service/agent/` assembles the agent (config + Scope + capability
@@ -323,8 +323,8 @@ shared value: "the turn is over" says nothing about what the user wanted.
 
 ### Not archiving is a bug: per-turn persistence
 
-`settleTurn` writes the session to the archive **before** `turn.end`, then emits. The order is
-the whole point: once a client sees `turn.end` it treats the turn as finished, so a session
+`settleTurn` writes the session to the archive **before** `session.turnEnd`, then emits. The order is
+the whole point: once a client sees `session.turnEnd` it treats the turn as finished, so a session
 missing from disk at that moment means "quit and come back and nothing happened". This is what
 the old `ConversationPersistPlugin` did on every `onInnerLoopEnd`.
 
@@ -380,13 +380,13 @@ required:
   (`DEFAULT_SESSION_IDLE_TIMEOUT_MS`, 60 s, `--session-idle-timeout`). It must cover the client's
   reconnect budget (~30 s worst case), otherwise a reconnecting client finds the session already
   reclaimed. The deadline **re-checks** the rule, so an `attach` arriving inside the window just
-  cancels it, and a turn still running at the deadline defers the close to `turn.end`.
+  cancels it, and a turn still running at the deadline defers the close to `session.turnEnd`.
 - The flag lives in **server memory**, per session; it is not persisted and not tied to a
   client identity. A TUI keeps exactly one session in it and maintains it automatically at the
   single place where it switches sessions; a future desktop / web shell may expose it as a
   user-managed pin list. Nothing in the server hard-codes "one at a time" — that constraint is
   a property of the TUI's usage, not of the protocol.
-- **Closing is cheap and lossless**: the archive was written before `turn.end`, so a closed
+- **Closing is cheap and lossless**: the archive was written before `session.turnEnd`, so a closed
   session is re-hydrated by `session.attach` straight from disk.
 - `session.list` reports `live` (in server memory right now) — the old `keepAlive` field was the
   client's *declaration*, not a fact, and the list no longer carries it.
@@ -457,7 +457,7 @@ The same split applies to workspaces (`id` + `title`); `name` is kept for things
 ### Automatic titles
 
 After the **first** turn of a session settles, the server asks a model for a name and writes it
-into the archive; `session.titleChanged` tells clients about it (`turn.end` is already out — the
+into the archive; `session.titleChanged` tells clients about it (`session.turnEnd` is already out — the
 name never blocks anything). Three limits, each of them deliberate: it only runs when the title
 is still empty (**a hand-renamed title is never overwritten**), it runs at most once per session
 (failure just leaves the title empty — no retries, no error notice), and it is bounded by a 10s
@@ -485,7 +485,7 @@ agent-specific, and invalidating it would evict every other session in the works
 
 Delegated sub-agents are *tool calls* (`AgentTool` / `AgentToolLazy`), and the protocol treats
 them that way: `session.subAgent.started` / `.ended` carry a per-turn `index` (the label) and a
-stable `subAgentId` (the client's selection key), `message.delta` grows an optional `subAgentId`,
+stable `subAgentId` (the client's selection key), `session.delta` grows an optional `subAgentId`,
 and `session.subAgent.snapshot` returns that sub-agent's own transcript. Two invariants:
 
 - **A sub-agent's deltas never move the main phase.** While a sub-agent runs, the main agent is
@@ -501,12 +501,12 @@ and `session.subAgent.snapshot` returns that sub-agent's own transcript. Two inv
 `{ sessionId, turnId, toolCalls: [{ index, name, id?, arguments }] }`, where `arguments` is the
 JSON string assembled so far (not valid JSON until the call is finished). It goes out **while
 the stream is still open**, so a client can draw the tool card as the arguments arrive instead
-of waiting for the `session.snapshot` that follows `turn.end`. Main agent only — sub-agents
+of waiting for the `session.snapshot` that follows `session.turnEnd`. Main agent only — sub-agents
 have their own channel and never move this one.
 
-Why a separate event instead of another field on `message.delta`:
+Why a separate event instead of another field on `session.delta`:
 
-- `message.delta` is a **text stream**: every frame means "append this". Tool calls are
+- `session.delta` is a **text stream**: every frame means "append this". Tool calls are
   **assembly state**: every frame means "this is what it looks like now". Two semantics in one
   event force every client to guess whether a field appends or replaces — and the symptom of
   guessing wrong is arguments spliced twice.
@@ -531,21 +531,21 @@ Two server-side rules:
 
 `session.messageAppended` carries `{ sessionId, turnId, message }`, where `message` is **the
 message itself** — today a tool result (`role: "tool"` + `tool_call_id` + content). It goes out
-the moment that tool finishes (core's `tool-call-end`), not at `turn.end`. Main agent only;
+the moment that tool finishes (core's `tool-call-end`), not at `session.turnEnd`. Main agent only;
 sub-agents have their own channel.
 
-Why not just `message.delta`:
+Why not just `session.delta`:
 
-- `message.delta` is a **text stream** (every frame means "append this"). A tool result is a
+- `session.delta` is a **text stream** (every frame means "append this"). A tool result is a
   **complete message**, and its identity — `tool_call_id`, the pairing with a card drawn from
   `session.toolCalls` — is not inside any piece of text. A client that only had deltas would have
   to invent a message shape of its own, which is a second representation of the same thing.
-- Why not wait for the snapshot: `session.snapshot` is only available after `turn.end`, and a
+- Why not wait for the snapshot: `session.snapshot` is only available after `session.turnEnd`, and a
   turn can run for minutes — the user stares at the argument card without ever seeing what the
   tool produced. Core already settles results one at a time (one `tool-call-end` per tool,
   fastest first); holding them to the end of the turn buys nothing.
 - Why **only** tool results: a streaming assistant message is still being assembled, and the
-  client is already drawing it from `message.delta` plus a placeholder message. Pushing it here
+  client is already drawing it from `session.delta` plus a placeholder message. Pushing it here
   as well gives one message two representations, which then have to be reconciled. A tool result
   has neither problem: it is final when it goes out, and nothing else is drawing it.
 
@@ -575,7 +575,7 @@ The channel is the **namespace**, not a field:
 | Event | Bound to | Rendered where |
 |---|---|---|
 | `session.notice` | a session (`sessionId` is required) | inside the conversation — disappears when you switch away |
-| `global.notice` | nothing | app-level (status bar / banner) — must survive session switches |
+| `server.notice` | nothing | app-level (status bar / banner) — must survive session switches |
 
 Both go through the same `EventHub`, so a client needs **one** subscription. A
 `workspace.notice` is the natural third if a notice ever belongs to a workspace but to no
@@ -632,7 +632,7 @@ Three things are worth knowing before touching it:
 
 ## Config and agent definitions
 
-`src/protocol/config.ts` is the contract for everything that changes **global** state and
+`@ai-zen/agents-protocol` (`config.ts`) is the contract for everything that changes **global** state and
 belongs to no session: the config centre (`config.get` / `config.save` /
 `config.reasoningPresets`, `config.mcp.get` / `config.mcp.save` scoped `global` | `project`)
 and agent definitions (`agent.list` / `get` / `save` / `remove`, next to the older
@@ -682,7 +682,7 @@ test with two or three fakes and nothing else.
 | `cli/src/session-store.ts` + 旧 `session-pointer.ts` | `src/service/store/` (port + file impl + legacy migration) |
 | project paths derived from `cwd` | `src/service/workspace/workspace.ts` |
 | `cli/src/agent-creator.ts` (config + Scope + capability discovery) | `src/service/agent/` |
-| `cli/src/config.ts` + `cli/src/agents-store.ts` (config / MCP / agent definition I/O) | `src/service/config/` + `src/protocol/config.ts` |
+| `cli/src/config.ts` + `cli/src/agents-store.ts` (config / MCP / agent definition I/O) | `src/service/config/` + `@ai-zen/agents-protocol` (`config.ts`) |
 | `cli/src/tui/file-index.ts` (`@` completion, scanning the client's disk) | `src/service/workspace/FileIndex.ts` |
 | `cli/src/model-switch.ts` (write `AgentDefinition.modelId` + clear thinking params) | `SessionAgentFactory.setModel` (`agent.model.set`) |
 | `cli/src/conversation-persist-plugin.ts` (per-turn autosave) | `SessionManager.settleTurn` + `writeSession` |
@@ -690,7 +690,7 @@ test with two or three fakes and nothing else.
 | — | `session.keepAlive.set` / `session.close` / `session.setAgent`, the keep-alive + holder reclaimer (`SessionManager.scheduleReclaim`) |
 | `cli/src/sub-agent-guard-plugin.ts` | `sdk/src/agent-plugins/SubAgentGuardInstallerPlugin.ts` |
 | `cli/src/handoff-service.ts` (the hooks around the SDK's handoff flow) | `src/service/handoff/` |
-| — | `src/protocol/` frames, message and session shapes |
+| — | the whole `@ai-zen/agents-protocol` package (frames, messages, session shapes, error codes) |
 | — | `src/daemon/` listener, handshake, discovery file, session handlers |
 | — | `src/service/session/SessionManager.ts` (live sessions + event fan-out) |
 

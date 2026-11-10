@@ -12,8 +12,8 @@
  *     会话跑在哪：那个目录在服务端很可能根本不存在（要么开出一个空目录、要么直接失败）。
  *
  * 所以判据只能有一个，而且必须两处共用（开会话的工作区、项目作用域 mcp 的工作区）——
- * 分成两套判断，迟早出现「会话在 A 项目、mcp 配置读的却是别处」。判据的**实现**在服务端包里
- * （`@ai-zen/agents-server` 的 `isLoopbackHost`）：那边也要用它决定能不能绑这个地址，
+ * 分成两套判断，迟早出现「会话在 A 项目、mcp 配置读的却是别处」。判据的**实现**在协议包里
+ * （`@ai-zen/agents-protocol` 的 `isLoopbackHost`）：服务端那边也要用它决定能不能绑这个地址，
  * 两处共读同一份，才不会再出现「服务端认为 `127.0.0.2` 不是回环、客户端认为它是」。
  *
  * ## 为什么只认 loopback
@@ -22,7 +22,7 @@
  * `0.0.0.0` **不算**：那是监听地址，不是连接目标。
  */
 
-import { isLoopbackHost } from "@ai-zen/agents-server/protocol";
+import { isLoopbackHost } from "@ai-zen/agents-protocol";
 
 /**
  * 「我期望在这个目录」—— 只在服务端也在这台机器上时才说。

@@ -13,7 +13,7 @@
  * ## 为什么拉起之后要轮询
  *
  * detached 子进程的启动是异步的：spawn 返回 ≠ 端口在监听 ≠ 发现文件已写。轮询
- * （读发现文件 → 连 → `ping`）是唯一可靠的"就绪"判据，`ping` 成功才算能用。
+ * （读发现文件 → `callOnce` 探活）是唯一可靠的"就绪"判据，`ping` 成功才算能用。
  */
 
 import { spawn } from "node:child_process";
@@ -22,9 +22,10 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import {
   DAEMON_METHODS,
+  callOnce,
   readDescriptor,
   type ServerDescriptor,
-} from "@ai-zen/agents-server/protocol";
+} from "@ai-zen/agents-protocol";
 import { SocketServerClient } from "./socket-server-client.js";
 import type { ClientInfo, ServerAddress, ServerClient } from "./types.js";
 
@@ -67,7 +68,7 @@ export async function ensureServer(deps: EnsureServerDeps): Promise<EnsureServer
 
   const existing = await readDescriptor(deps.aiZenDir);
   if (existing) {
-    const client = await probe(connect, existing);
+    const client = await probe(connect, existing, deps.clientInfo);
     if (client) return { client, address: addressOf(existing), started: false };
   }
 
@@ -79,7 +80,7 @@ export async function ensureServer(deps: EnsureServerDeps): Promise<EnsureServer
     const descriptor = await readDescriptor(deps.aiZenDir);
     // 只认**新**的那个 pid：旧发现文件（进程已死）对应的端口不该被当成刚拉起的那个
     if (descriptor && descriptor.pid !== existing?.pid) {
-      const client = await probe(connect, descriptor);
+      const client = await probe(connect, descriptor, deps.clientInfo);
       if (client) return { client, address: addressOf(descriptor), started: true };
     }
     await waitBeforeRetry(retryIntervalMs);
@@ -95,18 +96,37 @@ function addressOf(descriptor: ServerDescriptor): ServerAddress {
   return { host: descriptor.host, port: descriptor.port };
 }
 
-/** 连上并 ping 一次；连不上 / ping 不通都返回 `null`（"不在跑"），不抛错 */
+/**
+ * 探活 → 建连：先问一句 `ping`（`callOnce`，一次调用、问完挂断），通了再建那条长期连接。
+ *
+ * ## 为什么是两趟
+ *
+ * 「服务端活着吗」与「我该用哪条连接跟它说话」是两个问题：前者是**一次问话**（诊断、探活、
+ * 收摊都只是问一句），后者是**一条资源**（在飞调用、事件通道、断开通知）。以前把它们合成
+ * 一趟（连上顺便 ping，不通就把这条连接扔掉），于是每条失败路径都要记得 `close()`；
+ * 而探活本身其实不需要一条长连接。
+ *
+ * 多出来的成本只是本机一次短连接（握手两个往返），而轮询期间失败的那一趟会立刻返回
+ * （服务端没起来时连 `connect` 都过不去），不会因为多一问变慢。
+ */
 async function probe(
   connect: (address: ServerAddress) => Promise<ServerClient>,
   descriptor: ServerDescriptor,
+  clientInfo: ClientInfo,
 ): Promise<ServerClient | null> {
-  let client: ServerClient | null = null;
   try {
-    client = await connect(addressOf(descriptor));
-    await client.call(DAEMON_METHODS.ping, undefined, { timeoutMs: PROBE_TIMEOUT_MS });
-    return client;
+    await callOnce(addressOf(descriptor), DAEMON_METHODS.ping, undefined, {
+      client: clientInfo,
+      timeoutMs: PROBE_TIMEOUT_MS,
+    });
   } catch {
-    client?.close();
+    // 连不上 / ping 不通都只是「不在跑」，不抛错（探活的答案本来就是一个布尔）
+    return null;
+  }
+  try {
+    return await connect(addressOf(descriptor));
+  } catch {
+    // 探活之后到建连之间服务端没了：同样当「不在跑」，交给上层重试
     return null;
   }
 }
@@ -138,6 +158,17 @@ async function spawnServerProcess({ aiZenDir }: { aiZenDir: string }): Promise<v
  *
  * 不在这里写死 `dist/cli.js`：dist 布局是服务端的实现细节，写死等于把两仓的目录结构
  * 焊在一起（它哪天改 bundler，这边就得跟着改，而类型系统不会提醒）。
+ *
+ * ## 这个解析依赖谁装了服务端包
+ *
+ * 本包**不依赖** `@ai-zen/agents-server`（D1：client 只依赖协议 —— 否则「客户端不拖进
+ * 服务端实现」就只是纪律）。于是一个前置事实变成了显式的：**拉起服务端这条路径要求宿主
+ * 应用装了服务端包**（CLI / 桌面端都装了 —— 它们要那个 bin）。
+ *
+ * 而「装了」有好有坏：npm 的扁平布局会把应用的依赖摊在顶层 `node_modules`，抬层解析找得到；
+ * pnpm 的严格布局只给**声明过**的依赖建链接，所以本仓的 `packages/client` 把它列在
+ * `devDependencies`（用例与本地运行要它），发布出去的消费者则要靠自己的依赖声明。
+ * 装配根若想完全掌控这件事，用 `EnsureServerDeps.startServerProcess` 注入自己的拉起方式。
  */
 function serverEntryPath(): string {
   const require = createRequire(import.meta.url);

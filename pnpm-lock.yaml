@@ -23,16 +23,19 @@ importers:
 
   packages/client:
     dependencies:
-      '@ai-zen/agents-core':
+      '@ai-zen/agents-protocol':
         specifier: workspace:^
+        version: link:../protocol
+    devDependencies:
+      '@ai-zen/agents-core':
+        specifier: workspace:*
         version: link:../core
       '@ai-zen/agents-sdk':
-        specifier: workspace:^
+        specifier: workspace:*
         version: link:../sdk
       '@ai-zen/agents-server':
-        specifier: workspace:^
+        specifier: workspace:*
         version: link:../server
-    devDependencies:
       '@ai-zen/agents-testing':
         specifier: workspace:*
         version: link:../testing
@@ -70,6 +73,28 @@ importers:
       dotenv:
         specifier: ^17.4.2
         version: 17.4.2
+      rimraf:
+        specifier: ^6.0.0
+        version: 6.1.3
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+      vite:
+        specifier: ^8.3.5
+        version: 8.3.5(@types/node@24.13.2)
+      vitest:
+        specifier: ^5.1.0
+        version: 5.1.0(@types/node@24.13.2)(vite@8.3.5(@types/node@24.13.2))
+
+  packages/protocol:
+    dependencies:
+      '@ai-zen/agents-core':
+        specifier: workspace:^
+        version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: ^24.12.2
+        version: 24.13.2
       rimraf:
         specifier: ^6.0.0
         version: 6.1.3
@@ -125,6 +150,9 @@ importers:
 
   packages/server:
     dependencies:
+      '@ai-zen/agents-protocol':
+        specifier: workspace:^
+        version: link:../protocol
       '@ai-zen/agents-sdk':
         specifier: workspace:^
         version: link:../sdk

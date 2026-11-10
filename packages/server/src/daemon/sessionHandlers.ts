@@ -25,7 +25,6 @@
 import type { Connection, MethodHandler } from "./Daemon.js";
 import {
   badParams,
-  codedError,
   field,
   optionalBoolean,
   optionalString,
@@ -77,7 +76,8 @@ import {
   type WorkspaceRemoveResult,
   type WorkspaceRenameResult,
   type WorkspaceResolveResult,
-} from "../protocol/sessions.js";
+} from "@ai-zen/agents-protocol";
+import { ERROR_CODES, codedError } from "@ai-zen/agents-protocol";
 
 export interface SessionHandlerOptions {
   manager: SessionManager;
@@ -108,7 +108,8 @@ export function createSessionHandlers(
    */
   const workspacePathOf = async (workspaceId: string): Promise<string> => {
     const workspace = await readWorkspace({ workspacesRoot, id: workspaceId });
-    if (!workspace) throw codedError("unknown-workspace", `unknown workspace: ${workspaceId}`);
+    if (!workspace)
+      throw codedError(ERROR_CODES.unknownWorkspace, `unknown workspace: ${workspaceId}`);
     return workspace.path;
   };
 
@@ -438,7 +439,7 @@ export function createSessionHandlers(
      *
      * 守护进程对方法调用不设超时（帧层只管字节），所以这里不需要“先回执、结果走事件”
      * 那一套（那是 `session.send` 的做法）；进度会作为 `session.notice` 与
-     * `session.phase` / `message.delta` 事件先到，客户端不必等回执才知道在动。
+     * `session.phase` / `session.delta` 事件先到，客户端不必等回执才知道在动。
      */
     [SESSION_METHODS.handoff]: async (params): Promise<SessionHandoffResult> => {
       return await manager.handoff(requireString(params, "sessionId"), optionalMode(params));

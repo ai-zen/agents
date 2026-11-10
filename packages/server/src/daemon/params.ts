@@ -20,21 +20,21 @@
  * 不带码的错误在界面上只能显示成一句笼统的失败。
  */
 
+import { ERROR_CODES, codedError, type CodedError } from "@ai-zen/agents-protocol";
+
 /** 取原始字段（不做任何判定，供本文件与外部的可选枚举校验复用） */
 export function field(params: unknown, name: string): unknown {
   return (params as Record<string, unknown> | null | undefined)?.[name];
 }
 
-/** 带机器可判别 code 的错误（守护进程原样回给客户端）；与 `SessionManager` 里同一个写法 */
-export function codedError(code: string, message: string): Error & { code: string } {
-  const error = new Error(message) as Error & { code?: string };
-  error.code = code;
-  return error as Error & { code: string };
-}
-
-/** 参数不合法（`bad-params` 是客户端唯一需要区分的那一类：它得改请求，不是重试） */
-export function badParams(message: string): Error & { code: string } {
-  return codedError("bad-params", message);
+/**
+ * 参数不合法（`bad-params` 是客户端唯一需要区分的那一类：它得改请求，不是重试）。
+ *
+ * `codedError` 现在是**协议包的一份**（`@ai-zen/agents-protocol` 的 `errors.ts`）：它曾经在本包
+ * 有六份逐字相同的拷贝，而错误码是线上事实——六份拷贝意味着六处可能写错码的地方。
+ */
+export function badParams(message: string): CodedError {
+  return codedError(ERROR_CODES.badParams, message);
 }
 
 /** 取必填字符串参数 */
@@ -104,7 +104,7 @@ export function optionalString(params: unknown, name: string): string | undefine
  * 取一个必填的对象参数。
  *
  * 只验「是个对象」，**不看字段**：`config` / `definition` 的形状归 SDK 定义，handler 不解释
- * （见 `protocol/config.ts` 头注释）。数组与 `null` 都不算对象 —— 它们在后面的服务层
+ * （见 `@ai-zen/agents-protocol` 的 `config.ts` 头注释）。数组与 `null` 都不算对象 —— 它们在后面的服务层
  * 会表现成更难懂的失败。
  */
 export function requireObject(params: unknown, name: string): Record<string, unknown> {

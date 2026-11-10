@@ -17,7 +17,8 @@
  * 后续全部走事件；`turnId` 用来把事件归到具体的一轮（用户可能中途连按两次）。
  */
 
-import type { PhaseInfo } from "../service/progress/PhaseTracker.js";
+import type { Message, ModelParams, Usage } from "./model.js";
+import type { PhaseInfo } from "./phase.js";
 
 /**
  * 词汇表（名字就这三个，不再多造）：
@@ -157,7 +158,7 @@ export const SESSION_METHODS = {
    * 保活区开关（每段会话一个标记，幂等）。
    *
    * `on: true` = 「这段我现在要，别回收」；`on: false` = 「我不管了，跑完就收」。
-   * 回收判据就一条：`turn.end` 收尾之后仍不在保活区 → 关闭（存档已在收尾前写好，
+   * 回收判据就一条：`session.turnEnd` 收尾之后仍不在保活区 → 关闭（存档已在收尾前写好，
    * 所以再点回来 `attach` 能从盘上装回来）。
    */
   keepAliveSet: "session.keepAlive.set",
@@ -172,25 +173,28 @@ export const EVENT_METHODS = {
 } as const;
 
 /**
- * 事件名（服务端主动推，无 `id`，不等回执）。
+ * 会话事件名（服务端主动推，无 `id`，不等回执）。**11 条，值全部以 `session.` 开头。**
  *
- * 命名空间写的是**作用范围**，所以通知天然分两个通道：
- *   - `session.notice`：对话内通知，绑在某一段会话上（落盘失败、工具失败、迁移降级…），
- *     跟着会话走 —— 切到别的会话就不该还挂在那儿；
- *   - `global.notice`：全局通知，不属于任何会话（服务本身的事），切会话也不该消失。
+ * 命名空间写的是**作用范围**：这张表里的每一条都绑在某一段会话上（载荷里有 `sessionId`），
+ * 所以表名是 `SESSION_EVENTS`、值的前缀是 `session.`。不属于任何会话的事不往这张表里塞 ——
+ * 它去 `SERVER_EVENTS`（见下）。
  *
- * 将来若出现「属于某个工作区但不属于某段会话」的通知，再加 `workspace.notice`，
- * 不用回头改这两个的语义。
+ * 这条口径曾经破过：`message.delta` 与 `turn.end` 没有命名空间（而它们都带 `sessionId`），
+ * 全局通知反而住在 `SESSION_EVENTS` 里。于是前缀既不能用来判断「这条事件说的是谁」，
+ * 也不能用来过滤。改名之后，**看到前缀就知道该看哪张表**。
+ *
+ * 将来若出现「属于某个工作区但不属于某段会话」的事件，再加 `workspace.*` 前缀与一张新表，
+ * 不用回头改这两张的语义。
  */
 export const SESSION_EVENTS = {
   /** 生成阶段变化（六态 + 工具名） */
   phase: "session.phase",
   /** 正文 / 推理增量 */
-  delta: "message.delta",
+  delta: "session.delta",
   /**
    * 本轮工具调用的**组装态**（到目前为止是什么），客户端据此在流式期间就画出工具卡片。
    *
-   * **为什么不塞进 `message.delta`**：`delta` 是**文本流** —— 每一片的语义是「再加这一段」，
+   * **为什么不塞进 `session.delta`**：`delta` 是**文本流** —— 每一片的语义是「再加这一段」，
    * 客户端把 `text` 往后接就对了。工具调用不是这样：参数是边流边长的，一个有意义的
    * 工具调用只在**组装完成之后**才存在（半个 JSON 什么都画不出来），所以这里给的必须是
    * 「到现在为止是什么」。两种语义（追加 vs 覆盖）混在同一条事件里，客户端只能靠猜
@@ -208,28 +212,28 @@ export const SESSION_EVENTS = {
   /**
    * 一条**已经定型**的工具结果消息 —— 工具跑完一个就推一条，不等一轮结束。
    *
-   * **为什么不能只靠 `message.delta`**：那条是**正文增量**（文本流，每片的语义是「再往后
+   * **为什么不能只靠 `session.delta`**：那条是**正文增量**（文本流，每片的语义是「再往后
    * 接这一段」），而工具结果是一条**完整消息**：`role: "tool"` + `tool_call_id`（与
    * `session.toolCalls` 里那次调用配对的身份）+ 定型后的正文。增量里根本没有
    * `tool_call_id`，客户端拿「一串文本」拼不出「这是哪个工具的结果」—— 要拼就得自己
    * 猜、自己包装，而猜错的症状是结果挂到了另一张工具卡片上。
    *
-   * **为什么要逐条推、不等快照**：`session.snapshot` 要等 `turn.end` 之后才拿得到，而一个
+   * **为什么要逐条推、不等快照**：`session.snapshot` 要等 `session.turnEnd` 之后才拿得到，而一个
    * 长轮次里工具可能跑上好几分钟 —— 用户盯着参数卡片，看不到它跑出了什么。core 那边
    * 结果本来就是**逐条定型**的（`tool-call-end` 每个工具各发一次，谁先跑完谁先发），
    * 推迟到轮末纯属浪费。
    *
    * **为什么只推工具结果这一类**：流式中的 assistant 消息还在拼，客户端已经在用
-   * `message.delta` + 一条占位消息画它了。把它也从这里推出去，同一条消息就有了两种表示
+   * `session.delta` + 一条占位消息画它了。把它也从这里推出去，同一条消息就有了两种表示
    * （增量拼出来的那份 vs 这条快照），收尾时还得对账「哪一份才是真的」。工具结果没有这个
    * 问题：它在推出去的那一刻就已经定型，而且没有别的通道在画它。
    *
-   * 载荷里的 `message` 是**那一条消息本身**，形状由 SDK 定 —— 与
-   * `SessionSnapshotResult.messages: unknown[]` 同一口径：协议刻意不认识 SDK 的消息形状。
+   * 载荷里的 `message` 是**那一条消息本身**，形状就是 core 的 `Message`（从 `./model.js`
+   * 转出）—— 与 `SessionSnapshotResult.messages` 同一口径：协议只搬运，不另造一份形状。
    */
   messageAppended: "session.messageAppended",
   /** 一轮结束（成功或失败） */
-  turnEnd: "turn.end",
+  turnEnd: "session.turnEnd",
   /** 对话内通知（绑会话） */
   notice: "session.notice",
   /**
@@ -248,7 +252,7 @@ export const SESSION_EVENTS = {
    *
    * 服务端可以在**一轮进行中**换 id（自动迁移就是如此）：这时客户端没有任何请求
    * 可以拿来“拿到新 id”，所以必须有一条事件说清楚 —— 否则它会在旧 id 上等一个
-   * 永远不会到的 `turn.end`。
+   * 永远不会到的 `session.turnEnd`。
    *
    * 载荷用 `from` 而不是 `sessionId` 标识“这条是说哪段会话的”（那个 id 已经不存在了），
    * 客户端拿 `from === 自己当前 id` 就能认领。
@@ -257,7 +261,7 @@ export const SESSION_EVENTS = {
   /**
    * 会话的显示名变了（今天只有服务端的自动标题会发）。
    *
-   * 为什么必须有这条事件：自动标题发生在 `turn.end` **之后**的异步动作里，客户端手上
+   * 为什么必须有这条事件：自动标题发生在 `session.turnEnd` **之后**的异步动作里，客户端手上
    * 没有任何请求可以拿来「拿到新名字」—— 没有它，侧栏会一直用首条消息兑底命名，
    * 直到用户手动刷新一次列表（而在那之前，用户会以为这功能没生效）。
    *
@@ -269,8 +273,22 @@ export const SESSION_EVENTS = {
   subAgentStarted: "session.subAgent.started",
   /** 一个子 Agent 结束：done = 正常跑完，failed = 抛错（**一旦 failed 就不再变**） */
   subAgentEnded: "session.subAgent.ended",
-  /** 全局通知（不绑会话） */
-  globalNotice: "global.notice",
+} as const;
+
+/**
+ * 服务端事件名（不绑任何会话）。目前只有一条：服务端自己的通知。
+ *
+ * 为什么它必须从 `SESSION_EVENTS` 里**拆出来**（而不是留在原地改个名）：它压根不是
+ * 会话事件 —— 载荷里没有 `sessionId`，切到别的会话也不该消失（存盘目录坏了、MCP 连不上
+ * 都是「这个服务端」的事）。而它曾经住在 `SESSION_EVENTS` 里，于是「按会话过滤事件」的
+ * 代码必须给它开例外，例外本身又成了第二套规则。
+ *
+ * 两张表 + 两个联合（`SessionEvent` / `ServerEvent`）的拆法，与
+ * `SESSION_METHODS` / `DAEMON_METHODS` 完全同构：作用域不同的东西不放在同一张表里。
+ */
+export const SERVER_EVENTS = {
+  /** 服务端通知（不属于任何会话：MCP 连不上、存档目录不可用…） */
+  notice: "server.notice",
 } as const;
 
 // ==================== 方法参数与结果 ====================
@@ -412,7 +430,7 @@ export interface SessionCreateParams {
    * 会话」指针挪过去 —— 否则用户下次进 TUI，续接到的是一条脚本调用的结果。想留档只有
    * 一条路：显式 `session.save`（CLI 侧就是 `ai --save`）。
    *
-   * 它只管**自动落盘**，不改变其余语义：会话照样是活会话（`turn.end` 之后按保活区回收）、
+   * 它只管**自动落盘**，不改变其余语义：会话照样是活会话（`session.turnEnd` 之后按保活区回收）、
    * 照样能 `save` / `saveAs`、迁移照样写档。
    */
   persist?: boolean;
@@ -663,7 +681,7 @@ export interface SessionSnapshotResult {
    * 后的请求体：字段省略（`undefined`）的意思就是「这一档没有覆盖」，模型走自己的
    * `defaultParams` —— 不是「服务端没算出来」，客户端照实显示出厂设置即可。
    */
-  modelParams?: unknown;
+  modelParams?: ModelParams;
   /**
    * 上面那份 `modelParams` 取自哪一级。
    *
@@ -687,9 +705,9 @@ export interface SessionSnapshotResult {
   turnId: number;
   phase: PhaseInfo | null;
   /** 当前完整消息列表（服务端是唯一真相源） */
-  messages: unknown[];
+  messages: Message[];
   /** 最近一轮用量（Agent 提供才带；客户端不知道就别显示） */
-  lastUsage?: unknown;
+  lastUsage?: Usage;
 }
 
 export interface SessionReloadParams {
@@ -731,7 +749,7 @@ export interface SessionModelParamsSetParams {
    * `null` = **清掉**这一层的覆盖，回到模型出厂参数。为什么不用「不传字段」表示清除：
    * JSON 里丢掉的字段与「没给」无法区分，而「清掉」是一个明确的意图（`/think default`）。
    */
-  modelParams: unknown;
+  modelParams: ModelParams | null;
 }
 
 /** 与 `session.model.set` 同形：改完就回一份新快照（客户端不用再要一次） */
@@ -936,7 +954,7 @@ export interface SessionHandoffResult {
   /** **实际**使用的执行者：请求 `self` 但降级时会与入参不同 */
   mode: HandoffMode;
   /** 交接之后的消息（客户端直接重渲染） */
-  messages: unknown[];
+  messages: Message[];
 }
 
 /**
@@ -970,7 +988,7 @@ export interface SessionRollbackResult {
    */
   prompt: string;
   /** 撤回之后剩下的全部消息（客户端直接重渲染，不用再要一次快照） */
-  messages: unknown[];
+  messages: Message[];
 }
 
 /**
@@ -991,7 +1009,7 @@ export interface SubAgentSnapshotResult {
   index: number;
   status: "running" | "done" | "failed";
   /** 它到目前为止的完整对话（从第 0 条起，服务端原样给，不解释形状） */
-  messages: unknown[];
+  messages: Message[];
 }
 
 // ==================== 事件 ====================
@@ -1008,7 +1026,7 @@ export type SessionPhaseEvent = {
   phase: PhaseInfo | null;
 };
 
-export type MessageDeltaEvent = {
+export type SessionDeltaEvent = {
   event: typeof SESSION_EVENTS.delta;
   sessionId: string;
   turnId: number;
@@ -1040,7 +1058,7 @@ export type MessageDeltaEvent = {
  * 回答不同的问题：「用户看到的第几栏」与「是哪一次委派」。`index` 每轮都会重来，所以
  * 它不能当 id 用；反过来，id 带上展示含义之后，改一次标签就得动一次 id。
  */
-export type SubAgentStartedEvent = {
+export type SessionSubAgentStartedEvent = {
   event: typeof SESSION_EVENTS.subAgentStarted;
   sessionId: string;
   turnId: number;
@@ -1054,7 +1072,7 @@ export type SubAgentStartedEvent = {
  * `failed` 是**终态**：出错之后即便 SDK 还会发结束事件，也绝不能改回 `done` ——
  * 否则界面上一个真的失败了的子任务会显示成成功。
  */
-export type SubAgentEndedEvent = {
+export type SessionSubAgentEndedEvent = {
   event: typeof SESSION_EVENTS.subAgentEnded;
   sessionId: string;
   turnId: number;
@@ -1102,7 +1120,7 @@ export type SessionToolCallsEvent = {
  * 一条已经定型的工具结果消息上线（见 `SESSION_EVENTS.messageAppended` 的三条「为什么」）。
  *
  * `message` 是**那一条消息本身**，原样搬运：协议不解释它的字段，也不在这里另造一个
- * 「工具结果」的中间形状 —— 中间形状迟早与 SDK 里那份真消息漂开（SDK 加一个字段，客户端
+ * 「工具结果」的中间形状 —— 中间形状迟早与 core 里那份真消息漂开（core 加一个字段，客户端
  * 就得等协议也加一个），而这条事件的意义恰恰是「服务端是唯一真相源，客户端照着渲染」。
  */
 export type SessionMessageAppendedEvent = {
@@ -1112,13 +1130,14 @@ export type SessionMessageAppendedEvent = {
   /**
    * 刚定型、刚追加进会话的那一条消息（今天是 `role: "tool"` 的工具结果）。
    *
-   * 类型是 `unknown`：与 `SessionSnapshotResult.messages` 同一口径 —— 协议不认识 SDK 的
-   * 消息形状（那是 SDK 的资产，字段随时会加），客户端拿到的就是服务端手里那一份。
+   * 类型是 `Message`（从 `./model.js` 转出的 core 类型）：与
+   * `SessionSnapshotResult.messages` 同一份形状 —— 它就是服务端手里那一条，协议只搬运、
+   * 不在这里另造中间形状。
    */
-  message: unknown;
+  message: Message;
 };
 
-export type TurnEndEvent = {
+export type SessionTurnEndEvent = {
   event: typeof SESSION_EVENTS.turnEnd;
   sessionId: string;
   turnId: number;
@@ -1161,7 +1180,13 @@ export const SESSION_NOTICE_CODES = {
   subAgentFailed: "subAgentFailed",
 } as const;
 
-/** 全局通知的 code 表（同上：只增不改语义） */
+/**
+ * 服务端通知的 code 表（`server.notice` 载荷里的枚举；同上：只增不改语义）。
+ *
+ * 名字里的 `GLOBAL` 是历史叫法（那条事件原先叫 `global.notice`）。改名时**没有连表一起改**：
+ * 这些码是客户端 i18n 表的键（`notice.<code>`），改名字面量等于让所有客户端的词典失效，
+ * 而它们值一个字没变 —— 表名跟着改只带来迁移成本，不带来任何约束。
+ */
 export const GLOBAL_NOTICE_CODES = {
   /** MCP server 连不上 */
   mcpUnavailable: "mcpUnavailable",
@@ -1182,9 +1207,9 @@ export type SessionNoticeEvent = {
   params?: Record<string, unknown>;
 };
 
-/** 全局通知：不属于任何会话，切会话也不该消失 */
-export type GlobalNoticeEvent = {
-  event: typeof SESSION_EVENTS.globalNotice;
+/** 服务端通知：不属于任何会话，切会话也不该消失 */
+export type ServerNoticeEvent = {
+  event: typeof SERVER_EVENTS.notice;
   level: NoticeLevel;
   code: GlobalNoticeCode;
   params?: Record<string, unknown>;
@@ -1198,17 +1223,22 @@ export type GlobalNoticeEvent = {
  */
 export type NoticePayload = Omit<SessionNoticeEvent, "event" | "sessionId">;
 
-/** 服务端能推给客户端的全部事件 */
-export type ServerEvent =
+/**
+ * 一条会话事件的联合（11 条）。名字全部带 `Session` 前缀：联合里一眼能看出作用域，
+ * 与 `ServerNoticeEvent` 拼成 `ServerEvent` 时也不会读成「同一类东西」。
+ */
+export type SessionEvent =
   | SessionPhaseEvent
-  | MessageDeltaEvent
+  | SessionDeltaEvent
   | SessionToolCallsEvent
   | SessionMessageAppendedEvent
-  | TurnEndEvent
+  | SessionTurnEndEvent
   | SessionNoticeEvent
-  | GlobalNoticeEvent
   | SessionIdChangedEvent
   | SessionTitleChangedEvent
   | SessionQuestionEvent
-  | SubAgentStartedEvent
-  | SubAgentEndedEvent;
+  | SessionSubAgentStartedEvent
+  | SessionSubAgentEndedEvent;
+
+/** 服务端能推给客户端的全部事件 = 会话事件 + 服务端自己的通知 */
+export type ServerEvent = SessionEvent | ServerNoticeEvent;

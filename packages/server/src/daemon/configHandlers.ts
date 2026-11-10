@@ -34,7 +34,7 @@ import {
   type ConfigSetDefaultAgentResult,
   type ConfigSetDefaultModelResult,
   type McpScope,
-} from "../protocol/config.js";
+} from "@ai-zen/agents-protocol";
 
 export interface ConfigHandlerOptions {
   config: ConfigService;

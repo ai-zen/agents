@@ -29,12 +29,13 @@
 
 import { isAbsolute, relative } from "node:path";
 import { discoverSkills, discoverUserToolFiles } from "@ai-zen/agents-sdk";
+import { ERROR_CODES, codedError } from "@ai-zen/agents-protocol";
 import type {
   AssetListParams,
   AssetListResult,
   AssetScope,
   AssetSummary,
-} from "../../protocol/assets.js";
+} from "@ai-zen/agents-protocol";
 import { readWorkspace } from "../workspace/workspace.js";
 import { assetDirs } from "../agent/agentPaths.js";
 
@@ -99,7 +100,7 @@ export class AssetService {
       id: input.workspaceId,
     });
     if (!workspace) {
-      throw codedError("unknown-workspace", `unknown workspace: ${input.workspaceId}`);
+      throw codedError(ERROR_CODES.unknownWorkspace, `unknown workspace: ${input.workspaceId}`);
     }
     return workspace.path;
   }
@@ -145,11 +146,4 @@ function sourceOf(path: string, workspacePath: string | null): AssetScope {
   if (!workspacePath) return "global";
   const relativePath = relative(workspacePath, path);
   return relativePath.startsWith("..") || isAbsolute(relativePath) ? "global" : "project";
-}
-
-/** 带机器可判别 code 的错误（守护进程原样回给客户端） */
-function codedError(code: string, message: string): Error & { code: string } {
-  const error = new Error(message) as Error & { code?: string };
-  error.code = code;
-  return error as Error & { code: string };
 }

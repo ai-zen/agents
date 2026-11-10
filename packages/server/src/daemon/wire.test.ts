@@ -26,9 +26,9 @@ import { join } from "node:path";
 import { Daemon, type DaemonOptions, type MethodHandler } from "./Daemon.js";
 import { socketWire, type Wire } from "./wire.js";
 import { EventHub } from "../service/events/EventHub.js";
-import { encodeFrame, FrameDecoder } from "../protocol/frames.js";
-import { PROTOCOL_VERSION } from "../protocol/messages.js";
-import { SESSION_EVENTS } from "../protocol/sessions.js";
+import { encodeFrame, FrameDecoder } from "@ai-zen/agents-protocol";
+import { PROTOCOL_VERSION } from "@ai-zen/agents-protocol";
+import { SESSION_EVENTS } from "@ai-zen/agents-protocol";
 
 let dir: string;
 let daemon: Daemon | null = null;

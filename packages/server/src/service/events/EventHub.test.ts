@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { EventHub } from "./EventHub.js";
-import { SESSION_EVENTS, type ServerEvent } from "../../protocol/sessions.js";
+import { SESSION_EVENTS, SERVER_EVENTS, type ServerEvent } from "@ai-zen/agents-protocol";
 
 let hub: EventHub;
 let received: ServerEvent[];
@@ -71,7 +71,7 @@ describe("EventHub", () => {
 
   it("全局通知走同一条线：不带 sessionId，也不该被会话过滤掉", () => {
     hub.publish({
-      event: SESSION_EVENTS.globalNotice,
+      event: SERVER_EVENTS.notice,
       level: "warn",
       code: "mcpUnavailable",
       params: { name: "github" },

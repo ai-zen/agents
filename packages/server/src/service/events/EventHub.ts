@@ -9,7 +9,7 @@
  * 由客户端决定贴在哪（对话内的贴会话，全局的贴状态栏）。
  */
 
-import type { ServerEvent } from "../../protocol/sessions.js";
+import type { ServerEvent } from "@ai-zen/agents-protocol";
 
 export class EventHub {
   private readonly listeners = new Set<(event: ServerEvent) => void>();
