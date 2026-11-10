@@ -19,6 +19,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Daemon } from "./daemon/Daemon.js";
 import { createAgentHandlers } from "./daemon/agentHandlers.js";
+import { createAssetHandlers } from "./daemon/assetHandlers.js";
 import { createConfigHandlers } from "./daemon/configHandlers.js";
 import { createSessionHandlers } from "./daemon/sessionHandlers.js";
 import {
@@ -31,6 +32,7 @@ import { encodeFrame, FrameDecoder } from "./protocol/frames.js";
 import { DAEMON_METHODS } from "./protocol/daemon.js";
 import { PROTOCOL_VERSION } from "./protocol/messages.js";
 import { SessionAgentFactory } from "./service/agent/SessionAgentFactory.js";
+import { AssetService } from "./service/asset/AssetService.js";
 import { globalAgentPaths } from "./service/agent/agentPaths.js";
 import { ConfigService } from "./service/config/ConfigService.js";
 import { createAutoTitle } from "./service/session/AutoTitle.js";
@@ -293,6 +295,10 @@ async function main(): Promise<number> {
       }),
       ...createAgentHandlers({ factory: agentFactory, config: configService }),
       ...createConfigHandlers({ config: configService }),
+      // 资产清单（只读）：全局层与项目层的目录都在组装根这里解析成值再注入
+      ...createAssetHandlers({
+        service: new AssetService({ aiZenDir: args.aiZenDir, homeDir, workspacesRoot }),
+      }),
     },
     onStopped: (reason) => {
       log("info", `exit (${reason})`);

@@ -146,6 +146,21 @@ Two details are load-bearing:
   them the menu cannot be drilled into (`@src/` → keep listing), so it is a capability
   difference, not list padding.
 
+### Capabilities on disk: `asset.list`
+
+`asset.list { kind: "skill" | "tool", scope?, workspaceId? }` returns what capability discovery
+would find — a **read-only** view (no CRUD lives here: assets are the user's files, and changing
+them is a different action with its own permission story). It does **not** re-implement the scan:
+`agentPaths.assetDirs` says which directories belong to which layer, and the SDK's
+`discoverSkills` / `discoverUserToolFiles` do the scanning, so the panel and the agent can never
+disagree about what is installed. Each entry carries its own `source` (`global` / `project`),
+because `scope` defaults to *both* layers (project wins on a name clash, same priority order as
+discovery). `scope: "project"` without a `workspaceId` is `bad-params`: project-level assets hang
+off a workspace path, so there is no \"empty list\" answer — the caller forgot an argument. Without
+a `workspaceId` you simply get the global layer only. One asymmetry worth knowing: `path` is a
+**directory** for a skill (multi-file unit, `SKILL.md` inside) and a **file** for a tool; and
+listing tools really does `import()` them (that is how discovery loads `Tool` instances).
+
 ### Two rounds, one session: `create` vs `attach`
 
 `session.create` means **a new session** — if the id is already live it refuses

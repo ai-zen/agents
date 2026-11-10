@@ -195,6 +195,18 @@ export {
 export { ConfigService, type ConfigServiceOptions } from "./service/config/ConfigService.js";
 export { createConfigHandlers, type ConfigHandlerOptions } from "./daemon/configHandlers.js";
 
+// ---- 资产清单（只读；不属于某段会话，也不是配置字段，故单开一个命名空间） ----
+export {
+  ASSET_METHODS,
+  type AssetKind,
+  type AssetListParams,
+  type AssetListResult,
+  type AssetScope,
+  type AssetSummary,
+} from "./protocol/assets.js";
+export { AssetService, type AssetServiceOptions } from "./service/asset/AssetService.js";
+export { createAssetHandlers, type AssetHandlerOptions } from "./daemon/assetHandlers.js";
+
 // ---- 守护进程与协议（客户端只需要协议类型 + Daemon 用于进程内嵌入/测试） ----
 export {
   Daemon,
@@ -239,7 +251,17 @@ export {
 } from "./protocol/daemon.js";
 
 // ---- Agent 装配（会话「能跑」的一环：配置 + Scope + 能力发现） ----
-export { agentPaths, type AgentPaths, type AgentPathsInput } from "./service/agent/agentPaths.js";
+export {
+  agentPaths,
+  assetDirs,
+  globalAgentPaths,
+  globalSkillsDirs,
+  globalToolsDirs,
+  projectSkillsDirs,
+  projectToolsDirs,
+  type AgentPaths,
+  type AgentPathsInput,
+} from "./service/agent/agentPaths.js";
 export {
   SessionAgentFactory,
   type SessionAgentFactoryOptions,
