@@ -34,3 +34,4 @@ export * from "./sessions.js";
 export * from "./config.js";
 export * from "./assets.js";
 export * from "./discovery.js";
+export * from "./host.js";

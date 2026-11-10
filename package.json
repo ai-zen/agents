@@ -7,8 +7,9 @@
     "build-core": "pnpm --filter @ai-zen/agents-core build",
     "build-sdk": "pnpm --filter @ai-zen/agents-sdk build",
     "build-server": "pnpm --filter @ai-zen/agents-server build",
+    "build-client": "pnpm build-server && pnpm --filter @ai-zen/agents-client build",
     "build-testing": "pnpm --filter @ai-zen/agents-testing build",
-    "test": "pnpm build-testing && pnpm --filter @ai-zen/agents-testing test && pnpm --filter @ai-zen/agents-core test && pnpm --filter @ai-zen/agents-sdk test && pnpm --filter @ai-zen/agents-server test",
+    "test": "pnpm build-testing && pnpm build-client && pnpm --filter @ai-zen/agents-testing test && pnpm --filter @ai-zen/agents-core test && pnpm --filter @ai-zen/agents-sdk test && pnpm --filter @ai-zen/agents-server test && pnpm --filter @ai-zen/agents-client test",
     "format": "prettier --write --ignore-path .prettierignore \"**/*.{ts,tsx,js,mjs,cjs,json}\"",
     "format:check": "prettier --check --ignore-path .prettierignore \"**/*.{ts,tsx,js,mjs,cjs,json}\""
   },

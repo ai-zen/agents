@@ -1,0 +1,51 @@
+{
+  "name": "@ai-zen/agents-client",
+  "version": "0.1.0",
+  "description": "AI-Zen Agents Client — 到 agents-server 的连接层：服务发现/拉起、帧编解码、会话与配置门面。CLI 与 Desktop 共用同一份实现",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ai-zen/agents.git",
+    "directory": "packages/client"
+  },
+  "homepage": "https://github.com/ai-zen/agents/tree/main/packages/client#readme",
+  "bugs": {
+    "url": "https://github.com/ai-zen/agents/issues"
+  },
+  "scripts": {
+    "clean": "rimraf ./dist",
+    "prebuild": "npm run clean",
+    "build": "tsc",
+    "pretest": "tsc --noEmit -p tsconfig.test.json",
+    "test": "vitest run",
+    "test:all": "npm run pretest && vitest run && npm run build"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "client",
+    "server",
+    "session",
+    "llm"
+  ],
+  "author": "LZQCN",
+  "license": "MIT",
+  "dependencies": {
+    "@ai-zen/agents-server": "workspace:^",
+    "@ai-zen/agents-sdk": "workspace:^"
+  },
+  "devDependencies": {
+    "@ai-zen/agents-testing": "workspace:*",
+    "@types/node": "^24.12.2",
+    "rimraf": "^6.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vitest": "^5.1.0"
+  },
+  "files": [
+    "dist",
+    "CHANGELOG.md"
+  ]
+}

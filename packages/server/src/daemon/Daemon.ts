@@ -40,7 +40,7 @@ import {
   writeDescriptor,
   type ServerDescriptor,
 } from "../protocol/discovery.js";
-import { isLoopbackHost } from "./host.js";
+import { isLoopbackHost } from "../protocol/host.js";
 
 /** 方法处理函数：拿参数、返回结果；抛错则回 `ok:false` */
 export type MethodHandler = (params: unknown, connection: Connection) => Promise<unknown> | unknown;
