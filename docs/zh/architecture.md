@@ -101,7 +101,7 @@ AI-Zen Agents 是一个 **pnpm monorepo**（工作区根 `@ai-zen/agents-workspa
 
 日志写 `<aiZenDir>/logs/server.log`：守护进程是客户端 detached 拉起的，绝不能往客户端终端写。
 
-## 协议面：45 个方法 / 10 个事件
+## 协议面：45 个方法 / 12 个事件
 
 方法名与事件名都是 `as const` 常量表，客户端与服务端共用同一份字面量。**统计口径**：数这些表里的条目——一个方法名字面量算一条；参数 / 结果类型不算；三个内置方法（`ping` / `status` / `shutdown`）**算**方法（它们和其它方法一样要握手后才能调，只是由 `Daemon` 自己实现）；通知码（`SESSION_NOTICE_CODES` / `GLOBAL_NOTICE_CODES`）不算事件，它们是 `session.notice` / `global.notice` 载荷里的枚举。
 
@@ -116,11 +116,13 @@ AI-Zen Agents 是一个 **pnpm monorepo**（工作区根 `@ai-zen/agents-workspa
 | 内置 `ping` / `status` / `shutdown` | 3 | `protocol/daemon.ts` 的 `DAEMON_METHODS` |
 | **合计** | **45** | |
 
-事件共 **10** 条，全在 `protocol/sessions.ts` 的 `SESSION_EVENTS` 里：`session.phase`、`message.delta`、`turn.end`、`session.notice`、`session.question`、`session.idChanged`、`session.titleChanged`、`session.subAgent.started`、`session.subAgent.ended`、`global.notice`。
+事件共 **12** 条，全在 `protocol/sessions.ts` 的 `SESSION_EVENTS` 里：`session.phase`、`message.delta`、`session.toolCalls`、`session.messageAppended`、`turn.end`、`session.notice`、`session.question`、`session.idChanged`、`session.titleChanged`、`session.subAgent.started`、`session.subAgent.ended`、`global.notice`。
 
-三条与本文件有关的性质：
+五条与本文件有关的性质：
 
 - 事件载荷只装**事实**（阶段 kind、工具名、正文字符串），不装文案——渲染成哪种语言由客户端决定。
+- `message.delta` 是**文本流**（每片追加），`session.toolCalls` 是**组装态**（每次给「到现在为止是什么」）：语义不同就不合进一条事件，否则客户端得猜哪个字段该接、哪个该替。
+- `session.messageAppended` 推的是**一条完整消息**（工具结果：`role: "tool"` + `tool_call_id` + 正文），逐条推、不等快照：工具结果在 core 里是逐个定型的，快照却要等 `turn.end`，长轮次里用户会盯着参数卡片等好几分钟。
 - `send` 立刻返回 `turnId`，一轮的后续全部走事件：一轮可能跑几分钟，等它跑完再回，客户端就没有任何东西可渲染。
 - 命名空间按**作用对象**分：`workspace.*` 是对容器做事，`session.*` 是对一段会话做事，`events.watch` 是连接级的，`asset.*` 只读（资产是用户的文件系统，改它是另一个动作）。
 

@@ -109,8 +109,9 @@ scenario on both.
 ## Session layer
 
 `src/protocol/sessions.ts` is the wire contract for sessions — method names, params and the
-session events (`session.phase`, `message.delta`, `turn.end`, `session.notice`,
-`session.idChanged`, `session.titleChanged`, `session.question`, `session.subAgent.*`). `src/service/session/
+session events (`session.phase`, `message.delta`, `session.toolCalls`, `session.messageAppended`,
+`turn.end`, `session.notice`, `session.idChanged`, `session.titleChanged`, `session.question`,
+`session.subAgent.*`). `src/service/session/
 SessionManager.ts` implements the live-session registry and the SDK-event → protocol-event
 translation; `src/service/agent/` assembles the agent (config + Scope + capability
 discovery) per workspace; `src/daemon/sessionHandlers.ts` registers `workspace.resolve` /
@@ -493,6 +494,74 @@ and `session.subAgent.snapshot` returns that sub-agent's own transcript. Two inv
   `reload` / re-key / close), matching what the client shows: a sub-agent is worth looking at
   while it runs, and its transcript is otherwise history. One exception: the *id* counter is not
   reset, so a client's stale selection can never attach to the next turn's `sub-1`.
+
+### Tool calls during streaming: assembly state, not deltas
+
+`session.toolCalls` carries **the current turn's tool calls as they stand right now**:
+`{ sessionId, turnId, toolCalls: [{ index, name, id?, arguments }] }`, where `arguments` is the
+JSON string assembled so far (not valid JSON until the call is finished). It goes out **while
+the stream is still open**, so a client can draw the tool card as the arguments arrive instead
+of waiting for the `session.snapshot` that follows `turn.end`. Main agent only — sub-agents
+have their own channel and never move this one.
+
+Why a separate event instead of another field on `message.delta`:
+
+- `message.delta` is a **text stream**: every frame means "append this". Tool calls are
+  **assembly state**: every frame means "this is what it looks like now". Two semantics in one
+  event force every client to guess whether a field appends or replaces — and the symptom of
+  guessing wrong is arguments spliced twice.
+- The payload is the **full set** of this turn's calls, never "the fragments that just
+  arrived". The assembly already happened in core (`Agent.parseStreamData` fills
+  `receiver.tool_calls` *before* emitting `chunk-parsed`); making clients re-assemble would be
+  a second implementation of it, and a second implementation is exactly how this project has
+  been bitten before.
+- `arguments` grows while it streams, so the same call is reported several times. The client
+  updates that entry **in place**, keyed by `index` (or `id`) — replace, don't append.
+
+Two server-side rules:
+
+- **Only changes go out.** The test is count / name / id / `arguments` *length* (arguments are
+  append-only) — no `JSON.stringify` of the whole argument string per chunk.
+- **An empty set is not a change.** Text-only frames and the `usage`-only tail frame carry no
+  tool calls; sending `toolCalls: []` would erase the cards the client just drew. The list
+  resets only when the turn settles, at the same moment `PhaseTracker.reset()` runs, so a
+  retry of the same command in the next turn still produces its own event.
+
+### Tool results during streaming: one complete message, the moment each tool settles
+
+`session.messageAppended` carries `{ sessionId, turnId, message }`, where `message` is **the
+message itself** — today a tool result (`role: "tool"` + `tool_call_id` + content). It goes out
+the moment that tool finishes (core's `tool-call-end`), not at `turn.end`. Main agent only;
+sub-agents have their own channel.
+
+Why not just `message.delta`:
+
+- `message.delta` is a **text stream** (every frame means "append this"). A tool result is a
+  **complete message**, and its identity — `tool_call_id`, the pairing with a card drawn from
+  `session.toolCalls` — is not inside any piece of text. A client that only had deltas would have
+  to invent a message shape of its own, which is a second representation of the same thing.
+- Why not wait for the snapshot: `session.snapshot` is only available after `turn.end`, and a
+  turn can run for minutes — the user stares at the argument card without ever seeing what the
+  tool produced. Core already settles results one at a time (one `tool-call-end` per tool,
+  fastest first); holding them to the end of the turn buys nothing.
+- Why **only** tool results: a streaming assistant message is still being assembled, and the
+  client is already drawing it from `message.delta` plus a placeholder message. Pushing it here
+  as well gives one message two representations, which then have to be reconciled. A tool result
+  has neither problem: it is final when it goes out, and nothing else is drawing it.
+
+Two server-side rules:
+
+- **Only settled results go out, in no particular order.** Core appends the tool result message
+  *before* the tool runs (`Message.Tool` → `status: "pending"`, empty content) and flips it to a
+  final status at the settle point — so in a parallel batch the first tool to finish is usually
+  the *later* entry in `agent.messages`, with a still-pending entry in front of it. "Everything
+  past a high-water mark" would push that pending entry with an empty body and then never
+  correct it; "wait for the earlier entry first" would make the fast tool wait for the slow one.
+  The test is therefore *settled* (`FINISHED_STATUSES`, the same test `visiblePhase` uses to
+  answer "who is still running") **and** *not pushed yet* (`LiveSession.pushedMessages`).
+- **The cursor resets with the turn.** `resetStreamState` — the same moment `PhaseTracker.reset()`
+  runs — rebases it onto the current message list, so the next turn's first result still produces
+  its own event while history is never pushed a second time.
 
 ### Notices: two channels, on one wire
 

@@ -101,7 +101,7 @@ The two idle timeouts are different things: `--idle-timeout` covers the whole da
 
 Logs go to `<aiZenDir>/logs/server.log`: the daemon is spawned detached by a client, so it must never write to the client's terminal.
 
-## The protocol surface: 45 methods / 10 events
+## The protocol surface: 45 methods / 12 events
 
 Method names and event names are `as const` tables shared by client and server. **Counting rule**: count the entries in those tables — one method-name literal is one method; parameter and result types do not count; the three built-in methods (`ping` / `status` / `shutdown`) **do** count as methods (they are called after the handshake like any other, they are merely implemented by `Daemon` itself); notice codes (`SESSION_NOTICE_CODES` / `GLOBAL_NOTICE_CODES`) do not count as events — they are enums inside the payload of `session.notice` / `global.notice`.
 
@@ -116,11 +116,13 @@ Method names and event names are `as const` tables shared by client and server. 
 | Built-ins `ping` / `status` / `shutdown` | 3 | `DAEMON_METHODS` in `protocol/daemon.ts` |
 | **Total** | **45** | |
 
-There are **10** events, all in `SESSION_EVENTS` in `protocol/sessions.ts`: `session.phase`, `message.delta`, `turn.end`, `session.notice`, `session.question`, `session.idChanged`, `session.titleChanged`, `session.subAgent.started`, `session.subAgent.ended`, `global.notice`.
+There are **12** events, all in `SESSION_EVENTS` in `protocol/sessions.ts`: `session.phase`, `message.delta`, `session.toolCalls`, `session.messageAppended`, `turn.end`, `session.notice`, `session.question`, `session.idChanged`, `session.titleChanged`, `session.subAgent.started`, `session.subAgent.ended`, `global.notice`.
 
-Three properties that matter at this level:
+Five properties that matter at this level:
 
 - Event payloads carry **facts** only (a phase kind, a tool name, a piece of text), never wording — turning them into "Connecting…" or "连接中…" is the client's job.
+- `message.delta` is a **text stream** (each frame appends), while `session.toolCalls` is **assembly state** (each frame says "this is what it looks like now"). Different semantics stay in different events; one event carrying both would leave the client guessing which fields append and which replace.
+- `session.messageAppended` carries **one complete message** (a tool result: `role: "tool"` + `tool_call_id` + content) and goes out one message at a time instead of waiting for a snapshot: core finalises tool results one by one, while a snapshot is only available after `turn.end` — and on a long turn the user stares at the argument card for minutes.
 - `send` returns a `turnId` immediately and everything afterwards travels as events: a turn can run for minutes, and a request that only answered at the end would leave the client with nothing to render.
 - Namespaces follow **what the method acts on**: `workspace.*` acts on the container, `session.*` on one conversation, `events.watch` belongs to the connection, and `asset.*` is read-only (assets are the user's filesystem; changing them is a different action).
 

@@ -187,6 +187,47 @@ export const SESSION_EVENTS = {
   phase: "session.phase",
   /** 正文 / 推理增量 */
   delta: "message.delta",
+  /**
+   * 本轮工具调用的**组装态**（到目前为止是什么），客户端据此在流式期间就画出工具卡片。
+   *
+   * **为什么不塞进 `message.delta`**：`delta` 是**文本流** —— 每一片的语义是「再加这一段」，
+   * 客户端把 `text` 往后接就对了。工具调用不是这样：参数是边流边长的，一个有意义的
+   * 工具调用只在**组装完成之后**才存在（半个 JSON 什么都画不出来），所以这里给的必须是
+   * 「到现在为止是什么」。两种语义（追加 vs 覆盖）混在同一条事件里，客户端只能靠猜
+   * 「这个字段该接还是该替」，而猜错的症状是参数被拼成两遍。
+   *
+   * **为什么给组装态而不是增片**：增片要求客户端自己把 JSON 片段攒成一次调用 —— 那是把
+   * core 已经做完的组装（`Agent.parseStreamData` 就地拼 `receiver.tool_calls`）在客户端
+   * 再做一遍。本项目反复栽在「同一件事两份实现」上：第二份迟早与第一份漂开（core 改了
+   * 合并规则、客户端还按老规则攒），而症状是「工具卡片里的参数与真正发出去的请求不一样」。
+   *
+   * **为什么同一个调用会被多次上报**：参数边流边长，每次有变化就重发一次全量。客户端按
+   * `index`（或 `id`）就地更新那一项即可，不要往后追加 —— 它是覆盖语义。
+   */
+  toolCalls: "session.toolCalls",
+  /**
+   * 一条**已经定型**的工具结果消息 —— 工具跑完一个就推一条，不等一轮结束。
+   *
+   * **为什么不能只靠 `message.delta`**：那条是**正文增量**（文本流，每片的语义是「再往后
+   * 接这一段」），而工具结果是一条**完整消息**：`role: "tool"` + `tool_call_id`（与
+   * `session.toolCalls` 里那次调用配对的身份）+ 定型后的正文。增量里根本没有
+   * `tool_call_id`，客户端拿「一串文本」拼不出「这是哪个工具的结果」—— 要拼就得自己
+   * 猜、自己包装，而猜错的症状是结果挂到了另一张工具卡片上。
+   *
+   * **为什么要逐条推、不等快照**：`session.snapshot` 要等 `turn.end` 之后才拿得到，而一个
+   * 长轮次里工具可能跑上好几分钟 —— 用户盯着参数卡片，看不到它跑出了什么。core 那边
+   * 结果本来就是**逐条定型**的（`tool-call-end` 每个工具各发一次，谁先跑完谁先发），
+   * 推迟到轮末纯属浪费。
+   *
+   * **为什么只推工具结果这一类**：流式中的 assistant 消息还在拼，客户端已经在用
+   * `message.delta` + 一条占位消息画它了。把它也从这里推出去，同一条消息就有了两种表示
+   * （增量拼出来的那份 vs 这条快照），收尾时还得对账「哪一份才是真的」。工具结果没有这个
+   * 问题：它在推出去的那一刻就已经定型，而且没有别的通道在画它。
+   *
+   * 载荷里的 `message` 是**那一条消息本身**，形状由 SDK 定 —— 与
+   * `SessionSnapshotResult.messages: unknown[]` 同一口径：协议刻意不认识 SDK 的消息形状。
+   */
+  messageAppended: "session.messageAppended",
   /** 一轮结束（成功或失败） */
   turnEnd: "turn.end",
   /** 对话内通知（绑会话） */
@@ -1021,6 +1062,62 @@ export type SubAgentEndedEvent = {
   status: "done" | "failed";
 };
 
+/**
+ * 一项工具调用的组装态（`session.toolCalls` 载荷里的元素）。
+ *
+ * 字段与 core 里那条正在拼的 assistant 消息同形（`receiver.tool_calls[index]`）：这不是
+ * 巧合 —— 服务端只做搬运，不重新解释它的含义。
+ */
+export interface ToolCallState {
+  /**
+   * 本轮内的下标（并行时区分不同调用）。
+   *
+   * 客户端按它就地更新：同一个 `index` 的多次上报是**同一个调用在长大**，不是新调用。
+   * 名字与参数片段可能分几个 chunk 到达，靠 `id` 认领会漏掉 `id` 还没到的那一两片，
+   * 所以归并键是 `index`（`id` 到了之后也一样按 `index` 归并，别换成 `id`）。
+   */
+  index: number;
+  /** 工具名（core 只在首个 delta 里给，后续 delta 只带参数片段） */
+  name: string;
+  /** 调用 id（core 收到第一个带 `id` 的 chunk 之后才有）：客户端拿它和工具结果配对 */
+  id?: string;
+  /** 组装到此刻的参数串（**可能还不是合法 JSON**：正在流的时候它本来就是半截） */
+  arguments: string;
+}
+
+/**
+ * 本轮工具调用的组装态（见 `SESSION_EVENTS.toolCalls` 的三条「为什么」）。
+ *
+ * `toolCalls` 是**全集**而不是「这一片新增了什么」：客户端拿它整体替换自己手上的那一轮
+ * 工具调用列表，不必攒片段。
+ */
+export type SessionToolCallsEvent = {
+  event: typeof SESSION_EVENTS.toolCalls;
+  sessionId: string;
+  turnId: number;
+  toolCalls: ToolCallState[];
+};
+
+/**
+ * 一条已经定型的工具结果消息上线（见 `SESSION_EVENTS.messageAppended` 的三条「为什么」）。
+ *
+ * `message` 是**那一条消息本身**，原样搬运：协议不解释它的字段，也不在这里另造一个
+ * 「工具结果」的中间形状 —— 中间形状迟早与 SDK 里那份真消息漂开（SDK 加一个字段，客户端
+ * 就得等协议也加一个），而这条事件的意义恰恰是「服务端是唯一真相源，客户端照着渲染」。
+ */
+export type SessionMessageAppendedEvent = {
+  event: typeof SESSION_EVENTS.messageAppended;
+  sessionId: string;
+  turnId: number;
+  /**
+   * 刚定型、刚追加进会话的那一条消息（今天是 `role: "tool"` 的工具结果）。
+   *
+   * 类型是 `unknown`：与 `SessionSnapshotResult.messages` 同一口径 —— 协议不认识 SDK 的
+   * 消息形状（那是 SDK 的资产，字段随时会加），客户端拿到的就是服务端手里那一份。
+   */
+  message: unknown;
+};
+
 export type TurnEndEvent = {
   event: typeof SESSION_EVENTS.turnEnd;
   sessionId: string;
@@ -1105,6 +1202,8 @@ export type NoticePayload = Omit<SessionNoticeEvent, "event" | "sessionId">;
 export type ServerEvent =
   | SessionPhaseEvent
   | MessageDeltaEvent
+  | SessionToolCallsEvent
+  | SessionMessageAppendedEvent
   | TurnEndEvent
   | SessionNoticeEvent
   | GlobalNoticeEvent

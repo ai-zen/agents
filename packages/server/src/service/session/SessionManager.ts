@@ -40,7 +40,13 @@
  * 再判一次 —— 宽限期是给断线重连留的窗口，不是给「没人要」的会话续命。
  */
 
-import { PhaseTracker, pendingToolCalls, type PhaseInfo } from "../progress/PhaseTracker.js";
+import {
+  PhaseTracker,
+  pendingToolCalls,
+  FINISHED_STATUSES,
+  type PhaseInfo,
+  type PhaseMessageLike,
+} from "../progress/PhaseTracker.js";
 import { compareSessionEntries } from "../store/SessionStore.js";
 import type { SessionRecord, SessionRef, SessionStore } from "../store/SessionStore.js";
 import { EventHub } from "../events/EventHub.js";
@@ -61,6 +67,7 @@ import type {
   MessageContent,
   ModelLevel,
   SubAgentSnapshotResult,
+  ToolCallState,
 } from "../../protocol/sessions.js";
 import {
   SESSION_EVENTS,
@@ -359,6 +366,30 @@ interface LiveSession {
   agent: AgentLike;
   turnId: number;
   phase: PhaseTracker;
+  /**
+   * 本轮工具调用的**上报去重器**（只记上一次报出去的是什么，不是真相源）。
+   *
+   * 与 `phase` 并排放在会话上、而不是做成 `attachEvents` 的闭包变量：闭包在换 Agent 时
+   * 会随重挂一起消失（`adoptAgent`），看起来也够用；但**一轮收尾**（`settleTurn`）没有
+   * 闭包可清，影子就会滑到下一轮去当「上一次」。放在会话上，归零才有一个共同的落点
+   * （见 `resetStreamState`）。
+   */
+  toolCalls: ToolCallReporter;
+  /**
+   * 本轮**已经推上线**的消息（按消息身份记，不是「推到第几条」）。
+   *
+   * 为什么必须是集合而不是一个下标：core 在工具**执行前**就把结果消息追加进
+   * `agent.messages`（`Message.Tool` → `status: "pending"`、正文空），跑完才就地翻成终态；
+   * 并行时先完成的那条于是往往排在**后面**。一个只增不减的下标会在「先推了下标 3」之后
+   * 把下标 2 当成已经推过 —— 那条真正跑完的慢工具结果就再也发不出去。
+   * 同理它也顶得住 `rollback`（`splice` 截断消息表）：按下标记会在截断后指到别的消息上，
+   * 按身份记不会。
+   *
+   * 与 `toolCalls` 并排放在会话上、而不是做成 `attachEvents` 的闭包变量：理由逐字相同
+   * （换 Agent 时闭包随重挂消失，而一轮收尾没有闭包可清），归零的落点也必须是同一个
+   * （见 `resetStreamState`）。
+   */
+  pushedMessages: Set<unknown>;
   /** 本轮是否已经出过错（`error` 与 `finally` 都会到，收尾只报一次） */
   turnFailed: { code: string; message: string } | null;
   turnSettled: boolean;
@@ -630,6 +661,86 @@ function deltaOf(chunk: any): { text: string; reasoning: string } {
   const text = typeof delta?.content === "string" ? delta.content : "";
   const reasoning = typeof delta?.reasoning_content === "string" ? delta.reasoning_content : "";
   return { text, reasoning };
+}
+
+/**
+ * 从 core 那条**正在拼的 assistant 消息**里取出工具调用的组装态。
+ *
+ * 为什么读第一个参数（receiver）而不是去解析 chunk：组装早就做完了。core 的
+ * `Agent.parseStreamData` 每消费一片就**就地**把 delta 拼进 `receiver`，然后才
+ * `emit("chunk-parsed", receiver, chunk)`（`packages/core/src/Agent.ts`）。在这里再解析
+ * 一遍 chunk，等于把 core 已经做过的拼装重做一份，而且半截 JSON 还得自己接 —— 正是
+ * 本项目反复栽过的「第二份实现」。
+ *
+ * 读到的形状（同上一行引用处，逐字）：
+ *
+ *     receiver.tool_calls[index] = {
+ *       index, id?, type?,
+ *       function: { name, arguments },   // arguments 是**累积到此刻**的字符串
+ *     }
+ *
+ * 两个已知的中间态，都按空值处理（不是兜底，是形状本来如此）：
+ *   - 名字与参数分几片到达：core 只在本下标的第一个 delta 里见到名字，后续只带参数片段；
+ *   - core 建对象时写的是 `{ ...默认值, ...delta.function }`，但同一行后面又摊了一次
+ *     `...deltaToolCall`，于是头一片里的 `function` 可能是**这一片的子集**（只有 name、
+ *     没有 arguments，或者反过来）—— 缺哪一半都有可能。
+ */
+function toolCallsOf(receiver: unknown): ToolCallState[] {
+  const raw = (receiver as any)?.tool_calls;
+  if (!Array.isArray(raw)) return [];
+  const calls: ToolCallState[] = [];
+  for (const call of raw) {
+    // 空位只可能出现在装配中的数组上；跳过比崩掉诚实（这一轮的工具卡片少画一张，
+    // 下一片到达时它照样补上）
+    if (!call) continue;
+    calls.push({
+      index: call.index,
+      name: typeof call.function?.name === "string" ? call.function.name : "",
+      ...(typeof call.id === "string" ? { id: call.id } : {}),
+      arguments: typeof call.function?.arguments === "string" ? call.function.arguments : "",
+    });
+  }
+  return calls;
+}
+
+/**
+ * 工具调用的**上报去重器** —— 只记「上一次报出去的是什么」，不是真相源。
+ *
+ * 为什么需要它：参数边流边长，而 chunk 的粒度跟内容无关 —— 一个只带 `id` 的片、一个只带
+ * `usage` 的收尾片、重连后重放的同一片，都会走到上报点。每片都发一次全量，客户端就要按帧
+ * 重渲染那张工具卡片（一条长参数能把界面拖成幻灯片）。
+ *
+ * 为什么判据这么便宜：组装**只追加**（core 那边是 `arguments += …`），所以「变了没有」
+ * 等价于「个数变了、某个名字变了、某个 id 变了，或某个参数串的**长度**变了」。把参数串整个
+ * 比一遍（`JSON.stringify`）既慢又没必要 —— 它只会往长里长。这条等价关系的前提是 core 的
+ * 追加式组装，那边哪天改成覆盖式重写，这里得跟着看。
+ */
+class ToolCallReporter {
+  /** 上一次报出去的形状（只留判据要用的四个字段） */
+  private reported: ToolCallState[] = [];
+
+  /** 有没有变化？有就顺手记成新的「上一次」，调用方据此决定发不发 */
+  update(next: readonly ToolCallState[]): boolean {
+    const last = this.reported;
+    const changed =
+      next.length !== last.length ||
+      next.some((call, i) => {
+        const prev = last[i]!;
+        return (
+          call.index !== prev.index ||
+          call.name !== prev.name ||
+          call.id !== prev.id ||
+          call.arguments.length !== prev.arguments.length
+        );
+      });
+    if (changed) this.reported = next.map((call) => ({ ...call }));
+    return changed;
+  }
+
+  /** 一轮结束：影子清零（与 `PhaseTracker.reset()` 同一个时机，见 `resetStreamState`） */
+  reset(): void {
+    this.reported = [];
+  }
 }
 
 /**
@@ -1256,7 +1367,7 @@ export class SessionManager {
     session.agent = agent;
     session.turnFailed = null;
     session.turnSettled = true;
-    session.phase.reset();
+    this.resetStreamState(session);
     // 换了 Agent：旧子 Agent 实例连同它们的对话一起退场（它们属于旧底座）
     this.clearSubAgents(session);
     session.detach = this.attachEvents(session);
@@ -1604,6 +1715,10 @@ export class SessionManager {
       agent,
       turnId: 0,
       phase: new PhaseTracker(),
+      toolCalls: new ToolCallReporter(),
+      // 基线 = 此刻已有的消息：续接来的历史已经在客户端的快照里了，不该被当成「刚追加的」
+      // 再推一遍（见 `pushedMessages`）。
+      pushedMessages: new Set(agent.messages),
       turnFailed: null,
       turnSettled: true,
       settleDeferred: false,
@@ -1873,9 +1988,12 @@ export class SessionManager {
      * 单测当时没抓住：假 Agent 是按**单参**形状 fire 的，恰好喂饱了 `receiver?.chunk ?? receiver`
      * 那条“两种形状都认”的兼容写法。假件的形状必须照拄真件的形状，否则它测的是想象。
      */
-    const onChunk = (_receiver: unknown, chunk: any) => {
+    const onChunk = (receiver: unknown, chunk: any) => {
       session.phase.delta(chunk);
       this.emitPhase(session);
+      // 工具调用的组装态：读的是第一个参数（`receiver`），不是 `chunk` —— 理由见 `toolCallsOf`。
+      // 它让客户端在流式期间就能画出工具卡片，不必等 `turn.end` 之后那份快照。
+      this.emitToolCalls(session, receiver);
 
       const { text, reasoning } = deltaOf(chunk);
       const completionTokens = completionOf(chunk);
@@ -1897,8 +2015,13 @@ export class SessionManager {
     };
 
     // 工具跑完一个就报一次：并行时先完成的那个从「等待」里消失，
-    // 否则界面会一直念着已经结束的工具名
-    const onToolCallEnd = () => this.emitPhase(session);
+    // 否则界面会一直念着已经结束的工具名。
+    // 同一刻顺手把**刚定型的那条结果消息**推上线：core 就在这一刻把 `status` 翻成终态
+    // （`markResult` 是唯一的结果定型点），再往后拖就只有等到轮末的快照了。
+    const onToolCallEnd = () => {
+      this.emitPhase(session);
+      this.emitAppendedMessages(session);
+    };
 
     const onError = (error: any) => {
       this.failTurn(session, {
@@ -2130,7 +2253,7 @@ export class SessionManager {
     // 清在 `turn.end` 之前：客户端收到收尾事件时再去要子 Agent 快照，拿不到才是对的。
     this.clearSubAgents(session);
 
-    session.phase.reset();
+    this.resetStreamState(session);
     this.emitPhase(session);
     this.emit({
       event: SESSION_EVENTS.turnEnd,
@@ -2246,6 +2369,96 @@ export class SessionManager {
       turnId: session.turnId,
       phase: this.visiblePhase(session),
     });
+  }
+
+  /**
+   * 把本轮工具调用的**组装态**推上线（`session.toolCalls`）。
+   *
+   * 为什么另起一条事件而不塞进 `message.delta`：`delta` 是文本流（每片的语义是「再加这
+   * 一段」），工具调用是组装态（每次给的是「到现在为止是什么」）。两种语义混在一条事件
+   * 里，客户端就得靠猜这个字段该接还是该替。
+   *
+   * 为什么发全量而不是增片：core 已经替我们拼好了（见 `toolCallsOf`），再让客户端攒一遍
+   * 片段，就是把同一个拼装在两个仓库里各写一份。
+   *
+   * 只发**变化了的**帧：判据在 `ToolCallReporter.update`（个数 / 名字 / id / 参数长度），
+   * 不做全串比较。
+   */
+  private emitToolCalls(session: LiveSession, receiver: unknown): void {
+    const toolCalls = toolCallsOf(receiver);
+    // 空集合不是一次「变化」：这条 receiver 上此刻还没有工具调用（纯正文的片、只带 usage
+    // 的收尾片、以及一轮里**下一个**内层循环刚开始时的空消息），把它当成「工具调用被清空
+    // 了」发出去，客户端会把刚画好的卡片抹掉。真正的归零只有一处：`resetStreamState`。
+    if (toolCalls.length === 0) return;
+    if (!session.toolCalls.update(toolCalls)) return;
+    this.emit({
+      event: SESSION_EVENTS.toolCalls,
+      sessionId: session.id,
+      turnId: session.turnId,
+      toolCalls,
+    });
+  }
+
+  /**
+   * 把**刚刚定型**的工具结果消息逐条推上线（`session.messageAppended`）。
+   *
+   * 为什么不能只靠 `message.delta`：那条事件的语义是**正文增量**（「再往后接这一段」），
+   * 而工具结果是一条**完整消息** —— `role: "tool"` + `tool_call_id`（与 `session.toolCalls`
+   * 里那次调用配对的身份）+ 定型后的正文。`tool_call_id` 不在任何一段正文里，客户端拿增量
+   * 拼不出来；硬拼就得自己包装一条「工具结果」，那是同一条消息的第二份表示。
+   *
+   * 为什么要逐条推、不等快照：`session.snapshot` 要等 `turn.end` 之后才拿得到，而一个长
+   * 轮次里工具能跑好几分钟 —— 用户盯着参数卡片，看不到它跑出了什么。core 那边结果本来就是
+   * 逐条定型的（`tool-call-end` 每个工具各发一次，谁先跑完谁先发），这里只是把那一刻已经
+   * 定型的消息顺手转出去。
+   *
+   * 为什么只推 `role === "tool"`：流式中的 assistant 消息还在拼，客户端已经在用
+   * `message.delta` + 占位消息画它了；再从这条通道推一遍，同一条消息就有了两种表示
+   * （增量拼出来的那份和这条快照），收尾时还要对账「哪一份才是真的」。工具结果没有这个
+   * 问题：它推出去时已经定型，也没有别的通道在画它。
+   *
+   * 为什么判据是「定型了吗」而不是「下标越过游标了」：core 在工具**执行前**就把结果消息
+   * 追加进 `agent.messages`（`Message.Tool` → `status: "pending"`、正文为空），跑完才就地
+   * 翻成终态 —— 于是并行时先完成的那条往往排在**后面**，它前面那条还在 `pending`。只按下标
+   * 往后推会把还在跑的那条（正文空）当成结果发出去（客户端画出一张空卡片，等它真跑完时
+   * 游标已经越过它，那张卡片再也不会被补上）；反过来「等前面那条跑完再往后推」又会让先
+   * 完成的结果干等后完成的那个。所以两条判据：**已定型**（`FINISHED_STATUSES`，与
+   * `visiblePhase` 判「谁还在跑」用的是同一份）+ **推过没有**（`session.pushedMessages`）。
+   */
+  private emitAppendedMessages(session: LiveSession): void {
+    for (const message of session.agent.messages) {
+      if (session.pushedMessages.has(message)) continue;
+      const { role, status } = message as PhaseMessageLike;
+      // 只推工具结果（理由见上）：assistant 消息此刻还在流里，`message.delta` 在画它
+      if (role !== "tool") continue;
+      // 还没定型：等它自己那次 `tool-call-end` —— 此刻它正文还是空的
+      if (!FINISHED_STATUSES.has(status ?? "")) continue;
+      session.pushedMessages.add(message);
+      this.emit({
+        event: SESSION_EVENTS.messageAppended,
+        sessionId: session.id,
+        turnId: session.turnId,
+        message,
+      });
+    }
+  }
+
+  /**
+   * 一轮的**流式状态**归零：阶段 + 工具调用的去重影子 + 「哪些消息已经推过」。
+   *
+   * 为什么三件事合成一个动作：它们必须同进同退。只清阶段不清影子，下一轮若拼出来的名字
+   * 与参数与上一轮逐字相同（同一句话重试、同一个脚本再跑一次），去重判据会认为「没变」，
+   * 那整轮的工具卡片一张都不会出现 —— 一个只在重复劳动时才出现的 bug，碰上了也很难相信。
+   * 写成一个动作，就不存在「改到一处、漏掉另一处」的形态。
+   *
+   * 消息游标归位用的是**以当前消息表为基线**（`new Set(messages)`）而不是 `clear()`：
+   * 清空之后下一轮第一次推就会把整段历史当成「刚追加的」重推一遍 —— 那是「跨轮泄漏」的
+   * 另一面（上一轮的东西漏到下一轮），而不是解药。
+   */
+  private resetStreamState(session: LiveSession): void {
+    session.phase.reset();
+    session.toolCalls.reset();
+    session.pushedMessages = new Set(session.agent.messages);
   }
 
   private emit(event: ServerEvent): void {
