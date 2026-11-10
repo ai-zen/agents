@@ -349,3 +349,62 @@ describe("ConfigService：bootstrap 由服务端负责", () => {
     expect((after as AgentDefinition).name).toBe("我改过的名字");
   });
 });
+
+/**
+ * 配置写盘之后，服务端**自己**要把缓存的 Scope 作废。
+ *
+ * 不这样做的症状是「改了配置，另一段会话还在用旧的」：`Scope` 里存着配置快照，而且是按
+ * 工作区缓存的 —— 客户端只会 reload 它手上那段会话所在的工作区，别的工作区照样是旧的。
+ * 这里只锁「写盘后通知了」这件事；「通知之后兜底真的生效」由真进程冒烟验（`resolveModel`
+ * 的用例只证明解析顺序，不证明快照刷新）。
+ */
+describe("ConfigService：写盘后通知装配方（丢旧配置快照）", () => {
+  it("三条写路径都会通知：save / setDefaultAgent / setDefaultModel", async () => {
+    let notified = 0;
+    const watched = new ConfigService({
+      configFile: join(root, "config.json"),
+      agentsDir: join(root, "agents"),
+      subAgentsDir: join(root, "sub-agents"),
+      globalMcpFile: join(root, "mcp.json"),
+      workspacesRoot,
+      onConfigChanged: () => {
+        notified++;
+      },
+    });
+
+    await watched.save({ endpoints: [], models: [] });
+    expect(notified).toBe(1);
+    await watched.setDefaultAgent("default");
+    expect(notified).toBe(2);
+    await watched.setDefaultModel("gpt-6-astra");
+    expect(notified).toBe(3);
+  });
+
+  it("只读的方法不通知（读配置不该让运行时重建）", async () => {
+    let notified = 0;
+    const watched = new ConfigService({
+      configFile: join(root, "config.json"),
+      agentsDir: join(root, "agents"),
+      subAgentsDir: join(root, "sub-agents"),
+      globalMcpFile: join(root, "mcp.json"),
+      workspacesRoot,
+      onConfigChanged: () => {
+        notified++;
+      },
+    });
+    await watched.save({ endpoints: [], models: [] });
+    const before = notified;
+
+    await watched.get();
+    await watched.reasoningPresets();
+    await watched.listAgents();
+
+    expect(notified).toBe(before);
+  });
+
+  it("不注入回调时照常工作（单测与嵌入式用法不必关心装配方）", async () => {
+    await expect(service.setDefaultModel("gpt-6-astra")).resolves.toEqual({
+      modelId: "gpt-6-astra",
+    });
+  });
+});

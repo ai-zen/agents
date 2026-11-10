@@ -65,6 +65,20 @@ export interface ConfigServiceOptions {
   globalMcpFile: string;
   /** `<配置根>/workspaces`（project 作用域要靠它找回工作区路径） */
   workspacesRoot: string;
+  /**
+   * 配置写盘后通知装配方「你手里的 Scope 过期了」（不注入则什么都不做）。
+   *
+   * ## 为什么必须在这里调，而不是让客户端改完配置自己 reload
+   *
+   * `Scope` 里存着一份配置快照（端点、模型清单、`defaultModel`……），而它是**按工作区缓存**
+   * 的。写完配置不丢它，那个工作区接下来的所有会话就都在用旧快照 —— 典型症状是两个：
+   * 「刚改的端点 Key 不生效」与「刚配的全局兜底模型还是报没模型」。而且缓存是按工作区的：
+   * 客户端只会 reload 它手上那一段会话所在的工作区，**别的工作区照样是旧的** ——
+   * 那就变成「谁记得 reload 谁对」，正好是分离要治的那种错。
+   *
+   * 回调的语义是「全部失效」：配置是全局的，不存在“只影响一个工作区”的配置写入。
+   */
+  onConfigChanged?: () => void | Promise<void>;
 }
 
 export class ConfigService {
@@ -117,7 +131,17 @@ export class ConfigService {
    */
   async save(config: AppConfig): Promise<ConfigSaveResult> {
     await new ConfigManager(this.options.configFile).write(config);
+    await this.notifyChanged();
     return { saved: true };
+  }
+
+  /**
+   * 写盘之后的唯一收尾动作：告诉装配方「旧配置快照作废」。
+   *
+   * 集中一处调：每条写路径各自记得调一次，就会漏掉下一条新加的方法。
+   */
+  private async notifyChanged(): Promise<void> {
+    await this.options.onConfigChanged?.();
   }
 
   /**
@@ -135,6 +159,7 @@ export class ConfigService {
     const manager = new ConfigManager(this.options.configFile);
     const config = await manager.read();
     await manager.write({ ...config, defaultAgent: agentId });
+    await this.notifyChanged();
     return { agentId };
   }
 
@@ -159,6 +184,7 @@ export class ConfigService {
     const manager = new ConfigManager(this.options.configFile);
     const config = await manager.read();
     await manager.write({ ...config, defaultModel: modelId });
+    await this.notifyChanged();
     return { modelId };
   }
 

@@ -245,6 +245,9 @@ async function main(): Promise<number> {
     subAgentsDir: join(args.aiZenDir, "sub-agents"),
     globalMcpFile: join(args.aiZenDir, "mcp.json"),
     workspacesRoot,
+    // 配置一写盘就把所有工作区缓存的 Scope 丢掉：它们各持一份配置快照，不丢就是
+    // 「改完配置、别的会话还在用旧的」（详见 `ConfigServiceOptions.onConfigChanged`）
+    onConfigChanged: () => agentFactory.invalidate(),
   });
   // 配置根初始化：默认 Agent / 子 Agent / 出厂模型与策略表都由**服务端**释放。
   // 客户端不再碰本机配置目录，所以“首次启动就有默认 Agent”只能在这里保证 ——
