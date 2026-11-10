@@ -16,8 +16,8 @@
  *
  * `export * from "@ai-zen/agents-server/protocol"`。这样上层只要认这一个包：方法名常量、
  * 结果类型、帧编解码都在手边。它**不是**第二份定义 —— 只是把服务端那个入口原样转出去
- * （`@ai-zen/agents-server/protocol` 见服务端 `src/protocol/index.ts`，那里的依赖图是闭合的：
- * 只有同级模块 + node 内置）。
+ * （`@ai-zen/agents-server/protocol` 见服务端 `src/protocol/index.ts`，那里的**运行期**依赖图
+ * 是闭合的：只有同级模块 + node 内置。类型面有一处跨出去的 `import type`，编译后即被抹掉）。
  *
  * ## 运行期依赖图（可用 grep 检验，见 README）
  *
