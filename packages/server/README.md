@@ -236,6 +236,29 @@ a *live* id — routing that through `create` is what used to make resume imposs
 `turn-busy`. Events are attributed by reading `session.turnId` **at emit time**, so two
 concurrent turns would interleave their deltas under each other's ids.
 
+### `session.snapshot`: one resolution, three model facts
+
+A reconnecting client gets one screenful of facts from `session.snapshot` instead of replaying
+the event stream. The model part is a **single resolution's** output: `modelId` is the model
+actually in use, `modelLevel` says which of the three levels it came from (`session` >
+`agent` > `global`), and `modelParams` + `modelParamsLevel` are the params that same resolution
+picked (`resolveModelParams` is keyed by the level `resolveModel` just produced — one call each,
+no second pass). **`modelParams` and `modelLevel` come from the same resolution**, so a client
+must not re-derive the level from "effective value + definition + default": that is a second
+implementation of the priority order, and the first symptom is a settings screen showing "high"
+while the request goes out with the old model's `thinking` block.
+
+Two things worth knowing about `modelParams`:
+
+- It is the **override layer**, not the merged request body — `session`'s copy when the model
+  came from the session, the definition's `modelParams` when it came from the agent, and absent
+  otherwise (the model's own `defaultParams` then apply). `global` has nowhere to store params,
+  so that level never reports any — never borrowed from another level, because a session-level
+  model sent with the previous model's params is a 400.
+- `modelParamsLevel` travels with it (both present or both absent) and carries the same value as
+  `modelLevel`: the pair exists so a client can show "this value" and "set at this level"
+  together without inferring one from the other.
+
 ### Asking the client something: `session.question`
 
 Some decisions belong to the user, not to the server — auto-migration's "who writes the handoff
@@ -348,7 +371,7 @@ only), so a client had to stitch them together — and could stitch the same ses
 Now there is one method and one entry per session:
 
 ```
-{ sessionId, agentId, title?, modelId?, messageCount, updatedAt, live, phase }
+{ sessionId, agentId, title?, modelId?, effectiveModelId?, effectiveModelLevel?, messageCount, updatedAt, live, phase }
 ```
 
 - **No message bodies.** The store keeps a per-session sidecar (`<id>.meta.json`) with exactly
@@ -357,6 +380,36 @@ Now there is one method and one entry per session:
 - **`includeSaved: false`** = live sessions only (no disk read).
 - **Order** is `updatedAt` descending, ties broken by id descending — two sessions created in
   the same millisecond must not swap places on every refresh.
+
+### `modelId` vs `effectiveModelId`: two facts, one response
+
+`modelId` is the **session-level override** — the innermost level of the three-level resolution,
+i.e. what `session.model.set` wrote into the archive. It is absent for most sessions, because
+most sessions follow their agent definition or the global fallback, and its meaning stays exactly
+that (`session.snapshot`'s `modelId` is something else: that one is the *effective* model).
+
+`effectiveModelId` + `effectiveModelLevel` are the **resolved** model and the level it came from
+(`session` > `agent` > `global`, single implementation: the SDK's `resolveModel`). They exist
+because a sidebar's model dropdown has to show the current value: with only the override field,
+every session that follows its definition renders as "no model selected". The fix belongs on the
+server — a client that re-derives the value from "override + definition + default" is a **second
+implementation of the priority order**, and the first symptom is a dropdown showing A while the
+request goes out as B. Render `effectiveModelId`; take the "which level is in effect" badge from
+`effectiveModelLevel` (same vocabulary as `session.snapshot`'s `modelLevel`).
+
+Both fields are **omitted** when the server cannot resolve a model for that entry (the agent
+definition was deleted, or all three levels are empty). They are never fabricated and never
+fall back to `modelId` — a guessed model just makes the UI lie more confidently.
+
+Cost: live entries read the model the server's own agent was built with (the resolution already
+happened in `createAgent`) — free, and always consistent with `session.snapshot`. Archived
+entries have no agent instance, so they go through the injected `resolveSessionModel`
+(`agentId`'s definition + `AppConfig` + `resolveModel`). That resolver is asked **once per
+`agentId`** (and per distinct session-level override, which is part of its input) within a single
+`list` call — most workspaces keep one or two agents for all their sessions. It is deliberately
+*not* cached across calls: config and definitions change, and a refresh must show the new answer.
+A resolution that throws drops those two fields for that entry only; the rest of the list is
+still returned (an archive can easily outlive the definition it was created under).
 
 ### `title` vs `id`
 

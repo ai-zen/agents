@@ -11,6 +11,11 @@
  * 与每轮收尾的 `writeSession`）：格式、位置、目录布局都由那个端口决定，本类不碰文件。
  * 这条边界是为了让本文件可测：给一个假 Agent 就能跑完整个事件流程，不需要网络。
  *
+ * 同理，**本层不读配置**：凡要「配置 + Agent 定义」才能算出来的东西（自动标题、清单里
+ * 存档条目的生效模型）都由组装根注入成窄函数（`SessionManagerOptions` 里的 `autoTitle` /
+ * `resolveSessionModel`）。活会话的生效模型不在此列 —— 它是 `createAgent` 那一次解析的
+ * 现成产物，本类只读。
+ *
  * ## 为什么事件出口是 `subscribe()` 而不是构造参数
  *
  * 一个会话可能被多个客户端看（终端 + 桌面端同时连）。广播是管理器的职责，
@@ -45,9 +50,13 @@ import {
   type HandoffAgentLike,
 } from "../handoff/SessionHandoff.js";
 import type { AutoTitleFn } from "./AutoTitle.js";
-// 只借**类型**：自动迁移触发上下文的形状真相源在 SDK 的插件里，本层再抄一份就是
+// `resolveModelParams` 是**运行期**依赖：参数该取哪一层只有 SDK 那一处实现
+// （`packages/sdk/src/runtime/resolveModel.ts`）。快照要报「当前生效的参数」，就得问
+// 它 —— 本层再写一遍「哪一档取哪一份」，就是让同一个 `switch` 存在两份的第二天。
+// 其余两个只借**类型**：自动迁移触发上下文的形状真相源在 SDK 的插件里，本层再抄一份就是
 // 第二份会漂移的规则（`import type` 编译后会被擦掉，不构成运行期依赖）。
-import type { AutoMigrateTriggerInfo } from "@ai-zen/agents-sdk";
+import { resolveModelParams } from "@ai-zen/agents-sdk";
+import type { AutoMigrateTriggerInfo, ModelParams } from "@ai-zen/agents-sdk";
 import type {
   MessageContent,
   ModelLevel,
@@ -308,6 +317,37 @@ export interface SessionManagerOptions {
    * 用例只能靠 `sleep(10000)`，那是把「超时」测成「时钟」。
    */
   autoTitleTimeoutMs?: number;
+  /**
+   * 解一条**存档条目**的生效模型（`agentId` 的定义 + 全局兜底 → 模型与档位）。
+   *
+   * ## 为什么需要这个注入点
+   *
+   * 清单里每条都要带生效模型（`SessionListEntry.effectiveModelId`，侧栏下拉框的当前值），
+   * 而活会话那一半**已经有了**：Agent 实例是 `createAgent` 按三级解析造出来的，`modelIdOf`
+   * / `modelLevelOf` 直接读它的解析产物。存档条目没有实例 —— 只剩一条 `SessionRecord`，
+   * 解析它要「这个 `agentId` 的定义 + 当前 `AppConfig`」，而**本层刻意不读配置**
+   * （见本接口里每个 `xxx` 的注释：本包只认注入进来的值）。
+   *
+   * 于是注入点窄成「`agentId` + 会话级覆盖 → 模型 + 档位」：怎么读定义、怎么读配置、
+   * 解析顺序怎么排全在注入方（组装根），而且**唯一实现仍然只有 SDK 的 `resolveModel`**
+   * —— 注入方必须调它，不许在这里或那里重写一遍 `a ?? b ?? c`。
+   *
+   * ## 语义
+   *
+   * 不注入 = 存档条目上不给这两个字段（活会话照旧给）：没有解析能力时，少给一个字段比
+   * 让整个清单失败有用。
+   *
+   * 抛错（定义已删、三级都空）→ `list` 把**那一条**的字段省掉，其余条目照常返回：
+   * 一段存档活过了它的 Agent 定义是常态（用户删了定义、留着历史），那不是「清单坏了」。
+   *
+   * 一个工作区里多数会话共用一两个 Agent，所以 `list` 在**本次调用内**按
+   * `agentId` + 会话级覆盖去重，同一个输入只问它一次（不做进程级缓存：配置随时可能变，
+   * 跨请求复用等于让清单在改完配置之后还说旧模型）。
+   */
+  resolveSessionModel?: (input: { agentId: string; sessionModelId?: string }) => Promise<{
+    modelId: string;
+    level: ModelLevel;
+  }>;
 }
 
 interface LiveSession {
@@ -536,6 +576,22 @@ function modelIdOf(agent: AgentLike): string {
 }
 
 /**
+ * Agent **定义上**那份参数覆盖（`AgentDefinition.modelParams`）—— 三级里 `agent` 那一档。
+ *
+ * 为什么从 `definition` 上取：SDK 交给 Agent 的是**解析之后**的那份定义（`modelId`
+ * 已经换成生效模型），而 `modelParams` 仍是这一档的原始覆盖 —— `createAgent` 只按档位
+ * **选**一份去装配，不会把选中的结果写回定义。所以它和 `session.modelParams` 合起来
+ * 就是 `resolveModelParams` 要的两个候选。
+ *
+ * 与 `modelIdOf` 同一个取法：这两个字段都不在 `AgentLike` 里（那是「能跑一轮」的最小面），
+ * 仍是「同一个对象、更宽的视图」。
+ */
+function agentModelParamsOf(agent: AgentLike): ModelParams | undefined {
+  const definition = (agent as { definition?: { modelParams?: ModelParams } }).definition;
+  return definition?.modelParams;
+}
+
+/**
  * 生效模型来自哪一级（会话 / Agent 定义 / 全局兜底）。
  *
  * 同样来自 SDK 的解析副产品：本层不知道 `config.defaultModel`（它不读配置），也不应该
@@ -607,6 +663,8 @@ export class SessionManager {
   private readonly autoTitleFn: AutoTitleFn | undefined;
   /** 等标题的上限（可注入，缺省见 `AUTO_TITLE_TIMEOUT_MS`） */
   private readonly autoTitleTimeoutMs: number;
+  /** 存档条目的生效模型解析（不注入 = 存档条目上不给这一对字段） */
+  private readonly resolveSessionModel: SessionManagerOptions["resolveSessionModel"];
   /** 自建的 hub 由自己清理；外面传进来的归外面管 */
   private readonly ownsHub: boolean;
 
@@ -621,20 +679,39 @@ export class SessionManager {
     this.schedule = options.schedule ?? defaultSchedule;
     this.autoTitleFn = options.autoTitle;
     this.autoTitleTimeoutMs = options.autoTitleTimeoutMs ?? AUTO_TITLE_TIMEOUT_MS;
+    this.resolveSessionModel = options.resolveSessionModel;
     this.hub = options.hub ?? new EventHub();
     this.ownsHub = !options.hub;
   }
 
-  /** 整份快照：客户端（重）连上来时一次拿全，不用先从事件流里攒 */
+  /**
+   * 整份快照：客户端（重）连上来时一次拿全，不用先从事件流里攒。
+   *
+   * 模型那三样（`modelId` / `modelLevel` / `modelParams`）必须**同源**：解析只发生在
+   * `createAgent` 里（`resolveModel` 给模型与档位），这边只把档位拿去问
+   * `resolveModelParams`「参数该取哪一份」。各解析一遍的话，「模型来自会话级、参数却按
+   * 定义级算」这种错在快照里看不出来（两边各自都“说得通”），而它真的会发生：会话换过
+   * 模型、参数却还留在定义上，客户端显示的思考强度和实际发出去的请求就是两件事。
+   */
   async snapshot(sessionId: string): Promise<SessionSnapshotResult> {
     const session = this.require(sessionId);
+    // 档位只取一次，模型、参数两处都用它 —— 这就是「同一次解析」在代码里的样子
+    const level = modelLevelOf(session.agent);
+    const modelParams = resolveModelParams({
+      level,
+      sessionModelParams: session.modelParams as ModelParams | undefined,
+      agentModelParams: agentModelParamsOf(session.agent),
+    });
     return {
       sessionId: session.id,
       workspaceId: session.workspaceId,
       agentId: session.agentId,
       // 生效模型 + 它来自哪一级：两者都是 SDK 解析结果的透传（见 `modelIdOf` / `modelLevelOf`）
       modelId: modelIdOf(session.agent),
-      modelLevel: modelLevelOf(session.agent),
+      modelLevel: level,
+      // 没有覆盖时整对字段都不出现：`undefined` 本身是「这一档什么都不带」这个答案，
+      // 客户端照实显示出厂参数，而不是自己去定义 / 默认里推一个值出来
+      ...(modelParams !== undefined ? { modelParams, modelParamsLevel: level } : {}),
       apiModel: apiModelOf(session.agent),
       turnId: session.turnId,
       phase: this.visiblePhase(session),
@@ -1195,23 +1272,51 @@ export class SessionManager {
    * 两次」。合并后**一段会话在列表里只有一条**，`live` 说它此刻在不在内存里。
    *
    * `includeSaved: false` = 只看活会话（少读一次磁盘）。
+   *
+   * ## 生效模型（`effectiveModelId` / `effectiveModelLevel`）从哪来
+   *
+   * 两条路各自取「已经算好的那一份」，本层绝不自己推优先级（唯一实现是 SDK 的
+   * `resolveModel`）：
+   *
+   *   · 活会话 —— Agent 实例就是 `createAgent` 按三级解析造出来的，`modelIdOf` /
+   *     `modelLevelOf` 读的是那次解析的产物，与 `snapshot` 报的是同一件事实；
+   *   · 存档条目 —— 只有 `SessionRecord`，没有实例，只能问注入的 `resolveSessionModel`
+   *     （本层不读配置）。没注入 / 解析失败就省掉这两个字段，那一条照旧列出。
    */
   async list(
     workspaceId: string,
     options: { includeSaved?: boolean } = {},
   ): Promise<SessionListEntry[]> {
     const byId = new Map<string, SessionListEntry>();
+    /**
+     * 本次调用内的解析缓存（`agentId` + 会话级覆盖 → 结果或「解析不出来」）。
+     *
+     * 为什么键里要带会话级覆盖：解析的输入里就有它（`session > agent > global`，覆盖值一旦
+     * 存在就直接赢），只按 `agentId` 缓存会把「没覆盖的那条」的答案发给「有覆盖的那条」。
+     * 实际效果仍是「一个 Agent 一次」：同一个工作区里绝大多数存档都没有覆盖。
+     *
+     * 为什么缓存失败也是 `null` 而不只是省略：一个删掉的定义可能挂着一堆历史会话，
+     * 每条都再问一次注入方，就是让同一个失败在一个请求里重演 N 次。
+     *
+     * 只在本次调用内有效（不做进程级缓存）：配置与定义随时会变，跨请求复用等于让清单
+     * 在用户改完配置之后还报旧模型。
+     */
+    const resolvedModels = new Map<string, { modelId: string; level: ModelLevel } | null>();
 
     if (options.includeSaved !== false) {
       const store = await this.storeFor(workspaceId);
       // 没有存档不算错：活会话仍然列得出来（与 `listSaved` 的 `no-store` 不同口径——
       // 那条是「我要存档却不能给」，这条是「预览全部」，少一半总比报错有用）
       for (const entry of (await store?.list()) ?? []) {
+        const resolved = await this.archivedModelOf(entry, resolvedModels);
         byId.set(entry.id, {
           sessionId: entry.id,
           agentId: entry.agentId,
           ...(entry.title !== undefined ? { title: entry.title } : {}),
           ...(entry.modelId !== undefined ? { modelId: entry.modelId } : {}),
+          ...(resolved
+            ? { effectiveModelId: resolved.modelId, effectiveModelLevel: resolved.level }
+            : {}),
           messageCount: entry.messageCount,
           updatedAt: entry.updatedAt,
           live: false,
@@ -1223,11 +1328,20 @@ export class SessionManager {
     // 活会话覆盖同名存档条目：内存里那份才是**此刻**的事实（可能多一整轮还没落盘）
     for (const session of this.sessions.values()) {
       if (session.workspaceId !== workspaceId) continue;
+      // 生效模型 = 这个 Agent 装配时解析出来的那个（与 `snapshot` 同源，客户端不必自己算）。
+      // 空串按「拿不到」算 —— 与 `resolveModel` 同一口径（`modelId: ""` 不是模型名）
+      const effectiveModelId = modelIdOf(session.agent);
       byId.set(session.id, {
         sessionId: session.id,
         agentId: session.agentId,
         ...(session.title !== undefined ? { title: session.title } : {}),
         ...(session.modelId !== undefined ? { modelId: session.modelId } : {}),
+        ...(effectiveModelId
+          ? {
+              effectiveModelId,
+              effectiveModelLevel: modelLevelOf(session.agent),
+            }
+          : {}),
         messageCount: session.agent.messages.length,
         updatedAt: session.updatedAt,
         live: true,
@@ -1241,6 +1355,38 @@ export class SessionManager {
         { id: b.sessionId, updatedAt: b.updatedAt },
       ),
     );
+  }
+
+  /**
+   * 一条**存档**条目的生效模型（见 `SessionManagerOptions.resolveSessionModel`）。
+   *
+   * 为什么失败返回 `null` 而不是抛出去：清单是侧栏的全部历史，一条解析不出来（定义被删、
+   * 三级都空）不该让整张列表打不开 —— 那一段会话仍然在盘上、仍然要能被选中和删除。
+   * 返回 `null` 的语义就是「这一刻说不准它的模型」，调用方据此省掉那两个字段（不猜值）。
+   */
+  private async archivedModelOf(
+    entry: { agentId: string; modelId?: string },
+    cache: Map<string, { modelId: string; level: ModelLevel } | null>,
+  ): Promise<{ modelId: string; level: ModelLevel } | null> {
+    // 没注入解析器 = 这一层没有解析能力（本层不读配置），那就一条都不给
+    if (!this.resolveSessionModel) return null;
+
+    const key = `${entry.agentId}\u0000${entry.modelId ?? ""}`;
+    const cached = cache.get(key);
+    if (cached !== undefined) return cached;
+
+    let resolved: { modelId: string; level: ModelLevel } | null = null;
+    try {
+      resolved = await this.resolveSessionModel({
+        agentId: entry.agentId,
+        sessionModelId: entry.modelId,
+      });
+    } catch {
+      // 具体原因（定义已删、配置里三级都空）是注入方的事，本层只需要「这条没有」这个结论
+      resolved = null;
+    }
+    cache.set(key, resolved);
+    return resolved;
   }
 
   /**

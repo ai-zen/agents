@@ -6,9 +6,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SessionManager, type AgentLike, type CreateAgentInput } from "./SessionManager.js";
 import { FileSessionStore } from "../store/FileSessionStore.js";
 import type { SessionRecord, SessionStore } from "../store/SessionStore.js";
-import type { HandoffMode, ServerEvent } from "../../protocol/sessions.js";
+import type { HandoffMode, ServerEvent, SessionListEntry } from "../../protocol/sessions.js";
 import type { AutoTitleRequest } from "./AutoTitle.js";
 import { EventHub } from "../events/EventHub.js";
+import { resolveModel } from "@ai-zen/agents-sdk";
 
 /**
  * 等一轮真正收尾。
@@ -2151,6 +2152,9 @@ describe("SessionManager：会话级模型覆盖（session.model.set）", () => 
  * 「参数只在模型来自会话级时才生效」由 SDK 的 `resolveModelParams` 决定（见
  * `resolveModel.test.ts` / `createAgent.test.ts`），服务端不重复推一遍这个规则 —— 那正是
  * 两份实现的开端（与上面那个 describe 同一个理由）。
+ *
+ * 快照里那对 `modelParams` / `modelParamsLevel` 也锁在这里：它们是客户端显示「思考强度
+ * 当前值」的唯一来源，而“当前值是哪一层的”只有服务端说得准。
  */
 describe("SessionManager：会话级模型参数（session.modelParams.set）", () => {
   let store: MemoryStore;
@@ -2159,22 +2163,38 @@ describe("SessionManager：会话级模型参数（session.modelParams.set）", 
   let inputs: CreateAgentInput[];
   /** 最近造出来的那个 Agent（假件里 `send` / `finally` 要打在它身上） */
   let latest: FakeAgent;
+  /**
+   * Agent **定义上**那份参数（`AgentDefinition.modelParams`；真件从盘上读）。
+   *
+   * 它不等于「生效参数」：`createAgent` 只在模型来自 `agent` 档时用它 —— 所以它必须能被
+   * 单独摆成 `undefined` / 有值，才能分清「快照报的是哪一层的那份」。
+   */
+  let agentDefParams: Record<string, unknown> | undefined;
 
   /**
    * 假 Agent：`definition.modelId` 与 `modelLevel` 都跟着入参走，与真件的解析结果同形
    * （真件由 `createAgent` 把生效模型写进定义、并给出档位）。
+   *
+   * `definition.modelParams` 则照抄**定义上**那一份（由 `agentDefParams` 控制）：真件的
+   * 定义里的 `modelParams` 不会被会话级覆盖改写，它一直是 `agent` 那一档的原始值。
    */
   const buildAgent = (input: CreateAgentInput): FakeAgent => {
     const next = new FakeAgent();
     next.modelLevel = input.modelId ? "session" : "agent";
-    (next as unknown as { definition: { modelId?: string } }).definition.modelId =
-      input.modelId ?? "m-agent";
+    const definition = (
+      next as unknown as {
+        definition: { modelId?: string; modelParams?: Record<string, unknown> };
+      }
+    ).definition;
+    definition.modelId = input.modelId ?? "m-agent";
+    definition.modelParams = agentDefParams;
     return next;
   };
 
   beforeEach(() => {
     store = new MemoryStore();
     inputs = [];
+    agentDefParams = undefined;
     sessionCounter = 0;
     live = new SessionManager({
       createAgent: async (input) => {
@@ -2302,6 +2322,275 @@ describe("SessionManager：会话级模型参数（session.modelParams.set）", 
 
     expect(inputs.at(-1)!.modelParams).toBeUndefined();
     expect(store.records.get(sessionId)!.modelParams).toBeUndefined();
+  });
+
+  // ==================================================================
+  // 快照里的生效参数：防的是「客户端只能靠命令层自己补视图」——
+  // 没这一对字段，想显示当前思考强度的客户端就得自己从「生效值 + 定义 + 默认」反推档位，
+  // 而那是优先级规则的第二份实现（推出来的档与实际发出的参数迟早不一致）。
+  // ==================================================================
+
+  it("快照带上生效参数与它的档位：模型来自会话级时取会话级那份（定义那份不参与）", async () => {
+    // 定义上也带着参数：它是配给**定义绑定的那个模型**的，会话换过模型之后就不该再露面
+    agentDefParams = { thinking: { type: "disabled" } };
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    await runTurn(sessionId);
+    await live.setModel(sessionId, "m-session");
+
+    const snapshot = await live.setModelParams(sessionId, { reasoning_effort: "high" });
+
+    expect(snapshot.modelLevel).toBe("session");
+    expect(snapshot.modelParams).toEqual({ reasoning_effort: "high" });
+    expect(snapshot.modelParamsLevel).toBe("session");
+  });
+
+  it("快照带上定义那份参数：模型来自 Agent 定义时，档位是 agent（不是会话级）", async () => {
+    agentDefParams = { reasoning_effort: "low" };
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+
+    const snapshot = await live.snapshot(sessionId);
+
+    expect(snapshot.modelLevel).toBe("agent");
+    expect(snapshot.modelParams).toEqual({ reasoning_effort: "low" });
+    // 档位与参数同源：客户端不需要自己判断「定义上的值算不算生效」
+    expect(snapshot.modelParamsLevel).toBe("agent");
+  });
+
+  it("模型来自会话级、会话级没设参数：快照不带参数，也不退回去用定义那份（跨级就是端点 400）", async () => {
+    // 定义上有参数，但它属于定义绑定的旧模型（例如旧模型才认的 `thinking`）
+    agentDefParams = { thinking: { type: "disabled" } };
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    await live.setModel(sessionId, "m-session");
+
+    const snapshot = await live.snapshot(sessionId);
+
+    expect(snapshot.modelId).toBe("m-session");
+    expect(snapshot.modelLevel).toBe("session");
+    // 字段省略 = 「这一档没有覆盖」：客户端显示出厂参数，而不是把旧模型那份当当前值
+    expect("modelParams" in snapshot).toBe(false);
+    expect("modelParamsLevel" in snapshot).toBe(false);
+  });
+
+  it("会话里存着参数但模型来自定义：快照不报它 —— 存着不等于生效，参数跟着档位走", async () => {
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+    await runTurn(sessionId);
+    // 生效模型是定义上的 m-agent，这一份参数在装配时就不参与（由 SDK 按档位排除）
+    await live.setModelParams(sessionId, { reasoning_effort: "high" });
+
+    const snapshot = await live.snapshot(sessionId);
+
+    expect(snapshot.modelLevel).toBe("agent");
+    expect("modelParams" in snapshot).toBe(false);
+    // 存档里它还在（换回会话级模型时仍有效）—— 只是不该被当成「当前值」显示出去
+    expect(store.records.get(sessionId)!.modelParams).toEqual({ reasoning_effort: "high" });
+  });
+
+  it("全局兜底那一档没有参数可指：会话里存着参数也不报（那一级没有放参数的地方）", async () => {
+    // 假装配方照真件：三级都落到 `config.defaultModel` 时档位是 global（定义没绑模型）
+    const globalLive = new SessionManager({
+      createAgent: async () => {
+        const next = new FakeAgent();
+        next.modelLevel = "global";
+        (
+          next as unknown as { definition: { modelId?: string; modelParams?: unknown } }
+        ).definition.modelId = "m-default";
+        return next;
+      },
+      nextSessionId: () => `chat_${++sessionCounter}`,
+      storeFor: () => store,
+    });
+    const { sessionId } = await globalLive.create({ workspaceId: "ws-1", path: "/p" });
+
+    const snapshot = await globalLive.setModelParams(sessionId, { reasoning_effort: "high" });
+
+    expect(snapshot.modelLevel).toBe("global");
+    // 全局那一级只有 `defaultModel`，没有参数层：不许从别的层挪一份过来
+    expect("modelParams" in snapshot).toBe(false);
+    expect("modelParamsLevel" in snapshot).toBe(false);
+  });
+});
+
+/**
+ * 清单里的生效模型（`effectiveModelId` / `effectiveModelLevel`）。
+ *
+ * 这组用例锁的是一处**行为回归**：`SessionListEntry.modelId` 的语义是「会话级覆盖」，
+ * 没有覆盖就缺省 —— 于是「跟着 Agent 定义走 / 跟着全局兜底走」的会话（绝大多数）在清单里
+ * 没有模型可显示，桌面端的下拉框就空着。修法只能是**服务端**在清单里给出解析后的生效值：
+ * 让客户端拿「覆盖值 + 定义 + 默认」再推一遍，就是优先级规则的第二份实现。
+ *
+ * 解析的唯一实现是 SDK 的 `resolveModel`，所以下面的假解析器也调它（只多一个计数）：
+ * 用例要防的正是「服务端又自己写了一遍 `a ?? b ?? c`」，假件必须与真件同源才看得见。
+ */
+describe("SessionManager：清单里的生效模型（effectiveModelId / effectiveModelLevel）", () => {
+  let store: MemoryStore;
+  /** 每次装配的入参（活会话那一路的模型是 `createAgent` 解析出来的） */
+  let inputs: CreateAgentInput[];
+  /** 假的「定义表 + 全局兜底」：字段名照 `AgentDefinition.modelId` / `AppConfig.defaultModel` */
+  let definitions: Map<string, { modelId?: string }>;
+  let config: { defaultModel?: string };
+  /** 解析器每次被问到的输入（用例断言「一次请求里同一个输入只问一次」） */
+  let calls: Array<{ agentId: string; sessionModelId?: string }>;
+
+  /** 与真件同形的假解析器：只把两档原始值递给 SDK 的 `resolveModel`，然后数一次 */
+  const resolveSessionModel = async (input: { agentId: string; sessionModelId?: string }) => {
+    calls.push(input);
+    const definition = definitions.get(input.agentId);
+    // 定义已删：与 `createAgent` 同一口径（它也认为这段会话装不起来）
+    if (!definition) throw new Error(`Agent "${input.agentId}" not found`);
+    const resolved = resolveModel({
+      sessionModelId: input.sessionModelId,
+      agentModelId: definition.modelId,
+      defaultModel: config.defaultModel,
+    });
+    if (!resolved) throw new Error(`Agent "${input.agentId}" has no model bound`);
+    return resolved;
+  };
+
+  /** 假 Agent：`definition.modelId` 与 `modelLevel` 都跟着入参走，与真件的解析结果同形 */
+  const buildAgent = (modelId?: string): FakeAgent => {
+    const next = new FakeAgent();
+    next.modelLevel = modelId ? "session" : "agent";
+    (next as unknown as { definition: { modelId?: string } }).definition.modelId =
+      modelId ?? "m-agent";
+    return next;
+  };
+
+  const build = (withResolver: boolean) =>
+    new SessionManager({
+      createAgent: async (input) => {
+        inputs.push(input);
+        return buildAgent(input.modelId);
+      },
+      nextSessionId: () => `chat_${++sessionCounter}`,
+      storeFor: () => store,
+      resolveSessionModel: withResolver ? resolveSessionModel : undefined,
+    });
+
+  const entryOf = (listed: SessionListEntry[], sessionId: string) =>
+    listed.find((entry) => entry.sessionId === sessionId)!;
+
+  beforeEach(() => {
+    store = new MemoryStore();
+    inputs = [];
+    calls = [];
+    sessionCounter = 0;
+    // 出厂形态：Agent 定义自己绑了模型，全局兜底另有一个（定义没绑时才轮到它）
+    definitions = new Map([["default", { modelId: "m-agent" }]]);
+    config = { defaultModel: "m-global" };
+  });
+
+  it("活会话：生效模型与 snapshot 的 modelId 是同一件事实（不必问解析器）", async () => {
+    const live = build(true);
+    const { sessionId } = await live.create({ workspaceId: "ws-1", path: "/p" });
+
+    const listed = await live.list("ws-1");
+    const snapshot = await live.snapshot(sessionId);
+
+    // 跟着 Agent 定义走的会话（没有覆盖）现在也有模型可显示了
+    expect(listed[0]!.effectiveModelId).toBe("m-agent");
+    expect(listed[0]!.effectiveModelLevel).toBe("agent");
+    // 与快照逐字一致：清单与状态栏不能各说一个模型
+    expect(listed[0]!.effectiveModelId).toBe(snapshot.modelId);
+    expect(listed[0]!.effectiveModelLevel).toBe(snapshot.modelLevel);
+
+    // 会话级覆盖之后跟着走
+    const overridden = await live.setModel(sessionId, "m-session");
+    const after = (await live.list("ws-1"))[0]!;
+    expect(after.effectiveModelId).toBe(overridden.modelId);
+    expect(after.effectiveModelLevel).toBe("session");
+    expect(after.effectiveModelId).toBe((await live.snapshot(sessionId)).modelId);
+    // 清单里那个值就是装配时递给 `createAgent` 的会话级覆盖（客户端不必再拼一遍）
+    expect(inputs.at(-1)!.modelId).toBe("m-session");
+
+    // 活会话这一路**一次解析器都不用问**：模型是 `createAgent` 那一次解析的产物
+    expect(calls).toEqual([]);
+  });
+
+  it("存档条目（注入了解析器）：给出生效模型；共用一个 agentId 时只解析一次", async () => {
+    await store.write({ id: "chat_a", agentId: "default", messages: [] });
+    await store.write({ id: "chat_b", agentId: "default", messages: [] });
+    await store.write({ id: "chat_c", agentId: "default", messages: [] });
+    const live = build(true);
+
+    const listed = await live.list("ws-1");
+
+    expect(listed.map((entry) => entry.sessionId).sort()).toEqual(["chat_a", "chat_b", "chat_c"]);
+    for (const entry of listed) {
+      expect(entry.live).toBe(false);
+      expect(entry.effectiveModelId).toBe("m-agent");
+      expect(entry.effectiveModelLevel).toBe("agent");
+    }
+    // 三条会话共用一个 Agent：一个工作区里多数会话就是这样，解析只该发生一次
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.agentId).toBe("default");
+  });
+
+  it("存档条目（没注入解析器）：两个字段都省略，list 照常返回", async () => {
+    await store.write({ id: "chat_a", agentId: "default", messages: [] });
+    const live = build(false);
+    await live.create({ workspaceId: "ws-1", path: "/p" });
+
+    const listed = await live.list("ws-1");
+
+    // 没有解析能力 ≠ 清单坏了：存档那条照旧列出，只是不说模型
+    const archived = entryOf(listed, "chat_a");
+    expect(archived.agentId).toBe("default");
+    expect("effectiveModelId" in archived).toBe(false);
+    expect("effectiveModelLevel" in archived).toBe(false);
+    // 活会话不依赖解析器（模型来自 Agent 实例），照旧给
+    expect(entryOf(listed, "chat_1").effectiveModelId).toBe("m-agent");
+  });
+
+  it("定义已删（解析器抛错）：那几条省略字段，其余条目照常，list 不报错", async () => {
+    await store.write({ id: "chat_gone_1", agentId: "deleted", messages: [] });
+    await store.write({ id: "chat_gone_2", agentId: "deleted", messages: [] });
+    await store.write({ id: "chat_ok", agentId: "default", messages: [] });
+    const live = build(true);
+
+    const listed = await live.list("ws-1");
+
+    expect(listed.map((entry) => entry.sessionId).sort()).toEqual([
+      "chat_gone_1",
+      "chat_gone_2",
+      "chat_ok",
+    ]);
+    for (const sessionId of ["chat_gone_1", "chat_gone_2"]) {
+      const gone = entryOf(listed, sessionId);
+      expect("effectiveModelId" in gone).toBe(false);
+      expect("effectiveModelLevel" in gone).toBe(false);
+    }
+    expect(entryOf(listed, "chat_ok").effectiveModelId).toBe("m-agent");
+    // 同一个失败也不重复问：删掉一个定义可能挂着一堆历史会话
+    expect(calls.filter((call) => call.agentId === "deleted")).toHaveLength(1);
+  });
+
+  it("modelId 的语义没被改：它只报会话级覆盖，生效值另给", async () => {
+    await store.write({
+      id: "chat_override",
+      agentId: "default",
+      messages: [],
+      modelId: "m-session",
+    });
+    await store.write({ id: "chat_plain", agentId: "default", messages: [] });
+    const live = build(true);
+
+    const listed = await live.list("ws-1");
+
+    // 有覆盖：`modelId` 仍是覆盖值，生效值也是它（会话级赢了），档位说清了这一点
+    const override = entryOf(listed, "chat_override");
+    expect(override.modelId).toBe("m-session");
+    expect(override.effectiveModelId).toBe("m-session");
+    expect(override.effectiveModelLevel).toBe("session");
+
+    // 没覆盖：`modelId` 缺省（语义没被偷换成「生效值」），生效值落在定义那一档
+    const plain = entryOf(listed, "chat_plain");
+    expect("modelId" in plain).toBe(false);
+    expect(plain.effectiveModelId).toBe("m-agent");
+    expect(plain.effectiveModelLevel).toBe("agent");
+
+    // 两者可以不同，而解析的输入里就带着覆盖值 —— 缓存键必须含它，否则第二条会拿到
+    // 第一条的答案（同一个 agentId、不同的会话级覆盖是两件事）
+    expect(calls).toHaveLength(2);
   });
 });
 

@@ -37,6 +37,8 @@ import { globalAgentPaths } from "./service/agent/agentPaths.js";
 import { ConfigService } from "./service/config/ConfigService.js";
 import { createAutoTitle } from "./service/session/AutoTitle.js";
 import { EventHub } from "./service/events/EventHub.js";
+import type { AgentDefinition, AppConfig } from "@ai-zen/agents-sdk";
+import { resolveModel } from "@ai-zen/agents-sdk";
 import {
   SessionManager,
   DEFAULT_SESSION_IDLE_TIMEOUT_MS,
@@ -278,6 +280,29 @@ async function main(): Promise<number> {
     // （`defaultMigrationModel`）都要读配置，所以注入的是「函数」而不是一个布尔值 ——
     // 会话层不读配置，而这里只给它一个 `config.json` 路径
     autoTitle: createAutoTitle({ configFile }),
+    // 存档条目的生效模型：会话层只认记录（`agentId` + 会话级覆盖），要算出生效模型必须
+    // 有「那个 agentId 的定义」与「全局兜底」，这两样都只有组装根手里有。解析本身交给
+    // SDK 的 `resolveModel`（三级顺序的唯一实现）—— 这里只负责把三档的**原始值**递给它，
+    // 绝不自己写 `a ?? b ?? c`（那就是第二份会漂的优先级）。
+    resolveSessionModel: async ({ agentId, sessionModelId }) => {
+      // 协议层把定义与配置当**不透明载荷**（客户端不该解释它们），而组装根手里这份就是
+      // SDK 的 `AgentDefinition` / `AppConfig` —— 整个仓库里唯一该做这个断言的地方
+      const definition = (await configService.getAgent({ id: agentId }))
+        .agent as AgentDefinition | null;
+      // 定义已经删了：与 `createAgent` 同一口径（它也认为这段会话根本装不起来）。
+      // 抛出去而不是退到全局兜底 —— 一条指着已删定义的存档没有「生效模型」可言，
+      // 会话层会把这一条的字段省掉，清单其余部分照常
+      if (!definition) throw new Error(`Agent "${agentId}" not found`);
+      const { config } = await configService.get();
+      const resolved = resolveModel({
+        sessionModelId,
+        agentModelId: definition.modelId,
+        defaultModel: (config as AppConfig).defaultModel,
+      });
+      // 三级都空 = 真的没有模型（`createAgent` 对它是报错），所以同样按「解析失败」处理
+      if (!resolved) throw new Error(`Agent "${agentId}" has no model bound`);
+      return resolved;
+    },
   });
 
   const daemon = new Daemon({
