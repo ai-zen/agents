@@ -43,13 +43,14 @@
 时，不会把 openai / MCP SDK 拖进去）。
 
 ```bash
-# 列出所有 import 语句里出现的模块说明符，再滤掉 node:* 与类型转出（`@ai-zen/agents-core`）
-grep -rn '^import\|^\} from' src/ | grep -v 'node:' | grep -v 'agents-core'
-# 期望：输出里只剩相对路径（`./frames.js` 之类）与 `@ai-zen/agents-protocol` 自身
+# 列出所有 import 语句里出现的模块说明符，再滤掉测试、node:* 与类型转出（`@ai-zen/agents-core`）
+grep -rn '^import\|^\} from' src/ | grep -v '\.test\.' | grep -v 'node:' | grep -v 'agents-core'
+# 期望：输出里只剩相对路径（`./frames.js` 之类）—— 那就是「零第三方依赖」的样子
 ```
 
-> 检查命令必须锚在行首（`^import` / `^\} from`）。不锚的话，本文件与各模块文档注释里那些
-> `import … from "…"` 的例子会被自己 grep 到，得出错误结论 —— 这一步在 client 包里踩过。
+> 检查命令必须锚在行首（`^import` / `^\} from`）**且滤掉 `*.test.ts`**。不锚的话，本文件与各模块
+> 文档注释里那些 `import … from "…"` 的例子会被自己 grep 到；不滤测试的话，`vitest` 会被当成
+> 运行期依赖 —— 两种都会得出错误结论（前一条在 client 包里踩过）。
 
 产物侧再验一次（`dist/*.js` 里只该有相对路径与 `node:*`）：
 
@@ -60,12 +61,12 @@ grep -hoE '^import .* from "[^"]+";' dist/*.js | sed 's/.*from "//;s/";//' | sor
 
 ### 2. 不反向依赖任何实现
 
-协议不认识 `service/`、`daemon/`、`domain/`（那是服务端内部实现的分层）。它曾经有一条反向
-的 `import type`：`sessions.ts` 从服务端的 `PhaseTracker` 里取 `PhaseInfo` —— 于是「线上载荷
-的形状」由某一侧的内部状态机拥有（D2 修掉了它）。
+协议不认识 `daemon/`、`domain/`、`lib/`（那是服务端内部实现的分层）。它曾经有一条反向
+的 `import type`：`sessions.ts` 从服务端的阶段状态机里取 `PhaseInfo` —— 于是「线上载荷
+的形状」由某一侧的内部状态机拥有（D2 修掉了它，形状现在就在本包的 `phase.ts`）。
 
 ```bash
-grep -rn 'service/\|daemon/\|domain/' src/   # 必须为空
+grep -rn 'service/\|daemon/\|domain/\|lib/' src/   # 必须为空
 ```
 
 ### 3. 只转出类型，不转出运行期值
@@ -74,7 +75,9 @@ grep -rn 'service/\|daemon/\|domain/' src/   # 必须为空
 `export { Role }` —— 那等于把 core 拖进本包的运行时依赖图。
 
 ```bash
-grep -rn 'export {.*Role' src/   # 必须为空
+# 行首是 ` *` 的是**注释行**：`model.ts` 的文件头用散文说着「绝不许 `export { Role }`」，
+# 不滤就会把这句拒绝当成违规（门禁只该扫代码行，修的是命令不是注释）
+grep -rn 'export {.*Role' src/ | grep -v '^\S*:[0-9]*: *\*'   # 必须为空
 ```
 
 ## 用法

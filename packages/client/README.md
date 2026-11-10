@@ -101,18 +101,21 @@ connection.onClose(() => {
 全部会分叉；而 `createRemoteConfigPort` 还会把工作区 id 缓存在自己的连接上（换连接才作废），
 于是「会话开在 A 项目、项目级 `mcp.json` 读的却是别处」。
 
-可 grep 的判据（每个进程的**组装根**里 `new ServerConnection(` 恰好一处，其余位置只把实例传下去）：
+可 grep 的判据（每个进程的**组装根**里 `new ServerConnection(` 恰好一处，其余位置只把实例传下去）。
+**注意路径**：CLI 与桌面端是两个独立仓，与本仓同级（`agents/` 的兄弟目录），所以从
+`packages/client` 出发是 `../../../cli` 与 `../../../desktop`：
 
 ```bash
 # 应用侧（CLI / 桌面端 main）里造连接的地方 —— 应当各只有组装根那一行
-grep -rn 'new ServerConnection(' ../cli/src ../../desktop/packages/main/src | grep -v '\.test\.'
-# 期望：每个进程最多一行 —— P4/P5 接上 D8 之后各只剩组装根那一行。
+grep -rn 'new ServerConnection(' ../../../cli/src ../../../desktop/packages/main/src | grep -v '\.test\.'
+# 期望：**恰好两行**，各是本进程的组装根（`cli/src/server-client/index.ts` 与
+# `desktop/packages/main/src/server/index.ts`），且每个文件里只有这一行。
 # 出现第二行就是「某个工具函数自己又建了一条」：配置面与会话各一条 = 两套连接视图。
 #
 # 库这一侧唯一那一处是 `createRemoteConfigPort` 的**兜底**（不递 `connection` 时它才自己建，
 # 供「配置面先于会话」的场景）：应用应当显式递 `connection`，不靠兜底
-grep -rn 'new ServerConnection(' packages/client/src | grep -v '\.test\.'
-# 期望：只有 config-port.ts 那一行
+grep -rn 'new ServerConnection(' src | grep -v '\.test\.'
+# 期望：只有 `src/config-port.ts` 那一行（`createRemoteConfigPort` 的兜底）
 ```
 
 已经有一条连接（或想自己管生命周期）就给 `{ client }` / `{ connect }`，此时

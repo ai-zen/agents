@@ -11,7 +11,7 @@
  * 「拆了但还在一个团里」。所以形状单独一处，四边都只依赖它：**谁拥有哪个字段写在这里**，
  * 各字段的注释点名它的主人（这是拆分之后判断「这块该不该动」的依据）。
  *
- * 语义上的归属（见 `target-architecture.md` D10 那张表）：
+ * 语义上的归属（见 `docs/zh/architecture.md` 的「`SessionManager` 的四件」）：
  *
  *   注册表 / 回收      `holders` / `reclaimCancel` / `reclaimOnSettle`
  *   turn 生命周期      `turnId` / `turnSettled` / `turnFailed` / `settleDeferred`

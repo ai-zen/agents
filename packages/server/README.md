@@ -12,8 +12,13 @@ Dependency direction (one-way, never reversed):
 ```
 @ai-zen/cli ─────┐
                  ├──→ @ai-zen/agents-server ──→ @ai-zen/agents-sdk ──→ @ai-zen/agents-core
-desktop/main ────┘
+desktop/main ────┘             │
+                               └──→ @ai-zen/agents-protocol ──(import type only)──→ @ai-zen/agents-core
 ```
+
+Both front ends actually reach this package through `@ai-zen/agents-client` (which depends on
+nothing but the protocol); they declare `@ai-zen/agents-server` so they can spawn its bin. The
+wire contract itself lives in `@ai-zen/agents-protocol`, which this package depends on.
 
 `sdk` and `core` must never import this package:
 
@@ -346,7 +351,8 @@ CLI's pipe mode) asks one thing and exits; archiving it would leave a session in
 worse, move the workspace's "last session" pointer — the next TUI launch would resume a script's
 output. So `session.create` takes `persist?: boolean` (default `true`): with `false` the settle
 path skips the write and never touches the pointer. Everything else still holds — it is a live
-session (keep-alive applies), `save` / `saveAs` / migration still write to disk when called.
+session (it is held by the connection that created it), `save` / `saveAs` / migration still
+write to disk when called.
 
 The two flags are deliberately separate things and must not be conflated:
 
@@ -654,16 +660,18 @@ while the server's agents keep using the old model. Three deliberate choices:
 ## Two hard constraints (machine-checkable)
 
 1. **No UI stack here.** The package boundary is the process boundary — `ink`, `react` and
-   terminal helpers belong to the client. `dependencies` holds `@ai-zen/agents-sdk` and
-   nothing UI-shaped.
+   terminal helpers belong to the client. `dependencies` holds `@ai-zen/agents-protocol` and
+   `@ai-zen/agents-sdk` — no UI stack, no client.
 2. **No process-wide globals.** No current working directory, no global config paths, no
    global locale: everything comes in through constructor arguments. The single exception is
    `src/cli.ts` — the composition root — which is *allowed* to read `AI_ZEN_DIR` / `HOME` /
    `argv` and must immediately turn them into injected values.
 
 ```bash
+# 行首是 ` *` 的是**注释行**（`Daemon.ts` 的文件头用散文说了 `AI_ZEN_DIR`），`*.test.ts` 里的只
+# 是用例名字 —— 门禁只该扫代码行，修的是命令而不是注释
 grep -rn "process\.cwd()\|AI_ZEN_DIR\|refreshPaths\|setLocale\|getScope" packages/server/src \
-  | grep -v "src/cli.ts"    # must be empty
+  | grep -v "src/cli.ts" | grep -v '\.test\.' | grep -v '^\S*:[0-9]*: *\*'    # must be empty
 ```
 
 That grep *is* the definition of "locally instantiable": any module here can be built in a

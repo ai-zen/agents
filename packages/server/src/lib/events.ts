@@ -11,8 +11,8 @@
  * ## 为什么它住在 `lib/`
  *
  * 它是“把一条事件扇出去”这件机理，没有任何业务判断 —— 唯一的“业务”是 `watcherCount()`
- * （没人看着就不提问），而那条判定的用户在 `QuestionBroker` 手里（见 `target-architecture.md`
- * 里“别合并 EventHub”那一条）。所以它与 `phase.ts` 同归 `lib/`，不进 `domain/`。
+ * （没人看着就不提问），而那条判定的用户在 `QuestionBroker` 手里（见
+ * `docs/zh/architecture.md` 的「`server` 包的目录」）。所以它与 `phase.ts` 同归 `lib/`，不进 `domain/`。
  */
 
 import type { ServerEvent } from "@ai-zen/agents-protocol";
