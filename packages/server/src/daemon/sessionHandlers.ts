@@ -26,10 +26,8 @@
  * 一条判定落在本层的依据是「它只跟参数有关」：字段齐不齐、形状对不对、该不该要求路径
  * 存在。只要它需要**读别的对象再决定做什么**，那就是业务，归 `domain/`。
  *
- * 曾经有一条越界的：`workspace.remove` 在本层先 `removeWorkspace()`，再遍历
- * `manager.list()` 把活会话一个个 `close()` —— 这是「删工作区要连带关掉它的活会话」这条
- * 业务规则的第二个实现点，而且它拿不到 `SessionManager` 内部现成的会话表（得先列一遍）。
- * 现在下沉成 `manager.closeWorkspace(workspaceId)`，handler 只留两行。
+ * `workspace.remove` 就是这条判据的样板：handler 只调 `removeWorkspace`（盘）与
+ * `manager.closeWorkspace`（内存）两个业务动作，自己不列会话、不自己一个个 `close()`。
  */
 
 import type { Connection, MethodHandler } from "./Daemon.js";
@@ -195,9 +193,8 @@ export function createSessionHandlers(
      * `sessions/` 与「上一轮会话」指针）。
      *
      * 两件事分在两处：「删盘上的目录（含存档）」是工作区的业务（`removeWorkspace`），
-     * 「关掉内存里的活会话」是会话的业务（`manager.closeWorkspace`）。以前它们都写在
-     * 本层，于是「删工作区时要连带关会话」这条规则只有本层知道 —— 而它真正的理由在会话
-     * 那一侧：被删目录里的活会话下一轮收尾会把存档写回来（`FileSessionStore.write` 自己
+     * 「关掉内存里的活会话」是会话的业务（`manager.closeWorkspace`）。两边都必须做 ——
+     * 被删目录里的活会话下一轮收尾会把存档写回来（`FileSessionStore.write` 自己
      * 会 `mkdir`），刚删掉的工作区就**部分复活**了。
      *
      * 幂等：目录本来就不在 → `removed:false`，不当错误。
@@ -313,8 +310,7 @@ export function createSessionHandlers(
     /**
      * 某个工作区的会话清单：盘上的存档 ∪ 内存里的活会话（一条不重）。
      *
-     * 以前是两条（`list` 只给活会话 / `listSaved` 只给 id）：侧栏得自己拼，还会把同一段
-     * 拼成两条。合成一条后**一段会话在列表里只有一个条目**。
+     * 存档与活会话在**同一个条目形状**里给出，所以一段会话在列表里只有一个条目。
      */
     [SESSION_METHODS.list]: async (params): Promise<SessionListResult> => {
       const workspaceId = requireString(params, "workspaceId");
@@ -410,7 +406,7 @@ export function createSessionHandlers(
     /**
      * 某个子 Agent 到目前为止的完整对话。
      *
-     * 子 Agent 只活在当前一轮（见 `SessionManager.clearSubAgents`）：轮次过去后这个 id 就
+     * 子 Agent 只活在当前一轮（见 `EventBridge.clearSubAgents`）：轮次过去后这个 id 就
      * 不存在了，所以带 `sub-agent-missing` 码报错，而不是回一份空对话。
      */
     [SESSION_METHODS.subAgentSnapshot]: async (params): Promise<SubAgentSnapshotResult> => {

@@ -3,7 +3,7 @@ import { Tool, ToolCallContext } from "@ai-zen/agents-core";
 import type { AgentNS } from "@ai-zen/agents-core";
 import type { AgentDefinition, AppConfig, ToolEnv } from "../../../types/index.js";
 
-/** SdkCallbackTool 构造选项。env 为核心字段，未来可在此扩展可选项。 */
+/** SdkCallbackTool 构造选项 */
 export interface SdkCallbackToolOptions {
   /** 注入的工具环境 */
   env: ToolEnv;
@@ -19,7 +19,6 @@ export interface SdkCallbackToolOptions {
  *   - 一个工具一个类，文件名 = 类名（PascalCase）
  *   - 依赖环境（cwd、config）通过构造参数显式注入
  *   - 相对路径统一用 resolve() 解析到 env.cwd
- *   - 工具定义（function）由子类以类体字段提供（见 SdkCallbackTool.function）
  */
 export abstract class SdkCallbackTool extends Tool {
   /** 注入的工具环境 */

@@ -31,12 +31,11 @@ export interface ExcludeOptions {
 
 /** filter / buildTools 的过滤选项 */
 export interface FilterOptions {
-  /** 排除项黑名单（优先级高于 permissions） */
   exclude?: ExcludeOptions;
 }
 
 /**
- * Scope — 全局上下文 + 能力装配编排容器（v1）。
+ * Scope — 全局上下文 + 能力装配编排容器。
  *
  * Scope 是 SDK 的唯一入口对象，持有：
  *   - 应用配置（端点、模型等）

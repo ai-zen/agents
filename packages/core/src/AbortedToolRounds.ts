@@ -46,7 +46,7 @@ function keyOfResult(m: AgentNS.Message): string {
  * ## 范围
  *
  * **仅处理「被中断」（含 `Aborted` 状态）的轮次**。其它状态（如 `allowJsonParseError=false`
- * 时工具报错标记的 `Error`）保持原有语义，不受本函数影响。
+ * 时工具报错标记的 `Error`）不受本函数影响。
  *
  * ## 判定与处理
  *

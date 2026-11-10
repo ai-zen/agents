@@ -138,9 +138,8 @@ describe("SessionAgentFactory", () => {
   /**
    * 工作区路径必须递到装配方：它是 `Scope` 的 cwd（工具相对路径的基准）。
    *
-   * `agentPaths` 的注释一直写着「工作区根是 Agent 的 cwd」，但这个字段曾经只用来拼
-   * 项目级 skills / tools / mcp 路径，**没往 `Scope` 递** —— 于是服务端进程的 cwd
-   * （守护进程被拉起时的目录）成了工具的相对路径基准。这条用例钉的就是那个字段。
+   * 不递的话 `Scope` 的 cwd 缺省取服务端进程的当前目录（守护进程被拉起时的目录），
+   * 于是 `@` 补全列的是工作区 B 的文件，`exec pwd` 却落在目录 A。这条用例钉的就是那个字段。
    */
   it("工作区路径随 paths 一起交给装配方（`Scope` 的 cwd 靠它，否则工具落到守护进程目录）", async () => {
     const { factory, scopes } = makeFactory();

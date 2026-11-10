@@ -22,7 +22,7 @@ export interface ServerDescriptor {
   /** 服务端包版本，用于诊断与版本漂移提示 */
   version: string;
   startedAt: string;
-  /** 发现的 schema 版本，将来字段变动时用 */
+  /** 发现的 schema 版本，字段变动时靠它判断能不能读 */
   schema: 1;
 }
 

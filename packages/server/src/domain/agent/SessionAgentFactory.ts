@@ -292,12 +292,11 @@ async function defaultCreateAgent(
 }
 
 /**
- * 默认装配：与 CLI 侧那段 Scope 装配同一套优先级，只是路径由调用方给。
+ * 默认装配：路径由调用方给，`Scope` 的其余配置直接取自 `config`。
  *
  * `cwd` 必须显式给工作区路径：`Scope` 的缺省值是**进程的当前目录**，而服务端进程的 cwd
  * 是守护进程被拉起时的目录 —— 工具的相对路径、交接护栏的基准都取它，于是「会话在工作区 B、
- * `exec pwd` 却在目录 A」。这条曾经就是这么错的（`agentPaths` 的注释一直写着
- * 「工作区根是 Agent 的 cwd」，但那个字段根本没往 Scope 递）。
+ * `exec pwd` 却在目录 A」。
  */
 async function defaultCreateScope(input: { config: AppConfig; paths: AgentPaths }): Promise<Scope> {
   const scope = new Scope({

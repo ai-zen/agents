@@ -158,7 +158,7 @@ export interface MigrateParams extends HandoffParams {
  *
  * 职责分层（这是本模块唯一的设计主线）：
  *   - `handoff()`：**只产出交接文档**（停工 → 写文档 → 校验 → 失败降级），不动会话；
- *   - `migrate()`：`handoff()` 之后清历史并开新会话（原「任务迁移」语义）。
+ *   - `migrate()`：`handoff()` 之后清历史并开新会话。
  *
  * 模板的唯一真相源是 `handoff` Skill（`SKILL.md`）；代码只负责
  * 「读正文 → 注入 → 校验文件 → 读不到时用兜底模板」，不持有第二份章节清单。

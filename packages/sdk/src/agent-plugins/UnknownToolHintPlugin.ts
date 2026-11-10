@@ -16,7 +16,6 @@ import { McpScopePlugin } from "../scope/plugins/mcp/McpScopePlugin.js";
  * 是否"有 MCP 配置"经 `scope.getPluginById(McpScopePlugin.ID)` 查询 MCP 插件获得。
  */
 export class UnknownToolHintPlugin implements AgentPlugin {
-  /** 全局 Scope 实例 */
   private readonly scope: Scope;
 
   constructor(options: { scope: Scope }) {

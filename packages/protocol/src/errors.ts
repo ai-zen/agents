@@ -7,9 +7,7 @@
  * 「是改请求（`bad-params` / `bad-index`）、还是重试（`turn-busy`）、还是换一段会话
  * （`session-missing` / `unknown-session`）」。既然它是**线上事实**，就不能散在各处的裸字符串：
  * 服务端写错一个字母，客户端的分支就永远不命中，而症状是「界面上什么反应都没有」。
- *
- * 曾经的状况正是这样：19 个码散成裸字符串、`codedError` 有六份逐字相同的拷贝，而
- * notice code 早就有表 —— 同一个问题一半有答案、一半没有。现在两边都只剩一份。
+ * 所以两边只剩一份：散在各处的裸字符串与六份逐字相同的 `codedError` 拷贝都是不可接受的。
  *
  * ## 只增不改语义
  *
@@ -75,8 +73,8 @@ export interface CodedError extends Error {
 /**
  * 造一个带码的错误。
  *
- * 不用 `class`：六个服务模块各自 `throw`，而跨包/跨版本时 `instanceof` 会漏（同一个码
- * 可能由别的实现抛出）。形状统一就够了，见文件头最后一段。
+ * 不用 `class`：多个服务模块各自 `throw`，而跨包/跨版本时 `instanceof` 会漏（同一个码
+ * 可能由别的实现抛出）。形状统一就够了。
  */
 export function codedError(code: ErrorCode, message: string): CodedError {
   // `Object.assign` 直接把 `code` 挂上去，返回值天然是 `Error & { code }`：

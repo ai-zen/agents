@@ -131,7 +131,7 @@ grep -rn '@ai-zen/agents-core' packages/client/src --include=*.ts | grep -v '\.t
 - `send` 立刻返回 `turnId`，一轮的后续全部走事件：一轮可能跑几分钟，等它跑完再回，客户端就没有任何东西可渲染。
 - 命名空间按**作用对象**分：`workspace.*` 是对容器做事，`session.*` 是对一段会话做事，`events.watch` 是连接级的，`asset.*` 只读（资产是用户的文件系统，改它是另一个动作）。事件同理：`session-` 前缀是**会话事件**（服务端派生或服务端自己的动作，载荷里有 `sessionId`），`server-notice` 是**服务端自己的通知**（不属于任何会话，切会话也不该消失），`AGENT_EVENTS` 那 9 条说的是**一个 Agent 身上发生了什么**（名字就是 core 的名字）—— 看一眼名字就知道该看哪张表，不必背清单。
 
-每个方法/事件的入参、出参与语义**不在这里抄**——那是 `packages/server/README.md` 的事。这里只给分类与规模。
+每个方法/事件的入参、出参与语义**不在这里抄**——定义处（`packages/protocol/src/sessions.ts` / `config.ts` / `assets.ts` / `daemon.ts`）就是唯一的说明，需要更多篇幅的语义在 `packages/server/README.md`。这里只给分类与规模。
 
 ## 协议为什么是独立包
 
@@ -339,7 +339,6 @@ packages/server/src/
 
 - **桌面端 main 已经用上 `SessionStream`**（`desktop@49c82c1`，`events.ts` 838 → 665 行）：手写的增量累积、子 Agent 合并、收尾整份替换、`failed` 判定全部删了，只剩「喂事件 / 映射成 `ChatStreamEvent`」。留着没搬的两块**是桌面端独有的事实**，不是重复：① `user` 事件的正文（协议不推用户消息）；② 占位 assistant 消息的 id（render 的 `v-for` key 需要它，而状态机刻意不给流式消息编 id）。
 - **`SessionStream` 还差三个出口**（桌面端因为缺它们各留了一小段 workaround，都在 `events.ts` 里且有注释）：① 流式消息的稳定 id（现在 main 自己按 `一轮一个` 编）；② 「丢掉某段会话的拼接态」的公开入口（现在靠 `new SessionStream()` 整台替换）；③ `applySnapshot` 不对齐 `state.turnId`（现在 main 自己拿快照比对残影）。
-- **服务端 README 的 handler 清单落后于协议**：`packages/server/README.md` 里那段「registers …」漏了 6 条会话方法（`session.snapshot` / `session.rollback` / `session.save` / `session.saveAs` / `session.model.set` / `session.modelParams.set`），还把事件 `session-question` 当方法列了出来。README 本身待改，清单的唯一真相是 `SESSION_METHODS`。
 - **方法表命名不同构**：`EVENT_METHODS`（单数）与其余五张方法表（复数）不一致。纯命名问题，改它要动两处引用。
 - **`Role` / `MessageStatus` 是 core 的 `enum`（运行期值）**，所以**应用**（CLI / 桌面端）依赖 core 是正当的。若要让应用也只依赖协议，得把数据词汇落到底层包 —— 本轮判定不划算，不做。
 - **`packages/sdk/src/config/constants.ts` 的注释仍在描述按前端分家的运行时目录**（`~/.ai-zen/<前端>/`），与「会话属于工作区、`config.json` 在 `<aiZenDir>` 下」的现状不符。

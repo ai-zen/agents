@@ -4,8 +4,8 @@
  *
  * ## 为什么要有这一层
  *
- * 这些动作以前在 TUI 里直接调 `readConfig` / `saveConfig` / `readAgentStore` 这些函数，
- * 而它们全是**本地磁盘**操作。两端在同一台机器时看不出问题；客户端搬到另一台机器上，
+ * 配置中心这套动作如果直接调本地的 `readConfig` / `saveConfig` / `readAgentStore`，
+ * 操作的全是**本地磁盘**。两端在同一台机器时看不出问题；客户端搬到另一台机器上，
  * 「我在笔记本上改的配置」和「服务端 Agent 实际用的配置」就是两份互不相干的事实 ——
  * 界面上显示成功，跑起来还是旧模型（错得很安静）。
  *
@@ -20,14 +20,14 @@
  * 于是调用点只换注入值，不换写法。
  *
  * 两层共用的那部分（方法名、参数拼装）只在门面（`RemoteConfig` / `RemoteSessions`）里写一次
- * （包括工作区的解析 —— 那条以前是裸调 `client.call(...)`）：本文件不 import 任何「方法名
+ * （包括工作区的解析）：本文件不 import 任何「方法名
  * 常量表」（那类常量的名字都以 METHODS 结尾），于是「同一件事两处拼参数」在这里无从发生。
  *
  * ## 会话级模型动作**不在**这里
  *
- * `session.model.set` / `session.modelParams.set` 曾经挂在这个接口上（读起来像配置）。
- * 但它们的**作用对象是一段会话**，所以搬去了 `RemoteSessions.modelSet` /
- * `modelParamsSet`（D6）。判据见 `facade/config.ts` 的文件头：作用对象是不是某一段会话。
+ * `session.model.set` / `session.modelParams.set` **不**在这个接口上：它们读起来像配置，
+ * 但作用对象是一段会话，所以归 `RemoteSessions.modelSet` /
+ * `modelParamsSet`。判据见 `facade/config.ts` 的文件头：作用对象是不是某一段会话。
  *
  * ## MCP 的「项目作用域」为什么不传路径
  *
@@ -120,7 +120,7 @@ export interface ConfigPort {
 
 export interface RemoteConfigPortDeps {
   /**
-   * 共享一条连接（组装根通常传这个）：与对话走**同一条** —— 一个进程一条连接（D8）。
+   * 共享一条连接（组装根通常传这个）：与对话走**同一条** —— 一个进程一条连接。
    *
    * 不给时这里自己建一条（`client` / `connect` / `aiZenDir` + `clientInfo` 三选一），
    * 于是「配置面在会话之前就要用」的场景（启动预检）不必先开一段会话。
@@ -161,8 +161,7 @@ export interface RemoteConfigPortDeps {
  *
  * ## 「连接死了怎么办」不再是这一层的事
  *
- * 它以前自己缓存、自己判 `closed`、自己重建 —— 那是 D8 那个 bug 的第三份实现（桌面端
- * 是第二份，CLI 手传 `configPort` 是第一份）。现在全归 {@link ServerConnection}：
+ * 它在这里**既不缓存也不重建连接** —— 那些全归 {@link ServerConnection}：
  * 每次取用都判活，断了就重建（并在新连接上重新订阅 `events.watch`）。
  *
  * ## 为什么工作区 id 也在这层解析

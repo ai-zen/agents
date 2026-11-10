@@ -4,7 +4,7 @@ AI-Zen SDK — shared business logic layer providing a unified Agent runtime for
 
 ## Source of Truth
 
-**[`docs/sdk-design-v1.md`](./docs/sdk-design-v1.md)** is the single source of truth for this package's design. All implementations must stay consistent with the document. (Pre-refactor design is kept in [`docs/sdk-design-v0.md`](./docs/sdk-design-v0.md).)
+**[`docs/sdk-design-v1.md`](./docs/sdk-design-v1.md)** is the single source of truth for this package's design. All implementations must stay consistent with the document.
 
 ## Architecture
 
@@ -23,7 +23,7 @@ config        ← ConfigManager + constants: config.json read/write + directory 
 crud          ← capability-entity CRUD (Agent definitions; conversations/drafts are persisted by each consumer)
 runtime       ← model factory + Agent assembly + task handoff/migration (cancellable via `AbortSignal`; createModel / createAgent / SdkAgent / HandoffService / HandoffGuardPlugin)
 scope         ← Scope orchestration container + ScopePlugin contract + PermissionEvaluator / disclosure + plugins/ (5 self-contained capability sources: discovery + tools + plugin)
-agent-plugins ← Agent plugins (autoMigrate, autoRefreshTools, contextGuard, unknownToolHint)
+agent-plugins ← Agent plugins (autoMigrate, autoRefreshTools, contextGuard, unknownToolHint, subAgentGuardInstaller)
 shared        ← content blocks (file → content block transport), entity repository, logging, errors
 ```
 
@@ -34,7 +34,7 @@ Dependency direction: `agent-plugins → runtime → scope`; `runtime → scope 
 | Entity | Description |
 |--------|-------------|
 | **Scope** | Orchestration container: global context (`config` / `cwd` / `agentsDir`) + the three-phase capability pipeline (discover → filter → instantiate) + plugin registry. Explicitly assembled via `scope.use(...)` |
-| **ScopePlugin** | Capability plugin (the v1 extension point): self-owns one capability source's discovery state, candidate names, and instantiation (`discover` / `candidates` / `instantiate` / `dispose`). 5 standard plugins ship out of the box, assembled via `allInOne()` |
+| **ScopePlugin** | Capability plugin (the extension point): self-owns one capability source's discovery state, candidate names, and instantiation (`discover` / `candidates` / `instantiate` / `dispose`). 5 standard plugins ship out of the box, assembled via `allInOne()` |
 | **ToolEnv** | Tool environment `{ cwd, config }`; injected when the built-in-tools plugin (`BuiltinToolsScopePlugin`) instantiates tools, serving as the base for relative path resolution and config reads |
 | **SdkCallbackTool** | Abstract base for built-in tools: `env` constructor injection + subclass `call()` + `resolve()` relative path resolution |
 | **SdkAgent** | Extends the Core Agent, carries SDK metadata, supports `use()` plugin registration |
@@ -79,18 +79,6 @@ await agent.send("Hello");
 await scope.dispose(); // disconnect MCP, release plugin resources
 ```
 
-## Development Status
-
-| Module | Status |
-|--------|--------|
-| `types` | ✅ Implemented — core entities, permission model, MCP types complete |
-| `config` | ✅ Implemented — ConfigManager + factory defaults + one-shot bootstrap |
-| `crud` | ✅ Implemented — capability-entity CRUD for Agents, etc. (conversations/drafts persisted by each consumer) |
-| `scope` | ✅ Implemented — Scope + ScopePlugin + 5 standard plugins (builtin / user-tools / skills / mcp / subagents) + allInOne |
-| `runtime` | ✅ Implemented — createAgent, MCP connection management, task migration |
-| `agent-plugins` | ✅ Implemented — AutoMigratePlugin / AutoRefreshToolsPlugin / ContextGuardPlugin / UnknownToolHintPlugin |
-| `shared` | ✅ Implemented — SdkError + injectable Logger |
-
 ## Built-in Tools
 
 All built-in tools are classes (extending `SdkCallbackTool`), instantiated by the built-in-tools plugin (`BuiltinToolsScopePlugin`) with a `ToolEnv` — one set of instances per Scope, with `cwd` injected and relative paths resolved against `Scope.cwd`, never depending on the global `process.cwd()`.
@@ -123,7 +111,7 @@ Conditionally injected based on the active model / config:
 | `generate_image` | Only when `defaultImageModel` is configured | Generate an image from a text description |
 | `view_image` | Only for vision models (the agent's `modelId` resolves to a model with `vision: true`) | View / analyze an image: local images are auto-uploaded via the Files API, network URLs are referenced directly |
 
-Tool output protection: `AppConfig.maxToolOutput` (in characters, default 32768) is the unified ceiling for tool output. Each tool handles overflow itself — `exec` dumps `stdout.log` / `stderr.log` separately (returning head/tail previews per stream), `find_text` / `glob` / `ls` dump `result.json` (returning a head preview), and `read` only warns and suggests batched reads via `range`. Dumps go to `<tmpdir>/ai-zen/tool-output/<tool>-<timestamp>-<random>/`, one directory per call, with no self-cleanup. See [`docs/sdk-design-v1.md` §12](docs/sdk-design-v1.md).
+Tool output protection: `AppConfig.maxToolOutput` (in characters, default 32768) is the unified ceiling for tool output. Each tool handles overflow itself — `exec` dumps `stdout.log` / `stderr.log` separately (returning head/tail previews per stream), `find_text` / `glob` / `ls` dump `result.json` (returning a head preview), and `read` only warns and suggests batched reads via `range`. Dumps go to `<tmpdir>/ai-zen/tool-output/<tool>-<timestamp>-<random>/`, one directory per call, with no self-cleanup. See [`docs/sdk-design-v1.md`](docs/sdk-design-v1.md).
 
 Interrupt strategies live in the config: `AppConfig.abortedMessageStrategy` (`keep` / `drop`, factory `keep` — the model can continue the half-sentence after an interrupt) and `AppConfig.abortedToolRoundStrategy` (`fill` / `drop`, factory `fill` — whole rounds go in or out, because `tool_calls` must pair with results). `createAgent()` reads them from `scope.config` when no explicit option is passed, keeping a single source of truth.
 
@@ -147,7 +135,7 @@ This is a performance boundary, not a convenience choice — **SDK behaviour and
 - **Cache prefixes stop being comparable.** Prompt caching matches on the prefix; letting language into the SDK multiplies the prefix shapes of one code path and removes the single variable that benchmarks rely on.
 - **Diagnosis needs one shape.** Performance data, bug reproductions and tool-call success rates have to be comparable across users; once behaviour drifts with locale, every conclusion needs a "what language are you on?" qualifier first.
 
-Following the user's language is handled by one language-neutral instruction in the factory system prompt — `Always reply in the same language the user writes in.` — which adapts per **message** rather than per installation, and needs no locale plumbing in the SDK. Full rationale: [`docs/sdk-design-v1.md` §1](docs/sdk-design-v1.md).
+Following the user's language is handled by one language-neutral instruction in the factory system prompt — `Always reply in the same language the user writes in.` — which adapts per **message** rather than per installation, and needs no locale plumbing in the SDK. Full rationale: [`docs/sdk-design-v1.md`](docs/sdk-design-v1.md).
 
 ## Design Principles
 

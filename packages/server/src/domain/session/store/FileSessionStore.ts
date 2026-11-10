@@ -14,14 +14,14 @@
  * 为什么不搞一个大索引文件（`index.json`）：多段会话可能并发落盘，一个共享文件就是
  * 写竞争 + 互相覆盖；每段自己的清单只由它的写者动，天然没这个问题。
  *
- * 老的存档没有清单：`list()` 遇到就**读一次补一份**（幂等，之后不再解析）。
+ * 没有清单的存档（清单被手删、或从未写过）：`list()` 遇到就**读一次补一份**（幂等，之后不再解析）。
  *
  * 三条是由位置本身决定的：
  *   - 会话属于**工作区**，不属于某个前端（CLI / 桌面端共享同一份数据）；
  *   - 工作区自己就是分区键，指针不必再带 cwd 这一层，所以是单指针；
  *   - 路径：全部由构造参数注入，本模块不读任何进程级全局。
  *
- * 本模块只认当前布局（`<workspace>/sessions/`）。更早布局的归位属于一次性运维，
+ * 本模块只认 `<workspace>/sessions/` 这一种布局。别的历史布局的归位属于一次性运维，
  * 不该长期住在产品代码里。
  */
 
@@ -81,7 +81,7 @@ export class FileSessionStore<Message = unknown> implements SessionStore<Message
       if (!file.endsWith(".json")) continue; // 滤掉写盘中的 `.json.tmp`
       const id = file.slice(0, -".json".length);
       if (entries.has(id)) continue; // 清单已经给了
-      // 没有清单的存档（搬迁前写的 / 清单被手删）：读一次、补一份，之后不再解析
+      // 没有清单的存档（清单被手删或从未写过）：读一次、补一份，之后不再解析
       const entry = (await this.readMeta(id)) ?? (await this.backfillMeta(id));
       if (entry) entries.set(id, entry);
     }
@@ -95,7 +95,7 @@ export class FileSessionStore<Message = unknown> implements SessionStore<Message
    * **一条**记录的时间付一次全表扫描（1000 段存档时 ~78ms）。这里只碰 `<id>.meta.json`
    * 这一个文件，与存档条数无关。
    *
-   * 为什么与 `list()` 一样允许回填：老存档（搬迁前写的 / 清单被手删）本来就没有清单，
+   * 为什么与 `list()` 一样允许回填：没有清单的存档（清单被手删或从未写过）里没有这份投影，
    * 只看 `<id>.meta.json` 的话，续接会拿到 `null`（时间退回「现在」），而侧栏里同一段会话
    * 仍显示 mtime —— 同一个事实两个值，正是要避开的那种。
    */
@@ -103,7 +103,7 @@ export class FileSessionStore<Message = unknown> implements SessionStore<Message
     return (await this.readMeta(id)) ?? (await this.backfillMeta(id));
   }
 
-  /** 读清单；不存在或形状不对 → `null`（老存档本来就没有，不是错误） */
+  /** 读清单；不存在或形状不对 → `null`（没有清单不是错误） */
   private async readMeta(id: string): Promise<SessionEntry | null> {
     try {
       const parsed = JSON.parse(
@@ -144,7 +144,7 @@ export class FileSessionStore<Message = unknown> implements SessionStore<Message
       const parsed = JSON.parse(
         await fs.readFile(this.pathOf(id), "utf-8"),
       ) as SessionRecord<Message>;
-      // 形状不对（旧版残留、手改坏）一律当作没有，不猜
+      // 形状不对（手改坏、外来内容）一律当作没有，不猜
       if (!parsed || typeof parsed.id !== "string" || !Array.isArray(parsed.messages)) return null;
       return parsed;
     } catch {

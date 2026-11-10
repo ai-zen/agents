@@ -16,7 +16,7 @@
  * 是 TUI 还是 Electron 主进程，也能被单测直接钉住时序（这条竞态靠真 socket 复现不了，要凑）。
  *
  * 消息形状从协议包拿（`Message`）：协议是数据模型的**唯一出口**，客户端不再直接去 core 里
- * 捞类型（D12）。类型在产物里被抹掉，所以运行期依赖图仍然只有 `@ai-zen/agents-protocol` +
+ * 捞类型。类型在产物里被抹掉，所以运行期依赖图仍然只有 `@ai-zen/agents-protocol` +
  * `node:*`（见 README「产物的运行期依赖图必须闭合」）。
  */
 
@@ -150,7 +150,7 @@ export function mergeStreamedSnapshot(
  * 写一条 assistant 消息的正文/推理，其余字段（`tool_calls` 等）原样保留。
  *
  * 导出是给 `session/stream.ts` 用的：它也必须在增量到达时把正文写回那条临时消息上，
- * 而那段逻辑曾经在两边各占 7 行（`withText` / `withAssistantText`）。两份拷贝的漂移
+ * 而这段逻辑只该有一份 —— 两份拷贝的漂移
  * 方向很难看：只要一边忘了带 `reasoning_content`，推理模型的「想」就会在其中一个前端上
  * 整段消失，而且只在推理模型上显形。所以只留一份，放在这份合并规则旁边。
  */

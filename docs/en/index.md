@@ -101,7 +101,7 @@ For complete installation and usage, see [Quick Start](getting-started.md).
 
 ## Related repositories
 
-`@ai-zen/cli` (interactive AI Agent terminal) and the desktop app (`@ai-zen/desktop-main`) live in their own repositories and connect to this repository's `@ai-zen/agents-server` through `@ai-zen/agents-client`. The `packages/webui` directory holds nothing but a `README.md`; it is not a package.
+`@ai-zen/cli` (interactive AI Agent terminal) and the desktop app (`@ai-zen/desktop-main`) live in their own repositories and connect to this repository's `@ai-zen/agents-server` through `@ai-zen/agents-client`.
 
 ## License
 

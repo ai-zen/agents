@@ -471,8 +471,7 @@ describe("SessionManager：交接 / 迁移", () => {
     expect(result.handoffPath.startsWith(join(workspace, ".ai-zen", "handoffs"))).toBe(true);
     expect(agent.messages).toEqual(before); // 摘要模式不碰消息
     // 交接回合（指令 + 回执）留在会话里，而「每轮 session-turn-end 前落盘」对它同样成立：
-    // 用户 `/handoff` 完直接退出，回来时这一段必须在存档里（旧版由
-    // `ConversationPersistPlugin.onInnerLoopEnd` 承担同一件事）。
+    // 用户 `/handoff` 完直接退出，回来时这一段必须在存档里。
     expect([...store.records.keys()]).toEqual([sessionId]);
   });
 
@@ -1156,9 +1155,8 @@ describe("SessionManager：会话级模型覆盖（session.model.set）", () => 
  *
  * 这里断言的是服务端这一侧的责任：参数有没有被原样递进装配、有没有落进存档、`attach`
  * 回来还在不在、换模型 / 换 Agent 有没有清掉、`recordOf` 有没有把它带进 saveAs 与迁移。
- * 「参数只在模型来自会话级时才生效」由 SDK 的 `resolveModelParams` 决定（见
- * `resolveModel.test.ts` / `createAgent.test.ts`），服务端不重复推一遍这个规则 —— 那正是
- * 两份实现的开端（与上面那个 describe 同一个理由）。
+ * 「参数只在模型来自会话级时才生效」由 SDK 的 `resolveModelParams` 决定，服务端不重复推
+ * 一遍这个规则 —— 那正是两份实现的开端（与上面那个 describe 同一个理由）。
  *
  * 快照里那对 `modelParams` / `modelParamsLevel` 也锁在这里：它们是客户端显示「思考强度
  * 当前值」的唯一来源，而“当前值是哪一层的”只有服务端说得准。

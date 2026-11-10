@@ -44,7 +44,7 @@ export const WORKSPACE_METHODS = {
    * 路径 → 工作区身份（首次见到这个路径时写 `workspace.json`）。
    *
    * 幂等：同一个路径反复调，永远得到同一个 `workspaceId` —— id 首次分配后**冻结**，
-   * 目录改名也不会变（要靠 `relocate` 显式搬，见那边的注释）。
+   * 目录改名也不会变（要接回新路径只能显式调 `relocate`）。
    */
   resolve: "workspace.resolve",
   /** 某个工作区的文件清单（客户端 `@` 补全用；扫的是服务端磁盘） */
@@ -79,7 +79,7 @@ export const SESSION_METHODS = {
   /**
    * 接上一段**已经存在**的会话（活着就接、盘上有就装回来）。
    *
-   * 与 `create` 分开的理由见 `SessionManager.attach`：会话的存活期比客户端连接长，
+   * 与 `create` 分开的理由：会话的存活期比客户端连接长，
    * 「接着上次」如果复用 `create`，会撞在它「id 撞了就拒绝」的语义上 —— 用户看到的是
    * 「打不开自己上一轮会话」。`create` 的不静默顶掉语义**不动**，两个动作各说各的。
    */
@@ -323,7 +323,7 @@ export interface WorkspaceResolveParams {
   /**
    * 工作目录的绝对路径（服务端负责规范化与建目录）。
    *
-   * **可选**：cwd 归属服务端 —— 客户端（终端 / 桌面 / 将来的浏览器）不指定时，用服务端
+   * **可选**：cwd 归属服务端 —— 客户端（终端 / 桌面 / 浏览器）不指定时，用服务端
    * 进程的工作目录（由组装根注入，不是这一层去读进程级全局）。不带参数的 `workspace.resolve`
    * 才是「我的工作区在哪」这个问题的正解：客户端把自己进程的当前工作目录送上来，等于让
    * 客户端替服务端决定会话跑在哪个目录。
@@ -435,8 +435,7 @@ export interface SessionCreateParams {
    *
    * 为什么干脆不该给：路径是服务端的磁盘事实，而客户端手上那份是**它自己**那边的路径 ——
    * 两机部署时那个路径在服务端可能根本不存在。客户端只持有 id，这才叫 cwd 归服务端。
-   * 留这个口子是为了兼容「同一个路径想跑两遍」以外的旧调用，等鉴权落地时它会彻底消失：
-   * 客户端不该有能力决定自己跑在哪个目录。
+   * 留这个口子只为了「同一个路径想跑两遍」这类调用；客户端本就不该有能力决定自己跑在哪个目录。
    */
   path?: string;
   /** 用哪个 Agent（缺省 `default`；**续接已有存档时不给就沿用存档里记的那个**） */
@@ -449,7 +448,7 @@ export interface SessionCreateParams {
    */
   sessionId?: string;
   /**
-   * 每轮收尾是否把会话写进工作区存档（缺省 `true` = 一直以来的行为）。
+   * 每轮收尾是否把会话写进工作区存档（缺省 `true`）。
    *
    * `false` 是给**一次性调用**用的（`ai "…"`、`cat f | ai` 这类管道场景）：那段会话
    * 属于这一次提问，不该在 `workspaces/<id>/sessions/` 里留档，更不该把「本工作区上一轮
@@ -551,17 +550,17 @@ export type SessionQuestionEvent = {
   questionId: string;
   /** 哪一类问题 —— 客户端按它查自己的词典（标题 / 选项文案）与分派表 */
   kind: SessionQuestionKind;
-  /** 怎么答：选一个（今天的形态）还是填一个值（留的口子，客服端可以暂不实现） */
+  /** 怎么答：选一个（交接类问题的形态）还是填一个值（留的口子，客户端可以暂不实现） */
   input: "select" | "text";
   /** `input:"select"` 时的选项 id 列表；文案在客户端（`kind + id`） */
   options?: readonly string[];
   /**
-   * 渲染标题要用的事实（今天的交接类问题：`{ promptTokens, handoffTokens }`）。
+   * 渲染标题要用的事实（交接类问题：`{ promptTokens, handoffTokens }`）。
    *
    * 走一个通用袋子而不是固定字段：换一个问题就换里面的内容，协议不用改几次。
    */
   params: Record<string, unknown>;
-  /** 用户能不能「不答」（今天的交接类问题可以 = 「不交接」） */
+  /** 用户能不能「不答」（交接类问题可以 = 「不交接」） */
   allowSkip: boolean;
   /**
    * 服务端等不到答案时会用的取值。
@@ -596,8 +595,8 @@ export interface SessionListParams {
  *
  * ## 为什么要 `live` + `phase`
  *
- * 侧栏是一个列表：既要全部历史，又要「这段正在跑」。以前这是两条方法（`session.list`
- * 只给活会话、`session.listSaved` 只给 id），客户端得自己拼，还会把同一段拼成两条。
+ * 侧栏是一个列表：既要全部历史，又要「这段正在跑」。两者必须在同一条条目里给出 ——
+ * 分成两个来源，客户端就得自己拼，还会把同一段会话拼成两条。
  *
  * ## 为什么没有 `turnId`
  *
@@ -625,8 +624,7 @@ export interface SessionListEntry {
    * ## 为什么清单里必须有这一位
    *
    * 侧栏的模型下拉框要显示「当前值」。只给上面那个 `modelId` 的话，「跟着定义走 / 跟着
-   * 全局兜底走」的会话（也就是绝大多数）在清单里没有模型可显示，下拉框就空着 ——
-   * 这是改造带来的行为回归（改造前客户端自己存着一段解析后的值）。而按本仓的原则
+   * 全局兜底走」的会话（也就是绝大多数）在清单里没有模型可显示，下拉框就空着。而按本仓的原则
    * （同一件事实只有一个定义），客户端不该拿「覆盖值 + Agent 定义 + 默认」再推一遍：
    * 那是优先级规则的第二份实现，它和真正发出去的请求迟早不一致。
    *
@@ -861,8 +859,6 @@ export interface SessionRemoveResult {
  *   - `text`：文本段；
  *   - `image_url`：内联 data URL（带可选的 `detail` 档位）；
  *   - `file`：Files API 引用 —— `file_id`（已上传）或 `file_data`（base64 内联）。
- *
- * 将来的二进制旁路（`artifact.*`）会让客户端只传字节、由服务端转换。
  */
 export type MessageContentBlock =
   | { type: "text"; text: string }
@@ -880,14 +876,14 @@ export type MessageContent = string | MessageContentBlock[];
  *     便宜、确定，但保真度低 —— 是**逃生模式**，也是 `self` 失败后的单向降级目标。
  *
  * 由服务端按 SDK 的 `HandoffMode` 定义，不直接引用 SDK 类型：协议是线上契约，
- * 客户端（将来的浏览器 / 手机）不该为了一个枚举去装 SDK。
+ * 客户端不该为了一个枚举去装 SDK。
  */
 export type HandoffMode = "self" | "summary";
 
 /**
  * 迁移之后旧历史怎么处理 —— 它与「要不要换 id」是**同一件事**，不是两个旋钮。
  *
- *   - `prune`（`session.migrate` 的缺省 = 分家之前的行为）：历史从内存里物理剔除，只留
+ *   - `prune`（`session.migrate` 的缺省）：历史从内存里物理剔除，只留
  *     「模板 + 交接断点」。旧历史只剩存档一份，所以旧会话必须以**独立的一段**留在旧 id
  *     下 —— 否则那段对话就没了。于是：换 id、发 `session-id-changed`。
  *   - `omit`（SDK 的 `MigrationStrategy` 默认值）：历史消息标 `omit: true` 留在原处（可审计、
@@ -899,12 +895,12 @@ export type HandoffMode = "self" | "summary";
  * 只是标了不再发送，会话仍是同一段，换个 id 等于凭空多出一条幽灵存档。
  *
  * 与 SDK 的 `MigrationStrategy` 逐字一致，但**不引用它的类型**：协议是线上契约，客户端
- * （将来的浏览器 / 手机）不该为了一个枚举去装 SDK。
+ * 不该为了一个枚举去装 SDK。
  */
 export type MigrationStrategy = "prune" | "omit";
 
 /**
- * `session.migrate` 不传 `strategy` 时的处置方式：`prune`（= 分家之前的行为）。
+ * `session.migrate` 不传 `strategy` 时的处置方式：`prune`。
  *
  * 写在协议里而不是各层各写一份 `?? "prune"`：缺省值是**线上契约**的一部分（客户端不传
  * 就该看到旧行为），而它同时被三层用到（handler 透传、会话层参数默认、交接服务参数默认）。
@@ -977,7 +973,7 @@ export interface SessionHandoffResult {
  * 交接 + 开新会话（`session.migrate`）。
  *
  * 比 `handoff` 多一个 `strategy`：它决定**旧历史怎么处置**，而处置方式又决定了「还是不是
- * 同一段会话」（见 `MigrationStrategy`）。缺省 `prune` —— 客户端不传时行为与分家之前逐字一致。
+ * 同一段会话」（见 `MigrationStrategy`）。缺省 `prune` —— 客户端不传时行为与显式传 `prune` 一致。
  */
 export interface SessionMigrateParams extends SessionHandoffParams {
   /** 历史处置策略；缺省 `prune`（= 换 id 的旧行为，见 `DEFAULT_MIGRATION_STRATEGY`）。

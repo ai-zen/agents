@@ -56,7 +56,6 @@ class UserToolExitError extends Error {
  *
  * 这个预检能把「放错目录的普通脚本」挡在求值之前——没有 export 的模块本来也会被
  * `normalizeToolExport` 判成 null，区别只在于：那时它已经被求值、副作用已经发生了。
- * 实测那 4 个一次性脚本的 export 计数全为 0。
  *
  * 读不出来（权限 / 编码 / 不是普通文件）时放行：预检只为省掉明显的白跑，
  * 不该因为读不了文件就把正常工具挡住。

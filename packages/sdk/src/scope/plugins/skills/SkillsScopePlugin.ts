@@ -9,7 +9,7 @@ import type { ScopeCandidates, ScopePlugin } from "../../ScopePlugin.js";
 /**
  * Skill 插件 —— 发现 SKILL.md + 装配渐进式披露元工具。
  *
- * 渐进式披露设计原样保留：
+ * 渐进式披露：
  *   - `load_skill`            枚举所有允许的 skill
  *   - `call_skill_sub_agent`  枚举 subAgent: true 的 skill（AgentToolLazy）
  * 两个元工具名恒上报 `tools` 维度（供权限允许/拒绝 → 拒绝即切断披露通道）；

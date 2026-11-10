@@ -44,8 +44,9 @@ leftover" from "different build still running" before it even connects. Logs go 
 
 ### v1 boundary: no authentication, therefore loopback only
 
-This build has **no auth**. `Daemon.start()` refuses any host that is not
-`127.0.0.1` / `::1` / `localhost` and throws. That is not a placeholder to be relaxed
+This build has **no auth**. `Daemon.start()` accepts only loopback hosts — the whole
+`127.0.0.0/8` block, `::1` and `localhost`, judged by the protocol package's `isLoopbackHost()` —
+and throws for anything else. That is not a placeholder to be relaxed
 casually: the service exposes `exec` (arbitrary command execution), so an unauthenticated
 listener reachable from the network would hand a shell to the whole LAN. Exposing a port
 means building auth first — there is no "open it for now" middle state.
@@ -70,15 +71,19 @@ WebSocket text frames and stdio, and can be driven by hand with `nc`:
 | Frame | Direction | Notes |
 |---|---|---|
 | `hello` | client → server, **first frame, mandatory** | version mismatch ⇒ connection closed |
-| `{ id, method, params }` | both | request ids are allocated by the sender; each direction has its own id space |
-| `{ id, ok, result \| error }` | both | reply to the above |
-| `{ event, ... }` | server → client (later: both) | unsolicited, no reply expected |
+| `{ id, method, params }` | client → server | one direction only; `id` is allocated by the client |
+| `{ id, ok, result \| error }` | server → client | reply to the above |
+| `{ event, ... }` | server → client | unsolicited, no reply expected |
 
-Images currently ride inside `session.send` as OpenAI-compatible content blocks (`text` /
+There is deliberately **one direction only**: when the server needs to ask the client
+something it emits `session-question` and gets the answer back through the `session.answer`
+*method* — so frame `id`s are allocated by a single side and two directions can never collide.
+
+Images ride inside `session.send` as OpenAI-compatible content blocks (`text` /
 `image_url` / `file`) — base64 inlined, so the client must keep the whole frame under
 `MAX_FRAME_BYTES` (8 MiB); an oversized frame is a protocol error and kills the connection.
-The long-term answer is an `artifact.*` method pair (bytes over a side channel), at which
-point the content-block assembly moves here, to the side that knows the endpoint and model.
+There is no side channel for bytes: the content-block assembly stays on the client, which is
+the side that knows the endpoint and model.
 
 Built-in methods: `ping`, `status`, `shutdown`. Everything else is injected by the
 composition root through `DaemonOptions.handlers`, so the daemon skeleton stays free of
@@ -124,26 +129,29 @@ handoff), `EventBridge.ts` (SDK events → protocol events), `Persistence.ts` (t
 and every write path), `QuestionBroker.ts` (server → client questions). `src/lib/` holds the
 business-free parts (`phase.ts` = phase state machine, `events.ts` = connection fan-out).
 `src/domain/agent/` assembles the agent (config + Scope + capability
-discovery) per workspace; `src/daemon/sessionHandlers.ts` registers `workspace.resolve` /
-`workspace.files` / `workspace.list` / `workspace.rename` / `workspace.remove` /
-`workspace.relocate` / `events.watch` / `session.create` / `session.attach` / `session.send` /
-`session.cancel` / `session.list` / `session.rename` / `session.remove` / `session.last` /
-`session.subAgent.snapshot` / `session-question`+`session.answer` / `session.reload` /
-`session.setAgent` / `session.close` / `session.handoff` /
-`session.migrate` on a `Daemon`, and `src/cli.ts` wires all of it.
+discovery) per workspace; `src/daemon/sessionHandlers.ts` registers the session and workspace
+methods, `configHandlers.ts` / `agentHandlers.ts` / `assetHandlers.ts` the rest, and `src/cli.ts`
+wires all of it.
+
+**The method list has exactly one source of truth: `SESSION_METHODS` / `WORKSPACE_METHODS` /
+`EVENT_METHODS` (and `CONFIG_METHODS` / `AGENT_METHODS` / `ASSET_METHODS` / `DAEMON_METHODS`) in
+the protocol package.** This README deliberately does not copy it: a copy is what goes stale, and
+a stale list is worse than no list. What each method means is documented where it is defined
+(`sessions.ts` / `config.ts` / `assets.ts` / `daemon.ts`); the sections below only carry the
+semantics that need more room than a doc comment.
 
 Agent assembly is **per workspace**: one Scope (one set of MCP connections and tool
 discovery) is shared by every session in the same workspace, and never shared across
 workspaces — project-level skills / tools / mcp hang off the workspace path.
 
-Two plugins are installed regardless of the model's token thresholds: `AutoRefreshToolsPlugin`
-(re-discovers capabilities so a server/skill/tool added mid-session becomes visible) and the
-sub-agent guard installer. The refresh timing is a global config knob
-(`autoRefreshTools`: `inner-loop-start` — default, before every request — / `outer-loop-start`
-— once per turn — / `off`), because it trades freshness against one capability scan per
-request. Guard / auto-migration come *after* that check: they only apply when the model
-declares `tokenThresholds`, and returning early on "no thresholds" must not silently disable
-tool refresh too.
+Two things happen with tool plugins, and only one of them is unconditional: `AutoRefreshToolsPlugin`
+is installed **regardless of token thresholds** (re-discovers capabilities so a server/skill/tool
+added mid-session becomes visible), while guard / sub-agent guard / auto-migration come *after*
+that check — they only apply when the model declares `tokenThresholds`, and returning early on
+"no thresholds" must not silently disable tool refresh too. The refresh timing is a global config
+knob (`autoRefreshTools`: `inner-loop-start` — default, before every request — /
+`outer-loop-start` — once per turn — / `off`), because it trades freshness against one capability
+scan per request.
 
 ### The workspace owns the cwd — and the agent's tool cwd
 
@@ -154,7 +162,7 @@ runs:
   is the user's actual intent ("I typed `ai` in this project") and it is what makes "reuse or
   create *this* directory's workspace, then resume its last conversation" work. The client only
   says *"I would like this directory"*; the server still normalises it, and the client keeps the
-  **returned** path (`reset()` relies on it to open the next session in the same workspace).
+  **returned** path (the CLI's `reset()` uses it to open the next session in the same workspace).
 - **Remote server** — nothing is sent, and the server answers with *its own* working directory:
   the `--workspace` flag, else the directory the daemon was started from (logged at startup, so
   "who decided this directory" is always answerable from the log). A laptop's cwd is a directory
@@ -162,7 +170,7 @@ runs:
 
 The handler never reads the process cwd itself — the composition root resolves the default once
 and injects it as `defaultWorkspacePath`. The *client* makes the same call for project-scoped
-`mcp.json` (`src/server-client/local-host.ts` is the single judge), because two separate
+`mcp.json` (`local-host.ts` in `@ai-zen/agents-client` is the single judge), because two separate
 judgements would eventually disagree: the session in project A, the MCP config read from
 somewhere else.
 
@@ -205,9 +213,10 @@ Lifecycle methods, and the one place the path must still exist:
   workspace (otherwise their next turn would write the archive back and partly resurrect it).
   Idempotent: `removed: false` when it was not there.
 
-`session.create` is the **only** method that requires the path to exist: with the directory gone
+`session.create` requires the **recorded** workspace path to still exist: with the directory gone
 it fails with `workspace-path-missing` (message carries the path) instead of quietly creating an
-empty directory the user would mistake for "resumed my project". Read-only methods
+empty directory the user would mistake for "resumed my project". (`workspace.relocate` also
+requires a path to exist — its *new* one.) Read-only methods
 (`session.attach` / `last` / `list` / `snapshot`, and `workspace.resolve` / `list` / `rename` /
 `remove`) keep working: history lives in `workspaces/<id>/sessions/`, which has nothing to do
 with whether that working directory still exists — and those are exactly the methods needed to
@@ -268,7 +277,7 @@ listing tools really does `import()` them (that is how discovery loads `Tool` in
 archive (`session-missing` if neither). The distinction exists because a session outlives its
 clients: closing the terminal only drops the event subscription, while the session (and its
 Agent and MCP connections) keeps running. Resuming "the last conversation" therefore arrives at
-a *live* id — routing that through `create` is what used to make resume impossible.
+a *live* id, and `create` refuses a live id by design — so resume has to go through `attach`.
 
 `send` has a matching guard: while a turn is in flight, a second `send` is rejected with
 `turn-busy`. Events are attributed by reading `session.turnId` **at emit time**, so two
@@ -309,14 +318,13 @@ session.answer   { questionId, choice: string | null }
 
 - `kind` says *what* is being asked; the client looks up its own wording (`kind + option id`)
   and its own picker. Adding a second kind is a client-side table entry, no protocol change.
-- `params` carries whatever the client needs to render a title (today `{ promptTokens,
-  handoffTokens }`) — a bag, not fixed fields, because the next question will want others.
+- `params` carries whatever the client needs to render a title (for handoff-mode today
+  `{ promptTokens, handoffTokens }`) — a bag, not fixed fields, because the next question will want others.
 - `fallback` is **what the server will use when nobody answers** (timeout, no watcher, or a
   client that does not know this `kind`). The asking party supplies it: only it knows which way
   is safe. For handoff-mode it is `null` = *do nothing*: deciding whether to migrate on the
-  user's behalf is exactly the kind of overreach this API exists to avoid. (The old CLI
-  defaulted to `self` when nobody could be asked; that is gone on purpose — the hard guard
-  still interrupts a turn that grows past the limit.)
+  user's behalf is exactly the kind of overreach this API exists to avoid. Nobody is asked
+  on the user's behalf — the hard guard still interrupts a turn that grows past the limit.
 
 Three rules make waiting safe, and each has a reason:
 
@@ -325,18 +333,17 @@ Three rules make waiting safe, and each has a reason:
 - **Register before emitting.** Handlers run synchronously, so a fast client may answer inside
   the same event-loop tick.
 - **Wait, but with a deadline** (`askTimeoutMs`, 5 min by default), and **clear the table on all
-  three exits** (answered / timed out / released by `releaseQuestions`). "Not in the table" is
+  three exits** (answered / timed out / released by `QuestionBroker.release`). "Not in the table" is
   the single test for "this answer came too late".
 
-`releaseQuestions` resolves each pending question with **its own** `fallback` — not with one
+`release` resolves each pending question with **its own** `fallback` — not with one
 shared value: "the turn is over" says nothing about what the user wanted.
 
 ### Not archiving is a bug: per-turn persistence
 
 `settleTurn` writes the session to the archive **before** `session-turn-end`, then emits. The order is
 the whole point: once a client sees `session-turn-end` it treats the turn as finished, so a session
-missing from disk at that moment means "quit and come back and nothing happened". This is what
-the old `ConversationPersistPlugin` did on every `onInnerLoopEnd`.
+missing from disk at that moment means "quit and come back and nothing happened".
 
 Three details:
 
@@ -398,10 +405,9 @@ A session outlives its clients, but it must not live forever. One fact decides i
 
 ### The list is one list: `session.list { workspaceId, includeSaved? }`
 
-A sidebar needs **all** sessions and, for each, whether it is running right now. That used to be
-two methods (`session.list` = live sessions with a phase; `session.listSaved` = archived ids
-only), so a client had to stitch them together — and could stitch the same session twice.
-Now there is one method and one entry per session:
+A sidebar needs **all** sessions and, for each, whether it is running right now. Both live on the
+same entry — `live` + `phase` next to the archive fields — so a client never stitches two sources
+(and can never stitch the same session twice):
 
 ```
 { sessionId, agentId, title?, modelId?, effectiveModelId?, effectiveModelLevel?, messageCount, updatedAt, live, phase }
@@ -590,7 +596,7 @@ Two server-side rules:
   the *later* entry in `agent.messages`, with a still-pending entry in front of it. "Everything
   past a high-water mark" would push that pending entry with an empty body and then never
   correct it; "wait for the earlier entry first" would make the fast tool wait for the slow one.
-  The test is therefore *settled* (`FINISHED_STATUSES`, the same test `visiblePhase` uses to
+  The test is therefore *settled* (`FINISHED_STATUSES`, the same test `EventBridge.phaseOf` uses to
   answer "who is still running") **and** *not pushed yet* (`LiveSession.pushedMessages`).
 - **The cursor resets with the turn.** `resetStreamState` — the same moment `PhaseTracker.reset()`
   runs — rebases it onto the current message list, so the next turn's first result still produces
@@ -632,8 +638,8 @@ notices instead of sentences, and the session-id switch.
 
 Three things are worth knowing before touching it:
 
-- **`migrate` has a `strategy`, and it decides identity.** `prune` (the default, i.e. the
-  pre-split behaviour) physically drops the history, so the old segment only survives as an
+- **`migrate` has a `strategy`, and it decides identity.** `prune` (the default) physically drops
+  the history, so the old segment only survives as an
   archive: the old id is archived first (before pruning), the handoff round is settled **on
   the old id**, and only then does the live session move to a new key. `omit` marks the old
   messages `omit: true` and keeps them, so nothing about the session changed — it **keeps its
@@ -659,23 +665,22 @@ Three things are worth knowing before touching it:
   `SessionManager.migrate()`, each free to fail loudly.
 - **Progress is notices, not sentences.** `handoffWriting` / `handoffAutoDetected` /
   `migrationDegraded` / `handoffPath` / `handoffArchived` / `handoffMigrated` +
-  `handoffMigratedHint` / `migrationSkipped`. The last three are easy to lose: the old CLI
-  produced them as text through `HandoffService.log()`, and a text channel is exactly what
-  gets dropped server-side (the server emits no prose).
+  `handoffMigratedHint` / `migrationSkipped` — all `SESSION_NOTICE_CODES`, so each one is a code a
+  client renders with its own wording (the server emits no prose).
 
 ## Config and agent definitions
 
 `@ai-zen/agents-protocol` (`config.ts`) is the contract for everything that changes **global** state and
 belongs to no session: the config centre (`config.get` / `config.save` /
 `config.reasoningPresets`, `config.mcp.get` / `config.mcp.save` scoped `global` | `project`)
-and agent definitions (`agent.list` / `get` / `save` / `remove`, next to the older
+and agent definitions (`agent.list` / `get` / `save` / `remove`, next to the narrower
 `agent.model.set`). `ConfigService` wraps the SDK's `ConfigManager` / `AgentRepository`; every
 path (`config.json`, `agents/`, `sub-agents/`, `mcp.json`, workspaces root) is injected by the
 composition root.
 
-Why this layer exists at all: the config centre used to read and write the **client's** disk.
-With both ends on one machine that looks fine and fails silently — the UI reports success
-while the server's agents keep using the old model. Three deliberate choices:
+Why this layer exists at all: config must be read and written by the **side that owns it**.
+If the client wrote its own disk, both ends on one machine would look fine and fail silently —
+the UI reports success while the server's agents keep using the old model. Three deliberate choices:
 
 - **Payloads are `unknown`.** The shape of `AppConfig` / `AgentDefinition` belongs to the SDK;
   a browser client should not have to install it to read a config. `unknown` becomes a real
@@ -706,28 +711,3 @@ grep -rn "process\.cwd()\|AI_ZEN_DIR\|refreshPaths\|setLocale\|getScope" package
 
 That grep *is* the definition of "locally instantiable": any module here can be built in a
 test with two or three fakes and nothing else.
-
-## Status
-
-`0.1.0` — extraction in progress.
-
-| Source (CLI) | Here |
-|---|---|
-| `cli/src/tui/phase.ts` (state machine only) | `src/lib/phase.ts` (`PhaseTracker`) |
-| `cli/src/session-store.ts` + 旧 `session-pointer.ts` | `src/domain/session/store/` (port + file impl) |
-| project paths derived from `cwd` | `src/domain/workspace/workspace.ts` |
-| `cli/src/agent-creator.ts` (config + Scope + capability discovery) | `src/domain/agent/` |
-| `cli/src/config.ts` + `cli/src/agents-store.ts` (config / MCP / agent definition I/O) | `src/domain/config/` + `@ai-zen/agents-protocol` (`config.ts`) |
-| `cli/src/tui/file-index.ts` (`@` completion, scanning the client's disk) | `src/domain/workspace/FileIndex.ts` |
-| `cli/src/model-switch.ts` (write `AgentDefinition.modelId` + clear thinking params) | `SessionAgentFactory.setModel` (`agent.model.set`) |
-| `cli/src/conversation-persist-plugin.ts` (per-turn autosave) | `SessionManager.settleTurn` + `writeSession` |
-| `cli/src/auto-migrate-confirm.ts` (the three-way picker's server half) | `SessionManager.askQuestion` (`session-question` / `session.answer`) |
-| — | `session.close` / `session.setAgent`, the holder reclaimer (`SessionManager.scheduleReclaim`) |
-| `cli/src/sub-agent-guard-plugin.ts` | `sdk/src/agent-plugins/SubAgentGuardInstallerPlugin.ts` |
-| `cli/src/handoff-service.ts` (the hooks around the SDK's handoff flow) | `src/domain/handoff/` |
-| — | the whole `@ai-zen/agents-protocol` package (frames, messages, session shapes, error codes) |
-| — | `src/daemon/` listener, handshake, discovery file, session handlers |
-| — | `src/domain/session/` (live sessions, event translation, archives, questions) + `src/lib/events.ts` (fan-out) |
-
-Text/formatting stays client-side on purpose: this layer emits facts
-(`{ kind, tools }`), not sentences.

@@ -13,7 +13,6 @@ import { ToolCallContext } from "./ToolCallContext.js";
  */
 export abstract class Tool implements AgentNS.ToolDefine {
   type: "function" = "function";
-  /** 工具定义。由子类赋值（类体字段或构造内 this.function = ...）。 */
   declare function: AgentNS.FunctionDefine;
 
   abstract exec(ctx: ToolCallContext): Promise<AgentNS.MessageContent>;

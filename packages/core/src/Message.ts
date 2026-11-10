@@ -1,9 +1,6 @@
 import { AgentNS } from "./AgentNS.js";
 import { PickRequired } from "./Common.js";
 
-/**
- * Represents a message in a AI chat conversation.
- */
 export class Message implements AgentNS.Message {
   id: string;
   name?: string | undefined;
@@ -20,9 +17,6 @@ export class Message implements AgentNS.Message {
   hidden?: boolean | undefined;
   omit?: boolean | undefined;
 
-  /**
-   * Creates an instance of the Message class.
-   */
   constructor(options: PickRequired<Message | "role">) {
     if (!options.role) throw new Error("Message must have a role");
     this.id = options.id ?? generateMessageId();
@@ -41,9 +35,6 @@ export class Message implements AgentNS.Message {
     this.omit = options.omit;
   }
 
-  /**
-   * Creates a system message.
-   */
   static System(content = "") {
     return new Message({
       role: AgentNS.Role.System,
@@ -52,9 +43,6 @@ export class Message implements AgentNS.Message {
     });
   }
 
-  /**
-   * Creates an assistant message with a default pending status.
-   */
   static Assistant(content = "") {
     return new Message({
       role: AgentNS.Role.Assistant,
@@ -63,9 +51,6 @@ export class Message implements AgentNS.Message {
     });
   }
 
-  /**
-   * Creates a user message.
-   */
   static User(content: AgentNS.MessageContentSection[] | string) {
     return new Message({
       role: AgentNS.Role.User,
@@ -74,9 +59,6 @@ export class Message implements AgentNS.Message {
     });
   }
 
-  /**
-   * Creates a tool result message.
-   */
   static Tool(tool_call: AgentNS.ToolCall, result = "") {
     return new Message({
       role: AgentNS.Role.Tool,
@@ -87,9 +69,6 @@ export class Message implements AgentNS.Message {
     });
   }
 
-  /**
-   * Creates a function result message.
-   */
   static Function(function_call: AgentNS.FunctionCall, result = "") {
     return new Message({
       role: AgentNS.Role.Function,

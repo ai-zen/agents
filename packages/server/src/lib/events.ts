@@ -41,7 +41,7 @@ export class EventHub {
    *
    * 会话层用它判断「这个问题有没有人看得见」：会话活得比连接久（客户端退出后 Agent
    * 仍在服务端活着），此时发一条提问没有任何人能看见、更没人能答 —— 那只是把这一轮
-   * 挂到超时才继续。见 `SessionManager.askHandoffMode`。
+   * 挂到超时才继续。见 `QuestionBroker.askHandoffMode`。
    */
   watcherCount(): number {
     return this.listeners.size;

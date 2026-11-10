@@ -241,7 +241,7 @@ async function toMessageSection(
  * 文本输出保护（保序）：
  *
  * - **未超限**：原样返回映射后的块数组，不重排、不合并、不丢块；
- *   纯文本时退化为单个字符串（历史行为）。
+ *   纯文本时退化为单个字符串。
  * - **超限**：全部文本落盘为 result.txt，只保留**一个**警告文本块占据
  *   原首个文本块的位置，其余文本块丢弃（内容已落盘），媒体块原位不动。
  *   这样即使文本夹在中间，媒体与位置的对应关系也不会被打乱。
@@ -291,7 +291,7 @@ async function protectCallOutput(
       }
       collapsed.push(section);
     }
-    // 仅一个文本块（无媒体）：退化为字符串，与历史行为一致
+    // 仅一个文本块（无媒体）：退化为字符串
     return collapsed.length === 1 ? (collapsed[0] as AgentNS.TextContentSection).text : collapsed;
   }
 
@@ -306,7 +306,7 @@ async function protectCallOutput(
  * 通过官方 Client.callTool() API 调用 MCP 服务器上的工具。
  *
  * 返回形态：
- *   - 仅文本 → 纯字符串（与历史行为一致）；
+ *   - 仅文本 → 纯字符串；
  *   - 含媒体 → 内容块数组：首块为受保护的文本，其后原样透传 image / file 块。
  *
  * env 仅用于读取 maxToolOutput（文本输出保护上限），与内置工具口径一致。

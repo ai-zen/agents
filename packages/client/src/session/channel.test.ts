@@ -6,12 +6,12 @@
  * 等待一律「轮询到条件成立」（见 `waitFor`）：断线与重连都没有确定性时机（socket 的 close、
  * 新进程的监听都依赖事件循环），固定 `sleep` 在机器一忙时就翻车。
  *
- * 三条重连不变式（设计文档 D7）逐条各一个用例：
+ * 三条重连不变式逐条各一个用例：
  *   1. 在飞的那一轮不能永远挂着（空闲时断线 / 一轮中断线，两条路径）；
  *   2. 重连最多 3 次、递增退避（全失败就以连接错误失败）；
  *   3. 单飞（多个断线信号只起一次重连）。
  *
- * 另外两条来自 CLI 的边界：`dispose`（这里是 `close()`）之后不再重连；重连不新增任何
+ * 另外两条边界：`dispose`（这里是 `close()`）之后不再重连；重连不新增任何
  * 用户可见文案（`notices` 全程为空）。
  */
 
@@ -302,7 +302,7 @@ async function sessionsOf(): Promise<RemoteSessions> {
 }
 
 /**
- * 服务端认定的默认工作区 → 它的存档目录（与 `SessionManager.storeFor` 同一个目录）。
+ * 服务端认定的默认工作区 → 它的存档目录（与 `PersistenceOptions.storeFor` 给的是同一个目录）。
  *
  * 「断线期间跑完的那一轮」只能这么造：真让服务端跑一轮它就不会是「断线期间」了。
  */
@@ -670,7 +670,7 @@ describe("SessionChannel：断线重连的三条不变式", () => {
   });
 });
 
-describe("SessionChannel：换 id 与快照里的「还在跑」（P4 会立刻踩到的三条）", () => {
+describe("SessionChannel：换 id 与快照里的「还在跑」", () => {
   /**
    * 与服务端在一轮内部换 id（自动迁移）有关的那条：`session-turn-end` 从**新** id 上来。
    *
@@ -847,7 +847,7 @@ describe("SessionChannel：服务端提问的兜底", () => {
   });
 });
 
-describe("SessionChannel：close 是对外唯一的回收手段（D5×D8）", () => {
+describe("SessionChannel：close 是对外唯一的回收手段", () => {
   it("close 之后服务端当场回收这段会话（存档还在，attach 装得回来）", async () => {
     agent.messages = [{ role: "user", content: "聊过一句" }];
     const opened = await open();

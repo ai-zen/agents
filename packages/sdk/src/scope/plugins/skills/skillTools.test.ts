@@ -137,7 +137,7 @@ describe("createCallSkillSubAgentTool", () => {
     return { chat: { completions: { create: vi.fn(async () => stream) } } } as any;
   }
 
-  /** 宿主 Agent：带 read 工具，并挂载被测工具（模拟 Provider.instantiate 的结果） */
+  /** 宿主 Agent：带 read 工具，并挂载被测工具（模拟 Scope.instantiate 的结果） */
   function buildHost(tool: AgentToolLazy) {
     const readFileTool = new CallbackTool({
       function: {

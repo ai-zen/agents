@@ -10,14 +10,13 @@ import { AgentNS } from "./AgentNS.js";
  * 求和请一律用 `sumUsage()`：它同时累加两者，故不会漏算子 Agent（含其孙级）的开销。
  */
 
-/** 零用量 */
 export const ZERO_USAGE: AgentNS.Usage = {
   prompt_tokens: 0,
   completion_tokens: 0,
   total_tokens: 0,
 };
 
-/** 累加两个 usage（逐字段相加，返回新对象） */
+/** 逐字段相加，返回新对象（不改动入参） */
 export function addUsage(a: AgentNS.Usage, b: AgentNS.Usage): AgentNS.Usage {
   return {
     prompt_tokens: a.prompt_tokens + b.prompt_tokens,

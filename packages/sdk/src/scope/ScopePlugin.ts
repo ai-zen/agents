@@ -13,7 +13,7 @@ export interface ScopeCandidates {
 }
 
 /**
- * ScopePlugin — 能力插件契约（v1 核心扩展点）。
+ * ScopePlugin — 能力插件契约。
  *
  * 一个插件**自持一类能力**的完整生命周期：自己发现、自己持有发现结果、
  * 自己声明候选名、自己按过滤结果实例化工具、自己负责释放。

@@ -250,8 +250,8 @@ describe("Agent 定义", () => {
   });
 
   /**
-   * 同名 id 是两个池子里各自的**两份**定义。这一组是回归保护：曾经 `getAgent` 只收 `id`，
-   * 客户端两栏界面上点中子 Agent 的 `default`，拿回的是顶层那份。
+   * 同名 id 是两个池子里各自的**两份**定义。这一组钉的是「带了 kind 就只查那一池」：
+   * 不带 kind 时在两栏界面上点中子 Agent 的 `default`，拿回的是顶层那份。
    */
   describe("getAgent 区分池子（kind）", () => {
     beforeEach(async () => {

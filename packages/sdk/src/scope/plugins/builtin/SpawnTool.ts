@@ -43,8 +43,8 @@ export class SpawnTool extends SdkCallbackTool {
      * 本工具只回答「进程是否已启动」，**不跟踪退出状态**。
      *
      * 它 spawn 后立刻返回，输出也走 `stdio: "ignore"` 丢弃；因此命令不存在、语法错误、
-     * 脚本起来就崩这类「早退失败」在这里一律看不见 —— 以前会把它们报成 `success: true`，
-     * 现在如实命名为 `started`，并在 note 里说清。需要成败/输出/退出码请用 exec。
+     * 脚本起来就崩这类「早退失败」在这里一律看不见 —— 所以结果字段叫 `started` 而不是
+     * `success`，并在 note 里说清。需要成败/输出/退出码请用 exec。
      */
     return new Promise<string>((resolve) => {
       const child = spawn(command, [], {

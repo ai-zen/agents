@@ -8,10 +8,9 @@
  * `SessionManager`（脏）那一刀完全相同：把「什么时候要重连、重连几次」混进状态机，
  * 状态机就只能靠「摆一台真服务端」来测。
  *
- * ## 三条不变式必须继承（丢掉任何一条都是回归）
+ * ## 三条不变式（丢掉任何一条都是回归）
  *
- * 它们来自 `cli/src/tui/remote-chat-session.ts` —— 那是「一轮之内的客户端会话状态机」
- * 目前唯一跑通过的实现，每一条都是踩出来的：
+ * 每一条都是踩出来的：
  *
  * 1. **在飞的那一轮不能永远挂着。** 界面用 `await waitForTurn()` 包着 busy 状态与输入禁用，
  *    而 `await` 的落定靠同一 `turnId` 的 `session-turn-end`。断线时那条 socket 上的一切都扔了，
@@ -234,7 +233,7 @@ export class SessionChannel {
     this.clock = deps.clock ?? REAL_CLOCK;
     this.stream = new SessionStream();
     // 断线通知挂一次就够：它在 `ServerConnection` 上（那才是连接的主人），
-    // 换连接时**不会**失效 —— 这是 D8 之后比 CLI 那份实现少了一个坑的地方
+    // 重连换掉的是它内部的 socket，这个订阅跟着进程走、不受影响
     this.offClose = this.connection.onClose(() => this.handleClose());
   }
 
@@ -476,9 +475,10 @@ export class SessionChannel {
    * ## 为什么它在 channel 上（而不是只留在 `RemoteSessions`）
    *
    * `RemoteSessions` 是「按 id 说话」的无状态门面，它不知道「当前这一段是哪个 id」；而
-   * 调用方（`/model`）手里拿的恰恰只有 channel。以前只能在应用里 `new RemoteSessions(
-   * await connection.client())` 现取一次门面 —— 参数拼装仍然只有包里一份（不是第二份
-   * 实现），但多绕一层，且「当前 id」与「门面」两个来源在应用里又成了一个会漂的配对。
+   * 调用方（`/model`）手里拿的恰恰只有 channel。让应用自己
+   * `new RemoteSessions(await connection.client())` 现取一次门面也能做 —— 参数拼装仍然只有包里
+   * 一份（不是第二份实现），但多绕一层，且「当前 id」与「门面」两个来源在应用里又成了一个会
+   * 漂的配对。
    *
    * ## 为什么它**不**换 id、却要把返回的快照对齐屏幕
    *
@@ -540,8 +540,7 @@ export class SessionChannel {
    * 选项必须从这里透传，因为**调用方手里只有 channel**（它知道「当前这一段是哪个 id」），
    * 而 `RemoteSessions` 是「按 id 说话」的无状态门面。不透传的后果不是「少一个参数」，
    * 而是逼调用方在应用里 `new RemoteSessions(await connection.client())` 现取一次门面 ——
-   * 参数拼装仍然只有包里一份，但「当前 id」与「门面」两个来源在应用里又成了一个会漂的配对
-   * （P4 的一次性调用路径当年就是这么绕过去的）。
+   * 参数拼装仍然只有包里一份，但「当前 id」与「门面」两个来源在应用里又成了一个会漂的配对。
    */
   async save(options: { setAsLast?: boolean } = {}): Promise<string> {
     return (await this.sessions!.save(this.sessionId, options)).sessionId;
@@ -578,9 +577,9 @@ export class SessionChannel {
    * ## 为什么必须在包里而不是让应用自己记住
    *
    * 服务端在好几个动作里会换掉活会话的键（`saveAs`、`migrate` 的 `prune`）。状态机里的 id
-   * 不跟着换，之后到达的事件就全被过滤掉 —— 症状正是设计文档点名的那条：「在旧 id 上等一个
-   * 永远不来的 `session-turn-end`，界面永久生成中」。把它收成一个方法，调用方就不必记得「换完 id
-   * 还得通知状态机」（P4 自己 `new RemoteSessions(...)` 时就会忘）。
+   * 不跟着换，之后到达的事件就全被过滤掉 —— 症状是「在旧 id 上等一个永远不来的
+   * `session-turn-end`，界面永久生成中」。把它收成一个方法，调用方就不必记得「换完 id
+   * 还得通知状态机」。
    *
    * 两步的顺序是必须的：先 `applyIdChanged`（此后的事件按新 id 认领），再拉快照（迁移把
    * 历史剔成了「模板 + 断点」，屏幕上的那份已经作废）。
@@ -632,7 +631,7 @@ export class SessionChannel {
       if (event.subAgentId) {
         // 带 `subAgentId` 的增量属于那个子 Agent：拼到它自己的临时消息上，**不碰**主会话的
         // 拼接状态，也不改 `phase` —— 子 Agent 的流是工具内部的事，主阶段此刻该停在
-        // 「等待 xxx 返回」（与进程内实现同一条规矩）
+        // 「等待 xxx 返回」
         this.stream.subAgentDelta({
           subAgentId: event.subAgentId,
           text: event.text,
@@ -738,8 +737,7 @@ export class SessionChannel {
    *
    * 它是 `waitForTurn()` 的「已收尾」判据，所以只有**消息真的换成快照之后**才算数：开头就
    * 置位的话，一轮非常短时（`session-turn-end` 比 `send` 的**回执**先到）调用会立刻返回，而这里
-   * 那份快照还在路上 —— 调用方紧接着读消息拿到的是空数组（CLI 实测踩过：stdio 会因此
-   * 打印「模型没回答」）。
+   * 那份快照还在路上 —— 调用方紧接着读消息拿到的是空数组（stdio 会因此打印「模型没回答」）。
    */
   private async finishTurn(
     turnId: number,
@@ -890,7 +888,7 @@ export class SessionChannel {
    * 以及**整段成功才换上去**（`commit`）：半途失败时 `this.client` 仍是那条断掉的连接，
    * 「断了就用不了」这条语义不被半成品污染。
    *
-   * 注意它与 CLI 那份实现的一处差别：**失败时不关连接**。连接是进程级共享的
+   * 注意：**失败时不关连接**。连接是进程级共享的
    * （`ServerConnection`），这次 attach 失败不代表那条连接没用了 —— 关掉会连累别的会话。
    */
   private async restore(): Promise<RestoreOutcome> {

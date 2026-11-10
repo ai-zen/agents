@@ -17,7 +17,7 @@ describe("fromGitList：git 的文件清单 → 「文件 + 祖先目录」条�
     const entries = fromGitList(["src/tui/chat.tsx"]);
 
     expect(entries).toEqual([
-      // 目录由深到浅（与 CLI 侧同一个反推循环、同一个顺序）
+      // 目录由深到浅
       { path: "src/tui", dir: true },
       { path: "src", dir: true },
       { path: "src/tui/chat.tsx", dir: false },

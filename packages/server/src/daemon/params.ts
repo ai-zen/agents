@@ -4,7 +4,7 @@
  * ## 为什么单独抽出来
  *
  * `sessionHandlers` / `agentHandlers` / `configHandlers` 各自都在验「哪个字段是必填字符串」
- * 这种同一件事，于是曾经有过三份逐字相同、参数名不同的 `requireString` 与 `badParams`。
+ * 这种同一件事，三份逐字相同的 `requireString` 与 `badParams` 只差参数名。
  * 重复的**校验规则**不是「顺手多写几行」，是同一个根因的三个副本：改判定口径（比如哪天
  * 要求字符串非空白）时，改一处忘两处，症状会表现成「这条路径的参数校验没生效」。
  *
@@ -30,8 +30,8 @@ export function field(params: unknown, name: string): unknown {
 /**
  * 参数不合法（`bad-params` 是客户端唯一需要区分的那一类：它得改请求，不是重试）。
  *
- * `codedError` 现在是**协议包的一份**（`@ai-zen/agents-protocol` 的 `errors.ts`）：它曾经在本包
- * 有六份逐字相同的拷贝，而错误码是线上事实——六份拷贝意味着六处可能写错码的地方。
+ * `codedError` 只有**协议包的一份**（`@ai-zen/agents-protocol` 的 `errors.ts`）：错误码是
+ * 线上事实，多一份拷贝就是多一处可能写错码的地方。
  */
 export function badParams(message: string): CodedError {
   return codedError(ERROR_CODES.badParams, message);

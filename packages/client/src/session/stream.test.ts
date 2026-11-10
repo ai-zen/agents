@@ -1,13 +1,9 @@
 /**
  * `SessionStream` 的用例：**纯状态机**，不起 daemon、不开 socket、不装假时钟。
  *
- * 这一组用例的存在理由就是「它可以是纯的」：CLI 那份状态机（`remote-chat-session.test.ts`）
- * 只能靠「真 socket + 真 Daemon + 逐帧驱动假 Agent」来验，于是一个竞态要摆一条链路才能看出
- * 对不对，而且验不到「快照比本地短」这种凑不出来的时序。搬进包之后，这些断言全是
- * 「喂几个事件，看状态」。
- *
- * 从 CLI 搬来的那几条在 `it` 的注释里标了出处（`remote-chat-session.test.ts` 的用例名），
- * 搬的是**断言**，不是测试脚手架：那边需要 daemon 的部分留在 `channel.test.ts`。
+ * 存在理由就是「它可以是纯的」：状态机能纯，断言就都是「喂几个事件，看状态」，
+ * 包括「快照比本地短」这种靠真 socket 凑不出来的时序。需要 daemon 的那一层留在
+ * `channel.test.ts`。
  */
 
 import { describe, expect, it } from "vitest";
@@ -68,7 +64,6 @@ function streaming(): SessionStream {
 
 describe("SessionStream：正文增量与收尾对账", () => {
   it("增量累积在**一条**临时消息上，屏幕能一路滚起来", () => {
-    // 出自 remote-chat-session.test.ts「send 的语义与进程内一致」：生成中就能读到临时拼出来的正文
     const stream = streaming();
     stream.setPhase({ kind: "streaming" });
 
@@ -84,7 +79,6 @@ describe("SessionStream：正文增量与收尾对账", () => {
   });
 
   it("session-turn-end 用服务端快照整份对账：服务端有、本地拼不出来的字段都补上", () => {
-    // 出自同一条用例：「收尾后是服务端那份权威消息（连 reasoning_content 都在），不是本地拼的近似」
     const stream = streaming();
     stream.applyDelta({ text: "答完了" });
 
@@ -170,7 +164,6 @@ describe("SessionStream：正文增量与收尾对账", () => {
   });
 
   it("只带用量的收尾 chunk 不会在转录里留下空 assistant", () => {
-    // 出自 remote-chat-session.test.ts「流末只带 usage 的 chunk 不会在转录里留下空 assistant」
     const stream = streaming();
     stream.applyDelta({ text: "答案" });
     // 只带 usage（正文与推理都是空串）：校准速率要用它，但**不该**拼进正文
@@ -221,7 +214,6 @@ describe("SessionStream：工具调用与工具结果", () => {
 
 describe("SessionStream：子 Agent 栏目", () => {
   it("started 给出 index / id；增量落在它自己的对话里，主会话一个字都不多", () => {
-    // 出自 remote-chat-session.test.ts「子 Agent 栏目」那组用例（原本要靠真 socket 驱动）
     const stream = streaming();
     stream.subAgentStarted({ subAgentId: "s1", index: 1 });
 
@@ -245,7 +237,6 @@ describe("SessionStream：子 Agent 栏目", () => {
   });
 
   it("快照把已有内容补齐，且与已拼出的增量合并（不吞字、不多出一条）", () => {
-    // 出自「started 给出 index / id：标签按服务端编号出现，快照把已有消息填上」
     const stream = streaming();
     stream.subAgentStarted({ subAgentId: "s1", index: 1 });
     stream.subAgentDelta({ subAgentId: "s1", text: "数到" });
@@ -263,7 +254,6 @@ describe("SessionStream：子 Agent 栏目", () => {
   });
 
   it("ended 把状态改成 done；`failed` 不会被随后的 done 擦成成功", () => {
-    // 出自「ended 把状态改成 done；failed 不会被随后的 done 覆盖」：
     // core 的 `onSubAgentEnd` 在 finally 里分发，出错的那次也照样会来一条结束事件
     const stream = streaming();
     stream.subAgentStarted({ subAgentId: "s1", index: 1 });
@@ -276,8 +266,7 @@ describe("SessionStream：子 Agent 栏目", () => {
     expect(stream.state.subAgents.map((view) => view.status)).toEqual(["done", "failed"]);
   });
 
-  it("只活当前一轮：session-turn-end 清空栏目（与进程内实现的 `finally` 等价）", () => {
-    // 出自「只活当前一轮：session-turn-end 清空列表」
+  it("只活当前一轮：session-turn-end 清空栏目", () => {
     const stream = streaming();
     stream.subAgentStarted({ subAgentId: "s1", index: 1 });
     stream.subAgentDelta({ subAgentId: "s1", text: "跑到一半" });
@@ -298,7 +287,7 @@ describe("SessionStream：子 Agent 栏目", () => {
 
 describe("SessionStream：换 id", () => {
   it("idChanged 只换 id 与清栏目，**不动**在飞的那一轮（迁移发生在一轮内部）", () => {
-    // 出自「服务端在一轮内部换 id（自动迁移）」：不跟着换就会在旧 id 上等一个永远不到的 session-turn-end
+    // 不跟着换就会在旧 id 上等一个永远不到的 session-turn-end
     const stream = streaming();
     stream.setPhase({ kind: "streaming" });
     stream.subAgentStarted({ subAgentId: "s1", index: 1 });
@@ -352,9 +341,8 @@ describe("SessionStream：失败是终态", () => {
 
 describe("SessionStream：重连对齐（applySnapshot）", () => {
   it("一轮跑到一半断线重连：已拼出的正文留在**同一条**消息上，后续增量接着拼", () => {
-    // CLI 那份实现在这里有一处静默丢字：`applySnapshot` 把消息整份换掉，而拼接态还指着
-    // 已经被换下去的那条消息对象 —— 之后的增量全写在一个不在列表里的对象上，
-    // 屏幕要等到 session-turn-end 才补回来。合并规则让它们收敛回同一条。
+    // 整份换掉快照会静默丢字：拼接态还指着已经被换下去的那条消息对象 —— 之后的增量全写在
+    // 一个不在列表里的对象上，屏幕要等到 session-turn-end 才补回来。合并规则让它们收敛回同一条。
     const stream = streaming();
     stream.applyDelta({ text: "一半" });
 
@@ -467,7 +455,6 @@ describe("SessionStream：重连对齐（applySnapshot）", () => {
 
 describe("SessionStream：用量口径", () => {
   it("totalUsage 把工具消息上的 subAgentUsage 一起累加（子 Agent 的消耗不漏算）", () => {
-    // 出自 remote-chat-session.test.ts「totalUsage 会把工具消息上的 subAgentUsage 一起累加」：
     // 期望值与 core 的 `sumUsage` 逐字相同 —— 包里那份是它的口径镜像（不能 import 它的运行期值）
     const stream = streaming();
     stream.settle(

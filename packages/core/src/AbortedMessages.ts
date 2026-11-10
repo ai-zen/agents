@@ -3,7 +3,7 @@ import { AgentNS } from "./AgentNS.js";
 /**
  * 「被中断的 assistant 消息」如何处置 —— 只管**内容与思考**，不管工具调用。
  *
- * - `drop`：不保留（默认，保持既有行为）—— 被中断的 assistant 不进下一轮上下文
+ * - `drop`：不保留（默认）—— 被中断的 assistant 不进下一轮上下文
  * - `keep`：保留已经输出的部分 —— 把消息恢复为 `Completed`，让它进入历史
  */
 export type AbortedMessageStrategy = "drop" | "keep";
@@ -60,7 +60,7 @@ export function reconcileAbortedMessages(
   messages: AgentNS.Message[],
   strategy: AbortedMessageStrategy = "drop",
 ): void {
-  // drop 即既有行为：Aborted 消息由 formatHistory 自然过滤，无需任何改动
+  // drop：Aborted 消息由 formatHistory 自然过滤，无需任何改动
   if (strategy === "drop") return;
 
   for (const m of messages) {

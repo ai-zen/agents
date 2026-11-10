@@ -1,9 +1,9 @@
 /**
  * 会话管理器 —— 服务端「活着的会话」的**注册表与生命周期**。
  *
- * ## 它现在管什么（拆完之后）
+ * ## 它管什么
  *
- * 这个类原来有 2600 行、12 个并列职责。按「谁拥有 `LiveSession` 的哪些字段」拆成四块：
+ * 按「谁拥有 `LiveSession` 的哪些字段」分成四块：
  *
  *   · `EventBridge`     —— SDK 事件 → 协议事件（含流式影子：工具调用 / 已推消息 / 子 Agent 栏目）
  *   · `Persistence`     —— 存档的形状与写盘（`recordOf` 是那一处的唯一定义）
@@ -58,9 +58,9 @@
  * 判据取合取就是把不可靠的那个当成了必要条件。所以只有持有者一条：「我不看这段了」
  * 只剩一个显式表达（`session.close`），「我崩了」由内核兜 —— 两条路都不依赖客户端记得发帧。
  *
- * 代价（记账，不说成「行为不变」）：一次性调用（`ai "…"`）与 TUI 的 `/new` 过去靠那帧
- * 「我不要了」当场让服务端回收，现在它们要么显式 `session.close`，要么留到宽限期到点。
- * 宽限期是给断线重连留的窗口，不是给「没人要」的会话续命。
+ * 代价（记账，不说成「行为不变」）：一次性调用（`ai "…"`）与 TUI 的 `/new` 要么显式
+ * `session.close`，要么留到宽限期到点。宽限期是给断线重连留的窗口，不是给「没人要」的
+ * 会话续命。
  */
 
 import { PhaseTracker } from "../../lib/phase.js";
@@ -114,8 +114,8 @@ import {
   type SessionSaveResult,
   type SessionSnapshotResult,
 } from "@ai-zen/agents-protocol";
-// 值导入（不是 `import type`）：`codedError` 与错误码表是**运行期**的东西。
-// 它们原先是本文件的一份本地拷贝，六份逐字相同 —— 现在只有协议那一份。
+// 值导入（不是 `import type`）：`codedError` 与错误码表是**运行期**的东西，
+// 它们的唯一定义在协议包里。
 import { ERROR_CODES, codedError } from "@ai-zen/agents-protocol";
 
 // 形状与最小面住在 `LiveSession.ts`（四个类共用）；这里转出去，是因为它们一直是本模块
@@ -533,7 +533,7 @@ export class SessionManager {
   /**
    * 另存为指定 id（`/save <名字>`）：写新档、删旧档、活会话换键。
    *
-   * 与 {`migrate`} 的区别：这是**同一段对话**换个名字，所以 `turnId` 不动；
+   * 与 `migrate` 的区别：这是**同一段对话**换个名字，所以 `turnId` 不动；
    * 删旧档是必须的 —— 同一份对话在 `/load` 列表里出现两条，用户分不清哪条是新的。
    *
    * 两半分居两处：写新档 / 删旧档 / 挪指针在 `Persistence.saveAs`（存档侧），换键在
@@ -852,7 +852,7 @@ export class SessionManager {
    * 按磁盘上的（新）配置与 Agent 定义重建 Agent，**保留当前消息**。
    *
    * 用在「`/config` 改了端点凭据」「`agent.model.set` 换了模型」之后：Scope 持有配置
-   * 快照，不连带重建就还是旧的那份（CLI 时代 `resetScope()` 的存在就是这个原因）。
+   * 快照，不连带重建就还是旧的那份。
    *
    * 会话级模型覆盖原样带进这次重建：它是这段会话的一部分，不该因为「重新读了一次配置」
    * 就被悄悄丢掉（真正该丢它的是 `setAgent`）。
@@ -926,7 +926,7 @@ export class SessionManager {
   /**
    * 某个工作区的会话清单：盘上的存档 ∪ 内存里的活会话。
    *
-   * ## 为什么合并成一条（原来是 `list` + `listSaved`）
+   * ## 为什么只有一条方法
    *
    * 侧栏是**一个**列表：既要全部历史，又要「这段正在跑」。分两条时两边各缺一半（活会话
    * 有 phase、没标题；存档有历史、只有 id），客户端得自己拼，还会拼出「同一段会话出现
@@ -1149,7 +1149,7 @@ export class SessionManager {
    * 撤回：删掉 `index` 起的消息，**并立即落盘**。
    *
    * 落盘不是可选项：只改内存的话，存档里仍留着被撤回的消息，下次 `/load` 或重启
-   * 就“复活”（TUI 时代踩过这个坑）。所以先确认有存档可写，再动消息 —— 避免
+   * 就“复活”。所以先确认有存档可写，再动消息 —— 避免
    * “改了一半、存不下去”。
    */
   async rollback(sessionId: string, index: number): Promise<SessionRollbackResult> {
@@ -1492,8 +1492,8 @@ export class SessionManager {
    * 关掉一个工作区下**全部**活会话（删工作区时用）。
    *
    * 为什么这条归本类而不是归 handler：它需要知道「哪些会话是活的」，而那是本类的注册表。
-   * 曾经写在 `sessionHandlers` 里（先 `list(workspaceId, {includeSaved:false})` 再逐个
-   * `close()`），两个后果都不好：一是**业务规则跑到传输层**去了（handler 只该验参数与接线），
+   * 让 handler 自己拼（`list(workspaceId, {includeSaved:false})` 再逐个 `close()`）有两个后果：
+   * 一是**业务规则跑到传输层**去了（handler 只该验参数与接线），
    * 二是那次 `list()` 白白拼了一整套 `SessionListEntry`（生效模型、消息条数、阶段）只为了
    * 拿一串 id —— 而这类会话恰恰是「正要被删掉的」，取那些字段一点用都没有。
    *
@@ -1531,9 +1531,8 @@ export class SessionManager {
    * 五步的顺序是定死的，每一步都有人依赖它：
    *
    *   1. **先落盘**（带用户消息的回合）：`session-turn-end` 一到，客户端就认为这一轮结束、内容
-   *      已经定型；此时存档里还没有它，退出 TUI 再进来就「什么都没发生」。旧版的
-   *      `ConversationPersistPlugin` 干的就是这一步（每轮 `onInnerLoopEnd`），搬到服务端
-   *      之后一度漏了——于是「聊完退出、再 `ai` 是新会话」。
+   *      已经定型；此时存档里还没有它，退出 TUI 再进来就「什么都没发生」。所以这一步落在
+   *      发收尾事件之前：漏了它，症状就是「聊完退出、再 `ai` 是新会话」。
    *   2. 放行挂着的提问：不会再有答案了。
    *   3. 清子 Agent 栏目：它只活当前一轮。
    *   4. 阶段归零并广播：界面据此把 spinner 收起来。

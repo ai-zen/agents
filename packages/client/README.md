@@ -39,13 +39,14 @@ node -e 'console.log(Object.keys(require("./packages/client/package.json").depen
 # 只有 [ "@ai-zen/agents-protocol" ]
 ```
 
-`devDependencies` 里另有三个 workspace 包，都只为**类型与用例**，不进产物：
+`devDependencies` 里另有四个 workspace 包，都只为**类型与用例**，不进产物：
 
 | 包 | 为什么还在 |
 |---|---|
 | `@ai-zen/agents-sdk` | `config-port.ts` 的公开类型要 `AppConfig` / `AgentDefinition` / `ReasoningPresets`（线上传的是 `unknown`，客户端兑现成类型）。**只在 `import type` 里出现**，产物 `dist/*.js` 里没有它 —— 但 `dist/*.d.ts` 里有，所以它不能删干净 |
 | `@ai-zen/agents-server` | 用例要起**真 Daemon**（`Daemon` / `writeDescriptor` / `encodeFrame`）；另外 `ensure-server` 拉起服务端时要 `require.resolve` 它的 `bin`。测试代码不进产物 |
 | `@ai-zen/agents-core` | 用例要真的 `AgentNS.Role` 真值造数据（`stream-merge.test.ts`） |
+| `@ai-zen/agents-testing` | 用例要一个**真讲协议**的假模型端点（`startFakeLlm`，`turn-and-resume.test.ts`），否则「一轮跑完再续接」只能靠手发帧凑 |
 
 ### 2. 产物的运行期依赖图必须闭合
 

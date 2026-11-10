@@ -9,7 +9,7 @@
  *    `maxContextChars` 是 token 口径之前的历史遗留，按 `floor(chars / 4)` 折成 tokens
  *    （与旧代码的回退算法一致）后并入 `handoff`。
  * 2. **`Model.reasoning` → `Model.reasoningPreset`**
- *    alpha.13 曾用 `reasoning: { efforts, disable? }` 在模型上声明思考能力，后来改成
+ *    老配置用 `reasoning: { efforts, disable? }` 在模型上声明思考能力，现在是
  *    「引用策略表里的名字」。未标 `custom` 的模型会被出厂定义整块覆盖，但**标了 `custom`
  *    的模型会原地保留**，于是留下一个无人认识的 `reasoning` 死字段，同时因为缺
  *    `reasoningPreset` 而默默失去调档能力。这里删掉旧字段，并按**同 id 的出厂模型**
@@ -17,14 +17,13 @@
  *
  * 另有一类「缺省值缺位」的迁移：`Endpoint.capabilities`（见 `normalizeEndpointCapabilities`）。
  *
- * ## `defaultModel` 是**反例**：这一版不再删它
+ * ## `defaultModel` 是**反例**：它不需要迁移，也绝不能清
  *
- * alpha.17 曾把 `defaultModel` 当成废弃字段整块清掉（当时模型的唯一真相源改成
- * `AgentDefinition.modelId`）；现在模型解析改成三级，它反过来成了**全局兜底层**
- * （`会话级覆盖 > Agent 定义 > 本字段`，唯一实现在 `runtime/resolveModel.ts`）。
- * 字段名没变，所以这里**什么都不用搬**：老配置里写着的 `defaultModel` 原样保留、
- * 继续生效。绝对不能再清 —— 清掉等于用户升级一次就静默丢一次自己配的兜底模型，
- * 而这属于「默认值缺位」里最坏的一种：丢的是用户明确填过的值。
+ * 模型解析是三级（`会话级覆盖 > Agent 定义 > 本字段`，唯一实现在
+ * `runtime/resolveModel.ts`），`defaultModel` 就是**全局兜底层**。字段名从未变过，
+ * 所以这里**什么都不用搬**：老配置里写着的原样保留、继续生效。绝对不能再清 ——
+ * 清掉等于用户升级一次就静默丢一次自己配的兜底模型，而这属于「默认值缺位」里最坏的
+ * 一种：丢的是用户明确填过的值。
  *
  * 迁移时机：`ConfigManager.read()` 读出即迁（内存里永远是当前形状）；
  * 落盘由 `ensureDefaultConfig()` 负责 —— 它比较迁移结果与磁盘原文，不同才写回，
@@ -99,7 +98,7 @@ export function migrateModelThresholds(model: Model): { model: Model; changed: b
     legacyChars !== undefined ? Math.max(1, Math.floor(legacyChars / 4)) : undefined;
   const handoff =
     current.handoff ?? legacyTokens ?? fromChars ?? legacySingle ?? DEFAULT_HANDOFF_THRESHOLD;
-  // 旧数据里没有 guard 这一项：按重构前 ContextGuardPlugin 的默认 ratio（1.5）折算一次，
+  // 旧数据里没有 guard 这一项：按 1.5 倍（历史上护栏用的默认倍数）折算一次，
   // 让迁移后的实际行为与迁移前一致。这是**一次性**换算，落盘后两个值都是整数，
   // 运行时不再有任何倍数关系（想调硬线就直接改 guard 的数字）。
   const guard = current.guard ?? Math.round(handoff * 1.5);
@@ -198,12 +197,12 @@ export function normalizeAbortStrategies(config: AppConfig): boolean {
 /**
  * 补齐端点**缺失**的能力位声明（`Endpoint.capabilities`）。
  *
- * ## 这个问题是怎么来的
+ * ## 为什么要补
  *
- * `capabilities.filesApi` 是 alpha.12 才引入的能力位 —— 同一版把 `view_image` 的判定
- * 从「端点 id 是不是 `deepseek`」改成「看这一位」，并只给**出厂 deepseek** 打了 `true`。
+ * `capabilities.filesApi` 是后来才引入的能力位 —— 它把 `view_image` 的判定从「端点 id
+ * 是不是 `deepseek`」改成「看这一位」，而出厂只有 deepseek 打了 `true`。
  * 但端点**不参与出厂托管**（`ConfigManager.syncManagedModels` 明写「保持用户配置」），
- * 迁移此前也完全不碰 `endpoints` —— 于是 alpha.12 之前就已写下的配置，其 deepseek
+ * 迁移此前也完全不碰 `endpoints` —— 于是在这之前就已写下的配置，其 deepseek
  * 端点永远缺 `capabilities`，`supportsFilesApi()` 恒为 `false`：
  *
  *   · 出厂承诺的「deepseek 走 Files API」对这些用户从未生效；

@@ -119,8 +119,9 @@ export class ConfigManager {
    * - 已有其他 Agent → 返回 null
    *
    * 模型按三级解析（`会话级覆盖 > AgentDefinition.modelId > AppConfig.defaultModel`）。
-   * 这里只负责把默认 Agent 的 `modelId` 补齐 —— 历史版本曾没有 config 层的兜底，
-   * 那些 Agent 定义完全可能缺 `modelId`，而用户当时在用的是 `config.defaultModel`。
+   * 这里只负责把默认 Agent 的 `modelId` 补齐 —— 老配置里的 Agent 定义可能根本没写
+   * `modelId`（用户的兜底是 `config.defaultModel`），补齐时优先用它，升级才不会改变用户
+   * 实际在用的模型。
    *
    * @param defaultModel 配置里的 `defaultModel`（三级解析的兜底那一级）。仅在默认 Agent
    *   **既无 modelId** 且该模型仍在模型清单里时用它补齐，让升级不改变用户实际在用的模型。
@@ -245,9 +246,7 @@ export class ConfigManager {
     subAgent: AgentDefinition | null;
   }> {
     await this.ensureDirs();
-    // 先把配置读到当前形状（内含迁移），再从里面取 `defaultModel` 去补默认 Agent 的模型：
-    // 早先这里是直接读磁盘原文，只因为那时 `defaultModel` 已从类型里删掉 —— 现在它是
-    // 正式字段（三级解析的兜底），不必再绕过 `read()`。
+    // 先把配置读到当前形状（内含迁移），再从里面取 `defaultModel` 去补默认 Agent 的模型
     const config = await this.ensureDefaultConfig();
     this.knownModelIds = new Set((config.models ?? []).map((m) => m.id));
     const agent = await this.ensureDefaultAgent(config.defaultModel);

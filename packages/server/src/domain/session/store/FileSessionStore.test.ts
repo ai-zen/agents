@@ -48,7 +48,7 @@ describe("FileSessionStore", () => {
       ["chat_mid", 2],
       ["chat_new", 3],
     ] as const) {
-      // 直接写文件（绕过 write）：模拟搬迁前留下的、没有清单的存档
+      // 直接写文件（绕过 write）：模拟没有清单的存档（清单被删或从未写过）
       writeFileSync(
         join(root, "sessions", `${id}.json`),
         JSON.stringify({ ...sample, id }),
@@ -119,7 +119,7 @@ describe("FileSessionStore", () => {
   it("清单缺失：entry 从正文 mtime 回填，与 list 的回填逐字段一致", async () => {
     await store.write({ ...sample, id: "chat_a", title: "先问 entry", messages: ["a", "b"] });
     await store.write({ ...sample, id: "chat_b", title: "先问 list" });
-    // 定死 mtime 再删清单：模拟「搬迁前写的 / 清单被手删」的老存档
+    // 定死 mtime 再删清单：模拟「清单被手删 / 从未写过」的存档
     const base = Math.floor(Date.now() / 1000) - 500;
     for (const [id, offset] of [
       ["chat_a", 1],

@@ -98,7 +98,7 @@ console.log(agent.messages.at(-1)?.content);
 
 ## 相关仓库
 
-`@ai-zen/cli`（交互式 AI Agent 终端）与桌面端（`@ai-zen/desktop-main`）在各自仓库里，通过 `@ai-zen/agents-client` 连到本仓库的 `@ai-zen/agents-server`。`packages/webui` 目录里只剩一份 `README.md`，不是包。
+`@ai-zen/cli`（交互式 AI Agent 终端）与桌面端（`@ai-zen/desktop-main`）在各自仓库里，通过 `@ai-zen/agents-client` 连到本仓库的 `@ai-zen/agents-server`。
 
 ## 许可证
 

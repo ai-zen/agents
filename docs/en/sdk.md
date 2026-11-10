@@ -9,7 +9,7 @@ outline: deep
 `@ai-zen/agents-sdk` is the **engine / capability layer** built on top of `@ai-zen/agents-core`, providing a unified Agent runtime for CLI / Desktop.
 
 - **Installation**: `npm install @ai-zen/agents-sdk` (depends on `@ai-zen/agents-core`, linked via `workspace:^`).
-- **Source of truth**: [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md) (the older `sdk-design-v0.md` is kept as a historical archive).
+- **Source of truth**: [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md) .
 
 ## Scope — global context + capability assembly orchestrator
 

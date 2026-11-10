@@ -4,7 +4,7 @@
  * 为什么在 SDK 而不在 CLI：子 Agent 内循环缺护栏是**所有宿主**共有的问题，不是 CLI 特性。
  * 会话执行搬到服务端之后，服务端装配插件的那一处（`installPlugins`）装不到 CLI 仓里的实现，
  * 远程会话的子 Agent 就会裸奔；把它放进 SDK，CLI 与服务端才能装同一份护栏、
- * 共享同一套阈值语义（原实现位于 CLI 的 `src/sub-agent-guard-plugin.ts`，本次原样搬入）。
+ * 共享同一套阈值语义。
  *
  * 背景：SDK 的子 Agent 由 `AgentTool` / `AgentToolLazy` 在委派时 `new Agent({...})` 构建，
  * 新建实例不携带任何插件（`Agent._plugins` 每实例私有，不向子 Agent 传播），且子 Agent 走
@@ -33,10 +33,8 @@
  * 终止用户对话（如需硬停，父 Agent 须设 allowJsonParseError=false）。
  *
  * 覆盖范围：core 只有两条委派路径（`AgentTool` / `AgentToolLazy`），均分发 onSubAgentStart，
- * 故本插件对**全部**子 Agent 生效。SDK 的 `call_skill_sub_agent`（技能子 Agent）也走
- * `AgentToolLazy`（见 `skillTools.ts`：工具由 AgentToolLazy 承载，复用统一的委派边界），
- * 同样被覆盖——早期版本的注释说它「不分发该钩子」，那个说法在 skill 子 Agent 统一到
- * core 委派原语之后已不成立。
+ * 故本插件对**全部**子 Agent 生效。SDK 的 `call_skill_sub_agent`（技能子 Agent）同样由
+ * `AgentToolLazy` 承载、走同一委派边界，因此也在覆盖范围内。
  */
 
 import type { AgentPlugin, SubAgentContext } from "@ai-zen/agents-core";

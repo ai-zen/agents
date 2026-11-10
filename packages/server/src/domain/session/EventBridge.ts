@@ -1,5 +1,5 @@
 /**
- * SDK 事件 → 协议事件的翻译器（D10 拆出来的第一块）。
+ * SDK 事件 → 协议事件的翻译器（`SessionManager` 拆出来的四块之一）。
  *
  * ## 管什么
  *
@@ -320,7 +320,7 @@ export class EventBridge {
      *
      * 这里挂的监听**不用**在 `sub-agent-end` 撤销：子 Agent 实例是「每次委派新建」的
      * （core 的 `AgentTool.exec()` 里 `new Agent(...)`、`AgentToolLazy.exec()` 里
-     * `buildAgent(...)`），随本次 run 结束回收，监听器跟着走 —— 与 CLI 侧同一个理由。
+     * `buildAgent(...)`），随本次 run 结束回收，监听器跟着走。
      */
     const onSubStart = ({ subAgent }: { subAgent: SubAgentLike }) => {
       const entry: SubAgentEntry = {

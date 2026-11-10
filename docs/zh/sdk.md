@@ -9,7 +9,7 @@ outline: deep
 `@ai-zen/agents-sdk` 是建立在 `@ai-zen/agents-core` 之上的**引擎 / 能力层**，为 CLI / Desktop 提供统一 Agent 运行时。
 
 - **安装**：`npm install @ai-zen/agents-sdk`（依赖 `@ai-zen/agents-core`，以 `workspace:^` 关联）。
-- **设计真相源**：[`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md)（旧版 `sdk-design-v0.md` 为历史存档）。
+- **设计真相源**：[`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md)。
 
 ## Scope —— 全局上下文 + 能力装配编排容器
 

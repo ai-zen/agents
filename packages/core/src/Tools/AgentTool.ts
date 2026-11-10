@@ -7,7 +7,10 @@ import { ToolCallContext } from "../ToolCallContext.js";
 import { Tool } from "../Tool.js";
 
 /**
- * AgentTool is a combination of Agent and Tool, which has tool definitions and generates output using chat.
+ * AgentTool —— 把一个子 Agent 暴露成工具。构造时就把 client / model / messages 定下来，
+ * 执行时把 `parsedArgs` 填进消息里的 `{{key}}` 占位符再跑子 Agent。
+ *
+ * 消息列表最后一条必须是 User 消息（否则子 Agent 没有要回答的东西，构造函数直接拒绝）。
  */
 export class AgentTool extends AgentContext implements Tool {
   type: "function";
@@ -38,21 +41,13 @@ export class AgentTool extends AgentContext implements Tool {
     };
   }
 
-  /**
-   * Executes the agent's function with the given function call context.
-   * @param ctx - The function call context.
-   * @returns {Promise<AgentNS.MessageContent>} The result of the agent execution (last message content).
-   */
+  /** 跑一次子 Agent，把它的最后一条消息内容当作工具结果（拒绝时是拒绝原因） */
   async exec(ctx: ToolCallContext): Promise<AgentNS.MessageContent> {
-    // Create a chat for the agent using exported config
     const agent = new Agent({
       ...this.toAgentConfig(),
     });
 
-    // Inject the arguments into the cloned agent's message list
     agent.messages = AgentTool.injectArgs(agent.messages, ctx.parsedArgs);
-
-    // （Assistant 占位由 run 内循环开头统一追加）
 
     // 委派边界：onSubAgentStart 钩子（可拒绝本次委派；同时广播 sub-agent-start 事件）
     const subCtx: SubAgentContext = {
@@ -63,7 +58,6 @@ export class AgentTool extends AgentContext implements Tool {
     const denied = await ctx.agent.dispatchHook("onSubAgentStart", subCtx);
     if (denied !== undefined) return denied;
 
-    // Send the agent chat to the server
     try {
       // 子 Agent 中断联动：外层 abort → agent.abort()
       const onAbort = () => agent.abort();
@@ -88,10 +82,7 @@ export class AgentTool extends AgentContext implements Tool {
   }
 
   /**
-   * Replace template string with values from the given record.
-   * @param template - The template string.
-   * @param valueMap - The record containing key-value pairs for replacement.
-   * @returns {string} The replaced string.
+   * 把模板里的 `{{key}}` 换成 `valueMap[key]`；没有对应键的占位符原样保留。
    */
   static replaceStringWithValues(template: string, valueMap: Record<string, any>): string {
     const regex = /{{\s?(\w+)\s?}}/g;
@@ -108,9 +99,7 @@ export class AgentTool extends AgentContext implements Tool {
   }
 
   /**
-   * Format the messages by replacing the parameters in the messages with their parsed values.
-   * @param messages - The list of messages.
-   * @param parsedArgs - The parsed arguments.
+   * 深拷贝一份消息列表，把每条消息的字符串 content 做占位符替换（内容块数组原样保留）。
    */
   static injectArgs<T extends AgentNS.Message>(messages: T[], parsedArgs: any): T[] {
     return JSON.parse(JSON.stringify(messages)).map((message: T) => ({

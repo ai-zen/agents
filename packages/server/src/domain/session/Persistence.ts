@@ -1,5 +1,5 @@
 /**
- * 会话存档的读写（D10 拆出来的第二块）。
+ * 会话存档的读写（`SessionManager` 拆出来的四块之一）。
  *
  * ## 管什么
  *
@@ -9,7 +9,8 @@
  * `recordOf` 是**存档形状的唯一定义处**：所有写档路径都从它取，漏一个字段就是一类数据
  * 丢失（`title` 漏了 → 改过的名字下次写档被抹掉；`modelId` 漏了 → 会话级模型覆盖在下一轮
  * 悄悄失效；`modelParams` 漏了 → 参数退回 Agent 定义那份、配给另一个模型、端点 400）。
- * 它原来埋在一个 2600 行的类中间，谁也不知道改存档要动哪儿 —— 这正是这块单独成类的理由。
+ * 把形状定义埋在一个几千行的类中间，「改存档要动哪儿」就没人说得清 —— 这正是这块
+ * 单独成类的理由。
  *
  * ## 不管什么
  *
@@ -45,8 +46,8 @@ export interface PersistenceOptions {
    * 注入成**函数**而不是实例：一个进程服务多个工作区，每个工作区一份存档。
    *
    * 泛型参数写 `Message`：存档里的正文就是协议转出的那个 `Message`（`SessionSnapshotResult.messages`
-   * 用的也是它）。以前这里是不带参数的 `SessionStore`（正文 = `unknown`），于是每处「把存档
-   * 读回来装上 Agent」都得写一次断言 —— 那些断言就是「协议与存档两份形状」的缝隙。
+   * 用的也是它）。不带参数的 `SessionStore`（正文 = `unknown`）会逼着每处「把存档
+   * 读回来装上 Agent」写一次断言 —— 那些断言就是「协议与存档两份形状」的缝隙。
    */
   storeFor?: (workspaceId: string) => SessionStore<Message> | Promise<SessionStore<Message>>;
   /**
@@ -107,7 +108,7 @@ export class Persistence {
   /**
    * 把会话写进存档（并更新「本工作区上一轮会话」指针）。
    *
-   * 两条规矩与旧版 `ConversationPersistPlugin` 逐字对齐：
+   * 两条规矩：
    *   - **尚无用户消息就不写**：否则 `/load` 列表里会出现一串空会话；
    *   - 写失败不抛（那是收尾路径）：转成 `persistFailed` 通知给用户，因为「以为存了、
    *     其实没存」是最坏的失败形态——用户会在下次 `ai` 发现对话不翼而飞。
@@ -138,8 +139,8 @@ export class Persistence {
    * 收尾时按标记落盘（为什么只有 `send` / `handoff` 置位，见 `LiveSession.persistOnSettle`）。
    *
    * 注意它与「这段会话该不该活着」是**两件不同的事**：`persistOnSettle` 说这一轮该不该写
-   * 档，回收判据说这段会话该不该留在内存里（`reclaimOnSettle`）。曾经有过把两者混成一个
-   * 标记的写法，症状是「迁移的中场收尾把会话收了」或「该写的档没写」。
+   * 档，回收判据说这段会话该不该留在内存里（`reclaimOnSettle`）。混成一个
+   * 标记的症状是「迁移的中场收尾把会话收了」或「该写的档没写」。
    */
   async writeOnSettle(session: LiveSession): Promise<void> {
     if (!session.persistOnSettle) return;

@@ -10,7 +10,7 @@
  *
  * ## 为什么 git 优先、`fs.glob` 兜底
  *
- * 沿用 CLI 侧（`cli/src/tui/file-index.ts`）实测过的结论，本文件只是换了个宿主：
+ * 选型依据：
  * `git ls-files -co --exclude-standard` 一次同时拿到**已跟踪 + 未跟踪**，且**尊重
  * .gitignore**；`fs.promises.glob` 更快且不依赖外部进程，但它不认 .gitignore、也不返回
  * 隐藏文件（实测 `.gitignore`、`.ai-zen/` 全丢），所以只当「不在 git 仓库里」时的兜底。
@@ -82,7 +82,7 @@ interface CacheEntry {
  * 继续列它下面的内容。客户端能不能渲染出那一行、以及选中后补不补末尾的 `/`，**只**看
  * 条目上的 `dir`（客户端 `PathEntry` / `mentionInsertText` 就这么判）。服务端不回目录
  * 条目，客户端拿不到目录行 —— 远程模式下「钻目录」这个能力直接消失，这不是清单瘦身，
- * 是功能退化。所以这里与客户端 `cli/src/tui/file-index.ts` 的 `fromGitList` 逐字对齐：
+ * 是功能退化。所以本文件的 `fromGitList` 与客户端补全的取法逐字对齐：
  * 从每个文件的路径反推所有祖先目录（`lastIndexOf("/")` 循环）、`Set` 去重、目录排在
  * 文件之前（同一屏里更好读）。
  *

@@ -29,15 +29,12 @@ export class CodeTool implements Tool {
   async exec(ctx: ToolCallContext): Promise<AgentNS.MessageContent> {
     let result;
 
-    // If the tool has code
     if (this.code) {
-      // Construct a new parameter object based on the function parameters definition
-      // Make sure that the parameter object does not have any missing keys, as missing keys may cause "x is not defined" errors during execution
+      // 按参数定义把键补齐：字符串代码里直接引用参数名，缺键会拿到 "x is not defined"
       const wideArgs = Object.fromEntries(
         Object.keys(this.function.parameters.properties!).map((key) => [key, ctx.parsedArgs[key]]),
       );
 
-      // Create a new function and execute it
       const fun = new Function(...Object.keys(wideArgs), this.code);
       result = await fun.call(ctx, ...Object.values(wideArgs));
     }

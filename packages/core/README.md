@@ -2,7 +2,7 @@
 
 Core framework for building LLM agents, providing the base abstractions needed to build intelligent agents. Works in both Node.js and browser environments.
 
-The agent runtime is **plugin-driven** and runs directly on the **official OpenAI SDK** (`openai` package) — no in-house request layer.
+The agent runtime is **plugin-driven** and runs directly on the **official OpenAI SDK** (`openai` package).
 
 ## Installation
 
@@ -51,11 +51,11 @@ The `client` is an `openai` SDK instance — any OpenAI-compatible vendor (OpenA
 
 ```typescript
 interface AgentContext {
-  client: OpenAI;                    // openai SDK client
-  model: string;                     // Model name sent to the API
-  modelConfig: Record<string, unknown>; // Model params (temperature etc.), spread into the request; may include vendor-specific fields (e.g. DeepSeek `thinking`)
-  messages: AgentNS.Message[];       // Message list
-  tools: Tool[];                     // Tool list
+  client: OpenAI;
+  model: string;
+  modelConfig: Record<string, unknown>; // spread into the request; may include vendor-specific fields (e.g. DeepSeek `thinking`)
+  messages: AgentNS.Message[];
+  tools: Tool[];
   allowJsonParseError: boolean;      // Whether JSON parse errors are allowed (default true)
   abortedToolRoundStrategy: AbortedToolRoundStrategy; // how an interrupted tool round is reconciled (default "fill")
   abortedToolRoundReason: string;    // reason filled into unfinished tool results under "fill" (default "用户中断了会话")
@@ -64,7 +64,7 @@ interface AgentContext {
 ```
 
 - `append(message)` — appends a message to the message list and returns it
-- Extension happens through **plugins** (`agent.use(plugin)`), not constructor hooks
+- Extension happens through **plugins** (`agent.use(plugin)`)
 
 ### Message
 
@@ -111,6 +111,7 @@ Message status enum:
 
 | Status | Description |
 |--------|-------------|
+| `Unknown` | Not set (the default on a freshly constructed message) |
 | `Pending` | Waiting for processing |
 | `Writing` | AI is generating |
 | `Completed` | Done |
@@ -265,7 +266,7 @@ const tool = new IndexedSearchTool({
 
 ### Plugins — the only extension point
 
-`AgentContext` no longer provides any `onXxx` constructor hooks. **Plugins are the only way to extend the Agent.** Register a plugin with `agent.use(plugin)`, then `await agent.init()`.
+**Plugins are the only way to extend the Agent.** Register a plugin with `agent.use(plugin)`, then `await agent.init()`.
 
 ```typescript
 import { Agent, Message } from "@ai-zen/agents-core";
@@ -431,13 +432,11 @@ Only rounds containing an `Aborted` message are touched; other states (e.g. `Err
 
 #### Aborted messages (reasoning & content)
 
-Tool rounds have `reconcileAbortedToolRounds()`, but **pure reasoning / plain text** messages had nobody looking after them: their `status` stayed `Aborted`, and `formatHistory()` only lets `undefined | Completed` through — so whatever the model had already streamed (`reasoning_content` and `content`) vanished from the next request entirely. The user saw a half-finished sentence on screen while the model had no memory of saying it.
-
-`Agent.run()` therefore calls the exported `reconcileAbortedMessages()` **after** `reconcileAbortedToolRounds()`, driven by:
+`formatHistory()` only lets `undefined | Completed` through, so an interrupted assistant message carries nothing into the next request: whatever the model had already streamed (`reasoning_content` and `content`) disappears — the user sees a half-finished sentence on screen while the model has no memory of saying it. `reconcileAbortedMessages()` is what turns that around; `Agent.run()` calls it **after** `reconcileAbortedToolRounds()`, driven by:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `abortedMessageStrategy` | `"drop"` | `drop` keeps the previous behaviour (nothing is kept); `keep` restores an aborted assistant that actually produced output to `Completed`, so the partial content/reasoning enters the next context |
+| `abortedMessageStrategy` | `"drop"` | `drop` keeps nothing; `keep` restores an aborted assistant that actually produced output to `Completed`, so the partial content/reasoning enters the next context |
 
 Boundaries of `keep`:
 

@@ -45,7 +45,7 @@ export * from "./status.js";
 export * from "./local-host.js";
 export * from "./mcp.js";
 
-// 传输层：一个进程一条连接（D8）。会话层不自己建连接，只借它说话
+// 传输层：一个进程一条连接。会话层不自己建连接，只借它说话
 // —— 「断了就重建 + 重新 events.watch」只在这一处发生
 export * from "./transport/connection.js";
 

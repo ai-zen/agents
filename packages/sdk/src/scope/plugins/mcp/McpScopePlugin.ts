@@ -10,7 +10,7 @@ import type { ScopeCandidates, ScopePlugin } from "../../ScopePlugin.js";
 /**
  * MCP 插件 —— 发现 mcp.json + 自持连接管理器 + 装配渐进式披露元工具。
  *
- * 渐进式披露设计原样保留：
+ * 渐进式披露：
  *   - `load_mcp`            枚举所有允许的 server（含 include_manifest 开关）
  *   - `call_mcp_tool`       调用已连接 server 的工具
  *   - `read_mcp_resource`   读取已连接 server 的资源

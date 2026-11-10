@@ -18,7 +18,7 @@ export interface AllInOneOptions {
  *
  * 顺序即优先级（去重时后注册覆盖先注册）：
  *   builtin → user-tools → skills → mcp → subagents
- * 因此用户工具可覆盖同名内置工具（与 v0 一致）。
+ * 因此用户工具可覆盖同名内置工具。
  *
  * 想裁剪/替换某一类，改用手工逐个 `new XxxScopePlugin(...)` 后 `.use()`。
  */

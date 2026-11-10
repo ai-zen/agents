@@ -36,7 +36,7 @@ export interface SkillInfo {
   allowedTools?: string[];
 }
 
-// ---- 发现（返回完整 SkillInfo，不再丢失 subAgent 等信息）----
+// ---- 发现（返回完整 SkillInfo，含 subAgent 等元数据）----
 
 /**
  * 扫描多个目录中发现的所有 Skill（含 SKILL.md 的子目录）。

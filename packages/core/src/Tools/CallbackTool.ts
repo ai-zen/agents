@@ -16,9 +16,8 @@ export class CallbackTool extends Tool {
   async exec(ctx: ToolCallContext): Promise<AgentNS.MessageContent> {
     let result;
 
-    // If the tool has a callback function
     if (this.callback) {
-      // Execute the callback function, passing parsed args and the full ctx explicitly.
+      // 回调拿到解析后的参数与完整 ctx（要 agent / signal / preventDefault 都不必另存闭包）
       result = await this.callback(ctx.parsedArgs, ctx);
     }
 

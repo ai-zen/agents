@@ -95,19 +95,12 @@ export interface ToolCallEndContext {
  * | `onSubAgentEnd` | SubAgentContext | 仅短路后续插件 |
  */
 export interface AgentPlugin {
-  /** Agent.init() 时调用，用于异步初始化 */
   onInit?(): Promise<void>;
-  /** Agent.send() 调用前触发。返回 string 拒绝本次发送（抛错中断） */
   onBeforeSend?(ctx: SendContext): HookResult;
-  /** Agent.send() 返回后调用 */
   onAfterSend?(ctx: SendContext): HookResult;
-  /** Agent 内循环开始前触发（每次 API 请求前）。返回 string 中断本轮 */
   onInnerLoopStart?(ctx: SendContext): HookResult;
-  /** Agent 内循环结束后触发（一次 API 请求 + 可能的工具调用后） */
   onInnerLoopEnd?(ctx: SendContext): HookResult;
-  /** Agent 整组内循环开始前触发（一次 send 仅一次）。返回 string 中断整组 */
   onInnerLoopsStart?(ctx: SendContext): HookResult;
-  /** Agent 整组内循环结束后触发（一次 send 仅一次） */
   onInnerLoopsEnd?(ctx: SendContext): HookResult;
   /**
    * 单个工具调用执行前触发（收同一个 ToolCallContext 实例）。
@@ -245,9 +238,6 @@ export class Agent extends AgentContext {
    */
   private innerLoopTasks: Set<PendingTask> = new Set();
 
-  /**
-   * Abort current in-flight inner-loop tasks.
-   */
   abort() {
     this.innerLoopTasks.forEach((task) => {
       task.controller.abort();
@@ -387,7 +377,7 @@ export class Agent extends AgentContext {
     );
 
     // 被中断的 assistant（不带工具调用）按策略决定去留：`keep` 时保留已输出的内容/思考，
-    // 让模型下一轮能接着半截往下说（`drop` 即既有行为：Aborted 消息不进历史）。
+    // 让模型下一轮能接着半截往下说（`drop` 时 Aborted 消息不进历史）。
     // 必须排在工具轮次归一之后：带 `tool_calls` 的消息已由上一个函数处理，此处只收尾纯内容消息。
     reconcileAbortedMessages(this.messages, this.abortedMessageStrategy);
 
@@ -401,9 +391,6 @@ export class Agent extends AgentContext {
     return this.messages;
   }
 
-  /**
-   * Get the available tool definitions.
-   */
   formatTools() {
     if (!this.tools?.length) return undefined;
     return this.tools.map((tool) => ({
@@ -418,9 +405,6 @@ export class Agent extends AgentContext {
     }));
   }
 
-  /**
-   * Get the conversation history in a format suitable for the request.
-   */
   formatHistory() {
     return this.messages
       .filter(
@@ -704,9 +688,7 @@ export class Agent extends AgentContext {
       }),
     );
 
-    // isPreventDefault: 工具主动要求停止（preventDefault）
-    // status: 消息状态，Error 表示工具执行出错且不容错
-    // 两者任一为 true，则不继续下一轮
+    // 任一工具要求停止（preventDefault）或标记为 Error，就不再开下一轮
     const shouldStop = results.some(
       (r) => r.isPreventDefault || r.status === AgentNS.MessageStatus.Error,
     );
@@ -723,9 +705,6 @@ export class Agent extends AgentContext {
     return `未知工具: ${toolCall.function?.name}，没有找到对应的工具实现。`;
   }
 
-  /**
-   * Check if there is a pending message.
-   */
   get isHasPendingMessage() {
     return (
       this.messages.some(
@@ -737,9 +716,9 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * Send a user question.
-   * @param content The user question.
-   * @returns A promise that resolves to the conversation messages.
+   * 发一条用户消息，等整组内循环跑完。
+   *
+   * 返回 this.messages，且是**在 onAfterSend 之后**取的：插件可以整体替换消息列表（迁移 / 保存）。
    */
   async send(content: AgentNS.MessageContentSection[] | string) {
     // 插件上下文（消息快照仅供读取）
@@ -755,10 +734,9 @@ export class Agent extends AgentContext {
       throw new Error(`send 被插件拒绝: ${denied}`);
     }
 
-    // Create a question message.
     this.append(Message.User(content));
 
-    // Run the chat：Assistant 占位由 run 内循环开头统一追加。
+    // 跑一整组内循环（Assistant 占位由 run 内循环开头统一追加）。
     await this.run(ctx);
 
     // onAfterSend 钩子：可做迁移、保存等后处理（如替换 this.messages 重开会话），

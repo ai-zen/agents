@@ -13,8 +13,8 @@ import type { SdkAgent } from "../runtime/SdkAgent.js";
  * | `off` | 不装插件 | 只靠 `/reload` |
  *
  * 为什么不是「每轮固定刷一次」：一次 `refresh()` 会重扫 MCP 配置、按需建连接，
- * 长工具链的一轮里可能要跑好几次。默认取 `inner-loop-start` 是为了与旧版行为等价
- * （旧版挂在 `onBeforeSend` 上，靠内循环反复触发达到同样效果），嫌慢可以调低。
+ * 长工具链的一轮里可能要跑好几次。默认 `inner-loop-start` 是时效优先的取舍，
+ * 嫌开销大就换成 `outer-loop-start`。
  */
 export type AutoRefreshWhen = "inner-loop-start" | "outer-loop-start";
 

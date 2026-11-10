@@ -64,9 +64,9 @@ export interface AgentLike {
    *
    * 载荷是**多参**的，而且每个事件不一样：`chunk-parsed` 是 `(receiver, chunk)`，
    * `sub-agent-start` 是 `({ subAgent })`，`open` / `finally` 没有载荷。这里写 `(...args)`
-   * 而不是 `(payload)` 是故意的：曾经它就是 `(payload: any) => void`，于是监听器只收一个
-   * 参数也能过编译 —— 而那个参数是**消息**，不是 chunk，正文增量于是一条也发不出去
-   * （详见 `EventBridge.attach` 里 `onChunk` 的注释）。类型说诚实话，比它“好用”重要。
+   * 而不是 `(payload)` 是故意的：写成单参时，监听器只收一个参数也能过编译 —— 而第一个
+   * 参数是那条**正在拼的消息**，不是 chunk（`EventBridge` 的 `onChunk` 读的正是第一个
+   * 参数），少一个位置就把正文增量全掉了。类型说诚实话，比它“好用”重要。
    */
   events: {
     on(event: string, handler: (...args: any[]) => void): void;
@@ -188,7 +188,7 @@ export interface LiveSession {
    * `migrate` **不能**置位——它在交接前已经把**完整历史**存进旧 id，之后才把消息剔除；
    * 如果收尾时再无条件写一次，写下去的会是被 prune 过的版本，把刚存好的完整存档盖掉。
    * `autoMigrate` 反过来是安全的：它跑在 `send` 的那一轮里，收尾时 id 已经换成新的，
-   * 写下去的就是新会话的开场（与旧版 `onMigrated` 里那次落盘同一个效果）。
+   * 写下去的就是新会话的开场。
    *
    * 同一条标记也是「这一轮真正的终点」的判据，所以回收判定也挂在它上：`migrate` 中场
    * 那次收尾不能触发回收（那时会话正要换 id）。

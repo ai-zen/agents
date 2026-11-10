@@ -1,25 +1,8 @@
-# SDK 设计文档 v1（Scope / ScopePlugin）
+# SDK 设计文档（Scope / ScopePlugin）
 
-> **本文档是 `@ai-zen/agents-sdk` 的 v1 设计真相源。**
+> **本文档是 `@ai-zen/agents-sdk` 的设计真相源。**
 >
-> v1 是一次**架构重构**：把原 `Provider`（全局上下文 + 能力管线）改名为 **`Scope`**，并把"能力来源"从 `Scope` 的内联逻辑中**疏散为可组合的 `ScopePlugin`**。
->
-> 本文档描述的是 **v1 目标设计**（重构完成后与实现逐项对齐）。重构前的设计见 [sdk-design-v0.md](./sdk-design-v0.md)。v0 与 v1 的功能边界、权限模型、渐进式披露、MCP 生命周期、任务迁移等**语义完全一致**，差异仅在"能力来源如何组织"。
-
----
-
-## 0. v0 → v1 一句话
-
-> 把 `Provider` 从"**上帝对象**（上下文 + 注册表 + 四类能力的发现/过滤/实例化硬编码）"拆成"**编排容器 `Scope`**（只保留上下文 + 三阶段管线骨架）" + "**若干 `ScopePlugin`**（各自自持一类能力的发现状态与实例化逻辑）"。
-
-| 维度 | v0 | v1 |
-|------|----|----|
-| 入口对象 | `Provider` | `Scope` |
-| 能力来源组织 | 硬编码在 `Provider.refresh/filter/instantiate` | 疏散为 5 个 `ScopePlugin` |
-| 扩展方式 | 改 `Provider` 源码 | 实现 `ScopePlugin` 并 `scope.use()` |
-| 上下文 | `Provider` 持有 config/cwd/env/paths/mcpManager | `Scope` 只持 config/cwd/env/agentsDir；paths/mcpManager 归各插件 |
-| 能力候选集 | `Provider.builtinTools/userTools/skills/mcps/subagents` | 插件私有自持，`Scope` 不再暴露聚合 |
-| 渐进式披露 | `load_skill` / `load_mcp` 等元工具 | **原样保留**，仅从 `Provider` 平移到插件 |
+> 一句话：`Scope` 是**编排容器**（全局上下文 + 三阶段能力管线骨架），能力来源全部疏散为**可组合的 `ScopePlugin`**（各自自持发现状态与实例化逻辑）。
 
 ---
 
@@ -76,16 +59,16 @@ Desktop ──┘                   │
 **依赖方向（SDK 内部）**：
 
 ```
-scope ──> runtime ──> capabilities ──> crud ──> config ──> types
-  │           │
-  │           └──> shared
-  │
-  └──> @ai-zen/agents-core
+agent-plugins ──> runtime ──> crud ──> shared ──> types
+                       │
+                       └──> scope（仅取 `Scope` 类型）
+scope/plugins ──> runtime（仅 `subagents` 取 `createModel`）
 ```
 
 - `scope` 是最高层：`Scope` 编排、`ScopePlugin` 契约与 5 个具体插件。
-- 插件依赖 `runtime`（`Scope` 类型、`McpConnectionManager`、`createModel`）与 `capabilities`（discovery + implements）。
-- `Scope` 只依赖 `ScopePlugin` **接口**（不静态 import 具体插件），插件经 `scope.use()` 注入 —— 无模块级循环，仅存在"插件 → Scope"的类型级单向引用。
+- `runtime` 组装 `Scope`（`createAgent` / `createModel` 只吃 `scope.config`），并封装 Agent 组装与交接流程。
+- `scope` 与 `runtime` 之间只有一条值级依赖（`subagents → createModel`），其余方向均为类型引用。
+- `config` / `crud` / `shared` / `types` 不反向依赖上层。
 
 ---
 
@@ -292,13 +275,11 @@ config        ← ConfigManager + constants：读写 config.json + 目录初始�
 crud          ← 能力实体 CRUD（AgentRepository；通用 EntityRepository 在 shared）
 runtime       ← 运行时常驻件：模型工厂 + Agent 组装 + 任务交接/迁移（createModel / createAgent / SdkAgent / HandoffService / HandoffGuardPlugin）
 scope         ← Scope 编排容器 + ScopePlugin 契约 + PermissionEvaluator + disclosure + plugins/（5 个能力来源，各自自包含「发现 + 工具 + 插件」）
-agent-plugins ← AgentPlugin 插件（autoMigrate、autoRefreshTools、contextGuard、unknownToolHint）
-shared        ← EntityRepository、SdkError、Logger
+agent-plugins ← AgentPlugin 插件（autoMigrate、autoRefreshTools、contextGuard、unknownToolHint、subAgentGuardInstaller）
+shared        ← content-blocks、EntityRepository、SdkError、Logger
 ```
 
-> **结构原则（v1.x）**：能力来源按「自包含模块」组织——每个来源一个文件夹，内含「发现 + 工具 + 插件」，插件不再跨文件夹「缝合」。`runtime/` 保留运行时常驻件；`scope/` 只放 Scope 相关；顶层不再有 `capabilities/`、`plugin/`。
->
-> 依赖方向：`agent-plugins → runtime → scope`（runtime 组装 Scope；scope 的能力插件依赖 runtime 的 `createModel`）；`scope → types / shared`，`runtime → scope / crud / shared / types`。`runtime ⇆ scope` 仅剩一条类型级边。
+> **结构原则**：能力来源按「自包含模块」组织——每个来源一个文件夹，内含「发现 + 工具 + 插件 + 自己的管理器」，插件不跨文件夹缝合。`runtime/` 保留运行时常驻件；`scope/` 只放 Scope 相关。依赖方向见 §1。
 
 ### 目录结构（src/）
 
@@ -374,7 +355,7 @@ const scope = new Scope({
 });
 ```
 
-> **v0 → v1 变化**：`Provider` 构造曾接收 `subAgentsPaths / skillsPaths / toolsPaths / mcpPaths`；v1 中这些**路径移交给各自的能力插件**（见 §9）。`Scope` 只保留 `config / cwd / agentsDir`。
+> `Scope` 只持有 `config / cwd / agentsDir`；能力来源路径由各自的插件接收（见 §8）。
 
 ### 关键字段
 
@@ -471,7 +452,7 @@ createAgent(scope, agentId, { messages }) → SdkAgent（并行 send）
 
 ## 7. ScopePlugin — 插件契约
 
-`ScopePlugin` 是 **v1 的核心扩展点**。一个插件**自持一类能力**的完整生命周期：它自己发现、自己持有发现结果、自己声明候选名、自己按过滤结果实例化工具、自己负责释放。
+`ScopePlugin` 是 SDK 的核心扩展点。一个插件**自持一类能力**的完整生命周期：它自己发现、自己持有发现结果、自己声明候选名、自己按过滤结果实例化工具、自己负责释放。
 
 > **与 `AgentPlugin` 的区别**：`ScopePlugin` 挂在**能力装配管线**（discover/filter/instantiate）；`AgentPlugin` 挂在 **Agent 运行时**（send/loop/toolcall）。两者互不相关，也不可混用。
 
@@ -545,7 +526,7 @@ export interface ScopePlugin {
 | `McpScopePlugin` | `mcp` | `discoverMcpServers(paths)` + 私有 `mcpManager` | `mcps` + `tools: [load_mcp, call_mcp_tool, read_mcp_resource]` | `createLoadMcpTool` / `createCallMcpTool` / `createReadMcpResourceTool` |
 | `SubAgentsScopePlugin` | `subagents` | `discoverSubAgents(paths)` | `subagents` | `createSubAgentTool(def, scope)` |
 
-### 路径归属（v0 → v1 变化）
+### 路径归属
 
 各插件在**构造时接收自己的路径**（绝对路径，或相对路径 → 在 `discover()` 中按 `scope.cwd` join）：
 
@@ -578,7 +559,7 @@ instantiate(scope, filtered) {
 
 同 `BuiltinToolsScopePlugin` 结构，来源换成 `discoverUserTools(paths)`。与内置插件**分开**，以便单独替换/停用其中一类。
 
-### SkillsScopePlugin（渐进式披露保留）
+### SkillsScopePlugin（渐进式披露）
 
 ```typescript
 discover(scope, opts) { this.skills = await discoverSkills(this.paths, opts); }
@@ -601,7 +582,7 @@ instantiate(scope, filtered) {
 }
 ```
 
-### McpScopePlugin（渐进式披露保留）
+### McpScopePlugin（渐进式披露）
 
 ```typescript
 // 构造：paths 非空 → 内部创建 mcpManager
@@ -666,7 +647,7 @@ export function allInOne(options?: {
 }
 ```
 
-> **顺序即优先级**：`instantiate()` 收集后按"后注册覆盖先注册"去重，故 `allInOne` 按 `[builtin, user-tools, skills, mcp, subagents]` 排列 —— 用户工具可覆盖同名内置工具（与 v0 一致）。想裁剪/替换某一类，改用手工逐个 `new XxxScopePlugin(...)` + `.use()`。
+> **顺序即优先级**：`instantiate()` 收集后按"后注册覆盖先注册"去重，故 `allInOne` 按 `[builtin, user-tools, skills, mcp, subagents]` 排列 —— 用户工具可覆盖同名内置工具。想裁剪/替换某一类，改用手工逐个 `new XxxScopePlugin(...)` + `.use()`。
 
 ---
 
@@ -712,9 +693,9 @@ instantiate(filtered)
 
 ---
 
-## 10. 动态工具与渐进式披露（**原样保留**）
+## 10. 动态工具与渐进式披露
 
-MCP 和 Skill 采用**惰性加载**：装配时不直接注册具体工具，而是注册「加载器工具」，由 LLM 在运行时按需触发。**v1 不改变这套设计**，仅把装配逻辑从 `Provider.instantiate()` 平移到 `SkillsScopePlugin` / `McpScopePlugin`。
+MCP 和 Skill 采用**惰性加载**：装配时不直接注册具体工具，而是注册「加载器工具」，由 LLM 在运行时按需触发。装配逻辑归位到 `SkillsScopePlugin` / `McpScopePlugin`。
 
 ### load_skill
 
@@ -846,7 +827,7 @@ abstract class SdkCallbackTool extends Tool {
 - 一个工具一个类，文件名 = 类名（PascalCase）
 - 环境（`cwd`、`config`）**构造注入**，不依赖全局 `process.cwd()`，也不反查 Agent 上下文
 - 相对路径统一用 `resolve()` 解析到 `env.cwd`
-- `exec()` 保证返回 string：字符串原样，非字符串 JSON 序列化，`undefined` 归一为空串
+- `exec()` 的归一：字符串原样，内容块数组直接透传（图片/文件等结构化内容），其余 JSON 序列化，`undefined` 归一为空串
 
 ### BUILTIN_TOOL_CLASSES 注册表（scope/plugins/builtin/index.ts）
 
@@ -921,7 +902,7 @@ export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> 
 - `http` → `StreamableHTTPClientTransport`
 - `sse` → `SSEClientTransport`
 
-> **归属变化**：`McpConnectionManager` 仍是 `runtime` 层的独立类，但**实例由 `McpScopePlugin` 私有持有**（v0 中由 `Provider` 持有）。外部不再经 `scope.mcpManager` 访问，而是经 `scope.getPluginById(McpScopePlugin.ID)`。
+> **归属**：`McpConnectionManager` 是 `mcp` 插件目录内的独立类，**实例由 `McpScopePlugin` 私有持有**。外部不经 `scope.mcpManager` 访问，而是经 `scope.getPluginById(McpScopePlugin.ID)`。
 
 ### 状态机
 
@@ -1065,7 +1046,7 @@ class AgentRepository extends EntityRepository<AgentDefinition> {
 
 ```typescript
 class SdkAgent extends Agent {
-  readonly scope: Scope;                  // v0 中为 provider
+  readonly scope: Scope;
   readonly definition: AgentDefinition;   // 含权限 permissions
 }
 ```
@@ -1107,23 +1088,28 @@ interface AgentPlugin {
 
 ### AutoRefreshToolsPlugin
 
-每次 `send()` 前重新扫描文件系统并按权限重建工具（v1 中经 `scope`）：
+按 `autoRefreshTools` 档位重新扫描文件系统并按权限重建工具（`inner-loop-start` 默认，`outer-loop-start` 则挂在 `onBeforeSend`）：
 
 ```typescript
 class AutoRefreshToolsPlugin implements AgentPlugin {
-  async onBeforeSend(ctx: SendContext): Promise<void> {
-    const { agent } = ctx as { agent: SdkAgent };
-    await agent.scope.refresh({ silent: true });
-    agent.tools = agent.scope.buildTools(agent.definition, {
-      exclude: { subagents: agent.definition.function?.name ? [agent.definition.function.name] : undefined },
-    });
-  }
+  constructor(options: { when?: AutoRefreshWhen } = {});
+
+  // 两个钩子共用同一段 refresh + buildTools（见 refreshTools）
+  async onInnerLoopStart(ctx: SendContext): Promise<void>;   // when === "inner-loop-start"
+  async onBeforeSend(ctx: SendContext): Promise<void>;      // when === "outer-loop-start"
 }
+
+// refreshTools：先 refresh（重新发现），再按新结果重建 agent.tools —— 只刷前者，
+// 模型看到的还是旧工具集
+await agent.scope.refresh({ silent: true });
+agent.tools = agent.scope.buildTools(agent.definition, {
+  exclude: { subagents: agent.definition.function?.name ? [agent.definition.function.name] : undefined },
+});
 ```
 
-### UnknownToolHintPlugin（v1 调整）
+### UnknownToolHintPlugin
 
-未知工具的 MCP 智能提示。由调用方显式注册。**v1 中改为经 `scope.getPluginById(McpScopePlugin.ID)` 获知 MCP 配置**（v0 中读 `provider.mcpPaths`）：
+未知工具的 MCP 智能提示。由调用方显式注册；是否“有 MCP 配置”经 `scope.getPluginById(McpScopePlugin.ID)` 查询：
 
 ```typescript
 class UnknownToolHintPlugin implements AgentPlugin {
@@ -1324,7 +1310,7 @@ SDK 不维护 Conversation / Draft 概念，只保留 `AgentNS.Message`。各端
 | 模型 / 端点 | ❌ | ✅ `createModel(scope, modelId)` |
 | 权限模型 | ❌ | ✅ AgentPermissions + PermissionEvaluator |
 | 能力发现 | ❌ | ✅ discovery（builtin / user / skill / mcp / subagent） |
-| 能力编排 | ❌ | ✅ **Scope + ScopePlugin（v1）** |
+| 能力编排 | ❌ | ✅ **Scope + ScopePlugin** |
 | MCP 连接 | ❌ | ✅ McpConnectionManager（基于官方 sdk） |
 | 配置 / 默认值 | ❌ | ✅ ConfigManager + constants |
 | 实体持久化 | ❌ | ✅ EntityRepository |
@@ -1394,13 +1380,13 @@ await agentB.send("……");
 ## 22. 设计决策汇总
 
 1. **Scope 是唯一入口**：各层通过 `scope` 引用获取全局服务
-2. **能力插件化（v1 核心）**：四类能力来源疏散为 5 个 `ScopePlugin`，一来源一插件
+2. **能力插件化**：四类能力来源疏散为 5 个 `ScopePlugin`，一来源一插件
 3. **插件全自持**：插件的发现状态、候选、实例化、释放都在插件内；`Scope` 只编排
 4. **显式装配**：`Scope` 不装默认插件，调用方经 `.use()` 注入；`allInOne()` 仅供便利
 5. **路径随插件**：能力来源路径由插件持有（可基于 `scope.cwd` join）；`Scope` 只留 `config/cwd/agentsDir`
 6. **`use()` 必须在 `init()` 前**：`init()` 之后再 `use()` 抛错
 7. **`getPluginById` + `dispose`**：对外暴露插件查询；`dispose()` 与 `init()` 对称
-8. **渐进式披露原样保留**：`load_skill` / `load_mcp` 等元工具设计零改动，仅平移归位
+8. **渐进式披露**：`load_skill` / `load_mcp` 等元工具把能力清单编成参数枚举，装载时才展开正文
 9. **工具类化 + 环境注入**：内置工具都是 `SdkCallbackTool` 子类，`ToolEnv` 构造注入
 10. **cwd 下沉到 Scope**：多会话并行靠 `ToolEnv.cwd` 而非进程级 chdir
 11. **权限即披露**：deny 掉的项对 LLM 完全不可见
@@ -1415,35 +1401,3 @@ await agentB.send("……");
 20. **apiKey 明文存储**：文件权限 600 由用户保证
 21. **English-only，不做国际化**：文案固定英文，语言只属于各端界面层；阈值是绝对量，语言若进入 SDK 会移动交接 / 阻断的触发点（详见 §1「语言边界」）
 22. **`tools/` 目录是「可信扩展」，且加载必须 fail-safe**：该目录里的文件是被 `import()` **求值**的代码，而不是被读取的配置——用户文件因此拥有宿主的全部权限。实测事故：一个无参时 `process.exit(2)` 的开发脚本放进 tools 后，每次启动都在初始化途中杀掉宿主。因此加载路径有三道护栏（无 `export` 不 import / 求值期抑制 `process.exit`·`abort` 并改写 console 输出 / 单文件超时），但**不做**进程隔离——`Tool` 带回调，跨进程必须建 RPC 转发层，而那正是 MCP 的职责；不可信代码请写成 MCP 服务器。拒绝原因只走 `getLogger()`，不为它新增通知 API：宿主接管日志即可一次性覆盖所有子系统
-
----
-
-## 23. 迁移指南（v0 → v1）
-
-### 改名映射
-
-| v0 | v1 |
-|----|----|
-| `class Provider`（`runtime/Provider.ts`） | `class Scope`（`scope/Scope.ts`） |
-| `new Provider({ config, cwd, agentsDir, subAgentsPaths, skillsPaths, toolsPaths, mcpPaths })` | `new Scope({ config, cwd, agentsDir })` + `.use(...allInOne({ skillsPaths, toolsPaths, subAgentsPaths, mcpPaths }))` |
-| `Provider.create(options)` | **暂不提供**（用 `new Scope()` + `.use()` + `await scope.init()`） |
-| `provider`（字段/参数/变量） | `scope` |
-| `SdkAgent.provider` | `SdkAgent.scope` |
-| `createAgent(provider, …)` | `createAgent(scope, …)` |
-| `createModel(provider, …)` | `createModel(scope, …)` |
-| `provider.mcpManager` | `scope.getPluginById(McpScopePlugin.ID)`（MCP 插件私有） |
-| `provider.mcpPaths` | 由 `McpScopePlugin` 持有；外部经 `scope.getPluginById(...).hasConfig()` |
-| `provider.builtinTools / userTools / skills / mcps / subagents` | **不再暴露**；如需读取改为经对应插件查询 |
-| `provider.refresh() / filter() / instantiate() / buildTools()` | `scope.*`（同名同义） |
-
-### 破坏性变更
-
-- `Provider` 符号**删除**（不留别名）
-- `Scope` 构造不再接收能力来源路径
-- `Scope` 不再暴露聚合候选集
-- 插件必须**显式装配**（`Scope` 不装默认）
-- `SdkAgent` / `createAgent` / `createModel` / `subAgentTools` 的 `provider` 参数改名 `scope`
-
-### 版本
-
-`0.12.0 → 1.0.0-alpha.0`（破坏性重构，转正为 1.0 预发布）。

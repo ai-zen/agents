@@ -12,7 +12,7 @@ import type { ServerEvent } from "@ai-zen/agents-protocol";
  * 服务端在哪。
  *
  * 单独起个名字（而不是到处写 `{ host: string; port: number }`）：将来换 unix socket
- * 或 URL 时，改的是这一个类型，不是二十九处字面量。
+ * 或 URL 时，改的是这一个类型，不是每一处字面量。
  */
 export interface ServerAddress {
   host: string;

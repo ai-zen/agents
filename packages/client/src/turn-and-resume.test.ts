@@ -102,7 +102,7 @@ async function boot(): Promise<void> {
     client: clientInfo,
   });
   sessions = new RemoteSessions(client);
-  // `events.watch` 是**连接级**的（D8 之后归 `ServerConnection`）：这里直接发那一帧
+  // `events.watch` 是**连接级**的（归 `ServerConnection`）：这里直接发那一帧
   await client.call(EVENT_METHODS.watch);
 }
 

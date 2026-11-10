@@ -10,7 +10,7 @@ import type { AgentDefinition } from "../types/index.js";
 import type { Scope } from "../scope/Scope.js";
 import type { ModelLevel } from "./resolveModel.js";
 
-// 插件机制已提升到 core：重新导出，SDK 现有 import 来源保持可用
+// 插件机制在 core：重新导出，SDK 侧 import 来源保持不变
 export type { AgentPlugin, SendContext } from "@ai-zen/agents-core";
 
 /**
@@ -24,9 +24,9 @@ export type { AgentPlugin, SendContext } from "@ai-zen/agents-core";
  *   - modelLevel：这个模型是从哪一级解析出来的（会话 / Agent 定义 / 全局兜底）。
  *     值是 `resolveModel` 的副产品，客户端用它把「当前生效档」标在 `/model` 选择器上。
  *
- * 插件能力（use / init / send 钩子分发）继承自 Core Agent，此处不再重复实现。
+ * 插件能力（use / init / send 钩子分发）继承自 Core Agent，此处不重复实现。
  * 未知工具的 MCP 智能提示由独立插件 `UnknownToolHintPlugin` 提供（调用方显式 use）。
- * 权限统一从 `definition.permissions` 读取，不再单独持有。
+ * 权限统一从 `definition.permissions` 读取。
  */
 export class SdkAgent extends Agent {
   /** 全局 Scope 实例 */

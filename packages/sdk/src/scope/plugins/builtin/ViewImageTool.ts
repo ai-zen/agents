@@ -28,7 +28,7 @@ function isLocalUrl(value: string): boolean {
  *   - http(s) URL → 直接以 `image_url` 内容块返回；
  *   - 本地路径 → 交给 `fileToContentSection()` 统一处理：
  *       端点声明 `capabilities.filesApi`（出厂仅 deepseek）→ Files API 上传，`file` 块（file_id）；
- *       其余端点 → base64 data URL 内联（`image_url`），不再要求必须配置 deepseek。
+ *       其余端点 → base64 data URL 内联（`image_url`）。
  *
  * 端点按**当前模型**反查（`ctx.agent.model`），不硬编码端点 id——`file_id` 是端点维度
  * 资源，传错端点会返回 not found。

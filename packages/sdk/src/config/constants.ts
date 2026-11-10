@@ -314,6 +314,6 @@ export const DEFAULT_MCP_CONFIG: { mcpServers: Record<string, unknown> } = {
  * 各客户端（CLI/Desktop）的运行时数据（config.json、conversations/、drafts/）
  * 由客户端自行在各自目录下管理：
  *   ~/.ai-zen/cli/          ← CLI 运行时
- *   ~/.ai-zen/desktop/      ← Desktop 运行时（未来）
+ *   ~/.ai-zen/desktop/      ← Desktop 运行时
  */
 export const CONFIG_SUB_DIRS = ["agents", "sub-agents", "skills", "tools", "mcp-oauth"] as const;

@@ -128,16 +128,6 @@ Whether these tools are registered is controlled by the `tools` permission dimen
 
 (See the permission model in [SDK](sdk.md).) MCP uses **server-level trust**: once a server is allowed, all of its tools / resources are available to the Agent. The `mcps` dimension matches by server name (e.g. `github` / `postgres`).
 
-## In depth
-
-The SDK package maintains more detailed MCP documentation:
-
-- [`packages/sdk/docs/mcp-architecture.md`](../../packages/sdk/docs/mcp-architecture.md) — MCP architecture
-- [`packages/sdk/docs/mcp-basic-lifecycle.md`](../../packages/sdk/docs/mcp-basic-lifecycle.md) — connection lifecycle
-- [`packages/sdk/docs/mcp-client.md`](../../packages/sdk/docs/mcp-client.md) — client
-- [`packages/sdk/docs/mcp-server.md`](../../packages/sdk/docs/mcp-server.md) and `mcp-server-*.md` — server / tools / resources / prompts
-- [`packages/sdk/docs/mcp-spec.md`](../../packages/sdk/docs/mcp-spec.md) — protocol specification
-
 ## Related documentation
 
 - [SDK](sdk.md) — `Scope` and MCP manager integration

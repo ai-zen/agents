@@ -341,7 +341,7 @@ describe("createRemoteConfigPort：连接的懒建与重建（注入假连接）
     // 两档模型写入各走各的线上方法名：定义级 `agent.model.set`、全局兜底
     // `config.defaultModel.set`（字面量只有协议里那一份，这里顺带钉住）。
     // 会话级那一档（`session.model.set`）**不在这个门面上** —— 它的作用对象是一段会话，
-    // 归 `RemoteSessions.modelSet`（D6，用例见 `facade/sessions.test.ts`）。
+    // 归 `RemoteSessions.modelSet`。
     expect(calls.map((call) => call.method)).toEqual([
       CONFIG_METHODS.get,
       CONFIG_METHODS.save,

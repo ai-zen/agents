@@ -2,7 +2,7 @@
 
 AI Agent 核心框架，提供构建智能代理所需的基础抽象层。支持 Node.js 和浏览器环境。
 
-Agent 运行时是**插件驱动**的，直接构建在 **OpenAI 官方 SDK**（`openai` 包）之上——不再有自研请求层。
+Agent 运行时是**插件驱动**的，直接构建在 **OpenAI 官方 SDK**（`openai` 包）之上。
 
 ## 安装
 
@@ -51,11 +51,11 @@ console.log(agent.messages.at(-1)?.content);
 
 ```typescript
 interface AgentContext {
-  client: OpenAI;                    // openai SDK client
-  model: string;                     // 发送给 API 的模型名
+  client: OpenAI;
+  model: string;
   modelConfig: Record<string, unknown>; // 模型参数（temperature 等），展开进请求体；可含厂商特有字段（如 DeepSeek `thinking`）
-  messages: AgentNS.Message[];       // 消息列表
-  tools: Tool[];                     // 工具列表
+  messages: AgentNS.Message[];
+  tools: Tool[];
   allowJsonParseError: boolean;      // 是否允许 JSON 解析错误（默认 true）
   abortedToolRoundStrategy: AbortedToolRoundStrategy; // 工具轮次被中断时的归一策略（默认 "fill"）
   abortedToolRoundReason: string;    // fill 策略下未完成工具结果的填充原因（默认「用户中断了会话」）
@@ -64,7 +64,7 @@ interface AgentContext {
 ```
 
 - `append(message)` — 追加一条消息并返回
-- 扩展方式：通过**插件**（`agent.use(plugin)`），不再提供 `onXxx` 构造钩子
+- 扩展方式：通过**插件**（`agent.use(plugin)`）
 
 ### Message（消息）
 
@@ -111,6 +111,7 @@ Message.Function(functionCall, "执行结果");
 
 | 状态 | 说明 |
 |------|------|
+| `Unknown` | 未设置（消息刚构造时的取值） |
 | `Pending` | 等待处理 |
 | `Writing` | AI 正在生成 |
 | `Completed` | 已完成 |
@@ -265,7 +266,7 @@ const tool = new IndexedSearchTool({
 
 ### 插件——唯一的扩展方式
 
-`AgentContext` 不再提供任何 `onXxx` 构造钩子，**插件是扩展 Agent 的唯一途径**。通过 `agent.use(plugin)` 注册插件，然后 `await agent.init()`。
+**插件是扩展 Agent 的唯一途径。** 通过 `agent.use(plugin)` 注册插件，然后 `await agent.init()`。
 
 ```typescript
 import { Agent, Message } from "@ai-zen/agents-core";
@@ -431,13 +432,11 @@ agent.abort(); // 中止当前轮所有进行中的内循环任务
 
 #### 中断的思考与内容（aborted messages）
 
-工具轮次有 `reconcileAbortedToolRounds()` 兜底，但**纯思考 / 纯文本**消息此前无人过问：它们的 `status` 停在 `Aborted`，而 `formatHistory()` 只放行 `undefined | Completed`，于是模型已经吐出来的 `reasoning_content` 与 `content` 在下一轮请求里**整条消失** —— 用户在屏幕上看到的半句话，模型自己完全不记得。
-
-为此 `Agent.run()` 在 `reconcileAbortedToolRounds()` **之后**调用导出的 `reconcileAbortedMessages()`，由 `abortedMessageStrategy` 决定去留：
+`formatHistory()` 只放行 `undefined | Completed`，于是被中断的 assistant 消息在下一轮请求里**整条消失**：模型已经吐出来的 `reasoning_content` 与 `content` 都不见了 —— 用户在屏幕上看到的半句话，模型自己完全不记得。`reconcileAbortedMessages()` 就是补这一段的；`Agent.run()` 在 `reconcileAbortedToolRounds()` **之后**调用它，由 `abortedMessageStrategy` 决定去留：
 
 | 选项 | 默认 | 说明 |
 |------|------|------|
-| `abortedMessageStrategy` | `"drop"` | `drop` 不保留（既有行为）；`keep` 把**确有输出**的被中断 assistant 恢复为 `Completed`，使已输出的内容/思考进入下一轮上下文 |
+| `abortedMessageStrategy` | `"drop"` | `drop` 不保留；`keep` 把**确有输出**的被中断 assistant 恢复为 `Completed`，使已输出的内容/思考进入下一轮上下文 |
 
 `keep` 的边界：
 

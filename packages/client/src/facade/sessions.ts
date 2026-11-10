@@ -214,8 +214,7 @@ export class RemoteSessions {
   /**
    * 某个工作区的会话清单（盘上的存档 ∪ 内存里的活会话，一条不重，按 `updatedAt` 倒序）。
    *
-   * 以前这里是两条（`list` 活会话 / `listSaved` 只有 id）：GUI 的侧栏得自己拼、还会把同一段
-   * 拼成两条。服务端合成一条后，这里也只剩一条 —— `title` / `messageCount` / `live` 都在里面。
+   * `title` / `messageCount` / `live` 都在同一条里：侧栏一次拿全，不必自己拼两个来源。
    */
   async list(workspaceId: string): Promise<SessionListResult> {
     return await this.client.call<SessionListResult>(SESSION_METHODS.list, { workspaceId });

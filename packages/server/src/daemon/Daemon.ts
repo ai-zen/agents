@@ -206,8 +206,8 @@ export class Daemon {
   /** 停止：拒新连接 → 关掉现有连接 → 删发现文件 */
   async stop(reason: string): Promise<void> {
     // 已经有人在收摊：把同一个 Promise 交出去。
-    // 以前这里直接 `return`，于是「客户端发 shutdown」与「进程收信号」撞车时，
-    // 后来的那个调用方拿到的是「已经停了」的假象 —— 而发现文件这时可能还没删。
+    // 不这样的话，「客户端发 shutdown」与「进程收信号」撞车时，后来那个调用方拿到的是
+    // 「已经停了」的假象 —— 而发现文件这时可能还没删。
     this.stopping ??= this.doStop(reason);
     return await this.stopping;
   }
