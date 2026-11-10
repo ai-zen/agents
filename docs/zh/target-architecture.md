@@ -185,7 +185,8 @@ export function codeOf(value: unknown): ErrorCode | undefined;
 
 | 情形 | 切换前 | 现在（P2 之后） | P4 之后（D8 一条长连接） |
 |---|---|---|---|
-| TUI `/new`、`/load` 切走 | 发一帧保活=false → 服务端当场收 | 连接仍在 → **持有者还在 → 宽限期不生效** | 同左，而且更确定（连接根本不重连） |
+| TUI `/new` 切走（同一实例、同一连接、只换 id） | 发一帧保活=false → 当场收 | 持有者还在 → **宽限期不生效** | 同左，且更确定 |
+| TUI `/load` 切走（卸载重挂载） | 同上 | 今天连接随卸载一起没，**暂时不泄漏** | D8 接入后连接存活 → **开始泄漏**（所以 P4b 必须在这一步做对） |
 | TUI 退出 | `client.close()` → drivers 消失 | 正常回收 | 正常回收 |
 | `ai "…"` 一次性 | 同一帧 → 当场收 | **泄漏到宽限期** | 同左 |
 
@@ -482,7 +483,7 @@ test -z "$(grep -rn 'messages: unknown\|modelParams: unknown\|message: unknown' 
 |---|---|
 | 1、2、3、4、5、6 | **P1 已完成**（实测见提交 `e9e15c5`） |
 | `keepAlive` 消失（`grep -rn keepAlive packages/{server,protocol}/src`）+ 方法数 45→44 | **P2 已完成** |
-| CLI 侧 `core` 依赖只剩 `version.ts` 的字符串解析 | **P4** |
+| ~~CLI 侧 `core` 依赖只剩 `version.ts`~~ → **已撤销**：D12 明说「应用依赖 core 不是问题、本轮不做」，CLI 有 10 个非测试文件在用 `AgentNS.Role` / `MessageStatus`（运行期 enum）。这条判据**本轮不适用** | — |
 | 门面 key == 方法表 key（类型级用例） | **P3** |
 | 产物 import 图：`session`/`commands`/`stdio` 无 ink/react/`./tui/` | **P4** |
 
