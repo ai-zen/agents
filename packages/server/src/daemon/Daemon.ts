@@ -9,17 +9,21 @@
  * - **只有三个自带方法**：`ping` / `status` / `shutdown`（它们在任何命名空间之外，
  *   因为它们是「活着吗 / 你是谁 / 可以关了吗」这三个问题）。其余方法全部由组装根注入：
  *   `session.*` / `workspace.*` / `events.watch`（`protocol/sessions.ts`）、`config.*` /
- *   `agent.*`（`protocol/config.ts`）。本类只管「字节流 → 帧 → 方法调用」，不认识业务。
+ *   `agent.*`（`protocol/config.ts`）。本类只管「文本行 → 帧 → 方法调用」，不认识业务，
+ *   也不认识字节从哪里来（那是 `./wire.ts` 的事）。
  * - **握手不省**：即使现在不鉴权，首帧也必须 `hello`。将来加 token/公钥时只改握手内容，
  *   不动所有客户端的建连逻辑。
  *
  * ## 为什么帧协议与传输解耦
  *
  * 同一套帧要能跑在 TCP / WebSocket / stdio 上（将来 `ssh` 隧道、浏览器直连）。本文件只
- * 负责"字节流 → 帧 → 方法调用"，传输层具体是什么由 `listen()` 的选项和将来的适配器决定。
+ * 负责"文本行 → 帧 → 方法调用"，与那条线「从哪来」无关：入参是 `Wire`（`./wire.js`），
+ * 六个成员，每一个都是本文件真正用到的。目前只有一种传输 —— TCP：`start()` 里把每个
+ * `net.Socket` 用 `socketWire()` 包一层再交给 `handleConnection()`；加第二种传输时只新写
+ * 一个 `Wire` 实现和一个监听器，本文件不用改。
  */
 
-import { createServer, type Server, type Socket } from "node:net";
+import { createServer, type Server } from "node:net";
 import { encodeFrame, FrameDecoder, ProtocolError } from "../protocol/frames.js";
 import {
   DAEMON_METHODS,
@@ -41,6 +45,7 @@ import {
   type ServerDescriptor,
 } from "../protocol/discovery.js";
 import { isLoopbackHost } from "../protocol/host.js";
+import { socketWire, type Wire } from "./wire.js";
 
 /** 方法处理函数：拿参数、返回结果；抛错则回 `ok:false` */
 export type MethodHandler = (params: unknown, connection: Connection) => Promise<unknown> | unknown;
@@ -57,7 +62,7 @@ export interface Connection {
    * 这条连接断开时的回调；返回取消注册的函数。
    *
    * 订阅类方法（如 `events.watch`）靠它在断开时退订：不退订就会给一条已经 destroy 的
-   * socket 一直写帧，而 `write` 在 Node 里是不报错的 —— 泄漏是安静的。
+   * 连接一直写帧，而 `write` 在 Node 里是不报错的 —— 泄漏是安静的。
    */
   onClose(listener: () => void): () => void;
 }
@@ -92,7 +97,8 @@ export class Daemon {
 
   private server: Server | null = null;
   private actualPort = 0;
-  private readonly connections = new Set<Socket>();
+  /** 当前连接的**传输那一侧**（`Wire`，不是 socket）：收摊时要逐个断掉 */
+  private readonly connections = new Set<Wire>();
   private readonly startedAt = new Date();
   private nextConnectionId = 1;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -140,7 +146,9 @@ export class Daemon {
       );
     }
 
-    const server = createServer((socket) => this.handleConnection(socket));
+    // TCP 这一路：`net.Socket` → `Wire` 适配器 → `handleConnection()`。
+    // 换传输时变的只有这一行之后的那个函数（新写一个监听器 + 一个新 `Wire` 实现）。
+    const server = createServer((socket) => this.handleConnection(socketWire(socket)));
     this.server = server;
 
     await new Promise<void>((resolve, reject) => {
@@ -207,7 +215,7 @@ export class Daemon {
   private async doStop(reason: string): Promise<void> {
     this.clearIdleTimer();
 
-    for (const socket of this.connections) socket.destroy();
+    for (const wire of this.connections) wire.destroy();
     this.connections.clear();
 
     if (this.server) {
@@ -227,22 +235,29 @@ export class Daemon {
   // 连接处理
   // ==================================================================
 
-  private handleConnection(socket: Socket): void {
+  /**
+   * 接一条**已经建好的双工线**：首帧 `hello` → 帧分发 → 断开清理。
+   *
+   * 为什么是 public：这就是传输的插口，也是本类唯一对外开放的连接入口。TCP 那一路在
+   * `start()` 里把每个 `net.Socket` 包成 `Wire` 后调它；将来 WebSocket 的监听器做同一件事
+   * （把 `ws` 的文本帧包成 `Wire`，然后调这一行），本类不用改。用例也从这扇门进来喂一个
+   * 内存双工 —— 所以没有「只为测试存在」的构造参数或分支。
+   */
+  handleConnection(wire: Wire): void {
     const id = this.nextConnectionId++;
     const decoder = new FrameDecoder();
     let handshaken = false;
     const closeListeners = new Set<() => void>();
 
-    socket.setEncoding("utf-8");
-    this.connections.add(socket);
+    this.connections.add(wire);
     this.clearIdleTimer();
 
     const connection: Connection = {
       id,
       send: (event) => {
-        if (!socket.destroyed) socket.write(encodeFrame(event));
+        if (!wire.destroyed) wire.write(encodeFrame(event));
       },
-      close: () => socket.destroy(),
+      close: () => wire.destroy(),
       onClose: (listener) => {
         closeListeners.add(listener);
         return () => closeListeners.delete(listener);
@@ -251,28 +266,28 @@ export class Daemon {
 
     const fail = (code: string, message: string) => {
       this.log("warn", `conn#${id} rejected: ${code} ${message}`);
-      if (!socket.destroyed)
-        socket.write(
+      if (!wire.destroyed)
+        wire.write(
           encodeFrame({
             kind: "hello",
             ok: false,
             error: { code, message },
           } satisfies HelloResponse),
         );
-      socket.destroy();
+      wire.destroy();
     };
 
-    socket.on("data", (chunk: string) => {
+    wire.onData((chunk: string) => {
       let frames: unknown[];
       try {
         frames = decoder.push(chunk);
       } catch (error) {
         const code = error instanceof ProtocolError ? error.code : "bad-frame";
         this.log("warn", `conn#${id} protocol error: ${code}`);
-        if (!socket.destroyed) {
-          socket.write(encodeFrame({ ok: false, error: { code, message: String(error) } }));
+        if (!wire.destroyed) {
+          wire.write(encodeFrame({ ok: false, error: { code, message: String(error) } }));
         }
-        socket.destroy();
+        wire.destroy();
         return;
       }
 
@@ -290,7 +305,7 @@ export class Daemon {
             return;
           }
           handshaken = true;
-          socket.write(
+          wire.write(
             encodeFrame({
               kind: "hello",
               ok: true,
@@ -307,7 +322,7 @@ export class Daemon {
         }
 
         if (!isRequestFrame(frame)) {
-          socket.write(
+          wire.write(
             encodeFrame({
               ok: false,
               error: { code: "bad-frame", message: "expected a request frame" },
@@ -315,18 +330,18 @@ export class Daemon {
           );
           continue;
         }
-        void this.dispatch(frame.id, frame.method, frame.params, connection, socket);
+        void this.dispatch(frame.id, frame.method, frame.params, connection, wire);
       }
     });
 
-    socket.on("close", () => {
-      this.connections.delete(socket);
+    wire.onClose(() => {
+      this.connections.delete(wire);
       for (const listener of closeListeners) listener();
       closeListeners.clear();
       this.log("info", `conn#${id} closed (open: ${this.connections.size})`);
       this.armIdleTimer();
     });
-    socket.on("error", (error) => {
+    wire.onError((error) => {
       this.log("warn", `conn#${id} socket error: ${error.message}`);
     });
   }
@@ -336,11 +351,11 @@ export class Daemon {
     method: string,
     params: unknown,
     connection: Connection,
-    socket: Socket,
+    wire: Wire,
   ): Promise<void> {
     const handler = this.handlers.get(method);
     if (!handler) {
-      writeIfOpen(socket, {
+      writeIfOpen(wire, {
         id,
         ok: false,
         error: { code: "unknown-method", message: `unknown method: ${method}` },
@@ -349,9 +364,9 @@ export class Daemon {
     }
     try {
       const result = await handler(params, connection);
-      writeIfOpen(socket, { id, ok: true, result });
+      writeIfOpen(wire, { id, ok: true, result });
     } catch (error: any) {
-      writeIfOpen(socket, {
+      writeIfOpen(wire, {
         id,
         ok: false,
         error: { code: error?.code ?? "internal", message: error?.message ?? String(error) },
@@ -408,6 +423,6 @@ export class Daemon {
   }
 }
 
-function writeIfOpen(socket: Socket, frame: unknown): void {
-  if (!socket.destroyed) socket.write(encodeFrame(frame));
+function writeIfOpen(wire: Wire, frame: unknown): void {
+  if (!wire.destroyed) wire.write(encodeFrame(frame));
 }

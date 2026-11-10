@@ -79,6 +79,33 @@ Built-in methods: `ping`, `status`, `shutdown`. Everything else is injected by t
 composition root through `DaemonOptions.handlers`, so the daemon skeleton stays free of
 business logic.
 
+### The transport is replaceable — today exactly one implementation exists
+
+`Daemon` never touches a socket. Its connection entry point takes a `Wire`
+(`src/daemon/wire.ts`): six members, counted from what the daemon actually uses —
+`write(text)`, `destroy()`, `destroyed`, `onData`, `onClose`, `onError`. Nothing else comes
+along (`pause` / `resume` / half-close / `remoteAddress` … are unused, so they are not in the
+interface: every extra member is an obligation for every future transport).
+
+Chunks on a `Wire` are **already decoded strings**. Decoding belongs to the transport — the
+net adapter is `socketWire()`, whose whole job is `setEncoding("utf-8")` plus six one-line
+mappings — because `FrameDecoder` slices frames by *text* lines and `MAX_FRAME_BYTES` counts
+characters. A `Wire` handed `Buffer`s would force a second notion of "frame boundary" into
+the protocol layer.
+
+Today's only implementation is **TCP**: `start()` wraps each `net.Socket` with
+`socketWire()` and passes it to `Daemon.handleConnection(wire)`. WebSocket is **not
+implemented** — there is no `ws` dependency and no WS listener in this package. Adding one
+means (1) a new `Wire` implementation over `ws` text frames and (2) a listener that calls
+`daemon.handleConnection(wire)` per connection; `Daemon` and `src/protocol/` do not change.
+Authentication stays unsolved either way: the loopback assertion lives in the listener, not
+in the `Wire`.
+
+That "not a socket" claim is tested, not hoped for: `src/daemon/wire.test.ts` drives the
+same `handleConnection()` with an in-memory duplex (two `PassThrough`s, no `vi.mock`) and
+with a real `net.Socket`, running the identical handshake / call / event-push / close
+scenario on both.
+
 ## Session layer
 
 `src/protocol/sessions.ts` is the wire contract for sessions — method names, params and the

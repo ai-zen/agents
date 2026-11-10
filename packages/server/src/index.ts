@@ -229,6 +229,13 @@ export {
   type DaemonOptions,
   type MethodHandler,
 } from "./daemon/Daemon.js";
+// `Wire` 属于公开面：要给服务端接一种新传输（WebSocket / stdio）的人，必须能**在包外**
+// 按这个接口写一个实现，再把每条连接交给 `Daemon.handleConnection()`。它刻意不在
+// `protocol/` 里 —— 协议面是「线上长什么样」，`Wire` 是「本进程里怎么把它递进来」，
+// 是服务端的内部接缝，只是因为「实现者可能在别的包里」才必须可 import。
+// （适配器 `socketWire` 不导出：外部实现者各有各的底层，抄不到它；net 那一路的样板
+// 就在 `src/daemon/wire.ts` 里。）
+export type { Wire } from "./daemon/wire.js";
 export {
   descriptorPath,
   isProcessAlive,
