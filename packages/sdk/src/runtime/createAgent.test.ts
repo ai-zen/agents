@@ -29,6 +29,8 @@ const config: AppConfig = {
       name: "GPT-4",
       endpointId: "openai",
       tokenThresholds: { handoff: 500000, guard: 750000 },
+      // 出厂参数：参数解析的用例要能看出「覆盖有没有生效」（以及没覆盖时它还在）
+      defaultParams: { temperature: 0.3 },
     },
     // 三级解析要用到第二个模型（会话级覆盖 / 全局兜底各取一个，才能看出谁赢）
     {
@@ -36,6 +38,7 @@ const config: AppConfig = {
       name: "GPT-4 mini",
       endpointId: "openai",
       tokenThresholds: { handoff: 400000, guard: 600000 },
+      defaultParams: { thinking: { type: "enabled" } },
     },
   ],
 };
@@ -228,6 +231,74 @@ describe("createAgent", () => {
 
     expect(agent.definition.modelId).toBe("gpt4");
     expect(agent.modelLevel).toBe("session");
+  });
+
+  /**
+   * 参数与模型同源：**参数取「模型来自哪一级」那一份**。
+   *
+   * 三条用例对应三档。跨级那一对（会话级模型 + 定义参数）是重点：定义那份参数是配给旧
+   * 模型的（这里用 `thinking` 举例子），跟到会话级模型上就是「旧模型参数发给新模型」。
+   */
+  describe("模型参数跟着档位走", () => {
+    it("会话级：取会话级参数，定义那份一个字段都不进来", async () => {
+      await writeAgentFile("my-agent", {
+        modelId: "gpt4",
+        modelParams: { thinking: { type: "disabled" } },
+      });
+      const scope = await makeScope();
+
+      const agent = await createAgent(scope, "my-agent", {
+        modelId: "gpt4-mini",
+        modelParams: { reasoning_effort: "high" },
+      });
+
+      // 出厂参数照旧在，覆盖只有会话级那一份
+      expect(agent.modelConfig).toEqual({
+        thinking: { type: "enabled" },
+        reasoning_effort: "high",
+      });
+    });
+
+    it("会话级换模型但没给参数：只用新模型的出厂参数（不退回定义那份）", async () => {
+      await writeAgentFile("my-agent", {
+        modelId: "gpt4",
+        modelParams: { thinking: { type: "disabled" } },
+      });
+      const scope = await makeScope();
+
+      const agent = await createAgent(scope, "my-agent", { modelId: "gpt4-mini" });
+
+      expect(agent.modelConfig).toEqual({ thinking: { type: "enabled" } });
+    });
+
+    it("定义级：取 Agent 定义参数（三级解析之前的行为，逐字不变）", async () => {
+      await writeAgentFile("my-agent", {
+        modelId: "gpt4",
+        modelParams: { reasoning_effort: "low" },
+      });
+      const scope = await makeScope();
+
+      const agent = await createAgent(scope, "my-agent");
+
+      expect(agent.modelLevel).toBe("agent");
+      expect(agent.modelConfig).toEqual({ temperature: 0.3, reasoning_effort: "low" });
+    });
+
+    it("全局兜底：没有任何一层的参数，只用模型出厂参数", async () => {
+      // 定义没绑模型、却写着参数：那一层参数属于「定义绑定的模型」，不该跟到兜底模型上
+      await writeAgentFile("my-agent", {
+        modelId: undefined,
+        modelParams: { thinking: { type: "disabled" } },
+      });
+      const scope = await makeScope({ config: { defaultModel: "gpt4-mini" } });
+
+      const agent = await createAgent(scope, "my-agent", {
+        modelParams: { reasoning_effort: "max" },
+      });
+
+      expect(agent.modelLevel).toBe("global");
+      expect(agent.modelConfig).toEqual({ thinking: { type: "enabled" } });
+    });
   });
 
   it("Agent 定义缺少 messages 字段时也能正常创建（空值兜底）", async () => {

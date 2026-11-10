@@ -3,8 +3,8 @@ import { AgentRepository } from "../crud/AgentRepository.js";
 import { SdkAgent } from "./SdkAgent.js";
 import type { Scope } from "../scope/Scope.js";
 import { createModel } from "./createModel.js";
-import { resolveModel } from "./resolveModel.js";
-import type { AgentDefinition } from "../types/index.js";
+import { resolveModel, resolveModelParams } from "./resolveModel.js";
+import type { AgentDefinition, ModelParams } from "../types/index.js";
 import type { AbortedMessageStrategy, AbortedToolRoundStrategy } from "@ai-zen/agents-core";
 
 /**
@@ -34,18 +34,31 @@ export interface CreateAgentOptions {
    * Agent 定义），会话存档是服务端的财产。**解析顺序仍只在这里实现**（见 `resolveModel`）。
    */
   modelId?: string;
+  /**
+   * **会话级**模型参数覆盖（三级解析里与 `modelId` 同一级的那一份，服务端从会话存档的
+   * `modelParams` 取）。
+   *
+   * 只有 `modelId` 那一级赢了它才会真正生效 —— 取哪一份由 `resolveModelParams` 按档位
+   * 决定（同一处规则）。**它不会与 `AgentDefinition.modelParams` 合并**：定义那份是配给
+   * 定义绑定的模型的，会话把模型换掉之后把旧参数发给新模型就是端点 400。
+   */
+  modelParams?: ModelParams;
 }
 
 /**
  * 从磁盘创建 Agent。
  *
  * 通过 Scope 获取已发现的能力，读取 Agent 定义，过滤并实例化工具，产出 SdkAgent。
- * 模型按 **会话级覆盖 > Agent 定义 > 全局兜底** 解析（唯一实现：`resolveModel`）。
+ * 模型按 **会话级覆盖 > Agent 定义 > 全局兜底** 解析（唯一实现：`resolveModel`）；
+ * **参数取「模型来自哪一级」那一份**、绝不跨级混合（同一处实现：`resolveModelParams`）。
  *
  * ```ts
  * const agent = await createAgent(scope, "my-agent");
- * // 这一段会话临时换个模型（不动 Agent 定义）
- * const scoped = await createAgent(scope, "my-agent", { modelId: "gpt-6-astra" });
+ * // 这一段会话临时换个模型（不动 Agent 定义）：模型与参数都取会话级那一份
+ * const scoped = await createAgent(scope, "my-agent", {
+ *   modelId: "gpt-6-astra",
+ *   modelParams: { reasoning_effort: "high" },
+ * });
  * ```
  */
 export async function createAgent(
@@ -77,11 +90,16 @@ export async function createAgent(
   // 会话，落盘走的是会话存档的 `modelId`（见服务端 `SessionManager.recordOf`）。
   const definition: AgentDefinition = { ...stored, modelId: resolved.modelId };
 
-  const { client, model, modelConfig } = createModel(
-    scope,
-    resolved.modelId,
-    definition.modelParams,
-  );
+  // 参数跟着「模型来自哪一级」走：档位是上面那次解析的产物，这里只按它取那一份
+  // （规则只有一处实现，见 `resolveModelParams`）。会话级没设参数、或模型来自全局兜底时
+  // 拿到的是 `undefined` —— 那就一个字段都不覆盖，让模型走自己的 `defaultParams`。
+  const params = resolveModelParams({
+    level: resolved.level,
+    sessionModelParams: options.modelParams,
+    agentModelParams: definition.modelParams,
+  });
+
+  const { client, model, modelConfig } = createModel(scope, resolved.modelId, params);
 
   const tools = scope.buildTools(definition, {
     exclude: {

@@ -116,8 +116,13 @@ export type { AgentPlugin, SendContext } from "./runtime/SdkAgent.js";
 export { createAgent } from "./runtime/createAgent.js";
 export type { CreateAgentOptions } from "./runtime/createAgent.js";
 // 模型三级解析（唯一实现）：档位类型也导出，服务端与客户端要按它渲染「当前生效档」
-export { resolveModel } from "./runtime/resolveModel.js";
-export type { ModelLevel, ModelResolutionInput, ResolvedModel } from "./runtime/resolveModel.js";
+export { resolveModel, resolveModelParams } from "./runtime/resolveModel.js";
+export type {
+  ModelLevel,
+  ModelResolutionInput,
+  ModelParamsResolutionInput,
+  ResolvedModel,
+} from "./runtime/resolveModel.js";
 export { McpConnectionManager } from "./scope/plugins/mcp/McpConnectionManager.js";
 export type { McpConnectOptions } from "./scope/plugins/mcp/McpConnectionManager.js";
 export { SdkCallbackTool } from "./scope/plugins/builtin/SdkCallbackTool.js";
