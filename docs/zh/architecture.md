@@ -124,12 +124,12 @@ grep -rn '@ai-zen/agents-core' packages/client/src --include=*.ts | grep -v '\.t
 五条与本文件有关的性质：
 
 - 事件载荷只装**事实**（阶段 kind、工具名、正文字符串），不装文案——渲染成哪种语言由客户端决定。
-- `AGENT_EVENTS` 的 9 条是 core 的原名（`open` / `chunk` / `chunk-parsed` / `parsed` / `tool-call-end` / `error` / `finally` / `sub-agent-start` / `sub-agent-end`），服务端在 core 发它的**同一刻**原样转上线，一条不改名。其中 `open` / `chunk` / `parsed` / `error` / `finally` 客户端今天用不到，但照样发 —— 协议面是 core 的公开事实，用不用是客户端的事。
+- `AGENT_EVENTS` 的 10 条是 core 的原名（`open` / `chunk` / `chunk-parsed` / `parsed` / `message` / `tool-call-end` / `error` / `finally` / `sub-agent-start` / `sub-agent-end`），服务端在 core 发它的**同一刻**原样转上线，一条不改名。其中 `open` / `chunk` / `parsed` / `error` / `finally` 客户端今天用不到，但照样发 —— 协议面是 core 的公开事实，用不用是客户端的事。
 - 时机是硬的：同一片 `chunk` 早于 `chunk-parsed`；`error` 早于 `finally`；`finally` 早于 `session-turn-end`（后者是服务端落盘、换 id、回收判定都做完之后）。`finally` 与 `session-turn-end` 是**两条不同的事件**，不是改名关系。
 - `chunk-parsed` 是**文本流**（每片追加），`session-tool-calls` 是**组装态**（每次给「到现在为止是什么」）：语义不同就不合进一条事件，否则客户端得猜哪个字段该接、哪个该替。
-- `tool-call-end` 推的是**一条完整消息**（工具结果：`role: "tool"` + `tool_call_id` + 正文），逐条推、不等快照：工具结果在 core 里是逐个定型的，快照却要等 `session-turn-end`，长轮次里用户会盯着参数卡片等好几分钟。
+- `message` 推的是**服务端构造出来的那些消息**（用户消息、占位 assistant、工具结果），也就是「拿 chunk 折不出来」的那一类：载荷是完整的一条消息，`message.id` 就是 upsert 键，所以同一个工具结果可以「执行前 `pending` 一条、定型后再一条」。`tool-call-end` 现在仍随工具定型转发（今天的客户端还在用它画工具卡片），客户端切到 `message` 之后它与服务端那几行一起删。
 - `send` 立刻返回 `turnId`，一轮的后续全部走事件：一轮可能跑几分钟，等它跑完再回，客户端就没有任何东西可渲染。
-- 命名空间按**作用对象**分：`workspace.*` 是对容器做事，`session.*` 是对一段会话做事，`events.watch` 是连接级的，`asset.*` 只读（资产是用户的文件系统，改它是另一个动作）。事件同理：`session-` 前缀是**会话事件**（服务端派生或服务端自己的动作，载荷里有 `sessionId`），`server-notice` 是**服务端自己的通知**（不属于任何会话，切会话也不该消失），`AGENT_EVENTS` 那 9 条说的是**一个 Agent 身上发生了什么**（名字就是 core 的名字）—— 看一眼名字就知道该看哪张表，不必背清单。
+- 命名空间按**作用对象**分：`workspace.*` 是对容器做事，`session.*` 是对一段会话做事，`events.watch` 是连接级的，`asset.*` 只读（资产是用户的文件系统，改它是另一个动作）。事件同理：`session-` 前缀是**会话事件**（服务端派生或服务端自己的动作，载荷里有 `sessionId`），`server-notice` 是**服务端自己的通知**（不属于任何会话，切会话也不该消失），`AGENT_EVENTS` 那 10 条说的是**一个 Agent 身上发生了什么**（名字就是 core 的名字）—— 看一眼名字就知道该看哪张表，不必背清单。
 
 每个方法/事件的入参、出参与语义**不在这里抄**——定义处（`packages/protocol/src/sessions.ts` / `config.ts` / `assets.ts` / `daemon.ts`）就是唯一的说明，需要更多篇幅的语义在 `packages/server/README.md`。这里只给分类与规模。
 
@@ -277,7 +277,7 @@ packages/server/src/
 | 文件 | 拿走的东西 | 职责 |
 |---|---|---|
 | `SessionManager.ts` | 注册表 `sessions` / `holders` / 回收 / turn 生命周期（`beginTurn` / `settleTurn` / `failTurn`）/ 目录（`list` / `last` / `rename` / `remove` / `rollback`）/ 交接（`handoff` / `migrate` / `autoMigrate`）/ `create` / `attach` / `close` / `dispose` | 注册表与轮次生命周期 —— 「我正在管的那批会话」 |
-| `EventBridge.ts` | `toolCalls` / `pushedMessages` / 流式影子 / 子 Agent 栏目 | SDK 事件 → 协议事件。只依赖 `agent.events` + `hub`，**不需要会话表、不需要 store** |
+| `EventBridge.ts` | `toolCalls` / 流式影子 / 子 Agent 栏目 | SDK 事件 → 协议事件。只依赖 `agent.events` + `hub`，**不需要会话表、不需要 store** |
 | `Persistence.ts` | `store` / `record` / `persistOnSettle` / `autoPersist` | 存档形状与全部写盘路径。**`recordOf` 是存档形状唯一定义处** |
 | `QuestionBroker.ts` | `questions` / `questionSeq` | 服务端向客户端提问：认领、超时、放行。唯一需要 `hub.watcherCount()` 的组件 —— **没人在看就不问** |
 | `LiveSession.ts` | — | 那段会话的形状，以及 `AgentLike` / `SubAgentLike` / `AskQuestionSpec`。四个类都只依赖它 |

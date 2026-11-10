@@ -25,9 +25,9 @@ import type { PhaseInfo, PhaseKind, ToolCallRef } from "@ai-zen/agents-protocol"
 /**
  * 结果消息里能表示「这个工具已经结束」的状态（其余一律视为仍在跑）。
  *
- * 导出而不是本文件私有：会话管理器推工具结果消息时（`emitAppendedMessages`）用的是**同一条**
- * 判据 —— 「这条结果定型了吗」。两处各写一份 `Set`，只会在某天多出一种终态时漂成「阶段里
- * 已经不念它了，但结果永远推不出去」。
+ * 导出而不是本文件私有：`EventBridge` 判「这条工具结果该不该转成 `tool-call-end`」用的是
+ * **同一条**判据 —— 「这条结果定型了吗」。两处各写一份 `Set`，只会在某天多出一种终态时漂成
+ * 「阶段里已经不念它了，但结果永远推不出去」。
  */
 export const FINISHED_STATUSES = new Set(["completed", "error", "aborted"]);
 

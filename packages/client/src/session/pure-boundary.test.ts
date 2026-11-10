@@ -15,6 +15,9 @@
  *
  *   · `@ai-zen/agents-protocol` —— 纯类型 + 方法名常量（编译后什么都不剩）；
  *   · `../stream-merge.js` —— 同一份合并规则（它自己也是纯的）；
+ *   · `@ai-zen/agents-core` —— **只取 `applyChunk`**：它是「一片 chunk 怎么攒成一条消息」的
+ *     唯一实现，纯函数、不碰 I/O、不读配置、不建客户端（`dist/applyChunk.js` 连 import 都
+ *     没有）。这一层要折流，就必须用它，抄一份才是真正破坏纯度的事；
  *   · 别的都不行：`node:fs` / `node:net` 是 I/O，`agents-server` 是 daemon 与存档，
  *     `agents-sdk` 会去读配置、建模型客户端。
  *
@@ -29,7 +32,11 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 /** 允许出现在纯状态机 import 图里的模块 */
-const ALLOWED: RegExp[] = [/^@ai-zen\/agents-protocol$/, /^\.\.\/stream-merge\.js$/];
+const ALLOWED: RegExp[] = [
+  /^@ai-zen\/agents-protocol$/,
+  /^\.\.\/stream-merge\.js$/,
+  /^@ai-zen\/agents-core$/,
+];
 
 /** 把源文件里出现的模块 specifier 全抓出来（`from "x"`、`import "x"`、`import("x")` 三种形状） */
 function importsOf(source: string): string[] {
@@ -60,7 +67,6 @@ describe("纯边界：SessionStream 的 import 清单", () => {
     for (const forbidden of [
       "@ai-zen/agents-server",
       "@ai-zen/agents-sdk",
-      "@ai-zen/agents-core",
       "node:fs",
       "node:net",
       "./channel.js",
@@ -69,5 +75,7 @@ describe("纯边界：SessionStream 的 import 清单", () => {
     }
     expect(isAllowed("@ai-zen/agents-protocol")).toBe(true);
     expect(isAllowed("../stream-merge.js")).toBe(true);
+    // core 只放行**包根**这一条：深路径（`@ai-zen/agents-core/dist/...`、`/Agent.js`）不认
+    expect(isAllowed("@ai-zen/agents-core/Agent.js")).toBe(false);
   });
 });

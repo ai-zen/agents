@@ -1,7 +1,7 @@
 /**
  * 事件表的几条不变量 —— 用用例钉住，而不是靠人眼数。
  *
- * 事件面分成三张表：`AGENT_EVENTS` 9 条（core `Agent.events` 的原名）、`SESSION_EVENTS`
+ * 事件面分成三张表：`AGENT_EVENTS` 10 条（core `Agent.events` 的原名）、`SESSION_EVENTS`
  * 7 条（服务端派生 / 自己决定的事）、`SERVER_EVENTS` 1 条（服务端自己的通知）。这些都是
  * **静态事实**，而它们错了之后没有任何编译错误：把 `chunk-parsed` 写成 `session-delta`
  * 照样能编译、照样能跑，只是客户端订阅的那一条静默失效（永远是「生成中」）。所以在这里钉住。
@@ -11,20 +11,21 @@ import { describe, expect, it } from "vitest";
 import { AGENT_EVENTS, SERVER_EVENTS, SESSION_EVENTS } from "./sessions.js";
 
 describe("事件表", () => {
-  it("Agent 9 条、会话 7 条、服务端 1 条（改数量就该回来改这里与文档）", () => {
-    expect(Object.keys(AGENT_EVENTS)).toHaveLength(9);
+  it("Agent 10 条、会话 7 条、服务端 1 条（改数量就该回来改这里与文档）", () => {
+    expect(Object.keys(AGENT_EVENTS)).toHaveLength(10);
     expect(Object.keys(SESSION_EVENTS)).toHaveLength(7);
     expect(Object.keys(SERVER_EVENTS)).toHaveLength(1);
   });
 
-  it("Agent 表的 9 个值逐字等于 core `Agent.events` 的原名（照抄 core 是规则，不是巧合）", () => {
+  it("Agent 表的 10 个值逐字等于 core `Agent.events` 的原名（照抄 core 是规则，不是巧合）", () => {
     // 顺序与 `packages/core/src/Agent.ts` 的「事件系统」一节一致：改名 / 加一条就要同时
-    // 想一次「core 那边叫什么」。逐字比较而不是 startsWith：这 9 条的意义就在于**同名**。
+    // 想一次「core 那边叫什么」。逐字比较而不是 startsWith：这 10 条的意义就在于**同名**。
     expect(Object.values(AGENT_EVENTS)).toEqual([
       "open",
       "chunk",
       "chunk-parsed",
       "parsed",
+      "message",
       "tool-call-end",
       "error",
       "finally",

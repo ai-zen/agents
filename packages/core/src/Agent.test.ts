@@ -1916,6 +1916,133 @@ describe("Agent", () => {
       expect(agent.isHasPendingMessage).toBe(false);
     });
   });
+
+  /**
+   * `message` 事件 —— 「哪一条消息变了」的唯一出口。
+   *
+   * 它是 `append`（用户消息 / 占位 assistant / 工具结果）与就地定型（工具跑完、一轮出错）
+   * 两处的广播点。断言的是**事件本身**（收到了什么），而不是最终 `messages` 长什么样 ——
+   * 只看后者的话，广播时机错了（比如定型时没重发）也照样绿。
+   */
+  describe("事件：message", () => {
+    it("append 广播那条消息本身（同一个对象、同 id）", () => {
+      const agent = new Agent({ client: {} as any, model: "gpt-4" });
+      const seen: AgentNS.Message[] = [];
+      agent.events.on("message", (message: AgentNS.Message) => seen.push(message));
+
+      const user = agent.append(Message.User("你好"));
+
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toBe(user);
+      expect(seen[0].id).toBe(user.id);
+    });
+
+    it("工具结果：执行前 pending 广播一次，定型后同 id 再广播一次", async () => {
+      const client = createMockClient([
+        [
+          chunk({
+            tool_calls: [
+              {
+                index: 0,
+                id: "1",
+                type: "function",
+                function: { name: "getTime", arguments: "{}" },
+              },
+            ],
+          }),
+          chunk({}, "tool_calls"),
+        ],
+        [chunk({ content: "好了" }), stopChunk()],
+      ]);
+      const tool = new CallbackTool({
+        function: {
+          name: "getTime",
+          description: "获取当前时间",
+          parameters: { type: "object", properties: {} },
+        },
+        callback: () => "12:00:00",
+      });
+      const agent = new Agent({
+        client,
+        model: "gpt-4",
+        messages: [Message.System("sys")],
+        tools: [tool],
+      });
+
+      // 就地改的是同一个对象，所以要在广播**那一刻**抄一份出来
+      const seen: Array<{ id: string; status?: string; content?: unknown }> = [];
+      agent.events.on("message", (message: AgentNS.Message) =>
+        seen.push({ id: message.id, status: message.status, content: message.content }),
+      );
+
+      agent.append(Message.Assistant());
+      await agent.run();
+
+      const toolEvents = seen.filter(
+        (event) => agent.messages.find((m) => m.id === event.id)?.role === AgentNS.Role.Tool,
+      );
+      expect(toolEvents).toHaveLength(2);
+      // 同一条消息的两次广播：先 pending（参数有了、结果还没），再 completed（结果定了）
+      expect(toolEvents[0].id).toBe(toolEvents[1].id);
+      expect(toolEvents[0].status).toBe(AgentNS.MessageStatus.Pending);
+      expect(toolEvents[1].status).toBe(AgentNS.MessageStatus.Completed);
+      expect(toolEvents[1].content).toBe("12:00:00");
+    });
+
+    it("用户消息比第一个 chunk 先广播", async () => {
+      const client = createMockClient([[chunk({ content: "收到" }), stopChunk()]]);
+      const agent = new Agent({
+        client,
+        model: "gpt-4",
+        messages: [Message.System("sys")],
+      });
+
+      const order: string[] = [];
+      agent.events.on("message", (message: AgentNS.Message) =>
+        order.push(`message:${message.role}`),
+      );
+      agent.events.on("chunk", () => order.push("chunk"));
+
+      await agent.send("你好");
+
+      // 用户消息 → 占位 assistant → 才可能有 chunk
+      expect(order.slice(0, 2)).toEqual([
+        `message:${AgentNS.Role.User}`,
+        `message:${AgentNS.Role.Assistant}`,
+      ]);
+      expect(order.indexOf("chunk")).toBeGreaterThan(1);
+    });
+
+    it("一轮出错：assistant 那条以错误正文重发（status = Error）", async () => {
+      const client = {
+        chat: {
+          completions: {
+            create: async () => {
+              throw new Error("网络断了");
+            },
+          },
+        },
+      } as any;
+      const agent = new Agent({
+        client,
+        model: "gpt-4",
+        messages: [Message.System("sys")],
+      });
+
+      const seen: Array<{ role: string; status?: string; content?: unknown }> = [];
+      agent.events.on("message", (message: AgentNS.Message) =>
+        seen.push({ role: message.role, status: message.status, content: message.content }),
+      );
+
+      agent.append(Message.Assistant());
+      await agent.run();
+
+      const last = seen.at(-1)!;
+      expect(last.role).toBe(AgentNS.Role.Assistant);
+      expect(last.status).toBe(AgentNS.MessageStatus.Error);
+      expect(last.content).toBe("网络断了");
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

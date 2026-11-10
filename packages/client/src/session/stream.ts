@@ -49,16 +49,10 @@ import type {
   PhaseInfo,
   SessionSnapshotResult,
   SubAgentSnapshotResult,
-  ToolCall,
-  ToolCallState,
   Usage,
 } from "@ai-zen/agents-protocol";
-import {
-  ROLE,
-  mergeStreamedSnapshot,
-  withAssistantText,
-  type StreamedAssistant,
-} from "../stream-merge.js";
+import { applyChunk as foldChunk, type ChunkDelta } from "@ai-zen/agents-core";
+import { ROLE, mergeStreamedSnapshot, type StreamedAssistant } from "../stream-merge.js";
 
 /** 一轮的生命周期三态（`failed` 是终态，见文件头第 3 条） */
 export type SessionStatus = "idle" | "streaming" | "failed";
@@ -84,7 +78,7 @@ export interface SubAgentView {
   id: string;
   /** 出现序号（本轮内从 1 起）：栏目标签直接印它 */
   index: number;
-  /** 它到目前为止的完整对话 */
+  /** 它到目前为止的完整对话（流式期间最后一条是正在折的那条 assistant） */
   messages: Message[];
   status: SubAgentStatus;
 }
@@ -176,17 +170,16 @@ function placeholder(): Message {
   return { role: ROLE.Assistant, content: "" } as Message;
 }
 
-/** `session-tool-calls` 的扁平载荷 → 消息里的嵌套形状（与 core 的 `ToolCall` 同形） */
-function toToolCall(call: ToolCallState): ToolCall {
-  return {
-    index: call.index,
-    // `id` 只有在场时才带：core 收到第一个带 id 的 chunk 之前那几片本来就没有 id，
-    // 补成空串会让「与工具结果配对」这件事失效
-    ...(call.id ? { id: call.id } : {}),
-    type: "function",
-    // 参数原样搬（半截 JSON 也照搬）：这一层不解析、不修补
-    function: { name: call.name, arguments: call.arguments },
-  };
+/**
+ * 这条正在折的消息值不值得上屏：有正文、有推理、或已经有工具调用。
+ *
+ * 只带 `usage` 的收尾片与只有 `role` 的首片都折不出这三样 —— 它们照样有用（校准速率），
+ * 但进消息列表就是一条空 assistant。
+ */
+function hasContent(message: Message): boolean {
+  return (
+    message.content !== "" || Boolean(message.reasoning_content) || Boolean(message.tool_calls)
+  );
 }
 
 export class SessionStream {
@@ -304,53 +297,71 @@ export class SessionStream {
     this.commit({ status: "failed", failure, turnId: null });
   }
 
-  // ==================== 正文与工具调用 ====================
+  // ==================== 正文、推理与工具调用（折 chunk） ====================
 
   /**
-   * 正文 / 推理增量（累积到一条**临时** assistant 消息上）。
+   * 一片**原始 chunk** —— 折进「这一轮正在拼的那条 assistant 消息」，返回本片增量。
    *
-   * 只带用量的收尾 chunk（`text` 与 `reasoning` 都是空串）**不进消息列表**：拼了会在转录里
-   * 多出一条空 assistant。它照样有用（校准速率），但那是应用层的事（`SessionChannelPolicy`）。
+   * ## 为什么是「折」而不是「接服务端算好的增量」
+   *
+   * 正文、推理、工具调用的组装（参数是边流边长的半截 JSON）、流末的 `usage` /
+   * `finish_reason` —— 这五件事 core 已经在一个函数里做完了（`applyChunk`）。服务端再把
+   * 它们挑出来推一遍（原来是 `chunk-parsed` + `session-tool-calls` 两条事件），等于同一份
+   * 解读在两端各写一遍，而其中一份改了指纹、另一份照旧时，症状是「界面上的参数与发出去的
+   * 请求不一样」。所以客户端直接调 core 那一份，线上只走原始片。
+   *
+   * ## 为什么返回值要交出去
+   *
+   * 「这一片新增了多少字」是**应用层**的事（CLI 用它算 tok/s），折叠方是唯一知道答案的人。
+   * 让应用层自己再解一遍 chunk，就是又一个第二份实现。
    */
-  applyDelta(delta: { text?: string; reasoning?: string }): void {
-    const text = delta.text ?? "";
-    const reasoning = delta.reasoning ?? "";
-    if (!text && !reasoning) return;
-
+  applyChunk(chunk: unknown): ChunkDelta {
     this.ensureStreaming();
-    const streaming = this.streaming!;
-    streaming.text += text;
-    streaming.reasoning += reasoning;
-    const messages = [...this.value.messages];
-    const slot = this.streamSlot!;
-    const message = withAssistantText(messages[slot]!, streaming.text, streaming.reasoning);
-    messages[slot] = message;
-    streaming.message = message;
-    this.commit({
-      messages,
-      totalUsage: sumUsage(messages),
-      status: this.value.status === "failed" ? "failed" : "streaming",
-    });
+    const receiver = this.streaming!.message;
+    const delta = foldChunk(receiver, chunk as never);
+    // 折完什么也没多（只带 `usage` 的收尾片、只有 role 的首片）：**不上屏**，也不留一条空
+    // assistant。用量还在 receiver 上，收尾快照会给同一份事实 —— 屏幕上多一条空消息才是
+    // 真正的损失。所以「折」与「上屏」是两步：先折进一个还没进列表的 receiver，折出东西了
+    // 才把它挂上去。
+    if (!hasContent(receiver)) return delta;
+    this.showStreaming();
+    return delta;
   }
 
   /**
-   * 本轮工具调用的**组装态**（整份替换语义）。
+   * 子 Agent 的一片原始 chunk：折进**它自己**的临时消息。
    *
-   * 与正文增量刻意不同：参数是边流边长的，一个有意义的调用只在组装完成之后才存在，所以
-   * 协议给的是「到现在为止是什么」，客户端按 `index` 就地更新、不往后追加（追加会把参数
-   * 拼成两遍）。落在**正在流式的那条 assistant 消息**的 `tool_calls` 上 —— 它就是这条响应
-   * 的一部分，收尾时由快照整份替换。
+   * 与主会话的 `applyChunk` 是同一套折叠（同一个 `applyChunk`），但状态完全不共享 ——
+   * 共享就会让主对话里凭空多出子 Agent 的正文。没有 `started` 就没有这一栏（严格按会话
+   * 过滤后这只会在「中途接上连接」时发生，而那时快照才是数据的来源）。
    */
-  applyToolCalls(calls: readonly ToolCallState[]): void {
-    this.ensureStreaming();
-    const messages = [...this.value.messages];
-    const slot = this.streamSlot!;
-    messages[slot] = { ...messages[slot]!, tool_calls: calls.map(toToolCall) };
-    this.streaming!.message = messages[slot]!;
-    this.commit({
-      messages,
-      status: this.value.status === "failed" ? "failed" : "streaming",
-    });
+  subAgentChunk(subAgentId: string, chunk: unknown): ChunkDelta {
+    const index = this.indexOfSubAgent(subAgentId);
+    const empty: ChunkDelta = { text: "", reasoning: "" };
+    if (index < 0) return empty;
+
+    const view = this.value.subAgents[index]!;
+    const messages = [...view.messages];
+    let stream = this.subAgentStreams.get(subAgentId);
+    if (!stream) {
+      stream = { message: placeholder(), text: "", reasoning: "" };
+      this.subAgentStreams.set(subAgentId, stream);
+      messages.push(stream.message);
+    }
+    const slot = messages.length - 1;
+    const delta = foldChunk(stream.message, chunk as never);
+    // 与主会话同一条规矩：什么也没折出来的片不新增一条空消息（receiver 留着继续折）
+    if (!hasContent(stream.message)) {
+      if (slot === view.messages.length) this.subAgentStreams.delete(subAgentId);
+      return delta;
+    }
+    // 折的是同一个对象：换一个新引用交给 React（它靠引用比较判断要不要重画）
+    messages[slot] = { ...stream.message };
+    stream.message = messages[slot]!;
+    stream.text = typeof stream.message.content === "string" ? stream.message.content : "";
+    stream.reasoning = stream.message.reasoning_content ?? "";
+    this.replaceSubAgent(index, { ...view, messages });
+    return delta;
   }
 
   /**
@@ -385,38 +396,6 @@ export class SessionStream {
       status: "running",
     };
     this.commit({ subAgents: [...this.value.subAgents, view] });
-  }
-
-  /**
-   * 子 Agent 的增量：拼到**它自己**的临时消息上。
-   *
-   * 与主会话的 `applyDelta` 是同一套拼接策略，但状态完全不共享 —— 共享就会让主会话里
-   * 凭空多出子 Agent 的正文。没有 `started` 就没有这一栏（严格按会话过滤后这只会在
-   * 「中途接上连接」时发生，而那时快照才是数据的来源）。
-   */
-  subAgentDelta(event: { subAgentId: string; text?: string; reasoning?: string }): void {
-    const index = this.indexOfSubAgent(event.subAgentId);
-    if (index < 0) return;
-    const text = event.text ?? "";
-    const reasoning = event.reasoning ?? "";
-    if (!text && !reasoning) return;
-
-    const view = this.value.subAgents[index]!;
-    let stream = this.subAgentStreams.get(event.subAgentId);
-    const messages = [...view.messages];
-    if (!stream) {
-      const message = placeholder();
-      stream = { message, text: "", reasoning: "" };
-      this.subAgentStreams.set(event.subAgentId, stream);
-      messages.push(message);
-    }
-    stream.text += text;
-    stream.reasoning += reasoning;
-    const slot = messages.length - 1;
-    const message = withAssistantText(messages[slot]!, stream.text, stream.reasoning);
-    messages[slot] = message;
-    stream.message = message;
-    this.replaceSubAgent(index, { ...view, messages });
   }
 
   /**
@@ -554,13 +533,54 @@ export class SessionStream {
     this.commit({ subAgents });
   }
 
-  /** 保证有一条正在拼的临时消息；没有就新建一条放在列表末尾 */
+  /**
+   * 折完一片之后刷新状态：消息换一个新引用、`text` / `reasoning` 镜到拼接态上。
+   *
+   * 为什么要换引用：`commit` 的约定是「每次变更换一个新对象」，前端靠引用比较决定重画；
+   * 就地改那个对象会让屏幕停在上一帧。
+   *
+   * 为什么 `text` / `reasoning` 还要单独存一份：`mergeStreamedSnapshot` 用它判断「本地
+   * 这份是不是快照那条的续写」（互为前缀）。那份判断与内容的**字符串**形态绑定 —— 内容段
+   * 数组形态（视觉）折出来时它是空串，于是合并走「本地没有可续内容」那一支，用服务端的。
+   */
+  private refreshStreaming(): void {
+    const streaming = this.streaming!;
+    const slot = this.streamSlot!;
+    const messages = [...this.value.messages];
+    messages[slot] = { ...streaming.message };
+    streaming.message = messages[slot]!;
+    streaming.text = typeof streaming.message.content === "string" ? streaming.message.content : "";
+    streaming.reasoning = streaming.message.reasoning_content ?? "";
+    this.commit({
+      messages,
+      totalUsage: sumUsage(messages),
+      status: this.value.status === "failed" ? "failed" : "streaming",
+    });
+  }
+
+  /**
+   * 保证有一个正在折的 receiver（**还没进消息列表**）。
+   *
+   * 与列表解耦是刻意的：一片只带 `usage` 的收尾片折不出任何可见内容，它不该在转录里留下
+   * 一条空 assistant。所以 receiver 先独立存在，折出东西了再由 {@link showStreaming} 挂上
+   * 列表（那一步才通知前端）。
+   */
   private ensureStreaming(): void {
-    if (this.streaming && this.streamSlot !== null) return;
-    const message = placeholder();
-    this.streaming = { message, text: "", reasoning: "" };
-    this.value = { ...this.value, messages: [...this.value.messages, message] };
-    this.streamSlot = this.value.messages.length - 1;
+    if (this.streaming) return;
+    this.streaming = { message: placeholder(), text: "", reasoning: "" };
+    this.streamSlot = null;
+  }
+
+  /** 把 receiver 挂进列表（第一次折出可见内容时；重复调用是空操作） */
+  private showStreaming(): void {
+    if (this.streamSlot !== null) {
+      this.refreshStreaming();
+      return;
+    }
+    const messages = [...this.value.messages, this.streaming!.message];
+    this.value = { ...this.value, messages };
+    this.streamSlot = messages.length - 1;
+    this.refreshStreaming();
   }
 
   private commit(patch: Partial<SessionStreamState>): void {

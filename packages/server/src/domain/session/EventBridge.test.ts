@@ -294,93 +294,98 @@ describe("SessionManager：工具调用的组装态（session-tool-calls）", ()
   });
 });
 /**
- * 工具结果消息（`tool-call-end`）—— 工具跑完一个就推一条，不等一轮结束。
+ * 消息事件（`message`）—— 「哪一条消息变了」的唯一出口。
  *
- * 这一组盯的是**时机与身份**：推的是哪一条消息（刚定型的工具结果）、什么时候推（`tool-call-end`
- * 那一刻，不是 `session-turn-end` 之后）、以及推第几次（同一条只推一次，跨轮不串）。每条用例都按真件
- * 的形状摆布 `agent.messages`：结果消息在执行**前**就以 `pending` 追加、跑完才翻终态。
+ * 服务端不再扫 `agent.messages` 做差集：core 在唯一的追加口（`Agent.append`）与两处就地
+ * 定型（工具跑完、一轮出错）广播 `message`，这里只做搬运。所以这一组盯的是**搬的是哪一条、
+ * 什么时候搬**，而不是「推过哪些」—— 那份记账已经不存在了（它在并行工具下本来就是错的：
+ * 结果消息在执行**前**就追加、跑完才翻终态，按下标推会把还在跑的那条当成结果发出去）。
+ *
+ * `tool-call-end` 目前仍由这里顺手转出去（客户端的工具卡片还在监听它），判据是
+ * 「`role === "tool"` 且已定型」—— 它是一条**过渡**产物，客户端切到 `message` 之后连同
+ * 协议里那条事件一起删。
  */
-describe("SessionManager：工具结果消息（tool-call-end）", () => {
-  /** 事件里推出去的那几条消息（按顺序），只取判定身份要用的字段 */
-  const appended = () => pick("tool-call-end").map((event) => event.message as Record<string, any>);
+describe("SessionManager：消息事件（message）", () => {
+  /** 事件里推出去的消息（按顺序） */
+  const pushed = () => pick("message").map((event) => event.message as Record<string, any>);
 
-  it("工具一跑完就把结果消息推上线：不必等 session-turn-end，推的就是那一条", async () => {
+  it("工具结果：执行前 pending 一条，定型后同 id 一条（正文那一刻才落）", async () => {
     const { sessionId } = await create();
     manager.send(sessionId, "hi");
 
-    const message = toolResult("call_1", "exec", "总用量 12");
+    const message = toolResult("call_1", "exec");
     agent.messages.push(message);
+    // core `append`：工具**执行前**就追加，此刻 pending、正文空
+    agent.fire("message", message);
+
+    expect(pushed()).toHaveLength(1);
+    expect(pushed()[0]).toMatchObject({ role: "tool", tool_call_id: "call_1", status: "pending" });
+    // 还没定型：这一刻不该出现 `tool-call-end`（用户该看到的是「在跑」）
+    expect(pick("tool-call-end")).toHaveLength(0);
+
+    message.content = "总用量 12";
     fireToolCallEnd(agent, message);
 
-    const events = pick("tool-call-end");
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ sessionId, turnId: 1 });
-    // 推的是**那一条**：tool_call_id 与正文都对得上（服务端只搬运，不重新包装）
-    expect(events[0]!.message).toEqual({
-      role: "tool",
-      tool_call_id: "call_1",
-      name: "exec",
-      content: "总用量 12",
-      status: "completed",
-    });
-    // 此刻这一轮还没收尾 —— 这正是这条事件存在的理由（快照要等到 session-turn-end 之后）
+    expect(pushed()).toHaveLength(2);
+    // 同一条、同 id：客户端按 id 覆盖即可，不必判断「这是新增还是更新」
+    expect(pushed()[1]!.id).toBe(pushed()[0]!.id);
+    expect(pushed()[1]).toMatchObject({ content: "总用量 12", status: "completed" });
+    // 定型那一刻才转 `tool-call-end`，且推的就是那一条（服务端只搬运，不重新包装）
+    const ends = pick("tool-call-end");
+    expect(ends).toHaveLength(1);
+    expect(ends[0]!.message).toBe(message);
+    // 此刻这一轮还没收尾 —— 这正是这两条事件存在的理由（快照要等 session-turn-end 之后）
     expect(pick("session-turn-end")).toHaveLength(0);
   });
 
-  it("同一条结果不会推第二次：没有新消息就不发", async () => {
+  it("用户消息与占位 assistant 走同一条事件；它们不转 `tool-call-end`", async () => {
     const { sessionId } = await create();
     manager.send(sessionId, "hi");
 
-    const message = toolResult("call_1", "exec", "ok");
-    agent.messages.push(message);
-    fireToolCallEnd(agent, message);
-    expect(appended()).toHaveLength(1);
+    const user = { id: "m-user", role: "user", content: "hi", status: "completed" };
+    const placeholder = { id: "m-assistant", role: "assistant", content: "", status: "pending" };
+    agent.fire("message", user);
+    agent.fire("message", placeholder);
 
-    // 再 fire 一次、消息表一个字没变：没有「新追加的」可推
-    fireToolCallEnd(agent, message);
-    expect(appended()).toHaveLength(1);
+    expect(pushed()).toEqual([user, placeholder]);
+    expect(pick("tool-call-end")).toHaveLength(0);
   });
 
-  it("并行/连续多个工具：各推一次，顺序与追加顺序一致", async () => {
+  it("并行：先跑完的先转 `tool-call-end`，还没定型的那条一次都不转", async () => {
     const { sessionId } = await create();
     manager.send(sessionId, "hi");
 
-    const first = toolResult("call_1", "exec", "第一次");
-    agent.messages.push(first);
-    fireToolCallEnd(agent, first);
+    // 真件的顺序：两个结果消息在**执行前**就都追加好了（`Promise.all` 的 map 里同步
+    // append），所以「先完成的那条」往往排在**后面**，前面那条还是 pending、正文空
+    const slow = toolResult("call_1", "exec");
+    const fast = toolResult("call_2", "read_file");
+    agent.messages.push(slow, fast);
+    agent.fire("message", slow);
+    agent.fire("message", fast);
+    expect(pushed()).toHaveLength(2);
+    expect(pick("tool-call-end")).toHaveLength(0); // 两条都还在跑
 
-    const second = toolResult("call_2", "edit", "第二次");
-    agent.messages.push(second);
-    fireToolCallEnd(agent, second);
+    fast.content = "快结果";
+    fireToolCallEnd(agent, fast, "completed");
+    expect(pick("tool-call-end").map((event) => event.message.tool_call_id)).toEqual(["call_2"]);
+    expect(pick("tool-call-end")[0]!.message.content).toBe("快结果");
 
-    expect(appended().map((message) => message.tool_call_id)).toEqual(["call_1", "call_2"]);
-    expect(appended().map((message) => message.content)).toEqual(["第一次", "第二次"]);
+    slow.content = "慢结果";
+    fireToolCallEnd(agent, slow, "completed");
+    expect(pick("tool-call-end").map((event) => event.message.tool_call_id)).toEqual([
+      "call_2",
+      "call_1",
+    ]);
   });
 
-  it("只推工具结果：同一批里的 assistant 消息不推（它由 chunk-parsed + 占位消息在画）", async () => {
-    const { sessionId } = await create();
-    manager.send(sessionId, "hi");
-
-    // 一轮里前面那个内层循环已经说完的正文（`status: completed`，不是拼装中）：客户端手上
-    // 早就有了这一条。它会出现在 `agent.messages` 里，但绝不该从这条通道再推一遍 ——
-    // 否则同一条消息有了两种表示，收尾还得对账「哪一份才是真的」。
-    agent.messages.push({ role: "assistant", content: "我来看一下", status: "completed" });
-    const message = toolResult("call_1", "exec", "ok");
-    agent.messages.push(message);
-    fireToolCallEnd(agent, message);
-
-    expect(appended()).toHaveLength(1);
-    expect(appended()[0]!.role).toBe("tool");
-    expect(appended()[0]!.tool_call_id).toBe("call_1");
-  });
-
-  it("不跨轮泄漏：上一轮推过的消息既不再推，也不挡住下一轮的第一条", async () => {
+  it("消息按当前轮编号转发：第二轮的消息带 turnId 2，上一轮的不重发", async () => {
     const { sessionId } = await create();
     manager.send(sessionId, "第一轮");
     const first = toolResult("call_1", "exec", "第一轮结果");
     agent.messages.push(first);
+    agent.fire("message", first); // core `append`：执行前就追加
     fireToolCallEnd(agent, first);
-    expect(appended()).toHaveLength(1);
+    expect(pushed()).toHaveLength(2); // append + 定型
 
     agent.fire("finally");
     await settled();
@@ -388,39 +393,36 @@ describe("SessionManager：工具结果消息（tool-call-end）", () => {
     expect(manager.send(sessionId, "第二轮").turnId).toBe(2);
     const second = toolResult("call_2", "read_file", "第二轮结果");
     agent.messages.push(second);
+    agent.fire("message", second);
     fireToolCallEnd(agent, second);
 
-    // 第二轮那条照推（没被上一轮的水位挡掉），上一轮那条也没被重推（清空成空集就会漏成
-    // ["call_1","call_1","call_2"]）
-    expect(appended().map((message) => message.tool_call_id)).toEqual(["call_1", "call_2"]);
-    expect(pick("tool-call-end").at(-1)!.turnId).toBe(2);
+    // 每条消息按 core 的事实各转一次；轮末归零没有「水位」要恢复，所以上一轮那两条不会被
+    // 重推，也挡不住这一轮
+    expect(pushed().map((message) => message.tool_call_id)).toEqual([
+      "call_1",
+      "call_1",
+      "call_2",
+      "call_2",
+    ]);
+    expect(pick("message").at(-1)!.turnId).toBe(2);
   });
 
-  it("并行时先跑完的先推；还没定型的那条等它自己跑完，不会被当成结果提前推出去", async () => {
+  it("子 Agent 的消息带 `subAgentId`：归到它自己的对话，不是主会话", async () => {
     const { sessionId } = await create();
     manager.send(sessionId, "hi");
+    const sub = new FakeSubAgent();
+    agent.fire("sub-agent-start", { subAgent: sub });
 
-    // 真件的顺序：两个工具的结果消息在**执行前**就都追加好了（core 在 `Promise.all` 的
-    // map 里同步 append），所以「先完成的那条」往往排在**后面**，前面那条还是 pending、
-    // 正文空（这条顺序是实跑 core 确认的，见 `Message.Tool` 与 `handleToolCall`）
-    const slow = toolResult("call_1", "exec");
-    const fast = toolResult("call_2", "read_file");
-    agent.messages.push(slow, fast);
+    const subMessage = { id: "m-sub", role: "assistant", content: "子任务输出" };
+    sub.fire("message", subMessage);
 
-    // 快工具跑完：正文在这一刻才落（core 的 `resultReceiver.content = await tool.exec(ctx)`），
-    // 随后 `markResult` 翻状态并 fire
-    fast.content = "快结果";
-    fireToolCallEnd(agent, fast, "completed");
-    // 只推快的那条，且是定型后的正文；慢的那条此刻正文还是空的，不能提前推
-    expect(appended().map((message) => message.tool_call_id)).toEqual(["call_2"]);
-    expect(appended()[0]!.content).toBe("快结果");
-
-    slow.content = "慢结果";
-    fireToolCallEnd(agent, slow, "completed");
-    expect(appended().map((message) => message.tool_call_id)).toEqual(["call_2", "call_1"]);
-    expect(appended().map((message) => message.content)).toEqual(["快结果", "慢结果"]);
+    const events = pick("message");
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ sessionId, turnId: 1, subAgentId: "sub-1" });
+    expect(events[0]!.message).toBe(subMessage);
   });
 });
+
 /**
  * 子 Agent 栏目 —— 行为对齐 CLI 的 `onSubStart` / `onSubEnd`：序号、三态、增量分流、
  * 「只活当前一轮」。每条用例都对着一个会被后人改坏的点。
@@ -437,6 +439,22 @@ describe("SessionManager：子 Agent（栏目）", () => {
       { event: "sub-agent-start", sessionId, turnId: 1, subAgentId: "sub-1", index: 1 },
       { event: "sub-agent-start", sessionId, turnId: 1, subAgentId: "sub-2", index: 2 },
     ]);
+  });
+
+  it("子 Agent 的**原始片**也带 subAgentId 上线（客户端要拿它自己折消息）", async () => {
+    const { sessionId } = await create();
+    manager.send(sessionId, "hi");
+    const sub = new FakeSubAgent();
+    agent.fire("sub-agent-start", { subAgent: sub });
+
+    const raw = chunk({ content: "子" });
+    fireChunk(sub, raw);
+
+    const pushed = pick("chunk");
+    expect(pushed).toHaveLength(1);
+    expect(pushed[0]).toMatchObject({ sessionId, turnId: 1, subAgentId: "sub-1" });
+    // 原样搬这一片（厂商形状，协议不解释）
+    expect(pushed[0]!.chunk).toBe(raw);
   });
 
   it("子 Agent 的增量带 subAgentId 推给客户端，且**一行都不碰主阶段**", async () => {

@@ -1271,9 +1271,6 @@ export class SessionManager {
       turnId: 0,
       phase: new PhaseTracker(),
       toolCalls: new ToolCallReporter(),
-      // 基线 = 此刻已有的消息：续接来的历史已经在客户端的快照里了，不该被当成「刚追加的」
-      // 再推一遍（见 `pushedMessages`）。
-      pushedMessages: new Set(agent.messages),
       turnFailed: null,
       turnSettled: true,
       settleDeferred: false,

@@ -33,10 +33,10 @@
   "author": "LZQCN",
   "license": "MIT",
   "dependencies": {
+    "@ai-zen/agents-core": "workspace:^",
     "@ai-zen/agents-protocol": "workspace:^"
   },
   "devDependencies": {
-    "@ai-zen/agents-core": "workspace:*",
     "@ai-zen/agents-sdk": "workspace:*",
     "@ai-zen/agents-server": "workspace:*",
     "@ai-zen/agents-testing": "workspace:*",

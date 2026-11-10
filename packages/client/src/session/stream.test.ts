@@ -15,6 +15,42 @@ import type {
 } from "@ai-zen/agents-protocol";
 import { SessionStream, type SessionStreamState } from "./stream.js";
 
+/**
+ * 造一片**真形状**的流式 chunk（`id` / `object` / `created` / `model` / `choices[].delta`）。
+ *
+ * 假件照抄真件：`applyChunk` 读的是 `choices[0].delta`，只喂 `{ text }` 这种自造对象，测出来
+ * 的只是「测试自己拼得对」。
+ */
+function chunk(delta: Record<string, unknown>, finish_reason: unknown = null) {
+  return {
+    id: "chunk-1",
+    object: "chat.completion.chunk",
+    created: 0,
+    model: "mock",
+    choices: [{ index: 0, delta, finish_reason }],
+  };
+}
+
+/** 一片正文（可带推理） */
+const textChunk = (text: string, reasoning?: string) =>
+  chunk({ content: text, ...(reasoning === undefined ? {} : { reasoning_content: reasoning }) });
+
+/** 一片工具调用（`arguments` 是**累积到此刻**的串，与 core 的组装规则一致） */
+const toolChunk = (call: { index: number; id?: string; name?: string; arguments: string }) =>
+  chunk({
+    tool_calls: [
+      {
+        index: call.index,
+        type: "function",
+        ...(call.id === undefined ? {} : { id: call.id }),
+        function: {
+          ...(call.name === undefined ? {} : { name: call.name }),
+          arguments: call.arguments,
+        },
+      },
+    ],
+  });
+
 // 造数据用**真的** `AgentNS.Role`（不是字面量镜像）：包里的 `ROLE` 是它的同值镜像，
 // 两处一起把这个值钉死 —— 镜像写错的那天，这里先红
 const user = (content: string): Message =>
@@ -67,8 +103,8 @@ describe("SessionStream：正文增量与收尾对账", () => {
     const stream = streaming();
     stream.setPhase({ kind: "streaming" });
 
-    stream.applyDelta({ text: "答" });
-    stream.applyDelta({ text: "完", reasoning: "想" });
+    stream.applyChunk(textChunk("答"));
+    stream.applyChunk(textChunk("完", "想"));
 
     expect(stream.state.messages).toEqual([
       { role: AgentNS.Role.Assistant, content: "答完", reasoning_content: "想" },
@@ -80,7 +116,7 @@ describe("SessionStream：正文增量与收尾对账", () => {
 
   it("session-turn-end 用服务端快照整份对账：服务端有、本地拼不出来的字段都补上", () => {
     const stream = streaming();
-    stream.applyDelta({ text: "答完了" });
+    stream.applyChunk(textChunk("答完了"));
 
     const usage = { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 };
     stream.settle(
@@ -124,8 +160,8 @@ describe("SessionStream：正文增量与收尾对账", () => {
     // 竞态：快照是「请求处理那一刻」的副本，之后到达的增量只存在于本地 —— 整份覆盖会让
     // 屏幕上的答案凭空短一截，而且本轮不会再补上
     const stream = streaming();
-    stream.applyDelta({ text: "答完了一" });
-    stream.applyDelta({ text: "半" });
+    stream.applyChunk(textChunk("答完了一"));
+    stream.applyChunk(textChunk("半"));
 
     stream.settle(snapshotOf([user("你好"), assistant("答完了一")]));
 
@@ -135,7 +171,7 @@ describe("SessionStream：正文增量与收尾对账", () => {
 
   it("服务端那份是唯一真相：本地拼不出的工具结果随快照一起上屏", () => {
     const stream = streaming();
-    stream.applyDelta({ text: "我查一下" });
+    stream.applyChunk(textChunk("我查一下"));
 
     stream.settle(
       snapshotOf([
@@ -154,7 +190,7 @@ describe("SessionStream：正文增量与收尾对账", () => {
 
   it("取不到快照（服务端刚重启）也照样收尾：本地那份近似留着，不假装这一轮还在跑", () => {
     const stream = streaming();
-    stream.applyDelta({ text: "半句" });
+    stream.applyChunk(textChunk("半句"));
 
     stream.settle(null);
 
@@ -165,10 +201,9 @@ describe("SessionStream：正文增量与收尾对账", () => {
 
   it("只带用量的收尾 chunk 不会在转录里留下空 assistant", () => {
     const stream = streaming();
-    stream.applyDelta({ text: "答案" });
+    stream.applyChunk(textChunk("答案"));
     // 只带 usage（正文与推理都是空串）：校准速率要用它，但**不该**拼进正文
-    stream.applyDelta({ text: "", reasoning: "" });
-    stream.applyDelta({});
+    stream.applyChunk(textChunk("", ""));
 
     expect(stream.state.messages).toHaveLength(1);
     expect(stream.state.messages[0]!.content).toBe("答案");
@@ -180,9 +215,11 @@ describe("SessionStream：工具调用与工具结果", () => {
     const stream = streaming();
 
     // 第一次上报：参数只到半截（可能还不是合法 JSON）
-    stream.applyToolCalls([{ index: 0, name: "exec", arguments: '{"cmd"' }]);
+    stream.applyChunk(toolChunk({ index: 0, name: "exec", arguments: '{"cmd"' }));
     // 同一个调用在长大：客户端按 index 就地更新，不往后追加（追加会把参数拼成两遍）
-    stream.applyToolCalls([{ index: 0, id: "call_1", name: "exec", arguments: '{"cmd":"ls"}' }]);
+    stream.applyChunk(
+      toolChunk({ index: 0, id: "call_1", name: "exec", arguments: '{"cmd":"ls"}' }),
+    );
 
     expect(stream.state.messages).toHaveLength(1);
     expect(stream.state.messages[0]!.tool_calls).toEqual([
@@ -195,7 +232,7 @@ describe("SessionStream：工具调用与工具结果", () => {
     ]);
 
     // 之后的正文拼在**同一条**上（工具调用是这条响应的一部分，不是另一条消息）
-    stream.applyDelta({ text: "好" });
+    stream.applyChunk(textChunk("好"));
     expect(stream.state.messages).toHaveLength(1);
     expect(stream.state.messages[0]!.content).toBe("好");
     expect(stream.state.messages[0]!.tool_calls).toHaveLength(1);
@@ -221,8 +258,8 @@ describe("SessionStream：子 Agent 栏目", () => {
       { id: "s1", index: 1, messages: [], status: "running" },
     ]);
 
-    stream.subAgentDelta({ subAgentId: "s1", text: "数到" });
-    stream.subAgentDelta({ subAgentId: "s1", text: "3 个" });
+    stream.subAgentChunk("s1", textChunk("数到"));
+    stream.subAgentChunk("s1", textChunk("3 个"));
 
     expect(stream.state.subAgents[0]!.messages[0]!.content).toBe("数到3 个");
     // 子 Agent 的增量不进主会话（拼进去等于凭空多出一段文字）
@@ -231,7 +268,7 @@ describe("SessionStream：子 Agent 栏目", () => {
 
   it("没有 started 就没有这一栏（`index` 是服务端给的，客户端编不出来）", () => {
     const stream = streaming();
-    stream.subAgentDelta({ subAgentId: "s404", text: "没人认领的字" });
+    stream.subAgentChunk("s404", textChunk("没人认领的字"));
 
     expect(stream.state.subAgents).toEqual([]);
   });
@@ -239,7 +276,7 @@ describe("SessionStream：子 Agent 栏目", () => {
   it("快照把已有内容补齐，且与已拼出的增量合并（不吞字、不多出一条）", () => {
     const stream = streaming();
     stream.subAgentStarted({ subAgentId: "s1", index: 1 });
-    stream.subAgentDelta({ subAgentId: "s1", text: "数到" });
+    stream.subAgentChunk("s1", textChunk("数到"));
 
     // 这次往返可能比第一批增量还慢：服务端那份末尾是「数到」，本地已经有「数到」
     stream.subAgentSnapshot(subAgentSnapshotOf([user("子任务：数文件"), assistant("数到")]));
@@ -248,7 +285,7 @@ describe("SessionStream：子 Agent 栏目", () => {
     expect(stream.state.subAgents[0]!.messages[1]!.content).toBe("数到");
 
     // 之后的增量继续拼在**同一条**上
-    stream.subAgentDelta({ subAgentId: "s1", text: "3 个" });
+    stream.subAgentChunk("s1", textChunk("3 个"));
     expect(stream.state.subAgents[0]!.messages).toHaveLength(2);
     expect(stream.state.subAgents[0]!.messages[1]!.content).toBe("数到3 个");
   });
@@ -269,7 +306,7 @@ describe("SessionStream：子 Agent 栏目", () => {
   it("只活当前一轮：session-turn-end 清空栏目", () => {
     const stream = streaming();
     stream.subAgentStarted({ subAgentId: "s1", index: 1 });
-    stream.subAgentDelta({ subAgentId: "s1", text: "跑到一半" });
+    stream.subAgentChunk("s1", textChunk("跑到一半"));
 
     stream.settle(snapshotOf([user("统计一下")]));
 
@@ -306,7 +343,7 @@ describe("SessionStream：换 id", () => {
 describe("SessionStream：失败是终态", () => {
   it("failTurn 之后 settle 不许把它擦成 idle（消息照样对账）", () => {
     const stream = streaming();
-    stream.applyDelta({ text: "半句" });
+    stream.applyChunk(textChunk("半句"));
 
     stream.failTurn({ code: "internal", message: "boom" });
     expect(stream.state.status).toBe("failed");
@@ -344,7 +381,7 @@ describe("SessionStream：重连对齐（applySnapshot）", () => {
     // 整份换掉快照会静默丢字：拼接态还指着已经被换下去的那条消息对象 —— 之后的增量全写在
     // 一个不在列表里的对象上，屏幕要等到 session-turn-end 才补回来。合并规则让它们收敛回同一条。
     const stream = streaming();
-    stream.applyDelta({ text: "一半" });
+    stream.applyChunk(textChunk("一半"));
 
     stream.applySnapshot(snapshotOf([user("问"), assistant("")], { turnId: 1 }));
 
@@ -354,7 +391,7 @@ describe("SessionStream：重连对齐（applySnapshot）", () => {
     expect(stream.state.status).toBe("streaming");
     expect(stream.state.turnId).toBe(1);
 
-    stream.applyDelta({ text: "继续" });
+    stream.applyChunk(textChunk("继续"));
 
     expect(stream.state.messages).toHaveLength(2);
     expect(stream.state.messages[1]!.content).toBe("一半继续");
@@ -371,7 +408,9 @@ describe("SessionStream：重连对齐（applySnapshot）", () => {
   it("工具调用组装期间重连：服务端最后一条是工具结果 → 增量后该消息仍是 tool，新正文进新的一条 assistant", () => {
     const stream = streaming();
     // 工具调用组装中：拼接态只有 tool_calls，正文与推理都是空串（= 早退分支的入口）
-    stream.applyToolCalls([{ index: 0, id: "call_1", name: "exec", arguments: '{"cmd":"ls"}' }]);
+    stream.applyChunk(
+      toolChunk({ index: 0, id: "call_1", name: "exec", arguments: '{"cmd":"ls"}' }),
+    );
 
     // 断线重连：服务端还在跑（phase 非空），最后一条是刚定型的工具结果
     stream.applySnapshot(
@@ -385,7 +424,7 @@ describe("SessionStream：重连对齐（applySnapshot）", () => {
     );
 
     // 服务端还在跑的下一片正文
-    stream.applyDelta({ text: "继续" });
+    stream.applyChunk(textChunk("继续"));
 
     expect(stream.state.messages.map((message) => message.role)).toEqual([
       AgentNS.Role.User,
@@ -403,10 +442,10 @@ describe("SessionStream：重连对齐（applySnapshot）", () => {
   it("早退分支之后下一片增量新建一条 assistant，而不是复用旧拼接态", () => {
     const stream = streaming();
     // 空正文的拼接态（工具调用组装期间），随后重连拿到一份快照
-    stream.applyToolCalls([{ index: 0, name: "exec", arguments: "{}" }]);
+    stream.applyChunk(toolChunk({ index: 0, name: "exec", arguments: "{}" }));
     stream.applySnapshot(snapshotOf([user("问")], { turnId: 1, phase: { kind: "streaming" } }));
 
-    stream.applyDelta({ text: "新" });
+    stream.applyChunk(textChunk("新"));
 
     // 旧拼接态（正文空）没有可续的内容：丢弃它，增量另起一条
     expect(stream.state.messages).toHaveLength(2);
@@ -489,16 +528,16 @@ describe("SessionStream：变更通知", () => {
     stream.setPhase({ kind: "queued" });
     const before = stream.state;
     // 空增量不是变更：不该通知（否则每片 usage chunk 都要重画一次屏）
-    stream.applyDelta({ text: "" });
+    stream.applyChunk(textChunk(""));
     expect(stream.state).toBe(before);
 
-    stream.applyDelta({ text: "字" });
+    stream.applyChunk(textChunk("字"));
     expect(seen.length).toBe(2);
     expect(seen.at(-1)).toBe(stream.state);
     expect(seen[0]).not.toBe(seen[1]);
 
     off();
-    stream.applyDelta({ text: "还有" });
+    stream.applyChunk(textChunk("还有"));
     expect(seen.length).toBe(2);
   });
 });

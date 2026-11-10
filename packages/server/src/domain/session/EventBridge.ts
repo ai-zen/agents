@@ -5,15 +5,14 @@
  *
  * 把 Agent（`agent.events`）发出来的东西翻成线上事件，两块：
  *
- *   1. **原样转达** core 的 9 条（`AGENT_EVENTS`：`open` / `chunk` / `chunk-parsed` /
- *      `parsed` / `tool-call-end` / `error` / `finally` / `sub-agent-start` /
+ *   1. **原样转达** core 的 10 条（`AGENT_EVENTS`：`open` / `chunk` / `chunk-parsed` /
+ *      `parsed` / `message` / `tool-call-end` / `error` / `finally` / `sub-agent-start` /
  *      `sub-agent-end`）—— 名字与时机都照抄 core，一行不改；
  *   2. **派生**服务端自己的那几条（`SESSION_EVENTS`）：阶段（`session-phase`）、
  *      本轮工具调用的组装态（`session-tool-calls`）。
  *
- * 顺带管 `LiveSession` 上的**流式影子**（`toolCalls` 去重器 / `pushedMessages` /
- * `subAgents` 表与两个序号）—— 它们只服务于「这一轮推过什么」，归零必须同进同退
- * （见 `resetStreamState`）。
+ * 顺带管 `LiveSession` 上的**流式影子**（`toolCalls` 去重器 / `subAgents` 表与两个序号）
+ * —— 它们只服务于「这一轮报过什么」，归零必须同进同退（见 `resetStreamState`）。
  *
  * ## 不管什么
  *
@@ -254,6 +253,37 @@ export class EventBridge {
       });
     };
 
+    /**
+     * 一条消息被追加或就地改完（core `message`）→ 原样转上线。
+     *
+     * 这条事件让服务端**不必再扫 `agent.messages` 做差集**：core 在唯一的追加口
+     * （`Agent.append`）与两处就地定型（工具跑完、一轮出错）广播它，订阅方按 `message.id`
+     * 覆盖即可。「推过哪些」那份记账与数组本身就是两个会漂的事实 —— 并行工具在执行**前**
+     * 就追加、跑完才翻终态，按下标推会把还在跑的那条当成结果发出去。
+     *
+     * 三类消息共用这一条：用户消息、占位 assistant（客户端拿它当折叠目标）、工具结果
+     * （先 `pending` 后终态，同 id 两次）。
+     */
+    const onMessage = (message: any) => {
+      this.emit({
+        event: AGENT_EVENTS.message,
+        sessionId: session.id,
+        turnId: session.turnId,
+        message,
+      });
+
+      // 过渡：当前客户端还在监听 `tool-call-end` 带货（它靠那条消息把工具卡片补上）。
+      // 客户端改成监听 `message` 之后，这几行与协议里的 `tool-call-end` 一起删。
+      const { role, status } = message as PhaseMessageLike;
+      if (role !== "tool" || !FINISHED_STATUSES.has(status ?? "")) return;
+      this.emit({
+        event: AGENT_EVENTS.toolCallEnd,
+        sessionId: session.id,
+        turnId: session.turnId,
+        message,
+      });
+    };
+
     const onParsed = (receiver: any) => {
       // core `parsed`：流结束、receiver 定稿。此后这一轮的正文不再变。
       this.emit({
@@ -267,10 +297,8 @@ export class EventBridge {
 
     // 工具跑完一个就报一次：并行时先完成的那个从「等待」里消失，
     // 否则界面会一直念着已经结束的工具名。
-    // 同一刻顺手把**刚定型的那条结果消息**推上线（core `tool-call-end` 就是「结果定了」
-    // 那一刻，`markResult` 是唯一的结果定型点），再往后拖就只有等到轮末的快照了。
+    // （「刚定型的那条消息」已经由 `message` 事件推上去了，这里只管阶段）
     const onToolCallEnd = () => {
-      this.emitAppendedMessages(session);
       this.emitPhase(session);
     };
 
@@ -338,7 +366,7 @@ export class EventBridge {
         index: entry.index,
       });
 
-      /** 子 Agent 的正文增量：只带 `subAgentId` 推给客户端，不推进主阶段（理由见上） */
+      /** 子 Agent 自己的正文增量：只带 `subAgentId` 推给客户端，不推进主阶段（理由见上） */
       const onSubChunk = (_receiver: unknown, chunk: any) => {
         // 同上：第二个参数才是 chunk（`chunk-parsed` 是两参，见 `onChunk`）
         const { text, reasoning } = deltaOf(chunk);
@@ -369,8 +397,33 @@ export class EventBridge {
         this.emitSubAgentEnded(session, entry);
       };
 
+      /**
+       * 子 Agent 的**原始片**：与主 Agent 同一条事件，带 `subAgentId` 归到它的对话里。
+       *
+       * 客户端要自己折消息（`applyChunk`），靠的就是这一条 —— 只转 `chunk-parsed`
+       * （正文增量）的话，子 Agent 的思考内容、工具调用、用量都折不出来。
+       */
+      subAgent.events.on("chunk", (chunk: any) => {
+        this.emit({
+          event: AGENT_EVENTS.chunk,
+          sessionId: session.id,
+          turnId: session.turnId,
+          subAgentId: entry.id,
+          chunk,
+        });
+      });
       subAgent.events.on("chunk-parsed", onSubChunk);
       subAgent.events.on("error", onSubError);
+      /** 子 Agent 自己的消息（占位 / 工具结果）走同一条事件，带上 `subAgentId` 归到它的对话里 */
+      subAgent.events.on("message", (message: any) => {
+        this.emit({
+          event: AGENT_EVENTS.message,
+          sessionId: session.id,
+          turnId: session.turnId,
+          subAgentId: entry.id,
+          message,
+        });
+      });
     };
 
     const onSubEnd = ({ subAgent }: { subAgent: SubAgentLike }) => {
@@ -383,6 +436,7 @@ export class EventBridge {
 
     events.on("open", onOpen);
     events.on("chunk", onRawChunk);
+    events.on("message", onMessage);
     events.on("chunk-parsed", onChunk);
     events.on("parsed", onParsed);
     events.on("tool-call-end", onToolCallEnd);
@@ -394,6 +448,7 @@ export class EventBridge {
     return () => {
       events.off("open", onOpen);
       events.off("chunk", onRawChunk);
+      events.off("message", onMessage);
       events.off("chunk-parsed", onChunk);
       events.off("parsed", onParsed);
       events.off("tool-call-end", onToolCallEnd);
@@ -458,50 +513,6 @@ export class EventBridge {
   }
 
   /**
-   * 把**刚刚定型**的工具结果消息逐条推上线（core `tool-call-end`）。
-   *
-   * 为什么不能只靠 `chunk-parsed`：那条事件的语义是**正文增量**（「再往后接这一段」），
-   * 而工具结果是一条**完整消息** —— `role: "tool"` + `tool_call_id`（与 `session-tool-calls`
-   * 里那次调用配对的身份）+ 定型后的正文。`tool_call_id` 不在任何一段正文里，客户端拿增量
-   * 拼不出来；硬拼就得自己包装一条「工具结果」，那是同一条消息的第二份表示。
-   *
-   * 为什么要逐条推、不等快照：`session.snapshot` 要等 `session-turn-end` 之后才拿得到，而一个长
-   * 轮次里工具能跑好几分钟 —— 用户盯着参数卡片，看不到它跑出了什么。core 那边结果本来就是
-   * 逐条定型的（`tool-call-end` 每个工具各发一次，谁先跑完谁先发），这里只是把那一刻已经
-   * 定型的消息顺手转出去。
-   *
-   * 为什么只推 `role === "tool"`：流式中的 assistant 消息还在拼，客户端已经在用
-   * `chunk-parsed` + 占位消息画它了；再从这条通道推一遍，同一条消息就有了两种表示
-   * （增量拼出来的那份和这条快照），收尾时还要对账「哪一份才是真的」。工具结果没有这个
-   * 问题：它推出去时已经定型，也没有别的通道在画它。
-   *
-   * 为什么判据是「定型了吗」而不是「下标越过游标了」：core 在工具**执行前**就把结果消息
-   * 追加进 `agent.messages`（`Message.Tool` → `status: "pending"`、正文为空），跑完才就地
-   * 翻成终态 —— 于是并行时先完成的那条往往排在**后面**，它前面那条还在 `pending`。只按下标
-   * 往后推会把还在跑的那条（正文空）当成结果发出去（客户端画出一张空卡片，等它真跑完时
-   * 游标已经越过它，那张卡片再也不会被补上）；反过来「等前面那条跑完再往后推」又会让先
-   * 完成的结果干等后完成的那个。所以两条判据：**已定型**（`FINISHED_STATUSES`，与
-   * `phaseOf` 判「谁还在跑」用的是同一份）+ **推过没有**（`session.pushedMessages`）。
-   */
-  emitAppendedMessages(session: LiveSession): void {
-    for (const message of session.agent.messages) {
-      if (session.pushedMessages.has(message)) continue;
-      const { role, status } = message as PhaseMessageLike;
-      // 只推工具结果（理由见上）：assistant 消息此刻还在流里，`chunk-parsed` 在画它
-      if (role !== "tool") continue;
-      // 还没定型：等它自己那次 `tool-call-end` —— 此刻它正文还是空的
-      if (!FINISHED_STATUSES.has(status ?? "")) continue;
-      session.pushedMessages.add(message);
-      this.emit({
-        event: AGENT_EVENTS.toolCallEnd,
-        sessionId: session.id,
-        turnId: session.turnId,
-        message,
-      });
-    }
-  }
-
-  /**
    * 把一个子 Agent 的终态发给客户端。
    *
    * 状态取**条目上的那个**（调用方在发之前已经写好）：`running` 走不到这里 ——
@@ -540,21 +551,16 @@ export class EventBridge {
   }
 
   /**
-   * 一轮的**流式状态**归零：阶段 + 工具调用的去重影子 + 「哪些消息已经推过」。
+   * 一轮的**流式状态**归零：阶段 + 工具调用的去重影子。
    *
-   * 为什么三件事合成一个动作：它们必须同进同退。只清阶段不清影子，下一轮若拼出来的名字
-   * 与参数与上一轮逐字相同（同一句话重试、同一个脚本再跑一次），去重判据会认为「没变」，
+   * 为什么两件事合成一个动作：它们必须同进同退。只清阶段不清影子，下一轮若拼出来的名字
+   * 与参数与上一轮逐字相同（同一句话重试、同一个脚本再跑一次），去重判据会认为“没变”，
    * 那整轮的工具卡片一张都不会出现 —— 一个只在重复劳动时才出现的 bug，碰上了也很难相信。
    * 写成一个动作，就不存在「改到一处、漏掉另一处」的形态。
-   *
-   * 消息游标归位用的是**以当前消息表为基线**（`new Set(messages)`）而不是 `clear()`：
-   * 清空之后下一轮第一次推就会把整段历史当成「刚追加的」重推一遍 —— 那是「跨轮泄漏」的
-   * 另一面（上一轮的东西漏到下一轮），而不是解药。
    */
   resetStreamState(session: LiveSession): void {
     session.phase.reset();
     session.toolCalls.reset();
-    session.pushedMessages = new Set(session.agent.messages);
   }
 
   private emit(event: ServerEvent): void {

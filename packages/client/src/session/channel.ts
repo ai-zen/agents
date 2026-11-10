@@ -98,6 +98,22 @@ const RECONNECT_BACKOFF_MS = [100, 300] as const;
 /** 服务端通知的码在**另一张表**里（`SERVER_NOTICE_CODES`），所以出口的类型是两者的并集 */
 export type ChannelNoticePayload = NoticePayload | Omit<ServerNoticeEvent, "event">;
 
+/**
+ * 一片 chunk 折出来的增量 —— {@link SessionChannelPolicy.onDelta} 的载荷。
+ *
+ * `sessionId` / `turnId` / `subAgentId` 让应用把「这一片的速率」归到正确的会话与轮次上；
+ * `text` / `reasoning` 是本片新增量，`completionTokens` 只有流末片才有（真实用量，拿它校准
+ * 比按字符估算准得多）。
+ */
+export interface StreamDelta {
+  sessionId: string;
+  turnId: number;
+  subAgentId?: string;
+  text: string;
+  reasoning: string;
+  completionTokens?: number;
+}
+
 export interface SessionChannelPolicy {
   /**
    * 服务端提问时怎么答（自动迁移的「交接方式三选一」）。
@@ -120,13 +136,15 @@ export interface SessionChannelPolicy {
    */
   onChange?: (immediate: boolean) => void;
   /**
-   * 收到一条正文增量（含**只带用量**的收尾 chunk 与子 Agent 的增量）。
+   * 一片 chunk 折完之后，把**本片的增量**交给应用（含只带用量的收尾片与子 Agent 的片）。
    *
    * 为什么它是一条旁路而不是状态字段：「本轮的生成速率」是纯展示口径（tok/s），它靠
    * 「每片的字符数 + 流末的真实 completionTokens + 墙钟」算出来，而**墙钟不属于状态机**
-   * （那会让 `SessionStream` 不再是纯的）。所以原始增量在这里漏一手给应用，状态机自己不碰。
+   * （那会让 `SessionStream` 不再是纯的）。所以增量在这里漏一手给应用，状态机自己不碰。
+   *
+   * 载荷是折叠方（`applyChunk`）给出的增量，不是原始事件：应用层不必再解一遍 chunk。
    */
-  onDelta?: (event: AgentChunkParsedEvent) => void;
+  onDelta?: (delta: StreamDelta) => void;
 }
 
 /**
@@ -625,28 +643,27 @@ export class SessionChannel {
       this.notify(event.phase === null);
     });
 
-    mine(AGENT_EVENTS.chunkParsed, (event) => {
-      // 「本轮的生成速率」靠原始增量算（含子 Agent 的：那些 token 也是真从网络来的）
-      this.policy.onDelta?.(event);
-      if (event.subAgentId) {
-        // 带 `subAgentId` 的增量属于那个子 Agent：拼到它自己的临时消息上，**不碰**主会话的
-        // 拼接状态，也不改 `phase` —— 子 Agent 的流是工具内部的事，主阶段此刻该停在
-        // 「等待 xxx 返回」
-        this.stream.subAgentDelta({
-          subAgentId: event.subAgentId,
-          text: event.text,
-          reasoning: event.reasoning,
-        });
-      } else {
-        // 只带用量的收尾 chunk 由状态机自己挡掉（它不拼正文，见 `applyDelta`）
-        this.stream.applyDelta({ text: event.text, reasoning: event.reasoning });
-      }
-      this.notify(false);
-    });
-
-    // 工具调用的组装态：整份替换（协议里定死的语义：同一个调用会被多次上报）
-    mine(SESSION_EVENTS.toolCalls, (event) => {
-      this.stream.applyToolCalls(event.toolCalls);
+    /**
+     * 一片**原始 chunk**：正文 / 推理 / 工具调用的组装 / 流末用量与结束原因全在它里面。
+     *
+     * 状态机用 core 的 `applyChunk` 往那条正在拼的 assistant 消息上折，应用拿折出来的
+     * 增量算速率。带 `subAgentId` 的片归子 Agent：折进**它自己**的消息，且不碰主阶段 ——
+     * 子 Agent 的流是工具内部的事，主阶段此刻该停在「等待 xxx 返回」。
+     */
+    mine(AGENT_EVENTS.chunk, (event) => {
+      const delta = event.subAgentId
+        ? this.stream.subAgentChunk(event.subAgentId, event.chunk)
+        : this.stream.applyChunk(event.chunk);
+      this.policy.onDelta?.({
+        sessionId: event.sessionId,
+        turnId: event.turnId,
+        ...(event.subAgentId ? { subAgentId: event.subAgentId } : {}),
+        text: delta.text,
+        reasoning: delta.reasoning,
+        ...(delta.completionTokens === undefined
+          ? {}
+          : { completionTokens: delta.completionTokens }),
+      });
       this.notify(false);
     });
 

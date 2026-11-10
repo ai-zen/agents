@@ -329,12 +329,12 @@ describe("SessionChannel：开一段会话并跑一轮", () => {
 
     // 服务端这一侧：追加用户消息 → 流式两片 → 收尾
     agent.messages.push({ role: "user", content: "你好" });
-    agent.fire("chunk-parsed", {}, { choices: [{ delta: { content: "答" } }] });
+    agent.fire("chunk", { choices: [{ delta: { content: "答" } }] });
     await waitFor(() => JSON.stringify(opened.stream.state.messages).includes("答"));
     expect(done.settled).toBe(false); // 还在跑：界面靠它管 busy
     // 真链路上「增量拼起来」与「最终正文」是同一串字；对不上时合并规则宁可重复也不吞字
     // （那条边界在 `stream.test.ts` 里单测）
-    agent.fire("chunk-parsed", {}, { choices: [{ delta: { content: "完了" } }] });
+    agent.fire("chunk", { choices: [{ delta: { content: "完了" } }] });
 
     agent.messages.push({ role: "assistant", content: "答完了", reasoning_content: "想一想" });
     agent.fire("finally");
@@ -738,7 +738,7 @@ describe("SessionChannel：换 id 与快照里的「还在跑」", () => {
     await waitFor(() => agent.sent.length === 1);
     // 先让服务端的阶段非空（快照里才有东西可给）
     agent.messages.push({ role: "user", content: "长任务" });
-    agent.fire("chunk-parsed", {}, { choices: [{ delta: { content: "一" } }] });
+    agent.fire("chunk", { choices: [{ delta: { content: "一" } }] });
     await waitFor(() => JSON.stringify(opened.stream.state.messages).includes("一"));
     const pending = watch(opened.waitForTurn(turnId));
     const connectsBefore = connects;
@@ -757,7 +757,7 @@ describe("SessionChannel：换 id 与快照里的「还在跑」", () => {
     expect(opened.stream.state.turnId).toBe(turnId);
 
     // 增量继续来，并且落在**同一条**消息上（合并规则负责这件事，见 stream.test.ts）
-    agent.fire("chunk-parsed", {}, { choices: [{ delta: { content: "二" } }] });
+    agent.fire("chunk", { choices: [{ delta: { content: "二" } }] });
     await waitFor(() => JSON.stringify(opened.stream.state.messages).includes("二"));
     expect(JSON.stringify(opened.stream.state.messages)).toContain("一二");
 

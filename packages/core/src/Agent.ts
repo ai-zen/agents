@@ -9,6 +9,7 @@ import { Message } from "./Message.js";
 import { Tool } from "./Tool.js";
 import { reconcileAbortedToolRounds } from "./AbortedToolRounds.js";
 import { reconcileAbortedMessages } from "./AbortedMessages.js";
+import { applyChunk } from "./applyChunk.js";
 
 // ---------------------------------------------------------------------------
 // 插件接口
@@ -246,6 +247,38 @@ export class Agent extends AgentContext {
   }
 
   /**
+   * 追加一条消息，并**立刻**广播出去（事件名 `message`）。
+   *
+   * ## 为什么覆写（而不是让调用方各自广播）
+   *
+   * 三处 append 都在 core 内部：用户消息（`send`）、占位 assistant（内循环开头）、工具结果
+   * （`handleToolCall`，执行前）。外部想「知道多了哪一条」只有扫 `messages` 做差集一条路 ——
+   * 那需要自己记住推过哪些，而这份记忆与数组本身是两个会漂的事实。广播点放在唯一的追加口上，
+   * 订阅方就只需要「按 id 覆盖」这一条规则。
+   *
+   * ## 载荷是消息本身
+   *
+   * 不是 `{ agent, message, index }`：订阅方要的就是「哪一条」，`message.id` 唯一标识它，
+   * 位置由接收方按自己的列表算（线上的那条事件同样只带消息，见协议 `session-message`）。
+   */
+  append(message: AgentNS.Message): AgentNS.Message {
+    const appended = super.append(message);
+    this.emitMessage(appended);
+    return appended;
+  }
+
+  /**
+   * 就地改完之后重发一次**同一条**消息（同 id，订阅方按 id 覆盖）。
+   *
+   * 两处调用：工具结果定型（`markResult` 把 `pending` 翻成终态）、一轮出错（`run` 的 catch
+   * 把错误正文写进 assistant）。它们都不追加新消息，但「那条消息」变了 —— 只靠追加事件，
+   * 订阅方会永远停在 `pending` 上。
+   */
+  private emitMessage(message: AgentNS.Message): void {
+    this.events.emit("message", message);
+  }
+
+  /**
    * Run the conversation with the server.
    * @param ctx 插件上下文（由 send() 传入；直接调用 run() 时构造默认上下文）
    */
@@ -357,6 +390,8 @@ export class Agent extends AgentContext {
       } catch (error: any) {
         currentReceiver.status = AgentNS.MessageStatus.Error;
         currentReceiver.content = error.message;
+        // 错误正文落在消息上：先让订阅方看到这条消息的新样子，再报「这一轮出错了」
+        this.emitMessage(currentReceiver);
         this.events.emit("error", error);
       } finally {
         // 每轮结束统一触发（无论正常/continue/异常）
@@ -424,143 +459,18 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * Parse the streamed response data.
+   * 消费一条流：每片广播两条事件，攒消息的规则在 {@link applyChunk}。
    *
-   * 消费 openai 官方 SDK 的流式 chunk（ChatCompletionChunk）。
-   * 注意：SDK 类型未声明 DeepSeek 等厂商特有的 reasoning_content 字段，
-   * 此处按 any 处理以兼容思维链增量。
+   * 顺序是硬契约：`chunk`（原始片，**解析之前**）→ `applyChunk` → `chunk-parsed`
+   * （两参：正在拼的 assistant 消息 + 那片原始 chunk）。解析抛错的那一片照样留下 `chunk`
+   * ——「这片到了」与「这片解出来了」是两件事。
+   *
+   * 攒消息本身**不在这里写**：见 `applyChunk.ts` 的文件头（第二份实现 = 漂移起点）。
    */
   async parseStreamData(receiver: AgentNS.Message, stream: AsyncIterable<ChatCompletionChunk>) {
     for await (const chunk of stream) {
       this.events.emit("chunk", chunk);
-
-      // 捕获流式最后一个 chunk 的 usage：钉到本轮 assistant 消息上（与 finish_reason 同处），
-      // 使用量随消息持久化，从而可按消息求和统计累计消耗（计费口径）与审计。
-      // 「最近一次用量」（`lastUsage`）由该字段派生，不再单独存一份。
-      if (chunk?.usage) {
-        receiver.usage = chunk.usage as unknown as AgentNS.Usage;
-      }
-
-      if (chunk?.choices?.[0]) {
-        const finishReason = chunk.choices[0].finish_reason;
-        if (finishReason) {
-          receiver.finish_reason = finishReason as AgentNS.FinishReason;
-        }
-
-        const delta = chunk.choices[0].delta as any;
-
-        if (delta?.content) {
-          if (delta.content instanceof Array) {
-            if (delta.content[0]) {
-              const deltaSection = delta.content[0];
-              const index = deltaSection.index!;
-
-              if (!(receiver.content instanceof Array)) {
-                receiver.content = [];
-              }
-
-              if (!receiver.content[index]) {
-                receiver.content[index] = {
-                  index,
-                  ...deltaSection,
-                };
-              }
-
-              if ("image_url" in deltaSection) {
-                const currentSection = receiver.content[index] as AgentNS.ImageUrlContentSection;
-                currentSection["type"] = "image_url";
-                currentSection["image_url"] ??= { url: "" };
-                currentSection["image_url"].url += deltaSection.image_url;
-              }
-
-              if ("text" in deltaSection) {
-                const currentSection = receiver.content[index] as AgentNS.TextContentSection;
-                currentSection["type"] = "text";
-                currentSection["text"] ??= "";
-                currentSection["text"] += deltaSection.text;
-              }
-            }
-          } else {
-            if (typeof receiver.content != "string") {
-              receiver.content = "";
-            }
-
-            receiver.content += delta.content;
-          }
-        }
-
-        if (delta?.tool_calls) {
-          if (delta.tool_calls[0]) {
-            const deltaToolCall = delta.tool_calls[0];
-            const index = deltaToolCall.index!;
-
-            if (!receiver.tool_calls) {
-              receiver.tool_calls = [];
-            }
-
-            if (!receiver.tool_calls[index]) {
-              receiver.tool_calls[index] = {
-                index,
-                function: {
-                  name: "",
-                  arguments: "",
-                  ...deltaToolCall.function,
-                },
-                ...deltaToolCall,
-              };
-            }
-
-            if (deltaToolCall.id) {
-              receiver.tool_calls[index]["id"] = deltaToolCall.id;
-            }
-
-            if (deltaToolCall.function?.name) {
-              receiver.tool_calls[index]["function"]!["name"] = deltaToolCall.function.name;
-            }
-
-            if (deltaToolCall.function?.arguments) {
-              if (
-                deltaToolCall.function.arguments.startsWith(
-                  receiver.tool_calls[index]["function"]!["arguments"]!,
-                )
-              ) {
-                receiver.tool_calls[index]["function"]!["arguments"] =
-                  deltaToolCall.function.arguments;
-              } else {
-                receiver.tool_calls[index]["function"]!["arguments"] +=
-                  deltaToolCall.function.arguments;
-              }
-            }
-          }
-        }
-
-        if (delta?.function_call) {
-          if (!receiver.function_call) {
-            receiver.function_call = {
-              name: "",
-              arguments: "",
-              ...delta.function_call,
-            };
-          }
-
-          if (delta.function_call.name) {
-            receiver.function_call!.name = delta.function_call.name;
-          }
-
-          if (delta.function_call.arguments) {
-            receiver.function_call!.arguments += delta.function_call.arguments;
-          }
-        }
-
-        if (delta?.reasoning_content) {
-          if (typeof receiver.reasoning_content != "string") {
-            receiver.reasoning_content = "";
-          }
-
-          receiver.reasoning_content += delta.reasoning_content;
-        }
-      }
-
+      applyChunk(receiver, chunk);
       this.events.emit("chunk-parsed", receiver, chunk);
     }
 
@@ -615,6 +525,8 @@ export class Agent extends AgentContext {
             ? AgentNS.MessageStatus.Aborted
             : status;
           this.innerLoopTasks.delete(toolTask);
+          // 定型就是「这条消息变了」：先按新状态重发它，再报「这个工具跑完了」这个时刻
+          this.emitMessage(resultReceiver);
           // 载荷里的状态取**已 clamp** 的 `resultReceiver.status`：被中止的工具不能报成 completed
           this.events.emit("tool-call-end", {
             agent: this,

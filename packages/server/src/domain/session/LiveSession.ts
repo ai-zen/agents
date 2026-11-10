@@ -4,7 +4,7 @@
  * ## 为什么单独一个文件
  *
  * 它不是任何一个类的私有财产：`SessionManager` 管它的注册与回收，`EventBridge` 管它上面的
- * 流式影子（`toolCalls` / `pushedMessages`），`Persistence` 读它的存档字段（`title` /
+ * 流式影子（`toolCalls`），`Persistence` 读它的存档字段（`title` /
  * `modelId` / `autoPersist`…），`QuestionBroker` 管它挂着的提问。
  *
  * 拆成四个类之后，如果这张形状留在其中某一个类里，另外三个就得 `import` 那个类 —— 那正是
@@ -15,7 +15,7 @@
  *
  *   注册表 / 回收      `holders` / `reclaimCancel` / `reclaimOnSettle`
  *   turn 生命周期      `turnId` / `turnSettled` / `turnFailed` / `settleDeferred`
- *   流式影子           `toolCalls` / `pushedMessages` / `subAgents` / `subAgent*Seq`
+ *   流式影子           `toolCalls` / `subAgents` / `subAgent*Seq`
  *   存档               `title` / `modelId` / `modelParams` / `autoPersist` / `updatedAt`
  *   提问               `questions` / `questionSeq`
  *
@@ -156,21 +156,6 @@ export interface LiveSession {
    * （见 `resetStreamState`）。
    */
   toolCalls: ToolCallReporter;
-  /**
-   * 本轮**已经推上线**的消息（按消息身份记，不是「推到第几条」）。
-   *
-   * 为什么必须是集合而不是一个下标：core 在工具**执行前**就把结果消息追加进
-   * `agent.messages`（`Message.Tool` → `status: "pending"`、正文空），跑完才就地翻成终态；
-   * 并行时先完成的那条于是往往排在**后面**。一个只增不减的下标会在「先推了下标 3」之后
-   * 把下标 2 当成已经推过 —— 那条真正跑完的慢工具结果就再也发不出去。
-   * 同理它也顶得住 `rollback`（`splice` 截断消息表）：按下标记会在截断后指到别的消息上，
-   * 按身份记不会。
-   *
-   * 与 `toolCalls` 并排放在会话上、而不是做成 `EventBridge.attach` 的闭包变量：理由逐字相同
-   * （换 Agent 时闭包随重挂消失，而一轮收尾没有闭包可清），归零的落点也必须是同一个
-   * （见 `resetStreamState`）。
-   */
-  pushedMessages: Set<unknown>;
   /** 本轮是否已经出过错（`error` 与 `finally` 都会到，收尾只报一次） */
   turnFailed: { code: string; message: string } | null;
   turnSettled: boolean;

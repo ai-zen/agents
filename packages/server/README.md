@@ -508,7 +508,7 @@ and `session.subAgent.snapshot` returns that sub-agent's own transcript. Two inv
 
 ### The agent's own events go out verbatim: same names, same moments
 
-Nine of the seventeen events are core's own (`AGENT_EVENTS`) and the server forwards them
+Ten of the eighteen events are core's own (`AGENT_EVENTS`) and the server forwards them
 **unchanged**, at the moment core emits them — renaming them on the wire would mean keeping a
 translation table across protocol, server and client, and a table only ever drifts:
 
@@ -518,7 +518,8 @@ translation table across protocol, server and client, and a table only ever drif
 | `chunk` | core `chunk` — one raw chunk arrived, **before** it is parsed |
 | `chunk-parsed` | core `chunk-parsed` — that chunk is parsed and `receiver` updated in place |
 | `parsed` | core `parsed` — the stream ended, `receiver` is final |
-| `tool-call-end` | core `tool-call-end` — one tool result is final (payload: that message) |
+| `message` | core `message` — one message was appended or finalised in place (payload: that message) |
+| `tool-call-end` | core `tool-call-end` — one tool finished (the message itself travels on `message`) |
 | `error` | core `error` — the turn failed, **before** `finally` |
 | `finally` | core `finally` — core is done with the turn |
 | `sub-agent-start` / `sub-agent-end` | core's delegation boundary |
@@ -566,41 +567,32 @@ Two server-side rules:
   resets only when the turn settles, at the same moment `PhaseTracker.reset()` runs, so a
   retry of the same command in the next turn still produces its own event.
 
-### Tool results during streaming: one complete message, the moment each tool settles
+### Messages the server constructs: one complete message, the moment it changes
 
-`tool-call-end` carries `{ sessionId, turnId, message }`, where `message` is **the
-message itself** — today a tool result (`role: "tool"` + `tool_call_id` + content). It goes out
-the moment that tool finishes (core's `tool-call-end`), not at `session-turn-end`. Main agent only;
-sub-agents have their own channel.
+Four messages are **not** derivable from the stream: the user message (`send` constructs it), the
+placeholder assistant (every inner loop starts by appending one, and the stream is folded into
+it), and tool results (the product of *executing* a tool, not of any chunk). Core emits `message`
+at its single append point (`Agent.append`) and at the two places it finalises a message in place
+(a tool settling, a failed turn); the server forwards it verbatim:
 
-Why not just `chunk-parsed`:
+```
+{ event: "message", sessionId, turnId, subAgentId?, message }   // message: the complete Message
+```
 
-- `chunk-parsed` is a **text stream** (every frame means "append this"). A tool result is a
-  **complete message**, and its identity — `tool_call_id`, the pairing with a card drawn from
-  `session-tool-calls` — is not inside any piece of text. A client that only had deltas would have
-  to invent a message shape of its own, which is a second representation of the same thing.
-- Why not wait for the snapshot: `session.snapshot` is only available after `session-turn-end`, and a
-  turn can run for minutes — the user stares at the argument card without ever seeing what the
-  tool produced. Core already settles results one at a time (one `tool-call-end` per tool,
-  fastest first); holding them to the end of the turn buys nothing.
-- Why **only** tool results: a streaming assistant message is still being assembled, and the
-  client is already drawing it from `chunk-parsed` plus a placeholder message. Pushing it here
-  as well gives one message two representations, which then have to be reconciled. A tool result
-  has neither problem: it is final when it goes out, and nothing else is drawing it.
+`message.id` is the upsert key (`AgentNS.Message` requires it), so one tool result goes out twice —
+`pending` before the tool runs, final afterwards — and the client replaces the entry instead of
+needing a second merging rule. Sub-agent messages travel on the same event with `subAgentId`, so a
+delegated conversation no longer needs a snapshot round-trip to show its tool results.
 
-Two server-side rules:
+Why not derive them from `chunk`: `chunk-parsed` is a **text stream** (every frame means "append
+this"), while a tool result is a **complete message** whose identity (`tool_call_id`, the pairing
+with a card drawn from `session-tool-calls`) is not inside any piece of text. Why not wait for the
+snapshot: `session.snapshot` only exists after `session-turn-end`, and a turn can run for minutes —
+the user would stare at the argument card without ever seeing what the tool produced.
 
-- **Only settled results go out, in no particular order.** Core appends the tool result message
-  *before* the tool runs (`Message.Tool` → `status: "pending"`, empty content) and flips it to a
-  final status at the settle point — so in a parallel batch the first tool to finish is usually
-  the *later* entry in `agent.messages`, with a still-pending entry in front of it. "Everything
-  past a high-water mark" would push that pending entry with an empty body and then never
-  correct it; "wait for the earlier entry first" would make the fast tool wait for the slow one.
-  The test is therefore *settled* (`FINISHED_STATUSES`, the same test `EventBridge.phaseOf` uses to
-  answer "who is still running") **and** *not pushed yet* (`LiveSession.pushedMessages`).
-- **The cursor resets with the turn.** `resetStreamState` — the same moment `PhaseTracker.reset()`
-  runs — rebases it onto the current message list, so the next turn's first result still produces
-  its own event while history is never pushed a second time.
+`tool-call-end` is still forwarded next to it (`role === "tool"` && settled). It is a
+**transitional** derivation kept for today's clients, which draw tool cards from it; it goes away
+together with the client-side handler once clients read `message`.
 
 ### Notices: two channels, on one wire
 

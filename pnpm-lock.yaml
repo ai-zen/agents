@@ -23,13 +23,13 @@ importers:
 
   packages/client:
     dependencies:
+      '@ai-zen/agents-core':
+        specifier: workspace:^
+        version: link:../core
       '@ai-zen/agents-protocol':
         specifier: workspace:^
         version: link:../protocol
     devDependencies:
-      '@ai-zen/agents-core':
-        specifier: workspace:*
-        version: link:../core
       '@ai-zen/agents-sdk':
         specifier: workspace:*
         version: link:../sdk

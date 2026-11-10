@@ -274,6 +274,8 @@ export const assembling = () => ({ role: "assistant" as const });
  * 正文还没有、`status` 是 `pending`；跑完才由 `markResult` 就地翻成终态。
  */
 export const toolResult = (toolCallId: string, name: string, content = "") => ({
+  // 真件每条消息都有 id（`Message` 构造时生成）：线上按 id 覆盖，假件必须同形
+  id: `m-${toolCallId}`,
   role: "tool" as const,
   tool_call_id: toolCallId,
   name,
@@ -282,16 +284,16 @@ export const toolResult = (toolCallId: string, name: string, content = "") => ({
 });
 
 /**
- * 按 **core 的真实契约**驱动一次「某个工具跑完了」（`tool-call-end`）。
+ * 按 **core 的真实契约**驱动一次「某个工具跑完了」：`message` → `tool-call-end`。
  *
- * 真件是 `Agent.handleToolCall` 里的 `markResult`（`packages/core/src/Agent.ts`），它做两件事：
+ * 真件是 `Agent.handleToolCall` 里的 `markResult`（`packages/core/src/Agent.ts`），它做三件事：
  *   1. 把 `resultReceiver.status` 翻成终态（被 abort 的一律 clamp 成 `aborted`）；
- *   2. `this.events.emit("tool-call-end", { agent, toolCall, result })` —— **三个字段**，
+ *   2. `this.emitMessage(resultReceiver)` —— 按新状态重发**同一条**消息（`message` 事件）；
+ *   3. `this.events.emit("tool-call-end", { agent, toolCall, result })` —— **三个字段**，
  *      `result` 就是刚定型的那条消息本身（`ToolCallEndContext`）。
  *
- * 这条事件在过去那组用例里是按 `{ id }` 这种自造形状 fire 的（`onToolCallEnd` 当时不读
- * 载荷，所以形状错了也一直是绿的，连第三个字段叫什么都不会有人发现）。假件的形状必须
- * 照抄真件：`tool-call-end` 的载荷形状就是「结果消息从哪来」这件事的契约。
+ * 两步都要照抄：只 fire `tool-call-end` 的话，`message` 那条通道在用例里永远收不到东西，
+ * 而它正是「服务端不必再扫 `agent.messages` 做差集」的全部依据。
  */
 export function fireToolCallEnd(
   agent_: FakeAgent,
@@ -299,6 +301,7 @@ export function fireToolCallEnd(
   status: "completed" | "error" | "aborted" = "completed",
 ): void {
   result.status = status;
+  agent_.fire("message", result);
   agent_.fire("tool-call-end", {
     agent: agent_,
     toolCall: { id: result.tool_call_id, type: "function", function: { name: result.name } },

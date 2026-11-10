@@ -2,6 +2,7 @@ export * from "./AgentNS.js";
 export * from "./Common.js";
 export * from "./Tools/index.js";
 export * from "./Agent.js";
+export * from "./applyChunk.js";
 export * from "./AgentContext.js";
 export * from "./AbortedToolRounds.js";
 export * from "./AbortedMessages.js";
