@@ -2567,3 +2567,106 @@ describe("SessionManager：自动标题（第一轮 turn.end 之后异步起名�
     expect(store.records.get(sessionId)!.title).toBeUndefined();
   });
 });
+
+describe("SessionManager：迁移策略（omit 与 prune 是两种结局，不是两个开关）", () => {
+  let store: MemoryStore;
+  let workspace: string;
+  let strategyManager: SessionManager;
+  let counter = 0;
+
+  beforeEach(async () => {
+    store = new MemoryStore();
+    counter = 0;
+    workspace = await fs.mkdtemp(join(tmpdir(), "aiz-migrate-strategy-"));
+    strategyManager = new SessionManager({
+      createAgent: async () => agent,
+      nextSessionId: () => `chat_${++counter}`,
+      storeFor: () => store,
+      handoff: { aiZenDir: join(workspace, "ai-zen"), homeDir: workspace },
+    });
+    events = [];
+    strategyManager.subscribe((event) => events.push(event));
+  });
+
+  afterEach(async () => {
+    await fs.rm(workspace, { recursive: true, force: true });
+  });
+
+  /**
+   * 开一段「真跑过一轮」的会话（`turnId` 到 1，迁移之后要看到它继续累加）。
+   *
+   * 消息必须照真件的形状开头：真 Agent 的 `messages` 第一条是 `definition.messages` 里的
+   * 模板（system）。SDK 的 `omit` 就是按「前 `definition.messages.length` 条是模板」来判
+   * 的 —— 假件漏了这条 system，断言就会得到 `omit: undefined`，而真件永远不会那样。
+   */
+  const openChatted = async (): Promise<string> => {
+    const { sessionId } = await strategyManager.create({ workspaceId: "ws-1", path: workspace });
+    strategyManager.send(sessionId, "旧任务");
+    agent.messages = [
+      { role: "system", content: "模板" },
+      { role: "user", content: "旧任务" },
+      { role: "assistant", content: "旧答复" },
+    ];
+    agent.fire("finally");
+    await settled();
+    return sessionId;
+  };
+
+  it("omit：同一个 sessionId，历史标 omit 留在原处，不发 idChanged，存档只有一份", async () => {
+    const sessionId = await openChatted();
+
+    const result = await strategyManager.migrate(sessionId, undefined, "omit");
+
+    // 还是同一段会话：内容没变（只是旧消息不再发给模型），没有理由换个身份
+    expect(result.sessionId).toBe(sessionId);
+    expect(pick("session.idChanged")).toEqual([]);
+
+    // 历史留着（可审计 / 可回放），标的是「不再发送」；模板不动，末尾追加交接断点
+    const messages = agent.messages as Array<Record<string, unknown>>;
+    expect(messages[0]).toEqual({ role: "system", content: "模板" });
+    expect(messages[1]).toMatchObject({ role: "user", content: "旧任务", omit: true });
+    expect(messages[2]).toMatchObject({ role: "assistant", content: "旧答复", omit: true });
+    expect(JSON.stringify(messages.at(-1))).toContain(result.handoffPath);
+
+    // 存档就是同一份：没有写出第二个 id，也没有把旧档删掉
+    expect([...store.records.keys()]).toEqual([sessionId]);
+    expect(store.records.get(sessionId)!.messages).toEqual(messages);
+    expect((await store.lastSession())!.id).toBe(sessionId);
+
+    // `turnId` 继续累加（迁移本身也是一轮），收尾事件仍在同一个 id 上
+    expect((await strategyManager.snapshot(sessionId)).turnId).toBe(2);
+    expect(pick("turn.end").at(-1)).toMatchObject({ sessionId, ok: true });
+
+    // 不再有「旧会话已另存」那条通知：它根本没有被另存成一段
+    expect(pick("session.notice").map((notice) => notice.code)).toEqual([
+      "handoffWriting",
+      "migrationDegraded", // 假 Agent 无 write 工具 → 摘要模式
+      "handoffPath",
+      "handoffMigrated",
+      "handoffMigratedHint",
+    ]);
+  });
+
+  it("prune：显式传与不传逐字同一条路（换 id、旧段作为存档留在旧 id 下）", async () => {
+    const sessionId = await openChatted();
+
+    const result = await strategyManager.migrate(sessionId, undefined, "prune");
+
+    expect(result.sessionId).not.toBe(sessionId);
+    expect(pick("session.idChanged")).toEqual([
+      { event: "session.idChanged", from: sessionId, sessionId: result.sessionId },
+    ]);
+    // 两份存档：旧的是交接前的完整历史，新的是「模板 + 交接断点」
+    expect(store.records.get(sessionId)!.messages).toEqual([
+      { role: "system", content: "模板" },
+      { role: "user", content: "旧任务" },
+      { role: "assistant", content: "旧答复" },
+    ]);
+    expect(JSON.stringify(store.records.get(result.sessionId)!.messages)).not.toContain("旧任务");
+    // 旧会话存档里的通知仍然先说「已存档」（这一条 prune 才有意义）
+    expect(pick("session.notice")[0]).toMatchObject({
+      code: "handoffArchived",
+      params: { sessionId },
+    });
+  });
+});

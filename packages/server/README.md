@@ -370,10 +370,14 @@ notices instead of sentences, and the session-id switch.
 
 Three things are worth knowing before touching it:
 
-- **`migrate` changes `sessionId`.** The old id is archived first (before pruning, so the
-  full history survives), the handoff round is settled **on the old id**, and only then does
-  the live session move to the new key. A client sees `turn.end` for the session it knows,
-  and learns the new id from the method result.
+- **`migrate` has a `strategy`, and it decides identity.** `prune` (the default, i.e. the
+  pre-split behaviour) physically drops the history, so the old segment only survives as an
+  archive: the old id is archived first (before pruning), the handoff round is settled **on
+  the old id**, and only then does the live session move to a new key. `omit` marks the old
+  messages `omit: true` and keeps them, so nothing about the session changed — it **keeps its
+  id** (no `idChanged`), `turnId` keeps counting, and the archive stays one file (written on
+  settle). The two are not separate knobs: pruning means "these are two conversations",
+  omitting means "same conversation, older messages are no longer sent".
 - **Both are one round.** They bump `turnId` like `send` does, so phase/delta events belong
   to a real turn; the settling is owned by the method's promise (`settleDeferred`), because
   the SDK also emits `finally` for the handoff round itself.

@@ -25,6 +25,7 @@ import { FileSessionStore } from "../service/store/FileSessionStore.js";
 import { encodeFrame, FrameDecoder } from "../protocol/frames.js";
 import { PROTOCOL_VERSION } from "../protocol/messages.js";
 import { EVENT_METHODS, SESSION_METHODS, WORKSPACE_METHODS } from "../protocol/sessions.js";
+import type { ServerEvent } from "../protocol/sessions.js";
 
 /** 交接文档正文：SDK 有 400 字节的有效性阈值 */
 const DOC = `# 交接\n\n${"- 桩\n".repeat(80)}`;
@@ -448,6 +449,49 @@ describe("会话处理器（真 socket）", () => {
     expect(saved.sessions.map((session: any) => session.sessionId).sort()).toEqual(
       [created.sessionId, result.sessionId].sort(),
     );
+  });
+
+  it("session.migrate 的 strategy 只认两个取值：别的原样回 bad-params", async () => {
+    await startDaemon();
+    const created = (await client!.call(SESSION_METHODS.create, {
+      workspaceId: "ws-1",
+      path: dir,
+    })) as { sessionId: string };
+    agent.messages = [{ role: "user", content: "旧任务" }];
+
+    await expect(
+      client!.call(SESSION_METHODS.migrate, { sessionId: created.sessionId, strategy: "drop" }),
+    ).rejects.toThrow(/bad-params/);
+    // 消息原样未动：参数错不会走到交接那一步
+    expect(agent.messages).toEqual([{ role: "user", content: "旧任务" }]);
+  });
+
+  it("session.migrate{strategy:'omit'}：同一个 id 回来，会话列表里也只有这一段", async () => {
+    await startDaemon();
+    // 事件从这个管理器的**源头**上收（这条用例要看的是「没发 idChanged」，不是接线）
+    const seen: ServerEvent[] = [];
+    manager.subscribe((event) => seen.push(event));
+    const created = (await client!.call(SESSION_METHODS.create, {
+      workspaceId: "ws-1",
+      path: dir,
+    })) as { sessionId: string };
+    agent.messages = [
+      { role: "system", content: "模板" },
+      { role: "user", content: "旧任务" },
+    ];
+
+    const result = (await client!.call(SESSION_METHODS.migrate, {
+      sessionId: created.sessionId,
+      strategy: "omit",
+    })) as any;
+
+    expect(result.sessionId).toBe(created.sessionId);
+    // 没换 id，就没有 idChanged 事件（客户端不会把后面的请求切到另一个 id 上）
+    expect(seen.filter((event) => event.event === "session.idChanged")).toEqual([]);
+    const saved = (await client!.call(SESSION_METHODS.list, { workspaceId: "ws-1" })) as any;
+    expect(saved.sessions.map((session: any) => session.sessionId)).toEqual([created.sessionId]);
+    // 旧消息还在，只是标了不再发送
+    expect(agent.messages[1]).toMatchObject({ content: "旧任务", omit: true });
   });
 
   it("session.handoff 的 mode 只认两个取值：别的原样回 bad-params", async () => {

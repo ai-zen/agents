@@ -3,8 +3,9 @@
  *
  * ## 为什么服务端只包一层，业务全在 SDK
  *
- * 「停工 → 读 Skill → 写文档 → 校验 → self 失败降级 summary → 剔除历史 → 注入交接断点」
- * 这一整套在 SDK 的 `HandoffService` 里，是**与产品无关**的流程。CLI 时代这一层补的是
+ * 「停工 → 读 Skill → 写文档 → 校验 → self 失败降级 summary → 按策略处置历史（`prune`
+ * 剔除 / `omit` 标记）→ 注入交接断点」这一整套在 SDK 的 `HandoffService` 里，是**与产品
+ * 无关**的流程。CLI 时代这一层补的是
  * 产品侧副作用（进度提示、旧会话存档、新会话落盘），本文件同样是这个角色，只是副作用
  * 换成了服务端的三件事：
  *
@@ -32,8 +33,10 @@ import {
   type HandoffContext,
 } from "@ai-zen/agents-sdk";
 import {
+  DEFAULT_MIGRATION_STRATEGY,
   SESSION_NOTICE_CODES,
   type HandoffMode,
+  type MigrationStrategy,
   type NoticePayload,
 } from "../../protocol/sessions.js";
 import { agentPaths } from "../agent/agentPaths.js";
@@ -93,8 +96,9 @@ export class SessionHandoff {
     this.service = new HandoffService({
       // 交接文档跟着项目走（与 CLI 的 `<cwd>/.ai-zen/handoffs` 是同一个位置）
       handoffDir: join(workspacePath, ".ai-zen", "handoffs"),
-      // 与外层语义一致：迁移后只留「模板 + 交接断点」，历史不掺在新会话里
-      strategy: "prune",
+      // 不在这里写 `strategy`：历史怎么处置由**调用方**决定（`migrate()` 的第三个参数），
+      // 因为它与「换不换 sessionId」是同一件事（见协议里的 `MigrationStrategy`）。写在这
+      // 里就是第二份缺省值，而它曾把 `omit` 路径静默地变成了 `prune`。
       // 交接模板的唯一真相源是磁盘上的 `handoff` Skill（可被项目级覆盖）
       skillDirs: paths.skillsDirs.filter((dir) => existsSync(dir)),
       onBeforeHandoff: (ctx: HandoffContext) => {
@@ -165,9 +169,19 @@ export class SessionHandoff {
     return { handoffPath: ctx.handoffPath, mode: ctx.mode };
   }
 
-  /** 交接 + 剔除历史。换 id 与落盘由会话层接着做（见本文件头的「为什么」） */
-  async migrate(agent: HandoffAgentLike, mode?: HandoffMode): Promise<HandoffOutcome> {
-    const ctx = await this.service.migrate({ agent: asSdkAgent(agent), mode });
+  /**
+   * 交接 + 按 `strategy` 处置历史。换不换 id 由会话层接着做（见本文件头的「为什么」）。
+   *
+   * `strategy` **必须**由调用方递下去：SDK 的默认值是 `omit`，而服务端的缺省是 `prune`
+   * （分家之前的行为，见协议里的 `DEFAULT_MIGRATION_STRATEGY`）。中间这一跳丢了它，用户传的
+   * `omit` 就会静默变成 SDK 的默认值，而两条路对「这段会话还叫不叫这个名字」的结论完全相反。
+   */
+  async migrate(
+    agent: HandoffAgentLike,
+    mode?: HandoffMode,
+    strategy: MigrationStrategy = DEFAULT_MIGRATION_STRATEGY,
+  ): Promise<HandoffOutcome> {
+    const ctx = await this.service.migrate({ agent: asSdkAgent(agent), mode, strategy });
     return { handoffPath: ctx.handoffPath, mode: ctx.mode };
   }
 }

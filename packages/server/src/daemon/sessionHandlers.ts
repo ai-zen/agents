@@ -30,6 +30,7 @@ import {
   WORKSPACE_METHODS,
   type HandoffMode,
   type MessageContent,
+  type MigrationStrategy,
   type SessionAnswerResult,
   type SessionAttachResult,
   type SessionCancelResult,
@@ -332,7 +333,11 @@ export function createSessionHandlers(
     },
 
     [SESSION_METHODS.migrate]: async (params): Promise<SessionMigrateResult> => {
-      return await manager.migrate(requireString(params, "sessionId"), optionalMode(params));
+      return await manager.migrate(
+        requireString(params, "sessionId"),
+        optionalMode(params),
+        optionalStrategy(params),
+      );
     },
   };
 }
@@ -372,6 +377,25 @@ function optionalMode(params: unknown): HandoffMode | undefined {
   if (value === undefined || value === null) return undefined;
   if (value !== "self" && value !== "summary") {
     throw badParams(`invalid "mode" (expected self | summary)`);
+  }
+  return value;
+}
+
+/**
+ * 迁移的历史处置策略：只有两个取值，别的值不猜。
+ *
+ * 为什么缺省是 `undefined` 而不是在这里写成 `"prune"`：缺省值只有一个定义处（
+ * `SessionManager.migrate` 的参数默认值），handler 再写一份就等于把「缺省是什么」
+ * 说了两遍 —— 改一处忘一处时，症状是「客户端不传时行为不一样」，最难查的一类。
+ *
+ * 猜错的代价很实在：`prune` 与 `omit` 绑着「换不换 sessionId」，猜错等于把用户的会话
+ * 变成另一段（或者凭空多一条存档）。
+ */
+function optionalStrategy(params: unknown): MigrationStrategy | undefined {
+  const value = (params as Record<string, unknown> | null | undefined)?.["strategy"];
+  if (value === undefined || value === null) return undefined;
+  if (value !== "prune" && value !== "omit") {
+    throw badParams(`invalid "strategy" (expected prune | omit)`);
   }
   return value;
 }

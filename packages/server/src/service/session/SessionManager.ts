@@ -56,7 +56,9 @@ import type {
 import {
   SESSION_EVENTS,
   SESSION_NOTICE_CODES,
+  DEFAULT_MIGRATION_STRATEGY,
   type HandoffMode,
+  type MigrationStrategy,
   type NoticeLevel,
   type NoticePayload,
   type ServerEvent,
@@ -729,7 +731,11 @@ export class SessionManager {
         params: { sessionId: previousId },
       });
 
-      await this.handoffOf(session).migrate(asHandoffAgent(session.agent), mode);
+      await this.handoffOf(session).migrate(
+        asHandoffAgent(session.agent),
+        mode,
+        DEFAULT_MIGRATION_STRATEGY,
+      );
       await this.adopt(session, store);
     } finally {
       session.settleDeferred = false;
@@ -885,48 +891,73 @@ export class SessionManager {
   }
 
   /**
-   * 交接 + 开新会话（`/migrate`）：写文档、剔除历史、**换 sessionId**。
+   * 交接 + 开新会话（`/migrate`）：写文档、按 `strategy` 处置历史；`prune` 还要换 sessionId。
    *
-   * 三步顺序是定死的：
+   * ## `prune`（缺省，分家之前的行为）的顺序是定死的
+   *
    *   1. 先把旧会话存进存档（**交接回合之前**的完整历史）。存不下去就在这里打住，
    *      此时内存里什么都还没动；反过来「先 prune 再存」则是文档写了、历史没了；
    *   2. 交接（SDK 负责：写文档、校验、降级、剔除历史、注入断点）；
    *   3. 收尾（发在旧 id 上）→ 换 id 并落盘新会话。
    *
-   * `turnId` 是**会话内**的轮次编号，换 id 后继续递增 —— 不清零。不清零是因为自动迁移
-   * 发生在**一轮内部**：那一轮还没收尾，把计数归零会让它的 `turn.end` 带一个客户端
-   * 从没见过的编号（它会在旧轮次上一直等下去）。
+   * ## `omit` 是另一条路，而且「不存档、不换 id」
    *
-   * 第 3 步把「收尾」放在「换 id」之前：客户端先看到旧会话这一轮结束，再收到响应里的
-   * 新 id，两次`session.phase`/`turn.end` 的 `sessionId` 才不会指向一个它还不知情的会话。
+   * `omit` 不剔历史（只打 `omit: true` 标记），所以：
+   *   - **不预存旧档**：存档就是同一份文件，收尾时会把「完整历史（带标记）」写回去；
+   *     先存一遍等于同一份东西写两次，还会多发一条不实的 `handoffArchived`
+   *     （用户会以为旧会话被另存成了一段）；
+   *   - **不换 id**：内容没变（只是旧消息不再发给模型），它还是同一段对话。换 id 会让
+   *     刚聊过的那一段在侧栏里凭空消失，存档里多一条不知道从哪来的幽灵。于是也不发
+   *     `session.idChanged`；
+   *   - 落盘改由收尾负责（`persistOnSettle`）：`turn.end` 之前写完，存档里那份就是
+   *     带 `omit` 标记的完整历史 —— 下次 `attach` 装回来，旧消息仍然不会发给模型。
+   *
+   * 两条路共用的部分：`turnId` 是**会话内**的轮次编号，不因迁移清零；收尾在 `prune` 下
+   * 必须 `await` 且发生在换 id **之前** —— 客户端先看到旧会话这一轮结束，再收到响应里
+   * 的新 id，两次 `session.phase` / `turn.end` 的 `sessionId` 才不指一个它还不知道的会话。
    */
-  async migrate(sessionId: string, mode?: HandoffMode): Promise<SessionMigrateResult> {
+  async migrate(
+    sessionId: string,
+    mode?: HandoffMode,
+    strategy: MigrationStrategy = DEFAULT_MIGRATION_STRATEGY,
+  ): Promise<SessionMigrateResult> {
     const session = this.requireIdle(sessionId);
     const store = await this.storeFor(session.workspaceId);
-    // 迁移必须能存档：prune 之后旧历史只存在于存档里（内存里只剩模板 + 断点）
+    // 迁移必须能存档：prune 之后旧历史只存在于存档里（内存里只剩模板 + 断点）；omit 的
+    // 「旧消息不再发给模型」这条事实也只能靠存档记住（否则 attach 回来又是一份干净历史）
     if (!store)
       throw codedError("no-store", `no session store for workspace ${session.workspaceId}`);
 
     this.beginTurn(session);
     session.settleDeferred = true;
+    // 收尾该不该写档：prune 已经自己存过完整历史（再写会把 prune 后的版本盖上去），
+    // omit 则**必须**写（存档里那份要带上 `omit` 标记）
+    session.persistOnSettle = strategy === "omit";
     try {
       const previousId = session.id;
-      await store.write(this.recordOf(session, [...session.agent.messages], previousId));
-      await store.setLastSession(previousId);
-      this.notice(previousId, {
-        level: "info",
-        code: SESSION_NOTICE_CODES.handoffArchived,
-        params: { sessionId: previousId },
-      });
+      if (strategy === "prune") {
+        await store.write(this.recordOf(session, [...session.agent.messages], previousId));
+        await store.setLastSession(previousId);
+        this.notice(previousId, {
+          level: "info",
+          code: SESSION_NOTICE_CODES.handoffArchived,
+          params: { sessionId: previousId },
+        });
+      }
 
-      const outcome = await this.handoffOf(session).migrate(asHandoffAgent(session.agent), mode);
+      const outcome = await this.handoffOf(session).migrate(
+        asHandoffAgent(session.agent),
+        mode,
+        strategy,
+      );
 
       session.settleDeferred = false;
-      // 收尾必须 **await**：它发的是**旧 id** 的 `turn.end`，而下一行就把 id 换掉了。
-      // 不等它跑完，客户端可能先收到新 id 的响应，再收一条指向旧会话的收尾事件。
+      // 收尾必须 **await**：它发的是收尾那一刻 id 的 `turn.end`，而下一行可能就把 id
+      // 换掉了。不等它跑完，客户端可能先收到新 id 的响应，再收一条指向旧会话的收尾事件。
       await this.settleTurn(session);
 
-      const nextId = await this.adopt(session, store);
+      // 换 id 只属于 prune（理由见方法注释）：omit 下 `session.id` 原样返回
+      const nextId = strategy === "prune" ? await this.adopt(session, store) : session.id;
       return {
         sessionId: nextId,
         handoffPath: outcome.handoffPath,

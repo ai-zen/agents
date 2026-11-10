@@ -214,3 +214,36 @@ describe("SessionHandoff：取消", () => {
     expect(await handoffFiles()).toEqual(before);
   });
 });
+
+describe("SessionHandoff：迁移策略由调用方决定（这一层只负责递下去）", () => {
+  it("omit：历史留在原处、标成不再发送（模板那几条不动）", async () => {
+    const agent = makeAgent({ writeTool: true });
+    agent.messages = [
+      { role: "system", content: "模板" },
+      { role: "user", content: "旧任务" },
+      { role: "assistant", content: "旧答复" },
+    ];
+
+    const outcome = await makeService().migrate(agent, undefined, "omit");
+
+    const messages = agent.messages as Array<Record<string, unknown>>;
+    expect(messages[0]).toEqual({ role: "system", content: "模板" });
+    expect(messages[1]).toMatchObject({ content: "旧任务", omit: true });
+    expect(messages[2]).toMatchObject({ content: "旧答复", omit: true });
+    // 旧历史**还在**（与 prune 的分界线就在这一条）
+    expect(JSON.stringify(messages)).toContain("旧任务");
+    expect(String(messages.at(-1)!.content)).toContain(outcome.handoffPath);
+  });
+
+  it("不传 strategy：仍是 prune（分家之前的行为，缺省值只有协议里那一份）", async () => {
+    const agent = makeAgent({ writeTool: true });
+    agent.messages = [
+      { role: "system", content: "模板" },
+      { role: "user", content: "旧任务" },
+    ];
+
+    await makeService().migrate(agent);
+
+    expect(JSON.stringify(agent.messages)).not.toContain("旧任务");
+  });
+});

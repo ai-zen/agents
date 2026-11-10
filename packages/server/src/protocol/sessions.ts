@@ -86,7 +86,7 @@ export const SESSION_METHODS = {
   saveAs: "session.saveAs",
   /** 只产出交接文档：写文档，**不动会话**（不换 id、不剔历史） */
   handoff: "session.handoff",
-  /** 交接 + 开新会话：写文档、剔历史、**换 sessionId** */
+  /** 交接 + 开新会话（缺省的 `prune`：写文档、剔历史、**换 sessionId**；`omit` 不换，见 `MigrationStrategy`） */
   migrate: "session.migrate",
   /** 取某个子 Agent 到目前为止的完整对话（客户端切到该栏目时对齐用） */
   subAgentSnapshot: "session.subAgent.snapshot",
@@ -620,6 +620,37 @@ export type MessageContent = string | MessageContentBlock[];
 export type HandoffMode = "self" | "summary";
 
 /**
+ * 迁移之后旧历史怎么处理 —— 它与「要不要换 id」是**同一件事**，不是两个旋钮。
+ *
+ *   - `prune`（`session.migrate` 的缺省 = 分家之前的行为）：历史从内存里物理剔除，只留
+ *     「模板 + 交接断点」。旧历史只剩存档一份，所以旧会话必须以**独立的一段**留在旧 id
+ *     下 —— 否则那段对话就没了。于是：换 id、发 `session.idChanged`。
+ *   - `omit`（SDK 的 `MigrationStrategy` 默认值）：历史消息标 `omit: true` 留在原处（可审计、
+ *     可回放，但不再发给模型）。既然历史还在，就没有理由把它变成另一段会话：
+ *     **同一个 sessionId**，不发 `idChanged`，`turnId` 继续累加。
+ *
+ * 两者**绑定**关系是语义必然，而不是实现上的巧合：id 是「这是哪一段对话」的身份。旧历史
+ * 被剔除后，新旧两段的内容完全不同，继续共用同一个 id 会让存档自己盖自己；反过来，历史
+ * 只是标了不再发送，会话仍是同一段，换个 id 等于凭空多出一条幽灵存档。
+ *
+ * 与 SDK 的 `MigrationStrategy` 逐字一致，但**不引用它的类型**：协议是线上契约，客户端
+ * （将来的浏览器 / 手机）不该为了一个枚举去装 SDK。
+ */
+export type MigrationStrategy = "prune" | "omit";
+
+/**
+ * `session.migrate` 不传 `strategy` 时的处置方式：`prune`（= 分家之前的行为）。
+ *
+ * 写在协议里而不是各层各写一份 `?? "prune"`：缺省值是**线上契约**的一部分（客户端不传
+ * 就该看到旧行为），而它同时被三层用到（handler 透传、会话层参数默认、交接服务参数默认）。
+ * 写了两份的那天，症状就是「直调交接与走方法调用的缺省不一样」，而两者都会写档。
+ *
+ * 注意它**不等于** SDK 的 `HandoffService` 缺省（那边是 `omit`）：产品的缺省是 prune，
+ * 所以服务端每一跳都把选定的值显式递下去，而不是依赖 SDK 的默认值。
+ */
+export const DEFAULT_MIGRATION_STRATEGY: MigrationStrategy = "prune";
+
+/**
  * 服务端提问的种类。
  *
  * 只增不改语义（与通知 code 表同一条规矩）：客户端按 `kind` 决定弹哪个选择器，
@@ -657,14 +688,17 @@ export interface SessionHandoffParams {
 }
 
 /**
- * 一次交接的结果。`handoff` 与 `migrate` 共用（迁移就多一件事：`sessionId` 变了）。
+ * 一次交接的结果。`handoff` 与 `migrate` 共用（迁移就多一件事：`sessionId` 可能变了）。
  *
  * 为什么连 `messages` 一起回：交接回合会往会话里追加消息、迁移则把历史剔成
- * 「模板 + 交接断点」。客户端拿这一份直接重渲染，不必再要一次快照（两次往返之间
- * 还会有事件插进来）。
+ * 「模板 + 交接断点」（`omit` 则是把历史标成不再发送）。客户端拿这一份直接重渲染，不必
+ * 再要一次快照（两次往返之间还会有事件插进来）。
  */
 export interface SessionHandoffResult {
-  /** 交接之后的会话 id：`handoff` 不变，`migrate` 是**新会话**的 id */
+  /**
+   * 交接之后的会话 id：`handoff` 与 `migrate{strategy:"omit"}` 不变，
+   * `migrate{strategy:"prune"}` 是**新会话**的 id（旧那段作为存档留在旧 id 下）
+   */
   sessionId: string;
   /** 交接文档绝对路径（在服务端的工作区里，客户端未必能直接打开） */
   handoffPath: string;
@@ -674,10 +708,19 @@ export interface SessionHandoffResult {
   messages: unknown[];
 }
 
-/** 交接 + 开新会话：入参与 `handoff` 逐字相同（都是「用哪种执行者」） */
-export type SessionMigrateParams = SessionHandoffParams;
+/**
+ * 交接 + 开新会话（`session.migrate`）。
+ *
+ * 比 `handoff` 多一个 `strategy`：它决定**旧历史怎么处置**，而处置方式又决定了「还是不是
+ * 同一段会话」（见 `MigrationStrategy`）。缺省 `prune` —— 客户端不传时行为与分家之前逐字一致。
+ */
+export interface SessionMigrateParams extends SessionHandoffParams {
+  /** 历史处置策略；缺省 `prune`（= 换 id 的旧行为，见 `DEFAULT_MIGRATION_STRATEGY`）。
+   *  `omit` 保持同一个 sessionId */
+  strategy?: MigrationStrategy;
+}
 
-/** 迁移的结果与 `handoff` 同形 —— 差别只在 `sessionId` 是**新的**那一段 */
+/** 迁移的结果与 `handoff` 同形 —— 差别只在 `sessionId`（`prune` 下是**新的**那一段） */
 export type SessionMigrateResult = SessionHandoffResult;
 
 export interface SessionRollbackParams {
