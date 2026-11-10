@@ -39,7 +39,8 @@ export { discoverSubAgents } from "./scope/plugins/subagents/discover.js";
 export { discoverSkills, readSkill } from "./scope/plugins/skills/discover.js";
 export type { SkillInfo, Frontmatter } from "./scope/plugins/skills/discover.js";
 export { discoverMcpServers } from "./scope/plugins/mcp/discover.js";
-export { discoverUserTools } from "./scope/plugins/usertools/discover.js";
+export { discoverUserTools, discoverUserToolFiles } from "./scope/plugins/usertools/discover.js";
+export type { UserToolFile } from "./scope/plugins/usertools/discover.js";
 
 // Scope — 全局上下文 + 能力装配编排容器
 export { Scope } from "./scope/Scope.js";
@@ -105,7 +106,11 @@ export type {
 } from "./shared/content-blocks.js";
 
 // 运行时
-export { createModel } from "./runtime/createModel.js";
+export { createModel, createModelFromConfig } from "./runtime/createModel.js";
+export type { AgentModel } from "./runtime/createModel.js";
+// 一次性模型调用（不流式 / 不带工具）：交接摘要、会话自动标题共用这一份请求体形状
+export { completeOnce } from "./runtime/completeOnce.js";
+export type { CompleteOnceInput } from "./runtime/completeOnce.js";
 export { SdkAgent } from "./runtime/SdkAgent.js";
 export type { AgentPlugin, SendContext } from "./runtime/SdkAgent.js";
 export { createAgent } from "./runtime/createAgent.js";

@@ -134,19 +134,50 @@ function reportReject(
 }
 
 /**
+ * 一个用户工具文件（加载成功的那一个）：文件身份 + 加载出来的实例。
+ *
+ * 为什么要成对给：`Tool` 自己不记「我是从哪个文件来的」（它只是 core 的一个工具对象），
+ * 而 `asset.list` 那类「把发现结果报给客户端看」的调用方需要的正是**文件**（路径、
+ * 文件名）。让调用方拿着工具名去某个目录里找同名文件，就是第二套扫描规则。
+ */
+export interface UserToolFile {
+  /** 文件名（不含扩展名）：同一条扫描里的唯一键，也是发现顺序的依据 */
+  name: string;
+  /** 文件绝对路径（`<某个 tools 目录>/<name>.js|.mjs`） */
+  path: string;
+  tool: Tool;
+}
+
+/**
  * 扫描多个 tools/ 目录，发现所有 .js / .mjs 文件，动态加载为 Tool 实例。
  * 使用原生 dynamic import() 加载（在 "type": "module" 下 .js 也是 ESM），
  * 每次添加时间戳 querystring 防止缓存。
  *
  * 按优先级从高到低传入路径列表，同名工具靠前的路径优先（先到先得）。
  * 按文件名排序以保证确定性。
+ *
+ * 本体在 {@link discoverUserToolFiles}：两个出口共用同一条扫描规则（顺序、去重、导入护栏、
+ * 超时都在那一处），否则「Agent 装了哪些工具」与「资产清单里列了哪些」迟早对不上。
  */
 export async function discoverUserTools(
   paths: string[],
   options: DiscoverUserToolsOptions = {},
 ): Promise<Tool[]> {
+  return (await discoverUserToolFiles(paths, options)).map((item) => item.tool);
+}
+
+/**
+ * 同 {@link discoverUserTools}，但把**文件**也一起交出来（路径 / 文件名）。
+ *
+ * 发现规则只有一份：目录顺序、同名去重、扩展名、导入护栏、超时全部写在本函数里，
+ * 另一个出口只是上面的 `map`。
+ */
+export async function discoverUserToolFiles(
+  paths: string[],
+  options: DiscoverUserToolsOptions = {},
+): Promise<UserToolFile[]> {
   const seen = new Set<string>();
-  const tools: Tool[] = [];
+  const items: UserToolFile[] = [];
 
   for (const dir of paths) {
     try {
@@ -168,10 +199,11 @@ export async function discoverUserTools(
       for (const { name, ext } of files) {
         if (!seen.has(name)) {
           seen.add(name);
+          const path = join(dir, name + ext);
           try {
-            const tool = await loadToolFile(join(dir, name + ext), options);
+            const tool = await loadToolFile(path, options);
             if (tool) {
-              tools.push(tool);
+              items.push({ name, path, tool });
             }
           } catch {
             // 跳过加载失败的文件
@@ -183,7 +215,7 @@ export async function discoverUserTools(
     }
   }
 
-  return tools;
+  return items;
 }
 
 // ==================================================================

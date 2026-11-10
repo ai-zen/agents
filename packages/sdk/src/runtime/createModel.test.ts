@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createModel } from "./createModel.js";
+import { createModel, createModelFromConfig } from "./createModel.js";
 import type { AppConfig } from "../types/index.js";
 import type { Scope } from "../scope/Scope.js";
 
@@ -177,5 +177,26 @@ describe("createModel：Agent 级参数覆盖（浅合并，SDK 不解释键名�
     expect(b.modelConfig!.reasoning_effort).toBe("off");
     // 模型自身配置未被污染
     expect(cfg.models[0]!.defaultParams!.reasoning_effort).toBe("max");
+  });
+});
+
+describe("createModelFromConfig：没有 Scope 的那条路", () => {
+  it("与 createModel 逐字同源：同一份配置得到同样的模型名与参数", () => {
+    // 服务端的辅助小请求（自动标题）只拿得到配置：为了它去建一个 Scope 会连带拉起
+    // MCP 连接。两条路必须落到同一份「模型 → 端点 → client」解析上。
+    const viaConfig = createModelFromConfig(baseConfig, "ds-v3", { temperature: 0.1 });
+    const viaScope = createModel(mockScope(baseConfig), "ds-v3", { temperature: 0.1 });
+
+    expect(viaConfig.model).toBe(viaScope.model);
+    expect(viaConfig.modelConfig).toEqual(viaScope.modelConfig);
+  });
+
+  it("配置坏了就抛（模型不在清单 / 端点缺 Key 都是调用方要判的失败）", () => {
+    expect(() => createModelFromConfig(baseConfig, "nope")).toThrow('Model "nope" not found');
+    const noKey: AppConfig = {
+      ...baseConfig,
+      endpoints: [{ id: "openai", name: "OpenAI", baseUrl: "https://x/v1", apiKey: "" }],
+    };
+    expect(() => createModelFromConfig(noKey, "gpt4")).toThrow("API key");
   });
 });

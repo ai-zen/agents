@@ -5,6 +5,7 @@ import type OpenAI from "openai";
 import { getLogger, type Logger } from "../shared/logger.js";
 import { readSkill } from "../scope/plugins/skills/discover.js";
 import { FALLBACK_HANDOFF_TEMPLATE, HANDOFF_SKILL_ID } from "../config/factory-skills.js";
+import { completeOnce } from "./completeOnce.js";
 import { HandoffGuardPlugin } from "./HandoffGuardPlugin.js";
 import type { SdkAgent } from "./SdkAgent.js";
 
@@ -654,29 +655,23 @@ export class HandoffService {
     const skillContent = await this.readSkillContent();
     this.throwIfAborted(signal);
 
-    // `signal` 走 RequestOptions（第二参数），与 `core/Agent.ts` 调用模型时一致：
-    // 放在 body 里不会被 OpenAI SDK 当成取消信号。
-    const response = await client.chat.completions.create(
-      {
-        model,
-        ...(modelConfig ?? {}),
-        messages: [
-          {
-            role: "system",
-            content: HandoffService.createHandoffInstruction({
-              skillContent,
-              handoffPath,
-              toolsAvailable: false,
-            }),
-          },
-          { role: "user", content: historyText },
-        ],
-      },
-      signal ? { signal } : undefined,
-    );
+    // 请求体形状（system + user、modelConfig 展开、signal 走 RequestOptions）的唯一实现在
+    // `completeOnce`：会话自动标题那一类「辅助小请求」走同一条路，两边不会一份带 stream、
+    // 另一份不带
+    const handoffDoc = await completeOnce({
+      client,
+      model,
+      modelConfig,
+      system: HandoffService.createHandoffInstruction({
+        skillContent,
+        handoffPath,
+        toolsAvailable: false,
+      }),
+      user: historyText,
+      signal,
+    });
 
-    const handoffDoc = response.choices[0]?.message?.content;
-    if (!handoffDoc || !handoffDoc.trim()) {
+    if (!handoffDoc.trim()) {
       throw new Error("Failed to generate the handoff document");
     }
     return handoffDoc;

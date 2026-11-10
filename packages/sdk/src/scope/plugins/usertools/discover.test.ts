@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { discoverUserTools } from "./discover.js";
+import { discoverUserToolFiles, discoverUserTools } from "./discover.js";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -402,5 +402,45 @@ describe("discoverUserTools —— 坏文件不能伤到宿主", () => {
 
     expect(process.exit).toBe(realExit);
     expect(console.log).toBe(realLog);
+  });
+});
+
+/**
+ * 文件级出口：与 `discoverUserTools` 共用同一条扫描规则，只是把「文件」也交出来。
+ *
+ * 为什么需要它：`AssetSummary.path`（`asset.list` 的载荷）要的是文件本身，而 `Tool` 不记
+ * 自己来自哪个文件。让调用方按工具名去目录里再找一遍，就等于把「目录顺序 / 同名去重 /
+ * 扩展名」这套规则抄第二份 —— 两份扫描规则迟早不一致。
+ */
+describe("discoverUserToolFiles", () => {
+  it("给出文件路径与文件名，顺序与 discoverUserTools 逐条一致", async () => {
+    writeTool("b_tool.mjs", simpleToolCode("b_tool", "b"));
+    writeTool("a_tool.js", simpleToolCode("a_tool", "a"));
+
+    const files = await discoverUserToolFiles([dir], { silent: true });
+    const tools = await discoverUserTools([dir], { silent: true });
+
+    expect(files.map((item) => item.name)).toEqual(["a_tool", "b_tool"]);
+    expect(files.map((item) => item.path)).toEqual([
+      join(dir, "a_tool.js"),
+      join(dir, "b_tool.mjs"),
+    ]);
+    // 同一个工具实例、同一个顺序：两个出口不是两条扫描
+    expect(files.map((item) => item.tool)).toEqual(tools);
+  });
+
+  it("靠前的目录优先：同名文件只出靠前那一个（去重规则也没分叉）", async () => {
+    const other = mkdtempSync(join(tmpdir(), "ai-zen-usertools-other-"));
+    try {
+      writeTool("same.mjs", simpleToolCode("same", "from-first"));
+      writeFileSync(join(other, "same.mjs"), simpleToolCode("same", "from-second"));
+
+      const files = await discoverUserToolFiles([dir, other], { silent: true });
+
+      expect(files).toHaveLength(1);
+      expect(files[0]!.path).toBe(join(dir, "same.mjs"));
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
   });
 });

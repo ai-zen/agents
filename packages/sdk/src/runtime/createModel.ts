@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import type { Scope } from "../scope/Scope.js";
-import type { ModelParams } from "../types/index.js";
+import type { AppConfig, ModelParams } from "../types/index.js";
 
 /**
  * Agent 模型装配结果：openai SDK client + 模型名 + 模型参数。
@@ -40,9 +40,27 @@ function mergeParams(
  *
  * `overrides` 是 **Agent 级参数覆盖**（`AgentDefinition.modelParams`）：
  * 同一个模型可以给不同 Agent 配不同参数，而模型自身的 `defaultParams` 保持不变。
+ *
+ * 本体在 {@link createModelFromConfig}：有的调用方（服务端的辅助小请求，如会话自动标题）
+ * **只拿到配置、没有 Scope**，而建一个 Scope 会连带拉起 MCP 连接 —— 为了发一次几十 token
+ * 的请求去起一套能力发现，代价与收益完全不成比例。两条路共用同一份「模型 → 端点 → client」
+ * 解析，否则「Agent 用的端点」与「辅助请求用的端点」迟早是两份会漂的事实。
  */
 export function createModel(scope: Scope, modelId: string, overrides?: ModelParams): AgentModel {
-  const config = scope.config;
+  return createModelFromConfig(scope.config, modelId, overrides);
+}
+
+/**
+ * 从**配置本身**装配模型（不需要 Scope）。
+ *
+ * 只在「不经过 Agent 的一次性小请求」里用；Agent 一律走 {@link createModel}（它多一层
+ * `scope.config` 的取法，两者最终落到这里）。
+ */
+export function createModelFromConfig(
+  config: AppConfig,
+  modelId: string,
+  overrides?: ModelParams,
+): AgentModel {
   const modelConfig = config.models.find((m) => m.id === modelId);
   if (!modelConfig) throw new Error(`Model "${modelId}" not found`);
 
