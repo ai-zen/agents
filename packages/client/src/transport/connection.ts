@@ -67,7 +67,7 @@ export interface ServerConnectionDeps {
    */
   connect?: () => Promise<ServerClient>;
   /**
-   * 自动拉起服务端所需的两个事实：配置根与服务端可执行文件的位置。
+   * 自动拉起服务端所需的事实：配置根、身份、以及拉哪个包。
    *
    * 只在既没有 `client` 也没有 `connect` 时才需要。本包不读 `AI_ZEN_DIR` 这类进程级全局
    * （它是库，读了就再也改不了目录），由组装根读一次再递进来。
@@ -75,6 +75,8 @@ export interface ServerConnectionDeps {
   aiZenDir?: string;
   /** 握手时自称的身份（同样只在自己建连时用到）：应用名 + 版本号 */
   clientInfo?: ClientInfo;
+  /** `npx` 拉起的服务端包坐标（缺省 `@ai-zen/agents-server`）；预发布版本要带 `@x.y.z` */
+  serverPackage?: string;
 }
 
 export class ServerConnection {
@@ -249,6 +251,7 @@ export class ServerConnection {
         "ServerConnection 需要 connect，或者 aiZenDir + clientInfo（不注入时就不知道怎么拉起服务端）",
       );
     }
-    return (await ensureServer({ aiZenDir, clientInfo })).client;
+    const { serverPackage } = this.deps;
+    return (await ensureServer({ aiZenDir, clientInfo, serverPackage })).client;
   }
 }

@@ -39,7 +39,7 @@ Read `A ← B` as "B depends on A". Every edge is a fact in `package.json` —
 | `client` | `core` | runtime dependency, **the only** entry in `dependencies` |
 | `client` | `sdk` | **types only**: a `peerDependencies` entry plus a devDependency (`ConfigPort`'s public signature needs `AppConfig` / `AgentDefinition` / `ReasoningPresets`); not a single runtime reference |
 | `client` | `server` | **types only**: a `peerDependencies` entry (the host must provide it) plus a devDependency (this repo's tests start a real Daemon); not a single runtime reference |
-| `cli` / `desktop main` | `client` (the CLI additionally `sdk` / `core`) | application-side dependency. Both also declare `server` — they spawn it through `ensureServer`, so they need to locate its bin; in direction they are users of `client` |
+| `cli` / `desktop main` | `client` (the CLI additionally `sdk` / `core`) | application-side dependency. How the server gets launched is the host's policy: the CLI pulls it on demand with `npx` (pinning the version through its own `serverPackage`), the desktop app launches the copy it ships; in direction they are users of `client` |
 
 ### Three hard properties
 
@@ -50,8 +50,7 @@ Each one can be falsified with a command; none of them rests on "remember not to
 judgement, discovery-file I/O, `callOnce`) are its own copy under `packages/client/src/wire/` — the
 contract shares **types**, not code. So `dependencies` holds one entry, `core`;
 `@ai-zen/agents-server` is a **peerDependency** (the host must provide it: the type surface comes
-from it, and `ensure-server` needs `require.resolve` on its bin) plus a devDependency (this repo's
-tests start a real Daemon).
+from it) plus a devDependency (this repo's tests start a real Daemon).
 
 ```bash
 # dependency table: agents-server / agents-sdk / agents-testing must not appear
@@ -62,11 +61,12 @@ node -e 'const d=require("./packages/client/package.json").dependencies; const b
 # expect only @ai-zen/agents-core, ./xxx.js and node:*
 ```
 
-`ensure-server.ts` is the one place in the package that calls
-`require.resolve("@ai-zen/agents-server/package.json")`: it has to spawn `agents-server serve`, so
-it must find that bin (and throws when the package is absent). That is a **deployment policy, not a
-layering edge**, which is why it stays out of `dependencies`; an app that does not want that path can
-inject its own `startServerProcess`, and then the `resolve` never runs.
+`ensure-server.ts` launches the server with `npx -y <serverPackage> serve`: downloaded on demand, so
+the host does not need `@ai-zen/agents-server` installed. That is a **deployment policy, not a
+layering edge** — hence the package coordinate is supplied by the host (`serverPackage`; a prerelease
+must carry `@x.y.z`, otherwise `npx` has no `latest` to resolve). An app that does not want that path
+injects its own `startServerProcess` — which is exactly what the desktop app does with the copy it
+ships.
 
 **② The contract is types only, with zero runtime exports.** `packages/server/src/protocol/` holds
 nothing but `type` / `interface`: wire shapes, the method-name and event-name unions, the error-code
@@ -103,7 +103,7 @@ and a second definition is exactly what this project refuses. So it is declared 
 
 - `agents-server` does not appear anywhere under `packages/sdk/src` or `packages/core/src`;
 - `packages/server/src` holds no import of `agents-client`;
-- production code under `packages/client/src` references `@ai-zen/agents-server` in `import type` position only; the runtime pieces are its own `src/wire/`, and the single `require.resolve` on it is in `ensure-server.ts`;
+- production code under `packages/client/src` references `@ai-zen/agents-server` in `import type` position only; the runtime pieces are its own `src/wire/`, and nothing in it resolves or spawns the server's `bin` (launching goes through `npx`);
 - `packages/server/src/protocol` contains no `domain/` / `daemon/` / `lib/` (the protocol knows no implementation on either side).
 
 ## What each layer owns, and what it refuses

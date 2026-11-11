@@ -37,7 +37,8 @@ CLI（TUI）与 Desktop（main）共用同一份实现：两个前端各写一�
 - **协议不是依赖，是类型**：线上形状来自 `@ai-zen/agents-server/protocol`（服务端的类型文件），
   只做 `import type`；运行期那几件（帧编解码、错误码判据、回环判据）是本包 `src/wire/` 里
   自己的一份实现。`@ai-zen/agents-server` 因此只是 **peerDependency**（宿主必须提供它：
-  `ensure-server` 要 spawn 它的 bin，类型面也来自它）+ devDependency（本仓用例要起真 Daemon）；
+  类型面来自它）+ devDependency（本仓用例要起真 Daemon）。拉起服务端不走它 ——
+  `ensure-server` 默认用 `npx` 现下现起，宿主的依赖表里不需要这一项；
 - **SDK 同理，只是纯类型**：`ConfigPort` 的公开签名要 `AppConfig` / `AgentDefinition` /
   `ReasoningPresets`，而线上刻意把它们写成 `unknown`（契约不认识 SDK），兑现成类型正是这一层
   的职责。所以 `@ai-zen/agents-sdk` 也是 **peer + dev** —— 副本会随 sdk 的落盘格式各自漂，
@@ -61,7 +62,7 @@ core 的运行期依赖只有 `@ai-zen/event-bus`（`openai` 在 core 里只出�
 | 包 | 为什么还在 |
 |---|---|
 | `@ai-zen/agents-sdk` | **peer + dev**：`config-port.ts` 的公开签名要 `AppConfig` / `AgentDefinition` / `ReasoningPresets`（线上传的是 `unknown`，客户端兑现成类型）。**只在 `import type` 里出现**，产物 `dist/*.js` 里没有它 —— 但 `dist/*.d.ts` 里有，所以宿主必须提供它，和 `server` 同理 |
-| `@ai-zen/agents-server` | **peer + dev**：类型面（`protocol`）与用例（真 Daemon）都要它；`ensure-server` 拉起服务端时还要 `require.resolve` 它的 `bin`。运行期产物里一行都没有 |
+| `@ai-zen/agents-server` | **peer + dev**：类型面（`protocol`）与用例（真 Daemon）都要它。运行期产物里一行都没有 —— 拉起服务端走 `npx`，不解析它的 `bin` |
 | `@ai-zen/agents-testing` | 用例要一个**真讲协议**的假模型端点（`startFakeLlm`，`turn-and-resume.test.ts`），否则「一轮跑完再续接」只能靠手发帧凑 |
 
 ### 2. 产物的运行期依赖图必须闭合

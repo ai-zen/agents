@@ -39,7 +39,7 @@ AI-Zen Agents 是一个 **pnpm monorepo**（工作区根 `@ai-zen/agents-workspa
 | `client` | `core` | 运行期依赖，`dependencies` **只有这一项** |
 | `client` | `sdk` | **只有类型**：`peerDependencies` + `devDependencies`（`ConfigPort` 的公开签名要 `AppConfig` / `AgentDefinition` / `ReasoningPresets`）；运行期一行都不引用 |
 | `client` | `server` | **只有类型**：`peerDependencies`（宿主必须提供）+ `devDependencies`（本仓用例要起真 Daemon）；运行期一行都不引用 |
-| `cli` / `desktop main` | `client`（CLI 另加 `sdk` / `core`） | 应用侧依赖。两仓的 `dependencies` 里也都有 `server` —— 它们经 `ensureServer` 拉起服务端，得能定位它的 bin；方向上它们只是 `client` 的使用者 |
+| `cli` / `desktop main` | `client`（CLI 另加 `sdk` / `core`） | 应用侧依赖。拉起服务端的策略归宿主：CLI 用 `npx` 现下现起（版本由它自己的 `serverPackage` 钉），桌面端拉起随包分发的那个；方向上它们只是 `client` 的使用者 |
 
 ### 三条硬性质
 
@@ -49,8 +49,7 @@ AI-Zen Agents 是一个 **pnpm monorepo**（工作区根 `@ai-zen/agents-workspa
 运行期那几件（帧编解码、错误码判据、回环判据、发现文件读写、`callOnce`）在
 `packages/client/src/wire/` 是它自己的一份实现 —— 协议只共享**类型**，不共享代码。所以
 `dependencies` 里只有一个 `core`；`@ai-zen/agents-server` 是它的 **peerDependency**（宿主必须
-提供：类型面来自它，`ensure-server` 还要 `require.resolve` 它的 bin）+ devDependency（本仓用例
-要起真 Daemon）。
+提供：类型面来自它）+ devDependency（本仓用例要起真 Daemon）。
 
 ```bash
 # 依赖表：不许出现 agents-server / agents-sdk / agents-testing
@@ -61,10 +60,10 @@ node -e 'const d=require("./packages/client/package.json").dependencies; const b
 # 期望只有 @ai-zen/agents-core、./xxx.js 与 node:*
 ```
 
-`ensure-server.ts` 是包里唯一 `require.resolve("@ai-zen/agents-server/package.json")` 的地方：
-它要 spawn 一个 `agents-server serve`，就得知道那个 bin 在哪（那个包不在就抛错）。这是
-**部署策略，不是分层**，所以它不进 `dependencies`；不想走这条路的应用可以注入自己的
-`startServerProcess`，那样连那个 `resolve` 都不会跑。
+`ensure-server.ts` 默认用 `npx -y <serverPackage> serve` 拉起服务端：现下现起，不需要宿主预装
+`@ai-zen/agents-server`。这是**部署策略，不是分层** —— 所以包坐标由宿主给（`serverPackage`；
+预发布版本必须带 `@x.y.z`，否则 `npx` 没有 `latest` 可解），不想要这套的应用注入自己的
+`startServerProcess` 即可（桌面端拉起的就是随包分发的那个）。
 
 **② 契约是纯类型，零运行期导出。** `packages/server/src/protocol/` 里只有 `type` / `interface`：
 线上形状、方法名与事件名的联合、错误码联合、数据模型的类型转出。带运行期的那些（帧编解码、
@@ -151,7 +150,7 @@ grep -rn 'from "' packages/server/src/protocol/*.ts | grep -v '\.test\.' | grep 
 
 **为什么不是独立的一个包**（也不是 core 里的东西）：线上有哪些方法 / 事件 / 载荷，是**服务端提供的形状**，它就该住在服务端里，没有一个单独的可安装单元。判据一句话：这份东西描述服务端提供什么，它归服务端；它要能被别的进程执行，它才是代码。
 
-**为什么客户端不会被拖上服务端运行时**：客户端对服务端只做 `import type`（形状与名字），运行期那几件在 `packages/client/src/wire/` 是它自己的一份实现 —— 协议只共享**类型**，不共享代码。所以 `@ai-zen/agents-client` 的 `dependencies` 只有 `@ai-zen/agents-core`；`@ai-zen/agents-server` 与 `@ai-zen/agents-sdk` 都是它的 **peerDependency**（宿主必须提供：类型面来自它们，`ensure-server` 还要 spawn 服务端那个 bin）+ devDependency（本仓用例要起真 Daemon）。装客户端不会把 openai / MCP SDK 拖进**产物**；它们只是宿主本来就装着的类型来源。
+**为什么客户端不会被拖上服务端运行时**：客户端对服务端只做 `import type`（形状与名字），运行期那几件在 `packages/client/src/wire/` 是它自己的一份实现 —— 协议只共享**类型**，不共享代码。所以 `@ai-zen/agents-client` 的 `dependencies` 只有 `@ai-zen/agents-core`；`@ai-zen/agents-server` 与 `@ai-zen/agents-sdk` 都是它的 **peerDependency**（宿主必须提供：类型面来自它们）+ devDependency（本仓用例要起真 Daemon）。装客户端不会把 openai / MCP SDK 拖进**产物**；它们只是宿主本来就装着的类型来源。
 
 **桌面端 main 是打包产物**，同一条理由的现实版：它只 import `@ai-zen/agents-server/protocol` 的类型，打包器不会跟进 daemon / 存档 / 工作区。
 
