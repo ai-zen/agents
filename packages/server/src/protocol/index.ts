@@ -27,6 +27,7 @@ export type * from "./daemon.js";
 export type * from "./sessions.js";
 export type * from "./config.js";
 export type * from "./assets.js";
+export type * from "./content.js";
 export type * from "./phase.js";
 export type * from "./errors.js";
 export type * from "./model.js";

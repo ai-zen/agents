@@ -128,4 +128,42 @@ describe("SocketServerClient", () => {
       SocketServerClient.connect({ address: { host: "127.0.0.1", port: deadPort }, client }),
     ).rejects.toThrow(/ECONNREFUSED|connect/i);
   });
+
+  it("带字节的调用：帧之后紧跟原始字节，服务端收到的是同一批（含 0x0A 也不变形）", async () => {
+    // 服务端这一侧用真 Daemon（真解码器）+ 一个只记字节的 handler：要证的是**写出去**
+    // 的形状，而解回来的形状只有真解码器说了算
+    const seen: Buffer[] = [];
+    const instance = new Daemon({
+      aiZenDir: dir,
+      port: 0,
+      version: "0.0.0-test",
+      handlers: {
+        "content.upload": (_params, _connection, payload) => {
+          seen.push(payload!);
+          return { got: payload?.byteLength ?? -1 };
+        },
+      },
+    });
+    await instance.start();
+    const bytes = Buffer.from([0x00, 0x0a, 0xff, 0x0a]);
+    const connection = await SocketServerClient.connect({
+      address: { host: "127.0.0.1", port: instance.port },
+      client,
+    });
+
+    try {
+      const result = await connection.call<{ got: number }>(
+        "content.upload",
+        { bytes: bytes.byteLength, mime: "image/png", filename: "a.png" },
+        { bytes },
+      );
+      expect(result).toEqual({ got: 4 });
+      expect(seen[0]).toEqual(bytes);
+      // 这条连接还能继续用（payload 没有把后续的帧吃掉）
+      expect(await connection.call("ping")).toEqual({ pong: true });
+    } finally {
+      connection.close();
+      await instance.stop("test");
+    }
+  });
 });

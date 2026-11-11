@@ -71,7 +71,6 @@ export class SocketServerClient implements ServerClient {
     const connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
 
     const socket = createConnection({ host: address.host, port: address.port });
-    socket.setEncoding("utf-8");
     const connection = new SocketServerClient(
       socket,
       address,
@@ -124,6 +123,7 @@ export class SocketServerClient implements ServerClient {
     }
     const id = this.nextId++;
     const timeoutMs = options?.timeoutMs ?? this.callTimeoutMs;
+    const bytes = options?.bytes;
 
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -134,6 +134,9 @@ export class SocketServerClient implements ServerClient {
       this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer });
       // `params` 为 undefined 时 JSON.stringify 会整键丢掉，帧里就只剩 `{ id, method }`
       this.socket.write(encodeFrame({ id, method, params }));
+      // 帧后紧跟原始字节（`params.bytes` 声明的就是它的长度）：两次 `write` 在同一
+      // socket 上保序，所以对端读到的就是「一行 JSON，然后恰好 N 个字节」
+      if (bytes) this.socket.write(bytes);
     });
   }
 
@@ -169,24 +172,25 @@ export class SocketServerClient implements ServerClient {
   // ==================================================================
 
   private attach(): void {
-    this.socket.on("data", (chunk: string) => this.handleChunk(chunk));
+    this.socket.on("data", (chunk: Buffer) => this.handleChunk(chunk));
     this.socket.on("error", (error: Error) => this.failAll(error));
     this.socket.on("close", () =>
       this.failAll(new Error(`connection closed (${this.address.host}:${this.address.port})`)),
     );
   }
 
-  private handleChunk(chunk: string): void {
-    let frames: unknown[];
+  private handleChunk(chunk: Buffer): void {
     try {
-      frames = this.decoder.push(chunk);
+      this.decoder.push(chunk);
+      // 一项一项取（理由见 `wire/frames.ts`）：回帧永远是文本帧，payload 项直接跳过
+      for (let item = this.decoder.next(); item; item = this.decoder.next()) {
+        if (item.type === "frame") this.handleFrame(item.frame);
+      }
     } catch (error) {
       // 畸形帧：这条连接已经不可能对齐了，整体作废（不猜下一帧从哪开始）
       this.failAll(error as Error);
       this.socket.destroy();
-      return;
     }
-    for (const frame of frames) this.handleFrame(frame);
   }
 
   private handleFrame(frame: unknown): void {

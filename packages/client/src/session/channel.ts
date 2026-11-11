@@ -57,6 +57,7 @@
  */
 
 import type {
+  ContentUploadResult,
   HandoffMode,
   MessageContent,
   MigrationStrategy,
@@ -72,7 +73,7 @@ import type {
   WorkspaceFileEntry,
 } from "@ai-zen/agents-server/protocol";
 import { ERROR_CODES, codeOf } from "../wire/errors.js";
-import { RemoteSessions } from "../facade/sessions.js";
+import { RemoteSessions, type UploadContentInput } from "../facade/sessions.js";
 import type { ServerConnection } from "../transport/connection.js";
 import type { ServerClient } from "../types.js";
 import { isSessionGone, connectionLostError } from "./errors.js";
@@ -516,6 +517,21 @@ export class SessionChannel {
     const result = await this.sessions!.rollback(this.sessionId, index);
     await this.syncFromServer().catch(() => {});
     return result.prompt;
+  }
+
+  /**
+   * 一批字节 → 一块能放进消息的内容（粘贴的图片走这条路）。
+   *
+   * 为什么在 channel 上而不只留在门面：这件事要问「**这一段**会话用的是什么端点 / 模型」
+   * （上传还是内联、模型看不看得见图），而唯一知道当前 id 的就是 channel —— 与
+   * {@link setModel} 同一个理由。
+   *
+   * 它**不碰状态**：只回一块内容，发不发、怎么拼消息由调用方决定（`session.send` 之前
+   * 拼进去）。失败原样抛出（`unknown-session` / 体积超限 / 端点拒绝），由调用方决定是
+   * 丢掉这一张还是整条不发。
+   */
+  async uploadContent(input: UploadContentInput): Promise<ContentUploadResult> {
+    return await this.sessions!.uploadContent(this.sessionId, input);
   }
 
   /**

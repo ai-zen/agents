@@ -109,13 +109,20 @@ class Peer {
   private nextId = 1;
 
   constructor(
-    private readonly writeText: (text: string) => void,
+    private readonly write: (chunk: string | Buffer) => void,
     private readonly hangUp: () => void,
   ) {}
 
-  /** 传输把收到的文本递进来（各自在 `data` 里调） */
-  feed(chunk: string): void {
-    for (const frame of this.decoder.push(chunk)) this.inbox.push(frame);
+  /** 传输把收到的字节递进来（各自在 `data` 里调） */
+  feed(chunk: Buffer): void {
+    try {
+      this.decoder.push(chunk);
+      for (let item = this.decoder.next(); item; item = this.decoder.next()) {
+        if (item.type === "frame") this.inbox.push(item.frame);
+      }
+    } catch (error) {
+      this.inbox.push(error);
+    }
     this.wake();
   }
 
@@ -126,12 +133,18 @@ class Peer {
   }
 
   send(frame: unknown): void {
-    this.writeText(encodeFrame(frame));
+    this.write(encodeFrame(frame));
   }
 
-  /** 发一段裸文本（测协议错误时用） */
+  /** 发一帧 + 它后面紧跟的原始字节（带 payload 的请求） */
+  sendWithBytes(frame: unknown, bytes: Buffer): void {
+    this.write(encodeFrame(frame));
+    this.write(bytes);
+  }
+
+  /** 发一段裸字节（测协议错误时用） */
   raw(text: string): void {
-    this.writeText(text);
+    this.write(text);
   }
 
   /** 本端掉线 */
@@ -192,27 +205,24 @@ class FakeWire implements Wire {
   private readonly toClient = new PassThrough();
   readonly peer: Peer;
 
-  private readonly dataListeners: Array<(chunk: string) => void> = [];
+  private readonly dataListeners: Array<(chunk: Buffer) => void> = [];
   private readonly errorListeners: Array<(error: Error) => void> = [];
   private readonly closeListeners: Array<() => void> = [];
   private closed = false;
   private finished = false;
 
   constructor() {
-    // 解码成字符串是**传输**的责任（真 socket 上是 `setEncoding("utf-8")`）：接口约定
-    // `onData` 吐 string，这里照约定实现 —— 于是守护进程拿到的 chunk 与真 socket 完全一致。
-    this.toServer.setEncoding("utf-8");
-    this.toClient.setEncoding("utf-8");
-
+    // 接口约定 `onData` 吐字节（payload 里的任何字节都得原样到达协议层），所以这里不解码：
+    // 两个流都保持 Buffer 模式，守护进程拿到的 chunk 与真 socket 完全一致。
     this.peer = new Peer(
       (text) => this.toServer.write(text),
       () => this.teardown(),
     );
 
-    this.toServer.on("data", (chunk: string) => {
+    this.toServer.on("data", (chunk: Buffer) => {
       for (const listener of this.dataListeners) listener(chunk);
     });
-    this.toClient.on("data", (chunk: string) => this.peer.feed(chunk));
+    this.toClient.on("data", (chunk: Buffer) => this.peer.feed(chunk));
     for (const stream of [this.toServer, this.toClient]) {
       stream.on("error", (error: Error) => {
         for (const listener of this.errorListeners) listener(error);
@@ -227,7 +237,7 @@ class FakeWire implements Wire {
     return this.closed;
   }
 
-  onData(listener: (chunk: string) => void): void {
+  onData(listener: (chunk: Buffer) => void): void {
     this.dataListeners.push(listener);
   }
 
@@ -272,12 +282,11 @@ class FakeWire implements Wire {
 /** 真 `net.Socket` 的对端：把「收 / 发 / 断」接到同一个 `Peer` 上，断言与假传输完全一样 */
 async function connectSocketPeer(port: number): Promise<Peer> {
   const socket = createConnection({ host: "127.0.0.1", port });
-  socket.setEncoding("utf-8");
   const peer = new Peer(
     (text) => socket.write(text),
     () => socket.destroy(),
   );
-  socket.on("data", (chunk: string) => peer.feed(chunk));
+  socket.on("data", (chunk: Buffer) => peer.feed(chunk));
   socket.on("close", () => peer.markClosed());
   await new Promise<void>((resolve, reject) => {
     socket.once("connect", () => resolve());
@@ -344,6 +353,95 @@ describe("假 Wire（内存双工）驱动 Daemon", () => {
     expect(await wire.peer.next()).toMatchObject({ ok: false, error: { code: "bad-frame" } });
     await waitFor(() => wire.destroyed, "wire 被 destroy()");
     await waitFor(() => instance.connectionCount === 0, "断开后连接从 connections 里被删掉");
+  });
+
+  /**
+   * 带 payload 的方法：帧说多少字节、后面就紧跟多少字节。
+   *
+   * 用真方法名 `content.upload`（「哪条方法带字节」是 `Daemon` 里那张表定的，假名字进不去），
+   * 但 handler 换成假件 —— 这一层要证的是**字节怎么到 handler 手里**，不是内容怎么转。
+   */
+  const bytesHandlers = (seen: Buffer[]): Record<string, AnyHandler> => ({
+    "content.upload": (_params, _connection, payload) => {
+      seen.push(payload!);
+      return { got: payload?.byteLength ?? -1 };
+    },
+  });
+
+  it("帧与 payload 在同一个 chunk 里到达：字节原样交给 handler（中间那个 0x0A 不被当帧边界）", async () => {
+    const seen: Buffer[] = [];
+    const instance = makeDaemon({ handlers: bytesHandlers(seen) });
+    const wire = new FakeWire();
+    instance.handleConnection(wire);
+    await wire.peer.handshake();
+
+    const bytes = Buffer.from([0x41, 0x0a, 0x42]);
+    // 帧 + payload + 下一帧，一次写进同一条流（实际传输几乎总是这个形状）
+    wire.peer.sendWithBytes(
+      { id: 7, method: "content.upload", params: { bytes: bytes.byteLength } },
+      bytes,
+    );
+    wire.peer.send({ id: 8, method: "ping" });
+
+    expect(await wire.peer.nextMatching((frame) => frame?.id === 7)).toEqual({
+      id: 7,
+      ok: true,
+      result: { got: 3 },
+    });
+    expect(seen[0]).toEqual(bytes);
+    // 二进制阶段结束后回到按行切帧：紧接着的那一帧照常被认出
+    expect(await wire.peer.nextMatching((frame) => frame?.id === 8)).toMatchObject({ ok: true });
+  });
+
+  it("payload 跨 chunk：收满之前不派发，收满之后派发（帧先存着，字节到了才走）", async () => {
+    const seen: Buffer[] = [];
+    const instance = makeDaemon({ handlers: bytesHandlers(seen) });
+    const wire = new FakeWire();
+    instance.handleConnection(wire);
+    await wire.peer.handshake();
+
+    wire.peer.sendWithBytes(
+      { id: 1, method: "content.upload", params: { bytes: 4 } },
+      Buffer.from("AB"),
+    );
+    // 字节没收满：一帧都不该派发。若解码器按 `\n` 找帧边界，这里会先撞出 bad-frame、把这条
+    // 连接断掉，下面那句 await 就会以「连接在等到帧之前就断了」红掉
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(seen).toHaveLength(0);
+
+    wire.peer.raw("CD");
+    expect(await wire.peer.nextMatching((frame) => frame?.id === 1)).toEqual({
+      id: 1,
+      ok: true,
+      result: { got: 4 },
+    });
+    expect(seen[0]).toEqual(Buffer.from("ABCD"));
+  });
+
+  it("字节声明不合法 → 协议错误并断开（长度非正 / 不带字节的方法冒出一个 bytes）", async () => {
+    for (const params of [{ bytes: 0 }, { bytes: -5 }, { bytes: 1.5 }]) {
+      const instance = makeDaemon({ handlers: bytesHandlers([]) });
+      const wire = new FakeWire();
+      instance.handleConnection(wire);
+      await wire.peer.handshake();
+
+      wire.peer.send({ id: 1, method: "content.upload", params });
+      expect(await wire.peer.nextMatching((frame) => frame?.ok === false)).toMatchObject({
+        error: { code: "bad-frame" },
+      });
+      await waitFor(() => wire.destroyed, "wire 被 destroy()");
+    }
+
+    // 不带字节的方法上出现 `bytes`：帧形状自相矛盾，同样断开
+    const instance = makeDaemon();
+    const wire = new FakeWire();
+    instance.handleConnection(wire);
+    await wire.peer.handshake();
+    wire.peer.send({ id: 1, method: "ping", params: { bytes: 4 } });
+    expect(await wire.peer.nextMatching((frame) => frame?.ok === false)).toMatchObject({
+      error: { code: "bad-frame" },
+    });
+    await waitFor(() => wire.destroyed, "wire 被 destroy()");
   });
 });
 

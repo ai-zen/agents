@@ -1,6 +1,6 @@
 ---
 title: Architecture
-description: Five packages and two applications, their one-way dependency direction, what each layer owns and refuses, a 44-method / 15-event protocol surface, why the contract is the server's type files, the client's transport/facade/session layers, the server's directory layout, the single rule behind a session's lifetime, the four parts of SessionManager, the <aiZenDir> on-disk layout, build/test order, what this round of refactoring changed, and the gaps that remain.
+description: Five packages and two applications, their one-way dependency direction, what each layer owns and refuses, a 45-method / 15-event protocol surface, why the contract is the server's type files, the client's transport/facade/session layers, the server's directory layout, the single rule behind a session's lifetime, the four parts of SessionManager, the <aiZenDir> on-disk layout, build/test order, what this round of refactoring changed, and the gaps that remain.
 outline: deep
 ---
 
@@ -117,7 +117,7 @@ and a second definition is exactly what this project refuses. So it is declared 
 | `cli` (separate repo) | Rendering and input (ink), slash commands and the session layer, drawing the state of a `SessionStream` | Session orchestration, archives, workspaces, config writes — those live on the server. It depends on `client`, plus `sdk` / `core` (the app needs business types such as `AgentDefinition` and **runtime enums** such as `Role` / `MessageStatus`) |
 | `desktop main` (separate repo) | Application-level facts (`app.getVersion()` as `clientInfo`), spawning the server, subscribing to events and turning that state over to the renderer | The server implementation itself. Its event translator is now a thin adapter over `SessionStream` |
 
-## The protocol surface: 44 methods / 15 events
+## The protocol surface: 45 methods / 15 events
 
 Method and event names are **string-literal union types**, not runtime constant tables — they are
 declared in `packages/server/src/protocol/`, which holds types only and not a single line of
@@ -133,8 +133,9 @@ not events, they are enums inside `session-notice` / `server-notice` payloads.
 | `config.*` | 7 | `ConfigMethod` in `config.ts` |
 | `agent.*` | 5 | `AgentMethod` in `config.ts` |
 | `asset.*` | 1 | `AssetMethod` in `assets.ts` |
+| `content.*` | 1 | `ContentMethod` in `content.ts` |
 | built-in `ping` / `status` / `shutdown` | 3 | `DaemonMethod` in `daemon.ts` |
-| **total** | **44** | |
+| **total** | **45** | |
 
 There are **15** events, in three unions, all in `sessions.ts`:
 
@@ -208,8 +209,8 @@ Inside the package the split is by "dirty / pure" and by responsibility. Whateve
 |---|---|---|
 | **Transport** | `transport/connection.ts` (`ServerConnection`) | **One connection per process**: every use checks `closed`, rebuilds when dead, re-subscribes to `events.watch` on the new connection, reports both disconnects and readiness upwards (`onClose` / `onOpen`). It does **not** retry — retrying is a session-layer rule |
 | | `ensure-server.ts` | Reads `<aiZenDir>/run/server.json`; if liveness (`callOnce` asking `ping`) fails it spawns `agents-server serve` detached and polls until `ping` answers. It is the **only** place in the package that knows about `agents-server` (deployment strategy, not a layer) |
-| | `socket-server-client.ts` | One TCP + JSON-lines connection: `hello` handshake, in-flight calls, event dispatch, disconnect notification |
-| **Facade** | `facade/sessions.ts` (`RemoteSessions`, 27) | Typed thin wrapper over `session.*` (21) + `workspace.*` (6) |
+| | `socket-server-client.ts` | One TCP + JSON-lines connection: `hello` handshake, in-flight calls (optionally carrying raw bytes), event dispatch, disconnect notification |
+| **Facade** | `facade/sessions.ts` (`RemoteSessions`, 28) | Typed thin wrapper over `session.*` (21) + `workspace.*` (6) + `content.*` (1) |
 | | `facade/config.ts` (`RemoteConfig`, 13) | `config.*` (7) + `agent.*` (5) + `asset.*` (1) |
 | | `facade/coverage.test-d.ts` | Facade method set **===** protocol method-table key set; **100% coverage** is enforced by types: one method missing or one extra fails to compile |
 | **Session** | `session/stream.ts` (`SessionStream`) | The **pure** state machine: messages / phase / model / usage / sub-agents / terminal failure for one turn. Zero I/O, zero timers, zero globals |
@@ -291,6 +292,7 @@ Writes are atomic (write `.tmp`, then `rename`) so a client never reads half a J
 ### Transport and handshake
 
 - **TCP + JSON-lines**: one JSON object per line, terminated by `\n`; the frame ceiling is 8 MiB, and an oversized frame is a protocol error that kills the connection (`packages/server/src/wire/frames.ts`). JSON-lines was chosen so the protocol can be driven by hand with debugging tools and dropped as-is into WebSocket text frames and stdio.
+- **Binary hangs off the frame**: a request frame that declares `params.bytes` is followed on the same stream by exactly that many **raw bytes** (no separator, no encoding); line framing resumes once they are all in, and one payload is capped at 64 MiB (`MAX_PAYLOAD_BYTES`). Images and files travel this way (`content.upload`); the conversion (upload to a `file_id`, base64 inline, or degrade to a text hint) is decided **server-side** from the endpoint and model that session is using.
 - **The first frame must be `hello`**: the client opens with `{ kind: "hello", protocol, client: { name, version } }` and the server replies with the same shape, carrying `ok` and `server: { name, version, protocol, pid, startedAt }`. There is **no exception** — even though this build has no authentication yet, the handshake still comes first, otherwise "add auth later" would mean rewriting how every client connects (header of `packages/server/src/protocol/messages.ts`).
 - After that each direction carries two kinds: request/response `{ id, method, params }` → `{ id, ok, result | error }`, and events `{ event, ... }`, pushed by the server, with no `id` and no reply expected.
 - The protocol version is `PROTOCOL_VERSION = 1`; any incompatible field change bumps it, and there is no "best-effort" compatibility mode.

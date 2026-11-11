@@ -6,7 +6,7 @@
  * 若 `Daemon` 直接收 `net.Socket`，「服务端讲什么」与「字节从哪里来」就焊死在一起：
  * 想接 WebSocket（浏览器直连 / 远程）就得改 `Daemon` 本体。而 `Daemon` 里绝大部分
  * 代码（首帧 `hello` 校验、帧分发、在飞请求、事件推送、空闲退出）与传输毫无关系。
- * 帧协议（`src/protocol/` 的 `frames.ts`）本来就是传输无关的 JSON-lines ——
+ * 帧协议（`src/wire/frames.ts`）本来就是传输无关的 JSON-lines（外加帧后的二进制挂法）——
  * 缺的只是「谁递这行文本、谁报断开」这件事的接口。把它定下来之后，加一种传输 = 新写一个
  * `Wire` 实现 + 一个监听器，`Daemon` 与契约层都不用动。
  *
@@ -18,17 +18,15 @@
  * `setNoDelay` / `bytesRead` … 现在一个都没用上，所以一个都不进来 —— 等真的要用时再加，
  * 顺手加进来的东西没人能说清它为什么该被每种传输实现。
  *
- * ## 线上流动的是**字符串**，不是 `Buffer`
+ * ## 线上流动的是**字节**，不是字符串
  *
- * 这条语义是硬约束，所以写清楚：`Daemon` 靠 `socket.setEncoding("utf-8")`
- * 让 `data` 事件吐字符串，而 `FrameDecoder.push(chunk: string)` 是按**文本行**切帧的
- * （`indexOf("\n")`，并且按字符数比 `MAX_FRAME_BYTES`）。因此：
+ * `Wire.onData` 递的是 `Buffer`：帧协议里除了文本行还有**原始字节**（带 `bytes` 的请求帧
+ * 后面紧跟恰好那么多字节，见 `src/wire/frames.ts`）。这里必须说清楚为什么不能解码成
+ * 字符串：任意字节都可能出现在 payload 里，过一遍 UTF-8 解码就已经坏了（非法序列会被
+ * 换成 U+FFFD，`0x0A` 之类的字节会被当成帧边界）—— 坏在**数据**上，而且没有报错。
  *
- * - **解码成字符串的责任在传输这一侧**（net 那一路就是 `setEncoding("utf-8")`，见下面的
- *   `socketWire()`），`Wire` 上只跑 `string`。
- * - 反向选择（`Wire` 上跑 `Buffer`）会把「UTF-8 多字节字符被 chunk 边界切开」这件事推回
- *   协议层或 `Daemon`：那等于在两处定义帧边界，而 `FrameDecoder` 已经按「一行文本」定义过
- *   一次了。浏览器 WebSocket 的 `event.data` 本来就是字符串，跑 `string` 对它零成本。
+ * 所以 `Daemon` 拿到的就是字节，切帧（按 `\n` 切行 / 按声明长度切 payload）也由
+ * `FrameDecoder` 在字节上完成：帧边界只在这一个地方定义。
  *
  * ## 本文件里**没有**哪个传输
  *
@@ -53,13 +51,14 @@ export interface Wire {
   readonly destroyed: boolean;
 
   /**
-   * 入站：来了一段**已解码的文本** —— `Daemon` 唯一的入站口（chunk 直接喂 `FrameDecoder.push`）。
+   * 入站：来了一段**原始字节** —— `Daemon` 唯一的入站口（chunk 直接喂 `FrameDecoder.push`）。
    *
-   * 为什么是字符串：见文件头「线上流动的是字符串」。
+   * 为什么是 `Buffer`：见文件头「线上流动的是字节」。解成文本的责任不在传输这一侧 ——
+   * payload 里出现什么字节都是合法的，任何一次性解码都会把它弄坏。
    * 为什么没有退订返回值：这条线的寿命就是连接的寿命 —— 断开即整条丢弃，`Daemon` 不会
    * 在连接中途换掉自己的数据回调；返回一个没人用的退订函数只是给每种传输多一项义务。
    */
-  onData(listener: (chunk: string) => void): void;
+  onData(listener: (chunk: Buffer) => void): void;
 
   /**
    * 传输层自己出了错（连接被重置、底层写失败等）—— `Daemon` 只记一行 warn。
@@ -101,20 +100,16 @@ export interface Wire {
  * （`ws.send` / `ws.close` / `readyState` / `message` / `error` / `close`），而"到底要映射到
  * 哪几个成员"这件事只有接口本身能回答。
  *
- * 为什么 `setEncoding` 在这里：把字节解成文本是传输的实现细节，不是协议概念 ——
- * 让 `Daemon` 去关心"这条线是文本还是字节"就等于把传输知识漏回协议层。
+ * 为什么不做 `setEncoding`：`data` 事件因此吐 `Buffer`，payload 原样到达 `FrameDecoder`
+ * （见文件头「线上流动的是字节」）。改回字符串会让图片这类二进制数据在**数据**上悄悄坏掉。
  */
 export function socketWire(socket: Socket): Wire {
-  // 解成文本之后 'data' 从此吐字符串，多字节字符被切开时由 Node 的 StringDecoder
-  // 兜住（这就是不能挪到 Daemon 的原因）。
-  socket.setEncoding("utf-8");
-
   return {
     get destroyed(): boolean {
       return socket.destroyed;
     },
     onData: (listener) => {
-      socket.on("data", (chunk: string) => listener(chunk));
+      socket.on("data", (chunk: Buffer) => listener(chunk));
     },
     onError: (listener) => {
       socket.on("error", (error: Error) => listener(error));

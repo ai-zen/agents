@@ -220,11 +220,17 @@ class TestClient {
 
   static async connect(port: number): Promise<TestClient> {
     const socket = createConnection({ host: "127.0.0.1", port });
-    socket.setEncoding("utf-8");
     const decoder = new FrameDecoder();
     const client = new TestClient(socket, decoder);
-    socket.on("data", (chunk: string) => {
-      for (const frame of decoder.push(chunk)) client.inbox.push(frame);
+    socket.on("data", (chunk: Buffer) => {
+      try {
+        decoder.push(chunk);
+        for (let item = decoder.next(); item; item = decoder.next()) {
+          if (item.type === "frame") client.inbox.push(item.frame);
+        }
+      } catch (error) {
+        client.inbox.push(error);
+      }
       client.wake();
     });
     socket.on("close", () => {

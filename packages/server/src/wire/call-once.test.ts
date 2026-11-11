@@ -43,10 +43,11 @@ async function startFakePeer(options: FakePeerOptions = {}): Promise<number> {
   const peer: Server = createServer((socket: Socket) => {
     const decoder = new FrameDecoder();
     let greeted = false;
-    socket.setEncoding("utf-8");
-    socket.on("data", (chunk: string) => {
-      for (const frame of decoder.push(chunk)) {
-        const value = frame as Record<string, any>;
+    socket.on("data", (chunk: Buffer) => {
+      decoder.push(chunk);
+      for (let item = decoder.next(); item; item = decoder.next()) {
+        if (item.type !== "frame") continue;
+        const value = item.frame as Record<string, any>;
         if (value?.kind === "hello") {
           if (options.acceptHandshake === false) {
             socket.write(

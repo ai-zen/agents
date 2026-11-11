@@ -628,10 +628,16 @@ class TestClient {
 
   static async connect(port: number): Promise<TestClient> {
     const socket = createConnection({ host: "127.0.0.1", port });
-    socket.setEncoding("utf-8");
     const instance = new TestClient(socket, new FrameDecoder());
-    socket.on("data", (chunk: string) => {
-      for (const frame of instance.decoder.push(chunk)) instance.inbox.push(frame);
+    socket.on("data", (chunk: Buffer) => {
+      try {
+        instance.decoder.push(chunk);
+        for (let item = instance.decoder.next(); item; item = instance.decoder.next()) {
+          if (item.type === "frame") instance.inbox.push(item.frame);
+        }
+      } catch (error) {
+        instance.inbox.push(error);
+      }
       instance.wake();
     });
     socket.on("close", () => {

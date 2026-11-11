@@ -1,6 +1,6 @@
 ---
 title: 架构
-description: 五个包与两个应用的分层与单向依赖、每层管什么不管什么、协议面 44 个方法 / 15 个事件、契约为什么是服务端的类型文件、client 的传输/门面/会话三层、server 的目录、会话寿命的唯一规则、SessionManager 的四件、<aiZenDir> 落盘布局与构建测试顺序。
+description: 五个包与两个应用的分层与单向依赖、每层管什么不管什么、协议面 45 个方法 / 15 个事件、契约为什么是服务端的类型文件、client 的传输/门面/会话三层、server 的目录、会话寿命的唯一规则、SessionManager 的四件、<aiZenDir> 落盘布局与构建测试顺序。
 outline: deep
 ---
 
@@ -110,7 +110,7 @@ grep -rn 'from "' packages/server/src/protocol/*.ts | grep -v '\.test\.' | grep 
 | `cli`（独立仓） | 渲染与输入（ink）、斜杠命令与会话层、把 `SessionStream` 的状态画出来 | 会话编排、存档、工作区、配置写入 —— 那些都在服务端。它依赖 `client`，另加 `sdk` / `core`（应用要用 `AgentDefinition` 这类业务类型与 `Role` / `MessageStatus` 这类**运行期 enum**） |
 | `desktop main`（独立仓） | 应用级事实（`app.getVersion()` 当 `clientInfo`）、拉起服务端、订阅事件并把状态转给 renderer | 服务端实现本身。它今天还持有一份**自己的**会话状态机（见「已知缺口 / 未完成」） |
 
-## 协议面：44 个方法 / 15 个事件
+## 协议面：45 个方法 / 15 个事件
 
 方法名与事件名都是**字面量联合类型**（不是运行期常量表）—— 它们定义在 `packages/server/src/protocol/`，只有类型，没有一行运行期代码。**统计口径**：数联合里的成员 —— 一个方法名字面量算一条；参数 / 结果类型不算；三个内置方法（`ping` / `status` / `shutdown`）**算**方法；通知码不算事件，它们是 `session-notice` / `server-notice` 载荷里的枚举。
 
@@ -122,8 +122,9 @@ grep -rn 'from "' packages/server/src/protocol/*.ts | grep -v '\.test\.' | grep 
 | `config.*` | 7 | `config.ts` 的 `ConfigMethod` |
 | `agent.*` | 5 | `config.ts` 的 `AgentMethod` |
 | `asset.*` | 1 | `assets.ts` 的 `AssetMethod` |
+| `content.*` | 1 | `content.ts` 的 `ContentMethod` |
 | 内置 `ping` / `status` / `shutdown` | 3 | `daemon.ts` 的 `DaemonMethod` |
-| **合计** | **44** | |
+| **合计** | **45** | |
 
 事件共 **15** 条，分三个联合，都在 `sessions.ts`：
 
@@ -169,8 +170,8 @@ grep -rn 'from "' packages/server/src/protocol/*.ts | grep -v '\.test\.' | grep 
 |---|---|---|
 | **传输** | `transport/connection.ts`（`ServerConnection`） | **一个进程一条连接**：每次取用都判 `closed`、断了就重建、重建后在新连接上重新订阅 `events.watch`、断线与就绪都往上说（`onClose` / `onOpen`）。它**不重试** —— 重试是会话层的规则 |
 | | `ensure-server.ts` | 读 `<aiZenDir>/run/server.json`；探活（`callOnce` 问一句 `ping`）失败就 detached 拉起 `agents-server serve`，轮询到 `ping` 通。它是包里**唯一**知道 `agents-server` 的地方（部署策略，不是分层） |
-| | `socket-server-client.ts` | 一条 TCP + JSON-lines 连接：`hello` 握手、在飞调用、事件分发、断开通知 |
-| **门面** | `facade/sessions.ts`（`RemoteSessions`，27 条） | `session.*`(21) + `workspace.*`(6) 的类型化薄封装 |
+| | `socket-server-client.ts` | 一条 TCP + JSON-lines 连接：`hello` 握手、在飞调用（可带一段原始字节）、事件分发、断开通知 |
+| **门面** | `facade/sessions.ts`（`RemoteSessions`，28 条） | `session.*`(21) + `workspace.*`(6) + `content.*`(1) 的类型化薄封装 |
 | | `facade/config.ts`（`RemoteConfig`，13 条） | `config.*`(7) + `agent.*`(5) + `asset.*`(1) |
 | | `facade/coverage.test-d.ts` | 门面方法集合 **===** 协议方法表 key 集合，**100% 覆盖**由类型保证：少一条、多一条都编译不过 |
 | **会话** | `session/stream.ts`（`SessionStream`） | **纯**状态机：一轮之内的消息 / 阶段 / 模型 / 用量 / 子 Agent / 失败终态。零 I/O、零 timers、零全局 |
@@ -252,6 +253,7 @@ packages/server/src/
 ### 传输与握手
 
 - **TCP + JSON-lines**：一行一个 JSON，`\n` 结尾；单帧上限 8 MiB，超了判协议错误并断开连接（`packages/server/src/wire/frames.ts`）。选 JSON-lines 是为了能用手搓工具调试，并能原样塞进 WebSocket 文本帧与 stdio。
+- **二进制挂在帧后**：声明了 `params.bytes` 的请求帧之后，同一条流上紧跟恰好这么多个**原始字节**（无分隔符、无编码），收满后回到按行切帧；单块上限 64 MiB（`MAX_PAYLOAD_BYTES`）。图片 / 文件的字节走这条路（`content.upload`），转换（上传成 `file_id` / base64 内联 / 退化成文本）由服务端按**这段会话**的端点与模型决定。
 - **首帧必须 `hello`**：客户端先发 `{ kind: "hello", protocol, client: { name, version } }`，服务端回同形状回执，带 `ok` 与 `server: { name, version, protocol, pid, startedAt }`。**没有例外**——即使当前还没有鉴权，也必须先握手，否则「将来加鉴权」就得改所有客户端的建连逻辑（`packages/server/src/protocol/messages.ts` 文件头）。
 - 之后两个方向的消息各两类：请求/响应 `{ id, method, params }` → `{ id, ok, result | error }`；事件 `{ event, ... }` 由服务端主动推、无 `id`、不等回执。
 - 协议版本 `PROTOCOL_VERSION = 1`；任何不兼容的字段变化都要 +1，不做「尽力兼容」。

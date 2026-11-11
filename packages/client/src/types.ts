@@ -28,6 +28,15 @@ export interface ClientInfo {
 export interface CallOptions {
   /** 本次调用的时限；不传就用客户端默认值 */
   timeoutMs?: number;
+  /**
+   * 同时发出去的**原始字节**：这一帧后面紧跟恰好这么多字节（帧内 `params.bytes` 声明的
+   * 就是它的长度）。
+   *
+   * 为什么挂在 options 上而不是 params 里：帧是 JSON，字节进去只能被 base64 一遍
+   * （体积涨三分之一、还得先整块驻留成字符串）。分开之后线上的形状就是
+   * 「一行 JSON + N 个原始字节」，与协议层 `FrameDecoder` 切的完全一致。
+   */
+  bytes?: Uint8Array;
 }
 
 /**

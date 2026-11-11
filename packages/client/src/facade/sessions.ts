@@ -8,11 +8,14 @@
  * 协议一改名就得改两处、还只改一处也能编译通过。所以门面的方法集合必须**等于**方法表
  * 的 key 集合 —— 少一条编译不过，多一条也编译不过（用例见 `facade/coverage.test-d.ts`）。
  *
- * ## 为什么是 27 条（`SessionMethod` 21 + `WorkspaceMethod` 6）
+ * ## 为什么是 28 条（`SessionMethod` 21 + `WorkspaceMethod` 6 + `ContentMethod` 1）
  *
  * 会话是工作区的下级对象，客户端做事时两者总是成对出现（列清单要工作区 id、开会话要
  * 工作区路径、改名要指明是哪个工作区的存档）。分成两个对象的话，每次调用点都要同时持有
  * 两个引用，而「哪一条属于哪一边」就成了每次都要重新判的事。
+ *
+ * `content.upload` 挂在这一边而不另开一个对象：它要的输入就是「哪一段会话」——端点与
+ * 视觉能力跟着那段会话的模型走，所以调用点手里一定已经有会话 id。
  *
  * ## 方法名为什么不等于表的 key
  *
@@ -25,6 +28,7 @@
  */
 
 import type {
+  ContentUploadResult,
   HandoffMode,
   MessageContent,
   MigrationStrategy,
@@ -57,6 +61,16 @@ import type {
   WorkspaceResolveResult,
 } from "@ai-zen/agents-server/protocol";
 import type { ServerClient } from "../types.js";
+
+/** 一批要换成内容块的字节（`content.upload` 的入参） */
+export interface UploadContentInput {
+  /** 原始字节（图片 / 文件）；长度由门面自己填进帧里，调用方不必再算一遍 */
+  bytes: Uint8Array;
+  /** MIME（`image/png` …）：决定走图片通道还是文件通道 */
+  mime: string;
+  /** 文件名：上传与 `file` 块都要它 */
+  filename: string;
+}
 
 /** 开一个会话要多说几句，单独成类型，避免调用点各拼一份 */
 export interface OpenSessionInput {
@@ -179,8 +193,9 @@ export class RemoteSessions {
   /**
    * 开始一轮；返回 `turnId`，过程与结果都走事件。
    *
-   * `content` 可以是纯文本，也可以是「文本 + 图片」的内容块数组 —— 服务端不解释它，
-   * 原样交给 Agent（内容块怎么拼是客户端的事）。
+   * `content` 可以是纯文本，也可以是「文本 + 内容块」的数组 —— 服务端不解释它，原样交给
+   * Agent。但**一个文件 / 一张图该以什么形式进去**不是客户端决定的：那是
+   * {@link uploadContent} 的事（端点能力、上传还是内联、文件归属，判据全在服务端）。
    */
   async send(sessionId: string, content: MessageContent): Promise<SessionSendResult> {
     return await this.client.call<SessionSendResult>("session.send", { sessionId, content });
@@ -380,5 +395,23 @@ export class RemoteSessions {
       sessionId,
       subAgentId,
     });
+  }
+
+  // ==================== 内容（`content.*`，1 条） ====================
+
+  /**
+   * 一批字节 → 一块能放进消息的内容（`text` / `image_url` / `file`）。
+   *
+   * 字节走帧后的二进制 payload（不 base64 塞回 JSON）；`bytes` 这个长度字段由这里从
+   * `input.bytes` 自己算 —— 调用方只说“就这些字节”，没有第二个地方能把长度写错。
+   * 怎么发（上传成 `file_id` / 内联成 data URL / 退化成文本提示）由服务端按**这段会话**
+   * 实际用的端点与模型决定，回来的 `warning` 是它的降级说明（转进通知栏）。
+   */
+  async uploadContent(sessionId: string, input: UploadContentInput): Promise<ContentUploadResult> {
+    return await this.client.call<ContentUploadResult>(
+      "content.upload",
+      { sessionId, bytes: input.bytes.byteLength, mime: input.mime, filename: input.filename },
+      { bytes: input.bytes },
+    );
   }
 }

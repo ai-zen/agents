@@ -28,6 +28,7 @@ import type {
   AgentMethodKey,
   AssetMethodKey,
   ConfigMethodKey,
+  ContentMethodKey,
   SessionMethodKey,
   WorkspaceMethodKey,
 } from "@ai-zen/agents-server/protocol";
@@ -45,7 +46,7 @@ type MethodNames<T> = keyof T;
 type AssertNone<T extends never> = T;
 
 // ==================================================================
-// 会话面：`SessionMethod`(21) + `WorkspaceMethod`(6)
+// 会话面：`SessionMethod`(21) + `WorkspaceMethod`(6) + `ContentMethod`(1)
 // ==================================================================
 
 /**
@@ -88,10 +89,18 @@ const WORKSPACE_COVERAGE = {
   relocate: "relocateWorkspace",
 } satisfies Record<WorkspaceMethodKey, MethodNames<RemoteSessions>>;
 
-/** 两张表合起来认领的方法：`RemoteSessions` 上的每一个方法都必须在这里面 */
+/**
+ * `content.upload` 落在 `RemoteSessions` 上（它要的输入是会话 id），所以归这一张表。
+ */
+const CONTENT_COVERAGE = {
+  upload: "uploadContent",
+} satisfies Record<ContentMethodKey, MethodNames<RemoteSessions>>;
+
+/** 三张表合起来认领的方法：`RemoteSessions` 上的每一个方法都必须在这里面 */
 type SessionsClaimed =
   | (typeof SESSION_COVERAGE)[keyof typeof SESSION_COVERAGE]
-  | (typeof WORKSPACE_COVERAGE)[keyof typeof WORKSPACE_COVERAGE];
+  | (typeof WORKSPACE_COVERAGE)[keyof typeof WORKSPACE_COVERAGE]
+  | (typeof CONTENT_COVERAGE)[keyof typeof CONTENT_COVERAGE];
 
 // 「多一条」：门面上有谁也没认领的方法 → 编译不过
 export type SessionsExhaustive = AssertNone<Exclude<MethodNames<RemoteSessions>, SessionsClaimed>>;

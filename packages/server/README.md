@@ -35,7 +35,7 @@ The wire contract is **not a package** — it is this package's type files. Two 
 | | Holds | Runtime exports |
 |---|---|---|
 | `src/protocol/` | method/event **name unions**, payload types, error-code unions, frame shapes, phase shapes, the type-only re-export of the data model | **none** — every file is `type`/`interface` only |
-| `src/wire/` | frame codec (`encodeFrame` / `FrameDecoder` / `MAX_FRAME_BYTES` / `ProtocolError`), error-code predicate (`codedError` / `isCodedError` / `codeOf`), loopback predicate, `PROTOCOL_VERSION`, discovery-file I/O, `callOnce`, `DEFAULT_MIGRATION_STRATEGY` | yes |
+| `src/wire/` | frame codec (`encodeFrame` / `FrameDecoder` / `MAX_FRAME_BYTES` / `MAX_PAYLOAD_BYTES` / `ProtocolError`), error-code predicate (`codedError` / `isCodedError` / `codeOf`), loopback predicate, `PROTOCOL_VERSION`, discovery-file I/O, `callOnce`, `DEFAULT_MIGRATION_STRATEGY` | yes |
 
 Clients import **only** `@ai-zen/agents-server/protocol` and only with `import type`; their own
 runtime copies live in `packages/client/src/wire/`. Nothing is shared but shapes and names — which
@@ -101,11 +101,27 @@ There is deliberately **one direction only**: when the server needs to ask the c
 something it emits `session-question` and gets the answer back through the `session.answer`
 *method* — so frame `id`s are allocated by a single side and two directions can never collide.
 
-Images ride inside `session.send` as OpenAI-compatible content blocks (`text` /
-`image_url` / `file`) — base64 inlined, so the client must keep the whole frame under
-`MAX_FRAME_BYTES` (8 MiB); an oversized frame is a protocol error and kills the connection.
-There is no side channel for bytes: the content-block assembly stays on the client, which is
-the side that knows the endpoint and model.
+Images and files do **not** ride inside `session.send`: a request frame that declares
+`params.bytes` is followed on the same stream by exactly that many **raw bytes** (no separator, no
+encoding), then line framing resumes.
+
+```
+→ {"id":7,"method":"content.upload","params":{"sessionId":"chat_1","bytes":4,"mime":"image/png","filename":"a.png"}}
+→ <4 raw bytes>
+→ {"id":8,"method":"ping"}
+```
+
+Why a binary tail instead of base64 inside the JSON: base64 costs a third more bytes and forces the
+whole payload through a string. The length is declared once, the bytes are taken as they come.
+Only the methods in `BINARY_METHODS` (`src/daemon/Daemon.ts`) may carry a payload; a `bytes` field
+on any other method, a non-positive length, or a length above `MAX_PAYLOAD_BYTES` (64 MiB) is a
+protocol error and kills the connection.
+
+The content block that goes into `session.send` is produced **server-side**
+(`content.upload` → SDK `fileToContentSection`): whether those bytes get uploaded as a `file_id`,
+inlined as base64, or degraded to a text hint depends on the endpoint and model **that session**
+is actually using. A frame carrying such a block still has to fit under `MAX_FRAME_BYTES`
+(8 MiB) — the inline case puts base64 back into the JSON frame — so clients keep measuring it.
 
 Built-in methods: `ping`, `status`, `shutdown`. Everything else is injected by the
 composition root through `DaemonOptions.handlers`, so the daemon skeleton stays free of
@@ -119,11 +135,14 @@ business logic.
 along (`pause` / `resume` / half-close / `remoteAddress` … are unused, so they are not in the
 interface: every extra member is an obligation for every future transport).
 
-Chunks on a `Wire` are **already decoded strings**. Decoding belongs to the transport — the
-net adapter is `socketWire()`, whose whole job is `setEncoding("utf-8")` plus six one-line
-mappings — because `FrameDecoder` slices frames by *text* lines and `MAX_FRAME_BYTES` counts
-characters. A `Wire` handed `Buffer`s would force a second notion of "frame boundary" into
-the protocol layer.
+Chunks on a `Wire` are **raw bytes**. Undecoded on purpose: a payload may contain any byte value
+(`0x0A` included), so decoding belongs at the frame layer where the bytes are actually sliced —
+`FrameDecoder` splits lines on `\n` and payloads by declared length, and both decisions live in
+that one place. The net adapter `socketWire()` is six one-line mappings and no `setEncoding`.
+
+`FrameDecoder` hands out **one item at a time** (`push()` then `next()`): whether the bytes after a
+frame are a binary payload is a question only the caller can answer (it knows the method), so the
+decoder must not read ahead of that verdict.
 
 Today's only implementation is **TCP**: `start()` wraps each `net.Socket` with
 `socketWire()` and passes it to `Daemon.handleConnection(wire)`. WebSocket is **not
@@ -152,13 +171,14 @@ and every write path), `QuestionBroker.ts` (server → client questions). `src/l
 business-free parts (`phase.ts` = phase state machine, `events.ts` = connection fan-out).
 `src/domain/agent/` assembles the agent (config + Scope + capability
 discovery) per workspace; `src/daemon/sessionHandlers.ts` registers the session and workspace
-methods, `configHandlers.ts` / `agentHandlers.ts` / `assetHandlers.ts` the rest, and `src/cli.ts`
-wires all of it.
+methods, `configHandlers.ts` / `agentHandlers.ts` / `assetHandlers.ts` / `contentHandlers.ts` the
+rest, and `src/cli.ts` wires all of it.
 
 **The method list has exactly one source of truth: `MethodApi` in `src/protocol/api.ts`** — one
 entry per method, binding each name to its params and result. The name unions it must agree with
 (`SessionMethod` / `WorkspaceMethod` / `EventMethod` / `ConfigMethod` / `AgentMethod` /
-`AssetMethod` / `DaemonMethod`) live in `sessions.ts` / `config.ts` / `assets.ts` / `daemon.ts`,
+`AssetMethod` / `ContentMethod` / `DaemonMethod`) live in `sessions.ts` / `config.ts` / `assets.ts` /
+`content.ts` / `daemon.ts`,
 and two `Assert`s in `api.ts` fail the build if the two ever disagree. This README deliberately
 does not copy the list: a copy is what goes stale, and a stale list is worse than no list. What
 each method means is documented where it is defined; the sections below only carry the semantics

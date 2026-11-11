@@ -88,7 +88,6 @@ export async function callOnce<M extends AnyMethod>(
       finish(new Error(`timeout after ${timeoutMs}ms calling ${method}`));
     }, timeoutMs);
 
-    socket.setEncoding("utf-8");
     socket.on("connect", () => {
       socket.write(encodeFrame({ kind: "hello", protocol: PROTOCOL_VERSION, client }));
     });
@@ -98,42 +97,43 @@ export async function callOnce<M extends AnyMethod>(
       finish(new Error(`connection closed before replying (${address.host}:${address.port})`)),
     );
 
-    socket.on("data", (chunk: string) => {
-      let frames: unknown[];
+    // chunk 是**字节**（帧里可能跟二进制 payload）：解码交给 `FrameDecoder`，这里只看帧
+    socket.on("data", (chunk: Buffer) => {
       try {
-        frames = decoder.push(chunk);
+        decoder.push(chunk);
+        // 一项一项取（理由见 `frames.ts`）：回帧永远是文本帧，payload 项直接跳过
+        for (let item = decoder.next(); item; item = decoder.next()) {
+          if (item.type !== "frame") continue;
+          const value = item.frame as Record<string, any> | null;
+
+          if (value?.kind === "hello") {
+            const hello = value as HelloResponse;
+            if (!hello.ok) {
+              const code = hello.error?.code ?? "bad-handshake";
+              finish(
+                codedFailure(code, `handshake rejected: ${code}: ${hello.error?.message ?? ""}`),
+              );
+              return;
+            }
+            // `params` 为 undefined 时 JSON.stringify 会整键丢掉，帧里就只剩 `{ id, method }`
+            socket.write(encodeFrame({ id: REQUEST_ID, method, params }));
+            continue;
+          }
+
+          if (value?.id === REQUEST_ID) {
+            const response = value as ResponseFrame;
+            if (response.ok) finish(null, response.result);
+            else
+              finish(
+                codedFailure(
+                  response.error.code,
+                  `${response.error.code}: ${response.error.message}`,
+                ),
+              );
+          }
+        }
       } catch (error) {
         finish(error as Error);
-        return;
-      }
-      for (const frame of frames) {
-        const value = frame as Record<string, any> | null;
-
-        if (value?.kind === "hello") {
-          const hello = value as HelloResponse;
-          if (!hello.ok) {
-            const code = hello.error?.code ?? "bad-handshake";
-            finish(
-              codedFailure(code, `handshake rejected: ${code}: ${hello.error?.message ?? ""}`),
-            );
-            return;
-          }
-          // `params` 为 undefined 时 JSON.stringify 会整键丢掉，帧里就只剩 `{ id, method }`
-          socket.write(encodeFrame({ id: REQUEST_ID, method, params }));
-          continue;
-        }
-
-        if (value?.id === REQUEST_ID) {
-          const response = value as ResponseFrame;
-          if (response.ok) finish(null, response.result);
-          else
-            finish(
-              codedFailure(
-                response.error.code,
-                `${response.error.code}: ${response.error.message}`,
-              ),
-            );
-        }
       }
     });
   });

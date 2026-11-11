@@ -27,6 +27,7 @@
  */
 
 import type { AssetListParams, AssetListResult, AssetMethod } from "./assets.js";
+import type { ContentMethod, ContentUploadParams, ContentUploadResult } from "./content.js";
 import type {
   AgentGetParams,
   AgentGetResult,
@@ -118,7 +119,7 @@ export interface MethodContract<P, R> {
   result: R;
 }
 
-/** 线上全部方法（44 条）→ 它的参数与结果 */
+/** 线上全部方法（45 条）→ 它的参数与结果 */
 export interface MethodApi {
   // ---- 工作区 ----
   "workspace.resolve": MethodContract<WorkspaceResolveParams, WorkspaceResolveResult>;
@@ -182,6 +183,9 @@ export interface MethodApi {
   // ---- 资产 ----
   "asset.list": MethodContract<AssetListParams, AssetListResult>;
 
+  // ---- 内容 ----
+  "content.upload": MethodContract<ContentUploadParams, ContentUploadResult>;
+
   // ---- 内置 ----
   ping: MethodContract<void, PingResult>;
   status: MethodContract<void, DaemonStatusResult>;
@@ -205,6 +209,7 @@ type AllDeclaredMethods =
   | ConfigMethod
   | AgentMethod
   | AssetMethod
+  | ContentMethod
   | DaemonMethod;
 
 /** `T` 是 `true` 才算通过；`false` 会在这一行编译错误 */

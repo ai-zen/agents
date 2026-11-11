@@ -9,8 +9,8 @@
  * - **只有三个自带方法**：`ping` / `status` / `shutdown`（它们在任何命名空间之外，
  *   因为它们是「活着吗 / 你是谁 / 可以关了吗」这三个问题）。其余方法全部由组装根注入：
  *   `session.*` / `workspace.*` / `events.watch`（`src/protocol/` 的 `sessions.ts`）、
- *   `config.*` / `agent.*`（同一个包的 `config.ts`）。本类只管「文本行 → 帧 → 方法调用」，不认识业务，
- *   也不认识字节从哪里来（那是 `./wire.ts` 的事）。
+ *   `config.*` / `agent.*`（同一个包的 `config.ts`）、`content.upload`（`content.ts`）。本类只管
+ *   「字节 → 帧 → 方法调用」，不认识业务，也不认识字节从哪里来（那是 `./wire.ts` 的事）。
  * - **握手不省**：即使现在不鉴权，首帧也必须 `hello`。将来加 token/公钥时只改握手内容，
  *   不动所有客户端的建连逻辑。
  *
@@ -44,6 +44,11 @@ export type MethodHandlers = {
   [M in AnyMethod]?: (
     params: ParamsOf<M>,
     connection: Connection,
+    /**
+     * 跟在帧后面的原始字节 —— 只有带字节的方法（见 `BINARY_METHODS`）会收到，其余恒为
+     * `undefined`（它们的请求帧后面一个多余字节都没有）。
+     */
+    payload?: Buffer,
   ) => ResultOf<M> | Promise<ResultOf<M>>;
 };
 
@@ -53,7 +58,7 @@ export type MethodHandlers = {
  * 这是一处**有意**的擦除，位置在「收到一帧 JSON → 查到某个 handler」这个边界上；
  * 帧本身的合法性由 `isRawRequestFrame` 判定，而「这条方法的参数长什么样」由方法表声明。
  */
-export type AnyHandler = (params: never, connection: Connection) => unknown;
+export type AnyHandler = (params: never, connection: Connection, payload?: Buffer) => unknown;
 
 /** 一条已建连的连接（握手后可用） */
 export interface Connection {
@@ -100,6 +105,40 @@ export interface DaemonOptions {
 
 /** 拒绝启动时给用户看的那句话里的地址说明（判据本身的实现在 `host.ts`） */
 const LOOPBACK_HOSTS_NOTE = "127.0.0.0/8 / ::1 / localhost";
+
+/**
+ * 请求帧后面紧跟原始字节的方法（帧形状见 `src/wire/frames.ts`）。
+ *
+ * 判据放在这里、而不在 handler 里：「进入二进制阶段」必须在**同步**遍历刚切出的项时决定
+ * （依据方法名 + 帧里的 `bytes`），否则「下一批字节属于谁」会跟着 `dispatch` 的异步时序漂。
+ *
+ * 表里的名字受 `AnyMethod` 约束 —— 拼错方法名当场编译错误（而不是变成一条永远带不上
+ * payload 的方法）。
+ */
+const BINARY_METHODS: ReadonlySet<string> = new Set(["content.upload"] satisfies AnyMethod[]);
+
+/**
+ * 这一帧后面跟多少字节（`null` = 不跟字节）。
+ *
+ * 两条错法都在这里判：带字节的方法没声明长度、不带字节的方法冒出一个 `bytes`。
+ * 长度本身合不合法（正整数 / 上限）由 `FrameDecoder.expectBytes` 判 —— 「payload 多长
+ * 算长」只有那一处判据。
+ *
+ * @throws ProtocolError（`bad-frame`）—— 帧形状错，整条流已经对不齐了
+ */
+function payloadLengthOf(method: string, params: unknown): number | null {
+  const declared = (params as Record<string, unknown> | null | undefined)?.["bytes"];
+  if (!BINARY_METHODS.has(method)) {
+    if (declared !== undefined) {
+      throw new ProtocolError("bad-frame", `${method} does not take a binary payload`);
+    }
+    return null;
+  }
+  if (typeof declared !== "number") {
+    throw new ProtocolError("bad-frame", `${method} requires "bytes" (the payload length)`);
+  }
+  return declared;
+}
 
 export class Daemon {
   private readonly options: DaemonOptions;
@@ -261,6 +300,12 @@ export class Daemon {
     const id = this.nextConnectionId++;
     const decoder = new FrameDecoder();
     let handshaken = false;
+    /**
+     * 等 payload 的那一帧（见 `wire.onData` 里的说明）。
+     *
+     * 它必须活到**整条连接**，而不是一个 chunk：payload 可以跨多个 chunk 才收满。
+     */
+    let awaitingPayload: { id: number; method: string; params: unknown } | null = null;
     const closeListeners = new Set<() => void>();
 
     this.connections.add(wire);
@@ -291,60 +336,110 @@ export class Daemon {
       wire.destroy();
     };
 
-    wire.onData((chunk: string) => {
-      let frames: unknown[];
+    /**
+     * 帧层违规（非法帧 / 超限 / 带字节的帧声明了非法长度）。
+     *
+     * 一律断开：这条流已经对不齐了（下一帧从哪里开始不知道），继续读只会把后面的字节
+     * 当成帧解析，错误会以更难查的形式出现在别处。
+     */
+    const rejectProtocol = (error: unknown) => {
+      const code = error instanceof ProtocolError ? error.code : "bad-frame";
+      this.log("warn", `conn#${id} protocol error: ${code}`);
+      if (!wire.destroyed) {
+        wire.write(encodeFrame({ ok: false, error: { code, message: String(error) } }));
+      }
+      wire.destroy();
+    };
+
+    wire.onData((chunk: Buffer) => {
       try {
-        frames = decoder.push(chunk);
+        decoder.push(chunk);
       } catch (error) {
-        const code = error instanceof ProtocolError ? error.code : "bad-frame";
-        this.log("warn", `conn#${id} protocol error: ${code}`);
-        if (!wire.destroyed) {
-          wire.write(encodeFrame({ ok: false, error: { code, message: String(error) } }));
-        }
-        wire.destroy();
+        rejectProtocol(error);
         return;
       }
 
-      for (const frame of frames) {
-        if (!handshaken) {
-          if (!isHelloRequest(frame)) {
-            fail("bad-handshake", "first frame must be hello");
-            return;
-          }
-          if (frame.protocol !== PROTOCOL_VERSION) {
-            fail(
-              "version-mismatch",
-              `client speaks protocol ${frame.protocol}, this server speaks ${PROTOCOL_VERSION}`,
+      /**
+       * 一项一项取，而不是一次把 chunk 切完。
+       *
+       * 判据在**这一层**：帧之后跟的是不是二进制 payload，只有认识方法名的调用方知道。
+       * 所以顺序是「取一帧 → 判它带不带字节 → （带就）`expectBytes` → 再取下一项」，
+       * 全程同步 —— 这也是「先存帧、收到 payload 再派发」那个选择成立的前提：帧的派发可以
+       * 异步，但「哪段字节属于哪一帧」在这串同步里就定死了。
+       *
+       * `awaitingPayload` 同一时刻最多一个：解码器是串行的（二进制阶段收满之前不会
+       * 吐出下一帧）。
+       */
+      try {
+        for (let item = decoder.next(); item; item = decoder.next()) {
+          if (item.type === "bytes") {
+            const pending = awaitingPayload;
+            awaitingPayload = null;
+            // 没有帧在等：帧形状自相矛盾（多出来一段没人认领的字节）
+            if (!pending) throw new ProtocolError("bad-frame", "binary payload without a frame");
+            void this.dispatch(
+              pending.id,
+              pending.method,
+              pending.params,
+              connection,
+              wire,
+              item.bytes,
             );
-            return;
+            continue;
           }
-          handshaken = true;
-          wire.write(
-            encodeFrame({
-              kind: "hello",
-              ok: true,
-              server: {
-                name: "@ai-zen/agents-server",
-                version: this.options.version,
-                protocol: PROTOCOL_VERSION,
-                pid: process.pid,
-                startedAt: this.startedAt.toISOString(),
-              },
-            } satisfies HelloResponse),
-          );
-          continue;
-        }
 
-        if (!isRequestFrame(frame)) {
-          wire.write(
-            encodeFrame({
-              ok: false,
-              error: { code: "bad-frame", message: "expected a request frame" },
-            }),
-          );
-          continue;
+          const frame = item.frame;
+          if (!handshaken) {
+            if (!isHelloRequest(frame)) {
+              fail("bad-handshake", "first frame must be hello");
+              return;
+            }
+            if (frame.protocol !== PROTOCOL_VERSION) {
+              fail(
+                "version-mismatch",
+                `client speaks protocol ${frame.protocol}, this server speaks ${PROTOCOL_VERSION}`,
+              );
+              return;
+            }
+            handshaken = true;
+            wire.write(
+              encodeFrame({
+                kind: "hello",
+                ok: true,
+                server: {
+                  name: "@ai-zen/agents-server",
+                  version: this.options.version,
+                  protocol: PROTOCOL_VERSION,
+                  pid: process.pid,
+                  startedAt: this.startedAt.toISOString(),
+                },
+              } satisfies HelloResponse),
+            );
+            continue;
+          }
+
+          if (!isRequestFrame(frame)) {
+            wire.write(
+              encodeFrame({
+                ok: false,
+                error: { code: "bad-frame", message: "expected a request frame" },
+              }),
+            );
+            continue;
+          }
+
+          // 带字节的请求帧：进入二进制阶段（后面恰好 `bytes` 个字节），帧本身等收到字节再派发
+          const length = payloadLengthOf(frame.method, frame.params);
+          if (length !== null) {
+            decoder.expectBytes(length);
+            awaitingPayload = { id: frame.id, method: frame.method, params: frame.params };
+            continue;
+          }
+
+          void this.dispatch(frame.id, frame.method, frame.params, connection, wire);
         }
-        void this.dispatch(frame.id, frame.method, frame.params, connection, wire);
+      } catch (error) {
+        rejectProtocol(error);
       }
     });
 
@@ -366,6 +461,7 @@ export class Daemon {
     params: unknown,
     connection: Connection,
     wire: Wire,
+    payload?: Buffer,
   ): Promise<void> {
     const handler = this.handlers.get(method);
     if (!handler) {
@@ -379,7 +475,7 @@ export class Daemon {
     try {
       // 唯一的断言：`params` 是解出来的 JSON（合法性已由 `isRawRequestFrame` 判过形状），
       // 具体形状由方法表声明。
-      const result = await handler(params as never, connection);
+      const result = await handler(params as never, connection, payload);
       writeIfOpen(wire, { id, ok: true, result });
     } catch (error: any) {
       writeIfOpen(wire, {

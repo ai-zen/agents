@@ -11,14 +11,14 @@ CLI（TUI）与 Desktop（main）共用同一份实现：两个前端各写一�
 | 文件 | 脏/纯 | 职责 |
 |---|---|---|
 | `transport/connection.ts` | 脏 | **一个进程一条连接**（`ServerConnection`）：每次取用都判活、断了就重建、重建后在新连接上重新订阅 `events.watch`、断线与就绪都往上说 |
-| `socket-server-client.ts` | 脏 | 一条 TCP + JSON-lines 连接：`hello` 握手、在飞调用、事件分发、断开通知 |
+| `socket-server-client.ts` | 脏 | 一条 TCP + JSON-lines 连接：`hello` 握手、在飞调用（可带一段原始字节）、事件分发、断开通知 |
 | `ensure-server.ts` | 脏 | 读 `<aiZenDir>/run/server.json`；探活（`callOnce` 问一句 `ping`）失败就 detached 拉起 `agents-server serve`，轮询到 `ping` 通 |
 | `session/channel.ts` | 脏 | **一条会话的 I/O**（`SessionChannel`）：订阅、请求、重连（三条不变式）、重新 `attach`、`close` 当场回收 |
 | `session/stream.ts` | 纯 | **一轮之内的状态机**（`SessionStream`）：消息 / 阶段 / 模型 / 用量 / 子 Agent / 失败终态 |
 | `stream-merge.ts` | 纯 | 「本地流式增量」与「服务端快照」的合并规则（`mergeStreamedSnapshot`，唯一实现） |
 | `session/errors.ts` | 纯 | 「这段会话还在不在」的唯一判据（`isSessionGone`；`session-missing` 与 `unknown-session` **两个都算**） |
 | `tsconfig.pure.json` + `session/pure-boundary.test.ts` | 门禁 | 纯边界**是机制而不是约定**：`stream.ts` 的 import 图只许 `agents-server/protocol`（类型）+ `stream-merge`，进 `agents-server` **包根** / `agents-sdk` 就编译不过 |
-| `facade/sessions.ts` | 纯 | `session.*`(21) + `workspace.*`(6) 的类型化门面（`RemoteSessions`），100% 覆盖 |
+| `facade/sessions.ts` | 纯 | `session.*`(21) + `workspace.*`(6) + `content.*`(1) 的类型化门面（`RemoteSessions`），100% 覆盖 |
 | `facade/config.ts` | 纯 | `config.*`(7) + `agent.*`(5) + `asset.*`(1) 的类型化门面（`RemoteConfig`），100% 覆盖 |
 | `facade/coverage.test-d.ts` | 类型 | 门面方法集合 === 协议方法表 key 集合（少一条、多一条都编译不过） |
 | `config-port.ts` | 应用端口 | 配置面（`ConfigPort`）：把线上形状兑现成 `AppConfig` / `AgentStore` 这些应用类型，实现建在 `RemoteConfig` 上 |

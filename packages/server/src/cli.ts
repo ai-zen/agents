@@ -20,6 +20,7 @@ import { Daemon } from "./daemon/Daemon.js";
 import { createAgentHandlers } from "./daemon/agentHandlers.js";
 import { createAssetHandlers } from "./daemon/assetHandlers.js";
 import { createConfigHandlers } from "./daemon/configHandlers.js";
+import { createContentHandlers } from "./daemon/contentHandlers.js";
 import { createSessionHandlers } from "./daemon/sessionHandlers.js";
 
 import type { AnyMethod, ResultOf } from "./protocol/api.js";
@@ -281,6 +282,8 @@ async function main(): Promise<number> {
       }),
       ...createAgentHandlers({ factory: agentFactory, config: configService }),
       ...createConfigHandlers({ config: configService }),
+      // 内容转块（`content.upload`）：端点与模型从**这段会话**查，上传 / 内联的判据在 SDK
+      ...createContentHandlers({ manager: sessions, config: configService }),
       // 资产清单（只读）：全局层与项目层的目录都在组装根这里解析成值再注入
       ...createAssetHandlers({
         service: new AssetService({ aiZenDir: args.aiZenDir, homeDir, workspacesRoot }),

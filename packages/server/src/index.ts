@@ -74,3 +74,4 @@ export * from "./daemon/sessionHandlers.js";
 export * from "./daemon/agentHandlers.js";
 export * from "./daemon/configHandlers.js";
 export * from "./daemon/assetHandlers.js";
+export * from "./daemon/contentHandlers.js";
