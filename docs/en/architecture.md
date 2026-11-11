@@ -134,7 +134,7 @@ not events, they are enums inside `session-notice` / `server-notice` payloads.
 | `agent.*` | 5 | `AgentMethod` in `config.ts` |
 | `asset.*` | 1 | `AssetMethod` in `assets.ts` |
 | `content.*` | 1 | `ContentMethod` in `content.ts` (the only method that carries a binary payload) |
-| `notice.*` | 2 | `NoticeMethod` in `notice.ts` (`notice.list` / `notice.ack`, the query and acknowledgement pair for global notices) |
+| `notice.*` | 2 | `NoticeMethod` in `notice.ts` (`notice.list` lists the global notice slots; `notice.ack` acknowledges — it takes ids of both global and per-session notices) |
 | `hello` (handshake) | 1 | `hello` in the method table; its two shapes are `HelloParams` / `HelloResult` in `protocol/messages.ts` (field by field in [Wire Protocol](protocol.md), under "Handshake") |
 | built-in `ping` / `status` / `shutdown` | 3 | `DaemonMethod` in `daemon.ts` |
 | **total** | **48** | |

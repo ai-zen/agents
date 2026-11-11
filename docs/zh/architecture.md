@@ -123,7 +123,7 @@ grep -rn 'from "' packages/server/src/protocol/*.ts | grep -v '\.test\.' | grep 
 | `agent.*` | 5 | `config.ts` 的 `AgentMethod` |
 | `asset.*` | 1 | `assets.ts` 的 `AssetMethod` |
 | `content.*` | 1 | `content.ts` 的 `ContentMethod`（唯一带二进制载荷的方法） |
-| `notice.*` | 2 | `notice.ts` 的 `NoticeMethod`（`notice.list` / `notice.ack`，全局通知的查询与确认） |
+| `notice.*` | 2 | `notice.ts` 的 `NoticeMethod`（`notice.list` 列全局通知的槽位；`notice.ack` 确认 —— 两类通知的 id 它都认） |
 | `hello`（握手） | 1 | 方法表里的 `hello`；两个形状是 `protocol/messages.ts` 的 `HelloParams` / `HelloResult`（字段逐个见 [线上协议](protocol.md) 的「握手」一节） |
 | 内置 `ping` / `status` / `shutdown` | 3 | `daemon.ts` 的 `DaemonMethod` |
 | **合计** | **48** | |
