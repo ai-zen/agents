@@ -10,13 +10,23 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Daemon, type AnyHandler } from "./Daemon.js";
 import { readDescriptor } from "../wire/discovery.js";
+import { readToken } from "../wire/token.js";
 import { PROTOCOL_VERSION } from "../wire/messages.js";
 import { MAX_TEXT_BYTES } from "../wire/frames.js";
 import { WsTestClient } from "./WsTestClientTestSupport.js";
+
+/**
+ * 用例统一用这一个凭证，并且**注入**给 `Daemon`：不读文件、不靠「刚好生成了什么」。
+ *
+ * 它与 `Daemon.start()` 默认那条路（`<aiZenDir>/run/token`）无关 —— 那条路由 `wire/token.ts`
+ * 自己的用例验。
+ */
+const TOKEN = "test-token-64c8c2f0bdf14a0d8e8a6b2f4d1e9c33";
 
 let dir: string;
 let daemon: Daemon | null = null;
@@ -42,6 +52,8 @@ async function startDaemon(
     aiZenDir: dir,
     port: 0, // 系统分配
     version: "0.1.0-test",
+    // 凭证注入（不读文件）：除了专门测鉴权的那几组，其余用例都不该为它分心
+    token: TOKEN,
     ...options,
   });
   await instance.start();
@@ -49,10 +61,52 @@ async function startDaemon(
   return instance;
 }
 
+/** 连一个**带凭证**的客户端（要测「没凭证 / 错凭证」的用例自己用 `WsTestClient.connect`） */
 async function connect(port: number = daemon!.port): Promise<WsTestClient> {
-  const client = await WsTestClient.connect(port);
+  const client = await WsTestClient.connect(port, TOKEN);
   clients.push(client);
   return client;
+}
+
+/**
+ * 手搓一次升级请求，拿回 HTTP 状态码与响应 body：用来断言「这个 `Origin` 能不能把连接建起来」。
+ *
+ * 为什么不用 `WsTestClient`：`Origin` 只在**握手请求头**里，而这里要看的正好是「服务端回
+ * 的是 101 还是 403」—— 那是 HTTP 层的答案，用 `http.request` 才看得见。101 那一侧拿到
+ * socket 之后立刻掐掉（只验证「升级被接受了」）。
+ */
+async function upgradeStatus(
+  port: number,
+  origin?: string,
+): Promise<{ status: number; body: string }> {
+  return await new Promise((resolve, reject) => {
+    const request = httpRequest({
+      host: "127.0.0.1",
+      port,
+      path: "/",
+      headers: {
+        Connection: "Upgrade",
+        Upgrade: "websocket",
+        "Sec-WebSocket-Version": "13",
+        "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+        ...(origin === undefined ? {} : { Origin: origin }),
+      },
+    });
+    // 101：升级被接受
+    request.on("upgrade", (response, socket) => {
+      socket.destroy();
+      resolve({ status: response.statusCode ?? 0, body: "" });
+    });
+    // 403：拒绝走的是普通响应，body 读出来（它是一个完整的 HTTP 响应，不是半截）
+    request.on("response", (response) => {
+      let body = "";
+      response.setEncoding("utf-8");
+      response.on("data", (chunk: string) => (body += chunk));
+      response.on("end", () => resolve({ status: response.statusCode ?? 0, body }));
+    });
+    request.on("error", reject);
+    request.end();
+  });
 }
 
 describe("Daemon 启动与发现", () => {
@@ -76,7 +130,7 @@ describe("Daemon 启动与发现", () => {
     expect(await readDescriptor(dir)).toBeNull();
   });
 
-  it("拒绝监听非 loopback（本版没有鉴权，这是硬边界）", async () => {
+  it("拒绝监听非 loopback（远程走隧道 / 反向代理，服务端永不绑非 loopback）", async () => {
     const instance = new Daemon({ aiZenDir: dir, host: "0.0.0.0", port: 0, version: "t" });
     await expect(instance.start()).rejects.toThrow(/loopback/);
   });
@@ -191,6 +245,185 @@ describe("握手", () => {
       });
     }
     // 断代只在「版本真的不同」时发生：这条连接还能补上一次正确的握手
+    expect(await client.handshake()).toMatchObject({ result: { protocol: PROTOCOL_VERSION } });
+    expect(await client.call("ping")).toEqual({ pong: true });
+  });
+});
+
+describe("凭证（hello 的 params.token）", () => {
+  it("不带 token → bad-params（-32602），**不断连**（补一条合法的 hello 就能继续用）", async () => {
+    await startDaemon();
+    // 这条客户端不带凭证：它发的 `hello` 里连 `token` 这个键都没有
+    const client = await WsTestClient.connect(daemon!.port);
+    clients.push(client);
+
+    const refused = await client.handshake();
+    expect(refused).toMatchObject({
+      jsonrpc: "2.0",
+      // 形状错（缺字段）不是凭证错：客户端该改的是请求体，不是「再猜一次」
+      error: { code: -32602, data: { code: "bad-params" } },
+    });
+    expect(refused.error.message).toMatch(/token/);
+    // 错误信息里不会出现真凭证
+    expect(refused.error.message).not.toContain(TOKEN);
+    expect(await client.closed()).toBe(false);
+
+    // 连接还活着：同一个连接补上一条带凭证的 hello 就能继续用
+    expect(await client.handshake({ token: TOKEN })).toMatchObject({
+      result: { protocol: PROTOCOL_VERSION },
+    });
+    expect(await client.call("ping")).toEqual({ pong: true });
+  });
+
+  it("token 不是字符串 → bad-params（先形状、后值：两件事不是一个码）", async () => {
+    await startDaemon();
+    const client = await connect();
+
+    for (const token of [123, null, {}, []]) {
+      client.send({
+        jsonrpc: "2.0",
+        id: 21,
+        method: "hello",
+        params: { protocol: PROTOCOL_VERSION, token, client: { name: "t", version: "0" } },
+      });
+      expect(await client.nextMatching((frame) => frame.id === 21)).toMatchObject({
+        error: { code: -32602, data: { code: "bad-params" } },
+      });
+    }
+    // 一条都没把连接断掉
+    expect(await client.handshake()).toMatchObject({ result: { protocol: PROTOCOL_VERSION } });
+  });
+
+  it("token 不对 → unauthorized（-32000），**不断连**（客户端可以改正重试）", async () => {
+    await startDaemon();
+    const client = await connect();
+
+    const refused = await client.handshake({ token: "not-the-token" });
+    expect(refused).toMatchObject({
+      jsonrpc: "2.0",
+      error: { code: -32000, data: { code: "unauthorized" } },
+    });
+    // 凭证本身不许回显：错误信息不该变成「猜对了几位」的提示
+    expect(refused.error.message).not.toContain("not-the-token");
+    expect(await client.closed()).toBe(false);
+
+    // 没换成凭证之前，别的方法仍然是 `handshake-required`（握手就没完成）
+    expect(await client.request("ping")).toMatchObject({
+      error: { data: { code: "handshake-required" } },
+    });
+
+    // 改正之后同一条连接照样能用
+    expect(await client.handshake()).toMatchObject({ result: { protocol: PROTOCOL_VERSION } });
+    expect(await client.call("ping")).toEqual({ pong: true });
+  });
+
+  it("token 对上 → 握手成功，后续方法可调用", async () => {
+    const instance = await startDaemon();
+    const client = await connect();
+
+    const hello = await client.handshake();
+    expect(hello.result).toMatchObject({ name: "@ai-zen/agents-server" });
+    expect(await client.call("ping")).toEqual({ pong: true });
+    expect((await client.call("status")).connections).toBe(1);
+    expect(instance.connectionCount).toBe(1);
+  });
+
+  it("未鉴权的连接调任何非 hello 方法 → 仍然是 handshake-required（语义：握手还没完成）", async () => {
+    await startDaemon();
+    // 带凭证但**没发 hello**：拒绝的理由是顺序，不是「你是谁」
+    const client = await connect();
+
+    for (const method of ["ping", "status", "session.list", "events.watch"]) {
+      expect(await client.request(method, {})).toMatchObject({
+        error: { code: -32000, data: { code: "handshake-required" } },
+      });
+    }
+    // 补上握手之后同一个方法就能用
+    expect(await client.handshake()).toMatchObject({ result: { protocol: PROTOCOL_VERSION } });
+    expect(await client.call("ping")).toEqual({ pong: true });
+  });
+
+  // 注入空值这条路曾经是**fail-open** 的：`??` 只挡 `null` / `undefined`，于是 `token: ""` 变成
+  // 一串长度为 0 的凭证，而 `timingSafeEqual` 比两个空 Buffer 返回 true；客户端没凭证时发的
+  // 恰恰就是 `token: ""` —— 空凭证 = 人人可进。下面三条钉的是「空白注入 = 没注入」。
+  it("注入的 token 是空串 → 客户端发空串 hello **不能**握手成功（空凭证不是一把空钥匙）", async () => {
+    // 宿主从某个密钥存储读到空值 / 配置项写成 `AI_ZEN_TOKEN=` 就是这个形状
+    const instance = await startDaemon({ token: "" });
+
+    // 没有凭证的客户端发的正是 `token: ""`（见 `wire/call-once.ts` 的 `token: options?.token ?? ""`）
+    const client = await WsTestClient.connect(instance.port, "");
+    clients.push(client);
+
+    const refused = await client.handshake();
+    expect(refused).toMatchObject({
+      jsonrpc: "2.0",
+      error: { code: -32000, data: { code: "unauthorized" } },
+    });
+    // 握手确实没成：后面调别的方法仍然是 handshake-required（而不是「已登录」）
+    expect(await client.request("ping")).toMatchObject({
+      error: { data: { code: "handshake-required" } },
+    });
+    // 而 unauthorized 不断连（换一条 hello 仍可重试）
+    expect(await client.closed()).toBe(false);
+  });
+
+  it("注入的 token 是纯空白（三个空格）→ 同上：空白不是凭证", async () => {
+    const instance = await startDaemon({ token: "   " });
+    const client = await WsTestClient.connect(instance.port, "   ");
+    clients.push(client);
+
+    expect(await client.handshake()).toMatchObject({
+      error: { code: -32000, data: { code: "unauthorized" } },
+    });
+  });
+
+  it("注入空串但调了 start() → 回落到 aiZenDir 的凭证文件（读或生成），用文件里那串能握手", async () => {
+    const instance = await startDaemon({ token: "" });
+
+    // 「空白注入 = 没注入」：凭证来自 `ensureToken()`，是一串真的 base64url（43 字符）
+    const fromFile = await readToken(dir);
+    expect(fromFile).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+    // 文件里那一串才是这个进程的钥匙
+    const client = await WsTestClient.connect(instance.port, fromFile!);
+    clients.push(client);
+    expect(await client.handshake()).toMatchObject({ result: { protocol: PROTOCOL_VERSION } });
+    expect(await client.call("ping")).toEqual({ pong: true });
+  });
+});
+
+describe("Origin 校验（浏览器来源，纵深防御）", () => {
+  it("Origin 不在名单也不是 loopback → HTTP 403 拒绝升级（没有建立 WS）", async () => {
+    await startDaemon();
+
+    // 拒绝发生在升级之前：对端拿到的是一个（完整的）HTTP 响应，而不是一条 WS 连接
+    const refused = await upgradeStatus(daemon!.port, "https://evil.example");
+    expect(refused.status).toBe(403);
+    expect(refused.body).toMatch(/origin/i);
+    expect(daemon!.connectionCount).toBe(0);
+  });
+
+  it("Origin 是 loopback → 放行（与端口无关：本机任意端口的页面都是自己人）", async () => {
+    await startDaemon();
+
+    expect((await upgradeStatus(daemon!.port, "http://127.0.0.1:5173")).status).toBe(101);
+    expect((await upgradeStatus(daemon!.port, "http://localhost:3000")).status).toBe(101);
+  });
+
+  it("Origin 在 allowedOrigins 里 → 放行（nginx + 域名部署）；名单之外照样拒", async () => {
+    await startDaemon({ allowedOrigins: ["https://your.domain"] });
+
+    expect((await upgradeStatus(daemon!.port, "https://your.domain")).status).toBe(101);
+    // 名单是「除了 loopback 之外还允许谁」，不是「谁都放行」的开关
+    expect((await upgradeStatus(daemon!.port, "https://other.domain")).status).toBe(403);
+  });
+
+  it("不带 Origin → 放行（非浏览器客户端，由 token 兜）", async () => {
+    await startDaemon();
+
+    // 测试客户端默认不带 Origin（终端 / 桌面端 / 脚本都是这样）
+    expect((await upgradeStatus(daemon!.port)).status).toBe(101);
+    const client = await connect();
     expect(await client.handshake()).toMatchObject({ result: { protocol: PROTOCOL_VERSION } });
     expect(await client.call("ping")).toEqual({ pong: true });
   });

@@ -28,7 +28,7 @@ describe("isRequestFrame", () => {
     expect(isRequestFrame([request])).toBe(false);
   });
 
-  it("缺 `jsonrpc: \"2.0\"` 字面量不算请求", () => {
+  it('缺 `jsonrpc: "2.0"` 字面量不算请求', () => {
     expect(isRequestFrame({ id: 1, method: "ping" })).toBe(false);
     expect(isRequestFrame({ jsonrpc: "1.0", id: 1, method: "ping" })).toBe(false);
   });
@@ -76,7 +76,7 @@ describe("二进制消息的 id 前缀", () => {
 });
 
 describe("协议版本", () => {
-  it("本版是 2（E1：断代，版本不匹配即不连）", () => {
-    expect(PROTOCOL_VERSION).toBe(2);
+  it("本版是 3（`hello` 加了必填的 `token`，线上形状的破坏性变更必须断代）", () => {
+    expect(PROTOCOL_VERSION).toBe(3);
   });
 });

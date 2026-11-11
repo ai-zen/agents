@@ -4,12 +4,12 @@
  * 码表本身是类型（服务端的 `src/protocol/errors.ts`）；这里那串字面量是它的运行期镜像，只为
  * `isCodedError` 的结构判定而存在。两侧各一份 —— 协议只共享类型，不共享代码。
  *
- * ## 为什么协议级的七个码也在这张表里
+ * ## 为什么协议级的八个码也在这张表里
  *
- * `bad-frame` / `invalid-request` / `handshake-required` / `bad-handshake` / `version-mismatch` /
- * `unknown-method` / `internal` 不是业务层 `throw` 出来的，但它们一样会出现在失败响应的
- * `error.data.code` 上。不在表里的话 `isCodedError` 不认它们，客户端拿到手就是一个**裸字符串**：
- * `codeOf()` 返回 `undefined`，于是「版本不匹配」与「未知失败」在调用点看起来一模一样。
+ * `bad-frame` / `invalid-request` / `handshake-required` / `unauthorized` / `bad-handshake` /
+ * `version-mismatch` / `unknown-method` / `internal` 不是业务层 `throw` 出来的，但它们一样会出现在
+ * 失败响应的 `error.data.code` 上。不在表里的话 `isCodedError` 不认它们，客户端拿到手就是一个**裸
+ * 字符串**：`codeOf()` 返回 `undefined`，于是「版本不匹配」与「未知失败」在调用点看起来一模一样。
  *
  * ## 为什么没有 `frame-too-large`
  *
@@ -57,6 +57,10 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "bad-frame",
   "invalid-request",
   "handshake-required",
+  // 凭证不对：`hello` 的 `params.token` 与服务端手上那串不相等。它必须在这张表里，
+  // 否则 `explainUnauthorized` 拿到的 `codeOf()` 是 `undefined` —— 那两句话就永远说不出来，
+  // 用户看到的只剩服务端那句 `token does not match this server`
+  "unauthorized",
   "bad-handshake",
   "version-mismatch",
   "unknown-method",

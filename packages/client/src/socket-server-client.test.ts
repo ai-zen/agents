@@ -31,6 +31,14 @@ import { SocketServerClient } from "./socket-server-client.js";
 import type { ClientInfo, ServerAddress } from "./types.js";
 
 const client: ClientInfo = { name: "@ai-zen/cli", version: "0.0.0-test" };
+/**
+ * 本文件所有真 Daemon 用同一串凭证（`Daemon` 的 `token` 选项，不读文件）。
+ *
+ * 写成常量而不是让 Daemon 自己生成再读文件：这里验的是「连接层把凭证原样放进 `hello`」，而
+ * 「凭证从哪来」属于 `resolve-target.ts`（`resolve-target.test.ts` 与 `ensure-server.test.ts`
+ * 各自验了那一层）。
+ */
+const TOKEN = "socket-client-test-token-5f1c8e2a7b394d60a0c4e7f1b8d23a69";
 
 let dir: string;
 let daemon: Daemon | null = null;
@@ -38,7 +46,7 @@ const fakeServers: FakeWsServer[] = [];
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "aiz-cli-server-client-"));
-  daemon = new Daemon({ aiZenDir: dir, port: 0, version: "0.0.0-test" });
+  daemon = new Daemon({ aiZenDir: dir, port: 0, version: "0.0.0-test", token: TOKEN });
 });
 
 afterEach(async () => {
@@ -65,7 +73,11 @@ async function unusedPort(): Promise<number> {
 
 describe("SocketServerClient", () => {
   it("握手后可以直接调 ping / status（不用自己发 hello）", async () => {
-    const connection = await SocketServerClient.connect({ address: await startServer(), client });
+    const connection = await SocketServerClient.connect({
+      address: await startServer(),
+      client,
+      token: TOKEN,
+    });
     try {
       expect(await connection.call("ping")).toEqual({ pong: true });
 
@@ -74,19 +86,23 @@ describe("SocketServerClient", () => {
       );
       expect(status.port).toBe(daemon!.port);
       expect(status.pid).toBe(process.pid);
-      // E1：本版协议号是 2（发现文件、`status`、`hello` 三处报的都是它）
-      expect(status.protocol).toBe(2);
+      // E1：本版协议号是 3（发现文件、`status`、`hello` 三处报的都是它）
+      expect(status.protocol).toBe(3);
 
       // 握手回执里服务端自报的身份（扁平的那一份，没有 `server` 那一层）
       expect(connection.server?.name).toBe("@ai-zen/agents-server");
-      expect(connection.server?.protocol).toBe(2);
+      expect(connection.server?.protocol).toBe(3);
     } finally {
       connection.close();
     }
   });
 
   it("方法不存在 → 抛 unknown-method（字符串码原样带出来）", async () => {
-    const connection = await SocketServerClient.connect({ address: await startServer(), client });
+    const connection = await SocketServerClient.connect({
+      address: await startServer(),
+      client,
+      token: TOKEN,
+    });
     try {
       await expect(connection.call("nope")).rejects.toThrow(/unknown-method/);
     } finally {
@@ -100,6 +116,7 @@ describe("SocketServerClient", () => {
       aiZenDir: dir,
       port: 0,
       version: "0.0.0-test",
+      token: TOKEN,
       handlers: {
         "session.send": () => {
           throw Object.assign(new Error("a turn is already running"), { code: "turn-busy" });
@@ -110,6 +127,7 @@ describe("SocketServerClient", () => {
     const connection = await SocketServerClient.connect({
       address: { host: "127.0.0.1", port: instance.port },
       client,
+      token: TOKEN,
     });
 
     try {
@@ -131,7 +149,11 @@ describe("SocketServerClient", () => {
   });
 
   it("服务端收摊后：调用立刻失败，不挂到超时", async () => {
-    const connection = await SocketServerClient.connect({ address: await startServer(), client });
+    const connection = await SocketServerClient.connect({
+      address: await startServer(),
+      client,
+      token: TOKEN,
+    });
     await daemon!.stop("test");
     daemon = null;
 
@@ -159,16 +181,50 @@ describe("SocketServerClient", () => {
     });
     fakeServers.push(fake);
 
-    const error = await SocketServerClient.connect({ address: fake.address, client }).then(
+    const error = await SocketServerClient.connect({
+      address: fake.address,
+      client,
+    }).then(
       () => null,
       (failure: unknown) => failure as Error & { code?: unknown },
     );
     expect(error?.message).toMatch(/version-mismatch/);
     expect(error?.code).toBe("version-mismatch");
-    // 握手请求本身也长对了：一条普通方法，id 是 1，参数里有协议号与客户端身份
+    // 握手请求本身也长对了：一条普通方法，id 是 1，参数里有协议号、凭证与客户端身份。
+    // 这一条没传 `token`（这个假服务端不验），所以凭证是**空串**而不是整个键缺失
     const hello = JSON.parse(fake.messages[0].data.toString());
     expect(hello).toMatchObject({ jsonrpc: "2.0", id: 1, method: "hello" });
-    expect(hello.params).toMatchObject({ protocol: 2, client });
+    expect(hello.params).toEqual({ protocol: 3, token: "", client });
+  });
+
+  it("`token` 原样进 `hello.params`（给了什么就发什么，不加工、不省略）", async () => {
+    const fake = await startFakeWsServer((_message, reply) => {
+      reply(
+        encodeFrame({
+          jsonrpc: "2.0",
+          id: 1,
+          error: {
+            code: -32000,
+            message: "token does not match this server",
+            data: { code: "unauthorized" },
+          },
+        }),
+      );
+    });
+    fakeServers.push(fake);
+
+    const error = await SocketServerClient.connect({
+      address: fake.address,
+      client,
+      token: "a-token-from-env",
+    }).then(
+      () => null,
+      (failure: unknown) => failure as Error & { code?: unknown },
+    );
+    // 凭证不对：错误码原样带到调用方（谁去解释这句话是 `explainUnauthorized` 的事）
+    expect(error?.code).toBe("unauthorized");
+    const hello = JSON.parse(fake.messages[0].data.toString());
+    expect(hello.params).toEqual({ protocol: 3, token: "a-token-from-env", client });
   });
 
   it("服务端不回 hello → connect 在 connectTimeoutMs 后超时失败", async () => {
@@ -176,7 +232,11 @@ describe("SocketServerClient", () => {
     fakeServers.push(fake);
 
     await expect(
-      SocketServerClient.connect({ address: fake.address, client, connectTimeoutMs: 100 }),
+      SocketServerClient.connect({
+        address: fake.address,
+        client,
+        connectTimeoutMs: 100,
+      }),
     ).rejects.toThrow(/handshake timeout/);
   });
 
@@ -205,7 +265,11 @@ describe("SocketServerClient", () => {
     });
     fakeServers.push(fake);
 
-    const connection = await SocketServerClient.connect({ address: fake.address, client });
+    const connection = await SocketServerClient.connect({
+      address: fake.address,
+      client,
+      token: TOKEN,
+    });
     const bytes = Buffer.from([0x00, 0x0a, 0xff, 0x0a]);
     try {
       const result = await connection.call(
@@ -247,6 +311,7 @@ describe("SocketServerClient", () => {
       aiZenDir: dir,
       port: 0,
       version: "0.0.0-test",
+      token: TOKEN,
       handlers: {
         "content.upload": (_params, _connection, payload) => {
           seen.push(payload!);
@@ -259,6 +324,7 @@ describe("SocketServerClient", () => {
     const connection = await SocketServerClient.connect({
       address: { host: "127.0.0.1", port: instance.port },
       client,
+      token: TOKEN,
     });
 
     try {
@@ -358,7 +424,9 @@ async function startFakeWsServer(
 
 /** `Sec-WebSocket-Accept = base64(sha1(key + GUID))` */
 function acceptKey(key: string): string {
-  return createHash("sha1").update(key + WS_GUID).digest("base64");
+  return createHash("sha1")
+    .update(key + WS_GUID)
+    .digest("base64");
 }
 
 /** 拆出一条帧（**客户端发来的帧必有掩码**，掩码要去掉）；不足一帧返回 `null` */

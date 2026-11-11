@@ -92,6 +92,9 @@ let dir: string;
 /** 客户端不带工作目录时用的那个（组装根注入，真进程里是服务端自己的 cwd） */
 let defaultWorkspacePath: string;
 
+/** 本文件用的凭证（注入给两个 `Daemon`，再随 `hello` 发回来）—— 不读文件 */
+const TOKEN = "session-handlers-token-4a7d0c19f2b34e85a6c1d90b7e2f3851";
+
 /**
  * 造一个真实存在的工作区目录。
  *
@@ -153,6 +156,7 @@ async function startDaemon(): Promise<void> {
     aiZenDir: dir,
     port: 0,
     version: "0.1.0-test",
+    token: TOKEN,
     handlers: createSessionHandlers({
       manager,
       workspacesRoot: join(dir, "workspaces"),
@@ -161,7 +165,7 @@ async function startDaemon(): Promise<void> {
   });
   await instance.start();
   daemon = instance;
-  client = await WsTestClient.connect(instance.port);
+  client = await WsTestClient.connect(instance.port, TOKEN);
   await client.handshake();
 }
 
@@ -793,6 +797,7 @@ describe("会话跟着连接走：断开后按宽限期回收（不靠客户端�
       aiZenDir: join(dir, "ai-zen-hold"),
       port: 0,
       version: "0.1.0-test",
+      token: TOKEN,
       handlers: createSessionHandlers({
         manager: idle,
         workspacesRoot: join(dir, "workspaces"),
@@ -801,7 +806,7 @@ describe("会话跟着连接走：断开后按宽限期回收（不靠客户端�
     });
     await instance.start();
     try {
-      const conn = await WsTestClient.connect(instance.port);
+      const conn = await WsTestClient.connect(instance.port, TOKEN);
       await conn.handshake();
       const created = (await conn.call("session.create", {
         workspaceId: "ws-hold",

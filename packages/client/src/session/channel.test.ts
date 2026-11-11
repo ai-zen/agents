@@ -37,6 +37,8 @@ import type { ClientInfo } from "../types.js";
 import { SessionChannel, type ChannelNoticePayload, type SessionChannelPolicy } from "./channel.js";
 
 const clientInfo: ClientInfo = { name: "@ai-zen/agents-client", version: "0.0.0-test" };
+/** 本文件那几台真 Daemon 的凭证（重连后会「换一台服务端」，但只换 `aiZenDir` 里的存档） */
+const TOKEN = "channel-test-token-6f30b9d84e2a4c71a0d5e8b37c41f926";
 
 /**
  * 假 Agent：**测试就是服务端那一侧的「模型」**。
@@ -154,6 +156,7 @@ beforeEach(() => {
       const client = await SocketServerClient.connect({
         address: { host: "127.0.0.1", port },
         client: clientInfo,
+        token: TOKEN,
       });
       connects += 1;
       return client;
@@ -206,6 +209,7 @@ function newDaemon(): Daemon {
     aiZenDir: dir,
     port: 0,
     version: "0.0.0-test",
+    token: TOKEN,
     handlers: createSessionHandlers({
       manager: manager!,
       workspacesRoot: join(dir, "workspaces"),

@@ -23,6 +23,7 @@ import { FakeAgent } from "./domain/session/SessionTestSupport.js";
 import { EventHub } from "./lib/events.js";
 import type { ServerEvent } from "./protocol/index.js";
 import { readDescriptor } from "./wire/discovery.js";
+import { readToken, tokenPath } from "./wire/token.js";
 
 let dir: string;
 let agent: FakeAgent;
@@ -79,11 +80,21 @@ function makeApp(): ServerApp {
   });
 }
 
+/**
+ * 连一个客户端。
+ *
+ * 凭证从 `ServerApp` **自己写出来的那个文件**读：`ServerApp` 不接注入的 token（凭证的
+ * 所有权在 `Daemon` 那一层，本类只是把路径写进日志），所以这里走它默认的那条真实路径。
+ */
+async function connectTo(port: number): Promise<WsTestClient> {
+  return await WsTestClient.connect(port, (await readToken(dir)) ?? undefined);
+}
+
 /** 起服务并连上一个客户端（`notice.*` 是线上方法，得走真协议） */
 async function startApp(): Promise<WsTestClient> {
   app = makeApp();
   await app.start();
-  client = await WsTestClient.connect(app.port);
+  client = await connectTo(app.port);
   await client.handshake();
   return client;
 }
@@ -166,7 +177,7 @@ describe("notice.list / notice.ack（真 WebSocket）", () => {
     expect(hub.watcherCount()).toBe(0);
 
     await app.start();
-    const first = await WsTestClient.connect(app.port);
+    const first = await connectTo(app.port);
     client = first;
     await first.handshake();
     expect(await first.call("notice.list")).toEqual({
@@ -182,7 +193,7 @@ describe("notice.list / notice.ack（真 WebSocket）", () => {
     });
 
     // 另一个客户端同时看着：它也能看到同一条（一份状态，不是每个客户端各一份）
-    const second = await WsTestClient.connect(app.port);
+    const second = await connectTo(app.port);
     await second.handshake();
     expect((await second.call("notice.list")).notices).toHaveLength(1);
 
@@ -399,6 +410,13 @@ describe("生命周期：start / stop", () => {
     expect((await readDescriptor(dir))?.port).toBe(app.port);
     // 配置根被释放（默认 Agent 落盘）：新机器上第一次 `agent.list` 不该是空的
     expect(descriptor.protocol).toBeGreaterThan(0);
+
+    // 启动日志里有凭证文件的**路径**（要拿它去设 `AI_ZEN_SERVER_TOKEN` 连远程的人得知道
+    // 它住在哪），但**没有**凭证本身 —— 日志会被翻、会被贴出去
+    expect(logs.some((line) => line.includes(tokenPath(dir)))).toBe(true);
+    const token = await readToken(dir);
+    expect(token).not.toBeNull();
+    expect(logs.some((line) => line.includes(token!))).toBe(false);
 
     // 停会话是收摊中间那一步：起一段会话，收摊之后它不在了
     const created = await sessions.create({ workspaceId: "ws-1", path: dir });

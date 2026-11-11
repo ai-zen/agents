@@ -16,7 +16,7 @@ AI-Zen Agents 是一个 **pnpm monorepo**（工作区根 `@ai-zen/agents-workspa
 | `@ai-zen/agents-client` | 0.1.0-alpha.0 | 到服务端的连接层；**私有**，由 CLI / 桌面端在构建时内联 |
 | `@ai-zen/agents-testing` | 0.1.0 | 私有，测试替身（OpenAI 兼容的假流式端点） |
 
-（`packages/` 下另有 `test-project`（私有 fixture 包）、`test-home` 与 `webui`（两个目录都没有 `package.json`，不是包）。CLI 与桌面端是**独立仓库**，不在本 monorepo 内，但它们在本文件的依赖图里各有位置。）
+（`packages/` 下共七个目录：上表五个（含 `testing`）之外，还有 `test-project`（私有 fixture 包，自带 `package.json`）与 `test-home`（唯一没有 `package.json` 的目录，不是包）。CLI 与桌面端是**独立仓库**，不在本 monorepo 内，但它们在本文件的依赖图里各有位置。）
 
 ## 分层与依赖方向
 
@@ -173,6 +173,7 @@ grep -rn 'from "' packages/server/src/protocol/*.ts | grep -v '\.test\.' | grep 
 | **传输** | `transport/connection.ts`（`ServerConnection`） | **一个进程一条连接**：每次取用都判 `closed`、断了就重建、重建后在新连接上重新订阅 `events.watch`、断线与就绪都往上说（`onClose` / `onOpen`）。它**不重试** —— 重试是会话层的规则 |
 | | `ensure-server.ts` | 读 `<aiZenDir>/run/server.json`；探活（`callOnce` 问一句 `ping`）失败就 detached 拉起 `agents-server serve`，轮询到 `ping` 通。它是包里**唯一**知道 `agents-server` 的地方（部署策略，不是分层） |
 | | `socket-server-client.ts` | 一条 WebSocket + JSON-RPC 2.0 连接：`hello` 握手、在飞调用（可带一段二进制载荷）、事件分发、断开通知 |
+| | `resolve-target.ts` + `wire/server-url.ts` / `wire/token.ts` | 「连哪儿 + 拿什么进门」的**唯一解析点**：地址优先级（显式 > 发现文件）、凭证优先级（显式 > `run/token`）、地址形状与 URL 拼法（`ws`/`wss`/`http`/`https`、可带 path）。地址能指向远端，凭证就不能只从本地文件读 —— 两件事同源 |
 | **门面** | `facade/sessions.ts`（`RemoteSessions`，28 条） | `session.*`(21) + `workspace.*`(6) + `content.*`(1) 的类型化薄封装 |
 | | `facade/config.ts`（`RemoteConfig`，13 条） | `config.*`(7) + `agent.*`(5) + `asset.*`(1) |
 | | `facade/coverage.test-d.ts` | 门面方法集合 **===** 协议方法表 key 集合，**100% 覆盖**由类型保证：少一条、多一条都编译不过 |
@@ -254,13 +255,15 @@ packages/server/src/
 
 ### 传输与握手
 
-线上是 **WebSocket + JSON-RPC 2.0**：一条 WebSocket 消息就是一条完整的 JSON-RPC 2.0 消息，分帧交给 WebSocket 的消息边界；第一条消息必须是 `hello`，版本对不上就不建连 —— 即使当前还没有鉴权，也照样先握手，这样将来加鉴权不用改所有客户端的建连逻辑。消息分类、`id` 范围、二进制载荷、大小上限、错误码与「什么时候才断连」的分级、15 个事件、有状态的通知与题目，逐条见 [线上协议](protocol.md)。
+线上是 **WebSocket + JSON-RPC 2.0**：一条 WebSocket 消息就是一条完整的 JSON-RPC 2.0 消息，分帧交给 WebSocket 的消息边界；第一条消息必须是 `hello`，协议版本与凭证都在它的 `params` 里，版本对不上就不建连。消息分类、`id` 范围、二进制载荷、大小上限、鉴权与来源校验、错误码与「什么时候才断连」的分级、15 个事件、有状态的通知与题目，逐条见 [线上协议](protocol.md)；远程访问怎么搭见[部署与远程访问](deploy.md)。
 
 ### 只绑回环
 
 `Daemon.start()` 对 host 做断言：不是回环地址就抛错拒绝启动（`packages/server/src/daemon/Daemon.ts`）。判据 `isLoopbackHost()` 在 `packages/server/src/wire/host.ts`，认 `localhost`、`::1`、以及 `127.0.0.0/8` 整段（按 RFC 1122，不是只有 `127.0.0.1`）。
 
-这条不是占位符：本版**没有鉴权**，而服务端暴露的能力里有 `exec`（任意命令执行），未鉴权的端口一旦能被非本机访问，等于把 shell 送给整个局域网。默认 `127.0.0.1:8790`；`--port 0` 让系统分配。
+这条不是占位符，也**不是「因为没鉴权才这么干」**：服务端暴露的能力里有 `exec`（任意命令执行），把一个这样的端口直接摆到网络上，不是这个项目要的默认状态。远程访问走**防火墙 + 隧道 / 反向代理**（nginx 在同机反代到 `127.0.0.1`，正好落进这条断言）：服务端**永不实现 TLS、永不绑非 loopback** —— `wss://` 是**客户端**的一个能力，不是服务端的一个模式。默认 `127.0.0.1:8790`；`--port 0` 让系统分配。
+
+配合它的两道门是**凭证**（`hello` 的 `params.token`，服务端在 `start()` 时读或生成 `<aiZenDir>/run/token`，0600）与**来源校验**（升级时判 `Origin`，名单来自 `AI_ZEN_ALLOWED_ORIGINS`）。两者各自的判据与不变量见[线上协议](protocol.md)，部署侧的做法见[部署与远程访问](deploy.md)。
 
 两个 idle 是两个不同的东西：`--idle-timeout` 是整个守护进程（一个连接都没有了，多久后退出，缺省不退出），`--session-idle-timeout` 是单段会话（没人看着了，多久后回收）。
 
@@ -316,6 +319,7 @@ packages/server/src/
 | `<aiZenDir>/workspaces/<workspaceId>/sessions/<id>.meta.json` | 该会话的列表清单（无正文） | 同上 |
 | `<aiZenDir>/workspaces/<workspaceId>/last-session.json` | 「本工作区上一轮会话」指针 | 同上 |
 | `<aiZenDir>/run/server.json` | 服务发现文件 | `src/wire/discovery.ts` 中 `descriptorPath` |
+| `<aiZenDir>/run/token` | 访问凭证（0600；`start()` 时读或生成，**不进** `server.json`） | `src/wire/token.ts` 中 `tokenPath` |
 | `<aiZenDir>/logs/server.log` | 守护进程日志（追加写） | `src/cli.ts` 的 `openLog` |
 
 `<aiZenDir>` 下**没有按前端分家的目录**：会话属于**工作区**，CLI 与桌面端共享同一份数据。指针也不按 cwd 分键 —— 工作区自己就是分区键，所以它是单指针（`last-session.json`）。
@@ -356,7 +360,8 @@ packages/server/src/
 
 ## 相关文档
 
-- [线上协议](protocol.md) —— 线上契约逐条：传输、`id`、二进制帧、上限、握手、错误码、事件、有状态的通知与题目
+- [线上协议](protocol.md) —— 线上契约逐条：传输、`id`、二进制帧、上限、握手、鉴权、来源校验、错误码、事件、有状态的通知与题目
+- [部署与远程访问](deploy.md) —— 三种访问形态、nginx 反代与它的默认值陷阱、客户端地址与凭证的优先级
 - [Core API](core.md) —— 运行时公开 API 与实现细节
 - [SDK](sdk.md) —— 能力层公开 API
 - [检索与 RAG](rag.md) —— 检索能力现状

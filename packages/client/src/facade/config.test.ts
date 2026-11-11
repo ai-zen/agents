@@ -34,6 +34,8 @@ import type { ClientInfo } from "../types.js";
 import { RemoteConfig } from "./config.js";
 
 const clientInfo: ClientInfo = { name: "@ai-zen/agents-client", version: "0.0.0-test" };
+/** 本文件那台真 Daemon 的凭证（`hello` 的 `params.token` 必须与它相等） */
+const TOKEN = "facade-config-token-8b2f4d107ac94e63b5d19f0c3a7e8264";
 const NOW = "2026-01-01T00:00:00.000Z";
 
 function definitionOf(id: string, extra: Partial<AgentDefinition> = {}): AgentDefinition {
@@ -122,6 +124,7 @@ async function start(): Promise<void> {
     aiZenDir: dir,
     port: 0,
     version: "0.0.0-test",
+    token: TOKEN,
     handlers: {
       ...createSessionHandlers({
         manager: manager!,
@@ -146,6 +149,7 @@ async function start(): Promise<void> {
   connection = await SocketServerClient.connect({
     address: { host: "127.0.0.1", port: daemon.port },
     client: clientInfo,
+    token: TOKEN,
   });
   config = new RemoteConfig(connection);
 }

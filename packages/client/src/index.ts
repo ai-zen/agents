@@ -8,7 +8,7 @@
  * |---|---|---|
  * | 传输 | `transport/connection.ts` | **一个进程一条连接**（`ServerConnection`）：发现/拉起、断线重建、在新连接上重新订阅 `events.watch`、断线与就绪的上报 |
  * | 传输 | `socket-server-client.ts` | 一条 WebSocket + JSON-RPC 2.0 + `hello` 握手 + 在飞调用 + 事件分发 |
- * | 传输 | `ensure-server.ts` | 读发现文件并探活，探不到就 detached 拉起一个 `agents-server serve` |
+ * | 传输 | `ensure-server.ts` | 有显式地址就只连（**永不拉起**）；否则读发现文件并探活，探不到就 detached 拉起一个 `agents-server serve` |
  * | 脏 | `session/channel.ts` | **一条会话的 I/O**（`SessionChannel`）：订阅、请求、重连三条不变式、重新 `attach` |
  * | 纯 | `session/stream.ts` | **一轮之内的状态机**（`SessionStream`）：零 I/O、零 UI、零 timers |
  * | 纯 | `stream-merge.ts` | 「本地流式增量 vs 服务端快照」怎么拼（`mergeStreamedSnapshot`） |
@@ -17,6 +17,7 @@
  * | 门面 | `facade/config.ts` | `config.*`(7) + `agent.*`(5) + `asset.*`(1)，同样 100% 覆盖 |
  * | 应用端口 | `config-port.ts` | 配置面（`ConfigPort`）：把线上形状兑现成 `AppConfig` / `AgentStore` 这些应用类型 |
  * | 判据 | `local-host.ts` / `status.ts` / `mcp.ts` | 工作目录该不该递上去、服务端现在什么状态、`mcp.json` 的形状 |
+ * | 解析 | `resolve-target.ts` / `wire/server-url.ts` | 「连哪儿 + 拿什么进门」的唯一解析点：地址形状、URL 拼法、凭证优先级（显式 > `<aiZenDir>/run/token`） |
  *
  * ## 为什么契约也从这里转出
  *
@@ -48,6 +49,11 @@ export * from "./status.js";
 export * from "./local-host.js";
 export * from "./mcp.js";
 
+// 「连哪儿 + 拿什么进门」的唯一解析点：显式地址 / 显式凭证与环境变量、发现文件、token 文件
+// 三者的优先级只写在一处（`readExplicitTarget` / `resolveToken`），外加把 `unauthorized`
+// 翻成对症那句话的 `explainUnauthorized` —— 三个前端要说同一句话，就必须共用同一份措辞
+export * from "./resolve-target.js";
+
 // 传输层：一个进程一条连接。会话层不自己建连接，只借它说话
 // —— 「断了就重建 + 重新 events.watch」只在这一处发生
 export * from "./transport/connection.js";
@@ -75,3 +81,8 @@ export type * from "@ai-zen/agents-server/protocol";
 // 运行期件（本包自己那一份实现）：消息的编码与两个体积上限、发现文件读，CLI 的组装根要用
 export { MAX_PAYLOAD_BYTES, MAX_TEXT_BYTES } from "./wire/frames.js";
 export { readDescriptor } from "./wire/discovery.js";
+
+// 地址形状与 URL 的唯一实现处：`--server` 的解析、诊断输出里的端点、将来的设置面板都走这里
+// （不再各自拼 `ws://host:port` —— 那两份逐字相同的私有实现在本批被删掉了）
+export { parseServerUrl, webSocketUrl } from "./wire/server-url.js";
+export type { ServerTarget } from "./wire/server-url.js";

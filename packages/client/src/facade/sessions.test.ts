@@ -61,6 +61,8 @@ class FakeAgent implements AgentLike {
 }
 
 const clientInfo: ClientInfo = { name: "@ai-zen/cli", version: "0.0.0-test" };
+/** 本文件那台真 Daemon 的凭证（`hello` 的 `params.token` 必须与它相等） */
+const TOKEN = "facade-sessions-token-2e96a3c58d0741bf9a6c2d70e5b13f48";
 
 /** 交接文档正文：SDK 有 400 字节的有效性阈值 */
 const DOC = `# 交接\n\n${"- 桩\n".repeat(80)}`;
@@ -158,6 +160,7 @@ async function start(): Promise<void> {
     aiZenDir: dir,
     port: 0,
     version: "0.0.0-test",
+    token: TOKEN,
     handlers: {
       ...createSessionHandlers({
         manager: manager!,
@@ -181,6 +184,7 @@ async function start(): Promise<void> {
   connection = await SocketServerClient.connect({
     address: { host: "127.0.0.1", port: daemon.port },
     client: clientInfo,
+    token: TOKEN,
   });
   sessions = new RemoteSessions(connection);
 }

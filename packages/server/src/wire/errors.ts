@@ -46,6 +46,7 @@ const ERROR_CODES: readonly ErrorCode[] = [
   "bad-frame",
   "invalid-request",
   "handshake-required",
+  "unauthorized",
   "bad-handshake",
   "version-mismatch",
   "unknown-method",

@@ -5,8 +5,8 @@
  *
  * ## 为什么这里还留着代码
  *
- * 本文件是**唯一**允许读进程级环境的地方（`AI_ZEN_DIR` / `HOME` / `argv` / `cwd`）：所有
- * 路径在这里解析成**值**，再以构造参数注入给 `ServerApp`。`src/domain/`、`src/lib/`、
+ * 本文件是**唯一**允许读进程级环境的地方（`AI_ZEN_DIR` / `AI_ZEN_ALLOWED_ORIGINS` / `HOME` /
+ * `argv` / `cwd`）：所有路径与名单在这里解析成**值**，再以构造参数注入给 `ServerApp`。`src/domain/`、`src/lib/`、
  * `src/daemon/` 与 `ServerApp` 里一律不读全局（可用 README 的 grep 检验）。
  *
  * ## 为什么只剩这么点
@@ -37,6 +37,7 @@ import {
   readDescriptor,
   removeDescriptor,
 } from "./wire/discovery.js";
+import { readToken } from "./wire/token.js";
 import { SERVER_NAME, SERVER_VERSION } from "./version.js";
 
 interface Args {
@@ -56,6 +57,14 @@ interface Args {
   sessionIdleTimeoutMs: number;
   /** 客户端不指定工作目录时用哪个（`--workspace`，缺省为启动本进程时的目录） */
   defaultWorkspace: string;
+  /**
+   * 额外允许的浏览器 `Origin`（`AI_ZEN_ALLOWED_ORIGINS`，逗号分隔）。
+   *
+   * 只有环境变量一条路（不给 `--flag`）：它是部署形态的参数（nginx + 域名），不是一次性
+   * 开关；当参数传会进 shell 历史，改动一次还要改启动脚本。`Origin` 不是秘密，但也没
+   * 必要多一种写它的方式。
+   */
+  allowedOrigins: string[];
 }
 
 function parseArgs(argv: string[]): Args {
@@ -84,6 +93,8 @@ function parseArgs(argv: string[]): Args {
   // 拉起来的、当时他在哪个目录」的答案，所以启动日志里会把它打出来（否则用户报
   // 「`@` 补全列出来的全是不认识的目录」时，无从判断是谁决定的目录）。
   const defaultWorkspace = readFlag(rest, "--workspace") ?? process.cwd();
+  // 浏览器来源白名单：只从环境变量读（见 `Args.allowedOrigins` 的注释）
+  const allowedOrigins = parseOrigins(process.env.AI_ZEN_ALLOWED_ORIGINS);
 
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error(`bad --port: ${port}`);
   if (!Number.isFinite(idleTimeoutMs) || idleTimeoutMs < 0) {
@@ -92,7 +103,30 @@ function parseArgs(argv: string[]): Args {
   if (!Number.isFinite(sessionIdleTimeoutMs) || sessionIdleTimeoutMs < 0) {
     throw new Error(`bad --session-idle-timeout: ${sessionIdleTimeoutMs}`);
   }
-  return { command, aiZenDir, port, host, idleTimeoutMs, sessionIdleTimeoutMs, defaultWorkspace };
+  return {
+    command,
+    aiZenDir,
+    port,
+    host,
+    idleTimeoutMs,
+    sessionIdleTimeoutMs,
+    defaultWorkspace,
+    allowedOrigins,
+  };
+}
+
+/**
+ * `AI_ZEN_ALLOWED_ORIGINS` → `Origin` 列表（逗号分隔、trim、丢空项）。
+ *
+ * 丢空项是必须的：`A,,B` / 结尾多一个逗号 / 只写了一堆空白，都不该在名单里留下一个空串
+ * （它永远匹配不上，但会让读日志的人以为配了两条）。
+ */
+function parseOrigins(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
 }
 
 /** 取 `--flag value` 的值（同时支持 `--flag=value`） */
@@ -137,17 +171,18 @@ async function openLog(aiZenDir: string): Promise<ServerLog> {
  * 连上在跑的服务端问一句（`stop` / 单实例检查用）。
  *
  * 与客户端 `status.ts`、`ensure-server.ts` 里的探活是**同一件事**，实现只有
- * `wire/call-once.ts` 的一份（`callOnce`），三处都调它。
+ * `wire/call-once.ts` 的一份（`callOnce`），三处都调它。凭证从 `aiZenDir` 下那一个文件读 ——
+ * 正在跑的那个守护进程就是把它写在那里的（`wire/token.ts`）。
  */
 async function callRunning<M extends AnyMethod>(
-  host: string,
-  port: number,
+  address: { host: string; port: number; aiZenDir: string },
   method: M,
   timeoutMs = 2000,
 ): Promise<ResultOf<M>> {
-  return await callOnce({ host, port }, method, undefined, {
+  return await callOnce({ host: address.host, port: address.port }, method, undefined, {
     timeoutMs,
     client: { name: "agents-server-cli", version: SERVER_VERSION },
+    token: (await readToken(address.aiZenDir)) ?? undefined,
   });
 }
 
@@ -178,7 +213,8 @@ async function main(): Promise<number> {
       console.log("stale descriptor cleaned (process was gone)");
       return 0;
     }
-    await callRunning(descriptor.host, descriptor.port, "shutdown");
+    const address = { ...descriptor, aiZenDir: args.aiZenDir };
+    await callRunning(address, "shutdown");
     console.log(`stopped server on ${descriptor.host}:${descriptor.port} (pid ${descriptor.pid})`);
     return 0;
   }
@@ -195,6 +231,8 @@ async function main(): Promise<number> {
     port: args.port,
     idleTimeoutMs: args.idleTimeoutMs,
     sessionIdleTimeoutMs: args.sessionIdleTimeoutMs,
+    // 浏览器来源白名单：`AI_ZEN_ALLOWED_ORIGINS`（空 = 只允许 loopback）
+    allowedOrigins: args.allowedOrigins,
     log: log.log,
     flushLog: log.flush,
   });

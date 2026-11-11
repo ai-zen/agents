@@ -18,7 +18,9 @@
  * 没有专门的握手帧：第一条请求就是 `hello`（`MethodApi` 里的普通方法），所以这里与
  * `SocketServerClient` 走的是同一个形状 —— `id` + `method` + `params`，回执也是普通的成功 /
  * 失败响应。版本号放在 `hello` 的 `params.protocol` 里；服务端不匹配就回一条
- * `version-mismatch` 的错误响应，然后**断连**。
+ * `version-mismatch` 的错误响应，然后**断连**。凭证同样在 `hello` 里（`params.token`，见
+ * {@link CallOnceOptions.token}）：不对回 `unauthorized`，那一条**不断连**（换一条 `hello`
+ * 就能继续说），而这一次问话到此为止。
  *
  * ## 错误形态与 `SocketServerClient` 一致
  *
@@ -32,13 +34,15 @@
  * （`ECONNREFUSED` 之类在 undici 内部被吞掉了），所以「连不上谁」由这里的消息补上 —— 探活失败
  * 时那句话就是给人看的答案。
  *
- * ## 只用 `frames` / `messages` + 全局 `WebSocket`
+ * ## 只用 `frames` / `messages` / `server-url` + 全局 `WebSocket`
  *
  * 没有第三方依赖 —— 本包的运行期依赖图必须保持零（见 `index.ts` 文件头）。
  */
 
 import { encodeFrame } from "./frames.js";
 import { PROTOCOL_VERSION } from "./messages.js";
+import type { ServerTarget } from "./server-url.js";
+import { webSocketUrl } from "./server-url.js";
 import type {
   AnyMethod,
   HelloParams,
@@ -46,15 +50,29 @@ import type {
   ResponseFrame,
 } from "@ai-zen/agents-server/protocol";
 
-/** 连哪儿（与客户端 `ServerAddress` 逐字同形，但不引用它 —— 那是客户端的类型） */
-export interface CallOnceAddress {
-  host: string;
-  port: number;
-}
+/**
+ * 连哪儿。
+ *
+ * 是 `wire/server-url.ts` 的 {@link ServerTarget} 的别名，**不是**第二份形状：`CallOnceAddress`
+ * 曾经逐字重复了一遍 `{ host; port }`（理由写的是「那是客户端的类型」），而 `wire/` 本来就在客
+ * 户端里面 —— 于是包内有两处形状定义，`webSocketUrl` 也有两份逐字相同的实现。名字保留（避免
+ * 全仓改名噪声），定义只剩一处。
+ */
+export type CallOnceAddress = ServerTarget;
 
 export interface CallOnceOptions {
   /** 整次问话的时限（建连 + 握手 + 调用），缺省 2000ms */
   timeoutMs?: number;
+  /**
+   * 握手的凭证（`hello` 的 `params.token`）。
+   *
+   * 为什么不走 `Authorization` 头：浏览器的 `new WebSocket()` **不允许**设自定义请求头 —— 那会
+   * 让将来的 webui 一步都走不了；也不走 query string（会进日志 / 历史 / Referer）。
+   *
+   * 不给就发一个空串，与服务端那份 `callOnce` 同一条口径：调用方确实有一个凭证位置，只是没有
+   * 值可放 —— 服务端据此回 `unauthorized`，比“整个字段缺失（`bad-params`）”更接近事实。
+   */
+  token?: string;
   /**
    * 握手时自称的身份（只进服务端日志，不参与鉴权）。
    *
@@ -111,7 +129,11 @@ export async function callOnce<M extends AnyMethod>(
     }, timeoutMs);
 
     socket.addEventListener("open", () => {
-      const hello: HelloParams = { protocol: PROTOCOL_VERSION, client };
+      const hello: HelloParams = {
+        protocol: PROTOCOL_VERSION,
+        token: options?.token ?? "",
+        client,
+      };
       socket.send(encodeFrame({ jsonrpc: "2.0", id: HELLO_ID, method: "hello", params: hello }));
     });
     // 底层原因（`ECONNREFUSED` / 被拒的升级）全局 WebSocket 不会递上来，所以消息里带端点
@@ -145,20 +167,11 @@ export async function callOnce<M extends AnyMethod>(
         if (!("error" in frame)) finish(null, frame.result);
         else
           finish(
-            codedFailure(
-              frame.error.data.code,
-              `${frame.error.data.code}: ${frame.error.message}`,
-            ),
+            codedFailure(frame.error.data.code, `${frame.error.data.code}: ${frame.error.message}`),
           );
       }
     });
   });
-}
-
-/** `ws://host:port` —— IPv6 字面量要加方括号（`::1` 是允许的监听地址之一） */
-function webSocketUrl(address: CallOnceAddress): string {
-  const host = address.host.includes(":") ? `[${address.host}]` : address.host;
-  return `ws://${host}:${address.port}`;
 }
 
 /**

@@ -16,7 +16,7 @@ AI-Zen Agents is a **pnpm monorepo** (workspace root `@ai-zen/agents-workspace`,
 | `@ai-zen/agents-client` | 0.1.0-alpha.0 | Connection layer to the server; **private**, inlined by CLI / Desktop at build time |
 | `@ai-zen/agents-testing` | 0.1.0 | Private, test doubles (a fake OpenAI-compatible streaming endpoint) |
 
-(`packages/` also holds `test-project` (a private fixture package) and the directories `test-home` and `webui` — neither of those has a `package.json`, so neither is a package. The CLI and the desktop app live in **separate repositories**, not in this monorepo, but each has its own place in the dependency graph below.)
+(`packages/` holds seven directories in total: the five above (including `testing`), plus `test-project` (a private fixture package with its own `package.json`) and `test-home` (the only directory without a `package.json`, so not a package). The CLI and the desktop app live in **separate repositories**, not in this monorepo, but each has its own place in the dependency graph below.)
 
 ## Layering and dependency direction
 
@@ -212,6 +212,7 @@ Inside the package the split is by "dirty / pure" and by responsibility. Whateve
 | **Transport** | `transport/connection.ts` (`ServerConnection`) | **One connection per process**: every use checks `closed`, rebuilds when dead, re-subscribes to `events.watch` on the new connection, reports both disconnects and readiness upwards (`onClose` / `onOpen`). It does **not** retry — retrying is a session-layer rule |
 | | `ensure-server.ts` | Reads `<aiZenDir>/run/server.json`; if liveness (`callOnce` asking `ping`) fails it spawns `agents-server serve` detached and polls until `ping` answers. It is the **only** place in the package that knows about `agents-server` (deployment strategy, not a layer) |
 | | `socket-server-client.ts` | One WebSocket + JSON-RPC 2.0 connection: `hello` handshake, in-flight calls (optionally carrying a binary payload), event dispatch, disconnect notification |
+| | `resolve-target.ts` + `wire/server-url.ts` / `wire/token.ts` | The **single resolution point** for "where to connect + what gets you in": address precedence (explicit > discovery file), credential precedence (explicit > `run/token`), the address shape and the one URL builder (`ws` / `wss` / `http` / `https`, an optional path). Once the address can point at a remote machine, the credential can no longer be read from the local file alone — the two are resolved together |
 | **Facade** | `facade/sessions.ts` (`RemoteSessions`, 28) | Typed thin wrapper over `session.*` (21) + `workspace.*` (6) + `content.*` (1) |
 | | `facade/config.ts` (`RemoteConfig`, 13) | `config.*` (7) + `agent.*` (5) + `asset.*` (1) |
 | | `facade/coverage.test-d.ts` | Facade method set **===** protocol method-table key set; **100% coverage** is enforced by types: one method missing or one extra fails to compile |
@@ -293,13 +294,15 @@ Writes are atomic (write `.tmp`, then `rename`) so a client never reads half a J
 
 ### Transport and handshake
 
-The wire is **WebSocket + JSON-RPC 2.0**: one WebSocket message is exactly one complete JSON-RPC 2.0 message, and framing is the WebSocket message boundary; the first message must be `hello`, and a version that does not match means no connection — the handshake comes first even though this build has no authentication yet, so that adding authentication later does not mean rewriting how every client connects. For message classification, the `id` range, binary payloads, size ceilings, error codes and when a connection is dropped, the 15 events, and the stateful notices and questions, see [Wire Protocol](protocol.md) item by item.
+The wire is **WebSocket + JSON-RPC 2.0**: one WebSocket message is exactly one complete JSON-RPC 2.0 message, and framing is the WebSocket message boundary; the first message must be `hello`, the protocol version and the credential both ride in its `params`, and a version that does not match means no connection. For message classification, the `id` range, binary payloads, size ceilings, authentication and the origin check, error codes and when a connection is dropped, the 15 events, and the stateful notices and questions, see [Wire Protocol](protocol.md) item by item; for how to set up remote access, see [Deployment & Remote Access](deploy.md).
 
 ### Loopback only
 
 `Daemon.start()` asserts on the host: anything that is not a loopback address throws and refuses to start (`packages/server/src/daemon/Daemon.ts`). The judgement `isLoopbackHost()` lives in `packages/server/src/wire/host.ts` and accepts `localhost`, `::1`, and the whole `127.0.0.0/8` range (per RFC 1122, not just `127.0.0.1`).
 
-This is not a placeholder: this build has **no authentication**, and the server exposes `exec` (arbitrary command execution), so an unauthenticated port reachable from off-machine would hand a shell to the whole LAN. The default is `127.0.0.1:8790`; `--port 0` lets the OS pick.
+This is not a placeholder, and it is **not** "loopback because there is no authentication": the server's capability set includes `exec` (arbitrary command execution), and putting such a port straight onto a network is not the default this project wants. Remote access goes through **tunnels / a reverse proxy** (nginx on the same machine proxying to `127.0.0.1`, which lands exactly on this assertion): the server **never implements TLS and never binds a non-loopback address** — `wss://` is a **client** capability, not a server mode. The default is `127.0.0.1:8790`; `--port 0` lets the OS pick.
+
+The two gates that go with it are the **credential** (`params.token` of `hello`; the server reads or generates `<aiZenDir>/run/token`, mode 0600, in `start()`) and the **origin check** (judged during the upgrade, the list coming from `AI_ZEN_ALLOWED_ORIGINS`). Their criteria and invariants are in [Wire Protocol](protocol.md); the deployment side is in [Deployment & Remote Access](deploy.md).
 
 The two idle timeouts are different things: `--idle-timeout` covers the whole daemon (no connections left — exit after that long; off by default), `--session-idle-timeout` covers a single session (nobody watching it any more — reclaim it after that long).
 
@@ -355,6 +358,7 @@ The config root is written as `<aiZenDir>`: the `--ai-zen-dir` flag, else `AI_ZE
 | `<aiZenDir>/workspaces/<workspaceId>/sessions/<id>.meta.json` | The listing sidecar for that session (no body) | Same |
 | `<aiZenDir>/workspaces/<workspaceId>/last-session.json` | "The last session of this workspace" pointer | Same |
 | `<aiZenDir>/run/server.json` | Service discovery file | `descriptorPath` in `src/wire/discovery.ts` |
+| `<aiZenDir>/run/token` | Access credential (0600; read or generated in `start()`, **never** inside `server.json`) | `tokenPath` in `src/wire/token.ts` |
 | `<aiZenDir>/logs/server.log` | Daemon log (appended) | `openLog` in `src/cli.ts` |
 
 There is **no per-front-end directory** under `<aiZenDir>`: a session belongs to a **workspace**, and the CLI and the desktop app share one set of data. The pointer is not keyed by cwd either — the workspace is the partition key, so it is a single pointer (`last-session.json`).
@@ -395,7 +399,8 @@ Which gives these operating rules:
 
 ## Related documentation
 
-- [Wire Protocol](protocol.md) — the wire contract item by item: transport, `id`, binary frames, ceilings, handshake, error codes, events, stateful notices and questions
+- [Wire Protocol](protocol.md) — the wire contract item by item: transport, `id`, binary frames, ceilings, handshake, authentication, the origin check, error codes, events, stateful notices and questions
+- [Deployment & Remote Access](deploy.md) — the three access shapes, the nginx reverse proxy and its default-value traps, the client's address and credential precedence
 - [Core API](core.md) — runtime public API and implementation details
 - [SDK](sdk.md) — capability-layer public API
 - [Retrieval & RAG](rag.md) — retrieval capability status

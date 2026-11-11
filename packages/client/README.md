@@ -12,7 +12,8 @@ CLI（TUI）与 Desktop（main）共用同一份实现：两个前端各写一�
 |---|---|---|
 | `transport/connection.ts` | 脏 | **一个进程一条连接**（`ServerConnection`）：每次取用都判活、断了就重建、重建后在新连接上重新订阅 `events.watch`、断线与就绪都往上说 |
 | `socket-server-client.ts` | 脏 | 一条 WebSocket + JSON-RPC 2.0 连接：`hello` 握手、在飞调用（可带一块二进制帧载荷）、事件分发、断开通知 |
-| `ensure-server.ts` | 脏 | 读 `<aiZenDir>/run/server.json`；探活（`callOnce` 问一句 `ping`）失败就 detached 拉起 `agents-server serve`，轮询到 `ping` 通 |
+| `ensure-server.ts` | 脏 | 读 `<aiZenDir>/run/server.json`；探活（`callOnce` 问一句 `ping`）失败就 detached 拉起 `agents-server serve`，轮询到 `ping` 通。**给了显式地址时只连、绝不拉起** |
+| `resolve-target.ts` | 脏 | 「连哪儿 + 拿什么进门」的**唯一解析点**：地址优先级（显式 > 发现文件）、凭证优先级（显式 > `run/token`）、`unauthorized` 的对症说法。地址能指向远端，凭证就不能只从本地文件读 —— 两件事必须同源 |
 | `session/channel.ts` | 脏 | **一条会话的 I/O**（`SessionChannel`）：订阅、请求、重连（三条不变式）、重新 `attach`、`close` 当场回收 |
 | `session/stream.ts` | 纯 | **一轮之内的状态机**（`SessionStream`）：消息 / 阶段 / 模型 / 用量 / 子 Agent / 失败终态 |
 | `stream-merge.ts` | 纯 | 「本地流式增量」与「服务端快照」的合并规则（`mergeStreamedSnapshot`，唯一实现） |
@@ -26,7 +27,25 @@ CLI（TUI）与 Desktop（main）共用同一份实现：两个前端各写一�
 | `local-host.ts` | 纯 | 「服务端是不是在这台机器上」→ 决定要不要把客户端 cwd 当工作区递上去 |
 | `mcp.ts` | 类型 | `mcp.json` 的形状（读写归服务端） |
 | 协议 | 类型 | `@ai-zen/agents-server/protocol` 原样**类型转出**：方法/事件名的字面量联合、载荷类型、错误码联合、数据模型类型（只 `import type`，编译后不剩） |
-| `wire/` | 脏 | **本包自己那一份运行期实现**：消息编码与体积上限（`frames.ts`）、错误码判据（`errors.ts`）、回环判据（`host.ts`）、版本号（`messages.ts`）、发现文件读（`discovery.ts`）、一次性问话（`call-once.ts`）。协议只共享类型，代码各写各的 |
+| `wire/` | 脏 | **本包自己那一份运行期实现**：消息编码与体积上限（`frames.ts`）、错误码判据（`errors.ts`）、回环判据（`host.ts`）、版本号（`messages.ts`）、发现文件读（`discovery.ts`）、一次性问话（`call-once.ts`）、地址形状与 URL 拼法（`server-url.ts`）、凭证读端（`token.ts`）。协议只共享类型，代码各写各的 |
+
+## 地址与凭证：一个解析点
+
+服务端可以不在本机。这一层要回答的两个问题是「连哪儿」与「拿什么进门」，而它们必须**同源**：
+
+| 什么 | 优先级（左高右低） | 归一在 |
+|---|---|---|
+| 地址 | `--server <url>` > `AI_ZEN_SERVER_URL` > `<aiZenDir>/run/server.json` | `resolve-target.ts`（`readExplicitTarget`）+ `wire/server-url.ts`（`parseServerUrl`） |
+| 凭证 | `AI_ZEN_SERVER_TOKEN` > `<aiZenDir>/run/token` > 无 | `resolve-target.ts`（`resolveToken`）+ `wire/token.ts`（`readToken`） |
+
+四条理由，每条都是一个具体的错：
+
+- **地址能指向远端，凭证就不可能只来自本地文件。** `--server https://your.domain/ai-zen` 那台机器上的 `<aiZenDir>/run/token` 与它手里那把锁毫无关系。反过来，只把地址做成可配、凭证仍然就地读文件，得到的是最难查的半远程状态 —— 连得上、握手被拒，而错误信息不说为什么。所以 `unauthorized` 的措辞也在这里定，且按「地址是谁给的 × 凭证从哪来」分成几句对症的话：只给一句「重启服务端」，在对面是隧道时指的就是错的机器。
+- **地址的 URL 与拼法全包只准有一份。** `wire/server-url.ts` 既解析（`parseServerUrl`：接受 `ws` / `wss` / `http` / `https`，后两个按 `http → ws`、`https → wss` 映射；可带 path，nginx 子路径挂载需要它）也拼装（`webSocketUrl`：IPv6 加方括号、按 `secure` 出 `ws`/`wss`）。两份逐字相同的拼法，就有一份会先被改对。
+- **显式地址永不拉起本地服务端。** 本地 `npx` 起的进程一定不在那个地址上，拉起只会白等一轮然后报一个指向错误方向的超时。所以 `ensure-server` 在拿到显式地址时只连。
+- **没有 `--token`，这是有意的。** 地址不是秘密，可以进 argv；凭证是秘密，进了 argv 就会留在 `ps` 的输出与 shell 历史里。凭证只有环境变量与文件两个来源。
+
+`wire/token.ts` 是**只读**的：写端只有服务端一个（客户端也生成的话，两个进程会各写一份、各自认为自己是那把锁，症状是「刚连上就被 `unauthorized`」）。部署侧怎么填这几个值见[部署与远程访问](../../docs/zh/deploy.md)。
 
 ## 三条硬约束（都能用命令检验）
 
@@ -83,7 +102,9 @@ grep -hoE '^import .* from "[^"]+";' dist/*.js | sed 's/.*from "//;s/";//' | sor
 
 `aiZenDir`（配置根）与 `clientInfo`（握手自称的身份）都由**组装根**注入：CLI 在
 `src/server-client/index.ts`、桌面端在 main 的启动处各读一次 env / `app.getVersion()`。
-两者都是「应用级事实」，本包是库，拍不了这个板 —— 否则桌面端拉起服务端时会自称是 CLI。
+显式地址与显式凭证（`--server` / `AI_ZEN_SERVER_URL` / `AI_ZEN_SERVER_TOKEN`）同理由组装根读
+环境后以 `serverUrl` / `serverToken` 注入 —— 本包不读 `process.env`。
+它们都是「应用级事实」，本包是库，拍不了这个板 —— 否则桌面端拉起服务端时会自称是 CLI。
 
 ## 用法
 
@@ -98,6 +119,9 @@ const clientInfo = { name: "@ai-zen/desktop", version: app.getVersion() };
 
 // 一个进程一条连接：会话与配置面共用它，谁也不自己建
 const connection = new ServerConnection({ aiZenDir, clientInfo });
+// 服务端在另一台机器上时，同一个构造器多给两个字段（照旧是一个进程一条）：
+//   new ServerConnection({ aiZenDir, clientInfo, serverUrl: "wss://your.domain/ai-zen",
+//                          serverToken: process.env.AI_ZEN_SERVER_TOKEN })
 const config = createRemoteConfigPort({ connection }); // ← 必须递同一个 connection
 
 const channel = new SessionChannel({ connection, policy: { onChange, onNotice } });

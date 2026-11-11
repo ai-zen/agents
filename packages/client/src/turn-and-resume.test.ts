@@ -38,6 +38,8 @@ import { startFakeLlm, type FakeLlm } from "@ai-zen/agents-testing";
 import { AgentNS, applyChunk } from "@ai-zen/agents-core";
 
 const clientInfo: ClientInfo = { name: "@ai-zen/cli", version: "0.0.0-test" };
+/** 本文件那台真 Daemon 的凭证（`hello` 的 `params.token` 必须与它相等） */
+const TOKEN = "turn-resume-token-c4a82f60d93b417e8f50a2c7b1e69d34";
 const REPLY = "这是一段流式答复，用来验证拼接。";
 
 let dir: string;
@@ -86,6 +88,7 @@ async function boot(): Promise<void> {
     aiZenDir: dir,
     port: 0,
     version: "0.0.0-test",
+    token: TOKEN,
     handlers: {
       ...createSessionHandlers({
         manager,
@@ -98,6 +101,7 @@ async function boot(): Promise<void> {
   client = await SocketServerClient.connect({
     address: { host: "127.0.0.1", port: daemon.port },
     client: clientInfo,
+    token: TOKEN,
   });
   sessions = new RemoteSessions(client);
   // `events.watch` 是**连接级**的（归 `ServerConnection`）：这里直接发那一帧

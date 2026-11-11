@@ -11,6 +11,12 @@
  * 它必须与用例一起被排除在产物之外 —— 命名按仓库约定用 `*TestSupport.ts`（见 tsconfig 的
  * `exclude`）。
  *
+ * ## 凭证是一个可选的构造参数
+ *
+ * `connect(port, token)` 把 token 放进每一条 `hello` 的 `params` 里；不给就不带这个字段
+ * （于是服务端回 `bad-params`）—— 「不带凭证」本身就是要测的情形，所以它不能被一个缺省值
+ * 掩盖。用例造 `Daemon` 时优先注入 `token`（与这里同一个字符串），不要去读那个文件。
+ *
  * ## 为什么用真 WebSocket 而不是内存双工
  *
  * 被测的是**线上协议本身**：换成假传输就等于没测（`daemon/wire.test.ts` 另有一半专门的
@@ -38,11 +44,15 @@ export class WsTestClient {
   /** 请求 id 从 100 起：把 1–99 留给「用例自己指定 id」的场景，避免与自动分配撞号 */
   private nextId = 100;
 
-  private constructor(private readonly socket: WebSocket) {}
+  private constructor(
+    private readonly socket: WebSocket,
+    /** 握手时要带的凭证（`undefined` = 不带这个字段，用来测「没凭证」那条路） */
+    private readonly token?: string,
+  ) {}
 
-  static async connect(port: number): Promise<WsTestClient> {
+  static async connect(port: number, token?: string): Promise<WsTestClient> {
     const socket = new WebSocket(`ws://127.0.0.1:${port}`);
-    const client = new WsTestClient(socket);
+    const client = new WsTestClient(socket, token);
     socket.on("message", (data: RawData, isBinary: boolean) => {
       // 服务端不发二进制（它的结果全部是 JSON）；真收到了就当一条解析不了的消息塞进队列
       if (isBinary) return;
@@ -113,10 +123,12 @@ export class WsTestClient {
     return response.result;
   }
 
-  /** 握手（第一条请求）。可以覆盖 `hello` 的参数，用来测版本不匹配 */
+  /** 握手（第一条请求）。可以覆盖 `hello` 的参数，用来测版本不匹配 / 凭证不对 */
   async handshake(params: Record<string, unknown> = {}): Promise<WireFrame> {
     return await this.request("hello", {
       protocol: PROTOCOL_VERSION,
+      // 没给凭证就**不带这个键**：缺失与「给了一个空串」是两种形状
+      ...(this.token === undefined ? {} : { token: this.token }),
       client: { name: "test", version: "0" },
       ...params,
     });

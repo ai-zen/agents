@@ -70,6 +70,7 @@ import type { GlobalNoticeSlot, NoticeAckResult, NoticeListResult } from "./prot
 import { callOnce } from "./wire/call-once.js";
 import type { ServerDescriptor } from "./wire/discovery.js";
 import { isProcessAlive, readDescriptor, removeDescriptor } from "./wire/discovery.js";
+import { readToken, tokenPath } from "./wire/token.js";
 import { SERVER_VERSION } from "./version.js";
 
 /** 日志级别（与 `Daemon` / `cli.ts` 的日志出口同一套词） */
@@ -89,6 +90,13 @@ export interface ServerAppOptions {
   workspacesRoot?: string;
   /** 监听地址；缺省 `127.0.0.1`（非 loopback 会被 `Daemon` 拒绝） */
   host?: string;
+  /**
+   * 额外允许的浏览器 `Origin`（完整串；缺省空 = 只允许 loopback）。
+   *
+   * 值由组装根（`cli.ts`）从 `AI_ZEN_ALLOWED_ORIGINS` 解完再注入 —— 本类不读 `process.env`
+   * （见文件头的第三条纪律）。
+   */
+  allowedOrigins?: string[];
   /** 端口；缺省 8790，`0` = 系统分配 */
   port?: number;
   /** 整个守护进程的空闲退出（毫秒）；`0` = 不自动退出 */
@@ -145,6 +153,8 @@ export class ServerApp {
 
   private readonly host: string;
   private readonly portNumber: number;
+  /** 浏览器 `Origin` 白名单（已解完的值；空数组 = 只允许 loopback） */
+  private readonly allowedOrigins: readonly string[];
   private readonly idleTimeoutMs: number;
   private readonly version: string;
   private readonly now: () => string;
@@ -165,6 +175,7 @@ export class ServerApp {
     this.workspacesRoot = options.workspacesRoot ?? join(options.aiZenDir, "workspaces");
     this.host = options.host ?? "127.0.0.1";
     this.portNumber = options.port ?? 8790;
+    this.allowedOrigins = options.allowedOrigins ?? [];
     this.idleTimeoutMs = options.idleTimeoutMs ?? 0;
     this.version = options.version ?? SERVER_VERSION;
     this.now = options.now ?? (() => new Date().toISOString());
@@ -376,6 +387,8 @@ export class ServerApp {
       port: this.portNumber,
       version: this.version,
       idleTimeoutMs: this.idleTimeoutMs,
+      // 浏览器来源白名单：默认空 = 只允许 loopback（nginx + 域名部署时由组装根填）
+      allowedOrigins: [...this.allowedOrigins],
       log: (level, message) => this.log(level, message),
       handlers: this.methods,
       // 收摊的中间一步：连接已经全关掉、发现文件还在 —— 会话在这里收
@@ -390,6 +403,9 @@ export class ServerApp {
     try {
       const descriptor = await daemon.start();
       this.started = true;
+      // 凭证文件的**路径**（不是凭证本身）：要拿它去设 `AI_ZEN_SERVER_TOKEN` 连远程时，
+      // 用户得先知道本机这一串住在哪。token 本身永远不进日志。
+      this.log("info", `auth token file: ${tokenPath(this.aiZenDir)}`);
       return descriptor;
     } catch (error) {
       this.daemon = null;
@@ -486,7 +502,8 @@ export class ServerApp {
    * 连上在跑的那个问一句（单实例检查用）。
    *
    * 与客户端探活是**同一件事**：走 `wire/call-once.ts` 的那一份实现，身份署名本进程
-   * （`client` 是服务端日志里排查时最有用的一条事实）。
+   * （`client` 是服务端日志里排查时最有用的一条事实）。凭证从 `aiZenDir` 下那一个文件读 ——
+   * 正在跑的那个守护进程就是把它写在那里的。
    */
   private async callRunning<M extends AnyMethod>(
     host: string,
@@ -497,6 +514,7 @@ export class ServerApp {
     return await callOnce({ host, port }, method, undefined, {
       timeoutMs,
       client: { name: "agents-server-cli", version: this.version },
+      token: (await readToken(this.aiZenDir)) ?? undefined,
     });
   }
 

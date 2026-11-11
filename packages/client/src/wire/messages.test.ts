@@ -67,7 +67,7 @@ describe("二进制消息的 id 前缀", () => {
 });
 
 describe("协议版本", () => {
-  it("本版是 2（E1：断代，版本不匹配即不连）", () => {
-    expect(PROTOCOL_VERSION).toBe(2);
+  it("本版是 3（E1：断代，版本不匹配即不连；`hello` 加必填的 `token` 就是那次断代）", () => {
+    expect(PROTOCOL_VERSION).toBe(3);
   });
 });

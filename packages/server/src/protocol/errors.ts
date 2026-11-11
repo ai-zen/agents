@@ -81,6 +81,21 @@ export type ErrorCode =
    */
   | "handshake-required"
   /**
+   * 握手带来的凭证不对（`hello` 的 `params.token` 与服务端配的那一串不相等）。
+   *
+   * 这个码**不断连**，理由有两条：
+   *
+   *   1. 客户端可以改正重试 —— token 是一个它手上可能有、只是拿错了的字符串（比如转发到
+   *      远程 daemon 时还在用本地那份），换一条 `hello` 就能继续说；
+   *   2. 断连本身就是一次**信息泄露**：拒绝升级 / 挂断端口会让扫描方知道「这个端口上确实
+   *      有个服务在听」。回一条错误只是「你这条请求不合格」，端口仍然只是一个沉默的端口。
+   *
+   * 与 `handshake-required` 的分界：那一条说的是「顺序不对，你还没握手」；这一条说的是
+   * 「握手了，但你说的凭证不是这把锁的钥匙」。形状错（`token` 不是字符串 / 缺失）仍然落
+   * `bad-params` —— 那条要改的是请求体，不是凭证。
+   */
+  | "unauthorized"
+  /**
    * 握手本身不合格（上一版的第一个首帧校验用的码）。
    *
    * 本版不再产出它：握手前的失败现在分得更细 —— 顺序不对是 `handshake-required`，版本
@@ -115,7 +130,7 @@ export type RpcErrorCode = -32700 | -32600 | -32601 | -32602 | -32603 | -32000;
  *
  * 只有五条需要专门的数字码（`bad-frame` / `invalid-request` / `unknown-method` /
  * `bad-params` / `internal`），其余（业务码 + `bad-handshake` / `version-mismatch` /
- * `handshake-required`）一律落 `-32000` —— 它们的共同点是「服务端拒绝了这次请求」，
+ * `handshake-required` / `unauthorized`）一律落 `-32000` —— 它们的共同点是「服务端拒绝了这次请求」，
  * 客户端该看的是 `data.code`，不是数字码。
  *
  * `bad-frame` 与 `invalid-request` 是**两档**，不是同一条：前者是「不是合法 JSON」（解析

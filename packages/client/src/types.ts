@@ -10,17 +10,20 @@
  */
 
 import type { ServerEvent } from "@ai-zen/agents-server/protocol";
+import type { ServerTarget } from "./wire/server-url.js";
 
 /**
  * 服务端在哪。
  *
- * 单独起个名字（而不是到处写 `{ host: string; port: number }`）：将来换 unix socket
- * 或 URL 时，改的是这一个类型，不是每一处字面量。
+ * **这是 {@link ServerTarget} 的类型别名，不再是一份独立定义**：形状（`host` / `port` /
+ * `path?` / `secure?`）只在 `wire/server-url.ts` 里写一次 —— 那里同时是 URL 的唯一实现处。
+ * 两份逐字相同的形状看起来无害，代价却在「哪个才是权威」：改了 `webSocketUrl` 认识的那一份、
+ * 忘了另一份，编译照样通过，而线上会少一段 path 或多一个斜杠。
+ *
+ * 名字保留（而不是让全仓改叫 `ServerTarget`）只是为了少一片改名噪声：`ServerClient.address`、
+ * 会话层的错误文案、两个前端的 import 都还认这个名字。
  */
-export interface ServerAddress {
-  host: string;
-  port: number;
-}
+export type ServerAddress = ServerTarget;
 
 /** 客户端身份：握手请求 `hello` 的 `params.client`，只进日志与服务端回执，**不参与鉴权** */
 export interface ClientInfo {

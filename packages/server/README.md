@@ -19,8 +19,9 @@ Both front ends reach this package through `@ai-zen/agents-client`. The wire con
 package**: it is this package's own type files, `src/protocol/` (types only — method/event name
 unions, payload types, error-code unions), exposed as `@ai-zen/agents-server/protocol` for
 `import type`. Everything with runtime behaviour (frame codec, error-code predicate, loopback
-predicate, version constant, discovery-file I/O, `callOnce`) lives in `src/wire/` on this side —
-and each client has its own copy under `packages/client/src/wire/`. Only types are shared.
+predicate, version constant, discovery-file I/O, `callOnce`, the credential file's read-and-generate
+in `token`) lives in `src/wire/` on this side — and each client has its own copy under
+`packages/client/src/wire/`. Only types are shared.
 
 `sdk` and `core` must never import this package:
 
@@ -35,7 +36,7 @@ The wire contract is **not a package** — it is this package's type files. Two 
 | | Holds | Runtime exports |
 |---|---|---|
 | `src/protocol/` | method/event **name unions**, payload types, error-code unions, message shapes, phase shapes, the type-only re-export of the data model | **none** — every file is `type`/`interface` only |
-| `src/wire/` | message codec (one JSON-RPC 2.0 message per WS message), error-code predicate (`codedError` / `isCodedError` / `codeOf`), loopback predicate, `PROTOCOL_VERSION`, discovery-file I/O, `callOnce`, `DEFAULT_MIGRATION_STRATEGY` | yes |
+| `src/wire/` | message codec (one JSON-RPC 2.0 message per WS message), error-code predicate (`codedError` / `isCodedError` / `codeOf`), loopback predicate, `PROTOCOL_VERSION`, discovery-file I/O, the credential file's path / read / generate (`tokenPath` / `readToken` / `ensureToken`), `callOnce`, `DEFAULT_MIGRATION_STRATEGY` | yes |
 
 Clients import **only** `@ai-zen/agents-server/protocol` and only with `import type`; their own
 runtime copies live in `packages/client/src/wire/`. Nothing is shared but shapes and names — which
@@ -64,32 +65,50 @@ stop). The file carries `pid` + `version` + `protocol`, so a client can tell "cr
 leftover" from "different build still running" before it even connects. Logs go to
 `<aiZenDir>/logs/server.log` — a daemon must never write to the client's terminal.
 
-### v1 boundary: no authentication, therefore loopback only
+### Loopback only, with a token and an origin check in front
 
-This build has **no auth**. `Daemon.start()` accepts only loopback hosts — the whole
-`127.0.0.0/8` block, `::1` and `localhost`, judged by `isLoopbackHost()` in `src/wire/host.ts` —
-and throws for anything else. That is not a placeholder to be relaxed
-casually: the service exposes `exec` (arbitrary command execution), so an unauthenticated
-listener reachable from the network would hand a shell to the whole LAN. Exposing a port
-means building auth first — there is no "open it for now" middle state.
+`Daemon.start()` accepts only loopback hosts — the whole `127.0.0.0/8` block, `::1` and
+`localhost`, judged by `isLoopbackHost()` in `src/wire/host.ts` — and throws for anything else.
+That is not "loopback because there is no auth" and not a placeholder to be relaxed casually: the
+service exposes `exec` (arbitrary command execution), so putting such a port straight onto a
+network is not the default this project wants. Remote access goes through **tunnels or a reverse
+proxy** (nginx on the same machine proxying to `127.0.0.1`, which lands exactly on that assertion);
+the server **never implements TLS and never binds a non-loopback address** — `wss://` is a *client*
+capability, not a server mode. See `docs/zh/deploy.md` / `docs/en/deploy.md`.
 
-The protocol is nevertheless **shaped** for auth: every connection's first frame must be
-`hello { protocol, client }`, handshake failures carry machine-readable codes, and a
-mismatched protocol version is rejected outright instead of "best-effort" interpreted.
-Adding tokens/keys later changes the handshake payload only.
+What guards the port is a **credential**, not the absence of listeners:
+
+- every connection's first request must be `hello`, and `params.token` is **required** in it;
+- the token is an opaque random string (32 random bytes, base64url). `start()` reuses
+  `<aiZenDir>/run/token` if it exists and generates it (mode 0600, atomic `.tmp` + `rename`)
+  otherwise — one source of truth per machine, shared with every client on it. It deliberately
+  does **not** live in `server.json`: that file is diagnostic and gets pasted into issues;
+- a wrong token is **`unauthorized`** (`-32000`) and a malformed one (`token` missing / not a
+  string) is `bad-params` (`-32602`); neither drops the connection — a client fixes the field or
+  the key and continues on the same connection. Hanging up would also tell a scanner that
+  something really is listening here;
+- the comparison is constant-time (`timingSafeEqual`, after a length check), and the token itself
+  never reaches a log line.
+
+Browsers get a second, independent gate: the upgrade is refused with **HTTP 403** unless the request
+has no `Origin` at all (terminals, the desktop app, scripts), or its origin's hostname is loopback
+(the port is irrelevant), or its origin is listed in `AI_ZEN_ALLOWED_ORIGINS`. It is defence in
+depth — what actually stops a random web page from talking to a bare port is the token, which a page
+cannot read. Refusing before the upgrade is why the answer is an HTTP status rather than a WS close
+code: at that moment there is no WebSocket to close.
 
 ## Wire protocol
 
 **WebSocket + JSON-RPC 2.0**: one WS message is exactly one complete JSON-RPC 2.0 message, in both
 directions, and a text frame carries no trailing newline — the WS message boundary is the only
-framing there is. The version is `2`, and a version that does not match means no connection. The
-full spec (the `id` range, binary frames, size ceilings, the error-code mapping and the exact list
-of cases that drop a connection) is `docs/zh/protocol.md` / `docs/en/protocol.md`; this section only
-says what the wire is.
+framing there is. The version is `3`, and a version that does not match means no connection. The
+full spec (the `id` range, binary frames, size ceilings, authentication, the origin check, the
+error-code mapping and the exact list of cases that drop a connection) is `docs/zh/protocol.md` /
+`docs/en/protocol.md`; this section only says what the wire is.
 
 ```
-→ {"jsonrpc":"2.0","id":1,"method":"hello","params":{"protocol":2,"client":{"name":"tui","version":"1.0.2"}}}
-← {"jsonrpc":"2.0","id":1,"result":{"name":"agents-server","version":"0.1.0","protocol":2,"pid":4180641,"startedAt":"..."}}
+→ {"jsonrpc":"2.0","id":1,"method":"hello","params":{"protocol":3,"token":"<this machine's run/token>","client":{"name":"tui","version":"1.0.2"}}}
+← {"jsonrpc":"2.0","id":1,"result":{"name":"agents-server","version":"0.1.0","protocol":3,"pid":4180641,"startedAt":"..."}}
 → {"jsonrpc":"2.0","id":2,"method":"ping"}
 ← {"jsonrpc":"2.0","id":2,"result":{"pong":true}}
 ← {"jsonrpc":"2.0","method":"session.event","params":{"event":"chunk",...}}
@@ -153,16 +172,20 @@ There is no unsubscribe handle: a wire lives exactly as long as its connection, 
 swaps its callbacks mid-connection.
 
 `start()` serves HTTP, accepts the upgrade, and hands each connection to
-`Daemon.handleConnection(wire)`. Authentication stays unsolved (see the v1 boundary above): the
-loopback assertion lives in the listener, not in the `Wire`.
+`Daemon.handleConnection(wire)`. The credential check does not live in `start()`'s listener but in
+the connection handler — `hello` is where the token rides — while the origin check does live in the
+listener: it has to answer with HTTP 403 before the WebSocket exists.
 
 That "not a socket" claim is tested, not hoped for. `src/daemon/wire.test.ts` drives the same
 `handleConnection()` twice: once through an **in-memory duplex** (a real object implementing `Wire`
 over two `PassThrough` streams), and once with a **real WebSocket client** — `WsTestClient`
 (`src/daemon/WsTestClientTestSupport.ts`) connects to the daemon over `ws://` and speaks JSON-RPC
-through the very same `webSocketWire()` adapter and upgrade callback that `start()` uses. The
-assertions are the same set for both halves — handshake / call / event push / binary pairing / close
-cleanup — so "the same thing over another transport" is checked rather than asserted. `WsTestClient`
+through the very same `webSocketWire()` adapter and upgrade callback that `start()` uses. Both
+halves handshake with a **token injected into the `Daemon`** (never read from a file, so no test
+depends on whatever happens to be on disk). The second half walks the same scene — handshake / call /
+event push / close cleanup — while the in-memory half additionally covers binary pairing, the
+request-level errors that must not drop the connection, and the `unauthorized` path — so "the same
+thing over another transport" is checked rather than asserted. `WsTestClient`
 is what `Daemon.test.ts` and `sessionHandlers.test.ts` use as well, and it is a real socket on
 purpose: what those suites test is the wire itself, so nothing is mocked.
 

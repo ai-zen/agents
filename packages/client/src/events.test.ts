@@ -45,6 +45,8 @@ class FakeAgent implements AgentLike {
 }
 
 const clientInfo: ClientInfo = { name: "@ai-zen/cli", version: "0.0.0-test" };
+/** 本文件那台真 Daemon 的凭证（`hello` 的 `params.token` 必须与它相等） */
+const TOKEN = "events-test-token-3c7d1a94b02e4f68a5d9c2e17b4a8063";
 
 let dir: string;
 let daemon: Daemon | null = null;
@@ -78,6 +80,7 @@ async function start(): Promise<SocketServerClient> {
     aiZenDir: dir,
     port: 0,
     version: "0.0.0-test",
+    token: TOKEN,
     handlers: createSessionHandlers({
       manager: manager!,
       workspacesRoot: join(dir, "workspaces"),
@@ -89,6 +92,7 @@ async function start(): Promise<SocketServerClient> {
   connection = await SocketServerClient.connect({
     address: { host: "127.0.0.1", port: daemon.port },
     client: clientInfo,
+    token: TOKEN,
   });
   return connection;
 }

@@ -56,6 +56,13 @@
  *
  * `connect()` 返回时一定已经握过手，调用方拿到客户端就能 `call()`。把「先发 hello、等回执、
  * 再发请求」摊给每个调用点，等于将来加鉴权时每个调用点都要跟着改。
+ *
+ * ## 凭证在 `hello` 的 `params.token` 里，不在请求头里
+ *
+ * 浏览器 `new WebSocket()` **不允许**设自定义请求头（`Authorization` 那一类一个都设不了），
+ * 而本类用的就是浏览器那个 WebSocket —— 把凭证放在头里，将来的 webui 一步都走不了。所以它
+ * 与协议版本、客户端身份一样，是 `hello` 的一个参数（`options.token`）。没有就发空串，口径与
+ * `wire/call-once.ts` 一致。
  */
 
 import type {
@@ -71,6 +78,7 @@ import {
   PROTOCOL_VERSION,
   REQUEST_ID_BYTES,
 } from "./wire/messages.js";
+import { webSocketUrl } from "./wire/server-url.js";
 import type { CallOptions, ClientInfo, ServerAddress, ServerClient } from "./types.js";
 
 interface PendingCall {
@@ -82,6 +90,13 @@ interface PendingCall {
 export interface SocketServerClientOptions {
   address: ServerAddress;
   client: ClientInfo;
+  /**
+   * 握手的凭证（`hello` 的 `params.token`）。不给就发空串，服务端回 `unauthorized`。
+   *
+   * 值从哪来属于**部署策略**，不在这里决定：`resolve-target.ts` 的 `resolveToken()` 按「显
+   * 式凭证 > `<aiZenDir>/run/token`」取一次，组装根把它递进来（`ensureServer` 就是这么做的）。
+   */
+  token?: string;
   /** 建连 + 握手的总时限。握手是两趟往返，但都在本机，1s 都算宽裕 */
   connectTimeoutMs?: number;
   /** 单次 `call` 的默认时限（会话类方法会跑很久，调用点应显式传 `timeoutMs`） */
@@ -106,6 +121,8 @@ export class SocketServerClient implements ServerClient {
   private readonly pending = new Map<number, PendingCall>();
   private readonly listeners = new Map<string, Set<(payload: ServerEvent) => void>>();
   private readonly callTimeoutMs: number;
+  /** 每次（重）连都把同一串凭证塞进 `hello`：它属于「这个客户端连的是谁」，不随调用变 */
+  private readonly token: string;
 
   /** 握手期间的非空槽位：`hello` 的回执到时由它落定 `connect()` 的 promise */
   private pendingHandshake: { resolve: () => void; reject: (error: Error) => void } | null = null;
@@ -116,10 +133,16 @@ export class SocketServerClient implements ServerClient {
   /** 「连接断了」的订阅者（与事件通道分开：这是传输层说的，不是服务端说的） */
   private readonly closeListeners = new Set<() => void>();
 
-  private constructor(socket: WebSocket, address: ServerAddress, callTimeoutMs: number) {
+  private constructor(
+    socket: WebSocket,
+    address: ServerAddress,
+    callTimeoutMs: number,
+    token: string,
+  ) {
     this.socket = socket;
     this.address = address;
     this.callTimeoutMs = callTimeoutMs;
+    this.token = token;
   }
 
   /** 建连 + 握手；握手被拒或超时一律抛错（调用方据此决定"重拉一个"还是"报给人看"） */
@@ -132,6 +155,7 @@ export class SocketServerClient implements ServerClient {
       socket,
       address,
       options.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
+      options.token ?? "",
     );
 
     const ready = new Promise<void>((resolve, reject) => {
@@ -236,7 +260,7 @@ export class SocketServerClient implements ServerClient {
    * 不必把 `open` 之后的发送也接进那个 promise 链。
    */
   private sendHello(client: ClientInfo): void {
-    const params: HelloParams = { protocol: PROTOCOL_VERSION, client };
+    const params: HelloParams = { protocol: PROTOCOL_VERSION, token: this.token, client };
     void this.sendCall<HelloResult>(HELLO_ID, "hello", params, this.callTimeoutMs).then(
       (result) => {
         this.serverInfo = result;
@@ -413,10 +437,4 @@ function failureOf(error: unknown): Error & { code?: string } {
 /** 下一个请求 `id`：跳过握手那个，封顶回到 `2`（值域是 `0 … 2³²-1`，见 `wire/messages.ts`） */
 function nextRequestId(id: number): number {
   return id >= MAX_REQUEST_ID ? HELLO_ID + 1 : id + 1;
-}
-
-/** `ws://host:port` —— IPv6 字面量要加方括号（`::1` 是允许的监听地址之一） */
-function webSocketUrl(address: ServerAddress): string {
-  const host = address.host.includes(":") ? `[${address.host}]` : address.host;
-  return `ws://${host}:${address.port}`;
 }

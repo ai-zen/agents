@@ -14,7 +14,7 @@
 import type { ProtocolVersion, RawRequestFrame } from "@ai-zen/agents-server/protocol";
 
 /** 协议版本：任何不兼容的字段变化都要 +1，两端必须一致（E1：本版断代，不匹配即不连） */
-export const PROTOCOL_VERSION = 2 satisfies ProtocolVersion;
+export const PROTOCOL_VERSION = 3 satisfies ProtocolVersion;
 
 /**
  * `id` 的上界：无符号 32 位整数的最大值（= `0xffffffff`）。

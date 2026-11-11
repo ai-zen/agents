@@ -78,6 +78,15 @@ export interface ServerConnectionDeps {
   /** `npx` 拉起的服务端包坐标（缺省 `@ai-zen/agents-server`）；预发布版本要带 `@x.y.z` */
   serverPackage?: string;
   /**
+   * 显式地址（`--server` / `AI_ZEN_SERVER_URL`）：给了就只连那个地址、**绝不拉起**（D10）。
+   *
+   * 透传给 {@link ensureServer}：本类不自己解析地址 —— 「连哪儿 + 拿什么进门」只该有一个解析
+   * 点（`resolve-target.ts`），否则重连走一遍、初次连走另一遍。
+   */
+  serverUrl?: string;
+  /** 显式凭证（`AI_ZEN_SERVER_TOKEN`）；没给就退回 `<aiZenDir>/run/token`，同样透传 */
+  serverToken?: string;
+  /**
    * 接管「怎么拉起服务端」。不给就用 {@link ensureServer} 的默认（`npx`）。
    *
    * 宿主自带一份服务端时用它：桌面端就是拉起**随包分发**的那个，不必让用户机器上的
@@ -258,7 +267,16 @@ export class ServerConnection {
         "ServerConnection 需要 connect，或者 aiZenDir + clientInfo（不注入时就不知道怎么拉起服务端）",
       );
     }
-    const { serverPackage, startServerProcess } = this.deps;
-    return (await ensureServer({ aiZenDir, clientInfo, serverPackage, startServerProcess })).client;
+    const { serverPackage, startServerProcess, serverUrl, serverToken } = this.deps;
+    return (
+      await ensureServer({
+        aiZenDir,
+        clientInfo,
+        serverPackage,
+        startServerProcess,
+        serverUrl,
+        serverToken,
+      })
+    ).client;
   }
 }

@@ -1,12 +1,12 @@
 ---
 title: Wire Protocol
-description: WebSocket + JSON-RPC 2.0 — one WS message is one JSON-RPC message, integer ids in 0…2^32-1, the first 4 bytes of a binary frame carry the request id and a binary frame always comes after its request, six cases drop the connection (either ceiling / a handshake-time version mismatch / three binary-frame anomalies), the 64 MiB / 8 MiB ceilings and the order they are judged in, no batch, object-form params only, notifications from the client are dropped in silence, the hello handshake (flat result) with its frozen field names and where they are declared, the error-code mapping and the mandatory data.code (including bad-frame and the five invalid-request cases), the id rule for error responses, 15 events behind one session.event method, the stateful questions and per-session / global notices plus the shape of their elements, the binary channel behind content.upload, and 48 methods.
+description: WebSocket + JSON-RPC 2.0 (protocol version 3) — one WS message is one JSON-RPC message, clients may connect over wss:// while the server itself speaks plaintext loopback only, integer ids in 0…2^32-1, the first 4 bytes of a binary frame carry the request id and a binary frame always comes after its request, six cases drop the connection (either ceiling / a handshake-time version mismatch / three binary-frame anomalies), the 64 MiB / 8 MiB ceilings and the order they are judged in, no batch, object-form params only, notifications from the client are dropped in silence, the hello handshake (flat result) with its frozen field names (including the mandatory params.token) and where they are declared, why the credential rides in params rather than in an Authorization header / a query string / Sec-WebSocket-Protocol, the origin check with three admissions and one 403 refusal, the error-code mapping (including unauthorized) and the mandatory data.code, the id rule for error responses, 15 events behind one session.event method, the stateful questions and per-session / global notices plus the shape of their elements, the binary channel behind content.upload, and 48 methods.
 outline: deep
 ---
 
 # Wire Protocol
 
-This page is the item-by-item specification for anyone implementing a client. The transport is **WebSocket**; the messages are **JSON-RPC 2.0**. The protocol version is `2`: a version that does not match means no connection.
+This page is the item-by-item specification for anyone implementing a client. The transport is **WebSocket**; the messages are **JSON-RPC 2.0**. The protocol version is `3`: a version that does not match means no connection.
 
 The clauses answer only "is this allowed"; they do not answer "does anything send it" — that is the implementation's call.
 
@@ -15,6 +15,27 @@ The clauses answer only "is this allowed"; they do not answer "does anything sen
 - The server sends and receives over one **WebSocket** connection.
 - **One WebSocket message is exactly one complete JSON-RPC 2.0 message**, in both directions.
 - The WebSocket message boundary is the only source of framing: a text frame carries **no trailing newline**, and one message begins and ends inside one WS message.
+- Clients **may** connect over `wss://` (the same WebSocket on top of TLS, for instance behind an nginx that terminates TLS and proxies to loopback). The protocol asks nothing extra of it: frames, messages, `id`s and binary payloads are identical to `ws://`.
+- **This build's server itself listens only on plaintext `ws://` on loopback**: it implements no TLS and binds no non-loopback address. To get `wss://`, put a reverse proxy in front of it and keep the plaintext leg on the machine's loopback. See [Deployment & Remote Access](deploy.md).
+
+Those two are **two different things** and neither may be derived from the other: the first says what the protocol **allows** (it does), the second says what this build's server **offers** (no TLS). The clauses write only the former; the latter belongs to the implementation and the deployment — a server that speaks plaintext WS only can still be reached by `wss://` clients, as long as something in between terminates TLS.
+
+## Origin check
+
+A WebSocket handshake is an HTTP `upgrade` request. In a browser, `new WebSocket()` has that request sent by the browser itself, which **forces** an `Origin` header (the page's origin) onto it; a script cannot change it. The server judges the origin once, **before the upgrade**, with exactly four outcomes:
+
+| Case | Result |
+|---|---|
+| the request carries **no `Origin` header** | admitted — terminals, desktop apps and scripts never send it, and the credential covers them (see "Authentication") |
+| the `Origin`'s **hostname is loopback** | admitted — **the hostname only, the port is irrelevant**: a local web UI or debug page counts as one of ours on whichever port it runs, so port drift never locks us out |
+| the `Origin` is in the server's **allowed list** | admitted — the list comes from the `AI_ZEN_ALLOWED_ORIGINS` environment variable (comma-separated, each entry trimmed, empty entries dropped); an entry is an **origin** (scheme + host + port, e.g. `https://your.domain`) |
+| everything else (including `Origin: null` and unparsable strings) | **the upgrade is refused**: one **HTTP 403**, and that WebSocket never exists |
+
+The refusal is an HTTP 403 rather than a WS close code because it happens **before the upgrade**: not even `101 Switching Protocols` has gone out yet, so what the peer reads is an HTTP response — there is no connection to close, and the premise of a close code does not hold in this row.
+
+What it blocks is "any web page may talk to a bare port"; what **actually** blocks that is the credential (a web page cannot read that 0600 credential file on the machine — see [Deployment & Remote Access](deploy.md)). So the origin check is **defence in depth**: its independent value is in the future — once a web UI authenticates with cookies, a cross-site WS handshake will carry those cookies, and then `Origin` is one of the few things that still tells you which page started it.
+
+On the day a browser arrives at nginx with `https://your.domain`, that origin **must** be configured into `AI_ZEN_ALLOWED_ORIGINS`, or your own web UI gets refused by your own server (403).
 
 ## Message classification
 
@@ -136,7 +157,8 @@ Request (client → server):
   "id": 1,
   "method": "hello",
   "params": {
-    "protocol": 2,
+    "protocol": 3,
+    "token": "<the credential this server gave out>",
     "client": { "name": "ai", "version": "1.4.0" }
   }
 }
@@ -151,7 +173,7 @@ Response (server → client, on success):
   "result": {
     "name": "agents-server",
     "version": "0.1.0",
-    "protocol": 2,
+    "protocol": 3,
     "pid": 48213,
     "startedAt": "2025-01-01T00:00:00.000Z"
   }
@@ -164,12 +186,13 @@ The field names are frozen:
 
 | Where | Field | Type | What it is |
 |---|---|---|---|
-| `params` | `protocol` | number | the protocol version the client supports (`2` in this version) |
+| `params` | `protocol` | number | the protocol version the client supports (`3` in this version) |
+| `params` | `token` | string | **required**: the access credential. Its position and judgement are in "Authentication"; where the value comes from is in [Deployment & Remote Access](deploy.md) |
 | `params` | `client.name` | string | the client's name (used for logs and local debugging only, not for authentication) |
 | `params` | `client.version` | string | the client's version |
 | `result` | `name` | string | the server's name |
 | `result` | `version` | string | the server's version |
-| `result` | `protocol` | number | the protocol version on the server's side (`2` in this version) |
+| `result` | `protocol` | number | the protocol version on the server's side (`3` in this version) |
 | `result` | `pid` | number | the server's process id |
 | `result` | `startedAt` | string | when the server started (an ISO time string) |
 
@@ -180,8 +203,38 @@ Rules:
 - **The first message must be a request to `hello`**. Calling any method before the handshake → the server answers `-32000` with `data.code: "handshake-required"`, and **the connection stays open**; sending `hello` then makes that same connection usable.
 - **`params` is not an object** (including no `params` at all) → the server answers `-32602` with `data.code: "bad-params"`, and **the connection stays open**. It is not a version mismatch: that one says "the two ends do not speak the same generation", this one says "the shell of this request is wrong, fix it and send it again".
 - A protocol version mismatch → `data.code: "version-mismatch"` (`-32000`), and the connection is **dropped** afterwards. A missing or non-numeric `params.protocol` lands here too — if the peer's version cannot be read, it does not match.
+- The credential is judged after the version, **shape first, then value**: a missing or non-string `token` → `bad-params` (`-32602`); a string that is not equal to the one the server holds → `unauthorized` (`-32000`). Neither **drops the connection** (the next section, "Authentication", has the details).
 - **Sending another `hello` after the handshake** → the server answers `-32600` with `data.code: "invalid-request"`, and **the connection stays open** (it falls into the fifth row of "the five cases `invalid-request` covers" below).
-- There is no exception: even though this version has no authentication yet, the handshake still comes first. Adding authentication later then changes the handshake, not how every client connects.
+- There is no exception: `hello` is the only way in, and both the protocol version and the credential ride in its `params`. So every client's connect logic has exactly one shape (`HelloParams`), and the server has no second sequence such as "send a dedicated authentication frame first".
+
+## Authentication
+
+Getting in takes more than a matching protocol version: the connection has to show that this port is yours to use. The credential is an **opaque** random string (this build's server uses 32 random bytes, base64url — 43 characters): no structure, no peer, no revocation list. It answers one question only — are you holding this key.
+
+**Position: `params.token` of `hello`, required.** It is an ordinary field of the handshake request (see the parameter table above), so there is no second "authentication" request and no "auth frame, then `hello`" sequence; the credential and the version are judged in the same place, and the one error a client gets back already says what to change.
+
+**Judgement: shape first, then value — two cases, two codes.**
+
+| Case | `data.code` | numeric code | connection |
+|---|---|---|---|
+| `token` missing, or not a string (`null` / a number / an object …) | `bad-params` | `-32602` | **stays open** |
+| `token` is a string but not equal to the one the server holds | `unauthorized` | `-32000` | **stays open** |
+
+The reason for splitting them is the same ruler as for `protocol`: a shape error means the **request body** is wrong (this client has not filled the field in), a value error means the **credential** is wrong (the field is right, the key is not). Merging the two only sends the first kind of person off to swap keys.
+
+**A failure does not drop the connection.** `unauthorized` is a request-level failure, not a connection-level one: the client fixes it and continues with **the next `hello` on the same connection**. The server does not hang up either — hanging up is itself a leak: refusing the upgrade or closing at once tells a scanner that something really is listening on this port, whereas one error response only says "this request of yours does not qualify".
+
+**The comparison is constant-time.** The server compares in constant time (a length mismatch is an immediate no), so that "at which character the difference was found" does not show up in the timing. The credential itself **never enters a log line or an error message** — it is a key, not an identifier.
+
+**Why it does not ride anywhere else:**
+
+| Candidate | Why not |
+|---|---|
+| the `Authorization` request header | **that position does not exist in a browser**: `new WebSocket()` does not allow custom request headers, and the browser writes the handshake's key headers itself. Putting it there means the web UI cannot take a single step, and the web UI is exactly the second front end this protocol serves |
+| the query string (`?token=…`) | it lands in access logs, shell history, `Referer` headers and the debug output of every middlebox in between. A key does not belong in any of those |
+| `Sec-WebSocket-Protocol` | that field is for **negotiating a subprotocol** (both sides declare which dialects they speak). Using it as a credential channel is a hack: everyone who reads it (proxies, gateways, logs) should not find a secret in a negotiation field |
+
+Where the credential itself comes from (the precedence between `<aiZenDir>/run/token` and the `AI_ZEN_SERVER_TOKEN` environment variable) and how each front end presents it are deployment facts rather than wire shape — see [Deployment & Remote Access](deploy.md).
 
 ## Errors
 
@@ -210,6 +263,7 @@ Response shape (`error` and `result` are mutually exclusive, never both):
 | `unknown-method` | `-32601` | the method name is not known |
 | `bad-params` | `-32602` | the parameter shape is wrong |
 | `internal` | `-32603` | an internal server error |
+| `unauthorized` | `-32000` | the credential that came with the handshake is not the one the server holds (a missing or non-string `token` still lands in `bad-params`) |
 | everything else (the business codes, plus `bad-handshake` / `version-mismatch` / `handshake-required`) | `-32000` | a business failure, or a request-level handshake failure |
 
 The full table of string codes is in the server's `packages/server/src/protocol/errors.ts`.
@@ -410,6 +464,8 @@ The complete list is below, and it holds **six** cases:
 | ⑤ | a second binary frame for the same `id` | connection dropped |
 | ⑥ | a binary message **shorter than 4 bytes** (not even the `id` can be read) | connection dropped |
 
+The origin check's **403 is not one of the six**: it happens before the WebSocket exists (see "Origin check"), so there is no connection to drop.
+
 What the six share: **in these situations this connection can never go on.** ①② are a message that was not accepted for its size (the same content sent again is just as large, so there is no "fix the request and try again" recovery path); ③ means the two ends do not speak the same generation, so no later message's shape can be trusted; ④⑤⑥ mean the two ends' views of the bytes have diverged, or the bytes cannot be attributed at all — all three belong to no request, so there is not even a "reply to whom".
 
-Nothing else drops the connection: invalid JSON (`bad-frame`), an unknown method, a wrong `params` shape, `hello` with a non-object `params` (`bad-params`), calling another method before the handshake (`handshake-required`), another `hello` after it, a top-level array, a message with no `method`, a missing `jsonrpc: "2.0"`, an out-of-range `id`, a business failure, an empty-payload binary frame, a notification coming from the client (dropped in silence, not even an error goes back) — **none of them drop it**; on the client side an unknown `data.code` is handed to the caller as it is, connection kept too.
+Nothing else drops the connection: invalid JSON (`bad-frame`), an unknown method, a wrong `params` shape, `hello` with a non-object `params` (`bad-params`), `hello` with a missing or non-string `token` (also `bad-params`), **a wrong credential (`unauthorized`)**, calling another method before the handshake (`handshake-required`), another `hello` after it, a top-level array, a message with no `method`, a missing `jsonrpc: "2.0"`, an out-of-range `id`, a business failure, an empty-payload binary frame, a notification coming from the client (dropped in silence, not even an error goes back) — **none of them drop it**; on the client side an unknown `data.code` is handed to the caller as it is, connection kept too.

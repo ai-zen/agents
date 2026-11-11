@@ -18,7 +18,9 @@
  * 没有专门的握手帧：第一条请求就是 `hello`（`MethodApi` 里的普通方法），所以这里与
  * `SocketServerClient` 走的是同一个形状 —— `id` + `method` + `params`，回执也是普通的
  * 成功 / 失败响应。版本号放在 `hello` 的 `params.protocol` 里；服务端不匹配就回一条
- * `version-mismatch` 的错误响应，然后**断连**。
+ * `version-mismatch` 的错误响应，然后**断连**。凭证同样在它里面（`params.token`，见
+ * `CallOnceOptions.token`）：不对回 `unauthorized`，那一条**不断连**（换一条 `hello` 就能
+ * 继续说），而这一次问话就到此为止（`finish` 把错误交回去）。
  *
  * ## 错误形态与 `SocketServerClient` 一致
  *
@@ -46,6 +48,14 @@ export interface CallOnceAddress {
 export interface CallOnceOptions {
   /** 整次问话的时限（建连 + 握手 + 调用），缺省 2000ms */
   timeoutMs?: number;
+  /**
+   * 握手的凭证（`hello` 的 `params.token`）。
+   *
+   * 不给就发一个空串，服务端回 `unauthorized` —— 那比“整个字段缺失”更接近事实：调用方
+   * 确实有一个凭证位置，只是他没有值可放。本机问话（诊断 / 收摊 / 探活）的调用方都是
+   * 从这里读出的值：`<aiZenDir>/run/token`（见 `wire/token.ts`）。
+   */
+  token?: string;
   /**
    * 握手时自称的身份（只进服务端日志，不参与鉴权）。
    *
@@ -102,7 +112,11 @@ export async function callOnce<M extends AnyMethod>(
     }, timeoutMs);
 
     socket.on("open", () => {
-      const hello: HelloParams = { protocol: PROTOCOL_VERSION, client };
+      const hello: HelloParams = {
+        protocol: PROTOCOL_VERSION,
+        token: options?.token ?? "",
+        client,
+      };
       socket.send(encodeFrame({ jsonrpc: "2.0", id: HELLO_ID, method: "hello", params: hello }));
     });
     // 底层原因（`ECONNREFUSED` / 被拒的升级）原样递出去：探活失败时那句话就是答案
@@ -134,10 +148,7 @@ export async function callOnce<M extends AnyMethod>(
         if (!("error" in frame)) finish(null, frame.result);
         else
           finish(
-            codedFailure(
-              frame.error.data.code,
-              `${frame.error.data.code}: ${frame.error.message}`,
-            ),
+            codedFailure(frame.error.data.code, `${frame.error.data.code}: ${frame.error.message}`),
           );
       }
     });

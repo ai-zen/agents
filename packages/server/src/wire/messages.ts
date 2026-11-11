@@ -8,7 +8,7 @@
 import type { RawRequestFrame } from "../protocol/messages.js";
 
 /** 协议版本：任何不兼容的字段变化都要 +1，两端必须一致 */
-export const PROTOCOL_VERSION = 2 satisfies import("../protocol/messages.js").ProtocolVersion;
+export const PROTOCOL_VERSION = 3 satisfies import("../protocol/messages.js").ProtocolVersion;
 
 /**
  * `id` 的上界：无符号 32 位整数的最大值（= `0xffffffff`）。

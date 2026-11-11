@@ -1,18 +1,27 @@
 /**
  * 常驻服务进程 —— 只监听 loopback，只讲 JSON-RPC 2.0 over WebSocket。
  *
- * ## 本版边界（v2，刻意最小）
+ * ## 本版边界（v3，刻意最小）
  *
- * - **没有鉴权**：因为只绑 `127.0.0.1`。`start()` 里对 host 做了断言 —— 未鉴权的端口一旦
- *   能被非本机访问，等于把 `exec`（远程执行）送给整个局域网。要对外必须先做鉴权，没有"先
- *   开着再说"的中间态。
+ * - **鉴权只有一串不透明 token**：`hello` 的 `params.token` 必须与服务端手上那串相等（注入
+ *   的从构造时就生效，没注入则在 `start()` 时读或生成 `<aiZenDir>/run/token`，见
+ *   `wire/token.ts`）。失败回 `unauthorized` —— 请求级失败，**不断连**（客户端可以改正
+ *   重试；而断连反而暴露"这个端口存在"）。
+ * - **仍然只绑 loopback**，而且**不是**因为没鉴权了：远程访问走隧道 / 反向代理（nginx 在
+ *   同机反代到 `127.0.0.1`，正好落进 `start()` 里那条断言）。服务端**永不实现 TLS、永不绑
+ *   非 loopback** —— `wss://` 是客户端的一个能力，不是服务端的一个模式。
+ * - **浏览器来源另有一道 Origin 校验**（`start()` 的 `upgrade` 回调）：无 `Origin` 放行
+ *   （非浏览器客户端由 token 兜）、`Origin` 的 hostname 是 loopback 放行、在
+ *   `DaemonOptions.allowedOrigins` 里放行，其余一律 **`403` 拒绝升级**（此刻 WS 还没建立，
+ *   回 WS close 码是错误的）。定位是纵深防御：真正挡住"任意网页连裸端口"的是 token（网页
+ *   读不到本地那个 0600 文件）。
  * - **只有四个自带方法**：`hello` / `ping` / `status` / `shutdown`（它们在任何命名空间之外，
  *   因为它们是「能不能开始用 / 活着吗 / 你是谁 / 可以关了吗」这四个问题）。其余方法全部由
  *   组装根注入：`session.*` / `workspace.*` / `events.watch`（`src/protocol/` 的 `sessions.ts`）、
  *   `config.*` / `agent.*`、`content.upload`。本类只管「一条消息 → 方法调用」，不认识业务，
  *   也不认识消息从哪里来（那是 `./wire.ts` 的事）。
- * - **握手不省**：即使现在不鉴权，第一条请求也必须 `hello`。将来加 token/公钥时只改 `hello`
- *   的参数与 handler，不动所有客户端的建连逻辑。
+ * - **握手不省**：第一条请求必须是 `hello`，协议版本与凭证都在它的 `params` 里。所有客户端
+ *   的建连逻辑因此只有一处（`HelloParams`），没有「先发一个专门的鉴权帧」那种第二套顺序。
  *
  * ## 一条消息怎么变成一次调用
  *
@@ -38,6 +47,9 @@
  * JSON 的文本**：WS 已经给了消息边界，「这一条不是 JSON」不再等于「后面的字节全部错位」。
  * 上一版把非法 JSON 当成流错位而断连，那个判据来自 JSON-lines 时代，本版作废。
  *
+ * 凭证不对（`unauthorized`）在这六条之外：它回一条错误、连接照旧 —— 客户端换一条 `hello`
+ * 就能继续说（见 `protocol/errors.ts` 该码的注释）。
+ *
  * ## 为什么传输与派发解耦
  *
  * 入参是 `Wire`（`./wire.js`）：七个成员，每一个都是本文件真正用到的。`start()` 里把每个
@@ -46,6 +58,7 @@
  */
 
 import { createServer, type Server } from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import { WebSocketServer } from "ws";
 import { encodeFrame, MAX_PAYLOAD_BYTES, MAX_TEXT_BYTES } from "../wire/frames.js";
 import type {
@@ -71,6 +84,7 @@ import { rpcCodeOf } from "../wire/errors.js";
 import type { ServerDescriptor } from "../wire/discovery.js";
 import { descriptorPath, removeDescriptor, writeDescriptor } from "../wire/discovery.js";
 import { isLoopbackHost } from "../wire/host.js";
+import { ensureToken } from "../wire/token.js";
 import { webSocketWire, type Wire } from "./wire.js";
 
 /**
@@ -120,10 +134,34 @@ export interface Connection {
 export interface DaemonOptions {
   /** 配置根目录（`~/.ai-zen`）。**必须注入**：本包不读进程级全局 */
   aiZenDir: string;
-  /** 监听地址。默认 `127.0.0.1`；非 loopback 一律拒绝启动（本版无鉴权） */
+  /**
+   * 监听地址。默认 `127.0.0.1`；非 loopback 一律拒绝启动（远程走隧道 / 反向代理，
+   * 服务端永不实现 TLS、永不绑非 loopback）
+   */
   host?: string;
   /** 端口；`0` = 让系统分配（测试用）。默认 8790 */
   port?: number;
+  /**
+   * 注入的凭证（`hello` 的 `params.token` 要与之相等）。
+   *
+   * 不传 = `start()` 时用 `ensureToken(aiZenDir)` 读或生成 `<aiZenDir>/run/token`。
+   * 注入的用处有两个：用例不必为了拿一串凭证去读文件，以及凭证由别处管理（容器编排把
+   * 密钥挂进来）时不必假装它住在 `aiZenDir` 里。
+   *
+   * **空字符串或全空白按「没有注入」处理**：那不是一个长度为 0 的凭证，而是「宿主读到了一个
+   * 空值」（密钥存储里那一项是空的、配置项写成 `AI_ZEN_TOKEN=`）。于是 `start()` 回落到
+   * `ensureToken()` 读或生成文件，而不会变成「空凭证 = 人人可进」（判据见
+   * `normalizeInjectedToken`）。
+   */
+  token?: string;
+  /**
+   * 额外允许的浏览器 `Origin`（完整串，如 `https://your.domain`；默认空 = 只允许 loopback）。
+   *
+   * 判据在 `start()` 的 `upgrade` 回调里：无 `Origin` 放行、loopback hostname 放行、
+   * 在这个名单里放行，其余 `403` 拒绝升级。名字里的 `allowed` 是「除了默认那一条之外还
+   * 允许谁」，不是「允许谁」的全集 —— loopback 永远放行（与端口无关）。
+   */
+  allowedOrigins?: string[];
   /** 服务端包版本，写进发现文件与握手回执 */
   version: string;
   /**
@@ -179,6 +217,17 @@ export class Daemon {
   private server: Server | null = null;
   private wss: WebSocketServer | null = null;
   private actualPort = 0;
+  /**
+   * 本进程的凭证（注入的从构造时就生效；没注入则在 `start()` 时读 / 生成
+   * `<aiZenDir>/run/token`）。
+   *
+   * `null` = 还没定（`start()` 之前，或用例直接 `handleConnection()` 喂连接的那种），**或**
+   * 注入的是空串 / 全空白（赋值处已经归一，见 `normalizeInjectedToken`）。此时任何 `hello`
+   * 都对不上 —— 没有凭证就没有「对的凭证」，这是 fail-closed 的那一侧。
+   *
+   * 它**绝不进日志**：日志里最多出现 token 文件的路径。
+   */
+  private token: string | null = null;
   /** 当前连接的**传输那一侧**（`Wire`，不是 WebSocket）：收摊时要逐个断掉 */
   private readonly connections = new Set<Wire>();
   private readonly startedAt = new Date();
@@ -191,6 +240,11 @@ export class Daemon {
     this.options = options;
     this.host = options.host ?? "127.0.0.1";
     this.requestedPort = options.port ?? 8790;
+    // 注入的凭证从构造时就生效：它不依赖「读文件」，也就不依赖 `start()` —— 用例直接
+    // `handleConnection()` 喂连接时（没有监听的场景）也是同一把锁。
+    // 空串 / 全空白在这里就归一成「没有凭证」：空凭证等于人人可进，理由见
+    // `normalizeInjectedToken`。与 `start()` 那处走同一个函数，两处口径不会分叉。
+    this.token = normalizeInjectedToken(options.token);
 
     // 自带方法：足够让客户端判断"能不能开始用"、"活着"、"是不是我这个版本"、"能不能让我关掉"
     this.handlers.set("hello", (): HelloResult => this.identity());
@@ -222,12 +276,24 @@ export class Daemon {
     return this.connections.size;
   }
 
-  /** 启动：监听 → 写发现文件 → 挂空闲计时器 */
+  /** 启动：拿凭证 → 监听 → 写发现文件 → 挂空闲计时器 */
   async start(): Promise<ServerDescriptor> {
+    // 凭证：注入的优先（构造函数里已经生效，这里再写一遍是为了让两处口径写在一起），
+    // 否则读或生成那个 0600 文件 —— 文件读写是异步的，只可能在这里做。`start()` 失败
+    // （比如下面那条 loopback 断言）时留下的文件无害：下次启动直接复用它。
+    // 归一也走构造时那个函数：注入空串 / 全空白等价于「没注入」，于是回落到「读或生成文件」
+    // —— 既不退化成「没有凭证谁都进不来」，也不变成「空凭证人人可进」。
+    this.token =
+      normalizeInjectedToken(this.options.token) ?? (await ensureToken(this.options.aiZenDir));
+
+    // 只绑 loopback。**不是因为没鉴权**（现在有了），而是这条边界横在「同一台机器」上：
+    // 远程访问走隧道 / 反向代理（nginx 在同机反代到 `127.0.0.1`，正好落进这条断言）；服务端
+    // 永不实现 TLS、永不绑非 loopback —— `wss://` 是客户端的一个能力，不是服务端的一个模式。
     if (!isLoopbackHost(this.host)) {
       throw new Error(
-        `refusing to listen on ${this.host}: this build has no authentication yet, ` +
-          `so it is restricted to loopback (${LOOPBACK_HOSTS_NOTE})`,
+        `refusing to listen on ${this.host}: this server only listens on loopback ` +
+          `(${LOOPBACK_HOSTS_NOTE}) — remote access goes through a tunnel or a reverse proxy ` +
+          `in front of 127.0.0.1`,
       );
     }
 
@@ -241,6 +307,27 @@ export class Daemon {
     // `maxPayload` 是**单条消息**的上限（64 MiB）：超了由 ws 直接断连（见文件头「六条断连」）。
     const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD_BYTES });
     server.on("upgrade", (request, socket, head) => {
+      // 来源校验（纵深防御，判据见 `isOriginAllowed`）。拒绝必须发生在**升级之前**：
+      // 此刻连 `101` 都还没发出去，对端收到的是一个 HTTP 响应而不是一条 WS 连接 ——
+      // 所以这里回 WS close 码是错误的（没有连接可关）。
+      const origin = request.headers.origin;
+      if (!isOriginAllowed(origin, this.options.allowedOrigins ?? [])) {
+        this.log("warn", `refused upgrade from origin ${String(origin)}`);
+        const body = "origin not allowed\n";
+        // 一个**完整的** HTTP 响应（状态行 + 头 + 空行 + body）：对端此刻读的是 HTTP，
+        // 不是 WS 帧。`end` 的 callback 在数据都交出去之后才调 —— 紧接着就 destroy 的话，
+        // 缓冲里那几行可能一个字节都到不了对端。
+        socket.end(
+          "HTTP/1.1 403 Forbidden\r\n" +
+            "Connection: close\r\n" +
+            "Content-Type: text/plain; charset=utf-8\r\n" +
+            `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+            "\r\n" +
+            body,
+          () => socket.destroy(),
+        );
+        return;
+      }
       wss.handleUpgrade(request, socket, head, (ws) => this.handleConnection(webSocketWire(ws)));
     });
     this.server = server;
@@ -490,6 +577,25 @@ export class Daemon {
           );
           return;
         }
+        // 凭证。**先形状后值**（与上面 `protocol` 同一把尺子，见 `protocol/errors.ts`）：
+        //   · `token` 不是字符串 / 缺失 → `bad-params` —— 要改的是请求体；
+        //   · 是字符串但不等 → `unauthorized` —— 要改的是凭证。
+        // 两者都**不断连**（用 `replyError`，不是 `failAndClose`）：客户端换一条 `hello` 就能
+        // 继续说；而挂断反而让扫描方知道"这个端口上确实有服务在听"。日志里只有错误码，
+        // **token 本身一个字都不许进日志**。
+        const token = (helloParams as Partial<HelloParams>).token;
+        if (typeof token !== "string") {
+          replyError(
+            request.id,
+            "bad-params",
+            `hello expects a string "token", got ${token === undefined ? "nothing" : typeof token}`,
+          );
+          return;
+        }
+        if (!this.tokenMatches(token)) {
+          replyError(request.id, "unauthorized", "token does not match this server");
+          return;
+        }
         // 握手成功。置位在派发之前：`hello` 的 handler 只是返回身份，没有失败路径
         handshaken = true;
       }
@@ -602,6 +708,26 @@ export class Daemon {
   // 内部
   // ==================================================================
 
+  /**
+   * 这条 `hello` 带来的 token 是不是本进程那把钥匙。
+   *
+   * 用 `crypto.timingSafeEqual` 而不是 `===`：它保证「比到第几个字符才发现不同」不反映在
+   * 耗时上。但它的入参必须是**长度相等**的两串（不等长会直接抛错），所以先比长度 ——
+   * 长度不等就是不等，没有必要进那个常数时间的比较。
+   */
+  private tokenMatches(candidate: string): boolean {
+    const expected = this.token;
+    // 没有凭证 = 没有任何东西能对上：fail-closed。这里的 `null` 不只是「`start()` 没跑过」——
+    // 注入的值是空串 / 全空白时，赋值处（构造函数与 `start()`）已经把它归一成 `null`，所以
+    // 那条路也走这里。空串若被当成一把（长度为 0 的）钥匙，就是「人人可进」：客户端没有凭证
+    // 时发的恰恰是 `token: ""`（`wire/call-once.ts`）。见 `normalizeInjectedToken`。
+    if (expected === null) return false;
+    const given = Buffer.from(candidate, "utf8");
+    const wanted = Buffer.from(expected, "utf8");
+    if (given.length !== wanted.length) return false;
+    return timingSafeEqual(given, wanted);
+  }
+
   /** 握手的回执：这个进程是谁、说的是哪个版本 */
   private identity(): HelloResult {
     return {
@@ -658,6 +784,43 @@ function writeIfOpen(wire: Wire, frame: ResultFrame | ErrorFrame | EventNotifica
 }
 
 /**
+ * 这条升级请求的 `Origin` 能不能进（纵深防御；真正挡住「任意网页连裸端口」的是 token）。
+ *
+ * 三条放行，一条拒绝：
+ *
+ *   · **没有 `Origin`** —— 终端 / 桌面端 / 脚本都不发这个头（浏览器的 WS 握手才强制带它），
+ *     它们由 token 兜；
+ *   · `Origin` 的 **hostname 是 loopback** —— 本机的 webui / 调试页面在哪个端口上都算自己人
+ *     （**与端口无关**，所以端口漂移不会把自己拒掉）；
+ *   · 在 `allowedOrigins` 里 —— nginx + 域名部署时那个 `https://your.domain`；
+ *   · 其余一律拒绝。
+ *
+ * 解析失败的（`Origin: null`、畸形串）按「不在名单里」处理：解不出 hostname 的东西没有
+ * 资格被当成自己人。名单条目比较前两边都过一道 `new URL(...).origin`：多写一个结尾斜杠
+ * 是迟早的事，而它不该表现为「自己配的域名被自己拒掉」。
+ */
+function isOriginAllowed(origin: string | undefined, allowed: readonly string[]): boolean {
+  if (origin === undefined) return true;
+  const parsed = parseOrigin(origin);
+  if (parsed === null) return false;
+  for (const entry of allowed) {
+    if (entry === origin) return true;
+    if (parseOrigin(entry)?.origin === parsed.origin) return true;
+  }
+  return isLoopbackHost(parsed.hostname);
+}
+
+/** `Origin` 字符串 → 规格化后的 origin 与 hostname；解析失败返回 null */
+function parseOrigin(value: string): { origin: string; hostname: string } | null {
+  try {
+    const url = new URL(value);
+    return { origin: url.origin, hostname: url.hostname };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 这一条是不是一条 **JSON-RPC 通知**（有 `method`、没有 `id`）。
  *
  * 判据只取这两个键：方法名是不是认识的不重要 —— 通知本来就没有回执，也就不存在
@@ -687,4 +850,28 @@ function messageOfThrown(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   const message = (error as { message?: unknown } | null | undefined)?.message;
   return typeof message === "string" && message.length > 0 ? message : String(error);
+}
+
+/**
+ * 注入的凭证 → 本进程手上那把钥匙（`null` = 没有注入）。
+ *
+ * **空串与纯空白都归一成 `null`**，不能当成一串「长度为 0 的凭证」：
+ *
+ *   · 它不可能是「用户挑了这串」的结果 —— 说得出的那串凭证是 `randomBytes(32)` 的 base64url
+ *     （43 字符，见 `wire/token.ts`），空 / 空白只可能来自「宿主读到了一个空值」：密钥存储里
+ *     那一项是空的、配置项写成 `AI_ZEN_TOKEN=`、编排清单里的变量没填上；
+ *   · 而客户端**没有凭证时发的恰恰是 `token: ""`**（`wire/call-once.ts` 里的
+ *     `token: options?.token ?? ""`）。若把空串当成一把有效的钥匙，`tokenMatches()` 会比两个
+ *     长度 0 的 `Buffer` 并返回 `true` —— 空凭证就成了「人人可进」，与 fail-closed 正好相反。
+ *
+ * 归一放在**赋值处**（构造函数与 `start()` 两处，同一个函数），而不是在 `tokenMatches()` 里
+ * 打补丁：两处口径一致，将来多一个赋值点也不会漏。归一之后 `start()` 自然回落到
+ * `ensureToken()`（注入空串 = 没注入 = 从文件读 / 生成）。
+ *
+ * 判空白用 `trim()`，但**值本身不改**：凭证是逐字节比较的东西，悄悄改写它会让「注入什么才
+ * 对得上」变得不可推理。
+ */
+function normalizeInjectedToken(value: string | undefined): string | null {
+  if (value === undefined) return null;
+  return value.trim().length > 0 ? value : null;
 }

@@ -47,6 +47,8 @@ function definitionOf(id: string, extra: Partial<AgentDefinition> = {}): AgentDe
 // ==================================================================
 
 const clientInfo: ClientInfo = { name: "@ai-zen/agents-client", version: "0.0.0-test" };
+/** 本文件那台真 Daemon 的凭证（`hello` 的 `params.token` 必须与它相等） */
+const TOKEN = "config-port-token-7d1b0e46f2c34a85b90e3c27a6d5148f";
 
 let dir: string;
 let daemon: Daemon | null = null;
@@ -145,6 +147,7 @@ async function start(): Promise<void> {
     aiZenDir: dir,
     port: 0,
     version: "0.0.0-test",
+    token: TOKEN,
     handlers: {
       ...createSessionHandlers({
         manager: manager!,
@@ -160,6 +163,7 @@ async function start(): Promise<void> {
   connection = await SocketServerClient.connect({
     address: { host: "127.0.0.1", port: daemon.port },
     client: clientInfo,
+    token: TOKEN,
   });
 }
 

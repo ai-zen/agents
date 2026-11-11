@@ -44,7 +44,7 @@ import type { AnyMethod, MethodApi } from "./api.js";
 import type { ServerEvent } from "./sessions.js";
 
 /** 协议版本：任何不兼容的字段变化都要 +1 */
-export type ProtocolVersion = 2;
+export type ProtocolVersion = 3;
 
 /**
  * `hello` 的参数 —— 建连后客户端发的**第一条请求**的参数。
@@ -55,7 +55,21 @@ export type ProtocolVersion = 2;
 export interface HelloParams {
   /** 客户端支持的协议版本（与服务端的 `ProtocolVersion` 必须相等，否则不连） */
   protocol: number;
-  /** 客户端标识（只用于日志与本机调试，不参与鉴权） */
+  /**
+   * 访问凭证（**必填**，服务端配的那串不透明随机 token）。
+   *
+   * 为什么走消息体、而不是 `Authorization` 头或 query string：
+   *
+   *   · `Authorization` 头 —— 浏览器 `new WebSocket()` **不允许**设自定义头（WebSocket
+   *     规范里握手头由浏览器独占），webui 一步都走不了；
+   *   · query string —— 会进服务端日志、浏览器历史、以及跨站请求的 `Referer`；
+   *   · `Sec-WebSocket-Protocol` —— 拿协商字段当信道是 hack（它本来的语义是子协议名）。
+   *
+   * 于是凭证与其它握手参数一样，落在第一条普通请求的 `params` 里：所有客户端（TUI /
+   * 桌面端 / 浏览器）用同一条路，服务端也只有一处校验。
+   */
+  token: string;
+  /** 客户端标识（只用于日志与本机调试 —— **不参与鉴权**，鉴权只看上面的 `token`） */
   client: {
     name: string;
     version: string;

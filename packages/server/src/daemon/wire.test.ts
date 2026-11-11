@@ -35,6 +35,13 @@ import { WsTestClient } from "./WsTestClientTestSupport.js";
 let dir: string;
 let daemon: Daemon | null = null;
 
+/**
+ * 本文件用的凭证：注入给 `Daemon`，并写进两边客户端的 `hello`。
+ *
+ * 与 `Daemon.test.ts` 同一个道理 —— 不读文件，也不靠「刚好生成了什么」。
+ */
+const TOKEN = "wire-test-token-0f3b7d21c9a84e56b0d2f7a1c3e58b94";
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "aiz-server-wire-"));
 });
@@ -54,7 +61,7 @@ afterEach(async () => {
  * `start()` 就跟 `http.Server` 扯上了关系，证明力就没了。
  */
 function makeDaemon(options: Partial<DaemonOptions> = {}): Daemon {
-  const instance = new Daemon({ aiZenDir: dir, version: "0.1.0-test", ...options });
+  const instance = new Daemon({ aiZenDir: dir, version: "0.1.0-test", token: TOKEN, ...options });
   daemon = instance;
   return instance;
 }
@@ -163,6 +170,7 @@ class Peer {
   async handshake(): Promise<any> {
     return await this.request("hello", {
       protocol: PROTOCOL_VERSION,
+      token: TOKEN,
       client: { name: "wire-test", version: "0" },
     });
   }
@@ -397,6 +405,25 @@ describe("假 Wire（内存双工）驱动 Daemon", () => {
     });
     expect(seen[0]).toEqual(bytes);
   });
+
+  it("注入的凭证是空串 → 构造时就等于「没有凭证」：发一条空串 hello 也是 unauthorized", async () => {
+    // 为什么这条住在这里：本文件是**唯一**不 `start()` 就驱动 daemon 的地方，而这正好把
+    // 「注入的凭证从构造时就生效」那句话逼到墙角 —— 空串不是一个「长度为 0 的凭证」，它是
+    // 「宿主读到了一个空值」。若它被当成一把有效的钥匙，客户端没凭证时发的 `token: ""`
+    // （见 `wire/call-once.ts`）就能直接握手成功，也就是「空凭证 = 人人可进」。
+    const instance = makeDaemon({ token: "" });
+    const wire = new FakeWire();
+    instance.handleConnection(wire);
+
+    const refused = await wire.peer.request("hello", {
+      protocol: PROTOCOL_VERSION,
+      token: "",
+      client: { name: "wire-test", version: "0" },
+    });
+    expect(refused).toMatchObject({ error: { code: -32000, data: { code: "unauthorized" } } });
+    // `unauthorized` 是请求级失败：连接照旧（客户端换一条 hello 就能重试）
+    expect(wire.destroyed).toBe(false);
+  });
 });
 
 // ==================================================================
@@ -414,7 +441,7 @@ describe("真 WebSocket（webSocketWire 适配器）", () => {
     await new Promise<void>((resolve) => wss.once("listening", () => resolve()));
     const port = (wss.address() as { port: number }).port;
 
-    const client = await WsTestClient.connect(port);
+    const client = await WsTestClient.connect(port, TOKEN);
     try {
       expect((await client.handshake()).result).toMatchObject({ protocol: PROTOCOL_VERSION });
       expect(await client.call("ping")).toEqual({ pong: true });
