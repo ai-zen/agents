@@ -54,6 +54,10 @@ export * from "./mcp.js";
 // 翻成对症那句话的 `explainUnauthorized` —— 三个前端要说同一句话，就必须共用同一份措辞
 export * from "./resolve-target.js";
 
+// 「上次连的是哪台」的唯一实现：读写（`0600` + 原子写）、校验、以及界面上那一行字。
+// CLI 与桌面端各存各的文件（`<aiZenDir>/cli|desktop/connection.json`），但规则只有这一份
+export * from "./connection-settings.js";
+
 // 传输层：一个进程一条连接。会话层不自己建连接，只借它说话
 // —— 「断了就重建 + 重新 events.watch」只在这一处发生
 export * from "./transport/connection.js";
