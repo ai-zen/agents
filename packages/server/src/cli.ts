@@ -126,7 +126,7 @@ async function openLog(aiZenDir: string): Promise<(level: string, message: strin
  *
  * 手搓 socket + 手搓解码这一段曾经在这里有 55 行：建连、发 `hello`、等回执、发请求、
  * 认 `id`、超时、销毁。它与客户端 `status.ts`、`ensure-server.ts` 里的探活是**同一件事的
- * 第三份实现** —— 现在它只有协议包里的一份（`callOnce`），三处都调它。
+ * 第三份实现** —— 现在它只有 `wire/call-once.ts` 的一份（`callOnce`），三处都调它。
  *
  * 身份仍然署名本进程：`client` 是排查时最有用的一条事实（服务端日志里写着谁连的）。
  */

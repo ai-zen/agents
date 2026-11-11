@@ -22,8 +22,8 @@
  *   · 别的都不行：`node:fs` / `node:net` 是 I/O，`@ai-zen/agents-server`（包根）是 daemon 与存档，
  *     `agents-sdk` 会去读配置、建模型客户端。
  *
- * 判据是**运行期图**，不是包名：契约能进，是因为它的产物 import 图闭合在自身与 `node:*`
- * （`packages/protocol/README.md` 里有可跑的判据）；反过来说，哪天有人往 `src/` 里 import 了
+ * 判据是**运行期图**，不是包名：契约能进，是因为它**一个运行期导出都没有**，编译后只剩 `.d.ts`
+ * （`packages/server/README.md` 里有可跑的判据）；反过来说，哪天有人往 `src/` 里 import 了
  * 会碰 I/O 的东西，白名单这一条拦得住（specifier 变了），但拦不住同一个包内的行为变化 ——
  * 那种得看产物判据。
  *

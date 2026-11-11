@@ -113,7 +113,7 @@ import type {
 } from "../../protocol/index.js";
 import { DEFAULT_MIGRATION_STRATEGY } from "../../wire/sessions.js";
 // 值导入（不是 `import type`）：`codedError` 与错误码表是**运行期**的东西，
-// 它们的唯一定义在协议包里。
+// 它们的唯一定义在 `wire/errors.ts`。
 
 import { codedError } from "../../wire/errors.js";
 

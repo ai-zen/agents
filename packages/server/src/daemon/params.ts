@@ -31,8 +31,8 @@ export function field(params: unknown, name: string): unknown {
 /**
  * 参数不合法（`bad-params` 是客户端唯一需要区分的那一类：它得改请求，不是重试）。
  *
- * `codedError` 只有**协议包的一份**（`src/protocol/` 的 `errors.ts`）：错误码是
- * 线上事实，多一份拷贝就是多一处可能写错码的地方。
+ * `codedError` 只有一份（`src/wire/errors.ts`；错误码本身是 `src/protocol/errors.ts` 的
+ * 那个联合）：错误码是线上事实，多一份拷贝就是多一处可能写错码的地方。
  */
 export function badParams(message: string): CodedError {
   return codedError("bad-params", message);

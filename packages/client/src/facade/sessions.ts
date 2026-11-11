@@ -8,7 +8,7 @@
  * 协议一改名就得改两处、还只改一处也能编译通过。所以门面的方法集合必须**等于**方法表
  * 的 key 集合 —— 少一条编译不过，多一条也编译不过（用例见 `facade/coverage.test-d.ts`）。
  *
- * ## 为什么是 27 条（`SESSION_METHODS` 21 + `WORKSPACE_METHODS` 6）
+ * ## 为什么是 27 条（`SessionMethod` 21 + `WorkspaceMethod` 6）
  *
  * 会话是工作区的下级对象，客户端做事时两者总是成对出现（列清单要工作区 id、开会话要
  * 工作区路径、改名要指明是哪个工作区的存档）。分成两个对象的话，每次调用点都要同时持有
@@ -279,7 +279,7 @@ export class RemoteSessions {
    *
    * 它与 `agent.model.set`（{@link RemoteConfig.agentSetModel}）的形状刻意一样、作用域刻意
    * 不同：那个改的是**全局的** Agent 定义（影响所有用它的会话），这个只改这一段 ——
-   * 它们本来就属于两个门面，因为「作用对象是不是某一段会话」正是这两张表的分界。
+   * 它们本来就属于两个门面，因为「作用对象是不是某一段会话」正是这两个联合的分界。
    */
   async modelSet(sessionId: string, modelId: string): Promise<SessionModelSetResult> {
     return await this.client.call<SessionModelSetResult>("session.model.set", {

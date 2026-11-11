@@ -1,7 +1,7 @@
 /**
  * 生成阶段的线上形状 —— 一轮对话里「模型现在到底在干什么」。
  *
- * ## 为什么它在协议包里，而不是服务端的状态机旁边
+ * ## 为什么它在契约里，而不是服务端的状态机旁边
  *
  * 这三个类型是**线上载荷的形状**：`SessionListEntry.phase`、`SessionSnapshotResult.phase`、
  * `SessionPhaseEvent.phase` 都在传它，客户端拿它渲染状态栏。契约的形状不该由

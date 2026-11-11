@@ -1,12 +1,12 @@
 ---
 title: 架构
-description: 五个包与两个应用的分层与单向依赖、每层管什么不管什么、协议面 44 个方法 / 15 个事件、协议为什么独立成包、client 的传输/门面/会话三层、server 的目录、会话寿命的唯一规则、SessionManager 的四件、<aiZenDir> 落盘布局与构建测试顺序。
+description: 五个包与两个应用的分层与单向依赖、每层管什么不管什么、协议面 44 个方法 / 15 个事件、契约为什么是服务端的类型文件、client 的传输/门面/会话三层、server 的目录、会话寿命的唯一规则、SessionManager 的四件、<aiZenDir> 落盘布局与构建测试顺序。
 outline: deep
 ---
 
 # 架构
 
-AI-Zen Agents 是一个 **pnpm monorepo**（工作区根 `@ai-zen/agents-workspace`，私有，`2.0.0`）。`packages/` 下与本文件相关的是六个包：
+AI-Zen Agents 是一个 **pnpm monorepo**（工作区根 `@ai-zen/agents-workspace`，私有，`2.0.0`）。`packages/` 下与本文件相关的是五个包：
 
 | 包 | 版本 | 定位 |
 |----|------|------|
@@ -24,65 +24,80 @@ AI-Zen Agents 是一个 **pnpm monorepo**（工作区根 `@ai-zen/agents-workspa
 
 ```
 @ai-zen/agents-core ←──────────── @ai-zen/agents-sdk ←──────── @ai-zen/agents-server ←── bin: agents-server
-      ↑ (仅类型)                                                   ↑
+      ↑ (运行期)                                                   ↑
 @ai-zen/agents-client ───────────────────────→（只 import type）─┘
       ↑
 @ai-zen/agents-client ←── bin: ai (cli) / desktop main
 ```
 
-读法：`A ← B` 是「B 依赖 A」。五条边都是 `package.json` 里的事实 ——
+读法：`A ← B` 是「B 依赖 A」。每一条都是 `package.json` 里的事实 ——
 
 | 从 | 到 | 形态 |
 |----|----|------|
 | `sdk` | `core` | 运行期依赖 |
-| `server` | `sdk` + `protocol` | 运行期依赖，`dependencies` 两项 |
-| `client` | `protocol` | 运行期依赖，`dependencies` **只有这一项** |
+| `server` | `core` + `sdk` | 运行期依赖，`dependencies` 两项 |
+| `client` | `core` | 运行期依赖，`dependencies` **只有这一项** |
+| `client` | `server` | **只有类型**：`peerDependencies`（宿主必须提供）+ `devDependencies`（本仓用例要起真 Daemon）；运行期一行都不引用 |
 | `cli` / `desktop main` | `client`（CLI 另加 `sdk` / `core`） | 应用侧依赖。两仓的 `dependencies` 里也都有 `server` —— 它们经 `ensureServer` 拉起服务端，得能定位它的 bin；方向上它们只是 `client` 的使用者 |
 
 ### 三条硬性质
 
 每一条都能用命令证伪，而不是靠「记得别那么写」。
 
-**① `client` 与 `server` 之间没有边。** 两侧都依赖 `protocol`，谁也不依赖对方（`client` 另外运行期依赖 `core`，理由见下方「三条硬约束」第 1 条 —— 那是**向下**的一条边，不是「拖进服务端实现」）。
+**① `client` 与 `server` 之间没有运行期边。** 客户端对服务端只做 `import type`（形状与名字），
+运行期那几件（帧编解码、错误码判据、回环判据、发现文件读写、`callOnce`）在
+`packages/client/src/wire/` 是它自己的一份实现 —— 协议只共享**类型**，不共享代码。所以
+`dependencies` 里只有一个 `core`；`@ai-zen/agents-server` 是它的 **peerDependency**（宿主必须
+提供：类型面来自它，`ensure-server` 还要 `require.resolve` 它的 bin）+ devDependency（本仓用例
+要起真 Daemon）。
 
 ```bash
 # 依赖表：不许出现 agents-server / agents-sdk / agents-testing
 node -e 'const d=require("./packages/client/package.json").dependencies; const bad=Object.keys(d).filter((k)=>/agents-(server|sdk|testing)$/.test(k)); if(bad.length) throw new Error(bad.join())'
 
-# 源码：除注释与那一个例外文件外，不该出现 agents-server
-grep -rn 'agents-server' packages/client/src --include=*.ts | grep -v '\.test\.' | grep -v 'ensure-server\.ts' | grep -v '^\S*:[0-9]*: *\*'
+# 产物侧才是真正的裁决：运行期只有 core
+(cd packages/client && npm run build && grep -hoE '^import .* from "[^"]+";' dist/*.js | sed 's/.*from "//;s/";//' | sort -u)
+# 期望只有 @ai-zen/agents-core、./xxx.js 与 node:*
+```
+
+`ensure-server.ts` 是包里唯一 `require.resolve("@ai-zen/agents-server/package.json")` 的地方：
+它要 spawn 一个 `agents-server serve`，就得知道那个 bin 在哪（那个包不在就抛错）。这是
+**部署策略，不是分层**，所以它不进 `dependencies`；不想走这条路的应用可以注入自己的
+`startServerProcess`，那样连那个 `resolve` 都不会跑。
+
+**② 契约是纯类型，零运行期导出。** `packages/server/src/protocol/` 里只有 `type` / `interface`：
+线上形状、方法名与事件名的联合、错误码联合、数据模型的类型转出。带运行期的那些（帧编解码、
+错误码判据、回环判据、版本号、发现文件读写、`callOnce`）在 `packages/server/src/wire/`。
+
+```bash
+grep -rn '^export \(const\|function\|class\|async function\)' packages/server/src/protocol/*.ts | grep -v '\.test\.'
 # 必须为空
 ```
 
-唯一例外是 `ensure-server.ts`：它要 spawn 一个 `agents-server serve`，就得知道那个 bin 在哪，只能 `require.resolve("@ai-zen/agents-server/package.json")`（那个包不在就抛错）。这是**部署策略，不是分层**：所以它不在 `dependencies` 里 —— 宿主应用（CLI / 桌面端）本来就装着服务端包；不想走这条路的应用可以注入自己的 `startServerProcess`，那样连那个 `resolve` 都不会跑。消费点只有那一个文件。
-
-**② `protocol` 运行期零第三方依赖。** 类型上依赖 `core`，但那是 `import type`，产物里擦除。
-
-```bash
-# 源码：滤掉测试、node:* 与类型转出之后，只剩本包的相对路径
-grep -rn '^import\|^\} from' packages/protocol/src | grep -v '\.test\.' | grep -v 'node:' | grep -v 'agents-core'
-
-# 产物侧才是真正的裁决
-(cd packages/protocol && npm run build && grep -hoE '^import .* from "[^"]+";' dist/*.js | sed 's/.*from "//;s/";//' | sort -u)
-# 期望只有 ./xxx.js 与 node:*
-```
-
-**③ 数据模型只有一份，协议只做类型转出。** `Message` / `Usage` / `ToolCall` / `ModelParams` 由 `core` 声明，协议 `model.ts` 只把它们**类型级**转出；`PhaseInfo` 这类线上载荷的形状由协议自己拥有。折 chunk（`applyChunk`）与用量求和（`sumUsage`）客户端直接引 `core` —— 引它，而不是抄一份。
+**③ 数据模型只有一份，契约只做类型转出。** `Message` / `Usage` / `ToolCall` / `ModelParams` 由
+`core` 声明，契约的 `model.ts` 只把它们**类型级**转出；`PhaseInfo` 这类线上载荷的形状由契约
+自己拥有。折 chunk（`applyChunk`）与用量求和（`sumUsage`）客户端直接引 `core` —— 引它，而不是
+抄一份。
 
 ```bash
-# 协议对 core 的引用只能出现在类型位置
-grep -rn '@ai-zen/agents-core' packages/protocol/src | grep -v '^\S*:[0-9]*: *\*'
+# 契约对 core 的引用只能出现在类型位置
+grep -rn '@ai-zen/agents-core' packages/server/src/protocol | grep -v '^\S*:[0-9]*: *\*'
 # 期望只有 model.ts 的那一条 `import type`
+
+# 除相对路径与那一条 core 之外，契约不引任何东西
+grep -rn 'from "' packages/server/src/protocol/*.ts | grep -v '\.test\.' | grep -v 'from "\./' | grep -v '@ai-zen/agents-core'
+# 必须为空
 ```
 
-为什么这值得一条硬性质：`Message` 的形状既是落盘格式（存档 JSON）也是线上形状。给它再造一份「线上镜像」就是第二份定义 —— 而这个项目最忌讳的正是第二份定义。所以它只在一个地方（协议）声明。
+为什么这值得一条硬性质：`Message` 的形状既是落盘格式（存档 JSON）也是线上形状。给它再造一份
+「线上镜像」就是第二份定义 —— 而这个项目最忌讳的正是第二份定义。所以它只在一个地方声明。
 
 ### 反向没有边
 
 - `packages/sdk/src` 与 `packages/core/src` 里搜不到 `agents-server`；
 - `packages/server/src` 里没有对 `agents-client` 的 import；
-- `packages/client/src` 的生产代码里没有对 `@ai-zen/agents-server` 的 import（除上面那一个例外）；
-- `packages/protocol/src` 里搜不到 `domain/` / `daemon/` / `lib/`（协议不认识任何一方的实现）。
+- `packages/client/src` 的生产代码对 `@ai-zen/agents-server` 只有 `import type`，运行期件在自己的 `src/wire/`；唯一 `require.resolve` 它的是 `ensure-server.ts`；
+- `packages/server/src/protocol` 里搜不到 `domain/` / `daemon/` / `lib/`（协议不认识任何一方的实现）。
 
 ## 每层管什么、不管什么
 
@@ -90,8 +105,7 @@ grep -rn '@ai-zen/agents-core' packages/protocol/src | grep -v '^\S*:[0-9]*: *\*
 |---|---|---|
 | `core` | 对话运行时：`Agent` / `Message` / `Tool` / `ToolCallContext`、插件与事件系统 | 权限、文件系统、配置、持久化 —— `src/` 里没有任何 `node:*` 内置模块的导入。依赖只有 `openai` 与 `@ai-zen/event-bus` |
 | `sdk` | 业务能力：能力管线（发现 → 过滤 → 实例化）、权限模型、MCP 生命周期、任务交接与迁移、内置工具、`ConfigManager` | 进程与连接、会话存档、工作区、任何「客户端长什么样」的事。依赖 `core`、`@modelcontextprotocol/sdk`、`dayjs`、`openai` |
-| `protocol` | 线上契约：怎么找到对方（发现文件的形状与原子读写）、怎么说话（帧编解码、`hello` 握手、`callOnce`）、说什么形状（方法名表、事件名表、载荷类型、错误码表、阶段形状、数据模型的类型出口） | 任何业务判断、任何状态机、任何 UI 概念 —— 这里没有一行代码知道「会话该怎么存活」，只有它**在线上的样子** |
-| `server` | 会话编排、存档、工作区、配置与 Agent 定义的服务端读写、资产清单、事件出口，以及把这一切接到一条 TCP 连接上的 `Daemon` | UI 栈（不依赖 ink / react / 终端库 —— 包边界就是进程边界）、进程级全局（cwd / 全局配置路径 / 全局 locale）。两条硬约束写在 `packages/server/src/index.ts` 的文件头，唯一例外是组装根 `src/cli.ts` |
+| `server` | 线上**契约**（`src/protocol/`：方法名与事件名的联合、载荷类型、错误码、阶段形状、数据模型的类型出口 —— 纯类型、零运行期导出）与其**运行期件**（`src/wire/`：帧编解码、`hello` 握手、错误码判据、回环判据、版本号、发现文件读写、`callOnce`），加会话编排、存档、工作区、配置与 Agent 定义的服务端读写、资产清单、事件出口，以及把这一切接到一条 TCP 连接上的 `Daemon` | UI 栈（不依赖 ink / react / 终端库 —— 包边界就是进程边界）、进程级全局（cwd / 全局配置路径 / 全局 locale）。两条硬约束写在 `packages/server/src/index.ts` 的文件头，唯一例外是组装根 `src/cli.ts` |
 | `client` | 一个前端到服务端之间**全部**需要在客户端发生的事：服务发现与拉起、一条 TCP 连接、会话与配置两张门面、**会话流状态机**（三个前端必须一致的那部分「想」）、两个判据（要不要把 cwd 递上去、服务端现在什么状态） | 渲染、本地化、进程级全局、任何服务端数据的本地读写 |
 | `cli`（独立仓） | 渲染与输入（ink）、斜杠命令与会话层、把 `SessionStream` 的状态画出来 | 会话编排、存档、工作区、配置写入 —— 那些都在服务端。它依赖 `client`，另加 `sdk` / `core`（应用要用 `AgentDefinition` 这类业务类型与 `Role` / `MessageStatus` 这类**运行期 enum**） |
 | `desktop main`（独立仓） | 应用级事实（`app.getVersion()` 当 `clientInfo`）、拉起服务端、订阅事件并把状态转给 renderer | 服务端实现本身。它今天还持有一份**自己的**会话状态机（见「已知缺口 / 未完成」） |
@@ -171,7 +185,7 @@ grep -rn '@ai-zen/agents-core' packages/protocol/src | grep -v '^\S*:[0-9]*: *\*
 
 ### 三条硬约束（都能用命令检验）
 
-1. **运行期为 `protocol` + `core` 两条边** —— `protocol` 是与服务端之间的契约（硬性质①）；`core` 是折 chunk（`applyChunk`）、用量求和（`sumUsage`）、角色枚举（`AgentNS.Role`）的**唯一实现**，客户端引它而不是抄一份镜像。core 的产物运行期只加载 `@ai-zen/event-bus`，`openai` 在 core 里只占类型位置。`devDependencies` 里另有三个 workspace 包，只为类型与用例，不进产物。
+1. **运行期只有 `core` 一条依赖边** —— `core` 是折 chunk（`applyChunk`）、用量求和（`sumUsage`）、角色枚举（`AgentNS.Role`）的**唯一实现**，客户端引它而不是抄一份镜像；与服务端之间的契约**只是类型**（`import type`，见硬性质①），不是依赖。core 的产物运行期只加载 `@ai-zen/event-bus`，`openai` 在 core 里只占类型位置。`devDependencies` 里另有三个 workspace 包，只为类型与用例，不进产物。
 2. **产物的运行期依赖图必须闭合**：`npm run build` 之后 `dist/*.js` 的外部 import 只允许 `@ai-zen/agents-core`，其余是同级相对路径与 `node:*` —— **没有 `@ai-zen/agents-server`**。
 
    ```bash
@@ -192,7 +206,9 @@ packages/server/src/
                   （+ LiveSession 形状、AutoTitle、store/ 存档端口与实现）
     workspace/  agent/  config/  asset/  handoff/
   lib/          无业务语义的通用零件：phase.ts（PhaseTracker）、events.ts（EventHub）
-  daemon/       传输与接线：Daemon / wire / params / *Handlers
+  protocol/     线上契约（纯类型）：方法名 / 事件名的联合、载荷、错误码、阶段形状、数据模型出口
+  wire/         契约的运行期件：帧编解码、错误码判据、回环判据、版本号、发现文件 I/O、callOnce
+  daemon/       传输与接线：Daemon / wire（传输抽象）/ params / *Handlers
   cli.ts        组装根（唯一读 env / argv 的地方）
   index.ts      包对外桶（`export *`，撞名会编译失败——那正是提醒）
 ```
@@ -220,7 +236,7 @@ packages/server/src/
 
 ### 发现文件
 
-位置 `<aiZenDir>/run/server.json`，形状由 `packages/protocol/src/discovery.ts` 的 `ServerDescriptor` 定义：
+位置 `<aiZenDir>/run/server.json`，形状由 `packages/server/src/wire/discovery.ts` 的 `ServerDescriptor` 定义：
 
 | 字段 | 含义 |
 |------|------|
@@ -235,14 +251,14 @@ packages/server/src/
 
 ### 传输与握手
 
-- **TCP + JSON-lines**：一行一个 JSON，`\n` 结尾；单帧上限 8 MiB，超了判协议错误并断开连接（`packages/protocol/src/frames.ts`）。选 JSON-lines 是为了能用手搓工具调试，并能原样塞进 WebSocket 文本帧与 stdio。
-- **首帧必须 `hello`**：客户端先发 `{ kind: "hello", protocol, client: { name, version } }`，服务端回同形状回执，带 `ok` 与 `server: { name, version, protocol, pid, startedAt }`。**没有例外**——即使当前还没有鉴权，也必须先握手，否则「将来加鉴权」就得改所有客户端的建连逻辑（`packages/protocol/src/messages.ts` 文件头）。
+- **TCP + JSON-lines**：一行一个 JSON，`\n` 结尾；单帧上限 8 MiB，超了判协议错误并断开连接（`packages/server/src/wire/frames.ts`）。选 JSON-lines 是为了能用手搓工具调试，并能原样塞进 WebSocket 文本帧与 stdio。
+- **首帧必须 `hello`**：客户端先发 `{ kind: "hello", protocol, client: { name, version } }`，服务端回同形状回执，带 `ok` 与 `server: { name, version, protocol, pid, startedAt }`。**没有例外**——即使当前还没有鉴权，也必须先握手，否则「将来加鉴权」就得改所有客户端的建连逻辑（`packages/server/src/protocol/messages.ts` 文件头）。
 - 之后两个方向的消息各两类：请求/响应 `{ id, method, params }` → `{ id, ok, result | error }`；事件 `{ event, ... }` 由服务端主动推、无 `id`、不等回执。
 - 协议版本 `PROTOCOL_VERSION = 1`；任何不兼容的字段变化都要 +1，不做「尽力兼容」。
 
 ### 只绑回环
 
-`Daemon.start()` 对 host 做断言：不是回环地址就抛错拒绝启动（`packages/server/src/daemon/Daemon.ts`）。判据 `isLoopbackHost()` 在 `packages/protocol/src/host.ts`，认 `localhost`、`::1`、以及 `127.0.0.0/8` 整段（按 RFC 1122，不是只有 `127.0.0.1`）。
+`Daemon.start()` 对 host 做断言：不是回环地址就抛错拒绝启动（`packages/server/src/daemon/Daemon.ts`）。判据 `isLoopbackHost()` 在 `packages/server/src/wire/host.ts`，认 `localhost`、`::1`、以及 `127.0.0.0/8` 整段（按 RFC 1122，不是只有 `127.0.0.1`）。
 
 这条不是占位符：本版**没有鉴权**，而服务端暴露的能力里有 `exec`（任意命令执行），未鉴权的端口一旦能被非本机访问，等于把 shell 送给整个局域网。默认 `127.0.0.1:8790`；`--port 0` 让系统分配。
 
@@ -316,25 +332,24 @@ packages/server/src/
 |--------|--------|
 | `build-core` | `pnpm --filter @ai-zen/agents-core build` |
 | `build-sdk` | `pnpm --filter @ai-zen/agents-sdk build` |
-| `build-server` | `pnpm build-protocol && pnpm --filter @ai-zen/agents-server build` |
-| `build-client` | `pnpm build-protocol && pnpm --filter @ai-zen/agents-client build` |
-| `test` | `pnpm build-testing && pnpm build-server && pnpm build-client`，然后依次跑 `protocol` → `testing` → `core` → `sdk` → `server` → `client` 的 `test` |
+| `build-server` | `pnpm --filter @ai-zen/agents-server build` |
+| `build-client` | `pnpm --filter @ai-zen/agents-client build` |
+| `test` | `pnpm build-testing && pnpm build-server && pnpm build-client`，然后依次跑 `testing` → `core` → `sdk` → `server` → `client` 的 `test` |
 
 **为什么是这个顺序**：包之间靠 `dist` 解析，不靠源码路径。每个包的 `main` / `types` / `exports` 都指向 `dist/`，pnpm 只是把 workspace 包软链进 `node_modules`（软链的落点还是包的 `package.json`，于是解析到 `dist`），各包也没有 `paths` 之类的源码映射；每个包的 `build` 是 `prebuild`（`rimraf ./dist`）+ `tsc`。上游不先产出 `dist`，下游连类型都看不见。
 
 于是操作口径是：
 
-- **改了契约**（`packages/server/src/protocol/`）→ `pnpm build-server`。它是服务端的类型文件，随服务端一起产出；`client` 读的是 `dist/protocol/*.d.ts`。
-- **改了客户端层**（`packages/client/src/`）→ `pnpm build-client`。它自带 `build-protocol`（协议是它的直接依赖）。
-- **`build-server` 也自带 `build-protocol`**：改完协议只跑一条命令就能重编服务端。两者都不含 core / sdk（那两条是独立脚本）。干净检出要按 `build-core` → `build-sdk` → `build-protocol` → `build-server` → `build-client` 走一遍。
-- **`pnpm test` 显式构建 `testing` / `server` / `client`**（后两者连带 `protocol`）；`core` / `sdk` 的产物必须事先由 `build-core` / `build-sdk` 备好，否则依赖它们的包会在 `pretest`（`tsc --noEmit`）与 `vitest` 阶段解析不到。client 的用例会起**真 Daemon**，所以 `server` 的 `dist` 也必须在。
+- **改了契约**（`packages/server/src/protocol/`）→ `pnpm build-server`。契约是服务端的类型文件，随服务端一起产出；`client` 经 `@ai-zen/agents-server/protocol` 读到的是 `dist/protocol/*.d.ts`。
+- **改了客户端层**（`packages/client/src/`）→ `pnpm build-client`。
+- 两条脚本都不含 core / sdk（那两条是独立脚本）。干净检出要按 `build-core` → `build-sdk` → `build-server` → `build-client` 走一遍。
+- **`pnpm test` 显式构建 `testing` / `server` / `client`**；`core` / `sdk` 的产物必须事先由 `build-core` / `build-sdk` 备好，否则依赖它们的包会在 `pretest`（`tsc --noEmit`）与 `vitest` 阶段解析不到。client 的用例会起**真 Daemon**，所以 `server` 的 `dist` 也必须在。
 - 只跑单个包的用例：`pnpm --filter @ai-zen/agents-server test`（前提同上：它的上游 `dist` 在）。
 
 ## 已知缺口 / 未完成
 
 - **桌面端 main 已经用上 `SessionStream`**（`desktop@49c82c1`，`events.ts` 838 → 665 行）：手写的增量累积、子 Agent 合并、收尾整份替换、`failed` 判定全部删了，只剩「喂事件 / 映射成 `ChatStreamEvent`」。留着没搬的两块**是桌面端独有的事实**，不是重复：① `user` 事件的正文（协议不推用户消息）；② 占位 assistant 消息的 id（render 的 `v-for` key 需要它，而状态机刻意不给流式消息编 id）。
 - **`SessionStream` 还差三个出口**（桌面端因为缺它们各留了一小段 workaround，都在 `events.ts` 里且有注释）：① 流式消息的稳定 id（现在 main 自己按 `一轮一个` 编）；② 「丢掉某段会话的拼接态」的公开入口（现在靠 `new SessionStream()` 整台替换）；③ `applySnapshot` 不对齐 `state.turnId`（现在 main 自己拿快照比对残影）。
-- **方法表命名不同构**：`EVENT_METHODS`（单数）与其余五张方法表（复数）不一致。纯命名问题，改它要动两处引用。
 - **`Role` / `MessageStatus` 是 core 的 `enum`（运行期值）**，所以**应用**（CLI / 桌面端）依赖 core 是正当的。若要让应用也只依赖协议，得把数据词汇落到底层包 —— 本轮判定不划算，不做。
 - **`packages/sdk/src/config/constants.ts` 的注释仍在描述按前端分家的运行时目录**（`~/.ai-zen/<前端>/`），与「会话属于工作区、`config.json` 在 `<aiZenDir>` 下」的现状不符。
 - **一轮收尾时若快照取失败**，桌面端仍推 `error`（与改造前一致：本地近似里那条占位消息没有稳定 id，不能塞进 `done`）。真窗口里要确认错误条出现且输入框恢复。
@@ -347,5 +362,4 @@ packages/server/src/
 - [MCP](mcp.md) —— MCP 接入与生命周期
 - [`packages/server/README.md`](../../packages/server/README.md) —— 服务端：方法逐个语义、会话层细节、运维口径
 - [`packages/client/README.md`](../../packages/client/README.md) —— 连接层：三个层次、三条硬约束与 grep 检验
-- [`packages/protocol/README.md`](../../packages/protocol/README.md) —— 契约包：包里有什么、三条硬约束
 - [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md) —— SDK 设计真相源

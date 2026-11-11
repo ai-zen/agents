@@ -90,7 +90,7 @@ const MAX_RECONNECT_ATTEMPTS = 3;
 /** 第 `i` 次**重试**之前等多久（`i=0` 对应第 2 次尝试）：递增，给抖动的网络与服务端重启留时间 */
 const RECONNECT_BACKOFF_MS = [100, 300] as const;
 
-/** 服务端通知的码在**另一张表**里（`SERVER_NOTICE_CODES`），所以出口的类型是两者的并集 */
+/** 服务端通知的码在**另一个联合**里（`ServerNoticeCode`），所以出口的类型是两者的并集 */
 export type ChannelNoticePayload = NoticePayload | Omit<ServerNoticeEvent, "event">;
 
 export interface SessionChannelPolicy {

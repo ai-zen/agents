@@ -25,8 +25,8 @@
   //
   // 注意：白名单按**包**判，而不是按**行为**判。core / protocol 能进是因为用到的那几个都不碰
   // I/O；反过来说，一旦有人从它们那里引了碰 I/O 的东西（`callOnce` 建 socket、`discovery` 读
-  // 文件），这道门禁拦不住（同名包）。真正的兜底是 `packages/protocol/README.md` 的产物判据：
-  // 那个包的运行期图里只有兄弟模块与 `node:*`。
+  // 文件），这道门禁拦不住（同名包）。真正的兜底是 `packages/server/README.md` 的判据：
+  // 契约目录里零运行期导出，编译后只剩 `.d.ts`，运行期根本不存在这个 specifier。
   //
   // 另一道保险（同伴，不是重复）：`src/session/pure-boundary.test.ts` 把 `stream.ts` 的
   // import 清单整段扫一遍、断言只允许白名单 —— 它连「只取副作用」那种形状也抓。

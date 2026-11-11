@@ -44,8 +44,8 @@ CLI（TUI）与 Desktop（main）共用同一份实现：两个前端各写一�
   角色的消息或某个子 Agent 的用量上显形。引它才是唯一不出第二份的选择。
 
 ```bash
-# 依赖表：只许 core 与 protocol —— `agents-server` 出现在这里就是失败
-node -e 'const d=require("./packages/client/package.json").dependencies; if(d["@ai-zen/agents-server"]) throw new Error("agents-server 只能出现在 devDependencies"); console.log(Object.keys(d))'
+# 依赖表：只许 core —— `agents-server` 出现在这里就是失败
+node -e 'const d=require("./packages/client/package.json").dependencies; if(d["@ai-zen/agents-server"]) throw new Error("agents-server 只能出现在 peer 与 dev"); console.log(Object.keys(d))'
 # [ "@ai-zen/agents-core" ]
 ```
 

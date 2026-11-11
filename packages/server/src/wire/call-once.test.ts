@@ -2,12 +2,11 @@
  * `callOnce` 的用例 —— 真 socket、真帧，一个只认「握手 + 一帧」的假服务端。
  *
  * 为什么不用 `vi.mock`：这段代码的全部价值就在**真的收发与真的超时**上。把它换成假件，
- * 测到的只是「我按我想要的方式调了它」，而三份重复实现当初正是各自都"看起来对"。
+ * 测到的只是「我按我想要的方式调了它」，而不是它真能在一条线上把一句话问完。
  *
- * 为什么假服务端是手搓的 30 行而不是真 `Daemon`：`Daemon` 在 `@ai-zen/agents-server` 里，
- * 而协议包不能依赖服务端（那会把契约钉在一个实现上，也成环）。这里需要的只是「一个会说
- * JSON-lines 的对端」，与 `wire.test.ts` 用一个内存双工证明「不是 `net.Socket` 也能驱动
- * `Daemon`」是同一个思路的反向：证明「不是 `Daemon` 也能被 `callOnce` 问」。
+ * 为什么假服务端是手搓的 30 行而不是真 `Daemon`：这里需要的只是「一个会说 JSON-lines 的
+ * 对端」，与 `wire.test.ts` 用一个内存双工证明「不是 `net.Socket` 也能驱动 `Daemon`」是
+ * 同一个思路的反向：证明「不是 `Daemon` 也能被 `callOnce` 问」。
  */
 
 import { createServer, type Server, type Socket } from "node:net";

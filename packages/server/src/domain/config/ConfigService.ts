@@ -354,7 +354,7 @@ function messageOf(cause: unknown): string {
 /**
  * 取系统错误的 `code`（`ENOENT` / `EACCES` 这类）。
  *
- * 名字不叫 `codeOf`：协议包导出的 `codeOf` 读的是**本项目的错误码表**（`ERROR_CODES`，
+ * 名字不叫 `codeOf`：`src/wire/errors.ts` 的 `codeOf` 读的是**本项目的错误码**（`ErrorCode`，
  * 也就是帧里那个 `code`），这里读的是 Node 的 errno 字符串 —— 两个概念同名会让人以为
  * 能互换。
  */

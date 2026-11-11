@@ -213,7 +213,7 @@ export interface AgentRemoveResult {
   removed: boolean;
 }
 
-/** `CONFIG_METHODS` 的**成员名**（不是线上值）—— 给「门面必须覆盖每一条」这类类型级用例用 */
+/** `ConfigMethod` 的**成员名**（不是线上值）—— 给「门面必须覆盖每一条」这类类型级用例用 */
 export type ConfigMethodKey =
   | "get"
   | "save"
@@ -223,5 +223,5 @@ export type ConfigMethodKey =
   | "mcpGet"
   | "mcpSave";
 
-/** `AGENT_METHODS` 的**成员名**（不是线上值）—— 给「门面必须覆盖每一条」这类类型级用例用 */
+/** `AgentMethod` 的**成员名**（不是线上值）—— 给「门面必须覆盖每一条」这类类型级用例用 */
 export type AgentMethodKey = "setModel" | "list" | "get" | "save" | "remove";

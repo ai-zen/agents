@@ -45,7 +45,7 @@ type MethodNames<T> = keyof T;
 type AssertNone<T extends never> = T;
 
 // ==================================================================
-// 会话面：`SESSION_METHODS`(21) + `WORKSPACE_METHODS`(6)
+// 会话面：`SessionMethod`(21) + `WorkspaceMethod`(6)
 // ==================================================================
 
 /**
@@ -97,7 +97,7 @@ type SessionsClaimed =
 export type SessionsExhaustive = AssertNone<Exclude<MethodNames<RemoteSessions>, SessionsClaimed>>;
 
 // ==================================================================
-// 配置面：`CONFIG_METHODS`(7) + `AGENT_METHODS`(5) + `ASSET_METHODS`(1)
+// 配置面：`ConfigMethod`(7) + `AgentMethod`(5) + `AssetMethod`(1)
 // ==================================================================
 
 const CONFIG_COVERAGE = {

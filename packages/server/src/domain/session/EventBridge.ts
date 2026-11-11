@@ -5,10 +5,10 @@
  *
  * 把 Agent（`agent.events`）发出来的东西翻成线上事件：
  *
- *   1. **原样转达** core 的那几条（`AGENT_EVENTS`：`open` / `chunk` / `parsed` /
+ *   1. **原样转达** core 的那几条（`AgentEventName`：`open` / `chunk` / `parsed` /
  *      `tool-call-end` / `error` / `finally` / `sub-agent-start` / `sub-agent-end`）——
  *      名字与时机都照抄 core，一行不改；
- *   2. **派生**服务端自己的那几条（`SESSION_EVENTS`）：阶段（`session-phase`）。
+ *   2. **派生**服务端自己的那几条（`SessionEventName`）：阶段（`session-phase`）。
  *
  * core 的 `chunk-parsed` 与 `message` **不上线**：它们分别是「客户端折 `chunk` 就能得到的
  * 派生值」与「`tool-call-end` + 轮末快照已经覆盖的事实」。摘出来另立事件，等于给同一个

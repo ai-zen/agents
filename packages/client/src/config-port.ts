@@ -20,8 +20,8 @@
  * 于是调用点只换注入值，不换写法。
  *
  * 两层共用的那部分（方法名、参数拼装）只在门面（`RemoteConfig` / `RemoteSessions`）里写一次
- * （包括工作区的解析）：本文件不 import 任何「方法名
- * 常量表」（那类常量的名字都以 METHODS 结尾），于是「同一件事两处拼参数」在这里无从发生。
+ * （包括工作区的解析）：本文件不 import 任何方法名（`SessionMethod` / `WorkspaceMethod`
+ * 这些名字联合），于是「同一件事两处拼参数」在这里无从发生。
  *
  * ## 会话级模型动作**不在**这里
  *
@@ -39,8 +39,8 @@
 import type { AgentKind } from "@ai-zen/agents-server/protocol";
 // 只取类型：`AppConfig` / `AgentDefinition` / `ReasoningPresets` 是配置与定义在两端的
 // 共同形状，而**线上**刻意不认识 SDK（`config.get` 的 `config` 在协议里是 `unknown`）。
-// `import type` 在产物里被整体擦除，所以本包的运行期依赖图仍然只有协议包 + node 内置
-// —— 桌面端 main 打包时不会因此拖进 sdk（验证命令见 README）。
+// `import type` 在产物里被整体擦除，所以本包的运行期依赖图仍然只有 `@ai-zen/agents-core`
+// 与 `node:*` —— 桌面端 main 打包时不会因此拖进 sdk（验证命令见 README）。
 import type { AgentDefinition, AppConfig, ReasoningPresets } from "@ai-zen/agents-sdk";
 import { RemoteConfig } from "./facade/config.js";
 import { RemoteSessions } from "./facade/sessions.js";

@@ -96,5 +96,5 @@ export interface AssetListResult {
   assets: AssetSummary[];
 }
 
-/** `ASSET_METHODS` 的**成员名**（不是线上值）—— 给「门面必须覆盖每一条」这类类型级用例用 */
+/** `AssetMethod` 的**成员名**（不是线上值）—— 给「门面必须覆盖每一条」这类类型级用例用 */
 export type AssetMethodKey = "list";

@@ -140,10 +140,10 @@ scenario on both.
 ## Session layer
 
 `src/protocol/sessions.ts` is the wire contract for sessions — method names, params and the
-events, in three tables: `AGENT_EVENTS` (core's own eight: `open`, `chunk`, `parsed`,
-`tool-call-end`, `error`, `finally`, `sub-agent-start`, `sub-agent-end`), `SESSION_EVENTS`
+events, as three name unions: `AgentEventName` (core's own eight: `open`, `chunk`, `parsed`,
+`tool-call-end`, `error`, `finally`, `sub-agent-start`, `sub-agent-end`), `SessionEventName`
 (`session-phase`, `session-turn-end`, `session-notice`, `session-question`,
-`session-id-changed`, `session-title-changed`) and `SERVER_EVENTS` (`server-notice`).
+`session-id-changed`, `session-title-changed`) and `ServerEventName` (`server-notice`).
 `src/domain/session/` holds the session as four collaborating classes:
 `SessionManager.ts` (live-session registry, holders/reclaiming, turn lifecycle, catalogue,
 handoff), `EventBridge.ts` (SDK events → protocol events), `Persistence.ts` (the archive shape
@@ -154,12 +154,14 @@ discovery) per workspace; `src/daemon/sessionHandlers.ts` registers the session 
 methods, `configHandlers.ts` / `agentHandlers.ts` / `assetHandlers.ts` the rest, and `src/cli.ts`
 wires all of it.
 
-**The method list has exactly one source of truth: `SESSION_METHODS` / `WORKSPACE_METHODS` /
-`EVENT_METHODS` (and `CONFIG_METHODS` / `AGENT_METHODS` / `ASSET_METHODS` / `DAEMON_METHODS`) in
-`src/protocol/`.** This README deliberately does not copy it: a copy is what goes stale, and
-a stale list is worse than no list. What each method means is documented where it is defined
-(`sessions.ts` / `config.ts` / `assets.ts` / `daemon.ts`); the sections below only carry the
-semantics that need more room than a doc comment.
+**The method list has exactly one source of truth: `MethodApi` in `src/protocol/api.ts`** — one
+entry per method, binding each name to its params and result. The name unions it must agree with
+(`SessionMethod` / `WorkspaceMethod` / `EventMethod` / `ConfigMethod` / `AgentMethod` /
+`AssetMethod` / `DaemonMethod`) live in `sessions.ts` / `config.ts` / `assets.ts` / `daemon.ts`,
+and two `Assert`s in `api.ts` fail the build if the two ever disagree. This README deliberately
+does not copy the list: a copy is what goes stale, and a stale list is worse than no list. What
+each method means is documented where it is defined; the sections below only carry the semantics
+that need more room than a doc comment.
 
 Agent assembly is **per workspace**: one Scope (one set of MCP connections and tool
 discovery) is shared by every session in the same workspace, and never shared across
@@ -530,7 +532,7 @@ and `session.subAgent.snapshot` returns that sub-agent's own transcript. Two inv
 
 ### The agent's own events go out verbatim: same names, same moments
 
-Eight of the fifteen events are core's own (`AGENT_EVENTS`) and the server forwards them
+Eight of the fifteen events are core's own (`AgentEventName`) and the server forwards them
 **unchanged**, at the moment core emits them — renaming them on the wire would mean keeping a
 translation table across protocol, server and client, and a table only ever drifts:
 
@@ -591,7 +593,7 @@ protocol that nothing on either end read.
 
 Events carry **facts, never sentences**, and notices are no exception: a notice is
 `{ level, code, params? }` — the client looks up `notice.<code>` in its own i18n table.
-Codes are protocol (`SESSION_NOTICE_CODES` / `SERVER_NOTICE_CODES`): add new ones, never
+Codes are protocol (`SessionNoticeCode` / `ServerNoticeCode`): add new ones, never
 repurpose an existing one.
 
 The channel is the **namespace**, not a field:
@@ -650,7 +652,7 @@ Three things are worth knowing before touching it:
   `SessionManager.migrate()`, each free to fail loudly.
 - **Progress is notices, not sentences.** `handoffWriting` / `handoffAutoDetected` /
   `migrationDegraded` / `handoffPath` / `handoffArchived` / `handoffMigrated` +
-  `handoffMigratedHint` / `migrationSkipped` — all `SESSION_NOTICE_CODES`, so each one is a code a
+  `handoffMigratedHint` / `migrationSkipped` — all `SessionNoticeCode`, so each one is a code a
   client renders with its own wording (the server emits no prose).
 
 ## Config and agent definitions

@@ -29,15 +29,14 @@ import type { PhaseInfo } from "./phase.js";
  *
  * `session.*` 只用于「对一个会话做事」。不属于某个会话的动作不往这个命名空间里塞：
  * 例如「订阅事件」是**连接级**的（`events.watch`），跟具体会话无关；工作区是会话的
- * **父容器**，它的事归 `workspace.*`（见 `WORKSPACE_METHODS`）。
+ * **父容器**，它的事归 `workspace.*`（见 `WorkspaceMethod`）。
  */
 
 /**
  * 工作区方法名（服务端注册与客户端调用共用同一份字面量）。
  *
- * 为什么要跟 `SESSION_METHODS` 分开：工作区是会话的父容器，两个层级的动作混在一个
- * 常量表里，调用点就得靠眼力分辨「这一步是在认容器，还是在对一段会话做事」。分开之后
- * **线上方法名一个字没变**（仍是 `workspace.resolve`）—— 客户端只改引用的常量名。
+ * 为什么要跟 `SessionMethod` 分开：工作区是会话的父容器，两个层级的动作混进同一个
+ * 名字联合里，调用点就得靠眼力分辨「这一步是在认容器，还是在对一段会话做事」。
  */
 export type WorkspaceMethod =
   | "workspace.resolve"
@@ -91,9 +90,9 @@ export type EventMethod = "events.watch";
  *
  * 时机照抄 core：`error` 早于 `finally`。
  *
- * 与 `SESSION_EVENTS` 的分工：这张表是**Agent 身上发生了什么**（core 那边就有的事实），
+ * 与 `SessionEventName` 的分工：这张表是**Agent 身上发生了什么**（core 那边就有的事实），
  * 那张表是**服务端额外告诉你什么**（阶段派生、通知、提问、换 id、一轮真正收尾）。不属于
- * 任何会话的事在 `SERVER_EVENTS`。
+ * 任何会话的事在 `ServerEventName`。
  */
 export type AgentEventName =
   | "open"
@@ -110,15 +109,15 @@ export type AgentEventName =
  *
  * 这张表装的是**服务端自己派生 / 自己决定的事**：core 里没有这些事件 —— 阶段是服务端从
  * core 的事实里算出来的，`session-turn-end` 要等落盘、换 id、回收判定都做完，通知 /
- * 提问 / 换 id / 改名都是服务端自己的动作。core 原有的事件在 `AGENT_EVENTS`。
+ * 提问 / 换 id / 改名都是服务端自己的动作。core 原有的事件在 `AgentEventName`。
  *
  * 命名空间写的是**作用范围**：`session-` 前缀说明这条绑在某一段会话上（载荷里有
- * `sessionId`），不属于任何会话的事不往这张表里塞 —— 它去 `SERVER_EVENTS`（见下）。从而
+ * `sessionId`），不属于任何会话的事不往这张表里塞 —— 它去 `ServerEventName`（见下）。从而
  * **看到名字就知道该看哪张表**，不必背清单。
  *
  * 为什么值一律 kebab-case：线上事件名只有一种写法 —— core 的 `tool-call-end` 与这里的
  * `session-turn-end` 长得一样，读的人不必先分辨「这条是谁的」再决定怎么念。（方法名的
- * `session.send` 那套点号是**命名空间**，不是事件名的规则，见 `SESSION_METHODS`。）
+ * `session.send` 那套点号是**命名空间**，不是事件名的规则，见 `SessionMethod`。）
  *
  * 将来若出现「属于某个工作区但不属于某段会话」的事件，再加一张 `workspace-*` 前缀的表，
  * 不用回头改这几张的语义。
@@ -138,9 +137,9 @@ export type SessionEventName =
  * 切到别的会话也不该消失（存盘目录坏了、MCP 连不上都是「这个服务端」的事）。放在同一张
  * 表里的话，「按会话过滤事件」的代码就得给它开例外，而例外本身又成了第二套规则。
  *
- * 三张表（`AGENT_EVENTS` / `SESSION_EVENTS` / `SERVER_EVENTS`）+ 三个联合
+ * 三个名字联合（`AgentEventName` / `SessionEventName` / `ServerEventName`）+ 三个载荷联合
  * （`AgentEvent` / `SessionEvent` / `ServerEvent`）的拆法，与
- * `SESSION_METHODS` / `DAEMON_METHODS` 完全同构：作用域不同的东西不放在同一张表里。
+ * `SessionMethod` / `DaemonMethod` 完全同构：作用域不同的东西不放进同一个联合里。
  */
 export type ServerEventName = "server-notice";
 
@@ -351,7 +350,7 @@ export type SessionIdChangedEvent = {
 };
 
 /**
- * 会话改名的通知（见 `SESSION_EVENTS.titleChanged`）。
+ * 会话改名的通知（见 `"session-title-changed"`）。
  *
  * 载荷只有两个事实：哪段会话、新名字是什么。**不带「谁起的」** —— 客户端不需要为
  * 名字的来源分支出两套渲染，而「自动起的名字不该反过来覆盖用户手改」是服务端的判定
@@ -364,7 +363,7 @@ export type SessionTitleChangedEvent = {
 };
 
 /**
- * 服务端向客户端提问（见 `SESSION_EVENTS.question` 的「为什么」）。
+ * 服务端向客户端提问（见 `"session-question"` 的「为什么」）。
  *
  * 载荷只说四件可判别的事实，**一个字幕都不产**：问的是哪一类（`kind`，客户端据此查
  * 自己的词典与分派表）、能怎么答（`input` / `options`）、渲染标题要哪些数（`params`）、
@@ -945,7 +944,7 @@ export type AgentErrorEvent = {
  *
  * 只带「谁、哪一轮」：core 的 `finally` 是个空载荷通知，它的意义全在**时机**上 —— 客户端
  * 拿它知道 core 那一侧说完了。落盘、换 id、回收判定都还没做，所以它**不是**
- * `session-turn-end`（见 `SESSION_EVENTS.turnEnd`）：两条事件时机不同，都要发，顺序恒为
+ * `session-turn-end`（见 `"session-turn-end"`）：两条事件时机不同，都要发，顺序恒为
  * `error`? → `finally` → `session-turn-end`。
  */
 export type AgentFinallyEvent = {
@@ -1001,7 +1000,7 @@ export type AgentEvent =
   | AgentSubAgentEndEvent;
 
 /**
- * 生成阶段（`SESSION_EVENTS.phase`）。
+ * 生成阶段（`"session-phase"`）。
  *
  * **派生**事件：服务端在 `open` / `parsed` / 每个 `tool-call-end` 那一刻按状态机算一份
  * 整的阶段推上来 —— 客户端不自己推阶段（三个前端各推一遍就会各错一遍）。
@@ -1055,8 +1054,8 @@ export type SessionNoticeCode =
 /**
  * 服务端通知的 code 表（`server-notice` 载荷里的枚举；同上：只增不改语义）。
  *
- * 名字跟事件表走（`SERVER_EVENTS` ↔ `SERVER_NOTICE_CODES` ↔ `ServerNoticeCode`）：一张
- * 表叫 SERVER、旁边的码表叫别的，读的人只能靠猜两者是不是同一件事。**表的 key 改的是
+ * 名字跟事件名走（`ServerEventName` 的 `server-notice` ↔ `ServerNoticeCode`）：一个
+ * 叫 SERVER、旁边的码叫别的，读的人只能靠猜两者是不是同一件事。**改的是
  * 类型名，不是 code 的字面量**（那些是客户端 i18n 表的键，改字面量等于让词典失效），
  * 所以改名对线上零影响。
  */
@@ -1114,7 +1113,7 @@ export interface EventWatchResult {
   watching: true;
 }
 
-/** `SESSION_METHODS` 的**成员名**（不是线上值）—— 给「门面必须覆盖每一条」这类类型级用例用 */
+/** `SessionMethod` 的**成员名**（不是线上值）—— 给「门面必须覆盖每一条」这类类型级用例用 */
 export type SessionMethodKey =
   | "create"
   | "attach"
@@ -1138,8 +1137,8 @@ export type SessionMethodKey =
   | "modelParamsSet"
   | "close";
 
-/** `WORKSPACE_METHODS` 的**成员名**（不是线上值）—— 给「门面必须覆盖每一条」这类类型级用例用 */
+/** `WorkspaceMethod` 的**成员名**（不是线上值）—— 给「门面必须覆盖每一条」这类类型级用例用 */
 export type WorkspaceMethodKey = "resolve" | "files" | "list" | "rename" | "remove" | "relocate";
 
-/** `EVENT_METHODS` 的**成员名**（不是线上值）—— 给「门面必须覆盖每一条」这类类型级用例用 */
+/** `EventMethod` 的**成员名**（不是线上值）—— 给「门面必须覆盖每一条」这类类型级用例用 */
 export type EventMethodKey = "watch";
