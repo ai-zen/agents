@@ -125,7 +125,13 @@ function gitList(root: string): Promise<string[] | null> {
     execFile(
       "git",
       ["ls-files", "-co", "--exclude-standard"],
-      { cwd: root, timeout: SCAN_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 },
+      {
+        cwd: root,
+        timeout: SCAN_TIMEOUT_MS,
+        maxBuffer: 64 * 1024 * 1024,
+        // 服务端没有控制台：不 hide 的话每唤起一次 `@` 补全都弹一个终端窗口
+        windowsHide: true,
+      },
       (error, stdout) => resolve(error ? null : stdout.split("\n").filter(Boolean)),
     );
   });

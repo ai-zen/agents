@@ -143,6 +143,10 @@ export class ExecTool extends SdkCallbackTool {
         shell: true,
         detached: process.platform !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
+        // 与 `SpawnTool` 同一条约定：输出走管道，不需要也不该给用户弹一个终端窗口。
+        // 这一条尤其要紧 —— 服务端自己是 detached 起的、没有控制台，不 hide 的话这里
+        // **每次工具调用**都会新分配一个控制台窗口。
+        windowsHide: true,
       });
 
       const collect = (target: Buffer[]) => (chunk: Buffer) => {

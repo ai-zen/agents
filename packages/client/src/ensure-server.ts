@@ -266,7 +266,12 @@ const DEFAULT_SERVER_PACKAGE = "@ai-zen/agents-server";
 function spawnServerChild(serverPackage: string, aiZenDir: string) {
   // 显式传一遍：子进程不依赖「调用方的 env 恰好和发现目录一致」
   const env = { ...process.env, AI_ZEN_DIR: aiZenDir };
-  const options = { detached: true, stdio: "ignore" as const, env };
+  /**
+   * `windowsHide`：Windows 上 `detached` 会给子进程**自己的**控制台窗口 —— 一次拉起就是
+   * 一个终端弹窗（跑 e2e 时每个临时 AI_ZEN_DIR 一个，一串窗口就是这么来的）。服务端本来
+   * 只写自己的日志文件、stdout/stderr 都是 ignore，那个窗口没有任何作用。
+   */
+  const options = { detached: true, stdio: "ignore" as const, env, windowsHide: true };
   if (process.platform === "win32") {
     return spawn(`npx -y ${serverPackage} serve --ai-zen-dir "${aiZenDir}"`, {
       ...options,
