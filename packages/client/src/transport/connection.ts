@@ -77,6 +77,13 @@ export interface ServerConnectionDeps {
   clientInfo?: ClientInfo;
   /** `npx` 拉起的服务端包坐标（缺省 `@ai-zen/agents-server`）；预发布版本要带 `@x.y.z` */
   serverPackage?: string;
+  /**
+   * 接管「怎么拉起服务端」。不给就用 {@link ensureServer} 的默认（`npx`）。
+   *
+   * 宿主自带一份服务端时用它：桌面端就是拉起**随包分发**的那个，不必让用户机器上的
+   * `npx` 去 registry 上找包（那台机器可能连 npm 都没有）。
+   */
+  startServerProcess?: (deps: { aiZenDir: string }) => Promise<void>;
 }
 
 export class ServerConnection {
@@ -251,7 +258,7 @@ export class ServerConnection {
         "ServerConnection 需要 connect，或者 aiZenDir + clientInfo（不注入时就不知道怎么拉起服务端）",
       );
     }
-    const { serverPackage } = this.deps;
-    return (await ensureServer({ aiZenDir, clientInfo, serverPackage })).client;
+    const { serverPackage, startServerProcess } = this.deps;
+    return (await ensureServer({ aiZenDir, clientInfo, serverPackage, startServerProcess })).client;
   }
 }
