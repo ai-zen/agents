@@ -30,4 +30,5 @@ export type * from "./assets.js";
 export type * from "./content.js";
 export type * from "./phase.js";
 export type * from "./errors.js";
+export type * from "./notice.js";
 export type * from "./model.js";

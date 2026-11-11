@@ -1,9 +1,12 @@
 /**
  * 客户端侧对「服务端」的全部认知。
  *
- * 这里只有**端口**（能力接口），没有实现：TUI / 命令层只认 {@link ServerClient}，
- * 不认 TCP、不认 HTTP，也不知道服务端跑在同机还是别处。将来换传输（WebSocket / stdio /
- * ssh 隧道）只换实现类，调用点一行不改 —— 这是「传输自由」在类型上的落点。
+ * 这里只有**端口**（能力接口），没有实现：TUI / 命令层只认 {@link ServerClient}，不认
+ * WebSocket、不认 `ws://`，也不知道服务端跑在同机还是别处。将来换传输（stdio / ssh 隧道 /
+ * 内存双工）只换实现类，调用点一行不改 —— 这是「传输自由」在类型上的落点。
+ *
+ * 线上形状是 JSON-RPC 2.0 over WebSocket（见 `@ai-zen/agents-server/protocol`）；本文件只
+ * 描述「调用方看到的那三件事」：调用、事件、断开。
  */
 
 import type { ServerEvent } from "@ai-zen/agents-server/protocol";
@@ -19,7 +22,7 @@ export interface ServerAddress {
   port: number;
 }
 
-/** 客户端身份：握手首帧的 `client` 字段，只进日志与服务端回执，**不参与鉴权** */
+/** 客户端身份：握手请求 `hello` 的 `params.client`，只进日志与服务端回执，**不参与鉴权** */
 export interface ClientInfo {
   name: string;
   version: string;
@@ -29,12 +32,12 @@ export interface CallOptions {
   /** 本次调用的时限；不传就用客户端默认值 */
   timeoutMs?: number;
   /**
-   * 同时发出去的**原始字节**：这一帧后面紧跟恰好这么多字节（帧内 `params.bytes` 声明的
-   * 就是它的长度）。
+   * 同时发出去的**原始字节**：这次调用在线上是**两条** WS 消息 —— 先一条文本请求，再一条
+   * 二进制消息（前 4 字节是该请求 `id` 的大端无符号数，其余就是这些字节）。
    *
-   * 为什么挂在 options 上而不是 params 里：帧是 JSON，字节进去只能被 base64 一遍
-   * （体积涨三分之一、还得先整块驻留成字符串）。分开之后线上的形状就是
-   * 「一行 JSON + N 个原始字节」，与协议层 `FrameDecoder` 切的完全一致。
+   * 为什么挂在 options 上而不是 params 里：文本消息是 JSON，字节进去只能被 base64 一遍
+   * （体积涨三分之一、还得先整块驻留成字符串）。分开之后载荷长度只有一个来源 —— 二进制消息
+   * 自己的长度（所以 `params` 里**没有**「字节数」这个字段，A24）。
    */
   bytes?: Uint8Array;
 }

@@ -1,8 +1,20 @@
 /**
  * 错误码的**运行期**部分：造错、判错、取码。
  *
- * 码表本身是类型（`src/protocol/errors.ts`）；这里那串字面量是它的运行期镜像，只为
+ * 码表本身是类型（服务端的 `src/protocol/errors.ts`）；这里那串字面量是它的运行期镜像，只为
  * `isCodedError` 的结构判定而存在。两侧各一份 —— 协议只共享类型，不共享代码。
+ *
+ * ## 为什么协议级的七个码也在这张表里
+ *
+ * `bad-frame` / `invalid-request` / `handshake-required` / `bad-handshake` / `version-mismatch` /
+ * `unknown-method` / `internal` 不是业务层 `throw` 出来的，但它们一样会出现在失败响应的
+ * `error.data.code` 上。不在表里的话 `isCodedError` 不认它们，客户端拿到手就是一个**裸字符串**：
+ * `codeOf()` 返回 `undefined`，于是「版本不匹配」与「未知失败」在调用点看起来一模一样。
+ *
+ * ## 为什么没有 `frame-too-large`
+ *
+ * 本版永不会收到它（A19）：单条消息的体积上限交给 WebSocket 的 `maxPayload`，超了由传输层直接
+ * 断连 —— 那时没有一条错误响应能回来。码表里留着它只会让 `switch` 多一条永远不走的分支。
  */
 
 import type { CodedError, ErrorCode } from "@ai-zen/agents-server/protocol";
@@ -40,6 +52,15 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "handoff-in-flight",
   "handoff-aborted",
   "bad-index",
+  // 协议级的码：不是业务层 `throw` 的，但一样会出现在 `error.data.code` 上，
+  // 所以它们必须在集合里 —— 否则 `isCodedError` 不认它们，客户端拿到手就是一个裸字符串
+  "bad-frame",
+  "invalid-request",
+  "handshake-required",
+  "bad-handshake",
+  "version-mismatch",
+  "unknown-method",
+  "internal",
 ];
 
 const ERROR_CODE_SET = new Set<string>(ERROR_CODES);

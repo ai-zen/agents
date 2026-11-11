@@ -41,8 +41,9 @@ export function createContentHandlers(options: ContentHandlerOptions): MethodHan
     /**
      * 一段字节 → 一块能放进消息的内容（`text` / `image_url` / `file`）。
      *
-     * 字节由帧后紧跟的 payload 提供（见 `src/wire/frames.ts`）：走到这里时长度已经由解码器
-     * 保证过，不再复核一个字节都不差的长度 —— 那是帧层的事实，这一层只认形状。
+     * 字节由**同一条连接上的另一条二进制消息**提供（前 4 字节是这条请求的 `id`，其余是载荷）；
+     * 走到这里时它已经完整地送到了，不再复核长度 —— 那是传输层的事实，这一层只认形状。
+     * 但「0 字节」是一个**内容上**的问题（没有什么可转），所以由这一层判。
      */
     ["content.upload"]: async (
       params,
@@ -52,7 +53,10 @@ export function createContentHandlers(options: ContentHandlerOptions): MethodHan
       const sessionId = requireString(params, "sessionId");
       const mime = requireString(params, "mime");
       const filename = requireString(params, "filename");
-      if (!payload) throw badParams(`missing binary payload for "content.upload"`);
+      // 没有二进制消息，或者有但里面一个字节都没有：都是「没东西可转」
+      if (!payload || payload.byteLength === 0) {
+        throw badParams(`missing binary payload for "content.upload"`);
+      }
 
       // 会话不在（`unknown-session`）/ 配置读不出来都是带码的错误，原样递给客户端：
       // 两者都不是「参数形状错」，客户端的处置也不同（换会话 / 等一会儿重试）

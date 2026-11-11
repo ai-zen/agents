@@ -34,8 +34,8 @@ The wire contract is **not a package** — it is this package's type files. Two 
 
 | | Holds | Runtime exports |
 |---|---|---|
-| `src/protocol/` | method/event **name unions**, payload types, error-code unions, frame shapes, phase shapes, the type-only re-export of the data model | **none** — every file is `type`/`interface` only |
-| `src/wire/` | frame codec (`encodeFrame` / `FrameDecoder` / `MAX_FRAME_BYTES` / `MAX_PAYLOAD_BYTES` / `ProtocolError`), error-code predicate (`codedError` / `isCodedError` / `codeOf`), loopback predicate, `PROTOCOL_VERSION`, discovery-file I/O, `callOnce`, `DEFAULT_MIGRATION_STRATEGY` | yes |
+| `src/protocol/` | method/event **name unions**, payload types, error-code unions, message shapes, phase shapes, the type-only re-export of the data model | **none** — every file is `type`/`interface` only |
+| `src/wire/` | message codec (one JSON-RPC 2.0 message per WS message), error-code predicate (`codedError` / `isCodedError` / `codeOf`), loopback predicate, `PROTOCOL_VERSION`, discovery-file I/O, `callOnce`, `DEFAULT_MIGRATION_STRATEGY` | yes |
 
 Clients import **only** `@ai-zen/agents-server/protocol` and only with `import type`; their own
 runtime copies live in `packages/client/src/wire/`. Nothing is shared but shapes and names — which
@@ -80,82 +80,91 @@ Adding tokens/keys later changes the handshake payload only.
 
 ## Wire protocol
 
-Transport-agnostic: **JSON-lines** (one JSON object per `\n`). It runs as-is over TCP,
-WebSocket text frames and stdio, and can be driven by hand with `nc`:
+**WebSocket + JSON-RPC 2.0**: one WS message is exactly one complete JSON-RPC 2.0 message, in both
+directions, and a text frame carries no trailing newline — the WS message boundary is the only
+framing there is. The version is `2`, and a version that does not match means no connection. The
+full spec (the `id` range, binary frames, size ceilings, the error-code mapping and the exact list
+of cases that drop a connection) is `docs/zh/protocol.md` / `docs/en/protocol.md`; this section only
+says what the wire is.
 
 ```
-→ {"kind":"hello","protocol":1,"client":{"name":"tui","version":"1.0.2"}}
-← {"kind":"hello","ok":true,"server":{"version":"0.1.0","protocol":1,"pid":4180641,...}}
-→ {"id":1,"method":"ping"}
-← {"id":1,"ok":true,"result":{"pong":true}}
+→ {"jsonrpc":"2.0","id":1,"method":"hello","params":{"protocol":2,"client":{"name":"tui","version":"1.0.2"}}}
+← {"jsonrpc":"2.0","id":1,"result":{"name":"agents-server","version":"0.1.0","protocol":2,"pid":4180641,"startedAt":"..."}}
+→ {"jsonrpc":"2.0","id":2,"method":"ping"}
+← {"jsonrpc":"2.0","id":2,"result":{"pong":true}}
+← {"jsonrpc":"2.0","method":"session.event","params":{"event":"chunk",...}}
 ```
 
-| Frame | Direction | Notes |
-|---|---|---|
-| `hello` | client → server, **first frame, mandatory** | version mismatch ⇒ connection closed |
-| `{ id, method, params }` | client → server | one direction only; `id` is allocated by the client |
-| `{ id, ok, result \| error }` | server → client | reply to the above |
-| `{ event, ... }` | server → client | unsolicited, no reply expected |
+Three message classes: a **request** (has `method`; with an `id` it expects a response), a
+**response** (no `method`, has `id`) and a **notification** (has `method`, no `id`). `id`s are
+integers in `0 … 2³²-1`, allocated by the client. This build's server only ever sends
+notifications and never initiates requests, so the two directions' ids cannot collide.
 
-There is deliberately **one direction only**: when the server needs to ask the client
-something it emits `session-question` and gets the answer back through the `session.answer`
-*method* — so frame `id`s are allocated by a single side and two directions can never collide.
-
-Images and files do **not** ride inside `session.send`: a request frame that declares
-`params.bytes` is followed on the same stream by exactly that many **raw bytes** (no separator, no
-encoding), then line framing resumes.
+Images and files do **not** ride inside `session.send`: `content.upload` is one call spread over
+two WS messages — the ordinary text request, then a binary message whose first four bytes are that
+request's `id` and whose remaining bytes are the payload.
 
 ```
-→ {"id":7,"method":"content.upload","params":{"sessionId":"chat_1","bytes":4,"mime":"image/png","filename":"a.png"}}
-→ <4 raw bytes>
-→ {"id":8,"method":"ping"}
+→ {"jsonrpc":"2.0","id":7,"method":"content.upload","params":{"sessionId":"chat_1","mime":"image/png","filename":"a.png"}}
+→ <binary: 4-byte id 7, then the raw bytes>
 ```
 
-Why a binary tail instead of base64 inside the JSON: base64 costs a third more bytes and forces the
-whole payload through a string. The length is declared once, the bytes are taken as they come.
-Only the methods in `BINARY_METHODS` (`src/daemon/Daemon.ts`) may carry a payload; a `bytes` field
-on any other method, a non-positive length, or a length above `MAX_PAYLOAD_BYTES` (64 MiB) is a
-protocol error and kills the connection.
+`params` carries `sessionId` / `mime` / `filename` (all three required) and **no** length field —
+the payload is exactly as long as the binary message is. Why a separate binary message instead of
+base64 inside the JSON: base64 costs a third more bytes and forces the whole payload through a
+string. The bytes are found by `id`, never by position, and WS ordering puts them after their
+request frame; a binary message whose `id` matches no in-flight request drops the connection. Only
+the methods in `BINARY_METHODS` (`src/daemon/Daemon.ts`) may carry a payload.
 
 The content block that goes into `session.send` is produced **server-side**
 (`content.upload` → SDK `fileToContentSection`): whether those bytes get uploaded as a `file_id`,
 inlined as base64, or degraded to a text hint depends on the endpoint and model **that session**
-is actually using. A frame carrying such a block still has to fit under `MAX_FRAME_BYTES`
-(8 MiB) — the inline case puts base64 back into the JSON frame — so clients keep measuring it.
+is actually using. A JSON-RPC text message carrying such a block still has to fit under the 8 MiB
+text-frame ceiling — the inline case puts base64 back into the JSON message — so clients keep
+measuring it.
 
 Built-in methods: `ping`, `status`, `shutdown`. Everything else is injected by the
 composition root through `DaemonOptions.handlers`, so the daemon skeleton stays free of
 business logic.
 
-### The transport is replaceable — today exactly one implementation exists
+### The transport is one seam: `Daemon` never touches a socket
 
-`Daemon` never touches a socket. Its connection entry point takes a `Wire`
-(`src/daemon/wire.ts`): six members, counted from what the daemon actually uses —
-`write(text)`, `destroy()`, `destroyed`, `onData`, `onClose`, `onError`. Nothing else comes
-along (`pause` / `resume` / half-close / `remoteAddress` … are unused, so they are not in the
-interface: every extra member is an obligation for every future transport).
+`Daemon`'s connection entry point takes a `Wire` (`src/daemon/wire.ts`), so how bytes actually
+arrive is not the daemon's business — and neither is framing: a WebSocket message *is* a frame, so
+there is no line splitting and no declared-length accumulation anywhere in this package. A text
+message is decoded as exactly one JSON-RPC message; a binary message is a payload whose first four
+bytes are the `id` of the in-flight request it belongs to.
 
-Chunks on a `Wire` are **raw bytes**. Undecoded on purpose: a payload may contain any byte value
-(`0x0A` included), so decoding belongs at the frame layer where the bytes are actually sliced —
-`FrameDecoder` splits lines on `\n` and payloads by declared length, and both decisions live in
-that one place. The net adapter `socketWire()` is six one-line mappings and no `setEncoding`.
+The interface is settled: **seven members — six methods plus one property**, each of them counted
+from what `Daemon` actually calls, no more and no fewer (a member is an obligation every transport
+has to implement and test).
 
-`FrameDecoder` hands out **one item at a time** (`push()` then `next()`): whether the bytes after a
-frame are a binary payload is a question only the caller can answer (it knows the method), so the
-decoder must not read ahead of that verdict.
+| Member | Kind | What it is |
+|---|---|---|
+| `destroyed` | property | can the peer still receive? `Daemon` checks it before writing (writing a closed connection is a silent no-op) |
+| `onText(listener)` | method | inbound: one text message, already a string. The boundary is the transport's job; whether it parses as JSON is the daemon's (`bad-frame`) |
+| `onBinary(listener)` | method | inbound: one binary message — its first four bytes are the request `id`, the rest is the payload, handed over as a raw `Buffer` (one UTF-8 round trip would corrupt an image without failing) |
+| `onError(listener)` | method | the transport itself failed (reset, write error); `Daemon` logs one warn line. It has to be in the interface: `ws` throws when an `error` event has no listener, and folding it into `onClose` would lose that log line |
+| `onClose(listener)` | method | the connection is gone for good, exactly once — the connection table, the `events.watch` unsubscribes and the idle timer all key off it |
+| `write(text)` | method | outbound: one text message. Outbound has this single door; the server sends no binary (all of its results are JSON) |
+| `destroy()` | method | drop this connection; implemented as `ws.close()` — a graceful close, so an error response sent just before it still reaches the peer |
 
-Today's only implementation is **TCP**: `start()` wraps each `net.Socket` with
-`socketWire()` and passes it to `Daemon.handleConnection(wire)`. WebSocket is **not
-implemented** — there is no `ws` dependency and no WS listener in this package. Adding one
-means (1) a new `Wire` implementation over `ws` text frames and (2) a listener that calls
-`daemon.handleConnection(wire)` per connection; `Daemon` and `src/protocol/` do not change.
-Authentication stays unsolved either way: the loopback assertion lives in the listener, not
-in the `Wire`.
+There is no unsubscribe handle: a wire lives exactly as long as its connection, and `Daemon` never
+swaps its callbacks mid-connection.
 
-That "not a socket" claim is tested, not hoped for: `src/daemon/wire.test.ts` drives the
-same `handleConnection()` with an in-memory duplex (two `PassThrough`s, no `vi.mock`) and
-with a real `net.Socket`, running the identical handshake / call / event-push / close
-scenario on both.
+`start()` serves HTTP, accepts the upgrade, and hands each connection to
+`Daemon.handleConnection(wire)`. Authentication stays unsolved (see the v1 boundary above): the
+loopback assertion lives in the listener, not in the `Wire`.
+
+That "not a socket" claim is tested, not hoped for. `src/daemon/wire.test.ts` drives the same
+`handleConnection()` twice: once through an **in-memory duplex** (a real object implementing `Wire`
+over two `PassThrough` streams), and once with a **real WebSocket client** — `WsTestClient`
+(`src/daemon/WsTestClientTestSupport.ts`) connects to the daemon over `ws://` and speaks JSON-RPC
+through the very same `webSocketWire()` adapter and upgrade callback that `start()` uses. The
+assertions are the same set for both halves — handshake / call / event push / binary pairing / close
+cleanup — so "the same thing over another transport" is checked rather than asserted. `WsTestClient`
+is what `Daemon.test.ts` and `sessionHandlers.test.ts` use as well, and it is a real socket on
+purpose: what those suites test is the wire itself, so nothing is mocked.
 
 ## Session layer
 

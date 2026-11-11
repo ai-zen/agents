@@ -1,8 +1,8 @@
 /**
- * `QuestionBroker` 的用例：服务端提问、客户端回答、以及「没人在看就不问」。
+ * `QuestionBroker` 的用例：服务端提问、客户端回答，以及**题目是槽位**这件事。
  *
- * 这一组的中心是那四条约束（没人在看就不问 / 先登记再发 / 有时限 / 三个出口都清表）：
- * 少任何一条，症状都是「这一轮永远收不了尾」，而它在一轮对话里只表现成「界面卡住」。
+ * 这一组的中心是那四条约束（先登记再发 / 没人看也登记 / 有时限 / 三个出口都清表）：
+ * 少任何一条，症状都是「这一轮永远收不了尾」，或者「后连上来的客户端看不见那道题」。
  *
  * 共用脚手架见 `SessionTestSupport.ts`。
  */
@@ -23,6 +23,7 @@ import {
   events,
   counter,
   resetEvents,
+  settled,
   useSessionKit,
 } from "./SessionTestSupport.js";
 
@@ -125,10 +126,10 @@ describe("SessionManager：自动迁移用哪种方式交接，由客户端回�
       // 选择器的标题要显示「已用 X / 上限 Y」：这两个数只有服务端手里有
       params: { promptTokens: 999, handoffTokens: 500 },
     });
-    expect(questions[0].questionId).toMatch(/^q-\d+$/);
+    expect(questions[0].questionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-/);
 
     // 不回答的话这一轮就悬着（并占用迁移的并发闸门）：用例自己把它收掉
-    expect(auto.answer(sessionId, questions[0].questionId, "self")).toEqual({ answered: true });
+    expect(auto.answer(questions[0].questionId, "self")).toEqual({ answered: true });
     await pending;
   });
 
@@ -139,9 +140,9 @@ describe("SessionManager：自动迁移用哪种方式交接，由客户端回�
     const pending = triggerAutoMigrate(hooks);
     const question = pick("session-question")[0];
 
-    expect(auto.answer(sessionId, question.questionId, "summary")).toEqual({ answered: true });
+    expect(auto.answer(question.questionId, "summary")).toEqual({ answered: true });
     // 同一个 questionId 再答一次：来晚了 —— 不抛错、也不用重试（服务端已经继续跑了）
-    expect(auto.answer(sessionId, question.questionId, "self")).toEqual({ answered: false });
+    expect(auto.answer(question.questionId, "self")).toEqual({ answered: false });
     await pending;
 
     // 交接服务收到的「请求执行者」就是用户选的那个：请求 self 时会降级到 summary 并多一条
@@ -161,7 +162,7 @@ describe("SessionManager：自动迁移用哪种方式交接，由客户端回�
 
     const pending = triggerAutoMigrate(hooks);
     const question = pick("session-question")[0];
-    expect(auto.answer(sessionId, question.questionId, null)).toEqual({ answered: true });
+    expect(auto.answer(question.questionId, null)).toEqual({ answered: true });
     await pending;
 
     expect(pick("session-id-changed")).toEqual([]);
@@ -170,7 +171,7 @@ describe("SessionManager：自动迁移用哪种方式交接，由客户端回�
     expect(store.records.size).toBe(0);
   });
 
-  it("没有客户端在看：不问，按兜底「什么都不做」跳过迁移（说一句 migrationSkipped）", async () => {
+  it("没有客户端在看：题目照样登记在槽位上（不是一次性广播），后来接上的客户端看得见、答得了", async () => {
     // 独立的一套：hub 上一个订阅者都没有 —— 客户端已退出，而会话仍在服务端活着
     const silentHub = new RecordingHub();
     const silent = assemble({ hub: silentHub, askTimeoutMs: 30_000 });
@@ -178,23 +179,55 @@ describe("SessionManager：自动迁移用哪种方式交接，由客户端回�
     const { sessionId } = await silent.manager.create({ workspaceId: "ws-1", path: workspace });
     agent.messages = [{ role: "user", content: "旧任务" }];
 
-    // 全程没人回答却能跑完：若真问了，这一句会挂到 30 秒超时（用例先超时失败）
-    await triggerAutoMigrate(silent.hooks);
-
+    const pending = triggerAutoMigrate(silent.hooks);
+    await settled(); // 让它跑到「等答案」那一步（没人在看也不会自己走完）
     expect(silentHub.watcherCount()).toBe(0);
-    expect(silentHub.published.filter((event) => event.event === "session-question")).toEqual([]);
+
+    // 快照是它的**第二个出口**：题目在槽位上，带着答它所需的一切
+    const snapshot = await silent.manager.snapshot(sessionId);
+    expect(snapshot.pendingQuestions).toHaveLength(1);
+    const question = snapshot.pendingQuestions[0]!;
+    expect(question).toMatchObject({
+      event: "session-question",
+      sessionId,
+      kind: "handoff-mode",
+      input: "select",
+      options: ["self", "summary"],
+      allowSkip: true,
+      fallback: null,
+      params: { promptTokens: 999, handoffTokens: 500 },
+    });
+
+    // 后来接上的客户端答它：认领成功，且这一轮按**用户的决定**继续（不是按兜底跳过）
+    expect(silent.manager.answer(question.questionId, "summary")).toEqual({ answered: true });
+    await pending;
+
     const notices = silentHub.published.filter(
       (event): event is Extract<ServerEvent, { event: "session-notice" }> =>
         event.event === "session-notice",
     );
-    // 兜底 = 什么都不做：**不迁移**（旧版这里的默认是 self 自动迁移，按产品决定改掉了）
-    expect(notices.some((notice) => notice.code === "handoffWriting")).toBe(false);
-    expect(notices.some((notice) => notice.code === "migrationSkipped")).toBe(true);
+    expect(notices.some((notice) => notice.code === "handoffWriting")).toBe(true);
+    expect(notices.some((notice) => notice.code === "migrationSkipped")).toBe(false);
     expect(
       silentHub.published.filter((event) => event.event === "session-id-changed"),
-    ).toHaveLength(0);
-    // 会话原封不动
-    expect((await silent.manager.list("ws-1")).map((item) => item.sessionId)).toEqual([sessionId]);
+    ).toHaveLength(1);
+  });
+
+  it("确认即消：答掉的那道题从槽位上消失，第二个客户端既看不到也答不了", async () => {
+    const { sessionId } = await auto.create({ workspaceId: "ws-1", path: workspace });
+    agent.messages = [{ role: "user", content: "旧任务" }];
+
+    const pending = triggerAutoMigrate(hooks);
+    await settled();
+    const question = (await auto.snapshot(sessionId)).pendingQuestions[0]!;
+    expect(question).toBeDefined();
+
+    expect(auto.answer(question.questionId, null)).toEqual({ answered: true });
+
+    // 一份状态：任意客户端确认即消 —— 不是「每个客户端各存一份已读」
+    expect((await auto.snapshot(sessionId)).pendingQuestions).toEqual([]);
+    expect(auto.answer(question.questionId, "self")).toEqual({ answered: false });
+    await pending;
   });
 
   it("没人回答（超时）：按兜底跳过迁移，并把挂着的提问清掉", async () => {
@@ -218,17 +251,58 @@ describe("SessionManager：自动迁移用哪种方式交接，由客户端回�
     expect(pick("session-id-changed")).toHaveLength(0);
     // 表已清：这个问题现在谁也答不了（迟到的回答只能是「来晚了」）
     const remaining = (await fast.manager.list("ws-1"))[0]!.sessionId;
-    expect(fast.manager.answer(remaining, question.questionId, "summary")).toEqual({
+    expect(fast.manager.answer(question.questionId, "summary")).toEqual({
       answered: false,
     });
+    // 快照里也没了：超时之后那道题不能再被谁看到、更不能再被回答
+    expect((await fast.manager.snapshot(remaining)).pendingQuestions).toEqual([]);
   });
 
-  it("answer 一个不存在的会话：unknown-session（拿错 id 是调用方的错，不是「来晚了」）", () => {
-    expect(() => auto.answer("sess_404", "q-1", "self")).toThrow(/unknown session/);
-    try {
-      auto.answer("sess_404", "q-1", "self");
-    } catch (error) {
-      expect((error as { code?: string }).code).toBe("unknown-session");
-    }
+  it("跨会话不撞号：两段会话各问一问，两个 questionId 不同，answer 按 id 定位到对的那一段", async () => {
+    const localHub = new RecordingHub();
+    const hooksList: Hooks[] = [];
+    let seq = 0;
+    const local = new SessionManager({
+      hub: localHub,
+      createAgent: async (input) => {
+        hooksList.push({ autoMigrate: input.autoMigrate, resolveMode: input.resolveMode });
+        return agent;
+      },
+      nextSessionId: () => `chat_cross_${++seq}`,
+      storeFor: () => store,
+      handoff: { aiZenDir: join(workspace, "ai-zen"), homeDir: workspace },
+      askTimeoutMs: 30_000,
+    });
+    extras.push(local);
+    const first = await local.create({ workspaceId: "ws-1", path: workspace });
+    const second = await local.create({ workspaceId: "ws-1", path: workspace });
+    agent.messages = [{ role: "user", content: "旧任务" }];
+
+    // 两段会话各问一次（都在「没人答」的状态下挂着）
+    const pendingA = triggerAutoMigrate(hooksList[0]!);
+    const pendingB = triggerAutoMigrate(hooksList[1]!);
+    await settled();
+
+    const questionA = (await local.snapshot(first.sessionId)).pendingQuestions[0]!;
+    const questionB = (await local.snapshot(second.sessionId)).pendingQuestions[0]!;
+    expect(questionA.questionId).not.toBe(questionB.questionId);
+    expect(questionA.sessionId).toBe(first.sessionId);
+    expect(questionB.sessionId).toBe(second.sessionId);
+
+    // 只答第一段：只有它那张表被清，第二段的题目原封不动（这就是「按 id 定位」的意思）
+    expect(local.answer(questionA.questionId, null)).toEqual({ answered: true });
+    expect((await local.snapshot(first.sessionId)).pendingQuestions).toEqual([]);
+    expect(
+      (await local.snapshot(second.sessionId)).pendingQuestions.map((q) => q.questionId),
+    ).toEqual([questionB.questionId]);
+
+    expect(local.answer(questionB.questionId, null)).toEqual({ answered: true });
+    await Promise.all([pendingA, pendingB]);
+  });
+
+  it("answer 一个不认识的 questionId：answered:false（来晚了，不是拿错了会话）", () => {
+    // 不再有 `unknown-session` 那条分支：只认 questionId，而「这个 id 不在任何表里」
+    // 对客户端就是「不用重试」 —— 与超时 / 已答过 / 会话已收是同一件事。
+    expect(auto.answer("q-404", "self")).toEqual({ answered: false });
   });
 });

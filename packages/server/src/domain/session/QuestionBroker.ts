@@ -7,19 +7,34 @@
  * （「用哪种方式交接」）。四条约束写在 `askQuestion` 里，因为它们是**提问**的规矩，
  * 不是交接的规矩：
  *
- *   1. **没人在看就不问**（返回兜底值）；
- *   2. **先登记再发事件**（客户端可能在同一轮事件循环里就答了）；
+ *   1. **先登记再发事件**（客户端可能在同一轮事件循环里就答了）；
+ *   2. **没人看也登记**（题目是槽位，不是一次性广播：后来的连接靠 `session.snapshot` 补看
+ *      并回答 —— 见 `LiveSession.questions`）；
  *   3. **等，但有时限**（`askTimeoutMs`，到点用兜底值收场）；
  *   4. **三个出口都清表**（答了 / 超时 / 被流程放行）—— 清表是「来晚了」的唯一判据。
  *
  * ## 为什么它能单独成一个类
  *
- * 它是四块里**唯一需要 `hub.watcherCount()`** 的：没人在看时提问只是把这一轮挂死。
- * 除此之外它只碰会话上的 `questions` / `questionSeq` 两个字段，不碰注册表、不碰存档。
+ * 它只碰会话上的 `questions` 一个字段与 `hub`：不碰注册表、不碰存档。
+ *
+ * ## 与上一版的差别：那条「没人在看就不问」的规矩退场了
+ *
+ * 上一版：`watcherCount() === 0` 时**根本不问**，直接返回兜底。那是因为提问题是「一次性
+ * 广播」：没人看 = 那条事件永远没人收到 = 只能把这一轮挂到超时。
+ *
+ * 现在题目是**槽位**：登记之后一直挂着，后来接上的客户端在 `session.snapshot` 的
+ * `pendingQuestions` 里看得见（webui 与远程让「人不在同一条连接上」成为常态）。于是「没人看」
+ * 不再等于「没人能答」—— 该等，`askTimeoutMs` 仍是那个硬上限。
  */
 
+import { randomUUID } from "node:crypto";
 import type { EventHub } from "../../lib/events.js";
-import type { HandoffMode, NoticePayload, SessionAnswerResult } from "../../protocol/index.js";
+import type {
+  HandoffMode,
+  NoticePayload,
+  SessionAnswerResult,
+  SessionQuestionEvent,
+} from "../../protocol/index.js";
 import type { AutoMigrateTriggerInfo } from "@ai-zen/agents-sdk";
 import type { AskQuestionSpec, LiveSession } from "./LiveSession.js";
 
@@ -27,13 +42,8 @@ import type { AskQuestionSpec, LiveSession } from "./LiveSession.js";
 export const ASK_TIMEOUT_MS = 300_000;
 
 export interface QuestionBrokerOptions {
-  /**
-   * 事件出口。
-   *
-   * 兼作「有没有人在看」的判据：`watcherCount()` 为 0 时**根本不问**（理由见
-   * `askQuestion` 第 1 条）。这条判定只有这里用得到，所以不是会话层的通用设施。
-   */
-  hub: Pick<EventHub, "publish" | "watcherCount">;
+  /** 事件出口（全局通知与会话事件共用同一条推送线） */
+  hub: Pick<EventHub, "publish">;
   /** 等回答的上限（毫秒）。可注入：等 5 分钟才能验证的用例只能靠 `sleep`，那是把「超时」测成「时钟」 */
   askTimeoutMs?: number;
   /** 这段会话还在注册表里吗（问一个已经退场的会话没有意义） */
@@ -43,7 +53,7 @@ export interface QuestionBrokerOptions {
 }
 
 export class QuestionBroker {
-  private readonly hub: Pick<EventHub, "publish" | "watcherCount">;
+  private readonly hub: Pick<EventHub, "publish">;
   private readonly askTimeoutMs: number;
 
   constructor(private readonly options: QuestionBrokerOptions) {
@@ -54,18 +64,15 @@ export class QuestionBroker {
   /**
    * 问客户端一个问题，等它的答案（`session.answer`）。四条规矩见文件头。
    *
-   * 「没人在看就不问」为什么是**兜底而不是等**：发出去没人看得见，等一个不会来的答案
-   * 只是把这一轮挂死（客户端已退出，而会话仍在服务端活着）。
+   * 「没人看也登记」为什么是**等**而不是「直接给兜底」：题目是槽位，后接上来的客户端在
+   * 快照里看得见它、也答得了它。只有当谁都不来时，`askTimeoutMs` 才替用户收了场。
+   *
+   * id 用 UUID：`session.answer` 只带 `questionId`（不再带 `sessionId`），服务端靠这一个值
+   * 定位到该答哪一段会话 —— 跨会话、跨进程、跨重启都不撞号，也不需要任何持久化计数器。
    */
   async askQuestion(session: LiveSession, spec: AskQuestionSpec): Promise<string | null> {
-    if (this.hub.watcherCount() === 0) return spec.fallback;
-
-    const questionId = `q-${++session.questionSeq}`;
-    const answer = new Promise<string | null>((resolve) => {
-      session.questions.set(questionId, { resolve, fallback: spec.fallback });
-    });
-
-    this.hub.publish({
+    const questionId = randomUUID();
+    const event: SessionQuestionEvent = {
       event: "session-question",
       sessionId: session.id,
       questionId,
@@ -75,7 +82,13 @@ export class QuestionBroker {
       params: spec.params ?? {},
       allowSkip: spec.allowSkip ?? false,
       fallback: spec.fallback,
+    };
+    // 先登记再发：客户端可能在这一条事件的处理里就把答案送回来了（同一轮事件循环）
+    const answer = new Promise<string | null>((resolve) => {
+      session.questions.set(questionId, { resolve, fallback: spec.fallback, event });
     });
+
+    this.hub.publish(event);
 
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timedOut = new Promise<string | null>((resolve) => {
@@ -98,7 +111,7 @@ export class QuestionBroker {
    *
    * 本方法只负责两件事：把触发时的两个数（`promptTokens` / `handoffTokens`）交给
    * {@link askQuestion}，并把答案翻译成 `HandoffMode | null`。提问本身的四条约束
-   * （没人在看就不问 / 先登记再发 / 有时限 / 三个出口都清表）在 `askQuestion` 里，
+   * （先登记再发 / 没人看也登记 / 有时限 / 三个出口都清表）在 `askQuestion` 里，
    * 不在这里重写一遍——那是一处会与实现无关地漂的副本。
    *
    * 兜底是 `null`（本次不交接）而不是 `self`：迁移要不要现在做，是用户的决定；服务端替他
@@ -134,8 +147,8 @@ export class QuestionBroker {
   /**
    * 认领一个回答（`session.answer`）。
    *
-   * 三种结果各有含义，不能混（见 `SessionManager.answer`）：会话不存在 → `unknown-session`；
-   * 问题不在表里 → `{ answered: false }`，**不是参数错，是来晚了**；认领成功 → `{ answered: true }`。
+   * 三种结果各有含义，不能混（见 `SessionManager.answer`）：`questionId` 在表里 → 认领成功；
+   * 不在表里 → `{ answered: false }`，**不是参数错，是来晚了**。
    */
   answer(session: LiveSession, questionId: string, choice: string | null): SessionAnswerResult {
     const pending = session.questions.get(questionId);

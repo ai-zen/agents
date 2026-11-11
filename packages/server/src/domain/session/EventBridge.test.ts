@@ -381,6 +381,8 @@ describe("SessionManager：子 Agent（栏目）", () => {
     expect(pick("session-notice")).toEqual([
       {
         event: "session-notice",
+        // 槽位 id（A35）：事件与快照里的 `pendingNotices` 是同一个值
+        id: expect.any(String),
         sessionId,
         level: "error",
         code: "subAgentFailed",

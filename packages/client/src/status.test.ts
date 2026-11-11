@@ -49,7 +49,7 @@ describe("readServerStatus", () => {
     if (!status.running) return; // 类型收窄（失败时上面已断言）
     expect(status.port).toBe(daemon.port);
     expect(status.pid).toBe(process.pid);
-    expect(status.protocol).toBe(1);
+    expect(status.protocol).toBe(2);
     // 这条连接自己也算在内：status 报告的是「此刻有几条连着的」
     expect(status.connections).toBe(1);
   });
@@ -59,7 +59,7 @@ describe("readServerStatus", () => {
       pid: process.pid,
       host: "127.0.0.1",
       port: await unusedPort(),
-      protocol: 1,
+      protocol: 2,
       version: "0.0.0-test",
       startedAt: new Date().toISOString(),
       schema: 1,

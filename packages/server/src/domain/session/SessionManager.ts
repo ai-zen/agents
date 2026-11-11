@@ -63,6 +63,7 @@
  * 会话续命。
  */
 
+import { randomUUID } from "node:crypto";
 import { PhaseTracker } from "../../lib/phase.js";
 import { compareSessionEntries } from "./store/SessionStore.js";
 import type { SessionRecord, SessionStore } from "./store/SessionStore.js";
@@ -76,7 +77,7 @@ import type { AutoTitleFn } from "./AutoTitle.js";
 import { EventBridge } from "./EventBridge.js";
 import { Persistence } from "./Persistence.js";
 import { QuestionBroker } from "./QuestionBroker.js";
-import type { AgentLike, LiveSession, SubAgentLike } from "./LiveSession.js";
+import type { AgentLike, LiveSession, PendingNotice, SubAgentLike } from "./LiveSession.js";
 // `resolveModelParams` 是**运行期**依赖：参数该取哪一层只有 SDK 那一处实现
 // （`packages/sdk/src/runtime/resolveModel.ts`）。快照要报「当前生效的参数」，就得问
 // 它 —— 本层再写一遍「哪一档取哪一份」，就是让同一个 `switch` 存在两份的第二天。
@@ -500,6 +501,29 @@ export class SessionManager {
       phase: this.events.phaseOf(session),
       messages: [...session.agent.messages],
       ...(session.agent.lastUsage !== undefined ? { lastUsage: session.agent.lastUsage } : {}),
+      // 两个槽位表：**会长在会话上的事实**（不是一次性事件），后连上来的客户端靠快照补看。
+      // 题目：答掉 / 超时 / 放行即消失；通知：登记后一直在这里，直到会话关闭。两者都是
+      // 会话作用域、不落盘 —— 会话没了它们跟着没（见 `LiveSession`）。
+      pendingQuestions: [...session.questions.values()].map((slot) => ({
+        ...slot.event,
+        // 会话可能中途换过 id（`migrate` 的 prune 分支）：快照说的是「此刻是哪一段」
+        sessionId: session.id,
+      })),
+      // **`pendingNotices` 装的是会话内通知**（`SessionNoticeEvent`，`code` 是
+      // `SessionNoticeCode`），不是全局通知：那是进程作用域的事，入口是 `notice.list`。
+      // 与题目同一个理由 —— 登记之后一直在这里，直到有人确认或会话关闭；快照是「后连上来
+      // 的客户端补看错过的通知」的第二个出口。
+      pendingNotices: [...session.notices.values()].map((slot) => ({
+        event: "session-notice",
+        // 槽位的 id 原样交出去：实时推送与这里说的是同一条通知，两个出口的 id 必须一致
+        // （否则客户端为了`notice.ack` 还得回头再查一次，白跑一趟往返）
+        id: slot.id,
+        // 会话可能中途换过 id（`migrate` 的 prune 分支），同 `pendingQuestions`
+        sessionId: session.id,
+        level: slot.level,
+        code: slot.code,
+        ...(slot.params !== undefined ? { params: slot.params } : {}),
+      })),
     };
   }
 
@@ -1180,18 +1204,62 @@ export class SessionManager {
   }
 
   /**
-   * 发一条**对话内**通知（绑会话）。
+   * 发一条**对话内**通知（绑会话）—— **存与播的唯一入口**。
+   *
+   * 两半必须在一起，分开写的那天就会漏播（或漏存）：
+   *   · 存：登记成一个槽位（`LiveSession.notices`），寿命到会话关闭为止；
+   *   · 播：推一条 `session-notice` 给此刻在看的连接（顺带通知一声，不是唯一出口）。
+   *
+   * 两半**共用同一个 id**（槽位的 UUID）：它们说的是同一条通知，两个出口的 id 不一致，客户端
+   * 收到事件也无法确认它，只能按 code + params 本地去重、事后再拉一次列表找 id。
    *
    * 会话不存在就直接抛：发一条没有归属的通知，客户端既贴不到会话上、也没法清理。
-   * 全局通知不归这里管 —— 那是服务本身的事，由组装根直接往 hub 里发。
+   * 全局通知不归这里管 —— 那是进程作用域的事（`ServerApp.publishNotice`）。
+   *
+   * 返回登进表的那个槽位（含 `id`）：与 `ServerApp.publishNotice` 同一个口径 —— 存与播的
+   * 入口顺手把「刚刚存进去的是什么」交回去，需要拿 id 做后续动作（日志对账、用例断言
+   * 「确认掉的就是这一条」）的一方不必再去表里猜。
    */
-  notice(sessionId: string, notice: NoticePayload): void {
+  notice(sessionId: string, notice: NoticePayload): PendingNotice {
     const session = this.require(sessionId);
+    const slot: PendingNotice = {
+      ...notice,
+      // UUID：跨会话、跨进程、跨重启都不撞号，也不靠任何持久化计数器
+      id: randomUUID(),
+      createdAt: new Date().toISOString(),
+    };
+    session.notices.set(slot.id, slot);
+    // 推出去的那条事件带**槽位自己的 id**（不是另生成一个）：实时推送与槽位是同一条通知
+    // 的两个出口，客户端拿到事件就能直接 `notice.ack`，不必回头再拉快照找 id。
     this.hub.publish({
       event: "session-notice",
+      id: slot.id,
       sessionId: session.id,
       ...notice,
     });
+    return slot;
+  }
+
+  /**
+   * 按 id 确认掉**一条会话内通知**（`notice.ack` 的会话那一半）。
+   *
+   * 为什么由本类的注册表扫描，而不是让调用方带着 `sessionId` 来：通知 id 是 UUID（构造时
+   * 用 `randomUUID()`），**本身就能定位到那一条**，与方法 `session.answer` 只认
+   * `questionId` 同一个理由 —— 多一个字段就是多一处「两个 id 要配对」的机会。
+   * 也正因为如此，确认入口只有一条（`notice.ack`），不必为会话内通知再造一条带
+   * `sessionId` 的方法；调用方也不必先知道它属于哪段会话。
+   *
+   * 不另维护「通知 → 会话」的第二张索引：那是两份要同步的真相，而一段会话的通知通常
+   * 只有零到几条，扫描的代价可以忽略。
+   *
+   * 返回 `true` = 这次真的消掉了一条（`acked` 只列这个）；`false` = 本来就不在（已经被别人
+   * 确认过、或会话已收）—— 那不是错误，确认方要的结果已经达成。
+   */
+  ackNotice(noticeId: string): boolean {
+    for (const session of this.sessions.values()) {
+      if (session.notices.delete(noticeId)) return true;
+    }
+    return false;
   }
 
   async create(input: SessionCreateInput): Promise<SessionCreateResult> {
@@ -1302,7 +1370,7 @@ export class SessionManager {
       subAgentSeq: 0,
       subAgentIdSeq: 0,
       questions: new Map(),
-      questionSeq: 0,
+      notices: new Map(),
       detach: () => {},
     };
     session.detach = this.events.attach(session);
@@ -1413,18 +1481,26 @@ export class SessionManager {
   /**
    * 回答服务端提出的问题（`session.answer`）。
    *
-   * 三种结果各有含义，不能混：
-   *   - 会话不存在 → `unknown-session`：调用方拿错了 id；
-   *   - 问题不在表里 → `{ answered: false }`：**不是参数错，是来晚了**（超时 / 已经答过 /
-   *     会话已收）。客户端把选择器收掉就好，不重试、不报错 —— 把它报成错误，用户会在
-   *     “操作失败”里卡一辈子，而实际上服务端早就自己继续跑了；
-   *   - 认领成功 → `{ answered: true }`，`askHandoffMode` 那边随之继续。
+   * 只认 `questionId`（UUID）—— 它本身就能定位到问题，不再需要 `sessionId`：少一个字段就是
+   * 少一处「两个 id 要配对」的机会（配错了就是答到别人的会话里）。
    *
-   * 认领的判定在 `QuestionBroker`（清表是「来晚了」的唯一判据，那一处实现）；
-   * 本方法只负责「先确认会话存在」—— 「拿错 id」与「来晚了」必须是两个不同的答案。
+   * 两种结果各有含义，不能混：
+   *   - 认领成功 → `{ answered: true }`，`askHandoffMode` 那边随之继续；
+   *   - 找不到这段提问 → `{ answered: false }`：**不是参数错，是来晚了**（超时 / 已经答过 /
+   *     会话已收）。客户端把选择器收掉就好，不重试、不报错 —— 把它报成错误，用户会在
+   *     “操作失败”里卡一辈子，而实际上服务端早就自己继续跑了。
+   *
+   * 怎么找到那段会话：扫注册表（谁的表里有这个 id）。不另维护「问题 → 会话」的第二张索引 ——
+   * 那就是两份要同步的真相，而一个会话同一时刻只有 0 或 1 个问题，扫描的代价可以忽略。
+   * 认领的判定在 `QuestionBroker`（清表是「来晚了」的唯一判据，那一处实现）。
    */
-  answer(sessionId: string, questionId: string, choice: string | null): SessionAnswerResult {
-    return this.questions.answer(this.require(sessionId), questionId, choice);
+  answer(questionId: string, choice: string | null): SessionAnswerResult {
+    for (const session of this.sessions.values()) {
+      if (session.questions.has(questionId)) {
+        return this.questions.answer(session, questionId, choice);
+      }
+    }
+    return { answered: false };
   }
 
   cancel(sessionId: string): SessionCancelResult {

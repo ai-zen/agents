@@ -49,10 +49,12 @@
   "license": "MIT",
   "dependencies": {
     "@ai-zen/agents-core": "workspace:^",
-    "@ai-zen/agents-sdk": "workspace:^"
+    "@ai-zen/agents-sdk": "workspace:^",
+    "ws": "^8.22.2"
   },
   "devDependencies": {
     "@types/node": "^24.12.2",
+    "@types/ws": "^8.18.2",
     "rimraf": "^6.0.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.5",

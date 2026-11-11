@@ -1,6 +1,6 @@
 ---
 title: Architecture
-description: Five packages and two applications, their one-way dependency direction, what each layer owns and refuses, a 45-method / 15-event protocol surface, why the contract is the server's type files, the client's transport/facade/session layers, the server's directory layout, the single rule behind a session's lifetime, the four parts of SessionManager, the <aiZenDir> on-disk layout, build/test order, what this round of refactoring changed, and the gaps that remain.
+description: Five packages and two applications, their one-way dependency direction, what each layer owns and refuses, a 48-method / 15-event protocol surface, why the contract is the server's type files, the client's transport/facade/session layers, the server's directory layout, the single rule behind a session's lifetime, the four parts of SessionManager, the <aiZenDir> on-disk layout, build/test order, what this round of refactoring changed, and the gaps that remain.
 outline: deep
 ---
 
@@ -46,7 +46,7 @@ Read `A ← B` as "B depends on A". Every edge is a fact in `package.json` —
 Each one can be falsified with a command; none of them rests on "remember not to write that".
 
 **① There is no runtime edge between `client` and `server`.** The client imports the server for
-**types only** (shapes and names); the runtime pieces (frame codec, error-code judgement, loopback
+**types only** (shapes and names); the runtime pieces (message codec, error-code judgement, loopback
 judgement, discovery-file I/O, `callOnce`) are its own copy under `packages/client/src/wire/` — the
 contract shares **types**, not code. So `dependencies` holds one entry, `core`;
 `@ai-zen/agents-server` is a **peerDependency** (the host must provide it: the type surface comes
@@ -70,7 +70,7 @@ ships.
 
 **② The contract is types only, with zero runtime exports.** `packages/server/src/protocol/` holds
 nothing but `type` / `interface`: wire shapes, the method-name and event-name unions, the error-code
-union, the type exit for the data model. Everything with a runtime (frame codec, error-code
+union, the type exit for the data model. Everything with a runtime (message codec, error-code
 judgement, loopback judgement, version constant, discovery-file I/O, `callOnce`) lives in
 `packages/server/src/wire/`.
 
@@ -112,12 +112,12 @@ and a second definition is exactly what this project refuses. So it is declared 
 |---|---|---|
 | `core` | The conversation runtime: `Agent` / `Message` / `Tool` / `ToolCallContext`, the plugin and event system | Permissions, the filesystem, configuration, persistence — its `src/` imports no `node:*` builtin at all. Its only dependencies are `openai` and `@ai-zen/event-bus` |
 | `sdk` | Business capability: the capability pipeline (discover → filter → instantiate), the permission model, MCP lifecycle, task handoff and migration, built-in tools, `ConfigManager` | Processes and connections, session archives, workspaces, anything about what a client looks like. Depends on `core`, `@modelcontextprotocol/sdk`, `dayjs`, `openai` |
-| `server` | The wire **contract** (`src/protocol/`: the method-name and event-name unions, payload types, error codes, the phase shape, the type exit for the data model — types only, zero runtime exports) and its **runtime pieces** (`src/wire/`: frame codec, `hello` handshake, error-code judgement, loopback judgement, version constant, discovery-file I/O, `callOnce`), plus session orchestration, archives, workspaces, server-side reads/writes of configuration and agent definitions, the asset listing, the event outlet, and the `Daemon` that puts all of it on one TCP connection | Any UI stack (no ink / react / terminal library — the package boundary is the process boundary), and no process-level globals (cwd / global config path / global locale). Both hard constraints are in the header of `packages/server/src/index.ts`; the only exception is the composition root `src/cli.ts` |
-| `client` | **Everything** that has to happen on the client side between a front end and the server: service discovery and spawning, one TCP connection, two facades (sessions, config), the **session-stream state machine** (the part of "thinking" all three front ends must agree on), two judgements (whether to hand up the cwd, what state the server is in) | Rendering, localisation, process-level globals, any local read/write of server-side data |
+| `server` | The wire **contract** (`src/protocol/`: the method-name and event-name unions, payload types, error codes, the phase shape, the type exit for the data model — types only, zero runtime exports) and its **runtime pieces** (`src/wire/`: message codec, `hello` handshake, error-code judgement, loopback judgement, version constant, discovery-file I/O, `callOnce`), plus session orchestration, archives, workspaces, server-side reads/writes of configuration and agent definitions, the asset listing, the event outlet, and the `Daemon` that puts all of it on one WebSocket connection | Any UI stack (no ink / react / terminal library — the package boundary is the process boundary), and no process-level globals (cwd / global config path / global locale). Both hard constraints are in the header of `packages/server/src/index.ts`; the only exception is the composition root `src/cli.ts` |
+| `client` | **Everything** that has to happen on the client side between a front end and the server: service discovery and spawning, one WebSocket connection, two facades (sessions, config), the **session-stream state machine** (the part of "thinking" all three front ends must agree on), two judgements (whether to hand up the cwd, what state the server is in) | Rendering, localisation, process-level globals, any local read/write of server-side data |
 | `cli` (separate repo) | Rendering and input (ink), slash commands and the session layer, drawing the state of a `SessionStream` | Session orchestration, archives, workspaces, config writes — those live on the server. It depends on `client`, plus `sdk` / `core` (the app needs business types such as `AgentDefinition` and **runtime enums** such as `Role` / `MessageStatus`) |
 | `desktop main` (separate repo) | Application-level facts (`app.getVersion()` as `clientInfo`), spawning the server, subscribing to events and turning that state over to the renderer | The server implementation itself. Its event translator is now a thin adapter over `SessionStream` |
 
-## The protocol surface: 45 methods / 15 events
+## The protocol surface: 48 methods / 15 events
 
 Method and event names are **string-literal union types**, not runtime constant tables — they are
 declared in `packages/server/src/protocol/`, which holds types only and not a single line of
@@ -133,9 +133,11 @@ not events, they are enums inside `session-notice` / `server-notice` payloads.
 | `config.*` | 7 | `ConfigMethod` in `config.ts` |
 | `agent.*` | 5 | `AgentMethod` in `config.ts` |
 | `asset.*` | 1 | `AssetMethod` in `assets.ts` |
-| `content.*` | 1 | `ContentMethod` in `content.ts` |
+| `content.*` | 1 | `ContentMethod` in `content.ts` (the only method that carries a binary payload) |
+| `notice.*` | 2 | `NoticeMethod` in `notice.ts` (`notice.list` / `notice.ack`, the query and acknowledgement pair for global notices) |
+| `hello` (handshake) | 1 | `hello` in the method table; its two shapes are `HelloParams` / `HelloResult` in `protocol/messages.ts` (field by field in [Wire Protocol](protocol.md), under "Handshake") |
 | built-in `ping` / `status` / `shutdown` | 3 | `DaemonMethod` in `daemon.ts` |
-| **total** | **45** | |
+| **total** | **48** | |
 
 There are **15** events, in three unions, all in `sessions.ts`:
 
@@ -168,7 +170,7 @@ definition site (`packages/server/src/protocol/sessions.ts` / `config.ts` / `ass
 
 `packages/server/src/protocol/` holds nothing but `type` / `interface`: the wire shapes, the
 method/event name unions, the error-code union, and the type-only re-export of the data model.
-**Zero runtime exports.** Everything with runtime behaviour (frame codec, error-code predicate,
+**Zero runtime exports.** Everything with runtime behaviour (message codec, error-code predicate,
 loopback predicate, version constant, discovery-file I/O, `callOnce`) lives in
 `packages/server/src/wire/`.
 
@@ -209,7 +211,7 @@ Inside the package the split is by "dirty / pure" and by responsibility. Whateve
 |---|---|---|
 | **Transport** | `transport/connection.ts` (`ServerConnection`) | **One connection per process**: every use checks `closed`, rebuilds when dead, re-subscribes to `events.watch` on the new connection, reports both disconnects and readiness upwards (`onClose` / `onOpen`). It does **not** retry — retrying is a session-layer rule |
 | | `ensure-server.ts` | Reads `<aiZenDir>/run/server.json`; if liveness (`callOnce` asking `ping`) fails it spawns `agents-server serve` detached and polls until `ping` answers. It is the **only** place in the package that knows about `agents-server` (deployment strategy, not a layer) |
-| | `socket-server-client.ts` | One TCP + JSON-lines connection: `hello` handshake, in-flight calls (optionally carrying raw bytes), event dispatch, disconnect notification |
+| | `socket-server-client.ts` | One WebSocket + JSON-RPC 2.0 connection: `hello` handshake, in-flight calls (optionally carrying a binary payload), event dispatch, disconnect notification |
 | **Facade** | `facade/sessions.ts` (`RemoteSessions`, 28) | Typed thin wrapper over `session.*` (21) + `workspace.*` (6) + `content.*` (1) |
 | | `facade/config.ts` (`RemoteConfig`, 13) | `config.*` (7) + `agent.*` (5) + `asset.*` (1) |
 | | `facade/coverage.test-d.ts` | Facade method set **===** protocol method-table key set; **100% coverage** is enforced by types: one method missing or one extra fails to compile |
@@ -247,7 +249,7 @@ packages/server/src/
     workspace/  agent/  config/  asset/  handoff/
   lib/          generic parts with no business semantics: phase.ts (PhaseTracker), events.ts (EventHub)
   protocol/     the wire contract (types only): method-name / event-name unions, payloads, error codes, phase shape, data-model exit
-  wire/         the contract's runtime pieces: frame codec, error-code judgement, loopback judgement, version constant, discovery-file I/O, callOnce
+  wire/         the contract's runtime pieces: message codec, error-code judgement, loopback judgement, version constant, discovery-file I/O, callOnce
   daemon/       transport and wiring: Daemon / wire (transport abstraction) / params / *Handlers
   cli.ts        composition root (the only reader of env / argv)
   index.ts      the package barrel (`export *`; a name clash fails the build — that is the point)
@@ -257,7 +259,7 @@ The **dividing line** between `domain/` and `lib/` is this: `domain/` holds **bu
 
 Two more:
 
-- **`daemon/` handles only "byte stream → frame → method call"**: `Daemon` itself carries just `ping` / `status` / `shutdown`, and the rest of the method table is injected by the composition root through `DaemonOptions.handlers`. This layer does **no business orchestration** — it validates parameter shapes and wires things up; any decision that needs to read another object belongs to `domain/` (e.g. "removing a workspace must close its live sessions" is `SessionManager.closeWorkspace`).
+- **`daemon/` handles only "WebSocket message → JSON-RPC message → method call"**: `Daemon` itself carries just `ping` / `status` / `shutdown`, and the rest of the method table is injected by the composition root through `DaemonOptions.handlers`. This layer does **no business orchestration** — it validates parameter shapes and wires things up; any decision that needs to read another object belongs to `domain/` (e.g. "removing a workspace must close its live sessions" is `SessionManager.closeWorkspace`).
 - **`cli.ts` is the composition root**: the only place allowed to read env / argv (`AI_ZEN_DIR`, `HOME`, command-line flags); it resolves paths into values and injects them, while `domain/`, `lib/` and `daemon/` read no globals. **`index.ts` is an `export *` barrel**, not a manifest of methods.
 
 The wire contract is not in `src/daemon/` or `src/domain/` — it is `src/protocol/` in this same package (types only), with the runtime pieces in `src/wire/`.
@@ -291,11 +293,7 @@ Writes are atomic (write `.tmp`, then `rename`) so a client never reads half a J
 
 ### Transport and handshake
 
-- **TCP + JSON-lines**: one JSON object per line, terminated by `\n`; the frame ceiling is 8 MiB, and an oversized frame is a protocol error that kills the connection (`packages/server/src/wire/frames.ts`). JSON-lines was chosen so the protocol can be driven by hand with debugging tools and dropped as-is into WebSocket text frames and stdio.
-- **Binary hangs off the frame**: a request frame that declares `params.bytes` is followed on the same stream by exactly that many **raw bytes** (no separator, no encoding); line framing resumes once they are all in, and one payload is capped at 64 MiB (`MAX_PAYLOAD_BYTES`). Images and files travel this way (`content.upload`); the conversion (upload to a `file_id`, base64 inline, or degrade to a text hint) is decided **server-side** from the endpoint and model that session is using.
-- **The first frame must be `hello`**: the client opens with `{ kind: "hello", protocol, client: { name, version } }` and the server replies with the same shape, carrying `ok` and `server: { name, version, protocol, pid, startedAt }`. There is **no exception** — even though this build has no authentication yet, the handshake still comes first, otherwise "add auth later" would mean rewriting how every client connects (header of `packages/server/src/protocol/messages.ts`).
-- After that each direction carries two kinds: request/response `{ id, method, params }` → `{ id, ok, result | error }`, and events `{ event, ... }`, pushed by the server, with no `id` and no reply expected.
-- The protocol version is `PROTOCOL_VERSION = 1`; any incompatible field change bumps it, and there is no "best-effort" compatibility mode.
+The wire is **WebSocket + JSON-RPC 2.0**: one WebSocket message is exactly one complete JSON-RPC 2.0 message, and framing is the WebSocket message boundary; the first message must be `hello`, and a version that does not match means no connection — the handshake comes first even though this build has no authentication yet, so that adding authentication later does not mean rewriting how every client connects. For message classification, the `id` range, binary payloads, size ceilings, error codes and when a connection is dropped, the 15 events, and the stateful notices and questions, see [Wire Protocol](protocol.md) item by item.
 
 ### Loopback only
 
@@ -315,7 +313,7 @@ That is all of it, and **there is no second judgement**.
 
 `holders` means "at this moment one connection is actually watching it": the transport registers it (`session.create` / `session.attach` register the calling connection) and removes it when that connection closes (hooked on `connection.onClose`). It requires no cooperation from the client — the disappearance of a connection is **guaranteed by the kernel** (a `kill -9`, a crash or a power cut all take that socket away). The grace period is `DEFAULT_SESSION_IDLE_TIMEOUT_MS` (60 s, `--session-idle-timeout`), long enough to cover the client's worst-case reconnect budget; at the deadline the rule is **re-checked**, so an `attach` arriving inside the window merely cancels the reclaim, and a turn still running pushes it to `session-turn-end`.
 
-**Why there is no client-reported "keep-alive intent"**: that design used the conjunction of "the declared intent **and** a holder", and of those two facts only one survives the hardest case — a crashed process cannot send that frame, so the declaration stays at "keep it" forever and the session, together with its Agent and message history, pins itself in memory (this package runs on loopback, so the only reclaiming event would be a daemon restart); whereas a holder is a kernel-guaranteed fact that the very same crash cleans up. Taking the conjunction just made the unreliable half a necessary condition. The single "why" for this decision is the header of `SessionManager.ts`.
+**Why there is no client-reported "keep-alive intent"**: that design used the conjunction of "the declared intent **and** a holder", and of those two facts only one survives the hardest case — a crashed process cannot send that message, so the declaration stays at "keep it" forever and the session, together with its Agent and message history, pins itself in memory (this package runs on loopback, so the only reclaiming event would be a daemon restart); whereas a holder is a kernel-guaranteed fact that the very same crash cleans up. Taking the conjunction just made the unreliable half a necessary condition. The single "why" for this decision is the header of `SessionManager.ts`.
 
 Two **behavioural consequences** must be booked, and must not be described as "one mechanism fewer, behaviour unchanged":
 
@@ -397,6 +395,7 @@ Which gives these operating rules:
 
 ## Related documentation
 
+- [Wire Protocol](protocol.md) — the wire contract item by item: transport, `id`, binary frames, ceilings, handshake, error codes, events, stateful notices and questions
 - [Core API](core.md) — runtime public API and implementation details
 - [SDK](sdk.md) — capability-layer public API
 - [Retrieval & RAG](rag.md) — retrieval capability status

@@ -559,6 +559,25 @@ export interface SessionSnapshotResult {
   messages: Message[];
   /** 最近一轮用量（Agent 提供才带；客户端不知道就别显示） */
   lastUsage?: Usage;
+  /**
+   * 还没被回答的提问。
+   *
+   * 快照要给「后来的连接」看：问题产生的时点未必有人在看，人回来时那条事件早就推过了 ——
+   * 没有这份列表，待处理的问题在界面上就等于不存在。元素就是推给客户端的那条事件，不另造
+   * 一份形状（`questionId` / `kind` / `options` / `params` 全在里面）。
+   */
+  pendingQuestions: SessionQuestionEvent[];
+  /**
+   * 还没被确认的会话内通知。
+   *
+   * 与 `pendingQuestions` 同一个理由：通知的寿命终点是「有人确认」，不是「推过一次」。所以
+   * 快照是它的第二个出口 —— 后连上来的客户端靠这里补看错过的那些。
+   *
+   * 元素是 `SessionNoticeEvent`（不是 `ServerNoticeEvent`）：这是**会话作用域**的那一类，
+   * `code` 取 `SessionNoticeCode`。全局通知的 `code` 是 `ServerNoticeCode`，两份表互不兼容 ——
+   * 用后者接前者的值只能靠断言，而那个断言每一天都在说谎。全局的走 `notice.list`。
+   */
+  pendingNotices: SessionNoticeEvent[];
 }
 
 export interface SessionReloadParams {
@@ -753,7 +772,12 @@ export type SessionQuestionKind = "handoff-mode";
  * 一段已经继续跑下去的会话。
  */
 export interface SessionAnswerParams {
-  sessionId: string;
+  /**
+   * 要回答的那个问题的 id（UUID，全局唯一）。
+   *
+   * 为什么要 UUID 并且**不再带 `sessionId`**：id 本身就能定位到问题，多一个字段只是多一处
+   * 「两个 id 要配对」的机会（配错了就是答到别人的会话里）。
+   */
   questionId: string;
   /**
    * 选中的选项 id；`null` = 跳过（仅当 `allowSkip`）。
@@ -852,9 +876,10 @@ export interface SubAgentSnapshotResult {
 
 // ==================== 事件 ====================
 //
-// 这些写成 `type` 而不是 `interface`：`interface` 不会隐式获得索引签名，于是
-// 无法直接传给 `Connection.send(event: EventFrame)`（`EventFrame` 带 `[key: string]: unknown`）。
-// 写成类型别名则天然兼容，不需要在发送处加一次 `as` 断言。
+// 这些写成 `type` 而不是 `interface`：`interface` 不参与隐式索引签名，而事件载荷会被装进
+// `EventNotification.params`（`messages.ts`）再序列化上线，用类型别名写就不必在发送处加
+// `as` 断言。唯一的例外是 `ServerNoticeEvent` —— 它被两处引用（联合、全局槽位），具名
+// `interface` 比内联对象类型好引用。
 
 /**
  * 一轮开始（core `open`）。
@@ -1061,9 +1086,33 @@ export type SessionNoticeCode =
  */
 export type ServerNoticeCode = "mcpUnavailable" | "storeUnavailable";
 
-/** 对话内通知：与某一段会话绑定 */
+/**
+ * 对话内通知：与某一段会话绑定。
+ *
+ * ## `id` 为什么必须出现在**事件**里（而不只在槽位里）
+ *
+ * 通知是**有状态的槽位**，寿命的终点是「有人确认」（`notice.ack { ids }`）。同一份状态有
+ * 两个出口：
+ *
+ *   · **实时推送** —— 本事件（`session-notice`）；
+ *   · **槽位** —— `session.snapshot` 的 `pendingNotices`（以及确认时查的那张表）。
+ *
+ * **两个出口是同一条通知，`id` 必须一致**。少了它，客户端虽然收得到通知，却拿不到能确认
+ * 它的凭据 —— 只能按「code + params」自己造一份本地去重表，而那个表得活到会话关闭，还得
+ * 与服务端的槽位保持同步；更糟的是想确认时只能回头再拉一次快照/列表把 id 找出来，白跑一趟
+ * 往返，且中间还可能已经被别人确认掉（拿不到 = 以为自己没收到过）。
+ *
+ * id 是 UUID（`crypto.randomUUID()`）：跨会话、跨进程、跨重启都不撞号，也不需要持久化计数器。
+ */
 export type SessionNoticeEvent = {
   event: "session-notice";
+  /**
+   * 通知 id（UUID）—— **就是槽位的 id**：确认（`notice.ack { ids }`）直接用它。
+   *
+   * 与槽位同一个值，不是另发的编号：两个出口说的是同一条通知，id 不一致等于让客户端
+   * 为确认再查一次列表。
+   */
+  id: string;
   sessionId: string;
   level: NoticeLevel;
   code: SessionNoticeCode;
@@ -1071,21 +1120,44 @@ export type SessionNoticeEvent = {
   params?: Record<string, unknown>;
 };
 
-/** 服务端通知：不属于任何会话，切会话也不该消失 */
-export type ServerNoticeEvent = {
+/**
+ * 服务端通知：不属于任何会话，切会话也不该消失。
+ *
+ * 写成具名 `interface` 而不是内联对象类型：它有两个别处的引用者 —— `ServerEvent` 联合，
+ * 以及 `notice.*` 那套全局槽位（`notice.ts` 的 `GlobalNoticeSlot`）。会话内通知是另一
+ * 条线（`SessionNoticeEvent`）：它带 `sessionId`、`code` 取 `SessionNoticeCode`，两者
+ * 不互换。
+ *
+ * ## `id` 与 `SessionNoticeEvent` 同一个理由
+ *
+ * 这里是全局通知的两个出口之一：**实时推送**（`server-notice`）；另一个是**槽位**
+ * （`notice.list` 列出的 `GlobalNoticeSlot`、以及 `notice.ack { ids }` 查的那张表）。
+ * 同一条通知的两个出口，`id` **必须一致** —— 否则客户端收到通知却拿不到确认凭据，只能
+ * 按「code + params」本地去重，确认时还得先 `notice.list` 把 id 捞出来，白跑一趟往返。
+ */
+export interface ServerNoticeEvent {
   event: "server-notice";
+  /**
+   * 通知 id（UUID）—— **就是槽位的 id**：确认（`notice.ack { ids }`）直接用它。
+   *
+   * 与槽位同一个值，不是另发的编号（理由见 `SessionNoticeEvent.id`）。
+   */
+  id: string;
   level: NoticeLevel;
   code: ServerNoticeCode;
+  /** 文案里的可变部分（客户端代入自己的模板） */
   params?: Record<string, unknown>;
-};
+}
 
 /**
- * 一条通知的**载荷**：`level` + `code` + `params`，不含「属于哪段会话」与事件名。
+ * 一条通知的**载荷**：`level` + `code` + `params`，不含「属于哪段会话」、事件名，也不含
+ * `id` —— 它是**产生一条通知时**要说的东西，而 id 由登记槽位的那一次当场生成（UUID），
+ * 不由调用方指定：否则「谁能造 id」就成了第三个真相源。
  *
  * 抽出来是因为三处都在说同一件事：协议里的 `SessionNoticeEvent`、会话层的
  * `notice()` / `noticeIfAlive()`、交接服务的通知出口。少声明一份，就少一处会漂的形状。
  */
-export type NoticePayload = Omit<SessionNoticeEvent, "event" | "sessionId">;
+export type NoticePayload = Omit<SessionNoticeEvent, "event" | "sessionId" | "id">;
 
 /**
  * 一条会话事件的联合（6 条，服务端派生 / 自己决定的那部分）。名字全部带 `Session`

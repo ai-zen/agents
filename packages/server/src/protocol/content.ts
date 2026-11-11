@@ -20,8 +20,10 @@
  *
  * ## 线上的字节不在这份文件里
  *
- * `bytes` 只是**长度声明**：请求帧后面紧跟恰好这么多个原始字节（帧形状见
- * `src/wire/frames.ts`）。这里不重复描述帧的挂法，只声明「有这么个数」。
+ * 载荷就是那条**二进制消息本身**（形状见 `src/wire/messages.ts` 的 `REQUEST_ID_BYTES`：
+ * 前 4 字节是请求 `id`，其余全是载荷）。所以这里**没有**一个「字节数」参数：消息边界已经
+ * 由 WebSocket 给出，长度就是剩下的部分 —— 再让客户端填一个数字，就是逼它填一个假数
+ * （填错了服务端还得判断信谁）。
  */
 
 import type { MessageContentBlock } from "./sessions.js";
@@ -37,13 +39,6 @@ export interface ContentUploadParams {
    * （实发模型名 → 端点）是服务端的解析结果，客户端再推一遍就是第二份会漂的实现。
    */
   sessionId: string;
-  /**
-   * 帧后紧跟的原始字节数。
-   *
-   * 它是**帧形状的一部分**，不是普通参数：解码方据它切出 payload，收满之前不按 `\n`
-   * 找帧边界。非正整数、超过 payload 上限、或出现在不带字节的方法上都是协议错误。
-   */
-  bytes: number;
   /** 字节的 MIME（`image/png` / `application/pdf` …）—— 决定走图片通道还是文件通道 */
   mime: string;
   /**

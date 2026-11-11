@@ -390,7 +390,7 @@ describe("SessionManager：reload（按新配置重建 Agent，保留消息）",
 describe("SessionManager：通知（两个通道）", () => {
   it("notice 发的是**对话内**通知：带 sessionId，绑在那段会话上", async () => {
     const { sessionId } = await create();
-    manager.notice(sessionId, {
+    const slot = manager.notice(sessionId, {
       level: "error",
       code: "persistFailed",
       params: { error: "磁盘满" },
@@ -399,6 +399,8 @@ describe("SessionManager：通知（两个通道）", () => {
     expect(pick("session-notice")).toEqual([
       {
         event: "session-notice",
+        // 推出去的事件带**槽位自己的 id**（A35）：两个出口同一条通知
+        id: slot.id,
         sessionId,
         level: "error",
         code: "persistFailed",
@@ -420,9 +422,11 @@ describe("SessionManager：通知（两个通道）", () => {
     const mine: ServerEvent[] = [];
     withHub.subscribe((event) => mine.push(event));
 
-    hub.publish({ event: "server-notice", level: "warn", code: "mcpUnavailable" });
+    hub.publish({ event: "server-notice", id: "notice-1", level: "warn", code: "mcpUnavailable" });
 
-    expect(mine).toEqual([{ event: "server-notice", level: "warn", code: "mcpUnavailable" }]);
+    expect(mine).toEqual([
+      { event: "server-notice", id: "notice-1", level: "warn", code: "mcpUnavailable" },
+    ]);
   });
 });
 

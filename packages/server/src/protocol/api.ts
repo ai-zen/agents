@@ -54,6 +54,13 @@ import type {
   ConfigSetDefaultModelResult,
 } from "./config.js";
 import type { DaemonMethod, DaemonStatusResult, PingResult, ShutdownResult } from "./daemon.js";
+import type { HelloParams, HelloResult } from "./messages.js";
+import type {
+  NoticeAckParams,
+  NoticeAckResult,
+  NoticeListResult,
+  NoticeMethod,
+} from "./notice.js";
 import type {
   EventMethod,
   EventWatchResult,
@@ -119,7 +126,7 @@ export interface MethodContract<P, R> {
   result: R;
 }
 
-/** 线上全部方法（45 条）→ 它的参数与结果 */
+/** 线上全部方法（48 条）→ 它的参数与结果 */
 export interface MethodApi {
   // ---- 工作区 ----
   "workspace.resolve": MethodContract<WorkspaceResolveParams, WorkspaceResolveResult>;
@@ -187,9 +194,18 @@ export interface MethodApi {
   "content.upload": MethodContract<ContentUploadParams, ContentUploadResult>;
 
   // ---- 内置 ----
+  /**
+   * 握手。建连后的第一条请求；它不属于任何命名空间，与 `ping` / `status` / `shutdown`
+   * 同类。握手前调别的方法回 `handshake-required`（回错误、不断连）。
+   */
+  hello: MethodContract<HelloParams, HelloResult>;
   ping: MethodContract<void, PingResult>;
   status: MethodContract<void, DaemonStatusResult>;
   shutdown: MethodContract<void, ShutdownResult>;
+
+  // ---- 全局通知（不属于任何会话，随进程生死） ----
+  "notice.list": MethodContract<void, NoticeListResult>;
+  "notice.ack": MethodContract<NoticeAckParams, NoticeAckResult>;
 }
 
 /** 全部方法名（= `MethodApi` 的键） */
@@ -210,7 +226,10 @@ type AllDeclaredMethods =
   | AgentMethod
   | AssetMethod
   | ContentMethod
-  | DaemonMethod;
+  | NoticeMethod
+  | DaemonMethod
+  /** `hello` 不属于任何命名空间（与 `DaemonMethod` 同类），所以就是一个平级的方法名 */
+  | "hello";
 
 /** `T` 是 `true` 才算通过；`false` 会在这一行编译错误 */
 type Assert<T extends true> = T;

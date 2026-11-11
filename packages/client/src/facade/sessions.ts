@@ -64,7 +64,12 @@ import type { ServerClient } from "../types.js";
 
 /** 一批要换成内容块的字节（`content.upload` 的入参） */
 export interface UploadContentInput {
-  /** 原始字节（图片 / 文件）；长度由门面自己填进帧里，调用方不必再算一遍 */
+  /**
+   * 原始字节（图片 / 文件）。
+   *
+   * 不往 `params` 里塞「有多少字节」：它自己是同一条连接上的**另一条二进制消息**，长度就是那条
+   * 消息剩下的长度（A24）。
+   */
   bytes: Uint8Array;
   /** MIME（`image/png` …）：决定走图片通道还是文件通道 */
   mime: string;
@@ -209,16 +214,14 @@ export class RemoteSessions {
   /**
    * 回答服务端提出的问题（目前只有自动迁移的「交接方式三选一」）。
    *
+   * 只带 `questionId`（UUID，全局唯一）：不再多一个会话 id —— 那只是多一处「两个 id 要配对」
+   * 的机会（配错了就是答到别人的会话里）。
+   *
    * `choice: null` = 用户选「不交接」（跳过本次迁移）。返回 `answered: false` 表示**来晚了**
    * （超时 / 已答过 / 会话已收）—— 那不是错误，客户端把选择器收掉即可。
    */
-  async answer(
-    sessionId: string,
-    questionId: string,
-    choice: string | null,
-  ): Promise<SessionAnswerResult> {
+  async answer(questionId: string, choice: string | null): Promise<SessionAnswerResult> {
     return await this.client.call<SessionAnswerResult>("session.answer", {
-      sessionId,
       questionId,
       choice,
     });
@@ -402,15 +405,18 @@ export class RemoteSessions {
   /**
    * 一批字节 → 一块能放进消息的内容（`text` / `image_url` / `file`）。
    *
-   * 字节走帧后的二进制 payload（不 base64 塞回 JSON）；`bytes` 这个长度字段由这里从
-   * `input.bytes` 自己算 —— 调用方只说“就这些字节”，没有第二个地方能把长度写错。
-   * 怎么发（上传成 `file_id` / 内联成 data URL / 退化成文本提示）由服务端按**这段会话**
-   * 实际用的端点与模型决定，回来的 `warning` 是它的降级说明（转进通知栏）。
+   * 字节走**同一条连接上的另一条二进制消息**（前 4 字节是这次请求的 `id`），不 base64 塞回
+   * JSON。`params` 里**没有**「字节数」这个字段（A24）：载荷长度就是那条二进制消息剩下的长度
+   * —— 消息边界已经由 WebSocket 给出，再填一个数字就是逼客户端填一个假数（填错了服务端还得
+   * 判断信谁）。
+   *
+   * 怎么发（上传成 `file_id` / 内联成 data URL / 退化成文本提示）由服务端按**这段会话**实际用
+   * 的端点与模型决定，回来的 `warning` 是它的降级说明（转进通知栏）。
    */
   async uploadContent(sessionId: string, input: UploadContentInput): Promise<ContentUploadResult> {
     return await this.client.call<ContentUploadResult>(
       "content.upload",
-      { sessionId, bytes: input.bytes.byteLength, mime: input.mime, filename: input.filename },
+      { sessionId, mime: input.mime, filename: input.filename },
       { bytes: input.bytes },
     );
   }

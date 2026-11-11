@@ -188,8 +188,18 @@ describe("两个通知通道", () => {
       path: dir,
     });
 
-    manager!.notice(created.sessionId, { level: "error", code: "persistFailed" });
-    hub.publish({ event: "server-notice", level: "warn", code: "mcpUnavailable" });
+    const sessionSlot = manager!.notice(created.sessionId, {
+      level: "error",
+      code: "persistFailed",
+    });
+    // 全局通知的槽位在 `ServerApp` 里（本用例只起 `Daemon`）：直接发一条带 id 的事件，
+    // 验的是「id 一路传到了客户端」
+    hub.publish({
+      event: "server-notice",
+      id: "notice-global-1",
+      level: "warn",
+      code: "mcpUnavailable",
+    });
 
     for (let i = 0; i < 100 && notices.length < 2; i++) {
       await new Promise((resolve) => setTimeout(resolve, 5));
@@ -207,5 +217,8 @@ describe("两个通知通道", () => {
       code: "mcpUnavailable",
     });
     expect(notices[1]).not.toHaveProperty("sessionId");
+    // A35：两类事件的 `id` 就是槽位 id —— 客户端拿到它才能 `notice.ack` 掉那一条
+    expect((notices[0] as { id: string }).id).toBe(sessionSlot.id);
+    expect((notices[1] as { id: string }).id).toBe("notice-global-1");
   });
 });

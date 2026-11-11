@@ -1,6 +1,6 @@
 ---
 title: 架构
-description: 五个包与两个应用的分层与单向依赖、每层管什么不管什么、协议面 45 个方法 / 15 个事件、契约为什么是服务端的类型文件、client 的传输/门面/会话三层、server 的目录、会话寿命的唯一规则、SessionManager 的四件、<aiZenDir> 落盘布局与构建测试顺序。
+description: 五个包与两个应用的分层与单向依赖、每层管什么不管什么、协议面 48 个方法 / 15 个事件、契约为什么是服务端的类型文件、client 的传输/门面/会话三层、server 的目录、会话寿命的唯一规则、SessionManager 的四件、<aiZenDir> 落盘布局与构建测试顺序。
 outline: deep
 ---
 
@@ -46,7 +46,7 @@ AI-Zen Agents 是一个 **pnpm monorepo**（工作区根 `@ai-zen/agents-workspa
 每一条都能用命令证伪，而不是靠「记得别那么写」。
 
 **① `client` 与 `server` 之间没有运行期边。** 客户端对服务端只做 `import type`（形状与名字），
-运行期那几件（帧编解码、错误码判据、回环判据、发现文件读写、`callOnce`）在
+运行期那几件（消息编解码、错误码判据、回环判据、发现文件读写、`callOnce`）在
 `packages/client/src/wire/` 是它自己的一份实现 —— 协议只共享**类型**，不共享代码。所以
 `dependencies` 里只有一个 `core`；`@ai-zen/agents-server` 是它的 **peerDependency**（宿主必须
 提供：类型面来自它）+ devDependency（本仓用例要起真 Daemon）。
@@ -66,7 +66,7 @@ node -e 'const d=require("./packages/client/package.json").dependencies; const b
 `startServerProcess` 即可（桌面端拉起的就是随包分发的那个）。
 
 **② 契约是纯类型，零运行期导出。** `packages/server/src/protocol/` 里只有 `type` / `interface`：
-线上形状、方法名与事件名的联合、错误码联合、数据模型的类型转出。带运行期的那些（帧编解码、
+线上形状、方法名与事件名的联合、错误码联合、数据模型的类型转出。带运行期的那些（消息编解码、
 错误码判据、回环判据、版本号、发现文件读写、`callOnce`）在 `packages/server/src/wire/`。
 
 ```bash
@@ -105,12 +105,12 @@ grep -rn 'from "' packages/server/src/protocol/*.ts | grep -v '\.test\.' | grep 
 |---|---|---|
 | `core` | 对话运行时：`Agent` / `Message` / `Tool` / `ToolCallContext`、插件与事件系统 | 权限、文件系统、配置、持久化 —— `src/` 里没有任何 `node:*` 内置模块的导入。依赖只有 `openai` 与 `@ai-zen/event-bus` |
 | `sdk` | 业务能力：能力管线（发现 → 过滤 → 实例化）、权限模型、MCP 生命周期、任务交接与迁移、内置工具、`ConfigManager` | 进程与连接、会话存档、工作区、任何「客户端长什么样」的事。依赖 `core`、`@modelcontextprotocol/sdk`、`dayjs`、`openai` |
-| `server` | 线上**契约**（`src/protocol/`：方法名与事件名的联合、载荷类型、错误码、阶段形状、数据模型的类型出口 —— 纯类型、零运行期导出）与其**运行期件**（`src/wire/`：帧编解码、`hello` 握手、错误码判据、回环判据、版本号、发现文件读写、`callOnce`），加会话编排、存档、工作区、配置与 Agent 定义的服务端读写、资产清单、事件出口，以及把这一切接到一条 TCP 连接上的 `Daemon` | UI 栈（不依赖 ink / react / 终端库 —— 包边界就是进程边界）、进程级全局（cwd / 全局配置路径 / 全局 locale）。两条硬约束写在 `packages/server/src/index.ts` 的文件头，唯一例外是组装根 `src/cli.ts` |
-| `client` | 一个前端到服务端之间**全部**需要在客户端发生的事：服务发现与拉起、一条 TCP 连接、会话与配置两张门面、**会话流状态机**（三个前端必须一致的那部分「想」）、两个判据（要不要把 cwd 递上去、服务端现在什么状态） | 渲染、本地化、进程级全局、任何服务端数据的本地读写 |
+| `server` | 线上**契约**（`src/protocol/`：方法名与事件名的联合、载荷类型、错误码、阶段形状、数据模型的类型出口 —— 纯类型、零运行期导出）与其**运行期件**（`src/wire/`：消息编解码、`hello` 握手、错误码判据、回环判据、版本号、发现文件读写、`callOnce`），加会话编排、存档、工作区、配置与 Agent 定义的服务端读写、资产清单、事件出口，以及把这一切接到一条 WebSocket 连接上的 `Daemon` | UI 栈（不依赖 ink / react / 终端库 —— 包边界就是进程边界）、进程级全局（cwd / 全局配置路径 / 全局 locale）。两条硬约束写在 `packages/server/src/index.ts` 的文件头，唯一例外是组装根 `src/cli.ts` |
+| `client` | 一个前端到服务端之间**全部**需要在客户端发生的事：服务发现与拉起、一条 WebSocket 连接、会话与配置两张门面、**会话流状态机**（三个前端必须一致的那部分「想」）、两个判据（要不要把 cwd 递上去、服务端现在什么状态） | 渲染、本地化、进程级全局、任何服务端数据的本地读写 |
 | `cli`（独立仓） | 渲染与输入（ink）、斜杠命令与会话层、把 `SessionStream` 的状态画出来 | 会话编排、存档、工作区、配置写入 —— 那些都在服务端。它依赖 `client`，另加 `sdk` / `core`（应用要用 `AgentDefinition` 这类业务类型与 `Role` / `MessageStatus` 这类**运行期 enum**） |
 | `desktop main`（独立仓） | 应用级事实（`app.getVersion()` 当 `clientInfo`）、拉起服务端、订阅事件并把状态转给 renderer | 服务端实现本身。它今天还持有一份**自己的**会话状态机（见「已知缺口 / 未完成」） |
 
-## 协议面：45 个方法 / 15 个事件
+## 协议面：48 个方法 / 15 个事件
 
 方法名与事件名都是**字面量联合类型**（不是运行期常量表）—— 它们定义在 `packages/server/src/protocol/`，只有类型，没有一行运行期代码。**统计口径**：数联合里的成员 —— 一个方法名字面量算一条；参数 / 结果类型不算；三个内置方法（`ping` / `status` / `shutdown`）**算**方法；通知码不算事件，它们是 `session-notice` / `server-notice` 载荷里的枚举。
 
@@ -122,9 +122,11 @@ grep -rn 'from "' packages/server/src/protocol/*.ts | grep -v '\.test\.' | grep 
 | `config.*` | 7 | `config.ts` 的 `ConfigMethod` |
 | `agent.*` | 5 | `config.ts` 的 `AgentMethod` |
 | `asset.*` | 1 | `assets.ts` 的 `AssetMethod` |
-| `content.*` | 1 | `content.ts` 的 `ContentMethod` |
+| `content.*` | 1 | `content.ts` 的 `ContentMethod`（唯一带二进制载荷的方法） |
+| `notice.*` | 2 | `notice.ts` 的 `NoticeMethod`（`notice.list` / `notice.ack`，全局通知的查询与确认） |
+| `hello`（握手） | 1 | 方法表里的 `hello`；两个形状是 `protocol/messages.ts` 的 `HelloParams` / `HelloResult`（字段逐个见 [线上协议](protocol.md) 的「握手」一节） |
 | 内置 `ping` / `status` / `shutdown` | 3 | `daemon.ts` 的 `DaemonMethod` |
-| **合计** | **45** | |
+| **合计** | **48** | |
 
 事件共 **15** 条，分三个联合，都在 `sessions.ts`：
 
@@ -147,7 +149,7 @@ grep -rn 'from "' packages/server/src/protocol/*.ts | grep -v '\.test\.' | grep 
 
 ## 契约为什么是服务端的类型文件
 
-`packages/server/src/protocol/` 里只有 `type` / `interface`：线上形状、方法名与事件名的联合、错误码联合、数据模型的类型转出。**没有一个运行期导出**。带运行期的那些（帧编解码、错误码判据、回环判据、版本号、发现文件读写、`callOnce`）在 `packages/server/src/wire/`。
+`packages/server/src/protocol/` 里只有 `type` / `interface`：线上形状、方法名与事件名的联合、错误码联合、数据模型的类型转出。**没有一个运行期导出**。带运行期的那些（消息编解码、错误码判据、回环判据、版本号、发现文件读写、`callOnce`）在 `packages/server/src/wire/`。
 
 **为什么不是独立的一个包**（也不是 core 里的东西）：线上有哪些方法 / 事件 / 载荷，是**服务端提供的形状**，它就该住在服务端里，没有一个单独的可安装单元。判据一句话：这份东西描述服务端提供什么，它归服务端；它要能被别的进程执行，它才是代码。
 
@@ -170,7 +172,7 @@ grep -rn 'from "' packages/server/src/protocol/*.ts | grep -v '\.test\.' | grep 
 |---|---|---|
 | **传输** | `transport/connection.ts`（`ServerConnection`） | **一个进程一条连接**：每次取用都判 `closed`、断了就重建、重建后在新连接上重新订阅 `events.watch`、断线与就绪都往上说（`onClose` / `onOpen`）。它**不重试** —— 重试是会话层的规则 |
 | | `ensure-server.ts` | 读 `<aiZenDir>/run/server.json`；探活（`callOnce` 问一句 `ping`）失败就 detached 拉起 `agents-server serve`，轮询到 `ping` 通。它是包里**唯一**知道 `agents-server` 的地方（部署策略，不是分层） |
-| | `socket-server-client.ts` | 一条 TCP + JSON-lines 连接：`hello` 握手、在飞调用（可带一段原始字节）、事件分发、断开通知 |
+| | `socket-server-client.ts` | 一条 WebSocket + JSON-RPC 2.0 连接：`hello` 握手、在飞调用（可带一段二进制载荷）、事件分发、断开通知 |
 | **门面** | `facade/sessions.ts`（`RemoteSessions`，28 条） | `session.*`(21) + `workspace.*`(6) + `content.*`(1) 的类型化薄封装 |
 | | `facade/config.ts`（`RemoteConfig`，13 条） | `config.*`(7) + `agent.*`(5) + `asset.*`(1) |
 | | `facade/coverage.test-d.ts` | 门面方法集合 **===** 协议方法表 key 集合，**100% 覆盖**由类型保证：少一条、多一条都编译不过 |
@@ -208,7 +210,7 @@ packages/server/src/
     workspace/  agent/  config/  asset/  handoff/
   lib/          无业务语义的通用零件：phase.ts（PhaseTracker）、events.ts（EventHub）
   protocol/     线上契约（纯类型）：方法名 / 事件名的联合、载荷、错误码、阶段形状、数据模型出口
-  wire/         契约的运行期件：帧编解码、错误码判据、回环判据、版本号、发现文件 I/O、callOnce
+  wire/         契约的运行期件：消息编解码、错误码判据、回环判据、版本号、发现文件 I/O、callOnce
   daemon/       传输与接线：Daemon / wire（传输抽象）/ params / *Handlers
   cli.ts        组装根（唯一读 env / argv 的地方）
   index.ts      包对外桶（`export *`，撞名会编译失败——那正是提醒）
@@ -218,7 +220,7 @@ packages/server/src/
 
 其余两处：
 
-- **`daemon/` 只管「字节流 → 帧 → 方法调用」**：`Daemon` 自己只带 `ping` / `status` / `shutdown`，其余方法表由组装根通过 `DaemonOptions.handlers` 注入。这一层**不做业务编排** —— 它只验参数形状、接线；需要读别的对象再决定做什么的判定属于 `domain/`（例：「删工作区要连带关活会话」下沉成了 `SessionManager.closeWorkspace`）。
+- **`daemon/` 只管「WebSocket 消息 → JSON-RPC 消息 → 方法调用」**：`Daemon` 自己只带 `ping` / `status` / `shutdown`，其余方法表由组装根通过 `DaemonOptions.handlers` 注入。这一层**不做业务编排** —— 它只验参数形状、接线；需要读别的对象再决定做什么的判定属于 `domain/`（例：「删工作区要连带关活会话」下沉成了 `SessionManager.closeWorkspace`）。
 - **`cli.ts` 是组装根**：唯一允许读 env / argv 的地方（`AI_ZEN_DIR`、`HOME`、命令行参数），把路径解析成值后注入给下面的对象；`domain/`、`lib/`、`daemon/` 一律不读全局。**`index.ts` 是 `export *` 桶**，不是方法清单。
 
 线上契约不在 `src/daemon/` 或 `src/domain/` 里 —— 它在同一包的 `src/protocol/`（纯类型），运行期件在 `src/wire/`。
@@ -252,11 +254,7 @@ packages/server/src/
 
 ### 传输与握手
 
-- **TCP + JSON-lines**：一行一个 JSON，`\n` 结尾；单帧上限 8 MiB，超了判协议错误并断开连接（`packages/server/src/wire/frames.ts`）。选 JSON-lines 是为了能用手搓工具调试，并能原样塞进 WebSocket 文本帧与 stdio。
-- **二进制挂在帧后**：声明了 `params.bytes` 的请求帧之后，同一条流上紧跟恰好这么多个**原始字节**（无分隔符、无编码），收满后回到按行切帧；单块上限 64 MiB（`MAX_PAYLOAD_BYTES`）。图片 / 文件的字节走这条路（`content.upload`），转换（上传成 `file_id` / base64 内联 / 退化成文本）由服务端按**这段会话**的端点与模型决定。
-- **首帧必须 `hello`**：客户端先发 `{ kind: "hello", protocol, client: { name, version } }`，服务端回同形状回执，带 `ok` 与 `server: { name, version, protocol, pid, startedAt }`。**没有例外**——即使当前还没有鉴权，也必须先握手，否则「将来加鉴权」就得改所有客户端的建连逻辑（`packages/server/src/protocol/messages.ts` 文件头）。
-- 之后两个方向的消息各两类：请求/响应 `{ id, method, params }` → `{ id, ok, result | error }`；事件 `{ event, ... }` 由服务端主动推、无 `id`、不等回执。
-- 协议版本 `PROTOCOL_VERSION = 1`；任何不兼容的字段变化都要 +1，不做「尽力兼容」。
+线上是 **WebSocket + JSON-RPC 2.0**：一条 WebSocket 消息就是一条完整的 JSON-RPC 2.0 消息，分帧交给 WebSocket 的消息边界；第一条消息必须是 `hello`，版本对不上就不建连 —— 即使当前还没有鉴权，也照样先握手，这样将来加鉴权不用改所有客户端的建连逻辑。消息分类、`id` 范围、二进制载荷、大小上限、错误码与「什么时候才断连」的分级、15 个事件、有状态的通知与题目，逐条见 [线上协议](protocol.md)。
 
 ### 只绑回环
 
@@ -276,7 +274,7 @@ packages/server/src/
 
 `holders` 是「此刻真有一条连接在看着它」：由传输层登记（`session.create` / `session.attach` 登记调用方那条连接），连接断开时摘掉（挂在 `connection.onClose` 上）。它不需要客户端配合 —— 连接消失是**内核保证的**（进程被 `kill -9`、崩溃、断电都会让那条 socket 消失）。宽限期是 `DEFAULT_SESSION_IDLE_TIMEOUT_MS`（60 s，`--session-idle-timeout`），够覆盖客户端最坏情况下的重连预算；到点时会**重新判一遍**规则，所以窗口内到达的 `attach` 只是取消这次回收，而还在跑的一轮会把回收推到 `session-turn-end`。
 
-**为什么没有「客户端上报的保活意图」**：那种设计的判据是「上报的意图 **与** 持有者的合取」，而两个事实里只有一个在**最难的情况**下还成立 —— 崩溃的进程发不出那一帧，声明会永远停在「要」，会话连同它占的 Agent 与消息历史永久留在内存里（本包跑在回环上，唯一的回收时机是重启守护进程）；而持有者是内核保证的事实，同样的崩溃恰好把它清干净。取合取只是把不可靠的那个当成了必要条件。这条理由的唯一「为什么」现场是 `SessionManager.ts` 的文件头。
+**为什么没有「客户端上报的保活意图」**：那种设计的判据是「上报的意图 **与** 持有者的合取」，而两个事实里只有一个在**最难的情况**下还成立 —— 崩溃的进程发不出那条消息，声明会永远停在「要」，会话连同它占的 Agent 与消息历史永久留在内存里（本包跑在回环上，唯一的回收时机是重启守护进程）；而持有者是内核保证的事实，同样的崩溃恰好把它清干净。取合取只是把不可靠的那个当成了必要条件。这条理由的唯一「为什么」现场是 `SessionManager.ts` 的文件头。
 
 两条**行为后果**必须记账，不许说成「机制少一个、行为不变」：
 
@@ -358,6 +356,7 @@ packages/server/src/
 
 ## 相关文档
 
+- [线上协议](protocol.md) —— 线上契约逐条：传输、`id`、二进制帧、上限、握手、错误码、事件、有状态的通知与题目
 - [Core API](core.md) —— 运行时公开 API 与实现细节
 - [SDK](sdk.md) —— 能力层公开 API
 - [检索与 RAG](rag.md) —— 检索能力现状

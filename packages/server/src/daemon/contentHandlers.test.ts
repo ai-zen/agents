@@ -74,9 +74,16 @@ function upload(
   return handlers["content.upload"]!(params as never, connection, payload);
 }
 
-/** PNG 头 + 一段含 `0x0A` 的正文：二进制阶段不许按换行切，这里顺手也钉住这一点 */
+/** PNG 头 + 一段含 `0x0A` 的正文：载荷是原始字节，一个 0x0A 只是一个普通字节 */
 const BYTES = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47]), Buffer.from([0x0a, 0x00])]);
 
+/**
+ * 调用参数。
+ *
+ * `bytes` 是上一版留下的**长度声明**（帧后跟多少个字节）；这一版字节与请求靠 WS 消息的
+ * 4 字节 id 前缀配对，handler 不再读它 —— 但契约里的字段还在（本批不动 `protocol/`），
+ * 所以这里如实填上。
+ */
 const PARAMS = {
   sessionId: "chat_1",
   bytes: BYTES.byteLength,
@@ -169,7 +176,13 @@ describe("content.upload", () => {
     }
   });
 
-  it("没有 payload → bad-params（帧层保证不会发生，但 handler 不靠这条保证活着）", async () => {
+  it("没有载荷 → bad-params（传输层保证不会发生，但 handler 不靠这条保证活着）", async () => {
     await expect(upload(handlersOf({}), PARAMS)).rejects.toMatchObject({ code: "bad-params" });
+  });
+
+  it("空载荷（0 字节）→ bad-params：二进制消息到了，但里面没东西可转", async () => {
+    await expect(upload(handlersOf({}), PARAMS, Buffer.alloc(0))).rejects.toMatchObject({
+      code: "bad-params",
+    });
   });
 });

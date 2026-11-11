@@ -1,78 +1,38 @@
+import { describe, it, expect } from "vitest";
+import { encodeFrame, MAX_PAYLOAD_BYTES, MAX_TEXT_BYTES } from "./frames.js";
+
 /**
- * 帧解码器的**二进制阶段** —— 客户端这一侧的那一份（与服务端 `wire/frames.ts` 逐字相同，
- * 所以这几条用例在两边跑的是同一段判据）。
+ * 这一版 `wire/frames.ts` 里只剩「编码 + 两个上限」：分帧交给 WebSocket 了，所以这里没有解码器
+ * 可测 —— 上一版那批用例（半帧跨 chunk / 二进制阶段 / `expectBytes` 的上限）随 `FrameDecoder`
+ * 一起删掉了，测它已经没有对应的实现（A3）。
  *
- * 题目只有三件：payload 与帧在同一个 chunk 里到达、payload 跨 chunk、以及收满之后还能接着
- * 按行切帧。客户端目前只**发** payload（服务端不推二进制），但解码器是两侧共用的一份实现 ——
- * 它坏一半，下一次「服务端也要推字节」时坏的就是线上。
+ * 剩下的三条都是**与对端逐字同构**的那部分：服务端发回来的 `\n` 约定、以及两个上限的取值。
+ * 它们跑错的话症状在线上（一条 JSON 多一个尾字节、或者一条消息被误判成超限），不在类型里。
  */
-
-import { describe, expect, it } from "vitest";
-import {
-  MAX_PAYLOAD_BYTES,
-  ProtocolError,
-  FrameDecoder,
-  encodeFrame,
-  type DecodedItem,
-} from "./frames.js";
-
-/** 喂一段字节并取出全部项；`onFrame` 是「这一帧后面要不要收二进制」的判定（与调用方同形） */
-function collect(
-  decoder: FrameDecoder,
-  chunk?: Buffer,
-  onFrame?: (frame: unknown) => number | null,
-): DecodedItem[] {
-  if (chunk) decoder.push(chunk);
-  const items: DecodedItem[] = [];
-  for (let item = decoder.next(); item; item = decoder.next()) {
-    items.push(item);
-    if (item.type === "frame") {
-      const length = onFrame?.(item.frame);
-      if (typeof length === "number") decoder.expectBytes(length);
-    }
-  }
-  return items;
-}
-
-/** 帧里的 `params.bytes` 声明的长度 */
-function declaredLength(frame: unknown): number | null {
-  const bytes = (frame as { params?: { bytes?: unknown } } | null)?.params?.bytes;
-  return typeof bytes === "number" ? bytes : null;
-}
-
-describe("FrameDecoder：二进制阶段", () => {
-  it("payload 与帧在同一个 chunk 里：先出帧、再出 payload，然后回到按行切帧", () => {
-    const decoder = new FrameDecoder();
-    const chunk = Buffer.concat([
-      Buffer.from(`${encodeFrame({ id: 1, method: "content.upload", params: { bytes: 3 } })}`),
-      Buffer.from([0x0a, 0x00, 0xff]),
-      Buffer.from(encodeFrame({ id: 2, method: "next" })),
-    ]);
-
-    const items = collect(decoder, chunk, declaredLength);
-    expect(items.map((item) => item.type)).toEqual(["frame", "bytes", "frame"]);
-    expect(items[1]).toEqual({ type: "bytes", bytes: Buffer.from([0x0a, 0x00, 0xff]) });
+describe("encodeFrame", () => {
+  it("就是 JSON.stringify：没有结尾换行（边界只有 WebSocket 一个来源）", () => {
+    const text = encodeFrame({ jsonrpc: "2.0", id: 1, method: "ping" });
+    expect(text).toBe('{"jsonrpc":"2.0","id":1,"method":"ping"}');
+    expect(text.endsWith("\n")).toBe(false);
   });
 
-  it("payload 跨 chunk：没收满不出项，收满之后接上下一帧", () => {
-    const decoder = new FrameDecoder();
-    const frame = encodeFrame({ id: 9, method: "content.upload", params: { bytes: 4 } });
-    expect(collect(decoder, Buffer.from(`${frame}A`), declaredLength)).toHaveLength(1);
-    expect(collect(decoder, Buffer.from("B"))).toHaveLength(0);
-
-    const items = collect(decoder, Buffer.from(`CD${encodeFrame({ id: 10, method: "next" })}`));
-    expect(items.map((item) => item.type)).toEqual(["bytes", "frame"]);
-    expect(items[0]).toEqual({ type: "bytes", bytes: Buffer.from("ABCD") });
+  it("编出来的东西解回去与原来相等（含中文与字符串里的换行）", () => {
+    const frame = { text: "第一行\n第二行", n: 1, nested: { ok: true }, 中文: "值" };
+    expect(JSON.parse(encodeFrame(frame))).toEqual(frame);
   });
 
-  it("长度非法（非正整数 / 超上限）当场抛：收第一个字节之前就拒", () => {
-    for (const length of [0, -1, 2.5]) {
-      expect(() => new FrameDecoder().expectBytes(length)).toThrow(ProtocolError);
-    }
-    try {
-      new FrameDecoder().expectBytes(MAX_PAYLOAD_BYTES + 1);
-    } catch (error) {
-      expect((error as ProtocolError).code).toBe("frame-too-large");
-    }
+  it("`params` 为 undefined 时整键消失（不是 `null`）", () => {
+    expect(encodeFrame({ jsonrpc: "2.0", id: 1, method: "status", params: undefined })).toBe(
+      '{"jsonrpc":"2.0","id":1,"method":"status"}',
+    );
+  });
+});
+
+describe("体积上限", () => {
+  it("单条消息 64 MiB（交给 WS 的 maxPayload）；文本另卡 8 MiB", () => {
+    expect(MAX_PAYLOAD_BYTES).toBe(64 * 1024 * 1024);
+    expect(MAX_TEXT_BYTES).toBe(8 * 1024 * 1024);
+    // 两档各管一侧：文本的那一档必须更小，否则它等于不存在
+    expect(MAX_TEXT_BYTES).toBeLessThan(MAX_PAYLOAD_BYTES);
   });
 });

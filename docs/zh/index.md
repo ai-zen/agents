@@ -19,7 +19,7 @@ AI-Zen Agents 是一个**模块化的 LLM Agent 框架**，以 pnpm workspace �
 1. **`@ai-zen/agents-core`** —— 插件驱动的 Agent 运行时。直接运行于官方 `openai` SDK 之上，不维护自己的请求层。负责对话生命周期、流式输出、工具调用、多轮递归对话、事件与插件扩展。
 2. **`@ai-zen/agents-sdk`** —— 建立在 core 之上的**引擎 / 能力层**。负责业务能力管线（发现 → 权限过滤 → 实例化）、Scope 全局上下文、MCP 连接管理、任务迁移，以及内置文件/命令工具集。
 3. **`@ai-zen/agents-server`** —— **常驻服务端**（`agents-server serve`）。会话编排、能力装配、存档、工作区、迁移都在这里；CLI 与桌面端只做渲染与输入。
-4. **`@ai-zen/agents-client`** —— 到服务端的**连接层**：服务发现与拉起、一条 TCP 连接、会话与配置门面。CLI 与桌面端 main 共用同一份实现。
+4. **`@ai-zen/agents-client`** —— 到服务端的**连接层**：服务发现与拉起、一条 WebSocket 连接、会话与配置门面。CLI 与桌面端 main 共用同一份实现。
 
 ## 项目结构
 

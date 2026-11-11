@@ -1,38 +1,77 @@
 /**
- * 常驻服务进程 —— 只监听 loopback，只讲一种帧协议。
+ * 常驻服务进程 —— 只监听 loopback，只讲 JSON-RPC 2.0 over WebSocket。
  *
- * ## 本版边界（v1，刻意最小）
+ * ## 本版边界（v2，刻意最小）
  *
  * - **没有鉴权**：因为只绑 `127.0.0.1`。`start()` 里对 host 做了断言 —— 未鉴权的端口一旦
  *   能被非本机访问，等于把 `exec`（远程执行）送给整个局域网。要对外必须先做鉴权，没有"先
  *   开着再说"的中间态。
- * - **只有三个自带方法**：`ping` / `status` / `shutdown`（它们在任何命名空间之外，
- *   因为它们是「活着吗 / 你是谁 / 可以关了吗」这三个问题）。其余方法全部由组装根注入：
- *   `session.*` / `workspace.*` / `events.watch`（`src/protocol/` 的 `sessions.ts`）、
- *   `config.*` / `agent.*`（同一个包的 `config.ts`）、`content.upload`（`content.ts`）。本类只管
- *   「字节 → 帧 → 方法调用」，不认识业务，也不认识字节从哪里来（那是 `./wire.ts` 的事）。
- * - **握手不省**：即使现在不鉴权，首帧也必须 `hello`。将来加 token/公钥时只改握手内容，
- *   不动所有客户端的建连逻辑。
+ * - **只有四个自带方法**：`hello` / `ping` / `status` / `shutdown`（它们在任何命名空间之外，
+ *   因为它们是「能不能开始用 / 活着吗 / 你是谁 / 可以关了吗」这四个问题）。其余方法全部由
+ *   组装根注入：`session.*` / `workspace.*` / `events.watch`（`src/protocol/` 的 `sessions.ts`）、
+ *   `config.*` / `agent.*`、`content.upload`。本类只管「一条消息 → 方法调用」，不认识业务，
+ *   也不认识消息从哪里来（那是 `./wire.ts` 的事）。
+ * - **握手不省**：即使现在不鉴权，第一条请求也必须 `hello`。将来加 token/公钥时只改 `hello`
+ *   的参数与 handler，不动所有客户端的建连逻辑。
  *
- * ## 为什么帧协议与传输解耦
+ * ## 一条消息怎么变成一次调用
  *
- * 同一套帧要能跑在 TCP / WebSocket / stdio 上（将来 `ssh` 隧道、浏览器直连）。本文件只
- * 负责"文本行 → 帧 → 方法调用"，与那条线「从哪来」无关：入参是 `Wire`（`./wire.js`），
- * 六个成员，每一个都是本文件真正用到的。目前只有一种传输 —— TCP：`start()` 里把每个
- * `net.Socket` 用 `socketWire()` 包一层再交给 `handleConnection()`；加第二种传输时只新写
+ * 文本消息直接 `JSON.parse`，然后只看两个键在不在（判别规则见 `protocol/messages.ts`）：
+ * 有 `method` 是请求；无 `method` 有 `id` 是响应（服务端不会收到）。有 `method`、没有 `id` 的
+ * 是**通知**，按 JSON-RPC 原文（服务端 MUST NOT reply to a Notification）**静默丢弃**；
+ * 其余同不出来的（顶层数组 / 缺 `method` / 外壳不合法）回一条 `invalid-request`，**不断连**。
+ *
+ * 带字节的请求（`content.upload`）是**两条** WS 消息：先一条文本请求（`params` 里只有
+ * 普通参数），再一条二进制消息（前 4 字节是这条请求的 `id`，其余是载荷）。所以文本先到、
+ * 字节后到，两者靠 `id` 配对 —— 见 `awaitingBinary`。
+ *
+ * ## 断连情形收敛成六条（其余一律回错误、连接继续）
+ *
+ *   1. 一条消息超过 WS 层的 `maxPayload`（64 MiB）—— 那条消息根本没被收下，没有可回应之物；
+ *   2. 文本消息超过实现层的 8 MiB（同上，没有恢复路径）；
+ *   3. 握手阶段协议版本不匹配（断代：后面每条消息的形状都不可信）；
+ *   4. 二进制消息的 `id` 找不到在飞请求 —— WS 单连接**保序**，所以这只可能是实现错误；
+ *   5. 同一个 `id` 收到第二块二进制 —— 同上；
+ *   6. 二进制消息不足 4 字节（连 `id` 都读不出来）。
+ *
+ * 共同性质：**这条连接再也无法继续**。其余全部「回一条错误、连接照旧」，**包括不是合法
+ * JSON 的文本**：WS 已经给了消息边界，「这一条不是 JSON」不再等于「后面的字节全部错位」。
+ * 上一版把非法 JSON 当成流错位而断连，那个判据来自 JSON-lines 时代，本版作废。
+ *
+ * ## 为什么传输与派发解耦
+ *
+ * 入参是 `Wire`（`./wire.js`）：七个成员，每一个都是本文件真正用到的。`start()` 里把每个
+ * WebSocket 用 `webSocketWire()` 包一层再交给 `handleConnection()`；加第二种传输时只新写
  * 一个 `Wire` 实现和一个监听器，本文件不用改。
  */
 
-import { createServer, type Server } from "node:net";
-import { encodeFrame, FrameDecoder, ProtocolError } from "../wire/frames.js";
-import type { DaemonStatusResult, PingResult, ShutdownResult } from "../protocol/index.js";
-import type { EventFrame, HelloResponse } from "../protocol/index.js";
+import { createServer, type Server } from "node:http";
+import { WebSocketServer } from "ws";
+import { encodeFrame, MAX_PAYLOAD_BYTES, MAX_TEXT_BYTES } from "../wire/frames.js";
+import type {
+  DaemonStatusResult,
+  ErrorFrame,
+  EventNotification,
+  HelloParams,
+  HelloResult,
+  PingResult,
+  ResultFrame,
+  ServerEvent,
+  ShutdownResult,
+} from "../protocol/index.js";
 import type { AnyMethod, ParamsOf, ResultOf } from "../protocol/api.js";
-import { isHelloRequest, isRequestFrame, PROTOCOL_VERSION } from "../wire/messages.js";
+import type { ErrorCode } from "../protocol/errors.js";
+import {
+  isRequestFrame,
+  PROTOCOL_VERSION,
+  readRequestId,
+  REQUEST_ID_BYTES,
+} from "../wire/messages.js";
+import { rpcCodeOf } from "../wire/errors.js";
 import type { ServerDescriptor } from "../wire/discovery.js";
 import { descriptorPath, removeDescriptor, writeDescriptor } from "../wire/discovery.js";
 import { isLoopbackHost } from "../wire/host.js";
-import { socketWire, type Wire } from "./wire.js";
+import { webSocketWire, type Wire } from "./wire.js";
 
 /**
  * 一张方法表：**键必须是 `MethodApi` 的方法名**，参数与结果由方法名决定。
@@ -45,8 +84,9 @@ export type MethodHandlers = {
     params: ParamsOf<M>,
     connection: Connection,
     /**
-     * 跟在帧后面的原始字节 —— 只有带字节的方法（见 `BINARY_METHODS`）会收到，其余恒为
-     * `undefined`（它们的请求帧后面一个多余字节都没有）。
+     * 这条请求的**二进制载荷** —— 只有带字节的方法（见 `BINARY_METHODS`）会收到，其余恒为
+     * `undefined`（它们的请求只有一条文本消息）。空载荷是长度 0 的 `Buffer`（不是
+     * `undefined`）：那说明对端确实发了二进制消息，只是里面没有内容，该由 handler 判。
      */
     payload?: Buffer,
   ) => ResultOf<M> | Promise<ResultOf<M>>;
@@ -55,8 +95,8 @@ export type MethodHandlers = {
 /**
  * 内部存放用的擦除形态：一个 `Map` 的键是运行时才知道的字符串，类型参数到不了这里。
  *
- * 这是一处**有意**的擦除，位置在「收到一帧 JSON → 查到某个 handler」这个边界上；
- * 帧本身的合法性由 `isRawRequestFrame` 判定，而「这条方法的参数长什么样」由方法表声明。
+ * 这是一处**有意**的擦除，位置在「收到一条消息 → 查到某个 handler」这个边界上；
+ * 外壳的合法性由 `isRequestFrame` 判定，而「这条方法的参数长什么样」由方法表声明。
  */
 export type AnyHandler = (params: never, connection: Connection, payload?: Buffer) => unknown;
 
@@ -64,17 +104,17 @@ export type AnyHandler = (params: never, connection: Connection, payload?: Buffe
 export interface Connection {
   /** 连接 id，只用于日志 */
   readonly id: number;
-  /** 主动推一条事件给该客户端 */
-  send(event: EventFrame): void;
-  /** 关闭连接（不给客户端任何"再见"帧） */
+  /** 主动推一条事件给该客户端（包成 `session.event` 通知） */
+  send(event: ServerEvent): void;
+  /** 关闭连接（不再回任何东西） */
   close(): void;
   /**
    * 这条连接断开时的回调；返回取消注册的函数。
    *
-   * 订阅类方法（如 `events.watch`）靠它在断开时退订：不退订就会给一条已经 destroy 的
-   * 连接一直写帧，而 `write` 在 Node 里是不报错的 —— 泄漏是安静的。
+   * 订阅类方法（如 `events.watch`）靠它在断开时退订：不退订就会给一条已经关掉的连接一直
+   * 写消息，而写一条关掉的连接是不报错的 —— 泄漏是安静的。
    */
-  onClose(listener: () => void): () => void;
+  onClose(listener: () => void): void;
 }
 
 export interface DaemonOptions {
@@ -87,7 +127,7 @@ export interface DaemonOptions {
   /** 服务端包版本，写进发现文件与握手回执 */
   version: string;
   /**
-   * 业务方法表（`ping` / `status` / `shutdown` 由本类自带，同名的以注入的为准）。
+   * 业务方法表（`hello` / `ping` / `status` / `shutdown` 由本类自带，同名的以注入的为准）。
    *
    * 这里是**擦除形态**：daemon 是一个按名字分发的调度器，不认识具体有哪些方法。
    * 「方法名 ↔ 参数/结果」的严格性在四个 handler 工厂的返回类型上（`MethodHandlers`）——
@@ -101,44 +141,34 @@ export interface DaemonOptions {
   log?: (level: "info" | "warn" | "error", message: string) => void;
   /** 退出前的收尾（如 flush 日志）。`stop()` 之后调用 */
   onStopped?: (reason: string) => void;
+  /**
+   * 收摊中间的一步：**连接已全部关掉、发现文件还没删** 的那一刻（`stop()` 里调）。
+   *
+   * 为什么需要这个缝：收摊的五步有先后（拒新连接 → 关连接 → 停会话 → flush 日志 → 删
+   * 发现文件 → 退出），而「停会话」不属于传输层。本类只管前两步与删发现文件；中间那一步
+   * 交给持有者（`ServerApp`）—— 它才手上有会话。顺序不能倒：先删发现文件再停会话的话，
+   * 下一个客户端有可能在会话还没收完时就接上一个已经没有会话的进程。
+   */
+  onDrained?: (reason: string) => void | Promise<void>;
 }
 
 /** 拒绝启动时给用户看的那句话里的地址说明（判据本身的实现在 `host.ts`） */
 const LOOPBACK_HOSTS_NOTE = "127.0.0.0/8 / ::1 / localhost";
 
-/**
- * 请求帧后面紧跟原始字节的方法（帧形状见 `src/wire/frames.ts`）。
- *
- * 判据放在这里、而不在 handler 里：「进入二进制阶段」必须在**同步**遍历刚切出的项时决定
- * （依据方法名 + 帧里的 `bytes`），否则「下一批字节属于谁」会跟着 `dispatch` 的异步时序漂。
- *
- * 表里的名字受 `AnyMethod` 约束 —— 拼错方法名当场编译错误（而不是变成一条永远带不上
- * payload 的方法）。
- */
-const BINARY_METHODS: ReadonlySet<string> = new Set(["content.upload"] satisfies AnyMethod[]);
+/** 握手回执里自称的名字（与 `version.ts` 的 `SERVER_NAME` 同值；本类不为此多一个依赖） */
+const SERVER_NAME = "@ai-zen/agents-server";
 
 /**
- * 这一帧后面跟多少字节（`null` = 不跟字节）。
+ * 要收二进制载荷的方法（线上会多一条二进制消息的那些）。
  *
- * 两条错法都在这里判：带字节的方法没声明长度、不带字节的方法冒出一个 `bytes`。
- * 长度本身合不合法（正整数 / 上限）由 `FrameDecoder.expectBytes` 判 —— 「payload 多长
- * 算长」只有那一处判据。
+ * 判据放在这里、而不在 handler 里：收到文本请求时**先不派发**，等它的二进制帧到了再一起
+ * 派发。这个「等」必须由认识方法名的那一层决定 —— handler 只拿到参数与载荷，它无法表达
+ * 「我还没收到字节」。
  *
- * @throws ProtocolError（`bad-frame`）—— 帧形状错，整条流已经对不齐了
+ * 表里的名字受 `AnyMethod` 约束 —— 拼错方法名当场编译错误（而不是变成一条永远等不到载荷、
+ * 也就永远不会被派发的方法）。
  */
-function payloadLengthOf(method: string, params: unknown): number | null {
-  const declared = (params as Record<string, unknown> | null | undefined)?.["bytes"];
-  if (!BINARY_METHODS.has(method)) {
-    if (declared !== undefined) {
-      throw new ProtocolError("bad-frame", `${method} does not take a binary payload`);
-    }
-    return null;
-  }
-  if (typeof declared !== "number") {
-    throw new ProtocolError("bad-frame", `${method} requires "bytes" (the payload length)`);
-  }
-  return declared;
-}
+const BINARY_METHODS: ReadonlySet<string> = new Set(["content.upload"] satisfies AnyMethod[]);
 
 export class Daemon {
   private readonly options: DaemonOptions;
@@ -147,8 +177,9 @@ export class Daemon {
   private readonly handlers = new Map<string, AnyHandler>();
 
   private server: Server | null = null;
+  private wss: WebSocketServer | null = null;
   private actualPort = 0;
-  /** 当前连接的**传输那一侧**（`Wire`，不是 socket）：收摊时要逐个断掉 */
+  /** 当前连接的**传输那一侧**（`Wire`，不是 WebSocket）：收摊时要逐个断掉 */
   private readonly connections = new Set<Wire>();
   private readonly startedAt = new Date();
   private nextConnectionId = 1;
@@ -161,7 +192,8 @@ export class Daemon {
     this.host = options.host ?? "127.0.0.1";
     this.requestedPort = options.port ?? 8790;
 
-    // 自带方法：足够让客户端判断"活着"、"是不是我这个版本"、"能不能让我关掉"
+    // 自带方法：足够让客户端判断"能不能开始用"、"活着"、"是不是我这个版本"、"能不能让我关掉"
+    this.handlers.set("hello", (): HelloResult => this.identity());
     this.handlers.set("ping", (): PingResult => ({ pong: true }));
     this.handlers.set("status", () => this.status());
     this.handlers.set("shutdown", (): ShutdownResult => {
@@ -199,10 +231,20 @@ export class Daemon {
       );
     }
 
-    // TCP 这一路：`net.Socket` → `Wire` 适配器 → `handleConnection()`。
-    // 换传输时变的只有这一行之后的那个函数（新写一个监听器 + 一个新 `Wire` 实现）。
-    const server = createServer((socket) => this.handleConnection(socketWire(socket)));
+    // HTTP 服务器只是 WebSocket 的承载（握手要先有一次 HTTP upgrade）。普通 HTTP 请求
+    // 回一句 426：这条端口只讲 WebSocket，说清楚比静默挂住有用。
+    const server = createServer((_request, response) => {
+      response.writeHead(426, { "content-type": "text/plain; charset=utf-8" });
+      response.end("this endpoint speaks WebSocket only\n");
+    });
+    // `noServer`：升级由我们自己从 HTTP 服务器的 `upgrade` 事件里接，ws 不再另开监听。
+    // `maxPayload` 是**单条消息**的上限（64 MiB）：超了由 ws 直接断连（见文件头「六条断连」）。
+    const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD_BYTES });
+    server.on("upgrade", (request, socket, head) => {
+      wss.handleUpgrade(request, socket, head, (ws) => this.handleConnection(webSocketWire(ws)));
+    });
     this.server = server;
+    this.wss = wss;
 
     await new Promise<void>((resolve, reject) => {
       /**
@@ -256,7 +298,7 @@ export class Daemon {
     return descriptor;
   }
 
-  /** 停止：拒新连接 → 关掉现有连接 → 删发现文件 */
+  /** 停止：拒新连接 → 关连接 →（停会话 / flush 日志）→ 删发现文件 → 退出 */
   async stop(reason: string): Promise<void> {
     // 已经有人在收摊：把同一个 Promise 交出去。
     // 不这样的话，「客户端发 shutdown」与「进程收信号」撞车时，后来那个调用方拿到的是
@@ -268,19 +310,37 @@ export class Daemon {
   private async doStop(reason: string): Promise<void> {
     this.clearIdleTimer();
 
+    // ① 拒新连接：先把升级通道关掉（noServer 模式下 close() 只是把它标成不再接受升级，
+    //    没有监听句柄要释放），这样接下来的销毁不会有过路的新连接插进来
+    if (this.wss) {
+      const wss = this.wss;
+      this.wss = null;
+      wss.close();
+    }
+
+    // ② 关连接：现有的全部断掉
     for (const wire of this.connections) wire.destroy();
     this.connections.clear();
 
     if (this.server) {
       const server = this.server;
       this.server = null;
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        // 关闭帧是异步的：收摊不该等对端回应。这里直接掐掉所有底层连接，
+        // 否则一个不回应的客户端会把 `close()` 的 callback 永远吊住
+        server.closeAllConnections();
+      });
     }
     this.actualPort = 0;
 
-    // 发现文件必须删：留着它，下一个客户端会连到一个已经没人监听的端口
+    // ③④ 停会话 / flush 日志：连接已经全没了，而发现文件还在（交给持有者）
+    await this.options.onDrained?.(reason);
+
+    // ⑤ 发现文件必须删：留着它，下一个客户端会连到一个已经没人监听的端口
     await removeDescriptor(this.options.aiZenDir);
     this.log("info", `stopped: ${reason}`);
+    // ⑥ 退出（也交给持有者：日志 flush 完才走）
     this.options.onStopped?.(reason);
   }
 
@@ -289,23 +349,22 @@ export class Daemon {
   // ==================================================================
 
   /**
-   * 接一条**已经建好的双工线**：首帧 `hello` → 帧分发 → 断开清理。
+   * 接一条**已经建好的双工线**：握手门 → 消息分类 → 派发 → 断开清理。
    *
-   * 为什么是 public：这就是传输的插口，也是本类唯一对外开放的连接入口。TCP 那一路在
-   * `start()` 里把每个 `net.Socket` 包成 `Wire` 后调它；将来 WebSocket 的监听器做同一件事
-   * （把 `ws` 的文本帧包成 `Wire`，然后调这一行），本类不用改。用例也从这扇门进来喂一个
-   * 内存双工 —— 所以没有「只为测试存在」的构造参数或分支。
+   * 为什么是 public：这就是传输的插口，也是本类唯一对外开放的连接入口。`start()` 里把每个
+   * WebSocket 包成 `Wire` 后调它；用例也从这扇门进来喂一个内存双工 —— 所以没有「只为测试
+   * 存在」的构造参数或分支。
    */
   handleConnection(wire: Wire): void {
     const id = this.nextConnectionId++;
-    const decoder = new FrameDecoder();
     let handshaken = false;
     /**
-     * 等 payload 的那一帧（见 `wire.onData` 里的说明）。
+     * 已经收到文本请求、正在等它那条二进制消息的请求（`id → 那条请求`）。
      *
-     * 它必须活到**整条连接**，而不是一个 chunk：payload 可以跨多个 chunk 才收满。
+     * 这是「文本先到、字节后到」的配对表：WS 单连接保序，所以二进制消息必然晚于它的请求；
+     * 反过来（先到字节）就是实现错误，见 `onBinary`。
      */
-    let awaitingPayload: { id: number; method: string; params: unknown } | null = null;
+    const awaitingBinary = new Map<number, { method: string; params: unknown }>();
     const closeListeners = new Set<() => void>();
 
     this.connections.add(wire);
@@ -313,9 +372,7 @@ export class Daemon {
 
     const connection: Connection = {
       id,
-      send: (event) => {
-        if (!wire.destroyed) wire.write(encodeFrame(event));
-      },
+      send: (event) => writeIfOpen(wire, eventNotification(event)),
       close: () => wire.destroy(),
       onClose: (listener) => {
         closeListeners.add(listener);
@@ -323,125 +380,160 @@ export class Daemon {
       },
     };
 
-    const fail = (code: string, message: string) => {
+    /** 回一条错误响应，连接照旧（请求级失败都走它，见文件头「六条断连」里的「其余一律」） */
+    const replyError = (requestId: number | null, code: ErrorCode, message: string): void => {
       this.log("warn", `conn#${id} rejected: ${code} ${message}`);
-      if (!wire.destroyed)
-        wire.write(
-          encodeFrame({
-            kind: "hello",
-            ok: false,
-            error: { code, message },
-          } satisfies HelloResponse),
-        );
-      wire.destroy();
+      writeIfOpen(wire, errorFrame(requestId, code, message));
     };
 
     /**
-     * 帧层违规（非法帧 / 超限 / 带字节的帧声明了非法长度）。
+     * 回一条错误响应**然后**断连。
      *
-     * 一律断开：这条流已经对不齐了（下一帧从哪里开始不知道），继续读只会把后面的字节
-     * 当成帧解析，错误会以更难查的形式出现在别处。
+     * 本版只有一处用得上：版本真的不匹配（文件头六条里的第 ③ 条，见 `protocol/errors.ts`
+     * 的 `version-mismatch`）。顺序不能反 —— 先把错误发出去，再关连接（`Wire.destroy()` 是
+     * 优雅关闭，会把排队中的那条响应发完）。
      */
-    const rejectProtocol = (error: unknown) => {
-      const code = error instanceof ProtocolError ? error.code : "bad-frame";
-      this.log("warn", `conn#${id} protocol error: ${code}`);
-      if (!wire.destroyed) {
-        wire.write(encodeFrame({ ok: false, error: { code, message: String(error) } }));
-      }
+    const failAndClose = (requestId: number | null, code: ErrorCode, message: string): void => {
+      replyError(requestId, code, message);
+      this.log("warn", `conn#${id} closing: ${code}`);
       wire.destroy();
     };
 
-    wire.onData((chunk: Buffer) => {
-      try {
-        decoder.push(chunk);
-      } catch (error) {
-        rejectProtocol(error);
+    /** 收到一条文本消息：解析 → 分类 → 握手门 → （带字节的方法先挂起）→ 派发 */
+    const onText = (text: string): void => {
+      // 实现层的文本上限（二进制可以用满 WS 的 64 MiB，见 `wire/frames.ts`）。
+      // 超限**断连且不回错误响应**（与 `maxPayload` 那一档同一个道理）：没有可回应之物 ——
+      // 这条消息在体积上就没被收下，而且「同一段内容再发一遍还是这么大」，没有恢复路径。
+      // 它与「不是合法 JSON」是两件事：后者回 `bad-frame`、不断连。
+      if (Buffer.byteLength(text, "utf8") > MAX_TEXT_BYTES) {
+        this.log("warn", `conn#${id} closing: text message exceeds ${MAX_TEXT_BYTES} bytes`);
+        wire.destroy();
         return;
       }
 
-      /**
-       * 一项一项取，而不是一次把 chunk 切完。
-       *
-       * 判据在**这一层**：帧之后跟的是不是二进制 payload，只有认识方法名的调用方知道。
-       * 所以顺序是「取一帧 → 判它带不带字节 → （带就）`expectBytes` → 再取下一项」，
-       * 全程同步 —— 这也是「先存帧、收到 payload 再派发」那个选择成立的前提：帧的派发可以
-       * 异步，但「哪段字节属于哪一帧」在这串同步里就定死了。
-       *
-       * `awaitingPayload` 同一时刻最多一个：解码器是串行的（二进制阶段收满之前不会
-       * 吐出下一帧）。
-       */
+      let parsed: unknown;
       try {
-        for (let item = decoder.next(); item; item = decoder.next()) {
-          if (item.type === "bytes") {
-            const pending = awaitingPayload;
-            awaitingPayload = null;
-            // 没有帧在等：帧形状自相矛盾（多出来一段没人认领的字节）
-            if (!pending) throw new ProtocolError("bad-frame", "binary payload without a frame");
-            void this.dispatch(
-              pending.id,
-              pending.method,
-              pending.params,
-              connection,
-              wire,
-              item.bytes,
-            );
-            continue;
-          }
-
-          const frame = item.frame;
-          if (!handshaken) {
-            if (!isHelloRequest(frame)) {
-              fail("bad-handshake", "first frame must be hello");
-              return;
-            }
-            if (frame.protocol !== PROTOCOL_VERSION) {
-              fail(
-                "version-mismatch",
-                `client speaks protocol ${frame.protocol}, this server speaks ${PROTOCOL_VERSION}`,
-              );
-              return;
-            }
-            handshaken = true;
-            wire.write(
-              encodeFrame({
-                kind: "hello",
-                ok: true,
-                server: {
-                  name: "@ai-zen/agents-server",
-                  version: this.options.version,
-                  protocol: PROTOCOL_VERSION,
-                  pid: process.pid,
-                  startedAt: this.startedAt.toISOString(),
-                },
-              } satisfies HelloResponse),
-            );
-            continue;
-          }
-
-          if (!isRequestFrame(frame)) {
-            wire.write(
-              encodeFrame({
-                ok: false,
-                error: { code: "bad-frame", message: "expected a request frame" },
-              }),
-            );
-            continue;
-          }
-
-          // 带字节的请求帧：进入二进制阶段（后面恰好 `bytes` 个字节），帧本身等收到字节再派发
-          const length = payloadLengthOf(frame.method, frame.params);
-          if (length !== null) {
-            decoder.expectBytes(length);
-            awaitingPayload = { id: frame.id, method: frame.method, params: frame.params };
-            continue;
-          }
-
-          void this.dispatch(frame.id, frame.method, frame.params, connection, wire);
-        }
-      } catch (error) {
-        rejectProtocol(error);
+        parsed = JSON.parse(text);
+      } catch {
+        // 不是合法 JSON。上一版在这里断连（"流已经对不齐了"），本版不断：WS 给了消息边界
+        replyError(null, "bad-frame", "message is not valid JSON");
+        return;
       }
-    });
+
+      if (isNotification(parsed)) {
+        // JSON-RPC 原文：服务端 **MUST NOT** reply to a Notification。回一条错误是违反标准
+        // （也把「客户端只管发、不管答」的那类用法变成噪声）。静默丢弃，连接照旧。
+        // 排在外壳判定之前：通知没有 `id`，`isRequestFrame` 必然不认它。
+        this.log(
+          "info",
+          `conn#${id} dropped notification: ${String((parsed as { method: string }).method)}`,
+        );
+        return;
+      }
+
+      if (!isRequestFrame(parsed)) {
+        // 顶层数组（批量）/ 缺 method / 缺 `jsonrpc` / `id` 不合规 / 来了响应：
+        // 都归不到任何一条请求，`id` 只能是 null
+        replyError(null, "invalid-request", "message is not a valid request object");
+        return;
+      }
+
+      const request = parsed;
+
+      if (handshaken) {
+        // 握手只有一次：重放不是「再来一遍」
+        if (request.method === "hello") {
+          replyError(request.id, "invalid-request", "hello has already been accepted");
+          return;
+        }
+      } else {
+        if (request.method !== "hello") {
+          // 请求级失败：回错误就好，客户端补上 `hello` 就能继续用（不断连）
+          replyError(
+            request.id,
+            "handshake-required",
+            `first request must be hello, got ${request.method}`,
+          );
+          return;
+        }
+        // 版本从 `hello` 的普通参数里读（握手就是一条普通方法，见 `protocol/messages.ts`）。
+        // 这里分两步，**形状错误与版本不匹配不是同一件事**（A27 / A31）：
+        //   · 参数不是对象 / 没有 `protocol` / `protocol` 不是数字 → `bad-params`，**不断连**：
+        //     客户端该改的是请求体，而报成 `version-mismatch` 会让人跑去改版本号；
+        //   · 是数字但不等于本版的版本 → `version-mismatch` + 断连（断代：后面每条消息的形状
+        //     都不可信，这是唯一需要断连的请求级失败）。
+        const helloParams = request.params;
+        if (typeof helloParams !== "object" || helloParams === null || Array.isArray(helloParams)) {
+          replyError(
+            request.id,
+            "bad-params",
+            `hello expects object params, got ${helloParams === null ? "null" : typeof helloParams}`,
+          );
+          return;
+        }
+        const protocol = (helloParams as Partial<HelloParams>).protocol;
+        if (typeof protocol !== "number") {
+          // 缺失或不是数字：仍是形状错（`{protocol:"2"}` 与 `{}` 同一种毛病），不是版本不同
+          replyError(
+            request.id,
+            "bad-params",
+            `hello expects a numeric "protocol", got ${protocol === undefined ? "nothing" : typeof protocol}`,
+          );
+          return;
+        }
+        if (protocol !== PROTOCOL_VERSION) {
+          // 断代：版本不同意味着后面每条消息的形状都不可信
+          failAndClose(
+            request.id,
+            "version-mismatch",
+            `client speaks protocol ${String(protocol)}, this server speaks ${PROTOCOL_VERSION}`,
+          );
+          return;
+        }
+        // 握手成功。置位在派发之前：`hello` 的 handler 只是返回身份，没有失败路径
+        handshaken = true;
+      }
+
+      if (BINARY_METHODS.has(request.method)) {
+        // 带字节的请求：先不派发，等它的二进制消息到了再一起走（见 `onBinary`）
+        awaitingBinary.set(request.id, { method: request.method, params: request.params });
+        return;
+      }
+
+      void this.dispatch(request.id, request.method, request.params, connection, wire);
+    };
+
+    /** 收到一条二进制消息：前 4 字节是请求 `id`，其余是载荷 */
+    const onBinary = (bytes: Buffer): void => {
+      const requestId = readRequestId(bytes);
+      if (requestId === null) {
+        // 连 `id` 都读不出来：归不到任何请求，回不了错误，只可能是实现错误
+        this.log("warn", `conn#${id} closing: binary message shorter than ${REQUEST_ID_BYTES}B`);
+        wire.destroy();
+        return;
+      }
+      const pending = awaitingBinary.get(requestId);
+      if (!pending) {
+        // WS 单连接保序 → 二进制必然晚于它的请求。早到（或同一个 id 的第二块）只可能是
+        // 实现错误，而且无从回复（错误归不到任何在飞请求）—— 断连
+        this.log("warn", `conn#${id} closing: no request waiting for binary payload ${requestId}`);
+        wire.destroy();
+        return;
+      }
+      awaitingBinary.delete(requestId);
+      // 空载荷（正好 4 字节）照样派发：长度 0 交给 handler 判（它回 `bad-params`）
+      void this.dispatch(
+        requestId,
+        pending.method,
+        pending.params,
+        connection,
+        wire,
+        bytes.subarray(REQUEST_ID_BYTES),
+      );
+    };
+
+    wire.onText(onText);
+    wire.onBinary(onBinary);
 
     wire.onClose(() => {
       this.connections.delete(wire);
@@ -465,24 +557,18 @@ export class Daemon {
   ): Promise<void> {
     const handler = this.handlers.get(method);
     if (!handler) {
-      writeIfOpen(wire, {
-        id,
-        ok: false,
-        error: { code: "unknown-method", message: `unknown method: ${method}` },
-      });
+      writeIfOpen(wire, errorFrame(id, "unknown-method", `unknown method: ${method}`));
       return;
     }
     try {
-      // 唯一的断言：`params` 是解出来的 JSON（合法性已由 `isRawRequestFrame` 判过形状），
+      // 唯一的断言：`params` 是解出来的 JSON（外壳合法性已由 `isRequestFrame` 判过），
       // 具体形状由方法表声明。
       const result = await handler(params as never, connection, payload);
-      writeIfOpen(wire, { id, ok: true, result });
-    } catch (error: any) {
-      writeIfOpen(wire, {
-        id,
-        ok: false,
-        error: { code: error?.code ?? "internal", message: error?.message ?? String(error) },
-      });
+      writeIfOpen(wire, { jsonrpc: "2.0", id, result } satisfies ResultFrame);
+    } catch (error) {
+      // 码是 handler 抛出来的那个（业务层 `CodedError.code`），没有就是 `internal`：
+      // 「服务端自己出的事」与「你参数错了」是两件不同的事，客户端处置也不同
+      writeIfOpen(wire, errorFrame(id, codeOfThrown(error), messageOfThrown(error)));
     }
   }
 
@@ -516,6 +602,17 @@ export class Daemon {
   // 内部
   // ==================================================================
 
+  /** 握手的回执：这个进程是谁、说的是哪个版本 */
+  private identity(): HelloResult {
+    return {
+      name: SERVER_NAME,
+      version: this.options.version,
+      protocol: PROTOCOL_VERSION,
+      pid: process.pid,
+      startedAt: this.startedAt.toISOString(),
+    };
+  }
+
   private status(): DaemonStatusResult {
     return {
       version: this.options.version,
@@ -535,6 +632,59 @@ export class Daemon {
   }
 }
 
-function writeIfOpen(wire: Wire, frame: unknown): void {
+// ==================================================================
+// 线上对象的两条出站形状
+// ==================================================================
+
+/**
+ * 一条错误响应：`error.code` 是 JSON-RPC 的数字码（由字符串码映射来），`error.data.code`
+ * 是原来的字符串码 —— 客户端看后者决定怎么办（见 `protocol/messages.ts` 的 `ErrorObject`）。
+ */
+function errorFrame(requestId: number | null, code: ErrorCode, message: string): ErrorFrame {
+  return {
+    jsonrpc: "2.0",
+    id: requestId,
+    error: { code: rpcCodeOf(code), message, data: { code } },
+  };
+}
+
+/** 一条事件通知：15 个事件共用 method `session.event`，具体哪件事由 `params.event` 说 */
+function eventNotification(event: ServerEvent): EventNotification {
+  return { jsonrpc: "2.0", method: "session.event", params: event };
+}
+
+function writeIfOpen(wire: Wire, frame: ResultFrame | ErrorFrame | EventNotification): void {
   if (!wire.destroyed) wire.write(encodeFrame(frame));
+}
+
+/**
+ * 这一条是不是一条 **JSON-RPC 通知**（有 `method`、没有 `id`）。
+ *
+ * 判据只取这两个键：方法名是不是认识的不重要 —— 通知本来就没有回执，也就不存在
+ * 「方法不存在」的告诉方式。数组不是通知（本版不支持批量，那是 `invalid-request`）。
+ */
+function isNotification(frame: unknown): boolean {
+  if (typeof frame !== "object" || frame === null || Array.isArray(frame)) return false;
+  const value = frame as { method?: unknown; id?: unknown };
+  return typeof value.method === "string" && value.method.length > 0 && value.id === undefined;
+}
+
+/**
+ * handler 抛出来的东西 → 线上字符串码。
+ *
+ * 表外的码（服务端新加了一类失败、或者 SDK 抛的）照样递出去：**未知的码比丢掉的码有用**，
+ * 客户端至少能显示「失败原因是这一条」。它们映射到 `-32000`（见 `wire/errors.ts`）。
+ */
+function codeOfThrown(error: unknown): ErrorCode {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  // 唯一的断言：`code` 从 JSON 之外的边界（别处 `throw` 的对象）来，表由 `protocol/errors.ts`
+  // 声明；合不合表在这里判不出来，也不该在这里改成 `internal`（那会吞掉真实原因）
+  return typeof code === "string" && code.length > 0 ? (code as ErrorCode) : "internal";
+}
+
+/** 同上的 message 半边：`Error` 取 `message`，别的东西原样 `String()` */
+function messageOfThrown(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  const message = (error as { message?: unknown } | null | undefined)?.message;
+  return typeof message === "string" && message.length > 0 ? message : String(error);
 }

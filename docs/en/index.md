@@ -19,7 +19,7 @@ The framework has four layers with a one-way dependency direction:
 1. **`@ai-zen/agents-core`** — A plugin-driven Agent runtime. It runs directly on the official `openai` SDK and does not maintain its own request layer. It is responsible for conversation lifecycle, streaming output, tool calls, multi-turn recursive dialogs, events, and plugin extension.
 2. **`@ai-zen/agents-sdk`** — The **engine / capability layer** built on top of core. It is responsible for the business capability pipeline (discover → permission-filter → instantiate), the global Scope context, MCP connection management, task migration, and the built-in file/command toolset.
 3. **`@ai-zen/agents-server`** — The **resident server** (`agents-server serve`). Session orchestration, capability assembly, archives, workspaces and migration all live here; the CLI and the desktop app only render and read input.
-4. **`@ai-zen/agents-client`** — The **connection layer** to the server: service discovery and spawning, one TCP connection, session and config facades. The CLI and the desktop main process share this one implementation.
+4. **`@ai-zen/agents-client`** — The **connection layer** to the server: service discovery and spawning, one WebSocket connection, session and config facades. The CLI and the desktop main process share this one implementation.
 
 ## Project structure
 

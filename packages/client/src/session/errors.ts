@@ -34,8 +34,8 @@ export function isSessionGoneCode(code: string): boolean {
 /**
  * 这个错误是不是「会话已经没了」。
  *
- * 先看**结构化** `code`（`SocketServerClient` 会把服务端帧里的 `code` 挂到 error 上），
- * 拿不到才退回看 message 前缀 —— 后者只对自造错误成立，但成本是一行，而漏判的代价是
+ * 先看**结构化** `code`（`SocketServerClient` 会把失败响应里的 `error.data.code` 挂到 error
+ * 上），拿不到才退回看 message 前缀 —— 后者只对自造错误成立，但成本是一行，而漏判的代价是
  * 「对着一个已经不在的会话重试三次」。
  */
 export function isSessionGone(error: unknown): boolean {

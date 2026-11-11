@@ -80,6 +80,9 @@ function snapshotOf(
     turnId: 1,
     phase: null,
     messages,
+    // 两个槽位（题目 / 会话内通知）都是快照的一部分：契约里它们是必填数组，空数组 = 此刻没有
+    pendingQuestions: [],
+    pendingNotices: [],
     ...extra,
   };
 }

@@ -32,12 +32,15 @@
  * `export *` 撞上**重名会编译失败**，这恰恰是它比手工列举强的地方：手工列举时重名被
  * 后者静默覆盖，谁也不会发现。
  *
- * 唯一的例外是 `./daemon/wire.js`：它的 `socketWire` 适配器**刻意不导出**（外部实现者
- * 各有各的底层，抄不到它；要给本包接一种新传输，只需按 `Wire` 接口写一份），所以那里
- * 用显式具名导出。这是「选择不导出」，不是重名。
+ * 唯一的例外是 `./daemon/wire.js`：它的 `Wire` 是**接口**（本包不需要导出那边任何运行期
+ * 值），而 `export *` 导不了默认没写在桶里的东西 —— 这里用一行 `export type` 把它单独请
+ * 出来。这是「选择导什么」，不是重名。
  */
 
 export type * from "./protocol/index.js";
+
+// ---- 进程作用域的根：状态 + 方法表 + 生命周期 ----
+export * from "./ServerApp.js";
 
 // ---- 机理件（无业务语义） ----
 export * from "./version.js";
@@ -75,3 +78,4 @@ export * from "./daemon/agentHandlers.js";
 export * from "./daemon/configHandlers.js";
 export * from "./daemon/assetHandlers.js";
 export * from "./daemon/contentHandlers.js";
+export * from "./daemon/noticeHandlers.js";

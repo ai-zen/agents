@@ -1,5 +1,5 @@
 /**
- * 处理器接线测试 —— 走真 socket。
+ * 处理器接线测试 —— 真起守护进程、真 WebSocket。
  *
  * 业务逻辑在 `SessionManager.test.ts` 里用假 Agent 测透了；这里只证明三件事：
  * **事件真的能从服务端推过连接**、参数错会原样回给客户端、以及 `workspace.*` 里的
@@ -7,14 +7,17 @@
  *
  * `workspace.files` 那个用例用真实临时目录（假件证明不了「扫的是哪个目录」），
  * 其余一律注入。
+ *
+ * 消息形状与客户端全部用 `WsTestClient`（`WsTestClientTestSupport.ts`）：事件现在包在
+ * 一条 `session.event` 通知里（`WireFrame.params`），所以断言事件内容用 `nextEvent()`。
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createConnection, type Socket } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Daemon } from "./Daemon.js";
+import { WsTestClient } from "./WsTestClientTestSupport.js";
 import { createSessionHandlers } from "./sessionHandlers.js";
 import {
   SessionManager,
@@ -22,8 +25,6 @@ import {
   type CreateAgentInput,
 } from "../domain/session/SessionManager.js";
 import { FileSessionStore } from "../domain/session/store/FileSessionStore.js";
-import { encodeFrame, FrameDecoder } from "../wire/frames.js";
-import { PROTOCOL_VERSION } from "../wire/messages.js";
 
 import type { ServerEvent } from "../protocol/index.js";
 
@@ -108,7 +109,7 @@ let agent: FakeAgent;
 let manager: SessionManager;
 /** `createAgent` 收到的入参（断言「这一段会话跑在哪个路径上」，以及那两个会话层钩子） */
 let agentInputs: CreateAgentInput[];
-let client: TestClient | null = null;
+let client: WsTestClient | null = null;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "aiz-session-handlers-"));
@@ -160,11 +161,11 @@ async function startDaemon(): Promise<void> {
   });
   await instance.start();
   daemon = instance;
-  client = await TestClient.connect(instance.port);
+  client = await WsTestClient.connect(instance.port);
   await client.handshake();
 }
 
-describe("工作区处理器（真 socket）", () => {
+describe("工作区处理器（真 WebSocket）", () => {
   it("workspace.resolve 建目录并回 workspaceId", async () => {
     await startDaemon();
     const result = await client!.call("workspace.resolve", { path: "/work/proj-a" });
@@ -241,7 +242,7 @@ describe("工作区处理器（真 socket）", () => {
   });
 });
 
-describe("会话处理器（真 socket）", () => {
+describe("会话处理器（真 WebSocket）", () => {
   it("watch 之后：create / send 的进展以事件帧推到这条连接上", async () => {
     await startDaemon();
     await client!.call("events.watch");
@@ -260,7 +261,7 @@ describe("会话处理器（真 socket）", () => {
     expect(agent.sent).toEqual(["你好"]);
 
     // send 当下就会有一条 phase（connecting）
-    expect(await client!.next()).toMatchObject({
+    expect(await client!.nextEvent()).toMatchObject({
       event: "session-phase",
       sessionId: created.sessionId,
       turnId: 1,
@@ -275,15 +276,19 @@ describe("会话处理器（真 socket）", () => {
     const piece = { choices: [{ delta: { content: "答" } }] };
     agent.fire("chunk", piece);
     agent.fire("chunk-parsed", {}, piece);
-    expect(await client!.next()).toMatchObject({ event: "chunk", turnId: 1 });
-    const phaseAfterDelta = (await client!.next()) as any;
+    expect(await client!.nextEvent()).toMatchObject({ event: "chunk", turnId: 1 });
+    const phaseAfterDelta = (await client!.nextEvent()) as any;
     expect(phaseAfterDelta).toMatchObject({ event: "session-phase", phase: { kind: "streaming" } });
 
     agent.fire("finally");
-    expect(await client!.next()).toMatchObject({ event: "finally", turnId: 1 });
-    const phaseReset = (await client!.next()) as any;
+    expect(await client!.nextEvent()).toMatchObject({ event: "finally", turnId: 1 });
+    const phaseReset = (await client!.nextEvent()) as any;
     expect(phaseReset.phase).toBeNull();
-    expect(await client!.next()).toMatchObject({ event: "session-turn-end", ok: true, turnId: 1 });
+    expect(await client!.nextEvent()).toMatchObject({
+      event: "session-turn-end",
+      ok: true,
+      turnId: 1,
+    });
   });
 
   it("session.subAgent.snapshot 走通；未知子 Agent → sub-agent-missing 错误帧", async () => {
@@ -420,14 +425,14 @@ describe("会话处理器（真 socket）", () => {
     expect(result.messages).toEqual([{ role: "user", content: "任务" }]);
 
     // 交接按「一轮」记账：先报 connecting，中间是三条通知，最后收尾
-    expect(await client!.next()).toMatchObject({
+    expect(await client!.nextEvent()).toMatchObject({
       event: "session-phase",
       sessionId: created.sessionId,
       turnId: 1,
       phase: { kind: "connecting" },
     });
     const notices: any[] = [];
-    for (let i = 0; i < 3; i++) notices.push(await client!.next());
+    for (let i = 0; i < 3; i++) notices.push(await client!.nextEvent());
     expect(notices.map((notice) => notice.event)).toEqual([
       "session-notice",
       "session-notice",
@@ -543,7 +548,7 @@ describe("会话处理器（真 socket）", () => {
       await input.autoMigrate!(mode);
     })();
 
-    const question = (await client!.next()) as any;
+    const question = (await client!.nextEvent()) as any;
     expect(question).toMatchObject({
       event: "session-question",
       sessionId: created.sessionId,
@@ -557,7 +562,6 @@ describe("会话处理器（真 socket）", () => {
 
     expect(
       await client!.call("session.answer", {
-        sessionId: created.sessionId,
         questionId: question.questionId,
         choice: "summary",
       }),
@@ -574,131 +578,31 @@ describe("会话处理器（真 socket）", () => {
     expect(listed.sessions[0].live).toBe(true);
   });
 
-  it("session.answer 参数错 → bad-params（choice 缺失不等于「跳过」：那是 null）", async () => {
+  it("session.answer 参数错 → bad-params（只收 questionId + choice，choice 缺失不等于「跳过」）", async () => {
     await startDaemon();
-    const created = (await client!.call("session.create", {
-      workspaceId: "ws-1",
-      path: dir,
-    })) as { sessionId: string };
+    await client!.call("session.create", { workspaceId: "ws-1", path: dir });
 
-    await expect(
-      client!.call("session.answer", { sessionId: created.sessionId, choice: "self" }),
-    ).rejects.toThrow(/bad-params/);
-    await expect(
-      client!.call("session.answer", {
-        sessionId: created.sessionId,
-        questionId: "q-1",
-        choice: "",
-      }),
-    ).rejects.toThrow(/bad-params/);
+    // 缺 questionId
+    await expect(client!.call("session.answer", { choice: "self" })).rejects.toThrow(/bad-params/);
+    // 空串不是「跳过」：「不交接」用 `null` 表达
+    await expect(client!.call("session.answer", { questionId: "q-1", choice: "" })).rejects.toThrow(
+      /bad-params/,
+    );
     // 连接还能继续用
     expect(await client!.call("ping")).toEqual({ pong: true });
   });
 
-  it("session.answer 回答一个已经不在的问题 → answered:false（来晚了，不是错）", async () => {
+  it("session.answer 回答一个已经不存在的题 → answered:false（来晚了，不是错）", async () => {
     await startDaemon();
-    const created = (await client!.call("session.create", {
-      workspaceId: "ws-1",
-      path: dir,
-    })) as { sessionId: string };
+    await client!.call("session.create", { workspaceId: "ws-1", path: dir });
 
     // 超时 / 已答过 / 会话已收，对客户端都是同一件事：不用重试
-    expect(
-      await client!.call("session.answer", {
-        sessionId: created.sessionId,
-        questionId: "q-404",
-        choice: null,
-      }),
-    ).toEqual({ answered: false });
+    expect(await client!.call("session.answer", { questionId: "q-404", choice: null })).toEqual({
+      answered: false,
+    });
     expect(await client!.call("ping")).toEqual({ pong: true });
   });
 });
-
-/** 最小握手客户端：只做这一层要用的「发一帧、等一帧」 */
-class TestClient {
-  private inbox: unknown[] = [];
-  private waiters: Array<() => void> = [];
-  private closed = false;
-  private nextRequestId = 1;
-
-  private constructor(
-    private readonly socket: Socket,
-    private readonly decoder: FrameDecoder,
-  ) {}
-
-  static async connect(port: number): Promise<TestClient> {
-    const socket = createConnection({ host: "127.0.0.1", port });
-    const instance = new TestClient(socket, new FrameDecoder());
-    socket.on("data", (chunk: Buffer) => {
-      try {
-        instance.decoder.push(chunk);
-        for (let item = instance.decoder.next(); item; item = instance.decoder.next()) {
-          if (item.type === "frame") instance.inbox.push(item.frame);
-        }
-      } catch (error) {
-        instance.inbox.push(error);
-      }
-      instance.wake();
-    });
-    socket.on("close", () => {
-      instance.closed = true;
-      instance.wake();
-    });
-    await new Promise<void>((resolve, reject) => {
-      socket.once("connect", () => resolve());
-      socket.once("error", reject);
-    });
-    return instance;
-  }
-
-  private wake(): void {
-    for (const waiter of this.waiters.splice(0)) waiter();
-  }
-
-  async next(): Promise<unknown> {
-    while (this.inbox.length === 0) {
-      if (this.closed) throw new Error("connection closed while waiting for a frame");
-      await new Promise<void>((resolve) => this.waiters.push(resolve));
-    }
-    return this.inbox.shift();
-  }
-
-  async handshake(): Promise<void> {
-    this.socket.write(
-      encodeFrame({
-        kind: "hello",
-        protocol: PROTOCOL_VERSION,
-        client: { name: "test", version: "0" },
-      }),
-    );
-    expect(await this.next()).toMatchObject({ kind: "hello", ok: true });
-  }
-
-  async call(method: string, params?: unknown): Promise<unknown> {
-    const id = this.nextRequestId++;
-    this.socket.write(encodeFrame({ id, method, params }));
-    // 事件帧没有 id：它们可能比响应**先**到（如 send 里先推 phase 再回执），
-    // 所以不是丢掉，而是原样塞回队列，等调用方用 next() 按序取
-    const skipped: unknown[] = [];
-    try {
-      for (;;) {
-        const frame = await this.next();
-        if ((frame as any)?.id !== id) {
-          skipped.push(frame);
-          continue;
-        }
-        if ((frame as any).ok) return (frame as any).result;
-        throw new Error(`${(frame as any).error.code}: ${(frame as any).error.message}`);
-      }
-    } finally {
-      this.inbox.unshift(...skipped);
-    }
-  }
-
-  close(): void {
-    this.socket.destroy();
-  }
-}
 
 describe("会话创建：path 可缺省，sessionId 必须被尊重", () => {
   it("不带 path：用 workspace.json 记的路径（客户端不需要知道目录在哪）", async () => {
@@ -748,12 +652,12 @@ describe("会话创建：path 可缺省，sessionId 必须被尊重", () => {
 });
 
 /**
- * `session.model.set`：会话级模型覆盖，走真 socket 验一次接线。
+ * `session.model.set`：会话级模型覆盖，走真 WebSocket 验一次接线。
  *
  * 业务（落盘、换 Agent 时清掉、失败时不落）在 `SessionManager.test.ts` 里测透了；这里只钉
  * 「参数验过之后原样进了服务层」与「回的是新快照」。
  */
-describe("session.model.set（真 socket）", () => {
+describe("session.model.set（真 WebSocket）", () => {
   it("改这一段会话的模型：回新快照（生效模型 + 档位），装配方收到会话级覆盖", async () => {
     await startDaemon();
     const created = (await client!.call("session.create", {
@@ -783,12 +687,12 @@ describe("session.model.set（真 socket）", () => {
 });
 
 /**
- * `session.modelParams.set`：会话级模型参数，走真 socket 验一次接线。
+ * `session.modelParams.set`：会话级模型参数，走真 WebSocket 验一次接线。
  *
  * 业务（落盘、换模型 / 换 Agent 时清掉）在 `SessionManager.test.ts` 里测透了；这里只钉
  * 「不透明载荷原样进了服务层」与「回的是新快照」。
  */
-describe("session.modelParams.set（真 socket）", () => {
+describe("session.modelParams.set（真 WebSocket）", () => {
   it("写会话级参数：装配方收到它、回新快照", async () => {
     await startDaemon();
     const created = (await client!.call("session.create", {
@@ -897,7 +801,7 @@ describe("会话跟着连接走：断开后按宽限期回收（不靠客户端�
     });
     await instance.start();
     try {
-      const conn = await TestClient.connect(instance.port);
+      const conn = await WsTestClient.connect(instance.port);
       await conn.handshake();
       const created = (await conn.call("session.create", {
         workspaceId: "ws-hold",
@@ -923,7 +827,7 @@ describe("会话跟着连接走：断开后按宽限期回收（不靠客户端�
 });
 
 /** 改名与删除：两条都是"侧栏动作"，必须能对**盘上的存档**做（不必先进内存） */
-describe("session.rename / session.remove（真 socket）", () => {
+describe("session.rename / session.remove（真 WebSocket）", () => {
   it("rename 改 title 不动 id；remove 之后列表与存档都没了", async () => {
     await startDaemon();
     const created = (await client!.call("session.create", {
@@ -979,7 +883,7 @@ describe("session.rename / session.remove（真 socket）", () => {
  * 这一组用例都在回答同一个问题：**用户把项目目录 `mv` 走之后，那些会话还在不在**。
  * 它们必须用真目录（`mkdtemp`）与真 `rename` —— 假件证明不了「盘上那份记录指向哪里」。
  */
-describe("工作区：id 冻结 / list / rename / remove / relocate（真 socket）", () => {
+describe("工作区：id 冻结 / list / rename / remove / relocate（真 WebSocket）", () => {
   /** 认一个工作区（客户端启动第一句就是它） */
   const resolveOf = async (path: string) =>
     (await client!.call("workspace.resolve", { path })) as {

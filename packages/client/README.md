@@ -1,6 +1,6 @@
 # @ai-zen/agents-client
 
-到 `agents-server` 的**连接层**：服务发现与拉起、帧编解码、会话与配置门面。
+到 `agents-server` 的**连接层**：服务发现与拉起、消息编解码、会话与配置门面。
 CLI（TUI）与 Desktop（main）共用同一份实现：两个前端各写一份，就会在 `hello` 握手、
 重连、错误码上慢慢分叉。
 
@@ -11,7 +11,7 @@ CLI（TUI）与 Desktop（main）共用同一份实现：两个前端各写一�
 | 文件 | 脏/纯 | 职责 |
 |---|---|---|
 | `transport/connection.ts` | 脏 | **一个进程一条连接**（`ServerConnection`）：每次取用都判活、断了就重建、重建后在新连接上重新订阅 `events.watch`、断线与就绪都往上说 |
-| `socket-server-client.ts` | 脏 | 一条 TCP + JSON-lines 连接：`hello` 握手、在飞调用（可带一段原始字节）、事件分发、断开通知 |
+| `socket-server-client.ts` | 脏 | 一条 WebSocket + JSON-RPC 2.0 连接：`hello` 握手、在飞调用（可带一块二进制帧载荷）、事件分发、断开通知 |
 | `ensure-server.ts` | 脏 | 读 `<aiZenDir>/run/server.json`；探活（`callOnce` 问一句 `ping`）失败就 detached 拉起 `agents-server serve`，轮询到 `ping` 通 |
 | `session/channel.ts` | 脏 | **一条会话的 I/O**（`SessionChannel`）：订阅、请求、重连（三条不变式）、重新 `attach`、`close` 当场回收 |
 | `session/stream.ts` | 纯 | **一轮之内的状态机**（`SessionStream`）：消息 / 阶段 / 模型 / 用量 / 子 Agent / 失败终态 |
@@ -26,7 +26,7 @@ CLI（TUI）与 Desktop（main）共用同一份实现：两个前端各写一�
 | `local-host.ts` | 纯 | 「服务端是不是在这台机器上」→ 决定要不要把客户端 cwd 当工作区递上去 |
 | `mcp.ts` | 类型 | `mcp.json` 的形状（读写归服务端） |
 | 协议 | 类型 | `@ai-zen/agents-server/protocol` 原样**类型转出**：方法/事件名的字面量联合、载荷类型、错误码联合、数据模型类型（只 `import type`，编译后不剩） |
-| `wire/` | 脏 | **本包自己那一份运行期实现**：帧编解码（`frames.ts`）、错误码判据（`errors.ts`）、回环判据（`host.ts`）、版本号（`messages.ts`）、发现文件读（`discovery.ts`）、一次性问话（`call-once.ts`）。协议只共享类型，代码各写各的 |
+| `wire/` | 脏 | **本包自己那一份运行期实现**：消息编码与体积上限（`frames.ts`）、错误码判据（`errors.ts`）、回环判据（`host.ts`）、版本号（`messages.ts`）、发现文件读（`discovery.ts`）、一次性问话（`call-once.ts`）。协议只共享类型，代码各写各的 |
 
 ## 三条硬约束（都能用命令检验）
 
@@ -35,7 +35,7 @@ CLI（TUI）与 Desktop（main）共用同一份实现：两个前端各写一�
 运行期只有一条边，另有两个 peer 只为类型面：
 
 - **协议不是依赖，是类型**：线上形状来自 `@ai-zen/agents-server/protocol`（服务端的类型文件），
-  只做 `import type`；运行期那几件（帧编解码、错误码判据、回环判据）是本包 `src/wire/` 里
+  只做 `import type`；运行期那几件（消息编码与体积上限、错误码判据、回环判据）是本包 `src/wire/` 里
   自己的一份实现。`@ai-zen/agents-server` 因此只是 **peerDependency**（宿主必须提供它：
   类型面来自它）+ devDependency（本仓用例要起真 Daemon）。拉起服务端不走它 ——
   `ensure-server` 默认用 `npx` 现下现起，宿主的依赖表里不需要这一项；

@@ -17,7 +17,7 @@
  *   turn 生命周期      `turnId` / `turnSettled` / `turnFailed` / `settleDeferred`
  *   流式影子           `subAgents` / `subAgent*Seq`
  *   存档               `title` / `modelId` / `modelParams` / `autoPersist` / `updatedAt`
- *   提问               `questions` / `questionSeq`
+ *   槽位（不落盘）     `questions`（待答题目）/ `notices`（会话内通知）
  *
  * 这些字段仍然**长在同一个对象上**（不是四张表）：它们说的是同一段会话的四个面，
  * 分成四张表就意味着四条「按 id 查回来」的路径，而那种查不到的状态最难解释。
@@ -29,6 +29,9 @@ import type {
   Message,
   MessageContent,
   ModelLevel,
+  NoticeLevel,
+  SessionNoticeCode,
+  SessionQuestionEvent,
   SessionQuestionKind,
   Usage,
 } from "../../protocol/index.js";
@@ -128,10 +131,43 @@ export interface AskQuestionSpec {
  * 一个挂着等回答的提问（`resolve` 收场，`fallback` 是没人答时的取值）。
  *
  * 归属：`QuestionBroker`（表在会话上，认领与清表都在那边 —— 清表是「来晚了」的唯一判据）。
+ *
+ * 为什么要连 `event` 一起存：它是**槽位**而不只是一条在飞的 promise。提问发生时未必有人在
+ * 看（客户端刚崩、或一轮还在跑而人已经走了），而 `session.snapshot` 是它的**第二个出口**
+ * —— 后来的连接靠这一份把错过的题目补看回来。存的就是当初推给客户端的那条事件，不另造
+ * 一份形状（少一份就会漂：快照里少一个字段，选择器就渲染不出来）。
  */
 export interface PendingQuestion {
+  /** 登记时推给客户端的那条事件（快照原样回放；`sessionId` 由快照那一次覆盖） */
+  event: SessionQuestionEvent;
   resolve: (choice: string | null) => void;
   fallback: string | null;
+}
+
+/**
+ * 一个**会话内通知**的槽位（`level` + `code` + `params` + 登记时刻）。
+ *
+ * 与全局通知（`protocol/notice.ts` 的 `GlobalNoticeSlot`）是同一套形状、两个作用域：
+ * 这一份归属是**会话**（`LiveSession.notices`），会话没了它跟着没；那一份归属是**进程**
+ * （`ServerApp`），切会话不该把它误杀。两者的 code 表也不同（`SessionNoticeCode` vs
+ * `ServerNoticeCode`）—— 客户端据此查各自的词典。
+ *
+ * 为什么有 `id`：与题目同一个理由 —— 寿命的终点是「有人确认」，而确认要有个能指的 id。
+ * 用 UUID 而不是会话内递增序号：跨会话、跨进程都不撞号，也不需要任何持久化计数器。
+ *
+ * 归属：`SessionManager.notice()`（存与播的唯一入口，见那个方法）。
+ */
+export interface PendingNotice {
+  /** 槽位 id（UUID） */
+  id: string;
+  /** 级别：客户端据此选颜色 / 语气 */
+  level: NoticeLevel;
+  /** 通知种类：客户端按它查自己的 i18n 表渲染 —— 服务端不产文案 */
+  code: SessionNoticeCode;
+  /** 文案里的可变部分（客户端代入自己的模板） */
+  params?: Record<string, unknown>;
+  /** 登记时刻（ISO 8601） */
+  createdAt: string;
 }
 
 /** 一段活着的会话（字段归属见文件头那张表） */
@@ -242,15 +278,26 @@ export interface LiveSession {
   /** id 序号（与展示序号分开：id 要稳定且不带含义，见 `EventBridge.attach` 的注释） */
   subAgentIdSeq: number;
   /**
-   * 等客户端回答的问题（`questionId` → resolve）。
+   * 待答题目（`questionId` → 槽位）。**会话作用域的槽位表，不落盘。**
    *
    * 一个会话同一时刻只会有 0 或 1 个（自动迁移是串行的：`settleDeferred` 占着坑），
    * 仍用 Map 是因为「过期的回答一律拒」这条判定靠它：认领时按 id 查表，查不到就是来晚了
    * （超时 / 已答过 / 会话已收），而那三种情况对客户端是同一件事 —— 不必重试。
+   *
+   * id 是 UUID（跨会话、跨进程不撞号）：`session.answer` 只带 `questionId`，服务端靠它唯一的
+   * 一次查表找到该答哪一段会话 —— 不需要任何「两个 id 要配对」的额外字段。
+   *
+   * 寿命：答掉 / 超时 / 被流程放行（`QuestionBroker.release`）即消失；会话关闭时随会话一起没。
    */
   questions: Map<string, PendingQuestion>;
-  /** 提问序号（只在会话内递增）：认领靠它的而不是轮次，一轮里可以问不止一次 */
-  questionSeq: number;
+  /**
+   * 待确认的会话内通知（`noticeId` → 槽位）。**会话作用域的槽位表，不落盘。**
+   *
+   * 与 `questions` 同一条规矩：登记之后一直在这里，直到会话关闭 —— 通知的寿命终点由消费者
+   * 决定（待确认的确认入口见 `protocol/notice.ts` 的说明）。会话关闭即整表消失（`close` 把
+   * 会话对象从注册表里摘掉，这些槽位不再被任何东西引用）。
+   */
+  notices: Map<string, PendingNotice>;
   /** 摘掉这个 Agent 上挂的全部 SDK 事件监听（`EventBridge.attach` 的返回值） */
   detach: () => void;
 }

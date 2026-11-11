@@ -62,12 +62,12 @@ import type {
   MessageContent,
   MigrationStrategy,
   ModelParams,
-  NoticePayload,
   ServerEvent,
   ServerNoticeEvent,
   SessionListResult,
   SessionModelParamsSetResult,
   SessionModelSetResult,
+  SessionNoticeEvent,
   SessionQuestionEvent,
   SessionSnapshotResult,
   WorkspaceFileEntry,
@@ -91,8 +91,18 @@ const MAX_RECONNECT_ATTEMPTS = 3;
 /** 第 `i` 次**重试**之前等多久（`i=0` 对应第 2 次尝试）：递增，给抖动的网络与服务端重启留时间 */
 const RECONNECT_BACKOFF_MS = [100, 300] as const;
 
-/** 服务端通知的码在**另一个联合**里（`ServerNoticeCode`），所以出口的类型是两者的并集 */
-export type ChannelNoticePayload = NoticePayload | Omit<ServerNoticeEvent, "event">;
+/**
+ * 服务端通知的码在**另一个联合**里（`ServerNoticeCode`），所以出口的类型是两者的并集。
+ *
+ * 两支都**带 `id`**（A35）：通知在服务端是**有状态的槽位**，寿命的终点是「有人确认」
+ * （`notice.ack { ids }`）。这里是客户端唯一拿到那个 id 的地方 —— 把它剥掉，调用方就只能按
+ * 「code + params」本地去重，确认时还得回头再查一次列表。
+ *
+ * 形状取自**事件**（去掉事件名与归属会话）而不是 `NoticePayload`：后者是「产生一条通知时
+ * 要说的东西」，本来就不含 `id`（id 由登记槽位的那一次生成），拿它当出口类型会把 id 剥掉。
+ */
+export type ChannelNoticePayload =
+  Omit<SessionNoticeEvent, "event" | "sessionId"> | Omit<ServerNoticeEvent, "event">;
 
 export interface SessionChannelPolicy {
   /**
@@ -104,10 +114,13 @@ export interface SessionChannelPolicy {
    */
   answerQuestion?: (event: SessionQuestionEvent) => Promise<string | null>;
   /**
-   * 通知 / 错误上报（`code` + `params`，**不在这里做 i18n**）。
+   * 通知 / 错误上报（`id` + `code` + `params`，**不在这里做 i18n**）。
    *
    * 服务端只给机器可判的码，句子由应用查自己的词典 —— 否则一个服务端同时接中文终端和
    * 英文浏览器时只能挑一个语言撒谎。
+   *
+   * `id` 是确认这条通知的唯一凭据（`notice.ack { ids }`）：调用方要留到确认之后才丢，
+   * 不要拿「code + params」自己造一份去重表 —— 那是把服务端的槽位在本地再实现一遍。
    */
   onNotice?: (payload: ChannelNoticePayload) => void;
   /**
@@ -686,7 +699,14 @@ export class SessionChannel {
     });
 
     mine("session-notice", (event) => {
-      this.policy.onNotice?.({ level: event.level, code: event.code, params: event.params });
+      // `id` 跟着走：通知是有状态的槽位，确认靠 `notice.ack { ids }` —— 客户端收得到却拿不到
+      // 凭据的话，只能按 code + params 本地去重，确认时还得回头再查一次
+      this.policy.onNotice?.({
+        id: event.id,
+        level: event.level,
+        code: event.code,
+        params: event.params,
+      });
     });
 
     /**
@@ -710,7 +730,13 @@ export class SessionChannel {
     // 全局通知不属于任何会话：切会话也不该消失，所以不过滤 sessionId
     offs.push(
       client.on("server-notice", (event) => {
-        this.policy.onNotice?.({ level: event.level, code: event.code, params: event.params });
+        // 同上：`id` 是确认这条通知的唯一凭据，不能在这一层丢掉
+        this.policy.onNotice?.({
+          id: event.id,
+          level: event.level,
+          code: event.code,
+          params: event.params,
+        });
       }),
     );
 
@@ -785,7 +811,8 @@ export class SessionChannel {
 
   private async answerQuestion(event: SessionQuestionEvent): Promise<void> {
     const choice = await this.answerChoice(event);
-    await this.sessions!.answer(this.sessionId, event.questionId, choice);
+    // 只带 `questionId`：它本身就能定位到问题（UUID 全局唯一），会话 id 递上去只是多一处配对
+    await this.sessions!.answer(event.questionId, choice);
   }
 
   /**

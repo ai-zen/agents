@@ -290,16 +290,15 @@ export function createSessionHandlers(options: SessionHandlerOptions): MethodHan
     /**
      * 回答服务端提出的问题（目前只有自动迁移的「用哪种方式交接」）。
      *
-     * 三个字段都是必填的：`mode` 不给不等于「不交接」—— 「不交接」是一个明确的选择，
-     * 用 `null` 表达；字段缺失是调用方漏了东西（或客户端版本对不上），当场拒比默默按
-     * `null` 处理安全得多（后者会让用户的会话在无提示的情况下不迁移）。
+     * 只收两个字段：`questionId`（UUID，本身就能定位到那段会话）与 `choice`。**不再收
+     * `sessionId`** —— 多一个字段就是多一处「两个 id 要配对」的机会。
+     *
+     * `choice` 必填：「不交接」是一个明确的选择，用 `null` 表达；字段缺失是调用方漏了东西
+     * （或客户端版本对不上），当场拒比默默按 `null` 处理安全得多（后者会让用户的会话在无提示
+     * 的情况下不迁移）。
      */
     ["session.answer"]: (params): SessionAnswerResult => {
-      return manager.answer(
-        requireString(params, "sessionId"),
-        requireString(params, "questionId"),
-        requireChoice(params),
-      );
+      return manager.answer(requireString(params, "questionId"), requireChoice(params));
     },
 
     /**

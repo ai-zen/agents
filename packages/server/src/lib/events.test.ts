@@ -72,6 +72,7 @@ describe("EventHub", () => {
   it("全局通知走同一条线：不带 sessionId，也不该被会话过滤掉", () => {
     hub.publish({
       event: "server-notice",
+      id: "notice-1",
       level: "warn",
       code: "mcpUnavailable",
       params: { name: "github" },

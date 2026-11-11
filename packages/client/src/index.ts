@@ -7,7 +7,7 @@
  * | 层 | 文件 | 职责 |
  * |---|---|---|
  * | 传输 | `transport/connection.ts` | **一个进程一条连接**（`ServerConnection`）：发现/拉起、断线重建、在新连接上重新订阅 `events.watch`、断线与就绪的上报 |
- * | 传输 | `socket-server-client.ts` | 一条 TCP + JSON-lines + `hello` 握手 + 在飞调用 + 事件分发 |
+ * | 传输 | `socket-server-client.ts` | 一条 WebSocket + JSON-RPC 2.0 + `hello` 握手 + 在飞调用 + 事件分发 |
  * | 传输 | `ensure-server.ts` | 读发现文件并探活，探不到就 detached 拉起一个 `agents-server serve` |
  * | 脏 | `session/channel.ts` | **一条会话的 I/O**（`SessionChannel`）：订阅、请求、重连三条不变式、重新 `attach` |
  * | 纯 | `session/stream.ts` | **一轮之内的状态机**（`SessionStream`）：零 I/O、零 UI、零 timers |
@@ -26,14 +26,16 @@
  *
  * ## 运行期依赖图（可用 grep 检验，见 README）
  *
- *   @ai-zen/agents-client ──→ ./wire/*（本包自己那份实现）──→ node:*
+ *   @ai-zen/agents-client ──→ ./wire/*（本包自己那份实现）──→ 全局 `WebSocket` / node:*
  *                          ├─→ @ai-zen/agents-core（折 chunk / 用量求和 / 角色枚举）
- *                          └─→ node:net / node:child_process / node:module
+ *                          └─→ node:child_process / node:module / node:fs
  *
  * 只有两个包，**没有 `@ai-zen/agents-server`**：契约是声明 + 纯实现，服务端的运行时
- * （daemon / 存档 / 会话管理）不在这条链上。`@ai-zen/agents-server` 只是本包的
- * devDependency —— 用例要起一台真 Daemon，而拉起它的默认路径会 `require.resolve` 它的 bin
- * （那条路径属于**部署策略**，不是分层；消费者可以注入自己的 `startServerProcess`）。
+ * （daemon / 存档 / 会话管理）不在这条链上。传输也不引 `ws` —— 用 Node 内建的全局
+ * `WebSocket`（`dependencies` 里出现 `ws` 就会被 cli / desktop 打包拖进产物）。
+ * `@ai-zen/agents-server` 只是本包的 devDependency —— 用例要起一台真 Daemon，而拉起它的默认
+ * 路径会 `require.resolve` 它的 bin（那条路径属于**部署策略**，不是分层；消费者可以注入自己的
+ * `startServerProcess`）。
  *
  * 唯一只以**类型**出现的是 `config-port.ts` 的 `import type … from "@ai-zen/agents-sdk"`
  * （配置 / 定义在两端的共同形状），产物里被整体抹除。
@@ -70,6 +72,6 @@ export * from "./stream-merge.js";
 // 协议面（方法名常量 / 结果类型 / 帧编解码）原样转出，理由见文件头
 export type * from "@ai-zen/agents-server/protocol";
 
-// 运行期件（本包自己那一份实现）：帧上限与发现文件读，CLI 的组装根要用
-export { MAX_FRAME_BYTES } from "./wire/frames.js";
+// 运行期件（本包自己那一份实现）：消息的编码与两个体积上限、发现文件读，CLI 的组装根要用
+export { MAX_PAYLOAD_BYTES, MAX_TEXT_BYTES } from "./wire/frames.js";
 export { readDescriptor } from "./wire/discovery.js";
