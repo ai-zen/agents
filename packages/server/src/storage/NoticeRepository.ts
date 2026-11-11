@@ -1,0 +1,98 @@
+/**
+ * `notices` 表仓储：通知持久化（PRD L3：手动清 + 持久化）。
+ *
+ * 库里存的是**码 + 参数**而不是渲染好的句子：多语言在读出时按连接的语言渲染
+ * （architecture.md §6），否则一条通知存死一种语言，换个语言连回来就错了。
+ *
+ * `durationMs` 为 null 表示永久存在；有值时到点消失，靠 `deleteExpired` 清掉。
+ */
+
+import type { Database } from "./Database.js";
+import type { Notice, NoticeCreateInput, NoticeRow } from "./types.js";
+
+const COLUMNS = "id, level, code, params, durationMs, createdAt";
+
+function parseParams(value: string | null): Record<string, unknown> | null {
+  if (value === null) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function toNotice(row: NoticeRow): Notice {
+  return {
+    id: row.id,
+    level: row.level,
+    code: row.code,
+    params: parseParams(row.params),
+    durationMs: row.durationMs,
+    createdAt: row.createdAt,
+  };
+}
+
+export class NoticeRepository {
+  private readonly db: Database;
+
+  constructor(db: Database) {
+    this.db = db;
+  }
+
+  async create(input: NoticeCreateInput): Promise<void> {
+    await this.db.run(
+      `INSERT INTO notices (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        input.id,
+        input.level,
+        input.code,
+        input.params === undefined || input.params === null ? null : JSON.stringify(input.params),
+        input.durationMs ?? null,
+        input.createdAt,
+      ],
+    );
+  }
+
+  async get(id: string): Promise<Notice | undefined> {
+    const row = await this.db.get<NoticeRow>(`SELECT ${COLUMNS} FROM notices WHERE id = ?`, [id]);
+    return row ? toNotice(row) : undefined;
+  }
+
+  /**
+   * 仍然该显示的通知：永久的（`durationMs IS NULL`）加上还没到点的。
+   * 已到点但还没被 `deleteExpired` 扫掉的，这里也不返回，免得读到已过期的通知。
+   */
+  async listActive(now: number): Promise<Notice[]> {
+    const rows = await this.db.all<NoticeRow>(
+      `SELECT ${COLUMNS} FROM notices
+       WHERE durationMs IS NULL OR createdAt + durationMs > ?
+       ORDER BY createdAt ASC, id ASC`,
+      [now],
+    );
+    return rows.map(toNotice);
+  }
+
+  /** 手动清除一条（PRD L3：永久通知只能这样消失） */
+  async clear(id: string): Promise<number> {
+    const result = await this.db.run("DELETE FROM notices WHERE id = ?", [id]);
+    return result.changes;
+  }
+
+  async clearAll(): Promise<number> {
+    const result = await this.db.run("DELETE FROM notices");
+    return result.changes;
+  }
+
+  /** 清掉已经到点的通知，返回清掉的条数 */
+  async deleteExpired(now: number): Promise<number> {
+    const result = await this.db.run(
+      "DELETE FROM notices WHERE durationMs IS NOT NULL AND createdAt + durationMs <= ?",
+      [now],
+    );
+    return result.changes;
+  }
+}
