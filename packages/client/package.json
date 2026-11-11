@@ -1,6 +1,7 @@
 {
   "name": "@ai-zen/agents-client",
   "version": "0.1.0-alpha.0",
+  "private": true,
   "description": "AI-Zen Agents Client — 到 agents-server 的连接层：服务发现/拉起、帧编解码、会话与配置门面。CLI 与 Desktop 共用同一份实现",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -45,10 +46,6 @@
     "vite": "^8.3.5",
     "vitest": "^5.1.0"
   },
-  "files": [
-    "dist",
-    "CHANGELOG.md"
-  ],
   "peerDependencies": {
     "@ai-zen/agents-sdk": "^1.2.0-alpha.0",
     "@ai-zen/agents-server": "^0.1.0-alpha.0"

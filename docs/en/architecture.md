@@ -13,7 +13,7 @@ AI-Zen Agents is a **pnpm monorepo** (workspace root `@ai-zen/agents-workspace`,
 | `@ai-zen/agents-core` | 4.6.0-alpha.0 | Conversation runtime kernel |
 | `@ai-zen/agents-sdk` | 1.2.0-alpha.0 | Business capability layer |
 | `@ai-zen/agents-server` | 0.1.0-alpha.0 | Resident server: session orchestration / archives / workspaces |
-| `@ai-zen/agents-client` | 0.1.0-alpha.0 | Connection layer to the server |
+| `@ai-zen/agents-client` | 0.1.0-alpha.0 | Connection layer to the server; **private**, inlined by CLI / Desktop at build time |
 | `@ai-zen/agents-testing` | 0.1.0 | Private, test doubles (a fake OpenAI-compatible streaming endpoint) |
 
 (`packages/` also holds `test-project` (a private fixture package) and the directories `test-home` and `webui` — neither of those has a `package.json`, so neither is a package. The CLI and the desktop app live in **separate repositories**, not in this monorepo, but each has its own place in the dependency graph below.)

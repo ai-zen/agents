@@ -13,7 +13,7 @@ AI-Zen Agents 是一个 **pnpm monorepo**（工作区根 `@ai-zen/agents-workspa
 | `@ai-zen/agents-core` | 4.6.0-alpha.0 | 对话运行时内核 |
 | `@ai-zen/agents-sdk` | 1.2.0-alpha.0 | 业务能力层 |
 | `@ai-zen/agents-server` | 0.1.0-alpha.0 | 常驻服务端：会话编排 / 存档 / 工作区 |
-| `@ai-zen/agents-client` | 0.1.0-alpha.0 | 到服务端的连接层 |
+| `@ai-zen/agents-client` | 0.1.0-alpha.0 | 到服务端的连接层；**私有**，由 CLI / 桌面端在构建时内联 |
 | `@ai-zen/agents-testing` | 0.1.0 | 私有，测试替身（OpenAI 兼容的假流式端点） |
 
 （`packages/` 下另有 `test-project`（私有 fixture 包）、`test-home` 与 `webui`（两个目录都没有 `package.json`，不是包）。CLI 与桌面端是**独立仓库**，不在本 monorepo 内，但它们在本文件的依赖图里各有位置。）
