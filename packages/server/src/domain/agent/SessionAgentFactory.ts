@@ -19,7 +19,7 @@
  * 与 CLI 的 `/reload` 语义一致。
  */
 
-import { existsSync } from "node:fs";
+import { promises as fsp } from "node:fs";
 import {
   AgentRepository,
   allInOne,
@@ -306,17 +306,32 @@ async function defaultCreateScope(input: { config: AppConfig; paths: AgentPaths 
     agentsDir: input.paths.agentsDir,
   }).use(
     ...allInOne({
-      subAgentsPaths: existing(input.paths.subAgentsDirs),
-      skillsPaths: existing(input.paths.skillsDirs),
-      toolsPaths: existing(input.paths.toolsDirs),
-      mcpPaths: existing(input.paths.mcpConfigs),
+      // 目录层原样传：三个发现器各自先 `fs.access(dir)` 再 `continue`，不存在的目录
+      // 本来就不会产出任何一项。在这边预筛一遍是同一件事做两遍。
+      subAgentsPaths: input.paths.subAgentsDirs,
+      skillsPaths: input.paths.skillsDirs,
+      toolsPaths: input.paths.toolsDirs,
+      // MCP 是例外，必须筛：`McpScopePlugin.hasConfig()` 的判据就是「路径表非空」，
+      // 而 `agentPaths()` 无条件给五个**候选文件**路径 —— 原样传下去等于永远声称
+      // 「配了 MCP」（`unknown tool` 会给出错误建议，连接管理器也白建）。
+      mcpPaths: await existingPaths(input.paths.mcpConfigs),
     }),
   );
   await scope.init();
   return scope;
 }
 
-/** 只保留真实存在的路径：不存在的不参与发现（也不该在候选里多一行） */
-function existing(paths: string[]): string[] {
-  return paths.filter((path) => existsSync(path));
+/** 只保留真实存在的路径（`access` 不抛即为存在）；并发探，不逐个等 */
+async function existingPaths(paths: string[]): Promise<string[]> {
+  const present = await Promise.all(
+    paths.map(async (path) => {
+      try {
+        await fsp.access(path);
+        return path;
+      } catch {
+        return undefined;
+      }
+    }),
+  );
+  return present.filter((path): path is string => path !== undefined);
 }

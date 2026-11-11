@@ -24,7 +24,6 @@
  * 复用实例避免插件数组无限增长。
  */
 
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   HandoffAbortedError,
@@ -94,8 +93,10 @@ export class SessionHandoff {
       // 不在这里写 `strategy`：历史怎么处置由**调用方**决定（`migrate()` 的第三个参数），
       // 因为它与「换不换 sessionId」是同一件事（见协议里的 `MigrationStrategy`）。写在这
       // 里就是第二份缺省值，而它曾把 `omit` 路径静默地变成了 `prune`。
-      // 交接模板的唯一真相源是磁盘上的 `handoff` Skill（可被项目级覆盖）
-      skillDirs: paths.skillsDirs.filter((dir) => existsSync(dir)),
+      // 交接模板的唯一真相源是磁盘上的 `handoff` Skill（可被项目级覆盖）。
+      // 不预先筛存在性：`HandoffService` 拿 `readSkill()` 逐目录试读，读不到就落兜底模板，
+      // 而那条 warn 会列出真实路径 —— 预筛只会让日志变成「none configured」，更难排查。
+      skillDirs: paths.skillsDirs,
       onBeforeHandoff: (ctx: HandoffContext) => {
         // 自动迁移（用量超阈值触发）与手动 `/handoff` 是两种语义：前者的「何时」不是用户
         // 决定的，得让它知道「上下文快满了，正在交接」，否则只会看到会话自己换了话题
