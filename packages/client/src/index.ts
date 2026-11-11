@@ -88,5 +88,5 @@ export { readDescriptor } from "./wire/discovery.js";
 
 // 地址形状与 URL 的唯一实现处：`--server` 的解析、诊断输出里的端点、将来的设置面板都走这里
 // （不再各自拼 `ws://host:port` —— 那两份逐字相同的私有实现在本批被删掉了）
-export { parseServerUrl, webSocketUrl } from "./wire/server-url.js";
+export { normalizeServerAddress, parseServerUrl, webSocketUrl } from "./wire/server-url.js";
 export type { ServerTarget } from "./wire/server-url.js";

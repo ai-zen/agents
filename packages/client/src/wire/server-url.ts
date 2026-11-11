@@ -98,6 +98,26 @@ export function webSocketUrl(target: ServerTarget): string {
   return `${scheme}://${literal}:${target.port}${pathOf(target.path)}`;
 }
 
+/**
+ * 用户敲的地址 → 一条能交给 {@link parseServerUrl} 的地址。
+ *
+ * 只做一件事：**没写 scheme 就补 `ws://`**。用户在终端 / 面板里敲 `10.0.0.5:8790` 是最自然的
+ * 写法，而 {@link parseServerUrl} 要求带 scheme —— 不补的话他会得到一句「不是合法的服务端
+ * 地址」，而真正的问题只是少敲了六个字符。
+ *
+ * **不猜加密**：写了 `https://` / `wss://` 就按他的（{@link parseServerUrl} 里有 `http→ws`、
+ * `https→wss` 的映射），没写就当内网明文 —— 反过来「自动给你升成 wss」会在连一个没配证书的
+ * 服务端时得到一条与地址无关的 TLS 报错。
+ *
+ * 它住在形状判据的隔壁：**补 scheme 与校验 scheme 是同一件事的两半**，分开两处就会分叉
+ * （典型症状是「这个补完能过、那个补完过不了」）。
+ */
+export function normalizeServerAddress(raw: string): string {
+  const text = raw.trim();
+  if (text === "") return text;
+  return text.includes("://") ? text : `ws://${text}`;
+}
+
 /** `[::1]` → `::1`（其它地址原样） */
 function stripBrackets(host: string): string {
   return host.replace(/^\[|\]$/g, "");
