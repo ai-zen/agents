@@ -52,16 +52,16 @@ agents/
 CLI / 桌面端 main
         │
         ▼
-@ai-zen/agents-client  ──►  (import type)  @ai-zen/agents-server/protocol
-        （连接层）                  （线上契约：方法/事件名、载荷、错误码、帧、发现）    （会话编排 / 存档 / 工作区）
-                                            ▲
-                                            │（只取类型）
-@ai-zen/agents-server  ──►  @ai-zen/agents-sdk  ──►  @ai-zen/agents-core  ──►  openai 官方 SDK
- （会话编排 / 存档 / 工作区）    （能力管线 / Scope / MCP）    （Agent 运行时）
+@ai-zen/agents-client ──(运行期)──►  @ai-zen/agents-core ──►  openai 官方 SDK
+   （连接层）        │
+                    └──(仅类型)──►  @ai-zen/agents-server/protocol
+                                    （线上契约：方法/事件名、载荷、错误码、帧、发现文件）
+
+@ai-zen/agents-server  ──►  @ai-zen/agents-sdk
+ （会话编排 / 存档 / 工作区 / 契约 + 它的运行期件）
 ```
 
-依赖方向单向，永不反向：`core ← sdk ← server`，`protocol ← server` 与 `protocol ← client`
-（**client 与 server 之间没有边**），`client ← CLI / 桌面端 main`。详见 [架构](architecture.md)。
+依赖方向单向，永不反向：`core ← sdk ← server`，`client ← CLI / 桌面端 main`。`client` 的运行期只有 `core` 一条边，对服务端只做 `import type`（`@ai-zen/agents-server/protocol` 的类型），`@ai-zen/agents-sdk` 与 `@ai-zen/agents-server` 都是它的 **peer**（宿主必须提供）。详见 [架构](architecture.md)。
 
 ## 快速开始
 

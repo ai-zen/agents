@@ -32,31 +32,35 @@ CLI（TUI）与 Desktop（main）共用同一份实现：两个前端各写一�
 
 ### 1. 运行期依赖只有 `@ai-zen/agents-core`
 
-两条边，各有理由：
+运行期只有一条边，另有两个 peer 只为类型面：
 
 - **协议不是依赖，是类型**：线上形状来自 `@ai-zen/agents-server/protocol`（服务端的类型文件），
   只做 `import type`；运行期那几件（帧编解码、错误码判据、回环判据）是本包 `src/wire/` 里
   自己的一份实现。`@ai-zen/agents-server` 因此只是 **peerDependency**（宿主必须提供它：
   `ensure-server` 要 spawn 它的 bin，类型面也来自它）+ devDependency（本仓用例要起真 Daemon）；
+- **SDK 同理，只是纯类型**：`ConfigPort` 的公开签名要 `AppConfig` / `AgentDefinition` /
+  `ReasoningPresets`，而线上刻意把它们写成 `unknown`（契约不认识 SDK），兑现成类型正是这一层
+  的职责。所以 `@ai-zen/agents-sdk` 也是 **peer + dev** —— 副本会随 sdk 的落盘格式各自漂，
+  那是第二份定义；
 - **`core`**：折 chunk（`applyChunk`）、用量求和（`sumUsage`）、角色枚举（`AgentNS.Role`）
   都是 core 的**唯一实现**。客户端要么引它，要么抄一份 —— 而抄一份就是给同一个概念立第二
   个定义（`{Assistant:"assistant"}` 镜像、重写一遍的求和函数），两边各自演化，症状只在某个
   角色的消息或某个子 Agent 的用量上显形。引它才是唯一不出第二份的选择。
 
 ```bash
-# 依赖表：只许 core —— `agents-server` 出现在这里就是失败
-node -e 'const d=require("./packages/client/package.json").dependencies; if(d["@ai-zen/agents-server"]) throw new Error("agents-server 只能出现在 peer 与 dev"); console.log(Object.keys(d))'
-# [ "@ai-zen/agents-core" ]
+# 依赖表：只许 core —— server / sdk 出现在 dependencies 里就是失败
+node -e 'const p=require("./packages/client/package.json"); const bad=Object.keys(p.dependencies).filter(k=>/agents-(server|sdk)$/.test(k)); if(bad.length) throw new Error(bad.join()); console.log(Object.keys(p.dependencies), Object.keys(p.peerDependencies))'
+# [ "@ai-zen/agents-core" ] [ "@ai-zen/agents-sdk", "@ai-zen/agents-server" ]
 ```
 
 core 的运行期依赖只有 `@ai-zen/event-bus`（`openai` 在 core 里只出现在**类型位置**，
 `packages/core/dist/*.js` 里没有它），所以这条边不会把 `openai` 拖进客户端产物。
 
-`devDependencies` 里另有三个 workspace 包，只为**类型与用例**，不进产物：
+`devDependencies` 里另有三个 workspace 包，只为**类型与用例**，不进产物（其中两个同时是 peer）：
 
 | 包 | 为什么还在 |
 |---|---|
-| `@ai-zen/agents-sdk` | `config-port.ts` 的公开类型要 `AppConfig` / `AgentDefinition` / `ReasoningPresets`（线上传的是 `unknown`，客户端兑现成类型）。**只在 `import type` 里出现**，产物 `dist/*.js` 里没有它 —— 但 `dist/*.d.ts` 里有，所以它不能删干净 |
+| `@ai-zen/agents-sdk` | **peer + dev**：`config-port.ts` 的公开签名要 `AppConfig` / `AgentDefinition` / `ReasoningPresets`（线上传的是 `unknown`，客户端兑现成类型）。**只在 `import type` 里出现**，产物 `dist/*.js` 里没有它 —— 但 `dist/*.d.ts` 里有，所以宿主必须提供它，和 `server` 同理 |
 | `@ai-zen/agents-server` | **peer + dev**：类型面（`protocol`）与用例（真 Daemon）都要它；`ensure-server` 拉起服务端时还要 `require.resolve` 它的 `bin`。运行期产物里一行都没有 |
 | `@ai-zen/agents-testing` | 用例要一个**真讲协议**的假模型端点（`startFakeLlm`，`turn-and-resume.test.ts`），否则「一轮跑完再续接」只能靠手发帧凑 |
 

@@ -50,6 +50,7 @@
     "CHANGELOG.md"
   ],
   "peerDependencies": {
+    "@ai-zen/agents-sdk": "^1.2.0-alpha.0",
     "@ai-zen/agents-server": "^0.1.0-alpha.0"
   }
 }

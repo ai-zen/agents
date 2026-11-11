@@ -37,6 +37,7 @@ AI-Zen Agents 是一个 **pnpm monorepo**（工作区根 `@ai-zen/agents-workspa
 | `sdk` | `core` | 运行期依赖 |
 | `server` | `core` + `sdk` | 运行期依赖，`dependencies` 两项 |
 | `client` | `core` | 运行期依赖，`dependencies` **只有这一项** |
+| `client` | `sdk` | **只有类型**：`peerDependencies` + `devDependencies`（`ConfigPort` 的公开签名要 `AppConfig` / `AgentDefinition` / `ReasoningPresets`）；运行期一行都不引用 |
 | `client` | `server` | **只有类型**：`peerDependencies`（宿主必须提供）+ `devDependencies`（本仓用例要起真 Daemon）；运行期一行都不引用 |
 | `cli` / `desktop main` | `client`（CLI 另加 `sdk` / `core`） | 应用侧依赖。两仓的 `dependencies` 里也都有 `server` —— 它们经 `ensureServer` 拉起服务端，得能定位它的 bin；方向上它们只是 `client` 的使用者 |
 
@@ -150,7 +151,7 @@ grep -rn 'from "' packages/server/src/protocol/*.ts | grep -v '\.test\.' | grep 
 
 **为什么不是独立的一个包**（也不是 core 里的东西）：线上有哪些方法 / 事件 / 载荷，是**服务端提供的形状**，它就该住在服务端里，没有一个单独的可安装单元。判据一句话：这份东西描述服务端提供什么，它归服务端；它要能被别的进程执行，它才是代码。
 
-**为什么客户端不会被拖上服务端运行时**：客户端对服务端只做 `import type`（形状与名字），运行期那几件在 `packages/client/src/wire/` 是它自己的一份实现 —— 协议只共享**类型**，不共享代码。所以 `@ai-zen/agents-client` 的 `dependencies` 只有 `@ai-zen/agents-core`；`@ai-zen/agents-server` 是它的 **peerDependency**（宿主必须提供：类型面来自它，`ensure-server` 也要 spawn 它的 bin）+ devDependency（本仓用例要起真 Daemon）。装客户端不会把 openai / MCP SDK 拖进来。
+**为什么客户端不会被拖上服务端运行时**：客户端对服务端只做 `import type`（形状与名字），运行期那几件在 `packages/client/src/wire/` 是它自己的一份实现 —— 协议只共享**类型**，不共享代码。所以 `@ai-zen/agents-client` 的 `dependencies` 只有 `@ai-zen/agents-core`；`@ai-zen/agents-server` 与 `@ai-zen/agents-sdk` 都是它的 **peerDependency**（宿主必须提供：类型面来自它们，`ensure-server` 还要 spawn 服务端那个 bin）+ devDependency（本仓用例要起真 Daemon）。装客户端不会把 openai / MCP SDK 拖进**产物**；它们只是宿主本来就装着的类型来源。
 
 **桌面端 main 是打包产物**，同一条理由的现实版：它只 import `@ai-zen/agents-server/protocol` 的类型，打包器不会跟进 daemon / 存档 / 工作区。
 
@@ -185,7 +186,7 @@ grep -rn 'from "' packages/server/src/protocol/*.ts | grep -v '\.test\.' | grep 
 
 ### 三条硬约束（都能用命令检验）
 
-1. **运行期只有 `core` 一条依赖边** —— `core` 是折 chunk（`applyChunk`）、用量求和（`sumUsage`）、角色枚举（`AgentNS.Role`）的**唯一实现**，客户端引它而不是抄一份镜像；与服务端之间的契约**只是类型**（`import type`，见硬性质①），不是依赖。core 的产物运行期只加载 `@ai-zen/event-bus`，`openai` 在 core 里只占类型位置。`devDependencies` 里另有三个 workspace 包，只为类型与用例，不进产物。
+1. **运行期只有 `core` 一条依赖边** —— `core` 是折 chunk（`applyChunk`）、用量求和（`sumUsage`）、角色枚举（`AgentNS.Role`）的**唯一实现**，客户端引它而不是抄一份镜像；与 `sdk` 和 `server` 之间**只是类型**（`import type`，见硬性质①），两个都是 peer。core 的产物运行期只加载 `@ai-zen/event-bus`，`openai` 在 core 里只占类型位置。`devDependencies` 里另有三个 workspace 包（其中 `sdk` 与 `server` 同时是 peer），只为类型与用例，不进产物。
 2. **产物的运行期依赖图必须闭合**：`npm run build` 之后 `dist/*.js` 的外部 import 只允许 `@ai-zen/agents-core`，其余是同级相对路径与 `node:*` —— **没有 `@ai-zen/agents-server`**。
 
    ```bash

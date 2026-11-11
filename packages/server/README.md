@@ -40,7 +40,8 @@ The wire contract is **not a package** — it is this package's type files. Two 
 Clients import **only** `@ai-zen/agents-server/protocol` and only with `import type`; their own
 runtime copies live in `packages/client/src/wire/`. Nothing is shared but shapes and names — which
 is why `@ai-zen/agents-client` has zero runtime dependency on this package (the server is its
-**peerDependency**: the host must provide it for the type faces and for spawning the bin).
+**peerDependency**: the host must provide it for the type faces and for spawning the bin; the SDK is
+a peer for the same reason, `ConfigPort`'s public signature needs its config and agent shapes).
 
 ```bash
 # the type face must stay free of runtime exports

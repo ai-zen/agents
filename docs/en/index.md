@@ -52,18 +52,20 @@ agents/
 CLI / desktop main
         │
         ▼
-@ai-zen/agents-client  ──►  (import type)  @ai-zen/agents-server/protocol
-     (connection layer)     (wire contract: method/event    (session orchestration /
-                             names, payloads, error codes,   archives / workspaces)
-                             frames, discovery)
-                                            ▲
-                                            │ (types only)
-@ai-zen/agents-server  ──►  @ai-zen/agents-sdk  ──►  @ai-zen/agents-core  ──►  official openai SDK
-  (session orchestration / archives / workspaces)  (capability pipeline / Scope / MCP)  (Agent runtime)
+@ai-zen/agents-client ──(runtime)──►  @ai-zen/agents-core ──►  official openai SDK
+  (connection layer)   │
+                       └──(types only)──►  @ai-zen/agents-server/protocol
+                                           (wire contract: method/event names, payloads,
+                                            error codes, frames, discovery file)
+
+@ai-zen/agents-server  ──►  @ai-zen/agents-sdk  ──►  @ai-zen/agents-core
+ (session orchestration / archives / workspaces / the contract + its runtime pieces)
 ```
 
-The dependency direction is one-way, never reversed: `core ← sdk ← server`, `protocol ← server` and
-`protocol ← client` (**there is no edge between client and server**), `client ← CLI / desktop main`.
+The dependency direction is one-way, never reversed: `core ← sdk ← server`, and
+`client ← CLI / desktop main`. `client` has exactly one runtime edge (`core`); towards the server it
+does `import type` only (the types of `@ai-zen/agents-server/protocol`), and both
+`@ai-zen/agents-sdk` and `@ai-zen/agents-server` are its **peers** (the host must provide them).
 See [Architecture](architecture.md).
 
 ## Quick start

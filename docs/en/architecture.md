@@ -37,6 +37,7 @@ Read `A ← B` as "B depends on A". Every edge is a fact in `package.json` —
 | `sdk` | `core` | runtime dependency |
 | `server` | `core` + `sdk` | runtime dependencies, two entries in `dependencies` |
 | `client` | `core` | runtime dependency, **the only** entry in `dependencies` |
+| `client` | `sdk` | **types only**: a `peerDependencies` entry plus a devDependency (`ConfigPort`'s public signature needs `AppConfig` / `AgentDefinition` / `ReasoningPresets`); not a single runtime reference |
 | `client` | `server` | **types only**: a `peerDependencies` entry (the host must provide it) plus a devDependency (this repo's tests start a real Daemon); not a single runtime reference |
 | `cli` / `desktop main` | `client` (the CLI additionally `sdk` / `core`) | application-side dependency. Both also declare `server` — they spawn it through `ensureServer`, so they need to locate its bin; in direction they are users of `client` |
 
@@ -178,9 +179,11 @@ belongs to the server; if other processes must execute it, it is code.
 **Why a client never drags the server runtime in**: the client only does `import type` (shapes and
 names); the runtime pieces are its own copies under `packages/client/src/wire/`. Only types are
 shared, never code. Hence `@ai-zen/agents-client` has exactly one entry in `dependencies`
-(`@ai-zen/agents-core`), and `@ai-zen/agents-server` is its **peerDependency** (the host must
-provide it: the type face comes from it, and `ensure-server` spawns its bin) plus a devDependency
-(tests start a real Daemon). Installing the client does not pull in openai or the MCP SDK.
+(`@ai-zen/agents-core`), while `@ai-zen/agents-server` and `@ai-zen/agents-sdk` are both its
+**peerDependencies** (the host must provide them: the type faces come from them, and `ensure-server`
+spawns the server's bin) plus devDependencies (tests start a real Daemon). Installing the client
+pulls neither openai nor the MCP SDK into the **artifact**; they are only the type sources the host
+already has.
 
 **The desktop main process is a bundle artifact**, the same reason in practical clothes: it imports
 only the types of `@ai-zen/agents-server/protocol`, so no bundler follows daemon / archives /
@@ -221,7 +224,7 @@ One more pure piece sits at the package root: `stream-merge.ts` (`mergeStreamedS
 
 ### Three hard constraints (each machine-checkable)
 
-1. **It has exactly one runtime dependency edge, `core`** — `core` holds the **only** implementations of chunk folding (`applyChunk`), usage summing (`sumUsage`) and the role enum (`AgentNS.Role`), so the client imports them instead of copying a mirror; the contract with the server is **types only** (`import type`, see hard property ①), not a dependency. At runtime core's artifact only loads `@ai-zen/event-bus`; `openai` appears in core in type position only. `devDependencies` holds three more workspace packages, all for types and test cases only; none reaches the artifact.
+1. **It has exactly one runtime dependency edge, `core`** — `core` holds the **only** implementations of chunk folding (`applyChunk`), usage summing (`sumUsage`) and the role enum (`AgentNS.Role`), so the client imports them instead of copying a mirror; with `sdk` and `server` it is **types only** (`import type`, see hard property ①), and both are peers. At runtime core's artifact only loads `@ai-zen/event-bus`; `openai` appears in core in type position only. `devDependencies` holds three more workspace packages (`sdk` and `server` are also peers), all for types and test cases only; none reaches the artifact.
 2. **The emitted runtime dependency graph must be closed**: after `npm run build`, external imports in `dist/*.js` may only be `@ai-zen/agents-core`; everything else is a sibling relative path or `node:*` — **no `@ai-zen/agents-server`**.
 
    ```bash
