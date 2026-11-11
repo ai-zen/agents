@@ -17,7 +17,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import type { ServerDescriptor } from "./wire/discovery.js";
@@ -136,12 +136,16 @@ async function probe(
  * 等 `spawn` 事件而不是直接返回：可执行文件找不到这类错误当场报，不用等满 10s 超时。
  */
 async function spawnServerProcess({ aiZenDir }: { aiZenDir: string }): Promise<void> {
-  const child = spawn(process.execPath, [serverEntryPath(), "serve", "--ai-zen-dir", aiZenDir], {
-    detached: true,
-    stdio: "ignore",
-    // 显式传一遍：子进程不依赖"调用方的 env 恰好和发现目录一致"
-    env: { ...process.env, AI_ZEN_DIR: aiZenDir },
-  });
+  const child = spawn(
+    process.execPath,
+    [await serverEntryPath(), "serve", "--ai-zen-dir", aiZenDir],
+    {
+      detached: true,
+      stdio: "ignore",
+      // 显式传一遍：子进程不依赖"调用方的 env 恰好和发现目录一致"
+      env: { ...process.env, AI_ZEN_DIR: aiZenDir },
+    },
+  );
 
   await new Promise<void>((resolve, reject) => {
     child.once("spawn", () => resolve());
@@ -169,10 +173,10 @@ async function spawnServerProcess({ aiZenDir }: { aiZenDir: string }): Promise<v
  * pnpm 的严格布局只给**声明过**的依赖建链接，所以本仓的 `packages/client` 把它列在
  * `devDependencies`（用例与本地运行要它），发布出去的消费者则要靠自己的依赖声明。
  */
-function serverEntryPath(): string {
+async function serverEntryPath(): Promise<string> {
   const require = createRequire(import.meta.url);
   const packageJsonPath = require.resolve("@ai-zen/agents-server/package.json");
-  const pkg = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as {
+  const pkg = JSON.parse(await readFile(packageJsonPath, "utf-8")) as {
     bin?: Record<string, string>;
   };
   const bin = pkg.bin?.["agents-server"];
