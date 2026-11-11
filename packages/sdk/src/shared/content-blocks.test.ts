@@ -1,4 +1,6 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { promises as fs } from "node:fs";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
@@ -242,5 +244,92 @@ describe("fileToContentSection：传输方式选择", () => {
 
   it("默认内联上限为 8 MiB", () => {
     expect(DEFAULT_MAX_INLINE_BYTES).toBe(8 * 1024 * 1024);
+  });
+});
+
+/**
+ * 默认上传实现走的是**真 HTTP**（`fetch` + `FormData`），不再是 `openai` 包。
+ *
+ * 这里用本地 `node:http` 假端点钉住线格式：路径、鉴权头、multipart 的两个字段名。
+ * 换实现时这三样最容易悄悄错 —— 而错了的表现是「上传失败 → 静默降级成内联」，
+ * 界面上一切正常，只是每张图都变成请求体里的 base64。
+ */
+describe("默认上传实现（真 HTTP，不注入 upload）", () => {
+  async function fakeEndpoint(): Promise<{
+    endpoint: Endpoint;
+    requests: Array<{ url?: string; auth?: string; body: string }>;
+    reply: { status: number; body: string };
+    close: () => Promise<void>;
+  }> {
+    const requests: Array<{ url?: string; auth?: string; body: string }> = [];
+    const reply = { status: 200, body: JSON.stringify({ id: "file-from-http" }) };
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk) => chunks.push(chunk as Buffer));
+      req.on("end", () => {
+        requests.push({
+          url: req.url,
+          auth: req.headers.authorization,
+          body: Buffer.concat(chunks).toString("utf8"),
+        });
+        res.writeHead(reply.status, { "content-type": "application/json" });
+        res.end(reply.body);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    return {
+      endpoint: {
+        id: `fake-${randomBytes(4).toString("hex")}`,
+        name: "Fake",
+        // 末尾多一个 `/`：实现必须自己收掉，否则会拼出 `//files`
+        baseUrl: `http://127.0.0.1:${port}/v1/`,
+        apiKey: "sk-fake",
+        capabilities: { filesApi: true },
+      },
+      requests,
+      reply,
+      close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    };
+  }
+
+  it("POST {baseUrl}/files，带 Bearer，multipart 里是 purpose=user_data + file", async () => {
+    const fake = await fakeEndpoint();
+    try {
+      const file = await tmpImage("PNGDATA");
+      const r = await fileToContentSection({ source: { path: file }, endpoint: fake.endpoint });
+
+      expect(fake.requests).toHaveLength(1);
+      const [request] = fake.requests;
+      expect(request.url).toBe("/v1/files");
+      expect(request.auth).toBe("Bearer sk-fake");
+      expect(request.body).toContain('name="purpose"');
+      expect(request.body).toContain("user_data");
+      expect(request.body).toContain('name="file"');
+      expect(request.body).toContain('filename="img.png"');
+      expect(request.body).toContain("PNGDATA");
+      expect(request.body).toContain("image/png");
+
+      expect(r.transport).toBe("files-api");
+      expect(r.section).toEqual({ type: "file", file_id: "file-from-http" });
+      expect(r.warning).toBeUndefined();
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("端点返回非 2xx：抛错，由调用方降级为内联并给出 warning", async () => {
+    const fake = await fakeEndpoint();
+    fake.reply.status = 500;
+    fake.reply.body = JSON.stringify({ error: "nope" });
+    try {
+      const file = await tmpImage();
+      const r = await fileToContentSection({ source: { path: file }, endpoint: fake.endpoint });
+      expect(r.transport).toBe("inline");
+      expect(r.warning).toMatch(/Files API upload failed/);
+      expect(r.warning).toContain("500");
+    } finally {
+      await fake.close();
+    }
   });
 });

@@ -13,7 +13,6 @@
  * | 内联体积超过上限且无法上传 | 抛错（不静默塞进请求体） |
  */
 
-import OpenAI, { toFile } from "openai";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -166,12 +165,42 @@ function rememberUpload(key: string, fileId: string): void {
   }
 }
 
-/** 默认上传实现：OpenAI 兼容的 `POST {baseUrl}/files`（`purpose=user_data`） */
+/**
+ * 默认上传实现：OpenAI 兼容的 `POST {baseUrl}/files`（`purpose=user_data`）。
+ *
+ * 用原生 `fetch` + `FormData`，不用 `openai` 包：这里要的只是「发一个 multipart、读回
+ * `id`」，而那 20 MB 的 SDK 会随着本模块的**静态 import** 进入任何打包它的人的产物 ——
+ * CLI 只为了粘贴一张图就得背上它。原生实现没有这个代价，HTTP 上完全等价。
+ */
 const defaultUpload: UploadFn = async ({ endpoint, data, filename, signal }) => {
-  const client = new OpenAI({ apiKey: endpoint.apiKey, baseURL: endpoint.baseUrl });
-  const file = await toFile(Buffer.from(data), filename);
-  const uploaded = await client.files.create({ file, purpose: "user_data" }, { signal });
-  return uploaded.id;
+  // 拷一份：`data` 的类型是 `Uint8Array<ArrayBufferLike>`，而 `BlobPart` 只收
+  // `ArrayBuffer` 支撑的（TS 5.7 起两者不再互相兼容）。上传是一次性的，拷一次
+  // 相对一次网络往返可以忽略。
+  const bytes = new Uint8Array(data.byteLength);
+  bytes.set(data);
+
+  const form = new FormData();
+  form.append("purpose", "user_data");
+  form.append(
+    "file",
+    new Blob([bytes], { type: mimeOf(filename) ?? "application/octet-stream" }),
+    filename,
+  );
+  const response = await fetch(`${endpoint.baseUrl.replace(/\/+$/, "")}/files`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${endpoint.apiKey}` },
+    body: form,
+    signal,
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(
+      `File upload failed: HTTP ${response.status}${detail ? ` — ${detail.slice(0, 200)}` : ""}`,
+    );
+  }
+  const body = (await response.json()) as { id?: unknown };
+  if (typeof body.id !== "string") throw new Error("File upload failed: response has no `id`");
+  return body.id;
 };
 
 function isRemoteUrl(value: string): boolean {
