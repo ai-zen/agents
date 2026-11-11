@@ -105,9 +105,12 @@ describe("callOnce", () => {
   it("一问一答：返回服务端的结果（params 原样送到）", async () => {
     const port = await startFakePeer();
 
-    const result = await callOnce({ host: "127.0.0.1", port }, "ping", { a: 1 });
+    // 用一条**带参数**的方法：`ping` 在方法表里是 `void`，带 params 在类型上就不成立
+    const result = await callOnce({ host: "127.0.0.1", port }, "workspace.resolve", {
+      path: "/tmp",
+    });
 
-    expect(result).toEqual({ method: "ping", params: { a: 1 } });
+    expect(result).toEqual({ method: "workspace.resolve", params: { path: "/tmp" } });
   });
 
   it("不带 params：帧里不出现 params 字段（`JSON.stringify` 把 undefined 整键丢掉）", async () => {

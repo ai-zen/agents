@@ -9,7 +9,7 @@
  * 这不是空清单，是调用方漏了东西（客户端得改请求），所以是 `bad-params`。
  */
 
-import type { MethodHandler } from "./Daemon.js";
+import type { MethodHandlers } from "./Daemon.js";
 import { badParams, field, optionalString } from "./params.js";
 import type { AssetListResult, AssetKind, AssetScope } from "../protocol/index.js";
 
@@ -19,7 +19,7 @@ export interface AssetHandlerOptions {
   service: AssetService;
 }
 
-export function createAssetHandlers(options: AssetHandlerOptions): Record<string, MethodHandler> {
+export function createAssetHandlers(options: AssetHandlerOptions): MethodHandlers {
   return {
     ["asset.list"]: async (params): Promise<AssetListResult> => {
       const kind = requireKind(params);

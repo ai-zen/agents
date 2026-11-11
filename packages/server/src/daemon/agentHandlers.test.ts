@@ -11,12 +11,12 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentDefinition } from "@ai-zen/agents-sdk";
-import type { Connection, MethodHandler } from "./Daemon.js";
+import type { AnyHandler, Connection } from "./Daemon.js";
 import { createAgentHandlers } from "./agentHandlers.js";
 import { ConfigService } from "../domain/config/ConfigService.js";
 
 let root: string;
-let handlers: Record<string, MethodHandler>;
+let handlers: Record<string, AnyHandler>;
 /** `setModel` 的调用记录：证明它仍然是原来那条路（写 Agent 定义交给装配层） */
 let setModelCalls: Array<{ agentId: string; modelId: string }>;
 
@@ -55,7 +55,7 @@ afterEach(() => {
 async function call(method: string, params?: unknown): Promise<unknown> {
   const handler = handlers[method];
   expect(handler, `method not registered: ${method}`).toBeTypeOf("function");
-  return await handler(params, connection);
+  return await handler(params as never, connection);
 }
 
 /**

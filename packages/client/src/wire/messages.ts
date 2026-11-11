@@ -5,7 +5,11 @@
  * （`packages/client/src/wire/messages.ts`）—— 协议只共享类型，不共享代码。
  */
 
-import type { HelloRequest, ProtocolVersion, RequestFrame } from "@ai-zen/agents-server/protocol";
+import type {
+  HelloRequest,
+  ProtocolVersion,
+  RawRequestFrame,
+} from "@ai-zen/agents-server/protocol";
 
 /** 协议版本：任何不兼容的字段变化都要 +1，两端必须一致 */
 export const PROTOCOL_VERSION = 1 satisfies ProtocolVersion;
@@ -16,8 +20,8 @@ export function isHelloRequest(frame: unknown): frame is HelloRequest {
   return Boolean(value && value.kind === "hello" && typeof value.protocol === "number");
 }
 
-export function isRequestFrame(frame: unknown): frame is RequestFrame {
-  const value = frame as Partial<RequestFrame> | null | undefined;
+export function isRequestFrame(frame: unknown): frame is RawRequestFrame {
+  const value = frame as Partial<RawRequestFrame> | null | undefined;
   return Boolean(
     value &&
     typeof value.id === "number" &&

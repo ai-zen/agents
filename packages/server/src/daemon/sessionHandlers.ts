@@ -30,7 +30,7 @@
  * `manager.closeWorkspace`（内存）两个业务动作，自己不列会话、不自己一个个 `close()`。
  */
 
-import type { Connection, MethodHandler } from "./Daemon.js";
+import type { Connection, MethodHandlers } from "./Daemon.js";
 import {
   badParams,
   field,
@@ -97,9 +97,7 @@ export interface SessionHandlerOptions {
   fileIndex?: FileIndex;
 }
 
-export function createSessionHandlers(
-  options: SessionHandlerOptions,
-): Record<string, MethodHandler> {
+export function createSessionHandlers(options: SessionHandlerOptions): MethodHandlers {
   const { manager, workspacesRoot, defaultWorkspacePath } = options;
   const fileIndex = options.fileIndex ?? new FileIndex();
 

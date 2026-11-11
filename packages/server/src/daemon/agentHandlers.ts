@@ -17,7 +17,7 @@
  * 拆成两个 handler 文件只会让接线处出现两条 `...createXxxHandlers()`。
  */
 
-import type { MethodHandler } from "./Daemon.js";
+import type { MethodHandlers } from "./Daemon.js";
 import { badParams, field, requireString } from "./params.js";
 import type { SessionAgentFactory } from "../domain/agent/SessionAgentFactory.js";
 import type { ConfigService } from "../domain/config/ConfigService.js";
@@ -38,7 +38,7 @@ export interface AgentHandlerOptions {
   config: ConfigService;
 }
 
-export function createAgentHandlers(options: AgentHandlerOptions): Record<string, MethodHandler> {
+export function createAgentHandlers(options: AgentHandlerOptions): MethodHandlers {
   const { factory, config } = options;
 
   return {

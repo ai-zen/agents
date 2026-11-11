@@ -22,6 +22,7 @@ import { createAssetHandlers } from "./daemon/assetHandlers.js";
 import { createConfigHandlers } from "./daemon/configHandlers.js";
 import { createSessionHandlers } from "./daemon/sessionHandlers.js";
 
+import type { AnyMethod, ResultOf } from "./protocol/api.js";
 import { callOnce } from "./wire/call-once.js";
 import {
   descriptorPath,
@@ -129,12 +130,12 @@ async function openLog(aiZenDir: string): Promise<(level: string, message: strin
  *
  * 身份仍然署名本进程：`client` 是排查时最有用的一条事实（服务端日志里写着谁连的）。
  */
-async function callRunning(
+async function callRunning<M extends AnyMethod>(
   host: string,
   port: number,
-  method: string,
+  method: M,
   timeoutMs = 2000,
-): Promise<unknown> {
+): Promise<ResultOf<M>> {
   return await callOnce({ host, port }, method, undefined, {
     timeoutMs,
     client: { name: "agents-server-cli", version: SERVER_VERSION },

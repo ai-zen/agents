@@ -20,6 +20,9 @@
  * `src/wire/messages.ts`。
  */
 
+import type { AnyMethod, MethodApi } from "./api.js";
+import type { ServerEvent } from "./sessions.js";
+
 /** 协议版本：任何不兼容的字段变化都要 +1 */
 export type ProtocolVersion = 1;
 
@@ -51,8 +54,30 @@ export interface HelloResponse {
   };
 }
 
-/** 请求帧（客户端 → 服务端；见文件头的「本版只有一个方向」） */
-export interface RequestFrame {
+/**
+ * 请求帧（客户端 → 服务端；见文件头的「本版只有一个方向」）。
+ *
+ * 它是 **`MethodApi` 上的判别联合**：`method` 决定 `params` 的类型。构造一个帧即被这张表
+ * 约束 —— 把 `SessionSendParams` 塞给 `session.attach`、或者把方法名拼错，都编译不过。
+ * 没参数的方法（`ping` / `config.get` …）不允许带 `params`。
+ */
+export type RequestFrame = { [M in AnyMethod]: FrameFor<M> }[AnyMethod];
+
+/** 某一个方法的请求帧形状 */
+type FrameFor<M extends AnyMethod> = { id: number; method: M } & ([MethodApi[M]["params"]] extends [
+  void,
+]
+  ? { params?: void }
+  : { params: MethodApi[M]["params"] });
+
+/**
+ * 解码出来、**还没校验**的帧 —— 传输层只认这个形状。
+ *
+ * 为什么不让传输层直接用 `RequestFrame`：线上的字节是 JSON，任何一侧收到的都是
+ * `unknown`。判别联合描述的是「合法帧长什么样」，而「这串字节是不是合法帧」只能靠运行时
+ * 校验（`isRawRequestFrame`）。把两者混成一个类型，等于让类型系统替 JSON 背书。
+ */
+export interface RawRequestFrame {
   id: number;
   method: string;
   params?: unknown;
@@ -72,8 +97,5 @@ export interface ErrorFrame {
 
 export type ResponseFrame = ResultFrame | ErrorFrame;
 
-/** 事件帧（服务端 → 客户端，无 id） */
-export interface EventFrame {
-  event: string;
-  [key: string]: unknown;
-}
+/** 事件帧（服务端 → 客户端，无 id）：就是服务端能推的那三种事件的联合，每个成员都带字面量 `event` */
+export type EventFrame = ServerEvent;

@@ -36,7 +36,7 @@ const connection: Connection = {
 };
 
 /** 调一次 `asset.list`（handler 是普通函数，直接调就是它在线上的行为） */
-const list = (params: unknown) => handlers["asset.list"]!(params, connection);
+const list = (params: unknown) => handlers["asset.list"]!(params as never, connection);
 
 beforeEach(async () => {
   root = await fs.mkdtemp(join(tmpdir(), "aiz-asset-handlers-"));

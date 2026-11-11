@@ -15,7 +15,7 @@ import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AppConfig } from "@ai-zen/agents-sdk";
-import type { Connection, MethodHandler } from "./Daemon.js";
+import type { AnyHandler, Connection } from "./Daemon.js";
 import { createConfigHandlers } from "./configHandlers.js";
 import { ConfigService } from "../domain/config/ConfigService.js";
 
@@ -24,7 +24,7 @@ import { ensureWorkspace } from "../domain/workspace/workspace.js";
 let root: string;
 let workspacesRoot: string;
 let service: ConfigService;
-let handlers: Record<string, MethodHandler>;
+let handlers: Record<string, AnyHandler>;
 
 /** 配置面不用连接（没有事件），给一个空实现满足签名 */
 const connection: Connection = {
@@ -55,7 +55,7 @@ afterEach(() => {
 async function call(method: string, params?: unknown): Promise<unknown> {
   const handler = handlers[method];
   expect(handler, `method not registered: ${method}`).toBeTypeOf("function");
-  return await handler(params, connection);
+  return await handler(params as never, connection);
 }
 
 describe("config.get / config.save", () => {

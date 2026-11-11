@@ -20,7 +20,7 @@
  * （`agent.save` 的 `definition` 同理，见 `agentHandlers.ts` 的 `requireDefinition`。）
  */
 
-import type { MethodHandler } from "./Daemon.js";
+import type { MethodHandlers } from "./Daemon.js";
 import { badParams, field, optionalString, requireObject, requireString } from "./params.js";
 import type { ConfigService } from "../domain/config/ConfigService.js";
 import type { AppConfig } from "@ai-zen/agents-sdk";
@@ -39,7 +39,7 @@ export interface ConfigHandlerOptions {
   config: ConfigService;
 }
 
-export function createConfigHandlers(options: ConfigHandlerOptions): Record<string, MethodHandler> {
+export function createConfigHandlers(options: ConfigHandlerOptions): MethodHandlers {
   const { config } = options;
 
   return {

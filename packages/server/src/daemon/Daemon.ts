@@ -27,14 +27,33 @@ import { createServer, type Server } from "node:net";
 import { encodeFrame, FrameDecoder, ProtocolError } from "../wire/frames.js";
 import type { DaemonStatusResult, PingResult, ShutdownResult } from "../protocol/index.js";
 import type { EventFrame, HelloResponse } from "../protocol/index.js";
+import type { AnyMethod, ParamsOf, ResultOf } from "../protocol/api.js";
 import { isHelloRequest, isRequestFrame, PROTOCOL_VERSION } from "../wire/messages.js";
 import type { ServerDescriptor } from "../wire/discovery.js";
 import { descriptorPath, removeDescriptor, writeDescriptor } from "../wire/discovery.js";
 import { isLoopbackHost } from "../wire/host.js";
 import { socketWire, type Wire } from "./wire.js";
 
-/** 方法处理函数：拿参数、返回结果；抛错则回 `ok:false` */
-export type MethodHandler = (params: unknown, connection: Connection) => Promise<unknown> | unknown;
+/**
+ * 一张方法表：**键必须是 `MethodApi` 的方法名**，参数与结果由方法名决定。
+ *
+ * 四个 handler 工厂各返回其中一部分，组装根合并成一张。写错方法名、参数类型对不上、
+ * 返回的结果不是那条方法的结果 —— 都在各自的工厂里当场编译错误。
+ */
+export type MethodHandlers = {
+  [M in AnyMethod]?: (
+    params: ParamsOf<M>,
+    connection: Connection,
+  ) => ResultOf<M> | Promise<ResultOf<M>>;
+};
+
+/**
+ * 内部存放用的擦除形态：一个 `Map` 的键是运行时才知道的字符串，类型参数到不了这里。
+ *
+ * 这是一处**有意**的擦除，位置在「收到一帧 JSON → 查到某个 handler」这个边界上；
+ * 帧本身的合法性由 `isRawRequestFrame` 判定，而「这条方法的参数长什么样」由方法表声明。
+ */
+export type AnyHandler = (params: never, connection: Connection) => unknown;
 
 /** 一条已建连的连接（握手后可用） */
 export interface Connection {
@@ -62,8 +81,15 @@ export interface DaemonOptions {
   port?: number;
   /** 服务端包版本，写进发现文件与握手回执 */
   version: string;
-  /** 业务方法表（`ping` / `status` / `shutdown` 由本类自带，同名的以注入的为准） */
-  handlers?: Record<string, MethodHandler>;
+  /**
+   * 业务方法表（`ping` / `status` / `shutdown` 由本类自带，同名的以注入的为准）。
+   *
+   * 这里是**擦除形态**：daemon 是一个按名字分发的调度器，不认识具体有哪些方法。
+   * 「方法名 ↔ 参数/结果」的严格性在四个 handler 工厂的返回类型上（`MethodHandlers`）——
+   * 组装根把工厂的结果合并进来，写错就是工厂那边编译错误；而测试要注入 `boom` / `echo`
+   * 这类假方法，不该被真实的方法表挡住。
+   */
+  handlers?: Record<string, AnyHandler>;
   /** 空闲多久自动退出（毫秒）；`0`/不传 = 不自动退出 */
   idleTimeoutMs?: number;
   /** 日志出口（默认不输出；由 bin 接到文件） */
@@ -79,7 +105,7 @@ export class Daemon {
   private readonly options: DaemonOptions;
   private readonly host: string;
   private readonly requestedPort: number;
-  private readonly handlers = new Map<string, MethodHandler>();
+  private readonly handlers = new Map<string, AnyHandler>();
 
   private server: Server | null = null;
   private actualPort = 0;
@@ -105,6 +131,8 @@ export class Daemon {
       return { stopping: true };
     });
     for (const [name, handler] of Object.entries(options.handlers ?? {})) {
+      // 参数类型是 `never`：把 `(params: SessionSendParams) => …` 这类强类型 handler 赋进来
+      // 是安全的（参数逆变），取值时的断言只有 `dispatch` 那一处。
       this.handlers.set(name, handler);
     }
   }
@@ -349,7 +377,9 @@ export class Daemon {
       return;
     }
     try {
-      const result = await handler(params, connection);
+      // 唯一的断言：`params` 是解出来的 JSON（合法性已由 `isRawRequestFrame` 判过形状），
+      // 具体形状由方法表声明。
+      const result = await handler(params as never, connection);
       writeIfOpen(wire, { id, ok: true, result });
     } catch (error: any) {
       writeIfOpen(wire, {

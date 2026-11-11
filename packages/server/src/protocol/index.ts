@@ -21,6 +21,7 @@
  * 不会被任何门禁抓到。`export type *` 让这里成为纯透传：新增类型自动可见。
  */
 
+export type * from "./api.js";
 export type * from "./messages.js";
 export type * from "./daemon.js";
 export type * from "./sessions.js";

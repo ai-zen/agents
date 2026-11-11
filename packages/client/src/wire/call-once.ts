@@ -26,7 +26,12 @@
 import { createConnection, type Socket } from "node:net";
 import { encodeFrame, FrameDecoder } from "./frames.js";
 import { PROTOCOL_VERSION } from "./messages.js";
-import type { HelloResponse, ResponseFrame } from "@ai-zen/agents-server/protocol";
+import type {
+  AnyMethod,
+  HelloResponse,
+  MethodApi,
+  ResponseFrame,
+} from "@ai-zen/agents-server/protocol";
 
 /** 连哪儿（与客户端 `ServerAddress` 逐字同形，但不引用它 —— 那是客户端的类型） */
 export interface CallOnceAddress {
@@ -59,16 +64,16 @@ const REQUEST_ID = 1;
  *
  * @throws 建连失败 / 握手被拒 / 超时 / 服务端回失败帧 —— 失败帧的 `code` 挂在 `.code` 上
  */
-export async function callOnce(
+export async function callOnce<M extends AnyMethod>(
   address: CallOnceAddress,
-  method: string,
-  params?: unknown,
+  method: M,
+  params?: MethodApi[M]["params"],
   options?: CallOnceOptions,
-): Promise<unknown> {
+): Promise<MethodApi[M]["result"]> {
   const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const client = options?.client ?? DEFAULT_CLIENT;
 
-  return await new Promise<unknown>((resolve, reject) => {
+  return await new Promise<MethodApi[M]["result"]>((resolve, reject) => {
     const socket: Socket = createConnection({ host: address.host, port: address.port });
     const decoder = new FrameDecoder();
     let settled = false;
@@ -79,7 +84,8 @@ export async function callOnce(
       clearTimeout(timer);
       socket.destroy();
       if (fail) reject(fail);
-      else resolve(result);
+      // 边界断言：`result` 是解出来的 JSON，类型由方法表声明（运行时校验不在这里）
+      else resolve(result as MethodApi[M]["result"]);
     };
 
     const timer = setTimeout(() => {

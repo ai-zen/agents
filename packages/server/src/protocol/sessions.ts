@@ -1109,6 +1109,11 @@ export type SessionEvent =
  */
 export type ServerEvent = AgentEvent | SessionEvent | ServerNoticeEvent;
 
+/** `events.watch` 的结果：订阅已建立（事件随后从连接上推下来） */
+export interface EventWatchResult {
+  watching: true;
+}
+
 /** `SESSION_METHODS` 的**成员名**（不是线上值）—— 给「门面必须覆盖每一条」这类类型级用例用 */
 export type SessionMethodKey =
   | "create"

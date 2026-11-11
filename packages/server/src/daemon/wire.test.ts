@@ -23,7 +23,7 @@ import { PassThrough } from "node:stream";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Daemon, type DaemonOptions, type MethodHandler } from "./Daemon.js";
+import { Daemon, type AnyHandler, type DaemonOptions } from "./Daemon.js";
 import { socketWire, type Wire } from "./wire.js";
 import { EventHub } from "../lib/events.js";
 import { encodeFrame, FrameDecoder } from "../wire/frames.js";
@@ -76,7 +76,7 @@ async function waitFor(condition: () => boolean, what: string, timeoutMs = 2000)
  * 本文件要验的是**传输这一层**：`Connection.send` 是否真的落到 `Wire.write` 上、
  * `Wire` 断开是否真的跑完清理。
  */
-function eventHandlers(hub: EventHub, onUnsubscribe: () => void): Record<string, MethodHandler> {
+function eventHandlers(hub: EventHub, onUnsubscribe: () => void): Record<string, AnyHandler> {
   return {
     "events.watch": (_params, connection) => {
       const unsubscribe = hub.subscribe((event) => connection.send(event));
