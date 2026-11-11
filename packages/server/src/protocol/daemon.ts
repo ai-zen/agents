@@ -16,14 +16,7 @@
  */
 
 /** 自带方法名（服务端注册与客户端调用共用同一份字面量） */
-export const DAEMON_METHODS = {
-  /** 活着吗 —— 「服务端就绪了没」的唯一判据（`ensureServer` 的轮询就靠它） */
-  ping: "ping",
-  /** 身份与运行态：版本、协议号、监听地址、连接数、启动时间 */
-  status: "status",
-  /** 让服务端收摊（先回执、下一个 tick 再停） */
-  shutdown: "shutdown",
-} as const;
+export type DaemonMethod = "ping" | "status" | "shutdown";
 
 /** `ping` 的结果：能回这个就说明握手成功、方法分发正常 */
 export interface PingResult {
@@ -53,3 +46,6 @@ export interface DaemonStatusResult {
 export interface ShutdownResult {
   stopping: true;
 }
+
+/** `DAEMON_METHODS` 的**成员名**（不是线上值）—— 给「门面必须覆盖每一条」这类类型级用例用 */
+export type DaemonMethodKey = "ping" | "status" | "shutdown";

@@ -50,8 +50,9 @@ import type {
   ConfigSetDefaultAgentResult,
   ConfigSetDefaultModelResult,
   McpScope,
-} from "@ai-zen/agents-protocol";
-import { ERROR_CODES, codedError } from "@ai-zen/agents-protocol";
+} from "../../protocol/index.js";
+
+import { codedError } from "../../wire/errors.js";
 
 export interface ConfigServiceOptions {
   /** `<配置根>/config.json` */
@@ -329,7 +330,7 @@ export class ConfigService {
     const workspaceId = input.workspaceId;
     if (!workspaceId) {
       // 缺参数是**调用方**的错，且可判别（与 `bad-params` 分开：那个是协议层形状错）
-      throw codedError(ERROR_CODES.workspaceRequired, "project scope needs a workspaceId");
+      throw codedError("workspace-required", "project scope needs a workspaceId");
     }
     // 工作区路径只能反查：id 是哈希派生的，光看 id 推不回目录（也不该在协议里给路径）
     const workspace = await readWorkspace({
@@ -337,8 +338,7 @@ export class ConfigService {
       id: workspaceId,
     });
     // `null` 涵盖「没这个工作区」「记录坏了」「id 想逃出 workspaces 根」三种
-    if (!workspace)
-      throw codedError(ERROR_CODES.unknownWorkspace, `unknown workspace: ${workspaceId}`);
+    if (!workspace) throw codedError("unknown-workspace", `unknown workspace: ${workspaceId}`);
     return join(workspace.path, ".ai-zen", "mcp.json");
   }
 }

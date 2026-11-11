@@ -1,5 +1,5 @@
 /**
- * 线上消息的**唯一**形状定义。
+ * 线上消息的**唯一**形状定义 —— 只有类型，没有一行运行期代码。
  *
  * 客户端（TUI / 桌面端 / 浏览器）只认这里的类型；服务端实现与传输（TCP / WebSocket /
  * stdio）都不得额外约定格式。想加字段就加——但**不能改已有字段的语义**，客户端可能比
@@ -15,10 +15,13 @@
  * 服务端需要「问客户端一件事」时走的**不是**请求帧，而是「事件问 + 方法答」
  * （`session-question` → `session.answer`）：这样帧层的 `id` 空间只有一方在分配，
  * 不必处理两个方向撞号。
+ *
+ * 版本号是个**类型**（`ProtocolVersion`），不是运行期常量：常量属于实现，见
+ * `src/wire/messages.ts`。
  */
 
 /** 协议版本：任何不兼容的字段变化都要 +1 */
-export const PROTOCOL_VERSION = 1;
+export type ProtocolVersion = 1;
 
 /** 客户端 → 服务端的第一帧，必须发 */
 export interface HelloRequest {
@@ -73,21 +76,4 @@ export type ResponseFrame = ResultFrame | ErrorFrame;
 export interface EventFrame {
   event: string;
   [key: string]: unknown;
-}
-
-/** 首帧是不是 `hello`（服务端连接处理的第一道判断） */
-export function isHelloRequest(frame: unknown): frame is HelloRequest {
-  const value = frame as Partial<HelloRequest> | null | undefined;
-  return Boolean(value && value.kind === "hello" && typeof value.protocol === "number");
-}
-
-export function isRequestFrame(frame: unknown): frame is RequestFrame {
-  const value = frame as Partial<RequestFrame> | null | undefined;
-  return Boolean(
-    value &&
-    typeof value.id === "number" &&
-    Number.isFinite(value.id) &&
-    typeof value.method === "string" &&
-    value.method.length > 0,
-  );
 }

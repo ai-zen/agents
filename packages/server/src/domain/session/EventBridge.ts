@@ -32,14 +32,7 @@
 
 import { FINISHED_STATUSES, pendingToolCalls, type PhaseMessageLike } from "../../lib/phase.js";
 import type { EventHub } from "../../lib/events.js";
-import {
-  AGENT_EVENTS,
-  SESSION_EVENTS,
-  SESSION_NOTICE_CODES,
-  type NoticePayload,
-  type PhaseInfo,
-  type ServerEvent,
-} from "@ai-zen/agents-protocol";
+import type { NoticePayload, PhaseInfo, ServerEvent } from "../../protocol/index.js";
 import type { LiveSession, SubAgentEntry, SubAgentLike } from "./LiveSession.js";
 
 /**
@@ -91,7 +84,7 @@ export class EventBridge {
       // core `open`：请求发出去之前那一刻。名字与时机都照抄 core —— 客户端今天不用它，
       // 但「一轮开始了」是 core 的公开事实，线上就该有这一条（用不用是客户端的事）。
       this.emit({
-        event: AGENT_EVENTS.open,
+        event: "open",
         sessionId: session.id,
         turnId: session.turnId,
       });
@@ -120,7 +113,7 @@ export class EventBridge {
      */
     const onRawChunk = (chunk: any) => {
       this.emit({
-        event: AGENT_EVENTS.chunk,
+        event: "chunk",
         sessionId: session.id,
         turnId: session.turnId,
         chunk,
@@ -138,7 +131,7 @@ export class EventBridge {
       const { role, status } = message as PhaseMessageLike;
       if (role !== "tool" || !FINISHED_STATUSES.has(status ?? "")) return;
       this.emit({
-        event: AGENT_EVENTS.toolCallEnd,
+        event: "tool-call-end",
         sessionId: session.id,
         turnId: session.turnId,
         message,
@@ -148,7 +141,7 @@ export class EventBridge {
     const onParsed = (receiver: any) => {
       // core `parsed`：流结束、receiver 定稿。此后这一轮的正文不再变。
       this.emit({
-        event: AGENT_EVENTS.parsed,
+        event: "parsed",
         sessionId: session.id,
         turnId: session.turnId,
       });
@@ -172,7 +165,7 @@ export class EventBridge {
       // `error` → `finally` → `session-turn-end`，别把这份错误只留在收尾事件里 ——
       // 两者的时机不同（后者要等落盘）。
       this.emit({
-        event: AGENT_EVENTS.error,
+        event: "error",
         sessionId: session.id,
         turnId: session.turnId,
         error: failure,
@@ -185,7 +178,7 @@ export class EventBridge {
       // 所以这条与 `session-turn-end` 是两条事件，`finally` 先发（`settleTurn` 里发的是
       // 后者）。
       this.emit({
-        event: AGENT_EVENTS.finally,
+        event: "finally",
         sessionId: session.id,
         turnId: session.turnId,
       });
@@ -220,7 +213,7 @@ export class EventBridge {
       };
       session.subAgents.set(entry.id, entry);
       this.emit({
-        event: AGENT_EVENTS.subAgentStart,
+        event: "sub-agent-start",
         sessionId: session.id,
         turnId: session.turnId,
         subAgentId: entry.id,
@@ -237,7 +230,7 @@ export class EventBridge {
         entry.status = "failed";
         this.options.notice(session.id, {
           level: "error",
-          code: SESSION_NOTICE_CODES.subAgentFailed,
+          code: "subAgentFailed",
           params: { index: entry.index, message: error?.message ?? String(error) },
         });
         this.emitSubAgentEnded(session, entry);
@@ -251,7 +244,7 @@ export class EventBridge {
        */
       subAgent.events.on("chunk", (chunk: any) => {
         this.emit({
-          event: AGENT_EVENTS.chunk,
+          event: "chunk",
           sessionId: session.id,
           turnId: session.turnId,
           subAgentId: entry.id,
@@ -312,7 +305,7 @@ export class EventBridge {
 
   emitPhase(session: LiveSession): void {
     this.emit({
-      event: SESSION_EVENTS.phase,
+      event: "session-phase",
       sessionId: session.id,
       turnId: session.turnId,
       phase: this.phaseOf(session),
@@ -329,7 +322,7 @@ export class EventBridge {
   emitSubAgentEnded(session: LiveSession, entry: SubAgentEntry): void {
     const status = entry.status === "failed" ? "failed" : "done";
     this.emit({
-      event: AGENT_EVENTS.subAgentEnd,
+      event: "sub-agent-end",
       sessionId: session.id,
       turnId: session.turnId,
       subAgentId: entry.id,

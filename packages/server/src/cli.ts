@@ -21,14 +21,14 @@ import { createAgentHandlers } from "./daemon/agentHandlers.js";
 import { createAssetHandlers } from "./daemon/assetHandlers.js";
 import { createConfigHandlers } from "./daemon/configHandlers.js";
 import { createSessionHandlers } from "./daemon/sessionHandlers.js";
+
+import { callOnce } from "./wire/call-once.js";
 import {
-  DAEMON_METHODS,
-  callOnce,
   descriptorPath,
   isProcessAlive,
   readDescriptor,
   removeDescriptor,
-} from "@ai-zen/agents-protocol";
+} from "./wire/discovery.js";
 import { SessionAgentFactory } from "./domain/agent/SessionAgentFactory.js";
 import { AssetService } from "./domain/asset/AssetService.js";
 import { globalAgentPaths } from "./domain/agent/agentPaths.js";
@@ -168,7 +168,7 @@ async function main(): Promise<number> {
       console.log("stale descriptor cleaned (process was gone)");
       return 0;
     }
-    await callRunning(descriptor.host, descriptor.port, DAEMON_METHODS.shutdown);
+    await callRunning(descriptor.host, descriptor.port, "shutdown");
     console.log(`stopped server on ${descriptor.host}:${descriptor.port} (pid ${descriptor.pid})`);
     return 0;
   }
@@ -179,7 +179,7 @@ async function main(): Promise<number> {
   if (existing) {
     if (isProcessAlive(existing.pid)) {
       try {
-        await callRunning(existing.host, existing.port, DAEMON_METHODS.ping, 800);
+        await callRunning(existing.host, existing.port, "ping", 800);
         console.error(
           `already running on ${existing.host}:${existing.port} (pid ${existing.pid}, v${existing.version})`,
         );

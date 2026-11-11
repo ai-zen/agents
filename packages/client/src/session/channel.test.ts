@@ -28,8 +28,8 @@ import {
   type CreateAgentInput,
   type ModelLevel,
 } from "@ai-zen/agents-server";
-import type { SessionQuestionEvent } from "@ai-zen/agents-protocol";
-import { ERROR_CODES, codeOf } from "@ai-zen/agents-protocol";
+import type { SessionQuestionEvent } from "@ai-zen/agents-server/protocol";
+import { ERROR_CODES, codeOf } from "../wire/errors.js";
 import { RemoteSessions } from "../facade/sessions.js";
 import { SocketServerClient } from "../socket-server-client.js";
 import { ServerConnection } from "../transport/connection.js";
@@ -787,12 +787,12 @@ describe("SessionChannel：换 id 与快照里的「还在跑」", () => {
 
     await waitFor(() => pending.settled);
     // 服务端原码原样交给调用方（不是包一层「连接断了」）
-    expect(codeOf(pending.error)).toBe(ERROR_CODES.sessionMissing);
+    expect(codeOf(pending.error)).toBe("session-missing");
     // 恰好一次：gone 是终局，不重试
     expect(attempts).toBe(1);
     // 状态标终态，且带的是同一个码（界面靠它说清「会话不在了」）
     expect(opened.stream.state.status).toBe("failed");
-    expect(opened.stream.state.failure?.code).toBe(ERROR_CODES.sessionMissing);
+    expect(opened.stream.state.failure?.code).toBe("session-missing");
   });
 });
 

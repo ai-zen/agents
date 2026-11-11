@@ -8,7 +8,7 @@
  *   开着再说"的中间态。
  * - **只有三个自带方法**：`ping` / `status` / `shutdown`（它们在任何命名空间之外，
  *   因为它们是「活着吗 / 你是谁 / 可以关了吗」这三个问题）。其余方法全部由组装根注入：
- *   `session.*` / `workspace.*` / `events.watch`（`@ai-zen/agents-protocol` 的 `sessions.ts`）、
+ *   `session.*` / `workspace.*` / `events.watch`（`src/protocol/` 的 `sessions.ts`）、
  *   `config.*` / `agent.*`（同一个包的 `config.ts`）。本类只管「文本行 → 帧 → 方法调用」，不认识业务，
  *   也不认识字节从哪里来（那是 `./wire.ts` 的事）。
  * - **握手不省**：即使现在不鉴权，首帧也必须 `hello`。将来加 token/公钥时只改握手内容，
@@ -24,27 +24,13 @@
  */
 
 import { createServer, type Server } from "node:net";
-import { encodeFrame, FrameDecoder, ProtocolError } from "@ai-zen/agents-protocol";
-import {
-  DAEMON_METHODS,
-  type DaemonStatusResult,
-  type PingResult,
-  type ShutdownResult,
-} from "@ai-zen/agents-protocol";
-import {
-  isHelloRequest,
-  isRequestFrame,
-  PROTOCOL_VERSION,
-  type EventFrame,
-  type HelloResponse,
-} from "@ai-zen/agents-protocol";
-import {
-  descriptorPath,
-  removeDescriptor,
-  writeDescriptor,
-  type ServerDescriptor,
-} from "@ai-zen/agents-protocol";
-import { isLoopbackHost } from "@ai-zen/agents-protocol";
+import { encodeFrame, FrameDecoder, ProtocolError } from "../wire/frames.js";
+import type { DaemonStatusResult, PingResult, ShutdownResult } from "../protocol/index.js";
+import type { EventFrame, HelloResponse } from "../protocol/index.js";
+import { isHelloRequest, isRequestFrame, PROTOCOL_VERSION } from "../wire/messages.js";
+import type { ServerDescriptor } from "../wire/discovery.js";
+import { descriptorPath, removeDescriptor, writeDescriptor } from "../wire/discovery.js";
+import { isLoopbackHost } from "../wire/host.js";
 import { socketWire, type Wire } from "./wire.js";
 
 /** 方法处理函数：拿参数、返回结果；抛错则回 `ok:false` */
@@ -111,9 +97,9 @@ export class Daemon {
     this.requestedPort = options.port ?? 8790;
 
     // 自带方法：足够让客户端判断"活着"、"是不是我这个版本"、"能不能让我关掉"
-    this.handlers.set(DAEMON_METHODS.ping, (): PingResult => ({ pong: true }));
-    this.handlers.set(DAEMON_METHODS.status, () => this.status());
-    this.handlers.set(DAEMON_METHODS.shutdown, (): ShutdownResult => {
+    this.handlers.set("ping", (): PingResult => ({ pong: true }));
+    this.handlers.set("status", () => this.status());
+    this.handlers.set("shutdown", (): ShutdownResult => {
       // 先让响应发出去，再收摊（一个 tick 之后再停，见 stop() 的注释）
       setTimeout(() => void this.stop("client requested"), 0);
       return { stopping: true };

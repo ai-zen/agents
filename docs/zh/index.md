@@ -10,7 +10,7 @@ AI-Zen Agents 是一个**模块化的 LLM Agent 框架**，以 pnpm workspace �
 
 - **许可证**：MIT
 - **npm 包**：`@ai-zen/agents-workspace`（workspace 根，私有）；公开子包为 `@ai-zen/agents-core`、`@ai-zen/agents-sdk`、`@ai-zen/agents-server` 与 `@ai-zen/agents-client`
-- **当前版本**：workspace `2.0.0`；`@ai-zen/agents-core` `4.5.5`；`@ai-zen/agents-sdk` `1.1.0`；`@ai-zen/agents-server` `0.1.0`；`@ai-zen/agents-client` `0.1.0`
+- **当前版本**：workspace `2.0.0`；`@ai-zen/agents-core` `4.6.0-alpha.0`；`@ai-zen/agents-sdk` `1.2.0-alpha.0`；`@ai-zen/agents-server` `0.1.0-alpha.0`；`@ai-zen/agents-client` `0.1.0-alpha.0`
 
 ## 这是什么
 
@@ -52,7 +52,7 @@ agents/
 CLI / 桌面端 main
         │
         ▼
-@ai-zen/agents-client  ──►  @ai-zen/agents-protocol  ◄──  @ai-zen/agents-server
+@ai-zen/agents-client  ──►  (import type)  @ai-zen/agents-server/protocol
         （连接层）                  （线上契约：方法/事件名、载荷、错误码、帧、发现）    （会话编排 / 存档 / 工作区）
                                             ▲
                                             │（只取类型）

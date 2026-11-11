@@ -18,15 +18,12 @@ import {
   FileSessionStore,
   SessionAgentFactory,
   SessionManager,
-  EVENT_METHODS,
-  SESSION_EVENTS,
   type AgentLike,
   type ModelLevel,
   type ServerEvent,
 } from "@ai-zen/agents-server";
 import { SocketServerClient } from "../socket-server-client.js";
 import { RemoteSessions } from "./sessions.js";
-import { SESSION_METHODS } from "@ai-zen/agents-protocol";
 import type { ClientInfo, ServerClient } from "../types.js";
 
 class FakeAgent implements AgentLike {
@@ -296,26 +293,22 @@ describe("RemoteSessions", () => {
   it("事件线：send 之后阶段与收尾都推到客户端", async () => {
     await start();
     const received: ServerEvent[] = [];
-    connection!.on(SESSION_EVENTS.phase, (event) => received.push(event));
-    connection!.on(SESSION_EVENTS.turnEnd, (event) => received.push(event));
+    connection!.on("session-phase", (event) => received.push(event));
+    connection!.on("session-turn-end", (event) => received.push(event));
 
-    await connection!.call(EVENT_METHODS.watch);
+    await connection!.call("events.watch");
     const { sessionId } = await sessions.open({ path: join(dir, "proj") });
     await sessions.send(sessionId, "你好");
 
     agent.fire("open");
     agent.fire("finally");
 
-    for (
-      let i = 0;
-      i < 100 && !received.some((event) => event.event === SESSION_EVENTS.turnEnd);
-      i++
-    ) {
+    for (let i = 0; i < 100 && !received.some((event) => event.event === "session-turn-end"); i++) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     const kinds = received.map((event) => event.event);
-    expect(kinds).toContain(SESSION_EVENTS.phase);
-    expect(kinds).toContain(SESSION_EVENTS.turnEnd);
+    expect(kinds).toContain("session-phase");
+    expect(kinds).toContain("session-turn-end");
   });
 });
 
@@ -577,16 +570,16 @@ describe("RemoteSessions：会话级模型（session.model.set / modelParams.set
 
     expect(calls).toEqual([
       {
-        method: SESSION_METHODS.modelSet,
+        method: "session.model.set",
         params: { sessionId: "chat_1", modelId: "alt-model" },
       },
       {
-        method: SESSION_METHODS.modelParamsSet,
+        method: "session.modelParams.set",
         params: { sessionId: "chat_1", modelParams: { reasoning_effort: "high" } },
       },
       // `null` 必须**在**参数里（JSON 里丢掉的字段与「没给」无法区分，而「清掉」是明确意图）
       {
-        method: SESSION_METHODS.modelParamsSet,
+        method: "session.modelParams.set",
         params: { sessionId: "chat_1", modelParams: null },
       },
     ]);

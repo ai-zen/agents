@@ -18,7 +18,7 @@ import type { AppConfig } from "@ai-zen/agents-sdk";
 import type { Connection, MethodHandler } from "./Daemon.js";
 import { createConfigHandlers } from "./configHandlers.js";
 import { ConfigService } from "../domain/config/ConfigService.js";
-import { CONFIG_METHODS } from "@ai-zen/agents-protocol";
+
 import { ensureWorkspace } from "../domain/workspace/workspace.js";
 
 let root: string;
@@ -60,30 +60,30 @@ async function call(method: string, params?: unknown): Promise<unknown> {
 
 describe("config.get / config.save", () => {
   it("config.get 回出厂默认配置 + 那份文件在服务端的位置", async () => {
-    const result = (await call(CONFIG_METHODS.get)) as { config: AppConfig; path: string };
+    const result = (await call("config.get")) as { config: AppConfig; path: string };
     expect(result.config.models.length).toBeGreaterThan(0);
     // 配置中心的菜单要印它：客户端的 config.json 不是这个文件
     expect(result.path).toBe(join(root, "config.json"));
   });
 
   it("config.save 落盘后 config.get 读得回来", async () => {
-    const current = ((await call(CONFIG_METHODS.get)) as { config: AppConfig }).config;
+    const current = ((await call("config.get")) as { config: AppConfig }).config;
 
     await expect(
-      call(CONFIG_METHODS.save, { config: { ...current, maxToolOutput: 777 } }),
+      call("config.save", { config: { ...current, maxToolOutput: 777 } }),
     ).resolves.toEqual({ saved: true });
 
-    const after = ((await call(CONFIG_METHODS.get)) as { config: AppConfig }).config;
+    const after = ((await call("config.get")) as { config: AppConfig }).config;
     expect(after.maxToolOutput).toBe(777);
     expect(() => statSync(join(root, "config.json"))).not.toThrow();
   });
 
   it("config.save 缺 config / 传数组或字符串 → bad-params", async () => {
-    await expect(call(CONFIG_METHODS.save, {})).rejects.toMatchObject({ code: "bad-params" });
-    await expect(call(CONFIG_METHODS.save, { config: [] })).rejects.toMatchObject({
+    await expect(call("config.save", {})).rejects.toMatchObject({ code: "bad-params" });
+    await expect(call("config.save", { config: [] })).rejects.toMatchObject({
       code: "bad-params",
     });
-    await expect(call(CONFIG_METHODS.save, { config: "{}" })).rejects.toMatchObject({
+    await expect(call("config.save", { config: "{}" })).rejects.toMatchObject({
       code: "bad-params",
     });
     // 没写出任何文件
@@ -93,25 +93,25 @@ describe("config.get / config.save", () => {
 
 describe("config.reasoningPresets", () => {
   it("回出厂策略表", async () => {
-    const result = (await call(CONFIG_METHODS.reasoningPresets)) as { presets: object };
+    const result = (await call("config.reasoningPresets")) as { presets: object };
     expect(Object.keys(result.presets)).toContain("openai");
   });
 });
 
 describe("config.defaultAgent.set", () => {
   it("只改 defaultAgent：其余字段原样保留，回写入后的 id", async () => {
-    const current = ((await call(CONFIG_METHODS.get)) as { config: AppConfig }).config;
+    const current = ((await call("config.get")) as { config: AppConfig }).config;
     const before = {
       models: current.models,
       endpoints: current.endpoints,
       maxToolOutput: current.maxToolOutput,
     };
 
-    await expect(call(CONFIG_METHODS.defaultAgentSet, { agentId: "coder" })).resolves.toEqual({
+    await expect(call("config.defaultAgent.set", { agentId: "coder" })).resolves.toEqual({
       agentId: "coder",
     });
 
-    const after = ((await call(CONFIG_METHODS.get)) as { config: AppConfig }).config;
+    const after = ((await call("config.get")) as { config: AppConfig }).config;
     expect(after.defaultAgent).toBe("coder");
     // 窄方法的全部意义：别的字段一个都不动（整份写回会抹掉并发修改）
     expect({ models: after.models, endpoints: after.endpoints }).toEqual({
@@ -121,10 +121,10 @@ describe("config.defaultAgent.set", () => {
   });
 
   it("缺 agentId / 空串 → bad-params", async () => {
-    await expect(call(CONFIG_METHODS.defaultAgentSet, {})).rejects.toMatchObject({
+    await expect(call("config.defaultAgent.set", {})).rejects.toMatchObject({
       code: "bad-params",
     });
-    await expect(call(CONFIG_METHODS.defaultAgentSet, { agentId: "" })).rejects.toMatchObject({
+    await expect(call("config.defaultAgent.set", { agentId: "" })).rejects.toMatchObject({
       code: "bad-params",
     });
   });
@@ -132,24 +132,24 @@ describe("config.defaultAgent.set", () => {
 
 describe("config.defaultModel.set", () => {
   it("只改 defaultModel：其余字段原样保留，回写入后的 id", async () => {
-    const current = ((await call(CONFIG_METHODS.get)) as { config: AppConfig }).config;
+    const current = ((await call("config.get")) as { config: AppConfig }).config;
     const before = { models: current.models, endpoints: current.endpoints };
 
-    await expect(call(CONFIG_METHODS.defaultModelSet, { modelId: "gpt-6-astra" })).resolves.toEqual(
-      { modelId: "gpt-6-astra" },
-    );
+    await expect(call("config.defaultModel.set", { modelId: "gpt-6-astra" })).resolves.toEqual({
+      modelId: "gpt-6-astra",
+    });
 
-    const after = ((await call(CONFIG_METHODS.get)) as { config: AppConfig }).config;
+    const after = ((await call("config.get")) as { config: AppConfig }).config;
     // 三级解析的兜底层（`会话级覆盖 > 定义 > 全局`）：窄方法只动它这一位
     expect(after.defaultModel).toBe("gpt-6-astra");
     expect({ models: after.models, endpoints: after.endpoints }).toEqual(before);
   });
 
   it("缺 modelId / 空串 → bad-params（空串不是「没配」，是写坏了）", async () => {
-    await expect(call(CONFIG_METHODS.defaultModelSet, {})).rejects.toMatchObject({
+    await expect(call("config.defaultModel.set", {})).rejects.toMatchObject({
       code: "bad-params",
     });
-    await expect(call(CONFIG_METHODS.defaultModelSet, { modelId: "" })).rejects.toMatchObject({
+    await expect(call("config.defaultModel.set", { modelId: "" })).rejects.toMatchObject({
       code: "bad-params",
     });
   });
@@ -157,17 +157,17 @@ describe("config.defaultModel.set", () => {
 
 describe("config.mcp.get / config.mcp.save", () => {
   it("缺 scope 或取值不认识 → bad-params（不替客户端猜 global）", async () => {
-    await expect(call(CONFIG_METHODS.mcpGet, {})).rejects.toMatchObject({ code: "bad-params" });
-    await expect(call(CONFIG_METHODS.mcpGet, { scope: "workspace" })).rejects.toMatchObject({
+    await expect(call("config.mcp.get", {})).rejects.toMatchObject({ code: "bad-params" });
+    await expect(call("config.mcp.get", { scope: "workspace" })).rejects.toMatchObject({
       code: "bad-params",
     });
-    await expect(call(CONFIG_METHODS.mcpSave, { scope: "global" })).rejects.toMatchObject({
+    await expect(call("config.mcp.save", { scope: "global" })).rejects.toMatchObject({
       code: "bad-params",
     });
   });
 
   it("project 作用域缺 workspaceId → 服务层的 workspace-required 原样上来（本层只验形状）", async () => {
-    await expect(call(CONFIG_METHODS.mcpGet, { scope: "project" })).rejects.toMatchObject({
+    await expect(call("config.mcp.get", { scope: "project" })).rejects.toMatchObject({
       code: "workspace-required",
     });
   });
@@ -175,7 +175,7 @@ describe("config.mcp.get / config.mcp.save", () => {
   it("坏文件是结果不是异常：ok:false 帧交给编辑屏", async () => {
     writeFileSync(join(root, "mcp.json"), "{oops", "utf-8");
 
-    const result = (await call(CONFIG_METHODS.mcpGet, { scope: "global" })) as {
+    const result = (await call("config.mcp.get", { scope: "global" })) as {
       ok: boolean;
       error?: string;
     };
@@ -186,11 +186,11 @@ describe("config.mcp.get / config.mcp.save", () => {
   it("global 往返", async () => {
     const config = { mcpServers: { pty: { command: "npx" } } };
 
-    await expect(call(CONFIG_METHODS.mcpSave, { scope: "global", config })).resolves.toEqual({
+    await expect(call("config.mcp.save", { scope: "global", config })).resolves.toEqual({
       saved: true,
     });
     // 结果里带**服务端**那个文件的路径：编辑屏要印它（客户端的 mcp.json 不是这个文件）
-    await expect(call(CONFIG_METHODS.mcpGet, { scope: "global" })).resolves.toEqual({
+    await expect(call("config.mcp.get", { scope: "global" })).resolves.toEqual({
       ok: true,
       config,
       path: join(root, "mcp.json"),
@@ -203,7 +203,7 @@ describe("config.mcp.get / config.mcp.save", () => {
     const workspace = await ensureWorkspace({ workspacesRoot, path: projectPath });
     const config = { mcpServers: { local: { command: "node" } } };
 
-    await call(CONFIG_METHODS.mcpSave, {
+    await call("config.mcp.save", {
       scope: "project",
       workspaceId: workspace.id,
       config,
@@ -211,7 +211,7 @@ describe("config.mcp.get / config.mcp.save", () => {
 
     expect(() => statSync(join(projectPath, ".ai-zen", "mcp.json"))).not.toThrow();
     await expect(
-      call(CONFIG_METHODS.mcpGet, { scope: "project", workspaceId: workspace.id }),
+      call("config.mcp.get", { scope: "project", workspaceId: workspace.id }),
     ).resolves.toEqual({ ok: true, config, path: join(projectPath, ".ai-zen", "mcp.json") });
   });
 });

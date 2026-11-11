@@ -19,13 +19,7 @@
  */
 
 import type { EventHub } from "../../lib/events.js";
-import {
-  SESSION_EVENTS,
-  SESSION_NOTICE_CODES,
-  type HandoffMode,
-  type NoticePayload,
-  type SessionAnswerResult,
-} from "@ai-zen/agents-protocol";
+import type { HandoffMode, NoticePayload, SessionAnswerResult } from "../../protocol/index.js";
 import type { AutoMigrateTriggerInfo } from "@ai-zen/agents-sdk";
 import type { AskQuestionSpec, LiveSession } from "./LiveSession.js";
 
@@ -72,7 +66,7 @@ export class QuestionBroker {
     });
 
     this.hub.publish({
-      event: SESSION_EVENTS.question,
+      event: "session-question",
       sessionId: session.id,
       questionId,
       kind: spec.kind,
@@ -132,7 +126,7 @@ export class QuestionBroker {
     // 跳过（用户选的 / 兜底走到这儿）：说一句「本次没迁」，否则用户只会看到上下文继续涨
     this.noticeIfAlive(session, {
       level: "info",
-      code: SESSION_NOTICE_CODES.migrationSkipped,
+      code: "migrationSkipped",
     });
     return null;
   }

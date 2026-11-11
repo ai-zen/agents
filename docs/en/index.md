@@ -10,7 +10,7 @@ AI-Zen Agents is a **modular LLM Agent framework**, organized as a monorepo via 
 
 - **License**: MIT
 - **npm package**: `@ai-zen/agents-workspace` (workspace root, private); public subpackages are `@ai-zen/agents-core`, `@ai-zen/agents-sdk`, `@ai-zen/agents-server` and `@ai-zen/agents-client`
-- **Current versions**: workspace `2.0.0`; `@ai-zen/agents-core` `4.5.5`; `@ai-zen/agents-sdk` `1.1.0`; `@ai-zen/agents-server` `0.1.0`; `@ai-zen/agents-client` `0.1.0`
+- **Current versions**: workspace `2.0.0`; `@ai-zen/agents-core` `4.6.0-alpha.0`; `@ai-zen/agents-sdk` `1.2.0-alpha.0`; `@ai-zen/agents-server` `0.1.0-alpha.0`; `@ai-zen/agents-client` `0.1.0-alpha.0`
 
 ## What this is
 
@@ -52,7 +52,7 @@ agents/
 CLI / desktop main
         │
         ▼
-@ai-zen/agents-client  ──►  @ai-zen/agents-protocol  ◄──  @ai-zen/agents-server
+@ai-zen/agents-client  ──►  (import type)  @ai-zen/agents-server/protocol
      (connection layer)     (wire contract: method/event    (session orchestration /
                              names, payloads, error codes,   archives / workspaces)
                              frames, discovery)

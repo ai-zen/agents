@@ -9,7 +9,7 @@
  *
  * 所以判据写成**两个方向**都编译不过：
  *
- * 1. **少一条**：对照表被约束成 `Record<keyof typeof SESSION_METHODS, keyof RemoteSessions>`，
+ * 1. **少一条**：对照表被约束成 `Record<SessionMethodKey, keyof RemoteSessions>`，
  *    协议新增一条方法而这张表没补 → 「缺少属性」编译错误；
  * 2. **多一条**：门面上多出一个谁也没认领的方法（比如指向了一个根本没人调用的协议 key）
  *    → 下面那条 `AssertNone<Exclude<…>>` 编译错误。
@@ -24,13 +24,13 @@
  * 它也不会进 `dist/`。
  */
 
-import {
-  AGENT_METHODS,
-  ASSET_METHODS,
-  CONFIG_METHODS,
-  SESSION_METHODS,
-  WORKSPACE_METHODS,
-} from "@ai-zen/agents-protocol";
+import type {
+  AgentMethodKey,
+  AssetMethodKey,
+  ConfigMethodKey,
+  SessionMethodKey,
+  WorkspaceMethodKey,
+} from "@ai-zen/agents-server/protocol";
 import type { RemoteConfig } from "./config.js";
 import type { RemoteSessions } from "./sessions.js";
 
@@ -77,7 +77,7 @@ const SESSION_COVERAGE = {
   modelSet: "modelSet",
   modelParamsSet: "modelParamsSet",
   close: "close",
-} satisfies Record<keyof typeof SESSION_METHODS, MethodNames<RemoteSessions>>;
+} satisfies Record<SessionMethodKey, MethodNames<RemoteSessions>>;
 
 const WORKSPACE_COVERAGE = {
   resolve: "resolveWorkspace",
@@ -86,7 +86,7 @@ const WORKSPACE_COVERAGE = {
   rename: "renameWorkspace",
   remove: "removeWorkspace",
   relocate: "relocateWorkspace",
-} satisfies Record<keyof typeof WORKSPACE_METHODS, MethodNames<RemoteSessions>>;
+} satisfies Record<WorkspaceMethodKey, MethodNames<RemoteSessions>>;
 
 /** 两张表合起来认领的方法：`RemoteSessions` 上的每一个方法都必须在这里面 */
 type SessionsClaimed =
@@ -108,7 +108,7 @@ const CONFIG_COVERAGE = {
   defaultModelSet: "defaultModelSet",
   mcpGet: "mcpGet",
   mcpSave: "mcpSave",
-} satisfies Record<keyof typeof CONFIG_METHODS, MethodNames<RemoteConfig>>;
+} satisfies Record<ConfigMethodKey, MethodNames<RemoteConfig>>;
 
 const AGENT_COVERAGE = {
   setModel: "agentSetModel",
@@ -116,11 +116,11 @@ const AGENT_COVERAGE = {
   get: "agentGet",
   save: "agentSave",
   remove: "agentRemove",
-} satisfies Record<keyof typeof AGENT_METHODS, MethodNames<RemoteConfig>>;
+} satisfies Record<AgentMethodKey, MethodNames<RemoteConfig>>;
 
 const ASSET_COVERAGE = {
   list: "assetList",
-} satisfies Record<keyof typeof ASSET_METHODS, MethodNames<RemoteConfig>>;
+} satisfies Record<AssetMethodKey, MethodNames<RemoteConfig>>;
 
 /** 三张表合起来认领的方法：`RemoteConfig` 上的每一个方法都必须在这里面 */
 type ConfigClaimed =

@@ -33,7 +33,7 @@ import type {
   ServerEvent,
   SessionListEntry,
   Usage,
-} from "@ai-zen/agents-protocol";
+} from "../../protocol/index.js";
 import type { AutoTitleRequest } from "./AutoTitle.js";
 import { EventHub } from "../../lib/events.js";
 import { resolveModel } from "@ai-zen/agents-sdk";

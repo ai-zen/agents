@@ -38,13 +38,14 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { ERROR_CODES, codedError } from "@ai-zen/agents-protocol";
+
+import { codedError } from "../../wire/errors.js";
 import type {
   WorkspaceRelocateResult,
   WorkspaceRemoveResult,
   WorkspaceRenameResult,
   WorkspaceSummary,
-} from "@ai-zen/agents-protocol";
+} from "../../protocol/index.js";
 
 export interface Workspace {
   id: string;
@@ -210,10 +211,10 @@ export async function renameWorkspace(options: {
   title: string;
 }): Promise<WorkspaceRenameResult> {
   const title = options.title.trim();
-  if (!title) throw codedError(ERROR_CODES.badParams, "title must not be empty");
+  if (!title) throw codedError("bad-params", "title must not be empty");
 
   const found = await recordOf(options.workspacesRoot, options.id);
-  if (!found) throw codedError(ERROR_CODES.unknownWorkspace, `unknown workspace: ${options.id}`);
+  if (!found) throw codedError("unknown-workspace", `unknown workspace: ${options.id}`);
   // 只改 title，其余字段原样带回去（`path` / `createdAt` 一个字都不动）
   await writeRecord(found.rootDir, options.id, { ...found.record, title });
   return { workspaceId: options.id, title };
@@ -262,14 +263,14 @@ export async function relocateWorkspace(options: {
   path: string;
 }): Promise<WorkspaceRelocateResult> {
   const found = await recordOf(options.workspacesRoot, options.id);
-  if (!found) throw codedError(ERROR_CODES.unknownWorkspace, `unknown workspace: ${options.id}`);
+  if (!found) throw codedError("unknown-workspace", `unknown workspace: ${options.id}`);
 
   const absolute = resolve(options.path);
   await requireWorkspacePath(absolute);
 
   const occupant = await findByPath(options.workspacesRoot, absolute);
   if (occupant && occupant.id !== options.id) {
-    throw codedError(ERROR_CODES.workspaceExists, `workspace already exists: ${absolute}`);
+    throw codedError("workspace-exists", `workspace already exists: ${absolute}`);
   }
   await writeRecord(found.rootDir, options.id, { ...found.record, path: absolute });
   return { workspaceId: options.id, path: absolute };
@@ -287,7 +288,7 @@ export async function relocateWorkspace(options: {
  */
 export async function requireWorkspacePath(path: string): Promise<void> {
   if (await pathExists(path)) return;
-  throw codedError(ERROR_CODES.workspacePathMissing, `workspace path does not exist: ${path}`);
+  throw codedError("workspace-path-missing", `workspace path does not exist: ${path}`);
 }
 
 /**

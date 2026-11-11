@@ -9,10 +9,11 @@
  *   @ai-zen/cli ─────┐
  *                    ├──→ @ai-zen/agents-server ──→ @ai-zen/agents-sdk ──→ @ai-zen/agents-core
  *   desktop/main ────┘              │                                               ↑
- *                                   └──→ @ai-zen/agents-protocol ─────→ (仅类型) ──┘
+ *                                     └─→ src/protocol（仅类型）+ src/wire（运行期）
  *
- * 线上契约在**独立的包**里（`@ai-zen/agents-protocol`），不在本包：客户端只依赖那个包，
- * 于是「客户端不拖进服务端实现」是结构保证的，不靠纪律。
+ * 线上契约就在本包里：`src/protocol/` 只有类型（形状、名字、错误码联合），`src/wire/` 是
+ * 运行期件（帧编解码、错误码判据、回环判据、版本号、发现文件、`callOnce`）。客户端只对它做
+ * `import type`，自己的运行期用 `packages/client/src/wire/` 那一份 —— 协议只共享类型，不共享代码。
  *
  * 两条硬约束（可用 grep 检验，命令见 README）：
  *   1. 本包**不得**依赖任何 UI 栈（ink / react / 终端库）——包边界就是进程边界；
@@ -23,7 +24,7 @@
  *
  * ## 桶为什么是 `export *`
  *
- * 手工列举（一半是把协议包的符号抄一遍，一半是把各模块的符号抄一遍）的问题不是难写，
+ * 手工列举（一半是把协议层的符号抄一遍，一半是把各模块的符号抄一遍）的问题不是难写，
  * 是**会漏**：加了一个导出却忘了加进桶，症状是「包里的东西
  * import 不到」—— 而那种错在写代码那一刻完全不显眼。改成 `export *` 之后，模块的公开面
  * 就是包的公开面，两者不可能漂。
@@ -36,7 +37,7 @@
  * 用显式具名导出。这是「选择不导出」，不是重名。
  */
 
-export * from "@ai-zen/agents-protocol";
+export type * from "./protocol/index.js";
 
 // ---- 机理件（无业务语义） ----
 export * from "./version.js";
@@ -66,7 +67,7 @@ export * from "./domain/agent/SessionAgentFactory.js";
 export * from "./daemon/Daemon.js";
 // `Wire` 属于公开面：要给服务端接一种新传输（WebSocket / stdio）的人，必须能**在包外**
 // 按这个接口写一个实现，再把每条连接交给 `Daemon.handleConnection()`。它刻意不在
-// `@ai-zen/agents-protocol` 里 —— 协议面是「线上长什么样」，`Wire` 是「本进程里怎么把它递进来」，
+// `src/protocol/` 里 —— 协议面是「线上长什么样」，`Wire` 是「本进程里怎么把它递进来」，
 // 是服务端的内部接缝，只是因为「实现者可能在别的包里」才必须可 import。
 export type { Wire } from "./daemon/wire.js";
 export * from "./daemon/sessionHandlers.js";

@@ -39,36 +39,14 @@
  */
 
 /** 配置方法名（服务端注册与客户端调用共用同一份字面量，避免两边各写一份字符串） */
-export const CONFIG_METHODS = {
-  /** 读全局配置（`<配置根>/config.json`）；形状 = SDK 的 `AppConfig` */
-  get: "config.get",
-  /** 整份写回全局配置 */
-  save: "config.save",
-  /** 读思考策略表（`<配置根>/reasoning-presets.json`，缺失/损坏时由 SDK 回落出厂种子） */
-  reasoningPresets: "config.reasoningPresets",
-  /**
-   * 换「默认 Agent」：只写 `defaultAgent` 一个字段（`/agent` 用）。
-   *
-   * 与 `agent.model.set` 同一个理由：让客户端「读整份 → 改一个字段 → 整份写回」，
-   * 在多客户端（终端 + 桌面端）并存时就是丢更新 —— 后保存的那个把对方刚改的字段抹掉。
-   */
-  defaultAgentSet: "config.defaultAgent.set",
-  /**
-   * 换「全局兜底模型」：只写 `defaultModel` 一个字段（`/model --global` 用）。
-   *
-   * 与 `defaultAgentSet` / `agent.model.set` 同一个理由：让它成为窄方法，而不是让客户端
-   * 「读整份 → 改一个字段 → 整份写回」—— 多客户端（终端 + 桌面端）并存时，后保存的那个
-   * 会把对方刚改的字段抹掉。
-   *
-   * 它只动**兜底那一级**（三级解析：`会话级覆盖 > AgentDefinition.modelId > 本字段`）：
-   * 已经绑了模型的 Agent 一个都不受影响。
-   */
-  defaultModelSet: "config.defaultModel.set",
-  /** 读某个作用域的 MCP 配置 */
-  mcpGet: "config.mcp.get",
-  /** 整份写回某个作用域的 MCP 配置 */
-  mcpSave: "config.mcp.save",
-} as const;
+export type ConfigMethod =
+  | "config.get"
+  | "config.save"
+  | "config.reasoningPresets"
+  | "config.defaultAgent.set"
+  | "config.defaultModel.set"
+  | "config.mcp.get"
+  | "config.mcp.save";
 
 /**
  * Agent 定义的方法 —— **一个命名空间一张表**。
@@ -81,18 +59,8 @@ export const CONFIG_METHODS = {
  * 一条方法只能靠 `patch: true` 这类开关区分，那是给调用方制造分叉 —— 所以方法保持分开，
  * 但都在同一张表里。
  */
-export const AGENT_METHODS = {
-  /** 换模型：写 `AgentDefinition.modelId` 并清空与新模型不兼容的思考参数（**一个字段**） */
-  setModel: "agent.model.set",
-  /** 列全部 Agent 定义（顶层 + 子 Agent 两路，配置中心分两栏展示） */
-  list: "agent.list",
-  /** 按 id 取一份定义（`kind` 缺省时顶层优先；不存在回 `null`，不是错） */
-  get: "agent.get",
-  /** 整份写回一份定义（`id` 决定文件名） */
-  save: "agent.save",
-  /** 删一份定义（本来就不存在回 `removed: false`，不当错误） */
-  remove: "agent.remove",
-} as const;
+export type AgentMethod =
+  "agent.model.set" | "agent.list" | "agent.get" | "agent.save" | "agent.remove";
 
 // ==================== 配置 ====================
 
@@ -244,3 +212,16 @@ export interface AgentRemoveResult {
   /** 本来就不存在时是 `false`（不是错误）：与 `session.cancel` 的 `cancelled` 同一口径 */
   removed: boolean;
 }
+
+/** `CONFIG_METHODS` 的**成员名**（不是线上值）—— 给「门面必须覆盖每一条」这类类型级用例用 */
+export type ConfigMethodKey =
+  | "get"
+  | "save"
+  | "reasoningPresets"
+  | "defaultAgentSet"
+  | "defaultModelSet"
+  | "mcpGet"
+  | "mcpSave";
+
+/** `AGENT_METHODS` 的**成员名**（不是线上值）—— 给「门面必须覆盖每一条」这类类型级用例用 */
+export type AgentMethodKey = "setModel" | "list" | "get" | "save" | "remove";

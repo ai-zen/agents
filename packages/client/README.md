@@ -17,7 +17,7 @@ CLI（TUI）与 Desktop（main）共用同一份实现：两个前端各写一�
 | `session/stream.ts` | 纯 | **一轮之内的状态机**（`SessionStream`）：消息 / 阶段 / 模型 / 用量 / 子 Agent / 失败终态 |
 | `stream-merge.ts` | 纯 | 「本地流式增量」与「服务端快照」的合并规则（`mergeStreamedSnapshot`，唯一实现） |
 | `session/errors.ts` | 纯 | 「这段会话还在不在」的唯一判据（`isSessionGone`；`session-missing` 与 `unknown-session` **两个都算**） |
-| `tsconfig.pure.json` + `session/pure-boundary.test.ts` | 门禁 | 纯边界**是机制而不是约定**：`stream.ts` 的 import 图只许 `agents-protocol` + `stream-merge`，进 `agents-server` / `agents-sdk` 就编译不过 |
+| `tsconfig.pure.json` + `session/pure-boundary.test.ts` | 门禁 | 纯边界**是机制而不是约定**：`stream.ts` 的 import 图只许 `agents-server/protocol`（类型）+ `stream-merge`，进 `agents-server` **包根** / `agents-sdk` 就编译不过 |
 | `facade/sessions.ts` | 纯 | `session.*`(21) + `workspace.*`(6) 的类型化门面（`RemoteSessions`），100% 覆盖 |
 | `facade/config.ts` | 纯 | `config.*`(7) + `agent.*`(5) + `asset.*`(1) 的类型化门面（`RemoteConfig`），100% 覆盖 |
 | `facade/coverage.test-d.ts` | 类型 | 门面方法集合 === 协议方法表 key 集合（少一条、多一条都编译不过） |
@@ -25,23 +25,28 @@ CLI（TUI）与 Desktop（main）共用同一份实现：两个前端各写一�
 | `status.ts` | 脏 | `--server-status` 背后的只读诊断（不拉起，`callOnce` 问一句 `status`） |
 | `local-host.ts` | 纯 | 「服务端是不是在这台机器上」→ 决定要不要把客户端 cwd 当工作区递上去 |
 | `mcp.ts` | 类型 | `mcp.json` 的形状（读写归服务端） |
-| 协议 | — | `@ai-zen/agents-protocol` 原样转出：方法名常量、结果类型、帧编解码、发现文件形状、数据模型类型 |
+| 协议 | 类型 | `@ai-zen/agents-server/protocol` 原样**类型转出**：方法/事件名的字面量联合、载荷类型、错误码联合、数据模型类型（只 `import type`，编译后不剩） |
+| `wire/` | 脏 | **本包自己那一份运行期实现**：帧编解码（`frames.ts`）、错误码判据（`errors.ts`）、回环判据（`host.ts`）、版本号（`messages.ts`）、发现文件读（`discovery.ts`）、一次性问话（`call-once.ts`）。协议只共享类型，代码各写各的 |
 
 ## 三条硬约束（都能用命令检验）
 
-### 1. 运行期依赖 `@ai-zen/agents-protocol` 与 `@ai-zen/agents-core`
+### 1. 运行期依赖只有 `@ai-zen/agents-core`
 
 两条边，各有理由：
 
-- **`protocol`**：client 与 server 之间只走协议；
+- **协议不是依赖，是类型**：线上形状来自 `@ai-zen/agents-server/protocol`（服务端的类型文件），
+  只做 `import type`；运行期那几件（帧编解码、错误码判据、回环判据）是本包 `src/wire/` 里
+  自己的一份实现。`@ai-zen/agents-server` 因此只是 **peerDependency**（宿主必须提供它：
+  `ensure-server` 要 spawn 它的 bin，类型面也来自它）+ devDependency（本仓用例要起真 Daemon）；
 - **`core`**：折 chunk（`applyChunk`）、用量求和（`sumUsage`）、角色枚举（`AgentNS.Role`）
   都是 core 的**唯一实现**。客户端要么引它，要么抄一份 —— 而抄一份就是给同一个概念立第二
   个定义（`{Assistant:"assistant"}` 镜像、重写一遍的求和函数），两边各自演化，症状只在某个
   角色的消息或某个子 Agent 的用量上显形。引它才是唯一不出第二份的选择。
 
 ```bash
-node -e 'console.log(Object.keys(require("./packages/client/package.json").dependencies))'
-# [ "@ai-zen/agents-core", "@ai-zen/agents-protocol" ]
+# 依赖表：只许 core 与 protocol —— `agents-server` 出现在这里就是失败
+node -e 'const d=require("./packages/client/package.json").dependencies; if(d["@ai-zen/agents-server"]) throw new Error("agents-server 只能出现在 devDependencies"); console.log(Object.keys(d))'
+# [ "@ai-zen/agents-core" ]
 ```
 
 core 的运行期依赖只有 `@ai-zen/event-bus`（`openai` 在 core 里只出现在**类型位置**，
@@ -52,7 +57,7 @@ core 的运行期依赖只有 `@ai-zen/event-bus`（`openai` 在 core 里只出�
 | 包 | 为什么还在 |
 |---|---|
 | `@ai-zen/agents-sdk` | `config-port.ts` 的公开类型要 `AppConfig` / `AgentDefinition` / `ReasoningPresets`（线上传的是 `unknown`，客户端兑现成类型）。**只在 `import type` 里出现**，产物 `dist/*.js` 里没有它 —— 但 `dist/*.d.ts` 里有，所以它不能删干净 |
-| `@ai-zen/agents-server` | 用例要起**真 Daemon**（`Daemon` / `writeDescriptor` / `encodeFrame`）；另外 `ensure-server` 拉起服务端时要 `require.resolve` 它的 `bin`。测试代码不进产物 |
+| `@ai-zen/agents-server` | **peer + dev**：类型面（`protocol`）与用例（真 Daemon）都要它；`ensure-server` 拉起服务端时还要 `require.resolve` 它的 `bin`。运行期产物里一行都没有 |
 | `@ai-zen/agents-testing` | 用例要一个**真讲协议**的假模型端点（`startFakeLlm`，`turn-and-resume.test.ts`），否则「一轮跑完再续接」只能靠手发帧凑 |
 
 ### 2. 产物的运行期依赖图必须闭合
@@ -62,7 +67,7 @@ cd packages/client && npm run build
 grep -hoE '^import .* from "[^"]+";' dist/*.js | sed 's/.*from "//;s/";//' | sort -u
 ```
 
-期望输出只有 `@ai-zen/agents-core`、`@ai-zen/agents-protocol`、同级相对路径、`node:*` 四类。
+期望输出只有 `@ai-zen/agents-core`、同级相对路径、`node:*` 三类 —— **没有 `@ai-zen/agents-server`**。
 `@ai-zen/agents-sdk`（`AppConfig` / `AgentDefinition` / `ReasoningPresets`）只以 `import type`
 出现在 `dist/*.d.ts` 里，产物运行期不加载它。
 

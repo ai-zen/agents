@@ -90,33 +90,32 @@ import type {
   ModelLevel,
   SessionListEntry,
   SubAgentSnapshotResult,
-} from "@ai-zen/agents-protocol";
-import {
-  SESSION_EVENTS,
-  SESSION_NOTICE_CODES,
-  DEFAULT_MIGRATION_STRATEGY,
-  type HandoffMode,
-  type MigrationStrategy,
-  type NoticePayload,
-  type ServerEvent,
-  type SessionAnswerResult,
-  type SessionAttachResult,
-  type SessionCancelResult,
-  type SessionCloseResult,
-  type SessionCreateResult,
-  type SessionHandoffResult,
-  type SessionLastResult,
-  type SessionMigrateResult,
-  type SessionRenameResult,
-  type SessionRemoveResult,
-  type SessionRollbackResult,
-  type SessionSaveAsResult,
-  type SessionSaveResult,
-  type SessionSnapshotResult,
-} from "@ai-zen/agents-protocol";
+} from "../../protocol/index.js";
+import type {
+  HandoffMode,
+  MigrationStrategy,
+  NoticePayload,
+  ServerEvent,
+  SessionAnswerResult,
+  SessionAttachResult,
+  SessionCancelResult,
+  SessionCloseResult,
+  SessionCreateResult,
+  SessionHandoffResult,
+  SessionLastResult,
+  SessionMigrateResult,
+  SessionRenameResult,
+  SessionRemoveResult,
+  SessionRollbackResult,
+  SessionSaveAsResult,
+  SessionSaveResult,
+  SessionSnapshotResult,
+} from "../../protocol/index.js";
+import { DEFAULT_MIGRATION_STRATEGY } from "../../wire/sessions.js";
 // 值导入（不是 `import type`）：`codedError` 与错误码表是**运行期**的东西，
 // 它们的唯一定义在协议包里。
-import { ERROR_CODES, codedError } from "@ai-zen/agents-protocol";
+
+import { codedError } from "../../wire/errors.js";
 
 // 形状与最小面住在 `LiveSession.ts`（四个类共用）；这里转出去，是因为它们一直是本模块
 // 公开面的一部分（`SessionAgentFactory` 与另一些包的测试按这个路径 import）。
@@ -515,7 +514,7 @@ export class SessionManager {
   async subAgentSnapshot(sessionId: string, subAgentId: string): Promise<SubAgentSnapshotResult> {
     const session = this.require(sessionId);
     const entry = session.subAgents.get(subAgentId);
-    if (!entry) throw codedError(ERROR_CODES.subAgentMissing, `no such sub-agent: ${subAgentId}`);
+    if (!entry) throw codedError("sub-agent-missing", `no such sub-agent: ${subAgentId}`);
     return {
       subAgentId: entry.id,
       index: entry.index,
@@ -564,7 +563,7 @@ export class SessionManager {
     // 换 id = 这是新的一段会话：上一段里的子 Agent 不该跟着过来
     this.events.clearSubAgents(session);
     if (nextId !== previousId) {
-      this.emit({ event: SESSION_EVENTS.idChanged, from: previousId, sessionId: nextId });
+      this.emit({ event: "session-id-changed", from: previousId, sessionId: nextId });
     }
   }
 
@@ -605,7 +604,7 @@ export class SessionManager {
       await this.store.archive(session, previousId, store);
       this.notice(previousId, {
         level: "info",
-        code: SESSION_NOTICE_CODES.handoffArchived,
+        code: "handoffArchived",
         params: { sessionId: previousId },
       });
 
@@ -696,7 +695,7 @@ export class SessionManager {
         await this.store.archive(session, previousId, store);
         this.notice(previousId, {
           level: "info",
-          code: SESSION_NOTICE_CODES.handoffArchived,
+          code: "handoffArchived",
           params: { sessionId: previousId },
         });
       }
@@ -749,7 +748,7 @@ export class SessionManager {
   async setAgent(sessionId: string, agentId: string): Promise<SessionSnapshotResult> {
     const session = this.require(sessionId);
     if (this.isTurnInFlight(session)) {
-      throw codedError(ERROR_CODES.turnInFlight, `session ${sessionId} has a turn in flight`);
+      throw codedError("turn-in-flight", `session ${sessionId} has a turn in flight`);
     }
     // 已经是这个 Agent：不重建（重建会丢掉工具发现的热状态，没任何好处）
     if (session.agentId === agentId) return await this.snapshot(sessionId);
@@ -786,7 +785,7 @@ export class SessionManager {
   async setModel(sessionId: string, modelId: string): Promise<SessionSnapshotResult> {
     const session = this.require(sessionId);
     if (this.isTurnInFlight(session)) {
-      throw codedError(ERROR_CODES.turnInFlight, `session ${sessionId} has a turn in flight`);
+      throw codedError("turn-in-flight", `session ${sessionId} has a turn in flight`);
     }
 
     // 换到**别的**模型就清掉会话级参数：旧参数是配给旧模型的（GLM 不接受
@@ -828,7 +827,7 @@ export class SessionManager {
   async setModelParams(sessionId: string, modelParams: unknown): Promise<SessionSnapshotResult> {
     const session = this.require(sessionId);
     if (this.isTurnInFlight(session)) {
-      throw codedError(ERROR_CODES.turnInFlight, `session ${sessionId} has a turn in flight`);
+      throw codedError("turn-in-flight", `session ${sessionId} has a turn in flight`);
     }
 
     // `null` = 清掉覆盖：这次装配干脆不带参数（与「从来没设过」同一条路），存档里也删掉
@@ -1070,7 +1069,7 @@ export class SessionManager {
     title: string;
   }): Promise<SessionRenameResult> {
     const title = input.title.trim();
-    if (!title) throw codedError(ERROR_CODES.badParams, "title must not be empty");
+    if (!title) throw codedError("bad-params", "title must not be empty");
 
     const session = this.sessions.get(input.sessionId);
     if (session) {
@@ -1081,10 +1080,9 @@ export class SessionManager {
     }
 
     const store = await this.store.store(input.workspaceId);
-    if (!store) throw codedError(ERROR_CODES.noStore, `no session store for ${input.workspaceId}`);
+    if (!store) throw codedError("no-store", `no session store for ${input.workspaceId}`);
     const record = await store.read(input.sessionId);
-    if (!record)
-      throw codedError(ERROR_CODES.sessionMissing, `no such session: ${input.sessionId}`);
+    if (!record) throw codedError("session-missing", `no such session: ${input.sessionId}`);
     record.title = title;
     await store.write(record);
     return { sessionId: record.id, title };
@@ -1158,10 +1156,7 @@ export class SessionManager {
 
     const messages = session.agent.messages;
     if (!Number.isInteger(index) || index < 0 || index >= messages.length) {
-      throw codedError(
-        ERROR_CODES.badIndex,
-        `index ${index} is out of range (0..${messages.length - 1})`,
-      );
+      throw codedError("bad-index", `index ${index} is out of range (0..${messages.length - 1})`);
     }
 
     const removedMessages = messages.splice(index);
@@ -1193,7 +1188,7 @@ export class SessionManager {
   notice(sessionId: string, notice: NoticePayload): void {
     const session = this.require(sessionId);
     this.hub.publish({
-      event: SESSION_EVENTS.notice,
+      event: "session-notice",
       sessionId: session.id,
       ...notice,
     });
@@ -1219,7 +1214,7 @@ export class SessionManager {
     if (input.sessionId) {
       sessionId = input.sessionId;
       if (this.sessions.has(sessionId)) {
-        throw codedError(ERROR_CODES.sessionExists, `session already exists: ${sessionId}`);
+        throw codedError("session-exists", `session already exists: ${sessionId}`);
       }
       // 续接：这个 id 在工作区存档里有记录，就把它的消息装进 Agent。
       // 服务端是唯一真相源 —— 客户端只给 id，不搬消息。
@@ -1362,7 +1357,7 @@ export class SessionManager {
     const store = await this.store.store(input.workspaceId);
     const record = store ? await store.read(input.sessionId) : null;
     if (!record) {
-      throw codedError(ERROR_CODES.sessionMissing, `no such session: ${input.sessionId}`);
+      throw codedError("session-missing", `no such session: ${input.sessionId}`);
     }
     // 走 create 的装配路径：它会按存档里的 agentId 装配 Agent 并把消息装进去
     return await this.create({ ...input, sessionId: input.sessionId });
@@ -1383,7 +1378,7 @@ export class SessionManager {
     // 交接那一次会被报成 `turn-busy`，客户端就拿不到「正在交接」这个更准的原因
     // （两者对客户端是不同的事：前者等一会儿再发，后者可能要等一整份交接文档）。
     if (session.settleDeferred) {
-      throw codedError(ERROR_CODES.handoffInFlight, `session ${sessionId} is handing off`);
+      throw codedError("handoff-in-flight", `session ${sessionId} is handing off`);
     }
 
     // 已有一轮在跑就拒绝。
@@ -1398,7 +1393,7 @@ export class SessionManager {
     // 编号，调用方拿到它就会用这个编号过滤事件。排队会让语义变成「稍后」，调用方手里的
     // 编号与它此刻看到的状态不再对应；该不该等、等多久，是客户端的决定，服务端不替它做。
     if (this.isTurnInFlight(session)) {
-      throw codedError(ERROR_CODES.turnBusy, `session ${sessionId} already has a turn in flight`);
+      throw codedError("turn-busy", `session ${sessionId} already has a turn in flight`);
     }
 
     this.beginTurn(session);
@@ -1566,7 +1561,7 @@ export class SessionManager {
     this.events.resetStreamState(session);
     this.events.emitPhase(session);
     this.emit({
-      event: SESSION_EVENTS.turnEnd,
+      event: "session-turn-end",
       sessionId: session.id,
       turnId: session.turnId,
       ok: session.turnFailed === null,
@@ -1658,7 +1653,7 @@ export class SessionManager {
     // 走现有的存档写入路径：标题是会话存档里的一份事实，另开一条写档路径就是第二处
     // 「存档里都有什么」（`recordOf` 漏一个字段就是一类数据丢失）
     await this.store.write(session);
-    this.emit({ event: SESSION_EVENTS.titleChanged, sessionId: session.id, title });
+    this.emit({ event: "session-title-changed", sessionId: session.id, title });
   }
 
   private emit(event: ServerEvent): void {
@@ -1667,7 +1662,7 @@ export class SessionManager {
 
   private require(sessionId: string): LiveSession {
     const session = this.sessions.get(sessionId);
-    if (!session) throw codedError(ERROR_CODES.unknownSession, `unknown session: ${sessionId}`);
+    if (!session) throw codedError("unknown-session", `unknown session: ${sessionId}`);
     return session;
   }
 
@@ -1755,16 +1750,13 @@ export class SessionManager {
   private requireIdle(sessionId: string): LiveSession {
     const session = this.require(sessionId);
     if (this.isTurnInFlight(session)) {
-      throw codedError(ERROR_CODES.turnInFlight, `session ${sessionId} has a turn in flight`);
+      throw codedError("turn-in-flight", `session ${sessionId} has a turn in flight`);
     }
     const hasUserMessage = session.agent.messages.some(
       (message) => (message as { role?: unknown } | null)?.role === "user",
     );
     if (!hasUserMessage) {
-      throw codedError(
-        ERROR_CODES.nothingToHandoff,
-        `session ${sessionId} has no user message yet`,
-      );
+      throw codedError("nothing-to-handoff", `session ${sessionId} has no user message yet`);
     }
     return session;
   }
@@ -1777,7 +1769,7 @@ export class SessionManager {
    */
   private handoffOf(session: LiveSession): SessionHandoff {
     if (!this.handoffOptions) {
-      throw codedError(ERROR_CODES.noHandoff, "handoff is not configured on this server");
+      throw codedError("no-handoff", "handoff is not configured on this server");
     }
     session.handoff ??= new SessionHandoff({
       ...this.handoffOptions,
@@ -1795,9 +1787,9 @@ export class SessionManager {
    */
   private failHandoff(session: LiveSession, error: unknown): unknown {
     if (isHandoffAborted(error)) {
-      this.notice(session.id, { level: "info", code: SESSION_NOTICE_CODES.turnAborted });
+      this.notice(session.id, { level: "info", code: "turnAborted" });
       session.turnFailed = { code: "aborted", message: "handoff cancelled" };
-      return codedError(ERROR_CODES.handoffAborted, "handoff cancelled");
+      return codedError("handoff-aborted", "handoff cancelled");
     }
     const failure = error as { code?: unknown; message?: unknown } | null;
     session.turnFailed = {

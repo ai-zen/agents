@@ -24,7 +24,6 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { EVENT_METHODS } from "@ai-zen/agents-protocol";
 import { ServerConnection } from "./connection.js";
 import type { ServerAddress, ServerClient } from "../types.js";
 
@@ -69,7 +68,7 @@ class FakeClient implements ServerClient {
 
   /** 这条连接上收到过几帧 `events.watch`（服务端按帧登记订阅者，所以「恰好一帧」才是对的） */
   get watchFrames(): number {
-    return this.calls.filter((method) => method === EVENT_METHODS.watch).length;
+    return this.calls.filter((method) => method === "events.watch").length;
   }
 }
 

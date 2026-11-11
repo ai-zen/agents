@@ -50,7 +50,7 @@ import type {
   SessionSnapshotResult,
   SubAgentSnapshotResult,
   Usage,
-} from "@ai-zen/agents-protocol";
+} from "@ai-zen/agents-server/protocol";
 import { AgentNS, applyChunk as foldChunk, sumUsage } from "@ai-zen/agents-core";
 import { mergeStreamedSnapshot, type StreamedAssistant } from "../stream-merge.js";
 
@@ -127,7 +127,6 @@ export interface SessionStreamState {
   /** 最近一次失败（`status === "failed"` 时才有） */
   failure?: TurnFailure;
 }
-
 
 /**
  * 占位 assistant 消息。

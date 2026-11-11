@@ -18,24 +18,26 @@
  * | 应用端口 | `config-port.ts` | 配置面（`ConfigPort`）：把线上形状兑现成 `AppConfig` / `AgentStore` 这些应用类型 |
  * | 判据 | `local-host.ts` / `status.ts` / `mcp.ts` | 工作目录该不该递上去、服务端现在什么状态、`mcp.json` 的形状 |
  *
- * ## 为什么协议也从这里转出
+ * ## 为什么契约也从这里转出
  *
- * `export * from "@ai-zen/agents-protocol"`。这样上层只要认这一个包：方法名常量、
- * 结果类型、帧编解码、数据模型类型都在手边。它**不是**第二份定义 —— 只是把协议包原样
+ * `export type * from "@ai-zen/agents-server/protocol"`。这样上层只要认这一个包：方法名、
+ * 结果类型、帧编解码、数据模型类型都在手边。它**不是**第二份定义 —— 只是把契约包原样
  * 转出去（那个包的**运行期**依赖图是闭合的：只有同级模块 + node 内置；类型面有一处跨出去的
  * `import type` 到 core，编译后即被抹掉）。
  *
  * ## 运行期依赖图（可用 grep 检验，见 README）
  *
- *   @ai-zen/agents-client ──→ @ai-zen/agents-protocol ──→ node:fs / node:path / node:net
- *                          └─→ node:net / node:child_process / node:os / node:module
+ *   @ai-zen/agents-client ──→ ./wire/*（本包自己那份实现）──→ node:*
+ *                          ├─→ @ai-zen/agents-core（折 chunk / 用量求和 / 角色枚举）
+ *                          └─→ node:net / node:child_process / node:module
  *
- * 只有协议包一个包：**没有 sdk、没有服务端本体、没有 core**。这不是纪律（靠人记得只走子路径），
- * 是结构 —— `client` 与 `server` 之间没有依赖边，两侧都只依赖协议包。
+ * 只有两个包，**没有 `@ai-zen/agents-server`**：契约是声明 + 纯实现，服务端的运行时
+ * （daemon / 存档 / 会话管理）不在这条链上。`@ai-zen/agents-server` 只是本包的
+ * devDependency —— 用例要起一台真 Daemon，而拉起它的默认路径会 `require.resolve` 它的 bin
+ * （那条路径属于**部署策略**，不是分层；消费者可以注入自己的 `startServerProcess`）。
  *
- * 两处例外都只是**类型**，在产物里被整体擦除：`config-port.ts` 的
- * `import type … from "@ai-zen/agents-sdk"`（配置 / 定义在两端的共同形状），
- * 和协议包里对 core 的那一次类型转出（`Message` / `Usage` / `ToolCall`）。
+ * 唯一只以**类型**出现的是 `config-port.ts` 的 `import type … from "@ai-zen/agents-sdk"`
+ * （配置 / 定义在两端的共同形状），产物里被整体抹除。
  */
 
 export * from "./types.js";
@@ -67,4 +69,8 @@ export * from "./config-port.js";
 export * from "./stream-merge.js";
 
 // 协议面（方法名常量 / 结果类型 / 帧编解码）原样转出，理由见文件头
-export * from "@ai-zen/agents-protocol";
+export type * from "@ai-zen/agents-server/protocol";
+
+// 运行期件（本包自己那一份实现）：帧上限与发现文件读，CLI 的组装根要用
+export { MAX_FRAME_BYTES } from "./wire/frames.js";
+export { readDescriptor } from "./wire/discovery.js";

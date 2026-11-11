@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SessionManager, type CreateAgentInput } from "./SessionManager.js";
 import { FileSessionStore } from "./store/FileSessionStore.js";
-import type { Message, ServerEvent, SessionListEntry } from "@ai-zen/agents-protocol";
+import type { Message, ServerEvent, SessionListEntry } from "../../protocol/index.js";
 import type { AutoTitleRequest } from "./AutoTitle.js";
 import { EventHub } from "../../lib/events.js";
 import { resolveModel } from "@ai-zen/agents-sdk";

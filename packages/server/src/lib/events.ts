@@ -15,7 +15,7 @@
  * `docs/zh/architecture.md` 的「`server` 包的目录」）。所以它与 `phase.ts` 同归 `lib/`，不进 `domain/`。
  */
 
-import type { ServerEvent } from "@ai-zen/agents-protocol";
+import type { ServerEvent } from "../protocol/index.js";
 
 export class EventHub {
   private readonly listeners = new Set<(event: ServerEvent) => void>();

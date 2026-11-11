@@ -17,7 +17,7 @@
  * 只认一个码」要避免的形状（症状是「服务端重启之后，TUI 会重连、桌面端不会」）。
  */
 
-import { ERROR_CODES, codeOf } from "@ai-zen/agents-protocol";
+import { ERROR_CODES, codeOf } from "../wire/errors.js";
 import type { ServerAddress } from "../types.js";
 
 /**
@@ -28,7 +28,7 @@ import type { ServerAddress } from "../types.js";
  * 同一份判据，所以这里不再各自列一遍字面量。
  */
 export function isSessionGoneCode(code: string): boolean {
-  return code === ERROR_CODES.sessionMissing || code === ERROR_CODES.unknownSession;
+  return code === "session-missing" || code === "unknown-session";
 }
 
 /**
@@ -42,9 +42,7 @@ export function isSessionGone(error: unknown): boolean {
   const code = codeOf(error);
   if (code !== undefined) return isSessionGoneCode(code);
   const message = error instanceof Error ? error.message : String(error);
-  return (
-    message.startsWith(ERROR_CODES.sessionMissing) || message.startsWith(ERROR_CODES.unknownSession)
-  );
+  return message.startsWith("session-missing") || message.startsWith("unknown-session");
 }
 
 /**

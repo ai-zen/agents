@@ -24,17 +24,16 @@ import type { MethodHandler } from "./Daemon.js";
 import { badParams, field, optionalString, requireObject, requireString } from "./params.js";
 import type { ConfigService } from "../domain/config/ConfigService.js";
 import type { AppConfig } from "@ai-zen/agents-sdk";
-import {
-  CONFIG_METHODS,
-  type ConfigGetResult,
-  type ConfigMcpGetResult,
-  type ConfigMcpSaveResult,
-  type ConfigReasoningPresetsResult,
-  type ConfigSaveResult,
-  type ConfigSetDefaultAgentResult,
-  type ConfigSetDefaultModelResult,
-  type McpScope,
-} from "@ai-zen/agents-protocol";
+import type {
+  ConfigGetResult,
+  ConfigMcpGetResult,
+  ConfigMcpSaveResult,
+  ConfigReasoningPresetsResult,
+  ConfigSaveResult,
+  ConfigSetDefaultAgentResult,
+  ConfigSetDefaultModelResult,
+  McpScope,
+} from "../protocol/index.js";
 
 export interface ConfigHandlerOptions {
   config: ConfigService;
@@ -44,32 +43,32 @@ export function createConfigHandlers(options: ConfigHandlerOptions): Record<stri
   const { config } = options;
 
   return {
-    [CONFIG_METHODS.get]: async (): Promise<ConfigGetResult> => await config.get(),
+    ["config.get"]: async (): Promise<ConfigGetResult> => await config.get(),
 
-    [CONFIG_METHODS.save]: async (params): Promise<ConfigSaveResult> => {
+    ["config.save"]: async (params): Promise<ConfigSaveResult> => {
       // 唯一的「线上 unknown → SDK 类型」断言点（见文件头注释）
       return await config.save(requireObject(params, "config") as unknown as AppConfig);
     },
 
-    [CONFIG_METHODS.reasoningPresets]: async (): Promise<ConfigReasoningPresetsResult> => {
+    ["config.reasoningPresets"]: async (): Promise<ConfigReasoningPresetsResult> => {
       return await config.reasoningPresets();
     },
 
     /** 换默认 Agent：**只写一个字段**，不读整份也不写回整份（见 `ConfigService.setDefaultAgent`） */
-    [CONFIG_METHODS.defaultAgentSet]: async (params): Promise<ConfigSetDefaultAgentResult> => {
+    ["config.defaultAgent.set"]: async (params): Promise<ConfigSetDefaultAgentResult> => {
       return await config.setDefaultAgent(requireString(params, "agentId"));
     },
 
     /** 换全局兜底模型：窄方法，理由与上面那条逐条相同（`/model --global` 用） */
-    [CONFIG_METHODS.defaultModelSet]: async (params): Promise<ConfigSetDefaultModelResult> => {
+    ["config.defaultModel.set"]: async (params): Promise<ConfigSetDefaultModelResult> => {
       return await config.setDefaultModel(requireString(params, "modelId"));
     },
 
-    [CONFIG_METHODS.mcpGet]: async (params): Promise<ConfigMcpGetResult> => {
+    ["config.mcp.get"]: async (params): Promise<ConfigMcpGetResult> => {
       return await config.mcpGet(mcpTarget(params));
     },
 
-    [CONFIG_METHODS.mcpSave]: async (params): Promise<ConfigMcpSaveResult> => {
+    ["config.mcp.save"]: async (params): Promise<ConfigMcpSaveResult> => {
       return await config.mcpSave({
         ...mcpTarget(params),
         // MCP 配置的顶层结构（`mcpServers`）由编辑屏负责；这里只保证它是个对象，

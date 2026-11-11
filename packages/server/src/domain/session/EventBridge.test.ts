@@ -11,7 +11,7 @@
 
 import { describe, expect, it } from "vitest";
 import { SessionManager } from "./SessionManager.js";
-import type { Message } from "@ai-zen/agents-protocol";
+import type { Message } from "../../protocol/index.js";
 import {
   settled,
   FakeSubAgent,
@@ -181,7 +181,6 @@ describe("SessionManager：SDK 事件 → 协议事件", () => {
     expect(ends[0]).toMatchObject({ ok: false, error: { code: "timeout", message: "超时" } });
     expect((await manager.list("ws-1"))[0]!.phase).toBeNull();
   });
-
 });
 /**
  * 工具结果定型（`tool-call-end`）—— 客户端在流式期间把工具卡片补上的唯一出口。
@@ -328,7 +327,11 @@ describe("SessionManager：子 Agent（栏目）", () => {
     fireChunk(sub, { choices: [{ delta: { content: "子" } }] });
 
     // 子 Agent 的原始片带 `subAgentId` 上线（客户端折它得到正文）；摘出来的增量不上线
-    expect(pick("chunk").slice(-2).map((event) => event.subAgentId)).toEqual(["sub-1", "sub-1"]);
+    expect(
+      pick("chunk")
+        .slice(-2)
+        .map((event) => event.subAgentId),
+    ).toEqual(["sub-1", "sub-1"]);
     // 回归保护：拿子 Agent 的 delta 去改主阶段，界面会从「等待 xxx 返回」变成「输出中」
     expect(pick("session-phase")).toHaveLength(phasesBefore);
     expect((await manager.list("ws-1"))[0]!.phase).toMatchObject({

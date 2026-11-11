@@ -12,7 +12,7 @@ import type {
   Message,
   SessionSnapshotResult,
   SubAgentSnapshotResult,
-} from "@ai-zen/agents-protocol";
+} from "@ai-zen/agents-server/protocol";
 import { SessionStream, type SessionStreamState } from "./stream.js";
 
 /**

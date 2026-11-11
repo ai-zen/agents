@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Daemon, writeDescriptor } from "@ai-zen/agents-server";
+import { Daemon } from "@ai-zen/agents-server";
+import { writeDescriptor } from "./wire/discovery.js";
 import { readServerStatus } from "./status.js";
 import type { ClientInfo } from "./types.js";
 

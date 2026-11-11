@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SessionManager } from "./SessionManager.js";
-import type { HandoffMode, ServerEvent } from "@ai-zen/agents-protocol";
+import type { HandoffMode, ServerEvent } from "../../protocol/index.js";
 import { EventHub } from "../../lib/events.js";
 import {
   pick,

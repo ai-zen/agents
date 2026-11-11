@@ -30,17 +30,7 @@
  * `<工作区>/.ai-zen/tools/` …），改它意味着替用户动他手写的文件，那是另一个动作
  * （也要另一套权限与冲突设计），不该藏在「列个清单」旁边。
  */
-export const ASSET_METHODS = {
-  /**
-   * 列出某个工作区（或全局）的资产。
-   *
-   * 为什么需要它：客户端（TUI 的技能面板、桌面端的配置中心）要显示「有哪些 skill / 工具、
-   * 来自哪一层」。而**发现规则在服务端**（扫哪些目录、同名谁优先、哪些文件不是工具）——
-   * 客户端自己扫一遍就是第二套规则，两份迟早不一致（典型症状：Agent 实际能用 12 个 skill，
-   * 面板上列了 9 个，用户以为坏了）。
-   */
-  list: "asset.list",
-} as const;
+export type AssetMethod = "asset.list";
 
 /** 资产类别：目前只有技能与用户工具（内置工具、MCP 服务器、子 Agent 不在这里） */
 export type AssetKind = "skill" | "tool";
@@ -105,3 +95,6 @@ export interface AssetListParams {
 export interface AssetListResult {
   assets: AssetSummary[];
 }
+
+/** `ASSET_METHODS` 的**成员名**（不是线上值）—— 给「门面必须覆盖每一条」这类类型级用例用 */
+export type AssetMethodKey = "list";

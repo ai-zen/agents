@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { SessionManager } from "./SessionManager.js";
 import { FileSessionStore } from "./store/FileSessionStore.js";
-import type { Message } from "@ai-zen/agents-protocol";
+import type { Message } from "../../protocol/index.js";
 import {
   settled,
   MemoryStore,

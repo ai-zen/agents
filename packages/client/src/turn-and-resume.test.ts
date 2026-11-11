@@ -29,9 +29,6 @@ import {
   FileSessionStore,
   SessionAgentFactory,
   SessionManager,
-  AGENT_EVENTS,
-  EVENT_METHODS,
-  SESSION_EVENTS,
   type ServerEvent,
 } from "@ai-zen/agents-server";
 import type { ClientInfo } from "./types.js";
@@ -104,7 +101,7 @@ async function boot(): Promise<void> {
   });
   sessions = new RemoteSessions(client);
   // `events.watch` 是**连接级**的（归 `ServerConnection`）：这里直接发那一帧
-  await client.call(EVENT_METHODS.watch);
+  await client.call("events.watch");
 }
 
 /** 关掉这一套（模拟守护进程重启：内存全丢，只剩盘上的东西） */
@@ -123,8 +120,8 @@ async function shutdown(): Promise<void> {
 async function runTurn(sessionId: string, prompt: string): Promise<ServerEvent[]> {
   const seen: ServerEvent[] = [];
   const offs = [
-    client!.on(AGENT_EVENTS.chunk, (event) => seen.push(event)),
-    client!.on(SESSION_EVENTS.turnEnd, (event) => seen.push(event)),
+    client!.on("chunk", (event) => seen.push(event)),
+    client!.on("session-turn-end", (event) => seen.push(event)),
   ];
   try {
     const { turnId } = await sessions.send(sessionId, prompt);

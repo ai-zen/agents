@@ -32,13 +32,8 @@ import {
   type SdkAgent,
   type HandoffContext,
 } from "@ai-zen/agents-sdk";
-import {
-  DEFAULT_MIGRATION_STRATEGY,
-  SESSION_NOTICE_CODES,
-  type HandoffMode,
-  type MigrationStrategy,
-  type NoticePayload,
-} from "@ai-zen/agents-protocol";
+import type { HandoffMode, MigrationStrategy, NoticePayload } from "../../protocol/index.js";
+import { DEFAULT_MIGRATION_STRATEGY } from "../../wire/sessions.js";
 import { agentPaths } from "../agent/agentPaths.js";
 
 /**
@@ -108,14 +103,14 @@ export class SessionHandoff {
         if (promptTokens != null && handoffTokens != null) {
           notice({
             level: "info",
-            code: SESSION_NOTICE_CODES.handoffAutoDetected,
+            code: "handoffAutoDetected",
             params: { used: promptTokens, limit: handoffTokens, mode: ctx.requestedMode },
           });
           return;
         }
         notice({
           level: "info",
-          code: SESSION_NOTICE_CODES.handoffWriting,
+          code: "handoffWriting",
           params: { mode: ctx.requestedMode },
         });
       },
@@ -124,13 +119,13 @@ export class SessionHandoff {
         if (ctx.mode !== ctx.requestedMode) {
           notice({
             level: "warn",
-            code: SESSION_NOTICE_CODES.migrationDegraded,
+            code: "migrationDegraded",
             params: { requested: ctx.requestedMode, mode: ctx.mode },
           });
         }
         notice({
           level: "info",
-          code: SESSION_NOTICE_CODES.handoffPath,
+          code: "handoffPath",
           params: { path: ctx.handoffPath },
         });
       },
@@ -144,10 +139,10 @@ export class SessionHandoff {
         const count = (ctx.agent as { messages?: unknown[] } | undefined)?.messages?.length ?? 0;
         notice({
           level: "info",
-          code: SESSION_NOTICE_CODES.handoffMigrated,
+          code: "handoffMigrated",
           params: { n: count },
         });
-        notice({ level: "info", code: SESSION_NOTICE_CODES.handoffMigratedHint });
+        notice({ level: "info", code: "handoffMigratedHint" });
       },
     });
   }

@@ -25,7 +25,8 @@
 
 import { createConnection, type Socket } from "node:net";
 import { encodeFrame, FrameDecoder } from "./frames.js";
-import { PROTOCOL_VERSION, type HelloResponse, type ResponseFrame } from "./messages.js";
+import { PROTOCOL_VERSION } from "./messages.js";
+import type { HelloResponse, ResponseFrame } from "../protocol/messages.js";
 
 /** 连哪儿（与客户端 `ServerAddress` 逐字同形，但不引用它 —— 那是客户端的类型） */
 export interface CallOnceAddress {
@@ -40,15 +41,15 @@ export interface CallOnceOptions {
    * 握手时自称的身份（只进服务端日志，不参与鉴权）。
    *
    * 有缺省值：绝大多数调用方（诊断 / 收摊 / 探活）不需要为此多写一行；而它仍然可注入，
-   * 因为「这条连接是谁连的」在排查时是有用的事实，不该被协议包统一冒名。
+   * 因为「这条连接是谁连的」在排查时是有用的事实，不该被本包统一冒名。
    */
   client?: { name: string; version: string };
 }
 
 const DEFAULT_TIMEOUT_MS = 2000;
 
-/** 缺省身份：协议包自己。应用想署名就显式传 `client` */
-const DEFAULT_CLIENT = { name: "@ai-zen/agents-protocol", version: "1" };
+/** 缺省身份：本包（`callOnce` 的调用方多半是诊断 / 收摊脚本，不署名就以此出场） */
+const DEFAULT_CLIENT = { name: "@ai-zen/agents-server", version: "1" };
 
 /** 只有一条请求，所以 id 恒为 1（不需要分配器） */
 const REQUEST_ID = 1;

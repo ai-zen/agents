@@ -31,7 +31,7 @@ import type {
   ModelLevel,
   SessionQuestionKind,
   Usage,
-} from "@ai-zen/agents-protocol";
+} from "../../protocol/index.js";
 
 /**
  * 能跑一轮对话的 Agent 的最小面。

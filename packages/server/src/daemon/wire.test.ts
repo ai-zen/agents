@@ -26,9 +26,8 @@ import { join } from "node:path";
 import { Daemon, type DaemonOptions, type MethodHandler } from "./Daemon.js";
 import { socketWire, type Wire } from "./wire.js";
 import { EventHub } from "../lib/events.js";
-import { encodeFrame, FrameDecoder } from "@ai-zen/agents-protocol";
-import { PROTOCOL_VERSION } from "@ai-zen/agents-protocol";
-import { SESSION_EVENTS } from "@ai-zen/agents-protocol";
+import { encodeFrame, FrameDecoder } from "../wire/frames.js";
+import { PROTOCOL_VERSION } from "../wire/messages.js";
 
 let dir: string;
 let daemon: Daemon | null = null;
@@ -88,7 +87,7 @@ function eventHandlers(hub: EventHub, onUnsubscribe: () => void): Record<string,
       return { watching: true };
     },
     "test.publish": () => {
-      hub.publish({ event: SESSION_EVENTS.turnEnd, sessionId: "s1", turnId: 1, ok: true });
+      hub.publish({ event: "session-turn-end", sessionId: "s1", turnId: 1, ok: true });
       return { published: true };
     },
   };
@@ -321,10 +320,8 @@ describe("假 Wire（内存双工）驱动 Daemon", () => {
     expect(hub.watcherCount()).toBe(1);
 
     await wire.peer.call("test.publish");
-    expect(
-      await wire.peer.nextMatching((frame) => frame?.event === SESSION_EVENTS.turnEnd),
-    ).toEqual({
-      event: SESSION_EVENTS.turnEnd,
+    expect(await wire.peer.nextMatching((frame) => frame?.event === "session-turn-end")).toEqual({
+      event: "session-turn-end",
       sessionId: "s1",
       turnId: 1,
       ok: true,
@@ -367,11 +364,11 @@ describe("真 net.Socket（TCP 那一路的适配器）", () => {
 
       await peer.call("events.watch");
       await peer.call("test.publish");
-      expect(
-        await peer.nextMatching((frame) => frame?.event === SESSION_EVENTS.turnEnd),
-      ).toMatchObject({
-        sessionId: "s1",
-      });
+      expect(await peer.nextMatching((frame) => frame?.event === "session-turn-end")).toMatchObject(
+        {
+          sessionId: "s1",
+        },
+      );
 
       peer.close();
       await waitFor(() => instance.connectionCount === 0, "断开后连接从 connections 里被删掉");

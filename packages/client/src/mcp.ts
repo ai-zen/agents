@@ -15,10 +15,10 @@
  * ## `McpScope` 从协议转出
  *
  * 它同时是线上参数（`ConfigMcpGetParams.scope`）与本地词汇，所以定义只有协议那一处
- * （`@ai-zen/agents-protocol` 的 `config.ts`），这里只做透传。
+ * （`src/protocol/config.ts`），这里只做透传。
  */
 
-import type { McpScope } from "@ai-zen/agents-protocol";
+import type { McpScope } from "@ai-zen/agents-server/protocol";
 
 export type { McpScope };
 

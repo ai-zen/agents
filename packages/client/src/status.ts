@@ -15,12 +15,9 @@
  * 越不容易在诊断时自己出错。
  */
 
-import {
-  DAEMON_METHODS,
-  callOnce,
-  readDescriptor,
-  type DaemonStatusResult,
-} from "@ai-zen/agents-protocol";
+import type { DaemonStatusResult } from "@ai-zen/agents-server/protocol";
+import { readDescriptor } from "./wire/discovery.js";
+import { callOnce } from "./wire/call-once.js";
 import type { ClientInfo } from "./types.js";
 
 export interface ServerStatusDeps {
@@ -41,7 +38,7 @@ export async function readServerStatus(deps: ServerStatusDeps): Promise<ServerSt
 
   const address = { host: descriptor.host, port: descriptor.port };
   try {
-    const status = (await callOnce(address, DAEMON_METHODS.status, undefined, {
+    const status = (await callOnce(address, "status", undefined, {
       client: deps.clientInfo,
       timeoutMs: STATUS_TIMEOUT_MS,
     })) as DaemonStatusResult;

@@ -11,9 +11,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Daemon } from "./Daemon.js";
-import { readDescriptor } from "@ai-zen/agents-protocol";
-import { encodeFrame, FrameDecoder } from "@ai-zen/agents-protocol";
-import { PROTOCOL_VERSION } from "@ai-zen/agents-protocol";
+import { readDescriptor } from "../wire/discovery.js";
+import { encodeFrame, FrameDecoder } from "../wire/frames.js";
+import { PROTOCOL_VERSION } from "../wire/messages.js";
 
 let dir: string;
 let daemon: Daemon | null = null;

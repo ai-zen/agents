@@ -28,15 +28,13 @@
  */
 
 import type { SessionRecord, SessionStore } from "./store/SessionStore.js";
-import {
-  ERROR_CODES,
-  SESSION_NOTICE_CODES,
-  codedError,
-  type Message,
-  type NoticePayload,
-  type SessionSaveAsResult,
-  type SessionSaveResult,
-} from "@ai-zen/agents-protocol";
+import type {
+  Message,
+  NoticePayload,
+  SessionSaveAsResult,
+  SessionSaveResult,
+} from "../../protocol/index.js";
+import { codedError } from "../../wire/errors.js";
 import type { LiveSession } from "./LiveSession.js";
 
 export interface PersistenceOptions {
@@ -78,8 +76,7 @@ export class Persistence {
   /** 取不到就报 `no-store`（要写档的路径用它，别自己再拼一遍同样的错） */
   async requireStore(workspaceId: string): Promise<SessionStore<Message>> {
     const store = await this.store(workspaceId);
-    if (!store)
-      throw codedError(ERROR_CODES.noStore, `no session store for workspace ${workspaceId}`);
+    if (!store) throw codedError("no-store", `no session store for workspace ${workspaceId}`);
     return store;
   }
 
@@ -129,7 +126,7 @@ export class Persistence {
     } catch (error: any) {
       this.options.notice(session.id, {
         level: "error",
-        code: SESSION_NOTICE_CODES.persistFailed,
+        code: "persistFailed",
         params: { error: error?.message ?? String(error) },
       });
     }
@@ -173,7 +170,7 @@ export class Persistence {
   async saveAs(session: LiveSession, id: string): Promise<SessionSaveAsResult> {
     const store = await this.requireStore(session.workspaceId);
     if (id !== session.id && this.options.isLive(id)) {
-      throw codedError(ERROR_CODES.sessionExists, `session already exists: ${id}`);
+      throw codedError("session-exists", `session already exists: ${id}`);
     }
 
     const previousId = session.id;
@@ -207,7 +204,7 @@ export class Persistence {
   async adopt(session: LiveSession, store: SessionStore<Message>): Promise<string> {
     const nextId = this.options.nextSessionId();
     if (this.options.isLive(nextId)) {
-      throw codedError(ERROR_CODES.sessionExists, `session already exists: ${nextId}`);
+      throw codedError("session-exists", `session already exists: ${nextId}`);
     }
 
     await store.write(this.recordOf(session, [...session.agent.messages], nextId));

@@ -24,40 +24,38 @@
  * 它是**无状态**的薄封装（只持有连接），不缓存、不判活：连接的生死归 `ServerConnection`。
  */
 
-import {
-  SESSION_METHODS,
-  WORKSPACE_METHODS,
-  type HandoffMode,
-  type MessageContent,
-  type MigrationStrategy,
-  type ModelParams,
-  type SessionAnswerResult,
-  type SessionAttachResult,
-  type SessionCancelResult,
-  type SessionCloseResult,
-  type SessionCreateResult,
-  type SessionHandoffResult,
-  type SessionListResult,
-  type SessionLastResult,
-  type SessionMigrateResult,
-  type SessionModelParamsSetResult,
-  type SessionModelSetResult,
-  type SessionRemoveResult,
-  type SessionRenameResult,
-  type SessionRollbackResult,
-  type SessionSaveAsResult,
-  type SessionSaveResult,
-  type SessionSendResult,
-  type SessionSetAgentResult,
-  type SessionSnapshotResult,
-  type SubAgentSnapshotResult,
-  type WorkspaceFilesResult,
-  type WorkspaceListResult,
-  type WorkspaceRelocateResult,
-  type WorkspaceRemoveResult,
-  type WorkspaceRenameResult,
-  type WorkspaceResolveResult,
-} from "@ai-zen/agents-protocol";
+import type {
+  HandoffMode,
+  MessageContent,
+  MigrationStrategy,
+  ModelParams,
+  SessionAnswerResult,
+  SessionAttachResult,
+  SessionCancelResult,
+  SessionCloseResult,
+  SessionCreateResult,
+  SessionHandoffResult,
+  SessionListResult,
+  SessionLastResult,
+  SessionMigrateResult,
+  SessionModelParamsSetResult,
+  SessionModelSetResult,
+  SessionRemoveResult,
+  SessionRenameResult,
+  SessionRollbackResult,
+  SessionSaveAsResult,
+  SessionSaveResult,
+  SessionSendResult,
+  SessionSetAgentResult,
+  SessionSnapshotResult,
+  SubAgentSnapshotResult,
+  WorkspaceFilesResult,
+  WorkspaceListResult,
+  WorkspaceRelocateResult,
+  WorkspaceRemoveResult,
+  WorkspaceRenameResult,
+  WorkspaceResolveResult,
+} from "@ai-zen/agents-server/protocol";
 import type { ServerClient } from "../types.js";
 
 /** 开一个会话要多说几句，单独成类型，避免调用点各拼一份 */
@@ -92,14 +90,14 @@ export class RemoteSessions {
    */
   async resolveWorkspace(path?: string): Promise<WorkspaceResolveResult> {
     return await this.client.call<WorkspaceResolveResult>(
-      WORKSPACE_METHODS.resolve,
+      "workspace.resolve",
       path ? { path } : {},
     );
   }
 
   /** 工作区的文件清单（`@` 补全用；扫的是**服务端**磁盘） */
   async files(workspaceId: string): Promise<WorkspaceFilesResult> {
-    return await this.client.call<WorkspaceFilesResult>(WORKSPACE_METHODS.files, { workspaceId });
+    return await this.client.call<WorkspaceFilesResult>("workspace.files", { workspaceId });
   }
 
   /**
@@ -109,12 +107,12 @@ export class RemoteSessions {
    * 而它（连同历史）还在盘上。顺序由服务端定死，客户端不必重排。
    */
   async listWorkspaces(): Promise<WorkspaceListResult> {
-    return await this.client.call<WorkspaceListResult>(WORKSPACE_METHODS.list);
+    return await this.client.call<WorkspaceListResult>("workspace.list");
   }
 
   /** 改工作区显示名（**不动 id、不动 path**） */
   async renameWorkspace(workspaceId: string, title: string): Promise<WorkspaceRenameResult> {
-    return await this.client.call<WorkspaceRenameResult>(WORKSPACE_METHODS.rename, {
+    return await this.client.call<WorkspaceRenameResult>("workspace.rename", {
       workspaceId,
       title,
     });
@@ -122,7 +120,7 @@ export class RemoteSessions {
 
   /** 删一个工作区 —— **连它的全部会话一起**（幂等：本来就没有 → `removed:false`） */
   async removeWorkspace(workspaceId: string): Promise<WorkspaceRemoveResult> {
-    return await this.client.call<WorkspaceRemoveResult>(WORKSPACE_METHODS.remove, {
+    return await this.client.call<WorkspaceRemoveResult>("workspace.remove", {
       workspaceId,
     });
   }
@@ -134,7 +132,7 @@ export class RemoteSessions {
    * `resolve` 就会回到同一个 id。
    */
   async relocateWorkspace(workspaceId: string, path: string): Promise<WorkspaceRelocateResult> {
-    return await this.client.call<WorkspaceRelocateResult>(WORKSPACE_METHODS.relocate, {
+    return await this.client.call<WorkspaceRelocateResult>("workspace.relocate", {
       workspaceId,
       path,
     });
@@ -150,7 +148,7 @@ export class RemoteSessions {
    */
   async open(input: OpenSessionInput): Promise<SessionCreateResult> {
     const workspace = await this.resolveWorkspace(input.path);
-    return await this.client.call<SessionCreateResult>(SESSION_METHODS.create, {
+    return await this.client.call<SessionCreateResult>("session.create", {
       workspaceId: workspace.workspaceId,
       // 服务端能自己反查路径：客户端只在**它确实知道**时才递上去
       ...(input.path ? { path: input.path } : {}),
@@ -175,7 +173,7 @@ export class RemoteSessions {
     path?: string;
     agentId?: string;
   }): Promise<SessionAttachResult> {
-    return await this.client.call<SessionAttachResult>(SESSION_METHODS.attach, input);
+    return await this.client.call<SessionAttachResult>("session.attach", input);
   }
 
   /**
@@ -185,12 +183,12 @@ export class RemoteSessions {
    * 原样交给 Agent（内容块怎么拼是客户端的事）。
    */
   async send(sessionId: string, content: MessageContent): Promise<SessionSendResult> {
-    return await this.client.call<SessionSendResult>(SESSION_METHODS.send, { sessionId, content });
+    return await this.client.call<SessionSendResult>("session.send", { sessionId, content });
   }
 
   /** 掐掉本轮（不销毁会话）：`cancelled:false` = 本来就没在跑（幂等） */
   async cancel(sessionId: string): Promise<SessionCancelResult> {
-    return await this.client.call<SessionCancelResult>(SESSION_METHODS.cancel, { sessionId });
+    return await this.client.call<SessionCancelResult>("session.cancel", { sessionId });
   }
 
   /**
@@ -204,7 +202,7 @@ export class RemoteSessions {
     questionId: string,
     choice: string | null,
   ): Promise<SessionAnswerResult> {
-    return await this.client.call<SessionAnswerResult>(SESSION_METHODS.answer, {
+    return await this.client.call<SessionAnswerResult>("session.answer", {
       sessionId,
       questionId,
       choice,
@@ -217,7 +215,7 @@ export class RemoteSessions {
    * `title` / `messageCount` / `live` 都在同一条里：侧栏一次拿全，不必自己拼两个来源。
    */
   async list(workspaceId: string): Promise<SessionListResult> {
-    return await this.client.call<SessionListResult>(SESSION_METHODS.list, { workspaceId });
+    return await this.client.call<SessionListResult>("session.list", { workspaceId });
   }
 
   /** 改显示名（**不动 id**；与「另存为」`saveAs` 是两件事） */
@@ -226,7 +224,7 @@ export class RemoteSessions {
     sessionId: string,
     title: string,
   ): Promise<SessionRenameResult> {
-    return await this.client.call<SessionRenameResult>(SESSION_METHODS.rename, {
+    return await this.client.call<SessionRenameResult>("session.rename", {
       workspaceId,
       sessionId,
       title,
@@ -235,7 +233,7 @@ export class RemoteSessions {
 
   /** 删一段会话（物理删存档，幂等：本来就没有 → `removed:false`） */
   async remove(workspaceId: string, sessionId: string): Promise<SessionRemoveResult> {
-    return await this.client.call<SessionRemoveResult>(SESSION_METHODS.remove, {
+    return await this.client.call<SessionRemoveResult>("session.remove", {
       workspaceId,
       sessionId,
     });
@@ -243,12 +241,12 @@ export class RemoteSessions {
 
   /** 某个工作区「上一轮会话」的指针（续接用；没有则 `null`） */
   async last(workspaceId: string): Promise<SessionLastResult> {
-    return await this.client.call<SessionLastResult>(SESSION_METHODS.last, { workspaceId });
+    return await this.client.call<SessionLastResult>("session.last", { workspaceId });
   }
 
   /** 撤回：从 `index` 起删掉并落盘；返回剩下的消息与被删的首条用户消息 */
   async rollback(sessionId: string, index: number): Promise<SessionRollbackResult> {
-    return await this.client.call<SessionRollbackResult>(SESSION_METHODS.rollback, {
+    return await this.client.call<SessionRollbackResult>("session.rollback", {
       sessionId,
       index,
     });
@@ -256,12 +254,12 @@ export class RemoteSessions {
 
   /** 整份快照：消息 / 阶段 / 轮次 / 用量 / 模型 */
   async snapshot(sessionId: string): Promise<SessionSnapshotResult> {
-    return await this.client.call<SessionSnapshotResult>(SESSION_METHODS.snapshot, { sessionId });
+    return await this.client.call<SessionSnapshotResult>("session.snapshot", { sessionId });
   }
 
   /** 按磁盘上的新配置/定义重建 Agent（保留消息），返回重建后的快照 */
   async reload(sessionId: string): Promise<SessionSnapshotResult> {
-    return await this.client.call<SessionSnapshotResult>(SESSION_METHODS.reload, { sessionId });
+    return await this.client.call<SessionSnapshotResult>("session.reload", { sessionId });
   }
 
   /**
@@ -270,7 +268,7 @@ export class RemoteSessions {
    * 返回快照：模型、消息与阈值都跟着变了，客户端拿它一次对齐屏幕。
    */
   async setAgent(sessionId: string, agentId: string): Promise<SessionSetAgentResult> {
-    return await this.client.call<SessionSetAgentResult>(SESSION_METHODS.setAgent, {
+    return await this.client.call<SessionSetAgentResult>("session.setAgent", {
       sessionId,
       agentId,
     });
@@ -284,7 +282,7 @@ export class RemoteSessions {
    * 它们本来就属于两个门面，因为「作用对象是不是某一段会话」正是这两张表的分界。
    */
   async modelSet(sessionId: string, modelId: string): Promise<SessionModelSetResult> {
-    return await this.client.call<SessionModelSetResult>(SESSION_METHODS.modelSet, {
+    return await this.client.call<SessionModelSetResult>("session.model.set", {
       sessionId,
       modelId,
     });
@@ -301,7 +299,7 @@ export class RemoteSessions {
     sessionId: string,
     modelParams: ModelParams | null,
   ): Promise<SessionModelParamsSetResult> {
-    return await this.client.call<SessionModelParamsSetResult>(SESSION_METHODS.modelParamsSet, {
+    return await this.client.call<SessionModelParamsSetResult>("session.modelParams.set", {
       sessionId,
       modelParams,
     });
@@ -315,7 +313,7 @@ export class RemoteSessions {
    * （`/new`、`/load`）也必须显式调它 —— 否则内存峰值随切换次数线性增长，直到宽限期才回落。
    */
   async close(sessionId: string): Promise<SessionCloseResult> {
-    return await this.client.call<SessionCloseResult>(SESSION_METHODS.close, { sessionId });
+    return await this.client.call<SessionCloseResult>("session.close", { sessionId });
   }
 
   /**
@@ -325,7 +323,7 @@ export class RemoteSessions {
    * 否则连着跑几条 `cat … | ai --save` 之后，下次 `ai` 会续接到最后一条管道结果上。
    */
   async save(sessionId: string, options: { setAsLast?: boolean } = {}): Promise<SessionSaveResult> {
-    return await this.client.call<SessionSaveResult>(SESSION_METHODS.save, {
+    return await this.client.call<SessionSaveResult>("session.save", {
       sessionId,
       ...(options.setAsLast !== undefined ? { setAsLast: options.setAsLast } : {}),
     });
@@ -337,7 +335,7 @@ export class RemoteSessions {
    * 返回值里的 `sessionId` 才是当前有效的那个 —— 与 `migrate` 同一个规矩。
    */
   async saveAs(sessionId: string, id: string): Promise<SessionSaveAsResult> {
-    return await this.client.call<SessionSaveAsResult>(SESSION_METHODS.saveAs, { sessionId, id });
+    return await this.client.call<SessionSaveAsResult>("session.saveAs", { sessionId, id });
   }
 
   /**
@@ -347,7 +345,7 @@ export class RemoteSessions {
    * `chunk` —— 这个方法可能要跑一两分钟，等回执期间界面靠事件渲染。
    */
   async handoff(sessionId: string, mode?: HandoffMode): Promise<SessionHandoffResult> {
-    return await this.client.call<SessionHandoffResult>(SESSION_METHODS.handoff, {
+    return await this.client.call<SessionHandoffResult>("session.handoff", {
       sessionId,
       ...(mode ? { mode } : {}),
     });
@@ -364,7 +362,7 @@ export class RemoteSessions {
     mode?: HandoffMode,
     strategy?: MigrationStrategy,
   ): Promise<SessionMigrateResult> {
-    return await this.client.call<SessionMigrateResult>(SESSION_METHODS.migrate, {
+    return await this.client.call<SessionMigrateResult>("session.migrate", {
       sessionId,
       ...(mode ? { mode } : {}),
       ...(strategy ? { strategy } : {}),
@@ -378,7 +376,7 @@ export class RemoteSessions {
    * `sub-agent-missing` —— 那不是服务端出错，客户端该做的是把栏目收回去。
    */
   async subAgentSnapshot(sessionId: string, subAgentId: string): Promise<SubAgentSnapshotResult> {
-    return await this.client.call<SubAgentSnapshotResult>(SESSION_METHODS.subAgentSnapshot, {
+    return await this.client.call<SubAgentSnapshotResult>("session.subAgent.snapshot", {
       sessionId,
       subAgentId,
     });

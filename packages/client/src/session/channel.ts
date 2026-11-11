@@ -56,26 +56,22 @@
  * 调用方改它没有任何意义（改了也不会发给服务端任何一个字段）。
  */
 
-import {
-  AGENT_EVENTS,
-  ERROR_CODES,
-  SERVER_EVENTS,
-  SESSION_EVENTS,
-  codeOf,
-  type HandoffMode,
-  type MessageContent,
-  type MigrationStrategy,
-  type ModelParams,
-  type NoticePayload,
-  type ServerEvent,
-  type ServerNoticeEvent,
-  type SessionListResult,
-  type SessionModelParamsSetResult,
-  type SessionModelSetResult,
-  type SessionQuestionEvent,
-  type SessionSnapshotResult,
-  type WorkspaceFileEntry,
-} from "@ai-zen/agents-protocol";
+import type {
+  HandoffMode,
+  MessageContent,
+  MigrationStrategy,
+  ModelParams,
+  NoticePayload,
+  ServerEvent,
+  ServerNoticeEvent,
+  SessionListResult,
+  SessionModelParamsSetResult,
+  SessionModelSetResult,
+  SessionQuestionEvent,
+  SessionSnapshotResult,
+  WorkspaceFileEntry,
+} from "@ai-zen/agents-server/protocol";
+import { ERROR_CODES, codeOf } from "../wire/errors.js";
 import { RemoteSessions } from "../facade/sessions.js";
 import type { ServerConnection } from "../transport/connection.js";
 import type { ServerClient } from "../types.js";
@@ -610,7 +606,7 @@ export class SessionChannel {
       );
     };
 
-    mine(SESSION_EVENTS.phase, (event) => {
+    mine("session-phase", (event) => {
       this.stream.setPhase(event.phase);
       // 每个 chunk 都会带一条 phase：走合帧，别把渲染压到每片一次；回到空闲才立即上屏
       this.notify(event.phase === null);
@@ -624,14 +620,14 @@ export class SessionChannel {
      * 带 `subAgentId` 的片归子 Agent：折进**它自己**的消息，且不碰主阶段 ——
      * 子 Agent 的流是工具内部的事，主阶段此刻该停在「等待 xxx 返回」。
      */
-    mine(AGENT_EVENTS.chunk, (event) => {
+    mine("chunk", (event) => {
       if (event.subAgentId) this.stream.subAgentChunk(event.subAgentId, event.chunk);
       else this.stream.applyChunk(event.chunk);
       this.notify(false);
     });
 
     // 一条已经定型的工具结果：原样搬进消息列表，不拼装（它就是服务端手里那条）
-    mine(AGENT_EVENTS.toolCallEnd, (event) => {
+    mine("tool-call-end", (event) => {
       this.stream.applyMessageAppended(event.message);
       this.notify(true);
     });
@@ -645,7 +641,7 @@ export class SessionChannel {
      * 失败不升级成通知：这次拉取只是「把已有内容补上」，增量照样拼、`session-turn-end` 照样清，
      * 连接真断了会有别的信号。
      */
-    mine(AGENT_EVENTS.subAgentStart, (event) => {
+    mine("sub-agent-start", (event) => {
       this.stream.subAgentStarted(event);
       void this.syncSubAgent(event.subAgentId).catch(() => {});
       // 标签立刻上屏（「它开跑了」这件事不该等一个往返）
@@ -653,12 +649,12 @@ export class SessionChannel {
     });
 
     // 子 Agent 收尾：只改状态（正文由增量与快照负责，这里不再拉一次）
-    mine(AGENT_EVENTS.subAgentEnd, (event) => {
+    mine("sub-agent-end", (event) => {
       this.stream.subAgentEnded(event);
       this.notify(true);
     });
 
-    mine(SESSION_EVENTS.turnEnd, (event) => {
+    mine("session-turn-end", (event) => {
       void this.finishTurn(event.turnId, event.error);
     });
 
@@ -669,11 +665,11 @@ export class SessionChannel {
      * 把界面卡在这个 await 里毫无好处。回答失败不升级成通知：这一问只是「迁移用哪种方式」，
      * 服务端有超时兜底，弹一条错误只会让用户以为迁移坏了。
      */
-    mine(SESSION_EVENTS.question, (event) => {
+    mine("session-question", (event) => {
       void this.answerQuestion(event).catch(() => {});
     });
 
-    mine(SESSION_EVENTS.notice, (event) => {
+    mine("session-notice", (event) => {
       this.policy.onNotice?.({ level: event.level, code: event.code, params: event.params });
     });
 
@@ -685,7 +681,7 @@ export class SessionChannel {
      * 客户端会在旧 id 上等一个永远不会到的 `session-turn-end`，界面就永久卡在「生成中」。
      */
     offs.push(
-      client.on(SESSION_EVENTS.idChanged, (event) => {
+      client.on("session-id-changed", (event) => {
         if (event.from !== this.sessionId) return;
         this.stream.applyIdChanged(event.sessionId);
         // 迁移已经把历史剔成「模板 + 断点」：屏幕上的那份已经作废，重取一次
@@ -697,7 +693,7 @@ export class SessionChannel {
 
     // 全局通知不属于任何会话：切会话也不该消失，所以不过滤 sessionId
     offs.push(
-      client.on(SERVER_EVENTS.notice, (event) => {
+      client.on("server-notice", (event) => {
         this.policy.onNotice?.({ level: event.level, code: event.code, params: event.params });
       }),
     );
@@ -838,7 +834,7 @@ export class SessionChannel {
           // 会话已经结束：重连没有意义。在飞的那一轮以服务端给的原话失败，状态也标终态
           this.stream.failTurn({
             // 沿用服务端给的码（`session-missing` / `unknown-session`），拿不到时用第一个
-            code: codeOf(outcome.error) ?? ERROR_CODES.sessionMissing,
+            code: codeOf(outcome.error) ?? "session-missing",
             message: outcome.error.message,
           });
           this.failPendingTurn(outcome.error);

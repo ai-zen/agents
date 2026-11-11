@@ -22,10 +22,10 @@ import {
   type CreateAgentInput,
 } from "../domain/session/SessionManager.js";
 import { FileSessionStore } from "../domain/session/store/FileSessionStore.js";
-import { encodeFrame, FrameDecoder } from "@ai-zen/agents-protocol";
-import { PROTOCOL_VERSION } from "@ai-zen/agents-protocol";
-import { EVENT_METHODS, SESSION_METHODS, WORKSPACE_METHODS } from "@ai-zen/agents-protocol";
-import type { ServerEvent } from "@ai-zen/agents-protocol";
+import { encodeFrame, FrameDecoder } from "../wire/frames.js";
+import { PROTOCOL_VERSION } from "../wire/messages.js";
+
+import type { ServerEvent } from "../protocol/index.js";
 
 /** 交接文档正文：SDK 有 400 字节的有效性阈值 */
 const DOC = `# 交接\n\n${"- 桩\n".repeat(80)}`;
@@ -167,7 +167,7 @@ async function startDaemon(): Promise<void> {
 describe("工作区处理器（真 socket）", () => {
   it("workspace.resolve 建目录并回 workspaceId", async () => {
     await startDaemon();
-    const result = await client!.call(WORKSPACE_METHODS.resolve, { path: "/work/proj-a" });
+    const result = await client!.call("workspace.resolve", { path: "/work/proj-a" });
     expect(result).toMatchObject({ path: "/work/proj-a" });
     expect((result as { workspaceId: string }).workspaceId).toMatch(/^proj-a-[0-9a-f]{8}$/);
   });
@@ -175,7 +175,7 @@ describe("工作区处理器（真 socket）", () => {
   it("workspace.resolve 不带 path：用服务端默认工作区（cwd 归属服务端）", async () => {
     await startDaemon();
     // 连 params 都不传：客户端不需要知道目录在哪
-    const result = (await client!.call(WORKSPACE_METHODS.resolve)) as {
+    const result = (await client!.call("workspace.resolve")) as {
       workspaceId: string;
       path: string;
     };
@@ -187,11 +187,9 @@ describe("工作区处理器（真 socket）", () => {
   it("参数错 → bad-params 错误帧（不是崩掉连接）", async () => {
     await startDaemon();
     // `path` 是可选的，但给了就得是字符串
-    await expect(client!.call(WORKSPACE_METHODS.resolve, { path: 42 })).rejects.toThrow(
-      /bad-params/,
-    );
-    await expect(client!.call(WORKSPACE_METHODS.files, {})).rejects.toThrow(/bad-params/);
-    await expect(client!.call(SESSION_METHODS.last, {})).rejects.toThrow(/bad-params/);
+    await expect(client!.call("workspace.resolve", { path: 42 })).rejects.toThrow(/bad-params/);
+    await expect(client!.call("workspace.files", {})).rejects.toThrow(/bad-params/);
+    await expect(client!.call("session.last", {})).rejects.toThrow(/bad-params/);
     // 连接还能继续用
     expect(await client!.call("ping")).toEqual({ pong: true });
   });
@@ -203,10 +201,10 @@ describe("工作区处理器（真 socket）", () => {
     writeFileSync(join(projectRoot, "src", "chat.tsx"), "");
     writeFileSync(join(projectRoot, "README.md"), "");
 
-    const workspace = (await client!.call(WORKSPACE_METHODS.resolve, { path: projectRoot })) as {
+    const workspace = (await client!.call("workspace.resolve", { path: projectRoot })) as {
       workspaceId: string;
     };
-    const listed = (await client!.call(WORKSPACE_METHODS.files, {
+    const listed = (await client!.call("workspace.files", {
       workspaceId: workspace.workspaceId,
     })) as { entries: Array<{ path: string; dir: boolean }> };
 
@@ -219,25 +217,25 @@ describe("工作区处理器（真 socket）", () => {
 
   it("workspace.files 的未知工作区 → unknown-workspace（不是空清单）", async () => {
     await startDaemon();
-    await expect(
-      client!.call(WORKSPACE_METHODS.files, { workspaceId: "nope-00000000" }),
-    ).rejects.toThrow(/unknown-workspace/);
+    await expect(client!.call("workspace.files", { workspaceId: "nope-00000000" })).rejects.toThrow(
+      /unknown-workspace/,
+    );
     expect(await client!.call("ping")).toEqual({ pong: true });
   });
 
   it("session.last：没有指针回 null，存档之后回那段会话的 id", async () => {
     await startDaemon();
-    expect(await client!.call(SESSION_METHODS.last, { workspaceId: "ws-1" })).toEqual({
+    expect(await client!.call("session.last", { workspaceId: "ws-1" })).toEqual({
       sessionId: null,
     });
 
-    const created = (await client!.call(SESSION_METHODS.create, {
+    const created = (await client!.call("session.create", {
       workspaceId: "ws-1",
       path: dir,
     })) as { sessionId: string };
-    await client!.call(SESSION_METHODS.save, { sessionId: created.sessionId });
+    await client!.call("session.save", { sessionId: created.sessionId });
 
-    expect(await client!.call(SESSION_METHODS.last, { workspaceId: "ws-1" })).toEqual({
+    expect(await client!.call("session.last", { workspaceId: "ws-1" })).toEqual({
       sessionId: created.sessionId,
     });
   });
@@ -246,15 +244,15 @@ describe("工作区处理器（真 socket）", () => {
 describe("会话处理器（真 socket）", () => {
   it("watch 之后：create / send 的进展以事件帧推到这条连接上", async () => {
     await startDaemon();
-    await client!.call(EVENT_METHODS.watch);
+    await client!.call("events.watch");
 
-    const created = (await client!.call(SESSION_METHODS.create, {
+    const created = (await client!.call("session.create", {
       workspaceId: "ws-1",
       path: workDir("proj-a"),
     })) as { sessionId: string; agentId: string };
     expect(created.agentId).toBe("default");
 
-    const sent = (await client!.call(SESSION_METHODS.send, {
+    const sent = (await client!.call("session.send", {
       sessionId: created.sessionId,
       content: "你好",
     })) as { turnId: number };
@@ -290,11 +288,11 @@ describe("会话处理器（真 socket）", () => {
 
   it("session.subAgent.snapshot 走通；未知子 Agent → sub-agent-missing 错误帧", async () => {
     await startDaemon();
-    const created = (await client!.call(SESSION_METHODS.create, {
+    const created = (await client!.call("session.create", {
       workspaceId: "ws-1",
       path: dir,
     })) as { sessionId: string };
-    await client!.call(SESSION_METHODS.send, {
+    await client!.call("session.send", {
       sessionId: created.sessionId,
       content: "帮我查两处",
     });
@@ -304,7 +302,7 @@ describe("会话处理器（真 socket）", () => {
     agent.fire("sub-agent-start", { subAgent: sub });
 
     expect(
-      await client!.call(SESSION_METHODS.subAgentSnapshot, {
+      await client!.call("session.subAgent.snapshot", {
         sessionId: created.sessionId,
         subAgentId: "sub-1",
       }),
@@ -317,27 +315,27 @@ describe("会话处理器（真 socket）", () => {
 
     // 子 Agent 只活在当前一轮：不存在的 id 带码报错，不回一份空对话
     await expect(
-      client!.call(SESSION_METHODS.subAgentSnapshot, {
+      client!.call("session.subAgent.snapshot", {
         sessionId: created.sessionId,
         subAgentId: "sub-404",
       }),
     ).rejects.toThrow(/sub-agent-missing/);
     // 参数缺失同样是 bad-params，且连接还能继续用
     await expect(
-      client!.call(SESSION_METHODS.subAgentSnapshot, { sessionId: created.sessionId }),
+      client!.call("session.subAgent.snapshot", { sessionId: created.sessionId }),
     ).rejects.toThrow(/bad-params/);
     expect(await client!.call("ping")).toEqual({ pong: true });
   });
 
   it("session.list 报出活着的会话与当前阶段", async () => {
     await startDaemon();
-    const created = (await client!.call(SESSION_METHODS.create, {
+    const created = (await client!.call("session.create", {
       workspaceId: "ws-1",
       path: workDir("proj-list"),
     })) as { sessionId: string };
-    await client!.call(SESSION_METHODS.send, { sessionId: created.sessionId, content: "hi" });
+    await client!.call("session.send", { sessionId: created.sessionId, content: "hi" });
 
-    const listed = (await client!.call(SESSION_METHODS.list, { workspaceId: "ws-1" })) as {
+    const listed = (await client!.call("session.list", { workspaceId: "ws-1" })) as {
       sessions: any[];
     };
     expect(listed.sessions).toHaveLength(1);
@@ -355,17 +353,17 @@ describe("会话处理器（真 socket）", () => {
   it("未知会话 → unknown-session 错误帧；cancel 未知会话回 false（不是错）", async () => {
     await startDaemon();
     await expect(
-      client!.call(SESSION_METHODS.send, { sessionId: "sess_404", content: "x" }),
+      client!.call("session.send", { sessionId: "sess_404", content: "x" }),
     ).rejects.toThrow(/unknown-session/);
 
-    expect(await client!.call(SESSION_METHODS.cancel, { sessionId: "sess_404" })).toEqual({
+    expect(await client!.call("session.cancel", { sessionId: "sess_404" })).toEqual({
       cancelled: false,
     });
   });
 
   it("session.send 收「文本 + 图片」内容块：服务端不解释，原样交给 Agent", async () => {
     await startDaemon();
-    const created = (await client!.call(SESSION_METHODS.create, {
+    const created = (await client!.call("session.create", {
       workspaceId: "ws-1",
       path: dir,
     })) as { sessionId: string };
@@ -374,7 +372,7 @@ describe("会话处理器（真 socket）", () => {
       { type: "image_url", image_url: { url: "data:image/png;base64,AAA" } },
     ];
 
-    const sent = (await client!.call(SESSION_METHODS.send, {
+    const sent = (await client!.call("session.send", {
       sessionId: created.sessionId,
       content,
     })) as { turnId: number };
@@ -386,33 +384,33 @@ describe("会话处理器（真 socket）", () => {
 
   it("不认识的内容块 → bad-params（放过去只会在端点那边变成更难懂的 400）", async () => {
     await startDaemon();
-    const created = (await client!.call(SESSION_METHODS.create, {
+    const created = (await client!.call("session.create", {
       workspaceId: "ws-1",
       path: dir,
     })) as { sessionId: string };
 
     await expect(
-      client!.call(SESSION_METHODS.send, {
+      client!.call("session.send", {
         sessionId: created.sessionId,
         content: [{ type: "video", url: "x" }],
       }),
     ).rejects.toThrow(/bad-params/);
     await expect(
-      client!.call(SESSION_METHODS.send, { sessionId: created.sessionId, content: [] }),
+      client!.call("session.send", { sessionId: created.sessionId, content: [] }),
     ).rejects.toThrow(/bad-params/);
     expect(agent.sent).toEqual([]);
   });
 
   it("session.handoff：返回文档路径与执行者，进度作为事件推过连接", async () => {
     await startDaemon();
-    await client!.call(EVENT_METHODS.watch);
-    const created = (await client!.call(SESSION_METHODS.create, {
+    await client!.call("events.watch");
+    const created = (await client!.call("session.create", {
       workspaceId: "ws-1",
       path: dir,
     })) as { sessionId: string };
     agent.messages = [{ role: "user", content: "任务" }];
 
-    const result = (await client!.call(SESSION_METHODS.handoff, {
+    const result = (await client!.call("session.handoff", {
       sessionId: created.sessionId,
     })) as any;
 
@@ -446,26 +444,26 @@ describe("会话处理器（真 socket）", () => {
 
   it("session.migrate：旧会话入档、新会话落盘、旧 id 退场", async () => {
     await startDaemon();
-    const created = (await client!.call(SESSION_METHODS.create, {
+    const created = (await client!.call("session.create", {
       workspaceId: "ws-1",
       path: dir,
     })) as { sessionId: string };
     agent.messages = [{ role: "user", content: "旧任务" }];
 
-    const result = (await client!.call(SESSION_METHODS.migrate, {
+    const result = (await client!.call("session.migrate", {
       sessionId: created.sessionId,
     })) as any;
 
     expect(result.sessionId).not.toBe(created.sessionId);
     // 活会话换了键：旧 id 不再是活会话（但它作为存档仍在列表里）
-    const live = (await client!.call(SESSION_METHODS.list, {
+    const live = (await client!.call("session.list", {
       workspaceId: "ws-1",
       includeSaved: false,
     })) as any;
     expect(live.sessions.map((session: any) => session.sessionId)).toEqual([result.sessionId]);
     // 旧会话与新会话都在存档里（旧的是交接前那份完整历史）—— 列表是合并视图，
     // 所以这里按 id 集合断言，不看 `live`
-    const saved = (await client!.call(SESSION_METHODS.list, { workspaceId: "ws-1" })) as any;
+    const saved = (await client!.call("session.list", { workspaceId: "ws-1" })) as any;
     expect(saved.sessions.map((session: any) => session.sessionId).sort()).toEqual(
       [created.sessionId, result.sessionId].sort(),
     );
@@ -473,14 +471,14 @@ describe("会话处理器（真 socket）", () => {
 
   it("session.migrate 的 strategy 只认两个取值：别的原样回 bad-params", async () => {
     await startDaemon();
-    const created = (await client!.call(SESSION_METHODS.create, {
+    const created = (await client!.call("session.create", {
       workspaceId: "ws-1",
       path: dir,
     })) as { sessionId: string };
     agent.messages = [{ role: "user", content: "旧任务" }];
 
     await expect(
-      client!.call(SESSION_METHODS.migrate, { sessionId: created.sessionId, strategy: "drop" }),
+      client!.call("session.migrate", { sessionId: created.sessionId, strategy: "drop" }),
     ).rejects.toThrow(/bad-params/);
     // 消息原样未动：参数错不会走到交接那一步
     expect(agent.messages).toEqual([{ role: "user", content: "旧任务" }]);
@@ -491,7 +489,7 @@ describe("会话处理器（真 socket）", () => {
     // 事件从这个管理器的**源头**上收（这条用例要看的是「没发 idChanged」，不是接线）
     const seen: ServerEvent[] = [];
     manager.subscribe((event) => seen.push(event));
-    const created = (await client!.call(SESSION_METHODS.create, {
+    const created = (await client!.call("session.create", {
       workspaceId: "ws-1",
       path: dir,
     })) as { sessionId: string };
@@ -500,7 +498,7 @@ describe("会话处理器（真 socket）", () => {
       { role: "user", content: "旧任务" },
     ];
 
-    const result = (await client!.call(SESSION_METHODS.migrate, {
+    const result = (await client!.call("session.migrate", {
       sessionId: created.sessionId,
       strategy: "omit",
     })) as any;
@@ -508,7 +506,7 @@ describe("会话处理器（真 socket）", () => {
     expect(result.sessionId).toBe(created.sessionId);
     // 没换 id，就没有 idChanged 事件（客户端不会把后面的请求切到另一个 id 上）
     expect(seen.filter((event) => event.event === "session-id-changed")).toEqual([]);
-    const saved = (await client!.call(SESSION_METHODS.list, { workspaceId: "ws-1" })) as any;
+    const saved = (await client!.call("session.list", { workspaceId: "ws-1" })) as any;
     expect(saved.sessions.map((session: any) => session.sessionId)).toEqual([created.sessionId]);
     // 旧消息还在，只是标了不再发送
     expect(agent.messages[1]).toMatchObject({ content: "旧任务", omit: true });
@@ -516,13 +514,13 @@ describe("会话处理器（真 socket）", () => {
 
   it("session.handoff 的 mode 只认两个取值：别的原样回 bad-params", async () => {
     await startDaemon();
-    const created = (await client!.call(SESSION_METHODS.create, {
+    const created = (await client!.call("session.create", {
       workspaceId: "ws-1",
       path: dir,
     })) as { sessionId: string };
 
     await expect(
-      client!.call(SESSION_METHODS.handoff, { sessionId: created.sessionId, mode: "auto" }),
+      client!.call("session.handoff", { sessionId: created.sessionId, mode: "auto" }),
     ).rejects.toThrow(/bad-params/);
     // 连接还能继续用
     expect(await client!.call("ping")).toEqual({ pong: true });
@@ -530,8 +528,8 @@ describe("会话处理器（真 socket）", () => {
 
   it("session.answer：提问以事件推过连接，回答之后服务端那一轮继续跑（迁移用的是用户选的 mode）", async () => {
     await startDaemon();
-    await client!.call(EVENT_METHODS.watch);
-    const created = (await client!.call(SESSION_METHODS.create, {
+    await client!.call("events.watch");
+    const created = (await client!.call("session.create", {
       workspaceId: "ws-1",
       path: dir,
     })) as { sessionId: string };
@@ -558,7 +556,7 @@ describe("会话处理器（真 socket）", () => {
     });
 
     expect(
-      await client!.call(SESSION_METHODS.answer, {
+      await client!.call("session.answer", {
         sessionId: created.sessionId,
         questionId: question.questionId,
         choice: "summary",
@@ -567,7 +565,7 @@ describe("会话处理器（真 socket）", () => {
     await migrated;
 
     // 旧 id 退场、新 id 登场：迁移真的按用户的选择发生了（旧那段已入档，所以只看活会话）
-    const listed = (await client!.call(SESSION_METHODS.list, {
+    const listed = (await client!.call("session.list", {
       workspaceId: "ws-1",
       includeSaved: false,
     })) as any;
@@ -578,16 +576,16 @@ describe("会话处理器（真 socket）", () => {
 
   it("session.answer 参数错 → bad-params（choice 缺失不等于「跳过」：那是 null）", async () => {
     await startDaemon();
-    const created = (await client!.call(SESSION_METHODS.create, {
+    const created = (await client!.call("session.create", {
       workspaceId: "ws-1",
       path: dir,
     })) as { sessionId: string };
 
     await expect(
-      client!.call(SESSION_METHODS.answer, { sessionId: created.sessionId, choice: "self" }),
+      client!.call("session.answer", { sessionId: created.sessionId, choice: "self" }),
     ).rejects.toThrow(/bad-params/);
     await expect(
-      client!.call(SESSION_METHODS.answer, {
+      client!.call("session.answer", {
         sessionId: created.sessionId,
         questionId: "q-1",
         choice: "",
@@ -599,14 +597,14 @@ describe("会话处理器（真 socket）", () => {
 
   it("session.answer 回答一个已经不在的问题 → answered:false（来晚了，不是错）", async () => {
     await startDaemon();
-    const created = (await client!.call(SESSION_METHODS.create, {
+    const created = (await client!.call("session.create", {
       workspaceId: "ws-1",
       path: dir,
     })) as { sessionId: string };
 
     // 超时 / 已答过 / 会话已收，对客户端都是同一件事：不用重试
     expect(
-      await client!.call(SESSION_METHODS.answer, {
+      await client!.call("session.answer", {
         sessionId: created.sessionId,
         questionId: "q-404",
         choice: null,
@@ -700,11 +698,11 @@ describe("会话创建：path 可缺省，sessionId 必须被尊重", () => {
   it("不带 path：用 workspace.json 记的路径（客户端不需要知道目录在哪）", async () => {
     await startDaemon();
     // 先认一个工作区，让服务端手上有一份 workspace.json
-    const workspace = (await client!.call(WORKSPACE_METHODS.resolve, {
+    const workspace = (await client!.call("workspace.resolve", {
       path: workDir("proj-a"),
     })) as { workspaceId: string; path: string };
 
-    const created = (await client!.call(SESSION_METHODS.create, {
+    const created = (await client!.call("session.create", {
       workspaceId: workspace.workspaceId,
     })) as { sessionId: string };
 
@@ -715,9 +713,9 @@ describe("会话创建：path 可缺省，sessionId 必须被尊重", () => {
 
   it("不带 path 又是个服务端不认识的工作区：报 unknown-workspace，不静默造目录", async () => {
     await startDaemon();
-    await expect(
-      client!.call(SESSION_METHODS.create, { workspaceId: "ws-unknown" }),
-    ).rejects.toThrow(/unknown-workspace/);
+    await expect(client!.call("session.create", { workspaceId: "ws-unknown" })).rejects.toThrow(
+      /unknown-workspace/,
+    );
   });
 
   it("带了 sessionId 就沿用它，并把存档里的消息装进 Agent（续接 / `/load` 的根）", async () => {
@@ -731,7 +729,7 @@ describe("会话创建：path 可缺省，sessionId 必须被尊重", () => {
       messages: [{ role: "user", content: "旧对话" }],
     });
 
-    const created = (await client!.call(SESSION_METHODS.create, {
+    const created = (await client!.call("session.create", {
       workspaceId,
       path: workDir("proj-resume"),
       sessionId: "chat_old",
@@ -752,12 +750,12 @@ describe("会话创建：path 可缺省，sessionId 必须被尊重", () => {
 describe("session.model.set（真 socket）", () => {
   it("改这一段会话的模型：回新快照（生效模型 + 档位），装配方收到会话级覆盖", async () => {
     await startDaemon();
-    const created = (await client!.call(SESSION_METHODS.create, {
+    const created = (await client!.call("session.create", {
       workspaceId: "ws-1",
       path: dir,
     })) as { sessionId: string };
 
-    const snapshot = (await client!.call(SESSION_METHODS.modelSet, {
+    const snapshot = (await client!.call("session.model.set", {
       sessionId: created.sessionId,
       modelId: "gpt-6-astra",
     })) as { modelId: string; modelLevel: string; sessionId: string };
@@ -771,11 +769,9 @@ describe("session.model.set（真 socket）", () => {
 
   it("缺 sessionId / modelId → bad-params（空串不是「没给」）", async () => {
     await startDaemon();
-    await expect(client!.call(SESSION_METHODS.modelSet, { modelId: "m" })).rejects.toThrow(
-      /bad-params/,
-    );
+    await expect(client!.call("session.model.set", { modelId: "m" })).rejects.toThrow(/bad-params/);
     await expect(
-      client!.call(SESSION_METHODS.modelSet, { sessionId: "chat_1", modelId: "" }),
+      client!.call("session.model.set", { sessionId: "chat_1", modelId: "" }),
     ).rejects.toThrow(/bad-params/);
   });
 });
@@ -789,12 +785,12 @@ describe("session.model.set（真 socket）", () => {
 describe("session.modelParams.set（真 socket）", () => {
   it("写会话级参数：装配方收到它、回新快照", async () => {
     await startDaemon();
-    const created = (await client!.call(SESSION_METHODS.create, {
+    const created = (await client!.call("session.create", {
       workspaceId: "ws-1",
       path: dir,
     })) as { sessionId: string };
 
-    const snapshot = (await client!.call(SESSION_METHODS.modelParamsSet, {
+    const snapshot = (await client!.call("session.modelParams.set", {
       sessionId: created.sessionId,
       modelParams: { reasoning_effort: "high" },
     })) as { sessionId: string; modelId: string };
@@ -806,17 +802,17 @@ describe("session.modelParams.set（真 socket）", () => {
 
   it("缺 sessionId → bad-params；`null` 是合法值（= 清掉覆盖）", async () => {
     await startDaemon();
-    const created = (await client!.call(SESSION_METHODS.create, {
+    const created = (await client!.call("session.create", {
       workspaceId: "ws-1",
       path: dir,
     })) as { sessionId: string };
 
-    await expect(client!.call(SESSION_METHODS.modelParamsSet, { modelParams: {} })).rejects.toThrow(
+    await expect(client!.call("session.modelParams.set", { modelParams: {} })).rejects.toThrow(
       /bad-params/,
     );
 
     // `null` 不能被参数校验拦掉：它是「清除」的唯一表达方式
-    await client!.call(SESSION_METHODS.modelParamsSet, {
+    await client!.call("session.modelParams.set", {
       sessionId: created.sessionId,
       modelParams: null,
     });
@@ -827,13 +823,13 @@ describe("session.modelParams.set（真 socket）", () => {
 describe("session.attach：会话活得比连接久", () => {
   it("活着的会话直接接上（不再报 session-exists）", async () => {
     await startDaemon();
-    const created = (await client!.call(SESSION_METHODS.create, {
+    const created = (await client!.call("session.create", {
       workspaceId: "ws-1",
       path: workDir("proj-a"),
     })) as { sessionId: string; agentId: string };
 
     // 「接着上次」走的就是这条：客户端只给 id，服务端知道它还在内存里
-    const attached = await client!.call(SESSION_METHODS.attach, {
+    const attached = await client!.call("session.attach", {
       workspaceId: "ws-1",
       path: workDir("proj-a"),
       sessionId: created.sessionId,
@@ -846,7 +842,7 @@ describe("session.attach：会话活得比连接久", () => {
   it("内存与盘上都没有这个 id → session-missing（不悄悄开一段空的）", async () => {
     await startDaemon();
     await expect(
-      client!.call(SESSION_METHODS.attach, {
+      client!.call("session.attach", {
         workspaceId: "ws-1",
         path: dir,
         sessionId: "chat_gone",
@@ -897,7 +893,7 @@ describe("会话跟着连接走：断开后按宽限期回收（不靠客户端�
     try {
       const conn = await TestClient.connect(instance.port);
       await conn.handshake();
-      const created = (await conn.call(SESSION_METHODS.create, {
+      const created = (await conn.call("session.create", {
         workspaceId: "ws-hold",
         path: workDir("proj-hold"),
       })) as { sessionId: string };
@@ -924,34 +920,34 @@ describe("会话跟着连接走：断开后按宽限期回收（不靠客户端�
 describe("session.rename / session.remove（真 socket）", () => {
   it("rename 改 title 不动 id；remove 之后列表与存档都没了", async () => {
     await startDaemon();
-    const created = (await client!.call(SESSION_METHODS.create, {
+    const created = (await client!.call("session.create", {
       workspaceId: "ws-1",
       path: workDir("proj-title"),
     })) as { sessionId: string };
 
-    const renamed = await client!.call(SESSION_METHODS.rename, {
+    const renamed = await client!.call("session.rename", {
       workspaceId: "ws-1",
       sessionId: created.sessionId,
       title: "重构会话",
     });
     expect(renamed).toEqual({ sessionId: created.sessionId, title: "重构会话" });
 
-    const listed = (await client!.call(SESSION_METHODS.list, { workspaceId: "ws-1" })) as any;
+    const listed = (await client!.call("session.list", { workspaceId: "ws-1" })) as any;
     expect(listed.sessions).toHaveLength(1);
     expect(listed.sessions[0]).toMatchObject({ sessionId: created.sessionId, title: "重构会话" });
 
     expect(
-      await client!.call(SESSION_METHODS.remove, {
+      await client!.call("session.remove", {
         workspaceId: "ws-1",
         sessionId: created.sessionId,
       }),
     ).toEqual({ removed: true });
 
-    const after = (await client!.call(SESSION_METHODS.list, { workspaceId: "ws-1" })) as any;
+    const after = (await client!.call("session.list", { workspaceId: "ws-1" })) as any;
     expect(after.sessions).toEqual([]);
     // 幂等
     expect(
-      await client!.call(SESSION_METHODS.remove, {
+      await client!.call("session.remove", {
         workspaceId: "ws-1",
         sessionId: created.sessionId,
       }),
@@ -960,13 +956,13 @@ describe("session.rename / session.remove（真 socket）", () => {
 
   it("rename 参数缺 title → bad-params（不静默当空名字）", async () => {
     await startDaemon();
-    const created = (await client!.call(SESSION_METHODS.create, {
+    const created = (await client!.call("session.create", {
       workspaceId: "ws-1",
       path: workDir("proj-title2"),
     })) as { sessionId: string };
 
     await expect(
-      client!.call(SESSION_METHODS.rename, { workspaceId: "ws-1", sessionId: created.sessionId }),
+      client!.call("session.rename", { workspaceId: "ws-1", sessionId: created.sessionId }),
     ).rejects.toThrow(/bad-params/);
   });
 });
@@ -980,26 +976,26 @@ describe("session.rename / session.remove（真 socket）", () => {
 describe("工作区：id 冻结 / list / rename / remove / relocate（真 socket）", () => {
   /** 认一个工作区（客户端启动第一句就是它） */
   const resolveOf = async (path: string) =>
-    (await client!.call(WORKSPACE_METHODS.resolve, { path })) as {
+    (await client!.call("workspace.resolve", { path })) as {
       workspaceId: string;
       path: string;
     };
   const createIn = async (workspaceId: string) =>
-    (await client!.call(SESSION_METHODS.create, { workspaceId })) as { sessionId: string };
+    (await client!.call("session.create", { workspaceId })) as { sessionId: string };
 
   it("目录改名后历史不丢：mv → relocate → 会话还在 → 新路径 resolve 回到同一个 id", async () => {
     await startDaemon();
     const before = workDir("proj-old");
     const workspace = await resolveOf(before);
     const created = await createIn(workspace.workspaceId);
-    await client!.call(SESSION_METHODS.save, { sessionId: created.sessionId });
+    await client!.call("session.save", { sessionId: created.sessionId });
 
     // ① 用户在自己终端里 `mv ~/proj-old ~/proj-new`（服务端当然不知道）
     const after = join(dir, "proj-new");
     renameSync(before, after);
 
     // ② 侧栏看得见「这个工作区的目录不在了」：记录与历史都还在，只是路径失效
-    const listed = (await client!.call(WORKSPACE_METHODS.list)) as { workspaces: any[] };
+    const listed = (await client!.call("workspace.list")) as { workspaces: any[] };
     expect(listed.workspaces).toEqual([
       expect.objectContaining({
         workspaceId: workspace.workspaceId,
@@ -1010,20 +1006,20 @@ describe("工作区：id 冻结 / list / rename / remove / relocate（真 socket
 
     // ③ 开会话被明确拒绝（message 里带 path），绝不替用户 mkdir 出一个空目录
     await expect(
-      client!.call(SESSION_METHODS.create, { workspaceId: workspace.workspaceId }),
+      client!.call("session.create", { workspaceId: workspace.workspaceId }),
     ).rejects.toThrow(new RegExp(`workspace-path-missing.*${before}`));
     expect(existsSync(before)).toBe(false);
 
     // ④ 修复：客户端拿旧 id 把记录指到新路径
     expect(
-      await client!.call(WORKSPACE_METHODS.relocate, {
+      await client!.call("workspace.relocate", {
         workspaceId: workspace.workspaceId,
         path: after,
       }),
     ).toEqual({ workspaceId: workspace.workspaceId, path: after });
 
     // ⑤ 历史还在：会话列表照旧（这就是「挪个目录，历史就没了」不再发生）
-    const sessions = (await client!.call(SESSION_METHODS.list, {
+    const sessions = (await client!.call("session.list", {
       workspaceId: workspace.workspaceId,
     })) as { sessions: any[] };
     expect(sessions.sessions.map((item) => item.sessionId)).toEqual([created.sessionId]);
@@ -1032,7 +1028,7 @@ describe("工作区：id 冻结 / list / rename / remove / relocate（真 socket
     expect((await resolveOf(after)).workspaceId).toBe(workspace.workspaceId);
 
     // ⑦ 那段会话能接回来（「历史没丢」的最终证明）
-    const resumed = (await client!.call(SESSION_METHODS.attach, {
+    const resumed = (await client!.call("session.attach", {
       workspaceId: workspace.workspaceId,
       sessionId: created.sessionId,
     })) as { sessionId: string };
@@ -1046,12 +1042,12 @@ describe("工作区：id 冻结 / list / rename / remove / relocate（真 socket
     const kept = await resolveOf(keep);
     const lost = await resolveOf(doomed);
     // 改个名字让顺序与创建顺序不同（顺序按显示名，不按创建先后）
-    await client!.call(WORKSPACE_METHODS.rename, {
+    await client!.call("workspace.rename", {
       workspaceId: lost.workspaceId,
       title: "0-最先",
     });
 
-    const first = (await client!.call(WORKSPACE_METHODS.list)) as { workspaces: any[] };
+    const first = (await client!.call("workspace.list")) as { workspaces: any[] };
     expect(first.workspaces.map((item) => item.workspaceId)).toEqual([
       lost.workspaceId,
       kept.workspaceId,
@@ -1060,7 +1056,7 @@ describe("工作区：id 冻结 / list / rename / remove / relocate（真 socket
 
     rmSync(doomed, { recursive: true });
 
-    const second = (await client!.call(WORKSPACE_METHODS.list)) as { workspaces: any[] };
+    const second = (await client!.call("workspace.list")) as { workspaces: any[] };
     expect(second.workspaces).toEqual([
       expect.objectContaining({
         workspaceId: lost.workspaceId,
@@ -1081,7 +1077,7 @@ describe("工作区：id 冻结 / list / rename / remove / relocate（真 socket
     const workspace = await resolveOf(path);
 
     expect(
-      await client!.call(WORKSPACE_METHODS.rename, {
+      await client!.call("workspace.rename", {
         workspaceId: workspace.workspaceId,
         title: "重构现场",
       }),
@@ -1089,7 +1085,7 @@ describe("工作区：id 冻结 / list / rename / remove / relocate（真 socket
 
     // id 与 path 一个字都没动：同一个路径拿回来的还是同一个 id
     expect((await resolveOf(path)).workspaceId).toBe(workspace.workspaceId);
-    const listed = (await client!.call(WORKSPACE_METHODS.list)) as { workspaces: any[] };
+    const listed = (await client!.call("workspace.list")) as { workspaces: any[] };
     expect(
       listed.workspaces.find((item) => item.workspaceId === workspace.workspaceId),
     ).toMatchObject({
@@ -1098,17 +1094,17 @@ describe("工作区：id 冻结 / list / rename / remove / relocate（真 socket
     });
 
     await expect(
-      client!.call(WORKSPACE_METHODS.rename, {
+      client!.call("workspace.rename", {
         workspaceId: workspace.workspaceId,
         title: "",
       }),
     ).rejects.toThrow(/bad-params/);
     await expect(
-      client!.call(WORKSPACE_METHODS.rename, { workspaceId: workspace.workspaceId }),
+      client!.call("workspace.rename", { workspaceId: workspace.workspaceId }),
     ).rejects.toThrow(/bad-params/);
     // 未知工作区不是 bad-params（参数是对的，东西不在）
     await expect(
-      client!.call(WORKSPACE_METHODS.rename, { workspaceId: "nope-00000000", title: "x" }),
+      client!.call("workspace.rename", { workspaceId: "nope-00000000", title: "x" }),
     ).rejects.toThrow(/unknown-workspace/);
   });
 
@@ -1116,30 +1112,26 @@ describe("工作区：id 冻结 / list / rename / remove / relocate（真 socket
     await startDaemon();
     const workspace = await resolveOf(workDir("proj-rm"));
     const created = await createIn(workspace.workspaceId);
-    await client!.call(SESSION_METHODS.save, { sessionId: created.sessionId });
+    await client!.call("session.save", { sessionId: created.sessionId });
 
     const rootDir = join(dir, "workspaces", workspace.workspaceId);
     expect(existsSync(join(rootDir, "sessions", `${created.sessionId}.json`))).toBe(true);
 
-    expect(
-      await client!.call(WORKSPACE_METHODS.remove, { workspaceId: workspace.workspaceId }),
-    ).toEqual({
+    expect(await client!.call("workspace.remove", { workspaceId: workspace.workspaceId })).toEqual({
       removed: true,
     });
     expect(existsSync(rootDir)).toBe(false);
 
     // 活会话也得退场：不然它下一轮收尾会把存档写回来（`FileSessionStore.write` 自己 mkdir），
     // 刚删掉的工作区就部分复活了
-    const live = (await client!.call(SESSION_METHODS.list, {
+    const live = (await client!.call("session.list", {
       workspaceId: workspace.workspaceId,
       includeSaved: false,
     })) as { sessions: any[] };
     expect(live.sessions).toEqual([]);
 
     // 幂等：本来就不在了
-    expect(
-      await client!.call(WORKSPACE_METHODS.remove, { workspaceId: workspace.workspaceId }),
-    ).toEqual({
+    expect(await client!.call("workspace.remove", { workspaceId: workspace.workspaceId })).toEqual({
       removed: false,
     });
   });
@@ -1150,7 +1142,7 @@ describe("工作区：id 冻结 / list / rename / remove / relocate（真 socket
 
     const missing = join(dir, "not-there");
     await expect(
-      client!.call(WORKSPACE_METHODS.relocate, {
+      client!.call("workspace.relocate", {
         workspaceId: workspace.workspaceId,
         path: missing,
       }),
@@ -1161,10 +1153,10 @@ describe("工作区：id 冻结 / list / rename / remove / relocate（真 socket
     const taken = workDir("taken");
     const occupant = await resolveOf(taken);
     await expect(
-      client!.call(WORKSPACE_METHODS.relocate, { workspaceId: workspace.workspaceId, path: taken }),
+      client!.call("workspace.relocate", { workspaceId: workspace.workspaceId, path: taken }),
     ).rejects.toThrow(/workspace-exists/);
     // 记录一个都没动
-    const listed = (await client!.call(WORKSPACE_METHODS.list)) as { workspaces: any[] };
+    const listed = (await client!.call("workspace.list")) as { workspaces: any[] };
     expect(
       listed.workspaces.find((item) => item.workspaceId === workspace.workspaceId),
     ).toMatchObject({ path: join(dir, "owner") });
@@ -1179,7 +1171,7 @@ describe("工作区：id 冻结 / list / rename / remove / relocate（真 socket
     await startDaemon();
     const missing = join(dir, "never-existed");
     await expect(
-      client!.call(SESSION_METHODS.create, { workspaceId: "ws-x", path: missing }),
+      client!.call("session.create", { workspaceId: "ws-x", path: missing }),
     ).rejects.toThrow(new RegExp(`workspace-path-missing.*${missing}`));
     expect(existsSync(missing)).toBe(false);
     // 连接还能继续用
@@ -1191,27 +1183,25 @@ describe("工作区：id 冻结 / list / rename / remove / relocate（真 socket
     const path = workDir("proj-vanish");
     const workspace = await resolveOf(path);
     const created = await createIn(workspace.workspaceId);
-    await client!.call(SESSION_METHODS.save, { sessionId: created.sessionId });
+    await client!.call("session.save", { sessionId: created.sessionId });
     // 收掉活会话，逼 attach 走「从存档装回来」那条路
-    expect(await client!.call(SESSION_METHODS.close, { sessionId: created.sessionId })).toEqual({
+    expect(await client!.call("session.close", { sessionId: created.sessionId })).toEqual({
       closed: true,
     });
 
     // 用户把项目目录整个删了
     rmSync(path, { recursive: true });
 
-    expect(
-      await client!.call(SESSION_METHODS.last, { workspaceId: workspace.workspaceId }),
-    ).toEqual({
+    expect(await client!.call("session.last", { workspaceId: workspace.workspaceId })).toEqual({
       sessionId: created.sessionId,
     });
-    const listed = (await client!.call(SESSION_METHODS.list, {
+    const listed = (await client!.call("session.list", {
       workspaceId: workspace.workspaceId,
     })) as { sessions: any[] };
     expect(listed.sessions.map((item) => item.sessionId)).toEqual([created.sessionId]);
     expect(
       (
-        (await client!.call(SESSION_METHODS.attach, {
+        (await client!.call("session.attach", {
           workspaceId: workspace.workspaceId,
           sessionId: created.sessionId,
         })) as { sessionId: string }
@@ -1220,7 +1210,7 @@ describe("工作区：id 冻结 / list / rename / remove / relocate（真 socket
 
     // 但开会话仍然拒绝 —— 同一个前提的两种待遇，差别只在「会不会真的动那个目录」
     await expect(
-      client!.call(SESSION_METHODS.create, { workspaceId: workspace.workspaceId }),
+      client!.call("session.create", { workspaceId: workspace.workspaceId }),
     ).rejects.toThrow(/workspace-path-missing/);
   });
 });

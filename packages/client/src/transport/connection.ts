@@ -47,7 +47,6 @@
  * 明确的失败（抛错）比一个安静地不听事件的连接好。
  */
 
-import { EVENT_METHODS } from "@ai-zen/agents-protocol";
 import { ensureServer } from "../ensure-server.js";
 import type { ClientInfo, ServerClient } from "../types.js";
 
@@ -181,7 +180,7 @@ export class ServerConnection {
       this.install(client);
       // 重新订阅：订阅按连接登记，新连接默认什么都不推
       if (this.watchWanted) {
-        await client.call(EVENT_METHODS.watch);
+        await client.call("events.watch");
         this.watched = client;
       }
       this.fire(this.openListeners);
@@ -204,7 +203,7 @@ export class ServerConnection {
       if (this.watched === client) return;
     }
     const attempt = (async () => {
-      await client.call(EVENT_METHODS.watch);
+      await client.call("events.watch");
       this.watched = client;
     })();
     this.watching = attempt;

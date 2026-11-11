@@ -29,30 +29,27 @@
  * 无状态：只持有连接，不缓存、不判活（连接的生死归 `ServerConnection`）。
  */
 
-import {
-  AGENT_METHODS,
-  ASSET_METHODS,
-  CONFIG_METHODS,
-  type AgentGetParams,
-  type AgentGetResult,
-  type AgentListResult,
-  type AgentRemoveParams,
-  type AgentRemoveResult,
-  type AgentSaveParams,
-  type AgentSaveResult,
-  type AgentSetModelResult,
-  type AssetListParams,
-  type AssetListResult,
-  type ConfigGetResult,
-  type ConfigMcpGetParams,
-  type ConfigMcpGetResult,
-  type ConfigMcpSaveParams,
-  type ConfigMcpSaveResult,
-  type ConfigReasoningPresetsResult,
-  type ConfigSaveResult,
-  type ConfigSetDefaultAgentResult,
-  type ConfigSetDefaultModelResult,
-} from "@ai-zen/agents-protocol";
+import type {
+  AgentGetParams,
+  AgentGetResult,
+  AgentListResult,
+  AgentRemoveParams,
+  AgentRemoveResult,
+  AgentSaveParams,
+  AgentSaveResult,
+  AgentSetModelResult,
+  AssetListParams,
+  AssetListResult,
+  ConfigGetResult,
+  ConfigMcpGetParams,
+  ConfigMcpGetResult,
+  ConfigMcpSaveParams,
+  ConfigMcpSaveResult,
+  ConfigReasoningPresetsResult,
+  ConfigSaveResult,
+  ConfigSetDefaultAgentResult,
+  ConfigSetDefaultModelResult,
+} from "@ai-zen/agents-server/protocol";
 import type { ServerClient } from "../types.js";
 
 export class RemoteConfig {
@@ -62,17 +59,17 @@ export class RemoteConfig {
 
   /** 读全局配置 + 那份文件在**服务端**的位置（客户端的路径是它自己的，算不出来） */
   async get(): Promise<ConfigGetResult> {
-    return await this.client.call<ConfigGetResult>(CONFIG_METHODS.get);
+    return await this.client.call<ConfigGetResult>("config.get");
   }
 
   /** 整份写回全局配置（形状 = SDK 的 `AppConfig`，协议层不解释） */
   async save(config: unknown): Promise<ConfigSaveResult> {
-    return await this.client.call<ConfigSaveResult>(CONFIG_METHODS.save, { config });
+    return await this.client.call<ConfigSaveResult>("config.save", { config });
   }
 
   /** 读思考策略表（文件缺失 / 损坏时由 SDK 回落出厂种子） */
   async reasoningPresets(): Promise<ConfigReasoningPresetsResult> {
-    return await this.client.call<ConfigReasoningPresetsResult>(CONFIG_METHODS.reasoningPresets);
+    return await this.client.call<ConfigReasoningPresetsResult>("config.reasoningPresets");
   }
 
   /**
@@ -82,7 +79,7 @@ export class RemoteConfig {
    * 整份写回会把对方刚改的字段抹掉。
    */
   async defaultAgentSet(agentId: string): Promise<ConfigSetDefaultAgentResult> {
-    return await this.client.call<ConfigSetDefaultAgentResult>(CONFIG_METHODS.defaultAgentSet, {
+    return await this.client.call<ConfigSetDefaultAgentResult>("config.defaultAgent.set", {
       agentId,
     });
   }
@@ -93,7 +90,7 @@ export class RemoteConfig {
    * 它只动兜底那一级：已经绑了模型的 Agent 一个都不受影响。
    */
   async defaultModelSet(modelId: string): Promise<ConfigSetDefaultModelResult> {
-    return await this.client.call<ConfigSetDefaultModelResult>(CONFIG_METHODS.defaultModelSet, {
+    return await this.client.call<ConfigSetDefaultModelResult>("config.defaultModel.set", {
       modelId,
     });
   }
@@ -106,12 +103,12 @@ export class RemoteConfig {
    * 否则同一套判据会在两个地方各写一遍。
    */
   async mcpGet(params: ConfigMcpGetParams): Promise<ConfigMcpGetResult> {
-    return await this.client.call<ConfigMcpGetResult>(CONFIG_METHODS.mcpGet, params);
+    return await this.client.call<ConfigMcpGetResult>("config.mcp.get", params);
   }
 
   /** 整份写回某个作用域的 MCP 配置 */
   async mcpSave(params: ConfigMcpSaveParams): Promise<ConfigMcpSaveResult> {
-    return await this.client.call<ConfigMcpSaveResult>(CONFIG_METHODS.mcpSave, params);
+    return await this.client.call<ConfigMcpSaveResult>("config.mcp.save", params);
   }
 
   // ==================== Agent 定义（`agent.*`，5 条） ====================
@@ -123,7 +120,7 @@ export class RemoteConfig {
    * （`GLM-5.3` 不接受 `thinking.disabled` 这类），这条规则只该有一份实现。
    */
   async agentSetModel(agentId: string, modelId: string): Promise<AgentSetModelResult> {
-    return await this.client.call<AgentSetModelResult>(AGENT_METHODS.setModel, {
+    return await this.client.call<AgentSetModelResult>("agent.model.set", {
       agentId,
       modelId,
     });
@@ -131,22 +128,22 @@ export class RemoteConfig {
 
   /** 列全部 Agent 定义（顶层 + 子 Agent 两路，配置中心分两栏展示） */
   async agentList(): Promise<AgentListResult> {
-    return await this.client.call<AgentListResult>(AGENT_METHODS.list);
+    return await this.client.call<AgentListResult>("agent.list");
   }
 
   /** 按 id 取一份定义（`kind` 缺省时顶层优先；不存在回 `null`，不是错） */
   async agentGet(params: AgentGetParams): Promise<AgentGetResult> {
-    return await this.client.call<AgentGetResult>(AGENT_METHODS.get, params);
+    return await this.client.call<AgentGetResult>("agent.get", params);
   }
 
   /** 整份写回一份定义（`id` 决定文件名） */
   async agentSave(params: AgentSaveParams): Promise<AgentSaveResult> {
-    return await this.client.call<AgentSaveResult>(AGENT_METHODS.save, params);
+    return await this.client.call<AgentSaveResult>("agent.save", params);
   }
 
   /** 删一份定义（本来就不存在回 `removed: false`，不当错误） */
   async agentRemove(params: AgentRemoveParams): Promise<AgentRemoveResult> {
-    return await this.client.call<AgentRemoveResult>(AGENT_METHODS.remove, params);
+    return await this.client.call<AgentRemoveResult>("agent.remove", params);
   }
 
   // ==================== 资产（`asset.*`，1 条） ====================
@@ -158,6 +155,6 @@ export class RemoteConfig {
    * 第二套规则，两份迟早不一致（症状：Agent 实际能用 12 个 skill，面板上列了 9 个）。
    */
   async assetList(params: AssetListParams): Promise<AssetListResult> {
-    return await this.client.call<AssetListResult>(ASSET_METHODS.list, params);
+    return await this.client.call<AssetListResult>("asset.list", params);
   }
 }

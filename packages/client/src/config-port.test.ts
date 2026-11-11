@@ -12,14 +12,11 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  AGENT_METHODS,
-  CONFIG_METHODS,
   ConfigService,
   Daemon,
   FileSessionStore,
   SessionAgentFactory,
   SessionManager,
-  WORKSPACE_METHODS,
   createAgentHandlers,
   createConfigHandlers,
   createSessionHandlers,
@@ -285,15 +282,15 @@ function fakeClient(calls: RecordedCall[]): ServerClient & { closed: boolean } {
     async call<T>(method: string, params?: unknown): Promise<T> {
       calls.push({ method, params });
       switch (method) {
-        case CONFIG_METHODS.get:
+        case "config.get":
           return { config: { endpoints: [], models: [] } } as T;
-        case CONFIG_METHODS.reasoningPresets:
+        case "config.reasoningPresets":
           return { presets: {} } as T;
-        case CONFIG_METHODS.mcpGet:
+        case "config.mcp.get":
           return { ok: true, config: { mcpServers: {} } } as T;
-        case WORKSPACE_METHODS.resolve:
+        case "workspace.resolve":
           return { workspaceId: "ws_fake", path: "/srv/proj" } as T;
-        case AGENT_METHODS.list:
+        case "agent.list":
           return { agents: [], subAgents: [] } as T;
         default:
           return { saved: true } as T;
@@ -343,11 +340,11 @@ describe("createRemoteConfigPort：连接的懒建与重建（注入假连接）
     // 会话级那一档（`session.model.set`）**不在这个门面上** —— 它的作用对象是一段会话，
     // 归 `RemoteSessions.modelSet`。
     expect(calls.map((call) => call.method)).toEqual([
-      CONFIG_METHODS.get,
-      CONFIG_METHODS.save,
-      AGENT_METHODS.setModel,
-      CONFIG_METHODS.defaultModelSet,
-      AGENT_METHODS.list,
+      "config.get",
+      "config.save",
+      "agent.model.set",
+      "config.defaultModel.set",
+      "agent.list",
     ]);
     expect(calls[3]!.params).toEqual({ modelId: "m" });
   });
@@ -373,7 +370,7 @@ describe("createRemoteConfigPort：连接的懒建与重建（注入假连接）
     await port.readConfig();
 
     expect(connects).toBe(2);
-    expect(second.map((call) => call.method)).toEqual([CONFIG_METHODS.get]);
+    expect(second.map((call) => call.method)).toEqual(["config.get"]);
   });
 
   it("project 作用域：把客户端 cwd 递给服务端，问一次就缓存", async () => {
@@ -386,21 +383,19 @@ describe("createRemoteConfigPort：连接的懒建与重建（注入假连接）
     await port.readMcpConfig("project");
     await port.writeMcpConfig({ mcpServers: {} }, "project");
 
-    const resolves = calls.filter((call) => call.method === WORKSPACE_METHODS.resolve);
+    const resolves = calls.filter((call) => call.method === "workspace.resolve");
     expect(resolves).toHaveLength(1);
     // 与开会话同一套判据：本地就把 cwd 递上去，远端才不说（见 `local-host.ts`）
     expect(resolves[0]!.params).toEqual({ path: "/work/proj" });
 
-    expect(calls.filter((call) => call.method === CONFIG_METHODS.mcpGet)[0]!.params).toEqual({
+    expect(calls.filter((call) => call.method === "config.mcp.get")[0]!.params).toEqual({
       scope: "project",
       workspaceId: "ws_fake",
     });
-    expect(calls.filter((call) => call.method === CONFIG_METHODS.mcpSave)[0]!.params).toMatchObject(
-      {
-        scope: "project",
-        workspaceId: "ws_fake",
-      },
-    );
+    expect(calls.filter((call) => call.method === "config.mcp.save")[0]!.params).toMatchObject({
+      scope: "project",
+      workspaceId: "ws_fake",
+    });
   });
 
   it("global 作用域不问工作区（多一次往返，也多一个会漂的答案）", async () => {
@@ -411,7 +406,7 @@ describe("createRemoteConfigPort：连接的懒建与重建（注入假连接）
 
     await port.readMcpConfig("global");
 
-    expect(calls.map((call) => call.method)).toEqual([CONFIG_METHODS.mcpGet]);
+    expect(calls.map((call) => call.method)).toEqual(["config.mcp.get"]);
     expect(calls[0]!.params).toEqual({ scope: "global" });
   });
 });

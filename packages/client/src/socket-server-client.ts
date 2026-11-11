@@ -18,14 +18,9 @@
  */
 
 import { createConnection, type Socket } from "node:net";
-import {
-  encodeFrame,
-  FrameDecoder,
-  PROTOCOL_VERSION,
-  type HelloResponse,
-  type ResponseFrame,
-  type ServerEvent,
-} from "@ai-zen/agents-protocol";
+import type { HelloResponse, ResponseFrame, ServerEvent } from "@ai-zen/agents-server/protocol";
+import { encodeFrame, FrameDecoder } from "./wire/frames.js";
+import { PROTOCOL_VERSION } from "./wire/messages.js";
 import type { CallOptions, ClientInfo, ServerAddress, ServerClient } from "./types.js";
 
 interface PendingCall {

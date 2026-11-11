@@ -50,40 +50,38 @@ import {
 } from "../domain/workspace/workspace.js";
 import { FileIndex } from "../domain/workspace/FileIndex.js";
 import type { SessionManager } from "../domain/session/SessionManager.js";
-import {
-  EVENT_METHODS,
-  SESSION_METHODS,
-  WORKSPACE_METHODS,
-  type HandoffMode,
-  type MessageContent,
-  type MigrationStrategy,
-  type SessionAnswerResult,
-  type SessionAttachResult,
-  type SessionCancelResult,
-  type SessionCreateResult,
-  type SessionHandoffResult,
-  type SessionLastResult,
-  type SessionListEntry,
-  type SessionListResult,
-  type SessionRenameResult,
-  type SessionRemoveResult,
-  type SessionMigrateResult,
-  type SessionRollbackResult,
-  type SessionReloadParams,
-  type SessionCloseResult,
-  type SessionSaveAsResult,
-  type SessionSaveResult,
-  type SessionSendResult,
-  type SessionSnapshotResult,
-  type SubAgentSnapshotResult,
-  type WorkspaceFilesResult,
-  type WorkspaceListResult,
-  type WorkspaceRelocateResult,
-  type WorkspaceRemoveResult,
-  type WorkspaceRenameResult,
-  type WorkspaceResolveResult,
-} from "@ai-zen/agents-protocol";
-import { ERROR_CODES, codedError } from "@ai-zen/agents-protocol";
+import type {
+  HandoffMode,
+  MessageContent,
+  MigrationStrategy,
+  SessionAnswerResult,
+  SessionAttachResult,
+  SessionCancelResult,
+  SessionCreateResult,
+  SessionHandoffResult,
+  SessionLastResult,
+  SessionListEntry,
+  SessionListResult,
+  SessionRenameResult,
+  SessionRemoveResult,
+  SessionMigrateResult,
+  SessionRollbackResult,
+  SessionReloadParams,
+  SessionCloseResult,
+  SessionSaveAsResult,
+  SessionSaveResult,
+  SessionSendResult,
+  SessionSnapshotResult,
+  SubAgentSnapshotResult,
+  WorkspaceFilesResult,
+  WorkspaceListResult,
+  WorkspaceRelocateResult,
+  WorkspaceRemoveResult,
+  WorkspaceRenameResult,
+  WorkspaceResolveResult,
+} from "../protocol/index.js";
+
+import { codedError } from "../wire/errors.js";
 
 export interface SessionHandlerOptions {
   manager: SessionManager;
@@ -114,8 +112,7 @@ export function createSessionHandlers(
    */
   const workspacePathOf = async (workspaceId: string): Promise<string> => {
     const workspace = await readWorkspace({ workspacesRoot, id: workspaceId });
-    if (!workspace)
-      throw codedError(ERROR_CODES.unknownWorkspace, `unknown workspace: ${workspaceId}`);
+    if (!workspace) throw codedError("unknown-workspace", `unknown workspace: ${workspaceId}`);
     return workspace.path;
   };
 
@@ -146,7 +143,7 @@ export function createSessionHandlers(
      * 「能不能在这里开会话」（后者是 `session.create` 的事）。用户 `mv` 完目录后客户端
      * 还是会拿旧路径或新路径来问，答案必须是那个**已经存在的** id，否则历史就找不回来了。
      */
-    [WORKSPACE_METHODS.resolve]: async (params): Promise<WorkspaceResolveResult> => {
+    ["workspace.resolve"]: async (params): Promise<WorkspaceResolveResult> => {
       const path = optionalString(params, "path") ?? defaultWorkspacePath;
       const workspace = await ensureWorkspace({ workspacesRoot, path });
       return { workspaceId: workspace.id, path: workspace.path };
@@ -158,7 +155,7 @@ export function createSessionHandlers(
      * 只收 `workspaceId`：根目录是**服务端的磁盘事实**，靠 `workspace.json` 反查，
      * 不接受调用方递来的路径 —— 否则补全扫的就是别人机器上的目录。
      */
-    [WORKSPACE_METHODS.files]: async (params): Promise<WorkspaceFilesResult> => {
+    ["workspace.files"]: async (params): Promise<WorkspaceFilesResult> => {
       const workspaceId = requireString(params, "workspaceId");
       return { entries: await fileIndex.list(await workspacePathOf(workspaceId)) };
     },
@@ -170,7 +167,7 @@ export function createSessionHandlers(
      * 一个连接服务于谁的工作区，与它能不能看见这些工作区无关（同一台机器上的
      * 终端与桌面端看到的是同一份）。顺序由 `listWorkspaces` 定死，客户端不重排。
      */
-    [WORKSPACE_METHODS.list]: async (): Promise<WorkspaceListResult> => {
+    ["workspace.list"]: async (): Promise<WorkspaceListResult> => {
       return { workspaces: await listWorkspaces({ workspacesRoot }) };
     },
 
@@ -180,7 +177,7 @@ export function createSessionHandlers(
      * 目标可以是一条「路径已经不在了」的记录 —— 这正是它有用的场景之一（目录被挪了，
      * 先给这个工作区起个名字，等下再 `relocate`）。
      */
-    [WORKSPACE_METHODS.rename]: async (params): Promise<WorkspaceRenameResult> => {
+    ["workspace.rename"]: async (params): Promise<WorkspaceRenameResult> => {
       return await renameWorkspace({
         workspacesRoot,
         id: requireString(params, "workspaceId"),
@@ -199,7 +196,7 @@ export function createSessionHandlers(
      *
      * 幂等：目录本来就不在 → `removed:false`，不当错误。
      */
-    [WORKSPACE_METHODS.remove]: async (params): Promise<WorkspaceRemoveResult> => {
+    ["workspace.remove"]: async (params): Promise<WorkspaceRemoveResult> => {
       const workspaceId = requireString(params, "workspaceId");
       const result = await removeWorkspace({ workspacesRoot, id: workspaceId });
       manager.closeWorkspace(workspaceId);
@@ -212,7 +209,7 @@ export function createSessionHandlers(
      * 参数校验之外的三条判定（新路径必须存在、不能与别的工作区撞、id 不动）都在
      * `relocateWorkspace` 里：它们要碰磁盘，且与 `session.create` 的前置判断是同一条。
      */
-    [WORKSPACE_METHODS.relocate]: async (params): Promise<WorkspaceRelocateResult> => {
+    ["workspace.relocate"]: async (params): Promise<WorkspaceRelocateResult> => {
       return await relocateWorkspace({
         workspacesRoot,
         id: requireString(params, "workspaceId"),
@@ -227,7 +224,7 @@ export function createSessionHandlers(
      * （一个连接可以同时看多个会话的事件）。一个会话可能被多个客户端看（终端 + 桌面端），
      * 而每个客户端的连断互不相干 —— 连接断开时自动退订（`onClose`）。
      */
-    [EVENT_METHODS.watch]: (_params, connection: Connection) => {
+    ["events.watch"]: (_params, connection: Connection) => {
       const unsubscribe = manager.subscribe((event) => connection.send(event));
       connection.onClose(unsubscribe);
       return { watching: true };
@@ -240,7 +237,7 @@ export function createSessionHandlers(
      * 路径只是多一个会漂的副本，而且它抄的是**自己**那边的路径 —— 两机时那个路径在服务端
      * 根本不存在。这与 `workspace.resolve` 的 `path` 可选是同一个口径：cwd 归服务端。
      */
-    [SESSION_METHODS.create]: async (params, connection): Promise<SessionCreateResult> => {
+    ["session.create"]: async (params, connection): Promise<SessionCreateResult> => {
       const workspaceId = requireString(params, "workspaceId");
       const path = optionalString(params, "path") ?? (await workspacePathOf(workspaceId));
       /**
@@ -269,7 +266,7 @@ export function createSessionHandlers(
      *
      * 客户端只会递 id —— 那段会话此刻在不在内存里、还是只在盘上，它无从判断。
      */
-    [SESSION_METHODS.attach]: async (params, connection): Promise<SessionAttachResult> => {
+    ["session.attach"]: async (params, connection): Promise<SessionAttachResult> => {
       const workspaceId = requireString(params, "workspaceId");
       const path = optionalString(params, "path") ?? (await workspacePathOf(workspaceId));
       const result = await manager.attach({
@@ -282,13 +279,13 @@ export function createSessionHandlers(
       return result;
     },
 
-    [SESSION_METHODS.send]: (params): SessionSendResult => {
+    ["session.send"]: (params): SessionSendResult => {
       const sessionId = requireString(params, "sessionId");
       const content = requireContent(params);
       return manager.send(sessionId, content);
     },
 
-    [SESSION_METHODS.cancel]: (params): SessionCancelResult => {
+    ["session.cancel"]: (params): SessionCancelResult => {
       return manager.cancel(requireString(params, "sessionId"));
     },
 
@@ -299,7 +296,7 @@ export function createSessionHandlers(
      * 用 `null` 表达；字段缺失是调用方漏了东西（或客户端版本对不上），当场拒比默默按
      * `null` 处理安全得多（后者会让用户的会话在无提示的情况下不迁移）。
      */
-    [SESSION_METHODS.answer]: (params): SessionAnswerResult => {
+    ["session.answer"]: (params): SessionAnswerResult => {
       return manager.answer(
         requireString(params, "sessionId"),
         requireString(params, "questionId"),
@@ -312,14 +309,14 @@ export function createSessionHandlers(
      *
      * 存档与活会话在**同一个条目形状**里给出，所以一段会话在列表里只有一个条目。
      */
-    [SESSION_METHODS.list]: async (params): Promise<SessionListResult> => {
+    ["session.list"]: async (params): Promise<SessionListResult> => {
       const workspaceId = requireString(params, "workspaceId");
       const includeSaved = optionalBoolean(params, "includeSaved");
       return { sessions: await manager.list(workspaceId, { includeSaved }) };
     },
 
     /** 改显示名（不动 id；目标可以只是盘上的存档） */
-    [SESSION_METHODS.rename]: async (params): Promise<SessionRenameResult> => {
+    ["session.rename"]: async (params): Promise<SessionRenameResult> => {
       return await manager.rename({
         workspaceId: requireString(params, "workspaceId"),
         sessionId: requireString(params, "sessionId"),
@@ -328,7 +325,7 @@ export function createSessionHandlers(
     },
 
     /** 删一段会话（物理删存档；幂等） */
-    [SESSION_METHODS.remove]: async (params): Promise<SessionRemoveResult> => {
+    ["session.remove"]: async (params): Promise<SessionRemoveResult> => {
       return await manager.remove({
         workspaceId: requireString(params, "workspaceId"),
         sessionId: requireString(params, "sessionId"),
@@ -340,22 +337,22 @@ export function createSessionHandlers(
      *
      * 指针指向的存档已不在（改名 / 手删）时回 `null` —— 取舍见 `SessionManager.last`。
      */
-    [SESSION_METHODS.last]: async (params): Promise<SessionLastResult> => {
+    ["session.last"]: async (params): Promise<SessionLastResult> => {
       return await manager.last(requireString(params, "workspaceId"));
     },
 
-    [SESSION_METHODS.rollback]: async (params): Promise<SessionRollbackResult> => {
+    ["session.rollback"]: async (params): Promise<SessionRollbackResult> => {
       return await manager.rollback(
         requireString(params, "sessionId"),
         requireNumber(params, "index"),
       );
     },
 
-    [SESSION_METHODS.snapshot]: async (params): Promise<SessionSnapshotResult> => {
+    ["session.snapshot"]: async (params): Promise<SessionSnapshotResult> => {
       return await manager.snapshot(requireString(params, "sessionId"));
     },
 
-    [SESSION_METHODS.reload]: async (params): Promise<SessionSnapshotResult> => {
+    ["session.reload"]: async (params): Promise<SessionSnapshotResult> => {
       return await manager.reload(requireString(params, "sessionId"));
     },
 
@@ -364,7 +361,7 @@ export function createSessionHandlers(
      *
      * `agentId` 是否真存在由装配方判定（它读定义）；这一层只保证参数齐。
      */
-    [SESSION_METHODS.setAgent]: async (params): Promise<SessionSnapshotResult> => {
+    ["session.setAgent"]: async (params): Promise<SessionSnapshotResult> => {
       return await manager.setAgent(
         requireString(params, "sessionId"),
         requireString(params, "agentId"),
@@ -377,7 +374,7 @@ export function createSessionHandlers(
      * 模型是否在配置里、端点有没有 Key：由装配方（SDK 的 `createModel`）在重建时判定
      * —— 这一层只保证参数齐。失败时会话原样不动（见 `SessionManager.setModel`）。
      */
-    [SESSION_METHODS.modelSet]: async (params): Promise<SessionSnapshotResult> => {
+    ["session.model.set"]: async (params): Promise<SessionSnapshotResult> => {
       return await manager.setModel(
         requireString(params, "sessionId"),
         requireString(params, "modelId"),
@@ -391,7 +388,7 @@ export function createSessionHandlers(
      * 替客户端判断它长得对不对）。`null` 是合法值（= 清掉覆盖，回到模型出厂参数），
      * 所以不能拿 `requireString` 那类必填判定去卡它。
      */
-    [SESSION_METHODS.modelParamsSet]: async (params): Promise<SessionSnapshotResult> => {
+    ["session.modelParams.set"]: async (params): Promise<SessionSnapshotResult> => {
       return await manager.setModelParams(
         requireString(params, "sessionId"),
         field(params, "modelParams"),
@@ -399,7 +396,7 @@ export function createSessionHandlers(
     },
 
     /** 明确关闭一段会话（幂等：本来就没在跑时回 `closed:false`，不当错误） */
-    [SESSION_METHODS.close]: (params): SessionCloseResult => {
+    ["session.close"]: (params): SessionCloseResult => {
       return manager.close(requireString(params, "sessionId"));
     },
 
@@ -409,21 +406,21 @@ export function createSessionHandlers(
      * 子 Agent 只活在当前一轮（见 `EventBridge.clearSubAgents`）：轮次过去后这个 id 就
      * 不存在了，所以带 `sub-agent-missing` 码报错，而不是回一份空对话。
      */
-    [SESSION_METHODS.subAgentSnapshot]: async (params): Promise<SubAgentSnapshotResult> => {
+    ["session.subAgent.snapshot"]: async (params): Promise<SubAgentSnapshotResult> => {
       return await manager.subAgentSnapshot(
         requireString(params, "sessionId"),
         requireString(params, "subAgentId"),
       );
     },
 
-    [SESSION_METHODS.save]: async (params): Promise<SessionSaveResult> => {
+    ["session.save"]: async (params): Promise<SessionSaveResult> => {
       // `setAsLast:false` = 一次性调用的归档（`ai --save`）：写档但不篡改续接指针
       return await manager.save(requireString(params, "sessionId"), {
         setAsLast: optionalBoolean(params, "setAsLast"),
       });
     },
 
-    [SESSION_METHODS.saveAs]: async (params): Promise<SessionSaveAsResult> => {
+    ["session.saveAs"]: async (params): Promise<SessionSaveAsResult> => {
       return await manager.saveAs(requireString(params, "sessionId"), requireString(params, "id"));
     },
 
@@ -434,11 +431,11 @@ export function createSessionHandlers(
      * 那一套（那是 `session.send` 的做法）；进度会作为 `session-notice` 与
      * `session-phase` / `chunk-parsed` 事件先到，客户端不必等回执才知道在动。
      */
-    [SESSION_METHODS.handoff]: async (params): Promise<SessionHandoffResult> => {
+    ["session.handoff"]: async (params): Promise<SessionHandoffResult> => {
       return await manager.handoff(requireString(params, "sessionId"), optionalMode(params));
     },
 
-    [SESSION_METHODS.migrate]: async (params): Promise<SessionMigrateResult> => {
+    ["session.migrate"]: async (params): Promise<SessionMigrateResult> => {
       return await manager.migrate(
         requireString(params, "sessionId"),
         optionalMode(params),

@@ -29,13 +29,14 @@
 
 import { isAbsolute, relative } from "node:path";
 import { discoverSkills, discoverUserToolFiles } from "@ai-zen/agents-sdk";
-import { ERROR_CODES, codedError } from "@ai-zen/agents-protocol";
+
+import { codedError } from "../../wire/errors.js";
 import type {
   AssetListParams,
   AssetListResult,
   AssetScope,
   AssetSummary,
-} from "@ai-zen/agents-protocol";
+} from "../../protocol/index.js";
 import { readWorkspace } from "../workspace/workspace.js";
 import { assetDirs } from "../agent/agentPaths.js";
 
@@ -100,7 +101,7 @@ export class AssetService {
       id: input.workspaceId,
     });
     if (!workspace) {
-      throw codedError(ERROR_CODES.unknownWorkspace, `unknown workspace: ${input.workspaceId}`);
+      throw codedError("unknown-workspace", `unknown workspace: ${input.workspaceId}`);
     }
     return workspace.path;
   }

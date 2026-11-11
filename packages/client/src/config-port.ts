@@ -36,7 +36,7 @@
  * 是同一个答案 —— 客户端再抄一份路径过去，就又多了一份会漂的真相。
  */
 
-import { type AgentKind } from "@ai-zen/agents-protocol";
+import type { AgentKind } from "@ai-zen/agents-server/protocol";
 // 只取类型：`AppConfig` / `AgentDefinition` / `ReasoningPresets` 是配置与定义在两端的
 // 共同形状，而**线上**刻意不认识 SDK（`config.get` 的 `config` 在协议里是 `unknown`）。
 // `import type` 在产物里被整体擦除，所以本包的运行期依赖图仍然只有协议包 + node 内置

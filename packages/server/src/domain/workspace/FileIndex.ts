@@ -34,7 +34,7 @@
 import { execFile } from "node:child_process";
 import * as fsp from "node:fs/promises";
 import path from "node:path";
-import type { WorkspaceFileEntry } from "@ai-zen/agents-protocol";
+import type { WorkspaceFileEntry } from "../../protocol/index.js";
 
 /** 索引有效期：过期后下一次 `@` 重新扫 */
 export const INDEX_TTL_MS = 15_000;

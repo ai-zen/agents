@@ -5,10 +5,10 @@
  * 是可跨端传输的事实（`kind` + 工具名），渲染成「连接中…」还是「Connecting…」由客户端决定。
  * 请求方可命令表也一样：只存 `descriptionKey`，不存文案。
  *
- * ## 形状在协议包里，状态机在这里
+ * ## 形状在契约层，状态机在这里
  *
- * `PhaseKind` / `PhaseInfo` / `ToolCallRef` 搬到 `@ai-zen/agents-protocol` 了 —— 它们是
- * **线上载荷的形状**（快照与 `session-phase` 都在传），不能由服务端某个内部状态机拥有。
+ * `PhaseKind` / `PhaseInfo` / `ToolCallRef` 定义在 `src/protocol/phase.ts` —— 它们是
+ * **线上载荷的形状**（快照与 `session-phase` 都在传），不能由某个内部状态机拥有。
  * 本文件只剩**实现**：六态怎么判定、按 index 记工具名、从流末消息里取出全部调用。
  * 客户端不需要这个类（它收到的是判定好的 `kind`）。
  *
@@ -20,7 +20,7 @@
  * 业务”这类问题就不用靠读代码回答了 —— 不在一个目录里就不在一个包里。
  */
 
-import type { PhaseInfo, PhaseKind, ToolCallRef } from "@ai-zen/agents-protocol";
+import type { PhaseInfo, PhaseKind, ToolCallRef } from "../protocol/index.js";
 
 /**
  * 结果消息里能表示「这个工具已经结束」的状态（其余一律视为仍在跑）。

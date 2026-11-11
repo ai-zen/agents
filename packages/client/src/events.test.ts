@@ -14,11 +14,6 @@ import {
   createSessionHandlers,
   EventHub,
   SessionManager,
-  AGENT_EVENTS,
-  SESSION_EVENTS,
-  SERVER_EVENTS,
-  EVENT_METHODS,
-  SESSION_METHODS,
   type AgentLike,
   type ModelLevel,
   type ServerEvent,
@@ -111,16 +106,16 @@ describe("SocketServerClient.on（服务端推的事件）", () => {
   it("watch 之后收得到阶段 / 原始片 / 轮次收尾", async () => {
     const client = await start();
     const received: ServerEvent[] = [];
-    client.on(SESSION_EVENTS.phase, (event) => received.push(event));
-    client.on(AGENT_EVENTS.chunk, (event) => received.push(event));
-    client.on(SESSION_EVENTS.turnEnd, (event) => received.push(event));
+    client.on("session-phase", (event) => received.push(event));
+    client.on("chunk", (event) => received.push(event));
+    client.on("session-turn-end", (event) => received.push(event));
 
-    await client.call(EVENT_METHODS.watch);
-    const created = await client.call<{ sessionId: string }>(SESSION_METHODS.create, {
+    await client.call("events.watch");
+    const created = await client.call<{ sessionId: string }>("session.create", {
       workspaceId: "ws-1",
       path: dir,
     });
-    await client.call(SESSION_METHODS.send, { sessionId: created.sessionId, content: "你好" });
+    await client.call("session.send", { sessionId: created.sessionId, content: "你好" });
 
     const piece = { choices: [{ delta: { content: "答" } }] };
     agent.fire("open");
@@ -128,20 +123,20 @@ describe("SocketServerClient.on（服务端推的事件）", () => {
     agent.fire("chunk", piece);
     agent.fire("chunk-parsed", {}, piece);
     agent.fire("finally");
-    await waitFor(received, SESSION_EVENTS.turnEnd);
+    await waitFor(received, "session-turn-end");
 
     const kinds = received
-      .filter((event) => event.event === SESSION_EVENTS.phase)
+      .filter((event) => event.event === "session-phase")
       .map((event) => (event as { phase: { kind?: string } | null }).phase?.kind ?? null);
     expect(kinds).toEqual(["connecting", "queued", "streaming", null]);
 
-    const pieces = received.filter((event) => event.event === AGENT_EVENTS.chunk);
+    const pieces = received.filter((event) => event.event === "chunk");
     expect(pieces).toHaveLength(1);
     expect(pieces[0]).toMatchObject({ chunk: piece, turnId: 1 });
     // 摘一份增量出来的那条事件已经不在协议里：线上一条都不该出现
     expect(received.map((event) => event.event as string)).not.toContain("chunk-parsed");
 
-    const ends = received.filter((event) => event.event === SESSION_EVENTS.turnEnd);
+    const ends = received.filter((event) => event.event === "session-turn-end");
     expect(ends).toHaveLength(1);
     expect(ends[0]).toMatchObject({ ok: true, sessionId: created.sessionId, turnId: 1 });
   });
@@ -149,15 +144,15 @@ describe("SocketServerClient.on（服务端推的事件）", () => {
   it("取消订阅之后不再收到事件", async () => {
     const client = await start();
     const received: ServerEvent[] = [];
-    const off = client.on(SESSION_EVENTS.phase, (event) => received.push(event));
+    const off = client.on("session-phase", (event) => received.push(event));
 
-    await client.call(EVENT_METHODS.watch);
-    const created = await client.call<{ sessionId: string }>(SESSION_METHODS.create, {
+    await client.call("events.watch");
+    const created = await client.call<{ sessionId: string }>("session.create", {
       workspaceId: "ws-1",
       path: dir,
     });
-    await client.call(SESSION_METHODS.send, { sessionId: created.sessionId, content: "x" });
-    await waitFor(received, SESSION_EVENTS.phase);
+    await client.call("session.send", { sessionId: created.sessionId, content: "x" });
+    await waitFor(received, "session-phase");
 
     off();
     const before = received.length;
@@ -168,11 +163,11 @@ describe("SocketServerClient.on（服务端推的事件）", () => {
 
   it("没订阅时事件不会把连接搞坏（后续调用照常）", async () => {
     const client = await start();
-    const created = await client.call<{ sessionId: string }>(SESSION_METHODS.create, {
+    const created = await client.call<{ sessionId: string }>("session.create", {
       workspaceId: "ws-1",
       path: dir,
     });
-    await client.call(SESSION_METHODS.send, { sessionId: created.sessionId, content: "x" });
+    await client.call("session.send", { sessionId: created.sessionId, content: "x" });
     agent.fire("open");
     agent.fire("finally");
 
@@ -184,17 +179,17 @@ describe("两个通知通道", () => {
   it("对话内通知与全局通知都能收到，形状可区分（一个有 sessionId，一个没有）", async () => {
     const client = await start();
     const notices: ServerEvent[] = [];
-    client.on(SESSION_EVENTS.notice, (event) => notices.push(event));
-    client.on(SERVER_EVENTS.notice, (event) => notices.push(event));
+    client.on("session-notice", (event) => notices.push(event));
+    client.on("server-notice", (event) => notices.push(event));
 
-    await client.call(EVENT_METHODS.watch);
-    const created = await client.call<{ sessionId: string }>(SESSION_METHODS.create, {
+    await client.call("events.watch");
+    const created = await client.call<{ sessionId: string }>("session.create", {
       workspaceId: "ws-1",
       path: dir,
     });
 
     manager!.notice(created.sessionId, { level: "error", code: "persistFailed" });
-    hub.publish({ event: SERVER_EVENTS.notice, level: "warn", code: "mcpUnavailable" });
+    hub.publish({ event: "server-notice", level: "warn", code: "mcpUnavailable" });
 
     for (let i = 0; i < 100 && notices.length < 2; i++) {
       await new Promise((resolve) => setTimeout(resolve, 5));

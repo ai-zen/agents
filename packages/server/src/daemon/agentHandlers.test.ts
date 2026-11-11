@@ -14,7 +14,6 @@ import type { AgentDefinition } from "@ai-zen/agents-sdk";
 import type { Connection, MethodHandler } from "./Daemon.js";
 import { createAgentHandlers } from "./agentHandlers.js";
 import { ConfigService } from "../domain/config/ConfigService.js";
-import { AGENT_METHODS } from "@ai-zen/agents-protocol";
 
 let root: string;
 let handlers: Record<string, MethodHandler>;
@@ -79,13 +78,13 @@ function definition(id: string, extra: Partial<AgentDefinition> = {}): AgentDefi
 describe("agent.model.set（原有方法，语义不变）", () => {
   it("转交给装配层，参数原样", async () => {
     await expect(
-      call(AGENT_METHODS.setModel, { agentId: "default", modelId: "glm-5.3" }),
+      call("agent.model.set", { agentId: "default", modelId: "glm-5.3" }),
     ).resolves.toEqual({ agentId: "default", modelId: "glm-5.3" });
     expect(setModelCalls).toEqual([{ agentId: "default", modelId: "glm-5.3" }]);
   });
 
   it("缺 agentId / modelId → bad-params", async () => {
-    await expect(call(AGENT_METHODS.setModel, { agentId: "default" })).rejects.toMatchObject({
+    await expect(call("agent.model.set", { agentId: "default" })).rejects.toMatchObject({
       code: "bad-params",
     });
     expect(setModelCalls).toEqual([]);
@@ -94,10 +93,10 @@ describe("agent.model.set（原有方法，语义不变）", () => {
 
 describe("agent.list / agent.get", () => {
   it("list 两路分开给", async () => {
-    await call(AGENT_METHODS.save, { kind: "agent", definition: definition("a") });
-    await call(AGENT_METHODS.save, { kind: "subagent", definition: definition("x") });
+    await call("agent.save", { kind: "agent", definition: definition("a") });
+    await call("agent.save", { kind: "subagent", definition: definition("x") });
 
-    const result = (await call(AGENT_METHODS.list)) as {
+    const result = (await call("agent.list")) as {
       agents: AgentDefinition[];
       subAgents: AgentDefinition[];
     };
@@ -106,18 +105,18 @@ describe("agent.list / agent.get", () => {
   });
 
   it("get 命中回定义，没命中回 null（不是错误）", async () => {
-    await call(AGENT_METHODS.save, { kind: "agent", definition: definition("a") });
+    await call("agent.save", { kind: "agent", definition: definition("a") });
 
-    const found = (await call(AGENT_METHODS.get, { id: "a" })) as {
+    const found = (await call("agent.get", { id: "a" })) as {
       agent: AgentDefinition | null;
     };
     expect(found.agent?.name).toBe("a");
 
-    await expect(call(AGENT_METHODS.get, { id: "ghost" })).resolves.toEqual({ agent: null });
+    await expect(call("agent.get", { id: "ghost" })).resolves.toEqual({ agent: null });
   });
 
   it("get 缺 id → bad-params", async () => {
-    await expect(call(AGENT_METHODS.get, {})).rejects.toMatchObject({ code: "bad-params" });
+    await expect(call("agent.get", {})).rejects.toMatchObject({ code: "bad-params" });
   });
 });
 
@@ -129,29 +128,29 @@ describe("agent.list / agent.get", () => {
  */
 describe("agent.get 的 kind（区分顶层 Agent / 子 Agent）", () => {
   beforeEach(async () => {
-    await call(AGENT_METHODS.save, {
+    await call("agent.save", {
       kind: "agent",
       definition: definition("default", { name: "顶层" }),
     });
-    await call(AGENT_METHODS.save, {
+    await call("agent.save", {
       kind: "subagent",
       definition: definition("default", { name: "子里的 default" }),
     });
-    await call(AGENT_METHODS.save, {
+    await call("agent.save", {
       kind: "subagent",
       definition: definition("helper", { name: "帮手" }),
     });
   });
 
   it("不指定 kind：同名时拿到顶层那份", async () => {
-    const result = (await call(AGENT_METHODS.get, { id: "default" })) as {
+    const result = (await call("agent.get", { id: "default" })) as {
       agent: AgentDefinition | null;
     };
     expect(result.agent?.name).toBe("顶层");
   });
 
   it("kind: subagent → 子 Agent 那份（不被顶层抢走）", async () => {
-    const result = (await call(AGENT_METHODS.get, {
+    const result = (await call("agent.get", {
       id: "default",
       kind: "subagent",
     })) as { agent: AgentDefinition | null };
@@ -159,7 +158,7 @@ describe("agent.get 的 kind（区分顶层 Agent / 子 Agent）", () => {
   });
 
   it("kind: agent → 顶层那份", async () => {
-    const result = (await call(AGENT_METHODS.get, {
+    const result = (await call("agent.get", {
       id: "default",
       kind: "agent",
     })) as { agent: AgentDefinition | null };
@@ -167,7 +166,7 @@ describe("agent.get 的 kind（区分顶层 Agent / 子 Agent）", () => {
   });
 
   it("只有子 Agent 有该 id、不指定 kind：拿到子 Agent 那份", async () => {
-    const result = (await call(AGENT_METHODS.get, { id: "helper" })) as {
+    const result = (await call("agent.get", { id: "helper" })) as {
       agent: AgentDefinition | null;
     };
     expect(result.agent?.name).toBe("帮手");
@@ -176,12 +175,12 @@ describe("agent.get 的 kind（区分顶层 Agent / 子 Agent）", () => {
   it("非法 kind → bad-params，不静默退化成顶层优先", async () => {
     // 拼错/大小写/空串都是客户端 bug，当场报：“数据错乱”比“参数错”难查得多
     for (const kind of ["sub-agent", "Agent", "agents", ""]) {
-      await expect(call(AGENT_METHODS.get, { id: "default", kind })).rejects.toMatchObject({
+      await expect(call("agent.get", { id: "default", kind })).rejects.toMatchObject({
         code: "bad-params",
       });
     }
     // `null` 也不算“没给”：客户端给了个说不清的值
-    await expect(call(AGENT_METHODS.get, { id: "default", kind: null })).rejects.toMatchObject({
+    await expect(call("agent.get", { id: "default", kind: null })).rejects.toMatchObject({
       code: "bad-params",
     });
   });
@@ -189,7 +188,7 @@ describe("agent.get 的 kind（区分顶层 Agent / 子 Agent）", () => {
 
 describe("agent.save / agent.remove", () => {
   it("save 按 kind 落到对应目录", async () => {
-    await call(AGENT_METHODS.save, {
+    await call("agent.save", {
       kind: "subagent",
       definition: definition("helper", { name: "帮手" }),
     });
@@ -201,16 +200,16 @@ describe("agent.save / agent.remove", () => {
 
   it("save 的 kind 只认两个取值、definition 必须有 id", async () => {
     await expect(
-      call(AGENT_METHODS.save, { kind: "agent", definition: { name: "无 id" } }),
+      call("agent.save", { kind: "agent", definition: { name: "无 id" } }),
     ).rejects.toMatchObject({ code: "bad-params" });
-    await expect(call(AGENT_METHODS.save, { kind: "agent" })).rejects.toMatchObject({
+    await expect(call("agent.save", { kind: "agent" })).rejects.toMatchObject({
       code: "bad-params",
     });
     await expect(
-      call(AGENT_METHODS.save, { kind: "sub-agent", definition: definition("a") }),
+      call("agent.save", { kind: "sub-agent", definition: definition("a") }),
     ).rejects.toMatchObject({ code: "bad-params" });
     await expect(
-      call(AGENT_METHODS.save, { kind: "agent", definition: [definition("a")] }),
+      call("agent.save", { kind: "agent", definition: [definition("a")] }),
     ).rejects.toMatchObject({ code: "bad-params" });
   });
 
@@ -218,20 +217,20 @@ describe("agent.save / agent.remove", () => {
     mkdirSync(join(root, "agents"), { recursive: true });
     writeFileSync(join(root, "agents", "gone.json"), JSON.stringify(definition("gone")), "utf-8");
 
-    await expect(call(AGENT_METHODS.remove, { kind: "agent", id: "gone" })).resolves.toEqual({
+    await expect(call("agent.remove", { kind: "agent", id: "gone" })).resolves.toEqual({
       removed: true,
     });
     expect(() => statSync(join(root, "agents", "gone.json"))).toThrow();
-    await expect(call(AGENT_METHODS.remove, { kind: "agent", id: "gone" })).resolves.toEqual({
+    await expect(call("agent.remove", { kind: "agent", id: "gone" })).resolves.toEqual({
       removed: false,
     });
   });
 
   it("remove 缺 kind / id → bad-params", async () => {
-    await expect(call(AGENT_METHODS.remove, { id: "a" })).rejects.toMatchObject({
+    await expect(call("agent.remove", { id: "a" })).rejects.toMatchObject({
       code: "bad-params",
     });
-    await expect(call(AGENT_METHODS.remove, { kind: "agent" })).rejects.toMatchObject({
+    await expect(call("agent.remove", { kind: "agent" })).rejects.toMatchObject({
       code: "bad-params",
     });
   });

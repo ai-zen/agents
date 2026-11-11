@@ -31,7 +31,7 @@
  */
 
 import { AgentNS } from "@ai-zen/agents-core";
-import type { Message } from "@ai-zen/agents-protocol";
+import type { Message } from "@ai-zen/agents-server/protocol";
 
 /**
  * 一条消息的正文。
@@ -142,7 +142,9 @@ export function mergeStreamedSnapshot(
 
   // 规则 3：对齐「服务端已知的 assistant 正文」，只接上多出来的那截
   const confirmed = base
-    .filter((message) => message.role === AgentNS.Role.Assistant && typeof message.content === "string")
+    .filter(
+      (message) => message.role === AgentNS.Role.Assistant && typeof message.content === "string",
+    )
     .map((message) => message.content as string)
     .join("");
   if (confirmed.endsWith(localText)) return { messages: base, stream: null };

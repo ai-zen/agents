@@ -6,7 +6,7 @@
  * ssh 隧道）只换实现类，调用点一行不改 —— 这是「传输自由」在类型上的落点。
  */
 
-import type { ServerEvent } from "@ai-zen/agents-protocol";
+import type { ServerEvent } from "@ai-zen/agents-server/protocol";
 
 /**
  * 服务端在哪。
@@ -40,7 +40,7 @@ export interface CallOptions {
  * 拿它当“连接”用会让两层概念糊在一起 —— 一条连接可以陆续服务好几个会话。
  *
  * `call` 是请求/响应，`on` 是服务端主动推的事件（阶段、增量、轮次收尾）—— 两者
- * 共用一条连接，事件的载荷形状由 `@ai-zen/agents-protocol` 的 `sessions.ts` 定义。
+ * 共用一条连接，事件的载荷形状由 `@ai-zen/agents-server/protocol` 的 `sessions.ts` 定义。
  */
 export interface ServerClient {
   readonly address: ServerAddress;

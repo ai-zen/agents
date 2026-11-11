@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Daemon, encodeFrame } from "@ai-zen/agents-server";
+import { Daemon } from "@ai-zen/agents-server";
+import { encodeFrame } from "./wire/frames.js";
 import { SocketServerClient } from "./socket-server-client.js";
 import type { ClientInfo, ServerAddress } from "./types.js";
 

@@ -12,18 +12,39 @@ Dependency direction (one-way, never reversed):
 ```
 @ai-zen/cli ─────┐
                  ├──→ @ai-zen/agents-server ──→ @ai-zen/agents-sdk ──→ @ai-zen/agents-core
-desktop/main ────┘             │
-                               └──→ @ai-zen/agents-protocol ──(import type only)──→ @ai-zen/agents-core
+desktop/main ────┘
 ```
 
-Both front ends actually reach this package through `@ai-zen/agents-client` (which depends on
-nothing but the protocol); they declare `@ai-zen/agents-server` so they can spawn its bin. The
-wire contract itself lives in `@ai-zen/agents-protocol`, which this package depends on.
+Both front ends reach this package through `@ai-zen/agents-client`. The wire contract is **not a
+package**: it is this package's own type files, `src/protocol/` (types only — method/event name
+unions, payload types, error-code unions), exposed as `@ai-zen/agents-server/protocol` for
+`import type`. Everything with runtime behaviour (frame codec, error-code predicate, loopback
+predicate, version constant, discovery-file I/O, `callOnce`) lives in `src/wire/` on this side —
+and each client has its own copy under `packages/client/src/wire/`. Only types are shared.
 
 `sdk` and `core` must never import this package:
 
 ```bash
 grep -rn "agents-server" packages/sdk/src packages/core/src   # must be empty
+```
+
+## The contract: `src/protocol/` (types) and `src/wire/` (runtime)
+
+The wire contract is **not a package** — it is this package's type files. Two directories, two jobs:
+
+| | Holds | Runtime exports |
+|---|---|---|
+| `src/protocol/` | method/event **name unions**, payload types, error-code unions, frame shapes, phase shapes, the type-only re-export of the data model | **none** — every file is `type`/`interface` only |
+| `src/wire/` | frame codec (`encodeFrame` / `FrameDecoder` / `MAX_FRAME_BYTES` / `ProtocolError`), error-code predicate (`codedError` / `isCodedError` / `codeOf`), loopback predicate, `PROTOCOL_VERSION`, discovery-file I/O, `callOnce`, `DEFAULT_MIGRATION_STRATEGY` | yes |
+
+Clients import **only** `@ai-zen/agents-server/protocol` and only with `import type`; their own
+runtime copies live in `packages/client/src/wire/`. Nothing is shared but shapes and names — which
+is why `@ai-zen/agents-client` has zero runtime dependency on this package (the server is its
+**peerDependency**: the host must provide it for the type faces and for spawning the bin).
+
+```bash
+# the type face must stay free of runtime exports
+grep -rn '^export \(const\|function\|class\|async function\)' packages/server/src/protocol   # must be empty
 ```
 
 ## Running the daemon
@@ -45,7 +66,7 @@ leftover" from "different build still running" before it even connects. Logs go 
 ### v1 boundary: no authentication, therefore loopback only
 
 This build has **no auth**. `Daemon.start()` accepts only loopback hosts — the whole
-`127.0.0.0/8` block, `::1` and `localhost`, judged by the protocol package's `isLoopbackHost()` —
+`127.0.0.0/8` block, `::1` and `localhost`, judged by `isLoopbackHost()` in `src/wire/host.ts` —
 and throws for anything else. That is not a placeholder to be relaxed
 casually: the service exposes `exec` (arbitrary command execution), so an unauthenticated
 listener reachable from the network would hand a shell to the whole LAN. Exposing a port
@@ -107,7 +128,7 @@ Today's only implementation is **TCP**: `start()` wraps each `net.Socket` with
 `socketWire()` and passes it to `Daemon.handleConnection(wire)`. WebSocket is **not
 implemented** — there is no `ws` dependency and no WS listener in this package. Adding one
 means (1) a new `Wire` implementation over `ws` text frames and (2) a listener that calls
-`daemon.handleConnection(wire)` per connection; `Daemon` and `@ai-zen/agents-protocol` do not change.
+`daemon.handleConnection(wire)` per connection; `Daemon` and `src/protocol/` do not change.
 Authentication stays unsolved either way: the loopback assertion lives in the listener, not
 in the `Wire`.
 
@@ -118,7 +139,7 @@ scenario on both.
 
 ## Session layer
 
-`@ai-zen/agents-protocol` (`sessions.ts`) is the wire contract for sessions — method names, params and the
+`src/protocol/sessions.ts` is the wire contract for sessions — method names, params and the
 events, in three tables: `AGENT_EVENTS` (core's own eight: `open`, `chunk`, `parsed`,
 `tool-call-end`, `error`, `finally`, `sub-agent-start`, `sub-agent-end`), `SESSION_EVENTS`
 (`session-phase`, `session-turn-end`, `session-notice`, `session-question`,
@@ -135,7 +156,7 @@ wires all of it.
 
 **The method list has exactly one source of truth: `SESSION_METHODS` / `WORKSPACE_METHODS` /
 `EVENT_METHODS` (and `CONFIG_METHODS` / `AGENT_METHODS` / `ASSET_METHODS` / `DAEMON_METHODS`) in
-the protocol package.** This README deliberately does not copy it: a copy is what goes stale, and
+`src/protocol/`.** This README deliberately does not copy it: a copy is what goes stale, and
 a stale list is worse than no list. What each method means is documented where it is defined
 (`sessions.ts` / `config.ts` / `assets.ts` / `daemon.ts`); the sections below only carry the
 semantics that need more room than a doc comment.
@@ -634,7 +655,7 @@ Three things are worth knowing before touching it:
 
 ## Config and agent definitions
 
-`@ai-zen/agents-protocol` (`config.ts`) is the contract for everything that changes **global** state and
+`src/protocol/config.ts` is the contract for everything that changes **global** state and
 belongs to no session: the config centre (`config.get` / `config.save` /
 `config.reasoningPresets`, `config.mcp.get` / `config.mcp.save` scoped `global` | `project`)
 and agent definitions (`agent.list` / `get` / `save` / `remove`, next to the narrower
@@ -659,7 +680,7 @@ the UI reports success while the server's agents keep using the old model. Three
 ## Two hard constraints (machine-checkable)
 
 1. **No UI stack here.** The package boundary is the process boundary — `ink`, `react` and
-   terminal helpers belong to the client. `dependencies` holds `@ai-zen/agents-protocol` and
+   terminal helpers belong to the client. `dependencies` holds `@ai-zen/agents-core` and
    `@ai-zen/agents-sdk` — no UI stack, no client.
 2. **No process-wide globals.** No current working directory, no global config paths, no
    global locale: everything comes in through constructor arguments. The single exception is

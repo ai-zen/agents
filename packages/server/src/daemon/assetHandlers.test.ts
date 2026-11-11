@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createAssetHandlers } from "./assetHandlers.js";
-import { ASSET_METHODS } from "@ai-zen/agents-protocol";
+
 import { AssetService } from "../domain/asset/AssetService.js";
 import { ensureWorkspace } from "../domain/workspace/workspace.js";
 import type { Connection } from "./Daemon.js";
@@ -36,7 +36,7 @@ const connection: Connection = {
 };
 
 /** 调一次 `asset.list`（handler 是普通函数，直接调就是它在线上的行为） */
-const list = (params: unknown) => handlers[ASSET_METHODS.list]!(params, connection);
+const list = (params: unknown) => handlers["asset.list"]!(params, connection);
 
 beforeEach(async () => {
   root = await fs.mkdtemp(join(tmpdir(), "aiz-asset-handlers-"));

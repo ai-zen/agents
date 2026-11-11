@@ -11,8 +11,8 @@
 
 import type { MethodHandler } from "./Daemon.js";
 import { badParams, field, optionalString } from "./params.js";
-import type { AssetListResult, AssetKind, AssetScope } from "@ai-zen/agents-protocol";
-import { ASSET_METHODS } from "@ai-zen/agents-protocol";
+import type { AssetListResult, AssetKind, AssetScope } from "../protocol/index.js";
+
 import type { AssetService } from "../domain/asset/AssetService.js";
 
 export interface AssetHandlerOptions {
@@ -21,7 +21,7 @@ export interface AssetHandlerOptions {
 
 export function createAssetHandlers(options: AssetHandlerOptions): Record<string, MethodHandler> {
   return {
-    [ASSET_METHODS.list]: async (params): Promise<AssetListResult> => {
+    ["asset.list"]: async (params): Promise<AssetListResult> => {
       const kind = requireKind(params);
       const scope = optionalScope(params);
       const workspaceId = optionalString(params, "workspaceId");

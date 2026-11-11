@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Daemon, writeDescriptor } from "@ai-zen/agents-server";
+import { Daemon } from "@ai-zen/agents-server";
+import { writeDescriptor } from "./wire/discovery.js";
 import { ensureServer } from "./ensure-server.js";
 import type { ClientInfo } from "./types.js";
 

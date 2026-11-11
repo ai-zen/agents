@@ -39,133 +39,42 @@ import type { PhaseInfo } from "./phase.js";
  * 常量表里，调用点就得靠眼力分辨「这一步是在认容器，还是在对一段会话做事」。分开之后
  * **线上方法名一个字没变**（仍是 `workspace.resolve`）—— 客户端只改引用的常量名。
  */
-export const WORKSPACE_METHODS = {
-  /**
-   * 路径 → 工作区身份（首次见到这个路径时写 `workspace.json`）。
-   *
-   * 幂等：同一个路径反复调，永远得到同一个 `workspaceId` —— id 首次分配后**冻结**，
-   * 目录改名也不会变（要接回新路径只能显式调 `relocate`）。
-   */
-  resolve: "workspace.resolve",
-  /** 某个工作区的文件清单（客户端 `@` 补全用；扫的是服务端磁盘） */
-  files: "workspace.files",
-  /**
-   * 盘上全部工作区（带 `pathExists`）。
-   *
-   * 客户端启动时的侧栏要用它：只看自己 cwd 那一个工作区的话，用户 `mv` 完目录就再也
-   * 看不到旧工作区 —— 而它（连同历史）还在盘上。
-   */
-  list: "workspace.list",
-  /** 改显示名（**不动 id、不动 path**；与 `session.rename` 同名同义） */
-  rename: "workspace.rename",
-  /**
-   * 删一个工作区 —— **连它的全部会话一起**（整个 `workspaces/<id>/` 目录）。
-   *
-   * 幂等：本来就没有 → `removed:false`（与 `agent.remove` / `session.remove` 同一口径）。
-   */
-  remove: "workspace.remove",
-  /**
-   * 把记录的 path 改到新目录（**id 不变**）。
-   *
-   * 这是「目录改名之后历史不丢」的入口：`mv` 之后调用方拿旧 id 调它，之后对新路径
-   * `resolve` 就会回到同一个 id。
-   */
-  relocate: "workspace.relocate",
-} as const;
+export type WorkspaceMethod =
+  | "workspace.resolve"
+  | "workspace.files"
+  | "workspace.list"
+  | "workspace.rename"
+  | "workspace.remove"
+  | "workspace.relocate";
 
 /** 会话方法名（服务端注册与客户端调用共用同一份字面量，避免两边各写一份字符串） */
-export const SESSION_METHODS = {
-  create: "session.create",
-  /**
-   * 接上一段**已经存在**的会话（活着就接、盘上有就装回来）。
-   *
-   * 与 `create` 分开的理由：会话的存活期比客户端连接长，
-   * 「接着上次」如果复用 `create`，会撞在它「id 撞了就拒绝」的语义上 —— 用户看到的是
-   * 「打不开自己上一轮会话」。`create` 的不静默顶掉语义**不动**，两个动作各说各的。
-   */
-  attach: "session.attach",
-  send: "session.send",
-  cancel: "session.cancel",
-  /**
-   * 回答服务端提出的问题（目前只有自动迁移的「用哪种方式交接」）。
-   *
-   * 为什么是个**方法**而不是事件：提问要一个确定的答案，而且提问方（服务端）在等它
-   * —— 单向事件只能承载「事实」，承载不了「往返」。问题本身仍走事件（见
-   * `SESSION_EVENTS.question`），因为它的方向是服务端 → 客户端。
-   */
-  answer: "session.answer",
-  /** 某个工作区下的会话清单（盘上的存档 ∪ 内存里的活会话，一条不重） */
-  list: "session.list",
-  /** 改显示名（**不动 id**；与“另存为” `saveAs` 是两件事） */
-  rename: "session.rename",
-  /** 删一段会话（物理删存档，幂等） */
-  remove: "session.remove",
-  /** 某个工作区「上一轮会话」的指针（只有 id；客户端拿它走续接） */
-  last: "session.last",
-  /** 撤回：删掉下标起的消息，并立即落盘 */
-  rollback: "session.rollback",
-  /** 按磁盘上的（新）配置与 Agent 定义重建 Agent，**保留消息** */
-  reload: "session.reload",
-  /** 整份快照：客户端（重）连上来时一次拿全，不用自己拼事件 */
-  snapshot: "session.snapshot",
-  /** 把当前会话写进工作区存档（并把它设为「上一轮会话」） */
-  save: "session.save",
-  /** 另存为指定 id：写新档、删旧档、活会话跟着换键（`/save <名字>`） */
-  saveAs: "session.saveAs",
-  /** 只产出交接文档：写文档，**不动会话**（不换 id、不剔历史） */
-  handoff: "session.handoff",
-  /** 交接 + 开新会话（缺省的 `prune`：写文档、剔历史、**换 sessionId**；`omit` 不换，见 `MigrationStrategy`） */
-  migrate: "session.migrate",
-  /** 取某个子 Agent 到目前为止的完整对话（客户端切到该栏目时对齐用） */
-  subAgentSnapshot: "session.subAgent.snapshot",
-  /**
-   * 换 Agent：按新定义重建 Agent、**保留消息**、更新会话的 `agentId`。
-   *
-   * 为什么要一条方法：Agent 身份归服务端（Agent 跑在它那边），而 `/agent` 是「同一段
-   * 对话换个 Agent 继续」。客户端自己搬消息重建会话是另一条路 —— 那条路要求服务端接受
-   * 客户端递来的历史，与「服务端是唯一真相源」直接冲突。
-   */
-  setAgent: "session.setAgent",
-  /**
-   * 换**这一段会话**的模型：写会话存档的 `modelId`（三级解析的最内层）并重建 Agent。
-   *
-   * 与 `agent.model.set` 的形状刻意一样、作用域刻意不同：那个改的是**全局的** Agent 定义
-   * （影响所有用它的会话），这个只改这一段（`/model` 不带作用级别的写法走这条）。
-   * 两个动作都得存在：「我这次用官网上那个模型跑」（会话级）与「我以后默认用它」（定义级）
-   * 是两件事，合并成一个只能靠参数开关分叉，调用方就得猜自己改的是哪一份。
-   */
-  modelSet: "session.model.set",
-  /**
-   * 改**这一段会话**的模型**参数**（`/think` 在会话级模型下写的那一层）。
-   *
-   * 为什么与 `modelSet` 分开：两者是同一级（会话级）的两份事实，但语义完全不同 ——
-   * 「换模型」会连带清掉参数（新模型不一定接受旧参数），改参数不该动模型。合成一条就只能
-   * 靠参数开关分叉，调用方得猜自己改的是哪一份。
-   *
-   * 为什么只有会话级有这条：参数跟着「模型来自哪一级」走。参数落在 Agent 定义上时走
-   * `agent.save`（今天的行为）；模型来自全局兜底时**没有任何一层可写**（全局那一级只有
-   * `config.defaultModel`），客户端自己就拒了（见 CLI 的 `/think`）。
-   */
-  modelParamsSet: "session.modelParams.set",
-  /**
-   * 关闭一段会话：摘事件、让出 Agent 与 Scope 引用，**不删存档**，**当场回收**。
-   *
-   * 它是「我不看这段了」的**唯一**显式表达（自动回收不靠它：持有者没了就由服务端按宽限期
-   * 收）。连接断开**不算** —— 会话的存活期比连接长，关掉终端只退订阅，服务端那一轮仍会跑完。
-   *
-   * 为什么要有它而不是只靠宽限期：一次性调用（`ai "…"`）跑完就该让服务端当场把那段会话
-   * 还回去，否则在 shell 里高频调用会一段段堆到宽限期才释放。
-   */
-  close: "session.close",
-} as const;
+export type SessionMethod =
+  | "session.create"
+  | "session.attach"
+  | "session.send"
+  | "session.cancel"
+  | "session.answer"
+  | "session.list"
+  | "session.rename"
+  | "session.remove"
+  | "session.last"
+  | "session.rollback"
+  | "session.reload"
+  | "session.snapshot"
+  | "session.save"
+  | "session.saveAs"
+  | "session.handoff"
+  | "session.migrate"
+  | "session.subAgent.snapshot"
+  | "session.setAgent"
+  | "session.model.set"
+  | "session.modelParams.set"
+  | "session.close";
 
 /**
  * 连接级方法（与某个会话无关，所以不放在 `session.*` 里）
  */
-export const EVENT_METHODS = {
-  /** 让**这条连接**开始收事件（事件是服务端主动推、无 `id`、不等回执） */
-  watch: "events.watch",
-} as const;
+export type EventMethod = "events.watch";
 
 /**
  * Agent 事件名（服务端主动推，无 `id`，不等回执）。**8 条，值逐字等于 core `Agent.events` 的原名。**
@@ -186,29 +95,15 @@ export const EVENT_METHODS = {
  * 那张表是**服务端额外告诉你什么**（阶段派生、通知、提问、换 id、一轮真正收尾）。不属于
  * 任何会话的事在 `SERVER_EVENTS`。
  */
-export const AGENT_EVENTS = {
-  /** 一轮开始（core `open`：请求发出去之前那一刻） */
-  open: "open",
-  /** 一片原始 chunk 到达（core `chunk`：**解析之前**）。这片载荷是厂商形状，协议不解释 */
-  chunk: "chunk",
-  /** 流结束、receiver 定稿（core `parsed`） */
-  parsed: "parsed",
-  /** 一个工具的结果定型（core `tool-call-end`）：载荷是那条刚定型的消息 */
-  toolCallEnd: "tool-call-end",
-  /** 一轮出错（core `error`：**早于** `finally`） */
-  error: "error",
-  /**
-   * 一轮收尾（core `finally`）。
-   *
-   * **它不是 `session-turn-end`**：`finally` 只说明 core 说完了，落盘、换 id、回收判定都
-   * 还没做。两条事件时机不同，**都要发**，顺序恒为 `error`? → `finally` → `session-turn-end`。
-   */
-  finally: "finally",
-  /** 一个子 Agent 开始（core `sub-agent-start`；本轮内 `index` 从 1 起，`subAgentId` 跨轮稳定） */
-  subAgentStart: "sub-agent-start",
-  /** 一个子 Agent 结束（core `sub-agent-end`：done = 正常跑完，failed = 抛错，**一旦 failed 就不再变**） */
-  subAgentEnd: "sub-agent-end",
-} as const;
+export type AgentEventName =
+  | "open"
+  | "chunk"
+  | "parsed"
+  | "tool-call-end"
+  | "error"
+  | "finally"
+  | "sub-agent-start"
+  | "sub-agent-end";
 
 /**
  * 会话事件名（服务端主动推，无 `id`，不等回执）。**6 条，值全部 kebab-case。**
@@ -228,59 +123,13 @@ export const AGENT_EVENTS = {
  * 将来若出现「属于某个工作区但不属于某段会话」的事件，再加一张 `workspace-*` 前缀的表，
  * 不用回头改这几张的语义。
  */
-export const SESSION_EVENTS = {
-  /**
-   * 生成阶段变化（六态 + 工具名）。
-   *
-   * **派生**事件：在 `open` / `parsed` / 每个 `tool-call-end` 那一刻各报一次
-   * （那三个时刻阶段都可能变），服务端算好整份 `phase` 推上来。
-   */
-  phase: "session-phase",
-  /**
-   * 一轮**真正**结束（成功或失败）：core 的 `finally` **之后**，服务端落盘、换 id、
-   * 回收判定都做完了。
-   *
-   * 与 `finally` 分开的理由：`finally` 只说明 core 那一侧说完了 —— 存档这时还没写、
-   * 会话可能马上要被回收。客户端在这条事件上才该「当成这一轮结束了」去拉快照，否则可能
-   * 拿到一份还没落盘的历史。顺序恒为 `error`? → `finally` → `session-turn-end`。
-   */
-  turnEnd: "session-turn-end",
-  /** 对话内通知（绑会话） */
-  notice: "session-notice",
-  /**
-   * 服务端向客户端提问：**需要用户决定的事，服务端不替用户选**。
-   *
-   * 与通知的区别是它要一个回答（有 `questionId`），且服务端那一侧正等着它：自动迁移
-   * 「用哪种方式交接」原本是 TUI 进程内的一个三选一，前后端分离之后必须原样回到用户手上
-   * —— 否则服务端就是替用户做了「保真还是便宜」这个决定。
-   *
-   * 回答走 `session.answer`；答案来晚了（超时 / 会话已收）服务端回 `answered: false`，
-   * 不报错（那不是参数错）。
-   */
-  question: "session-question",
-  /**
-   * 会话换了 id（迁移 / 另存为 / **一轮进行中的自动迁移**）。
-   *
-   * 服务端可以在**一轮进行中**换 id（自动迁移就是如此）：这时客户端没有任何请求
-   * 可以拿来“拿到新 id”，所以必须有一条事件说清楚 —— 否则它会在旧 id 上等一个
-   * 永远不会到的 `session-turn-end`。
-   *
-   * 载荷用 `from` 而不是 `sessionId` 标识“这条是说哪段会话的”（那个 id 已经不存在了），
-   * 客户端拿 `from === 自己当前 id` 就能认领。
-   */
-  idChanged: "session-id-changed",
-  /**
-   * 会话的显示名变了（今天只有服务端的自动标题会发）。
-   *
-   * 为什么必须有这条事件：自动标题发生在 `session-turn-end` **之后**的异步动作里，客户端手上
-   * 没有任何请求可以拿来「拿到新名字」—— 没有它，侧栏会一直用首条消息兑底命名，
-   * 直到用户手动刷新一次列表（而在那之前，用户会以为这功能没生效）。
-   *
-   * 客户端可以完全不理它（它只是一条展示用的名字）；手工改名（`session.rename`）**不**
-   * 发它：那条请求的响应里已经有新名字了。
-   */
-  titleChanged: "session-title-changed",
-} as const;
+export type SessionEventName =
+  | "session-phase"
+  | "session-turn-end"
+  | "session-notice"
+  | "session-question"
+  | "session-id-changed"
+  | "session-title-changed";
 
 /**
  * 服务端事件名（不绑任何会话）。目前只有一条：服务端自己的通知。
@@ -293,10 +142,7 @@ export const SESSION_EVENTS = {
  * （`AgentEvent` / `SessionEvent` / `ServerEvent`）的拆法，与
  * `SESSION_METHODS` / `DAEMON_METHODS` 完全同构：作用域不同的东西不放在同一张表里。
  */
-export const SERVER_EVENTS = {
-  /** 服务端通知（不属于任何会话：MCP 连不上、存档目录不可用…） */
-  notice: "server-notice",
-} as const;
+export type ServerEventName = "server-notice";
 
 // ==================== 方法参数与结果 ====================
 
@@ -497,7 +343,7 @@ export interface SessionSendResult {
  * **一轮进行中**换 —— 客户端靠这条事件把之后的请求与事件过滤切到新 id 上。
  */
 export type SessionIdChangedEvent = {
-  event: typeof SESSION_EVENTS.idChanged;
+  event: "session-id-changed";
   /** 旧 id（客户端用 `from === 当前 id` 认领这条） */
   from: string;
   /** 新 id */
@@ -512,7 +358,7 @@ export type SessionIdChangedEvent = {
  * （它手里才有那一刻的真相），不是客户端该参与的决定。
  */
 export type SessionTitleChangedEvent = {
-  event: typeof SESSION_EVENTS.titleChanged;
+  event: "session-title-changed";
   sessionId: string;
   title: string;
 };
@@ -525,7 +371,7 @@ export type SessionTitleChangedEvent = {
  * 不答/答不了时服务端会怎么做（`fallback`）。
  */
 export type SessionQuestionEvent = {
-  event: typeof SESSION_EVENTS.question;
+  event: "session-question";
   sessionId: string;
   /** 本次提问的 id（回答时带回来；服务端据此认领，过期的回答一律拒） */
   questionId: string;
@@ -890,7 +736,7 @@ export type MigrationStrategy = "prune" | "omit";
  * 注意它**不等于** SDK 的 `HandoffService` 缺省（那边是 `omit`）：产品的缺省是 prune，
  * 所以服务端每一跳都把选定的值显式递下去，而不是依赖 SDK 的默认值。
  */
-export const DEFAULT_MIGRATION_STRATEGY: MigrationStrategy = "prune";
+/** 缺省策略是 `prune` —— 值在 `src/wire/sessions.ts`（这里只有类型） */
 
 /**
  * 服务端提问的种类。
@@ -1018,7 +864,7 @@ export interface SubAgentSnapshotResult {
  * 事实，内容要到后面那串 `chunk` 里才出现。
  */
 export type AgentOpenEvent = {
-  event: typeof AGENT_EVENTS.open;
+  event: "open";
   sessionId: string;
   turnId: number;
 };
@@ -1032,7 +878,7 @@ export type AgentOpenEvent = {
  * 更懂它。它来自 HTTP 响应体，本来就能 JSON 序列化，可以原样上线。
  */
 export type AgentChunkEvent = {
-  event: typeof AGENT_EVENTS.chunk;
+  event: "chunk";
   sessionId: string;
   turnId: number;
   /** 有它就属于那个**子 Agent** 的对话（与主 Agent 的片同一个判据） */
@@ -1042,7 +888,7 @@ export type AgentChunkEvent = {
 
 /** 流结束、receiver 定稿（core `parsed`）：此后这一轮的正文不再变 */
 export type AgentParsedEvent = {
-  event: typeof AGENT_EVENTS.parsed;
+  event: "parsed";
   sessionId: string;
   turnId: number;
 };
@@ -1066,7 +912,7 @@ export type AgentParsedEvent = {
  * （正文空）当成结果发出去，而「等前面那条跑完再往后推」又会让先完成的干等后完成的。
  */
 export type AgentToolCallEndEvent = {
-  event: typeof AGENT_EVENTS.toolCallEnd;
+  event: "tool-call-end";
   sessionId: string;
   turnId: number;
   /**
@@ -1088,7 +934,7 @@ export type AgentToolCallEndEvent = {
  * 不是同一件事）。
  */
 export type AgentErrorEvent = {
-  event: typeof AGENT_EVENTS.error;
+  event: "error";
   sessionId: string;
   turnId: number;
   error: { code: string; message: string };
@@ -1103,7 +949,7 @@ export type AgentErrorEvent = {
  * `error`? → `finally` → `session-turn-end`。
  */
 export type AgentFinallyEvent = {
-  event: typeof AGENT_EVENTS.finally;
+  event: "finally";
   sessionId: string;
   turnId: number;
 };
@@ -1117,7 +963,7 @@ export type AgentFinallyEvent = {
  * 它不能当 id 用；反过来，id 带上展示含义之后，改一次标签就得动一次 id。
  */
 export type AgentSubAgentStartEvent = {
-  event: typeof AGENT_EVENTS.subAgentStart;
+  event: "sub-agent-start";
   sessionId: string;
   turnId: number;
   subAgentId: string;
@@ -1131,7 +977,7 @@ export type AgentSubAgentStartEvent = {
  * 否则界面上一个真的失败了的子任务会显示成成功。
  */
 export type AgentSubAgentEndEvent = {
-  event: typeof AGENT_EVENTS.subAgentEnd;
+  event: "sub-agent-end";
   sessionId: string;
   turnId: number;
   subAgentId: string;
@@ -1161,7 +1007,7 @@ export type AgentEvent =
  * 整的阶段推上来 —— 客户端不自己推阶段（三个前端各推一遍就会各错一遍）。
  */
 export type SessionPhaseEvent = {
-  event: typeof SESSION_EVENTS.phase;
+  event: "session-phase";
   sessionId: string;
   turnId: number;
   /** null = 本轮已收尾、回到空闲 */
@@ -1176,7 +1022,7 @@ export type SessionPhaseEvent = {
  * 结论，与 `AgentErrorEvent` 里那份错误同源。
  */
 export type SessionTurnEndEvent = {
-  event: typeof SESSION_EVENTS.turnEnd;
+  event: "session-turn-end";
   sessionId: string;
   turnId: number;
   ok: boolean;
@@ -1193,30 +1039,18 @@ export type NoticeLevel = "info" | "warn" | "error";
  * **只增不改语义**：code 一旦发出去就是协议的一部分，改了等于客户端文案失配。
  * 客户端按 `notice.<code>` 查自己的 i18n 表渲染 —— 服务端不产文案。
  */
-export const SESSION_NOTICE_CODES = {
-  /** 会话落盘失败（用户以为存了，其实没存） */
-  persistFailed: "persistFailed",
-  /** 交接/迁移降级（请求的执行者与实际执行者不一致） */
-  migrationDegraded: "migrationDegraded",
-  /** 本轮被中止 */
-  turnAborted: "turnAborted",
-  /** 开始写交接文档（`params.mode` 是请求的执行者） */
-  handoffWriting: "handoffWriting",
-  /** 自动迁移被触发（`params` 带 `used` / `limit` / `mode`） */
-  handoffAutoDetected: "handoffAutoDetected",
-  /** 交接文档落在这个路径（`params.path`） */
-  handoffPath: "handoffPath",
-  /** 迁移前把旧会话存进了存档（`params.sessionId` 是**旧**会话） */
-  handoffArchived: "handoffArchived",
-  /** 迁移完成、新会话已开启（`params.n` 是新会话第一条上下文的消息数） */
-  handoffMigrated: "handoffMigrated",
-  /** 紧跟在 `handoffMigrated` 后面那条补充（新助手会先读交接文档） */
-  handoffMigratedHint: "handoffMigratedHint",
-  /** 用户在提问里选了「不交接」/ 没人答 → 本次跳过迁移 */
-  migrationSkipped: "migrationSkipped",
-  /** 子 Agent 出错（`params.message` 是原始错误文本；`params.index` 是本轮序号） */
-  subAgentFailed: "subAgentFailed",
-} as const;
+export type SessionNoticeCode =
+  | "persistFailed"
+  | "migrationDegraded"
+  | "turnAborted"
+  | "handoffWriting"
+  | "handoffAutoDetected"
+  | "handoffPath"
+  | "handoffArchived"
+  | "handoffMigrated"
+  | "handoffMigratedHint"
+  | "migrationSkipped"
+  | "subAgentFailed";
 
 /**
  * 服务端通知的 code 表（`server-notice` 载荷里的枚举；同上：只增不改语义）。
@@ -1226,19 +1060,11 @@ export const SESSION_NOTICE_CODES = {
  * 类型名，不是 code 的字面量**（那些是客户端 i18n 表的键，改字面量等于让词典失效），
  * 所以改名对线上零影响。
  */
-export const SERVER_NOTICE_CODES = {
-  /** MCP server 连不上 */
-  mcpUnavailable: "mcpUnavailable",
-  /** 存档目录不可用（读/写失败） */
-  storeUnavailable: "storeUnavailable",
-} as const;
-
-export type SessionNoticeCode = (typeof SESSION_NOTICE_CODES)[keyof typeof SESSION_NOTICE_CODES];
-export type ServerNoticeCode = (typeof SERVER_NOTICE_CODES)[keyof typeof SERVER_NOTICE_CODES];
+export type ServerNoticeCode = "mcpUnavailable" | "storeUnavailable";
 
 /** 对话内通知：与某一段会话绑定 */
 export type SessionNoticeEvent = {
-  event: typeof SESSION_EVENTS.notice;
+  event: "session-notice";
   sessionId: string;
   level: NoticeLevel;
   code: SessionNoticeCode;
@@ -1248,7 +1074,7 @@ export type SessionNoticeEvent = {
 
 /** 服务端通知：不属于任何会话，切会话也不该消失 */
 export type ServerNoticeEvent = {
-  event: typeof SERVER_EVENTS.notice;
+  event: "server-notice";
   level: NoticeLevel;
   code: ServerNoticeCode;
   params?: Record<string, unknown>;
@@ -1282,3 +1108,33 @@ export type SessionEvent =
  * core 原名事件（类型上不认识 = 写不出来 = 收不到）。
  */
 export type ServerEvent = AgentEvent | SessionEvent | ServerNoticeEvent;
+
+/** `SESSION_METHODS` 的**成员名**（不是线上值）—— 给「门面必须覆盖每一条」这类类型级用例用 */
+export type SessionMethodKey =
+  | "create"
+  | "attach"
+  | "send"
+  | "cancel"
+  | "answer"
+  | "list"
+  | "rename"
+  | "remove"
+  | "last"
+  | "rollback"
+  | "reload"
+  | "snapshot"
+  | "save"
+  | "saveAs"
+  | "handoff"
+  | "migrate"
+  | "subAgentSnapshot"
+  | "setAgent"
+  | "modelSet"
+  | "modelParamsSet"
+  | "close";
+
+/** `WORKSPACE_METHODS` 的**成员名**（不是线上值）—— 给「门面必须覆盖每一条」这类类型级用例用 */
+export type WorkspaceMethodKey = "resolve" | "files" | "list" | "rename" | "remove" | "relocate";
+
+/** `EVENT_METHODS` 的**成员名**（不是线上值）—— 给「门面必须覆盖每一条」这类类型级用例用 */
+export type EventMethodKey = "watch";

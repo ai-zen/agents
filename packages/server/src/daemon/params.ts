@@ -20,7 +20,8 @@
  * 不带码的错误在界面上只能显示成一句笼统的失败。
  */
 
-import { ERROR_CODES, codedError, type CodedError } from "@ai-zen/agents-protocol";
+import type { CodedError } from "../protocol/index.js";
+import { codedError } from "../wire/errors.js";
 
 /** 取原始字段（不做任何判定，供本文件与外部的可选枚举校验复用） */
 export function field(params: unknown, name: string): unknown {
@@ -30,11 +31,11 @@ export function field(params: unknown, name: string): unknown {
 /**
  * 参数不合法（`bad-params` 是客户端唯一需要区分的那一类：它得改请求，不是重试）。
  *
- * `codedError` 只有**协议包的一份**（`@ai-zen/agents-protocol` 的 `errors.ts`）：错误码是
+ * `codedError` 只有**协议包的一份**（`src/protocol/` 的 `errors.ts`）：错误码是
  * 线上事实，多一份拷贝就是多一处可能写错码的地方。
  */
 export function badParams(message: string): CodedError {
-  return codedError(ERROR_CODES.badParams, message);
+  return codedError("bad-params", message);
 }
 
 /** 取必填字符串参数 */
@@ -89,7 +90,7 @@ export function optionalString(params: unknown, name: string): string | undefine
  * 取一个必填的对象参数。
  *
  * 只验「是个对象」，**不看字段**：`config` / `definition` 的形状归 SDK 定义，handler 不解释
- * （见 `@ai-zen/agents-protocol` 的 `config.ts` 头注释）。数组与 `null` 都不算对象 —— 它们在后面的服务层
+ * （见 `src/protocol/` 的 `config.ts` 头注释）。数组与 `null` 都不算对象 —— 它们在后面的服务层
  * 会表现成更难懂的失败。
  */
 export function requireObject(params: unknown, name: string): Record<string, unknown> {

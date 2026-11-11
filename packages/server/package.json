@@ -1,6 +1,6 @@
 {
   "name": "@ai-zen/agents-server",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.0",
   "description": "AI-Zen Agents Server — session/workspace service shared by CLI and Desktop",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol/index.d.ts",
+      "default": "./dist/protocol/index.js"
     },
     "./package.json": "./package.json"
   },
@@ -44,7 +48,7 @@
   "author": "LZQCN",
   "license": "MIT",
   "dependencies": {
-    "@ai-zen/agents-protocol": "workspace:^",
+    "@ai-zen/agents-core": "workspace:^",
     "@ai-zen/agents-sdk": "workspace:^"
   },
   "devDependencies": {

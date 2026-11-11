@@ -20,12 +20,9 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import {
-  DAEMON_METHODS,
-  callOnce,
-  readDescriptor,
-  type ServerDescriptor,
-} from "@ai-zen/agents-protocol";
+import type { ServerDescriptor } from "./wire/discovery.js";
+import { readDescriptor } from "./wire/discovery.js";
+import { callOnce } from "./wire/call-once.js";
 import { SocketServerClient } from "./socket-server-client.js";
 import type { ClientInfo, ServerAddress, ServerClient } from "./types.js";
 
@@ -115,7 +112,7 @@ async function probe(
   clientInfo: ClientInfo,
 ): Promise<ServerClient | null> {
   try {
-    await callOnce(addressOf(descriptor), DAEMON_METHODS.ping, undefined, {
+    await callOnce(addressOf(descriptor), "ping", undefined, {
       client: clientInfo,
       timeoutMs: PROBE_TIMEOUT_MS,
     });
@@ -161,14 +158,16 @@ async function spawnServerProcess({ aiZenDir }: { aiZenDir: string }): Promise<v
  *
  * ## 这个解析依赖谁装了服务端包
  *
- * 本包**不依赖** `@ai-zen/agents-server`（client 只依赖协议 —— 否则「客户端不拖进
- * 服务端实现」就只是纪律）。于是一个前置事实变成了显式的：**拉起服务端这条路径要求宿主
- * 应用装了服务端包**（CLI / 桌面端都装了 —— 它们要那个 bin）。
+ * 本包的**运行期依赖**里没有 `@ai-zen/agents-server`（只有 `agents-core` 与
+ * `agents-server/protocol` 的类型，运行期用自己的 wire 实现）。于是「拉起服务端」这条路径的
+ * 前提是显式的：**宿主应用装了服务端包**（CLI / 桌面端都装了 —— 它们要那个 bin）。
+ *
+ * 这正是它的定位：`ensureServer` 是**部署策略**，不是分层。不想走这条路的应用可以把
+ * `startServerProcess` 注入进来，那样连这个 `resolve` 都不会跑。
  *
  * 而「装了」有好有坏：npm 的扁平布局会把应用的依赖摊在顶层 `node_modules`，抬层解析找得到；
  * pnpm 的严格布局只给**声明过**的依赖建链接，所以本仓的 `packages/client` 把它列在
  * `devDependencies`（用例与本地运行要它），发布出去的消费者则要靠自己的依赖声明。
- * 装配根若想完全掌控这件事，用 `EnsureServerDeps.startServerProcess` 注入自己的拉起方式。
  */
 function serverEntryPath(): string {
   const require = createRequire(import.meta.url);
