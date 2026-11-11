@@ -38,6 +38,7 @@ import type { ClientInfo } from "./types.js";
 import { SocketServerClient } from "./socket-server-client.js";
 import { RemoteSessions } from "./facade/sessions.js";
 import { startFakeLlm, type FakeLlm } from "@ai-zen/agents-testing";
+import { AgentNS, applyChunk } from "@ai-zen/agents-core";
 
 const clientInfo: ClientInfo = { name: "@ai-zen/cli", version: "0.0.0-test" };
 const REPLY = "这是一段流式答复，用来验证拼接。";
@@ -122,7 +123,7 @@ async function shutdown(): Promise<void> {
 async function runTurn(sessionId: string, prompt: string): Promise<ServerEvent[]> {
   const seen: ServerEvent[] = [];
   const offs = [
-    client!.on(AGENT_EVENTS.chunkParsed, (event) => seen.push(event)),
+    client!.on(AGENT_EVENTS.chunk, (event) => seen.push(event)),
     client!.on(SESSION_EVENTS.turnEnd, (event) => seen.push(event)),
   ];
   try {
@@ -143,13 +144,16 @@ describe("一轮真跑（真 SDK + 流式 HTTP）", () => {
 
     const events = await runTurn(sessionId, "你好");
 
-    const deltas = events.filter((event) => event.event === "chunk-parsed");
+    // 线上只有原始片：用 core 的 `applyChunk` 折一遍（客户端就是这么做的），
+    // 折出来的正文必须与答复逐字相同 —— 「流式」这件事才算走通。
+    const pieces = events.filter((event) => event.event === "chunk");
+    const receiver = { role: AgentNS.Role.Assistant, content: "" } as AgentNS.Message;
+    for (const event of pieces) applyChunk(receiver, event.chunk as never);
     // 4 片 + 收尾那一片只带 usage（正文为空）—— 至少得有 2 片正文才算「流式」
-    const streamed = deltas.map((event) => event.text).join("");
-    expect(deltas.length).toBeGreaterThan(1);
-    expect(streamed).toBe(REPLY);
-    // 流末 chunk 的真实产物 token 数被带了出来（状态栏速率靠它校准）
-    expect(deltas.some((event) => event.usage?.completionTokens === 7)).toBe(true);
+    expect(pieces.length).toBeGreaterThan(1);
+    expect(receiver.content).toBe(REPLY);
+    // 流末 chunk 的真实产物用量被折进消息（状态栏速率按它校准）
+    expect(receiver.usage?.completion_tokens).toBe(7);
     expect(events.at(-1)).toMatchObject({ event: "session-turn-end", ok: true });
 
     // 服务端那份快照才是真相：最后一条是已完成的 assistant，正文就是答复

@@ -344,7 +344,7 @@ export class RemoteSessions {
    * 只产出交接文档（`/handoff`）：会话 id 不变、历史不动。
    *
    * 进度（`handoffWriting` / `handoffPath` / 降级）走 `session-notice`，流式正文走
-   * `chunk-parsed` —— 这个方法可能要跑一两分钟，等回执期间界面靠事件渲染。
+   * `chunk` —— 这个方法可能要跑一两分钟，等回执期间界面靠事件渲染。
    */
   async handoff(sessionId: string, mode?: HandoffMode): Promise<SessionHandoffResult> {
     return await this.client.call<SessionHandoffResult>(SESSION_METHODS.handoff, {

@@ -15,9 +15,9 @@
  *
  *   · `@ai-zen/agents-protocol` —— 纯类型 + 方法名常量（编译后什么都不剩）；
  *   · `../stream-merge.js` —— 同一份合并规则（它自己也是纯的）；
- *   · `@ai-zen/agents-core` —— **只取 `applyChunk`**：它是「一片 chunk 怎么攒成一条消息」的
- *     唯一实现，纯函数、不碰 I/O、不读配置、不建客户端（`dist/applyChunk.js` 连 import 都
- *     没有）。这一层要折流，就必须用它，抄一份才是真正破坏纯度的事；
+ *   · `@ai-zen/agents-core` —— 本包在运行期就依赖它：折 chunk（`applyChunk`）、用量求和
+ *     （`sumUsage`）、角色枚举（`AgentNS.Role`）都用它那一份，不抄镜像。它纯，是因为
+ *     用到的这三个都是不碰 I/O 的值/函数（`dist/applyChunk.js` 连 import 都没有）；
  *   · 别的都不行：`node:fs` / `node:net` 是 I/O，`agents-server` 是 daemon 与存档，
  *     `agents-sdk` 会去读配置、建模型客户端。
  *

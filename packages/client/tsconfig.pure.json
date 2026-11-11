@@ -19,8 +19,12 @@
   // 就说明这一层开始有 I/O 或 timers 了。
   //
   // 允许的：`@ai-zen/agents-protocol`（纯类型 + 方法名常量）与 `@ai-zen/agents-core`
-  // （用例要用**真的** `AgentNS.Role` 造数据，把镜像值钉死）、`vitest`。三条白名单之外
+  // （运行期真要它：`applyChunk` / `sumUsage` / `AgentNS.Role`）、`vitest`。三条白名单之外
   // 的新依赖都会在这里变红 —— 那时候该问的是「这层还纯吗」，而不是「把它加进白名单」。
+  //
+  // 注意：白名单按**包**判，而不是按**行为**判。core 能进是因为用到的那三个都不碰 I/O，
+  // 不是因为我们破例；反过来说，一旦有人从 core 里引了会起 daemon / 读配置的东西，
+  // 这道门禁拦不住（同名包），得看 `pure-boundary.test.ts` 那条 import 清单用例。
   //
   // 另一道保险（同伴，不是重复）：`src/session/pure-boundary.test.ts` 把 `stream.ts` 的
   // import 清单整段扫一遍、断言只允许白名单 —— 它连「只取副作用」那种形状也抓。

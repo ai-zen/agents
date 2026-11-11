@@ -4,7 +4,7 @@
  * ## 为什么单独一个文件
  *
  * 它不是任何一个类的私有财产：`SessionManager` 管它的注册与回收，`EventBridge` 管它上面的
- * 流式影子（`toolCalls`），`Persistence` 读它的存档字段（`title` /
+ * 流式影子（`subAgents`），`Persistence` 读它的存档字段（`title` /
  * `modelId` / `autoPersist`…），`QuestionBroker` 管它挂着的提问。
  *
  * 拆成四个类之后，如果这张形状留在其中某一个类里，另外三个就得 `import` 那个类 —— 那正是
@@ -15,7 +15,7 @@
  *
  *   注册表 / 回收      `holders` / `reclaimCancel` / `reclaimOnSettle`
  *   turn 生命周期      `turnId` / `turnSettled` / `turnFailed` / `settleDeferred`
- *   流式影子           `toolCalls` / `subAgents` / `subAgent*Seq`
+ *   流式影子           `subAgents` / `subAgent*Seq`
  *   存档               `title` / `modelId` / `modelParams` / `autoPersist` / `updatedAt`
  *   提问               `questions` / `questionSeq`
  *
@@ -32,7 +32,6 @@ import type {
   SessionQuestionKind,
   Usage,
 } from "@ai-zen/agents-protocol";
-import type { ToolCallReporter } from "./EventBridge.js";
 
 /**
  * 能跑一轮对话的 Agent 的最小面。
@@ -147,15 +146,6 @@ export interface LiveSession {
   turnId: number;
   /** 阶段状态机（纯，见 `lib/phase.ts`）；`EventBridge.phaseOf` 负责「对外怎么报」 */
   phase: PhaseTracker;
-  /**
-   * 本轮工具调用的**上报去重器**（只记上一次报出去的是什么，不是真相源）。
-   *
-   * 与 `phase` 并排放在会话上、而不是做成 `EventBridge.attach` 的闭包变量：闭包在换 Agent
-   * 时会随重挂一起消失（`adoptAgent`），看起来也够用；但**一轮收尾**（`settleTurn`）没有
-   * 闭包可清，影子就会滑到下一轮去当「上一次」。放在会话上，归零才有一个共同的落点
-   * （见 `resetStreamState`）。
-   */
-  toolCalls: ToolCallReporter;
   /** 本轮是否已经出过错（`error` 与 `finally` 都会到，收尾只报一次） */
   turnFailed: { code: string; message: string } | null;
   turnSettled: boolean;

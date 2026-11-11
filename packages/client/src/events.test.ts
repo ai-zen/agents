@@ -108,11 +108,11 @@ async function waitFor(received: ServerEvent[], name: string, count = 1): Promis
 }
 
 describe("SocketServerClient.on（服务端推的事件）", () => {
-  it("watch 之后收得到阶段 / 正文增量 / 轮次收尾", async () => {
+  it("watch 之后收得到阶段 / 原始片 / 轮次收尾", async () => {
     const client = await start();
     const received: ServerEvent[] = [];
     client.on(SESSION_EVENTS.phase, (event) => received.push(event));
-    client.on(AGENT_EVENTS.chunkParsed, (event) => received.push(event));
+    client.on(AGENT_EVENTS.chunk, (event) => received.push(event));
     client.on(SESSION_EVENTS.turnEnd, (event) => received.push(event));
 
     await client.call(EVENT_METHODS.watch);
@@ -122,9 +122,11 @@ describe("SocketServerClient.on（服务端推的事件）", () => {
     });
     await client.call(SESSION_METHODS.send, { sessionId: created.sessionId, content: "你好" });
 
+    const piece = { choices: [{ delta: { content: "答" } }] };
     agent.fire("open");
-    // `chunk-parsed` 是两参：`(receiver, chunk)`，第二个才是原始 chunk
-    agent.fire("chunk-parsed", {}, { choices: [{ delta: { content: "答" } }] });
+    // 原始片原样上线；core 的解析那一步（`chunk-parsed`）不推增量 —— 客户端自己折这一份
+    agent.fire("chunk", piece);
+    agent.fire("chunk-parsed", {}, piece);
     agent.fire("finally");
     await waitFor(received, SESSION_EVENTS.turnEnd);
 
@@ -133,9 +135,11 @@ describe("SocketServerClient.on（服务端推的事件）", () => {
       .map((event) => (event as { phase: { kind?: string } | null }).phase?.kind ?? null);
     expect(kinds).toEqual(["connecting", "queued", "streaming", null]);
 
-    const deltas = received.filter((event) => event.event === AGENT_EVENTS.chunkParsed);
-    expect(deltas).toHaveLength(1);
-    expect(deltas[0]).toMatchObject({ text: "答", reasoning: "", turnId: 1 });
+    const pieces = received.filter((event) => event.event === AGENT_EVENTS.chunk);
+    expect(pieces).toHaveLength(1);
+    expect(pieces[0]).toMatchObject({ chunk: piece, turnId: 1 });
+    // 摘一份增量出来的那条事件已经不在协议里：线上一条都不该出现
+    expect(received.map((event) => event.event as string)).not.toContain("chunk-parsed");
 
     const ends = received.filter((event) => event.event === SESSION_EVENTS.turnEnd);
     expect(ends).toHaveLength(1);

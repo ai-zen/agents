@@ -148,34 +148,3 @@ describe("applyChunk：流末的用量与结束原因", () => {
     expect(message.usage?.completion_tokens).toBe(2);
   });
 });
-
-describe("applyChunk：返回值是本片的增量", () => {
-  it("正文与推理各报各自的增量（不是累计值）", () => {
-    const message = receiver();
-    applyChunk(message, chunk({ content: "你" }));
-    const second = applyChunk(message, chunk({ content: "好", reasoning_content: "嗯" }));
-    expect(second).toEqual({ text: "好", reasoning: "嗯" });
-    expect(message.content).toBe("你好");
-  });
-
-  it("流末片报出真实产物 token 数", () => {
-    const message = receiver();
-    const delta = applyChunk(
-      message,
-      chunk({}, "stop", { usage: { prompt_tokens: 3, completion_tokens: 7, total_tokens: 10 } }),
-    );
-    expect(delta).toEqual({ text: "", reasoning: "", completionTokens: 7 });
-  });
-
-  it("什么都没有的片：两个空串，没有 completionTokens", () => {
-    const message = receiver();
-    expect(applyChunk(message, chunk({}))).toEqual({ text: "", reasoning: "" });
-  });
-
-  it("内容段数组：报那一段的增量", () => {
-    const message = receiver();
-    applyChunk(message, chunk({ content: [{ index: 0, type: "text" }] }));
-    const delta = applyChunk(message, chunk({ content: [{ index: 0, text: "半句" }] }));
-    expect(delta).toEqual({ text: "半句", reasoning: "" });
-  });
-});

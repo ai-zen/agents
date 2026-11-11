@@ -60,7 +60,7 @@ export * from "./facade/sessions.js";
 export * from "./facade/config.js";
 export * from "./config-port.js";
 
-// 「本地流式增量 vs 服务端快照」的合并规则（`mergeStreamedSnapshot` / `StreamedAssistant` / `ROLE`）。
+// 「本地流式增量 vs 服务端快照」的合并规则（`mergeStreamedSnapshot` / `StreamedAssistant`）。
 // 它是公开面的一部分：会话状态机与两个前端都要在同一个时序压力下做同一件事
 // （快照比第一批增量还慢），而这份规则只该有一份 —— 各写一遍就会在「宁可重复也不吞字」
 // 这类边界上分叉。

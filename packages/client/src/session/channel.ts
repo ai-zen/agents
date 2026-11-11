@@ -62,7 +62,6 @@ import {
   SERVER_EVENTS,
   SESSION_EVENTS,
   codeOf,
-  type AgentChunkParsedEvent,
   type HandoffMode,
   type MessageContent,
   type MigrationStrategy,
@@ -98,22 +97,6 @@ const RECONNECT_BACKOFF_MS = [100, 300] as const;
 /** 服务端通知的码在**另一张表**里（`SERVER_NOTICE_CODES`），所以出口的类型是两者的并集 */
 export type ChannelNoticePayload = NoticePayload | Omit<ServerNoticeEvent, "event">;
 
-/**
- * 一片 chunk 折出来的增量 —— {@link SessionChannelPolicy.onDelta} 的载荷。
- *
- * `sessionId` / `turnId` / `subAgentId` 让应用把「这一片的速率」归到正确的会话与轮次上；
- * `text` / `reasoning` 是本片新增量，`completionTokens` 只有流末片才有（真实用量，拿它校准
- * 比按字符估算准得多）。
- */
-export interface StreamDelta {
-  sessionId: string;
-  turnId: number;
-  subAgentId?: string;
-  text: string;
-  reasoning: string;
-  completionTokens?: number;
-}
-
 export interface SessionChannelPolicy {
   /**
    * 服务端提问时怎么答（自动迁移的「交接方式三选一」）。
@@ -135,16 +118,6 @@ export interface SessionChannelPolicy {
    * 其余情况调用方可以攒到下一帧。
    */
   onChange?: (immediate: boolean) => void;
-  /**
-   * 一片 chunk 折完之后，把**本片的增量**交给应用（含只带用量的收尾片与子 Agent 的片）。
-   *
-   * 为什么它是一条旁路而不是状态字段：「本轮的生成速率」是纯展示口径（tok/s），它靠
-   * 「每片的字符数 + 流末的真实 completionTokens + 墙钟」算出来，而**墙钟不属于状态机**
-   * （那会让 `SessionStream` 不再是纯的）。所以增量在这里漏一手给应用，状态机自己不碰。
-   *
-   * 载荷是折叠方（`applyChunk`）给出的增量，不是原始事件：应用层不必再解一遍 chunk。
-   */
-  onDelta?: (delta: StreamDelta) => void;
 }
 
 /**
@@ -646,24 +619,14 @@ export class SessionChannel {
     /**
      * 一片**原始 chunk**：正文 / 推理 / 工具调用的组装 / 流末用量与结束原因全在它里面。
      *
-     * 状态机用 core 的 `applyChunk` 往那条正在拼的 assistant 消息上折，应用拿折出来的
-     * 增量算速率。带 `subAgentId` 的片归子 Agent：折进**它自己**的消息，且不碰主阶段 ——
+     * 状态机用 core 的 `applyChunk` 往那条正在拼的 assistant 消息上折，应用通过
+     * {@link SessionChannelPolicy.onChange} 拿到更新后的状态（要算速率就看消息本身）。
+     * 带 `subAgentId` 的片归子 Agent：折进**它自己**的消息，且不碰主阶段 ——
      * 子 Agent 的流是工具内部的事，主阶段此刻该停在「等待 xxx 返回」。
      */
     mine(AGENT_EVENTS.chunk, (event) => {
-      const delta = event.subAgentId
-        ? this.stream.subAgentChunk(event.subAgentId, event.chunk)
-        : this.stream.applyChunk(event.chunk);
-      this.policy.onDelta?.({
-        sessionId: event.sessionId,
-        turnId: event.turnId,
-        ...(event.subAgentId ? { subAgentId: event.subAgentId } : {}),
-        text: delta.text,
-        reasoning: delta.reasoning,
-        ...(delta.completionTokens === undefined
-          ? {}
-          : { completionTokens: delta.completionTokens }),
-      });
+      if (event.subAgentId) this.stream.subAgentChunk(event.subAgentId, event.chunk);
+      else this.stream.applyChunk(event.chunk);
       this.notify(false);
     });
 

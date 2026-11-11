@@ -24,7 +24,7 @@ describe("流式增量与服务端快照的合并（竞态）", () => {
   const streamOf = (text: string, reasoning = ""): StreamedAssistant => {
     const message = assistant(text);
     if (reasoning) message.reasoning_content = reasoning;
-    return { message, text, reasoning };
+    return { message };
   };
 
   it("本地还没有增量：结果就是快照（开始时最常见）", () => {
@@ -78,7 +78,7 @@ describe("流式增量与服务端快照的合并（竞态）", () => {
     expect(merged.messages[1]!.content).toBe("答完了");
     // 反向的那一支（本地是快照的**后缀**）：同一段，后续增量接着拼在这一条上
     expect(merged.stream!.message).toBe(merged.messages[1]);
-    expect(merged.stream!.text).toBe("答完了");
+    expect(merged.stream!.message.content).toBe("答完了");
   });
 
   it("快照那份比本地新：本地只是它的一段前缀 → 取快照那条，不许多出一条「答」", () => {
@@ -93,7 +93,7 @@ describe("流式增量与服务端快照的合并（竞态）", () => {
     expect(merged.messages[1]!.content).toBe("答完了");
     // 本地那半句是**过时的前缀**（它的每个字都在快照里），丢掉不会丢内容
     expect(merged.stream!.message).toBe(merged.messages[1]);
-    expect(merged.stream!.text).toBe("答完了");
+    expect(merged.stream!.message.content).toBe("答完了");
   });
 
   it("规则 2 的两个方向互相对称：谁更全就留谁，两个方向都只有一条 assistant", () => {

@@ -11,27 +11,31 @@ import { describe, expect, it } from "vitest";
 import { AGENT_EVENTS, SERVER_EVENTS, SESSION_EVENTS } from "./sessions.js";
 
 describe("事件表", () => {
-  it("Agent 10 条、会话 7 条、服务端 1 条（改数量就该回来改这里与文档）", () => {
-    expect(Object.keys(AGENT_EVENTS)).toHaveLength(10);
-    expect(Object.keys(SESSION_EVENTS)).toHaveLength(7);
+  it("Agent 8 条、会话 6 条、服务端 1 条（改数量就该回来改这里与文档）", () => {
+    expect(Object.keys(AGENT_EVENTS)).toHaveLength(8);
+    expect(Object.keys(SESSION_EVENTS)).toHaveLength(6);
     expect(Object.keys(SERVER_EVENTS)).toHaveLength(1);
   });
 
-  it("Agent 表的 10 个值逐字等于 core `Agent.events` 的原名（照抄 core 是规则，不是巧合）", () => {
+  it("Agent 表的 8 个值逐字等于 core `Agent.events` 的原名（照抄 core 是规则，不是巧合）", () => {
     // 顺序与 `packages/core/src/Agent.ts` 的「事件系统」一节一致：改名 / 加一条就要同时
-    // 想一次「core 那边叫什么」。逐字比较而不是 startsWith：这 10 条的意义就在于**同名**。
+    // 想一次「core 那边叫什么」。逐字比较而不是 startsWith：这些条的意义就在于**同名**。
+    //
+    // 只有被转出去的才在表里：core 的 `chunk-parsed`（正文增量）与 `message`（整条消息）
+    // 不上线 —— 前者客户端折 `chunk` 就有，后者被 `tool-call-end` 与快照覆盖。
     expect(Object.values(AGENT_EVENTS)).toEqual([
       "open",
       "chunk",
-      "chunk-parsed",
       "parsed",
-      "message",
       "tool-call-end",
       "error",
       "finally",
       "sub-agent-start",
       "sub-agent-end",
     ]);
+    // 这两条确实不在线上事件里（免得有人「顺手补回来」）
+    expect(Object.values(AGENT_EVENTS) as string[]).not.toContain("chunk-parsed");
+    expect(Object.values(AGENT_EVENTS) as string[]).not.toContain("message");
   });
 
   it("事件名一律 kebab-case：不许点号，也不许驼峰（属性名可以驼峰，值不行）", () => {

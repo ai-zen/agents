@@ -15,25 +15,38 @@
  * 之后的增量该继续往哪条上拼」。不碰 socket、不读时钟、不留状态、不抛错 —— 因此不挑剔调用方
  * 是 TUI 还是 Electron 主进程，也能被单测直接钉住时序（这条竞态靠真 socket 复现不了，要凑）。
  *
- * 消息形状从协议包拿（`Message`）：协议是数据模型的**唯一出口**，客户端不再直接去 core 里
- * 捞类型。类型在产物里被抹掉，所以运行期依赖图仍然只有 `@ai-zen/agents-protocol` +
- * `node:*`（见 README「产物的运行期依赖图必须闭合」）。
+ * ## 消息形状与角色都直接用 core 的
+ *
+ * 协议是数据模型的**类型出口**（`Message`），`AgentNS.Role` 这个运行期值直接取自 core——
+ * 本包在运行期就依赖 core（折 chunk 与用量求和都在那边），所以没有理由再抄一份
+ * `{ Assistant: "assistant" }` 当「同值镜像」：镜像与枚举是同一件事的两个定义，枚举加一个
+ * 角色、镜像照旧时，症状是「某个角色的消息在合并里被当成正文」。
+ *
+ * ## 拼接态不存镜像
+ *
+ * 拼接态只有一条消息（`StreamedAssistant.message`）。正文与推理一律从它身上**现读**
+ * （{@link textOf} / {@link reasoningOf}），这里不另存 `text` / `reasoning` 两份拷贝 ——
+ * 拷贝活不过一次就地折叠：`applyChunk` 改的是 `message`，镜像得靠每个调用方挨个跟上，漏一处
+ * 就会拿旧数据去做「互为前缀」的判断，而症状是「屏幕上答案短一截」。
  */
 
+import { AgentNS } from "@ai-zen/agents-core";
 import type { Message } from "@ai-zen/agents-protocol";
 
 /**
- * `Role.Assistant` 的同值镜像。
+ * 一条消息的正文。
  *
- * 为什么不用枚举本身：协议只**转出类型**、不转出 `Role`（它是运行期有对象的值，转出就等于
- * 把 core 拖进本包的运行期依赖图）。值写错编译器会拦 —— `Message["role"]` 与该字面量不
- * 重叠时报 TS2367；用例那边又用真的 `AgentNS.Role.Assistant` 造数据，两处一起把这个值钉死。
- *
- * 导出是给同目录之外的纯状态机（`session/stream.ts`）用的：它也必须在运行期知道「哪条是
- * assistant」，而本包不能为了一个字符串去 import core。**这份镜像只许有一份** —— 所以它在
- * 这里导出，而不是在那边再抄一遍。
+ * 内容段数组形态（带图片的 assistant）没有可比的字符串，按空串处理 —— 与合并规则第 2 条
+ * 的前提一致：那条规则比的是「同一段正文」，而内容段形态下落进第 3 条的对齐分支。
  */
-export const ROLE = { Assistant: "assistant" } as const;
+function textOf(message: Message): string {
+  return typeof message.content === "string" ? message.content : "";
+}
+
+/** 一条消息的推理内容（推理模型才有） */
+function reasoningOf(message: Message): string {
+  return message.reasoning_content ?? "";
+}
 
 /**
  * 本地拼接状态（一段流式内容一条）。
@@ -44,12 +57,8 @@ export const ROLE = { Assistant: "assistant" } as const;
  * 时整份清空，不存在「拼错了要修」的问题。
  */
 export interface StreamedAssistant {
-  /** 临时消息：同时也是调用方消息列表里的那一条（增量就地改它，屏幕才跟得上） */
+  /** 正在拼的那条消息：同时也是调用方消息列表里的那一条（增量就地改它，屏幕才跟得上） */
   message: Message;
-  /** 累计正文（= `message.content`，单独存一份，省得每次从联合类型里往外捞） */
-  text: string;
-  /** 累计推理内容（推理模型才有） */
-  reasoning: string;
 }
 
 /**
@@ -73,8 +82,8 @@ export interface StreamedAssistant {
  * 2. 快照末尾那条 assistant 的正文与本地累计正文**互为前缀** → 它们是同一段（core 在流式
  *    开始前就把占位消息追加进了 `messages`，之后就地改它）。取信息多的那份，并让后续
  *    增量继续拼在这一条上 —— 否则同一段会被拆成两条消息在屏幕上闪。两个方向都要认：
- *      · 本地是快照的后缀（`stream.text.startsWith(tailText)`）：本地更全，取本地的；
- *      · 本地是快照的前缀（`tailText.startsWith(stream.text)`）：**快照更全**，取快照那条。
+ *      · 本地是快照的后缀（`localText.startsWith(tailText)`）：本地更全，取本地的；
+ *      · 本地是快照的前缀（`tailText.startsWith(localText)`）：**快照更全**，取快照那条。
  *    只认第一个方向时，第二个方向会一路落到第 3 条的对不上分支，屏幕上末尾多出一条
  *    内容为「答」的 assistant 消息（一轮里前半句上屏两遍）。
  * 3. 否则快照末尾不是「正在拼的那一段」：用「服务端已知 assistant 正文按序拼接」对齐，只接
@@ -92,17 +101,21 @@ export function mergeStreamedSnapshot(
   stream: StreamedAssistant | null,
 ): { messages: Message[]; stream: StreamedAssistant | null } {
   const base = [...snapshot];
-  if (!stream || (!stream.text && !stream.reasoning)) return { messages: base, stream };
+  const localText = stream ? textOf(stream.message) : "";
+  const localReasoning = stream ? reasoningOf(stream.message) : "";
+  if (!stream || (!localText && !localReasoning)) return { messages: base, stream };
 
   const tail = base.at(-1);
   const tailText =
-    tail && tail.role === ROLE.Assistant && typeof tail.content === "string" ? tail.content : null;
+    tail && tail.role === AgentNS.Role.Assistant && typeof tail.content === "string"
+      ? tail.content
+      : null;
 
   // 规则 2 的第一个方向：同一段，本地更全
-  if (tailText !== null && stream.text.startsWith(tailText)) {
-    const merged = withAssistantText(tail!, stream.text, stream.reasoning);
+  if (tailText !== null && localText.startsWith(tailText)) {
+    const merged = withAssistantText(tail!, localText, localReasoning);
     base[base.length - 1] = merged;
-    return { messages: base, stream: { ...stream, message: merged } };
+    return { messages: base, stream: { message: merged } };
   }
 
   /**
@@ -114,36 +127,33 @@ export function mergeStreamedSnapshot(
    * 后面又跟一条「答」。缺这一支时它并不报错，只在重连 / 快照比增量慢这类时序里显形。
    *
    * 拼接态**接着指向快照那条**（不是丢掉）：快照只是这一刻的副本，这一段还在流，下一片
-   * 增量得拼在同一条上 —— 指回 null 会让 `applyDelta` 另起一条消息，把一段答案在屏幕上
-   * 裂成两段（那正是规则 2 想避免的事）。推理取两者更长的：它与正文同帧到达但可能**先到**，
-   * 本地那份比快照长时吞掉它同样是丢内容。
+   * 增量得拼在同一条上 —— 指回 null 会让后续的 `applyChunk` 另起一条消息，把一段答案在
+   * 屏幕上裂成两段（那正是规则 2 想避免的事）。推理取两者更长的：它与正文同帧到达但可能
+   * **先到**，本地那份比快照长时吞掉它同样是丢内容。
    */
-  if (tailText !== null && tailText.startsWith(stream.text)) {
-    const snapshotReasoning =
-      typeof tail!.reasoning_content === "string" ? tail!.reasoning_content : "";
+  if (tailText !== null && tailText.startsWith(localText)) {
+    const snapshotReasoning = reasoningOf(tail!);
     const reasoning =
-      snapshotReasoning.length >= stream.reasoning.length ? snapshotReasoning : stream.reasoning;
+      snapshotReasoning.length >= localReasoning.length ? snapshotReasoning : localReasoning;
     const merged = withAssistantText(tail!, tailText, reasoning);
     base[base.length - 1] = merged;
-    return { messages: base, stream: { message: merged, text: tailText, reasoning } };
+    return { messages: base, stream: { message: merged } };
   }
 
   // 规则 3：对齐「服务端已知的 assistant 正文」，只接上多出来的那截
   const confirmed = base
-    .filter((message) => message.role === ROLE.Assistant && typeof message.content === "string")
+    .filter((message) => message.role === AgentNS.Role.Assistant && typeof message.content === "string")
     .map((message) => message.content as string)
     .join("");
-  if (confirmed.endsWith(stream.text)) return { messages: base, stream: null };
+  if (confirmed.endsWith(localText)) return { messages: base, stream: null };
 
-  const rest = stream.text.startsWith(confirmed)
-    ? stream.text.slice(confirmed.length)
-    : stream.text;
+  const rest = localText.startsWith(confirmed) ? localText.slice(confirmed.length) : localText;
   const appended = withAssistantText(
-    { role: ROLE.Assistant, content: "" } as Message,
+    { role: AgentNS.Role.Assistant, content: "" } as Message,
     rest,
-    stream.reasoning,
+    localReasoning,
   );
-  return { messages: [...base, appended], stream: { ...stream, message: appended, text: rest } };
+  return { messages: [...base, appended], stream: { message: appended } };
 }
 
 /**
@@ -155,7 +165,7 @@ export function mergeStreamedSnapshot(
  * 整段消失，而且只在推理模型上显形。所以只留一份，放在这份合并规则旁边。
  */
 export function withAssistantText(message: Message, text: string, reasoning: string): Message {
-  const next = { ...message, role: ROLE.Assistant, content: text } as Message;
+  const next = { ...message, role: AgentNS.Role.Assistant, content: text } as Message;
   if (reasoning) next.reasoning_content = reasoning;
   return next;
 }

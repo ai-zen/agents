@@ -73,7 +73,7 @@ import {
   type HandoffAgentLike,
 } from "../handoff/SessionHandoff.js";
 import type { AutoTitleFn } from "./AutoTitle.js";
-import { EventBridge, ToolCallReporter } from "./EventBridge.js";
+import { EventBridge } from "./EventBridge.js";
 import { Persistence } from "./Persistence.js";
 import { QuestionBroker } from "./QuestionBroker.js";
 import type { AgentLike, LiveSession, SubAgentLike } from "./LiveSession.js";
@@ -1270,7 +1270,6 @@ export class SessionManager {
       agent,
       turnId: 0,
       phase: new PhaseTracker(),
-      toolCalls: new ToolCallReporter(),
       turnFailed: null,
       turnSettled: true,
       settleDeferred: false,

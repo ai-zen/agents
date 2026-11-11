@@ -20,9 +20,9 @@
  * 1. **不许自己实现合并规则**：`settle()` 与 `applySnapshot()` 都走 `stream-merge.ts` 的
  *    {@link mergeStreamedSnapshot}。那份规则（尤其「宁可重复也不吞字」）是唯一实现，
  *    在这里再写一遍就多一份会漂的答案，而漂移只在竞态里显形。
- * 2. **不许 import `@ai-zen/agents-core` 的运行期值**：`ROLE` 用 `stream-merge.ts` 的
- *    字面量镜像（`AgentNS.Role` 是 enum，属于运行期值）；类型一律 `import type`。
- *    `totalUsage` 也一样 —— 它是 core `sumUsage` 的口径镜像，见 {@link sumUsage}。
+ * 2. **不存既有类型的摘录**：角色用 `AgentNS.Role`、用量求和用 core 的 `sumUsage()`，
+ *    直接引 core 的运行期值 —— 本包在运行期就依赖它（折 chunk 在那边），抄一份
+ *    `{Assistant:"assistant"}` 或用例重写一遍求和，只会多出第二份会漂的定义。
  * 3. **`failed` 是终态**：`settle()` 不许把它擦成 `idle`（core 的 `onSubAgentEnd` 在
  *    `finally` 里分发，失败的那次照样会来一条收尾事件，无脑覆盖会把 ✖
  *    擦成 ✓）。只有 `beginTurn()`（新一轮开始）与 `applySnapshot()`（换基线）能清掉它。
@@ -51,8 +51,8 @@ import type {
   SubAgentSnapshotResult,
   Usage,
 } from "@ai-zen/agents-protocol";
-import { applyChunk as foldChunk, type ChunkDelta } from "@ai-zen/agents-core";
-import { ROLE, mergeStreamedSnapshot, type StreamedAssistant } from "../stream-merge.js";
+import { AgentNS, applyChunk as foldChunk, sumUsage } from "@ai-zen/agents-core";
+import { mergeStreamedSnapshot, type StreamedAssistant } from "../stream-merge.js";
 
 /** 一轮的生命周期三态（`failed` 是终态，见文件头第 3 条） */
 export type SessionStatus = "idle" | "streaming" | "failed";
@@ -128,36 +128,6 @@ export interface SessionStreamState {
   failure?: TurnFailure;
 }
 
-/** 零用量：`totalUsage` 的起点 */
-const ZERO_USAGE: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
-
-/**
- * 按消息求和 token 用量 —— core `sumUsage()` 的**口径镜像**。
- *
- * 为什么这里必须有一份：本包不能 import `@ai-zen/agents-core` 的运行期值（那会把 openai
- * 拖进客户端的运行期依赖图，而「运行期只依赖协议包」是结构而不是纪律）。所以口径在这里
- * 按同一份规则重写：`message.usage`（本条响应）＋ `message.subAgentUsage`（内部委派），
- * **两者都要加** —— 只加前者会把子 Agent（含其孙级）的消耗静默漏掉。
- *
- * 漂移风险由用例钉住：`stream.test.ts` 里那条「工具消息上的 subAgentUsage 一起累加」
- * 用的是真 `AgentNS.Role` 造的数据、且期望值与 core 的 `sumUsage` 逐字相同。
- */
-function sumUsage(messages: readonly Message[]): Usage {
-  let acc: Usage = { ...ZERO_USAGE };
-  for (const message of messages) {
-    if (message.usage) acc = addUsage(acc, message.usage);
-    if (message.subAgentUsage) acc = addUsage(acc, message.subAgentUsage);
-  }
-  return acc;
-}
-
-function addUsage(a: Usage, b: Usage): Usage {
-  return {
-    prompt_tokens: a.prompt_tokens + b.prompt_tokens,
-    completion_tokens: a.completion_tokens + b.completion_tokens,
-    total_tokens: a.total_tokens + b.total_tokens,
-  };
-}
 
 /**
  * 占位 assistant 消息。
@@ -167,7 +137,7 @@ function addUsage(a: Usage, b: Usage): Usage {
  * 两条记录说的是同一条消息，id 却不同。所以只能断言（与 CLI 现在那份实现同一条）。
  */
 function placeholder(): Message {
-  return { role: ROLE.Assistant, content: "" } as Message;
+  return { role: AgentNS.Role.Assistant, content: "" } as Message;
 }
 
 /**
@@ -209,7 +179,7 @@ export class SessionStream {
       modelLevel: initial.modelLevel ?? "agent",
       // 实发名同样只有服务端知道（首次快照到达前是空串，界面在那之前不渲染模型信息）
       apiModel: "",
-      totalUsage: { ...ZERO_USAGE },
+      totalUsage: sumUsage([]),
       status: "idle",
     };
   }
@@ -231,7 +201,7 @@ export class SessionStream {
    * 开始一轮。
    *
    * 它只做三件事：记下等的是哪一轮、把终态 `failed` 复位、把状态标成 `streaming`。
-   * **不动**拼接态与消息：`chunk-parsed` 完全可能**比 `session.send` 的回执先到**
+   * **不动**拼接态与消息：`chunk` 完全可能**比 `session.send` 的回执先到**
    * （服务端先推 `connecting` 再回 `turnId`），那时正文已经在拼了 —— 在这里清掉拼接态，
    * 那几片字就会在屏幕上裂成两条消息。
    *
@@ -300,32 +270,32 @@ export class SessionStream {
   // ==================== 正文、推理与工具调用（折 chunk） ====================
 
   /**
-   * 一片**原始 chunk** —— 折进「这一轮正在拼的那条 assistant 消息」，返回本片增量。
+   * 一片**原始 chunk** —— 折进「这一轮正在拼的那条 assistant 消息」。
    *
    * ## 为什么是「折」而不是「接服务端算好的增量」
    *
    * 正文、推理、工具调用的组装（参数是边流边长的半截 JSON）、流末的 `usage` /
    * `finish_reason` —— 这五件事 core 已经在一个函数里做完了（`applyChunk`）。服务端再把
-   * 它们挑出来推一遍（原来是 `chunk-parsed` + `session-tool-calls` 两条事件），等于同一份
+   * 它们摘出来推一遍（`chunk-parsed` 与 `session-tool-calls`，两条都删了），等于同一份
    * 解读在两端各写一遍，而其中一份改了指纹、另一份照旧时，症状是「界面上的参数与发出去的
    * 请求不一样」。所以客户端直接调 core 那一份，线上只走原始片。
    *
-   * ## 为什么返回值要交出去
+   * ## 不返回「本片增量」
    *
-   * 「这一片新增了多少字」是**应用层**的事（CLI 用它算 tok/s），折叠方是唯一知道答案的人。
-   * 让应用层自己再解一遍 chunk，就是又一个第二份实现。
+   * 本片新增了什么就写在原始片里（`chunk.choices[0].delta`），要用的人自己看；本方法只负责
+   * 把事实折进 `receiver`（累计态），由调用方通过 {@link onChange} 拿到不可变状态。摘一份
+   * 「增量」出来就是给同一个概念立第二个定义。
    */
-  applyChunk(chunk: unknown): ChunkDelta {
+  applyChunk(chunk: unknown): void {
     this.ensureStreaming();
     const receiver = this.streaming!.message;
-    const delta = foldChunk(receiver, chunk as never);
+    foldChunk(receiver, chunk as never);
     // 折完什么也没多（只带 `usage` 的收尾片、只有 role 的首片）：**不上屏**，也不留一条空
     // assistant。用量还在 receiver 上，收尾快照会给同一份事实 —— 屏幕上多一条空消息才是
     // 真正的损失。所以「折」与「上屏」是两步：先折进一个还没进列表的 receiver，折出东西了
     // 才把它挂上去。
-    if (!hasContent(receiver)) return delta;
+    if (!hasContent(receiver)) return;
     this.showStreaming();
-    return delta;
   }
 
   /**
@@ -335,33 +305,29 @@ export class SessionStream {
    * 共享就会让主对话里凭空多出子 Agent 的正文。没有 `started` 就没有这一栏（严格按会话
    * 过滤后这只会在「中途接上连接」时发生，而那时快照才是数据的来源）。
    */
-  subAgentChunk(subAgentId: string, chunk: unknown): ChunkDelta {
+  subAgentChunk(subAgentId: string, chunk: unknown): void {
     const index = this.indexOfSubAgent(subAgentId);
-    const empty: ChunkDelta = { text: "", reasoning: "" };
-    if (index < 0) return empty;
+    if (index < 0) return;
 
     const view = this.value.subAgents[index]!;
     const messages = [...view.messages];
     let stream = this.subAgentStreams.get(subAgentId);
     if (!stream) {
-      stream = { message: placeholder(), text: "", reasoning: "" };
+      stream = { message: placeholder() };
       this.subAgentStreams.set(subAgentId, stream);
       messages.push(stream.message);
     }
     const slot = messages.length - 1;
-    const delta = foldChunk(stream.message, chunk as never);
+    foldChunk(stream.message, chunk as never);
     // 与主会话同一条规矩：什么也没折出来的片不新增一条空消息（receiver 留着继续折）
     if (!hasContent(stream.message)) {
       if (slot === view.messages.length) this.subAgentStreams.delete(subAgentId);
-      return delta;
+      return;
     }
     // 折的是同一个对象：换一个新引用交给 React（它靠引用比较判断要不要重画）
     messages[slot] = { ...stream.message };
     stream.message = messages[slot]!;
-    stream.text = typeof stream.message.content === "string" ? stream.message.content : "";
-    stream.reasoning = stream.message.reasoning_content ?? "";
     this.replaceSubAgent(index, { ...view, messages });
-    return delta;
   }
 
   /**
@@ -468,7 +434,7 @@ export class SessionStream {
    *
    * 合并规则有一条早退分支（本地正文与推理都为空 → 原样返回快照，见
    * `mergeStreamedSnapshot`）：此刻拼接态的那条临时消息**根本不在**返回的列表里，而
-   * 「长度 - 1」是服务端那条的下标。这条路径真实可达：`session-tool-calls` 会建立一条正文为空
+   * 「长度 - 1」是服务端那条的下标。这条路径真实可达：只带工具调用的 `chunk` 会建立一条正文为空
    * 的流式态（工具调用是这条响应的一部分，正文还没开始），此时断线重连、服务端还在跑，
    * 下一片正文就会被写到服务端最后一条上 —— 而它往往是**工具结果**（`role:"tool"`）。
    * 那条消息被改写成 assistant，工具结果静默消失；用户消息同理会被顶掉。
@@ -534,14 +500,10 @@ export class SessionStream {
   }
 
   /**
-   * 折完一片之后刷新状态：消息换一个新引用、`text` / `reasoning` 镜到拼接态上。
+   * 折完一片之后刷新状态：消息换一个新引用。
    *
    * 为什么要换引用：`commit` 的约定是「每次变更换一个新对象」，前端靠引用比较决定重画；
    * 就地改那个对象会让屏幕停在上一帧。
-   *
-   * 为什么 `text` / `reasoning` 还要单独存一份：`mergeStreamedSnapshot` 用它判断「本地
-   * 这份是不是快照那条的续写」（互为前缀）。那份判断与内容的**字符串**形态绑定 —— 内容段
-   * 数组形态（视觉）折出来时它是空串，于是合并走「本地没有可续内容」那一支，用服务端的。
    */
   private refreshStreaming(): void {
     const streaming = this.streaming!;
@@ -549,8 +511,6 @@ export class SessionStream {
     const messages = [...this.value.messages];
     messages[slot] = { ...streaming.message };
     streaming.message = messages[slot]!;
-    streaming.text = typeof streaming.message.content === "string" ? streaming.message.content : "";
-    streaming.reasoning = streaming.message.reasoning_content ?? "";
     this.commit({
       messages,
       totalUsage: sumUsage(messages),
@@ -567,7 +527,7 @@ export class SessionStream {
    */
   private ensureStreaming(): void {
     if (this.streaming) return;
-    this.streaming = { message: placeholder(), text: "", reasoning: "" };
+    this.streaming = { message: placeholder() };
     this.streamSlot = null;
   }
 

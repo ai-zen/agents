@@ -119,9 +119,9 @@ scenario on both.
 ## Session layer
 
 `@ai-zen/agents-protocol` (`sessions.ts`) is the wire contract for sessions — method names, params and the
-events, in three tables: `AGENT_EVENTS` (core's own nine: `open`, `chunk`, `chunk-parsed`, `parsed`,
+events, in three tables: `AGENT_EVENTS` (core's own eight: `open`, `chunk`, `parsed`,
 `tool-call-end`, `error`, `finally`, `sub-agent-start`, `sub-agent-end`), `SESSION_EVENTS`
-(`session-phase`, `session-tool-calls`, `session-turn-end`, `session-notice`, `session-question`,
+(`session-phase`, `session-turn-end`, `session-notice`, `session-question`,
 `session-id-changed`, `session-title-changed`) and `SERVER_EVENTS` (`server-notice`).
 `src/domain/session/` holds the session as four collaborating classes:
 `SessionManager.ts` (live-session registry, holders/reclaiming, turn lifecycle, catalogue,
@@ -496,7 +496,8 @@ agent-specific, and invalidating it would evict every other session in the works
 
 Delegated sub-agents are *tool calls* (`AgentTool` / `AgentToolLazy`), and the protocol treats
 them that way: `sub-agent-start` / `sub-agent-end` carry a per-turn `index` (the label) and a
-stable `subAgentId` (the client's selection key), `chunk-parsed` grows an optional `subAgentId`,
+stable `subAgentId` (the client's selection key), the raw `chunk` event grows an optional
+`subAgentId` (so a client folds a sub-agent's transcript from the same stream the main one uses),
 and `session.subAgent.snapshot` returns that sub-agent's own transcript. Two invariants:
 
 - **A sub-agent's deltas never move the main phase.** While a sub-agent runs, the main agent is
@@ -508,7 +509,7 @@ and `session.subAgent.snapshot` returns that sub-agent's own transcript. Two inv
 
 ### The agent's own events go out verbatim: same names, same moments
 
-Ten of the eighteen events are core's own (`AGENT_EVENTS`) and the server forwards them
+Eight of the fifteen events are core's own (`AGENT_EVENTS`) and the server forwards them
 **unchanged**, at the moment core emits them — renaming them on the wire would mean keeping a
 translation table across protocol, server and client, and a table only ever drifts:
 
@@ -516,83 +517,54 @@ translation table across protocol, server and client, and a table only ever drif
 |---|---|
 | `open` | core `open` — the request is about to go out, once per inner loop |
 | `chunk` | core `chunk` — one raw chunk arrived, **before** it is parsed |
-| `chunk-parsed` | core `chunk-parsed` — that chunk is parsed and `receiver` updated in place |
 | `parsed` | core `parsed` — the stream ended, `receiver` is final |
-| `message` | core `message` — one message was appended or finalised in place (payload: that message) |
-| `tool-call-end` | core `tool-call-end` — one tool finished (the message itself travels on `message`) |
+| `tool-call-end` | a `role: "tool"` message reached a finished status (payload: that message) |
 | `error` | core `error` — the turn failed, **before** `finally` |
 | `finally` | core `finally` — core is done with the turn |
 | `sub-agent-start` / `sub-agent-end` | core's delegation boundary |
 
-`open` / `chunk` / `parsed` / `error` / `finally` are unused by today's clients and are still
-sent: they are core's public facts, and a client that later wants them (a "started" timestamp, a
-raw-chunk debug pane) must not need a server change. Payloads are minimal by design — `{ sessionId,
-turnId }`, plus `chunk` for the raw piece (vendor shape, the protocol does not interpret it) and a
-flattened `{ code, message }` for `error` (`Error` instances cannot go on the wire).
+`open` / `parsed` / `error` / `finally` are unused by today's clients and are still sent: they are
+core's public facts, and a client that later wants them (a "started" timestamp, a "core is done"
+edge) must not need a server change. Payloads are minimal by design — `{ sessionId, turnId }`,
+plus `chunk` for the raw piece (vendor shape, the protocol does not interpret it) and a flattened
+`{ code, message }` for `error` (`Error` instances cannot go on the wire).
 
-Two timings are part of the contract: for one piece, `chunk` precedes `chunk-parsed`; and a failed
-turn goes `error` → `finally` → `session-turn-end`. **`finally` and `session-turn-end` are two
-different events**: the former only says core is done, the latter goes out after the archive is
-written, ids are swapped and the reclaim check has run (`SessionManager.settleTurn`).
+**core's `chunk-parsed` is not forwarded.** It carried the text/reasoning delta of one piece: a
+derived copy of what the raw `chunk` already says, recomputed on the server and re-sent on the
+wire, with its own payload type and its own `subAgentId` routing. Clients fold `chunk` with
+core's `applyChunk` instead — one implementation, on both ends.
 
-### Tool calls during streaming: assembly state, not deltas
+One timing is part of the contract: a failed turn goes `error` → `finally` → `session-turn-end`.
+**`finally` and `session-turn-end` are two different events**: the former only says core is done,
+the latter goes out after the archive is written, ids are swapped and the reclaim check has run
+(`SessionManager.settleTurn`).
 
-`session-tool-calls` carries **the current turn's tool calls as they stand right now**:
-`{ sessionId, turnId, toolCalls: [{ index, name, id?, arguments }] }`, where `arguments` is the
-JSON string assembled so far (not valid JSON until the call is finished). It goes out **while
-the stream is still open**, so a client can draw the tool card as the arguments arrive instead
-of waiting for the `session.snapshot` that follows `session-turn-end`. Main agent only — sub-agents
-have their own channel and never move this one.
+### Tool results go out the moment they settle
 
-Why a separate event instead of another field on `chunk-parsed`:
-
-- `chunk-parsed` is a **text stream**: every frame means "append this". Tool calls are
-  **assembly state**: every frame means "this is what it looks like now". Two semantics in one
-  event force every client to guess whether a field appends or replaces — and the symptom of
-  guessing wrong is arguments spliced twice.
-- The payload is the **full set** of this turn's calls, never "the fragments that just
-  arrived". The assembly already happened in core (`Agent.parseStreamData` fills
-  `receiver.tool_calls` *before* emitting `chunk-parsed`); making clients re-assemble would be
-  a second implementation of it, and a second implementation is exactly how this project has
-  been bitten before.
-- `arguments` grows while it streams, so the same call is reported several times. The client
-  updates that entry **in place**, keyed by `index` (or `id`) — replace, don't append.
-
-Two server-side rules:
-
-- **Only changes go out.** The test is count / name / id / `arguments` *length* (arguments are
-  append-only) — no `JSON.stringify` of the whole argument string per chunk.
-- **An empty set is not a change.** Text-only frames and the `usage`-only tail frame carry no
-  tool calls; sending `toolCalls: []` would erase the cards the client just drew. The list
-  resets only when the turn settles, at the same moment `PhaseTracker.reset()` runs, so a
-  retry of the same command in the next turn still produces its own event.
-
-### Messages the server constructs: one complete message, the moment it changes
-
-Four messages are **not** derivable from the stream: the user message (`send` constructs it), the
-placeholder assistant (every inner loop starts by appending one, and the stream is folded into
-it), and tool results (the product of *executing* a tool, not of any chunk). Core emits `message`
-at its single append point (`Agent.append`) and at the two places it finalises a message in place
-(a tool settling, a failed turn); the server forwards it verbatim:
+A tool result is the product of *executing* a tool, not of any chunk, so no client can fold it out
+of the stream. It travels on `tool-call-end`:
 
 ```
-{ event: "message", sessionId, turnId, subAgentId?, message }   // message: the complete Message
+{ event: "tool-call-end", sessionId, turnId, message }   // message: core's own Message
 ```
 
-`message.id` is the upsert key (`AgentNS.Message` requires it), so one tool result goes out twice —
-`pending` before the tool runs, final afterwards — and the client replaces the entry instead of
-needing a second merging rule. Sub-agent messages travel on the same event with `subAgentId`, so a
-delegated conversation no longer needs a snapshot round-trip to show its tool results.
+`message` is forwarded unchanged — the protocol does not interpret its fields, and there is no
+"tool result event" shape to drift from core's message. Core emits `message` at its single append
+point (`Agent.append`) and at the two places it finalises a message in place; the server uses that
+only as the **trigger**, forwarding the one case clients need: a `role: "tool"` message that has
+reached a finished status.
 
-Why not derive them from `chunk`: `chunk-parsed` is a **text stream** (every frame means "append
-this"), while a tool result is a **complete message** whose identity (`tool_call_id`, the pairing
-with a card drawn from `session-tool-calls`) is not inside any piece of text. Why not wait for the
-snapshot: `session.snapshot` only exists after `session-turn-end`, and a turn can run for minutes —
-the user would stare at the argument card without ever seeing what the tool produced.
+Why not wait for the snapshot: `session.snapshot` only exists after `session-turn-end`, and a turn
+can run for minutes — the user would stare at the argument card without ever seeing what the tool
+produced.
 
-`tool-call-end` is still forwarded next to it (`role === "tool"` && settled). It is a
-**transitional** derivation kept for today's clients, which draw tool cards from it; it goes away
-together with the client-side handler once clients read `message`.
+**Why there is no `message` event any more.** It used to forward every appended/finalised message
+(the user message, the placeholder assistant, tool results) with `message.id` as the upsert key,
+and it had **no subscriber on any client**: the user message is constructed by the client itself,
+the placeholder is client-side folding state, and the tool result already travels on
+`tool-call-end`. A derived copy of an existing fact is a second definition of that fact, and this
+one dragged along an id-based upsert rule, a `subAgentId` variant and a pending→final two-phase
+protocol that nothing on either end read.
 
 ### Notices: two channels, on one wire
 

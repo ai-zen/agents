@@ -269,16 +269,15 @@ describe("会话处理器（真 socket）", () => {
       phase: { kind: "connecting" },
     });
 
-    // 正文增量与轮次收尾
+    // 原始片与轮次收尾
     // `chunk-parsed` 是两参：`(receiver, chunk)` —— 第二个才是原始 chunk。
-    // 一片 chunk 出四条帧，顺序是硬的：原始片（core `chunk`）→ 解析结果
-    // （core `chunk-parsed`）→ 派生出来的阶段与工具调用组装态。
+    // 一片 chunk 出两条帧：原始片（core `chunk`）→ 派生出来的阶段。正文增量不上线，
+    // 客户端拿原始片自己折（core 的 `applyChunk`）。
     // core 是先发 `chunk` 再解析（`Agent.parseStreamData`），所以假件也按这个顺序 fire。
     const piece = { choices: [{ delta: { content: "答" } }] };
     agent.fire("chunk", piece);
     agent.fire("chunk-parsed", {}, piece);
     expect(await client!.next()).toMatchObject({ event: "chunk", turnId: 1 });
-    expect(await client!.next()).toMatchObject({ event: "chunk-parsed", text: "答" });
     const phaseAfterDelta = (await client!.next()) as any;
     expect(phaseAfterDelta).toMatchObject({ event: "session-phase", phase: { kind: "streaming" } });
 

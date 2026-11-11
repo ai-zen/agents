@@ -168,18 +168,19 @@ export const EVENT_METHODS = {
 } as const;
 
 /**
- * Agent 事件名（服务端主动推，无 `id`，不等回执）。**10 条，值逐字等于 core `Agent.events` 的原名。**
+ * Agent 事件名（服务端主动推，无 `id`，不等回执）。**8 条，值逐字等于 core `Agent.events` 的原名。**
  *
- * 为什么照抄 core 的名字：这 10 条说的就是 core 的生命周期事实 —— 一轮开始（`open`）、
- * 一片原始 chunk 到达（`chunk`）、同一片解析完（`chunk-parsed`）、流结束（`parsed`）、
- * 一条消息被追加或就地改完（`message`）、一个工具结果定型（`tool-call-end`）、出错（`error`）、
- * 收尾（`finally`）、委派的起止（`sub-agent-start` / `sub-agent-end`）。服务端只做一件事：
- * core 发它的**同一刻**把它原样转上线。自己另起一套名字（比如把 `chunk-parsed` 叫成 delta、把 `tool-call-end`
- * 叫成「追加了一条消息」）就得在协议、服务端、客户端之间维护一份对照表，而对照表迟早
- * 与 core 漂开 —— 读实现的人只会发现名字在撒谎。
+ * 为什么照抄 core 的名字：这些就是 core 的生命周期事实 —— 一轮开始（`open`）、一片原始
+ * chunk 到达（`chunk`）、流结束（`parsed`）、一个工具结果定型（`tool-call-end`）、出错
+ * （`error`）、收尾（`finally`）、委派的起止（`sub-agent-start` / `sub-agent-end`）。服务端
+ * 只做一件事：core 发它的**同一刻**把它原样转上线。自己另起一套名字就得在协议、服务端、
+ * 客户端之间维护一份对照表，而对照表迟早与 core 漂开 —— 读实现的人只会发现名字在撒谎。
  *
- * 时机同样照抄 core，两条顺序是硬约束：`chunk` 早于同一片的 `chunk-parsed`；`error`
- * 早于 `finally`。
+ * 上表的是**被转出去的那几条**。core 的 `chunk-parsed`（正文/推理增量）与 `message`
+ * （整条消息）**不上线**：前者是客户端折 `chunk` 就能得到的派生值，后者被 `tool-call-end`
+ * 与轮末快照覆盖。把一个既有事实摘一份另立事件，就是给它立第二个定义。
+ *
+ * 时机照抄 core：`error` 早于 `finally`。
  *
  * 与 `SESSION_EVENTS` 的分工：这张表是**Agent 身上发生了什么**（core 那边就有的事实），
  * 那张表是**服务端额外告诉你什么**（阶段派生、通知、提问、换 id、一轮真正收尾）。不属于
@@ -190,17 +191,8 @@ export const AGENT_EVENTS = {
   open: "open",
   /** 一片原始 chunk 到达（core `chunk`：**解析之前**）。这片载荷是厂商形状，协议不解释 */
   chunk: "chunk",
-  /** 同一片解析完、receiver 就地更新之后（core `chunk-parsed`）：正文 / 推理增量 */
-  chunkParsed: "chunk-parsed",
   /** 流结束、receiver 定稿（core `parsed`） */
   parsed: "parsed",
-  /**
-   * 一条消息被追加或就地改完（core `message`）：载荷是那条完整的消息。
-   *
-   * 它装的是**服务端构造出来的**那些消息（用户消息、占位 assistant、工具结果），也就是
-   * 「不能由 chunk 折叠出来」的那一类；流式正文仍归 `chunk`。
-   */
-  message: "message",
   /** 一个工具的结果定型（core `tool-call-end`）：载荷是那条刚定型的消息 */
   toolCallEnd: "tool-call-end",
   /** 一轮出错（core `error`：**早于** `finally`） */
@@ -219,17 +211,17 @@ export const AGENT_EVENTS = {
 } as const;
 
 /**
- * 会话事件名（服务端主动推，无 `id`，不等回执）。**7 条，值全部 kebab-case。**
+ * 会话事件名（服务端主动推，无 `id`，不等回执）。**6 条，值全部 kebab-case。**
  *
  * 这张表装的是**服务端自己派生 / 自己决定的事**：core 里没有这些事件 —— 阶段是服务端从
  * core 的事实里算出来的，`session-turn-end` 要等落盘、换 id、回收判定都做完，通知 /
- * 提问 / 换 id / 改名都是服务端自己的动作。core 原有的 10 条在 `AGENT_EVENTS`。
+ * 提问 / 换 id / 改名都是服务端自己的动作。core 原有的事件在 `AGENT_EVENTS`。
  *
  * 命名空间写的是**作用范围**：`session-` 前缀说明这条绑在某一段会话上（载荷里有
  * `sessionId`），不属于任何会话的事不往这张表里塞 —— 它去 `SERVER_EVENTS`（见下）。从而
  * **看到名字就知道该看哪张表**，不必背清单。
  *
- * 为什么值一律 kebab-case：线上事件名只有一种写法 —— core 的 `chunk-parsed` 与这里的
+ * 为什么值一律 kebab-case：线上事件名只有一种写法 —— core 的 `tool-call-end` 与这里的
  * `session-turn-end` 长得一样，读的人不必先分辨「这条是谁的」再决定怎么念。（方法名的
  * `session.send` 那套点号是**命名空间**，不是事件名的规则，见 `SESSION_METHODS`。）
  *
@@ -240,28 +232,10 @@ export const SESSION_EVENTS = {
   /**
    * 生成阶段变化（六态 + 工具名）。
    *
-   * **派生**事件：在 `open` / 每个 `chunk-parsed` / `parsed` / 每个 `tool-call-end`
-   * 那一刻各报一次（那四个时刻阶段都可能变），服务端算好整份 `phase` 推上来。
+   * **派生**事件：在 `open` / `parsed` / 每个 `tool-call-end` 那一刻各报一次
+   * （那三个时刻阶段都可能变），服务端算好整份 `phase` 推上来。
    */
   phase: "session-phase",
-  /**
-   * 本轮工具调用的**组装态**（到目前为止是什么），客户端据此在流式期间就画出工具卡片。
-   *
-   * **为什么不塞进 `chunk-parsed`**：那条是**文本流** —— 每一片的语义是「再加这一段」，
-   * 客户端把 `text` 往后接就对了。工具调用不是这样：参数是边流边长的，一个有意义的
-   * 工具调用只在**组装完成之后**才存在（半个 JSON 什么都画不出来），所以这里给的必须是
-   * 「到现在为止是什么」。两种语义（追加 vs 覆盖）混在同一条事件里，客户端只能靠猜
-   * 「这个字段该接还是该替」，而猜错的症状是参数被拼成两遍。
-   *
-   * **为什么给组装态而不是增片**：增片要求客户端自己把 JSON 片段攒成一次调用 —— 那是把
-   * core 已经做完的组装（`Agent.parseStreamData` 就地拼 `receiver.tool_calls`）在客户端
-   * 再做一遍。本项目反复栽在「同一件事两份实现」上：第二份迟早与第一份漂开（core 改了
-   * 合并规则、客户端还按老规则攒），而症状是「工具卡片里的参数与真正发出去的请求不一样」。
-   *
-   * **为什么同一个调用会被多次上报**：参数边流边长，每次有变化就重发一次全量。客户端按
-   * `index`（或 `id`）就地更新那一项即可，不要往后追加 —— 它是覆盖语义。
-   */
-  toolCalls: "session-tool-calls",
   /**
    * 一轮**真正**结束（成功或失败）：core 的 `finally` **之后**，服务端落盘、换 id、
    * 回收判定都做完了。
@@ -1041,7 +1015,7 @@ export interface SubAgentSnapshotResult {
  * 一轮开始（core `open`）。
  *
  * 载荷只留最小可用的一份：谁、哪一轮。**没有正文** —— `open` 是「请求发出去了」这个
- * 事实，内容要到后面那串 `chunk-parsed` 里才出现。
+ * 事实，内容要到后面那串 `chunk` 里才出现。
  */
 export type AgentOpenEvent = {
   event: typeof AGENT_EVENTS.open;
@@ -1050,7 +1024,7 @@ export type AgentOpenEvent = {
 };
 
 /**
- * 一片原始 chunk 到达（core `chunk`：**早于**同一片的 `chunk-parsed`）。
+ * 一片原始 chunk 到达（core `chunk`：core 解析这一片**之前**）。
  *
  * `chunk` 原样搬 core 给的那个对象：**厂商形状，协议不解释**（OpenAI 的
  * `ChatCompletionChunk`，外加各家自己塞进来的 `reasoning_content` 之类）。所以类型是
@@ -1061,39 +1035,9 @@ export type AgentChunkEvent = {
   event: typeof AGENT_EVENTS.chunk;
   sessionId: string;
   turnId: number;
-  /** 有它就属于那个**子 Agent** 的对话（与 `chunk-parsed` 同一个判据） */
+  /** 有它就属于那个**子 Agent** 的对话（与主 Agent 的片同一个判据） */
   subAgentId?: string;
   chunk: unknown;
-};
-
-/**
- * 同一片解析完、receiver 就地更新之后（core `chunk-parsed`）：正文 / 推理增量。
- *
- * 名称与时机都照 core：`parseStreamData` 每消费一片就先把 delta 拼进 `receiver`，然后才
- * 发 `chunk-parsed`，所以这条事件里出去的永远是**解析之后**的增量。
- */
-export type AgentChunkParsedEvent = {
-  event: typeof AGENT_EVENTS.chunkParsed;
-  sessionId: string;
-  turnId: number;
-  /** 正文增量（只带推理内容时为空串） */
-  text: string;
-  /** 推理增量（推理模型才有） */
-  reasoning: string;
-  /**
-   * 有它就属于那个**子 Agent**，没有就是主 Agent。
-   *
-   * 一条增量通道同时承载两层对话，靠这个字段分流；缺省（不等于空串）表示主 Agent，
-   * 于是老客户端不改也能继续把主对话读对。
-   */
-  subAgentId?: string;
-  /**
-   * 真实用量（流末 chunk 才有）：客户端用它校准本轮速率。
-   *
-   * 一条「只带 usage」的增量也会因此推出去（`text`/`reasoning` 都是空串）—— 不带它，
-   * 状态栏的 tok/s 就只能靠估算（按字符折算，中文偏差不小）。
-   */
-  usage?: { completionTokens: number };
 };
 
 /** 流结束、receiver 定稿（core `parsed`）：此后这一轮的正文不再变 */
@@ -1101,32 +1045,6 @@ export type AgentParsedEvent = {
   event: typeof AGENT_EVENTS.parsed;
   sessionId: string;
   turnId: number;
-};
-
-/**
- * 一条消息被追加或就地改完（core `message`）：载荷是**完整的**那条消息。
- *
- * ## 为什么需要它
- *
- * 有些消息根本不是从流里来的：用户消息（`send` 那一瞬构造）、占位 assistant（内循环开头
- * 构造，之后的 chunk 往它上面折）、工具结果（工具**执行**的产物）。它们只能整条给 ——
- * 客户端拿 chunk 无论怎么折都折不出来。
- *
- * ## 为什么载荷是消息本身
- *
- * `message.id` 必填且全局唯一（core `AgentNS.Message`），所以它就是 upsert 键：收到同 id 时
- * 整条替换、没见过则追加到末尾。工具结果因此可以**先 `pending` 后终态**发两次（参数与
- * 名字先上屏，结果跑完再补上），客户端不需要为「同一条消息的两阶段」再写一套合并规则。
- *
- * 不另造中间形状（“工具结果事件”之类）：core 手里那条就是线上那条，多一层包装就多一处会漂。
- */
-export type AgentMessageEvent = {
-  event: typeof AGENT_EVENTS.message;
-  sessionId: string;
-  turnId: number;
-  /** 有它就属于那个**子 Agent** 的对话（与 `chunk-parsed` 同一个判据） */
-  subAgentId?: string;
-  message: Message;
 };
 
 /**
@@ -1139,7 +1057,7 @@ export type AgentMessageEvent = {
  *
  * 为什么不等到轮末的快照：`session.snapshot` 要等 `session-turn-end` 之后才拿得到，而一个
  * 长轮次里工具能跑好几分钟，用户盯着参数卡片看不到它跑出了什么。为什么只推工具结果：
- * 流式中的 assistant 消息还在拼，客户端已经在用 `chunk-parsed` + 占位消息画它了，从这里
+ * 流式中的 assistant 消息还在拼，客户端已经在折 `chunk` + 占位消息画它了，从这里
  * 再推一遍就会出现同一条消息的两种表示。
  *
  * 为什么判据是「定型了吗」而不是「下标越过游标了」：core 在工具**执行前**就把结果消息
@@ -1221,7 +1139,7 @@ export type AgentSubAgentEndEvent = {
 };
 
 /**
- * 一条 Agent 事件的联合（10 条，名字与 core `Agent.events` 逐字相同）。
+ * 一条 Agent 事件的联合（8 条，名字与 core `Agent.events` 逐字相同）。
  *
  * 名字全部带 `Agent` 前缀：联合里一眼能看出作用域，与 `SessionEvent` 拼成 `ServerEvent`
  * 时也不会读成「同一类东西」。
@@ -1229,9 +1147,7 @@ export type AgentSubAgentEndEvent = {
 export type AgentEvent =
   | AgentOpenEvent
   | AgentChunkEvent
-  | AgentChunkParsedEvent
   | AgentParsedEvent
-  | AgentMessageEvent
   | AgentToolCallEndEvent
   | AgentErrorEvent
   | AgentFinallyEvent
@@ -1241,9 +1157,8 @@ export type AgentEvent =
 /**
  * 生成阶段（`SESSION_EVENTS.phase`）。
  *
- * **派生**事件：服务端在 `open` / 每个 `chunk-parsed` / `parsed` / 每个 `tool-call-end`
- * 那一刻按状态机算一份整的阶段推上来 —— 客户端不自己推阶段（三个前端各推一遍就会各错
- * 一遍）。
+ * **派生**事件：服务端在 `open` / `parsed` / 每个 `tool-call-end` 那一刻按状态机算一份
+ * 整的阶段推上来 —— 客户端不自己推阶段（三个前端各推一遍就会各错一遍）。
  */
 export type SessionPhaseEvent = {
   event: typeof SESSION_EVENTS.phase;
@@ -1251,42 +1166,6 @@ export type SessionPhaseEvent = {
   turnId: number;
   /** null = 本轮已收尾、回到空闲 */
   phase: PhaseInfo | null;
-};
-
-/**
- * 一项工具调用的组装态（`session-tool-calls` 载荷里的元素）。
- *
- * 字段与 core 里那条正在拼的 assistant 消息同形（`receiver.tool_calls[index]`）：这不是
- * 巧合 —— 服务端只做搬运，不重新解释它的含义。
- */
-export interface ToolCallState {
-  /**
-   * 本轮内的下标（并行时区分不同调用）。
-   *
-   * 客户端按它就地更新：同一个 `index` 的多次上报是**同一个调用在长大**，不是新调用。
-   * 名字与参数片段可能分几个 chunk 到达，靠 `id` 认领会漏掉 `id` 还没到的那一两片，
-   * 所以归并键是 `index`（`id` 到了之后也一样按 `index` 归并，别换成 `id`）。
-   */
-  index: number;
-  /** 工具名（core 只在首个 delta 里给，后续 delta 只带参数片段） */
-  name: string;
-  /** 调用 id（core 收到第一个带 `id` 的 chunk 之后才有）：客户端拿它和工具结果配对 */
-  id?: string;
-  /** 组装到此刻的参数串（**可能还不是合法 JSON**：正在流的时候它本来就是半截） */
-  arguments: string;
-}
-
-/**
- * 本轮工具调用的组装态（见 `SESSION_EVENTS.toolCalls` 的三条「为什么」）。
- *
- * `toolCalls` 是**全集**而不是「这一片新增了什么」：客户端拿它整体替换自己手上的那一轮
- * 工具调用列表，不必攒片段。
- */
-export type SessionToolCallsEvent = {
-  event: typeof SESSION_EVENTS.toolCalls;
-  sessionId: string;
-  turnId: number;
-  toolCalls: ToolCallState[];
 };
 
 /**
@@ -1384,13 +1263,12 @@ export type ServerNoticeEvent = {
 export type NoticePayload = Omit<SessionNoticeEvent, "event" | "sessionId">;
 
 /**
- * 一条会话事件的联合（7 条，服务端派生 / 自己决定的那部分）。名字全部带 `Session`
+ * 一条会话事件的联合（6 条，服务端派生 / 自己决定的那部分）。名字全部带 `Session`
  * 前缀：联合里一眼能看出作用域，与 `AgentEvent` / `ServerNoticeEvent` 拼成 `ServerEvent`
  * 时也不会读成「同一类东西」。
  */
 export type SessionEvent =
   | SessionPhaseEvent
-  | SessionToolCallsEvent
   | SessionTurnEndEvent
   | SessionNoticeEvent
   | SessionQuestionEvent
@@ -1398,9 +1276,9 @@ export type SessionEvent =
   | SessionTitleChangedEvent;
 
 /**
- * 服务端能推给客户端的全部事件 = Agent 的 10 条 + 会话的 7 条 + 服务端自己的通知 1 条。
+ * 服务端能推给客户端的全部事件 = Agent 的 8 条 + 会话的 6 条 + 服务端自己的通知 1 条。
  *
- * 三张表都要在这里合上：少了 `AgentEvent`，客户端就订阅不到 `chunk-parsed` / `open`
- * 这类 core 原名事件（类型上不认识 = 写不出来 = 收不到），而那正是这次改名的目的。
+ * 三张表都要在这里合上：少了 `AgentEvent`，客户端就订阅不到 `open` / `chunk` 这类
+ * core 原名事件（类型上不认识 = 写不出来 = 收不到）。
  */
 export type ServerEvent = AgentEvent | SessionEvent | ServerNoticeEvent;

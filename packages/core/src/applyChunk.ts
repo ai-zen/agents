@@ -15,33 +15,27 @@
  *
  * 所以 `parseStreamData` 只剩「取 chunk → 广播 → 调这里 → 广播」四步，攒消息的规则全在本文件。
  *
+ * ## 返回值是 `void`：本片「新增了什么」在原始片里，不另立形状
+ *
+ * 曾经这里返回过一个 `{ text, reasoning, completionTokens }`，理由是有调用方要拿它校准
+ * 生成速率。那个类型就是错的：`chunk.choices[0].delta` 本身（以及它的类型 `AgentNS.Delta`）
+ * 已经在描述「本片新增了什么」，再摘一份出来等于给同一个概念立第二个定义 —— 摘的时候必然
+ * 少了 `tool_calls`、少了内容段数组里的图片段，于是「速率算的」与「真正吐的」各自演化。
+ *
+ * 要「这一片新增了什么」的调用方直接看原始片；要「到目前为止有什么」的看 `receiver` ——
+ * 它就地更新，不需要任何中间对象转述。
+ *
  * ## 只 import 类型，运行期零依赖
  *
  * `AgentNS` 与 `ChatCompletionChunk` 都只出现在类型位置，编译后抹掉：本模块的产物除了自己
- * 什么都不 import。客户端要拿它算增量时，不必因此把 `openai` 拖进自己的打包产物。
+ * 什么都不 import。客户端要折流时直接用它，不必因此把 `openai` 拖进自己的打包产物。
  */
 
 import type { ChatCompletionChunk } from "openai/resources/chat/completions";
 import type { AgentNS } from "./AgentNS.js";
 
 /**
- * 这一片造成的**增量**（不是快照）。
- *
- * 为什么返回值是增量而不是 void：调用方拿它干的事（校准生成速率、判断「这一片有没有内容」）
- * 都要的是「这一片新增了什么」，而不是「到现在为止一共是什么」。返回增量就不必让调用方自己
- * 再解一遍 chunk —— 那正是本项目反复清掉的「同一件事两份实现」。
- */
-export interface ChunkDelta {
-  /** 本片追加的正文（分段内容形下是那一段的增量；本片没追加就是空串） */
-  text: string;
-  /** 本片追加的推理内容 */
-  reasoning: string;
-  /** 本片携带的真实产物 token 数（只有流末片才有；其余情况是 `undefined`） */
-  completionTokens?: number;
-}
-
-/**
- * 把一片 chunk 攒进 `receiver`，并返回本片的增量。
+ * 把一片 chunk 攒进 `receiver`。
  *
  * 就地改 `receiver`（正文 / 推理 / 工具调用 / `finish_reason` / `usage`），不返回新对象 ——
  * 调用方手里那个引用就是「这一轮正在拼的那条消息」，换对象会让已经挂在它上面的引用（事件
@@ -50,20 +44,15 @@ export interface ChunkDelta {
  * 一片什么都不带的 chunk（只有 `id` / `model` 这类外层字段）是合法的：正文不动，别的字段
  * 也不动。收尾片通常如此，它唯一的作用是带 `usage` 或 `finish_reason`。
  */
-export function applyChunk(receiver: AgentNS.Message, chunk: ChatCompletionChunk): ChunkDelta {
-  const delta: ChunkDelta = { text: "", reasoning: "" };
+export function applyChunk(receiver: AgentNS.Message, chunk: ChatCompletionChunk): void {
   // 流式最后一个 chunk 才带 usage：钉到本轮 assistant 消息上（与 finish_reason 同处），
   // 使用量随消息持久化，从而可按消息求和统计累计消耗（计费口径）与审计。
   // 「最近一次用量」（`lastUsage`）由该字段派生，不再单独存一份。
   if (chunk?.usage) {
     receiver.usage = chunk.usage as unknown as AgentNS.Usage;
-    const completion = chunk.usage.completion_tokens;
-    if (typeof completion === "number" && Number.isFinite(completion)) {
-      delta.completionTokens = completion;
-    }
   }
 
-  if (!chunk?.choices?.[0]) return delta;
+  if (!chunk?.choices?.[0]) return;
 
   const finishReason = chunk.choices[0].finish_reason;
   if (finishReason) {
@@ -101,7 +90,6 @@ export function applyChunk(receiver: AgentNS.Message, chunk: ChatCompletionChunk
           currentSection["type"] = "text";
           currentSection["text"] ??= "";
           currentSection["text"] += deltaSection.text;
-          delta.text += deltaSection.text;
         }
       }
     } else {
@@ -110,7 +98,6 @@ export function applyChunk(receiver: AgentNS.Message, chunk: ChatCompletionChunk
       }
 
       receiver.content += delta_.content;
-      delta.text += delta_.content;
     }
   }
 
@@ -183,7 +170,5 @@ export function applyChunk(receiver: AgentNS.Message, chunk: ChatCompletionChunk
     }
 
     receiver.reasoning_content += delta_.reasoning_content;
-    delta.reasoning += delta_.reasoning_content;
   }
-  return delta;
 }

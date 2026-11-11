@@ -45,11 +45,11 @@ Read `A ← B` as "B depends on A". All five edges are facts in `package.json` �
 
 Each one can be falsified with a command; none of them rests on "remember not to write that".
 
-**① There is no edge between `client` and `server`.** Both depend only on `protocol`; neither depends on the other.
+**① There is no edge between `client` and `server`.** Both depend on `protocol`; neither depends on the other (`client` also depends on `core` at runtime — see item 1 under "Three hard constraints" below; that is a **downward** edge, not "dragging in the server implementation").
 
 ```bash
-# the dependency table: one entry, the protocol
-node -e 'const d=require("./packages/client/package.json").dependencies; if(Object.keys(d).join()!=="@ai-zen/agents-protocol") throw new Error(Object.keys(d).join())'
+# the dependency table: agents-server / agents-sdk / agents-testing must not appear
+node -e 'const d=require("./packages/client/package.json").dependencies; const bad=Object.keys(d).filter((k)=>/agents-(server|sdk|testing)$/.test(k)); if(bad.length) throw new Error(bad.join())'
 
 # the source: apart from comments and that one exception file, agents-server must not appear
 grep -rn 'agents-server' packages/client/src --include=*.ts | grep -v '\.test\.' | grep -v 'ensure-server\.ts' | grep -v '^\S*:[0-9]*: *\*'
@@ -112,22 +112,21 @@ Method names and event names are `as const` tables shared by client and server. 
 | Built-ins `ping` / `status` / `shutdown` | 3 | `DAEMON_METHODS` in `daemon.ts` |
 | **Total** | **44** | |
 
-There are **17** events, in three tables, all in `sessions.ts`:
+There are **15** events, in three tables, all in `sessions.ts`:
 
 | Table | Count | Event names | Meaning |
 |-------|-------|-------------|---------|
-| `AGENT_EVENTS` | 9 | `open`, `chunk`, `chunk-parsed`, `parsed`, `tool-call-end`, `error`, `finally`, `sub-agent-start`, `sub-agent-end` | Values are verbatim core `Agent.events` names, and they fire at core's own moments |
-| `SESSION_EVENTS` | 7 | `session-phase`, `session-tool-calls`, `session-turn-end`, `session-notice`, `session-question`, `session-id-changed`, `session-title-changed` | Derived by the server / actions of the server itself |
+| `AGENT_EVENTS` | 8 | `open`, `chunk`, `parsed`, `tool-call-end`, `error`, `finally`, `sub-agent-start`, `sub-agent-end` | Values are verbatim core `Agent.events` names, and they fire at core's own moments |
+| `SESSION_EVENTS` | 6 | `session-phase`, `session-turn-end`, `session-notice`, `session-question`, `session-id-changed`, `session-title-changed` | Derived by the server / actions of the server itself |
 | `SERVER_EVENTS` | 1 | `server-notice` | The server's own notice (belongs to no session) |
-| **Total** | **17** | | |
+| **Total** | **15** | | |
 
 Five properties that matter at this level:
 
 - Event payloads carry **facts** only (a phase kind, a tool name, a piece of text), never wording — turning them into "Connecting…" or "连接中…" is the client's job.
-- The ten `AGENT_EVENTS` are core's own names (`open` / `chunk` / `chunk-parsed` / `parsed` / `message` / `tool-call-end` / `error` / `finally` / `sub-agent-start` / `sub-agent-end`); the server forwards each one at the very moment core emits it, without renaming anything. `open` / `chunk` / `parsed` / `error` / `finally` are unused by today's client but are still sent — the protocol surface is core's public fact, and whether to use it is the client's business.
-- The timing is hard: `chunk` precedes `chunk-parsed` for the same piece; `error` precedes `finally`; `finally` precedes `session-turn-end` (which only goes out after the server has written the archive, swapped ids and run the reclaim check). `finally` and `session-turn-end` are **two different events**, not a rename of one another.
-- `chunk-parsed` is a **text stream** (each frame appends), while `session-tool-calls` is **assembly state** (each frame says "this is what it looks like now"). Different semantics stay in different events; one event carrying both would leave the client guessing which fields append and which replace.
-- `message` carries **the messages the server itself constructs** (the user message, the placeholder assistant, tool results) — exactly the ones a client cannot fold out of `chunk`. The payload is one complete message and `message.id` is the upsert key, so a tool result may go out twice: `pending` before the tool runs and final afterwards. `tool-call-end` is still forwarded when a tool settles (today's clients draw tool cards from it); it goes away together with the client-side handler once clients read `message`.
+- The eight `AGENT_EVENTS` are core's own names (`open` / `chunk` / `parsed` / `tool-call-end` / `error` / `finally` / `sub-agent-start` / `sub-agent-end`); the server forwards each one at the very moment core emits it, without renaming anything. `open` / `parsed` / `error` / `finally` are unused by today's client but are still sent — the protocol surface is core's public fact, and whether to use it is the client's business.
+- **core's `chunk-parsed` and `message` are never sent**: the first is "the text delta, which a client gets by folding `chunk` itself"; the second is covered by `tool-call-end` (fired the moment a tool result is final, carrying core's own message) plus the end-of-turn snapshot. Extracting a derived copy of an existing fact into its own event gives that fact a second definition — one the server then has to keep in sync with core forever.
+- The timing is hard: `error` precedes `finally`; `finally` precedes `session-turn-end` (which only goes out after the server has written the archive, swapped ids and run the reclaim check). `finally` and `session-turn-end` are **two different events**, not a rename of one another.
 - `send` returns a `turnId` immediately and everything afterwards travels as events: a turn can run for minutes, and a request that only answered at the end would leave the client with nothing to render.
 - Namespaces follow **what the method acts on**: `workspace.*` acts on the container, `session.*` on one conversation, `events.watch` belongs to the connection, and `asset.*` is read-only (assets are the user's filesystem; changing them is a different action). Events follow the same rule: the `session-` prefix marks **session events** (derived by the server or actions of the server itself, payload carries `sessionId`), `server-notice` is the **server's own notice** (it belongs to no session and must survive switching sessions), and the ten `AGENT_EVENTS` describe **what happens to one Agent** (their names are core's names) — the name alone tells you which table to look at, with no list to memorise.
 
@@ -137,7 +136,7 @@ The parameters, results and semantics of each method and event are **not** copie
 
 `@ai-zen/agents-protocol` (`packages/protocol`) is **a package of its own**, not a part of either side.
 
-**There is exactly one reason**: a contract is **both sides' property**. Living inside one of them forces the package graph to be `client → server`, so "the client must not drag in the server implementation" can only be maintained by discipline — only use a certain subpath, keep the artifact graph closed. And **discipline rots, structure does not**. Once the contract has its own package, that edge does not exist at all: `server` and `client` both depend only on `protocol`, neither on the other. Today `packages/server/package.json` exposes just two entries in `exports` (`.` and `./package.json`, the latter so `ensure-server` can locate the bin) — there is no longer a hole opened "so that clients can reach in".
+**There is exactly one reason**: a contract is **both sides' property**. Living inside one of them forces the package graph to be `client → server`, so "the client must not drag in the server implementation" can only be maintained by discipline — only use a certain subpath, keep the artifact graph closed. And **discipline rots, structure does not**. Once the contract has its own package, that edge does not exist at all: `server` and `client` both depend on `protocol` (the client additionally on `core`, downwards), neither on the other's implementation. Today `packages/server/package.json` exposes just two entries in `exports` (`.` and `./package.json`, the latter so `ensure-server` can locate the bin) — there is no longer a hole opened "so that clients can reach in".
 
 **The desktop main process is a bundle artifact**, which is the same reason in practical clothes: the moment the main entry of `@ai-zen/agents-server` shows up in its import graph, the whole server implementation (plus `@ai-zen/agents-sdk`, the MCP SDK and openai) is packed into the installer.
 
@@ -175,8 +174,8 @@ One more pure piece sits at the package root: `stream-merge.ts` (`mergeStreamedS
 
 ### Three hard constraints (each machine-checkable)
 
-1. **At runtime it depends on the protocol package only** — see hard property ① under "Layering and dependency direction". `devDependencies` holds four more workspace packages, all for types and test cases only; none reaches the artifact.
-2. **The emitted runtime dependency graph must be closed**: after `npm run build`, external imports in `dist/*.js` may only be `@ai-zen/agents-protocol`; everything else is a sibling relative path or `node:*`.
+1. **It depends on `protocol` + `core` at runtime** — `protocol` is the contract shared with the server (hard property ①); `core` holds the **only** implementations of chunk folding (`applyChunk`), usage summing (`sumUsage`) and the role enum (`AgentNS.Role`), so the client imports them instead of copying a mirror. At runtime core's artifact only loads `@ai-zen/event-bus`; `openai` appears in core in type position only. `devDependencies` holds three more workspace packages, all for types and test cases only; none reaches the artifact.
+2. **The emitted runtime dependency graph must be closed**: after `npm run build`, external imports in `dist/*.js` may only be `@ai-zen/agents-protocol` and `@ai-zen/agents-core`; everything else is a sibling relative path or `node:*`.
 
    ```bash
    cd packages/client && npm run build
@@ -277,7 +276,7 @@ The session under `domain/session/` is four classes plus one shape file, all tak
 | File | What it took | Responsibility |
 |---|---|---|
 | `SessionManager.ts` | the registry `sessions` / `holders` / reclaiming / the turn lifecycle (`beginTurn` / `settleTurn` / `failTurn`) / the catalogue (`list` / `last` / `rename` / `remove` / `rollback`) / handoff (`handoff` / `migrate` / `autoMigrate`) / `create` / `attach` / `close` / `dispose` | The registry and the turn lifecycle — "the batch of sessions I am currently managing" |
-| `EventBridge.ts` | `toolCalls` / the streaming shadow / the sub-agent column | SDK events → protocol events. Depends only on `agent.events` + `hub`, **needs neither the session table nor the store** |
+| `EventBridge.ts` | the streaming shadow / the sub-agent column | SDK events → protocol events. Depends only on `agent.events` + `hub`, **needs neither the session table nor the store** |
 | `Persistence.ts` | `store` / `record` / `persistOnSettle` / `autoPersist` | The archive shape and every write path. **`recordOf` is the single definition of the archive shape** |
 | `QuestionBroker.ts` | `questions` / `questionSeq` | Server → client questions: claiming, timeouts, releasing. The only component that needs `hub.watcherCount()` — **if nobody is watching, do not ask** |
 | `LiveSession.ts` | — | The shape of that session, plus `AgentLike` / `SubAgentLike` / `AskQuestionSpec`. All four classes depend on it alone |

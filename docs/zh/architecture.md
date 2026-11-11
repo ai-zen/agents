@@ -45,11 +45,11 @@ AI-Zen Agents 是一个 **pnpm monorepo**（工作区根 `@ai-zen/agents-workspa
 
 每一条都能用命令证伪，而不是靠「记得别那么写」。
 
-**① `client` 与 `server` 之间没有边。** 两侧都只依赖 `protocol`，谁都不依赖谁。
+**① `client` 与 `server` 之间没有边。** 两侧都依赖 `protocol`，谁也不依赖对方（`client` 另外运行期依赖 `core`，理由见下方「三条硬约束」第 1 条 —— 那是**向下**的一条边，不是「拖进服务端实现」）。
 
 ```bash
-# 依赖表：只有协议一项
-node -e 'const d=require("./packages/client/package.json").dependencies; if(Object.keys(d).join()!=="@ai-zen/agents-protocol") throw new Error(Object.keys(d).join())'
+# 依赖表：不许出现 agents-server / agents-sdk / agents-testing
+node -e 'const d=require("./packages/client/package.json").dependencies; const bad=Object.keys(d).filter((k)=>/agents-(server|sdk|testing)$/.test(k)); if(bad.length) throw new Error(bad.join())'
 
 # 源码：除注释与那一个例外文件外，不该出现 agents-server
 grep -rn 'agents-server' packages/client/src --include=*.ts | grep -v '\.test\.' | grep -v 'ensure-server\.ts' | grep -v '^\S*:[0-9]*: *\*'
@@ -112,22 +112,21 @@ grep -rn '@ai-zen/agents-core' packages/client/src --include=*.ts | grep -v '\.t
 | 内置 `ping` / `status` / `shutdown` | 3 | `daemon.ts` 的 `DAEMON_METHODS` |
 | **合计** | **44** | |
 
-事件共 **17** 条，分三张表，都在 `sessions.ts`：
+事件共 **15** 条，分三张表，都在 `sessions.ts`：
 
 | 表 | 条数 | 事件名 | 定义 |
 |----|------|--------|------|
-| `AGENT_EVENTS` | 9 | `open`、`chunk`、`chunk-parsed`、`parsed`、`tool-call-end`、`error`、`finally`、`sub-agent-start`、`sub-agent-end` | 值逐字等于 core `Agent.events` 的原名，时机也照抄 core |
-| `SESSION_EVENTS` | 7 | `session-phase`、`session-tool-calls`、`session-turn-end`、`session-notice`、`session-question`、`session-id-changed`、`session-title-changed` | 服务端派生 / 服务端自己的动作 |
+| `AGENT_EVENTS` | 8 | `open`、`chunk`、`parsed`、`tool-call-end`、`error`、`finally`、`sub-agent-start`、`sub-agent-end` | 值逐字等于 core `Agent.events` 的原名，时机也照抄 core |
+| `SESSION_EVENTS` | 6 | `session-phase`、`session-turn-end`、`session-notice`、`session-question`、`session-id-changed`、`session-title-changed` | 服务端派生 / 服务端自己的动作 |
 | `SERVER_EVENTS` | 1 | `server-notice` | 服务端自己的通知（不属于任何会话） |
-| **合计** | **17** | | |
+| **合计** | **15** | | |
 
 五条与本文件有关的性质：
 
 - 事件载荷只装**事实**（阶段 kind、工具名、正文字符串），不装文案——渲染成哪种语言由客户端决定。
-- `AGENT_EVENTS` 的 10 条是 core 的原名（`open` / `chunk` / `chunk-parsed` / `parsed` / `message` / `tool-call-end` / `error` / `finally` / `sub-agent-start` / `sub-agent-end`），服务端在 core 发它的**同一刻**原样转上线，一条不改名。其中 `open` / `chunk` / `parsed` / `error` / `finally` 客户端今天用不到，但照样发 —— 协议面是 core 的公开事实，用不用是客户端的事。
-- 时机是硬的：同一片 `chunk` 早于 `chunk-parsed`；`error` 早于 `finally`；`finally` 早于 `session-turn-end`（后者是服务端落盘、换 id、回收判定都做完之后）。`finally` 与 `session-turn-end` 是**两条不同的事件**，不是改名关系。
-- `chunk-parsed` 是**文本流**（每片追加），`session-tool-calls` 是**组装态**（每次给「到现在为止是什么」）：语义不同就不合进一条事件，否则客户端得猜哪个字段该接、哪个该替。
-- `message` 推的是**服务端构造出来的那些消息**（用户消息、占位 assistant、工具结果），也就是「拿 chunk 折不出来」的那一类：载荷是完整的一条消息，`message.id` 就是 upsert 键，所以同一个工具结果可以「执行前 `pending` 一条、定型后再一条」。`tool-call-end` 现在仍随工具定型转发（今天的客户端还在用它画工具卡片），客户端切到 `message` 之后它与服务端那几行一起删。
+- `AGENT_EVENTS` 的 8 条是 core 的原名（`open` / `chunk` / `parsed` / `tool-call-end` / `error` / `finally` / `sub-agent-start` / `sub-agent-end`），服务端在 core 发它的**同一刻**原样转上线，一条不改名。其中 `open` / `parsed` / `error` / `finally` 客户端今天用不到，但照样发 —— 协议面是 core 的公开事实，用不用是客户端的事。
+- **core 的 `chunk-parsed` 与 `message` 不上线**：前者是「客户端折 `chunk` 就能得到的正文增量」，后者被 `tool-call-end`（工具结果定型那一刻，载荷就是 core 手里那条消息）与轮末快照覆盖。把一个既有事实摘一份另立事件，就是给它立第二个定义 —— 服务端还得一直维护着与 core 同步。
+- 时机是硬的：`error` 早于 `finally`；`finally` 早于 `session-turn-end`（后者是服务端落盘、换 id、回收判定都做完之后）。`finally` 与 `session-turn-end` 是**两条不同的事件**，不是改名关系。
 - `send` 立刻返回 `turnId`，一轮的后续全部走事件：一轮可能跑几分钟，等它跑完再回，客户端就没有任何东西可渲染。
 - 命名空间按**作用对象**分：`workspace.*` 是对容器做事，`session.*` 是对一段会话做事，`events.watch` 是连接级的，`asset.*` 只读（资产是用户的文件系统，改它是另一个动作）。事件同理：`session-` 前缀是**会话事件**（服务端派生或服务端自己的动作，载荷里有 `sessionId`），`server-notice` 是**服务端自己的通知**（不属于任何会话，切会话也不该消失），`AGENT_EVENTS` 那 10 条说的是**一个 Agent 身上发生了什么**（名字就是 core 的名字）—— 看一眼名字就知道该看哪张表，不必背清单。
 
@@ -137,7 +136,7 @@ grep -rn '@ai-zen/agents-core' packages/client/src --include=*.ts | grep -v '\.t
 
 `@ai-zen/agents-protocol`（`packages/protocol`）是**一个独立的包**，不是任何一方的一部分。
 
-**理由只有一条**：契约是**双方的东西**。住在其中一方家里，包依赖图就必然是 `client → server`，于是「客户端不该拖进服务端实现」只能靠纪律维持 —— 只许走某个子路径、产物依赖图必须闭合。而**纪律会腐化，结构不会**。搬出来之后那条边根本不存在：`server` 与 `client` 都只依赖协议包，谁都不依赖谁。今天 `packages/server/package.json` 的 `exports` 只有两项（`.` 与 `./package.json`，后者是 `ensure-server` 定位 bin 用的），没有任何「为了让客户端能用而开的口子」。
+**理由只有一条**：契约是**双方的东西**。住在其中一方家里，包依赖图就必然是 `client → server`，于是「客户端不该拖进服务端实现」只能靠纪律维持 —— 只许走某个子路径、产物依赖图必须闭合。而**纪律会腐化，结构不会**。搬出来之后那条边根本不存在：`server` 与 `client` 都只依赖协议（`client` 另有一条向下的 `core` 依赖），谁也不依赖对方的实现。今天 `packages/server/package.json` 的 `exports` 只有两项（`.` 与 `./package.json`，后者是 `ensure-server` 定位 bin 用的），没有任何「为了让客户端能用而开的口子」。
 
 **桌面端 main 是打包产物**，这是同一条理由的现实版本：import 图上出现 `@ai-zen/agents-server` 的主入口，整套服务端实现（连带 `@ai-zen/agents-sdk`、MCP SDK、openai）就会被塞进安装包。
 
@@ -175,8 +174,8 @@ grep -rn '@ai-zen/agents-core' packages/client/src --include=*.ts | grep -v '\.t
 
 ### 三条硬约束（都能用命令检验）
 
-1. **运行期只依赖协议包** —— 见「分层与依赖方向」的硬性质①。`devDependencies` 里另有四个 workspace 包，都只为类型与用例，不进产物。
-2. **产物的运行期依赖图必须闭合**：`npm run build` 之后 `dist/*.js` 的外部 import 只允许 `@ai-zen/agents-protocol`，其余是同级相对路径与 `node:*`。
+1. **运行期为 `protocol` + `core` 两条边** —— `protocol` 是与服务端之间的契约（硬性质①）；`core` 是折 chunk（`applyChunk`）、用量求和（`sumUsage`）、角色枚举（`AgentNS.Role`）的**唯一实现**，客户端引它而不是抄一份镜像。core 的产物运行期只加载 `@ai-zen/event-bus`，`openai` 在 core 里只占类型位置。`devDependencies` 里另有三个 workspace 包，只为类型与用例，不进产物。
+2. **产物的运行期依赖图必须闭合**：`npm run build` 之后 `dist/*.js` 的外部 import 只允许 `@ai-zen/agents-protocol` 与 `@ai-zen/agents-core`，其余是同级相对路径与 `node:*`。
 
    ```bash
    cd packages/client && npm run build
@@ -277,7 +276,7 @@ packages/server/src/
 | 文件 | 拿走的东西 | 职责 |
 |---|---|---|
 | `SessionManager.ts` | 注册表 `sessions` / `holders` / 回收 / turn 生命周期（`beginTurn` / `settleTurn` / `failTurn`）/ 目录（`list` / `last` / `rename` / `remove` / `rollback`）/ 交接（`handoff` / `migrate` / `autoMigrate`）/ `create` / `attach` / `close` / `dispose` | 注册表与轮次生命周期 —— 「我正在管的那批会话」 |
-| `EventBridge.ts` | `toolCalls` / 流式影子 / 子 Agent 栏目 | SDK 事件 → 协议事件。只依赖 `agent.events` + `hub`，**不需要会话表、不需要 store** |
+| `EventBridge.ts` | 流式影子 / 子 Agent 栏目 | SDK 事件 → 协议事件。只依赖 `agent.events` + `hub`，**不需要会话表、不需要 store** |
 | `Persistence.ts` | `store` / `record` / `persistOnSettle` / `autoPersist` | 存档形状与全部写盘路径。**`recordOf` 是存档形状唯一定义处** |
 | `QuestionBroker.ts` | `questions` / `questionSeq` | 服务端向客户端提问：认领、超时、放行。唯一需要 `hub.watcherCount()` 的组件 —— **没人在看就不问** |
 | `LiveSession.ts` | — | 那段会话的形状，以及 `AgentLike` / `SubAgentLike` / `AskQuestionSpec`。四个类都只依赖它 |

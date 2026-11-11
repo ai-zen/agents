@@ -29,23 +29,30 @@ CLI（TUI）与 Desktop（main）共用同一份实现：两个前端各写一�
 
 ## 三条硬约束（都能用命令检验）
 
-### 1. 运行期只依赖 `@ai-zen/agents-protocol`
+### 1. 运行期依赖 `@ai-zen/agents-protocol` 与 `@ai-zen/agents-core`
 
-`dependencies` 里只有它一项 —— 这不再是「纪律」，是**结构**：client 与 server 之间没有边，
-两侧都只依赖协议包。
+两条边，各有理由：
+
+- **`protocol`**：client 与 server 之间只走协议；
+- **`core`**：折 chunk（`applyChunk`）、用量求和（`sumUsage`）、角色枚举（`AgentNS.Role`）
+  都是 core 的**唯一实现**。客户端要么引它，要么抄一份 —— 而抄一份就是给同一个概念立第二
+  个定义（`{Assistant:"assistant"}` 镜像、重写一遍的求和函数），两边各自演化，症状只在某个
+  角色的消息或某个子 Agent 的用量上显形。引它才是唯一不出第二份的选择。
 
 ```bash
 node -e 'console.log(Object.keys(require("./packages/client/package.json").dependencies))'
-# 只有 [ "@ai-zen/agents-protocol" ]
+# [ "@ai-zen/agents-core", "@ai-zen/agents-protocol" ]
 ```
 
-`devDependencies` 里另有四个 workspace 包，都只为**类型与用例**，不进产物：
+core 的运行期依赖只有 `@ai-zen/event-bus`（`openai` 在 core 里只出现在**类型位置**，
+`packages/core/dist/*.js` 里没有它），所以这条边不会把 `openai` 拖进客户端产物。
+
+`devDependencies` 里另有三个 workspace 包，只为**类型与用例**，不进产物：
 
 | 包 | 为什么还在 |
 |---|---|
 | `@ai-zen/agents-sdk` | `config-port.ts` 的公开类型要 `AppConfig` / `AgentDefinition` / `ReasoningPresets`（线上传的是 `unknown`，客户端兑现成类型）。**只在 `import type` 里出现**，产物 `dist/*.js` 里没有它 —— 但 `dist/*.d.ts` 里有，所以它不能删干净 |
 | `@ai-zen/agents-server` | 用例要起**真 Daemon**（`Daemon` / `writeDescriptor` / `encodeFrame`）；另外 `ensure-server` 拉起服务端时要 `require.resolve` 它的 `bin`。测试代码不进产物 |
-| `@ai-zen/agents-core` | 用例要真的 `AgentNS.Role` 真值造数据（`stream-merge.test.ts`） |
 | `@ai-zen/agents-testing` | 用例要一个**真讲协议**的假模型端点（`startFakeLlm`，`turn-and-resume.test.ts`），否则「一轮跑完再续接」只能靠手发帧凑 |
 
 ### 2. 产物的运行期依赖图必须闭合
@@ -55,7 +62,7 @@ cd packages/client && npm run build
 grep -hoE '^import .* from "[^"]+";' dist/*.js | sed 's/.*from "//;s/";//' | sort -u
 ```
 
-期望输出只有 `@ai-zen/agents-protocol`、同级相对路径、`node:*` 三类。
+期望输出只有 `@ai-zen/agents-core`、`@ai-zen/agents-protocol`、同级相对路径、`node:*` 四类。
 `@ai-zen/agents-sdk`（`AppConfig` / `AgentDefinition` / `ReasoningPresets`）只以 `import type`
 出现在 `dist/*.d.ts` 里，产物运行期不加载它。
 
