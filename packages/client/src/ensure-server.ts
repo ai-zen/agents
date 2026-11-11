@@ -252,6 +252,31 @@ async function probe(
 const DEFAULT_SERVER_PACKAGE = "@ai-zen/agents-server";
 
 /**
+ * 真正的那一句 `spawn`：两个平台各一条路，**都不传 args 数组 + `shell: true`**。
+ *
+ * 为什么 Windows 上要自己把命令拼成一个字符串：`npx` 在那里是 `npx.cmd`，不经 cmd.exe
+ * 起不来，所以必须有 shell —— 而「`shell: true` + args 数组」是 Node 明确标了弃用的形状
+ * （DEP0190：args 不转义，只做拼接）。症状不是崩溃，是一句 `DeprecationWarning` 写进
+ * **调用方**的 stderr —— 而 stdio 模式的契约是「成功那一轮 stderr 一个字都没有」，
+ * e2e 直接断言 `stderr === ""`，于是这条警告会把每次 `ai "…"` 变成一个噪声源。
+ *
+ * 自己拼就自己负责转义：这条命令行里唯一的变量是目录，引一次即可（包坐标是发布策略，
+ * 由宿主给常量）。POSIX 那条路不变：`npx` 本身就是可执行文件，没有 shell 可言。
+ */
+function spawnServerChild(serverPackage: string, aiZenDir: string) {
+  // 显式传一遍：子进程不依赖「调用方的 env 恰好和发现目录一致」
+  const env = { ...process.env, AI_ZEN_DIR: aiZenDir };
+  const options = { detached: true, stdio: "ignore" as const, env };
+  if (process.platform === "win32") {
+    return spawn(`npx -y ${serverPackage} serve --ai-zen-dir "${aiZenDir}"`, {
+      ...options,
+      shell: true,
+    });
+  }
+  return spawn("npx", ["-y", serverPackage, "serve", "--ai-zen-dir", aiZenDir], options);
+}
+
+/**
  * 用 `npx` 拉起一个 detached 的服务端进程。
  *
  * ## 为什么是 npx，而不是「解析已装的那个 bin」
@@ -278,14 +303,7 @@ async function spawnServerProcess({
   aiZenDir: string;
   serverPackage: string;
 }): Promise<void> {
-  const child = spawn("npx", ["-y", serverPackage, "serve", "--ai-zen-dir", aiZenDir], {
-    detached: true,
-    stdio: "ignore",
-    // 显式传一遍：子进程不依赖"调用方的 env 恰好和发现目录一致"
-    env: { ...process.env, AI_ZEN_DIR: aiZenDir },
-    // Windows 上 `npx` 是 `npx.cmd`，不经 shell 起不来
-    shell: process.platform === "win32",
-  });
+  const child = spawnServerChild(serverPackage, aiZenDir);
 
   await new Promise<void>((resolve, reject) => {
     child.once("spawn", () => resolve());
