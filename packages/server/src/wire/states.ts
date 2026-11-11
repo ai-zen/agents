@@ -1,3 +1,6 @@
+import type { AgentNS } from "@ai-zen/agents-core";
+import { ZERO_USAGE } from "@ai-zen/agents-core";
+
 import type { MessageKey } from "../i18n/index.js";
 
 /**
@@ -6,6 +9,17 @@ import type { MessageKey } from "../i18n/index.js";
  * 这一层的思想来源是 PRD §3 的尺子 ④⑤：**服务端给事实、客户端给表现**。
  * 于是这里的每个字段都只承载一种事实（数字是数字、列表是列表、状态是状态），
  * 需要句子的时候给 `LocalizedText`（码 + 参数 + 已渲染的一句），而不是把句子当数据结构。
+ *
+ * 消息相关的概念不在这里定义，直接用 core 的导出：
+ *   - 消息本体 = `AgentNS.Message`（正文 / 思考 / 工具调用 / 状态 / 角色 / 结束原因 / 用量都在里面）；
+ *   - 消息内容 = `AgentNS.MessageContent`、`AgentNS.MessageContentSection`（`text` / `image_url` / `file`）；
+ *   - 工具调用 = `AgentNS.ToolCall`、`AgentNS.FunctionCall`；
+ *   - 消息状态 / 角色 / 结束原因 = `AgentNS.MessageStatus` / `AgentNS.Role` / `AgentNS.FinishReason`；
+ *   - 流式增量 = `AgentNS.Delta`；用量 = `AgentNS.Usage`（求和用 core 的 `sumUsage`）。
+ *
+ * 本文件只装 core 没有的**产品事实**：生成六态、通知分档、问题对象、上下文阈值、
+ * 状态栏块、素材引用，以及「哪个对话 / 哪一轮」这类薄外壳。外壳里的消息、内容、工具调用、
+ * 用量字段装的就是 core 的那几个类型，没有第二份定义。
  *
  * 时间用 ISO 8601 字符串（与 SDK 的 `createdAt` / `updatedAt` 同口径）；id 是字符串，
  * 由服务端分配（PRD L6）。
@@ -49,16 +63,16 @@ export interface ProblemFact extends LocalizedText {
 
 /** 拼装中的工具调用：名字已到、参数还在流里 */
 export interface AssemblingToolCall {
-  toolCallId: string;
-  name: string;
+  /** 正在拼的那个调用，core 原样（`id` / `index` / `function.name` / `function.arguments`） */
+  toolCall: AgentNS.ToolCall;
   /** 已收到的参数字符数，用来给「正在拼」一个可见的进度 */
   argumentsChars: number;
 }
 
 /** 正在跑的工具：等工具态里列出来的就是这些（并行时只含还在跑的，PRD L8） */
 export interface RunningTool {
-  toolCallId: string;
-  name: string;
+  /** 被执行的调用，core 原样（工具名在 `function.name` 上） */
+  toolCall: AgentNS.ToolCall;
   startedAt: string;
   /** 该工具是子 Agent 委派时带上它的快照（PRD F-I7） */
   subagent?: SubAgentSnapshot;
@@ -126,14 +140,17 @@ export interface RunState {
 // 子 Agent（PRD F-I7）
 // ---------------------------------------------------------------------------
 
-/** 子 Agent 的状态：跑完就是跑完，失败就是失败，不合并成一个「结束」 */
+/** 子 Agent 的运行状态：跑完就是跑完，失败就是失败，不合并成一个「结束」 */
 export type SubAgentStatus = "running" | "done" | "error" | "aborted";
 
 /**
  * 子 Agent 的快照：某次委派产生的一个子 Agent。
  *
- * `toolCallId` 是它挂在哪一个工具调用下面（客户端据此把它塞进对应消息段的折叠区），
+ * `toolCallId` 是它挂在哪一个工具调用下面（客户端据此把它塞进对应工具调用的折叠区），
  * `messageCount` 说明它有几句可回看的话，取用 `message.list` 带上 `toolCallId`。
+ *
+ * `usage` 是这一个子 Agent（含其孙级）的求和结果，形状就是 core 的 `Usage`
+ * （求和使用 core 的 `sumUsage`）。
  */
 export interface SubAgentSnapshot {
   toolCallId: string;
@@ -142,146 +159,13 @@ export interface SubAgentSnapshot {
   startedAt: string;
   finishedAt: string | null;
   messageCount: number;
-  usage: UsageSnapshot | null;
+  usage: AgentNS.Usage | null;
   problem: ProblemFact | null;
-}
-
-// ---------------------------------------------------------------------------
-// 消息与消息段（PRD F-I1 / F-I2）
-// ---------------------------------------------------------------------------
-
-/** 消息是谁说的；工具结果挂在助手消息的工具调用段里，不单独成一条 */
-export type MessageRole = "user" | "assistant";
-
-/**
- * 一条消息的状态。
- *
- * 四态对应界面上的四件事：还在流（`streaming`）/ 说完了（`done`）/ 被中止（`aborted`）/
- * 出错停下（`error`）。「是否还在上下文里」是另一回事，见 `omit`。
- */
-export type MessageStatus = "streaming" | "done" | "aborted" | "error";
-
-/** 全部消息状态；运行时校验与测试遍历用 */
-export const MESSAGE_STATUSES: readonly MessageStatus[] = [
-  "streaming",
-  "done",
-  "aborted",
-  "error",
-];
-
-/** 工具调用段的状态：参数在拼、工具在跑、跑完、失败、被中止 */
-export type ToolCallStatus = "assembling" | "running" | "done" | "error" | "aborted";
-
-/** 思考段：模型的思考内容 */
-export interface ThinkingSegment {
-  kind: "thinking";
-  text: string;
-}
-
-/**
- * 工具调用段：一次调用的全部事实（名字、参数、结果、状态、子 Agent）。
- *
- * `argumentsText` 保留原始参数文本而不是解析后的对象：流式过程中它可能是半截 JSON，
- * 显示与「拼到哪儿了」都靠它；解析结果由客户端在需要时自己做。
- */
-export interface ToolCallSegment {
-  kind: "tool_call";
-  toolCallId: string;
-  name: string;
-  argumentsText: string;
-  status: ToolCallStatus;
-  /** 工具返回的文本；还没结果时为空 */
-  resultText: string | null;
-  startedAt: string | null;
-  finishedAt: string | null;
-  /** 失败/中止的原因 */
-  problem: ProblemFact | null;
-  /** 这次调用是子 Agent 委派时，带上子 Agent 的快照 */
-  subagent: SubAgentSnapshot | null;
-}
-
-/** 正文段：模型说给用户的话 */
-export interface TextSegment {
-  kind: "text";
-  text: string;
-}
-
-/**
- * 一条助手消息由若干段组成，段的类型只有这三种（PRD F-I2）。
- *
- * 段在图上的先后与产出顺序一致：思考在前、工具调用居中、正文在后；界面照数组顺序排，
- * 就能让同一条消息在多次渲染、多个客户端之间长得一样。
- */
-export type MessageSegment = ThinkingSegment | ToolCallSegment | TextSegment;
-
-/** 段的种类名 */
-export type SegmentKind = MessageSegment["kind"];
-
-/** 段的种类表 */
-export const SEGMENT_KINDS: readonly SegmentKind[] = ["thinking", "tool_call", "text"];
-
-/**
- * 附件引用：库与消息里存的是引用，字节落数据根的 `assets/`（PRD L2 / F-H8）。
- *
- * 带 `bytes` / `mime` / 尺寸这些事实，客户端据此排占位框，不必先下载再量。
- */
-export interface AssetRef {
-  assetId: string;
-  /** MIME 类型，如 `image/png` */
-  mime: string;
-  /** 字节数 */
-  bytes: number;
-  /** 原始文件名（可缺） */
-  name: string | null;
-  width: number | null;
-  height: number | null;
-}
-
-/** 一条消息的可读形状：事件与 `message.list` 都发它 */
-export interface MessageView {
-  id: string;
-  conversationId: string;
-  role: MessageRole;
-  status: MessageStatus;
-  /**
-   * 这条是否还在上下文里。
-   *
-   * 服务端给的事实（PRD F-I1）：`omit: true` 表示它还在库里、还能看，但不再发给模型。
-   * 界面用删除线表示「已失效」这个表现，由客户端定。
-   */
-  omit: boolean;
-  /**
-   * 是否是服务端注入的内容（例如「现在在哪个目录」，PRD F-D9）。
-   *
-   * 客户端可据此把它与用户输入区分开显示。
-   */
-  injected: boolean;
-  /** 段序列（顺序见 `MessageSegment`） */
-  segments: MessageSegment[];
-  /** 用户消息带的图片/文件 */
-  attachments: AssetRef[];
-  /** 这条消息自身失败/被中止的原因 */
-  problem: ProblemFact | null;
-  /** 这条消息那次响应自身的 token 用量（助手消息才有） */
-  usage: TokenCounts | null;
-  createdAt: string;
-  updatedAt: string;
 }
 
 // ---------------------------------------------------------------------------
 // 用量（PRD F-I5）
 // ---------------------------------------------------------------------------
-
-/**
- * 一组 token 计数。
- *
- * 分三个数字而不是一个总数：输入端与输出端的价格不同，界面要能把它们分开摆。
- */
-export interface TokenCounts {
-  prompt: number;
-  completion: number;
-  total: number;
-}
 
 /** 速率的统计口径：按输出 token 算，还是按总量算 */
 export type RateBasis = "completion" | "total";
@@ -289,16 +173,21 @@ export type RateBasis = "completion" | "total";
 /**
  * 用量快照：本轮 / 累计 / 速率（PRD F-I5）。
  *
- * `total` 含子 Agent（含孙级）—— 这是 PRD 明确要求的：漏了子 Agent，用户会发现账单比界面大。
- * `subAgent` 单独再给一份，是为了让「累计里有子 Agent 多少」这件事本身可见。
+ * 三个口径里装的是同一份 core `Usage`，字段名与取值照 core（`prompt_tokens` /
+ * `completion_tokens` / `total_tokens`）：
+ *   - `turn`：当前这一轮请求；
+ *   - `total`：这段对话至今，含子 Agent（含孙级）—— 这是 PRD 明确要求的：漏了子 Agent，
+ *     用户会发现账单比界面大；
+ *   - `subAgent`：累计里由子 Agent 贡献的那部分，单独再给一份是为了让「累计里有多少是
+ *     子 Agent 花的」这件事本身可见。
  */
 export interface UsageSnapshot {
   /** 本轮（当前这一轮请求） */
-  turn: TokenCounts;
+  turn: AgentNS.Usage;
   /** 累计（这段对话至今，含子 Agent） */
-  total: TokenCounts;
+  total: AgentNS.Usage;
   /** 累计里由子 Agent 贡献的部分 */
-  subAgent: TokenCounts;
+  subAgent: AgentNS.Usage;
   /** 速率 */
   rate: {
     value: number;
@@ -309,26 +198,12 @@ export interface UsageSnapshot {
   updatedAt: string;
 }
 
-/** 空用量（构造默认值用） */
-export function zeroTokenCounts(): TokenCounts {
-  return { prompt: 0, completion: 0, total: 0 };
-}
-
-/** 逐字段相加，返回新对象 */
-export function addTokenCounts(a: TokenCounts, b: TokenCounts): TokenCounts {
-  return {
-    prompt: a.prompt + b.prompt,
-    completion: a.completion + b.completion,
-    total: a.total + b.total,
-  };
-}
-
-/** 一份零值用量快照 */
+/** 一份零值用量快照（三个口径都是 core 的零值 `Usage`） */
 export function zeroUsage(now: string): UsageSnapshot {
   return {
-    turn: zeroTokenCounts(),
-    total: zeroTokenCounts(),
-    subAgent: zeroTokenCounts(),
+    turn: { ...ZERO_USAGE },
+    total: { ...ZERO_USAGE },
+    subAgent: { ...ZERO_USAGE },
     rate: { value: 0, unit: "tokens_per_second", basis: "completion" },
     updatedAt: now,
   };
@@ -339,14 +214,15 @@ export function zeroUsage(now: string): UsageSnapshot {
 // ---------------------------------------------------------------------------
 
 /**
- * 上下文占用的当轮事实：当前用量 + 两条线的绝对值（PRD F-D1 / D27）。
+ * 上下文占用的当轮事实：最近一次请求的用量 + 两条线的绝对值（PRD F-D1 / D27）。
  *
  * 比例由客户端自己算（前端不做算术的另一面是：服务端把原始数字给全）。
- * `overHandoff` / `overGuard` 是服务端判定出的结论，客户端不必自己比大小。
+ * 「还装得下多少」看的是 `usage.prompt_tokens`；`overHandoff` / `overGuard` 是服务端
+ * 判定出的结论，客户端不必自己比大小。
  */
 export interface ContextState {
-  /** 当前 prompt token 用量（决定「还装得下多少」的那个数） */
-  promptTokens: number;
+  /** 最近一次请求的用量，core 原样 */
+  usage: AgentNS.Usage;
   /** 交接线（软线，SDK 的 `tokenThresholds.handoff`） */
   handoffThreshold: number;
   /** 硬线（`tokenThresholds.guard`） */
@@ -498,7 +374,7 @@ export interface FolderFact {
 }
 
 // ---------------------------------------------------------------------------
-// 输入与附件（PRD F-H7 / F-H8 / D5）
+// 素材与用户输入（PRD F-H7 / F-H8 / D5）
 // ---------------------------------------------------------------------------
 
 /** 一张图片 / 一个文件的上限：20MB（PRD D5 / F-H8） */
@@ -507,25 +383,39 @@ export const MAX_ASSET_BYTES = 20 * 1024 * 1024;
 /** 一条消息最多带几张图片（PRD D5） */
 export const MAX_ASSETS_PER_MESSAGE = 4;
 
-/** 一次文本输入 */
-export interface TextInputPart {
-  type: "text";
-  text: string;
-}
-
-/** 一次附件输入：引用已上传的素材（上传走 `asset.begin` / `asset.chunk` / `asset.end`） */
-export interface AssetInputPart {
-  type: "asset";
+/**
+ * 素材引用：库与消息里存的是引用，字节落数据根的 `assets/`（PRD L2 / F-H8）。
+ *
+ * 带 `bytes` / `mime` / 尺寸这些事实，客户端据此排占位框，不必先下载再量。
+ * 它是**上传的产物**（`asset.end` 回的），不是消息内容：进消息时由服务端转成 core 的
+ * 内容段（`image_url` / `file`，PRD F-H7）。
+ */
+export interface AssetRef {
   assetId: string;
+  /** MIME 类型，如 `image/png` */
+  mime: string;
+  /** 字节数 */
+  bytes: number;
+  /** 原始文件名（可缺） */
+  name: string | null;
+  width: number | null;
+  height: number | null;
 }
 
 /**
- * 一条用户输入由若干部分拼成：文本段与附件段。
+ * 一次用户输入。
  *
- * 图片变成消息内容时，文本段在前（PRD F-H7）；具体按哪条传输路径发给模型是服务端的判断，
- * 结果以 `AttachmentOutcome` 的形式回到客户端。
+ * 内容本体就是 core 的那一份：`AgentNS.MessageContent`（纯文本字符串，或
+ * `text` / `image_url` / `file` 内容段数组）。这里只补一样 core 没有的东西：已上传但还没
+ * 变成内容段的素材 id —— 素材怎么变成内容段（文件引用 / 内联 / 退化成文字）由服务端按
+ * 实发模型决定（PRD F-H7），客户端只说「用了哪几张」。
  */
-export type InputPart = TextInputPart | AssetInputPart;
+export interface MessageInput {
+  /** 用户输入的内容，core 原样 */
+  content: AgentNS.MessageContent;
+  /** 已上传、待转成内容段的素材 id（顺序即用户的摆放顺序）；没有素材时省略 */
+  assetIds?: string[];
+}
 
 /** 附件真正发出去时用的路径：文件引用 / 内联 / 退化成文字 / 没发出去 */
 export type AttachmentDelivery = "file_reference" | "inline" | "text_fallback" | "dropped";
@@ -533,11 +423,15 @@ export type AttachmentDelivery = "file_reference" | "inline" | "text_fallback" |
 /**
  * 一个附件这一轮的结局（PRD F-H7：失败要告警、全失败退回纯文本、不假成功）。
  *
- * 服务端说清「它最后是怎么走的」与「没成功的原因」，客户端据此显示告警或保持沉默。
+ * 服务端说清「它最后是怎么走的」「变成了哪个内容段」与「没成功的原因」，客户端据此显示
+ * 告警或保持沉默。`section` 用的是 core 的内容段类型：内联图片是 `image_url` 段、
+ * Files API 是 `file` 段、降级成文字是 `text` 段。
  */
 export interface AttachmentOutcome {
   assetId: string;
   deliveredAs: AttachmentDelivery;
+  /** 真正拼进消息的那个内容段，core 原样；没发出去时为空 */
+  section: AgentNS.MessageContentSection | null;
   /** 没送达/降级时的人话原因 */
   problem: ProblemFact | null;
 }

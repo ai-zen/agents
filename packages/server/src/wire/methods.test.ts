@@ -1,3 +1,4 @@
+import { AgentNS } from "@ai-zen/agents-core";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -7,7 +8,10 @@ import {
   methodDomain,
   type ConversationSendParams,
   type ConversationSendResult,
+  type ConversationTransientResult,
+  type MessageHit,
   type MessageListParams,
+  type MessageListResult,
   type MethodDomain,
   type MethodName,
 } from "./methods.js";
@@ -79,23 +83,91 @@ describe("PRD §4 的落点能力都有方法承接", () => {
     expect(subagent.toolCallId).toBe("t-1");
   });
 
-  it("`conversation.send` 入参给结构化输入、出参给出两个 id 与附件结局", () => {
+  it("`conversation.send` 入参用 core 的内容形状，出参给出两个 id 与附件结局", () => {
     const params: ConversationSendParams = {
       conversationId: "c-1",
-      parts: [
-        { type: "text", text: "看一眼这张图" },
-        { type: "asset", assetId: "a-1" },
-      ],
+      input: {
+        content: [{ type: "text", text: "看一眼这张图" }],
+        assetIds: ["a-1"],
+      },
     };
     const result: ConversationSendResult = {
       userMessageId: "m-1",
       assistantMessageId: "m-2",
-      attachments: [{ assetId: "a-1", deliveredAs: "inline", problem: null }],
+      attachments: [
+        {
+          assetId: "a-1",
+          deliveredAs: "inline",
+          section: { type: "image_url", image_url: { url: "https://example.test/a.png" } },
+          problem: null,
+        },
+      ],
       acceptedAt: "2026-01-01T00:00:00.000Z",
     };
-    expect(params.parts[0].type).toBe("text");
+    expect(params.input.assetIds).toEqual(["a-1"]);
     expect(result.assistantMessageId).toBe("m-2");
-    expect(result.attachments[0].deliveredAs).toBe("inline");
+    expect(result.attachments[0].section?.type).toBe("image_url");
+  });
+
+  it("`message.list` 的消息数组就是 core 的 Message，不重新包装字段", () => {
+    const result: MessageListResult = {
+      conversationId: "c-1",
+      anchor: "m-2",
+      messages: [
+        {
+          id: "m-2",
+          role: AgentNS.Role.Assistant,
+          status: AgentNS.MessageStatus.Completed,
+          content: "看完了",
+          reasoning_content: "先看文件",
+          tool_calls: [
+            { index: 0, id: "t-1", type: "function", function: { name: "read", arguments: "{}" } },
+          ],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+          omit: false,
+          hidden: false,
+        },
+      ],
+    };
+
+    // 消息元素类型就是 AgentNS.Message（多一个字段少一个字段都会在编译期露馅）
+    const first: AgentNS.Message = result.messages[0];
+    expect(first.id).toBe("m-2");
+    expect(first.tool_calls?.[0].function?.name).toBe("read");
+    // 没有额外的外壳字段（旧的 `segments` / `attachments` / `omitted` 都没了）
+    expect(Object.keys(first).sort()).toEqual([
+      "content",
+      "hidden",
+      "id",
+      "omit",
+      "reasoning_content",
+      "role",
+      "status",
+      "tool_calls",
+      "usage",
+    ]);
+  });
+
+  it("`conversation.transient` 回一条 core 的助手消息（内容/用量都在上面）", () => {
+    const result: ConversationTransientResult = {
+      message: { id: "m-1", role: AgentNS.Role.Assistant, content: "一次性回答", usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } },
+      subagents: [],
+      problem: null,
+    };
+    expect(result.message.content).toBe("一次性回答");
+    expect(result.message.usage?.total_tokens).toBe(3);
+  });
+
+  it("搜索命中的角色用 core 的 Role", () => {
+    const hit: MessageHit = {
+      conversationId: "c-1",
+      conversationName: "聊聊",
+      messageId: "m-3",
+      role: AgentNS.Role.User,
+      snippet: "…图片内容…",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    expect(hit.role).toBe("user");
   });
 
   it("能力编号 ↔ 方法名的落点（按 PRD §4 清单逐条）", () => {

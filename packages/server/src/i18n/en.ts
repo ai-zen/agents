@@ -70,8 +70,6 @@ export const en = {
   // ---- 消息与状态的事实叙述（配结构化字段一起给出）----
   "message.reverted": "Removed {count} message(s). The text is back in your input.",
   "message.cwdMissing": "This project's folder no longer exists ({cwd}). The conversation and its history are still here.",
-  "message.toolFailed": "{tool} failed: {reason}",
-  "message.toolAborted": "{tool} was stopped before it finished.",
   "message.injectedContext": "Sent by the server, not typed by you: {summary}",
   "message.subagentFailed": "The helper agent {name} failed: {reason}",
   "message.subagentFinished": "The helper agent {name} finished.",

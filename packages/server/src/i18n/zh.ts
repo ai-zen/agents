@@ -69,8 +69,6 @@ export const zh = {
   // ---- 消息与状态的事实叙述 ----
   "message.reverted": "删掉了 {count} 条消息，内容已经放回输入框。",
   "message.cwdMissing": "这个项目的目录已经不存在了（{cwd}）。对话和历史都还在。",
-  "message.toolFailed": "{tool} 失败了：{reason}",
-  "message.toolAborted": "{tool} 还没跑完就被停下了。",
   "message.injectedContext": "这段是服务端加进来的，不是你输入的：{summary}",
   "message.subagentFailed": "子 Agent {name} 失败了：{reason}",
   "message.subagentFinished": "子 Agent {name} 跑完了。",

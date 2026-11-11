@@ -1,3 +1,4 @@
+import { AgentNS, applyChunk } from "@ai-zen/agents-core";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -61,27 +62,69 @@ describe("事件表", () => {
     expect(payload.run.status).toBe("running");
   });
 
-  it("message.delta 的增量能按段类型收窄", () => {
-    const payload: MessageDeltaPayload = {
+  it("message.delta 的增量就是 core 的 Delta，属于哪一段由它自己的字段说明", () => {
+    const textDelta: MessageDeltaPayload = {
       conversationId: "c-1",
       messageId: "m-2",
       seq: 3,
-      segment: "text",
-      delta: { kind: "text", delta: "你好" },
-      messageStatus: "streaming",
+      delta: { content: "你好" },
       at: NOW,
     };
-    if (payload.delta.kind === "text") {
-      expect(payload.delta.delta).toBe("你好");
-    }
-    expect(payload.segment).toBe("text");
+    expect(textDelta.delta.content).toBe("你好");
+    expect(textDelta.delta.reasoning_content).toBeUndefined();
 
-    const toolDelta: MessageDeltaPayload = {
-      ...payload,
-      segment: "tool_call",
-      delta: { kind: "tool_call", toolCallId: "t-1", name: "read", argumentsDelta: '{"pa', status: "assembling" },
+    const thinkingDelta: MessageDeltaPayload = {
+      ...textDelta,
+      seq: 0,
+      delta: { reasoning_content: "先看文件" },
     };
-    expect(toolDelta.delta.kind === "tool_call" && toolDelta.delta.status).toBe("assembling");
+    expect(thinkingDelta.delta.reasoning_content).toBe("先看文件");
+
+    // 工具调用的增量也是 core 的形状：id 先到、名字与参数可能后到
+    const toolDelta: MessageDeltaPayload = {
+      ...textDelta,
+      seq: 1,
+      delta: {
+        tool_calls: [
+          { index: 0, id: "t-1", type: "function", function: { name: "read", arguments: '{"pa' } },
+        ],
+      },
+    };
+    const call = toolDelta.delta.tool_calls?.[0];
+    expect(call?.id).toBe("t-1");
+    expect(call?.function?.arguments).toBe('{"pa');
+
+    // 内容段数组（图片 / 文件）走的也是同一份 Delta
+    const sectionDelta: MessageDeltaPayload = {
+      ...textDelta,
+      seq: 2,
+      delta: { content: [{ index: 0, type: "image_url", image_url: { url: "https://example.test/a.png" } }] },
+    };
+    expect(Array.isArray(sectionDelta.delta.content) && sectionDelta.delta.content[0].type).toBe(
+      "image_url",
+    );
+  });
+
+  it("message.delta 的增量能用 core 的 applyChunk 攒成一条消息", () => {
+    const receiver: AgentNS.Message = { id: "m-2", role: AgentNS.Role.Assistant };
+    const payload: MessageDeltaPayload = {
+      conversationId: "c-1",
+      messageId: "m-2",
+      seq: 0,
+      delta: { content: "你好", reasoning_content: "先看文件" },
+      at: NOW,
+    };
+
+    // 按 core 的 chunk 形状把这一片喂给 applyChunk：字段名对不上就会攒不进去
+    const chunk = {
+      choices: [{ index: 0, delta: payload.delta, finish_reason: null }],
+      usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+    };
+    applyChunk(receiver, chunk as unknown as Parameters<typeof applyChunk>[1]);
+
+    expect(receiver.content).toBe("你好");
+    expect(receiver.reasoning_content).toBe("先看文件");
+    expect(receiver.usage).toEqual({ prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 });
   });
 
   it("conversation.changed 覆盖结构变化的那几种", () => {
@@ -138,6 +181,6 @@ describe("事件表", () => {
     expect(question.question.options[0].value).toBe("self");
 
     const usage: EventPayload<"usage"> = { conversationId: "c-1", usage: zeroUsage(NOW), at: NOW };
-    expect(usage.usage.turn.total).toBe(0);
+    expect(usage.usage.turn.total_tokens).toBe(0);
   });
 });

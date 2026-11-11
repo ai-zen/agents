@@ -13,3 +13,11 @@
 - [src/wire/frames.ts] 收到数组（批量请求）时我用 `unsupported` 拒；如果客户端希望按「参数不对」处理，可以换成 `invalid_params`，请定一个。
 - [src/config.ts] `resolveListenTarget` 遇到手写错的端口（0 / 越界 / 非整数）我按「当作没给」回落到下一级；要不要改成直接报 `config_invalid` 让用户看见写错了？
 - [src/config.ts] plan 的 `ServerPaths` 只有数据根下五条路径，architecture §2 的目录图里还有 `agents/`、`skills/`、`tools/`、`subagents/`、`mcp.json`：这些路径由 `config.ts` 给出（`ServerPaths` 加字段），还是由 SDK `ConfigManager` 自己推导？
+- [src/wire/states.ts] 消息本体换成 core 的 `AgentNS.Message` 之后，消息的 `createdAt` / `updatedAt` 没有位置了（core 的 `Message` 没有时间字段）：接受「只按数组顺序、界面不显示每条时间」，还是要一个薄外壳 `{ message: AgentNS.Message; createdAt; updatedAt }`（多包一层）？
+- [src/wire/states.ts] 用户输入里的「已上传却没变成内容段的素材」在 core 的内容段类型里没有对应（`image_url` 要 URL、`file` 要 `file_id` / `file_data`），我用了 `MessageInput { content: AgentNS.MessageContent; assetIds?: string[] }`，`assetIds` 只当定位、由服务端按实发模型转成内容段（F-H7）：这个外壳形状认不认？
+- [src/wire/states.ts] 工具失败的文案键 `message.toolFailed` / `message.toolAborted` 原本挂在 `ToolCallSegment.problem` 上；工具调用改成 core 的 `ToolCall` + `role=tool` 消息之后没有这个字段了，我已把两条键删掉（失败的说明由工具消息自己的内容承载）。若 PM 要工具失败仍以 `ProblemFact` 出网，需要指定它挂在哪个字段上。
+- [src/wire/events.ts] `message.delta` 的外壳去掉了 `segment` 与 `messageStatus`：属于哪一段由 `AgentNS.Delta` 自己带的字段（`content` / `reasoning_content` / `tool_calls`）表达，消息状态走 `run.state`。要不要在 delta 事件里继续带一份状态快照？
+- [src/wire/states.ts] 上下文阈值状态里的输入用量从单个 `promptTokens` 数字改成了 core 的 `usage: AgentNS.Usage`（占用看 `usage.prompt_tokens`）：界面只要一个数的话，是否认可从 `usage.prompt_tokens` 取？
+- [src/wire/methods.ts] `conversation.transient` 的出参从 `segments` / `text` / `usage` 三样改成 core 的一条 `AgentNS.Message`（内容、用量都在消息上，累计用 core 的 `sumUsage`）：一次性脚本要「拼好的正文」时从 `message.content` 取，还是要单独再给一个 `text` 字段（那是重复字段）？
+- [src/wire/states.ts] 子 Agent 的运行状态目前仍自造 `running | done | error | aborted`（core 只有**消息**状态，没有子 Agent 生命周期）：保持现状，还是改成 `AgentNS.MessageStatus` 的取值？
+- [src/wire/states.ts] R21 里写的 core 消息字段是 `omitted`，core 实际导出的是 `omit`（`AgentNS.Message.omit`）；我按 core 的 `omit` 写，`plan-server-rewrite.md` 里那处描述要改。

@@ -1,12 +1,6 @@
-import type {
-  MessageStatus,
-  NoticeView,
-  QuestionView,
-  RunState,
-  SegmentKind,
-  ToolCallStatus,
-  UsageSnapshot,
-} from "./states.js";
+import type { AgentNS } from "@ai-zen/agents-core";
+
+import type { NoticeView, QuestionView, RunState, UsageSnapshot } from "./states.js";
 
 /**
  * 事件（服务端 → 客户端的推送，见 architecture §7）。
@@ -17,6 +11,10 @@ import type {
  *
  * 一条约定：事件只描述「发生了什么变化」，客户端需要完整对象时回服务端拉 ——
  * 这样多端同时在线时不会出现「一份数据在推送里长成另一种形状」。
+ *
+ * 流式增量的载荷是 core 的 `AgentNS.Delta` 原样：它描述的正是一片 chunk 带来了什么
+ * （`content` / `reasoning_content` / `tool_calls` / …），`applyChunk` 吃的是同一份，
+ * 所以客户端攒出来的消息与服务端存下来的那条逐字一致。
  */
 
 // ---------------------------------------------------------------------------
@@ -36,40 +34,12 @@ export interface RunStatePayload {
   at: string;
 }
 
-/** 思考段的增量：思考内容正在长 */
-export interface ThinkingDelta {
-  kind: "thinking";
-  /** 这一片新增的思考文本 */
-  delta: string;
-}
-
-/** 正文段的增量：模型正在说 */
-export interface TextDelta {
-  kind: "text";
-  /** 这一片新增的正文 */
-  delta: string;
-}
-
-/**
- * 工具调用段的增量：参数在拼、状态在变。
- *
- * `name` 与 `argumentsDelta` 可为空，是因为流里可能先到 id、后到名字与参数片段。
- */
-export interface ToolCallDelta {
-  kind: "tool_call";
-  toolCallId: string;
-  name: string | null;
-  /** 这一片新增的参数文本（可能是半截 JSON，由客户端拼完再解释） */
-  argumentsDelta: string | null;
-  /** 这一刻这段工具调用的状态 */
-  status: ToolCallStatus;
-}
-
-/** 一段消息里的增量：它属于哪一段（思考 / 工具调用 / 正文）由 `kind` 指明 */
-export type MessageDelta = ThinkingDelta | TextDelta | ToolCallDelta;
-
 /**
  * `message.delta`：一条消息的流式增量（PRD L5：在线时推送；断线后靠 `message.list` 补拉）。
+ *
+ * 增量本体是 core 的 `AgentNS.Delta`，这一片属于哪一段由它自己带的字段说明：`content` 是
+ * 正文、`reasoning_content` 是思考、`tool_calls` 是工具调用（PRD F-I2 的那三段）。
+ * 外壳只带定位信息：哪个对话、哪条消息、这条消息内的第几片。
  *
  * `seq` 是这条消息内的递增序号，客户端用它发现「漏了一片」并在重连后重拉整条。
  */
@@ -78,11 +48,9 @@ export interface MessageDeltaPayload {
   messageId: string;
   /** 这条消息内的序号，从 0 开始递增 */
   seq: number;
-  /** 属于哪一段（与增量类型一致） */
-  segment: SegmentKind;
-  delta: MessageDelta;
-  /** 这条消息此刻的状态 */
-  messageStatus: MessageStatus;
+  /** 这一片增量，core 原样 */
+  delta: AgentNS.Delta;
+  /** 这次推送的时刻 */
   at: string;
 }
 

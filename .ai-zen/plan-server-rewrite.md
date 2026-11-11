@@ -140,3 +140,29 @@ W1 交付者提的问题，按下列裁定执行；**实施者不要重开这些
 | R18 | `conversations.agentId/modelId` 可空 | **都改成 NOT NULL**：L7 说身份创建时定死；解析不出助手/模型就在创建时报错，不写半成品行 |
 | R19 | `tx` 内不能读中间结果 | **放开**：`tx` 的回调里要能 `all/get/run`（同一 worker 消息内串行执行） |
 | R20 | Workspace 列表顺序 | 按 `createdAt DESC`（D13 只定对话侧栏） |
+
+## 6. 追加铁律（用户当场纠偏，2026-11-12）
+
+**R21：聊天消息内容不许发明新数据类型，一律原样用 `@ai-zen/agents-core` 的导出。**
+
+- 消息本体 = `AgentNS.Message`（含 `id` / `role` / `content` / `tool_calls` / `reasoning_content` / `tool_call_id` / `status` / `finish_reason` / `usage` / `subAgentUsage` / `omit` / `hidden` …）
+- 消息内容段 = `AgentNS.MessageContent` / `AgentNS.MessageContentSection`（`text` / `image_url` / `file`）
+- 工具调用 = `AgentNS.ToolCall` / `AgentNS.FunctionCall`
+- 状态与角色 = `AgentNS.MessageStatus` / `AgentNS.Role` / `AgentNS.FinishReason`（**不要**自己再造一套 `streaming/done/aborted/error`）
+- 流式增量 = `AgentNS.Delta`（`applyChunk` 吃它）
+- 用量 = core 的 `Usage` / `sumUsage()`
+
+wire 层**只能包一层薄外壳**（哪个对话、哪个工作站、六态运行状态、通知、问题、能力清单这些「非消息事实」可以自定义），**不得重新定义消息、消息段、工具调用、消息状态、用量的形状**。凡是 core 已经有的，字段名与取值照抄。
+
+## 7. PM 裁定（W1-R 纠偏后）
+
+| # | 问题 | 裁定 |
+|---|---|---|
+| R22 | `message.list` 里的消息时间戳（core `Message` 没有时间字段） | **不加外壳**：消息原样 `AgentNS.Message[]`。顺序由服务端给，客户端不显示每条时间（PRD 没有这条需求）。真要加时再加外壳，现在不留预备字段 |
+| R23 | 素材 id（core 内容段没有 assetId） | 认 `MessageInput.assetIds?: string[]`：它是「已上传待转段」的定位，进消息前由服务端按实发模型转成 `image_url` / `file` 段（F-H7） |
+| R24 | 工具失败的文案键（原挂在自造的段上） | 不要单独承载字段：失败事实就在那条 `role: tool` 消息的 `content` + `status`（`AgentNS.MessageStatus.Error`）上。文案键已删，保持删掉 |
+| R25 | `message.delta` 是否带消息状态快照 | 不带。状态只有 `run.state` 一处给（L8 的六态），增量事件只搬 `AgentNS.Delta` |
+| R26 | `ContextState` 用 `usage: AgentNS.Usage` | 接受，界面取 `usage.prompt_tokens` 与两条阈值比较 |
+| R27 | `conversation.transient` 不再单独给 `text` | 接受（内容从 `message.content` 取），不留重复字段 |
+| R28 | `SubAgentStatus` 仍是自造四态 | 保留：core 只有消息状态，没有「子 Agent 这个对象」。但取值命名不得与 `AgentNS.MessageStatus` 混用同名同义 |
+| R29 | plan 文档把 core 字段写成 `omitted` | 已改正为 `omit`（core 事实以 `packages/core/src/AgentNS.ts` 为准） |

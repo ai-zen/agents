@@ -1,6 +1,7 @@
 import type {
   AbortedMessageStrategy,
   AbortedToolRoundStrategy,
+  AgentNS,
 } from "@ai-zen/agents-core";
 import type {
   AgentDefinition,
@@ -15,10 +16,8 @@ import type {
   ContextState,
   ConversationState,
   FolderFact,
-  InputPart,
   LocalizedText,
-  MessageSegment,
-  MessageView,
+  MessageInput,
   NoticeLevel,
   NoticeView,
   ProblemFact,
@@ -39,6 +38,10 @@ import type {
  * 两条贯穿全表的口径：
  *   1. 出参只给**结构化事实**，需要句子时给 `LocalizedText`；不把句子当数据结构（PRD §3 尺子 ④⑤）。
  *   2. 各域的「读」返回完整对象、「写」返回写后的完整对象，这样客户端拿到响应就能直接替换本地状态。
+ *
+ * 消息相关的出参用的就是 core 的类型：消息本体 `AgentNS.Message`、内容 `AgentNS.MessageContent` /
+ * `AgentNS.MessageContentSection`、增量 `AgentNS.Delta`、用量 `AgentNS.Usage`。这里只包外壳
+ * （哪个对话、哪个工作站、受理了什么）。
  */
 
 // ---------------------------------------------------------------------------
@@ -466,12 +469,13 @@ export interface ConversationDeleteResult {
  * `conversation.send` 入参（PRD F-C2 / L6 / D14 / F-H7 / F-D10）。
  *
  * 一轮的开始：服务端先占位（在跑则 `busy`），再分配用户消息与助手消息的 id（L6：助手消息 id
- * 在请求发出之前就有），然后开始流式。用户输入由文本段与附件段拼成，图片的传输路径由服务端定（F-H7）。
+ * 在请求发出之前就有），然后开始流式。用户输入用 core 的内容形状（`MessageInput`），
+ * 图片的传输路径由服务端定（F-H7）。
  * 有问题在挡着这段对话时会被拒（`question_pending`，D23 / F-D10）。
  */
 export interface ConversationSendParams {
   conversationId: string;
-  parts: InputPart[];
+  input: MessageInput;
 }
 
 /**
@@ -516,8 +520,8 @@ export interface ConversationRevertParams {
 export interface ConversationRevertResult {
   /** 被删掉的消息 id（按原顺序） */
   removedMessageIds: string[];
-  /** 回填到输入框的内容（文本 + 附件引用，PRD F-C8） */
-  restoredInput: InputPart[];
+  /** 回填到输入框的内容（core 的内容形状 + 素材引用，PRD F-C8） */
+  restoredInput: MessageInput;
 }
 
 /**
@@ -565,17 +569,20 @@ export interface ConversationSetThinkingResult {
 export interface ConversationTransientParams {
   /** 这一轮在哪个目录里跑（相对路径的解析基准） */
   cwd: string;
-  parts: InputPart[];
+  input: MessageInput;
   agentId?: string;
   modelId?: string;
 }
 
-/** `conversation.transient` 出参：这一轮产出的段、正文、用量（不产生任何可回看的 id） */
+/**
+ * `conversation.transient` 出参：这一轮产出的那条助手消息（不产生任何可回看的 id）。
+ *
+ * 内容、思考、工具调用、结束原因、用量都在 core 的 `AgentNS.Message` 上；要「这一轮一共花了
+ * 多少」用 core 的 `sumUsage([message])`（它把自身用量与子 Agent 用量一起算）。
+ */
 export interface ConversationTransientResult {
-  segments: MessageSegment[];
-  /** 正文拼好的那一份，方便脚本直接取用 */
-  text: string;
-  usage: UsageSnapshot;
+  /** 这一轮产出的助手消息，core 原样 */
+  message: AgentNS.Message;
   subagents: SubAgentSnapshot[];
   problem: ProblemFact | null;
 }
@@ -602,12 +609,17 @@ export interface MessageListParams {
   toolCallId?: string;
 }
 
-/** `message.list` 出参：按 `seq` 升序的消息 */
+/**
+ * `message.list` 出参：消息本体就是 core 的 `AgentNS.Message`，这里只包一层定位外壳。
+ *
+ * 顺序即对话里的先后顺序；「这条是否还在上下文里」看消息自己的 `omit`，「是否服务端注入」
+ * 看 `hidden`（PRD F-D9 / F-I1），内容与工具调用看 `content` / `tool_calls` / `reasoning_content`。
+ */
 export interface MessageListResult {
   conversationId: string;
   /** 被 `after` 命中的那条消息 id（没命中或没给则为空，客户端据此判断这是全量还是续传） */
   anchor: string | null;
-  messages: MessageView[];
+  messages: AgentNS.Message[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1496,8 +1508,8 @@ export interface MessageHit {
   conversationId: string;
   conversationName: string;
   messageId: string;
-  /** 命中消息的角色 */
-  role: MessageView["role"];
+  /** 命中消息的角色，core 原样 */
+  role: AgentNS.Role;
   /** 命中处前后的一小段原文（供高亮） */
   snippet: string;
   createdAt: string;
