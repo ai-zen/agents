@@ -21,3 +21,34 @@
 - [src/wire/methods.ts] `conversation.transient` 的出参从 `segments` / `text` / `usage` 三样改成 core 的一条 `AgentNS.Message`（内容、用量都在消息上，累计用 core 的 `sumUsage`）：一次性脚本要「拼好的正文」时从 `message.content` 取，还是要单独再给一个 `text` 字段（那是重复字段）？
 - [src/wire/states.ts] 子 Agent 的运行状态目前仍自造 `running | done | error | aborted`（core 只有**消息**状态，没有子 Agent 生命周期）：保持现状，还是改成 `AgentNS.MessageStatus` 的取值？
 - [src/wire/states.ts] R21 里写的 core 消息字段是 `omitted`，core 实际导出的是 `omit`（`AgentNS.Message.omit`）；我按 core 的 `omit` 写，`plan-server-rewrite.md` 里那处描述要改。
+- [src/storage/migrations.ts] R14 / R18 是改表结构，而 SQLite 不能就地给已有列加 NOT NULL（要整表重建，事务里重建父表会触发外键级联删除）。这套表结构还没随版本发出去（`~/.ai-zen` 下也还没有库），所以我把两条裁定直接落进 v1 的建表语句、没有追加 v2；如果 PM 认为 v1 已经算「发过一版」，需要改成 v2 迁移，并且要定「库里已有重复 cwd / NULL 身份的旧行」怎么处理（报错、去重、还是丢弃）。
+- [src/storage/Database.ts] R19 我实现成声明式批次：`tx` 回调只能登记 `all/get/run`，结果按回调返回的凭据回传（读与写在同一条 worker 消息、同一个事务里串行）。因此「读到值再在 JS 里决定下一条写什么」仍然做不到（要那样得让 worker 等主线程，R19 明确不许）；需要分支的场合把条件写进 SQL。这个取舍认不认？
+- [src/storage/types.ts] W1 的 `MessageContentSection` 是仓储自造的宽松形状（`{ type?: string; text?: string; [key: string]: unknown }`），与 R21「消息内容段一律用 core 的 `AgentNS.MessageContentSection`」冲突；`src/services/MessageService.ts` 里已经因此报类型不兼容（TS2677）。这不在 W2-S 的三件事范围内，我没有改，请定由谁把 storage 的行类型换成 core 的导出。
+- [src/services/WorkspaceService.ts] `workspace.remove` / `conversation.delete` 的出参里没有「要清哪些素材文件」的位置，我让服务方法返回 wire 结果的超集（多一个 `assetPaths`）；要不要把 `assetPaths` 加进 `RemovalConsequences`，还是由 app 层去问 AssetService？
+- [src/services/WorkspaceService.ts] `workspaces` 表没有 `updatedAt` 列，`WorkspaceView.updatedAt` 我拿「名下对话最近一次变化」充当、没有对话时等于创建时间；要真值得给表加列。
+- [src/services/ConversationService.ts] `ConversationSummary.nameIsAuto` 在库里没有真值，我按「名字是否还等于创建时间那个原名」推：自动命名（D2 / W4-H）之后名字一变就会被读成「用户改过」。要不要给对话行加 `renamedByUser` / `nameIsAuto` 列？
+- [src/services/SearchService.ts] `MessageRepository.search` 没有偏移与计数入口：`offset` 由我先取 `offset+limit` 再切片，`total` 在结果数不到取数上限时准确、否则只是下界。要给仓储加 `offset` 参数与一个计数查询吗？
+- [src/services/MessageService.ts] F-I7 的 `message.list(toolCallId)` 在存储里没有对应线索：我按消息 `data.tool_call_id` 过滤，捞到的是「那次委派的工具结果消息」，子 Agent 自己那几条消息目前读不出来。子 Agent 消息靠什么关联到父工具调用（加一列 `parentToolCallId`？）
+- [src/services/ConversationService.ts] `conversation.create` 的两条失败（助手没绑模型且配置无兜底模型 / 配置指向不存在的模型）现在借用 `error.configInvalid` 的 `{reason}` 塞英文短语；要加专键（如 `error.modelUnresolved`）吗？（i18n 归 W1-B / PM）
+- [src/services/WorkspaceService.ts] 同一个 cwd 再登记一次我报 `invalid_params`（`detail.reason=already_registered`）而不是幂等返回已有项目：D10 的「问一次」可能被多端同时点，要幂等吗？
+- [src/services/ConversationService.ts] 撤回时若这段对话正在跑一轮，我报 `busy`（要删的正是流式还在写的那几条）。认不认这条前置？
+- [src/services/ConversationService.ts] `conversation.setThinking` 的「当前档」按「助手定义上的 `modelParams` 恰好覆盖某一档补丁」反推（F-B6 写进去的是参数不是档位名）；多档补丁互为子集时取策略表里的第一个。要更严格的判定就得另有地方记「当前档」。
+- [src/services/CredentialService.ts] 对已经吊销过的凭证再吊销一次，我回 `revoked: false`（与 `notice.dismiss` 的 `dismissed` 同口径：这次有没有真的改动库），而不是幂等 true。
+- [src/services/MessageService.ts] storage 的 `MessageContentSection` 与 core 的不兼容（TS2677）我在服务层按 core 形状逐段重建绕过了，没有改 storage 的行类型；要统一得由 storage 换成 core 的导出（与 storage 实施者那条重复，按一条算）。
+- [src/services/ConversationService.ts] 删对话 / 删项目我只通知运行时 `forget(conversationId)`；「Workspace 被删 → 回收它的 Scope」（architecture §4 三因之二）不在这个窄接口里，需要 app.ts 或运行时在项目删除后自己回收。
+- [src/runtime/ChatRunner.ts] F-H7 的「`assetIds` → 内容段」这一步（按实发模型选 file 引用 / 内联 / 退化成文字）服务端还没有实现者：我留了 `prepareAttachments` 注入点，未注入时 `assetIds` 被忽略、`attachments` 回空数组。这一步归 AssetService（W2-C）还是 W4 的素材层？
+- [src/runtime/ChatRunner.ts] core 在 `run()` 的 catch 里会把在途 assistant 无条件改成 `Error`（用户 abort 时也一样），而 D15 要求「在途消息以 `Aborted` 落库」：我按 D15 落 `Aborted`，用 `run.state.outcome = "aborted"` + `problem = null` 区分「用户停的」与「真出错」，装载时 `reconcile(keep)` 会把它修回 `Completed`。这个「库里记发生过什么、内存按 core 策略」的口径认不认？
+- [src/runtime/ChatRunner.ts] `run.state` 只在「换态」或「还在跑的工具列表变了」时推（字符数不逐片刷，逐片的增量在 `message.delta` 里）；若客户端要实时字数，得在接线层累加 delta，或改成节流推快照。
+- [src/runtime/ChatRunner.ts] 受理之后事件立即开始推，可能早于 `conversation.send` 的回包（客户端那时还没拿到 `assistantMessageId`）：由接线层缓冲到回包写完再放行推送，还是客户端按 `conversationId` 缓冲未知 messageId？（我倾向前者，归 W3-E）
+- [src/runtime/ChatRunner.ts] `conversation.changed` 的 `messageCount` 我填的是「进这一轮时的历史条数 + 本轮产出条数」（内存里的数），不是库里的精确计数；要精确得由服务层查一次。
+- [src/runtime/ChatRunner.ts] D3/R1 的临时对话不入库、不推流式事件，而 `ChatRunner` 的骨架就是「落库 + 推事件」：临时对话要不要一个不落库的变体（只借 Scope、跑完把消息一次返回），还是它根本不走 `ChatRunner`？
+- [src/runtime/ChatRunner.ts] `createSdkAgentFactory` 的交接线插件要注入 `HandoffService`（用它的 `busy` 与交接回合钩子）；未注入时 `AutoMigratePlugin` 与交接工具守卫都不装 —— 没有交接服务就无从交接。这个降级要不要在装配处报一次 warn／通知？
+- [src/runtime/ChatRunner.ts] 服务层的 `ConversationRuntimePort` 里有「临时换模型 / 临时思考档位 / forget」三样进程内状态，但它们只有装配 agent 时才用得上：我在 `SdkAgentFactoryOptions` 留了 `resolveModelId` / `resolveModelParams` 两个缝，`ChatRunner.forget()` 也已提供；这三样状态的**持有者**要不要放进 `runtime/`（现在只有服务层契约、没有实现者）？
+- [src/runtime/ScopeRegistry.ts] `recycleAll()`（配置变更重连 MCP，F-E2）我实现成「空闲的立刻销毁，正被持有的打标记、最后一次 `release` 时销毁」，避免把跑到一半的那一轮的工具能力抽掉；若裁定要「立刻全部销毁」，改一处即可。
+- [src/runtime/ScopeRegistry.ts] plan §1 的回调名是 `onIdle(cb)`、任务描述是 `onAllRecycled(cb)`：我按后者实现（语义「全部回收完，根对象据此判退出」），文档回改时以哪个为准？
+- [src/runtime/ScopeRegistry.ts] `createWorkspaceScopeFactory` 只做 SDK 口径的装配（`allInOne` 五类插件 + `init()`）；MCP 的 5 层链（L9）与 skills / tools / sub-agents 的各层目录要由接线层按 cwd 算好传进来（这两件事归配置层 W4-G）。
+- [src/runtime/RunRegistry.ts] （自决）忙即拒的 `ServerError("busy")` 在 `detail` 里带 `{ conversationId, startedAt, aborted }`：文案键 `error.busy` 没有占位符，所以「在忙什么」这个事实只放结构化字段里，不改文案。
+- [src/runtime/ChatRunner.ts] （自决）一轮的用量三个口径定为：`turn` = 本轮全部产出消息的 `sumUsage`（含本轮子 Agent）、`total` = 历史 + 本轮、`subAgent` = 全部消息里 `subAgentUsage` 之和；`rate` 按输出 token / 秒、两位小数。
+- [src/runtime/ChatRunner.ts] （自决）assistant 占位与用户消息的 id 由服务端先分配并落库，core 在 `send()` 里自己追加的那两条在 `message` 事件里被认领成这两个 id；工具轮次里后续追加的消息各分配一个新 id（`id` 不参与 core 的任何判断）。
+- [src/runtime/ChatRunner.ts] （自决）`reconcile(conversationId)` 既做「重启修复」也在每轮开始时调用（装载即修复）：只写回 `status` / `omit` 真的变了的行，所以常态下多出来的写库次数为 0。
+- [src/runtime/ChatRunner.ts] （自决）工具结果消息一被追加就先落一行（`pending`），这样进程中间没了也能从库里看出「这个工具参与了、但没定型」；最终版仍在内循环结束时一次性写。

@@ -19,8 +19,9 @@ export interface Migration {
 }
 
 /**
- * 迁移列表。只追加、不改写已发布的条目：已经装在别人机器上升过级的库不会再跑旧条目，
- * 改旧条目等于让两台机器的表结构悄悄分叉。
+ * 迁移列表。眼下只有 v1：这套表结构还没随版本发出去，PM 在 W1 之后的裁定（cwd 唯一、
+ * 身份列非空）直接落进了 v1 的建表语句。再往后改结构时追加新条目 —— 已经装上升过级的库
+ * 不会重跑旧条目，改旧条目会让两台机器的表结构悄悄分叉。
  */
 export const MIGRATIONS: Migration[] = [
   {
@@ -33,24 +34,25 @@ export const MIGRATIONS: Migration[] = [
          createdAt     INTEGER NOT NULL
        )`,
 
-      // workspaces：一个工作目录登记一次。cwd 不可变（PRD D9），所以没有更新的入口
+      // workspaces：一个工作目录登记一次。cwd 不可变（PRD D9），所以没有更新的入口。
+      // cwd 唯一：同一个目录登记两次会出现两个 Scope 抢同一目录；唯一约束自带的索引
+      // 就是「这个 cwd 登记过没有」（PRD D10 的问一次）的查询路径，不再另建普通索引
       `CREATE TABLE IF NOT EXISTS workspaces (
          id        TEXT PRIMARY KEY,
          name      TEXT NOT NULL,
-         cwd       TEXT NOT NULL,
+         cwd       TEXT NOT NULL UNIQUE,
          createdAt INTEGER NOT NULL
        )`,
-      // 「这个 cwd 登记过没有」（PRD D10 的问一次）走这条索引
-      `CREATE INDEX IF NOT EXISTS idx_workspaces_cwd ON workspaces (cwd)`,
 
-      // conversations：身份（workspace / 助手 / 模型）创建时定死（PRD L7）
+      // conversations：身份（workspace / 助手 / 模型）创建时定死（PRD L7），
+      // 所以 agentId / modelId 不允许为空 —— 解析不出助手或模型时在创建处就失败，不落半成品行
       `CREATE TABLE IF NOT EXISTS conversations (
          id          TEXT PRIMARY KEY,
          workspaceId TEXT NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
          name        TEXT NOT NULL,
          pinned      INTEGER NOT NULL DEFAULT 0,
-         agentId     TEXT,
-         modelId     TEXT,
+         agentId     TEXT NOT NULL,
+         modelId     TEXT NOT NULL,
          createdAt   INTEGER NOT NULL,
          updatedAt   INTEGER NOT NULL
        )`,

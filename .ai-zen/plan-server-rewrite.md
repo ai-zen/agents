@@ -166,3 +166,34 @@ wire 层**只能包一层薄外壳**（哪个对话、哪个工作站、六态�
 | R27 | `conversation.transient` 不再单独给 `text` | 接受（内容从 `message.content` 取），不留重复字段 |
 | R28 | `SubAgentStatus` 仍是自造四态 | 保留：core 只有消息状态，没有「子 Agent 这个对象」。但取值命名不得与 `AgentNS.MessageStatus` 混用同名同义 |
 | R29 | plan 文档把 core 字段写成 `omitted` | 已改正为 `omit`（core 事实以 `packages/core/src/AgentNS.ts` 为准） |
+
+## 8. PM 裁定（W2 之后）
+
+| # | 问题 | 裁定 |
+|---|---|---|
+| R30 | storage 自造 `MessageContentSection` 与 core 冲突（TS2677），服务层逐段重建绕过 | **storage 的行类型换成 core 的 `AgentNS.MessageContent` / `MessageContentSection`**；`MessageService.toAgentMessage` 改成透传，不许逐段重建 |
+| R31 | `tx` 只能声明式登记，不能「读到值再决定写什么」 | 认。需要分支就把条件写进 SQL |
+| R32 | R14/R18 直接改进 v1 建表语句（未发布过） | 认。眼下只有 v1，再往后追加 |
+| R33 | 删除类方法要「要清哪些素材文件」 | 不进契约。app 层删完对话后问 `AssetService` 要文件清单并清理 |
+| R34 | `workspaces` 无 `updatedAt` 列 | 不加列。`WorkspaceView.updatedAt` = 名下对话最近一次活动（没有就创建时间） |
+| R35 | `nameIsAuto` 库里没有真值 | **加列** `conversations.nameIsAuto INTEGER NOT NULL DEFAULT 1`（创建时的原名算自动）；用户改名置 0，自动命名置 1 并写入新名。不许靠「名字是否等于原名」猜 |
+| R36 | `MessageRepository.search` 无 offset / 计数 | 不扩展。`total` 是下界，注释写清 |
+| R37 | 子 Agent 消息怎么关联父工具调用（F-I7） | **加列** `messages.parentToolCallId TEXT`（可空）；本轮只落列，子 Agent 消息的写入与回看归 W4（先记成已知缺口） |
+| R38 | `conversation.create` 的「模型解析不出来」借用 `error.configInvalid` 塞英文短语 | 加专键 `error.modelUnresolved`（en/zh 各一条），服务层改用它 |
+| R39 | 同一 cwd 再登记 → 报错还是幂等 | 报 `invalid_params` + `detail.reason=already_registered` + 已有 `workspaceId`（不幂等，多端同时点由客户端处理） |
+| R40 | 撤回时该对话正在跑 → `busy` | 认 |
+| R41 | `setThinking` 的「当前档」靠参数补丁反推 | 认：F-B6 写进去的就是参数，参数即真相，不另外记档位名 |
+| R42 | 已吊销的凭证再吊销 → `revoked:false` | 认（本次有没有真改动库） |
+| R43 | 删对话只通知 `forget`，删项目的 Scope 回收没人管 | 删项目时由 app 层调 `ScopeRegistry.disposeWorkspace(id)` |
+| R44 | `assetIds → 内容段`（F-H7）没人实现 | 归 W3-E 的 `AssetService`：实现并注入 `ChatRunner` 的 `prepareAttachments` |
+| R45 | core 把在途 assistant 无条件改 `Error`，D15 要求 `Aborted` 落库 | 认现口径：库里记 `Aborted` + `outcome=aborted`，内存按 core 策略，装载时 `reconcile(keep)` 修回 |
+| R46 | `run.state` 不逐片推 | 认。要实时字数就由接线层/客户端累加 `message.delta` |
+| R47 | 事件可能早于 `conversation.send` 回包 | 接线层缓冲：该对话的推送等回包写完再放行（W3-E 实现） |
+| R48 | `conversation.changed.messageCount` 用内存数 | 认（它只是「去拉一下」的信号，不是计数真相） |
+| R49 | 临时对话是否走 `ChatRunner` 的落库路径 | 不走落库路径：同一条执行逻辑，不落库、不推流式事件、一次返回。W4 补（先记缺口） |
+| R50 | 未注入交接服务时不装交接插件 | 认，但装配处要推一条 `warning` 通知（不静默） |
+| R51 | `ConversationRuntimePort`（临时模型 / 临时思考 / forget）没有实现者 | 放进 `runtime/ConversationStateRegistry.ts`，由 W3 组装时接到服务层 |
+| R52 | `recycleAll` 对正被持有的 Scope 等释放后再销毁 | 认 |
+| R53 | `onIdle` 还是 `onAllRecycled` | 以 `onAllRecycled` 为准；架构文档回改成这个名字 |
+| R54 | MCP 5 层链与 skills / tools / sub-agents 目录 | 归 W4-G 算好传给 `ScopeRegistry` |
+| R55 | 用量三口径、id 认领、每轮先 `reconcile`、工具消息先落 `pending` | 全部认 |

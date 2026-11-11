@@ -42,6 +42,19 @@ describe("WorkspaceRepository", () => {
     expect(await repo.get("nope")).toBeUndefined();
   });
 
+  it("同一个 cwd 不能登记两次（R14）", async () => {
+    await repo.create({ id: "w1", name: "项目一", cwd: "/tmp/one", createdAt: 100 });
+
+    await expect(
+      repo.create({ id: "w2", name: "另一个名字", cwd: "/tmp/one", createdAt: 200 }),
+    ).rejects.toThrow(/UNIQUE/i);
+
+    // 失败的插入什么都没留下：仍然只有原来那个 Workspace
+    expect(await repo.count()).toBe(1);
+    expect((await repo.getByCwd("/tmp/one"))?.id).toBe("w1");
+    expect(await repo.get("w2")).toBeUndefined();
+  });
+
   it("列表按创建时间倒序（最近加的排前面）", async () => {
     await repo.create({ id: "w1", name: "旧", cwd: "/tmp/one", createdAt: 100 });
     await repo.create({ id: "w2", name: "新", cwd: "/tmp/two", createdAt: 200 });
@@ -63,8 +76,8 @@ describe("WorkspaceRepository", () => {
     await repo.create({ id: "w1", name: "项目一", cwd: "/tmp/one", createdAt: 100 });
     await db.run(
       `INSERT INTO conversations (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
-       VALUES (?, ?, ?, 0, NULL, NULL, ?, ?)`,
-      ["c1", "w1", "对话", 100, 100],
+       VALUES (?, ?, ?, 0, ?, ?, ?, ?)`,
+      ["c1", "w1", "对话", "agent-1", "model-1", 100, 100],
     );
 
     expect(await repo.delete("w1")).toBe(1);

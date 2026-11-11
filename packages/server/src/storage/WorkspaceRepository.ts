@@ -18,6 +18,7 @@ export class WorkspaceRepository {
   }
 
   async create(input: WorkspaceCreateInput): Promise<void> {
+    // cwd 在表上唯一：同一个目录重复登记会在这里直接报 UNIQUE 约束错误
     await this.db.run(
       `INSERT INTO workspaces (${COLUMNS}) VALUES (?, ?, ?, ?)`,
       [input.id, input.name, input.cwd, input.createdAt],
@@ -30,10 +31,7 @@ export class WorkspaceRepository {
 
   /** 按 cwd 找登记过的 Workspace（PRD D10：普通对话遇到未登记的 cwd 时问一次） */
   async getByCwd(cwd: string): Promise<WorkspaceRow | undefined> {
-    return this.db.get<WorkspaceRow>(
-      `SELECT ${COLUMNS} FROM workspaces WHERE cwd = ? ORDER BY createdAt ASC LIMIT 1`,
-      [cwd],
-    );
+    return this.db.get<WorkspaceRow>(`SELECT ${COLUMNS} FROM workspaces WHERE cwd = ?`, [cwd]);
   }
 
   /** 全部 Workspace，新建的排前面 */

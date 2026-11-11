@@ -17,28 +17,61 @@ export interface RunResult {
   lastInsertRowid: number;
 }
 
-/** `tx` 回调里登记的一条语句 */
-export interface TxStatement {
+/** 事务里一条语句的执行方式：整表读、单行读、写 */
+export type TxKind = "all" | "get" | "run";
+
+/** 送进 worker 的一条语句（`kind` 决定它在 worker 里按哪条路径执行） */
+interface TxBatchStatement {
+  kind: TxKind;
   sql: string;
   params: SQLInputValue[];
 }
 
 /**
- * `tx` 回调拿到的客户端：只能**登记**语句，语句在回调返回后一次性送进 worker，
- * 在同一个事务里按顺序执行。
+ * 在 `tx` 回调里登记一条语句后拿到的凭据：批次跑完后靠它把结果从 `tx` 的返回值里取出来。
  *
- * 事务内拿不到中间结果 —— 需要「读一下再决定写什么」的场合，把判断折进一条带子查询的
- * SQL 里，或者把读放在事务外（本层不做业务判断，跨表原子性由调用方用 `tx` 圈定范围）。
+ * `index` 是这条语句在批次里的位置。`output` 只在类型上标记「这条语句会产出什么形状」，
+ * 运行时是 `undefined`，不参与跨线程传输。
+ */
+export interface TxStatement<T> {
+  readonly index: number;
+  readonly output?: T;
+}
+
+/**
+ * `tx` 回调拿到的客户端：`all` / `get` / `run` 都只是**登记**语句，按登记顺序排进同一批。
+ *
+ * 批次在回调返回后一次性送进 worker，在同一个事务里串行执行；读到的值由回调返回哪几条
+ * 凭据决定（返回凭据数组 → 拿到等长的结果，返回单条凭据 → 拿到单条结果，什么都不返回 →
+ * 只是一批写）。回调自己抛错时批次还没发出去，库里不会有任何改动。
  */
 export interface TxClient {
-  run(sql: string, params?: SQLInputValue[]): void;
+  all<T>(sql: string, params?: SQLInputValue[]): TxStatement<T[]>;
+  get<T>(sql: string, params?: SQLInputValue[]): TxStatement<T | undefined>;
+  run(sql: string, params?: SQLInputValue[]): TxStatement<RunResult>;
 }
+
+/** 回调能返回的东西：不关心结果、一条语句的凭据、或一组凭据 */
+export type TxPlan = TxStatement<unknown> | readonly TxStatement<unknown>[] | void;
+
+/** 单条凭据对应结果的类型 */
+export type TxValue<S> = S extends TxStatement<infer R> ? R : never;
+
+/**
+ * `tx` 的返回值：回调返回一组凭据时是等长的结果元组，返回单条凭据时是那条的结果，
+ * 什么都不返回时是 `void`。
+ */
+export type TxOutcome<S extends TxPlan> = S extends readonly TxStatement<unknown>[]
+  ? { [K in keyof S]: TxValue<S[K]> }
+  : S extends TxStatement<unknown>
+    ? TxValue<S>
+    : void;
 
 type RequestPayload =
   | { kind: "all"; sql: string; params: SQLInputValue[] }
   | { kind: "get"; sql: string; params: SQLInputValue[] }
   | { kind: "run"; sql: string; params: SQLInputValue[] }
-  | { kind: "batch"; statements: TxStatement[] };
+  | { kind: "batch"; statements: TxBatchStatement[] };
 
 type WorkerResponse =
   | { id: number; ok: true; result?: unknown }
@@ -61,6 +94,26 @@ function resolveWorkerUrl(): URL {
 
 function toError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
+}
+
+function isStatementList(
+  value: TxStatement<unknown> | readonly TxStatement<unknown>[],
+): value is readonly TxStatement<unknown>[] {
+  return Array.isArray(value);
+}
+
+/** 按凭据里的下标把结果对回调用方；下标越界说明凭据不是这一批登记的，直接报错 */
+function pickResult<T>(statement: TxStatement<T>, results: readonly unknown[]): T {
+  if (statement.index >= results.length) {
+    throw new Error(`tx 结果缺少第 ${statement.index} 条语句（本批共 ${results.length} 条）`);
+  }
+  return results[statement.index] as T;
+}
+
+function pickOutcome(plan: TxPlan, results: readonly unknown[]): unknown {
+  if (plan === undefined) return undefined;
+  if (isStatementList(plan)) return plan.map((statement) => pickResult(statement, results));
+  return pickResult(plan, results);
 }
 
 export class Database {
@@ -92,24 +145,40 @@ export class Database {
   }
 
   /**
-   * 事务：回调里用 `tx.run` 登记语句，回调返回后整批在 worker 里
-   * `BEGIN IMMEDIATE` → 逐条执行 → `COMMIT`，任一条失败就整体 ROLLBACK。
+   * 事务：回调里用 `client.all` / `get` / `run` 登记语句，回调返回后整批在 worker 里
+   * `BEGIN IMMEDIATE` → 按登记顺序逐条执行 → `COMMIT`，任一条失败就整体 ROLLBACK。
+   *
+   * 回调返回的凭据决定拿回哪些结果，所以「先读后写」是一次往返、一个事务：
+   *
+   * ```ts
+   * const [found, written] = await db.tx((q) => [
+   *   q.get<{ n: number }>("SELECT n FROM t WHERE id = ?", [id]),
+   *   q.run("UPDATE t SET n = n + 1 WHERE id = ?", [id]),
+   * ]);
+   * ```
    *
    * 回调抛错时还什么都没发出去，等于什么都没写，直接向上抛。
    */
-  async tx<T>(fn: (tx: TxClient) => Promise<T> | T): Promise<T> {
+  async tx<const S extends TxPlan>(fn: (client: TxClient) => S | Promise<S>): Promise<TxOutcome<S>> {
     this.assertOpen();
-    const statements: TxStatement[] = [];
-    const client: TxClient = {
-      run(sql, params = []) {
-        statements.push({ sql, params });
-      },
+    const batch: TxBatchStatement[] = [];
+    const register = <T>(kind: TxKind, sql: string, params: SQLInputValue[]): TxStatement<T> => {
+      const index = batch.length;
+      batch.push({ kind, sql, params });
+      return { index };
     };
-    const result = await fn(client);
-    if (statements.length > 0) {
-      await this.dispatch({ kind: "batch", statements });
-    }
-    return result;
+    const client: TxClient = {
+      all: <T>(sql: string, params: SQLInputValue[] = []) => register<T[]>("all", sql, params),
+      get: <T>(sql: string, params: SQLInputValue[] = []) => register<T | undefined>("get", sql, params),
+      run: (sql: string, params: SQLInputValue[] = []) => register<RunResult>("run", sql, params),
+    };
+
+    const plan = await fn(client);
+    const results =
+      batch.length === 0
+        ? []
+        : ((await this.dispatch({ kind: "batch", statements: batch })) as readonly unknown[]);
+    return pickOutcome(plan, results) as TxOutcome<S>;
   }
 
   /**

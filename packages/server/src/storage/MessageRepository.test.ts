@@ -42,8 +42,8 @@ beforeEach(async () => {
   ] as const) {
     await db.run(
       `INSERT INTO conversations (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
-       VALUES (?, ?, ?, 0, NULL, NULL, ?, ?)`,
-      [id, workspaceId, name, createdAt, createdAt],
+       VALUES (?, ?, ?, 0, ?, ?, ?, ?)`,
+      [id, workspaceId, name, "agent-1", "model-1", createdAt, createdAt],
     );
   }
 });

@@ -65,6 +65,33 @@ describe("migrate", () => {
     expect(await meta.getSchemaVersion()).toBe(MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 1);
   });
 
+  it("表结构钉住 cwd 唯一与身份列非空", async () => {
+    await migrate(db);
+
+    const workspaceColumns = await db.all<{ name: string; notnull: number }>(
+      "PRAGMA table_info('workspaces')",
+    );
+    expect(workspaceColumns.find((column) => column.name === "cwd")?.notnull).toBe(1);
+
+    const workspaceIndexes = await db.all<{ name: string; unique: number }>(
+      "PRAGMA index_list('workspaces')",
+    );
+    const uniqueIndexColumns: string[][] = [];
+    for (const index of workspaceIndexes.filter((candidate) => candidate.unique === 1)) {
+      const columns = await db.all<{ name: string }>(`PRAGMA index_info('${index.name}')`);
+      uniqueIndexColumns.push(columns.map((column) => column.name));
+    }
+    // cwd 上有一条唯一索引（id 主键那条另算）
+    expect(uniqueIndexColumns).toContainEqual(["cwd"]);
+
+    const conversationColumns = await db.all<{ name: string; notnull: number }>(
+      "PRAGMA table_info('conversations')",
+    );
+    for (const name of ["agentId", "modelId"]) {
+      expect(conversationColumns.find((column) => column.name === name)?.notnull).toBe(1);
+    }
+  });
+
   it("迁移后仍然是 WAL 且外键约束是开着的", async () => {
     await migrate(db);
     const journal = await db.get<{ journal_mode: string }>("PRAGMA journal_mode");

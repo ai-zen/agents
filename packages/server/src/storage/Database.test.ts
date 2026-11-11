@@ -1,5 +1,5 @@
 /**
- * `Database` 门面与 worker 的协作测试：建库、四条执行通道、事务原子性、关闭语义。
+ * `Database` 门面与 worker 的协作测试：建库、四条执行通道、事务里的读与写、关闭语义。
  * 每个用例都在自己的一次性临时目录里开库，不碰仓库目录、也不碰用户的 `~/.ai-zen`。
  */
 
@@ -52,20 +52,62 @@ describe("Database", () => {
 
   it("tx 成功时整批提交，语句按登记顺序执行", async () => {
     await db.run("CREATE TABLE t (id TEXT PRIMARY KEY)");
-    await db.tx((tx) => {
-      tx.run("INSERT INTO t (id) VALUES (?)", ["x"]);
-      tx.run("INSERT INTO t (id) VALUES (?)", ["y"]);
+    await db.tx((q) => {
+      q.run("INSERT INTO t (id) VALUES (?)", ["x"]);
+      q.run("INSERT INTO t (id) VALUES (?)", ["y"]);
     });
     const rows = await db.all<{ id: string }>("SELECT id FROM t ORDER BY id");
     expect(rows.map((row) => row.id)).toEqual(["x", "y"]);
   });
 
+  it("tx 里能读：读到的是同一事务里写之后的状态（R19）", async () => {
+    await db.run("CREATE TABLE t (id TEXT PRIMARY KEY, n INTEGER NOT NULL)");
+    await db.run("INSERT INTO t (id, n) VALUES ('a', 1)");
+
+    const [before, updated, after, listed] = await db.tx((q) => [
+      q.get<{ n: number }>("SELECT n FROM t WHERE id = ?", ["a"]),
+      q.run("UPDATE t SET n = n + 1 WHERE id = ?", ["a"]),
+      q.get<{ n: number }>("SELECT n FROM t WHERE id = ?", ["a"]),
+      q.all<{ n: number }>("SELECT n FROM t ORDER BY n"),
+    ]);
+
+    expect(before?.n).toBe(1);
+    expect(updated.changes).toBe(1);
+    expect(after?.n).toBe(2);
+    expect(listed).toEqual([{ n: 2 }]);
+  });
+
+  it("tx 里只读也可以：结果按登记顺序对回来", async () => {
+    await db.run("CREATE TABLE t (id TEXT PRIMARY KEY)");
+    await db.run("INSERT INTO t (id) VALUES ('x')");
+
+    const single = await db.tx((q) => q.get<{ id: string }>("SELECT id FROM t"));
+    expect(single?.id).toBe("x");
+
+    const missing = await db.tx((q) =>
+      q.get<{ id: string }>("SELECT id FROM t WHERE id = ?", ["nope"]),
+    );
+    expect(missing).toBeUndefined();
+  });
+
+  it("tx 里的读语句出错时整批回滚，前面的写也不留", async () => {
+    await db.run("CREATE TABLE t (id TEXT PRIMARY KEY)");
+    await expect(
+      db.tx((q) => [
+        q.run("INSERT INTO t (id) VALUES (?)", ["written"]),
+        q.get("SELECT * FROM 不存在的表"),
+      ]),
+    ).rejects.toThrow();
+
+    expect(await db.all("SELECT id FROM t")).toEqual([]);
+  });
+
   it("tx 中途失败时整批回滚，前面成功的语句也不留下", async () => {
     await db.run("CREATE TABLE t (id TEXT PRIMARY KEY)");
     await expect(
-      db.tx((tx) => {
-        tx.run("INSERT INTO t (id) VALUES (?)", ["kept?"]);
-        tx.run("INSERT INTO t (id) VALUES (?)", ["kept?"]); // 主键冲突
+      db.tx((q) => {
+        q.run("INSERT INTO t (id) VALUES (?)", ["kept?"]);
+        q.run("INSERT INTO t (id) VALUES (?)", ["kept?"]); // 主键冲突
       }),
     ).rejects.toThrow(/UNIQUE|constraint/i);
 
@@ -76,8 +118,8 @@ describe("Database", () => {
   it("tx 回调自己抛错时不会写任何东西", async () => {
     await db.run("CREATE TABLE t (id TEXT PRIMARY KEY)");
     await expect(
-      db.tx((tx) => {
-        tx.run("INSERT INTO t (id) VALUES (?)", ["never"]);
+      db.tx((q) => {
+        q.run("INSERT INTO t (id) VALUES (?)", ["never"]);
         throw new Error("业务侧放弃");
       }),
     ).rejects.toThrow("业务侧放弃");

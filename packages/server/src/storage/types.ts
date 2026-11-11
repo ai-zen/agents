@@ -53,8 +53,8 @@ export interface ConversationRow {
   /** 0 / 1：侧栏置顶（PRD D13） */
   pinned: number;
   /** 创建时定死的助手与模型（PRD L7），此处只存 id；定义本身在配置层 */
-  agentId: string | null;
-  modelId: string | null;
+  agentId: string;
+  modelId: string;
   createdAt: number;
   /** 最后一次结构性变化的时间；排序只看 pinned + createdAt，不看它（D13） */
   updatedAt: number;
@@ -68,8 +68,9 @@ export interface ConversationCreateInput {
   id: string;
   workspaceId: string;
   name: string;
-  agentId?: string | null;
-  modelId?: string | null;
+  /** 助手与模型是对话身份的一部分，创建时必须已知（解析不出来就先解析、不建行） */
+  agentId: string;
+  modelId: string;
   createdAt: number;
   updatedAt?: number;
 }

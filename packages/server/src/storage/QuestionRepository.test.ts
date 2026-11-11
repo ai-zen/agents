@@ -29,7 +29,7 @@ beforeEach(async () => {
   ]);
   await db.run(
     `INSERT INTO conversations (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
-     VALUES ('c1', 'w1', '对话', 0, NULL, NULL, 2, 2)`,
+     VALUES ('c1', 'w1', '对话', 0, 'agent-1', 'model-1', 2, 2)`,
   );
 });
 

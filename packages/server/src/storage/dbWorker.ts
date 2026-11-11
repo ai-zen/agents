@@ -27,7 +27,9 @@ type WorkerRequest =
   | { id: number; kind: "batch"; statements: Statement[] }
   | { id: number; kind: "close" };
 
+/** 事务里的一条语句：`kind` 决定按整表读、单行读还是写执行 */
 interface Statement {
+  kind: "all" | "get" | "run";
   sql: string;
   params: SQLInputValue[];
 }
@@ -91,14 +93,27 @@ function runStatement(sql: string, params: SQLInputValue[]): RunResult {
   };
 }
 
+/** 按语句自己声明的种类执行：读的回行，写的回 `changes` / `lastInsertRowid` */
+function executeStatement(statement: Statement): unknown {
+  switch (statement.kind) {
+    case "all":
+      return prepare(statement.sql).all(...statement.params);
+    case "get":
+      return prepare(statement.sql).get(...statement.params);
+    case "run":
+      return runStatement(statement.sql, statement.params);
+  }
+}
+
 /**
  * 一次消息内串行执行一批语句：`BEGIN IMMEDIATE` 先拿写锁，中途任何一条失败就整批
- * ROLLBACK。主线程的 `Database.tx` 就是靠这个保证「要么全成、要么全不成」。
+ * ROLLBACK。主线程的 `Database.tx` 就是靠这个保证「要么全成、要么全不成」，也是它能让
+ * 回调里「先读再写」而不拆成两次往返的原因（读与写在同一个事务、同一条消息里跑完）。
  */
-function runBatch(statements: Statement[]): RunResult[] {
+function runBatch(statements: Statement[]): unknown[] {
   sqlite.exec("BEGIN IMMEDIATE");
   try {
-    const results = statements.map((statement) => runStatement(statement.sql, statement.params));
+    const results = statements.map((statement) => executeStatement(statement));
     sqlite.exec("COMMIT");
     return results;
   } catch (error) {

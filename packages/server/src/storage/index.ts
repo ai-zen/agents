@@ -6,7 +6,15 @@
  */
 
 export { Database } from "./Database.js";
-export type { RunResult, TxClient, TxStatement } from "./Database.js";
+export type {
+  RunResult,
+  TxClient,
+  TxKind,
+  TxOutcome,
+  TxPlan,
+  TxStatement,
+  TxValue,
+} from "./Database.js";
 
 export { migrate, MIGRATIONS } from "./migrations.js";
 export type { Migration } from "./migrations.js";
