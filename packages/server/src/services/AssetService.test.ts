@@ -229,7 +229,7 @@ describe("prepareAttachments", () => {
     expect(url.startsWith("data:image/png;base64,")).toBe(true);
   });
 
-  it("端点声明 Files API：走文件引用（file_id），不上传两次", async () => {
+  it("端点声明 Files API：走文件引用（file_id）；每次取用都由 SDK 真上传一次", async () => {
     modelContext = { model: model(true), endpoint: endpoint(true) };
     const ref = await uploadAsset(imageBytes(16));
 
@@ -239,9 +239,9 @@ describe("prepareAttachments", () => {
     expect(outcome.section).toEqual({ type: "file", file_id: "file-1" });
     expect(uploadedFiles).toEqual([`${ref.assetId}.png`]);
 
-    // 第二次取用同一张：SDK 的上传缓存命中，不再上传
+    // SDK 不记厂商侧的文件 id：再取用同一张就是再传一次，要避免重复上传得由服务端自己记 id
     await service.prepareAttachments(prepare([ref.assetId]));
-    expect(uploadedFiles).toHaveLength(1);
+    expect(uploadedFiles).toHaveLength(2);
   });
 
   it("模型读不了图：退化成文字，并如实记账", async () => {

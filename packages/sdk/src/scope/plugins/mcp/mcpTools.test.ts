@@ -4,7 +4,6 @@ import { dirname } from "node:path";
 import { createLoadMcpTool, createCallMcpTool, createReadMcpResourceTool } from "./mcpTools.js";
 import type { McpConnectionManager } from "./McpConnectionManager.js";
 import type { AppConfig, McpServerConfig, ToolEnv, UploadFn } from "../../../types/index.js";
-import { clearUploadCache } from "../../../shared/content-blocks.js";
 import { cleanupDumpDir } from "../../../test-support/tool-output.js";
 
 /**
@@ -63,7 +62,6 @@ function textOnlyConfig(): Partial<AppConfig> {
 }
 
 beforeEach(() => {
-  clearUploadCache();
   mockUpload.mockReset();
   mockUpload.mockResolvedValue("file-mcp-1");
 });
@@ -512,12 +510,12 @@ describe("createCallMcpTool", () => {
       expect(mockUpload).toHaveBeenCalledTimes(1);
     });
 
-    it("同一张图（相同字节）重复调用只上传一次（内容哈希缓存）", async () => {
+    it("同一张图（相同字节）重复调用：每次都真上传（SDK 不记 id）", async () => {
       const manager = managerWithContent([{ type: "image", data: "AAAA", mimeType: "image/png" }]);
       const tool = callMcpTool(manager, makeEnv(filesApiConfig()));
       await tool.callback({ server: "github", tool: "shot", arguments: {} }, visionCtx);
       await tool.callback({ server: "github", tool: "shot", arguments: {} }, visionCtx);
-      expect(mockUpload).toHaveBeenCalledTimes(1);
+      expect(mockUpload).toHaveBeenCalledTimes(2);
     });
 
     it("非视觉模型时 MCP 图片退化为文本提示（避免 4xx），且不上传", async () => {

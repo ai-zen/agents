@@ -333,7 +333,7 @@ agent-plugins/                ← AgentPlugin 插件
   ContextGuardPlugin.ts       ← 严重超限安全护栏
   UnknownToolHintPlugin.ts    ← 未知工具的 MCP 智能提示（调用方显式注册）
 shared/
-  content-blocks.ts           ← 文件/媒体 → 内容块（传输决策表、上传缓存、内联上限、退化规则）
+  content-blocks.ts           ← 文件/媒体 → 内容块（传输决策表、上传动作、内联上限、退化规则）
   EntityRepository.ts         ← 通用 JSON 仓储
   errors.ts                   ← SdkError / ContextOverflowError
   logger.ts                   ← getLogger / setLogger
@@ -879,7 +879,7 @@ export const BUILTIN_TOOL_CLASSES: Array<new (env: ToolEnv) => SdkCallbackTool> 
 
 要点：
 
-- **上传缓存**按端点维度存（`endpoint.id` + 绝对路径 / 内容哈希），同一张图重复调用只上传一次；
+- **SDK 不记厂商侧的文件 id**：需要 `file_id` 时每次调用都真上传一次，要不要记下「这个文件在这个端点上的 id」由调用方（持有持久存储的一侧）决定；
 - **上传失败降级**为 base64 内联，媒体块不丢；非视觉模型退化为文本提示，避免必然 4xx；
 - **出网动作走注入**：`ToolEnvDeps.upload`（默认实现是 `POST {baseUrl}/files`），测试与宿主不需要打穿模块图；
 - 调用方：`ViewImageTool`、`call_mcp_tool` / `read_mcp_resource` 的媒体块，以及 `FileContentSection`（`file_id` / `file_data`）。

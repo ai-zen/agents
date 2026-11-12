@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { promises as fs } from "node:fs";
@@ -8,7 +8,6 @@ import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import {
   DEFAULT_MAX_INLINE_BYTES,
-  clearUploadCache,
   fileToContentSection,
   mimeOf,
   resolveModelAndEndpoint,
@@ -47,8 +46,6 @@ async function tmpImage(content = "PNGDATA", ext = ".png"): Promise<string> {
   await fs.writeFile(file, content);
   return file;
 }
-
-beforeEach(() => clearUploadCache());
 
 describe("基础工具函数", () => {
   it("mimeOf 按扩展名（大小写不敏感），未知返回 undefined", () => {
@@ -125,21 +122,15 @@ describe("fileToContentSection：传输方式选择", () => {
     expect(r.bytes).toBe(7);
   });
 
-  it("同一文件重复转换命中缓存，只上传一次", async () => {
-    const upload = vi.fn(async () => "file-cached");
+  it("同一文件每次转换都真上传（SDK 不记 id，去重由调用方决定）", async () => {
+    const upload = vi.fn(async () => "file-each-time");
     const file = await tmpImage();
     await fileToContentSection({ source: { path: file }, endpoint: deepseek, deps: { upload } });
     await fileToContentSection({ source: { path: file }, endpoint: deepseek, deps: { upload } });
-    expect(upload).toHaveBeenCalledTimes(1);
-  });
-
-  it("不同端点不复用缓存（file_id 是端点维度资源）", async () => {
-    const upload = vi.fn(async () => "file-x");
-    const file = await tmpImage();
+    // 换个端点再传一次：`file_id` 是端点维度资源，SDK 也不替调用方记
     const other: Endpoint = { ...deepseek, id: "deepseek-2" };
-    await fileToContentSection({ source: { path: file }, endpoint: deepseek, deps: { upload } });
     await fileToContentSection({ source: { path: file }, endpoint: other, deps: { upload } });
-    expect(upload).toHaveBeenCalledTimes(2);
+    expect(upload).toHaveBeenCalledTimes(3);
   });
 
   it("上传失败自动降级为 base64 内联，并给出 warning", async () => {

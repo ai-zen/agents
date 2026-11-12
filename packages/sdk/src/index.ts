@@ -93,7 +93,6 @@ export {
   toDataUrl,
   base64ByteLength,
   contentHash,
-  clearUploadCache,
   MIME_BY_EXT,
   DEFAULT_MAX_INLINE_BYTES,
 } from "./shared/content-blocks.js";
