@@ -1,92 +1,119 @@
 /**
- * `@ai-zen/agents-client` —— 一个前端（CLI / 桌面端 / 将来的其它）到 `agents-server`
- * 之间**全部**需要在客户端这边发生的事。
+ * `@ai-zen/agents-client` —— cli 与 desktop 共用的**到 `agents-server` 的连接层**。
  *
- * ## 包里有什么（按「脏 / 纯」分层）
+ * 一个门面，五件事：
  *
- * | 层 | 文件 | 职责 |
- * |---|---|---|
- * | 传输 | `transport/connection.ts` | **一个进程一条连接**（`ServerConnection`）：发现/拉起、断线重建、在新连接上重新订阅 `events.watch`、断线与就绪的上报 |
- * | 传输 | `socket-server-client.ts` | 一条 WebSocket + JSON-RPC 2.0 + `hello` 握手 + 在飞调用 + 事件分发 |
- * | 传输 | `ensure-server.ts` | 有显式地址就只连（**永不拉起**）；否则读发现文件并探活，探不到就 detached 拉起一个 `agents-server serve` |
- * | 脏 | `session/channel.ts` | **一条会话的 I/O**（`SessionChannel`）：订阅、请求、重连三条不变式、重新 `attach` |
- * | 纯 | `session/stream.ts` | **一轮之内的状态机**（`SessionStream`）：零 I/O、零 UI、零 timers |
- * | 纯 | `stream-merge.ts` | 「本地流式增量 vs 服务端快照」怎么拼（`mergeStreamedSnapshot`） |
- * | 纯 | `session/errors.ts` | 「这段会话还在不在」的唯一判据 |
- * | 门面 | `facade/sessions.ts` | `session.*`(21) + `workspace.*`(6)，**100% 覆盖**（类型级用例钉着） |
- * | 门面 | `facade/config.ts` | `config.*`(7) + `agent.*`(5) + `asset.*`(1)，同样 100% 覆盖 |
- * | 应用端口 | `config-port.ts` | 配置面（`ConfigPort`）：把线上形状兑现成 `AppConfig` / `AgentStore` 这些应用类型 |
- * | 判据 | `local-host.ts` / `status.ts` / `mcp.ts` | 工作目录该不该递上去、服务端现在什么状态、`mcp.json` 的形状 |
- * | 解析 | `resolve-target.ts` / `wire/server-url.ts` | 「连哪儿 + 拿什么进门」的唯一解析点：地址形状、URL 拼法、凭证优先级（显式 > `<aiZenDir>/run/token`） |
+ * | 想要什么 | 从哪来 |
+ * |---|---|
+ * | 一条已经握过手的连接：`call` / `subscribe` / `close` / `reconnect` | {@link Client}（`client.ts`） |
+ * | 「有就上、没有就拉一个」 | {@link ensureServer}（`connection.ts`） |
+ * | 记住上次连的是哪台、说哪种语言 | `settings.ts` |
+ * | 断线之后补拉（状态 + 消息） | `resume.ts`（`resume` / `mergeResumed` / `lastMessageId`） |
+ * | 重连几次、等多久 | `reconnect.ts` |
  *
- * ## 为什么契约也从这里转出
+ * 契约（方法名、事件名、载荷、业务码、消息本体）**不在这里重写一份**：类型直接从
+ * `@ai-zen/agents-server` 转出（下方 `export type`），所以 cli / desktop 只认这一个包也能拿到
+ * 与服务端逐字一致的形状。运行期一个字节都不 import 那个包 —— 它的包根会把整个服务端（单根、
+ * SQLite worker、SDK 装配）拉进产物。
  *
- * `export type * from "@ai-zen/agents-server/protocol"`。这样上层只要认这一个包：方法名、
- * 结果类型、数据模型类型都在手边。它**不是**第二份定义 —— 只是把契约的类型原样转出去
- * （契约目录里零运行期导出，编译后只剩 `.d.ts`；类型面有一处跨出去的 `import type` 到 core）。
- *
- * ## 运行期依赖图（可用 grep 检验，见 README）
- *
- *   @ai-zen/agents-client ──→ ./wire/*（本包自己那份实现）──→ 全局 `WebSocket` / node:*
- *                          ├─→ @ai-zen/agents-core（折 chunk / 用量求和 / 角色枚举）
- *                          └─→ node:child_process / node:module / node:fs
- *
- * 只有两个包，**没有 `@ai-zen/agents-server`**：契约是声明 + 纯实现，服务端的运行时
- * （daemon / 存档 / 会话管理）不在这条链上。传输也不引 `ws` —— 用 Node 内建的全局
- * `WebSocket`（`dependencies` 里出现 `ws` 就会被 cli / desktop 打包拖进产物）。
- * `@ai-zen/agents-server` 只是本包的 devDependency —— 用例要起一台真 Daemon，而拉起它的默认
- * 路径会 `require.resolve` 它的 bin（那条路径属于**部署策略**，不是分层；消费者可以注入自己的
- * `startServerProcess`）。
- *
- * 唯一只以**类型**出现的是 `config-port.ts` 的 `import type … from "@ai-zen/agents-sdk"`
- * （配置 / 定义在两端的共同形状），产物里被整体抹除。
+ * 这个包 `private: true`、不发版（R69）：cli 与 desktop 打包时各自把它**捆进自己的产物**。
  */
 
-export * from "./types.js";
-export * from "./socket-server-client.js";
-export * from "./ensure-server.js";
-export * from "./status.js";
-export * from "./local-host.js";
-export * from "./mcp.js";
+export { Client } from "./client.js";
+export type {
+  CallOptions,
+  ClientOptions,
+  MethodCallArgs,
+  ResumeOutcome,
+  Unsubscribe,
+} from "./client.js";
 
-// 「连哪儿 + 拿什么进门」的唯一解析点：显式地址 / 显式凭证与环境变量、发现文件、token 文件
-// 三者的优先级只写在一处（`readExplicitTarget` / `resolveToken`），外加把 `unauthorized`
-// 翻成对症那句话的 `explainUnauthorized` —— 三个前端要说同一句话，就必须共用同一份措辞
-export * from "./resolve-target.js";
+export {
+  addressLabel,
+  isLoopbackHost,
+  normalizeAddress,
+  parseAddress,
+  webSocketUrl,
+} from "./address.js";
+export type { ServerTarget } from "./address.js";
 
-// 「上次连的是哪台」的唯一实现：读写（`0600` + 原子写）、校验、以及界面上那一行字。
-// CLI 与桌面端各存各的文件（`<aiZenDir>/cli|desktop/connection.json`），但规则只有这一份
-export * from "./connection-settings.js";
+export {
+  AI_ZEN_DIR_ENV,
+  ensureServer,
+  readLocalToken,
+  readServerFile,
+  resolveDataRoot,
+  resolveServerEntry,
+  serverFilePath,
+  spawnAgentsServer,
+  tokenFilePath,
+} from "./connection.js";
+export type {
+  EnsureServerOptions,
+  EnsureServerResult,
+  LocalServerFacts,
+  SpawnServerContext,
+} from "./connection.js";
 
-// 传输层：一个进程一条连接。会话层不自己建连接，只借它说话
-// —— 「断了就重建 + 重新 events.watch」只在这一处发生
-export * from "./transport/connection.js";
+export { ClientError, fromServerError, isClientError, localError } from "./errors.js";
+export type { ClientErrorCode, LocalErrorCode } from "./errors.js";
 
-// 会话层：一纯一脏。纯的那个（状态机）可以在单测里直接跑完一轮，
-// 脏的那个（通道）只负责接线与重连 —— 这条边界就是「会话状态机终于能被测」的全部凭据
-export * from "./session/stream.js";
-export * from "./session/channel.js";
-export * from "./session/errors.js";
+export { mergeResumed, lastMessageId, resumeConversation } from "./resume.js";
+export type { ContractCaller, ResumeMode, ResumedConversation } from "./resume.js";
 
-// 门面：方法名集合 === 协议方法表 key 集合（类型级用例见 `facade/coverage.test-d.ts`）
-export * from "./facade/sessions.js";
-export * from "./facade/config.js";
-export * from "./config-port.js";
+export {
+  DEFAULT_RECONNECT_POLICY,
+  isRetryableByDefault,
+  reconnectUntilConnected,
+  retryDelay,
+} from "./reconnect.js";
+export type {
+  ReconnectAttempt,
+  ReconnectOptions,
+  ReconnectPolicy,
+  Reconnectable,
+} from "./reconnect.js";
 
-// 「本地流式增量 vs 服务端快照」的合并规则（`mergeStreamedSnapshot` / `StreamedAssistant`）。
-// 它是公开面的一部分：会话状态机与两个前端都要在同一个时序压力下做同一件事
-// （快照比第一批增量还慢），而这份规则只该有一份 —— 各写一遍就会在「宁可重复也不吞字」
-// 这类边界上分叉。
-export * from "./stream-merge.js";
+export {
+  describeSettings,
+  parseSettings,
+  readSettings,
+  redactToken,
+  settingsLabel,
+  settingsPath,
+  settingsToTarget,
+  writeSettings,
+} from "./settings.js";
+export type { ConnectionClient, ConnectionMode, ConnectionSettings } from "./settings.js";
 
-// 协议面（方法名常量 / 结果类型 / 帧编解码）原样转出，理由见文件头
-export type * from "@ai-zen/agents-server/protocol";
-
-// 运行期件（本包自己那一份实现）：消息的编码与两个体积上限、发现文件读，CLI 的组装根要用
-export { MAX_PAYLOAD_BYTES, MAX_TEXT_BYTES } from "./wire/frames.js";
-export { readDescriptor } from "./wire/discovery.js";
-
-// 地址形状与 URL 的唯一实现处：`--server` 的解析、诊断输出里的端点、将来的设置面板都走这里
-// （不再各自拼 `ws://host:port` —— 那两份逐字相同的私有实现在本批被删掉了）
-export { normalizeServerAddress, parseServerUrl, webSocketUrl } from "./wire/server-url.js";
-export type { ServerTarget } from "./wire/server-url.js";
+/**
+ * 契约类型的转出（只转出形状，运行期不 import 服务端）。
+ *
+ * 上层要的消息本体就是 core 的 `AgentNS.Message` —— 经服务端再导出的同一个定义，客户端不包一层。
+ */
+export type {
+  // 方法表与事件表
+  EventMap,
+  EventName,
+  EventPayload,
+  MethodMap,
+  MethodName,
+  MethodParams,
+  MethodResult,
+  NoParams,
+  // 握手与身份
+  ClientInfo,
+  ServerHelloParams,
+  ServerHelloResult,
+  // 状态形状（`conversation.state` 与事件载荷里有）
+  ConversationState,
+  NoticeView,
+  QuestionView,
+  RunState,
+  UsageSnapshot,
+  // 错误
+  BizCode,
+  ErrorData,
+  // 消息本体与增量（core 的定义）
+  AgentNS,
+} from "@ai-zen/agents-server";

@@ -179,3 +179,23 @@
 - [src/storage/MessageRepository.ts, src/services/ConversationService.ts, src/services/WorkspaceService.ts] 按 B1(a)(b)/B2 落注释：两个仓储读方法各一段（`listByConversation` 数的是主线、`countByConversation` 数的是全部行），代价一侧三个调用点各一段（删对话、删项目、`toSummary` 的 `messageCount`）。只写「这一处是哪个数、为什么与另一处不同」，不写「应该用哪个」；SQL、类型、行为一个字没动。
 - [docs/architecture.md] §5 存储表下方补「消息条数的两个口径」（读路径口径 + 谁在用），§9 删掉「状态栏块里的助手名字与可用性」与「`config.setDefaults` 写缺省语言的契约形状」两条已知缺口，§11 加一行变更记录。删第二条是我顺手做的：task 1 落地之后那条描述已经不成立，留着就是错的（B3 只点名了第一条）。
 - [src/app.test.ts] 原来那句 `{ defaults: { language: "zh" } } as unknown as MethodParams<"config.setDefaults">`（注释写着「契约的 `DefaultSelection` 还没有 `language`」）按契约落地改成正常调用，并补上「写 `null` → 下一条连接握手回 `en`」的往返。认不出来的语言那条反向断言留着（照旧 `as unknown as`，因为类型上就拦得住）。
+
+## C1（`packages/client` 按新契约重写）追加
+
+- [packages/client/src/connection.ts] R69 之后不能再用 `npx @ai-zen/agents-server` 拉起本地服务端（那是「依赖已发布版本」）。缺省实现改成 `process.execPath <已装包的 dist/cli.js> serve --ai-zen-dir <数据根>`，入口从 `@ai-zen/agents-server/package.json` 解析；打包后的 cli / desktop 没有这个包可解析，需要宿主用 `serverEntry` 把入口递进来（`spawnServer` 也可整个换掉）。这个「入口由宿主给」的口径认不认，还是要一个环境变量（如 `AI_ZEN_SERVER_ENTRY`）作为第二来源？
+- [packages/client/src/errors.ts] 有一类失败服务端**不在场**、没有 `data.message` 可用：连不上、握手超时、连接断了、拉起超时。这几句我按连接语言（zh / en，缺省英文，与 D8 / R58 一致）在客户端渲染，是全包唯一由客户端产出的用户可见文本。要不要把它们收进服务端 i18n（客户端只按码取），还是就留在客户端？
+- [packages/client/src/client.ts] 本波的门面只有「连接 + 调用 + 事件分派 + 补拉」，没有「一轮之内的状态机」：`message.delta` 只把 `AgentNS.Delta` 分派出去，折叠交给前端（core 的 `applyChunk` 在运行时由调用方用）。旧 client 里那份 `session/stream.ts`（阶段 / 用量 / 子 Agent / 失败终态的纯状态机）这一波没有搬 —— 若 C2 / C3 不希望各写一份，需要另派一个波次把它按新契约重写。
+- [packages/client/src/resume.ts] 补拉的 `after` 锚点由调用方给（`client.track(id, anchor)` / `setAnchor`）或由上一次 `resume` 的结果回填；客户端**不**从 `message.delta` 自动推导锚点（那要求客户端解释事件载荷的语义）。要自动维护的话请定：客户端是否允许理解「哪个 messageId 是这段对话的最后一条」。
+- [packages/client/src/connection.ts] 「就绪」的判据是「发现文件出现 + `server.hello` 成功」。`ServerApp.start()` 目前是先装配再监听，所以这条判据在当下够用；若将来出现「端口在听、业务还没就绪」的窗口，需要服务端在 `hello` 里给一个就绪标记（现在没有）。
+- [packages/client/src/client.ts] `asset.begin` / `asset.end` 在契约里是普通方法，但上传还要发**二进制分帧**（`net/UploadReceiver.ts` 的帧格式）。本波的客户端没有上传实现（门面不含它），C2 / C3 做图片上传时要么客户端补一段「发二进制帧」，要么各前端自己发。
+- [packages/client/src/settings.ts] 设置里加了 `language`（D26 的「记住上次连接」+ D8 的连接语言）。我的理解是：设置存**用户的偏好语言**，每次 `connect` 握手时带上、`server.setLanguage` 之后跟着更新；语言本身仍是连接级、断开即忘。这条口径认不认（尤其「换了个语言偏好，是否要立刻对现有连接生效」）？
+- [packages/client/package.json] `@ai-zen/agents-core` 还在 `dependencies` 里，但本包运行期已经不再 import 它（消息与增量全是 `import type`，折叠在调用方）。降成 devDependency 要动根 `pnpm-lock.yaml`，超出本波可改范围，所以这次只留注释说明，等下一轮 install 时再降。
+
+### C1 自决（记在这里，供 PM 复核）
+
+- [packages/client/src/connection.ts] （自决）「被服务端拒」（`unauthorized`）不当成「还没就绪」：发现文件里那个实例答了话但拒了凭证时，直接把这句错误抛出去，**不**再 spawn 一个新的。否则症状是「明明有个实例在跑，客户端又拉一个、等满 15 秒，最后报『服务端起不来』」。
+- [packages/client/src/connection.ts] （自决）凭证每一轮轮询都重读 `run/token`：刚拉起的服务端是它自己启动时才生成那串文件的，只在 spawn 之前读一次会让「第一次拉起」永远连不上。
+- [packages/client/src/connection.ts] （自决）发现文件的形状在客户端本地声明成 `LocalServerFacts`（只读 `pid` / `host` / `port`）：它不是契约的一部分（`net/discovery.ts` 的 `ServerFileInfo` 不在包根出口里），而客户端对它的要求只有「读不出来就当没有」。
+- [packages/client/src/reconnect.ts] （自决）缺省策略是**一直重试**（`maxAttempts: Infinity`）、退避从 250ms 起、封顶 10 秒：放弃的时机是产品判断，包内不预设「试三次就放弃」（那是旧服务端被作废的决定之一）。
+- [packages/client/src/client.ts, src/errors.ts] （自决）客户端**不维护第二份清单**：事件名没有白名单（没人订阅的名字自然没人接），业务码没有码表（服务端新增的码照样递出去，调用方的 `switch` 落进 `default`）。两份清单的漂移方向永远是「服务端加了、客户端静默丢掉」。
+- [packages/client/src/client.ts] （自决）传输用 Node 内建的全局 `WebSocket`，不引入 `ws`：两个前端要把这个包捆进产物，运行期依赖越少越好。代价是 `error` 事件没有底层原因，所以本地文案里带上 `host:port`。

@@ -14,5 +14,6 @@
     "types": ["node"]
   },
   "include": ["src"],
-  "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.test.tsx", "**/*.test-d.ts"]
+  // 用例与测试脚手架不进产物：`*.test.ts` 是断言，`testSupport/` 是假服务端（只被用例 import）
+  "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.test-d.ts", "**/testSupport/**"]
 }
