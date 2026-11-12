@@ -56,7 +56,7 @@ import {
   type TransferLimits,
 } from "../wire/index.js";
 import type { TokenVerifier } from "./auth.js";
-import type { UploadReceiver } from "./UploadReceiver.js";
+import { decodeChunkFrame, type UploadReceiver } from "./UploadReceiver.js";
 
 // ---------------------------------------------------------------------------
 // 注入点
@@ -484,8 +484,34 @@ export class WsHub {
     try {
       await uploads.receiveBinary(state.id, bytes);
     } catch (error) {
-      this.send(state, this.errorFrame(null, error, state.language));
+      this.send(state, this.chunkErrorFrame(error, bytes, state.language));
     }
+  }
+
+  /**
+   * 分片帧的错误帧。
+   *
+   * 二进制帧没有 `id`，所以「哪一趟上传被拒了」只能靠 `detail.uploadId` 认出来：这里尽力从帧头
+   * 取一次 `uploadId` 补进 `detail`（原有的结构化事实不动，已经有 `uploadId` 就不覆盖）。
+   * 业务错误原样出网；非业务错误按 `internal` 出网、细节只进日志。帧头坏到解不出 `uploadId` 时
+   * 与原来一样，什么也不补。
+   */
+  private chunkErrorFrame(
+    error: unknown,
+    frame: Uint8Array,
+    language: Language,
+  ): JsonRpcErrorFrame {
+    const uploadId = uploadIdOf(frame);
+    if (uploadId === null) return this.errorFrame(null, error, language);
+    if (ServerError.is(error)) {
+      return errResponse(null, withUploadId(error, uploadId), language);
+    }
+    this.logger.error("处理上传分片时出现非业务错误", { uploadId, error: describeError(error) });
+    return errResponse(
+      null,
+      new ServerError("internal", { detail: { reason: "chunk_failed", uploadId } }),
+      language,
+    );
   }
 
   /**
@@ -561,7 +587,12 @@ export class WsHub {
 
     if (this.options.uploads) {
       if (method === "asset.begin") {
-        return await this.options.uploads.begin(state.id, params as AssetBeginParams);
+        // 语言是连接状态：草稿对话落库时要靠它渲染那条隐藏的 cwd 消息（D8）
+        return await this.options.uploads.begin(
+          state.id,
+          params as AssetBeginParams,
+          state.language,
+        );
       }
       if (method === "asset.end") {
         return await this.options.uploads.end(state.id, params as AssetEndParams);
@@ -741,6 +772,34 @@ function toConnectionInfo(state: ConnectionState): ConnectionInfo {
 function describeError(error: unknown): { message: string; stack?: string } {
   if (error instanceof Error) return { message: error.message, stack: error.stack };
   return { message: String(error) };
+}
+
+/**
+ * 从一帧分片里尽力取出 `uploadId`（解不出就是 `null`：帧已经坏到没有头可读）。
+ */
+function uploadIdOf(frame: Uint8Array): string | null {
+  try {
+    return decodeChunkFrame(frame).uploadId;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 把 `uploadId` 补进错误的 `detail`（原有的事实保留，已有的 `uploadId` 不覆盖）。
+ *
+ * `detail` 不是对象时把它挪到 `detail.detail` 下而不是丢掉：错误帧里带出去的结构化事实
+ * 都走 `detail`，一个非对象的值不能成为「既然不好合并就扔掉」的理由。
+ */
+function withUploadId(error: ServerError, uploadId: string): ServerError {
+  const detail = error.detail;
+  if (detail === undefined) return error.withDetail({ uploadId });
+  if (typeof detail === "object" && detail !== null && !Array.isArray(detail)) {
+    const record = detail as Record<string, unknown>;
+    if (record.uploadId !== undefined) return error;
+    return error.withDetail({ ...record, uploadId });
+  }
+  return error.withDetail({ detail, uploadId });
 }
 
 /** 入站字节：`ws` 可能给 Buffer、ArrayBuffer 或 Buffer 数组（分片） */

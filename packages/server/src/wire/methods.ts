@@ -1375,7 +1375,7 @@ export type AssetPurpose = "message_image";
 /**
  * `asset.begin` 入参（architecture A11 三段式的第一段 / PRD F-H8）。
  *
- * 声明总长、用途、类型。超限在这里就拒（PRD D5：20MB/张，不接收完再说不行）。
+ * 声明总长、用途、类型与归属的对话。超限在这里就拒（PRD D5：20MB/张，不接收完再说不行）。
  */
 export interface AssetBeginParams {
   purpose: AssetPurpose;
@@ -1385,8 +1385,14 @@ export interface AssetBeginParams {
   bytes: number;
   /** 原始文件名（可缺） */
   name?: string;
-  /** 打算用在哪个对话上（可缺；给了就便于按引用清理，PRD D17） */
-  conversationId?: string;
+  /**
+   * 这段素材归属哪段对话（必填）。
+   *
+   * 素材行在库里按 `conversationId` 挂外键，落定那一刻这段对话必须已经存在；草稿对话
+   * （`conversation.create` 之后还没发过消息，R56）在 `asset.begin` 这一步落库，
+   * 与「第一次 `conversation.send`」同义。
+   */
+  conversationId: string;
 }
 
 /** `asset.begin` 出参：上传句柄与这次的上限 */

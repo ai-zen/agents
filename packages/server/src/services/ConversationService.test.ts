@@ -493,6 +493,25 @@ describe("R56：create 不落库，首次发消息才写行", () => {
     expect(await harness.conversations.list()).toHaveLength(1);
   });
 
+  it("并发调 ensurePersisted：只插一行、只写一条 cwd 消息（上传与发送可能同时撞上）", async () => {
+    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const id = created.conversation?.id ?? "";
+
+    const results = await Promise.all([
+      harness.service.ensurePersisted(id),
+      harness.service.ensurePersisted(id),
+      harness.service.ensurePersisted(id),
+    ]);
+
+    expect(results.map((row) => row.id)).toEqual([id, id, id]);
+    expect(await harness.conversations.list()).toHaveLength(1);
+    const messages = await harness.messages.listByConversation(id, undefined, {
+      includeHidden: true,
+    });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.data).toMatchObject({ hidden: true });
+  });
+
   it("草稿也能改名与置顶（只动内存），落库时带过去", async () => {
     const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
     const id = created.conversation?.id ?? "";

@@ -27,6 +27,7 @@ import type { ServerPaths } from "../config.js";
 import { DEFAULT_LANGUAGE, render, type MessageKey } from "../i18n/index.js";
 import type { UploadFinalizeRequest } from "../net/UploadReceiver.js";
 import type { AttachmentPreparer } from "../runtime/ChatRunner.js";
+import { ServerError } from "../wire/errors.js";
 import {
   MAX_ASSETS_PER_MESSAGE,
   type AssetRef,
@@ -158,6 +159,9 @@ export class AssetService {
    *
    * 顺序是「先改名、再登记行、失败就把文件删回去」：库里出现一行指向不存在的文件，
    * 比文件多留一份更难收拾（取用时会变成「有引用但读不到」）。
+   *
+   * 登记失败时把错误翻译一次：外键失败在这条路上只有一个含义（那段对话在库里不存在），
+   * 换成一个可判别的业务码，客户端才能说一句人话。
    */
   async finalizeUpload(request: UploadFinalizeRequest): Promise<AssetRef> {
     const assetId = this.newId();
@@ -181,7 +185,7 @@ export class AssetService {
       });
     } catch (error) {
       await fs.rm(finalPath, { force: true }).catch(() => undefined);
-      throw error;
+      throw this.registrationError(error, request.conversationId);
     }
 
     return {
@@ -193,6 +197,25 @@ export class AssetService {
       width: null,
       height: null,
     };
+  }
+
+  /**
+   * 登记素材行失败 → 给调用方一个能分支的错误。
+   *
+   * `assets.conversationId` 是这张表上唯一一条指向别处的外键（`messageId` 在这一步还是空），
+   * 所以外键失败的含义就是「这段对话在库里不存在」：报 `not_found` 而不是 internal。
+   * 其余失败（盘、库坏了）仍是 internal，原因写进 detail 并进日志。
+   */
+  private registrationError(error: unknown, conversationId: string): unknown {
+    if (ServerError.is(error)) return error;
+    const reason = error instanceof Error ? error.message : String(error);
+    if (/FOREIGN KEY/i.test(reason)) {
+      return new ServerError("not_found", {
+        params: { entity: "conversation" },
+        detail: { conversationId, reason: "conversation_not_found" },
+      });
+    }
+    return new ServerError("internal", { detail: { reason, context: "asset_register" } });
   }
 
   /** 把上传好的素材挂到落库后的那条消息上（上传早于消息落库，PRD D5 / F-H8） */

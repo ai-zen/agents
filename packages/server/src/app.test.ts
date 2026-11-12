@@ -7,6 +7,7 @@
  */
 
 import { promises as fs } from "node:fs";
+import { createHash } from "node:crypto";
 import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,11 +19,13 @@ import type { ExitFacts, ServerApp, ServerAppOptions } from "./app.js";
 import { resolvePaths } from "./config.js";
 import { DEFAULT_PORT, resolveListenTarget } from "./config.js";
 import type { ConnectionInfo } from "./net/index.js";
+import { encodeChunkFrame } from "./net/index.js";
 import { readServerFile, writeServerFile } from "./net/discovery.js";
 import {
   isError,
   isNotification,
   isSuccess,
+  listDir,
   makeTempDir,
   TestClient,
   wait,
@@ -35,6 +38,7 @@ import { Database } from "./storage/index.js";
 import { METHOD_NAMES } from "./wire/index.js";
 import { ServerError } from "./wire/index.js";
 import type {
+  AssetRef,
   ConversationTransientResult,
   ConversationView,
   MethodName,
@@ -568,6 +572,124 @@ describe("删除路径", () => {
     expect(remaining.total).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 带图的第一条消息：草稿对话在上传这一步落库（R56 / F-H8）
+// ---------------------------------------------------------------------------
+
+describe("草稿对话上的上传（R56 / F-H8）", () => {
+  it("begin → chunk → end 走通：对话落库、只写一条隐藏的 cwd 消息、素材登记", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture);
+    const { workspace } = await callMethod(app, "workspace.create", {
+      cwd: fixture.workspaceDir.path,
+    });
+    const { conversation } = await callMethod(app, "conversation.create", {
+      workspaceId: workspace.id,
+      agentId: "default",
+      modelId: "test-model",
+    });
+    const conversationId = conversation?.id ?? "";
+    // 建出来还只是草稿：库里没有这一行（R56）
+    expect(await app.db.all("SELECT id FROM conversations")).toEqual([]);
+
+    const client = await connect(app);
+    const bytes = new Uint8Array(2048);
+    for (let index = 0; index < bytes.length; index += 1) bytes[index] = index % 251;
+
+    const began = await callThroughPush(client, "asset.begin", {
+      purpose: "message_image",
+      mime: "image/png",
+      bytes: bytes.byteLength,
+      name: "photo.png",
+      conversationId,
+    });
+    const uploadId = (began as { uploadId: string }).uploadId;
+
+    // 落库发生在 `asset.begin`：那一刻这段对话已经在库里，且带上了那条隐藏的 cwd 消息
+    expect((await app.db.all<{ id: string }>("SELECT id FROM conversations")).map((row) => row.id))
+      .toEqual([conversationId]);
+
+    client.sendBinary(encodeChunkFrame(uploadId, bytes.subarray(0, 1000)));
+    client.sendBinary(encodeChunkFrame(uploadId, bytes.subarray(1000)));
+    // 分片没有回执：用一次请求当栅栏，确认它们都已经被处理
+    await callThroughPush(client, "server.setLanguage", { language: "en" });
+
+    const ended = await callThroughPush(client, "asset.end", {
+      uploadId,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+    });
+    const asset = (ended as { asset: AssetRef }).asset;
+    expect(asset).toMatchObject({ mime: "image/png", bytes: bytes.byteLength, name: "photo.png" });
+    // 素材行挂在这段对话上（外键过得去，说明对话确实先落了库）
+    expect(await app.assetService.get(asset.assetId)).toMatchObject({ conversationId });
+
+    // 库里只有一条隐藏消息，正文含这段对话的 cwd
+    const hidden = await hiddenMessagesOf(app, conversationId);
+    expect(hidden).toHaveLength(1);
+    expect(hidden[0]?.content).toContain(fixture.workspaceDir.path);
+
+    // 再落一次同一个草稿（例如第二张图、或者紧接着那次 send）：行与 cwd 消息都不该多出来
+    await app.conversationService.ensurePersisted(conversationId);
+    expect(await app.db.all("SELECT id FROM conversations")).toHaveLength(1);
+    expect(await hiddenMessagesOf(app, conversationId)).toHaveLength(1);
+  });
+
+  it("不存在的 conversationId：可判别的业务码，不落临时文件", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture);
+    const client = await connect(app);
+
+    const id = client.request("asset.begin", {
+      purpose: "message_image",
+      mime: "image/png",
+      bytes: 16,
+      conversationId: "no-such-conversation",
+    });
+    const frame = await client.queue.next();
+    expect(isError(frame)).toBe(true);
+    if (!isError(frame)) return;
+    expect(frame.id).toBe(id);
+    expect(frame.error.data.code).toBe("not_found");
+    expect(frame.error.data.detail).toMatchObject({
+      conversationId: "no-such-conversation",
+    });
+    expect(await listDir(app.paths.assetsDir)).toEqual([]);
+  });
+});
+
+/** 一段对话名下那条隐藏的 cwd 消息（`data.hidden` 为真的那些） */
+async function hiddenMessagesOf(
+  app: ServerApp,
+  conversationId: string,
+): Promise<Array<{ content: string; data: string | null }>> {
+  const rows = await app.db.all<{ content: string; data: string | null }>(
+    "SELECT content, data FROM messages WHERE conversationId = ? ORDER BY seq",
+    [conversationId],
+  );
+  return rows.filter((row) => row.data !== null && row.data.includes("\"hidden\":true"));
+}
+
+/**
+ * 发一个请求并取回它的回包，跳过中间插进来的推送。
+ *
+ * `asset.begin` 会在处理过程中落库，于是先产生一条 `conversation.changed`（R47：它排在回包之后
+ * 出网，但对用例来说仍是队列里的一帧）。
+ */
+async function callThroughPush(
+  client: TestClient,
+  method: string,
+  params: unknown,
+): Promise<unknown> {
+  const id = client.request(method, params);
+  for (;;) {
+    const frame = await client.queue.next();
+    if (isNotification(frame)) continue;
+    if (!isSuccess(frame)) throw new Error(`期望成功响应，拿到：${JSON.stringify(frame)}`);
+    if (frame.id !== id) throw new Error(`回包对不上：期望 ${id}，拿到 ${frame.id}`);
+    return frame.result;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // 配置改完就生效（F-E2 / F-F9）：ConfigApplyPort 接上了没有

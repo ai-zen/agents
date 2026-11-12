@@ -538,6 +538,11 @@ export class ServerApp {
     this.uploads = new UploadReceiver({
       assetsDir: paths.assetsDir,
       finalize: (request) => this.assetService.finalizeUpload(request),
+      // 草稿对话（R56）在第一次带图上传时就落库：素材行按 `conversationId` 挂外键，
+      // 所以落库这一步挪到 `asset.begin`（与「第一次 send」同义，`ensurePersisted` 自己幂等）
+      ensureConversation: async (conversationId, language) => {
+        await this.conversationService.ensurePersisted(conversationId, language);
+      },
       onError: (error, context) => {
         this.logger.warn("上传收尾失败", { context, error: describeError(error) });
       },

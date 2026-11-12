@@ -4,6 +4,8 @@
  * 三段式的分工：
  *   1. `asset.begin`（JSON-RPC 请求）：声明用途、类型、总字节数。**超限在这里就拒**（PRD D5：
  *      20MB/张），不接收完再说不行 —— 那既浪费带宽，也让客户端在上传中途白等一下。
+ *      素材行要按对话挂外键，所以开临时文件之前先让归属的对话落库（草稿对话在库里还没有行，
+ *      R56：落库发生在「第一次真正用到它」的那一刻，带图的第一条消息就属于这种）。
  *   2. 任意多个二进制帧：每一帧带上「这是哪个上传」的头，字节直接追加进临时文件，不在内存里攒。
  *   3. `asset.end`（JSON-RPC 请求）：校验总长度与客户端给的 `sha256`，通过后交给落定回调，
  *      把临时文件变成正式素材（`<dataRoot>/assets/` 下的正式文件 + 库里一行引用）。
@@ -30,6 +32,7 @@ import { promises as fs } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 
+import { DEFAULT_LANGUAGE, type Language } from "../i18n/index.js";
 import { ServerError } from "../wire/errors.js";
 import type {
   AssetBeginParams,
@@ -64,11 +67,30 @@ export interface UploadFinalizeRequest {
 /** 落定：把临时文件变成正式素材并登记引用 */
 export type UploadFinalizer = (request: UploadFinalizeRequest) => Promise<AssetRef>;
 
+/**
+ * 上传前让「这段对话」成为库里的行。
+ *
+ * `language` 是那条「这段对话在哪个目录」的隐藏消息的渲染语言（D8）：上传是连接上的动作，
+ * 只有接线层知道收件人说的是哪种语言，所以逐次传进来而不是在构造时定死。
+ */
+export type ConversationPersister = (
+  conversationId: string,
+  language: Language,
+) => Promise<void>;
+
 export interface UploadReceiverOptions {
   /** 数据根下的 `assets/`：临时文件与正式文件同目录，改名不必跨设备复制 */
   assetsDir: string;
   /** 收完之后做什么（缺省实现见 `AssetService.finalizeUpload`） */
   finalize: UploadFinalizer;
+  /**
+   * 上传前把这段对话落成库里的行（R56：`conversation.create` 只发 id 与身份）。
+   *
+   * 素材行按 `conversationId` 挂外键，所以「新对话第一条消息就带图」这条路上，对话的落库发生在
+   * `asset.begin`（与「第一次 `send`」同义）。实现方要自己幂等（同一段对话反复调只落一行）；
+   * 不注入时上传不碰对话表。
+   */
+  ensureConversation?: ConversationPersister;
   /** 单张上限，缺省 `MAX_ASSET_BYTES`（20MB，PRD D5） */
   maxAssetBytes?: number;
   /** 内部错误去处（清理失败、落定失败等）；缺省忽略 */
@@ -116,6 +138,7 @@ export class UploadReceiver {
   private readonly onError?: (error: unknown, context: string) => void;
   /** 单张上限；`hello` 的 `limits` 也从这里取，两边不各写一个数 */
   readonly maxAssetBytes: number;
+  private readonly ensureConversation?: ConversationPersister;
   /** connectionId → uploadId → 进行中的上传 */
   private readonly sessions = new Map<string, Map<string, UploadSession>>();
 
@@ -123,21 +146,32 @@ export class UploadReceiver {
     this.assetsDir = options.assetsDir;
     this.finalize = options.finalize;
     this.maxAssetBytes = options.maxAssetBytes ?? MAX_ASSET_BYTES;
+    this.ensureConversation = options.ensureConversation;
     this.onError = options.onError;
   }
 
   /**
-   * `asset.begin`：校验声明、开临时文件、发一个上传句柄。
+   * `asset.begin`：校验声明、让归属的对话先落库、开临时文件、发一个上传句柄。
    *
    * 声明里只有「总长」能验，字节本身还没到；所以这里的拒绝都是**声明层面**的
-   * （超限、类型不合法、缺对话归属）。
+   * （超限、类型不合法、缺对话归属、对话不存在）。
+   *
+   * 「让对话落库」排在建临时文件之前：对话不存在时这一趟上传一个字节都不该落盘，
+   * 也不该占住一个 `uploadId`。`language` 是这条连接的语言，用来渲染那条隐藏的 cwd 消息。
    */
-  async begin(connectionId: string, params: AssetBeginParams): Promise<AssetBeginResult> {
+  async begin(
+    connectionId: string,
+    params: AssetBeginParams,
+    language: Language = DEFAULT_LANGUAGE,
+  ): Promise<AssetBeginResult> {
     const purpose = requirePurpose(params.purpose);
     const mime = requireMime(params.mime);
     const declaredBytes = requireDeclaredBytes(params.bytes, this.maxAssetBytes);
     const conversationId = requireConversationId(params.conversationId);
     const name = normalizeName(params.name);
+
+    // 草稿对话在库里还没有行（R56），而素材行要挂 `conversationId` 外键：先落库再收字节
+    await this.persistConversation(conversationId, language);
 
     await fs.mkdir(this.assetsDir, { recursive: true });
     const uploadId = randomUUID();
@@ -279,6 +313,28 @@ export class UploadReceiver {
   // -------------------------------------------------------------------------
   // 内部
   // -------------------------------------------------------------------------
+
+  /**
+   * 让这段对话先成为库里的行（幂等由注入方保证）。
+   *
+   * 业务错误（`not_found` 之类）原样上抛：客户端要按码说人话，不能让「对话不存在」在出网时
+   * 变成一句 internal。其余异常（写库失败这类）收敛成 `internal` 并留一个原因，原始错误同时
+   * 交给 `onError` 进日志。
+   */
+  private async persistConversation(conversationId: string, language: Language): Promise<void> {
+    const ensure = this.ensureConversation;
+    if (!ensure) return;
+    try {
+      await ensure(conversationId, language);
+    } catch (error) {
+      if (ServerError.is(error)) throw error;
+      this.onError?.(error, "让对话落库失败");
+      throw new ServerError("internal", {
+        detail: { reason: "conversation_persist_failed", conversationId },
+        cause: error,
+      });
+    }
+  }
 
   private sessionMap(connectionId: string): Map<string, UploadSession> {
     let sessions = this.sessions.get(connectionId);

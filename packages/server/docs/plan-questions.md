@@ -223,3 +223,4 @@
 - [src/services/AgentService.ts] （自决）`agent.setModel` 换了模型时，把定义上「旧模型策略表里出现过的键」从 `modelParams` 里剔掉（SDK 那套表本来就以「某个键属于思考参数 = 它在表里出现过」为准，不硬编码键名）；与思考无关的参数（`temperature` 之类）不动。换成同一个模型时一个字都不动。
 - [src/wire/states.ts] （自决，越界一处）`StatusBlock` 的 model 块事实原先内联写了一份 `{ modelId; name; vision; overriddenThisSession }`，改成引用新的 `ModelState`：契约里同一个形状只留一份，`ConversationModelState` 现在是它的别名。
 - [src/app.ts] `ConversationStateRegistry` 删掉后，服务层要的 `ConversationRuntimePort` 只剩 `isRunning` / `forget`，由 `ServerApp.createConversationRuntime()` 现拼（`forget` 指向 `ChatRunner.forget`，晚绑定）。`app.conversationStates` 这个可读属性随之消失。
+- [src/net/UploadReceiver.ts] 服务端已补上「上传前先让草稿对话落库」（`asset.begin` → `ConversationService.ensurePersisted`），所以 `packages/client/src/integration.test.ts` 里那条「草稿对话上传到 asset.end 被外键拒掉、码是 internal」的用例会红（它自己写了「服务端哪天补上，这条会红」），CLI 里「草稿上不尝试上传」的分支也该一起删：这一波按边界没有碰 `packages/client`，交客户端那一侧收尾。

@@ -678,6 +678,111 @@ describe("二进制上传（A11 / PRD D5、F-H8）", () => {
     expect(isError(frame) && frame.error.data.code).toBe("unauthorized");
     expect(await listDir(assetsDir)).toEqual([]);
   });
+
+  it("分片被拒时错误帧带 uploadId（二进制帧没有 id，只能靠 detail 认出是哪一趟）", async () => {
+    await startHub();
+    const client = await connectAuthorized();
+
+    // 一个不存在的 uploadId：分片本身是好的，只是这趟上传不在这条连接上
+    client.sendBinary(encodeChunkFrame("no-such-upload", new Uint8Array([1, 2, 3])));
+    const frame = await client.queue.next();
+    expect(isError(frame)).toBe(true);
+    if (!isError(frame)) return;
+    expect(frame.id).toBeNull();
+    expect(frame.error.data.code).toBe("not_found");
+    expect(frame.error.data.detail).toMatchObject({
+      uploadId: "no-such-upload",
+      reason: "unknown_upload_id",
+    });
+  });
+
+  it("分片超过声明总长：错误帧的码与 uploadId 都能对上", async () => {
+    await startHub();
+    const client = await connectAuthorized();
+
+    const began = await client.call("asset.begin", {
+      purpose: "message_image",
+      mime: "image/png",
+      bytes: 4,
+      conversationId: "c-1",
+    });
+    const uploadId = (began.result as { uploadId: string }).uploadId;
+    client.sendBinary(encodeChunkFrame(uploadId, new Uint8Array(5)));
+
+    const frame = await client.queue.next();
+    expect(isError(frame)).toBe(true);
+    if (!isError(frame)) return;
+    expect(frame.error.data.code).toBe("payload_too_large");
+    expect(frame.error.data.detail).toMatchObject({
+      uploadId,
+      reason: "exceeds_declared_bytes",
+    });
+  });
+
+  it("坏帧解不出 uploadId 时不硬编造一个", async () => {
+    await startHub();
+    const client = await connectAuthorized();
+
+    client.sendBinary(new Uint8Array([0, 0]));
+    const frame = await client.queue.next();
+    expect(isError(frame)).toBe(true);
+    if (!isError(frame)) return;
+    expect(frame.error.data.code).toBe("invalid_params");
+    expect(frame.error.data.detail).toMatchObject({ reason: "frame_too_short" });
+    expect((frame.error.data.detail as { uploadId?: unknown }).uploadId).toBeUndefined();
+  });
+
+  it("`asset.begin` 把这条连接的语言交给落库那一步（cwd 消息的渲染语言）", async () => {
+    const ensured: [string, Language][] = [];
+    const uploads = new UploadReceiver({
+      assetsDir,
+      finalize: fakeFinalize,
+      ensureConversation: async (conversationId, language) => {
+        ensured.push([conversationId, language]);
+      },
+    });
+    await startHub({ uploads });
+    const client = await connectAuthorized("zh");
+
+    await client.call("asset.begin", {
+      purpose: "message_image",
+      mime: "image/png",
+      bytes: 4,
+      conversationId: "draft-1",
+    });
+
+    expect(ensured).toEqual([["draft-1", "zh"]]);
+  });
+
+  it("对话不存在的错误是业务码，不是 internal", async () => {
+    const uploads = new UploadReceiver({
+      assetsDir,
+      finalize: fakeFinalize,
+      ensureConversation: async (conversationId) => {
+        throw new ServerError("not_found", {
+          params: { entity: "conversation" },
+          detail: { conversationId },
+        });
+      },
+    });
+    await startHub({ uploads });
+    const client = await connectAuthorized("zh");
+
+    client.request("asset.begin", {
+      purpose: "message_image",
+      mime: "image/png",
+      bytes: 4,
+      conversationId: "no-such-conversation",
+    });
+    const frame = await client.queue.next();
+    expect(isError(frame)).toBe(true);
+    if (!isError(frame)) return;
+    expect(frame.error.data.code).toBe("not_found");
+    expect(frame.error.data.detail).toMatchObject({ conversationId: "no-such-conversation" });
+    // 句子按这条连接的语言渲染
+    expect(frame.error.data.message).toBe(render("zh", "error.notFound", { entity: "conversation" }));
+    expect(await listDir(assetsDir)).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { ServerError } from "../wire/errors.js";
-import { MAX_ASSET_BYTES, type AssetRef } from "../wire/index.js";
+import { MAX_ASSET_BYTES, type AssetBeginParams, type AssetRef } from "../wire/index.js";
 import {
   decodeChunkFrame,
   encodeChunkFrame,
@@ -172,8 +172,14 @@ describe("拒绝与清理", () => {
   });
 
   it("缺对话归属时拒（库里的素材行要挂在一段对话上）", async () => {
+    // 入参是网络上来的 JSON：类型上是必填字段，运行时仍然可能没带（契约不替客户端把关）
+    const withoutConversation = {
+      purpose: "message_image",
+      mime: "image/png",
+      bytes: 10,
+    } as unknown as AssetBeginParams;
     const error = await receiver
-      .begin(CONNECTION, { purpose: "message_image", mime: "image/png", bytes: 10 })
+      .begin(CONNECTION, withoutConversation)
       .catch((caught: unknown) => caught);
 
     expect((error as ServerError).code).toBe("invalid_params");
@@ -280,6 +286,117 @@ describe("拒绝与清理", () => {
       failing.end(CONNECTION, { uploadId: began.uploadId, sha256: sha256(bytes) }),
     ).rejects.toThrow("登记失败");
     expect(await listDir(assetsDir)).toEqual([]);
+  });
+});
+
+describe("草稿对话的落库（R56）", () => {
+  it("begin 先让归属的对话落库、再开临时文件，语言跟着连接走", async () => {
+    const ensured: [string, string][] = [];
+    const withHook = new UploadReceiver({
+      assetsDir,
+      finalize: fakeFinalize,
+      ensureConversation: async (conversationId, language) => {
+        ensured.push([conversationId, language]);
+        // 落库先于开临时文件：这一刻 assets/ 里什么都不该有
+        expect(await listDir(assetsDir)).toEqual([]);
+      },
+    });
+
+    const began = await withHook.begin(
+      CONNECTION,
+      { purpose: "message_image", mime: "image/png", bytes: 4, conversationId: "draft-1" },
+      "zh",
+    );
+
+    expect(ensured).toEqual([["draft-1", "zh"]]);
+    expect(await listDir(assetsDir)).toEqual([`.upload-${began.uploadId}.part`]);
+    await withHook.dispose();
+  });
+
+  it("连接没声明语言时用缺省语言", async () => {
+    const ensured: string[] = [];
+    const withHook = new UploadReceiver({
+      assetsDir,
+      finalize: fakeFinalize,
+      ensureConversation: async (_conversationId, language) => {
+        ensured.push(language);
+      },
+    });
+
+    await withHook.begin(CONNECTION, {
+      purpose: "message_image",
+      mime: "image/png",
+      bytes: 4,
+      conversationId: "draft-1",
+    });
+
+    expect(ensured).toEqual(["en"]);
+    await withHook.dispose();
+  });
+
+  it("对话不存在：业务码原样出网，不建临时文件、不占上传句柄", async () => {
+    const withHook = new UploadReceiver({
+      assetsDir,
+      finalize: fakeFinalize,
+      ensureConversation: async (conversationId) => {
+        throw new ServerError("not_found", {
+          params: { entity: "conversation" },
+          detail: { conversationId },
+        });
+      },
+    });
+
+    const error = await withHook
+      .begin(CONNECTION, {
+        purpose: "message_image",
+        mime: "image/png",
+        bytes: 4,
+        conversationId: "no-such-conversation",
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(ServerError.is(error)).toBe(true);
+    expect((error as ServerError).code).toBe("not_found");
+    expect((error as ServerError).detail).toMatchObject({
+      conversationId: "no-such-conversation",
+    });
+    expect(await listDir(assetsDir)).toEqual([]);
+    expect(withHook.pendingCount()).toBe(0);
+    await withHook.dispose();
+  });
+
+  it("落库时的非业务异常收敛成 internal（不是一句裸错误）", async () => {
+    const reported: string[] = [];
+    const withHook = new UploadReceiver({
+      assetsDir,
+      finalize: fakeFinalize,
+      ensureConversation: async () => {
+        throw new Error("disk I/O error");
+      },
+      onError: (_error, context) => {
+        reported.push(context);
+      },
+    });
+
+    const error = await withHook
+      .begin(CONNECTION, {
+        purpose: "message_image",
+        mime: "image/png",
+        bytes: 4,
+        conversationId: "draft-1",
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(ServerError.is(error)).toBe(true);
+    expect((error as ServerError).code).toBe("internal");
+    expect((error as ServerError).detail).toMatchObject({
+      reason: "conversation_persist_failed",
+      conversationId: "draft-1",
+    });
+    // 原始错误也进了日志口子
+    expect(reported).toEqual(["让对话落库失败"]);
+    expect(await listDir(assetsDir)).toEqual([]);
+    await withHook.dispose();
   });
 });
 

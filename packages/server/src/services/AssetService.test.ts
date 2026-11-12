@@ -18,6 +18,7 @@ import { AssetRepository } from "../storage/AssetRepository.js";
 import { Database } from "../storage/Database.js";
 import { migrate } from "../storage/migrations.js";
 import { MAX_ASSETS_PER_MESSAGE, type AssetRef, type AttachmentOutcome } from "../wire/index.js";
+import { ServerError } from "../wire/errors.js";
 import {
   AssetService,
   type AttachmentModelContext,
@@ -179,6 +180,22 @@ describe("finalizeUpload", () => {
     const ref = await uploadAsset(imageBytes(8));
     await service.linkToMessage([ref.assetId], "msg-1");
     expect((await repo.listByMessage("msg-1")).map((row) => row.id)).toEqual([ref.assetId]);
+  });
+
+  it("对话不存在时给可判别的业务码（不是 internal）", async () => {
+    const error = await uploadAsset(imageBytes(8), { conversationId: "no-such-conversation" }).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(ServerError.is(error)).toBe(true);
+    expect((error as ServerError).code).toBe("not_found");
+    expect((error as ServerError).detail).toMatchObject({
+      conversationId: "no-such-conversation",
+      reason: "conversation_not_found",
+    });
+    // 正式文件也不留（库里没行、盘上就不该有文件）
+    const leftovers = (await fs.readdir(assetsDir)).filter((name) => !name.endsWith(".part"));
+    expect(leftovers).toEqual([]);
   });
 });
 

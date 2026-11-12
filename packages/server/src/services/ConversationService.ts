@@ -243,6 +243,8 @@ export class ConversationService {
   private readonly drafts: ConversationDraftStore;
   private readonly emit?: ChatEventEmitter;
   private readonly now: () => number;
+  /** 正在落库的草稿：同一个 id 的并发调用共用同一次写入（key 是 conversationId） */
+  private readonly persisting = new Map<string, Promise<Conversation>>();
   /** 助手定义是文件（PRD F-G3：一实体一文件），按配置根下的 `agents/` 目录读 */
   private readonly agents: AgentRepository;
 
@@ -393,8 +395,12 @@ export class ConversationService {
    * 把草稿落成 `conversations` 的一行（R56：首次 `send` 时用同一个 id 写）。
    *
    * 已经在库里就直接返回那一行（重复调用是幂等的）；草稿不在、库里也没这一行就是
-   * `not_found`。先把草稿摘掉再写库：两次并发的 `send` 里后到的那一次就抢不到同一份草稿，
+   * `not_found`。先把草稿摘掉再写库：两次并发的调用里后到的那一次就抢不到同一份草稿，
    * 不会两次插同一行；写失败时把草稿放回去，下一次还能再试。
+   *
+   * 但「抢不到草稿」不等于「这段对话不存在」：同一个 id 的并发调用（例如一次拖进四张图，
+   * 每个上传都在 `asset.begin` 里调一次）在这里排队共用同一次写入，免得后到的那次误报
+   * `not_found`、也免得那条隐藏的 cwd 消息被写两遍。
    *
    * 落行那一刻同时写上这段对话的第一条消息：一条 `hidden` 的 `user` 消息，告诉模型这段对话
    * 对应的 cwd（PRD F-D9）。它最先写，所以 `seq` 在真实用户消息之前；之后每轮都不再重写。
@@ -413,11 +419,24 @@ export class ConversationService {
       this.drafts.forget(id);
       return existing;
     }
+    const running = this.persisting.get(id);
+    if (running) return await running;
+    const task = this.persistDraft(id, language);
+    this.persisting.set(id, task);
+    try {
+      return await task;
+    } finally {
+      this.persisting.delete(id);
+    }
+  }
+
+  /** 草稿 → 库里那一行（含那条隐藏的 cwd 消息）；并发去重由 {@link ensurePersisted} 负责 */
+  private async persistDraft(id: string, language: Language): Promise<Conversation> {
     const draft = this.drafts.take(id);
     if (!draft) {
       throw new ServerError("not_found", {
         params: { entity: "conversation" },
-        detail: { conversationId },
+        detail: { conversationId: id },
       });
     }
     try {
