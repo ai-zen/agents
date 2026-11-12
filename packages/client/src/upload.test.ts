@@ -94,8 +94,9 @@ function uploadMethods(counter: { begins: number }) {
           mime: "image/png",
           bytes: 0,
           name: null,
-          width: null,
-          height: null,
+          // 服务端落定时解出的像素尺寸（R76）；客户端原样往上传
+          width: 120,
+          height: 80,
         },
         digest,
       };
@@ -165,6 +166,8 @@ describe("分帧", () => {
     expect(uploadIds.size).toBe(1);
 
     expect(asset.assetId).toBe("asset-upload-1");
+    // 引用原样带回：宽高也在（桌面端拿它先摆占位框）
+    expect(asset).toMatchObject({ width: 120, height: 80 });
     expect(bytesOfUpload(server, "upload-1")).toEqual(payload);
 
     // `asset.begin` 声明的是真实尺寸与类型，`asset.end` 给的是真摘要
@@ -435,8 +438,8 @@ describe("去重命中（asset.begin 说已经有了）", () => {
             mime: "image/png",
             bytes: 12,
             name: "already.png",
-            width: null,
-            height: null,
+            width: 120,
+            height: 80,
           },
         }),
         // 命中之后不该再调 `asset.end`；真被调到了就用一个显眼的错误钉住
@@ -470,6 +473,8 @@ describe("去重命中（asset.begin 说已经有了）", () => {
     });
 
     expect(asset.assetId).toBe("asset-existing");
+    // 去重命中回的也是既有那一行的完整引用，宽高一样在
+    expect(asset).toMatchObject({ width: 120, height: 80 });
     expect(binaryFrames(dedupeServer)).toEqual([]);
     expect(dedupeServer.frames.filter((frame) => frame.method === "asset.end")).toEqual([]);
     // 声明照样得带上摘要：服务端就是靠它认出来的

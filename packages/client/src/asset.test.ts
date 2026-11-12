@@ -42,8 +42,9 @@ beforeAll(async () => {
             mime: "image/png",
             bytes: PAYLOAD.byteLength,
             name: "a.png",
-            width: null,
-            height: null,
+            // 服务端落定时解出的像素尺寸（R76）
+            width: 120,
+            height: 80,
           },
           variant,
           data: Buffer.from(PAYLOAD).toString("base64"),
@@ -72,6 +73,8 @@ describe("getAsset", () => {
     expect(new Uint8Array(fetched.bytes)).toEqual(PAYLOAD);
     expect(fetched.variant).toBe("original");
     expect(fetched.asset).toMatchObject({ assetId: "asset-1", mime: "image/png", name: "a.png" });
+    // 宽高原样带出来：调用方不必等字节解出来再量，可以先摆占位框
+    expect(fetched.asset).toMatchObject({ width: 120, height: 80 });
     // 没给 variant 就不发这个字段（服务端的缺省是原图）
     expect(asked.at(-1)).toEqual({ assetId: "asset-1" });
   });
