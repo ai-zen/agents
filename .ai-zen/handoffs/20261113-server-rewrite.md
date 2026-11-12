@@ -73,3 +73,21 @@ cd packages/server && npx vitest run                              # 应 679 全�
 
 1. **PRD D25 写「不做发现文件」，实现里有 `<dataRoot>/run/server.json`**：它是单实例判断与「端口退了临时端口」时客户端找得到服务端的唯一真相（A2/D26 需要它）。当前按「留发现文件」实现，PRD 那句「不做发现文件」需要用户改口或要求拆掉。
 2. **`packages/server/bad-src/` 何时删**：用户已判「整包是垃圾」，本轮只改名未删（保留参照），删除时机由用户定。
+
+---
+
+## 追加（同日，客户端重写波次 C1–C3）
+
+- **R68/R69**：`@ai-zen/agents-client` 已按新契约**重写完毕**并提交（`8efa72f`，分支 `feat/server-rewrite`）：9 个源文件 + 76 用例全绿，`private: true`、删掉发布姿态、类型全部 `import type` 自 `@ai-zen/agents-server`。新 API：`Client`（connect/call/subscribe/resume/reconnect）、`ensureServer`（本地无感拉起 / 显式地址只连）、`settings`、`resume`、`reconnect`、`errors`。
+- **C2 CLI**（仓库 `/home/ubuntu/projects/ai-zen/cli-old`，**未提交，109 个改动留在工作区**）：竖切跑通——`tsc` 零错误、564 用例绿、`vitest e2e` 16 绿、真机 TUI（pty）+ 真服务端 + 假模型跑通「拉起→发消息→流式→状态栏用量→/resume//config//exit」。删掉 33 个进程内源文件（会话存档、持久化插件、cwd 插件、自动迁移确认、配置向导 21 文件等）。打包用 vite，`@ai-zen/agents-client` 通过 `link:` + 不外部化**内联进 dist**（产物零引用），但**服务端入口靠 `createRequire` 在运行时解析 `@ai-zen/agents-server/package.json`**（可用 `AI_ZEN_SERVER_ENTRY` 覆盖）。
+- **C3 desktop**（仓库 `/home/ubuntu/projects/ai-zen/desktop`，分支 **`feat/new-server`**，**未提交，34 个改动**）：竖切跑通——`packages/main` tsc 零错误、107 用例绿、render 50 用例绿、真 Electron（xvfb+CDP）跑通「拉起随包服务端→建项目→建对话→发消息→六态上屏→重启连回」。`rolldown.config.mjs` 把客户端库 alias 到源文件并内联（`scripts/check-inlined.mjs` 自检），另**新增 `dist/dbWorker.js` 产物**（否则本机服务端开库即崩）。
+
+### 下一步（按优先级）
+
+1. **CLI 与 desktop 的收尾面**（两边报告都列了按 PRD 编号的未接清单）：附件上传（`asset.begin/chunk/end`）、问题对象的作答 UI、状态栏块、配置逐项编辑（`config.patch` / `saveEndpoint` / `patchMcps` / `model.*`）、`@` 补全改走 `completion.files`、桌面端 `notice.list/dismiss`、连接断开时状态回落。
+2. **三个跨端一致性问题**（需拍板）：
+   - `hidden` 语义冲突：服务端拿它表示「这条里有服务端注入段」（cwd），CLI 旧语义是「整条不画」。当前两端各自按前者处理。
+   - 会话级「跟随默认思考档」缺一个方法值（`conversation.setThinking` 只接受具体档位名，无法清掉覆盖）。
+   - `conversation.create` 是草稿（R56），不发消息不进侧栏 —— 桌面端「新建对话」瞬间侧栏看不到它。
+3. **打包边界**：R69 要求「各端捆绑共享代码」，两端都做到了「客户端库内联」；但服务端入口仍需运行时解析（CLI 用 `link:`、桌面端随包分发 `dist/server.mjs`）。若要「产物零运行时外部依赖」，需要另一套方案（旁置/安装器）。
+4. `packages/{shared,render}` 的 `@ai-zen/agents-core` 仍指 registry 4.1.0，main 与客户端库用 workspace 版 4.6.0-alpha，**跨版本能过但早晚撞**。
