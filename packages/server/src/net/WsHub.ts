@@ -118,6 +118,14 @@ export type EventLocalizer = <E extends EventName>(
   language: Language,
 ) => EventMap[E];
 
+/**
+ * 连接未声明语言时的缺省语言来源。
+ *
+ * 给函数时在每次握手那一刻求值：缺省语言是「配置里的那一项」（PRD D8 / R58），而配置可以在
+ * 进程跑着的时候改，存成构造时的快照会让「刚改的缺省语言」对下一条连接不生效。
+ */
+export type DefaultLanguageSource = Language | (() => Language | Promise<Language>);
+
 export interface WsHubOptions {
   /** 监听地址（由调用方按 `resolveListenTarget` 算好传进来，本文件不判断本地/对外） */
   host: string;
@@ -133,10 +141,14 @@ export interface WsHubOptions {
   serverVersion: string;
   /** 进程启动时刻（ISO 8601）；缺省取构造时的时钟 */
   startedAt?: string;
-  /** 能力清单（PRD F-E5：帮助页与指令菜单从这一份渲染）；缺省为空 */
-  capabilities?: () => CapabilityView[];
-  /** 连接未声明语言时的缺省语言（PRD D8：缺省英文） */
-  defaultLanguage?: Language;
+  /**
+   * 能力清单（PRD F-E5：帮助页与指令菜单从这一份渲染）；缺省为空。
+   *
+   * 入参是这条连接的语言（裁定 R58）：句子按收件人的语言给，id 列表与顺序不变（R57）。
+   */
+  capabilities?: (language: Language) => CapabilityView[];
+  /** 连接未声明语言时的缺省语言（PRD D8：缺省英文）；给函数时每次握手现算 */
+  defaultLanguage?: DefaultLanguageSource;
   /** 推送出网前的按连接本地化（不注入则原样搬运） */
   localizeEvent?: EventLocalizer;
   /**
@@ -195,7 +207,8 @@ export class WsHub {
   private readonly logger: HubLogger;
   private readonly clock: () => number;
   private readonly startedAt: string;
-  private readonly defaultLanguage: Language;
+  /** 缺省语言来源（可能是函数：配置里的那一项可改，每次握手现算） */
+  private readonly defaultLanguageSource: DefaultLanguageSource;
   /** connectionId → 连接状态（关闭即移除；推送只发给还在这里面的连接） */
   private readonly connections = new Map<string, ConnectionState>();
   private server: WebSocketServer | null = null;
@@ -206,7 +219,7 @@ export class WsHub {
     this.logger = options.logger ?? QUIET_LOGGER;
     this.clock = options.clock ?? Date.now;
     this.startedAt = options.startedAt ?? new Date(this.clock()).toISOString();
-    this.defaultLanguage = options.defaultLanguage ?? "en";
+    this.defaultLanguageSource = options.defaultLanguage ?? "en";
   }
 
   // -------------------------------------------------------------------------
@@ -369,7 +382,8 @@ export class WsHub {
     const state: ConnectionState = {
       id: randomUUID(),
       socket,
-      language: this.defaultLanguage,
+      // 握完手就换成协商出的那一份；这里是它之前的样子（同步可得的那个值）
+      language: this.initialLanguage(),
       clientInfo: null,
       credentialId: null,
       authorized: false,
@@ -584,16 +598,42 @@ export class WsHub {
     state.language =
       typeof hello.language === "string" && hello.language.trim() !== ""
         ? normalizeLanguage(hello.language)
-        : this.defaultLanguage;
+        : await this.resolveDefaultLanguage();
 
     return {
       language: state.language,
       serverVersion: this.options.serverVersion,
       protocolVersion: PROTOCOL_VERSION,
       startedAt: this.startedAt,
-      capabilities: this.options.capabilities?.() ?? [],
+      // 握手只给能力 id 列表（R57）：清单本身按这条连接的语言渲染，但 id 与顺序固定
+      capabilities: (this.options.capabilities?.(state.language) ?? []).map(
+        (capability) => capability.id,
+      ),
       limits: this.transferLimits(),
     };
+  }
+
+  /**
+   * 连接没声明语言时用哪一种（PRD D8 / 裁定 R58）。
+   *
+   * 来源可以是函数（配置里的缺省语言可改），所以每次握手现算一次；算不出来就用英文 ——
+   * 语言这件事不该让握手失败。
+   */
+  private async resolveDefaultLanguage(): Promise<Language> {
+    const source = this.defaultLanguageSource;
+    if (typeof source === "string") return source;
+    try {
+      return normalizeLanguage(await source());
+    } catch (error) {
+      this.logger.warn("读缺省语言失败，回落到英文", { error: describeError(error) });
+      return "en";
+    }
+  }
+
+  /** 握手之前的语言：来源不是函数时就是它，是函数时先用英文（拿不到同步值） */
+  private initialLanguage(): Language {
+    const source = this.defaultLanguageSource;
+    return typeof source === "string" ? source : "en";
   }
 
   /** `server.setLanguage`：改这条连接的语言，断开即忘（PRD D8 / F-E4） */

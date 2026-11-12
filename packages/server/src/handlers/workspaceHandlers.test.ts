@@ -16,7 +16,7 @@ import type { ServerApp } from "../app.js";
 import type { ConnectionInfo } from "../net/index.js";
 import { makeTempDir, type TempDir } from "../net/TestSupport.js";
 import { ServerError } from "../wire/index.js";
-import type { MethodName, MethodParams, MethodResult } from "../wire/index.js";
+import type { ConversationView, MethodName, MethodParams, MethodResult } from "../wire/index.js";
 
 const CONFIG = JSON.stringify(
   {
@@ -74,6 +74,22 @@ async function startApp(): Promise<ServerApp> {
   await app.start();
   apps.push(app);
   return app;
+}
+
+/**
+ * 建一段对话并让它落库（R56：`create` 只发 id，首次 `send` 才写 `conversations` 行）。
+ *
+ * 这些用例要看的是「项目被删时名下对话怎么处理」，所以直接把草稿落成真行，不跑一轮。
+ */
+async function seedConversation(app: ServerApp, workspaceId: string): Promise<ConversationView> {
+  const created = await callMethod(app, "conversation.create", {
+    workspaceId,
+    agentId: "default",
+    modelId: "test-model",
+  });
+  if (!created.conversation) throw new Error("conversation.create 没有建出对话");
+  await app.conversationService.ensurePersisted(created.conversation.id);
+  return created.conversation;
 }
 
 async function callMethod<M extends MethodName>(
@@ -140,11 +156,7 @@ describe("workspace.remove 的跨层补齐", () => {
     const app = await startApp();
     const cwd = await makeTemp("ai-zen-ws-handlers-cwd-");
     const { workspace } = await callMethod(app, "workspace.create", { cwd: cwd.path });
-    const { conversation } = await callMethod(app, "conversation.create", {
-      workspaceId: workspace.id,
-      agentId: "default",
-      modelId: "test-model",
-    });
+    const conversation = await seedConversation(app, workspace.id);
     const assetPath = await seedAsset(app, conversation.id);
 
     await app.scopeRegistry.acquire(workspace.id);
@@ -170,11 +182,7 @@ describe("workspace.remove 的跨层补齐", () => {
     const app = await startApp();
     const cwd = await makeTemp("ai-zen-ws-handlers-cwd-");
     const { workspace } = await callMethod(app, "workspace.create", { cwd: cwd.path });
-    const { conversation } = await callMethod(app, "conversation.create", {
-      workspaceId: workspace.id,
-      agentId: "default",
-      modelId: "test-model",
-    });
+    const conversation = await seedConversation(app, workspace.id);
     const assetPath = await seedAsset(app, conversation.id);
 
     await app.scopeRegistry.acquire(workspace.id);

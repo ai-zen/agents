@@ -140,7 +140,8 @@ export interface ServerHelloParams {
  * `hello` 出参。
  *
  * 除了握手成功本身，还把「这条连接以后说哪种语言」「服务端是什么版本」「有哪些能力」
- * 一次给全：客户端连上就能把界面语言定下来（D8），帮助页也能直接渲染（F-E5）。
+ * 一次给全：客户端连上就能把界面语言定下来（D8）。能力只给 id 列表（R57）：握手这一帧
+ * 要小，完整清单（标题、说明、阻塞与不可撤销）走 `server.capabilities`，那一份按连接语言渲染。
  */
 export interface ServerHelloResult {
   /** 这条连接协商出的语言；后续这条连接上的文案都按它渲染 */
@@ -149,8 +150,12 @@ export interface ServerHelloResult {
   protocolVersion: string;
   /** 服务端进程启动时间 */
   startedAt: string;
-  /** 能力清单（PRD F-E5 / F-E6 / F-F9） */
-  capabilities: CapabilityView[];
+  /**
+   * 能力 id 列表（PRD F-E5 / R57）
+   *
+   * 每一串就是 `server.capabilities` 里那一项 `CapabilityView.id`，顺序与那份清单一致。
+   */
+  capabilities: string[];
   /** 附件上限等客户端要先知道的事实（PRD D5） */
   limits: TransferLimits;
 }
@@ -221,6 +226,30 @@ export interface ServerUsageResult {
 /** `capabilities` 出参（PRD F-E5：帮助与指令菜单都从这一份渲染） */
 export interface ServerCapabilitiesResult {
   capabilities: CapabilityView[];
+}
+
+/**
+ * `server.reload` 能重载的范围（PRD F-E1 命令清单里的「重载」）。
+ *
+ * 每一档对应「哪一类能力要重新装配」：改的是磁盘上的东西（配置文件 / 助手定义 / 技能目录 /
+ * MCP 文件），所以重载不写盘，只让服务端重新读一遍。不给 `scope` 表示全部。
+ */
+export type ServerReloadScope = "config" | "agents" | "tools" | "skills" | "mcp";
+
+/** `server.reload` 入参：只重载某一类能力，或全部（不给） */
+export interface ServerReloadParams {
+  scope?: ServerReloadScope;
+}
+
+/**
+ * `server.reload` 出参：与 `config.patch` 同一份形状（`config` + `applied`）。
+ *
+ * `config` 是重载之后读到的配置（密钥仍是掩码），`applied` 说明重载了什么、哪些项目的 Scope
+ * 被回收（随后按需重建）、合成的那一条通知是谁。客户端因此可以用与改配置同一套提示。
+ */
+export interface ServerReloadResult {
+  config: ConfigView;
+  applied: ConfigApplyReport;
 }
 
 /**
@@ -390,21 +419,40 @@ export interface ConversationListResult {
 }
 
 /**
- * `conversation.create` 入参（PRD F-A3「开新会话、别续接」/ F-C7 / D9 / L7）。
+ * `conversation.create` 入参（PRD F-A3「开新会话、别续接」/ F-C7 / D9 / D10 / L7）。
  *
  * 助手与模型在创建时定死（PRD L7）：换默认走 `agent.setModel`，改的是「以后的对话」用哪个模型，
  * 这段对话的身份不动。
+ *
+ * 定位项目两条路（D10）：`workspaceId` 是「已经登记过的项目」；`cwd` 是从目录出发
+ * —— 那个目录还没登记成项目时，服务端不建对话，而是问一次要不要登记（见出参）。
  */
 export interface ConversationCreateParams {
-  workspaceId: string;
+  /** 已经登记的项目 id；与 `cwd` 二选一 */
+  workspaceId?: string;
+  /** 目录（绝对路径）；未登记时回 `requiresRegistration` 并挂一个问题 */
+  cwd?: string;
   agentId: string;
   /** 缺省用助手绑定的模型（PRD F-B1：模型真相在助手定义上） */
   modelId?: string;
 }
 
-/** `conversation.create` 出参 */
+/**
+ * `conversation.create` 出参。
+ *
+ * 两种情况：正常建出草稿 → `conversation` 有值；目录还没登记成项目 → `conversation` 为
+ * `null`，`requiresRegistration` / `questionId` / `cwd` 说明该答哪道题（答「是」之后服务端
+ * 登记项目并继续建对话）。
+ */
 export interface ConversationCreateResult {
-  conversation: ConversationView;
+  /** 新建的对话；目录待登记时为 `null`（这时还没有对话） */
+  conversation: ConversationView | null;
+  /** 需要先回答「要不要把这个目录登记成项目」（PRD D10） */
+  requiresRegistration?: boolean;
+  /** 那条登记问题的 id（`question.answer` 用它） */
+  questionId?: string | null;
+  /** 待登记的目录（与 `requiresRegistration` 一起给出） */
+  cwd?: string | null;
 }
 
 /** `conversation.get` 入参（PRD F-A6：服务端只提供「按 id 打开」） */
@@ -1548,6 +1596,13 @@ export interface MethodMap {
   "server.usage": { params: ServerUsageParams; result: ServerUsageResult };
   /** F-E5 / F-E6 / F-F9：帮助由能力清单渲染；阻塞与不可撤销是能力属性。 */
   "server.capabilities": { params: NoParams; result: ServerCapabilitiesResult };
+  /**
+   * F-E1：命令清单里的「重载」在服务端这一侧的动作。
+   *
+   * 改完配置本来就会自动生效（F-E2）；这一条是给人一个「我现在就说一遍」的入口 ——
+   * 手改了磁盘上的助手定义 / 技能目录 / MCP 文件之后不必重启。
+   */
+  "server.reload": { params: ServerReloadParams; result: ServerReloadResult };
   /** D8 / F-E4：`/lang` 是连接级动作，语言挂在连接上、断开即忘。 */
   "server.setLanguage": { params: ServerSetLanguageParams; result: ServerSetLanguageResult };
 
@@ -1728,6 +1783,7 @@ export const METHOD_NAMES = [
   "server.shutdown",
   "server.usage",
   "server.capabilities",
+  "server.reload",
   "server.setLanguage",
   "workspace.list",
   "workspace.create",

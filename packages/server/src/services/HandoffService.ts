@@ -86,6 +86,12 @@ export interface ScopeBorrower {
 export interface HandoffConversationPort {
   create(params: ConversationCreateParams): Promise<ConversationCreateResult>;
   get(params: ConversationGetParams): Promise<ConversationGetResult>;
+  /**
+   * 把刚 `create` 出来的对话落成真行（R56：首次发消息时才写 `conversations`）。
+   *
+   * 交接开的新对话第一条就是服务端写的摘要，于是它（与普通对话的首发一样）马上就有行。
+   */
+  ensurePersisted(conversationId: string): Promise<unknown>;
 }
 
 /** 取消交接（用户按了取消）。与「交接失败」分开：前者回到交接前，后者要说明原因。 */
@@ -430,6 +436,15 @@ export class HandoffService {
       agentId: conversation.agentId,
       modelId: conversation.modelId,
     });
+    if (!created.conversation) {
+      // 交接开新对话给的是已有项目（`workspaceId`），不会走到「目录待登记」那条路
+      throw new ServerError("internal", {
+        detail: { reason: "conversation_not_created", workspaceId: conversation.workspaceId },
+      });
+    }
+    const newConversationId = created.conversation.id;
+    // 摘要写得进库的前提是这段对话已经有行了（R56：消息的外键指向 `conversations`）
+    await this.conversationViews.ensurePersisted(newConversationId);
 
     const summary = await this.excerpt(document.path);
     const content = render(language, "handoff.newConversationSummary", {
@@ -445,7 +460,7 @@ export class HandoffService {
     const createdAt = this.now();
     await this.messages.upsert({
       id: message.id,
-      conversationId: created.conversation.id,
+      conversationId: newConversationId,
       role: AgentNS.Role.System as string,
       status: AgentNS.MessageStatus.Completed as string,
       omit: false,
@@ -455,7 +470,7 @@ export class HandoffService {
     });
 
     this.emit?.("conversation.changed", {
-      conversationId: created.conversation.id,
+      conversationId: newConversationId,
       workspaceId: conversation.workspaceId,
       change: "created",
       messageCount: 1,
@@ -468,7 +483,7 @@ export class HandoffService {
       messageCount: null,
       at: iso(createdAt),
     });
-    return created.conversation.id;
+    return newConversationId;
   }
 
   /** 交接文档的摘要片段（读不出来就给空串：新对话仍然指向文档路径） */

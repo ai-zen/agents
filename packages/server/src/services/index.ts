@@ -17,10 +17,11 @@ export type {
   ConversationRuntimePort,
   ConversationServiceDeps,
   ConversationRemovalReport,
+  WorkspaceLocation,
 } from "./ConversationService.js";
 
 export { MessageService, readUsage, toAgentMessage, toCoreRole } from "./MessageService.js";
-export type { MessageServiceDeps } from "./MessageService.js";
+export type { MessageDraftLookup, MessageServiceDeps } from "./MessageService.js";
 
 export { SearchService } from "./SearchService.js";
 export type { ConversationSummarizer, SearchServiceDeps } from "./SearchService.js";

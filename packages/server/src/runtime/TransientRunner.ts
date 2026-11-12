@@ -31,6 +31,7 @@ import type { ConfigManager, Scope } from "@ai-zen/agents-sdk";
 import { DEFAULT_LANGUAGE, render } from "../i18n/index.js";
 import type { Language } from "../i18n/index.js";
 import type { AgentFactory, ChatAgent } from "./ChatRunner.js";
+import { appendInjectedText, injectedContextOf } from "./ChatRunner.js";
 import { ServerError } from "../wire/errors.js";
 import type {
   ConversationTransientParams,
@@ -143,7 +144,9 @@ export class TransientRunner {
         modelId: params.modelId ?? null,
         history: [],
       });
-      await agent.send(params.input.content);
+      // F-D9：临时对话也告诉模型「当前目录是哪儿」；目录就是入参里的那个 cwd（不是进程工作目录）
+      const injected = injectedContextOf(cwd, language);
+      await agent.send(appendInjectedText(params.input.content, injected.text));
       const message = lastAssistant(agent.messages);
       if (!message) {
         throw new ServerError("internal", {

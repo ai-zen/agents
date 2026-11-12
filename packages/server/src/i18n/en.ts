@@ -18,6 +18,9 @@ export const en = {
   "error.unsupported": "The server can't handle {what}.",
   "error.internal": "Something broke on the server. The log has the details.",
   "error.configInvalid": "The settings aren't usable yet: {reason}.",
+  // 端口写得不对（D25 的三档来源里，显式给出的那个值不合法；裁定 R67）
+  "error.portInvalid":
+    "That port number can't be used: {value} (from {source}). It has to be a whole number from 1 to 65535 — 0 means \"let the system pick one\" and only works on the command line.",
   // 助手没有可用模型（`conversation.create` 借 `config_invalid` 这个码，结构化原因在 `detail` 里）
   "error.modelUnresolved":
     "No model could be resolved for this assistant — pick a model for it, or set a default model in the settings.",
@@ -77,6 +80,8 @@ export const en = {
   "message.reverted": "Removed {count} message(s). The text is back in your input.",
   "message.cwdMissing": "This project's folder no longer exists ({cwd}). The conversation and its history are still here.",
   "message.injectedContext": "Sent by the server, not typed by you: {summary}",
+  // 每轮末尾追问给模型的那句事实（PRD F-D9：cwd 来自对话所属项目，不是服务端进程的目录）
+  "message.injectedContext.cwd": "the current folder is {cwd}",
   "message.subagentFailed": "The helper agent {name} failed: {reason}",
   "message.subagentFinished": "The helper agent {name} finished.",
   "message.imageAsText": "{model} can't look at images, so {name} was described in text instead.",
@@ -175,6 +180,8 @@ export const en = {
   "capability.server.usage.detail": "Tokens for this turn, this conversation, this project or the whole server, helper agents included.",
   "capability.server.capabilities": "List what the server can do",
   "capability.server.capabilities.detail": "The list this help page is drawn from: what each ability does and whether it blocks or can't be undone.",
+  "capability.server.reload": "Reload from disk",
+  "capability.server.reload.detail": "Re-read configuration, assistants, tools, skills or MCP entries: affected projects rebuild their capabilities, nothing restarts.",
   "capability.server.setLanguage": "Switch language for this connection",
   "capability.server.setLanguage.detail": "Every message on this connection is rendered in the chosen language; a reconnect forgets it.",
 

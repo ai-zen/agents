@@ -17,7 +17,7 @@
 import type { AgentRepository } from "@ai-zen/agents-sdk";
 import type { AppConfig, ConfigManager, Endpoint } from "@ai-zen/agents-sdk";
 
-import { DEFAULT_LANGUAGE, render, type MessageKey } from "../i18n/index.js";
+import { DEFAULT_LANGUAGE, LANGUAGES, normalizeLanguage, render, type Language, type MessageKey } from "../i18n/index.js";
 import { ServerError } from "../wire/errors.js";
 import { MAX_ASSETS_PER_MESSAGE, MAX_ASSET_BYTES } from "../wire/index.js";
 import type {
@@ -45,6 +45,9 @@ import type {
   EndpointInput,
   EndpointView,
   ReferenceList,
+  ServerReloadParams,
+  ServerReloadResult,
+  ServerReloadScope,
 } from "../wire/index.js";
 import { DiscoveryService, type WorkspaceCwdLookup } from "./DiscoveryService.js";
 import { ModelService } from "./ModelService.js";
@@ -98,6 +101,17 @@ export interface ConfigServiceOptions {
   /** 时钟，测试注入用；缺省 `Date.now` */
   now?: () => number;
 }
+
+/** `server.reload` 认的几档范围（与契约同源） */
+const RELOAD_SCOPES: readonly ServerReloadScope[] = ["config", "agents", "tools", "skills", "mcp"];
+
+/**
+ * 可经 `config.setDefaults` 写的默认项。
+ *
+ * 比契约的 `DefaultSelection` 多一项 `language`：它是 SDK `AppConfig` 上的字段（裁定 R58），
+ * 存的不是「这个客户端现在用哪种语言」（那是连接的事），而是「没声明时算哪一种」。
+ */
+type DefaultsInput = Partial<DefaultSelection> & { language?: Language | null };
 
 /** 可以写的三档行为开关取值（与 SDK `AppConfig` 的取值一致） */
 const ABORTED_MESSAGE_STRATEGIES = ["keep", "drop"] as const;
@@ -263,11 +277,43 @@ export class ConfigService {
    */
   async setDefaults(params: ConfigSetDefaultsParams): Promise<ConfigSetDefaultsResult> {
     const config = await this.readConfig();
-    const next: AppConfig = { ...config, ...(await this.mergeDefaults(config, params.defaults ?? {})) };
+    const defaults: DefaultsInput = params.defaults ?? {};
+    const next: AppConfig = { ...config, ...(await this.mergeDefaults(config, defaults)) };
     await this.configManager.write(next);
     return {
       config: await this.toView(next),
       applied: await this.apply({ config: true, sections: ["defaults"] }),
+    };
+  }
+
+  /**
+   * `server.reload`（PRD F-E1 / 裁定 R63）：从磁盘重读一遍，让改动生效。
+   *
+   * 不写盘：改的是磁盘上的东西（`config.json`、助手定义、技能 / 工具目录、MCP 文件），这里只
+   * 把「哪几类要重新装配」交给注入的生效一跳（回收受影响的 Scope + 合成一条通知），出参与
+   * `config.patch` 同一份形状，客户端于是可以用同一套提示。
+   */
+  async reload(params: ServerReloadParams = {}): Promise<ServerReloadResult> {
+    const scope = params.scope;
+    if (scope !== undefined && !RELOAD_SCOPES.includes(scope)) {
+      throw new ServerError("invalid_params", {
+        params: { field: "scope" },
+        detail: { field: "scope", reason: "not_allowed", value: scope, allowed: [...RELOAD_SCOPES] },
+      });
+    }
+    const reloaded = reloadedOf(scope);
+    const config = await this.readConfig();
+    const outcome = this.applyPort ? await this.applyPort.apply(reloadChangeOf(reloaded)) : {};
+    return {
+      config: await this.toView(config),
+      applied: {
+        appliedAt: new Date(this.now()).toISOString(),
+        reloaded,
+        recycledWorkspaceIds: outcome.recycledWorkspaceIds ?? [],
+        // 重载本身不需要重启：Scope 回收之后下一次请求会按新读到的磁盘状态重建
+        restartRequired: false,
+        noticeId: outcome.noticeId ?? null,
+      },
     };
   }
 
@@ -443,8 +489,19 @@ export class ConfigService {
    */
   private async mergeDefaults(
     config: AppConfig,
-    input: Partial<DefaultSelection>,
-  ): Promise<Pick<AppConfig, "defaultAgent" | "defaultModel" | "defaultMigrationModel" | "defaultImageModel" | "namingModel" | "autoTitle">> {
+    input: DefaultsInput,
+  ): Promise<
+    Pick<
+      AppConfig,
+      | "defaultAgent"
+      | "defaultModel"
+      | "defaultMigrationModel"
+      | "defaultImageModel"
+      | "namingModel"
+      | "autoTitle"
+      | "language"
+    >
+  > {
     const modelIds = new Set(config.models.map((model) => model.id));
     const imageModelIds = new Set((config.imageModels ?? []).map((model) => model.id));
 
@@ -495,6 +552,7 @@ export class ConfigService {
       defaultImageModel: pickDefault(config.defaultImageModel, input.defaultImageModel),
       namingModel: pickDefault(config.namingModel, input.namingModel),
       autoTitle: input.autoTitle === undefined ? config.autoTitle : input.autoTitle,
+      language: pickLanguage(config.language, input.language, "defaults.language"),
     };
   }
 
@@ -730,11 +788,63 @@ function referencesToEndpoint(config: AppConfig, endpointId: string): ReferenceL
   return { referenced: items.length > 0, items };
 }
 
+/** 这次要求重载的范围里，哪几类东西要重新装配（不给范围 = 全部） */
+function reloadedOf(scope: ServerReloadScope | undefined): ConfigApplyReport["reloaded"] {
+  const all = scope === undefined;
+  return {
+    config: all || scope === "config",
+    tools: all || scope === "tools",
+    skills: all || scope === "skills",
+    agents: all || scope === "agents",
+    mcp: all || scope === "mcp",
+  };
+}
+
+/**
+ * 重载要交给生效一跳的改动描述。
+ *
+ * 只表达「哪几类变了」：重载不写盘，`sections` 于是不参与任何写入，只用来把范围说清楚；
+ * `workspaceIds` 留空表示影响所有项目（重读的是全局的磁盘文件）。
+ */
+function reloadChangeOf(reloaded: ConfigApplyReport["reloaded"]): ConfigApplyChange {
+  const sections = Object.entries(reloaded)
+    .filter(([, on]) => on)
+    .map(([section]) => section);
+  return {
+    config: reloaded.config,
+    mcp: reloaded.mcp,
+    agents: reloaded.agents,
+    sections,
+    workspaceIds: [],
+  };
+}
+
 /** `null` 表示清空（返回 `undefined`，写盘时字段消失，读出来就是「还没选」） */
 function pickDefault(current: string | undefined, incoming: string | null | undefined): string | undefined {
   if (incoming === undefined) return current;
   if (incoming === null) return undefined;
   return incoming.trim() === "" ? undefined : incoming.trim();
+}
+
+/**
+ * 缺省语言（裁定 R58）：`undefined` 不改，`null` 清掉（回落英文），其余必须是受支持的语言。
+ *
+ * 不认的值直接驳回而不是悄悄换成英文：界面语言被悄悄改掉，用户会以为自己点错了。
+ */
+function pickLanguage(
+  current: Language | undefined,
+  incoming: Language | null | undefined,
+  field: string,
+): Language | undefined {
+  if (incoming === undefined) return current;
+  if (incoming === null) return undefined;
+  if (typeof incoming !== "string" || !(LANGUAGES as readonly string[]).includes(incoming)) {
+    throw new ServerError("invalid_params", {
+      params: { field },
+      detail: { field, reason: "not_a_language", value: incoming, allowed: [...LANGUAGES] },
+    });
+  }
+  return normalizeLanguage(incoming);
 }
 
 /** 枚举型字段的取值校验 */

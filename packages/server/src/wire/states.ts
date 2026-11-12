@@ -447,7 +447,17 @@ export interface AttachmentOutcome {
  * 「服务端给能力、客户端给交互」），双方都不需要解析一整行字符串。
  */
 export type StatusBlock =
-  | { id: "agent"; label: LocalizedText; facts: { agentId: string; name: string; available: boolean } }
+  | {
+      id: "agent";
+      label: LocalizedText;
+      /**
+       * 助手块的三个事实。
+       *
+       * `agentId` 是这段对话的身份（创建时定死，L7）；`name` 与 `available` 的真相在助手定义
+       * 那一层，`conversation.state` 这一跳拿不到时给 `null`（说「不知道」而不是编一个值）。
+       */
+      facts: { agentId: string; name: string | null; available: boolean | null };
+    }
   | {
       id: "model";
       label: LocalizedText;

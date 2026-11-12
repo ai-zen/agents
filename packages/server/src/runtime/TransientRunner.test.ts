@@ -43,6 +43,8 @@ interface Harness {
   runner: TransientRunner;
   scopes: RecordingScopes;
   agentCalls: Array<{ agentId: string; modelId: string | null; historyLength: number }>;
+  /** 这一轮真正发给模型的内容（F-D9 要验注入段接在末尾） */
+  sentContents: Array<AgentNS.MessageContent>;
   behaviour: { fail: Error | null; status: AgentNS.MessageStatus | null; deltas: AgentNS.Delta[] };
 }
 
@@ -56,6 +58,7 @@ async function setup(config: Record<string, unknown> = { defaultAgent: "a1" }): 
 
   const scopes = new RecordingScopes();
   const agentCalls: Harness["agentCalls"] = [];
+  const sentContents: Array<AgentNS.MessageContent> = [];
   const behaviour: Harness["behaviour"] = {
     fail: null,
     status: null,
@@ -83,6 +86,12 @@ async function setup(config: Record<string, unknown> = { defaultAgent: "a1" }): 
         return messages;
       };
     }
+    // 把真正发给模型的内容记下来（在所有「换掉 send」的分支之后包一层，包在最外层）
+    const send = agent.send.bind(agent);
+    agent.send = async (content) => {
+      sentContents.push(content);
+      return await send(content);
+    };
     return agent;
   };
 
@@ -92,7 +101,7 @@ async function setup(config: Record<string, unknown> = { defaultAgent: "a1" }): 
     configManager: new ConfigManager(configPath),
   });
 
-  return { dir, db, runner, scopes, agentCalls, behaviour };
+  return { dir, db, runner, scopes, agentCalls, sentContents, behaviour };
 }
 
 let harness: Harness;
@@ -170,6 +179,24 @@ describe("只借 Scope，与 Workspace 无关（D3）", () => {
       harness.runner.run({ cwd: "/tmp/project", input: { content: "x" } }),
     ).rejects.toMatchObject({ code: "internal" });
     expect(harness.scopes.released).toEqual([transientScopeKey("/tmp/project")]);
+  });
+});
+
+describe("告诉模型「现在在哪个目录」（F-D9）", () => {
+  it("cwd 作为注入段接在用户内容末尾", async () => {
+    await harness.runner.run(
+      { cwd: "/tmp/project", input: { content: "一句话回答我" } },
+      "zh",
+    );
+
+    const content = harness.sentContents[0];
+    expect(Array.isArray(content)).toBe(true);
+    if (!Array.isArray(content)) return;
+    expect(content[0]).toEqual({ type: "text", text: "一句话回答我" });
+    const injected = content.at(-1);
+    expect(injected?.type).toBe("text");
+    const text = injected && "text" in injected ? injected.text : "";
+    expect(text).toContain("/tmp/project");
   });
 });
 

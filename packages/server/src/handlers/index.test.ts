@@ -17,7 +17,12 @@ import { hasMessage } from "../i18n/index.js";
 import type { ConnectionInfo } from "../net/index.js";
 import { isError, makeTempDir, TestClient, type TempDir } from "../net/TestSupport.js";
 import { METHOD_NAMES } from "../wire/index.js";
-import type { MethodName, MethodParams, MethodResult } from "../wire/index.js";
+import type {
+  ConversationView,
+  MethodName,
+  MethodParams,
+  MethodResult,
+} from "../wire/index.js";
 import { BRIDGED_METHODS, createCapabilities, createHandlers } from "./index.js";
 
 const CONFIG = JSON.stringify(
@@ -76,6 +81,22 @@ async function startApp(): Promise<{ app: ServerApp; workspaceDir: TempDir }> {
   await app.start();
   apps.push(app);
   return { app, workspaceDir };
+}
+
+/**
+ * 建一段对话并让它落库（R56：`conversation.create` 只发 id，首次 `send` 才写 `conversations` 行）。
+ *
+ * 这里的用例要看的是别的东西（列表、搜索结果、项目删除），所以直接把草稿落成真行。
+ */
+async function seedConversation(app: ServerApp, workspaceId: string): Promise<ConversationView> {
+  const created = await callMethod(app, "conversation.create", {
+    workspaceId,
+    agentId: "default",
+    modelId: "test-model",
+  });
+  if (!created.conversation) throw new Error("conversation.create 没有建出对话");
+  await app.conversationService.ensurePersisted(created.conversation.id);
+  return created.conversation;
 }
 
 async function callMethod<M extends MethodName>(
@@ -191,11 +212,7 @@ describe("只转发的三个域", () => {
   it("message.list / search.* / credential.* 都接到服务层", async () => {
     const { app, workspaceDir } = await startApp();
     const { workspace } = await callMethod(app, "workspace.create", { cwd: workspaceDir.path });
-    const { conversation } = await callMethod(app, "conversation.create", {
-      workspaceId: workspace.id,
-      agentId: "default",
-      modelId: "test-model",
-    });
+    const conversation = await seedConversation(app, workspace.id);
 
     const page = await callMethod(app, "message.list", { conversationId: conversation.id });
     expect(page.messages).toEqual([]);

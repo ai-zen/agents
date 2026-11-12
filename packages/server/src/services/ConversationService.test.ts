@@ -20,6 +20,7 @@ import { migrate } from "../storage/migrations.js";
 import { ServerError } from "../wire/errors.js";
 import { ConversationService } from "./ConversationService.js";
 import type { ConversationRuntimePort } from "./ConversationService.js";
+import type { ConversationCreateParams, ConversationView } from "../wire/index.js";
 
 /** 内存里的临时状态都放这里：服务层只通过这个窄接口读写，自己不留一份 */
 class FakeRuntime implements ConversationRuntimePort {
@@ -65,6 +66,8 @@ interface Harness {
   messages: MessageRepository;
   assets: AssetRepository;
   questions: QuestionRepository;
+  /** 推出去的事件（`conversation.changed`，L5 / D22） */
+  events: Array<{ name: string; payload: unknown }>;
 }
 
 const BASE_CONFIG = {
@@ -149,6 +152,7 @@ async function setup(config: Record<string, unknown> = BASE_CONFIG): Promise<Har
   const assets = new AssetRepository(db);
   const questions = new QuestionRepository(db);
   clock = 1_700_000_000_000;
+  const events: Array<{ name: string; payload: unknown }> = [];
   const service = new ConversationService({
     conversations,
     messages,
@@ -157,6 +161,9 @@ async function setup(config: Record<string, unknown> = BASE_CONFIG): Promise<Har
     questions,
     configManager: new ConfigManager(configPath),
     runtime,
+    emit: (name, payload) => {
+      events.push({ name, payload });
+    },
     now: () => (clock += 60_000),
   });
 
@@ -172,9 +179,27 @@ async function setup(config: Record<string, unknown> = BASE_CONFIG): Promise<Har
     messages,
     assets,
     questions,
+    events,
   };
   await workspaces.create({ id: "w1", name: "项目一", cwd: projectDir, createdAt: 1 });
   return harnessValue;
+}
+
+/**
+ * 建一段对话并让它落库。
+ *
+ * R56 之后 `create` 只发 id 与身份（草稿），落库发生在首次 `conversation.send`。这个文件里
+ * 绝大多数用例要看的是「落库之后」的行为（排序、改名、撤回、临时换模型），所以造完直接
+ * 用 `ensurePersisted` 落成真行。
+ */
+async function createPersisted(
+  service: ConversationService,
+  params: ConversationCreateParams,
+): Promise<{ conversation: ConversationView }> {
+  const created = await service.create(params);
+  if (!created.conversation) throw new Error("conversation.create 没有建出对话");
+  await service.ensurePersisted(created.conversation.id);
+  return { conversation: created.conversation };
 }
 
 beforeEach(async () => {
@@ -188,7 +213,7 @@ afterEach(async () => {
 
 describe("ConversationService.create（身份创建时定死，L7 / R18）", () => {
   it("助手绑定的模型优先于配置里的兜底模型，三件身份都落库", async () => {
-    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const conversation = created.conversation;
 
     expect(conversation.workspaceId).toBe("w1");
@@ -206,7 +231,7 @@ describe("ConversationService.create（身份创建时定死，L7 / R18）", () 
   });
 
   it("入参明确点名模型时以它为准", async () => {
-    const created = await harness.service.create({
+    const created = await createPersisted(harness.service, {
       workspaceId: "w1",
       agentId: "a1",
       modelId: "m3",
@@ -215,26 +240,26 @@ describe("ConversationService.create（身份创建时定死，L7 / R18）", () 
   });
 
   it("助手没绑模型时落到配置里的兜底模型", async () => {
-    const created = await harness.service.create({ workspaceId: "w1", agentId: "a2" });
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a2" });
     expect(created.conversation.agentId).toBe("a2");
     expect(created.conversation.modelId).toBe("m3");
   });
 
   it("原名就是创建时间，所以 nameIsAuto 为真（D2）", async () => {
-    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     expect(created.conversation.name).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
     expect(created.conversation.nameIsAuto).toBe(true);
   });
 
   it("项目不存在时报 not_found，不写半成品行", async () => {
-    await expect(harness.service.create({ workspaceId: "没有这个项目", agentId: "a1" })).rejects.toMatchObject(
+    await expect(createPersisted(harness.service, { workspaceId: "没有这个项目", agentId: "a1" })).rejects.toMatchObject(
       { code: "not_found" },
     );
     expect(await harness.conversations.list()).toEqual([]);
   });
 
   it("助手不存在时报 not_found", async () => {
-    await expect(harness.service.create({ workspaceId: "w1", agentId: "没有这个助手" })).rejects.toMatchObject(
+    await expect(createPersisted(harness.service, { workspaceId: "w1", agentId: "没有这个助手" })).rejects.toMatchObject(
       { code: "not_found" },
     );
     expect(await harness.conversations.list()).toEqual([]);
@@ -242,7 +267,7 @@ describe("ConversationService.create（身份创建时定死，L7 / R18）", () 
 
   it("点名要的模型不存在时报 not_found", async () => {
     await expect(
-      harness.service.create({ workspaceId: "w1", agentId: "a1", modelId: "没有这个模型" }),
+      createPersisted(harness.service, { workspaceId: "w1", agentId: "a1", modelId: "没有这个模型" }),
     ).rejects.toMatchObject({ code: "not_found" });
   });
 
@@ -250,7 +275,7 @@ describe("ConversationService.create（身份创建时定死，L7 / R18）", () 
     const bare = await setup({ ...BASE_CONFIG, defaultModel: undefined });
     try {
       await expect(
-        bare.service.create({ workspaceId: "w1", agentId: "a2" }),
+        createPersisted(bare.service, { workspaceId: "w1", agentId: "a2" }),
       ).rejects.toMatchObject({
         code: "config_invalid",
         messageKey: "error.modelUnresolved",
@@ -271,7 +296,7 @@ describe("ConversationService.create（身份创建时定死，L7 / R18）", () 
     });
     try {
       await expect(
-        broken.service.create({ workspaceId: "w1", agentId: "a2" }),
+        createPersisted(broken.service, { workspaceId: "w1", agentId: "a2" }),
       ).rejects.toMatchObject({
         code: "config_invalid",
         messageKey: "error.modelUnresolved",
@@ -287,9 +312,9 @@ describe("ConversationService.create（身份创建时定死，L7 / R18）", () 
 
 describe("ConversationService.list（D13）", () => {
   it("置顶优先、再按创建时间倒序；改名与置顶都不改创建时间", async () => {
-    const first = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
-    const second = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
-    const third = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const first = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    const second = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    const third = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
 
     let listed = await harness.service.list({ workspaceId: "w1" });
     expect(listed.conversations.map((item) => item.id)).toEqual([
@@ -311,8 +336,8 @@ describe("ConversationService.list（D13）", () => {
   });
 
   it("按置顶筛、按 limit/offset 切页，total 是筛完的总数", async () => {
-    const first = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
-    await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const first = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     await harness.service.pin({ conversationId: first.conversation.id, pinned: true });
 
     const pinnedOnly = await harness.service.list({ workspaceId: "w1", pinned: true });
@@ -324,7 +349,7 @@ describe("ConversationService.list（D13）", () => {
   });
 
   it("running 与 hasPendingQuestion 都从注入的那一侧现取", async () => {
-    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     harness.runtime.running.add(created.conversation.id);
     await harness.questions.create({
       id: "q1",
@@ -346,7 +371,7 @@ describe("ConversationService.list（D13）", () => {
 
 describe("ConversationService.get / rename / pin", () => {
   it("get 带上目录事实与消息统计", async () => {
-    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     await harness.messages.upsert({
       id: "msg-1",
       conversationId: created.conversation.id,
@@ -363,7 +388,7 @@ describe("ConversationService.get / rename / pin", () => {
   });
 
   it("改名之后 nameIsAuto 翻假，身份不动", async () => {
-    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const renamed = await harness.service.rename({
       conversationId: created.conversation.id,
       name: "  我的对话  ",
@@ -375,7 +400,7 @@ describe("ConversationService.get / rename / pin", () => {
   });
 
   it("自动命名之后 nameIsAuto 仍为真（R35：读的是列，不是名字内容）", async () => {
-    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const id = created.conversation.id;
 
     // 自动命名是 W4-H 的动作，这里直接走仓储那一条写入路径
@@ -387,7 +412,7 @@ describe("ConversationService.get / rename / pin", () => {
   });
 
   it("用户改名之后再自动命名，又回到自动", async () => {
-    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const id = created.conversation.id;
 
     await harness.service.rename({ conversationId: id, name: "我先自己起的名" });
@@ -400,7 +425,7 @@ describe("ConversationService.get / rename / pin", () => {
 
 describe("ConversationService.delete（D17）", () => {
   it("dryRun 只算代价，真删后对话与消息一起消失，并回要清的文件清单", async () => {
-    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const id = created.conversation.id;
     await harness.messages.upsert({
       id: "msg-1",
@@ -436,9 +461,151 @@ describe("ConversationService.delete（D17）", () => {
   });
 });
 
+describe("R56：create 不落库，首次发消息才写行", () => {
+  it("create 只发 id 与身份：库里 0 行、列表里也没有它", async () => {
+    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const conversation = created.conversation;
+    expect(conversation).not.toBeNull();
+    if (!conversation) return;
+
+    // 身份三件套已经定死（L7），但这一行还没有进库
+    expect(conversation.workspaceId).toBe("w1");
+    expect(conversation.agentId).toBe("a1");
+    expect(conversation.modelId).toBe("m1");
+    const rows = await harness.db.all<{ id: string }>("SELECT id FROM conversations");
+    expect(rows).toEqual([]);
+
+    // 但它不是一个「找不到的对话」：get 能拿到正确视图
+    const opened = await harness.service.get({ conversationId: conversation.id });
+    expect(opened.conversation.id).toBe(conversation.id);
+    expect(opened.conversation.messageCount).toBe(0);
+    expect(opened.conversation.workspaceId).toBe("w1");
+
+    // 侧栏列表只给已经落库的（F-C2：否则一堆空会话）
+    expect((await harness.service.list({ workspaceId: "w1" })).total).toBe(0);
+  });
+
+  it("首次发消息时用同一个 id 落库（ensurePersisted），之后与普通对话无差别", async () => {
+    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const id = created.conversation?.id ?? "";
+
+    const persisted = await harness.service.ensurePersisted(id);
+    expect(persisted.id).toBe(id);
+    expect(persisted.workspaceId).toBe("w1");
+    expect(persisted.agentId).toBe("a1");
+    expect(persisted.modelId).toBe("m1");
+    expect(persisted.nameIsAuto).toBe(true);
+
+    const listed = await harness.service.list({ workspaceId: "w1" });
+    expect(listed.conversations.map((item) => item.id)).toEqual([id]);
+    // 落库就是「第一次出现在其它窗口的侧栏里」：推一条 created（L5）
+    expect(harness.events.map((event) => event.payload)).toContainEqual(
+      expect.objectContaining({ conversationId: id, change: "created" }),
+    );
+
+    // 幂等：再落一次不会插第二行
+    await harness.service.ensurePersisted(id);
+    expect(await harness.conversations.list()).toHaveLength(1);
+  });
+
+  it("草稿也能改名与置顶（只动内存），落库时带过去", async () => {
+    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const id = created.conversation?.id ?? "";
+
+    const renamed = await harness.service.rename({ conversationId: id, name: "我自己起的" });
+    expect(renamed.conversation.name).toBe("我自己起的");
+    expect(renamed.conversation.nameIsAuto).toBe(false);
+    await harness.service.pin({ conversationId: id, pinned: true });
+
+    await harness.service.ensurePersisted(id);
+    const row = await harness.conversations.get(id);
+    expect(row?.name).toBe("我自己起的");
+    expect(row?.nameIsAuto).toBe(false);
+    expect(row?.pinned).toBe(true);
+  });
+
+  it("没落库的草稿也能删，代价是零", async () => {
+    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const id = created.conversation?.id ?? "";
+
+    const removed = await harness.service.delete({ conversationId: id });
+    expect(removed.removed).toBe(true);
+    expect(removed.consequences).toEqual({ conversations: 1, messages: 0, assets: 0 });
+    await expect(harness.service.get({ conversationId: id })).rejects.toMatchObject({
+      code: "not_found",
+    });
+  });
+
+  it("只给了未登记的 cwd 时回一张「待登记」事实单，不建对话也不建项目", async () => {
+    const located = await harness.service.locateWorkspace({ cwd: join(harness.projectDir, "sub") });
+    expect(located).toEqual({ needsRegistration: join(harness.projectDir, "sub") });
+
+    // 已登记的 cwd 则直接命中那个项目
+    const existing = await harness.service.locateWorkspace({ cwd: harness.projectDir });
+    expect("workspace" in existing && existing.workspace.id).toBe("w1");
+
+    // 两个都没给：参数不对，不当成「随便找个目录」
+    await expect(harness.service.locateWorkspace({})).rejects.toMatchObject({
+      code: "invalid_params",
+    });
+  });
+});
+
+describe("多端在线同步（L5 / D22：conversation.changed）", () => {
+  const changes = (): Array<Record<string, unknown>> =>
+    harness.events
+      .filter((event) => event.name === "conversation.changed")
+      .map((event) => event.payload as Record<string, unknown>);
+
+  it("改名 / 置顶 / 撤回 / 删除各推一条，带定位信息", async () => {
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    const id = created.conversation.id;
+    await harness.messages.upsert({
+      id: "u1",
+      conversationId: id,
+      role: "user",
+      status: "completed",
+      content: "第一句",
+      createdAt: 10,
+    });
+    harness.events.length = 0;
+
+    await harness.service.rename({ conversationId: id, name: "新名字" });
+    await harness.service.pin({ conversationId: id, pinned: true });
+    await harness.service.revert({ conversationId: id, beforeMessageId: "u1" });
+    await harness.service.delete({ conversationId: id });
+
+    expect(changes().map((payload) => payload.change)).toEqual([
+      "renamed",
+      "pinned",
+      "message_removed",
+      "deleted",
+    ]);
+    for (const payload of changes()) {
+      expect(payload.conversationId).toBe(id);
+      expect(payload.workspaceId).toBe("w1");
+      expect(typeof payload.at).toBe("string");
+    }
+    // 撤回推的是「还剩几条」（客户端按它决定要不要重拉）
+    expect(changes()[2]?.messageCount).toBe(0);
+  });
+
+  it("读路径不推（列表 / 打开 / 临时换模型都不改别的窗口要看的东西）", async () => {
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    const id = created.conversation.id;
+    harness.events.length = 0;
+
+    await harness.service.list({ workspaceId: "w1" });
+    await harness.service.get({ conversationId: id });
+    await harness.service.setModel({ conversationId: id, modelId: "m3" });
+    await harness.service.setThinking({ conversationId: id, level: "low" });
+    expect(changes()).toEqual([]);
+  });
+});
+
 describe("ConversationService.revert（D24）", () => {
   it("删到指定用户消息之前（含它），回填它当时的内容与素材", async () => {
-    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const id = created.conversation.id;
     for (const [messageId, role, content, createdAt] of [
       ["u1", "user", "第一句", 1_000],
@@ -474,7 +641,7 @@ describe("ConversationService.revert（D24）", () => {
   });
 
   it("撤回点不是用户消息时报参数错", async () => {
-    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const id = created.conversation.id;
     await harness.messages.upsert({
       id: "a1",
@@ -491,14 +658,47 @@ describe("ConversationService.revert（D24）", () => {
   });
 
   it("消息不在这一段对话里时报 not_found", async () => {
-    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     await expect(
       harness.service.revert({ conversationId: created.conversation.id, beforeMessageId: "别处的" }),
     ).rejects.toMatchObject({ code: "not_found" });
   });
 
+  it("回填只给纯文本 + assetIds：图片靠素材复原，不在正文里再给一遍（R62）", async () => {
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    const id = created.conversation.id;
+    // 一条带图的用户消息：入库的内容段里已经有 image_url 与 file（发出去时转换好的）
+    await harness.messages.upsert({
+      id: "u1",
+      conversationId: id,
+      role: "user",
+      status: "completed",
+      content: [
+        { type: "text", text: "看这两张" },
+        { type: "image_url", image_url: { url: "https://example.test/a.png" } },
+        { type: "file", file_id: "file-1", filename: "a.pdf" },
+      ],
+      createdAt: 10,
+    });
+    await harness.assets.create({
+      id: "as1",
+      conversationId: id,
+      messageId: "u1",
+      path: "assets/as1.png",
+      mime: "image/png",
+      bytes: 5,
+      createdAt: 11,
+    });
+
+    const result = await harness.service.revert({ conversationId: id, beforeMessageId: "u1" });
+    expect(result.restoredInput).toEqual({
+      content: [{ type: "text", text: "看这两张" }],
+      assetIds: ["as1"],
+    });
+  });
+
   it("正在跑一轮时拒绝撤回", async () => {
-    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     harness.runtime.running.add(created.conversation.id);
     await expect(
       harness.service.revert({
@@ -511,7 +711,7 @@ describe("ConversationService.revert（D24）", () => {
 
 describe("ConversationService.setModel（L7 / D20）", () => {
   it("临时换模型只交给运行时，库里的 modelId 不变", async () => {
-    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const id = created.conversation.id;
 
     const result = await harness.service.setModel({ conversationId: id, modelId: "m3" });
@@ -529,7 +729,7 @@ describe("ConversationService.setModel（L7 / D20）", () => {
   });
 
   it("传 null 或传回身份上的那个模型都等于「回到默认」", async () => {
-    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const id = created.conversation.id;
 
     await harness.service.setModel({ conversationId: id, modelId: "m3" });
@@ -544,7 +744,7 @@ describe("ConversationService.setModel（L7 / D20）", () => {
   });
 
   it("历史里有图而新模型不看图时拒绝并说明原因", async () => {
-    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const id = created.conversation.id;
     await harness.assets.create({
       id: "as1",
@@ -564,7 +764,7 @@ describe("ConversationService.setModel（L7 / D20）", () => {
   });
 
   it("历史里没有图时允许换到不看图的模型", async () => {
-    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const result = await harness.service.setModel({
       conversationId: created.conversation.id,
       modelId: "m2",
@@ -573,14 +773,14 @@ describe("ConversationService.setModel（L7 / D20）", () => {
   });
 
   it("换到不存在的模型报 not_found", async () => {
-    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     await expect(
       harness.service.setModel({ conversationId: created.conversation.id, modelId: "没有这个模型" }),
     ).rejects.toMatchObject({ code: "not_found" });
   });
 
   it("上下文占用取最近一次请求的用量", async () => {
-    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const id = created.conversation.id;
     await harness.messages.upsert({
       id: "a1",
@@ -620,7 +820,7 @@ describe("ConversationService.setThinking（F-B6 / F-B7）", () => {
       "utf-8",
     );
 
-    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     expect(created.conversation.thinking).toEqual({
       preset: "test-preset",
       levels: ["low", "high"],
@@ -631,7 +831,7 @@ describe("ConversationService.setThinking（F-B6 / F-B7）", () => {
   });
 
   it("临时调档写进运行时，并回展开后的参数", async () => {
-    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const id = created.conversation.id;
     const result = await harness.service.setThinking({ conversationId: id, level: "low" });
 
@@ -644,14 +844,14 @@ describe("ConversationService.setThinking（F-B6 / F-B7）", () => {
   });
 
   it("档位不在策略表里时报参数错", async () => {
-    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     await expect(
       harness.service.setThinking({ conversationId: created.conversation.id, level: "超高" }),
     ).rejects.toMatchObject({ code: "invalid_params" });
   });
 
   it("模型没有思考策略时报 unsupported", async () => {
-    const created = await harness.service.create({
+    const created = await createPersisted(harness.service, {
       workspaceId: "w1",
       agentId: "a1",
       modelId: "m2",

@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { isError, isSuccess, TestClient } from "./net/TestSupport.js";
+import { isError, isNotification, isSuccess, TestClient } from "./net/TestSupport.js";
 import type { ConversationListResult, MessageListResult, WorkspaceListResult } from "./wire/index.js";
 
 /** 包根（`src/` 的上一级）：不读进程工作目录，从本文件的 URL 推 */
@@ -144,6 +144,27 @@ async function waitForServerFile(): Promise<{ port: number; token: string }> {
 
 async function connect(port: number): Promise<TestClient> {
   return await TestClient.connect(`ws://127.0.0.1:${port}/`);
+}
+
+/**
+ * 发一个请求并等它的回包，中间插进来的推送（事件）先跳过。
+ *
+ * 发过消息的那个进程在跑一轮（端点不存在，很快以失败收尾），`run.state` / `conversation.changed`
+ * 会与后面的回包交错到达；`TestClient.call` 按到达顺序取帧，在这段流程里不够用。
+ */
+async function callSkippingEvents(
+  client: TestClient,
+  method: string,
+  params: unknown = {},
+): Promise<unknown> {
+  const id = client.request(method, params);
+  for (;;) {
+    const frame = await client.queue.next(20_000);
+    if (isNotification(frame)) continue;
+    if (!isSuccess(frame)) throw new Error(`期望成功响应，拿到：${JSON.stringify(frame)}`);
+    expect(frame.id).toBe(id);
+    return frame.result;
+  }
 }
 
 /** 停一个进程并等它真的走 */
@@ -298,8 +319,16 @@ describe("进程冒烟：命令行起服务 → 连接 → 建项目/对话 → 
     const messages = await client.call("message.list", { conversationId });
     expect((messages.result as MessageListResult).messages).toEqual([]);
 
-    const conversations = await client.call("conversation.list", {});
-    const listed = conversations.result as ConversationListResult;
+    // R56 / F-C2：还没发过消息的对话只在内存里（草稿），所以侧栏列表里看不到它
+    const beforeSend = await client.call("conversation.list", {});
+    expect((beforeSend.result as ConversationListResult).total).toBe(0);
+
+    // 发一条：首次 send 用同一个 id 落库（端点不存在，那一轮会以失败收尾，
+    // 但「受理即落库」与模型答不答得上来无关）
+    await client.call("conversation.send", { conversationId, input: { content: "你好" } });
+
+    const conversations = await callSkippingEvents(client, "conversation.list", {});
+    const listed = conversations as ConversationListResult;
     expect(listed.total).toBe(1);
     expect(listed.conversations[0]?.id).toBe(conversationId);
 
@@ -327,7 +356,10 @@ describe("进程冒烟：命令行起服务 → 连接 → 建项目/对话 → 
     expect(afterList.conversations[0]?.id).toBe(conversationId);
 
     const messagesAfter = await again.call("message.list", { conversationId });
-    expect((messagesAfter.result as MessageListResult).messages).toEqual([]);
+    const storedMessages = (messagesAfter.result as MessageListResult).messages;
+    // 用户那条已经落库了（内容带服务端注入的当前目录，F-D9）
+    expect(storedMessages.length).toBeGreaterThan(0);
+    expect(storedMessages[0]?.role).toBe("user");
 
     // ---- 6. 再收尾一次：这一轮也走「摘发现文件 → 关库 → 退出 0」 ----
     await again.close();

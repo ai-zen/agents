@@ -11,15 +11,22 @@
  *
  * `server.hello` / `server.setLanguage` / `asset.*` 由接线层自己接管（语言是连接状态、
  * 上传要按连接分帧），这里不重复注册。
+ *
+ * `server.reload`（F-E1）在这里只做转发：重载是「让磁盘上的改动生效」，那条路（回收 Scope、
+ * 合成一条通知）的持有者是配置服务。
  */
 
 import type { AgentNS } from "@ai-zen/agents-core";
 
+import type { Language } from "../i18n/index.js";
 import type { HandlerTable } from "../net/index.js";
 import type { ConversationService } from "../services/ConversationService.js";
 import type { MessageService } from "../services/MessageService.js";
+import { relocalizeText } from "../services/NoticeService.js";
 import type {
   CapabilityView,
+  ServerReloadParams,
+  ServerReloadResult,
   ServerUpgradeParams,
   ServerUpgradeResult,
   ServerUsageParams,
@@ -43,6 +50,8 @@ export interface ServerHandlerDeps {
   now: () => string;
   /** 请求收尾（`server.shutdown`）：单根排程，先让回包写出去 */
   requestStop: (reason?: string) => void;
+  /** 从磁盘重载（`server.reload`）：配置服务那边跑「生效」那条路（回收 Scope + 合成通知） */
+  reload: (params: ServerReloadParams) => Promise<ServerReloadResult>;
   /** 升级判定与重启排程（磁盘版本归单根去读，这里只把结论转给客户端） */
   upgrade: ServerUpgradeHandler;
 }
@@ -61,7 +70,10 @@ export function createServerHandlers(deps: ServerHandlerDeps): HandlerTable {
       pid: process.pid,
     }),
 
-    "server.capabilities": () => ({ capabilities: deps.capabilities() }),
+    "server.capabilities": (context) => ({
+      // 清单按这条连接的语言出句子（裁定 R58）：id / 顺序与语言无关（R57）
+      capabilities: localizeCapabilities(deps.capabilities(), context.connection.language),
+    }),
 
     "server.shutdown": (context) => {
       deps.requestStop(context.params.reason);
@@ -70,6 +82,9 @@ export function createServerHandlers(deps: ServerHandlerDeps): HandlerTable {
 
     // 升级即重启（D4 / F-E3）：结论由单根给，它知道磁盘上的版本与重启排程
     "server.upgrade": async (context) => await deps.upgrade(context.params),
+
+    // 重载不重启（F-E1 / F-E2 / R63）：与改配置走同一条生效路径，回同一份报告
+    "server.reload": async (context) => await deps.reload(context.params),
 
     "server.usage": async (context) => await usageOf(deps, context.params),
   };
@@ -100,6 +115,23 @@ async function usageOf(
           : "server",
     usage: usageOfMessages(collected, deps.now()),
   };
+}
+
+/**
+ * 能力清单按这条连接的语言重渲染（裁定 R58）。
+ *
+ * 清单本身由配置层按缺省语言产出（每项的标题与说明都带着 `messageKey` + `params`），这里只把
+ * 句子换成收件人的语言 —— 与通知、问题出网前那一跳同一个口径（D8：存码不存句子）。
+ */
+function localizeCapabilities(
+  capabilities: readonly CapabilityView[],
+  language: Language,
+): CapabilityView[] {
+  return capabilities.map((capability) => ({
+    ...capability,
+    title: relocalizeText(capability.title, language),
+    description: relocalizeText(capability.description, language),
+  }));
 }
 
 async function conversationIdsOf(

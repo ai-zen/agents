@@ -244,7 +244,7 @@ describe("握手与鉴权（PRD A5 / D8）", () => {
     expect(hub.connectionInfos().every((info) => info.credentialId === null)).toBe(true);
   });
 
-  it("hello 的出参带语言、版本、能力与上限", async () => {
+  it("hello 的出参带语言、版本、能力 id 与上限（R57）", async () => {
     await startHub();
     const client = await connect();
 
@@ -254,9 +254,12 @@ describe("握手与鉴权（PRD A5 / D8）", () => {
       serverVersion: "0.1.0-alpha.0",
       protocolVersion: PROTOCOL_VERSION,
       startedAt: NOW,
-      capabilities: CAPABILITIES,
       limits: { maxAssetBytes: MAX_ASSET_BYTES, maxAssetsPerMessage: 4 },
     });
+    // 能力只给 id 列表：完整清单（标题、说明、属性）在 server.capabilities
+    expect((result as { capabilities: string[] }).capabilities).toEqual(
+      CAPABILITIES.map((capability) => capability.id),
+    );
   });
 
   it("认不出的语言回落英文", async () => {

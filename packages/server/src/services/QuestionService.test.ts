@@ -21,8 +21,10 @@ import {
   HANDOFF_OPTION_DECLINE,
   HANDOFF_OPTION_SELF,
   QuestionService,
+  WORKSPACE_OPTION_ACCEPT,
+  WORKSPACE_OPTION_DECLINE,
 } from "./QuestionService.js";
-import type { QuestionGuardProbe } from "./QuestionService.js";
+import type { QuestionGuardProbe, QuestionWorkspacePort } from "./QuestionService.js";
 
 interface HandoffCall {
   params: HandoffStartParams;
@@ -44,6 +46,10 @@ interface Harness {
   handoffBehaviour: { run: () => Promise<{ newConversationId: string | null }> };
   events: Array<{ name: string; payload: unknown }>;
   clock: { value: number };
+  /** 登记项目那一步收到的 cwd（D10） */
+  workspaceCalls: string[];
+  /** 登记完接着建对话那一步收到的参数 */
+  conversationCalls: Array<{ workspaceId: string; agentId: string; modelId?: string }>;
 }
 
 async function setup(): Promise<Harness> {
@@ -73,6 +79,8 @@ async function setup(): Promise<Harness> {
   const handoffCalls: HandoffCall[] = [];
   const events: Array<{ name: string; payload: unknown }> = [];
   const clock = { value: 1_700_000_000_000 };
+  const workspaceCalls: string[] = [];
+  const conversationCalls: Array<{ workspaceId: string; agentId: string; modelId?: string }> = [];
 
   const handoffBehaviour: { run: () => Promise<{ newConversationId: string | null }> } = {
     run: async () => ({ newConversationId: "c2" }),
@@ -88,6 +96,16 @@ async function setup(): Promise<Harness> {
           handoffCalls.push({ params, language });
           return await handoffBehaviour.run();
         },
+      },
+      workspaces: {
+        create: async (params: { cwd: string }) => {
+          workspaceCalls.push(params.cwd);
+          return { workspace: { id: `w-${workspaceCalls.length}` } };
+        },
+      } satisfies QuestionWorkspacePort,
+      createConversation: async (params) => {
+        conversationCalls.push(params);
+        return { conversation: { id: "c-new" } };
       },
       now: () => (clock.value += 1000),
       emit: (name, payload) => {
@@ -108,6 +126,8 @@ async function setup(): Promise<Harness> {
     handoffBehaviour,
     events,
     clock,
+    workspaceCalls,
+    conversationCalls,
   };
 }
 
@@ -200,11 +220,26 @@ describe("问题对象的基本形状（D22）", () => {
     ).rejects.toMatchObject({ code: "invalid_params" });
   });
 
-  it("list 不给对话就说清缺什么（仓储没有全库查询路径）", async () => {
-    await expect(harness.service.list({})).rejects.toMatchObject({
-      code: "invalid_params",
-      detail: { field: "conversationId", reason: "required" },
+  it("list 不给对话就查全库，也看得到挂不上对话的那种问题（R61）", async () => {
+    const handoffId = await askHandoff(harness);
+    // 一条与对话无关的问题：目录还没登记成项目（D10 / R17）
+    const registration = await harness.service.askWorkspaceRegistration({
+      cwd: "/tmp/not-a-project",
+      agentId: "a1",
     });
+    expect(registration.conversationId).toBeNull();
+
+    const all = await harness.service.list({});
+    expect(all.questions.map((question) => question.id)).toEqual([handoffId, registration.id]);
+
+    // 按对话筛时看不到那条与对话无关的（它本来就不属于任何对话）
+    const scoped = await harness.service.list({ conversationId: "c1" });
+    expect(scoped.questions.map((question) => question.id)).toEqual([handoffId]);
+
+    // `state` 在全库查询上也生效
+    await harness.service.answer({ questionId: handoffId, value: HANDOFF_OPTION_DECLINE });
+    const pendingOnly = await harness.service.list({ state: "pending" });
+    expect(pendingOnly.questions.map((question) => question.id)).toEqual([registration.id]);
   });
 
   it("问题不存在时 answer 报 not_found", async () => {
@@ -332,6 +367,64 @@ describe("交接在对话停下之后触发（D22）", () => {
     expect(harness.handoffCalls).toHaveLength(0);
     const listed = await harness.service.list({ conversationId: "c1", state: "pending" });
     expect(listed.questions.map((question) => question.id)).toEqual([id]);
+  });
+});
+
+describe("cwd 未登记就问一次要不要登记（D10 / R60）", () => {
+  it("问题本身不改变任何东西：只把待办与身份存下来", async () => {
+    const asked = await harness.service.askWorkspaceRegistration({
+      cwd: "/tmp/not-a-project",
+      agentId: "a1",
+      modelId: "m1",
+    });
+
+    expect(asked.kind).toBe("workspace_registration");
+    // 它不挂在任何对话上，也不挡着对话（R17 / D10）
+    expect(asked.conversationId).toBeNull();
+    expect(asked.blocking).toBe(false);
+    expect(asked.options.map((option) => option.value)).toEqual([
+      WORKSPACE_OPTION_ACCEPT,
+      WORKSPACE_OPTION_DECLINE,
+    ]);
+    expect(asked.prompt.params).toEqual({ cwd: "/tmp/not-a-project" });
+    expect(harness.workspaceCalls).toEqual([]);
+    expect(harness.conversationCalls).toEqual([]);
+  });
+
+  it("答「要」：先登记项目，再用那个项目接着建对话", async () => {
+    const asked = await harness.service.askWorkspaceRegistration({
+      cwd: "/tmp/not-a-project",
+      agentId: "a1",
+      modelId: "m1",
+    });
+
+    const answered = await harness.service.answer(
+      { questionId: asked.id, value: WORKSPACE_OPTION_ACCEPT },
+      { language: "zh" },
+    );
+
+    expect(harness.workspaceCalls).toEqual(["/tmp/not-a-project"]);
+    expect(harness.conversationCalls).toEqual([
+      { workspaceId: "w-1", agentId: "a1", modelId: "m1" },
+    ]);
+    expect(answered.effects).toEqual({ handoffStarted: false, newConversationId: "c-new" });
+    expect(answered.question.state).toBe("answered");
+  });
+
+  it("答「不要」就什么都不做", async () => {
+    const asked = await harness.service.askWorkspaceRegistration({
+      cwd: "/tmp/not-a-project",
+      agentId: "a1",
+    });
+
+    const answered = await harness.service.answer({
+      questionId: asked.id,
+      value: WORKSPACE_OPTION_DECLINE,
+    });
+
+    expect(harness.workspaceCalls).toEqual([]);
+    expect(harness.conversationCalls).toEqual([]);
+    expect(answered.effects).toEqual({ handoffStarted: false, newConversationId: null });
   });
 });
 

@@ -7,14 +7,16 @@
  */
 
 import { promises as fs } from "node:fs";
+import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createServer, resolveServerVersion } from "./app.js";
 import type { ExitFacts, ServerApp, ServerAppOptions } from "./app.js";
 import { resolvePaths } from "./config.js";
+import { DEFAULT_PORT, resolveListenTarget } from "./config.js";
 import type { ConnectionInfo } from "./net/index.js";
 import { readServerFile, writeServerFile } from "./net/discovery.js";
 import {
@@ -29,9 +31,12 @@ import {
 import { BRIDGED_METHODS } from "./handlers/index.js";
 import { FakeAgent } from "./runtime/TestSupport.js";
 import { transientScopeKey } from "./runtime/TransientRunner.js";
+import { Database } from "./storage/index.js";
 import { METHOD_NAMES } from "./wire/index.js";
+import { ServerError } from "./wire/index.js";
 import type {
   ConversationTransientResult,
+  ConversationView,
   MethodName,
   MethodParams,
   MethodResult,
@@ -120,6 +125,22 @@ async function startApp(fixture: Fixture, options: ServerAppOptions = {}): Promi
 }
 
 /** 直接调 handler 表（省掉网络：这几条断言看的是「接上了没有」） */
+/**
+ * 建一段对话并让它落库（R56：`conversation.create` 只发 id 与身份，首次 `send` 才写行）。
+ *
+ * 这里的用例要看的是删除路径与钩子，所以直接把草稿落成真行，不跑一轮。
+ */
+async function seedConversation(app: ServerApp, workspaceId: string): Promise<ConversationView> {
+  const created = await callMethod(app, "conversation.create", {
+    workspaceId,
+    agentId: "default",
+    modelId: "test-model",
+  });
+  if (!created.conversation) throw new Error("conversation.create 没有建出对话");
+  await app.conversationService.ensurePersisted(created.conversation.id);
+  return created.conversation;
+}
+
 async function callMethod<M extends MethodName>(
   app: ServerApp,
   method: M,
@@ -130,8 +151,7 @@ async function callMethod<M extends MethodName>(
   return await handler({ method, params, connection: CONNECTION });
 }
 
-async function connect(app: ServerApp): Promise<TestClient> {
-  const target = app.address;
+async function connect(app: ServerApp): Promise<TestClient> {  const target = app.address;
   if (!target) throw new Error("服务端没在监听");
   const client = await TestClient.connect(`ws://127.0.0.1:${target.port}/`);
   clients.push(client);
@@ -147,6 +167,18 @@ async function exists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** 按指定语言调一个方法（文案随连接语言变的那些接口要用它） */
+async function callInLanguage<M extends MethodName>(
+  app: ServerApp,
+  method: M,
+  params: MethodParams<M>,
+  language: ConnectionInfo["language"],
+): Promise<MethodResult<M>> {
+  const handler = app.handlers[method];
+  if (!handler) throw new Error(`方法未注册：${method}`);
+  return await handler({ method, params, connection: { ...CONNECTION, language } });
 }
 
 afterEach(async () => {
@@ -472,11 +504,7 @@ describe("删除路径", () => {
     const { workspace } = await callMethod(app, "workspace.create", {
       cwd: fixture.workspaceDir.path,
     });
-    const { conversation } = await callMethod(app, "conversation.create", {
-      workspaceId: workspace.id,
-      agentId: "default",
-      modelId: "test-model",
-    });
+    const conversation = await seedConversation(app, workspace.id);
 
     // 造一条素材行（等价于一次上传落定）：临时文件 → 正式文件 + 库里的引用
     const tempPath = join(app.paths.assetsDir, ".upload-test.part");
@@ -522,11 +550,7 @@ describe("删除路径", () => {
     const { workspace } = await callMethod(app, "workspace.create", {
       cwd: fixture.workspaceDir.path,
     });
-    await callMethod(app, "conversation.create", {
-      workspaceId: workspace.id,
-      agentId: "default",
-      modelId: "test-model",
-    });
+    await seedConversation(app, workspace.id);
 
     // 借一次 Scope 再还（依赖归零，但空闲计时还没到）
     await app.scopeRegistry.acquire(workspace.id);
@@ -597,6 +621,190 @@ describe("配置生效", () => {
   });
 });
 
+describe("从磁盘重载（F-E1 / R63）", () => {
+  it("server.reload 回收受影响 Scope、合成一条通知，并回与 config.patch 同一份报告", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture, { scopeIdleTimeoutMs: 10 * 60 * 1000 });
+    const { workspace } = await callMethod(app, "workspace.create", {
+      cwd: fixture.workspaceDir.path,
+    });
+    await app.scopeRegistry.acquire(workspace.id);
+    app.scopeRegistry.release(workspace.id);
+    expect(app.scopeRegistry.size()).toBe(1);
+
+    const reloaded = await callMethod(app, "server.reload", { scope: "skills" });
+
+    // 与 config.patch 同一份报告形状：这次只说要重载的那一类
+    expect(reloaded.applied.reloaded).toEqual({
+      config: false,
+      tools: false,
+      skills: true,
+      agents: false,
+      mcp: false,
+    });
+    expect(reloaded.applied.recycledWorkspaceIds).toEqual([workspace.id]);
+    expect(app.scopeRegistry.size()).toBe(0);
+    expect(reloaded.applied.noticeId).not.toBeNull();
+    expect(reloaded.applied.restartRequired).toBe(false);
+    // 配置本身没被改（重载只读不写）
+    expect(reloaded.config.configDir).toBe(app.configManager.basePath);
+  });
+
+  it("不给 scope 就是全部重载；认不出的 scope 按参数不对拒", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture);
+
+    const all = await callMethod(app, "server.reload", {});
+    expect(all.applied.reloaded).toEqual({
+      config: true,
+      tools: true,
+      skills: true,
+      agents: true,
+      mcp: true,
+    });
+
+    await expect(
+      callMethod(app, "server.reload", { scope: "没这一类" as unknown as "config" }),
+    ).rejects.toMatchObject({ code: "invalid_params" });
+  });
+});
+
+describe("D10：目录未登记成项目时先问一次", () => {
+  it("create 回 requiresRegistration，问题能在 question.list（不带对话）里看到", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture);
+
+    // 这个 cwd 从来没登记成项目
+    const created = await callMethod(app, "conversation.create", {
+      cwd: fixture.workspaceDir.path,
+      agentId: "default",
+      modelId: "test-model",
+    });
+    expect(created.conversation).toBeNull();
+    expect(created.requiresRegistration).toBe(true);
+    expect(created.cwd).toBe(fixture.workspaceDir.path);
+    expect(created.questionId).toBeTruthy();
+
+    // 没建对话也没建项目
+    expect((await callMethod(app, "workspace.list")).workspaces).toEqual([]);
+    expect((await callMethod(app, "conversation.list")).total).toBe(0);
+
+    // 问题挂不上对话，所以只能按「全库」查（R61）
+    const pending = await callMethod(app, "question.list", { state: "pending" });
+    const question = pending.questions.find((item) => item.id === created.questionId);
+    expect(question).toBeDefined();
+    expect(question?.kind).toBe("workspace_registration");
+    expect(question?.conversationId).toBeNull();
+  });
+
+  it("答「要」之后登记项目，并用它把那段对话接着建出来", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture);
+
+    const created = await callMethod(app, "conversation.create", {
+      cwd: fixture.workspaceDir.path,
+      agentId: "default",
+      modelId: "test-model",
+    });
+    const questionId = created.questionId ?? "";
+
+    const answered = await callMethod(app, "question.answer", {
+      questionId,
+      value: "accept",
+    });
+    expect(answered.question.state).toBe("answered");
+
+    // 项目已登记（cwd 就是那个目录）
+    const workspaces = await callMethod(app, "workspace.list");
+    expect(workspaces.workspaces.map((item) => item.folder.cwd)).toEqual([
+      fixture.workspaceDir.path,
+    ]);
+
+    // 对话也建出来了（还是草稿：没发过消息就不进列表，R56）
+    const newId = answered.effects.newConversationId;
+    expect(newId).toBeTruthy();
+    const opened = await callMethod(app, "conversation.get", { conversationId: newId ?? "" });
+    expect(opened.conversation.workspaceId).toBe(workspaces.workspaces[0]?.id);
+    expect(opened.conversation.modelId).toBe("test-model");
+    expect((await callMethod(app, "conversation.list")).total).toBe(0);
+  });
+
+  it("答「不要」就什么都不做", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture);
+
+    const created = await callMethod(app, "conversation.create", {
+      cwd: fixture.workspaceDir.path,
+      agentId: "default",
+      modelId: "test-model",
+    });
+    const answered = await callMethod(app, "question.answer", {
+      questionId: created.questionId ?? "",
+      value: "decline",
+    });
+    expect(answered.effects.newConversationId).toBeNull();
+    expect((await callMethod(app, "workspace.list")).workspaces).toEqual([]);
+    expect((await callMethod(app, "conversation.list")).total).toBe(0);
+  });
+});
+
+describe("到交接线才提问（R59 / F-D2）", () => {
+  /** 建一段对话并跑一轮，等它结算 */
+  async function runAndSettle(app: ServerApp, workspaceId: string): Promise<void> {
+    const conversation = await seedConversation(app, workspaceId);
+    await callMethod(app, "conversation.send", {
+      conversationId: conversation.id,
+      input: { content: "说点什么" },
+    });
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if (app.chatRunner.turn(conversation.id) === undefined) return;
+      await wait(10);
+    }
+    throw new Error("这一轮没有结算");
+  }
+
+  it("越过交接线才问，未到线不问", async () => {
+    const fixture = await makeFixture();
+    let promptTokens = 0;
+    const app = await startApp(fixture, {
+      createAgent: async () =>
+        new FakeAgent([
+          {
+            deltas: [{ content: "答完了" }],
+            usage: {
+              prompt_tokens: promptTokens,
+              completion_tokens: 5,
+              total_tokens: promptTokens + 5,
+            },
+          },
+        ]),
+    });
+    const { workspace } = await callMethod(app, "workspace.create", {
+      cwd: fixture.workspaceDir.path,
+    });
+
+    // 交接线是 1000（见上面的 CONFIG）：这一轮只用了 500，不问
+    promptTokens = 500;
+    await runAndSettle(app, workspace.id);
+    await wait(50);
+    const quiet = await callMethod(app, "question.list", { state: "pending" });
+    expect(quiet.questions).toEqual([]);
+
+    // 这一轮 1500：到线了，问
+    promptTokens = 1500;
+    await runAndSettle(app, workspace.id);
+    let asked: Awaited<ReturnType<typeof callMethod<"question.list">>>["questions"] = [];
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      asked = (await callMethod(app, "question.list", { state: "pending" })).questions;
+      if (asked.length > 0) break;
+      await wait(10);
+    }
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.kind).toBe("handoff");
+    expect(asked[0]?.options.map((option) => option.value)).toEqual(["self", "summary", "decline"]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // conversation.* 的三个跨服务钩子
 // ---------------------------------------------------------------------------
@@ -608,11 +816,7 @@ describe("对话的三个钩子", () => {
     const { workspace } = await callMethod(app, "workspace.create", {
       cwd: fixture.workspaceDir.path,
     });
-    const { conversation } = await callMethod(app, "conversation.create", {
-      workspaceId: workspace.id,
-      agentId: "default",
-      modelId: "test-model",
-    });
+    const conversation = await seedConversation(app, workspace.id);
 
     // 一个挡着对话的问题（不可撤销动作的确认）
     await app.questionService.ask({
@@ -669,5 +873,312 @@ describe("对话的三个钩子", () => {
     await wait(120);
     expect(client.queue.size()).toBe(0);
     app.scopeRegistry.recycleAll();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 缺省语言（D8 / 裁定 R58）
+// ---------------------------------------------------------------------------
+
+/** 往夹具的 config.json 里补几个字段（`ConfigManager` 读原文，不认识的字段原样保留） */
+async function patchConfigFile(fixture: Fixture, patch: Record<string, unknown>): Promise<void> {
+  const path = join(fixture.dataRoot.path, "config.json");
+  const current = JSON.parse(await fs.readFile(path, "utf8")) as Record<string, unknown>;
+  await fs.writeFile(path, JSON.stringify({ ...current, ...patch }, null, 2), "utf8");
+}
+
+/** 拿一个当前空闲的端口（先占再放：只为了拿到一个数） */
+async function freePort(): Promise<number> {
+  const server = createTcpServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const port = typeof address === "object" && address !== null ? address.port : 0;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return port;
+}
+
+/**
+ * 等一件真实异步的事做完（收尾要关真套接字、关库，这些不是微任务）。
+ *
+ * 每轮让出 10ms 真时间：`setImmediate` 循环跑得比套接字关闭快得多，等不到结果。
+ */
+async function until(predicate: () => boolean, message: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (predicate()) return;
+    await wait(10);
+  }
+  throw new Error(message);
+}
+
+/** 让真实异步推进几轮（但还不足以等完一次收尾） */
+async function flushAsync(): Promise<void> {
+  await wait(20);
+}
+
+/** 手写一次握手（不经过 harness 的 `connect`，因为这里要控制带不带 language） */
+async function handshake(
+  app: ServerApp,
+  language?: "en" | "zh",
+): Promise<{ language: string; capabilities: string[] }> {
+  const target = app.address;
+  if (!target) throw new Error("服务端没在监听");
+  const client = await TestClient.connect(`ws://127.0.0.1:${target.port}/`);
+  clients.push(client);
+  const token = (await fs.readFile(app.paths.tokenFile, "utf8")).trim();
+  const frame = await client.hello(token, language === undefined ? {} : { language });
+  return frame.result as { language: string; capabilities: string[] };
+}
+
+describe("缺省语言（D8 / 裁定 R58）", () => {
+  it("hello 不带 language 时用配置里的语言，带了就以连接为准", async () => {
+    const fixture = await makeFixture();
+    await patchConfigFile(fixture, { language: "zh" });
+    const app = await startApp(fixture);
+
+    expect((await handshake(app)).language).toBe("zh");
+    // 连接自己声明的语言优先级更高（语言挂连接，断开即忘）
+    expect((await handshake(app, "en")).language).toBe("en");
+  });
+
+  it("配置里没写 language 时缺省英文", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture);
+    expect((await handshake(app)).language).toBe("en");
+  });
+
+  it("config.setDefaults 写得进 language，下一条连接立刻用新的缺省", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture);
+    expect((await handshake(app)).language).toBe("en");
+
+    // 契约的 `DefaultSelection` 还没有 `language` 这一项（`wire/methods.ts` 不在本轮的
+    // 可改范围里），服务端按 `DefaultsInput` 收下它 —— 这一句断言就是把那条路打通。
+    const params = { defaults: { language: "zh" } } as unknown as MethodParams<"config.setDefaults">;
+    const written = await callMethod(app, "config.setDefaults", params);
+    expect(written.config.configDir).toBe(fixture.dataRoot.path);
+
+    expect((await handshake(app)).language).toBe("zh");
+    // 认不出来的语言直接驳回，不悄悄换成英文
+    const bad = { defaults: { language: "fr" } } as unknown as MethodParams<"config.setDefaults">;
+    await expect(callMethod(app, "config.setDefaults", bad)).rejects.toMatchObject({
+      code: "invalid_params",
+    });
+  });
+
+  it("server.capabilities 按连接语言渲染，id 与顺序不变（R57 / R58）", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture);
+
+    const english = await callInLanguage(app, "server.capabilities", {}, "en");
+    const chinese = await callInLanguage(app, "server.capabilities", {}, "zh");
+
+    expect(english.capabilities.map((item) => item.id)).toEqual(
+      chinese.capabilities.map((item) => item.id),
+    );
+    expect(english.capabilities.map((item) => item.method)).toEqual(
+      chinese.capabilities.map((item) => item.method),
+    );
+    expect(english.capabilities[0]?.title.message).not.toBe(chinese.capabilities[0]?.title.message);
+    // 同一份事实：码与参数不动，只有句子换了语言
+    expect(english.capabilities[0]?.title.messageKey).toBe(chinese.capabilities[0]?.title.messageKey);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 端口的三档来源（D25 / 裁定 R67）
+// ---------------------------------------------------------------------------
+
+describe("端口的三档来源（D25 / 裁定 R67）", () => {
+  it("<dataRoot>/server.json 的 port 会被采用", async () => {
+    const fixture = await makeFixture();
+    const port = await freePort();
+    await fs.writeFile(
+      join(fixture.dataRoot.path, "server.json"),
+      JSON.stringify({ port }),
+      "utf8",
+    );
+
+    const app = await createServer({
+      aiZenDir: fixture.dataRoot.path,
+      local: true,
+      exit: () => undefined,
+    });
+    apps.push(app);
+    const target = await app.start();
+    expect(target.port).toBe(port);
+  });
+
+  it("启动参数优先于配置文件", async () => {
+    const fixture = await makeFixture();
+    const fromFile = await freePort();
+    await fs.writeFile(
+      join(fixture.dataRoot.path, "server.json"),
+      JSON.stringify({ port: fromFile }),
+      "utf8",
+    );
+
+    // `startApp` 传的是 `port: 0`（系统分配）：配置文件那一档轮不到它说话
+    const app = await startApp(fixture);
+    expect(app.address?.port).toBeGreaterThan(0);
+    expect(app.address?.port).not.toBe(fromFile);
+  });
+
+  it("配置文件里的端口不合法 → config_invalid，不静默回落", async () => {
+    const fixture = await makeFixture();
+    await fs.writeFile(
+      join(fixture.dataRoot.path, "server.json"),
+      JSON.stringify({ port: 70000 }),
+      "utf8",
+    );
+
+    await expect(
+      createServer({ aiZenDir: fixture.dataRoot.path, local: true, exit: () => undefined }),
+    ).rejects.toSatisfy(
+      (error: unknown) =>
+        ServerError.is(error) &&
+        error.code === "config_invalid" &&
+        (error.detail as { field?: string }).field === "port",
+    );
+  });
+
+  it("两档都没给时回落默认 8790（解析这一跳的结论，不去真占 8790）", async () => {
+    const fixture = await makeFixture();
+    // 没有 server.json、也不给 port：解析结果就是默认端口
+    expect(resolveListenTarget({ local: true, port: undefined, configPort: undefined }).port).toBe(
+      DEFAULT_PORT,
+    );
+    // 同一个数据根上建出来（不 start）不会因为端口而失败
+    const app = await createServer({
+      aiZenDir: fixture.dataRoot.path,
+      local: true,
+      port: 0,
+      exit: () => undefined,
+    });
+    apps.push(app);
+    expect(app.running).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 升级自检（D4 / F-E3 / 裁定 R66）
+// ---------------------------------------------------------------------------
+
+describe("升级自检（D4 / F-E3 / 裁定 R66）", () => {
+  /** 把自检定时器换成手摇的：用例自己决定什么时候「过了 30 秒」，不必真等 */
+  function manualTimer(): {
+    startVersionTimer: (task: () => void, everyMs: number) => () => void;
+    tick: () => void;
+    cancels: number[];
+    starts: number[];
+  } {
+    let task: (() => void) | null = null;
+    const cancels: number[] = [];
+    const starts: number[] = [];
+    return {
+      startVersionTimer: (nextTask, everyMs) => {
+        task = nextTask;
+        starts.push(everyMs);
+        return () => {
+          cancels.push(everyMs);
+          task = null;
+        };
+      },
+      tick: () => {
+        if (task === null) throw new Error("自检定时器已经被清掉");
+        task();
+      },
+      cancels,
+      starts,
+    };
+  }
+
+  it("磁盘版本变新就收尾退出并推通知；定时器在 stop() 里清掉", async () => {
+    const fixture = await makeFixture();
+    let disk = "0.0.1";
+    const facts: ExitFacts[] = [];
+    const timer = manualTimer();
+
+    const app = await createServer({
+      aiZenDir: fixture.dataRoot.path,
+      port: 0,
+      local: true,
+      version: "1.0.0",
+      diskVersion: () => disk,
+      versionCheckIntervalMs: 30_000,
+      startVersionTimer: timer.startVersionTimer,
+      exit: (exitFacts) => {
+        facts.push(exitFacts);
+      },
+    });
+    apps.push(app);
+    await app.start();
+    // 启动时按 30 秒起了那一个低频定时器
+    expect(timer.starts).toEqual([30_000]);
+
+    // 磁盘上还是旧版本：自检什么都不做
+    timer.tick();
+    await flushAsync();
+    expect(app.running).toBe(true);
+    expect(facts).toEqual([]);
+    expect(timer.cancels).toEqual([]);
+
+    // 新版本落盘：下一次自检收尾退出（由启动方式重拉）
+    disk = "1.1.0";
+    timer.tick();
+    await until(() => facts.length > 0, "自检没有收尾退出");
+    expect(app.running).toBe(false);
+    expect(facts.map((item) => item.reason)).toEqual(["requested"]);
+
+    // 说明「为什么进程要走」的那条通知（收尾之后库已关，重开一份读库里的行）
+    const reopened = new Database(app.paths.dbFile);
+    try {
+      const rows = await reopened.all<{ code: string; params: string | null }>(
+        "SELECT code, params FROM notices",
+      );
+      expect(rows.map((row) => row.code)).toEqual(["notice.upgradeRestarting"]);
+      expect(rows[0]?.params).toContain("1.1.0");
+    } finally {
+      await reopened.close();
+    }
+
+    // 定时器已经清掉：不会再有一次检查
+    expect(timer.cancels).toEqual([30_000]);
+  });
+
+  it("磁盘版本没变（或更旧）时一直不动", async () => {
+    const fixture = await makeFixture();
+    let disk = "1.0.0";
+    const facts: ExitFacts[] = [];
+    const timer = manualTimer();
+
+    const app = await createServer({
+      aiZenDir: fixture.dataRoot.path,
+      port: 0,
+      local: true,
+      version: "1.0.0",
+      diskVersion: () => disk,
+      startVersionTimer: timer.startVersionTimer,
+      exit: (exitFacts) => {
+        facts.push(exitFacts);
+      },
+    });
+    apps.push(app);
+    await app.start();
+
+    timer.tick();
+    await flushAsync();
+    expect(app.running).toBe(true);
+
+    // 回退不算升级（重启只会把用户拉回旧版本）
+    disk = "0.9.0";
+    timer.tick();
+    await flushAsync();
+    expect(app.running).toBe(true);
+    expect(facts).toEqual([]);
+
+    // 收尾把定时器清掉（不留悬挂定时器）
+    await app.stop("requested");
+    expect(timer.cancels).toHaveLength(1);
+    expect(() => timer.tick()).toThrow("自检定时器已经被清掉");
   });
 });

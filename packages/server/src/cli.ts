@@ -17,7 +17,7 @@
 import { mkdir } from "node:fs/promises";
 
 import { createServer, resolveServerVersion } from "./app.js";
-import { resolvePaths } from "./config.js";
+import { readServerSettings, resolvePaths } from "./config.js";
 import type { ServerPaths } from "./config.js";
 import type { Language } from "./i18n/index.js";
 import { CredentialService } from "./services/index.js";
@@ -41,7 +41,9 @@ const CLI_LANGUAGE: Language = "zh";
 const USAGE = `用法：
   agents-server [serve] [--port <端口>] [--host <地址>] [--local | --public] [--ai-zen-dir <目录>]
       前台启动服务。缺省是本地实例（只监听 127.0.0.1，凭证自动生成并写在 <数据根>/run/token）。
+      端口的三档来源：--port > <数据根>/server.json 的 port > 默认 8790。
       --port 0  让系统分配一个空闲端口（端口被占用时的退路，也是测试与冒烟用的写法）。
+      日志写在 <数据根>/logs/server.log（按大小轮转）。
 
   agents-server token create [--note <备注>] [--ai-zen-dir <目录>]
       新建一串凭证。明文只显示这一次。
@@ -267,14 +269,23 @@ async function runTokenRevoke(paths: ServerPaths, credentialId: string): Promise
  *
  * 启动后打印四样东西：实际监听地址（端口可能是系统分配的）、版本、发现文件、本地凭证交付文件
  * —— 客户端要连的就是前两个，本机免输凭证靠的是第三个（PRD A5 / architecture §2）。
+ * 日志落在哪儿也报一行（PRD F-J2：界面被占满时那是唯一的去处）。
+ *
+ * 端口的三档来源（D25 / 裁定 R67）：`--port` > `<数据根>/server.json` 的 `port` > 默认 8790。
+ * 配置文件那一档在这里读：读坏了（不是 JSON、端口不合法）就当场失败，不静默回落。
  *
  * 同一个数据根上已经有人在服务时（单实例），本进程只是把那个地址报出来就退出：
  * 两个进程各写一份 `server.json` 会让客户端连谁都不对。
  */
 async function runServe(parsed: ParsedArgs): Promise<void> {
+  const paths = resolvePaths(parsed.aiZenDir);
+  // 参数给了端口就不读配置文件：那一档这时轮不到它说话
+  const configPort = parsed.port === undefined ? (await readServerSettings(paths)).port : undefined;
+
   const app = await createServer({
     aiZenDir: parsed.aiZenDir,
     port: parsed.port,
+    configPort,
     host: parsed.host,
     local: parsed.local,
   });
@@ -292,6 +303,7 @@ async function runServe(parsed: ParsedArgs): Promise<void> {
   process.stdout.write(`服务端已启动：ws://${target.host}:${target.port}\n`);
   process.stdout.write(`版本：${app.version}（协议 ${PROTOCOL_VERSION}）\n`);
   process.stdout.write(`发现文件：${app.paths.serverFile}\n`);
+  process.stdout.write(`日志：${app.paths.logsDir}\n`);
   if (app.local) {
     process.stdout.write(`本地凭证交付文件：${app.paths.tokenFile}\n`);
   } else {

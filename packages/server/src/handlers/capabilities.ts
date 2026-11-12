@@ -48,6 +48,7 @@ const FACTS: readonly CapabilityFact[] = [
   { method: "server.shutdown", prd: "F-E1", blocking: false, destructive: false },
   { method: "server.usage", prd: "F-I5", blocking: false, destructive: false },
   { method: "server.capabilities", prd: "F-E5", blocking: false, destructive: false },
+  { method: "server.reload", prd: "F-E1", blocking: false, destructive: false },
   { method: "server.setLanguage", prd: "F-E4", blocking: false, destructive: false },
 
   { method: "workspace.list", prd: "D9", blocking: false, destructive: false },

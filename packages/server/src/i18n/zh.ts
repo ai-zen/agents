@@ -17,6 +17,9 @@ export const zh = {
   "error.unsupported": "服务端处理不了{what}。",
   "error.internal": "服务端内部出错了，细节写进日志里了。",
   "error.configInvalid": "当前配置还用不了：{reason}。",
+  // 端口写得不对（D25 的三档来源里，显式给出的那个值不合法；裁定 R67）
+  "error.portInvalid":
+    "这个端口号不能用：{value}（来自 {source}）。端口要是 1..65535 的整数 —— 0 表示「让系统分配」，只在命令行里有效。",
   // 助手没有可用模型（结构化原因在 `detail` 里）
   "error.modelUnresolved": "这个助手没有可用的模型 —— 给它挑一个模型，或者在设置里指定一个默认模型。",
   "error.notFactoryModel": "「{id}」不在出厂模型清单里，没有可以恢复的出厂版本。",
@@ -73,6 +76,8 @@ export const zh = {
   "message.reverted": "删掉了 {count} 条消息，内容已经放回输入框。",
   "message.cwdMissing": "这个项目的目录已经不存在了（{cwd}）。对话和历史都还在。",
   "message.injectedContext": "这段是服务端加进来的，不是你输入的：{summary}",
+  // 每轮末尾追加给模型的那句事实（PRD F-D9：cwd 来自对话所属项目，不是服务端进程的目录）
+  "message.injectedContext.cwd": "当前目录是 {cwd}",
   "message.subagentFailed": "子 Agent {name} 失败了：{reason}",
   "message.subagentFinished": "子 Agent {name} 跑完了。",
   "message.imageAsText": "{model} 看不了图片，{name} 改成用文字描述发过去。",
@@ -155,6 +160,8 @@ export const zh = {
   "capability.server.usage.detail": "本轮 / 这段对话 / 这个项目 / 整机的 token 用量，含子 Agent。",
   "capability.server.capabilities": "列出服务端能做什么",
   "capability.server.capabilities.detail": "帮助页就是照这份清单渲染的：每件事做什么、会不会占住对话、能不能撤。",
+  "capability.server.reload": "从磁盘重载",
+  "capability.server.reload.detail": "重新读一遍配置、助手、工具、技能或 MCP 条目：受影响的项日会重建能力，不用重启。",
   "capability.server.setLanguage": "换这条连接的语言",
   "capability.server.setLanguage.detail": "这条连接上的文案都按选的语言渲染；断开重连就忘掉。",
 

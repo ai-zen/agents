@@ -7,11 +7,13 @@
  */
 
 import { beforeEach, describe, expect, it } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentNS } from "@ai-zen/agents-core";
 import { AgentNS as AgentNSValue } from "@ai-zen/agents-core";
+import { AutoMigratePlugin, Scope } from "@ai-zen/agents-sdk";
+import type { HandoffService, SendContext } from "@ai-zen/agents-sdk";
 
 import {
   ConversationRepository,
@@ -21,11 +23,12 @@ import {
   WorkspaceRepository,
 } from "../storage/index.js";
 import type { Conversation, MessageUpsertInput, StoredMessage } from "../storage/types.js";
+import type { Language } from "../i18n/index.js";
 import type { EventMap, EventName } from "../wire/events.js";
 import { ServerError } from "../wire/errors.js";
 import type { GenerationPhaseName, RunState } from "../wire/states.js";
-import type { AgentBuildContext, ChatAgent } from "./ChatRunner.js";
-import { ChatRunner, DEFAULT_STREAM_WRITE_INTERVAL_MS } from "./ChatRunner.js";
+import type { AgentBuildContext, ChatAgent, TurnSettledFacts } from "./ChatRunner.js";
+import { ChatRunner, createSdkAgentFactory, DEFAULT_STREAM_WRITE_INTERVAL_MS } from "./ChatRunner.js";
 import { RunRegistry } from "./RunRegistry.js";
 import { ScopeRegistry } from "./ScopeRegistry.js";
 import type { FakeRound } from "./TestSupport.js";
@@ -80,6 +83,11 @@ function createHarness(options: {
   conversation?: Conversation;
   streamWriteIntervalMs?: number;
   history?: MessageUpsertInput[];
+  /** 这段对话所属项目的目录（F-D9 的注入段用）；不注入则不注入那一段 */
+  cwd?: string;
+  /** 一轮结算之后的回调（R59） */
+  onTurnSettled?: (facts: TurnSettledFacts) => void;
+  language?: Language;
 }): Harness {
   const clock = new ManualClock();
   const store = new RecordingMessageStore();
@@ -112,6 +120,9 @@ function createHarness(options: {
     clock,
     newId: () => `srv-${++idCursor}`,
     streamWriteIntervalMs: options.streamWriteIntervalMs ?? 0,
+    resolveCwd: async () => options.cwd ?? null,
+    onTurnSettled: options.onTurnSettled,
+    defaultLanguage: options.language,
   });
 
   const pushed = <E extends EventName>(name: E): Array<EventMap[E]> =>
@@ -262,13 +273,14 @@ describe("ChatRunner：六态与增量", () => {
     });
     await turn.done;
 
+    // 两个工具都定型之后不再停在「在等工具」：那一态描述的事已经不成立，回到「连上」，
+    // 接着是下一轮的首字与正文（L8：并行时逐个减少，减到空就换态）
     expect(custom.phases()).toEqual([
       "connected",
       "awaiting_first_token",
       "thinking",
       "generating",
       "assembling_tool_calls",
-      "awaiting_tools",
       "awaiting_tools",
       "awaiting_tools",
       "awaiting_tools",
@@ -285,7 +297,9 @@ describe("ChatRunner：六态与增量", () => {
         const generation = payload.run.generation;
         return generation?.phase === "awaiting_tools" ? generation.runningTools.length : -1;
       });
-    expect(runningCounts).toEqual([1, 2, 1, 0]);
+    expect(runningCounts).toEqual([1, 2, 1]);
+    // 最后一条「等工具」快照里没有还在跑的工具：不会有「等一个空列表」的态出网
+    expect(runningCounts.every((count) => count > 0)).toBe(true);
   });
 
   it("增量事件搬的是 core 的 `AgentNS.Delta`，同一片刻推给客户端", async () => {
@@ -464,6 +478,141 @@ describe("ChatRunner：结算", () => {
     expect(snapshot.messageCount).toBe(1);
     expect(snapshot.usage).toEqual({ prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 });
     expect(snapshot.finishedAt).not.toBeNull();
+  });
+
+  it("子 Agent 说过的话也落库，挂在那次委派的工具调用上（F-I7）", async () => {
+    const custom = createHarness({
+      rounds: [
+        {
+          deltas: [{ tool_calls: [{ index: 0, id: "call-9", type: "function", function: { name: "delegate", arguments: "{}" } }] }],
+          toolCalls: [{ id: "call-9", name: "delegate" }],
+          subAgent: {
+            name: "helper",
+            messages: [
+              {
+                id: "inner-u",
+                role: AgentNSValue.Role.User,
+                status: AgentNSValue.MessageStatus.Completed,
+                content: "把方案说一下",
+              },
+              {
+                id: "inner-a",
+                role: AgentNSValue.Role.Assistant,
+                status: AgentNSValue.MessageStatus.Completed,
+                content: "方案是这样",
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "交给助手" },
+    });
+    const settlement = await turn.done;
+
+    // 条数就是真落下去的条数
+    expect(settlement.run.subagents[0]?.messageCount).toBe(2);
+
+    // 落库的两条都带 parentToolCallId（回看靠它），且不在主线历史里
+    const subRows = custom.store.writes.filter((row) => row.parentToolCallId === "call-9");
+    expect(subRows.map((row) => row.content)).toEqual(["把方案说一下", "方案是这样"]);
+    expect(subRows.every((row) => row.conversationId === CONVERSATION_ID)).toBe(true);
+  });
+});
+
+describe("ChatRunner：告诉模型「现在在哪个目录」（F-D9）", () => {
+  it("cwd 作为系统注入接在最后一条用户消息末尾，并标上服务端注入", async () => {
+    const custom = createHarness({
+      rounds: plainRounds(),
+      cwd: "/tmp/ai-zen-project",
+      language: "zh",
+    });
+
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "看看这里" },
+    });
+    await turn.done;
+
+    const content = custom.store.peek(turn.userMessageId)?.content;
+    expect(Array.isArray(content)).toBe(true);
+    if (!Array.isArray(content)) return;
+    // 用户的那段原样在前，注入的那段在末尾
+    expect(content[0]).toEqual({ type: "text", text: "看看这里" });
+    const injected = content.at(-1);
+    expect(injected?.type).toBe("text");
+    const text = injected && "text" in injected ? injected.text : "";
+    expect(text).toContain("/tmp/ai-zen-project");
+    // 它以「这是服务端加的」那句话开头（i18n 里已有的键）
+    expect(text).toContain("服务端");
+
+    // 「这条里有服务端注入」的事实走既有的 `data.hidden` 约定
+    expect(custom.store.peek(turn.userMessageId)?.data).toEqual({ hidden: true });
+  });
+
+  it("拿不到 cwd 时不注入，用户那条保持原样", async () => {
+    const custom = createHarness({ rounds: plainRounds() });
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "看看这里" },
+    });
+    await turn.done;
+
+    const row = custom.store.peek(turn.userMessageId);
+    expect(row?.content).toBe("看看这里");
+    expect(row?.data).toBeNull();
+  });
+});
+
+describe("ChatRunner：一轮结算之后报事实（R59）", () => {  it("结算时回调 onTurnSettled，带本轮用量 / 交接线 / 语言", async () => {
+    const settled: TurnSettledFacts[] = [];
+    const custom = createHarness({
+      rounds: [
+        {
+          deltas: [{ content: "好" }],
+          usage: { prompt_tokens: 120, completion_tokens: 5, total_tokens: 125 },
+        },
+      ],
+      // 模型上的交接线由 Scope 的配置提供（该假 Scope 里没有这个模型 → 0，这里只验回调本身）
+      language: "zh",
+      onTurnSettled: (facts) => settled.push(facts),
+    });
+
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "说点什么" },
+    });
+    await turn.done;
+
+    expect(settled).toHaveLength(1);
+    expect(settled[0]).toMatchObject({
+      conversationId: CONVERSATION_ID,
+      outcome: "completed",
+      promptTokens: 120,
+      language: "zh",
+    });
+    expect(typeof settled[0]?.handoffTokens).toBe("number");
+  });
+
+  it("回调里抛错不影响这一轮（只记日志）", async () => {
+    const problems: string[] = [];
+    const custom = createHarness({
+      rounds: plainRounds(),
+      onTurnSettled: () => {
+        throw new Error("回调炸了");
+      },
+    });
+    void problems;
+
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "说点什么" },
+    });
+    const settlement = await turn.done;
+    expect(settlement.outcome).toBe("completed");
   });
 });
 
@@ -691,6 +840,70 @@ describe("ChatRunner：用量三个口径（PRD F-I5）", () => {
       unit: "tokens_per_second",
       basis: "completion",
     });
+  });
+});
+
+describe("真装配：交接线插件不替用户决定迁移（R59 / PRD §5）", () => {
+  it("越过交接线也不自动迁移：装配时传的 resolveMode 一律回 null", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ai-zen-sdk-factory-"));
+    try {
+      const agentsDir = join(dir, "agents");
+      await mkdir(agentsDir, { recursive: true });
+      await writeFile(
+        join(agentsDir, "a1.json"),
+        JSON.stringify({ id: "a1", name: "助手", modelId: "model-1", messages: [], custom: true }),
+        "utf-8",
+      );
+
+      // 真 Scope：配置里那个模型配了交接线 100
+      const scope = new Scope({
+        cwd: dir,
+        agentsDir,
+        config: {
+          endpoints: [{ id: "e1", name: "端点", baseUrl: "https://example.test/v1", apiKey: "k" }],
+          models: [
+            {
+              id: "model-1",
+              name: "模型",
+              endpointId: "e1",
+              tokenThresholds: { handoff: 100, guard: 200 },
+            },
+          ],
+        },
+      });
+
+      const migrations: unknown[] = [];
+      const handoff = {
+        busy: false,
+        migrate: async (input: unknown) => {
+          migrations.push(input);
+        },
+      } as unknown as HandoffService;
+
+      const factory = createSdkAgentFactory({ handoff: () => handoff });
+      const agent = await factory({
+        conversationId: CONVERSATION_ID,
+        workspaceId: WORKSPACE_ID,
+        agentId: "a1",
+        modelId: "model-1",
+        scope,
+        history: [],
+      });
+
+      const plugins = (agent as unknown as { _plugins: unknown[] })._plugins;
+      const autoMigrate = plugins.find((plugin) => plugin instanceof AutoMigratePlugin) as
+        | AutoMigratePlugin
+        | undefined;
+      expect(autoMigrate).toBeDefined();
+
+      // 用量已经远超交接线：插件仍然不问、也不迁移（问用户的是 QuestionService）
+      await autoMigrate?.onAfterSend({
+        agent: { lastUsage: { prompt_tokens: 9999, completion_tokens: 1, total_tokens: 10000 } },
+      } as unknown as SendContext);
+      expect(migrations).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

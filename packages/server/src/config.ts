@@ -1,5 +1,8 @@
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+
+import { ServerError } from "./wire/errors.js";
 
 /**
  * 路径与监听的来源（plan §1 的 `config.ts` 契约）。
@@ -12,7 +15,7 @@ import { join } from "node:path";
  * 数据在哪」随启动方式漂移。数据根只有一个来源：显式参数 → `AI_ZEN_DIR` → 用户目录下的 `~/.ai-zen`。
  */
 
-/** 数据根下的五个路径（`architecture.md` §2 的目录图） */
+/** 数据根下的路径（`architecture.md` §2 的目录图） */
 export interface ServerPaths {
   /** 数据根（`AI_ZEN_DIR`，缺省 `~/.ai-zen`） */
   dataRoot: string;
@@ -26,6 +29,12 @@ export interface ServerPaths {
   serverFile: string;
   /** 本地凭证交付文件：`<dataRoot>/run/token` */
   tokenFile: string;
+  /** SDK 的配置文件：`<dataRoot>/config.json`（配置唯一真相，裁定 R13） */
+  configFile: string;
+  /** 服务端自己的设置文件：`<dataRoot>/server.json`（D25 的「配置文件」那一档，裁定 R67） */
+  serverConfigFile: string;
+  /** 日志目录：`<dataRoot>/logs`（PRD F-J2：界面被占用时日志另有去处） */
+  logsDir: string;
 }
 
 /** 数据根目录名（缺省落在用户目录下） */
@@ -45,6 +54,15 @@ const TOKEN_FILE_NAME = "token";
 
 /** 附件子目录名 */
 const ASSETS_DIR_NAME = "assets";
+
+/** SDK 配置文件名（`<dataRoot>/config.json`，裁定 R13） */
+const CONFIG_FILE_NAME = "config.json";
+
+/** 服务端设置文件名（`<dataRoot>/server.json`，裁定 R67） */
+const SERVER_CONFIG_FILE_NAME = "server.json";
+
+/** 日志子目录名（PRD F-J2） */
+const LOGS_DIR_NAME = "logs";
 
 /** 数据根环境变量（PRD F-J4：数据根可由它改，测试与多实例都靠它） */
 export const AI_ZEN_DIR_ENV = "AI_ZEN_DIR";
@@ -74,7 +92,7 @@ export function resolveDataRoot(aiZenDir?: string): string {
   return join(homedir(), DEFAULT_DIR_NAME);
 }
 
-/** 按数据根推出五条路径（库、附件、运行期目录、发现文件、凭证文件） */
+/** 按数据根推出全部路径（库、附件、运行期目录、发现文件、凭证文件、两份配置文件、日志目录） */
 export function resolvePaths(aiZenDir?: string): ServerPaths {
   const dataRoot = resolveDataRoot(aiZenDir);
   const runDir = join(dataRoot, RUN_DIR_NAME);
@@ -85,6 +103,9 @@ export function resolvePaths(aiZenDir?: string): ServerPaths {
     runDir,
     serverFile: join(runDir, SERVER_FILE_NAME),
     tokenFile: join(runDir, TOKEN_FILE_NAME),
+    configFile: join(dataRoot, CONFIG_FILE_NAME),
+    serverConfigFile: join(dataRoot, SERVER_CONFIG_FILE_NAME),
+    logsDir: join(dataRoot, LOGS_DIR_NAME),
   };
 }
 
@@ -113,25 +134,122 @@ export interface ListenTargetInput {
 /**
  * 决定监听哪个地址、哪个端口。
  *
- * 端口优先级：参数 > 配置文件 > 默认（PRD D25）。参数或配置里给的值不是一个可用端口
- * （非整数、越界）时当作没给 —— 一个手写错的端口号不该让进程起不来，但也要让人能看出它被跳过了，
- * 所以调用方拿到的是回落后的结果。
+ * 端口优先级：参数 > 配置文件 > 默认（PRD D25）。**显式给出的值不合法就报错**（裁定 R67）：
+ * 静默回落会造成「我配了 9000 却在 8790 上」这种查不出来的偏差，所以只有「完全没给」才落到
+ * 下一顺位。
+ *
+ * 两个来源的合法范围不同：启动参数允许 `0`（让系统分配，用例与冒烟都用它），配置文件里的
+ * 端口必须是真端口 —— 写 `0` 的意图只能是「每次启动换一个」，而这件事在配置文件里说不清。
  */
 export function resolveListenTarget(input: ListenTargetInput): ListenTarget {
   return {
     host: input.local ? LOOPBACK_HOST : PUBLIC_HOST,
-    port: firstValidPort(input.port, input.configPort) ?? DEFAULT_PORT,
+    port: resolvePort(input.port, input.configPort),
   };
 }
 
-function firstValidPort(...candidates: (number | undefined)[]): number | undefined {
-  for (const candidate of candidates) {
-    if (isValidPort(candidate)) return candidate;
+/** 端口的三档优先级与两套取值范围（分出来是为了让调用方与用例都能单独验这一跳） */
+export function resolvePort(port: number | undefined, configPort: number | undefined): number {
+  if (port !== undefined) {
+    if (!isPortOrAuto(port)) throw invalidPort("port", port, "launch_argument");
+    return port;
   }
-  return undefined;
+  if (configPort !== undefined) {
+    if (!isValidPort(configPort)) throw invalidPort("configPort", configPort, "server.json");
+    return configPort;
+  }
+  return DEFAULT_PORT;
 }
 
 /** 端口是否是 1..65535 的整数 */
 export function isValidPort(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= 65535;
+}
+
+/** 启动参数里的端口：`0` 也认（交给系统分配），其余同 {@link isValidPort} */
+export function isPortOrAuto(value: unknown): value is number {
+  return value === 0 || isValidPort(value);
+}
+
+/**
+ * 端口写得不对。
+ *
+ * 码是 `config_invalid`（PRD F-A8：配置类问题要能当场修），`detail` 说明哪个来源给的什么值，
+ * 界面据此把光标放到那一栏（`server.json` 的 `port`，或启动参数）。
+ */
+function invalidPort(field: string, value: unknown, source: string): ServerError {
+  return new ServerError("config_invalid", {
+    messageKey: "error.portInvalid",
+    params: { value: String(value), source },
+    detail: { field, value, source, reason: "not_a_usable_port", allowed: "1..65535, 0 (launch argument only)" },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// <dataRoot>/server.json（D25 的「配置文件」那一档，裁定 R67）
+// ---------------------------------------------------------------------------
+
+/**
+ * 服务端设置文件的形状。
+ *
+ * 只放「服务端自己的启动参数」这类东西，`config.json` 那一份归 SDK 管（R13）。眼下只有一个
+ * `port`：D25 的中间那一档需要一个真实来源，而不是让 `configPort` 只能由宿主程序注入。
+ */
+export interface ServerSettings {
+  /** 端口；缺省表示「这一档没说话」，落到默认端口 */
+  port?: number;
+}
+
+/**
+ * 读 `<dataRoot>/server.json`。
+ *
+ * 三种情况分开：文件不在 → 空设置（这一档没说话）；读不出来 / 不是 JSON 对象 → `config_invalid`
+ * （写坏了要让人看见，不能当没有，否则用户改完没有任何反馈）；`port` 在但不是可用端口 →
+ * `config_invalid`（裁定 R67：显式给出的非法值报错，不静默回落）。
+ */
+export async function readServerSettings(paths: ServerPaths): Promise<ServerSettings> {
+  let raw: string;
+  try {
+    raw = await readFile(paths.serverConfigFile, "utf8");
+  } catch (error) {
+    // 文件不在是正常情况（绝大多数据根上就没有这份文件）
+    if (isMissingFile(error)) return {};
+    throw new ServerError("config_invalid", {
+      messageKey: "config.fileBroken",
+      params: { path: paths.serverConfigFile, reason: "unreadable" },
+      detail: { path: paths.serverConfigFile, reason: "unreadable" },
+    });
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new ServerError("config_invalid", {
+      messageKey: "config.fileBroken",
+      params: { path: paths.serverConfigFile, reason: "not_json" },
+      detail: { path: paths.serverConfigFile, reason: "not_json" },
+    });
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new ServerError("config_invalid", {
+      messageKey: "config.fileBroken",
+      params: { path: paths.serverConfigFile, reason: "not_an_object" },
+      detail: { path: paths.serverConfigFile, reason: "not_an_object" },
+    });
+  }
+
+  const record = parsed as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(record, "port") || record.port === null) return {};
+  const port = record.port;
+  if (!isValidPort(port)) throw invalidPort("port", port, "server.json");
+  return { port };
+}
+
+function isMissingFile(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { code?: unknown }).code === "ENOENT"
+  );
 }

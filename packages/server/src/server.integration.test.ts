@@ -34,7 +34,9 @@ import type {
   ConfigGetResult,
   ConfigPatchResult,
   ConversationCreateResult,
+  ConversationGetResult,
   ConversationListResult,
+  ConversationSendResult,
   ModelListResult,
   NoticeListResult,
   QuestionAnswerResult,
@@ -284,9 +286,10 @@ describe("端到端集成：真进程 + 真连接", () => {
     })) as ServerHelloResult;
     expect(helloResult.language).toBe("zh");
     expect(helloResult.protocolVersion).toBe("1");
-    // 能力清单在握手时就给全（F-E5 / R6），不是空数组
+    // 握手只给能力 id 列表（R57）：详细信息走 server.capabilities
     expect(helloResult.capabilities.length).toBeGreaterThan(50);
-    expect(helloResult.capabilities.some((item) => item.method === "conversation.send")).toBe(true);
+    expect(helloResult.capabilities.every((id) => typeof id === "string")).toBe(true);
+    expect(helloResult.capabilities).toContain("F-C2");
     log("握手", `language=${helloResult.language} 协议=${helloResult.protocolVersion} 能力=${helloResult.capabilities.length} 条`);
 
     // =====================================================================
@@ -305,8 +308,31 @@ describe("端到端集成：真进程 + 真连接", () => {
       agentId: "default",
       modelId: "test-model",
     })) as ConversationCreateResult;
+    if (!createdConversation.conversation) throw new Error("conversation.create 没有建出对话");
     const conversationId = createdConversation.conversation.id;
     expect(conversationId.length).toBeGreaterThan(0);
+
+    // R56 / F-C2：空会话不落库 —— 建了不发就断线，它应该像没建过一样
+    const draftGotten = (await callThrough(client, "conversation.get", {
+      conversationId,
+    })) as ConversationGetResult;
+    expect(draftGotten.conversation.id).toBe(conversationId);
+    const listBeforeSend = (await callThrough(client, "conversation.list", {
+      workspaceId: workspace.id,
+    })) as ConversationListResult;
+    expect(listBeforeSend.total).toBe(0);
+    log(
+      "空会话（R56）",
+      `conversation=${conversationId} get 能拿到=${String(draftGotten.conversation.id === conversationId)} 列表 total=${listBeforeSend.total}`,
+    );
+
+    // 发一条：首次 send 用同一个 id 落库（这里连不上假端点，那一轮会以失败结算，
+    // 但「受理已落库」这件事与模型有没有答无关）
+    const sent = (await callThrough(client, "conversation.send", {
+      conversationId,
+      input: { content: "你好" },
+    })) as ConversationSendResult;
+    expect(sent.userMessageId.length).toBeGreaterThan(0);
 
     const conversations = (await callThrough(client, "conversation.list", {
       workspaceId: workspace.id,
@@ -314,7 +340,10 @@ describe("端到端集成：真进程 + 真连接", () => {
     expect(conversations.total).toBe(1);
     expect(conversations.conversations[0]?.id).toBe(conversationId);
     expect(conversations.conversations[0]?.workspaceId).toBe(workspace.id);
-    log("建库对象", `workspace=${workspace.id} conversation=${conversationId} 列表 total=${conversations.total}`);
+    log(
+      "建库对象",
+      `workspace=${workspace.id} conversation=${conversationId} 发出后列表 total=${conversations.total}`,
+    );
 
     // =====================================================================
     // 3. config.get（端点密钥是掩码）→ model.list → agent.list
@@ -352,7 +381,9 @@ describe("端到端集成：真进程 + 真连接", () => {
     const patched = (await callThrough(client, "config.patch", {
       patch: { limits: { maxToolOutput: 4096 } },
     })) as ConfigPatchResult;
-    expect(patched.applied.recycledWorkspaceIds).toEqual([]);
+    // 上面那一轮 send 借过这个项目的 Scope（发过消息的对话按项目装配能力），
+    // 于是「改配置回收受影响 Scope」这一跳回报的就是它
+    expect(patched.applied.recycledWorkspaceIds).toEqual([workspace.id]);
     expect(patched.applied.noticeId).not.toBeNull();
     expect(patched.config.limits.maxToolOutput).toBe(4096);
 

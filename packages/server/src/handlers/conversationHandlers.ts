@@ -19,14 +19,18 @@ import { addUsage, sumUsage, ZERO_USAGE } from "@ai-zen/agents-core";
 import type { AgentNS } from "@ai-zen/agents-core";
 import type { AppConfig } from "@ai-zen/agents-sdk";
 
-import type { Language } from "../i18n/index.js";
+import { render } from "../i18n/index.js";
+import type { Language, MessageKey } from "../i18n/index.js";
 import type { HandlerTable } from "../net/index.js";
 import type { ChatRunner } from "../runtime/index.js";
 import type { AssetService } from "../services/AssetService.js";
 import type { ConversationService } from "../services/ConversationService.js";
 import type { MessageService } from "../services/MessageService.js";
+import { ServerError } from "../wire/errors.js";
 import type {
   ContextState,
+  ConversationCreateParams,
+  ConversationCreateResult,
   ConversationTransientParams,
   ConversationTransientResult,
   ConversationAbortParams,
@@ -38,10 +42,14 @@ import type {
   ConversationState,
   ConversationStateParams,
   ConversationStateResult,
+  ConversationView,
   QuestionView,
   RunState,
+  StatusBlock,
+  StatusBlockId,
   UsageSnapshot,
 } from "../wire/index.js";
+import { STATUS_BLOCK_IDS } from "../wire/index.js";
 import { localizeOutcome } from "./assetHandlers.js";
 
 /** `conversation.*` 的实现要的持有者 */
@@ -56,6 +64,15 @@ export interface ConversationHandlerDeps {
   questionsFor?: (conversationId: string) => Promise<QuestionView[]>;
   /** 读配置：上下文阈值跟着模型走（PRD F-D1） */
   readConfig: () => Promise<AppConfig>;
+  /**
+   * 目录没登记成项目时问一次「要不要登记」（PRD D10）。
+   *
+   * 不注入时 `conversation.create` 遇到未登记的 cwd 直接回参数错误（说清缺什么）。
+   */
+  askWorkspaceRegistration?: (
+    input: { cwd: string; agentId: string; modelId?: string | null },
+    language: Language,
+  ) => Promise<QuestionView>;
   /** 刷新思考档位表快照（`setThinking` 之前调一次：改完读回的参数要用当前表） */
   refreshThinkingPresets: () => Promise<void>;
   /** 时钟（ISO 8601 时间戳） */
@@ -88,7 +105,8 @@ export interface ConversationHandlerDeps {
 export function createConversationHandlers(deps: ConversationHandlerDeps): HandlerTable {
   const handlers: HandlerTable = {
     "conversation.list": async (context) => await deps.conversations.list(context.params),
-    "conversation.create": async (context) => await deps.conversations.create(context.params),
+    "conversation.create": async (context) =>
+      await createConversation(deps, context.params, context.connection.language),
     "conversation.get": async (context) => await deps.conversations.get(context.params),
     "conversation.rename": async (context) => await deps.conversations.rename(context.params),
     "conversation.pin": async (context) => await deps.conversations.pin(context.params),
@@ -101,7 +119,7 @@ export function createConversationHandlers(deps: ConversationHandlerDeps): Handl
       await sendTurn(deps, context.params, context.connection.language),
 
     "conversation.state": async (context) => ({
-      state: await conversationStateOf(deps, context.params.conversationId),
+      state: await conversationStateOf(deps, context.params.conversationId, context.connection.language),
     }),
 
     "conversation.abort": async (context) => await abort(deps, context.params),
@@ -127,7 +145,42 @@ export function createConversationHandlers(deps: ConversationHandlerDeps): Handl
 // ---------------------------------------------------------------------------
 
 /**
+ * `conversation.create`：定位项目 → 未登记时先问一次（PRD D10）→ 建对话草稿（R56）。
+ *
+ * 「问一次」在这里接的理由：提问通道（`QuestionService`）与对话服务是两个持有者，而契约里的
+ * 位置是这一个方法。答「要」之后登记项目与继续建对话由 `QuestionService` 自己完成（D22）。
+ */
+async function createConversation(
+  deps: ConversationHandlerDeps,
+  params: ConversationCreateParams,
+  language: Language,
+): Promise<ConversationCreateResult> {
+  const located = await deps.conversations.locateWorkspace(params);
+  if (!("needsRegistration" in located)) {
+    return await deps.conversations.create(params);
+  }
+
+  const cwd = located.needsRegistration;
+  const ask = deps.askWorkspaceRegistration;
+  if (!ask) {
+    // 没有提问通道就不默默建也能建：把「先登记」这个事实结构化地回给调用方
+    throw new ServerError("invalid_params", {
+      params: { field: "cwd" },
+      detail: { field: "cwd", reason: "workspace_not_registered", cwd },
+    });
+  }
+  const question = await ask(
+    { cwd, agentId: params.agentId, modelId: params.modelId ?? null },
+    language,
+  );
+  return { conversation: null, requiresRegistration: true, questionId: question.id, cwd };
+}
+
+/**
  * `conversation.send`：受理一轮，把素材挂到落库后的那条用户消息上（PRD L6 / F-I12 / D5）。
+ *
+ * 先把草稿落成真行（R56：首次 `send` 时才写 `conversations`）：FK 要求消息所属的对话已经存在，
+ * 而且后端的一切（重连、列表、删除）都按「存在即能查」处理。
  *
  * 附件结局里的句子是素材层按默认语言渲染的（那一层不知道收件人是谁），这里按**这条连接**的
  * 语言重渲染一次再出网（D8：库里只留码与参数）。
@@ -140,7 +193,14 @@ async function sendTurn(
   // D23：有一段挡着的问题（交接确认、不可撤销动作的确认）就先答它再发
   await deps.assertSendable?.(params.conversationId);
 
-  const turn = await deps.runner.run({ conversationId: params.conversationId, input: params.input });
+  // R56：草稿在第一条用户消息之前不落库，这里把它写成真行（同一个 id）
+  await deps.conversations.ensurePersisted(params.conversationId);
+
+  const turn = await deps.runner.run({
+    conversationId: params.conversationId,
+    input: params.input,
+    language,
+  });
 
   const assetIds = params.input.assetIds ?? [];
   if (assetIds.length > 0) {
@@ -222,14 +282,13 @@ async function runStateOf(
  * 一段对话的现场（PRD L5：重连先拉状态）。
  *
  * 拼装顺序：视图（身份 / 思考档 / 目录）→ 运行状态（在跑就用这一轮自己的快照）→
- * 用量（在跑用这一轮，空闲就用库里消息求和）→ 上下文阈值（跟着模型走）→ 挂在这段对话上的问题。
- *
- * `statusBlocks` 仍是空数组：状态栏的块（PRD F-I6）还没有实现者 —— 六态、工具、子 Agent
- * 这些事实都在 `run` 与 `usage` 里，客户端自己按块排布即可。
+ * 用量（在跑用这一轮，空闲就用库里消息求和）→ 上下文阈值（跟着模型走）→ 挂在这段对话上的问题
+ * → 状态栏的块（PRD F-I6）。
  */
 async function conversationStateOf(
   deps: ConversationHandlerDeps,
   conversationId: string,
+  language: Language,
 ): Promise<ConversationState> {
   const now = deps.now();
   const { conversation } = await deps.conversations.get({ conversationId });
@@ -238,17 +297,106 @@ async function conversationStateOf(
   const usage = turn ? turn.runState().usage : usageOfMessages(page.messages, now);
   const config = await deps.readConfig();
   const model = config.models.find((item) => item.id === conversation.model.modelId);
+  const run = turn ? turn.runState() : idleRunState(conversationId, usage);
+  const context = contextOf(page.messages, model);
 
   return {
     conversationId,
-    run: turn ? turn.runState() : idleRunState(conversationId, usage),
-    context: contextOf(page.messages, model),
+    run,
+    context,
     thinking: conversation.thinking,
     usage,
     questions: deps.questionsFor ? await deps.questionsFor(conversationId) : [],
-    statusBlocks: [],
+    statusBlocks: statusBlocksOf({ conversation, run, context, usage, language }),
     updatedAt: now,
   };
+}
+
+// ---------------------------------------------------------------------------
+// 状态栏的块（PRD F-I6 / 裁定 R65）
+// ---------------------------------------------------------------------------
+
+/** 造状态栏块要的那几处事（每一项都已经在别处算好了，这里只负责装箱） */
+export interface StatusBlockInput {
+  /** 服务层给的对话视图（身份、模型、思考档、目录事实） */
+  conversation: ConversationView;
+  /** 这一轮的快照（六态、工具、子 Agent、本轮用量） */
+  run: RunState;
+  /** 上下文占用与两条阈值 */
+  context: ContextState;
+  /** 累计用量 */
+  usage: UsageSnapshot;
+  /** 收件人的语言（块的标签是给人看的一句话） */
+  language: Language;
+}
+
+/** 块的标签（`label.agent` / `label.model` …，PRD F-I6：服务端给块名，客户端排版） */
+function blockLabel(id: StatusBlockId, language: Language): StatusBlock["label"] {
+  const messageKey = `label.${id}` as MessageKey;
+  return { code: messageKey, messageKey, params: {}, message: render(language, messageKey) };
+}
+
+/**
+ * 按 `STATUS_BLOCK_IDS` 的顺序拼装状态栏的块（PRD F-I6 / 裁定 R65）。
+ *
+ * 这里**不产生新事实**：每一块装的都是别处已经算好的那份 —— 对话视图里的身份 / 模型 / 思考档 /
+ * 目录、`conversation.state` 里的上下文与用量、以及这一轮快照里的六态与子 Agent。工具块只取
+ * `awaiting_tools` 态里还在跑的那几个（并行时有几个列几个，正是 L8 要的语义）；其余态下没有
+ * 工具在跑，列表就是空的。
+ *
+ * 助手名字与「这个助手能不能用」不在这一层（它们在助手定义那边，`ConversationView` 只给 id），
+ * 所以这两个字段在拿不到时给 `null` —— 不猜，也不编一个看起来像真的值。
+ */
+export function statusBlocksOf(input: StatusBlockInput): StatusBlock[] {
+  const { conversation, run, context, usage, language } = input;
+  const generation = run.generation;
+  const runningTools = generation?.phase === "awaiting_tools" ? generation.runningTools : [];
+
+  const blocks: Record<StatusBlockId, StatusBlock> = {
+    agent: {
+      id: "agent",
+      label: blockLabel("agent", language),
+      facts: { agentId: conversation.agentId, name: null, available: null },
+    },
+    model: {
+      id: "model",
+      label: blockLabel("model", language),
+      facts: conversation.model,
+    },
+    thinking: {
+      id: "thinking",
+      label: blockLabel("thinking", language),
+      facts: conversation.thinking,
+    },
+    context: {
+      id: "context",
+      label: blockLabel("context", language),
+      facts: context,
+    },
+    usage: {
+      id: "usage",
+      label: blockLabel("usage", language),
+      facts: usage,
+    },
+    cwd: {
+      id: "cwd",
+      label: blockLabel("cwd", language),
+      facts: conversation.folder,
+    },
+    tools: {
+      id: "tools",
+      label: blockLabel("tools", language),
+      facts: { running: runningTools },
+    },
+    subagents: {
+      id: "subagents",
+      label: blockLabel("subagents", language),
+      facts: { items: run.subagents },
+    },
+  };
+
+  // 顺序按 `STATUS_BLOCK_IDS` 给：那是建议的摆放顺序，客户端可以只取自己摆得下的前几块
+  return STATUS_BLOCK_IDS.map((id) => blocks[id]);
 }
 
 // ---------------------------------------------------------------------------

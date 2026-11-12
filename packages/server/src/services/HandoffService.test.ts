@@ -179,7 +179,10 @@ async function setup(): Promise<Harness> {
   });
 
   const created = await conversationService.create({ workspaceId: "w1", agentId: "a1" });
+  if (!created.conversation) throw new Error("conversation.create 没有建出对话");
   const conversationId = created.conversation.id;
+  // R56：`create` 只发 id，落库发生在首次 `send`；夹具里直接落库（后面要往它名下写消息）
+  await conversationService.ensurePersisted(conversationId);
 
   // 一段有内容的对话：一轮「用户 + 助手」
   await messages.upsertMany([

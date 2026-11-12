@@ -22,7 +22,7 @@ import type { AppConfig } from "@ai-zen/agents-sdk";
 
 import type { Language } from "../i18n/index.js";
 import type { HandlerTable } from "../net/index.js";
-import type { ChatRunner, ScopeRegistry } from "../runtime/index.js";
+import type { ChatEventEmitter, ChatRunner, ScopeRegistry } from "../runtime/index.js";
 import type { TransientRunner } from "../runtime/TransientRunner.js";
 import type { AgentService } from "../services/AgentService.js";
 import type { AssetService } from "../services/AssetService.js";
@@ -37,7 +37,8 @@ import type { NoticeService } from "../services/NoticeService.js";
 import type { QuestionService } from "../services/QuestionService.js";
 import type { SearchService } from "../services/SearchService.js";
 import type { WorkspaceService } from "../services/WorkspaceService.js";
-import type { CapabilityView, MethodName, QuestionView } from "../wire/index.js";
+import type { CapabilityView, MethodName, QuestionView, ServerReloadParams, ServerReloadResult } from "../wire/index.js";
+import type { EventMap, EventName } from "../wire/events.js";
 import { createAgentHandlers } from "./agentHandlers.js";
 import { createAssetHandlers } from "./assetHandlers.js";
 import { createCompletionHandlers } from "./completionHandlers.js";
@@ -125,10 +126,17 @@ export interface HandlerDeps {
   refreshThinkingPresets: () => Promise<void>;
   /** 时钟：契约里的时间一律 ISO 8601 字符串 */
   now: () => string;
+  /** 推事件（`conversation.changed` 这类多端同步信号）；不注入时不推 */
+  emit?: <E extends EventName>(name: E, payload: EventMap[E]) => void;
 
   // ---- 跨服务的对话钩子（分属三个服务，契约里却是同一对方法的位置）----
   /** 有挡着的问题就拒发（D23）；发之前问一句 */
   assertSendable: (conversationId: string) => Promise<void>;
+  /** 目录没登记成项目时问一次（D10：`conversation.create` 遇到未登记的 cwd） */
+  askWorkspaceRegistration?: (
+    input: { cwd: string; agentId: string; modelId?: string | null },
+    language: Language,
+  ) => Promise<QuestionView>;
   /** 一轮结算之后起一次自动命名（D2） */
   autoNameAfterTurn: (conversationId: string, language: Language) => Promise<void>;
   /** 结算后钩子失败的去处（命名没跑成不该让已经结算的一轮变成失败） */
@@ -148,6 +156,8 @@ export interface HandlerDeps {
     diskVersion: string | null;
     targetVersion: string | null;
   }>;
+  /** 从磁盘重载（`server.reload`：与改配置同一条生效路径） */
+  reload: (params: ServerReloadParams) => Promise<ServerReloadResult>;
 }
 
 /**
@@ -159,7 +169,15 @@ export interface HandlerDeps {
 export function createHandlers(deps: HandlerDeps): HandlerTable {
   return {
     ...createServerHandlers(deps),
-    ...createWorkspaceHandlers(deps),
+    ...createWorkspaceHandlers({
+      workspaces: deps.workspaces,
+      conversations: deps.conversations,
+      assets: deps.assets,
+      runner: deps.runner,
+      scopes: deps.scopes,
+      emit: deps.emit,
+      now: deps.now,
+    }),
     ...createConversationHandlers({
       conversations: deps.conversations,
       messages: deps.messages,
@@ -170,6 +188,7 @@ export function createHandlers(deps: HandlerDeps): HandlerTable {
       now: deps.now,
       onTurnSettled: deps.onTurnSettled,
       assertSendable: deps.assertSendable,
+      askWorkspaceRegistration: deps.askWorkspaceRegistration,
       autoNameAfterTurn: deps.autoNameAfterTurn,
       onHookError: deps.onHookError,
       questionsFor: deps.questionsFor,

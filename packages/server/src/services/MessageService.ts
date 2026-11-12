@@ -17,14 +17,26 @@ import { AgentNS } from "@ai-zen/agents-core";
 
 import type { ConversationRepository } from "../storage/ConversationRepository.js";
 import type { MessageRepository } from "../storage/MessageRepository.js";
-import type { StoredMessage } from "../storage/types.js";
+import type { Conversation, StoredMessage } from "../storage/types.js";
 import { ServerError } from "../wire/errors.js";
 import type { MessageListParams, MessageListResult } from "../wire/index.js";
+
+/**
+ * 草稿（R56）：刚建出来、还没发过消息的对话在库里没有行。
+ *
+ * 只暴露「按 id 取」，取到的就是存储层的行形状 —— 它没有消息可读，但存在本身足以让
+ * 读取路径不把一段刚建好的对话当成「不存在」。
+ */
+export interface MessageDraftLookup {
+  get(conversationId: string): Conversation | undefined;
+}
 
 /** 消息服务依赖 */
 export interface MessageServiceDeps {
   conversations: ConversationRepository;
   messages: MessageRepository;
+  /** 草稿注册表（R56）；不注入时只认库里已有的行 */
+  drafts?: MessageDraftLookup;
 }
 
 /** 角色取值表：库里的字符串认不出来时归 `Unknown`，不猜 */
@@ -177,10 +189,12 @@ export function readUsage(data: Record<string, unknown> | null | undefined): Age
 export class MessageService {
   private readonly conversations: ConversationRepository;
   private readonly messages: MessageRepository;
+  private readonly drafts?: MessageDraftLookup;
 
   constructor(deps: MessageServiceDeps) {
     this.conversations = deps.conversations;
     this.messages = deps.messages;
+    this.drafts = deps.drafts;
   }
 
   /**
@@ -192,8 +206,10 @@ export class MessageService {
    * - 给了但这段对话里没有这个 id（已删、或换过库）：退回整段历史，`anchor` 为空 ——
    *   客户端据此知道这是一次全量。
    *
-   * `toolCallId` 取某个子 Agent 自己的消息（PRD F-I7）：它按消息上的 `tool_call_id` 过滤，
-   * 两个参数同时给时先按 A12 切出续传段，再在结果里按 `toolCallId` 过滤。
+   * `toolCallId` 取某个子 Agent 自己的消息（PRD F-I7）：它按消息落库时记下的
+   * `parentToolCallId` 取（那次委派的工具调用 id），走的是另一条查询 —— 子 Agent 的消息不在
+   * 主线历史里（`listByConversation` 只给主线），所以两个参数同时给时 `after` 只用来定 `anchor`，
+   * 结果集仍是那个子 Agent 的全部消息。
    */
   async list(params: MessageListParams): Promise<MessageListResult> {
     const conversation = await this.requireConversation(params.conversationId);
@@ -206,24 +222,39 @@ export class MessageService {
       }
     }
 
-    const rows = await this.messages.listByConversation(conversation.id, params.after);
-    let messages = rows.map((row) => toAgentMessage(row));
-    if (params.toolCallId !== undefined && params.toolCallId.length > 0) {
-      const toolCallId = params.toolCallId;
-      messages = messages.filter((message) => message.tool_call_id === toolCallId);
+    const toolCallId = params.toolCallId;
+    if (toolCallId !== undefined && toolCallId.length > 0) {
+      const delegated = await this.messages.listByParentToolCallId(conversation.id, toolCallId);
+      return {
+        conversationId: conversation.id,
+        anchor,
+        messages: delegated.map((row) => toAgentMessage(row)),
+      };
     }
-    return { conversationId: conversation.id, anchor, messages };
+
+    const rows = await this.messages.listByConversation(conversation.id, params.after);
+    return {
+      conversationId: conversation.id,
+      anchor,
+      messages: rows.map((row) => toAgentMessage(row)),
+    };
   }
 
+  /**
+   * 这段对话存不存在：库里那一行，或者一份还没落库的草稿（R56）。
+   *
+   * 草稿还没有任何消息，所以读它总是得到空集 —— 但它不该被读成「找不到这段对话」：
+   * 客户端刚 `create` 完就会拉一次消息与现场。
+   */
   private async requireConversation(conversationId: string) {
     const id = typeof conversationId === "string" ? conversationId.trim() : "";
     const row = id.length === 0 ? undefined : await this.conversations.get(id);
-    if (!row) {
-      throw new ServerError("not_found", {
-        params: { entity: "conversation" },
-        detail: { conversationId },
-      });
-    }
-    return row;
+    if (row) return row;
+    const draft = id.length === 0 ? undefined : this.drafts?.get(id);
+    if (draft) return draft;
+    throw new ServerError("not_found", {
+      params: { entity: "conversation" },
+      detail: { conversationId },
+    });
   }
 }

@@ -265,7 +265,9 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
       agentId: "default",
       modelId: "test-model",
     });
-    const conversationId = (conversationCreated.result as ConversationCreateResult).conversation.id;
+    const createdConversation = (conversationCreated.result as ConversationCreateResult).conversation;
+    if (!createdConversation) throw new Error("conversation.create 没有建出对话");
+    const conversationId = createdConversation.id;
     expect(conversationId.length).toBeGreaterThan(0);
 
     // ---- 步骤 3：一轮对话（受理即返回两个 id，事件随后到） ----
@@ -308,7 +310,16 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
     ]);
     expect(page.messages[0]?.id).toBe(acceptedResult.userMessageId);
     expect(page.messages[1]?.id).toBe(acceptedResult.assistantMessageId);
-    expect(page.messages[0]?.content).toBe("你好");
+    // 用户那条末尾多了服务端注入的一段（F-D9：告诉模型当前目录是哪儿）
+    const userSections = page.messages[0]?.content;
+    expect(Array.isArray(userSections)).toBe(true);
+    if (Array.isArray(userSections)) {
+      expect(userSections[0]).toEqual({ type: "text", text: "你好" });
+      const injected = userSections[1];
+      expect(injected?.type).toBe("text");
+      const injectedText = injected && "text" in injected ? injected.text : "";
+      expect(injectedText).toContain(workspaceDir.path);
+    }
     expect(page.messages[1]?.content).toBe("你好。");
     expect(page.messages[1]?.reasoning_content).toBe("先想一下。");
     expect(page.messages[2]?.content).toBe("ok:ls");

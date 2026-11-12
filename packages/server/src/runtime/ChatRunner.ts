@@ -52,7 +52,7 @@ import {
 } from "@ai-zen/agents-sdk";
 
 import { DEFAULT_LANGUAGE, render } from "../i18n/index.js";
-import type { MessageKey } from "../i18n/index.js";
+import type { Language, MessageKey } from "../i18n/index.js";
 import type { Conversation, MessageUpsertInput, StoredMessage } from "../storage/types.js";
 import { ServerError } from "../wire/errors.js";
 import type { EventMap, EventName } from "../wire/events.js";
@@ -114,6 +114,13 @@ export interface AgentBuildContext {
 export type AgentFactory = (context: AgentBuildContext) => Promise<ChatAgent>;
 
 /**
+ * 交接服务（SDK 口径）按这一轮的装配事实现场取一个。
+ *
+ * 给 `undefined` 就是「这一轮不装交接线插件」（R50：装配处会推一条警告，不静默）。
+ */
+export type HandoffProvider = (context: AgentBuildContext) => HandoffService | undefined;
+
+/**
  * 本文件驱动的那部分 agent 表面。
  *
  * core 的 `Agent` 与 SDK 的 `SdkAgent` 都满足它；测试里的假 agent 也满足它，
@@ -147,6 +154,25 @@ export type AttachmentPreparer = (context: {
 export interface ChatRunParams {
   conversationId: string;
   input: MessageInput;
+  /** 这一轮是哪条连接发起的语言（D8；缺省用注入的默认语言） */
+  language?: Language;
+}
+
+/**
+ * 一轮结算之后的事实（R59：交接线问题由服务端自己在这个时机问）。
+ *
+ * 「到交接线了没有」只在服务端算得出来：`promptTokens` 是这一轮实际用量，`handoffTokens`
+ * 是生效模型上配的那条线（0 表示这个模型没配）。带着 `language` 一起给，是因为问用户的话
+ * 要按发起这条连接的语言渲染（D8）。
+ */
+export interface TurnSettledFacts {
+  conversationId: string;
+  outcome: RunOutcome;
+  /** 这一轮的 `prompt_tokens`（结算快照里的本轮用量） */
+  promptTokens: number;
+  /** 生效模型的交接线；`0` 表示没配 */
+  handoffTokens: number;
+  language: Language;
 }
 
 /** 受理之后立刻给客户端的东西（PRD F-I12 / L6） */
@@ -198,7 +224,14 @@ export interface ChatRunnerOptions {
   conversations: ConversationStore;
   scopes: ScopeRegistry;
   runs: RunRegistry;
-  createAgent: AgentFactory;
+  /** 造 agent 的工厂；不注入时按 SDK 口径装配（交接服务由 `handoff` 提供） */
+  createAgent?: AgentFactory;
+  /**
+   * 交接服务：注入之后每一轮都装交接线插件（R59 / R50）；不注入时那个插件就不装。
+   *
+   * 只在不注入 `createAgent` 时生效（两边都注入时以 `createAgent` 为准）。
+   */
+  handoff?: HandoffProvider;
   emit: ChatEventEmitter;
   clock?: Clock;
   /** 服务端分配消息 id；缺省用 `crypto.randomUUID` */
@@ -206,6 +239,22 @@ export interface ChatRunnerOptions {
   /** 边流边写的节流时长（毫秒）；0 表示每到一片就写一次 */
   streamWriteIntervalMs?: number;
   prepareAttachments?: AttachmentPreparer;
+  /**
+   * 这段对话所在项目的目录（PRD F-D9：每轮末尾注入「当前目录」）。
+   *
+   * 目录来自 Workspace 而不是进程工作目录；不注入时不注入那段上下文。
+   */
+  resolveCwd?: (workspaceId: string) => Promise<string | null>;
+  /**
+   * 这一轮实际用哪个模型（临时换模型的覆盖只在内存里，L7）。
+   *
+   * 结算时用它取生效模型的交接线（R59）；不注入时用对话创建时定死的那个。
+   */
+  resolveModelId?: (conversationId: string) => string | null;
+  /** 这一轮没带语言时用哪种语言渲染服务端注入的那段话（D8） */
+  defaultLanguage?: Language;
+  /** 一轮结算之后的回调（R59：交接线问题由它触发） */
+  onTurnSettled?: (facts: TurnSettledFacts) => void;
   /** 内部错误的去处（写库失败、回收失败等）；缺省忽略 */
   onError?: (error: unknown, context: string) => void;
 }
@@ -280,17 +329,56 @@ function toUsage(value: unknown): AgentNS.Usage | undefined {
   return { prompt_tokens, completion_tokens, total_tokens };
 }
 
+/** 服务端注入的一段上下文（F-D9）：发给模型的文本 + 它的来源事实（cwd） */
+export interface InjectedContext {
+  cwd: string;
+  text: string;
+}
+
+/**
+ * 这一段要往模型那边补充的上下文（PRD F-D9：告诉模型「现在在哪个目录」）。
+ *
+ * 目录取的是这个对话所属项目的 cwd（不是进程工作目录）；句子用的是「这是服务端加的，不是
+ * 用户输入的」那条文案，于是它以已存在的方式说明自己是注入内容（R21：不新造消息类型）。
+ */
+export function injectedContextOf(cwd: string, language: Language): InjectedContext {
+  const summary = render(language, "message.injectedContext.cwd", { cwd });
+  return {
+    cwd,
+    text: render(language, "message.injectedContext", { summary }),
+  };
+}
+
+/**
+ * 把注入的那段文本接到内容末尾。
+ *
+ * 内容可能是一串纯文本（用户只打了一句话）或一串内容段（带图带文件），两种情况都归到
+ * core 的内容段形式上，追加一个 `text` 段 —— 不改变原有段的类型与顺序（F-I2）。
+ */
+export function appendInjectedText(
+  content: AgentNS.MessageContent,
+  text: string,
+): AgentNS.MessageContent {
+  const section: AgentNS.TextContentSection = { type: "text", text };
+  if (typeof content === "string") {
+    return content.length === 0 ? [section] : [{ type: "text", text: content }, section];
+  }
+  return [...content, section];
+}
+
 /**
  * 消息 → 边流边写的入参。
  *
  * `content` 走 JSON 列：存储层的 `content` 列就是 core 内容段的 JSON，两边的形状一致，
  * 只差存储层为了「不 import core」而声明的索引签名，故此处做一次显式转换。
+ * `parentToolCallId` 非空即「这条消息是某个子 Agent 说的」（R37 / F-I7）。
  */
 function toRow(
   message: AgentNS.Message,
   conversationId: string,
   createdAt: number,
   statusOverride?: AgentNS.MessageStatus,
+  parentToolCallId?: string,
 ): MessageUpsertInput {
   const data: Record<string, unknown> = {};
   if (message.tool_calls) data.tool_calls = message.tool_calls;
@@ -311,6 +399,7 @@ function toRow(
     omit: message.omit === true,
     content: (message.content ?? null) as unknown as MessageUpsertInput["content"],
     data: Object.keys(data).length > 0 ? data : null,
+    parentToolCallId: parentToolCallId ?? null,
     createdAt,
   };
 }
@@ -408,12 +497,17 @@ function toProblem(error: unknown): ProblemFact {
 interface TurnSessionInit {
   conversation: Conversation;
   scope: Scope;
+  /** 造 agent 的工厂（由 `ChatRunner` 在受理时定下：注入的那个，或按 SDK 口径装配的那个） */
+  createAgent: AgentFactory;
   history: AgentNS.Message[];
   content: AgentNS.MessageContent;
+  /** 服务端注入的那段上下文（F-D9）；没有可注入的目录时为 `null` */
+  injected: InjectedContext | null;
   attachments: AttachmentOutcome[];
   userMessageId: string;
   assistantMessageId: string;
   handle: RunHandle;
+  language: Language;
   acceptedAt: string;
   startedAtMs: number;
   /** 结算收尾之后通知一声（`ChatRunner` 用它把这一轮从「现场」表里摘掉） */
@@ -436,8 +530,11 @@ class TurnSession implements ChatTurn {
 
   private readonly conversation: Conversation;
   private readonly scope: Scope;
+  private readonly createAgent: AgentFactory;
   private readonly history: AgentNS.Message[];
   private readonly content: AgentNS.MessageContent;
+  private readonly injected: InjectedContext | null;
+  private readonly language: Language;
   private readonly handle: RunHandle;
   private readonly options: ChatRunnerOptions;
   private readonly clock: Clock;
@@ -462,6 +559,8 @@ class TurnSession implements ChatTurn {
   private readonly deltaSeq = new Map<string, number>();
   private readonly runningTools = new Map<string, RunningTool>();
   private readonly subagents = new Map<string, SubAgentSnapshot>();
+  /** 已经落过库的子 Agent 委派（工具调用 id） */
+  private readonly persistedSubAgents = new Set<string>();
 
   private userIdUsed = false;
   private assistantIdUsed = false;
@@ -480,8 +579,11 @@ class TurnSession implements ChatTurn {
     this.conversation = init.conversation;
     this.conversationId = init.conversation.id;
     this.scope = init.scope;
+    this.createAgent = init.createAgent;
     this.history = init.history;
     this.content = init.content;
+    this.injected = init.injected;
+    this.language = init.language;
     this.attachments = init.attachments;
     this.userMessageId = init.userMessageId;
     this.assistantMessageId = init.assistantMessageId;
@@ -519,7 +621,7 @@ class TurnSession implements ChatTurn {
   async execute(): Promise<void> {
     try {
       this.pushRunState();
-      const agent = await this.options.createAgent({
+      const agent = await this.createAgent({
         conversationId: this.conversationId,
         workspaceId: this.conversation.workspaceId,
         agentId: this.conversation.agentId ?? "",
@@ -585,6 +687,10 @@ class TurnSession implements ChatTurn {
       return;
     }
 
+    // 这一轮的用户消息带着服务端注入的那段（F-D9）：core 后来追加的那一份也标上，
+    // 内循环结束再写一次时这个事实不会丢
+    if (message.id === this.userMessageId && this.injected !== null) message.hidden = true;
+
     if (
       message.role === AgentNSValue.Role.Tool ||
       message.role === AgentNSValue.Role.Function
@@ -636,8 +742,19 @@ class TurnSession implements ChatTurn {
     this.scheduleStreamWrite(receiver);
   }
 
+  /**
+   * 一个工具定型了（L8 的「在等哪几个工具」）。
+   *
+   * 剩下还有工具没定型就继续报「在等工具」，并把列表缩到还在跑的那些（并行时逐个减少）。
+   * 都定型了就不该停在「在等工具」：那一态描述的是一件已经不成立的事，此时回到「连上」
+   * （接下来要么是下一轮的首字，要么这一轮结束）。
+   */
   private onToolCallEnd(ctx: ToolCallEndContext): void {
     this.runningTools.delete(toolKey(ctx.toolCall));
+    if (this.runningTools.size === 0) {
+      this.setGeneration({ phase: "connected", since: this.sinceFor("connected") });
+      return;
+    }
     this.setGeneration({
       phase: "awaiting_tools",
       since: this.sinceFor("awaiting_tools"),
@@ -675,7 +792,6 @@ class TurnSession implements ChatTurn {
     );
     existing.status = this.aborted ? "aborted" : failed ? "error" : "done";
     existing.finishedAt = this.nowIso();
-    existing.messageCount = ctx.subAgent.messages.length;
     existing.usage = usage;
     if (failed) {
       const reason = lastErrorText(ctx.subAgent.messages);
@@ -684,7 +800,30 @@ class TurnSession implements ChatTurn {
         reason,
       });
     }
+
+    // F-I7：子 Agent 说过的话也落库（挂在那次委派的工具调用上），条数就是真落下去的条数
+    const rows = this.persistSubAgent(toolCallId, ctx.subAgent.messages);
+    existing.messageCount = rows;
     this.pushRunState();
+  }
+
+  /**
+   * 把子 Agent 的消息落库（F-I7），返回落了多条。
+   *
+   * 同一次委派只落一遍（`sub-agent-end` 重复到达时不重复写）；每条都拿服务端分配的 id（L6），
+   * 挂上 `parentToolCallId`，`seq` 由仓储在对话内递增。
+   */
+  private persistSubAgent(toolCallId: string, messages: readonly AgentNS.Message[]): number {
+    if (this.persistedSubAgents.has(toolCallId)) return messages.length;
+    this.persistedSubAgents.add(toolCallId);
+    const now = this.clock.now();
+    const rows = messages.map((message) => {
+      const id = this.newId();
+      this.createdAtOf.set(id, now);
+      return toRow({ ...message, id }, this.conversationId, now, undefined, toolCallId);
+    });
+    this.enqueueWrites(rows);
+    return rows.length;
   }
 
   /** 工具结果消息一出现就算「开始等它」；并行时列表里有几个就是几个（PRD L8） */
@@ -792,6 +931,15 @@ class TurnSession implements ChatTurn {
       .catch((error: unknown) => this.options.onError?.(error, "stream-write"));
   }
 
+  /** 一批行按同一份额度写下去（子 Agent 的消息一次写一拍）；与边流边写共用一条串行链 */
+  private enqueueWrites(rows: MessageUpsertInput[]): void {
+    if (rows.length === 0) return;
+    this.lastWriteAt = this.clock.now();
+    this.writeChain = this.writeChain
+      .then(() => this.options.messages.upsertMany(rows))
+      .catch((error: unknown) => this.options.onError?.(error, "sub-agent-write"));
+  }
+
   /** 把挂着的节流写收干净（结算前必须做：不能让「最终版」被一次迟到的增量写覆盖） */
   private async flushWrites(): Promise<void> {
     this.writeTimer?.();
@@ -875,7 +1023,33 @@ class TurnSession implements ChatTurn {
       run,
     });
 
+    this.notifySettled(outcome, usage);
     this.onSettled?.();
+  }
+
+  /**
+   * 一轮结算之后通知组装层（R59：交接线问题由它触发）。
+   *
+   * 这一跳只报事实：本轮 `prompt_tokens`、生效模型上那条交接线、这一轮连接的语言。
+   * 「到线了没、要不要问用户」不在本文件判断（PRD D22：问，且不在流式中途）。
+   */
+  private notifySettled(outcome: RunOutcome, usage: UsageSnapshot): void {
+    const onSettled = this.options.onTurnSettled;
+    if (!onSettled) return;
+    const modelId =
+      this.options.resolveModelId?.(this.conversationId) ?? this.conversation.modelId;
+    const model = this.scope.config.models.find((candidate) => candidate.id === modelId);
+    try {
+      onSettled({
+        conversationId: this.conversationId,
+        outcome,
+        promptTokens: usage.turn.prompt_tokens,
+        handoffTokens: model?.tokenThresholds.handoff ?? 0,
+        language: this.language,
+      });
+    } catch (error) {
+      this.options.onError?.(error, "on-turn-settled");
+    }
   }
 
   /**
@@ -1088,6 +1262,11 @@ export class ChatRunner {
     return (this.options.newId ?? defaultNewId)();
   }
 
+  /** 缺省的 agent 工厂（不注入 `createAgent` 时用）：按 SDK 口径装配，交接服务来自 `handoff` */
+  private agentFactory(): AgentFactory {
+    return this.options.createAgent ?? createSdkAgentFactory({ handoff: this.options.handoff });
+  }
+
   /**
    * 受理一轮：占位、落两条消息、把执行放到后台，然后把两个 id 还给调用方（PRD L6 / F-I12）。
    *
@@ -1097,6 +1276,7 @@ export class ChatRunner {
   async run(params: ChatRunParams): Promise<ChatTurn> {
     const { conversationId } = params;
     const handle = this.options.runs.start(conversationId);
+    const language = params.language ?? this.options.defaultLanguage ?? DEFAULT_LANGUAGE;
 
     let workspaceId: string | undefined;
     let session: TurnSession | undefined;
@@ -1111,6 +1291,10 @@ export class ChatRunner {
       // 装载即修复：上一次进程如果是在写的时候没的，这里把在途消息修成可继续的状态
       const history = (await this.reconcile(conversationId)).messages;
       const prepared = await this.prepare(params, conversation);
+      // F-D9：每轮末尾补一段「当前目录是哪儿」；目录来自这段对话的项目，不是进程工作目录
+      const injected = await this.injectedContextFor(conversation.workspaceId, language);
+      const content =
+        injected === null ? prepared.content : appendInjectedText(prepared.content, injected.text);
 
       const nowMs = this.clock.now();
       const acceptedAt = new Date(nowMs).toISOString();
@@ -1125,8 +1309,10 @@ export class ChatRunner {
           role: AgentNSValue.Role.User as string,
           status: AgentNSValue.MessageStatus.Completed as string,
           omit: false,
-          content: prepared.content as unknown as MessageUpsertInput["content"],
-          data: null,
+          content: content as unknown as MessageUpsertInput["content"],
+          // 注入过就标上「这条里有服务端加的东西」：沿用 `data.hidden` 这个既有落库口径
+          // （与交接摘要条一致），`message.list` 读回来时它就是 core 的 `Message.hidden`
+          data: injected === null ? null : { hidden: true },
           createdAt: nowMs,
         },
         {
@@ -1144,12 +1330,15 @@ export class ChatRunner {
       session = new TurnSession(this.options, {
         conversation,
         scope,
+        createAgent: this.agentFactory(),
         history,
-        content: prepared.content,
+        content,
+        injected,
         attachments: prepared.attachments,
         userMessageId: userId,
         assistantMessageId: assistantId,
         handle,
+        language,
         acceptedAt,
         startedAtMs: nowMs,
         onSettled: () => {
@@ -1166,6 +1355,18 @@ export class ChatRunner {
     this.turns.set(session.conversationId, session);
     void session.execute();
     return session;
+  }
+
+  /** 这段对话所属项目的目录（F-D9）；拿不到就不注入那一段 */
+  private async injectedContextFor(
+    workspaceId: string,
+    language: Language,
+  ): Promise<InjectedContext | null> {
+    const resolve = this.options.resolveCwd;
+    if (!resolve) return null;
+    const cwd = await resolve(workspaceId);
+    if (cwd === null || cwd.length === 0) return null;
+    return injectedContextOf(cwd, language);
   }
 
   /** 这一段对话正在跑的那一轮（没有就 `undefined`）：拉现场用 */
@@ -1254,7 +1455,7 @@ export interface SdkAgentFactoryOptions {
    * 交接服务（写交接文档 + 迁移）。给了才装交接线插件（`AutoMigratePlugin`）；
    * 交接服务自己会在交接回合往 agent 上装工具守卫。
    */
-  handoff?: (context: AgentBuildContext) => HandoffService | undefined;
+  handoff?: HandoffProvider;
   /**
    * 工具刷新时机；缺省读 SDK 配置的 `autoRefreshTools`，再缺省 `inner-loop-start`。
    *
@@ -1311,7 +1512,13 @@ export function createSdkAgentFactory(options: SdkAgentFactoryOptions = {}): Age
       );
       if (handoff) {
         agent.use(
-          new AutoMigratePlugin({ service: handoff, handoffTokens: thresholds.handoff }),
+          new AutoMigratePlugin({
+            service: handoff,
+            handoffTokens: thresholds.handoff,
+            // R59 / PRD §5：服务端不替用户决定「要不要迁移」——问用户的是
+            // `QuestionService.askHandoff`（一轮结算之后），这里一律跳过本次迁移。
+            resolveMode: () => null,
+          }),
         );
       }
     }

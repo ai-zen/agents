@@ -16,7 +16,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 import { AgentNS, ZERO_USAGE } from "@ai-zen/agents-core";
 import { AgentRepository, resolveModel } from "@ai-zen/agents-sdk";
@@ -30,6 +30,9 @@ import type {
   ReasoningPresets,
 } from "@ai-zen/agents-sdk";
 
+import type { ConversationDraftStore } from "../runtime/ConversationDrafts.js";
+import { ConversationDrafts } from "../runtime/ConversationDrafts.js";
+import type { ChatEventEmitter } from "../runtime/ChatRunner.js";
 import type { AssetRepository } from "../storage/AssetRepository.js";
 import type { ConversationRepository } from "../storage/ConversationRepository.js";
 import type { MessageRepository } from "../storage/MessageRepository.js";
@@ -37,6 +40,7 @@ import type { QuestionRepository } from "../storage/QuestionRepository.js";
 import type { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
 import type { Conversation, StoredMessage, WorkspaceRow } from "../storage/types.js";
 import { ServerError } from "../wire/errors.js";
+import type { ConversationChangeKind } from "../wire/events.js";
 import type {
   ContextState,
   ConversationCreateParams,
@@ -102,6 +106,16 @@ export interface ConversationRemovalReport extends ConversationDeleteResult {
   assetPaths: string[];
 }
 
+/**
+ * 从项目定位的两条路得出「哪个项目」：已经登记的那个，或者一个还没登记的目录（PRD D10）。
+ *
+ * 做成联合类型而不是抛错：调用方（`conversation.create` 的接线层）要就「未登记」这件事
+ * 问用户一次，那就不是一个错误。
+ */
+export type WorkspaceLocation =
+  | { workspace: WorkspaceRow }
+  | { needsRegistration: string };
+
 /** 对话服务的依赖；由单根组装后注入 */
 export interface ConversationServiceDeps {
   conversations: ConversationRepository;
@@ -112,6 +126,10 @@ export interface ConversationServiceDeps {
   /** 配置唯一入口（SDK）：助手定义在 `<basePath>/agents/`，模型与默认项在 `config.json` 里 */
   configManager: ConfigManager;
   runtime: ConversationRuntimePort;
+  /** 草稿（R56）：`create` 只记在这里，首次 `send` 才落库；不注入时用一份自己的 */
+  drafts?: ConversationDraftStore;
+  /** 推 `conversation.changed`（多端在线同步，L5 / D22）；不注入时不推 */
+  emit?: ChatEventEmitter;
   /** 时钟，测试注入用；缺省 `Date.now` */
   now?: () => number;
 }
@@ -143,6 +161,44 @@ function autoName(ms: number): string {
   const date = new Date(ms);
   const pad = (value: number): string => String(value).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/**
+ * cwd 归一化成绝对路径。
+ *
+ * 与 `WorkspaceService` 同一套口径（D9 的 cwd 一旦定死就不再变）：相对路径不能拿
+ * 进程工作目录去解，否则同一个入参在不同启动方式下会得到两个项目。
+ */
+function normalizeCwd(value: string): string {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (raw.length === 0) {
+    throw new ServerError("invalid_params", {
+      params: { field: "cwd" },
+      detail: { field: "cwd", reason: "empty" },
+    });
+  }
+  if (!isAbsolute(raw)) {
+    throw new ServerError("invalid_params", {
+      params: { field: "cwd" },
+      detail: { field: "cwd", reason: "not_absolute", cwd: value },
+    });
+  }
+  return resolve(raw);
+}
+
+/**
+ * 撤回时回填的正文只取纯文本段（R62）。
+ *
+ * 一条带附件的用户消息里既有正文又有 `image_url` / `file` 段；原样回填会让客户端既拿到
+ * 已经转换好的段、又拿到 `assetIds`（图片会显示两遍）。附件靠 `assetIds` 复原（F-H3）。
+ */
+function textOnlyContent(content: AgentNS.MessageContent | undefined): AgentNS.MessageContent {
+  if (content === undefined) return "";
+  if (typeof content === "string") return content;
+  const sections = content.filter(
+    (section): section is AgentNS.TextContentSection => section.type === "text",
+  );
+  return sections.length === 0 ? "" : sections;
 }
 
 /** 必填的 id / 名字类参数：空串按「参数不对」处理，不拿它去查库 */
@@ -192,6 +248,8 @@ export class ConversationService {
   private readonly questions: QuestionRepository;
   private readonly configManager: ConfigManager;
   private readonly runtime: ConversationRuntimePort;
+  private readonly drafts: ConversationDraftStore;
+  private readonly emit?: ChatEventEmitter;
   private readonly now: () => number;
   /** 助手定义是文件（PRD F-G3：一实体一文件），按配置根下的 `agents/` 目录读 */
   private readonly agents: AgentRepository;
@@ -204,6 +262,8 @@ export class ConversationService {
     this.questions = deps.questions;
     this.configManager = deps.configManager;
     this.runtime = deps.runtime;
+    this.drafts = deps.drafts ?? new ConversationDrafts();
+    this.emit = deps.emit;
     this.now = deps.now ?? Date.now;
     this.agents = new AgentRepository(join(deps.configManager.basePath, "agents"));
   }
@@ -213,6 +273,9 @@ export class ConversationService {
    *
    * 顺序由仓储定死：`pinned DESC, createdAt DESC` —— 活动、打开、改名都不影响它，所以这里
    * 除了按 Workspace / 置顶筛、按 `limit` / `offset` 切页之外，不再重排。
+   *
+   * 列表只给已经落库的对话：草稿（还没发过消息，R56）不在侧栏里出现 —— 建了不发就断线
+   * 的那段对话应该像没建过一样。
    */
   async list(params: ConversationListParams = {}): Promise<ConversationListResult> {
     const rows = params.workspaceId === undefined
@@ -231,14 +294,52 @@ export class ConversationService {
   }
 
   /**
-   * 开一段新对话（PRD F-C7 / L7 / R18）。
+   * 定位这段对话所属的项目（PRD D9 / D10）。
    *
-   * 身份三件套在这里定死：项目来自入参，助手从磁盘上的定义文件解析，模型走 SDK 的三级解析
-   * （`会话级 > 助手定义 > 配置里的兜底`，唯一实现在 `resolveModel`）。任一解析不出来就报错，
-   * 不写半成品行 —— 一条没有助手或没有模型的对话没有可用的身份。
+   * 两条路：给了 `workspaceId` 就是那个已登记的项目（`cwd` 忽略）；只给了 `cwd` 时按目录找
+   * 已登记的那个，找不到就回一张「待登记」的事实单 —— 由接线层去问用户（D10 的「问一次」）。
+   * 两个都没给就是参数不对，不当成「随便找个目录」。
+   */
+  async locateWorkspace(params: {
+    workspaceId?: string;
+    cwd?: string;
+  }): Promise<WorkspaceLocation> {
+    const workspaceId = typeof params.workspaceId === "string" ? params.workspaceId.trim() : "";
+    if (workspaceId.length > 0) {
+      return { workspace: await this.requireWorkspace(workspaceId) };
+    }
+    const cwd = params.cwd === undefined ? null : normalizeCwd(params.cwd);
+    if (cwd === null) {
+      throw new ServerError("invalid_params", {
+        params: { field: "workspaceId" },
+        detail: { field: "workspaceId", reason: "required", or: "cwd" },
+      });
+    }
+    const existing = await this.workspaces.getByCwd(cwd);
+    if (existing) return { workspace: existing };
+    return { needsRegistration: cwd };
+  }
+
+  /**
+   * 开一段新对话（PRD F-C7 / L7 / R18 / R56）。
+   *
+   * 身份三件套在这里定死：项目来自入参（`workspaceId` 或 `cwd`），助手从磁盘上的定义文件解析，
+   * 模型走 SDK 的三级解析（`会话级 > 助手定义 > 配置里的兜底`，唯一实现在 `resolveModel`）。
+   * 任一解析不出来就报错，不写半成品行 —— 一条没有助手或没有模型的对话没有可用的身份。
+   *
+   * **这一行现在不写库**：只把 id 与身份留在草稿里（R56 / F-C2「没有用户消息就不写」）。
+   * 首次 `conversation.send` 时由 {@link ensurePersisted} 用同一个 id 落库。
    */
   async create(params: ConversationCreateParams): Promise<ConversationCreateResult> {
-    const workspace = await this.requireWorkspace(params.workspaceId);
+    const located = await this.locateWorkspace(params);
+    if ("needsRegistration" in located) {
+      // 直接调服务层的调用方（不经过接线层）拿不到提问通道：把它们导回「先登记」那一步
+      throw new ServerError("invalid_params", {
+        params: { field: "cwd" },
+        detail: { field: "cwd", reason: "workspace_not_registered", cwd: located.needsRegistration },
+      });
+    }
+    const workspace = located.workspace;
     const config = await this.readConfig();
     const agent = await this.readAgent(requireId(params.agentId, "agentId"));
 
@@ -271,16 +372,70 @@ export class ConversationService {
     }
 
     const createdAt = this.now();
-    const id = randomUUID();
-    await this.conversations.create({
-      id,
+    const draft: Conversation = {
+      id: randomUUID(),
       workspaceId: workspace.id,
       name: autoName(createdAt),
+      nameIsAuto: true,
+      pinned: false,
       agentId: agent.id,
       modelId: model.id,
       createdAt,
       updatedAt: createdAt,
-    });
+    };
+    this.drafts.put(draft);
+
+    const context = await this.viewContext(
+      config,
+      [[workspace.id, workspace]],
+      [[agent.id, agent]],
+    );
+    const { view } = await this.composeView(draft, context);
+    return { conversation: view, requiresRegistration: false };
+  }
+
+  /**
+   * 把草稿落成 `conversations` 的一行（R56：首次 `send` 时用同一个 id 写）。
+   *
+   * 已经在库里就直接返回那一行（重复调用是幂等的）；草稿不在、库里也没这一行就是
+   * `not_found`。先把草稿摘掉再写库：两次并发的 `send` 里后到的那一次就抢不到同一份草稿，
+   * 不会两次插同一行；写失败时把草稿放回去，下一次还能再试。
+   */
+  async ensurePersisted(conversationId: string): Promise<Conversation> {
+    const id = requireId(conversationId, "conversationId");
+    const existing = await this.conversations.get(id);
+    if (existing) {
+      this.drafts.forget(id);
+      return existing;
+    }
+    const draft = this.drafts.take(id);
+    if (!draft) {
+      throw new ServerError("not_found", {
+        params: { entity: "conversation" },
+        detail: { conversationId },
+      });
+    }
+    try {
+      await this.conversations.create({
+        id: draft.id,
+        workspaceId: draft.workspaceId,
+        name: draft.name,
+        agentId: draft.agentId,
+        modelId: draft.modelId,
+        createdAt: draft.createdAt,
+        updatedAt: draft.updatedAt,
+      });
+      // 新行默认是「自动命名、未置顶」；草稿期间用户改过名 / 置过顶的，落库时补写一次
+      if (draft.nameIsAuto === false) {
+        await this.conversations.renameByUser(draft.id, draft.name, draft.updatedAt);
+      }
+      if (draft.pinned) {
+        await this.conversations.setPinned(draft.id, true, draft.updatedAt);
+      }
+    } catch (error) {
+      this.drafts.put(draft);
+      throw error;
+    }
 
     const row = await this.conversations.get(id);
     if (!row) {
@@ -288,20 +443,16 @@ export class ConversationService {
         detail: { reason: "conversation vanished after insert", id },
       });
     }
-    const context = await this.viewContext(
-      config,
-      [[workspace.id, workspace]],
-      [[agent.id, agent]],
-    );
-    const { view } = await this.composeView(row, context);
-    return { conversation: view };
+    // 草稿变成真行那一刻才第一次出现在其它窗口的侧栏里，所以这里补一条 `created`
+    this.emitChanged(row.id, row.workspaceId, "created", 0);
+    return row;
   }
 
   /** 按 id 打开一段对话（PRD F-A6：服务端只提供「按 id 打开」） */
   async get(params: ConversationGetParams): Promise<ConversationGetResult> {
-    const row = await this.requireConversation(params.conversationId);
+    const conversation = await this.requireConversation(params.conversationId);
     const { view } = await this.composeView(
-      row,
+      conversation,
       await this.viewContext(await this.readConfig()),
     );
     return { conversation: view };
@@ -309,23 +460,43 @@ export class ConversationService {
 
   /** 改名（PRD D1 / F-C3）：只换名字，id、身份与排序都不动；名字从此归用户（R35） */
   async rename(params: ConversationRenameParams): Promise<ConversationRenameResult> {
-    const row = await this.requireConversation(params.conversationId);
+    const conversation = await this.requireConversation(params.conversationId);
     const name = requireId(params.name, "name");
-    await this.conversations.renameByUser(row.id, name, this.now());
-    return { conversation: await this.reloadView(row.id) };
+    const updatedAt = this.now();
+
+    const draft = this.drafts.get(conversation.id);
+    if (draft) {
+      this.drafts.put({ ...draft, name, nameIsAuto: false, updatedAt });
+    } else {
+      await this.conversations.renameByUser(conversation.id, name, updatedAt);
+    }
+
+    const view = await this.reloadView(conversation.id);
+    this.emitChanged(view.id, view.workspaceId, "renamed", view.messageCount);
+    return { conversation: view };
   }
 
   /** 手动置顶（PRD F-C5 / D13）：只动 `pinned`，不碰创建时间 */
   async pin(params: ConversationPinParams): Promise<ConversationPinResult> {
-    const row = await this.requireConversation(params.conversationId);
+    const conversation = await this.requireConversation(params.conversationId);
     if (typeof params.pinned !== "boolean") {
       throw new ServerError("invalid_params", {
         params: { field: "pinned" },
         detail: { field: "pinned", reason: "not_boolean" },
       });
     }
-    await this.conversations.setPinned(row.id, params.pinned, this.now());
-    return { conversation: await this.reloadView(row.id) };
+    const updatedAt = this.now();
+
+    const draft = this.drafts.get(conversation.id);
+    if (draft) {
+      this.drafts.put({ ...draft, pinned: params.pinned, updatedAt });
+    } else {
+      await this.conversations.setPinned(conversation.id, params.pinned, updatedAt);
+    }
+
+    const view = await this.reloadView(conversation.id);
+    this.emitChanged(view.id, view.workspaceId, "pinned", view.messageCount);
+    return { conversation: view };
   }
 
   /**
@@ -334,13 +505,28 @@ export class ConversationService {
    * `dryRun` 先算账（消息数、素材数），客户端据此警告用户。真删是 delete 语句 + 外键级联，
    * 消息行、素材行、问题行随对话一起消失；`assets/` 下的文件由 asset 层按引用清，这里只
    * 把清单回出去（PRD D17「图片按引用清理」）。
+   *
+   * 还没落库的草稿也能删：没有行、没有消息、没有素材，代价是零。
    */
   async delete(params: ConversationDeleteParams): Promise<ConversationRemovalReport> {
-    const row = await this.requireConversation(params.conversationId);
-    const assetRows = await this.assets.listByConversation(row.id);
+    const conversation = await this.requireConversation(params.conversationId);
+
+    const draft = this.drafts.get(conversation.id);
+    if (draft) {
+      const draftConsequences = { conversations: 1, messages: 0, assets: 0 };
+      if (params.dryRun === true) {
+        return { removed: false, consequences: draftConsequences, assetPaths: [] };
+      }
+      this.drafts.forget(conversation.id);
+      await this.runtime.forget(conversation.id);
+      this.emitChanged(conversation.id, draft.workspaceId, "deleted", null);
+      return { removed: true, consequences: draftConsequences, assetPaths: [] };
+    }
+
+    const assetRows = await this.assets.listByConversation(conversation.id);
     const consequences = {
       conversations: 1,
-      messages: await this.messages.countByConversation(row.id),
+      messages: await this.messages.countByConversation(conversation.id),
       assets: assetRows.length,
     };
     const assetPaths = assetRows.map((asset) => asset.path);
@@ -349,17 +535,19 @@ export class ConversationService {
       return { removed: false, consequences, assetPaths };
     }
 
-    await this.runtime.forget(row.id);
-    const changes = await this.conversations.delete(row.id);
-    return { removed: changes > 0, consequences, assetPaths };
+    await this.runtime.forget(conversation.id);
+    const changes = await this.conversations.delete(conversation.id);
+    const removed = changes > 0;
+    if (removed) this.emitChanged(conversation.id, conversation.workspaceId, "deleted", null);
+    return { removed, consequences, assetPaths };
   }
 
   /**
    * 撤回（PRD F-C8 / D24 / R10）。
    *
    * 撤回到某条**用户消息之前**：那条消息及其后全部硬删，被撤回的内容按 core 的内容形状
-   * 回给客户端填回输入框（连它当时带的素材 id 一起，F-H3「带图消息连图一起恢复」）。
-   * 不留删除痕迹（R10）；正在跑一轮时拒绝，不然删的正是流式还在写的那几条。
+   * 回给客户端填回输入框（只有纯文本段 + 当时带的素材 id，R62 / F-H3「带图消息连图一起
+   * 恢复」）。不留删除痕迹（R10）；正在跑一轮时拒绝，不然删的正是流式还在写的那几条。
    */
   async revert(params: ConversationRevertParams): Promise<ConversationRevertResult> {
     const row = await this.requireConversation(params.conversationId);
@@ -387,11 +575,14 @@ export class ConversationService {
     const doomed = await this.messages.listByConversation(row.id, anchor.id);
     const removedMessageIds = doomed.map((message) => message.id);
     const assetIds = (await this.assets.listByMessage(anchor.id)).map((asset) => asset.id);
+    const content = textOnlyContent(anchor.content);
     const restoredInput: MessageInput = assetIds.length > 0
-      ? { content: anchor.content ?? "", assetIds }
-      : { content: anchor.content ?? "" };
+      ? { content, assetIds }
+      : { content };
 
     await this.messages.deleteAfter(row.id, anchor.id, { includeSelf: true });
+    const remaining = (await this.messages.listByConversation(row.id)).length;
+    this.emitChanged(row.id, row.workspaceId, "message_removed", remaining);
     return { removedMessageIds, restoredInput };
   }
 
@@ -543,18 +734,32 @@ export class ConversationService {
 
   /** 改完之后重新读一遍再拼视图：改名与置顶都要回写后的完整对象 */
   private async reloadView(conversationId: string): Promise<ConversationView> {
-    const row = await this.conversations.get(conversationId);
-    if (!row) {
-      throw new ServerError("not_found", {
-        params: { entity: "conversation" },
-        detail: { conversationId },
-      });
-    }
+    const row = await this.requireConversation(conversationId);
     const { view } = await this.composeView(
       row,
       await this.viewContext(await this.readConfig()),
     );
     return view;
+  }
+
+  /**
+   * 推一条 `conversation.changed`（L5 / D22：两个窗口同时开着时，对方界面靠它去拉）。
+   *
+   * 只报「什么变了 + 够用的定位信息」，不搬整个对象（architecture §7）。
+   */
+  private emitChanged(
+    conversationId: string,
+    workspaceId: string,
+    change: ConversationChangeKind,
+    messageCount: number | null,
+  ): void {
+    this.emit?.("conversation.changed", {
+      conversationId,
+      workspaceId,
+      change,
+      messageCount,
+      at: iso(this.now()),
+    });
   }
 
   /**
@@ -588,16 +793,20 @@ export class ConversationService {
     };
   }
 
+  /**
+   * 按 id 取一段对话：先看库里那一行，再看草稿（R56）。都用同一份行形状，
+   * 于是视图拼装、临时模型、临时思考档位这些路径对草稿一字不改。
+   */
   private async requireConversation(conversationId: string): Promise<Conversation> {
     const id = typeof conversationId === "string" ? conversationId.trim() : "";
     const row = id.length === 0 ? undefined : await this.conversations.get(id);
-    if (!row) {
-      throw new ServerError("not_found", {
-        params: { entity: "conversation" },
-        detail: { conversationId },
-      });
-    }
-    return row;
+    if (row) return row;
+    const draft = id.length === 0 ? undefined : this.drafts.get(id);
+    if (draft) return draft;
+    throw new ServerError("not_found", {
+      params: { entity: "conversation" },
+      detail: { conversationId },
+    });
   }
 
   private async requireWorkspace(workspaceId: string): Promise<WorkspaceRow> {
@@ -611,7 +820,6 @@ export class ConversationService {
     }
     return row;
   }
-
   private async loadWorkspace(workspaceId: string, context: ViewContext): Promise<WorkspaceRow> {
     const cached = context.workspaces.get(workspaceId);
     if (cached) return cached;

@@ -22,6 +22,7 @@ let dir: string;
 let db: Database;
 let service: MessageService;
 let messages: MessageRepository;
+let conversations: ConversationRepository;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "ai-zen-services-messages-"));
@@ -29,7 +30,7 @@ beforeEach(async () => {
   await migrate(db);
 
   const workspaces = new WorkspaceRepository(db);
-  const conversations = new ConversationRepository(db);
+  conversations = new ConversationRepository(db);
   messages = new MessageRepository(db);
   service = new MessageService({ conversations, messages });
 
@@ -146,7 +147,8 @@ describe("MessageService.list 的取法（A12）", () => {
     await expect(service.list({ conversationId: "没有这段对话" })).rejects.toBeInstanceOf(ServerError);
   });
 
-  it("toolCallId 过滤出子 Agent 自己的消息", async () => {
+  it("toolCallId 取回子 Agent 自己的消息（按 parentToolCallId，F-I7）", async () => {
+    // 那次委派本身：assistant 发出工具调用，工具结果也挂着同一个工具调用 id
     await messages.upsert({
       id: "tool-1",
       conversationId: "c1",
@@ -156,9 +158,73 @@ describe("MessageService.list 的取法（A12）", () => {
       data: { tool_call_id: "call-1" },
       createdAt: 500,
     });
+    // 子 Agent 自己说过的话：落库时记下它是哪次委派里说的
+    for (const [id, role, content] of [
+      ["sub-1", "user", "把方案 A 说一下"],
+      ["sub-2", "assistant", "方案 A 是……"],
+    ] as const) {
+      await messages.upsert({
+        id,
+        conversationId: "c1",
+        role,
+        status: "completed",
+        content,
+        parentToolCallId: "call-1",
+        createdAt: 510,
+      });
+    }
 
     const result = await service.list({ conversationId: "c1", toolCallId: "call-1" });
-    expect(result.messages.map((message) => message.id)).toEqual(["tool-1"]);
+    expect(result.messages.map((message) => message.id)).toEqual(["sub-1", "sub-2"]);
+    expect(result.messages.map((message) => message.role)).toEqual([
+      AgentNS.Role.User,
+      AgentNS.Role.Assistant,
+    ]);
+  });
+
+  it("子 Agent 的消息不混进主线历史（否则模型下一轮会把别人的对话当上下文）", async () => {
+    await messages.upsert({
+      id: "sub-1",
+      conversationId: "c1",
+      role: "assistant",
+      status: "completed",
+      content: "子 Agent 说的",
+      parentToolCallId: "call-1",
+      createdAt: 900,
+    });
+
+    const result = await service.list({ conversationId: "c1" });
+    expect(result.messages.map((message) => message.id)).toEqual(["u1", "a1", "u2"]);
+  });
+
+  it("还没落库的草稿也能读：空消息、不是 not_found（R56）", async () => {
+    const drafts = new Map([
+      [
+        "draft-1",
+        {
+          id: "draft-1",
+          workspaceId: "w1",
+          name: "2026-11-12 10:00",
+          nameIsAuto: true,
+          pinned: false,
+          agentId: "a1",
+          modelId: "m1",
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+    ]);
+    const withDrafts = new MessageService({
+      conversations,
+      messages,
+      drafts: { get: (id: string) => drafts.get(id) },
+    });
+
+    const page = await withDrafts.list({ conversationId: "draft-1" });
+    expect(page.messages).toEqual([]);
+    await expect(withDrafts.list({ conversationId: "没有这段对话" })).rejects.toBeInstanceOf(
+      ServerError,
+    );
   });
 });
 

@@ -37,8 +37,14 @@ export type {
   ChatRunParams,
   ChatTurn,
   ConversationStore,
+  HandoffProvider,
+  InjectedContext,
   MessageStore,
   ReconcileResult,
   SdkAgentFactoryOptions,
   TurnSettlement,
+  TurnSettledFacts,
 } from "./ChatRunner.js";
+
+export { ConversationDrafts } from "./ConversationDrafts.js";
+export type { ConversationDraftStore } from "./ConversationDrafts.js";

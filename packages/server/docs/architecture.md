@@ -26,7 +26,7 @@
 | A10 | Scope 与对话的回收计时器**只有一处**（见 §4） | 本文 |
 | A11 | 上传走同一条 WS 上的**二进制帧**（三段式），不用 base64 字符串 | 本轮 Q9 |
 | A12 | `message.list` 按**消息 id 取**：带 `after=<id>` 时，该 id **存在**就返回它**最新的内容**及之后全部；该 id **不存在**就返回全部（断线补拉与删除后重拉共用这一条规则） | 本轮 Q10 |
-| A13 | 能力清单的粒度是「契约里每个方法一条」（63 条，与 `METHOD_NAMES` 一一对应）；同一条 PRD 能力号下有多个方法时，`id` 用 `<编号>#<动作>` 区分 | `src/handlers/capabilities.ts` |
+| A13 | 能力清单的粒度是「契约里每个方法一条」（64 条，与 `METHOD_NAMES` 一一对应）；同一条 PRD 能力号下有多个方法时，`id` 用 `<编号>#<动作>` 区分 | `src/handlers/capabilities.ts` |
 
 ## 2. 进程与接线
 
@@ -37,24 +37,28 @@
 | 被本地客户端拉起（本地实例，`local: true`） | 只监听回环（`127.0.0.1`） | 服务端首次启动时生成，客户端自动取 |
 | 创建者手动起、要给别人连（对外实例，`--public`） | 监听创建者指定的地址（缺省 `0.0.0.0`） | 创建者在自己的入口里创建凭证（带备注），手动分发给对方 |
 
-端口按 PRD D25，优先级是启动参数 > 配置文件（`configPort` 注入项）> 默认端口 8790，落点是 `src/config.ts` 的 `resolveListenTarget`。两种边界情形按代码现在的样子记着：
+端口按 PRD D25，优先级是启动参数 > 配置文件 > 默认端口 8790，落点是 `src/config.ts` 的 `resolveListenTarget`。两种边界情形按代码现在的样子记着：
 
 - 端口给 `0` 表示由系统分配（`--port 0`，`app.ts` 的 `resolveTarget` 对它单独放行）；用例与冒烟都用这个写法。
-- 参数里的端口不是一个合法端口（非整数、越界）时，`resolveListenTarget` 按「没给」处理、回落下一顺位。端口被占用时 `WsHub.listen` 把错误抛给启动流程，进程以失败退出 —— 自动改监听端口的路径没有实现，要换端口就显式写 `--port 0`。
+- **显式给出但不合法的端口报 `config_invalid`，不静默回落**（裁定 R67）：非整数、越界都拒；`0` 只认启动参数那一档（“让系统分配”这件事在配置文件里说不清）。只有完全没给才落到下一顺位。端口被占用时 `WsHub.listen` 把错误抛给启动流程，进程以失败退出 —— 自动改监听端口的路径没有实现，要换端口就显式写 `--port 0`。
+
+**配置文件那一档的真实来源是 `<数据根>/server.json`**（形状 `{ "port": 8790 }`，见 `src/config.ts` 的 `readServerSettings`）：文件不在或没写 `port` 就算“这一档没说话”；写坏了（不是 JSON 对象）或端口不合法按 `config_invalid` 拒绝。`cli.ts` 的 `serve` 与 `ServerApp.create()` 都读它 —— 前者读了随 `configPort` 传下去，后者在不给 `configPort` 且启动参数没给端口时自己读。
 
 **单实例靠发现文件**：`<数据根>/run/server.json` 是「这台机器上谁在服务」的唯一真相（`pid`、`host`、`port`、`version`、`local`、`startedAt`，见 `src/net/discovery.ts` 的 `ServerFileInfo`）。启动时 `ServerApp.detectRunningInstance` 读它：pid 活着就挂靠那个地址、不重复监听；pid 已死或文件坏了就清掉再起。客户端探活也读它。
 
 **凭证交付**：凭证自身一份真相在库里（可列出、带备注、可单独吊销）；`<数据根>/run/token` 只是个交付口，内容只有「本地那串」，本地实例启动时由 `createLocalCredential` 生成、由 `writeLocalToken` 写入。对外实例不写这个文件，只提示用 `token create` 自己建再分发。交付文件的权限是**尽力而为**地设成 `0600`（POSIX 上挡住同机其他用户；**Windows 上 `mode` / `chmod` 不改变 ACL**，那里的保护来自用户目录本身）—— 文档和文案都不把它当安全保证。
 
-**升级**（PRD D4）：`server.upgrade` 比磁盘上的版本（`readDiskVersion` 读本包 `package.json`）与运行版本，确认新版本真的落盘了才安排一次收尾，进程退出后由启动方式重新拉起；服务端不自己装包，也不 `exec` 回自己。
+**升级**（PRD D4）：`server.upgrade` 比磁盘上的版本（`readDiskVersion` 读本包 `package.json`）与运行版本，确认新版本真的落盘了才安排一次收尾，进程退出后由启动方式重新拉起；服务端不自己装包，也不 `exec` 回自己。**启动后还有一道低频自检**（裁定 R66 / `app.ts` 的 `checkDiskVersion`）：每 30 秒（`unref()` 的定时器，`stop()` 里清掉）比一次磁盘版本，磁盘上的那个更新就推一条 `notice.upgradeRestarting` 再走同一条收尾；回退不算升级，不重启。
 
-**数据根**（`AI_ZEN_DIR`，缺省 `~/.ai-zen`，可被环境变量改）。`ServerPaths`（`src/config.ts`）给出数据根与它下面的库、附件、运行期目录、发现文件、凭证文件五行；`config.json` 由 `app.ts` 按 `<dataRoot>/config.json` 拼好交给 SDK 的 `ConfigManager`；`agents/ sub-agents/ skills/ tools/ mcp-oauth/` 与 `mcp.json`、`reasoning-presets.json` 由 SDK 的 `ConfigManager` 在其 `basePath`（= 数据根）下推导与释放：
+**数据根**（`AI_ZEN_DIR`，缺省 `~/.ai-zen`，可被环境变量改）。`ServerPaths`（`src/config.ts`）给出数据根与它下面的库、附件、运行期目录、发现文件、凭证文件、两份配置文件与日志目录；`config.json` 交给 SDK 的 `ConfigManager`（`ServerPaths.configFile`），`server.json` 是服务端自己的设置（`ServerPaths.serverConfigFile`）；`agents/ sub-agents/ skills/ tools/ mcp-oauth/` 与 `mcp.json`、`reasoning-presets.json` 由 SDK 的 `ConfigManager` 在其 `basePath`（= 数据根）下推导与释放：
 
 ```
 <数据根>/
 ├── ai-zen.db              # 全机一个库（ServerPaths.dbFile）
 ├── assets/                # 上传临时文件与正式素材（ServerPaths.assetsDir）
-├── config.json            # 配置唯一真相（ConfigManager 以它为边界）
+├── config.json            # 配置唯一真相（ServerPaths.configFile；ConfigManager 以它为边界）
+├── server.json            # 服务端自己的设置：端口那一档（ServerPaths.serverConfigFile）
+├── logs/                  # 服务端日志（ServerPaths.logsDir；server.log + 轮转出的 .1…）
 ├── reasoning-presets.json # 思考策略表（ConfigManager）
 ├── mcp.json               # 用户级 MCP 配置（ConfigManager）
 ├── agents/                # 助手定义（一实体一文件）
@@ -78,7 +82,7 @@ ServerApp（根：组装、启动、退出）
 │  ├─ Database             SQLite worker（all / get / run / tx / close）
 │  ├─ *Repository          只做 SQL，不含业务（一表一文件）
 │  ├─ i18n                 render / normalizeLanguage（en 基准、zh；未知语言回落 en）
-│  └─ HubLogger            日志口子（warn / error），注入进 WsHub 与单根
+│  └─ Logger               日志落 `logs/server.log`（按大小轮转）、warn / error 同时上通知
 ├─ 服务（一服务一文件，薄，共 15 个）
 │  ├─ WorkspaceService、ConversationService、MessageService、AgentService
 │  ├─ ModelService、ConfigService、AssetService、SearchService、CredentialService
@@ -106,7 +110,7 @@ index.ts      包出口（wire 类型 + createServer）
 wire/         契约：methods（方法表）、frames（帧）、errors（业务码）、events（事件）、states（状态形状）
 net/          WsHub、auth、discovery、UploadReceiver
 handlers/     方法实现（一域一文件）+ capabilities（能力清单）+ index（HandlerTable 与桥接名单）
-services/     薄服务
+services/     薄服务 + Logger（日志文件与轮转）
 runtime/      ScopeRegistry、RunRegistry、ConversationStateRegistry、ChatRunner、TransientRunner
 storage/      Database、dbWorker、Repository、migrations
 i18n/         文案（en 基准 / zh）
@@ -127,6 +131,8 @@ i18n/         文案（en 基准 / zh）
 **计时器只有一处**：`ScopeRegistry` 持有唯一那份空闲计时。L4 说的「10 分钟无活动」和 D28 说的「Scope 空闲 10 分钟」，是同一个计时器的两个说法，不各写一份。全部 Scope 都回收完时它回调 `onAllRecycled(cb)`（`src/runtime/ScopeRegistry.ts`），单根据此重算退出判据。
 
 **进程退出**：判据是「连接数 0、已经握过手（`served`）、没有在跑的轮次、`ScopeRegistry.size()` 为 0」。触发源有四个，都不另起计时器：`ScopeRegistry.onAllRecycled`、每轮结算（`onTurnSettled`）、`WsHub.onConnectionsChanged`、`server.shutdown`。进程退出连带断开所有 MCP 连接，这是已知代价（MCP 服务器自己拉起的外部进程可能随之结束，取决于那个 MCP server 的实现）。
+
+**收尾（`stop()`）的顺序**：摘发现文件 → 回收 Scope → 断连接 → 清理上传 → 关库 → 关日志（先写最后一笔，再 flush 并关流，PRD F-J2）。同一次收尾还负责清掉升级自检的定时器（裁定 R66）。
 
 **Scope 被销毁的三个原因**：(1) 空闲 10 分钟（`release` 后计时到点）；(2) Workspace 被删（`disposeWorkspace(id)`）；(3) 配置变更需要重连 MCP（PRD F-E2，`recycleAll()`，正被持有的 Scope 打标记、等最后一次 `release` 再销毁）。
 
@@ -164,15 +170,17 @@ const [found, written] = await db.tx((q) => [
 
 **迁移**：`meta.schemaVersion` + 顺序迁移脚本，启动时逐级在事务里跑（结构改动与版本号同一次提交）；不识别任何旧数据（L1）。R14/R18 等结构裁定直接落在 v1 的建表语句里，没有追加 v2（这套表结构还没随版本发出去，R32）。
 
+**库之外的两份文件**：`config.json`（配置唯一真相，`ServerPaths.configFile`）与 `server.json`（服务端自己的设置：端口那一档，`ServerPaths.serverConfigFile`）；日志的落点由 `ServerPaths.logsDir` 给出，详见 §2。
+
 ## 6. 接线：一条 WS 上的 JSON-RPC
 
-**首帧 `hello`**：`{ token, language?, clientInfo: { name, version, platform? } }`（`src/wire/methods.ts` 的 `ServerHelloParams`）。凭证不放在 URL 查询串里（会进日志与进程表）；未 `hello` 成功的连接只放行 `hello`，其余方法与二进制帧都回 `unauthorized`。`language` 挂在连接上，断开即忘（D8 的缺省语言取配置）。`hello` 成功时一并回：协商出的 `language`、`serverVersion`、`protocolVersion`、`startedAt`、能力清单 `capabilities`（与 `server.capabilities` 同一份 `CapabilityView[]`）、附件上限 `limits`。
+**首帧 `hello`**：`{ token, language?, clientInfo: { name, version, platform? } }`（`src/wire/methods.ts` 的 `ServerHelloParams`）。凭证不放在 URL 查询串里（会进日志与进程表）；未 `hello` 成功的连接只放行 `hello`，其余方法与二进制帧都回 `unauthorized`。`language` 挂在连接上，断开即忘；没带时用 `config.json` 的 `language`（缺省英文，裁定 R58）。`hello` 成功时一并回：协商出的 `language`、`serverVersion`、`protocolVersion`、`startedAt`、**能力 id 列表 `capabilities`（`string[]`，裁定 R57）**、附件上限 `limits`。完整的清单（标题、说明、属性）走 `server.capabilities`。
 
-**方法名**：`<域>.<动作>`。契约里共 63 个方法（`src/wire/methods.ts` 的 `METHOD_NAMES`，14 个域）：
+**方法名**：`<域>.<动作>`。契约里共 64 个方法（`src/wire/methods.ts` 的 `METHOD_NAMES`，14 个域）：
 
 | 域 | 个数 | 方法 |
 |---|---|---|
-| `server` | 7 | `hello` `version` `upgrade` `shutdown` `usage` `capabilities` `setLanguage` |
+| `server` | 8 | `hello` `version` `upgrade` `shutdown` `usage` `capabilities` `reload` `setLanguage` |
 | `workspace` | 5 | `list` `create` `get` `rename` `remove` |
 | `conversation` | 13 | `list` `create` `get` `state` `rename` `pin` `delete` `send` `abort` `revert` `setModel` `setThinking` `transient` |
 | `message` | 1 | `list` |
@@ -241,7 +249,7 @@ const [found, written] = await db.tx((q) => [
 
 事件只描述「发生了什么变化」，需要完整对象时客户端回服务端拉（`conversation.state` / `message.list`），这样多端同时在线时不会出现「一份数据在推送里长成另一种形状」。
 
-**能力清单（A13）**：`server.capabilities` 与 `hello` 都回 `CapabilityView[]`，粒度是**每个契约方法一条**（63 条），每项带 `id`（PRD 能力号；同号多方法时为 `<编号>#<动作>`，如 `F-F2#deleteEndpoint`）、`domain`、`title` / `description`（`LocalizedText`，键为 `capability.<方法名>` / `capability.<方法名>.detail`）、`method`、`blocking`（执行期间占住这段对话，F-E6）、`destructive`（不可撤销，F-F9 的二次确认）。`workspace.*` 那几条在 PRD §4 没有单列能力号，`id` 用契约注释里记的决定号（`D9` / `D10` / `D11`）。清单与 `METHOD_NAMES` 一一对应，用例钉住这条。
+**能力清单（A13）**：`server.capabilities` 回完整清单、`hello` 只回 id 列表（裁定 R57），粒度是**每个契约方法一条**（64 条），每项带 `id`（PRD 能力号；同号多方法时为 `<编号>#<动作>`，如 `F-F2#deleteEndpoint`）、`domain`、`title` / `description`（`LocalizedText`，键为 `capability.<方法名>` / `capability.<方法名>.detail`）、`method`、`blocking`（执行期间占住这段对话，F-E6）、`destructive`（不可撤销，F-F9 的二次确认）。`workspace.*` 那几条在 PRD §4 没有单列能力号，`id` 用契约注释里记的决定号（`D9` / `D10` / `D11`）。清单与 `METHOD_NAMES` 一一对应（id 与顺序与语言无关），标题与说明按**连接的语言**渲染（裁定 R58：存码不存句子，出网前重渲染）；用例钉住这两条。
 
 ## 8. 与 core / SDK 的边界
 
@@ -260,10 +268,9 @@ const [found, written] = await db.tx((q) => [
 | 缺口 | 现状 |
 |---|---|
 | 子 Agent 消息回看（PRD F-I7） | `messages.parentToolCallId` 列已落库（R37），`MessageRepository.listByParentToolCallId(conversationId, parentToolCallId)` 也有了；但生产路径里没有写入该列的调用方（只有用例在用），也没有方法把它暴露出去。眼下 `message.list(toolCallId)` 按消息自己的 `tool_call_id` 过滤，取到的是那次委派的工具结果消息 |
-| `statusBlocks`（PRD F-I6） | `conversation.state` 里恒为空数组（`conversationHandlers.ts`）：六态 / 工具 / 子 Agent 的事实都在 `run` 与 `usage` 里，块怎么切由呈现层决定，服务端没有另造一份 |
+| 状态栏块里的助手名字与可用性（PRD F-I6） | `conversation.state` 的 `statusBlocks` 按八块给出，但 `agent` 块的 `name` / `available` 恒为 `null`：这两项在助手定义那一层（`AgentService`），而 `conversation.state` 这一跳只看得见对话自己存的 `agentId` |
+| `config.setDefaults` 写缺省语言的契约形状 | 服务端收下 `defaults.language`（`ConfigService` 的 `DefaultsInput`），但 `wire/methods.ts` 的 `DefaultSelection` 还没有这一项，`config.get` 的 `defaults` 也还不回它 |
 | 「客户端自造问题」 | 契约里只有 `question.list` / `question.answer`。问题对象由服务端内部产生（交接线、cwd 登记、不可撤销动作的二次确认），没有让客户端或脚本提问的方法（`server.integration.test.ts` 的 `seedQuestion` 因此绕开契约，直开库调 `QuestionService.ask` 造一行） |
-| 日志落文件（PRD F-J2） | 只有一个注入式日志口子 `HubLogger`（`warn` / `error`），单根与 `WsHub` 往里写；落文件与轮转没有实现者 |
-| 配置文件里的端口（PRD D25 的第二顺位） | `ServerAppOptions.configPort` → `resolveListenTarget` 这条路是通的，但 CLI 没有从 `config.json` 读端口的来源（SDK 的 `AppConfig` 没有 port 字段），走 CLI 启动时这一级拿不到值 |
 
 ## 10. 待拍板
 
@@ -277,3 +284,4 @@ const [found, written] = await db.tx((q) => [
 | 2026-11-12 | 上传定为二进制帧（A11）；§9 待拍板只剩一条 |
 | 2026-11-12 | `message.list` 取法定下（A12）：按 id 取、含自身最新内容、id 不存在则全量；§9 清空 |
 | 2026-11-12 | 按实现复核（W5-B）：回调名改 `onAllRecycled`；补桥接名单与二进制帧格式；推送的事件名在 `method`；表骨架按实际列重写；`tx` 的声明式批次边界写清；方法表 63 个 / 事件 6 个 / 能力清单粒度（A13）落文；数据根目录树按 `ConfigManager` 实际推导；新增 §9 已知缺口，原 §9/§10 顺延 |
+| 2026-11-12 | W6-B 运维与展示面：方法表 63 → 64（`server.reload` 进表，A13 的能力条数同步）；§6/§7 改正「`hello` 回完整清单」为**只回能力 id 列表**（R57）；§2 端口那一档补真实来源 `<数据根>/server.json` 与「显式非法端口报 `config_invalid`」（R67）、补升级自检（R66）、数据根目录树与 §5 补 `server.json` 与 `logs/`（F-J2）、§3 的日志口子由 `HubLogger` 改为 `Logger`、§4 补收尾顺序；§9 已知缺口按本轮实现改写（状态栏块、日志、端口三条出列，补助手名字与 `DefaultSelection.language` 两条） |

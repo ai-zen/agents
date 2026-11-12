@@ -19,10 +19,12 @@ import { makeTempDir, wait, type TempDir } from "../net/TestSupport.js";
 import type { AgentFactory } from "../runtime/index.js";
 import { deferred, FakeAgent, type Deferred } from "../runtime/TestSupport.js";
 import { ServerError } from "../wire/index.js";
+import { STATUS_BLOCK_IDS } from "../wire/index.js";
 import type {
   ConversationAbortResult,
   ConversationDeleteResult,
   ConversationSendResult,
+  ConversationView,
   MethodName,
   MethodParams,
   MethodResult,
@@ -101,17 +103,29 @@ async function makeHarness(options: { createAgent?: AgentFactory } = {}): Promis
   apps.push(app);
 
   const { workspace } = await callMethod(app, "workspace.create", { cwd: workspaceDir.path });
-  const { conversation } = await callMethod(app, "conversation.create", {
-    workspaceId: workspace.id,
-    agentId: "default",
-    modelId: "test-model",
-  });
+  const conversation = await seedConversation(app, workspace.id);
   return {
     app,
     workspaceId: workspace.id,
     conversationId: conversation.id,
     workspaceDir,
   };
+}
+
+/**
+ * 建一段对话并让它落库（R56：`conversation.create` 只发 id，首次 `send` 才写 `conversations` 行）。
+ *
+ * 这里的用例要看的是别的东西（列表、搜索结果、项目删除），所以直接把草稿落成真行。
+ */
+async function seedConversation(app: ServerApp, workspaceId: string): Promise<ConversationView> {
+  const created = await callMethod(app, "conversation.create", {
+    workspaceId,
+    agentId: "default",
+    modelId: "test-model",
+  });
+  if (!created.conversation) throw new Error("conversation.create 没有建出对话");
+  await app.conversationService.ensurePersisted(created.conversation.id);
+  return created.conversation;
 }
 
 async function callMethod<M extends MethodName>(
@@ -285,5 +299,82 @@ describe("conversation.abort / conversation.delete", () => {
     expect(app.chatRunner.turn(conversationId)).toBeUndefined();
     // 素材行随对话一起没了
     expect(await app.assetService.get(assetId)).toBeUndefined();
+  });
+});
+
+describe("conversation.state 的状态栏块（PRD F-I6 / 裁定 R65）", () => {
+  it("八块按 STATUS_BLOCK_IDS 的顺序给出，事实都来自已有字段", async () => {
+    const { app, conversationId, workspaceDir } = await makeHarness();
+
+    const { state } = await callMethod(app, "conversation.state", { conversationId });
+    expect(state.statusBlocks.map((block) => block.id)).toEqual([...STATUS_BLOCK_IDS]);
+
+    const view = (await callMethod(app, "conversation.get", { conversationId })).conversation;
+    const agent = state.statusBlocks.find((block) => block.id === "agent");
+    // 身份来自对话自己（创建时定死，L7）；名字与可用性在助手定义那一层，这里给 null 而不编
+    expect(agent?.id === "agent" && agent.facts.agentId).toBe(view.agentId);
+    expect(agent?.id === "agent" && agent.facts.name).toBeNull();
+    expect(agent?.id === "agent" && agent.facts.available).toBeNull();
+
+    const model = state.statusBlocks.find((block) => block.id === "model");
+    expect(model?.id === "model" && model.facts.modelId).toBe(view.model.modelId);
+    expect(model?.id === "model" && model.facts.overriddenThisSession).toBe(false);
+
+    const thinking = state.statusBlocks.find((block) => block.id === "thinking");
+    expect(thinking?.id === "thinking" && thinking.facts).toEqual(view.thinking);
+
+    const context = state.statusBlocks.find((block) => block.id === "context");
+    expect(context?.id === "context" && context.facts).toEqual(state.context);
+
+    const usage = state.statusBlocks.find((block) => block.id === "usage");
+    expect(usage?.id === "usage" && usage.facts).toEqual(state.usage);
+
+    // 目录事实来自这段对话所属的项目（目录存在为真：临时目录刚建出来）
+    const cwd = state.statusBlocks.find((block) => block.id === "cwd");
+    expect(cwd?.id === "cwd" && cwd.facts.cwd).toBe(workspaceDir.path);
+    expect(cwd?.id === "cwd" && cwd.facts.exists).toBe(true);
+
+    const tools = state.statusBlocks.find((block) => block.id === "tools");
+    expect(tools?.id === "tools" && tools.facts.running).toEqual([]);
+
+    const subagents = state.statusBlocks.find((block) => block.id === "subagents");
+    expect(subagents?.id === "subagents" && subagents.facts.items).toEqual(state.run.subagents);
+
+    // 标签按连接语言给（D8）
+    const labels = state.statusBlocks.map((block) => block.label.message);
+    expect(labels[0]).toBe(render("en", "label.agent"));
+  });
+
+  it("流式中 tools 块跟着 run.generation 里还在跑的工具变", async () => {
+    const toolGate: Deferred<void> = deferred();
+    const { app, conversationId } = await makeHarness({
+      createAgent: async () =>
+        new FakeAgent([
+          { deltas: [{ content: "我查一下。" }], toolCalls: [{ id: "call-1", name: "read", arguments: "{}" }], toolGate: toolGate.promise },
+          { deltas: [{ content: "查到了。" }] },
+        ]),
+    });
+
+    await callMethod(app, "conversation.send", { conversationId, input: { content: "看看文件" } });
+
+    // 等这一轮进到「等工具」
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const turn = app.chatRunner.turn(conversationId);
+      if (turn?.runState().generation?.phase === "awaiting_tools") break;
+      await wait(10);
+    }
+
+    const during = await callMethod(app, "conversation.state", { conversationId });
+    const toolsDuring = during.state.statusBlocks.find((block) => block.id === "tools");
+    expect(toolsDuring?.id === "tools" && toolsDuring.facts.running.map((tool) => tool.toolCall.function?.name)).toEqual(["read"]);
+    // 六态的事实只有一处（run.generation），块里装的就是它
+    expect(during.state.run.generation?.phase).toBe("awaiting_tools");
+
+    toolGate.resolve();
+    await settle(app, conversationId);
+
+    const after = await callMethod(app, "conversation.state", { conversationId });
+    const toolsAfter = after.state.statusBlocks.find((block) => block.id === "tools");
+    expect(toolsAfter?.id === "tools" && toolsAfter.facts.running).toEqual([]);
   });
 });

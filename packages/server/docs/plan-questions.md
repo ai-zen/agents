@@ -144,3 +144,28 @@
 - [src/app.test.ts] `conversation.send` 的完整一轮（事件顺序 + 库里落消息）仍由 `e2e.test.ts` 用假 agent 覆盖：那一层要真装配 Scope、真流式、真写库，放在真进程里跑不划算（也不该为了测试往 CLI 里塞假 agent）。
 - [src/handlers/conversationHandlers.ts] `conversation.state` 的 `questions` 接上了（= `question.list(conversationId)`，含已回答的那些，客户端按状态决定要不要显示）；`statusBlocks` 仍是空数组 —— 六态 / 工具 / 子 Agent 的事实都在 `run` 与 `usage` 里，块怎么切是呈现层的决定，服务端不另造一份。
 - [src/app.ts] 没有注入交接服务时，R50 的警告在**第一次装配 agent** 时推一条（`notice.logWarning`，永久）；它描述的是「自动交接线没装」，不是某一轮的错。
+
+## W6-A（R56–R63 缺口补齐）追加
+
+- [src/runtime/ChatRunner.ts] R56 之后，一段对话在首次发消息之前只活在内存里（草稿）。我让 `ChatRunner` 的「用户消息那条行」在 `message.list` 之外也多带一个事实：用户消息里追加过注入段时，落库时按既有约定写 `data.hidden = true`（core 的 `Message.hidden`）。选的不是 `data.injectedContext` 这类新键（R21：不新造字段），也不是给片段加 `hidden`（core 的内容段没有这个字段）。因此「服务端注入」这个事实挂在**整条用户消息**上，界面若照 `hidden` 直接隐藏整条就会把用户自己打的字也藏掉 —— 客户端按「这条里有服务端加的东西，可折叠」处理。
+- [src/runtime/ChatRunner.ts] 注入段的文本用了 `i18n` 里既有的 `message.injectedContext`（「这段是服务端加进来的，不是你输入的：{summary}」）+ 新键 `message.injectedContext.cwd`（「当前目录是 {cwd}」）。新键是加法，en / zh 各一条。
+- [src/services/MessageService.ts] （自决）R56 让「刚 `create` 完还没发消息」的对话在库里没有行，而客户端 `create` 之后会立刻 `message.list` / `conversation.state`：我在 `MessageService` 加了一个可选的 `drafts` 注入口（结构上是草稿注册表），对草稿返回空消息而不是 `not_found`。不注入时行为与以前一致。
+- [src/services/ConversationService.ts] （自决）草稿期间用户可以改名 / 置顶（`conversation.rename` / `pin` 对草稿也生效，只改内存）。落库时 `conversations.create` 的缺省是「自动命名 + 未置顶」，所以 `ensurePersisted` 在插入之后补写一次 `renameByUser` / `setPinned`（只在草稿确实改过时才多这两条 SQL）。
+- [src/services/HandoffService.ts] R56 的一个连带：交接开的新对话第一条消息是服务端写的摘要，写进去要有 `conversations` 行（外键）。所以交接在写摘要之前先调 `conversationViews.ensurePersisted(newConversationId)`（注入的形状 = `ConversationService`，端口类型多一个方法）。
+- [src/runtime/TransientRunner.ts] 临时对话也注入「当前目录」（F-D9），段用同一份 `injectedContextOf` / `appendInjectedText`；它不落库，所以没有 `hidden` 这个落点可言。
+- [src/services/ConfigService.ts] R63 的 `server.reload` 我在 `ConfigService` 里加了一个 `reload(scope?)`：它不写盘，只把「哪几类要重新装配」交给注入的 `ConfigApplyPort`（回收 Scope + 合成一条通知），出参与 `config.patch` 同一份形状（`config` + `applied`）。这个文件不在 W6-A 的「可改文件」清单里，但「生效报告」的形状计算在它内部（`apply()` 是私有的），放别处只能把那段映射抄一遍；改动只有「加一个方法 + 两个纯函数 + 三个 wire 类型 import」。
+- [src/net/WsHub.ts] R57 要求 `hello` 只回能力 id 列表，而 `ServerHelloResult.capabilities` 的拼装在接线层（`handleHello`）。改动只有一行（`(capabilities ?? []).map((c) => c.id)`），`WsHubOptions.capabilities` 的入参形状没动。这个文件在「不许改」清单里，属于「确实必须」的那一类。
+- [src/app.ts, src/handlers/serverHandlers.ts] (`server.reload` 的落点) 我按 `server.upgrade` 的同一套写法：handler 只转发，结论由组装层给（`HandlerDeps.reload` → `ConfigService.reload`）。
+- [docs/architecture.md] R57 / R63 改了两处契约事实（`hello` 的 `capabilities` 从 `CapabilityView[]` 变成 `string[]`；方法数 63 → 64，`server` 域 7 → 8 条），§6 与 §7 的表格、§2 里的数字都要跟着改。`architecture.md` 不在 W6-A 的可改清单里，所以这两处留给 PM 的文档波次。
+- [src/handlers/capabilities.ts] 新增的 `server.reload` 在能力清单里取 `F-E1`（命令清单里的「重载」）；i18n 加了两条键 `capability.server.reload` / `.detail`。
+- [src/app.test.ts] R59 的「到交接线才问」在 app 层用假 agent 演：同一段配置（交接线 1000），一轮 `prompt_tokens = 500` 不问、`1500` 问。`AutoMigratePlugin` 的 `resolveMode: () => null` 在 `ChatRunner.test.ts` 里用真装配（真 Scope + 磁盘上的助手定义）取出插件直接调 `onAfterSend`，断言交接服务一次都没被叫。
+- [src/services/QuestionService.ts] （自决）答「要」之后登记项目并接着建对话：两步都在 `applyEffects` 里，任一步拿不到注入端口就只改问题状态（`noEffects()`）。若登记成功而建对话失败（例如助手已被删），问题已经是 `answered` 且项目已登记，错误直接抛给调用方 —— 客户端会看到「题答了但对话没建出来」，重试就是要再 `conversation.create` 一次。
+
+## W6-B（R64–R67 运维与展示面）追加
+
+- [src/wire/states.ts] （自决）R65 要求「八块拼出来」且「拿不到就省略该块」，但 `StatusBlock` 的 `agent` 块事实是 `{ agentId, name, available }`：`conversation.state` 这一跳只看得见对话自己存的 `agentId`，助手名字与「能不能用」在 `AgentService`（另一层持有者），而 `handlers/index.ts`（`ConversationHandlerDeps` 的组装点）不在本轮可改文件里，注不进去。我把这两个字段改成 `string | null` / `boolean | null`（`states.ts` 的「`StatusBlock` 若要微调」那一项），拿不到时给 `null`，块本身照给。要么下轮让 `conversation.state` 也接上 `AgentService`（多一次定义文件读），要么就认 `null`。
+- [src/services/ConfigService.ts] （自决）R58 要 `config.setDefaults` 能写 `language`，但 `wire/methods.ts` 的 `DefaultSelection`（`config.get` 的 `defaults` 也是它）不在可改文件里。我在 `ConfigService` 里用一个本地类型 `DefaultsInput = Partial<DefaultSelection> & { language?: Language | null }` 收下它：写盘与生效都通，`hello` 的缺省语言立刻跟着变；但**契约层面**客户端还看不到 `defaults.language`（`config.get` 不回它，类型上也不接受）。要让它在契约里正式成立，需要给 `DefaultSelection` 加一项 —— 那是 `wire/methods.ts` 的改动，请 PM 派。
+- [src/config.ts] （自决）R67 的两个来源我按不同范围校验：启动参数认 `0`（系统分配，`--port 0` 的既有用法），配置文件里的 `port` 必须是真的 1..65535 —— 「每次启动换一个端口」这件事在配置文件里说不清，写 `0` 按 `config_invalid` 拒。另外 `<dataRoot>/server.json` **写坏了也是 `config_invalid`**（不是「当没有」）：改完没有任何反馈比报错更难查。
+- [src/app.ts] （自决）R66 的自检定时器做成注入点 `ServerAppOptions.startVersionTimer`（缺省 `setInterval(...).unref()`）。用假定时器（`vi.useFakeTimers`）验不通：`WsHub.close()` 要等真套接字关完，而它自己那个 200ms 兜底定时器被假掉之后就永远等不到，`stop()` 在假定时器下会挂住。所以用例注入一个手摇的定时器（`tick()` / 取消记账），既不必真等 30 秒，也能断言 `stop()` 把取消函数调了。
+- [src/services/Logger.ts] （自决）warn / error 上通知的「防回环」用的是一个重入标记：**发通知期间**产生的 warn / error 只落文件、不再上通知。代价是同一 tick 里连发的多条 warn / error 只有第一条会上通知栏（第二条起被挡）。我认为这比「通知写库失败 → 记一条日志 → 又发通知」的循环要好，但它是产品可感的行为，记在这里请 PM 确认。
+- [src/app.ts] （自决）`<dataRoot>/server.json` 只在「真的要用到它」时才读：启动参数给了端口就不读（坏文件不该拦住显式端口），`createServer` 传了 `configPort` 也不读（CLI 已经读过一次）。所以「配置文件坏掉」这件事只有在它那一档真被用到时才会报出来。

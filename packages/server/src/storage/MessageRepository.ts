@@ -203,12 +203,17 @@ export class MessageRepository {
    *   它的内容已经变了，得重新拿最新的。
    * - 给了 `after` 但库里没有这个 id（已删除、或换了库）：退回整段历史。
    *
+   * 三条都只覆盖**主线**消息：子 Agent 的消息虽然落在同一张表，但它们属于另一次对话
+   * 与另一步执行（`parentToolCallId` 非空），回看走 {@link listByParentToolCallId}，
+   * 不能混进主线历史（否则模型下一轮会把别人的对话当成自己的上下文）。
+   *
    * 三种情况收敛成一条 SQL：找不到时 `COALESCE` 把下界降成 -1，条件恒真。
    */
   async listByConversation(conversationId: string, after?: string): Promise<StoredMessage[]> {
     const rows = await this.db.all<MessageRow>(
       `SELECT ${COLUMNS} FROM messages
        WHERE conversationId = ?
+         AND parentToolCallId IS NULL
          AND (? IS NULL
               OR seq >= COALESCE(
                    (SELECT seq FROM messages WHERE id = ? AND conversationId = ?),

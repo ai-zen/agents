@@ -75,6 +75,13 @@ export interface AskQuestionInput {
   blocking?: boolean;
   /** 出网的稳定码；缺省用 `prompt.messageKey` */
   code?: string;
+  /**
+   * 与界面无关、但答完之后用得到的事实（例如「哪个目录待登记」、要接着建哪段对话）。
+   *
+   * 存进 `questions.payload.data`：它不是文案，不跟着语言变；也不是契约上的东西（客户端
+   * 只看得到渲染好的句子与候选项），服务端答完后自己取用。
+   */
+  data?: Record<string, unknown>;
 }
 
 /** 回答时的现场事实：哪条连接答的、用哪种语言回话 */
@@ -83,6 +90,22 @@ export interface QuestionAnswerContext {
   /** 回答它的那条连接（多端时用来显示「别的窗口答了」） */
   answeredBy?: string | null;
 }
+
+/** 登记项目的两个候选值（D10：问一次要不要把它登记成项目） */
+export const WORKSPACE_OPTION_ACCEPT = "accept";
+export const WORKSPACE_OPTION_DECLINE = "decline";
+
+/** 登记项目那一步要的两个动作（结构上 `WorkspaceService` 与 `ConversationService` 满足） */
+export interface QuestionWorkspacePort {
+  create(params: { cwd: string }): Promise<{ workspace: { id: string } }>;
+}
+
+/** 登记之后继续把那段对话建出来的入口（结构上 `ConversationService.create` 满足） */
+export type QuestionConversationCreator = (params: {
+  workspaceId: string;
+  agentId: string;
+  modelId?: string;
+}) => Promise<{ conversation: { id: string } | null }>;
 
 /**
  * 答完之后的副作用入口（交接那一步）。
@@ -110,6 +133,10 @@ export interface QuestionServiceDeps {
   guard?: QuestionGuardProbe;
   /** 交接入口（答完接着交接，D22）；不注入时答完只改状态、不触发交接 */
   handoff?: QuestionHandoffPort;
+  /** 登记项目的入口（D10）；不注入时答完只改状态 */
+  workspaces?: QuestionWorkspacePort;
+  /** 登记完项目之后接着建对话的那一步（D10） */
+  createConversation?: QuestionConversationCreator;
   /** 推 `question` 事件（多端看到同一个，D22） */
   emit?: ChatEventEmitter;
   now?: () => number;
@@ -131,6 +158,8 @@ interface StoredPayload {
     detail: { messageKey: string; params: Record<string, unknown> } | null;
   }>;
   blocking: boolean;
+  /** 答完之后用得到的事实（不渲染、不出网） */
+  data: Record<string, unknown>;
 }
 
 /** 回答的稳定值（`questions.answer` 的 JSON） */
@@ -166,6 +195,7 @@ function toStoredPayload(value: unknown, fallbackCode: string): StoredPayload {
       prompt: { messageKey: "question.blocking", params: {} },
       options: [],
       blocking: false,
+      data: {},
     };
   }
   const prompt = isRecord(value.prompt) ? value.prompt : {};
@@ -198,6 +228,7 @@ function toStoredPayload(value: unknown, fallbackCode: string): StoredPayload {
         : null,
     })),
     blocking: value.blocking === true,
+    data: isRecord(value.data) ? value.data : {},
   };
 }
 
@@ -263,6 +294,8 @@ export class QuestionService {
   private readonly runs?: RunsView;
   private readonly guard?: QuestionGuardProbe;
   private readonly handoff?: QuestionHandoffPort;
+  private readonly workspaces?: QuestionWorkspacePort;
+  private readonly createConversation?: QuestionConversationCreator;
   private readonly emit?: ChatEventEmitter;
   private readonly now: () => number;
   private readonly newId: () => string;
@@ -272,6 +305,8 @@ export class QuestionService {
     this.runs = deps.runs;
     this.guard = deps.guard;
     this.handoff = deps.handoff;
+    this.workspaces = deps.workspaces;
+    this.createConversation = deps.createConversation;
     this.emit = deps.emit;
     this.now = deps.now ?? Date.now;
     this.newId = deps.newId ?? randomUUID;
@@ -334,6 +369,7 @@ export class QuestionService {
             : { messageKey: option.detail.messageKey, params: option.detail.params ?? {} },
       })),
       blocking: input.blocking ?? defaultBlocking(input.kind),
+      data: input.data ?? {},
     };
 
     const id = this.newId();
@@ -401,22 +437,48 @@ export class QuestionService {
   }
 
   /**
+   * 目录还没登记成项目时问一次「要不要加为项目」（PRD D10）。
+   *
+   * 真的去登记、以及登记完接着建那段对话，都发生在答「要」之后（见 {@link applyEffects}）：
+   * 问题本身不改变任何东西，只把待办与现场事实（cwd + 身份三件套里的后两件）存下来。
+   */
+  async askWorkspaceRegistration(
+    input: { cwd: string; agentId: string; modelId?: string | null },
+    language: Language = DEFAULT_LANGUAGE,
+  ): Promise<QuestionView> {
+    return await this.ask(
+      {
+        // 没有对话可挂：这个目录还没登记成项目，也就不存在属于它的对话（R17）
+        conversationId: null,
+        kind: "workspace_registration",
+        code: "question.workspaceRegister.prompt",
+        prompt: { messageKey: "question.workspaceRegister.prompt", params: { cwd: input.cwd } },
+        options: [
+          { value: WORKSPACE_OPTION_ACCEPT, label: { messageKey: "question.workspaceRegister.accept" } },
+          { value: WORKSPACE_OPTION_DECLINE, label: { messageKey: "question.workspaceRegister.decline" } },
+        ],
+        data: { cwd: input.cwd, agentId: input.agentId, modelId: input.modelId ?? null },
+      },
+      language,
+    );
+  }
+
+  /**
    * 列出问题（PRD D22：多端看同一个）。
    *
-   * `conversationId` 是必填的：仓储按对话取（`listByConversation`），没有「全库提问」这条
-   * 查询路径；不传就无法准确回答，所以直接说清缺什么，而不是回一个空列表让人以为没有提问。
+   * `conversationId` 可选（R61）：给了就只看那段对话的；不给就看全库（含没挂对话的那些，
+   * 例如「要不要把这个目录登记成项目」）。`state` 两种情况下都生效。
    */
   async list(
     params: QuestionListParams = {},
     language: Language = DEFAULT_LANGUAGE,
   ): Promise<QuestionListResult> {
-    if (params.conversationId === undefined) {
-      throw new ServerError("invalid_params", {
-        params: { field: "conversationId" },
-        detail: { field: "conversationId", reason: "required" },
-      });
-    }
-    const rows = await this.questions.listByConversation(params.conversationId, params.state);
+    const conversationId =
+      typeof params.conversationId === "string" ? params.conversationId.trim() : "";
+    const rows =
+      conversationId.length > 0
+        ? await this.questions.listByConversation(conversationId, params.state)
+        : await this.questions.listAll(params.state);
     return { questions: rows.map((row) => toView(row, language)) };
   }
 
@@ -522,7 +584,10 @@ export class QuestionService {
     const view = toView(answeredRow ?? question, language);
     this.emit?.("question", { question: view, at: iso(answeredAt) });
 
-    const effects = await this.applyEffects(kind, handoffMode, conversationId, language);
+    const effects = await this.applyEffects(
+      { kind, value, handoffMode, conversationId, data: payload.data },
+      language,
+    );
     return { question: view, effects };
   }
 
@@ -542,20 +607,33 @@ export class QuestionService {
     return view;
   }
 
-  /** 答完之后接着往下走（目前只有交接这一条副作用） */
+  /**
+   * 答完之后接着往下走：交接（D22）与登记项目（D10）各一条路径。
+   *
+   * 两条路径都在问题已经落成 `answered` 之后才跑：答不下去的那些情况（越线、对话在跑）
+   * 在写状态之前就返回了，所以这里不需要再判断一遍。
+   */
   private async applyEffects(
-    kind: QuestionKind,
-    handoffMode: "self" | "summary" | null,
-    conversationId: string | null,
+    input: {
+      kind: QuestionKind;
+      value: string;
+      handoffMode: "self" | "summary" | null;
+      conversationId: string | null;
+      data: Record<string, unknown>;
+    },
     language: Language,
   ): Promise<QuestionAnswerResult["effects"]> {
-    if (kind !== "handoff" || handoffMode === null || conversationId === null || !this.handoff) {
+    if (input.kind === "workspace_registration") {
+      return await this.registerWorkspace(input.value, input.data);
+    }
+    const handoffMode = input.handoffMode;
+    if (input.kind !== "handoff" || handoffMode === null || input.conversationId === null || !this.handoff) {
       return noEffects();
     }
     try {
       const started = await this.handoff.start(
         {
-          conversationId,
+          conversationId: input.conversationId,
           mode: handoffMode,
           then: "new_conversation",
         },
@@ -569,6 +647,32 @@ export class QuestionService {
       }
       throw error;
     }
+  }
+
+  /**
+   * 答「要」之后：把那个 cwd 登记成项目，并接着建出用户一开始要的那段对话（D10）。
+   *
+   * 两个动作都幂等得刚好：登记同一个 cwd 两次会报 `already_registered`（R39，客户端处理），
+   * 而这里不会重复触发（问题已经是 `answered`）。答「不要」就什么都不做。
+   */
+  private async registerWorkspace(
+    value: string,
+    data: Record<string, unknown>,
+  ): Promise<QuestionAnswerResult["effects"]> {
+    if (value !== WORKSPACE_OPTION_ACCEPT || !this.workspaces) return noEffects();
+    const cwd = typeof data.cwd === "string" ? data.cwd : "";
+    const agentId = typeof data.agentId === "string" ? data.agentId : "";
+    const modelId = typeof data.modelId === "string" ? data.modelId : undefined;
+    if (cwd.length === 0 || agentId.length === 0) return noEffects();
+
+    const created = await this.workspaces.create({ cwd });
+    if (!this.createConversation) return noEffects();
+    const conversation = await this.createConversation({
+      workspaceId: created.workspace.id,
+      agentId,
+      modelId,
+    });
+    return { handoffStarted: false, newConversationId: conversation.conversation?.id ?? null };
   }
 
   private async requireQuestion(questionId: string): Promise<Question> {

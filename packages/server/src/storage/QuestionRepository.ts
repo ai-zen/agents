@@ -91,6 +91,25 @@ export class QuestionRepository {
   }
 
   /**
+   * 全库的问题，按创建时间升序（R61：`question.list` 不要求给对话）。
+   *
+   * 不按对话筛时，`conversationId` 为 NULL 的那些（例如「要不要把目录登记成项目」）也在结果里
+   * —— 它们本来就与某段对话无关，用「按对话取」的查询永远看不到它们。
+   */
+  async listAll(state?: string): Promise<Question[]> {
+    const rows =
+      state === undefined
+        ? await this.db.all<QuestionRow>(
+            `SELECT ${COLUMNS} FROM questions ORDER BY createdAt ASC, id ASC`,
+          )
+        : await this.db.all<QuestionRow>(
+            `SELECT ${COLUMNS} FROM questions WHERE state = ? ORDER BY createdAt ASC, id ASC`,
+            [state],
+          );
+    return rows.map(toQuestion);
+  }
+
+  /**
    * 更新状态 / 回答。只拼出真正要改的列，没给的列保持不变
    * （例如只改 state 时不会把已有的 answer 抹掉）。
    */
