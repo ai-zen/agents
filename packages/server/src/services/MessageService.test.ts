@@ -197,6 +197,50 @@ describe("MessageService.list 的取法（A12）", () => {
     expect(result.messages.map((message) => message.id)).toEqual(["u1", "a1", "u2"]);
   });
 
+  it("hidden 的消息默认不返回，includeHidden 才给（F-D9 的 cwd 消息）", async () => {
+    await messages.upsert({
+      id: "cwd",
+      conversationId: "c1",
+      role: "user",
+      status: "completed",
+      content: "当前目录是 /tmp/one",
+      data: { hidden: true },
+      createdAt: 5,
+    });
+
+    const page = await service.list({ conversationId: "c1" });
+    expect(page.messages.map((message) => message.id)).toEqual(["u1", "a1", "u2"]);
+
+    const withHidden = await service.list({ conversationId: "c1", includeHidden: true });
+    // 按 `seq` 排：这条最后写进去，所以排在三条之后
+    expect(withHidden.messages.map((message) => message.id)).toEqual(["u1", "a1", "u2", "cwd"]);
+    const cwdMessage = withHidden.messages.at(-1);
+    expect(cwdMessage?.hidden).toBe(true);
+    expect(cwdMessage?.content).toBe("当前目录是 /tmp/one");
+  });
+
+  it("hidden 的子 Agent 消息也一样默认不返回", async () => {
+    await messages.upsert({
+      id: "sub-hidden",
+      conversationId: "c1",
+      role: "assistant",
+      status: "completed",
+      content: "子 Agent 的内部提示",
+      data: { hidden: true },
+      parentToolCallId: "call-1",
+      createdAt: 910,
+    });
+
+    const delegated = await service.list({ conversationId: "c1", toolCallId: "call-1" });
+    expect(delegated.messages).toEqual([]);
+    const withHidden = await service.list({
+      conversationId: "c1",
+      toolCallId: "call-1",
+      includeHidden: true,
+    });
+    expect(withHidden.messages.map((message) => message.id)).toEqual(["sub-hidden"]);
+  });
+
   it("还没落库的草稿也能读：空消息、不是 not_found（R56）", async () => {
     const drafts = new Map([
       [
@@ -209,6 +253,7 @@ describe("MessageService.list 的取法（A12）", () => {
           pinned: false,
           agentId: "a1",
           modelId: "m1",
+          thinkingLevel: null,
           createdAt: 1,
           updatedAt: 1,
         },
@@ -252,7 +297,8 @@ describe("消息还原成 core 的形状（R21 / R22）", () => {
       createdAt: 600,
     });
 
-    const result = await service.list({ conversationId: "c1", after: "rich" });
+    // 这条带 `hidden`：默认读取不返回它，显式要才给（`hidden` = 这条不给人看）
+    const result = await service.list({ conversationId: "c1", after: "rich", includeHidden: true });
     const message = result.messages[0];
     expect(message).toEqual({
       id: "rich",

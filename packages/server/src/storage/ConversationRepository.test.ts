@@ -49,7 +49,7 @@ afterEach(async () => {
 });
 
 describe("ConversationRepository", () => {
-  it("创建时定下的身份（workspace / 助手 / 模型）能原样读回", async () => {
+  it("创建时定下的项目与助手、加上模型与档位，能原样读回", async () => {
     await repo.create({
       id: "c1",
       workspaceId: "w1",
@@ -69,9 +69,31 @@ describe("ConversationRepository", () => {
       pinned: false,
       agentId: "agent-1",
       modelId: "model-1",
+      // 新建的会话不选档位：跟随助手定义上的那份参数
+      thinkingLevel: null,
       createdAt: 500,
       updatedAt: 500,
     });
+  });
+
+  it("换模型写这一列并顺手清掉档位；选档位只动那一列", async () => {
+    await repo.create(input({ id: "c1", workspaceId: "w1", name: "原名", createdAt: 100 }));
+
+    await repo.setThinkingLevel("c1", "high", 200);
+    expect(await repo.get("c1")).toMatchObject({ modelId: "model-1", thinkingLevel: "high" });
+
+    // 换模型：两句在一条语句里，档位不会留到新模型上
+    await repo.setModel("c1", "model-2", 300);
+    expect(await repo.get("c1")).toMatchObject({
+      modelId: "model-2",
+      thinkingLevel: null,
+      updatedAt: 300,
+    });
+
+    // 清回「跟随助手」写的是 null
+    await repo.setThinkingLevel("c1", "low", 400);
+    await repo.setThinkingLevel("c1", null, 500);
+    expect((await repo.get("c1"))?.thinkingLevel).toBeNull();
   });
 
   it("名字是不是自动起的写在这一列上：用户改名置 0，自动命名置 1（R35）", async () => {

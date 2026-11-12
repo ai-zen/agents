@@ -8,8 +8,9 @@
 import type { Database } from "./Database.js";
 import type { Conversation, ConversationCreateInput, ConversationRow } from "./types.js";
 
+/** 读写路径共用的列清单（顺序与 `toConversation` 的形状一致） */
 const COLUMNS =
-  "id, workspaceId, name, nameIsAuto, pinned, agentId, modelId, createdAt, updatedAt";
+  "id, workspaceId, name, nameIsAuto, pinned, agentId, modelId, thinkingLevel, createdAt, updatedAt";
 
 /** 列表/搜索统一用这个顺序：置顶在前，再按创建时间倒序（PRD D13） */
 const ORDER_BY = "ORDER BY pinned DESC, createdAt DESC, id DESC";
@@ -37,13 +38,14 @@ export class ConversationRepository {
   async create(input: ConversationCreateInput): Promise<void> {
     const updatedAt = input.updatedAt ?? input.createdAt;
     await this.db.run(
-      `INSERT INTO conversations (${COLUMNS}) VALUES (?, ?, ?, 1, 0, ?, ?, ?, ?)`,
+      `INSERT INTO conversations (${COLUMNS}) VALUES (?, ?, ?, 1, 0, ?, ?, ?, ?, ?)`,
       [
         input.id,
         input.workspaceId,
         input.name,
         input.agentId,
         input.modelId,
+        input.thinkingLevel ?? null,
         input.createdAt,
         updatedAt,
       ],
@@ -102,6 +104,33 @@ export class ConversationRepository {
     const result = await this.db.run(
       "UPDATE conversations SET pinned = ?, updatedAt = ? WHERE id = ?",
       [pinned ? 1 : 0, updatedAt, id],
+    );
+    return result.changes;
+  }
+
+  /**
+   * 换这段会话的模型，并把思考档位清空。
+   *
+   * 两句合成一条语句是故意的：档位属于模型（同一个档位名在不同模型的策略表里对应不同
+   * 参数），只改 `modelId` 不改档位会留下一个在新模型上说得通、参数却属于旧模型的档位。
+   */
+  async setModel(id: string, modelId: string, updatedAt: number): Promise<number> {
+    const result = await this.db.run(
+      "UPDATE conversations SET modelId = ?, thinkingLevel = NULL, updatedAt = ? WHERE id = ?",
+      [modelId, updatedAt, id],
+    );
+    return result.changes;
+  }
+
+  /** 写这段会话的思考档位；`null` 表示回到「跟随助手定义」 */
+  async setThinkingLevel(
+    id: string,
+    thinkingLevel: string | null,
+    updatedAt: number,
+  ): Promise<number> {
+    const result = await this.db.run(
+      "UPDATE conversations SET thinkingLevel = ?, updatedAt = ? WHERE id = ?",
+      [thinkingLevel, updatedAt, id],
     );
     return result.changes;
   }

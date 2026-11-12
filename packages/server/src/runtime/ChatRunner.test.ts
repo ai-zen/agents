@@ -46,7 +46,7 @@ const CONVERSATION_ID = "c-1";
 const WORKSPACE_ID = "ws-1";
 const TEN_MINUTES = 10 * 60 * 1000;
 
-/** 一段对话（身份创建时定死：助手与模型都在这里，PRD L7） */
+/** 一段对话（助手创建时定死；模型与思考档位是这段会话自己的，见 F-B4 / F-B6） */
 function makeConversation(overrides: Partial<Conversation> = {}): Conversation {
   return {
     id: CONVERSATION_ID,
@@ -55,6 +55,7 @@ function makeConversation(overrides: Partial<Conversation> = {}): Conversation {
     pinned: false,
     agentId: "default",
     modelId: "model-1",
+    thinkingLevel: null,
     nameIsAuto: true,
     createdAt: 0,
     updatedAt: 0,
@@ -83,8 +84,6 @@ function createHarness(options: {
   conversation?: Conversation;
   streamWriteIntervalMs?: number;
   history?: MessageUpsertInput[];
-  /** 这段对话所属项目的目录（F-D9 的注入段用）；不注入则不注入那一段 */
-  cwd?: string;
   /** 一轮结算之后的回调（R59） */
   onTurnSettled?: (facts: TurnSettledFacts) => void;
   language?: Language;
@@ -120,7 +119,6 @@ function createHarness(options: {
     clock,
     newId: () => `srv-${++idCursor}`,
     streamWriteIntervalMs: options.streamWriteIntervalMs ?? 0,
-    resolveCwd: async () => options.cwd ?? null,
     onTurnSettled: options.onTurnSettled,
     defaultLanguage: options.language,
   });
@@ -523,38 +521,10 @@ describe("ChatRunner：结算", () => {
   });
 });
 
-describe("ChatRunner：告诉模型「现在在哪个目录」（F-D9）", () => {
-  it("cwd 作为系统注入接在最后一条用户消息末尾，并标上服务端注入", async () => {
-    const custom = createHarness({
-      rounds: plainRounds(),
-      cwd: "/tmp/ai-zen-project",
-      language: "zh",
-    });
+describe("ChatRunner：cwd 不再按轮拼进消息（F-D9）", () => {
+  it("用户消息原样落库：不带注入段，也不标 hidden", async () => {
+    const custom = createHarness({ rounds: plainRounds(), language: "zh" });
 
-    const turn = await custom.runner.run({
-      conversationId: CONVERSATION_ID,
-      input: { content: "看看这里" },
-    });
-    await turn.done;
-
-    const content = custom.store.peek(turn.userMessageId)?.content;
-    expect(Array.isArray(content)).toBe(true);
-    if (!Array.isArray(content)) return;
-    // 用户的那段原样在前，注入的那段在末尾
-    expect(content[0]).toEqual({ type: "text", text: "看看这里" });
-    const injected = content.at(-1);
-    expect(injected?.type).toBe("text");
-    const text = injected && "text" in injected ? injected.text : "";
-    expect(text).toContain("/tmp/ai-zen-project");
-    // 它以「这是服务端加的」那句话开头（i18n 里已有的键）
-    expect(text).toContain("服务端");
-
-    // 「这条里有服务端注入」的事实走既有的 `data.hidden` 约定
-    expect(custom.store.peek(turn.userMessageId)?.data).toEqual({ hidden: true });
-  });
-
-  it("拿不到 cwd 时不注入，用户那条保持原样", async () => {
-    const custom = createHarness({ rounds: plainRounds() });
     const turn = await custom.runner.run({
       conversationId: CONVERSATION_ID,
       input: { content: "看看这里" },
@@ -564,6 +534,38 @@ describe("ChatRunner：告诉模型「现在在哪个目录」（F-D9）", () =>
     const row = custom.store.peek(turn.userMessageId);
     expect(row?.content).toBe("看看这里");
     expect(row?.data).toBeNull();
+  });
+
+  it("历史里那条 hidden 的 cwd 消息会装进这一轮（模型看得到，只是不给人看）", async () => {
+    const custom = createHarness({
+      rounds: plainRounds(),
+      history: [
+        {
+          id: "cwd-1",
+          conversationId: CONVERSATION_ID,
+          role: AgentNSValue.Role.User as string,
+          status: AgentNSValue.MessageStatus.Completed as string,
+          omit: false,
+          content: "当前目录是 /tmp/ai-zen-project",
+          data: { hidden: true },
+          createdAt: 0,
+        },
+      ],
+    });
+
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "看看这里" },
+    });
+    await turn.done;
+
+    // 取历史要连 hidden 的一起取，否则模型下一轮就不知道自己在哪个目录
+    const history = custom.builds[0]?.history ?? [];
+    expect(history.map((message) => message.id)).toContain("cwd-1");
+    expect(history[0]?.hidden).toBe(true);
+    // 这一轮没有重写它（只有用例自己 seed 的那一笔）
+    expect(custom.store.historyOf("cwd-1")).toHaveLength(1);
+    expect(custom.store.peek("cwd-1")?.data).toEqual({ hidden: true });
   });
 });
 
@@ -886,6 +888,7 @@ describe("真装配：交接线插件不替用户决定迁移（R59 / PRD §5）
         workspaceId: WORKSPACE_ID,
         agentId: "a1",
         modelId: "model-1",
+        thinkingLevel: null,
         scope,
         history: [],
       });
@@ -1057,5 +1060,119 @@ describe("ChatRunner：与真实存储对接", () => {
       await db.close();
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("真装配：会话级模型与思考档位（F-B4 / F-B6）", () => {
+  /** 造一个真 Scope：两个模型，只有 model-1 挂着思考策略表 */
+  function makeScope(dir: string, agentsDir: string): Scope {
+    return new Scope({
+      cwd: dir,
+      agentsDir,
+      config: {
+        endpoints: [{ id: "e1", name: "端点", baseUrl: "https://example.test/v1", apiKey: "k" }],
+        models: [
+          {
+            id: "model-1",
+            name: "模型一",
+            endpointId: "e1",
+            tokenThresholds: { handoff: 100, guard: 200 },
+            reasoningPreset: "test-preset",
+          },
+          {
+            id: "model-2",
+            name: "模型二",
+            endpointId: "e1",
+            tokenThresholds: { handoff: 50, guard: 150 },
+          },
+        ],
+        defaultModel: "model-2",
+      },
+    });
+  }
+
+  const PRESETS = {
+    "test-preset": { levels: { low: { reasoning_effort: "low" }, high: { reasoning_effort: "high" } } },
+  };
+
+  async function build(input: {
+    agentModelId?: string;
+    agentParams?: Record<string, unknown>;
+    conversationModelId: string;
+    thinkingLevel: string | null;
+  }): Promise<{ modelConfig: Record<string, unknown> }> {
+    const dir = await mkdtemp(join(tmpdir(), "ai-zen-session-params-"));
+    try {
+      const agentsDir = join(dir, "agents");
+      await mkdir(agentsDir, { recursive: true });
+      await writeFile(
+        join(agentsDir, "a1.json"),
+        JSON.stringify({
+          id: "a1",
+          name: "助手",
+          messages: [],
+          custom: true,
+          ...(input.agentModelId === undefined ? {} : { modelId: input.agentModelId }),
+          ...(input.agentParams === undefined ? {} : { modelParams: input.agentParams }),
+        }),
+        "utf-8",
+      );
+      const factory = createSdkAgentFactory({ thinkingPresets: () => PRESETS });
+      const agent = await factory({
+        conversationId: CONVERSATION_ID,
+        workspaceId: WORKSPACE_ID,
+        agentId: "a1",
+        modelId: input.conversationModelId,
+        thinkingLevel: input.thinkingLevel,
+        scope: makeScope(dir, agentsDir),
+        history: [],
+      });
+      const withConfig = agent as unknown as { modelConfig: Record<string, unknown> };
+      return { modelConfig: withConfig.modelConfig };
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("档位展开成参数补丁，叠在助手定义的参数之上", async () => {
+    const { modelConfig } = await build({
+      agentModelId: "model-1",
+      agentParams: { reasoning_effort: "low", temperature: 0.2 },
+      conversationModelId: "model-1",
+      thinkingLevel: "high",
+    });
+    expect(modelConfig).toMatchObject({ reasoning_effort: "high", temperature: 0.2 });
+  });
+
+  it("没选档位时就是助手定义上的那份参数", async () => {
+    const { modelConfig } = await build({
+      agentModelId: "model-1",
+      agentParams: { reasoning_effort: "low" },
+      conversationModelId: "model-1",
+      thinkingLevel: null,
+    });
+    expect(modelConfig).toMatchObject({ reasoning_effort: "low" });
+  });
+
+  it("会话把模型换掉之后，助手定义上那份参数不跟着走（它是给旧模型配的）", async () => {
+    const { modelConfig } = await build({
+      agentModelId: "model-1",
+      agentParams: { reasoning_effort: "high", thinking: { type: "enabled" } },
+      conversationModelId: "model-2",
+      thinkingLevel: null,
+    });
+    expect(modelConfig).not.toHaveProperty("reasoning_effort");
+    expect(modelConfig).not.toHaveProperty("thinking");
+  });
+
+  it("换过模型之后即使档位名还在，也不会把旧模型的补丁发出去", async () => {
+    // model-2 没有策略表：档位名展不开，只剩「什么都不带」
+    const { modelConfig } = await build({
+      agentModelId: "model-1",
+      agentParams: { reasoning_effort: "high" },
+      conversationModelId: "model-2",
+      thinkingLevel: "high",
+    });
+    expect(modelConfig).not.toHaveProperty("reasoning_effort");
   });
 });

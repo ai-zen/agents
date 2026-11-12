@@ -25,13 +25,13 @@
  */
 
 import type { AgentNS } from "@ai-zen/agents-core";
-import { AgentNS as AgentNSValue } from "@ai-zen/agents-core";
+import { AgentNS as AgentNSValue, Message } from "@ai-zen/agents-core";
 import type { ConfigManager, Scope } from "@ai-zen/agents-sdk";
 
 import { DEFAULT_LANGUAGE, render } from "../i18n/index.js";
 import type { Language } from "../i18n/index.js";
 import type { AgentFactory, ChatAgent } from "./ChatRunner.js";
-import { appendInjectedText, injectedContextOf } from "./ChatRunner.js";
+import { injectedContextOf } from "./ChatRunner.js";
 import { ServerError } from "../wire/errors.js";
 import type {
   ConversationTransientParams,
@@ -77,6 +77,7 @@ const TRANSIENT_IDENTITY = "conversation.transient";
  *
  * `conversationId` / `workspaceId` 填一个显式占位：工厂里可能把它们写进钩子载荷（日志、
  * 交接服务的决策），填 `""` 会让日志里出现一个空身份，填占位符至少看得出来这是临时对话。
+ * `thinkingLevel` 恒为 `null`：临时对话没有会话行，也就没有会话级档位，跟助手定义上的那份。
  */
 export function transientAgentFactoryFrom(createAgent: AgentFactory): TransientAgentFactory {
   return async (context) =>
@@ -85,6 +86,7 @@ export function transientAgentFactoryFrom(createAgent: AgentFactory): TransientA
       workspaceId: TRANSIENT_IDENTITY,
       agentId: context.agentId,
       modelId: context.modelId,
+      thinkingLevel: null,
       scope: context.scope,
       history: context.history,
     });
@@ -144,9 +146,17 @@ export class TransientRunner {
         modelId: params.modelId ?? null,
         history: [],
       });
-      // F-D9：临时对话也告诉模型「当前目录是哪儿」；目录就是入参里的那个 cwd（不是进程工作目录）
-      const injected = injectedContextOf(cwd, language);
-      await agent.send(appendInjectedText(params.input.content, injected.text));
+      // F-D9：临时对话也一样告诉模型「当前目录是哪儿」。它不落库，所以这条 `hidden` 消息
+      // 只活在内存里（与那段落库的 cwd 消息同一个形状）；目录就是入参里的那个 cwd
+      agent.append(
+        new Message({
+          role: AgentNSValue.Role.User,
+          content: injectedContextOf(cwd, language),
+          status: AgentNSValue.MessageStatus.Completed,
+          hidden: true,
+        }),
+      );
+      await agent.send(params.input.content);
       const message = lastAssistant(agent.messages);
       if (!message) {
         throw new ServerError("internal", {

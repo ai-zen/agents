@@ -14,6 +14,10 @@
  * 3. **子 Agent 的归属**：`parentToolCallId` 记下这条消息是被哪次工具调用派出去产生的
  *    （R37）。怎么写入由上层决定，本文件提供按它取回的一段读取路径。
  *
+ * 4. **`hidden` 的两条读数**：`hidden` 是 core 的 `Message.hidden`，落在 `data` 列的 JSON 里
+ *    （没有单独的列）。给用户看的读取路径（`message.list`、侧栏条数、删除代价）默认把它
+ *    排除；要连它一起取的地方（模型的历史、排查问题）显式传 `includeHidden`。
+ *
  * FTS 索引的同步交给 `messages` 上的触发器（同样在 migrations.ts 里建），所以本文件
  * 写消息时只写 `messages` 表，不需要额外维护索引。
  */
@@ -38,6 +42,20 @@ const SNIPPET_LENGTH = 160;
 
 const COLUMNS =
   "id, conversationId, seq, role, status, omit, content, data, searchText, parentToolCallId, createdAt, updatedAt";
+
+/**
+ * 「这条消息给用户看」的条件：`data.hidden` 不为真。
+ *
+ * `hidden` 在 `data` 这列 JSON 里，所以判断要读一次 JSON。`data` 为空或不是合法 JSON 时
+ * 按「不是隐藏」算 —— 一条坏数据不该让整条消息在界面上凭空消失。
+ */
+const VISIBLE_ONLY = `(CASE WHEN json_valid(data) THEN json_extract(data, '$.hidden') ELSE 0 END) IS NOT 1`;
+
+/** 读消息时的选项 */
+export interface MessageListOptions {
+  /** 连 `hidden` 的消息一起取（默认不取：`hidden` 表示这条不给人看） */
+  includeHidden?: boolean;
+}
 
 /**
  * 写入语句：`seq` 取同对话当前最大值 + 1；同一 id 再写时只覆盖内容类字段。
@@ -211,20 +229,34 @@ export class MessageRepository {
    *
    * 这里数出来的是**主线**的条数（`parentToolCallId IS NULL` 那一半）：子 Agent 的消息落在同一张
    * 表、但有非空的 `parentToolCallId`，不在本方法的结果里。同样是「这段对话有多少条消息」，
-   * {@link countByConversation} 数的是表里的全部行（不筛这一列），所以一段跑过子 Agent 的对话，
-   * `listByConversation().length` 会小于 `countByConversation()`。
+   * {@link countByConversation} 数的是表里的全部行（不筛那一列，只筛 `hidden`），所以一段跑过
+   * 子 Agent 的对话，`listByConversation().length` 会小于 `countByConversation()`。
+   *
+   * `hidden` 的消息默认不在结果里（侧栏条数、`message.list` 都用这条默认）。要看的那一侧
+   * （模型的历史、排查）传 `includeHidden`。
    */
-  async listByConversation(conversationId: string, after?: string): Promise<StoredMessage[]> {
+  async listByConversation(
+    conversationId: string,
+    after?: string,
+    options: MessageListOptions = {},
+  ): Promise<StoredMessage[]> {
     const rows = await this.db.all<MessageRow>(
       `SELECT ${COLUMNS} FROM messages
        WHERE conversationId = ?
          AND parentToolCallId IS NULL
+         AND (? = 1 OR ${VISIBLE_ONLY})
          AND (? IS NULL
               OR seq >= COALESCE(
                    (SELECT seq FROM messages WHERE id = ? AND conversationId = ?),
                    -1))
        ORDER BY seq ASC`,
-      [conversationId, after ?? null, after ?? null, conversationId],
+      [
+        conversationId,
+        options.includeHidden === true ? 1 : 0,
+        after ?? null,
+        after ?? null,
+        conversationId,
+      ],
     );
     return rows.map(toStoredMessage);
   }
@@ -237,12 +269,14 @@ export class MessageRepository {
   async listByParentToolCallId(
     conversationId: string,
     parentToolCallId: string,
+    options: MessageListOptions = {},
   ): Promise<StoredMessage[]> {
     const rows = await this.db.all<MessageRow>(
       `SELECT ${COLUMNS} FROM messages
        WHERE conversationId = ? AND parentToolCallId = ?
+         AND (? = 1 OR ${VISIBLE_ONLY})
        ORDER BY seq ASC`,
-      [conversationId, parentToolCallId],
+      [conversationId, parentToolCallId, options.includeHidden === true ? 1 : 0],
     );
     return rows.map(toStoredMessage);
   }
@@ -341,10 +375,13 @@ export class MessageRepository {
    * 与 {@link listByConversation} 的差别就在 `parentToolCallId` 这一列：本方法不筛它，所以子 Agent
    * 的消息也算在内。同一个问题（「这段对话有多少条消息」）于是有两个不同的数，两处的用途不同：
    * 这里要的是「删掉会让库里少多少行」，那边要的是「主线里能回看多少条」。
+   *
+   * `hidden` 的消息两边都不算：它在界面上从来没出现过，删掉它数进代价里会让用户看到
+   * 一个对不上的数字。
    */
   async countByConversation(conversationId: string): Promise<number> {
     const row = await this.db.get<{ n: number }>(
-      "SELECT count(*) AS n FROM messages WHERE conversationId = ?",
+      `SELECT count(*) AS n FROM messages WHERE conversationId = ? AND ${VISIBLE_ONLY}`,
       [conversationId],
     );
     return row?.n ?? 0;

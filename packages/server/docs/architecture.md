@@ -90,7 +90,6 @@ ServerApp（根：组装、启动、退出）
 ├─ 运行时（有状态，比 service 更长寿）
 │  ├─ ScopeRegistry             workspaceId → Scope + 依赖计数 + 空闲计时
 │  ├─ RunRegistry               conversationId → 运行中的那一轮
-│  ├─ ConversationStateRegistry 进程内状态：临时模型 / 临时思考档 / forget
 │  ├─ ChatRunner                一轮的流式循环（借 Scope、产出事件、落库）
 │  └─ TransientRunner           临时对话的一轮（不落库、不推流式事件）
 ├─ 接入
@@ -111,7 +110,7 @@ wire/         契约：methods（方法表）、frames（帧）、errors（业�
 net/          WsHub、auth、discovery、UploadReceiver
 handlers/     方法实现（一域一文件）+ capabilities（能力清单）+ index（HandlerTable 与桥接名单）
 services/     薄服务 + Logger（日志文件与轮转）
-runtime/      ScopeRegistry、RunRegistry、ConversationStateRegistry、ChatRunner、TransientRunner
+runtime/      ScopeRegistry、RunRegistry、ChatRunner、TransientRunner
 storage/      Database、dbWorker、Repository、migrations
 i18n/         文案（en 基准 / zh）
 ```
@@ -127,6 +126,12 @@ i18n/         文案（en 基准 / zh）
         → 流式：增量推事件；同一条消息边流边写
         → 内循环结束：写一次（D15）→ agent 释放 → ScopeRegistry.release（依赖 −1，归零则起 10 分钟计时）
 ```
+
+**一段对话的模型与思考档位存在会话行上**（`conversations.modelId` / `conversations.thinkingLevel`，PRD L7 / F-B4 / F-B6）：改了就落库，重开重连、重启都还是它。装配 agent 时从这里取：`modelId` 直接给 SDK 的三级解析（会话级那一档），`thinkingLevel` 按该模型引用的思考策略表展开成参数补丁、叠在助手定义的 `modelParams` 之上（同一模型才叠：会话把模型换掉之后，定义上那份参数是给旧模型的）。展开发生在 `ChatRunner.createSdkAgentFactory`（`conversationModelParams`），档位名本身不进请求。换模型时档位被清空（它是模型的档位）。服务层要的运行时接口因此只剩两件事：忙不忙（`RunRegistry.isRunning`）与删掉之后的中止（`ChatRunner.forget`）。
+
+**一段对话的诞生（R56）**：`conversation.create` 只定身份（`workspaceId` / `agentId` / `modelId`）并发一个 id，不写库；首次 `conversation.send` 时 `ConversationService.ensurePersisted` 才把这一行写进 `conversations`。**落行那一刻同时写这段对话的第一条消息**：一条 `role: user`、`hidden: true` 的消息，正文告诉模型这段对话对应的 cwd（PRD F-D9，正文由 `injectedContextOf` 拼）。它最先写，所以 `seq` 在真实用户消息之前；之后每一轮都不再写、也不再往用户消息里拼任何东西。cwd 取这段对话所属 `workspaces.cwd`（不读进程工作目录），`workspaceId` 创建即定死，没有任何方法能改它。
+
+**`hidden` 的含义就是「这条不给人看」**（core `AgentNS.Message.hidden`）：它仍参与模型上下文（`ChatRunner.reconcile` 取历史时显式带上），但 `message.list` 默认不返回、侧栏条数与删除代价都不数它；客户端按这个字段决定不展示。临时对话（`TransientRunner`）不落库，同一条 cwd 消息只拼在内存的发送内容里（`agent.append` 一条 `hidden` 消息）。
 
 **计时器只有一处**：`ScopeRegistry` 持有唯一那份空闲计时。L4 说的「10 分钟无活动」和 D28 说的「Scope 空闲 10 分钟」，是同一个计时器的两个说法，不各写一份。全部 Scope 都回收完时它回调 `onAllRecycled(cb)`（`src/runtime/ScopeRegistry.ts`），单根据此重算退出判据。
 
@@ -156,7 +161,7 @@ const [found, written] = await db.tx((q) => [
 | 表 | 关键列 |
 |---|---|
 | `workspaces` | `id`、`name`、`cwd`（不可变、`UNIQUE`）、`createdAt` —— 没有 `updatedAt` 列（R34） |
-| `conversations` | `id`、`workspaceId`（级联删）、`name`、`nameIsAuto`（0/1，DEFAULT 1，R35）、`pinned`、`agentId`（NOT NULL）、`modelId`（NOT NULL，R18）、`createdAt`、`updatedAt`；索引 `(workspaceId, pinned DESC, createdAt DESC)` |
+| `conversations` | `id`、`workspaceId`（级联删）、`name`、`nameIsAuto`（0/1，DEFAULT 1，R35）、`pinned`、`agentId`（NOT NULL）、`modelId`（NOT NULL，R18，可改）、`thinkingLevel`（可空：空 = 跟随助手定义）、`createdAt`、`updatedAt`；索引 `(workspaceId, pinned DESC, createdAt DESC)` |
 | `messages` | `id`（服务端分配，请求发出前就有）、`conversationId`（级联删）、`seq`（与对话内唯一）、`role`、`status`、`omit`、`content`(json)、`data`(json)、`searchText`、`parentToolCallId`（可空，R37）、`createdAt`、`updatedAt`；索引 `(conversationId, seq)`、`(parentToolCallId)` |
 | `assets` | `id`、`conversationId`（级联删）、`messageId`（`ON DELETE SET NULL`，R16）、`name`、`path`、`mime`、`bytes`、`sha256`、`createdAt` |
 | `notices` | `id`、`level`、`code`、`params`(json)、`durationMs`（null = 永久）、`conversationId`（可空、级联删）、`createdAt`（L3：持久化，手动清或到点消失） |
@@ -164,14 +169,14 @@ const [found, written] = await db.tx((q) => [
 | `credentials` | `id`、`note`、`hash`（唯一索引）、`createdAt`、`revokedAt` |
 | `meta` | 单行表（`id` 固定 1）：`schemaVersion`、`createdAt` |
 
-**消息条数的两个口径（读路径的事，不是两张表）**：同一个问题「这段对话有多少条消息」在库里有两个答案，因为两条读数问的不是同一样东西 —— `messages` 一张表里既有主线的消息，也有子 Agent 的消息（它们带非空的 `parentToolCallId`，R37）。
+**消息条数的两个口径（读路径的事，不是两张表）**：同一个问题「这段对话有多少条消息」在库里有两个答案，因为两条读数问的不是同一样东西 —— `messages` 一张表里既有主线的消息，也有子 Agent 的消息（它们带非空的 `parentToolCallId`，R37）；另外 `hidden` 的消息（会话创建时的 cwd 消息、交接摘要）在两条读数里都不算。
 
 | 读数（`src/storage/MessageRepository.ts`） | 数的是什么 | 谁在用 |
 |---|---|---|
-| `listByConversation` | 只数**主线**（`parentToolCallId IS NULL`），子 Agent 的消息不在结果里 | 侧栏摘要 `ConversationSummary.messageCount`（`ConversationService.toSummary`）、`conversation.changed.messageCount`、`conversation.state` 的用量与上下文（`usage` / `context` 都从这份消息列表算） |
-| `countByConversation` | 数 `messages` 表里这段对话的**全部行**，不筛那一列 | 删除代价 `consequences.messages`（`conversation.delete` 与 `workspace.remove` 的 `dryRun` 与非 `dryRun` 都用它） |
+| `listByConversation` | 只数**主线**（`parentToolCallId IS NULL`），子 Agent 的消息不在结果里；`hidden` 的默认不返回（要就传 `includeHidden`） | 侧栏摘要 `ConversationSummary.messageCount`（`ConversationService.toSummary`）、`conversation.changed.messageCount`、`conversation.state` 的用量与上下文（`usage` / `context` 都从这份消息列表算）、`message.list` |
+| `countByConversation` | 数 `messages` 表里这段对话的**全部行**，只筛 `hidden` 一列 | 删除代价 `consequences.messages`（`conversation.delete` 与 `workspace.remove` 的 `dryRun` 与非 `dryRun` 都用它） |
 
-所以一段跑过子 Agent 的对话，「侧栏显示几条」会小于「删掉它会少多少行」，两个数不互相换算，也不互为校验：一处是读路径的主线视图，一处是删除的代价。两处代码（`MessageRepository` 与两个服务）各自有注释说明「这里是哪个数、为什么与另一处不同」。
+所以一段跑过子 Agent 的对话，「侧栏显示几条」会小于「删掉它会少多少行」，两个数不互相换算，也不互为校验：一处是读路径的主线视图，一处是删除的代价。`hidden` 的消息两边都不算（它在界面上从来没出现过）。两处代码（`MessageRepository` 与两个服务）各自有注释说明「这里是哪个数、为什么与另一处不同」。
 
 **全文检索**：`messages_fts` 是挂在 `messages` 上的 FTS5 外部内容表，只索引 `searchText` 一列，`tokenize='trigram'`，用三个触发器（insert / delete / update of `searchText`）同步。两条实测约束落在实现里：(1) `unicode61` 下整段中文是一个 token，用错就搜不到；(2) `trigram` 的查询词至少 3 个字符，少于 3 个字符时 `MessageRepository.search` 走 `LIKE` 子串（D16 的「成本接受」就落在这）。
 
@@ -211,7 +216,7 @@ const [found, written] = await db.tx((q) => [
 
 分发顺序是 `hello` → 未握手拒绝 → 已知方法名校验 → 上面两条连接级方法 → 注入 `UploadReceiver` 时的两个上传方法 → handler 表；表里没有的名字回 `unsupported`（`detail.reason = handler_not_registered`）。`handlers/index.test.ts` 钉住这件事：契约里的每个方法要么在表里、要么在桥接名单里，且两边不重叠。
 
-**`message.list` 的取法（A12）**：入参 `conversationId`、`after?: <消息 id>`、`toolCallId?`。
+**`message.list` 的取法（A12）**：入参 `conversationId`、`after?: <消息 id>`、`toolCallId?`、`includeHidden?`（默认 `false`：`hidden` 的消息不返回）。
 
 | `after` | 返回 |
 |---|---|
@@ -251,7 +256,7 @@ const [found, written] = await db.tx((q) => [
 |---|---|
 | `run.state` | `conversationId` + 一份 `RunState` 快照（`status` 空闲/在跑/已结束、`generation` 六态：连上 / 等首字 / 在想 / 在输出 / 拼工具调用 / 等工具、`subagents`、`usage`、`outcome`、`problem`）+ `at`；发全量快照而不是差量 |
 | `message.delta` | `conversationId` + `messageId` + 消息内递增的 `seq` + core 的 `AgentNS.Delta` 原样（正文 / 思考 / 工具调用由它自己的字段区分）+ `at` |
-| `conversation.changed` | `conversationId` + `workspaceId` + `change`（`created` / `renamed` / `pinned` / `messages_persisted` / `message_removed` / `settings_changed` / `deleted`）+ `messageCount` + `at` —— 让客户端知道「该去拉了」 |
+| `conversation.changed` | `conversationId` + `workspaceId` + `change`（`created` / `renamed` / `pinned` / `messages_persisted` / `message_removed` / `settings_changed` / `deleted`）+ `messageCount`（`hidden` 的消息不算）+ `at` —— 让客户端知道「该去拉了」 |
 | `notice` | `notice`（`NoticeView`：三档语气 `info`/`warning`/`error`、`duration` 秒或 null、`conversationId` 或 null、`text`）+ `at` |
 | `question` | `question`（`QuestionView`：`id`、`kind`（`handoff`/`workspace_registration`/`confirmation`）、`prompt`、`options`、`state`、`answer`、`blocking`）+ `at`；多端看同一个（D22） |
 | `usage` | `conversationId` + `usage`（`UsageSnapshot`：`turn` 本轮 / `total` 累计 / `subAgent` 累计里子 Agent 贡献的那部分 / `rate` 速率）+ `at` |
@@ -293,3 +298,5 @@ const [found, written] = await db.tx((q) => [
 | 2026-11-12 | 按实现复核（W5-B）：回调名改 `onAllRecycled`；补桥接名单与二进制帧格式；推送的事件名在 `method`；表骨架按实际列重写；`tx` 的声明式批次边界写清；方法表 63 个 / 事件 6 个 / 能力清单粒度（A13）落文；数据根目录树按 `ConfigManager` 实际推导；新增 §9 已知缺口，原 §9/§10 顺延 |
 | 2026-11-12 | W6-B 运维与展示面：方法表 63 → 64（`server.reload` 进表，A13 的能力条数同步）；§6/§7 改正「`hello` 回完整清单」为**只回能力 id 列表**（R57）；§2 端口那一档补真实来源 `<数据根>/server.json` 与「显式非法端口报 `config_invalid`」（R67）、补升级自检（R66）、数据根目录树与 §5 补 `server.json` 与 `logs/`（F-J2）、§3 的日志口子由 `HubLogger` 改为 `Logger`、§4 补收尾顺序；§9 已知缺口按本轮实现改写（状态栏块、日志、端口三条出列，补助手名字与 `DefaultSelection.language` 两条） |
 | 2026-11-12 | W6-C 补齐两条已知缺口：`DefaultSelection.language` 进契约（§9 那条出列）、状态栏助手块的名字与可用性由 `AgentService.describe` 现读（§9 那条出列）；§5 存储表下方补「消息条数的两个口径」（`listByConversation` 主线 / `countByConversation` 全部行，侧栏 vs 删除代价） |
+| 2026-11-12 | W7-A：cwd 注入改成**会话创建时一条独立的 `hidden` 消息**（PRD F-D9 改口径），每轮不再往用户消息末尾拼注入段；§4 补「一段对话的诞生」与 `hidden` 的含义，§5 两个条数口径都改成不含 `hidden`，§6 `message.list` 加 `includeHidden?`，§7 `conversation.changed.messageCount` 注明不含 `hidden` |
+| 2026-11-12 | W7-C：模型与思考档位改成**会话级、持久化**（PRD L7 / F-B4 / F-B6）：§5 `conversations` 加 `thinkingLevel`（可空）且 `modelId` 变成可改；§4 补「一段对话的模型与档位存在会话行上」与装配口径（档位名 → 参数补丁在 `ChatRunner.createSdkAgentFactory` 展开）；§3 删掉 `ConversationStateRegistry`（进程内临时覆盖作废），服务层要的运行时接口只剩 `isRunning` / `forget` |

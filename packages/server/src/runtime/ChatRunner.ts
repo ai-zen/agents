@@ -41,8 +41,17 @@ import {
   sumUsage,
 } from "@ai-zen/agents-core";
 import type { SubAgentContext, ToolCallEndContext } from "@ai-zen/agents-core";
-import type { AppConfig, HandoffService, Scope } from "@ai-zen/agents-sdk";
+import type {
+  AgentDefinition,
+  AppConfig,
+  HandoffService,
+  Model,
+  ModelParams,
+  ReasoningPresets,
+  Scope,
+} from "@ai-zen/agents-sdk";
 import {
+  AgentRepository,
   AutoMigratePlugin,
   AutoRefreshToolsPlugin,
   ContextGuardPlugin,
@@ -81,7 +90,17 @@ import { systemClock } from "./ScopeRegistry.js";
 export interface MessageStore {
   upsert(input: MessageUpsertInput): Promise<void>;
   upsertMany(inputs: MessageUpsertInput[]): Promise<void>;
-  listByConversation(conversationId: string, after?: string): Promise<StoredMessage[]>;
+  /**
+   * 按对话取主线消息。
+   *
+   * 历史装载传 `includeHidden`（`hidden` 的消息也在模型的上下文里，只是不给人看）；
+   * 其余用途默认只要用户看得到的那部分。
+   */
+  listByConversation(
+    conversationId: string,
+    after?: string,
+    options?: { includeHidden?: boolean },
+  ): Promise<StoredMessage[]>;
 }
 
 /** 对话仓储里本文件用到的部分（`ConversationRepository` 结构上满足） */
@@ -103,8 +122,14 @@ export interface AgentBuildContext {
   workspaceId: string;
   /** 这段对话创建时定死的助手（PRD L7） */
   agentId: string;
-  /** 这段对话创建时定死的模型；`null` 时交给 SDK 三级解析 */
+  /** 这段会话现在用的模型（存在会话行上）；`null` 时交给 SDK 三级解析 */
   modelId: string | null;
+  /**
+   * 这段会话选的思考档位名（存在会话行上）；`null` = 跟随助手定义上的那份参数。
+   *
+   * 存名不存参数：档位属于模型，同名档位在不同模型的策略表里对应不同参数，展开在装配这一刻做。
+   */
+  thinkingLevel: string | null;
   scope: Scope;
   /** 这一轮开始前的历史（core 原样消息），工厂可以把它当作给 agent 的初始消息 */
   history: AgentNS.Message[];
@@ -239,18 +264,6 @@ export interface ChatRunnerOptions {
   /** 边流边写的节流时长（毫秒）；0 表示每到一片就写一次 */
   streamWriteIntervalMs?: number;
   prepareAttachments?: AttachmentPreparer;
-  /**
-   * 这段对话所在项目的目录（PRD F-D9：每轮末尾注入「当前目录」）。
-   *
-   * 目录来自 Workspace 而不是进程工作目录；不注入时不注入那段上下文。
-   */
-  resolveCwd?: (workspaceId: string) => Promise<string | null>;
-  /**
-   * 这一轮实际用哪个模型（临时换模型的覆盖只在内存里，L7）。
-   *
-   * 结算时用它取生效模型的交接线（R59）；不注入时用对话创建时定死的那个。
-   */
-  resolveModelId?: (conversationId: string) => string | null;
   /** 这一轮没带语言时用哪种语言渲染服务端注入的那段话（D8） */
   defaultLanguage?: Language;
   /** 一轮结算之后的回调（R59：交接线问题由它触发） */
@@ -329,41 +342,16 @@ function toUsage(value: unknown): AgentNS.Usage | undefined {
   return { prompt_tokens, completion_tokens, total_tokens };
 }
 
-/** 服务端注入的一段上下文（F-D9）：发给模型的文本 + 它的来源事实（cwd） */
-export interface InjectedContext {
-  cwd: string;
-  text: string;
-}
-
 /**
- * 这一段要往模型那边补充的上下文（PRD F-D9：告诉模型「现在在哪个目录」）。
+ * 会话创建时那条 cwd 消息的正文（PRD F-D9：告诉模型「当前目录是哪儿」）。
  *
+ * 这条消息在对话落库时写一次，之后不再重写、也不随每轮拼接（说了两遍模型会以为目录变了）。
  * 目录取的是这个对话所属项目的 cwd（不是进程工作目录）；句子用的是「这是服务端加的，不是
- * 用户输入的」那条文案，于是它以已存在的方式说明自己是注入内容（R21：不新造消息类型）。
+ * 用户输入的」那条文案（R21：不新造消息类型）。
  */
-export function injectedContextOf(cwd: string, language: Language): InjectedContext {
+export function injectedContextOf(cwd: string, language: Language): string {
   const summary = render(language, "message.injectedContext.cwd", { cwd });
-  return {
-    cwd,
-    text: render(language, "message.injectedContext", { summary }),
-  };
-}
-
-/**
- * 把注入的那段文本接到内容末尾。
- *
- * 内容可能是一串纯文本（用户只打了一句话）或一串内容段（带图带文件），两种情况都归到
- * core 的内容段形式上，追加一个 `text` 段 —— 不改变原有段的类型与顺序（F-I2）。
- */
-export function appendInjectedText(
-  content: AgentNS.MessageContent,
-  text: string,
-): AgentNS.MessageContent {
-  const section: AgentNS.TextContentSection = { type: "text", text };
-  if (typeof content === "string") {
-    return content.length === 0 ? [section] : [{ type: "text", text: content }, section];
-  }
-  return [...content, section];
+  return render(language, "message.injectedContext", { summary });
 }
 
 /**
@@ -501,8 +489,6 @@ interface TurnSessionInit {
   createAgent: AgentFactory;
   history: AgentNS.Message[];
   content: AgentNS.MessageContent;
-  /** 服务端注入的那段上下文（F-D9）；没有可注入的目录时为 `null` */
-  injected: InjectedContext | null;
   attachments: AttachmentOutcome[];
   userMessageId: string;
   assistantMessageId: string;
@@ -533,7 +519,6 @@ class TurnSession implements ChatTurn {
   private readonly createAgent: AgentFactory;
   private readonly history: AgentNS.Message[];
   private readonly content: AgentNS.MessageContent;
-  private readonly injected: InjectedContext | null;
   private readonly language: Language;
   private readonly handle: RunHandle;
   private readonly options: ChatRunnerOptions;
@@ -582,7 +567,6 @@ class TurnSession implements ChatTurn {
     this.createAgent = init.createAgent;
     this.history = init.history;
     this.content = init.content;
-    this.injected = init.injected;
     this.language = init.language;
     this.attachments = init.attachments;
     this.userMessageId = init.userMessageId;
@@ -626,6 +610,7 @@ class TurnSession implements ChatTurn {
         workspaceId: this.conversation.workspaceId,
         agentId: this.conversation.agentId ?? "",
         modelId: this.conversation.modelId,
+        thinkingLevel: this.conversation.thinkingLevel,
         scope: this.scope,
         history: [...this.history],
       });
@@ -686,10 +671,6 @@ class TurnSession implements ChatTurn {
       }
       return;
     }
-
-    // 这一轮的用户消息带着服务端注入的那段（F-D9）：core 后来追加的那一份也标上，
-    // 内循环结束再写一次时这个事实不会丢
-    if (message.id === this.userMessageId && this.injected !== null) message.hidden = true;
 
     if (
       message.role === AgentNSValue.Role.Tool ||
@@ -1036,9 +1017,9 @@ class TurnSession implements ChatTurn {
   private notifySettled(outcome: RunOutcome, usage: UsageSnapshot): void {
     const onSettled = this.options.onTurnSettled;
     if (!onSettled) return;
-    const modelId =
-      this.options.resolveModelId?.(this.conversationId) ?? this.conversation.modelId;
-    const model = this.scope.config.models.find((candidate) => candidate.id === modelId);
+    const model = this.scope.config.models.find(
+      (candidate) => candidate.id === this.conversation.modelId,
+    );
     try {
       onSettled({
         conversationId: this.conversationId,
@@ -1291,10 +1272,6 @@ export class ChatRunner {
       // 装载即修复：上一次进程如果是在写的时候没的，这里把在途消息修成可继续的状态
       const history = (await this.reconcile(conversationId)).messages;
       const prepared = await this.prepare(params, conversation);
-      // F-D9：每轮末尾补一段「当前目录是哪儿」；目录来自这段对话的项目，不是进程工作目录
-      const injected = await this.injectedContextFor(conversation.workspaceId, language);
-      const content =
-        injected === null ? prepared.content : appendInjectedText(prepared.content, injected.text);
 
       const nowMs = this.clock.now();
       const acceptedAt = new Date(nowMs).toISOString();
@@ -1309,10 +1286,8 @@ export class ChatRunner {
           role: AgentNSValue.Role.User as string,
           status: AgentNSValue.MessageStatus.Completed as string,
           omit: false,
-          content: content as unknown as MessageUpsertInput["content"],
-          // 注入过就标上「这条里有服务端加的东西」：沿用 `data.hidden` 这个既有落库口径
-          // （与交接摘要条一致），`message.list` 读回来时它就是 core 的 `Message.hidden`
-          data: injected === null ? null : { hidden: true },
+          content: prepared.content as unknown as MessageUpsertInput["content"],
+          data: null,
           createdAt: nowMs,
         },
         {
@@ -1332,8 +1307,7 @@ export class ChatRunner {
         scope,
         createAgent: this.agentFactory(),
         history,
-        content,
-        injected,
+        content: prepared.content,
         attachments: prepared.attachments,
         userMessageId: userId,
         assistantMessageId: assistantId,
@@ -1355,18 +1329,6 @@ export class ChatRunner {
     this.turns.set(session.conversationId, session);
     void session.execute();
     return session;
-  }
-
-  /** 这段对话所属项目的目录（F-D9）；拿不到就不注入那一段 */
-  private async injectedContextFor(
-    workspaceId: string,
-    language: Language,
-  ): Promise<InjectedContext | null> {
-    const resolve = this.options.resolveCwd;
-    if (!resolve) return null;
-    const cwd = await resolve(workspaceId);
-    if (cwd === null || cwd.length === 0) return null;
-    return injectedContextOf(cwd, language);
   }
 
   /** 这一段对话正在跑的那一轮（没有就 `undefined`）：拉现场用 */
@@ -1401,7 +1363,11 @@ export class ChatRunner {
    * 只写回状态/`omit` 真的变了的那些行，于是「启动时扫一遍」不会把整段历史重写一次。
    */
   async reconcile(conversationId: string): Promise<ReconcileResult> {
-    const rows = await this.options.messages.listByConversation(conversationId);
+    // 历史要连 `hidden` 的一起取：那些消息只是不给人看，模型下一轮照样得看到它们
+    // （会话创建时那条 cwd 消息、交接摘要）
+    const rows = await this.options.messages.listByConversation(conversationId, undefined, {
+      includeHidden: true,
+    });
     const messages = rows.map(fromRow);
 
     for (const message of messages) {
@@ -1463,18 +1429,78 @@ export interface SdkAgentFactoryOptions {
    */
   autoRefreshTools?: AppConfig["autoRefreshTools"];
   /**
-   * 这一轮实际用哪个模型：返回 `null` / `undefined` 就用 `context.modelId`。
+   * 思考策略表（档位名 → 参数补丁）的现读入口。
    *
-   * 留给「临时换模型」（PRD L7：只活在进程内存、不进库）这个事实的持有方：那个覆盖不在
-   * 库里，也不在本文件，接线时由它把覆盖接进来。
+   * 装配是异步的，所以这里给一个取快照的函数而不是快照本身：接线层在配置变更后会重新
+   * 读一次表（`refreshThinkingPresets`），拿旧快照会把已删掉的档位展开成空补丁。
    */
-  resolveModelId?: (context: AgentBuildContext) => string | null | undefined;
-  /**
-   * 会话级模型参数补丁（三级解析里与 `modelId` 同一级的那一份）。
-   *
-   * 思考强度（PRD F-B6）写入的就是参数：档位名 → 参数的那一步由持有思考状态的一侧展开。
-   */
-  resolveModelParams?: (context: AgentBuildContext) => Record<string, unknown> | undefined;
+  thinkingPresets?: () => ReasoningPresets | null;
+}
+
+/**
+ * 这一段会话该带哪些模型参数（PRD F-B6）。
+ *
+ * 两件事合在这里：
+ *   1. 助手定义上的 `modelParams`（用户给这个助手配的参数，也是「跟随默认」所指的那份）；
+ *   2. 会话行上的思考档位展开出的补丁（档位名 → 参数），盖在 1 上面。
+ *
+ * 只在「会话定的模型就是助手定义那个模型」时才叠上 1：会话把模型换掉之后，定义上那份参数
+ * 是配给旧模型的（可能带着旧模型才认的键），发给新模型只会换来一句 400。换模型时档位会被
+ * 清空，所以那之后这里通常什么都不带，让模型走自己的出厂参数。
+ */
+export function conversationModelParams(input: {
+  /** 会话行上的模型（从 `scope.config` 里找到的那个；找不到时为空） */
+  model: Model | undefined;
+  /** 助手定义上的模型 id（未绑定时为 `undefined`） */
+  agentModelId: string | undefined;
+  /** 配置里的兜底模型（`AppConfig.defaultModel`） */
+  defaultModelId: string | undefined;
+  /** 助手定义上的参数（`AgentDefinition.modelParams`） */
+  agentParams: ModelParams | undefined;
+  /** 会话行上的思考档位名；`null` = 跟随助手定义 */
+  thinkingLevel: string | null;
+  presets: ReasoningPresets | null;
+}): ModelParams | undefined {
+  const agentModelId = input.agentModelId ?? input.defaultModelId;
+  const sameModel = input.model !== undefined && input.model.id === agentModelId;
+  const base = sameModel ? input.agentParams : undefined;
+
+  const patch = thinkingPatchOf(input.model, input.thinkingLevel, input.presets);
+  if (!patch) return base;
+  return { ...(base ?? {}), ...patch };
+}
+
+/** 档位名 → 参数补丁（模型没配策略表、表里没这个档、或没选档位时都是 `undefined`） */
+function thinkingPatchOf(
+  model: Model | undefined,
+  thinkingLevel: string | null,
+  presets: ReasoningPresets | null,
+): ModelParams | undefined {
+  if (!model || thinkingLevel === null || !presets) return undefined;
+  const presetName = model.reasoningPreset;
+  if (!presetName) return undefined;
+  const preset = presets[presetName];
+  if (!preset || !Object.prototype.hasOwnProperty.call(preset.levels, thinkingLevel)) {
+    return undefined;
+  }
+  return preset.levels[thinkingLevel];
+}
+
+/**
+ * 读一次助手定义（只为拿它绑定哪个模型、带哪些参数）。
+ *
+ * SDK 的 `createAgent` 自己也会读一次定义；这里多这一遍是因为会话档位展开的参数要叠在
+ * 定义那份参数上，而只有定义在手才知道该叠什么。读不出来就当作没有（真正的报错由
+ * `createAgent` 那句给出）。
+ */
+async function readAgentDefinition(
+  context: AgentBuildContext,
+): Promise<AgentDefinition | null> {
+  try {
+    return await new AgentRepository(context.scope.agentsDir).read(context.agentId);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1489,11 +1515,23 @@ export interface SdkAgentFactoryOptions {
  */
 export function createSdkAgentFactory(options: SdkAgentFactoryOptions = {}): AgentFactory {
   return async (context: AgentBuildContext): Promise<ChatAgent> => {
+    // 会话行上的模型就是这一轮的模型（`conversation.setModel` 写的就是它），
+    // 再往下的三级解析（助手定义 → 全局兜底）仍由 SDK 那一处算
+    const modelId = context.modelId ?? undefined;
+    const sessionModel = context.scope.config.models.find(
+      (candidate) => candidate.id === modelId,
+    );
+    const definition = await readAgentDefinition(context);
     const agent = await createAgent(context.scope, context.agentId, {
-      // 会话级覆盖：临时换的模型优先，其次是这段对话创建时定死的那个（PRD L7）；
-      // 都没给就落到助手定义 / 全局兜底（SDK 三级解析）
-      modelId: options.resolveModelId?.(context) ?? context.modelId ?? undefined,
-      modelParams: options.resolveModelParams?.(context),
+      modelId,
+      modelParams: conversationModelParams({
+        model: sessionModel,
+        agentModelId: definition?.modelId,
+        defaultModelId: context.scope.config.defaultModel,
+        agentParams: definition?.modelParams,
+        thinkingLevel: context.thinkingLevel,
+        presets: options.thinkingPresets?.() ?? null,
+      }),
     });
 
     // 生效的模型写在 `agent.definition.modelId` 上（SDK 三级解析之后的那一份）

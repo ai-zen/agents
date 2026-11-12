@@ -240,7 +240,8 @@ export type ThinkingSource = "following_default" | "manual" | "not_adjustable";
  * 思考强度的状态（PRD F-B6 / F-B7）。
  *
  * `levels` 是该模型可选的全部档位名（来自思考策略表）；`selected` 是当前档位；
- * `params` 是这一档**展开后的请求参数**——服务端写入的是参数，档位名只是给人和界面看的标签。
+ * `params` 是这一档**展开后的请求参数**（档位名存在会话行上，展开发生在装配 agent 那一刻）。
+ * `following_default` 表示这段会话没设过档位，用的是助手定义上的那份参数。
  */
 export interface ThinkingState {
   /** 引用的思考策略名（模型上配的那个） */
@@ -253,6 +254,28 @@ export interface ThinkingState {
   source: ThinkingSource;
   /** 当前档位展开后的参数补丁 */
   params: Record<string, unknown>;
+}
+
+/**
+ * 一段会话现在用的模型来自哪里（PRD F-B4 里「会话级」与「助手定义」两个动作的区别）。
+ *
+ * `agent` = 会话行上那个模型就是助手定义绑的那个（没换过）；
+ * `conversation` = 会话行上是另一个模型（创建时点名，或 `conversation.setModel` 改过）。
+ */
+export type ModelSource = "agent" | "conversation";
+
+/**
+ * 模型块的事实（PRD F-I6 的状态栏块）。
+ *
+ * `modelId` / `name` / `vision` 是这段会话**现在**用的那个模型，`source` 说明它是助手定义
+ * 给的还是这段会话自己定的。
+ */
+export interface ModelState {
+  modelId: string;
+  name: string;
+  /** 这个模型能不能看图（PRD D20 / F-B8 的判定依据） */
+  vision: boolean;
+  source: ModelSource;
 }
 
 // ---------------------------------------------------------------------------
@@ -462,7 +485,7 @@ export type StatusBlock =
   | {
       id: "model";
       label: LocalizedText;
-      facts: { modelId: string; name: string; vision: boolean; overriddenThisSession: boolean };
+      facts: ModelState;
     }
   | { id: "thinking"; label: LocalizedText; facts: ThinkingState }
   | { id: "context"; label: LocalizedText; facts: ContextState }

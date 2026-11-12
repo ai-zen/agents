@@ -57,7 +57,6 @@ import type {
   TurnSettledFacts,
 } from "./runtime/index.js";
 import { ConversationDrafts } from "./runtime/ConversationDrafts.js";
-import { ConversationStateRegistry } from "./runtime/ConversationStateRegistry.js";
 import { TransientRunner, cwdOfTransientScopeKey, transientAgentFactoryFrom } from "./runtime/TransientRunner.js";
 import {
   ConversationService,
@@ -66,6 +65,7 @@ import {
   SearchService,
   WorkspaceService,
 } from "./services/index.js";
+import type { ConversationRuntimePort } from "./services/index.js";
 import { AgentService } from "./services/AgentService.js";
 import { AssetService } from "./services/AssetService.js";
 import { AutoNaming } from "./services/AutoNaming.js";
@@ -239,7 +239,12 @@ export class ServerApp {
   // ---- 运行时 ----
   readonly scopeRegistry: ScopeRegistry;
   readonly runRegistry: RunRegistry;
-  readonly conversationStates: ConversationStateRegistry;
+  /**
+   * 服务层要的两件运行时事实：忙不忙、删掉之后的中止。
+   *
+   * 模型与思考档位不在这里 —— 它们在会话行上。
+   */
+  readonly conversationRuntime: ConversationRuntimePort;
   /** 还没发过第一条消息的对话（R56：`create` 只发 id 与身份，首次 `send` 才落库） */
   readonly conversationDrafts: ConversationDrafts;
   readonly chatRunner: ChatRunner;
@@ -357,7 +362,7 @@ export class ServerApp {
       return row ? { cwd: row.cwd } : undefined;
     };
 
-    // ---- 2. 运行时：Scope 的持有、轮次占位、每段对话的进程内状态 ----
+    // ---- 2. 运行时：Scope 的持有、轮次占位、服务层要的窄接口 ----
     // 工厂包一层再交给注册表：它要读发现服务算好的能力目录，而那一层比 Scope 先造好
     const injectedScopeFactory = options.createScope;
     this.scopeRegistry = new ScopeRegistry({
@@ -369,7 +374,7 @@ export class ServerApp {
       },
     });
     this.runRegistry = new RunRegistry({ clock: this.clock });
-    this.conversationStates = new ConversationStateRegistry({ runs: this.runRegistry });
+    this.conversationRuntime = this.createConversationRuntime();
     this.conversationDrafts = new ConversationDrafts();
     // 交接服务：入参优先，缺省按 cwd 造一个真的（R59：不再因为「没注入」就不装交接插件）
     this.handoffProvider = options.handoff ?? this.defaultHandoffProvider();
@@ -390,7 +395,7 @@ export class ServerApp {
       conversations: this.conversations,
       messages: this.messages,
       assets: this.assets,
-      runtime: this.conversationStates,
+      runtime: this.conversationRuntime,
       now: () => this.clock.now(),
     });
     this.conversationService = new ConversationService({
@@ -400,7 +405,7 @@ export class ServerApp {
       assets: this.assets,
       questions: this.questions,
       configManager: this.configManager,
-      runtime: this.conversationStates,
+      runtime: this.conversationRuntime,
       drafts: this.conversationDrafts,
       // 多端在线同步（L5 / D22）：改名/置顶/撤回/删除之后对方窗口得知道去拉
       emit: (name, payload) => this.emitEvent(name, payload),
@@ -511,10 +516,7 @@ export class ServerApp {
       emit: (name, payload) => this.emitEvent(name, payload),
       clock: this.clock,
       prepareAttachments: (context) => this.assetService.prepareAttachments(context),
-      // F-D9：每轮末尾告诉模型「当前目录是哪儿」；目录来自这段对话的项目
-      resolveCwd: async (workspaceId) => (await this.workspaces.get(workspaceId))?.cwd ?? null,
-      // 临时换的模型只活在内存（L7），结算时按它取生效模型的交接线
-      resolveModelId: (conversationId) => this.conversationStates.getModelOverride(conversationId),
+      // 结算时按这段会话行上的模型取交接线（`setModel` 之后就是新模型的阈值）
       defaultLanguage: options.defaultLanguage ?? DEFAULT_LANGUAGE,
       // R59：一轮结算之后服务端自己判断要不要问交接线的问题（D22：在对话停下之后）
       onTurnSettled: (facts) => {
@@ -979,9 +981,8 @@ export class ServerApp {
   private defaultAgentFactory(): AgentFactory {
     const assembled = createSdkAgentFactory({
       handoff: (context) => this.handoffFor(context),
-      resolveModelId: (context) =>
-        this.conversationStates.getModelOverride(context.conversationId) ?? undefined,
-      resolveModelParams: (context) => this.thinkingParams(context),
+      // 档位名 → 参数补丁要用思考策略表；配置变更后会重读，所以这里给一个现读入口
+      thinkingPresets: () => this.presets,
     });
     return assembled;
   }
@@ -1059,20 +1060,18 @@ export class ServerApp {
   }
 
   /**
-   * 这段对话临时调的思考档位 → 请求参数（PRD F-B6 / R41：写进去的是参数）。
+   * 服务层要的那个窄接口（`ConversationRuntimePort`）。
    *
-   * 这一跳必须同步（agent 工厂的注入点就是同步的），所以档位表用启动时读到的快照；
-   * 政策表是出厂资产，进程生命周期内不变，用快照是安全的。
+   * `forget` 指向 `ChatRunner.forget`（中止在跑的轮次、清掉这一轮的内存现场）。它只能晚绑定：
+   * 服务比执行者先造出来，所以这里闭包住 `this`，调用那一刻才去拿 `chatRunner`。
    */
-  private thinkingParams(context: AgentBuildContext): Record<string, unknown> | undefined {
-    const level = this.conversationStates.getThinkingOverride(context.conversationId);
-    if (level === null) return undefined;
-    const modelId =
-      this.conversationStates.getModelOverride(context.conversationId) ?? context.modelId;
-    const model = context.scope.config.models.find((candidate) => candidate.id === modelId);
-    const presetName = model?.reasoningPreset;
-    const preset = presetName ? this.presets?.[presetName] : undefined;
-    return preset?.levels[level];
+  private createConversationRuntime(): ConversationRuntimePort {
+    return {
+      isRunning: (conversationId) => this.runRegistry.isRunning(conversationId),
+      forget: (conversationId) => {
+        this.chatRunner.forget(conversationId);
+      },
+    };
   }
 
   /** 素材转换要的实发模型与端点（F-H7 的判定依据：模型能不能看图、端点有没有 Files API） */

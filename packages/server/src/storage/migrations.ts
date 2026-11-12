@@ -44,20 +44,23 @@ export const MIGRATIONS: Migration[] = [
          createdAt INTEGER NOT NULL
        )`,
 
-      // conversations：身份（workspace / 助手 / 模型）创建时定死（PRD L7），
-      // 所以 agentId / modelId 不允许为空 —— 解析不出助手或模型时在创建处就失败，不落半成品行。
+      // conversations：项目 / 助手创建时定死，模型与思考档位是这段会话自己的（可以改）。
+      // agentId / modelId 不允许为空 —— 解析不出助手或模型时在创建处就失败，不落半成品行。
       // nameIsAuto 记住「这个名字是不是自动起的」（R35）：创建时的原名算自动，用户改名置 0，
       // 自动命名写入新名并置 1。
+      // thinkingLevel 存档位名（可空）：空 = 跟随助手定义上的那份参数；非空 = 这一段会话选的档位，
+      // 装配 agent 时按该模型的思考策略表展开成参数补丁。
       `CREATE TABLE IF NOT EXISTS conversations (
-         id          TEXT PRIMARY KEY,
-         workspaceId TEXT NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
-         name        TEXT NOT NULL,
-         nameIsAuto  INTEGER NOT NULL DEFAULT 1,
-         pinned      INTEGER NOT NULL DEFAULT 0,
-         agentId     TEXT NOT NULL,
-         modelId     TEXT NOT NULL,
-         createdAt   INTEGER NOT NULL,
-         updatedAt   INTEGER NOT NULL
+         id            TEXT PRIMARY KEY,
+         workspaceId   TEXT NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+         name          TEXT NOT NULL,
+         nameIsAuto    INTEGER NOT NULL DEFAULT 1,
+         pinned        INTEGER NOT NULL DEFAULT 0,
+         agentId       TEXT NOT NULL,
+         modelId       TEXT NOT NULL,
+         thinkingLevel TEXT,
+         createdAt     INTEGER NOT NULL,
+         updatedAt     INTEGER NOT NULL
        )`,
       // 侧栏排序 = 置顶优先、再按创建时间倒序（PRD D13）；活动/改名不影响顺序
       `CREATE INDEX IF NOT EXISTS idx_conversations_workspace

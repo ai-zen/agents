@@ -172,11 +172,17 @@ export class RecordingMessageStore implements MessageStore {
     for (const input of inputs) await this.upsert(input);
   }
 
-  async listByConversation(conversationId: string, after?: string): Promise<StoredMessage[]> {
+  async listByConversation(
+    conversationId: string,
+    after?: string,
+    options: { includeHidden?: boolean } = {},
+  ): Promise<StoredMessage[]> {
     const ordered = [...this.rows.values()]
       .filter((entry) => entry.row.conversationId === conversationId)
       .sort((a, b) => a.order - b.order)
-      .map((entry) => entry.row);
+      .map((entry) => entry.row)
+      // 与真仓储同一个口径：`data.hidden` 为真的消息默认不返回
+      .filter((row) => options.includeHidden === true || row.data?.hidden !== true);
     const anchorIndex = after ? ordered.findIndex((row) => row.id === after) : -1;
     const visible = anchorIndex >= 0 ? ordered.slice(anchorIndex) : ordered;
     return visible.map((row, index) => toStored(row, index + 1));

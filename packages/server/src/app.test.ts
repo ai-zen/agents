@@ -212,7 +212,9 @@ describe("ServerApp 的组装", () => {
     // 运行时
     expect(app.scopeRegistry.size()).toBe(0);
     expect(app.runRegistry.size()).toBe(0);
-    expect(app.conversationStates.size()).toBe(0);
+    // 服务层要的两件运行时事实（模型与档位在会话行上，不在这里）
+    expect(app.conversationRuntime.isRunning("没有这段对话")).toBe(false);
+    expect(typeof app.conversationRuntime.forget).toBe("function");
     // 服务
     expect(typeof app.workspaceService.create).toBe("function");
     expect(typeof app.conversationService.create).toBe("function");

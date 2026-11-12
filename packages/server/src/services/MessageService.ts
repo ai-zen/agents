@@ -2,8 +2,8 @@
  * 消息服务：按对话读消息，以及把库里的一行还原成 core 的消息对象。
  *
  * 对应能力编号：A12 / L5（按消息 id 续拉：命中则从它开始且含它自身的最新内容，不命中返回全部）、
- * F-I7（`toolCallId` 取子 Agent 自己的消息）、R21 / R22（消息原样用 core 的 `AgentNS.Message`，
- * 不额外挂时间戳这类外壳字段）。
+ * F-I7（`toolCallId` 取子 Agent 自己的消息）、F-D9（会话创建时那条 `hidden` 的 cwd 消息默认不出网）、
+ * R21 / R22（消息原样用 core 的 `AgentNS.Message`，不额外挂时间戳这类外壳字段）。
  *
  * `toAgentMessage` 是这个仓库里「存储行 → core 消息」的唯一一份实现：对话服务算用量、判断
  * 历史里有没有图也要走它，免得同一行在两处被读出两个样子。
@@ -210,9 +210,13 @@ export class MessageService {
    * `parentToolCallId` 取（那次委派的工具调用 id），走的是另一条查询 —— 子 Agent 的消息不在
    * 主线历史里（`listByConversation` 只给主线），所以两个参数同时给时 `after` 只用来定 `anchor`，
    * 结果集仍是那个子 Agent 的全部消息。
+   *
+   * `hidden` 的消息（会话创建时那条 cwd 消息、交接摘要）默认不回：core 的这个字段就是
+   * 「这条不给人看」。要看到它们（排查、或客户端显式要）就传 `includeHidden`。
    */
   async list(params: MessageListParams): Promise<MessageListResult> {
     const conversation = await this.requireConversation(params.conversationId);
+    const options = { includeHidden: params.includeHidden === true };
 
     let anchor: string | null = null;
     if (params.after !== undefined && params.after.length > 0) {
@@ -224,7 +228,11 @@ export class MessageService {
 
     const toolCallId = params.toolCallId;
     if (toolCallId !== undefined && toolCallId.length > 0) {
-      const delegated = await this.messages.listByParentToolCallId(conversation.id, toolCallId);
+      const delegated = await this.messages.listByParentToolCallId(
+        conversation.id,
+        toolCallId,
+        options,
+      );
       return {
         conversationId: conversation.id,
         anchor,
@@ -232,7 +240,7 @@ export class MessageService {
       };
     }
 
-    const rows = await this.messages.listByConversation(conversation.id, params.after);
+    const rows = await this.messages.listByConversation(conversation.id, params.after, options);
     return {
       conversationId: conversation.id,
       anchor,

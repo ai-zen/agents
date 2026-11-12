@@ -18,6 +18,7 @@ import type {
   FolderFact,
   LocalizedText,
   MessageInput,
+  ModelState,
   NoticeLevel,
   NoticeView,
   ProblemFact,
@@ -370,7 +371,7 @@ export interface ConversationSummary {
   pinned: boolean;
   /** 这段对话的助手（创建时定死，PRD L7） */
   agentId: string;
-  /** 这段对话的模型（创建时定死，PRD L7） */
+  /** 这段对话现在用的模型（存会话行上，可改，PRD F-B4） */
   modelId: string;
   createdAt: string;
   updatedAt: string;
@@ -383,17 +384,12 @@ export interface ConversationSummary {
 }
 
 /**
- * 一段对话的当前模型事实（PRD L7 / F-B4 / F-B8）。
+ * 一段对话的当前模型事实（PRD F-B4 / F-B8）。
  *
- * `overriddenThisSession` 说明「现在是临时换过的模型」：临时换只活在内存里，重开回默认。
+ * `source` 说这个模型是谁定的：`agent` = 助手定义上那个（这段会话没换过）；
+ * `conversation` = 这段会话自己定的（创建时点名或 `conversation.setModel` 改过）。
  */
-export interface ConversationModelState {
-  modelId: string;
-  name: string;
-  /** 这个模型能不能看图（PRD D20 / F-B8 的判定依据） */
-  vision: boolean;
-  overriddenThisSession: boolean;
-}
+export type ConversationModelState = ModelState;
 
 /** 一段对话的完整样子 */
 export interface ConversationView extends ConversationSummary {
@@ -421,8 +417,8 @@ export interface ConversationListResult {
 /**
  * `conversation.create` 入参（PRD F-A3「开新会话、别续接」/ F-C7 / D9 / D10 / L7）。
  *
- * 助手与模型在创建时定死（PRD L7）：换默认走 `agent.setModel`，改的是「以后的对话」用哪个模型，
- * 这段对话的身份不动。
+ * 项目与助手在创建时定死（PRD L7）；模型先取助手定义上那个（也可在这里点名），之后归这段会话
+ * —— 换它走 `conversation.setModel`，改「以后的对话」用哪个模型走 `agent.setModel`。
  *
  * 定位项目两条路（D10）：`workspaceId` 是「已经登记过的项目」；`cwd` 是从目录出发
  * —— 那个目录还没登记成项目时，服务端不建对话，而是问一次要不要登记（见出参）。
@@ -573,14 +569,15 @@ export interface ConversationRevertResult {
 }
 
 /**
- * `conversation.setModel` 入参（PRD F-B4 / F-B8 / D20 / L7）。
+ * `conversation.setModel` 入参（PRD F-B4 / F-B8 / D20）。
  *
- * 这是**临时换模型**：只活在内存、不进库、重开回默认。历史里有图而新模型读不了图时拒绝
+ * 换的是**这段会话**的模型：写完就落库，重开、重启都还是它；换模型同时把这段会话的
+ * 思考档位清成「跟随助手默认」（档位属于模型）。历史里有图而新模型读不了图时拒绝
  * （业务码 `model_unsupported`）。改助手默认模型是另一个动作，见 `agent.setModel`。
  */
 export interface ConversationSetModelParams {
   conversationId: string;
-  /** `null` 表示回到这段对话创建时定的模型 */
+  /** `null` 表示回到助手定义上那个模型 */
   modelId: string | null;
 }
 
@@ -593,14 +590,15 @@ export interface ConversationSetModelResult {
 }
 
 /**
- * `conversation.setThinking` 入参（PRD F-B6：用户说「多想一点」，写进去的是参数不是档位名）。
+ * `conversation.setThinking` 入参（PRD F-B6 / F-B7）。
  *
- * 会话级临时调整，与 `agent.setThinking`（改助手的默认）分开。
+ * 改的是**这段会话**的思考档位：档位名落库，装配 agent 时按当前模型的思考策略表展开成
+ * 参数补丁。与 `agent.setThinking`（改助手的默认）分开。
  */
 export interface ConversationSetThinkingParams {
   conversationId: string;
-  /** 档位名（来自 `ThinkingState.levels`） */
-  level: string;
+  /** 档位名（来自 `ThinkingState.levels`）；`null` = 回到跟随助手默认 */
+  level: string | null;
 }
 
 /** `conversation.setThinking` 出参：展开后的参数与来源（PRD F-B7） */
@@ -650,18 +648,23 @@ export interface ConversationTransientResult {
  * 它的内容已经变了；从它自己重新拿，就天然是「最新内容 + 之后的」。
  *
  * `toolCallId` 用来取某个子 Agent 自己的消息（PRD F-I7：子 Agent 的消息可回看）。
+ *
+ * `hidden` 的消息（会话创建时那条 cwd 消息、交接摘要）默认**不返回**：core 的 `hidden` 就是
+ * 「这条不给人看」。要它们就显式要（`includeHidden: true`）。
  */
 export interface MessageListParams {
   conversationId: string;
   after?: string;
   toolCallId?: string;
+  /** 连 `hidden` 的消息一起返回（默认 false） */
+  includeHidden?: boolean;
 }
 
 /**
  * `message.list` 出参：消息本体就是 core 的 `AgentNS.Message`，这里只包一层定位外壳。
  *
- * 顺序即对话里的先后顺序；「这条是否还在上下文里」看消息自己的 `omit`，「是否服务端注入」
- * 看 `hidden`（PRD F-D9 / F-I1），内容与工具调用看 `content` / `tool_calls` / `reasoning_content`。
+ * 顺序即对话里的先后顺序；「这条是否还在上下文里」看消息自己的 `omit`，「这条是不是不给人看」
+ * 看 `hidden`（PRD F-D9），内容与工具调用看 `content` / `tool_calls` / `reasoning_content`。
  */
 export interface MessageListResult {
   conversationId: string;
@@ -1204,7 +1207,7 @@ export interface AgentDeleteResult {
 /**
  * `agent.setModel` 入参（PRD F-B4 / F-B1：改助手默认模型，影响以后的对话）。
  *
- * 与 `conversation.setModel`（临时换、只活在内存）是两个动作、两个入口。
+ * 与 `conversation.setModel`（改这一段会话的模型、存会话行）是两个动作、两个入口。
  */
 export interface AgentSetModelParams {
   agentId: string;
@@ -1629,7 +1632,7 @@ export interface MethodMap {
   // ---- conversation.*：一段对话的身份、历史、一轮的运行 ----
   /** F-C5 / D13：默认创建时间倒序 + 手动置顶。 */
   "conversation.list": { params: ConversationListParams; result: ConversationListResult };
-  /** F-A3 / F-C7 / L7：开新会话；项目、助手、模型在创建时定死。 */
+  /** F-A3 / F-C7 / L7：开新会话；项目与助手在创建时定死（模型与档位归会话）。 */
   "conversation.create": { params: ConversationCreateParams; result: ConversationCreateResult };
   /** F-A6：按 id 打开（「接着上次聊」的记住工作归客户端）。 */
   "conversation.get": { params: ConversationGetParams; result: ConversationGetResult };
@@ -1647,9 +1650,9 @@ export interface MethodMap {
   "conversation.abort": { params: ConversationAbortParams; result: ConversationAbortResult };
   /** F-C8 / D24：撤回到某条用户消息之前，其后硬删，内容回填输入框。 */
   "conversation.revert": { params: ConversationRevertParams; result: ConversationRevertResult };
-  /** F-B4 / F-B8 / D20 / L7：临时换模型（只在内存）+ 拒绝降级。 */
+  /** F-B4 / F-B8 / D20：换这段会话的模型（存会话行）+ 拒绝降级。 */
   "conversation.setModel": { params: ConversationSetModelParams; result: ConversationSetModelResult };
-  /** F-B6 / F-B7：临时调思考强度，写入的是参数。 */
+  /** F-B6 / F-B7：调这段会话的思考档位（存档位名）；展开成参数在装配 agent 那一刻。 */
   "conversation.setThinking": {
     params: ConversationSetThinkingParams;
     result: ConversationSetThinkingResult;
@@ -1708,7 +1711,7 @@ export interface MethodMap {
   "agent.update": { params: AgentUpdateParams; result: AgentUpdateResult };
   /** F-F5：删除（含子 Agent），删前问「还有谁指它」；删默认助手时连带清默认。 */
   "agent.delete": { params: AgentDeleteParams; result: AgentDeleteResult };
-  /** F-B4 / F-B1：改助手默认模型（另一个动作：与临时换模型分开）。 */
+  /** F-B4 / F-B1：改助手默认模型（另一个动作：与改这段会话的模型分开），并清掉旧模型的档位参数。 */
   "agent.setModel": { params: AgentSetModelParams; result: AgentSetModelResult };
   /** F-B6：把思考档位展开成参数写进助手定义。 */
   "agent.setThinking": { params: AgentSetThinkingParams; result: AgentSetThinkingResult };

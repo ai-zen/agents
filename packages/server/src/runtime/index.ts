@@ -38,7 +38,6 @@ export type {
   ChatTurn,
   ConversationStore,
   HandoffProvider,
-  InjectedContext,
   MessageStore,
   ReconcileResult,
   SdkAgentFactoryOptions,

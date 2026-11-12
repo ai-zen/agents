@@ -23,6 +23,7 @@ import type {
   ConfigManager,
   Model,
   ModelParams,
+  ReasoningPreset,
   ReasoningPresets,
 } from "@ai-zen/agents-sdk";
 
@@ -170,6 +171,30 @@ function matchesPatch(params: ModelParams | undefined, patch: ModelParams): bool
   const entries = Object.entries(patch);
   if (entries.length === 0) return false;
   return entries.every(([key, value]) => deepEqual(params[key], value));
+}
+
+/**
+ * 去掉「属于某个思考策略档位」的那些参数键，回剩下的参数（没有剩下时 `undefined`）。
+ *
+ * 判断一个键是不是思考参数只看一件事：它在策略表里出现过（SDK 那套表就是这么定的，
+ * 不硬编码任何键名）。换模型之后旧档位的键留在定义上，下一轮就会把旧模型才认的参数
+ * 发给新模型。
+ */
+function withoutThinkingParams(
+  params: ModelParams | undefined,
+  preset: ReasoningPreset | undefined,
+): ModelParams | undefined {
+  if (!params) return undefined;
+  if (!preset) return params;
+  const levelKeys = new Set(
+    Object.values(preset.levels).flatMap((patch) => Object.keys(patch ?? {})),
+  );
+  if (levelKeys.size === 0) return params;
+  const kept: ModelParams = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (!levelKeys.has(key)) kept[key] = value;
+  }
+  return Object.keys(kept).length === 0 ? undefined : kept;
 }
 
 /** 只保留「入参真的给了」的字段（`undefined` 表示这次不改它） */
@@ -385,7 +410,11 @@ export class AgentService {
   }
 
   /**
-   * 改助手的默认模型（F-B4 / F-B1：影响以后的对话，与「临时换模型」是两个动作）。
+   * 改助手的默认模型（F-B4 / F-B1：影响以后的对话，与「改这段会话的模型」是两个动作）。
+   *
+   * 换了模型就同时把定义上「旧模型档位带来的那些参数」去掉：定义上的参数是给旧模型配的，
+   * 旧模型才认的键（例如某个厂商的 `thinking` 形状）发给新模型只会换来一句 400。
+   * 定义上与其无关的参数（`temperature` 之类）不动。
    */
   async setModel(params: AgentSetModelParams): Promise<AgentSetModelResult> {
     const id = requireId(params.agentId, "agentId");
@@ -396,14 +425,26 @@ export class AgentService {
       throw new ServerError("not_found", { params: { entity: "model" }, detail: { modelId } });
     }
 
+    const presets = await this.configManager.readReasoningPresets();
+    const previousModelId = found.definition.modelId ?? config.defaultModel;
+    const modelParams =
+      previousModelId === modelId
+        ? found.definition.modelParams
+        : withoutThinkingParams(
+            found.definition.modelParams,
+            reasoningPresetOf(previousModelId ? findModel(config, previousModelId) : undefined, presets),
+          );
+
     const updated: AgentDefinition = {
       ...found.definition,
       modelId,
       custom: true,
       updatedAt: new Date(this.now()).toISOString(),
     };
+    if (modelParams === undefined) delete updated.modelParams;
+    else updated.modelParams = modelParams;
+
     await this.repos[found.home].write(updated);
-    const presets = await this.configManager.readReasoningPresets();
     return {
       agent: this.toView(config, presets, {
         id,

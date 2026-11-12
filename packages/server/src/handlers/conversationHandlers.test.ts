@@ -318,7 +318,8 @@ describe("conversation.state 的状态栏块（PRD F-I6 / 裁定 R65）", () => 
 
     const model = state.statusBlocks.find((block) => block.id === "model");
     expect(model?.id === "model" && model.facts.modelId).toBe(view.model.modelId);
-    expect(model?.id === "model" && model.facts.overriddenThisSession).toBe(false);
+    // 没换过模型：它来自助手定义
+    expect(model?.id === "model" && model.facts.source).toBe("agent");
 
     const thinking = state.statusBlocks.find((block) => block.id === "thinking");
     expect(thinking?.id === "thinking" && thinking.facts).toEqual(view.thinking);

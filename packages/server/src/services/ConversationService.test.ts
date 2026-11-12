@@ -1,6 +1,6 @@
 /**
- * 对话服务的验收：身份创建时定死（L7 / R18）、侧栏顺序（D13）、改名与置顶各管一件事、
- * 硬删与代价（D17）、撤回（D24）、临时换模型只在内存且拒绝降级（D20）、思考档位（F-B6）。
+ * 对话服务的验收：项目与助手创建时定死（R18）、侧栏顺序（D13）、改名与置顶各管一件事、
+ * 硬删与代价（D17）、撤回（D24）、会话级模型与思考档位（F-B4 / F-B6 / D20）。
  */
 
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -17,39 +17,23 @@ import { MessageRepository } from "../storage/MessageRepository.js";
 import { QuestionRepository } from "../storage/QuestionRepository.js";
 import { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
 import { migrate } from "../storage/migrations.js";
+import { AgentNS } from "@ai-zen/agents-core";
+
 import { ServerError } from "../wire/errors.js";
 import { ConversationService } from "./ConversationService.js";
 import type { ConversationRuntimePort } from "./ConversationService.js";
 import type { ConversationCreateParams, ConversationView } from "../wire/index.js";
 
-/** 内存里的临时状态都放这里：服务层只通过这个窄接口读写，自己不留一份 */
+/** 运行时只提供两件事实：忙不忙、删掉之后的中止（模型与档位在会话行上） */
 class FakeRuntime implements ConversationRuntimePort {
   readonly running = new Set<string>();
-  readonly models = new Map<string, string>();
-  readonly thinking = new Map<string, string>();
   readonly forgotten: string[] = [];
 
   isRunning(conversationId: string): boolean {
     return this.running.has(conversationId);
   }
-  getModelOverride(conversationId: string): string | null {
-    return this.models.get(conversationId) ?? null;
-  }
-  setModelOverride(conversationId: string, modelId: string | null): void {
-    if (modelId === null) this.models.delete(conversationId);
-    else this.models.set(conversationId, modelId);
-  }
-  getThinkingOverride(conversationId: string): string | null {
-    return this.thinking.get(conversationId) ?? null;
-  }
-  setThinkingOverride(conversationId: string, level: string | null): void {
-    if (level === null) this.thinking.delete(conversationId);
-    else this.thinking.set(conversationId, level);
-  }
   forget(conversationId: string): void {
     this.forgotten.push(conversationId);
-    this.models.delete(conversationId);
-    this.thinking.delete(conversationId);
   }
 }
 
@@ -189,7 +173,7 @@ async function setup(config: Record<string, unknown> = BASE_CONFIG): Promise<Har
  * 建一段对话并让它落库。
  *
  * R56 之后 `create` 只发 id 与身份（草稿），落库发生在首次 `conversation.send`。这个文件里
- * 绝大多数用例要看的是「落库之后」的行为（排序、改名、撤回、临时换模型），所以造完直接
+ * 绝大多数用例要看的是「落库之后」的行为（排序、改名、撤回、换模型），所以造完直接
  * 用 `ensurePersisted` 落成真行。
  */
 async function createPersisted(
@@ -223,7 +207,8 @@ describe("ConversationService.create（身份创建时定死，L7 / R18）", () 
       modelId: "m1",
       name: "模型一",
       vision: true,
-      overriddenThisSession: false,
+      // 没换过模型：助手定义绑的那个
+      source: "agent",
     });
     const stored = await harness.conversations.get(conversation.id);
     expect(stored?.agentId).toBe("a1");
@@ -590,16 +575,22 @@ describe("多端在线同步（L5 / D22：conversation.changed）", () => {
     expect(changes()[2]?.messageCount).toBe(0);
   });
 
-  it("读路径不推（列表 / 打开 / 临时换模型都不改别的窗口要看的东西）", async () => {
+  it("读路径不推；换模型与调档各推一条 settings_changed（它们会出现在别的窗口的状态栏上）", async () => {
     const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const id = created.conversation.id;
     harness.events.length = 0;
 
     await harness.service.list({ workspaceId: "w1" });
     await harness.service.get({ conversationId: id });
+    expect(changes()).toEqual([]);
+
     await harness.service.setModel({ conversationId: id, modelId: "m3" });
     await harness.service.setThinking({ conversationId: id, level: "low" });
-    expect(changes()).toEqual([]);
+    expect(changes().map((payload) => payload.change)).toEqual([
+      "settings_changed",
+      "settings_changed",
+    ]);
+    expect(changes()[0]?.messageCount).toBeNull();
   });
 });
 
@@ -638,6 +629,12 @@ describe("ConversationService.revert（D24）", () => {
 
     const left = await harness.messages.listByConversation(id);
     expect(left.map((message) => message.id)).toEqual(["u1", "a1"]);
+    // 会话开头那条 cwd 消息排在撤回到的位置之前，不跟着没（不展示，但要还在）
+    const leftAll = await harness.messages.listByConversation(id, undefined, {
+      includeHidden: true,
+    });
+    expect(leftAll).toHaveLength(3);
+    expect(leftAll[0]?.data).toMatchObject({ hidden: true });
   });
 
   it("撤回点不是用户消息时报参数错", async () => {
@@ -709,38 +706,71 @@ describe("ConversationService.revert（D24）", () => {
   });
 });
 
-describe("ConversationService.setModel（L7 / D20）", () => {
-  it("临时换模型只交给运行时，库里的 modelId 不变", async () => {
+/** 把助手定义写成带参数的那一份（档位的「跟随默认」靠定义上的参数认） */
+async function writeAgentWithParams(params: Record<string, unknown>): Promise<void> {
+  await writeFile(
+    join(harness.dir, "agents", "a1.json"),
+    JSON.stringify({
+      id: "a1",
+      name: "助手一",
+      messages: [],
+      modelId: "m1",
+      modelParams: params,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    }),
+    "utf-8",
+  );
+}
+
+describe("ConversationService.setModel（F-B4 / D20：会话级、落库）", () => {
+  it("换模型写进会话行，重开这段对话读到的还是新模型", async () => {
     const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const id = created.conversation.id;
 
     const result = await harness.service.setModel({ conversationId: id, modelId: "m3" });
-    expect(result.conversation.model).toMatchObject({
-      modelId: "m3",
-      overriddenThisSession: true,
-    });
+    expect(result.conversation.model).toMatchObject({ modelId: "m3", source: "conversation" });
     expect(result.model.modelId).toBe("m3");
     // 阈值跟着新模型走
     expect(result.context.handoffThreshold).toBe(60);
     expect(result.context.guardThreshold).toBe(160);
-    // 库里的身份没有被动过
-    expect((await harness.conversations.get(id))?.modelId).toBe("m1");
-    expect(harness.runtime.models.get(id)).toBe("m3");
+    // 库里那一行就是新模型；再打开读到的也是它（不是内存里的临时值）
+    expect((await harness.conversations.get(id))?.modelId).toBe("m3");
+    const reopened = await harness.service.get({ conversationId: id });
+    expect(reopened.conversation.model).toMatchObject({ modelId: "m3", source: "conversation" });
   });
 
-  it("传 null 或传回身份上的那个模型都等于「回到默认」", async () => {
+  it("换模型把思考档位清成 null（档位属于模型）", async () => {
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    const id = created.conversation.id;
+    await harness.service.setThinking({ conversationId: id, level: "high" });
+    expect((await harness.conversations.get(id))?.thinkingLevel).toBe("high");
+
+    await harness.service.setModel({ conversationId: id, modelId: "m3" });
+
+    expect((await harness.conversations.get(id))?.thinkingLevel).toBeNull();
+    const reopened = await harness.service.get({ conversationId: id });
+    expect(reopened.conversation.thinking.selected).toBeNull();
+    expect(reopened.conversation.thinking.source).toBe("following_default");
+  });
+
+  it("传 null 等于回到助手定义上那个模型（source 变回 agent）", async () => {
     const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const id = created.conversation.id;
 
     await harness.service.setModel({ conversationId: id, modelId: "m3" });
     const cleared = await harness.service.setModel({ conversationId: id, modelId: null });
-    expect(cleared.model).toMatchObject({ modelId: "m1", overriddenThisSession: false });
-    expect(harness.runtime.models.has(id)).toBe(false);
+    expect(cleared.model).toMatchObject({ modelId: "m1", source: "agent" });
+    expect((await harness.conversations.get(id))?.modelId).toBe("m1");
+  });
 
-    await harness.service.setModel({ conversationId: id, modelId: "m3" });
-    const same = await harness.service.setModel({ conversationId: id, modelId: "m1" });
-    expect(same.model.overriddenThisSession).toBe(false);
-    expect(harness.runtime.models.has(id)).toBe(false);
+  it("传回行上那个模型是个空操作：档位不被顺手清掉", async () => {
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    const id = created.conversation.id;
+    await harness.service.setThinking({ conversationId: id, level: "low" });
+
+    await harness.service.setModel({ conversationId: id, modelId: "m1" });
+    expect((await harness.conversations.get(id))?.thinkingLevel).toBe("low");
   });
 
   it("历史里有图而新模型不看图时拒绝并说明原因", async () => {
@@ -759,7 +789,6 @@ describe("ConversationService.setModel（L7 / D20）", () => {
       harness.service.setModel({ conversationId: id, modelId: "m2" }),
     ).rejects.toMatchObject({ code: "model_unsupported", messageKey: "error.modelUnsupported" });
     // 被拒绝时什么都没改
-    expect(harness.runtime.models.has(id)).toBe(false);
     expect((await harness.conversations.get(id))?.modelId).toBe("m1");
   });
 
@@ -802,23 +831,22 @@ describe("ConversationService.setModel（L7 / D20）", () => {
     expect(result.context.overHandoff).toBe(true);
     expect(result.context.overGuard).toBe(false);
   });
+
+  it("还没落库的草稿也能换模型与调档：落库时按草稿里的写", async () => {
+    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const id = created.conversation?.id ?? "";
+    await harness.service.setModel({ conversationId: id, modelId: "m3" });
+    await harness.service.setThinking({ conversationId: id, level: "low" });
+
+    const row = await harness.service.ensurePersisted(id);
+    expect(row.modelId).toBe("m3");
+    expect(row.thinkingLevel).toBe("low");
+  });
 });
 
-describe("ConversationService.setThinking（F-B6 / F-B7）", () => {
+describe("ConversationService.setThinking（F-B6 / F-B7：会话级、落库）", () => {
   it("跟随助手定义：参数对上某一档就报那一档", async () => {
-    await writeFile(
-      join(harness.dir, "agents", "a1.json"),
-      JSON.stringify({
-        id: "a1",
-        name: "助手一",
-        messages: [],
-        modelId: "m1",
-        modelParams: { reasoning_effort: "high", temperature: 0.2 },
-        createdAt: "2026-01-01T00:00:00.000Z",
-        updatedAt: "2026-01-01T00:00:00.000Z",
-      }),
-      "utf-8",
-    );
+    await writeAgentWithParams({ reasoning_effort: "high", temperature: 0.2 });
 
     const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     expect(created.conversation.thinking).toEqual({
@@ -830,7 +858,7 @@ describe("ConversationService.setThinking（F-B6 / F-B7）", () => {
     });
   });
 
-  it("临时调档写进运行时，并回展开后的参数", async () => {
+  it("调档写进会话行，并回展开后的参数", async () => {
     const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const id = created.conversation.id;
     const result = await harness.service.setThinking({ conversationId: id, level: "low" });
@@ -840,14 +868,76 @@ describe("ConversationService.setThinking（F-B6 / F-B7）", () => {
       source: "manual",
       params: { reasoning_effort: "low" },
     });
-    expect(harness.runtime.thinking.get(id)).toBe("low");
+    expect((await harness.conversations.get(id))?.thinkingLevel).toBe("low");
+    // 再打开这段对话读到的也是它（不是内存里的临时值）
+    const reopened = await harness.service.get({ conversationId: id });
+    expect(reopened.conversation.thinking.selected).toBe("low");
+    expect(reopened.conversation.thinking.source).toBe("manual");
   });
 
-  it("档位不在策略表里时报参数错", async () => {
+  it("level: null 回到跟随助手定义（source: following_default）", async () => {
+    await writeAgentWithParams({ reasoning_effort: "high" });
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    const id = created.conversation.id;
+    await harness.service.setThinking({ conversationId: id, level: "low" });
+
+    const cleared = await harness.service.setThinking({ conversationId: id, level: null });
+    expect((await harness.conversations.get(id))?.thinkingLevel).toBeNull();
+    expect(cleared.thinking).toMatchObject({
+      selected: "high",
+      source: "following_default",
+      params: { reasoning_effort: "high" },
+    });
+  });
+
+  it("两段对话各设不同档位互不影响（一段关掉思考、一段开到最大）", async () => {
+    const first = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    const second = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+
+    await harness.service.setThinking({ conversationId: first.conversation.id, level: "low" });
+    await harness.service.setThinking({ conversationId: second.conversation.id, level: "high" });
+
+    const a = await harness.service.get({ conversationId: first.conversation.id });
+    const b = await harness.service.get({ conversationId: second.conversation.id });
+    expect(a.conversation.thinking).toMatchObject({ selected: "low", source: "manual" });
+    expect(b.conversation.thinking).toMatchObject({ selected: "high", source: "manual" });
+    expect((await harness.conversations.get(first.conversation.id))?.thinkingLevel).toBe("low");
+    expect((await harness.conversations.get(second.conversation.id))?.thinkingLevel).toBe("high");
+  });
+
+  it("档位不在策略表里时报参数错，detail 里给出可用档位", async () => {
     const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     await expect(
       harness.service.setThinking({ conversationId: created.conversation.id, level: "超高" }),
-    ).rejects.toMatchObject({ code: "invalid_params" });
+    ).rejects.toMatchObject({
+      code: "invalid_params",
+      detail: { field: "level", level: "超高", levels: ["low", "high"] },
+    });
+    // 被拒绝时没有写库
+    expect((await harness.conversations.get(created.conversation.id))?.thinkingLevel).toBeNull();
+  });
+
+  it("助手定义上的默认档改了，不影响已有会话的会话级档位", async () => {
+    await writeAgentWithParams({ reasoning_effort: "high" });
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    const id = created.conversation.id;
+    await harness.service.setThinking({ conversationId: id, level: "low" });
+
+    // 助手改成默认「high」：那是「以后的对话」的事
+    await writeAgentWithParams({ reasoning_effort: "high", temperature: 0.1 });
+    const existing = await harness.service.get({ conversationId: id });
+    expect(existing.conversation.thinking).toMatchObject({
+      selected: "low",
+      source: "manual",
+      params: { reasoning_effort: "low" },
+    });
+
+    // 新对话跟着助手定义走
+    const fresh = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    expect(fresh.conversation.thinking).toMatchObject({
+      selected: "high",
+      source: "following_default",
+    });
   });
 
   it("模型没有思考策略时报 unsupported", async () => {
@@ -860,6 +950,89 @@ describe("ConversationService.setThinking（F-B6 / F-B7）", () => {
       harness.service.setThinking({ conversationId: created.conversation.id, level: "low" }),
     ).rejects.toMatchObject({ code: "unsupported" });
     expect(created.conversation.thinking.source).toBe("not_adjustable");
+    // 不可调的模型上「回到跟随助手」同样不成立
+    await expect(
+      harness.service.setThinking({ conversationId: created.conversation.id, level: null }),
+    ).rejects.toMatchObject({ code: "unsupported" });
+  });
+});
+
+describe("会话创建时那条 hidden 的 cwd 消息（F-D9）", () => {
+  it("落库时最先写一条 hidden 的 user 消息，正文含 cwd、seq 在用户消息之前", async () => {
+    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const id = created.conversation?.id ?? "";
+    await harness.service.ensurePersisted(id, "zh");
+    // 首次发送的那条用户消息（走仓储落行，`seq` 排在 cwd 消息之后）
+    await harness.messages.upsert({
+      id: "u1",
+      conversationId: id,
+      role: "user",
+      status: "completed",
+      content: "看看这个项目",
+      createdAt: clock,
+    });
+
+    const visible = await harness.messages.listByConversation(id);
+    expect(visible.map((message) => message.id)).toEqual(["u1"]);
+
+    const all = await harness.messages.listByConversation(id, undefined, { includeHidden: true });
+    expect(all.map((message) => message.id)).toHaveLength(2);
+    const cwdMessage = all[0]!;
+    expect(cwdMessage.role).toBe(AgentNS.Role.User);
+    expect(cwdMessage.data).toMatchObject({ hidden: true });
+    expect(cwdMessage.seq).toBeLessThan(all[1]!.seq);
+    expect(all[1]?.id).toBe("u1");
+    const content = cwdMessage.content;
+    const text = typeof content === "string" ? content : JSON.stringify(content);
+    expect(text).toContain(harness.projectDir);
+  });
+
+  it("不进侧栏计数、也不进删除代价计数", async () => {
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    const id = created.conversation.id;
+    await harness.messages.upsert({
+      id: "u1",
+      conversationId: id,
+      role: "user",
+      status: "completed",
+      content: "一句话",
+      createdAt: 2,
+    });
+
+    const { conversation } = await harness.service.get({ conversationId: id });
+    expect(conversation.messageCount).toBe(1);
+    const dry = await harness.service.delete({ conversationId: id, dryRun: true });
+    expect(dry.consequences.messages).toBe(1);
+    // 库里确实有两条（那条 hidden 的还在），只是两处计数都不算它
+    const all = await harness.messages.listByConversation(id, undefined, { includeHidden: true });
+    expect(all).toHaveLength(2);
+  });
+
+  it("换了 Workspace 打开同一段对话，那条会话的 cwd 仍是它原来的那个", async () => {
+    const otherDir = join(harness.dir, "another-project");
+    await mkdir(otherDir, { recursive: true });
+    await harness.workspaces.create({ id: "w2", name: "项目二", cwd: otherDir, createdAt: 2 });
+
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    const id = created.conversation.id;
+    const readCwd = async (): Promise<string> => {
+      const rows = await harness.messages.listByConversation(id, undefined, { includeHidden: true });
+      const content = rows[0]?.content;
+      return typeof content === "string" ? content : JSON.stringify(content);
+    };
+    const before = await readCwd();
+    expect(before).toContain(harness.projectDir);
+
+    // 在另一个项目里开一段新对话、并把两个项目都列一遍（「当前项目」变了）
+    await createPersisted(harness.service, { workspaceId: "w2", agentId: "a1" });
+    await harness.service.list({ workspaceId: "w2" });
+    await harness.service.list({});
+
+    // 原来那段对话的归属与那条 cwd 消息一个字都没变
+    const opened = await harness.service.get({ conversationId: id });
+    expect(opened.conversation.workspaceId).toBe("w1");
+    expect(opened.conversation.folder.cwd).toBe(harness.projectDir);
+    expect(await readCwd()).toBe(before);
   });
 });
 

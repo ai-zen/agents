@@ -199,3 +199,27 @@
 - [packages/client/src/reconnect.ts] （自决）缺省策略是**一直重试**（`maxAttempts: Infinity`）、退避从 250ms 起、封顶 10 秒：放弃的时机是产品判断，包内不预设「试三次就放弃」（那是旧服务端被作废的决定之一）。
 - [packages/client/src/client.ts, src/errors.ts] （自决）客户端**不维护第二份清单**：事件名没有白名单（没人订阅的名字自然没人接），业务码没有码表（服务端新增的码照样递出去，调用方的 `switch` 落进 `default`）。两份清单的漂移方向永远是「服务端加了、客户端静默丢掉」。
 - [packages/client/src/client.ts] （自决）传输用 Node 内建的全局 `WebSocket`，不引入 `ws`：两个前端要把这个包捆进产物，运行期依赖越少越好。代价是 `error` 事件没有底层原因，所以本地文案里带上 `host:port`。
+
+## W7-A（cwd 注入改成会话创建时一条隐藏消息）追加
+
+- [PRD F-D9 / src/runtime/ChatRunner.ts / src/services/ConversationService.ts] 用户当场裁定：cwd 注入不再是「每轮拼进最后一条用户消息末尾」，而是**会话创建（落库那一刻）写一条独立的 `hidden` 的 `user` 消息**；每轮不重复注入；`hidden` 回到 core 的原意「这条不给人看」（不再表示「这条里有服务端加的东西」）。原 `appendInjectedText` + 每轮拼接 + 把用户消息标 `hidden` 那套整体删掉。
+- [src/services/ConversationService.ts] （自决）`ensurePersisted(conversationId, language = DEFAULT_LANGUAGE)`：那条 cwd 消息的正文要落成一句话，所以落库时就得定一个渲染语言。真实现场能给的只有「发起这条连接的语言」（D8），而 `handlers/conversationHandlers.ts` 不在本波可改文件里，所以**生产路径眼下用的是缺省语言（en）**；把发起连接的语言接进去只需在那一跳多传一个参数（`ensurePersisted(id, language)`），请 PM 派给接线层。
+- [src/services/ConversationService.ts] （自决）交接开新对话（`HandoffService.openFollowUpConversation`）也会先调 `ensurePersisted`，于是新对话同样是「一条 hidden 的 cwd 消息 + 一条 hidden 的交接摘要」。两条都不展示，`message.list` 默认两条都不返回；`HandoffService.test.ts` 原来断言「新对话只有一条消息」，改成显式 `includeHidden` 后断言两条。
+- [src/storage/MessageRepository.ts] （自决）`hidden` 落在 `data` 列 JSON 里（没有单独的列，也没改迁移）。过滤与计数用 SQL 的 `json_extract` 读它：`(CASE WHEN json_valid(data) THEN json_extract(data, '$.hidden') ELSE 0 END) IS NOT 1`。`json_valid` 那层是为了让「库里出现坏 JSON」不至于把整条消息读不出来（与已有的 `parseJson` 兜底同一个口径）。
+- [src/storage/MessageRepository.ts] （自决，留一个已知缺口）全文检索 `search()` 没有跟着筛 `hidden`：那段 SQL 是 join 过的、列都带别名，加条件要动检索那条路径，而本波拿到的边界是「只加 `includeHidden` 过滤与计数口径」。结果是那条 cwd 消息的正文（含项目路径）在全文检索里搜得到。要不要一起筛，请定。
+- [src/app.ts, src/runtime/index.ts] 越界两处、都只是一个删除/一行：`ChatRunner` 不再有 `resolveCwd` 这个注入点（cwd 现在由对话服务自己从 `workspaces` 读），所以 `app.ts` 组装处那一行与 `runtime/index.ts` 的 `InjectedContext` 导出跟着删；不删就编不过（`tsc` 会报多余属性 / 不存在的导出）。
+- [src/services/HandoffService.ts] （连带影响，该文件不在本波可改清单里，没有动）新的默认口径是「`listByConversation` 不返回 `hidden` 的消息」，于是 `HandoffService.loadHistory` 交给交接 agent 的历史里不再有 `hidden` 的两类消息（会话开头那条 cwd 消息、上一轮交接写的摘要）。要不要在这里显式传 `includeHidden: true`（模型看得到、界面仍然不展示），请定 —— 语义上我认为该传，但那是另一个文件的改动。
+
+## W7-C（模型与思考档位改成会话级、持久化）追加
+
+- **用户当场裁定（本节即结论，别再重开）**：`/model` 与 `/think` 只改**这一段会话**的模型与思考档位，**持久化到会话级**（落库，不落内存、不重启丢）；要改**全局**（以后的对话）就改助手定义（`agent.setModel` / `agent.setThinking`），不用命令临时指定；**两者的持久化级别必须对称**（都在会话级）；**换模型必须同步清掉思考档位**。由此作废：`plan-server-rewrite.md` L7 的「临时换模型只在内存、不进库、重开回默认」半句、`ConversationStateRegistry` 的「临时覆盖」概念，以及 R41（「`setThinking` 的当前档靠参数补丁反推，不另外记档位名」——会话这一侧现在存的就是档位名；助手定义那一侧仍是参数即真相，`agent.setThinking` 口径不变）。
+- [src/storage/migrations.ts, src/storage/types.ts, src/storage/ConversationRepository.ts] `conversations` 加 `thinkingLevel TEXT`（可空 = 跟随助手定义），`modelId` 保留但允许更新；仓储加 `setModel`（一条语句同时写 `modelId` 并清 `thinkingLevel`）与 `setThinkingLevel`。表结构仍改在 v1（未发布）。
+- [src/runtime/ChatRunner.ts] （自决）**装配时的参数口径**：会话行上的 `thinkingLevel` 按该模型引用的策略表展开成补丁，叠在助手定义的 `modelParams` 之上 —— 但**只在「会话模型 == 助手定义那个模型」时**才叠。SDK 的 `resolveModelParams` 明写「参数取模型来自哪一级那一份、绝不跨级混合」（会话把模型换掉之后，定义那份是给旧模型配的，混进来就是 400），两条要求在这个条件下同时成立。换模型时档位被清空，所以换完通常什么都不带。实现是 `ChatRunner.conversationModelParams`（纯函数，用例直接钉）。
+- [src/runtime/ChatRunner.ts] （自决）为了拿「助手定义上的 `modelParams`」，工厂里多读一次定义文件（`new AgentRepository(scope.agentsDir).read(agentId)`）：`createAgent` 内部也会读一次，多这一遍是因为只有定义在手才知道该叠什么。读不出来就当作没有（真正的报错由 `createAgent` 那句给出）。
+- [src/services/HandoffService.ts] **越界一行、不改就编不过**：`AgentBuildContext` 多一个必填 `thinkingLevel`，交接回合组装 agent 那一处必须跟着传 `conversation.thinkingLevel`（交接回合与普通一轮用同一套会话级模型与档位，语义上也该传）。
+- [src/services/ConversationService.ts] （自决）`setModel` 传回**行上已有的那个模型**当作空操作（档位不被顺手清掉）；`modelId: null` 的口径保留成「回到助手定义上那个模型」（助手没绑时用配置里的兜底，都没有就报 `config_invalid`）。只有模型真的变了才清档位、才推事件。
+- [src/services/ConversationService.ts] （自决）换模型 / 调档之后推一条 `conversation.changed`（`change: "settings_changed"`，用的是 `src/wire/events.ts` 里已有的取值，没有新增）：它们现在会出现在**别的窗口**的状态栏上（从前只在内存里，别的窗口本来也看不到，所以当时不推）。若认为这两个动作不该推，删掉那两行 `emitChanged` 即可。
+- [src/services/ConversationService.ts] （自决）`ConversationModelState.source` 的判定与装配口径同一处逻辑：`agent` = 会话行上的模型就是助手定义绑的那个（助手没绑时算配置里的兜底模型），否则 `conversation`。清掉 `overriddenThisSession`。
+- [src/services/AgentService.ts] （自决）`agent.setModel` 换了模型时，把定义上「旧模型策略表里出现过的键」从 `modelParams` 里剔掉（SDK 那套表本来就以「某个键属于思考参数 = 它在表里出现过」为准，不硬编码键名）；与思考无关的参数（`temperature` 之类）不动。换成同一个模型时一个字都不动。
+- [src/wire/states.ts] （自决，越界一处）`StatusBlock` 的 model 块事实原先内联写了一份 `{ modelId; name; vision; overriddenThisSession }`，改成引用新的 `ModelState`：契约里同一个形状只留一份，`ConversationModelState` 现在是它的别名。
+- [src/app.ts] `ConversationStateRegistry` 删掉后，服务层要的 `ConversationRuntimePort` 只剩 `isRunning` / `forget`，由 `ServerApp.createConversationRuntime()` 现拼（`forget` 指向 `ChatRunner.forget`，晚绑定）。`app.conversationStates` 这个可读属性随之消失。

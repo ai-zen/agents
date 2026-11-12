@@ -357,7 +357,7 @@ describe("进程冒烟：命令行起服务 → 连接 → 建项目/对话 → 
 
     const messagesAfter = await again.call("message.list", { conversationId });
     const storedMessages = (messagesAfter.result as MessageListResult).messages;
-    // 用户那条已经落库了（内容带服务端注入的当前目录，F-D9）
+    // 用户那条已经落库了（会话创建时那条隐藏的 cwd 消息不在默认返回里，F-D9）
     expect(storedMessages.length).toBeGreaterThan(0);
     expect(storedMessages[0]?.role).toBe("user");
 

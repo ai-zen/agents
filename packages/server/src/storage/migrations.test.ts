@@ -90,6 +90,8 @@ describe("migrate", () => {
     for (const name of ["agentId", "modelId"]) {
       expect(conversationColumns.find((column) => column.name === name)?.notnull).toBe(1);
     }
+    // 思考档位存档位名，可空 = 跟随助手定义（F-B6）
+    expect(conversationColumns.find((column) => column.name === "thinkingLevel")?.notnull).toBe(0);
   });
 
   it("表结构钉住两列真值：名字是否自动起（R35）与子 Agent 的父工具调用（R37）", async () => {

@@ -338,6 +338,37 @@ describe("AgentService.setModel / setThinking", () => {
     expect(written.modelParams).toEqual({ reasoning_effort: "high" });
   });
 
+  it("换模型时清掉定义上「旧模型档位带来的那些参数」（其它参数不动）", async () => {
+    await writeJson(
+      join(dataRoot, "agents", "tuned.json"),
+      definition("tuned", {
+        modelId: "m-a1",
+        modelParams: { reasoning_effort: "high", temperature: 0.2 },
+      }),
+    );
+
+    // m-a1 → m-plain（后者没有思考策略表）：旧档位那个键跟着走就是错的
+    const { agent } = await service.setModel({ agentId: "tuned", modelId: "m-plain" });
+    expect(agent.modelId).toBe("m-plain");
+    expect(agent.modelParams).toEqual({ temperature: 0.2 });
+
+    const written = JSON.parse(
+      await readFile(join(dataRoot, "agents", "tuned.json"), "utf-8"),
+    ) as AgentDefinition;
+    expect(written.modelParams).toEqual({ temperature: 0.2 });
+  });
+
+  it("换成同一个模型时参数一个字都不动", async () => {
+    await writeJson(
+      join(dataRoot, "agents", "same.json"),
+      definition("same", { modelId: "m-a1", modelParams: { reasoning_effort: "high" } }),
+    );
+
+    const { agent } = await service.setModel({ agentId: "same", modelId: "m-a1" });
+    expect(agent.modelParams).toEqual({ reasoning_effort: "high" });
+    expect(agent.thinking).toMatchObject({ selected: "high", source: "manual" });
+  });
+
   it("档位不认识、模型不可调，都拒", async () => {
     await expect(
       service.setThinking({ agentId: "default", level: "ultra" }),

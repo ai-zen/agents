@@ -80,7 +80,7 @@ export const en = {
   "message.reverted": "Removed {count} message(s). The text is back in your input.",
   "message.cwdMissing": "This project's folder no longer exists ({cwd}). The conversation and its history are still here.",
   "message.injectedContext": "Sent by the server, not typed by you: {summary}",
-  // 每轮末尾追问给模型的那句事实（PRD F-D9：cwd 来自对话所属项目，不是服务端进程的目录）
+  // 会话创建时那条 hidden 消息里的那句事实（PRD F-D9：cwd 来自对话所属项目，不是服务端进程的目录）
   "message.injectedContext.cwd": "the current folder is {cwd}",
   "message.subagentFailed": "The helper agent {name} failed: {reason}",
   "message.subagentFinished": "The helper agent {name} finished.",

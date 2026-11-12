@@ -43,7 +43,9 @@ interface Harness {
   runner: TransientRunner;
   scopes: RecordingScopes;
   agentCalls: Array<{ agentId: string; modelId: string | null; historyLength: number }>;
-  /** 这一轮真正发给模型的内容（F-D9 要验注入段接在末尾） */
+  /** 造出来的假 agent（看它手里最后有哪些消息） */
+  agents: FakeAgent[];
+  /** 这一轮真正发给模型的内容 */
   sentContents: Array<AgentNS.MessageContent>;
   behaviour: { fail: Error | null; status: AgentNS.MessageStatus | null; deltas: AgentNS.Delta[] };
 }
@@ -58,6 +60,7 @@ async function setup(config: Record<string, unknown> = { defaultAgent: "a1" }): 
 
   const scopes = new RecordingScopes();
   const agentCalls: Harness["agentCalls"] = [];
+  const agents: FakeAgent[] = [];
   const sentContents: Array<AgentNS.MessageContent> = [];
   const behaviour: Harness["behaviour"] = {
     fail: null,
@@ -72,6 +75,7 @@ async function setup(config: Record<string, unknown> = { defaultAgent: "a1" }): 
       historyLength: context.history.length,
     });
     const agent = new FakeAgent([{ deltas: behaviour.deltas }]);
+    agents.push(agent);
     if (behaviour.fail) {
       agent.send = async () => {
         throw behaviour.fail;
@@ -101,7 +105,7 @@ async function setup(config: Record<string, unknown> = { defaultAgent: "a1" }): 
     configManager: new ConfigManager(configPath),
   });
 
-  return { dir, db, runner, scopes, agentCalls, sentContents, behaviour };
+  return { dir, db, runner, scopes, agentCalls, agents, sentContents, behaviour };
 }
 
 let harness: Harness;
@@ -183,20 +187,23 @@ describe("只借 Scope，与 Workspace 无关（D3）", () => {
 });
 
 describe("告诉模型「现在在哪个目录」（F-D9）", () => {
-  it("cwd 作为注入段接在用户内容末尾", async () => {
+  it("cwd 是一条独立的 hidden 消息，发出去的正文就是用户打的那一句", async () => {
     await harness.runner.run(
       { cwd: "/tmp/project", input: { content: "一句话回答我" } },
       "zh",
     );
 
-    const content = harness.sentContents[0];
-    expect(Array.isArray(content)).toBe(true);
-    if (!Array.isArray(content)) return;
-    expect(content[0]).toEqual({ type: "text", text: "一句话回答我" });
-    const injected = content.at(-1);
-    expect(injected?.type).toBe("text");
-    const text = injected && "text" in injected ? injected.text : "";
-    expect(text).toContain("/tmp/project");
+    // 发出去的正文不再附注入段
+    expect(harness.sentContents[0]).toBe("一句话回答我");
+
+    // 而 agent 收到的第一条是那条 hidden 的 user 消息，正文带 cwd
+    const cwdMessage = harness.agents[0]?.messages[0];
+    expect(cwdMessage?.role).toBe(AgentNS.Role.User);
+    expect(cwdMessage?.hidden).toBe(true);
+    expect(cwdMessage?.content).toContain("/tmp/project");
+    // 临时对话不落库，所以这条也只活在内存（库里仍是 0 行）
+    const rows = await harness.db.all<{ n: number }>("SELECT COUNT(*) AS n FROM messages");
+    expect(rows[0]?.n).toBe(0);
   });
 });
 

@@ -1,18 +1,17 @@
 /**
- * 对话服务：一段对话的诞生、改名、置顶、删除、撤回，以及两个「临时调整」（换模型、换思考强度）。
+ * 对话服务：一段对话的诞生、改名、置顶、删除、撤回，以及两个「会话级调整」（换模型、换思考档位）。
  *
  * 对应能力编号：F-C1（稳定 id）、F-C3（可改名字）、F-C5（置顶 + 创建时间倒序）、
  * F-C7（开新会话）、F-C8 / D24（撤回硬删 + 回填输入框）、F-C10 / D17（硬删 + 警告）、
- * F-B4 / L7 / D20（临时换模型只在内存、历史有图时拒绝降级）、F-B6 / F-B7（思考档位）、
- * L5（重连按 id 拉）、L6（id 服务端分配）、R18（身份创建时定死，解析不出就不写库）、
+ * F-B4 / D20（会话级换模型、历史有图时拒绝降级）、F-B6 / F-B7（思考档位）、
+ * L5（重连按 id 拉）、L6（id 服务端分配）、R18（身份创建时必须有助手与模型）、
  * R22（消息原样用 core 的类型）。
  *
  * 两条贯穿这个文件的边界：
- *   1. **身份在创建时定死**：`workspaceId` / `agentId` / `modelId` 由 `create` 解析后落库，
- *      此后没有任何方法改它们。临时换模型只把覆盖交给运行时（内存），库里的 `modelId` 不动。
- *   2. **服务层不缓存 agent、不驻留对话状态**：`running`、临时模型覆盖、临时思考档位都从
- *      注入的 {@link ConversationRuntimePort} 现取现放。运行时那边的实现（W2-D）是本进程
- *      唯一持有这些状态的地方。
+ *   1. **项目与助手创建即定死**：`workspaceId` / `agentId` 由 `create` 解析后落库，此后没有
+ *      任何方法改它们。模型与思考档位不在这条线上：它们是这段会话自己的，存在会话行上、可以改。
+ *   2. **服务层不缓存 agent、不驻留对话状态**：`running` 与「删掉之后的现场清理」都从注入的
+ *      {@link ConversationRuntimePort} 现取现放；模型与档位在库里，不在内存里存第二份。
  */
 
 import { randomUUID } from "node:crypto";
@@ -33,6 +32,9 @@ import type {
 import type { ConversationDraftStore } from "../runtime/ConversationDrafts.js";
 import { ConversationDrafts } from "../runtime/ConversationDrafts.js";
 import type { ChatEventEmitter } from "../runtime/ChatRunner.js";
+import { injectedContextOf } from "../runtime/ChatRunner.js";
+import { DEFAULT_LANGUAGE } from "../i18n/index.js";
+import type { Language } from "../i18n/index.js";
 import type { AssetRepository } from "../storage/AssetRepository.js";
 import type { ConversationRepository } from "../storage/ConversationRepository.js";
 import type { MessageRepository } from "../storage/MessageRepository.js";
@@ -65,6 +67,7 @@ import type {
   ConversationSummary,
   ConversationView,
   MessageInput,
+  ModelSource,
   ThinkingState,
 } from "../wire/index.js";
 import { readUsage, toAgentMessage } from "./MessageService.js";
@@ -73,30 +76,19 @@ import { toFolderFact } from "./WorkspaceService.js";
 /**
  * 运行时注入给对话服务的窄接口。
  *
- * 这些事实都活在**本进程内存**里，而且只有运行时知道：
- *   - 这段对话现在有没有在跑一轮（PRD F-I3 / D14）；
- *   - 临时换的模型（L7：不进库，重开回默认）；
- *   - 临时调的思考档位（F-B6：会话级调整）；
- *   - 对话被删掉之后，这些内存项该被扔掉。
+ * 只剩两件运行时才知道的事：
+ *   - 这段对话现在有没有在跑一轮（PRD F-I3 / D14，真相在 `RunRegistry` 一处）；
+ *   - 对话被删掉之后，把这一轮的现场丢掉（中止在跑的轮次）。
+ *
+ * 模型与思考档位不在这里：它们存在会话行上（`modelId` / `thinkingLevel`），服务层自己读写库。
  *
  * 服务层只按它读写，不 import `runtime/` 里的任何实现、也不自己存一份 —— 两份状态迟早
  * 有一份先漂（D28：agent 用完即弃、对话不驻留）。
- *
- * 取值方法同步（拼一遍列表时要逐条问），写入方法允许异步（运行时可能得先把在跑的那轮
- * 停下来、或让下一次请求重新装配），服务层会 await 它们。
  */
 export interface ConversationRuntimePort {
   /** 这段对话现在是否在跑一轮 */
   isRunning(conversationId: string): boolean;
-  /** 本进程内的临时模型覆盖；没设过返回 `null` */
-  getModelOverride(conversationId: string): string | null;
-  /** 设置/清除临时模型覆盖（`null` = 回到创建时定的模型）；不写库 */
-  setModelOverride(conversationId: string, modelId: string | null): void | Promise<void>;
-  /** 本进程内的临时思考档位；没设过返回 `null` */
-  getThinkingOverride(conversationId: string): string | null;
-  /** 设置/清除临时思考档位（`null` = 回到助手定义上的那份）；不写库 */
-  setThinkingOverride(conversationId: string, level: string | null): void | Promise<void>;
-  /** 对话（或它的项目）被删掉之后，把这段对话相关的内存状态扔掉 */
+  /** 对话（或它的项目）被删掉之后，中止在跑的轮次并清掉现场 */
   forget(conversationId: string): void | Promise<void>;
 }
 
@@ -323,9 +315,10 @@ export class ConversationService {
   /**
    * 开一段新对话（PRD F-C7 / L7 / R18 / R56）。
    *
-   * 身份三件套在这里定死：项目来自入参（`workspaceId` 或 `cwd`），助手从磁盘上的定义文件解析，
-   * 模型走 SDK 的三级解析（`会话级 > 助手定义 > 配置里的兜底`，唯一实现在 `resolveModel`）。
-   * 任一解析不出来就报错，不写半成品行 —— 一条没有助手或没有模型的对话没有可用的身份。
+   * 项目与助手在这里定死：项目来自入参（`workspaceId` 或 `cwd`），助手从磁盘上的定义文件解析。
+   * 模型的值也在这里算出来（SDK 的三级解析 `会话级 > 助手定义 > 配置里的兜底`，唯一实现在
+   * `resolveModel`），但它落的是**会话行**：之后可以由 `setModel` 改。解析不出来就报错，
+   * 不写半成品行 —— 一条没有助手或没有模型的对话没有可用的身份。
    *
    * **这一行现在不写库**：只把 id 与身份留在草稿里（R56 / F-C2「没有用户消息就不写」）。
    * 首次 `conversation.send` 时由 {@link ensurePersisted} 用同一个 id 落库。
@@ -380,6 +373,8 @@ export class ConversationService {
       pinned: false,
       agentId: agent.id,
       modelId: model.id,
+      // 新建的会话不选档位：思考强度跟随助手定义上的那份（F-B6）
+      thinkingLevel: null,
       createdAt,
       updatedAt: createdAt,
     };
@@ -400,8 +395,18 @@ export class ConversationService {
    * 已经在库里就直接返回那一行（重复调用是幂等的）；草稿不在、库里也没这一行就是
    * `not_found`。先把草稿摘掉再写库：两次并发的 `send` 里后到的那一次就抢不到同一份草稿，
    * 不会两次插同一行；写失败时把草稿放回去，下一次还能再试。
+   *
+   * 落行那一刻同时写上这段对话的第一条消息：一条 `hidden` 的 `user` 消息，告诉模型这段对话
+   * 对应的 cwd（PRD F-D9）。它最先写，所以 `seq` 在真实用户消息之前；之后每轮都不再重写。
+   * cwd 从这段对话的 Workspace 取（不是进程工作目录）；`workspaceId` 建会话时就定死了，
+   * 这里只读不改。
+   *
+   * `language` 是这条消息正文的渲染语言（D8：调用方传发起这条连接的语言；不传时用缺省语言）。
    */
-  async ensurePersisted(conversationId: string): Promise<Conversation> {
+  async ensurePersisted(
+    conversationId: string,
+    language: Language = DEFAULT_LANGUAGE,
+  ): Promise<Conversation> {
     const id = requireId(conversationId, "conversationId");
     const existing = await this.conversations.get(id);
     if (existing) {
@@ -422,9 +427,12 @@ export class ConversationService {
         name: draft.name,
         agentId: draft.agentId,
         modelId: draft.modelId,
+        // 草稿期间用户先调过档的话，落库时跟着写进去
+        thinkingLevel: draft.thinkingLevel,
         createdAt: draft.createdAt,
         updatedAt: draft.updatedAt,
       });
+      await this.writeCwdMessage(draft, language);
       // 新行默认是「自动命名、未置顶」；草稿期间用户改过名 / 置过顶的，落库时补写一次
       if (draft.nameIsAuto === false) {
         await this.conversations.renameByUser(draft.id, draft.name, draft.updatedAt);
@@ -446,6 +454,36 @@ export class ConversationService {
     // 草稿变成真行那一刻才第一次出现在其它窗口的侧栏里，所以这里补一条 `created`
     this.emitChanged(row.id, row.workspaceId, "created", 0);
     return row;
+  }
+
+  /**
+   * 写会话开头那条 `hidden` 的 cwd 消息（PRD F-D9）。
+   *
+   * 它是一条普通的 `user` 消息，只是 `hidden` 为真：模型在上下文里能看到它，界面上不展示
+   * 它（core 的 `Message.hidden`）。内容用的是 i18n 里那两条既有键的拼装（与临时对话共用
+   * `injectedContextOf`）。
+   *
+   * cwd 来自这段对话所属的 Workspace（PRD D9：一段对话绑一个项目，cwd 创建即定死），
+   * 不读进程工作目录。
+   */
+  private async writeCwdMessage(draft: Conversation, language: Language): Promise<void> {
+    const workspace = await this.workspaces.get(draft.workspaceId);
+    if (!workspace) {
+      // 行已经写进去了、外键指着它，所以这里只可能是库被别处改坏了
+      throw new ServerError("internal", {
+        detail: { reason: "workspace_missing", workspaceId: draft.workspaceId },
+      });
+    }
+    await this.messages.upsert({
+      id: randomUUID(),
+      conversationId: draft.id,
+      role: AgentNS.Role.User as string,
+      status: AgentNS.MessageStatus.Completed as string,
+      omit: false,
+      content: injectedContextOf(workspace.cwd, language),
+      data: { hidden: true },
+      createdAt: this.now(),
+    });
   }
 
   /** 按 id 打开一段对话（PRD F-A6：服务端只提供「按 id 打开」） */
@@ -527,9 +565,10 @@ export class ConversationService {
     const consequences = {
       conversations: 1,
       // 这个数来自 `countByConversation`：库里这段对话的全部消息行，**含子 Agent 的消息**
-      // （它们落在同一张表、`parentToolCallId` 非空）。所以它会比侧栏摘要里的 `messageCount`
-      // 大：那个数来自 `listByConversation`，只数主线。两者是两个不同的量（这一处是「删掉会少
-      // 多少行」的代价，那一处是「侧栏显示几句话」），不互相换算。
+      // （它们落在同一张表、`parentToolCallId` 非空），但**不含 `hidden` 的**（会话创建时那条
+      // cwd 消息、交接摘要）。所以它会比侧栏摘要里的 `messageCount` 大：那个数来自
+      // `listByConversation`，只数主线。两者是两个不同的量（这一处是「删掉会少多少行」的代价，
+      // 那一处是「侧栏显示几句话」），不互相换算。
       messages: await this.messages.countByConversation(conversation.id),
       assets: assetRows.length,
     };
@@ -591,60 +630,62 @@ export class ConversationService {
   }
 
   /**
-   * 临时换模型（PRD F-B4 / F-B8 / D20 / L7）。
+   * 换这段会话的模型（PRD F-B4 / F-B8 / D20）。
    *
-   * 只把覆盖交给运行时（内存），库里的 `modelId` 一个字都不改：重开这段对话就回默认。
+   * 写的是**会话行**上的 `modelId`：这一段对话以后都用新模型，重开、重启都还是它。换模型
+   * 同时把这段会话的思考档位清成「跟随助手定义」—— 档位是模型的档位，同一个名字在不同
+   * 模型上对应不同参数，留着就变成把旧模型的参数发给新模型。
+   *
+   * `modelId: null` 表示回到助手定义上那个模型（它也没绑时用配置里的兜底）。
    * 历史里已经有图、而新模型不看图时拒绝（D20），并说明原因。
    */
   async setModel(params: ConversationSetModelParams): Promise<ConversationSetModelResult> {
     const row = await this.requireConversation(params.conversationId);
     const config = await this.readConfig();
 
-    let override: string | null;
-    if (params.modelId == null) {
-      override = null;
-    } else {
-      const modelId = requireId(params.modelId, "modelId");
-      if (modelId === row.modelId) {
-        // 选的正是身份上的那个模型：覆盖等于没设，清掉才不会让「临时换过」的标记骗人
-        override = null;
-      } else {
-        const model = config.models.find((item) => item.id === modelId);
-        if (!model) {
-          throw new ServerError("not_found", {
-            params: { entity: "model" },
-            detail: { modelId },
-          });
-        }
-        if (model.vision !== true && (await this.hasImages(row.id))) {
-          throw new ServerError("model_unsupported", {
-            params: { model: model.name },
-            detail: { modelId: model.id, conversationId: row.id, reason: "history_has_images" },
-          });
-        }
-        override = model.id;
-      }
+    const modelId = params.modelId == null
+      ? await this.agentModelIdOf(row.agentId, config)
+      : requireId(params.modelId, "modelId");
+    const model = config.models.find((item) => item.id === modelId);
+    if (!model) {
+      throw new ServerError("not_found", {
+        params: { entity: "model" },
+        detail: { modelId },
+      });
+    }
+    if (model.vision !== true && (await this.hasImages(row.id))) {
+      throw new ServerError("model_unsupported", {
+        params: { model: model.name },
+        detail: { modelId: model.id, conversationId: row.id, reason: "history_has_images" },
+      });
     }
 
-    await this.runtime.setModelOverride(row.id, override);
+    const updated = model.id === row.modelId ? row : await this.writeModel(row, model.id);
     const { view, context } = await this.composeView(
-      row,
+      updated,
       await this.viewContext(config),
     );
+    // 换了的模型会出现在别的窗口的状态栏上（L5 / D22），推一条让它们去拉
+    if (updated.modelId !== row.modelId) {
+      this.emitChanged(row.id, row.workspaceId, "settings_changed", null);
+    }
     return { conversation: view, model: view.model, context };
   }
 
   /**
-   * 临时调思考强度（PRD F-B6 / F-B7）。
+   * 调这段会话的思考档位（PRD F-B6 / F-B7）。
    *
-   * 一样只活在内存里：改助手默认档是另一个动作（`agent.setThinking`），这一段对话的临时
-   * 调整归运行时。档位名必须在该模型引用的策略表里 —— 表里没有的档发出去只会换来一句 400。
+   * 写的是档位名（不是展开后的参数）：档位属于模型，同一个名字在不同模型的策略表里对应
+   * 不同参数。`level: null` 表示回到「跟随助手定义」。改助手默认档是另一个动作
+   * （`agent.setThinking`）。
+   *
+   * 档位名必须在该模型引用的策略表里 —— 表里没有的档发出去只会换来一句 400；模型没有
+   * 可调档位时整件事不成立（`unsupported`）。
    */
   async setThinking(params: ConversationSetThinkingParams): Promise<ConversationSetThinkingResult> {
     const row = await this.requireConversation(params.conversationId);
-    const level = requireId(params.level, "level");
     const context = await this.viewContext(await this.readConfig());
-    const { model } = this.effectiveModel(row, context.config);
+    const model = this.effectiveModel(row, context.config);
     if (!model) {
       throw new ServerError("not_found", {
         params: { entity: "model" },
@@ -658,16 +699,18 @@ export class ConversationService {
         detail: { modelId: model.id, preset: model.reasoningPreset ?? null },
       });
     }
-    if (!Object.prototype.hasOwnProperty.call(preset.levels, level)) {
+    const level = params.level == null ? null : requireId(params.level, "level");
+    if (level !== null && !Object.prototype.hasOwnProperty.call(preset.levels, level)) {
       throw new ServerError("invalid_params", {
         params: { field: "level" },
         detail: { field: "level", level, levels: Object.keys(preset.levels) },
       });
     }
 
-    await this.runtime.setThinkingOverride(row.id, level);
+    const updated = await this.writeThinkingLevel(row, level);
     const agent = await this.loadAgent(row.agentId, context);
-    return { thinking: this.buildThinking(row.id, model, agent, context.presets) };
+    this.emitChanged(row.id, row.workspaceId, "settings_changed", null);
+    return { thinking: this.buildThinking(updated, model, agent, context.presets) };
   }
 
   /**
@@ -703,8 +746,8 @@ export class ConversationService {
       createdAt: iso(row.createdAt),
       updatedAt: iso(row.updatedAt),
       // 这个数来自 `listByConversation` 的长度：只有**主线**消息（不含子 Agent 的，那些在同一个
-      // 表里 `parentToolCallId` 非空）。删除代价（`consequences.messages`）用的是另一条读数
-      // `countByConversation`，数的是表里的全部行，所以同一段对话这两处数字可以不等。
+      // 表里 `parentToolCallId` 非空），也不含 `hidden` 的。删除代价（`consequences.messages`）用的是另一条读数
+      // `countByConversation`，数的是表里的全部行（只筛 `hidden`），所以同一段对话这两处数字可以不等。
       messageCount: stored.length,
       lastMessageAt: stored.length === 0 ? null : iso(latestCreatedAt(stored)),
       running: this.runtime.isRunning(row.id),
@@ -721,19 +764,19 @@ export class ConversationService {
     const pending = await this.questions.listByConversation(row.id, "pending");
     const workspace = await this.loadWorkspace(row.workspaceId, context);
     const agent = await this.loadAgent(row.agentId, context);
-    const { model, overridden } = this.effectiveModel(row, context.config);
+    const model = this.effectiveModel(row, context.config);
 
     const modelState: ConversationModelState = {
       modelId: model?.id ?? row.modelId ?? "",
-      // 模型可能在配置里被删掉了：身份上的 id 仍然有效（L7），显示名退回那个 id
+      // 模型可能在配置里被删掉了：行上的 id 仍然有效（它是这段会话现在用的那个），显示名退回 id
       name: model?.name ?? row.modelId ?? "",
       vision: model?.vision === true,
-      overriddenThisSession: overridden,
+      source: this.modelSource(row, agent, context.config),
     };
     const view: ConversationView = {
       ...this.toSummary(row, stored, pending.length),
       model: modelState,
-      thinking: this.buildThinking(row.id, model, agent, context.presets),
+      thinking: this.buildThinking(row, model, agent, context.presets),
       folder: await toFolderFact(workspace.cwd),
     };
     return { view, context: buildContext(model, lastUsage(stored)) };
@@ -801,8 +844,8 @@ export class ConversationService {
   }
 
   /**
-   * 按 id 取一段对话：先看库里那一行，再看草稿（R56）。都用同一份行形状，
-   * 于是视图拼装、临时模型、临时思考档位这些路径对草稿一字不改。
+   * 按 id 取一段对话：先看库里那一行，再看草稿（R56）。两者用同一份行形状，
+   * 于是视图拼装、换模型、写档位这些路径对草稿一字不改。
    */
   private async requireConversation(conversationId: string): Promise<Conversation> {
     const id = typeof conversationId === "string" ? conversationId.trim() : "";
@@ -878,20 +921,79 @@ export class ConversationService {
   }
 
   /**
-   * 这段对话**现在**用哪个模型：运行时里的临时覆盖优先，其次是创建时定死的那个。
+   * 这段对话**现在**用哪个模型：就是会话行上那个 `modelId`。
    *
-   * 被覆盖或兜底的那个模型可能已经从配置里删掉了 —— 那时 `model` 为空，调用方按 ID 显示。
+   * 它可能已经从配置里删掉了 —— 那时 `model` 为空，调用方按 ID 显示。
    */
-  private effectiveModel(
+  private effectiveModel(row: Conversation, config: AppConfig): Model | undefined {
+    return config.models.find((item) => item.id === row.modelId);
+  }
+
+  /**
+   * 这个模型是谁定的（PRD F-B4 两个动作的区别）。
+   *
+   * 会话行上的模型与助手定义绑的那个一致时算「跟着助手走」；否则算「会话自己定的」
+   * （创建时点名，或 `setModel` 改过）。助手没绑模型时它实际上用配置里的兜底，那一档也算
+   * 「跟着助手走」：装配时用的参数口径与这里同一个判断（见 `ChatRunner` 的 `conversationModelParams`）。
+   */
+  private modelSource(
     row: Conversation,
+    agent: AgentDefinition | null,
     config: AppConfig,
-  ): { model: Model | undefined; overridden: boolean } {
-    const override = this.runtime.getModelOverride(row.id);
-    const modelId = override ?? row.modelId ?? "";
-    return {
-      model: config.models.find((item) => item.id === modelId),
-      overridden: override !== null && override !== row.modelId,
-    };
+  ): ModelSource {
+    const agentModelId = agent?.modelId ?? config.defaultModel;
+    return agentModelId !== undefined && agentModelId === row.modelId
+      ? "agent"
+      : "conversation";
+  }
+
+  /** 助手定义上那个模型（`/model` 不带 id 时回到它）；它没绑且没有兜底时报错 */
+  private async agentModelIdOf(agentId: string, config: AppConfig): Promise<string> {
+    const agent = await this.readAgentOrNull(agentId);
+    const resolved = resolveModel({
+      agentModelId: agent?.modelId,
+      defaultModel: config.defaultModel,
+    });
+    if (!resolved) {
+      throw new ServerError("config_invalid", {
+        messageKey: "error.modelUnresolved",
+        detail: { agentId, defaultModel: config.defaultModel ?? null },
+      });
+    }
+    return resolved.modelId;
+  }
+
+  /**
+   * 把模型写进会话（草稿还没落库时写进草稿，落库那一刻跟着写进去）。
+   *
+   * 与仓储的 `setModel` 一个口径：档位跟着清掉（档位是模型的档位）。
+   */
+  private async writeModel(row: Conversation, modelId: string): Promise<Conversation> {
+    const updatedAt = this.now();
+    const draft = this.drafts.get(row.id);
+    if (draft) {
+      const next: Conversation = { ...draft, modelId, thinkingLevel: null, updatedAt };
+      this.drafts.put(next);
+      return next;
+    }
+    await this.conversations.setModel(row.id, modelId, updatedAt);
+    return { ...row, modelId, thinkingLevel: null, updatedAt };
+  }
+
+  /** 把思考档位写进会话（`null` = 回到跟随助手定义），回写后的行 */
+  private async writeThinkingLevel(
+    row: Conversation,
+    thinkingLevel: string | null,
+  ): Promise<Conversation> {
+    const updatedAt = this.now();
+    const draft = this.drafts.get(row.id);
+    if (draft) {
+      const next: Conversation = { ...draft, thinkingLevel, updatedAt };
+      this.drafts.put(next);
+      return next;
+    }
+    await this.conversations.setThinkingLevel(row.id, thinkingLevel, updatedAt);
+    return { ...row, thinkingLevel, updatedAt };
   }
 
   /** 模型引用的思考策略（表里没有、或没有档位，就是「这个模型不可调」，F-B7） */
@@ -905,11 +1007,12 @@ export class ConversationService {
   /**
    * 思考强度状态（PRD F-B6 / F-B7）。
    *
-   * 三个来源：运行时里存着这段对话临时调的档（`manual`）；助手定义上的参数正好是某一档
+   * 三种来源：会话行上选了某一档（`manual`）；没选、而助手定义上的参数正好是某一档
    * （`following_default`）；模型没有思考策略（`not_adjustable`）。
+   * 行上那个档位名在当前模型的策略表里不存在（换过模型、或策略表被改）时退回「跟随助手」。
    */
   private buildThinking(
-    conversationId: string,
+    row: Conversation,
     model: Model | undefined,
     agent: AgentDefinition | null,
     presets: ReasoningPresets,
@@ -926,14 +1029,14 @@ export class ConversationService {
       };
     }
     const levels = Object.keys(preset.levels);
-    const override = this.runtime.getThinkingOverride(conversationId);
-    if (override !== null && Object.prototype.hasOwnProperty.call(preset.levels, override)) {
+    const chosen = row.thinkingLevel;
+    if (chosen !== null && Object.prototype.hasOwnProperty.call(preset.levels, chosen)) {
       return {
         preset: presetName,
         levels,
-        selected: override,
+        selected: chosen,
         source: "manual",
-        params: preset.levels[override] ?? {},
+        params: preset.levels[chosen] ?? {},
       };
     }
     const detected = levels.find((level) =>

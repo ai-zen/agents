@@ -76,7 +76,7 @@ export const zh = {
   "message.reverted": "删掉了 {count} 条消息，内容已经放回输入框。",
   "message.cwdMissing": "这个项目的目录已经不存在了（{cwd}）。对话和历史都还在。",
   "message.injectedContext": "这段是服务端加进来的，不是你输入的：{summary}",
-  // 每轮末尾追加给模型的那句事实（PRD F-D9：cwd 来自对话所属项目，不是服务端进程的目录）
+  // 会话创建时那条 hidden 消息里的那句事实（PRD F-D9：cwd 来自对话所属项目，不是服务端进程的目录）
   "message.injectedContext.cwd": "当前目录是 {cwd}",
   "message.subagentFailed": "子 Agent {name} 失败了：{reason}",
   "message.subagentFinished": "子 Agent {name} 跑完了。",

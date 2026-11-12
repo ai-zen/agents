@@ -47,9 +47,17 @@ export interface ConversationRow {
   nameIsAuto: number;
   /** 0 / 1：侧栏置顶（PRD D13） */
   pinned: number;
-  /** 创建时定死的助手与模型（PRD L7），此处只存 id；定义本身在配置层 */
+  /** 创建时定死的助手（PRD L7），此处只存 id；定义本身在配置层 */
   agentId: string;
+  /** 这段会话现在用的模型：创建时取助手定义上那个，之后可以由 `conversation.setModel` 改 */
   modelId: string;
+  /**
+   * 这段会话选的思考档位名；`null` = 跟随助手定义上的那份参数。
+   *
+   * 存的是档位名而不是展开后的参数：档位属于模型（同一个档位名在不同模型的策略表里
+   * 对应不同参数），换模型时这一列被清空，展开只在装配 agent 那一刻做。
+   */
+  thinkingLevel: string | null;
   createdAt: number;
   /** 最后一次结构性变化的时间；排序只看 pinned + createdAt，不看它（D13） */
   updatedAt: number;
@@ -65,9 +73,12 @@ export interface ConversationCreateInput {
   id: string;
   workspaceId: string;
   name: string;
-  /** 助手与模型是对话身份的一部分，创建时必须已知（解析不出来就先解析、不建行） */
+  /** 助手是对话身份的一部分，创建时必须已知（解析不出来就先解析、不建行） */
   agentId: string;
+  /** 模型创建时也必须有值（取助手定义上那个，或创建时点名的那一个） */
   modelId: string;
+  /** 创建时就能定的思考档位（草稿期间用户先调过档、首次发消息才落库）；缺省 `null` = 跟随助手 */
+  thinkingLevel?: string | null;
   createdAt: number;
   updatedAt?: number;
 }

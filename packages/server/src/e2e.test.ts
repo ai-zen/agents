@@ -310,16 +310,20 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
     ]);
     expect(page.messages[0]?.id).toBe(acceptedResult.userMessageId);
     expect(page.messages[1]?.id).toBe(acceptedResult.assistantMessageId);
-    // 用户那条末尾多了服务端注入的一段（F-D9：告诉模型当前目录是哪儿）
-    const userSections = page.messages[0]?.content;
-    expect(Array.isArray(userSections)).toBe(true);
-    if (Array.isArray(userSections)) {
-      expect(userSections[0]).toEqual({ type: "text", text: "你好" });
-      const injected = userSections[1];
-      expect(injected?.type).toBe("text");
-      const injectedText = injected && "text" in injected ? injected.text : "";
-      expect(injectedText).toContain(workspaceDir.path);
-    }
+    // 用户那条就是用户打的那一句（cwd 不再按轮拼进来，F-D9）
+    expect(page.messages[0]?.content).toBe("你好");
+    expect(page.messages[0]?.hidden).toBeUndefined();
+    // 而库里最先写的那条是隐藏的 cwd 消息：`seq` 在用户消息之前，默认不出网
+    const withHidden = await client.call("message.list", { conversationId, includeHidden: true });
+    const cwdMessage = (withHidden.result as MessageListResult).messages[0];
+    expect(cwdMessage?.role).toBe(AgentNSValue.Role.User);
+    expect(cwdMessage?.hidden).toBe(true);
+    expect(cwdMessage?.id).not.toBe(acceptedResult.userMessageId);
+    const cwdText = typeof cwdMessage?.content === "string" ? cwdMessage.content : "";
+    expect(cwdText).toContain(workspaceDir.path);
+    expect((withHidden.result as MessageListResult).messages[1]?.id).toBe(
+      acceptedResult.userMessageId,
+    );
     expect(page.messages[1]?.content).toBe("你好。");
     expect(page.messages[1]?.reasoning_content).toBe("先想一下。");
     expect(page.messages[2]?.content).toBe("ok:ls");
@@ -377,6 +381,17 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
     // 受理即借了 Scope（这一轮跑到结算才还）
     expect(app.scopeRegistry.size()).toBe(1);
     await collectRun();
+
+    // 连发两轮之后库里的 cwd 消息仍然只有一条（每轮不再注入，F-D9）
+    const afterSecond = await client.call("message.list", {
+      conversationId,
+      includeHidden: true,
+    });
+    const hiddenMessages = (afterSecond.result as MessageListResult).messages.filter(
+      (message) => message.hidden === true,
+    );
+    expect(hiddenMessages).toHaveLength(1);
+    expect(hiddenMessages[0]?.id).toBe(cwdMessage?.id);
 
     // 连接还在：即便 Scope 空闲到点被回收，也不该判「该退出了」
     await app.checkExit();

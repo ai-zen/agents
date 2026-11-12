@@ -409,12 +409,17 @@ describe("交接之后开新对话（D18）", () => {
     expect(after.map((message) => message.id)).toEqual(before.map((message) => message.id));
     expect(await harness.conversations.list()).toHaveLength(2);
 
-    // 新对话开场：一条服务端注入的交接摘要，指向文档
-    const seeded = await harness.messages.listByConversation(newId);
-    expect(seeded).toHaveLength(1);
-    expect(seeded[0]?.role).toBe(AgentNS.Role.System);
+    // 新对话开场：先是会话创建时那条 hidden 的 cwd 消息，再是一条服务端注入的交接摘要
+    // （两条都 `hidden`，所以读取时要显式要）
+    const seeded = await harness.messages.listByConversation(newId, undefined, {
+      includeHidden: true,
+    });
+    expect(seeded).toHaveLength(2);
+    expect(seeded[0]?.role).toBe(AgentNS.Role.User);
     expect(seeded[0]?.data).toMatchObject({ hidden: true });
-    const content = seeded[0]?.content;
+    expect(seeded[1]?.role).toBe(AgentNS.Role.System);
+    expect(seeded[1]?.data).toMatchObject({ hidden: true });
+    const content = seeded[1]?.content;
     expect(typeof content === "string" ? content : JSON.stringify(content)).toContain(
       result.document.path,
     );

@@ -385,6 +385,8 @@ export class HandoffService {
         workspaceId: conversation.workspaceId,
         agentId: conversation.agentId,
         modelId: conversation.modelId,
+        // 交接回合用的是与普通一轮同一个 agent 口径（会话级模型与档位）
+        thinkingLevel: conversation.thinkingLevel,
         scope,
         history,
       });
