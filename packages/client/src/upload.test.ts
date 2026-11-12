@@ -76,12 +76,14 @@ function bytesOfUpload(server: FakeServer, uploadId: string): Uint8Array {
 /** 每次 `asset.begin` 发一个不同的句柄，`asset.end` 回一条引用 */
 function uploadMethods(counter: { begins: number }) {
   return {
-    "asset.begin": (params: unknown) => {
+    "asset.begin": () => {
       counter.begins += 1;
       return {
+        deduped: false,
         uploadId: `upload-${counter.begins}`,
         maxBytes: DEFAULT_MAX_ASSET_BYTES,
         receivedBytes: 0,
+        asset: null,
       };
     },
     "asset.end": (params: unknown) => {
@@ -172,6 +174,8 @@ describe("分帧", () => {
       mime: "image/png",
       bytes: 1000,
       name: "shot.png",
+      // 摘要在 `begin` 就交上去：服务端据此判断「这段对话里是不是已经有这份字节」
+      sha256: sha256(payload),
       conversationId: CONVERSATION_ID,
     });
     const end = server.frames.filter((frame) => frame.method === "asset.end").at(-1);
@@ -409,5 +413,67 @@ describe("连接状态", () => {
       mime: "image/png",
     }).catch((caught: unknown) => caught)) as ClientError;
     expect(error.code).toBe("closed");
+  });
+});
+
+describe("对话内去重（asset.begin 说已经有了）", () => {
+  /** 服务端回 `deduped: true` 的假服务端：一个字节都不该再从我这边发出去 */
+  let dedupeServer: FakeServer;
+  let dedupeClient: Client;
+
+  beforeAll(async () => {
+    dedupeServer = await startFakeServer({
+      methods: {
+        ...helloLimits(),
+        "asset.begin": () => ({
+          deduped: true,
+          uploadId: null,
+          maxBytes: DEFAULT_MAX_ASSET_BYTES,
+          receivedBytes: 0,
+          asset: {
+            assetId: "asset-existing",
+            mime: "image/png",
+            bytes: 12,
+            name: "already.png",
+            width: null,
+            height: null,
+          },
+        }),
+        // 命中之后不该再调 `asset.end`；真被调到了就用一个显眼的错误钉住
+        "asset.end": () => {
+          throw new FakeMethodError("invalid_params", "命中去重之后不该再 end");
+        },
+      },
+    });
+    dedupeClient = await Client.connect({
+      target: dedupeServer.address,
+      token: "test-token",
+      clientInfo: CLIENT_INFO,
+      language: "zh",
+    });
+  });
+
+  afterAll(async () => {
+    await dedupeClient.close();
+    await dedupeServer.close();
+  });
+
+  it("`begin` 命中即结束：不发二进制帧、不调 `asset.end`，直接回既有引用", async () => {
+    const asset = await uploadAsset(dedupeClient, {
+      conversationId: CONVERSATION_ID,
+      data: bytesOf(12, 7),
+      mime: "image/png",
+      name: "already.png",
+    });
+
+    expect(asset.assetId).toBe("asset-existing");
+    expect(binaryFrames(dedupeServer)).toEqual([]);
+    expect(dedupeServer.frames.filter((frame) => frame.method === "asset.end")).toEqual([]);
+    // 声明照样得带上摘要：服务端就是靠它认出来的
+    const begin = dedupeServer.frames.find((frame) => frame.method === "asset.begin");
+    expect(begin?.params).toMatchObject({
+      sha256: sha256(bytesOf(12, 7)),
+      conversationId: CONVERSATION_ID,
+    });
   });
 });

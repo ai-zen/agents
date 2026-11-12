@@ -22,6 +22,7 @@ import { ensureServer, readServerFile, tokenFilePath } from "./connection.js";
 import type { ClientError } from "./errors.js";
 import type { ServerTarget } from "./address.js";
 import { parseIncoming } from "./frames.js";
+import { getAsset } from "./asset.js";
 import { uploadAsset, uploadAssets, DEFAULT_MAX_ASSET_BYTES } from "./upload.js";
 
 const CLIENT_INFO: ClientInfo = { name: "test-client", version: "0.0.0-test" };
@@ -266,6 +267,55 @@ describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () =>
     await client.call("conversation.abort", { conversationId }).catch(() => undefined);
   }, 30_000);
 
+  it("同一张图上传两次：第二次在 begin 就命中，只落一份文件、只回同一个 assetId", async () => {
+    const client = await connect("zh");
+    const conversationId = await persistedConversation(client);
+
+    const first = await uploadAsset(client, {
+      conversationId,
+      data: PAYLOAD,
+      mime: "image/png",
+      name: "once.png",
+    });
+    const second = await uploadAsset(client, {
+      conversationId,
+      data: PAYLOAD,
+      mime: "image/png",
+      name: "twice.png",
+    });
+
+    expect(second.assetId).toBe(first.assetId);
+    // 磁盘上只有一份（临时文件不算）
+    const stored = (await fs.readdir(join(dataRoot, "assets"))).filter(
+      (name) => !name.startsWith(".upload-"),
+    );
+    expect(stored.filter((name) => name.startsWith(first.assetId))).toHaveLength(1);
+  }, 30_000);
+
+  it("asset.get：原图与缩略图两档都取得到字节，内容与上传的逐字节一致", async () => {
+    const client = await connect("zh");
+    const conversationId = await persistedConversation(client);
+    const asset = await uploadAsset(client, {
+      conversationId,
+      data: PAYLOAD,
+      mime: "image/png",
+      name: "replay.png",
+    });
+
+    for (const variant of ["original", "thumb"] as const) {
+      const fetched = await getAsset(client, { assetId: asset.assetId, variant });
+      expect(fetched.variant).toBe(variant);
+      expect(fetched.asset.assetId).toBe(asset.assetId);
+      expect(new Uint8Array(fetched.bytes)).toEqual(PAYLOAD);
+    }
+
+    // 不认识的 id：服务端报 not_found（客户端原样抛）
+    const error = (await getAsset(client, { assetId: "no-such-asset" }).catch(
+      (caught: unknown) => caught,
+    )) as ClientError;
+    expect(error.code).toBe("not_found");
+  }, 30_000);
+
   it("超过一张上限：多出来的逐条报告，前 4 张照常上传", async () => {
     const client = await connect("zh");
     const conversationId = await persistedConversation(client);
@@ -273,51 +323,18 @@ describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () =>
     // 本地前置校验用的就是这条上限：真服务端的 `hello.limits.maxAssetBytes`
     expect(client.hello?.limits.maxAssetBytes).toBe(DEFAULT_MAX_ASSET_BYTES);
 
-    const result = await uploadAssets(client, {
-      conversationId,
-      sources: [
-        { data: PAYLOAD, mime: "image/png", name: "1.png" },
-        { data: PAYLOAD, mime: "image/png", name: "2.png" },
-        { data: PAYLOAD, mime: "image/png", name: "3.png" },
-        { data: PAYLOAD, mime: "image/png", name: "4.png" },
-        { data: PAYLOAD, mime: "image/png", name: "5.png" },
-      ],
-    });
+    // 五份内容各不相同：相同内容会命中对话内去重（那是另一条用例），这里要的是「五份」这个前提
+    const sources = [1, 2, 3, 4, 5].map((index) => ({
+      data: new Uint8Array([...PAYLOAD, index]),
+      mime: "image/png",
+      name: `${index}.png`,
+    }));
+
+    const result = await uploadAssets(client, { conversationId, sources });
 
     expect(result.assets).toHaveLength(4);
     expect(result.failures.map((failure) => failure.name)).toEqual(["5.png"]);
     expect(result.failures[0]?.error.code).toBe("asset_count_exceeded");
-  }, 30_000);
-
-  it("草稿对话（R56 还没落库）：上传到 asset.end 被服务端的外键拒掉，不是静默成功", async () => {
-    // 这条用例钉的是**服务端的现状**：`assets.conversationId` 外键指向 `conversations`，
-    // 而草稿在首次 `send` 之前不在那张表里。服务端哪天补上「上传前先落库」，这条会红，
-    // 那时 CLI 里「草稿上不尝试上传」的分支也该一起删
-    const client = await connect("zh");
-    const cwd = await fs.mkdtemp(join(tmpdir(), "ai-zen-client-draft-"));
-    try {
-      const { workspace } = await client.call("workspace.create", { cwd });
-      const created = await client.call("conversation.create", {
-        workspaceId: workspace.id,
-        agentId: "default",
-      });
-      if (!created.conversation) throw new Error("对话没建出来");
-
-      const error = (await uploadAsset(client, {
-        conversationId: created.conversation.id,
-        data: PAYLOAD,
-        mime: "image/png",
-      }).catch((caught: unknown) => caught)) as ClientError;
-
-      expect(error.code).toBe("internal");
-      // 一个字节都没留下来：临时文件在 `asset.end` 失败时已被服务端删掉
-      const leftovers = (await fs.readdir(join(dataRoot, "assets"))).filter((name) =>
-        name.startsWith(".upload-"),
-      );
-      expect(leftovers).toEqual([]);
-    } finally {
-      await fs.rm(cwd, { recursive: true, force: true });
-    }
   }, 30_000);
 });
 

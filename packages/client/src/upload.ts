@@ -1,13 +1,18 @@
 /**
  * 上传一个素材（图片）—— 服务端三段式的**客户端那一半**（PRD D5 / F-H8 / A11）。
  *
- * ## 三段式
+ * ## 三段式（可能只有一段）
  *
  * ```
- * asset.begin { purpose, mime, bytes, name?, conversationId }   → { uploadId, maxBytes, receivedBytes }
+ * asset.begin { purpose, mime, bytes, name?, sha256, conversationId }
+ *   → { deduped: false, uploadId, maxBytes, receivedBytes, asset: null }   新上传，接着发字节
+ *   → { deduped: true,  uploadId: null, ...,           asset: AssetRef }  已经有了，到此为止
  * 若干二进制帧（见 chunkFrame.ts）                              → 没有回执，按 uploadId 落盘
  * asset.end   { uploadId, sha256 }                              → { asset: AssetRef }
  * ```
+ *
+ * `sha256` 一开始就带上：服务端用它判断「这段对话里是不是已经有这份字节了」，命中时一个字节
+ * 都不用传（下面会直接返回既有引用）。同一张图贴两次因此只占一份磁盘、一次上行。
  *
  * 为什么字节不走 JSON-RPC 而走二进制帧：分片是任意二进制，base64 进 JSON 会平白多出三分之一体积，
  * 服务端还得先解一层编码；而「这条连接上的二进制帧 = 上传分片」是唯一的含义，不需要再包 `id`。
@@ -19,13 +24,11 @@
  * （`server.hello` 的 `limits`）：服务端的数字才是那个真的会拒人的数字；拿不到握手结果时才用与
  * D5 一致的缺省值，两者都写在下面的常量里。
  *
- * 摘要（sha256）由客户端算、服务端复核：这是「传过去的字节就是用户选的那张图」的唯一证据。
- *
  * ## 一段对话的归属
  *
  * `asset.begin` 要 `conversationId`（库里的素材行按对话挂外键，见服务端 `UploadReceiver`）：没有
  * 归属的上传只会在 `assets/` 里留下一个没人认领的文件。所以上传必须发生在**已经有一段对话**之后
- * —— 调用方手里得有 `conversationId`，且那段对话在库里是存在的（草稿那一步的取舍见 CLI 的报告）。
+ * —— 调用方手里得有 `conversationId`（草稿对话在 `asset.begin` 那一步由服务端落库）。
  */
 
 import { createHash } from "node:crypto";
@@ -130,7 +133,9 @@ export interface UploadAssetsResult {
  * 上传一份内容，回服务端给的素材引用。
  *
  * 顺序是有意的：先算上限与摘要（本地能判的错在这里就抛），再 `asset.begin`（服务端的拒也在这里
- * 到达，而且它拒的时候一个字节都还没传），然后分片，最后 `asset.end` 由服务端复核长度与摘要。
+ * 到达，而且它拒的时候一个字节都还没传）—— 如果服务端说“这段对话里已经有了”（`deduped`），
+ * 这一步就把既有引用返回，不发帧、不调 `asset.end`；否则分片，最后 `asset.end` 由服务端复核
+ * 长度与摘要。
  */
 export async function uploadAsset(
   client: UploadTransport,
@@ -141,19 +146,40 @@ export async function uploadAsset(
   const language = client.language;
   const loaded = await loadSource(options, limits.maxAssetBytes, language);
 
+  // 客户端本来就要算一次摘要（`asset.end` 要用）；顺手在 `begin` 就交上去，让服务端能提前去重
   const digest = createHash("sha256").update(loaded.bytes).digest("hex");
 
-  const { uploadId, maxBytes } = await client.call("asset.begin", {
+  const began = await client.call("asset.begin", {
     purpose: "message_image",
     mime: loaded.mime,
     bytes: loaded.bytes.byteLength,
     ...(loaded.name === null ? {} : { name: loaded.name }),
+    sha256: digest,
     conversationId: options.conversationId,
   });
 
+  // 命中对话内去重：服务端已经有这份字节，回的是既有引用（客户端一个帧也不欠）
+  if (began.deduped) {
+    if (began.asset === null) {
+      throw localError("unexpected", {
+        params: { reason: "asset.begin 说已有素材，却没给引用" },
+        detail: { assetId: null, reason: "deduped_without_asset" },
+      });
+    }
+    return began.asset;
+  }
+
+  const uploadId = began.uploadId;
+  if (uploadId === null) {
+    throw localError("unexpected", {
+      params: { reason: "asset.begin 既没说已有素材，也没给上传句柄" },
+      detail: { reason: "missing_upload_id" },
+    });
+  }
+
   // 服务端这一刻的上限可能比本地缺省值更小（部署方调过），以它为准而不是以我们猜的为准
-  if (loaded.bytes.byteLength > maxBytes) {
-    throw tooLarge(loaded.bytes.byteLength, maxBytes, language);
+  if (loaded.bytes.byteLength > began.maxBytes) {
+    throw tooLarge(loaded.bytes.byteLength, began.maxBytes, language);
   }
 
   for (let offset = 0; offset < loaded.bytes.byteLength; offset += chunkSize) {
