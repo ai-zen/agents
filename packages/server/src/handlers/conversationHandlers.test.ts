@@ -311,10 +311,10 @@ describe("conversation.state 的状态栏块（PRD F-I6 / 裁定 R65）", () => 
 
     const view = (await callMethod(app, "conversation.get", { conversationId })).conversation;
     const agent = state.statusBlocks.find((block) => block.id === "agent");
-    // 身份来自对话自己（创建时定死，L7）；名字与可用性在助手定义那一层，这里给 null 而不编
+    // 身份来自对话自己（创建时定死，L7）；名字与可用性来自助手定义那一层（`AgentService.describe`）
     expect(agent?.id === "agent" && agent.facts.agentId).toBe(view.agentId);
-    expect(agent?.id === "agent" && agent.facts.name).toBeNull();
-    expect(agent?.id === "agent" && agent.facts.available).toBeNull();
+    expect(agent?.id === "agent" && agent.facts.name).toBe("Test Assistant");
+    expect(agent?.id === "agent" && agent.facts.available).toBe(true);
 
     const model = state.statusBlocks.find((block) => block.id === "model");
     expect(model?.id === "model" && model.facts.modelId).toBe(view.model.modelId);
@@ -343,6 +343,23 @@ describe("conversation.state 的状态栏块（PRD F-I6 / 裁定 R65）", () => 
     // 标签按连接语言给（D8）
     const labels = state.statusBlocks.map((block) => block.label.message);
     expect(labels[0]).toBe(render("en", "label.agent"));
+  });
+
+  it("助手被删之后，助手块回 null（名字与可用性都没有可报的事实）", async () => {
+    const { app, conversationId } = await makeHarness();
+
+    const before = await callMethod(app, "conversation.state", { conversationId });
+    const beforeAgent = before.state.statusBlocks.find((block) => block.id === "agent");
+    expect(beforeAgent?.id === "agent" && beforeAgent.facts.name).toBe("Test Assistant");
+
+    await app.agentService.delete({ agentId: "default" });
+
+    const after = await callMethod(app, "conversation.state", { conversationId });
+    const afterAgent = after.state.statusBlocks.find((block) => block.id === "agent");
+    // 对话仍记着那个 id（L7），但定义已经没了：不猜名字，也不编一个可用性
+    expect(afterAgent?.id === "agent" && afterAgent.facts.agentId).toBe("default");
+    expect(afterAgent?.id === "agent" && afterAgent.facts.name).toBeNull();
+    expect(afterAgent?.id === "agent" && afterAgent.facts.available).toBeNull();
   });
 
   it("流式中 tools 块跟着 run.generation 里还在跑的工具变", async () => {

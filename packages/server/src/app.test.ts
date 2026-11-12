@@ -951,13 +951,15 @@ describe("缺省语言（D8 / 裁定 R58）", () => {
     const app = await startApp(fixture);
     expect((await handshake(app)).language).toBe("en");
 
-    // 契约的 `DefaultSelection` 还没有 `language` 这一项（`wire/methods.ts` 不在本轮的
-    // 可改范围里），服务端按 `DefaultsInput` 收下它 —— 这一句断言就是把那条路打通。
-    const params = { defaults: { language: "zh" } } as unknown as MethodParams<"config.setDefaults">;
-    const written = await callMethod(app, "config.setDefaults", params);
-    expect(written.config.configDir).toBe(fixture.dataRoot.path);
-
+    // 契约的 `DefaultSelection.language` 就在 `defaults` 里（R58），写与读走同一份形状
+    const written = await callMethod(app, "config.setDefaults", { defaults: { language: "zh" } });
+    expect(written.config.defaults.language).toBe("zh");
     expect((await handshake(app)).language).toBe("zh");
+
+    // 写 `null` 就是清掉这一项：缺省语言回到英文
+    await callMethod(app, "config.setDefaults", { defaults: { language: null } });
+    expect((await handshake(app)).language).toBe("en");
+
     // 认不出来的语言直接驳回，不悄悄换成英文
     const bad = { defaults: { language: "fr" } } as unknown as MethodParams<"config.setDefaults">;
     await expect(callMethod(app, "config.setDefaults", bad)).rejects.toMatchObject({

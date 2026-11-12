@@ -217,6 +217,10 @@ export class WorkspaceService {
     };
     const assetPaths: string[] = [];
     for (const conversation of conversations) {
+      // 这个数来自 `countByConversation`：每段对话在 `messages` 表里的全部行，**含子 Agent 的
+      // 消息**（它们落在同一张表、`parentToolCallId` 非空）。侧栏摘要的 `messageCount` 是另一条
+      // 读数（`listByConversation`，只数主线），所以「删这个项目会少多少条消息」通常比列表里那些
+      // 对话的条数加起来大——两个数在问两件事（删表代价 / 侧栏显示），不互相抵消。
       consequences.messages += await this.messages.countByConversation(conversation.id);
       const assets = await this.assets.listByConversation(conversation.id);
       consequences.assets += assets.length;

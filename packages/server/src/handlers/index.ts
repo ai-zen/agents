@@ -184,6 +184,8 @@ export function createHandlers(deps: HandlerDeps): HandlerTable {
       assets: deps.assets,
       runner: deps.runner,
       readConfig: deps.readConfig,
+      // 状态栏助手块的名字与可用性（PRD F-I6）：只借用 `AgentService.describe` 这一个只读口
+      agents: deps.agents,
       refreshThinkingPresets: deps.refreshThinkingPresets,
       now: deps.now,
       onTurnSettled: deps.onTurnSettled,

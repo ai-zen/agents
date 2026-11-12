@@ -185,6 +185,32 @@ describe("AgentService.list", () => {
   });
 });
 
+describe("AgentService.describe", () => {
+  it("只回名字与可用性；定义没了、文件读不出来都回 null", async () => {
+    await writeJson(
+      join(dataRoot, "agents", "named.json"),
+      definition("named", { name: "Named Assistant", modelId: "m-a1" }),
+    );
+    expect(await service.describe("named")).toEqual({
+      agentId: "named",
+      name: "Named Assistant",
+      available: true,
+    });
+
+    // 模型不存在：名字照样有，只是不可用（F-B5 的口径）
+    expect(await service.describe("writer")).toEqual({
+      agentId: "writer",
+      name: "Writer",
+      available: false,
+    });
+
+    // 文件不在：助手已经被删（对话可能还记着那个 id，L7）
+    expect(await service.describe("gone")).toBeNull();
+    // 文件在但读不出来：同样没有可报的名字与可用性
+    expect(await service.describe("broken")).toBeNull();
+  });
+});
+
 describe("AgentService.create / update", () => {
   it("没有 function 的进 agents/，有 function 的进 sub-agents/", async () => {
     const plain = await service.create({

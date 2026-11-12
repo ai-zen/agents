@@ -453,8 +453,9 @@ export type StatusBlock =
       /**
        * 助手块的三个事实。
        *
-       * `agentId` 是这段对话的身份（创建时定死，L7）；`name` 与 `available` 的真相在助手定义
-       * 那一层，`conversation.state` 这一跳拿不到时给 `null`（说「不知道」而不是编一个值）。
+       * `agentId` 是这段对话的身份（创建时定死，L7）；`name` 与 `available` 由 `conversation.state`
+       * 现读助手定义得出（`AgentService.describe`）。定义已经没了（助手被删，L7 允许对话留着旧 id）
+       * 或文件读不出来时，这两项都是 `null` —— 说「不知道」而不是编一个值。
        */
       facts: { agentId: string; name: string | null; available: boolean | null };
     }

@@ -840,7 +840,8 @@ export interface ImageModelInput {
  * 默认项（PRD F-F7 / D2 / D6）。
  *
  * 模型只有一个真相源在助手定义上（PRD F-B1），这里的 `defaultModel` 是 SDK 的兜底那一层，
- * 只在助手没绑模型时起作用。
+ * 只在助手没绑模型时起作用。`language` 是这一组里唯一的非「选哪个实体」项：它是缺省语言
+ * （裁定 R58），与 SDK `AppConfig.language` 同源。
  */
 export interface DefaultSelection {
   /** 默认助手（PRD F-B3 / F-B5） */
@@ -855,6 +856,13 @@ export interface DefaultSelection {
   namingModel: string | null;
   /** 自动命名开关（PRD D2：带独立开关） */
   autoTitle: boolean;
+  /**
+   * 缺省语言（PRD D8 / 裁定 R58）：`hello` 没声明语言时算哪一种。
+   *
+   * 它不是「这个客户端现在用哪种语言」（那是连接的事，断开即忘），而是「没声明时用哪一种」。
+   * 省略 = 这次不改；写 `null` = 清掉这一项（回落英文）；`config.get` 读回时没设置就是 `null`。
+   */
+  language?: Language | null;
 }
 
 /** 配置层面的上限（PRD F-F8 / D5） */

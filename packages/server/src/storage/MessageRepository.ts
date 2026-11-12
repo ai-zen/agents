@@ -208,6 +208,11 @@ export class MessageRepository {
    * 不能混进主线历史（否则模型下一轮会把别人的对话当成自己的上下文）。
    *
    * 三种情况收敛成一条 SQL：找不到时 `COALESCE` 把下界降成 -1，条件恒真。
+   *
+   * 这里数出来的是**主线**的条数（`parentToolCallId IS NULL` 那一半）：子 Agent 的消息落在同一张
+   * 表、但有非空的 `parentToolCallId`，不在本方法的结果里。同样是「这段对话有多少条消息」，
+   * {@link countByConversation} 数的是表里的全部行（不筛这一列），所以一段跑过子 Agent 的对话，
+   * `listByConversation().length` 会小于 `countByConversation()`。
    */
   async listByConversation(conversationId: string, after?: string): Promise<StoredMessage[]> {
     const rows = await this.db.all<MessageRow>(
@@ -330,6 +335,13 @@ export class MessageRepository {
     return result.changes;
   }
 
+  /**
+   * 数一段对话在 `messages` 表里的全部行数（PRD D17 / F-F9 的代价一侧用它）。
+   *
+   * 与 {@link listByConversation} 的差别就在 `parentToolCallId` 这一列：本方法不筛它，所以子 Agent
+   * 的消息也算在内。同一个问题（「这段对话有多少条消息」）于是有两个不同的数，两处的用途不同：
+   * 这里要的是「删掉会让库里少多少行」，那边要的是「主线里能回看多少条」。
+   */
   async countByConversation(conversationId: string): Promise<number> {
     const row = await this.db.get<{ n: number }>(
       "SELECT count(*) AS n FROM messages WHERE conversationId = ?",

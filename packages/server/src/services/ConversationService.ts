@@ -526,6 +526,10 @@ export class ConversationService {
     const assetRows = await this.assets.listByConversation(conversation.id);
     const consequences = {
       conversations: 1,
+      // 这个数来自 `countByConversation`：库里这段对话的全部消息行，**含子 Agent 的消息**
+      // （它们落在同一张表、`parentToolCallId` 非空）。所以它会比侧栏摘要里的 `messageCount`
+      // 大：那个数来自 `listByConversation`，只数主线。两者是两个不同的量（这一处是「删掉会少
+      // 多少行」的代价，那一处是「侧栏显示几句话」），不互相换算。
       messages: await this.messages.countByConversation(conversation.id),
       assets: assetRows.length,
     };
@@ -698,6 +702,9 @@ export class ConversationService {
       modelId: row.modelId ?? "",
       createdAt: iso(row.createdAt),
       updatedAt: iso(row.updatedAt),
+      // 这个数来自 `listByConversation` 的长度：只有**主线**消息（不含子 Agent 的，那些在同一个
+      // 表里 `parentToolCallId` 非空）。删除代价（`consequences.messages`）用的是另一条读数
+      // `countByConversation`，数的是表里的全部行，所以同一段对话这两处数字可以不等。
       messageCount: stored.length,
       lastMessageAt: stored.length === 0 ? null : iso(latestCreatedAt(stored)),
       running: this.runtime.isRunning(row.id),

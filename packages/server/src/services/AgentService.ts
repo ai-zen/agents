@@ -73,6 +73,21 @@ export interface AgentServiceOptions {
 /** 一条定义来自哪个仓储（决定删除时该删哪个文件） */
 type AgentHome = "agents" | "sub-agents";
 
+/**
+ * 一个助手的最小只读事实：它现在叫什么、现在能不能用。
+ *
+ * `describe()` 的返回值。状态栏的助手块（`conversation.state`）只要这两条：它不展示提示词、
+ * 权限、思考档位，所以不必把整份 `AgentView` 搬过去。
+ */
+export interface AgentDescription {
+  /** 定义上的 id（与传入的 `agentId` 相同） */
+  agentId: string;
+  /** 定义上的显示名 */
+  name: string;
+  /** 现在能不能跑（模型 / 端点 / 密钥都齐才算，与 `agent.list` 同一份口径） */
+  available: boolean;
+}
+
 /** 仓储里读到的一条定义；`definition` 为 `null` 表示文件在但读不出来 */
 interface LoadedAgent {
   id: string;
@@ -237,6 +252,25 @@ export class AgentService {
     const config = await this.configManager.read();
     const presets = await this.configManager.readReasoningPresets();
     return { agent: this.toView(config, presets, found) };
+  }
+
+  /**
+   * 一个助手现在叫什么、能不能用（最小只读导出，PRD F-I6 的状态栏助手块用）。
+   *
+   * 与 `get()` 走同一份 `load()` / `toView()` 口径，只是只回这两条事实：调用方（会话现场快照）
+   * 要的是「这个 id 现在叫什么、还能不能跑」，不是整份定义。
+   *
+   * 拿不到就回 `null`：定义文件已经没了（助手被删，而对话仍记着那个 id，L7），或者文件在但
+   * 读不出来（坏 JSON）。这两种情况下「名字」与「可用性」都没有可报的事实。
+   */
+  async describe(agentId: string): Promise<AgentDescription | null> {
+    const id = requireId(agentId, "agentId");
+    const found = await this.load(id);
+    if (!found || found.definition === null) return null;
+    const config = await this.configManager.read();
+    const presets = await this.configManager.readReasoningPresets();
+    const view = this.toView(config, presets, found);
+    return { agentId: view.id, name: view.name, available: view.available };
   }
 
   // -------------------------------------------------------------------------

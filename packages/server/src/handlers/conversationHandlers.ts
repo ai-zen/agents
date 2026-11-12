@@ -23,6 +23,7 @@ import { render } from "../i18n/index.js";
 import type { Language, MessageKey } from "../i18n/index.js";
 import type { HandlerTable } from "../net/index.js";
 import type { ChatRunner } from "../runtime/index.js";
+import type { AgentDescription } from "../services/AgentService.js";
 import type { AssetService } from "../services/AssetService.js";
 import type { ConversationService } from "../services/ConversationService.js";
 import type { MessageService } from "../services/MessageService.js";
@@ -64,6 +65,13 @@ export interface ConversationHandlerDeps {
   questionsFor?: (conversationId: string) => Promise<QuestionView[]>;
   /** 读配置：上下文阈值跟着模型走（PRD F-D1） */
   readConfig: () => Promise<AppConfig>;
+  /**
+   * 读助手定义那一层的最小事实（名字 + 能不能用，PRD F-I6 的状态栏助手块）。
+   *
+   * 只用到 `describe`（`AgentService.describe` 是唯一实现者）：接线层不碰定义文件，
+   * 也不把 `AgentService` 整个搬进来。不注入时助手块的名字与可用性都是 `null`。
+   */
+  agents?: { describe: (agentId: string) => Promise<AgentDescription | null> };
   /**
    * 目录没登记成项目时问一次「要不要登记」（PRD D10）。
    *
@@ -299,6 +307,8 @@ async function conversationStateOf(
   const model = config.models.find((item) => item.id === conversation.model.modelId);
   const run = turn ? turn.runState() : idleRunState(conversationId, usage);
   const context = contextOf(page.messages, model);
+  // 助手那条事实只在这里取一次（IO 留在这里，下面拼块的那一步仍是同步纯函数）
+  const agent = await agentFactOf(deps, conversation.agentId);
 
   return {
     conversationId,
@@ -307,7 +317,7 @@ async function conversationStateOf(
     thinking: conversation.thinking,
     usage,
     questions: deps.questionsFor ? await deps.questionsFor(conversationId) : [],
-    statusBlocks: statusBlocksOf({ conversation, run, context, usage, language }),
+    statusBlocks: statusBlocksOf({ conversation, agent, run, context, usage, language }),
     updatedAt: now,
   };
 }
@@ -316,10 +326,31 @@ async function conversationStateOf(
 // 状态栏的块（PRD F-I6 / 裁定 R65）
 // ---------------------------------------------------------------------------
 
+/**
+ * 助手块的那两条事实（名字 / 能不能用，PRD F-I6）。
+ *
+ * 真相在助手定义那一层，这里只读一次，把它变成块能装的那两格；拼块的 `statusBlocksOf`
+ * 于是仍然是同步纯函数。没注入助手服务、或定义已经没了（被删 / 读不出来）时两格都是 `null`
+ * —— 说「不知道」而不是编一个看起来像真的值。
+ */
+async function agentFactOf(
+  deps: ConversationHandlerDeps,
+  agentId: string,
+): Promise<StatusBlockInput["agent"]> {
+  const described = await deps.agents?.describe(agentId);
+  if (!described) return { name: null, available: null };
+  return { name: described.name, available: described.available };
+}
+
 /** 造状态栏块要的那几处事（每一项都已经在别处算好了，这里只负责装箱） */
 export interface StatusBlockInput {
   /** 服务层给的对话视图（身份、模型、思考档、目录事实） */
   conversation: ConversationView;
+  /**
+   * 助手块的两条事实（名字 / 能不能用），由 {@link conversationStateOf} 从助手定义那一层读来。
+   * 拿不到时两格都是 `null`（助手已被删、或定义文件读不出来）。
+   */
+  agent: { name: string | null; available: boolean | null };
   /** 这一轮的快照（六态、工具、子 Agent、本轮用量） */
   run: RunState;
   /** 上下文占用与两条阈值 */
@@ -344,11 +375,11 @@ function blockLabel(id: StatusBlockId, language: Language): StatusBlock["label"]
  * `awaiting_tools` 态里还在跑的那几个（并行时有几个列几个，正是 L8 要的语义）；其余态下没有
  * 工具在跑，列表就是空的。
  *
- * 助手名字与「这个助手能不能用」不在这一层（它们在助手定义那边，`ConversationView` 只给 id），
- * 所以这两个字段在拿不到时给 `null` —— 不猜，也不编一个看起来像真的值。
+ * 助手块的 `name` / `available` 由调用方（`conversationStateOf`）先从助手定义那一层读好传进来
+ * （`input.agent`）：本函数保持同步纯函数，不在这里做 IO。
  */
 export function statusBlocksOf(input: StatusBlockInput): StatusBlock[] {
-  const { conversation, run, context, usage, language } = input;
+  const { conversation, agent, run, context, usage, language } = input;
   const generation = run.generation;
   const runningTools = generation?.phase === "awaiting_tools" ? generation.runningTools : [];
 
@@ -356,7 +387,7 @@ export function statusBlocksOf(input: StatusBlockInput): StatusBlock[] {
     agent: {
       id: "agent",
       label: blockLabel("agent", language),
-      facts: { agentId: conversation.agentId, name: null, available: null },
+      facts: { agentId: conversation.agentId, name: agent.name, available: agent.available },
     },
     model: {
       id: "model",

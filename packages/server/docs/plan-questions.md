@@ -169,3 +169,13 @@
 - [src/app.ts] （自决）R66 的自检定时器做成注入点 `ServerAppOptions.startVersionTimer`（缺省 `setInterval(...).unref()`）。用假定时器（`vi.useFakeTimers`）验不通：`WsHub.close()` 要等真套接字关完，而它自己那个 200ms 兜底定时器被假掉之后就永远等不到，`stop()` 在假定时器下会挂住。所以用例注入一个手摇的定时器（`tick()` / 取消记账），既不必真等 30 秒，也能断言 `stop()` 把取消函数调了。
 - [src/services/Logger.ts] （自决）warn / error 上通知的「防回环」用的是一个重入标记：**发通知期间**产生的 warn / error 只落文件、不再上通知。代价是同一 tick 里连发的多条 warn / error 只有第一条会上通知栏（第二条起被挡）。我认为这比「通知写库失败 → 记一条日志 → 又发通知」的循环要好，但它是产品可感的行为，记在这里请 PM 确认。
 - [src/app.ts] （自决）`<dataRoot>/server.json` 只在「真的要用到它」时才读：启动参数给了端口就不读（坏文件不该拦住显式端口），`createServer` 传了 `configPort` 也不读（CLI 已经读过一次）。所以「配置文件坏掉」这件事只有在它那一档真被用到时才会报出来。
+
+## W6-C（两条已知缺口补齐 + 计数口径注释）追加
+
+- [src/wire/methods.ts] `DefaultSelection.language?: Language | null` 按裁定进契约（R58 的三条语义照旧：省略 = 这次不改、`null` = 清掉并回落英文、`config.get` 读回「没设置」时是 `null` 而不是 `"en"`）。`ConfigService` 里那个本地类型 `DefaultsInput` 随之删掉：`config.setDefaults` 的 `defaults`、`config.patch` 的 `defaults` 与 `config.get` 的 `defaults` 现在同一个类型，服务端不再有一份「契约外的形状」。
+- [src/services/AgentService.ts] （自决）`describe(agentId)` 返回 `{ agentId, name, available } | null`；`null` 的口径按你拍的那两点：文件不在（助手被删、而对话仍记着那个 id，L7）与文件在但读不出来（坏 JSON）都回 `null`。`available` 复用 `toView()` 的判定（模型 / 端点 / 密钥都齐才算），所以 `agent.list` / `agent.get` / 状态栏块三处说的是同一件事。代价：每次 `conversation.state` 多读一次定义文件 + 配置 + 思考策略表（`toView` 要 presets 才能算 thinking）；单次快照的量，没有加缓存。
+- [src/handlers/conversationHandlers.ts] （自决）助手那条事实的 IO 留在 `conversationStateOf`（按你的裁定），`statusBlocksOf` 保持同步纯函数：`StatusBlockInput` 多一个 `agent: { name, available }` 字段，由上面的 `agentFactOf` 填。`ConversationHandlerDeps.agents` 做成可选的结构化端口（只用 `describe`，`AgentService` 是唯一实现者），不注入时两格都是 `null`；`handlers/index.ts` 总会把 `AgentService` 递进来，所以生产路径上不会走那条空路。
+- [src/wire/states.ts] （自决，只改注释）`StatusBlock` 里 agent 块那段说明跟着改：「`name` / `available` 由 `conversation.state` 现读助手定义得出，定义没了或读不出来才是 `null`」——`null` 的语义从「这一跳拿不到」变成「定义已经没了」。类型没动（仍是 `string | null` / `boolean | null`），这个文件不在 B1 的可改清单里，属于「改完之后原注释就变成错的」那一类，只动了这一段注释。
+- [src/storage/MessageRepository.ts, src/services/ConversationService.ts, src/services/WorkspaceService.ts] 按 B1(a)(b)/B2 落注释：两个仓储读方法各一段（`listByConversation` 数的是主线、`countByConversation` 数的是全部行），代价一侧三个调用点各一段（删对话、删项目、`toSummary` 的 `messageCount`）。只写「这一处是哪个数、为什么与另一处不同」，不写「应该用哪个」；SQL、类型、行为一个字没动。
+- [docs/architecture.md] §5 存储表下方补「消息条数的两个口径」（读路径口径 + 谁在用），§9 删掉「状态栏块里的助手名字与可用性」与「`config.setDefaults` 写缺省语言的契约形状」两条已知缺口，§11 加一行变更记录。删第二条是我顺手做的：task 1 落地之后那条描述已经不成立，留着就是错的（B3 只点名了第一条）。
+- [src/app.test.ts] 原来那句 `{ defaults: { language: "zh" } } as unknown as MethodParams<"config.setDefaults">`（注释写着「契约的 `DefaultSelection` 还没有 `language`」）按契约落地改成正常调用，并补上「写 `null` → 下一条连接握手回 `en`」的往返。认不出来的语言那条反向断言留着（照旧 `as unknown as`，因为类型上就拦得住）。

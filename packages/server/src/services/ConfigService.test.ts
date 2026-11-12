@@ -139,6 +139,8 @@ describe("ConfigService.get", () => {
       defaultImageModel: "img-1",
       namingModel: null,
       autoTitle: true,
+      // 缺省语言没设置时读回 `null`（与「设成了 en」区分开）
+      language: null,
     });
     expect(config.limits).toEqual({
       maxToolOutput: 4_096,
@@ -347,6 +349,28 @@ describe("ConfigService.patch / setDefaults", () => {
     const { config } = await service.setDefaults({ defaults: { defaultAgent: "default" } });
     expect(config.defaults.defaultAgent).toBe("default");
     expect((await readConfig()).defaultAgent).toBe("default");
+  });
+
+  it("缺省语言写得进，config.get 读得回（R58）", async () => {
+    const written = await service.setDefaults({ defaults: { language: "zh" } });
+    expect(written.config.defaults.language).toBe("zh");
+    expect((await readConfig()).language).toBe("zh");
+
+    // 走一遍读路径：`config.get` 的 `defaults` 里有它（不是只有写路径认识它）
+    const { config } = await service.get();
+    expect(config.defaults.language).toBe("zh");
+  });
+
+  it("缺省语言传 null 就是清掉，回落英文", async () => {
+    await service.setDefaults({ defaults: { language: "zh" } });
+    const { config } = await service.setDefaults({ defaults: { language: null } });
+    expect(config.defaults.language).toBeNull();
+    expect((await readConfig()).language).toBeUndefined();
+
+    // 认不出来的语言直接驳，不悄悄换成英文
+    await expect(
+      service.setDefaults({ defaults: { language: "fr" as unknown as "zh" } }),
+    ).rejects.toMatchObject({ code: "invalid_params" });
   });
 });
 

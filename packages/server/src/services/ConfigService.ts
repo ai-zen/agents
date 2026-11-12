@@ -105,14 +105,6 @@ export interface ConfigServiceOptions {
 /** `server.reload` 认的几档范围（与契约同源） */
 const RELOAD_SCOPES: readonly ServerReloadScope[] = ["config", "agents", "tools", "skills", "mcp"];
 
-/**
- * 可经 `config.setDefaults` 写的默认项。
- *
- * 比契约的 `DefaultSelection` 多一项 `language`：它是 SDK `AppConfig` 上的字段（裁定 R58），
- * 存的不是「这个客户端现在用哪种语言」（那是连接的事），而是「没声明时算哪一种」。
- */
-type DefaultsInput = Partial<DefaultSelection> & { language?: Language | null };
-
 /** 可以写的三档行为开关取值（与 SDK `AppConfig` 的取值一致） */
 const ABORTED_MESSAGE_STRATEGIES = ["keep", "drop"] as const;
 const ABORTED_TOOL_ROUND_STRATEGIES = ["fill", "drop"] as const;
@@ -270,14 +262,14 @@ export class ConfigService {
   }
 
   /**
-   * `config.setDefaults`（F-F7 / D2 / D6）。
+   * `config.setDefaults`（F-F7 / D2 / D6 / R58）。
    *
    * 与 `config.patch` 的 `defaults` 是同一件事，只是入口更窄：默认助手、兜底模型、
-   * 迁移模型、图片模型、取名模型、自动命名开关。
+   * 迁移模型、图片模型、取名模型、自动命名开关，以及缺省语言（`hello` 没声明语言时用哪种）。
    */
   async setDefaults(params: ConfigSetDefaultsParams): Promise<ConfigSetDefaultsResult> {
     const config = await this.readConfig();
-    const defaults: DefaultsInput = params.defaults ?? {};
+    const defaults: Partial<DefaultSelection> = params.defaults ?? {};
     const next: AppConfig = { ...config, ...(await this.mergeDefaults(config, defaults)) };
     await this.configManager.write(next);
     return {
@@ -446,6 +438,8 @@ export class ConfigService {
         defaultImageModel: config.defaultImageModel ?? null,
         namingModel: config.namingModel ?? null,
         autoTitle: config.autoTitle !== false,
+        // 没设置就是 `null`（不是 `"en"`）：读回来的要能与「设成了英文」区分开
+        language: config.language ?? null,
       },
       limits: {
         maxToolOutput: config.maxToolOutput ?? FALLBACK_MAX_TOOL_OUTPUT,
@@ -489,7 +483,7 @@ export class ConfigService {
    */
   private async mergeDefaults(
     config: AppConfig,
-    input: DefaultsInput,
+    input: Partial<DefaultSelection>,
   ): Promise<
     Pick<
       AppConfig,

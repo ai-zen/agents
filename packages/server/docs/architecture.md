@@ -164,6 +164,15 @@ const [found, written] = await db.tx((q) => [
 | `credentials` | `id`、`note`、`hash`（唯一索引）、`createdAt`、`revokedAt` |
 | `meta` | 单行表（`id` 固定 1）：`schemaVersion`、`createdAt` |
 
+**消息条数的两个口径（读路径的事，不是两张表）**：同一个问题「这段对话有多少条消息」在库里有两个答案，因为两条读数问的不是同一样东西 —— `messages` 一张表里既有主线的消息，也有子 Agent 的消息（它们带非空的 `parentToolCallId`，R37）。
+
+| 读数（`src/storage/MessageRepository.ts`） | 数的是什么 | 谁在用 |
+|---|---|---|
+| `listByConversation` | 只数**主线**（`parentToolCallId IS NULL`），子 Agent 的消息不在结果里 | 侧栏摘要 `ConversationSummary.messageCount`（`ConversationService.toSummary`）、`conversation.changed.messageCount`、`conversation.state` 的用量与上下文（`usage` / `context` 都从这份消息列表算） |
+| `countByConversation` | 数 `messages` 表里这段对话的**全部行**，不筛那一列 | 删除代价 `consequences.messages`（`conversation.delete` 与 `workspace.remove` 的 `dryRun` 与非 `dryRun` 都用它） |
+
+所以一段跑过子 Agent 的对话，「侧栏显示几条」会小于「删掉它会少多少行」，两个数不互相换算，也不互为校验：一处是读路径的主线视图，一处是删除的代价。两处代码（`MessageRepository` 与两个服务）各自有注释说明「这里是哪个数、为什么与另一处不同」。
+
 **全文检索**：`messages_fts` 是挂在 `messages` 上的 FTS5 外部内容表，只索引 `searchText` 一列，`tokenize='trigram'`，用三个触发器（insert / delete / update of `searchText`）同步。两条实测约束落在实现里：(1) `unicode61` 下整段中文是一个 token，用错就搜不到；(2) `trigram` 的查询词至少 3 个字符，少于 3 个字符时 `MessageRepository.search` 走 `LIKE` 子串（D16 的「成本接受」就落在这）。
 
 **边流边写**：运行时以内存里的消息为真相，同一条消息行按节流 upsert；装载/崩溃恢复复用 core 的 `reconcileAbortedToolRounds(fill)` + `reconcileAbortedMessages(keep)`，所以 `status` / `omit` 两列必须落盘（PRD D15）。
@@ -268,8 +277,6 @@ const [found, written] = await db.tx((q) => [
 | 缺口 | 现状 |
 |---|---|
 | 子 Agent 消息回看（PRD F-I7） | `messages.parentToolCallId` 列已落库（R37），`MessageRepository.listByParentToolCallId(conversationId, parentToolCallId)` 也有了；但生产路径里没有写入该列的调用方（只有用例在用），也没有方法把它暴露出去。眼下 `message.list(toolCallId)` 按消息自己的 `tool_call_id` 过滤，取到的是那次委派的工具结果消息 |
-| 状态栏块里的助手名字与可用性（PRD F-I6） | `conversation.state` 的 `statusBlocks` 按八块给出，但 `agent` 块的 `name` / `available` 恒为 `null`：这两项在助手定义那一层（`AgentService`），而 `conversation.state` 这一跳只看得见对话自己存的 `agentId` |
-| `config.setDefaults` 写缺省语言的契约形状 | 服务端收下 `defaults.language`（`ConfigService` 的 `DefaultsInput`），但 `wire/methods.ts` 的 `DefaultSelection` 还没有这一项，`config.get` 的 `defaults` 也还不回它 |
 | 「客户端自造问题」 | 契约里只有 `question.list` / `question.answer`。问题对象由服务端内部产生（交接线、cwd 登记、不可撤销动作的二次确认），没有让客户端或脚本提问的方法（`server.integration.test.ts` 的 `seedQuestion` 因此绕开契约，直开库调 `QuestionService.ask` 造一行） |
 
 ## 10. 待拍板
@@ -285,3 +292,4 @@ const [found, written] = await db.tx((q) => [
 | 2026-11-12 | `message.list` 取法定下（A12）：按 id 取、含自身最新内容、id 不存在则全量；§9 清空 |
 | 2026-11-12 | 按实现复核（W5-B）：回调名改 `onAllRecycled`；补桥接名单与二进制帧格式；推送的事件名在 `method`；表骨架按实际列重写；`tx` 的声明式批次边界写清；方法表 63 个 / 事件 6 个 / 能力清单粒度（A13）落文；数据根目录树按 `ConfigManager` 实际推导；新增 §9 已知缺口，原 §9/§10 顺延 |
 | 2026-11-12 | W6-B 运维与展示面：方法表 63 → 64（`server.reload` 进表，A13 的能力条数同步）；§6/§7 改正「`hello` 回完整清单」为**只回能力 id 列表**（R57）；§2 端口那一档补真实来源 `<数据根>/server.json` 与「显式非法端口报 `config_invalid`」（R67）、补升级自检（R66）、数据根目录树与 §5 补 `server.json` 与 `logs/`（F-J2）、§3 的日志口子由 `HubLogger` 改为 `Logger`、§4 补收尾顺序；§9 已知缺口按本轮实现改写（状态栏块、日志、端口三条出列，补助手名字与 `DefaultSelection.language` 两条） |
+| 2026-11-12 | W6-C 补齐两条已知缺口：`DefaultSelection.language` 进契约（§9 那条出列）、状态栏助手块的名字与可用性由 `AgentService.describe` 现读（§9 那条出列）；§5 存储表下方补「消息条数的两个口径」（`listByConversation` 主线 / `countByConversation` 全部行，侧栏 vs 删除代价） |
