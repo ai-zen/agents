@@ -95,7 +95,7 @@ export const MIGRATIONS: Migration[] = [
       // 去重是**全局**的：sha256 唯一，同一份字节在整台机器上只有一行、一份磁盘。所以这张表
       // 不再记「属于哪段对话 / 哪条消息」：归属在 conversation_assets 里，一张图贴到两个项目
       // 就是一行素材 + 两行关系。
-      // width / height 可空：要解码图片才拿得到，本波不引入图像库，未知就是 NULL。
+      // width / height 可空：落定时按文件头解（PNG / JPEG），解不出来就是 NULL。
       `CREATE TABLE IF NOT EXISTS assets (
          id        TEXT PRIMARY KEY,
          name      TEXT,

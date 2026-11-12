@@ -172,7 +172,7 @@ export interface AssetRow {
   bytes: number;
   /** 内容摘要（上传时服务端自己算的那一份）：全库唯一，即全局去重的键 */
   sha256: string;
-  /** 像素宽度；要解码图片才拿得到，本波不解码就是 null */
+  /** 像素宽度：落定时按文件头解出（PNG / JPEG），解不出来是 null */
   width: number | null;
   /** 像素高度；口径同 `width` */
   height: number | null;

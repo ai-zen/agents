@@ -262,3 +262,7 @@
 - [core `formatContent`, `Agent.formatContent*`] （自决）可重写的落点：`Agent.formatContent` / `Agent.formatContentSection` 是实例方法（与 `formatHistory` 同一种覆盖方式：继承或实例赋值），`formatContent` 逐段调的是 `this.formatContentSection`，所以覆写任一个都生效；模块级导出的两个纯函数是默认实现（服务端拿它剥字段，没有 agent 实例）。
 - [src/services/AssetService.ts] （自决）「换厂商 / 换端点」的判据：一次查询同时看「这个端点上有没有」（`onEndpoint`）与「别的端点上有没有」（`elsewhere`）；`onEndpoint` 或两边都没有就照常交给 SDK 的 Files API 路径（复用 / 首传），只有「这里没有、别处有」才把端点换成 `null`，让 SDK 走内联 base64。这样三条规则不依赖「是谁在调」（本轮附件与历史重放同一条规则），也不产生跨端点的 `file_id`。
 - [src/services/AssetService.ts] （自决）替换函数的形态收敛：`file_id` 段只留 `{ type: "file", file_id }`，`filename` 只跟 `file_data` 一起出现；`image_url` 段的内层 `detail` 有就带上（原样透传，不凭空造值）。
+
+## W14-A（素材尺寸 R76）追加
+
+- [src/services/imageSize.ts] （自决）解码口径：签名说话，不看 `asset.begin` 声明的 `mime` —— 声明 `image/png` 而字节其实是 JPEG 时，按文件头解（`readImageSize` 先试 PNG 签名与 IHDR 块，再试 JPEG 的 `SOI` + 段长遍历），两边都对不上就是 `null`。理由：容器是字节自己的事实，`mime` 是客户端说的。另外解尺寸只读文件头前 64 KiB（`IMAGE_HEAD_BYTES`）：PNG 只需 24 字节，JPEG 的 SOF 段前面排着大块 EXIF 时可能被推到几十 KB 之后 —— 超出这个窗口的 JPEG 会得到 `null`（客户端按「未知」排占位框）。若要覆盖更大 EXIF，改成按段长流式读即可，请 PM 定要不要现在扩。

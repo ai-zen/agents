@@ -120,6 +120,43 @@ function imageBytes(size = 64): Uint8Array {
   return bytes;
 }
 
+/** 一份带真头的 PNG：8 字节签名 + IHDR 块（宽高就在里面，后面是占位的空字节） */
+function pngBytes(width: number, height: number, tail = 16): Buffer {
+  const buffer = Buffer.alloc(33 + tail);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(buffer, 0);
+  buffer.writeUInt32BE(13, 8);
+  buffer.write("IHDR", 12, "latin1");
+  buffer.writeUInt32BE(width, 16);
+  buffer.writeUInt32BE(height, 20);
+  buffer[24] = 8;
+  buffer[25] = 2;
+  return buffer;
+}
+
+/** 一份带真头的 JPEG：SOI + APP1（EXIF 占位）+ SOF0 段（高宽在里面）+ SOS */
+function jpegBytes(width: number, height: number): Buffer {
+  const app = Buffer.alloc(4 + 16);
+  app[0] = 0xff;
+  app[1] = 0xe1;
+  app.writeUInt16BE(18, 2);
+
+  const frame = Buffer.alloc(4 + 15);
+  frame[0] = 0xff;
+  frame[1] = 0xc0;
+  frame.writeUInt16BE(17, 2);
+  frame[4] = 8;
+  frame.writeUInt16BE(height, 5);
+  frame.writeUInt16BE(width, 7);
+  frame[9] = 3;
+
+  return Buffer.concat([
+    Buffer.from([0xff, 0xd8]),
+    app,
+    frame,
+    Buffer.from([0xff, 0xda, 0x00, 0x02, 0x00, 0x00]),
+  ]);
+}
+
 /** 走一遍「上传收完 → 落定登记」：临时文件进、正式素材出 */
 async function uploadAsset(
   bytes: Uint8Array,
@@ -202,6 +239,46 @@ describe("finalizeUpload", () => {
   it("表外 MIME 落 .bin（取用时改走「字节 + 显式 mime」那条来源）", async () => {
     const ref = await uploadAsset(imageBytes(8), { mime: "application/x-weird" });
     expect((await repo.get(ref.assetId))?.path).toBe(`assets/${ref.assetId}.bin`);
+  });
+
+  it("落定时解出 PNG 的宽高：出参与 assets 行都是真值（R76）", async () => {
+    const ref = await uploadAsset(pngBytes(120, 80));
+
+    expect(ref).toMatchObject({ mime: "image/png", width: 120, height: 80 });
+    expect(await repo.get(ref.assetId)).toMatchObject({ width: 120, height: 80 });
+  });
+
+  it("落定时解出 JPEG 的宽高（SOF0 段）", async () => {
+    const ref = await uploadAsset(jpegBytes(640, 480), { mime: "image/jpeg", name: "photo.jpg" });
+
+    expect(ref).toMatchObject({ mime: "image/jpeg", width: 640, height: 480 });
+    expect(await repo.get(ref.assetId)).toMatchObject({ width: 640, height: 480 });
+  });
+
+  it("不是图片：宽高都是 null（不解、不猜）", async () => {
+    const ref = await uploadAsset(Buffer.from("%PDF-1.7 一份文档", "utf8"), {
+      mime: "application/pdf",
+      name: "doc.pdf",
+    });
+
+    expect(ref).toMatchObject({ width: null, height: null });
+    expect(await repo.get(ref.assetId)).toMatchObject({ width: null, height: null });
+  });
+
+  it("截断的 PNG：宽高为 null，上传照样成功", async () => {
+    // 只留签名与块头：IHDR 的宽高字段没进来
+    const truncated = pngBytes(120, 80).subarray(0, 20);
+
+    const ref = await uploadAsset(truncated);
+
+    expect(ref).toMatchObject({ mime: "image/png", bytes: truncated.byteLength });
+    expect(ref.width).toBeNull();
+    expect(ref.height).toBeNull();
+    expect(await repo.get(ref.assetId)).toMatchObject({ width: null, height: null });
+    // 素材确实落成了正式文件
+    expect((await fs.readFile(join(assetsDir, `${ref.assetId}.png`))).byteLength).toBe(
+      truncated.byteLength,
+    );
   });
 
   it("linkMessageAssets：扫落库内容里的 __asset_id 记关系行（同一 message+asset 只一行）", async () => {
@@ -764,6 +841,14 @@ describe("getAsset", () => {
   it("不给 variant 时按原图", async () => {
     const ref = await uploadAsset(imageBytes(8));
     expect((await service.getAsset({ assetId: ref.assetId })).variant).toBe("original");
+  });
+
+  it("回包里带上传时解出的宽高（客户端拿它摆占位框）", async () => {
+    const ref = await uploadAsset(pngBytes(120, 80));
+
+    const fetched = await service.getAsset({ assetId: ref.assetId });
+
+    expect(fetched.asset).toMatchObject({ assetId: ref.assetId, width: 120, height: 80 });
   });
 
   it("id 不认识：报 not_found（不是 internal）", async () => {

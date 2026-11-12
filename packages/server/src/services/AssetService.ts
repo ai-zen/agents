@@ -54,6 +54,7 @@ import {
   type LocalizedText,
   type ProblemFact,
 } from "../wire/index.js";
+import { readImageSizeFromFile } from "./imageSize.js";
 
 // ---------------------------------------------------------------------------
 // 依赖形状
@@ -74,7 +75,7 @@ export interface AssetRecord {
   bytes: number;
   /** 内容摘要；全库唯一，所以它也是去重的键 */
   sha256: string;
-  /** 像素宽度；本波不解码图片，未如时为 `null` */
+  /** 像素宽度：落定时按文件头解出（PNG / JPEG），解不出来为 `null` */
   width: number | null;
   /** 像素高度；口径同 `width` */
   height: number | null;
@@ -234,6 +235,9 @@ export class AssetService {
    *
    * 「这段素材归哪段对话」不在这张表上：归属在消息落库那一刻写进 `conversation_assets`
    * （{@link AssetService.linkMessageAssets}），所以这个入参里的 `conversationId` 不参与登记。
+   *
+   * 文件落到正式位置之后读一次文件头，把像素尺寸一并登记（{@link readImageSizeFromFile}）：
+   * 客户端拿 `width` / `height` 先排占位框，图显示出来时界面不会跳。量不到就是 `null`。
    */
   async finalizeUpload(request: UploadFinalizeRequest): Promise<AssetRef> {
     const assetId = this.newId();
@@ -243,6 +247,7 @@ export class AssetService {
     await fs.mkdir(this.options.paths.assetsDir, { recursive: true });
     await fs.rename(request.tempPath, finalPath);
 
+    const size = await readImageSizeFromFile(finalPath);
     const relativePath = toRelativePath(this.options.paths.dataRoot, finalPath);
     try {
       const { row, created } = await this.assets.upsert({
@@ -252,9 +257,9 @@ export class AssetService {
         mime: request.mime,
         bytes: request.bytes,
         sha256: request.sha256,
-        // 尺寸要解码图片才拿得到；本波不引入图像库，落 `null`（客户端按「未知」处理）
-        width: null,
-        height: null,
+        // 尺寸来自文件头解码；量不到（非 PNG / JPEG、截断、读不出来）时为 `null`
+        width: size?.width ?? null,
+        height: size?.height ?? null,
         createdAt: this.now(),
       });
       // 没插进去：库里已经有一份同摘要的字节，刚改名的那份是多余的
