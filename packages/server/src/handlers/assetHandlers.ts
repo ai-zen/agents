@@ -1,30 +1,38 @@
 /**
- * `asset.*`：上传入口（PRD D5 / F-H7 / F-H8）。
+ * `asset.*`：上传入口与取回（PRD D5 / F-H7 / F-H8）。
  *
- * 这一段在契约里是两个方法（`asset.begin` / `asset.end`）加一条二进制分帧通道，
- * 而它们都长在 WebSocket 上：分片要直接写进 `assets/` 的临时文件、要能按连接清理，
- * 所以由接线层（`net/WsHub` + `net/UploadReceiver`）直接接管，本文件**不重复注册**
- * 这两个方法名，只提供这一域的翻译工作与素材层给别处用的入口。
+ * `asset.begin` / `asset.end` 不在这张表里：它们长在 WebSocket 上（分片要直接写进 `assets/`
+ * 的临时文件、要能按连接清理），由接线层（`net/WsHub` + `net/UploadReceiver`）直接接管，
+ * 这里再注册一份就成了两处实现，客户端会看到两个不同的答案。
  *
- * 之所以仍然留着这个文件：附件结局（`AttachmentOutcome`）里的句子是在素材层（不知道
- * 收件人是谁）按默认语言渲染的，重渲染发生在接线层 —— 那是这一域的翻译，放在这里而不是
- * 散在 `conversation.send` 里。
+ * `asset.get` 在这一格里：它不需要连接状态（不问「你是谁这条连接在做什么」），一条 WS 上的
+ * JSON 请求/响应就够 —— 内容走 base64 回包，因此不涉及二进制下行帧的关联问题。
+ *
+ * 这一域还有一件翻译工作留在这里：附件结局（`AttachmentOutcome`）里的句子是在素材层（不知道
+ * 收件人是谁）按默认语言渲染的，重渲染发生在接线层。
  */
 
 import { render } from "../i18n/index.js";
 import type { Language } from "../i18n/index.js";
 import type { HandlerTable } from "../net/index.js";
-import type { AttachmentOutcome, ProblemFact } from "../wire/index.js";
+import type { AssetService } from "../services/AssetService.js";
+import type { AssetGetParams, AttachmentOutcome, ProblemFact } from "../wire/index.js";
+
+/** `asset.*` 的 handler 依赖 */
+export interface AssetHandlerDeps {
+  assets: AssetService;
+}
 
 /**
  * `asset.*` 的 handler 表。
  *
- * 返回空表是**结论**而不是占位：`asset.begin` / `asset.end` 由 `WsHub` 在注入了
- * `UploadReceiver` 时自己接管（它要拿到连接 id 才能分帧落盘），这里再注册一份就成了两处
- * 实现，客户端会看到两个不同的答案。
+ * 只有 `asset.get`：另外两个方法由接线层接管（见文件头），返回空表才是结论而不是占位。
  */
-export function createAssetHandlers(): HandlerTable {
-  return {};
+export function createAssetHandlers(deps: AssetHandlerDeps): HandlerTable {
+  return {
+    // 按 id 取回内容：`assets` 是资源的唯一真相，历史里的 `asset://` 靠它重放
+    "asset.get": async (context) => await deps.assets.getAsset(context.params as AssetGetParams),
+  };
 }
 
 /** 一个附件结局的句子按这条连接的语言重渲染（码与参数不动，PRD D8） */

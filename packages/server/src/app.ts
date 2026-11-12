@@ -379,9 +379,11 @@ export class ServerApp {
     // 交接服务：入参优先，缺省按 cwd 造一个真的（R59：不再因为「没注入」就不装交接插件）
     this.handoffProvider = options.handoff ?? this.defaultHandoffProvider();
 
-    // ---- 3. 素材（上传落定与「素材 id → 内容段」） ----
+    // ---- 3. 素材（上传落定、厂商 file_id 缓存、「素材 id → 内容段」、`asset://` 两端的解析） ----
     this.assetService = new AssetService({
       assets: this.assets,
+      // 厂商 file_id 是可失效缓存：命中不传、miss 才传（两层缓存的上面那一层）
+      vendorFiles: this.assets,
       paths,
       resolveModelContext: (modelId) => this.resolveModelContext(modelId),
       onProblem: (problem, context) => {
@@ -516,6 +518,10 @@ export class ServerApp {
       emit: (name, payload) => this.emitEvent(name, payload),
       clock: this.clock,
       prepareAttachments: (context) => this.assetService.prepareAttachments(context),
+      // 历史里的 `asset://` 每轮发送前按当前模型还原（换模型 / 重启之后历史里的图还能发）
+      prepareHistory: (context) => this.assetService.resolveHistory(context),
+      // 厂商说「file 不存在/无效」：把这段对话在这个端点上的缓存作废，`ChatRunner` 再试一次
+      invalidateVendorFiles: (context) => this.assetService.invalidateVendorFiles(context),
       // 结算时按这段会话行上的模型取交接线（`setModel` 之后就是新模型的阈值）
       defaultLanguage: options.defaultLanguage ?? DEFAULT_LANGUAGE,
       // R59：一轮结算之后服务端自己判断要不要问交接线的问题（D22：在对话停下之后）
@@ -538,6 +544,8 @@ export class ServerApp {
     this.uploads = new UploadReceiver({
       assetsDir: paths.assetsDir,
       finalize: (request) => this.assetService.finalizeUpload(request),
+      // `asset.begin` 带 sha256 时先问一句：同一段对话里同一张图只存一份、只传一次
+      findExisting: (input) => this.assetService.findExistingAsset(input),
       // 草稿对话（R56）在第一次带图上传时就落库：素材行按 `conversationId` 挂外键，
       // 所以落库这一步挪到 `asset.begin`（与「第一次 send」同义，`ensurePersisted` 自己幂等）
       ensureConversation: async (conversationId, language) => {

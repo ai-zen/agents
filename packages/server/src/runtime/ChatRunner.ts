@@ -164,8 +164,15 @@ export interface ChatAgent {
 
 /** 把已上传的素材变成真正发出去的内容段（PRD F-H7）；不给就原样用 `input.content` */
 export interface AttachmentPreparation {
+  /** 真正发给模型的内容（已按实发模型换成文件引用 / 内联 / 文字） */
   content: AgentNS.MessageContent;
   attachments: AttachmentOutcome[];
+  /**
+   * 落库用的内容（消息里只存我们自己的引用：`asset://<assetId>`）。
+   *
+   * 不给时落库的就是 `content`：不是每个注入方都有“厂商产物不能进库”这回事。
+   */
+  storedContent?: AgentNS.MessageContent;
 }
 
 export type AttachmentPreparer = (context: {
@@ -174,6 +181,30 @@ export type AttachmentPreparer = (context: {
   modelId: string | null;
   input: MessageInput;
 }) => Promise<AttachmentPreparation>;
+
+/**
+ * 历史里的素材引用还原成当前模型能吃的内容段（PRD F-H7）：每轮发送之前跑一次。
+ *
+ * 每轮都要跑一次：能不能吃跟着实发模型 / 端点变，而历史里存的是与端点无关的 `asset://<id>`。
+ * 不给就原样把历史交给 agent。
+ */
+export type AttachmentHistoryResolver = (context: {
+  conversationId: string;
+  modelId: string | null;
+  messages: AgentNS.Message[];
+}) => Promise<AgentNS.Message[]>;
+
+/**
+ * 「厂商说这个 file 不在了」之后的服务端动作：作废这段对话在那个端点上的缓存，返回删掉的行数。
+ *
+ * 返回 0 表示没有可作废的东西（本来就没缓存、或解析不出端点），那一轮就不重试了 —— 没有东西
+ * 被清掉时重试只是再拿同一个 `file_id` 去撞同一面墙。
+ */
+export type VendorFileInvalidator = (context: {
+  conversationId: string;
+  modelId: string | null;
+  error: unknown;
+}) => Promise<number>;
 
 /** 一轮的入参（`conversation.send` 的 params 去掉 wire 外壳） */
 export interface ChatRunParams {
@@ -264,6 +295,17 @@ export interface ChatRunnerOptions {
   /** 边流边写的节流时长（毫秒）；0 表示每到一片就写一次 */
   streamWriteIntervalMs?: number;
   prepareAttachments?: AttachmentPreparer;
+  /**
+   * 历史里的 `asset://` → 当前模型能吃的段（F-H7）。不给时历史原样交给 agent。
+   *
+   * 与 `prepareAttachments` 分开两个注入点，是因为它们错在不同时机：一个在受理时算一次，
+   * 一个每一次发送（含重试）都要重算。
+   */
+  prepareHistory?: AttachmentHistoryResolver;
+  /**
+   * 厂商报「file 不存在/无效」时的自愈口（删缓存 + 重试）。不注入就不重试。
+   */
+  invalidateVendorFiles?: VendorFileInvalidator;
   /** 这一轮没带语言时用哪种语言渲染服务端注入的那段话（D8） */
   defaultLanguage?: Language;
   /** 一轮结算之后的回调（R59：交接线问题由它触发） */
@@ -283,6 +325,33 @@ export const DEFAULT_STREAM_WRITE_INTERVAL_MS = 200;
 interface RawChunk {
   usage?: AgentNS.Usage;
   choices?: Array<{ delta?: AgentNS.Delta; finish_reason?: string | null }>;
+}
+
+/**
+ * 这一条错误像不像「厂商说那个 file 不在了」。
+ *
+ * 这条判断靠错误里的文字（SDK / 厂商给的，各家写法不一样），所以两半都对上才算：说的是「文件」
+ * （或 `file_id`），而且给的是「不存在 / 无效 / 已过期」这类结局。只看一半就重试，会变成对任何
+ * 报错都重发一遗（额度就是这么烧掉的）。
+ */
+function looksLikeVendorFileProblem(error: unknown): boolean {
+  const text = errorText(error);
+  if (text === "") return false;
+  const mentionsFile = /\bfile\b|file_id/i.test(text);
+  const saysGone = /not\s*found|does\s*not\s*exist|no\s*such|invalid|expired|unknown|deleted|missing/i.test(
+    text,
+  );
+  return mentionsFile && saysGone;
+}
+
+/** 任意抛出物 → 一段可搜的文本（错误体里嵌套的 `error.message` 也拿上） */
+function errorText(error: unknown): string {
+  if (typeof error === "string") return error;
+  if (error instanceof Error) {
+    const body = (error as { error?: unknown }).error;
+    return `${error.message} ${typeof body === "object" && body !== null ? JSON.stringify(body) : ""}`;
+  }
+  return "";
 }
 
 /** 正文 / 思考的字符数（分段内容只数文本段） */
@@ -487,9 +556,16 @@ interface TurnSessionInit {
   scope: Scope;
   /** 造 agent 的工厂（由 `ChatRunner` 在受理时定下：注入的那个，或按 SDK 口径装配的那个） */
   createAgent: AgentFactory;
+  /** 库里装载出来的历史（未还原） */
+  rawHistory: AgentNS.Message[];
+  /** 还原之后的历史（这一轮第一次尝试用的那份） */
   history: AgentNS.Message[];
   content: AgentNS.MessageContent;
+  /** 落库用的内容；不给时就是 `content` */
+  storedContent?: AgentNS.MessageContent;
   attachments: AttachmentOutcome[];
+  /** 重新备一次发送内容（重试用）：历史与输入都重算一遍 */
+  reprepare?: () => Promise<AttachmentPreparation>;
   userMessageId: string;
   assistantMessageId: string;
   handle: RunHandle;
@@ -517,8 +593,14 @@ class TurnSession implements ChatTurn {
   private readonly conversation: Conversation;
   private readonly scope: Scope;
   private readonly createAgent: AgentFactory;
-  private readonly history: AgentNS.Message[];
-  private readonly content: AgentNS.MessageContent;
+  /** 库里装载出来的历史（原样，带 `asset://`）：每轮发送前才按当前模型还原 */
+  private readonly rawHistory: AgentNS.Message[];
+  /** 还原后的历史（这一轮实际交给 agent 的那份） */
+  private history: AgentNS.Message[];
+  /** 这一轮发给模型的内容；重试时会被重新备一次（厂商产物变了） */
+  private content: AgentNS.MessageContent;
+  /** 落库的内容（`asset://` 形态）：重试不改它，它就是用户挂的那几张图 */
+  private readonly storedContent: AgentNS.MessageContent;
   private readonly language: Language;
   private readonly handle: RunHandle;
   private readonly options: ChatRunnerOptions;
@@ -526,6 +608,8 @@ class TurnSession implements ChatTurn {
   private readonly newId: () => string;
   private readonly startedAtMs: number;
   private readonly onSettled?: () => void;
+  /** 重试用的重备口（没有注入时就不重试） */
+  private readonly reprepare?: () => Promise<AttachmentPreparation>;
 
   private resolveDone!: (settlement: TurnSettlement) => void;
   private agent?: ChatAgent;
@@ -550,6 +634,8 @@ class TurnSession implements ChatTurn {
   private userIdUsed = false;
   private assistantIdUsed = false;
   private streaming?: AgentNS.Message;
+  /** 这一次尝试还没产生任何可观测的进展（没流出增量、没落过行）—— 只有在这种时候重试才安全 */
+  private cleanAttempt = true;
   /** 结算后 agent 已经被丢掉：把本轮产出留在这里，快照与用量还读得到 */
   private detached?: AgentNS.Message[];
   private generation: GenerationState;
@@ -565,8 +651,11 @@ class TurnSession implements ChatTurn {
     this.conversationId = init.conversation.id;
     this.scope = init.scope;
     this.createAgent = init.createAgent;
+    this.rawHistory = init.rawHistory;
     this.history = init.history;
     this.content = init.content;
+    this.storedContent = init.storedContent ?? init.content;
+    this.reprepare = init.reprepare;
     this.language = init.language;
     this.attachments = init.attachments;
     this.userMessageId = init.userMessageId;
@@ -605,32 +694,120 @@ class TurnSession implements ChatTurn {
   async execute(): Promise<void> {
     try {
       this.pushRunState();
-      const agent = await this.createAgent({
-        conversationId: this.conversationId,
-        workspaceId: this.conversation.workspaceId,
-        agentId: this.conversation.agentId ?? "",
-        modelId: this.conversation.modelId,
-        thinkingLevel: this.conversation.thinkingLevel,
-        scope: this.scope,
-        history: [...this.history],
-      });
-      this.attach(agent);
-
-      // 装配 agent 期间用户就按了停：不再发请求，直接按中止结算
-      if (this.handle.aborted) {
-        this.takeAbortSnapshot();
-        agent.abort();
-      } else {
-        await agent.send(this.content);
-      }
+      await this.attemptOnce();
     } catch (error) {
-      this.recordFailure(error);
+      // 厂商说「这个 file 不存在/无效」：把这段对话在那个端点上的缓存作废，再试一次（最多一次）。
+      // 作废后下一轮发送自然走到重传；重传还不行，SDK 那条既有选路会自己降级到内联、再退到文本。
+      const recovered = await this.retryAfterVendorFileError(error);
+      if (!recovered) this.recordFailure(error);
     } finally {
       await this.settle();
     }
   }
 
+  /** 一次尝试（建 agent → 把历史与用户输入发出去）；失败原样上抛，由 `execute` 决定要不要重试 */
+  private async attemptOnce(): Promise<void> {
+    this.cleanAttempt = true;
+    const agent = await this.createAgent({
+      conversationId: this.conversationId,
+      workspaceId: this.conversation.workspaceId,
+      agentId: this.conversation.agentId ?? "",
+      modelId: this.conversation.modelId,
+      thinkingLevel: this.conversation.thinkingLevel,
+      scope: this.scope,
+      history: [...this.history],
+    });
+    this.attach(agent);
+
+    // 装配 agent 期间用户就按了停：不再发请求，直接按中止结算
+    if (this.handle.aborted) {
+      this.takeAbortSnapshot();
+      agent.abort();
+      return;
+    }
+    await agent.send(this.content);
+  }
+
+  /**
+   * 「file 失效」那条错误的自愈：作废缓存 → 重备内容 → 重跑一次。
+   *
+   * 只在一次尝试还没产生任何可观测进展时重试（第一个请求就因 file 被拒的情形）：已经流出过增量
+   * 或已落过库的那一轮重跑，会在历史里多出一条用户消息，那不是用户做过的事。
+   * 返回 `true` 表示“重试过了”，不管重试本身的成败：成败由重试那一趟自己的错误路径管。
+   */
+  private async retryAfterVendorFileError(error: unknown): Promise<boolean> {
+    const invalidate = this.options.invalidateVendorFiles;
+    if (!invalidate) return false;
+    if (!this.cleanAttempt || this.handle.aborted) return false;
+    if (!looksLikeVendorFileProblem(error)) return false;
+
+    let removed = 0;
+    try {
+      removed = await invalidate({
+        conversationId: this.conversationId,
+        modelId: this.conversation.modelId,
+        error,
+      });
+    } catch (caught) {
+      this.options.onError?.(caught, "作废厂商文件缓存失败");
+      return false;
+    }
+    // 没东西可清：重试只是拿同一个 file_id 再撞一次
+    if (removed === 0) return false;
+
+    this.resetForRetry();
+    try {
+      await this.reprepareContent();
+      await this.attemptOnce();
+      return true;
+    } catch (again) {
+      this.recordFailure(again);
+      return true;
+    }
+  }
+
+  /** 重试前把这一轮的内存现场回到「还没开始」：只有历史与两条预先分配的 id 留着 */
+  private resetForRetry(): void {
+    this.userIdUsed = false;
+    this.assistantIdUsed = false;
+    this.streaming = undefined;
+    this.detached = undefined;
+    this.problem = null;
+    this.producedIds.length = 0;
+    this.deltaSeq.clear();
+    this.runningTools.clear();
+    this.subagents.clear();
+    this.persistedSubAgents.clear();
+    this.abortedInFlight.clear();
+    this.generation = { phase: "connected", since: this.acceptedAt };
+  }
+
+  /** 重算这一轮的发送内容：历史与用户输入都按当前模型重新还原/转换一次 */
+  private async reprepareContent(): Promise<void> {
+    if (!this.reprepare) return;
+    const prepared = await this.reprepare();
+    this.content = prepared.content;
+    this.history = await this.resolveHistory();
+  }
+
   // ---- 装配：把 core 的事件接到本文件 ----
+
+  /** 这一轮交给 agent 的历史（`asset://` 已还原成当前模型能吃的段） */
+  private async resolveHistory(): Promise<AgentNS.Message[]> {
+    const resolve = this.options.prepareHistory;
+    if (!resolve) return this.rawHistory;
+    try {
+      return await resolve({
+        conversationId: this.conversationId,
+        modelId: this.conversation.modelId,
+        messages: this.rawHistory,
+      });
+    } catch (error) {
+      // 还原失败不让整轮发不出去：带着库里原样的历史继续（模型最多拿到一句降级说明）
+      this.options.onError?.(error, "还原历史里的素材引用失败");
+      return this.rawHistory;
+    }
+  }
 
   private attach(agent: ChatAgent): void {
     this.agent = agent;
@@ -708,6 +885,8 @@ class TurnSession implements ChatTurn {
     const delta = chunk.choices?.[0]?.delta;
     // 只有外层字段的收尾片（带 usage / finish_reason）不产生增量事件
     if (!delta) return;
+    // 已经流出内容了：这一轮不能整轮重跑（重跑会在历史里多一条用户消息）
+    this.cleanAttempt = false;
 
     const seq = this.deltaSeq.get(receiver.id) ?? 0;
     this.deltaSeq.set(receiver.id, seq + 1);
@@ -901,6 +1080,8 @@ class TurnSession implements ChatTurn {
 
   private enqueueWrite(message: AgentNS.Message): void {
     this.lastWriteAt = this.clock.now();
+    // 已经落过行了：这一轮不能整轮重跑
+    this.cleanAttempt = false;
     const row = toRow(
       message,
       this.conversationId,
@@ -1040,14 +1221,20 @@ class TurnSession implements ChatTurn {
    * 或被立刻中止），库里那条占位必须有个终态，否则客户端会看到一条永远在写的消息。
    */
   private async persistFinal(outcome: RunOutcome, produced: AgentNS.Message[]): Promise<void> {
-    const rows = produced.map((message) =>
-      toRow(
+    const rows = produced.map((message) => {
+      const row = toRow(
         message,
         this.conversationId,
         this.createdAtOf.get(message.id) ?? this.settledAtMs ?? this.clock.now(),
         this.abortedInFlight.has(message.id) ? AgentNSValue.MessageStatus.Aborted : undefined,
-      ),
-    );
+      );
+      // 用户那条消息在 core 那边带着「这一次发出去的内容」（厂商的 file_id / base64）。
+      // 落库要的是 `asset://` 那一份：否则库里这条消息就绑死在这次发送所用的端点上了。
+      if (message.id === this.userMessageId) {
+        row.content = this.storedContent as unknown as MessageUpsertInput["content"];
+      }
+      return row;
+    });
 
     if (!this.assistantIdUsed) {
       const status =
@@ -1270,15 +1457,18 @@ export class ChatRunner {
       const scope = await this.options.scopes.acquire(workspaceId);
 
       // 装载即修复：上一次进程如果是在写的时候没的，这里把在途消息修成可继续的状态
-      const history = (await this.reconcile(conversationId)).messages;
+      const stored = await this.reconcile(conversationId);
+      const rawHistory = stored.messages;
       const prepared = await this.prepare(params, conversation);
+      const history = await this.resolveHistory(conversationId, rawHistory, conversation.modelId);
 
       const nowMs = this.clock.now();
       const acceptedAt = new Date(nowMs).toISOString();
       const userId = this.newId();
       const assistantId = this.newId();
 
-      // 用户消息与助手占位都在请求返回之前落库（L6：客户端拿着这两个 id 接流）
+      // 用户消息与助手占位都在请求返回之前落库（L6：客户端拿着这两个 id 接流）。
+      // 用户消息存的是 `asset://` 形态（`storedContent`），不是这一次发送的产物
       await this.options.messages.upsertMany([
         {
           id: userId,
@@ -1286,7 +1476,7 @@ export class ChatRunner {
           role: AgentNSValue.Role.User as string,
           status: AgentNSValue.MessageStatus.Completed as string,
           omit: false,
-          content: prepared.content as unknown as MessageUpsertInput["content"],
+          content: (prepared.storedContent ?? prepared.content) as unknown as MessageUpsertInput["content"],
           data: null,
           createdAt: nowMs,
         },
@@ -1306,9 +1496,13 @@ export class ChatRunner {
         conversation,
         scope,
         createAgent: this.agentFactory(),
+        rawHistory,
         history,
         content: prepared.content,
+        ...(prepared.storedContent === undefined ? {} : { storedContent: prepared.storedContent }),
         attachments: prepared.attachments,
+        // 重试用：重新备一次发送内容与历史（厂商 file_id 已经被作废的那一批）
+        reprepare: async () => await this.prepare(params, conversation),
         userMessageId: userId,
         assistantMessageId: assistantId,
         handle,
@@ -1329,6 +1523,26 @@ export class ChatRunner {
     this.turns.set(session.conversationId, session);
     void session.execute();
     return session;
+  }
+
+  /**
+   * 历史装载完之后的第一件事情：把里面的 `asset://` 还原成当前模型能吃的段（F-H7）。
+   *
+   * 还原失败不让整轮发不出去：打一条日志、带着原样的历史继续。
+   */
+  private async resolveHistory(
+    conversationId: string,
+    messages: AgentNS.Message[],
+    modelId: string | null,
+  ): Promise<AgentNS.Message[]> {
+    const resolve = this.options.prepareHistory;
+    if (!resolve) return messages;
+    try {
+      return await resolve({ conversationId, modelId, messages });
+    } catch (error) {
+      this.options.onError?.(error, "还原历史里的素材引用失败");
+      return messages;
+    }
   }
 
   /** 这一段对话正在跑的那一轮（没有就 `undefined`）：拉现场用 */

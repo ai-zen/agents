@@ -1,8 +1,11 @@
 /**
- * 素材服务的验收：落定与登记、`assetIds` → 内容段（F-H7 / R44）、按引用清理（R33）。
+ * 素材服务的验收：落定与登记（含对话内去重）、`assetIds` → 内容段（F-H7 / R44）、
+ * 两层缓存（`assets` + 可失效的 `asset_vendor_files`）、`asset://` 的生成与还原、
+ * 按 id 取内容（`asset.get`）、按引用清理（R33）。
  *
  * 传输方式的选择交给 SDK 的 `fileToContentSection`（本服务不另写一套判定），所以用例里
- * 换成不同的端点/模型组合，验的是「最终走成了哪条路」以及「账有没有如实记」。
+ * 换成不同的端点/模型组合，验的是「最终走成了哪条路」以及「账有没有如实记」；
+ * 上传次数用假上传的计数器验：命中缓存就不该发 HTTP。
  */
 
 import { createHash, randomUUID } from "node:crypto";
@@ -21,6 +24,8 @@ import { MAX_ASSETS_PER_MESSAGE, type AssetRef, type AttachmentOutcome } from ".
 import { ServerError } from "../wire/errors.js";
 import {
   AssetService,
+  assetIdsOf,
+  type AssetVendorRegistry,
   type AttachmentModelContext,
   type AttachmentPrepareContext,
 } from "./AssetService.js";
@@ -79,6 +84,8 @@ beforeEach(async () => {
   uploadedFiles = [];
   service = new AssetService({
     assets: repo,
+    // 厂商 file_id 的缓存表就挂在同一个仓储上（两层缓存：assets 是真相，这张是缓存）
+    vendorFiles: repo,
     paths,
     resolveModelContext: () => modelContext,
     toolEnv: {
@@ -229,7 +236,7 @@ describe("prepareAttachments", () => {
     expect(url.startsWith("data:image/png;base64,")).toBe(true);
   });
 
-  it("端点声明 Files API：走文件引用（file_id）；每次取用都由 SDK 真上传一次", async () => {
+  it("端点声明 Files API：走文件引用（file_id），并且第二次取用命中缓存、不再发 HTTP", async () => {
     modelContext = { model: model(true), endpoint: endpoint(true) };
     const ref = await uploadAsset(imageBytes(16));
 
@@ -239,9 +246,16 @@ describe("prepareAttachments", () => {
     expect(outcome.section).toEqual({ type: "file", file_id: "file-1" });
     expect(uploadedFiles).toEqual([`${ref.assetId}.png`]);
 
-    // SDK 不记厂商侧的文件 id：再取用同一张就是再传一次，要避免重复上传得由服务端自己记 id
-    await service.prepareAttachments(prepare([ref.assetId]));
-    expect(uploadedFiles).toHaveLength(2);
+    // SDK 不再记厂商侧的文件 id（它的进程内缓存在上一波删掉了），所以由我们的表记：
+    // 第二次取用同一张图，`asset_vendor_files` 命中，一个 HTTP 都不发
+    const second = await service.prepareAttachments(prepare([ref.assetId]));
+    expect(outcomeOf(second.attachments, ref.assetId).section).toEqual({
+      type: "file",
+      file_id: "file-1",
+    });
+    expect(uploadedFiles).toHaveLength(1);
+    // 命中也把 lastUsedAt 更新一次（缓存行还活着）
+    expect((await repo.getVendorFile(ref.assetId, "ep-files"))?.lastUsedAt).toBe(NOW_MS);
   });
 
   it("模型读不了图：退化成文字，并如实记账", async () => {
@@ -386,5 +400,334 @@ describe("按引用清理", () => {
   it("文件已经不在了也不报错（清理要能重复执行）", async () => {
     const removed = await service.removeFiles(["assets/gone.png"]);
     expect(removed).toEqual(["assets/gone.png"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 对话内去重（同一张图贴两次只占一份磁盘）
+// ---------------------------------------------------------------------------
+
+describe("对话内去重", () => {
+  it("同一段对话里同一份字节上传两次：只落一份文件、第二次回既有 assetId", async () => {
+    const bytes = imageBytes(48);
+    const first = await uploadAsset(bytes);
+    const second = await uploadAsset(bytes, { name: "again.png" });
+
+    expect(second.assetId).toBe(first.assetId);
+    // 磁盘上只有一份（文件名是第一次那个 assetId）
+    expect(await fs.readdir(assetsDir)).toEqual([`${first.assetId}.png`]);
+    expect((await repo.listByConversation("c1")).map((row) => row.id)).toEqual([first.assetId]);
+    // 库里那一行留着第一次的名字
+    expect((await repo.get(first.assetId))?.name).toBe("photo.png");
+  });
+
+  it("换一段对话，同一份字节是另一份资源（去重不跨对话）", async () => {
+    await db.run(
+      `INSERT INTO conversations (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
+       VALUES ('c2', 'w1', '另一段', 0, 'agent-1', 'm-1', 2, 2)`,
+    );
+    const bytes = imageBytes(32);
+    const first = await uploadAsset(bytes);
+    const second = await uploadAsset(bytes, { conversationId: "c2" });
+
+    expect(second.assetId).not.toBe(first.assetId);
+    expect(await fs.readdir(assetsDir)).toHaveLength(2);
+  });
+
+  it("findExistingAsset：同对话 + 同摘要 + 同字节才算命中，字节数对不上不算", async () => {
+    const bytes = imageBytes(24);
+    const ref = await uploadAsset(bytes);
+    const digest = createHash("sha256").update(bytes).digest("hex");
+
+    const hit = await service.findExistingAsset({
+      conversationId: "c1",
+      sha256: digest,
+      bytes: bytes.byteLength,
+    });
+    expect(hit?.assetId).toBe(ref.assetId);
+
+    const miss = await service.findExistingAsset({
+      conversationId: "c1",
+      sha256: digest,
+      bytes: bytes.byteLength + 1,
+    });
+    expect(miss).toBeNull();
+    expect(
+      await service.findExistingAsset({ conversationId: "c1", sha256: "other", bytes: 24 }),
+    ).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 两层缓存：厂商 file_id 的失效与重建
+// ---------------------------------------------------------------------------
+
+describe("厂商 file_id 缓存", () => {
+  it("换端点：同一份素材在新端点上重传一次，新端点有自己的 file_id", async () => {
+    modelContext = { model: model(true), endpoint: endpoint(true) };
+    const ref = await uploadAsset(imageBytes(20));
+    await service.prepareAttachments(prepare([ref.assetId]));
+    expect(uploadedFiles).toHaveLength(1);
+
+    // 换一个端点（id 不同）：缓存按 (assetId, endpointId) 命中不了，要重传一次
+    modelContext = {
+      model: model(true),
+      endpoint: { ...endpoint(true), id: "ep-files-2" },
+    };
+    const second = await service.prepareAttachments(prepare([ref.assetId]));
+    expect(outcomeOf(second.attachments, ref.assetId).deliveredAs).toBe("file_reference");
+    expect(uploadedFiles).toHaveLength(2);
+    expect((await repo.getVendorFile(ref.assetId, "ep-files"))?.vendorFileId).toBe("file-1");
+    expect((await repo.getVendorFile(ref.assetId, "ep-files-2"))?.vendorFileId).toBe("file-2");
+    // 历史数据一个字都没变：素材行还是第一次那一行
+    expect(await repo.get(ref.assetId)).toBeDefined();
+  });
+
+  it("invalidateVendorFiles：删掉「这段对话 + 这个端点」的缓存，下一轮重传一次", async () => {
+    modelContext = { model: model(true), endpoint: endpoint(true) };
+    const ref = await uploadAsset(imageBytes(20));
+    await service.prepareAttachments(prepare([ref.assetId]));
+    expect(await repo.listVendorFiles("c1", "ep-files")).toHaveLength(1);
+
+    const removed = await service.invalidateVendorFiles({
+      conversationId: "c1",
+      modelId: "m-1",
+    });
+    expect(removed).toBe(1);
+    expect(await repo.listVendorFiles("c1", "ep-files")).toEqual([]);
+
+    // 缓存删了、素材还在：下一轮重新上传（这就是“删光也能从 assets 重建”）
+    await service.prepareAttachments(prepare([ref.assetId]));
+    expect(uploadedFiles).toHaveLength(2);
+    expect(await repo.listVendorFiles("c1", "ep-files")).toHaveLength(1);
+  });
+
+  it("解码不出端点时如实回 0（没有可作废的东西，调用方就不该重试）", async () => {
+    modelContext = { model: model(true), endpoint: null };
+    const ref = await uploadAsset(imageBytes(8));
+    await repo.upsertVendorFile({
+      assetId: ref.assetId,
+      endpointId: "ep-files",
+      vendorFileId: "file-1",
+      createdAt: NOW_MS,
+      lastUsedAt: NOW_MS,
+    });
+
+    expect(await service.invalidateVendorFiles({ conversationId: "c1", modelId: "m-1" })).toBe(0);
+    // 解析不出端点时那批缓存原样留着（没有依据说它们坏了）
+    expect(await repo.listVendorFiles("c1", "ep-files")).toHaveLength(1);
+  });
+
+  it("上传失败仍按既有选路降级：读缓存/写缓存出错都不该让发送失败", async () => {
+    modelContext = { model: model(true), endpoint: endpoint(true) };
+    const ref = await uploadAsset(imageBytes(8));
+    const broken: AssetVendorRegistry = {
+      getVendorFile: async () => {
+        throw new Error("db down");
+      },
+      upsertVendorFile: async () => {
+        throw new Error("db down");
+      },
+      touchVendorFile: async () => 0,
+      listVendorFiles: async () => [],
+      deleteVendorFiles: async () => 0,
+    };
+    const withBrokenCache = new AssetService({
+      assets: repo,
+      vendorFiles: broken,
+      paths,
+      resolveModelContext: () => modelContext,
+      toolEnv: {
+        upload: async ({ filename }) => {
+          uploadedFiles.push(filename);
+          return `file-${uploadedFiles.length}`;
+        },
+      },
+      now: () => NOW_MS,
+    });
+
+    const prepared = await withBrokenCache.prepareAttachments(prepare([ref.assetId]));
+    expect(outcomeOf(prepared.attachments, ref.assetId).deliveredAs).toBe("file_reference");
+    expect(uploadedFiles).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `asset://` 的生成（落库形态）与还原（发送前）
+// ---------------------------------------------------------------------------
+
+describe("asset:// 两端", () => {
+  it("prepareAttachments 同时给出发送形态与落库形态；落库形态里只有 asset://", async () => {
+    modelContext = { model: model(true), endpoint: endpoint(true) };
+    const ref = await uploadAsset(imageBytes(16));
+
+    const prepared = await service.prepareAttachments(prepare([ref.assetId]));
+
+    // 发送形态：厂商产物（file_id），会随端点/模型变
+    const sent = prepared.content as AgentNS.MessageContentSection[];
+    expect(sent[1]).toEqual({ type: "file", file_id: "file-1" });
+
+    // 落库形态：只有我们自己的引用
+    const stored = prepared.storedContent as AgentNS.MessageContentSection[];
+    expect(stored).toEqual([
+      { type: "text", text: "看看这张图" },
+      { type: "image_url", image_url: { url: `asset://${ref.assetId}` } },
+    ]);
+    const flat = JSON.stringify(stored);
+    expect(flat).not.toContain("file-1");
+    expect(flat).not.toContain("base64");
+    expect(flat).not.toContain(assetsDir);
+  });
+
+  it("非图片素材写进 file.file_id（同样是 asset:// 引用）", async () => {
+    const ref = await uploadAsset(imageBytes(10), { mime: "application/pdf", name: "a.pdf" });
+
+    const prepared = await service.prepareAttachments(prepare([ref.assetId]));
+
+    expect((prepared.storedContent as AgentNS.MessageContentSection[])[1]).toEqual({
+      type: "file",
+      file_id: `asset://${ref.assetId}`,
+      filename: "a.pdf",
+    });
+  });
+
+  it("assetIdsOf 从落库内容里认回素材 id（撤回回填用）", () => {
+    expect(
+      assetIdsOf([
+        { type: "text", text: "看看" },
+        { type: "image_url", image_url: { url: "asset://a1" } },
+        { type: "file", file_id: "asset://a2", filename: "a.pdf" },
+        { type: "image_url", image_url: { url: "https://example.test/x.png" } },
+        { type: "image_url", image_url: { url: "asset://a1" } },
+      ]),
+    ).toEqual(["a1", "a2"]);
+    expect(assetIdsOf("纯文本")).toEqual([]);
+  });
+
+  it("resolveHistory：历史里的 asset:// 换成当前模型能吃的内容段", async () => {
+    const ref = await uploadAsset(imageBytes(16));
+    const history: AgentNS.Message[] = [
+      {
+        id: "m1",
+        role: "user" as AgentNS.Role,
+        content: [
+          { type: "text", text: "这张图" },
+          { type: "image_url", image_url: { url: `asset://${ref.assetId}` } },
+        ],
+      },
+      { id: "m2", role: "assistant" as AgentNS.Role, content: "看到了" },
+    ];
+
+    const resolved = await service.resolveHistory({
+      conversationId: "c1",
+      modelId: "m-1",
+      messages: history,
+    });
+
+    const sections = resolved[0]?.content as AgentNS.MessageContentSection[];
+    expect(sections[0]).toEqual({ type: "text", text: "这张图" });
+    expect(sections[1]?.type).toBe("image_url");
+    const url = (sections[1] as { image_url: { url: string } }).image_url.url;
+    expect(url.startsWith("data:image/png;base64,")).toBe(true);
+    // 原消息不被就地改写（历史是只读的装载结果）
+    expect((history[0]?.content as AgentNS.MessageContentSection[])[1]).toEqual({
+      type: "image_url",
+      image_url: { url: `asset://${ref.assetId}` },
+    });
+    // 没有素材段的消息原样返回
+    expect(resolved[1]).toBe(history[1]);
+  });
+
+  it("resolveHistory：换了不看图的模型时，历史里的图退化成文字而不是原样发给厂商", async () => {
+    modelContext = { model: model(false), endpoint: endpoint(false) };
+    const ref = await uploadAsset(imageBytes(16));
+
+    const resolved = await service.resolveHistory({
+      conversationId: "c1",
+      modelId: "m-1",
+      messages: [
+        {
+          id: "m1",
+          role: "user" as AgentNS.Role,
+          content: [{ type: "image_url", image_url: { url: `asset://${ref.assetId}` } }],
+        },
+      ],
+    });
+
+    const sections = resolved[0]?.content as AgentNS.MessageContentSection[];
+    expect(sections[0]?.type).toBe("text");
+    expect(JSON.stringify(sections)).not.toContain("asset://");
+  });
+
+  it("resolveHistory：素材已经不在时给一句文字说明（不把 asset:// 交给厂商）", async () => {
+    const resolved = await service.resolveHistory({
+      conversationId: "c1",
+      modelId: "m-1",
+      messages: [
+        {
+          id: "m1",
+          role: "user" as AgentNS.Role,
+          content: [{ type: "image_url", image_url: { url: "asset://gone" } }],
+        },
+      ],
+    });
+
+    const sections = resolved[0]?.content as AgentNS.MessageContentSection[];
+    expect(sections[0]?.type).toBe("text");
+    expect(JSON.stringify(sections)).not.toContain("asset://");
+  });
+
+  it("没有 asset:// 的历史不碰盘、不上传（原样返回同一个数组）", async () => {
+    const history: AgentNS.Message[] = [
+      { id: "m1", role: "user" as AgentNS.Role, content: "只有文字" },
+    ];
+    const resolved = await service.resolveHistory({
+      conversationId: "c1",
+      modelId: "m-1",
+      messages: history,
+    });
+
+    expect(resolved).toBe(history);
+    expect(uploadedFiles).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// asset.get
+// ---------------------------------------------------------------------------
+
+describe("getAsset", () => {
+  it("两档都能取到字节，且与落盘的那份逐字节一致", async () => {
+    const bytes = imageBytes(40);
+    const ref = await uploadAsset(bytes);
+
+    for (const variant of ["original", "thumb"] as const) {
+      const fetched = await service.getAsset({ assetId: ref.assetId, variant });
+      expect(fetched.variant).toBe(variant);
+      expect(fetched.asset.assetId).toBe(ref.assetId);
+      expect(new Uint8Array(Buffer.from(fetched.data, "base64"))).toEqual(bytes);
+    }
+  });
+
+  it("不给 variant 时按原图", async () => {
+    const ref = await uploadAsset(imageBytes(8));
+    expect((await service.getAsset({ assetId: ref.assetId })).variant).toBe("original");
+  });
+
+  it("id 不认识：报 not_found（不是 internal）", async () => {
+    const error = (await service.getAsset({ assetId: "nope" }).catch((caught: unknown) => caught)) as ServerError;
+    expect(ServerError.is(error)).toBe(true);
+    expect(error.code).toBe("not_found");
+  });
+
+  it("行在而文件不在：报 not_found，并说明是文件缺失", async () => {
+    const ref = await uploadAsset(imageBytes(8));
+    await fs.rm(join(assetsDir, `${ref.assetId}.png`));
+
+    const error = (await service
+      .getAsset({ assetId: ref.assetId })
+      .catch((caught: unknown) => caught)) as ServerError;
+    expect(error.code).toBe("not_found");
+    expect((error.detail as { reason?: string }).reason).toBe("asset_file_missing");
   });
 });

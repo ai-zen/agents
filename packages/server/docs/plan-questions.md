@@ -224,3 +224,19 @@
 - [src/wire/states.ts] （自决，越界一处）`StatusBlock` 的 model 块事实原先内联写了一份 `{ modelId; name; vision; overriddenThisSession }`，改成引用新的 `ModelState`：契约里同一个形状只留一份，`ConversationModelState` 现在是它的别名。
 - [src/app.ts] `ConversationStateRegistry` 删掉后，服务层要的 `ConversationRuntimePort` 只剩 `isRunning` / `forget`，由 `ServerApp.createConversationRuntime()` 现拼（`forget` 指向 `ChatRunner.forget`，晚绑定）。`app.conversationStates` 这个可读属性随之消失。
 - [src/net/UploadReceiver.ts] 服务端已补上「上传前先让草稿对话落库」（`asset.begin` → `ConversationService.ensurePersisted`），所以 `packages/client/src/integration.test.ts` 里那条「草稿对话上传到 asset.end 被外键拒掉、码是 internal」的用例会红（它自己写了「服务端哪天补上，这条会红」），CLI 里「草稿上不尝试上传」的分支也该一起删：这一波按边界没有碰 `packages/client`，交客户端那一侧收尾。
+
+## W10（资源表与厂商关联表）追加
+
+- **用户裁定（本节即结论，别再重开）**：两张表 —— `assets`（现有表，不改名）= **资源的唯一真相**（补 `sha256 NOT NULL` + `width`/`height` 可空，加 `UNIQUE(conversationId, sha256)` 做对话内去重）；`asset_vendor_files`（新增）= **可失效的缓存**（`assetId → assets(id) ON DELETE CASCADE`、`endpointId`、`vendorFileId`、`createdAt`、`lastUsedAt`，`UNIQUE(assetId, endpointId)`，索引 `lastUsedAt`，删光能从 `assets` 重建）。消息里只许持久化 `asset://<assetId>`；厂商 `file_id` / base64 / SDK 的文本降级文案一律不进库。SDK 已删掉它自己的上传缓存，去重由我们的表负责，注入点是 `deps.upload`。`vendorFileId` 失效时删掉该端点下这段对话的缓存行、重试一次（每轮最多一次）。`asset.begin` 收 `sha256`，命中「同 conversationId + 同 sha256 + 同 bytes」直接回既有 assetId、不收字节。新方法 `asset.get({ assetId, variant })`，`thumb` 本波等同原图。不做：持久化 `file_id` 以外的东西、跨机共享、新依赖、给 SDK 加缓存。
+- [src/wire/methods.ts] （自决）`AssetBeginResult` 用**判别式的两个字段**而不是联合类型：`deduped: boolean` + `uploadId: string | null` + `asset: AssetRef | null`。理由是它在 `MethodMap` 里必须是一个具名类型（联合会被拆成两个匿名分支，客户端 `call` 的返回类型也跟着变成联合）。代价是「`deduped: true` 时 `asset` 必非空」这条只能靠注释与实现保证，类型上表达不出来；客户端 `uploadAsset` 里加了一句显式校验（两个字段自相矛盾时报本地错）。
+- [src/net/UploadReceiver.ts] （自决）去重判定放在 `begin` 的**最前面**，命中时连「让草稿对话落库」都跳过：素材行上的外键已经证明这段对话在库里，再去 `ensurePersisted` 一次只是多一次读库。去重查询本身失败按「没命中」处理（去重是省一次上传的优化，不是上传的前提）。
+- [src/net/UploadReceiver.ts] （自决）「同 bytes」这个条件是我加的第三道校验：摘要相同本来就等于内容相同，但它能挡住「客户端报的总长与服务端那一行对不上」这种自相矛盾的声明 —— 对不上就当作没命中，让客户端老实传一遍（服务端会复核长度与摘要）。
+- [src/services/AssetService.ts] （自决）缺省上传实现（`POST {baseUrl}/files`）在服务端重写了一份，因为 SDK 的 `defaultUpload` **没有从包根导出**（服务端只能调 SDK 的公开出口），而注入了 `deps.upload` 之后 SDK 就不会再用自己的缺省实现。用原生 `fetch` + `FormData`，不引依赖。
+- [src/services/AssetService.ts] （自决）`asset_dedup` 撞车（两个上传同时落同一份字节）走 `upsert`：后者删掉自己刚改名的那份文件、回先到的那一行。`finalizeUpload` 因此不再用 `create`。
+- [src/services/AssetService.ts] （自决）**落库形态包含「这一轮没送出去的图」**：`storedContent` 收的是「有素材行的那几份」，与「这一轮实际送达了哪几份」无关（送达失败的事实进 `AttachmentOutcome`，不进库）。理由是 `assets` 是真相、消息记的是「用户挂了哪几张图」；下一轮发送时会重新尝试（可能这次送得出去）。若认为「送不出去的就不该进历史」，改一行（只在 `outcome.deliveredAs !== "dropped"` 时收）即可，请 PM 定。
+- [src/services/AssetService.ts] （自决）`resolveHistory` 里还原失败的那一段换成一句**给模型看的**英文说明（`[Attachment] <name> is no longer available in this conversation.`），而不是把 `asset://` 原样交给厂商（那会整条请求 400）。它不进 i18n：这是发给模型的文字，不是给人看的文案（SDK 自己的降级提示也是这么写的）。
+- [src/runtime/ChatRunner.ts] （自决）「file 失效 → 清缓存 + 重试一次」的触发条件是**两个**都成立：错误文本里说到「文件 / `file_id`」，且给出的是「不存在 / 无效 / 已过期」这类结局。只看一半就会对任何报错都重发一遍（额度就是这么烧掉的）。另外只在「这一次尝试还没产生任何可观测进展」（没流出增量、没落过库）时重试 —— 已经有人看见内容的那一轮重跑，会在历史里多出一条用户消息。
+- [src/runtime/ChatRunner.ts] （自决）重试是「重新装配 agent + 重备内容」（`reprepare` 回调重新跑一次 `prepareAttachments` 与 `resolveHistory`），而不是复用上一趟的 agent：厂商产物在缓存被作废之后本来就该重算。`asset_vendor_files` 被清空后，重传失败仍走 SDK 既有的选路降级（上传失败 → 内联；内联超限 → 文字），我们没有另造一套降级。
+- [src/services/ConversationService.ts] （自决，越界一行）撤回回填的 `assetIds` 现在合并两个来源：`assets.messageId`（上传早于消息落库时挂上的那条）与**消息 content 里的 `asset://`**。对话内去重让同一张图可以被好几条消息引用，而 `messageId` 一列只能指向最后挂上去的那一条 —— 「这条消息挂了哪几张图」的真值其实是 content。
+- [packages/client/src/upload.ts] （自决）`sha256` 现在在 `begin` 就交上去（以前只在 `end` 交）：客户端本来就要算它，提前给等于让服务端能提前短路。`maxBytes` 的本地复核挪到 `deduped` 判断之后（命中时不必再看上限）。
+- [packages/client/src/integration.test.ts] 按 W7-C 的交接删掉了那条「草稿对话上传被外键拒」的存量红用例（服务端已让草稿在 `asset.begin` 落库），另外把「一次传 5 张」的用例改成五份**内容各不相同**的字节：相同内容现在会命中对话内去重（那是另一条用例的前提）。

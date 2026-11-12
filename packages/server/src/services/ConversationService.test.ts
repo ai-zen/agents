@@ -426,6 +426,7 @@ describe("ConversationService.delete（D17）", () => {
       path: "assets/as1.png",
       mime: "image/png",
       bytes: 5,
+      sha256: "sha256-1",
       createdAt: 3,
     });
 
@@ -639,6 +640,7 @@ describe("ConversationService.revert（D24）", () => {
       path: "assets/as1.png",
       mime: "image/png",
       bytes: 5,
+      sha256: "sha256-2",
       createdAt: 1_250,
     });
 
@@ -703,6 +705,7 @@ describe("ConversationService.revert（D24）", () => {
       path: "assets/as1.png",
       mime: "image/png",
       bytes: 5,
+      sha256: "sha256-3",
       createdAt: 11,
     });
 
@@ -801,6 +804,7 @@ describe("ConversationService.setModel（F-B4 / D20：会话级、落库）", ()
       path: "assets/as1.png",
       mime: "image/png",
       bytes: 5,
+      sha256: "sha256-4",
       createdAt: 3,
     });
 

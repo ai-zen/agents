@@ -13,7 +13,12 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { ServerError } from "../wire/errors.js";
-import { MAX_ASSET_BYTES, type AssetBeginParams, type AssetRef } from "../wire/index.js";
+import {
+  MAX_ASSET_BYTES,
+  type AssetBeginParams,
+  type AssetBeginResult,
+  type AssetRef,
+} from "../wire/index.js";
 import {
   decodeChunkFrame,
   encodeChunkFrame,
@@ -39,6 +44,17 @@ function payload(size: number): Uint8Array {
 
 function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+/**
+ * 取本次 `begin` 的上传句柄。
+ *
+ * `uploadId` 在契约里可空：命中对话内去重时它没有句柄（客户端不必再传）。这几条用例走的都是
+ * 新上传，所以这里要一个非空值；`null` 就说明 behaviour 变了，直接让用例红。
+ */
+function handleOf(began: AssetBeginResult): string {
+  if (began.uploadId === null) throw new Error("新上传没有拿到 uploadId");
+  return began.uploadId;
 }
 
 /** 收完之后的落定：把临时文件改成正式文件，回一个引用（真实现是 `AssetService.finalizeUpload`） */
@@ -80,17 +96,17 @@ describe("三段式上传", () => {
     expect(began.receivedBytes).toBe(0);
     expect(began.maxBytes).toBe(MAX_ASSET_BYTES);
     // 临时文件已经开了，但内容还是空的
-    expect(await listDir(assetsDir)).toEqual([`.upload-${began.uploadId}.part`]);
+    expect(await listDir(assetsDir)).toEqual([`.upload-${handleOf(began)}.part`]);
 
-    await receiver.receiveBinary(CONNECTION, encodeChunkFrame(began.uploadId, bytes.subarray(0, 1024)));
+    await receiver.receiveBinary(CONNECTION, encodeChunkFrame(handleOf(began), bytes.subarray(0, 1024)));
     const received = await receiver.receiveBinary(
       CONNECTION,
-      encodeChunkFrame(began.uploadId, bytes.subarray(1024)),
+      encodeChunkFrame(handleOf(began), bytes.subarray(1024)),
     );
     expect(received).toBe(bytes.byteLength);
 
     const ended = await receiver.end(CONNECTION, {
-      uploadId: began.uploadId,
+      uploadId: handleOf(began),
       sha256: sha256(bytes),
     });
 
@@ -98,8 +114,8 @@ describe("三段式上传", () => {
     expect(ended.asset.mime).toBe("image/png");
     expect(ended.asset.name).toBe("photo.png");
     // 临时文件没了，正式文件在，内容一致
-    expect(await listDir(assetsDir)).toEqual([`${began.uploadId}.bin`]);
-    const written = await fs.readFile(join(assetsDir, `${began.uploadId}.bin`));
+    expect(await listDir(assetsDir)).toEqual([`${handleOf(began)}.bin`]);
+    const written = await fs.readFile(join(assetsDir, `${handleOf(began)}.bin`));
     expect(new Uint8Array(written)).toEqual(bytes);
     // 落定时拿到的是校验过的事实
     expect(finalized).toHaveLength(1);
@@ -129,21 +145,21 @@ describe("三段式上传", () => {
       bytes: second.byteLength,
       conversationId: "c1",
     });
-    expect(beganFirst.uploadId).not.toBe(beganSecond.uploadId);
+    expect(handleOf(beganFirst)).not.toBe(handleOf(beganSecond));
     expect(receiver.pendingCount(CONNECTION)).toBe(2);
 
     // 交错的帧：各回各的上传
-    await receiver.receiveBinary(CONNECTION, encodeChunkFrame(beganFirst.uploadId, first.subarray(0, 400)));
-    await receiver.receiveBinary(CONNECTION, encodeChunkFrame(beganSecond.uploadId, second.subarray(0, 900)));
-    await receiver.receiveBinary(CONNECTION, encodeChunkFrame(beganFirst.uploadId, first.subarray(400)));
-    await receiver.receiveBinary(CONNECTION, encodeChunkFrame(beganSecond.uploadId, second.subarray(900)));
+    await receiver.receiveBinary(CONNECTION, encodeChunkFrame(handleOf(beganFirst), first.subarray(0, 400)));
+    await receiver.receiveBinary(CONNECTION, encodeChunkFrame(handleOf(beganSecond), second.subarray(0, 900)));
+    await receiver.receiveBinary(CONNECTION, encodeChunkFrame(handleOf(beganFirst), first.subarray(400)));
+    await receiver.receiveBinary(CONNECTION, encodeChunkFrame(handleOf(beganSecond), second.subarray(900)));
 
     const endedSecond = await receiver.end(CONNECTION, {
-      uploadId: beganSecond.uploadId,
+      uploadId: handleOf(beganSecond),
       sha256: sha256(second),
     });
     const endedFirst = await receiver.end(CONNECTION, {
-      uploadId: beganFirst.uploadId,
+      uploadId: handleOf(beganFirst),
       sha256: sha256(first),
     });
 
@@ -194,10 +210,10 @@ describe("拒绝与清理", () => {
       bytes: bytes.byteLength,
       conversationId: "c1",
     });
-    await receiver.receiveBinary(CONNECTION, encodeChunkFrame(began.uploadId, bytes.subarray(0, 60)));
+    await receiver.receiveBinary(CONNECTION, encodeChunkFrame(handleOf(began), bytes.subarray(0, 60)));
 
     const error = await receiver
-      .end(CONNECTION, { uploadId: began.uploadId, sha256: sha256(bytes) })
+      .end(CONNECTION, { uploadId: handleOf(began), sha256: sha256(bytes) })
       .catch((caught: unknown) => caught);
 
     expect((error as ServerError).code).toBe("invalid_params");
@@ -218,10 +234,10 @@ describe("拒绝与清理", () => {
       bytes: bytes.byteLength,
       conversationId: "c1",
     });
-    await receiver.receiveBinary(CONNECTION, encodeChunkFrame(began.uploadId, bytes));
+    await receiver.receiveBinary(CONNECTION, encodeChunkFrame(handleOf(began), bytes));
 
     const error = await receiver
-      .end(CONNECTION, { uploadId: began.uploadId, sha256: sha256(payload(99)) })
+      .end(CONNECTION, { uploadId: handleOf(began), sha256: sha256(payload(99)) })
       .catch((caught: unknown) => caught);
 
     expect((error as ServerError).detail).toMatchObject({ reason: "digest_mismatch" });
@@ -237,7 +253,7 @@ describe("拒绝与清理", () => {
     });
 
     const error = await receiver
-      .receiveBinary(CONNECTION, encodeChunkFrame(began.uploadId, payload(11)))
+      .receiveBinary(CONNECTION, encodeChunkFrame(handleOf(began), payload(11)))
       .catch((caught: unknown) => caught);
 
     expect((error as ServerError).code).toBe("payload_too_large");
@@ -252,7 +268,7 @@ describe("拒绝与清理", () => {
       bytes: 100,
       conversationId: "c1",
     });
-    await receiver.receiveBinary(CONNECTION, encodeChunkFrame(began.uploadId, payload(50)));
+    await receiver.receiveBinary(CONNECTION, encodeChunkFrame(handleOf(began), payload(50)));
     expect((await listDir(assetsDir)).length).toBe(1);
 
     await receiver.abortConnection(CONNECTION);
@@ -261,7 +277,7 @@ describe("拒绝与清理", () => {
     expect(receiver.pendingCount()).toBe(0);
     // 断了之后再 end：按「没有这个上传」处理
     const error = await receiver
-      .end(CONNECTION, { uploadId: began.uploadId, sha256: sha256(payload(100)) })
+      .end(CONNECTION, { uploadId: handleOf(began), sha256: sha256(payload(100)) })
       .catch((caught: unknown) => caught);
     expect((error as ServerError).code).toBe("not_found");
   });
@@ -280,10 +296,10 @@ describe("拒绝与清理", () => {
       bytes: bytes.byteLength,
       conversationId: "c1",
     });
-    await failing.receiveBinary(CONNECTION, encodeChunkFrame(began.uploadId, bytes));
+    await failing.receiveBinary(CONNECTION, encodeChunkFrame(handleOf(began), bytes));
 
     await expect(
-      failing.end(CONNECTION, { uploadId: began.uploadId, sha256: sha256(bytes) }),
+      failing.end(CONNECTION, { uploadId: handleOf(began), sha256: sha256(bytes) }),
     ).rejects.toThrow("登记失败");
     expect(await listDir(assetsDir)).toEqual([]);
   });
@@ -309,7 +325,7 @@ describe("草稿对话的落库（R56）", () => {
     );
 
     expect(ensured).toEqual([["draft-1", "zh"]]);
-    expect(await listDir(assetsDir)).toEqual([`.upload-${began.uploadId}.part`]);
+    expect(await listDir(assetsDir)).toEqual([`.upload-${handleOf(began)}.part`]);
     await withHook.dispose();
   });
 
@@ -459,3 +475,124 @@ function captureError(run: () => void): unknown {
     return error;
   }
 }
+
+describe("对话内去重（begin 命中即结束）", () => {
+  const EXISTING: AssetRef = {
+    assetId: "asset-existing",
+    mime: "image/png",
+    bytes: 1024,
+    name: "photo.png",
+    width: null,
+    height: null,
+  };
+
+  it("带 sha256 且已有同一份：直接回既有引用，不建临时文件、不分配 uploadId", async () => {
+    const looked: Array<{ conversationId: string; sha256: string; bytes: number }> = [];
+    const deduping = new UploadReceiver({
+      assetsDir,
+      finalize: fakeFinalize,
+      findExisting: async (input) => {
+        looked.push(input);
+        return EXISTING;
+      },
+    });
+
+    const began = await deduping.begin(CONNECTION, {
+      purpose: "message_image",
+      mime: "image/png",
+      bytes: EXISTING.bytes,
+      name: "photo.png",
+      sha256: "a".repeat(64),
+      conversationId: "c1",
+    });
+
+    expect(began).toEqual({
+      deduped: true,
+      uploadId: null,
+      maxBytes: MAX_ASSET_BYTES,
+      receivedBytes: 0,
+      asset: EXISTING,
+    });
+    expect(looked).toEqual([
+      { conversationId: "c1", sha256: "a".repeat(64), bytes: EXISTING.bytes },
+    ]);
+    // 一个字节都不收：没有临时文件，也没有挂着的上传
+    expect(await listDir(assetsDir)).toEqual([]);
+    expect(deduping.pendingCount()).toBe(0);
+    // 落定根本没发生（没有新素材）
+    expect(finalized).toEqual([]);
+    await deduping.dispose();
+  });
+
+  it("没命中（或没带 sha256）：照常开临时文件，deduped=false", async () => {
+    const deduping = new UploadReceiver({
+      assetsDir,
+      finalize: fakeFinalize,
+      findExisting: async () => null,
+    });
+    const bytes = payload(64);
+
+    const missed = await deduping.begin(CONNECTION, {
+      purpose: "message_image",
+      mime: "image/png",
+      bytes: bytes.byteLength,
+      sha256: sha256(bytes),
+      conversationId: "c1",
+    });
+    expect(missed.deduped).toBe(false);
+    expect(missed.asset).toBeNull();
+    expect(await listDir(assetsDir)).toEqual([`.upload-${handleOf(missed)}.part`]);
+
+    // 没带 sha256 的上传不问去重（客户端没算，服务端不猜）
+    const noDigest = await deduping.begin(CONNECTION, {
+      purpose: "message_image",
+      mime: "image/png",
+      bytes: bytes.byteLength,
+      conversationId: "c1",
+    });
+    expect(noDigest.deduped).toBe(false);
+    expect(deduping.pendingCount(CONNECTION)).toBe(2);
+    await deduping.dispose();
+  });
+
+  it("sha256 格式不对：按参数错拒（不是静默当成没带）", async () => {
+    const deduping = new UploadReceiver({
+      assetsDir,
+      finalize: fakeFinalize,
+      findExisting: async () => EXISTING,
+    });
+
+    await expect(
+      deduping.begin(CONNECTION, {
+        purpose: "message_image",
+        mime: "image/png",
+        bytes: 4,
+        sha256: "not-a-digest",
+        conversationId: "c1",
+      }),
+    ).rejects.toMatchObject({ code: "invalid_params" });
+    await deduping.dispose();
+  });
+
+  it("去重查询本身炸了：按没命中继续（去重是优化，不是上传的前提）", async () => {
+    const deduping = new UploadReceiver({
+      assetsDir,
+      finalize: fakeFinalize,
+      findExisting: async () => {
+        throw new Error("db down");
+      },
+      onError: () => undefined,
+    });
+
+    const began = await deduping.begin(CONNECTION, {
+      purpose: "message_image",
+      mime: "image/png",
+      bytes: 4,
+      sha256: "b".repeat(64),
+      conversationId: "c1",
+    });
+    expect(began.deduped).toBe(false);
+    expect(deduping.pendingCount(CONNECTION)).toBe(1);
+    await deduping.dispose();
+  });
+});

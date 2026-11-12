@@ -68,6 +68,18 @@ export interface UploadFinalizeRequest {
 export type UploadFinalizer = (request: UploadFinalizeRequest) => Promise<AssetRef>;
 
 /**
+ * 上传前的去重查询：这段对话里是不是已经有同一份字节了。
+ *
+ * 命中时 `asset.begin` 直接回既有引用（`deduped: true`）：不建临时文件、不分配 `uploadId`。
+ * 服务端自己算 `sha256` 也行，但它得先把 20MB 收完 —— 客户端本来就算过，问一句就够了。
+ */
+export type ExistingAssetLookup = (input: {
+  conversationId: string;
+  sha256: string;
+  bytes: number;
+}) => Promise<AssetRef | null>;
+
+/**
  * 上传前让「这段对话」成为库里的行。
  *
  * `language` 是那条「这段对话在哪个目录」的隐藏消息的渲染语言（D8）：上传是连接上的动作，
@@ -91,6 +103,12 @@ export interface UploadReceiverOptions {
    * 不注入时上传不碰对话表。
    */
   ensureConversation?: ConversationPersister;
+  /**
+   * `asset.begin` 带了 `sha256` 时先问一句「这段对话里是不是已经有它」。
+   *
+   * 不注入时不问去重（每次都收字节），也不报错：去重是优化，不是上传的前提。
+   */
+  findExisting?: ExistingAssetLookup;
   /** 单张上限，缺省 `MAX_ASSET_BYTES`（20MB，PRD D5） */
   maxAssetBytes?: number;
   /** 内部错误去处（清理失败、落定失败等）；缺省忽略 */
@@ -139,6 +157,7 @@ export class UploadReceiver {
   /** 单张上限；`hello` 的 `limits` 也从这里取，两边不各写一个数 */
   readonly maxAssetBytes: number;
   private readonly ensureConversation?: ConversationPersister;
+  private readonly findExisting?: ExistingAssetLookup;
   /** connectionId → uploadId → 进行中的上传 */
   private readonly sessions = new Map<string, Map<string, UploadSession>>();
 
@@ -147,14 +166,18 @@ export class UploadReceiver {
     this.finalize = options.finalize;
     this.maxAssetBytes = options.maxAssetBytes ?? MAX_ASSET_BYTES;
     this.ensureConversation = options.ensureConversation;
+    this.findExisting = options.findExisting;
     this.onError = options.onError;
   }
 
   /**
-   * `asset.begin`：校验声明、让归属的对话先落库、开临时文件、发一个上传句柄。
+   * `asset.begin`：校验声明、先问去重、让归属的对话先落库、开临时文件、发一个上传句柄。
    *
    * 声明里只有「总长」能验，字节本身还没到；所以这里的拒绝都是**声明层面**的
    * （超限、类型不合法、缺对话归属、对话不存在）。
+   *
+   * 去重命中时这条路就到此为止：不建临时文件、不分配 `uploadId`，也不让对话落库
+   * （素材行上那个外键已经证明这段对话在库里）。
    *
    * 「让对话落库」排在建临时文件之前：对话不存在时这一趟上传一个字节都不该落盘，
    * 也不该占住一个 `uploadId`。`language` 是这条连接的语言，用来渲染那条隐藏的 cwd 消息。
@@ -169,6 +192,22 @@ export class UploadReceiver {
     const declaredBytes = requireDeclaredBytes(params.bytes, this.maxAssetBytes);
     const conversationId = requireConversationId(params.conversationId);
     const name = normalizeName(params.name);
+    const sha256 = params.sha256 === undefined ? null : normalizeDigest(params.sha256);
+
+    // 同一段对话里同一份字节只存一份：命中就把既有引用直接回给客户端，一个字节也不收
+    const existing =
+      sha256 === null
+        ? null
+        : await this.lookupExisting({ conversationId, sha256, bytes: declaredBytes });
+    if (existing !== null) {
+      return {
+        deduped: true,
+        uploadId: null,
+        maxBytes: this.maxAssetBytes,
+        receivedBytes: 0,
+        asset: existing,
+      };
+    }
 
     // 草稿对话在库里还没有行（R56），而素材行要挂 `conversationId` 外键：先落库再收字节
     await this.persistConversation(conversationId, language);
@@ -196,7 +235,13 @@ export class UploadReceiver {
     };
     this.sessionMap(connectionId).set(uploadId, session);
 
-    return { uploadId, maxBytes: this.maxAssetBytes, receivedBytes: 0 };
+    return {
+      deduped: false,
+      uploadId,
+      maxBytes: this.maxAssetBytes,
+      receivedBytes: 0,
+      asset: null,
+    };
   }
 
   /**
@@ -343,6 +388,26 @@ export class UploadReceiver {
       this.sessions.set(connectionId, sessions);
     }
     return sessions;
+  }
+
+  /**
+   * 问一句「这段对话里有没有同一份字节」。
+   *
+   * 查询本身失败时当作「没命中」：去重是省一次上传的优化，不能因为它的存储出错就把整个上传拒掉。
+   */
+  private async lookupExisting(input: {
+    conversationId: string;
+    sha256: string;
+    bytes: number;
+  }): Promise<AssetRef | null> {
+    const find = this.findExisting;
+    if (!find) return null;
+    try {
+      return await find(input);
+    } catch (error) {
+      this.onError?.(error, "查询重复素材失败");
+      return null;
+    }
   }
 
   private detach(session: UploadSession): void {

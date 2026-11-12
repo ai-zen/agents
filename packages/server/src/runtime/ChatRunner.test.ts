@@ -11,7 +11,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentNS } from "@ai-zen/agents-core";
-import { AgentNS as AgentNSValue } from "@ai-zen/agents-core";
+import { AgentNS as AgentNSValue, applyChunk, Message } from "@ai-zen/agents-core";
 import { AutoMigratePlugin, Scope } from "@ai-zen/agents-sdk";
 import type { HandoffService, SendContext } from "@ai-zen/agents-sdk";
 
@@ -27,7 +27,12 @@ import type { Language } from "../i18n/index.js";
 import type { EventMap, EventName } from "../wire/events.js";
 import { ServerError } from "../wire/errors.js";
 import type { GenerationPhaseName, RunState } from "../wire/states.js";
-import type { AgentBuildContext, ChatAgent, TurnSettledFacts } from "./ChatRunner.js";
+import type {
+  AgentBuildContext,
+  ChatAgent,
+  ChatRunnerOptions,
+  TurnSettledFacts,
+} from "./ChatRunner.js";
 import { ChatRunner, createSdkAgentFactory, DEFAULT_STREAM_WRITE_INTERVAL_MS } from "./ChatRunner.js";
 import { RunRegistry } from "./RunRegistry.js";
 import { ScopeRegistry } from "./ScopeRegistry.js";
@@ -38,6 +43,7 @@ import {
   FakeAgent,
   flushMicrotasks,
   ManualClock,
+  RecordingEventBus,
   RecordingMessageStore,
   RecordingScopePlugin,
 } from "./TestSupport.js";
@@ -81,6 +87,12 @@ interface Harness {
 function createHarness(options: {
   rounds?: FakeRound[];
   agent?: ChatAgent;
+  /** 每次装配 agent 时现造一个（重试要用「第一次成功、第二次失败」这类脚本） */
+  agentFactory?: () => ChatAgent;
+  /** 素材相关的注入点（`ChatRunner` 只在有它们时才做对应的事） */
+  prepareAttachments?: ChatRunnerOptions["prepareAttachments"];
+  prepareHistory?: ChatRunnerOptions["prepareHistory"];
+  invalidateVendorFiles?: ChatRunnerOptions["invalidateVendorFiles"];
   conversation?: Conversation;
   streamWriteIntervalMs?: number;
   history?: MessageUpsertInput[];
@@ -111,7 +123,7 @@ function createHarness(options: {
     runs,
     createAgent: async (context) => {
       builds.push(context);
-      return agent;
+      return options.agentFactory ? options.agentFactory() : agent;
     },
     emit: (name, payload) => {
       events.push({ name, payload });
@@ -120,6 +132,13 @@ function createHarness(options: {
     newId: () => `srv-${++idCursor}`,
     streamWriteIntervalMs: options.streamWriteIntervalMs ?? 0,
     onTurnSettled: options.onTurnSettled,
+    ...(options.prepareAttachments === undefined
+      ? {}
+      : { prepareAttachments: options.prepareAttachments }),
+    ...(options.prepareHistory === undefined ? {} : { prepareHistory: options.prepareHistory }),
+    ...(options.invalidateVendorFiles === undefined
+      ? {}
+      : { invalidateVendorFiles: options.invalidateVendorFiles }),
     defaultLanguage: options.language,
   });
 
@@ -1174,5 +1193,285 @@ describe("真装配：会话级模型与思考档位（F-B4 / F-B6）", () => {
       thinkingLevel: "high",
     });
     expect(modelConfig).not.toHaveProperty("reasoning_effort");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 素材：落库形态（asset://）与「file 失效」自愈
+// ---------------------------------------------------------------------------
+
+/** 一个可脚本化的 agent：`send` 第 n 次成功 / 失败（失败时按厂商的错误甩出去） */
+class ScriptedAgent implements ChatAgent {
+  messages: AgentNS.Message[] = [];
+  readonly events = new RecordingEventBus();
+  sendCalls = 0;
+
+  constructor(
+    private readonly script: Array<{ fail?: Error; failAfterDeltas?: Error; deltas?: string[] }>,
+  ) {}
+
+  append(message: AgentNS.Message): AgentNS.Message {
+    this.messages.push(message);
+    this.events.emit("message", message);
+    return message;
+  }
+
+  abort(): void {
+    for (const message of this.messages) {
+      if (
+        message.status === AgentNSValue.MessageStatus.Pending ||
+        message.status === AgentNSValue.MessageStatus.Writing
+      ) {
+        message.status = AgentNSValue.MessageStatus.Aborted;
+      }
+    }
+  }
+
+  async send(content: AgentNS.MessageContent): Promise<AgentNS.Message[]> {
+    const step = this.script[this.sendCalls] ?? this.script[this.script.length - 1];
+    this.sendCalls += 1;
+    this.append(Message.User(content));
+    if (step?.fail) throw step.fail;
+
+    const receiver = this.append(Message.Assistant());
+    receiver.status = AgentNSValue.MessageStatus.Writing;
+    for (const text of step?.deltas ?? []) {
+      const chunk = {
+        choices: [{ delta: { content: text } }],
+      } as unknown as Parameters<typeof applyChunk>[1];
+      applyChunk(receiver, chunk);
+      this.events.emit("chunk-parsed", receiver, chunk);
+    }
+    // 已经流出内容之后才失败：整轮重跑会重来一遍增量，所以这种错误不该触发重试
+    if (step?.failAfterDeltas) throw step.failAfterDeltas;
+    receiver.status = AgentNSValue.MessageStatus.Completed;
+    return this.messages;
+  }
+}
+
+/** 落库用的内容：素材段写成 asset://（真实现是 `AssetService.prepareAttachments`） */
+const STORED_CONTENT: AgentNS.MessageContentSection[] = [
+  { type: "text", text: "看看这张" },
+  { type: "image_url", image_url: { url: "asset://a1" } },
+];
+
+describe("素材：落库只存 asset://", () => {
+  it("用户消息落库用的是 storedContent，发给 agent 的是转换后的内容", async () => {
+    const sent: AgentNS.MessageContent[] = [];
+    const custom = createHarness({
+      rounds: [],
+      agentFactory: () => {
+        const agent = new ScriptedAgent([{ deltas: ["好"] }]);
+        const send = agent.send.bind(agent);
+        agent.send = async (content: AgentNS.MessageContent) => {
+          sent.push(content);
+          return await send(content);
+        };
+        return agent;
+      },
+      prepareAttachments: async () => ({
+        // 发出去的那一份带厂商产物
+        content: [
+          { type: "text", text: "看看这张" },
+          { type: "file", file_id: "file-abc" },
+        ],
+        attachments: [],
+        storedContent: STORED_CONTENT,
+      }),
+    });
+
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "看看这张" },
+    });
+    await turn.done;
+
+    // 发给模型的是厂商能吃的段
+    expect(JSON.stringify(sent[0])).toContain("file-abc");
+    // 库里只有我们的引用
+    expect(custom.store.peek(turn.userMessageId)?.content).toEqual(STORED_CONTENT);
+    expect(JSON.stringify(custom.store.writes)).not.toContain("file-abc");
+  });
+
+  it("历史里的 asset:// 每轮发送前交给 prepareHistory 还原", async () => {
+    const resolvedCalls: AgentNS.Message[][] = [];
+    const custom = createHarness({
+      rounds: plainRounds(),
+      history: [
+        {
+          id: "old-1",
+          conversationId: CONVERSATION_ID,
+          role: "user",
+          status: "completed",
+          omit: false,
+          content: [{ type: "image_url", image_url: { url: "asset://a1" } }] as never,
+          data: null,
+          createdAt: 1,
+        },
+      ],
+      prepareHistory: async ({ messages }) => {
+        resolvedCalls.push(messages);
+        return messages.map((message) => ({
+          ...message,
+          content: [{ type: "text", text: "重放过的图" }],
+        }));
+      },
+    });
+
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "接着聊" },
+    });
+    await turn.done;
+
+    // 装载出来的历史（带 asset://）交给还原方
+    expect(JSON.stringify(resolvedCalls[0])).toContain("asset://a1");
+    // agent 拿到的是还原后的历史
+    expect(JSON.stringify(custom.builds[0]?.history)).toContain("重放过的图");
+    expect(JSON.stringify(custom.builds[0]?.history)).not.toContain("asset://");
+  });
+});
+
+describe("素材：厂商说 file 失效时清缓存 + 重试一次", () => {
+  /** 第一次因 file 不存在失败、第二次成功 */
+  function recoveringAgent(): ChatAgent {
+    return new ScriptedAgent([
+      { fail: new Error("File not found: file-abc (invalid file_id)") },
+      { deltas: ["重试成功"] },
+    ]);
+  }
+
+  it("认出「file 不存在/无效」→ 作废缓存 → 重跑一次并成功", async () => {
+    const invalidations: Array<{ conversationId: string; modelId: string | null }> = [];
+    // 同一个 agent 实例跨两次尝试：第一次甩错、第二次出内容
+    const agent = recoveringAgent();
+    const custom = createHarness({
+      rounds: [],
+      agentFactory: () => agent,
+      invalidateVendorFiles: async (context) => {
+        invalidations.push({ conversationId: context.conversationId, modelId: context.modelId });
+        return 1;
+      },
+      prepareAttachments: async () => ({
+        content: [{ type: "text", text: "看看这张" }],
+        attachments: [],
+      }),
+    });
+
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "看看这张" },
+    });
+    const settlement = await turn.done;
+
+    expect(invalidations).toEqual([
+      { conversationId: CONVERSATION_ID, modelId: "model-1" },
+    ]);
+    expect(settlement.outcome).toBe("completed");
+    // 重试是「重新装配 agent 再发一次」：工厂被叫了两次
+    expect(custom.builds).toHaveLength(2);
+    // 库里只有一条用户消息（重试没有多写一条）：写过的行里按 id 数
+    const userWrites = custom.store.writes.filter((row) => row.id === turn.userMessageId);
+    expect(new Set(userWrites.map((row) => row.id))).toEqual(new Set([turn.userMessageId]));
+    const allUserRows = custom.store.writes.filter((row) => row.role === "user");
+    expect(new Set(allUserRows.map((row) => row.id))).toEqual(new Set([turn.userMessageId]));
+  });
+
+  it("重试之后仍然失败：这一轮如实报错，且不再重试第二次（每轮最多一次）", async () => {
+    let invalidations = 0;
+    const failing = new Error("File not found: file-abc");
+    const agent = new ScriptedAgent([{ fail: failing }, { fail: failing }]);
+    const custom = createHarness({
+      rounds: [],
+      agentFactory: () => agent,
+      invalidateVendorFiles: async () => {
+        invalidations += 1;
+        return 1;
+      },
+    });
+
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "看看这张" },
+    });
+    const settlement = await turn.done;
+
+    expect(invalidations).toBe(1);
+    expect(settlement.outcome).toBe("error");
+    expect(settlement.problem).not.toBeNull();
+  });
+
+  it("没有可作废的缓存（返回 0）：不重试（同一个 file_id 再撞一次没意义）", async () => {
+    const custom = createHarness({
+      rounds: [],
+      agentFactory: () => new ScriptedAgent([{ fail: new Error("File not found: file-abc") }]),
+      invalidateVendorFiles: async () => 0,
+    });
+
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "看看这张" },
+    });
+    const settlement = await turn.done;
+
+    expect(custom.builds).toHaveLength(1);
+    expect(settlement.outcome).toBe("error");
+  });
+
+  it("不是「file 失效」类的错误：一个字都不清、不重试", async () => {
+    let invalidations = 0;
+    const custom = createHarness({
+      rounds: [],
+      agentFactory: () => new ScriptedAgent([{ fail: new Error("429 rate limited") }]),
+      invalidateVendorFiles: async () => {
+        invalidations += 1;
+        return 1;
+      },
+    });
+
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "看看这张" },
+    });
+    const settlement = await turn.done;
+
+    expect(invalidations).toBe(0);
+    expect(settlement.outcome).toBe("error");
+  });
+
+  it("已经流出内容之后再出错：不整轮重跑（重跑会在历史里多一条用户消息）", async () => {
+    let invalidations = 0;
+    let turnIndex = 0;
+    const custom = createHarness({
+      rounds: [],
+      agentFactory: () => {
+        turnIndex += 1;
+        // 第二轮那个 agent 先流出半句、再甩出 file 错误：这一轮已经有人看见内容了，不能重跑
+        return turnIndex === 1
+          ? new ScriptedAgent([{ deltas: ["第一轮"] }])
+          : new ScriptedAgent([
+              { deltas: ["一半"], failAfterDeltas: new Error("File not found: file-abc") },
+            ]);
+      },
+      invalidateVendorFiles: async () => {
+        invalidations += 1;
+        return 1;
+      },
+    });
+
+    const first = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "先聊一句" },
+    });
+    await first.done;
+
+    const second = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "再来一次" },
+    });
+    const settlement = await second.done;
+
+    expect(invalidations).toBe(0);
+    expect(settlement.outcome).toBe("error");
   });
 });

@@ -70,6 +70,7 @@ import type {
   ModelSource,
   ThinkingState,
 } from "../wire/index.js";
+import { assetIdsOf } from "./AssetService.js";
 import { readUsage, toAgentMessage } from "./MessageService.js";
 import { toFolderFact } from "./WorkspaceService.js";
 
@@ -636,7 +637,16 @@ export class ConversationService {
     // 锚点已确认存在，所以这次取到的就是「从它开始（含它）」的那一段（A12）
     const doomed = await this.messages.listByConversation(row.id, anchor.id);
     const removedMessageIds = doomed.map((message) => message.id);
-    const assetIds = (await this.assets.listByMessage(anchor.id)).map((asset) => asset.id);
+    /**
+     * 回填输入框要挂的素材（R62：只给纯文本 + assetIds，图靠 id 复原）。
+     *
+     * 两个来源合并：
+     *   - `assets.messageId`：上传早于消息落库，所以上传时挂上的那一条在这列里；
+     *   - 消息内容里的 `asset://`：对话内去重让同一张图可以被好几条消息引用，而这一列只指向
+     *     最后挂上去的那一条 —— “这条消息挂了哪几张图”的真值其实在 content 里。
+     */
+    const linkedIds = (await this.assets.listByMessage(anchor.id)).map((asset) => asset.id);
+    const assetIds = [...new Set([...linkedIds, ...assetIdsOf(anchor.content)])];
     const content = textOnlyContent(anchor.content);
     const restoredInput: MessageInput = assetIds.length > 0
       ? { content, assetIds }

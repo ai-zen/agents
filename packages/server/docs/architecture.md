@@ -26,7 +26,7 @@
 | A10 | Scope 与对话的回收计时器**只有一处**（见 §4） | 本文 |
 | A11 | 上传走同一条 WS 上的**二进制帧**（三段式），不用 base64 字符串 | 本轮 Q9 |
 | A12 | `message.list` 按**消息 id 取**：带 `after=<id>` 时，该 id **存在**就返回它**最新的内容**及之后全部；该 id **不存在**就返回全部（断线补拉与删除后重拉共用这一条规则） | 本轮 Q10 |
-| A13 | 能力清单的粒度是「契约里每个方法一条」（64 条，与 `METHOD_NAMES` 一一对应）；同一条 PRD 能力号下有多个方法时，`id` 用 `<编号>#<动作>` 区分 | `src/handlers/capabilities.ts` |
+| A13 | 能力清单的粒度是「契约里每个方法一条」（65 条，与 `METHOD_NAMES` 一一对应）；同一条 PRD 能力号下有多个方法时，`id` 用 `<编号>#<动作>` 区分 | `src/handlers/capabilities.ts` |
 
 ## 2. 进程与接线
 
@@ -163,11 +163,21 @@ const [found, written] = await db.tx((q) => [
 | `workspaces` | `id`、`name`、`cwd`（不可变、`UNIQUE`）、`createdAt` —— 没有 `updatedAt` 列（R34） |
 | `conversations` | `id`、`workspaceId`（级联删）、`name`、`nameIsAuto`（0/1，DEFAULT 1，R35）、`pinned`、`agentId`（NOT NULL）、`modelId`（NOT NULL，R18，可改）、`thinkingLevel`（可空：空 = 跟随助手定义）、`createdAt`、`updatedAt`；索引 `(workspaceId, pinned DESC, createdAt DESC)` |
 | `messages` | `id`（服务端分配，请求发出前就有）、`conversationId`（级联删）、`seq`（与对话内唯一）、`role`、`status`、`omit`、`content`(json)、`data`(json)、`searchText`、`parentToolCallId`（可空，R37）、`createdAt`、`updatedAt`；索引 `(conversationId, seq)`、`(parentToolCallId)` |
-| `assets` | `id`、`conversationId`（级联删）、`messageId`（`ON DELETE SET NULL`，R16）、`name`、`path`、`mime`、`bytes`、`sha256`、`createdAt` |
+| `assets` | `id`、`conversationId`（级联删）、`messageId`（`ON DELETE SET NULL`，R16）、`name`、`path`、`mime`、`bytes`、`sha256`（`NOT NULL`，与 `conversationId` 一起 `UNIQUE` = 对话内去重）、`width` / `height`（可空：本波不解码图片就是 `NULL`）、`createdAt` |
+| `asset_vendor_files` | `assetId`（指向 `assets`，级联删）、`endpointId`、`vendorFileId`、`createdAt`、`lastUsedAt`；`UNIQUE (assetId, endpointId)`，索引 `(lastUsedAt)`。**可失效的缓存**：删光能从 `assets` 重建 |
 | `notices` | `id`、`level`、`code`、`params`(json)、`durationMs`（null = 永久）、`conversationId`（可空、级联删）、`createdAt`（L3：持久化，手动清或到点消失） |
 | `questions` | `id`、`conversationId`（可空、级联删）、`kind`、`payload`(json)、`state`、`answer`(json)、`createdAt`、`updatedAt`、`answeredAt` |
 | `credentials` | `id`、`note`、`hash`（唯一索引）、`createdAt`、`revokedAt` |
 | `meta` | 单行表（`id` 固定 1）：`schemaVersion`、`createdAt` |
+
+**素材的表分两层，一层是真相、一层是缓存**：
+
+| 表 | 是什么 | 谁写它 |
+|---|---|---|
+| `assets` | **资源的唯一真相**：一份字节 + 类型、大小、内容摘要、像素尺寸（未知为 `NULL`）。消息里只记 `asset://<assetId>`，任何模型重放历史图都从这一份取（`asset.get`） | 上传落定（`AssetService.finalizeUpload`，走 `upsert`：同对话同摘要撞上唯一约束时删掉刚写的文件、回既有行） |
+| `asset_vendor_files` | **可失效的缓存**：这个素材在这个端点上对应厂商的哪个 `file_id`。`file_id` 是端点维度资源且会过期，所以命中就省一次上传、miss 就重传；一次请求因「file 不存在/无效」失败时按「这段对话 + 这个端点」整批作废（`ChatRunner` 随后重试一次） | `AssetService` 的 `upload` 注入点（查表 → 上传 → 写回，命中只 `touch` `lastUsedAt`） |
+
+厂商的 `file_id`、base64、绝对路径**都不进 `messages.content`**：那一列存的是 `asset://`，发送前才按当时的模型/端点还原成内容段（`AssetService.resolveHistory`）。于是「换模型 / 换端点 / 重启」都不需要改历史，只需要重算一次。
 
 **消息条数的两个口径（读路径的事，不是两张表）**：同一个问题「这段对话有多少条消息」在库里有两个答案，因为两条读数问的不是同一样东西 —— `messages` 一张表里既有主线的消息，也有子 Agent 的消息（它们带非空的 `parentToolCallId`，R37）；另外 `hidden` 的消息（会话创建时的 cwd 消息、交接摘要）在两条读数里都不算。
 
@@ -190,7 +200,7 @@ const [found, written] = await db.tx((q) => [
 
 **首帧 `hello`**：`{ token, language?, clientInfo: { name, version, platform? } }`（`src/wire/methods.ts` 的 `ServerHelloParams`）。凭证不放在 URL 查询串里（会进日志与进程表）；未 `hello` 成功的连接只放行 `hello`，其余方法与二进制帧都回 `unauthorized`。`language` 挂在连接上，断开即忘；没带时用 `config.json` 的 `language`（缺省英文，裁定 R58）。`hello` 成功时一并回：协商出的 `language`、`serverVersion`、`protocolVersion`、`startedAt`、**能力 id 列表 `capabilities`（`string[]`，裁定 R57）**、附件上限 `limits`。完整的清单（标题、说明、属性）走 `server.capabilities`。
 
-**方法名**：`<域>.<动作>`。契约里共 64 个方法（`src/wire/methods.ts` 的 `METHOD_NAMES`，14 个域）：
+**方法名**：`<域>.<动作>`。契约里共 65 个方法（`src/wire/methods.ts` 的 `METHOD_NAMES`，14 个域）：
 
 | 域 | 个数 | 方法 |
 |---|---|---|
@@ -204,12 +214,12 @@ const [found, written] = await db.tx((q) => [
 | `agent` | 7 | `list` `get` `create` `update` `delete` `setModel` `setThinking` |
 | `model` | 8 | `list` `listImages` `create` `update` `delete` `restoreFactory` `saveImage` `deleteImage` |
 | `credential` | 3 | `list` `create` `revoke` |
-| `asset` | 2 | `begin` `end` |
+| `asset` | 3 | `begin` `end` `get` |
 | `completion` | 1 | `files` |
 | `handoff` | 2 | `start` `listDocuments` |
 | `search` | 2 | `conversations` `messages` |
 
-**桥接名单（4 条不在 handler 表里）**：`server.hello`、`server.setLanguage`、`asset.begin`、`asset.end` 由 `WsHub` 自己处理（`src/handlers/index.ts` 的 `BRIDGED_METHODS`），其余 59 条进注入的 `HandlerTable`。为什么是这四条：
+**桥接名单（4 条不在 handler 表里）**：`server.hello`、`server.setLanguage`、`asset.begin`、`asset.end` 由 `WsHub` 自己处理（`src/handlers/index.ts` 的 `BRIDGED_METHODS`），其余 60 条进注入的 `HandlerTable`。为什么是这四条：
 
 - `server.hello` / `server.setLanguage`：凭证与语言都是**连接状态**（`ConnectionState.authorized` / `language`），业务层拿不到也不该管；
 - `asset.begin` / `asset.end`：上传要按 `connectionId` 分帧落盘、断线按连接清理（`UploadReceiver`），同样只有接线层知道是哪条连接。
@@ -238,7 +248,11 @@ const [found, written] = await db.tx((q) => [
 
 **推送（含通知）入库存的是「码 + 参数」，不是渲染好的句子**：多语言在读出时按该连接的语言渲染（D8），否则一条通知存死一种语言，换个语言连回来就错了。`notices` 表存 `code` + `params`，`hello` / 出网时才渲染成 `NoticeView.text`。
 
-**上传**：同一条 WS 上走三段式 —— `asset.begin`（JSON：`purpose` / `mime` / `bytes` / `conversationId` / `name?`，返回 `uploadId`）→ 若干二进制帧 → `asset.end`（`uploadId` + `sha256`，服务端校验总长与摘要后落定成正式素材并回 `AssetRef`）。单张 20MB 上限（D5），超限在 `begin` 就拒；中途断开按 `begin` 记的临时文件清理（`UploadReceiver.abortConnection`）。
+**上传**：同一条 WS 上走三段式 —— `asset.begin`（JSON：`purpose` / `mime` / `bytes` / `conversationId` / `name?` / `sha256?`，返回 `uploadId` 或「已经有了」）→ 若干二进制帧 → `asset.end`（`uploadId` + `sha256`，服务端校验总长与摘要后落定成正式素材并回 `AssetRef`）。单张 20MB 上限（D5），超限在 `begin` 就拒；中途断开按 `begin` 记的临时文件清理（`UploadReceiver.abortConnection`）。
+
+`begin` 带 `sha256` 时先问一次「这段对话里是不是已经有这份字节」（`UploadReceiver` 注入的 `findExisting` → `AssetRepository.findByDigest`，还要求字节数一致）：命中就直接回 `{ deduped: true, uploadId: null, asset }` —— **不建临时文件、不分配 `uploadId`**，客户端跳过二进制帧与 `asset.end`。同一张图贴两次因此只占一份磁盘、一次上行。没命中（或没带摘要）才照原路走；落定那一步用 `upsert`，两个并发上传撞在唯一约束上时后者删掉自己刚写的文件、回先到的那一行。
+
+**取回**：`asset.get { assetId, variant? }` 回 `{ asset, variant, data }`，`data` 是 base64 编码的内容。`thumb` 这一档目前**等同原图**（本波不引入原生图像库），回包里的 `variant` 说明实际给的是哪一档，客户端按 `asset.width` / `height`（未知为 `null`）自己缩。
 
 二进制帧的格式（`src/net/UploadReceiver.ts` 的 `encodeChunkFrame` / `decodeChunkFrame`，客户端复用同一份）：
 
@@ -263,7 +277,7 @@ const [found, written] = await db.tx((q) => [
 
 事件只描述「发生了什么变化」，需要完整对象时客户端回服务端拉（`conversation.state` / `message.list`），这样多端同时在线时不会出现「一份数据在推送里长成另一种形状」。
 
-**能力清单（A13）**：`server.capabilities` 回完整清单、`hello` 只回 id 列表（裁定 R57），粒度是**每个契约方法一条**（64 条），每项带 `id`（PRD 能力号；同号多方法时为 `<编号>#<动作>`，如 `F-F2#deleteEndpoint`）、`domain`、`title` / `description`（`LocalizedText`，键为 `capability.<方法名>` / `capability.<方法名>.detail`）、`method`、`blocking`（执行期间占住这段对话，F-E6）、`destructive`（不可撤销，F-F9 的二次确认）。`workspace.*` 那几条在 PRD §4 没有单列能力号，`id` 用契约注释里记的决定号（`D9` / `D10` / `D11`）。清单与 `METHOD_NAMES` 一一对应（id 与顺序与语言无关），标题与说明按**连接的语言**渲染（裁定 R58：存码不存句子，出网前重渲染）；用例钉住这两条。
+**能力清单（A13）**：`server.capabilities` 回完整清单、`hello` 只回 id 列表（裁定 R57），粒度是**每个契约方法一条**（65 条），每项带 `id`（PRD 能力号；同号多方法时为 `<编号>#<动作>`，如 `F-F2#deleteEndpoint`）、`domain`、`title` / `description`（`LocalizedText`，键为 `capability.<方法名>` / `capability.<方法名>.detail`）、`method`、`blocking`（执行期间占住这段对话，F-E6）、`destructive`（不可撤销，F-F9 的二次确认）。`workspace.*` 那几条在 PRD §4 没有单列能力号，`id` 用契约注释里记的决定号（`D9` / `D10` / `D11`）。清单与 `METHOD_NAMES` 一一对应（id 与顺序与语言无关），标题与说明按**连接的语言**渲染（裁定 R58：存码不存句子，出网前重渲染）；用例钉住这两条。
 
 ## 8. 与 core / SDK 的边界
 
@@ -300,3 +314,4 @@ const [found, written] = await db.tx((q) => [
 | 2026-11-12 | W6-C 补齐两条已知缺口：`DefaultSelection.language` 进契约（§9 那条出列）、状态栏助手块的名字与可用性由 `AgentService.describe` 现读（§9 那条出列）；§5 存储表下方补「消息条数的两个口径」（`listByConversation` 主线 / `countByConversation` 全部行，侧栏 vs 删除代价） |
 | 2026-11-12 | W7-A：cwd 注入改成**会话创建时一条独立的 `hidden` 消息**（PRD F-D9 改口径），每轮不再往用户消息末尾拼注入段；§4 补「一段对话的诞生」与 `hidden` 的含义，§5 两个条数口径都改成不含 `hidden`，§6 `message.list` 加 `includeHidden?`，§7 `conversation.changed.messageCount` 注明不含 `hidden` |
 | 2026-11-12 | W7-C：模型与思考档位改成**会话级、持久化**（PRD L7 / F-B4 / F-B6）：§5 `conversations` 加 `thinkingLevel`（可空）且 `modelId` 变成可改；§4 补「一段对话的模型与档位存在会话行上」与装配口径（档位名 → 参数补丁在 `ChatRunner.createSdkAgentFactory` 展开）；§3 删掉 `ConversationStateRegistry`（进程内临时覆盖作废），服务层要的运行时接口只剩 `isRunning` / `forget` |
+| 2026-11-13 | W10：资源表与厂商关联表。`assets` 补 `sha256`（`NOT NULL`）+ `width`/`height`（可空）+ `UNIQUE(conversationId, sha256)`（对话内去重）；新增可失效缓存表 `asset_vendor_files`（`UNIQUE(assetId, endpointId)`、索引 `lastUsedAt`、级联删）。消息里持久化的只有 `asset://<assetId>`，发送前由 `AssetService.resolveHistory` 按当前模型还原；厂商 `file_id` 由 `upload` 注入点查表/写表（命中零上传），失效时按「这段对话 + 这个端点」作废并由 `ChatRunner` 重试一次。新增方法 `asset.get`（65 个方法；走 JSON + base64 回包，不进桥接名单）；§5 补两张表的分工，§6 补去重与取回。 |

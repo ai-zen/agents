@@ -202,6 +202,7 @@ describe("WorkspaceService.remove", () => {
       path: "assets/as1.png",
       mime: "image/png",
       bytes: 10,
+      sha256: "sha256-1",
       createdAt: 2_150,
     });
     return workspaceId;

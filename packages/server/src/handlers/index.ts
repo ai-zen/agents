@@ -55,6 +55,7 @@ import { createServerHandlers } from "./serverHandlers.js";
 import { createWorkspaceHandlers } from "./workspaceHandlers.js";
 
 export type { AgentHandlerDeps } from "./agentHandlers.js";
+export type { AssetHandlerDeps } from "./assetHandlers.js";
 export type { CompletionHandlerDeps } from "./completionHandlers.js";
 export type { ConfigHandlerDeps } from "./configHandlers.js";
 export type { ConversationHandlerDeps } from "./conversationHandlers.js";
@@ -200,7 +201,7 @@ export function createHandlers(deps: HandlerDeps): HandlerTable {
     ...createMessageHandlers(deps),
     ...createSearchHandlers(deps),
     ...createCredentialHandlers(deps),
-    ...createAssetHandlers(),
+    ...createAssetHandlers({ assets: deps.assets }),
     ...createConfigHandlers({ config: deps.config }),
     ...createAgentHandlers({ agents: deps.agents }),
     ...createModelHandlers({ models: deps.models }),
