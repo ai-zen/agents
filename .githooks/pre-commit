@@ -1,0 +1,17 @@
+#!/bin/sh
+# 提交前密钥扫描：阻止把 API key / token / 私钥提交进仓库。
+# 由 `git config core.hooksPath .githooks` 启用（package.json 的 prepare 已自动配置）。
+# 明确知情时可跳过：SKIP_SECRET_SCAN=1 git commit ... 或 git commit --no-verify
+
+if [ "$SKIP_SECRET_SCAN" = "1" ]; then
+  echo "[secret-scan] 已按 SKIP_SECRET_SCAN=1 跳过密钥扫描" >&2
+  exit 0
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "[secret-scan] 警告：未找到 node，本次跳过密钥扫描" >&2
+  exit 0
+fi
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+exec node "$ROOT/scripts/scan-secrets.mjs" --staged

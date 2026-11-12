@@ -4,6 +4,9 @@
   "version": "2.0.0",
   "description": "AI-Zen Agents — modular LLM agent framework monorepo (pnpm workspace)",
   "scripts": {
+    "prepare": "git config core.hooksPath .githooks || true",
+    "scan:secrets": "node scripts/scan-secrets.mjs --all",
+    "scan:secrets:history": "node scripts/scan-secrets.mjs --history",
     "build-core": "pnpm --filter @ai-zen/agents-core build",
     "build-sdk": "pnpm --filter @ai-zen/agents-sdk build",
     "build-server": "pnpm --filter @ai-zen/agents-server build",
