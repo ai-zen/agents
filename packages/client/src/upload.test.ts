@@ -416,7 +416,7 @@ describe("连接状态", () => {
   });
 });
 
-describe("对话内去重（asset.begin 说已经有了）", () => {
+describe("去重命中（asset.begin 说已经有了）", () => {
   /** 服务端回 `deduped: true` 的假服务端：一个字节都不该再从我这边发出去 */
   let dedupeServer: FakeServer;
   let dedupeClient: Client;
@@ -441,7 +441,10 @@ describe("对话内去重（asset.begin 说已经有了）", () => {
         }),
         // 命中之后不该再调 `asset.end`；真被调到了就用一个显眼的错误钉住
         "asset.end": () => {
-          throw new FakeMethodError("invalid_params", "命中去重之后不该再 end");
+          throw new FakeMethodError({
+            code: "invalid_params",
+            message: "命中去重之后不该再 end",
+          });
         },
       },
     });

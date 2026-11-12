@@ -11,7 +11,7 @@
  * | 断线之后补拉（状态 + 消息） | `resume.ts`（`resume` / `mergeResumed` / `lastMessageId`） |
  * | 重连几次、等多久 | `reconnect.ts` |
  * | 把图片传上去、回一个能放进消息的引用 | `upload.ts`（`uploadAsset` / `uploadAssets`） |
- * | 按素材 id 把内容取回来（历史里的 `asset://`） | `asset.ts`（`getAsset`） |
+ * | 按素材 id 把内容取回来（历史里的 `__asset_id`） | `asset.ts`（`getAsset` / `getSectionAsset`） |
  *
  * 契约（方法名、事件名、载荷、业务码、消息本体）**不在这里重写一份**：类型直接从
  * `@ai-zen/agents-server` 转出（下方 `export type`），所以 cli / desktop 只认这一个包也能拿到
@@ -81,7 +81,7 @@ export type {
   UploadTransport,
 } from "./upload.js";
 
-export { getAsset } from "./asset.js";
+export { getAsset, getSectionAsset, localAssetIdOf } from "./asset.js";
 export type { AssetContent, GetAssetOptions } from "./asset.js";
 
 // 上传分片的二进制帧：形状与服务端 `net/UploadReceiver` 逐字节一致，两个前端都从这里取
@@ -147,4 +147,6 @@ export type {
   AssetVariant,
   AttachmentDelivery,
   AttachmentOutcome,
+  // 内容段上的本地扩展字段（`__asset_id`）：客户端按「有没有这个字段」决定要不要走素材通道
+  LocalMessageContentSection,
 } from "@ai-zen/agents-server";

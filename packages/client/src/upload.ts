@@ -11,8 +11,10 @@
  * asset.end   { uploadId, sha256 }                              → { asset: AssetRef }
  * ```
  *
- * `sha256` 一开始就带上：服务端用它判断「这段对话里是不是已经有这份字节了」，命中时一个字节
+ * `sha256` 一开始就带上：服务端用它判断「库里是不是已经有这份字节了」，命中时一个字节
  * 都不用传（下面会直接返回既有引用）。同一张图贴两次因此只占一份磁盘、一次上行。
+ * 去重按内容摘要做，不区分对话：另一段对话传过的同一张图也算命中，两段对话各自在服务端的
+ * 关系表里留一行引用。
  *
  * 为什么字节不走 JSON-RPC 而走二进制帧：分片是任意二进制，base64 进 JSON 会平白多出三分之一体积，
  * 服务端还得先解一层编码；而「这条连接上的二进制帧 = 上传分片」是唯一的含义，不需要再包 `id`。
@@ -26,9 +28,9 @@
  *
  * ## 一段对话的归属
  *
- * `asset.begin` 要 `conversationId`（库里的素材行按对话挂外键，见服务端 `UploadReceiver`）：没有
- * 归属的上传只会在 `assets/` 里留下一个没人认领的文件。所以上传必须发生在**已经有一段对话**之后
- * —— 调用方手里得有 `conversationId`（草稿对话在 `asset.begin` 那一步由服务端落库）。
+ * `asset.begin` 要 `conversationId`（服务端要确认这段对话存在、并在消息落库时把引用记到它名下）：
+ * 没有归属的上传只会在 `assets/` 里留下一个没人认领的文件。所以上传必须发生在**已经有一段对话**
+ * 之后 —— 调用方手里得有 `conversationId`（草稿对话在 `asset.begin` 那一步由服务端落库）。
  */
 
 import { createHash } from "node:crypto";
@@ -158,7 +160,7 @@ export async function uploadAsset(
     conversationId: options.conversationId,
   });
 
-  // 命中对话内去重：服务端已经有这份字节，回的是既有引用（客户端一个帧也不欠）
+  // 命中去重：服务端已经有这份字节，回的是既有引用（客户端一个帧也不欠）
   if (began.deduped) {
     if (began.asset === null) {
       throw localError("unexpected", {

@@ -323,7 +323,7 @@ describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () =>
     // 本地前置校验用的就是这条上限：真服务端的 `hello.limits.maxAssetBytes`
     expect(client.hello?.limits.maxAssetBytes).toBe(DEFAULT_MAX_ASSET_BYTES);
 
-    // 五份内容各不相同：相同内容会命中对话内去重（那是另一条用例），这里要的是「五份」这个前提
+    // 五份内容各不相同：相同内容会命中去重（那是另一条用例），这里要的是「五份」这个前提
     const sources = [1, 2, 3, 4, 5].map((index) => ({
       data: new Uint8Array([...PAYLOAD, index]),
       mime: "image/png",
