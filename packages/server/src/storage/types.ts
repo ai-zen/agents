@@ -164,16 +164,13 @@ export interface MessageSearchHit {
 
 export interface AssetRow {
   id: string;
-  conversationId: string;
-  /** 还没挂到消息上时为 null（上传早于消息落库，PRD D5 / F-H8） */
-  messageId: string | null;
   /** 原始文件名（可空：粘贴的图片未必有名字） */
   name: string | null;
   /** 数据根下 `assets/` 的相对路径，库里只存引用（PRD L2） */
   path: string;
   mime: string;
   bytes: number;
-  /** 内容摘要（上传时服务端自己算的那一份）：它与 `conversationId` 一起构成对话内去重的键 */
+  /** 内容摘要（上传时服务端自己算的那一份）：全库唯一，即全局去重的键 */
   sha256: string;
   /** 像素宽度；要解码图片才拿得到，本波不解码就是 null */
   width: number | null;
@@ -184,8 +181,6 @@ export interface AssetRow {
 
 export interface AssetCreateInput {
   id: string;
-  conversationId: string;
-  messageId?: string | null;
   name?: string | null;
   path: string;
   mime: string;
@@ -193,6 +188,21 @@ export interface AssetCreateInput {
   sha256: string;
   width?: number | null;
   height?: number | null;
+  createdAt: number;
+}
+
+/* ----------------------------- conversation_assets ------------------------ */
+
+/**
+ * 关系行：某条消息引用了某份素材。
+ *
+ * 一行就是一次「引用」；同一对 `(messageId, assetId)` 只有一行（唯一约束）。
+ * 素材的归属、以及「几张会话引用了它」都从这张表算，`assets` 行上不再记对话 / 消息。
+ */
+export interface ConversationAssetRow {
+  conversationId: string;
+  messageId: string;
+  assetId: string;
   createdAt: number;
 }
 

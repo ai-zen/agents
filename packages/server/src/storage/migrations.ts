@@ -91,26 +91,39 @@ export const MIGRATIONS: Migration[] = [
          ON messages (parentToolCallId)`,
 
       // assets：二进制素材的唯一真相（PRD L2 / F-H8）—— 文件在 assets/ 下，这一行记的是引用、
-      // 大小、类型、内容摘要与像素尺寸。消息里只写 `asset://<id>`，历史图因此能被任何模型重放。
-      // messageId 用 SET NULL：撤回硬删消息时素材行要留着，否则文件变成没人认领的孤儿（PRD D17）
-      // sha256 非空：它是「对话内去重」的键（同一张图贴两次只占一份磁盘、一次上行）。
+      // 大小、类型、内容摘要与像素尺寸。
+      // 去重是**全局**的：sha256 唯一，同一份字节在整台机器上只有一行、一份磁盘。所以这张表
+      // 不再记「属于哪段对话 / 哪条消息」：归属在 conversation_assets 里，一张图贴到两个项目
+      // 就是一行素材 + 两行关系。
       // width / height 可空：要解码图片才拿得到，本波不引入图像库，未知就是 NULL。
       `CREATE TABLE IF NOT EXISTS assets (
-         id             TEXT PRIMARY KEY,
-         conversationId TEXT NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
-         messageId      TEXT REFERENCES messages (id) ON DELETE SET NULL,
-         name           TEXT,
-         path           TEXT NOT NULL,
-         mime           TEXT NOT NULL,
-         bytes          INTEGER NOT NULL,
-         sha256         TEXT NOT NULL,
-         width          INTEGER,
-         height         INTEGER,
-         createdAt      INTEGER NOT NULL,
-         UNIQUE (conversationId, sha256)
+         id        TEXT PRIMARY KEY,
+         name      TEXT,
+         path      TEXT NOT NULL,
+         mime      TEXT NOT NULL,
+         bytes     INTEGER NOT NULL,
+         sha256    TEXT NOT NULL UNIQUE,
+         width     INTEGER,
+         height    INTEGER,
+         createdAt INTEGER NOT NULL
        )`,
-      `CREATE INDEX IF NOT EXISTS idx_assets_conversation ON assets (conversationId)`,
-      `CREATE INDEX IF NOT EXISTS idx_assets_message ON assets (messageId)`,
+
+      // conversation_assets：谁引用了哪份素材（消息 × 素材的关系行）。
+      // 写入时机是消息落库那一刻（扫 content 里的 `__asset_id`，同一 message+asset 一行）；
+      // 撤回 / 删对话 / 删消息都由外键级联删掉关系行，不需要谁去减计数。
+      // assetId 用 RESTRICT：还有人引用时物理删不掉素材行（护栏），真正的删除条件由
+      // 「COUNT(*) = 0」判定（见 AssetRepository.deleteIfUnreferenced）。
+      // 「几张会话引用了它」= COUNT(DISTINCT conversationId)，走 idx_conversation_assets_asset。
+      `CREATE TABLE IF NOT EXISTS conversation_assets (
+         conversationId TEXT NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
+         messageId      TEXT NOT NULL REFERENCES messages (id) ON DELETE CASCADE,
+         assetId        TEXT NOT NULL REFERENCES assets (id) ON DELETE RESTRICT,
+         createdAt      INTEGER NOT NULL,
+         UNIQUE (messageId, assetId)
+       )`,
+      `CREATE INDEX IF NOT EXISTS idx_conversation_assets_asset ON conversation_assets (assetId)`,
+      `CREATE INDEX IF NOT EXISTS idx_conversation_assets_conversation
+         ON conversation_assets (conversationId)`,
 
       // asset_vendor_files：厂商侧文件 id 的可失效缓存（端点维度、会过期）。
       // 它**不是**真相：删光之后从 assets 重建即可（下次发送时重新上传一遍），所以这里只记
@@ -126,7 +139,7 @@ export const MIGRATIONS: Migration[] = [
       // 清理时按「最近用过的」判（哪一段对话的哪些缓存已经放了很久）
       `CREATE INDEX IF NOT EXISTS idx_asset_vendor_files_lastUsedAt
          ON asset_vendor_files (lastUsedAt)`,
-      // 「这段对话在这个端点上的缓存」靠 UNIQUE (assetId, endpointId) 那条索引 join assets 拿到，
+      // 「这段对话在这个端点上的缓存」靠 UNIQUE (assetId, endpointId) join conversation_assets 拿到，
       // 不再另建一份（按 assetId 的前缀查询也走那条）
 
       // notices：持久化，durationMs 为 null 表示永久（PRD L3）。

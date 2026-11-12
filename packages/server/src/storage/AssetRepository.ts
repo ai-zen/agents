@@ -1,16 +1,21 @@
 /**
- * 素材的两张表：`assets`（资源的唯一真相）与 `asset_vendor_files`（它的一部分可失效缓存）。
+ * 素材的三张表：`assets`（资源的唯一真相）、`conversation_assets`（谁引用了它）与
+ * `asset_vendor_files`（它的一部分可失效缓存）。
  *
- * 两张表的 SQL 放在同一个文件里，是因为它们的生命周期绑在一起，而缓存表没有任何独立含义：
+ * 三张表的 SQL 放在同一个文件里，是因为它们的生命周期绑在一起，而另外两张都没有独立含义：
  *
- *   - `assets` 一行 = 数据根下一份文件 + 它的类型、大小、摘要、像素尺寸。消息里只写
- *     `asset://<id>`，所以这一行是「这张图是什么」的唯一答案；`(conversationId, sha256)` 唯一
- *     —— 同一张图在同一段对话里贴两次只占一份磁盘（去重按对话做，不跨对话）。
+ *   - `assets` 一行 = 数据根下一份文件 + 它的类型、大小、摘要、像素尺寸。`sha256` 全库唯一：
+ *     同一份字节在整台机器上只有一行、一份磁盘，所以这一行是「这张图是什么」的唯一答案。
+ *     它不记「属于哪段对话」——一张图可以同时被好几段对话引用。
+ *   - `conversation_assets` 一行 = 「某条消息引用了某份素材」。归属与「几张会话引用了它」都从
+ *     这张表算；消息被删（撤回 / 删对话）时关系行跟着级联消失，不需要谁去减计数。
+ *     `assetId` 用 `ON DELETE RESTRICT`：还有引用时素材行在库里删不掉（护栏）。
  *   - `asset_vendor_files` 一行 = 「这个素材在这个端点上对应厂商的哪个 file_id」。厂商的
  *     `file_id` 是端点维度资源且会过期，所以它只当缓存：删光也能从 `assets` 重建（下次发送时
  *     重新上传一遍），`ON DELETE CASCADE` 让它跟着素材走。
  *
- * 存储层只做 SQL：不判断文件在不在、不上传、不决定「缓存能不能用」。
+ * 存储层只做 SQL：不判断文件在不在、不上传、不决定「缓存能不能用」，也不判「该不该删字节」
+ * （那是素材服务的事：它按 {@link AssetRepository.countReferences} 的结果决定）。
  */
 
 import type { Database } from "./Database.js";
@@ -19,14 +24,14 @@ import type {
   AssetRow,
   AssetVendorFileRow,
   AssetVendorFileUpsertInput,
+  ConversationAssetRow,
 } from "./types.js";
 
-const COLUMNS =
-  "id, conversationId, messageId, name, path, mime, bytes, sha256, width, height, createdAt";
+const COLUMNS = "id, name, path, mime, bytes, sha256, width, height, createdAt";
 
 const VENDOR_COLUMNS = "assetId, endpointId, vendorFileId, createdAt, lastUsedAt";
 
-/** 插入一个素材行的结果：`created` 为 false 说明库里已经有同摘要的那一行（对话内去重命中） */
+/** 插入一个素材行的结果：`created` 为 false 说明库里已经有同摘要的那一行（全局去重命中） */
 export interface AssetUpsertOutcome {
   row: AssetRow;
   created: boolean;
@@ -40,26 +45,21 @@ export class AssetRepository {
   }
 
   async create(input: AssetCreateInput): Promise<void> {
-    await this.db.run(
-      `INSERT INTO assets (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        input.id,
-        input.conversationId,
-        input.messageId ?? null,
-        input.name ?? null,
-        input.path,
-        input.mime,
-        input.bytes,
-        input.sha256,
-        input.width ?? null,
-        input.height ?? null,
-        input.createdAt,
-      ],
-    );
+    await this.db.run(`INSERT INTO assets (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+      input.id,
+      input.name ?? null,
+      input.path,
+      input.mime,
+      input.bytes,
+      input.sha256,
+      input.width ?? null,
+      input.height ?? null,
+      input.createdAt,
+    ]);
   }
 
   /**
-   * 插入，但「同一段对话里同摘要的那一行已经存在」时不报错、把既有行返回。
+   * 插入，但「库里已经有同摘要的那一行」时不报错、把既有行返回。
    *
    * 两个并发上传撞在一起（同一张图连传两次）时，唯一约束会挡住第二次插入；这时返回先到的那一行，
    * 让上层把刚写出去的文件删掉即可 —— 而不是抛一个「库里已经有这条」的错误给用户。
@@ -70,12 +70,10 @@ export class AssetRepository {
   async upsert(input: AssetCreateInput): Promise<AssetUpsertOutcome> {
     const [inserted, found] = await this.db.tx((tx) => [
       tx.run(
-        `INSERT INTO assets (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (conversationId, sha256) DO NOTHING`,
+        `INSERT INTO assets (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (sha256) DO NOTHING`,
         [
           input.id,
-          input.conversationId,
-          input.messageId ?? null,
           input.name ?? null,
           input.path,
           input.mime,
@@ -86,10 +84,7 @@ export class AssetRepository {
           input.createdAt,
         ],
       ),
-      tx.get<AssetRow>(
-        `SELECT ${COLUMNS} FROM assets WHERE conversationId = ? AND sha256 = ?`,
-        [input.conversationId, input.sha256],
-      ),
+      tx.get<AssetRow>(`SELECT ${COLUMNS} FROM assets WHERE sha256 = ?`, [input.sha256]),
     ]);
 
     if (!found) {
@@ -103,39 +98,116 @@ export class AssetRepository {
     return this.db.get<AssetRow>(`SELECT ${COLUMNS} FROM assets WHERE id = ?`, [id]);
   }
 
-  /** 按内容摘要找：对话内去重（`asset.begin` 带 sha256 时走这一条） */
-  async findByDigest(conversationId: string, sha256: string): Promise<AssetRow | undefined> {
-    return this.db.get<AssetRow>(
-      `SELECT ${COLUMNS} FROM assets WHERE conversationId = ? AND sha256 = ?`,
-      [conversationId, sha256],
-    );
+  /** 按内容摘要找：全局去重（`asset.begin` 带 sha256 时走这一条） */
+  async findByDigest(sha256: string): Promise<AssetRow | undefined> {
+    return this.db.get<AssetRow>(`SELECT ${COLUMNS} FROM assets WHERE sha256 = ?`, [sha256]);
   }
 
+  /** 一段对话引用的全部素材（同一份素材被这段对话里两条消息引用时只出现一次） */
   async listByConversation(conversationId: string): Promise<AssetRow[]> {
     return this.db.all<AssetRow>(
-      `SELECT ${COLUMNS} FROM assets WHERE conversationId = ? ORDER BY createdAt ASC, id ASC`,
+      `SELECT DISTINCT ${columnList("a")}
+         FROM assets a
+         JOIN conversation_assets ca ON ca.assetId = a.id
+        WHERE ca.conversationId = ?
+        ORDER BY a.createdAt ASC, a.id ASC`,
       [conversationId],
     );
   }
 
+  /** 一条消息引用的全部素材 */
   async listByMessage(messageId: string): Promise<AssetRow[]> {
     return this.db.all<AssetRow>(
-      `SELECT ${COLUMNS} FROM assets WHERE messageId = ? ORDER BY createdAt ASC, id ASC`,
+      `SELECT DISTINCT ${columnList("a")}
+         FROM assets a
+         JOIN conversation_assets ca ON ca.assetId = a.id
+        WHERE ca.messageId = ?
+        ORDER BY a.createdAt ASC, a.id ASC`,
       [messageId],
     );
   }
 
-  /** 把上传完的素材挂到消息上（上传早于消息落库，PRD D5 / F-H8） */
-  async linkToMessage(id: string, messageId: string): Promise<number> {
-    const result = await this.db.run("UPDATE assets SET messageId = ? WHERE id = ?", [
-      messageId,
-      id,
-    ]);
+  /**
+   * 记一行「这条消息引用了这份素材」。已经记过（同一 message + asset）时返回 0，
+   * 否则返回 1：消息落库那一刻扫 `content` 里的 `__asset_id` 写行，重复写是常态。
+   */
+  async linkAsset(input: ConversationAssetRow): Promise<number> {
+    const result = await this.db.run(
+      `INSERT INTO conversation_assets (conversationId, messageId, assetId, createdAt)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT (messageId, assetId) DO NOTHING`,
+      [input.conversationId, input.messageId, input.assetId, input.createdAt],
+    );
     return result.changes;
+  }
+
+  /** 这份素材被几行引用（含同一段对话里的多条消息） */
+  async countReferences(assetId: string): Promise<number> {
+    const row = await this.db.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM conversation_assets WHERE assetId = ?",
+      [assetId],
+    );
+    return row?.n ?? 0;
+  }
+
+  /** 「几张会话引用了它」：`COUNT(DISTINCT conversationId)` */
+  async countConversations(assetId: string): Promise<number> {
+    const row = await this.db.get<{ n: number }>(
+      "SELECT COUNT(DISTINCT conversationId) AS n FROM conversation_assets WHERE assetId = ?",
+      [assetId],
+    );
+    return row?.n ?? 0;
+  }
+
+  /** 一份素材被哪些对话引用（「贴到过哪几个项目」） */
+  async listConversationIds(assetId: string): Promise<string[]> {
+    const rows = await this.db.all<{ conversationId: string }>(
+      `SELECT DISTINCT conversationId FROM conversation_assets
+        WHERE assetId = ?
+        ORDER BY conversationId ASC`,
+      [assetId],
+    );
+    return rows.map((row) => row.conversationId);
+  }
+
+  /** 一条消息引用了哪些素材 id（撤回要回填输入框时用；关系行随消息级联删除，先读一次） */
+  async listAssetIdsByMessage(messageId: string): Promise<string[]> {
+    const rows = await this.db.all<{ assetId: string }>(
+      `SELECT DISTINCT assetId FROM conversation_assets
+        WHERE messageId = ?
+        ORDER BY assetId ASC`,
+      [messageId],
+    );
+    return rows.map((row) => row.assetId);
+  }
+
+  /** 一段对话引用过哪些素材 id（删对话前先读一次：删完之后关系行就没了） */
+  async listAssetIdsByConversation(conversationId: string): Promise<string[]> {
+    const rows = await this.db.all<{ assetId: string }>(
+      `SELECT DISTINCT assetId FROM conversation_assets
+        WHERE conversationId = ?
+        ORDER BY assetId ASC`,
+      [conversationId],
+    );
+    return rows.map((row) => row.assetId);
   }
 
   async delete(id: string): Promise<number> {
     const result = await this.db.run("DELETE FROM assets WHERE id = ?", [id]);
+    return result.changes;
+  }
+
+  /**
+   * 归零才删：关系行还在时这条语句删不掉（`NOT EXISTS` 与 `ON DELETE RESTRICT` 是同一件事的
+   * 两道写法，前者让调用方拿到 0 行、后者保证真要删也不会带走别人的引用）。
+   */
+  async deleteIfUnreferenced(id: string): Promise<number> {
+    const result = await this.db.run(
+      `DELETE FROM assets
+        WHERE id = ?
+          AND NOT EXISTS (SELECT 1 FROM conversation_assets WHERE assetId = ?)`,
+      [id, id],
+    );
     return result.changes;
   }
 
@@ -174,13 +246,17 @@ export class AssetRepository {
     return result.changes;
   }
 
-  /** 一段对话在某个端点上的全部缓存行（失效自愈按这个粒度清） */
+  /**
+   * 一段对话在某个端点上的全部缓存行（失效自愈按这个粒度清）。
+   *
+   * 「这段对话的素材」从 `conversation_assets` 取：素材行本身不再记对话。
+   */
   async listVendorFiles(conversationId: string, endpointId: string): Promise<AssetVendorFileRow[]> {
     return this.db.all<AssetVendorFileRow>(
-      `SELECT v.assetId, v.endpointId, v.vendorFileId, v.createdAt, v.lastUsedAt
+      `SELECT DISTINCT v.assetId, v.endpointId, v.vendorFileId, v.createdAt, v.lastUsedAt
          FROM asset_vendor_files v
-         JOIN assets a ON a.id = v.assetId
-        WHERE a.conversationId = ? AND v.endpointId = ?
+         JOIN conversation_assets ca ON ca.assetId = v.assetId
+        WHERE ca.conversationId = ? AND v.endpointId = ?
         ORDER BY v.lastUsedAt ASC, v.assetId ASC`,
       [conversationId, endpointId],
     );
@@ -198,16 +274,23 @@ export class AssetRepository {
   /**
    * 一整段对话在某个端点上的缓存全部作废（一次请求因「file 不存在/无效」失败时走这一条）。
    *
-   * 删的是「这段对话 + 这个端点」这一批：那条请求里可能带了好几张历史图，逐张删要先把它们
-   * 从请求体里认出来，而按批删完重传一遍的代价本来就一样。返回删掉的行数。
+   * 删的是「这段对话引用过的素材 + 这个端点」这一批：那条请求里可能带了好几张历史图，逐张删要
+   * 先把它们从请求体里认出来，而按批删完重传一遍的代价本来就一样。返回删掉的行数。
    */
   async deleteVendorFiles(conversationId: string, endpointId: string): Promise<number> {
     const result = await this.db.run(
       `DELETE FROM asset_vendor_files
         WHERE endpointId = ?
-          AND assetId IN (SELECT id FROM assets WHERE conversationId = ?)`,
+          AND assetId IN (SELECT assetId FROM conversation_assets WHERE conversationId = ?)`,
       [endpointId, conversationId],
     );
     return result.changes;
   }
+}
+
+/** 给某个表别名拼一份带前缀的列名（join 时不能直接复用裸列名） */
+function columnList(alias: string): string {
+  return COLUMNS.split(",")
+    .map((column) => `${alias}.${column.trim()}`)
+    .join(", ");
 }

@@ -46,6 +46,7 @@ describe("migrate", () => {
       "conversations",
       "messages",
       "assets",
+      "conversation_assets",
       "asset_vendor_files",
       "notices",
       "questions",
@@ -146,37 +147,61 @@ describe("外键与级联", () => {
       ["msg1", "c1", 1, "user", "completed", '"你好"', "你好", 3, 3],
     );
     await db.run(
-      `INSERT INTO assets (id, conversationId, messageId, name, path, mime, bytes, sha256, createdAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ["as1", "c1", "msg1", "a.png", "assets/a.png", "image/png", 1024, "digest-1", 4],
+      `INSERT INTO assets (id, name, path, mime, bytes, sha256, createdAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ["as1", "a.png", "assets/a.png", "image/png", 1024, "digest-1", 4],
+    );
+    await db.run(
+      `INSERT INTO conversation_assets (conversationId, messageId, assetId, createdAt)
+       VALUES (?, ?, ?, ?)`,
+      ["c1", "msg1", "as1", 5],
     );
   }
 
-  it("删 workspace 连带删它的 conversations / messages / assets", async () => {
+  it("删 workspace 连带删它的 conversations / messages / 引用关系", async () => {
     await seed();
     await db.run("DELETE FROM workspaces WHERE id = ?", ["w1"]);
 
     expect(await db.all("SELECT id FROM conversations")).toEqual([]);
     expect(await db.all("SELECT id FROM messages")).toEqual([]);
-    expect(await db.all("SELECT id FROM assets")).toEqual([]);
+    expect(await db.all("SELECT assetId FROM conversation_assets")).toEqual([]);
+    // 素材行不跟着对话走：字节是全局的，删不删由「还几张引用」决定
+    expect(await db.all("SELECT id FROM assets")).toEqual([{ id: "as1" }]);
   });
 
-  it("删 conversation 连带删 messages 与 assets", async () => {
+  it("删 conversation 连带删 messages 与引用关系（素材行留着）", async () => {
     await seed();
     await db.run("DELETE FROM conversations WHERE id = ?", ["c1"]);
 
     expect(await db.all("SELECT id FROM messages")).toEqual([]);
-    expect(await db.all("SELECT id FROM assets")).toEqual([]);
+    expect(await db.all("SELECT assetId FROM conversation_assets")).toEqual([]);
+    expect(await db.all("SELECT id FROM assets")).toEqual([{ id: "as1" }]);
   });
 
-  it("删消息时素材行保留、messageId 置空（文件路径不能丢，PRD D17 按引用清理）", async () => {
+  it("删消息只带走它自己的关系行（素材行与文件路径还在）", async () => {
     await seed();
     await db.run("DELETE FROM messages WHERE id = ?", ["msg1"]);
 
-    const assets = await db.all<{ id: string; messageId: string | null; path: string }>(
-      "SELECT id, messageId, path FROM assets",
+    expect(await db.all("SELECT assetId FROM conversation_assets")).toEqual([]);
+    const assets = await db.all<{ id: string; path: string }>("SELECT id, path FROM assets");
+    expect(assets).toEqual([{ id: "as1", path: "assets/a.png" }]);
+  });
+
+  it("还有引用时素材行删不掉（assetId 是 ON DELETE RESTRICT 的护栏）", async () => {
+    await seed();
+    await expect(db.run("DELETE FROM assets WHERE id = ?", ["as1"])).rejects.toThrow(
+      /FOREIGN KEY/i,
     );
-    expect(assets).toEqual([{ id: "as1", messageId: null, path: "assets/a.png" }]);
+  });
+
+  it("同一份摘要只能落一行（sha256 全局唯一）", async () => {
+    await seed();
+    await expect(
+      db.run(
+        `INSERT INTO assets (id, name, path, mime, bytes, sha256, createdAt)
+         VALUES ('as2', NULL, 'assets/b.png', 'image/png', 8, 'digest-1', 6)`,
+      ),
+    ).rejects.toThrow(/UNIQUE/i);
   });
 
   it("外键真的在拦：插一条指向不存在对话的消息会失败", async () => {

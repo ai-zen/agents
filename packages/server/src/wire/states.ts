@@ -407,12 +407,101 @@ export const MAX_ASSET_BYTES = 20 * 1024 * 1024;
 export const MAX_ASSETS_PER_MESSAGE = 4;
 
 /**
+ * 内容段上的**本地扩展**：以 `__` 开头的键只在本机有意义（指回数据根下的一份素材），
+ * 发送给厂商之前一律剥离 —— 厂商不认识这些键，而「哪些字段能出网」应当由 core 的类型决定。
+ *
+ * 目前只有一个：`__asset_id` 指向 `assets` 表的一行。它取代了早先把 `asset://<id>` 塞进
+ * `image_url.url` / `file.file_id` 的做法：那两个字段是**真字段**，装一个假 scheme 会让
+ * 「这一段的 url 是空的」与「这一段的 url 指向本机素材」看起来是同一件事。
+ */
+export interface LocalSectionExtensions {
+  /** 这一段引用的素材 id（缺省 / 空串表示「这一段不引用素材」） */
+  __asset_id?: string;
+}
+
+/**
+ * 带本地扩展的内容段：core 的内容段 + `__` 开头的本机字段（交叉类型，不改 core）。
+ *
+ * 落库形态（`messages.content` 的 JSON）：
+ *
+ * ```json
+ * { "index": 1, "type": "image_url", "image_url": { "url": "" }, "__asset_id": "9f3c…" }
+ * { "index": 2, "type": "file", "filename": "报表.pdf", "__asset_id": "c3d4…" }
+ * ```
+ */
+export type LocalMessageContentSection = AgentNS.MessageContentSection & LocalSectionExtensions;
+
+/** 带本地扩展的正文：字符串原样，数组里的每一段可能带 `__` 字段 */
+export type LocalMessageContent = string | LocalMessageContentSection[];
+
+/** core 的内容段字段白名单：类型 → 可以出网的键（`image_url` 的嵌套键在下一层） */
+const CORE_SECTION_FIELDS: Record<string, readonly string[]> = {
+  text: ["index", "type", "text"],
+  image_url: ["index", "type", "image_url"],
+  file: ["index", "type", "file_id", "file_data", "filename"],
+};
+
+/** `image_url` 这一层允许出网的键 */
+const CORE_IMAGE_URL_FIELDS: readonly string[] = ["url", "detail"];
+
+/**
+ * 一个内容段里的素材 id（没有这个扩展字段时为空）。
+ *
+ * 判断依据就是「有没有这个字段」，不解析任何 scheme：段上的 url 是什么都不影响这个结论。
+ */
+export function localAssetIdOf(section: AgentNS.MessageContentSection): string | null {
+  const value = (section as LocalMessageContentSection).__asset_id;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+/**
+ * 发送前剥离本地扩展：按 core 的字段白名单重建每一段。
+ *
+ * 返回新数组（不改入参）：历史和这一轮的发送内容都要过一遍它，改入参会让「落库那一份」
+ * 与「发出去那一份」串味。字符串正文原样返回（字符串上没有段，也就没有 `__` 字段）。
+ */
+export function stripLocalExtensions(content: AgentNS.MessageContent): AgentNS.MessageContent {
+  if (!Array.isArray(content)) return content;
+  return content.map(stripSection);
+}
+
+/** 重建一段：只抄白名单里的键（嵌套的 `image_url` 再抄一层） */
+function stripSection(section: AgentNS.MessageContentSection): AgentNS.MessageContentSection {
+  const source = section as unknown as Record<string, unknown>;
+  const type = typeof source.type === "string" ? source.type : "";
+  const allowed = CORE_SECTION_FIELDS[type] ?? ["index", "type"];
+
+  const kept: Record<string, unknown> = {};
+  for (const key of allowed) {
+    const value = source[key];
+    if (value === undefined) continue;
+    kept[key] = key === "image_url" ? pickImageUrl(value) : value;
+  }
+  // 认不出的类型只留 `type` / `index`：宁可让厂商报一句内容不合法，也不把它认不出的键带出去
+  return kept as unknown as AgentNS.MessageContentSection;
+}
+
+/** `image_url` 的内层只留 `url` / `detail` */
+function pickImageUrl(value: unknown): unknown {
+  if (typeof value !== "object" || value === null) return { url: "" };
+  const source = value as Record<string, unknown>;
+  const kept: Record<string, unknown> = {};
+  for (const key of CORE_IMAGE_URL_FIELDS) {
+    if (source[key] !== undefined) kept[key] = source[key];
+  }
+  return kept;
+}
+
+/**
  * 素材引用：库与消息里存的是引用，字节落数据根的 `assets/`（PRD L2 / F-H8）。
  *
  * 带 `bytes` / `mime` / 尺寸这些事实，客户端据此排占位框，不必先下载再量。
  * 它是**上传的产物**（`asset.end` 回的），也是**去重命中时的答案**（`asset.begin` 的 `asset`）。
- * 消息里持久化的是 `asset://<assetId>`，不是这个对象本身：内容要回了原图、要换模型重发时
- * 都从 `assets` 这一份真相重算（`asset.get` 取字节）。
+ * 消息里持久化的是段上的本地扩展字段 `__asset_id`（见 {@link LocalMessageContentSection}），
+ * 不是这个对象本身：内容要回了原图、要换模型重发时都从 `assets` 这一份真相重算
+ * （`asset.get` 取字节）。
  */
 export interface AssetRef {
   assetId: string;
@@ -434,8 +523,8 @@ export interface AssetRef {
  * 变成内容段的素材 id —— 素材怎么变成内容段（文件引用 / 内联 / 退化成文字）由服务端按
  * 实发模型决定（PRD F-H7），客户端只说「用了哪几张」。
  *
- * 落库的 content 里素材写成 `asset://<assetId>`（图片是 `image_url.url`，文件是
- * `file.file_id`）：厂商的 `file_id`、base64、绝对路径都是「这一次发送的产物」，不进库。
+ * 落库的 content 里素材写成段上的 `__asset_id`（`image_url.url` / `file.file_id` 留空）：
+ * 厂商的 `file_id`、base64、绝对路径都是「这一次发送的产物」，不进库。
  */
 export interface MessageInput {
   /** 用户输入的内容，core 原样 */

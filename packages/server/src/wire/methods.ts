@@ -1446,7 +1446,7 @@ export type AssetVariant = "original" | "thumb";
  * `asset.get` 入参（PRD F-H7 / F-H8）：按素材 id 取回内容。
  *
  * `assets` 是资源的唯一真相，所以服务端重启、换模型、换设备之后，任何一段历史里的图都能靠
- * `asset://<assetId>` 重新取回来。
+ * 段上的 `__asset_id`（本地扩展字段）重新取回来。
  */
 export interface AssetGetParams {
   assetId: string;
