@@ -52,6 +52,8 @@ interface Harness {
   questions: QuestionRepository;
   /** 推出去的事件（`conversation.changed`，L5 / D22） */
   events: Array<{ name: string; payload: unknown }>;
+  /** 交给素材层「归零清扫」的素材 id（每调一次记一笔） */
+  sweeps: string[][];
 }
 
 const BASE_CONFIG = {
@@ -137,11 +139,17 @@ async function setup(config: Record<string, unknown> = BASE_CONFIG): Promise<Har
   const questions = new QuestionRepository(db);
   clock = 1_700_000_000_000;
   const events: Array<{ name: string; payload: unknown }> = [];
+  const sweeps: string[][] = [];
   const service = new ConversationService({
     conversations,
     messages,
     workspaces,
     assets,
+    // 删完之后「还剩几张引用」归素材层判：这里只记下它被问过哪几个素材
+    sweepAssets: async (assetIds) => {
+      sweeps.push(assetIds);
+      return [];
+    },
     questions,
     configManager: new ConfigManager(configPath),
     runtime,
@@ -164,6 +172,7 @@ async function setup(config: Record<string, unknown> = BASE_CONFIG): Promise<Har
     assets,
     questions,
     events,
+    sweeps,
   };
   await workspaces.create({ id: "w1", name: "项目一", cwd: projectDir, createdAt: 1 });
   return harnessValue;
@@ -409,7 +418,7 @@ describe("ConversationService.get / rename / pin", () => {
 });
 
 describe("ConversationService.delete（D17）", () => {
-  it("dryRun 只算代价，真删后对话与消息一起消失，并回要清的文件清单", async () => {
+  it("dryRun 只算代价；真删后对话与消息消失，引用归零的素材交给素材层清", async () => {
     const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const id = created.conversation.id;
     await harness.messages.upsert({
@@ -422,24 +431,36 @@ describe("ConversationService.delete（D17）", () => {
     });
     await harness.assets.create({
       id: "as1",
-      conversationId: id,
       path: "assets/as1.png",
       mime: "image/png",
       bytes: 5,
       sha256: "sha256-1",
       createdAt: 3,
     });
+    // 归属只在关系行上：素材行本身不记对话
+    await harness.assets.linkAsset({
+      conversationId: id,
+      messageId: "msg-1",
+      assetId: "as1",
+      createdAt: 4,
+    });
 
     const dry = await harness.service.delete({ conversationId: id, dryRun: true });
     expect(dry.removed).toBe(false);
     expect(dry.consequences).toEqual({ conversations: 1, messages: 1, assets: 1 });
-    expect(dry.assetPaths).toEqual(["assets/as1.png"]);
+    expect(dry.assetIds).toEqual(["as1"]);
     expect(await harness.conversations.get(id)).toBeDefined();
+    // dryRun 不该真的去清字节
+    expect(harness.sweeps).toEqual([]);
 
     const real = await harness.service.delete({ conversationId: id });
     expect(real.removed).toBe(true);
     expect(await harness.conversations.get(id)).toBeUndefined();
     expect(await harness.messages.countByConversation(id)).toBe(0);
+    // 关系行随外键级联消失，素材行本身留给素材层判
+    expect(await harness.assets.countReferences("as1")).toBe(0);
+    expect(await harness.assets.get("as1")).toBeDefined();
+    expect(harness.sweeps).toEqual([["as1"]]);
     expect(harness.runtime.forgotten).toContain(id);
     await expect(harness.service.get({ conversationId: id })).rejects.toMatchObject({
       code: "not_found",
@@ -635,18 +656,24 @@ describe("ConversationService.revert（D24）", () => {
     }
     await harness.assets.create({
       id: "as1",
-      conversationId: id,
-      messageId: "u2",
       path: "assets/as1.png",
       mime: "image/png",
       bytes: 5,
       sha256: "sha256-2",
       createdAt: 1_250,
     });
+    await harness.assets.linkAsset({
+      conversationId: id,
+      messageId: "u2",
+      assetId: "as1",
+      createdAt: 1_251,
+    });
 
     const result = await harness.service.revert({ conversationId: id, beforeMessageId: "u2" });
     expect(result.removedMessageIds).toEqual(["u2", "a2"]);
     expect(result.restoredInput).toEqual({ content: "第二句", assetIds: ["as1"] });
+    // 撤掉的消息引用的素材交给素材层清（还有别的引用就留下）
+    expect(harness.sweeps).toEqual([["as1"]]);
 
     const left = await harness.messages.listByConversation(id);
     expect(left.map((message) => message.id)).toEqual(["u1", "a1"]);
@@ -700,13 +727,17 @@ describe("ConversationService.revert（D24）", () => {
     });
     await harness.assets.create({
       id: "as1",
-      conversationId: id,
-      messageId: "u1",
       path: "assets/as1.png",
       mime: "image/png",
       bytes: 5,
       sha256: "sha256-3",
       createdAt: 11,
+    });
+    await harness.assets.linkAsset({
+      conversationId: id,
+      messageId: "u1",
+      assetId: "as1",
+      createdAt: 12,
     });
 
     const result = await harness.service.revert({ conversationId: id, beforeMessageId: "u1" });
@@ -798,14 +829,27 @@ describe("ConversationService.setModel（F-B4 / D20：会话级、落库）", ()
   it("历史里有图而新模型不看图时拒绝并说明原因", async () => {
     const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const id = created.conversation.id;
+    await harness.messages.upsert({
+      id: "u1",
+      conversationId: id,
+      role: "user",
+      status: "completed",
+      content: "看这张",
+      createdAt: 2,
+    });
     await harness.assets.create({
       id: "as1",
-      conversationId: id,
       path: "assets/as1.png",
       mime: "image/png",
       bytes: 5,
       sha256: "sha256-4",
       createdAt: 3,
+    });
+    await harness.assets.linkAsset({
+      conversationId: id,
+      messageId: "u1",
+      assetId: "as1",
+      createdAt: 4,
     });
 
     await expect(

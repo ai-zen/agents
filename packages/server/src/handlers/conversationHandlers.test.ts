@@ -189,7 +189,7 @@ afterEach(async () => {
 });
 
 describe("conversation.send", () => {
-  it("受理即回两个 id，并把素材挂到落库后的那条用户消息上（L6 / D5）", async () => {
+  it("受理即回两个 id，并把素材记成用户消息的引用关系（L6 / D5）", async () => {
     const { app, conversationId } = await makeHarness();
     const assetId = await uploadAsset(app, conversationId);
 
@@ -200,9 +200,11 @@ describe("conversation.send", () => {
 
     expect(sent.userMessageId.length).toBeGreaterThan(0);
     expect(sent.assistantMessageId.length).toBeGreaterThan(0);
-    // 上传早于消息落库：受理之后素材行挂到用户消息上
-    const record = await app.assetService.get(assetId);
-    expect(record?.messageId).toBe(sent.userMessageId);
+    // 消息落库那一刻扫 content 里的 `__asset_id` 写关系行
+    expect(await app.assets.listAssetIdsByMessage(sent.userMessageId)).toEqual([assetId]);
+    expect(await app.assets.countConversations(assetId)).toBe(1);
+    // 素材行本身不记归属（一张图可以被好几段对话引用）
+    expect(await app.assetService.get(assetId)).toBeDefined();
 
     await settle(app, conversationId);
     const page = await callMethod(app, "message.list", { conversationId });

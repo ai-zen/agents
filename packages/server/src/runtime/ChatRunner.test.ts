@@ -26,7 +26,7 @@ import type { Conversation, MessageUpsertInput, StoredMessage } from "../storage
 import type { Language } from "../i18n/index.js";
 import type { EventMap, EventName } from "../wire/events.js";
 import { ServerError } from "../wire/errors.js";
-import type { GenerationPhaseName, RunState } from "../wire/states.js";
+import type { GenerationPhaseName, LocalMessageContentSection, RunState } from "../wire/states.js";
 import type {
   AgentBuildContext,
   ChatAgent,
@@ -93,6 +93,7 @@ function createHarness(options: {
   prepareAttachments?: ChatRunnerOptions["prepareAttachments"];
   prepareHistory?: ChatRunnerOptions["prepareHistory"];
   invalidateVendorFiles?: ChatRunnerOptions["invalidateVendorFiles"];
+  linkMessageAssets?: ChatRunnerOptions["linkMessageAssets"];
   conversation?: Conversation;
   streamWriteIntervalMs?: number;
   history?: MessageUpsertInput[];
@@ -139,6 +140,9 @@ function createHarness(options: {
     ...(options.invalidateVendorFiles === undefined
       ? {}
       : { invalidateVendorFiles: options.invalidateVendorFiles }),
+    ...(options.linkMessageAssets === undefined
+      ? {}
+      : { linkMessageAssets: options.linkMessageAssets }),
     defaultLanguage: options.language,
   });
 
@@ -1197,7 +1201,7 @@ describe("真装配：会话级模型与思考档位（F-B4 / F-B6）", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 素材：落库形态（asset://）与「file 失效」自愈
+// 素材：落库形态（__asset_id）与「file 失效」自愈
 // ---------------------------------------------------------------------------
 
 /** 一个可脚本化的 agent：`send` 第 n 次成功 / 失败（失败时按厂商的错误甩出去） */
@@ -1249,13 +1253,13 @@ class ScriptedAgent implements ChatAgent {
   }
 }
 
-/** 落库用的内容：素材段写成 asset://（真实现是 `AssetService.prepareAttachments`） */
-const STORED_CONTENT: AgentNS.MessageContentSection[] = [
+/** 落库用的内容：素材段只有本地扩展字段（真实现是 `AssetService.prepareAttachments`） */
+const STORED_CONTENT: LocalMessageContentSection[] = [
   { type: "text", text: "看看这张" },
-  { type: "image_url", image_url: { url: "asset://a1" } },
+  { type: "image_url", image_url: { url: "" }, __asset_id: "a1" },
 ];
 
-describe("素材：落库只存 asset://", () => {
+describe("素材：落库只存 __asset_id", () => {
   it("用户消息落库用的是 storedContent，发给 agent 的是转换后的内容", async () => {
     const sent: AgentNS.MessageContent[] = [];
     const custom = createHarness({
@@ -1293,7 +1297,35 @@ describe("素材：落库只存 asset://", () => {
     expect(JSON.stringify(custom.store.writes)).not.toContain("file-abc");
   });
 
-  it("历史里的 asset:// 每轮发送前交给 prepareHistory 还原", async () => {
+  it("用户消息落库那一刻登记素材关系行（同一 message+asset 只一行）", async () => {
+    const linked: Array<{ conversationId: string; messageId: string; content: unknown }> = [];
+    const custom = createHarness({
+      rounds: plainRounds(),
+      prepareAttachments: async () => ({
+        content: [{ type: "text", text: "看看这张" }],
+        attachments: [],
+        storedContent: STORED_CONTENT,
+      }),
+      linkMessageAssets: async (context) => {
+        linked.push(context);
+        return 1;
+      },
+    });
+
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "看看这张" },
+    });
+    await turn.done;
+
+    // 扫的是落库的那一份内容（带 `__asset_id`），拿的是刚落库的那条用户消息 id
+    expect(linked).toHaveLength(1);
+    expect(linked[0]?.conversationId).toBe(CONVERSATION_ID);
+    expect(linked[0]?.messageId).toBe(turn.userMessageId);
+    expect(JSON.stringify(linked[0]?.content)).toContain("__asset_id");
+  });
+
+  it("历史里的 __asset_id 每轮发送前交给 prepareHistory 还原", async () => {
     const resolvedCalls: AgentNS.Message[][] = [];
     const custom = createHarness({
       rounds: plainRounds(),
@@ -1304,7 +1336,9 @@ describe("素材：落库只存 asset://", () => {
           role: "user",
           status: "completed",
           omit: false,
-          content: [{ type: "image_url", image_url: { url: "asset://a1" } }] as never,
+          content: [
+            { type: "image_url", image_url: { url: "" }, __asset_id: "a1" },
+          ] as never,
           data: null,
           createdAt: 1,
         },
@@ -1324,11 +1358,11 @@ describe("素材：落库只存 asset://", () => {
     });
     await turn.done;
 
-    // 装载出来的历史（带 asset://）交给还原方
-    expect(JSON.stringify(resolvedCalls[0])).toContain("asset://a1");
+    // 装载出来的历史（带 __asset_id）交给还原方
+    expect(JSON.stringify(resolvedCalls[0])).toContain("__asset_id");
     // agent 拿到的是还原后的历史
     expect(JSON.stringify(custom.builds[0]?.history)).toContain("重放过的图");
-    expect(JSON.stringify(custom.builds[0]?.history)).not.toContain("asset://");
+    expect(JSON.stringify(custom.builds[0]?.history)).not.toContain("__asset_id");
   });
 });
 

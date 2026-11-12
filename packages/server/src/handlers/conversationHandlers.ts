@@ -24,7 +24,6 @@ import type { Language, MessageKey } from "../i18n/index.js";
 import type { HandlerTable } from "../net/index.js";
 import type { ChatRunner } from "../runtime/index.js";
 import type { AgentDescription } from "../services/AgentService.js";
-import type { AssetService } from "../services/AssetService.js";
 import type { ConversationService } from "../services/ConversationService.js";
 import type { MessageService } from "../services/MessageService.js";
 import { ServerError } from "../wire/errors.js";
@@ -57,8 +56,6 @@ import { localizeOutcome } from "./assetHandlers.js";
 export interface ConversationHandlerDeps {
   conversations: ConversationService;
   messages: MessageService;
-  /** 素材挂接与文件清理（`conversation.send` / `conversation.delete` 用） */
-  assets: AssetService;
   /** 一轮的执行者（受理、现场、中止、忘掉） */
   runner: ChatRunner;
   /** 挂在这段对话上的问题（`conversation.state` 现场快照的一部分，D22；不注入时为空） */
@@ -185,10 +182,13 @@ async function createConversation(
 }
 
 /**
- * `conversation.send`：受理一轮，把素材挂到落库后的那条用户消息上（PRD L6 / F-I12 / D5）。
+ * `conversation.send`：受理一轮。
  *
  * 先把草稿落成真行（R56：首次 `send` 时才写 `conversations`）：FK 要求消息所属的对话已经存在，
  * 而且后端的一切（重连、列表、删除）都按「存在即能查」处理。
+ *
+ * 素材关系行不在这里写：它跟着「用户消息落库那一刻」走（`ChatRunner` 注入的
+ * `linkMessageAssets` 扫落库内容里的 `__asset_id`），所以重试与重写都不会重复记。
  *
  * 附件结局里的句子是素材层按默认语言渲染的（那一层不知道收件人是谁），这里按**这条连接**的
  * 语言重渲染一次再出网（D8：库里只留码与参数）。
@@ -209,12 +209,6 @@ async function sendTurn(
     input: params.input,
     language,
   });
-
-  const assetIds = params.input.assetIds ?? [];
-  if (assetIds.length > 0) {
-    // 上传早于消息落库：受理之后立刻把素材行挂到那条用户消息上
-    await deps.assets.linkToMessage(assetIds, turn.userMessageId);
-  }
 
   // 结算之后的两个收尾：起一次自动命名（D2，条件不成立时它自己什么都不做），
   // 再让单根重算一次退出判据（这一轮可能是最后一件欠着的事）
@@ -240,10 +234,11 @@ async function sendTurn(
 }
 
 /**
- * `conversation.delete`：删掉这段对话，再补齐两件只有接线层知道的事（R33）。
+ * `conversation.delete`：删掉这段对话，再补齐一件只有接线层知道的事（R33）。
  *
- *   1. 运行时里这一轮的现场要丢掉（`ChatRunner.forget`：正在跑就先让它停）；
- *   2. `assets/` 下的文件按引用清掉（服务层只算清单，删文件是素材层的事）。
+ * 运行时里这一轮的现场要丢掉（`ChatRunner.forget`：正在跑就先让它停）；素材字节的清理不在这里
+ * —— 服务层删完之后已经由素材层问过「还剩几张引用」，归零的那几份才删（见
+ * `ConversationService.delete` 的 `sweepAssets`）。
  */
 async function removeConversation(
   deps: ConversationHandlerDeps,
@@ -252,7 +247,6 @@ async function removeConversation(
   const report = await deps.conversations.delete(params);
   if (params.dryRun !== true && report.removed) {
     deps.runner.forget(params.conversationId);
-    await deps.assets.removeFiles(report.assetPaths);
   }
   return { removed: report.removed, consequences: report.consequences };
 }

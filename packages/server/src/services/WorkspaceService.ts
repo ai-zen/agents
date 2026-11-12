@@ -34,18 +34,18 @@ import type {
   WorkspaceRenameResult,
   WorkspaceView,
 } from "../wire/index.js";
-import type { ConversationRuntimePort } from "./ConversationService.js";
+import type { ConversationRuntimePort, AssetSweeper } from "./ConversationService.js";
 
 /**
  * `workspace.remove` 的结果。
  *
  * wire 的 `WorkspaceRemoveResult` 只有「删了没 + 代价」；真正把 `assets/` 下的文件
- * 清掉是 asset 那一层的事（PRD D17「图片按引用清理」），所以这里多带一份要清的文件
- * 清单（库里的相对路径）。清单是 wire 出参的超集，客户端看到的字段与契约一致。
+ * 清掉是 asset 那一层的事（PRD D17「图片按引用清理」），所以这里多带一份这些对话引用过的
+ * 素材 id（删完之后由 asset 层问「还剩几张引用」，归零才删）。
  */
 export interface WorkspaceRemovalReport extends WorkspaceRemoveResult {
-  /** 需要 asset 层按引用清掉的文件（数据根下的相对路径，来自 `assets.path`） */
-  assetPaths: string[];
+  /** 这些对话引用过的素材 id（可能还有别的对话在用） */
+  assetIds: string[];
 }
 
 /** Workspace 服务的依赖；由单根组装后注入，服务自己不取任何全局路径 */
@@ -54,6 +54,8 @@ export interface WorkspaceServiceDeps {
   conversations: ConversationRepository;
   messages: MessageRepository;
   assets: AssetRepository;
+  /** 引用归零的素材交给它删行删文件；不注入时字节会留在盘上（引用行已经没了） */
+  sweepAssets?: AssetSweeper;
   /**
    * 运行时钩子：删项目会连带删掉它名下的对话，这些对话在运行时里可能还留着
    * 临时覆盖、空闲计时之类的东西，删之前一并请它扔掉。
@@ -127,6 +129,7 @@ export class WorkspaceService {
   private readonly conversations: ConversationRepository;
   private readonly messages: MessageRepository;
   private readonly assets: AssetRepository;
+  private readonly sweepAssets?: AssetSweeper;
   private readonly runtime: ConversationRuntimePort;
   private readonly now: () => number;
 
@@ -135,6 +138,7 @@ export class WorkspaceService {
     this.conversations = deps.conversations;
     this.messages = deps.messages;
     this.assets = deps.assets;
+    this.sweepAssets = deps.sweepAssets;
     this.runtime = deps.runtime;
     this.now = deps.now ?? Date.now;
   }
@@ -202,9 +206,9 @@ export class WorkspaceService {
    * 删项目（PRD D11 / D17 / F-F9 / R7）。
    *
    * `dryRun` 只算账：名下对话数、消息数、素材数，客户端拿去向用户说明代价。真删时按外键
-   * 级联把对话、消息、问题行一起删掉，素材行随之消失 —— 但 `assets/` 下的文件不在服务端
-   * 的删除范围里（D11：目录本身服务端不碰；文件由 asset 层按引用清），所以把要清的文件
-   * 清单一起回给调用方。
+   * 级联把对话、消息、问题行、素材的引用关系一起删掉；`assets/` 下的文件不在服务的删除范围里
+   * （D11：目录本身服务端不碰），但素材的字节要按引用清 —— 那张图可能还有别的项目的对话在用，
+   * 所以只把「这些对话引用过哪几份素材」交给 asset 层，删完之后由它问「还剩几张引用」。
    */
   async remove(params: WorkspaceRemoveParams): Promise<WorkspaceRemovalReport> {
     const row = await this.requireRow(params.workspaceId);
@@ -215,7 +219,7 @@ export class WorkspaceService {
       messages: 0,
       assets: 0,
     };
-    const assetPaths: string[] = [];
+    const assetIds = new Set<string>();
     for (const conversation of conversations) {
       // 这个数来自 `countByConversation`：每段对话在 `messages` 表里的全部行，**含子 Agent 的
       // 消息**（它们落在同一张表、`parentToolCallId` 非空）。侧栏摘要的 `messageCount` 是另一条
@@ -224,11 +228,11 @@ export class WorkspaceService {
       consequences.messages += await this.messages.countByConversation(conversation.id);
       const assets = await this.assets.listByConversation(conversation.id);
       consequences.assets += assets.length;
-      for (const asset of assets) assetPaths.push(asset.path);
+      for (const asset of assets) assetIds.add(asset.id);
     }
 
     if (params.dryRun === true) {
-      return { removed: false, consequences, assetPaths };
+      return { removed: false, consequences, assetIds: [...assetIds] };
     }
 
     // 先请运行时忘掉这些对话，再删行：反过来会在运行时里留下指向已删记录的覆盖项
@@ -236,7 +240,9 @@ export class WorkspaceService {
       await this.runtime.forget(conversation.id);
     }
     const changes = await this.workspaces.delete(row.id);
-    return { removed: changes > 0, consequences, assetPaths };
+    // 关系行已经随外键没了：归零的那几份素材才删行删文件
+    if (changes > 0) await this.sweepAssets?.([...assetIds]);
+    return { removed: changes > 0, consequences, assetIds: [...assetIds] };
   }
 
   private async requireRow(workspaceId: string): Promise<WorkspaceRow> {

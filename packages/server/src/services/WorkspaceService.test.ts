@@ -47,6 +47,7 @@ let runtime: FakeRuntime;
 let conversations: ConversationRepository;
 let messages: MessageRepository;
 let assets: AssetRepository;
+let sweeps: string[][];
 let clock: number;
 
 beforeEach(async () => {
@@ -61,12 +62,18 @@ beforeEach(async () => {
   messages = new MessageRepository(db);
   assets = new AssetRepository(db);
   runtime = new FakeRuntime();
+  sweeps = [];
   clock = 1_000;
   service = new WorkspaceService({
     workspaces: new WorkspaceRepository(db),
     conversations,
     messages,
     assets,
+    // 删完项目之后「还剩几张引用」归素材层判：这里只记下它被问过哪几个素材
+    sweepAssets: async (assetIds) => {
+      sweeps.push(assetIds);
+      return [];
+    },
     runtime,
     now: () => (clock += 1),
   });
@@ -198,25 +205,32 @@ describe("WorkspaceService.remove", () => {
     });
     await assets.create({
       id: "as1",
-      conversationId: "c1",
       path: "assets/as1.png",
       mime: "image/png",
       bytes: 10,
       sha256: "sha256-1",
       createdAt: 2_150,
     });
+    // 归属只在关系行上（消息 c1 里那张图）
+    await assets.linkAsset({
+      conversationId: "c1",
+      messageId: "m1",
+      assetId: "as1",
+      createdAt: 2_160,
+    });
     return workspaceId;
   }
 
-  it("dryRun 只算账：对话数、消息数、素材数与要清的文件清单", async () => {
+  it("dryRun 只算账：对话数、消息数、素材数与受影响的素材 id", async () => {
     const workspaceId = await seed();
     const report = await service.remove({ workspaceId, dryRun: true });
 
     expect(report.removed).toBe(false);
     expect(report.consequences).toEqual({ conversations: 2, messages: 3, assets: 1 });
-    expect(report.assetPaths).toEqual(["assets/as1.png"]);
+    expect(report.assetIds).toEqual(["as1"]);
     // 什么都没动
     expect(await conversations.get("c1")).toBeDefined();
+    expect(sweeps).toEqual([]);
   });
 
   it("真删连带删掉名下对话与消息，目录本身不碰（D11）", async () => {
@@ -230,6 +244,9 @@ describe("WorkspaceService.remove", () => {
     expect(await service.list()).toEqual({ workspaces: [] });
     // 运行时被通知忘掉这两段对话
     expect(runtime.forgotten.sort()).toEqual(["c1", "c2"]);
+    // 关系行随外键没了；素材行本身交给素材层判（引用归零才删）
+    expect(await assets.countReferences("as1")).toBe(0);
+    expect(sweeps).toEqual([["as1"]]);
     // 目录还在：服务端不碰用户的目录（D11）
     await expect(service.create({ cwd: projectDir })).resolves.toBeDefined();
   });

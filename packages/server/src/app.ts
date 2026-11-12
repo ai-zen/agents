@@ -379,7 +379,7 @@ export class ServerApp {
     // 交接服务：入参优先，缺省按 cwd 造一个真的（R59：不再因为「没注入」就不装交接插件）
     this.handoffProvider = options.handoff ?? this.defaultHandoffProvider();
 
-    // ---- 3. 素材（上传落定、厂商 file_id 缓存、「素材 id → 内容段」、`asset://` 两端的解析） ----
+    // ---- 3. 素材（上传落定、厂商 file_id 缓存、「素材 id → 内容段」、`__asset_id` 两端的解析） ----
     this.assetService = new AssetService({
       assets: this.assets,
       // 厂商 file_id 是可失效缓存：命中不传、miss 才传（两层缓存的上面那一层）
@@ -397,6 +397,8 @@ export class ServerApp {
       conversations: this.conversations,
       messages: this.messages,
       assets: this.assets,
+      // 删完项目之后：关系行已经随外键没了，归零的素材由素材层删行 + 删文件
+      sweepAssets: (assetIds) => this.assetService.sweepUnreferenced(assetIds),
       runtime: this.conversationRuntime,
       now: () => this.clock.now(),
     });
@@ -405,6 +407,8 @@ export class ServerApp {
       messages: this.messages,
       workspaces: this.workspaces,
       assets: this.assets,
+      // 撤回 / 删对话之后同一件事：引用归零的素材才删字节
+      sweepAssets: (assetIds) => this.assetService.sweepUnreferenced(assetIds),
       questions: this.questions,
       configManager: this.configManager,
       runtime: this.conversationRuntime,
@@ -518,8 +522,10 @@ export class ServerApp {
       emit: (name, payload) => this.emitEvent(name, payload),
       clock: this.clock,
       prepareAttachments: (context) => this.assetService.prepareAttachments(context),
-      // 历史里的 `asset://` 每轮发送前按当前模型还原（换模型 / 重启之后历史里的图还能发）
+      // 历史里的 `__asset_id` 每轮发送前按当前模型还原（换模型 / 重启之后历史里的图还能发）
       prepareHistory: (context) => this.assetService.resolveHistory(context),
+      // 用户消息落库那一刻扫 content 里的 `__asset_id`，记成关系行（`conversation_assets`）
+      linkMessageAssets: (context) => this.assetService.linkMessageAssets(context),
       // 厂商说「file 不存在/无效」：把这段对话在这个端点上的缓存作废，`ChatRunner` 再试一次
       invalidateVendorFiles: (context) => this.assetService.invalidateVendorFiles(context),
       // 结算时按这段会话行上的模型取交接线（`setModel` 之后就是新模型的阈值）

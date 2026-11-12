@@ -68,13 +68,13 @@ export interface UploadFinalizeRequest {
 export type UploadFinalizer = (request: UploadFinalizeRequest) => Promise<AssetRef>;
 
 /**
- * 上传前的去重查询：这段对话里是不是已经有同一份字节了。
+ * 上传前的去重查询：库里是不是已经有同一份字节了。
  *
  * 命中时 `asset.begin` 直接回既有引用（`deduped: true`）：不建临时文件、不分配 `uploadId`。
  * 服务端自己算 `sha256` 也行，但它得先把 20MB 收完 —— 客户端本来就算过，问一句就够了。
+ * 去重是全局的（按内容摘要），所以这里不问「哪段对话」。
  */
 export type ExistingAssetLookup = (input: {
-  conversationId: string;
   sha256: string;
   bytes: number;
 }) => Promise<AssetRef | null>;
@@ -104,7 +104,7 @@ export interface UploadReceiverOptions {
    */
   ensureConversation?: ConversationPersister;
   /**
-   * `asset.begin` 带了 `sha256` 时先问一句「这段对话里是不是已经有它」。
+   * `asset.begin` 带了 `sha256` 时先问一句「库里是不是已经有它」。
    *
    * 不注入时不问去重（每次都收字节），也不报错：去重是优化，不是上传的前提。
    */
@@ -171,13 +171,14 @@ export class UploadReceiver {
   }
 
   /**
-   * `asset.begin`：校验声明、先问去重、让归属的对话先落库、开临时文件、发一个上传句柄。
+   * `asset.begin`：校验声明、让归属的对话落库、问去重、开临时文件、发一个上传句柄。
    *
    * 声明里只有「总长」能验，字节本身还没到；所以这里的拒绝都是**声明层面**的
    * （超限、类型不合法、缺对话归属、对话不存在）。
    *
-   * 去重命中时这条路就到此为止：不建临时文件、不分配 `uploadId`，也不让对话落库
-   * （素材行上那个外键已经证明这段对话在库里）。
+   * 去重命中时这条路就到此为止：不建临时文件、不分配 `uploadId`。去重按内容摘要做，不区分
+   * 对话，所以命中并不证明这段对话存在 —— 「让对话落库」排在问去重之前，不存在的对话这一趟
+   * 一个字节也不会收。
    *
    * 「让对话落库」排在建临时文件之前：对话不存在时这一趟上传一个字节都不该落盘，
    * 也不该占住一个 `uploadId`。`language` 是这条连接的语言，用来渲染那条隐藏的 cwd 消息。
@@ -194,11 +195,11 @@ export class UploadReceiver {
     const name = normalizeName(params.name);
     const sha256 = params.sha256 === undefined ? null : normalizeDigest(params.sha256);
 
-    // 同一段对话里同一份字节只存一份：命中就把既有引用直接回给客户端，一个字节也不收
-    const existing =
-      sha256 === null
-        ? null
-        : await this.lookupExisting({ conversationId, sha256, bytes: declaredBytes });
+    // 草稿对话在库里还没有行（R56），而「这段对话存在」是上传的前提：先落库再收字节
+    await this.persistConversation(conversationId, language);
+
+    // 库里已有同一份字节时只回引用：磁盘上只有一份，两段对话各自在关系表里留一行
+    const existing = sha256 === null ? null : await this.lookupExisting({ sha256, bytes: declaredBytes });
     if (existing !== null) {
       return {
         deduped: true,
@@ -208,9 +209,6 @@ export class UploadReceiver {
         asset: existing,
       };
     }
-
-    // 草稿对话在库里还没有行（R56），而素材行要挂 `conversationId` 外键：先落库再收字节
-    await this.persistConversation(conversationId, language);
 
     await fs.mkdir(this.assetsDir, { recursive: true });
     const uploadId = randomUUID();
@@ -391,12 +389,11 @@ export class UploadReceiver {
   }
 
   /**
-   * 问一句「这段对话里有没有同一份字节」。
+   * 问一句「库里有没有同一份字节」。
    *
    * 查询本身失败时当作「没命中」：去重是省一次上传的优化，不能因为它的存储出错就把整个上传拒掉。
    */
   private async lookupExisting(input: {
-    conversationId: string;
     sha256: string;
     bytes: number;
   }): Promise<AssetRef | null> {
@@ -583,8 +580,9 @@ function requireDeclaredBytes(value: unknown, limit: number): number {
 /**
  * 上传必须归属一段对话。
  *
- * 库里的 `assets` 行用 `conversationId` 外键，素材的取用与按引用清理也都按对话走；没有归属的
- * 上传无法登记，只能留下一个没人认领的文件。所以这里直接拒（而不是先收完再失败）。
+ * `asset.begin` 要这段对话在库里存在（草稿先落库），因为素材的引用关系（`conversation_assets`）
+ * 与「图片按引用清理」都按对话走；没有归属的上传只能留下一个没人认领的文件。所以这里直接拒
+ * （而不是先收完再失败）。
  */
 function requireConversationId(value: unknown): string {
   if (typeof value === "string" && value.trim() !== "") return value.trim();

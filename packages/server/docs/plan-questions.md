@@ -240,3 +240,16 @@
 - [src/services/ConversationService.ts] （自决，越界一行）撤回回填的 `assetIds` 现在合并两个来源：`assets.messageId`（上传早于消息落库时挂上的那条）与**消息 content 里的 `asset://`**。对话内去重让同一张图可以被好几条消息引用，而 `messageId` 一列只能指向最后挂上去的那一条 —— 「这条消息挂了哪几张图」的真值其实是 content。
 - [packages/client/src/upload.ts] （自决）`sha256` 现在在 `begin` 就交上去（以前只在 `end` 交）：客户端本来就要算它，提前给等于让服务端能提前短路。`maxBytes` 的本地复核挪到 `deduped` 判断之后（命中时不必再看上限）。
 - [packages/client/src/integration.test.ts] 按 W7-C 的交接删掉了那条「草稿对话上传被外键拒」的存量红用例（服务端已让草稿在 `asset.begin` 落库），另外把「一次传 5 张」的用例改成五份**内容各不相同**的字节：相同内容现在会命中对话内去重（那是另一条用例的前提）。
+
+## W11（引用方式改 `__asset_id` + 全局去重 + 关系表）追加
+
+- **用户裁定（本节即结论，别再重开）**：消息里不再用 `asset://` 塞 `image_url.url` / `file.file_id`；引用只在内容段上的本地扩展字段 **`__asset_id`**（`AgentNS.MessageContentSection & { __asset_id?: string }`，只在服务端 `wire/states.ts` 定义一次）。段上所有 `__` 开头的字段都是本地扩展、**发送前一概剥离**（白名单化，只留 core 定义的字段）。发送前把带 `__asset_id` 的段整段替换成当前模型/端点能吃的形式（Files API → `file` 段；视觉模型 → `image_url` + data URL；无视觉 → 一句文字），替换结果对同一 `(素材, 端点)` 必须稳定。去重从「对话内」改成「**全局**」：`assets.sha256` 唯一，删掉 `conversationId` / `messageId` 两列；新增关系表 `conversation_assets`，消息落库那一刻写行，级联删行，删完 `COUNT(*)` 归零才删素材行 + 磁盘文件。客户端按「有没有 `__asset_id`」决定回显，不解析 scheme。
+- [src/wire/states.ts] （自决）两个纯函数的签名：`localAssetIdOf(section: AgentNS.MessageContentSection): string | null` 与 `stripLocalExtensions(content: AgentNS.MessageContent): AgentNS.MessageContent`。剥离用**按类型列的字段白名单**（`text` / `image_url` / `file` 各一份，`image_url` 内层只留 `url` / `detail`），认不出的段只留 `type` / `index` —— 这样「哪些字段能出网」由 core 的类型决定，而不是由上次谁写进库的内容决定。
+- [src/services/AssetService.ts] （自决）落库形态：图片段 `{ type: "image_url", image_url: { url: "" }, __asset_id }`，文件段 `{ type: "file", filename?, __asset_id }`（`file_id` / `file_data` 都不出现）。`index` 本波不写：内容段的顺序就是数组顺序，而 `index` 是流式攒段时的产物，写进库只会变成第二份顺序事实。
+- [src/services/AssetService.ts] （自决）替换结果收敛成三种形态，`detail` 原样透传、不凭空造值（本波没有产出 `detail` 的地方）。Files API 的段带 `filename`（元数据里那一列的原始名字），**这一点与 core 类型注释里「`filename` 仅 `file_data` 时可带」有出入**：按本波口径照写，若厂商侧真因此报 400，去掉 `filename` 是一行改动，请 PM 定。
+- [src/services/AssetService.ts] （自决）「无视觉」那一句用中文：`[Image] <名字>（当前模型看不了图片）`（名字取 `assets.name`，取不到时取文件名）。早先 SDK 的降级句里带**磁盘绝对路径**，那是本机事实、厂商不需要知道，所以这一句由我们自己的替换函数出。
+- [src/services/AssetService.ts] （自决）`finalizeUpload` 不再校验「对话存在」（`assets` 上没有那条外键了）：校验挪到 `UploadReceiver.begin` 的 `ensureConversation`，并且**排在看去重之前** —— 去重是全局的，命中不再证明这段对话存在。
+- [src/runtime/ChatRunner.ts] （自决）关系行的写入口是 `ChatRunner` 新增的注入点 `linkMessageAssets`，调用点紧跟用户消息那条 `upsertMany`（扫的正是落库的那一份内容）。`conversationHandlers.sendTurn` 里原来那句 `assets.linkToMessage(assetIds, ...)` 随之删掉（否则同一件事两处写）。
+- [src/services/ConversationService.ts, src/services/WorkspaceService.ts] （自决）`ConversationRemovalReport` / `WorkspaceRemovalReport` 的 `assetPaths` 换成 `assetIds`：全局去重之后「这段对话名下的文件」不再是可删的清单（别的对话可能也在用），只能交 id 让素材层删完再数一遍。撤回同理（先记下要删的消息引用过哪些素材，删完再扫）。
+- [src/handlers/conversationHandlers.ts, src/handlers/workspaceHandlers.ts] 连带删两处：`ConversationHandlerDeps.assets` / `WorkspaceHandlerDeps.assets` 现在没人用（挂接与清文件都不在接线层了），所以这两个依赖与 `createHandlers` 里的两行一并去掉。
+- [packages/client/src/upload.test.ts] 顺手修一条既有类型错：`new FakeMethodError("invalid_params", "...")` 传了两个参数，而它的构造器收一个对象（`npx tsc -p tsconfig.test.json` 一直报这一条）。不影响行为，只让客户端的测试 tsconfig 干净。

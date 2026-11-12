@@ -30,7 +30,7 @@ export interface AssetHandlerDeps {
  */
 export function createAssetHandlers(deps: AssetHandlerDeps): HandlerTable {
   return {
-    // 按 id 取回内容：`assets` 是资源的唯一真相，历史里的 `asset://` 靠它重放
+    // 按 id 取回内容：`assets` 是资源的唯一真相，历史里的 `__asset_id` 靠它重放
     "asset.get": async (context) => await deps.assets.getAsset(context.params as AssetGetParams),
   };
 }

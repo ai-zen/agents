@@ -16,7 +16,13 @@ import type { ServerApp } from "../app.js";
 import type { ConnectionInfo } from "../net/index.js";
 import { makeTempDir, type TempDir } from "../net/TestSupport.js";
 import { ServerError } from "../wire/index.js";
-import type { ConversationView, MethodName, MethodParams, MethodResult } from "../wire/index.js";
+import type {
+  ConversationView,
+  LocalMessageContentSection,
+  MethodName,
+  MethodParams,
+  MethodResult,
+} from "../wire/index.js";
 
 const CONFIG = JSON.stringify(
   {
@@ -204,7 +210,12 @@ describe("workspace.remove 的跨层补齐", () => {
   });
 });
 
-/** 造一条素材行并返回它在磁盘上的绝对路径 */
+/** 带本地扩展字段的内容段（字面量直接写的话，core 的类型不认这些 `__` 键） */
+function localSections(...sections: LocalMessageContentSection[]): LocalMessageContentSection[] {
+  return sections;
+}
+
+/** 造一条素材行 + 一条引用它的消息，返回素材在磁盘上的绝对路径 */
 async function seedAsset(app: ServerApp, conversationId: string): Promise<string> {
   const tempPath = join(app.paths.assetsDir, ".upload-ws.part");
   await fs.writeFile(tempPath, "png-bytes");
@@ -217,6 +228,22 @@ async function seedAsset(app: ServerApp, conversationId: string): Promise<string
     name: "a.png",
     purpose: "message_image",
     conversationId,
+  });
+  // 归属只在关系行上：素材要先被一条消息引用，才会算进「删项目会少多少素材」
+  const messageId = `msg-${ref.assetId}`;
+  await app.messages.upsert({
+    id: messageId,
+    conversationId,
+    role: "user",
+    status: "completed",
+    content: localSections({ type: "image_url", image_url: { url: "" }, __asset_id: ref.assetId }),
+    createdAt: Date.now(),
+  });
+  await app.assets.linkAsset({
+    conversationId,
+    messageId,
+    assetId: ref.assetId,
+    createdAt: Date.now(),
   });
   return join(app.paths.dataRoot, "assets", `${ref.assetId}.png`);
 }

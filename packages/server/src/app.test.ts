@@ -36,6 +36,7 @@ import { FakeAgent } from "./runtime/TestSupport.js";
 import { transientScopeKey } from "./runtime/TransientRunner.js";
 import { Database } from "./storage/index.js";
 import { METHOD_NAMES } from "./wire/index.js";
+import type { LocalMessageContentSection } from "./wire/index.js";
 import { ServerError } from "./wire/index.js";
 import type {
   AssetRef,
@@ -143,6 +144,35 @@ async function seedConversation(app: ServerApp, workspaceId: string): Promise<Co
   if (!created.conversation) throw new Error("conversation.create 没有建出对话");
   await app.conversationService.ensurePersisted(created.conversation.id);
   return created.conversation;
+}
+
+/** 带本地扩展字段的内容段（字面量直接写的话，core 的类型不认这些 `__` 键） */
+function localSections(...sections: LocalMessageContentSection[]): LocalMessageContentSection[] {
+  return sections;
+}
+
+/**
+ * 造一条引用素材的用户消息，并写下那条关系行（等价于 `ChatRunner` 在消息落库那一刻做的事）。
+ *
+ * 素材行本身不记对话，所以「删对话会带走哪些素材」只能靠关系行回答。
+ */
+async function seedAssetMessage(
+  app: ServerApp,
+  conversationId: string,
+  assetId: string,
+  suffix = "1",
+): Promise<string> {
+  const messageId = `msg-${assetId}-${suffix}`;
+  await app.messages.upsert({
+    id: messageId,
+    conversationId,
+    role: "user",
+    status: "completed",
+    content: localSections({ type: "image_url", image_url: { url: "" }, __asset_id: assetId }),
+    createdAt: Date.now(),
+  });
+  await app.assets.linkAsset({ conversationId, messageId, assetId, createdAt: Date.now() });
+  return messageId;
 }
 
 async function callMethod<M extends MethodName>(
@@ -527,6 +557,8 @@ describe("删除路径", () => {
     });
     const assetPath = join(app.paths.dataRoot, "assets", `${ref.assetId}.png`);
     expect(await exists(assetPath)).toBe(true);
+    // 归属只在关系行上：一条消息引用它，删对话时它才算「受影响的素材」
+    const assetMessageId = await seedAssetMessage(app, conversation.id, ref.assetId);
 
     const dryRun = await callMethod(app, "conversation.delete", {
       conversationId: conversation.id,
@@ -543,8 +575,73 @@ describe("删除路径", () => {
     // 素材文件按引用清掉，库里的行也在
     expect(await exists(assetPath)).toBe(false);
     expect(await app.assetService.get(ref.assetId)).toBeUndefined();
+    expect(await app.assets.countReferences(ref.assetId)).toBe(0);
+    expect(assetMessageId.length).toBeGreaterThan(0);
     // 运行时那边这段对话的现场被丢掉了
     expect(app.chatRunner.turn(conversation.id)).toBeUndefined();
+  });
+
+  it("同一张图贴到两个对话：磁盘一份、素材一行、关系两行；删掉一个不算完，删掉最后一个才清字节", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture);
+    const { workspace } = await callMethod(app, "workspace.create", {
+      cwd: fixture.workspaceDir.path,
+    });
+    const first = await seedConversation(app, workspace.id);
+    const second = await seedConversation(app, workspace.id);
+
+    // 同一份字节传两次（第二次走全局去重：回的也是同一个 assetId）
+    const bytes = new TextEncoder().encode("same-image-bytes");
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const uploadOnce = async (conversationId: string): Promise<string> => {
+      const tempPath = join(app.paths.assetsDir, `.upload-${conversationId}.part`);
+      await fs.mkdir(app.paths.assetsDir, { recursive: true });
+      await fs.writeFile(tempPath, bytes);
+      const ref = await app.assetService.finalizeUpload({
+        uploadId: `upload-${conversationId}`,
+        tempPath,
+        mime: "image/png",
+        bytes: bytes.byteLength,
+        sha256,
+        name: "same.png",
+        purpose: "message_image",
+        conversationId,
+      });
+      return ref.assetId;
+    };
+    const firstAssetId = await uploadOnce(first.id);
+    const secondAssetId = await uploadOnce(second.id);
+    expect(secondAssetId).toBe(firstAssetId);
+
+    // 素材表里一行（sha256 全局唯一），磁盘上一份
+    const assetRows = await app.db.all<{ id: string }>("SELECT id FROM assets");
+    expect(assetRows.map((row) => row.id)).toEqual([firstAssetId]);
+    const assetPath = join(app.paths.dataRoot, "assets", `${firstAssetId}.png`);
+    expect((await fs.readdir(app.paths.assetsDir)).filter((name) => !name.startsWith("."))).toEqual(
+      [`${firstAssetId}.png`],
+    );
+
+    // 两个对话各有一条消息引用它 → 关系两行
+    await seedAssetMessage(app, first.id, firstAssetId, "a");
+    await seedAssetMessage(app, second.id, firstAssetId, "b");
+    expect(await app.assets.countReferences(firstAssetId)).toBe(2);
+    // 「几个会话引用了这张图」
+    expect(await app.assets.countConversations(firstAssetId)).toBe(1 + 1);
+    expect([...(await app.assets.listConversationIds(firstAssetId))].sort()).toEqual(
+      [first.id, second.id].sort(),
+    );
+
+    // 删掉其中一个对话：关系行消失，素材行与文件仍在
+    await callMethod(app, "conversation.delete", { conversationId: first.id });
+    expect(await app.assets.countConversations(firstAssetId)).toBe(1);
+    expect(await app.assetService.get(firstAssetId)).toBeDefined();
+    expect(await exists(assetPath)).toBe(true);
+
+    // 删掉最后一个引用：文件与行一起消失
+    await callMethod(app, "conversation.delete", { conversationId: second.id });
+    expect(await app.assets.countReferences(firstAssetId)).toBe(0);
+    expect(await app.assetService.get(firstAssetId)).toBeUndefined();
+    expect(await exists(assetPath)).toBe(false);
   });
 
   it("删项目会回收它的 Scope 并连名下对话一起清（R43）", async () => {
@@ -621,8 +718,9 @@ describe("草稿对话上的上传（R56 / F-H8）", () => {
     });
     const asset = (ended as { asset: AssetRef }).asset;
     expect(asset).toMatchObject({ mime: "image/png", bytes: bytes.byteLength, name: "photo.png" });
-    // 素材行挂在这段对话上（外键过得去，说明对话确实先落了库）
-    expect(await app.assetService.get(asset.assetId)).toMatchObject({ conversationId });
+    // 素材进库了（上传落定的那一行），归属要等消息落库那一刻才有关系行
+    expect(await app.assetService.get(asset.assetId)).toBeDefined();
+    expect(await app.assets.listAssetIdsByConversation(conversationId)).toEqual([]);
 
     // 库里只有一条隐藏消息，正文含这段对话的 cwd
     const hidden = await hiddenMessagesOf(app, conversationId);

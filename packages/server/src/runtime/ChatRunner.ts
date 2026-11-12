@@ -168,7 +168,7 @@ export interface AttachmentPreparation {
   content: AgentNS.MessageContent;
   attachments: AttachmentOutcome[];
   /**
-   * 落库用的内容（消息里只存我们自己的引用：`asset://<assetId>`）。
+   * 落库用的内容（消息里只存我们自己的引用：段上的 `__asset_id`）。
    *
    * 不给时落库的就是 `content`：不是每个注入方都有“厂商产物不能进库”这回事。
    */
@@ -185,7 +185,7 @@ export type AttachmentPreparer = (context: {
 /**
  * 历史里的素材引用还原成当前模型能吃的内容段（PRD F-H7）：每轮发送之前跑一次。
  *
- * 每轮都要跑一次：能不能吃跟着实发模型 / 端点变，而历史里存的是与端点无关的 `asset://<id>`。
+ * 每轮都要跑一次：能不能吃跟着实发模型 / 端点变，而历史里存的是与端点无关的 `__asset_id`。
  * 不给就原样把历史交给 agent。
  */
 export type AttachmentHistoryResolver = (context: {
@@ -193,6 +193,18 @@ export type AttachmentHistoryResolver = (context: {
   modelId: string | null;
   messages: AgentNS.Message[];
 }) => Promise<AgentNS.Message[]>;
+
+/**
+ * 消息落库那一刻登记「这条消息引用了哪些素材」（`conversation_assets` 关系行）。
+ *
+ * 扫的是**落库的那一份内容**（段上的 `__asset_id`），所以调用点紧跟用户消息的 upsert；
+ * 不注入时关系行就不记（引用计数少一份，删字节会晚一步）。
+ */
+export type MessageAssetLinker = (context: {
+  conversationId: string;
+  messageId: string;
+  content: AgentNS.MessageContent | undefined;
+}) => Promise<number>;
 
 /**
  * 「厂商说这个 file 不在了」之后的服务端动作：作废这段对话在那个端点上的缓存，返回删掉的行数。
@@ -296,12 +308,16 @@ export interface ChatRunnerOptions {
   streamWriteIntervalMs?: number;
   prepareAttachments?: AttachmentPreparer;
   /**
-   * 历史里的 `asset://` → 当前模型能吃的段（F-H7）。不给时历史原样交给 agent。
+   * 历史里的素材引用 → 当前模型能吃的段（F-H7）。不给时历史原样交给 agent。
    *
    * 与 `prepareAttachments` 分开两个注入点，是因为它们错在不同时机：一个在受理时算一次，
    * 一个每一次发送（含重试）都要重算。
    */
   prepareHistory?: AttachmentHistoryResolver;
+  /**
+   * 用户消息落库那一刻登记素材关系行（`conversation_assets`）。不注入就不记。
+   */
+  linkMessageAssets?: MessageAssetLinker;
   /**
    * 厂商报「file 不存在/无效」时的自愈口（删缓存 + 重试）。不注入就不重试。
    */
@@ -593,13 +609,13 @@ class TurnSession implements ChatTurn {
   private readonly conversation: Conversation;
   private readonly scope: Scope;
   private readonly createAgent: AgentFactory;
-  /** 库里装载出来的历史（原样，带 `asset://`）：每轮发送前才按当前模型还原 */
+  /** 库里装载出来的历史（原样，带 `__asset_id`）：每轮发送前才按当前模型还原 */
   private readonly rawHistory: AgentNS.Message[];
   /** 还原后的历史（这一轮实际交给 agent 的那份） */
   private history: AgentNS.Message[];
   /** 这一轮发给模型的内容；重试时会被重新备一次（厂商产物变了） */
   private content: AgentNS.MessageContent;
-  /** 落库的内容（`asset://` 形态）：重试不改它，它就是用户挂的那几张图 */
+  /** 落库的内容（`__asset_id` 形态）：重试不改它，它就是用户挂的那几张图 */
   private readonly storedContent: AgentNS.MessageContent;
   private readonly language: Language;
   private readonly handle: RunHandle;
@@ -792,7 +808,7 @@ class TurnSession implements ChatTurn {
 
   // ---- 装配：把 core 的事件接到本文件 ----
 
-  /** 这一轮交给 agent 的历史（`asset://` 已还原成当前模型能吃的段） */
+  /** 这一轮交给 agent 的历史（`__asset_id` 已还原成当前模型能吃的段） */
   private async resolveHistory(): Promise<AgentNS.Message[]> {
     const resolve = this.options.prepareHistory;
     if (!resolve) return this.rawHistory;
@@ -1229,7 +1245,7 @@ class TurnSession implements ChatTurn {
         this.abortedInFlight.has(message.id) ? AgentNSValue.MessageStatus.Aborted : undefined,
       );
       // 用户那条消息在 core 那边带着「这一次发出去的内容」（厂商的 file_id / base64）。
-      // 落库要的是 `asset://` 那一份：否则库里这条消息就绑死在这次发送所用的端点上了。
+      // 落库要的是 `__asset_id` 那一份：否则库里这条消息就绑死在这次发送所用的端点上了。
       if (message.id === this.userMessageId) {
         row.content = this.storedContent as unknown as MessageUpsertInput["content"];
       }
@@ -1468,7 +1484,7 @@ export class ChatRunner {
       const assistantId = this.newId();
 
       // 用户消息与助手占位都在请求返回之前落库（L6：客户端拿着这两个 id 接流）。
-      // 用户消息存的是 `asset://` 形态（`storedContent`），不是这一次发送的产物
+      // 用户消息存的是 `__asset_id` 形态（`storedContent`），不是这一次发送的产物
       await this.options.messages.upsertMany([
         {
           id: userId,
@@ -1491,6 +1507,9 @@ export class ChatRunner {
           createdAt: nowMs,
         },
       ]);
+
+      // 用户消息刚落库：把 content 里的 `__asset_id` 记成关系行（同一 message+asset 只一行）
+      await this.linkMessageAssets(conversationId, userId, prepared.storedContent ?? prepared.content);
 
       session = new TurnSession(this.options, {
         conversation,
@@ -1526,7 +1545,7 @@ export class ChatRunner {
   }
 
   /**
-   * 历史装载完之后的第一件事情：把里面的 `asset://` 还原成当前模型能吃的段（F-H7）。
+   * 历史装载完之后的第一件事情：把里面的 `__asset_id` 还原成当前模型能吃的段（F-H7）。
    *
    * 还原失败不让整轮发不出去：打一条日志、带着原样的历史继续。
    */
@@ -1542,6 +1561,26 @@ export class ChatRunner {
     } catch (error) {
       this.options.onError?.(error, "还原历史里的素材引用失败");
       return messages;
+    }
+  }
+
+  /**
+   * 用户消息落库之后登记素材关系行（`conversation_assets`）。
+   *
+   * 记不下来不让这一轮失败（消息已经发出去了）：打一条日志继续 —— 后果只是这份素材的
+   * 引用计数少一行，删字节会晚一步。
+   */
+  private async linkMessageAssets(
+    conversationId: string,
+    messageId: string,
+    content: AgentNS.MessageContent | undefined,
+  ): Promise<void> {
+    const link = this.options.linkMessageAssets;
+    if (!link) return;
+    try {
+      await link({ conversationId, messageId, content });
+    } catch (error) {
+      this.options.onError?.(error, "登记消息的素材引用失败");
     }
   }
 

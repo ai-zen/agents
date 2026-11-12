@@ -95,9 +95,21 @@ export interface ConversationRuntimePort {
 
 /** `conversation.delete` 的结果：wire 字段 + 交给 asset 层按引用清的文件清单 */
 export interface ConversationRemovalReport extends ConversationDeleteResult {
-  /** 需要 asset 层按引用清掉的文件（数据根下的相对路径，来自 `assets.path`） */
-  assetPaths: string[];
+  /**
+   * 这段对话引用过的素材 id。
+   *
+   * 行删了（关系行随外键级联消失）之后要交给素材层再问一次「还剩几张引用」：有人还在用就留着
+   * 字节，归零才删。这里只交 id，不交路径 —— 还在用的那份不该被当成可删的。
+   */
+  assetIds: string[];
 }
+
+/**
+ * 素材归零清扫口（`AssetService.sweepUnreferenced` 结构上满足）。
+ *
+ * 服务层不碰 `assets/` 下的文件：它只说「这几个素材可能没人用了」，删行删文件归素材层。
+ */
+export type AssetSweeper = (assetIds: string[]) => Promise<string[]>;
 
 /**
  * 从项目定位的两条路得出「哪个项目」：已经登记的那个，或者一个还没登记的目录（PRD D10）。
@@ -115,6 +127,8 @@ export interface ConversationServiceDeps {
   messages: MessageRepository;
   workspaces: WorkspaceRepository;
   assets: AssetRepository;
+  /** 引用归零的素材交给它删行删文件；不注入时字节会留在盘上（引用行已经没了） */
+  sweepAssets?: AssetSweeper;
   questions: QuestionRepository;
   /** 配置唯一入口（SDK）：助手定义在 `<basePath>/agents/`，模型与默认项在 `config.json` 里 */
   configManager: ConfigManager;
@@ -238,6 +252,7 @@ export class ConversationService {
   private readonly messages: MessageRepository;
   private readonly workspaces: WorkspaceRepository;
   private readonly assets: AssetRepository;
+  private readonly sweepAssets?: AssetSweeper;
   private readonly questions: QuestionRepository;
   private readonly configManager: ConfigManager;
   private readonly runtime: ConversationRuntimePort;
@@ -254,6 +269,7 @@ export class ConversationService {
     this.messages = deps.messages;
     this.workspaces = deps.workspaces;
     this.assets = deps.assets;
+    this.sweepAssets = deps.sweepAssets;
     this.questions = deps.questions;
     this.configManager = deps.configManager;
     this.runtime = deps.runtime;
@@ -560,9 +576,10 @@ export class ConversationService {
   /**
    * 硬删一段对话（PRD F-C10 / D17 / F-F9 / R7）。
    *
-   * `dryRun` 先算账（消息数、素材数），客户端据此警告用户。真删是 delete 语句 + 外键级联，
-   * 消息行、素材行、问题行随对话一起消失；`assets/` 下的文件由 asset 层按引用清，这里只
-   * 把清单回出去（PRD D17「图片按引用清理」）。
+   * `dryRun` 先算账（消息数、素材数），客户端据此警告用户。真删是 delete 语句 + 外键级联：
+   * 消息行、问题行、素材的引用关系（`conversation_assets`）随对话一起消失。素材行与 `assets/`
+   * 下的文件不一定：那张图可能还有别的对话在用，所以把「这段对话引用过哪几份素材」交给
+   * asset 层在删完之后再问一次「还剩几张引用」，归零才删（PRD D17「图片按引用清理」）。
    *
    * 还没落库的草稿也能删：没有行、没有消息、没有素材，代价是零。
    */
@@ -573,12 +590,12 @@ export class ConversationService {
     if (draft) {
       const draftConsequences = { conversations: 1, messages: 0, assets: 0 };
       if (params.dryRun === true) {
-        return { removed: false, consequences: draftConsequences, assetPaths: [] };
+        return { removed: false, consequences: draftConsequences, assetIds: [] };
       }
       this.drafts.forget(conversation.id);
       await this.runtime.forget(conversation.id);
       this.emitChanged(conversation.id, draft.workspaceId, "deleted", null);
-      return { removed: true, consequences: draftConsequences, assetPaths: [] };
+      return { removed: true, consequences: draftConsequences, assetIds: [] };
     }
 
     const assetRows = await this.assets.listByConversation(conversation.id);
@@ -592,17 +609,21 @@ export class ConversationService {
       messages: await this.messages.countByConversation(conversation.id),
       assets: assetRows.length,
     };
-    const assetPaths = assetRows.map((asset) => asset.path);
+    const assetIds = assetRows.map((asset) => asset.id);
 
     if (params.dryRun === true) {
-      return { removed: false, consequences, assetPaths };
+      return { removed: false, consequences, assetIds };
     }
 
     await this.runtime.forget(conversation.id);
     const changes = await this.conversations.delete(conversation.id);
     const removed = changes > 0;
-    if (removed) this.emitChanged(conversation.id, conversation.workspaceId, "deleted", null);
-    return { removed, consequences, assetPaths };
+    if (removed) {
+      // 关系行已经随外键没了：现在问「还剩几张引用」，归零的那几份才删字节
+      await this.sweepAssets?.(assetIds);
+      this.emitChanged(conversation.id, conversation.workspaceId, "deleted", null);
+    }
+    return { removed, consequences, assetIds };
   }
 
   /**
@@ -641,18 +662,21 @@ export class ConversationService {
      * 回填输入框要挂的素材（R62：只给纯文本 + assetIds，图靠 id 复原）。
      *
      * 两个来源合并：
-     *   - `assets.messageId`：上传早于消息落库，所以上传时挂上的那一条在这列里；
-     *   - 消息内容里的 `asset://`：对话内去重让同一张图可以被好几条消息引用，而这一列只指向
-     *     最后挂上去的那一条 —— “这条消息挂了哪几张图”的真值其实在 content 里。
+     *   - `conversation_assets`：消息落库时记下的关系行（这条消息与它之前几轮引用过的都在里面）；
+     *   - 消息内容里的 `__asset_id`：同一张图可以被好几条消息引用，而关系行是按消息记的 ——
+     *     这条消息自己挂了哪几张，content 永远是那个事实。
      */
-    const linkedIds = (await this.assets.listByMessage(anchor.id)).map((asset) => asset.id);
+    const linkedIds = await this.assets.listAssetIdsByMessage(anchor.id);
     const assetIds = [...new Set([...linkedIds, ...assetIdsOf(anchor.content)])];
     const content = textOnlyContent(anchor.content);
     const restoredInput: MessageInput = assetIds.length > 0
       ? { content, assetIds }
       : { content };
 
+    // 关系行随消息级联消失：先记下这段区间的消息引用过哪些素材，删完再看谁归零了
+    const doomedAssetIds = await this.collectAssetsOfMessages(removedMessageIds);
     await this.messages.deleteAfter(row.id, anchor.id, { includeSelf: true });
+    await this.sweepAssets?.(doomedAssetIds);
     const remaining = (await this.messages.listByConversation(row.id)).length;
     this.emitChanged(row.id, row.workspaceId, "message_removed", remaining);
     return { removedMessageIds, restoredInput };
@@ -1086,6 +1110,15 @@ export class ConversationService {
     if (assets.some((asset) => asset.mime.startsWith("image/"))) return true;
     const stored = await this.messages.listByConversation(conversationId);
     return stored.some((message) => contentHasImage(toAgentMessage(message).content));
+  }
+
+  /** 一批消息引用过的素材 id（删消息之前读一次：关系行随消息级联消失） */
+  private async collectAssetsOfMessages(messageIds: string[]): Promise<string[]> {
+    const ids = new Set<string>();
+    for (const messageId of messageIds) {
+      for (const assetId of await this.assets.listAssetIdsByMessage(messageId)) ids.add(assetId);
+    }
+    return [...ids];
   }
 }
 

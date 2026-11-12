@@ -476,7 +476,7 @@ function captureError(run: () => void): unknown {
   }
 }
 
-describe("对话内去重（begin 命中即结束）", () => {
+describe("全局去重（begin 命中即结束）", () => {
   const EXISTING: AssetRef = {
     assetId: "asset-existing",
     mime: "image/png",
@@ -486,8 +486,8 @@ describe("对话内去重（begin 命中即结束）", () => {
     height: null,
   };
 
-  it("带 sha256 且已有同一份：直接回既有引用，不建临时文件、不分配 uploadId", async () => {
-    const looked: Array<{ conversationId: string; sha256: string; bytes: number }> = [];
+  it("带 sha256 且库里已有同一份：直接回既有引用，不建临时文件、不分配 uploadId", async () => {
+    const looked: Array<{ sha256: string; bytes: number }> = [];
     const deduping = new UploadReceiver({
       assetsDir,
       finalize: fakeFinalize,
@@ -513,14 +513,63 @@ describe("对话内去重（begin 命中即结束）", () => {
       receivedBytes: 0,
       asset: EXISTING,
     });
-    expect(looked).toEqual([
-      { conversationId: "c1", sha256: "a".repeat(64), bytes: EXISTING.bytes },
-    ]);
+    expect(looked).toEqual([{ sha256: "a".repeat(64), bytes: EXISTING.bytes }]);
     // 一个字节都不收：没有临时文件，也没有挂着的上传
     expect(await listDir(assetsDir)).toEqual([]);
     expect(deduping.pendingCount()).toBe(0);
     // 落定根本没发生（没有新素材）
     expect(finalized).toEqual([]);
+    await deduping.dispose();
+  });
+
+  it("去重命中也要先确认对话存在（不存在的对话一个字节也不收）", async () => {
+    const ensured: string[] = [];
+    const deduping = new UploadReceiver({
+      assetsDir,
+      finalize: fakeFinalize,
+      ensureConversation: async (conversationId) => {
+        ensured.push(conversationId);
+      },
+      findExisting: async () => EXISTING,
+    });
+
+    const began = await deduping.begin(CONNECTION, {
+      purpose: "message_image",
+      mime: "image/png",
+      bytes: EXISTING.bytes,
+      sha256: "a".repeat(64),
+      conversationId: "draft-1",
+    });
+
+    expect(began.deduped).toBe(true);
+    // 去重是全局的（按内容摘要），命中并不证明这段对话存在，所以落库这一步不能跳过
+    expect(ensured).toEqual(["draft-1"]);
+    expect(await listDir(assetsDir)).toEqual([]);
+    await deduping.dispose();
+  });
+
+  it("去重命中且对话不存在：仍然报 not_found（不静默回一份别人的素材）", async () => {
+    const deduping = new UploadReceiver({
+      assetsDir,
+      finalize: fakeFinalize,
+      ensureConversation: async (conversationId) => {
+        throw new ServerError("not_found", {
+          params: { entity: "conversation" },
+          detail: { conversationId },
+        });
+      },
+      findExisting: async () => EXISTING,
+    });
+
+    await expect(
+      deduping.begin(CONNECTION, {
+        purpose: "message_image",
+        mime: "image/png",
+        bytes: EXISTING.bytes,
+        sha256: "a".repeat(64),
+        conversationId: "no-such-conversation",
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
     await deduping.dispose();
   });
 

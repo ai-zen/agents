@@ -1,25 +1,28 @@
 /**
  * 素材服务：上传产物的落定与登记、取用时变成内容段（F-H7 / R44）、按引用清理（R33）、
- * 以及「库里只有 `asset://`」这条口径的两端。
+ * 以及「落库只有 `__asset_id`」这条口径的两端。
  *
  * 它围着 `assets` 这一份真相做五件事：
  *
  *   1. **落定**（{@link AssetService.finalizeUpload}）：上传接收器（`net/UploadReceiver`）把字节收进
  *      临时文件之后，本服务把它改名为正式文件、在 `assets` 表登记一行、回一个 {@link AssetRef}。
- *      同一段对话里同摘要的那一行已经在时，不重复落文件（去重），回既有那一行。
+ *      库里已经有同摘要的那一行时不重复落文件（全局去重），回既有那一行。
  *   2. **取用**（{@link AssetService.prepareAttachments}）：`MessageInput.assetIds` → core 的内容段。
  *      走文件引用、内联 base64 还是退化成文字，由**实发模型与它所用端点**决定，判定逻辑用 SDK 的
  *      `fileToContentSection`（同一份口径，不在这里另写一遍）。没送出去的一律如实记账，不假装成功。
- *      同时给出「落库用」的那一份内容：素材在那里写成 `asset://<assetId>`。
- *   3. **重放**（{@link AssetService.resolveHistory}）：历史里的 `asset://<id>` 在每轮发送前还原成
- *      当前模型能吃的内容段 —— 换了模型、重启之后再跑，同一条历史照样发得出去。
+ *      同时给出「落库用」的那一份内容：素材在那里写成段上的 `__asset_id`（本地扩展字段）。
+ *   3. **重放**（{@link AssetService.resolveHistory}）：历史里的 `__asset_id` 在每轮发送前还原成
+ *      当前模型能吃的内容段 —— 换了模型、重启之后再跑，同一条历史照样发得出去。发出去的那一份
+ *      按 core 的字段白名单重建过（{@link stripLocalExtensions}），`__` 开头的键不会出网。
  *   4. **两层缓存**：`assets` 是真相；厂商的 `file_id` 是端点维度、会过期的资源，落在
  *      `asset_vendor_files`（{@link AssetService.vendorFiles}）。命中就不发 HTTP，miss 才真上传并写回；
  *      一次请求因「file 不存在/无效」失败时 {@link AssetService.invalidateVendorFiles} 把那一批作废。
- *   5. **清理**（{@link AssetService.removeByConversation} 等）：按对话 / 素材 id 找出引用、删文件、删行。
+ *   5. **清理**（{@link AssetService.sweepUnreferenced}）：引用归零的素材才删行、删文件。关系行
+ *      （`conversation_assets`）由外键级联删，所以这里判的是「删完之后还剩几张引用」。
  *      这一层是碰 `assets/` 下**正式文件**的地方（临时文件的生与死归上传接收器）。
  *
- * 它被 `ChatRunner` 当作 `prepareAttachments` / `prepareHistory` 注入（PRD F-H7 / 裁定 R44）。
+ * 它被 `ChatRunner` 当作 `prepareAttachments` / `prepareHistory` / `linkMessageAssets` 注入
+ * （PRD F-H7 / 裁定 R44）。
  */
 
 import { randomUUID } from "node:crypto";
@@ -36,15 +39,19 @@ import type { UploadFinalizeRequest } from "../net/UploadReceiver.js";
 import type {
   AttachmentHistoryResolver,
   AttachmentPreparer,
+  MessageAssetLinker,
 } from "../runtime/ChatRunner.js";
 import { ServerError } from "../wire/errors.js";
 import {
   MAX_ASSETS_PER_MESSAGE,
+  localAssetIdOf,
+  stripLocalExtensions,
   type AssetGetResult,
   type AssetRef,
   type AssetVariant,
   type AttachmentDelivery,
   type AttachmentOutcome,
+  type LocalMessageContentSection,
   type LocalizedText,
   type ProblemFact,
 } from "../wire/index.js";
@@ -61,14 +68,12 @@ import {
  */
 export interface AssetRecord {
   id: string;
-  conversationId: string;
-  messageId: string | null;
   name: string | null;
   /** 数据根下的相对路径（如 `assets/<id>.png`） */
   path: string;
   mime: string;
   bytes: number;
-  /** 内容摘要；`(conversationId, sha256)` 唯一，所以它也是对话内去重的键 */
+  /** 内容摘要；全库唯一，所以它也是去重的键 */
   sha256: string;
   /** 像素宽度；本波不解码图片，未如时为 `null` */
   width: number | null;
@@ -88,11 +93,9 @@ export interface VendorFileRecord {
 
 /** 素材仓储里本服务用到的部分（`AssetRepository` 结构上满足） */
 export interface AssetRegistry {
-  /** 插入；同一段对话里同摘要的那一行已经在时回既有行（`created: false`） */
+  /** 插入；库里已有同摘要的那一行时回既有行（`created: false`） */
   upsert(input: {
     id: string;
-    conversationId: string;
-    messageId?: string | null;
     name?: string | null;
     path: string;
     mime: string;
@@ -103,11 +106,19 @@ export interface AssetRegistry {
     createdAt: number;
   }): Promise<{ row: AssetRecord; created: boolean }>;
   get(id: string): Promise<AssetRecord | undefined>;
-  /** 按内容摘要找（`asset.begin` 带 sha256 时的去重命中判定） */
-  findByDigest(conversationId: string, sha256: string): Promise<AssetRecord | undefined>;
-  listByConversation(conversationId: string): Promise<AssetRecord[]>;
-  linkToMessage(id: string, messageId: string): Promise<number>;
-  delete(id: string): Promise<number>;
+  /** 按内容摘要找（`asset.begin` 带 sha256 时的去重命中判定，全库范围） */
+  findByDigest(sha256: string): Promise<AssetRecord | undefined>;
+  /** 记一行「这条消息引用了这份素材」；已经有这一行时返回 0 */
+  linkAsset(input: {
+    conversationId: string;
+    messageId: string;
+    assetId: string;
+    createdAt: number;
+  }): Promise<number>;
+  /** 这份素材被几行引用 */
+  countReferences(assetId: string): Promise<number>;
+  /** 归零才删（还有引用时返回 0，删不掉） */
+  deleteIfUnreferenced(assetId: string): Promise<number>;
 }
 
 /**
@@ -146,6 +157,9 @@ export type AttachmentPrepareContext = Parameters<AttachmentPreparer>[0];
 
 /** `prepareAttachments` 的出参（同上） */
 export type AttachmentPreparation = Awaited<ReturnType<AttachmentPreparer>>;
+
+/** `ChatRunner` 的素材关系登记口（结构即契约，同上） */
+export type MessageAssetLinkContext = Parameters<MessageAssetLinker>[0];
 
 /** 素材服务依赖；由单根组装后注入 */
 export interface AssetServiceOptions {
@@ -210,12 +224,12 @@ export class AssetService {
    * 顺序是「先改名、再登记行、失败就把文件删回去」：库里出现一行指向不存在的文件，
    * 比文件多留一份更难收拾（取用时会变成「有引用但读不到」）。
    *
-   * 登记走 upsert：同一段对话里同摘要的那一行已经在时（两个上传撞在一起，或客户端没带
-   * `sha256` 而服务端自己又算不出重复），唯一约束会挡住插入，这时把刚写出去的文件删掉、
-   * 回库里既有那一行 —— 对话内去重的目的（只占一份磁盘）因此对两条路都成立。
+   * 登记走 upsert，键是 `sha256`（全库唯一）：库里已经有同一份字节时（另一段对话传过、或
+   * 两个上传撞在一起），唯一约束会挡住插入，这时把刚写出去的文件删掉、回库里既有那一行 ——
+   * 全局去重的目的（整台机器只占一份磁盘）因此对两条路都成立。
    *
-   * 登记失败时把错误翻译一次：外键失败在这条路上只有一个含义（那段对话在库里不存在），
-   * 换成一个可判别的业务码，客户端才能说一句人话。
+   * 「这段素材归哪段对话」不在这张表上：归属在消息落库那一刻写进 `conversation_assets`
+   * （{@link AssetService.linkMessageAssets}），所以这个入参里的 `conversationId` 不参与登记。
    */
   async finalizeUpload(request: UploadFinalizeRequest): Promise<AssetRef> {
     const assetId = this.newId();
@@ -229,7 +243,6 @@ export class AssetService {
     try {
       const { row, created } = await this.assets.upsert({
         id: assetId,
-        conversationId: request.conversationId,
         name: request.name,
         path: relativePath,
         mime: request.mime,
@@ -245,53 +258,60 @@ export class AssetService {
       return toAssetRef(row);
     } catch (error) {
       await fs.rm(finalPath, { force: true }).catch(() => undefined);
-      throw this.registrationError(error, request.conversationId);
+      throw this.registrationError(error);
     }
   }
 
   /**
-   * 「这段对话里已经有这张图了」时回既有那一行（`UploadReceiver.begin` 的去重判定）。
+   * 「库里已经有这张图了」时回既有那一行（`UploadReceiver.begin` 的去重判定）。
    *
-   * 三个条件同时成立才算命中：同一段对话、同一个 `sha256`、同一个字节数。第三个条件看着多余
+   * 两个条件同时成立才算命中：同一个 `sha256`、同一个字节数。第二个条件看着多余
    * （摘要相同就是同一份内容），但它是「客户端报的总长与服务端那一行对得上」的交叉校验：对不上
    * 就当作没命中，让客户端老老实实传一遍。
+   *
+   * 去重是**全局**的：另一段对话传过的同一张图也算命中，命中之后两个对话各自在
+   * `conversation_assets` 里留一行引用，磁盘上仍然只有一份。
    */
-  async findExistingAsset(input: {
-    conversationId: string;
-    sha256: string;
-    bytes: number;
-  }): Promise<AssetRef | null> {
-    const row = await this.assets.findByDigest(input.conversationId, input.sha256);
+  async findExistingAsset(input: { sha256: string; bytes: number }): Promise<AssetRef | null> {
+    const row = await this.assets.findByDigest(input.sha256);
     if (!row || row.bytes !== input.bytes) return null;
     return toAssetRef(row);
   }
 
   /**
-   * 登记素材行失败 → 给调用方一个能分支的错误。
+   * 登记素材行失败的翻译。
    *
-   * `assets.conversationId` 是这张表上唯一一条指向别处的外键（`messageId` 在这一步还是空），
-   * 所以外键失败的含义就是「这段对话在库里不存在」：报 `not_found` 而不是 internal。
-   * 其余失败（盘、库坏了）仍是 internal，原因写进 detail 并进日志。
+   * `assets` 这一行不挂任何外键（归属在关系表上），所以这里没有「对话不存在」这类可判别失败：
+   * 盘坏了、库坏了都是 internal，原因写进 detail 并进日志。
    */
-  private registrationError(error: unknown, conversationId: string): unknown {
+  private registrationError(error: unknown): unknown {
     if (ServerError.is(error)) return error;
     const reason = error instanceof Error ? error.message : String(error);
-    if (/FOREIGN KEY/i.test(reason)) {
-      return new ServerError("not_found", {
-        params: { entity: "conversation" },
-        detail: { conversationId, reason: "conversation_not_found" },
-      });
-    }
     return new ServerError("internal", { detail: { reason, context: "asset_register" } });
   }
 
-  /** 把上传好的素材挂到落库后的那条消息上（上传早于消息落库，PRD D5 / F-H8） */
-  async linkToMessage(assetIds: string[], messageId: string): Promise<void> {
-    for (const assetId of dedupe(assetIds)) {
-      await this.assets.linkToMessage(assetId, messageId).catch((error: unknown) => {
-        this.report(error, "素材挂到消息上失败");
-      });
+  /**
+   * 消息落库那一刻：扫 `content` 里的 `__asset_id` 记关系行（同一 message + asset 只一行）。
+   *
+   * 关系行是「谁引用了它」的唯一记录，所以它跟消息行同一步写：之后撤回、删对话、删消息都由
+   * 外键级联删关系行，不需要谁去减计数。写不进去（素材 id 认不得、库出错）不让这一轮失败 ——
+   * 后果只是这份素材的引用少记一次，{@link AssetService.sweepUnreferenced} 因此会晚一步删。
+   */
+  async linkMessageAssets(context: MessageAssetLinkContext): Promise<number> {
+    let linked = 0;
+    for (const assetId of assetIdsOf(context.content)) {
+      try {
+        linked += await this.assets.linkAsset({
+          conversationId: context.conversationId,
+          messageId: context.messageId,
+          assetId,
+          createdAt: this.now(),
+        });
+      } catch (error) {
+        this.report(error, "登记消息的素材引用失败");
+      }
     }
+    return linked;
   }
 
   /** 一条素材行（取用方要按 id 查 ref 时用） */
@@ -314,14 +334,17 @@ export class AssetService {
    *   - **全失败退回纯文本**：一张都没送出去时内容就是用户原来那段文字，
    *     既没有凭空多出来的段，也没有假装发出去的占位。
    *
-   * 同时给出**落库用**的那一份（`storedContent`）：素材在那里是 `asset://<assetId>`。
+   * 同时给出**落库用**的那一份（`storedContent`）：素材在那里是段上的 `__asset_id`。
    * 一份内容、两种形状是故意的 —— 发给模型的带着厂商产物（`file_id` / base64），存下的带的是引用，
    * 否则这条消息绑在「这一次发送所用的端点」上，换模型 / 换端点 / 重启之后就发了。
    */
   async prepareAttachments(context: AttachmentPrepareContext): Promise<AttachmentPreparation> {
     const content = context.input.content;
     const assetIds = dedupe(context.input.assetIds ?? []);
-    if (assetIds.length === 0) return { content, attachments: [] };
+    if (assetIds.length === 0) {
+      // 没有素材也要过一遍白名单：用户输入里可能带着客户端塞的本地字段，它们不该出网
+      return { content: stripLocalExtensions(content), attachments: [] };
+    }
 
     const withinLimit = assetIds.slice(0, MAX_ASSETS_PER_MESSAGE);
     const overflow = assetIds.slice(MAX_ASSETS_PER_MESSAGE);
@@ -368,7 +391,7 @@ export class AssetService {
     }
 
     return {
-      content: withSections(content, collected),
+      content: stripLocalExtensions(withSections(content, collected)),
       attachments,
       // 落库的那一份：成不成功都记「用户挂过这几张」（失败事实在 `attachments` 里，不在库里）
       storedContent: withSections(content, records.map(assetSectionOf)),
@@ -376,35 +399,46 @@ export class AssetService {
   }
 
   /**
-   * 历史里的 `asset://<id>` → 当前模型能吃的内容段（`ChatRunner` 的 `prepareHistory`）。
+   * 历史里的 `__asset_id` → 当前模型能吃的内容段（`ChatRunner` 的 `prepareHistory`）。
    *
    * 每轮发送前跑一次，因为「能不能吃」跟着模型 / 端点变：换个支持 Files API 的端点就会走文件引用，
    * 换个不支持视觉的模型就退化成一句文字提示。还原不出来的那一段换成一句文字说明而不是把
-   * `asset://` 原样交给厂商（那会让整条请求 400）。
+   * 引用原样交给厂商（那会让整条请求 400）。
    *
-   * 没有 `asset://` 的历史只扫一遍、不读盘也不上传：绝大多数消息里没有图。
+   * 无论有没有素材引用，内容都按 core 的字段白名单重建一次：`__` 开头的键是本机扩展，
+   * 出网的那一份里不该有它们。没有引用时不读盘、不上传。
    */
   async resolveHistory(context: {
     conversationId: string;
     modelId: string | null;
     messages: AgentNS.Message[];
   }): Promise<AgentNS.Message[]> {
-    const needsResolve = (message: AgentNS.Message): boolean =>
-      Array.isArray(message.content) && message.content.some((section) => isAssetRefSection(section));
-    if (!context.messages.some(needsResolve)) return context.messages;
+    const usesAssets = context.messages.some(
+      (message) =>
+        Array.isArray(message.content) &&
+        message.content.some((section) => localAssetIdOf(section) !== null),
+    );
+    if (!usesAssets) {
+      return context.messages.map((message) =>
+        Array.isArray(message.content)
+          ? { ...message, content: stripLocalExtensions(message.content) }
+          : message,
+      );
+    }
 
     const target = await this.resolveTarget(context.modelId);
     const resolved: AgentNS.Message[] = [];
     for (const message of context.messages) {
-      if (!needsResolve(message) || !Array.isArray(message.content)) {
+      if (!Array.isArray(message.content)) {
         resolved.push(message);
         continue;
       }
       const sections: AgentNS.MessageContentSection[] = [];
       for (const section of message.content) {
-        const assetId = assetIdOfSection(section);
+        const assetId = localAssetIdOf(section);
         if (assetId === null) {
-          sections.push(section);
+          const stripped = stripLocalExtensions([section]);
+          sections.push(Array.isArray(stripped) ? (stripped[0] ?? section) : section);
           continue;
         }
         const record = await this.assets.get(assetId);
@@ -500,7 +534,7 @@ export class AssetService {
       });
 
       if (result.transport === "text") {
-        // 模型读不了图：SDK 给了一段文字说明，这里如实说是「退化成文字」
+        // 模型读不了图：给模型一句说明（不是给用户看的文案，所以不走 i18n）
         const problem = this.problem("message.imageAsText", {
           model: target.model?.name ?? target.model?.id ?? "",
           name: label,
@@ -509,7 +543,7 @@ export class AssetService {
         return {
           assetId: record.id,
           deliveredAs: "text_fallback",
-          section: result.section,
+          section: noVisionSection(label),
           problem,
         };
       }
@@ -517,7 +551,7 @@ export class AssetService {
       return {
         assetId: record.id,
         deliveredAs: deliveryOf(result.transport),
-        section: result.section,
+        section: replacementSection(result.section, label),
         problem: null,
       };
     } catch (error) {
@@ -557,7 +591,7 @@ export class AssetService {
           return cached.vendorFileId;
         }
       } catch (error) {
-        // 读缓存失败不该让发送失败：当作 miss，重新上传一逼
+        // 读缓存失败不该让发送失败：当作 miss，重新上传一遍
         this.report(error, "读厂商文件缓存失败");
       }
 
@@ -622,31 +656,38 @@ export class AssetService {
   // -------------------------------------------------------------------------
 
   /**
-   * 清掉一段对话名下的全部素材（行 + 文件）。
+   * 一批素材 id → 引用归零的那些：删行、删文件。
    *
-   * 对话已经被删掉时那些行已经随外键级联消失，本方法返回空清单；所以「删对话」那条路上
-   * 更常用的是 {@link removeFiles}（服务层删之前就已经把要清的文件清单算好了）。
+   * 调用时机是「消息清理完之后」：撤回、删对话、删项目都已经交给外键把关系行级联删掉了，
+   * 这里再问一次「这张素材还剩几行引用」（`COUNT(*)`）——还剩就不动，归零才删。
+   * `assets` 那行的删除走 {@link AssetRegistry.deleteIfUnreferenced}（`RESTRICT` 是护栏：
+   * 判完之后又有人引用上时，物理删不掉）。
+   *
+   * 返回真正删掉的文件（数据根相对路径）；行在而文件已经不在时不报错（清理要能重复执行）。
    */
-  async removeByConversation(conversationId: string): Promise<string[]> {
-    const rows = await this.assets.listByConversation(conversationId);
-    return await this.removeRecords(rows);
-  }
-
-  /** 清掉指定的几个素材（行 + 文件） */
-  async removeByAssetIds(assetIds: string[]): Promise<string[]> {
-    const rows: AssetRecord[] = [];
+  async sweepUnreferenced(assetIds: string[]): Promise<string[]> {
+    const removed: string[] = [];
     for (const assetId of dedupe(assetIds)) {
       const row = await this.assets.get(assetId);
-      if (row) rows.push(row);
+      if (!row) continue;
+      try {
+        if ((await this.assets.countReferences(assetId)) > 0) continue;
+        if ((await this.assets.deleteIfUnreferenced(assetId)) === 0) continue;
+      } catch (error) {
+        // 删行失败就留着文件：行还在而文件没了会变成「有引用无文件」，比多留一份更糟
+        this.report(error, "删除素材行失败");
+        continue;
+      }
+      removed.push(...(await this.removeFiles([row.path])));
     }
-    return await this.removeRecords(rows);
+    return removed;
   }
 
   /**
-   * 只删文件（行已经被级联删掉的场合）。
+   * 只删文件。
    *
-   * 入参是数据根下的相对路径（服务层返回的 `assetPaths` 就是这个形状）。路径必须落在
-   * `assets/` 里：这是唯一会让本服务删掉库外文件的地方，越界的路径一律不碰。
+   * 入参是数据根下的相对路径（`assets` 行的 `path` 就是这个形状）。路径必须落在 `assets/` 里：
+   * 这是唯一会让本服务删掉库外文件的地方，越界的路径一律不碰。
    */
   async removeFiles(relativePaths: string[]): Promise<string[]> {
     const removed: string[] = [];
@@ -667,22 +708,6 @@ export class AssetService {
       }
     }
     return removed;
-  }
-
-  /** 一批素材行：删行 + 删文件，返回删掉的文件（数据根相对路径） */
-  private async removeRecords(rows: AssetRecord[]): Promise<string[]> {
-    const removedPaths: string[] = [];
-    for (const row of rows) {
-      try {
-        await this.assets.delete(row.id);
-      } catch (error) {
-        this.report(error, "删除素材行失败");
-        // 行还在就继续：文件删掉会留下「有引用无文件」，比留着更糟
-        continue;
-      }
-      removedPaths.push(...(await this.removeFiles([row.path])));
-    }
-    return removedPaths;
   }
 
   // -------------------------------------------------------------------------
@@ -751,68 +776,87 @@ export function toAssetRef(row: AssetRecord): AssetRef {
   };
 }
 
-/** 消息里的素材引用前缀：`asset://<assetId>` */
-export const ASSET_URL_PREFIX = "asset://";
-
 /**
- * 素材 → 落库用的内容段（消息里只允许出现我们自己的引用）。
+ * 素材 → 落库用的内容段。
  *
- * 图片写 `image_url.url`，其余写 `file.file_id`：两处都借用 core 的字段装一个 `asset://` URL，
- * 因为 core 的内容段没有“素材 id”这个字段（R23 的口径）。发送前由 {@link AssetService.resolveHistory}
- * 把它们换成这个模型能吃的真段。
+ * 图片是 `image_url`（`url` 留空），其余是 `file`（`filename` 记原始名字，`file_id` / `file_data`
+ * 都不出现）；两种都只带本地扩展字段 `__asset_id`。真字段留空是故意的：库里存的是「引用哪份
+ * 素材」，而不是任何一种厂商产物。发送前由 {@link AssetService.resolveHistory} 按当时的模型
+ * 换成它能吃的真段。
  */
-export function assetSectionOf(row: AssetRecord): AgentNS.MessageContentSection {
-  const url = `${ASSET_URL_PREFIX}${row.id}`;
-  if (row.mime.startsWith("image/")) return { type: "image_url", image_url: { url } };
-  return row.name === null ? { type: "file", file_id: url } : { type: "file", file_id: url, filename: row.name };
-}
-
-/** 一个内容段是不是我们的素材引用 */
-export function isAssetRefSection(section: AgentNS.MessageContentSection): boolean {
-  return assetUrlOf(section) !== null;
-}
-
-/** 内容段里装的 `asset://` URL（不是素材引用时为空） */
-function assetUrlOf(section: AgentNS.MessageContentSection): string | null {
-  if (section.type === "image_url") {
-    const url = section.image_url.url;
-    return url.startsWith(ASSET_URL_PREFIX) ? url : null;
+export function assetSectionOf(row: AssetRecord): LocalMessageContentSection {
+  if (row.mime.startsWith("image/")) {
+    return { type: "image_url", image_url: { url: "" }, __asset_id: row.id };
   }
-  if (section.type === "file" && typeof section.file_id === "string") {
-    return section.file_id.startsWith(ASSET_URL_PREFIX) ? section.file_id : null;
-  }
-  return null;
-}
-
-/** 内容段里的素材 id（不是素材引用时为空） */
-export function assetIdOfSection(section: AgentNS.MessageContentSection): string | null {
-  const url = assetUrlOf(section);
-  if (url === null) return null;
-  const assetId = url.slice(ASSET_URL_PREFIX.length).trim();
-  return assetId === "" ? null : assetId;
+  return row.name === null
+    ? { type: "file", __asset_id: row.id }
+    : { type: "file", filename: row.name, __asset_id: row.id };
 }
 
 /**
  * 一条内容里的全部素材 id（按出现顺序、去重）。
  *
- * 撤回时的“回填输入框”（R62）靠它复原用户挂过的图：`assets.messageId` 一列只指向一条消息，
- * 而同一张图可以被好几条消息引用（对话内去重让它只落一份字节），所以消息content 才是“这条消息
- * 挂了哪几张图”的真相。
+ * 撤回时的“回填输入框”（R62）与消息落库时的关系行都靠它复原「这条消息挂了哪几张图」：
+ * `assets` 行上不再记消息，`conversation_assets` 才是那个事实，而它的来源是 content。
  */
 export function assetIdsOf(content: AgentNS.MessageContent | undefined): string[] {
   if (!Array.isArray(content)) return [];
   const ids: string[] = [];
   for (const section of content) {
-    const assetId = assetIdOfSection(section);
+    const assetId = localAssetIdOf(section);
     if (assetId !== null) ids.push(assetId);
   }
   return dedupe(ids);
 }
 
 /**
+ * 模型看不了图时给模型的替代段。
+ *
+ * 这是**发给模型的文字**，不是给人看的文案（所以不走 i18n）：把文件名说清楚，让模型知道自己
+ * 漏了什么。不带磁盘路径 —— 那是本机事实，厂商不需要知道。
+ */
+function noVisionSection(label: string): AgentNS.MessageContentSection {
+  return { type: "text", text: `[Image] ${label}（当前模型看不了图片）` };
+}
+
+/**
+ * 把 SDK 给出的段收敛成本服务的三种形态。
+ *
+ *   - Files API：`{ type: "file", file_id, filename }`
+ *   - 内联图片：`{ type: "image_url", image_url: { url: "data:…" } }`（`detail` 有就带上）
+ *   - 其余（非图片内联）：`{ type: "file", file_data, filename }`
+ *
+ * 同一个 `(素材, 端点)` 每次进来的 `source` 都是同一份字节，`upload` 命中持久缓存时拿到的也是
+ * 同一个 `file_id`，所以这里不做任何跟「这一次」有关的加工（时间戳、随机名、重新编码）——
+ * 连发两轮得到的段逐字节相同。
+ */
+function replacementSection(
+  section: AgentNS.MessageContentSection,
+  label: string,
+): AgentNS.MessageContentSection {
+  if (section.type === "file") {
+    if (typeof section.file_id === "string") {
+      // `file_id` 是引用已上传文件的字段：名字只作为可读标签带上，内容不再重复给
+      return { type: "file", file_id: section.file_id, filename: label };
+    }
+    if (typeof section.file_data === "string") {
+      return { type: "file", file_data: section.file_data, filename: label };
+    }
+    return section;
+  }
+  if (section.type === "image_url") {
+    const detail = section.image_url.detail;
+    return detail === undefined
+      ? { type: "image_url", image_url: { url: section.image_url.url } }
+      : { type: "image_url", image_url: { url: section.image_url.url, detail } };
+  }
+  return section;
+}
+
+/**
  * 还原失败时给模型的替代段。
  *
- * 这是**发给模型的文字**，不是给人看的文案（所以不走 i18n）：SDK 自己降级时也是这么写的。
+ * 这也是**发给模型的文字**（不走 i18n）：素材已经不在库里时，模型至少要知道这里原本有一个附件。
  */
 function unavailableSection(
   assetId: string,

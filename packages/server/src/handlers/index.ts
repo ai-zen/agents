@@ -173,7 +173,6 @@ export function createHandlers(deps: HandlerDeps): HandlerTable {
     ...createWorkspaceHandlers({
       workspaces: deps.workspaces,
       conversations: deps.conversations,
-      assets: deps.assets,
       runner: deps.runner,
       scopes: deps.scopes,
       emit: deps.emit,
@@ -182,7 +181,6 @@ export function createHandlers(deps: HandlerDeps): HandlerTable {
     ...createConversationHandlers({
       conversations: deps.conversations,
       messages: deps.messages,
-      assets: deps.assets,
       runner: deps.runner,
       readConfig: deps.readConfig,
       // 状态栏助手块的名字与可用性（PRD F-I6）：只借用 `AgentService.describe` 这一个只读口
