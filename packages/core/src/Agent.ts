@@ -10,6 +10,7 @@ import { Tool } from "./Tool.js";
 import { reconcileAbortedToolRounds } from "./AbortedToolRounds.js";
 import { reconcileAbortedMessages } from "./AbortedMessages.js";
 import { applyChunk } from "./applyChunk.js";
+import { formatContentSection } from "./formatContent.js";
 
 // ---------------------------------------------------------------------------
 // 插件接口
@@ -440,6 +441,27 @@ export class Agent extends AgentContext {
     }));
   }
 
+  /**
+   * 一条消息内容发给模型的那一份：字符串原样返回，数组逐段交给 {@link Agent.formatContentSection}。
+   *
+   * 委派与不委派由它自己判：字符串上没有段，也就没有段级字段可认。
+   */
+  formatContent(content: AgentNS.MessageContent): AgentNS.MessageContent {
+    if (!Array.isArray(content)) return content;
+    return content.map((section) => this.formatContentSection(section));
+  }
+
+  /**
+   * 一段内容发给模型的那一份：按段类型取认识的字段重建（默认口径见 core 的
+   * `formatContentSection`）。
+   *
+   * 它是内容字段的扩展点：覆写本方法就换掉逐段的规则，`formatContent` 与 `formatHistory`
+   * 都会跟着走这条路。
+   */
+  formatContentSection(section: AgentNS.MessageContentSection): AgentNS.MessageContentSection {
+    return formatContentSection(section);
+  }
+
   formatHistory() {
     return this.messages
       .filter(
@@ -449,7 +471,8 @@ export class Agent extends AgentContext {
       )
       .map((message) => ({
         role: message.role,
-        content: message.content,
+        content:
+          message.content === undefined ? undefined : this.formatContent(message.content),
         function_call: message.function_call ? message.function_call : undefined,
         tool_calls: message.tool_calls?.length ? message.tool_calls : undefined,
         tool_call_id: message.tool_call_id ?? undefined,
