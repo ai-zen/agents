@@ -46,7 +46,17 @@ export type LocalErrorCode =
   /** 拉起了本地服务端，但到时限还没就绪 */
   | "server_did_not_start"
   /** 找不到要拉起的服务端入口（宿主没给 `serverEntry`，也没装那个私有包） */
-  | "server_entry_missing";
+  | "server_entry_missing"
+  /** 单个附件超过上限（PRD D5：20MB/张；在 `asset.begin` 之前就拒） */
+  | "asset_too_large"
+  /** 一条消息的附件数超过上限（PRD D5：4 张/条；多出来的不静默丢，逐张给这个码） */
+  | "asset_count_exceeded"
+  /** 空文件（0 字节）没有可上传的内容 */
+  | "asset_empty"
+  /** 读不了要上传的文件（不存在、没权限……） */
+  | "asset_unreadable"
+  /** 认不出这个文件的类型，且调用方没给 mime */
+  | "asset_mime_unknown";
 
 /** 全部失败码：服务端的业务码，或客户端本地的码 */
 export type ClientErrorCode = BizCode | LocalErrorCode;
@@ -92,6 +102,26 @@ const LOCAL_TEXT: Record<LocalErrorCode, { zh: string; en: string }> = {
   server_entry_missing: {
     zh: "找不到要拉起的服务端入口：请让宿主给出 serverEntry，或确认已装 @ai-zen/agents-server",
     en: "No server entry to start: pass serverEntry from the host, or make sure @ai-zen/agents-server is installed",
+  },
+  asset_too_large: {
+    zh: "图片太大（{size}），超过单张 {limit} 的上限",
+    en: "The image is too large ({size}); the limit is {limit} per file",
+  },
+  asset_count_exceeded: {
+    zh: "一条消息最多 {limit} 张图片",
+    en: "A message can carry at most {limit} images",
+  },
+  asset_empty: {
+    zh: "{name} 是空文件（0 字节），没有可上传的内容",
+    en: "{name} is empty (0 bytes): there is nothing to upload",
+  },
+  asset_unreadable: {
+    zh: "读不了 {path}：{reason}",
+    en: "Could not read {path}: {reason}",
+  },
+  asset_mime_unknown: {
+    zh: "认不出 {name} 的类型（请显式给出 mime）",
+    en: "Cannot tell the type of {name} (pass an explicit mime)",
   },
 };
 

@@ -10,6 +10,7 @@
  * | 记住上次连的是哪台、说哪种语言 | `settings.ts` |
  * | 断线之后补拉（状态 + 消息） | `resume.ts`（`resume` / `mergeResumed` / `lastMessageId`） |
  * | 重连几次、等多久 | `reconnect.ts` |
+ * | 把图片传上去、回一个能放进消息的引用 | `upload.ts`（`uploadAsset` / `uploadAssets`） |
  *
  * 契约（方法名、事件名、载荷、业务码、消息本体）**不在这里重写一份**：类型直接从
  * `@ai-zen/agents-server` 转出（下方 `export type`），所以 cli / desktop 只认这一个包也能拿到
@@ -60,6 +61,27 @@ export type { ClientErrorCode, LocalErrorCode } from "./errors.js";
 
 export { mergeResumed, lastMessageId, resumeConversation } from "./resume.js";
 export type { ContractCaller, ResumeMode, ResumedConversation } from "./resume.js";
+
+export {
+  DEFAULT_CHUNK_SIZE,
+  DEFAULT_MAX_ASSET_BYTES,
+  DEFAULT_MAX_ASSETS_PER_MESSAGE,
+  formatBytes,
+  mimeOfPath,
+  uploadAsset,
+  uploadAssets,
+} from "./upload.js";
+export type {
+  AssetFailure,
+  AssetSource,
+  UploadAssetOptions,
+  UploadAssetsOptions,
+  UploadAssetsResult,
+  UploadTransport,
+} from "./upload.js";
+
+// 上传分片的二进制帧：形状与服务端 `net/UploadReceiver` 逐字节一致，两个前端都从这里取
+export { CHUNK_HEADER_LENGTH_BYTES, decodeChunkFrame, encodeChunkFrame } from "./chunkFrame.js";
 
 export {
   DEFAULT_RECONNECT_POLICY,
@@ -116,4 +138,8 @@ export type {
   ErrorData,
   // 消息本体与增量（core 的定义）
   AgentNS,
+  // 上传产物与附件结局（`asset.end` 回的那个引用、`conversation.send` 回的逐条结局）
+  AssetRef,
+  AttachmentDelivery,
+  AttachmentOutcome,
 } from "@ai-zen/agents-server";

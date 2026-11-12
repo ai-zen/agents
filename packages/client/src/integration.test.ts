@@ -22,6 +22,7 @@ import { ensureServer, readServerFile, tokenFilePath } from "./connection.js";
 import type { ClientError } from "./errors.js";
 import type { ServerTarget } from "./address.js";
 import { parseIncoming } from "./frames.js";
+import { uploadAsset, uploadAssets, DEFAULT_MAX_ASSET_BYTES } from "./upload.js";
 
 const CLIENT_INFO: ClientInfo = { name: "test-client", version: "0.0.0-test" };
 
@@ -195,6 +196,140 @@ describe("补拉（A12 的真语义）", () => {
     expect(resumed.mode).toBe("full");
   });
 });
+
+describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () => {
+  /** 一小段字节：内容不重要，重要的是长度与摘要能原样到达服务端 */
+  const PAYLOAD = new Uint8Array(2048).map((_, index) => (index * 7) % 251);
+
+  /** 建一个项目 + 一段对话，并把这段对话**先落库**（R56：`conversation.create` 只是草稿） */
+  async function persistedConversation(client: Client): Promise<string> {
+    const cwd = await fs.mkdtemp(join(tmpdir(), "ai-zen-client-upload-"));
+    const { workspace } = await client.call("workspace.create", { cwd });
+    const created = await client.call("conversation.create", {
+      workspaceId: workspace.id,
+      agentId: "default",
+    });
+    if (!created.conversation) throw new Error("对话没建出来");
+    const conversationId = created.conversation.id;
+
+    // 草稿落库靠第一轮 `conversation.send`（它内部调 `ensurePersisted`）：先发一句话，
+    // 再把这一轮停掉 —— 这一段的目的是「让对话在库里有一行」，不是为了跑模型
+    await client.call("conversation.send", { conversationId, input: { content: "先落库" } });
+    await client.call("conversation.abort", { conversationId }).catch(() => undefined);
+    await idle(client, conversationId);
+    return conversationId;
+  }
+
+  it("上传一张图：assets/ 下落了文件、asset.end 回了 AssetRef、send 的 attachments 里有它", async () => {
+    const client = await connect("zh");
+    const conversationId = await persistedConversation(client);
+
+    const asset = await uploadAsset(client, {
+      conversationId,
+      data: PAYLOAD,
+      mime: "image/png",
+      name: "probe.png",
+      chunkSize: 512,
+    });
+
+    // `asset.end` 回的引用：尺寸与摘要都是服务端复核过的那一份
+    expect(asset.assetId).not.toBe("");
+    expect(asset.mime).toBe("image/png");
+    expect(asset.bytes).toBe(PAYLOAD.byteLength);
+    expect(asset.name).toBe("probe.png");
+
+    // 真实落盘：`<数据根>/assets/` 下多了一份字节完全一致的文件
+    const stored = (await fs.readdir(join(dataRoot, "assets"))).filter(
+      (name) => !name.startsWith(".upload-"),
+    );
+    expect(stored.some((name) => name.startsWith(asset.assetId))).toBe(true);
+    const fileName = stored.find((name) => name.startsWith(asset.assetId)) as string;
+    const written = await fs.readFile(join(dataRoot, "assets", fileName));
+    expect(new Uint8Array(written)).toEqual(PAYLOAD);
+
+    // 带着 assetId 发一轮：`attachments` 里就是这一张的结局
+    const accepted = await client.call("conversation.send", {
+      conversationId,
+      input: { content: "看看这张", assetIds: [asset.assetId] },
+    });
+    expect(accepted.attachments).toHaveLength(1);
+    expect(accepted.attachments[0]?.assetId).toBe(asset.assetId);
+    expect(["file_reference", "inline", "text_fallback", "dropped"]).toContain(
+      accepted.attachments[0]?.deliveredAs,
+    );
+    // 没送出去时要带上服务端渲染好的原因（F-H7：不假成功）
+    if (accepted.attachments[0]?.deliveredAs === "dropped") {
+      expect(accepted.attachments[0]?.problem?.message).toBeTruthy();
+    }
+
+    // 这一轮会去连配置里的假端点（必然失败），收摊时把它停掉
+    await client.call("conversation.abort", { conversationId }).catch(() => undefined);
+  }, 30_000);
+
+  it("超过一张上限：多出来的逐条报告，前 4 张照常上传", async () => {
+    const client = await connect("zh");
+    const conversationId = await persistedConversation(client);
+
+    // 本地前置校验用的就是这条上限：真服务端的 `hello.limits.maxAssetBytes`
+    expect(client.hello?.limits.maxAssetBytes).toBe(DEFAULT_MAX_ASSET_BYTES);
+
+    const result = await uploadAssets(client, {
+      conversationId,
+      sources: [
+        { data: PAYLOAD, mime: "image/png", name: "1.png" },
+        { data: PAYLOAD, mime: "image/png", name: "2.png" },
+        { data: PAYLOAD, mime: "image/png", name: "3.png" },
+        { data: PAYLOAD, mime: "image/png", name: "4.png" },
+        { data: PAYLOAD, mime: "image/png", name: "5.png" },
+      ],
+    });
+
+    expect(result.assets).toHaveLength(4);
+    expect(result.failures.map((failure) => failure.name)).toEqual(["5.png"]);
+    expect(result.failures[0]?.error.code).toBe("asset_count_exceeded");
+  }, 30_000);
+
+  it("草稿对话（R56 还没落库）：上传到 asset.end 被服务端的外键拒掉，不是静默成功", async () => {
+    // 这条用例钉的是**服务端的现状**：`assets.conversationId` 外键指向 `conversations`，
+    // 而草稿在首次 `send` 之前不在那张表里。服务端哪天补上「上传前先落库」，这条会红，
+    // 那时 CLI 里「草稿上不尝试上传」的分支也该一起删
+    const client = await connect("zh");
+    const cwd = await fs.mkdtemp(join(tmpdir(), "ai-zen-client-draft-"));
+    try {
+      const { workspace } = await client.call("workspace.create", { cwd });
+      const created = await client.call("conversation.create", {
+        workspaceId: workspace.id,
+        agentId: "default",
+      });
+      if (!created.conversation) throw new Error("对话没建出来");
+
+      const error = (await uploadAsset(client, {
+        conversationId: created.conversation.id,
+        data: PAYLOAD,
+        mime: "image/png",
+      }).catch((caught: unknown) => caught)) as ClientError;
+
+      expect(error.code).toBe("internal");
+      // 一个字节都没留下来：临时文件在 `asset.end` 失败时已被服务端删掉
+      const leftovers = (await fs.readdir(join(dataRoot, "assets"))).filter((name) =>
+        name.startsWith(".upload-"),
+      );
+      expect(leftovers).toEqual([]);
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+/** 等这段对话不在跑（`conversation.send` 在跑的时候会 `busy`） */
+async function idle(client: Client, conversationId: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const { state } = await client.call("conversation.state", { conversationId });
+    if (state.run.status !== "running") return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("这一轮一直没有结算");
+}
 
 describe("ensureServer 对真实例", () => {
   it("发现文件里有活实例：直接连上，不拉起（started=false）", async () => {

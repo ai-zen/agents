@@ -19,6 +19,8 @@
 | `errors.ts` | `ClientError`：服务端业务码与文案原样搬运；只有「服务端不在场」那几句由客户端按语言给 |
 | `address.ts` | 地址形状与 `ws://` URL 的唯一实现处（IPv6、子路径、`http→ws`） |
 | `frames.ts` | JSON-RPC 2.0 的判别与构造（形状 `import type` 自服务端） |
+| `upload.ts` | 上传的三段式：`uploadAsset` / `uploadAssets`（`asset.begin` → 二进制帧 → `asset.end`）+ 20MB/4 张的本地前置校验 |
+| `chunkFrame.ts` | 上传分片的二进制帧编解码（与服务端 `net/UploadReceiver` 逐字节一致，两个前端都从这里取） |
 | `testSupport/` | 用例用的假服务端（手写最小帧编解码，不引入 `ws`） |
 
 ## 契约不在这里重写
@@ -40,6 +42,13 @@ client.subscribe("message.delta", (payload) => payload.delta.content);
 client.track(conversationId);          // 记住要跟着这段对话
 client.onClose(() => void reconnectUntilConnected(client));
 client.onResume((outcome) => { if (outcome.ok) setMessages(mergeResumed(local, outcome.resumed)); });
+
+// 图片：先传上去，再把 assetId 带进消息（怎么变成内容段由服务端定）
+const asset = await uploadAsset(client, { conversationId, path: "/tmp/shot.png" });
+await client.call("conversation.send", {
+  conversationId,
+  input: { content: "看看这张", assetIds: [asset.assetId] },
+});
 ```
 
 运行期**不 import** 服务端包：它的包根会把整个服务端（单根、SQLite worker、SDK 装配）拉进产物。

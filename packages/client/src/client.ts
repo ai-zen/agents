@@ -9,6 +9,9 @@
  *   · `subscribe` 按 `EventMap` 收窄载荷（`run.state` / `message.delta` / … 六个事件）；
  *   · `close` 之后不再可用，要恢复就 `reconnect()`。
  *
+ * 另有两条不在 JSON-RPC 里的通道：`resume`（补拉）与 {@link Client.sendBinary}（上传分片的二进制
+ * 帧）。后者的帧格式收在 `chunkFrame.ts`，上传本身是一次三段式（见 `upload.ts`）。
+ *
  * ## 握手：首帧 `server.hello`，凭证不进 URL
  *
  * `{ token, language?, clientInfo }` 放在**第一帧**里（`packages/server/src/wire/methods.ts` 的
@@ -84,6 +87,15 @@ const HELLO_ID = 1;
 const MAX_REQUEST_ID = 0xffff_ffff;
 const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
 const DEFAULT_CALL_TIMEOUT_MS = 30_000;
+/**
+ * 二进制写出去的「高水位」：`bufferedAmount` 超过它就等一等再写下一帧。
+ *
+ * 上传一个 20MB 的文件是几百帧，`send()` 是同步入队、不背压：一路写下去会把整份文件攒在
+ * socket 的发送缓冲里。4MB 足够把一条链路的往返延迟盖住，又不至于把内存交给对端的接收速度。
+ */
+const BINARY_HIGH_WATER_BYTES = 4 * 1024 * 1024;
+/** 等发送缓冲降下去时的轮询间隔（WS 没有 drain 事件，只能轮着看） */
+const BINARY_DRAIN_INTERVAL_MS = 2;
 
 /**
  * `call` 的其余入参：方法本身没有入参（`NoParams`）时可以整段省掉。
@@ -199,6 +211,37 @@ export class Client implements ContractCaller {
     const params = args[0];
     const options = args[1] as CallOptions | undefined;
     return this.request(method, params, options?.timeoutMs) as Promise<MethodResult<M>>;
+  }
+
+  /**
+   * 往这条连接写一个**二进制帧**。上传分片走这里（帧的形状见 `chunkFrame.ts`）。
+   *
+   * 为什么单独开一条通道而不是把字节塞进 JSON：`asset.begin` 之后的分片是任意二进制，
+   * base64 进 JSON 会平白多出三分之一体积，而且服务端得先解一层编码才拿到字节。这条连接上
+   * 二进制帧只有一种含义（上传分片），所以不需要再用 JSON-RPC 那套 `id` / `method` 包装。
+   *
+   * 分片没有回执（服务端按 `uploadId` 收，出错时用 `id: null` 的错误帧说话）：调用方发完所有
+   * 分片再 `asset.end`，由那一步的长度与摘要校验给出最终答案。
+   *
+   * 没握手成功时本地就拒（`not_connected`），与服务端「未 `hello` 不收二进制」那道门是同一件事。
+   *
+   * 参数上那个 `<ArrayBuffer>` 不是废话：全局 `WebSocket.send` 只收底层是 `ArrayBuffer` 的视图，
+   * 而 `Uint8Array` 缺省可以挂在 `SharedArrayBuffer` 上。写在这里比在调用点转一道强。
+   */
+  async sendBinary(frame: Uint8Array<ArrayBuffer>): Promise<void> {
+    const socket = this.socket;
+    if (!socket || !this.helloResult) {
+      throw localError("not_connected", {
+        language: this.configuredLanguage,
+        params: { method: "asset.chunk", endpoint: this.endpoint },
+      });
+    }
+    await this.drain(socket);
+    try {
+      socket.send(frame);
+    } catch {
+      throw this.lostError();
+    }
   }
 
   /**
@@ -456,6 +499,19 @@ export class Client implements ContractCaller {
       } catch {
         // 一个订阅者抛错不该连累其它订阅者，更不该让一条已经断了的连接出别的岔子
       }
+    }
+  }
+
+  /**
+   * 等发送缓冲落回高水位以下（`bufferedAmount` 一路涨说明对端读得慢）。
+   *
+   * 轮询而不是等事件：全局 `WebSocket` 没有 drain 事件。连接在这一等里断了就当场失败 ——
+   * 否则上传会卡在一个永远不会降下来的数字上。
+   */
+  private async drain(socket: WebSocket): Promise<void> {
+    while (typeof socket.bufferedAmount === "number" && socket.bufferedAmount > BINARY_HIGH_WATER_BYTES) {
+      await new Promise<void>((resolve) => setTimeout(resolve, BINARY_DRAIN_INTERVAL_MS));
+      if (this.socket !== socket) throw this.lostError();
     }
   }
 
