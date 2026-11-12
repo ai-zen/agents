@@ -52,6 +52,7 @@ function makeConversation(overrides: Partial<Conversation> = {}): Conversation {
     pinned: false,
     agentId: "default",
     modelId: "model-1",
+    nameIsAuto: true,
     createdAt: 0,
     updatedAt: 0,
     ...overrides,
@@ -747,6 +748,7 @@ describe("ChatRunner：接口面", () => {
       role: AgentNSValue.Role.Assistant,
       status: AgentNSValue.MessageStatus.Completed,
       omit: true,
+      parentToolCallId: null,
       content: [{ index: 0, type: "text", text: "带图的回答" }, { index: 1, type: "image_url", image_url: { url: "https://example.com/a.png" } }],
       data: {
         reasoning_content: "想过",

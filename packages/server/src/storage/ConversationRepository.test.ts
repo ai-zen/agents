@@ -1,6 +1,6 @@
 /**
  * `ConversationRepository` 的验收：身份字段落库且必填、侧栏排序口径（置顶 + 创建时间倒序，
- * PRD D13）、改名不改顺序、按名字搜索与 LIKE 通配符转义。
+ * PRD D13）、改名不改顺序、名字是不是自动起的（R35）、按名字搜索与 LIKE 通配符转义。
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -64,12 +64,35 @@ describe("ConversationRepository", () => {
       id: "c1",
       workspaceId: "w1",
       name: "2026-11-12 10:00",
+      // 创建时的原名就是自动起的名字（R35）
+      nameIsAuto: true,
       pinned: false,
       agentId: "agent-1",
       modelId: "model-1",
       createdAt: 500,
       updatedAt: 500,
     });
+  });
+
+  it("名字是不是自动起的写在这一列上：用户改名置 0，自动命名置 1（R35）", async () => {
+    await repo.create(input({ id: "c1", workspaceId: "w1", name: "2026-11-12 10:00", createdAt: 100 }));
+    expect((await repo.get("c1"))?.nameIsAuto).toBe(true);
+
+    // 用户改名：名字从此归用户，即使改成一个跟原名无关的字串也不靠内容推断
+    await repo.renameByUser("c1", "我的对话", 200);
+    expect((await repo.get("c1"))?.name).toBe("我的对话");
+    expect((await repo.get("c1"))?.nameIsAuto).toBe(false);
+
+    // 自动命名：写新名并把它标回自动
+    await repo.applyAutoName("c1", "重写存储层", 300);
+    expect((await repo.get("c1"))?.name).toBe("重写存储层");
+    expect((await repo.get("c1"))?.nameIsAuto).toBe(true);
+  });
+
+  it("用户把名字改回原样也仍然是用户改的（不靠名字内容判断）", async () => {
+    await repo.create(input({ id: "c1", workspaceId: "w1", name: "2026-11-12 10:00", createdAt: 100 }));
+    await repo.renameByUser("c1", "2026-11-12 10:00", 200);
+    expect((await repo.get("c1"))?.nameIsAuto).toBe(false);
   });
 
   it("身份列不能为空：绕过仓储直接插 NULL 也被数据库拒（R18）", async () => {
@@ -106,7 +129,7 @@ describe("ConversationRepository", () => {
     await repo.create(input({ id: "a", workspaceId: "w1", name: "甲", createdAt: 100 }));
     await repo.create(input({ id: "b", workspaceId: "w1", name: "乙", createdAt: 200 }));
 
-    await repo.rename("a", "甲（改过名）", 900);
+    await repo.renameByUser("a", "甲（改过名）", 900);
     await repo.touch("a", 1000);
 
     expect((await repo.listByWorkspace("w1")).map((row) => row.id)).toEqual(["b", "a"]);

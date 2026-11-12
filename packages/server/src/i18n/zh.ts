@@ -17,6 +17,8 @@ export const zh = {
   "error.unsupported": "服务端处理不了{what}。",
   "error.internal": "服务端内部出错了，细节写进日志里了。",
   "error.configInvalid": "当前配置还用不了：{reason}。",
+  // 助手没有可用模型（结构化原因在 `detail` 里）
+  "error.modelUnresolved": "这个助手没有可用的模型 —— 给它挑一个模型，或者在设置里指定一个默认模型。",
   "error.mcpUnavailable": "{name} 没有响应，这一轮缺它的工具，其它能力照常。",
   "error.modelUnsupported": "这段对话里已经有图片，{model} 读不了图片，所以没有换过去。",
   "error.handoffDeclined": "这次不交接，对话继续往下跑。",

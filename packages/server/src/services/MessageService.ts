@@ -7,13 +7,17 @@
  *
  * `toAgentMessage` 是这个仓库里「存储行 → core 消息」的唯一一份实现：对话服务算用量、判断
  * 历史里有没有图也要走它，免得同一行在两处被读出两个样子。
+ *
+ * 正文不做转换（R30）：仓储反序列化出来的就是 core 的 `AgentNS.MessageContent`，这里原样
+ * 搬上消息。剩下要做的是把「列里的字符串」收敛成 core 的取值（角色 / 状态 / 结束原因）
+ * 与把 `data` 列的 JSON 逐字段收窄到 core 的类型。
  */
 
 import { AgentNS } from "@ai-zen/agents-core";
 
 import type { ConversationRepository } from "../storage/ConversationRepository.js";
 import type { MessageRepository } from "../storage/MessageRepository.js";
-import type { MessageContent, StoredMessage } from "../storage/types.js";
+import type { StoredMessage } from "../storage/types.js";
 import { ServerError } from "../wire/errors.js";
 import type { MessageListParams, MessageListResult } from "../wire/index.js";
 
@@ -123,68 +127,13 @@ function toFinishReason(value: string): AgentNS.FinishReason {
 }
 
 /**
- * 库里的一段内容 → core 的内容段。
- *
- * 三种段按 core 的字段逐个抄（`text` / `image_url` / `file`）；认不出的段类型原样透传 ——
- * 写进去的东西读回来时丢掉，比多留一个字段更糟。非对象（坏数据）才被滤掉。
- */
-function toSection(value: unknown): AgentNS.MessageContentSection | null {
-  if (typeof value !== "object" || value === null) return null;
-  const source = value as Record<string, unknown>;
-  const index = typeof source.index === "number" ? source.index : undefined;
-
-  if (source.type === "text") {
-    const text = asString(source.text);
-    if (text === undefined) return null;
-    return index === undefined ? { type: "text", text } : { type: "text", text, index };
-  }
-  if (source.type === "image_url") {
-    const imageUrl = source.image_url;
-    if (typeof imageUrl !== "object" || imageUrl === null) return null;
-    const url = asString((imageUrl as Record<string, unknown>).url);
-    if (url === undefined) return null;
-    const detail = asString((imageUrl as Record<string, unknown>).detail);
-    const section: AgentNS.ImageUrlContentSection = {
-      type: "image_url",
-      image_url:
-        detail === undefined
-          ? { url }
-          : { url, detail: detail as "low" | "high" | "original" | "auto" },
-    };
-    if (index !== undefined) section.index = index;
-    return section;
-  }
-  if (source.type === "file") {
-    const section: AgentNS.FileContentSection = { type: "file" };
-    const fileId = asString(source.file_id);
-    const fileData = asString(source.file_data);
-    const filename = asString(source.filename);
-    if (fileId !== undefined) section.file_id = fileId;
-    if (fileData !== undefined) section.file_data = fileData;
-    if (filename !== undefined) section.filename = filename;
-    if (index !== undefined) section.index = index;
-    return section;
-  }
-  return source as unknown as AgentNS.MessageContentSection;
-}
-
-/** 库里 `content` 列 → core 的内容类型；空值按「没有内容」处理 */
-function toContent(value: MessageContent): AgentNS.MessageContent | undefined {
-  if (value === null) return undefined;
-  if (typeof value === "string") return value;
-  const sections: AgentNS.MessageContentSection[] = [];
-  for (const section of value) {
-    const converted = toSection(section);
-    if (converted !== null) sections.push(converted);
-  }
-  return sections;
-}
-
-/**
  * 库里一行 → core 的消息对象。
  *
- * `content` / `tool_calls` / `reasoning_content` / `usage` / `subAgentUsage` / `hidden` /
- * `omit` 这些字段名与取值全部照 core（R21）；认不出的字段不往消息上搬。
+ * 正文原样透传（R30）：仓储反序列化出来的就是 core 的 `MessageContent`，逐段重建会把 core
+ * 新增的段类型 / 字段丢掉，也会让同一条消息在不同读取路径上读出两个样子。
+ *
+ * 其余字段名与取值也全部照 core（R21）：`role` / `status` / `finish_reason` 从列里的字符串
+ * 收敛成 core 的取值，`data` 列的 JSON 逐字段收窄，认不出的不往消息上搬。
  */
 export function toAgentMessage(row: StoredMessage): AgentNS.Message {
   const data = row.data ?? {};
@@ -195,8 +144,8 @@ export function toAgentMessage(row: StoredMessage): AgentNS.Message {
     omit: row.omit,
   };
 
-  const content = toContent(row.content);
-  if (content !== undefined) message.content = content;
+  // `null` 在库里表示「这条消息没有正文」，core 的 `content` 是可选的，所以不搬空值
+  if (row.content !== null) message.content = row.content;
 
   const name = asString(data.name);
   if (name !== undefined) message.name = name;

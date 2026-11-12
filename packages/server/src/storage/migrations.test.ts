@@ -92,6 +92,21 @@ describe("migrate", () => {
     }
   });
 
+  it("表结构钉住两列真值：名字是否自动起（R35）与子 Agent 的父工具调用（R37）", async () => {
+    await migrate(db);
+
+    type ColumnInfo = { name: string; notnull: number; dflt_value: string | null };
+    const conversationColumns = await db.all<ColumnInfo>("PRAGMA table_info('conversations')");
+    const nameIsAuto = conversationColumns.find((column) => column.name === "nameIsAuto");
+    // 非空且默认 1：创建时的原名算自动起的名字
+    expect(nameIsAuto).toMatchObject({ notnull: 1, dflt_value: "1" });
+
+    const messageColumns = await db.all<ColumnInfo>("PRAGMA table_info('messages')");
+    const parentToolCallId = messageColumns.find((column) => column.name === "parentToolCallId");
+    // 可空：顶层消息没有父工具调用
+    expect(parentToolCallId).toMatchObject({ notnull: 0, dflt_value: null });
+  });
+
   it("迁移后仍然是 WAL 且外键约束是开着的", async () => {
     await migrate(db);
     const journal = await db.get<{ journal_mode: string }>("PRAGMA journal_mode");

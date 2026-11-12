@@ -6,26 +6,19 @@
  *   读写两侧不用再维护一张映射表）。
  * - 所有时间戳都是 `Date.now()` 的毫秒数，列类型 INTEGER（见各表注释）。
  * - 带 `Row` 后缀的是**数据库原样行**（JSON 列还是字符串），不带后缀的是仓储解好的对象。
- * - `role` / `status` 的取值与 `@ai-zen/agents-core` 的 `AgentNS.Role` /
- *   `AgentNS.MessageStatus` 一致；这里用字符串字面量声明，不 import core —— 存储层
- *   只负责存取，不该因为运行时类型变化而连带改动。
+ * - 消息正文直接用 core 的 `AgentNS.MessageContent`（R21 / R30）：列里存的就是它的 JSON，
+ *   仓储反序列化后就是同一个形状，服务层与运行时不必在两种形状之间翻译。
+ * - `role` / `status` 仍以字符串存取（取值与 `AgentNS.Role` / `AgentNS.MessageStatus` 一致），
+ *   收敛成 core 的枚举发生在服务层。
  */
+
+import type { AgentNS } from "@ai-zen/agents-core";
 
 /** 消息角色，取值与 core 的 `AgentNS.Role` 对齐 */
 export type MessageRole = "system" | "user" | "assistant" | "tool" | "function" | "unknown";
 
 /** 消息状态，取值与 core 的 `AgentNS.MessageStatus` 对齐 */
 export type MessageStatus = "pending" | "writing" | "completed" | "error" | "aborted" | "unknown";
-
-/** 消息内容分段（文本段、图片段……具体形状由 core 决定，存储层原样保存） */
-export interface MessageContentSection {
-  type?: string;
-  text?: string;
-  [key: string]: unknown;
-}
-
-/** 消息的 `content` 列：字符串，或分段数组；可能为空 */
-export type MessageContent = string | MessageContentSection[] | null;
 
 /* ------------------------------- workspaces ------------------------------- */
 
@@ -50,6 +43,8 @@ export interface ConversationRow {
   id: string;
   workspaceId: string;
   name: string;
+  /** 0 / 1：这个名字是不是自动起的（R35）。创建时的原名算自动，用户改名置 0，自动命名置 1 */
+  nameIsAuto: number;
   /** 0 / 1：侧栏置顶（PRD D13） */
   pinned: number;
   /** 创建时定死的助手与模型（PRD L7），此处只存 id；定义本身在配置层 */
@@ -60,8 +55,10 @@ export interface ConversationRow {
   updatedAt: number;
 }
 
-export interface Conversation extends Omit<ConversationRow, "pinned"> {
+export interface Conversation extends Omit<ConversationRow, "pinned" | "nameIsAuto"> {
   pinned: boolean;
+  /** 名字仍是自动起的那个（真值来自 `conversations.nameIsAuto` 列，不由名字反推） */
+  nameIsAuto: boolean;
 }
 
 export interface ConversationCreateInput {
@@ -86,12 +83,14 @@ export interface MessageRow {
   status: string;
   /** 0 / 1：是否已被移出上下文（PRD D15 要求 status / omit 必须落盘） */
   omit: number;
-  /** JSON：消息正文（字符串或分段数组） */
+  /** JSON：消息正文（core 内容形状的 JSON 文本） */
   content: string;
   /** JSON：其余字段（tool_calls / reasoning_content / usage / name / finish_reason …） */
   data: string | null;
   /** 供全文检索的纯文本（从 content 抽出来的正文，不含 JSON 键名） */
   searchText: string;
+  /** 子 Agent 消息挂在哪次工具调用上；顶层消息为 NULL（R37） */
+  parentToolCallId: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -99,11 +98,14 @@ export interface MessageRow {
 export interface StoredMessage {
   id: string;
   conversationId: string;
+  /** 子 Agent 消息所属的父工具调用 id；顶层消息为 `null`（R37） */
+  parentToolCallId: string | null;
   seq: number;
   role: string;
   status: string;
   omit: boolean;
-  content: MessageContent;
+  /** 已反序列化的正文：core 的内容形状；`null` 表示这条消息没有正文 */
+  content: AgentNS.MessageContent | null;
   data: Record<string, unknown> | null;
   createdAt: number;
   updatedAt: number;
@@ -118,9 +120,12 @@ export interface MessageUpsertInput {
   conversationId: string;
   role: string;
   status: string;
-  content?: MessageContent;
+  /** core 的内容形状；不给表示这条消息没有正文 */
+  content?: AgentNS.MessageContent | null;
   data?: Record<string, unknown> | null;
   omit?: boolean;
+  /** 子 Agent 消息要挂的父工具调用 id；不给表示顶层消息（R37） */
+  parentToolCallId?: string | null;
   createdAt: number;
 }
 

@@ -1,6 +1,7 @@
 /**
  * `MessageRepository` 的验收：边流边写的 upsert、seq 单调、`after` 三种分支、
- * 以及全文检索在中文下的行为（>= 3 字走 FTS5 trigram，2 字退化到 LIKE）。
+ * 子 Agent 消息按父工具调用取回（R37），以及全文检索在中文下的行为
+ * （>= 3 字走 FTS5 trigram，2 字退化到 LIKE）。
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -127,6 +128,43 @@ describe("MessageRepository.upsert", () => {
     ).rejects.toThrow();
 
     expect(await repo.countByConversation("c1")).toBe(0);
+  });
+});
+
+describe("MessageRepository 的父工具调用列（R37）", () => {
+  it("顶层消息的 parentToolCallId 是 null，子 Agent 消息带上父调用的 id", async () => {
+    await repo.upsert(message({ id: "top" }));
+    await repo.upsert(
+      message({ id: "child", role: "assistant", parentToolCallId: "call-1", createdAt: 200 }),
+    );
+
+    expect((await repo.get("top"))?.parentToolCallId).toBeNull();
+    expect((await repo.get("child"))?.parentToolCallId).toBe("call-1");
+  });
+
+  it("同一条消息反复写时，不带这一列的写不会把已记下的归属抹掉", async () => {
+    await repo.upsert(message({ id: "child", parentToolCallId: "call-1" }));
+    // 流式过程里的后续写入未必知道归属
+    await repo.upsert(message({ id: "child", content: "写完了", status: "completed" }));
+
+    expect((await repo.get("child"))?.parentToolCallId).toBe("call-1");
+    expect((await repo.get("child"))?.content).toBe("写完了");
+  });
+
+  it("按父工具调用取回子 Agent 的消息：同对话内按 seq 升序、不跨对话", async () => {
+    await repo.upsert(message({ id: "m1", parentToolCallId: "call-1", createdAt: 100 }));
+    await repo.upsert(message({ id: "m3", parentToolCallId: "call-1", createdAt: 300 }));
+    await repo.upsert(message({ id: "other-call", parentToolCallId: "call-2", createdAt: 200 }));
+    await repo.upsert(message({ id: "top", createdAt: 400 }));
+    // 同一个工具调用 id 出现在另一段对话里（不跟 c1 的那几条混在一起）
+    await repo.upsert(
+      message({ id: "elsewhere", conversationId: "c2", parentToolCallId: "call-1", createdAt: 500 }),
+    );
+
+    const children = await repo.listByParentToolCallId("c1", "call-1");
+    expect(children.map((row) => row.id)).toEqual(["m1", "m3"]);
+    expect(children[0]?.parentToolCallId).toBe("call-1");
+    expect(await repo.listByParentToolCallId("c1", "没这个调用")).toEqual([]);
   });
 });
 

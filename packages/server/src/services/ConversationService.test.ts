@@ -246,16 +246,41 @@ describe("ConversationService.create（身份创建时定死，L7 / R18）", () 
     ).rejects.toMatchObject({ code: "not_found" });
   });
 
-  it("模型三级都解析不出来时报 config_invalid，不写库", async () => {
+  it("模型三级都解析不出来时报 config_invalid，文案是「给助手挑个模型」那条（R38），不写库", async () => {
     const bare = await setup({ ...BASE_CONFIG, defaultModel: undefined });
     try {
       await expect(
         bare.service.create({ workspaceId: "w1", agentId: "a2" }),
-      ).rejects.toMatchObject({ code: "config_invalid" });
+      ).rejects.toMatchObject({
+        code: "config_invalid",
+        messageKey: "error.modelUnresolved",
+        detail: { agentId: "a2", defaultModel: null },
+      });
       expect(await bare.conversations.list()).toEqual([]);
     } finally {
       await bare.db.close();
       await rm(bare.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("配置指向不存在的模型时也用同一条文案，原因在 detail 里", async () => {
+    const broken = await setup({
+      ...BASE_CONFIG,
+      // 助手 a2 没绑模型，兜底层指向一个配置里没有的模型
+      defaultModel: "不存在的模型",
+    });
+    try {
+      await expect(
+        broken.service.create({ workspaceId: "w1", agentId: "a2" }),
+      ).rejects.toMatchObject({
+        code: "config_invalid",
+        messageKey: "error.modelUnresolved",
+        detail: { modelId: "不存在的模型", level: "global", agentId: "a2" },
+      });
+      expect(await broken.conversations.list()).toEqual([]);
+    } finally {
+      await broken.db.close();
+      await rm(broken.dir, { recursive: true, force: true });
     }
   });
 });
@@ -347,6 +372,29 @@ describe("ConversationService.get / rename / pin", () => {
     expect(renamed.conversation.nameIsAuto).toBe(false);
     expect(renamed.conversation.modelId).toBe("m1");
     expect(renamed.conversation.agentId).toBe("a1");
+  });
+
+  it("自动命名之后 nameIsAuto 仍为真（R35：读的是列，不是名字内容）", async () => {
+    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const id = created.conversation.id;
+
+    // 自动命名是 W4-H 的动作，这里直接走仓储那一条写入路径
+    await harness.conversations.applyAutoName(id, "重写存储层", 2_000);
+
+    const { conversation } = await harness.service.get({ conversationId: id });
+    expect(conversation.name).toBe("重写存储层");
+    expect(conversation.nameIsAuto).toBe(true);
+  });
+
+  it("用户改名之后再自动命名，又回到自动", async () => {
+    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const id = created.conversation.id;
+
+    await harness.service.rename({ conversationId: id, name: "我先自己起的名" });
+    expect((await harness.service.get({ conversationId: id })).conversation.nameIsAuto).toBe(false);
+
+    await harness.conversations.applyAutoName(id, "自动起的名字", 3_000);
+    expect((await harness.service.get({ conversationId: id })).conversation.nameIsAuto).toBe(true);
   });
 });
 

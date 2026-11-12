@@ -1,7 +1,7 @@
 /**
  * `messages` 表仓储：消息读写 + 全文检索。
  *
- * 两条与别处不同的地方：
+ * 三处与别处不同的地方：
  *
  * 1. **边流边写**：一轮生成过程中同一条助手消息会被反复写（PRD D15）。`upsert` 按 id
  *    覆盖正文 / 状态 / omit，但 `seq` 与 `createdAt` 保留第一次写入时的值 —— 否则消息
@@ -11,14 +11,18 @@
  *    中文子串才搜得到；代价是查询词至少要 3 个字符，少于 3 个字符（典型是两字中文）
  *    在 trigram 下必然搜不到，这里退化到 `LIKE` 子串匹配。
  *
+ * 3. **子 Agent 的归属**：`parentToolCallId` 记下这条消息是被哪次工具调用派出去产生的
+ *    （R37）。怎么写入由上层决定，本文件提供按它取回的一段读取路径。
+ *
  * FTS 索引的同步交给 `messages` 上的触发器（同样在 migrations.ts 里建），所以本文件
  * 写消息时只写 `messages` 表，不需要额外维护索引。
  */
 
 import type { SQLInputValue } from "node:sqlite";
+import type { AgentNS } from "@ai-zen/agents-core";
+
 import type { Database } from "./Database.js";
 import type {
-  MessageContent,
   MessageRow,
   MessageSearchHit,
   MessageSearchScope,
@@ -33,13 +37,16 @@ const TRIGRAM_MIN_LENGTH = 3;
 const SNIPPET_LENGTH = 160;
 
 const COLUMNS =
-  "id, conversationId, seq, role, status, omit, content, data, searchText, createdAt, updatedAt";
+  "id, conversationId, seq, role, status, omit, content, data, searchText, parentToolCallId, createdAt, updatedAt";
 
 /**
  * 写入语句：`seq` 取同对话当前最大值 + 1；同一 id 再写时只覆盖内容类字段。
  *
  * `MAX(seq)` 与插入在同一条语句里完成，worker 又是单线程串行执行，所以不会出现两条
  * 消息抢到同一个 seq（`UNIQUE (conversationId, seq)` 是最后一道防线）。
+ *
+ * `parentToolCallId` 在冲突分支里用 `COALESCE`：流式过程里同一条消息会被反复写，
+ * 不带上这一列的那些写不会把已经记下的归属抹掉。
  */
 const UPSERT_SQL = `
   INSERT INTO messages (${COLUMNS})
@@ -47,17 +54,18 @@ const UPSERT_SQL = `
     ?,
     ?,
     (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE conversationId = ?),
-    ?, ?, ?, ?, ?, ?,
+    ?, ?, ?, ?, ?, ?, ?,
     ?, ?
   )
   ON CONFLICT (id) DO UPDATE SET
-    role       = excluded.role,
-    status     = excluded.status,
-    omit       = excluded.omit,
-    content    = excluded.content,
-    data       = excluded.data,
-    searchText = excluded.searchText,
-    updatedAt  = excluded.updatedAt
+    role             = excluded.role,
+    status           = excluded.status,
+    omit             = excluded.omit,
+    content          = excluded.content,
+    data             = excluded.data,
+    searchText       = excluded.searchText,
+    parentToolCallId = COALESCE(excluded.parentToolCallId, messages.parentToolCallId),
+    updatedAt        = excluded.updatedAt
 `;
 
 /**
@@ -66,17 +74,18 @@ const UPSERT_SQL = `
  * 只取文本段：JSON 结构（工具调用的参数、用量等）不进索引，否则搜 "id"、"type"
  * 这类词会把所有工具调用消息都捞出来，反而搜不准。
  */
-function extractSearchText(content: MessageContent): string {
+function extractSearchText(content: AgentNS.MessageContent | null): string {
   if (content === null) return "";
   if (typeof content === "string") return content;
   const parts: string[] = [];
   for (const section of content) {
-    if (section && typeof section.text === "string") parts.push(section.text);
+    // 库里的内容是外部写入的 JSON，形状不保证合 core 的类型：非文本段不参与索引
+    if (section.type === "text" && typeof section.text === "string") parts.push(section.text);
   }
   return parts.join("\n");
 }
 
-function toSearchText(content: MessageContent): string {
+function toSearchText(content: AgentNS.MessageContent | null): string {
   return extractSearchText(content).replace(/\s+/g, " ").trim();
 }
 
@@ -90,17 +99,28 @@ function parseJson(value: string | null): unknown {
   }
 }
 
+/**
+ * `content` 列的反序列化：core 的 `MessageContent` 就是「字符串，或内容段数组」。
+ *
+ * 两种形状原样返回（R30：不在仓储层重建内容段）；其它情况（空列、坏数据）归为「没有正文」。
+ */
+function toContent(value: unknown): AgentNS.MessageContent | null {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value as AgentNS.MessageContentSection[];
+  return null;
+}
+
 function toStoredMessage(row: MessageRow): StoredMessage {
-  const content = parseJson(row.content);
   const data = parseJson(row.data);
   return {
     id: row.id,
     conversationId: row.conversationId,
+    parentToolCallId: row.parentToolCallId,
     seq: row.seq,
     role: row.role,
     status: row.status,
     omit: row.omit !== 0,
-    content: (typeof content === "string" || Array.isArray(content) ? content : null) as MessageContent,
+    content: toContent(parseJson(row.content)),
     data: typeof data === "object" && data !== null && !Array.isArray(data)
       ? (data as Record<string, unknown>)
       : null,
@@ -124,6 +144,7 @@ function upsertParams(input: MessageUpsertInput): SQLInputValue[] {
     contentJson,
     dataJson,
     searchText,
+    input.parentToolCallId ?? null,
     input.createdAt,
     input.createdAt,
   ];
@@ -194,6 +215,24 @@ export class MessageRepository {
                    -1))
        ORDER BY seq ASC`,
       [conversationId, after ?? null, after ?? null, conversationId],
+    );
+    return rows.map(toStoredMessage);
+  }
+
+  /**
+   * 按父工具调用取子 Agent 的消息（R37 提供的存储能力）。
+   *
+   * 按对话限定范围：工具调用 id 只在它所属的那段对话里有意义。
+   */
+  async listByParentToolCallId(
+    conversationId: string,
+    parentToolCallId: string,
+  ): Promise<StoredMessage[]> {
+    const rows = await this.db.all<MessageRow>(
+      `SELECT ${COLUMNS} FROM messages
+       WHERE conversationId = ? AND parentToolCallId = ?
+       ORDER BY seq ASC`,
+      [conversationId, parentToolCallId],
     );
     return rows.map(toStoredMessage);
   }

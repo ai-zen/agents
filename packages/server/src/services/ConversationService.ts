@@ -249,14 +249,15 @@ export class ConversationService {
       defaultModel: config.defaultModel,
     });
     if (!resolved) {
+      // 三级解析都没拿到模型：「给这个助手挑一个模型」那条文案（R38），结构化原因在 detail 里
       throw new ServerError("config_invalid", {
-        params: { reason: `assistant "${agent.id}" has no model and no fallback model is set` },
+        messageKey: "error.modelUnresolved",
         detail: { agentId: agent.id, defaultModel: config.defaultModel ?? null },
       });
     }
     const model = config.models.find((item) => item.id === resolved.modelId);
     if (!model) {
-      // 调用方点名要的模型不存在 → 找不到；配置自己指着不存在的模型 → 配置用不了
+      // 调用方点名要的模型不存在 → 找不到；配置自己指着不存在的模型 → 解析出来的模型用不了
       if (resolved.level === "session") {
         throw new ServerError("not_found", {
           params: { entity: "model" },
@@ -264,9 +265,7 @@ export class ConversationService {
         });
       }
       throw new ServerError("config_invalid", {
-        params: {
-          reason: `model "${resolved.modelId}" (from ${resolved.level} settings) is not defined`,
-        },
+        messageKey: "error.modelUnresolved",
         detail: { modelId: resolved.modelId, level: resolved.level, agentId: agent.id },
       });
     }
@@ -308,11 +307,11 @@ export class ConversationService {
     return { conversation: view };
   }
 
-  /** 改名（PRD D1 / F-C3）：只换名字，id、身份与排序都不动 */
+  /** 改名（PRD D1 / F-C3）：只换名字，id、身份与排序都不动；名字从此归用户（R35） */
   async rename(params: ConversationRenameParams): Promise<ConversationRenameResult> {
     const row = await this.requireConversation(params.conversationId);
     const name = requireId(params.name, "name");
-    await this.conversations.rename(row.id, name, this.now());
+    await this.conversations.renameByUser(row.id, name, this.now());
     return { conversation: await this.reloadView(row.id) };
   }
 
@@ -479,8 +478,8 @@ export class ConversationService {
   /**
    * 把一批对话行拼成侧栏用的摘要（列表与搜索共用同一份口径）。
    *
-   * `nameIsAuto` 由「名字是否还等于创建时间那个原名」推出来（PRD D2）：用户改名或自动命名
-   * 之后名字就不再是原名，于是标记自然翻成 false。
+   * `nameIsAuto` 直接读库里的那一列（R35）：它是「这个名字是不是自动起的」的唯一真值，
+   * 不由名字内容反推。
    */
   async summarize(rows: Conversation[]): Promise<ConversationSummary[]> {
     const summaries: ConversationSummary[] = [];
@@ -502,7 +501,7 @@ export class ConversationService {
       id: row.id,
       workspaceId: row.workspaceId,
       name: row.name,
-      nameIsAuto: row.name === autoName(row.createdAt),
+      nameIsAuto: row.nameIsAuto,
       pinned: row.pinned,
       agentId: row.agentId ?? "",
       modelId: row.modelId ?? "",

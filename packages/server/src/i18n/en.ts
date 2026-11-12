@@ -18,6 +18,9 @@ export const en = {
   "error.unsupported": "The server can't handle {what}.",
   "error.internal": "Something broke on the server. The log has the details.",
   "error.configInvalid": "The settings aren't usable yet: {reason}.",
+  // 助手没有可用模型（`conversation.create` 借 `config_invalid` 这个码，结构化原因在 `detail` 里）
+  "error.modelUnresolved":
+    "No model could be resolved for this assistant — pick a model for it, or set a default model in the settings.",
   "error.mcpUnavailable": "{name} isn't answering, so its tools are missing this turn. Everything else still works.",
   "error.modelUnsupported": "{model} can't take the images already in this conversation, so the switch was refused.",
   "error.handoffDeclined": "Handoff was declined, so this conversation carries on as it is.",

@@ -52,3 +52,26 @@
 - [src/runtime/ChatRunner.ts] （自决）assistant 占位与用户消息的 id 由服务端先分配并落库，core 在 `send()` 里自己追加的那两条在 `message` 事件里被认领成这两个 id；工具轮次里后续追加的消息各分配一个新 id（`id` 不参与 core 的任何判断）。
 - [src/runtime/ChatRunner.ts] （自决）`reconcile(conversationId)` 既做「重启修复」也在每轮开始时调用（装载即修复）：只写回 `status` / `omit` 真的变了的行，所以常态下多出来的写库次数为 0。
 - [src/runtime/ChatRunner.ts] （自决）工具结果消息一被追加就先落一行（`pending`），这样进程中间没了也能从库里看出「这个工具参与了、但没定型」；最终版仍在内循环结束时一次性写。
+- [src/storage/types.ts] R35 / R37 落成必填字段（`Conversation.nameIsAuto`、`StoredMessage.parentToolCallId`）之后，`src/runtime/ChatRunner.test.ts`（`makeConversation` 与一个 `StoredMessage` 字面量）与 `src/runtime/TestSupport.ts`（`toStored`）三处假数据要各补一行字段，才能让 `npx tsc --noEmit -p tsconfig.test.json` 回到全绿；`src/runtime/**` 不在我的可改范围，请让运行时实施者补（`nameIsAuto: true` / `parentToolCallId: null`），或授权我改这三行。`tsconfig.json`（不含 `*.test.ts`）已经是零错误。
+- [src/storage/types.ts] （自决）`StoredMessage.content` 的类型是 `AgentNS.MessageContent | null`：core 的 `MessageContent` 没有 `null`，这里的 `null` 只表示「这一行没有正文」（`content` 列存的是 JSON `null`），服务层照此不往消息上挂空 `content`。不引入第三种形状。
+- [src/storage/MessageRepository.ts] （自决）`parentToolCallId` 在 upsert 的冲突分支里用 `COALESCE`：流式过程里同一条消息会被反复写，不带上这一列的那些写不会把已记下的归属抹掉。代价是写进去之后没法再改回 `NULL`。另：读数方法 `listByParentToolCallId(conversationId, parentToolCallId)` 带对话范围（工具调用 id 只在它所属的那段对话里有意义）。
+- [src/net/UploadReceiver.ts] 上传的二进制帧在契约里只叫 `asset.chunk`，没有定义「帧里怎么标出是哪个上传」：我定成 `[4 字节大端头长度 N][N 字节 UTF-8 JSON {"uploadId": ...}][片段字节]`（`net/UploadReceiver.ts` 的 `encodeChunkFrame` / `decodeChunkFrame` 是唯一一份编码实现，客户端直接复用）。这个帧格式要写进 `architecture.md` §6 与客户端契约吗？
+- [src/net/UploadReceiver.ts] `asset.begin` 的 `conversationId` 在契约里是可选，但 `assets` 表那一列是 `NOT NULL` 外键、按引用清理也按对话走：没有对话归属的上传无法登记，所以我让 `asset.begin` 直接拒（`invalid_params` + `detail.reason=conversation_required`），而不是收完再失败或留一个没人认领的文件。若要支持 D3 临时对话带图（`conversation.transient` 没有对话 id），需要为「无对话归属的素材」定一个归属口径（内存态临时素材 / 素材表允许空对话）。
+- [src/services/AssetService.ts] F-H7 的三种结局里，「端点声明 Files API 但上传失败、SDK 降级为内联」与「模型读不了图、退化成文字」不是一回事：后者有文案键（`message.imageAsText`），前者 SDK 只给一句英文 `warning`，`AttachmentOutcome` 里没有「降级但送达」的键，现在 `problem` 为 null（客户端看不到这条告警）。要加一条键（例如 `attachment.inlinedAfterUploadFailed`）吗？
+- [src/services/AssetService.ts] `attachments[].problem.message` 是按默认语言（英文）渲染的：素材转换发生在 `ChatRunner` 那一轮里，那一层拿不到「这是哪条连接」。`LocalizedText` 带了 `messageKey` + `params`，所以 `conversation.send` 的 handler（W3-F / W4）可以按连接语言重渲染一次再出网 —— 这个重渲染点定在接线层认不认？
+- [src/services/AssetService.ts] 上传上限是 20MB/张（D5），而 SDK 内联（base64）上限是 8MiB：端点没有 Files API 时会有一档「允许上传、但发不出去」的图片（结局是 `dropped` + 告警）。要不要在上传时按「该对话当前模型能走哪条路」提前拒（F-H7「失败要告警」vs 用户体验）？
+- [src/net/WsHub.ts] 架构 §6 写「推送的 `params` 里带事件名与数据」，而契约层 `wire/frames.ts` 的 `notification()` 把事件名放在 `method`、载荷直接放 `params`：接线层照契约实现（客户端按 `method` 分支即可），没有在 `params` 里再塞一份事件名。要统一成哪种形状（改文档还是改帧）？
+- [src/net/WsHub.ts] `server.hello` 与 `server.setLanguage` 由接线层自己实现（语言是连接状态，业务层不该管），`asset.begin` / `asset.end` 在上传接收器注入时也由接线层接管；其余方法一律进注入的 handler 表。这三处「接线层代管」的口径要写进 architecture §6 吗？
+- [src/net/WsHub.ts] R47 的缓冲按「请求参数里的 `conversationId`」挂起该对话的推送，回包写完按序放行：这意味着 `message.list`、`conversation.abort` 这类同对话的请求也会短暂缓冲同对话的事件。认这个口径，还是只对 `conversation.send` 这类「受理即返回」的方法缓冲？
+- [src/app.ts] R13 说 `ServerPaths` 加 `configFile`，但 `config.ts` 里没有这个字段：我在 `app.ts` 按 `<dataRoot>/config.json` 拼出来交给 SDK 的 `ConfigManager`。要让 `config.ts` 补这个字段（并把 R13 的落点写对）吗？
+- [src/app.ts] 启动时调了一次 SDK 的 `ConfigManager.bootstrap()`（目录 + config.json + 默认助手 / 子 Agent + mcp.json + 出厂 skills + 思考策略表）：这属于「配置层」的财产，本轮由单根代做，W4-G 若有别的口径（例如只 `ensureDirs`、其余由 ConfigService 管）请指定。
+- [src/app.ts] 退出判据缺一个触发源：`WsHub` 只提供 `connectionInfos()`（拉），没有「连接数变化」的回调，所以「最后一条连接走了」由 `app.ts` 里 1s 的巡检定时器发现（`ScopeRegistry.onAllRecycled` 与每轮结算各能立刻触发一次重算）。要不要在 `net/WsHub` 补一个 `onConnectionsChanged` 回调以去掉巡检？
+- [src/app.ts] L4 的「没有活对话也没有连接后进程退出」在刚启动时会把「还没人来连」判成该退出：我加了「至少服务过一条连接（握手成功或连上过）之后才判退出」的口径。认不认？
+- [src/app.ts] `conversation.state` 没有服务层实现者（`ConversationService` 只有 get/list/rename/…）：我在 `app.ts` 把「视图 + 这一轮的 `RunState` + 库里消息求和 + 模型阈值」拼成 `ConversationState`；其中 `questions` 与 `statusBlocks` 先空着（问题对象归 W4-H、状态栏块归 W4，PRD F-I6）。要不要把它收进 `ConversationService`（或新建一个 StateService）？
+- [src/app.ts] `server.usage` 的三个范围（对话 / 项目 / 整机）现在靠「遍历对话 + 逐个 `messageService.list` 求和」实现：要不要仓储补一个按项目 / 整机的用量聚合查询，免得按对话逐个拉全量消息？
+- [src/app.ts] F-B6 的「思考档位 → 请求参数」发生在装配 agent 时，而 `SdkAgentFactoryOptions.resolveModelParams` 是同步注入点，所以 `reasoning-presets.json` 用启动时读到的快照（`conversation.send` / `setThinking` 时刷新一次）。档位表若要在进程内热改即生效，那个注入点需要一个异步形态。
+- [src/app.ts] R50 的「未注入交接服务要推一条 warning 通知」现在只在装配处记了一条 warn 日志：通知层（W4-H）还没到，所以没有可推的通道；留的注入点是 `ServerAppOptions.handoff`。
+- [src/app.ts] 单根把 handler 表暴露成 `readonly handlers`（`Partial<MethodName → handler>`）：W4 那几个域要往同一张表里加方法、用例要直接调 handler 时都用它。这个「单根公开 handler 表」的口径认不认？
+- [src/cli.ts] D25 的第二优先级「配置文件里的端口」在 CLI 里没有来源（SDK 的 `AppConfig` 没有 port 字段）：`--port` 之外只能由代码用 `configPort` 注入。要么定一个配置文件字段，要么 D25 的第二级改成「环境变量」。
+- [src/cli.ts] `bin` 名是 `agents-server`，我让「无子命令」与 `serve` 都表示前台起服务；`token` 三个动作直接开库（不启服务），`version` 只打印版本与协议版本。对外实例（`--public`）不会生成 `run/token`，只提示用 `token create` 自己建再分发。这些命令形状认不认？
+- [src/e2e.test.ts] 冒烟里注入的是假 agent 工厂（不连模型），所以 `createSdkAgentFactory` 的真装配（硬线 / 交接线 / 工具刷新）仍只有 `ChatRunner.test.ts` 的用例覆盖。W5 要不要加一条「真 SDK 装配 + 指向本地假端点的模型」的用例？

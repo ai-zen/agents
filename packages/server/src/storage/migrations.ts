@@ -45,11 +45,14 @@ export const MIGRATIONS: Migration[] = [
        )`,
 
       // conversations：身份（workspace / 助手 / 模型）创建时定死（PRD L7），
-      // 所以 agentId / modelId 不允许为空 —— 解析不出助手或模型时在创建处就失败，不落半成品行
+      // 所以 agentId / modelId 不允许为空 —— 解析不出助手或模型时在创建处就失败，不落半成品行。
+      // nameIsAuto 记住「这个名字是不是自动起的」（R35）：创建时的原名算自动，用户改名置 0，
+      // 自动命名写入新名并置 1。
       `CREATE TABLE IF NOT EXISTS conversations (
          id          TEXT PRIMARY KEY,
          workspaceId TEXT NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
          name        TEXT NOT NULL,
+         nameIsAuto  INTEGER NOT NULL DEFAULT 1,
          pinned      INTEGER NOT NULL DEFAULT 0,
          agentId     TEXT NOT NULL,
          modelId     TEXT NOT NULL,
@@ -60,24 +63,29 @@ export const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_conversations_workspace
          ON conversations (workspaceId, pinned DESC, createdAt DESC)`,
 
-      // messages：边流边写，同一条消息按 id 反复覆盖（PRD D15）
+      // messages：边流边写，同一条消息按 id 反复覆盖（PRD D15）。
+      // parentToolCallId 记录子 Agent 消息挂在哪次工具调用上（R37），顶层消息为空。
       `CREATE TABLE IF NOT EXISTS messages (
-         id             TEXT PRIMARY KEY,
-         conversationId TEXT NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
-         seq            INTEGER NOT NULL,
-         role           TEXT NOT NULL,
-         status         TEXT NOT NULL,
-         omit           INTEGER NOT NULL DEFAULT 0,
-         content        TEXT NOT NULL DEFAULT '',
-         data           TEXT,
-         searchText     TEXT NOT NULL DEFAULT '',
-         createdAt      INTEGER NOT NULL,
-         updatedAt      INTEGER NOT NULL,
+         id               TEXT PRIMARY KEY,
+         conversationId   TEXT NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
+         seq              INTEGER NOT NULL,
+         role             TEXT NOT NULL,
+         status           TEXT NOT NULL,
+         omit             INTEGER NOT NULL DEFAULT 0,
+         content          TEXT NOT NULL DEFAULT '',
+         data             TEXT,
+         searchText       TEXT NOT NULL DEFAULT '',
+         parentToolCallId TEXT,
+         createdAt        INTEGER NOT NULL,
+         updatedAt        INTEGER NOT NULL,
          UNIQUE (conversationId, seq)
        )`,
       // 按对话顺序读取，以及 `after=<消息 id>` 定位
       `CREATE INDEX IF NOT EXISTS idx_messages_conversation_seq
          ON messages (conversationId, seq)`,
+      // 按父工具调用取子 Agent 的消息（R37 的读取路径）；NULL 行不进索引，顶层消息不受影响
+      `CREATE INDEX IF NOT EXISTS idx_messages_parent_tool_call
+         ON messages (parentToolCallId)`,
 
       // assets：二进制素材落 assets/，库里只存引用（PRD L2）
       // messageId 用 SET NULL：撤回硬删消息时素材行要留着，否则文件变成没人认领的孤儿（PRD D17）

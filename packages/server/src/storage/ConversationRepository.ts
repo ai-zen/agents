@@ -9,13 +9,13 @@ import type { Database } from "./Database.js";
 import type { Conversation, ConversationCreateInput, ConversationRow } from "./types.js";
 
 const COLUMNS =
-  "id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt";
+  "id, workspaceId, name, nameIsAuto, pinned, agentId, modelId, createdAt, updatedAt";
 
 /** 列表/搜索统一用这个顺序：置顶在前，再按创建时间倒序（PRD D13） */
 const ORDER_BY = "ORDER BY pinned DESC, createdAt DESC, id DESC";
 
 function toConversation(row: ConversationRow): Conversation {
-  return { ...row, pinned: row.pinned !== 0 };
+  return { ...row, pinned: row.pinned !== 0, nameIsAuto: row.nameIsAuto !== 0 };
 }
 
 /** LIKE 的通配符要转义，否则用户搜 "100%" 会变成任意匹配 */
@@ -30,10 +30,14 @@ export class ConversationRepository {
     this.db = db;
   }
 
+  /**
+   * 新建对话：名字是创建时按时间起的原名，所以 `nameIsAuto` 落 1（R35）。
+   * 用户改名与自动命名各有自己的方法，不从这条路径走。
+   */
   async create(input: ConversationCreateInput): Promise<void> {
     const updatedAt = input.updatedAt ?? input.createdAt;
     await this.db.run(
-      `INSERT INTO conversations (${COLUMNS}) VALUES (?, ?, ?, 0, ?, ?, ?, ?)`,
+      `INSERT INTO conversations (${COLUMNS}) VALUES (?, ?, ?, 1, 0, ?, ?, ?, ?)`,
       [
         input.id,
         input.workspaceId,
@@ -68,10 +72,27 @@ export class ConversationRepository {
     return rows.map(toConversation);
   }
 
-  /** 改名：身份与顺序都不受影响（PRD D1 / D13），只记一次修改时间 */
-  async rename(id: string, name: string, updatedAt: number): Promise<number> {
+  /**
+   * 用户改名（PRD F-C3）：名字归用户，`nameIsAuto` 置 0（R35）。
+   * 身份与顺序都不受影响（PRD D1 / D13），只记一次修改时间。
+   */
+  async renameByUser(id: string, name: string, updatedAt: number): Promise<number> {
     const result = await this.db.run(
-      "UPDATE conversations SET name = ?, updatedAt = ? WHERE id = ?",
+      "UPDATE conversations SET name = ?, nameIsAuto = 0, updatedAt = ? WHERE id = ?",
+      [name, updatedAt, id],
+    );
+    return result.changes;
+  }
+
+  /**
+   * 自动命名（PRD D2）：写入起好的名字，并把它标成自动起的那一个（`nameIsAuto` = 1）。
+   *
+   * 与用户改名分开成两个方法：两者的差别只在 `nameIsAuto` 这一列，靠调用方选方法来表达
+   * 语义，读侧不必再猜名字是谁改的。
+   */
+  async applyAutoName(id: string, name: string, updatedAt: number): Promise<number> {
+    const result = await this.db.run(
+      "UPDATE conversations SET name = ?, nameIsAuto = 1, updatedAt = ? WHERE id = ?",
       [name, updatedAt, id],
     );
     return result.changes;

@@ -206,6 +206,39 @@ describe("消息还原成 core 的形状（R21 / R22）", () => {
     expect(Object.keys(message ?? {})).not.toContain("createdAt");
   });
 
+  it("正文原样透传：内容段不逐段重建（R30）", async () => {
+    const content = [
+      { index: 0, type: "text" as const, text: "看这两个文件" },
+      { index: 1, type: "image_url" as const, image_url: { url: "https://example.test/a.png", detail: "low" as const } },
+      { index: 2, type: "file" as const, file_id: "file-1", filename: "a.pdf" },
+    ];
+    await messages.upsert({
+      id: "sections",
+      conversationId: "c1",
+      role: "user",
+      status: "completed",
+      content,
+      createdAt: 800,
+    });
+
+    const result = await service.list({ conversationId: "c1", after: "sections" });
+    // 逐段重建会把 `index`、`detail`、`filename` 这类字段丢掉，这里是原样那一份
+    expect(result.messages[0]?.content).toEqual(content);
+  });
+
+  it("没有正文的消息不带 content 键（core 的 content 是可选的）", async () => {
+    await messages.upsert({
+      id: "no-content",
+      conversationId: "c1",
+      role: "assistant",
+      status: "completed",
+      createdAt: 900,
+    });
+
+    const result = await service.list({ conversationId: "c1", after: "no-content" });
+    expect(Object.keys(result.messages[0] ?? {})).not.toContain("content");
+  });
+
   it("认不出的角色与状态归 unknown，不猜", async () => {
     await messages.upsert({
       id: "weird",
