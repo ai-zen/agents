@@ -127,3 +127,20 @@
 - [src/handlers/conversationHandlers.ts] `conversation.state` 的 `questions` 与 `statusBlocks` 仍是空数组（问题对象归 W4-H、状态栏块归 W4）：这份拼装留在接线层，还是收进服务层（或单开一个 StateService）？
 - [src/cli.process.test.ts] 进程冒烟不跑一轮对话（不连模型）：真 SDK 装配仍只有 `ChatRunner` 的用例覆盖。W5 要不要加一条「指向本地假端点的模型」的用例？
 - [src/cli.process.test.ts] 这条用例自己跑一次 `tsc -p tsconfig.json` 才起进程（它要有 `dist/` 产物），因此比别的用例慢十来秒。要不要改成「验收先 build、用例只读 dist」？
+
+## W4-X（总装）追加
+
+- [src/handlers/capabilities.ts] 能力清单的粒度我按「契约里每个方法一条」做（63 条，与 `METHOD_NAMES` 一一对应），编号取 `wire/methods.ts` 每个方法的注释里的 PRD 能力号；同一条能力下有多个方法时（如 `config.saveEndpoint` / `config.deleteEndpoint` 都属于 F-F2）用 `<编号>#<动作>` 去重。`workspace.*` 的四条在 PRD §4 没有单列能力号（注释里写的是 D9 / D10 / D11），那几条的 id 用决定号。若 PM 要的是「按 PRD 能力行」而不是「按方法」，这份表要重排。
+- [src/i18n/en.ts, src/i18n/zh.ts] 能力清单的标题与说明必须是 `LocalizedText`，也就必须落在 i18n 键上（`capability.<方法名>` 与 `capability.<方法名>.detail`）：我按「只做加法」两语言各加了 126 个键。i18n 不在 W4-X 的可改清单里，这一处请 W1-B 或 PM 过一遍语气与用词（键名与清单一一对应，用例会钉住「每个方法都有键」）。
+- [src/app.ts] `server.upgrade` 的「重启」我实现成「磁盘版本已经比运行版本新（或请求的目标版本已落盘）→ 安排一次收尾，进程退出，由启动方式/宿主重新拉起」；服务端自己 `exec` 回自己没有做 —— 「谁负责重新拉起」是产品口径（本地客户端拉起 / systemd / 手动），不该由服务端假设。要服务端自己 re-exec 的话，下一轮在 `cli.ts` 里补。
+- [src/storage/migrations.ts] `notices.conversationId` 按 R32 直接改进 v1（这套表结构还没随版本发出去），没有追加 v2。它是可空外键 + `ON DELETE CASCADE`：删对话时它名下的通知跟着走，全局通知（NULL）不受影响。
+- [src/app.ts] 配置生效（`ConfigApplyPort`）的回收粒度：只改某个项目的 MCP（`workspace` 作用域）→ 只拆那个项目的 Scope；其余改动（端点 / 模型 / 上限 / 用户级 MCP / 默认项）影响所有 Scope → `recycleAll()`。报告里的 `recycledWorkspaceIds` 对「正被持有」的 Scope 表示「已打标记、等最后一次 release 再销毁」（R52），不是「此刻已经销毁」；同时合成一条 `info` + 3 秒的通知（F-F9）。
+- [src/app.ts] 退出判据补上了第四个触发源 `WsHub.onConnectionsChanged`（W3-F 记的缺口），并且「服务过」的判定收紧成「有连接握过手」：只看「连上来过」会让端口扫描器留下的空连接把服务端送走。另一个后果是「最后一条连接断开且什么都不欠」时进程会自己退 —— 这正是 L4 的口径，但本机客户端要能接受「重连时服务端可能已被重新拉起」。
+- [src/app.ts] R50 的那条警告改成「第一次装配 agent 时推一次」，不是启动时推：交接插件的有无是**装配能力**的事实，启动就推会让一次正常安装在通知栏里永久挂着一条警告（永久通知只能手动清，L3）。
+- [src/server.integration.test.ts] 契约里没有「提一个问题」的方法（问题的产生方是交接线 / 登记项目 / 不可撤销动作的二次确认，都在服务端内部）。集成用例因此在进程之间用同一个库写一行问题再读回来。客户端若要能自己造问题（调试、测试、脚本），需要在契约里加一条 `question.ask`。
+- [src/runtime/ScopeRegistry.ts] 两处加法：`createWorkspaceScopeFactory` 的 `skillsPaths` / `toolsPaths` / `subAgentsPaths` 允许给「按 cwd 算」的函数（R54：能力目录跟项目走，而 Scope 是按 cwd 装配的）；`ScopeRegistry.workspaceIds()` 读当前持有的键（配置生效要回报「回收了哪些项目的 Scope」）。
+- [src/handlers/conversationHandlers.ts] `conversation.send` 的三个钩子都接上了：发之前 `QuestionService.assertSendable`（D23）、受理后 `AssetService.linkToMessage`、结算后 `AutoNaming.afterTurn`（D2）。自动命名放在结算之后且不阻塞回包，它自己的返回值里说明「为什么没起名」。
+- [src/handlers/conversationHandlers.ts] `conversation.transient` 只有在注入了 `TransientRunner` 时才注册；单根总会注入，所以运行期它一定在表里（用例 `handlers/index.test.ts` 钉住「除四条桥接外全表覆盖」）。
+- [src/app.test.ts] `conversation.send` 的完整一轮（事件顺序 + 库里落消息）仍由 `e2e.test.ts` 用假 agent 覆盖：那一层要真装配 Scope、真流式、真写库，放在真进程里跑不划算（也不该为了测试往 CLI 里塞假 agent）。
+- [src/handlers/conversationHandlers.ts] `conversation.state` 的 `questions` 接上了（= `question.list(conversationId)`，含已回答的那些，客户端按状态决定要不要显示）；`statusBlocks` 仍是空数组 —— 六态 / 工具 / 子 Agent 的事实都在 `run` 与 `usage` 里，块怎么切是呈现层的决定，服务端不另造一份。
+- [src/app.ts] 没有注入交接服务时，R50 的警告在**第一次装配 agent** 时推一条（`notice.logWarning`，永久）；它描述的是「自动交接线没装」，不是某一轮的错。

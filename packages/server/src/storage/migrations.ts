@@ -103,16 +103,20 @@ export const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_assets_conversation ON assets (conversationId)`,
       `CREATE INDEX IF NOT EXISTS idx_assets_message ON assets (messageId)`,
 
-      // notices：持久化，durationMs 为 null 表示永久（PRD L3）
+      // notices：持久化，durationMs 为 null 表示永久（PRD L3）。
+      // conversationId 是「这条通知与哪段对话有关」的真值（可空 = 全局通知）：按对话过滤、
+      // 按对话清都走这一列；对话没了它也就没有意义，所以跟着级联删除。
       `CREATE TABLE IF NOT EXISTS notices (
-         id         TEXT PRIMARY KEY,
-         level      TEXT NOT NULL,
-         code       TEXT NOT NULL,
-         params     TEXT,
-         durationMs INTEGER,
-         createdAt  INTEGER NOT NULL
+         id             TEXT PRIMARY KEY,
+         level          TEXT NOT NULL,
+         code           TEXT NOT NULL,
+         params         TEXT,
+         durationMs     INTEGER,
+         conversationId TEXT REFERENCES conversations (id) ON DELETE CASCADE,
+         createdAt      INTEGER NOT NULL
        )`,
       `CREATE INDEX IF NOT EXISTS idx_notices_createdAt ON notices (createdAt)`,
+      `CREATE INDEX IF NOT EXISTS idx_notices_conversation ON notices (conversationId)`,
 
       // questions：有状态、可持久化、多端共享（PRD D22 / F-I9）
       `CREATE TABLE IF NOT EXISTS questions (

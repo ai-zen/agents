@@ -7,7 +7,8 @@
  *      什么都不接（一律 `unauthorized`），凭证不放在 URL 查询串里。`language` 挂在这条连接上、
  *      断开即忘（PRD D8）。
  *   2. **分发**：`MethodMap` 里的方法交给注入的 handler 表；没注册的方法回 `unsupported`
- *      （配置 / 助手 / 模型 / 通知 / 问题 / 交接这些域由别的波次补进来）。业务逻辑一律不在本文件里。
+ *      （接线层自己代管的只有 `server.hello` / `server.setLanguage` 与上传三段）。
+ *      业务逻辑一律不在本文件里。
  *   3. **推送**：JSON-RPC 通知（无 id），`params` 就是事件载荷。不重放、不需要 ack（PRD L5：
  *      断线重连由客户端自己拉）。受理即返回的方法（`conversation.send` 这类）会产生「事件早于回包」
  *      的顺序问题，所以按 `conversationId` 缓冲，回包写完再按序放行（裁定 R47）。
@@ -138,6 +139,13 @@ export interface WsHubOptions {
   defaultLanguage?: Language;
   /** 推送出网前的按连接本地化（不注入则原样搬运） */
   localizeEvent?: EventLocalizer;
+  /**
+   * 连接数变化时回调（参数是这一刻的连接数）。
+   *
+   * 单根靠它发现「最后一条连接走了」：那正是退出判据的一个触发源（PRD L4 / A10：
+   * 回收计时只有一处，所以这里只报事实、不自带定时器）。
+   */
+  onConnectionsChanged?: (count: number) => void;
   /** 时钟，缺省 `Date.now` */
   clock?: () => number;
   /** 日志；缺省安静 */
@@ -274,6 +282,7 @@ export class WsHub {
       state.holds.clear();
       this.connections.delete(state.id);
     }
+    this.notifyConnectionsChanged();
 
     if (!server) return;
     await new Promise<void>((resolve) => {
@@ -341,6 +350,17 @@ export class WsHub {
     return [...this.connections.values()].map((state) => toConnectionInfo(state));
   }
 
+  /** 报一次连接数变化；回调自己抛错不影响连接本身 */
+  private notifyConnectionsChanged(): void {
+    const listener = this.options.onConnectionsChanged;
+    if (!listener) return;
+    try {
+      listener(this.connections.size);
+    } catch (error) {
+      this.logger.warn("连接数变化回调抛错", { error: describeError(error) });
+    }
+  }
+
   // -------------------------------------------------------------------------
   // 连接
   // -------------------------------------------------------------------------
@@ -356,6 +376,7 @@ export class WsHub {
       holds: new Map(),
     };
     this.connections.set(state.id, state);
+    this.notifyConnectionsChanged();
 
     socket.on("message", (data: RawData, isBinary: boolean) => {
       void this.onFrame(state, data, isBinary).catch((error: unknown) => {
@@ -373,6 +394,7 @@ export class WsHub {
   private drop(state: ConnectionState): void {
     if (!this.connections.delete(state.id)) return;
     state.holds.clear();
+    this.notifyConnectionsChanged();
     void this.options.uploads?.abortConnection(state.id).catch((error: unknown) => {
       this.logger.warn("断线清理上传失败", { connectionId: state.id, error });
     });

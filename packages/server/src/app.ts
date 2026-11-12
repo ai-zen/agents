@@ -10,21 +10,23 @@
  *   3. **判据**：什么时候「什么都不欠了」可以退出（PRD L4 / 裁定 R53），以及启动时
  *      「这台机器上是不是已经有人在服务」（单实例，architecture §2）。
  *
- * 方法实现不在这里：`server.*` / `workspace.*` / `conversation.*` / `message.*` / `search.*`
- * / `credential.*` 的 handler 在 `handlers/`，由 {@link createHandlers} 拼成一张表交给 `WsHub`。
- * 本文件只给它们提供持有者（服务、运行时、配置、时钟）与一个收尾入口。
+ * 方法实现不在这里：每个域的 handler 在 `handlers/`，由 {@link createHandlers} 拼成一张表交给
+ * `WsHub`。本文件只给它们提供持有者（服务、运行时、配置、时钟）与几个只有它才接得起来的钩子：
+ *   - **配置生效**（`ConfigApplyPort`）：改完配置要回收受影响的 Scope（F-E2）并发一条通知（F-F9）；
+ *   - **Scope 装配**（`ScopeRegistry` 的工厂）：能力目录由 `DiscoveryService` 按 cwd 算好（R54/L9）；
+ *   - **退出判据**（`checkExit`）：连接数、在跑的轮次、Scope 三个来源都收敛到一处。
  */
 
 import { readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
-import { ConfigManager } from "@ai-zen/agents-sdk";
+import { AgentRepository, ConfigManager } from "@ai-zen/agents-sdk";
 import type { AppConfig, HandoffService, ReasoningPresets } from "@ai-zen/agents-sdk";
 
 import { resolveListenTarget, resolvePaths } from "./config.js";
 import type { ListenTarget, ServerPaths } from "./config.js";
-import { createHandlers } from "./handlers/index.js";
+import { createCapabilities, createHandlers } from "./handlers/index.js";
 import type { HandlerDeps } from "./handlers/index.js";
 import type { Language } from "./i18n/index.js";
 import {
@@ -47,6 +49,7 @@ import {
 } from "./runtime/index.js";
 import type { AgentBuildContext, AgentFactory, Clock, ScopeFactory } from "./runtime/index.js";
 import { ConversationStateRegistry } from "./runtime/ConversationStateRegistry.js";
+import { TransientRunner, cwdOfTransientScopeKey, transientAgentFactoryFrom } from "./runtime/TransientRunner.js";
 import {
   ConversationService,
   CredentialService,
@@ -54,18 +57,30 @@ import {
   SearchService,
   WorkspaceService,
 } from "./services/index.js";
+import { AgentService } from "./services/AgentService.js";
 import { AssetService } from "./services/AssetService.js";
+import { AutoNaming } from "./services/AutoNaming.js";
+import { CompletionService } from "./services/CompletionService.js";
+import { ConfigService } from "./services/ConfigService.js";
+import type { ConfigApplyChange, ConfigApplyOutcome, ConfigApplyPort } from "./services/ConfigService.js";
+import { DiscoveryService } from "./services/DiscoveryService.js";
+import { HandoffService as HandoffDocumentsService } from "./services/HandoffService.js";
+import { ModelService } from "./services/ModelService.js";
+import { NoticeService, createEventLocalizer } from "./services/NoticeService.js";
+import { QuestionService, createConversationGuardProbe } from "./services/QuestionService.js";
 import {
   AssetRepository,
   ConversationRepository,
   CredentialRepository,
   Database,
   MessageRepository,
+  NoticeRepository,
   QuestionRepository,
   WorkspaceRepository,
   migrate,
 } from "./storage/index.js";
-import type { CapabilityView } from "./wire/index.js";
+import type { CapabilityView, ServerUpgradeResult } from "./wire/index.js";
+import type { EventMap, EventName } from "./wire/events.js";
 
 // ---------------------------------------------------------------------------
 // 选项与事实
@@ -76,6 +91,9 @@ const CONFIG_FILE_NAME = "config.json";
 
 /** 读不到包元数据时的版本号（服务照常能跑，只是升级判定拿不到真版本） */
 const FALLBACK_VERSION = "0.0.0";
+
+/** 配置生效那条通知留几秒（F-F9：一次改动合成一条，一秒级的提示归 `info`） */
+const APPLIED_NOTICE_SECONDS = 3;
 
 /** 收尾时清发现文件失败不改变结论（进程都要退了，留一笔日志就够） */
 const QUIET_LOGGER: HubLogger = { warn: () => undefined, error: () => undefined };
@@ -122,13 +140,13 @@ export interface ServerAppOptions {
   createScope?: ScopeFactory;
   /** Scope 空闲回收时长（PRD D28 缺省 10 分钟；用例调小以免真等） */
   scopeIdleTimeoutMs?: number;
-  /** 交接服务（W4 才有）；未注入时不装交接插件，只记一条 warn（裁定 R50） */
+  /** 交接服务（SDK 口径，装交接线插件用）；未注入时不装插件并推一条警告通知（裁定 R50） */
   handoff?: (context: AgentBuildContext) => HandoffService | undefined;
   /** 时钟（Scope 回收计时与用例里的时间推进） */
   clock?: Clock;
   /** 真退出时做什么；缺省 `process.exit(0)` */
   exit?: ExitHook;
-  /** 能力清单（PRD F-E5；内容归 W4-G，本轮缺省为空） */
+  /** 能力清单（PRD F-E5）；缺省用 `handlers/capabilities.ts` 里那份与契约同步的清单 */
   capabilities?: () => CapabilityView[];
   /** 连接未声明语言时的缺省语言（PRD D8） */
   defaultLanguage?: Language;
@@ -147,6 +165,16 @@ export interface ServerAppOptions {
  * 决定（`src/app.ts` 与 `dist/app.js` 的上一级都是包根，两种形态都能读到同一份）。
  */
 export function resolveServerVersion(): string {
+  return readDiskVersion() ?? FALLBACK_VERSION;
+}
+
+/**
+ * 磁盘上的版本号：读本包的 `package.json`；读不到（或格式不对）返回 `null`。
+ *
+ * 升级判定（D4 / F-E3）要的就是「磁盘上现在是哪个版本」，所以这里与服务端版本共用
+ * 同一处读法，`null` 与 `"0.0.0"` 不混：前者是「不知道」，后者是「真的读到了 0.0.0」。
+ */
+export function readDiskVersion(): string | null {
   try {
     const raw = readFileSync(new URL("../package.json", import.meta.url), "utf8");
     const parsed: unknown = JSON.parse(raw);
@@ -156,7 +184,7 @@ export function resolveServerVersion(): string {
   } catch {
     // 包元数据读不到不影响服务本身：升级判定拿不到真版本而已
   }
-  return FALLBACK_VERSION;
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +200,7 @@ export class ServerApp {
   readonly conversations: ConversationRepository;
   readonly messages: MessageRepository;
   readonly assets: AssetRepository;
+  readonly notices: NoticeRepository;
   readonly questions: QuestionRepository;
   readonly credentials: CredentialRepository;
 
@@ -180,6 +209,7 @@ export class ServerApp {
   readonly runRegistry: RunRegistry;
   readonly conversationStates: ConversationStateRegistry;
   readonly chatRunner: ChatRunner;
+  readonly transientRunner: TransientRunner;
 
   // ---- 服务 ----
   readonly assetService: AssetService;
@@ -188,6 +218,15 @@ export class ServerApp {
   readonly messageService: MessageService;
   readonly searchService: SearchService;
   readonly credentialService: CredentialService;
+  readonly discoveryService: DiscoveryService;
+  readonly configService: ConfigService;
+  readonly agentService: AgentService;
+  readonly modelService: ModelService;
+  readonly completionService: CompletionService;
+  readonly noticeService: NoticeService;
+  readonly questionService: QuestionService;
+  readonly handoffService: HandoffDocumentsService;
+  readonly autoNaming: AutoNaming;
 
   // ---- 接入 ----
   readonly uploads: UploadReceiver;
@@ -197,6 +236,8 @@ export class ServerApp {
 
   /** 服务端版本（`hello` 与 `server.version` 报的那一个） */
   readonly version: string;
+  /** 能力清单（PRD F-E5：帮助页与指令菜单按它渲染） */
+  readonly capabilities: () => CapabilityView[];
   /** 进程启动时刻（ISO 8601） */
   readonly startedAt: string;
   /** 是不是本地实例（PRD A6：决定监听范围与要不要发本地凭证交付文件） */
@@ -222,6 +263,10 @@ export class ServerApp {
   private stopAllRecycled: (() => void) | null = null;
   /** 思考策略表快照（装配 agent 时要把档位名展开成参数，而那一层是同步的） */
   private presets: ReasoningPresets | null = null;
+  /** 推送入口（造好之前为 `null`：这时没有任何连接可推） */
+  private hubForPush: WsHub | null = null;
+  /** R50 的那条警告只说一次（描述的是装配能力，不是某一轮的错） */
+  private handoffWarningSent = false;
 
   private constructor(
     options: ServerAppOptions,
@@ -245,12 +290,24 @@ export class ServerApp {
     this.conversations = new ConversationRepository(db);
     this.messages = new MessageRepository(db);
     this.assets = new AssetRepository(db);
+    this.notices = new NoticeRepository(db);
     this.questions = new QuestionRepository(db);
     this.credentials = new CredentialRepository(db);
 
+    /** 助手与子 Agent 的定义仓储（配置层与助手/模型/配置三个服务共用同一份目录） */
+    const agentRepository = new AgentRepository(join(configManager.basePath, "agents"));
+    const subAgentRepository = new AgentRepository(join(configManager.basePath, "sub-agents"));
+    /** 按 workspaceId 取 cwd：发现、补全、配置三个服务都要同一份口径 */
+    const findWorkspace = async (workspaceId: string) => {
+      const row = await this.workspaces.get(workspaceId);
+      return row ? { cwd: row.cwd } : undefined;
+    };
+
     // ---- 2. 运行时：Scope 的持有、轮次占位、每段对话的进程内状态 ----
+    // 工厂包一层再交给注册表：它要读发现服务算好的能力目录，而那一层比 Scope 先造好
+    const injectedScopeFactory = options.createScope;
     this.scopeRegistry = new ScopeRegistry({
-      createScope: options.createScope ?? this.defaultScopeFactory(),
+      createScope: injectedScopeFactory ?? ((key) => this.defaultScopeFactory()(key)),
       idleTimeoutMs: options.scopeIdleTimeoutMs,
       clock: this.clock,
       onError: (error, workspaceId) => {
@@ -270,22 +327,7 @@ export class ServerApp {
       },
     });
 
-    // ---- 4. 一轮的执行者 ----
-    this.chatRunner = new ChatRunner({
-      messages: this.messages,
-      conversations: this.conversations,
-      scopes: this.scopeRegistry,
-      runs: this.runRegistry,
-      createAgent: options.createAgent ?? this.defaultAgentFactory(),
-      emit: (name, payload) => this.hub.push(name, payload),
-      clock: this.clock,
-      prepareAttachments: (context) => this.assetService.prepareAttachments(context),
-      onError: (error, context) => {
-        this.logger.error("一轮对话写库失败", { context, error: describeError(error) });
-      },
-    });
-
-    // ---- 5. 服务层（薄服务，运行时通过窄接口注进来） ----
+    // ---- 4. 服务层（薄服务，运行时通过窄接口注进来） ----
     this.workspaceService = new WorkspaceService({
       workspaces: this.workspaces,
       conversations: this.conversations,
@@ -318,7 +360,99 @@ export class ServerApp {
       now: () => this.clock.now(),
     });
 
-    // ---- 6. 上传接收（同一条 WS 上的二进制分帧） ----
+    // ---- 5. 配置、发现、模型、助手、补全 ----
+    this.discoveryService = new DiscoveryService({
+      configManager: this.configManager,
+      findWorkspace,
+    });
+    this.modelService = new ModelService({
+      configManager: this.configManager,
+      agents: agentRepository,
+    });
+    this.agentService = new AgentService({
+      configManager: this.configManager,
+      agents: agentRepository,
+      subAgents: subAgentRepository,
+      now: () => this.clock.now(),
+    });
+    this.completionService = new CompletionService({ findWorkspace });
+
+    // ---- 6. 通知、问题、交接、自动命名（它们互相引用，都靠注入） ----
+    // agent 工厂只造一次：交接回合与普通对话用同一个（跑完即弃，D28）
+    const createAgent = options.createAgent ?? this.defaultAgentFactory();
+    this.noticeService = new NoticeService({
+      notices: this.notices,
+      emit: (name, payload) => this.emitEvent(name, payload),
+      now: () => this.clock.now(),
+    });
+    this.handoffService = new HandoffDocumentsService({
+      conversations: this.conversations,
+      workspaces: this.workspaces,
+      messages: this.messages,
+      conversationViews: this.conversationService,
+      scopes: this.scopeRegistry,
+      createAgent,
+      runs: this.runRegistry,
+      questions: this.questions,
+      notices: this.noticeService,
+      emit: (name, payload) => this.emitEvent(name, payload),
+      now: () => this.clock.now(),
+    });
+    this.questionService = new QuestionService({
+      questions: this.questions,
+      runs: this.runRegistry,
+      // 硬线跟着模型走（D27），与 `conversation.state` 里那份阈值同一个口径
+      guard: createConversationGuardProbe({
+        conversations: this.conversations,
+        messages: this.messages,
+        configManager: this.configManager,
+      }),
+      handoff: this.handoffService,
+      emit: (name, payload) => this.emitEvent(name, payload),
+      now: () => this.clock.now(),
+    });
+    this.autoNaming = new AutoNaming({
+      conversations: this.conversations,
+      messages: this.messages,
+      configManager: this.configManager,
+      notices: this.noticeService,
+      emit: (name, payload) => this.emitEvent(name, payload),
+      now: () => this.clock.now(),
+    });
+    // 配置改完的「生效」一跳：回收 Scope（重连 MCP）+ 合成一条通知（F-E2 / F-F9）
+    this.configService = new ConfigService({
+      configManager: this.configManager,
+      models: this.modelService,
+      discovery: this.discoveryService,
+      agents: agentRepository,
+      findWorkspace,
+      apply: this.createApplyPort(),
+      now: () => this.clock.now(),
+    });
+
+    // ---- 7. 一轮的执行者（普通对话与临时对话共用同一份 agent 工厂） ----
+    this.chatRunner = new ChatRunner({
+      messages: this.messages,
+      conversations: this.conversations,
+      scopes: this.scopeRegistry,
+      runs: this.runRegistry,
+      createAgent,
+      emit: (name, payload) => this.emitEvent(name, payload),
+      clock: this.clock,
+      prepareAttachments: (context) => this.assetService.prepareAttachments(context),
+      onError: (error, context) => {
+        this.logger.error("一轮对话写库失败", { context, error: describeError(error) });
+      },
+    });
+    // 临时对话：不落库、不推流式事件，一次返回（D3 / R1 / R49）；Scope 仍按目录去借
+    this.transientRunner = new TransientRunner({
+      scopes: this.scopeRegistry,
+      createAgent: transientAgentFactoryFrom(createAgent),
+      configManager: this.configManager,
+      now: () => this.clock.now(),
+    });
+
+    // ---- 8. 上传接收（同一条 WS 上的二进制分帧） ----
     this.uploads = new UploadReceiver({
       assetsDir: paths.assetsDir,
       finalize: (request) => this.assetService.finalizeUpload(request),
@@ -327,9 +461,10 @@ export class ServerApp {
       },
     });
 
-    // ---- 7. 接线：方法表 + 一条 WebSocket ----
+    // ---- 9. 接线：方法表 + 一条 WebSocket ----
     this.handlers = createHandlers(this.handlerDeps());
     const target = this.resolveTarget();
+    this.capabilities = options.capabilities ?? (() => createCapabilities());
     this.hub = new WsHub({
       host: target.host,
       port: target.port,
@@ -338,11 +473,18 @@ export class ServerApp {
       uploads: this.uploads,
       serverVersion: this.version,
       startedAt: this.startedAt,
-      capabilities: () => options.capabilities?.() ?? [],
+      capabilities: () => this.capabilities(),
       defaultLanguage: options.defaultLanguage,
+      // 通知与问题里的句子按收件人那条连接的语言重新渲染一次（D8）
+      localizeEvent: createEventLocalizer(),
+      // 连接数变化是退出判据的一个触发源（A10：不另起计时器）
+      onConnectionsChanged: () => {
+        void this.checkExit();
+      },
       clock: () => this.clock.now(),
       logger: this.logger,
     });
+    this.hubForPush = this.hub;
   }
 
   /**
@@ -463,22 +605,21 @@ export class ServerApp {
   /**
    * 退出判据（PRD L4 / 裁定 R53）：没有连接、没有在跑的轮次、Scope 全部回收 —— 什么都不欠了。
    *
-   * 触发源只有两个，都不另起计时器（A10：计时器只有一处，即 `ScopeRegistry` 里那份空闲计时）：
+   * 触发源有三个，都不另起计时器（A10：计时器只有一处，即 `ScopeRegistry` 里那份空闲计时）：
    *   - `ScopeRegistry.onAllRecycled`：Scope 全部拆完那一刻；
-   *   - 每轮结算（`onTurnSettled`）：最后一件欠着的事可能是刚跑完的这一轮。
+   *   - 每轮结算（`onTurnSettled`）：最后一件欠着的事可能是刚跑完的这一轮；
+   *   - `WsHub.onConnectionsChanged`：最后一条连接走了。
    *
    * 两个防止误退的口子：
-   *   1. **还没被用过**时不判（刚起来的进程在等第一个客户端，这时「没有连接」是常态）；
+   *   1. **还没被真正用过**时不判：只有握过手（凭证被接受）的连接才算「有人用过它」，
+   *      刚起来的进程与端口扫描器留下的空连接都不该把服务端送走；
    *   2. 只在自己监听中判断（造好未启动、挂靠别人、已收尾时都不判）。
    */
   async checkExit(): Promise<void> {
     if (this.phase !== "running" || this.checking) return;
     this.checking = true;
     try {
-      if (this.hub.connectionInfos().length > 0) {
-        this.served = true;
-        return;
-      }
+      if (this.hub.connectionInfos().length > 0) return;
       if (!this.served) return;
       if (this.runRegistry.size() > 0) return;
       if (this.scopeRegistry.size() > 0) return;
@@ -567,15 +708,23 @@ export class ServerApp {
     return {
       version: this.version,
       startedAt: this.startedAt,
-      capabilities: () => this.options.capabilities?.() ?? [],
+      capabilities: () => this.capabilities(),
       workspaces: this.workspaceService,
       conversations: this.conversationService,
       messages: this.messageService,
       search: this.searchService,
       credentials: this.credentialService,
       assets: this.assetService,
+      config: this.configService,
+      agents: this.agentService,
+      models: this.modelService,
+      completion: this.completionService,
+      notices: this.noticeService,
+      questions: this.questionService,
+      handoff: this.handoffService,
       runner: this.chatRunner,
       scopes: this.scopeRegistry,
+      transient: this.transientRunner,
       readConfig: () => this.readConfig(),
       refreshThinkingPresets: async () => {
         this.presets = await this.configManager.readReasoningPresets();
@@ -585,6 +734,21 @@ export class ServerApp {
       onTurnSettled: () => {
         void this.checkExit();
       },
+      // D23：有挡着的问题（交接确认、不可撤销动作确认）就不受理这一轮
+      assertSendable: async (conversationId) => {
+        await this.questionService.assertSendable(conversationId);
+      },
+      // D2：一轮结算后起一次自动命名（幂等：条件不成立时它自己什么都不做）
+      autoNameAfterTurn: async (conversationId, language) => {
+        await this.autoNaming.afterTurn(conversationId, language);
+      },
+      onHookError: (error, hook) => {
+        this.logger.warn("结算后的钩子失败", { hook, error: describeError(error) });
+      },
+      // 现场快照里的问题：`conversation.state` 要能一次给出「现在有没有东西在等回答」（D22 / L5）
+      questionsFor: async (conversationId) =>
+        (await this.questionService.list({ conversationId })).questions,
+      upgrade: (params) => this.upgradeServer(params),
     };
   }
 
@@ -616,32 +780,60 @@ export class ServerApp {
     };
   }
 
-  /** 缺省的 Scope 工厂：按 SDK 口径装能力（MCP 的 5 层链与各层目录归 W4-G） */
+  /** 缺省的 Scope 工厂：按 SDK 口径装能力，能力目录由发现服务按 cwd 算好（R54 / L9） */
   private defaultScopeFactory(): ScopeFactory {
+    // 一次 acquire 只算一遍路径：四个目录同属「这个 cwd 的能力布局」
+    const abilityPaths = (cwd: string) => this.discoveryService.scopeAbilityPaths(cwd);
     return createWorkspaceScopeFactory({
-      resolveWorkspace: async (workspaceId) => {
-        const row = await this.workspaces.get(workspaceId);
+      // 两个来源：Workspace（按 id 查库）与临时对话（键里带着 cwd，D3「只借 Scope」）
+      resolveWorkspace: async (key) => {
+        const transientCwd = cwdOfTransientScopeKey(key);
+        if (transientCwd !== null) return { cwd: transientCwd };
+        const row = await this.workspaces.get(key);
         return row ? { cwd: row.cwd } : undefined;
       },
       getConfig: () => this.configManager.read(),
-      agentsDir: join(this.configManager.basePath, "agents"),
+      agentsDir: this.discoveryService.agentsDir,
+      skillsPaths: (cwd) => abilityPaths(cwd).skillsPaths,
+      toolsPaths: (cwd) => abilityPaths(cwd).toolsPaths,
+      subAgentsPaths: (cwd) => abilityPaths(cwd).subAgentsPaths,
+      mcpPaths: (cwd) => abilityPaths(cwd).mcpPaths,
     });
   }
 
   /** 缺省的 agent 工厂：SDK 口径装配（硬线、子 Agent 递归、交接线、工具刷新） */
   private defaultAgentFactory(): AgentFactory {
-    if (!this.options.handoff) {
-      // R50：没有交接服务就不装交接插件，但装配处要说一声，不让它悄悄消失
-      this.logger.warn("交接服务未注入：本轮不装交接插件（R50），交接能力由 W4 补", {
-        layer: "createSdkAgentFactory",
-      });
-    }
-    return createSdkAgentFactory({
+    const assembled = createSdkAgentFactory({
       handoff: this.options.handoff,
       resolveModelId: (context) =>
         this.conversationStates.getModelOverride(context.conversationId) ?? undefined,
       resolveModelParams: (context) => this.thinkingParams(context),
     });
+    if (this.options.handoff) return assembled;
+
+    // R50：没有交接服务就不装交接插件，但第一次装配 agent 时要说一声（不静默）。
+    // 一次进程只说一次：这话描述的是装配能力，不是某一轮的错。
+    return async (context) => {
+      if (!this.handoffWarningSent) {
+        this.handoffWarningSent = true;
+        void this.notifyMissingHandoff();
+      }
+      return await assembled(context);
+    };
+  }
+
+  /** R50 的那一条警告：交接插件没装时至少让人在通知栏里看到 */
+  private async notifyMissingHandoff(): Promise<void> {
+    try {
+      await this.noticeService.create({
+        level: "warning",
+        code: "notice.logWarning",
+        params: { summary: "handoff plugin not installed (no handoff service injected)" },
+        duration: null,
+      });
+    } catch (error) {
+      this.logger.warn("推交接插件缺失的警告失败", { error: describeError(error) });
+    }
   }
 
   /**
@@ -695,6 +887,116 @@ export class ServerApp {
 
   private nowIso(): string {
     return new Date(this.clock.now()).toISOString();
+  }
+
+  /**
+   * 推送一个事件（`NoticeService` / `QuestionService` / `ChatRunner` 共用同一个出口）。
+   *
+   * 造好接线层之前没有连接可推，这时的事件只写库不外发（重连之后客户端自己拉，L5）。
+   */
+  private emitEvent<E extends EventName>(name: E, payload: EventMap[E]): void {
+    if (this.hubForPush === null) return;
+    this.hubForPush.push(name, payload);
+  }
+
+  // -------------------------------------------------------------------------
+  // 配置生效（F-E2 / F-F9）
+  // -------------------------------------------------------------------------
+
+  /**
+   * 把「配置变了」这件事办成两件具体的事：回收受影响的能力、合成一条通知。
+   *
+   * 回收的粒度按改动范围分：只改了某个项目的 MCP（`workspace` 作用域）→ 只拆那个项目的
+   * Scope；其余改动（端点 / 模型 / 上限 / 用户级 MCP）影响所有 Scope → 全部回收。
+   * `recycleAll` 对正被持有的 Scope 是「打完标记等它释放」，所以报告里的 id 是
+   * 「将会重建的那些」—— 正在跑的那一轮不会在写到一半时被抽掉能力（R52）。
+   */
+  private createApplyPort(): ConfigApplyPort {
+    return {
+      apply: async (change: ConfigApplyChange): Promise<ConfigApplyOutcome> => {
+        const recycledWorkspaceIds = await this.recycleScopesFor(change);
+        const notice = await this.noticeService.create({
+          level: "info",
+          code: "notice.settingsApplied",
+          duration: APPLIED_NOTICE_SECONDS,
+        });
+        return { recycledWorkspaceIds, noticeId: notice.id };
+      },
+    };
+  }
+
+  private async recycleScopesFor(change: ConfigApplyChange): Promise<string[]> {
+    const held = this.scopeRegistry.workspaceIds();
+    if (change.mcp && !change.config && change.workspaceIds.length > 0) {
+      const targets = change.workspaceIds.filter((id) => held.includes(id));
+      for (const workspaceId of targets) await this.scopeRegistry.disposeWorkspace(workspaceId);
+      return targets;
+    }
+    await this.scopeRegistry.recycleAll();
+    return held;
+  }
+
+  // -------------------------------------------------------------------------
+  // 升级（D4 / F-E3）
+  // -------------------------------------------------------------------------
+
+  /**
+   * `server.upgrade`：比一次「磁盘上的版本」与「正在跑的版本」。
+   *
+   * 三种结论（契约里的 `ServerUpgradeState`）：磁盘读不出来 → `not_available`；两个版本一样
+   * 且没有要求别的目标 → `already_latest`；磁盘已经是新的（或请求的目标版本已落盘）→
+   * `restart_scheduled`，随后安排一次收尾：进程退出后由启动方式重新拉起（服务端不自己装包，
+   * D4）。
+   */
+  private async upgradeServer(params: { targetVersion?: string }): Promise<ServerUpgradeResult> {
+    const diskVersion = readDiskVersion();
+    const asked =
+      typeof params.targetVersion === "string" && params.targetVersion.trim() !== ""
+        ? params.targetVersion.trim()
+        : null;
+    if (diskVersion === null) {
+      return {
+        state: "not_available",
+        currentVersion: this.version,
+        diskVersion: null,
+        targetVersion: asked,
+      };
+    }
+    const target = asked ?? diskVersion;
+    if (diskVersion === this.version && asked === null) {
+      return {
+        state: "already_latest",
+        currentVersion: this.version,
+        diskVersion,
+        targetVersion: target,
+      };
+    }
+    if (target !== diskVersion) {
+      // 要的那个版本还没落到磁盘上：升级本身没完成，这时候重启只会回到旧版本
+      return {
+        state: "not_available",
+        currentVersion: this.version,
+        diskVersion,
+        targetVersion: target,
+      };
+    }
+    if (target === this.version) {
+      return {
+        state: "already_latest",
+        currentVersion: this.version,
+        diskVersion,
+        targetVersion: target,
+      };
+    }
+    setTimeout(() => {
+      void this.shutdown("requested");
+    }, 0);
+    return {
+      state: "restart_scheduled",
+      currentVersion: this.version,
+      diskVersion,
+      targetVersion: target,
+    };
   }
 }
 

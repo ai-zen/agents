@@ -191,6 +191,8 @@ export interface NoticeRow {
   params: string | null;
   /** 毫秒数；null 表示永久存在，只能手动清（PRD L3） */
   durationMs: number | null;
+  /** 这条通知与哪段对话有关；null 表示全局通知（对话删掉时随之级联删除） */
+  conversationId: string | null;
   createdAt: number;
 }
 
@@ -200,6 +202,8 @@ export interface Notice {
   code: string;
   params: Record<string, unknown> | null;
   durationMs: number | null;
+  /** 这条通知与哪段对话有关；null 表示全局通知 */
+  conversationId: string | null;
   createdAt: number;
 }
 
@@ -209,6 +213,8 @@ export interface NoticeCreateInput {
   code: string;
   params?: Record<string, unknown> | null;
   durationMs?: number | null;
+  /** 挂在哪段对话上；不给表示全局通知 */
+  conversationId?: string | null;
   createdAt: number;
 }
 

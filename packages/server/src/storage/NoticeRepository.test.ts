@@ -45,6 +45,8 @@ describe("NoticeRepository", () => {
       code: "config.endpoint.missing",
       params: { endpoint: "openai" },
       durationMs: null,
+      // 没挂对话的通知是全局的
+      conversationId: null,
       createdAt: 100,
     });
   });
@@ -72,6 +74,41 @@ describe("NoticeRepository", () => {
     expect(await repo.deleteExpired(200)).toBe(1);
     expect(await repo.get("brief")).toBeUndefined();
     expect(await repo.get("forever")).toBeDefined();
+  });
+
+  it("按对话挂着、按对话清掉（`notices.conversationId` 是一列真值）", async () => {
+    // 通知挂在对话上，所以先要有那个对话（外键是开着的）
+    await db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', 'p', '/tmp/p', 1)");
+    await db.run(
+      `INSERT INTO conversations (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
+       VALUES ('c1', 'w1', 'one', 0, 'a', 'm', 1, 1)`,
+    );
+    await db.run(
+      `INSERT INTO conversations (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
+       VALUES ('c2', 'w1', 'two', 0, 'a', 'm', 1, 1)`,
+    );
+
+    await repo.create({ id: "scoped1", level: "info", code: "a", conversationId: "c1", createdAt: 100 });
+    await repo.create({ id: "scoped2", level: "info", code: "a", conversationId: "c2", createdAt: 100 });
+    await repo.create({ id: "global", level: "info", code: "a", createdAt: 100 });
+
+    expect((await repo.get("scoped1"))?.conversationId).toBe("c1");
+    expect(await repo.clearByConversation("c1")).toBe(1);
+    expect(await repo.get("scoped1")).toBeUndefined();
+    expect(await repo.get("scoped2")).toBeDefined();
+    expect(await repo.get("global")).toBeDefined();
+  });
+
+  it("对话被删时它名下的通知跟着走（ON DELETE CASCADE）", async () => {
+    await db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', 'p', '/tmp/p', 1)");
+    await db.run(
+      `INSERT INTO conversations (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
+       VALUES ('c1', 'w1', 'one', 0, 'a', 'm', 1, 1)`,
+    );
+    await repo.create({ id: "scoped", level: "info", code: "a", conversationId: "c1", createdAt: 100 });
+
+    await db.run("DELETE FROM conversations WHERE id = 'c1'");
+    expect(await repo.get("scoped")).toBeUndefined();
   });
 
   it("手动清一条 / 清全部", async () => {

@@ -37,15 +37,6 @@ import type {
 import type { EventMap, EventName } from "../wire/events.js";
 import type { LocalizedText, QuestionView } from "../wire/states.js";
 
-/**
- * 「这条通知与哪段对话有关」在库里的落点。
- *
- * `notices` 表没有 `conversationId` 列（表结构归 storage），而契约的 `NoticeView` 有。
- * 所以它随渲染参数一起进 `params` 这个 JSON 列，读出时**先摘掉再渲染**：占位符替换看不到
- * 它，出网的 `text.params` 里也不会有它。已记入 `docs/plan-questions.md`（等表加列）。
- */
-const CONVERSATION_PARAM = "$conversationId";
-
 /** 库里那条 `code` 认不出来时用的文案键（配置被手改坏、旧版本写进去的码） */
 const UNKNOWN_CODE_KEY: MessageKey = "notice.unknown";
 
@@ -102,22 +93,13 @@ function toDurationMs(duration: number | null | undefined, field: string): numbe
   return Math.round(duration * 1000);
 }
 
-/** 把库里的 params 拆成「渲染参数」与「挂在哪段对话上」两半 */
-function splitParams(
-  stored: Record<string, unknown> | null,
-): { params: Record<string, unknown>; conversationId: string | null } {
-  if (!stored) return { params: {}, conversationId: null };
-  const { [CONVERSATION_PARAM]: raw, ...rest } = stored;
-  return { params: rest, conversationId: typeof raw === "string" ? raw : null };
-}
-
 /**
  * 一行库记录 → 契约上的 `NoticeView`（按给定语言渲染）。
  *
  * `duration` 在这里由毫秒换回秒：库里是机器口径，出网是用户口径。
  */
 function toView(notice: Notice, language: Language): NoticeView {
-  const { params, conversationId } = splitParams(notice.params);
+  const params = notice.params ?? {};
   const known = hasMessage(notice.code);
   const messageKey: MessageKey = known ? (notice.code as MessageKey) : UNKNOWN_CODE_KEY;
   // 认不出来的码：把原码当参数交给兜底那句，用户至少能看到它是什么
@@ -133,7 +115,7 @@ function toView(notice: Notice, language: Language): NoticeView {
     level: toLevel(notice.level),
     duration: notice.durationMs === null ? null : notice.durationMs / 1000,
     text,
-    conversationId,
+    conversationId: notice.conversationId,
     createdAt: iso(notice.createdAt),
   };
 }
@@ -227,9 +209,7 @@ export class NoticeService {
     }
 
     const durationMs = toDurationMs(input.duration, "duration");
-    const conversationId = input.conversationId ?? null;
-    const storedParams: Record<string, unknown> = { ...(input.params ?? {}) };
-    if (conversationId !== null) storedParams[CONVERSATION_PARAM] = conversationId;
+    const params: Record<string, unknown> = { ...(input.params ?? {}) };
 
     const id = this.newId();
     const createdAt = this.now();
@@ -237,8 +217,9 @@ export class NoticeService {
       id,
       level: input.level,
       code: input.code,
-      params: Object.keys(storedParams).length > 0 ? storedParams : null,
+      params: Object.keys(params).length > 0 ? params : null,
       durationMs,
+      conversationId: input.conversationId ?? null,
       createdAt,
     };
     await this.notices.create(row);
@@ -307,24 +288,13 @@ export class NoticeService {
     return { dismissed: changes > 0 };
   }
 
-  /**
-   * 清掉一批（不给 `conversationId` 就清全部）。
-   *
-   * 按对话清的时候逐条删：`notices` 表没有 `conversationId` 列（见
-   * {@link CONVERSATION_PARAM}），一次 DELETE 表达不出这个条件。
-   */
+  /** 清掉一批（不给 `conversationId` 就清全部） */
   async clear(params: NoticeClearParams = {}): Promise<NoticeClearResult> {
     if (params.conversationId === undefined) {
       const cleared = await this.notices.clearAll();
       return { cleared };
     }
-    const now = this.now();
-    const active = await this.notices.listActive(now);
-    const doomed = active.filter(
-      (notice) => splitParams(notice.params).conversationId === params.conversationId,
-    );
-    let cleared = 0;
-    for (const notice of doomed) cleared += await this.notices.clear(notice.id);
+    const cleared = await this.notices.clearByConversation(params.conversationId);
     return { cleared };
   }
 }

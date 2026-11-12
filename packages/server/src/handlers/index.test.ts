@@ -13,11 +13,12 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { createServer } from "../app.js";
 import type { ServerApp } from "../app.js";
+import { hasMessage } from "../i18n/index.js";
 import type { ConnectionInfo } from "../net/index.js";
 import { isError, makeTempDir, TestClient, type TempDir } from "../net/TestSupport.js";
 import { METHOD_NAMES } from "../wire/index.js";
 import type { MethodName, MethodParams, MethodResult } from "../wire/index.js";
-import { createHandlers } from "./index.js";
+import { BRIDGED_METHODS, createCapabilities, createHandlers } from "./index.js";
 
 const CONFIG = JSON.stringify(
   {
@@ -103,12 +104,41 @@ describe("handler 表", () => {
 
   it("接线层代管的方法不在表里（hello / setLanguage / 上传）", async () => {
     const { app } = await startApp();
-    for (const method of ["server.hello", "server.setLanguage", "asset.begin", "asset.end"]) {
-      expect(app.handlers[method as MethodName]).toBeUndefined();
+    for (const method of BRIDGED_METHODS) {
+      expect(app.handlers[method]).toBeUndefined();
     }
+    // 名单就是那四条，不多不少
+    expect([...BRIDGED_METHODS].sort()).toEqual([
+      "asset.begin",
+      "asset.end",
+      "server.hello",
+      "server.setLanguage",
+    ]);
   });
 
-  it("没注册的方法经由接线层回 unsupported，而不是别的码（R11）", async () => {
+  /**
+   * 契约全表覆盖：`MethodMap` 里的每个方法名都必须有归宿。
+   *
+   * 归宿只有两种：在这张 handler 表里，或者在接线层代管的那四条名单里。
+   * 漏一个就红 —— 这条用例是为了防「加了契约忘了实现」：那种情况下客户端拿到的是
+   * `unsupported`，而那是「这个服务端没这个功能」的意思，不该用来掩盖「没接上」。
+   */
+  it("契约里的每个方法要么在 handler 表里，要么在桥接名单里", async () => {
+    const { app } = await startApp();
+    const registered = new Set(Object.keys(app.handlers));
+
+    const homeless = METHOD_NAMES.filter(
+      (method) => !registered.has(method) && !BRIDGED_METHODS.includes(method),
+    );
+    expect(homeless).toEqual([]);
+
+    // 反过来也要成立：桥接名单里的方法不该又在这张表里注册一份（那样就有两处实现）
+    for (const method of BRIDGED_METHODS) expect(registered.has(method)).toBe(false);
+    // 表里不能有契约之外的名字
+    for (const method of registered) expect(METHOD_NAMES).toContain(method);
+  });
+
+  it("契约之外的方法名才是 unsupported（R11）", async () => {
     const { app } = await startApp();
     const target = app.address;
     const client = await TestClient.connect(`ws://127.0.0.1:${target?.port ?? 0}/`);
@@ -116,24 +146,44 @@ describe("handler 表", () => {
     const token = (await fs.readFile(app.paths.tokenFile, "utf8")).trim();
     await client.hello(token);
 
-    for (const method of ["agent.list", "config.get", "question.list", "conversation.transient"]) {
+    for (const method of ["nope.nothing", "conversation.explode"]) {
       client.request(method, {});
       const frame = await client.queue.next();
       expect(isError(frame)).toBe(true);
-      if (isError(frame)) expect(frame.error.data.code).toBe("unsupported");
+      if (isError(frame)) {
+        expect(frame.error.data.code).toBe("unsupported");
+        expect(frame.error.data.detail).toMatchObject({ reason: "unknown_method" });
+      }
+    }
+  });
+});
+
+describe("能力清单（F-E5 / F-E6 / F-F9）", () => {
+  it("每个方法都在清单里，标题与说明的文案键真的存在", () => {
+    const capabilities = createCapabilities();
+    expect(capabilities.map((item) => item.method)).toEqual([...METHOD_NAMES]);
+
+    const ids = capabilities.map((item) => item.id);
+    expect(new Set(ids).size).toBe(ids.length);
+
+    for (const item of capabilities) {
+      // 编号要么是 PRD 的能力号（F-xx），要么是契约注释里记的决定号（D-xx）
+      expect(item.id).toMatch(/^(F-[A-Z]\d+|D\d+)(#\w+)?$/);
+      expect(hasMessage(item.title.messageKey)).toBe(true);
+      expect(hasMessage(item.description.messageKey)).toBe(true);
+      expect(item.title.message.length).toBeGreaterThan(0);
+      expect(item.description.message.length).toBeGreaterThan(0);
     }
   });
 
-  it("未实现的域与已实现的域不重叠（表里没有一半实现的半成品）", async () => {
-    const { app } = await startApp();
-    const registered = new Set(Object.keys(app.handlers));
-    for (const method of METHOD_NAMES) {
-      if (method.startsWith("asset.")) continue;
-      const handler = app.handlers[method];
-      // 要么没注册，要么就是一个可调用的实现（没有“注册了但没实现”的占位）
-      if (registered.has(method)) expect(typeof handler).toBe("function");
-      else expect(handler).toBeUndefined();
-    }
+  it("阻塞与不可撤销就是那几个：一轮对话会占住对话，删项目 / 删对话不可撤", () => {
+    const byMethod = new Map(createCapabilities().map((item) => [item.method, item]));
+    expect(byMethod.get("conversation.send")?.blocking).toBe(true);
+    expect(byMethod.get("handoff.start")?.blocking).toBe(true);
+    expect(byMethod.get("workspace.remove")?.destructive).toBe(true);
+    expect(byMethod.get("conversation.delete")?.destructive).toBe(true);
+    expect(byMethod.get("conversation.list")?.destructive).toBe(false);
+    expect(byMethod.get("conversation.list")?.blocking).toBe(false);
   });
 });
 

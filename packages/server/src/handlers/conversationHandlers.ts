@@ -8,6 +8,11 @@
  * 唯一在接线层做的拼装是 `conversation.state` 的现场快照：它要把三处事实合起来
  * （服务层给的视图、运行时给的这一轮、库里消息求和的用量），而这三样分别属于三个持有者，
  * 只有接线层同时看得见它们。
+ *
+ * 一段对话的三处跨界钩子也在这里接（它们分属三个服务，契约里的位置却是同一对方法）：
+ *   - `conversation.send` 之前问一句「有挡着的问题吗」（D23）；
+ *   - 结算之后起一次自动命名（D2，幂等）；
+ *   - `conversation.transient` 走不落库的那条执行路径（R1 / R49）。
  */
 
 import { addUsage, sumUsage, ZERO_USAGE } from "@ai-zen/agents-core";
@@ -22,6 +27,8 @@ import type { ConversationService } from "../services/ConversationService.js";
 import type { MessageService } from "../services/MessageService.js";
 import type {
   ContextState,
+  ConversationTransientParams,
+  ConversationTransientResult,
   ConversationAbortParams,
   ConversationAbortResult,
   ConversationDeleteParams,
@@ -31,6 +38,7 @@ import type {
   ConversationState,
   ConversationStateParams,
   ConversationStateResult,
+  QuestionView,
   RunState,
   UsageSnapshot,
 } from "../wire/index.js";
@@ -44,6 +52,8 @@ export interface ConversationHandlerDeps {
   assets: AssetService;
   /** 一轮的执行者（受理、现场、中止、忘掉） */
   runner: ChatRunner;
+  /** 挂在这段对话上的问题（`conversation.state` 现场快照的一部分，D22；不注入时为空） */
+  questionsFor?: (conversationId: string) => Promise<QuestionView[]>;
   /** 读配置：上下文阈值跟着模型走（PRD F-D1） */
   readConfig: () => Promise<AppConfig>;
   /** 刷新思考档位表快照（`setThinking` 之前调一次：改完读回的参数要用当前表） */
@@ -52,16 +62,31 @@ export interface ConversationHandlerDeps {
   now: () => string;
   /** 一轮结算之后的通知点：单根据此重算退出判据 */
   onTurnSettled: () => void;
+  /** 有挡着的问题就拒绝（`QuestionService.assertSendable`，D23）；不注入时不检查 */
+  assertSendable?: (conversationId: string) => Promise<void>;
+  /** 一轮结算之后起一次自动命名（`AutoNaming.afterTurn`，D2：幂等，可无条件调） */
+  autoNameAfterTurn?: (conversationId: string, language: Language) => Promise<void>;
+  /**
+   * 结算后钩子的失败去处（命名没跑成不影响这一轮，但要让组装层看得见）。
+   *
+   * 不注入时静默：钩子是「顺手做的事」，它的失败不能反过来把已经结算的一轮弄成失败。
+   */
+  onHookError?: (error: unknown, hook: string) => void;
+  /** 临时对话的执行者（`TransientRunner`，D3 / R49）；不注入时这个方法回 `unsupported` */
+  runTransient?: (
+    params: ConversationTransientParams,
+    language: Language,
+  ) => Promise<ConversationTransientResult>;
 }
 
 /**
  * 注册 `conversation.*`。
  *
- * `conversation.transient`（临时对话，PRD D3）不在这一批：它要走一条不落库的执行路径，
- * 归 W4。没注册的方法由接线层回 `unsupported`（裁定 R11）。
+ * `conversation.transient`（临时对话，PRD D3）注册的前提是注入了 `runTransient`：
+ * 不注入时这个方法仍然落到接线层的 `unsupported`（裁定 R11）。
  */
 export function createConversationHandlers(deps: ConversationHandlerDeps): HandlerTable {
-  return {
+  const handlers: HandlerTable = {
     "conversation.list": async (context) => await deps.conversations.list(context.params),
     "conversation.create": async (context) => await deps.conversations.create(context.params),
     "conversation.get": async (context) => await deps.conversations.get(context.params),
@@ -87,6 +112,14 @@ export function createConversationHandlers(deps: ConversationHandlerDeps): Handl
       return await deps.conversations.setThinking(context.params);
     },
   };
+
+  const runTransient = deps.runTransient;
+  if (runTransient) {
+    // 临时对话没有 id、不落库、不推流式事件：一次调用同步返回结果（R1 / R49）
+    handlers["conversation.transient"] = async (context) =>
+      await runTransient(context.params, context.connection.language);
+  }
+  return handlers;
 }
 
 // ---------------------------------------------------------------------------
@@ -104,6 +137,9 @@ async function sendTurn(
   params: ConversationSendParams,
   language: Language,
 ): Promise<ConversationSendResult> {
+  // D23：有一段挡着的问题（交接确认、不可撤销动作的确认）就先答它再发
+  await deps.assertSendable?.(params.conversationId);
+
   const turn = await deps.runner.run({ conversationId: params.conversationId, input: params.input });
 
   const assetIds = params.input.assetIds ?? [];
@@ -112,9 +148,18 @@ async function sendTurn(
     await deps.assets.linkToMessage(assetIds, turn.userMessageId);
   }
 
-  // 这一轮可能是最后一件欠着的事：结算之后让单根重算一次退出判据
+  // 结算之后的两个收尾：起一次自动命名（D2，条件不成立时它自己什么都不做），
+  // 再让单根重算一次退出判据（这一轮可能是最后一件欠着的事）
   void turn.done.then(
-    () => deps.onTurnSettled(),
+    async () => {
+      try {
+        await deps.autoNameAfterTurn?.(params.conversationId, language);
+      } catch (error) {
+        // 起名失败就是「没起成」（D2：保持原名），不影响已经结算的这一轮
+        deps.onHookError?.(error, "autoNaming");
+      }
+      deps.onTurnSettled();
+    },
     () => deps.onTurnSettled(),
   );
 
@@ -177,10 +222,10 @@ async function runStateOf(
  * 一段对话的现场（PRD L5：重连先拉状态）。
  *
  * 拼装顺序：视图（身份 / 思考档 / 目录）→ 运行状态（在跑就用这一轮自己的快照）→
- * 用量（在跑用这一轮，空闲就用库里消息求和）→ 上下文阈值（跟着模型走）。
+ * 用量（在跑用这一轮，空闲就用库里消息求和）→ 上下文阈值（跟着模型走）→ 挂在这段对话上的问题。
  *
- * 两处暂时是空数组，因为它们的持有者还没来：`questions`（问题对象归 W4-H）、
- * `statusBlocks`（状态栏的块归 W4，PRD F-I6）。
+ * `statusBlocks` 仍是空数组：状态栏的块（PRD F-I6）还没有实现者 —— 六态、工具、子 Agent
+ * 这些事实都在 `run` 与 `usage` 里，客户端自己按块排布即可。
  */
 async function conversationStateOf(
   deps: ConversationHandlerDeps,
@@ -200,7 +245,7 @@ async function conversationStateOf(
     context: contextOf(page.messages, model),
     thinking: conversation.thinking,
     usage,
-    questions: [],
+    questions: deps.questionsFor ? await deps.questionsFor(conversationId) : [],
     statusBlocks: [],
     updatedAt: now,
   };

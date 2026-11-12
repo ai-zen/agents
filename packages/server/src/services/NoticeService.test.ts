@@ -261,6 +261,16 @@ describe("通知是独立通道，绝不进消息（F-I8）", () => {
   });
 
   it("按对话挂着，也能按对话清掉", async () => {
+    // 通知的对话归属是一列真值（外键开着），所以先要有那两个对话
+    await harness.db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', 'p', '/tmp/p', 1)");
+    for (const id of ["c1", "c2"]) {
+      await harness.db.run(
+        `INSERT INTO conversations (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
+         VALUES (?, 'w1', ?, 0, 'a', 'm', 1, 1)`,
+        [id, id],
+      );
+    }
+
     await harness.service.create({
       level: "warning",
       code: "notice.logWarning",
@@ -277,7 +287,8 @@ describe("通知是独立通道，绝不进消息（F-I8）", () => {
 
     const scoped = await harness.service.list({ conversationId: "c1" });
     expect(scoped.notices).toHaveLength(1);
-    // 与对话相关的标记只活在库里的参数中，出网的 params 里看不到它
+    // 归属在真列上（`NoticeView.conversationId`），渲染参数里只有文案自己的东西
+    expect(scoped.notices[0]?.conversationId).toBe("c1");
     expect(scoped.notices[0]?.text.params).toEqual({ summary: "一次" });
 
     const cleared = await harness.service.clear({ conversationId: "c1" });

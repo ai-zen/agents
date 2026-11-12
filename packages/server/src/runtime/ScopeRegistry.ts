@@ -172,6 +172,11 @@ export class ScopeRegistry {
     return this.entries.size;
   }
 
+  /** 当前持有哪几个（配置改动后要报告「回收了哪些项目的 Scope」） */
+  workspaceIds(): string[] {
+    return [...this.entries.keys()];
+  }
+
   /**
    * 全部回收 —— 配置改完要重连 MCP 时用（PRD F-E2：改完即生效，靠重连而不是重启）。
    *
@@ -292,16 +297,30 @@ export interface WorkspaceScopeFactoryOptions {
   getConfig(): AppConfig | Promise<AppConfig>;
   /** Agent 定义目录（SDK 的 `createAgent` 从这里读定义） */
   agentsDir: string;
-  /** Skill 目录（可多层，越靠前优先级越高） */
-  skillsPaths?: string[];
+  /** Skill 目录（可多层，越靠前优先级越高）；也能给一个「按 cwd 算」的函数 */
+  skillsPaths?: AbilityPathOption;
   /** 用户工具目录 */
-  toolsPaths?: string[];
+  toolsPaths?: AbilityPathOption;
   /** 子 Agent 目录 */
-  subAgentsPaths?: string[];
+  subAgentsPaths?: AbilityPathOption;
   /** MCP 配置文件的 5 层链（PRD L9），按 cwd 算好 */
   mcpPaths?: (cwd: string) => string[];
   /** 出网/外部依赖的注入点（测试替身） */
   deps?: ToolEnvDeps;
+}
+
+/**
+ * 一组能力目录：可以是固定的一份，也可以是「按 cwd 算」的函数。
+ *
+ * Skill / 工具 / 子 Agent 的目录跟项目走（L9：离项目越近越优先），而 Scope 是按 cwd 装配的，
+ * 所以装配处需要把「按 cwd 算」这件事交进来，而不是在构造时先算一份死的。
+ */
+export type AbilityPathOption = string[] | ((cwd: string) => string[]);
+
+/** 取一组目录（固定值与函数的两种写法收在一个地方） */
+function pathsFor(option: AbilityPathOption | undefined, cwd: string): string[] | undefined {
+  if (option === undefined) return undefined;
+  return typeof option === "function" ? option(cwd) : option;
 }
 
 /** 造一个「按 SDK 装能力」的工厂；返回值直接喂给 `ScopeRegistry` 的 `createScope` */
@@ -315,9 +334,9 @@ export function createWorkspaceScopeFactory(
     }
     const config = await options.getConfig();
     const abilityPaths: AllInOneOptions = {
-      skillsPaths: options.skillsPaths,
-      toolsPaths: options.toolsPaths,
-      subAgentsPaths: options.subAgentsPaths,
+      skillsPaths: pathsFor(options.skillsPaths, workspace.cwd),
+      toolsPaths: pathsFor(options.toolsPaths, workspace.cwd),
+      subAgentsPaths: pathsFor(options.subAgentsPaths, workspace.cwd),
       mcpPaths: options.mcpPaths?.(workspace.cwd),
     };
     const scope = new Scope({

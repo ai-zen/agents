@@ -1,9 +1,10 @@
 /**
  * `server.*`：进程事实（PRD F-E5 / F-I5 / D4 / L4）。
  *
- * 三件事在这里：
+ * 四件事在这里：
  *   - `version` / `capabilities`：报事实，供帮助页与指令菜单渲染（能力清单只在配置层维护一份，
  *     这里不编造）；
+ *   - `upgrade`：比磁盘上的版本与正在跑的版本，确认新版本真的落盘了才安排重启（D4 / F-E3）；
  *   - `usage`：按对话 / 项目 / 整机给一份累计用量（PRD F-I5）。三个范围的差别只在「取哪些
  *     对话的消息」，求和用 core 的 `sumUsage`（含子 Agent，与计费同口径）；
  *   - `shutdown`：受理一次收尾请求。真正退不退由单根的退出判据决定（PRD L4 / 裁定 R53）。
@@ -19,6 +20,8 @@ import type { ConversationService } from "../services/ConversationService.js";
 import type { MessageService } from "../services/MessageService.js";
 import type {
   CapabilityView,
+  ServerUpgradeParams,
+  ServerUpgradeResult,
   ServerUsageParams,
   ServerUsageResult,
 } from "../wire/index.js";
@@ -40,7 +43,14 @@ export interface ServerHandlerDeps {
   now: () => string;
   /** 请求收尾（`server.shutdown`）：单根排程，先让回包写出去 */
   requestStop: (reason?: string) => void;
+  /** 升级判定与重启排程（磁盘版本归单根去读，这里只把结论转给客户端） */
+  upgrade: ServerUpgradeHandler;
 }
+
+/** `server.upgrade` 的实现（结论由单根算，本文件只转发入参） */
+export type ServerUpgradeHandler = (
+  params: ServerUpgradeParams,
+) => Promise<ServerUpgradeResult>;
 
 export function createServerHandlers(deps: ServerHandlerDeps): HandlerTable {
   return {
@@ -57,6 +67,9 @@ export function createServerHandlers(deps: ServerHandlerDeps): HandlerTable {
       deps.requestStop(context.params.reason);
       return { accepted: true };
     },
+
+    // 升级即重启（D4 / F-E3）：结论由单根给，它知道磁盘上的版本与重启排程
+    "server.upgrade": async (context) => await deps.upgrade(context.params),
 
     "server.usage": async (context) => await usageOf(deps, context.params),
   };

@@ -15,7 +15,7 @@ import type { ExitFacts, ServerApp } from "../app.js";
 import type { ConnectionInfo } from "../net/index.js";
 import { makeTempDir, wait, type TempDir } from "../net/TestSupport.js";
 import { FakeAgent } from "../runtime/TestSupport.js";
-import { PROTOCOL_VERSION } from "../wire/index.js";
+import { METHOD_NAMES, PROTOCOL_VERSION } from "../wire/index.js";
 import type { MethodName, MethodParams, MethodResult } from "../wire/index.js";
 
 const CONFIG = JSON.stringify(
@@ -138,8 +138,12 @@ describe("server.version / server.capabilities", () => {
     expect(version.startedAt).toBe(app.startedAt);
     expect(version.pid).toBe(process.pid);
 
+    // 能力清单是真的那一份：契约里每个方法一条，带 PRD 编号与本地化好的标题（F-E5 / R6）
     const capabilities = await callMethod(app, "server.capabilities");
-    expect(capabilities.capabilities).toEqual([]);
+    expect(capabilities.capabilities.length).toBe(METHOD_NAMES.length);
+    const send = capabilities.capabilities.find((item) => item.method === "conversation.send");
+    expect(send).toMatchObject({ id: "F-C2", blocking: true, destructive: false });
+    expect(send?.title.message.length).toBeGreaterThan(0);
   });
 });
 

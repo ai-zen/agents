@@ -17,9 +17,25 @@ import type { ExitFacts, ServerApp, ServerAppOptions } from "./app.js";
 import { resolvePaths } from "./config.js";
 import type { ConnectionInfo } from "./net/index.js";
 import { readServerFile, writeServerFile } from "./net/discovery.js";
-import { isError, makeTempDir, TestClient, wait, type TempDir } from "./net/TestSupport.js";
+import {
+  isError,
+  isNotification,
+  isSuccess,
+  makeTempDir,
+  TestClient,
+  wait,
+  type TempDir,
+} from "./net/TestSupport.js";
+import { BRIDGED_METHODS } from "./handlers/index.js";
+import { FakeAgent } from "./runtime/TestSupport.js";
+import { transientScopeKey } from "./runtime/TransientRunner.js";
 import { METHOD_NAMES } from "./wire/index.js";
-import type { MethodName, MethodParams, MethodResult } from "./wire/index.js";
+import type {
+  ConversationTransientResult,
+  MethodName,
+  MethodParams,
+  MethodResult,
+} from "./wire/index.js";
 
 // ---------------------------------------------------------------------------
 // 夹具
@@ -199,69 +215,32 @@ describe("ServerApp 的组装", () => {
     await expect(app.db.all("SELECT 1")).rejects.toBeTruthy();
   });
 
-  it("注册了有实现者的方法，其余方法由接线层回 unsupported", async () => {
+  it("契约里的每个方法都接上了（桥接名单之外）", async () => {
     const fixture = await makeFixture();
     const app = await startApp(fixture);
-    const registered = Object.keys(app.handlers).sort();
+    const registered = new Set(Object.keys(app.handlers));
 
-    expect(registered).toEqual(
-      [
-        "conversation.abort",
-        "conversation.create",
-        "conversation.delete",
-        "conversation.get",
-        "conversation.list",
-        "conversation.pin",
-        "conversation.rename",
-        "conversation.revert",
-        "conversation.send",
-        "conversation.setModel",
-        "conversation.setThinking",
-        "conversation.state",
-        "credential.create",
-        "credential.list",
-        "credential.revoke",
-        "message.list",
-        "search.conversations",
-        "search.messages",
-        "server.capabilities",
-        "server.shutdown",
-        "server.usage",
-        "server.version",
-        "workspace.create",
-        "workspace.get",
-        "workspace.list",
-        "workspace.remove",
-        "workspace.rename",
-      ].sort(),
+    // 归宿只有两种：在 handler 表里，或由接线层代管（hello / setLanguage / 上传）
+    const homeless = METHOD_NAMES.filter(
+      (method) => !registered.has(method) && !BRIDGED_METHODS.includes(method),
     );
-    // 已注册的都在契约里（没有手滑写错的方法名）
+    expect(homeless).toEqual([]);
     for (const method of registered) expect(METHOD_NAMES).toContain(method);
 
-    // 还没实现的域：接线层回 unsupported，而不是 internal 或参数错（R11）
+    // 桥接名单里的四条由接线层实现，表里不能再注册一份
+    for (const method of BRIDGED_METHODS) expect(registered.has(method)).toBe(false);
+
+    // 契约之外的方法名才回 unsupported，而且带着「不认识这个方法」这个结构化原因（R11）
     const client = await connect(app);
-    for (const method of [
-      "config.get",
-      "agent.list",
-      "model.list",
-      "notice.list",
-      "question.list",
-      "handoff.start",
-      "completion.files",
-      "conversation.transient",
-    ]) {
+    for (const method of ["nope.nothing", "conversation.explode"]) {
       client.request(method, {});
       const frame = await client.queue.next();
       expect(isError(frame)).toBe(true);
       if (isError(frame)) {
         expect(frame.error.data.code).toBe("unsupported");
-        expect(frame.error.data.detail).toMatchObject({ reason: "handler_not_registered" });
+        expect(frame.error.data.detail).toMatchObject({ reason: "unknown_method" });
       }
     }
-
-    // `asset.begin` / `asset.end` 由接线层接管（上传要按连接分帧），不在 handler 表里
-    expect(registered).not.toContain("asset.begin");
-    expect(registered).not.toContain("asset.end");
   });
 
   it("server.version / server.usage / server.capabilities 报的都是事实", async () => {
@@ -274,11 +253,67 @@ describe("ServerApp 的组装", () => {
     expect(version.startedAt).toBe(app.startedAt);
 
     const capabilities = await callMethod(app, "server.capabilities");
-    expect(capabilities.capabilities).toEqual([]);
+    // 清单是真实的那一份：每个方法一条，标题与说明都有句子（F-E5）
+    expect(capabilities.capabilities.map((item) => item.method)).toEqual([...METHOD_NAMES]);
+    expect(capabilities.capabilities[0]?.title.message.length).toBeGreaterThan(0);
+    expect(capabilities.capabilities[0]?.id).toMatch(/^(F-[A-Z]\d+|D\d+)(#\w+)?$/);
 
     const usage = await callMethod(app, "server.usage");
     expect(usage.scope).toBe("server");
     expect(usage.usage.total.total_tokens).toBe(0);
+
+    // 升级判定：磁盘版本与正在跑的一样 → 已经是最新，不重启（D4 / F-E3）
+    const upgrade = await callMethod(app, "server.upgrade", {});
+    expect(upgrade.state).toBe("already_latest");
+    expect(upgrade.currentVersion).toBe(app.version);
+    expect(upgrade.diskVersion).toBe(app.version);
+
+    // 要一个磁盘上还没有的版本 → 没有可升的东西（不会平白重启）
+    const nowhere = await callMethod(app, "server.upgrade", { targetVersion: "99.9.9" });
+    expect(nowhere.state).toBe("not_available");
+    expect(nowhere.targetVersion).toBe("99.9.9");
+  });
+
+  it("启动时通知栏是空的（R50 的警告等到真装配 agent 时才说）", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture);
+    const notices = await callMethod(app, "notice.list");
+    expect(notices.notices).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scope 的装配（R54 / L9）
+// ---------------------------------------------------------------------------
+
+describe("Scope 工厂", () => {
+  it("按 cwd 从发现服务拿能力目录，认 Workspace 与临时目录两种键", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture);
+    const { workspace } = await callMethod(app, "workspace.create", {
+      cwd: fixture.workspaceDir.path,
+    });
+
+    // 能力目录由发现服务按 cwd 算好（R54）：MCP 是 5 层链，Skill 4 层、工具与子 Agent 各 2 层
+    const paths = app.discoveryService.scopeAbilityPaths(fixture.workspaceDir.path);
+    expect(paths.mcpPaths).toHaveLength(5);
+    expect(paths.skillsPaths).toHaveLength(4);
+    expect(paths.toolsPaths).toHaveLength(2);
+    expect(paths.subAgentsPaths).toHaveLength(2);
+
+    // 真装配一次（默认工厂，不注入替身）：Scope 的 cwd 就是项目的 cwd
+    const scope = await app.scopeRegistry.acquire(workspace.id);
+    expect(scope.cwd).toBe(fixture.workspaceDir.path);
+    app.scopeRegistry.release(workspace.id);
+
+    // 临时对话按目录借同一个通道（D3：只借 Scope，与 Workspace 无关）
+    const transientKey = transientScopeKey(fixture.workspaceDir.path);
+    const transientScope = await app.scopeRegistry.acquire(transientKey);
+    expect(transientScope.cwd).toBe(fixture.workspaceDir.path);
+    app.scopeRegistry.release(transientKey);
+
+    await app.scopeRegistry.recycleAll();
+    expect(app.scopeRegistry.size()).toBe(0);
   });
 });
 
@@ -505,5 +540,134 @@ describe("删除路径", () => {
     expect(app.scopeRegistry.size()).toBe(0);
     const remaining = await callMethod(app, "conversation.list", { workspaceId: workspace.id });
     expect(remaining.total).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 配置改完就生效（F-E2 / F-F9）：ConfigApplyPort 接上了没有
+// ---------------------------------------------------------------------------
+
+describe("配置生效", () => {
+  it("改完配置会回收 Scope、合成一条通知，并把两样事实回给调用方", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture, { scopeIdleTimeoutMs: 10 * 60 * 1000 });
+    const { workspace } = await callMethod(app, "workspace.create", {
+      cwd: fixture.workspaceDir.path,
+    });
+    // 让这个项目有一个 Scope 可回收（空闲计时调长了，不会自己走）
+    await app.scopeRegistry.acquire(workspace.id);
+    app.scopeRegistry.release(workspace.id);
+    expect(app.scopeRegistry.size()).toBe(1);
+
+    const applied = await callMethod(app, "config.patch", {
+      patch: { behavior: { autoRefreshTools: "inner-loop-start" } },
+    });
+
+    // 受影响的 Scope 被回收（下一段对话会用新配置重建）
+    expect(applied.applied.recycledWorkspaceIds).toEqual([workspace.id]);
+    expect(app.scopeRegistry.size()).toBe(0);
+    // 一次改动合成一条通知（F-F9）
+    expect(applied.applied.noticeId).not.toBeNull();
+    const listed = await callMethod(app, "notice.list");
+    expect(listed.notices.map((notice) => notice.id)).toContain(applied.applied.noticeId);
+    // 没有需要重启才生效的项（F-E2）
+    expect(applied.applied.restartRequired).toBe(false);
+  });
+
+  it("推出去的通知按收件人那条连接的语言重新渲染（D8 / localizeEvent）", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture);
+    const target = app.address;
+    const client = await TestClient.connect(`ws://127.0.0.1:${target?.port ?? 0}/`);
+    clients.push(client);
+    const token = (await fs.readFile(app.paths.tokenFile, "utf8")).trim();
+    await client.hello(token, { language: "zh" });
+
+    // 库里存的是码 + 参数（按缺省语言渲染一份），出网前换成这条连接的语言
+    client.request("config.patch", { patch: { limits: { maxToolOutput: 2048 } } });
+    let noticeText = "";
+    for (let index = 0; index < 4 && noticeText === ""; index += 1) {
+      const frame = await client.queue.next();
+      if (isNotification(frame) && frame.method === "notice") {
+        const payload = frame.params as { notice: { text: { message: string } } };
+        noticeText = payload.notice.text.message;
+      }
+    }
+    expect(noticeText).toContain("配置已生效");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// conversation.* 的三个跨服务钩子
+// ---------------------------------------------------------------------------
+
+describe("对话的三个钩子", () => {
+  it("有挡着的问题时 conversation.send 被拒（D23）", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture);
+    const { workspace } = await callMethod(app, "workspace.create", {
+      cwd: fixture.workspaceDir.path,
+    });
+    const { conversation } = await callMethod(app, "conversation.create", {
+      workspaceId: workspace.id,
+      agentId: "default",
+      modelId: "test-model",
+    });
+
+    // 一个挡着对话的问题（不可撤销动作的确认）
+    await app.questionService.ask({
+      conversationId: conversation.id,
+      kind: "confirmation",
+      prompt: { messageKey: "question.confirm.prompt", params: { action: "delete" } },
+      options: [
+        { value: "yes", label: { messageKey: "question.confirm.accept" } },
+        { value: "no", label: { messageKey: "question.confirm.decline" } },
+      ],
+      blocking: true,
+    });
+
+    await expect(
+      callMethod(app, "conversation.send", {
+        conversationId: conversation.id,
+        input: { content: "你好" },
+      }),
+    ).rejects.toMatchObject({ code: "question_pending" });
+    // 库里没有这一轮的任何消息（受理之前就挡下了）
+    const page = await callMethod(app, "message.list", { conversationId: conversation.id });
+    expect(page.messages).toEqual([]);
+
+    // 现场快照里也看得到这条问题（D22 / L5：重连先拉状态就知道有东西在等回答）
+    const snapshot = await callMethod(app, "conversation.state", { conversationId: conversation.id });
+    expect(snapshot.state.questions.map((item) => item.id)).toHaveLength(1);
+    expect(snapshot.state.questions[0]?.blocking).toBe(true);
+  });
+
+  it("临时对话：跑完把消息交回来，库里一条都没有，也不推流式事件（R1 / R49）", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture, {
+      createAgent: async () =>
+        new FakeAgent([{ deltas: [{ content: "一次性回答" }], usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 } }]),
+    });
+    // 临时对话要一个 cwd 作为相对路径基准，但不需要登记成项目
+    const client = await connect(app);
+
+    client.request("conversation.transient", {
+      cwd: fixture.workspaceDir.path,
+      input: { content: "随便问问" },
+      agentId: "default",
+      modelId: "test-model",
+    });
+    const frame = await client.queue.next(5000);
+    if (!isSuccess(frame)) throw new Error(`临时对话没跑成：${JSON.stringify(frame)}`);
+    const result = frame.result as ConversationTransientResult;
+    expect(result.message.content).toBe("一次性回答");
+    expect(result.problem).toBeNull();
+
+    // 不落库：对话与消息表都是空的
+    expect((await callMethod(app, "conversation.list")).total).toBe(0);
+    // 不推流式事件：回包之后队列里不该再冒出增量或六态
+    await wait(120);
+    expect(client.queue.size()).toBe(0);
+    app.scopeRegistry.recycleAll();
   });
 });
