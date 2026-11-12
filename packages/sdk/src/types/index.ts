@@ -237,6 +237,13 @@ export interface AppConfig {
   /** 默认迁移模型 ID */
   defaultMigrationModel?: string;
   /**
+   * 给新对话自动取名的模型 ID（缺省回落到 `defaultModel`）。
+   *
+   * 起名是一次性、不流式、不带工具的调用，用小模型就够；与「迁移模型」
+   * 分开是因为两者要求不同：迁移要能处理长上下文，起名只要几十个 token。
+   */
+  namingModel?: string;
+  /**
    * 自动给新会话起标题（缺省**视为开启**；出厂配置写 `true`）。
    *
    * 「缺省视为开启」的唯一判定在消费方（服务端 `AutoTitle`）的 `title === false` 那一处：

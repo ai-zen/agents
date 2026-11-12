@@ -75,3 +75,55 @@
 - [src/cli.ts] D25 的第二优先级「配置文件里的端口」在 CLI 里没有来源（SDK 的 `AppConfig` 没有 port 字段）：`--port` 之外只能由代码用 `configPort` 注入。要么定一个配置文件字段，要么 D25 的第二级改成「环境变量」。
 - [src/cli.ts] `bin` 名是 `agents-server`，我让「无子命令」与 `serve` 都表示前台起服务；`token` 三个动作直接开库（不启服务），`version` 只打印版本与协议版本。对外实例（`--public`）不会生成 `run/token`，只提示用 `token create` 自己建再分发。这些命令形状认不认？
 - [src/e2e.test.ts] 冒烟里注入的是假 agent 工厂（不连模型），所以 `createSdkAgentFactory` 的真装配（硬线 / 交接线 / 工具刷新）仍只有 `ChatRunner.test.ts` 的用例覆盖。W5 要不要加一条「真 SDK 装配 + 指向本地假端点的模型」的用例？
+- [src/services/DiscoveryService.ts] F-G2 只写了「Skill 4 层、工具与子 Agent 各 2 层」，没写具体是哪几个目录。我按 L9 的形状推的：Skill = `<ws>/.ai-zen/skills` → `<ws>/.agents/skills` → `<aiZenDir>/skills` → `~/.agents/skills`；工具 = `<ws>/.agents/tools` → `<aiZenDir>/tools`；子 Agent = `<ws>/.agents/sub-agents` → `<aiZenDir>/sub-agents`（数据根下的名字跟 SDK `CONFIG_SUB_DIRS` 走，是 `sub-agents` 不是 `subagents`）。这四条目录要 PM 确认（属于产品事实，不该由实施者拍）。
+- [src/services/DiscoveryService.ts] MCP 的 2 个可编辑作用域我定成 `<ws>/.ai-zen/mcp.json`（workspace）与 `<aiZenDir>/mcp.json`（user）；`<ws>/.mcp.json` 与 `<ws>/.agents/mcp.json`、`~/.agents/mcp.json` 只读。认不认？
+- [src/services/DiscoveryService.ts] `DiscoveryLayerView.editable` 我按「本契约的写方法能不能改这一层」算：MCP 有 2 层 true（与 F-G1 对齐），Skill / 工具 / 子 Agent 全部 false（契约里没有写它们的方法，`kind` 只有 MCP 有 `patch`）。若希望「用户自己那层」显示成可编辑（能手改文件），这个字段的语义要另定。
+- [src/services/DiscoveryService.ts] 写 MCP 时如果目标文件存在但读不出来（`broken`），我先把坏文件改名留档成套 `<path>.broken-<ISO>.bak` 再写新的：这样 F-F6 的「能看见、能修」都成立，而修复动作不会直接抹掉用户手写的内容。要不要统一成「拒写 + 让用户先手工修」？
+- [src/services/DiscoveryService.ts] `config.patchMcps` 的 `entries` 我按**整层替换**实现（没给的就是被删的），每个 id 以磁盘原文为底只覆盖入参明确给了的字段，所以 `oauth` 与未知键留着；`disabled` 省略 = 不改（要重新启用得显式传 `false`）。这个语义认不认？
+- [src/services/DiscoveryService.ts] `discoverSubAgents` 只回定义、不回文件路径，而 `DiscoveryEntryView.source` 要路径、坏文件也要看得见，所以子 Agent 那一层我按「SDK 判什么算子 Agent + 自己 readdir 拿文件名」两段做。认不认这种「SDK 判定 + 自己定位」的组合？
+- [src/services/ModelService.ts] F-F7 说「删模型时默认指向要自动改指或清空」，我定成「改指到同端点的第一条剩余模型；同端点没有剩的就清空」。换指到别的端点等于把请求发去另一家服务商，那件事该由人决定。
+- [src/services/ModelService.ts] 删一个**出厂托管**的模型会从 `config.json` 里消失，但下次 `ConfigManager.bootstrap()` 的 `syncManagedModels` 会按出厂清单把它加回来（现有机制只保留 `custom: true` 的条目，没有「隐藏」标记）。所以「删出厂模型」实际上活不过一次重启。要么给 SDK 加一个隐藏标记，要么在删出厂模型时拒绝（提示「用恢复出厂 / 改成自定义」）。
+- [src/services/ModelService.ts] 模型写入时我加了三道校验：端点必须存在、`handoff < guard`、`reasoningPreset` 必须在策略表里（否则档位表为空、思考强度不可调）。第三条会让「引用一个还没写的策略名」存不下来，认不认？
+- [src/services/AgentService.ts] `agent.*` 的 `custom` 我只会被 `create` / `update` 置 true（用户通过 API 改过定义 = 用户自有，SDK 初始化不再用出厂提示词覆盖）；`setModel` / `setThinking` 只动模型绑定与参数，不改 `custom`。认不认这个分界？
+- [src/services/AgentService.ts] `agent.update` 里 `modelId: ""` 表示「清掉绑定」（三级解析落到配置的兜底模型），`undefined` 表示不改；`function` 同理只有「给」没有「撤」（撤回子 Agent 身份没有对应契约字段）。要不要给 `AgentInput.function` 一个显式清空写法（`null`）？
+- [src/services/AgentService.ts] `agent.list` 的 `workspaceId` 目前只接参数、不影响算出的可用性：助手可用性看的是全局配置（模型 / 端点 / 密钥），而「在这个项目里能不能用」还得先把「项目里有哪些 Skill / MCP」和助手权限对上，那属于另一件事。要么定清楚它该算什么，要么从契约里去掉这个参数。
+- [src/services/AgentService.ts] 删除助手的 `references` 我只报了「默认助手」与「别的助手在 `permissions.subagents` 里点名它的 function」；已经有对话绑定这个助手的那些（L7：身份创建即定死）没算进去（要算得查库）。要不要把「还有 N 段对话在用这个助手」也列出来？
+- [src/services/ConfigService.ts] `config.saveEndpoint` 的密钥口径：省略 = 保留；传回来的值恰好等于当前掩码 = 当作没改；空串 = 清掉。第三种是唯一能删除密钥的写法，需要客户端明确这么做。
+- [src/services/ConfigService.ts] `config.get` 的 `issues` 我出了 6 类：端点没密钥（warning）、模型指向不存在的端点（error）、`handoff >= guard`（warning）、默认模型 / 迁移模型 / 取名模型指向不存在（error）、默认图片模型指向不存在（error）、默认助手不存在（warning）。`code` 用稳定小写下划线串（`endpoint_no_key` / `model_endpoint_missing` / `threshold_order` / `default_model_missing` / `default_image_model_missing` / `default_agent_missing`）。这是客户端要分支的稳定码，要 PM 过一遍。
+- [src/services/ConfigService.ts] `ConfigApplyReport.restartRequired` 我恒为 `false`（F-E2：改完配置靠重连生效）。如果以后有「必须重启才生效」的配置项（例如监听端口），这个字段由那一处置 true。
+- [src/services/ConfigService.ts] 「让改动生效」做成注入点 `ConfigApplyPort.apply(change) → { recycledWorkspaceIds, noticeId }`：配置服务只描述「变了什么」，回收 Scope（`ScopeRegistry.recycleAll()`）与合成通知（F-F9）归组装层。未注入时回报 `recycledWorkspaceIds: []`、`noticeId: null`。单根要记得注入。
+- [src/services/CompletionService.ts] 不新增依赖的前提下，「glob」是手写的递归遍历（跳过 `node_modules` / `.git` / `dist`，不跟符号链接、深度上限 32）。要真 glob 语义（`**` 之类）得引依赖，或让 PM 指定用 `node:fs` 的 `glob`。
+- [src/services/CompletionService.ts] 第一次问 `completion.files` 我**立刻回 `scanning` 并在后台扫**（`completion.scanning` 的文案正是「再多打几个字符它就出来了」），扫完之后的请求才回 `ready`。所以 UI 第一下必然看到「还在读」。认不认？另外我留了 `prefetch(workspaceId)`，组装层可以在项目打开时预热一次，让第一次按 `@` 就是 `ready`。
+- [src/services/CompletionService.ts] 扫描超时（5s）时我把已经读到的那些照常给出去并标 `problem = completion.timedOut`（一条都没读到时才是 `unavailable`）。另外加了 `completion.noFolder`（目录已不存在）与 `completion.truncated`（到 20000 条上限）两条键。
+- [src/handlers/*.ts] 四个域各一个 `createXHandlers(deps)`，与其它域的写法一致；`handlers/index.ts`（W3-F 的）还没拼这四个域，需要 PM 在串线时加进 `createHandlers`，并补 `HandlerDeps` 的 `config` / `agents` / `models` / `completion` 四项。`handlers/index.test.ts` 里「未实现的域」那几条断言也要跟着改。
+- [src/handlers/configHandlers.ts] 出参里的 `LocalizedText` 由 handler 按 `context.connection.language` 重渲染一次（D8；服务层存码 + 参数、按默认语言渲染一份）。同一套 `localizeLocalizedTexts` 也用在 agent / model / completion 三个域上：按形状识别（`code` + `messageKey` + `params` + `message`），认不出来的键原样留着。
+
+## W4-H（通知 / 问题对象 / 交接 / 自动命名 / 临时对话）追加
+
+- [src/storage/migrations.ts] `notices` 表没有 `conversationId` 列，而契约里 `NoticeView.conversationId` 与 `notice.list` / `notice.clear` 的按对话过滤都要它：我暂把它塞进 `params` 的一个保留键（`$conversationId`，读出时摘掉再渲染，出网的 `text.params` 里看不到它）。要加列吗？（加了我就改回一列，改动只在这一个服务里）
+- [src/wire/methods.ts] `handoff.start` 出参的 `document` 是必填，而「用户取消」既不是失败也没有文档：我抛 `ServerError("handoff_declined")`（既有业务码 + `error.handoffDeclined` 文案「这次不交接」）。如果要「取消也回成功结果」，`document` 需要可空或加一个 `cancelled` 标记。
+- [src/wire/methods.ts] `question.list` 的 `conversationId` 在契约里可空，但 `QuestionRepository` 只有 `listByConversation`：不传时我回 `invalid_params`（`detail.reason=required`）而不是空列表（空列表会被读成「没有待答问题」）。要支持「全库待答问题」得给仓储加一条查询。
+- [src/wire/methods.ts] D23「越线两端都拒绝」的落点我定为两处：① 过了硬线却答「就在这段里继续」→ 拒 `context_guard`，问题继续 `pending`；② `QuestionService.assertSendable(conversationId)` 给 `conversation.send` 用（有挡着的问题 → `question_pending`）。发送路径由接线层调 `assertSendable` 吗？
+- [src/wire/methods.ts] `error.questionPending` 带 `{question}` 参数，我填的是「那条问题提问按缺省语言渲染出的句子」——按连接语言重渲染错误时这个参数不会跟着变。要改成传 `questionId`（客户端自己取那句话）吗？
+- [src/runtime/TransientRunner.ts] 临时对话的 Scope 按 `transient:<cwd>` 这个键去借（`cwdOfTransientScopeKey` 能取回目录）：接线层的 Scope 工厂要认得这个前缀。认这个口径，还是给临时对话单独一条 Scope 通道？（PRD D3 只写「只借 Scope，与 Workspace 无关」，我按「按 cwd 借、与 Workspace 无关」落）
+- [src/runtime/TransientRunner.ts] `ConversationTransientResult.subagents` 我回空数组：临时对话不推事件、也不跟踪子 Agent 现场（一次返回、零痕迹）。若脚本要看到子 Agent 的花费，得在返回时补一份快照（那需要临时对话也订阅 agent 事件）。
+- [src/runtime/TransientRunner.ts] `conversation.transient` 的 handler 我没有写：它属于 `conversation.*` 域，而 `handlers/conversationHandlers.ts` 在别的实施者手里。接线层加一行 `"conversation.transient": async (context) => await transientRunner.run(context.params, context.connection.language)` 即可。
+- [src/services/HandoffService.ts] 自交接回合本身产生的消息（几 KB 指令 + 工具调用 + 回执）只留在内存、不写进旧对话的库：PRD D18 只说「旧对话完整保留」，没说把交接回合也记进对话。要记的话我在 `runHandoffRound` 里多写一次库即可。
+- [src/services/HandoffService.ts] 新对话的第一条消息我用 `role=system` + `data.hidden=1` 承载「交接文档路径 + 摘要」。也可以用 `role=user` + `hidden`；F-D9 的 `hidden` 语义是「服务端注入」，两种都符合，请定一个。
+- [src/services/HandoffService.ts] 交接成功后我推两条 `conversation.changed`：新对话 `created`、旧对话 `settings_changed`（旧对话的内容没变，只是「这段已经交接过」）。旧对话那条若不需要可以去掉。
+- [src/services/HandoffService.ts] 交接后的新对话我固定「同 Workspace + 同助手 + 同模型」；而 `question.answer` 触发的交接固定用 `then: "new_conversation"`（D18）。若要让用户能选「只产文档」（F-D4），交接问题的候选值需要多一档。
+- [src/services/AutoNaming.ts] 「第一轮结束之后」我按「这段对话里只有一条用户消息」判定；同一进程内另有一份 `Set` 防止同一轮连着调两次时重复起名（重启后若仍处在第一轮，会再起一次）。要更硬的判定，需要一列记「已经自动命名过」。
+- [src/services/NoticeService.ts] 事件的按连接本地化（`WsHub` 的 `localizeEvent`）我提供 `createEventLocalizer()`，同时覆盖 `notice` 与 `question` 两类载荷（其余事件原样返回）；接线层注入它即可，不需要每个服务各接一份。
+- [src/services/QuestionService.ts] 交接问题「挡不挡着对话」的缺省值：`handoff` 与 `confirmation` 挡、`workspace_registration` 不挡（后者与某段对话的生成无关）。认得话不用回；不认我就改成一律由调用方显式给。
+- [src/app.ts] 单实例的「活着」用 `process.kill(pid, 0)` 探活（不额外连一次端口）：pid 被系统复用时会把一个陌生进程当成「已有实例」并去挂靠它的地址。要不要在探活之后再校验 `server.json` 里的 `host:port` 真的连得上？
+- [src/app.ts] 退出判据缺一个触发源：`WsHub` 只提供 `connectionInfos()`（拉），没有「连接数变化」的回调。按「不另起计时器（A10）」的口径，判据只在 `ScopeRegistry.onAllRecycled` 与每轮结算时重算，于是「连过、但没建过 Scope 就断开」的进程会一直活着（旧的 1s 巡检方案已按裁定撤掉）。补齐要在 `net/WsHub` 加 `onConnectionsChanged`，那个文件不在 W3-F 的范围。
+- [src/app.ts] 挂靠别人的实例时（单实例发现已有进程在跑），本进程仍然建库、跑迁移、`ConfigManager.bootstrap()`（这些都是 `ServerApp.create` 里做的）。要不要让「挂靠」这条路连库都不开？
+- [src/app.ts] `--port 0`（让系统分配）我在 `app.ts` 里单独放行：`config.resolveListenTarget` 把 0 当非法端口、会回落到 8790。R12 要不要把「0 表示让系统分配」写进合法端口？
+- [src/handlers/index.ts] handler 表现在由 `createHandlers(deps)` 拼，W4 的域（config/agent/model/notice/question/handoff/completion）要进同一张表，就得改 `handlers/index.ts` 并在 `app.ts` 里造好它们要的服务 —— 这两处都在 W3-F 的文件范围里，需要指派由谁接、按什么顺序接（眼下它们自然落 `unsupported`）。
+- [src/cli.ts] 命令行的说明文字与错误固定中文：命令行没有连接级语言协商（D8 的语言挂在连接上，断开即忘），要跟 `LANG` 或加 `--lang` 请定一条。
+- [src/cli.ts] `--host` 与 `--local/--public` 的映射我按「回环地址 → 本地实例；非回环地址 → 对外实例；与 `--local` 同时写非回环地址算用法错（退出码 2）」。
+- [src/cli.ts] `token create` 只把明文打到 stdout，不写 `<数据根>/run/token`（那是本地实例启动时维护的交付口）：认这个分工吗？
+- [src/handlers/assetHandlers.ts] `asset.*` 在 handler 表里是空的：`asset.begin` / `asset.end` 由 `WsHub` 在注入 `UploadReceiver` 时接管（要按连接分帧落盘），再注册一份就成了两处实现。这一域只剩「附件结局按连接语言重渲染」的翻译工作。
+- [src/handlers/conversationHandlers.ts] `conversation.state` 的 `questions` 与 `statusBlocks` 仍是空数组（问题对象归 W4-H、状态栏块归 W4）：这份拼装留在接线层，还是收进服务层（或单开一个 StateService）？
+- [src/cli.process.test.ts] 进程冒烟不跑一轮对话（不连模型）：真 SDK 装配仍只有 `ChatRunner` 的用例覆盖。W5 要不要加一条「指向本地假端点的模型」的用例？
+- [src/cli.process.test.ts] 这条用例自己跑一次 `tsc -p tsconfig.json` 才起进程（它要有 `dist/` 产物），因此比别的用例慢十来秒。要不要改成「验收先 build、用例只读 dist」？

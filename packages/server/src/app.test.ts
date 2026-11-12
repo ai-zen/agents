@@ -1,9 +1,9 @@
 /**
- * `ServerApp`（单根）的验收：组装、注册了哪些方法、退出判据、删除路径的跨层补齐。
+ * `ServerApp`（单根）的验收：组装、启停对称、单实例、退出判据、删除路径的跨层补齐。
  *
  * 这里关心的是「谁被接上了、什么时刻会发生什么」，所以有一部分用例直接调用 handler 表
  * （省掉网络这一层），需要看连接数变化的那几条才真开 WebSocket —— 端到端那条完整链路在
- * `e2e.test.ts` 里。
+ * `e2e.test.ts` 里，真起进程的那条在 `cli.process.test.ts` 里。
  */
 
 import { promises as fs } from "node:fs";
@@ -14,8 +14,9 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { createServer, resolveServerVersion } from "./app.js";
 import type { ExitFacts, ServerApp, ServerAppOptions } from "./app.js";
+import { resolvePaths } from "./config.js";
 import type { ConnectionInfo } from "./net/index.js";
-import { readServerFile } from "./net/discovery.js";
+import { readServerFile, writeServerFile } from "./net/discovery.js";
 import { isError, makeTempDir, TestClient, wait, type TempDir } from "./net/TestSupport.js";
 import { METHOD_NAMES } from "./wire/index.js";
 import type { MethodName, MethodParams, MethodResult } from "./wire/index.js";
@@ -87,13 +88,12 @@ async function makeFixture(): Promise<Fixture> {
   return fixture;
 }
 
-/** 起一个服务（默认关掉巡检：退出判据只在显式打开它的用例里生效） */
+/** 起一个服务（端口 0 让系统分配；退出动作换成记账，不真的把测试进程送走） */
 async function startApp(fixture: Fixture, options: ServerAppOptions = {}): Promise<ServerApp> {
   const app = await createServer({
     aiZenDir: fixture.dataRoot.path,
     port: 0,
     local: true,
-    exitCheckIntervalMs: 0,
     exit: () => undefined,
     logger: { warn: () => undefined, error: () => undefined },
     ...options,
@@ -135,7 +135,7 @@ async function exists(path: string): Promise<boolean> {
 
 afterEach(async () => {
   for (const client of clients.splice(0)) await client.close().catch(() => undefined);
-  for (const app of apps.splice(0)) await app.shutdown("requested").catch(() => undefined);
+  for (const app of apps.splice(0)) await app.stop("requested").catch(() => undefined);
   for (const fixture of fixtures.splice(0)) {
     await fixture.workspaceDir.remove();
     await fixture.dataRoot.remove();
@@ -143,17 +143,16 @@ afterEach(async () => {
 });
 
 // ---------------------------------------------------------------------------
-// 组装
+// 组装与启停
 // ---------------------------------------------------------------------------
 
 describe("ServerApp 的组装", () => {
-  it("按对象图的顺序造出全部零件，并把发现文件写成实际端口", async () => {
+  it("按对象图的顺序造出全部零件，start / stop 对称", async () => {
     const fixture = await makeFixture();
     const app = await createServer({
       aiZenDir: fixture.dataRoot.path,
       port: 0,
       local: true,
-      exitCheckIntervalMs: 0,
       exit: () => undefined,
     });
     apps.push(app);
@@ -183,16 +182,19 @@ describe("ServerApp 的组装", () => {
 
     const target = await app.start();
     expect(target.port).toBeGreaterThan(0);
+    expect(app.running).toBe(true);
     const info = await readServerFile(app.paths);
     expect(info?.port).toBe(target.port);
+    expect(info?.pid).toBe(process.pid);
     expect(info?.local).toBe(true);
     expect(info?.version).toBe(app.version);
     // 本地实例启动时备好交付文件（客户端直接取）
     expect(await exists(app.paths.tokenFile)).toBe(true);
 
-    // 收尾：摘发现文件 + 关库
-    const facts = await app.shutdown("requested");
-    expect(facts.reason).toBe("requested");
+    // 收尾：摘发现文件 + 关库（对称于 start）
+    const facts = await app.stop("requested");
+    expect(facts).toEqual({ reason: "requested", connections: 0, runs: 0, scopes: 0 });
+    expect(app.running).toBe(false);
     expect(await readServerFile(app.paths)).toBeNull();
     await expect(app.db.all("SELECT 1")).rejects.toBeTruthy();
   });
@@ -256,6 +258,10 @@ describe("ServerApp 的组装", () => {
         expect(frame.error.data.detail).toMatchObject({ reason: "handler_not_registered" });
       }
     }
+
+    // `asset.begin` / `asset.end` 由接线层接管（上传要按连接分帧），不在 handler 表里
+    expect(registered).not.toContain("asset.begin");
+    expect(registered).not.toContain("asset.end");
   });
 
   it("server.version / server.usage / server.capabilities 报的都是事实", async () => {
@@ -277,55 +283,97 @@ describe("ServerApp 的组装", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 单实例（architecture §2：发现文件是「这台机器上谁在服务」的唯一真相）
+// ---------------------------------------------------------------------------
+
+describe("单实例", () => {
+  it("发现文件里那个进程还活着 → 挂靠它的地址，不再重复监听", async () => {
+    const fixture = await makeFixture();
+    await fs.mkdir(join(fixture.dataRoot.path, "run"), { recursive: true });
+    // pid 1 一定在（这台机器上就是 init/systemd），用来代表「别人正在服务」
+    const running = {
+      pid: 1,
+      host: "127.0.0.1",
+      port: 45671,
+      version: "9.9.9",
+      local: true,
+      startedAt: "2026-01-01T00:00:00.000Z",
+    };
+    await writeServerFile(pathsOf(fixture), running);
+
+    const app = await startApp(fixture);
+    expect(app.attached).toBe(true);
+    expect(app.running).toBe(false);
+    expect(app.address).toEqual({ host: "127.0.0.1", port: 45671 });
+
+    // 挂靠时不碰别人那份发现文件（本进程没在监听，删了它客户端就连不上了）
+    await app.stop("requested");
+    expect(await readServerFile(pathsOf(fixture))).toEqual(running);
+  });
+
+  it("发现文件是陈旧的（pid 已死）→ 清掉再起，并写成自己的实际端口", async () => {
+    const fixture = await makeFixture();
+    await fs.mkdir(join(fixture.dataRoot.path, "run"), { recursive: true });
+    const stale = {
+      // 远超常见 pid_max 的编号：这台机器上不会真有这个进程
+      pid: 4194303,
+      host: "127.0.0.1",
+      port: 45672,
+      version: "0.0.1",
+      local: true,
+      startedAt: "2026-01-01T00:00:00.000Z",
+    };
+    await writeServerFile(pathsOf(fixture), stale);
+
+    const app = await startApp(fixture);
+    expect(app.running).toBe(true);
+    const info = await readServerFile(app.paths);
+    expect(info?.pid).toBe(process.pid);
+    expect(info?.port).toBe(app.address?.port);
+    expect(info?.port).not.toBe(stale.port);
+  });
+
+  it("发现文件坏了 → 清掉再起（坏文件不该让服务起不来）", async () => {
+    const fixture = await makeFixture();
+    const paths = pathsOf(fixture);
+    await fs.mkdir(paths.runDir, { recursive: true });
+    await fs.writeFile(paths.serverFile, "{ 这不是 JSON", "utf8");
+
+    const app = await startApp(fixture);
+    expect(app.running).toBe(true);
+    expect((await readServerFile(app.paths))?.port).toBe(app.address?.port);
+  });
+});
+
+/** 还没起服务时也要能按同一套规则算出路径（写「别人的」发现文件用） */
+function pathsOf(fixture: Fixture) {
+  return resolvePaths(fixture.dataRoot.path);
+}
+
+// ---------------------------------------------------------------------------
 // 退出判据（PRD L4 / R53）
 // ---------------------------------------------------------------------------
 
 describe("退出判据", () => {
-  it("还没服务过任何连接时不判退出（刚起来的进程在等客户端）", async () => {
-    const fixture = await makeFixture();
-    const exits: ExitFacts[] = [];
-    await startApp(fixture, {
-      exitCheckIntervalMs: 10,
-      exit: (facts) => {
-        exits.push(facts);
-      },
-    });
-    await wait(120);
-    expect(exits).toEqual([]);
-  });
-
-  it("最后一条连接走了、没有在跑的轮次、Scope 全部回收 → 退出", async () => {
+  it("还没被用过时不判退出（刚起来的进程在等客户端）", async () => {
     const fixture = await makeFixture();
     const exits: ExitFacts[] = [];
     const app = await startApp(fixture, {
-      exitCheckIntervalMs: 10,
       exit: (facts) => {
         exits.push(facts);
       },
     });
 
-    const client = await connect(app);
-    // 有连接时不退（连接就是「还有人等着说话」）
-    await wait(80);
+    await app.checkExit();
     expect(exits).toEqual([]);
-
-    await client.close();
-    await wait(200);
-    expect(exits).toEqual([{ reason: "idle", connections: 0, runs: 0, scopes: 0 }]);
-    // 收尾已经做过了：不再监听
-    expect(app.running).toBe(false);
-
-    // 再关一次不会再触发一次退出（收尾幂等）
-    await app.shutdown("requested");
-    expect(exits).toHaveLength(1);
+    expect(app.running).toBe(true);
   });
 
-  it("Scope 全部回收（onAllRecycled）本身就是一次重算的触发点", async () => {
+  it("有连接时不判；连接断开且 Scope 回收之后（onAllRecycled）才退", async () => {
     const fixture = await makeFixture();
     const exits: ExitFacts[] = [];
     const app = await startApp(fixture, {
-      // 关掉巡检：这一条只允许「回收回调」把判据推起来
-      exitCheckIntervalMs: 0,
+      // 空闲回收调到几十毫秒：用例不能真等十分钟
       scopeIdleTimeoutMs: 30,
       exit: (facts) => {
         exits.push(facts);
@@ -337,16 +385,44 @@ describe("退出判据", () => {
       cwd: fixture.workspaceDir.path,
     });
     await app.scopeRegistry.acquire(workspace.id);
-    await client.close();
 
-    // 连接没了，但 Scope 还拿着：什么都不发生
-    await wait(120);
+    // 有连接 → 什么都不欠也不退（连接就是「还有人等着说话」）
+    await app.checkExit();
     expect(exits).toEqual([]);
 
     // 依赖归零 → 空闲到点 → 销毁 → onAllRecycled → 判据成立
+    // 这一次连接还开着，所以仍然不退
     app.scopeRegistry.release(workspace.id);
-    await wait(200);
+    await wait(120);
+    expect(app.scopeRegistry.size()).toBe(0);
+    expect(exits).toEqual([]);
+
+    // 再借一次、断开连接、再归还：这次什么都不欠了
+    await app.scopeRegistry.acquire(workspace.id);
+    await client.close();
+    await app.checkExit();
+    expect(exits).toEqual([]);
+    app.scopeRegistry.release(workspace.id);
+    await wait(150);
     expect(exits).toEqual([{ reason: "idle", connections: 0, runs: 0, scopes: 0 }]);
+    expect(app.running).toBe(false);
+  });
+
+  it("收尾只做一次、交棒只交一次", async () => {
+    const fixture = await makeFixture();
+    const exits: ExitFacts[] = [];
+    const app = await startApp(fixture, {
+      exit: (facts) => {
+        exits.push(facts);
+      },
+    });
+
+    const [first, second] = await Promise.all([
+      app.shutdown("requested"),
+      app.shutdown("requested"),
+    ]);
+    expect(first).toBe(second);
+    expect(exits).toHaveLength(1);
   });
 });
 

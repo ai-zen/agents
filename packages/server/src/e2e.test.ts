@@ -11,7 +11,10 @@
  *   4. `message.list` 拉回这一轮的消息（用户 + 助手 + 工具结果）；
  *   5. `conversation.state` 返回现场（跑完是空闲）；
  *   6. 关掉服务器 → 用**同一个数据根**再起一个 → `message.list` 仍拿回同一批消息；
- *   7. 断开所有连接 + 等 Scope 回收 → `onAllRecycled` 被触发、进程退出判据成立（`reason: idle`）。
+ *   7. 断开所有连接 + 等 Scope 回收 → `onAllRecycled` 触发退出判据（`reason: idle`）。
+ *
+ * 退出判据不靠轮询：触发源只有「Scope 全部回收」与「一轮结算」两处（裁定 R53）。所以第 7 步
+ * 的顺序是「连接先断、Scope 后回收」：回收那一刻判据才看到「没有连接」。
  */
 
 import { promises as fs } from "node:fs";
@@ -150,10 +153,8 @@ async function startServer(): Promise<ServerApp> {
     port: 0,
     local: true,
     createAgent,
-    // 空闲回收调到几十毫秒：用例不能真等十分钟
-    scopeIdleTimeoutMs: 40,
-    // 退出判据的巡检也调小：否则「最后一条连接走了」要等一秒才被发现
-    exitCheckIntervalMs: 10,
+    // 空闲回收调到 150ms：用例不能真等十分钟，又要在「连接断开之后」才回收（第 7 步）
+    scopeIdleTimeoutMs: 150,
     exit: (facts) => {
       exits.push(facts);
     },
@@ -352,7 +353,7 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
     expect(restored.messages[1]?.content).toBe("你好。");
     expect(restored.messages[3]?.content).toBe("完事。");
 
-    // ---- 步骤 7：断开所有连接 + 等 Scope 回收 → 进程退出判据成立 ----
+    // ---- 步骤 7：连接断开 + Scope 回收 → 进程退出判据成立 ----
     let recycled = 0;
     app.scopeRegistry.onAllRecycled(() => {
       recycled += 1;
@@ -367,13 +368,14 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
     await collectRun();
 
     // 连接还在：即便 Scope 空闲到点被回收，也不该判「该退出了」
-    await waitFor(() => recycled > 0);
-    expect(app.scopeRegistry.size()).toBe(0);
+    await app.checkExit();
     expect(exits.length).toBe(1);
 
     // 连接断开之后：没有连接、没有在跑的轮次、Scope 全部回收 → 退出
     await client.close();
     client = null;
+    await waitFor(() => recycled > 0);
+    expect(app.scopeRegistry.size()).toBe(0);
     await waitFor(() => exits.length > 1);
     expect(exits[exits.length - 1]).toEqual({ reason: "idle", connections: 0, runs: 0, scopes: 0 });
     expect(app.running).toBe(false);

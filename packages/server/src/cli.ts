@@ -1,27 +1,28 @@
 /**
- * 命令行入口（`bin` 指向 `dist/cli.js`）。
+ * 命令行入口（`bin.agents-server` → `dist/cli.js`）。
  *
  * 三组动作：
- *   - `agents-server` / `agents-server serve`：前台起服务（本地实例只监听回环，`--public` 对外）；
+ *   - `agents-server [serve]`：前台起服务。缺省是本地实例（只监听回环，凭证自动生成并写在
+ *     `<数据根>/run/token`）；`--public` 起对外实例，`--host` 指定监听地址；
  *   - `agents-server token create|list|revoke`：**不开服务**，直接开库操作凭证（PRD L11 / F-E4）。
  *     明文只在 `create` 的那一次输出里出现，此后库里只有摘要；
  *   - `agents-server version`：版本与协议版本（升级判定要比这两个，PRD D4 / F-E3）。
  *
- * 参数解析是手写的：这个包不新增依赖，而命令形状就这么几种。解析失败给一句人话 +
- * 退出码 2（「参数用法不对」与「运行失败」分开，脚本才好分支）。
+ * 参数解析是手写的：这个包不新增依赖，而命令形状就这么几种。解析失败给一句人话 + 退出码 2
+ * （「参数用法不对」与「运行失败」分开，脚本才好分支）；运行失败走 1，成功走 0。
  *
- * 本文件是进程入口：控制台输出与信号处理都在这里，业务与组装在 `app.ts`。
+ * 错误一律走 i18n 渲染出的人话，不甩栈：命令行是给人看的，栈只在日志里有意义。
  */
 
-import { Database } from "./storage/index.js";
-import type { Database as DatabaseType } from "./storage/Database.js";
-import { CredentialRepository } from "./storage/CredentialRepository.js";
-import { migrate } from "./storage/migrations.js";
-import { PROTOCOL_VERSION } from "./wire/index.js";
-import { createServer, resolveServerVersion } from "./app.js";
-import { resolvePaths, type ServerPaths } from "./config.js";
-import { CredentialService } from "./services/index.js";
 import { mkdir } from "node:fs/promises";
+
+import { createServer, resolveServerVersion } from "./app.js";
+import { resolvePaths } from "./config.js";
+import type { ServerPaths } from "./config.js";
+import type { Language } from "./i18n/index.js";
+import { CredentialService } from "./services/index.js";
+import { CredentialRepository, Database, migrate } from "./storage/index.js";
+import { PROTOCOL_VERSION, ServerError, toErrorData } from "./wire/index.js";
 
 /** 用法不对时的退出码（与「跑起来但失败了」区分开） */
 const EXIT_USAGE = 2;
@@ -29,16 +30,25 @@ const EXIT_USAGE = 2;
 /** 运行期失败的退出码 */
 const EXIT_FAILURE = 1;
 
+/**
+ * 命令行的语言。
+ *
+ * 服务端的产品文案是「按连接的语言」渲染的（PRD D8），而命令行没有连接、也就没有协商入口，
+ * 所以它与自己的说明文字用同一种语言。这一点已在 `docs/plan-questions.md` 记过。
+ */
+const CLI_LANGUAGE: Language = "zh";
+
 const USAGE = `用法：
-  agents-server [serve] [--port <端口>] [--local | --public] [--ai-zen-dir <目录>]
+  agents-server [serve] [--port <端口>] [--host <地址>] [--local | --public] [--ai-zen-dir <目录>]
       前台启动服务。缺省是本地实例（只监听 127.0.0.1，凭证自动生成并写在 <数据根>/run/token）。
+      --port 0  让系统分配一个空闲端口（端口被占用时的退路，也是测试与冒烟用的写法）。
 
   agents-server token create [--note <备注>] [--ai-zen-dir <目录>]
       新建一串凭证。明文只显示这一次。
   agents-server token list [--ai-zen-dir <目录>]
       列出全部凭证（含已吊销的）。
   agents-server token revoke <凭证 id> [--ai-zen-dir <目录>]
-      吊销一串凭证（已连上的连接不会被踢下线，吊销管的是「以后连不上」）。
+      单独吊销一串凭证。
 
   agents-server version
       打印服务端版本与协议版本。
@@ -55,9 +65,12 @@ interface ParsedArgs {
   /** `token create` 的备注 */
   note?: string;
   port?: number;
+  /** 数据根（`--ai-zen-dir`） */
+  aiZenDir?: string;
+  /** 显式指定的监听地址 */
+  host?: string;
   /** 本地实例（缺省）/ 对外实例 */
   local: boolean;
-  aiZenDir?: string;
 }
 
 /** 参数用法错误：带着一句给人看的话，由入口翻成退出码 2 */
@@ -71,6 +84,8 @@ class UsageError extends Error {}
 function parseArgs(argv: readonly string[]): ParsedArgs {
   const parsed: ParsedArgs = { command: "serve", local: true };
   const words: string[] = [];
+  /** `--local` / `--public` 有没有被人明确写出来（用来发现与 `--host` 的矛盾） */
+  let localGiven = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index] ?? "";
@@ -81,14 +96,25 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
         return parsed;
       case "--local":
         parsed.local = true;
+        localGiven = true;
         break;
       case "--public":
         parsed.local = false;
+        localGiven = true;
         break;
       case "--port": {
         const value = argv[index + 1];
         if (value === undefined) throw new UsageError("--port 后面要跟一个端口号");
         parsed.port = parsePort(value);
+        index += 1;
+        break;
+      }
+      case "--host": {
+        const value = argv[index + 1];
+        if (value === undefined || value.trim() === "") {
+          throw new UsageError("--host 后面要跟一个监听地址");
+        }
+        parsed.host = value.trim();
         index += 1;
         break;
       }
@@ -115,53 +141,69 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
   }
 
   const [head, ...rest] = words;
-  if (head === undefined) return parsed;
+  if (head !== undefined) {
+    if (head === "serve") {
+      if (rest.length > 0) throw new UsageError(`serve 不接受多余的位置参数：${rest.join(" ")}`);
+      parsed.command = "serve";
+    } else if (head === "version") {
+      if (rest.length > 0) throw new UsageError(`version 不接受位置参数：${rest.join(" ")}`);
+      parsed.command = "version";
+    } else if (head === "token") {
+      applyTokenArgs(parsed, rest);
+    } else {
+      throw new UsageError(`不认识的命令：${head}`);
+    }
+  }
 
-  if (head === "serve") {
-    if (rest.length > 0) throw new UsageError(`serve 不接受多余的位置参数：${rest.join(" ")}`);
-    parsed.command = "serve";
-    return parsed;
-  }
-  if (head === "version") {
-    if (rest.length > 0) throw new UsageError(`version 不接受位置参数：${rest.join(" ")}`);
-    parsed.command = "version";
-    return parsed;
-  }
-  if (head === "token") {
-    const [action, ...tail] = rest;
-    if (action === "create") {
-      if (tail.length > 0) throw new UsageError(`token create 不接受位置参数：${tail.join(" ")}`);
-      parsed.command = "token";
-      parsed.action = "create";
-      return parsed;
+  // 监听地址决定了这是哪种实例（PRD A6：本地实例只监听回环）
+  if (parsed.host !== undefined) {
+    if (isLoopbackHost(parsed.host)) {
+      parsed.local = true;
+    } else if (localGiven && parsed.local) {
+      throw new UsageError(`--local 与对外地址 ${parsed.host} 互相矛盾：本地实例只监听回环`);
+    } else {
+      parsed.local = false;
     }
-    if (action === "list") {
-      if (tail.length > 0) throw new UsageError(`token list 不接受位置参数：${tail.join(" ")}`);
-      parsed.command = "token";
-      parsed.action = "list";
-      return parsed;
-    }
-    if (action === "revoke") {
-      const id = tail[0];
-      if (id === undefined) throw new UsageError("token revoke 后面要跟一个凭证 id");
-      if (tail.length > 1) throw new UsageError(`token revoke 只接受一个 id：${tail.join(" ")}`);
-      parsed.command = "token";
-      parsed.action = "revoke";
-      parsed.credentialId = id;
-      return parsed;
-    }
-    throw new UsageError(`不认识的 token 动作：${action ?? "(空)"}（可用：create / list / revoke）`);
   }
-  throw new UsageError(`不认识的命令：${head}`);
+  return parsed;
 }
 
-/** 端口：1..65535 的整数；写错就当场说，不静默回落到默认端口（R12 的口径） */
+function applyTokenArgs(parsed: ParsedArgs, rest: readonly string[]): void {
+  const [action, ...tail] = rest;
+  if (action === "create" || action === "list") {
+    if (tail.length > 0) throw new UsageError(`token ${action} 不接受位置参数：${tail.join(" ")}`);
+    parsed.command = "token";
+    parsed.action = action;
+    return;
+  }
+  if (action === "revoke") {
+    const id = tail[0];
+    if (id === undefined) throw new UsageError("token revoke 后面要跟一个凭证 id");
+    if (tail.length > 1) throw new UsageError(`token revoke 只接受一个 id：${tail.join(" ")}`);
+    parsed.command = "token";
+    parsed.action = "revoke";
+    parsed.credentialId = id;
+    return;
+  }
+  throw new UsageError(`不认识的 token 动作：${action ?? "(空)"}（可用：create / list / revoke）`);
+}
+
+/**
+ * 端口：0..65535 的整数，`0` 表示让系统分配。
+ *
+ * 写错就当场说，不静默回落到默认端口（R12 的口径：静默回落会造成「我配了 9000 却在 8790 上」）。
+ */
 function parsePort(value: string): number {
   const port = Number(value);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new UsageError(`端口要写成 1..65535 的整数，收到的是：${value}`);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new UsageError(`端口要写成 0..65535 的整数（0 表示让系统分配），收到的是：${value}`);
   }
   return port;
+}
+
+/** 这个地址是不是回环（本地实例只监听回环，PRD A6） */
+function isLoopbackHost(host: string): boolean {
+  return host === "localhost" || host === "::1" || host.startsWith("127.");
 }
 
 /**
@@ -174,7 +216,7 @@ async function withCredentials<T>(
   work: (credentials: CredentialService) => Promise<T>,
 ): Promise<T> {
   await mkdir(paths.dataRoot, { recursive: true });
-  const db: DatabaseType = new Database(paths.dbFile);
+  const db = new Database(paths.dbFile);
   try {
     await migrate(db);
     return await work(new CredentialService({ credentials: new CredentialRepository(db) }));
@@ -195,7 +237,7 @@ async function runTokenCreate(paths: ServerPaths, note: string | undefined): Pro
   process.stdout.write("把它分发给要连接这台服务端的设备，对方在握手时带上它即可。\n");
 }
 
-/** `token list`：连已吊销的一起列，吊销状态看最后一列 */
+/** `token list`：连已吊销的一起列，吊销状态看中间那列 */
 async function runTokenList(paths: ServerPaths): Promise<void> {
   const result = await withCredentials(paths, (credentials) => credentials.list());
   if (result.credentials.length === 0) {
@@ -210,36 +252,47 @@ async function runTokenList(paths: ServerPaths): Promise<void> {
   }
 }
 
-/** `token revoke`：`revoked: false` 表示这串本来就已经吊销了（不是失败） */
+/** `token revoke`：`revoked: false` 表示这串本来就已经吊销了（不是失败，R42） */
 async function runTokenRevoke(paths: ServerPaths, credentialId: string): Promise<void> {
   const result = await withCredentials(paths, (credentials) =>
     credentials.revoke({ credentialId }),
   );
   process.stdout.write(
-    result.revoked
-      ? `已吊销：${credentialId}\n`
-      : `这串凭证本来就已吊销：${credentialId}\n`,
+    result.revoked ? `已吊销：${credentialId}\n` : `这串凭证本来就已吊销：${credentialId}\n`,
   );
 }
 
 /**
  * `serve`：前台起服务。
  *
- * 启动后打印三样东西：实际监听地址（端口可能是系统分配的）、发现文件、本地凭证交付文件路径
+ * 启动后打印四样东西：实际监听地址（端口可能是系统分配的）、版本、发现文件、本地凭证交付文件
  * —— 客户端要连的就是前两个，本机免输凭证靠的是第三个（PRD A5 / architecture §2）。
+ *
+ * 同一个数据根上已经有人在服务时（单实例），本进程只是把那个地址报出来就退出：
+ * 两个进程各写一份 `server.json` 会让客户端连谁都不对。
  */
 async function runServe(parsed: ParsedArgs): Promise<void> {
   const app = await createServer({
     aiZenDir: parsed.aiZenDir,
     port: parsed.port,
+    host: parsed.host,
     local: parsed.local,
   });
 
   const target = await app.start();
+
+  if (app.attached) {
+    process.stdout.write(`已有服务端在运行：ws://${target.host}:${target.port}\n`);
+    process.stdout.write(`发现文件：${app.paths.serverFile}\n`);
+    process.stdout.write("本进程不重复监听，直接退出。\n");
+    await app.stop("requested");
+    return;
+  }
+
   process.stdout.write(`服务端已启动：ws://${target.host}:${target.port}\n`);
   process.stdout.write(`版本：${app.version}（协议 ${PROTOCOL_VERSION}）\n`);
   process.stdout.write(`发现文件：${app.paths.serverFile}\n`);
-  if (parsed.local) {
+  if (app.local) {
     process.stdout.write(`本地凭证交付文件：${app.paths.tokenFile}\n`);
   } else {
     process.stdout.write(
@@ -247,7 +300,7 @@ async function runServe(parsed: ParsedArgs): Promise<void> {
     );
   }
 
-  // 优雅退出：等收尾做完（摘发现文件、断连接、关库）再让进程走
+  // 优雅退出：等收尾做完（摘发现文件、断连接、回收 Scope、关库）再让进程走
   const stop = (): void => {
     void app.shutdown("requested");
   };
@@ -257,7 +310,28 @@ async function runServe(parsed: ParsedArgs): Promise<void> {
 
 /** 版本：脚本里比对升级（PRD D4 / F-E3） */
 function runVersion(): void {
-  process.stdout.write(`@ai-zen/agents-server ${resolveServerVersion()}（协议 ${PROTOCOL_VERSION}）\n`);
+  process.stdout.write(
+    `@ai-zen/agents-server ${resolveServerVersion()}（协议 ${PROTOCOL_VERSION}）\n`,
+  );
+}
+
+/**
+ * 失败原因（人话）。
+ *
+ * `ServerError` 带文案键与参数，按命令行的语言渲染一句；其余错误只说它说了什么 —— 栈不进
+ * 终端，它只对改代码的人有用。
+ */
+function describeFailure(error: unknown): string {
+  if (ServerError.is(error)) {
+    const data = toErrorData(error, CLI_LANGUAGE);
+    const detail = error.detail;
+    const hint =
+      typeof detail === "object" && detail !== null && typeof (detail as { path?: unknown }).path === "string"
+        ? `（${(detail as { path: string }).path}）`
+        : "";
+    return `${data.message}${hint}`;
+  }
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -300,7 +374,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     // 服务在后台跑（监听、推送），主流程不阻塞在某个 Promise 上
     return 0;
   } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write(`${describeFailure(error)}\n`);
     return EXIT_FAILURE;
   }
 }

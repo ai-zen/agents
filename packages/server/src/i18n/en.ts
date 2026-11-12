@@ -21,6 +21,9 @@ export const en = {
   // 助手没有可用模型（`conversation.create` 借 `config_invalid` 这个码，结构化原因在 `detail` 里）
   "error.modelUnresolved":
     "No model could be resolved for this assistant — pick a model for it, or set a default model in the settings.",
+  // 恢复出厂时这次编辑的模型在出厂清单里没有对应定义（没有可用来替换的那一条）
+  "error.notFactoryModel":
+    "\"{id}\" isn't part of the factory model list, so there's no factory version to restore.",
   "error.mcpUnavailable": "{name} isn't answering, so its tools are missing this turn. Everything else still works.",
   "error.modelUnsupported": "{model} can't take the images already in this conversation, so the switch was refused.",
   "error.handoffDeclined": "Handoff was declined, so this conversation carries on as it is.",
@@ -99,10 +102,39 @@ export const en = {
   "completion.scanning": "Still reading the project's file list — a few more characters and it will fill in.",
   "completion.timedOut": "The file list took longer than {seconds}s to build, so it may be incomplete.",
   "completion.unavailable": "The file list isn't available here: {reason}",
+  "completion.noFolder": "this project's folder isn't there anymore",
+  "completion.truncated":
+    "Only the first {limit} files are listed; narrow what you type to see the rest.",
 
   // ---- 配置、模型、交接、工作区的短句 ----
   "config.referenced": "Still used by {count} item(s), so it can't be removed: {names}",
   "config.fileBroken": "{path} can't be read as settings: {reason}",
+
+  // ---- 端点、模型、助手的可用性（PRD F-B5：用不了也要列出来并说明原因）----
+  "endpoint.missing": "{id} isn't in the endpoint list anymore, so this can't be reached.",
+  "endpoint.noKey": "{endpoint} has no access key yet, so its models can't answer.",
+  "model.endpointMissing":
+    "{model} points to an endpoint ({id}) that isn't in the endpoint list anymore.",
+  "agent.modelMissing":
+    "This assistant is bound to a model ({id}) that isn't in the model list anymore.",
+  "agent.fileBroken": "{name} can't be read as an assistant definition: {reason}",
+
+  // ---- 配置检查（PRD F-A8：配错了要能当场修，问题指到具体字段）----
+  "config.issue.thresholdOrder":
+    "{name} has its handoff line ({handoff} tokens) at or above its hard limit ({guard} tokens).",
+  "config.issue.defaultMissing": "{field} points to {id}, which isn't in that list anymore.",
+  "config.issue.defaultAgentMissing":
+    "The default assistant ({id}) isn't among the assistant definitions anymore.",
+
+  // ---- 能力发现（PRD F-G2 / F-F6：坏掉的那一条也要看得见）----
+  "discovery.notADirectory": "{path} isn't a directory, so nothing was read from it.",
+  "discovery.shadowed": "This entry is overridden by the closer {path}.",
+  "discovery.mcpEntryInvalid":
+    "{name} has neither a transport nor a command, so it can't be connected.",
+  "discovery.skillBroken":
+    "{name} has a SKILL.md that can't be used as a skill: {reason}",
+  "discovery.toolUnloadable": "{name} couldn't be loaded as a tool: {reason}",
+  "discovery.subAgentBroken": "{name} isn't a usable sub-agent definition: {reason}",
   "model.unavailable": "{name} is listed but can't be used right now: {reason}",
   "model.visionRequired": "{model} can't read images, and this conversation has some.",
   "handoff.degraded": "The handoff fell back to {mode}: {reason}",
@@ -111,4 +143,20 @@ export const en = {
   "workspace.removalCost": "This removes {conversations} conversation(s) and their {messages} message(s). The folder on disk stays.",
   "attachment.tooLarge": "Each image can be at most {limit}; {name} is {size}.",
   "attachment.tooMany": "A message carries at most {limit} images.",
+
+  // ---- 通知 / 问题 / 交接 / 自动命名 / 临时对话（W4-H）----
+  // 库里那条通知的码认不出来（配置被手改坏、旧版本写进去的码）时的兜底句
+  "notice.unknown": "A notice from the server ({code}).",
+  // 交接本身失败（写不出文档、摘要请求出错）；用户取消不算失败，走 `error.handoffDeclined`
+  "error.handoffFailed": "The handoff didn't go through: {reason}",
+  // 临时对话（D3）：一次请求跑一轮，失败时没有会话可回看，只能在这一句里说清
+  "error.transientFailed": "That one-off request didn't finish: {reason}",
+  // 交接之后新开的那段对话，开场带上交接文档的位置与摘要（D18）
+  "handoff.newConversationSummary":
+    "This conversation continues an earlier one. The handoff document is at {path} — read it first, then carry on with the task.\n\nSummary of the handoff:\n{summary}",
+  // 降级的原因（`handoff.degraded` 的 {reason} 就是这句话）
+  "handoff.degradeReason.fallback":
+    "the assistant couldn't write the document itself this time",
+  // 自动命名（D2）：起不出名就保持原名，这句只在内部结果与日志里出现
+  "autoName.failed": "No name came out of it, so the original one stays: {reason}",
 } as const;

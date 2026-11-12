@@ -19,6 +19,7 @@ export const zh = {
   "error.configInvalid": "当前配置还用不了：{reason}。",
   // 助手没有可用模型（结构化原因在 `detail` 里）
   "error.modelUnresolved": "这个助手没有可用的模型 —— 给它挑一个模型，或者在设置里指定一个默认模型。",
+  "error.notFactoryModel": "「{id}」不在出厂模型清单里，没有可以恢复的出厂版本。",
   "error.mcpUnavailable": "{name} 没有响应，这一轮缺它的工具，其它能力照常。",
   "error.modelUnsupported": "这段对话里已经有图片，{model} 读不了图片，所以没有换过去。",
   "error.handoffDeclined": "这次不交接，对话继续往下跑。",
@@ -97,10 +98,32 @@ export const zh = {
   "completion.scanning": "还在读项目的文件清单，再多打几个字它就出来了。",
   "completion.timedOut": "文件清单超过 {seconds} 秒才建好，可能不完整。",
   "completion.unavailable": "这里拿不到文件清单：{reason}",
+  "completion.noFolder": "这个项目的目录已经不在了",
+  "completion.truncated": "只列了前 {limit} 个文件，再打几个字缩小范围就能看到其余的。",
 
   // ---- 配置、模型、交接、工作区的短句 ----
   "config.referenced": "还有 {count} 处引用它，所以不能删：{names}",
   "config.fileBroken": "{path} 读不成配置：{reason}",
+
+  // ---- 端点、模型、助手的可用性（PRD F-B5：用不了也要列出来并说明原因）----
+  "endpoint.missing": "{id} 已经不在端点列表里了，所以这里连不出去。",
+  "endpoint.noKey": "{endpoint} 还没配访问密钥，它的模型答不了话。",
+  "model.endpointMissing": "{model} 指向的端点（{id}）已经不在端点列表里了。",
+  "agent.modelMissing": "这个助手绑定的模型（{id}）已经不在模型列表里了。",
+  "agent.fileBroken": "{name} 读不成助手定义：{reason}",
+
+  // ---- 配置检查（PRD F-A8：配错了要能当场修，问题指到具体字段）----
+  "config.issue.thresholdOrder": "{name} 的交接线（{handoff} 个 token）到了或者超过了硬线（{guard} 个 token）。",
+  "config.issue.defaultMissing": "{field} 指向 {id}，那条已经不在清单里了。",
+  "config.issue.defaultAgentMissing": "默认助手（{id}）已经不在助手定义里了。",
+
+  // ---- 能力发现（PRD F-G2 / F-F6：坏掉的那一条也要看得见）----
+  "discovery.notADirectory": "{path} 不是目录，从它这里什么都读不到。",
+  "discovery.shadowed": "这一条被更近的 {path} 覆盖了。",
+  "discovery.mcpEntryInvalid": "{name} 既没有 transport 也没有 command，连不上。",
+  "discovery.skillBroken": "{name} 的 SKILL.md 用不成一个 Skill：{reason}",
+  "discovery.toolUnloadable": "{name} 加载不成一个工具：{reason}",
+  "discovery.subAgentBroken": "{name} 不是一个能用的子 Agent 定义：{reason}",
   "model.unavailable": "{name} 还在列表里，但现在用不了：{reason}",
   "model.visionRequired": "{model} 读不了图片，而这段对话里有图片。",
   "handoff.degraded": "交接退回到了 {mode}：{reason}",
@@ -109,4 +132,13 @@ export const zh = {
   "workspace.removalCost": "这会删掉 {conversations} 段对话和它们的 {messages} 条消息，磁盘上的目录不动。",
   "attachment.tooLarge": "一张图片最大 {limit}，{name} 是 {size}。",
   "attachment.tooMany": "一条消息最多带 {limit} 张图片。",
+
+  // ---- 通知 / 问题 / 交接 / 自动命名 / 临时对话（W4-H）----
+  "notice.unknown": "服务端有一条通知（{code}）。",
+  "error.handoffFailed": "交接没走通：{reason}",
+  "error.transientFailed": "这次一次性请求没跑完：{reason}",
+  "handoff.newConversationSummary":
+    "这段对话接着上一段。交接文档在 {path}，先读它，再接着做这件事。\n\n交接摘要：\n{summary}",
+  "handoff.degradeReason.fallback": "这次助手自己没能把文档写出来",
+  "autoName.failed": "没起出名字，保持原来的名字：{reason}",
 } satisfies Record<keyof typeof en, string>;
