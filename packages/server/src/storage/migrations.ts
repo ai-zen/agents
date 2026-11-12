@@ -125,22 +125,18 @@ export const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_conversation_assets_conversation
          ON conversation_assets (conversationId)`,
 
-      // asset_vendor_files：厂商侧文件 id 的可失效缓存（端点维度、会过期）。
+      // asset_vendor_files：厂商侧文件 id 的缓存（端点维度）。
       // 它**不是**真相：删光之后从 assets 重建即可（下次发送时重新上传一遍），所以这里只记
-      // 「哪个素材在哪个端点上对应哪个 file_id」与最后一次用它的时刻；素材没了就跟着走。
+      // 「哪个素材在哪个端点上对应哪个 file_id」；素材没了就跟着走。
       `CREATE TABLE IF NOT EXISTS asset_vendor_files (
          assetId      TEXT NOT NULL REFERENCES assets (id) ON DELETE CASCADE,
          endpointId   TEXT NOT NULL,
          vendorFileId TEXT NOT NULL,
          createdAt    INTEGER NOT NULL,
-         lastUsedAt   INTEGER NOT NULL,
          UNIQUE (assetId, endpointId)
        )`,
-      // 清理时按「最近用过的」判（哪一段对话的哪些缓存已经放了很久）
-      `CREATE INDEX IF NOT EXISTS idx_asset_vendor_files_lastUsedAt
-         ON asset_vendor_files (lastUsedAt)`,
-      // 「这段对话在这个端点上的缓存」靠 UNIQUE (assetId, endpointId) join conversation_assets 拿到，
-      // 不再另建一份（按 assetId 的前缀查询也走那条）
+      // 缓存行的两种查法靠 UNIQUE (assetId, endpointId)：
+      // 「这个端点上有没有」与「别的端点上有没有」都走这条（都是 assetId 前缀查询）
 
       // notices：持久化，durationMs 为 null 表示永久（PRD L3）。
       // conversationId 是「这条通知与哪段对话有关」的真值（可空 = 全局通知）：按对话过滤、

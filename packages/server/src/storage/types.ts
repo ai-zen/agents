@@ -209,18 +209,16 @@ export interface ConversationAssetRow {
 /* --------------------------- asset_vendor_files --------------------------- */
 
 /**
- * 厂商侧文件 id 的缓存行（可失效、可重建）。
+ * 厂商侧文件 id 的缓存行。
  *
- * `vendorFileId` 是**端点维度**的资源：同一个素材在 A 端点上传得到的 id 拿到 B 端点用会 not found，
- * 而且它自己也会过期。所以这张表只当缓存用：miss 就重新上传，命中就省一次 HTTP。
+ * `vendorFileId` 是**端点维度**的资源：同一个素材在 A 端点上传得到的 id 拿到 B 端点用会 not found。
+ * 所以这张表是缓存：这个端点上有就直接用，没有就按素材服务那三条规则走。
  */
 export interface AssetVendorFileRow {
   assetId: string;
   endpointId: string;
   vendorFileId: string;
   createdAt: number;
-  /** 最后一次命中/写入的时刻：清理与诊断按它判新鲜度 */
-  lastUsedAt: number;
 }
 
 export interface AssetVendorFileUpsertInput {
@@ -228,7 +226,6 @@ export interface AssetVendorFileUpsertInput {
   endpointId: string;
   vendorFileId: string;
   createdAt: number;
-  lastUsedAt: number;
 }
 
 /* --------------------------------- notices -------------------------------- */

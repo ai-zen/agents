@@ -200,7 +200,7 @@ describe("全局去重（按 sha256，不分对话）", () => {
   });
 });
 
-describe("asset_vendor_files（可失效的缓存）", () => {
+describe("asset_vendor_files（厂商 file_id 的缓存）", () => {
   /** 先有一条素材，缓存行都挂在它上面 */
   async function seedLinkedAsset(id = "a1", conversationId = "c1", digest = "digest-1") {
     await seedAsset(id, digest);
@@ -208,7 +208,7 @@ describe("asset_vendor_files（可失效的缓存）", () => {
     await repo.linkAsset({ conversationId, messageId, assetId: id, createdAt: 20 });
   }
 
-  it("upsert 写入、再写覆盖 file_id 与 lastUsedAt（同一对 asset+endpoint 只有一行）", async () => {
+  it("upsert 写入、再写覆盖 file_id（同一对 asset+endpoint 只有一行）", async () => {
     await seedLinkedAsset();
 
     await repo.upsertVendorFile({
@@ -216,96 +216,40 @@ describe("asset_vendor_files（可失效的缓存）", () => {
       endpointId: "ep-1",
       vendorFileId: "file-1",
       createdAt: 20,
-      lastUsedAt: 20,
     });
     await repo.upsertVendorFile({
       assetId: "a1",
       endpointId: "ep-1",
       vendorFileId: "file-2",
       createdAt: 30,
-      lastUsedAt: 30,
     });
 
-    expect(await repo.getVendorFile("a1", "ep-1")).toMatchObject({
-      vendorFileId: "file-2",
-      lastUsedAt: 30,
-    });
+    expect(await repo.getVendorFile("a1", "ep-1")).toMatchObject({ vendorFileId: "file-2" });
   });
 
-  it("touch 只改 lastUsedAt，不换 file_id", async () => {
+  it("describeVendorFiles 分开报「这个端点上有没有」与「别的端点上有没有」", async () => {
     await seedLinkedAsset();
     await repo.upsertVendorFile({
       assetId: "a1",
       endpointId: "ep-1",
       vendorFileId: "file-1",
       createdAt: 20,
-      lastUsedAt: 20,
     });
 
-    expect(await repo.touchVendorFile("a1", "ep-1", 99)).toBe(1);
-    expect(await repo.getVendorFile("a1", "ep-1")).toMatchObject({
-      vendorFileId: "file-1",
-      lastUsedAt: 99,
+    expect(await repo.describeVendorFiles("a1", "ep-1")).toEqual({
+      onEndpoint: true,
+      elsewhere: false,
     });
-    // 不存在的行：0 行被改动
-    expect(await repo.touchVendorFile("a1", "ep-2", 99)).toBe(0);
-  });
-
-  it("listVendorFiles 按「这段对话 + 这个端点」取，端点不对就是空的", async () => {
-    await seedLinkedAsset("a1");
-    await seedLinkedAsset("a2", "c1", "digest-2");
-    for (const [assetId, endpointId, at] of [
-      ["a1", "ep-1", 20],
-      ["a2", "ep-1", 30],
-      ["a1", "ep-2", 40],
-    ] as const) {
-      await repo.upsertVendorFile({
-        assetId,
-        endpointId,
-        vendorFileId: `file-${assetId}-${endpointId}`,
-        createdAt: at,
-        lastUsedAt: at,
-      });
-    }
-
-    const rows = await repo.listVendorFiles("c1", "ep-1");
-    expect(rows.map((row) => row.assetId)).toEqual(["a1", "a2"]);
-    expect(await repo.listVendorFiles("c1", "ep-3")).toEqual([]);
-  });
-
-  it("deleteVendorFiles 只删「这段对话引用的素材 + 这个端点」，返回删掉的行数", async () => {
-    await seedLinkedAsset("a1", "c1");
-    await seedLinkedAsset("a2", "c1", "digest-2");
-    await seedLinkedAsset("a3", "c2", "digest-3");
-    for (const assetId of ["a1", "a2", "a3"]) {
-      await repo.upsertVendorFile({
-        assetId,
-        endpointId: "ep-1",
-        vendorFileId: `file-${assetId}`,
-        createdAt: 20,
-        lastUsedAt: 20,
-      });
-    }
-
-    expect(await repo.deleteVendorFiles("c1", "ep-1")).toBe(2);
-    expect(await repo.listVendorFiles("c1", "ep-1")).toEqual([]);
-    // 别的对话那一行还在（缓存按对话作废）
-    expect((await repo.listVendorFiles("c2", "ep-1")).map((row) => row.assetId)).toEqual(["a3"]);
-  });
-
-  it("deleteVendorFile 删单条", async () => {
-    await seedLinkedAsset();
-    await repo.upsertVendorFile({
-      assetId: "a1",
-      endpointId: "ep-1",
-      vendorFileId: "file-1",
-      createdAt: 20,
-      lastUsedAt: 20,
+    // 换端点：这个端点上没有、另一个端点上才有
+    expect(await repo.describeVendorFiles("a1", "ep-2")).toEqual({
+      onEndpoint: false,
+      elsewhere: true,
     });
-
-    expect(await repo.deleteVendorFile("a1", "ep-1")).toBe(1);
-    expect(await repo.getVendorFile("a1", "ep-1")).toBeUndefined();
-    expect(await repo.deleteVendorFile("a1", "ep-1")).toBe(0);
+    // 没传过的素材：两边都没有
+    expect(await repo.describeVendorFiles("a9", "ep-1")).toEqual({
+      onEndpoint: false,
+      elsewhere: false,
+    });
   });
 
   it("素材删掉时缓存跟着走（ON DELETE CASCADE）", async () => {
@@ -315,7 +259,6 @@ describe("asset_vendor_files（可失效的缓存）", () => {
       endpointId: "ep-1",
       vendorFileId: "file-1",
       createdAt: 20,
-      lastUsedAt: 20,
     });
     await db.run("DELETE FROM messages WHERE id = ?", ["m1"]);
 

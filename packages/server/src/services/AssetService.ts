@@ -13,10 +13,13 @@
  *      同时给出「落库用」的那一份内容：素材在那里写成段上的 `__asset_id`（本地扩展字段）。
  *   3. **重放**（{@link AssetService.resolveHistory}）：历史里的 `__asset_id` 在每轮发送前还原成
  *      当前模型能吃的内容段 —— 换了模型、重启之后再跑，同一条历史照样发得出去。发出去的那一份
- *      按 core 的字段白名单重建过（{@link stripLocalExtensions}），`__` 开头的键不会出网。
- *   4. **两层缓存**：`assets` 是真相；厂商的 `file_id` 是端点维度、会过期的资源，落在
- *      `asset_vendor_files`（{@link AssetService.vendorFiles}）。命中就不发 HTTP，miss 才真上传并写回；
- *      一次请求因「file 不存在/无效」失败时 {@link AssetService.invalidateVendorFiles} 把那一批作废。
+ *      经 core 的 `formatContent` 按字段白名单重建，`__` 开头的键不会出网。
+ *   4. **厂商 file_id 的缓存**：`assets` 是真相；厂商的 `file_id` 是端点维度资源，落在
+ *      `asset_vendor_files`（{@link AssetService.vendorFiles}）。三条：
+ *        - 这个端点上有缓存行 → 直接用那个 `vendorFileId`；
+ *        - 这个端点上没有、别的端点上有（换厂商 / 换端点）→ 内联 base64，不往新端点重传；
+ *        - 哪个端点上都没有 → 上传一次并写回。
+ *      发送失败就报失败：不自动重试、不判失效、不清缓存。
  *   5. **清理**（{@link AssetService.sweepUnreferenced}）：引用归零的素材才删行、删文件。关系行
  *      （`conversation_assets`）由外键级联删，所以这里判的是「删完之后还剩几张引用」。
  *      这一层是碰 `assets/` 下**正式文件**的地方（临时文件的生与死归上传接收器）。
@@ -30,22 +33,18 @@ import { promises as fs } from "node:fs";
 import { basename, isAbsolute, join, relative } from "node:path";
 
 import type { AgentNS } from "@ai-zen/agents-core";
+import { formatContent, formatContentSection } from "@ai-zen/agents-core";
 import { fileToContentSection, mimeOf } from "@ai-zen/agents-sdk";
 import type { Endpoint, FileSource, Model, ToolEnvDeps, UploadFn } from "@ai-zen/agents-sdk";
 
 import type { ServerPaths } from "../config.js";
 import { DEFAULT_LANGUAGE, render, type MessageKey } from "../i18n/index.js";
 import type { UploadFinalizeRequest } from "../net/UploadReceiver.js";
-import type {
-  AttachmentHistoryResolver,
-  AttachmentPreparer,
-  MessageAssetLinker,
-} from "../runtime/ChatRunner.js";
+import type { AttachmentPreparer, MessageAssetLinker } from "../runtime/ChatRunner.js";
 import { ServerError } from "../wire/errors.js";
 import {
   MAX_ASSETS_PER_MESSAGE,
   localAssetIdOf,
-  stripLocalExtensions,
   type AssetGetResult,
   type AssetRef,
   type AssetVariant,
@@ -88,7 +87,14 @@ export interface VendorFileRecord {
   endpointId: string;
   vendorFileId: string;
   createdAt: number;
-  lastUsedAt: number;
+}
+
+/** 一个素材的缓存行分布：这个端点上有没有、别的端点上有没有 */
+export interface VendorFilePresence {
+  /** 这个端点上已经有缓存行（命中就复用那个 file_id） */
+  onEndpoint: boolean;
+  /** 别的端点上有（换过厂商 / 端点，这次走内联） */
+  elsewhere: boolean;
 }
 
 /** 素材仓储里本服务用到的部分（`AssetRepository` 结构上满足） */
@@ -124,16 +130,14 @@ export interface AssetRegistry {
 /**
  * 厂商 file_id 缓存表的窄接口（`AssetRepository` 结构上满足）。
  *
- * 单列一个口子是为了让「缓存可以失效、可以删光重建」这件事在类型上就是真的：本服务只用
- * 这五个动作，没有第二个地方会去改它。
+ * 单列一个口子是为了让「缓存只是一张表」这件事在类型上就是真的：本服务只用这三个动作，
+ * 没有第二个地方会去改它。
  */
 export interface AssetVendorRegistry {
   getVendorFile(assetId: string, endpointId: string): Promise<VendorFileRecord | undefined>;
   upsertVendorFile(input: VendorFileRecord): Promise<void>;
-  touchVendorFile(assetId: string, endpointId: string, lastUsedAt: number): Promise<number>;
-  listVendorFiles(conversationId: string, endpointId: string): Promise<VendorFileRecord[]>;
-  /** 这段对话在这个端点上的缓存整批作废，返回删掉的行数 */
-  deleteVendorFiles(conversationId: string, endpointId: string): Promise<number>;
+  /** 这个素材的缓存行分布（决定这次是复用、内联还是上传） */
+  describeVendorFiles(assetId: string, endpointId: string): Promise<VendorFilePresence>;
 }
 
 /**
@@ -343,7 +347,7 @@ export class AssetService {
     const assetIds = dedupe(context.input.assetIds ?? []);
     if (assetIds.length === 0) {
       // 没有素材也要过一遍白名单：用户输入里可能带着客户端塞的本地字段，它们不该出网
-      return { content: stripLocalExtensions(content), attachments: [] };
+      return { content: formatContent(content), attachments: [] };
     }
 
     const withinLimit = assetIds.slice(0, MAX_ASSETS_PER_MESSAGE);
@@ -391,7 +395,7 @@ export class AssetService {
     }
 
     return {
-      content: stripLocalExtensions(withSections(content, collected)),
+      content: formatContent(withSections(content, collected)),
       attachments,
       // 落库的那一份：成不成功都记「用户挂过这几张」（失败事实在 `attachments` 里，不在库里）
       storedContent: withSections(content, records.map(assetSectionOf)),
@@ -405,8 +409,8 @@ export class AssetService {
    * 换个不支持视觉的模型就退化成一句文字提示。还原不出来的那一段换成一句文字说明而不是把
    * 引用原样交给厂商（那会让整条请求 400）。
    *
-   * 无论有没有素材引用，内容都按 core 的字段白名单重建一次：`__` 开头的键是本机扩展，
-   * 出网的那一份里不该有它们。没有引用时不读盘、不上传。
+   * 无论有没有素材引用，内容都按 core 的字段白名单重建一次（`formatContent`）：`__` 开头的键
+   * 是本机扩展，出网的那一份里不该有它们。没有引用时不读盘、不上传。
    */
   async resolveHistory(context: {
     conversationId: string;
@@ -421,7 +425,7 @@ export class AssetService {
     if (!usesAssets) {
       return context.messages.map((message) =>
         Array.isArray(message.content)
-          ? { ...message, content: stripLocalExtensions(message.content) }
+          ? { ...message, content: formatContent(message.content) }
           : message,
       );
     }
@@ -437,8 +441,7 @@ export class AssetService {
       for (const section of message.content) {
         const assetId = localAssetIdOf(section);
         if (assetId === null) {
-          const stripped = stripLocalExtensions([section]);
-          sections.push(Array.isArray(stripped) ? (stripped[0] ?? section) : section);
+          sections.push(formatContentSection(section));
           continue;
         }
         const record = await this.assets.get(assetId);
@@ -452,30 +455,6 @@ export class AssetService {
       resolved.push({ ...message, content: sections });
     }
     return resolved;
-  }
-
-  /**
-   * 把「这段对话在这个端点上的厂商 file_id 缓存」整批作废，返回删掉的行数。
-   *
-   * 触发场景：一次请求因「file 不存在/无效」被厂商拒了。`file_id` 是端点维度且会过期的资源，
-   * 到底哪一条失效了从错误里看不出来，所以按「这段对话 + 这个端点」整批删：重传一遍的代价与
-   * 逐条定位一样，而下一轮发送会把真需要的那几个补回来。
-   */
-  async invalidateVendorFiles(input: {
-    conversationId: string;
-    modelId: string | null;
-  }): Promise<number> {
-    const vendor = this.vendorFiles;
-    if (!vendor) return 0;
-    const target = await this.resolveTarget(input.modelId);
-    const endpointId = target.endpoint?.id;
-    if (!endpointId) return 0;
-    try {
-      return await vendor.deleteVendorFiles(input.conversationId, endpointId);
-    } catch (error) {
-      this.report(error, "作废厂商文件缓存失败");
-      return 0;
-    }
   }
 
   /**
@@ -528,7 +507,7 @@ export class AssetService {
     try {
       const result = await fileToContentSection({
         source: await this.sourceOf(record),
-        endpoint: target.endpoint,
+        endpoint: await this.vendorEndpoint(record, target.endpoint),
         model: target.model,
         deps: this.conversionDeps(record, target),
       });
@@ -565,11 +544,33 @@ export class AssetService {
   }
 
   /**
+   * 这次交给 SDK 的端点。
+   *
+   * 这个端点上已经有这个素材的缓存行（或者哪个端点上都没有）时原样给它：前者命中复用，
+   * 后者上传一次。只有「这个端点上没有、别的端点上有」才给 `null` —— 那是换厂商 / 换端点，
+   * 不往新端点重传，SDK 于是走内联 base64。
+   */
+  private async vendorEndpoint(
+    record: AssetRecord,
+    endpoint: Endpoint | null,
+  ): Promise<Endpoint | null> {
+    const vendor = this.vendorFiles;
+    if (!vendor || !endpoint) return endpoint;
+    try {
+      const presence = await vendor.describeVendorFiles(record.id, endpoint.id);
+      return presence.onEndpoint || !presence.elsewhere ? endpoint : null;
+    } catch (error) {
+      // 读不到缓存行就当没命中：交给 SDK 那条既定选路（上传失败会自己降级内联）
+      this.report(error, "读厂商文件缓存失败");
+      return endpoint;
+    }
+  }
+
+  /**
    * 交给 SDK 转换器的依赖：只把 `upload` 换成一个「先查缓存、miss 才真上传」的版本。
    *
-   * SDK 那边不再记任何 file_id（上一波已删），所以“同一张图不重复上传”由持有持久存储的
-   * 这一层承担。缓存行以 `(assetId, endpointId)` 为键：同一个素材传到另一个端点必须重新上传
-   * （`vendorFileId` 是端点维度资源）。命中时只 `touch` 一下 `lastUsedAt`，不发 HTTP。
+   * SDK 那边不记任何 file_id，所以「同一张图不重复上传」由持有持久存储的这一层承担。
+   * 缓存行以 `(assetId, endpointId)` 为键：命中就拿那个 `vendorFileId`，miss 才发 HTTP 并写回。
    *
    * 每张素材各自拿一个闭包（不共享可变状态），并发发送两张不同的图不会互相写错行。
    */
@@ -586,10 +587,7 @@ export class AssetService {
       const endpointId = input.endpoint.id;
       try {
         const cached = await vendor.getVendorFile(record.id, endpointId);
-        if (cached) {
-          await vendor.touchVendorFile(record.id, endpointId, this.now());
-          return cached.vendorFileId;
-        }
+        if (cached) return cached.vendorFileId;
       } catch (error) {
         // 读缓存失败不该让发送失败：当作 miss，重新上传一遍
         this.report(error, "读厂商文件缓存失败");
@@ -597,13 +595,11 @@ export class AssetService {
 
       const vendorFileId = await realUpload(input);
       try {
-        const at = this.now();
         await vendor.upsertVendorFile({
           assetId: record.id,
           endpointId,
           vendorFileId,
-          createdAt: at,
-          lastUsedAt: at,
+          createdAt: this.now(),
         });
       } catch (error) {
         // 写回失败：这一轮照常发（id 已经拿到了），下一轮只是多传一次
@@ -822,7 +818,7 @@ function noVisionSection(label: string): AgentNS.MessageContentSection {
 /**
  * 把 SDK 给出的段收敛成本服务的三种形态。
  *
- *   - Files API：`{ type: "file", file_id, filename }`
+ *   - Files API：`{ type: "file", file_id }`
  *   - 内联图片：`{ type: "image_url", image_url: { url: "data:…" } }`（`detail` 有就带上）
  *   - 其余（非图片内联）：`{ type: "file", file_data, filename }`
  *
@@ -836,8 +832,8 @@ function replacementSection(
 ): AgentNS.MessageContentSection {
   if (section.type === "file") {
     if (typeof section.file_id === "string") {
-      // `file_id` 是引用已上传文件的字段：名字只作为可读标签带上，内容不再重复给
-      return { type: "file", file_id: section.file_id, filename: label };
+      // `file_id` 已经是引用：只有 `file_data` 才带 `filename`（两者不同现，见 core 的类型）
+      return { type: "file", file_id: section.file_id };
     }
     if (typeof section.file_data === "string") {
       return { type: "file", file_data: section.file_data, filename: label };

@@ -11,7 +11,7 @@
  *     这张表算；消息被删（撤回 / 删对话）时关系行跟着级联消失，不需要谁去减计数。
  *     `assetId` 用 `ON DELETE RESTRICT`：还有引用时素材行在库里删不掉（护栏）。
  *   - `asset_vendor_files` 一行 = 「这个素材在这个端点上对应厂商的哪个 file_id」。厂商的
- *     `file_id` 是端点维度资源且会过期，所以它只当缓存：删光也能从 `assets` 重建（下次发送时
+ *     `file_id` 是端点维度资源，所以它只当缓存：删光也能从 `assets` 重建（下次发送时
  *     重新上传一遍），`ON DELETE CASCADE` 让它跟着素材走。
  *
  * 存储层只做 SQL：不判断文件在不在、不上传、不决定「缓存能不能用」，也不判「该不该删字节」
@@ -29,12 +29,20 @@ import type {
 
 const COLUMNS = "id, name, path, mime, bytes, sha256, width, height, createdAt";
 
-const VENDOR_COLUMNS = "assetId, endpointId, vendorFileId, createdAt, lastUsedAt";
+const VENDOR_COLUMNS = "assetId, endpointId, vendorFileId, createdAt";
 
 /** 插入一个素材行的结果：`created` 为 false 说明库里已经有同摘要的那一行（全局去重命中） */
 export interface AssetUpsertOutcome {
   row: AssetRow;
   created: boolean;
+}
+
+/** 一个素材的缓存行分布（`describeVendorFiles` 的出参） */
+export interface AssetVendorFilePresence {
+  /** 这个端点上已经有缓存行 */
+  onEndpoint: boolean;
+  /** 别的端点上有 */
+  elsewhere: boolean;
 }
 
 export class AssetRepository {
@@ -229,62 +237,27 @@ export class AssetRepository {
   /** 写入（或覆盖）一条缓存行：同一对 `(assetId, endpointId)` 只有一行 */
   async upsertVendorFile(input: AssetVendorFileUpsertInput): Promise<void> {
     await this.db.run(
-      `INSERT INTO asset_vendor_files (${VENDOR_COLUMNS}) VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO asset_vendor_files (${VENDOR_COLUMNS}) VALUES (?, ?, ?, ?)
        ON CONFLICT (assetId, endpointId) DO UPDATE SET
-         vendorFileId = excluded.vendorFileId,
-         lastUsedAt   = excluded.lastUsedAt`,
-      [input.assetId, input.endpointId, input.vendorFileId, input.createdAt, input.lastUsedAt],
+         vendorFileId = excluded.vendorFileId`,
+      [input.assetId, input.endpointId, input.vendorFileId, input.createdAt],
     );
-  }
-
-  /** 只更新「最后用在什么时候」（命中缓存时调它，不重写 file_id） */
-  async touchVendorFile(assetId: string, endpointId: string, lastUsedAt: number): Promise<number> {
-    const result = await this.db.run(
-      "UPDATE asset_vendor_files SET lastUsedAt = ? WHERE assetId = ? AND endpointId = ?",
-      [lastUsedAt, assetId, endpointId],
-    );
-    return result.changes;
   }
 
   /**
-   * 一段对话在某个端点上的全部缓存行（失效自愈按这个粒度清）。
+   * 这个素材的缓存行分布：这个端点上有没有、别的端点上有没有。
    *
-   * 「这段对话的素材」从 `conversation_assets` 取：素材行本身不再记对话。
+   * 两个事实一次查完，是因为它们要一起看才说得清该走哪条路：这个端点上有就是命中复用，
+   * 只有别的端点上有就是换过端点（不重传、走内联），都没有才上传。
    */
-  async listVendorFiles(conversationId: string, endpointId: string): Promise<AssetVendorFileRow[]> {
-    return this.db.all<AssetVendorFileRow>(
-      `SELECT DISTINCT v.assetId, v.endpointId, v.vendorFileId, v.createdAt, v.lastUsedAt
-         FROM asset_vendor_files v
-         JOIN conversation_assets ca ON ca.assetId = v.assetId
-        WHERE ca.conversationId = ? AND v.endpointId = ?
-        ORDER BY v.lastUsedAt ASC, v.assetId ASC`,
-      [conversationId, endpointId],
+  async describeVendorFiles(assetId: string, endpointId: string): Promise<AssetVendorFilePresence> {
+    const row = await this.db.get<{ onEndpoint: number; elsewhere: number }>(
+      `SELECT
+         EXISTS (SELECT 1 FROM asset_vendor_files WHERE assetId = ? AND endpointId = ?) AS onEndpoint,
+         EXISTS (SELECT 1 FROM asset_vendor_files WHERE assetId = ? AND endpointId <> ?) AS elsewhere`,
+      [assetId, endpointId, assetId, endpointId],
     );
-  }
-
-  /** 删掉一条缓存行（某个 file_id 已经不认了） */
-  async deleteVendorFile(assetId: string, endpointId: string): Promise<number> {
-    const result = await this.db.run(
-      "DELETE FROM asset_vendor_files WHERE assetId = ? AND endpointId = ?",
-      [assetId, endpointId],
-    );
-    return result.changes;
-  }
-
-  /**
-   * 一整段对话在某个端点上的缓存全部作废（一次请求因「file 不存在/无效」失败时走这一条）。
-   *
-   * 删的是「这段对话引用过的素材 + 这个端点」这一批：那条请求里可能带了好几张历史图，逐张删要
-   * 先把它们从请求体里认出来，而按批删完重传一遍的代价本来就一样。返回删掉的行数。
-   */
-  async deleteVendorFiles(conversationId: string, endpointId: string): Promise<number> {
-    const result = await this.db.run(
-      `DELETE FROM asset_vendor_files
-        WHERE endpointId = ?
-          AND assetId IN (SELECT assetId FROM conversation_assets WHERE conversationId = ?)`,
-      [endpointId, conversationId],
-    );
-    return result.changes;
+    return { onEndpoint: row?.onEndpoint === 1, elsewhere: row?.elsewhere === 1 };
   }
 }
 

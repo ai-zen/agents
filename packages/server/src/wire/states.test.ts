@@ -10,7 +10,6 @@ import {
   QUESTION_KINDS,
   QUESTION_STATES,
   localAssetIdOf,
-  stripLocalExtensions,
   zeroUsage,
   type LocalMessageContentSection,
   type AssemblingToolCall,
@@ -310,44 +309,5 @@ describe("本地扩展字段（`__asset_id`）", () => {
     expect(localAssetIdOf({ type: "file", file_id: "asset://a2" })).toBeNull();
     // 空串 / 空白算没写
     expect(localAssetIdOf(withAsset("  "))).toBeNull();
-  });
-
-  it("stripLocalExtensions 按 core 的白名单重建每一段", () => {
-    const local: LocalMessageContentSection[] = [
-      { index: 1, type: "image_url", image_url: { url: "", detail: "low" }, __asset_id: "a1" },
-      // `__` 开头的都可以是本机字段（不只有 `__asset_id`），出网前一并不见
-      { index: 2, type: "file", filename: "报表.pdf", __asset_id: "a2", __note: "本机备注" } as LocalMessageContentSection,
-      { type: "text", text: "看图", __asset_id: "a3" },
-    ];
-    const content = stripLocalExtensions(local);
-
-    expect(content).toEqual([
-      { index: 1, type: "image_url", image_url: { url: "", detail: "low" } },
-      { index: 2, type: "file", filename: "报表.pdf" },
-      { type: "text", text: "看图" },
-    ]);
-    expect(JSON.stringify(content)).not.toContain("__");
-  });
-
-  it("字符串正文原样返回（字符串上没有段，也就没有本地字段）", () => {
-    expect(stripLocalExtensions("纯文本")).toBe("纯文本");
-  });
-
-  it("认不出的段只留 type / index：厂商认不得的键一律不出去", () => {
-    const content = stripLocalExtensions([
-      { type: "video", url: "x", __asset_id: "a1" } as unknown as AgentNS.MessageContentSection,
-    ]);
-
-    expect(content).toEqual([{ type: "video" }]);
-  });
-
-  it("不改入参（发送前的那一份与落库那一份不能串味）", () => {
-    const original: LocalMessageContentSection[] = [
-      { type: "image_url", image_url: { url: "" }, __asset_id: "a1" },
-    ];
-    const stripped = stripLocalExtensions(original);
-
-    expect(original[0]?.__asset_id).toBe("a1");
-    expect(stripped).not.toBe(original);
   });
 });

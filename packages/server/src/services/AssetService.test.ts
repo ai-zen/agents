@@ -249,27 +249,26 @@ describe("prepareAttachments", () => {
     expect(url.startsWith("data:image/png;base64,")).toBe(true);
   });
 
-  it("端点声明 Files API：走文件引用（file_id + 名字），并且第二次取用命中缓存、不再发 HTTP", async () => {
+  it("端点声明 Files API：走文件引用，并且第二次取用命中缓存、不再发 HTTP", async () => {
     modelContext = { model: model(true), endpoint: endpoint(true) };
     const ref = await uploadAsset(imageBytes(16));
 
     const first = await service.prepareAttachments(prepare([ref.assetId]));
     const outcome = outcomeOf(first.attachments, ref.assetId);
     expect(outcome.deliveredAs).toBe("file_reference");
-    expect(outcome.section).toEqual({ type: "file", file_id: "file-1", filename: "photo.png" });
+    // `file_id` 已经是引用，名字不跟着走（`filename` 只在 `file_data` 时才有意义，见 core 的类型）
+    expect(outcome.section).toEqual({ type: "file", file_id: "file-1" });
+    expect(outcome.section).not.toHaveProperty("filename");
     expect(uploadedFiles).toEqual([`${ref.assetId}.png`]);
 
-    // SDK 不再记厂商侧的文件 id（它的进程内缓存在上一波删掉了），所以由我们的表记：
-    // 第二次取用同一张图，`asset_vendor_files` 命中，一个 HTTP 都不发
+    // SDK 不记厂商侧的文件 id，由我们的表记：第二次取用同一张图，
+    // `asset_vendor_files` 命中，一个 HTTP 都不发
     const second = await service.prepareAttachments(prepare([ref.assetId]));
     expect(outcomeOf(second.attachments, ref.assetId).section).toEqual({
       type: "file",
       file_id: "file-1",
-      filename: "photo.png",
     });
     expect(uploadedFiles).toHaveLength(1);
-    // 命中也把 lastUsedAt 更新一次（缓存行还活着）
-    expect((await repo.getVendorFile(ref.assetId, "ep-files"))?.lastUsedAt).toBe(NOW_MS);
   });
 
   it("模型读不了图：退化成文字（带名字、不带磁盘路径），并如实记账", async () => {
@@ -498,62 +497,28 @@ describe("全局去重", () => {
 // ---------------------------------------------------------------------------
 
 describe("厂商 file_id 缓存", () => {
-  it("换端点：同一份素材在新端点上重传一次，新端点有自己的 file_id", async () => {
+  it("换端点：该端点上没有缓存行 → 内联，不往新端点重传", async () => {
     modelContext = { model: model(true), endpoint: endpoint(true) };
     const ref = await uploadAsset(imageBytes(20));
     await service.prepareAttachments(prepare([ref.assetId]));
     expect(uploadedFiles).toHaveLength(1);
 
-    // 换一个端点（id 不同）：缓存按 (assetId, endpointId) 命中不了，要重传一次
+    // 换一个端点（id 不同）：这个端点上没有这个素材的缓存行，就走内联 base64
     modelContext = {
       model: model(true),
       endpoint: { ...endpoint(true), id: "ep-files-2" },
     };
     const second = await service.prepareAttachments(prepare([ref.assetId]));
-    expect(outcomeOf(second.attachments, ref.assetId).deliveredAs).toBe("file_reference");
-    expect(uploadedFiles).toHaveLength(2);
+    expect(outcomeOf(second.attachments, ref.assetId).deliveredAs).toBe("inline");
+    expect(uploadedFiles).toHaveLength(1);
+    // 新端点上没有留下缓存行（没传过），老端点那一行原样还在
+    expect(await repo.describeVendorFiles(ref.assetId, "ep-files-2")).toEqual({
+      onEndpoint: false,
+      elsewhere: true,
+    });
     expect((await repo.getVendorFile(ref.assetId, "ep-files"))?.vendorFileId).toBe("file-1");
-    expect((await repo.getVendorFile(ref.assetId, "ep-files-2"))?.vendorFileId).toBe("file-2");
     // 历史数据一个字都没变：素材行还是第一次那一行
     expect(await repo.get(ref.assetId)).toBeDefined();
-  });
-
-  it("invalidateVendorFiles：删掉「这段对话 + 这个端点」的缓存，下一轮重传一次", async () => {
-    modelContext = { model: model(true), endpoint: endpoint(true) };
-    const ref = await uploadAsset(imageBytes(20));
-    await service.prepareAttachments(prepare([ref.assetId]));
-    // 缓存行按「对话引用过的素材」取，先记上关系行（真实流程里由消息落库那一刻写）
-    await linkToMessage(ref.assetId);
-    expect(await repo.listVendorFiles("c1", "ep-files")).toHaveLength(1);
-
-    const removed = await service.invalidateVendorFiles({
-      conversationId: "c1",
-      modelId: "m-1",
-    });
-    expect(removed).toBe(1);
-    expect(await repo.listVendorFiles("c1", "ep-files")).toEqual([]);
-
-    // 缓存删了、素材还在：下一轮重新上传（这就是“删光也能从 assets 重建”）
-    await service.prepareAttachments(prepare([ref.assetId]));
-    expect(uploadedFiles).toHaveLength(2);
-    expect(await repo.listVendorFiles("c1", "ep-files")).toHaveLength(1);
-  });
-
-  it("解码不出端点时如实回 0（没有可作废的东西，调用方就不该重试）", async () => {
-    modelContext = { model: model(true), endpoint: null };
-    const ref = await uploadAsset(imageBytes(8));
-    await linkToMessage(ref.assetId);
-    await repo.upsertVendorFile({
-      assetId: ref.assetId,
-      endpointId: "ep-files",
-      vendorFileId: "file-1",
-      createdAt: NOW_MS,
-      lastUsedAt: NOW_MS,
-    });
-
-    expect(await service.invalidateVendorFiles({ conversationId: "c1", modelId: "m-1" })).toBe(0);
-    // 解析不出端点时那批缓存原样留着（没有依据说它们坏了）
-    expect(await repo.listVendorFiles("c1", "ep-files")).toHaveLength(1);
   });
 
   it("上传失败仍按既有选路降级：读缓存/写缓存出错都不该让发送失败", async () => {
@@ -566,9 +531,9 @@ describe("厂商 file_id 缓存", () => {
       upsertVendorFile: async () => {
         throw new Error("db down");
       },
-      touchVendorFile: async () => 0,
-      listVendorFiles: async () => [],
-      deleteVendorFiles: async () => 0,
+      describeVendorFiles: async () => {
+        throw new Error("db down");
+      },
     };
     const withBrokenCache = new AssetService({
       assets: repo,
@@ -602,9 +567,10 @@ describe("__asset_id 两端", () => {
 
     const prepared = await service.prepareAttachments(prepare([ref.assetId]));
 
-    // 发送形态：厂商产物（file_id），会随端点/模型变
+    // 发送形态：厂商产物（file_id），会随端点/模型变；`filename` 不跟着 `file_id` 走
     const sent = prepared.content as AgentNS.MessageContentSection[];
-    expect(sent[1]).toEqual({ type: "file", file_id: "file-1", filename: "photo.png" });
+    expect(sent[1]).toEqual({ type: "file", file_id: "file-1" });
+    expect(sent[1]).not.toHaveProperty("filename");
 
     // 落库形态：真字段留空，引用只在扩展字段上
     const stored = prepared.storedContent as AgentNS.MessageContentSection[];
