@@ -276,6 +276,8 @@ export const zh = {
   "capability.asset.begin.detail": "先声明文件的大小与类型，超限的当场就拒。",
   "capability.asset.end": "结束上传",
   "capability.asset.end.detail": "校验长度与摘要，然后把它变成消息可以引用的素材。",
+  "capability.asset.get": "取回素材",
+  "capability.asset.get.detail": "把存着的字节取回来，任何模型都能重放历史里的图；缩略图这一档目前等同原图。",
 
   "capability.completion.files": "补全文件路径",
   "capability.completion.files.detail": "`@` 菜单背后的项目文件清单；还在读的时候会说出来。",

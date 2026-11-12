@@ -296,6 +296,8 @@ export const en = {
   "capability.asset.begin.detail": "Declares the size and type of a file; anything over the limit is refused right here.",
   "capability.asset.end": "Finish an upload",
   "capability.asset.end.detail": "Checks length and digest, then turns the file into something a message can reference.",
+  "capability.asset.get": "Fetch an asset",
+  "capability.asset.get.detail": "Returns the stored bytes so any model can replay an image from history; the thumbnail variant currently equals the original.",
 
   "capability.completion.files": "Complete file paths",
   "capability.completion.files.detail": "The project's file list behind the `@` menu; says so when it is still reading.",

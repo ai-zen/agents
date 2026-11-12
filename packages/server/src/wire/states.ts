@@ -410,8 +410,9 @@ export const MAX_ASSETS_PER_MESSAGE = 4;
  * 素材引用：库与消息里存的是引用，字节落数据根的 `assets/`（PRD L2 / F-H8）。
  *
  * 带 `bytes` / `mime` / 尺寸这些事实，客户端据此排占位框，不必先下载再量。
- * 它是**上传的产物**（`asset.end` 回的），不是消息内容：进消息时由服务端转成 core 的
- * 内容段（`image_url` / `file`，PRD F-H7）。
+ * 它是**上传的产物**（`asset.end` 回的），也是**去重命中时的答案**（`asset.begin` 的 `asset`）。
+ * 消息里持久化的是 `asset://<assetId>`，不是这个对象本身：内容要回了原图、要换模型重发时
+ * 都从 `assets` 这一份真相重算（`asset.get` 取字节）。
  */
 export interface AssetRef {
   assetId: string;
@@ -432,6 +433,9 @@ export interface AssetRef {
  * `text` / `image_url` / `file` 内容段数组）。这里只补一样 core 没有的东西：已上传但还没
  * 变成内容段的素材 id —— 素材怎么变成内容段（文件引用 / 内联 / 退化成文字）由服务端按
  * 实发模型决定（PRD F-H7），客户端只说「用了哪几张」。
+ *
+ * 落库的 content 里素材写成 `asset://<assetId>`（图片是 `image_url.url`，文件是
+ * `file.file_id`）：厂商的 `file_id`、base64、绝对路径都是「这一次发送的产物」，不进库。
  */
 export interface MessageInput {
   /** 用户输入的内容，core 原样 */

@@ -46,6 +46,7 @@ describe("migrate", () => {
       "conversations",
       "messages",
       "assets",
+      "asset_vendor_files",
       "notices",
       "questions",
       "credentials",
@@ -145,9 +146,9 @@ describe("外键与级联", () => {
       ["msg1", "c1", 1, "user", "completed", '"你好"', "你好", 3, 3],
     );
     await db.run(
-      `INSERT INTO assets (id, conversationId, messageId, name, path, mime, bytes, createdAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      ["as1", "c1", "msg1", "a.png", "assets/a.png", "image/png", 1024, 4],
+      `INSERT INTO assets (id, conversationId, messageId, name, path, mime, bytes, sha256, createdAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["as1", "c1", "msg1", "a.png", "assets/a.png", "image/png", 1024, "digest-1", 4],
     );
   }
 

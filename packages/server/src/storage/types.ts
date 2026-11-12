@@ -173,8 +173,12 @@ export interface AssetRow {
   path: string;
   mime: string;
   bytes: number;
-  /** 上传结束时的摘要，用于校验完整性 */
-  sha256: string | null;
+  /** 内容摘要（上传时服务端自己算的那一份）：它与 `conversationId` 一起构成对话内去重的键 */
+  sha256: string;
+  /** 像素宽度；要解码图片才拿得到，本波不解码就是 null */
+  width: number | null;
+  /** 像素高度；口径同 `width` */
+  height: number | null;
   createdAt: number;
 }
 
@@ -186,8 +190,35 @@ export interface AssetCreateInput {
   path: string;
   mime: string;
   bytes: number;
-  sha256?: string | null;
+  sha256: string;
+  width?: number | null;
+  height?: number | null;
   createdAt: number;
+}
+
+/* --------------------------- asset_vendor_files --------------------------- */
+
+/**
+ * 厂商侧文件 id 的缓存行（可失效、可重建）。
+ *
+ * `vendorFileId` 是**端点维度**的资源：同一个素材在 A 端点上传得到的 id 拿到 B 端点用会 not found，
+ * 而且它自己也会过期。所以这张表只当缓存用：miss 就重新上传，命中就省一次 HTTP。
+ */
+export interface AssetVendorFileRow {
+  assetId: string;
+  endpointId: string;
+  vendorFileId: string;
+  createdAt: number;
+  /** 最后一次命中/写入的时刻：清理与诊断按它判新鲜度 */
+  lastUsedAt: number;
+}
+
+export interface AssetVendorFileUpsertInput {
+  assetId: string;
+  endpointId: string;
+  vendorFileId: string;
+  createdAt: number;
+  lastUsedAt: number;
 }
 
 /* --------------------------------- notices -------------------------------- */

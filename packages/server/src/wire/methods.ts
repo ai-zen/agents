@@ -1386,6 +1386,13 @@ export interface AssetBeginParams {
   /** 原始文件名（可缺） */
   name?: string;
   /**
+   * 内容的 sha256（客户端本来就算过一次，传上来即可）。
+   *
+   * 带上它之后，同一段对话里同一张图第二次上传会在 `begin` 就短路（`deduped: true`）：
+   * 客户端不必再发二进制帧、也不必调 `asset.end`。不带就按一次全新上传处理。
+   */
+  sha256?: string;
+  /**
    * 这段素材归属哪段对话（必填）。
    *
    * 素材行在库里按 `conversationId` 挂外键，落定那一刻这段对话必须已经存在；草稿对话
@@ -1395,13 +1402,25 @@ export interface AssetBeginParams {
   conversationId: string;
 }
 
-/** `asset.begin` 出参：上传句柄与这次的上限 */
+/**
+ * `asset.begin` 出参：上传句柄与这次的上限（或「已经有了，不用传」）。
+ *
+ * 两种形态：
+ *   - 新上传：`deduped: false`，`uploadId` 是一个句柄，`asset` 为 `null`；
+ *   - 命中「同一段对话里同一个 sha256」：`deduped: true`，`uploadId` 为 `null`，`asset` 是既有
+ *     素材的引用（客户端直接拿它放进消息，既不发二进制帧也不调 `asset.end`）。
+ */
 export interface AssetBeginResult {
-  uploadId: string;
+  /** 是否命中了对话内的去重（命中时客户端跳过 `chunk` 与 `asset.end`） */
+  deduped: boolean;
+  /** 上传句柄；`deduped: true` 时为 `null` */
+  uploadId: string | null;
   /** 这个句柄能收多少字节（等于 `maxAssetBytes`，超了会在 `end` 被拒） */
   maxBytes: number;
   /** 服务端已收到的字节数（刚开时为 0） */
   receivedBytes: number;
+  /** `deduped: true` 时是既有素材的引用，否则为 `null` */
+  asset: AssetRef | null;
 }
 
 /**
@@ -1418,6 +1437,43 @@ export interface AssetEndParams {
 /** `asset.end` 出参：可放进消息的引用 */
 export interface AssetEndResult {
   asset: AssetRef;
+}
+
+/** `asset.get` 的取哪一档：原图，还是缩略图 */
+export type AssetVariant = "original" | "thumb";
+
+/**
+ * `asset.get` 入参（PRD F-H7 / F-H8）：按素材 id 取回内容。
+ *
+ * `assets` 是资源的唯一真相，所以服务端重启、换模型、换设备之后，任何一段历史里的图都能靠
+ * `asset://<assetId>` 重新取回来。
+ */
+export interface AssetGetParams {
+  assetId: string;
+  /**
+   * 取哪一档；缺省 `original`。
+   *
+   * `thumb` 目前**等同原图**：服务端这一波不引入原生图像库，缩略图只是「原图直出 + 宽高」，
+   * 客户端需要小图时自己按 `width` / `height` 缩放（宽高未知时为 `null`）。
+   */
+  variant?: AssetVariant;
+}
+
+/**
+ * `asset.get` 出参：内容本体 + 它的类型与尺寸。
+ *
+ * 内容走同一条 WS 上的 JSON 响应（base64），而不是另开一条二进制下行帧：
+ *   - 上传的二进制帧是「按 `uploadId` 认路的、没有回执的流」，下行复用它得再定一套
+ *     「这条帧对应哪个请求」的关联规则；JSON 响应的 id 天然就是那个关联；
+ *   - 请求/响应天然是原子的（不会与别的请求的下行数据交错），客户端也不用维护下行状态机。
+ * 代价是 base64 多出三分之一体积，单张上限仍是 20MB（PRD D5），一次一张。
+ */
+export interface AssetGetResult {
+  asset: AssetRef;
+  /** 实际给出的档（`thumb` 目前等同原图） */
+  variant: AssetVariant;
+  /** 内容本体，base64 编码（`mime` 说它是什么） */
+  data: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1748,11 +1804,13 @@ export interface MethodMap {
   /** L11 / F-E4（§4 未单列）：单独吊销一串。 */
   "credential.revoke": { params: CredentialRevokeParams; result: CredentialRevokeResult };
 
-  // ---- asset.*：上传入口（D5 / F-H8 / A11）----
-  /** D5 / F-H8 / A11：上传第一段，声明总长与类型，超限当场拒。 */
+  // ---- asset.*：上传入口（D5 / F-H8 / A11）与取回（F-H7）----
+  /** D5 / F-H8 / A11：上传第一段，声明总长与类型，超限当场拒；带 sha256 时可命中去重。 */
   "asset.begin": { params: AssetBeginParams; result: AssetBeginResult };
   /** F-H8 / A11：上传第三段，校验长度与摘要后变成可引用的素材。 */
   "asset.end": { params: AssetEndParams; result: AssetEndResult };
+  /** F-H7 / F-H8：按素材 id 取回内容（原图 / 缩略图两档），历史里的图因此能被重放。 */
+  "asset.get": { params: AssetGetParams; result: AssetGetResult };
 
   // ---- completion.*：`@` 补全的数据来源（F-H5 / D7）----
   /** F-H5 / D7：按需扫描的文件清单；未就绪要说话。 */
@@ -1853,6 +1911,7 @@ export const METHOD_NAMES = [
   "credential.revoke",
   "asset.begin",
   "asset.end",
+  "asset.get",
   "completion.files",
   "handoff.start",
   "handoff.listDocuments",

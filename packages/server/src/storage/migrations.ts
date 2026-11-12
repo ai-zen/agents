@@ -90,8 +90,11 @@ export const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_messages_parent_tool_call
          ON messages (parentToolCallId)`,
 
-      // assets：二进制素材落 assets/，库里只存引用（PRD L2）
+      // assets：二进制素材的唯一真相（PRD L2 / F-H8）—— 文件在 assets/ 下，这一行记的是引用、
+      // 大小、类型、内容摘要与像素尺寸。消息里只写 `asset://<id>`，历史图因此能被任何模型重放。
       // messageId 用 SET NULL：撤回硬删消息时素材行要留着，否则文件变成没人认领的孤儿（PRD D17）
+      // sha256 非空：它是「对话内去重」的键（同一张图贴两次只占一份磁盘、一次上行）。
+      // width / height 可空：要解码图片才拿得到，本波不引入图像库，未知就是 NULL。
       `CREATE TABLE IF NOT EXISTS assets (
          id             TEXT PRIMARY KEY,
          conversationId TEXT NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
@@ -100,11 +103,31 @@ export const MIGRATIONS: Migration[] = [
          path           TEXT NOT NULL,
          mime           TEXT NOT NULL,
          bytes          INTEGER NOT NULL,
-         sha256         TEXT,
-         createdAt      INTEGER NOT NULL
+         sha256         TEXT NOT NULL,
+         width          INTEGER,
+         height         INTEGER,
+         createdAt      INTEGER NOT NULL,
+         UNIQUE (conversationId, sha256)
        )`,
       `CREATE INDEX IF NOT EXISTS idx_assets_conversation ON assets (conversationId)`,
       `CREATE INDEX IF NOT EXISTS idx_assets_message ON assets (messageId)`,
+
+      // asset_vendor_files：厂商侧文件 id 的可失效缓存（端点维度、会过期）。
+      // 它**不是**真相：删光之后从 assets 重建即可（下次发送时重新上传一遍），所以这里只记
+      // 「哪个素材在哪个端点上对应哪个 file_id」与最后一次用它的时刻；素材没了就跟着走。
+      `CREATE TABLE IF NOT EXISTS asset_vendor_files (
+         assetId      TEXT NOT NULL REFERENCES assets (id) ON DELETE CASCADE,
+         endpointId   TEXT NOT NULL,
+         vendorFileId TEXT NOT NULL,
+         createdAt    INTEGER NOT NULL,
+         lastUsedAt   INTEGER NOT NULL,
+         UNIQUE (assetId, endpointId)
+       )`,
+      // 清理时按「最近用过的」判（哪一段对话的哪些缓存已经放了很久）
+      `CREATE INDEX IF NOT EXISTS idx_asset_vendor_files_lastUsedAt
+         ON asset_vendor_files (lastUsedAt)`,
+      // 「这段对话在这个端点上的缓存」靠 UNIQUE (assetId, endpointId) 那条索引 join assets 拿到，
+      // 不再另建一份（按 assetId 的前缀查询也走那条）
 
       // notices：持久化，durationMs 为 null 表示永久（PRD L3）。
       // conversationId 是「这条通知与哪段对话有关」的真值（可空 = 全局通知）：按对话过滤、

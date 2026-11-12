@@ -111,6 +111,7 @@ const FACTS: readonly CapabilityFact[] = [
 
   { method: "asset.begin", prd: "F-H8", blocking: false, destructive: false },
   { method: "asset.end", prd: "F-H8", blocking: false, destructive: false },
+  { method: "asset.get", prd: "F-H7", blocking: false, destructive: false },
 
   { method: "completion.files", prd: "F-H5", blocking: false, destructive: false },
 
