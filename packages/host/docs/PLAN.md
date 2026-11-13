@@ -13,13 +13,30 @@
 >
 > 历史：本文件取代四份已删的计划文件（见 §7），裁定编号 R1–R79 的原文在 git 历史里。
 
+## 0. 硬约束（用户 2026-11-13 定，四条，任何一浪都不许违反）
+
+1. **旧代码与旧门禁一律作废**（只针对 `cli` 与 `desktop`；`cli-old` 是只读参照物，与它无关）。
+   不许为「让旧用例变绿」写兼容层，不许保留旧字段/旧方法/旧名称，不许用 `.skip` 换绿。
+   旧用例里测的是**旧行为**就直接删（删掉比修好更对）；测的是**仍然成立**的行为，按新契约重写。
+   不留历史问题、不留 `@deprecated`、不留「以后再说」。
+2. **数据结构跟着上游走**。消息、内容段、用量、工具调用、思考档位、问题对象一律用
+   `@ai-zen/agents-core` / `@ai-zen/agents-sdk` / 宿主 `wire` 的**既有形状**；不许自己发明一套
+   再各种变形（adapter / mapper 层层套娃）。要变换只能发生在「渲染这一行」那一刻，且不新增类型。
+3. **共享代码只做私有包**。`@ai-zen/agents-client` 这类一律 `private: true`、不发版；
+   `cli` 与 `desktop` 构建时各自把它**内联进产物**，不许留运行时依赖。
+4. **客户端对上游的依赖 = 类型 + 干净函数**。类型可以依赖（构建时抹除）；无副作用的纯函数可以依赖
+   （构建时捆绑）。**产物里绝不许出现 `openai` 与 `@modelcontextprotocol/sdk`**（极重）。
+   护栏：`cli` 的 `check:imports --forbid openai --forbid @modelcontextprotocol`、
+   `desktop` 的 `check-no-host-runtime.mjs` / `check:inlined.mjs`；P0 要把 `@ai-zen/agents-client`
+   本身也加进禁令（内联之后它不该再出现在产物里）。
+
 ## 1. 现状快照（2026-11-13 实跑，不是估计）
 
 | 仓 | 分支 / HEAD | 未提交 | 类型检查 | 用例 |
 |---|---|---|---|---|
-| `agents`（host + client） | `feat/server-rewrite` / `af5e7c9` | 183 项 | `tsc` 0 错 | host **763 绿**（59 文件）、client **98 绿** |
-| `cli`（TUI CLI） | `main` / `75ab365` | **0** | **`tsc` 161 错 / 37 文件** | **58 失败 / 745 通过**（803 条，56 文件） |
-| `desktop` | `feat/new-server` / `cb16f28` | 77 项 | `vue-tsc` + rolldown + 两条护栏通过 | main **121 绿 + 3 跳过**、render **70 绿** |
+| `agents`（host + client） | `feat/server-rewrite` / `f4910b9` | 0 | `tsc` 0 错 | host **763 绿**（59 文件）、client **98 绿** |
+| `cli`（TUI CLI） | `main` / `75ab365` | 0 | **`tsc` 161 错 / 37 文件** | **58 失败 / 745 通过**（803 条，56 文件） |
+| `desktop` | `feat/new-server` / `157959b` | 0 | `vue-tsc` + rolldown + 护栏通过 | main **121 绿 + 3 跳过**、render **70 绿** |
 | `cli-old` | detached @ `pre-split-20261111` | 0 | 只读冻结参照物，不是迁移对象 | 冻结时 818 |
 
 **结论**：宿主已经完整（65 方法 / 6 事件 / 全绿），**TUI CLI 落在旧协议上、当前 HEAD 就编译不过**。
@@ -70,17 +87,21 @@
 旧库顺手给了 `ConfigPort` / `AgentStore` / `Mcp*` 这类便利层，新库不给 —— 它只做传输。
 所以 CLI 要像 `desktop/packages/main/src/host/services.ts` 一样，自己把「界面要的形状 ↔ 契约调用」翻一层：
 `config.get / patch / setDefaults / getDiscovery / patchMcps / saveEndpoint / deleteEndpoint`、
-`agent.*`（7 条）、`model.*`（8 条）。**规则照桌面端那四条纪律**：不自己算规则、不重新包装
-`AgentNS.Message`、结构化事实不拍平、契约没有的东西不造。
+`agent.*`（7 条）、`model.*`（8 条）。**规则**：不自己算规则（排序、可用性、生效模型都由宿主给）、
+不重新包装 `AgentNS.Message`、结构化事实不拍平、契约没有的东西不造。
+**这一层不许发明数据结构**（§0 第 2 条）：拿到的就是 `wire` 里那些类型，转手递下去；
+要挑字段就在调用点挑，不新造一个「ViewModel」。
 
-**S4 用例与 e2e**
-- 58 条失败按新 API 重写（`new ServerConnection()` 假件换成注入的 `client` 形状）
+**S4 用例与 e2e**（按 §0 第 1 条：旧门禁作废，不是「修到绿」）
+- 58 条失败先分两堆：**测旧行为的**（旧 `ServerConnection` 当假件、旧 `notice.ack`、旧 `serverUrl`）→ 删；
+  **测仍然成立的行为**（输入编辑、粘贴、状态标签、配置向导字段校验）→ 按新契约重写。
 - e2e 的 `Daemon`（来自已不存在的包）→ `createHost`（`agents/packages/host/src/index.ts:12` 导出）
-  或真进程 `agents-host serve`；`workspaceIdFor` 之类的旧助手一并替换
+  或真进程 `agents-host serve`；`workspaceIdFor` 之类的旧助手一并替换，不留兼容导出。
 
-**S5 打包**（R69 的下半场）
-`rolldown.config.mjs` 把 `@ai-zen/agents-client` 内联进 `dist`，`check:imports` 里加一条
-「产物不许留 `@ai-zen/agents-client` 的运行时依赖」。共享包 `private: true`，不许发包。
+**S5 打包**（§0 第 3、4 条）
+`rolldown.config.mjs` 把 `@ai-zen/agents-client` 内联进 `dist`，`check:imports` 加两条禁令：
+产物不许留 `@ai-zen/agents-client` 的运行时依赖，也不许出现 `openai` / `@modelcontextprotocol`。
+共享包 `private: true`，不许发包。
 
 ### 2.3 P0 验收（逐条走，错一条就是没做完）
 
