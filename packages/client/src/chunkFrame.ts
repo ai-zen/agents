@@ -1,7 +1,7 @@
 /**
  * 上传分片的**二进制帧**（`asset.chunk`）的编解码。
  *
- * 形状与服务端 `packages/server/src/net/UploadReceiver.ts` 的 `encodeChunkFrame` / `decodeChunkFrame`
+ * 形状与宿主 `packages/host/src/net/UploadReceiver.ts` 的 `encodeChunkFrame` / `decodeChunkFrame`
  * 逐字节一致：
  *
  * ```
@@ -10,9 +10,9 @@
  *
  * ## 为什么在客户端库里也要有一份
  *
- * 服务端那一份是运行期实现，客户端包不能 import 它（那个包的包根会把整个服务端拉进产物）。
+ * 宿主那一份是运行期实现，客户端包不能 import 它（那个包的包根会把整个宿主拉进产物）。
  * 而帧的形状是**两侧共同的约定**：cli 与 desktop 各写一份编码器，迟早会差一个字段，出错的
- * 表现又是「服务端说帧坏了」这种离现场很远的抱怨。所以编码与解码都收在这一个文件里，两个前端
+ * 表现又是「宿主说帧坏了」这种离现场很远的抱怨。所以编码与解码都收在这一个文件里，两个前端
  * 都从这里取。
  *
  * 头里带 `uploadId` 而不是「一条连接同时只有一个上传」：一次拖进四张图就是四个并发的上传，
@@ -23,7 +23,7 @@
 /** 帧头里那个长度字段占多少字节（大端无符号整数） */
 export const CHUNK_HEADER_LENGTH_BYTES = 4;
 
-/** 头部 JSON 的长度上限（与服务端同口径：防一个坏帧声称自己有 4GB 的头） */
+/** 头部 JSON 的长度上限（与宿主同口径：防一个坏帧声称自己有 4GB 的头） */
 const HEADER_LIMIT_BYTES = 4096;
 
 /** 拼一帧：头（`{"uploadId":"..."}`）+ 片段字节 */
@@ -41,7 +41,7 @@ export function encodeChunkFrame(uploadId: string, chunk: Uint8Array): Uint8Arra
  *
  * 坏帧抛 `Error` 而不是 `ClientError`：这个函数在客户端这一侧只有两种用法 —— 用例里检查
  * 「写出去的字节长什么样」，以及调试工具里回看抓到的帧。坏帧在那里是**断言失败**，不是一次
- * 可以展示给用户的失败。真正的拒绝归服务端，它的话由 `ClientError` 原样带回来。
+ * 可以展示给用户的失败。真正的拒绝归宿主，它的话由 `ClientError` 原样带回来。
  */
 export function decodeChunkFrame(frame: Uint8Array): { uploadId: string; chunk: Uint8Array } {
   if (frame.byteLength < CHUNK_HEADER_LENGTH_BYTES) {

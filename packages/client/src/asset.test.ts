@@ -1,38 +1,38 @@
 /**
  * `getAsset` 的验收：按素材 id 取回内容。
  *
- * 用假服务端（真 WebSocket、按方法名答题）钉三件事：
+ * 用假宿主（真 WebSocket、按方法名答题）钉三件事：
  *   1. `asset.get` 的入参照传（`assetId` 必给、`variant` 只在给了时才出现）；
  *   2. 回包里的 base64 被解成字节，且引用事实原样带出来（客户端不必自己 `Buffer.from`）；
  *   3. 「这个段要不要走素材通道」只看段上有没有 `__asset_id`，不解析 url scheme（`getSectionAsset`）。
  *
- * 真服务端的往返（两档都能取到字节）在 `integration.test.ts` 里。
+ * 真宿主的往返（两档都能取到字节）在 `integration.test.ts` 里。
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import type { AssetGetResult, ClientInfo } from "@ai-zen/agents-server";
+import type { AssetGetResult, ClientInfo } from "@ai-zen/agents-host";
 
-import type { LocalMessageContentSection } from "@ai-zen/agents-server";
+import type { LocalMessageContentSection } from "@ai-zen/agents-host";
 
 import { getAsset, getSectionAsset, localAssetIdOf } from "./asset.js";
 import { Client } from "./client.js";
-import { helloResult, startFakeServer, type FakeServer } from "./testSupport/fakeServer.js";
+import { helloResult, startFakeHost, type FakeHost } from "./testSupport/fakeHost.js";
 
 const CLIENT_INFO: ClientInfo = { name: "asset-test", version: "0.0.0-test" };
 
 /** 一份固定的“内容”：`hello` 的字节 */
 const PAYLOAD = new TextEncoder().encode("hello");
 
-let server: FakeServer;
+let host: FakeHost;
 let client: Client;
 let asked: unknown[];
 
 beforeAll(async () => {
   asked = [];
-  server = await startFakeServer({
+  host = await startFakeHost({
     methods: {
-      "server.hello": () => helloResult(),
+      "host.hello": () => helloResult(),
       "asset.get": (params: unknown) => {
         asked.push(params);
         const variant = (params as { variant?: "original" | "thumb" }).variant ?? "original";
@@ -42,7 +42,7 @@ beforeAll(async () => {
             mime: "image/png",
             bytes: PAYLOAD.byteLength,
             name: "a.png",
-            // 服务端落定时解出的像素尺寸（R76）
+            // 宿主落定时解出的像素尺寸（R76）
             width: 120,
             height: 80,
           },
@@ -54,7 +54,7 @@ beforeAll(async () => {
     },
   });
   client = await Client.connect({
-    target: server.address,
+    target: host.address,
     token: "test-token",
     clientInfo: CLIENT_INFO,
     language: "zh",
@@ -63,7 +63,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await client.close();
-  await server.close();
+  await host.close();
 });
 
 describe("getAsset", () => {
@@ -75,7 +75,7 @@ describe("getAsset", () => {
     expect(fetched.asset).toMatchObject({ assetId: "asset-1", mime: "image/png", name: "a.png" });
     // 宽高原样带出来：调用方不必等字节解出来再量，可以先摆占位框
     expect(fetched.asset).toMatchObject({ width: 120, height: 80 });
-    // 没给 variant 就不发这个字段（服务端的缺省是原图）
+    // 没给 variant 就不发这个字段（宿主的缺省是原图）
     expect(asked.at(-1)).toEqual({ assetId: "asset-1" });
   });
 
@@ -83,7 +83,7 @@ describe("getAsset", () => {
     const fetched = await getAsset(client, { assetId: "asset-1", variant: "thumb" });
 
     expect(asked.at(-1)).toEqual({ assetId: "asset-1", variant: "thumb" });
-    // 服务端这一波 thumb 等同原图：回包说的就是它实际给的那一档
+    // 宿主这一波 thumb 等同原图：回包说的就是它实际给的那一档
     expect(fetched.variant).toBe("thumb");
     expect(new Uint8Array(fetched.bytes)).toEqual(PAYLOAD);
   });

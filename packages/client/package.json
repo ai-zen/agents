@@ -2,7 +2,7 @@
   "name": "@ai-zen/agents-client",
   "version": "0.1.0-alpha.0",
   "private": true,
-  "description": "AI-Zen Agents Client — 到 agents-server 的连接层：本地拉起/发现服务端、连接设置、JSON-RPC 调用与事件、重连补拉。cli 与 desktop 各自把它捆进自己的产物",
+  "description": "AI-Zen Agents Client — 到 agents-host 的连接层：本地拉起/发现宿主、连接设置、JSON-RPC 调用与事件、重连补拉。cli 与 desktop 各自把它捆进自己的产物",
   "types": "dist/index.d.ts",
   "type": "module",
   "scripts": {
@@ -20,7 +20,7 @@
   },
   "devDependencies": {
     "@ai-zen/agents-sdk": "workspace:*",
-    "@ai-zen/agents-server": "workspace:*",
+    "@ai-zen/agents-host": "workspace:*",
     "@ai-zen/agents-testing": "workspace:*",
     "@types/node": "^24.12.2",
     "rimraf": "^6.0.0",

@@ -10,10 +10,10 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    // 与 sdk / server 一致：TS 7 不再自动从 node_modules/@types 收集全局类型
+    // 与 sdk / host 一致：TS 7 不再自动从 node_modules/@types 收集全局类型
     "types": ["node"]
   },
   "include": ["src"],
-  // 用例与测试脚手架不进产物：`*.test.ts` 是断言，`testSupport/` 是假服务端（只被用例 import）
+  // 用例与测试脚手架不进产物：`*.test.ts` 是断言，`testSupport/` 是假宿主（只被用例 import）
   "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.test-d.ts", "**/testSupport/**"]
 }

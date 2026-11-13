@@ -1,5 +1,5 @@
 /**
- * 上传一个素材（图片）—— 服务端三段式的**客户端那一半**（PRD D5 / F-H8 / A11）。
+ * 上传一个素材（图片）—— 宿主三段式的**客户端那一半**（PRD D5 / F-H8 / A11）。
  *
  * ## 三段式（可能只有一段）
  *
@@ -11,33 +11,33 @@
  * asset.end   { uploadId, sha256 }                              → { asset: AssetRef }
  * ```
  *
- * `sha256` 一开始就带上：服务端用它判断「库里是不是已经有这份字节了」，命中时一个字节
+ * `sha256` 一开始就带上：宿主用它判断「库里是不是已经有这份字节了」，命中时一个字节
  * 都不用传（下面会直接返回既有引用）。同一张图贴两次因此只占一份磁盘、一次上行。
- * 去重按内容摘要做，不区分对话：另一段对话传过的同一张图也算命中，两段对话各自在服务端的
+ * 去重按内容摘要做，不区分对话：另一段对话传过的同一张图也算命中，两段对话各自在宿主的
  * 关系表里留一行引用。
  *
  * 为什么字节不走 JSON-RPC 而走二进制帧：分片是任意二进制，base64 进 JSON 会平白多出三分之一体积，
- * 服务端还得先解一层编码；而「这条连接上的二进制帧 = 上传分片」是唯一的含义，不需要再包 `id`。
+ * 宿主还得先解一层编码；而「这条连接上的二进制帧 = 上传分片」是唯一的含义，不需要再包 `id`。
  *
  * ## 本地先把能拒的都拒掉
  *
  * 单张超过上限、附件张数超过上限、空文件、认不出类型 —— 这四件事在本地就能判，不必把 20MB 传
  * 上去再让 `asset.begin` 回一句不行（PRD D5 的口径也是「在 begin 就拒」）。上限**取值优先看握手**
- * （`server.hello` 的 `limits`）：服务端的数字才是那个真的会拒人的数字；拿不到握手结果时才用与
+ * （`host.hello` 的 `limits`）：宿主的数字才是那个真的会拒人的数字；拿不到握手结果时才用与
  * D5 一致的缺省值，两者都写在下面的常量里。
  *
  * ## 一段对话的归属
  *
- * `asset.begin` 要 `conversationId`（服务端要确认这段对话存在、并在消息落库时把引用记到它名下）：
+ * `asset.begin` 要 `conversationId`（宿主要确认这段对话存在、并在消息落库时把引用记到它名下）：
  * 没有归属的上传只会在 `assets/` 里留下一个没人认领的文件。所以上传必须发生在**已经有一段对话**
- * 之后 —— 调用方手里得有 `conversationId`（草稿对话在 `asset.begin` 那一步由服务端落库）。
+ * 之后 —— 调用方手里得有 `conversationId`（草稿对话在 `asset.begin` 那一步由宿主落库）。
  */
 
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { basename, extname } from "node:path";
 
-import type { AssetRef } from "@ai-zen/agents-server";
+import type { AssetRef } from "@ai-zen/agents-host";
 
 import { encodeChunkFrame } from "./chunkFrame.js";
 import { ClientError, localError } from "./errors.js";
@@ -66,9 +66,9 @@ export const DEFAULT_CHUNK_SIZE = 64 * 1024;
 export interface UploadTransport extends ContractCaller {
   /** 写一个二进制帧（`Client.sendBinary`；底层要 `ArrayBuffer` 支撑的视图） */
   sendBinary(frame: Uint8Array<ArrayBuffer>): Promise<void>;
-  /** 握手结果里的 `limits`（服务端真正的上限）；没握手时为空 */
+  /** 握手结果里的 `limits`（宿主真正的上限）；没握手时为空 */
   readonly hello?: { limits?: { maxAssetBytes?: number; maxAssetsPerMessage?: number } } | null;
-  /** 这条连接的语言（本地告警文案用它，与服务端文案的口径一致） */
+  /** 这条连接的语言（本地告警文案用它，与宿主文案的口径一致） */
   readonly language?: string;
 }
 
@@ -132,11 +132,11 @@ export interface UploadAssetsResult {
 }
 
 /**
- * 上传一份内容，回服务端给的素材引用。
+ * 上传一份内容，回宿主给的素材引用。
  *
- * 顺序是有意的：先算上限与摘要（本地能判的错在这里就抛），再 `asset.begin`（服务端的拒也在这里
- * 到达，而且它拒的时候一个字节都还没传）—— 如果服务端说“这段对话里已经有了”（`deduped`），
- * 这一步就把既有引用返回，不发帧、不调 `asset.end`；否则分片，最后 `asset.end` 由服务端复核
+ * 顺序是有意的：先算上限与摘要（本地能判的错在这里就抛），再 `asset.begin`（宿主的拒也在这里
+ * 到达，而且它拒的时候一个字节都还没传）—— 如果宿主说“这段对话里已经有了”（`deduped`），
+ * 这一步就把既有引用返回，不发帧、不调 `asset.end`；否则分片，最后 `asset.end` 由宿主复核
  * 长度与摘要。
  */
 export async function uploadAsset(
@@ -148,7 +148,7 @@ export async function uploadAsset(
   const language = client.language;
   const loaded = await loadSource(options, limits.maxAssetBytes, language);
 
-  // 客户端本来就要算一次摘要（`asset.end` 要用）；顺手在 `begin` 就交上去，让服务端能提前去重
+  // 客户端本来就要算一次摘要（`asset.end` 要用）；顺手在 `begin` 就交上去，让宿主能提前去重
   const digest = createHash("sha256").update(loaded.bytes).digest("hex");
 
   const began = await client.call("asset.begin", {
@@ -160,7 +160,7 @@ export async function uploadAsset(
     conversationId: options.conversationId,
   });
 
-  // 命中去重：服务端已经有这份字节，回的是既有引用（客户端一个帧也不欠）
+  // 命中去重：宿主已经有这份字节，回的是既有引用（客户端一个帧也不欠）
   if (began.deduped) {
     if (began.asset === null) {
       throw localError("unexpected", {
@@ -179,7 +179,7 @@ export async function uploadAsset(
     });
   }
 
-  // 服务端这一刻的上限可能比本地缺省值更小（部署方调过），以它为准而不是以我们猜的为准
+  // 宿主这一刻的上限可能比本地缺省值更小（部署方调过），以它为准而不是以我们猜的为准
   if (loaded.bytes.byteLength > began.maxBytes) {
     throw tooLarge(loaded.bytes.byteLength, began.maxBytes, language);
   }
@@ -201,10 +201,10 @@ export async function uploadAsset(
  *
  *   1. **张数上限在本地就判**（D5：4 张/条）。超出的那些不退化成「悄悄扔掉」，而是逐个进
  *      `failures`（`asset_count_exceeded`）—— 调用方需要能逐张说一句人话。前 `limit` 张照常上传：
- *      服务端 `prepareAttachments` 的口径也是「取前 N 张 + 逐条报告超出的」。
- *   2. **一份失败不连累其它份**：某一张读取失败/服务端拒了，它进 `failures`，剩下的继续。
+ *      宿主 `prepareAttachments` 的口径也是「取前 N 张 + 逐条报告超出的」。
+ *   2. **一份失败不连累其它份**：某一张读取失败/宿主拒了，它进 `failures`，剩下的继续。
  *      这比整批抛出去更接近用户想要的结果（「四张里有一张不行」不该等于「这轮什么都不发」）。
- *   3. 顺序串行：一次拖进来的几张图一块发，并发写同一条 socket 反而是给服务端的接收链排队。
+ *   3. 顺序串行：一次拖进来的几张图一块发，并发写同一条 socket 反而是给宿主的接收链排队。
  */
 export async function uploadAssets(
   client: UploadTransport,
@@ -385,7 +385,7 @@ export function mimeOfPath(path: string): string | null {
   return MIME_BY_EXTENSION[extname(path).toLowerCase()] ?? null;
 }
 
-/** 与服务端 `UploadReceiver` 同口径：去空白、小写 */
+/** 与宿主 `UploadReceiver` 同口径：去空白、小写 */
 function normalizeMime(mime: string): string {
   return mime.trim().toLowerCase();
 }
@@ -409,7 +409,7 @@ function reasonOf(error: unknown): string {
 /**
  * 字节数的人话形式（本地告警里的 `{size}` / `{limit}`）。
  *
- * 与服务端 `formatBytes` 同口径：1024 进制、最多一位小数（`20 MB`、`8.5 MB`、`512 KB`）。
+ * 与宿主 `formatBytes` 同口径：1024 进制、最多一位小数（`20 MB`、`8.5 MB`、`512 KB`）。
  */
 export function formatBytes(bytes: number): string {
   const units = ["B", "KB", "MB", "GB"];

@@ -1,22 +1,22 @@
 /**
- * 一条到 `agents-server` 的连接（一条 WebSocket + JSON-RPC 2.0）。
+ * 一条到 `agents-host` 的连接（一条 WebSocket + JSON-RPC 2.0）。
  *
  * ## 四件事
  *
  * `connect` / `call` / `subscribe` / `close`，就这四件：
- *   · `connect` 里把**握手**一次做完（`server.hello`），拿到 `Client` 就能直接调方法；
- *   · `call` 的入参与出参由服务端的 `MethodMap` 推出来（`MethodParams` / `MethodResult`）；
+ *   · `connect` 里把**握手**一次做完（`host.hello`），拿到 `Client` 就能直接调方法；
+ *   · `call` 的入参与出参由宿主的 `MethodMap` 推出来（`MethodParams` / `MethodResult`）；
  *   · `subscribe` 按 `EventMap` 收窄载荷（`run.state` / `message.delta` / … 六个事件）；
  *   · `close` 之后不再可用，要恢复就 `reconnect()`。
  *
  * 另有两条不在 JSON-RPC 里的通道：`resume`（补拉）与 {@link Client.sendBinary}（上传分片的二进制
  * 帧）。后者的帧格式收在 `chunkFrame.ts`，上传本身是一次三段式（见 `upload.ts`）。
  *
- * ## 握手：首帧 `server.hello`，凭证不进 URL
+ * ## 握手：首帧 `host.hello`，凭证不进 URL
  *
- * `{ token, language?, clientInfo }` 放在**第一帧**里（`packages/server/src/wire/methods.ts` 的
- * `ServerHelloParams`），而不是 URL 查询串 —— 查询串会进日志、进程表与反向代理的访问记录。
- * 握手成功之前 `call()` 一律在本地就被拒（`not_connected`），与服务端「未 `hello` 只放行
+ * `{ token, language?, clientInfo }` 放在**第一帧**里（`packages/host/src/wire/methods.ts` 的
+ * `HostHelloParams`），而不是 URL 查询串 —— 查询串会进日志、进程表与反向代理的访问记录。
+ * 握手成功之前 `call()` 一律在本地就被拒（`not_connected`），与宿主「未 `hello` 只放行
  * `hello`」那道门是同一件事的两侧。
  *
  * ## 不重放、不 ack
@@ -42,12 +42,12 @@ import type {
   MethodParams,
   MethodResult,
   NoParams,
-  ServerHelloParams,
-  ServerHelloResult,
-} from "@ai-zen/agents-server";
+  HostHelloParams,
+  HostHelloResult,
+} from "@ai-zen/agents-host";
 
-import { addressLabel, parseAddress, webSocketUrl, type ServerTarget } from "./address.js";
-import { ClientError, fromServerError, localError } from "./errors.js";
+import { addressLabel, parseAddress, webSocketUrl, type HostTarget } from "./address.js";
+import { ClientError, fromHostError, localError } from "./errors.js";
 import { encodeFrame, parseIncoming, requestFrame } from "./frames.js";
 import {
   lastMessageId,
@@ -68,12 +68,12 @@ export interface CallOptions {
 /** 建连参数 */
 export interface ClientOptions {
   /** 连哪儿：结构化地址（发现文件给的）或用户填的那串（`ws://` / `host:port` 都认） */
-  target: ServerTarget | string;
-  /** 握手凭证。没有就传空串 —— 服务端会回 `unauthorized`，那句话由它渲染 */
+  target: HostTarget | string;
+  /** 握手凭证。没有就传空串 —— 宿主会回 `unauthorized`，那句话由它渲染 */
   token: string;
   /** 客户端身份（`hello` 的 `clientInfo`：名字、版本、平台） */
   clientInfo: ClientInfo;
-  /** 连接语言（设置里的那一项）。留空 = 由服务端的默认语言决定（D8：缺省英文） */
+  /** 连接语言（设置里的那一项）。留空 = 由宿主的默认语言决定（D8：缺省英文） */
   language?: string;
   /** 建连 + 握手的总时限 */
   connectTimeoutMs?: number;
@@ -100,7 +100,7 @@ const BINARY_DRAIN_INTERVAL_MS = 2;
 /**
  * `call` 的其余入参：方法本身没有入参（`NoParams`）时可以整段省掉。
  *
- * 由 `MethodParams` 推出来，所以 `call("server.version")` 与
+ * 由 `MethodParams` 推出来，所以 `call("host.version")` 与
  * `call("conversation.state", { conversationId })` 各自是各自的样子 —— 不必为了「有的方法没参数」
  * 在契约或调用点写宽松重载。
  */
@@ -122,16 +122,16 @@ interface PendingCall {
 
 /** 一条连接。用 {@link Client.connect} 建，不要自己 `new` */
 export class Client implements ContractCaller {
-  private readonly target: ServerTarget;
+  private readonly target: HostTarget;
   private readonly token: string;
   private readonly clientInfo: ClientInfo;
   private readonly connectTimeoutMs: number;
   private readonly callTimeoutMs: number;
-  /** 设置里的语言；`server.setLanguage` 之后跟着变（重连时按它再握一次手） */
+  /** 设置里的语言；`host.setLanguage` 之后跟着变（重连时按它再握一次手） */
   private configuredLanguage: string | undefined;
 
   private socket: WebSocket | null = null;
-  private helloResult: ServerHelloResult | null = null;
+  private helloResult: HostHelloResult | null = null;
   private nextId = HELLO_ID + 1;
   private closing = false;
   /** 正在进行的重连：两个调用方同时发现断线是常态（`onClose` 与「用户点了重试」），只该连一次 */
@@ -170,13 +170,13 @@ export class Client implements ContractCaller {
   // -------------------------------------------------------------------------
 
   /** 握手结果（语言、版本、能力 id、附件上限）；没握手成功时为空 */
-  get hello(): ServerHelloResult | null {
+  get hello(): HostHelloResult | null {
     return this.helloResult;
   }
 
   /**
    * 这条连接说的是哪种语言：连上之后是**协商结果**（`Language`），没连上时是设置里那一项
-   * （可能是服务端不认识的写法，握手时它自己回落）。要那个更窄的联合类型就读 `hello.language`。
+   * （可能是宿主不认识的写法，握手时它自己回落）。要那个更窄的联合类型就读 `hello.language`。
    */
   get language(): string | undefined {
     return this.helloResult?.language ?? this.configuredLanguage;
@@ -192,8 +192,8 @@ export class Client implements ContractCaller {
     return addressLabel(this.target);
   }
 
-  /** 结构化地址（`ensureServer` 与界面用） */
-  get address(): ServerTarget {
+  /** 结构化地址（`ensureHost` 与界面用） */
+  get address(): HostTarget {
     return this.target;
   }
 
@@ -204,7 +204,7 @@ export class Client implements ContractCaller {
   /**
    * 调一个契约方法。
    *
-   * 失败一律是 {@link ClientError}：服务端回的业务错误原样保留（`code` / `message` / `detail`），
+   * 失败一律是 {@link ClientError}：宿主回的业务错误原样保留（`code` / `message` / `detail`），
    * 传输层的失败用本地码。握手没成就发方法会被本地拒（`not_connected`）。
    */
   call<M extends MethodName>(method: M, ...args: MethodCallArgs<M>): Promise<MethodResult<M>> {
@@ -217,13 +217,13 @@ export class Client implements ContractCaller {
    * 往这条连接写一个**二进制帧**。上传分片走这里（帧的形状见 `chunkFrame.ts`）。
    *
    * 为什么单独开一条通道而不是把字节塞进 JSON：`asset.begin` 之后的分片是任意二进制，
-   * base64 进 JSON 会平白多出三分之一体积，而且服务端得先解一层编码才拿到字节。这条连接上
+   * base64 进 JSON 会平白多出三分之一体积，而且宿主得先解一层编码才拿到字节。这条连接上
    * 二进制帧只有一种含义（上传分片），所以不需要再用 JSON-RPC 那套 `id` / `method` 包装。
    *
-   * 分片没有回执（服务端按 `uploadId` 收，出错时用 `id: null` 的错误帧说话）：调用方发完所有
+   * 分片没有回执（宿主按 `uploadId` 收，出错时用 `id: null` 的错误帧说话）：调用方发完所有
    * 分片再 `asset.end`，由那一步的长度与摘要校验给出最终答案。
    *
-   * 没握手成功时本地就拒（`not_connected`），与服务端「未 `hello` 不收二进制」那道门是同一件事。
+   * 没握手成功时本地就拒（`not_connected`），与宿主「未 `hello` 不收二进制」那道门是同一件事。
    *
    * 参数上那个 `<ArrayBuffer>` 不是废话：全局 `WebSocket.send` 只收底层是 `ArrayBuffer` 的视图，
    * 而 `Uint8Array` 缺省可以挂在 `SharedArrayBuffer` 上。写在这里比在调用点转一道强。
@@ -249,8 +249,8 @@ export class Client implements ContractCaller {
    *
    * 语言挂在连接上、断开即忘，所以这里记住协商结果，重连时照旧带上。
    */
-  async setLanguage(language: string): Promise<ServerHelloResult["language"]> {
-    const { language: negotiated } = await this.call("server.setLanguage", { language });
+  async setLanguage(language: string): Promise<HostHelloResult["language"]> {
+    const { language: negotiated } = await this.call("host.setLanguage", { language });
     this.configuredLanguage = negotiated;
     if (this.helloResult) this.helloResult = { ...this.helloResult, language: negotiated };
     return negotiated;
@@ -436,20 +436,20 @@ export class Client implements ContractCaller {
   }
 
   /**
-   * 握手：`open` 之后发首帧 `server.hello`，等它的回执。
+   * 握手：`open` 之后发首帧 `host.hello`，等它的回执。
    *
    * 三条出口——回执、`close`、`error`——都可能先到，所以用一个 `settled` 闸门只落定一次，并让
    * 握手有独立时限：连上了但对面一句话都不回，是这条路上最容易发生的那种「卡住」。
    */
-  private handshake(socket: WebSocket): Promise<ServerHelloResult> {
-    return new Promise<ServerHelloResult>((resolve, reject) => {
+  private handshake(socket: WebSocket): Promise<HostHelloResult> {
+    return new Promise<HostHelloResult>((resolve, reject) => {
       let settled = false;
-      const finish = (error?: ClientError, result?: ServerHelloResult): void => {
+      const finish = (error?: ClientError, result?: HostHelloResult): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         if (error) reject(error);
-        else resolve(result as ServerHelloResult);
+        else resolve(result as HostHelloResult);
       };
 
       const timer = setTimeout(() => {
@@ -465,13 +465,13 @@ export class Client implements ContractCaller {
       socket.addEventListener(
         "open",
         () => {
-          const params: ServerHelloParams = {
+          const params: HostHelloParams = {
             token: this.token,
             clientInfo: this.clientInfo,
             ...(this.configuredLanguage ? { language: this.configuredLanguage } : {}),
           };
-          this.transmit(socket, HELLO_ID, "server.hello", params, this.connectTimeoutMs).then(
-            (result) => finish(undefined, result as ServerHelloResult),
+          this.transmit(socket, HELLO_ID, "host.hello", params, this.connectTimeoutMs).then(
+            (result) => finish(undefined, result as HostHelloResult),
             (error: unknown) => finish(error instanceof ClientError ? error : this.lostError()),
           );
         },
@@ -532,7 +532,7 @@ export class Client implements ContractCaller {
   }
 
   private unavailableError(): ClientError {
-    return localError("server_unavailable", {
+    return localError("host_unavailable", {
       language: this.configuredLanguage,
       params: { endpoint: this.endpoint },
     });
@@ -600,7 +600,7 @@ export class Client implements ContractCaller {
 
   /** 一条入站消息 → 通知（事件）或回执（在飞表里的那一条） */
   private onMessage(raw: unknown): void {
-    // 服务端不发二进制（它的结果全是 JSON），收到了说明对端搞错了
+    // 宿主不发二进制（它的结果全是 JSON），收到了说明对端搞错了
     if (typeof raw !== "string") return;
     const incoming = parseIncoming(raw);
     if (!incoming) return;
@@ -619,7 +619,7 @@ export class Client implements ContractCaller {
         this.pending.delete(id);
         clearTimeout(call.timer);
         if (incoming.kind === "success") call.resolve(incoming.frame.result);
-        else call.reject(fromServerError(incoming.frame.error));
+        else call.reject(fromHostError(incoming.frame.error));
         return;
       }
       default:
@@ -630,7 +630,7 @@ export class Client implements ContractCaller {
   /**
    * 事件分派：按事件名找订阅者，载荷原样交出去。
    *
-   * 客户端不维护第二份事件名清单：名字来自 `EventMap`，没人订阅的名字自然没有订阅者 —— 服务端
+   * 客户端不维护第二份事件名清单：名字来自 `EventMap`，没人订阅的名字自然没有订阅者 —— 宿主
    * 加了新事件而客户端还不认识时，行为是「忽略」而不是「崩一下」。
    */
   private dispatchEvent(method: string, payload: unknown): void {
@@ -649,7 +649,7 @@ export class Client implements ContractCaller {
   private async resumeTracked(): Promise<void> {
     for (const conversationId of [...this.anchors.keys()]) {
       try {
-        // 一段补不上（对话被删 / 那一刻服务端出错）不该拖住其它段，所以逐段 try：
+        // 一段补不上（对话被删 / 那一刻宿主出错）不该拖住其它段，所以逐段 try：
         // 失败的这一段照旧留在表里，下次重连或调用方手动 `resume` 时再试
         await this.resume(conversationId);
       } catch (error) {

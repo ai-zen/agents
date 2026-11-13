@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { fromServerError, localError } from "./errors.js";
+import { fromHostError, localError } from "./errors.js";
 import {
   DEFAULT_RECONNECT_POLICY,
   isRetryableByDefault,
@@ -30,10 +30,10 @@ describe("retryDelay", () => {
 });
 
 describe("哪些失败值得重试", () => {
-  it("被服务端拒 / 地址错 / 已经关掉的不重试", () => {
+  it("被宿主拒 / 地址错 / 已经关掉的不重试", () => {
     expect(
       isRetryableByDefault(
-        fromServerError({
+        fromHostError({
           code: -32001,
           message: "x",
           data: { code: "unauthorized", message: "x", params: {} },
@@ -45,7 +45,7 @@ describe("哪些失败值得重试", () => {
   });
 
   it("连不上 / 断了 / 超时要重试", () => {
-    expect(isRetryableByDefault(localError("server_unavailable", { params: {} }))).toBe(true);
+    expect(isRetryableByDefault(localError("host_unavailable", { params: {} }))).toBe(true);
     expect(isRetryableByDefault(localError("connection_lost", { params: {} }))).toBe(true);
     expect(isRetryableByDefault(new Error("别的什么"))).toBe(true);
   });
@@ -84,14 +84,14 @@ describe("reconnectUntilConnected", () => {
       {
         reconnect: async () => {
           attempts += 1;
-          throw localError("server_unavailable", { params: { endpoint: "h:1" } });
+          throw localError("host_unavailable", { params: { endpoint: "h:1" } });
         },
       },
       { policy: POLICY, sleep: async () => undefined },
     ).catch((caught: unknown) => caught);
 
     expect(attempts).toBe(3);
-    expect((error as { code?: string }).code).toBe("server_unavailable");
+    expect((error as { code?: string }).code).toBe("host_unavailable");
   });
 
   it("不值得重试的失败当场抛，不空转", async () => {
@@ -100,7 +100,7 @@ describe("reconnectUntilConnected", () => {
       {
         reconnect: async () => {
           attempts += 1;
-          throw fromServerError({
+          throw fromHostError({
             code: -32001,
             message: "凭证没被接受",
             data: { code: "unauthorized", message: "凭证没被接受", params: {} },

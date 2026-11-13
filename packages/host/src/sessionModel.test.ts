@@ -1,0 +1,306 @@
+/**
+ * 会话级模型与思考档位（F-B4 / F-B6 / F-B7）：它们存在会话行上，改完立刻写库、重启还在。
+ *
+ * 这里跑的是真 `HostApp`（真 SQLite、真组装），只把 agent 那一层换成假工厂 —— 与
+ * `app.test.ts` 同一套口径。围绕三件事：
+ *   1. `/model` 写库之后重建 `HostApp`，读到的还是新模型；
+ *   2. 换模型把思考档位清成 `null`，下一轮装配 agent 时拿到的也是 `null`（旧档位的补丁不会再发出去）；
+ *   3. 两段会话各设各的档位，互不影响。
+ */
+
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, it } from "vitest";
+
+import { createHost } from "./app.js";
+import type { HostApp } from "./app.js";
+import type { ConnectionInfo } from "./net/index.js";
+import { makeTempDir, wait, type TempDir } from "./net/TestSupport.js";
+import type { AgentBuildContext } from "./runtime/index.js";
+import { FakeAgent } from "./runtime/TestSupport.js";
+import type {
+  ConversationCreateResult,
+  ConversationView,
+  MethodName,
+  MethodParams,
+  MethodResult,
+} from "./wire/index.js";
+
+// ---------------------------------------------------------------------------
+// 夹具
+// ---------------------------------------------------------------------------
+
+/** 两个模型：`test-model` 挂着出厂 `openai` 那张思考策略表，`plain-model` 没有档位 */
+const CONFIG = JSON.stringify(
+  {
+    endpoints: [
+      { id: "fake", name: "Fake", baseUrl: "https://example.invalid/v1", apiKey: "sk-fake" },
+    ],
+    models: [
+      {
+        id: "test-model",
+        name: "Test Model",
+        endpointId: "fake",
+        tokenThresholds: { handoff: 1000, guard: 2000 },
+        vision: true,
+        reasoningPreset: "openai",
+        custom: true,
+      },
+      {
+        id: "plain-model",
+        name: "Plain Model",
+        endpointId: "fake",
+        tokenThresholds: { handoff: 500, guard: 900 },
+        custom: true,
+      },
+    ],
+    defaultModel: "test-model",
+  },
+  null,
+  2,
+);
+
+const AGENT = JSON.stringify(
+  {
+    id: "default",
+    name: "Test Assistant",
+    modelId: "test-model",
+    messages: [{ id: "sys-1", role: "system", status: "completed", content: "测试助手" }],
+    custom: true,
+  },
+  null,
+  2,
+);
+
+const CONNECTION: ConnectionInfo = {
+  id: "test-connection",
+  language: "en",
+  clientInfo: null,
+  credentialId: null,
+};
+
+const dataRoots: TempDir[] = [];
+const workspaceDirs: TempDir[] = [];
+const apps: HostApp[] = [];
+
+async function makeDataRoot(): Promise<TempDir> {
+  const base = await makeTempDir("ai-zen-session-model-");
+  dataRoots.push(base);
+  await fs.mkdir(join(base.path, "agents"), { recursive: true });
+  await fs.writeFile(join(base.path, "config.json"), CONFIG, "utf8");
+  await fs.writeFile(join(base.path, "agents", "default.json"), AGENT, "utf8");
+  return base;
+}
+
+async function startApp(dataRoot: TempDir, createAgent?: (context: AgentBuildContext) => Promise<FakeAgent>): Promise<HostApp> {
+  const app = await createHost({
+    aiZenDir: dataRoot.path,
+    port: 0,
+    local: true,
+    exit: () => undefined,
+    logger: { warn: () => undefined, error: () => undefined },
+    ...(createAgent === undefined ? {} : { createAgent }),
+  });
+  await app.start();
+  apps.push(app);
+  return app;
+}
+
+async function callMethod<M extends MethodName>(
+  app: HostApp,
+  method: M,
+  params: MethodParams<M> = {} as MethodParams<M>,
+): Promise<MethodResult<M>> {
+  const handler = app.handlers[method];
+  if (!handler) throw new Error(`方法未注册：${method}`);
+  return await handler({ method, params, connection: CONNECTION });
+}
+
+/** 建一个项目 + 一段（已落库的）对话 */
+async function seedConversation(
+  app: HostApp,
+  workspaceId: string,
+): Promise<ConversationView> {
+  const created = await callMethod(app, "conversation.create", {
+    workspaceId,
+    agentId: "default",
+  });
+  const conversation = created.conversation as ConversationCreateResult["conversation"];
+  if (!conversation) throw new Error("conversation.create 没有建出对话");
+  await app.conversationService.ensurePersisted(conversation.id);
+  return conversation;
+}
+
+/** 建一个项目（同一个目录只能登记一次） */
+async function seedWorkspace(app: HostApp, cwd: string): Promise<string> {
+  const { workspace } = await callMethod(app, "workspace.create", { cwd });
+  return workspace.id;
+}
+
+afterEach(async () => {
+  for (const app of apps.splice(0)) await app.stop("requested").catch(() => undefined);
+  for (const dir of workspaceDirs.splice(0)) await dir.remove();
+  for (const dir of dataRoots.splice(0)) await dir.remove();
+});
+
+// ---------------------------------------------------------------------------
+// 用例
+// ---------------------------------------------------------------------------
+
+describe("会话级模型：写库与重启（F-B4）", () => {
+  it("`/model` 改完立刻写库，重建 HostApp 之后读到的还是新模型", async () => {
+    const dataRoot = await makeDataRoot();
+    const workspaceDir = await makeTempDir("ai-zen-session-model-cwd-");
+    workspaceDirs.push(workspaceDir);
+
+    const app = await startApp(dataRoot);
+    const workspaceId = await seedWorkspace(app, workspaceDir.path);
+    const conversation = await seedConversation(app, workspaceId);
+    expect(conversation.model).toMatchObject({ modelId: "test-model", source: "agent" });
+
+    const changed = await callMethod(app, "conversation.setModel", {
+      conversationId: conversation.id,
+      modelId: "plain-model",
+    });
+    expect(changed.model).toMatchObject({ modelId: "plain-model", source: "conversation" });
+    // 立刻写库（不是内存里的临时值）
+    const row = await app.db.get<{ modelId: string }>(
+      "SELECT modelId FROM conversations WHERE id = ?",
+      [conversation.id],
+    );
+    expect(row?.modelId).toBe("plain-model");
+
+    // 重启：同一个数据根再起一个服务
+    await app.stop("requested");
+    const restarted = await startApp(dataRoot);
+    const reopened = await callMethod(restarted, "conversation.get", {
+      conversationId: conversation.id,
+    });
+    expect(reopened.conversation.model).toMatchObject({
+      modelId: "plain-model",
+      source: "conversation",
+    });
+    expect(reopened.conversation.modelId).toBe("plain-model");
+  });
+});
+
+describe("换模型清掉思考档位（F-B6）", () => {
+  it("换模型后 thinkingLevel 变 null，下一轮装配拿到的也是 null（旧档位的补丁不再发出去）", async () => {
+    const dataRoot = await makeDataRoot();
+    const workspaceDir = await makeTempDir("ai-zen-session-model-cwd-");
+    workspaceDirs.push(workspaceDir);
+
+    // 记下每一轮装配 agent 时拿到的事实
+    const contexts: AgentBuildContext[] = [];
+    const app = await startApp(dataRoot, async (context) => {
+      contexts.push(context);
+      return new FakeAgent([
+        { deltas: [{ content: "好" }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
+      ]);
+    });
+    const workspaceId = await seedWorkspace(app, workspaceDir.path);
+    const conversation = await seedConversation(app, workspaceId);
+
+    // 先在这段会话上选一档
+    const chosen = await callMethod(app, "conversation.setThinking", {
+      conversationId: conversation.id,
+      level: "high",
+    });
+    expect(chosen.thinking).toMatchObject({
+      selected: "high",
+      source: "manual",
+      params: { reasoning_effort: "high" },
+    });
+
+    // 换模型：档位跟着清掉（档位属于模型）
+    await callMethod(app, "conversation.setModel", {
+      conversationId: conversation.id,
+      modelId: "plain-model",
+    });
+    const afterSwitch = await callMethod(app, "conversation.get", {
+      conversationId: conversation.id,
+    });
+    // `plain-model` 没有思考策略表：档位跟着模型一起没了
+    expect(afterSwitch.conversation.thinking.source).toBe("not_adjustable");
+    expect(afterSwitch.conversation.thinking.selected).toBeNull();
+    const row = await app.db.get<{ modelId: string; thinkingLevel: string | null }>(
+      "SELECT modelId, thinkingLevel FROM conversations WHERE id = ?",
+      [conversation.id],
+    );
+    expect(row).toEqual({ modelId: "plain-model", thinkingLevel: null });
+
+    // 跑一轮：装配时拿到的模型是新模型，档位是 null（工厂据此不带任何档位补丁）
+    await callMethod(app, "conversation.send", {
+      conversationId: conversation.id,
+      input: { content: "再问一句" },
+    });
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if (app.chatRunner.turn(conversation.id) === undefined) break;
+      await wait(10);
+    }
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0]).toMatchObject({ modelId: "plain-model", thinkingLevel: null });
+  });
+
+  it("两段会话各设各的档位，互不影响", async () => {
+    const dataRoot = await makeDataRoot();
+    const workspaceDir = await makeTempDir("ai-zen-session-model-cwd-");
+    workspaceDirs.push(workspaceDir);
+
+    const app = await startApp(dataRoot);
+    const workspaceId = await seedWorkspace(app, workspaceDir.path);
+    const first = await seedConversation(app, workspaceId);
+    const second = await seedConversation(app, workspaceId);
+
+    // A 关掉思考，B 开到最大
+    await callMethod(app, "conversation.setThinking", { conversationId: first.id, level: "off" });
+    await callMethod(app, "conversation.setThinking", { conversationId: second.id, level: "high" });
+
+    const a = await callMethod(app, "conversation.get", { conversationId: first.id });
+    const b = await callMethod(app, "conversation.get", { conversationId: second.id });
+    expect(a.conversation.thinking).toMatchObject({
+      selected: "off",
+      source: "manual",
+      params: { reasoning_effort: "none" },
+    });
+    expect(b.conversation.thinking).toMatchObject({
+      selected: "high",
+      source: "manual",
+      params: { reasoning_effort: "high" },
+    });
+
+    // 清掉 A 的档位不动 B
+    const cleared = await callMethod(app, "conversation.setThinking", {
+      conversationId: first.id,
+      level: null,
+    });
+    expect(cleared.thinking.source).toBe("following_default");
+    const b2 = await callMethod(app, "conversation.get", { conversationId: second.id });
+    expect(b2.conversation.thinking).toMatchObject({ selected: "high", source: "manual" });
+  });
+
+  it("档位不存在时报 invalid_params，detail 里给出可用档位", async () => {
+    const dataRoot = await makeDataRoot();
+    const workspaceDir = await makeTempDir("ai-zen-session-model-cwd-");
+    workspaceDirs.push(workspaceDir);
+
+    const app = await startApp(dataRoot);
+    const workspaceId = await seedWorkspace(app, workspaceDir.path);
+    const conversation = await seedConversation(app, workspaceId);
+
+    const handler = app.handlers["conversation.setThinking"];
+    if (!handler) throw new Error("方法未注册：conversation.setThinking");
+    await expect(
+      handler({
+        method: "conversation.setThinking",
+        params: { conversationId: conversation.id, level: "超高" },
+        connection: CONNECTION,
+      }),
+    ).rejects.toMatchObject({
+      code: "invalid_params",
+      detail: { field: "level", level: "超高", levels: ["minimal", "low", "medium", "high", "off"] },
+    });
+  });
+});

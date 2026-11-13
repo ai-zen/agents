@@ -1,16 +1,16 @@
 /**
  * 上传的三段式（`asset.begin` → 二进制帧 → `asset.end`）的验收。
  *
- * 用一个**真 WebSocket 的假服务端**钉住客户端这一半的行为，四件事：
+ * 用一个**真 WebSocket 的假宿主**钉住客户端这一半的行为，四件事：
  *
  *   1. **分帧正确**：写出去的二进制帧按 `chunkFrame` 的形状能被原样拆回来，按顺序拼起来就是原文件；
  *   2. **本地先拒**：单张超上限、空文件、认不出类型 —— 这些错不该等到 `asset.begin` 才出现，
  *      更不该把字节传上去再说不行；
- *   3. **摘要不符要如实失败**：`asset.end` 被拒时 `uploadAsset` 抛的是服务端那句 `ClientError`，
+ *   3. **摘要不符要如实失败**：`asset.end` 被拒时 `uploadAsset` 抛的是宿主那句 `ClientError`，
  *      不是「上传成功」；
  *   4. **两个上传不串**：同一条连接上并发两个上传，各自的帧只带自己的 `uploadId`，谁也不吃掉谁的字节。
  *
- * 假服务端按方法名答题，二进制帧只记录不处理（这段用例真正要判断的是客户端写出去的字节）。
+ * 假宿主按方法名答题，二进制帧只记录不处理（这段用例真正要判断的是客户端写出去的字节）。
  */
 
 import { createHash } from "node:crypto";
@@ -20,7 +20,7 @@ import { join } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import type { ClientInfo } from "@ai-zen/agents-server";
+import type { ClientInfo } from "@ai-zen/agents-host";
 
 import { Client } from "./client.js";
 import { decodeChunkFrame } from "./chunkFrame.js";
@@ -33,9 +33,9 @@ import {
 import {
   FakeMethodError,
   helloResult,
-  startFakeServer,
-  type FakeServer,
-} from "./testSupport/fakeServer.js";
+  startFakeHost,
+  type FakeHost,
+} from "./testSupport/fakeHost.js";
 
 const CLIENT_INFO: ClientInfo = { name: "upload-test", version: "0.0.0-test" };
 const CONVERSATION_ID = "conv-upload-1";
@@ -51,15 +51,15 @@ function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-/** 取下假服务端收到的全部二进制帧（opcode 2） */
-function binaryFrames(server: FakeServer): Uint8Array[] {
-  return server.messages.filter((message) => message.opcode === 0x2).map((m) => new Uint8Array(m.data));
+/** 取下假宿主收到的全部二进制帧（opcode 2） */
+function binaryFrames(host: FakeHost): Uint8Array[] {
+  return host.messages.filter((message) => message.opcode === 0x2).map((m) => new Uint8Array(m.data));
 }
 
 /** 把某一个 `uploadId` 的帧按到达顺序拼回原字节 */
-function bytesOfUpload(server: FakeServer, uploadId: string): Uint8Array {
+function bytesOfUpload(host: FakeHost, uploadId: string): Uint8Array {
   const chunks: Uint8Array[] = [];
-  for (const frame of binaryFrames(server)) {
+  for (const frame of binaryFrames(host)) {
     const decoded = decodeChunkFrame(frame);
     if (decoded.uploadId === uploadId) chunks.push(decoded.chunk);
   }
@@ -94,7 +94,7 @@ function uploadMethods(counter: { begins: number }) {
           mime: "image/png",
           bytes: 0,
           name: null,
-          // 服务端落定时解出的像素尺寸（R76）；客户端原样往上传
+          // 宿主落定时解出的像素尺寸（R76）；客户端原样往上传
           width: 120,
           height: 80,
         },
@@ -102,7 +102,7 @@ function uploadMethods(counter: { begins: number }) {
       };
     },
     // 上传之后要能继续走 JSON-RPC：二进制帧不应该把文本通道弄坏
-    "server.version": () => ({
+    "host.version": () => ({
       version: "0.0.0-test",
       protocolVersion: "1",
       startedAt: "2026-01-01T00:00:00.000Z",
@@ -111,19 +111,19 @@ function uploadMethods(counter: { begins: number }) {
   };
 }
 
-let server: FakeServer;
+let host: FakeHost;
 let client: Client;
 
 beforeAll(async () => {
   const counter = { begins: 0 };
-  server = await startFakeServer({
+  host = await startFakeHost({
     methods: {
       ...uploadMethods(counter),
       ...helloLimits(),
     },
   });
   client = await Client.connect({
-    target: server.address,
+    target: host.address,
     token: "test-token",
     clientInfo: CLIENT_INFO,
     language: "zh",
@@ -132,13 +132,13 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await client.close();
-  await server.close();
+  await host.close();
 });
 
 /** 握手里的上限改成小值：这样超限用例不必真的分配 20MB */
 function helloLimits() {
   return {
-    "server.hello": () =>
+    "host.hello": () =>
       helloResult({ limits: { maxAssetBytes: 1024, maxAssetsPerMessage: 4 } }),
   };
 }
@@ -146,7 +146,7 @@ function helloLimits() {
 describe("分帧", () => {
   it("按 chunkSize 切片、按顺序写帧，拼回来就是原字节，摘要也对得上", async () => {
     const payload = bytesOf(1000, 7);
-    const before = binaryFrames(server).length;
+    const before = binaryFrames(host).length;
 
     const asset = await uploadAsset(client, {
       conversationId: CONVERSATION_ID,
@@ -156,7 +156,7 @@ describe("分帧", () => {
       chunkSize: 300,
     });
 
-    const frames = binaryFrames(server).slice(before);
+    const frames = binaryFrames(host).slice(before);
     // 1000 字节按 300 切：300 + 300 + 300 + 100
     expect(frames.map((frame) => decodeChunkFrame(frame).chunk.byteLength)).toEqual([
       300, 300, 300, 100,
@@ -168,40 +168,40 @@ describe("分帧", () => {
     expect(asset.assetId).toBe("asset-upload-1");
     // 引用原样带回：宽高也在（桌面端拿它先摆占位框）
     expect(asset).toMatchObject({ width: 120, height: 80 });
-    expect(bytesOfUpload(server, "upload-1")).toEqual(payload);
+    expect(bytesOfUpload(host, "upload-1")).toEqual(payload);
 
     // `asset.begin` 声明的是真实尺寸与类型，`asset.end` 给的是真摘要
-    const begin = server.frames.find((frame) => frame.method === "asset.begin");
+    const begin = host.frames.find((frame) => frame.method === "asset.begin");
     expect(begin?.params).toEqual({
       purpose: "message_image",
       mime: "image/png",
       bytes: 1000,
       name: "shot.png",
-      // 摘要在 `begin` 就交上去：服务端据此判断「这段对话里是不是已经有这份字节」
+      // 摘要在 `begin` 就交上去：宿主据此判断「这段对话里是不是已经有这份字节」
       sha256: sha256(payload),
       conversationId: CONVERSATION_ID,
     });
-    const end = server.frames.filter((frame) => frame.method === "asset.end").at(-1);
+    const end = host.frames.filter((frame) => frame.method === "asset.end").at(-1);
     expect(end?.params).toEqual({ uploadId: "upload-1", sha256: sha256(payload) });
   });
 
   it("文本帧与二进制帧在同一条连接上互不影响（JSON-RPC 照常收发）", async () => {
-    const before = server.frames.length;
+    const before = host.frames.length;
     await uploadAsset(client, {
       conversationId: CONVERSATION_ID,
       data: bytesOf(10, 1),
       mime: "image/png",
     });
     // 上传之后这条连接仍然能正常调方法（二进制帧没有被当成坏 JSON 处理掉）
-    const version = await client.call("server.version");
+    const version = await client.call("host.version");
     expect(version.protocolVersion).toBe("1");
-    expect(server.frames.length).toBeGreaterThan(before);
+    expect(host.frames.length).toBeGreaterThan(before);
   });
 });
 
 describe("本地前置校验", () => {
   it("单张超过握手给的上限：本地就拒，一个字节都不发", async () => {
-    const beforeFrames = server.messages.length;
+    const beforeFrames = host.messages.length;
     const error = (await uploadAsset(client, {
       conversationId: CONVERSATION_ID,
       data: bytesOf(2048, 3),
@@ -210,11 +210,11 @@ describe("本地前置校验", () => {
 
     expect(error).toBeInstanceOf(ClientError);
     expect(error.code).toBe("asset_too_large");
-    expect(error.fromServer).toBe(false);
+    expect(error.fromHost).toBe(false);
     // 上限与尺寸都在那句话里（1 KB / 2 KB），用户不必猜
     expect(error.message).toContain("2 KB");
     expect(error.message).toContain("1 KB");
-    expect(server.messages.length).toBe(beforeFrames);
+    expect(host.messages.length).toBe(beforeFrames);
   });
 
   it("空文件：本地拒（没有可上传的内容）", async () => {
@@ -243,7 +243,7 @@ describe("本地前置校验", () => {
     await fs.writeFile(file, payload);
     try {
       await uploadAsset(client, { conversationId: CONVERSATION_ID, path: file });
-      const begin = server.frames.filter((frame) => frame.method === "asset.begin").at(-1);
+      const begin = host.frames.filter((frame) => frame.method === "asset.begin").at(-1);
       expect(begin?.params).toMatchObject({
         mime: "image/png",
         name: "picture.png",
@@ -255,10 +255,10 @@ describe("本地前置校验", () => {
   });
 });
 
-describe("服务端的拒", () => {
+describe("宿主的拒", () => {
   it("摘要不符：`asset.end` 的失败原样抛出来（不假成功）", async () => {
-    // 一个把收到的字节改掉一个位的服务端：它算出的摘要必然与客户端给的不同
-    const strict = await startFakeServer({
+    // 一个把收到的字节改掉一个位的宿主：它算出的摘要必然与客户端给的不同
+    const strict = await startFakeHost({
       methods: {
         "asset.begin": () => ({ uploadId: "up-x", maxBytes: DEFAULT_MAX_ASSET_BYTES, receivedBytes: 0 }),
         "asset.end": () => {
@@ -284,8 +284,8 @@ describe("服务端的拒", () => {
       }).catch((caught: unknown) => caught)) as ClientError;
 
       expect(error.code).toBe("invalid_params");
-      expect(error.fromServer).toBe(true);
-      // 文案是服务端渲染的那句，客户端不另写一份
+      expect(error.fromHost).toBe(true);
+      // 文案是宿主渲染的那句，客户端不另写一份
       expect(error.message).toBe("上传的字节与摘要对不上");
       expect(error.detail).toEqual({ reason: "digest_mismatch" });
     } finally {
@@ -294,8 +294,8 @@ describe("服务端的拒", () => {
     }
   });
 
-  it("`asset.begin` 就拒（超过服务端上限）：字节一个都没出去", async () => {
-    const strict = await startFakeServer({
+  it("`asset.begin` 就拒（超过宿主上限）：字节一个都没出去", async () => {
+    const strict = await startFakeHost({
       methods: {
         "asset.begin": () => {
           throw new FakeMethodError({
@@ -354,11 +354,11 @@ describe("并发", () => {
     const uploadIdB = b.assetId.replace("asset-", "");
 
     // 两条上传的字节各自完整，且互不污染（拼错一个字节这里的比较就会失败）
-    expect(bytesOfUpload(server, uploadIdA)).toEqual(first);
-    expect(bytesOfUpload(server, uploadIdB)).toEqual(second);
+    expect(bytesOfUpload(host, uploadIdA)).toEqual(first);
+    expect(bytesOfUpload(host, uploadIdB)).toEqual(second);
 
     // 每个 `asset.end` 用的都是自己那条上传的摘要
-    const ends = server.frames.filter((frame) => frame.method === "asset.end").slice(-2);
+    const ends = host.frames.filter((frame) => frame.method === "asset.end").slice(-2);
     const digests = ends.map((frame) => (frame.params as { sha256: string }).sha256);
     expect(digests.slice().sort()).toEqual([sha256(first), sha256(second)].sort());
   });
@@ -402,7 +402,7 @@ describe("并发", () => {
 describe("连接状态", () => {
   it("连接已关：第一步就本地拒，不写到一条不存在的连接上", async () => {
     const closed = await Client.connect({
-      target: server.address,
+      target: host.address,
       token: "test-token",
       clientInfo: CLIENT_INFO,
       language: "zh",
@@ -420,12 +420,12 @@ describe("连接状态", () => {
 });
 
 describe("去重命中（asset.begin 说已经有了）", () => {
-  /** 服务端回 `deduped: true` 的假服务端：一个字节都不该再从我这边发出去 */
-  let dedupeServer: FakeServer;
+  /** 宿主回 `deduped: true` 的假宿主：一个字节都不该再从我这边发出去 */
+  let dedupeHost: FakeHost;
   let dedupeClient: Client;
 
   beforeAll(async () => {
-    dedupeServer = await startFakeServer({
+    dedupeHost = await startFakeHost({
       methods: {
         ...helloLimits(),
         "asset.begin": () => ({
@@ -452,7 +452,7 @@ describe("去重命中（asset.begin 说已经有了）", () => {
       },
     });
     dedupeClient = await Client.connect({
-      target: dedupeServer.address,
+      target: dedupeHost.address,
       token: "test-token",
       clientInfo: CLIENT_INFO,
       language: "zh",
@@ -461,7 +461,7 @@ describe("去重命中（asset.begin 说已经有了）", () => {
 
   afterAll(async () => {
     await dedupeClient.close();
-    await dedupeServer.close();
+    await dedupeHost.close();
   });
 
   it("`begin` 命中即结束：不发二进制帧、不调 `asset.end`，直接回既有引用", async () => {
@@ -475,10 +475,10 @@ describe("去重命中（asset.begin 说已经有了）", () => {
     expect(asset.assetId).toBe("asset-existing");
     // 去重命中回的也是既有那一行的完整引用，宽高一样在
     expect(asset).toMatchObject({ width: 120, height: 80 });
-    expect(binaryFrames(dedupeServer)).toEqual([]);
-    expect(dedupeServer.frames.filter((frame) => frame.method === "asset.end")).toEqual([]);
-    // 声明照样得带上摘要：服务端就是靠它认出来的
-    const begin = dedupeServer.frames.find((frame) => frame.method === "asset.begin");
+    expect(binaryFrames(dedupeHost)).toEqual([]);
+    expect(dedupeHost.frames.filter((frame) => frame.method === "asset.end")).toEqual([]);
+    // 声明照样得带上摘要：宿主就是靠它认出来的
+    const begin = dedupeHost.frames.find((frame) => frame.method === "asset.begin");
     expect(begin?.params).toMatchObject({
       sha256: sha256(bytesOf(12, 7)),
       conversationId: CONVERSATION_ID,

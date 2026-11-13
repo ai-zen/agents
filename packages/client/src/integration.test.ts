@@ -1,26 +1,26 @@
 /**
- * 对**真服务端**的验收：一次性的 `createServer` + 真 socket + 本包的 `Client`。
+ * 对**真宿主**的验收：一次性的 `createHost` + 真 socket + 本包的 `Client`。
  *
- * 假服务端能钉住客户端的行为，但钉不住「两边的形状对得上」：握手返回什么、业务错误的
- * `data` 长什么样、`message.list` 的 `anchor` 怎么给、`ensureServer` 读的发现文件与凭证与服务端
+ * 假宿主能钉住客户端的行为，但钉不住「两边的形状对得上」：握手返回什么、业务错误的
+ * `data` 长什么样、`message.list` 的 `anchor` 怎么给、`ensureHost` 读的发现文件与凭证与宿主
  * 写的到底是不是同一份。这几件事只有真实例能回答。
  *
- * 服务端起在端口 0（系统分配）、数据根是临时目录，退出动作换成记账（不把测试进程送走）。
+ * 宿主起在端口 0（系统分配）、数据根是临时目录，退出动作换成记账（不把测试进程送走）。
  */
 
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createServer, ServerApp } from "@ai-zen/agents-server";
+import { createHost, HostApp } from "@ai-zen/agents-host";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import type { ClientInfo } from "@ai-zen/agents-server";
+import type { ClientInfo } from "@ai-zen/agents-host";
 
 import { Client } from "./client.js";
-import { ensureServer, readServerFile, tokenFilePath } from "./connection.js";
+import { ensureHost, readHostFile, tokenFilePath } from "./connection.js";
 import type { ClientError } from "./errors.js";
-import type { ServerTarget } from "./address.js";
+import type { HostTarget } from "./address.js";
 import { parseIncoming } from "./frames.js";
 import { getAsset } from "./asset.js";
 import { uploadAsset, uploadAssets, DEFAULT_MAX_ASSET_BYTES } from "./upload.js";
@@ -53,8 +53,8 @@ const AGENT = JSON.stringify({
 
 let dataRoot = "";
 let workspaceDir = "";
-let app: ServerApp | null = null;
-let target: ServerTarget;
+let app: HostApp | null = null;
+let target: HostTarget;
 let token = "";
 const clients: Client[] = [];
 
@@ -65,18 +65,18 @@ beforeAll(async () => {
   await fs.writeFile(join(dataRoot, "config.json"), CONFIG, "utf8");
   await fs.writeFile(join(dataRoot, "agents", "default.json"), AGENT, "utf8");
 
-  app = await createServer({
+  app = await createHost({
     aiZenDir: dataRoot,
     port: 0,
     local: true,
-    // 退出动作换成记账：这是用例进程，不能被服务端的退出判据送走
+    // 退出动作换成记账：这是用例进程，不能被宿主的退出判据送走
     exit: () => undefined,
     logger: { warn: () => undefined, error: () => undefined },
   });
   await app.start();
 
   const address = app.address;
-  if (!address) throw new Error("服务端没在监听");
+  if (!address) throw new Error("宿主没在监听");
   target = { host: "127.0.0.1", port: address.port };
   token = (await fs.readFile(tokenFilePath(dataRoot), "utf8")).trim();
 });
@@ -95,20 +95,20 @@ async function connect(language: string): Promise<Client> {
 }
 
 describe("握手", () => {
-  it("拿真服务端的握手结果，并协商出语言", async () => {
+  it("拿真宿主的握手结果，并协商出语言", async () => {
     const client = await connect("zh");
 
     expect(client.connected).toBe(true);
     expect(client.hello?.language).toBe("zh");
     expect(client.hello?.protocolVersion).toBe("1");
-    expect(client.hello?.serverVersion).not.toBe("");
-    // 握手只回能力 id 列表（R57），清单本身走 server.capabilities
+    expect(client.hello?.hostVersion).not.toBe("");
+    // 握手只回能力 id 列表（R57），清单本身走 host.capabilities
     expect(client.hello?.capabilities.length).toBeGreaterThan(0);
     expect(client.hello?.limits.maxAssetsPerMessage).toBeGreaterThan(0);
   });
 
-  it("还没握手就发方法：服务端回 unauthorized（hello_required）", async () => {
-    // 用一条裸连接验证服务端那道门（`Client` 自己也会在本地挡住，两条都该成立）
+  it("还没握手就发方法：宿主回 unauthorized（hello_required）", async () => {
+    // 用一条裸连接验证宿主那道门（`Client` 自己也会在本地挡住，两条都该成立）
     const socket = new WebSocket(`ws://${target.host}:${target.port}`);
     try {
       const reply = await new Promise<unknown>((resolve, reject) => {
@@ -119,7 +119,7 @@ describe("握手", () => {
         });
         socket.addEventListener("message", (event) => resolve(event.data));
         socket.addEventListener("error", reject);
-        setTimeout(() => reject(new Error("服务端没有回话")), 2_000);
+        setTimeout(() => reject(new Error("宿主没有回话")), 2_000);
       });
 
       const frame = parseIncoming(String(reply));
@@ -135,14 +135,14 @@ describe("握手", () => {
 });
 
 describe("调用与错误", () => {
-  it("方法调用：server.version 报出 pid 与版本", async () => {
+  it("方法调用：host.version 报出 pid 与版本", async () => {
     const client = await connect("zh");
-    const version = await client.call("server.version");
+    const version = await client.call("host.version");
     expect(version.protocolVersion).toBe("1");
     expect(version.pid).toBeGreaterThan(0);
   });
 
-  it("业务错误原样到 ClientError，且文案跟着连接语言走（服务端出文案）", async () => {
+  it("业务错误原样到 ClientError，且文案跟着连接语言走（宿主出文案）", async () => {
     const zh = await connect("zh");
     const en = await connect("en");
     const params = { conversationId: "not-a-real-conversation" };
@@ -156,8 +156,8 @@ describe("调用与错误", () => {
 
     expect(zhError.code).toBe("not_found");
     expect(enError.code).toBe("not_found");
-    expect(zhError.fromServer).toBe(true);
-    // 同一个失败、两种语言：客户端没有自己的那份文案，句子是服务端按连接渲染的
+    expect(zhError.fromHost).toBe(true);
+    // 同一个失败、两种语言：客户端没有自己的那份文案，句子是宿主按连接渲染的
     expect(zhError.message).not.toBe("");
     expect(enError.message).not.toBe("");
     expect(zhError.message).not.toBe(enError.message);
@@ -199,7 +199,7 @@ describe("补拉（A12 的真语义）", () => {
 });
 
 describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () => {
-  /** 一小段字节：内容不重要，重要的是长度与摘要能原样到达服务端 */
+  /** 一小段字节：内容不重要，重要的是长度与摘要能原样到达宿主 */
   const PAYLOAD = new Uint8Array(2048).map((_, index) => (index * 7) % 251);
 
   /** 建一个项目 + 一段对话，并把这段对话**先落库**（R56：`conversation.create` 只是草稿） */
@@ -233,7 +233,7 @@ describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () =>
       chunkSize: 512,
     });
 
-    // `asset.end` 回的引用：尺寸与摘要都是服务端复核过的那一份
+    // `asset.end` 回的引用：尺寸与摘要都是宿主复核过的那一份
     expect(asset.assetId).not.toBe("");
     expect(asset.mime).toBe("image/png");
     expect(asset.bytes).toBe(PAYLOAD.byteLength);
@@ -258,7 +258,7 @@ describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () =>
     expect(["file_reference", "inline", "text_fallback", "dropped"]).toContain(
       accepted.attachments[0]?.deliveredAs,
     );
-    // 没送出去时要带上服务端渲染好的原因（F-H7：不假成功）
+    // 没送出去时要带上宿主渲染好的原因（F-H7：不假成功）
     if (accepted.attachments[0]?.deliveredAs === "dropped") {
       expect(accepted.attachments[0]?.problem?.message).toBeTruthy();
     }
@@ -309,7 +309,7 @@ describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () =>
       expect(new Uint8Array(fetched.bytes)).toEqual(PAYLOAD);
     }
 
-    // 不认识的 id：服务端报 not_found（客户端原样抛）
+    // 不认识的 id：宿主报 not_found（客户端原样抛）
     const error = (await getAsset(client, { assetId: "no-such-asset" }).catch(
       (caught: unknown) => caught,
     )) as ClientError;
@@ -320,7 +320,7 @@ describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () =>
     const client = await connect("zh");
     const conversationId = await persistedConversation(client);
 
-    // 本地前置校验用的就是这条上限：真服务端的 `hello.limits.maxAssetBytes`
+    // 本地前置校验用的就是这条上限：真宿主的 `hello.limits.maxAssetBytes`
     expect(client.hello?.limits.maxAssetBytes).toBe(DEFAULT_MAX_ASSET_BYTES);
 
     // 五份内容各不相同：相同内容会命中去重（那是另一条用例），这里要的是「五份」这个前提
@@ -348,14 +348,14 @@ async function idle(client: Client, conversationId: string): Promise<void> {
   throw new Error("这一轮一直没有结算");
 }
 
-describe("ensureServer 对真实例", () => {
+describe("ensureHost 对真实例", () => {
   it("发现文件里有活实例：直接连上，不拉起（started=false）", async () => {
     let spawned = 0;
-    const result = await ensureServer({
+    const result = await ensureHost({
       dataRoot,
       clientInfo: CLIENT_INFO,
       settings: { mode: "local", language: "zh" },
-      spawnServer: async () => {
+      spawnHost: async () => {
         spawned += 1;
       },
     });
@@ -370,12 +370,12 @@ describe("ensureServer 对真实例", () => {
   });
 });
 
-describe("真拉起一个服务端进程（end-to-end）", () => {
-  it("没有实例时 spawn `agents-server serve`，轮询到就绪、连上、再让它退出", async () => {
+describe("真拉起一个宿主进程（end-to-end）", () => {
+  it("没有实例时 spawn `agents-host serve`，轮询到就绪、连上、再让它退出", async () => {
     const freshRoot = await fs.mkdtemp(join(tmpdir(), "ai-zen-client-spawn-"));
     let pid: number | null = null;
     try {
-      const result = await ensureServer({
+      const result = await ensureHost({
         dataRoot: freshRoot,
         clientInfo: CLIENT_INFO,
         settings: { mode: "local" },
@@ -388,13 +388,13 @@ describe("真拉起一个服务端进程（end-to-end）", () => {
       expect(result.explicit).toBe(false);
 
       // 发现文件是客户端认地址的唯一来源：这里的 pid 就是被拉起那个进程
-      pid = (await readServerFile(freshRoot))?.pid ?? null;
+      pid = (await readHostFile(freshRoot))?.pid ?? null;
       expect(pid).not.toBeNull();
-      const version = await result.client.call("server.version");
+      const version = await result.client.call("host.version");
       expect(version.pid).toBe(pid);
 
-      // 收摊：用契约里的 server.shutdown（进程随后自己退出），不让测试进程里留下常驻服务端
-      await result.client.call("server.shutdown", { reason: "test" });
+      // 收摊：用契约里的 host.shutdown（进程随后自己退出），不让测试进程里留下常驻宿主
+      await result.client.call("host.shutdown", { reason: "test" });
     } finally {
       if (pid !== null) {
         for (let index = 0; index < 100 && isAlive(pid); index += 1) {

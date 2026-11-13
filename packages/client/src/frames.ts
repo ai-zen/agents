@@ -1,14 +1,14 @@
 /**
- * JSON-RPC 2.0 帧的**判别与构造**（形状来自服务端契约，这里只有运行期的分类）。
+ * JSON-RPC 2.0 帧的**判别与构造**（形状来自宿主契约，这里只有运行期的分类）。
  *
- * 为什么本文件不 import 服务端的运行期导出（`parseFrame` / `okResponse` / `notification`）：
- * `@ai-zen/agents-server` 的包根会把整个服务端（单根、SQLite worker、SDK 装配）一起拉进产物。
+ * 为什么本文件不 import 宿主的运行期导出（`parseFrame` / `okResponse` / `notification`）：
+ * `@ai-zen/agents-host` 的包根会把整个宿主（单根、SQLite worker、SDK 装配）一起拉进产物。
  * 客户端只要类型，所以帧形状用 `import type` 拿，判别与拼装自己写这几十行。
  *
  * 入站只可能是两种东西：
- *   1. **通知**（有 `method`、没有 `id`）：服务端推的事件，`method` 就是事件名（`EventMap` 的键）；
+ *   1. **通知**（有 `method`、没有 `id`）：宿主推的事件，`method` 就是事件名（`EventMap` 的键）；
  *   2. **响应**（没有 `method`、有 `id`，带 `result` 或 `error` 恰有其一）。
- * 客户端发来的请求方向不存在（服务端不向客户端发请求），所以两种之外的一律忽略。
+ * 客户端发来的请求方向不存在（宿主不向客户端发请求），所以两种之外的一律忽略。
  */
 
 import type {
@@ -17,7 +17,7 @@ import type {
   JsonRpcNotificationFrame,
   JsonRpcRequestFrame,
   JsonRpcSuccessFrame,
-} from "@ai-zen/agents-server";
+} from "@ai-zen/agents-host";
 
 /** 一条入站帧的三种可能，分好类再交给 `Client` */
 export type IncomingFrame =
@@ -28,7 +28,7 @@ export type IncomingFrame =
 /** 一条出站请求（`id` 由 `Client` 分配） */
 export function requestFrame(id: JsonRpcId, method: string, params: unknown): JsonRpcRequestFrame {
   // `params` 为 `undefined` 时 JSON 里不留这个键（`JSON.stringify` 会整键丢掉），消息就只剩
-  // `{jsonrpc, id, method}` —— 服务端解析时按 `{}` 处理
+  // `{jsonrpc, id, method}` —— 宿主解析时按 `{}` 处理
   return { jsonrpc: "2.0", id, method, params };
 }
 
@@ -57,7 +57,7 @@ export function parseIncoming(text: string): IncomingFrame | null {
     if (value.id === undefined || value.id === null) {
       return { kind: "notification", frame: value as unknown as JsonRpcNotificationFrame };
     }
-    // 服务端不会向客户端发请求（`id` + `method` 同时出现）：不认识，当噪声丢掉
+    // 宿主不会向客户端发请求（`id` + `method` 同时出现）：不认识，当噪声丢掉
     return null;
   }
 

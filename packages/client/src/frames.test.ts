@@ -8,13 +8,13 @@ import { encodeFrame, parseIncoming, requestFrame } from "./frames.js";
 
 describe("出站", () => {
   it("请求帧的标准形状（没有 params 时不带这个键）", () => {
-    expect(requestFrame(7, "server.version", undefined)).toEqual({
+    expect(requestFrame(7, "host.version", undefined)).toEqual({
       jsonrpc: "2.0",
       id: 7,
-      method: "server.version",
+      method: "host.version",
     });
-    expect(encodeFrame(requestFrame(1, "server.hello", { token: "t" }))).toBe(
-      '{"jsonrpc":"2.0","id":1,"method":"server.hello","params":{"token":"t"}}',
+    expect(encodeFrame(requestFrame(1, "host.hello", { token: "t" }))).toBe(
+      '{"jsonrpc":"2.0","id":1,"method":"host.hello","params":{"token":"t"}}',
     );
   });
 });
@@ -37,7 +37,7 @@ describe("入站", () => {
     ).toBe("error");
   });
 
-  it("坏 JSON / 不是 2.0 / 服务端发请求 / 什么都没有：一律 null", () => {
+  it("坏 JSON / 不是 2.0 / 宿主发请求 / 什么都没有：一律 null", () => {
     expect(parseIncoming("{ 半个")).toBeNull();
     expect(parseIncoming('{"id":2,"result":1}')).toBeNull();
     expect(parseIncoming('{"jsonrpc":"2.0","id":3,"method":"x"}')).toBeNull();

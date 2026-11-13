@@ -1,5 +1,5 @@
 /**
- * 服务端地址的**形状**与「地址 ↔ URL」的**唯一实现处**。
+ * 宿主地址的**形状**与「地址 ↔ URL」的**唯一实现处**。
  *
  * 地址在本包内部一律是结构化字段（host / port / path / secure），字符串只出现在两个边界上：
  * 用户输入（{@link parseAddress}）与线上（{@link webSocketUrl}）。让每个调用点各自
@@ -16,9 +16,9 @@
 
 import { badAddress } from "./errors.js";
 
-/** 服务端在哪：host + port，外加两块可选的线上事实（子路径、是否加密） */
-export interface ServerTarget {
-  /** 裸地址（IPv6 不带方括号，与服务端发现文件里的 `host` 同形） */
+/** 宿主在哪：host + port，外加两块可选的线上事实（子路径、是否加密） */
+export interface HostTarget {
+  /** 裸地址（IPv6 不带方括号，与宿主发现文件里的 `host` 同形） */
   host: string;
   port: number;
   /** URL 的 path 部分；缺省 = 根路径（子路径挂载需要它） */
@@ -43,7 +43,7 @@ const SCHEMES: Record<string, { secure: boolean; defaultPort: number }> = {
  *
  * @throws `ClientError`（`bad_address`），错误信息里带原始字符串 —— 用户要能认出自己填的那一行
  */
-export function parseAddress(input: string): ServerTarget {
+export function parseAddress(input: string): HostTarget {
   const text = normalizeAddress(input);
   let url: URL;
   try {
@@ -56,9 +56,9 @@ export function parseAddress(input: string): ServerTarget {
   const known = SCHEMES[scheme];
   if (!known) throw badAddress(input);
 
-  const target: ServerTarget = {
+  const target: HostTarget = {
     // `URL.hostname` 对 IPv6 字面量带着方括号（`[::1]`）：方括号是 URL 的语法，不是地址的一部分。
-    // 存裸地址，与服务端发现文件里的 `host` 一致，两份东西拼在一条链上时不必层层剥
+    // 存裸地址，与宿主发现文件里的 `host` 一致，两份东西拼在一条链上时不必层层剥
     host: stripBrackets(url.hostname),
     port: url.port === "" ? known.defaultPort : Number(url.port),
   };
@@ -73,7 +73,7 @@ export function parseAddress(input: string): ServerTarget {
  *
  * `10.0.0.5:8790` 在终端里是最自然的写法，而 `parseAddress` 要求带 scheme。**不猜加密**：写了
  * `https://` / `wss://` 就按他的，没写就当内网明文 —— 反过来「自动升成 wss」会在连一个没配
- * 证书的服务端时得到一条与地址无关的 TLS 报错。
+ * 证书的宿主时得到一条与地址无关的 TLS 报错。
  */
 export function normalizeAddress(raw: string): string {
   const text = raw.trim();
@@ -86,7 +86,7 @@ export function normalizeAddress(raw: string): string {
  *
  * IPv6 字面量要加方括号（`::1` 是本地实例的合法监听地址之一）；没有 `path` 时不多出一个斜杠。
  */
-export function webSocketUrl(target: ServerTarget): string {
+export function webSocketUrl(target: HostTarget): string {
   const host = stripBrackets(target.host.trim());
   const literal = host.includes(":") ? `[${host}]` : host;
   const scheme = target.secure ? "wss" : "ws";
@@ -94,7 +94,7 @@ export function webSocketUrl(target: ServerTarget): string {
 }
 
 /** 一条给人看的地址（`host:port`，不含任何凭证；界面与错误文案都用它） */
-export function addressLabel(target: ServerTarget): string {
+export function addressLabel(target: HostTarget): string {
   const host = stripBrackets(target.host);
   return `${host.includes(":") ? `[${host}]` : host}:${target.port}`;
 }
@@ -102,7 +102,7 @@ export function addressLabel(target: ServerTarget): string {
 /**
  * 这个 host 是不是本机回环。
  *
- * 用来回答「本机的那串凭证对这台服务端有没有意义」：显式地址指向本机时，`run/token` 就是它的
+ * 用来回答「本机的那串凭证对这台宿主有没有意义」：显式地址指向本机时，`run/token` 就是它的
  * 凭证；指向远端时，本地文件里那一串与对面的锁毫无关系，不该拿去试。
  */
 export function isLoopbackHost(host: string): boolean {

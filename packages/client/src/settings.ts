@@ -12,14 +12,14 @@
  * ## 两个前端不共用一份文件
  *
  * `<数据根>/cli/connection.json` 与 `<数据根>/desktop/connection.json` 分开存：这两个客户端可能
- * 在两台机器上，也可能在同一台上连着**不同**的服务端。共用的只有 `<数据根>/run/` 下那两样
+ * 在两台机器上，也可能在同一台上连着**不同**的宿主。共用的只有 `<数据根>/run/` 下那两样
  * （发现文件与凭证）—— 那是**这台机器**的事实。
  *
  * ## 「没配过」是一个独立的事实
  *
  * {@link readSettings} 在没有可用配置时返回 `null`，而不是 `{ mode: "local" }`。用默认值兜底会
  * 把三种情形压成两格（没配过 / 配过本地 / 配过远程），于是「首次启动该进连接屏」这条判据做不
- * 出来 —— 首启会被当成「用户选过本地」，直接拉起一个服务端。
+ * 出来 —— 首启会被当成「用户选过本地」，直接拉起一个宿主。
  *
  * 坏 JSON / 字段不合法同样返回 `null`（与「文件不在」同一类事实：这份配置不可用），**绝不抛错**。
  */
@@ -48,7 +48,7 @@ export interface ConnectionSettings {
   url?: string;
   /** 仅 `remote` 有意义：显式凭证。留空 = 退回本机 `<数据根>/run/token`（本机实例那条兜底） */
   token?: string;
-  /** 连接语言（`hello` 时带上）。留空 = 由服务端的默认语言决定（D8：缺省英文） */
+  /** 连接语言（`hello` 时带上）。留空 = 由宿主的默认语言决定（D8：缺省英文） */
   language?: string;
 }
 
@@ -56,7 +56,7 @@ export interface ConnectionSettings {
  * 落点：`<数据根>/<client>/connection.json`。
  *
  * 放在各自的子目录下而不是数据根下：根下（`config.json` / `agents/` / `run/` / 库 / `assets/`）
- * 全是**服务端的事实**，客户端往里写东西会模糊那条边界；`cli/` / `desktop/` 一眼就是「这个
+ * 全是**宿主的事实**，客户端往里写东西会模糊那条边界；`cli/` / `desktop/` 一眼就是「这个
  * 客户端自己的」。
  */
 export function settingsPath(dataRoot: string, client: ConnectionClient): string {
@@ -130,7 +130,7 @@ export function parseSettings(raw: unknown): ConnectionSettings {
   const language = trimmed(input.language);
 
   if (input.mode === "remote") {
-    if (!url) throw new Error("选了远程模式，但没填服务端地址");
+    if (!url) throw new Error("选了远程模式，但没填宿主地址");
     // 地址合法性只问那一个实现（错误信息里带原串，用户认得出自己填了什么）
     parseAddress(url);
   }
@@ -163,12 +163,12 @@ export function settingsToTarget(settings: ConnectionSettings): {
 }
 
 /**
- * 界面上那一行字（`本机服务端` / 那个地址）。**绝不包含凭证**：地址里的 userinfo 会被抹掉 ——
+ * 界面上那一行字（`本机宿主` / 那个地址）。**绝不包含凭证**：地址里的 userinfo 会被抹掉 ——
  * 有人会把钥匙写进地址（`wss://token@host`），而这一行要上屏。
  */
 export function settingsLabel(settings: ConnectionSettings): string {
-  if (settings.mode !== "remote") return "本机服务端";
-  return stripUserInfo(settings.url ?? "") || "远程服务端";
+  if (settings.mode !== "remote") return "本机宿主";
+  return stripUserInfo(settings.url ?? "") || "远程宿主";
 }
 
 /**

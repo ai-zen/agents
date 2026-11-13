@@ -8,18 +8,24 @@
 import { describe, expect, it } from "vitest";
 
 import type {
+  AgentNS,
   ConversationState,
   MessageListResult,
   MethodName,
   MethodParams,
   MethodResult,
-} from "@ai-zen/agents-server";
+} from "@ai-zen/agents-host";
 
 import { lastMessageId, mergeResumed, resumeConversation, type ContractCaller } from "./resume.js";
-import { assistantMessage, conversationState, userMessage } from "./testSupport/fakeServer.js";
+import { assistantMessage, conversationState, userMessage } from "./testSupport/fakeHost.js";
 
 /** 记下每次调用的方法名与参数，按脚本回结果 */
-function fakeCaller(answers: { state: ConversationState; listed: MessageListResult }): {
+function fakeCaller(answers: {
+  state: ConversationState;
+  /** `conversation.state` 带 `includeMessages: true` 时回的那一份（全量补拉走这条） */
+  full?: AgentNS.Message[];
+  listed?: MessageListResult;
+}): {
   caller: ContractCaller;
   calls: { method: string; params: unknown }[];
 } {
@@ -28,9 +34,14 @@ function fakeCaller(answers: { state: ConversationState; listed: MessageListResu
     async call<M extends MethodName>(method: M, params: MethodParams<M>): Promise<MethodResult<M>> {
       calls.push({ method, params });
       if (method === "conversation.state") {
-        return { state: answers.state } as MethodResult<M>;
+        const wants = (params as { includeMessages?: boolean }).includeMessages === true;
+        // 没要的时候这个键不出现：与宿主的约定一致
+        return (wants
+          ? { state: answers.state, messages: answers.full ?? [] }
+          : { state: answers.state }) as MethodResult<M>;
       }
       if (method === "message.list") {
+        if (!answers.listed) throw new Error("用例没给 message.list 的结果");
         return answers.listed as MethodResult<M>;
       }
       throw new Error(`用例没准备这个方法：${method}`);
@@ -40,7 +51,7 @@ function fakeCaller(answers: { state: ConversationState; listed: MessageListResu
 }
 
 describe("resumeConversation", () => {
-  it("先拉 state、再拉消息；`after` 原样带出去（A12）", async () => {
+  it("续传：`after` 原样带出去，状态这一跳不要消息（A12）", async () => {
     const { caller, calls } = fakeCaller({
       state: conversationState("c1"),
       listed: {
@@ -53,6 +64,8 @@ describe("resumeConversation", () => {
     const resumed = await resumeConversation(caller, "c1", "m2");
 
     expect(calls.map((call) => call.method)).toEqual(["conversation.state", "message.list"]);
+    // 增量只能靠 `after` 表达，所以状态那一跳不必为消息付费
+    expect(calls[0]?.params).toEqual({ conversationId: "c1" });
     expect(calls[1]?.params).toEqual({ conversationId: "c1", after: "m2" });
     expect(resumed.mode).toBe("anchor");
     expect(resumed.anchor).toBe("m2");
@@ -60,18 +73,19 @@ describe("resumeConversation", () => {
     expect(resumed.state.conversationId).toBe("c1");
   });
 
-  it("没有锚点时不带 `after` 这个键；服务端回 anchor null 就是全量", async () => {
+  it("没有锚点：一次拿齐现场与消息，不再补一跳 message.list", async () => {
     const { caller, calls } = fakeCaller({
       state: conversationState("c1"),
-      listed: { conversationId: "c1", anchor: null, messages: [userMessage("m1", "问")] },
+      full: [userMessage("m1", "问"), assistantMessage("m2", "答")],
     });
 
     const resumed = await resumeConversation(caller, "c1");
 
-    // 不发 `after: undefined`：帧里连这个键都不该有
-    expect(calls[1]?.params).toEqual({ conversationId: "c1" });
+    expect(calls.map((call) => call.method)).toEqual(["conversation.state"]);
+    expect(calls[0]?.params).toEqual({ conversationId: "c1", includeMessages: true });
     expect(resumed.mode).toBe("full");
     expect(resumed.anchor).toBeNull();
+    expect(resumed.messages.map((message) => message.id)).toEqual(["m1", "m2"]);
   });
 });
 
@@ -103,7 +117,7 @@ describe("mergeResumed", () => {
     expect(merged.map((message) => message.id)).toEqual(["x1"]);
   });
 
-  it("续传但本地找不到那条：以服务端为准", () => {
+  it("续传但本地找不到那条：以宿主为准", () => {
     const merged = mergeResumed([userMessage("gone", "撤回过")], resumed());
     expect(merged.map((message) => message.id)).toEqual(["m2", "m3"]);
   });

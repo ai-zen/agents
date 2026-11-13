@@ -99,7 +99,7 @@ describe("读写", () => {
 
 describe("保存路径的校验", () => {
   it("remote 必须有能解析的地址", () => {
-    expect(() => parseSettings({ mode: "remote" })).toThrow(/没填服务端地址/);
+    expect(() => parseSettings({ mode: "remote" })).toThrow(/没填宿主地址/);
     expect(() => parseSettings({ mode: "remote", url: "ftp://example.test" })).toThrow();
     expect(parseSettings({ mode: "remote", url: "10.0.0.5:8790" })).toEqual({
       mode: "remote",
@@ -122,7 +122,7 @@ describe("保存路径的校验", () => {
 
 describe("给人看的那几行", () => {
   it("标签不带凭证", () => {
-    expect(settingsLabel({ mode: "local" })).toBe("本机服务端");
+    expect(settingsLabel({ mode: "local" })).toBe("本机宿主");
     expect(settingsLabel({ mode: "remote", url: "wss://token-in-url@example.test/ai-zen" })).toBe(
       "wss://example.test/ai-zen",
     );

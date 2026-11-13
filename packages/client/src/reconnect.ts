@@ -12,7 +12,7 @@
  *
  * ## 哪些失败不值得重试
  *
- * 传输层的失败（连不上、断了、握手超时）重试有意义；**被服务端拒**（`unauthorized`）与**地址
+ * 传输层的失败（连不上、断了、握手超时）重试有意义；**被宿主拒**（`unauthorized`）与**地址
  * 不合法**重试一万次也是同一个结果，无限重试只会把一条该上屏的错误藏进一个转圈的界面里。
  * 判据在 {@link isRetryableByDefault}，按码而不是按错误文本 —— 文本会变，码是契约。
  */
@@ -37,7 +37,7 @@ export interface ReconnectPolicy {
  * 缺省策略：**一直重试**，从 250ms 起按 2 倍退避、封顶 10 秒。
  *
  * 封顶那 10 秒是「别把断线的会话变成一台空转的机器」：桌面端可能挂一整天，无限退避会让下一次
- * 重试落到几小时之后，于是服务端早就回来了而界面还停在「重连中」。
+ * 重试落到几小时之后，于是宿主早就回来了而界面还停在「重连中」。
  */
 export const DEFAULT_RECONNECT_POLICY: ReconnectPolicy = {
   maxAttempts: Number.POSITIVE_INFINITY,
@@ -72,7 +72,7 @@ export interface ReconnectOptions {
 /**
  * 反复 `reconnect()` 直到连上（连上之后的补拉由 `Client` 自己做）。
  *
- * 抛出的错误是**最后一次失败的那个**：调用方要显示的就是它（服务端的话术已经按连接语言渲染
+ * 抛出的错误是**最后一次失败的那个**：调用方要显示的就是它（宿主的话术已经按连接语言渲染
  * 好了，本地那些也有文案）。不重试的失败当场抛出，不等满次数。
  */
 export async function reconnectUntilConnected(
@@ -110,7 +110,7 @@ export function retryDelay(policy: ReconnectPolicy, attempt: number): number {
 }
 
 /**
- * 缺省的可重试判据：被服务端拒的、地址错的、本端已经关掉的，都不重试。
+ * 缺省的可重试判据：被宿主拒的、地址错的、本端已经关掉的，都不重试。
  *
  * 其余（连不上、断了、握手超时、拉起失败）都算「现在不行、等会儿可能行」。
  */
@@ -121,7 +121,7 @@ export function isRetryableByDefault(error: unknown): boolean {
     case "invalid_params":
     case "bad_address":
     case "closed":
-    case "server_entry_missing":
+    case "host_entry_missing":
       return false;
     default:
       return true;

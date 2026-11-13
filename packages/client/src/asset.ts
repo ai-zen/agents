@@ -15,7 +15,7 @@
  *
  * ## 两档
  *
- * `variant: "original"` 是原图。`"thumb"` 目前**等同原图**（服务端这一波不引入原生图像库），
+ * `variant: "original"` 是原图。`"thumb"` 目前**等同原图**（宿主这一波不引入原生图像库），
  * 回包里的 `variant` 说明实际给的是哪一档；要小图就按 `asset.width` / `asset.height` 自己缩
  * （宽高未知时是 `null`）。
  *
@@ -27,7 +27,7 @@
  */
 
 import type { AgentNS } from "@ai-zen/agents-core";
-import type { AssetRef, AssetVariant, LocalMessageContentSection } from "@ai-zen/agents-server";
+import type { AssetRef, AssetVariant, LocalMessageContentSection } from "@ai-zen/agents-host";
 
 import type { ContractCaller } from "./resume.js";
 
@@ -40,7 +40,7 @@ export interface GetAssetOptions {
 
 /** 取回来的一份素材：引用事实 + 实际给的档 + 字节 */
 export interface AssetContent {
-  /** 服务端那边这一行的引用（`mime` / `bytes` / 宽高都在里面） */
+  /** 宿主那边这一行的引用（`mime` / `bytes` / 宽高都在里面） */
   asset: AssetRef;
   /** 实际给出的档（`thumb` 目前等同原图） */
   variant: AssetVariant;
@@ -51,7 +51,7 @@ export interface AssetContent {
 /**
  * 按素材 id 取回内容。
  *
- * 服务端找不到这个 id（或行在而文件不在）时报 `not_found`，错误原样往上抛：这一层不猜原因。
+ * 宿主找不到这个 id（或行在而文件不在）时报 `not_found`，错误原样往上抛：这一层不猜原因。
  */
 export async function getAsset(
   client: ContractCaller,
@@ -73,7 +73,7 @@ export async function getAsset(
 /**
  * 一个内容段引用的素材 id（没有这个扩展字段就是 `null`）。
  *
- * 与服务端那份判断同口径：看的是字段在不在，不是 url 长什么样。空串 / 空白算没写。
+ * 与宿主那份判断同口径：看的是字段在不在，不是 url 长什么样。空串 / 空白算没写。
  */
 export function localAssetIdOf(section: AgentNS.MessageContentSection): string | null {
   const value = (section as LocalMessageContentSection).__asset_id;
@@ -88,7 +88,7 @@ export function localAssetIdOf(section: AgentNS.MessageContentSection): string |
  * `null` 的意思是「这一段不用素材通道显示」—— 调用方按段上原有的字段显示（比如远端 url），
  * 不是「取失败」。取失败（id 认得、字节取不到）会抛错，让调用方决定怎么提示。
  *
- * 缩略图与原图同一个入口：`variant` 只是透传，服务端这一波两档给的是同一份字节。
+ * 缩略图与原图同一个入口：`variant` 只是透传，宿主这一波两档给的是同一份字节。
  */
 export async function getSectionAsset(
   client: ContractCaller,
