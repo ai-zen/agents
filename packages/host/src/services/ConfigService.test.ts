@@ -19,11 +19,11 @@ import { MAX_ASSETS_PER_MESSAGE, MAX_ASSET_BYTES } from "../wire/index.js";
 import type { ConfigBehavior } from "../wire/index.js";
 import {
   ConfigService,
-  maskApiKey,
   type ConfigApplyChange,
   type ConfigApplyOutcome,
   type ConfigApplyPort,
 } from "./ConfigService.js";
+import { maskSecret } from "./secretMask.js";
 
 const WORKSPACE_ID = "ws-1";
 const API_KEY = "sk-aaaaaaaabbbb1111";
@@ -118,9 +118,9 @@ describe("ConfigService.get", () => {
   it("密钥读出即掩码，明文不出网（F-F2）", async () => {
     const { config } = await service.get();
     const endpoint = config.endpoints.find((item) => item.id === "ep-a");
-    expect(endpoint?.apiKeyMasked).toBe(maskApiKey(API_KEY));
+    expect(endpoint?.apiKeyMasked).toBe(maskSecret(API_KEY));
     expect(endpoint?.apiKeySet).toBe(true);
-    expect(maskApiKey(API_KEY)).not.toContain("aaaaaaaab");
+    expect(maskSecret(API_KEY)).not.toContain("aaaaaaaab");
     // 整份出参里都没有明文
     expect(JSON.stringify(config)).not.toContain(API_KEY);
 
@@ -198,7 +198,7 @@ describe("ConfigService.saveEndpoint", () => {
       },
     });
     expect(endpoint.baseUrl).toBe("https://new.example/v1");
-    expect(endpoint.apiKeyMasked).toBe(maskApiKey("sk-newnewnew9999"));
+    expect(endpoint.apiKeyMasked).toBe(maskSecret("sk-newnewnew9999"));
     expect(endpoint.apiKeySet).toBe(true);
     expect(applied.reloaded.config).toBe(true);
     expect((await readConfig()).endpoints.map((item) => item.id)).toContain("ep-new");
@@ -218,7 +218,7 @@ describe("ConfigService.saveEndpoint", () => {
         id: "ep-a",
         name: "Endpoint A3",
         baseUrl: "https://a.example/v1",
-        apiKey: maskApiKey(API_KEY),
+        apiKey: maskSecret(API_KEY),
       },
     });
     expect((await readConfig()).endpoints.find((item) => item.id === "ep-a")?.apiKey).toBe(API_KEY);

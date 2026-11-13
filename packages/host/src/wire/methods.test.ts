@@ -74,12 +74,15 @@ describe("方法表", () => {
 });
 
 describe("PRD §4 的落点能力都有方法承接", () => {
-  it("`message.list` 支持 { conversationId, after? }（A12）", () => {
+  it("`message.list` 支持 { conversationId, after?, around? }（A12 / F-C6）", () => {
     const all: MessageListParams = { conversationId: "c-1" };
     const tail: MessageListParams = { conversationId: "c-1", after: "m-9" };
+    const located: MessageListParams = { conversationId: "c-1", around: "m-4" };
     const subagent: MessageListParams = { conversationId: "c-1", toolCallId: "t-1" };
     expect(Object.keys(all)).toEqual(["conversationId"]);
     expect(tail.after).toBe("m-9");
+    // F-C6 的定位：以某条为中心取一窗（消费者是桌面端的搜索命中跳转）
+    expect(located.around).toBe("m-4");
     expect(subagent.toolCallId).toBe("t-1");
   });
 

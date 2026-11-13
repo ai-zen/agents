@@ -2,7 +2,8 @@
  * 消息服务：按对话读消息，以及把库里的一行还原成 core 的消息对象。
  *
  * 对应能力编号：A12 / L5（按消息 id 续拉：命中则从它开始且含它自身的最新内容，不命中返回全部）、
- * F-I7（`toolCallId` 取子 Agent 自己的消息）、F-D9（会话创建时那条 `hidden` 的 cwd 消息默认不出网）、
+ * F-C6（`around` 定位取窗，供客户端把搜索命中的那条摆到眼前）、F-I7（`toolCallId` 取子 Agent
+ * 自己的消息）、F-D9（会话创建时那条 `hidden` 的 cwd 消息默认不出网）、
  * R21 / R22（消息原样用 core 的 `AgentNS.Message`，不额外挂时间戳这类外壳字段）。
  *
  * `toAgentMessage` 是这个仓库里「存储行 → core 消息」的唯一一份实现：对话服务算用量、判断
@@ -71,6 +72,12 @@ const FINISH_REASONS: readonly string[] = [
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+/** 可选的消息 id 参数：没给 / 空串一律当「没给」 */
+function idParam(value: unknown): string | undefined {
+  const id = asString(value)?.trim() ?? "";
+  return id.length > 0 ? id : undefined;
 }
 
 function asBoolean(value: unknown): boolean | undefined {
@@ -186,6 +193,30 @@ export function readUsage(data: Record<string, unknown> | null | undefined): Age
   return asUsage(data?.usage) ?? null;
 }
 
+/**
+ * `around` 取的窗口条数（PRD F-C6 的定位）。
+ *
+ * `message.list` 没有 `limit`：它一直是「一段对话全给」，`around` 只是把这一段收成一窗，
+ * 40 条足够看够上下文而不会把屏刷满。消费者是桌面端的搜索命中跳转（PLAN W4）。
+ */
+const AROUND_WINDOW = 40;
+
+/**
+ * 以某条消息为中心取一窗（PRD F-C6 的定位）。
+ *
+ * `rows` 是这段对话（或这个子 Agent）的全部消息、已按先后排序。命中那条一定在窗口里：
+ * 前面先给一半（`floor((size-1)/2)` 条），剩下的额度全给后面；命中靠近两端时窗口自然短一些。
+ * 命中不在 `rows` 里时回 `null` —— 调用方给空页（这条可能刚被撤回/换过库）。
+ */
+function windowAround(rows: StoredMessage[], around: string, size: number): StoredMessage[] | null {
+  const index = rows.findIndex((row) => row.id === around);
+  if (index < 0) return null;
+  const before = Math.floor((size - 1) / 2);
+  const start = Math.max(0, index - before);
+  const end = Math.min(rows.length, index + (size - before));
+  return rows.slice(start, end);
+}
+
 export class MessageService {
   private readonly conversations: ConversationRepository;
   private readonly messages: MessageRepository;
@@ -198,18 +229,23 @@ export class MessageService {
   }
 
   /**
-   * 读一段对话的消息（architecture A12）。
+   * 读一段对话的消息（architecture A12 / PRD F-C6）。
    *
-   * - 不给 `after`：整段历史；
-   * - 给了且该 id 就在这段对话里：**从这条开始**（含它，内容是最新的，可能是流式中那条的
+   * - 不给 `after`、也不给 `around`：整段历史；
+   * - 给了 `after` 且该 id 就在这段对话里：**从这条开始**（含它，内容是最新的，可能是流式中那条的
    *   部分内容）+ 其后全部，并把 `anchor` 报成它；
-   * - 给了但这段对话里没有这个 id（已删、或换过库）：退回整段历史，`anchor` 为空 ——
-   *   客户端据此知道这是一次全量。
+   * - 给了 `after` 但这段对话里没有这个 id（已删、或换过库）：退回整段历史，`anchor` 为空 ——
+   *   客户端据此知道这是一次全量；
+   * - 给了 `around`：以这条为中心取 {@link AROUND_WINDOW} 条（命中那条一定在里面），
+   *   `anchor` 报成它；命中不在可见集里时给空页 + 空 `anchor`，**不报错**（消息可能刚被撤回）。
+   *   `around` 与 `after` 同时给时**只认 `around`**：两者是两种取法（一个「从这里往下」、一个
+   *   「围绕这里」），混在一起没有唯一答案。
    *
    * `toolCallId` 取某个子 Agent 自己的消息（PRD F-I7）：它按消息落库时记下的
    * `parentToolCallId` 取（那次委派的工具调用 id），走的是另一条查询 —— 子 Agent 的消息不在
    * 主线历史里（`listByConversation` 只给主线），所以两个参数同时给时 `after` 只用来定 `anchor`，
-   * 结果集仍是那个子 Agent 的全部消息。
+   * 结果集仍是那个子 Agent 的全部消息。`around` 同此：`toolCallId` 决定读哪一段，`around`
+   * 只在那一段里定位。
    *
    * `hidden` 的消息（会话创建时那条 cwd 消息、交接摘要）默认不回：core 的这个字段就是
    * 「这条不给人看」。要看到它们（排查、或客户端显式要）就传 `includeHidden`。
@@ -217,35 +253,52 @@ export class MessageService {
   async list(params: MessageListParams): Promise<MessageListResult> {
     const conversation = await this.requireConversation(params.conversationId);
     const options = { includeHidden: params.includeHidden === true };
+    const around = idParam(params.around);
+    const after = idParam(params.after);
 
+    // `around` 优先：它给了就完全不管 `after`（连 `anchor` 也不由 `after` 定）
     let anchor: string | null = null;
-    if (params.after !== undefined && params.after.length > 0) {
-      const anchorRow = await this.messages.get(params.after);
+    if (around === undefined && after !== undefined) {
+      const anchorRow = await this.messages.get(after);
       if (anchorRow && anchorRow.conversationId === conversation.id) {
         anchor = anchorRow.id;
       }
     }
 
-    const toolCallId = params.toolCallId;
-    if (toolCallId !== undefined && toolCallId.length > 0) {
+    const toolCallId = idParam(params.toolCallId);
+    if (toolCallId !== undefined) {
       const delegated = await this.messages.listByParentToolCallId(
         conversation.id,
         toolCallId,
         options,
       );
-      return {
-        conversationId: conversation.id,
-        anchor,
-        messages: delegated.map((row) => toAgentMessage(row)),
-      };
+      return this.respond(conversation.id, delegated, anchor, around);
     }
 
-    const rows = await this.messages.listByConversation(conversation.id, params.after, options);
-    return {
-      conversationId: conversation.id,
-      anchor,
-      messages: rows.map((row) => toAgentMessage(row)),
-    };
+    // `around` 要的是「整段之后再取窗」，所以这一跳不带 `after`（带了就只剩后半段）
+    const rows = await this.messages.listByConversation(
+      conversation.id,
+      around === undefined ? after : undefined,
+      options,
+    );
+    return this.respond(conversation.id, rows, anchor, around);
+  }
+
+  /** 把一次读到的行拼成出参；`around` 给了就收成一窗（命中不在里面就是空页） */
+  private respond(
+    conversationId: string,
+    rows: StoredMessage[],
+    anchor: string | null,
+    around: string | undefined,
+  ): MessageListResult {
+    if (around === undefined) {
+      return { conversationId, anchor, messages: rows.map((row) => toAgentMessage(row)) };
+    }
+    const window = windowAround(rows, around, AROUND_WINDOW);
+    if (window === null) {
+      return { conversationId, anchor: null, messages: [] };
+    }
+    return { conversationId, anchor: around, messages: window.map((row) => toAgentMessage(row)) };
   }
 
   /**

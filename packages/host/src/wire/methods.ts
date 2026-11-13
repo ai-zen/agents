@@ -640,11 +640,13 @@ export interface ConversationTransientResult {
 // ---------------------------------------------------------------------------
 
 /**
- * `message.list` 入参（architecture A12 / PRD L5 / F-I7）。
+ * `message.list` 入参（architecture A12 / PRD L5 / F-I7 / F-C6）。
  *
- * - 不给 `after`：返回这段对话的全部消息；
- * - 给了且该 id 存在：**从这条开始**（含它本身，内容是**最新**的）+ 其后全部；
- * - 给了但该 id 不存在：返回全部。
+ * - 不给 `after`、也不给 `around`：返回这段对话的全部消息；
+ * - 给了 `after` 且该 id 存在：**从这条开始**（含它本身，内容是**最新**的）+ 其后全部；
+ * - 给了 `after` 但该 id 不存在：返回全部。
+ *
+ * `around` 是另一条取法（PRD F-C6 的定位）：**以某条消息为中心取一窗**，见下。
  *
  * 「从这条开始而不是它的下一条」是故意的：重连的客户端上次拿到的最后一条可能正是流式中那条，
  * 它的内容已经变了；从它自己重新拿，就天然是「最新内容 + 之后的」。
@@ -658,6 +660,24 @@ export interface MessageListParams {
   conversationId: string;
   after?: string;
   toolCallId?: string;
+  /**
+   * 定位取窗（PRD F-C6）：以这条消息为中心取一窗，供客户端把搜索命中的那条摆到眼前。
+   *
+   * **消费者是桌面端的搜索命中跳转（PLAN W4）**：`search.messages` 给了一条命中，桌面端拿着它的
+   * `messageId` 调 `message.list({ around })` 就能直接渲染命中那条附近的一段对话。
+   *
+   * 只在一种情形下有一种解释：
+   *   - 命中（这条在这段对话里、且在本次可见集里）：返回以它为中心的一窗（默认 40 条，
+   *     见 `MessageService` 的 `AROUND_WINDOW`；前后尽量均分，命中那条一定在里面），
+   *     `anchor` 报成它；
+   *   - 没命中（已撤回 / 换过库 / 是 `hidden` 而这次没要 `includeHidden`）：**空页**
+   *     （`messages: []`、`anchor: null`），**不报错** —— 消息可能刚被撤回，那不是一次失败的请求；
+   *   - 与 `after` 同时给：**`around` 优先，`after` 被忽略**。两者是两种取法（一个「从这里往下」、
+   *     一个「围绕这里」），混在一起没有唯一答案，所以只认 `around`；
+   *   - 与 `toolCallId` 同时给：`toolCallId` 决定读哪一段消息（子 Agent 自己那一段），`around`
+   *     只在这一段里定位 —— 与 `after` 无关。
+   */
+  around?: string;
   /** 连 `hidden` 的消息一起返回（默认 false） */
   includeHidden?: boolean;
 }
@@ -670,7 +690,11 @@ export interface MessageListParams {
  */
 export interface MessageListResult {
   conversationId: string;
-  /** 被 `after` 命中的那条消息 id（没命中或没给则为空，客户端据此判断这是全量还是续传） */
+  /**
+   * 被 `after` / `around` 命中的那条消息 id（没命中或没给则为空）。
+   *
+   * 客户端据此判断这是全量还是续传、以及这次 `around` 找没找到（`around` 没命中时是空页 + `null`）。
+   */
   anchor: string | null;
   messages: AgentNS.Message[];
 }
@@ -811,7 +835,13 @@ export interface ModelInput {
   name: string;
   endpointId: string;
   modelName?: string;
-  tokenThresholds: TokenThresholds;
+  /**
+   * 两条上下文阈值。**省略 = 用出厂默认**（SDK `DEFAULT_APP_CONFIG` 里那份），不是「不设阈值」：
+   * 没有阈值的模型既不会触发交接、也没有硬线保护。
+   *
+   * `model.create` 省略时套出厂默认；`model.update` 省略时不动（局部更新的既有语义）。
+   */
+  tokenThresholds?: TokenThresholds;
   defaultParams?: Record<string, unknown>;
   reasoningPreset?: string;
   vision?: boolean;
@@ -1017,12 +1047,27 @@ export interface ConfigDeleteEndpointResult {
 export type DiscoveryKind = "mcps" | "skills" | "tools" | "subagents";
 
 /**
+ * MCP 的 oauth 视图：形状就是 SDK 的 `McpServerConfig["oauth"]`，只把密钥那一项换掉。
+ *
+ * `clientSecret` → `clientSecretMasked` + `clientSecretSet`，与 `EndpointView` 的
+ * `apiKeyMasked` / `apiKeySet` 完全同一套口径（F-F2：明文不出网）。掩码由宿主用同一个函数
+ * 生成（`services/secretMask.ts` 的 `maskSecret`），客户端只负责显示。
+ */
+export type McpOauthView = Omit<NonNullable<McpServerConfig["oauth"]>, "clientSecret"> & {
+  /** 掩码后的密钥，例如 `abc…9f3a`；没配时为 `""` */
+  clientSecretMasked: string;
+  /** 是否配了密钥（配了才有东西需要保管） */
+  clientSecretSet: boolean;
+};
+
+/**
  * 发现出来的一个条目（PRD F-F6：条目字段齐全）。
  *
  * MCP 条目把「这条服务器是怎么起的」整份摊开：传输方式与它的参数（命令 / 参数 / 环境变量 /
  * 地址 / 请求头），这样客户端不必凭 `id` 重建一条就能改它（F-F6「按 id 增删改」）。
  * 已知字段的形状就是 SDK 的 `McpServerConfig`；`extra` 收留这一版不认识的键，
- * 客户端原样带回（F-F6「未知字段原样保留」）。
+ * 客户端原样带回（F-F6「未知字段原样保留」）。唯一的例外是 oauth 的 `clientSecret`：
+ * 它跟端点密钥一样只给掩码（{@link McpOauthView}，F-F2）。
  *
  * 只有启用状态留了一个开关：视图给 `enabled`，写入端收 SDK 的 `disabled`，两者互为取反。
  *
@@ -1061,11 +1106,12 @@ export interface DiscoveryEntryView {
   /** http / sse：请求头 */
   headers: Record<string, string> | null;
   /**
-   * oauth 配置（http）。
+   * oauth 配置（http）：{@link McpOauthView}，`clientSecret` 只给掩码。
    *
-   * 客户端不回写这一项时宿主按磁盘原文保留；读出来是为了让「原样写回」这条路可见且可核对。
+   * 消费者是 CLI 的 MCP 详情屏（`step-mcp.tsx` 把它渲染成一行「客户端密钥：sk-…9f3a」）。
+   * 回写时 `clientSecret` 省略 = 保留磁盘原值（与 `config.saveEndpoint` 的 `apiKey` 同口径）。
    */
-  oauth: McpServerConfig["oauth"] | null;
+  oauth: McpOauthView | null;
   /**
    * 这一版不认识的键（原样一条不多一条不少）。
    *
@@ -1133,6 +1179,12 @@ export type McpEditableScope = "user" | "workspace";
  * SDK 的 `McpServerConfig` 覆盖已知字段；`extra` 收留这个版本不认识的键，写回时原样带上。
  * 与 {@link DiscoveryEntryView} 是同一份事实的两个方向：视图用 `enabled`，这里用 SDK 的
  * `disabled`；视图里 `null` 的字段在这边省略即可（省略 = 这一项不动）。
+ *
+ * `oauth.clientSecret` 与 `config.saveEndpoint` 的 `apiKey` 同口径（F-F2）：
+ *   - 省略 → 保留磁盘原值（这是「不改密钥」的唯一写法）；
+ *   - 传回来的值正好等于当前掩码（`clientSecretMasked`）→ 当作没改，同样保留原值；
+ *   - 空串 → 把密钥清掉。
+ * 于是「客户端把掩码当密钥写回去」不会发生。`oauth` 里其余几项给了就覆盖。
  */
 export type McpServerEntryInput = McpServerConfig & {
   extra?: Record<string, unknown>;
@@ -1385,7 +1437,7 @@ export interface ModelListImagesResult {
   defaultImageModel: string | null;
 }
 
-/** `model.create` 入参（建出来就是自定义，PRD F-F3） */
+/** `model.create` 入参（建出来就是自定义，PRD F-F3）；`tokenThresholds` 省略时套出厂默认 */
 export interface ModelCreateParams {
   model: ModelInput;
 }
@@ -1855,7 +1907,12 @@ export interface MethodMap {
   };
 
   // ---- message.*：历史 ----
-  /** A12 / L5 / F-I7：按 id 取（含自身最新内容），可指定某个子 Agent 的消息。 */
+  /**
+   * A12 / L5 / F-I7：按 id 取（含自身最新内容），可指定某个子 Agent 的消息。
+   *
+   * F-C6 的定位（`around`）在这里：消费者是桌面端的搜索命中跳转（PLAN W4）—— 由
+   * `search.messages` 拿到命中后，用它把命中那条摆到眼前。CLI 不消费 `around`。
+   */
   "message.list": { params: MessageListParams; result: MessageListResult };
 
   // ---- question.*：问题对象（D22 / D23 / F-D2 / F-I9）----
@@ -1919,9 +1976,9 @@ export interface MethodMap {
   "model.list": { params: ModelListParams; result: ModelListResult };
   /** F-F4 / D6：图片模型与默认图片模型。 */
   "model.listImages": { params: NoParams; result: ModelListImagesResult };
-  /** F-F3：新建模型（建出来即自定义）。 */
+  /** F-F3：新建模型（建出来即自定义；不传阈值就用出厂默认那一档）。 */
   "model.create": { params: ModelCreateParams; result: ModelCreateResult };
-  /** F-F3：编辑模型（编辑即转自定义）。 */
+  /** F-F3：编辑模型（编辑即转自定义；没给的字段不动，阈值省略也不清空）。 */
   "model.update": { params: ModelUpdateParams; result: ModelUpdateResult };
   /** F-F2 / F-F7：删除模型；被引用时禁删并列出引用者。 */
   "model.delete": { params: ModelDeleteParams; result: ModelDeleteResult };

@@ -24,6 +24,7 @@ import type {
   Model,
   ReasoningPreset,
   ReasoningPresets,
+  TokenThresholds,
 } from "@ai-zen/agents-sdk";
 
 import { DEFAULT_LANGUAGE, render, type MessageKey } from "../i18n/index.js";
@@ -79,6 +80,36 @@ function text(messageKey: MessageKey, params: Record<string, unknown> = {}): Pro
     params,
     message: render(DEFAULT_LANGUAGE, messageKey, params),
   };
+}
+
+// ---------------------------------------------------------------------------
+// 出厂默认的两条阈值
+// ---------------------------------------------------------------------------
+
+/**
+ * 新建模型不传阈值时套的默认档（F-F3）。
+ *
+ * 唯一来源是 SDK 出厂配置里各模型的那份 `tokenThresholds`，这里不另写数字：取清单里
+ * **用得最多的那一档**（出厂清单里绝大多数模型的窗口都很大，用的是同一档；只有一个
+ * 200K 窗口的模型例外，那档给新模型既过度保守也说不通）。出厂清单改了，这里跟着改。
+ */
+function factoryDefaultThresholds(): TokenThresholds {
+  const tally = new Map<string, { value: TokenThresholds; hits: number }>();
+  for (const model of DEFAULT_APP_CONFIG.models) {
+    const { handoff, guard } = model.tokenThresholds;
+    const key = `${handoff}/${guard}`;
+    const seen = tally.get(key);
+    if (seen) seen.hits += 1;
+    else tally.set(key, { value: { handoff, guard }, hits: 1 });
+  }
+
+  let winner: { value: TokenThresholds; hits: number } | undefined;
+  for (const candidate of tally.values()) {
+    if (winner === undefined || candidate.hits > winner.hits) winner = candidate;
+  }
+  // 出厂清单为空是 SDK 侧的不变量被破坏；当场报出来，不默默写出一个没有阈值的模型
+  if (winner === undefined) throw new Error("SDK 的出厂配置里没有任何模型，拿不到默认阈值");
+  return { handoff: winner.value.handoff, guard: winner.value.guard };
 }
 
 // ---------------------------------------------------------------------------
@@ -473,8 +504,8 @@ export class ModelService {
         vision: input.vision,
         description: input.description,
       }),
-      // 出厂定义里每条模型都有阈值；入参没给就按「交接线 250K / 硬线 375K」这一档兜住
-      tokenThresholds: input.tokenThresholds ?? { handoff: 250_000, guard: 375_000 },
+      // 阈值：入参给了用入参，省略就套出厂默认（出厂清单里最多人用的那一档）
+      tokenThresholds: input.tokenThresholds ?? factoryDefaultThresholds(),
       custom: true,
     };
     validateModelShape(config, presets, model);

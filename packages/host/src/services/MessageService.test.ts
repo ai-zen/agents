@@ -273,6 +273,148 @@ describe("MessageService.list 的取法（A12）", () => {
   });
 });
 
+describe("MessageService.list 的 around（F-C6 的定位）", () => {
+  /** 往一段新对话里灌 n 条按顺序的消息；`around` 要足够的条数才看得出「窗口」 */
+  async function seedLong(count: number): Promise<void> {
+    await conversations.create({
+      id: "c-long",
+      workspaceId: "w1",
+      name: "很长的对话",
+      agentId: "a1",
+      modelId: "m1",
+      createdAt: 30,
+    });
+    for (let i = 1; i <= count; i += 1) {
+      await messages.upsert({
+        id: `m${i}`,
+        conversationId: "c-long",
+        role: i % 2 === 0 ? "assistant" : "user",
+        status: "completed",
+        content: `第 ${i} 条`,
+        createdAt: 1_000 + i,
+      });
+    }
+  }
+
+  it("以命中那条为中心取一窗：前后尽量均分，命中那条在里面", async () => {
+    await seedLong(50);
+
+    const page = await service.list({ conversationId: "c-long", around: "m25" });
+
+    expect(page.conversationId).toBe("c-long");
+    expect(page.anchor).toBe("m25");
+    expect(page.messages).toHaveLength(40);
+    // 前面 19 条、后面 20 条：命中那条左右都够看
+    expect(page.messages[0]?.id).toBe("m6");
+    expect(page.messages.at(-1)?.id).toBe("m45");
+    expect(page.messages[19]?.id).toBe("m25");
+  });
+
+  it("命中靠近两端时窗口自然短一些（不往回补别的消息）", async () => {
+    await seedLong(50);
+
+    const head = await service.list({ conversationId: "c-long", around: "m1" });
+    expect(head.anchor).toBe("m1");
+    expect(head.messages[0]?.id).toBe("m1");
+    expect(head.messages).toHaveLength(21);
+
+    const tail = await service.list({ conversationId: "c-long", around: "m50" });
+    expect(tail.anchor).toBe("m50");
+    expect(tail.messages.at(-1)?.id).toBe("m50");
+    expect(tail.messages).toHaveLength(20);
+  });
+
+  it("命中不存在时给空页，不报错（消息可能刚被撤回）", async () => {
+    await seedLong(5);
+
+    const gone = await service.list({ conversationId: "c-long", around: "已经撤回的 id" });
+    expect(gone.conversationId).toBe("c-long");
+    expect(gone.anchor).toBeNull();
+    expect(gone.messages).toEqual([]);
+
+    // 属于别的对话的 id 同样是「没命中」
+    const other = await service.list({ conversationId: "c-long", around: "u1" });
+    expect(other.anchor).toBeNull();
+    expect(other.messages).toEqual([]);
+  });
+
+  it("与 after 同时给时 around 优先，after 被忽略", async () => {
+    await seedLong(50);
+
+    const both = await service.list({ conversationId: "c-long", around: "m25", after: "m40" });
+    const only = await service.list({ conversationId: "c-long", around: "m25" });
+
+    expect(both).toEqual(only);
+    expect(both.anchor).toBe("m25");
+    expect(both.messages.map((message) => message.id)).toEqual(
+      only.messages.map((message) => message.id),
+    );
+  });
+
+  it("hidden 的消息要不到就是空页，includeHidden 才定位得到它", async () => {
+    await messages.upsert({
+      id: "cwd",
+      conversationId: "c1",
+      role: "user",
+      status: "completed",
+      content: "当前目录是 /tmp/one",
+      data: { hidden: true },
+      createdAt: 5,
+    });
+
+    const hidden = await service.list({ conversationId: "c1", around: "cwd" });
+    expect(hidden.anchor).toBeNull();
+    expect(hidden.messages).toEqual([]);
+
+    const withHidden = await service.list({
+      conversationId: "c1",
+      around: "cwd",
+      includeHidden: true,
+    });
+    expect(withHidden.anchor).toBe("cwd");
+    expect(withHidden.messages.map((message) => message.id)).toEqual(["u1", "a1", "u2", "cwd"]);
+  });
+
+  it("toolCallId 决定读哪一段，around 只在那一段里定位", async () => {
+    for (const [id, role, content] of [
+      ["sub-1", "user", "把方案 A 说一下"],
+      ["sub-2", "assistant", "方案 A 是……"],
+    ] as const) {
+      await messages.upsert({
+        id,
+        conversationId: "c1",
+        role,
+        status: "completed",
+        content,
+        parentToolCallId: "call-1",
+        createdAt: 510,
+      });
+    }
+
+    const delegated = await service.list({
+      conversationId: "c1",
+      toolCallId: "call-1",
+      around: "sub-2",
+    });
+    expect(delegated.anchor).toBe("sub-2");
+    expect(delegated.messages.map((message) => message.id)).toEqual(["sub-1", "sub-2"]);
+
+    // 主线上的 id 不在这一段里：那就是没命中
+    const mainline = await service.list({
+      conversationId: "c1",
+      toolCallId: "call-1",
+      around: "u1",
+    });
+    expect(mainline.messages).toEqual([]);
+  });
+
+  it("around 为空串时按没给处理（照旧给整段历史）", async () => {
+    const page = await service.list({ conversationId: "c1", around: "" });
+    expect(page.anchor).toBeNull();
+    expect(page.messages.map((message) => message.id)).toEqual(["u1", "a1", "u2"]);
+  });
+});
+
 describe("消息还原成 core 的形状（R21 / R22）", () => {
   it("内容段、工具调用、思考、用量、状态都按 core 的字段名还原", async () => {
     await messages.upsert({

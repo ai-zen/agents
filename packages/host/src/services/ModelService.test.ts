@@ -9,7 +9,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { AgentRepository, ConfigManager } from "@ai-zen/agents-sdk";
+import { AgentRepository, ConfigManager, DEFAULT_APP_CONFIG } from "@ai-zen/agents-sdk";
 import type { AgentDefinition, AppConfig } from "@ai-zen/agents-sdk";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -224,6 +224,48 @@ describe("ModelService.create / update", () => {
     for (const run of cases) {
       await expect(run()).rejects.toBeInstanceOf(HostError);
     }
+  });
+
+  it("不传阈值就套出厂默认那一档（来源是 SDK 的出厂清单，宿主不另写数字）", async () => {
+    const { model } = await service.create({
+      model: { id: "m-plain", name: "Plain", endpointId: "ep-a" },
+    });
+
+    expect(model.tokenThresholds).toEqual({ handoff: 250_000, guard: 375_000 });
+    // 这两个数必须真的是出厂清单里的那一档，而不是宿主自己编的
+    expect(
+      DEFAULT_APP_CONFIG.models.some(
+        (factory) =>
+          factory.tokenThresholds.handoff === model.tokenThresholds.handoff &&
+          factory.tokenThresholds.guard === model.tokenThresholds.guard,
+      ),
+    ).toBe(true);
+    expect((await readConfig()).models.find((item) => item.id === "m-plain")?.tokenThresholds)
+      .toEqual(model.tokenThresholds);
+  });
+
+  it("传了阈值就用传的", async () => {
+    const { model } = await service.create({
+      model: {
+        id: "m-mine",
+        name: "Mine",
+        endpointId: "ep-a",
+        tokenThresholds: { handoff: 1_000, guard: 2_000 },
+      },
+    });
+    expect(model.tokenThresholds).toEqual({ handoff: 1_000, guard: 2_000 });
+  });
+
+  it("编辑时没给阈值就不动它（不是「清空」，也不是「套默认」）", async () => {
+    const before = (await readConfig()).models.find((item) => item.id === "m-a1");
+    expect(before?.tokenThresholds).toEqual({ handoff: 100, guard: 150 });
+
+    const { model } = await service.update({ modelId: "m-a1", patch: { name: "只改名" } });
+
+    expect(model.tokenThresholds).toEqual({ handoff: 100, guard: 150 });
+    expect(
+      (await readConfig()).models.find((item) => item.id === "m-a1")?.tokenThresholds,
+    ).toEqual({ handoff: 100, guard: 150 });
   });
 
   it("编辑即转自定义（否则下轮初始化会被出厂定义冲回去）", async () => {

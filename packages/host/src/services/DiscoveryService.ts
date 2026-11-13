@@ -15,7 +15,8 @@
  *      文件覆盖掉了。
  *   3. **写**（{@link DiscoveryService.writeMcpEntry} / {@link DiscoveryService.deleteMcpEntry}）：
  *      只写 MCP 的两个可编辑作用域，一次只动一条；写回时保留这一版不认识的字段与 `oauth`
- *      （F-F6）。
+ *      （F-F6），其中 `oauth.clientSecret` 省略就按磁盘原文保留（F-F2：读出去的是掩码，
+ *      回写掩码就是把掩码当密钥存下来）。
  *
  * 判断「近的优先」用的是层序 `depth`（0 最靠近项目）：合并时同 id 取 depth 小的那一层，
  * 被盖住的条目仍然出现在它自己那一层里，只是带上一条「被谁覆盖」的问题说明。
@@ -44,9 +45,11 @@ import type {
   DiscoveryView,
   LocalizedText,
   McpEditableScope,
+  McpOauthView,
   McpServerEntryInput,
   ProblemFact,
 } from "../wire/index.js";
+import { isSecretMask, maskSecret } from "./secretMask.js";
 
 // ---------------------------------------------------------------------------
 // 目录名（与 SDK 的 `CONFIG_SUB_DIRS` 同口径）
@@ -373,6 +376,8 @@ export class DiscoveryService {
    * 写回的口径（与 `deleteMcpEntry` 共用同一份合并规则）：
    *   - 这个 id 的磁盘原文是底，覆盖入参里明确给了的字段，`extra` 最后叠上去 ——
    *     于是这一版不认识的键与没被提到的 `oauth` 都原样留着（F-F6）；
+   *   - `oauth.clientSecret` 跟端点密钥同一套：省略 / 等于当前掩码 → 保留原文，空串才清掉
+   *     （见 `mergeOauth`）；
    *   - 层里别的条目一个字节都不动：改一条不会把另一条读不全的字段覆盖掉；
    *   - 文件里 `mcpServers` 之外的顶层键也原样带上。
    */
@@ -986,19 +991,26 @@ function stringMap(value: unknown): Record<string, string> | null {
   return Object.fromEntries(entries) as Record<string, string>;
 }
 
-/** oauth 的四个必填项 + 两个可选项；形状不对（改坏了）按「没有」报 */
-function oauthOf(value: unknown): McpServerConfig["oauth"] | null {
+/**
+ * oauth 的四个必填项 + 两个可选项；形状不对（改坏了）按「没有」报。
+ *
+ * 密钥在这里就换掩码（F-F2：明文不出网）：返回的是 `McpOauthView`，只有
+ * `clientSecretMasked` / `clientSecretSet`，明文连视图对象都进不去。
+ */
+function oauthOf(value: unknown): McpOauthView | null {
   const record = asRecord(value);
   if (record === null) return null;
   const { authorizationUrl, tokenUrl, clientId, clientSecret, scope } = record;
   if (typeof authorizationUrl !== "string") return null;
   if (typeof tokenUrl !== "string") return null;
   if (typeof clientId !== "string") return null;
+  const secret = typeof clientSecret === "string" ? clientSecret : "";
   return {
     authorizationUrl,
     tokenUrl,
     clientId,
-    ...(typeof clientSecret === "string" ? { clientSecret } : {}),
+    clientSecretMasked: maskSecret(secret),
+    clientSecretSet: secret.trim() !== "",
     ...(typeof scope === "string" ? { scope } : {}),
   };
 }
@@ -1059,8 +1071,39 @@ function applyEntryPatch(previous: unknown, entry: McpServerEntryInput): Record<
   assign(next, "env", entry.env);
   assign(next, "url", entry.url);
   assign(next, "headers", entry.headers);
-  assign(next, "oauth", entry.oauth);
+  mergeOauth(next, base, entry.oauth);
   return next;
+}
+
+/**
+ * oauth 的合并（F-F2 的密钥口径在 MCP 这边落地的地方）。
+ *
+ * `oauth` 本身仍是「给了就换」，但里面的 `clientSecret` 跟端点密钥同一套规则：
+ *   - 省略 → 保留磁盘原值；
+ *   - 等于当前掩码（客户端把读到的整行原样写回来）→ 同样保留原值；
+ *   - 空串 → 清掉这一项；
+ *   - 其余 → 用新值。
+ * 于是「客户端把掩码当密钥写回去」不会落盘。
+ */
+function mergeOauth(
+  next: Record<string, unknown>,
+  base: Record<string, unknown>,
+  incoming: McpServerEntryInput["oauth"],
+): void {
+  if (incoming === undefined) return;
+  const previous = asRecord(base.oauth);
+  const current = typeof previous?.clientSecret === "string" ? previous.clientSecret : "";
+  const { clientSecret, ...rest } = incoming;
+
+  const merged: Record<string, unknown> = { ...previous, ...rest };
+  const secret =
+    clientSecret === undefined || isSecretMask(clientSecret, current)
+      ? current
+      : clientSecret.trim();
+  if (secret !== "") merged.clientSecret = secret;
+  else delete merged.clientSecret;
+
+  next.oauth = merged;
 }
 
 /** 只在入参真的给了这个字段时覆盖（`undefined` 表示「这次不改它」） */

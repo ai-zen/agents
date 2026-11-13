@@ -14,10 +14,19 @@ import { ConfigManager } from "@ai-zen/agents-sdk";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { HostError } from "../wire/errors.js";
-import type { DiscoveryEntryView, DiscoveryLayerView, McpServerEntryInput } from "../wire/index.js";
+import type {
+  DiscoveryEntryView,
+  DiscoveryLayerView,
+  McpOauthView,
+  McpServerEntryInput,
+} from "../wire/index.js";
 import { DiscoveryService } from "./DiscoveryService.js";
+import { maskSecret } from "./secretMask.js";
 
 const WORKSPACE_ID = "ws-1";
+
+/** oauth 的客户端密钥（用例里要断言它「一个字节都没出网」，所以长到能被掩码露头露尾） */
+const CLIENT_SECRET = "placeholder-oauth-secret-for-tests-only";
 
 let dataRoot: string;
 let project: string;
@@ -48,6 +57,9 @@ function layerAt(layers: DiscoveryLayerView[], depth: number): DiscoveryLayerVie
  *
  * 这是「客户端拿到视图怎么回写」的最小写法：`null` 表示这一项没有，省略即可；
  * `enabled` 折回 SDK 的 `disabled`；`extra` 一路带着。CLI 侧的 `mcp-helpers.ts` 做的是同一件事。
+ *
+ * oauth 的密钥只能省略（F-F2）：视图里只有 `clientSecretMasked` / `clientSecretSet`，
+ * 把它们抄进入参就是把掩码当密钥写回去 —— 省略才是「保留原值」。
  */
 function inputOf(entry: DiscoveryEntryView): McpServerEntryInput {
   return {
@@ -60,9 +72,15 @@ function inputOf(entry: DiscoveryEntryView): McpServerEntryInput {
     ...(entry.env !== null ? { env: entry.env } : {}),
     ...(entry.url !== null ? { url: entry.url } : {}),
     ...(entry.headers !== null ? { headers: entry.headers } : {}),
-    ...(entry.oauth !== null ? { oauth: entry.oauth } : {}),
+    ...(entry.oauth !== null ? { oauth: oauthInputOf(entry.oauth) } : {}),
     extra: entry.extra,
   };
+}
+
+/** 视图里的 oauth → 入参里的 oauth（只搬非密钥的那几项） */
+function oauthInputOf(oauth: McpOauthView): NonNullable<McpServerEntryInput["oauth"]> {
+  const { authorizationUrl, tokenUrl, clientId, scope } = oauth;
+  return { authorizationUrl, tokenUrl, clientId, ...(scope !== undefined ? { scope } : {}) };
 }
 
 beforeEach(async () => {
@@ -254,7 +272,13 @@ describe("DiscoveryService 读 MCP", () => {
       url: "https://api.example/mcp",
       headers: { Authorization: "Bearer t" },
       description: "远程",
-      oauth: { authorizationUrl: "https://auth", tokenUrl: "https://token", clientId: "c" },
+      oauth: {
+        authorizationUrl: "https://auth",
+        tokenUrl: "https://token",
+        clientId: "c",
+        clientSecretMasked: "",
+        clientSecretSet: false,
+      },
       enabled: true,
       extra: { "x-timeout": 30, "x-tags": ["a", "b"] },
     });
@@ -329,6 +353,197 @@ describe("DiscoveryService 读 MCP", () => {
     }
 
     expect(await readFile(path, "utf-8")).toBe(original);
+    // 密钥一个字节都没变：客户端手里只有掩码，省略回写才保得住它
+    const kept = JSON.parse(original) as {
+      mcpServers: Record<string, { oauth?: { clientSecret?: string } }>;
+    };
+    expect(kept.mcpServers.remote?.oauth?.clientSecret).toBe("secret-1");
+  });
+
+  it("oauth 的 clientSecret 只出掩码，明文不出网（F-F2）", async () => {
+    await writeJson(join(dataRoot, "mcp.json"), {
+      mcpServers: {
+        remote: {
+          type: "http",
+          url: "https://api.example/mcp",
+          oauth: {
+            authorizationUrl: "https://auth.example/a",
+            tokenUrl: "https://auth.example/t",
+            clientId: "client-1",
+            clientSecret: CLIENT_SECRET,
+            scope: "mcp",
+          },
+        },
+        bare: {
+          type: "http",
+          url: "https://api.example/bare",
+          oauth: {
+            authorizationUrl: "https://auth.example/a",
+            tokenUrl: "https://auth.example/t",
+            clientId: "client-2",
+          },
+        },
+      },
+    });
+
+    const { discovery } = await service.discover({ workspaceId: WORKSPACE_ID });
+    const entries = layerAt(discovery.mcps, 3).entries;
+    const remote = entries.find((entry) => entry.id === "remote");
+
+    // 形状仍是 SDK 的 oauth，只是密钥那一项换成掩码 + 「有没有配」
+    expect(remote?.oauth).toEqual({
+      authorizationUrl: "https://auth.example/a",
+      tokenUrl: "https://auth.example/t",
+      clientId: "client-1",
+      scope: "mcp",
+      clientSecretMasked: maskSecret(CLIENT_SECRET),
+      clientSecretSet: true,
+    });
+    expect(remote?.oauth !== null && remote?.oauth !== undefined && "clientSecret" in remote.oauth).toBe(
+      false,
+    );
+    // 整个发现视图里搜不到明文
+    expect(JSON.stringify(discovery)).not.toContain(CLIENT_SECRET);
+
+    // 没配密钥的那条：掩码是空串，`clientSecretSet` 说「没配」
+    expect(entries.find((entry) => entry.id === "bare")?.oauth).toEqual({
+      authorizationUrl: "https://auth.example/a",
+      tokenUrl: "https://auth.example/t",
+      clientId: "client-2",
+      clientSecretMasked: "",
+      clientSecretSet: false,
+    });
+  });
+
+  it("客户端把掩码当密钥写回来也不落盘（写在盘上的仍是原文）", async () => {
+    const path = join(dataRoot, "mcp.json");
+    // 用与写盘同一个格式（缩进 2 + 结尾换行），这样「一个字节都没变」才是可比的
+    await writeText(
+      path,
+      `${JSON.stringify(
+        {
+          mcpServers: {
+            remote: {
+              type: "http",
+              url: "https://api.example/mcp",
+              oauth: {
+                authorizationUrl: "https://auth.example/a",
+                tokenUrl: "https://auth.example/t",
+                clientId: "client-1",
+                clientSecret: CLIENT_SECRET,
+              },
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    const before = await readFile(path, "utf-8");
+
+    const entry = layerAt((await service.discover({ workspaceId: WORKSPACE_ID })).discovery.mcps, 3)
+      .entries[0]!;
+    const masked = entry.oauth!.clientSecretMasked;
+    expect(masked).not.toBe(CLIENT_SECRET);
+
+    await service.writeMcpEntry(
+      "user",
+      {
+        ...inputOf(entry),
+        oauth: { ...oauthInputOf(entry.oauth!), clientSecret: masked },
+      },
+      null,
+    );
+
+    expect(await readFile(path, "utf-8")).toBe(before);
+  });
+
+  it("改 oauth 的其它项：密钥按磁盘原文保留，其余项给了就覆盖", async () => {
+    const path = join(dataRoot, "mcp.json");
+    await writeJson(path, {
+      mcpServers: {
+        remote: {
+          type: "http",
+          url: "https://api.example/mcp",
+          oauth: {
+            authorizationUrl: "https://auth.example/a",
+            tokenUrl: "https://auth.example/t",
+            clientId: "client-1",
+            clientSecret: CLIENT_SECRET,
+            scope: "mcp",
+          },
+        },
+      },
+    });
+
+    await service.writeMcpEntry(
+      "user",
+      {
+        id: "remote",
+        transport: "http",
+        url: "https://api.example/mcp",
+        oauth: {
+          authorizationUrl: "https://auth.example/a",
+          tokenUrl: "https://auth.example/t",
+          clientId: "client-2",
+        },
+      },
+      null,
+    );
+
+    const written = JSON.parse(await readFile(path, "utf-8")) as {
+      mcpServers: Record<string, { oauth?: Record<string, unknown> }>;
+    };
+    expect(written.mcpServers.remote?.oauth).toEqual({
+      authorizationUrl: "https://auth.example/a",
+      tokenUrl: "https://auth.example/t",
+      clientId: "client-2",
+      clientSecret: CLIENT_SECRET,
+      scope: "mcp",
+    });
+  });
+
+  it("oauth.clientSecret 给空串才清掉它（唯一能清掉密钥的写法）", async () => {
+    const path = join(dataRoot, "mcp.json");
+    await writeJson(path, {
+      mcpServers: {
+        remote: {
+          type: "http",
+          url: "https://api.example/mcp",
+          oauth: {
+            authorizationUrl: "https://auth.example/a",
+            tokenUrl: "https://auth.example/t",
+            clientId: "client-1",
+            clientSecret: CLIENT_SECRET,
+          },
+        },
+      },
+    });
+
+    await service.writeMcpEntry(
+      "user",
+      {
+        id: "remote",
+        transport: "http",
+        url: "https://api.example/mcp",
+        oauth: {
+          authorizationUrl: "https://auth.example/a",
+          tokenUrl: "https://auth.example/t",
+          clientId: "client-1",
+          clientSecret: "",
+        },
+      },
+      null,
+    );
+
+    const written = JSON.parse(await readFile(path, "utf-8")) as {
+      mcpServers: Record<string, { oauth?: Record<string, unknown> }>;
+    };
+    expect(written.mcpServers.remote?.oauth).toEqual({
+      authorizationUrl: "https://auth.example/a",
+      tokenUrl: "https://auth.example/t",
+      clientId: "client-1",
+    });
   });
 
   it("改一条不动另一条：另一个条目的字节与它的未知键都留着", async () => {

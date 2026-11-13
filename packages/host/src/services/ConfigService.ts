@@ -54,6 +54,7 @@ import type {
 } from "../wire/index.js";
 import { DiscoveryService, type WorkspaceCwdLookup } from "./DiscoveryService.js";
 import { ModelService } from "./ModelService.js";
+import { isSecretMask, maskSecret } from "./secretMask.js";
 
 /** 改配置时用到的几类「生效」信号（→ {@link ConfigApplyReport}） */
 export interface ConfigApplyChange {
@@ -128,18 +129,6 @@ function text(messageKey: MessageKey, params: Record<string, unknown> = {}): Con
     params,
     message: render(DEFAULT_LANGUAGE, messageKey, params),
   };
-}
-
-/**
- * 密钥的掩码（F-F2：明文不出网）。
- *
- * 短密钥整串都掩掉：`sk-1` 这种长度的密钥，露头露尾就等于把整串给人看了。
- */
-export function maskApiKey(apiKey: string): string {
-  const key = apiKey.trim();
-  if (key === "") return "";
-  if (key.length <= 8) return "…";
-  return `${key.slice(0, 3)}…${key.slice(-4)}`;
 }
 
 /** 必填的文本参数 */
@@ -501,11 +490,8 @@ export class ConfigService {
   /** 端点的密钥：省略 / 等于当前掩码 → 保留原值；空串 → 清掉 */
   private resolveApiKey(incoming: string | undefined, existing: Endpoint | undefined): string {
     if (incoming === undefined) return existing?.apiKey ?? "";
-    const next = incoming.trim();
-    if (existing && existing.apiKey !== "" && next === maskApiKey(existing.apiKey)) {
-      return existing.apiKey;
-    }
-    return next;
+    if (existing && isSecretMask(incoming, existing.apiKey)) return existing.apiKey;
+    return incoming.trim();
   }
 
   /**
@@ -792,7 +778,7 @@ function toEndpointView(endpoint: Endpoint): EndpointView {
     id: endpoint.id,
     name: endpoint.name,
     baseUrl: endpoint.baseUrl,
-    apiKeyMasked: maskApiKey(apiKey),
+    apiKeyMasked: maskSecret(apiKey),
     apiKeySet: apiKey.trim() !== "",
     description: endpoint.description ?? null,
     capabilities: { filesApi: endpoint.capabilities?.filesApi === true },
