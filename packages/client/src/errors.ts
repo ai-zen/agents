@@ -45,7 +45,13 @@ export type LocalErrorCode =
   | "host_unavailable"
   /** 拉起了本地宿主，但到时限还没就绪 */
   | "host_did_not_start"
-  /** 找不到要拉起的宿主入口（宿主没给 `hostEntry`，也没装那个私有包） */
+  /** 拉起的那个子进程自己退了（npx 装不上、入口起不来）；`reason` 是它最后一行输出 */
+  | "host_launch_failed"
+  /** 调用方取消了这次拉起（Ctrl+C 杀掉了那个子进程） */
+  | "host_launch_cancelled"
+  /** 既没给宿主入口，也没给该让 npx 拉的版本范围（本机拉起无从下手） */
+  | "host_version_range_missing"
+  /** 找不到要拉起的宿主入口（调用方没给 `hostEntry`，本机也没装那个私有包） */
   | "host_entry_missing"
   /** 单个附件超过上限（PRD D5：20MB/张；在 `asset.begin` 之前就拒） */
   | "asset_too_large"
@@ -100,8 +106,20 @@ const LOCAL_TEXT: Record<LocalErrorCode, { zh: string; en: string }> = {
     en: "The local host did not become ready within {timeoutMs}ms (data root {dataRoot}, log {log})",
   },
   host_entry_missing: {
-    zh: "找不到要拉起的宿主入口：请让宿主给出 hostEntry，或确认已装 @ai-zen/agents-host",
-    en: "No host entry to start: pass hostEntry from the host, or make sure @ai-zen/agents-host is installed",
+    zh: "找不到要拉起的宿主入口：调用方没给 hostEntry，本机也没装 @ai-zen/agents-host",
+    en: "No host entry to start: hostEntry was not given, and @ai-zen/agents-host is not installed here",
+  },
+  host_launch_failed: {
+    zh: "拉起本机宿主失败：{reason}（日志 {log}）",
+    en: "Could not start the local host: {reason} (log {log})",
+  },
+  host_launch_cancelled: {
+    zh: "已取消：本机宿主没有拉起来",
+    en: "Cancelled: the local host was not started",
+  },
+  host_version_range_missing: {
+    zh: "不知道该拉哪一版宿主：既没给宿主入口（hostEntry），也没给版本范围（versionRange）",
+    en: "Nothing says which host to start: neither hostEntry nor versionRange was given",
   },
   asset_too_large: {
     zh: "图片太大（{size}），超过单张 {limit} 的上限",

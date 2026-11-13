@@ -12,7 +12,7 @@
 | 文件 | 职责 |
 |---|---|
 | `client.ts` | 一条 WS 上的 `Client`：`connect`（握手）/ `call` / `subscribe` / `close` / `reconnect` / `resume` |
-| `connection.ts` | `ensureHost`：读 `<数据根>/run/host.json` 与 `run/token`，没有活实例就 `spawn agents-host serve`，轮询到「发现文件出现 + 握手成功」；**给了显式地址就只连、绝不拉起** |
+| `connection.ts` | `ensureHost`：读 `<数据根>/run/host.json` 与 `run/token`，没有活实例就拉起一个（**给了 `entry` 起它，没给就让 `npx` 现下现起**，见 PRD L14），轮询到「发现文件出现 + 握手成功」；拉起过程中按 `HostLaunchStage` 报阶段（CLI 的下载屏吃它），可按 `AbortSignal` 取消；**给了显式地址就只连、绝不拉起** |
 | `settings.ts` | 连接设置（本机 / 远程地址 + 凭证 + 语言）的读写（`0600`、原子写）与措辞 |
 | `resume.ts` | 补拉：`conversation.state` + `message.list({ after })`，以及「续传 / 全量」两种拼法 |
 | `reconnect.ts` | 重连节奏（缺省无限重试，放弃与否由调用方决定）与「哪些失败不值得重试」 |

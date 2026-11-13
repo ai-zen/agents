@@ -42,18 +42,28 @@ export type { HostTarget } from "./address.js";
 export {
   AI_ZEN_DIR_ENV,
   ensureHost,
+  hostLaunchLogPath,
+  npxHostArgv,
   readLocalToken,
   readHostFile,
   resolveDataRoot,
   resolveHostEntry,
   hostFilePath,
-  spawnAgentsHost,
+  spawnHostByContext,
+  spawnHostEntry,
+  spawnHostViaNpx,
   tokenFilePath,
 } from "./connection.js";
 export type {
   EnsureHostOptions,
   EnsureHostResult,
+  HostLaunchFailure,
+  HostLaunchStage,
   LocalHostFacts,
+  NpxHostArgv,
+  SpawnDeps,
+  SpawnedHost,
+  SpawnHost,
   SpawnHostContext,
 } from "./connection.js";
 

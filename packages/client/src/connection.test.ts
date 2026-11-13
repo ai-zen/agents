@@ -3,20 +3,39 @@
  *
  * spawn 与文件读取都注入成假的，所以这里既不真起进程、也不真读盘；「拉起 → 轮询 → 就绪」这条链
  * 用一个手摇的时钟（`sleep` 推进 `now`）走完，不必真等 15 秒。
+ *
+ * 拉起那两条路（给了 `entry` / 没给而走 npx）在最后两组里单独验：那两组要把子进程也换成假的
+ * （`SpawnDeps.spawn`），否则会真的去联网拉一个包。
  */
 
-import { describe, expect, it } from "vitest";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { EventEmitter } from "node:events";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
 
 import type { ClientInfo } from "@ai-zen/agents-host";
 
 import type { Client, ClientOptions } from "./client.js";
 import {
   ensureHost,
+  hostLaunchLogPath,
+  npxHostArgv,
   readHostFile,
   resolveDataRoot,
   hostFilePath,
+  spawnHostByContext,
+  spawnHostViaNpx,
   tokenFilePath,
   type EnsureHostOptions,
+  type HostLaunchStage,
+  type SpawnDeps,
   type SpawnHostContext,
 } from "./connection.js";
 import { fromHostError, localError, type ClientError } from "./errors.js";
@@ -99,6 +118,9 @@ function harness(config: {
     now: () => clock,
     spawnHost: async (context) => {
       spawned.push(context);
+      // 缺省的拉起方式（npx）先报这两步：假件照着报，好让用例断言整条顺序
+      context.onStage?.("resolving");
+      context.onStage?.("installing");
       config.onSpawn?.(context, files);
     },
     connect: async (connectOptions) => {
@@ -236,7 +258,8 @@ describe("本机：没有就拉一个", () => {
 
     const result = await ensureHost(test.options);
 
-    expect(test.spawned).toEqual([{ dataRoot: DATA_ROOT, entry: "/host/dist/cli.js" }]);
+    expect(test.spawned).toHaveLength(1);
+    expect(test.spawned[0]).toMatchObject({ dataRoot: DATA_ROOT, entry: "/host/dist/cli.js" });
     expect(result.started).toBe(true);
     expect(result.target).toEqual({ host: "127.0.0.1", port: 54321 });
     // 第一轮没有凭证、第二轮拿到刚写出来的那串
@@ -299,5 +322,275 @@ describe("本地事实的读法", () => {
       if (previous === undefined) delete process.env.AI_ZEN_DIR;
       else process.env.AI_ZEN_DIR = previous;
     }
+  });
+});
+
+// ==================== 拉起：两条路 ====================
+
+/** 一个假子进程：只长着拉起那一层用到的那几件事（`once` / `emit` 来自 `EventEmitter`） */
+class FakeChild extends EventEmitter {
+  pid: number | undefined = 999_999;
+  killed: string[] = [];
+  unrefd = false;
+  unref(): void {
+    this.unrefd = true;
+  }
+  kill(signal?: string): boolean {
+    this.killed.push(signal ?? "SIGTERM");
+    return true;
+  }
+}
+
+interface SpawnCall {
+  command: string;
+  args: string[];
+  options: Record<string, unknown>;
+}
+
+/**
+ * 假 spawn：记下命令行与选项，下一轮微任务里报 `spawn`（此时「子进程」可以往日志里写东西）；
+ * 给了 `exit` 再接着报 `close`（模拟「拉起的那个子进程自己退了」）。
+ */
+function fakeSpawn(
+  plan: {
+    exit?: { code: number | null; signal?: string | null };
+    /** 「子进程」往拉起日志里写的那几行（npm 的输出来自子进程，不是我们写的） */
+    output?: { path: string; text: string };
+  } = {},
+) {
+  const calls: SpawnCall[] = [];
+  const child = new FakeChild();
+  const spawnImpl = (command: string, args: string[], options: Record<string, unknown>) => {
+    calls.push({ command, args, options });
+    queueMicrotask(() => {
+      if (plan.output) writeFileSync(plan.output.path, plan.output.text, "utf-8");
+      child.emit("spawn");
+      if (plan.exit) child.emit("close", plan.exit.code, plan.exit.signal ?? null);
+    });
+    return child;
+  };
+  return {
+    calls,
+    child,
+    spawn: spawnImpl as unknown as NonNullable<SpawnDeps["spawn"]>,
+  };
+}
+
+/** 每个用例一个临时数据根（拉起日志真的要写盘）；用例结束统一收掉 */
+let dirs: string[] = [];
+
+function tempDataRoot(): string {
+  const dir = mkdtempSync(join(tmpdir(), "aiz-launch-"));
+  dirs.push(dir);
+  return dir;
+}
+
+afterAll(() => {
+  for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  dirs = [];
+});
+
+const RANGE = "^0.1.0-alpha.0";
+
+describe("npx 那条路的命令行", () => {
+  it("POSIX：npx -y @ai-zen/agents-host@<range> serve --ai-zen-dir <数据根>", () => {
+    expect(
+      npxHostArgv({ versionRange: RANGE, dataRoot: "/data/ai-zen", platform: "linux" }),
+    ).toEqual({
+      command: "npx",
+      shell: false,
+      // `-y` 不能省：npx 装新包时会问一句，而屏幕上没有人能答
+      args: ["-y", `@ai-zen/agents-host@${RANGE}`, "serve", "--ai-zen-dir", "/data/ai-zen"],
+    });
+  });
+
+  it("Windows：npx.cmd 过一层 shell，范围里的 ^ 与路径各自加引号（否则被 cmd 当转义吃掉）", () => {
+    const argv = npxHostArgv({
+      versionRange: RANGE,
+      dataRoot: "C:\\Users\\u\\.ai-zen",
+      platform: "win32",
+    });
+    expect(argv.command).toBe("npx.cmd");
+    expect(argv.shell).toBe(true);
+    expect(argv.args).toEqual([
+      "-y",
+      `"@ai-zen/agents-host@${RANGE}"`,
+      "serve",
+      "--ai-zen-dir",
+      '"C:\\Users\\u\\.ai-zen"',
+    ]);
+  });
+});
+
+describe("两条路的判据：给了 entry 就起它，没给就 npx", () => {
+  it("给了 entry → process.execPath 跑那个入口（桌面端那条路一个字都没变）", async () => {
+    const fake = fakeSpawn();
+
+    const spawned = await spawnHostByContext(
+      { dataRoot: "/data/ai-zen", entry: "/host/dist/host.mjs", versionRange: RANGE },
+      { spawn: fake.spawn, platform: "linux" },
+    );
+
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.calls[0]?.command).toBe(process.execPath);
+    expect(fake.calls[0]?.args).toEqual([
+      "/host/dist/host.mjs",
+      "serve",
+      "--ai-zen-dir",
+      "/data/ai-zen",
+    ]);
+    expect(fake.calls[0]?.options).toMatchObject({
+      detached: true,
+      windowsHide: true,
+      env: expect.objectContaining({ AI_ZEN_DIR: "/data/ai-zen" }),
+    });
+    expect(typeof spawned.exited.then).toBe("function");
+  });
+
+  it("没给 entry → npx", async () => {
+    const fake = fakeSpawn();
+
+    await spawnHostByContext(
+      { dataRoot: "/data/ai-zen", versionRange: RANGE },
+      { spawn: fake.spawn, platform: "linux" },
+    );
+
+    expect(fake.calls[0]?.command).toBe("npx");
+    expect(fake.calls[0]?.args).toContain(`@ai-zen/agents-host@${RANGE}`);
+  });
+});
+
+describe("npx 那条路的子进程", () => {
+  it("windowsHide + detached；输出落 <数据根>/logs/host-launch.log（不进终端、不占管道）", async () => {
+    const dir = tempDataRoot();
+    const fake = fakeSpawn();
+
+    await spawnHostViaNpx(
+      { dataRoot: dir, versionRange: RANGE },
+      { spawn: fake.spawn, platform: "linux" },
+    );
+
+    const options = fake.calls[0]?.options ?? {};
+    expect(options.windowsHide).toBe(true);
+    expect(options.detached).toBe(true);
+    expect(options.shell).toBeFalsy();
+    const stdio = options.stdio as unknown[];
+    expect(stdio[0]).toBe("ignore");
+    expect(stdio[1]).toBe("ignore");
+    // 第三格是一个打开的文件描述符：进程的输出写进那个文件，而不是一条活管道
+    expect(typeof stdio[2]).toBe("number");
+    expect(existsSync(hostLaunchLogPath(dir))).toBe(true);
+    expect(fake.child.unrefd).toBe(true);
+  });
+
+  it("阶段先报 resolving 再报 installing（解析在前、下载安装在后）", async () => {
+    const dir = tempDataRoot();
+    const fake = fakeSpawn();
+    const stages: HostLaunchStage[] = [];
+
+    await spawnHostViaNpx(
+      { dataRoot: dir, versionRange: RANGE, onStage: (stage) => stages.push(stage) },
+      { spawn: fake.spawn, platform: "linux" },
+    );
+
+    expect(stages).toEqual(["resolving", "installing"]);
+  });
+
+  it("没给版本范围 → host_version_range_missing，一个进程都不起", async () => {
+    const fake = fakeSpawn();
+    const error = (await spawnHostViaNpx({ dataRoot: "/data/ai-zen" }, { spawn: fake.spawn }).catch(
+      (caught: unknown) => caught,
+    )) as ClientError;
+
+    expect(error.code).toBe("host_version_range_missing");
+    expect(fake.calls).toEqual([]);
+  });
+});
+
+describe("阶段与取消", () => {
+  it("阶段按 resolving → installing → starting → connected 走完一遍", async () => {
+    const test = harness({
+      settings: { mode: "local" },
+      // 发现文件要等一轮才出现：`starting` 那一刻才有东西可说
+      hostFile: { pid: 4321, host: "127.0.0.1", port: 54321, fromTick: 1 },
+      token: { value: "fresh-token", fromTick: 1 },
+    });
+    const stages: HostLaunchStage[] = [];
+    test.options.onStage = (stage) => stages.push(stage);
+
+    await ensureHost(test.options);
+
+    expect(stages).toEqual(["resolving", "installing", "starting", "connected"]);
+  });
+
+  it("取消会杀掉正在拉起的那个子进程", async () => {
+    const dir = tempDataRoot();
+    const controller = new AbortController();
+    const fake = fakeSpawn();
+
+    const spawning = spawnHostViaNpx(
+      { dataRoot: dir, versionRange: RANGE, signal: controller.signal },
+      // win32 那一支不走 `process.kill(-pid)`：用例不该真的去碰一个进程组
+      { spawn: fake.spawn, platform: "win32" },
+    );
+    controller.abort();
+    await spawning;
+
+    expect(fake.child.killed).toEqual(["SIGTERM"]);
+  });
+
+  it("拉起过程中被取消 → host_launch_cancelled（不是「起不来」）", async () => {
+    const controller = new AbortController();
+    const test = harness({
+      settings: { mode: "local" },
+      // 拉到一半用户按了 Ctrl+C
+      onSpawn: () => controller.abort(),
+    });
+    test.options.signal = controller.signal;
+
+    const error = (await ensureHost(test.options).catch(
+      (caught: unknown) => caught,
+    )) as ClientError;
+
+    expect(error.code).toBe("host_launch_cancelled");
+  });
+});
+
+describe("拉起失败：拿子进程最后一行输出当原因", () => {
+  it("npx 自己退了 → exited 带上退出码与那行原因（抹掉颜色控制序列）", async () => {
+    const dir = tempDataRoot();
+    const fake = fakeSpawn({
+      exit: { code: 1 },
+      output: {
+        path: hostLaunchLogPath(dir),
+        text: "npm warn exec 需要安装\n\u001b[31mnpm error 404 not found @ai-zen/agents-host\u001b[0m\n\n",
+      },
+    });
+
+    const spawned = await spawnHostViaNpx(
+      { dataRoot: dir, versionRange: RANGE },
+      { spawn: fake.spawn, platform: "linux" },
+    );
+
+    await expect(spawned.exited).resolves.toEqual({
+      code: 1,
+      reason: "npm error 404 not found @ai-zen/agents-host",
+    });
+  });
+
+  it("宿主进程提前退出 → 当场报 host_launch_failed（不必等满 15 秒），原话上屏", async () => {
+    const test = harness({ settings: { mode: "local" }, timeoutMs: 60_000 });
+    const options: EnsureHostOptions = {
+      ...test.options,
+      spawnHost: async () => ({
+        exited: Promise.resolve({ code: 1, reason: "npm error 404 not found" }),
+      }),
+    };
+
+    const error = (await ensureHost(options).catch((caught: unknown) => caught)) as ClientError;
+
+    expect(error.code).toBe("host_launch_failed");
+    expect(error.message).toContain("npm error 404 not found");
+    expect(error.detail).toMatchObject({ code: 1, logFile: hostLaunchLogPath(DATA_ROOT) });
   });
 });

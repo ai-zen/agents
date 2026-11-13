@@ -18,7 +18,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { ClientInfo } from "@ai-zen/agents-host";
 
 import { Client } from "./client.js";
-import { ensureHost, readHostFile, tokenFilePath } from "./connection.js";
+import { ensureHost, readHostFile, resolveHostEntry, tokenFilePath } from "./connection.js";
 import type { ClientError } from "./errors.js";
 import type { HostTarget } from "./address.js";
 import { parseIncoming } from "./frames.js";
@@ -379,6 +379,9 @@ describe("真拉起一个宿主进程（end-to-end）", () => {
         dataRoot: freshRoot,
         clientInfo: CLIENT_INFO,
         settings: { mode: "local" },
+        // 缺省的拉起方式是让 npx 现下现起（PRD L14），而这一条验的是「本机已经有那一份时
+        // 跑得起来」：显式递上仓库里装好的入口，于是不必联网、也不依赖 npm 缓存
+        hostEntry: resolveHostEntry(),
         timeoutMs: 30_000,
         retryIntervalMs: 100,
       });
