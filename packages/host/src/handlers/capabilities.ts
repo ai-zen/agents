@@ -95,6 +95,7 @@ const FACTS: readonly CapabilityFact[] = [
   { method: "agent.delete", prd: "F-F5", blocking: false, destructive: true },
   { method: "agent.setModel", prd: "F-B4", blocking: false, destructive: false },
   { method: "agent.setThinking", prd: "F-B6", blocking: false, destructive: false },
+  { method: "agent.restoreFactory", prd: "F-F5", blocking: false, destructive: true },
 
   { method: "model.list", prd: "F-F3", blocking: false, destructive: false },
   { method: "model.listImages", prd: "F-F4", blocking: false, destructive: false },

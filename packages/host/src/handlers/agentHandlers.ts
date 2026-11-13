@@ -17,7 +17,8 @@ export type AgentHandlerName =
   | "agent.update"
   | "agent.delete"
   | "agent.setModel"
-  | "agent.setThinking";
+  | "agent.setThinking"
+  | "agent.restoreFactory";
 
 /** 本文件产出的 handler 表片段 */
 export type AgentHandlers = Pick<HandlerTable, AgentHandlerName>;
@@ -48,6 +49,11 @@ export function createAgentHandlers(deps: AgentHandlerDeps): AgentHandlers {
     "agent.setThinking": async (context) =>
       localizeLocalizedTexts(
         await deps.agents.setThinking(context.params),
+        context.connection.language,
+      ),
+    "agent.restoreFactory": async (context) =>
+      localizeLocalizedTexts(
+        await deps.agents.restoreFactory(context.params),
         context.connection.language,
       ),
   };

@@ -3,13 +3,15 @@
  *
  * 覆盖：一实体一文件（有 `function` 的落 `sub-agents/`）、不可用的助手也列出并说明原因、
  * 默认助手的回落、编辑即用户自有、改默认模型、思考档位展开成参数、
- * 删默认助手时连带清默认、删除前的引用清单。
+ * 删默认助手时连带清默认、删除前的引用清单、
+ * 定义读得回来（`messages` / `function` 与读-改-写往返）、清掉思考参数（`level: null`）。
  */
 
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { AgentNS } from "@ai-zen/agents-core";
 import { ConfigManager } from "@ai-zen/agents-sdk";
 import type { AgentDefinition, AppConfig } from "@ai-zen/agents-sdk";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -37,6 +39,11 @@ async function writeText(path: string, value: string): Promise<void> {
 
 async function readConfig(): Promise<AppConfig> {
   return JSON.parse(await readFile(join(dataRoot, "config.json"), "utf-8")) as AppConfig;
+}
+
+/** 磁盘上那一份助手定义（看「写进去的是什么」，而不是视图说了什么） */
+async function readAgent(home: "agents" | "sub-agents", id: string): Promise<AgentDefinition> {
+  return JSON.parse(await readFile(join(dataRoot, home, `${id}.json`), "utf-8")) as AgentDefinition;
 }
 
 /** 一份够用的配置：一个配好密钥的端点、一个没密钥的端点、三个模型 */
@@ -399,5 +406,139 @@ describe("AgentService.setModel / setThinking", () => {
       selected: null,
       source: "following_default",
     });
+  });
+});
+
+describe("AgentService：定义要能读回来（F-B2 / F-F5）", () => {
+  it("AgentView 带 messages 与 function；非子 Agent 的 function 是 null", async () => {
+    const plain = await service.get({ agentId: "default" });
+    expect(plain.agent.messages).toEqual(SYSTEM);
+    expect(plain.agent.function).toBeNull();
+    expect(plain.agent.isSubAgent).toBe(false);
+
+    // 子 Agent：function 的内容原样读回来，不是只有 `isSubAgent: true`
+    const sub = await service.get({ agentId: "sub-one" });
+    expect(sub.agent.isSubAgent).toBe(true);
+    expect(sub.agent.messages).toEqual(SYSTEM);
+    expect(sub.agent.function).toEqual({
+      name: "sub_fn",
+      description: "does sub things",
+      parameters: { type: "object", properties: {} },
+    });
+
+    // list 与 get 是同一份视图（客户端两个入口看到的东西必须一致）
+    const { agents } = await service.list();
+    expect(agents.find((agent) => agent.id === "sub-one")?.function).toEqual(sub.agent.function);
+    expect(agents.find((agent) => agent.id === "default")?.function).toBeNull();
+    expect(agents.find((agent) => agent.id === "default")?.messages).toEqual(SYSTEM);
+  });
+
+  it("定义文件读不出来时 messages 与 function 都是 null，不编空数组 / 空对象", async () => {
+    // 坏 JSON：文件在、内容读不出来
+    const broken = await service.get({ agentId: "broken" });
+    expect(broken.agent.messages).toBeNull();
+    expect(broken.agent.function).toBeNull();
+    expect(broken.agent.available).toBe(false);
+
+    // 缺字段：JSON 读得出来，但定义里根本没写 messages（手改最容易少的字段）
+    await writeJson(join(dataRoot, "agents", "no-messages.json"), {
+      id: "no-messages",
+      name: "No Messages",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const partial = await service.get({ agentId: "no-messages" });
+    expect(partial.agent.messages).toBeNull();
+    expect(partial.agent.function).toBeNull();
+
+    // list 那一侧同一个口径
+    const { agents } = await service.list();
+    expect(agents.find((agent) => agent.id === "broken")?.messages).toBeNull();
+    expect(agents.find((agent) => agent.id === "broken")?.function).toBeNull();
+  });
+
+  it("读-改-写往返：get 到的 messages 原样交给 update 等于没改", async () => {
+    // 客户端真实路径：先写一版自己的提示词，再读回来 —— 读回来那一版才是「要原样写回」的对象
+    const edited: AgentDefinition["messages"] = [
+      { id: "edited-sys", role: AgentNS.Role.System, content: "you are an edited assistant" },
+      { id: "edited-user", role: AgentNS.Role.User, content: "{{task}}" },
+    ];
+    await service.update({ agentId: "default", patch: { messages: edited } });
+
+    const before = await service.get({ agentId: "default" });
+    const messages = before.agent.messages;
+    if (messages === null) throw new Error("messages 没读回来，往返无从谈起");
+    // 读回来的就是刚写进去的那一份（能写也得能读）
+    expect(messages).toEqual(edited);
+
+    const after = await service.update({ agentId: "default", patch: { messages } });
+    expect(after.agent.messages).toEqual(edited);
+
+    // 落盘那一份还是同一份提示词（视图说没改不算，文件也得是原样）
+    const onDisk = await readAgent("agents", "default");
+    expect(onDisk.messages).toEqual(edited);
+    expect(onDisk.name).toBe(before.agent.name);
+    expect(onDisk.modelId).toBe(before.agent.modelId);
+  });
+
+  it("读-改-写往返：子 Agent 的 function 原样写回也不变", async () => {
+    const before = await service.get({ agentId: "sub-one" });
+    const fn = before.agent.function;
+    if (fn === null) throw new Error("function 没读回来，往返无从谈起");
+
+    const after = await service.update({ agentId: "sub-one", patch: { function: fn } });
+    expect(after.agent.function).toEqual(before.agent.function);
+    // 仍然是子 Agent，落在 sub-agents/ 里（没被搬到 agents/）
+    expect(after.agent.isSubAgent).toBe(true);
+    expect((await readAgent("sub-agents", "sub-one")).function).toEqual(before.agent.function);
+  });
+});
+
+describe("AgentService.setThinking { level: null }（F-B6：撤回设值，不是设成某一档）", () => {
+  it("删掉思考参数：与思考无关的参数留着，thinking 回落到跟随默认", async () => {
+    await writeJson(
+      join(dataRoot, "agents", "tuned.json"),
+      definition("tuned", {
+        modelId: "m-a1",
+        modelParams: { reasoning_effort: "high", temperature: 0.2 },
+      }),
+    );
+
+    const { agent, thinking } = await service.setThinking({ agentId: "tuned", level: null });
+
+    expect(agent.modelParams).toEqual({ temperature: 0.2 });
+    expect(thinking.selected).toBeNull();
+    expect(thinking.source).toBe("following_default");
+    // 档位名清空，但档位表还在（这个模型仍然可调，只是没有覆盖）
+    expect(thinking.params).toEqual({});
+    expect(thinking.levels).toEqual(["low", "high"]);
+
+    expect((await readAgent("agents", "tuned")).modelParams).toEqual({ temperature: 0.2 });
+  });
+
+  it("思考参数是定义上唯一那份参数时，modelParams 整个从定义里去掉", async () => {
+    // 先设一档，把思考参数写进定义
+    await service.setThinking({ agentId: "default", level: "high" });
+    expect((await readAgent("agents", "default")).modelParams).toEqual({ reasoning_effort: "high" });
+
+    const { agent, thinking } = await service.setThinking({ agentId: "default", level: null });
+
+    expect(agent.modelParams).toEqual({});
+    expect(thinking).toMatchObject({ selected: null, source: "following_default", params: {} });
+    // 文件里连空对象都不留：参数即真相，没有参数就是没有这一层覆盖
+    expect(await readAgent("agents", "default")).not.toHaveProperty("modelParams");
+  });
+
+  it("未知档位名与空档位名照样按业务码拒（回归：null 分支没把校验写坏）", async () => {
+    await expect(
+      service.setThinking({ agentId: "default", level: "ultra" }),
+    ).rejects.toMatchObject({ code: "invalid_params" });
+
+    await expect(service.setThinking({ agentId: "default", level: "" })).rejects.toMatchObject({
+      code: "invalid_params",
+    });
+
+    // 两次拒绝都不该顺手写盘
+    expect(await readAgent("agents", "default")).not.toHaveProperty("modelParams");
   });
 });

@@ -1107,6 +1107,9 @@ export interface ConfigPatchMcpsResult {
  *
  * 提示词 + 模型 + 权限四维（tools / skills / mcps / subagents）+ 自定义标记，形状沿用 SDK；
  * 不可用的助手也列出来并说明原因（F-B5：「藏起来」会让人以为它没了）。
+ *
+ * 提示词（`messages`）与子 Agent 定义（`function`）也在视图里：`agent.update` 收得到它们，
+ * 视图就必须读得回来，否则「能写不能读」等于编辑不了助手定义（F-F5）。
  */
 export interface AgentView {
   id: string;
@@ -1117,6 +1120,19 @@ export interface AgentView {
   /** 助手级模型参数覆盖（思考强度写在这里，PRD F-B6） */
   modelParams: Record<string, unknown>;
   permissions: AgentDefinition["permissions"] | null;
+  /**
+   * 提示词（预设对话），形状就是 SDK 的 `AgentDefinition["messages"]`（PRD F-B2 / F-F5）。
+   *
+   * 定义是「能写就能读」的：这份原样交给 `agent.update` 的 `messages` 等于没改。
+   * 定义文件读不出来时是 `null` —— 那时没有「它的提示词是什么」这个事实可说。
+   */
+  messages: AgentDefinition["messages"] | null;
+  /**
+   * 子 Agent 的函数定义，形状沿用 SDK 的 `AgentDefinition["function"]`（PRD F-B2 / F-F5）。
+   *
+   * 非子 Agent 为 `null`；定义文件读不出来时也是 `null`。
+   */
+  function: AgentDefinition["function"] | null;
   /** 有 `function` 字段即子 Agent（PRD F-B2） */
   isSubAgent: boolean;
   /** 是不是用户自定义的（PRD F-G3：一实体一文件，可进 git、可手改） */
@@ -1225,16 +1241,44 @@ export interface AgentSetModelResult {
  * `agent.setThinking` 入参（PRD F-B6：写入的是参数不是档位名）。
  *
  * 档位在这里被展开成具体参数写进 `AgentDefinition.modelParams`，之后运行时不再查表。
+ * `level: null` 是撤回设值：把定义里的思考参数删掉，助手的思考回到「参数即真相」的那份来源
+ * （模型的默认参数），`ThinkingState.source` 跟着回落到 `following_default`。
+ *
+ * 与会话那一侧的 `conversation.setThinking(null)` 是两件事：那边改的是会话行上的档位名
+ * （这段对话回到跟随助手定义），这边改的是**助手的定义文件**（以后的对话都跟着变）。
  */
 export interface AgentSetThinkingParams {
   agentId: string;
-  level: string;
+  /** 档位名（来自 `ThinkingState.levels`）；`null` = 删掉定义上的思考参数 */
+  level: string | null;
 }
 
 /** `agent.setThinking` 出参 */
 export interface AgentSetThinkingResult {
   agent: AgentView;
   thinking: ThinkingState;
+}
+
+/**
+ * `agent.restoreFactory` 入参（PRD F-F5：与 `model.restoreFactory` 同形，可以先预演不落盘）。
+ *
+ * 只有出厂清单里的助手（SDK 的出厂定义）才有「出厂版本」可恢复；恢复是整条替换，
+ * 引用关系不动（这里不删任何东西）。
+ */
+export interface AgentRestoreFactoryParams {
+  agentId: string;
+  /** 只算「恢复之后会是什么样」，不落盘 */
+  dryRun?: boolean;
+}
+
+/**
+ * `agent.restoreFactory` 出参。
+ *
+ * `restored: false` 表示它本来就是出厂状态（没有可恢复的改动），不是失败。
+ */
+export interface AgentRestoreFactoryResult {
+  agent: AgentView;
+  restored: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -1777,8 +1821,13 @@ export interface MethodMap {
   "agent.delete": { params: AgentDeleteParams; result: AgentDeleteResult };
   /** F-B4 / F-B1：改助手默认模型（另一个动作：与改这段会话的模型分开），并清掉旧模型的档位参数。 */
   "agent.setModel": { params: AgentSetModelParams; result: AgentSetModelResult };
-  /** F-B6：把思考档位展开成参数写进助手定义。 */
+  /** F-B6：把思考档位展开成参数写进助手定义（`null` = 把那份参数删掉）。 */
   "agent.setThinking": { params: AgentSetThinkingParams; result: AgentSetThinkingResult };
+  /** F-F5：恢复出厂（整条替换；可以先预演不落盘）。 */
+  "agent.restoreFactory": {
+    params: AgentRestoreFactoryParams;
+    result: AgentRestoreFactoryResult;
+  };
 
   // ---- model.*：模型与图片模型（F-F3 / F-F4 / F-F7 / F-B8）----
   /** F-F3 / F-B7：模型清单（出厂托管 vs 自定义、两条阈值、思考档位、可用性）。 */
@@ -1900,6 +1949,7 @@ export const METHOD_NAMES = [
   "agent.delete",
   "agent.setModel",
   "agent.setThinking",
+  "agent.restoreFactory",
   "model.list",
   "model.listImages",
   "model.create",

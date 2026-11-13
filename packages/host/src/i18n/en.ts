@@ -120,6 +120,9 @@ export const en = {
   "agent.modelMissing":
     "This assistant is bound to a model ({id}) that isn't in the model list anymore.",
   "agent.fileBroken": "{name} can't be read as an assistant definition: {reason}",
+  // 恢复出厂时这个助手在出厂清单里没有对应定义（用户自建的那一份，没有可用来替换的出厂版）
+  "agent.notFactory":
+    "\"{id}\" isn't part of the factory assistant list, so there's no factory version to restore.",
 
   // ---- 配置检查（PRD F-A8：配错了要能当场修，问题指到具体字段）----
   "config.issue.thresholdOrder":
@@ -264,6 +267,9 @@ export const en = {
   "capability.agent.setModel.detail": "Changes the assistant's default model, which affects conversations started later.",
   "capability.agent.setThinking": "Set an assistant's thinking level",
   "capability.agent.setThinking.detail": "Writes the expanded request parameters into the assistant definition.",
+  "capability.agent.restoreFactory": "Restore an assistant to factory settings",
+  "capability.agent.restoreFactory.detail":
+    "Puts the whole assistant definition — prompt, model, permissions and thinking settings — back to the one that shipped with the host. You can look at the result before it's written.",
 
   "capability.model.list": "List models",
   "capability.model.list.detail": "Factory-managed and custom models with thresholds, thinking presets and availability.",

@@ -16,7 +16,12 @@ import { promises as fs } from "node:fs";
 import { join } from "node:path";
 
 import { AgentNS } from "@ai-zen/agents-core";
-import { AgentRepository, DEFAULT_AGENT_ID } from "@ai-zen/agents-sdk";
+import {
+  AgentRepository,
+  DEFAULT_AGENT_DEFINITION,
+  DEFAULT_AGENT_ID,
+  DEFAULT_SUBAGENT_DEFINITION,
+} from "@ai-zen/agents-sdk";
 import type {
   AgentDefinition,
   AppConfig,
@@ -39,6 +44,8 @@ import type {
   AgentInput,
   AgentListParams,
   AgentListResult,
+  AgentRestoreFactoryParams,
+  AgentRestoreFactoryResult,
   AgentSetModelParams,
   AgentSetModelResult,
   AgentSetThinkingParams,
@@ -58,6 +65,21 @@ const DIR_SUB_AGENTS = "sub-agents";
 
 /** 定义文件名的后缀：文件名 = `<id>.json` */
 const JSON_SUFFIX = ".json";
+
+/**
+ * 出厂定义的形状：SDK 的那两份常量不带时间戳（时间戳是实例化时补的）。
+ */
+type FactoryAgentDefinition = Omit<AgentDefinition, "createdAt" | "updatedAt">;
+
+/**
+ * 出厂清单：只有 SDK 的出厂定义才有「出厂版本」可恢复，用户自建的助手没有。
+ *
+ * 与模型那边（`DEFAULT_APP_CONFIG.models`）同一个口径：出厂那一份由 SDK 持有，宿主不另存一份。
+ */
+const FACTORY_AGENTS: readonly FactoryAgentDefinition[] = [
+  DEFAULT_AGENT_DEFINITION,
+  DEFAULT_SUBAGENT_DEFINITION,
+];
 
 /** 助手服务的依赖；由单根组装后注入 */
 export interface AgentServiceOptions {
@@ -223,6 +245,42 @@ function requireMessages(value: unknown): AgentNS.Message[] {
     });
   }
   return messages;
+}
+
+/**
+ * 两份提示词是不是同一份。
+ *
+ * 只比角色与内容：`Message.System()` 每次都生成新 id，落盘再读回来的 id 不会与出厂常量相等，
+ * 拿 id 比永远比不中。SDK 判断「出厂提示词是否已被改过」用的也是这个口径。
+ */
+function samePrompts(
+  left: readonly AgentNS.Message[],
+  right: readonly AgentNS.Message[],
+): boolean {
+  if (left.length !== right.length) return false;
+  return left.every(
+    (message, index) =>
+      message.role === right[index]?.role &&
+      JSON.stringify(message.content) === JSON.stringify(right[index]?.content),
+  );
+}
+
+/**
+ * 这条定义是不是已经就是出厂那一份（时间戳不比，`custom` 只看有没有被声明为自定义）。
+ *
+ * 用来回答「还需要恢复吗」：本来就一样时恢复是空动作，不该报成一次恢复成功。
+ */
+function isFactoryState(current: AgentDefinition, factory: FactoryAgentDefinition): boolean {
+  if (current.custom === true) return false;
+  return (
+    current.name === factory.name &&
+    (current.description ?? null) === (factory.description ?? null) &&
+    (current.modelId ?? null) === (factory.modelId ?? null) &&
+    deepEqual(current.modelParams ?? {}, factory.modelParams ?? {}) &&
+    deepEqual(current.permissions ?? null, factory.permissions ?? null) &&
+    deepEqual(current.function ?? null, factory.function ?? null) &&
+    samePrompts(current.messages ?? [], factory.messages)
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -460,10 +518,13 @@ export class AgentService {
    *
    * 档位必须在这个模型的思考策略表里：表里没有的档发出去只会换来一句 400。
    * 合并口径是「在现有参数上叠加这一档的补丁」—— 与思考无关的参数（temperature 之类）不动。
+   *
+   * `level: null` 是撤回设值：把定义里属于思考策略的那些参数删掉，其余参数照旧留着；
+   * 删完不剩任何参数时 `modelParams` 整个从定义里去掉，让「参数即真相」回到模型的默认参数。
+   * 与会话那一侧的 `conversation.setThinking(null)`（改成会话行上的档位名）是两件事。
    */
   async setThinking(params: AgentSetThinkingParams): Promise<AgentSetThinkingResult> {
     const id = requireId(params.agentId, "agentId");
-    const level = requireId(params.level, "level");
     const found = await this.requireEditable(id);
     const config = await this.configManager.read();
     const presets = await this.configManager.readReasoningPresets();
@@ -484,19 +545,28 @@ export class AgentService {
         detail: { modelId: model.id, preset: model.reasoningPreset ?? null },
       });
     }
-    if (!Object.prototype.hasOwnProperty.call(preset.levels, level)) {
+    const level = params.level === null ? null : requireId(params.level, "level");
+    if (level !== null && !Object.prototype.hasOwnProperty.call(preset.levels, level)) {
       throw new HostError("invalid_params", {
         params: { field: "level" },
         detail: { field: "level", level, levels: Object.keys(preset.levels) },
       });
     }
 
+    // `null` 走「删掉思考那些键」，否则走「叠加这一档的补丁」
+    const modelParams =
+      level === null
+        ? withoutThinkingParams(agent.modelParams, preset)
+        : { ...(agent.modelParams ?? {}), ...(preset.levels[level] ?? {}) };
+
     const updated: AgentDefinition = {
       ...agent,
-      modelParams: { ...(agent.modelParams ?? {}), ...(preset.levels[level] ?? {}) },
       custom: true,
       updatedAt: new Date(this.now()).toISOString(),
     };
+    if (modelParams === undefined) delete updated.modelParams;
+    else updated.modelParams = modelParams;
+
     await this.repos[found.home].write(updated);
     const view = this.toView(config, presets, {
       id,
@@ -505,6 +575,52 @@ export class AgentService {
       brokenReason: null,
     });
     return { agent: view, thinking: view.thinking };
+  }
+
+  /**
+   * 恢复出厂（F-F5：整条替换，与 `model.restoreFactory` 同一个语义）。
+   *
+   * 出厂那一份来自 SDK 的出厂定义（`DEFAULT_AGENT_DEFINITION` / `DEFAULT_SUBAGENT_DEFINITION`），
+   * 用户自建的助手不在出厂清单里，没有可恢复的版本。恢复之后这一条重新归 SDK 托管
+   * （`custom: false`，下次初始化会跟着出厂定义同步提示词），提示词 / 模型 / 权限 / 思考参数
+   * 全回到出厂那份；`createdAt` 是这个实体诞生的时刻，留着，`updatedAt` 是这次写入。
+   *
+   * `dryRun` 只算出「恢复之后会是什么样」，不落盘；本来就和出厂一致时回 `restored: false`
+   * （没有可恢复的改动，不是失败）。
+   */
+  async restoreFactory(params: AgentRestoreFactoryParams): Promise<AgentRestoreFactoryResult> {
+    const id = requireId(params.agentId, "agentId");
+    const found = await this.requireEditable(id);
+    const factory = FACTORY_AGENTS.find((item) => item.id === id);
+    if (!factory) {
+      throw new HostError("invalid_params", {
+        messageKey: "agent.notFactory",
+        params: { id },
+        detail: { agentId: id, reason: "not_a_factory_agent" },
+      });
+    }
+
+    const config = await this.configManager.read();
+    const presets = await this.configManager.readReasoningPresets();
+    if (isFactoryState(found.definition, factory)) {
+      return { agent: this.toView(config, presets, found), restored: false };
+    }
+
+    const restored: AgentDefinition = {
+      ...structuredClone(factory),
+      createdAt: found.definition.createdAt,
+      updatedAt: new Date(this.now()).toISOString(),
+    };
+    const home = this.homeOf(restored);
+    const after = { id, home, definition: restored, brokenReason: null };
+    if (params.dryRun === true) {
+      return { agent: this.toView(config, presets, after), restored: true };
+    }
+
+    await this.repos[home].write(restored);
+    // 出厂那份放在另一个目录时（比如被手改到 agents/ 里的子 Agent），旧文件跟着删掉
+    if (home !== found.home) await this.repos[found.home].delete(id);
+    return { agent: this.toView(config, presets, after), restored: true };
   }
 
   // -------------------------------------------------------------------------
@@ -523,6 +639,9 @@ export class AgentService {
         modelId: null,
         modelParams: {},
         permissions: null,
+        // 提示词与子 Agent 定义都读不出来：说「不知道」比编一个空数组诚实
+        messages: null,
+        function: null,
         isSubAgent: item.home === "sub-agents",
         custom: false,
         isDefault: config.defaultAgent === item.id,
@@ -553,6 +672,9 @@ export class AgentService {
       modelId: definition.modelId ?? null,
       modelParams: definition.modelParams ?? {},
       permissions: definition.permissions ?? null,
+      // 定义本身的形状：提示词与子 Agent 定义原样给出（手改的文件可能没写 `messages`，那也归到 null）
+      messages: definition.messages ?? null,
+      function: definition.function ?? null,
       isSubAgent: definition.function !== undefined,
       custom: definition.custom === true,
       isDefault: config.defaultAgent === definition.id,

@@ -113,6 +113,7 @@ export const zh = {
   "model.endpointMissing": "{model} 指向的端点（{id}）已经不在端点列表里了。",
   "agent.modelMissing": "这个助手绑定的模型（{id}）已经不在模型列表里了。",
   "agent.fileBroken": "{name} 读不成助手定义：{reason}",
+  "agent.notFactory": "{id} 不在出厂助手清单里，没有可恢复的出厂版本。",
 
   // ---- 配置检查（PRD F-A8：配错了要能当场修，问题指到具体字段）----
   "config.issue.thresholdOrder": "{name} 的交接线（{handoff} 个 token）到了或者超过了硬线（{guard} 个 token）。",
@@ -244,6 +245,9 @@ export const zh = {
   "capability.agent.setModel.detail": "改的是助手的默认模型，影响以后新开的对话。",
   "capability.agent.setThinking": "设助手的思考档位",
   "capability.agent.setThinking.detail": "把展开后的请求参数写进助手定义。",
+  "capability.agent.restoreFactory": "恢复助手出厂设置",
+  "capability.agent.restoreFactory.detail":
+    "把这份助手定义整条换回宿主自带的那一份——提示词、模型、权限、思考设置一起回退；可以先看恢复之后会是什么样再决定。",
 
   "capability.model.list": "列出模型",
   "capability.model.list.detail": "出厂托管与自定义的模型，带两条阈值、思考档位与可用性。",
