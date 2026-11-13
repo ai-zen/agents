@@ -412,9 +412,15 @@ export class ConfigManager {
   }
 
   /**
-   * 确保 basePath/mcp.json 存在。不存在时写入出厂默认 MCP 配置（含 socket-pty 与 chrome-devtools）。
-   * 已有文件不被覆盖，尊重用户已配置的 MCP 服务器。
-   * @returns 返回当前生效的 MCP 配置原始内容
+   * 确保 basePath/mcp.json 存在，三种情况分开（与 `config.json` / `host.json` 同一口径）：
+   *
+   * - **不存在** → 写入出厂默认 MCP 配置（含 socket-pty 与 chrome-devtools）。这是正常首启，
+   *   不回调；
+   * - **存在且解析得成对象** → 原样返回，不动用户的文件（哪怕里面全是用户自己的服务器）；
+   * - **存在但坏了**（读不了 / 不是 JSON / 不是对象 / 是数组）→ 恢复出厂：先把坏文件改名
+   *   留档为 `mcp.json.broken`，再写回出厂默认配置，然后回调一次。
+   *
+   * @returns 当前生效的 MCP 配置原始内容
    */
   async ensureDefaultMcpConfig(): Promise<Record<string, unknown>> {
     const mcpPath = this.mcpPath;
@@ -426,26 +432,46 @@ export class ConfigManager {
       await this.writeJson(mcpPath, DEFAULT_MCP_CONFIG);
       return { ...DEFAULT_MCP_CONFIG };
     }
-    // 已存在 → 不覆盖，读取返回
-    return JSON.parse(await fs.readFile(mcpPath, "utf-8")) as Record<string, unknown>;
+
+    // 存在：读不出来、解析不了、解析出来不是对象（含数组）都是同一档「坏」
+    let parsed: unknown = null;
+    try {
+      parsed = JSON.parse(await fs.readFile(mcpPath, "utf-8"));
+    } catch {
+      parsed = null;
+    }
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+
+    // 恢复出厂：先留一份残骸（用户会问「我原来那些服务器去哪了」），再写回出厂配置
+    await this.archiveBroken(mcpPath);
+    await this.writeJson(mcpPath, DEFAULT_MCP_CONFIG);
+    await this.onRecovered?.(mcpPath);
+    return { ...DEFAULT_MCP_CONFIG };
   }
 
   /**
-   * 读取 basePath/mcp.json，不存在时返回空结构。
+   * 把坏掉的 mcp.json 改名留档为 `mcp.json.broken`。
+   *
+   * 同名残骸已经在就带上时间戳（同一毫秒再撞上就补序号），免得把上一份残骸覆盖掉。
    */
-  async readMcpConfig(): Promise<{ mcpServers: Record<string, unknown> }> {
-    const mcpPath = this.mcpPath;
-    try {
-      await fs.access(mcpPath);
-    } catch {
-      return { mcpServers: {} };
+  private async archiveBroken(path: string): Promise<void> {
+    const base = `${path}.broken`;
+    let target = base;
+    for (let index = 0; await this.exists(target); index += 1) {
+      target = index === 0 ? `${base}.${Date.now()}` : `${base}.${Date.now()}-${index}`;
     }
+    await fs.rename(path, target);
+  }
+
+  /** 这个路径在不在（`access` 不抛就是在） */
+  private async exists(path: string): Promise<boolean> {
     try {
-      return JSON.parse(await fs.readFile(mcpPath, "utf-8")) as {
-        mcpServers: Record<string, unknown>;
-      };
+      await fs.access(path);
+      return true;
     } catch {
-      return { mcpServers: {} };
+      return false;
     }
   }
 

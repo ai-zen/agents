@@ -9,6 +9,7 @@ import {
   DEFAULT_SUBAGENT_ID,
   DEFAULT_SUBAGENT_DEFINITION,
   DEFAULT_APP_CONFIG,
+  DEFAULT_MCP_CONFIG,
 } from "./ConfigManager.js";
 
 async function tempDir() {
@@ -470,7 +471,7 @@ describe("ConfigManager.bootstrap", () => {
 });
 
 // ==================================================================
-// 默认 MCP 配置
+// 默认 MCP 配置（D32：与 config.json / host.json 同一口径）
 // ==================================================================
 
 describe("ConfigManager.ensureDefaultMcpConfig", () => {
@@ -480,37 +481,106 @@ describe("ConfigManager.ensureDefaultMcpConfig", () => {
     if (testDir) await fs.rm(testDir, { recursive: true, force: true });
   });
 
-  it("mcp.json 不存在 → 释放默认配置（含 socket-pty、chrome-devtools）", async () => {
-    testDir = await tempDir();
-    const mgr = makeManager(testDir);
+  /** 带恢复回调的管理器：恢复一次就往 `recovered` 里记一条路径 */
+  function makeManagerWithCallback(basePath: string): {
+    manager: ConfigManager;
+    recovered: string[];
+  } {
+    const recovered: string[] = [];
+    const manager = new ConfigManager(join(basePath, "config.json"), (path) => {
+      recovered.push(path);
+    });
+    return { manager, recovered };
+  }
 
-    const cfg = await mgr.ensureDefaultMcpConfig();
+  it("mcp.json 不存在 → 释放默认配置（含 socket-pty、chrome-devtools），不回调", async () => {
+    testDir = await tempDir();
+    const { manager, recovered } = makeManagerWithCallback(testDir);
+
+    const cfg = await manager.ensureDefaultMcpConfig();
 
     expect(cfg.mcpServers).toBeTruthy();
     expect((cfg.mcpServers as Record<string, any>)["socket-pty"]).toBeTruthy();
     expect((cfg.mcpServers as Record<string, any>)["chrome-devtools"]).toBeTruthy();
     await expect(fs.access(join(testDir, "mcp.json"))).resolves.toBeUndefined();
+    // 正常首启不是「恢复」，不该惊动通知
+    expect(recovered).toEqual([]);
+    await expect(fs.access(join(testDir, "mcp.json.broken"))).rejects.toThrow();
   });
 
-  it("mcp.json 已存在 → 不覆盖，返回已有内容", async () => {
+  it("mcp.json 是合法对象 → 一个字节都不动，不回调", async () => {
     testDir = await tempDir();
-    const mgr = makeManager(testDir);
-    const custom = { mcpServers: { "my-server": { type: "stdio", command: "my-cmd" } } };
-    await fs.writeFile(join(testDir, "mcp.json"), JSON.stringify(custom));
+    const { manager, recovered } = makeManagerWithCallback(testDir);
+    // 用户自己的条目 + 这一版不认识的顶层键：都该原样留着
+    const custom = {
+      mcpServers: { "my-server": { type: "stdio", command: "my-cmd", env: { A: "1" } } },
+      somethingUnknown: [1, 2, 3],
+    };
+    const original = JSON.stringify(custom, null, 2);
+    await fs.writeFile(join(testDir, "mcp.json"), original, "utf-8");
 
-    const cfg = await mgr.ensureDefaultMcpConfig();
+    const cfg = await manager.ensureDefaultMcpConfig();
 
     expect((cfg.mcpServers as Record<string, any>)["my-server"]).toBeTruthy();
     expect((cfg.mcpServers as Record<string, any>)["socket-pty"]).toBeUndefined();
+    expect(cfg.somethingUnknown).toEqual([1, 2, 3]);
+    // 逐字节不变（用户的文件不该被我们重排/美化）
+    await expect(fs.readFile(join(testDir, "mcp.json"), "utf-8")).resolves.toBe(original);
+    expect(recovered).toEqual([]);
+    await expect(fs.access(join(testDir, "mcp.json.broken"))).rejects.toThrow();
   });
 
-  it("writeMcpConfig/readMcpConfig 往返", async () => {
+  const BROKEN: [string, string][] = [
+    ["坏 JSON", "{ 这不是 JSON"],
+    ["数组", JSON.stringify([{ id: "server-1" }])],
+    ["null", "null"],
+  ];
+
+  for (const [name, content] of BROKEN) {
+    it(`${name}：bootstrap 不抛；恢复出厂；残骸留档；回调一次`, async () => {
+      testDir = await tempDir();
+      await fs.writeFile(join(testDir, "mcp.json"), content, "utf-8");
+      const { manager, recovered } = makeManagerWithCallback(testDir);
+
+      // bootstrap 走的是同一条路：坏 mcp.json 不该让它抛出去
+      await expect(manager.bootstrap()).resolves.toBeTruthy();
+
+      // 磁盘上已经是合法的出厂配置：下次启动不用再恢复一次
+      const onDisk = JSON.parse(await fs.readFile(join(testDir, "mcp.json"), "utf-8"));
+      expect(onDisk).toEqual(JSON.parse(JSON.stringify(DEFAULT_MCP_CONFIG)));
+
+      // 残骸是坏文件的原文
+      await expect(fs.readFile(join(testDir, "mcp.json.broken"), "utf-8")).resolves.toBe(content);
+
+      expect(recovered).toEqual([join(testDir, "mcp.json")]);
+    });
+  }
+
+  it("上一份残骸还在 → 新的带时间戳，不覆盖老的那份", async () => {
     testDir = await tempDir();
-    const mgr = makeManager(testDir);
+    const broken = join(testDir, "mcp.json.broken");
+    await fs.writeFile(broken, "上一份残骸", "utf-8");
+    await fs.writeFile(join(testDir, "mcp.json"), "{ 又坏了", "utf-8");
+    const { manager, recovered } = makeManagerWithCallback(testDir);
 
-    await mgr.writeMcpConfig({ mcpServers: { x: { type: "stdio", command: "cmd" } } });
-    const read = await mgr.readMcpConfig();
+    await manager.ensureDefaultMcpConfig();
 
-    expect(read.mcpServers["x"]).toBeTruthy();
+    // 老残骸原封不动
+    await expect(fs.readFile(broken, "utf-8")).resolves.toBe("上一份残骸");
+    const archived = (await fs.readdir(testDir)).filter((f) => f.startsWith("mcp.json.broken."));
+    expect(archived).toHaveLength(1);
+    await expect(fs.readFile(join(testDir, archived[0]!), "utf-8")).resolves.toBe("{ 又坏了");
+    expect(recovered).toHaveLength(1);
+  });
+
+  it("恢复过一次之后，再读不再触发恢复", async () => {
+    testDir = await tempDir();
+    await fs.writeFile(join(testDir, "mcp.json"), "{ 坏掉了", "utf-8");
+    const { manager, recovered } = makeManagerWithCallback(testDir);
+
+    await manager.ensureDefaultMcpConfig();
+    await manager.ensureDefaultMcpConfig();
+
+    expect(recovered).toHaveLength(1);
   });
 });

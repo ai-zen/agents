@@ -968,7 +968,6 @@ class ConfigManager {
   async ensureDefaultConfig(): Promise<AppConfig>;
   async ensureDefaultAgent(): Promise<AgentDefinition | null>;
   async ensureDefaultSubAgent(): Promise<AgentDefinition | null>;
-  async readMcpConfig(): Promise<{ mcpServers: Record<string, unknown> }>;
   async writeMcpConfig(config: { mcpServers: Record<string, unknown> }): Promise<void>;
   async ensureDefaultMcpConfig(): Promise<void>;
   async bootstrap(): Promise<{ config, agent, subAgent }>;

@@ -391,6 +391,49 @@ describe("HostApp 的组装", () => {
 
     await expect(fs.readFile(hostConfigFile, "utf8")).resolves.toBe("{}\n");
   });
+
+  it("mcp.json 坏了：宿主要能起来、恢复出厂、残骸留档、落一条带文件路径的 warning（D32）", async () => {
+    const fixture = await makeFixture();
+    const mcpFile = join(fixture.dataRoot.path, "mcp.json");
+    const broken = "{ 这不是 JSON";
+    await fs.writeFile(mcpFile, broken, "utf8");
+
+    // 真起一次宿主：坏 mcp.json 不该把装配拦下来
+    const app = await startApp(fixture);
+    expect(app.running).toBe(true);
+    // 恢复的是同一个文件：SDK 的 mcpPath 与发现里那一层是同一路径
+    expect(app.configManager.mcpPath).toBe(mcpFile);
+
+    const notices = await callMethod(app, "notice.list");
+    const recovered = notices.notices.filter(
+      (notice) => notice.text.code === "notice.configRecovered",
+    );
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]?.level).toBe("warning");
+    expect(recovered[0]?.text.message).toContain(mcpFile);
+    expect(recovered[0]?.text.message).toContain("factory settings");
+
+    // 磁盘上已经是合法的出厂配置，残骸原封不动
+    const onDisk = JSON.parse(await fs.readFile(mcpFile, "utf8")) as {
+      mcpServers: Record<string, unknown>;
+    };
+    expect(Object.keys(onDisk.mcpServers).sort()).toEqual(["chrome-devtools", "socket-pty"]);
+    await expect(fs.readFile(`${mcpFile}.broken`, "utf8")).resolves.toBe(broken);
+
+    // 发现里那一层不再是 broken（数据根下只有这一个 mcp 层）
+    const discovery = await callMethod(app, "config.getDiscovery");
+    const mine = discovery.discovery.mcps.filter((layer) => layer.path === mcpFile);
+    expect(mine).toHaveLength(1);
+    expect(mine[0]?.state).toBe("ok");
+    expect(mine[0]?.entries.map((entry) => entry.id).sort()).toEqual([
+      "chrome-devtools",
+      "socket-pty",
+    ]);
+    const underDataRoot = discovery.discovery.mcps.filter((layer) =>
+      layer.path.startsWith(fixture.dataRoot.path),
+    );
+    expect(underDataRoot.every((layer) => layer.state !== "broken")).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
