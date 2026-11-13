@@ -1,6 +1,6 @@
 ---
 title: Wire Protocol
-description: WebSocket + JSON-RPC 2.0 (protocol version 3) — one WS message is one JSON-RPC message, clients may connect over wss:// while the server itself speaks plaintext loopback only, integer ids in 0…2^32-1, the first 4 bytes of a binary frame carry the request id and a binary frame always comes after its request, six cases drop the connection (either ceiling / a handshake-time version mismatch / three binary-frame anomalies), the 64 MiB / 8 MiB ceilings and the order they are judged in, no batch, object-form params only, notifications from the client are dropped in silence, the hello handshake (flat result) with its frozen field names (including the mandatory params.token) and where they are declared, why the credential rides in params rather than in an Authorization header / a query string / Sec-WebSocket-Protocol, the origin check with three admissions and one 403 refusal, the error-code mapping (including unauthorized) and the mandatory data.code, the id rule for error responses, 15 events behind one session.event method, the stateful questions and per-session / global notices plus the shape of their elements, the binary channel behind content.upload, and 48 methods.
+description: WebSocket + JSON-RPC 2.0 (protocol version 3) — one WS message is one JSON-RPC message, clients may connect over wss:// while the host itself speaks plaintext loopback only, integer ids in 0…2^32-1, the first 4 bytes of a binary frame carry the request id and a binary frame always comes after its request, six cases drop the connection (either ceiling / a handshake-time version mismatch / three binary-frame anomalies), the 64 MiB / 8 MiB ceilings and the order they are judged in, no batch, object-form params only, notifications from the client are dropped in silence, the hello handshake (flat result) with its frozen field names (including the mandatory params.token) and where they are declared, why the credential rides in params rather than in an Authorization header / a query string / Sec-WebSocket-Protocol, the origin check with three admissions and one 403 refusal, the error-code mapping (including unauthorized) and the mandatory data.code, the id rule for error responses, 15 events behind one session.event method, the stateful questions and per-session / global notices plus the shape of their elements, the binary channel behind content.upload, and 48 methods.
 outline: deep
 ---
 
@@ -12,30 +12,30 @@ The clauses answer only "is this allowed"; they do not answer "does anything sen
 
 ## Transport
 
-- The server sends and receives over one **WebSocket** connection.
+- The host sends and receives over one **WebSocket** connection.
 - **One WebSocket message is exactly one complete JSON-RPC 2.0 message**, in both directions.
 - The WebSocket message boundary is the only source of framing: a text frame carries **no trailing newline**, and one message begins and ends inside one WS message.
 - Clients **may** connect over `wss://` (the same WebSocket on top of TLS, for instance behind an nginx that terminates TLS and proxies to loopback). The protocol asks nothing extra of it: frames, messages, `id`s and binary payloads are identical to `ws://`.
-- **This build's server itself listens only on plaintext `ws://` on loopback**: it implements no TLS and binds no non-loopback address. To get `wss://`, put a reverse proxy in front of it and keep the plaintext leg on the machine's loopback. See [Deployment & Remote Access](deploy.md).
+- **This build's host itself listens only on plaintext `ws://` on loopback**: it implements no TLS and binds no non-loopback address. To get `wss://`, put a reverse proxy in front of it and keep the plaintext leg on the machine's loopback. See [Deployment & Remote Access](deploy.md).
 
-Those two are **two different things** and neither may be derived from the other: the first says what the protocol **allows** (it does), the second says what this build's server **offers** (no TLS). The clauses write only the former; the latter belongs to the implementation and the deployment — a server that speaks plaintext WS only can still be reached by `wss://` clients, as long as something in between terminates TLS.
+Those two are **two different things** and neither may be derived from the other: the first says what the protocol **allows** (it does), the second says what this build's host **offers** (no TLS). The clauses write only the former; the latter belongs to the implementation and the deployment — a host that speaks plaintext WS only can still be reached by `wss://` clients, as long as something in between terminates TLS.
 
 ## Origin check
 
-A WebSocket handshake is an HTTP `upgrade` request. In a browser, `new WebSocket()` has that request sent by the browser itself, which **forces** an `Origin` header (the page's origin) onto it; a script cannot change it. The server judges the origin once, **before the upgrade**, with exactly four outcomes:
+A WebSocket handshake is an HTTP `upgrade` request. In a browser, `new WebSocket()` has that request sent by the browser itself, which **forces** an `Origin` header (the page's origin) onto it; a script cannot change it. The host judges the origin once, **before the upgrade**, with exactly four outcomes:
 
 | Case | Result |
 |---|---|
 | the request carries **no `Origin` header** | admitted — terminals, desktop apps and scripts never send it, and the credential covers them (see "Authentication") |
 | the `Origin`'s **hostname is loopback** | admitted — **the hostname only, the port is irrelevant**: a local web UI or debug page counts as one of ours on whichever port it runs, so port drift never locks us out |
-| the `Origin` is in the server's **allowed list** | admitted — the list comes from the `AI_ZEN_ALLOWED_ORIGINS` environment variable (comma-separated, each entry trimmed, empty entries dropped); an entry is an **origin** (scheme + host + port, e.g. `https://your.domain`) |
+| the `Origin` is in the host's **allowed list** | admitted — the list comes from the `AI_ZEN_ALLOWED_ORIGINS` environment variable (comma-separated, each entry trimmed, empty entries dropped); an entry is an **origin** (scheme + host + port, e.g. `https://your.domain`) |
 | everything else (including `Origin: null` and unparsable strings) | **the upgrade is refused**: one **HTTP 403**, and that WebSocket never exists |
 
 The refusal is an HTTP 403 rather than a WS close code because it happens **before the upgrade**: not even `101 Switching Protocols` has gone out yet, so what the peer reads is an HTTP response — there is no connection to close, and the premise of a close code does not hold in this row.
 
 What it blocks is "any web page may talk to a bare port"; what **actually** blocks that is the credential (a web page cannot read that 0600 credential file on the machine — see [Deployment & Remote Access](deploy.md)). So the origin check is **defence in depth**: its independent value is in the future — once a web UI authenticates with cookies, a cross-site WS handshake will carry those cookies, and then `Origin` is one of the few things that still tells you which page started it.
 
-On the day a browser arrives at nginx with `https://your.domain`, that origin **must** be configured into `AI_ZEN_ALLOWED_ORIGINS`, or your own web UI gets refused by your own server (403).
+On the day a browser arrives at nginx with `https://your.domain`, that origin **must** be configured into `AI_ZEN_ALLOWED_ORIGINS`, or your own web UI gets refused by your own host (403).
 
 ## Message classification
 
@@ -47,11 +47,11 @@ Which class a message belongs to depends only on whether it has `method` and `id
 | no `method`, has `id` | a response |
 | has `method`, no `id` | a notification (receives no response) |
 
-`session.event` is the notification the server sends: it has `method`, has no `id`, and the client does not reply.
+`session.event` is the notification the host sends: it has `method`, has no `id`, and the client does not reply.
 
-**A notification coming from the client is dropped in silence**: a message with `method` and no `id` is neither dispatched nor answered — not even with an error response — and the connection stays as it was. This is what JSON-RPC 2.0 itself prescribes: a notification is by definition the class that expects no receipt, and the server MUST NOT reply to a Notification; answering one with an error would be a departure from the standard. Dropping it does not touch the connection state either: it does not count as "the first request", and the handshake gate is still waiting for the next `hello` that carries an `id`.
+**A notification coming from the client is dropped in silence**: a message with `method` and no `id` is neither dispatched nor answered — not even with an error response — and the connection stays as it was. This is what JSON-RPC 2.0 itself prescribes: a notification is by definition the class that expects no receipt, and the host MUST NOT reply to a Notification; answering one with an error would be a departure from the standard. Dropping it does not touch the connection state either: it does not count as "the first request", and the handshake gate is still waiting for the next `hello` that carries an `id`.
 
-In this version the server does not initiate requests, so a client never receives a response and must not send one: a message the server receives that has **no `method`** is an invalid request (see "the five cases `invalid-request` covers" below).
+In this version the host does not initiate requests, so a client never receives a response and must not send one: a message the host receives that has **no `method`** is an invalid request (see "the five cases `invalid-request` covers" below).
 
 ## `id`
 
@@ -75,12 +75,12 @@ bytes 4…end    the raw payload (no separator, no encoding)
 
 - The first four bytes are that request's JSON-RPC `id` (big-endian, unsigned); everything after them is raw bytes. This is where the `0 … 2³²-1` limit on `id` comes from.
 - The payload is associated **by those four bytes alone**, never by "which frame it happens to follow": several requests carrying payloads can be in flight on one connection at the same time, and each binary frame finds its own request through those four bytes.
-- Bytes never travel inside JSON: `params` carries no bytes, bytes travel only in binary frames. Images and files that have to reach the server travel this way (`content.upload`, see the next section).
+- Bytes never travel inside JSON: `params` carries no bytes, bytes travel only in binary frames. Images and files that have to reach the host travel this way (`content.upload`, see the next section).
 - One request carries **at most one** binary frame.
 
 ### Ordering: a binary frame comes after its request frame
 
-WebSocket is **ordered on a single connection**: what is sent first arrives first. That gives one order you may rely on — **a binary frame always comes after its request frame**: the request frame arrives first and the server registers it as in flight; the bytes arrive afterwards and find that same request through their first four bytes.
+WebSocket is **ordered on a single connection**: what is sent first arrives first. That gives one order you may rely on — **a binary frame always comes after its request frame**: the request frame arrives first and the host registers it as in flight; the bytes arrive afterwards and find that same request through their first four bytes.
 
 The other way round is a violation: **a binary frame arriving before its request frame → the connection is dropped**. It can only come from an implementation error (a wrong `id`, or no request sent at all).
 
@@ -104,7 +104,7 @@ One sentence to separate them: the three drop cases are all "these bytes belong 
 `content.upload` **keeps its name**; it is still a method, still in the `content.*` namespace. Exactly one thing changed:
 
 - **Its bytes no longer hang behind the request frame with a length declared in `params`**; they travel in **a separate binary frame** whose first four bytes are that request's `id`.
-- The shape is "one call, two WS messages": first a text frame, an ordinary `content.upload` request (with an `id`); then a binary frame whose first four bytes are the same `id`, followed by the raw bytes. The server pairs the two by `id` and dispatches one call.
+- The shape is "one call, two WS messages": first a text frame, an ordinary `content.upload` request (with an `id`); then a binary frame whose first four bytes are the same `id`, followed by the raw bytes. The host pairs the two by `id` and dispatches one call.
 - **Bytes never enter JSON**: `params` only says what this thing is, and carries no length field at all — the payload is exactly as long as the binary frame is.
 - One request pairs with one binary frame, no more and no fewer (a second one → connection dropped; an empty one → the method decides, see the previous section).
 
@@ -116,7 +116,7 @@ One sentence to separate them: the three drop cases are all "these bytes belong 
 | `mime` | string | yes | the MIME of the bytes (`image/png` / `application/pdf` …) |
 | `filename` | string | yes | the file name (used both for the Files API upload and for the `filename` of a `file` block) |
 
-It is **the only real use of the binary channel**: the server's binary-method list holds nothing else, and that list is the only evidence that "this call puts extra bytes on the wire" — such a method is not dispatched before its bytes arrive.
+It is **the only real use of the binary channel**: the host's binary-method list holds nothing else, and that list is the only evidence that "this call puts extra bytes on the wire" — such a method is not dispatched before its bytes arrive.
 
 ## Size ceilings
 
@@ -135,7 +135,7 @@ Going over a ceiling means **the connection is dropped outright, with no error r
 
 ## No batch
 
-This version does not support JSON-RPC batches: a message whose top level is an array is not a valid request, and the server answers with **one** `-32600` error response (`data.code: "invalid-request"`) rather than expanding it item by item, and **does not drop the connection**.
+This version does not support JSON-RPC batches: a message whose top level is an array is not a valid request, and the host answers with **one** `-32600` error response (`data.code: "invalid-request"`) rather than expanding it item by item, and **does not drop the connection**.
 
 ## `params` is object-form only
 
@@ -143,13 +143,13 @@ This version does not support JSON-RPC batches: a message whose top level is an 
 
 ## Direction
 
-In this version the server only sends notifications; it does not initiate requests. The client initiates requests, the server replies and pushes `session.event`.
+In this version the host only sends notifications; it does not initiate requests. The client initiates requests, the host replies and pushes `session.event`.
 
 ## Handshake
 
-The handshake method is `hello`, and it is an ordinary method in the method table (not a separate class of frame): it is sent with an `id`, and the server answers it like any other request.
+The handshake method is `hello`, and it is an ordinary method in the method table (not a separate class of frame): it is sent with an `id`, and the host answers it like any other request.
 
-Request (client → server):
+Request (client → host):
 
 ```json
 {
@@ -158,20 +158,20 @@ Request (client → server):
   "method": "hello",
   "params": {
     "protocol": 3,
-    "token": "<the credential this server gave out>",
+    "token": "<the credential this host gave out>",
     "client": { "name": "ai", "version": "1.4.0" }
   }
 }
 ```
 
-Response (server → client, on success):
+Response (host → client, on success):
 
 ```json
 {
   "jsonrpc": "2.0",
   "id": 1,
   "result": {
-    "name": "agents-server",
+    "name": "agents-host",
     "version": "0.1.0",
     "protocol": 3,
     "pid": 48213,
@@ -180,7 +180,7 @@ Response (server → client, on success):
 }
 ```
 
-`result` is **flat** and has no `server` level: there is no `ok` any more in this version — success is spelled by "`result` or `error`" — and once nothing has to be kept apart from an `ok`, there are no sibling fields left that a namespace would separate, so one more level would be one level too many.
+`result` is **flat** and has no `host` level: there is no `ok` any more in this version — success is spelled by "`result` or `error`" — and once nothing has to be kept apart from an `ok`, there are no sibling fields left that a namespace would separate, so one more level would be one level too many.
 
 The field names are frozen:
 
@@ -190,26 +190,26 @@ The field names are frozen:
 | `params` | `token` | string | **required**: the access credential. Its position and judgement are in "Authentication"; where the value comes from is in [Deployment & Remote Access](deploy.md) |
 | `params` | `client.name` | string | the client's name (used for logs and local debugging only, not for authentication) |
 | `params` | `client.version` | string | the client's version |
-| `result` | `name` | string | the server's name |
-| `result` | `version` | string | the server's version |
-| `result` | `protocol` | number | the protocol version on the server's side (`3` in this version) |
-| `result` | `pid` | number | the server's process id |
-| `result` | `startedAt` | string | when the server started (an ISO time string) |
+| `result` | `name` | string | the host's name |
+| `result` | `version` | string | the host's version |
+| `result` | `protocol` | number | the protocol version on the host's side (`3` in this version) |
+| `result` | `pid` | number | the host's process id |
+| `result` | `startedAt` | string | when the host started (an ISO time string) |
 
-These two shapes are declared in `packages/server/src/protocol/messages.ts` as `HelloParams` / `HelloResult` — `hello` is one entry in the method table (`MethodApi`), on the same request / response path as every other method.
+These two shapes are declared in `packages/host/src/protocol/messages.ts` as `HelloParams` / `HelloResult` — `hello` is one entry in the method table (`MethodApi`), on the same request / response path as every other method.
 
 Rules:
 
-- **The first message must be a request to `hello`**. Calling any method before the handshake → the server answers `-32000` with `data.code: "handshake-required"`, and **the connection stays open**; sending `hello` then makes that same connection usable.
-- **`params` is not an object** (including no `params` at all) → the server answers `-32602` with `data.code: "bad-params"`, and **the connection stays open**. It is not a version mismatch: that one says "the two ends do not speak the same generation", this one says "the shell of this request is wrong, fix it and send it again".
+- **The first message must be a request to `hello`**. Calling any method before the handshake → the host answers `-32000` with `data.code: "handshake-required"`, and **the connection stays open**; sending `hello` then makes that same connection usable.
+- **`params` is not an object** (including no `params` at all) → the host answers `-32602` with `data.code: "bad-params"`, and **the connection stays open**. It is not a version mismatch: that one says "the two ends do not speak the same generation", this one says "the shell of this request is wrong, fix it and send it again".
 - A protocol version mismatch → `data.code: "version-mismatch"` (`-32000`), and the connection is **dropped** afterwards. A missing or non-numeric `params.protocol` lands here too — if the peer's version cannot be read, it does not match.
-- The credential is judged after the version, **shape first, then value**: a missing or non-string `token` → `bad-params` (`-32602`); a string that is not equal to the one the server holds → `unauthorized` (`-32000`). Neither **drops the connection** (the next section, "Authentication", has the details).
-- **Sending another `hello` after the handshake** → the server answers `-32600` with `data.code: "invalid-request"`, and **the connection stays open** (it falls into the fifth row of "the five cases `invalid-request` covers" below).
-- There is no exception: `hello` is the only way in, and both the protocol version and the credential ride in its `params`. So every client's connect logic has exactly one shape (`HelloParams`), and the server has no second sequence such as "send a dedicated authentication frame first".
+- The credential is judged after the version, **shape first, then value**: a missing or non-string `token` → `bad-params` (`-32602`); a string that is not equal to the one the host holds → `unauthorized` (`-32000`). Neither **drops the connection** (the next section, "Authentication", has the details).
+- **Sending another `hello` after the handshake** → the host answers `-32600` with `data.code: "invalid-request"`, and **the connection stays open** (it falls into the fifth row of "the five cases `invalid-request` covers" below).
+- There is no exception: `hello` is the only way in, and both the protocol version and the credential ride in its `params`. So every client's connect logic has exactly one shape (`HelloParams`), and the host has no second sequence such as "send a dedicated authentication frame first".
 
 ## Authentication
 
-Getting in takes more than a matching protocol version: the connection has to show that this port is yours to use. The credential is an **opaque** random string (this build's server uses 32 random bytes, base64url — 43 characters): no structure, no peer, no revocation list. It answers one question only — are you holding this key.
+Getting in takes more than a matching protocol version: the connection has to show that this port is yours to use. The credential is an **opaque** random string (this build's host uses 32 random bytes, base64url — 43 characters): no structure, no peer, no revocation list. It answers one question only — are you holding this key.
 
 **Position: `params.token` of `hello`, required.** It is an ordinary field of the handshake request (see the parameter table above), so there is no second "authentication" request and no "auth frame, then `hello`" sequence; the credential and the version are judged in the same place, and the one error a client gets back already says what to change.
 
@@ -218,13 +218,13 @@ Getting in takes more than a matching protocol version: the connection has to sh
 | Case | `data.code` | numeric code | connection |
 |---|---|---|---|
 | `token` missing, or not a string (`null` / a number / an object …) | `bad-params` | `-32602` | **stays open** |
-| `token` is a string but not equal to the one the server holds | `unauthorized` | `-32000` | **stays open** |
+| `token` is a string but not equal to the one the host holds | `unauthorized` | `-32000` | **stays open** |
 
 The reason for splitting them is the same ruler as for `protocol`: a shape error means the **request body** is wrong (this client has not filled the field in), a value error means the **credential** is wrong (the field is right, the key is not). Merging the two only sends the first kind of person off to swap keys.
 
-**A failure does not drop the connection.** `unauthorized` is a request-level failure, not a connection-level one: the client fixes it and continues with **the next `hello` on the same connection**. The server does not hang up either — hanging up is itself a leak: refusing the upgrade or closing at once tells a scanner that something really is listening on this port, whereas one error response only says "this request of yours does not qualify".
+**A failure does not drop the connection.** `unauthorized` is a request-level failure, not a connection-level one: the client fixes it and continues with **the next `hello` on the same connection**. The host does not hang up either — hanging up is itself a leak: refusing the upgrade or closing at once tells a scanner that something really is listening on this port, whereas one error response only says "this request of yours does not qualify".
 
-**The comparison is constant-time.** The server compares in constant time (a length mismatch is an immediate no), so that "at which character the difference was found" does not show up in the timing. The credential itself **never enters a log line or an error message** — it is a key, not an identifier.
+**The comparison is constant-time.** The host compares in constant time (a length mismatch is an immediate no), so that "at which character the difference was found" does not show up in the timing. The credential itself **never enters a log line or an error message** — it is a key, not an identifier.
 
 **Why it does not ride anywhere else:**
 
@@ -234,7 +234,7 @@ The reason for splitting them is the same ruler as for `protocol`: a shape error
 | the query string (`?token=…`) | it lands in access logs, shell history, `Referer` headers and the debug output of every middlebox in between. A key does not belong in any of those |
 | `Sec-WebSocket-Protocol` | that field is for **negotiating a subprotocol** (both sides declare which dialects they speak). Using it as a credential channel is a hack: everyone who reads it (proxies, gateways, logs) should not find a secret in a negotiation field |
 
-Where the credential itself comes from (the precedence between `<aiZenDir>/run/token` and the `AI_ZEN_SERVER_TOKEN` environment variable) and how each front end presents it are deployment facts rather than wire shape — see [Deployment & Remote Access](deploy.md).
+Where the credential itself comes from (the precedence between `<aiZenDir>/run/token` and the `AI_ZEN_HOST_TOKEN` environment variable) and how each front end presents it are deployment facts rather than wire shape — see [Deployment & Remote Access](deploy.md).
 
 ## Errors
 
@@ -262,15 +262,15 @@ Response shape (`error` and `result` are mutually exclusive, never both):
 | `invalid-request` | `-32600` | it is valid JSON but **not a valid request object** (top-level array / missing `method` / missing `jsonrpc: "2.0"` / an out-of-range `id` / another `hello` after the handshake) |
 | `unknown-method` | `-32601` | the method name is not known |
 | `bad-params` | `-32602` | the parameter shape is wrong |
-| `internal` | `-32603` | an internal server error |
-| `unauthorized` | `-32000` | the credential that came with the handshake is not the one the server holds (a missing or non-string `token` still lands in `bad-params`) |
+| `internal` | `-32603` | an internal host error |
+| `unauthorized` | `-32000` | the credential that came with the handshake is not the one the host holds (a missing or non-string `token` still lands in `bad-params`) |
 | everything else (the business codes, plus `bad-handshake` / `version-mismatch` / `handshake-required`) | `-32000` | a business failure, or a request-level handshake failure |
 
-The full table of string codes is in the server's `packages/server/src/protocol/errors.ts`.
+The full table of string codes is in the host's `packages/host/src/protocol/errors.ts`.
 
 ### `bad-frame`: invalid JSON is a recoverable error
 
-A text frame that is not valid JSON → the server answers `-32700` with `data.code: "bad-frame"` and **does not drop the connection**.
+A text frame that is not valid JSON → the host answers `-32700` with `data.code: "bad-frame"` and **does not drop the connection**.
 
 The reason is precisely the assumption that changed with the transport: **the message boundary is now provided by WebSocket**. In the line-framed days "where the frame ends" and "whether it parses" were the same question — a line that would not parse left you unable to tell where the next one began, and every byte after it was read wrong; that is what stream misalignment meant. Not any more: where a WS message ends has nothing to do with what is inside it, and the next one can be read right after this one with full confidence.
 
@@ -283,7 +283,7 @@ One string code covers five things; all five are `-32600` with `data.code: "inva
 | Case | Why it lands here |
 |---|---|
 | the top level is an **array** (this version has no batch) | an array is not a valid request object |
-| valid JSON but **missing `method`** | the server initiates no requests in this version, so the client never receives a response and must not send one; a message with no `method` is therefore nothing at all |
+| valid JSON but **missing `method`** | the host initiates no requests in this version, so the client never receives a response and must not send one; a message with no `method` is therefore nothing at all |
 | **missing `jsonrpc: "2.0"`** | the shell is not JSON-RPC 2.0: this message was not written by these rules, so its `id` and `method` cannot be read by them either |
 | an **out-of-range `id`** (not an integer / negative / above 2³²-1) | only that range of integers is usable (see "`id`"): nothing outside it can be tied back to a request, and it does not fit the four-byte prefix of a binary frame |
 | **another `hello` after the handshake is complete** | `hello` only means something at handshake time; the second one is not a valid call |
@@ -327,13 +327,13 @@ All 15 events travel behind **one method, `session.event`**. It is a notificatio
 | `finally` | core | the turn's wrap-up |
 | `sub-agent-start` | core | a sub-agent starts |
 | `sub-agent-end` | core | a sub-agent ends |
-| `session-phase` | server | the phase changed |
-| `session-turn-end` | server | the turn ended |
-| `session-notice` | server | a notice inside the session |
-| `session-question` | server | a question |
-| `session-id-changed` | server | the session id changed |
-| `session-title-changed` | server | the session title changed |
-| `server-notice` | server | a global notice (belongs to no session) |
+| `session-phase` | host | the phase changed |
+| `session-turn-end` | host | the turn ended |
+| `session-notice` | host | a notice inside the session |
+| `session-question` | host | a question |
+| `session-id-changed` | host | the session id changed |
+| `session-title-changed` | host | the session title changed |
+| `host-notice` | host | a global notice (belongs to no session) |
 
 The remaining fields of `params` are decided by that event's type. Shape example (only the necessary part):
 
@@ -343,7 +343,7 @@ The remaining fields of `params` are decided by that event's type. Shape example
 
 ### Ordering
 
-- Events are **ordered on a single connection**: the order a connection receives them in is the order the server sent them in.
+- Events are **ordered on a single connection**: the order a connection receives them in is the order the host sent them in.
 - The order carries meaning: `open` → `chunk` … → `parsed` → `tool-call-end` → `finally`.
 - Two more are hard: `error` comes before `finally`, and `finally` comes before `session-turn-end`. `finally` and `session-turn-end` are two different events, not a rename.
 
@@ -355,12 +355,12 @@ Questions, per-session notices and global notices are all **stateful slots with 
 |---|---|---|---|---|
 | questions | the session | the session | not persisted | `pendingQuestions` of `session.snapshot` |
 | per-session notices | the session | the session | not persisted | `pendingNotices` of `session.snapshot` |
-| global notices | the server process | the process | not persisted | `notice.list` |
+| global notices | the host process | the process | not persisted | `notice.list` |
 
 Three rules they share:
 
 - **Explicit acknowledgement is the only way out**: no timer ever removes one automatically.
-- **One piece of state**: any client acknowledging it removes it; the server does not keep a per-client read marker.
+- **One piece of state**: any client acknowledging it removes it; the host does not keep a per-client read marker.
 - **Ids are UUIDs**: question ids and notice ids are UUIDs, unique across processes, daemons and restarts. They are not the request `id` — a request `id` is an integer in `0 … 2³²-1`.
 
 The slots hold **the event objects themselves**; there is no separate "slot element" structure invented alongside them. Both kinds of notice carry an `id` (UUID) in their payload, so the pushed one and the one in the slot share the same id. The only extra field is the global notice's `createdAt`: it has nothing else to hang a stamp on.
@@ -381,7 +381,7 @@ A question arrives as one `session-question` event.
 | `options?` | `string[]` | the option ids when `input: "select"` (the wording lives on the client) |
 | `params` | object | the facts needed to render the title |
 | `allowSkip` | boolean | whether the user may decline to answer |
-| `fallback` | `string \| null` | the value the server will use if no answer arrives |
+| `fallback` | `string \| null` | the value the host will use if no answer arrives |
 
 A question is answered with `session.answer`, whose parameters are just two fields:
 
@@ -415,7 +415,7 @@ The `id` comes from the same UUID set as a global notice's. **Live push and the 
 
 ### Global notices
 
-A global notice arrives as one `server-notice` event, and it **belongs to no session** — which is why it hangs off the process rather than off a session, and switching sessions does not take it away. The payload of the pushed `server-notice` event also carries `id` (UUID), the same one as the slot returned by `notice.list` — for the same reason: push and slot are two exits of the same thing.
+A global notice arrives as one `host-notice` event, and it **belongs to no session** — which is why it hangs off the process rather than off a session, and switching sessions does not take it away. The payload of the pushed `host-notice` event also carries `id` (UUID), the same one as the slot returned by `notice.list` — for the same reason: push and slot are two exits of the same thing.
 
 Querying and acknowledging are a separate pair:
 
@@ -428,7 +428,7 @@ The result of `notice.list` is `notices: GlobalNoticeSlot[]`; each element carri
 |---|---|---|
 | `id` | string (UUID) | this notice's id, used when acknowledging; the pushed event and the slot carry the same id |
 | `level` | `"info"` / `"warn"` / `"error"` | severity |
-| `code` | the same code set as `server-notice` | which notice |
+| `code` | the same code set as `host-notice` | which notice |
 | `params?` | object | the variable parts of the wording |
 | `createdAt` | string (ISO time string) | when it was recorded |
 
@@ -436,17 +436,17 @@ The result of `notice.list` is `notices: GlobalNoticeSlot[]`; each element carri
 { "jsonrpc": "2.0", "id": 13, "method": "notice.ack", "params": { "ids": ["<uuid>", "<uuid>"] } }
 ```
 
-`ids` may mix ids of **global notices and per-session notices**: an id is a UUID and globally unique, so the server looks in the global table first and then scans each session's notice table — both are accepted, which is why per-session notices need no separate acknowledgement method.
+`ids` may mix ids of **global notices and per-session notices**: an id is a UUID and globally unique, so the host looks in the global table first and then scans each session's notice table — both are accepted, which is why per-session notices need no separate acknowledgement method.
 
 The result of `notice.ack` is `{ acked: string[] }` — **the ids that were actually deleted** (of either kind). An id that never existed, or that someone else had already acknowledged, does **not** appear in it; that is how a client learns which ones are still there, instead of receiving a bare "OK".
 
-`notice.list` / `notice.ack` are a **separate `notice.*` namespace**, declared in `packages/server/src/protocol/notice.ts` (`notice.list` lists the global ones only — per-session notices have something to hang off, so they come through the snapshot; acknowledging, on the other hand, is the single `notice.ack` shared by both kinds).
+`notice.list` / `notice.ack` are a **separate `notice.*` namespace**, declared in `packages/host/src/protocol/notice.ts` (`notice.list` lists the global ones only — per-session notices have something to hang off, so they come through the snapshot; acknowledging, on the other hand, is the single `notice.ack` shared by both kinds).
 
 Counting `hello` and these two, the wire carries **48** methods (45 + `hello` + `notice.list` + `notice.ack`) and still **15** events.
 
 ### Live push and catching up are two parallel paths
 
-- **Live push**: the moment one is produced, one notification is pushed (`session-question` / `session-notice` / `server-notice`), so a connected client need not wait for the next query.
+- **Live push**: the moment one is produced, one notification is pushed (`session-question` / `session-notice` / `host-notice`), so a connected client need not wait for the next query.
 - **Catching up**: the slots and query entry points are the fallback — nobody connected at the time, a reconnect, another connection, or even another client machine later all obtain the ones that have not disappeared through `session.snapshot` (questions, per-session notices) or `notice.list` (global notices).
 
 Both paths read the same state, so "was pushed" and "is still there" are two different things: one that was pushed may already have been acknowledged by someone else, and one that was never pushed (no one was connected when it was produced) may still be there.

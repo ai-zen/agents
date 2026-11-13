@@ -1,6 +1,6 @@
-# @ai-zen/agents-server
+# @ai-zen/agents-host
 
-AI-Zen Agents Server — the session/workspace service shared by CLI and Desktop.
+AI-Zen Agents Host — the session/workspace service shared by CLI and Desktop.
 
 Both front-ends should only *render and read input*; session orchestration, capability
 assembly, persistence and task migration live here.
@@ -11,13 +11,13 @@ Dependency direction (one-way, never reversed):
 
 ```
 @ai-zen/cli ─────┐
-                 ├──→ @ai-zen/agents-server ──→ @ai-zen/agents-sdk ──→ @ai-zen/agents-core
+                 ├──→ @ai-zen/agents-host ──→ @ai-zen/agents-sdk ──→ @ai-zen/agents-core
 desktop/main ────┘
 ```
 
 Both front ends reach this package through `@ai-zen/agents-client`. The wire contract is **not a
 package**: it is this package's own type files, `src/protocol/` (types only — method/event name
-unions, payload types, error-code unions), exposed as `@ai-zen/agents-server/protocol` for
+unions, payload types, error-code unions), exposed as `@ai-zen/agents-host/protocol` for
 `import type`. Everything with runtime behaviour (frame codec, error-code predicate, loopback
 predicate, version constant, discovery-file I/O, `callOnce`, the credential file's read-and-generate
 in `token`) lives in `src/wire/` on this side — and each client has its own copy under
@@ -26,7 +26,7 @@ in `token`) lives in `src/wire/` on this side — and each client has its own co
 `sdk` and `core` must never import this package:
 
 ```bash
-grep -rn "agents-server" packages/sdk/src packages/core/src   # must be empty
+grep -rn "agents-host" packages/sdk/src packages/core/src   # must be empty
 ```
 
 ## The contract: `src/protocol/` (types) and `src/wire/` (runtime)
@@ -38,32 +38,39 @@ The wire contract is **not a package** — it is this package's type files. Two 
 | `src/protocol/` | method/event **name unions**, payload types, error-code unions, message shapes, phase shapes, the type-only re-export of the data model | **none** — every file is `type`/`interface` only |
 | `src/wire/` | message codec (one JSON-RPC 2.0 message per WS message), error-code predicate (`codedError` / `isCodedError` / `codeOf`), loopback predicate, `PROTOCOL_VERSION`, discovery-file I/O, the credential file's path / read / generate (`tokenPath` / `readToken` / `ensureToken`), `callOnce`, `DEFAULT_MIGRATION_STRATEGY` | yes |
 
-Clients import **only** `@ai-zen/agents-server/protocol` and only with `import type`; their own
+Clients import **only** `@ai-zen/agents-host/protocol` and only with `import type`; their own
 runtime copies live in `packages/client/src/wire/`. Nothing is shared but shapes and names — which
-is why `@ai-zen/agents-client` has zero runtime dependency on this package (the server is its
+is why `@ai-zen/agents-client` has zero runtime dependency on this package (the host is its
 **peerDependency**: the host must provide it for the type faces and for spawning the bin; the SDK is
 a peer for the same reason, `ConfigPort`'s public signature needs its config and agent shapes).
 
 ```bash
 # the type face must stay free of runtime exports
-grep -rn '^export \(const\|function\|class\|async function\)' packages/server/src/protocol   # must be empty
+grep -rn '^export \(const\|function\|class\|async function\)' packages/host/src/protocol   # must be empty
 ```
 
 ## Running the daemon
 
 ```bash
-agents-server                      # foreground on 127.0.0.1:8790
-agents-server --port 0             # let the OS pick a free port
-agents-server --idle-timeout 1800000   # exit after 30 min with no connections
-agents-server --workspace ~/proj   # default workspace when the client sends none
-agents-server status               # print the discovery file + liveness
-agents-server stop                 # ask the running one to shut down
+agents-host                        # foreground on 127.0.0.1:8790; a local instance mints <aiZenDir>/run/token
+agents-host --port 0               # let the OS pick a free port
+agents-host --host 127.0.0.1 --port 9000
+agents-host --public               # outward-facing instance: no run/token, mint credentials yourself
+agents-host --ai-zen-dir ~/.ai-zen # data root (default ~/.ai-zen)
+
+agents-host token create --note laptop   # mint a credential; plaintext is shown once
+agents-host token list                   # every credential, revoked ones included
+agents-host token revoke <credential id>
+agents-host version                      # version + protocol version
 ```
 
-Clients find it through `<aiZenDir>/run/server.json` (written atomically; removed on a clean
+Port resolution has three sources, in order: `--port` > `port` in `<aiZenDir>/host.json` > 8790.
+`--port 0` asks the OS for a free port, which is what tests and smoke runs use.
+
+Clients find it through `<aiZenDir>/run/host.json` (written atomically; removed on a clean
 stop). The file carries `pid` + `version` + `protocol`, so a client can tell "crashed
 leftover" from "different build still running" before it even connects. Logs go to
-`<aiZenDir>/logs/server.log` — a daemon must never write to the client's terminal.
+`<aiZenDir>/logs/host.log` — a daemon must never write to the client's terminal.
 
 ### Loopback only, with a token and an origin check in front
 
@@ -73,8 +80,8 @@ That is not "loopback because there is no auth" and not a placeholder to be rela
 service exposes `exec` (arbitrary command execution), so putting such a port straight onto a
 network is not the default this project wants. Remote access goes through **tunnels or a reverse
 proxy** (nginx on the same machine proxying to `127.0.0.1`, which lands exactly on that assertion);
-the server **never implements TLS and never binds a non-loopback address** — `wss://` is a *client*
-capability, not a server mode. See `docs/zh/deploy.md` / `docs/en/deploy.md`.
+the host **never implements TLS and never binds a non-loopback address** — `wss://` is a *client*
+capability, not a host mode. See `docs/zh/deploy.md` / `docs/en/deploy.md`.
 
 What guards the port is a **credential**, not the absence of listeners:
 
@@ -82,7 +89,7 @@ What guards the port is a **credential**, not the absence of listeners:
 - the token is an opaque random string (32 random bytes, base64url). `start()` reuses
   `<aiZenDir>/run/token` if it exists and generates it (mode 0600, atomic `.tmp` + `rename`)
   otherwise — one source of truth per machine, shared with every client on it. It deliberately
-  does **not** live in `server.json`: that file is diagnostic and gets pasted into issues;
+  does **not** live in `host.json`: that file is diagnostic and gets pasted into issues;
 - a wrong token is **`unauthorized`** (`-32000`) and a malformed one (`token` missing / not a
   string) is `bad-params` (`-32602`); neither drops the connection — a client fixes the field or
   the key and continues on the same connection. Hanging up would also tell a scanner that
@@ -108,7 +115,7 @@ error-code mapping and the exact list of cases that drop a connection) is `docs/
 
 ```
 → {"jsonrpc":"2.0","id":1,"method":"hello","params":{"protocol":3,"token":"<this machine's run/token>","client":{"name":"tui","version":"1.0.2"}}}
-← {"jsonrpc":"2.0","id":1,"result":{"name":"agents-server","version":"0.1.0","protocol":3,"pid":4180641,"startedAt":"..."}}
+← {"jsonrpc":"2.0","id":1,"result":{"name":"agents-host","version":"0.1.0","protocol":3,"pid":4180641,"startedAt":"..."}}
 → {"jsonrpc":"2.0","id":2,"method":"ping"}
 ← {"jsonrpc":"2.0","id":2,"result":{"pong":true}}
 ← {"jsonrpc":"2.0","method":"session.event","params":{"event":"chunk",...}}
@@ -116,7 +123,7 @@ error-code mapping and the exact list of cases that drop a connection) is `docs/
 
 Three message classes: a **request** (has `method`; with an `id` it expects a response), a
 **response** (no `method`, has `id`) and a **notification** (has `method`, no `id`). `id`s are
-integers in `0 … 2³²-1`, allocated by the client. This build's server only ever sends
+integers in `0 … 2³²-1`, allocated by the client. This build's host only ever sends
 notifications and never initiates requests, so the two directions' ids cannot collide.
 
 Images and files do **not** ride inside `session.send`: `content.upload` is one call spread over
@@ -135,7 +142,7 @@ string. The bytes are found by `id`, never by position, and WS ordering puts the
 request frame; a binary message whose `id` matches no in-flight request drops the connection. Only
 the methods in `BINARY_METHODS` (`src/daemon/Daemon.ts`) may carry a payload.
 
-The content block that goes into `session.send` is produced **server-side**
+The content block that goes into `session.send` is produced **host-side**
 (`content.upload` → SDK `fileToContentSection`): whether those bytes get uploaded as a `file_id`,
 inlined as base64, or degraded to a text hint depends on the endpoint and model **that session**
 is actually using. A JSON-RPC text message carrying such a block still has to fit under the 8 MiB
@@ -165,7 +172,7 @@ has to implement and test).
 | `onBinary(listener)` | method | inbound: one binary message — its first four bytes are the request `id`, the rest is the payload, handed over as a raw `Buffer` (one UTF-8 round trip would corrupt an image without failing) |
 | `onError(listener)` | method | the transport itself failed (reset, write error); `Daemon` logs one warn line. It has to be in the interface: `ws` throws when an `error` event has no listener, and folding it into `onClose` would lose that log line |
 | `onClose(listener)` | method | the connection is gone for good, exactly once — the connection table, the `events.watch` unsubscribes and the idle timer all key off it |
-| `write(text)` | method | outbound: one text message. Outbound has this single door; the server sends no binary (all of its results are JSON) |
+| `write(text)` | method | outbound: one text message. Outbound has this single door; the host sends no binary (all of its results are JSON) |
 | `destroy()` | method | drop this connection; implemented as `ws.close()` — a graceful close, so an error response sent just before it still reaches the peer |
 
 There is no unsubscribe handle: a wire lives exactly as long as its connection, and `Daemon` never
@@ -195,11 +202,11 @@ purpose: what those suites test is the wire itself, so nothing is mocked.
 events, as three name unions: `AgentEventName` (core's own eight: `open`, `chunk`, `parsed`,
 `tool-call-end`, `error`, `finally`, `sub-agent-start`, `sub-agent-end`), `SessionEventName`
 (`session-phase`, `session-turn-end`, `session-notice`, `session-question`,
-`session-id-changed`, `session-title-changed`) and `ServerEventName` (`server-notice`).
+`session-id-changed`, `session-title-changed`) and `HostEventName` (`host-notice`).
 `src/domain/session/` holds the session as four collaborating classes:
 `SessionManager.ts` (live-session registry, holders/reclaiming, turn lifecycle, catalogue,
 handoff), `EventBridge.ts` (SDK events → protocol events), `Persistence.ts` (the archive shape
-and every write path), `QuestionBroker.ts` (server → client questions). `src/lib/` holds the
+and every write path), `QuestionBroker.ts` (host → client questions). `src/lib/` holds the
 business-free parts (`phase.ts` = phase state machine, `events.ts` = connection fan-out).
 `src/domain/agent/` assembles the agent (config + Scope + capability
 discovery) per workspace; `src/daemon/sessionHandlers.ts` registers the session and workspace
@@ -221,7 +228,7 @@ discovery) is shared by every session in the same workspace, and never shared ac
 workspaces — project-level skills / tools / mcp hang off the workspace path.
 
 Two things happen with tool plugins, and only one of them is unconditional: `AutoRefreshToolsPlugin`
-is installed **regardless of token thresholds** (re-discovers capabilities so a server/skill/tool
+is installed **regardless of token thresholds** (re-discovers capabilities so a host/skill/tool
 added mid-session becomes visible), while guard / sub-agent guard / auto-migration come *after*
 that check — they only apply when the model declares `tokenThresholds`, and returning early on
 "no thresholds" must not silently disable tool refresh too. The refresh timing is a global config
@@ -231,18 +238,18 @@ scan per request.
 
 ### The workspace owns the cwd — and the agent's tool cwd
 
-`workspace.resolve` takes an **optional** path, and who sends it depends on where the server
+`workspace.resolve` takes an **optional** path, and who sends it depends on where the host
 runs:
 
 - **Client on the same machine (loopback)** — the client sends its own working directory. That
   is the user's actual intent ("I typed `ai` in this project") and it is what makes "reuse or
   create *this* directory's workspace, then resume its last conversation" work. The client only
-  says *"I would like this directory"*; the server still normalises it, and the client keeps the
+  says *"I would like this directory"*; the host still normalises it, and the client keeps the
   **returned** path (the CLI's `reset()` uses it to open the next session in the same workspace).
-- **Remote server** — nothing is sent, and the server answers with *its own* working directory:
+- **Remote host** — nothing is sent, and the host answers with *its own* working directory:
   the `--workspace` flag, else the directory the daemon was started from (logged at startup, so
   "who decided this directory" is always answerable from the log). A laptop's cwd is a directory
-  the server may not even have.
+  the host may not even have.
 
 The handler never reads the process cwd itself — the composition root resolves the default once
 and injects it as `defaultWorkspacePath`. The *client* makes the same call for project-scoped
@@ -282,7 +289,7 @@ Lifecycle methods, and the one place the path must still exist:
 - `workspace.rename` changes **only** `title` (id and path untouched; empty title is
   `bad-params`) — same name and meaning as `session.rename`.
 - `workspace.relocate` rewrites `path`, keeping the id, so the sessions under that id become
-  reachable again. The new path must already exist (`workspace-path-missing` — the server never
+  reachable again. The new path must already exist (`workspace-path-missing` — the host never
   `mkdir`s for the user) and must not be claimed by another record (`workspace-exists`).
 - `workspace.remove` deletes `<workspacesRoot>/<id>/` **including `sessions/` and the pointer** —
   "delete this workspace and all its conversations" — and closes the live sessions of that
@@ -300,7 +307,7 @@ repair the record.
 
 ### Repairing a broken workspace is the **client's** job (deliberate)
 
-When `workspace.list` reports `pathExists: false`, the server deliberately does **not** try to
+When `workspace.list` reports `pathExists: false`, the host deliberately does **not** try to
 guess where the directory went — not by basename, not by inode, not by "it looked like the same
 project". The contract is:
 
@@ -318,7 +325,7 @@ a silent wrong answer is not.
 
 `workspace.files` returns the candidate list behind the client's `@`-completion. Entries are
 relative to the workspace root, `/`-separated, and carry `dir` so the client knows whether to
-append a trailing `/`. It is produced from **the server's** disk: `git ls-files -co
+append a trailing `/`. It is produced from **the host's** disk: `git ls-files -co
 --exclude-standard` first (one call gives tracked + untracked *and* respects `.gitignore`),
 `fs.glob` as the fallback for non-repos, 15s TTL cache keyed by workspace root, 20k entry cap.
 Two details are load-bearing:
@@ -384,7 +391,7 @@ Two things worth knowing about `modelParams`:
 
 ### Asking the client something: `session-question`
 
-Some decisions belong to the user, not to the server — auto-migration's "who writes the handoff
+Some decisions belong to the user, not to the host — auto-migration's "who writes the handoff
 document" (`self` | `summary` | skip) is the first one. The event is deliberately **generic**:
 
 ```
@@ -396,7 +403,7 @@ session.answer   { questionId, choice: string | null }
   and its own picker. Adding a second kind is a client-side table entry, no protocol change.
 - `params` carries whatever the client needs to render a title (for handoff-mode today
   `{ promptTokens, handoffTokens }`) — a bag, not fixed fields, because the next question will want others.
-- `fallback` is **what the server will use when nobody answers** (timeout, no watcher, or a
+- `fallback` is **what the host will use when nobody answers** (timeout, no watcher, or a
   client that does not know this `kind`). The asking party supplies it: only it knows which way
   is safe. For handoff-mode it is `null` = *do nothing*: deciding whether to migrate on the
   user's behalf is exactly the kind of overreach this API exists to avoid. Nobody is asked
@@ -477,7 +484,7 @@ A session outlives its clients, but it must not live forever. One fact decides i
   the grace period expires.
 - **Closing is cheap and lossless**: the archive was written before `session-turn-end`, so a closed
   session is re-hydrated by `session.attach` straight from disk.
-- `session.list` reports `live` (in server memory right now) — a fact, not a client declaration.
+- `session.list` reports `live` (in host memory right now) — a fact, not a client declaration.
 
 ### The list is one list: `session.list { workspaceId, includeSaved? }`
 
@@ -511,16 +518,16 @@ that (`session.snapshot`'s `modelId` is something else: that one is the *effecti
 (`session` > `agent` > `global`, single implementation: the SDK's `resolveModel`). They exist
 because a sidebar's model dropdown has to show the current value: with only the override field,
 every session that follows its definition renders as "no model selected". The fix belongs on the
-server — a client that re-derives the value from "override + definition + default" is a **second
+host — a client that re-derives the value from "override + definition + default" is a **second
 implementation of the priority order**, and the first symptom is a dropdown showing A while the
 request goes out as B. Render `effectiveModelId`; take the "which level is in effect" badge from
 `effectiveModelLevel` (same vocabulary as `session.snapshot`'s `modelLevel`).
 
-Both fields are **omitted** when the server cannot resolve a model for that entry (the agent
+Both fields are **omitted** when the host cannot resolve a model for that entry (the agent
 definition was deleted, or all three levels are empty). They are never fabricated and never
 fall back to `modelId` — a guessed model just makes the UI lie more confidently.
 
-Cost: live entries read the model the server's own agent was built with (the resolution already
+Cost: live entries read the model the host's own agent was built with (the resolution already
 happened in `createAgent`) — free, and always consistent with `session.snapshot`. Archived
 entries have no agent instance, so they go through the injected `resolveSessionModel`
 (`agentId`'s definition + `AppConfig` + `resolveModel`). That resolver is asked **once per
@@ -543,7 +550,7 @@ The same split applies to workspaces (`id` + `title`); `name` is kept for things
 
 ### Automatic titles
 
-After the **first** turn of a session settles, the server asks a model for a name and writes it
+After the **first** turn of a session settles, the host asks a model for a name and writes it
 into the archive; `session-title-changed` tells clients about it (`session-turn-end` is already out — the
 name never blocks anything). Three limits, each of them deliberate: it only runs when the title
 is still empty (**a hand-renamed title is never overwritten**), it runs at most once per session
@@ -559,7 +566,7 @@ background but **never writes the archive back**: what the user deleted must not
 
 ### `session.setAgent`: same conversation, different agent
 
-Agent identity belongs to the server (the agent runs there), so `/agent` cannot be done by
+Agent identity belongs to the host (the agent runs there), so `/agent` cannot be done by
 re-mounting a screen with a different `agentId` — `attach` returns a live session *as is* and
 ignores that field, which is how "switched!" could be shown while the next turn still ran the
 old agent. `session.setAgent` rebuilds the agent from the new definition, keeps
@@ -585,11 +592,11 @@ and `session.subAgent.snapshot` returns that sub-agent's own transcript. Two inv
 
 ### The agent's own events go out verbatim: same names, same moments
 
-Eight of the fifteen events are core's own (`AgentEventName`) and the server forwards them
+Eight of the fifteen events are core's own (`AgentEventName`) and the host forwards them
 **unchanged**, at the moment core emits them — renaming them on the wire would mean keeping a
-translation table across protocol, server and client, and a table only ever drifts:
+translation table across protocol, host and client, and a table only ever drifts:
 
-| Event | Fired by the server when |
+| Event | Fired by the host when |
 |---|---|
 | `open` | core `open` — the request is about to go out, once per inner loop |
 | `chunk` | core `chunk` — one raw chunk arrived, **before** it is parsed |
@@ -601,12 +608,12 @@ translation table across protocol, server and client, and a table only ever drif
 
 `open` / `parsed` / `error` / `finally` are unused by today's clients and are still sent: they are
 core's public facts, and a client that later wants them (a "started" timestamp, a "core is done"
-edge) must not need a server change. Payloads are minimal by design — `{ sessionId, turnId }`,
+edge) must not need a host change. Payloads are minimal by design — `{ sessionId, turnId }`,
 plus `chunk` for the raw piece (vendor shape, the protocol does not interpret it) and a flattened
 `{ code, message }` for `error` (`Error` instances cannot go on the wire).
 
 **core's `chunk-parsed` is not forwarded.** It carried the text/reasoning delta of one piece: a
-derived copy of what the raw `chunk` already says, recomputed on the server and re-sent on the
+derived copy of what the raw `chunk` already says, recomputed on the host and re-sent on the
 wire, with its own payload type and its own `subAgentId` routing. Clients fold `chunk` with
 core's `applyChunk` instead — one implementation, on both ends.
 
@@ -626,7 +633,7 @@ of the stream. It travels on `tool-call-end`:
 
 `message` is forwarded unchanged — the protocol does not interpret its fields, and there is no
 "tool result event" shape to drift from core's message. Core emits `message` at its single append
-point (`Agent.append`) and at the two places it finalises a message in place; the server uses that
+point (`Agent.append`) and at the two places it finalises a message in place; the host uses that
 only as the **trigger**, forwarding the one case clients need: a `role: "tool"` message that has
 reached a finished status.
 
@@ -646,7 +653,7 @@ protocol that nothing on either end read.
 
 Events carry **facts, never sentences**, and notices are no exception: a notice is
 `{ level, code, params? }` — the client looks up `notice.<code>` in its own i18n table.
-Codes are protocol (`SessionNoticeCode` / `ServerNoticeCode`): add new ones, never
+Codes are protocol (`SessionNoticeCode` / `HostNoticeCode`): add new ones, never
 repurpose an existing one.
 
 The channel is the **namespace**, not a field:
@@ -654,7 +661,7 @@ The channel is the **namespace**, not a field:
 | Event | Bound to | Rendered where |
 |---|---|---|
 | `session-notice` | a session (`sessionId` is required) | inside the conversation — disappears when you switch away |
-| `server-notice` | nothing | app-level (status bar / banner) — must survive session switches |
+| `host-notice` | nothing | app-level (status bar / banner) — must survive session switches |
 
 Both go through the same `EventHub`, so a client needs **one** subscription. A
 `workspace.notice` is the natural third if a notice ever belongs to a workspace but to no
@@ -666,14 +673,14 @@ Two design points worth keeping:
   A turn may run for minutes — a request/response `send` would leave the client with nothing
   to render and no sane timeout.
 - Events carry **facts, never sentences** (`{ kind, tools }`, not "等待工具返回…"), so one
-  server can serve a Chinese terminal and an English browser at the same time.
+  host can serve a Chinese terminal and an English browser at the same time.
 
 ### Handoff: two methods, one round each
 
 `session.handoff` writes a handoff document; `session.migrate` writes it **and opens a new
 session**. The flow itself (stop → read the `handoff` skill → write → validate → degrade
 `self` → `summary` → prune history → inject the breakpoint) lives in the SDK; this package
-only adds the server-side effects: documents under `<workspace>/.ai-zen/handoffs/`,
+only adds the host-side effects: documents under `<workspace>/.ai-zen/handoffs/`,
 notices instead of sentences, and the session-id switch.
 
 Three things are worth knowing before touching it:
@@ -706,7 +713,7 @@ Three things are worth knowing before touching it:
 - **Progress is notices, not sentences.** `handoffWriting` / `handoffAutoDetected` /
   `migrationDegraded` / `handoffPath` / `handoffArchived` / `handoffMigrated` +
   `handoffMigratedHint` / `migrationSkipped` — all `SessionNoticeCode`, so each one is a code a
-  client renders with its own wording (the server emits no prose).
+  client renders with its own wording (the host emits no prose).
 
 ## Config and agent definitions
 
@@ -720,7 +727,7 @@ composition root.
 
 Why this layer exists at all: config must be read and written by the **side that owns it**.
 If the client wrote its own disk, both ends on one machine would look fine and fail silently —
-the UI reports success while the server's agents keep using the old model. Three deliberate choices:
+the UI reports success while the host's agents keep using the old model. Three deliberate choices:
 
 - **Payloads are `unknown`.** The shape of `AppConfig` / `AgentDefinition` belongs to the SDK;
   a browser client should not have to install it to read a config. `unknown` becomes a real
@@ -745,7 +752,7 @@ the UI reports success while the server's agents keep using the old model. Three
 ```bash
 # 行首是 ` *` 的是**注释行**（`Daemon.ts` 的文件头用散文说了 `AI_ZEN_DIR`），`*.test.ts` 里的只
 # 是用例名字 —— 门禁只该扫代码行，修的是命令而不是注释
-grep -rn "process\.cwd()\|AI_ZEN_DIR\|refreshPaths\|setLocale\|getScope" packages/server/src \
+grep -rn "process\.cwd()\|AI_ZEN_DIR\|refreshPaths\|setLocale\|getScope" packages/host/src \
   | grep -v "src/cli.ts" | grep -v '\.test\.' | grep -v '^\S*:[0-9]*: *\*'    # must be empty
 ```
 
