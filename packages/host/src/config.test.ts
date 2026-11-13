@@ -202,7 +202,7 @@ describe("<dataRoot>/host.json（D25 的「配置文件」那一档，裁定 R67
     );
   });
 
-  it("文件坏了就恢复出厂：回 {}、磁盘写成合法的 {}、通知一次（D32）", async () => {
+  it("文件坏了就恢复出厂：回 {}、坏的那份留档、磁盘写成合法的 {}、通知一次（D32）", async () => {
     const dir = await makeDataRoot();
     const paths = resolvePaths(dir);
     const recovered: string[] = [];
@@ -211,18 +211,30 @@ describe("<dataRoot>/host.json（D25 的「配置文件」那一档，裁定 R67
     };
 
     // 解析不了的 JSON
-    await fs.writeFile(paths.hostConfigFile, "{ port: 9123", "utf8");
+    const firstBroken = "{ port: 9123";
+    await fs.writeFile(paths.hostConfigFile, firstBroken, "utf8");
     await expect(readHostSettings(paths, onRecovered)).resolves.toEqual({});
     await expect(fs.readFile(paths.hostConfigFile, "utf8")).resolves.toBe("{}\n");
+    // 残骸留档：用户手写的端口设置得能查回来
+    await expect(fs.readFile(`${paths.hostConfigFile}.broken`, "utf8")).resolves.toBe(firstBroken);
 
     // 合法 JSON 但不是对象：同一档
-    await fs.writeFile(paths.hostConfigFile, JSON.stringify([9123]), "utf8");
+    const secondBroken = JSON.stringify([9123]);
+    await fs.writeFile(paths.hostConfigFile, secondBroken, "utf8");
     await expect(readHostSettings(paths, onRecovered)).resolves.toEqual({});
     await expect(fs.readFile(paths.hostConfigFile, "utf8")).resolves.toBe("{}\n");
+    // 同名残骸已经在：上一份原封不动，这一份带时间戳另放
+    await expect(fs.readFile(`${paths.hostConfigFile}.broken`, "utf8")).resolves.toBe(firstBroken);
+    let stamped = (await fs.readdir(dir)).filter((f) => f.startsWith("host.json.broken."));
+    expect(stamped).toHaveLength(1);
+    await expect(fs.readFile(join(dir, stamped[0]!), "utf8")).resolves.toBe(secondBroken);
 
-    await fs.writeFile(paths.hostConfigFile, "null", "utf8");
+    const thirdBroken = "null";
+    await fs.writeFile(paths.hostConfigFile, thirdBroken, "utf8");
     await expect(readHostSettings(paths, onRecovered)).resolves.toEqual({});
     await expect(fs.readFile(paths.hostConfigFile, "utf8")).resolves.toBe("{}\n");
+    stamped = (await fs.readdir(dir)).filter((f) => f.startsWith("host.json.broken."));
+    expect(stamped).toHaveLength(2);
 
     // 三次都是同一份文件，每坏一次通知一次
     expect(recovered).toEqual([

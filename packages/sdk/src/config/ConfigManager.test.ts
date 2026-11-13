@@ -105,7 +105,7 @@ describe("配置文件坏了就恢复出厂（D32）", () => {
   ];
 
   for (const [name, content] of BROKEN) {
-    it(`${name}：read 回出厂配置、磁盘被写成出厂配置、回调一次`, async () => {
+    it(`${name}：read 回出厂配置、坏的那份留档、磁盘被写成出厂配置、回调一次`, async () => {
       await fs.writeFile(join(dir, "config.json"), content);
       const { manager, recovered } = makeManager();
 
@@ -116,9 +116,29 @@ describe("配置文件坏了就恢复出厂（D32）", () => {
       // 磁盘上已经不是那个坏文件了：下次启动直接读到合法配置
       const onDisk = JSON.parse(await fs.readFile(join(dir, "config.json"), "utf-8")) as AppConfig;
       expect(onDisk).toEqual(JSON.parse(JSON.stringify(DEFAULT_APP_CONFIG)));
+      // 残骸留档：端点与密钥全在原文里，内容一字不差才查得回「我原来配了什么」
+      await expect(fs.readFile(join(dir, "config.json.broken"), "utf-8")).resolves.toBe(content);
       expect(recovered).toEqual([join(dir, "config.json")]);
     });
   }
+
+  it("同名残骸已经在：这一次的带时间戳另放，上一份残骸不被覆盖", async () => {
+    const previous = "{ 上一份残骸";
+    const current = "{ 这一次坏的";
+    await fs.writeFile(join(dir, "config.json.broken"), previous, "utf-8");
+    await fs.writeFile(join(dir, "config.json"), current, "utf-8");
+    const { manager, recovered } = makeManager();
+
+    await manager.read();
+
+    // 老残骸原样留着
+    await expect(fs.readFile(join(dir, "config.json.broken"), "utf-8")).resolves.toBe(previous);
+    // 这一次的落在旁边，文件名带上时间戳
+    const stamped = (await fs.readdir(dir)).filter((f) => f.startsWith("config.json.broken."));
+    expect(stamped).toHaveLength(1);
+    await expect(fs.readFile(join(dir, stamped[0]!), "utf-8")).resolves.toBe(current);
+    expect(recovered).toEqual([join(dir, "config.json")]);
+  });
 
   it("第二次读不再触发恢复", async () => {
     await fs.writeFile(join(dir, "config.json"), "{ 坏掉了");

@@ -2,8 +2,15 @@
  * 能力发现服务：把「这个项目现在能用哪些 MCP / Skill / 工具 / 子 Agent」摊成分层清单。
  *
  * 对应能力编号：F-G1（MCP 5 层链，可编辑的只有 2 个作用域）、F-G2（Skill 4 层、工具与子 Agent
- * 各 2 层，只发现真实存在的目录，离项目越近越优先）、F-F6（坏文件要能看见、能修）、
+ * 各 2 层，只发现真实存在的目录，离项目越近越优先）、F-F6（坏文件按层分两种处置，见下）、
  * L9（MCP 的 5 层链）、R54（5 层链与各能力目录由本服务算好交给 ScopeRegistry）。
+ *
+ * **F-F6 里「坏文件」的那条口径不是一句话，按文件在哪分**：用户级那份
+ * （`<数据根>/mcp.json`）坏了由 SDK 恢复出厂并留残骸（PRD D32），本服务因此看到的是一个
+ * 好文件（除非文件是运行期才坏的，那时下一次启动才恢复）；项目侧
+ * （`<cwd>/.mcp.json`、`<cwd>/.ai-zen/mcp.json`、`<cwd>/.agents/mcp.json`）与
+ * `~/.agents/mcp.json` 坏了仍然是看得见的 `broken` 状态、能修 —— 那些文件在用户的仓库里，
+ * 恢复出厂等于改人家的 git 内容。
  *
  * 三件事分开：
  *
@@ -12,7 +19,8 @@
  *      `createWorkspaceScopeFactory`）拿的就是这些路径。
  *   2. **读**（{@link DiscoveryService.discover}）：把每一层的 `missing | ok | broken` 与条目
  *      报出来。`missing` 与 `broken` 必须分开（F-F6）：以前两者都当空配置，一保存就把用户的
- *      文件覆盖掉了。
+ *      文件覆盖掉了；`broken` 在项目侧与 `~/.agents` 各层是「看得见、能修」，用户级那层由
+ *      SDK 恢复出厂（D32）。
  *   3. **写**（{@link DiscoveryService.writeMcpEntry} / {@link DiscoveryService.deleteMcpEntry}）：
  *      只写 MCP 的两个可编辑作用域，一次只动一条；写回时保留这一版不认识的字段与 `oauth`
  *      （F-F6），其中 `oauth.clientSecret` 省略就按磁盘原文保留（F-F2：读出去的是掩码，

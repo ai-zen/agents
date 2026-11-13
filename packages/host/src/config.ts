@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { access, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -206,8 +206,9 @@ export interface HostSettings {
  * 读 `<dataRoot>/host.json`。
  *
  * 三种情况分开：文件不在 → 空设置（这一档没说话，静默）；读不出来 / 不是 JSON / 不是对象 →
- * 就是坏文件，恢复出厂：当空设置用（默认端口、默认语言）、写回一份合法的 `{}`、回调一次
- * （D32：坏了就恢复出厂，下次启动不再遇到同一个坏文件）；`port` 在但不是可用端口 →
+ * 就是坏文件，恢复出厂：先把坏文件改名留档为 `host.json.broken`、再写回一份合法的 `{}`、
+ * 再回调一次（D32：坏了就恢复出厂，下次启动不再遇到同一个坏文件；留档是数据，不是兜底 ——
+ * 用户手写的端口设置得能查回来）；`port` 在但不是可用端口 →
  * `config_invalid`（裁定 R67：显式给出的非法值报错，不静默回落）。
  */
 export async function readHostSettings(
@@ -241,15 +242,41 @@ export async function readHostSettings(
 }
 
 /**
- * 坏掉之后恢复出厂：写回一份合法的 `{}`（＝默认端口、默认语言），再回调一次。
+ * 坏掉之后恢复出厂：先把坏文件留档，再写回一份合法的 `{}`（＝默认端口、默认语言），再回调一次。
  */
 async function recoverHostSettings(
   paths: HostPaths,
   onRecovered?: ConfigRecoveredHandler,
 ): Promise<HostSettings> {
+  await archiveBroken(paths.hostConfigFile);
   await writeFile(paths.hostConfigFile, "{}\n", "utf8");
   await onRecovered?.(paths.hostConfigFile);
   return {};
+}
+
+/**
+ * 把坏掉的设置文件改名留档为 `host.json.broken`。
+ *
+ * 与 SDK 的 `ConfigManager.archiveBroken()` 同一条规则（三个配置文件同一口径）：同名残骸
+ * 已经在就带上时间戳（同一毫秒再撞上就补序号），不覆盖上一份残骸。
+ */
+async function archiveBroken(path: string): Promise<void> {
+  const base = `${path}.broken`;
+  let target = base;
+  for (let index = 0; await exists(target); index += 1) {
+    target = index === 0 ? `${base}.${Date.now()}` : `${base}.${Date.now()}-${index}`;
+  }
+  await rename(path, target);
+}
+
+/** 这个路径在不在（`access` 不抛就是在） */
+async function exists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isMissingFile(error: unknown): boolean {

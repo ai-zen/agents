@@ -968,8 +968,7 @@ class ConfigManager {
   async ensureDefaultConfig(): Promise<AppConfig>;
   async ensureDefaultAgent(): Promise<AgentDefinition | null>;
   async ensureDefaultSubAgent(): Promise<AgentDefinition | null>;
-  async writeMcpConfig(config: { mcpServers: Record<string, unknown> }): Promise<void>;
-  async ensureDefaultMcpConfig(): Promise<void>;
+  async ensureDefaultMcpConfig(): Promise<Record<string, unknown>>;   // mcp.json：缺失写出厂、坏了留档恢复出厂
   async bootstrap(): Promise<{ config, agent, subAgent }>;
 }
 ```

@@ -61,9 +61,12 @@ export class ConfigManager {
   /**
    * 读磁盘原文（不做任何迁移/同步），供 `ensureDefaultConfig()` 对比写盘用。
    *
-   * 文件在但读不成配置（JSON 解析不了、或者解析出来不是对象）就是一档「坏」：当场用出厂
-   * 配置写回磁盘，再回调一次，返回出厂配置。写回是为了让下次启动不再遇到同一个坏文件 ——
-   * 只返回默认值不落盘，用户每次开客户端都会再撞一次。
+   * 文件在但读不成配置（JSON 解析不了、或者解析出来不是对象）就是一档「坏」：先把坏文件
+   * 改名留档，再用出厂配置写回磁盘，再回调一次，返回出厂配置。写回是为了让下次启动不再
+   * 遇到同一个坏文件 —— 只返回默认值不落盘，用户每次开客户端都会再撞一次。
+   *
+   * 留档不是为了兜底，是为了数据：`config.json` 一恢复，用户的端点与密钥就全没了，
+   * 残骸是唯一能查回「我原来配了什么」的地方。
    */
   private async readRaw(): Promise<AppConfig | null> {
     try {
@@ -80,6 +83,7 @@ export class ConfigManager {
       parsed = null;
     }
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      await this.archiveBroken(this.configPath);
       await this.write(DEFAULT_APP_CONFIG);
       await this.onRecovered?.(this.configPath);
       return { ...DEFAULT_APP_CONFIG };
@@ -452,7 +456,7 @@ export class ConfigManager {
   }
 
   /**
-   * 把坏掉的 mcp.json 改名留档为 `mcp.json.broken`。
+   * 把坏掉的配置文件改名留档为 `<文件名>.broken`（`config.json` 与 `mcp.json` 同一口径）。
    *
    * 同名残骸已经在就带上时间戳（同一毫秒再撞上就补序号），免得把上一份残骸覆盖掉。
    */
@@ -473,14 +477,6 @@ export class ConfigManager {
     } catch {
       return false;
     }
-  }
-
-  /**
-   * 原子写入 mcp.json。
-   */
-  async writeMcpConfig(config: { mcpServers: Record<string, unknown> }): Promise<void> {
-    await this.ensureDirs();
-    await this.writeJson(this.mcpPath, config);
   }
 
   /** 原子写 JSON 文件（先写 .tmp 再 rename，避免半成品）。 */
