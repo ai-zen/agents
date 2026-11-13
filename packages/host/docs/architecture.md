@@ -25,8 +25,8 @@
 | A9 | agent 跑完即弃；Scope 无依赖后空闲 10 分钟回收（与 MCP 同生共死） | PRD D28 |
 | A10 | Scope 与对话的回收计时器**只有一处**（见 §4） | 本文 |
 | A11 | 上传走同一条 WS 上的**二进制帧**（三段式），不用 base64 字符串 | 本轮 Q9 |
-| A12 | `message.list` 按**消息 id 取**：带 `after=<id>` 时，该 id **存在**就返回它**最新的内容**及之后全部；该 id **不存在**就返回全部（断线补拉与删除后重拉共用这一条规则） | 本轮 Q10 |
-| A13 | 能力清单的粒度是「契约里每个方法一条」（65 条，与 `METHOD_NAMES` 一一对应）；同一条 PRD 能力号下有多个方法时，`id` 用 `<编号>#<动作>` 区分 | `src/handlers/capabilities.ts` |
+| A12 | `message.list` 有**两种按 id 的取法**：① `after=<id>` —— 该 id **存在**就返回它**最新的内容**及之后全部；该 id **不存在**就返回全部（断线补拉与删除后重拉共用这一条规则）。② `around=<id>`（F-C6 定位）—— 该 id 在本次可见集里就**以它为中心取一窗**（40 条，前后尽量均分，命中那条一定在里面）且 `anchor` 报成它；**不在**可见集里（已撤回 / 换过库 / 是 `hidden` 而这次没要）就回**空页 + `anchor: null`**，**不报错**（消息可能刚被撤回，那不是一次失败的请求）。两者同时给时 `around` 优先、`after` 被忽略；`toolCallId` 决定读哪一段（子 Agent 自己那一段），两个定位参数都只在那一堆里生效 | 本轮 Q10 + W1-8 |
+| A13 | 能力清单的粒度是「契约里每个方法一条」（63 条，与 `METHOD_NAMES` 一一对应）；同一条 PRD 能力号下有多个方法时，`id` 用 `<编号>#<动作>` 区分 | `src/handlers/capabilities.ts` |
 
 ## 2. 进程与接线
 
@@ -114,6 +114,16 @@ runtime/      ScopeRegistry、RunRegistry、ChatRunner、TransientRunner
 storage/      Database、dbWorker、Repository、migrations
 i18n/         文案（en 基准 / zh）
 ```
+
+**视图与入参的几处形状（这一轮补齐的；每条都写「谁产生 → 客户端拿它做什么」）**
+
+| 形状 | 谁产生 | 客户端拿它做什么 |
+|---|---|---|
+| `AgentView.messages` / `AgentView.function` | `AgentService.toView`，原样转出 SDK 的 `AgentDefinition["messages"]` / `["function"]`；定义文件读不出来时两者都是 `null`，非子 Agent 的 `function` 恒为 `null` | 「能写就能读」：客户端先看得到提示词与子 Agent 定义，才有可编辑的对象（F-F5）；`agent.update` 收到的 `messages` 原样交回等于没改 |
+| `DiscoveryEntryView` 的传输字段（`transport` / `command` / `args` / `env` / `url` / `headers`）与 `extra` | `DiscoveryService.discover`：MCP 条目把「这条服务器是怎么起的」整份摊开；`extra` 收留这一版不认识的键 | 编辑屏不必凭 `id` 重建一条就能改它；回写时 `extra` 逐字带回（F-F6 未知字段原样保留）。非 MCP 的三类这几格恒为 `null` / 空对象 |
+| `DiscoveryLayerView.scope`（`user` / `workspace` / `null`） | 同上：MCP 5 层里只有 2 层非空 | 客户端直接认「哪一层可写」，不再按 `editable` + `depth` 反推；skill / tool / subagent 三类恒 `null` |
+| `McpOauthView` 的掩码口径（`clientSecret` → `clientSecretMasked` + `clientSecretSet`） | `DiscoveryService`，掩码由 `services/secretMask.ts` 的 `maskSecret` 生成 | 与 `EndpointView` 的 `apiKeyMasked` / `apiKeySet` 同一套（F-F2：明文不出网）；回写时省略 `clientSecret` = 保留磁盘原值（把掩码当密钥存回去是另一类错） |
+| `ModelInput.tokenThresholds` 可选 | `ModelService`：`model.create` 省略时套出厂默认，`model.update` 省略时不动 | 客户端建模型不必自己抄两个数 —— 「没有阈值」既不会触发交接也没有硬线保护，所以默认值的持有者必须是宿主 |
 
 ## 4. 生命周期
 
@@ -204,41 +214,56 @@ const [found, written] = await db.tx((q) => [
 
 **首帧 `hello`**：`{ token, language?, clientInfo: { name, version, platform? } }`（`src/wire/methods.ts` 的 `HostHelloParams`）。凭证不放在 URL 查询串里（会进日志与进程表）；未 `hello` 成功的连接只放行 `hello`，其余方法与二进制帧都回 `unauthorized`。`language` 挂在连接上，断开即忘；没带时用 `config.json` 的 `language`（缺省英文，裁定 R58）。`hello` 成功时一并回：协商出的 `language`、`hostVersion`、`protocolVersion`、`startedAt`、**能力 id 列表 `capabilities`（`string[]`，裁定 R57）**、附件上限 `limits`。完整的清单（标题、说明、属性）走 `host.capabilities`。
 
-**方法名**：`<域>.<动作>`。契约里共 65 个方法（`src/wire/methods.ts` 的 `METHOD_NAMES`，14 个域）：
+**方法名**：`<域>.<动作>`。契约里共 **63** 个方法（`src/wire/methods.ts` 的 `METHOD_NAMES`，13 个域）：
 
 | 域 | 个数 | 方法 |
 |---|---|---|
-| `host` | 8 | `hello` `version` `upgrade` `shutdown` `usage` `capabilities` `reload` `setLanguage` |
+| `host` | 7 | `hello` `version` `upgrade` `shutdown` `capabilities` `reload` `setLanguage` |
 | `workspace` | 5 | `list` `create` `get` `rename` `remove` |
 | `conversation` | 13 | `list` `create` `get` `state` `rename` `pin` `delete` `send` `abort` `revert` `setModel` `setThinking` `transient` |
 | `message` | 1 | `list` |
 | `question` | 2 | `list` `answer` |
 | `notice` | 3 | `list` `dismiss` `clear` |
-| `config` | 7 | `get` `patch` `setDefaults` `getDiscovery` `patchMcps` `saveEndpoint` `deleteEndpoint` |
-| `agent` | 7 | `list` `get` `create` `update` `delete` `setModel` `setThinking` |
+| `config` | 8 | `get` `patch` `setDefaults` `getDiscovery` `saveMcp` `deleteMcp` `saveEndpoint` `deleteEndpoint` |
+| `agent` | 8 | `list` `get` `create` `update` `delete` `setModel` `setThinking` `restoreFactory` |
 | `model` | 8 | `list` `listImages` `create` `update` `delete` `restoreFactory` `saveImage` `deleteImage` |
-| `credential` | 3 | `list` `create` `revoke` |
 | `asset` | 3 | `begin` `end` `get` |
 | `completion` | 1 | `files` |
 | `handoff` | 2 | `start` `listDocuments` |
 | `search` | 2 | `conversations` `messages` |
 
-**桥接名单（4 条不在 handler 表里）**：`host.hello`、`host.setLanguage`、`asset.begin`、`asset.end` 由 `WsHub` 自己处理（`src/handlers/index.ts` 的 `BRIDGED_METHODS`），其余 60 条进注入的 `HandlerTable`。为什么是这四条：
+**65 → 63 的账：新增 3 个方法、删 5 个方法。** 每一行都写「它为什么落在契约面上」：
+
+| 变化 | 理由 |
+|---|---|
+| + `agent.restoreFactory { agentId, dryRun? }` | 与 `model.restoreFactory` 对称：改过的助手要能回到出厂那份（提示词 / 模型 / 权限 / 思考参数一起回），`dryRun` 只算代价、不落盘（与删除类方法的成本先行同一套写法） |
+| + `config.saveMcp` / `config.deleteMcp`（**取代** `config.patchMcps` 的整层替换） | 整层替换要求客户端「先读整层、再拼回去」，中间有一处不认识就丢配置；按 id 改只动这一条，形状与 `config.saveEndpoint` / `deleteEndpoint` 同一套写法 |
+| − `host.usage` | 它想要的三样（本轮 / 累计含子 Agent / 速率）`conversation.state.usage` 已经全覆盖；「项目 / 整机」聚合没有任何客户端需要 |
+| − `credential.list` / `credential.create` / `credential.revoke` | **删的是契约面，不是能力**（见下段） |
+
+**`credential.*` 的「删了但没有消失」必须分清**：凭证这件事仍然完整地在宿主里 —— 服务层 `CredentialService`、仓储 `CredentialRepository`、`<数据根>/run/token` 的本地交付、以及 `agents-host token create|list|revoke` 三个子命令全都没动（`CredentialView` / `CredentialListResult` / `CredentialCreateResult` 等形状也留着，供那三个子命令的返回值用，只是不再进 `MethodMap` / `METHOD_NAMES`）。删掉的是「客户端能通过契约列出 / 创建 / 吊销凭证」这条通道：客户端的职责只有「连接管理 + 记住密码」（PRD L13），而凭证由宿主自己管、自己决定哪些能进来。两者不是一回事，下一个人不该因为 `grep credential.*` 在 `wire/methods.ts` 里找不到方法名就以为能力没了。
+
+**桥接名单（4 条不在 handler 表里）**：`host.hello`、`host.setLanguage`、`asset.begin`、`asset.end` 由 `WsHub` 自己处理（`src/handlers/index.ts` 的 `BRIDGED_METHODS`），其余 **59** 条进注入的 `HandlerTable`。为什么是这四条：
 
 - `host.hello` / `host.setLanguage`：凭证与语言都是**连接状态**（`ConnectionState.authorized` / `language`），业务层拿不到也不该管；
 - `asset.begin` / `asset.end`：上传要按 `connectionId` 分帧落盘、断线按连接清理（`UploadReceiver`），同样只有接线层知道是哪条连接。
 
 分发顺序是 `hello` → 未握手拒绝 → 已知方法名校验 → 上面两条连接级方法 → 注入 `UploadReceiver` 时的两个上传方法 → handler 表；表里没有的名字回 `unsupported`（`detail.reason = handler_not_registered`）。`handlers/index.test.ts` 钉住这件事：契约里的每个方法要么在表里、要么在桥接名单里，且两边不重叠。
 
-**`message.list` 的取法（A12）**：入参 `conversationId`、`after?: <消息 id>`、`toolCallId?`、`includeHidden?`（默认 `false`：`hidden` 的消息不返回）。
+**`message.list` 的取法（A12）**：入参 `conversationId`、`after?: <消息 id>`、`around?: <消息 id>`、`toolCallId?`、`includeHidden?`（默认 `false`：`hidden` 的消息不返回）。
 
-| `after` | 返回 |
+| 入参 | 返回 |
 |---|---|
-| 不给 | 该对话全部消息 |
-| 给了且该 id 存在 | **从这条消息开始**（含它本身，内容是**最新**的，可能是流式中那条的部分内容 + 还在写的标记，L5）+ 其后全部；出参的 `anchor` 就是这条 id |
-| 给了但该 id 不存在（已删除、或库已换） | 全部，`anchor` 为空 |
+| 都不给 | 该对话全部消息 |
+| `after` 给了且该 id 存在 | **从这条消息开始**（含它本身，内容是**最新**的，可能是流式中那条的部分内容 + 还在写的标记，L5）+ 其后全部；出参的 `anchor` 就是这条 id |
+| `after` 给了但该 id 不存在（已删除、或库已换） | 全部，`anchor` 为空 |
+| `around` 给了且该 id 在本次可见集里 | 以它为中心一窗（`MessageService` 的 `AROUND_WINDOW` = **40** 条，前后尽量均分、命中那条一定在里面），`anchor` 就是这条 id |
+| `around` 给了但该 id 不在可见集里（已撤回 / 换过库 / 是 `hidden` 而这次没要） | **空页**（`messages: []`、`anchor: null`），**不报错** |
+| `around` 与 `after` 同时给 | 只认 `around`（`after` 被忽略）：一个「从这里往下」、一个「围绕这里」，混在一起没有唯一答案 |
 
-“从这条开始而不是它的下一条”是故意的：重连的客户端上次拿到的最后一条可能是流式中那条，它的内容已经变了；从它自己重新拿，天然就是“最新内容 + 之后的”。`toolCallId` 是在这条结果集上再按消息自己的 `tool_call_id` 过滤一次（F-I7 的取法，见 §9 的已知缺口）。
+“从这条开始而不是它的下一条”是故意的：重连的客户端上次拿到的最后一条可能是流式中那条，它的内容已经变了；从它自己重新拿，天然就是“最新内容 + 之后的”。`toolCallId` 是在这条结果集上再按消息自己的 `tool_call_id` 过滤一次（F-I7 的取法，见 §9 的已知缺口）；`around` 只在那一堆里定位，不改“读哪一段”。
+
+**`around` 的消费者只有桌面端**：`search.messages` 给一条命中，桌面端拿它的 `messageId` 调 `message.list({ around })` 把命中那条摆到眼前（W4 的搜索定位）。CLI 不消费它 —— 一阶段不做搜索。
 
 **推送**：JSON-RPC 通知（无 id）。事件名放在帧的 `method`，载荷直接放 `params` —— 形状由 `src/wire/frames.ts` 的 `notification(event, payload)` 定：
 
@@ -281,7 +306,7 @@ const [found, written] = await db.tx((q) => [
 
 事件只描述「发生了什么变化」，需要完整对象时客户端回宿主拉（`conversation.state` / `message.list`），这样多端同时在线时不会出现「一份数据在推送里长成另一种形状」。
 
-**能力清单（A13）**：`host.capabilities` 回完整清单、`hello` 只回 id 列表（裁定 R57），粒度是**每个契约方法一条**（65 条），每项带 `id`（PRD 能力号；同号多方法时为 `<编号>#<动作>`，如 `F-F2#deleteEndpoint`）、`domain`、`title` / `description`（`LocalizedText`，键为 `capability.<方法名>` / `capability.<方法名>.detail`）、`method`、`blocking`（执行期间占住这段对话，F-E6）、`destructive`（不可撤销，F-F9 的二次确认）。`workspace.*` 那几条在 PRD §4 没有单列能力号，`id` 用契约注释里记的决定号（`D9` / `D10` / `D11`）。清单与 `METHOD_NAMES` 一一对应（id 与顺序与语言无关），标题与说明按**连接的语言**渲染（裁定 R58：存码不存句子，出网前重渲染）；用例钉住这两条。
+**能力清单（A13）**：`host.capabilities` 回完整清单、`hello` 只回 id 列表（裁定 R57），粒度是**每个契约方法一条**（63 条，与 `METHOD_NAMES` 逐条对应），每项带 `id`（PRD 能力号；同号多方法时为 `<编号>#<动作>`，如 `F-F2#deleteEndpoint`）、`domain`、`title` / `description`（`LocalizedText`，键为 `capability.<方法名>` / `capability.<方法名>.detail`）、`method`、`blocking`（执行期间占住这段对话，F-E6）、`destructive`（不可撤销，F-F9 的二次确认）。`workspace.*` 那几条在 PRD §4 没有单列能力号，`id` 用契约注释里记的决定号（`D9` / `D10` / `D11`）。清单与 `METHOD_NAMES` 一一对应（id 与顺序与语言无关），标题与说明按**连接的语言**渲染（裁定 R58：存码不存句子，出网前重渲染）；用例钉住这两条。
 
 ## 8. 与 core / SDK 的边界
 
@@ -289,9 +314,20 @@ const [found, written] = await db.tx((q) => [
 |---|---|
 | `@ai-zen/agents-core` | `Agent`、流式 `applyChunk`、消息与工具调用结构（`AgentNS.Message` / `MessageContent` / `ToolCall` / `Delta` / `Usage`）、中止修复（`reconcileAbortedToolRounds` / `reconcileAbortedMessages`） |
 | `@ai-zen/agents-sdk` | `Scope`（能力装配）、`allInOne` 五类插件（内置工具 / 用户工具 / Skill / MCP / 子 Agent）、`ConfigManager`、`createAgent` / `SdkAgent`、`HandoffService`、各插件的 `discover*`、出厂 Skill 与思考策略表、`fileToContentSection` |
+| `@ai-zen/agents-client`（共享连接层） | 「确保有一个能连的宿主」：`ensureHost`（有就上、没有就拉一个）、`spawnHostViaNpx`（现下现起）、`Client`（连接 / 调用 / 事件分派 / 补拉 / 重连）、`settings`、`resume`、`upload`。它不知道自己被谁用，也不画任何界面 |
 | 宿主 | 进程与接线、凭证、Workspace 与对话的生命周期、Scope 的持有与回收、持久化、i18n 文案、通知与问题对象、上传 |
 
 原则：**agent 循环不重写**，宿主只做「装配 + 持久化 + 接线」。
+
+**共享连接层（`packages/client`）这一轮定的三件事，在它而不是在两端**（同一个包里两份实现就不是“共享”了）：
+
+| 职责 | 做到哪一步为止 |
+|---|---|
+| **npx 拉起**（`spawnHostViaNpx`） | 判据只有一句 `context.entry === undefined`：调用方给了宿主入口（桌面端把宿主捆进产物随包分发）就起那个入口，没给就让 npx 现下现起（`npx -y @ai-zen/agents-host@<range> serve --ai-zen-dir <数据根>`）。两条路之后是同一段「轮询发现文件 + 握手」，包里没有第二套语义 |
+| **阶段回调**（`onStage`） | 报 `resolving`（让 npx 解版本）/ `installing`（下载 + 安装，两步分不开）/ `starting`（子进程起来了、等发现文件与握手）/ `connected`。**只报走到哪一步**，不解析 npm 输出、不报百分比；怎么画是 CLI 的事（`tui/screens/host-download.tsx`），桌面端根本不给回调 |
+| **取消**（`signal: AbortSignal`） | 中止正在拉起的那个子进程（Ctrl+C / Esc）：拉起的动作归连接层，“按了这个键以后回哪块屏、退不退出程序”归前端（CLI 回连接屏、不退出） |
+
+拉起的两条路里，宿主这边的义务只有一条：把“我起来了”写成 `<数据根>/run/host.json` 并接住 `host.hello` —— 连接层不认端口而认这两件事实（端口可能被占而退回临时端口，也可能根本没人监听）。
 
 ## 9. 已知缺口
 
@@ -322,3 +358,4 @@ const [found, written] = await db.tx((q) => [
 | 2026-11-13 | W12：素材层删简。`asset_vendor_files` 去掉 `lastUsedAt` 列与它的索引（不做过期清理），缓存只剩三条规则（命中复用 / 换端点内联 / 首传写回）；删掉 `AssetService.invalidateVendorFiles`、`AssetRepository.listVendorFiles` / `deleteVendorFiles` / `deleteVendorFile` / `touchVendorFile`，以及 `ChatRunner` 里「file 不存在/无效」的文本判据、`retryAfterVendorFileError` / `resetForRetry` / 整轮重备的那一套。§5 按新口径回改；`stripLocalExtensions` 换成 core 的 `formatContent`（W12 同时给 core 加了 `formatContent` / `formatContentSection`，`formatHistory` 走它们）。 |
 | 2026-11-13 | W11：引用方式改成**内容段上的本地扩展字段 `__asset_id`**（不再往 `image_url.url` / `file.file_id` 里塞 `asset://`）。`assets` 去掉 `conversationId` / `messageId` 两列，`sha256` 改成全局 `UNIQUE`（去重从「对话内」改成「全局」）；新增关系表 `conversation_assets`（`UNIQUE(messageId, assetId)`、`assetId` 为 `ON DELETE RESTRICT`、索引 `assetId` / `conversationId`），消息落库那一刻扫 `content` 里的 `__asset_id` 写行，撤回 / 删对话由外键级联删行，删完之后 `COUNT(*)` 归零才删素材行与文件（`AssetService.sweepUnreferenced`）。「所有 `__` 开头的字段都是本地扩展、发送前一概剥离」落成 `wire/states.ts` 的两个纯函数 `stripLocalExtensions` / `localAssetIdOf`，`resolveHistory` 出的每一段都过白名单，且同一 `(素材, 端点)` 两轮算出来的段逐字节相同。客户端加 `localAssetIdOf` / `getSectionAsset`（按扩展字段取字节，不解析 scheme）。§5 补第三张表与「归零才删」的落点，§6 补全局去重与取回口径。 |
 | 2026-11-13 | W14-A：素材尺寸（裁定 R76）。`assets.width` / `height` 不再恒空 —— `AssetService.finalizeUpload` 把临时文件改名成正式文件之后读一次文件头，由 `src/services/imageSize.ts` 的 `readImageSize`（纯函数，零依赖）从 PNG 的 IHDR 块 / JPEG 的 SOF 段解出宽高写进这一行；其它格式、截断文件、解不出来的字节都写 `NULL`，不重试、不告警。`AssetRef` 与 `asset.get` 回的就是这一行，所以客户端拿到的 `width` / `height` 是上传那一刻量出来的真值。§5 的 `assets` 行按此回改。 |
+| 2026-11-14 | W3：契约面跟上新契约。方法表 **65 → 63**（13 个域、无 `credential` 域）：新增 `agent.restoreFactory`、`config.saveMcp` / `config.deleteMcp`（取代 `config.patchMcps` 的整层替换）；删 `host.usage` 与 `credential.list/create/revoke` —— **删的是契约面，能力仍在**（`CredentialService`、`CredentialRepository`、`<数据根>/run/token` 与 `agents-host token create\|list\|revoke` 一字未动，`Credential*` 形状只留给那三个子命令）；§6 桥接名单后「其余 60 条」改成 59。A12 补 `around` 的取法（40 条窗口 / 命中才给 `anchor` / 没命中回空页不报错 / 与 `after` 同给时 `around` 优先 / 消费者只有桌面端搜索定位），A13 的条数 65 → 63。§3 补「视图与入参的几处形状」（`AgentView.messages` / `function`、`DiscoveryEntryView` 的传输字段与 `extra`、`DiscoveryLayerView.scope`、`McpOauthView` 的掩码口径、`ModelInput.tokenThresholds` 可选），§7 能力清单条数同步。§8 把 `@ai-zen/agents-client` 列成「共享连接层」并写清它这一轮定的三件事（npx 拉起 `spawnHostViaNpx`、阶段回调四态、`AbortSignal` 取消），明确「怎么画屏」不归它。 |

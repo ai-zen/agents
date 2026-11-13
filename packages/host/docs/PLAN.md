@@ -32,32 +32,33 @@
    `desktop` 的 `check-no-host-runtime.mjs` / `check:inlined.mjs`；`@ai-zen/agents-client`
    本身也已加进禁令（内联之后它不该再出现在产物里）。
 
-## 1. 现状快照（2026-11-13 实跑，不是估计）
+## 1. 现状快照（2026-11-14 实跑，不是估计）
 
 | 仓 | 分支 / HEAD | 未提交 | 类型检查 | 用例 |
 |---|---|---|---|---|
-| `agents`（host + client） | `feat/server-rewrite` / `d0e85ff` | 0 | `tsc` **0 错**（host / client 各一遍） | host **763 绿 / 59 文件**、client **98 绿** |
-| `cli`（TUI CLI） | `main` / `57a295f` | 0 | `tsc -p tsconfig.test.json` **0 错** | 默认用例集 **835 全绿 / 55 文件**；真进程 e2e **18 绿 / 1 跳过 / 0 失败**；产物已内联连接层，**四条护栏全过**（`check:imports`：`dist/index.js` / `dist/commands/index.js` / `dist/session.js` / `dist/stdio.js`，禁令含 `@ai-zen/agents-client` / `openai` / `@modelcontextprotocol`） |
-| `desktop` | `feat/new-server` / `157959b` | 0 | `vue-tsc`（render）**0 错**；main 的构建走 rolldown + `check-inlined` | main **121 绿 + 3 跳过**、render **70 绿** |
-| `cli-old` | detached @ `pre-split-20261111` / `ace42a0` | 0 | 只读冻结参照物（目录只读权限），不是迁移对象 | — |
+| `agents`（host） | `feat/server-rewrite` / `e57ca7c` | 0（本波只改 `.md`） | `tsc --noEmit -p tsconfig.json` **0 错** | **799 绿 / 59 文件** |
+| `agents`（client） | `feat/server-rewrite` / `e57ca7c` | 0（同上） | `tsc --noEmit -p tsconfig.json` **0 错** | **110 绿 / 11 文件** |
+| `cli`（TUI CLI） | `main` / `57bcfdb` | 0（本波只改 `docs/*.md`） | `tsc --noEmit -p tsconfig.test.json` **0 错** | 默认集 **912 绿 / 59 文件**；真进程 e2e **18 绿 / 1 跳过 / 0 失败**（19 条） |
+| `desktop` | `feat/new-server` / `5699313` | 0 | `vue-tsc --noEmit`（render）**0 错**；main 走 rolldown + `check-inlined` | main **121 绿 + 3 跳过**（7 文件绿 + 3 文件跳过）；render **70 绿 / 8 文件** |
+| `cli-old-archive`（旧 TUI CLI 冻结快照） | detached @ `pre-split-20261111` / `ace42a0` | 0（只读目录；只有 README 首行那行归档声明是新增内容） | 不参与 | 只读参照物，不是迁移对象 |
 
-**结论**：宿主已经完整（**65 方法 / 6 事件**、全绿）；TUI CLI 已经跟上新契约 —— 从「`tsc` 161 错、58 条失败用例」
-到「0 错、835 绿、e2e 绿」。**「host ↔ TUI CLI」这条链已经通了**，剩下的欠账不是「编译不过」，而是两笔：
-**契约还差 12 条**（W1）、**CLI 还差 6 条产品行为**（W2）。
+**结论**：契约面已经定稿 —— **63 个方法 / 6 个事件**（`METHOD_NAMES` 实测 63 条、`capabilities.ts` 63 条一一对应），文档与代码在这一轮对齐（`architecture.md` 的方法表逐条核过）。「host ↔ TUI CLI」这条链已经通了**并且发过一版**：`@ai-zen/agents-host@0.1.0-alpha.1`（上游 `@ai-zen/agents-core@4.6.0-alpha.0` / `@ai-zen/agents-sdk@1.2.0-alpha.0` 同批发布）。`cli-old` 已降级为只读归档（`cli-old-archive`）。
+
+**干完的与剩下的**：W1（契约补齐）、W2（CLI 收口）、W3（归档与文档）**完成**；剩下两笔 —— **W4**（桌面端完整问答视图，优先级最低）与 **W5**（兜底治理，等契约与客户端定型后再动）。
 
 ## 2. 波次总览
 
-| 波 | 目标 | 验收（一句话） | 依赖 |
-|---|---|---|---|
-| **W1 契约补齐**（P0-A） | 用户裁定的契约面 12 条落进 `wire` | 12 条各有用例；`METHOD_NAMES` **65 → 63**；capabilities / i18n 同步；每个新字段都举得出「哪个客户端哪一行用它」 | 无 |
-| **W2 CLI 收口**（P0-B） | `npx` 拉起 + 下载屏 + `/ws` + `/shutdown` + 命令集增删 | 干净环境从零起一次宿主；失败 / 取消三条路径各有用例；命令表与 PRD F-E1 逐条对齐 | W1（契约先冻结，免得照着两份契约写两遍） |
-| **W3 归档与文档** | `cli-old` 归档、旧包名清干净、`architecture.md` 跟上新契约 | 三份文档与代码一致；旧包名只剩归档目录 | W1、W2 |
-| **W4 桌面端完整问答视图** | 标准完整问答视图（优先级最低） | 真 GUI 竖切一遍；`question.list/answer` 有调用点 | 无（排期在 W3 之后） |
-| **W5 兜底治理** | `retry` / `fallback` / `catch` 密集文件逐文件清理 | 三列清单全覆盖；留的每条指得出消费者 | W1–W3 |
+| 波 | 目标 | 验收（一句话） | 依赖 | 状态 |
+|---|---|---|---|---|
+| **W1 契约补齐**（P0-A） | 用户裁定的契约面 12 条落进 `wire` | 12 条各有用例；`METHOD_NAMES` **65 → 63**；capabilities / i18n 同步；每个新字段都举得出「哪个客户端哪一行用它」 | 无 | **✅ 完成**（2026-11-14，落地方式见 §3.4） |
+| **W2 CLI 收口**（P0-B） | `npx` 拉起 + 下载屏 + `/ws` + `/shutdown` + 命令集增删 | 干净环境从零起一次宿主；失败 / 取消三条路径各有用例；命令表与 PRD F-E1 逐条对齐 | W1 | **✅ 完成**（2026-11-14，落地方式见 §4.4；同批发布 `agents-host@0.1.0-alpha.1`） |
+| **W3 归档与文档** | `cli-old` 归档、旧包名清干净、`architecture.md` 跟上新契约 | 三份文档与代码一致；旧包名只剩归档目录 | W1、W2 | **✅ 完成**（2026-11-14，见 §5） |
+| **W4 桌面端完整问答视图** | 标准完整问答视图（优先级最低） | 真 GUI 竖切一遍（六步，见 §6）；`question.list/answer` 有调用点 | 无（排期在 W3 之后） | ⬜ 未开始 |
+| **W5 兜底治理** | `retry` / `fallback` / `catch` 密集文件逐文件清理 | 三列清单全覆盖；留的每条指得出消费者 | W1–W3 | ⬜ 未开始（依赖已就绪） |
 
 ---
 
-## 3. W1 契约补齐（P0-A，当前主线）
+## 3. W1 契约补齐（P0-A）—— ✅ 已完成（2026-11-14）
 
 ### 3.1 十二条（逐条可验收）
 
@@ -143,11 +144,42 @@
 
 见 §9 第 7 条：每加一个字段 / 方法，提交说明里要写「哪个客户端的哪一行会用到它」，写不出来就不加。
 
+### 3.4 落地方式（2026-11-14 复核，实测不是估计）
+
+**方法表 65 → 63 的账是「− 5 + 3」**（63 条由 `node` 直接数 `src/wire/methods.ts` 的 `METHOD_NAMES` 数组得出，`src/handlers/capabilities.ts` 的能力条数也是 63，两边一一对应）：
+
+| 增减 | 方法 | 去向 |
+|---|---|---|
+| −1 | `host.usage` | 整条删除，用量只剩 `conversation.state.usage`（`UsageSnapshot` 的 `turn` / `total` / `subAgent` / `rate`） |
+| −3 | `credential.list` / `create` / `revoke` | **只删 wire 面**（`MethodMap` + `METHOD_NAMES` + handler + capabilities + i18n 键）；`CredentialService` / `CredentialRepository` / `<数据根>/run/token` / `agents-host token create\|list\|revoke` 一字未动，`Credential*` 形状留着给那三个子命令用 |
+| −1 | `config.patchMcps` | 整层替换删除，由下面两条按 id 的写法取代 |
+| +1 | `agent.restoreFactory` | 新增：`{ agentId, dryRun? }`，与 `model.restoreFactory` 同形 |
+| +2 | `config.saveMcp` / `config.deleteMcp` | 新增：按 id 的增删改，形状与 `config.saveEndpoint` / `deleteEndpoint` 一套 |
+
+`grep -rn "host.usage"` 现在只命中注释与一条**防回归用例** —— `src/wire/methods.test.ts` 的「已删掉的方法不许自己长回来（裁定 2026-11-13）」把 `host.usage` / `credential.list` / `credential.create` / `credential.revoke` 四个名字钉成运行期 + 编译期两道断言（`Extract<MethodName, …> extends never`）。契约表里没有它们。
+
+| 条 | 落地方式（做成什么样） | 证据（能指回的那一条） |
+|---|---|---|
+| W1-1 | `AgentView` 加 `messages` / `function`（`wire/methods.ts`）；`AgentService.toView` 原样转出 SDK 的 `AgentDefinition["messages"]` / `["function"]`，读不出来就给 `null`，非子 Agent 的 `function` 恒为 `null` | `AgentService.test.ts`：「读-改-写往返：get 到的 messages 原样交给 update 等于没改」「…子 Agent 的 function 原样写回也不变」 |
+| W1-2 | `agent.restoreFactory` 进 `MethodMap` / `METHOD_NAMES` / handler 表 / capabilities；`dryRun: true` 只算代价、不落盘；本来就在出厂状态时回 `restored: false`（不是错） | `agentHandlers.test.ts`：「八个方法都注册上了（含 F-F5 的 `agent.restoreFactory`）」「本来就在出厂状态的助手回 `restored: false`，这不是错误」 |
+| W1-3 | `agent.setThinking` 的 `level: string \| null`，`null` = 删掉定义上的思考参数（撤回设值，不是设成某一档） | `AgentService.test.ts`:「`AgentService.setThinking { level: null }`（F-B6：撤回设值，不是设成某一档）」 |
+| W1-4 | `DiscoveryEntryView` 带齐六个传输字段 + `extra`；非 MCP 三类恒为 `null` / 空对象；回写时 `extra` 逐字带回 | `DiscoveryService.test.ts`：「条目视图带齐传输入口：传输方式与它的参数，加上两个未知键进 extra（F-F6）」 |
+| W1-5 | `config.patchMcps` 从 `MethodMap` / `METHOD_NAMES` / handler / capabilities / i18n 全部消失；改由 `config.saveMcp`（有 id 则改、无则建）/ `config.deleteMcp` 按 id 动一条；服务层的 `DiscoveryService.writeMcpEntry` / `deleteMcpEntry` 以磁盘原文为底、只覆盖明确给了的字段 | `DiscoveryService.test.ts` 的 deleteMcpEntry 组（删两次 / 跨作用域拒 / 空 id 拒） |
+| W1-6 | `DiscoveryLayerView.scope: McpEditableScope \| null`：MCP 5 层里正好 2 层非空（`user` / `workspace`），其余与另外三类恒 `null` | `DiscoveryService.test.ts`：`discovery.mcps.map((layer) => layer.scope)` 的逐层断言 |
+| W1-7 | `ModelInput.tokenThresholds` 可选：`model.create` 省略时套出厂默认（SDK `DEFAULT_APP_CONFIG` 那份，宿主不另写数字），`model.update` 省略时不动 | `ModelService.test.ts`：「不传阈值就套出厂默认那一档（来源是 SDK 的出厂清单，宿主不另写数字）」 |
+| W1-8 | `message.list` 加 `around`；窗口 `AROUND_WINDOW` = **40**（`MessageService`），前后尽量均分、命中那条一定在里面，`anchor` 报它；没命中回空页 + `anchor: null` 不报错；与 `after` 同给时 `around` 优先 | `MessageService.test.ts` 的「`MessageService.list` 的 around（F-C6 的定位）」一组（中间 / 头 / 尾 / 已撤回 / 与 after 一起给） |
+| W1-9 | `host.usage` 不存在于 `MethodMap` / `METHOD_NAMES` / handler / capabilities / i18n | `wire/methods.test.ts` 的防回归用例（见上） |
+| W1-10 | `credential.*` 的 wire 面全删、服务层与 `token` 子命令全留（两句区分已写进 `wire/methods.ts` 的注释与 `architecture.md` §6） | 同上；`agents-host token create\|list\|revoke` 的进程级用例仍在 |
+| W1-11 | `host.upgrade` / `host.shutdown` 都还在；CLI 的 `/upgrade` 与 `/shutdown` 各接它们 | `cli/src/commands/handlers.ts`:813（`host.upgrade`）、:948（`host.shutdown { reason: "cli" }`） |
+| W1-12 | 没有 `model.restoreFactoryImage`（`grep -rn restoreFactoryImage src/` 为空），防下一棒「顺手补对称」 | 同上 grep |
+
+**capabilities / i18n 同步**：能力清单 63 条与 `METHOD_NAMES` 一一对应（`capabilities.ts` 里每方法一条），i18n 的 `capability.*` 键集合与清单一致（用例钉住两套语言键集合相同）。`architecture.md` 的方法表 / A12 / A13 / §7 已同批对齐（W3-3）。
+
 ---
 
-## 4. W2 CLI 收口（P0-B）
+## 4. W2 CLI 收口（P0-B）—— ✅ 已完成（2026-11-14）
 
-### 4.1 前置：S1–S5 已完成（已落地并提交，HEAD `57a295f`）
+### 4.1 前置：S1–S5 已完成（已落地并提交，当时 HEAD `57a295f`；本轮 HEAD `57bcfdb`）
 
 | 步骤 | 落地证据 |
 |---|---|
@@ -217,9 +249,22 @@ W2 收尾时确认的是**「它接的到底是哪个方法」**（不是「文�
 每条的验收照旧：真进程手跑一遍 + 一条钉住该行为的用例。
 （`search.conversations` 从这张表里出去：一阶段不做搜索，见 W2-6。）
 
+### 4.4 落地方式（2026-11-14 复核）
+
+| 条 | 落地方式（做成什么样） | 证据 |
+|---|---|---|
+| W2-1 npx 现下现起 | 缺省实现是连接层的 `spawnHostViaNpx`（`packages/client/src/connection.ts`）：`npx -y @ai-zen/agents-host@<range> serve --ai-zen-dir <数据根>`。`<range>` 只有一处来源 —— CLI 的 `version.ts` 从 `devDependencies` 读 `@ai-zen/agents-host` 得 `AGENTS_HOST_RANGE`，构建时由 `rolldown.config.mjs` 的 `__AGENTS_HOST_RANGE__` 注入。两条路的判据只有一句：`context.entry === undefined` 就 npx（桌面端把宿主捆进产物、递 `entry`） | `cli/src/version.ts`、`cli/rolldown.config.mjs`；e2e 用**假 npx**（`src/__tests__/e2e.test.ts` 的注释写明参数形状 `-y @ai-zen/agents-host@<range> serve --ai-zen-dir <目录>`），不联网 |
+| W2-2 下载屏 | `cli/src/tui/screens/host-download.tsx`：阶段式、不确定进度；阶段由连接层的 `HostLaunchStage` 给（`resolving` / `installing` / `starting` / `connected`），**不解析 npm 输出、不报百分比**；「有就上」时一个阶段都不来，这时一个字节都不画（不为一次什么都没做的检查闪一下屏） | `host-download.test.tsx`：「解析版本 → 下载并安装 → 启动宿主 → 连上，最后报 connected」「每个阶段都在屏幕上真的出现过（不是一口气跳到结尾）」「只来了 connected → 一个字节都不画」 |
+| W2-3 失败 / 取消 | 失败：屏上多一行「子进程自己说的那句原因」+ `R` 重试；`Esc` / `Ctrl+C` 同义 → 停手（`AbortSignal` 杀掉正在拉起的子进程）并回连接屏、**不退出程序**；stdio（一次性）没有屏：只有一行原因 + 非 0 退出码 + stdout 为空 | `host-download.test.tsx` 的失败 / `R` / `Esc` / `Ctrl+C` 四条；`stdio.test.ts` 的「runStdio：本机拉起宿主失败（一次性调用没有屏）」 |
+| W2-4 `/ws` | 命令表里的 `ws`；三种动作 = **列 / 选 / 建**，三个入口（TUI 启动 / stdio / `/ws`）共用 `src/workspace.ts` 一份判据。启动策略：**本机** = 当前目录这条糖（`workspace.create` 递 cwd，有就复用）；**远端** = 只认「上次进入的那个」（`<数据根>/cli/last-workspace.json`，按宿主分键），都没有才进选择环节，且**绝不**把客户端路径递上去 | `src/workspace.test.ts`（含「远端 + 从没记过 → `null`，一条 `workspace.create` 都不发」） |
+| W2-5 `/shutdown` | `commands/handlers.ts` 的 `/shutdown` → `host.shutdown { reason: "cli" }`，**一次**二次确认（确认框把「会踢掉同一台机器上的其他客户端」说清楚）；取消那一支一个方法都不调；退出 CLI 本身**不**发 shutdown | `handlers.test.ts` 的 `/shutdown` 一组（确认框文案 / 取消不调 / 确认带 `reason` 回连接屏 / `accepted: false` 不自己编原因 / 拒绝走兜底出口） |
+| W2-6 命令集 | 删 `/search`（`commands/registry.ts` 的注释写明「搜索只服务桌面端」）；`/back` 为主名、`/revert` 退成别名；`/pin` 保留；`/ws` 与 `/shutdown` 进表 | `commands/registry.ts` 的 `REGISTRY_ENTRIES` |
+| W2-7 `notice.clear` | 通知屏 `Alt+X` 全部清空 → `notice.clear`（按对话清一片），这是它唯一的调用点（不删方法，给它真实出路） | `i18n` 的 `notice.clearHint` / `notice.clearedAll`；`src/pending-notices.ts` 的 `connection.call("notice.clear", { conversationId })` |
+| **那次发布** | `@ai-zen/agents-host@0.1.0-alpha.1`（registry 上的版本序列是 `0.0.0-stage` → `0.1.0-alpha.0` → `0.1.0-alpha.1`，`latest` 与 `alpha` 两个 dist-tag 都指 alpha.1）；上游同批发布 `@ai-zen/agents-core@4.6.0-alpha.0` / `@ai-zen/agents-sdk@1.2.0-alpha.0`（sdk 的 `alpha` tag = 1.2.0-alpha.0，`latest` 仍是 1.1.0） | `npm view` 实测（本机无提交任何包配置） |
+
 ---
 
-## 5. W3 归档与文档（W1、W2 之后）
+## 5. W3 归档与文档（W1、W2 之后）—— ✅ 已完成（2026-11-14）
 
 **W3-1【人的决策】`cli-old` 降级为归档**：目录加 `-archive` 后缀（`cli-old` → `cli-old-archive`），
 README 首行写「不要改、不要当实现依据」。
@@ -227,10 +272,10 @@ README 首行写「不要改、不要当实现依据」。
   （`grep -rn "cli-old/" --exclude-dir=cli-old-archive` 无输出或已是新名）。
 - 备注：该目录当前是只读权限（`dr-xr-xr-x`），改名动的是父目录，不必先 `chmod`。
 
-**W3-2【AI 的决策】旧包名 `@ai-zen/agents-server` 改准**：文档与注释里残留的一律改成 `@ai-zen/agents-host`
+**W3-2【AI 的决策】旧包名（`agents-server`，现名 `@ai-zen/agents-host`）改准**：文档与注释里残留的一律改成 `@ai-zen/agents-host`
 （或按上下文直接去掉）。
 - 为什么：宿主早改名（R77），残留旧名会让下一棒以为存在另一个包，或者去 npm 找一个不存在的坐标。
-- 验收：`grep -rn "@ai-zen/agents-server" agents cli desktop` 只剩归档目录（或零）。
+- 验收：全仓文档里不再有旧的宿主包名（本波实测见 §5.1：活文档 0 处，只剩历史记录与两处源码注释）。
 
 **W3-3【需求】`architecture.md` 随契约补齐更新。**
 （W1 里明确「不动它」就是为了等契约定稿一起改；结构与实现相关，一次改对。）
@@ -239,6 +284,22 @@ README 首行写「不要改、不要当实现依据」。
   `messages` / `function`、`DiscoveryEntryView` 的传输字段 + `extra`、`DiscoveryLayerView.scope`。
 - 验收：`architecture.md` 的方法条数与 `METHOD_NAMES` 逐条对齐（capabilities ↔ `METHOD_NAMES` 已有用例钉住，
   文档这边人工核一遍）；§9 已知缺口按本轮改写；§11 变更记录加一行。
+
+### 5.1 落地结果（2026-11-14）
+
+**W3-1（`cli-old` 归档）**：目录已改名 `/home/ubuntu/projects/ai-zen/cli-old-archive` —— 只改父目录里的条目名，内部一个文件都没动、`.git` 没碰（`git -C cli-old-archive status --short` 只有 `README.md` 那一行）。`README.md` 在**首行上方**加了一段声明（「归档，不要改，不要当实现依据」+ 活的实现路径 + `git show pre-split-20261111:<path>` 的对照办法）；改前 `chmod u+w`、改完**权限复原成 `444`**。现在 `ls -ld` 仍是 `dr-xr-xr-x`，目录内文件全是 `444` / 目录 `555`。
+- **没做**：PRD §1 的出处名同步（`PRD.md:3` / `:27` 仍写着 `cli-old`）—— 按本文件 §10 的分工，PRD 只有用户能改，所以留给用户（见 §8.3）。
+
+**W3-2（旧包名）**：改了 4 个文件，全是 `cli/docs` 下的活文档 ——
+- `cli/docs/zh/getting-started.md`、`cli/docs/en/getting-started.md`：「运行时依赖」那一行换成 `package.json` 的真面目（只剩 `ink` / `react` / `highlight.js` / `lowlight` / `string-width`，`@ai-zen/*` 三个是私有包、构建时内联），加一条「宿主不需要预先安装」（包名 `@ai-zen/agents-host`、住 `devDependencies` 当版本范围、`npx` 现下现起）；「纯 stdio 也跑在服务端」改成「跑在宿主上」，补阶段式下载屏与「会话落在宿主的 `<数据根>/ai-zen.db`」；「工作区跟着目录走」那一段改成「本机递 cwd / 远端不上送目录、只认上次进入的那个」；命令表补 `/ws` 与 `/shutdown` 两行。
+- `cli/docs/zh/mcp.md`、`cli/docs/en/mcp.md`：五层链的归属从「服务端的 `agentPaths().mcpConfigs`」改成「宿主的 `DiscoveryService`（读文件走 SDK 的 `discoverMcpServers`）」，并说明 CLI 只按 `config.getDiscovery` 回的层序渲染。
+- `cli/README.md` / `cli/README.zh.md` 复核：已无旧名（实测确认，未动）。
+- `desktop/docs/**`、`agents/docs/**`：实测 **0 处**旧名（`grep -rln "agents-server" desktop/docs agents/docs` 为空），未改。
+- **剩下的命中是有意不动的，分三类**：① `agents/.ai-zen/handoffs/**` 与 `cli/.ai-zen/handoffs/**` —— 历史记录，不假造过去；② `cli/.ai-zen/reviews/**` 两份 —— 写的是那一轮的事实，性质同交接记录；③ 两处源码 / 构建配置的注释（`cli/src/server-client.test.ts:8` 是在解释「那个常量早已消失」，`cli/rolldown.config.mjs:51` 的包名清单仍是旧名）—— 本波**不许动源码**，后者确实该改，留给下一波。所以「`grep` 只剩归档目录（或零）」这条验收**在文档层面成立**，全仓而言还有上面三类。
+
+**W3-3（`architecture.md`）**：六处 —— §1 的 A12（补 `around` 的完整取法）与 A13（65 → 63）；§3 新增「视图与入参的几处形状」一张表（`AgentView.messages` / `function`、`DiscoveryEntryView` 的传输字段与 `extra`、`DiscoveryLayerView.scope`、`McpOauthView` 的掩码口径、`ModelInput.tokenThresholds` 可选，每条写「谁产生 → 客户端拿它做什么」）；§6 方法表改成 13 个域 63 条 + 「65 → 63 的账」一张表 + `credential.*` 「删的是契约面、能力仍在」一段；§6 桥接名单后的「其余 60 条」→ 59；§6 `message.list` 的取法表补 `around` 三行（含 40 条窗口、空页不报错、与 `after` 同给时谁优先、消费者只有桌面端）；§7 能力条数 63；§8 把 `@ai-zen/agents-client` 列成「共享连接层」并写清它这一轮定的三件事（npx 拉起 / 阶段回调 / 取消），明确「怎么画屏」不归它；§11 加一行变更记录。
+- **方法数 63 是怎么核的**：用 `node` 直接数 `src/wire/methods.ts` 里 `METHOD_NAMES` 数组的元素 → 63；再交叉核对 `grep -c '^  "'` → 63、`src/handlers/capabilities.ts` 的能力条数 → 63；最后逐域点数（`7+5+13+1+2+3+8+8+8+3+1+2+2` = 63）。三个数一致才写进文档。
+- **§9 已知缺口没改**：那两条（子 Agent 消息回看、客户端自造问题）这一轮既没消除也没新增，改了反而是错的。
 
 ---
 
@@ -261,10 +322,26 @@ README 首行写「不要改、不要当实现依据」。
 4. **体验欠账**：首启引导屏没跑过真 GUI（本机无 electron 二进制，但有 `xvfb-run`）、
    「选服务 + 填 Key」不是向导只是跳设置页。
 
-**验收**：`xvfb-run` 里真 GUI 竖切一遍 —— 连上 → 发一条看到流式 → 跑到交接线作答 → 撤回 → 搜索命中并
-定位到那条消息（`message.list` 的 `around`）→ 置顶；`question.list/answer` 有调用点、`QuestionView` 不再
-被压成 notice；第 3 档逐条打勾，打不了勾的写清为什么不做（不许默默留空）。
-**依赖**：无；排期在 W3 之后。
+**验收（真 GUI 竖切，六步，一步都不能跳）**：在 `xvfb-run` 里跑真正的 Electron 应用，按下面顺序走一遍，
+每步都写下看到的：
+
+| # | 步骤 | 过了的样子 |
+|---|---|---|
+| 1 | **连上** | 首启能选本机 / 远程；本机那条能连上宿主，状态从 `connecting` 到 `ready`（带宿主自报的 `protocol` / `version`）；远程不可达时窗口照样能开，失败是窗口里的一件事 |
+| 2 | **流式** | 正文增量逐字出现（不是一次性蹦出来），思考与工具调用各按自己的形状显示，一轮结束状态栏回空闲 |
+| 3 | **作答交接问题** | 跑到交接线弹出 `question`（`question.list` 有调用点），选「新对话」后旧对话完整保留、新对话带着交接摘要开起来；`QuestionView` 不再被压成一条 notice |
+| 4 | **撤回** | 界面上那个动作 → `conversation.revert`；被撤回那条从列表消失，输入区能改完重发 |
+| 5 | **搜索命中并定位** | 搜一个词 → `search.messages` 命中 → 点命中 → `message.list({ around })` 把那条摆到眼前并高亮（`around` 唯一的消费者） |
+| 6 | **置顶** | 置顶后该对话跳到 `conversation.list` 顶部，重启桌面端仍然在顶上 |
+
+三条附加：
+- `question.list` / `question.answer` 在 `desktop/packages/main` 里**指得出调用点**（现在是零调用，`events.ts` 把
+  `QuestionView` 压成 notice）—— 这是 W4 内部最高优先级：不修它，对话跑到交接线就永久报废
+  （之后每次 `conversation.send` 被 `question_pending` 拒）。
+- 第 3 档那 22 项逐条打勾，打不了勾的写清为什么不做（不许默默留空）。
+- `xvfb-run` 这条路**不是设想**：`desktop/TODO` 的历史里记过「本机没有图形环境（`DISPLAY` / `WAYLAND_DISPLAY` 都空）但 `/usr/bin/xvfb-run` 存在 —— 无头 X 这条路是通的」，并给了可直接跑的措辞（`git -C desktop show 1c6e777:TODO.md`，71 行；先决条件是 `pnpm add -D electron` —— 本机 `node_modules/electron` 目前不存在）。
+
+**依赖**：无；排期在 W3 之后（W3 已完成）。
 
 ---
 
@@ -303,13 +380,28 @@ README 首行写「不要改、不要当实现依据」。
 | **命令集** | 删 `/search`；`/back` 为主名、`/revert` 为别名；`/pin` 保留 | PRD F-E1 / F-C6；W2-6 |
 | **桌面端** | 完整问答视图（不是最小方案），优先级最低 | PRD F-I9；W4 |
 | **目录** | `cli-old` 降级为归档（`-archive` 后缀 + README 首行） | W3-1 |
-| **旧的四个问题** | Q1 已定：删 wire 面、留服务层、`host.upgrade` 保留；Q2 已定：PRD 的 TUI 专属条目不动，归 W2 复验；Q4 已定：兜底审计要做，放 W5 | §8.2 只剩 Q3 |
+| **旧的四个问题** | Q1 已定：删 wire 面、留服务层、`host.upgrade` 保留；Q2 已定：PRD 的 TUI 专属条目不动，归 W2 复验；Q4 已定：兜底审计要做，放 W5 | §8.3（Q3 仍在；Q1/Q2/Q4 已定） |
 
-### 8.2 仍待你裁定（1 条）
+### 8.2 已定（2026-11-14 增补，7 条；W1/W2 收尾那一段的裁定）
+
+| 主题 | 已定的内容 | 落在哪 |
+|---|---|---|
+| **契约 · 密钥掩码（A 案）** | OAuth 客户端密钥**只给掩码**：`clientSecret` → `clientSecretMasked` + `clientSecretSet`，与端点的 `apiKeyMasked` / `apiKeySet` 同一套口径；回写时省略 = 保留磁盘原值（把掩码当密钥存回去是另一类错） | W1-4 / W1-6；`McpOauthView`；`architecture.md` §3 |
+| **契约 · 定位** | `message.list` 补 `around`（以某条为中心取一窗）—— **成本低就补**，不另开方法、不另做一套搜索接口 | W1-8；`AROUND_WINDOW` = 40；`architecture.md` A12 |
+| **契约 · 减法** | `credential.*` 的 **wire 面删掉、能力留下**：凭证归宿主自己管（`CredentialService` + `agents-host token *`），客户端只有「连接管理 + 记住密码」 | W1-10；PRD L13 |
+| **发布** | 先发 **alpha**（`@ai-zen/agents-host@0.1.0-alpha.1`，上游 `core@4.6.0-alpha.0` / `sdk@1.2.0-alpha.0` 同批），不发正式版 | W2 收尾（§4.4） |
+| **命令名** | `/back` 为主名（`/revert` 退成别名）：用户说的是「回到那条消息之前」，命令名不必迁就契约方法名 | W2-6 |
+| **搜索归属** | `/search` 从 CLI 删掉：**搜索归桌面端**（一个搜索框触发消息列表搜索，宿主给 `search.messages`，怎么搜由客户端定） | W2-6；PRD F-C6 |
+| **`/ws` 的形状与启动策略** | 一条命令三个动作：**列 / 选 / 建**；启动时自动进入 —— 本机用「当前目录」这条糖，远端用「上次进入的那个」，都没有才进选择环节（远端**绝不**上送客户端路径） | W2-4；`cli/src/workspace.ts` |
+
+### 8.3 仍待你裁定
 
 | 编号 | 问题 | 现状事实（供你判断） | 我的建议 |
 |---|---|---|---|
 | Q3 | desktop 的类型检查要不要前置 `agents/packages/host/dist` 的构建 | 现状靠已存在的 dist，构建顺序没写进脚本 | 前置（一次显式依赖，胜过一条隐式约定） |
+| Q4 | PRD §1 里的出处名 `cli-old` 谁改 | W3-1 的验收要求「PRD §1 的出处名同步」，但本文件 §10 规定 PRD 只有你能改。`PRD.md:3`（需求来源路径）与 `:27`（TUI CLI 那一行）现在仍写 `cli-old`；`cli-old-archive` 已经是新名 | 你改，或授权我改这两处的**路径名**（正文与 §7 变更记录不动） |
+| Q5 | `.ai-zen/handoffs/**` 与 `.ai-zen/reviews/**` 里的旧包名要不要一起改 | 你明确说了不动 handoffs（「不假造过去」）；reviews 是同一性质的历史记录，我按同一把尺子处理了，所以 W3-2 的「文档层面清完」在这两处留有命中 | 不改（历史记录保留当时的名字）；如果要改，需要你改口径 |
+| Q6 | `cli/rolldown.config.mjs:51` 的注释仍写着旧包名 | 那是构建配置（不是 `.md`），本波硬约束「不改源码」，所以没动；它确实与新事实不符 | 下一波（或你授权）一并改一行注释 |
 
 ---
 
@@ -346,7 +438,7 @@ README 首行写「不要改、不要当实现依据」。
 | `agents/.ai-zen/plan-host-rewrite.md`（36KB） | 裁定 R1–R79 的原文、目录契约、旧验收标准 → 仍在生效的约束已体现在 PRD / architecture / 本文件 §0 / §9 | `git show HEAD:agents/.ai-zen/plan-server-rewrite.md`（289 行，HEAD 里还是改名前的旧名） |
 | `agents/.ai-zen/plan-clients.md` | C1–C4 客户端波次 → 在 §2 / §3 / §4 | `git show HEAD:agents/.ai-zen/plan-clients.md`（26 行） |
 | `agents/.ai-zen/gap-report-20261113.md` | 完成度普查（65 方法 / 46 零调用）→ 结论进 §6，明细随该文件删除 | 未入库，只在上一轮对话里 |
-| `desktop/TODO.md` | 首启真 GUI 验收 5 条、凭据向导 5 条 → §6 第 4 档 | `git -C desktop show HEAD:TODO.md`（71 行） |
+| `desktop/TODO.md` | 首启真 GUI 验收 5 条、凭据向导 5 条 → §6 第 4 档 | `git -C desktop show 1c6e777:TODO.md`（71 行；该文件在 `a5fe379` 被删掉，HEAD 里已经没有） |
 
 ## 附录 A —— TUI CLI 曾缺的客户端库导出（`tsc` 58 条 TS2305 去重）
 

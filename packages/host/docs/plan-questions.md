@@ -68,7 +68,7 @@
 - [src/app.ts] 退出判据缺一个触发源：`WsHub` 只提供 `connectionInfos()`（拉），没有「连接数变化」的回调，所以「最后一条连接走了」由 `app.ts` 里 1s 的巡检定时器发现（`ScopeRegistry.onAllRecycled` 与每轮结算各能立刻触发一次重算）。要不要在 `net/WsHub` 补一个 `onConnectionsChanged` 回调以去掉巡检？
 - [src/app.ts] L4 的「没有活对话也没有连接后进程退出」在刚启动时会把「还没人来连」判成该退出：我加了「至少服务过一条连接（握手成功或连上过）之后才判退出」的口径。认不认？
 - [src/app.ts] `conversation.state` 没有服务层实现者（`ConversationService` 只有 get/list/rename/…）：我在 `app.ts` 把「视图 + 这一轮的 `RunState` + 库里消息求和 + 模型阈值」拼成 `ConversationState`；其中 `questions` 与 `statusBlocks` 先空着（问题对象归 W4-H、状态栏块归 W4，PRD F-I6）。要不要把它收进 `ConversationService`（或新建一个 StateService）？
-- [src/app.ts] `host.usage` 的三个范围（对话 / 项目 / 整机）现在靠「遍历对话 + 逐个 `messageService.list` 求和」实现：要不要仓储补一个按项目 / 整机的用量聚合查询，免得按对话逐个拉全量消息？
+- ~~[src/app.ts] `host.usage` 的三个范围（对话 / 项目 / 整机）现在靠「遍历对话 + 逐个 `messageService.list` 求和」实现：要不要仓储补一个按项目 / 整机的用量聚合查询，免得按对话逐个拉全量消息？~~ **作废（2026-11-14）**：`host.usage` 已从契约面整体删除（裁定 W1-9；`METHOD_NAMES` 现为 63 条，里面没有它）。用量只剩 `conversation.state.usage` 一个口径（`UsageSnapshot` 的 `turn` / `total` / `subAgent` / `rate`），「项目 / 整机」聚合没有任何客户端需要 —— 这个问题因此没有对象了：既没有 `host.usage` 可优化，也不该为它给仓储加聚合查询。原文留在这里，当「为什么删」的记录。
 - [src/app.ts] F-B6 的「思考档位 → 请求参数」发生在装配 agent 时，而 `SdkAgentFactoryOptions.resolveModelParams` 是同步注入点，所以 `reasoning-presets.json` 用启动时读到的快照（`conversation.send` / `setThinking` 时刷新一次）。档位表若要在进程内热改即生效，那个注入点需要一个异步形态。
 - [src/app.ts] R50 的「未注入交接服务要推一条 warning 通知」现在只在装配处记了一条 warn 日志：通知层（W4-H）还没到，所以没有可推的通道；留的注入点是 `HostAppOptions.handoff`。
 - [src/app.ts] 单根把 handler 表暴露成 `readonly handlers`（`Partial<MethodName → handler>`）：W4 那几个域要往同一张表里加方法、用例要直接调 handler 时都用它。这个「单根公开 handler 表」的口径认不认？
@@ -79,7 +79,7 @@
 - [src/services/DiscoveryService.ts] MCP 的 2 个可编辑作用域我定成 `<ws>/.ai-zen/mcp.json`（workspace）与 `<aiZenDir>/mcp.json`（user）；`<ws>/.mcp.json` 与 `<ws>/.agents/mcp.json`、`~/.agents/mcp.json` 只读。认不认？
 - [src/services/DiscoveryService.ts] `DiscoveryLayerView.editable` 我按「本契约的写方法能不能改这一层」算：MCP 有 2 层 true（与 F-G1 对齐），Skill / 工具 / 子 Agent 全部 false（契约里没有写它们的方法，`kind` 只有 MCP 有 `patch`）。若希望「用户自己那层」显示成可编辑（能手改文件），这个字段的语义要另定。
 - [src/services/DiscoveryService.ts] 写 MCP 时如果目标文件存在但读不出来（`broken`），我先把坏文件改名留档成套 `<path>.broken-<ISO>.bak` 再写新的：这样 F-F6 的「能看见、能修」都成立，而修复动作不会直接抹掉用户手写的内容。要不要统一成「拒写 + 让用户先手工修」？
-- [src/services/DiscoveryService.ts] `config.patchMcps` 的 `entries` 我按**整层替换**实现（没给的就是被删的），每个 id 以磁盘原文为底只覆盖入参明确给了的字段，所以 `oauth` 与未知键留着；`disabled` 省略 = 不改（要重新启用得显式传 `false`）。这个语义认不认？
+- ~~[src/services/DiscoveryService.ts] `config.patchMcps` 的 `entries` 我按**整层替换**实现（没给的就是被删的），每个 id 以磁盘原文为底只覆盖入参明确给了的字段，所以 `oauth` 与未知键留着；`disabled` 省略 = 不改（要重新启用得显式传 `false`）。这个语义认不认？~~ **作废（2026-11-14）**：`config.patchMcps` 已拆成按 id 的 `config.saveMcp` / `config.deleteMcp`（裁定 W1-5），「整层替换」这个概念不存在了，所以「整层替换的语义认不认」没有可答的对象。原语义里有两条**仍然成立**，只是搬到了新方法上（现在写在 `wire/methods.ts` 的注释里）：以磁盘原文为底、只覆盖入参明确给了的字段（`oauth` 与未知键留着）；`disabled` 省略 = 不改（要重新启用仍需显式传 `false`）。
 - [src/services/DiscoveryService.ts] `discoverSubAgents` 只回定义、不回文件路径，而 `DiscoveryEntryView.source` 要路径、坏文件也要看得见，所以子 Agent 那一层我按「SDK 判什么算子 Agent + 自己 readdir 拿文件名」两段做。认不认这种「SDK 判定 + 自己定位」的组合？
 - [src/services/ModelService.ts] F-F7 说「删模型时默认指向要自动改指或清空」，我定成「改指到同端点的第一条剩余模型；同端点没有剩的就清空」。换指到别的端点等于把请求发去另一家服务商，那件事该由人决定。
 - [src/services/ModelService.ts] 删一个**出厂托管**的模型会从 `config.json` 里消失，但下次 `ConfigManager.bootstrap()` 的 `syncManagedModels` 会按出厂清单把它加回来（现有机制只保留 `custom: true` 的条目，没有「隐藏」标记）。所以「删出厂模型」实际上活不过一次重启。要么给 SDK 加一个隐藏标记，要么在删出厂模型时拒绝（提示「用恢复出厂 / 改成自定义」）。
@@ -181,7 +181,7 @@
 
 ## C1（`packages/client` 按新契约重写）追加
 
-- [packages/client/src/connection.ts] R69 之后不能再用 `npx @ai-zen/agents-host` 拉起本地宿主（那是「依赖已发布版本」）。缺省实现改成 `process.execPath <已装包的 dist/cli.js> serve --ai-zen-dir <数据根>`，入口从 `@ai-zen/agents-host/package.json` 解析；打包后的 cli / desktop 没有这个包可解析，需要宿主用 `hostEntry` 把入口递进来（`spawnHost` 也可整个换掉）。这个「入口由宿主给」的口径认不认，还是要一个环境变量（如 `AI_ZEN_HOST_ENTRY`）作为第二来源？
+- ~~[packages/client/src/connection.ts] R69 之后不能再用 `npx @ai-zen/agents-host` 拉起本地宿主（那是「依赖已发布版本」）。缺省实现改成 `process.execPath <已装包的 dist/cli.js> serve --ai-zen-dir <数据根>`，入口从 `@ai-zen/agents-host/package.json` 解析；打包后的 cli / desktop 没有这个包可解析，需要宿主用 `hostEntry` 把入口递进来（`spawnHost` 也可整个换掉）。这个「入口由宿主给」的口径认不认，还是要一个环境变量（如 `AI_ZEN_HOST_ENTRY`）作为第二来源？~~ **作废（2026-11-14）**：用户后来裁定本机模式就是 **`npx` 现下现起**（PRD L14 / W2-1），连接层的缺省实现已改成 `spawnHostViaNpx`（`npx -y @ai-zen/agents-host@<range> serve --ai-zen-dir <数据根>`，`<range>` 由 CLI 构建时从 `devDependencies` 注入）；桌面端走另一条路（把宿主捆进自己的产物、用 `entry` 递入口）。所以「入口由宿主给还是环境变量」这个二选一已被两条路的判据取代：`context.entry === undefined` 就 npx，否则起给的那个入口。
 - [packages/client/src/errors.ts] 有一类失败宿主**不在场**、没有 `data.message` 可用：连不上、握手超时、连接断了、拉起超时。这几句我按连接语言（zh / en，缺省英文，与 D8 / R58 一致）在客户端渲染，是全包唯一由客户端产出的用户可见文本。要不要把它们收进宿主 i18n（客户端只按码取），还是就留在客户端？
 - [packages/client/src/client.ts] 本波的门面只有「连接 + 调用 + 事件分派 + 补拉」，没有「一轮之内的状态机」：`message.delta` 只把 `AgentNS.Delta` 分派出去，折叠交给前端（core 的 `applyChunk` 在运行时由调用方用）。旧 client 里那份 `session/stream.ts`（阶段 / 用量 / 子 Agent / 失败终态的纯状态机）这一波没有搬 —— 若 C2 / C3 不希望各写一份，需要另派一个波次把它按新契约重写。
 - [packages/client/src/resume.ts] 补拉的 `after` 锚点由调用方给（`client.track(id, anchor)` / `setAnchor`）或由上一次 `resume` 的结果回填；客户端**不**从 `message.delta` 自动推导锚点（那要求客户端解释事件载荷的语义）。要自动维护的话请定：客户端是否允许理解「哪个 messageId 是这段对话的最后一条」。
