@@ -1,6 +1,6 @@
 ---
 title: 部署与远程访问
-description: 宿主只绑 loopback 而 wss:// 是客户端的能力、三种访问形态（本机 / 隧道 / 反向代理）各自的入口与要配的东西、nginx 反代完整样例与三个默认值陷阱（未转发 Upgrade 头就是握手 400、client_max_body_size 默认 1m 让 content.upload 撞 413、proxy_read_timeout 默认 60s 让空闲连接被掐）、AI_ZEN_ALLOWED_ORIGINS 必须填浏览器带来的那个来源、客户端地址与凭证的优先级（--host / AI_ZEN_HOST_URL / 发现文件，AI_ZEN_HOST_TOKEN / run/token）与「为什么没有 --token」、隧道下工作目录仍按本机递上去的已知行为、凭证能隔开谁和隔不开谁、排错对照表。
+description: 宿主缺省只绑 loopback（--public 起对外实例）而 wss:// 是客户端的能力、三种访问形态（本机 / 隧道 / 反向代理）各自的入口与要配的东西、nginx 反代完整样例与三个默认值陷阱（未转发 Upgrade 头就是握手 400、client_max_body_size 默认 1m 让 content.upload 撞 413、proxy_read_timeout 默认 60s 让空闲连接被掐）、AI_ZEN_ALLOWED_ORIGINS 必须填浏览器带来的那个来源、客户端地址与凭证的优先级（--host / AI_ZEN_HOST_URL / 发现文件，AI_ZEN_HOST_TOKEN / run/token）与「为什么没有 --token」、隧道下工作目录仍按本机递上去的已知行为、凭证能隔开谁和隔不开谁、排错对照表。
 outline: deep
 ---
 
@@ -8,11 +8,24 @@ outline: deep
 
 这一页回答「宿主跑在哪儿、客户端怎么连过去」。线上说什么在[线上协议](protocol.md) —— 那里只写允不允许；这里写实际怎么搭、哪几个默认值会把事情弄坏。
 
-## 前提：宿主只绑 loopback
+## 前提：缺省只绑 loopback
 
-`agents-host serve` 只监听回环（缺省 `127.0.0.1:8790`），不是回环地址就拒绝启动。它**永不实现 TLS、永不绑非 loopback**：远程访问一律在它前面加一段（隧道或反向代理），明文那一段留在本机的回环上。
+`agents-host serve` **缺省**是本地实例：只监听回环（缺省 `127.0.0.1:8790`），凭证自动生成并写在 `<数据根>/run/token`（`packages/host/src/cli.ts` 的 `parseArgs` 把 `local` 初始成 `true`，`runServe` 只在本机实例上打那一行凭证路径）。
 
-这条边界横在「同一台机器」上，不是「有没有鉴权」—— 凭证已经在了（见[线上协议](protocol.md)的「鉴权」），但把一个能力里有 `exec` 的服务直接摆到网络上的端口上，仍然不是这个项目要的默认状态。
+对外实例是**显式动作**，两条路都通向同一个地址：
+
+| 写法 | 结果 |
+|---|---|
+| `agents-host serve`（或 `--local`） | `127.0.0.1:<port>`（`LOOPBACK_HOST`） |
+| `agents-host serve --public` | `0.0.0.0:<port>`（`PUBLIC_HOST`） |
+| `agents-host serve --host <非回环地址>` | 同上，`local` 被这次地址推断成 `false` |
+| `--local --host <非回环地址>` | **拒绝启动**（自相矛盾：`UsageError`，退出码 2） |
+
+判据只有一处：`resolveListenTarget`（`packages/host/src/config.ts`）—— `local ? LOOPBACK_HOST : PUBLIC_HOST`。`--public` 起的是**对外实例**：它不写本地凭证交付文件，凭证要自己 `agents-host token create --note <备注>` 建出来再分发给要连的设备（`runServe` 里那一行打印的就是这句话）。
+
+宿主**仍然不实现 TLS**：`ws://` 那一程永远是明文，`wss://` 是客户端的能力（隧道或反向代理终结 TLS）。所以 `--public` 是一条**显式**的路 —— 你把它摆在什么前面（或者明知道它裸在网络上），是这个决定的代价；缺省状态不变：什么都不配就只在本机回环上，一个能力里有 `exec` 的服务不会自己跑到网络上去。
+
+这条边界横在「同一台机器」上，不是「有没有鉴权」—— 凭证已经在（见[线上协议](protocol.md)的「鉴权」），但把一个能力里有 `exec` 的服务直接摆到网络上的端口上，仍然不是这个项目要的默认状态。
 
 | 事情 | 谁做 |
 |---|---|

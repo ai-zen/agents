@@ -1,6 +1,6 @@
 ---
 title: Deployment & Remote Access
-description: The host binds loopback only while wss:// is a client capability, the three access shapes (local / tunnel / reverse proxy) with the entry point and the knobs each one needs, a complete nginx reverse-proxy sample with its three default-value traps (no Upgrade headers means a 400 handshake, client_max_body_size defaults to 1m and turns content.upload into a 413, proxy_read_timeout defaults to 60s and cuts idle connections), why AI_ZEN_ALLOWED_ORIGINS must carry the origin a browser arrives with, the client's address and credential precedence (--host / AI_ZEN_HOST_URL / the discovery file, AI_ZEN_HOST_TOKEN / run/token) and why there is no --token, the known behaviour that a tunnel still forwards the local working directory, what the credential separates and what it does not, and a troubleshooting table.
+description: The host binds loopback by default (--public starts a public instance) while wss:// is a client capability, the three access shapes (local / tunnel / reverse proxy) with the entry point and the knobs each one needs, a complete nginx reverse-proxy sample with its three default-value traps (no Upgrade headers means a 400 handshake, client_max_body_size defaults to 1m and turns content.upload into a 413, proxy_read_timeout defaults to 60s and cuts idle connections), why AI_ZEN_ALLOWED_ORIGINS must carry the origin a browser arrives with, the client's address and credential precedence (--host / AI_ZEN_HOST_URL / the discovery file, AI_ZEN_HOST_TOKEN / run/token) and why there is no --token, the known behaviour that a tunnel still forwards the local working directory, what the credential separates and what it does not, and a troubleshooting table.
 outline: deep
 ---
 
@@ -8,9 +8,22 @@ outline: deep
 
 This page answers "where the host runs and how a client gets to it". What the wire says is in [Wire Protocol](protocol.md) — that page only states what is allowed; this one states how it is actually set up, and which defaults break it.
 
-## Premise: the host binds loopback only
+## Premise: loopback by default
 
-`agents-host serve` listens on loopback only (`127.0.0.1:8790` by default) and refuses to start on anything else. It **never implements TLS and never binds a non-loopback address**: remote access always puts a segment in front of it (a tunnel or a reverse proxy), and the plaintext leg stays on the machine's loopback.
+`agents-host serve` is **a local instance by default**: it listens on loopback only (`127.0.0.1:8790` by default) and generates the credential into `<data root>/run/token` (`parseArgs` in `packages/host/src/cli.ts` initialises `local` to `true`; `runServe` prints that credential path for local instances only).
+
+A public instance is an **explicit act**, and several invocations land on the same address:
+
+| Invocation | Result |
+|---|---|
+| `agents-host serve` (or `--local`) | `127.0.0.1:<port>` (`LOOPBACK_HOST`) |
+| `agents-host serve --public` | `0.0.0.0:<port>` (`PUBLIC_HOST`) |
+| `agents-host serve --host <non-loopback>` | Same — the address makes `local` false |
+| `--local --host <non-loopback>` | **Refuses to start** (contradiction: `UsageError`, exit code 2) |
+
+There is exactly one judgement call: `resolveListenTarget` (`packages/host/src/config.ts`) — `local ? LOOPBACK_HOST : PUBLIC_HOST`. `--public` starts a **public instance**: no local credential file is written (`if (this.local) await createLocalCredential(...)` in `app.ts`), so you mint credentials yourself with `agents-host token create --note <note>` and hand them to the devices that connect (`runServe` prints exactly that line).
+
+The host still **does not implement TLS**: the `ws://` leg is always plaintext, and `wss://` is a client-side capability (a tunnel or a reverse proxy terminates TLS). So `--public` is an explicit road — what you put in front of it (or knowing it sits naked on the network) is the price of that decision; the default does not change: with nothing configured the host only listens on this machine's loopback, and a service whose capability set includes `exec` does not walk out onto the network by itself.
 
 That boundary sits at "the same machine", not at "is there authentication" — the credential exists (see "Authentication" in [Wire Protocol](protocol.md)), but putting a service whose capability set includes `exec` straight onto a network-facing port is still not the default this project wants.
 
