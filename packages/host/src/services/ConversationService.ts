@@ -823,19 +823,11 @@ export class ConversationService {
   /**
    * 读配置。
    *
-   * `config.json` 是手改得了的文件（F-G3 的同款思路）：它坏了要让用户看见「配置用不了 +
-   * 哪一步读不动」，而不是一句「宿主内部错误」——所以解析失败在这里就折成 `config_invalid`。
+   * `config.json` 是手改得了的文件，它坏了由 SDK 当场恢复出厂（D32），所以这里不再把
+   * 解析失败折成别的错——读到的要么是磁盘上那份，要么是已经写回磁盘的出厂配置。
    */
   private async readConfig(): Promise<AppConfig> {
-    try {
-      return await this.configManager.read();
-    } catch (error) {
-      throw new HostError("config_invalid", {
-        params: { reason: error instanceof Error ? error.message : String(error) },
-        detail: { path: this.configManager.configPath },
-        cause: error,
-      });
-    }
+    return await this.configManager.read();
   }
 
   private async viewContext(

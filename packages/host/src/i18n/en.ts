@@ -43,6 +43,7 @@ export const en = {
   "notice.upgradeRestarting": "Updated to {version}. Restarting now.",
   "notice.logWarning": "Host warning: {summary}",
   "notice.logError": "Host error: {summary}",
+  "notice.configRecovered": "Config file {path} was broken; factory settings restored.",
   "notice.handoffWritten": "Handoff document written to {path}.",
   "notice.autoNamed": "Named this conversation \"{name}\".",
   "notice.languageChanged": "This connection now speaks {language}.",

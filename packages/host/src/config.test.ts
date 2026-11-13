@@ -163,9 +163,13 @@ describe("resolveListenTarget", () => {
 });
 
 describe("<dataRoot>/host.json（D25 的「配置文件」那一档，裁定 R67）", () => {
-  it("文件不在时这一档没说话（空设置）", async () => {
+  it("文件不在时这一档没说话（空设置，也不通知）", async () => {
     const dir = await makeDataRoot();
-    await expect(readHostSettings(resolvePaths(dir))).resolves.toEqual({});
+    const recovered: string[] = [];
+    await expect(
+      readHostSettings(resolvePaths(dir), (path) => void recovered.push(path)),
+    ).resolves.toEqual({});
+    expect(recovered).toEqual([]);
   });
 
   it("给了 port 就用它", async () => {
@@ -198,16 +202,33 @@ describe("<dataRoot>/host.json（D25 的「配置文件」那一档，裁定 R67
     );
   });
 
-  it("文件写坏了报 config_invalid（不能当没有，否则改完没有任何反馈）", async () => {
+  it("文件坏了就恢复出厂：回 {}、磁盘写成合法的 {}、通知一次（D32）", async () => {
     const dir = await makeDataRoot();
-    await fs.writeFile(join(dir, "host.json"), "{ port: 9123", "utf8");
-    await expect(readHostSettings(resolvePaths(dir))).rejects.toSatisfy(
-      (error: unknown) => HostError.is(error) && error.code === "config_invalid",
-    );
+    const paths = resolvePaths(dir);
+    const recovered: string[] = [];
+    const onRecovered = (path: string): void => {
+      recovered.push(path);
+    };
 
-    await fs.writeFile(join(dir, "host.json"), JSON.stringify([9123]), "utf8");
-    await expect(readHostSettings(resolvePaths(dir))).rejects.toSatisfy(
-      (error: unknown) => HostError.is(error) && error.code === "config_invalid",
-    );
+    // 解析不了的 JSON
+    await fs.writeFile(paths.hostConfigFile, "{ port: 9123", "utf8");
+    await expect(readHostSettings(paths, onRecovered)).resolves.toEqual({});
+    await expect(fs.readFile(paths.hostConfigFile, "utf8")).resolves.toBe("{}\n");
+
+    // 合法 JSON 但不是对象：同一档
+    await fs.writeFile(paths.hostConfigFile, JSON.stringify([9123]), "utf8");
+    await expect(readHostSettings(paths, onRecovered)).resolves.toEqual({});
+    await expect(fs.readFile(paths.hostConfigFile, "utf8")).resolves.toBe("{}\n");
+
+    await fs.writeFile(paths.hostConfigFile, "null", "utf8");
+    await expect(readHostSettings(paths, onRecovered)).resolves.toEqual({});
+    await expect(fs.readFile(paths.hostConfigFile, "utf8")).resolves.toBe("{}\n");
+
+    // 三次都是同一份文件，每坏一次通知一次
+    expect(recovered).toEqual([
+      paths.hostConfigFile,
+      paths.hostConfigFile,
+      paths.hostConfigFile,
+    ]);
   });
 });

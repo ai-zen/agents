@@ -67,6 +67,7 @@ export {
   DEFAULT_MCP_CONFIG,
   CONFIG_SUB_DIRS,
 } from "./config/ConfigManager.js";
+export type { ConfigRecoveredHandler } from "./config/ConfigManager.js";
 
 // 出厂资产 — 出厂 Skill（随版本释放到 <basePath>/skills/）
 export {

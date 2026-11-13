@@ -344,6 +344,53 @@ describe("HostApp 的组装", () => {
     const notices = await callMethod(app, "notice.list");
     expect(notices.notices).toEqual([]);
   });
+
+  it("config.json 坏了：恢复出厂、写回磁盘、落一条带文件路径的 warning（D32）", async () => {
+    const fixture = await makeFixture();
+    await fs.writeFile(join(fixture.dataRoot.path, "config.json"), "{ 这不是 JSON", "utf8");
+
+    const app = await startApp(fixture);
+
+    const notices = await callMethod(app, "notice.list");
+    const recovered = notices.notices.filter(
+      (notice) => notice.text.code === "notice.configRecovered",
+    );
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]?.level).toBe("warning");
+    // 文案里是哪个文件坏了（缺省语言英文）
+    expect(recovered[0]?.text.message).toContain(app.configManager.configPath);
+    expect(recovered[0]?.text.message).toContain("factory settings");
+
+    // 磁盘上已经是合法的出厂配置：下次启动不用再恢复一次
+    const onDisk = JSON.parse(
+      await fs.readFile(app.configManager.configPath, "utf8"),
+    ) as { models: unknown[] };
+    expect(onDisk.models.length).toBeGreaterThan(0);
+  });
+
+  it("host.json 坏了：恢复出厂、写回合法的 {}、落一条带文件路径的 warning（D32）", async () => {
+    const fixture = await makeFixture();
+    const hostConfigFile = join(fixture.dataRoot.path, "host.json");
+    await fs.writeFile(hostConfigFile, "{ 这不是 JSON", "utf8");
+
+    // 不给端口参数才会去读 host.json；这一条不监听（8790 留给真进程那几条用例）
+    const app = await createHost({
+      aiZenDir: fixture.dataRoot.path,
+      exit: () => undefined,
+      logger: { warn: () => undefined, error: () => undefined },
+    });
+    apps.push(app);
+
+    const notices = await callMethod(app, "notice.list");
+    const recovered = notices.notices.filter(
+      (notice) => notice.text.code === "notice.configRecovered",
+    );
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]?.level).toBe("warning");
+    expect(recovered[0]?.text.message).toContain(hostConfigFile);
+
+    await expect(fs.readFile(hostConfigFile, "utf8")).resolves.toBe("{}\n");
+  });
 });
 
 // ---------------------------------------------------------------------------

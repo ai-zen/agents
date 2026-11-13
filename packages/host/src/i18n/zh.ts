@@ -39,6 +39,7 @@ export const zh = {
   "notice.upgradeRestarting": "已更新到 {version}，现在重启。",
   "notice.logWarning": "宿主警告：{summary}",
   "notice.logError": "宿主错误：{summary}",
+  "notice.configRecovered": "配置文件 {path} 坏了，已恢复出厂设置。",
   "notice.handoffWritten": "交接文档已写到 {path}。",
   "notice.autoNamed": "给这段对话起名叫「{name}」。",
   "notice.languageChanged": "这条连接现在说{language}。",

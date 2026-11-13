@@ -1,6 +1,8 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+
+import type { ConfigRecoveredHandler } from "@ai-zen/agents-sdk";
 
 import { HostError } from "./wire/errors.js";
 
@@ -203,40 +205,32 @@ export interface HostSettings {
 /**
  * 读 `<dataRoot>/host.json`。
  *
- * 三种情况分开：文件不在 → 空设置（这一档没说话）；读不出来 / 不是 JSON 对象 → `config_invalid`
- * （写坏了要让人看见，不能当没有，否则用户改完没有任何反馈）；`port` 在但不是可用端口 →
+ * 三种情况分开：文件不在 → 空设置（这一档没说话，静默）；读不出来 / 不是 JSON / 不是对象 →
+ * 就是坏文件，恢复出厂：当空设置用（默认端口、默认语言）、写回一份合法的 `{}`、回调一次
+ * （D32：坏了就恢复出厂，下次启动不再遇到同一个坏文件）；`port` 在但不是可用端口 →
  * `config_invalid`（裁定 R67：显式给出的非法值报错，不静默回落）。
  */
-export async function readHostSettings(paths: HostPaths): Promise<HostSettings> {
+export async function readHostSettings(
+  paths: HostPaths,
+  onRecovered?: ConfigRecoveredHandler,
+): Promise<HostSettings> {
   let raw: string;
   try {
     raw = await readFile(paths.hostConfigFile, "utf8");
   } catch (error) {
     // 文件不在是正常情况（绝大多数据根上就没有这份文件）
     if (isMissingFile(error)) return {};
-    throw new HostError("config_invalid", {
-      messageKey: "config.fileBroken",
-      params: { path: paths.hostConfigFile, reason: "unreadable" },
-      detail: { path: paths.hostConfigFile, reason: "unreadable" },
-    });
+    return await recoverHostSettings(paths, onRecovered);
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    throw new HostError("config_invalid", {
-      messageKey: "config.fileBroken",
-      params: { path: paths.hostConfigFile, reason: "not_json" },
-      detail: { path: paths.hostConfigFile, reason: "not_json" },
-    });
+    return await recoverHostSettings(paths, onRecovered);
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new HostError("config_invalid", {
-      messageKey: "config.fileBroken",
-      params: { path: paths.hostConfigFile, reason: "not_an_object" },
-      detail: { path: paths.hostConfigFile, reason: "not_an_object" },
-    });
+    return await recoverHostSettings(paths, onRecovered);
   }
 
   const record = parsed as Record<string, unknown>;
@@ -244,6 +238,18 @@ export async function readHostSettings(paths: HostPaths): Promise<HostSettings> 
   const port = record.port;
   if (!isValidPort(port)) throw invalidPort("port", port, "host.json");
   return { port };
+}
+
+/**
+ * 坏掉之后恢复出厂：写回一份合法的 `{}`（＝默认端口、默认语言），再回调一次。
+ */
+async function recoverHostSettings(
+  paths: HostPaths,
+  onRecovered?: ConfigRecoveredHandler,
+): Promise<HostSettings> {
+  await writeFile(paths.hostConfigFile, "{}\n", "utf8");
+  await onRecovered?.(paths.hostConfigFile);
+  return {};
 }
 
 function isMissingFile(error: unknown): boolean {

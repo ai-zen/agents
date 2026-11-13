@@ -15,6 +15,14 @@ import { FACTORY_REASONING_PRESETS, REASONING_PRESETS_FILE } from "./reasoning-p
 import { migrateConfig } from "./migrate.js";
 
 /**
+ * 配置坏了、已经按出厂恢复之后的回调（参数是坏掉的那个文件路径）。
+ *
+ * 恢复本身在读的那一刻就做完了（写回出厂配置 + 返回出厂配置）；这个回调只负责让上层
+ * 能告诉用户「你的配置被重置过一次」。
+ */
+export type ConfigRecoveredHandler = (path: string) => void | Promise<void>;
+
+/**
  * 配置管理器 — 负责配置文件的读写、目录初始化、默认实体创建。
  */
 export class ConfigManager {
@@ -24,9 +32,13 @@ export class ConfigManager {
   /** 当前配置里的模型 id 集合（bootstrap 时填充，供默认 Agent 校验 modelId） */
   private knownModelIds: Set<string> = new Set();
 
-  constructor(configPath: string) {
+  /** 配置坏了被恢复出厂之后要通知的那一下（不注入就只是恢复，不告诉任何人） */
+  private readonly onRecovered?: ConfigRecoveredHandler;
+
+  constructor(configPath: string, onRecovered?: ConfigRecoveredHandler) {
     this.configPath = configPath;
     this.basePath = dirname(configPath);
+    this.onRecovered = onRecovered;
   }
 
   // -----------------------------------------------------------------------
@@ -34,7 +46,8 @@ export class ConfigManager {
   // -----------------------------------------------------------------------
 
   /**
-   * 读取配置。文件不存在时返回出厂默认配置。
+   * 读取配置。文件不存在时返回出厂默认配置；文件坏了（解析不了 / 不是对象）时
+   * 恢复出厂并写回磁盘，也返回出厂默认配置（见 `readRaw`）。
    *
    * 读到即**迁移**（`config/migrate.ts`）：上层拿到的永远是当前字段形状，
    * 旧字段（`maxContextTokens` / `maxContextChars`）不会漏到调用方。
@@ -45,7 +58,13 @@ export class ConfigManager {
     return raw ? migrateConfig(raw).config : { ...DEFAULT_APP_CONFIG };
   }
 
-  /** 读磁盘原文（不做任何迁移/同步），供 `ensureDefaultConfig()` 对比写盘用 */
+  /**
+   * 读磁盘原文（不做任何迁移/同步），供 `ensureDefaultConfig()` 对比写盘用。
+   *
+   * 文件在但读不成配置（JSON 解析不了、或者解析出来不是对象）就是一档「坏」：当场用出厂
+   * 配置写回磁盘，再回调一次，返回出厂配置。写回是为了让下次启动不再遇到同一个坏文件 ——
+   * 只返回默认值不落盘，用户每次开客户端都会再撞一次。
+   */
   private async readRaw(): Promise<AppConfig | null> {
     try {
       await fs.access(this.configPath);
@@ -53,7 +72,19 @@ export class ConfigManager {
       return null;
     }
     const raw = await fs.readFile(this.configPath, "utf-8");
-    return JSON.parse(raw) as AppConfig;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // 解析不了与「解析出来不是对象」是同一档坏
+      parsed = null;
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      await this.write(DEFAULT_APP_CONFIG);
+      await this.onRecovered?.(this.configPath);
+      return { ...DEFAULT_APP_CONFIG };
+    }
+    return parsed as AppConfig;
   }
 
   async write(config: AppConfig): Promise<void> {

@@ -22,7 +22,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
 import { AgentRepository, ConfigManager } from "@ai-zen/agents-sdk";
-import type { AppConfig, HandoffService, ReasoningPresets } from "@ai-zen/agents-sdk";
+import type { AppConfig, ConfigRecoveredHandler, HandoffService, ReasoningPresets } from "@ai-zen/agents-sdk";
 
 import { readHostSettings, resolveListenTarget, resolvePaths } from "./config.js";
 import type { ListenTarget, HostPaths } from "./config.js";
@@ -217,6 +217,34 @@ export function readDiskVersion(): string | null {
     // 包元数据读不到不影响服务本身：升级判定拿不到真版本而已
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// 配置文件恢复出厂的通知口
+// ---------------------------------------------------------------------------
+
+/**
+ * 配置文件坏了被恢复出厂时的通知口（D32）。
+ *
+ * `host.json` 与 `config.json` 的首次读都在通知服务之前（端口要在开库之前定下来，
+ * `bootstrap()` 在造对象之前），装配期发生的恢复先攒在这里；`HostApp` 造好之后 `attach()`
+ * 接上真正的通知，攒下的补发完，此后每恢复一次当场发一次。
+ */
+class ConfigRecoverySpool {
+  private readonly queued: string[] = [];
+  private sink: ConfigRecoveredHandler | null = null;
+
+  /** 交给 `readHostSettings` / `ConfigManager` 的那个回调 */
+  readonly onRecovered: ConfigRecoveredHandler = (path) => {
+    if (this.sink !== null) return this.sink(path);
+    this.queued.push(path);
+  };
+
+  /** 接上通知口，并把攒下的那些补发完 */
+  async attach(sink: ConfigRecoveredHandler): Promise<void> {
+    this.sink = sink;
+    for (const path of this.queued.splice(0)) await sink(path);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -586,6 +614,21 @@ export class HostApp {
   }
 
   /**
+   * 报一条「配置文件坏了、已恢复出厂」（D32）。
+   *
+   * 恢复动作本身在读到坏文件那一刻就做完了（写回 + 用出厂配置），这里只负责让用户知道
+   * 自己被重置过 —— warning 是 PRD F-J2 要求上通知栏的那一档。
+   */
+  private async noticeRecoveredConfig(path: string): Promise<void> {
+    await this.noticeService.create({
+      level: "warning",
+      code: "notice.configRecovered",
+      params: { path },
+      duration: null,
+    });
+  }
+
+  /**
    * 造一个 `HostApp`（不监听）。
    *
    * 顺序上先读配置文件、再开库：端口写得不对（`config_invalid`）时连库都不必建
@@ -594,9 +637,12 @@ export class HostApp {
    */
   static async create(options: HostAppOptions = {}): Promise<HostApp> {
     const paths = resolvePaths(options.aiZenDir);
+    // 配置文件坏了就恢复出厂（D32）：恢复过的文件名先攒着，等通知服务起来再补一条 warning
+    const recoveries = new ConfigRecoverySpool();
     // D25 的中间那一档：只在这一档真的要被用到时才读（参数给了就不必读，坏文件也不该拦住显式端口）
     const configPort =
-      options.configPort ?? (options.port === undefined ? (await readHostSettings(paths)).port : undefined);
+      options.configPort ??
+      (options.port === undefined ? (await readHostSettings(paths, recoveries.onRecovered)).port : undefined);
 
     await mkdir(paths.dataRoot, { recursive: true });
     await mkdir(paths.runDir, { recursive: true });
@@ -610,20 +656,24 @@ export class HostApp {
       throw error;
     }
 
-    const configManager = new ConfigManager(paths.configFile);
+    const configManager = new ConfigManager(paths.configFile, recoveries.onRecovered);
     // SDK 口径的首次初始化：目录 + config.json + 默认助手 + 子 Agent + mcp.json + 出厂 Skill
     // + 思考策略表。已有文件不覆盖（用户自定义的助手定义 `custom: true` 原样保留）。
     await configManager.bootstrap();
 
     const logging = resolveLogger(options, paths);
+    let app: HostApp;
     try {
-      return new HostApp(options, paths, db, configManager, configPort, logging.logger);
+      app = new HostApp(options, paths, db, configManager, configPort, logging.logger);
     } catch (error) {
       // 构造途中的抛出（端口不合法、接线造不出来）也要把库关掉：worker 线程不该被漏下
       await db.close();
       await logging.own?.close();
       throw error;
     }
+    // 通知服务就位了：装配期恢复过出厂的那几份配置各补一条 warning
+    await recoveries.attach((path) => app.noticeRecoveredConfig(path));
+    return app;
   }
 
   // -------------------------------------------------------------------------
@@ -1099,7 +1149,7 @@ export class HostApp {
     return { model: model ?? null, endpoint: endpoint ?? null };
   }
 
-  /** 读配置；坏了就是 `config_invalid`（服务层读配置时也是这个口径） */
+  /** 读配置（`config.json` 坏了由 SDK 恢复出厂，D32） */
   private async readConfig(): Promise<AppConfig> {
     return await this.configManager.read();
   }
