@@ -749,8 +749,8 @@ export class ConversationService {
       name: row.name,
       nameIsAuto: row.nameIsAuto,
       pinned: row.pinned,
-      agentId: row.agentId ?? "",
-      modelId: row.modelId ?? "",
+      agentId: row.agentId,
+      modelId: row.modelId,
       createdAt: iso(row.createdAt),
       updatedAt: iso(row.updatedAt),
       // 这个数来自 `listByConversation` 的长度：只有**主线**消息（不含子 Agent 的，那些在同一个
@@ -775,9 +775,9 @@ export class ConversationService {
     const model = this.effectiveModel(row, context.config);
 
     const modelState: ConversationModelState = {
-      modelId: model?.id ?? row.modelId ?? "",
+      modelId: model?.id ?? row.modelId,
       // 模型可能在配置里被删掉了：行上的 id 仍然有效（它是这段会话现在用的那个），显示名退回 id
-      name: model?.name ?? row.modelId ?? "",
+      name: model?.name ?? row.modelId,
       vision: model?.vision === true,
       source: this.modelSource(row, agent, context.config),
     };

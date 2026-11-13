@@ -771,7 +771,12 @@ export class ConfigService {
 // 纯函数
 // ---------------------------------------------------------------------------
 
-/** 端点定义 → 对外形状（密钥只给掩码，F-F2） */
+/**
+ * 端点定义 → 对外形状（密钥只给掩码，F-F2）。
+ *
+ * `apiKey` 在类型上是必填，但 `config.json` 是手改得了的：SDK 的读法是 `JSON.parse as AppConfig`，
+ * 不补字段。少写这一行的配置会走到 `?? ""`（界面显示「未设置密钥」，而不是整页读不出来）。
+ */
 function toEndpointView(endpoint: Endpoint): EndpointView {
   const apiKey = endpoint.apiKey ?? "";
   return {

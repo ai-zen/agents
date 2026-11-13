@@ -207,25 +207,12 @@ export class DiscoveryService {
    * `cwd` 为 `null`（还没打开项目）时只给后两层：项目侧那三层的路径得先有项目才算得出来。
    */
   mcpLayers(cwd: string | null): DiscoveryLayerPath[] {
+    const editable = this.editableMcpLayers(cwd);
     return withoutNulls([
       projectLayer(cwd, 0, `.${FILE_MCP}`, "other"),
-      cwd === null
-        ? null
-        : {
-            depth: 1,
-            path: join(cwd, PROJECT_AI_ZEN_DIR, FILE_MCP),
-            editable: true,
-            scope: "workspace" as const,
-            owner: "workspace" as const,
-          },
+      editable.workspace,
       projectLayer(cwd, 2, join(PROJECT_AGENTS_DIR, FILE_MCP), "other"),
-      {
-        depth: 3,
-        path: join(this.basePath, FILE_MCP),
-        editable: true,
-        scope: "user" as const,
-        owner: "user" as const,
-      },
+      editable.user,
       {
         depth: 4,
         path: join(this.homeDir, HOME_AGENTS_DIR, FILE_MCP),
@@ -234,6 +221,37 @@ export class DiscoveryService {
         owner: "other" as const,
       },
     ]);
+  }
+
+  /**
+   * 5 层链里那两个可写的层（第 1 层与第 4 层）；没有项目时 `workspace` 那层是 `null`。
+   *
+   * 位置、能不能写、归谁只在这里定一次：读（`mcpLayers`）与写（`writableMcpLayer`）拿的
+   * 是同一份定义。
+   */
+  private editableMcpLayers(cwd: string | null): {
+    workspace: DiscoveryLayerPath | null;
+    user: DiscoveryLayerPath;
+  } {
+    return {
+      workspace:
+        cwd === null
+          ? null
+          : {
+              depth: 1,
+              path: join(cwd, PROJECT_AI_ZEN_DIR, FILE_MCP),
+              editable: true,
+              scope: "workspace",
+              owner: "workspace",
+            },
+      user: {
+        depth: 3,
+        path: join(this.basePath, FILE_MCP),
+        editable: true,
+        scope: "user",
+        owner: "user",
+      },
+    };
   }
 
   /** Skill 的 4 层目录：`<ws>/.ai-zen/skills` → `<ws>/.agents/skills` → `<aiZenDir>/skills` → `~/.agents/skills` */
@@ -305,18 +323,6 @@ export class DiscoveryService {
   /** 只取 MCP 的 5 层路径（喂给 SDK 的 `discoverMcpServers` / `McpScopePlugin`） */
   mcpPaths(cwd: string): string[] {
     return this.mcpLayers(cwd).map((layer) => layer.path);
-  }
-
-  /** 按作用域找那一层的路径（写入时用） */
-  mcpLayer(scope: McpEditableScope, cwd: string | null): DiscoveryLayerPath {
-    const layer = this.mcpLayers(cwd).find((candidate) => candidate.scope === scope);
-    if (!layer) {
-      throw new HostError("unsupported", {
-        params: { what: `the "${scope}" MCP scope` },
-        detail: { scope, reason: "no_such_scope" },
-      });
-    }
-    return layer;
   }
 
   // -------------------------------------------------------------------------
@@ -427,15 +433,17 @@ export class DiscoveryService {
     return { layer: await this.readMcpLayerView(layer), removed };
   }
 
-  /** 可写作用域 → 那一层；`workspace` 作用域必须能落到某个项目里 */
+  /** 可写作用域 → 那一层；`workspace` 作用域必须能落到某个项目里（空串也算没给） */
   private writableMcpLayer(scope: McpEditableScope, cwd: string | null): DiscoveryLayerPath {
-    if (scope === "workspace" && (cwd === null || cwd.trim() === "")) {
+    const editable = this.editableMcpLayers(cwd);
+    if (scope === "user") return editable.user;
+    if (editable.workspace === null || (cwd ?? "").trim() === "") {
       throw new HostError("invalid_params", {
         params: { field: "workspaceId" },
         detail: { field: "workspaceId", reason: "workspace_scope_needs_workspace" },
       });
     }
-    return this.mcpLayer(scope, cwd);
+    return editable.workspace;
   }
 
   // -------------------------------------------------------------------------
@@ -1158,6 +1166,8 @@ async function listSubdirectories(dir: string): Promise<string[]> {
     const entries = await fs.readdir(dir, { withFileTypes: true });
     return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
   } catch {
+    // 走到这里只剩两种情形：调用前 `stat` 过了、目录刚被删掉，或没有读权限 ——
+    // 两种都按「这一层没有条目」报（层本身的 broken 已经由 `readDirectory` 报过）
     return [];
   }
 }
@@ -1167,6 +1177,7 @@ async function listFiles(dir: string): Promise<string[]> {
     const entries = await fs.readdir(dir, { withFileTypes: true });
     return entries.filter((entry) => entry.isFile()).map((entry) => entry.name).sort();
   } catch {
+    // 同 `listSubdirectories`：目录在 `stat` 之后刚被删、或没有读权限，按空报
     return [];
   }
 }

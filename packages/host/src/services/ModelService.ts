@@ -379,8 +379,8 @@ export class ModelService {
     const input = params.imageModel;
     const config = await this.readConfig();
     const id = requireText(input?.id, "imageModel.id");
-    requireText(input?.name, "imageModel.name");
-    requireText(input?.modelName, "imageModel.modelName");
+    const name = requireText(input?.name, "imageModel.name");
+    const modelName = requireText(input?.modelName, "imageModel.modelName");
     const endpointId = requireText(input?.endpointId, "imageModel.endpointId");
     if (!findEndpoint(config, endpointId)) {
       throw new HostError("invalid_params", {
@@ -399,9 +399,9 @@ export class ModelService {
         defaultQuality: input.defaultQuality,
       }),
       id,
-      name: requireText(input.name, "imageModel.name"),
+      name,
       endpointId,
-      modelName: requireText(input.modelName, "imageModel.modelName"),
+      modelName,
       custom: true,
     };
     const next: AppConfig = {

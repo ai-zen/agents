@@ -185,33 +185,6 @@ describe("问题对象的基本形状（D22）", () => {
     expect(chinese.questions[0]?.prompt.params).toEqual({ percent: 80 });
   });
 
-  it("候选为空、种类不认识、文案键不认识都按参数不对拒", async () => {
-    await expect(
-      harness.service.ask({
-        conversationId: "c1",
-        kind: "handoff",
-        prompt: { messageKey: "question.handoff.prompt" },
-        options: [],
-      }),
-    ).rejects.toMatchObject({ code: "invalid_params" });
-    await expect(
-      harness.service.ask({
-        conversationId: "c1",
-        kind: "no_such_kind" as unknown as "handoff",
-        prompt: { messageKey: "question.handoff.prompt" },
-        options: [{ value: "x", label: { messageKey: "question.handoff.self" } }],
-      }),
-    ).rejects.toMatchObject({ code: "invalid_params" });
-    await expect(
-      harness.service.ask({
-        conversationId: "c1",
-        kind: "handoff",
-        prompt: { messageKey: "no.such.key" as unknown as "question.handoff.prompt" },
-        options: [{ value: "x", label: { messageKey: "question.handoff.self" } }],
-      }),
-    ).rejects.toMatchObject({ code: "invalid_params" });
-  });
-
   it("list 不给对话就是全库，给了就只看那一段（R61）", async () => {
     const first = await askHandoff(harness);
     // 另一段对话上的问题

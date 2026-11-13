@@ -669,7 +669,7 @@ class TurnSession implements ChatTurn {
     const agent = await this.createAgent({
       conversationId: this.conversationId,
       workspaceId: this.conversation.workspaceId,
-      agentId: this.conversation.agentId ?? "",
+      agentId: this.conversation.agentId,
       modelId: this.conversation.modelId,
       thinkingLevel: this.conversation.thinkingLevel,
       scope: this.scope,
@@ -1516,7 +1516,7 @@ export class ChatRunner {
     }
     return prepare({
       conversationId: conversation.id,
-      agentId: conversation.agentId ?? "",
+      agentId: conversation.agentId,
       modelId: conversation.modelId,
       input: params.input,
     });

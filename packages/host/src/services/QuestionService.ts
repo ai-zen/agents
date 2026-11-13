@@ -29,7 +29,6 @@ import type { MessageRepository } from "../storage/MessageRepository.js";
 import type { QuestionPatch, QuestionRepository } from "../storage/QuestionRepository.js";
 import type { Question } from "../storage/types.js";
 import { HostError } from "../wire/errors.js";
-import { QUESTION_KINDS } from "../wire/states.js";
 import type {
   HandoffStartParams,
   LocalizedText,
@@ -293,46 +292,14 @@ export class QuestionService {
    *
    * 先落库再推事件：库里那一行是「多端看同一个」的真相（D22），推送只是提醒在线的那几个
    * 窗口去拉（L5 断线即作废）。
+   *
+   * 入参不做形状校验：`kind` 与两个 `messageKey` 的类型本身就是闭集（`QuestionKind` /
+   * `MessageKey`），而这里只有 `askHandoff` 一个调用方，候选项是常量字面量。
    */
   async ask(
     input: AskQuestionInput,
     language: Language = DEFAULT_LANGUAGE,
   ): Promise<QuestionView> {
-    if (!(QUESTION_KINDS as readonly string[]).includes(input.kind)) {
-      throw new HostError("invalid_params", {
-        params: { field: "kind" },
-        detail: { field: "kind", value: input.kind, kinds: QUESTION_KINDS },
-      });
-    }
-    if (!hasMessage(input.prompt.messageKey)) {
-      throw new HostError("invalid_params", {
-        params: { field: "prompt" },
-        detail: { field: "prompt", reason: "unknown_message_key" },
-      });
-    }
-    if (input.options.length === 0) {
-      throw new HostError("invalid_params", {
-        params: { field: "options" },
-        detail: { field: "options", reason: "empty" },
-      });
-    }
-    const seen = new Set<string>();
-    for (const option of input.options) {
-      if (option.value.trim().length === 0 || seen.has(option.value)) {
-        throw new HostError("invalid_params", {
-          params: { field: "options" },
-          detail: { field: "options", reason: "duplicate_or_empty_value", value: option.value },
-        });
-      }
-      seen.add(option.value);
-      if (!hasMessage(option.label.messageKey)) {
-        throw new HostError("invalid_params", {
-          params: { field: "options" },
-          detail: { field: "options", reason: "unknown_message_key", value: option.value },
-        });
-      }
-    }
-
     const payload: StoredPayload = {
       code: input.code ?? input.prompt.messageKey,
       prompt: { messageKey: input.prompt.messageKey, params: input.prompt.params ?? {} },
