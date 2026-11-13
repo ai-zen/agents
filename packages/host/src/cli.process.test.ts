@@ -194,6 +194,18 @@ describe("命令行本身：退出码与让人看得懂的错误", () => {
     expect(result.out).toContain("协议 1");
   });
 
+  /**
+   * 发布出去的形状：`dist/cli.js` 的第一行必须是 shebang。
+   *
+   * 这一条盯的是「装到机器上能不能用」：`bin` 装出来的 `.bin/agents-host` 直接指向这个文件，
+   * 缺 shebang 时 shell 会把它当脚本去解释，用户看到的是 `xxx: not found` 这种跟 CLI 毫无关系的
+   * 报错（发布 alpha.0 时真撞上了，所以补这条）。执行位由 npm 打包时按 `bin` 打上，不在这一步验。
+   */
+  it("dist/cli.js 带 shebang：装成 bin 之后能直接执行", async () => {
+    const first = (await fs.readFile(CLI_ENTRY, "utf8")).split("\n")[0];
+    expect(first).toBe("#!/usr/bin/env node");
+  });
+
   it("--help 打用法，退出码 0", () => {
     const result = runCli(["--help"]);
     expect(result.code).toBe(0);

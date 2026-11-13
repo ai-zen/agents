@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * 命令行入口（`bin.agents-host` → `dist/cli.js`）。
  *
