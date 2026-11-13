@@ -311,7 +311,7 @@ describe("HostApp 的组装", () => {
     }
   });
 
-  it("host.version / host.usage / host.capabilities 报的都是事实", async () => {
+  it("host.version / host.capabilities 报的都是事实", async () => {
     const fixture = await makeFixture();
     const app = await startApp(fixture);
 
@@ -325,10 +325,6 @@ describe("HostApp 的组装", () => {
     expect(capabilities.capabilities.map((item) => item.method)).toEqual([...METHOD_NAMES]);
     expect(capabilities.capabilities[0]?.title.message.length).toBeGreaterThan(0);
     expect(capabilities.capabilities[0]?.id).toMatch(/^(F-[A-Z]\d+|D\d+)(#\w+)?$/);
-
-    const usage = await callMethod(app, "host.usage");
-    expect(usage.scope).toBe("host");
-    expect(usage.usage.total.total_tokens).toBe(0);
 
     // 升级判定：磁盘版本与正在跑的一样 → 已经是最新，不重启（D4 / F-E3）
     const upgrade = await callMethod(app, "host.upgrade", {});

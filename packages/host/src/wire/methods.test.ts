@@ -26,7 +26,6 @@ const DOMAINS: readonly MethodDomain[] = [
   "config",
   "agent",
   "model",
-  "credential",
   "asset",
   "completion",
   "handoff",
@@ -209,7 +208,7 @@ describe("PRD §4 的落点能力都有方法承接", () => {
       "F-E1": ["host.capabilities", "host.shutdown"],
       "F-E2": ["config.patch"],
       "F-E3": ["host.upgrade", "host.version"],
-      "F-E4": ["host.setLanguage", "credential.create", "config.saveEndpoint"],
+      "F-E4": ["host.setLanguage", "config.saveEndpoint"], // 直达入口：语言 + 端点（凭据不在这条线上）
       "F-E5": ["host.capabilities"],
       "F-E6": ["host.capabilities"],
       "F-F1": ["config.get", "config.patch"],
@@ -229,7 +228,7 @@ describe("PRD §4 的落点能力都有方法承接", () => {
       "F-H8": ["asset.begin", "asset.end"],
       "F-I2": ["message.list"],
       "F-I3": ["conversation.state"],
-      "F-I5": ["host.usage", "conversation.state"],
+      "F-I5": ["conversation.state"], // 用量快照（本轮 / 累计含子 Agent / 速率）就在它的 `usage` 上
       "F-I6": ["conversation.state"],
       "F-I7": ["message.list", "conversation.state"],
       "F-I8": ["notice.list", "notice.dismiss", "notice.clear"],
@@ -256,5 +255,36 @@ describe("PRD §4 的落点能力都有方法承接", () => {
     for (const method of forbidden) {
       expect(isMethodName(method), method).toBe(false);
     }
+  });
+});
+
+describe("已删掉的方法不许自己长回来（裁定 2026-11-13）", () => {
+  /**
+   * 防的回归：有人照着旧 PRD / 旧客户端代码把方法加回 `MethodMap` 或 `METHOD_NAMES`。
+   *
+   * 这两组删的是「契约面」不是「能力」：用量看 `conversation.state.usage`（F-I5），
+   * 凭据管理是宿主的入口（`agents-host token create|list|revoke`）。方法一旦回到表里，
+   * 客户端就会以为这条路由通了，而宿主并不想提供它。
+   */
+  const REMOVED = [
+    "host.usage",
+    "credential.list",
+    "credential.create",
+    "credential.revoke",
+  ] as const;
+
+  it("这四个名字不在 METHOD_NAMES 里，也不是 MethodMap 的键", () => {
+    // 运行时：分发只认 METHOD_NAMES（`isMethodName`），所以它们进不来
+    for (const method of REMOVED) {
+      expect(METHOD_NAMES as readonly string[], method).not.toContain(method);
+      expect(isMethodName(method), method).toBe(false);
+    }
+
+    // 类型层：`MethodMap` 是纯类型，只能靠差集断言。上面「METHOD_NAMES 覆盖 MethodMap 的每个
+    // 键」那条用例已经把这层关系钉住了，所以「不在 METHOD_NAMES」+「覆盖无漏」= 「不在 MethodMap」。
+    // 这条断言是它的编译期版本：把方法加回 `MethodMap` 时，这里不再是 never，编译就红。
+    type StillInContract = Extract<MethodName, (typeof REMOVED)[number]>;
+    const noLongerInContract: StillInContract extends never ? true : false = true;
+    expect(noLongerInContract).toBe(true);
   });
 });

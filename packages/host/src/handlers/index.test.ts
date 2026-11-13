@@ -1,5 +1,5 @@
 /**
- * `createHandlers` 的验收：整张表长什么样、哪些方法还没注册、三个「只转发」的域接得对不对。
+ * `createHandlers` 的验收：整张表长什么样、哪些方法还没注册、两个「只转发」的域接得对不对。
  *
  * 这里走的是单根造出来的真服务（真库、真服务层），只是省掉网络这一层直接调 handler 表；
  * 需要看「未注册的方法回什么」时才开一条真 WebSocket —— 那个答案由接线层给。
@@ -208,8 +208,10 @@ describe("能力清单（F-E5 / F-E6 / F-F9）", () => {
   });
 });
 
-describe("只转发的三个域", () => {
-  it("message.list / search.* / credential.* 都接到服务层", async () => {
+describe("只转发的两个域", () => {
+  // `credential.*` 已从契约面删除（裁定 2026-11-13：凭据归宿主自己管），那三个方法不再是
+  // 客户端能调的入口；能力本身（`CredentialService`）另在 `services/CredentialService.test.ts` 验。
+  it("message.list / search.* 都接到服务层", async () => {
     const { app, workspaceDir } = await startApp();
     const { workspace } = await callMethod(app, "workspace.create", { cwd: workspaceDir.path });
     const conversation = await seedConversation(app, workspace.id);
@@ -226,17 +228,5 @@ describe("只转发的三个域", () => {
     const fullText = await callMethod(app, "search.messages", { query: "没有这段话" });
     expect(fullText.hits).toEqual([]);
     expect(fullText.total).toBe(0);
-
-    const created = await callMethod(app, "credential.create", { note: "另一台设备" });
-    expect(created.token.length).toBeGreaterThan(0);
-    const listed = await callMethod(app, "credential.list");
-    expect(listed.credentials.map((item) => item.id)).toContain(created.credential.id);
-    expect(
-      (await callMethod(app, "credential.revoke", { credentialId: created.credential.id })).revoked,
-    ).toBe(true);
-    // 再吊销一次：这次没有真的改动库（R42）
-    expect(
-      (await callMethod(app, "credential.revoke", { credentialId: created.credential.id })).revoked,
-    ).toBe(false);
   });
 });

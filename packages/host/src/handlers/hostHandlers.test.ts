@@ -1,7 +1,9 @@
 /**
- * `host.*` 的验收：版本与能力清单报的是事实、三个范围的用量口径、收尾请求走单根。
+ * `host.*` 的验收：版本与能力清单报的是事实、收尾请求走单根。
  *
  * `host.hello` / `host.setLanguage` 由接线层接管（语言是连接状态），不在这里验。
+ * `host.usage` 已从契约面删除（裁定 2026-11-13，F-I5 的落点是 `conversation.state`），
+ * 它的用例也一起删了。
  */
 
 import { promises as fs } from "node:fs";
@@ -131,16 +133,6 @@ async function callMethod<M extends MethodName>(
   return await handler({ method, params, connection: CONNECTION });
 }
 
-/** 跑一轮，让库里真的有用量可求和 */
-async function runOnce(app: HostApp, conversationId: string): Promise<void> {
-  await callMethod(app, "conversation.send", { conversationId, input: { content: "你好" } });
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (app.chatRunner.turn(conversationId) === undefined) return;
-    await wait(10);
-  }
-  throw new Error("这一轮没有结算");
-}
-
 afterEach(async () => {
   for (const app of apps.splice(0)) await app.stop("requested").catch(() => undefined);
   for (const temp of temps.splice(0)) await temp.remove();
@@ -161,30 +153,6 @@ describe("host.version / host.capabilities", () => {
     const send = capabilities.capabilities.find((item) => item.method === "conversation.send");
     expect(send).toMatchObject({ id: "F-C2", blocking: true, destructive: false });
     expect(send?.title.message.length).toBeGreaterThan(0);
-  });
-});
-
-describe("host.usage", () => {
-  it("三个范围各算各的：对话 / 项目 / 整机（F-I5）", async () => {
-    const { app, conversationId, workspaceId } = await makeHarness();
-
-    // 还没有消息：三个范围都是零值，不是错误
-    const empty = await callMethod(app, "host.usage", { conversationId });
-    expect(empty.scope).toBe("conversation");
-    expect(empty.usage.total.total_tokens).toBe(0);
-
-    await runOnce(app, conversationId);
-
-    const byConversation = await callMethod(app, "host.usage", { conversationId });
-    expect(byConversation.usage.total.total_tokens).toBe(15);
-
-    const byWorkspace = await callMethod(app, "host.usage", { workspaceId });
-    expect(byWorkspace.scope).toBe("workspace");
-    expect(byWorkspace.usage.total.total_tokens).toBe(15);
-
-    const whole = await callMethod(app, "host.usage");
-    expect(whole.scope).toBe("host");
-    expect(whole.usage.total.total_tokens).toBe(15);
   });
 });
 

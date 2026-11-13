@@ -29,7 +29,6 @@ import type { AssetService } from "../services/AssetService.js";
 import type { CompletionService } from "../services/CompletionService.js";
 import type { ConfigService } from "../services/ConfigService.js";
 import type { ConversationService } from "../services/ConversationService.js";
-import type { CredentialService } from "../services/CredentialService.js";
 import type { HandoffService } from "../services/HandoffService.js";
 import type { MessageService } from "../services/MessageService.js";
 import type { ModelService } from "../services/ModelService.js";
@@ -44,7 +43,6 @@ import { createAssetHandlers } from "./assetHandlers.js";
 import { createCompletionHandlers } from "./completionHandlers.js";
 import { createConfigHandlers } from "./configHandlers.js";
 import { createConversationHandlers } from "./conversationHandlers.js";
-import { createCredentialHandlers } from "./credentialHandlers.js";
 import { createHandoffHandlers } from "./handoffHandlers.js";
 import { createMessageHandlers } from "./messageHandlers.js";
 import { createModelHandlers } from "./modelHandlers.js";
@@ -59,7 +57,6 @@ export type { AssetHandlerDeps } from "./assetHandlers.js";
 export type { CompletionHandlerDeps } from "./completionHandlers.js";
 export type { ConfigHandlerDeps } from "./configHandlers.js";
 export type { ConversationHandlerDeps } from "./conversationHandlers.js";
-export type { CredentialHandlerDeps } from "./credentialHandlers.js";
 export type { HandoffHandlerDeps } from "./handoffHandlers.js";
 export type { MessageHandlerDeps } from "./messageHandlers.js";
 export type { ModelHandlerDeps } from "./modelHandlers.js";
@@ -104,7 +101,6 @@ export interface HandlerDeps {
   conversations: ConversationService;
   messages: MessageService;
   search: SearchService;
-  credentials: CredentialService;
   assets: AssetService;
   config: ConfigService;
   agents: AgentService;
@@ -192,7 +188,6 @@ export function createHandlers(deps: HandlerDeps): HandlerTable {
     }),
     ...createMessageHandlers(deps),
     ...createSearchHandlers(deps),
-    ...createCredentialHandlers(deps),
     ...createAssetHandlers({ assets: deps.assets }),
     ...createConfigHandlers({ config: deps.config }),
     ...createAgentHandlers({ agents: deps.agents }),

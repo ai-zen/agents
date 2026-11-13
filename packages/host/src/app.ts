@@ -891,7 +891,6 @@ export class HostApp {
       conversations: this.conversationService,
       messages: this.messageService,
       search: this.searchService,
-      credentials: this.credentialService,
       assets: this.assetService,
       config: this.configService,
       agents: this.agentService,

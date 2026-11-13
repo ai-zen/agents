@@ -45,7 +45,6 @@ export const en = {
   "notice.logError": "Host error: {summary}",
   "notice.handoffWritten": "Handoff document written to {path}.",
   "notice.autoNamed": "Named this conversation \"{name}\".",
-  "notice.credentialRevoked": "That access key no longer works.",
   "notice.languageChanged": "This connection now speaks {language}.",
   "notice.hardLimitHit": "This turn stopped at the {limit}-token limit. Nothing was lost — the conversation is waiting for you.",
 
@@ -176,8 +175,6 @@ export const en = {
   "capability.host.upgrade.detail": "Compares the version on disk with the running one and restarts when the update has really landed.",
   "capability.host.shutdown": "Shut the host down",
   "capability.host.shutdown.detail": "Stops serving once nothing is left running — open connections are closed.",
-  "capability.host.usage": "Show token usage",
-  "capability.host.usage.detail": "Tokens for this turn, this conversation, this project or the whole host, helper agents included.",
   "capability.host.capabilities": "List what the host can do",
   "capability.host.capabilities.detail": "The list this help page is drawn from: what each ability does and whether it blocks or can't be undone.",
   "capability.host.reload": "Reload from disk",
@@ -291,13 +288,6 @@ export const en = {
   "capability.model.saveImage.detail": "Binds an image model to an endpoint with its default size and quality.",
   "capability.model.deleteImage": "Delete an image model",
   "capability.model.deleteImage.detail": "Refuses while it is the default image model.",
-
-  "capability.credential.list": "List access keys",
-  "capability.credential.list.detail": "Every key with its note and whether it has been revoked.",
-  "capability.credential.create": "Create an access key",
-  "capability.credential.create.detail": "The plain key is shown once; afterwards only its hash is stored.",
-  "capability.credential.revoke": "Revoke an access key",
-  "capability.credential.revoke.detail": "That key stops working; the other keys keep working.",
 
   "capability.asset.begin": "Start an upload",
   "capability.asset.begin.detail": "Declares the size and type of a file; anything over the limit is refused right here.",

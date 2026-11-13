@@ -38,15 +38,20 @@ interface CapabilityFact {
  * `blocking` 只标「跑起来时这段对话不能发下一条」的那几个：一轮对话、交接回合、
  * 临时对话（它借的 Scope 与项目共用，跑的时候同样不能被打断）。
  * `destructive` 只标「做下去就回不来」的那几个：删项目 / 删对话 / 撤回 / 删端点 /
- * 删助手 / 删模型（含图片模型）/ 删 MCP 条目 / 恢复出厂 / 吊销凭证。清通知不算：它清的是
+ * 删助手 / 删模型（含图片模型）/ 删 MCP 条目 / 恢复出厂。清通知不算：它清的是
  * 界面上的一条提示，为它弹二次确认反而是打扰。
+ *
+ * 两样东西刻意不在这份清单里（裁定 2026-11-13）：
+ *   - `host.usage`：「按项目 / 整机」的用量聚合没有任何客户端消费，F-I5 的落点在
+ *     `conversation.state` 的 `usage`；
+ *   - `credential.*`：凭据由宿主自己管理（`agents-host token create|list|revoke`），
+ *     客户端只有「连接管理 + 记住密码」，那里没有可渲染的能力。
  */
 const FACTS: readonly CapabilityFact[] = [
   { method: "host.hello", prd: "F-A1", blocking: false, destructive: false },
   { method: "host.version", prd: "F-E3", blocking: false, destructive: false },
   { method: "host.upgrade", prd: "F-E3", blocking: false, destructive: false },
   { method: "host.shutdown", prd: "F-E1", blocking: false, destructive: false },
-  { method: "host.usage", prd: "F-I5", blocking: false, destructive: false },
   { method: "host.capabilities", prd: "F-E5", blocking: false, destructive: false },
   { method: "host.reload", prd: "F-E1", blocking: false, destructive: false },
   { method: "host.setLanguage", prd: "F-E4", blocking: false, destructive: false },
@@ -106,10 +111,6 @@ const FACTS: readonly CapabilityFact[] = [
   { method: "model.restoreFactory", prd: "F-F3", blocking: false, destructive: true },
   { method: "model.saveImage", prd: "F-F4", blocking: false, destructive: false },
   { method: "model.deleteImage", prd: "F-F4", blocking: false, destructive: true },
-
-  { method: "credential.list", prd: "F-E4", blocking: false, destructive: false },
-  { method: "credential.create", prd: "F-E4", blocking: false, destructive: false },
-  { method: "credential.revoke", prd: "F-E4", blocking: false, destructive: true },
 
   { method: "asset.begin", prd: "F-H8", blocking: false, destructive: false },
   { method: "asset.end", prd: "F-H8", blocking: false, destructive: false },

@@ -41,7 +41,6 @@ export const zh = {
   "notice.logError": "宿主错误：{summary}",
   "notice.handoffWritten": "交接文档已写到 {path}。",
   "notice.autoNamed": "给这段对话起名叫「{name}」。",
-  "notice.credentialRevoked": "那串访问密钥已经失效。",
   "notice.languageChanged": "这条连接现在说{language}。",
   "notice.hardLimitHit": "这一轮在 {limit} 这条线停下了。东西都还在，对话等你继续。",
 
@@ -154,8 +153,6 @@ export const zh = {
   "capability.host.upgrade.detail": "比对磁盘上的版本与正在跑的版本，确认新版本真的落盘了才重启。",
   "capability.host.shutdown": "关掉宿主",
   "capability.host.shutdown.detail": "等手上没有欠着的事之后停止服务，已连上的连接会断开。",
-  "capability.host.usage": "看用量",
-  "capability.host.usage.detail": "本轮 / 这段对话 / 这个项目 / 整机的 token 用量，含子 Agent。",
   "capability.host.capabilities": "列出宿主能做什么",
   "capability.host.capabilities.detail": "帮助页就是照这份清单渲染的：每件事做什么、会不会占住对话、能不能撤。",
   "capability.host.reload": "从磁盘重载",
@@ -269,13 +266,6 @@ export const zh = {
   "capability.model.saveImage.detail": "把图片模型绑到端点上，带默认尺寸与质量。",
   "capability.model.deleteImage": "删除图片模型",
   "capability.model.deleteImage.detail": "它还是默认图片模型时拒删。",
-
-  "capability.credential.list": "列出访问密钥",
-  "capability.credential.list.detail": "每一串带备注与是否已吊销。",
-  "capability.credential.create": "新建访问密钥",
-  "capability.credential.create.detail": "明文只显示这一次，此后库里只存摘要。",
-  "capability.credential.revoke": "吊销访问密钥",
-  "capability.credential.revoke.detail": "这一串不再能用，其他几串照常。",
 
   "capability.asset.begin": "开始上传",
   "capability.asset.begin.detail": "先声明文件的大小与类型，超限的当场就拒。",

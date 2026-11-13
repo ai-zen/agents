@@ -19,7 +19,7 @@ import type { Database } from "../storage/Database.js";
 import { CredentialRepository, hashCredential } from "../storage/CredentialRepository.js";
 import { readLocalToken, writeLocalToken } from "./discovery.js";
 
-/** 本地凭证的备注：与用户在 `credential.create` 里自己写的备注区分开 */
+/** 本地凭证的备注：与用户在 `agents-host token create --note` 里自己写的备注区分开 */
 export const LOCAL_CREDENTIAL_NOTE = "local";
 
 /** 凭证明文（base64url）的随机字节数；32 字节 → 43 个字符 */

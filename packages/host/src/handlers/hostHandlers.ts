@@ -1,12 +1,10 @@
 /**
- * `host.*`：进程事实（PRD F-E5 / F-I5 / D4 / L4）。
+ * `host.*`：进程事实（PRD F-E5 / D4 / L4）。
  *
- * 四件事在这里：
+ * 三件事在这里：
  *   - `version` / `capabilities`：报事实，供帮助页与指令菜单渲染（能力清单只在配置层维护一份，
  *     这里不编造）；
  *   - `upgrade`：比磁盘上的版本与正在跑的版本，确认新版本真的落盘了才安排重启（D4 / F-E3）；
- *   - `usage`：按对话 / 项目 / 整机给一份累计用量（PRD F-I5）。三个范围的差别只在「取哪些
- *     对话的消息」，求和用 core 的 `sumUsage`（含子 Agent，与计费同口径）；
  *   - `shutdown`：受理一次收尾请求。真正退不退由单根的退出判据决定（PRD L4 / 裁定 R53）。
  *
  * `host.hello` / `host.setLanguage` / `asset.*` 由接线层自己接管（语言是连接状态、
@@ -14,14 +12,14 @@
  *
  * `host.reload`（F-E1）在这里只做转发：重载是「让磁盘上的改动生效」，那条路（回收 Scope、
  * 合成一条通知）的持有者是配置服务。
+ *
+ * 用量不在这一域（裁定 2026-11-13）：F-I5 的「本轮 / 累计（含子 Agent）/ 速率」由
+ * `conversation.state` 的 `usage`（`UsageSnapshot`）给，`host.usage` 的「按项目 / 整机」聚合
+ * 没有任何客户端消费，已从契约面删除。
  */
-
-import type { AgentNS } from "@ai-zen/agents-core";
 
 import type { Language } from "../i18n/index.js";
 import type { HandlerTable } from "../net/index.js";
-import type { ConversationService } from "../services/ConversationService.js";
-import type { MessageService } from "../services/MessageService.js";
 import { relocalizeText } from "../services/NoticeService.js";
 import type {
   CapabilityView,
@@ -29,11 +27,8 @@ import type {
   HostReloadResult,
   HostUpgradeParams,
   HostUpgradeResult,
-  HostUsageParams,
-  HostUsageResult,
 } from "../wire/index.js";
 import { PROTOCOL_VERSION } from "../wire/index.js";
-import { usageOfMessages } from "./conversationHandlers.js";
 
 /** `host.*` 的实现要的持有者 */
 export interface HostHandlerDeps {
@@ -43,11 +38,6 @@ export interface HostHandlerDeps {
   startedAt: string;
   /** 能力清单（PRD F-E5）；内容归配置层，本轮由单根注入 */
   capabilities: () => CapabilityView[];
-  /** 按范围算用量要能列出对话 */
-  conversations: ConversationService;
-  messages: MessageService;
-  /** 时钟（ISO 8601 时间戳） */
-  now: () => string;
   /** 请求收尾（`host.shutdown`）：单根排程，先让回包写出去 */
   requestStop: (reason?: string) => void;
   /** 从磁盘重载（`host.reload`）：配置服务那边跑「生效」那条路（回收 Scope + 合成通知） */
@@ -85,35 +75,6 @@ export function createHostHandlers(deps: HostHandlerDeps): HandlerTable {
 
     // 重载不重启（F-E1 / F-E2 / R63）：与改配置走同一条生效路径，回同一份报告
     "host.reload": async (context) => await deps.reload(context.params),
-
-    "host.usage": async (context) => await usageOf(deps, context.params),
-  };
-}
-
-/**
- * 一段范围（对话 / 项目 / 整机）的累计用量。
- *
- * 范围只在「取哪些对话」上有差别；空范围（整机还没有任何对话）就是零值，
- * 不是错误 —— `sumUsage([])` 正好给出 core 的零值。
- */
-async function usageOf(
-  deps: HostHandlerDeps,
-  params: HostUsageParams,
-): Promise<HostUsageResult> {
-  const conversationIds = await conversationIdsOf(deps, params);
-  const collected: AgentNS.Message[] = [];
-  for (const conversationId of conversationIds) {
-    const page = await deps.messages.list({ conversationId });
-    collected.push(...page.messages);
-  }
-  return {
-    scope:
-      params.conversationId !== undefined
-        ? "conversation"
-        : params.workspaceId !== undefined
-          ? "workspace"
-          : "host",
-    usage: usageOfMessages(collected, deps.now()),
   };
 }
 
@@ -132,15 +93,4 @@ function localizeCapabilities(
     title: relocalizeText(capability.title, language),
     description: relocalizeText(capability.description, language),
   }));
-}
-
-async function conversationIdsOf(
-  deps: HostHandlerDeps,
-  params: HostUsageParams,
-): Promise<string[]> {
-  if (params.conversationId !== undefined) return [params.conversationId];
-  const scope =
-    params.workspaceId === undefined ? {} : { workspaceId: params.workspaceId };
-  const listed = await deps.conversations.list(scope);
-  return listed.conversations.map((conversation) => conversation.id);
 }

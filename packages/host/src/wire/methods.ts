@@ -27,7 +27,6 @@ import type {
   RunState,
   SubAgentSnapshot,
   ThinkingState,
-  UsageSnapshot,
 } from "./states.js";
 
 /**
@@ -95,7 +94,6 @@ export type MethodDomain =
   | "config"
   | "agent"
   | "model"
-  | "credential"
   | "asset"
   | "completion"
   | "handoff"
@@ -210,18 +208,6 @@ export interface HostShutdownParams {
 /** `shutdown` 出参：已受理（进程随后按 L4 的条件收尾） */
 export interface HostShutdownResult {
   accepted: boolean;
-}
-
-/** `usage` 入参：给哪个范围算（都不给就是这台宿主的累计） */
-export interface HostUsageParams {
-  conversationId?: string;
-  workspaceId?: string;
-}
-
-/** `usage` 出参：用量快照 + 它覆盖的范围（PRD F-I5） */
-export interface HostUsageResult {
-  scope: "conversation" | "workspace" | "host";
-  usage: UsageSnapshot;
 }
 
 /** `capabilities` 出参（PRD F-E5：帮助与指令菜单都从这一份渲染） */
@@ -1213,7 +1199,7 @@ export interface ConfigSaveMcpResult {
  * `config.deleteMcp` 入参（PRD F-F6：另有一条删除）。
  *
  * `id` 本来就不在这一层里时不算失败：`removed: false` 如实回答「本来就没有」，
- * 与 `config.deleteEndpoint` 的 `removed`、`credential.revoke` 的 `revoked` 同口径。
+ * 与 `config.deleteEndpoint` 的 `removed` 同口径（「本来就没有」不是错误）。
  */
 export interface ConfigDeleteMcpParams {
   scope: McpEditableScope;
@@ -1503,13 +1489,19 @@ export interface ModelDeleteImageResult {
 }
 
 // ---------------------------------------------------------------------------
-// credential.*
+// 凭证的形状（宿主内部，不在契约面上）
 // ---------------------------------------------------------------------------
+
+/*
+ * `credential.list|create|revoke` 三个方法已从契约面删除（裁定 2026-11-13：凭证归宿主自己管理，
+ * 客户端只有「连接管理 + 记住密码」）。下面的形状留着，因为能力本身还在：
+ * `CredentialService` 与 `agents-host token create|list|revoke` 的返回值用的就是这几个类型。
+ */
 
 /**
  * 一串凭证（PRD L11：可以有多串、创建时带备注、权限相同、可单独吊销）。
  *
- * 库里存的是哈希；`token` 明文只在 `credential.create` 的响应里出现一次。
+ * 库里存的是哈希；`token` 明文只在 `agents-host token create` 的那一次输出里出现。
  */
 export interface CredentialView {
   id: string;
@@ -1519,29 +1511,29 @@ export interface CredentialView {
   revokedAt: string | null;
 }
 
-/** `credential.list` 出参（PRD L11） */
+/** 凭证清单（PRD L11） */
 export interface CredentialListResult {
   credentials: CredentialView[];
 }
 
-/** `credential.create` 入参（PRD L11 / F-E4：创作者自己起、自己分发） */
+/** 新建凭证的入参（PRD L11：创作者自己起、自己分发） */
 export interface CredentialCreateParams {
   note: string;
 }
 
-/** `credential.create` 出参：明文只此一次 */
+/** 新建凭证的出参：明文只此一次 */
 export interface CredentialCreateResult {
   credential: CredentialView;
   /** 明文凭证；宿主此后只存哈希 */
   token: string;
 }
 
-/** `credential.revoke` 入参（PRD L11：可单独吊销） */
+/** 吊销凭证的入参（PRD L11：可单独吊销） */
 export interface CredentialRevokeParams {
   credentialId: string;
 }
 
-/** `credential.revoke` 出参 */
+/** 吊销凭证的出参 */
 export interface CredentialRevokeResult {
   revoked: boolean;
 }
@@ -1834,7 +1826,7 @@ export interface SearchMessagesResult {
  * 客户端按它接线，帮助与指令菜单按能力清单渲染（PRD F-E5）。
  */
 export interface MethodMap {
-  // ---- host.*：进程、握手、语言、升级、退出、全局用量、能力清单 ----
+  // ---- host.*：进程、握手、语言、升级、退出、能力清单 ----
   /**
    * F-A1：人用与脚本用两条路要分开。宿主判定「这次调用算不算一段对话」，
    * 握手这一帧是这条连接的起点（凭证 + 语言 + 客户端身份）。
@@ -1846,8 +1838,6 @@ export interface MethodMap {
   "host.upgrade": { params: HostUpgradeParams; result: HostUpgradeResult };
   /** F-E1：命令清单里的「退出」在宿主这一侧的动作。 */
   "host.shutdown": { params: HostShutdownParams; result: HostShutdownResult };
-  /** F-I5：用量要能按对话 / 项目 / 整机分别看。 */
-  "host.usage": { params: HostUsageParams; result: HostUsageResult };
   /** F-E5 / F-E6 / F-F9：帮助由能力清单渲染；阻塞与不可撤销是能力属性。 */
   "host.capabilities": { params: NoParams; result: HostCapabilitiesResult };
   /**
@@ -1989,14 +1979,6 @@ export interface MethodMap {
   /** F-F4 / F-F7：删除图片模型；被默认项引用时禁删。 */
   "model.deleteImage": { params: ModelDeleteImageParams; result: ModelDeleteImageResult };
 
-  // ---- credential.*：凭证多串（L11 / F-E4）----
-  /** L11 / F-E4（§4 未单列）：凭证可列出（带备注与吊销状态）。 */
-  "credential.list": { params: NoParams; result: CredentialListResult };
-  /** L11 / F-E4（§4 未单列）：新建一串（明文只回这一次，权限相同）。 */
-  "credential.create": { params: CredentialCreateParams; result: CredentialCreateResult };
-  /** L11 / F-E4（§4 未单列）：单独吊销一串。 */
-  "credential.revoke": { params: CredentialRevokeParams; result: CredentialRevokeResult };
-
   // ---- asset.*：上传入口（D5 / F-H8 / A11）与取回（F-H7）----
   /** D5 / F-H8 / A11：上传第一段，声明总长与类型，超限当场拒；带 sha256 时可命中去重。 */
   "asset.begin": { params: AssetBeginParams; result: AssetBeginResult };
@@ -2049,7 +2031,6 @@ export const METHOD_NAMES = [
   "host.version",
   "host.upgrade",
   "host.shutdown",
-  "host.usage",
   "host.capabilities",
   "host.reload",
   "host.setLanguage",
@@ -2101,9 +2082,6 @@ export const METHOD_NAMES = [
   "model.restoreFactory",
   "model.saveImage",
   "model.deleteImage",
-  "credential.list",
-  "credential.create",
-  "credential.revoke",
   "asset.begin",
   "asset.end",
   "asset.get",
