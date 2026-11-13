@@ -38,8 +38,8 @@ interface CapabilityFact {
  * `blocking` 只标「跑起来时这段对话不能发下一条」的那几个：一轮对话、交接回合、
  * 临时对话（它借的 Scope 与项目共用，跑的时候同样不能被打断）。
  * `destructive` 只标「做下去就回不来」的那几个：删项目 / 删对话 / 撤回 / 删端点 /
- * 删助手 / 删模型（含图片模型）/ 恢复出厂 / 吊销凭证。清通知不算：它清的是界面上的一条
- * 提示，为它弹二次确认反而是打扰。
+ * 删助手 / 删模型（含图片模型）/ 删 MCP 条目 / 恢复出厂 / 吊销凭证。清通知不算：它清的是
+ * 界面上的一条提示，为它弹二次确认反而是打扰。
  */
 const FACTS: readonly CapabilityFact[] = [
   { method: "host.hello", prd: "F-A1", blocking: false, destructive: false },
@@ -84,7 +84,8 @@ const FACTS: readonly CapabilityFact[] = [
   { method: "config.patch", prd: "F-F1", blocking: false, destructive: false },
   { method: "config.setDefaults", prd: "F-F7", blocking: false, destructive: false },
   { method: "config.getDiscovery", prd: "F-G1", blocking: false, destructive: false },
-  { method: "config.patchMcps", prd: "F-G1", blocking: false, destructive: false },
+  { method: "config.saveMcp", prd: "F-F6", blocking: false, destructive: false },
+  { method: "config.deleteMcp", prd: "F-G1", blocking: false, destructive: true },
   { method: "config.saveEndpoint", prd: "F-F2", blocking: false, destructive: false },
   { method: "config.deleteEndpoint", prd: "F-F2", blocking: false, destructive: true },
 

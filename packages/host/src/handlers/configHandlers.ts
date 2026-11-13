@@ -17,7 +17,8 @@ export type ConfigHandlerName =
   | "config.patch"
   | "config.setDefaults"
   | "config.getDiscovery"
-  | "config.patchMcps"
+  | "config.saveMcp"
+  | "config.deleteMcp"
   | "config.saveEndpoint"
   | "config.deleteEndpoint";
 
@@ -96,9 +97,11 @@ export function createConfigHandlers(deps: ConfigHandlerDeps): ConfigHandlers {
         await deps.config.getDiscovery(context.params),
         context.connection.language,
       ),
-    "config.patchMcps": async (context) =>
+    "config.saveMcp": async (context) =>
+      localizeLocalizedTexts(await deps.config.saveMcp(context.params), context.connection.language),
+    "config.deleteMcp": async (context) =>
       localizeLocalizedTexts(
-        await deps.config.patchMcps(context.params),
+        await deps.config.deleteMcp(context.params),
         context.connection.language,
       ),
     "config.saveEndpoint": async (context) =>

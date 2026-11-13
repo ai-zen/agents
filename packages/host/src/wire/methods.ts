@@ -1016,17 +1016,62 @@ export interface ConfigDeleteEndpointResult {
 /** 发现的种类（PRD F-G1 / F-G2：MCP 5 层链、Skill 4 层、工具与子 Agent 各 2 层） */
 export type DiscoveryKind = "mcps" | "skills" | "tools" | "subagents";
 
-/** 发现出来的一个条目 */
+/**
+ * 发现出来的一个条目（PRD F-F6：条目字段齐全）。
+ *
+ * MCP 条目把「这条服务器是怎么起的」整份摊开：传输方式与它的参数（命令 / 参数 / 环境变量 /
+ * 地址 / 请求头），这样客户端不必凭 `id` 重建一条就能改它（F-F6「按 id 增删改」）。
+ * 已知字段的形状就是 SDK 的 `McpServerConfig`；`extra` 收留这一版不认识的键，
+ * 客户端原样带回（F-F6「未知字段原样保留」）。
+ *
+ * 只有启用状态留了一个开关：视图给 `enabled`，写入端收 SDK 的 `disabled`，两者互为取反。
+ *
+ * 非 MCP 的那三类（Skill / 工具 / 子 Agent）没有传输这一层：那几个字段恒为 `null`、`extra` 恒为
+ * `Record` 里的空对象。
+ */
 export interface DiscoveryEntryView {
   id: string;
   name: string;
   description: string | null;
   /** 来自哪个文件/目录 */
   source: string;
-  /** 是否启用（MCP 有 `disabled` 字段；其它种类目前恒为 true） */
+  /**
+   * 是否启用（= SDK `McpServerConfig.disabled` 取反；其它种类目前恒为 true）。
+   *
+   * CLI 的 MCP 详情屏用它画「启用 / 已禁用」那一行，写入时折回 `disabled`。
+   */
   enabled: boolean;
   /** 条目自身的问题（如 MCP 连不上，PRD F-F6） */
   problem: ProblemFact | null;
+  /**
+   * 传输方式（`stdio` / `http` / `sse`）；文件里没有、也推不出来时为 `null`。
+   *
+   * CLI 的 MCP 列表与详情屏据此决定显示命令还是地址（`mcp-helpers.ts`），
+   * 并把整条错误条目修成能用的那一条。
+   */
+  transport: McpServerConfig["transport"] | null;
+  /** stdio：起什么程序 */
+  command: string | null;
+  /** stdio：程序参数 */
+  args: string[] | null;
+  /** stdio：环境变量 */
+  env: Record<string, string> | null;
+  /** http / sse：地址 */
+  url: string | null;
+  /** http / sse：请求头 */
+  headers: Record<string, string> | null;
+  /**
+   * oauth 配置（http）。
+   *
+   * 客户端不回写这一项时宿主按磁盘原文保留；读出来是为了让「原样写回」这条路可见且可核对。
+   */
+  oauth: McpServerConfig["oauth"] | null;
+  /**
+   * 这一版不认识的键（原样一条不多一条不少）。
+   *
+   * CLI 的 `mcp-helpers.ts` 把它塞回 `McpServerEntryInput.extra`，写回时逐字带回（F-F6）。
+   */
+  extra: Record<string, unknown>;
 }
 
 /**
@@ -1042,6 +1087,13 @@ export interface DiscoveryLayerView {
   /** 这一层对应的文件或目录绝对路径 */
   path: string;
   editable: boolean;
+  /**
+   * 这一层归哪个可编辑作用域；写不了（或不是 MCP）时为 `null`（PRD F-G1 / F-F6）。
+   *
+   * 客户端拿它直接认「哪一层是 `user`、哪一层是 `workspace`」，不必按 `editable` + `depth`
+   * 反推（CLI 的 `/mcp` 入口与 MCP 屏都按它取层）。
+   */
+  scope: McpEditableScope | null;
   state: "missing" | "ok" | "broken";
   /** 坏在哪（`state === "broken"` 时给） */
   problem: ProblemFact | null;
@@ -1079,23 +1131,50 @@ export type McpEditableScope = "user" | "workspace";
  * MCP 条目写入（PRD F-F6：字段齐全、`oauth` 与未知字段原样保留）。
  *
  * SDK 的 `McpServerConfig` 覆盖已知字段；`extra` 收留这个版本不认识的键，写回时原样带上。
+ * 与 {@link DiscoveryEntryView} 是同一份事实的两个方向：视图用 `enabled`，这里用 SDK 的
+ * `disabled`；视图里 `null` 的字段在这边省略即可（省略 = 这一项不动）。
  */
 export type McpServerEntryInput = McpServerConfig & {
   extra?: Record<string, unknown>;
 };
 
-/** `config.patchMcps` 入参 */
-export interface ConfigPatchMcpsParams {
+/**
+ * `config.saveMcp` 入参（PRD F-F6：按 id 增删改）。
+ *
+ * 形状与 `config.saveEndpoint` 对齐：`entry.id` 已在这一层里就改那一条，没有就建。
+ * 一次只动一条 —— 客户端因此不必先读整层再拼回去，也不会因为有一条读不全就把别的条目覆盖掉。
+ */
+export interface ConfigSaveMcpParams {
   scope: McpEditableScope;
   /** `scope === "workspace"` 时必填 */
   workspaceId?: string;
-  entries: McpServerEntryInput[];
+  entry: McpServerEntryInput;
 }
 
-/** `config.patchMcps` 出参：写回后的那一层（含坏文件状态是否已修好） */
-export interface ConfigPatchMcpsResult {
+/** `config.saveMcp` 出参：写回后的那一层（含坏文件状态是否已修好） */
+export interface ConfigSaveMcpResult {
   layer: DiscoveryLayerView;
   applied: ConfigApplyReport;
+}
+
+/**
+ * `config.deleteMcp` 入参（PRD F-F6：另有一条删除）。
+ *
+ * `id` 本来就不在这一层里时不算失败：`removed: false` 如实回答「本来就没有」，
+ * 与 `config.deleteEndpoint` 的 `removed`、`credential.revoke` 的 `revoked` 同口径。
+ */
+export interface ConfigDeleteMcpParams {
+  scope: McpEditableScope;
+  /** `scope === "workspace"` 时必填 */
+  workspaceId?: string;
+  id: string;
+}
+
+/** `config.deleteMcp` 出参：删完之后的那一层 + 到底删掉了没有 */
+export interface ConfigDeleteMcpResult {
+  layer: DiscoveryLayerView;
+  applied: ConfigApplyReport;
+  removed: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -1125,6 +1204,8 @@ export interface AgentView {
    *
    * 定义是「能写就能读」的：这份原样交给 `agent.update` 的 `messages` 等于没改。
    * 定义文件读不出来时是 `null` —— 那时没有「它的提示词是什么」这个事实可说。
+   * 文件读得出来但里面没写 `messages` 时也是 `null`：`null` 只表示「没有这份提示词」，
+   * 不区分是文件缺了还是字段缺了（要分清就去看 `agent.get` 报没报问题）。
    */
   messages: AgentDefinition["messages"] | null;
   /**
@@ -1260,7 +1341,9 @@ export interface AgentSetThinkingResult {
 }
 
 /**
- * `agent.restoreFactory` 入参（PRD F-F5：与 `model.restoreFactory` 同形，可以先预演不落盘）。
+ * `agent.restoreFactory` 入参（PRD F-F5：与 `model.restoreFactory` 同族，可以先预演不落盘）。
+ *
+ * 只是同族不是同形：模型那边没有 `dryRun`，也没有 `restored`。
  *
  * 只有出厂清单里的助手（SDK 的出厂定义）才有「出厂版本」可恢复；恢复是整条替换，
  * 引用关系不动（这里不删任何东西）。
@@ -1798,8 +1881,10 @@ export interface MethodMap {
   "config.setDefaults": { params: ConfigSetDefaultsParams; result: ConfigSetDefaultsResult };
   /** F-G1 / F-G2 / F-F6：5 层 MCP 链、Skill / 工具 / 子 Agent 的分层与坏文件状态。 */
   "config.getDiscovery": { params: ConfigGetDiscoveryParams; result: ConfigGetDiscoveryResult };
-  /** F-G1 / F-F6：两个可编辑作用域的 MCP 条目写回（未知字段与 `oauth` 原样保留）。 */
-  "config.patchMcps": { params: ConfigPatchMcpsParams; result: ConfigPatchMcpsResult };
+  /** F-G1 / F-F6：两个可编辑作用域的 MCP 条目写入（有 id 则改、无则建；未知字段与 `oauth` 原样保留）。 */
+  "config.saveMcp": { params: ConfigSaveMcpParams; result: ConfigSaveMcpResult };
+  /** F-F6：删掉那一层里的一条（本来就没有时 `removed: false`）。 */
+  "config.deleteMcp": { params: ConfigDeleteMcpParams; result: ConfigDeleteMcpResult };
   /** F-F2：端点写入（密钥可省略表示保留）。 */
   "config.saveEndpoint": { params: ConfigSaveEndpointParams; result: ConfigSaveEndpointResult };
   /** F-F2：被引用时禁删并列出引用者。 */
@@ -1939,7 +2024,8 @@ export const METHOD_NAMES = [
   "config.patch",
   "config.setDefaults",
   "config.getDiscovery",
-  "config.patchMcps",
+  "config.saveMcp",
+  "config.deleteMcp",
   "config.saveEndpoint",
   "config.deleteEndpoint",
   "agent.list",

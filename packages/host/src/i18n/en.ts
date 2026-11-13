@@ -246,8 +246,12 @@ export const en = {
   "capability.config.setDefaults.detail": "Default assistant, fallback model, migration model, image model and naming model.",
   "capability.config.getDiscovery": "Show where abilities come from",
   "capability.config.getDiscovery.detail": "The MCP layers, Skills, tools and helpers that are actually found, plus the files that can't be read.",
-  "capability.config.patchMcps": "Edit an MCP layer",
-  "capability.config.patchMcps.detail": "Writes one of the two editable layers; fields this version doesn't know are kept as they are.",
+  "capability.config.saveMcp": "Save an MCP server",
+  "capability.config.saveMcp.detail":
+    "Creates it if the id is new, edits it otherwise — one entry at a time, with its transport and that transport's parameters; fields this version doesn't know are kept as they are.",
+  "capability.config.deleteMcp": "Delete an MCP server",
+  "capability.config.deleteMcp.detail":
+    "Removes one entry from one of the two editable scopes; says so plainly when it wasn't there.",
   "capability.config.saveEndpoint": "Save an endpoint",
   "capability.config.saveEndpoint.detail": "Creates or edits an endpoint; leave the key out to keep the current one.",
   "capability.config.deleteEndpoint": "Delete an endpoint",

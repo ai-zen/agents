@@ -25,6 +25,8 @@ import type {
   ConfigBehavior,
   ConfigDeleteEndpointParams,
   ConfigDeleteEndpointResult,
+  ConfigDeleteMcpParams,
+  ConfigDeleteMcpResult,
   ConfigGetDiscoveryParams,
   ConfigGetDiscoveryResult,
   ConfigGetParams,
@@ -32,12 +34,12 @@ import type {
   ConfigIssue,
   ConfigLimits,
   ConfigPatch,
-  ConfigPatchMcpsParams,
-  ConfigPatchMcpsResult,
   ConfigPatchParams,
   ConfigPatchResult,
   ConfigSaveEndpointParams,
   ConfigSaveEndpointResult,
+  ConfigSaveMcpParams,
+  ConfigSaveMcpResult,
   ConfigSetDefaultsParams,
   ConfigSetDefaultsResult,
   ConfigView,
@@ -48,6 +50,7 @@ import type {
   HostReloadParams,
   HostReloadResult,
   HostReloadScope,
+  McpEditableScope,
 } from "../wire/index.js";
 import { DiscoveryService, type WorkspaceCwdLookup } from "./DiscoveryService.js";
 import { ModelService } from "./ModelService.js";
@@ -90,7 +93,7 @@ export interface ConfigServiceOptions {
   configManager: ConfigManager;
   /** 模型视图（`ConfigView.models` 与 `model.*` 用同一份口径）；缺省按本服务依赖造一个 */
   models?: ModelService;
-  /** 能力发现（`config.getDiscovery` 与 `config.patchMcps`）；缺省按本服务依赖造一个 */
+  /** 能力发现（`config.getDiscovery` 与 `config.saveMcp` / `config.deleteMcp`）；缺省按本服务依赖造一个 */
   discovery?: DiscoveryService;
   /** 助手定义仓储（检查默认助手还在不在） */
   agents?: AgentRepository;
@@ -386,29 +389,59 @@ export class ConfigService {
   }
 
   // -------------------------------------------------------------------------
-  // 写：MCP
+  // 写：MCP（按 id 增删改）
   // -------------------------------------------------------------------------
 
   /**
-   * `config.patchMcps`（F-G1 / F-F6）：写 MCP 的两个可编辑作用域之一。
+   * `config.saveMcp`（F-F6 / F-G1）：有 id 则改、无则建，一次只动一条。
    *
    * `workspace` 作用域要落到某个项目自己的 `.ai-zen/mcp.json` 里，所以必须给 `workspaceId`。
-   * 写回之后的条目里，这一版不认识的字段与 `oauth` 原样保留（在发现服务里做）。
+   * 合并与落盘的规则不在这里：发现服务的写入口只作一件事（把这一条叠到磁盘原文上），
+   * 于是这一版不认识的字段与 `oauth` 原样保留（F-F6）。
    */
-  async patchMcps(params: ConfigPatchMcpsParams): Promise<ConfigPatchMcpsResult> {
-    const entries = params.entries ?? [];
-    const cwd = params.scope === "workspace"
-      ? await this.requireWorkspaceCwd(params.workspaceId)
-      : null;
-    const layer = await this.discoveryService.writeMcpLayer(params.scope, entries, cwd);
+  async saveMcp(params: ConfigSaveMcpParams): Promise<ConfigSaveMcpResult> {
+    const cwd = await this.mcpWriteCwd(params.scope, params.workspaceId);
+    const layer = await this.discoveryService.writeMcpEntry(params.scope, params.entry, cwd);
     return {
       layer,
       applied: await this.apply({
         mcp: true,
         sections: ["mcp"],
-        workspaceIds: params.workspaceId && params.scope === "workspace" ? [params.workspaceId] : [],
+        workspaceIds: params.scope === "workspace" && params.workspaceId ? [params.workspaceId] : [],
       }),
     };
+  }
+
+  /**
+   * `config.deleteMcp`（F-F6）：删掉这一层里的一条。
+   *
+   * `id` 本来就不在这一层里时不是失败（`removed: false`）：重试一次删除、或另一个客户端
+   * 先一步删掉了，都不该变成一个错误（与 `config.deleteEndpoint` 的 `removed` 同口径）。
+   */
+  async deleteMcp(params: ConfigDeleteMcpParams): Promise<ConfigDeleteMcpResult> {
+    const cwd = await this.mcpWriteCwd(params.scope, params.workspaceId);
+    const { layer, removed } = await this.discoveryService.deleteMcpEntry(
+      params.scope,
+      params.id,
+      cwd,
+    );
+    return {
+      layer,
+      removed,
+      applied: await this.apply({
+        mcp: true,
+        sections: ["mcp"],
+        workspaceIds: params.scope === "workspace" && params.workspaceId ? [params.workspaceId] : [],
+      }),
+    };
+  }
+
+  /** MCP 写到哪：`user` 作用域与项目无关，`workspace` 作用域必须能拿到项目的 cwd */
+  private async mcpWriteCwd(
+    scope: McpEditableScope,
+    workspaceId: string | undefined,
+  ): Promise<string | null> {
+    return scope === "workspace" ? await this.requireWorkspaceCwd(workspaceId) : null;
   }
 
   // -------------------------------------------------------------------------

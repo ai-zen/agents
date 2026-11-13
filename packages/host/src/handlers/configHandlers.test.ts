@@ -74,14 +74,15 @@ afterEach(async () => {
 });
 
 describe("createConfigHandlers", () => {
-  it("七个方法都注册上了", () => {
+  it("八个方法都注册上了", () => {
     expect(Object.keys(handlers).sort()).toEqual([
       "config.deleteEndpoint",
+      "config.deleteMcp",
       "config.get",
       "config.getDiscovery",
       "config.patch",
-      "config.patchMcps",
       "config.saveEndpoint",
+      "config.saveMcp",
       "config.setDefaults",
     ]);
   });
@@ -126,19 +127,27 @@ describe("createConfigHandlers", () => {
     expect(removed.removed).toBe(true);
   });
 
-  it("config.getDiscovery / config.patchMcps 转发（没给项目就只报用户级那几层）", async () => {
+  it("config.getDiscovery / config.saveMcp / config.deleteMcp 转发（没给项目就只报用户级那几层）", async () => {
     const discovery = await handlers["config.getDiscovery"]!(call("config.getDiscovery", {}));
     expect(discovery.discovery.workspaceId).toBeNull();
     expect(discovery.discovery.mcps.map((layer) => layer.depth)).toEqual([3, 4]);
+    expect(discovery.discovery.mcps.map((layer) => layer.scope)).toEqual(["user", null]);
 
-    const written = await handlers["config.patchMcps"]!(
-      call("config.patchMcps", {
+    const written = await handlers["config.saveMcp"]!(
+      call("config.saveMcp", {
         scope: "user",
-        entries: [{ id: "pty", transport: "stdio", command: "npx" }],
+        entry: { id: "pty", transport: "stdio", command: "npx" },
       }),
     );
     expect(written.layer.path).toBe(join(dataRoot, "mcp.json"));
     expect(written.applied.reloaded.mcp).toBe(true);
+    expect(written.layer.entries.map((entry) => entry.id)).toEqual(["pty"]);
+
+    const removed = await handlers["config.deleteMcp"]!(
+      call("config.deleteMcp", { scope: "user", id: "pty" }),
+    );
+    expect(removed.removed).toBe(true);
+    expect(removed.layer.entries).toEqual([]);
   });
 });
 

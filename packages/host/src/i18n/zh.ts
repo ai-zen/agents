@@ -224,8 +224,12 @@ export const zh = {
   "capability.config.setDefaults.detail": "默认助手、兜底模型、迁移模型、图片模型、取名模型。",
   "capability.config.getDiscovery": "看能力从哪来",
   "capability.config.getDiscovery.detail": "MCP 各层、Skill、工具、子 Agent 到底找到了哪些，以及哪些文件读不出来。",
-  "capability.config.patchMcps": "编辑一层 MCP",
-  "capability.config.patchMcps.detail": "写两个可编辑作用域之一；这一版不认识的字段原样保留。",
+  "capability.config.saveMcp": "保存一条 MCP 服务器",
+  "capability.config.saveMcp.detail":
+    "有这一条就改、没有就建；只动这一条，传输方式与它的参数都在入参里，这一版不认识的字段原样保留。",
+  "capability.config.deleteMcp": "删除一条 MCP 服务器",
+  "capability.config.deleteMcp.detail":
+    "只从可编辑的那两个作用域里删这一条；本来就没有时如实回报，不算失败。",
   "capability.config.saveEndpoint": "保存端点",
   "capability.config.saveEndpoint.detail": "新建或修改端点；密钥省略就表示保留现有的。",
   "capability.config.deleteEndpoint": "删除端点",

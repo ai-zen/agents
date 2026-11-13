@@ -14,7 +14,7 @@ import { ConfigManager } from "@ai-zen/agents-sdk";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { HostError } from "../wire/errors.js";
-import type { DiscoveryLayerView } from "../wire/index.js";
+import type { DiscoveryEntryView, DiscoveryLayerView, McpServerEntryInput } from "../wire/index.js";
 import { DiscoveryService } from "./DiscoveryService.js";
 
 const WORKSPACE_ID = "ws-1";
@@ -41,6 +41,28 @@ function layerAt(layers: DiscoveryLayerView[], depth: number): DiscoveryLayerVie
   const found = layers.find((layer) => layer.depth === depth);
   if (!found) throw new Error(`没有第 ${depth} 层`);
   return found;
+}
+
+/**
+ * 层里的一个条目 → 写入入参（读回来、原样写回去）。
+ *
+ * 这是「客户端拿到视图怎么回写」的最小写法：`null` 表示这一项没有，省略即可；
+ * `enabled` 折回 SDK 的 `disabled`；`extra` 一路带着。CLI 侧的 `mcp-helpers.ts` 做的是同一件事。
+ */
+function inputOf(entry: DiscoveryEntryView): McpServerEntryInput {
+  return {
+    id: entry.id,
+    transport: entry.transport ?? "stdio",
+    ...(entry.description !== null ? { description: entry.description } : {}),
+    ...(entry.enabled ? {} : { disabled: true }),
+    ...(entry.command !== null ? { command: entry.command } : {}),
+    ...(entry.args !== null ? { args: entry.args } : {}),
+    ...(entry.env !== null ? { env: entry.env } : {}),
+    ...(entry.url !== null ? { url: entry.url } : {}),
+    ...(entry.headers !== null ? { headers: entry.headers } : {}),
+    ...(entry.oauth !== null ? { oauth: entry.oauth } : {}),
+    extra: entry.extra,
+  };
 }
 
 beforeEach(async () => {
@@ -149,6 +171,14 @@ describe("DiscoveryService 读 MCP", () => {
       true,
       false,
     ]);
+    // 可写的只有两层，而且由宿主直接点名（F-F6：客户端不必按 editable + depth 反推）
+    expect(discovery.mcps.map((layer) => layer.scope)).toEqual([
+      null,
+      "workspace",
+      null,
+      "user",
+      null,
+    ]);
 
     const near = layerAt(discovery.mcps, 1);
     expect(near.state).toBe("ok");
@@ -194,44 +224,160 @@ describe("DiscoveryService 读 MCP", () => {
     expect(layerAt(discovery.mcps, 3).state).toBe("broken");
   });
 
-  it("写回时保留 oauth 与这一版不认识的字段", async () => {
+  it("条目视图带齐传输入口：传输方式与它的参数，加上两个未知键进 extra（F-F6）", async () => {
     await writeJson(join(dataRoot, "mcp.json"), {
       mcpServers: {
-        a: {
+        remote: {
           type: "http",
-          url: "https://old.example",
-          disabled: true,
+          url: "https://api.example/mcp",
+          headers: { Authorization: "Bearer t" },
+          description: "远程",
           oauth: { authorizationUrl: "https://auth", tokenUrl: "https://token", clientId: "c" },
-          "x-custom": { nested: [1, 2] },
+          "x-timeout": 30,
+          "x-tags": ["a", "b"],
+        },
+        local: {
+          type: "stdio",
+          command: "npx",
+          args: ["-y", "pty"],
+          env: { DEBUG: "1" },
+          disabled: true,
         },
       },
     });
 
-    const layer = await service.writeMcpLayer(
+    const { discovery } = await service.discover({ workspaceId: WORKSPACE_ID });
+    const entries = layerAt(discovery.mcps, 3).entries;
+    const remote = entries.find((entry) => entry.id === "remote");
+    expect(remote).toMatchObject({
+      transport: "http",
+      url: "https://api.example/mcp",
+      headers: { Authorization: "Bearer t" },
+      description: "远程",
+      oauth: { authorizationUrl: "https://auth", tokenUrl: "https://token", clientId: "c" },
+      enabled: true,
+      extra: { "x-timeout": 30, "x-tags": ["a", "b"] },
+    });
+    expect(remote?.problem).toBeNull();
+
+    const local = entries.find((entry) => entry.id === "local");
+    expect(local).toMatchObject({
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "pty"],
+      env: { DEBUG: "1" },
+      url: null,
+      headers: null,
+      enabled: false,
+      extra: {},
+    });
+  });
+
+  it("没有传输方式、也推不出来的条目：transport 为 null 并报出问题", async () => {
+    await writeJson(join(dataRoot, "mcp.json"), { mcpServers: { odd: { description: "没写怎么起" } } });
+    const { discovery } = await service.discover({ workspaceId: WORKSPACE_ID });
+    const odd = layerAt(discovery.mcps, 3).entries.find((entry) => entry.id === "odd");
+    expect(odd?.transport).toBeNull();
+    expect(odd?.problem?.messageKey).toBe("discovery.mcpEntryInvalid");
+  });
+
+  it("**读回来的条目原样写回去 == 一字未改**（F-F6：未知字段原样保留）", async () => {
+    // 文件里的每一项都写全：六个传输入口 + oauth + 两个本版不认识的键 + 顶层多一个键
+    const path = join(dataRoot, "mcp.json");
+    const original =
+      `${JSON.stringify(
+        {
+          $schema: "https://example.test/mcp.schema.json",
+          mcpServers: {
+            remote: {
+              type: "sse",
+              url: "https://api.example/sse",
+              headers: { Authorization: "Bearer t", "X-Trace": "on" },
+              description: "远程",
+              oauth: {
+                authorizationUrl: "https://auth.example/a",
+                tokenUrl: "https://auth.example/t",
+                clientId: "client-1",
+                clientSecret: "secret-1",
+                scope: "mcp",
+              },
+              "x-timeout": 30,
+              "x-tags": ["a", { nested: true }],
+            },
+            local: {
+              type: "stdio",
+              command: "npx",
+              args: ["-y", "@modelcontextprotocol/server-x"],
+              env: { DEBUG: "1" },
+              disabled: false,
+              "x-quirk": null,
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`;
+    await writeText(path, original);
+
+    const before = await service.discover({ workspaceId: WORKSPACE_ID });
+    const layer = layerAt(before.discovery.mcps, 3);
+    expect(layer.scope).toBe("user");
+
+    // 视图 → 入参 → 写回：CLI 的 MCP 屏做的就是这件事
+    for (const entry of layer.entries) {
+      await service.writeMcpEntry("user", inputOf(entry), null);
+    }
+
+    expect(await readFile(path, "utf-8")).toBe(original);
+  });
+
+  it("改一条不动另一条：另一个条目的字节与它的未知键都留着", async () => {
+    await writeJson(join(dataRoot, "mcp.json"), {
+      mcpServers: {
+        a: { type: "stdio", command: "node", args: ["a"], "x-keep": 1 },
+        b: { type: "http", url: "https://b.example", headers: { "X-B": "1" } },
+      },
+    });
+    const before = JSON.parse(await readFile(join(dataRoot, "mcp.json"), "utf-8")) as {
+      mcpServers: Record<string, unknown>;
+    };
+
+    const layer = await service.writeMcpEntry(
       "user",
-      [
-        { id: "a", transport: "http", url: "https://new.example" },
-        { id: "b", transport: "stdio", command: "node", args: ["-v"] },
-      ],
+      { id: "a", transport: "stdio", command: "node", args: ["a", "--verbose"] },
+      null,
+    );
+
+    const after = JSON.parse(await readFile(join(dataRoot, "mcp.json"), "utf-8")) as {
+      mcpServers: Record<string, unknown>;
+    };
+    expect(after.mcpServers.b).toEqual(before.mcpServers.b);
+    expect(after.mcpServers.a).toEqual({
+      type: "stdio",
+      command: "node",
+      args: ["a", "--verbose"],
+      "x-keep": 1,
+    });
+    expect(layer.entries.find((entry) => entry.id === "a")?.args).toEqual(["a", "--verbose"]);
+  });
+
+  it("没给 id 的那一条是新建，且不动层里已有的条目", async () => {
+    await writeJson(join(dataRoot, "mcp.json"), {
+      mcpServers: { a: { type: "stdio", command: "node", "x-keep": 1 } },
+    });
+
+    const layer = await service.writeMcpEntry(
+      "user",
+      { id: "b", transport: "http", url: "https://b.example" },
       null,
     );
 
     const written = JSON.parse(await readFile(join(dataRoot, "mcp.json"), "utf-8")) as {
       mcpServers: Record<string, Record<string, unknown>>;
     };
-    expect(written.mcpServers.a.type).toBe("http");
-    expect(written.mcpServers.a.url).toBe("https://new.example");
-    expect(written.mcpServers.a.oauth).toEqual({
-      authorizationUrl: "https://auth",
-      tokenUrl: "https://token",
-      clientId: "c",
-    });
-    expect(written.mcpServers.a["x-custom"]).toEqual({ nested: [1, 2] });
-    expect(written.mcpServers.a.disabled).toBe(true);
-    expect(written.mcpServers.b.command).toBe("node");
-
-    expect(layer.path).toBe(join(dataRoot, "mcp.json"));
-    expect(layer.state).toBe("ok");
+    expect(Object.keys(written.mcpServers).sort()).toEqual(["a", "b"]);
+    expect(written.mcpServers.a).toEqual({ type: "stdio", command: "node", "x-keep": 1 });
+    expect(written.mcpServers.b).toEqual({ type: "http", url: "https://b.example" });
     expect(layer.entries.map((entry) => entry.id).sort()).toEqual(["a", "b"]);
   });
 
@@ -239,9 +385,9 @@ describe("DiscoveryService 读 MCP", () => {
     await writeJson(join(project, ".ai-zen", "mcp.json"), {
       mcpServers: { a: { type: "stdio", command: "node", disabled: true } },
     });
-    const layer = await service.writeMcpLayer(
+    const layer = await service.writeMcpEntry(
       "workspace",
-      [{ id: "a", transport: "stdio", command: "node", disabled: false }],
+      { id: "a", transport: "stdio", command: "node", disabled: false },
       project,
     );
     expect(layer.entries[0]?.enabled).toBe(true);
@@ -251,8 +397,65 @@ describe("DiscoveryService 读 MCP", () => {
     expect(written.mcpServers.a.disabled).toBe(false);
   });
 
+  it("坏文件写一次就修好（同一动作既是新建也是修复，F-F6）", async () => {
+    await writeText(join(dataRoot, "mcp.json"), "{ 这不是 JSON");
+
+    const layer = await service.writeMcpEntry(
+      "user",
+      { id: "a", transport: "stdio", command: "node" },
+      null,
+    );
+
+    expect(layer.state).toBe("ok");
+    expect(layer.entries.map((entry) => entry.id)).toEqual(["a"]);
+    const written = JSON.parse(await readFile(join(dataRoot, "mcp.json"), "utf-8")) as {
+      mcpServers: Record<string, unknown>;
+    };
+    expect(written.mcpServers).toEqual({ a: { type: "stdio", command: "node" } });
+  });
+
+  it("删除一条：别的条目留着；本来就没有时 removed: false 且文件不变", async () => {
+    await writeJson(join(dataRoot, "mcp.json"), {
+      mcpServers: {
+        a: { type: "stdio", command: "node" },
+        b: { type: "http", url: "https://b.example" },
+      },
+    });
+
+    const first = await service.deleteMcpEntry("user", "a", null);
+    expect(first.removed).toBe(true);
+    expect(first.layer.entries.map((entry) => entry.id)).toEqual(["b"]);
+
+    const afterFirst = await readFile(join(dataRoot, "mcp.json"), "utf-8");
+    const again = await service.deleteMcpEntry("user", "a", null);
+    expect(again.removed).toBe(false);
+    expect(await readFile(join(dataRoot, "mcp.json"), "utf-8")).toBe(afterFirst);
+    expect(again.layer.entries.map((entry) => entry.id)).toEqual(["b"]);
+  });
+
   it("workspace 作用域没给项目就拒", async () => {
-    await expect(service.writeMcpLayer("workspace", [], null)).rejects.toBeInstanceOf(HostError);
+    await expect(
+      service.writeMcpEntry("workspace", { id: "a", transport: "stdio" }, null),
+    ).rejects.toBeInstanceOf(HostError);
+    await expect(service.deleteMcpEntry("workspace", "a", null)).rejects.toBeInstanceOf(HostError);
+  });
+
+  it("空 id 两种写法都拒（没地方落地）", async () => {
+    await expect(
+      service.writeMcpEntry("user", { id: "  ", transport: "stdio" }, null),
+    ).rejects.toBeInstanceOf(HostError);
+    await expect(service.deleteMcpEntry("user", " ", null)).rejects.toBeInstanceOf(HostError);
+  });
+
+  it("不认识的传输方式当场拒，不写盘", async () => {
+    await expect(
+      service.writeMcpEntry(
+        "user",
+        { id: "a", transport: "websocket" as unknown as McpServerEntryInput["transport"] },
+        null,
+      ),
+    ).rejects.toMatchObject({ code: "invalid_params" });
+    await expect(readFile(join(dataRoot, "mcp.json"), "utf-8")).rejects.toBeTruthy();
   });
 });
 
@@ -267,6 +470,10 @@ describe("DiscoveryService 读目录类能力", () => {
     const { discovery } = await service.discover({ workspaceId: WORKSPACE_ID });
 
     expect(discovery.skills.map((layer) => layer.depth)).toEqual([0, 1, 2, 3]);
+    // Skill / 工具 / 子 Agent 没有「按作用域写入」这回事（F-G1 只管 MCP）
+    expect(discovery.skills.map((layer) => layer.scope)).toEqual([null, null, null, null]);
+    expect(discovery.tools.map((layer) => layer.scope)).toEqual([null, null]);
+    expect(discovery.subagents.map((layer) => layer.scope)).toEqual([null, null]);
     const near = layerAt(discovery.skills, 0);
     expect(near.state).toBe("ok");
     expect(near.entries.map((entry) => entry.id)).toEqual(["handoff"]);

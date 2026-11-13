@@ -13,8 +13,9 @@
  *   2. **读**（{@link DiscoveryService.discover}）：把每一层的 `missing | ok | broken` 与条目
  *      报出来。`missing` 与 `broken` 必须分开（F-F6）：以前两者都当空配置，一保存就把用户的
  *      文件覆盖掉了。
- *   3. **写**（{@link DiscoveryService.writeMcpLayer}）：只写 MCP 的两个可编辑作用域，写回时
- *      保留这一版不认识的字段与 `oauth`（F-F6）。
+ *   3. **写**（{@link DiscoveryService.writeMcpEntry} / {@link DiscoveryService.deleteMcpEntry}）：
+ *      只写 MCP 的两个可编辑作用域，一次只动一条；写回时保留这一版不认识的字段与 `oauth`
+ *      （F-F6）。
  *
  * 判断「近的优先」用的是层序 `depth`（0 最靠近项目）：合并时同 id 取 depth 小的那一层，
  * 被盖住的条目仍然出现在它自己那一层里，只是带上一条「被谁覆盖」的问题说明。
@@ -337,7 +338,7 @@ export class DiscoveryService {
     return { discovery: view };
   }
 
-  /** 只读一层（`config.patchMcps` 写回之后回报那一层时也用它） */
+  /** 只读一层（`config.saveMcp` / `config.deleteMcp` 写回之后回报那一层时也用它） */
   async readMcpLayerView(layer: DiscoveryLayerPath): Promise<DiscoveryLayerView> {
     const reading = await this.readMcpFile(layer.path);
     return {
@@ -345,6 +346,7 @@ export class DiscoveryService {
       depth: layer.depth,
       path: layer.path,
       editable: layer.editable,
+      scope: layer.scope,
       state: reading.state,
       problem: reading.problem,
       entries: reading.entries,
@@ -362,37 +364,73 @@ export class DiscoveryService {
   }
 
   // -------------------------------------------------------------------------
-  // 写：MCP 的两个可编辑作用域
+  // 写：MCP 的两个可编辑作用域（一次只动一条）
   // -------------------------------------------------------------------------
 
   /**
-   * 把一层 MCP 条目写回去（F-G1 / F-F6）。
+   * 存一条 MCP 条目（F-G1 / F-F6）：`entry.id` 在这一层里就改那一条，没有就建。
    *
-   * 写回的口径：
-   *   - 入参的 `entries` 是这一层**应该有的全部条目**（少掉的就是被删的）；
-   *   - 每个 id 先取磁盘上已有的那条原文，再覆盖入参里明确给了的字段，`extra` 最后叠上去 ——
-   *     于是这一版不认识的键与 `oauth` 都原样留着（F-F6）；
-   *   - 目标文件存在但读不出来时，先把坏文件改名留档（`.broken-<时间>.bak`），再写新的：
-   *     坏文件要能看见，也要能修（F-F6），而修复动作本身不该把用户手写的内容直接抹掉。
+   * 写回的口径（与 `deleteMcpEntry` 共用同一份合并规则）：
+   *   - 这个 id 的磁盘原文是底，覆盖入参里明确给了的字段，`extra` 最后叠上去 ——
+   *     于是这一版不认识的键与没被提到的 `oauth` 都原样留着（F-F6）；
+   *   - 层里别的条目一个字节都不动：改一条不会把另一条读不全的字段覆盖掉；
+   *   - 文件里 `mcpServers` 之外的顶层键也原样带上。
    */
-  async writeMcpLayer(
+  async writeMcpEntry(
     scope: McpEditableScope,
-    entries: McpServerEntryInput[],
+    entry: McpServerEntryInput,
     cwd: string | null,
   ): Promise<DiscoveryLayerView> {
+    const layer = this.writableMcpLayer(scope, cwd);
+    const existing = await this.readRawMcpFile(layer.path);
+    const id = entryId(entry);
+    const servers = {
+      ...existing.servers,
+      [id]: applyEntryPatch(existing.servers[id], entry),
+    };
+    await writeJsonFile(layer.path, { ...existing.rest, mcpServers: servers });
+    return await this.readMcpLayerView(layer);
+  }
+
+  /**
+   * 删一条 MCP 条目（F-F6）。
+   *
+   * 这个 id 本来就不在这一层里时落盘内容不变，回报 `removed: false`（不是失败）。
+   * 文件坏了但用户要清掉一个条目时，`readRawMcpFile` 把读不出来的那份当空 —— 于是这次写入
+   * 会用一份合法 JSON 覆盖它，这与「坏文件要能修」（F-F6）是同一个动作。
+   */
+  async deleteMcpEntry(
+    scope: McpEditableScope,
+    id: string,
+    cwd: string | null,
+  ): Promise<{ layer: DiscoveryLayerView; removed: boolean }> {
+    const key = id.trim();
+    if (key === "") {
+      throw new HostError("invalid_params", {
+        params: { field: "id" },
+        detail: { field: "id", reason: "empty" },
+      });
+    }
+    const layer = this.writableMcpLayer(scope, cwd);
+    const existing = await this.readRawMcpFile(layer.path);
+    const removed = Object.prototype.hasOwnProperty.call(existing.servers, key);
+    if (removed) {
+      const { [key]: _gone, ...servers } = existing.servers;
+      void _gone;
+      await writeJsonFile(layer.path, { ...existing.rest, mcpServers: servers });
+    }
+    return { layer: await this.readMcpLayerView(layer), removed };
+  }
+
+  /** 可写作用域 → 那一层；`workspace` 作用域必须能落到某个项目里 */
+  private writableMcpLayer(scope: McpEditableScope, cwd: string | null): DiscoveryLayerPath {
     if (scope === "workspace" && (cwd === null || cwd.trim() === "")) {
       throw new HostError("invalid_params", {
         params: { field: "workspaceId" },
         detail: { field: "workspaceId", reason: "workspace_scope_needs_workspace" },
       });
     }
-    const layer = this.mcpLayer(scope, cwd);
-
-    const existing = await this.readRawMcpFile(layer.path);
-    const servers = buildMcpServers(entries, existing.servers);
-    await writeJsonFile(layer.path, { ...existing.rest, mcpServers: servers });
-
-    return await this.readMcpLayerView(layer);
+    return this.mcpLayer(scope, cwd);
   }
 
   // -------------------------------------------------------------------------
@@ -426,6 +464,7 @@ export class DiscoveryService {
         depth: layer.depth,
         path: layer.path,
         editable: layer.editable,
+        scope: layer.scope,
         state: reading.state,
         problem: reading.problem,
         entries,
@@ -563,6 +602,8 @@ export class DiscoveryService {
         depth: layer.depth,
         path: layer.path,
         editable: layer.editable,
+        // 目录类能力（Skill / 工具 / 子 Agent）没有「按作用域写入」这回事（F-G2）
+        scope: layer.scope,
         state: reading.state,
         problem: reading.problem,
         entries,
@@ -627,30 +668,34 @@ export class DiscoveryService {
       };
     }
 
-    const entries: DiscoveryEntryView[] = discovered.map((skill) => ({
-      id: skill.id,
-      name: skill.name,
-      description: skill.description === "" ? null : skill.description,
-      source: skill.dirPath,
-      enabled: true,
-      problem: null,
-    }));
+    const entries: DiscoveryEntryView[] = discovered.map((skill) =>
+      directoryEntry({
+        id: skill.id,
+        name: skill.name,
+        description: skill.description === "" ? null : skill.description,
+        source: skill.dirPath,
+        enabled: true,
+        problem: null,
+      }),
+    );
 
     const known = new Set(entries.map((entry) => entry.id));
     for (const name of await listSubdirectories(dir)) {
       if (known.has(name)) continue;
       if (!(await fileExists(join(dir, name, "SKILL.md")))) continue;
-      entries.push({
-        id: name,
-        name,
-        description: null,
-        source: join(dir, name),
-        enabled: false,
-        problem: problem("discovery.skillBroken", { name, reason: "no usable frontmatter" }, {
-          path: join(dir, name, "SKILL.md"),
-          reason: "invalid_frontmatter",
+      entries.push(
+        directoryEntry({
+          id: name,
+          name,
+          description: null,
+          source: join(dir, name),
+          enabled: false,
+          problem: problem("discovery.skillBroken", { name, reason: "no usable frontmatter" }, {
+            path: join(dir, name, "SKILL.md"),
+            reason: "invalid_frontmatter",
+          }),
         }),
-      });
+      );
     }
     return { state: "ok", problem: null, entries: sortEntries(entries) };
   }
@@ -676,14 +721,16 @@ export class DiscoveryService {
       };
     }
 
-    const entries: DiscoveryEntryView[] = loaded.map((tool) => ({
-      id: tool.name,
-      name: tool.name,
-      description: null,
-      source: tool.path,
-      enabled: true,
-      problem: null,
-    }));
+    const entries: DiscoveryEntryView[] = loaded.map((tool) =>
+      directoryEntry({
+        id: tool.name,
+        name: tool.name,
+        description: null,
+        source: tool.path,
+        enabled: true,
+        problem: null,
+      }),
+    );
 
     const known = new Set(entries.map((entry) => entry.id));
     for (const file of await listFiles(dir)) {
@@ -691,17 +738,19 @@ export class DiscoveryService {
       if (extension === undefined) continue;
       const name = file.slice(0, -extension.length);
       if (known.has(name)) continue;
-      entries.push({
-        id: name,
-        name,
-        description: null,
-        source: join(dir, file),
-        enabled: false,
-        problem: problem("discovery.toolUnloadable", { name, reason: "not a loadable tool" }, {
-          path: join(dir, file),
-          reason: "load_failed",
+      entries.push(
+        directoryEntry({
+          id: name,
+          name,
+          description: null,
+          source: join(dir, file),
+          enabled: false,
+          problem: problem("discovery.toolUnloadable", { name, reason: "not a loadable tool" }, {
+            path: join(dir, file),
+            reason: "load_failed",
+          }),
         }),
-      });
+      );
     }
     return { state: "ok", problem: null, entries: sortEntries(entries) };
   }
@@ -729,14 +778,16 @@ export class DiscoveryService {
 
     const entries: DiscoveryEntryView[] = [];
     for (const definition of discovered) {
-      entries.push({
-        id: definition.id,
-        name: definition.name,
-        description: definition.function?.description ?? definition.description ?? null,
-        source: join(dir, `${definition.id}.json`),
-        enabled: true,
-        problem: null,
-      });
+      entries.push(
+        directoryEntry({
+          id: definition.id,
+          name: definition.name,
+          description: definition.function?.description ?? definition.description ?? null,
+          source: join(dir, `${definition.id}.json`),
+          enabled: true,
+          problem: null,
+        }),
+      );
     }
 
     const known = new Set(discovered.map((definition) => definition.id));
@@ -749,18 +800,20 @@ export class DiscoveryService {
       const parsed = await readJsonOrNull(path);
       const usable = parsed !== null && typeof parsed === "object" && "function" in parsed;
       if (usable) continue;
-      entries.push({
-        id,
-        name: id,
-        description: null,
-        source: path,
-        enabled: false,
-        problem: problem(
-          "discovery.subAgentBroken",
-          { name: id, reason: parsed === null ? "not readable as JSON" : "no function definition" },
-          { path, reason: parsed === null ? "invalid_json" : "missing_function" },
-        ),
-      });
+      entries.push(
+        directoryEntry({
+          id,
+          name: id,
+          description: null,
+          source: path,
+          enabled: false,
+          problem: problem(
+            "discovery.subAgentBroken",
+            { name: id, reason: parsed === null ? "not readable as JSON" : "no function definition" },
+            { path, reason: parsed === null ? "invalid_json" : "missing_function" },
+          ),
+        }),
+      );
     }
     return { state: "ok", problem: null, entries: sortEntries(entries) };
   }
@@ -812,7 +865,55 @@ function withoutNulls(layers: (DiscoveryLayerPath | null)[]): DiscoveryLayerPath
   return layers.filter((layer): layer is DiscoveryLayerPath => layer !== null);
 }
 
-/** 把一个原始条目变成视图（保留它读不懂的部分给写回用，视图里只给能表达的字段） */
+/**
+ * 目录类条目（Skill / 工具 / 子 Agent）。
+ *
+ * 它们的传输、命令、地址这些字段不存在（F-G2 那几类不靠传输启动），`extra` 也没有写回的路。
+ * 空值在这里一次填好，免得每个构造点各写一遍。
+ */
+function directoryEntry(
+  base: Pick<DiscoveryEntryView, "id" | "name" | "description" | "source" | "enabled" | "problem">,
+): DiscoveryEntryView {
+  return {
+    ...base,
+    transport: null,
+    command: null,
+    args: null,
+    env: null,
+    url: null,
+    headers: null,
+    oauth: null,
+    extra: {},
+  };
+}
+
+/** 传输方式在磁盘上的几种写法（SDK 优先取 `type`，兼容后两个别名） */
+const TRANSPORT_KEYS = ["type", "transport", "transportType"] as const;
+
+/**
+ * 条目的已知键：不在这份清单里的才进 `extra`。
+ *
+ * 与入参对齐（`McpServerEntryInput` 的字段 + 传输方式的三个写法）；`disabled` 是磁盘上的开关，
+ * 视图里折成 `enabled`。
+ */
+const KNOWN_ENTRY_KEYS: readonly string[] = [
+  ...TRANSPORT_KEYS,
+  "description",
+  "disabled",
+  "command",
+  "args",
+  "env",
+  "url",
+  "headers",
+  "oauth",
+];
+
+/**
+ * 把一个原始条目变成视图。
+ *
+ * 已知字段按 SDK 的 `McpServerConfig` 摊开（F-F6：客户端要能看见这条服务器是怎么起的）；
+ * 这一版不认识的键归 `extra`，写回时逐字带回。
+ */
 function mcpEntryView(id: string, value: unknown, source: string): DiscoveryEntryView {
   const raw = asRecord(value);
   if (raw === null) {
@@ -826,12 +927,20 @@ function mcpEntryView(id: string, value: unknown, source: string): DiscoveryEntr
         path: source,
         reason: "entry_not_an_object",
       }),
+      transport: null,
+      command: null,
+      args: null,
+      env: null,
+      url: null,
+      headers: null,
+      oauth: null,
+      extra: {},
     };
   }
 
-  const transport = raw.type ?? raw.transport ?? raw.transportType;
+  const declared = raw.type ?? raw.transport ?? raw.transportType;
   const inferred = typeof raw.command === "string" ? "stdio" : typeof raw.url === "string" ? "http" : null;
-  const resolved = typeof transport === "string" ? transport : inferred;
+  const resolved = typeof declared === "string" ? declared : inferred;
 
   return {
     id,
@@ -843,54 +952,115 @@ function mcpEntryView(id: string, value: unknown, source: string): DiscoveryEntr
       resolved === null || !isKnownTransport(resolved)
         ? problem("discovery.mcpEntryInvalid", { name: id }, {
             path: source,
-            reason: transport === undefined ? "missing_transport" : "unknown_transport",
-            transport,
+            reason: declared === undefined ? "missing_transport" : "unknown_transport",
+            transport: declared,
           })
         : null,
+    transport: resolved !== null && isKnownTransport(resolved) ? resolved : null,
+    command: typeof raw.command === "string" ? raw.command : null,
+    args: stringList(raw.args),
+    env: stringMap(raw.env),
+    url: typeof raw.url === "string" ? raw.url : null,
+    headers: stringMap(raw.headers),
+    oauth: oauthOf(raw.oauth),
+    extra: extraOf(raw),
   };
 }
 
-function isKnownTransport(value: string): boolean {
+function isKnownTransport(value: string): value is McpServerConfig["transport"] {
   return value === "stdio" || value === "http" || value === "sse";
 }
 
-/**
- * 入参条目 → 磁盘上的 `mcpServers` 对象。
- *
- * 每个 id 以磁盘上已有的原文为底：入参里明确给了的字段覆盖上去，`extra` 最后叠一层。
- * 这样「这一版不认识的键」与 `oauth` 都不会因为一次界面保存而消失（F-F6）。
- */
-function buildMcpServers(
-  entries: McpServerEntryInput[],
-  existing: Record<string, unknown>,
-): Record<string, unknown> {
-  const servers: Record<string, unknown> = {};
-  for (const entry of entries) {
-    const id = typeof entry.id === "string" ? entry.id.trim() : "";
-    if (id === "") {
-      throw new HostError("invalid_params", {
-        params: { field: "entries[].id" },
-        detail: { field: "entries[].id", reason: "empty" },
-      });
-    }
-    const previous = asRecord(existing[id]) ?? {};
-    const next: Record<string, unknown> = { ...previous };
+/** 字符串数组；形状不对按「没有」报，原值仍然留在磁盘上（写回时省略这一项即不动它） */
+function stringList(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  return value.every((item): item is string => typeof item === "string") ? [...value] : null;
+}
 
-    next.type = entry.transport;
-    assign(next, "description", entry.description);
-    assign(next, "disabled", entry.disabled);
-    assign(next, "command", entry.command);
-    assign(next, "args", entry.args);
-    assign(next, "env", entry.env);
-    assign(next, "url", entry.url);
-    assign(next, "headers", entry.headers);
-    assign(next, "oauth", entry.oauth);
-    if (entry.extra !== undefined) {
-      for (const [key, value] of Object.entries(entry.extra)) next[key] = value;
-    }
-    servers[id] = next;
+/** 字符串到字符串的表（`env` / `headers`）；形状不对按「没有」报，理由同上 */
+function stringMap(value: unknown): Record<string, string> | null {
+  const record = asRecord(value);
+  if (record === null) return null;
+  const entries = Object.entries(record);
+  if (!entries.every(([, item]) => typeof item === "string")) return null;
+  return Object.fromEntries(entries) as Record<string, string>;
+}
+
+/** oauth 的四个必填项 + 两个可选项；形状不对（改坏了）按「没有」报 */
+function oauthOf(value: unknown): McpServerConfig["oauth"] | null {
+  const record = asRecord(value);
+  if (record === null) return null;
+  const { authorizationUrl, tokenUrl, clientId, clientSecret, scope } = record;
+  if (typeof authorizationUrl !== "string") return null;
+  if (typeof tokenUrl !== "string") return null;
+  if (typeof clientId !== "string") return null;
+  return {
+    authorizationUrl,
+    tokenUrl,
+    clientId,
+    ...(typeof clientSecret === "string" ? { clientSecret } : {}),
+    ...(typeof scope === "string" ? { scope } : {}),
+  };
+}
+
+/** 这一版不认识的键（原样，不做归并与解释） */
+function extraOf(raw: Record<string, unknown>): Record<string, unknown> {
+  const extra: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (!KNOWN_ENTRY_KEYS.includes(key)) extra[key] = value;
   }
-  return servers;
+  return extra;
+}
+
+/** 取写入条目的 id 并盯住传输方式（空 id / 不认识的传输方式没地方落地，当场拒） */
+function entryId(entry: McpServerEntryInput): string {
+  const id = typeof entry?.id === "string" ? entry.id.trim() : "";
+  if (id === "") {
+    throw new HostError("invalid_params", {
+      params: { field: "entry.id" },
+      detail: { field: "entry.id", reason: "empty" },
+    });
+  }
+  if (typeof entry.transport !== "string" || !isKnownTransport(entry.transport)) {
+    throw new HostError("invalid_params", {
+      params: { field: "entry.transport" },
+      detail: {
+        field: "entry.transport",
+        reason: "unknown_transport",
+        value: entry.transport,
+        allowed: ["stdio", "http", "sse"],
+      },
+    });
+  }
+  return id;
+}
+
+/** 传输方式写到哪个键上：沿用磁盘里已有的那个写法，没有就写 `type` */
+function transportKeyOf(previous: Record<string, unknown>): string {
+  return TRANSPORT_KEYS.find((key) => key in previous) ?? "type";
+}
+
+/**
+ * 一条入参 → 磁盘上这个 id 的原文。
+ *
+ * 以磁盘原文为底：`extra` 先叠上，入参里明确给了的已知字段最后覆盖 —— `undefined` 表示
+ * 「这次不改它」，于是磁盘上那个值留着。这样一次只改一条的写入不会把这一版不认识的键、
+ * 没被提到的 `oauth`、或客户端看不全的字段弄丢（F-F6）。
+ */
+function applyEntryPatch(previous: unknown, entry: McpServerEntryInput): Record<string, unknown> {
+  const base = asRecord(previous) ?? {};
+  const next: Record<string, unknown> = { ...base, ...(entry.extra ?? {}) };
+
+  next[transportKeyOf(base)] = entry.transport;
+  assign(next, "description", entry.description);
+  assign(next, "disabled", entry.disabled);
+  assign(next, "command", entry.command);
+  assign(next, "args", entry.args);
+  assign(next, "env", entry.env);
+  assign(next, "url", entry.url);
+  assign(next, "headers", entry.headers);
+  assign(next, "oauth", entry.oauth);
+  return next;
 }
 
 /** 只在入参真的给了这个字段时覆盖（`undefined` 表示「这次不改它」） */

@@ -374,15 +374,16 @@ describe("ConfigService.patch / setDefaults", () => {
   });
 });
 
-describe("ConfigService.patchMcps", () => {
-  it("user 作用域写数据根下的 mcp.json", async () => {
-    const { layer, applied } = await service.patchMcps({
+describe("ConfigService.saveMcp / deleteMcp", () => {
+  it("user 作用域写数据根下的 mcp.json；没给的 id 是新建", async () => {
+    const { layer, applied } = await service.saveMcp({
       scope: "user",
-      entries: [{ id: "pty", transport: "stdio", command: "npx", args: ["pty"] }],
+      entry: { id: "pty", transport: "stdio", command: "npx", args: ["pty"] },
     });
 
     expect(layer.path).toBe(join(dataRoot, "mcp.json"));
     expect(layer.editable).toBe(true);
+    expect(layer.scope).toBe("user");
     expect(layer.state).toBe("ok");
     expect(layer.entries.map((entry) => entry.id)).toEqual(["pty"]);
     expect(applied.reloaded.mcp).toBe(true);
@@ -395,24 +396,76 @@ describe("ConfigService.patchMcps", () => {
     expect(Object.keys(written.mcpServers)).toEqual(["pty"]);
   });
 
+  it("同一个 id 再存一次是改那一条，层里别的条目不动", async () => {
+    await writeJson(join(dataRoot, "mcp.json"), {
+      mcpServers: {
+        pty: { type: "stdio", command: "npx", "x-keep": true },
+        other: { type: "http", url: "https://other.example" },
+      },
+    });
+
+    const { layer } = await service.saveMcp({
+      scope: "user",
+      entry: { id: "pty", transport: "stdio", command: "npx", args: ["-y", "pty"] },
+    });
+
+    const written = JSON.parse(await readFile(join(dataRoot, "mcp.json"), "utf-8")) as {
+      mcpServers: Record<string, Record<string, unknown>>;
+    };
+    expect(written.mcpServers.pty).toEqual({
+      type: "stdio",
+      command: "npx",
+      args: ["-y", "pty"],
+      "x-keep": true,
+    });
+    expect(written.mcpServers.other).toEqual({ type: "http", url: "https://other.example" });
+    expect(layer.entries.map((entry) => entry.id).sort()).toEqual(["other", "pty"]);
+  });
+
+  it("deleteMcp 删掉那一条；本来就没有时 removed: false（不是失败）", async () => {
+    await writeJson(join(dataRoot, "mcp.json"), {
+      mcpServers: { pty: { type: "stdio", command: "npx" } },
+    });
+
+    const removed = await service.deleteMcp({ scope: "user", id: "pty" });
+    expect(removed.removed).toBe(true);
+    expect(removed.layer.entries).toEqual([]);
+    expect(removed.applied.reloaded.mcp).toBe(true);
+
+    const again = await service.deleteMcp({ scope: "user", id: "pty" });
+    expect(again.removed).toBe(false);
+    expect(again.layer.entries).toEqual([]);
+  });
+
   it("workspace 作用域要落到项目里，所以必须给项目", async () => {
     await expect(
-      service.patchMcps({ scope: "workspace", entries: [] }),
+      service.saveMcp({ scope: "workspace", entry: { id: "local", transport: "stdio" } }),
     ).rejects.toMatchObject({ code: "invalid_params" });
+    await expect(service.deleteMcp({ scope: "workspace", id: "local" })).rejects.toMatchObject({
+      code: "invalid_params",
+    });
 
-    const { layer, applied } = await service.patchMcps({
+    const { layer, applied } = await service.saveMcp({
       scope: "workspace",
       workspaceId: WORKSPACE_ID,
-      entries: [{ id: "local", transport: "http", url: "https://local.example" }],
+      entry: { id: "local", transport: "http", url: "https://local.example" },
     });
     expect(layer.path).toBe(join(project, ".ai-zen", "mcp.json"));
+    expect(layer.scope).toBe("workspace");
     expect(applied.reloaded.mcp).toBe(true);
     expect(applyPort.changes.at(-1)?.workspaceIds).toEqual([WORKSPACE_ID]);
   });
 
   it("项目不存在就拒", async () => {
     await expect(
-      service.patchMcps({ scope: "workspace", workspaceId: "ws-gone", entries: [] }),
+      service.saveMcp({
+        scope: "workspace",
+        workspaceId: "ws-gone",
+        entry: { id: "local", transport: "stdio" },
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    await expect(
+      service.deleteMcp({ scope: "workspace", workspaceId: "ws-gone", id: "local" }),
     ).rejects.toMatchObject({ code: "not_found" });
   });
 });
