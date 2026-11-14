@@ -12,7 +12,7 @@ AI-Zen Agents is a **pnpm monorepo** (workspace root `@ai-zen/agents-workspace`,
 |---------|---------|------|
 | `@ai-zen/agents-core` | 4.6.0-alpha.0 | Conversation runtime kernel |
 | `@ai-zen/agents-sdk` | 1.2.0-alpha.2 | Business capability layer |
-| `@ai-zen/agents-host` | 0.1.0-alpha.5 | Resident host: session orchestration / archives / workspaces |
+| `@ai-zen/agents-host` | 0.1.0-alpha.6 | Resident host: session orchestration / archives / workspaces |
 | `@ai-zen/agents-client` | 0.1.0-alpha.0 | Connection layer to the host; **private**, inlined by CLI / Desktop at build time |
 | `@ai-zen/agents-testing` | 0.1.0 | Private, test doubles (a fake OpenAI-compatible streaming endpoint) |
 
