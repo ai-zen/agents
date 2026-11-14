@@ -2,15 +2,15 @@
  * 端到端集成验收：真 `node` 子进程起 `cli.js serve` + 真 `ws` 客户端，走完这一步交付的全部集成点。
  *
  * 与其它两条的分工：
- *   - `e2e.test.ts` 把宿主当库用（同进程内真监听），验的是「零件接起来能跑一轮」；
- *   - `cli.process.test.ts` 验的是命令行与进程生命周期；
+ *   - `session.flow.test.ts` 把宿主当库用（同进程内真监听），验的是「零件接起来能跑一轮」；
+ *   - `serve.process.test.ts` 验的是命令行与进程生命周期；
  *   - 这一条验的是**交付清单上的每一项在真进程里都接上了**：握手与语言、项目 / 对话、
  *     配置（密钥掩码）/ 模型 / 助手、通知（列出 + 清掉）、问题（多端同一份 + 答完推进状态）、
  *     `@` 补全、以及重启之后数据还在。
  *
  * 两条口径与用例的做法有关：
  *   1. **不连模型**：这个环境里没有真密钥，所以不跑 `conversation.send`（那一轮的端到端由
- *      `e2e.test.ts` 用假 agent 覆盖）。
+ *      `session.flow.test.ts` 用假 agent 覆盖）。
  *   2. **问题的产生方在宿主内部**：契约里没有「提一个问题」的方法（问题来自交接线、
  *      登记项目、不可撤销动作的二次确认），所以这一条用例在进程之间用同一个库把一行问题
  *      写进去 —— 库文件是真的，读它的是真进程。
@@ -103,7 +103,7 @@ let dataRoot = "";
 let workspaceDir = "";
 
 beforeAll(async () => {
-  // 真编译一次（产物放在独立目录；并行跑的 cli.process.test.ts 用 dist/，两边不打架）
+  // 真编译一次（产物放在独立目录；同组的 serve.process.test.ts 用 dist/，两边不打架）
   const built = spawnSync(
     "npx",
     ["tsc", "-p", "tsconfig.json", "--outDir", BUILD_DIR],
@@ -185,6 +185,21 @@ async function waitForHostFile(): Promise<{ port: number; token: string }> {
   throw new Error(`等不到发现文件：${hostFile}`);
 }
 
+/**
+ * 等一句话出现在子进程的 stdout 里。
+ *
+ * 「发现文件写好了」不等于「启动那行已经送到父进程」：两者是两条独立的路（文件系统 vs pipe），
+ * 谁先到由进程调度决定。要断言那行字就等它，不靠「等一下应该就到了」。
+ */
+async function waitForStdout(host: RunningHost, needle: string): Promise<string> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if (host.stdout().includes(needle)) return host.stdout();
+    await wait(20);
+  }
+  return host.stdout();
+}
+
 /** 打印一行阶段小结（交付报告里的实际输出就是这些行） */
 function log(stage: string, detail: string): void {
   console.log(`[集成] ${stage}: ${detail}`);
@@ -257,7 +272,9 @@ describe("端到端集成：真进程 + 真连接", () => {
     const host = await waitForHostFile();
     expect(host.port).toBeGreaterThan(0);
     expect(host.token.length).toBeGreaterThan(0);
-    expect(first.stdout()).toContain("宿主已启动：ws://127.0.0.1:");
+    expect(await waitForStdout(first, "宿主已启动：ws://127.0.0.1:")).toContain(
+      "宿主已启动：ws://127.0.0.1:",
+    );
 
     const anon = await connect(host.port);
     anon.request("workspace.list", {});

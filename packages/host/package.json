@@ -35,7 +35,8 @@
     "prepublishOnly": "node scripts/check-publish-tool.mjs && npm test && npm run build",
     "pretest": "tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
-    "test:all": "npm run pretest && vitest run && npm run build"
+    "test:all": "npm run pretest && vitest run && npm run build && vitest run --config vitest.e2e.config.ts",
+    "test:e2e": "npm run pretest && vitest run --config vitest.e2e.config.ts"
   },
   "keywords": [
     "ai",

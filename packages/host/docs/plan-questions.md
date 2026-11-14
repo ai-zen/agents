@@ -74,7 +74,7 @@
 - [src/app.ts] 单根把 handler 表暴露成 `readonly handlers`（`Partial<MethodName → handler>`）：W4 那几个域要往同一张表里加方法、用例要直接调 handler 时都用它。这个「单根公开 handler 表」的口径认不认？
 - [src/cli.ts] D25 的第二优先级「配置文件里的端口」在 CLI 里没有来源（SDK 的 `AppConfig` 没有 port 字段）：`--port` 之外只能由代码用 `configPort` 注入。要么定一个配置文件字段，要么 D25 的第二级改成「环境变量」。
 - [src/cli.ts] `bin` 名是 `agents-host`，我让「无子命令」与 `serve` 都表示前台起服务；`token` 三个动作直接开库（不启服务），`version` 只打印版本与协议版本。对外实例（`--public`）不会生成 `run/token`，只提示用 `token create` 自己建再分发。这些命令形状认不认？
-- [src/e2e.test.ts] 冒烟里注入的是假 agent 工厂（不连模型），所以 `createSdkAgentFactory` 的真装配（硬线 / 交接线 / 工具刷新）仍只有 `ChatRunner.test.ts` 的用例覆盖。W5 要不要加一条「真 SDK 装配 + 指向本地假端点的模型」的用例？
+- [src/session.flow.test.ts] 冒烟里注入的是假 agent 工厂（不连模型），所以 `createSdkAgentFactory` 的真装配（硬线 / 交接线 / 工具刷新）仍只有 `ChatRunner.test.ts` 的用例覆盖。W5 要不要加一条「真 SDK 装配 + 指向本地假端点的模型」的用例？
 - [src/services/DiscoveryService.ts] F-G2 只写了「Skill 4 层、工具与子 Agent 各 2 层」，没写具体是哪几个目录。我按 L9 的形状推的：Skill = `<ws>/.ai-zen/skills` → `<ws>/.agents/skills` → `<aiZenDir>/skills` → `~/.agents/skills`；工具 = `<ws>/.agents/tools` → `<aiZenDir>/tools`；子 Agent = `<ws>/.agents/sub-agents` → `<aiZenDir>/sub-agents`（数据根下的名字跟 SDK `CONFIG_SUB_DIRS` 走，是 `sub-agents` 不是 `subagents`）。这四条目录要 PM 确认（属于产品事实，不该由实施者拍）。
 - [src/services/DiscoveryService.ts] MCP 的 2 个可编辑作用域我定成 `<ws>/.ai-zen/mcp.json`（workspace）与 `<aiZenDir>/mcp.json`（user）；`<ws>/.mcp.json` 与 `<ws>/.agents/mcp.json`、`~/.agents/mcp.json` 只读。认不认？
 - [src/services/DiscoveryService.ts] `DiscoveryLayerView.editable` 我按「本契约的写方法能不能改这一层」算：MCP 有 2 层 true（与 F-G1 对齐），Skill / 工具 / 子 Agent 全部 false（契约里没有写它们的方法，`kind` 只有 MCP 有 `patch`）。若希望「用户自己那层」显示成可编辑（能手改文件），这个字段的语义要另定。
@@ -125,8 +125,8 @@
 - [src/cli.ts] `token create` 只把明文打到 stdout，不写 `<数据根>/run/token`（那是本地实例启动时维护的交付口）：认这个分工吗？
 - [src/handlers/assetHandlers.ts] `asset.*` 在 handler 表里是空的：`asset.begin` / `asset.end` 由 `WsHub` 在注入 `UploadReceiver` 时接管（要按连接分帧落盘），再注册一份就成了两处实现。这一域只剩「附件结局按连接语言重渲染」的翻译工作。
 - [src/handlers/conversationHandlers.ts] `conversation.state` 的 `questions` 与 `statusBlocks` 仍是空数组（问题对象归 W4-H、状态栏块归 W4）：这份拼装留在接线层，还是收进服务层（或单开一个 StateService）？
-- [src/cli.process.test.ts] 进程冒烟不跑一轮对话（不连模型）：真 SDK 装配仍只有 `ChatRunner` 的用例覆盖。W5 要不要加一条「指向本地假端点的模型」的用例？
-- [src/cli.process.test.ts] 这条用例自己跑一次 `tsc -p tsconfig.json` 才起进程（它要有 `dist/` 产物），因此比别的用例慢十来秒。要不要改成「验收先 build、用例只读 dist」？
+- [src/serve.process.test.ts] 进程冒烟不跑一轮对话（不连模型）：真 SDK 装配仍只有 `ChatRunner` 的用例覆盖。W5 要不要加一条「指向本地假端点的模型」的用例？
+- [src/serve.process.test.ts] 这条用例自己跑一次 `tsc -p tsconfig.json` 才起进程（它要有 `dist/` 产物），因此比别的用例慢十来秒。要不要改成「验收先 build、用例只读 dist」？
 
 ## W4-X（总装）追加
 
@@ -141,7 +141,7 @@
 - [src/runtime/ScopeRegistry.ts] 两处加法：`createWorkspaceScopeFactory` 的 `skillsPaths` / `toolsPaths` / `subAgentsPaths` 允许给「按 cwd 算」的函数（R54：能力目录跟项目走，而 Scope 是按 cwd 装配的）；`ScopeRegistry.workspaceIds()` 读当前持有的键（配置生效要回报「回收了哪些项目的 Scope」）。
 - [src/handlers/conversationHandlers.ts] `conversation.send` 的三个钩子都接上了：发之前 `QuestionService.assertSendable`（D23）、受理后 `AssetService.linkToMessage`、结算后 `AutoNaming.afterTurn`（D2）。自动命名放在结算之后且不阻塞回包，它自己的返回值里说明「为什么没起名」。
 - [src/handlers/conversationHandlers.ts] `conversation.transient` 只有在注入了 `TransientRunner` 时才注册；单根总会注入，所以运行期它一定在表里（用例 `handlers/index.test.ts` 钉住「除四条桥接外全表覆盖」）。
-- [src/app.test.ts] `conversation.send` 的完整一轮（事件顺序 + 库里落消息）仍由 `e2e.test.ts` 用假 agent 覆盖：那一层要真装配 Scope、真流式、真写库，放在真进程里跑不划算（也不该为了测试往 CLI 里塞假 agent）。
+- [src/app.test.ts] `conversation.send` 的完整一轮（事件顺序 + 库里落消息）仍由 `session.flow.test.ts` 用假 agent 覆盖：那一层要真装配 Scope、真流式、真写库，放在真进程里跑不划算（也不该为了测试往 CLI 里塞假 agent）。
 - [src/handlers/conversationHandlers.ts] `conversation.state` 的 `questions` 接上了（= `question.list(conversationId)`，含已回答的那些，客户端按状态决定要不要显示）；`statusBlocks` 仍是空数组 —— 六态 / 工具 / 子 Agent 的事实都在 `run` 与 `usage` 里，块怎么切是呈现层的决定，宿主不另造一份。
 - [src/app.ts] 没有注入交接服务时，R50 的警告在**第一次装配 agent** 时推一条（`notice.logWarning`，永久）；它描述的是「自动交接线没装」，不是某一轮的错。
 

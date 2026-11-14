@@ -3,6 +3,8 @@ node_modules
 dist
 package-lock.json
 packages/test-home/drafts/_current.json
+# host 的集成用例自己跑 tsc 时的产物目录（与 dist/ 分开，两条真进程用例互不抢占）
+.dist-it
 
 # 密钥类文件（.githooks/pre-commit 还有一道扫描兜底）
 .env

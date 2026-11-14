@@ -3,7 +3,7 @@
  *
  * 这里关心的是「谁被接上了、什么时刻会发生什么」，所以有一部分用例直接调用 handler 表
  * （省掉网络这一层），需要看连接数变化的那几条才真开 WebSocket —— 端到端那条完整链路在
- * `e2e.test.ts` 里，真起进程的那条在 `cli.process.test.ts` 里。
+ * `session.flow.test.ts` 里，真起进程的那条在 `serve.process.test.ts` 里。
  */
 
 import { promises as fs } from "node:fs";
