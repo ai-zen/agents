@@ -25,4 +25,8 @@ export {
 } from "./config.js";
 export type { ListenTarget, ListenTargetInput, HostPaths } from "./config.js";
 
+// `run/host.json` 的形状：连接层要读这个文件，字段名是同一份真相（PRD D25），
+// 所以这里把它导出去，让客户端 `Pick` 本类型而不是自己重声明一份字段。
+export type { HostFileInfo } from "./net/discovery.js";
+
 export * from "./wire/index.js";

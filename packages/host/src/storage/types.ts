@@ -14,9 +14,6 @@
 
 import type { AgentNS } from "@ai-zen/agents-core";
 
-/** 消息角色，取值与 core 的 `AgentNS.Role` 对齐 */
-export type MessageRole = "system" | "user" | "assistant" | "tool" | "function" | "unknown";
-
 /** 消息状态，取值与 core 的 `AgentNS.MessageStatus` 对齐 */
 export type MessageStatus = "pending" | "writing" | "completed" | "error" | "aborted" | "unknown";
 

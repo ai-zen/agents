@@ -116,6 +116,3 @@ export function createConfigHandlers(deps: ConfigHandlerDeps): ConfigHandlers {
       ),
   };
 }
-
-/** 单个方法也导出，便于用例直接调（不必造整张表） */
-export type ConfigMethodHandler<M extends ConfigHandlerName> = MethodHandler<M>;

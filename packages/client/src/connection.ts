@@ -56,6 +56,8 @@ import { dirname, join } from "node:path";
 
 import type { ClientInfo } from "@ai-zen/agents-host";
 
+import type { HostFileInfo } from "@ai-zen/agents-host";
+
 import { isLoopbackHost, parseAddress, type HostTarget } from "./address.js";
 import { Client, type ClientOptions } from "./client.js";
 import { isClientError, localError, type ClientError } from "./errors.js";
@@ -64,14 +66,15 @@ import { settingsToTarget, type ConnectionSettings } from "./settings.js";
 /** 数据根的环境变量名（与宿主的 `AI_ZEN_DIR_ENV` 同一个词） */
 export const AI_ZEN_DIR_ENV = "AI_ZEN_DIR";
 
-/** `run/host.json` 里本模块用到的字段（宿主 `net/discovery.ts` 的 `HostFileInfo` 的子集） */
-export interface LocalHostFacts {
-  /** 宿主进程 id：换了 pid 就说明「这是新拉起的那个」 */
-  pid: number;
-  /** 实际监听的地址（端口被占时是退回的临时端口） */
-  host: string;
-  port: number;
-}
+/**
+ * `run/host.json` 里本模块用到的字段。
+ *
+ * 直接 `Pick` 宿主的 `HostFileInfo`，**不重抄一份**：字段名与文件位置是同一份真相
+ * （PRD D25 说发现文件是唯一真相），重声明一次就等于把「字段叫什么」抄了第二遍 ——
+ * 宿主哪天把 `host` 改成 `hostname`，这里读出来是 `undefined`，症状是「连不上本机宿主，
+ * 但发现文件明明在那儿」。
+ */
+export type LocalHostFacts = Pick<HostFileInfo, "pid" | "host" | "port">;
 
 /**
  * 拉起的阶段。
@@ -191,7 +194,15 @@ export function resolveDataRoot(explicit?: string): string {
   return given ?? join(homedir(), ".ai-zen");
 }
 
-/** `<数据根>/run/host.json`：这台机器上谁在服务 */
+/**
+ * `<数据根>/run/host.json`：这台机器上谁在服务。
+ *
+ * 路径与宿主 `config.ts` 的 `HOST_FILE_NAME` 是同一个事实，但这里**不能** import 它：
+ * 宿主对本包只是 `devDependency`（本包对它的引用全是 `import type`，产物里不带宿主代码），
+ * 引一个运行期常量就会让发布出去的包在别人的机器上 `ERR_MODULE_NOT_FOUND`。
+ * 所以这条路径只能手写一份 —— 改名时宿主改这里也得改（字段名那一半已经用 `Pick` 消掉了，
+ * 见 `LocalHostFacts`）。
+ */
 export function hostFilePath(dataRoot: string): string {
   return join(dataRoot, "run", "host.json");
 }

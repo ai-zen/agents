@@ -126,11 +126,6 @@ export function findModel(config: AppConfig, modelId: string): Model | undefined
   return config.models.find((model) => model.id === modelId);
 }
 
-/** 按 id 找图片模型 */
-export function findImageModel(config: AppConfig, imageModelId: string): ImageModel | undefined {
-  return (config.imageModels ?? []).find((model) => model.id === imageModelId);
-}
-
 /**
  * 这个模型现在能不能用；能用回 `null`，不能用回一条带原因的事实（F-B5：藏着不如说清楚）。
  *

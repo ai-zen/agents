@@ -426,9 +426,6 @@ export interface LocalSectionExtensions {
  */
 export type LocalMessageContentSection = AgentNS.MessageContentSection & LocalSectionExtensions;
 
-/** 带本地扩展的正文：字符串原样，数组里的每一段可能带 `__` 字段 */
-export type LocalMessageContent = string | LocalMessageContentSection[];
-
 /**
  * 一个内容段里的素材 id（没有这个扩展字段时为空）。
  *
