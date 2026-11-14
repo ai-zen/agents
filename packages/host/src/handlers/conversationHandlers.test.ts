@@ -19,7 +19,6 @@ import { makeTempDir, wait, type TempDir } from "../net/TestSupport.js";
 import type { AgentFactory } from "../runtime/index.js";
 import { deferred, FakeAgent, type Deferred } from "../runtime/TestSupport.js";
 import { HostError } from "../wire/index.js";
-import { STATUS_BLOCK_IDS } from "../wire/index.js";
 import type {
   ConversationAbortResult,
   ConversationDeleteResult,
@@ -304,67 +303,52 @@ describe("conversation.abort / conversation.delete", () => {
   });
 });
 
-describe("conversation.state 的状态栏块（PRD F-I6 / 裁定 R65）", () => {
-  it("八块按 STATUS_BLOCK_IDS 的顺序给出，事实都来自已有字段", async () => {
+describe("conversation.state / conversation.get：客户端拼状态栏要的那几处事实（PRD F-I6）", () => {
+  it("每一处事实都在契约里各自有一份，客户端不必再被喂一份拼好的副本", async () => {
     const { app, conversationId, workspaceDir } = await makeHarness();
 
     const { state } = await callMethod(app, "conversation.state", { conversationId });
-    expect(state.statusBlocks.map((block) => block.id)).toEqual([...STATUS_BLOCK_IDS]);
+    const { conversation: view } = await callMethod(app, "conversation.get", { conversationId });
 
-    const view = (await callMethod(app, "conversation.get", { conversationId })).conversation;
-    const agent = state.statusBlocks.find((block) => block.id === "agent");
-    // 身份来自对话自己（创建时定死，L7）；名字与可用性来自助手定义那一层（`AgentService.describe`）
-    expect(agent?.id === "agent" && agent.facts.agentId).toBe(view.agentId);
-    expect(agent?.id === "agent" && agent.facts.name).toBe("Test Assistant");
-    expect(agent?.id === "agent" && agent.facts.available).toBe(true);
+    // 助手：身份来自对话自己（创建时定死，L7）；名字与可用性来自助手定义那一层
+    expect(view.agent).toEqual({ agentId: "default", name: "Test Assistant", available: true });
+    expect(view.agent.agentId).toBe(view.agentId);
 
-    const model = state.statusBlocks.find((block) => block.id === "model");
-    expect(model?.id === "model" && model.facts.modelId).toBe(view.model.modelId);
-    // 没换过模型：它来自助手定义
-    expect(model?.id === "model" && model.facts.source).toBe("agent");
+    // 模型：没换过，来源是助手定义；名字与 id 都在视图这一份里
+    expect(view.model.modelId).toBe("test-model");
+    expect(view.model.name).toBe("Test Model");
+    expect(view.model.source).toBe("agent");
 
-    const thinking = state.statusBlocks.find((block) => block.id === "thinking");
-    expect(thinking?.id === "thinking" && thinking.facts).toEqual(view.thinking);
+    // 思考档：视图与现场给的是同一份
+    expect(view.thinking).toEqual(state.thinking);
+    expect(state.thinking).toEqual(view.thinking);
 
-    const context = state.statusBlocks.find((block) => block.id === "context");
-    expect(context?.id === "context" && context.facts).toEqual(state.context);
+    // 目录事实来自这段对话所属的项目（临时目录刚建出来，存在为真）
+    expect(view.folder).toEqual({ cwd: workspaceDir.path, exists: true });
 
-    const usage = state.statusBlocks.find((block) => block.id === "usage");
-    expect(usage?.id === "usage" && usage.facts).toEqual(state.usage);
+    // 上下文与用量各自一份，谁都不需要从别处推
+    expect(state.context.handoffThreshold).toBeGreaterThan(0);
+    expect(state.context.usage.prompt_tokens).toBeGreaterThanOrEqual(0);
+    expect(state.usage.total.total_tokens).toBeGreaterThanOrEqual(0);
 
-    // 目录事实来自这段对话所属的项目（目录存在为真：临时目录刚建出来）
-    const cwd = state.statusBlocks.find((block) => block.id === "cwd");
-    expect(cwd?.id === "cwd" && cwd.facts.cwd).toBe(workspaceDir.path);
-    expect(cwd?.id === "cwd" && cwd.facts.exists).toBe(true);
-
-    const tools = state.statusBlocks.find((block) => block.id === "tools");
-    expect(tools?.id === "tools" && tools.facts.running).toEqual([]);
-
-    const subagents = state.statusBlocks.find((block) => block.id === "subagents");
-    expect(subagents?.id === "subagents" && subagents.facts.items).toEqual(state.run.subagents);
-
-    // 块名不在这里：宿主只给 id 与 facts，名字归客户端（PRD F-I6）
-    expect(state.statusBlocks.every((block) => !("label" in block))).toBe(true);
+    // 状态栏的块不再是契约面：拼哪几块、按什么顺序摆，归界面（PRD F-I6）
+    expect("statusBlocks" in state).toBe(false);
   });
 
-  it("助手被删之后，助手块回 null（名字与可用性都没有可报的事实）", async () => {
+  it("助手被删之后，视图里名字与可用性都是 null（不猜、也不编）", async () => {
     const { app, conversationId } = await makeHarness();
 
-    const before = await callMethod(app, "conversation.state", { conversationId });
-    const beforeAgent = before.state.statusBlocks.find((block) => block.id === "agent");
-    expect(beforeAgent?.id === "agent" && beforeAgent.facts.name).toBe("Test Assistant");
+    const before = await callMethod(app, "conversation.get", { conversationId });
+    expect(before.conversation.agent.name).toBe("Test Assistant");
 
     await app.agentService.delete({ agentId: "default" });
 
-    const after = await callMethod(app, "conversation.state", { conversationId });
-    const afterAgent = after.state.statusBlocks.find((block) => block.id === "agent");
-    // 对话仍记着那个 id（L7），但定义已经没了：不猜名字，也不编一个可用性
-    expect(afterAgent?.id === "agent" && afterAgent.facts.agentId).toBe("default");
-    expect(afterAgent?.id === "agent" && afterAgent.facts.name).toBeNull();
-    expect(afterAgent?.id === "agent" && afterAgent.facts.available).toBeNull();
+    const after = await callMethod(app, "conversation.get", { conversationId });
+    // 对话仍记着那个 id（L7），但定义已经没了
+    expect(after.conversation.agent).toEqual({ agentId: "default", name: null, available: null });
   });
 
-  it("流式中 tools 块跟着 run.generation 里还在跑的工具变", async () => {
+  it("流式中「还在跑的工具」就在 run.generation 里，客户端照它拼工具块", async () => {
     const toolGate: Deferred<void> = deferred();
     const { app, conversationId } = await makeHarness({
       createAgent: async () =>
@@ -384,17 +368,17 @@ describe("conversation.state 的状态栏块（PRD F-I6 / 裁定 R65）", () => 
     }
 
     const during = await callMethod(app, "conversation.state", { conversationId });
-    const toolsDuring = during.state.statusBlocks.find((block) => block.id === "tools");
-    expect(toolsDuring?.id === "tools" && toolsDuring.facts.running.map((tool) => tool.toolCall.function?.name)).toEqual(["read"]);
-    // 六态的事实只有一处（run.generation），块里装的就是它
-    expect(during.state.run.generation?.phase).toBe("awaiting_tools");
+    const generation = during.state.run.generation;
+    expect(generation?.phase).toBe("awaiting_tools");
+    // 「还在跑的工具」只在等工具那一态才有，取法就这一处（L8）
+    const running = generation?.phase === "awaiting_tools" ? generation.runningTools : [];
+    expect(running.map((tool) => tool.toolCall.function?.name)).toEqual(["read"]);
 
     toolGate.resolve();
     await settle(app, conversationId);
 
     const after = await callMethod(app, "conversation.state", { conversationId });
-    const toolsAfter = after.state.statusBlocks.find((block) => block.id === "tools");
-    expect(toolsAfter?.id === "tools" && toolsAfter.facts.running).toEqual([]);
+    expect(after.state.run.generation).toBeNull();
   });
 });
 
@@ -407,9 +391,9 @@ describe("conversation.state 的 includeMessages（要不要连消息一起回�
     const result = await callMethod(app, "conversation.state", { conversationId });
     // 键不出现，而不是空数组 —— 空数组的意思是「这段对话里没有消息」
     expect("messages" in result).toBe(false);
-    // 现场照旧完整：用量、状态栏块都在（只是没有消息本体）
+    // 现场照旧完整：用量、上下文都在（只是没有消息本体）
     expect(result.state.usage.total).toBeDefined();
-    expect(result.state.statusBlocks.length).toBeGreaterThan(0);
+    expect(result.state.context.handoffThreshold).toBeGreaterThanOrEqual(0);
   });
 
   it("要了就与 message.list 逐条相同：同一份读取，不是又读一遍", async () => {

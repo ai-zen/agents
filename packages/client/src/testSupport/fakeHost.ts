@@ -213,7 +213,6 @@ export function conversationState(
       updatedAt: "2026-01-01T00:00:00.000Z",
     },
     questions: [],
-    statusBlocks: [],
     updatedAt: "2026-01-01T00:00:00.000Z",
     ...overrides,
   };

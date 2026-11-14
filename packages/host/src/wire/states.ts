@@ -496,65 +496,18 @@ export interface AttachmentOutcome {
   problem: ProblemFact | null;
 }
 
-// ---------------------------------------------------------------------------
-// 状态栏的块（PRD F-I6）
-// ---------------------------------------------------------------------------
-
-/**
- * 状态栏每一块的事实。块 id 固定，块内结构按 id 不同而不同（判别式联合）。
- *
- * 这样的好处是：宿主给的是可排版的块，客户端决定摆哪几块、摆在哪（PRD F-I6 /
- * 「宿主给能力、客户端给交互」），双方都不需要解析一整行字符串。
- *
- * **块名（助手 / 模型 / 上下文 …）不在这里**：那是界面的词汇，归客户端 —— 同一块在
- * 不同界面上叫法可能不同，也可能干脆不显示名字。宿主只给 id 与 facts。
- */
-export type StatusBlock =
-  | {
-      id: "agent";
-      /**
-       * 助手块的三个事实。
-       *
-       * `agentId` 是这段对话的身份（创建时定死，L7）；`name` 与 `available` 由 `conversation.state`
-       * 现读助手定义得出（`AgentService.describe`）。定义已经没了（助手被删，L7 允许对话留着旧 id）
-       * 或文件读不出来时，这两项都是 `null` —— 说「不知道」而不是编一个值。
-       */
-      facts: { agentId: string; name: string | null; available: boolean | null };
-    }
-  | {
-      id: "model";
-      facts: ModelState;
-    }
-  | { id: "thinking"; facts: ThinkingState }
-  | { id: "context"; facts: ContextState }
-  | { id: "usage"; facts: UsageSnapshot }
-  | { id: "cwd"; facts: FolderFact }
-  | { id: "tools"; facts: { running: RunningTool[] } }
-  | { id: "subagents"; facts: { items: SubAgentSnapshot[] } };
-
-/** 状态栏块的 id */
-export type StatusBlockId = StatusBlock["id"];
-
-/** 全部块 id，按建议的摆放顺序 */
-export const STATUS_BLOCK_IDS: readonly StatusBlockId[] = [
-  "agent",
-  "model",
-  "thinking",
-  "context",
-  "usage",
-  "cwd",
-  "tools",
-  "subagents",
-];
-
-// ---------------------------------------------------------------------------
-// 一段对话的现场状态（PRD L5：重连先拉状态）
-// ---------------------------------------------------------------------------
-
 /**
  * 一段对话的现场：在跑哪一轮、上下文用了多少、有没有问题挂着、用量多少。
  *
  * 重连的客户端拿这一份就能把界面摆回原样，再按 `message.list`（带 `after`）补齐消息。
+ *
+ * **这里没有状态栏的块**（PRD F-I6）。块是「取哪几处事实、按什么顺序摆」，属于界面的排版：
+ * 八块要的事实全都已经在契约里各自有一份 —— 助手与模型与目录在 `ConversationView`，
+ * 上下文、思考档、用量在下面这几行，工具与子 Agent 在 `run` 里。界面自己拼即可。
+ *
+ * 曾经有过一份宿主拼好的 `statusBlocks`：它只在 `conversation.state` 被拉的那一刻成立，
+ * 于是聊天过程中「上下文百分比 / 模型名 / 本轮 tokens / 正在跑的工具」全冻在打开对话那一刻
+ * —— 一份拼好的副本没有刷新通道，而按块再推一份又会把同一批事实讲两遍。
  */
 export interface ConversationState {
   conversationId: string;
@@ -564,8 +517,6 @@ export interface ConversationState {
   usage: UsageSnapshot;
   /** 挂在这段对话上的问题（含已回答/已过期的，客户端按状态决定要不要显示） */
   questions: QuestionView[];
-  /** 状态栏的块（PRD F-I6） */
-  statusBlocks: StatusBlock[];
   /** 这份快照的时间 */
   updatedAt: string;
 }

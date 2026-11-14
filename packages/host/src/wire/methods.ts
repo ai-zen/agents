@@ -323,7 +323,21 @@ export interface ConversationSummary {
 export type ConversationModelState = ModelState;
 
 /** 一段对话的完整样子 */
+/**
+ * 这段对话的助手事实（PRD F-I6 的助手块要的就是这三格）。
+ *
+ * `agentId` 是这段对话的身份（创建时定死，L7）；`name` 与 `available` 现读助手定义得出
+ * （`AgentService.describe`）。定义已经没了（助手被删，L7 允许对话留着旧 id）或文件读不出来时
+ * 这两项都是 `null` —— 说「不知道」而不是编一个看起来像真的名字。
+ */
+export interface ConversationAgentState {
+  agentId: string;
+  name: string | null;
+  available: boolean | null;
+}
+
 export interface ConversationView extends ConversationSummary {
+  agent: ConversationAgentState;
   model: ConversationModelState;
   thinking: ThinkingState;
   /** 对话所属 Workspace 的目录事实（PRD D12） */

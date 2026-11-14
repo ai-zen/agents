@@ -5,7 +5,6 @@ import {
   GENERATION_PHASES,
   MAX_ASSETS_PER_MESSAGE,
   MAX_ASSET_BYTES,
-  STATUS_BLOCK_IDS,
   NOTICE_LEVELS,
   QUESTION_KINDS,
   QUESTION_STATES,
@@ -18,7 +17,6 @@ import {
   type GenerationState,
   type MessageInput,
   type RunningTool,
-  type StatusBlock,
   type UsageSnapshot,
 } from "./states.js";
 
@@ -257,28 +255,6 @@ describe("上下文阈值（PRD F-D1 / D27）", () => {
     };
     expect(context.usage.prompt_tokens).toBeGreaterThan(context.handoffThreshold);
     expect(context.usage.prompt_tokens).toBeLessThan(context.guardThreshold);
-  });
-});
-
-describe("状态栏块（PRD F-I6）", () => {
-  it("块名固定，块内事实按块名不同", () => {
-    expect([...STATUS_BLOCK_IDS]).toEqual([
-      "agent",
-      "model",
-      "thinking",
-      "context",
-      "usage",
-      "cwd",
-      "tools",
-      "subagents",
-    ]);
-
-    const cwdBlock: StatusBlock = { id: "cwd", facts: { cwd: "/tmp/x", exists: false } };
-    const toolsBlock: StatusBlock = { id: "tools", facts: { running: [] } };
-
-    // 判别式联合：按 id 收窄后拿到的就是对应块的事实
-    expect(cwdBlock.id === "cwd" && cwdBlock.facts.exists).toBe(false);
-    expect(toolsBlock.id === "tools" && toolsBlock.facts.running.length).toBe(0);
   });
 });
 

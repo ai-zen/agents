@@ -241,7 +241,7 @@ W2 收尾时确认的是**「它接的到底是哪个方法」**（不是「文�
 | `tui/screens/handoff-choice.ts` | F-D2 交接三选一 | `question.answer`（答完的后续动作在 `effects` 里，不用再发一次请求） |
 | `tui/screens/notice.ts`、`pending-notices.ts`、`session-notice.ts` | F-I8 通知通道 | `notice.list / dismiss / clear`（`clear` 见 W2-7） |
 | `tui/mention.ts` | F-H4 / F-H5 `@` 菜单 | `completion.files`（D7：远程前端看不到目录） |
-| `status-segments.ts`、`session-rate.ts` | F-I6 状态栏块 / F-I5 速率 | `statusBlocks` / `conversation.state.usage`（只有这一个口径） |
+| `status-blocks.ts`、`status-segments.ts`、`session-rate.ts` | F-I6 状态栏块 / F-I5 速率 | 块**由客户端现拼**（2026-11-14 起 `statusBlocks` 不在契约里）：助手 / 模型 / 思考档 / 目录取 `conversation.get` 的视图，上下文与用量取 `conversation.state`，工具与子 Agent 取 `run`；只有速率走 `conversation.state.usage`（就这一个口径） |
 | `tui/config-wizard/*`、`mcp-command.ts`、`agent-switch.ts`、`reasoning-effort.ts` | F-F1~F-F7、F-B4、F-B6 | `config.*` / `agent.*`（W1 之后 MCP 那屏走 `saveMcp` / `deleteMcp`） |
 | `tui/key-debug.ts`、`mouse.ts`、`input-editing.ts`、`system-editor.ts`、`hook.ts`、`clipboard.ts` | F-J3、F-H1~H3、F-C11、F-A4、F-H6 | — （本机能力，不经宿主） |
 | `version-compare.ts` | F-E3 升级 | `host.upgrade` + W2-1 的 range 比对 |

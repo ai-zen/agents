@@ -3,6 +3,35 @@
 All notable changes to `@ai-zen/agents-host` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versions use SemVer.
 
+## [0.1.0-alpha.6] - 2026-11-14
+
+> The status bar's blocks move to the client — the third and last step of "界面归界面，事实归宿主".
+> alpha.5 still shipped `conversation.state.statusBlocks`, an assembled copy of eight facts. That
+> copy was only true at the instant `conversation.state` was pulled, and a client only pulls it when
+> it opens a conversation (or changes model, or reloads). So the context percentage, the model
+> name, this turn's token count and the "tools running" indicator **stayed frozen at whatever they
+> were when the conversation was opened** — for the whole session.
+>
+> Not a missing refresh: the same facts existed twice. Every one of them was already on the wire
+> individually and already kept live by the client.
+
+### ⚠️ Breaking
+
+- **`conversation.state.statusBlocks` removed**, with `StatusBlock` / `StatusBlockId` /
+  `STATUS_BLOCK_IDS` / `statusBlocksOf` / `StatusBlockInput`. The eight blocks need facts that
+  already have a home in the contract: agent + model + thinking + folder in `ConversationView`,
+  context + thinking + usage in `ConversationState`, tools + sub-agents in `run`.
+- **`ConversationView` gains `agent: { agentId, name, available }`** — the two facts a client
+  cannot derive (the name lives in the agent definition; "available" needs the model / endpoint /
+  key check). `available` is still decided by `AgentService.describe`; `ConversationService` asks
+  for the conclusion through a `describeAgent` port rather than reimplementing the check.
+
+### 🐛 Fixed
+
+- A client that never re-pulls state now sees live facts, because there is no second copy to go
+  stale. The agent block degrades honestly: with the definition gone, `name` / `available` are
+  `null` (say "unknown", do not invent a value).
+
 ## [0.1.0-alpha.5] - 2026-11-14
 
 > The capability list is gone. `host.capabilities` existed to tell clients "what this build can

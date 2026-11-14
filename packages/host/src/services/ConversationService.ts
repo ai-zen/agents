@@ -54,6 +54,7 @@ import type {
   ConversationListParams,
   ConversationListResult,
   ConversationModelState,
+  ConversationAgentState,
   ConversationPinParams,
   ConversationPinResult,
   ConversationRenameParams,
@@ -127,6 +128,14 @@ export interface ConversationServiceDeps {
   drafts?: ConversationDraftStore;
   /** 推 `conversation.changed`（多端在线同步，L5 / D22）；不注入时不推 */
   emit?: ChatEventEmitter;
+  /**
+   * 助手那两格事实（定义上的名字 / 现在能不能跑）。
+   *
+   * 能不能跑要看模型 / 端点 / 密钥三处齐不齐，那是 `AgentService` 的活 —— 本服务不把
+   * 那套判定重写一份（两份判定必漂），只向它要一个结论。没注入、或定义已经没了时两格都是
+   * `null`（说「不知道」而不是编一个像真的名字）。
+   */
+  describeAgent?: (agentId: string) => Promise<{ name: string; available: boolean } | null>;
   /** 时钟，测试注入用；缺省 `Date.now` */
   now?: () => number;
 }
@@ -248,6 +257,7 @@ export class ConversationService {
   private readonly runtime: ConversationRuntimePort;
   private readonly drafts: ConversationDraftStore;
   private readonly emit?: ChatEventEmitter;
+  private readonly describeAgent?: ConversationServiceDeps["describeAgent"];
   private readonly now: () => number;
   /** 正在落库的草稿：同一个 id 的并发调用共用同一次写入（key 是 conversationId） */
   private readonly persisting = new Map<string, Promise<Conversation>>();
@@ -265,6 +275,7 @@ export class ConversationService {
     this.runtime = deps.runtime;
     this.drafts = deps.drafts ?? new ConversationDrafts();
     this.emit = deps.emit;
+    this.describeAgent = deps.describeAgent;
     this.now = deps.now ?? Date.now;
     this.agents = new AgentRepository(join(deps.configManager.basePath, "agents"));
   }
@@ -783,11 +794,27 @@ export class ConversationService {
     };
     const view: ConversationView = {
       ...this.toSummary(row, stored, pending.length),
+      agent: await this.agentState(row.agentId),
       model: modelState,
       thinking: this.buildThinking(row, model, agent, context.presets),
       folder: await toFolderFact(workspace.cwd),
     };
     return { view, context: buildContext(model, lastUsage(stored)) };
+  }
+
+  /**
+   * 这段对话的助手事实（名字 / 能不能跑）：向 `AgentService` 要结论，自己不下判断。
+   *
+   * 两格都可以是 `null` —— 没注入读数、或助手定义已经没了（被删 / 读不出来）。
+   * 界面拿 `null` 就知道「不知道」，不会把 id 当名字、也不会把「不可用」当成「可用」。
+   */
+  private async agentState(agentId: string): Promise<ConversationAgentState> {
+    const described = this.describeAgent ? await this.describeAgent(agentId) : null;
+    return {
+      agentId,
+      name: described?.name ?? null,
+      available: described?.available ?? null,
+    };
   }
 
   /** 改完之后重新读一遍再拼视图：改名与置顶都要回写后的完整对象 */

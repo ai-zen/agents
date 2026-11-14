@@ -7,7 +7,8 @@
  *
  * 唯一在接线层做的拼装是 `conversation.state` 的现场快照：它要把三处事实合起来
  * （服务层给的视图、运行时给的这一轮、库里消息求和的用量），而这三样分别属于三个持有者，
- * 只有接线层同时看得见它们。
+ * 只有接线层同时看得见它们。状态栏的块**不在这里拼**：那是界面的事（PRD F-I6），
+ * 八块要的事实各自都在契约里有一份，客户端自己取。
  *
  * 一段对话的三处跨界钩子也在这里接（它们分属三个服务，契约里的位置却是同一对方法）：
  *   - `conversation.send` 之前问一句「有挡着的问题吗」（D23）；
@@ -45,11 +46,8 @@ import type {
   ConversationView,
   QuestionView,
   RunState,
-  StatusBlock,
-  StatusBlockId,
   UsageSnapshot,
 } from "../wire/index.js";
-import { STATUS_BLOCK_IDS } from "../wire/index.js";
 import { localizeOutcome } from "./assetHandlers.js";
 
 /** `conversation.*` 的实现要的持有者 */
@@ -267,8 +265,6 @@ async function conversationStateOf(
   const model = config.models.find((item) => item.id === conversation.model.modelId);
   const run = turn ? turn.runState() : idleRunState(conversationId, usage);
   const context = contextOf(page.messages, model);
-  // 助手那条事实只在这里取一次（IO 留在这里，下面拼块的那一步仍是同步纯函数）
-  const agent = await agentFactOf(deps, conversation.agentId);
 
   return {
     state: {
@@ -278,104 +274,11 @@ async function conversationStateOf(
       thinking: conversation.thinking,
       usage,
       questions: deps.questionsFor ? await deps.questionsFor(conversationId) : [],
-      statusBlocks: statusBlocksOf({ conversation, agent, run, context, usage }),
       updatedAt: now,
     },
     // 这份消息就是上面算用量与上下文用的那一次读取，不是又读一遍
     messages: page.messages,
   };
-}
-
-// ---------------------------------------------------------------------------
-// 状态栏的块（PRD F-I6 / 裁定 R65）
-// ---------------------------------------------------------------------------
-
-/**
- * 助手块的那两条事实（名字 / 能不能用，PRD F-I6）。
- *
- * 真相在助手定义那一层，这里只读一次，把它变成块能装的那两格；拼块的 `statusBlocksOf`
- * 于是仍然是同步纯函数。没注入助手服务、或定义已经没了（被删 / 读不出来）时两格都是 `null`
- * —— 说「不知道」而不是编一个看起来像真的值。
- */
-async function agentFactOf(
-  deps: ConversationHandlerDeps,
-  agentId: string,
-): Promise<StatusBlockInput["agent"]> {
-  const described = await deps.agents?.describe(agentId);
-  if (!described) return { name: null, available: null };
-  return { name: described.name, available: described.available };
-}
-
-/** 造状态栏块要的那几处事（每一项都已经在别处算好了，这里只负责装箱） */
-export interface StatusBlockInput {
-  /** 服务层给的对话视图（身份、模型、思考档、目录事实） */
-  conversation: ConversationView;
-  /**
-   * 助手块的两条事实（名字 / 能不能用），由 {@link conversationStateOf} 从助手定义那一层读来。
-   * 拿不到时两格都是 `null`（助手已被删、或定义文件读不出来）。
-   */
-  agent: { name: string | null; available: boolean | null };
-  /** 这一轮的快照（六态、工具、子 Agent、本轮用量） */
-  run: RunState;
-  /** 上下文占用与两条阈值 */
-  context: ContextState;
-  /** 累计用量 */
-  usage: UsageSnapshot;
-}
-
-/**
- * 按 `STATUS_BLOCK_IDS` 的顺序拼装状态栏的块（PRD F-I6 / 裁定 R65）。
- *
- * 这里**不产生新事实**：每一块装的都是别处已经算好的那份 —— 对话视图里的身份 / 模型 / 思考档 /
- * 目录、`conversation.state` 里的上下文与用量、以及这一轮快照里的六态与子 Agent。工具块只取
- * `awaiting_tools` 态里还在跑的那几个（并行时有几个列几个，正是 L8 要的语义）；其余态下没有
- * 工具在跑，列表就是空的。
- *
- * 助手块的 `name` / `available` 由调用方（`conversationStateOf`）先从助手定义那一层读好传进来
- * （`input.agent`）：本函数保持同步纯函数，不在这里做 IO。
- */
-export function statusBlocksOf(input: StatusBlockInput): StatusBlock[] {
-  const { conversation, agent, run, context, usage } = input;
-  const generation = run.generation;
-  const runningTools = generation?.phase === "awaiting_tools" ? generation.runningTools : [];
-
-  const blocks: Record<StatusBlockId, StatusBlock> = {
-    agent: {
-      id: "agent",
-      facts: { agentId: conversation.agentId, name: agent.name, available: agent.available },
-    },
-    model: {
-      id: "model",
-      facts: conversation.model,
-    },
-    thinking: {
-      id: "thinking",
-      facts: conversation.thinking,
-    },
-    context: {
-      id: "context",
-      facts: context,
-    },
-    usage: {
-      id: "usage",
-      facts: usage,
-    },
-    cwd: {
-      id: "cwd",
-      facts: conversation.folder,
-    },
-    tools: {
-      id: "tools",
-      facts: { running: runningTools },
-    },
-    subagents: {
-      id: "subagents",
-      facts: { items: run.subagents },
-    },
-  };
-
-  // 顺序按 `STATUS_BLOCK_IDS` 给：那是建议的摆放顺序，客户端可以只取自己摆得下的前几块
-  return STATUS_BLOCK_IDS.map((id) => blocks[id]);
 }
 
 // ---------------------------------------------------------------------------

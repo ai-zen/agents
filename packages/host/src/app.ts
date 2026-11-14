@@ -439,6 +439,8 @@ export class HostApp {
       drafts: this.conversationDrafts,
       // 多端在线同步（L5 / D22）：改名/置顶/撤回/删除之后对方窗口得知道去拉
       emit: (name, payload) => this.emitEvent(name, payload),
+      // 助手那两格事实（名字 / 能不能跑）：判定在 AgentService，「能不能跑」要看模型 / 端点 / 密钥
+      describeAgent: (agentId) => this.agentService.describe(agentId),
       now: () => this.clock.now(),
     });
     this.messageService = new MessageService({
