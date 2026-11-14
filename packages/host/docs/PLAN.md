@@ -224,7 +224,7 @@
 - 为什么删 `/search`：**CLI 一阶段不做搜索** —— 搜索是桌面端的一个搜索框（F-C6），触发消息列表的搜索，
   宿主提供 `search.messages`，怎么搜由客户端定。
 - 验收：`commands/registry.ts` 的命令名与 PRD F-E1 逐条对齐（对照表进提交说明）；`search.conversations`
-  在 CLI 里零调用（grep）；i18n 删掉 `cmd.search.*`；帮助屏由 capabilities 渲染，不再多一条。
+  在 CLI 里零调用（grep）；i18n 删掉 `cmd.search.*`；帮助屏由 CLI 自己的命令表渲染（2026-11-14 订正：原计划走 capabilities，见 PRD F-E5），不再多一条。
 
 **W2-7【AI 的决策】`notice.clear` 现在零调用方 —— 在 CLI 通知屏加一个「全部清空」，给它真实出路，而不是删方法。**
 - 为什么：宿主侧 `notice.clear` 是实现完整、行为正确的通道动作（L3 手动清）；删掉等于让「一片通知一次清完」
