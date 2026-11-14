@@ -124,7 +124,7 @@ export interface RunState {
   /** 本轮那条助手消息的 id（请求发出前就分配，PRD L6）；空闲时为空 */
   assistantMessageId: string | null;
   /**
-   * 还没落成消息的排队条目数（PRD D3：用户在这轮跑的时候说的话）。
+   * 还没落成消息的排队条目数（PRD D14：用户在这轮跑的时候说的话）。
    *
    * 数字直接取**这一轮 agent 的 mailbox**（core 的 `Agent.inbox.length`），宿主不另记一份：
    * core 的 `abort()` 会清空 inbox（用户按停 = 排队的话不发了），另记的数会在那一瞬漂掉。

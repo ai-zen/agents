@@ -4,7 +4,7 @@
  * ## 一轮的骨架
  *
  * ```
- * RunRegistry.start（这一段对话同时只跑一轮；已经在跑的那一轮由 conversation.send 排队，D3）
+ * RunRegistry.start（这一段对话同时只跑一轮；已经在跑的那一轮由 conversation.send 排队，D14）
  *   → 借 Scope（ScopeRegistry.acquire：懒创建或复用，依赖 +1）
  *   → 分配两个消息 id 并落库（用户消息 + 助手占位，PRD L6：id 在请求发出前就有）
  *   → 装配 agent（可注入的工厂；跑完即弃，PRD D28）
@@ -13,7 +13,7 @@
  *   → 推结算态 `run.state` + `usage`
  * ```
  *
- * ## 跑中发送走 inbox，不走第二轮（PRD D3）
+ * ## 跑中发送走 inbox，不走第二轮（PRD D14）
  *
  * `conversation.send` 发现这一段已经有一轮在跑时，调的是 {@link ChatRunner.enqueue}：把那一句
  * 用户输入推给**那一轮的 agent**（core 的 `pushInbox`），由它在轮末落成一条 User 消息。于是
@@ -168,7 +168,7 @@ export interface ChatAgent {
   send(content: AgentNS.MessageContent): Promise<AgentNS.Message[]>;
   abort(): void;
   /**
-   * 排队待发的内容（core 的 `Agent.inbox`，PRD D3）。
+   * 排队待发的内容（core 的 `Agent.inbox`，PRD D14）。
    *
    * 宿主**只读**它：`RunState.inboxPending` 就是这份数组的长度。不自己另记一份计数 ——
    * core 的 `abort()` 会把 inbox 清空，另记的数会在那一瞬与真相分叉。
@@ -278,7 +278,7 @@ export interface ChatTurn {
 }
 
 /**
- * 一句排进**正在跑的那一轮**的用户输入（`conversation.send` 的排队回执，PRD D3）。
+ * 一句排进**正在跑的那一轮**的用户输入（`conversation.send` 的排队回执，PRD D14）。
  *
  * 没有 `assistantMessageId`：排队的话还没有「这一次要被回答的助手消息」—— 它落成一条 User
  * 消息之后由那一轮接着跑，流还是那一轮原来那条流。宿主在入队这一刻就把 `userMessageId`
@@ -364,7 +364,7 @@ export const DEFAULT_STREAM_WRITE_INTERVAL_MS = 200;
  * `RunRegistry` 从 `start()` 到 agent `attach()` 之间有一段看不见的空窗：读会话行、拿 Scope
  * （首次进某个项目要 MCP 发现）、修复历史、准备素材（可能要上传厂商）、装配 agent。正常是
  * 几十到几百毫秒，卡在某个外部调用上时可能是无限久。继续挂着等，客户端那侧只是一直转圈 ——
- * 到点就按老口径回 `busy`，让用户自己决定是等还是按停。
+ * 到点就放弃排队、回 `busy` 兜底，让用户自己决定是等还是按停（D14）。
  */
 export const QUEUE_READY_TIMEOUT_MS = 10_000;
 
@@ -670,7 +670,7 @@ class TurnSession implements ChatTurn {
   private writeChain: Promise<void> = Promise.resolve();
 
   /**
-   * 这一轮还能不能接新话（`conversation.send` 的排队分支靠它定夺，PRD D3）。
+   * 这一轮还能不能接新话（`conversation.send` 的排队分支靠它定夺，PRD D14）。
    *
    * 三态，转换只有四处：
    *   - `pending` → `open`：`attach()` 里 agent 装上了；
@@ -742,7 +742,7 @@ class TurnSession implements ChatTurn {
   }
 
   /**
-   * 这一刻能不能把新话排进这一轮（PRD D3 的排队分支）。
+   * 这一刻能不能把新话排进这一轮（PRD D14 的排队分支）。
    *
    * `pending`（轮次已登记、agent 还在装配）时会等，最多等 `timeoutMs`；`closed` 立刻 `false`。
    *
@@ -756,7 +756,7 @@ class TurnSession implements ChatTurn {
    * ## 为什么要有上界
    *
    * 装配卡在某个不应答的 MCP 服务上时，一直等会让这条请求一直挂着（客户端那侧只是转圈）。
-   * 到点回 `false`，调用方按老口径（`busy`）回话，把选择权交回用户。
+   * 到点回 `false`，调用方回 `busy` 兜底（D14：它不再是跑中发送的答复），把选择权交回用户。
    */
   async waitEnqueueable(timeoutMs: number): Promise<boolean> {
     if (this.enqueueState === "open") return true;
@@ -777,10 +777,10 @@ class TurnSession implements ChatTurn {
   }
 
   /**
-   * 把一句用户输入排进这一轮（PRD D3）。
+   * 把一句用户输入排进这一轮（PRD D14）。
    *
    * 返回 `null` = 这一轮接不了：agent 还没装上、这一轮已经跑完（正在收尾写库）、或者用户刚
-   * 按了停。三种都不是错误 —— 调用方回老路径，由 `run()` 决定「开新一轮」还是 `busy`。
+   * 按了停。三种都不是错误 —— 调用方回老路径（`run()`），由它决定「开新一轮」还是「回 `busy` 兜底」。
    *
    * ## 为什么「判能不能排」与「推」之间不允许有 await
    *
@@ -1475,7 +1475,7 @@ class TurnSession implements ChatTurn {
       );
       // 用户那条消息在 core 那边带着「这一次发出去的内容」（厂商的 file_id / base64）。
       // 落库要的是 `__asset_id` 那一份：否则库里这条消息就绑死在这次发送所用的端点上了。
-      // 排队进来的那几句同样有这个岔路（D3：排队的也走一遍素材准备），只是它们各自那一份
+      // 排队进来的那几句同样有这个岔路（D14：排队的也走一遍素材准备），只是它们各自那一份
       // 存在 `queuedStored` 里 —— 每句话的附件可以不同，不能拿主消息那份套上去。
       const stored =
         message.id === this.userMessageId ? this.storedContent : this.queuedStored.get(message.id);
@@ -1719,7 +1719,7 @@ export class ChatRunner {
   /**
    * 受理一轮：占位、落两条消息、把执行放到后台，然后把两个 id 还给调用方（PRD L6 / F-I12）。
    *
-   * 忙即拒（`HostError("busy")`，D14）；对话不存在则 `not_found`。任何一种失败都不会
+   * 已经在跑就抛 `busy`（D14 里它只剩兜底）；对话不存在则 `not_found`。任何一种失败都不会
    * 留下一个占着不动的轮次，也不会让 Scope 的依赖计数多算一次。
    */
   async run(params: ChatRunParams): Promise<ChatTurn> {
@@ -1855,7 +1855,7 @@ export class ChatRunner {
   }
 
   /**
-   * 把一句用户输入排进**正在跑的那一轮**（PRD D3：跑中发送不打断、也不拒）。
+   * 把一句用户输入排进**正在跑的那一轮**（PRD D14：跑中发送不打断、也不拒）。
    *
    * 返回 `null` 表示「这一段对话现在没有能排进去的一轮」：没在跑（`turns` 里没有这一段的
    * 现场）、刚登记轮次而 agent 还没装上且等超了上界（`QUEUE_READY_TIMEOUT_MS`）、或者这一轮

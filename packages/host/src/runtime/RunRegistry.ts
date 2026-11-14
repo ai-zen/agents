@@ -1,7 +1,18 @@
 /**
  * `RunRegistry` —— 「这段对话正在跑哪一轮」的唯一一处（architecture §4 / PRD D14）。
  *
- * 为什么要有它：一段对话同时跑一轮（PRD D14）。再来请求时本注册表**直接拒**并说明「正忙」。
+ * 为什么要有它：一段对话同时只跑一轮（PRD D14 的前半句）。这一条仍然是本注册表给出的
+ * **硬保证** —— 交接回合、撤回、问题答复都靠它在「这段对话现在不能动」时说清正忙
+ * （`start()` 撞上在跑的一轮就抛 `busy`）。
+ *
+ * 但「跑中再发一句话」不走这一道（PRD D14 的后半句）：`conversation.send` 在受理那一刻就
+ * 分流到 `ChatRunner.enqueue`，把那一句排进**正在跑的那一轮**的 inbox，回执 `queued: true`。
+ * 那不是绕过本注册表 —— 那条路上这一轮**已经在跑**，压根不会走到 `start()`，注册表里记的
+ * 始终还是同一轮。
+ *
+ * `busy` 因此只剩兜底（PRD D14 末段）：装配窗口过了上界（`QUEUE_READY_TIMEOUT_MS`，排不进
+ * 那一轮）、收尾竞态（这一轮已经跑完、正在写库结算），以及**别的动作**撞上在跑的一轮
+ * （见下一节）。它不是「跑中发送」的答复。
  *
  * ## 为什么它是注册表，而不是散在服务里的布尔
  *
@@ -11,7 +22,7 @@
  *
  * ## 它为什么不是排队执行器（也不能改成那个）
  *
- * 「用户跑中再发一句话」那条口子走的是 core 的 inbox，不是这里（PRD D3：
+ * 「用户跑中再发一句话」那条口子走的是 core 的 inbox，不是这里（PRD D14：
  * `conversation.send` → `ChatRunner.enqueue` → 那一轮 agent 的 `pushInbox`）。这一条仍然是
  * 一道**硬保证**：交接回合、撤回、问题答复都靠 `busy` 这一支把「这段对话现在不能动」说清楚
  * （`HandoffService` / `ConversationService.revert` / `QuestionService.answer`）。把这里改成
@@ -123,12 +134,13 @@ export class RunRegistry implements RunsView {
   /**
    * 占位：这段对话开始跑一轮。
    *
-   * 已经在跑就抛 `HostError("busy")` —— PRD D14：直接拒并说明「正忙」。`detail` 带上「上一次
+   * 已经在跑就抛 `HostError("busy")` —— PRD D14 里这一支只剩兜底。`detail` 带上「上一次
    * 是什么时候开始的」，让界面能说清「它在忙什么」而不是干巴巴一句忙。
    *
    * 「用户跑中再发一句话」不经过这一道：那条口子在 `conversation.send` 就分流到
-   * `ChatRunner.enqueue` 了（D3），压根不会走到 `start()`。这里抛 `busy` 的几种情形都是
-   * **别的动作**撞上了正在跑的一轮（交接、撤回、答问题，以及排队分支兜底之后的那个 `send`）。
+   * `ChatRunner.enqueue` 了（D14），压根不会走到 `start()`。这里抛 `busy` 的几种情形都是
+   * **别的动作**撞上了正在跑的一轮（交接、撤回、答问题），以及排队分支自己兜底之后的那个
+   * `send`（装配窗口等超了上界、或者这一轮正在收尾）。
    */
   start(conversationId: string): RunHandle {
     const existing = this.runs.get(conversationId);

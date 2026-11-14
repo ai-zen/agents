@@ -1,5 +1,5 @@
 /**
- * 取证：**真 core `Agent` 跑在真 `ChatRunner` 里**，用户在跑中发消息（PRD D3）。
+ * 取证：**真 core `Agent` 跑在真 `ChatRunner` 里**，用户在跑中发消息（PRD D14）。
  *
  * ## 为什么单独一个文件
  *
@@ -273,7 +273,7 @@ function createHarness(options: {
 // 主链路：跑中入队 → 工具轮收尾时落地 → 第二轮请求里带着它
 // ---------------------------------------------------------------------------
 
-describe("真 core Agent 跑在真 ChatRunner 里：跑中发送进 inbox（D3）", () => {
+describe("真 core Agent 跑在真 ChatRunner 里：跑中发送进 inbox（D14）", () => {
   it("工具正跑着时 enqueue → 工具轮后落地 → 第二轮请求里带着它，且第一轮没被 abort", async () => {
     const timeline: TimelineEntry[] = [];
     let coreAgent: Agent | undefined;

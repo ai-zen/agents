@@ -1,5 +1,6 @@
 /**
- * `conversation.*` 的验收：受理、素材挂接、按连接语言重渲染、忙即拒、中止、删除时的现场丢弃。
+ * `conversation.*` 的验收：受理、素材挂接、按连接语言重渲染、跑中发送排进 inbox、中止、
+ * 删除时的现场丢弃。
  *
  * 一轮里「真正属于 core 的那部分」在用例里照原样跑（`FakeAgent` 走同一个 `applyChunk`），
  * 只有「流从哪来」换成了脚本 —— 所以这里验的是接线，不是模型。
@@ -220,7 +221,7 @@ describe("conversation.send", () => {
     });
 
     expect(sent.userMessageId.length).toBeGreaterThan(0);
-    // 空闲时受理的是一轮新的：助手消息 id 必须在（`null` 只属于排队受理，D3）
+    // 空闲时受理的是一轮新的：助手消息 id 必须在（`null` 只属于排队受理，D14）
     expect(typeof sent.assistantMessageId).toBe("string");
     expect(sent.assistantMessageId?.length).toBeGreaterThan(0);
     // 消息落库那一刻扫 content 里的 `__asset_id` 写关系行
@@ -270,7 +271,7 @@ describe("conversation.send", () => {
     expect(chinese.attachments[0]?.problem?.message).not.toBe(outcome?.problem?.message);
   });
 
-  it("跑的时侯第二句不再被拒：它排进那一轮的 inbox，回包说 queued（D3）", async () => {
+  it("跑的时侯第二句不再被拒：它排进那一轮的 inbox，回包说 queued（D14）", async () => {
     const gate: Deferred<void> = deferred();
     const agent = new FakeAgent([
       { gate: gate.promise, deltas: [{ content: "慢" }] },

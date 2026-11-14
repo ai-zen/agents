@@ -468,12 +468,12 @@ export interface ConversationDeleteResult {
 }
 
 /**
- * `conversation.send` 入参（PRD F-C2 / L6 / D3 / F-H7 / F-D10）。
+ * `conversation.send` 入参（PRD F-C2 / L6 / D14 / F-H7 / F-D10）。
  *
  * 两种受理，取决于这段对话当时在不在跑：
  *   - 空闲 → 开一轮（宿主先占位，再分配用户消息与助手消息的 id，L6：助手消息 id 在请求
  *     发出之前就有，然后开始流式）；
- *   - 正在跑 → 这一句排进**那一轮**的 inbox（D3：不打断、也不再回 `busy`）。
+ *   - 正在跑 → 这一句排进**那一轮**的 inbox（D14：不打断、也不再回 `busy`）。
  *
  * 用户输入用 core 的内容形状（`MessageInput`），图片的传输路径由宿主定（F-H7）。
  * 有问题在挡着这段对话时会被拒（`question_pending`，D23 / F-D10）—— 排队不是绕过它的通道。
@@ -489,7 +489,7 @@ export interface ConversationSendParams {
  * ## 两半含义，由 `queued` 区分
  *
  * - `queued` 缺省 = 老路径：受理了**新的一轮**，两个 id 都在，客户端拿助手 id 接流。
- * - `queued: true` = 这一句排进了**正在跑的那一轮**（D3）。此时 `assistantMessageId` 是
+ * - `queued: true` = 这一句排进了**正在跑的那一轮**（D14）。此时 `assistantMessageId` 是
  *   `null`：排队的话还没有「这一次要被回答的助手消息」—— 它落成用户消息之后由那一轮接着跑，
  *   流还是那一轮原来的那条流。
  *

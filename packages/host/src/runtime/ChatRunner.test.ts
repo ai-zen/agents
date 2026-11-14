@@ -1236,7 +1236,7 @@ class ScriptedAgent implements ChatAgent {
   /**
    * 这个桩不承接 inbox：它只演「一轮跑完」的素材落库路径。
    *
-   * 真承接（推得进去、轮末落地）的那一份是 `FakeAgent`，D3 的用例都走那条。
+   * 真承接（推得进去、轮末落地）的那一份是 `FakeAgent`，D14 的用例都走那条。
    * 这里故意硬失败：万一有人以为「推一下就算收到了」，就在用例里当场报错。
    */
   inbox: AgentNS.InboxEntry[] = [];
@@ -1490,7 +1490,7 @@ describe("ChatRunner：子 Agent 说的话也推给客户端", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 跑中发送：进 inbox，不打断（D3 / D5）
+// 跑中发送：进 inbox，不打断（D14 / D5）
 // ---------------------------------------------------------------------------
 
 /**
@@ -1523,7 +1523,7 @@ class GatedMessageStore extends RecordingMessageStore {
   }
 }
 
-describe("ChatRunner：跑中发送进 inbox（D3：不打断、也不回 busy）", () => {
+describe("ChatRunner：跑中发送进 inbox（D14：不打断、也不回 busy）", () => {
   it("入队把这一句推进**这一轮**的 inbox，回执带上它的 id 与附件结局", async () => {
     const gate = deferred<void>();
     const agent = new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢慢说" }] }]);

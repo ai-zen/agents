@@ -3,7 +3,7 @@
  *
  * 这里只做「参数 → 交给服务/运行时 → 把结果翻译成契约形状」。业务判断在
  * `ConversationService` 与 `ChatRunner` 里：比如「一段对话同时只跑一轮」在 `RunRegistry`、
- * 「跑中发送排进那一轮的 inbox」在 `ChatRunner.enqueue`（D3）、「模型解析不出来」在服务层，
+ * 「跑中发送排进那一轮的 inbox」在 `ChatRunner.enqueue`（D14）、「模型解析不出来」在服务层，
  * 本文件不重新判断一遍。
  *
  * 唯一在接线层做的拼装是 `conversation.state` 的现场快照：它要把三处事实合起来
@@ -155,11 +155,12 @@ export function createConversationHandlers(deps: ConversationHandlerDeps): Handl
  * 先把草稿落成真行（R56：首次 `send` 时才写 `conversations`）：FK 要求消息所属的对话已经存在，
  * 而且后端的一切（重连、列表、删除）都按「存在即能查」处理。
  *
- * ## 两条受理路（PRD D3）
+ * ## 两条受理路（PRD D14）
  *
  * 1. **这段对话正跑着一轮** → 这一句排进**那一轮**的 inbox，立即回 `queued: true`（不再 `busy`）：
  *    不打断正在说的那一段，core 在轮末把它落成一条用户消息。
- * 2. 其余情况（空闲 / 刚跑完还没结算干净）→ 老路径 `runner.run()`：开新的一轮，忙就 `busy`。
+ * 2. 其余情况（空闲 / 刚跑完还没结算干净）→ 老路径 `runner.run()`：开新的一轮；真开不了
+ *    （装配窗口等超了上界、或者这一轮正好在收尾）才回 `busy` —— 那是兜底，不是跑中发送的答复。
  *
  * 为什么入队的定夺不在这一层：「跑着的那一轮」只在 `ChatRunner` 里（它手上才有 agent）；
  * 这里只负责把回执翻译成契约形状。`assertSendable`（D23）在两条路之前就过了 —— 排队不是
@@ -183,14 +184,14 @@ async function sendTurn(
   // R56：草稿在第一条用户消息之前不落库，这里把它写成真行（同一个 id）
   await deps.conversations.ensurePersisted(params.conversationId);
 
-  // D3：跑中发送 → 排进那一轮的 inbox。`null` = 现在没有能排进去的一轮，落到下面的老路径。
+  // D14：跑中发送 → 排进那一轮的 inbox。`null` = 现在没有能排进去的一轮，落到下面的老路径。
   const queued = await deps.runner.enqueue({
     conversationId: params.conversationId,
     input: params.input,
     language,
   });
   if (queued) {
-    // 排队的话还没有属于它的助手消息（流还是那一轮原来那条），所以这里是 `null`（D3/D5）
+    // 排队的话还没有属于它的助手消息（流还是那一轮原来那条），所以这里是 `null`（D14 / D5）
     return {
       userMessageId: queued.userMessageId,
       assistantMessageId: null,
@@ -345,7 +346,7 @@ export function idleRunState(
     conversationId,
     status: "idle",
     assistantMessageId: null,
-    // 没在跑的一轮就没有谁的入队可排：这里是 0，不是「未知」（D3）
+    // 没在跑的一轮就没有谁的入队可排：这里是 0，不是「未知」（D14）
     inboxPending: 0,
     startedAt: null,
     settledAt: null,

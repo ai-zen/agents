@@ -29,7 +29,10 @@ export type BizCode =
   | "invalid_params"
   /** 目标对象不存在（对话、消息、问题、附件……） */
   | "not_found"
-  /** 这段对话正在跑上一轮（PRD D14：忙就拒，不排队） */
+  /**
+   * 这段对话正在跑上一轮，而这个动作插不进去（PRD D14：`busy` 只剩兜底 ——
+   * 「跑中再发一句话」走那一轮的 inbox 排队，不回它）
+   */
   | "busy"
   /** 上传或请求体超限（PRD D5：图片 20MB/张） */
   | "payload_too_large"
