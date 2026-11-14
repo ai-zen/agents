@@ -107,6 +107,35 @@ export namespace AgentNS {
     omit?: boolean;
   }
 
+  /**
+   * inbox 条目的优先级，决定它落成 User 消息的时机：
+   * - `high`：一轮**内**循环（一次请求 + 它引发的工具调用）结束后立即插入；
+   * - `low`：整组内循环停下（agent 这一轮不再继续）之后才插入。
+   */
+  export type InboxPriority = "high" | "low";
+
+  /**
+   * 排进 Agent inbox 的一条待发内容。
+   *
+   * 它**不是**消息：落地那一刻才变成一条 `Message`（`role: "user"`），来源信息不落到
+   * 消息字段上（见 `inboxEntryContent`）。
+   */
+  export interface InboxEntry {
+    /**
+     * 落成那条 User 消息时用的 id。
+     *
+     * 之所以在**入队时**就定下来：宿主把它先告诉客户端（乐观回显），落地时用同一个 id，
+     * 同一条内容才不会显示两遍（客户端按 id 去重/覆盖）。
+     */
+    messageId: string;
+    /** `"user"` | `"tool"` | 其他人类可读来源名（只作展示与正文注释用） */
+    source: string;
+    priority: InboxPriority;
+    content: MessageContent;
+    /** 入队时刻（ISO 字符串） */
+    createdAt: string;
+  }
+
   export interface Delta {
     name?: string;
     content?: MessageContent;

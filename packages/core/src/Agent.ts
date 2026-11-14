@@ -5,7 +5,8 @@ import { AgentContext } from "./AgentContext.js";
 import type { UnknownToolContext } from "./AgentContext.js";
 import { PickRequired } from "./Common.js";
 import { ToolCallContext } from "./ToolCallContext.js";
-import { Message } from "./Message.js";
+import { Message, generateMessageId } from "./Message.js";
+import { inboxEntryMessage } from "./Inbox.js";
 import { Tool } from "./Tool.js";
 import { reconcileAbortedToolRounds } from "./AbortedToolRounds.js";
 import { reconcileAbortedMessages } from "./AbortedMessages.js";
@@ -74,6 +75,19 @@ export interface ToolCallEndContext {
    * 即使跑完也不算成功）。消费方直接读它，不必再回 `agent.messages` 里反查。
    */
   result: AgentNS.Message;
+}
+
+/**
+ * 事件载荷 —— `inbox`：有人往 `agent.inbox` 里推了一条待发内容。
+ *
+ * 载荷带 `agent`（哪个 Agent 收的）与 `entry`（推的那条本身）：「推成功」这件事的发生
+ * 时刻只有推的人自己知道，宿主/客户端据此点亮「已排队 N 条」，而不必轮询 `inbox`。
+ */
+export interface InboxContext {
+  /** 收下这条条目的 Agent */
+  agent: Agent;
+  /** 原样推入的那条条目（含已补齐的 `messageId` / `createdAt`） */
+  entry: AgentNS.InboxEntry;
 }
 
 /**
@@ -151,6 +165,15 @@ interface PendingTask {
 
 export class Agent extends AgentContext {
   events = new EventBus();
+
+  /**
+   * 运行中排队的待发内容：`pushInbox()` 推进来，`run()` 在对应的插入点取走并落成 User 消息。
+   *
+   * 公开可读（宿主据此展示「已排队 N 条」），写入走 `pushInbox` / `clearInbox`。
+   * 数组实例自始至终是同一个（推进用 `push`、取走与清空用 `splice`），所以拿着它做快照
+   * 的调用方不会抱到一份过期的副本。
+   */
+  inbox: AgentNS.InboxEntry[] = [];
 
   /** 已注册的插件列表 */
   private _plugins: AgentPlugin[] = [];
@@ -235,16 +258,73 @@ export class Agent extends AgentContext {
   private innerLoopsTasks: Set<PendingTask> = new Set();
 
   /**
+   * 本轮（这一次 `run`）是否已经被 `abort()` 叫停。
+   *
+   * ## 为什么另立一个标志，而不是沿用「receiverStatus === Aborted」
+   *
+   * 那个值说的是「**某条消息**被标了中止」，而且只在「内循环刚跑完、还没 reconcile」那一
+   * 刻可读：`reconcileAbortedToolRounds`（fill 策略）与 `reconcileAbortedMessages`（keep
+   * 策略）会把被中止的消息改回 `Completed`。而 inbox 的两个插入点里，低优先那个恰恰排在
+   * 两个 reconcile **之后**，高优先那个也可能已经跨过了好几条消息 —— 到那儿再去翻消息，
+   * 已经看不出「这一轮还要不要继续」了。所以要判断的是**这一轮**的状态，就直记在轮上。
+   *
+   * ## 何时置起 / 何时复位
+   *
+   * `abort()` 置 true、`run()` 每次开头复位：与今天一致 —— 没在跑的时候调 `abort()`，
+   * 不影响下一次 `send` 的正常运行（本次只清空 inbox，不带脾气到下一轮）。
+   */
+  private runAborted = false;
+
+  /**
    * 当前内循环（单轮）进行中的消息任务：内循环开始时记录，完成时清除。
    * 只保留未完成任务；abort 统一遍历本集合：中止 controller + 标记 receiver 为 Aborted。
    */
   private innerLoopTasks: Set<PendingTask> = new Set();
 
   abort() {
+    // 这一轮已被叫停：`run()` 的两个插入点都不再取条目，也不再开新圈（见 runAborted）
+    this.runAborted = true;
+    // 用户按停 = 排队的内容不发了：丢掉并清空（宿主据此收起「已排队 N 条」）
+    this.clearInbox();
     this.innerLoopTasks.forEach((task) => {
       task.controller.abort();
       task.receiver.status = AgentNS.MessageStatus.Aborted;
     });
+  }
+
+  /**
+   * 推一条内容进 `inbox`，等 `run()` 在对应插入点把它落成一条 User 消息。
+   *
+   * 缺 `messageId` / `createdAt` 就地补：`messageId` 允许由调用方在**入队时**定下 —— 宿主
+   * 先把它告诉客户端（乐观回显），落地那条消息用同一个 id，同一条内容才不会画两遍。
+   *
+   * 推完立即广播事件 `inbox`（非阻塞）：载荷是 `{ agent, entry }`，与「推成功」这个时刻一一
+   * 对应，订阅方不必轮询数组。
+   *
+   * @returns 实际入队的那条（补齐后的完整条目）
+   */
+  pushInbox(
+    entry: Omit<AgentNS.InboxEntry, "messageId" | "createdAt"> & { messageId?: string },
+  ): AgentNS.InboxEntry {
+    const pushed: AgentNS.InboxEntry = {
+      messageId: entry.messageId ?? generateMessageId(),
+      source: entry.source,
+      priority: entry.priority,
+      content: entry.content,
+      createdAt: new Date().toISOString(),
+    };
+    this.inbox.push(pushed);
+    this.events.emit("inbox", { agent: this, entry: pushed } satisfies InboxContext);
+    return pushed;
+  }
+
+  /**
+   * 清空 inbox，返回被丢掉的那些条目（按入队顺序）。
+   *
+   * `abort()` 调它：用户按停就是这个意思 —— 排着队的东西一句也不发了。
+   */
+  clearInbox(): AgentNS.InboxEntry[] {
+    return this.inbox.splice(0, this.inbox.length);
   }
 
   /**
@@ -280,10 +360,51 @@ export class Agent extends AgentContext {
   }
 
   /**
+   * 把某一档优先级的条目**按入队顺序**全部从 `inbox` 里取走。
+   *
+   * 用 `splice` 逐个摘而不是重建数组：`inbox` 是公开字段，外部可能拿着它做快照，
+   * 换掉数组实例等于让那些引用指向一份不存在的排队队列。
+   */
+  private drainInbox(priority: AgentNS.InboxPriority): AgentNS.InboxEntry[] {
+    const taken: AgentNS.InboxEntry[] = [];
+    for (let i = 0; i < this.inbox.length;) {
+      const entry = this.inbox[i]!;
+      if (entry.priority !== priority) {
+        i++;
+        continue;
+      }
+      taken.push(entry);
+      this.inbox.splice(i, 1);
+    }
+    return taken;
+  }
+
+  /**
+   * 取走某一档优先级的条目，逐条落成 User 消息；返回「是否真的插进了东西」。
+   *
+   * 走 `append`（而不是 `messages.push`）：落地的那条也得广播 `message`，否则订阅方永远
+   * 不知道屏幕上该多一条（宿主正是按这条事件落库的）。
+   *
+   * 返回值是外循环唯一的防死循环判据：一条都没插就说明这一档已经空了，再转一圈只会拿到
+   * 一模一样的请求。
+   */
+  private insertInbox(priority: AgentNS.InboxPriority): boolean {
+    const entries = this.drainInbox(priority);
+    for (const entry of entries) {
+      this.append(inboxEntryMessage(entry));
+    }
+    return entries.length > 0;
+  }
+
+  /**
    * Run the conversation with the server.
    * @param ctx 插件上下文（由 send() 传入；直接调用 run() 时构造默认上下文）
    */
   async run(ctx?: SendContext) {
+    // 新的一轮开工：上一轮若被 abort 过，那一笔在这里结清 —— 与今天一致，没在跑的时候
+    // 调 abort() 不影响下一次 send（见 runAborted）
+    this.runAborted = false;
+
     // 空消息校验：至少需要一条消息（如 send 追加的 User 消息）
     if (!this.messages.length) {
       throw new Error("You need to send at least one message as a receive message");
@@ -302,120 +423,143 @@ export class Agent extends AgentContext {
       throw new Error(`inner-loops-start 被插件拒绝: ${loopsDenied}`);
     }
 
-    // 内循环
+    // 外循环：一次 send 里，内循环可能被 inbox 反复续起来 —— 高优先条目把已经停下的内循环
+    // 重新点亮，低优先条目则让整组内循环（连同末尾的 reconcile*）再跑一遍。
     let needContinue = true;
-    while (needContinue) {
-      needContinue = false;
+    while (true) {
+      // 内循环（一次 API 请求 + 它引发的工具调用）：语义与改动前逐字一致，
+      // 只是从「唯一的循环」变成了外循环里的一圈
+      while (needContinue) {
+        needContinue = false;
 
-      // 内循环开头统一添加 Assistant 占位：若最后一条不是 Pending 的 Assistant 则追加，
-      // 使 run 无论从 send（末尾 User）还是手动追加（末尾任意）都能自洽启动
-      const last = this.messages.at(-1) as Message | undefined;
-      if (
-        !last ||
-        last.role !== AgentNS.Role.Assistant ||
-        last.status !== AgentNS.MessageStatus.Pending
-      ) {
-        this.append(Message.Assistant());
-      }
-
-      const currentReceiver = this.messages.at(-1) as Message;
-      const currentController = new AbortController();
-      const pendingTask: PendingTask = {
-        controller: currentController,
-        receiver: currentReceiver,
-      };
-      // 整组记录 + 当前轮活跃任务
-      this.innerLoopsTasks.add(pendingTask);
-      this.innerLoopTasks.add(pendingTask);
-
-      // 每次请求前分发钩子（可刷新工具定义、安全护栏等）
-      const loopDenied = await this.dispatchHook("onInnerLoopStart", sendCtx);
-      if (loopDenied !== undefined) {
-        throw new Error(`inner-loop-start 被插件拒绝: ${loopDenied}`);
-      }
-
-      const messages = this.formatHistory();
-      const tools = this.formatTools();
-
-      try {
-        // 通过官方 SDK 发起流式对话请求（连接建立后即进入 Writing）
-        const stream = (await this.client.chat.completions.create(
-          {
-            // 先铺模型参数（temperature 等；可含厂商特有字段，如 DeepSeek thinking），
-            // 再写框架契约 —— **顺序不能反**：model / messages / tools / stream /
-            // stream_options 是框架自己保证的，配置里写同名键也不能把它们改掉
-            // （否则 `stream: false` 之类会直接把流式解析打崩）。
-            ...this.modelConfig,
-            model: this.model,
-            messages,
-            tools,
-            stream: true,
-            stream_options: { include_usage: true },
-          } as any,
-          { signal: currentController.signal },
-        )) as unknown as AsyncIterable<ChatCompletionChunk>;
-
-        (currentReceiver as AgentNS.Message).status = AgentNS.MessageStatus.Writing;
-        this.events.emit("open");
-
-        await this.parseStreamData(currentReceiver, stream);
-
-        const receiverStatus = currentReceiver.status as AgentNS.MessageStatus | undefined;
+        // 内循环开头统一添加 Assistant 占位：若最后一条不是 Pending 的 Assistant 则追加，
+        // 使 run 无论从 send（末尾 User）还是手动追加（末尾任意）都能自洽启动
+        const last = this.messages.at(-1) as Message | undefined;
         if (
-          receiverStatus === AgentNS.MessageStatus.Aborted ||
-          receiverStatus === AgentNS.MessageStatus.Error
+          !last ||
+          last.role !== AgentNS.Role.Assistant ||
+          last.status !== AgentNS.MessageStatus.Pending
         ) {
-          // 本轮 assistant 已中止/出错：任务完成，finally 统一移除
-          continue;
+          this.append(Message.Assistant());
         }
 
-        currentReceiver.status = AgentNS.MessageStatus.Completed;
+        const currentReceiver = this.messages.at(-1) as Message;
+        const currentController = new AbortController();
+        const pendingTask: PendingTask = {
+          controller: currentController,
+          receiver: currentReceiver,
+        };
+        // 整组记录 + 当前轮活跃任务
+        this.innerLoopsTasks.add(pendingTask);
+        this.innerLoopTasks.add(pendingTask);
 
-        if (await this.handleToolCall(currentReceiver)) {
+        // 每次请求前分发钩子（可刷新工具定义、安全护栏等）
+        const loopDenied = await this.dispatchHook("onInnerLoopStart", sendCtx);
+        if (loopDenied !== undefined) {
+          throw new Error(`inner-loop-start 被插件拒绝: ${loopDenied}`);
+        }
+
+        const messages = this.formatHistory();
+        const tools = this.formatTools();
+
+        try {
+          // 通过官方 SDK 发起流式对话请求（连接建立后即进入 Writing）
+          const stream = (await this.client.chat.completions.create(
+            {
+              // 先铺模型参数（temperature 等；可含厂商特有字段，如 DeepSeek thinking），
+              // 再写框架契约 —— **顺序不能反**：model / messages / tools / stream /
+              // stream_options 是框架自己保证的，配置里写同名键也不能把它们改掉
+              // （否则 `stream: false` 之类会直接把流式解析打崩）。
+              ...this.modelConfig,
+              model: this.model,
+              messages,
+              tools,
+              stream: true,
+              stream_options: { include_usage: true },
+            } as any,
+            { signal: currentController.signal },
+          )) as unknown as AsyncIterable<ChatCompletionChunk>;
+
+          (currentReceiver as AgentNS.Message).status = AgentNS.MessageStatus.Writing;
+          this.events.emit("open");
+
+          await this.parseStreamData(currentReceiver, stream);
+
+          const receiverStatus = currentReceiver.status as AgentNS.MessageStatus | undefined;
           if (
-            (currentReceiver.status as AgentNS.MessageStatus | undefined) ===
-              AgentNS.MessageStatus.Aborted ||
-            (currentReceiver.status as AgentNS.MessageStatus | undefined) ===
-              AgentNS.MessageStatus.Error
+            receiverStatus === AgentNS.MessageStatus.Aborted ||
+            receiverStatus === AgentNS.MessageStatus.Error
           ) {
-            // 本轮 assistant 被中止/出错：任务完成，finally 统一移除
+            // 本轮 assistant 已中止/出错：任务完成，finally 统一移除
             continue;
           }
 
-          // 需要继续下一轮：下一轮内循环开头统一追加 Assistant 占位
-          needContinue = true;
+          currentReceiver.status = AgentNS.MessageStatus.Completed;
+
+          if (await this.handleToolCall(currentReceiver)) {
+            if (
+              (currentReceiver.status as AgentNS.MessageStatus | undefined) ===
+                AgentNS.MessageStatus.Aborted ||
+              (currentReceiver.status as AgentNS.MessageStatus | undefined) ===
+                AgentNS.MessageStatus.Error
+            ) {
+              // 本轮 assistant 被中止/出错：任务完成，finally 统一移除
+              continue;
+            }
+
+            // 需要继续下一轮：下一轮内循环开头统一追加 Assistant 占位
+            needContinue = true;
+          }
+
+          // 每次 内循环 完成（一次 API 请求 + 可能的工具调用）
+          await this.dispatchHook("onInnerLoopEnd", sendCtx);
+
+          // 高优先级插入点：这一圈内循环刚收尾（工具结果已 append 进 messages）、下一次
+          // 内循环开头的 Assistant 占位还没补。此刻插进来的 User 消息排在工具结果之后，
+          // 模型下一次请求天然看得见。插进去了就得再转一圈，否则这份内容只是躺在
+          // messages 里没人回。
+          if (!this.runAborted && this.insertInbox("high")) {
+            needContinue = true;
+          }
+        } catch (error: any) {
+          currentReceiver.status = AgentNS.MessageStatus.Error;
+          currentReceiver.content = error.message;
+          // 错误正文落在消息上：先让订阅方看到这条消息的新样子，再报「这一轮出错了」
+          this.emitMessage(currentReceiver);
+          this.events.emit("error", error);
+        } finally {
+          // 每轮结束统一触发（无论正常/continue/异常）
+          this.events.emit("finally");
+          // 本轮 assistant 任务已完成，从活跃集合移除；
+          // 整组记录（innerLoopsTasks）保留至 run 结束统一清空
+          this.innerLoopTasks.delete(pendingTask);
         }
-
-        // 每次 内循环 完成（一次 API 请求 + 可能的工具调用）
-        await this.dispatchHook("onInnerLoopEnd", sendCtx);
-      } catch (error: any) {
-        currentReceiver.status = AgentNS.MessageStatus.Error;
-        currentReceiver.content = error.message;
-        // 错误正文落在消息上：先让订阅方看到这条消息的新样子，再报「这一轮出错了」
-        this.emitMessage(currentReceiver);
-        this.events.emit("error", error);
-      } finally {
-        // 每轮结束统一触发（无论正常/continue/异常）
-        this.events.emit("finally");
-        // 本轮 assistant 任务已完成，从活跃集合移除；
-        // 整组记录（innerLoopsTasks）保留至 run 结束统一清空
-        this.innerLoopTasks.delete(pendingTask);
       }
+
+      // 归一化工具调用轮次：中断/不完整的轮次按策略统一为「整轮进出」，
+      // 保证 assistant（含 tool_calls）与其结果一一配对，避免服务端报错。
+      // 此处所有工具任务已 settled（handleToolCall 内 await Promise.all），无竞态。
+      reconcileAbortedToolRounds(
+        this.messages,
+        this.abortedToolRoundStrategy,
+        this.abortedToolRoundReason,
+      );
+
+      // 被中断的 assistant（不带工具调用）按策略决定去留：`keep` 时保留已输出的内容/思考，
+      // 让模型下一轮能接着半截往下说（`drop` 时 Aborted 消息不进历史）。
+      // 必须排在工具轮次归一之后：带 `tool_calls` 的消息已由上一个函数处理，此处只收尾纯内容消息。
+      reconcileAbortedMessages(this.messages, this.abortedMessageStrategy);
+
+      // 被叫停的这一轮到此收工：abort() 已经把 inbox 清空，所以这里既不再取条目，
+      // 也不再开新的一圈 —— 与改动前一致，abort 之后 run 只把 reconcile* 与
+      // onInnerLoopsEnd 走完就返回。
+      if (this.runAborted) break;
+
+      // 低优先级插入点：内循环全部停下、reconcile* 也收完尾之后。插进去了才开下一圈；
+      // 一条都没插就退出 —— 这是外循环唯一的正常出口（needContinue 由下一圈开头复位）。
+      if (!this.insertInbox("low")) break;
+      needContinue = true;
     }
-
-    // 归一化工具调用轮次：中断/不完整的轮次按策略统一为「整轮进出」，
-    // 保证 assistant（含 tool_calls）与其结果一一配对，避免服务端报错。
-    // 此处所有工具任务已 settled（handleToolCall 内 await Promise.all），无竞态。
-    reconcileAbortedToolRounds(
-      this.messages,
-      this.abortedToolRoundStrategy,
-      this.abortedToolRoundReason,
-    );
-
-    // 被中断的 assistant（不带工具调用）按策略决定去留：`keep` 时保留已输出的内容/思考，
-    // 让模型下一轮能接着半截往下说（`drop` 时 Aborted 消息不进历史）。
-    // 必须排在工具轮次归一之后：带 `tool_calls` 的消息已由上一个函数处理，此处只收尾纯内容消息。
-    reconcileAbortedMessages(this.messages, this.abortedMessageStrategy);
 
     // 整组内循环结束：含多轮工具调用，messages 为完整结果（正常/error/abort 均到达此处）
     await this.dispatchHook("onInnerLoopsEnd", sendCtx);
