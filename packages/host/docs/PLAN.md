@@ -42,7 +42,7 @@
 | `desktop` | `feat/new-server` / `5699313` | 0 | `vue-tsc --noEmit`（render）**0 错**；main 走 rolldown + `check-inlined` | main **121 绿 + 3 跳过**（7 文件绿 + 3 文件跳过）；render **70 绿 / 8 文件** |
 | `cli-old-archive`（旧 TUI CLI 冻结快照） | detached @ `pre-split-20261111` / `ace42a0` | 0（只读目录；只有 README 首行那行归档声明是新增内容） | 不参与 | 只读参照物，不是迁移对象 |
 
-**结论**：契约面已经定稿 —— **63 个方法 / 6 个事件**（`METHOD_NAMES` 实测 63 条、`capabilities.ts` 63 条一一对应），文档与代码在这一轮对齐（`architecture.md` 的方法表逐条核过）。「host ↔ TUI CLI」这条链已经通了**并且发过一版**：`@ai-zen/agents-host@0.1.0-alpha.1`（上游 `@ai-zen/agents-core@4.6.0-alpha.0` / `@ai-zen/agents-sdk@1.2.0-alpha.0` 同批发布）。`cli-old` 已降级为只读归档（`cli-old-archive`）。
+**结论**：契约面已经定稿 —— **62 个方法 / 6 个事件**（`METHOD_NAMES` 实测 62 条；2026-11-14 删掉 `host.capabilities` 后 63 → 62，能力清单连同 252 条 `capability.*` 文案一起下架，见 PRD F-E5 的订正），文档与代码在这一轮对齐（`architecture.md` 的方法表逐条核过）。「host ↔ TUI CLI」这条链已经通了**并且发过一版**：`@ai-zen/agents-host@0.1.0-alpha.1`（上游 `@ai-zen/agents-core@4.6.0-alpha.0` / `@ai-zen/agents-sdk@1.2.0-alpha.0` 同批发布）。`cli-old` 已降级为只读归档（`cli-old-archive`）。
 
 **干完的与剩下的**：W1（契约补齐）、W2（CLI 收口）、W3（归档与文档）**完成**；剩下两笔 —— **W4**（桌面端完整问答视图，优先级最低）与 **W5**（兜底治理，等契约与客户端定型后再动）。
 
@@ -173,7 +173,7 @@
 | W1-11 | `host.upgrade` / `host.shutdown` 都还在；CLI 的 `/upgrade` 与 `/shutdown` 各接它们 | `cli/src/commands/handlers.ts`:813（`host.upgrade`）、:948（`host.shutdown { reason: "cli" }`） |
 | W1-12 | 没有 `model.restoreFactoryImage`（`grep -rn restoreFactoryImage src/` 为空），防下一棒「顺手补对称」 | 同上 grep |
 
-**capabilities 同步**：能力清单 63 条与 `METHOD_NAMES` 一一对应（`capabilities.ts` 里每方法一条）。i18n 的 `capability.*` 键已在 2026-11-14 全部删除（清单里不再有文案，见 PRD F-E5 的订正），用例改为钉「清单只有 `blocking` / `destructive` / `domain` / `id` / `method` 五个字段」。`architecture.md` 的方法表 / A12 / A13 / §7 已同批对齐（W3-3）。
+**capabilities 同步**：~~能力清单 63 条与 `METHOD_NAMES` 一一对应~~ —— 这条要求在 2026-11-14 作废：能力清单（`host.capabilities` / `hello.capabilities` / `handlers/capabilities.ts` / `CapabilityView`）整个删掉了，两端零消费者（CLI 的 `/help` 用自己的命令表，桌面端从握手回执里就丢）。`architecture.md` 的方法表（62 条）/ A13 / §7 已同批对齐。
 
 ---
 
@@ -376,6 +376,30 @@ README 首行写「不要改、不要当实现依据」。
 第二遍只在有新证据表明某条其实**不必要**时才做。
 
 ---
+
+## 7.5 宿主 i18n 里那些「有句子、没人发」的码（2026-11-14 清理时记下来的缺口线索）
+
+宿主词典里 33 条文案没有任何生产码引用（`status.*` 六态、`usage.*`、`notice.*` 几条、
+`message.*`、`question.confirm.*`、`model.*`、`handoff.*` 等）。按「不留没人读的句子」全部删掉了，
+但删掉的不是需求 —— 其中**十九类是「宿主本该说、现在一个字都不发」**的提示。要补实现时从这里挑，
+别重新发明一套话：
+
+| 该说而没说的 | 原本留着的码 | 现状 |
+|---|---|---|
+| 删了对话 / 删了工作区之后确认一句 | `notice.conversationDeleted` / `notice.workspaceDeleted` | 两个方法都在契约里，删完宿主什么都不推 |
+| 图片上传完 | `notice.assetsUploaded` | `asset.end` 已经回了素材，通知没发 |
+| 这条连接换语言 | `notice.languageChanged` | `host.setLanguage` 只改连接状态 |
+| 撞到 token 硬线（F-D8） | `notice.hardLimitHit` | 硬线拦住了这一轮，界面只看到「停了」 |
+| 撤回一条消息之后 | `message.reverted` | `conversation.revert` 只回消息列表 |
+| 工作区目录没了（D12） | `message.cwdMissing` | 目录事实在 `FolderFact` 里，没有一句提示 |
+| 子 Agent 结束 | `message.subagentFinished` | 只在 `RunState.subagents` 里变状态 |
+| 附件被丢下（张数超限） | `message.attachmentTooMany` / `attachment.tooLarge` | 只有 `notice.attachmentDropped` 一条 |
+| 不可撤销动作的二次确认题 | `question.confirm.prompt/accept/decline` | 各端自己拼确认框（F-F9 的落点其实在客户端） |
+| 模型不可用 / 读不了图 | `model.unavailable` / `model.visionRequired` | 只有 `error.*` 那几条错误码 |
+| 端点被删了还挂着引用 | `endpoint.missing` | 只在 `ReferenceList` 里列引用者 |
+| 删工作区的代价 | `workspace.removalCost` | 桌面端拿到 `removalCost` 数字，CLI 没有删工作区的命令 |
+| 交接被拒 / 这个工作区还没文档 | `handoff.declined` / `handoff.noDocuments` | 交接被拒走 `error.handoffDeclined` |
+| 六态的人话 / 用量的读法 | `status.*` × 10、`usage.*` × 4 | 归客户端：CLI 有 `phase.*` 与状态栏格式化 |
 
 ## 8. 人的决策
 

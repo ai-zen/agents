@@ -13,7 +13,7 @@ import { zeroUsage } from "./states.js";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 
-const localized = (key: "status.idle") =>
+const localized = (key: "question.handoff.prompt") =>
   ({ code: key, messageKey: key, params: {}, message: key }) as const;
 
 describe("事件表", () => {
@@ -155,7 +155,7 @@ describe("事件表", () => {
         id: "n-1",
         level: "warning",
         duration: null,
-        text: localized("status.idle"),
+        text: localized("question.handoff.prompt"),
         conversationId: "c-1",
         createdAt: NOW,
       },
@@ -169,8 +169,8 @@ describe("事件表", () => {
         conversationId: "c-1",
         kind: "handoff",
         state: "pending",
-        prompt: localized("status.idle"),
-        options: [{ value: "self", label: localized("status.idle"), detail: null }],
+        prompt: localized("question.handoff.prompt"),
+        options: [{ value: "self", label: localized("question.handoff.prompt"), detail: null }],
         answer: null,
         blocking: true,
         createdAt: NOW,

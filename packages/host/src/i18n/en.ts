@@ -34,11 +34,7 @@ export const en = {
   "error.contextGuard": "This conversation reached its {limit}-token limit at {used} tokens, so the request was stopped before it could fail.",
 
   // ---- 通知：三档语气，`duration` 决定是否到点消失（PRD L3 / F-I8）----
-  "notice.settingsSaved": "Settings saved.",
   "notice.settingsApplied": "Settings applied — no restart needed.",
-  "notice.conversationDeleted": "Conversation deleted.",
-  "notice.workspaceDeleted": "Project removed, along with its {count} conversation(s). The folder itself was left alone.",
-  "notice.assetsUploaded": "{count} image(s) uploaded.",
   "notice.attachmentDropped": "{name} couldn't be sent and was left out of the message.",
   "notice.upgradeRestarting": "Updated to {version}. Restarting now.",
   "notice.logWarning": "Host warning: {summary}",
@@ -46,20 +42,8 @@ export const en = {
   "notice.configRecovered": "Config file {path} was broken; factory settings restored.",
   "notice.handoffWritten": "Handoff document written to {path}.",
   "notice.autoNamed": "Named this conversation \"{name}\".",
-  "notice.languageChanged": "This connection now speaks {language}.",
-  "notice.hardLimitHit": "This turn stopped at the {limit}-token limit. Nothing was lost — the conversation is waiting for you.",
 
   // ---- 生成六态（PRD L8 / F-I3）：每一态一句人话，事实在 run.state 字段里 ----
-  "status.connected": "Connected",
-  "status.awaitingFirstToken": "Connected — waiting for the first word",
-  "status.thinking": "Thinking…",
-  "status.generating": "Writing…",
-  "status.assemblingToolCalls": "Putting together {count} tool call(s)…",
-  "status.awaitingTools": "Waiting on {tools}",
-  "status.idle": "Ready",
-  "status.done": "Finished",
-  "status.aborted": "Stopped",
-  "status.error": "Stopped by an error",
 
   // ---- 问题对象（PRD D22 / F-I9）----
   "question.handoff.prompt": "This conversation is at {percent}% of the context budget set for it. How should we continue?",
@@ -68,27 +52,16 @@ export const en = {
   "question.handoff.summary": "Summarise the history instead",
   "question.handoff.summaryDetail": "Cheaper and predictable, but the document is less faithful.",
   "question.handoff.decline": "Keep going in this conversation",
-  "question.confirm.prompt": "{action} can't be undone. Go ahead?",
-  "question.confirm.accept": "Yes, do it",
-  "question.confirm.decline": "Cancel",
   "question.blocking": "This question is holding the conversation. Answer it to continue.",
 
   // ---- 消息与状态的事实叙述（配结构化字段一起给出）----
-  "message.reverted": "Removed {count} message(s). The text is back in your input.",
-  "message.cwdMissing": "This project's folder no longer exists ({cwd}). The conversation and its history are still here.",
   "message.injectedContext": "Sent by the host, not typed by you: {summary}",
   // 会话创建时那条 hidden 消息里的那句事实（PRD F-D9：cwd 来自对话所属项目，不是宿主进程的目录）
   "message.injectedContext.cwd": "the current folder is {cwd}",
   "message.subagentFailed": "The helper agent {name} failed: {reason}",
-  "message.subagentFinished": "The helper agent {name} finished.",
   "message.imageAsText": "{model} can't look at images, so {name} was described in text instead.",
-  "message.attachmentTooMany": "A message carries at most {limit} images. {name} was left out.",
 
   // ---- 用量（PRD F-I5）：三个数字分开给，句子只是给人看的拼装 ----
-  "usage.turn": "{value} tokens this turn",
-  "usage.total": "{value} tokens in total",
-  "usage.rate": "{value} tokens/s",
-  "usage.withSubAgents": "the total includes {value} from helper agents",
 
   // ---- 状态栏各块的标签（PRD F-I6：宿主给块名，客户端排版）----
 
@@ -105,7 +78,6 @@ export const en = {
   "config.fileBroken": "{path} can't be read as settings: {reason}",
 
   // ---- 端点、模型、助手的可用性（PRD F-B5：用不了也要列出来并说明原因）----
-  "endpoint.missing": "{id} isn't in the endpoint list anymore, so this can't be reached.",
   "endpoint.noKey": "{endpoint} has no access key yet, so its models can't answer.",
   "model.endpointMissing":
     "{model} points to an endpoint ({id}) that isn't in the endpoint list anymore.",
@@ -132,13 +104,7 @@ export const en = {
     "{name} has a SKILL.md that can't be used as a skill: {reason}",
   "discovery.toolUnloadable": "{name} couldn't be loaded as a tool: {reason}",
   "discovery.subAgentBroken": "{name} isn't a usable sub-agent definition: {reason}",
-  "model.unavailable": "{name} is listed but can't be used right now: {reason}",
-  "model.visionRequired": "{model} can't read images, and this conversation has some.",
   "handoff.degraded": "The handoff fell back to {mode}: {reason}",
-  "handoff.declined": "No handoff this time.",
-  "handoff.noDocuments": "No handoff documents in this project yet.",
-  "workspace.removalCost": "This removes {conversations} conversation(s) and their {messages} message(s). The folder on disk stays.",
-  "attachment.tooLarge": "Each image can be at most {limit}; {name} is {size}.",
   "attachment.tooMany": "A message carries at most {limit} images.",
 
   // ---- 通知 / 问题 / 交接 / 自动命名 / 临时对话（W4-H）----

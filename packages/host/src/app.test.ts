@@ -300,7 +300,7 @@ describe("HostApp 的组装", () => {
     }
   });
 
-  it("host.version / host.capabilities 报的都是事实", async () => {
+  it("host.version 报的都是事实", async () => {
     const fixture = await makeFixture();
     const app = await startApp(fixture);
 
@@ -308,11 +308,6 @@ describe("HostApp 的组装", () => {
     expect(version.version).toBe(app.version);
     expect(version.pid).toBe(process.pid);
     expect(version.startedAt).toBe(app.startedAt);
-
-    const capabilities = await callMethod(app, "host.capabilities");
-    // 清单是真实的那一份：每个方法一条（清单里没有文案，句子归客户端，见 PRD F-E5）
-    expect(capabilities.capabilities.map((item) => item.method)).toEqual([...METHOD_NAMES]);
-    expect(capabilities.capabilities[0]?.id).toMatch(/^(F-[A-Z]\d+|D\d+)(#\w+)?$/);
 
     // 升级判定：磁盘版本与正在跑的一样 → 已经是最新，不重启（D4 / F-E3）
     const upgrade = await callMethod(app, "host.upgrade", {});
@@ -928,15 +923,16 @@ describe("从磁盘重载（F-E1 / R63）", () => {
     app.scopeRegistry.release(workspace.id);
     expect(app.scopeRegistry.size()).toBe(1);
 
-    const reloaded = await callMethod(app, "host.reload", { scope: "skills" });
+    const reloaded = await callMethod(app, "host.reload", {});
 
-    // 与 config.patch 同一份报告形状：这次只说要重载的那一类
+    // 与 config.patch 同一份报告形状：重载就是「五类全重读一遍」（`scope` 那一档已删，
+    // 它从来没有调用方 —— 见 `ConfigService.reloadedOf()` 的注释）
     expect(reloaded.applied.reloaded).toEqual({
-      config: false,
-      tools: false,
+      config: true,
+      tools: true,
       skills: true,
-      agents: false,
-      mcp: false,
+      agents: true,
+      mcp: true,
     });
     expect(reloaded.applied.recycledWorkspaceIds).toEqual([workspace.id]);
     expect(app.scopeRegistry.size()).toBe(0);
@@ -946,7 +942,7 @@ describe("从磁盘重载（F-E1 / R63）", () => {
     expect(reloaded.config.configDir).toBe(app.configManager.basePath);
   });
 
-  it("不给 scope 就是全部重载；认不出的 scope 按参数不对拒", async () => {
+  it("重载不需要参数；带上没人认的字段也不改变行为", async () => {
     const fixture = await makeFixture();
     const app = await startApp(fixture);
 
@@ -958,10 +954,6 @@ describe("从磁盘重载（F-E1 / R63）", () => {
       agents: true,
       mcp: true,
     });
-
-    await expect(
-      callMethod(app, "host.reload", { scope: "没这一类" as unknown as "config" }),
-    ).rejects.toMatchObject({ code: "invalid_params" });
   });
 });
 
@@ -1039,10 +1031,10 @@ describe("对话的三个钩子", () => {
     await app.questionService.ask({
       conversationId: conversation.id,
       kind: "confirmation",
-      prompt: { messageKey: "question.confirm.prompt", params: { action: "delete" } },
+      prompt: { messageKey: "question.handoff.prompt" },
       options: [
-        { value: "yes", label: { messageKey: "question.confirm.accept" } },
-        { value: "no", label: { messageKey: "question.confirm.decline" } },
+        { value: "yes", label: { messageKey: "question.handoff.self" } },
+        { value: "no", label: { messageKey: "question.handoff.decline" } },
       ],
       blocking: true,
     });

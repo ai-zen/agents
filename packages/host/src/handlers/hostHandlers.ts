@@ -20,8 +20,6 @@
 
 import type { HandlerTable } from "../net/index.js";
 import type {
-  CapabilityView,
-  HostReloadParams,
   HostReloadResult,
   HostUpgradeParams,
   HostUpgradeResult,
@@ -35,11 +33,10 @@ export interface HostHandlerDeps {
   /** 进程启动时刻（ISO 8601） */
   startedAt: string;
   /** 能力清单（PRD F-E5）；内容归配置层，本轮由单根注入 */
-  capabilities: () => CapabilityView[];
   /** 请求收尾（`host.shutdown`）：单根排程，先让回包写出去 */
   requestStop: (reason?: string) => void;
   /** 从磁盘重载（`host.reload`）：配置服务那边跑「生效」那条路（回收 Scope + 合成通知） */
-  reload: (params: HostReloadParams) => Promise<HostReloadResult>;
+  reload: () => Promise<HostReloadResult>;
   /** 升级判定与重启排程（磁盘版本归单根去读，这里只把结论转给客户端） */
   upgrade: HostUpgradeHandler;
 }
@@ -58,9 +55,6 @@ export function createHostHandlers(deps: HostHandlerDeps): HandlerTable {
       pid: process.pid,
     }),
 
-    // 清单里没有一个句子，所以不按连接语言重渲染（R58 只约束带文案的出参）
-    "host.capabilities": () => ({ capabilities: deps.capabilities() }),
-
     "host.shutdown": (context) => {
       deps.requestStop(context.params.reason);
       return { accepted: true };
@@ -70,6 +64,6 @@ export function createHostHandlers(deps: HostHandlerDeps): HandlerTable {
     "host.upgrade": async (context) => await deps.upgrade(context.params),
 
     // 重载不重启（F-E1 / F-E2 / R63）：与改配置走同一条生效路径，回同一份报告
-    "host.reload": async (context) => await deps.reload(context.params),
+    "host.reload": async () => await deps.reload(),
   };
 }

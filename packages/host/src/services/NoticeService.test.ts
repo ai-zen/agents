@@ -78,7 +78,7 @@ describe("通知的持续时间（L3 / R15）", () => {
   it("给秒数就到点消失，契约是秒、库里是毫秒", async () => {
     const created = await harness.service.create({
       level: "info",
-      code: "notice.settingsSaved",
+      code: "notice.settingsApplied",
       duration: 3,
     });
     expect(created.duration).toBe(3);
@@ -110,7 +110,7 @@ describe("通知的持续时间（L3 / R15）", () => {
   });
 
   it("到点之后被清掉的行不会留在库里", async () => {
-    await harness.service.create({ level: "info", code: "notice.settingsSaved", duration: 1 });
+    await harness.service.create({ level: "info", code: "notice.settingsApplied", duration: 1 });
     harness.clock.value += 1000;
     await harness.service.list();
     const rows = await harness.db.all<NoticeRow>("SELECT id FROM notices");
@@ -119,12 +119,12 @@ describe("通知的持续时间（L3 / R15）", () => {
 
   it("非法持续时间按参数不对拒，不写库", async () => {
     await expect(
-      harness.service.create({ level: "info", code: "notice.settingsSaved", duration: -1 }),
+      harness.service.create({ level: "info", code: "notice.settingsApplied", duration: -1 }),
     ).rejects.toMatchObject({ code: "invalid_params" });
     await expect(
       harness.service.create({
         level: "info",
-        code: "notice.settingsSaved",
+        code: "notice.settingsApplied",
         duration: Number.POSITIVE_INFINITY,
       }),
     ).rejects.toMatchObject({ code: "invalid_params" });
@@ -181,7 +181,7 @@ describe("通知持久化（L3：重启不丢）", () => {
       });
       const created = await service.create({
         level: "info",
-        code: "notice.settingsSaved",
+        code: "notice.settingsApplied",
         duration: 60,
       });
 
@@ -208,7 +208,7 @@ describe("通知持久化（L3：重启不丢）", () => {
 describe("三档语气（R4）", () => {
   it("info / warning / error 各存各的，读回来不变形", async () => {
     // 每条间隔一毫秒：列表按创建时间升序，同一毫秒内只能靠 id 排，断言就没有意义了
-    await harness.service.create({ level: "info", code: "notice.settingsSaved", duration: 5 });
+    await harness.service.create({ level: "info", code: "notice.settingsApplied", duration: 5 });
     harness.clock.value += 1;
     await harness.service.create({ level: "warning", code: "notice.logWarning", params: { summary: "w" } });
     harness.clock.value += 1;
@@ -219,7 +219,7 @@ describe("三档语气（R4）", () => {
   });
 
   it("按语气筛选", async () => {
-    await harness.service.create({ level: "info", code: "notice.settingsSaved", duration: 5 });
+    await harness.service.create({ level: "info", code: "notice.settingsApplied", duration: 5 });
     await harness.service.create({ level: "error", code: "notice.logError", params: { summary: "e" } });
 
     const errors = await harness.service.list({ level: "error" });
@@ -230,7 +230,7 @@ describe("三档语气（R4）", () => {
   it("语气不在三档里就按参数不对拒", async () => {
     await expect(
       // 越过类型的一档看宿主守不守
-      harness.service.create({ level: "success" as unknown as "info", code: "notice.settingsSaved" }),
+      harness.service.create({ level: "success" as unknown as "info", code: "notice.settingsApplied" }),
     ).rejects.toMatchObject({ code: "invalid_params" });
   });
 });
@@ -271,14 +271,14 @@ describe("按语言渲染（D8）", () => {
   it("事件出网前按连接语言重渲染（WsHub 的 localizeEvent 注入点）", async () => {
     const created = await harness.service.create({
       level: "info",
-      code: "notice.settingsSaved",
+      code: "notice.settingsApplied",
     });
     const payload: EventMap["notice"] = { notice: created, at: "2026-01-01T00:00:00.000Z" };
     const localize = createEventLocalizer();
     const chinese = localize("notice", payload, "zh");
-    expect(chinese.notice.text.message).toBe("配置已保存。");
+    expect(chinese.notice.text.message).toBe("配置已生效，不用重启。");
     const english = localize("notice", payload, "en");
-    expect(english.notice.text.message).toBe("Settings saved.");
+    expect(english.notice.text.message).toBe("Settings applied — no restart needed.");
     // 只有带 `LocalizedText` 的事件过这一层：其余事件原样搬运（同一个对象，不复制）
     const other = { conversationId: "c1", status: "idle" } as unknown as EventMap["run.state"];
     expect(localize("run.state", other, "zh")).toBe(other);
@@ -287,7 +287,7 @@ describe("按语言渲染（D8）", () => {
 
 describe("通知是独立通道，绝不进消息（F-I8）", () => {
   it("发一条通知只推 notice 事件，库里没有任何消息行", async () => {
-    await harness.service.create({ level: "info", code: "notice.settingsSaved", duration: 1 });
+    await harness.service.create({ level: "info", code: "notice.settingsApplied", duration: 1 });
 
     expect(harness.events.map((event) => event.name)).toEqual(["notice"]);
     const messages = await harness.db.all<{ id: string }>("SELECT id FROM messages");
@@ -319,7 +319,7 @@ describe("通知是独立通道，绝不进消息（F-I8）", () => {
       params: { summary: "另一段" },
       conversationId: "c2",
     });
-    await harness.service.create({ level: "info", code: "notice.settingsSaved", duration: 5 });
+    await harness.service.create({ level: "info", code: "notice.settingsApplied", duration: 5 });
 
     const scoped = await harness.service.list({ conversationId: "c1" });
     expect(scoped.notices).toHaveLength(1);
@@ -335,7 +335,7 @@ describe("通知是独立通道，绝不进消息（F-I8）", () => {
   });
 
   it("clear 不给对话就清全部", async () => {
-    await harness.service.create({ level: "info", code: "notice.settingsSaved", duration: 5 });
+    await harness.service.create({ level: "info", code: "notice.settingsApplied", duration: 5 });
     await harness.service.create({ level: "error", code: "notice.logError", params: { summary: "e" } });
     expect(await harness.service.clear()).toEqual({ cleared: 2 });
     expect((await harness.service.list()).notices).toEqual([]);

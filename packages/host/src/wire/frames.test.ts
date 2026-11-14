@@ -186,8 +186,8 @@ describe("帧构造", () => {
         level: "info" as const,
         duration: 1,
         text: {
-          code: "notice.settingsSaved",
-          messageKey: "notice.settingsSaved" as const,
+          code: "notice.settingsApplied",
+          messageKey: "notice.settingsApplied" as const,
           params: {},
           message: "ok",
         },

@@ -166,7 +166,6 @@ export function helloResult(overrides: Partial<HostHelloResult> = {}): HostHello
     hostVersion: "0.0.0-test",
     protocolVersion: "1",
     startedAt: "2026-01-01T00:00:00.000Z",
-    capabilities: [],
     limits: { maxAssetBytes: 20 * 1024 * 1024, maxAssetsPerMessage: 4 },
     ...overrides,
   };

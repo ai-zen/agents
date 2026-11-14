@@ -5,18 +5,16 @@ import {
   METHOD_NAMES,
   PROTOCOL_VERSION,
   isMethodName,
-  methodDomain,
   type ConversationSendParams,
   type ConversationSendResult,
   type ConversationTransientResult,
   type MessageHit,
   type MessageListParams,
   type MessageListResult,
-  type MethodDomain,
   type MethodName,
 } from "./methods.js";
 
-const DOMAINS: readonly MethodDomain[] = [
+const DOMAINS: readonly string[] = [
   "host",
   "workspace",
   "conversation",
@@ -40,7 +38,8 @@ describe("方法表", () => {
   it("方法名都是 <域>.<动作>，域在已知清单里", () => {
     for (const method of METHOD_NAMES) {
       expect(method, method).toMatch(/^[a-z]+(\.[a-zA-Z]+)+$/);
-      expect(DOMAINS, method).toContain(methodDomain(method));
+      const domain = method.slice(0, method.indexOf("."));
+      expect(DOMAINS, method).toContain(domain);
     }
   });
 
@@ -61,7 +60,7 @@ describe("方法表", () => {
   });
 
   it("每个域在表里都有方法", () => {
-    const used = new Set(METHOD_NAMES.map((method) => methodDomain(method)));
+    const used = new Set(METHOD_NAMES.map((method) => method.slice(0, method.indexOf("."))));
     for (const domain of DOMAINS) {
       expect(used, domain).toContain(domain);
     }
@@ -205,12 +204,10 @@ describe("PRD §4 的落点能力都有方法承接", () => {
       "F-D7": ["handoff.start"], // 降级要说明
       "F-D9": ["message.list"], // 注入标记在消息上
       "F-D10": ["conversation.send", "question.answer"],
-      "F-E1": ["host.capabilities", "host.shutdown"],
+      "F-E1": ["host.shutdown", "host.reload"],
       "F-E2": ["config.patch"],
       "F-E3": ["host.upgrade", "host.version"],
       "F-E4": ["host.setLanguage", "config.saveEndpoint"], // 直达入口：语言 + 端点（凭据不在这条线上）
-      "F-E5": ["host.capabilities"],
-      "F-E6": ["host.capabilities"],
       "F-F1": ["config.get", "config.patch"],
       "F-F2": ["config.saveEndpoint", "config.deleteEndpoint"],
       "F-F3": ["model.list", "model.create", "model.update", "model.restoreFactory"],

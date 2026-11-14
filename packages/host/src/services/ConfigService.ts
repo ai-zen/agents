@@ -47,9 +47,7 @@ import type {
   EndpointInput,
   EndpointView,
   ReferenceList,
-  HostReloadParams,
   HostReloadResult,
-  HostReloadScope,
   McpEditableScope,
 } from "../wire/index.js";
 import { DiscoveryService, type WorkspaceCwdLookup } from "./DiscoveryService.js";
@@ -105,9 +103,6 @@ export interface ConfigServiceOptions {
   /** 时钟，测试注入用；缺省 `Date.now` */
   now?: () => number;
 }
-
-/** `host.reload` 认的几档范围（与契约同源） */
-const RELOAD_SCOPES: readonly HostReloadScope[] = ["config", "agents", "tools", "skills", "mcp"];
 
 /** 可以写的三档行为开关取值（与 SDK `AppConfig` 的取值一致） */
 const ABORTED_MESSAGE_STRATEGIES = ["keep", "drop"] as const;
@@ -277,15 +272,8 @@ export class ConfigService {
    * 把「哪几类要重新装配」交给注入的生效一跳（回收受影响的 Scope + 合成一条通知），出参与
    * `config.patch` 同一份形状，客户端于是可以用同一套提示。
    */
-  async reload(params: HostReloadParams = {}): Promise<HostReloadResult> {
-    const scope = params.scope;
-    if (scope !== undefined && !RELOAD_SCOPES.includes(scope)) {
-      throw new HostError("invalid_params", {
-        params: { field: "scope" },
-        detail: { field: "scope", reason: "not_allowed", value: scope, allowed: [...RELOAD_SCOPES] },
-      });
-    }
-    const reloaded = reloadedOf(scope);
+  async reload(): Promise<HostReloadResult> {
+    const reloaded = reloadedOf();
     const config = await this.readConfig();
     const outcome = this.applyPort ? await this.applyPort.apply(reloadChangeOf(reloaded)) : {};
     return {
@@ -807,15 +795,15 @@ function referencesToEndpoint(config: AppConfig, endpointId: string): ReferenceL
 }
 
 /** 这次要求重载的范围里，哪几类东西要重新装配（不给范围 = 全部） */
-function reloadedOf(scope: HostReloadScope | undefined): ConfigApplyReport["reloaded"] {
-  const all = scope === undefined;
-  return {
-    config: all || scope === "config",
-    tools: all || scope === "tools",
-    skills: all || scope === "skills",
-    agents: all || scope === "agents",
-    mcp: all || scope === "mcp",
-  };
+/**
+ * 重载报告：五类全都是 `true`。
+ *
+ * 从前这里能按 `scope` 只报一类，但那一档**没有任何入口**（客户端只会全量 `/reload`，
+ * 契约里也没人传 `scope`），五个取值 + 校验 + 映射都是空转。参数已删：重载就是「全部
+ * 重读一遍」。真要「只重载 MCP」时再加，那时它会有一条真实的命令入口。
+ */
+function reloadedOf(): ConfigApplyReport["reloaded"] {
+  return { config: true, tools: true, skills: true, agents: true, mcp: true };
 }
 
 /**

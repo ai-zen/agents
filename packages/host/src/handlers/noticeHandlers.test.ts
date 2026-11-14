@@ -66,20 +66,20 @@ afterEach(async () => {
 describe("notice.* 接线", () => {
   it("按连接的语言渲染（同一条通知，两条连接看到两种语言）", async () => {
     const handlers = createNoticeHandlers({ notices: harness.notices });
-    await harness.notices.create({ level: "info", code: "notice.settingsSaved" });
+    await harness.notices.create({ level: "info", code: "notice.settingsApplied" });
 
     const english = await handlers["notice.list"]?.(call("notice.list", {}, "en"));
     const chinese = await handlers["notice.list"]?.(call("notice.list", {}, "zh"));
 
-    expect(english?.notices[0]?.text.message).toBe("Settings saved.");
-    expect(chinese?.notices[0]?.text.message).toBe("配置已保存。");
+    expect(english?.notices[0]?.text.message).toBe("Settings applied — no restart needed.");
+    expect(chinese?.notices[0]?.text.message).toBe("配置已生效，不用重启。");
   });
 
   it("dismiss / clear 原样透传", async () => {
     const handlers = createNoticeHandlers({ notices: harness.notices });
     const created = await harness.notices.create({
       level: "info",
-      code: "notice.settingsSaved",
+      code: "notice.settingsApplied",
     });
 
     expect(
@@ -90,7 +90,7 @@ describe("notice.* 接线", () => {
 
   it("列表筛选参数也照传", async () => {
     const handlers = createNoticeHandlers({ notices: harness.notices });
-    await harness.notices.create({ level: "info", code: "notice.settingsSaved", duration: 5 });
+    await harness.notices.create({ level: "info", code: "notice.settingsApplied", duration: 5 });
     harness.clock.value += 1;
     await harness.notices.create({ level: "error", code: "notice.logError", params: { summary: "e" } });
 

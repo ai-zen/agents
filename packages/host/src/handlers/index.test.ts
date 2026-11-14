@@ -22,7 +22,7 @@ import type {
   MethodParams,
   MethodResult,
 } from "../wire/index.js";
-import { BRIDGED_METHODS, createCapabilities, createHandlers } from "./index.js";
+import { BRIDGED_METHODS, createHandlers } from "./index.js";
 
 const CONFIG = JSON.stringify(
   {
@@ -175,39 +175,6 @@ describe("handler 表", () => {
         expect(frame.error.data.detail).toMatchObject({ reason: "unknown_method" });
       }
     }
-  });
-});
-
-describe("能力清单（F-E5 / F-E6 / F-F9）", () => {
-  it("每个方法都在清单里，且清单项只有契约事实（没有文案字段）", () => {
-    const capabilities = createCapabilities();
-    expect(capabilities.map((item) => item.method)).toEqual([...METHOD_NAMES]);
-
-    const ids = capabilities.map((item) => item.id);
-    expect(new Set(ids).size).toBe(ids.length);
-
-    for (const item of capabilities) {
-      // 编号要么是 PRD 的能力号（F-xx），要么是契约注释里记的决定号（D-xx）
-      expect(item.id).toMatch(/^(F-[A-Z]\d+|D\d+)(#\w+)?$/);
-      // 清单里只有事实：没有文案字段（句子归客户端，PRD F-E5）
-      expect(Object.keys(item).sort()).toEqual([
-        "blocking",
-        "destructive",
-        "domain",
-        "id",
-        "method",
-      ]);
-    }
-  });
-
-  it("阻塞与不可撤销就是那几个：一轮对话会占住对话，删项目 / 删对话不可撤", () => {
-    const byMethod = new Map(createCapabilities().map((item) => [item.method, item]));
-    expect(byMethod.get("conversation.send")?.blocking).toBe(true);
-    expect(byMethod.get("handoff.start")?.blocking).toBe(true);
-    expect(byMethod.get("workspace.remove")?.destructive).toBe(true);
-    expect(byMethod.get("conversation.delete")?.destructive).toBe(true);
-    expect(byMethod.get("conversation.list")?.destructive).toBe(false);
-    expect(byMethod.get("conversation.list")?.blocking).toBe(false);
   });
 });
 

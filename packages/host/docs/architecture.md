@@ -26,7 +26,7 @@
 | A10 | Scope 与对话的回收计时器**只有一处**（见 §4） | 本文 |
 | A11 | 上传走同一条 WS 上的**二进制帧**（三段式），不用 base64 字符串 | 本轮 Q9 |
 | A12 | `message.list` 有**两种按 id 的取法**：① `after=<id>` —— 该 id **存在**就返回它**最新的内容**及之后全部；该 id **不存在**就返回全部（断线补拉与删除后重拉共用这一条规则）。② `around=<id>`（F-C6 定位）—— 该 id 在本次可见集里就**以它为中心取一窗**（40 条，前后尽量均分，命中那条一定在里面）且 `anchor` 报成它；**不在**可见集里（已撤回 / 换过库 / 是 `hidden` 而这次没要）就回**空页 + `anchor: null`**，**不报错**（消息可能刚被撤回，那不是一次失败的请求）。两者同时给时 `around` 优先、`after` 被忽略；`toolCallId` 决定读哪一段（子 Agent 自己那一段），两个定位参数都只在那一堆里生效 | 本轮 Q10 + W1-8 |
-| A13 | 能力清单的粒度是「契约里每个方法一条」（63 条，与 `METHOD_NAMES` 一一对应）；同一条 PRD 能力号下有多个方法时，`id` 用 `<编号>#<动作>` 区分 | `src/handlers/capabilities.ts` |
+| A13 | ~~能力清单的粒度是「契约里每个方法一条」~~ **已废（2026-11-14）**：`host.capabilities`、`hello.capabilities`、`handlers/capabilities.ts` 与 `CapabilityView` 都删了 —— 两端一个消费者都没有；清单里剩下的 `blocking` / `destructive` 也没人读（阻塞判断在客户端命令表，二次确认在各端的确认框） | — |
 
 ## 2. 进程与接线
 
@@ -212,13 +212,13 @@ const [found, written] = await db.tx((q) => [
 
 ## 6. 接线：一条 WS 上的 JSON-RPC
 
-**首帧 `hello`**：`{ token, language?, clientInfo: { name, version, platform? } }`（`src/wire/methods.ts` 的 `HostHelloParams`）。凭证不放在 URL 查询串里（会进日志与进程表）；未 `hello` 成功的连接只放行 `hello`，其余方法与二进制帧都回 `unauthorized`。`language` 挂在连接上，断开即忘；没带时用 `config.json` 的 `language`（缺省英文，裁定 R58）。`hello` 成功时一并回：协商出的 `language`、`hostVersion`、`protocolVersion`、`startedAt`、**能力 id 列表 `capabilities`（`string[]`，裁定 R57）**、附件上限 `limits`。完整的清单（编号、域、方法名、`blocking` / `destructive`）走 `host.capabilities` —— 清单里没有文案，与语言无关。
+**首帧 `hello`**：`{ token, language?, clientInfo: { name, version, platform? } }`（`src/wire/methods.ts` 的 `HostHelloParams`）。凭证不放在 URL 查询串里（会进日志与进程表）；未 `hello` 成功的连接只放行 `hello`，其余方法与二进制帧都回 `unauthorized`。`language` 挂在连接上，断开即忘；没带时用 `config.json` 的 `language`（缺省英文，裁定 R58）。`hello` 成功时一并回：协商出的 `language`、`hostVersion`、`protocolVersion`、`startedAt`、**能力 id 列表 `capabilities`（`string[]`，裁定 R57）**、附件上限 `limits`。~~完整的清单走 `host.capabilities`~~（2026-11-14 起这个方法与 `hello` 里的 `capabilities` 都已删除，没有消费者）。
 
-**方法名**：`<域>.<动作>`。契约里共 **63** 个方法（`src/wire/methods.ts` 的 `METHOD_NAMES`，13 个域）：
+**方法名**：`<域>.<动作>`。契约里共 **62** 个方法（`src/wire/methods.ts` 的 `METHOD_NAMES`，13 个域；2026-11-14 删掉 `host.capabilities` 后 63 → 62）：
 
 | 域 | 个数 | 方法 |
 |---|---|---|
-| `host` | 7 | `hello` `version` `upgrade` `shutdown` `capabilities` `reload` `setLanguage` |
+| `host` | 6 | `hello` `version` `upgrade` `shutdown` `reload` `setLanguage` |
 | `workspace` | 5 | `list` `create` `get` `rename` `remove` |
 | `conversation` | 13 | `list` `create` `get` `state` `rename` `pin` `delete` `send` `abort` `revert` `setModel` `setThinking` `transient` |
 | `message` | 1 | `list` |
@@ -306,9 +306,7 @@ const [found, written] = await db.tx((q) => [
 
 事件只描述「发生了什么变化」，需要完整对象时客户端回宿主拉（`conversation.state` / `message.list`），这样多端同时在线时不会出现「一份数据在推送里长成另一种形状」。
 
-**能力清单（A13）**：`host.capabilities` 回完整清单、`hello` 只回 id 列表（裁定 R57），粒度是**每个契约方法一条**（63 条，与 `METHOD_NAMES` 逐条对应），每项带 `id`（PRD 能力号；同号多方法时为 `<编号>#<动作>`，如 `F-F2#deleteEndpoint`）、`domain`、`method`、`blocking`（执行期间占住这段对话，F-E6）、`destructive`（不可撤销，F-F9 的二次确认）。`workspace.*` 那几条在 PRD §4 没有单列能力号，`id` 用契约注释里记的决定号（`D9` / `D10` / `D11`）。清单与 `METHOD_NAMES` 一一对应，id 与顺序固定。
-
-**清单里没有文案**（2026-11-14）：一项里一个字都不描述「这个能力叫什么、怎么跟用户说」—— 那是界面的活，归客户端（PRD F-E5 已订正）。原来的 `title` / `description` 两个 `LocalizedText`（`capability.<方法名>` / `.detail`，两种语言共 252 条）唯一消费者是 CLI 的 `/help`，`/help` 改用本地命令表后一并删掉，`createCapabilities()` 也不再收语言参数（R58 只约束带文案的出参）。用例钉住「清单里只有 `blocking` / `destructive` / `domain` / `id` / `method` 五个字段」。
+**能力清单已删（2026-11-14）**：`host.capabilities`、`hello.capabilities`、`handlers/capabilities.ts`（63 条 FACTS）、`CapabilityView` 与那 252 条 `capability.*` 文案一起从契约面删除（方法表 63 → 62）。原因：两端**一个消费者都没有** —— CLI 的 `/help` 改成用自己的命令表（PRD F-E5 订正），桌面端从握手回执里就把这个字段丢掉；清单里剩下的 `blocking` / `destructive` 同样没人读（「这一轮会占住对话」由客户端命令表的 `blocksInput` 决定，「不可撤销」由各端的确认框自己问）。要恢复时按 F-E6 重新设计：**属性归宿主、界面归客户端**，别再把两句界面文案塞进契约。
 
 ## 8. 与 core / SDK 的边界
 
@@ -423,4 +421,5 @@ afterAll(async () => { await db.close(); await rm(dir, { recursive: true, force:
 | 2026-11-13 | W14-A：素材尺寸（裁定 R76）。`assets.width` / `height` 不再恒空 —— `AssetService.finalizeUpload` 把临时文件改名成正式文件之后读一次文件头，由 `src/services/imageSize.ts` 的 `readImageSize`（纯函数，零依赖）从 PNG 的 IHDR 块 / JPEG 的 SOF 段解出宽高写进这一行；其它格式、截断文件、解不出来的字节都写 `NULL`，不重试、不告警。`AssetRef` 与 `asset.get` 回的就是这一行，所以客户端拿到的 `width` / `height` 是上传那一刻量出来的真值。§5 的 `assets` 行按此回改。 |
 | 2026-11-14 | W3：契约面跟上新契约。方法表 **65 → 63**（13 个域、无 `credential` 域）：新增 `agent.restoreFactory`、`config.saveMcp` / `config.deleteMcp`（取代 `config.patchMcps` 的整层替换）；删 `host.usage` 与 `credential.list/create/revoke` —— **删的是契约面，能力仍在**（`CredentialService`、`CredentialRepository`、`<数据根>/run/token` 与 `agents-host token create\|list\|revoke` 一字未动，`Credential*` 形状只留给那三个子命令）；§6 桥接名单后「其余 60 条」改成 59。A12 补 `around` 的取法（40 条窗口 / 命中才给 `anchor` / 没命中回空页不报错 / 与 `after` 同给时 `around` 优先 / 消费者只有桌面端搜索定位），A13 的条数 65 → 63。§3 补「视图与入参的几处形状」（`AgentView.messages` / `function`、`DiscoveryEntryView` 的传输字段与 `extra`、`DiscoveryLayerView.scope`、`McpOauthView` 的掩码口径、`ModelInput.tokenThresholds` 可选），§7 能力清单条数同步。§8 把 `@ai-zen/agents-client` 列成「共享连接层」并写清它这一轮定的三件事（npx 拉起 `spawnHostViaNpx`、阶段回调四态、`AbortSignal` 取消），明确「怎么画屏」不归它。 || 2026-11-14 | 测试口径落文（§11，原「变更记录」顺延为 §12）：默认套件关隔离 + 一个文件一个库里的一条 `tx` 清表 + 事实归属表 + 删用例的三条判据。默认套件从 79.5s 降到 20.3s，用例 801 → 761。 |
 | 2026-11-14 | 能力清单去掉 `title` / `description`：`/help` 改由 CLI 自己的命令表渲染（PRD F-E5 订正），那两个字段与 i18n 的 `capability.*` 252 条文案零消费者，连同 `localizeCapabilities`、`createCapabilities(language)` 的语言参数、`callInLanguage` 夹具一起删；A13 / §7 / hello 段同步 |
+| 2026-11-14 | 契约面 63 → 62：删 `host.capabilities`（连同 `hello.capabilities`、`handlers/capabilities.ts`、`CapabilityView`、`methodDomain()` 的唯一生产消费者）。两端零消费者，见 §7 那段；F-E6 的落点改成客户端命令表。`host.reload` 的 `scope` 参数一并删（5 值枚举 + 校验 + 映射全是空转，没有调用方）。i18n 又清掉 33 条零产出文案（`status.*` / `usage.*` / `notice.*` / `question.confirm.*` 等），并加守卫「每个词条在生产码里都有人取」 |
 | 2026-11-14 | 状态栏块名搬回客户端：`StatusBlock` 去掉 `label`（8 块 × 2 语言 = 16 条界面词汇），宿主只给 `id` + `facts` + 顺序（`STATUS_BLOCK_IDS`）；CLI 用本地词条 `status.block.<id>` 渲染。`statusBlocksOf` 不再收 `language`，`blockLabel()` 与 i18n 的 `label.*` 8 组键一起删。同一口径的第二个案例（第一个是能力清单的 `title`/`description`）：**界面文案归界面，宿主只给事实** |

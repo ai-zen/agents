@@ -250,10 +250,10 @@ async function seedQuestion(conversationId: string): Promise<string> {
     const question = await service.ask({
       conversationId,
       kind: "confirmation",
-      prompt: { messageKey: "question.confirm.prompt", params: { action: "删除这个项目" } },
+      prompt: { messageKey: "question.handoff.prompt" },
       options: [
-        { value: "yes", label: { messageKey: "question.confirm.accept" } },
-        { value: "no", label: { messageKey: "question.confirm.decline" } },
+        { value: "yes", label: { messageKey: "question.handoff.self" } },
+        { value: "no", label: { messageKey: "question.handoff.decline" } },
       ],
       blocking: true,
     });
@@ -303,11 +303,7 @@ describe("端到端集成：真进程 + 真连接", () => {
     })) as HostHelloResult;
     expect(helloResult.language).toBe("zh");
     expect(helloResult.protocolVersion).toBe("1");
-    // 握手只给能力 id 列表（R57）：详细信息走 host.capabilities
-    expect(helloResult.capabilities.length).toBeGreaterThan(50);
-    expect(helloResult.capabilities.every((id) => typeof id === "string")).toBe(true);
-    expect(helloResult.capabilities).toContain("F-C2");
-    log("握手", `language=${helloResult.language} 协议=${helloResult.protocolVersion} 能力=${helloResult.capabilities.length} 条`);
+    log("握手", `language=${helloResult.language} 协议=${helloResult.protocolVersion}`);
 
     // =====================================================================
     // 2. workspace.create → conversation.create → conversation.list

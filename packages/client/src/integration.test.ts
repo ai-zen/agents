@@ -102,8 +102,6 @@ describe("握手", () => {
     expect(client.hello?.language).toBe("zh");
     expect(client.hello?.protocolVersion).toBe("1");
     expect(client.hello?.hostVersion).not.toBe("");
-    // 握手只回能力 id 列表（R57），清单本身走 host.capabilities
-    expect(client.hello?.capabilities.length).toBeGreaterThan(0);
     expect(client.hello?.limits.maxAssetsPerMessage).toBeGreaterThan(0);
   });
 

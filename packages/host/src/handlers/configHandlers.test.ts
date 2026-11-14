@@ -163,7 +163,7 @@ describe("localizeLocalizedTexts", () => {
         detail: { reason: "no_key" },
       },
       list: [
-        { code: "endpoint.missing", messageKey: "endpoint.missing", params: { id: "e" }, message: "en" },
+        { code: "error.notFound", messageKey: "error.notFound", params: { entity: "端点" }, message: "en" },
       ],
     };
     const zh = localizeLocalizedTexts(input, "zh");

@@ -1,3 +1,7 @@
+import { readFile, readdir } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { en } from "./en.js";
@@ -32,6 +36,40 @@ describe("文案表", () => {
         expect(value, key).not.toContain("Error:");
       }
     }
+  });
+
+  /**
+   * 每个词条都真的有人取。
+   *
+   * 宿主的词典是**闭集**（`MessageKey = keyof typeof en`），类型能保证「写下的键一定存在」，
+   * 但保证不了反方向：功能搬走 / 屏改版 / 规则归客户端之后，句子留在词典里没人读。
+   * 它们不会报错，只会让读词典的人以为那些行为还在（`status.*` 六态、`usage.*`、
+   * `notice.workspaceDeleted` 这批就是这么活了很久，其中还在说「Project」）。
+   *
+   * 判据是「在生产码里出现过这个名字」：键都是字面量（动态取文案只有 `notice.*` 一条路，
+   * 而那条路的码也是别处的字面量），所以出现即代表有人取。用例与词典自身不算。
+   */
+  it("每个词条在生产码里都有人取（不留没人读的句子）", async () => {
+    const files: string[] = [];
+    const walk = async (dir: string): Promise<void> => {
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name !== "i18n") await walk(path);
+          continue;
+        }
+        if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) files.push(path);
+      }
+    };
+    await walk(fileURLToPath(new URL("../", import.meta.url)));
+    const production = (await Promise.all(files.map((file) => readFile(file, "utf8")))).join("\n");
+
+    // 按**带引号的整串**匹配：`includes("notice.logWarning")` 会把 `notice.logWarningX`
+    // 也算命中，那样守卫是假的（实测过）
+    const orphans = Object.keys(en).filter(
+      (key) => !production.includes(`"${key}"`) && !production.includes(`'${key}'`),
+    );
+    expect(orphans).toEqual([]);
   });
 
   it("每个业务码都有非空的兜底文案", () => {
@@ -95,7 +133,9 @@ describe("render", () => {
 
   it("数字与布尔按可读形式拼接，对象 JSON 化", () => {
     expect(render("en", "error.payloadTooLarge", { size: 21, limit: "20MB" })).toContain("21");
-    expect(render("en", "status.connected", { flag: true })).toBe(en["status.connected"]);
+    expect(render("en", "question.handoff.prompt", { flag: true })).toBe(
+      en["question.handoff.prompt"],
+    );
     expect(render("zh", "question.handoff.prompt", { percent: 80 })).toContain("80");
   });
 

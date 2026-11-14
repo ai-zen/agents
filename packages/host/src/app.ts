@@ -26,7 +26,7 @@ import type { AppConfig, ConfigRecoveredHandler, HandoffService, ReasoningPreset
 
 import { readHostSettings, resolveListenTarget, resolvePaths } from "./config.js";
 import type { ListenTarget, HostPaths } from "./config.js";
-import { createCapabilities, createHandlers } from "./handlers/index.js";
+import { createHandlers } from "./handlers/index.js";
 import type { HandlerDeps } from "./handlers/index.js";
 import { DEFAULT_LANGUAGE, normalizeLanguage } from "./i18n/index.js";
 import type { Language } from "./i18n/index.js";
@@ -89,7 +89,7 @@ import {
   WorkspaceRepository,
   migrate,
 } from "./storage/index.js";
-import type { CapabilityView, HostUpgradeResult } from "./wire/index.js";
+import type { HostUpgradeResult } from "./wire/index.js";
 import type { EventMap, EventName } from "./wire/events.js";
 
 // ---------------------------------------------------------------------------
@@ -172,8 +172,6 @@ export interface HostAppOptions {
   clock?: Clock;
   /** 真退出时做什么；缺省 `process.exit(0)` */
   exit?: ExitHook;
-  /** 能力清单（PRD F-E6 / F-F9）；缺省用 `handlers/capabilities.ts` 里那份与契约同步的清单 */
-  capabilities?: () => CapabilityView[];
   /** 连接未声明语言时的缺省语言（PRD D8）；不给时用配置里的 `language`，再缺省英文 */
   defaultLanguage?: Language;
   /** 日志口（连接事件与内部错误）；缺省写到 `<dataRoot>/logs/host.log` 并按大小轮转 */
@@ -303,8 +301,6 @@ export class HostApp {
 
   /** 宿主版本（`hello` 与 `host.version` 报的那一个） */
   readonly version: string;
-  /** 能力清单（PRD F-E6 / F-F9：哪些方法会阻塞、哪些不可撤销；与语言无关） */
-  readonly capabilities: () => CapabilityView[];
   /** 进程启动时刻（ISO 8601） */
   readonly startedAt: string;
   /** 是不是本地实例（PRD A6：决定监听范围与要不要发本地凭证交付文件） */
@@ -588,7 +584,6 @@ export class HostApp {
     // ---- 9. 接线：方法表 + 一条 WebSocket ----
     this.handlers = createHandlers(this.handlerDeps());
     const target = this.resolveTarget();
-    this.capabilities = options.capabilities ?? (() => createCapabilities());
     this.hub = new WsHub({
       host: target.host,
       port: target.port,
@@ -597,8 +592,6 @@ export class HostApp {
       uploads: this.uploads,
       hostVersion: this.version,
       startedAt: this.startedAt,
-      // 握手只用它的 id（R57）
-      capabilities: () => this.capabilities(),
       // 连接没带语言时用配置里的缺省语言（再缺省英文，D8 / R58）；配置可变，所以每一跳现读
       defaultLanguage: options.defaultLanguage ?? (() => this.configuredLanguage()),
       // 通知与问题里的句子按收件人那条连接的语言重新渲染一次（D8）
@@ -936,7 +929,6 @@ export class HostApp {
     return {
       version: this.version,
       startedAt: this.startedAt,
-      capabilities: () => this.capabilities(),
       workspaces: this.workspaceService,
       conversations: this.conversationService,
       messages: this.messageService,
@@ -980,8 +972,8 @@ export class HostApp {
       upgrade: (params) => this.upgradeHost(params),
       // 从磁盘重载（F-E1 / R63）：走配置服务那条「生效」路（回收 Scope + 合成一条通知）；
       // 思考策略表是启动时的快照，重载时一并重读（否则改完档位表要等 setThinking 才生效）
-      reload: async (params) => {
-        const report = await this.configService.reload(params);
+      reload: async () => {
+        const report = await this.configService.reload();
         this.presets = await this.configManager.readReasoningPresets();
         return report;
       },

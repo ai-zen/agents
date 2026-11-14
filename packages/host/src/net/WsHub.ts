@@ -38,7 +38,6 @@ import {
   parseFrame,
   type AssetBeginParams,
   type AssetEndParams,
-  type CapabilityView,
   type ClientInfo,
   type EventMap,
   type EventName,
@@ -146,7 +145,6 @@ export interface WsHubOptions {
    *
    * 入参是这条连接的语言（裁定 R58）：句子按收件人的语言给，id 列表与顺序不变（R57）。
    */
-  capabilities?: () => CapabilityView[];
   /** 连接未声明语言时的缺省语言（PRD D8：缺省英文）；给函数时每次握手现算 */
   defaultLanguage?: DefaultLanguageSource;
   /** 推送出网前的按连接本地化（不注入则原样搬运） */
@@ -636,8 +634,6 @@ export class WsHub {
       hostVersion: this.options.hostVersion,
       protocolVersion: PROTOCOL_VERSION,
       startedAt: this.startedAt,
-      // 握手只给能力 id 列表（R57）：清单与语言无关，id 与顺序固定
-      capabilities: (this.options.capabilities?.() ?? []).map((capability) => capability.id),
       limits: this.transferLimits(),
     };
   }

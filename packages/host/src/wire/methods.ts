@@ -63,46 +63,7 @@ export interface ClientInfo {
   platform?: string;
 }
 
-/**
- * 能力清单里的一项（PRD F-E5 帮助由能力清单渲染、F-E6 阻塞是能力属性、F-F9 二次确认）。
- *
- * `id` 用 PRD 的能力编号（如 `F-C8`），因为那份清单是「要为用户做到什么」的唯一真相；
- * 客户端据此接线，不必再维护第三份清单。
- */
-export interface CapabilityView {
-  /** 稳定能力编号（PRD §4 的编号，如 `F-C8`） */
-  id: string;
-  domain: MethodDomain;
-  /**
-   * 对应的方法名；纯事实类能力（如生成六态）没有方法，为空
-   *
-   * 清单里**没有标题与说明**：一份能力叫什么、怎么跟用户说，是界面的文案（归客户端）。
-   * 从前这里有 `title` / `description` 两个 `LocalizedText`，唯一的消费者是 CLI 的
-   * `/help`；客户端改成用自己的命令表渲染后（PRD F-E5 已订正），那两个字段与宿主 i18n
-   * 的 126 条 `capability.*` 文案一起删了 —— 留着就是没人读的字符串，迟早跟界面说的不一样。
-   */
-  method: MethodName | null;
-  /** 执行期间会阻塞对话（PRD F-E6：界面要能显示「正在执行什么」） */
-  blocking: boolean;
-  /** 有不可撤销的后果（PRD F-F9：需要二次确认） */
-  destructive: boolean;
-}
 
-/** 方法的域（方法名的第一段） */
-export type MethodDomain =
-  | "host"
-  | "workspace"
-  | "conversation"
-  | "message"
-  | "question"
-  | "notice"
-  | "config"
-  | "agent"
-  | "model"
-  | "asset"
-  | "completion"
-  | "handoff"
-  | "search";
 
 /**
  * 一次删除的代价（PRD D11「删前明说代价」/ D17「先警告」/ F-F9「二次确认」）。
@@ -155,12 +116,6 @@ export interface HostHelloResult {
   protocolVersion: string;
   /** 宿主进程启动时间 */
   startedAt: string;
-  /**
-   * 能力 id 列表（PRD F-E5 / R57）
-   *
-   * 每一串就是 `host.capabilities` 里那一项 `CapabilityView.id`，顺序与那份清单一致。
-   */
-  capabilities: string[];
   /** 附件上限等客户端要先知道的事实（PRD D5） */
   limits: TransferLimits;
 }
@@ -214,24 +169,6 @@ export interface HostShutdownParams {
 /** `shutdown` 出参：已受理（进程随后按 L4 的条件收尾） */
 export interface HostShutdownResult {
   accepted: boolean;
-}
-
-/** `capabilities` 出参（PRD F-E5：帮助与指令菜单都从这一份渲染） */
-export interface HostCapabilitiesResult {
-  capabilities: CapabilityView[];
-}
-
-/**
- * `host.reload` 能重载的范围（PRD F-E1 命令清单里的「重载」）。
- *
- * 每一档对应「哪一类能力要重新装配」：改的是磁盘上的东西（配置文件 / 助手定义 / 技能目录 /
- * MCP 文件），所以重载不写盘，只让宿主重新读一遍。不给 `scope` 表示全部。
- */
-export type HostReloadScope = "config" | "agents" | "tools" | "skills" | "mcp";
-
-/** `host.reload` 入参：只重载某一类能力，或全部（不给） */
-export interface HostReloadParams {
-  scope?: HostReloadScope;
 }
 
 /**
@@ -1844,15 +1781,13 @@ export interface MethodMap {
   "host.upgrade": { params: HostUpgradeParams; result: HostUpgradeResult };
   /** F-E1：命令清单里的「退出」在宿主这一侧的动作。 */
   "host.shutdown": { params: HostShutdownParams; result: HostShutdownResult };
-  /** F-E5 / F-E6 / F-F9：帮助由能力清单渲染；阻塞与不可撤销是能力属性。 */
-  "host.capabilities": { params: NoParams; result: HostCapabilitiesResult };
   /**
    * F-E1：命令清单里的「重载」在宿主这一侧的动作。
    *
    * 改完配置本来就会自动生效（F-E2）；这一条是给人一个「我现在就说一遍」的入口 ——
    * 手改了磁盘上的助手定义 / 技能目录 / MCP 文件之后不必重启。
    */
-  "host.reload": { params: HostReloadParams; result: HostReloadResult };
+  "host.reload": { params: NoParams; result: HostReloadResult };
   /** D8 / F-E4：`/lang` 是连接级动作，语言挂在连接上、断开即忘。 */
   "host.setLanguage": { params: HostSetLanguageParams; result: HostSetLanguageResult };
 
@@ -2037,7 +1972,6 @@ export const METHOD_NAMES = [
   "host.version",
   "host.upgrade",
   "host.shutdown",
-  "host.capabilities",
   "host.reload",
   "host.setLanguage",
   "workspace.list",
@@ -2101,9 +2035,4 @@ export const METHOD_NAMES = [
 /** 运行时判断一个字符串是不是已知方法名 */
 export function isMethodName(value: unknown): value is MethodName {
   return typeof value === "string" && (METHOD_NAMES as readonly string[]).includes(value);
-}
-
-/** 方法名属于哪个域（`conversation.send` → `conversation`） */
-export function methodDomain(method: MethodName): MethodDomain {
-  return method.slice(0, method.indexOf(".")) as MethodDomain;
 }

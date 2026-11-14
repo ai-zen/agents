@@ -97,10 +97,13 @@ describe("HostError", () => {
 
   it("可以换文案键与追加 detail，都返回新实例", () => {
     const base = new HostError("not_found", { params: { entity: "conversation" } });
-    const withMessage = base.withMessage("model.visionRequired", { model: "gpt-4o-mini" });
+    const withMessage = base.withMessage("error.payloadTooLarge", {
+      size: "3MB",
+      limit: "20MB",
+    });
     expect(withMessage.code).toBe("not_found");
-    expect(withMessage.messageKey).toBe("model.visionRequired");
-    expect(withMessage.toErrorData("en").message).toContain("gpt-4o-mini");
+    expect(withMessage.messageKey).toBe("error.payloadTooLarge");
+    expect(withMessage.toErrorData("en").message).toContain("3MB");
     expect(base.toErrorData("en").message).toContain("conversation");
 
     const withDetail = base.withDetail({ conversationId: "c-1" });

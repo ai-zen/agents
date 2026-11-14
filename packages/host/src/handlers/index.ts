@@ -36,7 +36,7 @@ import type { NoticeService } from "../services/NoticeService.js";
 import type { QuestionService } from "../services/QuestionService.js";
 import type { SearchService } from "../services/SearchService.js";
 import type { WorkspaceService } from "../services/WorkspaceService.js";
-import type { CapabilityView, MethodName, QuestionView, HostReloadParams, HostReloadResult } from "../wire/index.js";
+import type { MethodName, QuestionView, HostReloadResult } from "../wire/index.js";
 import type { EventMap, EventName } from "../wire/events.js";
 import { createAgentHandlers } from "./agentHandlers.js";
 import { createAssetHandlers } from "./assetHandlers.js";
@@ -65,7 +65,6 @@ export type { QuestionHandlerDeps } from "./questionHandlers.js";
 export type { SearchHandlerDeps } from "./searchHandlers.js";
 export type { HostHandlerDeps } from "./hostHandlers.js";
 export type { WorkspaceHandlerDeps } from "./workspaceHandlers.js";
-export { createCapabilities } from "./capabilities.js";
 
 /**
  * 由接线层代管、因此不在 handler 表里的方法名。
@@ -94,7 +93,6 @@ export interface HandlerDeps {
   /** 进程启动时刻（ISO 8601） */
   startedAt: string;
   /** 能力清单（PRD F-E5） */
-  capabilities: () => CapabilityView[];
 
   // ---- 服务 ----
   workspaces: WorkspaceService;
@@ -149,7 +147,7 @@ export interface HandlerDeps {
     targetVersion: string | null;
   }>;
   /** 从磁盘重载（`host.reload`：与改配置同一条生效路径） */
-  reload: (params: HostReloadParams) => Promise<HostReloadResult>;
+  reload: () => Promise<HostReloadResult>;
 }
 
 /**

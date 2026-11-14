@@ -37,7 +37,7 @@ import type { MessageKey } from "../i18n/index.js";
  * 「界面显示」「客户端重排」「换个语言连回来重渲染」三种需要。
  */
 export interface LocalizedText {
-  /** 稳定码（如 `notice.settingsSaved`、`tool.failed`），与文案键分开，便于客户端分支 */
+  /** 稳定码（如 `notice.settingsApplied`、`tool.failed`），与文案键分开，便于客户端分支 */
   code: string;
   /** 文案键（`i18n` 的键空间） */
   messageKey: MessageKey;

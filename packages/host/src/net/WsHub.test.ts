@@ -20,7 +20,6 @@ import { render, type Language } from "../i18n/index.js";
 import { MAX_ASSET_BYTES, PROTOCOL_VERSION, HostError } from "../wire/index.js";
 import type {
   AssetRef,
-  CapabilityView,
   ConversationSendResult,
   EventMap,
   EventName,
@@ -51,15 +50,6 @@ let finalized: UploadFinalizeRequest[];
 let logged: { level: "warn" | "error"; message: string; detail?: unknown }[];
 let hubReference: WsHub | null;
 
-const CAPABILITIES: CapabilityView[] = [
-  {
-    id: "F-C8",
-    domain: "conversation",
-    method: "conversation.revert",
-    blocking: false,
-    destructive: true,
-  },
-];
 
 beforeEach(async () => {
   dir = await makeTempDir("ws-hub");
@@ -171,7 +161,6 @@ async function startHub(overrides: Partial<WsHubOptions> = {}): Promise<void> {
     uploads,
     hostVersion: "0.1.0-alpha.0",
     startedAt: NOW,
-    capabilities: () => CAPABILITIES,
     logger,
     ...overrides,
   });
@@ -254,10 +243,6 @@ describe("握手与鉴权（PRD A5 / D8）", () => {
       startedAt: NOW,
       limits: { maxAssetBytes: MAX_ASSET_BYTES, maxAssetsPerMessage: 4 },
     });
-    // 能力只给 id 列表：完整清单（标题、说明、属性）在 host.capabilities
-    expect((result as { capabilities: string[] }).capabilities).toEqual(
-      CAPABILITIES.map((capability) => capability.id),
-    );
   });
 
   it("认不出的语言回落英文", async () => {
@@ -406,7 +391,7 @@ describe("推送（PRD L5 / R47）", () => {
         id: "n-1",
         level: "info",
         duration: 2,
-        text: { code: "notice.settingsSaved", messageKey: "notice.settingsSaved", params: {}, message: "" },
+        text: { code: "notice.settingsApplied", messageKey: "notice.settingsApplied", params: {}, message: "" },
         conversationId: null,
         createdAt: NOW,
       },
@@ -497,8 +482,8 @@ describe("推送（PRD L5 / R47）", () => {
         level: "info",
         duration: null,
         text: {
-          code: "notice.settingsSaved",
-          messageKey: "notice.settingsSaved",
+          code: "notice.settingsApplied",
+          messageKey: "notice.settingsApplied",
           params: {},
           message: "（产生现场渲染的那份）",
         },
@@ -512,8 +497,8 @@ describe("推送（PRD L5 / R47）", () => {
     const enFrame = await en.queue.next();
     const textOf = (frame: typeof zhFrame): string =>
       (frame as { params: { notice: { text: { message: string } } } }).params.notice.text.message;
-    expect(textOf(zhFrame)).toBe("[zh] notice.settingsSaved");
-    expect(textOf(enFrame)).toBe("[en] notice.settingsSaved");
+    expect(textOf(zhFrame)).toBe("[zh] notice.settingsApplied");
+    expect(textOf(enFrame)).toBe("[en] notice.settingsApplied");
   });
 
   it("未握手的连接收不到推送", async () => {
