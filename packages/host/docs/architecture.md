@@ -342,7 +342,68 @@ const [found, written] = await db.tx((q) => [
 
 （已清空：上一条“`message.list` 怎么取”已由 A12 定下。）
 
-## 11. 变更记录
+## 11. 测试口径
+
+两条门禁：`npm test`（默认套件，只看仓库内容）与 `npm run test:e2e`（两条真进程用例，各自跑一次 `tsc`、起真子进程 + 真 WebSocket，10 秒出头）。`test:all` = 两者 + 构建。
+
+**规模与成本**（2026-11-14 实测）：默认套件 53 文件 / 761 用例 / **20.3s**。单条用例 1–5ms 到 ~40ms 不等，分界只有一条：**这条用例要不要建库**。
+
+### 11.1 一个测试文件一个数据库
+
+每条用例都 `new Database + migrate` 要付 **55ms**（其中 44.6ms 是起一个 SQLite worker 线程），几百条用例就是几十秒。所以碰库的文件统一按这个形状写：
+
+```ts
+beforeAll(async () => {                     // 一次建库、一次迁移
+  dir = await mkdtemp(join(tmpdir(), "ai-zen-xxx-"));
+  db = new Database(join(dir, "ai-zen.db"));
+  await migrate(db);
+  repo = new XRepository(db);
+});
+beforeEach(async () => {
+  await db.tx((tx) => [                     // 一条批次 = 一次往返
+    tx.run("DELETE FROM notices"),
+    tx.run("DELETE FROM questions"),
+    tx.run("DELETE FROM workspaces"),       // 级联 conversations → messages → conversation_assets
+    tx.run("DELETE FROM assets"),           // 级联 asset_vendor_files
+    tx.run("DELETE FROM credentials"),
+  ]);
+  /* 本用例自己的 fixture（内容与顺序照旧） */
+});
+afterAll(async () => { await db.close(); await rm(dir, { recursive: true, force: true }); });
+```
+
+四条硬约束：
+
+1. **`meta` 表不许清** —— `migrate()` 靠 `meta.schemaVersion` 判断跑不跑，清掉等于每用例重跑迁移。
+2. **FTS 不用手工同步** —— `DELETE FROM messages`（含级联触发）由 `messages_fts_*` 触发器维护索引。
+3. **清表顺序** —— `workspaces` 必须在 `assets` 之前（先级联掉 `conversation_assets` 关系行，`assets` 的 `ON DELETE RESTRICT` 才不会拦）。
+4. **实例级状态每条重建** —— 服务实例、drafts、事件数组、时钟、假运行时不是库的一部分，共享一个实例会跨用例串味；共享的只有库。
+
+天生要「关库再重开」的用例（`migrations.test.ts` 的全新库、`Database.test.ts` 的 close 语义、`QuestionService` / `NoticeService` 的重开）**保留自己的实例**，不要塞进共享夹具。
+
+### 11.2 「一个事实只在一处断言」
+
+| 事实归属 | 正主 |
+|---|---|
+| 表结构 / UNIQUE / NOT NULL / 级联 / RESTRICT | `storage/migrations.test.ts` |
+| `db.tx()` 的声明式批次边界 | `storage/Database.test.ts` |
+| 契约语义（`message.list` 的 `after` / `around`、`question.list` 的过滤…） | 对应的 `*Service.test.ts` |
+| SQL 独有行为（FTS5 trigram、LIKE 退化、触发器跟随、通配符转义、`MAX(seq)+1`） | 对应的 `*Repository.test.ts` |
+| 上传状态机 / 分帧编解码 | `net/UploadReceiver.test.ts` |
+| WS 接线（二进制帧、连接状态、错误帧形状） | `net/WsHub.test.ts` |
+| 真命令行 / 真进程 / 重启持久化 | `test:e2e`（`serve.process.test.ts`、`host.integration.test.ts`） |
+
+同一件事在两层都断言，改一次行为就要改两个文件 —— 那种用例删掉弱的那一份，别两边都留。
+
+### 11.3 删用例的判据
+
+判据是必要性，不是「跑得快不快」：
+
+- **生产代码零调用者的方法，连用例一起删**（`AutoNaming.shouldName`、`QuestionService.cancel`、`ConversationRepository.touch` / `countByWorkspace`、`AssetRepository.countConversations` / `listConversationIds`、`QuestionRepository.delete`、`noticeHandlers.createNoticeEventLocalizer` 都是这么出列的）。留着它们会给出假安全覆盖。
+- **被测对象根本拿不到的依赖不要摆进夹具**（`TransientRunner` 没有库句柄，却每用例建库去断言「库里 0 行」）。
+- **便宜到可以每次改动都跑一遍的守卫按条数留**（`wire/*.test.ts` 70 条共 0.07s，1ms/条）：它们抓的是不可信客户端帧、错误码文案、方法表不许回表这类真回归，删了省不下时间，只丢覆盖。
+
+## 12. 变更记录
 
 | 日期 | 变更 |
 |---|---|
@@ -358,4 +419,4 @@ const [found, written] = await db.tx((q) => [
 | 2026-11-13 | W12：素材层删简。`asset_vendor_files` 去掉 `lastUsedAt` 列与它的索引（不做过期清理），缓存只剩三条规则（命中复用 / 换端点内联 / 首传写回）；删掉 `AssetService.invalidateVendorFiles`、`AssetRepository.listVendorFiles` / `deleteVendorFiles` / `deleteVendorFile` / `touchVendorFile`，以及 `ChatRunner` 里「file 不存在/无效」的文本判据、`retryAfterVendorFileError` / `resetForRetry` / 整轮重备的那一套。§5 按新口径回改；`stripLocalExtensions` 换成 core 的 `formatContent`（W12 同时给 core 加了 `formatContent` / `formatContentSection`，`formatHistory` 走它们）。 |
 | 2026-11-13 | W11：引用方式改成**内容段上的本地扩展字段 `__asset_id`**（不再往 `image_url.url` / `file.file_id` 里塞 `asset://`）。`assets` 去掉 `conversationId` / `messageId` 两列，`sha256` 改成全局 `UNIQUE`（去重从「对话内」改成「全局」）；新增关系表 `conversation_assets`（`UNIQUE(messageId, assetId)`、`assetId` 为 `ON DELETE RESTRICT`、索引 `assetId` / `conversationId`），消息落库那一刻扫 `content` 里的 `__asset_id` 写行，撤回 / 删对话由外键级联删行，删完之后 `COUNT(*)` 归零才删素材行与文件（`AssetService.sweepUnreferenced`）。「所有 `__` 开头的字段都是本地扩展、发送前一概剥离」落成 `wire/states.ts` 的两个纯函数 `stripLocalExtensions` / `localAssetIdOf`，`resolveHistory` 出的每一段都过白名单，且同一 `(素材, 端点)` 两轮算出来的段逐字节相同。客户端加 `localAssetIdOf` / `getSectionAsset`（按扩展字段取字节，不解析 scheme）。§5 补第三张表与「归零才删」的落点，§6 补全局去重与取回口径。 |
 | 2026-11-13 | W14-A：素材尺寸（裁定 R76）。`assets.width` / `height` 不再恒空 —— `AssetService.finalizeUpload` 把临时文件改名成正式文件之后读一次文件头，由 `src/services/imageSize.ts` 的 `readImageSize`（纯函数，零依赖）从 PNG 的 IHDR 块 / JPEG 的 SOF 段解出宽高写进这一行；其它格式、截断文件、解不出来的字节都写 `NULL`，不重试、不告警。`AssetRef` 与 `asset.get` 回的就是这一行，所以客户端拿到的 `width` / `height` 是上传那一刻量出来的真值。§5 的 `assets` 行按此回改。 |
-| 2026-11-14 | W3：契约面跟上新契约。方法表 **65 → 63**（13 个域、无 `credential` 域）：新增 `agent.restoreFactory`、`config.saveMcp` / `config.deleteMcp`（取代 `config.patchMcps` 的整层替换）；删 `host.usage` 与 `credential.list/create/revoke` —— **删的是契约面，能力仍在**（`CredentialService`、`CredentialRepository`、`<数据根>/run/token` 与 `agents-host token create\|list\|revoke` 一字未动，`Credential*` 形状只留给那三个子命令）；§6 桥接名单后「其余 60 条」改成 59。A12 补 `around` 的取法（40 条窗口 / 命中才给 `anchor` / 没命中回空页不报错 / 与 `after` 同给时 `around` 优先 / 消费者只有桌面端搜索定位），A13 的条数 65 → 63。§3 补「视图与入参的几处形状」（`AgentView.messages` / `function`、`DiscoveryEntryView` 的传输字段与 `extra`、`DiscoveryLayerView.scope`、`McpOauthView` 的掩码口径、`ModelInput.tokenThresholds` 可选），§7 能力清单条数同步。§8 把 `@ai-zen/agents-client` 列成「共享连接层」并写清它这一轮定的三件事（npx 拉起 `spawnHostViaNpx`、阶段回调四态、`AbortSignal` 取消），明确「怎么画屏」不归它。 |
+| 2026-11-14 | W3：契约面跟上新契约。方法表 **65 → 63**（13 个域、无 `credential` 域）：新增 `agent.restoreFactory`、`config.saveMcp` / `config.deleteMcp`（取代 `config.patchMcps` 的整层替换）；删 `host.usage` 与 `credential.list/create/revoke` —— **删的是契约面，能力仍在**（`CredentialService`、`CredentialRepository`、`<数据根>/run/token` 与 `agents-host token create\|list\|revoke` 一字未动，`Credential*` 形状只留给那三个子命令）；§6 桥接名单后「其余 60 条」改成 59。A12 补 `around` 的取法（40 条窗口 / 命中才给 `anchor` / 没命中回空页不报错 / 与 `after` 同给时 `around` 优先 / 消费者只有桌面端搜索定位），A13 的条数 65 → 63。§3 补「视图与入参的几处形状」（`AgentView.messages` / `function`、`DiscoveryEntryView` 的传输字段与 `extra`、`DiscoveryLayerView.scope`、`McpOauthView` 的掩码口径、`ModelInput.tokenThresholds` 可选），§7 能力清单条数同步。§8 把 `@ai-zen/agents-client` 列成「共享连接层」并写清它这一轮定的三件事（npx 拉起 `spawnHostViaNpx`、阶段回调四态、`AbortSignal` 取消），明确「怎么画屏」不归它。 || 2026-11-14 | 测试口径落文（§11，原「变更记录」顺延为 §12）：默认套件关隔离 + 一个文件一个库里的一条 `tx` 清表 + 事实归属表 + 删用例的三条判据。默认套件从 79.5s 降到 20.3s，用例 801 → 761。 |

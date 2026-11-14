@@ -310,9 +310,10 @@ README 首行写「不要改、不要当实现依据」。
 
 要还的账，按「先救命、后补齐、最后体验」排：
 
-1. **会跑死对话的 3 条（W4 内部优先级最高）**：问题对象没有作答通路（`question.list/answer` 零调用，
-   `main/src/host/events.ts` 把 `QuestionView` 压成一条 notice）⇒ 跑到交接线后每次 `conversation.send`
-   被 `question_pending` 拒，对话永久报废；交接 `handoff.start` 同一条链。
+1. ~~**会跑死对话的 3 条（W4 内部优先级最高）**~~ —— **已完成（2026-11-14）**：`QuestionView` 整份透传
+   （`main/src/host/events.ts` 的 `onQuestion`），`chat.questions` / `chat.answerQuestion` 两个服务接上
+   `question.list` / `question.answer`，`views/main/QuestionPanel.vue` 画候选并挡输入区，答完按
+   `effects.newConversationId` 切会话。剩下的「交接 `handoff.start`」仍属第 3 档（界面还没有入口）。
 2. **完整问答视图本身**：消息列表（源码着色、代码高亮、工具调用压一行、失效消息删除线）、输入区
    （多行 + 限高 + `@` + 图片粘贴 + 草稿）、作答面板（`question.*`）、通知栏（`notice.*`）、状态栏块、
    用量（`conversation.state.usage`）、错误说人话。
@@ -413,9 +414,9 @@ README 首行写「不要改、不要当实现依据」。
 | 编号 | 问题 | 现状事实（供你判断） | 我的建议 |
 |---|---|---|---|
 | Q3 | desktop 的类型检查要不要前置 `agents/packages/host/dist` 的构建 | 现状靠已存在的 dist，构建顺序没写进脚本 | 前置（一次显式依赖，胜过一条隐式约定） |
-| Q4 | PRD §1 里的出处名 `cli-old` 谁改 | W3-1 的验收要求「PRD §1 的出处名同步」，但本文件 §10 规定 PRD 只有你能改。`PRD.md:3`（需求来源路径）与 `:27`（TUI CLI 那一行）现在仍写 `cli-old`；`cli-old-archive` 已经是新名 | 你改，或授权我改这两处的**路径名**（正文与 §7 变更记录不动） |
+| Q4 | ~~PRD §1 里的出处名 `cli-old` 谁改~~ | **已清**：`PRD.md:3` 与 `:27` 现在都写 `cli-old-archive`（`:286` 的变更记录里保留当时的名字，那是历史） | — |
 | Q5 | `.ai-zen/handoffs/**` 与 `.ai-zen/reviews/**` 里的旧包名要不要一起改 | 你明确说了不动 handoffs（「不假造过去」）；reviews 是同一性质的历史记录，我按同一把尺子处理了，所以 W3-2 的「文档层面清完」在这两处留有命中 | 不改（历史记录保留当时的名字）；如果要改，需要你改口径 |
-| Q6 | `cli/rolldown.config.mjs:51` 的注释仍写着旧包名 | 那是构建配置（不是 `.md`），本波硬约束「不改源码」，所以没动；它确实与新事实不符 | 下一波（或你授权）一并改一行注释 |
+| Q6 | ~~`cli/rolldown.config.mjs:51` 的注释仍写着旧包名~~ | **已清**：那份配置现在只说 `@ai-zen/agents-client` / `agents-sdk` / `agents-host` 该被内联，没有旧包名 | — |
 
 ---
 
