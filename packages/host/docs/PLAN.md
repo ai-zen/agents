@@ -261,6 +261,7 @@ W2 收尾时确认的是**「它接的到底是哪个方法」**（不是「文�
 | W2-6 命令集 | 删 `/search`（`commands/registry.ts` 的注释写明「搜索只服务桌面端」）；`/back` 为主名、`/revert` 退成别名；`/pin` 保留；`/ws` 与 `/shutdown` 进表 | `commands/registry.ts` 的 `REGISTRY_ENTRIES` |
 | W2-7 `notice.clear` | 通知屏 `Alt+X` 全部清空 → `notice.clear`（按对话清一片），这是它唯一的调用点（不删方法，给它真实出路） | `i18n` 的 `notice.clearHint` / `notice.clearedAll`；`src/pending-notices.ts` 的 `connection.call("notice.clear", { conversationId })` |
 | **那次发布** | `@ai-zen/agents-host@0.1.0-alpha.1`（registry 上的版本序列是 `0.0.0-stage` → `0.1.0-alpha.0` → `0.1.0-alpha.1`，`latest` 与 `alpha` 两个 dist-tag 都指 alpha.1）；上游同批发布 `@ai-zen/agents-core@4.6.0-alpha.0` / `@ai-zen/agents-sdk@1.2.0-alpha.0`（sdk 的 `alpha` tag = 1.2.0-alpha.0，`latest` 仍是 1.1.0） | `npm view` 实测（本机无提交任何包配置） |
+| **2026-11-14 之后那一版** | `@ai-zen/agents-host@0.1.0-alpha.5`（`latest` 与 `alpha` 双 tag）+ **`@ai-zen/cli@1.1.0-alpha.0`**（只打到 `alpha` tag，`latest` 仍是稳定版 `1.0.2` —— 不许预发布顶掉稳定线）。上游 `core@4.6.0-alpha.0` / `sdk@1.2.0-alpha.2` 自 alpha.3 起 `src` 零改动，**未重发**。CLI 的 `devDependencies` 里宿主范围提到 `^0.1.0-alpha.5`（`AGENTS_HOST_RANGE` 是构建期烧进产物的，改完必须重新 build 才生效；`pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude` 同步加白）。`0.1.0-alpha.4` 同批发出后几分钟即被 alpha.5 取代：运行期代码一致，差别只是 `.d.ts` 里指向已删 `host.capabilities` 的残注释被清掉了 | registry 实测 + `npx -y` 真拉真跑（`agents-host version` → `0.1.0-alpha.5（协议 1）`） |
 
 ---
 

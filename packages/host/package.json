@@ -1,6 +1,6 @@
 {
   "name": "@ai-zen/agents-host",
-  "version": "0.1.0-alpha.3",
+  "version": "0.1.0-alpha.5",
   "description": "AI-Zen Agents Host — session/workspace service shared by CLI and Desktop",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

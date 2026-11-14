@@ -3,6 +3,52 @@
 All notable changes to `@ai-zen/agents-host` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versions use SemVer.
 
+## [0.1.0-alpha.5] - 2026-11-14
+
+> The capability list is gone. `host.capabilities` existed to tell clients "what this build can
+> do", but the only client that ever read it was the TUI's `/help` — and `/help` already had a
+> local command table. A list that duplicates a list is a list that drifts: the host called it
+> "项目", the CLI called it "工作区". So the method, its 252 copy entries and the `CapabilityView`
+> shape are removed — **63 → 62 methods** — and the CLI's `/help` now costs zero round trips.
+>
+> `0.1.0-alpha.4` was published minutes earlier with the identical runtime code but with doc
+> comments that still pointed at the removed method (they land in `dist/*.d.ts`, so they are part
+> of what you read). Use **alpha.5**.
+>
+> Ships on `@ai-zen/agents-core@4.6.0-alpha.0` + `@ai-zen/agents-sdk@1.2.0-alpha.2` (both
+> unchanged since the previous alpha, so this release is host-only).
+
+### ⚠️ Breaking
+
+- **`host.capabilities` removed** (63 → 62 methods), together with `hello.capabilities`,
+  `CapabilityView` / `HostCapabilitiesResult` / `MethodDomain`, the `handlers/capabilities.ts`
+  wiring and 252 `capability.*` strings. Nothing depended on it: the CLI's `/help` is local
+  now, the Desktop never called it.
+- **`host.reload` no longer takes `scope`** — the host is the only one who knows what is
+  reloadable, so it decides; `reloadedOf()` is unconditionally `true`.
+- **`StatusBlock.label` removed** — block names are client concepts ("sidebar" is not a host
+  word). The CLI carries its own eight `status.block.*` strings.
+
+### 🧹 Changed
+
+- **i18n now has a consumer rule**: the 33 entries no production code ever emitted are deleted,
+  and a guard test fails the suite if any entry has no reader. PLAN.md §7.5 keeps the 19 cases
+  where the host *should* say something and currently says nothing — those are gaps, not strings.
+- 4 exports with zero references removed, along with the long-dead `localizeCapabilities`.
+- **Doc comments that still described the deleted capability list are gone** — six of them, two
+  of which had drifted onto the *next* field and read as if they documented `defaultLanguage` /
+  `requestStop`.
+- The two real-process cases moved to `test:e2e` (out of the default suite's 759); test fixtures
+  went "one file, one database" with one `db.tx()` table wipe.
+
+## [0.1.0-alpha.1 … 0.1.0-alpha.3] - 2026-11-14
+
+- **`agents-host` bin got its shebang** (alpha.1) — without it `npm i -g` installed a file the
+  shell refuses to execute.
+- **A configuration file that does not parse is reset to factory values** and written back, the
+  broken one kept as `<name>.broken`, plus one warning notice naming the file (D32;
+  alpha.2 / alpha.3). No fallback layers, no throwing upwards.
+
 ## [0.1.0] - 2026-11-09
 
 First extraction step. The package exists so that CLI and Desktop stop maintaining two
