@@ -236,20 +236,6 @@ export class AutoNaming {
     return { named: true, name, skipped: null, problem: null };
   }
 
-  /** 这段对话当前该不该起名（接线层在调用前想做别的判断时用；不改任何状态） */
-  async shouldName(conversationId: string): Promise<{ should: boolean; reason: AutoNameSkip | null }> {
-    const conversation = await this.conversations.get(conversationId);
-    if (!conversation) return { should: false, reason: "conversation_missing" };
-    const config = await this.configManager.read();
-    if (config.autoTitle === false) return { should: false, reason: "disabled" };
-    if (!conversation.nameIsAuto) return { should: false, reason: "renamed_by_user" };
-    const rows = await this.messages.listByConversation(conversationId);
-    const userCount = rows.filter((row) => row.role === (AgentNS.Role.User as string)).length;
-    if (userCount !== 1) return { should: false, reason: "not_first_turn" };
-    if (!config.namingModel && !config.defaultModel) return { should: false, reason: "no_model" };
-    return { should: true, reason: null };
-  }
-
   /**
    * 缺省的取名调用：用 SDK 的 `completeOnce`（与交接摘要共用同一份请求体形状）。
    *

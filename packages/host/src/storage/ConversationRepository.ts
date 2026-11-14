@@ -135,15 +135,6 @@ export class ConversationRepository {
     return result.changes;
   }
 
-  /** 只推进修改时间（新增消息等结构变化后调用） */
-  async touch(id: string, updatedAt: number): Promise<number> {
-    const result = await this.db.run("UPDATE conversations SET updatedAt = ? WHERE id = ?", [
-      updatedAt,
-      id,
-    ]);
-    return result.changes;
-  }
-
   /** 硬删对话（PRD D17），消息与素材行随之级联删除 */
   async delete(id: string): Promise<number> {
     const result = await this.db.run("DELETE FROM conversations WHERE id = ?", [id]);
@@ -180,13 +171,5 @@ export class ConversationRepository {
       [workspaceId, pattern, limit],
     );
     return rows.map(toConversation);
-  }
-
-  async countByWorkspace(workspaceId: string): Promise<number> {
-    const row = await this.db.get<{ n: number }>(
-      "SELECT count(*) AS n FROM conversations WHERE workspaceId = ?",
-      [workspaceId],
-    );
-    return row?.n ?? 0;
   }
 }

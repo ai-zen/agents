@@ -1,6 +1,10 @@
 /**
  * 临时对话的验收（D3 / F-A2 / R1 / R49）：一次请求跑一轮、结果一次返回；无 id、不落库、
  * 不进列表、不可 attach、不推流式事件；只借 Scope，与 Workspace 无关。
+ *
+ * 夹具里一个库都不建：`TransientRunner` 的依赖只有 `scopes` / `createAgent` / `configManager`
+ * （见它自己的构造参数），根本没有库句柄 —— 以前这里每个用例 `new Database + migrate` 只为
+ * 查一句「库里 0 行」，而那句永远为真。「零痕迹」在真库上验才有意义，那条在 `app.test.ts`。
  */
 
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -11,8 +15,6 @@ import { AgentNS } from "@ai-zen/agents-core";
 import { ConfigManager } from "@ai-zen/agents-sdk";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { Database } from "../storage/Database.js";
-import { migrate } from "../storage/migrations.js";
 import type { Scope } from "@ai-zen/agents-sdk";
 import { FakeAgent, createFakeScope } from "./TestSupport.js";
 import { TransientRunner, cwdOfTransientScopeKey, transientScopeKey } from "./TransientRunner.js";
@@ -39,7 +41,6 @@ class RecordingScopes implements TransientScopeBorrower {
 
 interface Harness {
   dir: string;
-  db: Database;
   runner: TransientRunner;
   scopes: RecordingScopes;
   agentCalls: Array<{ agentId: string; modelId: string | null; historyLength: number }>;
@@ -52,8 +53,6 @@ interface Harness {
 
 async function setup(config: Record<string, unknown> = { defaultAgent: "a1" }): Promise<Harness> {
   const dir = await mkdtemp(join(tmpdir(), "ai-zen-transient-"));
-  const db = new Database(join(dir, "ai-zen.db"));
-  await migrate(db);
 
   const configPath = join(dir, "config.json");
   await writeFile(configPath, JSON.stringify(config), "utf-8");
@@ -105,7 +104,7 @@ async function setup(config: Record<string, unknown> = { defaultAgent: "a1" }): 
     configManager: new ConfigManager(configPath),
   });
 
-  return { dir, db, runner, scopes, agentCalls, agents, sentContents, behaviour };
+  return { dir, runner, scopes, agentCalls, agents, sentContents, behaviour };
 }
 
 let harness: Harness;
@@ -115,7 +114,6 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await harness.db.close();
   await rm(harness.dir, { recursive: true, force: true });
 });
 
@@ -132,16 +130,6 @@ describe("一次请求跑一轮，结果一次返回（D3）", () => {
     expect(result.subagents).toEqual([]);
     // 没有第二份「拼好的正文」之类的重复字段：结果只有这三样
     expect(Object.keys(result).sort()).toEqual(["message", "problem", "subagents"]);
-  });
-
-  it("过程中不落库：库里 0 行（对话 / 消息 / 通知 / 问题全都没有）", async () => {
-    await harness.runner.run({ cwd: "/tmp/project", input: { content: "不留痕迹" } });
-
-    const tables = ["conversations", "messages", "notices", "questions", "workspaces"];
-    for (const table of tables) {
-      const rows = await harness.db.all<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table}`);
-      expect(rows[0]?.n, table).toBe(0);
-    }
   });
 
   it("跑一轮就是一次 send，历史永远是空的（没有可续接的东西）", async () => {
@@ -201,9 +189,6 @@ describe("告诉模型「现在在哪个目录」（F-D9）", () => {
     expect(cwdMessage?.role).toBe(AgentNS.Role.User);
     expect(cwdMessage?.hidden).toBe(true);
     expect(cwdMessage?.content).toContain("/tmp/project");
-    // 临时对话不落库，所以这条也只活在内存（库里仍是 0 行）
-    const rows = await harness.db.all<{ n: number }>("SELECT COUNT(*) AS n FROM messages");
-    expect(rows[0]?.n).toBe(0);
   });
 });
 
@@ -246,7 +231,6 @@ describe("失败与结局的说明", () => {
       ).rejects.toMatchObject({ code: "config_invalid" });
       expect(bare.scopes.acquired).toEqual([]);
     } finally {
-      await bare.db.close();
       await rm(bare.dir, { recursive: true, force: true });
     }
   });

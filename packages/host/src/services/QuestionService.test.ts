@@ -369,17 +369,6 @@ describe("越过硬线两端都拒绝，问题继续挂着（D23 / F-D10）", ()
 });
 
 describe("生命周期（D22：有状态、可持久化）", () => {
-  it("显式取消是唯一的「关掉它」路径，且落库", async () => {
-    const id = await askHandoff(harness);
-    const cancelled = await harness.service.cancel(id);
-    expect(cancelled.state).toBe("cancelled");
-
-    const rows = await harness.db.all<{ state: string }>("SELECT state FROM questions");
-    expect(rows).toEqual([{ state: "cancelled" }]);
-    const pending = await harness.service.list({ conversationId: "c1", state: "pending" });
-    expect(pending.questions).toEqual([]);
-  });
-
   it("重开库之后问题与回答都还在", async () => {
     const id = await askHandoff(harness);
     await harness.service.answer({ questionId: id, value: "summary" }, { answeredBy: "conn-1" });

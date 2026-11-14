@@ -1,6 +1,6 @@
 /**
- * `notice.*` 的接线验收：语言从连接传下去（D8）、方法参数原样递给服务层、
- * 事件出网前按连接语言重渲染。
+ * `notice.*` 的接线验收：语言从连接传下去（D8）、方法参数原样递给服务层。
+ * 事件出网前的本地化（`createEventLocalizer`）归 `NoticeService.test.ts`，它才是那个实现的家。
  */
 
 import { mkdtemp, rm } from "node:fs/promises";
@@ -17,7 +17,7 @@ import type { MethodCallContext } from "../net/WsHub.js";
 import { isMethodName } from "../wire/index.js";
 import type { EventMap, MethodName, MethodParams } from "../wire/index.js";
 import { NoticeService } from "../services/NoticeService.js";
-import { createNoticeEventLocalizer, createNoticeHandlers } from "./noticeHandlers.js";
+import { createNoticeHandlers } from "./noticeHandlers.js";
 
 /** 一次调用的现场（连接 id + 连接语言；其余字段本域用不到） */
 function call<M extends MethodName>(
@@ -98,18 +98,6 @@ describe("notice.* 接线", () => {
       call("notice.list", { level: "error" }, "en"),
     );
     expect(onlyErrors?.notices.map((notice) => notice.level)).toEqual(["error"]);
-  });
-
-  it("事件出网前按连接语言重渲染", async () => {
-    const created = await harness.notices.create({ level: "info", code: "notice.settingsSaved" });
-    const payload: EventMap["notice"] = { notice: created, at: "2026-01-01T00:00:00.000Z" };
-
-    const localized = createNoticeEventLocalizer();
-    expect(localized("notice", payload, "zh").notice.text.message).toBe("配置已保存。");
-    expect(localized("notice", payload, "en").notice.text.message).toBe("Settings saved.");
-    // 其余事件没有文案，原样搬运
-    const other = { conversationId: "c1", status: "idle" } as unknown as EventMap["run.state"];
-    expect(localized("run.state", other, "zh")).toBe(other);
   });
 
   it("方法表里这三个方法的形状与服务层返回一致", () => {

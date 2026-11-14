@@ -508,22 +508,6 @@ export class QuestionService {
   }
 
   /**
-   * 显式取消一个问题（生命周期里的 `cancelled`）。
-   *
-   * 只有调用方明确要关掉时才用（例如对话被删、工作流换了方向）。没有任何自动取消的路径 ——
-   * 越线拒绝之后问题要继续挂着（D23），所以「答不下去」与「关掉它」是两件事。
-   */
-  async cancel(questionId: string, language: Language = DEFAULT_LANGUAGE): Promise<QuestionView> {
-    const question = await this.requireQuestion(questionId);
-    const cancelledAt = this.now();
-    await this.questions.update(question.id, { state: "cancelled", updatedAt: cancelledAt });
-    const row = await this.questions.get(question.id);
-    const view = toView(row ?? question, language);
-    this.emit?.("question", { question: view, at: iso(cancelledAt) });
-    return view;
-  }
-
-  /**
    * 答完之后接着往下走：交接（D22）。
    *
    * 只在问题已经落成 `answered` 之后才跑：答不下去的那些情况（越线、对话在跑）

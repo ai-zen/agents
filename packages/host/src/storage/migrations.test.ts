@@ -34,11 +34,14 @@ async function tableNames(database: Database): Promise<string[]> {
 
 describe("migrate", () => {
   it("全新库跑一次就建齐所有表，版本号落到最新", async () => {
+    const before = Date.now();
     await migrate(db);
 
     const meta = new MetaRepository(db);
     expect(await meta.getSchemaVersion()).toBe(1);
     expect((await meta.getState())?.createdAt).toBeGreaterThan(0);
+    // 建库时间就是这一跳写的（不是 0、也不是未来时间）
+    expect((await meta.getState())?.createdAt).toBeGreaterThanOrEqual(before);
 
     const names = await tableNames(db);
     for (const expected of [

@@ -8,7 +8,6 @@
 
 import type { HandlerTable } from "../net/WsHub.js";
 import type { EventLocalizer } from "../services/NoticeService.js";
-import { createEventLocalizer } from "../services/NoticeService.js";
 import type { NoticeService } from "../services/NoticeService.js";
 
 export interface NoticeHandlerDeps {
@@ -26,14 +25,4 @@ export function createNoticeHandlers(deps: NoticeHandlerDeps): NoticeHandlers {
     "notice.dismiss": async (context) => await deps.notices.dismiss(context.params),
     "notice.clear": async (context) => await deps.notices.clear(context.params),
   };
-}
-
-/**
- * 事件出网前的按连接本地化（`WsHub` 的 `localizeEvent` 注入点）。
- *
- * 通知与问题的统一入口在这里：两类事件都带 `LocalizedText`，语言是连接的事，
- * 所以「产生时按缺省语言渲染、出网时换成这条连接的语言」这一步落在接线层。
- */
-export function createNoticeEventLocalizer(): EventLocalizer {
-  return createEventLocalizer();
 }

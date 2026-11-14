@@ -132,7 +132,7 @@ describe("ConversationRepository", () => {
       ),
     ).rejects.toThrow(/NOT NULL/i);
 
-    expect(await repo.countByWorkspace("w1")).toBe(0);
+    expect(await repo.listByWorkspace("w1")).toEqual([]);
   });
 
   it("列表：置顶优先，其次创建时间倒序", async () => {
@@ -147,12 +147,11 @@ describe("ConversationRepository", () => {
     expect((await repo.listByWorkspace("w1")).map((row) => row.id)).toEqual(["old", "new", "mid"]);
   });
 
-  it("改名、活动都不改变排序（PRD D13）", async () => {
+  it("改名不改变排序（PRD D13）", async () => {
     await repo.create(input({ id: "a", workspaceId: "w1", name: "甲", createdAt: 100 }));
     await repo.create(input({ id: "b", workspaceId: "w1", name: "乙", createdAt: 200 }));
 
     await repo.renameByUser("a", "甲（改过名）", 900);
-    await repo.touch("a", 1000);
 
     expect((await repo.listByWorkspace("w1")).map((row) => row.id)).toEqual(["b", "a"]);
     expect((await repo.get("a"))?.name).toBe("甲（改过名）");
@@ -173,13 +172,11 @@ describe("ConversationRepository", () => {
     expect(await repo.searchByName("%", undefined, 10)).toHaveLength(1);
   });
 
-  it("limit 与计数", async () => {
+  it("limit 生效", async () => {
     await repo.create(input({ id: "c1", workspaceId: "w1", name: "甲", createdAt: 100 }));
     await repo.create(input({ id: "c2", workspaceId: "w1", name: "乙", createdAt: 200 }));
 
     expect(await repo.searchByName("", undefined, 1)).toHaveLength(1);
-    expect(await repo.countByWorkspace("w1")).toBe(2);
-    expect(await repo.countByWorkspace("w2")).toBe(0);
   });
 
   it("删对话是硬删（PRD D17）", async () => {

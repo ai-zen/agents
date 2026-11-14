@@ -246,6 +246,9 @@ describe("按语言渲染（D8）", () => {
     expect(chinese.notice.text.message).toBe("配置已保存。");
     const english = localize("notice", payload, "en");
     expect(english.notice.text.message).toBe("Settings saved.");
+    // 只有带 `LocalizedText` 的事件过这一层：其余事件原样搬运（同一个对象，不复制）
+    const other = { conversationId: "c1", status: "idle" } as unknown as EventMap["run.state"];
+    expect(localize("run.state", other, "zh")).toBe(other);
   });
 });
 

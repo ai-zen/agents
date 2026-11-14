@@ -308,26 +308,3 @@ describe("起名之后的副作用", () => {
     expect(listed.notices[0]?.level).toBe("info");
   });
 });
-
-describe("该不该起名（不改状态的前置判断）", () => {
-  it("第一轮 + 未改名 + 开关开着 → should", async () => {
-    await seedFirstTurn(harness);
-    expect(await harness.service.shouldName("c1")).toEqual({ should: true, reason: null });
-  });
-
-  it("第二轮 → 不该", async () => {
-    await seedFirstTurn(harness);
-    await harness.messages.upsert({
-      id: "c1-u2",
-      conversationId: "c1",
-      role: AgentNS.Role.User as string,
-      status: AgentNS.MessageStatus.Completed as string,
-      content: "再来一轮",
-      createdAt: 5,
-    });
-    expect(await harness.service.shouldName("c1")).toEqual({
-      should: false,
-      reason: "not_first_turn",
-    });
-  });
-});
