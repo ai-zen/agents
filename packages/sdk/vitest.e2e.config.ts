@@ -5,6 +5,7 @@ dotenv.config({ path: ".env.local" });
 
 export default defineConfig({
   test: {
+    isolate: false,
     include: ["test/e2e-*.test.ts"],
   },
 });

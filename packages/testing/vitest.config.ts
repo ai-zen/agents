@@ -10,5 +10,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["src/**/*.test.ts"],
+    // 与 sdk / host / cli 同口径：同进程内复用模块图
+    isolate: false,
   },
 });

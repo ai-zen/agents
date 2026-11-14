@@ -11,5 +11,7 @@ export default defineConfig({
     globals: true,
     environment: "node",
     include: ["src/**/*.test.ts"],
+    // 与 sdk / host / cli 同口径：同进程内复用模块图（本包的依赖图被它们逐层 import，重载最贵）
+    isolate: false,
   },
 });
