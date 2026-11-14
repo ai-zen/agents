@@ -72,7 +72,7 @@
 | D11 | **删 Workspace＝连带删它名下的对话**，删前明说代价；**目录本身宿主永不碰** |
 | D12 | **cwd 不存在**：Workspace 与对话照常存在、照常可看；宿主只报"目录已不存在"这个事实，**是否只读由客户端判断** |
 | D13 | **侧栏排序**：默认按**创建时间倒序**，可**手动置顶**；活动/打开/改名都不改变顺序 |
-| D14 | **一段对话同时只跑一轮**；再来请求直接拒绝并说明"正忙"；中止是用户的显式动作（不排队、不自动打断） |
+| D14 | **一段对话同时只跑一轮**；跑中再发一句**不拒绝、不打断** —— 那一句排进正在跑的那一轮的 inbox（core 的 `Agent.inbox`），宿主立刻回执 `queued: true`，由 core 在轮末把它落成一条用户消息。**两条优先级**：`high` 插在「这一圈内循环收尾（工具轮跑完、工具结果已进 messages）」的边界上，`low` 插在「agent 已经停下」（内循环全停 + 两次 reconcile 之后）之后。**一定落地**：取件点排在 `onInnerLoopsEnd` / `onAfterSend` 两个收尾钩子**之后**，所以只要宿主回了 `queued`，那条内容就会在这一轮结束前变成一条用户消息（不会「回了排队、其实没落」）。排队条目**在落地那一刻就写库**（`seq` 排在它引出的那条回答之前），不是拖到收尾。`busy` 不再是「跑中发送」的答复，只剩别的动作撞上正在跑的一轮（交接、撤回、答问题）与排队窗口没打开时的兜底。中止仍是用户的显式动作：`abort()` 会把还没落地的排队条目一起丢掉（用户按停 ＝ 排队的不发了） |
 | D15 | **崩溃恢复**：边流边写，在途消息以 `Aborted` 落库；装载/重启后复用 core 的 `reconcileAbortedToolRounds(fill)` + `reconcileAbortedMessages(keep)` 修复；存储层必须保留 `status`/`omit` |
 | D16 | **搜索**：按名称、按聊天内容全文、按 Workspace 过滤（中文分词成本接受） |
 | D17 | **删除对话＝硬删**，删除前警告；图片按引用清理（引用关系随消息级联消失，**归零**才删素材行与磁盘文件：别的对话还在用就留着） |
@@ -140,7 +140,7 @@
 | 编号 | 要什么 | 落点 | 边界 / 依据 |
 |---|---|---|---|
 | F-C1 | 一段会话有稳定 id | S | L6；id 与时间无关 |
-| F-C2 | 落盘时机：内循环结束写一次 + 流式中增量写 | S | D15；没有用户消息就不写（否则一堆空会话） |
+| F-C2 | 落盘时机：内循环结束写一次 + 流式中增量写 | S | D15；没有用户消息就不写（否则一堆空会话）。排队落地的用户消息是这条的唯一例外：**落地那一刻就写**（见 F-C14，否则 `seq` 会排到它引出的回答后面） |
 | F-C3 | 会话有可改的名字 | S | D1；改名不改变身份、不改变排序 |
 | F-C4 | 自动命名 | S | D2：首轮后、未改名、开关、取名模型、原名＝创建时间 |
 | F-C5 | 排序：创建时间倒序 + 手动置顶 | S | D13 |
@@ -150,6 +150,10 @@
 | F-C9 | 清屏只影响显示，不影响上下文 | C | 换个前端打开就该看到完整历史 |
 | F-C10 | 删除对话＝硬删 + 警告 | S | D17；图片按引用清理 |
 | F-C11 | 用本机编辑器写长消息 | C | — |
+| F-C12 | **跑中发送**：这段对话正在跑一轮时，再发一句不是拒绝、也不是打断 —— 它进**正在跑的那一轮**排队，宿主立刻回执（`queued: true`、`assistantMessageId` 为 `null`），由 core 在轮末把它落成一条用户消息 | S | D14。落点：`packages/host/src/handlers/conversationHandlers.ts` 的 `sendTurn`（先问 `ChatRunner.enqueue`，拿到就回 `{ userMessageId, assistantMessageId: null, queued: true, attachments, acceptedAt }`，不再回 `busy`）→ `packages/host/src/runtime/ChatRunner.ts` 的 `TurnSession.enqueue`（`source: "user"`、`priority: "high"`，**消息 id 在入队那一刻定死**，客户端按它乐观回显，落地那条用同一个 id）→ `packages/core/src/Agent.ts` 的 `pushInbox`。**边界**：排队那条没有属于自己的助手消息（流还是这一轮原来那条），所以 `assistantMessageId` 是 `null`；排队不是绕过问题闸门的通道（`assertSendable` 在两条受理路之前） |
+| F-C13 | 排队条目的插入点与「一定落地」：`high` 在工具轮跑完的边界落地、`low` 在 agent 停下之后落地，两个收尾钩子（`onInnerLoopsEnd` / `onAfterSend`）之后各再取一次件 | S | D14。落点：`packages/core/src/Agent.ts`（`run()` 的外循环、`runLoops()` 的两个插入点、`send()` 末尾那次兜底取件），`packages/core/src/Inbox.ts` 把条目落成 `Message.User`（`source` 不是 `user` 的，正文首行加 `// 这条消息来自 <source> 自动推送`）。**边界**：只有真的插进了条目才续圈（防死循环）；`abort()` 清空 inbox —— 按停之后到的条目留给下一轮 |
+| F-C14 | 排队落地的用户消息**在落地那一刻就写库** | S | D14 的「一定落地」要读得出因果。`seq` 是 `MAX(seq)+1` 按插入顺序给的（`packages/host/src/storage/MessageRepository.ts`），而助手消息是边流边写的；排队那条若等到收尾才首次写，重开这段对话读到的转录就是「助手说完 → 助手又说 → 用户冒最后一句」，最后那句永远没有回答。落点：`packages/host/src/runtime/ChatRunner.ts` 的 `persistLandedQueued`（落地即写行，紧跟着记素材关系行，`createdAt` 取**落地**那一刻），`persistFinal` 只做终态回写（幂等覆盖，仍是一行） |
+| F-C15 | 会话列表要说得出「这段此刻在跑」 | S | D13 的列表之外多一格事实：`ConversationSummary.run` 在跑是 `{ status: "running", startedAt }`、没在跑是 `null`（与 `running` 是同一件事实的两种说法，但一个布尔说不出「什么时候开始的」）。落点：`packages/host/src/wire/methods.ts`（`ConversationSummary.run`）、`packages/host/src/services/ConversationService.ts`（`ConversationRuntimePort.runState` 端口，缺省按没在跑算）、`packages/host/src/runtime/RunRegistry.ts`（`summary` 只问一段，不扫全体） |
 
 ### 4.4 上下文阈值与任务交接
 
@@ -222,13 +226,15 @@
 | F-I4 | 生成中有活的信号 | C | — |
 | F-I5 | token：本轮、累计（含子 Agent）、速率 | S | 累计漏了子 Agent，用户会发现账单比界面大。**只有一个口径**：这段对话的现场那份用量（`conversation.state.usage`）；不再有"按项目 / 整机聚合"的接口 —— 没有任何客户端要用它，留着就是第二个真相源 |
 | F-I6 | 状态栏内容要能按块排布 | S+C | 字段结构化，不能给一坨字符串。**2026-11-14 订正**：块由**客户端**拼（宿主只给事实），因为宿主拼好的那份副本只在拉状态的那一刻成立 —— 聊天过程中上下文百分比 / 模型名 / 本轮 tokens / 在跑的工具会全冻在打开对话那一刻。见 `architecture.md` 的变更记录与 `cli/src/status-blocks.ts` |
-| F-I7 | 子 Agent 的存在、状态、各自的消息可回看 | S+C | 失败必须显示失败 |
+| F-I7 | 子 Agent 的存在、状态、各自的消息可回看 | S+C | 失败必须显示失败。重开一段跑过的对话也要给得出来（空闲现场那一份见 F-I15） |
 | F-I8 | 通知：独立通道、绝不进消息、三档语气、带持续时间 | S | L3；D 系列（Q17）；TUI CLI 里"已保存"这类一秒提示就是给它 duration |
 | F-I9 | 问题要能被多端看到、能被回答；**桌面端要做完整的问答视图**（不是只把"跑到交接线就卡死"这条死路堵上），TUI CLI 的作答面板已经有了 | S+C | D22：问题对象；确认框这类交互本身归客户端。桌面端这一条的排期见 PLAN W4 |
 | F-I10 | 布局：整帧高度稳定、输入框吸底、禁止二次折行 | C | — |
 | F-I11 | 空会话的欢迎内容 | C | — |
-| F-I12 | 提交后立刻回显 | C | 宿主要保证"受理了就不会静默丢" |
+| F-I12 | 提交后立刻回显 | C | 宿主要保证"受理了就不会静默丢"：排队的那些也一样 —— 回了 `queued` 就一定落地，客户端可以按回包的 `userMessageId` 先画（D14 / F-C12） |
 | F-I13 | 打开一段对话时，状态栏那份事实与列出的消息来自**同一刻**，且只付一次往返 | S+C | 分两次取会在两次请求之间夹进新消息：界面上的用量与上下文就对不上手上的消息。宿主提供开关，只要状态的调用方（轮询）不为消息付费 |
+| F-I14 | 排队条数要看得见：这一轮里还有几句排队的用户输入没落地 | S+C | D14。`RunState.inboxPending` = **这一轮 agent 的 `inbox` 长度**（`packages/host/src/wire/states.ts`；`packages/host/src/runtime/ChatRunner.ts` 的 `buildRunState` 现读，不另记一份 —— `abort()` 会清空 inbox，另记的数会在那一瞬漂掉）。空闲时它恒为 `0`，不是「未知」。客户端拿它标「已排队 N 条」（CLI 在 `/sessions` 里显示） |
+| F-I15 | **重开一段跑过子 Agent 的对话，子代理页签不该是空的** | S | F-I7 的续：空闲现场（`status: "idle"`）也要给出历次委派的子 Agent 快照。落点：`packages/host/src/services/MessageService.ts` 的 `subAgents`（子 Agent 那一半从 `packages/host/src/storage/MessageRepository.ts` 的 `listDelegated` 取，工具名 / 用量 / 终态证据从主线那一页取）、`packages/host/src/handlers/conversationHandlers.ts` 的 `idleRunState`（`subagents` 是入参，函数仍是纯的）。**边界**：推不出终态时按最弱的一档给（子 Agent 自己有 error 行 → `error`；父工具结果 → `done` / `error` / `aborted`；结果缺失按发起它的助手消息是否中止推 `aborted`，否则 `error`）—— 契约里没有「悄悄消失」这一档；库里没有可信事实的 `finishedAt` / `problem` 宁可 `null`，不编 |
 
 ### 4.10 语言、日志、诊断
 
@@ -276,6 +282,7 @@
 | 迁移会把旧历史剔掉 | TUI CLI 是 `prune`；本稿改为**开新对话、旧的完整保留**（D18） |
 | 通知只有一种 | 三档语气 + 持续时间字段（L3） |
 | 子 Agent 不受上下文限制 | 与主 Agent 同源，递归传染到孙级 |
+| 跑中再发一句会被 `busy` 拒掉 | 跑中发送进**那一轮**的 inbox 排队（D14）：回 `queued: true`、不打断、一定落地。`busy` 只剩别的动作撞上正在跑的一轮（交接 / 撤回 / 答问题）与排队窗口没打开时的兜底 |
 | 图片模型没有使用者 | SDK 能力，本稿保留并补上生成链路（D6） |
 
 ## 7. 变更记录
@@ -295,3 +302,4 @@
 | 2026-11-13 | **19 条裁定落文**（契约 / 宿主侧 12 条、TUI CLI 侧 6 条、桌面端 1 条）。新增 **L13**（凭证只归宿主，客户端只有连接管理与记住密码）、**L14**（本机模式靠 `npx` 现下现起，CLI 声明宿主 semver range）、**D29**（关闭宿主是需求，但客户端退出不自动关）、**D30**（切换工作区是需求，工作区是实体入口）、**D31**（下载进度屏是需求）。改写 **F-A6**（工作区也有上次记忆）、**F-B2**（助手定义要能读回：提示词与子 Agent 定义）、**F-B6**（助手定义上的思考参数要能清掉）、**F-C6**（搜索是桌面端的搜索框，命中要能定位到那条消息；CLI 一阶段不做）、**F-E1**（命令集增删：`/ws` `/shutdown` 纳入，撤回主名 `/back`，无 `/search`）、**F-E3**（CLI 侧升级 = 按声明范围拉新版宿主 + 下载进度可见）、**F-F3**（阈值可不给，宿主套出厂默认）、**F-F4**（图片模型不做恢复出厂）、**F-F5**（助手定义可编辑 + 可恢复出厂）、**F-F6**（MCP 条目字段齐全、按 id 增删改、可编辑作用域由宿主点名、未知字段原样保留）、**F-I5**（用量只有一个口径，不再有按项目 / 整机聚合的接口）、**F-I9**（桌面端做完整问答视图）。§5 新增三条不做。契约侧连带：删掉 `host.usage` 与 `credential.list/create/revoke` 的 wire 面（服务层与 `agents-host token` 子命令不动）、`config.patchMcps` 改为 `config.saveMcp` + `config.deleteMcp`、补 `agent.restoreFactory`、`message.list` 支持以某条为中心取一窗 |
 | 2026-11-14 | 新增 **D32**（配置文件坏了就恢复出厂：写回磁盘 + 一条 warning 通知；`mcp.json` 例外，它是可编辑文件，坏要能看见能修）。用户口径原话：「不要搞该死的复杂的兜底，坏的直接恢复出厂设置就行了」 |
 | 2026-11-14 | **D32 扩到 `mcp.json`**（上一版给它开的「例外」取消）：三个配置文件同一口径 —— 坏了恢复出厂 + 记一笔 warning 通知，残骸仅作留档。F-F6 里「坏文件要能看见、能修」跟着改准（用户级那层恢复出厂，其余各层仍是看得见的 `broken`）。用户口径原话：「就算通知又如何，你MCP配置恢复了，事后记一笔通知不就行了」 |
+| 2026-11-15 | **D14 改写**：跑中发送不再一律 `busy` —— 那一句排进正在跑的那一轮的 inbox，两个插入点（工具轮跑完 → `high`；agent 停下 → `low`）＋ 两个收尾钩子之后再兜一次取件，所以「回了 `queued` 就一定落地」；中止仍清空排队条目，`busy` 只剩别的动作撞上正在跑的一轮。新增 **F-C12**（跑中发送）、**F-C13**（插入点与收尾取件）、**F-C14**（落地即写库：`seq` 的因果）、**F-C15**（会话列表带运行状态）、**F-I14**（`inboxPending`）、**F-I15**（重开后子代理页签）；§6 加一行订正「跑中再发一句会被 busy 拒掉」 |

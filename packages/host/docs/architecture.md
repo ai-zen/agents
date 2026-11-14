@@ -130,14 +130,29 @@ i18n/         文案（en 基准 / zh）
 **一轮对话**：
 
 ```
-请求到达 → RunRegistry.start（该对话已在跑则抛 HostError("busy")，PRD D14）
+请求到达（conversation.send）
+   ├─ 这段对话正在跑一轮 → ChatRunner.enqueue → 那一轮 agent 的 pushInbox（PRD D14：排队，不打断、不回 busy）
+   │                        └─ core 在轮末把它落成一条 User 消息（两个插入点＋两个收尾取件点，见下）
+   └─ 否则 → RunRegistry.start（真在跑则抛 HostError("busy")：只剩排队窗口没打开时的兜底）
         → 借 Scope（ScopeRegistry.acquire：懒创建或复用，依赖 +1）
         → 装配 agent（模型/助手/权限来自 SDK，跑完即弃）
         → 流式：增量推事件；同一条消息边流边写
         → 内循环结束：写一次（D15）→ agent 释放 → ScopeRegistry.release（依赖 −1，归零则起 10 分钟计时）
 ```
 
-**一段对话的模型与思考档位存在会话行上**（`conversations.modelId` / `conversations.thinkingLevel`，PRD L7 / F-B4 / F-B6）：改了就落库，重开重连、重启都还是它。装配 agent 时从这里取：`modelId` 直接给 SDK 的三级解析（会话级那一档），`thinkingLevel` 按该模型引用的思考策略表展开成参数补丁、叠在助手定义的 `modelParams` 之上（同一模型才叠：会话把模型换掉之后，定义上那份参数是给旧模型的）。展开发生在 `ChatRunner.createSdkAgentFactory`（`conversationModelParams`），档位名本身不进请求。换模型时档位被清空（它是模型的档位）。服务层要的运行时接口因此只剩两件事：忙不忙（`RunRegistry.isRunning`）与删掉之后的中止（`ChatRunner.forget`）。
+**跑中入队（PRD D14 / F-C12 / F-C13）**：`conversation.send` 先问 `ChatRunner.enqueue`，问的是「这一轮还能不能接新话」——`TurnSession.enqueueState` 三态（装配中 `pending` / 可接 `open` / 已收尾 `closed`），装配期间来的那几句在 `waitEnqueueable` 里等，上界 `QUEUE_READY_TIMEOUT_MS` = **10s**（到点回老口径，把选择权交回用户）。**判「能不能排」与「推」之间不允许有 await**：中间让出一次执行权就可能「判完还开着、推的时候已关上」，条目落进一个再也不会被取走的 inbox，而宿主已经回了 `queued: true`。条目由 core 取走，四个取件点：
+
+| 优先级 | 取件点 | 语义 |
+|---|---|---|
+| `high` | 每圈内循环末尾（`onInnerLoopEnd` 之后、下一次 Assistant 占位之前） | 「工具轮跑完」的边界：此刻工具结果已 append 进 `messages`，插进来的 User 排在它之后，下一次请求天然看得见；不打断模型正在吐的那一段 |
+| `low` | 内循环全部停下、`reconcileAbortedToolRounds` / `reconcileAbortedMessages` 之后 | 「agent 停下之后插入」 |
+| — | `onInnerLoopsEnd` 之后、`onAfterSend` 之后各再判一次（不分优先级，按入队顺序一起落） | 收尾钩子里推进来的条目也算这一轮。取件点若排在钩子**之前**，那段窗口里回出去的 `queued` 就是一句假话（「最后一次取件 → `send()` 返回」这一段整个压在它上面，SDK 的 `AutoMigratePlugin` 还在钩子里问用户）。**「回了 `queued` 就一定落地」的硬保证就落在这一行** |
+
+只有**真的插进了条目**才续圈（防死循环：插件从不入队时这一次判空就退出，一次请求都不多发）；`abort()` 清空 inbox、`runAborted` 之后四个取件点都不再取 —— 用户按停 ＝ 排队的不发了。落地本身在 core 的 `Inbox.ts`：`source === "user"` 原样贴，其他来源在正文首行加 `// 这条消息来自 <source> 自动推送`（分段内容把注释作为第一段 text 插进去，图片段原样留着），消息 id 用**入队那一刻定死的那个**（宿主已经把 id 告诉客户端了，落地换一个会让同一条内容画两遍）。
+
+**排队消息的首次写入在落地那一刻（PRD F-C14）**：`seq` 是 `MAX(seq)+1`，按**插入顺序**给 —— 客户端读回来就按它排，它是唯一的排序依据。而助手消息是边流边写的（`scheduleStreamWrite` 到节流点就写一片）。排队落地的用户消息若等到 `persistFinal` 才首次写，它拿到的 `seq` 会比「它引出的那一轮回答」更大：重开这段对话读到的转录成了「助手说完 → 助手又说 → 用户冒最后一句」，最后那句永远没有回答。所以 `onMessage` 的排队落地分支立刻 `persistLandedQueued`：写行进同一条 `writeChain`（与边流边写串行），正文用 `queuedStored` 那一份 `__asset_id` 形态，紧跟着 `linkQueuedAssets` 记素材关系行（`conversation_assets.messageId` 的外键指着 `messages.id`，只能先写行再记关系），`createdAt` 取**落地**那一刻。`persistFinal` 仍在，但它只做终态覆盖：`ON CONFLICT (id) DO UPDATE` 不碰 `seq` / `createdAt`，于是落地写一次、收尾覆盖一次，仍是一行。
+
+**一段对话的模型与思考档位存在会话行上**（`conversations.modelId` / `conversations.thinkingLevel`，PRD L7 / F-B4 / F-B6）：改了就落库，重开重连、重启都还是它。装配 agent 时从这里取：`modelId` 直接给 SDK 的三级解析（会话级那一档），`thinkingLevel` 按该模型引用的思考策略表展开成参数补丁、叠在助手定义的 `modelParams` 之上（同一模型才叠：会话把模型换掉之后，定义上那份参数是给旧模型的）。展开发生在 `ChatRunner.createSdkAgentFactory`（`conversationModelParams`），档位名本身不进请求。换模型时档位被清空（它是模型的档位）。服务层要的运行时接口因此只剩三件事（`ConversationRuntimePort`，`src/services/ConversationService.ts`）：忙不忙（`RunRegistry.isRunning`）、这一轮从什么时候开始（可选端口 `runState`，`conversation.list` 的 `run` 那一格用它，缺省按没在跑算）、删掉之后的中止（`ChatRunner.forget`）。
 
 **一段对话的诞生（R56）**：`conversation.create` 只定身份（`workspaceId` / `agentId` / `modelId`）并发一个 id，不写库；首次 `conversation.send` 时 `ConversationService.ensurePersisted` 才把这一行写进 `conversations`。**落行那一刻同时写这段对话的第一条消息**：一条 `role: user`、`hidden: true` 的消息，正文告诉模型这段对话对应的 cwd（PRD F-D9，正文由 `injectedContextOf` 拼）。它最先写，所以 `seq` 在真实用户消息之前；之后每一轮都不再写、也不再往用户消息里拼任何东西。cwd 取这段对话所属 `workspaces.cwd`（不读进程工作目录），`workspaceId` 创建即定死，没有任何方法能改它。
 
@@ -193,7 +208,7 @@ const [found, written] = await db.tx((q) => [
 
 厂商的 `file_id`、base64、绝对路径**都不进 `messages.content`**：那一列存的是段上的本地扩展字段 `__asset_id`（`image_url.url` / `file.file_id` 留空），发送前才按当时的模型/端点还原成内容段（`AssetService.resolveHistory`），并顺手过一遍 core 的 `formatContent`（按 core 的类型取字段重建）—— `__` 开头的键因此不出网。宿主自己不再留一份字段清单（`wire/states.ts` 只剩认 `__asset_id` 的 `localAssetIdOf`）。于是「换模型 / 换端点 / 重启」都不需要改历史，只需要重算一次；同一个 `(素材, 端点)` 每轮算出来的段逐字节相同（`asset_vendor_files` 命中持久缓存、内联的 base64 由同一份字节得出）。
 
-**消息条数的两个口径（读路径的事，不是两张表）**：同一个问题「这段对话有多少条消息」在库里有两个答案，因为两条读数问的不是同一样东西 —— `messages` 一张表里既有主线的消息，也有子 Agent 的消息（它们带非空的 `parentToolCallId`，R37）；另外 `hidden` 的消息（会话创建时的 cwd 消息、交接摘要）在两条读数里都不算。
+**消息条数的三个口径（读路径的事，不是两张表）**：同一个问题「这段对话有多少条消息」在库里有几个答案，因为几条读数问的不是同一样东西 —— `messages` 一张表里既有主线的消息，也有子 Agent 的消息（它们带非空的 `parentToolCallId`，R37）；另外 `hidden` 的消息（会话创建时的 cwd 消息、交接摘要）在两条读数里都不算。
 
 | 读数（`src/storage/MessageRepository.ts`） | 数的是什么 | 谁在用 |
 |---|---|---|
@@ -201,11 +216,13 @@ const [found, written] = await db.tx((q) => [
 | `countByConversation` | 数 `messages` 表里这段对话的**全部行**，只筛 `hidden` 一列 | 删除代价 `consequences.messages`（`conversation.delete` 与 `workspace.remove` 的 `dryRun` 与非 `dryRun` 都用它） |
 | `listDelegated` | 数的是**子 Agent 那一半**的行（`parentToolCallId IS NOT NULL`），与 `listByConversation` 正好互补；`hidden` 的默认不返回 | `MessageService.subAgents`：`conversation.state` / `conversation.abort` 空闲现场里的 `run.subagents`（重开一段跑过子 Agent 的对话，页签不该是空的；一次委派是否真的派出去过，唯一确凿的证据就是这里有一行） |
 
+**三条读数彼此不重叠也不留缝**：主线那一页（`listByConversation`，不带 `after`）＋ 子 Agent 那一半（`listDelegated`）＝ `countByConversation` 数的那些行；三者对 `hidden` 的口径一致（默认都不算，要就显式传 `includeHidden`）。所以「侧栏显示几条」「删掉会少多少行」「子代理页签里有几句」三个数之间的关系是**加减**，不是各自一套口径。`listDelegated` 与 `listByConversation` 的互补性落在 SQL 的两个条件上（`parentToolCallId IS NOT NULL` / `IS NULL`），不是同名方法的两个变体；要加新读数时照这个分工归档，不要在其中一个上叠开关。
+
 所以一段跑过子 Agent 的对话，「侧栏显示几条」会小于「删掉它会少多少行」，两个数不互相换算，也不互为校验：一处是读路径的主线视图，一处是删除的代价。`hidden` 的消息两边都不算（它在界面上从来没出现过）。两处代码（`MessageRepository` 与两个服务）各自有注释说明「这里是哪个数、为什么与另一处不同」。
 
 **全文检索**：`messages_fts` 是挂在 `messages` 上的 FTS5 外部内容表，只索引 `searchText` 一列，`tokenize='trigram'`，用三个触发器（insert / delete / update of `searchText`）同步。两条实测约束落在实现里：(1) `unicode61` 下整段中文是一个 token，用错就搜不到；(2) `trigram` 的查询词至少 3 个字符，少于 3 个字符时 `MessageRepository.search` 走 `LIKE` 子串（D16 的「成本接受」就落在这）。
 
-**边流边写**：运行时以内存里的消息为真相，同一条消息行按节流 upsert；装载/崩溃恢复复用 core 的 `reconcileAbortedToolRounds(fill)` + `reconcileAbortedMessages(keep)`，所以 `status` / `omit` 两列必须落盘（PRD D15）。
+**边流边写**：运行时以内存里的消息为真相，同一条消息行按节流 upsert；装载/崩溃恢复复用 core 的 `reconcileAbortedToolRounds(fill)` + `reconcileAbortedMessages(keep)`，所以 `status` / `omit` 两列必须落盘（PRD D15）。**排队落地的用户消息是这条的唯一例外**：它在**落地那一刻**就写第一笔（`persistLandedQueued`），否则 `seq` 会排到它引出的回答之后 —— 因果见 §4 的「排队消息的首次写入」。`persistFinal` 对所有消息都还在，只是对这些消息不再是首次写入。
 
 **迁移**：`meta.schemaVersion` + 顺序迁移脚本，启动时逐级在事务里跑（结构改动与版本号同一次提交）；不识别任何旧数据（L1）。R14/R18 等结构裁定直接落在 v1 的建表语句里，没有追加 v2（这套表结构还没随版本发出去，R32）。
 
@@ -347,7 +364,7 @@ const [found, written] = await db.tx((q) => [
 
 两条门禁：`npm test`（默认套件，只看仓库内容）与 `npm run test:e2e`（两条真进程用例，各自跑一次 `tsc`、起真子进程 + 真 WebSocket，10 秒出头）。`test:all` = 两者 + 构建。
 
-**规模与成本**（2026-11-14 实测）：默认套件 53 文件 / 761 用例 / **20.3s**。单条用例 1–5ms 到 ~40ms 不等，分界只有一条：**这条用例要不要建库**。
+**规模与成本**（2026-11-15 实测）：默认套件 54 文件 / 796 用例 / **22.9s**。单条用例 1–5ms 到 ~40ms 不等，分界只有一条：**这条用例要不要建库**。
 
 ### 11.1 一个测试文件一个数据库
 
@@ -425,3 +442,4 @@ afterAll(async () => { await db.close(); await rm(dir, { recursive: true, force:
 | 2026-11-14 | 契约面 63 → 62：删 `host.capabilities`（连同 `hello.capabilities`、`handlers/capabilities.ts`、`CapabilityView`、`methodDomain()` 的唯一生产消费者）。两端零消费者，见 §7 那段；F-E6 的落点改成客户端命令表。`host.reload` 的 `scope` 参数一并删（5 值枚举 + 校验 + 映射全是空转，没有调用方）。i18n 又清掉 33 条零产出文案（`status.*` / `usage.*` / `notice.*` / `question.confirm.*` 等），并加守卫「每个词条在生产码里都有人取」 |
 | 2026-11-14 | 状态栏块名搬回客户端：`StatusBlock` 去掉 `label`（8 块 × 2 语言 = 16 条界面词汇），宿主只给 `id` + `facts` + 顺序（`STATUS_BLOCK_IDS`）；CLI 用本地词条 `status.block.<id>` 渲染。`statusBlocksOf` 不再收 `language`，`blockLabel()` 与 i18n 的 `label.*` 8 组键一起删。同一口径的第二个案例（第一个是能力清单的 `title`/`description`）：**界面文案归界面，宿主只给事实** |
 | 2026-11-14 | 状态栏的**块整个搬回客户端**（同一把尺子的第三步，也是最后一步）：`statusBlocks` 从 `conversation.state` 删除，`StatusBlock` / `StatusBlockId` / `STATUS_BLOCK_IDS` / `statusBlocksOf` / `StatusBlockInput` 一并不在宿主持有。原因不是审美而是 bug：那份副本只在 `conversation.state` 被拉的那一刻成立，而拉状态只发生在「打开对话 / 换模型 / `host.reload`」——于是聊天过程中上下文百分比、模型名、本轮 tokens、正在跑的工具**全冻在打开对话那一刻**（`/model`、`/thinking` 之后状态栏也不变，`本轮` 永远是 0）。同一批事实存两份，其中一份必然过期。八块要的事实各自在契约里本来就有：助手（新增 `ConversationView.agent = { agentId, name, available }`，`available` 的判定仍由 `AgentService.describe` 给，`ConversationService` 通过 `describeAgent` 端口要结论、不重写一份）、模型 / 思考档 / 目录在视图，上下文与用量在 `ConversationState`，工具与子 Agent 在 `run`。CLI 用 `cli/src/status-blocks.ts` 的 `statusBlocksOf` 现拼，顺序归它自己 |
+| 2026-11-15 | 运行器补「跑中入队」：§4 的一轮时序拆成两条受理路（跑中 → `ChatRunner.enqueue` → core `pushInbox`；否则 `RunRegistry.start`，`busy` 只剩兜底），补四个取件点（`high` / `low` / `onInnerLoopsEnd` 之后 / `onAfterSend` 之后）与「判能不能排与推之间不允许有 await」「只有真插进条目才续圈」两条不变量；补「排队消息的首次写入必须在落地那一刻」（`seq` 的因果，`persistLandedQueued`）。§5 的「边流边写」注明这条例外，读数表下方补三条读数（`listByConversation` / `listDelegated` / `countByConversation`）的加减关系。`ConversationRuntimePort` 从两件事变三件（多一个可选的 `runState`，`conversation.list` 的 `run` 用它） |

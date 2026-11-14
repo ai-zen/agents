@@ -32,19 +32,19 @@
    `desktop` 的 `check-no-host-runtime.mjs` / `check:inlined.mjs`；`@ai-zen/agents-client`
    本身也已加进禁令（内联之后它不该再出现在产物里）。
 
-## 1. 现状快照（2026-11-14 实跑，不是估计）
+## 1. 现状快照（2026-11-15 实跑，不是估计）
 
 | 仓 | 分支 / HEAD | 未提交 | 类型检查 | 用例 |
 |---|---|---|---|---|
-| `agents`（host） | `feat/server-rewrite` / `e57ca7c` | 0（本波只改 `.md`） | `tsc --noEmit -p tsconfig.json` **0 错** | **799 绿 / 59 文件** |
-| `agents`（client） | `feat/server-rewrite` / `e57ca7c` | 0（同上） | `tsc --noEmit -p tsconfig.json` **0 错** | **110 绿 / 11 文件** |
-| `cli`（TUI CLI） | `main` / `57bcfdb` | 0（本波只改 `docs/*.md`） | `tsc --noEmit -p tsconfig.test.json` **0 错** | 默认集 **912 绿 / 59 文件**；真进程 e2e **18 绿 / 1 跳过 / 0 失败**（19 条） |
-| `desktop` | `feat/new-server` / `5699313` | 0 | `vue-tsc --noEmit`（render）**0 错**；main 走 rolldown + `check-inlined` | main **121 绿 + 3 跳过**（7 文件绿 + 3 文件跳过）；render **70 绿 / 8 文件** |
+| `agents`（host） | `feat/server-rewrite` / `a501730`（本波只在它上面叠一个 `.md` 提交） | 0（本轮只改 `.md`） | `tsc --noEmit -p tsconfig.json` **0 错** | **796 绿 / 54 文件**（22.9s） |
+| `agents`（client） | `feat/server-rewrite` / 同上 | 0（同上） | `tsc --noEmit -p tsconfig.json` **0 错** | **110 绿 / 11 文件**（2.1s） |
+| `cli`（TUI CLI） | `main` / `fb29f4e`（本波只在它上面叠一个 `.md` 提交） | 0（本轮只改 `docs/*.md` 与两个 README） | `tsc --noEmit -p tsconfig.test.json` **0 错** | 默认集 **953 绿 / 63 文件**（17.9s）；真进程 e2e 本轮**未复跑** |
+| `desktop` | `feat/new-server` / `0b34dc0` | 0 | 本轮**未复跑**（只改了夹具与 `chat.send` 的 `queued` 分支） | 同上（上一轮记的是 main 121 + 3 跳过 / render 70 / 8 文件） |
 | `cli-old-archive`（旧 TUI CLI 冻结快照） | detached @ `pre-split-20261111` / `ace42a0` | 0（只读目录；只有 README 首行那行归档声明是新增内容） | 不参与 | 只读参照物，不是迁移对象 |
 
 **结论**：契约面已经定稿 —— **62 个方法 / 6 个事件**（`METHOD_NAMES` 实测 62 条；2026-11-14 删掉 `host.capabilities` 后 63 → 62，能力清单连同 252 条 `capability.*` 文案一起下架，见 PRD F-E5 的订正），文档与代码在这一轮对齐（`architecture.md` 的方法表逐条核过）。「host ↔ TUI CLI」这条链已经通了**并且发过一版**：`@ai-zen/agents-host@0.1.0-alpha.1`（上游 `@ai-zen/agents-core@4.6.0-alpha.0` / `@ai-zen/agents-sdk@1.2.0-alpha.0` 同批发布）。`cli-old` 已降级为只读归档（`cli-old-archive`）。
 
-**干完的与剩下的**：W1（契约补齐）、W2（CLI 收口）、W3（归档与文档）**完成**；剩下两笔 —— **W4**（桌面端完整问答视图，优先级最低）与 **W5**（兜底治理，等契约与客户端定型后再动）。
+**干完的与剩下的**：W1（契约补齐）、W2（CLI 收口）、W3（归档与文档）、W6（运行期可输入与重开回看，见 §7.6）**完成**；剩下两笔 —— **W4**（桌面端完整问答视图，优先级最低）与 **W5**（兜底治理，等契约与客户端定型后再动）。
 
 ## 2. 波次总览
 
@@ -55,6 +55,7 @@
 | **W3 归档与文档** | `cli-old` 归档、旧包名清干净、`architecture.md` 跟上新契约 | 三份文档与代码一致；旧包名只剩归档目录 | W1、W2 | **✅ 完成**（2026-11-14，见 §5） |
 | **W4 桌面端完整问答视图** | 标准完整问答视图（优先级最低） | 真 GUI 竖切一遍（六步，见 §6）；`question.list/answer` 有调用点 | 无（排期在 W3 之后） | ⬜ 未开始 |
 | **W5 兜底治理** | `retry` / `fallback` / `catch` 密集文件逐文件清理 | 三列清单全覆盖；留的每条指得出消费者 | W1–W3 | ⬜ 未开始（依赖已就绪） |
+| **W6 运行期可输入与重开回看** | 跑中发送进 inbox（D14 改写）、`queued` 回包、排队数进运行状态、重开后子代理页签、会话列表带运行状态；客户端侧：运行中可输入、`/sessions`、状态栏对齐旧版 | PRD D14 / F-C12–F-C15 / F-I14 / F-I15 各有代码落点与用例；真 core 跑进真 `ChatRunner` 取到证 | W1 | **✅ 完成**（2026-11-15，落地方式见 §7.6） |
 
 ---
 
@@ -402,6 +403,60 @@ README 首行写「不要改、不要当实现依据」。
 | 交接被拒 / 这个工作区还没文档 | `handoff.declined` / `handoff.noDocuments` | 交接被拒走 `error.handoffDeclined` |
 | 六态的人话 / 用量的读法 | `status.*` × 10、`usage.*` × 4 | 归客户端：CLI 有 `phase.*` 与状态栏格式化 |
 
+## 7.6 W6 运行期可输入与重开回看（2026-11-15，已完成）
+
+> 本轮改的是**行为**，不是契约形状：`conversation.send` 在跑中不再回 `busy`，改成排队；`RunState` 多一格
+> `inboxPending`；`ConversationSummary` 多一格 `run`。需求侧已写进 PRD（**D14 改写** + F-C12–F-C15 / F-I14 / F-I15），
+> 本节只写拆法与落点。
+
+### 7.6.1 运行器：跑中入队的路径
+
+```
+conversation.send
+  → assertSendable（D23 的问题闸门：排队不是绕道）
+  → ensurePersisted（R56：草稿落成真行）
+  → ChatRunner.enqueue  ── 拿到 → 回 { userMessageId, assistantMessageId: null, queued: true, attachments, acceptedAt }
+  └─ 拿到 null（装配没完成 / 这一轮已收尾 / 刚按了停）→ 老路径 ChatRunner.run()（这时才可能 busy）
+       → 那一轮 agent 的 pushInbox({ messageId, source: "user", priority: "high", content })
+       → core 在轮末落成 Message.User（落地走 agent.append，所以同样广播 message 事件、宿主照它落库）
+```
+
+**四个取件点**（core `Agent.run()` / `send()`）：
+
+| 优先级 | 取件点 | 语义 |
+|---|---|---|
+| `high` | 每圈内循环末尾（`onInnerLoopEnd` 之后、下一次 Assistant 占位之前） | 工具轮跑完的边界：工具结果已在 `messages` 里，插进来的 User 排在它之后，下一次请求天然看得见 |
+| `low` | 内循环全部停下、两个 `reconcile*` 之后 | agent 停下之后插入 |
+| — | `onInnerLoopsEnd` 之后、`onAfterSend` 之后各再判一次（不分优先级，按入队顺序） | **「只要回了 `queued` 就一定落地」的落点**：取件点若排在收尾钩子之前，那段窗口（跨度＝「最后一次取件 → `send()` 返回」）里回出去的 `queued` 就是假话（SDK 的 `AutoMigratePlugin` 就在这个钩子里问用户，窗口是无界的） |
+
+三条不变量：① 只有**真的插进了条目**才续圈（防死循环）；② `abort()` 清空 inbox，`runAborted` 之后四个取件点都不再取（用户按停 ＝ 排队的不发了）；③ `TurnSession.enqueue` 里「判能不能排」与「推」之间**不允许有 await**（否则会出现「判完还开着、推的时候已关上」，条目落进一个再也不会被取走的 inbox，而宿主已经回了 `queued`）。装配期间来的那几句在 `waitEnqueueable` 里等，上界 `QUEUE_READY_TIMEOUT_MS` = 10s，到点回老口径。
+
+### 7.6.2 为什么排队消息的**首次写入**必须在落地那一刻
+
+`seq` 是 `MAX(seq)+1`、按插入顺序给，而客户端读回来就按它排 —— 它是转录顺序的**唯一**依据。助手消息是边流边写的（`scheduleStreamWrite` 到节流点就写一片）。所以排队的用户消息若等到 `persistFinal` 才首次写，它拿到的 `seq` 会比「它引出的那一轮回答」更大：重开这段对话读到的转录成了「助手说完 → 助手又说 → 用户冒最后一句」，最后那句永远没有回答。落地那一刻就写（`persistLandedQueued`，走同一条 `writeChain`，紧跟着 `linkQueuedAssets` 记素材关系行，`createdAt` 取落地时刻），`persistFinal` 只做终态覆盖（`ON CONFLICT (id) DO UPDATE` 不碰 `seq` / `createdAt`，仍是一行）。
+
+### 7.6.3 落地方式
+
+| 条 | 落点（包 + 文件） | 证据 |
+|---|---|---|
+| F-C12 跑中发送 | `packages/host/src/handlers/conversationHandlers.ts`（`sendTurn` 的分流与 `queued` 回包）、`packages/host/src/runtime/ChatRunner.ts`（`ChatRunner.enqueue` / `TurnSession.enqueue` / `waitEnqueueable`）、`packages/host/src/wire/methods.ts`（`ConversationSendResult.queued`） | `ChatRunner.inbox.test.ts`（真 core Agent 跑进真 ChatRunner：「工具正跑着时 enqueue → 工具轮后落地 → 第二轮请求里带着它，且第一轮没被 abort」）；`conversationHandlers.test.ts`：「跑的时侯第二句不再被拒：它排进那一轮的 inbox，回包说 queued」 |
+| F-C13 插入点与收尾取件 | `packages/core/src/Agent.ts`（`runLoops()` 的两个插入点、`run()` 与 `send()` 末尾的兜底取件）、`packages/core/src/Inbox.ts`（落成 `Message.User`、来源注释） | `packages/core/src/Agent.inbox.test.ts`（19 条：高 / 低优先级、来源注释、中止、空 inbox 与改动前一致、顺序、id 被尊重）；`ChatRunner.inbox.test.ts` 的两条收尾边界用例：「收尾边界（`onInnerLoopsEnd` 里）入队：回了排队，那条就一定在这一轮里落地」/「…（`onAfterSend` 里）入队」 |
+| F-C14 落地即写库 | `packages/host/src/runtime/ChatRunner.ts` 的 `persistLandedQueued` / `linkQueuedAssets` | `ChatRunner.inbox.test.ts` 的「排队落地那一刻就写库：库里它的 `seq` 排在它引出的那条回答之前」；`ChatRunner.test.ts` 的「排队那条在落地那一刻就写库：写入顺序与最终 `seq` 都排在它引出的回答之前」（假 agent 版）；`conversationHandlers.test.ts` 的「库里的顺序（`seq`）：排队那句排在它引出的回答之前…」 |
+| F-C15 会话列表带运行状态 | `packages/host/src/wire/methods.ts`（`ConversationSummary.run`）、`packages/host/src/services/ConversationService.ts`（`ConversationRuntimePort.runState`，可选）、`packages/host/src/runtime/RunRegistry.ts`（`summary`） | `RunRegistry.test.ts` 的「summary 只问一段：在跑给开始时刻，没在跑给 null」；`ConversationService.test.ts` 的 `run` 一组；`host.integration.test.ts` 的「重启后 `run` 为 `null`」 |
+| F-I14 `inboxPending` | `packages/host/src/wire/states.ts`、`packages/host/src/runtime/ChatRunner.ts`（`buildRunState` 现读 `agent.inbox.length`）、`packages/host/src/handlers/conversationHandlers.ts`（空闲恒 0） | `conversationHandlers.test.ts` 的「run.state 的 inboxPending：入队后 > 0、落地后归 0、空闲时为 0」与「abort 丢弃排队条目：回包的 run 里 inboxPending 为 0，那一句也不落库」 |
+| F-I15 重开后子代理页签 | `packages/host/src/services/MessageService.ts`（`subAgents`）、`packages/host/src/storage/MessageRepository.ts`（`listDelegated`）、`packages/host/src/handlers/conversationHandlers.ts`（`idleRunState` 收 `subagents` 入参） | `MessageService.test.ts` 的 `subAgents` 一组（「名字 / 用量 / 条数 / 开始时刻都从库里来…」「子 Agent 自己吐过 error 行时，父工具结果说什么都盖不过它」「从没委派过就是空数组」）；`MessageRepository.test.ts` 的「listDelegated 只给子 Agent 那一半」；`conversationHandlers.test.ts` 的「跑过子 Agent 的对话重开时，subagents 从库里捞回来」「子 Agent 自己出过错的那次委派，空闲时推成 error」「abort 回包里的空闲现场也带着子 Agent」 |
+
+**反向验证记录（提交说明里都有）**：去掉低 / 高优先插入点各红一批；去掉 `onInnerLoopsEnd` 之后的兜底取件会红「回了 `queued` 却没落地」；把「落地即写库」改回收尾写会红库序三条；把 `idleRunState` 的 `subagents` 改回 `[]` 红三条；把 `toSummary` 的 `run` 改回 `null` 红一条。
+
+### 7.6.4 客户端侧（同一轮，已落地）
+
+| 仓 | 做了什么 |
+|---|---|
+| `cli` | `session.send` 认 `queued` 回包（不 `waitForTurn`、按回包 id 乐观回显、提示「已排队」）；**会话归进程所有**（`src/sessions-registry.ts`：`/new` `/load` `/sessions` 只换「这一屏看哪一段」，旧那段留在后台跑，`dispose()` 只在进程收摊时统一调）；新增 `/sessions`（别名 `/ps`，本进程挂着的 ∪ 宿主上在跑的）；状态栏收敛成旧版三块（身份 / 用量 / 快捷键），`cwd` / `context` / `tools` / `subagents` 四块撤掉；阶段行搬到输入框之上的分割线之上、恒 1 行；运行中输入框可用 |
+| `desktop` | 夹具跟上新契约；`chat.send` 认 `queued`（不 `beginTurn`、乐观回显 + 一句中文提示） |
+
+**这两仓的文档同步归各自的仓**：`cli/docs/{zh,en}/**` 与两个 README 在这一轮一起改（命令表补 `/sessions`、状态栏口径、运行中可输入），宿主这一侧只改 PRD / PLAN / architecture。
+
 ## 8. 人的决策
 
 ### 8.1 已定（2026-11-13，19 条，按主题归类）
@@ -445,7 +500,7 @@ README 首行写「不要改、不要当实现依据」。
 
 ---
 
-## 9. 每波的验收标准（五波共用，不许减项）
+## 9. 每波的验收标准（各波共用，不许减项）
 
 1. 类型检查 0 错（host / client 的 `tsc`、cli 的 `tsc -p tsconfig.test.json`、desktop 的 `vue-tsc`）
 2. 用例全绿；**失败不许用 `.skip` 换绿**，要么修好要么删掉并说明
@@ -465,7 +520,7 @@ README 首行写「不要改、不要当实现依据」。
 
 | 路径 | 是什么 |
 |---|---|
-| `agents/packages/host/docs/PRD.md` | 需求唯一来源（83 条能力 + 锁定决策 L / D） |
+| `agents/packages/host/docs/PRD.md` | 需求唯一来源（89 条能力 + 锁定决策 L / D） |
 | `agents/packages/host/docs/architecture.md` | 宿主结构（A1–A13） |
 | `agents/packages/host/docs/plan-questions.md` | 实施者自决与待核（QD 条目） |
 | `agents/packages/host/docs/PLAN.md` | **本文件** |
