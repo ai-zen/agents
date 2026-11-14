@@ -594,6 +594,18 @@ class TurnSession implements ChatTurn {
   private readonly subagents = new Map<string, SubAgentSnapshot>();
   /** 已经落过库的子 Agent 委派（工具调用 id） */
   private readonly persistedSubAgents = new Set<string>();
+  /**
+   * 子 Agent 的消息 → 宿主分配的 id。
+   *
+   * 子 Agent 跑的时候它的消息只在**它自己的内存**里，而客户端要按 id 才拼得起来；id 必须
+   * 在第一次见到这条消息时定死，否则「流式时推出去的 id」与「结束后落库的 id」会是两个，
+   * 客户端就会以为那是两条消息。
+   */
+  private readonly subAgentIds = new WeakMap<AgentNS.Message, string>();
+  /** 子 Agent 消息的节流写：每条约 streamWriteIntervalMs 写一次（与主线同一个口径） */
+  private readonly subWriteAt = new Map<string, number>();
+  /** 每个子 Agent 到目前为止追加过几条消息（快照里的 `messageCount` 用它） */
+  private readonly subAgentCount = new Map<string, number>();
 
   private userIdUsed = false;
   private assistantIdUsed = false;
@@ -812,9 +824,57 @@ class TurnSession implements ChatTurn {
     };
     this.subagents.set(toolCallId, snapshot);
 
+    // 子 Agent 说的话也要过线（F-I7）：它跑在自己的 Agent 实例里，宿主不转发的话，
+    // 客户端只能等它跑完去读库 —— 中间整段时间屏幕上是一个字都没有的。
+    ctx.subAgent.events.on("message", (message: AgentNS.Message) => {
+      this.onSubAgentMessage(toolCallId, message);
+    });
+    ctx.subAgent.events.on("chunk-parsed", (receiver: AgentNS.Message, chunk: RawChunk) => {
+      this.onSubAgentChunk(toolCallId, receiver, chunk);
+    });
+
     const running = this.runningTools.get(toolKey(ctx.toolCallContext.tool_call));
     if (running) running.subagent = snapshot;
     this.pushRunState();
+  }
+
+  /** 子 Agent 追加了一条消息：先定 id（与落库那份一致），再刷新条数 */
+  private onSubAgentMessage(toolCallId: string, message: AgentNS.Message): void {
+    if (this.subAgentIds.has(message)) return;
+    this.subAgentIdOf(message);
+    const count = (this.subAgentCount.get(toolCallId) ?? 0) + 1;
+    this.subAgentCount.set(toolCallId, count);
+    const snapshot = this.subagents.get(toolCallId);
+    if (snapshot) snapshot.messageCount = count;
+    this.pushRunState();
+  }
+
+  /** 子 Agent 的一片增量：推成 `message.delta`（带 `toolCallId`）+ 节流写库 */
+  private onSubAgentChunk(toolCallId: string, receiver: AgentNS.Message, chunk: RawChunk): void {
+    const delta = chunk.choices?.[0]?.delta;
+    if (!delta) return;
+    const messageId = this.subAgentIdOf(receiver);
+    const seq = this.deltaSeq.get(messageId) ?? 0;
+    this.deltaSeq.set(messageId, seq + 1);
+    this.options.emit("message.delta", {
+      conversationId: this.conversationId,
+      messageId,
+      seq,
+      delta,
+      at: this.nowIso(),
+      toolCallId,
+    });
+    this.scheduleSubAgentWrite(toolCallId, receiver);
+  }
+
+  /** 子 Agent 那条消息的 id（第一次见就定下来，之后一直用这一个） */
+  private subAgentIdOf(message: AgentNS.Message): string {
+    const existing = this.subAgentIds.get(message);
+    if (existing !== undefined) return existing;
+    const id = this.newId();
+    this.subAgentIds.set(message, id);
+    this.createdAtOf.set(id, this.clock.now());
+    return id;
   }
 
   private onSubAgentEnd(ctx: SubAgentContext): void {
@@ -846,7 +906,8 @@ class TurnSession implements ChatTurn {
   /**
    * 把子 Agent 的消息落库（F-I7），返回落了多条。
    *
-   * 同一次委派只落一遍（`sub-agent-end` 重复到达时不重复写）；每条都拿宿主分配的 id（L6），
+   * 同一次委派只落一遍（`sub-agent-end` 重复到达时不重复写）；每条都拿**宿主已经发给客户端的**
+   * 那个 id（`subAgentIds`）—— 另给一个新 id 会让客户端把同一条消息当成两条。
    * 挂上 `parentToolCallId`，`seq` 由仓储在对话内递增。
    */
   private persistSubAgent(toolCallId: string, messages: readonly AgentNS.Message[]): number {
@@ -854,9 +915,14 @@ class TurnSession implements ChatTurn {
     this.persistedSubAgents.add(toolCallId);
     const now = this.clock.now();
     const rows = messages.map((message) => {
-      const id = this.newId();
-      this.createdAtOf.set(id, now);
-      return toRow({ ...message, id }, this.conversationId, now, undefined, toolCallId);
+      const id = this.subAgentIdOf(message);
+      return toRow(
+        { ...message, id },
+        this.conversationId,
+        this.createdAtOf.get(id) ?? now,
+        undefined,
+        toolCallId,
+      );
     });
     this.enqueueWrites(rows);
     return rows.length;
@@ -965,6 +1031,39 @@ class TurnSession implements ChatTurn {
     this.writeChain = this.writeChain
       .then(() => this.options.messages.upsert(row))
       .catch((error: unknown) => this.options.onError?.(error, "stream-write"));
+  }
+
+  /**
+   * 子 Agent 消息的节流写（与主线同一份节奏）。
+   *
+   * 不写的话，子 Agent 在跑的那几十分钟里库里什么都没有：客户端切过去是一页空白，
+   * 中途断线也一个字不剩。写完不丢终版：`sub-agent-end` 时 `persistSubAgent` 用同一批 id 再写一次。
+   */
+  private scheduleSubAgentWrite(toolCallId: string, message: AgentNS.Message): void {
+    const interval = this.options.streamWriteIntervalMs ?? DEFAULT_STREAM_WRITE_INTERVAL_MS;
+    if (interval <= 0) {
+      this.enqueueSubAgentWrite(toolCallId, message);
+      return;
+    }
+    const id = this.subAgentIdOf(message);
+    const now = this.clock.now();
+    if (now - (this.subWriteAt.get(id) ?? 0) < interval) return;
+    this.subWriteAt.set(id, now);
+    this.enqueueSubAgentWrite(toolCallId, message);
+  }
+
+  private enqueueSubAgentWrite(toolCallId: string, message: AgentNS.Message): void {
+    const id = this.subAgentIdOf(message);
+    const row = toRow(
+      { ...message, id },
+      this.conversationId,
+      this.createdAtOf.get(id) ?? this.clock.now(),
+      undefined,
+      toolCallId,
+    );
+    this.writeChain = this.writeChain
+      .then(() => this.options.messages.upsert(row))
+      .catch((error: unknown) => this.options.onError?.(error, "sub-agent-stream-write"));
   }
 
   /** 一批行按同一份额度写下去（子 Agent 的消息一次写一拍）；与边流边写共用一条串行链 */

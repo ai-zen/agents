@@ -261,7 +261,17 @@ export interface FakeRound {
   /** 工具结果消息上记的子 Agent 用量（模拟一次委派） */
   toolSubAgentUsage?: AgentNS.Usage;
   /** 这一轮的第一个工具是子 Agent 委派：给个名字与它的消息（`sub-agent-start/end` 两个钩子） */
-  subAgent?: { name: string; messages: AgentNS.Message[] };
+  subAgent?: {
+    name: string;
+    messages: AgentNS.Message[];
+    /**
+     * 子 Agent 「说」的正文片（每片推一次 `chunk-parsed`）。
+     *
+     * 它是宿主把子 Agent 的话转给客户端的唯一来源：没有这一项，用例就只能看到
+     * 「开始 / 结束」两个钩子，看不到任何内容。
+     */
+    stream?: string[];
+  };
 }
 
 /** 最小事件总线（形状与 core 的 `EventBus` 一致，只用 on / emit） */
@@ -372,7 +382,24 @@ export class FakeAgent implements ChatAgent {
       // 并行工具：先把结果消息都追加出来（于是「在等哪几个」是全的），再逐个定型
       const results = calls.map((call) => this.append(Message.Tool(call)));
       if (round.subAgent && calls[0]) {
-        this.events.emit("sub-agent-start", subAgentContext(this, calls[0], round.subAgent));
+        const started = subAgentContext(this, calls[0], round.subAgent);
+        this.events.emit("sub-agent-start", started);
+        // 子 Agent 跑起来了：先把它已有的消息报一遍（客户端据此算「它说了几句」），
+        // 再逐片推正文 —— 这两件都是子 Agent **自己**的事件，宿主只是转发
+        const inner = started.subAgent as unknown as FakeSubAgent;
+        for (const message of inner.messages) inner.events.emit("message", message);
+        const receiver = inner.messages[inner.messages.length - 1];
+        for (const text of round.subAgent.stream ?? []) {
+          if (receiver) {
+            const chunk = {
+              choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
+            };
+            // 与 core 的 `parseStreamData` 同一个顺序：先攒进消息，再广播
+            // （不先攒的话，假件里那条消息永远是空的，而真 core 里它已经长了）
+            applyChunk(receiver, chunk as Parameters<typeof applyChunk>[1]);
+            inner.events.emit("chunk-parsed", receiver, chunk);
+          }
+        }
       }
       if (round.toolGate) await round.toolGate;
 
@@ -403,15 +430,59 @@ export class FakeAgent implements ChatAgent {
  *
  * 形状按 core 的 `SubAgentContext` 给（本包只用 `toolCallContext.tool_call` 与 `subAgent`），
  * 假 agent 不是真的 core `Agent`，所以这里显式声明成钩子要的形状后再断言过去。
+ *
+ * 子 Agent 带的 `events` 是**同一个**：`sub-agent-start` 时宿主订上它，之后用例（或假 Agent）
+ * 往它上面 `emit("chunk-parsed")`，正是真 core `Agent` 的用法。
  */
 function subAgentContext(
   host: FakeAgent,
   toolCall: AgentNS.ToolCall,
-  subAgent: { name: string; messages: AgentNS.Message[] },
+  spec: { name: string; messages: AgentNS.Message[]; stream?: string[] },
 ): SubAgentContext {
+  const events = (spec as { __events?: FakeEmitter }).__events ?? createEmitter();
+  (spec as { __events?: FakeEmitter }).__events = events;
+  const subAgent: FakeSubAgent = {
+    messages: spec.messages,
+    definition: { name: spec.name },
+    events,
+  };
   return {
     agent: host,
-    subAgent: { messages: subAgent.messages, definition: { name: subAgent.name } },
+    subAgent: subAgent as unknown as SubAgentContext["subAgent"],
     toolCallContext: { tool_call: toolCall },
   } as unknown as SubAgentContext;
+}
+
+/** 假子 Agent：宿主只摸它的 `messages` 与 `events` */
+interface FakeSubAgent {
+  messages: AgentNS.Message[];
+  definition: { name: string };
+  events: FakeEmitter;
+}
+
+/** 够用的最小事件出口（`on` 订阅、`emit` 广播） */
+interface FakeEmitter {
+  on(event: string, handler: (...args: never[]) => void): () => void;
+  emit(event: string, ...args: unknown[]): void;
+}
+
+function createEmitter(): FakeEmitter {
+  const handlers = new Map<string, Array<(...args: unknown[]) => void>>();
+  return {
+    on(event, handler) {
+      const list = handlers.get(event) ?? [];
+      list.push(handler as (...args: unknown[]) => void);
+      handlers.set(event, list);
+      return () => {
+        const current = handlers.get(event) ?? [];
+        handlers.set(
+          event,
+          current.filter((item) => item !== handler),
+        );
+      };
+    },
+    emit(event, ...args) {
+      for (const handler of handlers.get(event) ?? []) handler(...args);
+    },
+  };
 }

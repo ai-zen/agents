@@ -10,7 +10,7 @@ AI-Zen Agents is a **modular LLM Agent framework**, organized as a monorepo via 
 
 - **License**: MIT
 - **npm package**: `@ai-zen/agents-workspace` (workspace root, private); public subpackages are `@ai-zen/agents-core`, `@ai-zen/agents-sdk` and `@ai-zen/agents-host`. `@ai-zen/agents-client` and `@ai-zen/agents-testing` are **private** and never published — the former is inlined by CLI / Desktop at build time, the latter only serves this repo's tests
-- **Current versions**: workspace `2.0.0`; `@ai-zen/agents-core` `4.6.0-alpha.0`; `@ai-zen/agents-sdk` `1.2.0-alpha.2`; `@ai-zen/agents-host` `0.1.0-alpha.6`; `@ai-zen/agents-client` `0.1.0-alpha.0` (private)
+- **Current versions**: workspace `2.0.0`; `@ai-zen/agents-core` `4.6.0-alpha.0`; `@ai-zen/agents-sdk` `1.2.0-alpha.2`; `@ai-zen/agents-host` `0.1.0-alpha.7`; `@ai-zen/agents-client` `0.1.0-alpha.0` (private)
 
 ## What this is
 

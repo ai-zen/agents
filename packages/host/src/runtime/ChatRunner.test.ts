@@ -1369,3 +1369,96 @@ describe("素材：落库只存 __asset_id", () => {
     expect(JSON.stringify(custom.builds[0]?.history)).not.toContain("__asset_id");
   });
 });
+
+// ---------------------------------------------------------------------------
+// 子 Agent 的输出要过线（F-I7）：没有这几条，客户端整轮都看不到一个字
+// ---------------------------------------------------------------------------
+
+describe("ChatRunner：子 Agent 说的话也推给客户端", () => {
+  it("每片正文都推一条 message.delta，带 toolCallId 与同一条消息的 id", async () => {
+    const custom = createHarness({
+      rounds: [
+        {
+          deltas: [
+            {
+              tool_calls: [
+                { index: 0, id: "call-7", type: "function", function: { name: "delegate", arguments: "{}" } },
+              ],
+            },
+          ],
+          toolCalls: [{ id: "call-7", name: "delegate" }],
+          subAgent: {
+            name: "helper",
+            messages: [
+              {
+                id: "inner-a",
+                role: AgentNSValue.Role.Assistant,
+                status: AgentNSValue.MessageStatus.Writing,
+                content: "",
+              },
+            ],
+            stream: ["查到", "了。"],
+          },
+        },
+      ],
+    });
+
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "交给助手" },
+    });
+    await turn.done;
+
+    const sub = custom.pushed("message.delta").filter((payload) => payload.toolCallId === "call-7");
+    expect(sub.map((payload) => payload.delta.content)).toEqual(["查到", "了。"]);
+    // 同一条消息：两片落在同一个 id 上（客户端据此把字拼成一条，而不是两条）
+    expect(sub[0]!.messageId).toBe(sub[1]!.messageId);
+    expect(sub.map((payload) => payload.seq)).toEqual([0, 1]);
+    // 主线的增量不带 toolCallId（那是主转录的）
+    const main = custom.pushed("message.delta").filter((payload) => payload.toolCallId === undefined);
+    expect(main.length).toBeGreaterThan(0);
+  });
+
+  it("落库用的是同一个 id：流式看到的与重开对话读回来的不会变成两条", async () => {
+    const custom = createHarness({
+      rounds: [
+        {
+          deltas: [
+            {
+              tool_calls: [
+                { index: 0, id: "call-8", type: "function", function: { name: "delegate", arguments: "{}" } },
+              ],
+            },
+          ],
+          toolCalls: [{ id: "call-8", name: "delegate" }],
+          subAgent: {
+            name: "helper",
+            messages: [
+              {
+                id: "inner-a",
+                role: AgentNSValue.Role.Assistant,
+                status: AgentNSValue.MessageStatus.Writing,
+                content: "",
+              },
+            ],
+            stream: ["查到了。"],
+          },
+        },
+      ],
+    });
+
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "交给助手" },
+    });
+    await turn.done;
+
+    const streamed = custom.pushed("message.delta").find((payload) => payload.toolCallId === "call-8");
+    expect(streamed).toBeDefined();
+    const row = custom.store.writes.find((write) => write.id === streamed!.messageId);
+    expect(row).toBeDefined();
+    // 挂在这次委派上，且带上子 Agent 说的正文
+    expect(row!.parentToolCallId).toBe("call-8");
+    expect(String(row!.content)).toContain("查到了。");
+  });
+});

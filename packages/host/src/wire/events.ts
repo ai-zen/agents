@@ -52,6 +52,13 @@ export interface MessageDeltaPayload {
   delta: AgentNS.Delta;
   /** 这次推送的时刻 */
   at: string;
+  /**
+   * 这条消息属于哪个子 Agent（挂在那次委派的工具调用 id 上，PRD F-I7）。
+   *
+   * **不给就是主线**：主线消息的增量一直是主线。子 Agent 的话不并进主转录，
+   * 客户端按这个键把它归到自己那一栏去（`message.list { toolCallId }` 能取回同一批）。
+   */
+  toolCallId?: string;
 }
 
 /**

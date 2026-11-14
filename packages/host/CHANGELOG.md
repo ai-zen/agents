@@ -3,6 +3,34 @@
 All notable changes to `@ai-zen/agents-host` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versions use SemVer.
 
+## [0.1.0-alpha.7] - 2026-11-14
+
+> Sub-agent output now crosses the wire. A delegated sub-agent runs inside its own `Agent` in this
+> process; the host only ever told clients "it started" and "it ended". Everything the sub-agent
+> said stayed in memory and was written to the database once, at the end — so a client watching
+> the run got **not one character** until the sub-agent had already finished.
+>
+> The old in-process CLI did not have this problem: it held the sub-agent instance and subscribed
+> to its own `chunk-parsed`. That is exactly what this release restores, one process boundary
+> further out.
+
+### Added
+
+- **`message.delta` carries `toolCallId`** when the delta belongs to a sub-agent (`MessageDeltaPayload.toolCallId`,
+  absent = main line). Clients route it to that sub-agent's own view instead of the main transcript.
+- **Sub-agent messages are written while they stream** (same `streamWriteIntervalMs` cadence as the
+  main line), so `message.list { toolCallId }` has content during the run and a mid-run crash no
+  longer loses the whole thing.
+- **`SubAgentSnapshot.messageCount` is live** — it now counts the sub-agent's messages as they
+  appear instead of only at the end.
+
+### 🐛 Fixed
+
+- Sub-agent messages get their id **the first time the host sees them**, and the final row reuses
+  it. Previously the id was assigned at persist time, so a streamed delta and the stored row would
+  have been two different ids — a client would have shown every sub-agent message twice after a
+  reload.
+
 ## [0.1.0-alpha.6] - 2026-11-14
 
 > The status bar's blocks move to the client — the third and last step of "界面归界面，事实归宿主".
