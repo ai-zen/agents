@@ -603,3 +603,24 @@ export interface LocalHostFacts {
 | **11** `host.reload` 的 `scope` | 删参数（契约小改），还是给 `/reload` 加子参数让"只重载某一类"真有入口？ | 5 值枚举 + 校验 + `wiz.reload.*` 5 条词条继续为一个不存在的入口服务；用户以为可以只重载 MCP。 |
 
 （另有两条"轻"判决已写在条目里，不单列：**8** 档位名是否由宿主给可本地化清单；**6** `blocksInput` 是"接上"还是"删掉"。）
+
+## 处理状态（2026-11-14 当日收尾）
+
+| 条目 | 状态 | 落点 |
+|---|---|---|
+| 1 能力清单零消费者 | **半办**：文案已删（`title` / `description` + 252 条 i18n）；清单本体与 `hello.capabilities` 的 id 列表仍在，**要不要从契约面删待拍** | `agents@e685d03` |
+| 2 状态栏块名 | ✅ 已办：`label` 删掉，CLI 用 `status.block.<id>` | `agents@a4ed0aa` + `cli@7222228` |
+| 3 宿主 34 组无产出 i18n 键 | **待拍**：哪些是"功能缺失的线索"、哪些是多余文案；待拍后一次清 | — |
+| 4 假注释 / 假用例名 | ✅ 已办 | `agents@72d625c` |
+| 5 上限 4 份定义 | ✅ 已办：会话透出 `hello.limits`，粘贴预检与提示都跟宿主走 | `cli@207204f` |
+| 6 CLI 三条只被用例读的导出 + 注释说错 | ✅ 已办（`method` 字段、假注释一起删）；`blocksInput` 仍有真实消费者，保留 | `cli@0f789a0` |
+| 7 PRD 能力号 ↔ 方法名两份映射对不上 | **待拍**：留一份（生成）还是都删；用例要不要交叉核对 `destructive` 条数 | — |
+| 8 档位名三处维护、`effort.custom` 永远显示不出来 | ✅ 已办（删死词条 + 守卫） | `cli@c468429` |
+| 9 CLI 8 组零产出词条 | ✅ 已办（16 条），并加了「每个词条都得有人取」的守卫 | `cli@c468429` / `cli@fde813e` |
+| 10 `mode.ts` 说 `run/server.json` | ✅ 已办 | `cli@c468429` |
+| 11 `host.reload` 的 `scope` 没人传 | **待拍**：删参数，还是给 `/reload` 加子参数 | — |
+| 12 桌面端 hello 解码两份 | ✅ 已办：`helloOf()` 一处 | `desktop@f8b79d0` |
+| 13 只被用例续命的导出 | ✅ 已办：host 4 处 / cli 9 处（连用例）/ desktop 1 处 | `cli@fde813e` / `agents@22dcc7d` / `desktop@f8b79d0` |
+| 14 连接层重抄 `HostFileInfo` 子集 | ✅ 已办（类型用 `Pick`；路径那一半受 devDependency 边界限制，已在注释里写清） | `agents@22dcc7d` |
+
+剩下的 1 / 3 / 7 / 11 全部是「动契约面或裁定」的，不是删垃圾，需要人拍。
