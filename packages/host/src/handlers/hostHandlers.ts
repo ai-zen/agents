@@ -2,8 +2,7 @@
  * `host.*`：进程事实（PRD F-E5 / D4 / L4）。
  *
  * 三件事在这里：
- *   - `version` / `capabilities`：报事实（能力清单只在配置层维护一份，这里不编造；
- *     清单里没有文案 —— 一份能力怎么跟用户说，归客户端）；
+ *   - `version`：报进程事实（版本、协议版本、启动时刻、pid），一个字都不编；
  *   - `upgrade`：比磁盘上的版本与正在跑的版本，确认新版本真的落盘了才安排重启（D4 / F-E3）；
  *   - `shutdown`：受理一次收尾请求。真正退不退由单根的退出判据决定（PRD L4 / 裁定 R53）。
  *
@@ -32,7 +31,6 @@ export interface HostHandlerDeps {
   version: string;
   /** 进程启动时刻（ISO 8601） */
   startedAt: string;
-  /** 能力清单（PRD F-E5）；内容归配置层，本轮由单根注入 */
   /** 请求收尾（`host.shutdown`）：单根排程，先让回包写出去 */
   requestStop: (reason?: string) => void;
   /** 从磁盘重载（`host.reload`）：配置服务那边跑「生效」那条路（回收 Scope + 合成通知） */

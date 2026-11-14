@@ -140,11 +140,6 @@ export interface WsHubOptions {
   hostVersion: string;
   /** 进程启动时刻（ISO 8601）；缺省取构造时的时钟 */
   startedAt?: string;
-  /**
-   * 能力清单（PRD F-E5：帮助页与指令菜单从这一份渲染）；缺省为空。
-   *
-   * 入参是这条连接的语言（裁定 R58）：句子按收件人的语言给，id 列表与顺序不变（R57）。
-   */
   /** 连接未声明语言时的缺省语言（PRD D8：缺省英文）；给函数时每次握手现算 */
   defaultLanguage?: DefaultLanguageSource;
   /** 推送出网前的按连接本地化（不注入则原样搬运） */

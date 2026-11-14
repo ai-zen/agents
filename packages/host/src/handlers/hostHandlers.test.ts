@@ -1,5 +1,5 @@
 /**
- * `host.*` 的验收：版本与能力清单报的是事实、收尾请求走单根。
+ * `host.*` 的验收：版本报的是事实、收尾请求走单根。
  *
  * `host.hello` / `host.setLanguage` 由接线层接管（语言是连接状态），不在这里验。
  * `host.usage` 已从契约面删除（裁定 2026-11-13，F-I5 的落点是 `conversation.state`），
@@ -138,7 +138,7 @@ afterEach(async () => {
   for (const temp of temps.splice(0)) await temp.remove();
 });
 
-describe("host.version / host.capabilities", () => {
+describe("host.version", () => {
   it("报的是进程事实，不是猜的", async () => {
     const { app } = await makeHarness();
     const version = await callMethod(app, "host.version");

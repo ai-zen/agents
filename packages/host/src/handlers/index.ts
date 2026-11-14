@@ -92,8 +92,6 @@ export interface HandlerDeps {
   version: string;
   /** 进程启动时刻（ISO 8601） */
   startedAt: string;
-  /** 能力清单（PRD F-E5） */
-
   // ---- 服务 ----
   workspaces: WorkspaceService;
   conversations: ConversationService;

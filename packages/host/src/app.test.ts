@@ -1128,14 +1128,14 @@ async function flushAsync(): Promise<void> {
 async function handshake(
   app: HostApp,
   language?: "en" | "zh",
-): Promise<{ language: string; capabilities: string[] }> {
+): Promise<{ language: string }> {
   const target = app.address;
   if (!target) throw new Error("宿主没在监听");
   const client = await TestClient.connect(`ws://127.0.0.1:${target.port}/`);
   clients.push(client);
   const token = (await fs.readFile(app.paths.tokenFile, "utf8")).trim();
   const frame = await client.hello(token, language === undefined ? {} : { language });
-  return frame.result as { language: string; capabilities: string[] };
+  return frame.result as { language: string };
 }
 
 describe("缺省语言（D8 / 裁定 R58）", () => {
