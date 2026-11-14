@@ -25,6 +25,7 @@ export {
   ChatRunner,
   createSdkAgentFactory,
   DEFAULT_STREAM_WRITE_INTERVAL_MS,
+  QUEUE_READY_TIMEOUT_MS,
 } from "./ChatRunner.js";
 export type {
   AgentBuildContext,
@@ -39,6 +40,7 @@ export type {
   ConversationStore,
   HandoffProvider,
   MessageStore,
+  QueuedTurn,
   ReconcileResult,
   SdkAgentFactoryOptions,
   TurnSettlement,

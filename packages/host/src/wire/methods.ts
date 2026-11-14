@@ -468,12 +468,15 @@ export interface ConversationDeleteResult {
 }
 
 /**
- * `conversation.send` 入参（PRD F-C2 / L6 / D14 / F-H7 / F-D10）。
+ * `conversation.send` 入参（PRD F-C2 / L6 / D3 / F-H7 / F-D10）。
  *
- * 一轮的开始：宿主先占位（在跑则 `busy`），再分配用户消息与助手消息的 id（L6：助手消息 id
- * 在请求发出之前就有），然后开始流式。用户输入用 core 的内容形状（`MessageInput`），
- * 图片的传输路径由宿主定（F-H7）。
- * 有问题在挡着这段对话时会被拒（`question_pending`，D23 / F-D10）。
+ * 两种受理，取决于这段对话当时在不在跑：
+ *   - 空闲 → 开一轮（宿主先占位，再分配用户消息与助手消息的 id，L6：助手消息 id 在请求
+ *     发出之前就有，然后开始流式）；
+ *   - 正在跑 → 这一句排进**那一轮**的 inbox（D3：不打断、也不再回 `busy`）。
+ *
+ * 用户输入用 core 的内容形状（`MessageInput`），图片的传输路径由宿主定（F-H7）。
+ * 有问题在挡着这段对话时会被拒（`question_pending`，D23 / F-D10）—— 排队不是绕过它的通道。
  */
 export interface ConversationSendParams {
   conversationId: string;
@@ -483,12 +486,27 @@ export interface ConversationSendParams {
 /**
  * `conversation.send` 出参：受理即返回两个 id（PRD F-I12：受理了就不会静默丢）。
  *
+ * ## 两半含义，由 `queued` 区分
+ *
+ * - `queued` 缺省 = 老路径：受理了**新的一轮**，两个 id 都在，客户端拿助手 id 接流。
+ * - `queued: true` = 这一句排进了**正在跑的那一轮**（D3）。此时 `assistantMessageId` 是
+ *   `null`：排队的话还没有「这一次要被回答的助手消息」—— 它落成用户消息之后由那一轮接着跑，
+ *   流还是那一轮原来的那条流。
+ *
+ * `userMessageId` 两种情形下都是**落地那条消息的 id**：排队时宿主在入队这一刻就定死它
+ * （D5），客户端先按它画一条乐观回显，几秒后库里回来的那条用的是同一个 id，同一条内容不会
+ * 显示两遍。
+ *
  * `attachments` 说明每个附件最后是怎么走的（文件引用 / 内联 / 退化成文字 / 没发出去），
- * 失败与降级都带原因，拿不到结果时不报成功（F-H7）。
+ * 失败与降级都带原因，拿不到结果时不报成功（F-H7）。排队的那一句同样走一遍素材准备，
+ * 结局照常回 —— 排队不等于「附件被静默丢掉」。
  */
 export interface ConversationSendResult {
   userMessageId: string;
-  assistantMessageId: string;
+  /** 排队受理（`queued: true`）时为空：那一句还没有属于它的助手消息 */
+  assistantMessageId: string | null;
+  /** `true` = 排进了正在跑的那一轮；缺省 = 老路径，受理了新的一轮 */
+  queued?: boolean;
   attachments: AttachmentOutcome[];
   acceptedAt: string;
 }

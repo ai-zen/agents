@@ -30,6 +30,7 @@ import type {
   MethodName,
   MethodParams,
   MethodResult,
+  RunState,
 } from "../wire/index.js";
 
 /** 模型故意不带 `vision`：图片会退化成文字，于是「按连接语言重渲染」才有东西可验 */
@@ -185,6 +186,24 @@ async function settle(app: HostApp, conversationId: string): Promise<void> {
   throw new Error("这一轮没有结算");
 }
 
+/**
+ * 等这一轮跑到某个形状（用例要在「跑到一半」那一瞬读现场）。
+ *
+ * 不能用固定次数的 `wait`：轮次由后台推进，具体几个 tick 到那一步是实现的细节。
+ */
+async function waitForRun(
+  app: HostApp,
+  conversationId: string,
+  predicate: (run: RunState) => boolean,
+): Promise<RunState> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const run = app.chatRunner.turn(conversationId)?.runState();
+    if (run && predicate(run)) return run;
+    await wait(10);
+  }
+  throw new Error("这一轮没有进到用例等的那个形状");
+}
+
 afterEach(async () => {
   for (const app of apps.splice(0)) await app.stop("requested").catch(() => undefined);
   for (const temp of temps.splice(0)) await temp.remove();
@@ -201,7 +220,9 @@ describe("conversation.send", () => {
     });
 
     expect(sent.userMessageId.length).toBeGreaterThan(0);
-    expect(sent.assistantMessageId.length).toBeGreaterThan(0);
+    // 空闲时受理的是一轮新的：助手消息 id 必须在（`null` 只属于排队受理，D3）
+    expect(typeof sent.assistantMessageId).toBe("string");
+    expect(sent.assistantMessageId?.length).toBeGreaterThan(0);
     // 消息落库那一刻扫 content 里的 `__asset_id` 写关系行
     expect(await app.assets.listAssetIdsByMessage(sent.userMessageId)).toEqual([assetId]);
     expect(await app.assets.countConversations(assetId)).toBe(1);
@@ -249,23 +270,214 @@ describe("conversation.send", () => {
     expect(chinese.attachments[0]?.problem?.message).not.toBe(outcome?.problem?.message);
   });
 
-  it("同一段对话正在跑一轮时，第二次受理被拒（D14：忙就拒）", async () => {
+  it("跑的时侯第二句不再被拒：它排进那一轮的 inbox，回包说 queued（D3）", async () => {
     const gate: Deferred<void> = deferred();
-    const { app, conversationId } = await makeHarness({
-      createAgent: async () => new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢" }] }]),
-    });
+    const agent = new FakeAgent([
+      { gate: gate.promise, deltas: [{ content: "慢" }] },
+      { deltas: [{ content: "回头答你上面那句" }] },
+    ]);
+    const { app, conversationId } = await makeHarness({ createAgent: async () => agent });
 
-    const first = await callMethod(app, "conversation.send", {
+    const first: ConversationSendResult = await callMethod(app, "conversation.send", {
       conversationId,
       input: { content: "第一句" },
     });
     expect(first.userMessageId.length).toBeGreaterThan(0);
 
-    await expect(
-      callMethod(app, "conversation.send", { conversationId, input: { content: "第二句" } }),
-    ).rejects.toSatisfy((error: unknown) => HostError.is(error) && error.code === "busy");
+    const second: ConversationSendResult = await callMethod(app, "conversation.send", {
+      conversationId,
+      input: { content: "第二句" },
+    });
+
+    // 排队受理：没有属于它的助手消息（流还是那一轮原来那条），并且明说了 queued
+    expect(second.queued).toBe(true);
+    expect(second.assistantMessageId).toBeNull();
+    expect(second.userMessageId.length).toBeGreaterThan(0);
+    expect(second.userMessageId).not.toBe(first.userMessageId);
+    // 条目真的进了这一轮 agent 的 inbox（不是只回了一句 queued）
+    expect(agent.inbox.map((entry) => entry.messageId)).toEqual([second.userMessageId]);
 
     gate.resolve();
+    await settle(app, conversationId);
+
+    // 两句都落了库，id 就是回包里那两个（D5：先画的那条与库里那条是同一条）
+    const page = await callMethod(app, "message.list", { conversationId });
+    expect(page.messages.map((message) => message.id)).toContain(first.userMessageId);
+    expect(page.messages.map((message) => message.id)).toContain(second.userMessageId);
+  });
+
+  it("回包的 userMessageId 就是落地那条消息的 id（D5：不会画两遍）", async () => {
+    const gate: Deferred<void> = deferred();
+    const agent = new FakeAgent([
+      { gate: gate.promise, deltas: [{ content: "先答" }] },
+      { deltas: [{ content: "再答" }] },
+    ]);
+    const { app, conversationId } = await makeHarness({ createAgent: async () => agent });
+
+    await callMethod(app, "conversation.send", { conversationId, input: { content: "第一句" } });
+    const queued: ConversationSendResult = await callMethod(app, "conversation.send", {
+      conversationId,
+      input: { content: "排队的那句" },
+    });
+
+    gate.resolve();
+    await settle(app, conversationId);
+
+    // 消息列表里那一条：id 与内容对得上回包（落地时没有另生成一个 id）
+    const page = await callMethod(app, "message.list", { conversationId });
+    const landed = page.messages.find((message) => message.id === queued.userMessageId);
+    expect(landed).toBeDefined();
+    expect(landed?.role).toBe(AgentNSValue.Role.User);
+    expect(landed?.content).toBe("排队的那句");
+    // 也没有第二条带着同样内容的用户消息（那就是「同一条显示两遍」的形状）
+    const same = page.messages.filter(
+      (message) => message.role === AgentNSValue.Role.User && message.content === "排队的那句",
+    );
+    expect(same).toHaveLength(1);
+  });
+
+  it("run.state 的 inboxPending：入队后 > 0、落地后归 0、空闲时为 0", async () => {
+    const firstGate: Deferred<void> = deferred();
+    const secondGate: Deferred<void> = deferred();
+    const agent = new FakeAgent([
+      { gate: firstGate.promise, deltas: [{ content: "先答" }] },
+      // 第二轮卡住，是为了能在「那一条已经落地、这一轮还在跑」那一刻看到 0
+      { gate: secondGate.promise, deltas: [{ content: "再答" }] },
+    ]);
+    const { app, conversationId } = await makeHarness({ createAgent: async () => agent });
+
+    await callMethod(app, "conversation.send", { conversationId, input: { content: "第一句" } });
+    // 没排队时就是在跑，也是 0（不是「未知」也不是 1）
+    expect((await callMethod(app, "conversation.state", { conversationId })).state.run.inboxPending).toBe(0);
+
+    const queued: ConversationSendResult = await callMethod(app, "conversation.send", {
+      conversationId,
+      input: { content: "排队的那句" },
+    });
+    expect(queued.queued).toBe(true);
+    // 入队之后：“已排队 1 条”
+    const pending = await callMethod(app, "conversation.state", { conversationId });
+    expect(pending.state.run.inboxPending).toBe(1);
+    expect(pending.state.run.status).toBe("running");
+
+    // 放行第一轮 → 那一条在轮末落地 → 第二轮卡着，现场里应当归 0
+    firstGate.resolve();
+    const afterLanded = await waitForRun(
+      app,
+      conversationId,
+      (run) => run.inboxPending === 0 && run.status === "running",
+    );
+    expect(afterLanded.inboxPending).toBe(0);
+    // 而且它真的落地了（不是被当成“已消费”而丢掉）
+    expect(agent.messages.map((message) => message.id)).toContain(queued.userMessageId);
+
+    secondGate.resolve();
+    await settle(app, conversationId);
+
+    // 空闲：恒为 0
+    const idle = await callMethod(app, "conversation.state", { conversationId });
+    expect(idle.state.run.status).toBe("idle");
+    expect(idle.state.run.inboxPending).toBe(0);
+  });
+
+  it("abort 丢弃排队条目：回包的 run 里 inboxPending 为 0，那一句也不落库", async () => {
+    const gate: Deferred<void> = deferred();
+    const agent = new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢慢说" }] }]);
+    const { app, conversationId } = await makeHarness({ createAgent: async () => agent });
+
+    await callMethod(app, "conversation.send", { conversationId, input: { content: "第一句" } });
+    const queued: ConversationSendResult = await callMethod(app, "conversation.send", {
+      conversationId,
+      input: { content: "还没发出去的那句" },
+    });
+    expect(queued.queued).toBe(true);
+
+    const aborted: ConversationAbortResult = await callMethod(app, "conversation.abort", {
+      conversationId,
+    });
+    expect(aborted.aborted).toBe(true);
+    // 用户按停 = 排队的话不发了：core 的 abort 已清空 inbox
+    expect(aborted.run.inboxPending).toBe(0);
+
+    gate.resolve();
+    await settle(app, conversationId);
+
+    // 那一句从没落过库
+    const page = await callMethod(app, "message.list", { conversationId });
+    expect(page.messages.map((message) => message.id)).not.toContain(queued.userMessageId);
+  });
+
+  it("排队那一句的附件照旧过线：结局照常回，落地时记下素材关系行", async () => {
+    const gate: Deferred<void> = deferred();
+    const agent = new FakeAgent([
+      { gate: gate.promise, deltas: [{ content: "先看一眼" }] },
+      { deltas: [{ content: "你说的那张我也看了" }] },
+    ]);
+    const { app, conversationId } = await makeHarness({ createAgent: async () => agent });
+    const assetId = await uploadAsset(app, conversationId);
+
+    await callMethod(app, "conversation.send", {
+      conversationId,
+      input: { content: "第一句", assetIds: [assetId] },
+    });
+    const queued: ConversationSendResult = await callMethod(app, "conversation.send", {
+      conversationId,
+      input: { content: "再看这张", assetIds: [assetId] },
+    });
+
+    // 排队不等于「附件被静默丢掉」：逐条结局照常回（这个模型读不了图 → 退化成文字）
+    expect(queued.queued).toBe(true);
+    expect(queued.attachments).toHaveLength(1);
+    expect(queued.attachments[0]?.assetId).toBe(assetId);
+    expect(queued.attachments[0]?.deliveredAs).toBe("text_fallback");
+
+    gate.resolve();
+    await settle(app, conversationId);
+
+    // 落地之后，关系行也记上了（`conversation_assets` 只能等消息行真的写下去再记）
+    expect(await app.assets.listAssetIdsByMessage(queued.userMessageId)).toEqual([assetId]);
+    const page = await callMethod(app, "message.list", { conversationId });
+    expect(page.messages.map((message) => message.id)).toContain(queued.userMessageId);
+  });
+
+  it("挡着的问题依旧先答再发：排队不是绕道（D23）", async () => {
+    const gate: Deferred<void> = deferred();
+    const agent = new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢" }] }]);
+    const { app, conversationId } = await makeHarness({ createAgent: async () => agent });
+
+    await callMethod(app, "conversation.send", { conversationId, input: { content: "第一句" } });
+
+    // 摆一个挡着这段对话的问题（交接确认那一类）
+    await app.questionService.ask({
+      conversationId,
+      kind: "confirmation",
+      prompt: { messageKey: "question.blocking" },
+      options: [{ value: "ok", label: { messageKey: "question.blocking" } }],
+    });
+
+    // 跑中发送同样要过这道闸：入队不能成为绕着闸门走的通道
+    await expect(
+      callMethod(app, "conversation.send", { conversationId, input: { content: "想绕过去" } }),
+    ).rejects.toSatisfy(
+      (error: unknown) => HostError.is(error) && error.code === "question_pending",
+    );
+    // 那一句没有进 inbox
+    expect(agent.inbox).toHaveLength(0);
+
+    gate.resolve();
+    await settle(app, conversationId);
+  });
+
+  it("没在跑的时候受理一轮：回包里不带 queued（老路径不变）", async () => {
+    const { app, conversationId } = await makeHarness();
+
+    const sent: ConversationSendResult = await callMethod(app, "conversation.send", {
+      conversationId,
+      input: { content: "就一句" },
+    });
+
+    expect(sent.queued).toBeUndefined();
+    expect(typeof sent.assistantMessageId).toBe("string");
     await settle(app, conversationId);
   });
 });

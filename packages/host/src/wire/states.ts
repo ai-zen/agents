@@ -115,13 +115,22 @@ export type RunStatus = "idle" | "running" | "settled";
  * 一轮的运行状态快照（`run.state` 事件的载荷、`conversation.state` 的一部分）。
  *
  * 重连的客户端靠它把界面恢复成「正在发生什么」（PRD L5）：`status` 说这一轮在不在跑，
- * `generation` 说跑到哪一态，`usage` 说花了多少，`subagents` 说有哪些子 Agent 在跑/跑过。
+ * `generation` 说跑到哪一态，`usage` 说花了多少，`subagents` 说有哪些子 Agent 在跑/跑过，
+ * `inboxPending` 说还有几句排队的话没落地。
  */
 export interface RunState {
   conversationId: string;
   status: RunStatus;
   /** 本轮那条助手消息的 id（请求发出前就分配，PRD L6）；空闲时为空 */
   assistantMessageId: string | null;
+  /**
+   * 还没落成消息的排队条目数（PRD D3：用户在这轮跑的时候说的话）。
+   *
+   * 数字直接取**这一轮 agent 的 mailbox**（core 的 `Agent.inbox.length`），宿主不另记一份：
+   * core 的 `abort()` 会清空 inbox（用户按停 = 排队的话不发了），另记的数会在那一瞬漂掉。
+   * 空闲时它恒为 `0`（不是「未知」）：没有在跑的一轮，就没有谁的队列可排。
+   */
+  inboxPending: number;
   startedAt: string | null;
   settledAt: string | null;
   /** `status === "running"` 时是六态之一；其余情况为空 */

@@ -12,6 +12,8 @@ import type { AgentNS } from "@ai-zen/agents-core";
 import {
   AgentNS as AgentNSValue,
   applyChunk,
+  generateMessageId,
+  inboxEntryContent,
   Message,
   type SubAgentContext,
   type ToolCallEndContext,
@@ -301,6 +303,9 @@ export class RecordingEventBus {
  * 假 agent：把 core 在 `send()` 里做的事按同一顺序演一遍（追加用户消息 → 追加助手占位 →
  * `open` → 每片 `chunk-parsed` → 工具消息 → `tool-call-end`），攒消息用的是 core 的
  * `applyChunk`，于是 ChatRunner 看到的事件序列与真 agent 一致。
+ *
+ * `inbox` 也按 core 的语义做（`pushInbox` 推、轮末 `drainInbox` 落成 `Message.User`）：
+ * 宿主跑中发送那一半就是靠它验的。做成「记一笔就算收到」的假件，用例断的是假货。
  */
 export class FakeAgent implements ChatAgent {
   messages: AgentNS.Message[] = [];
@@ -308,6 +313,19 @@ export class FakeAgent implements ChatAgent {
   sendCalls = 0;
   abortCalls = 0;
   aborted = false;
+  /**
+   * 排队待发的内容（core 的 `Agent.inbox` 同一份形状）。
+   *
+   * 宿主只读它的长度（`RunState.inboxPending`），写入走 {@link pushInbox} —— 与真 Agent 一样。
+   */
+  inbox: AgentNS.InboxEntry[] = [];
+  /**
+   * 每一次「请求」发出前的消息列表快照。
+   *
+   * 模型看到的就是这个列表的前身（core 在 `formatHistory()` 之前手里那份），所以「下一次请求
+   * 里带着那条排队的消息吗」这个断言只能落在它上面。
+   */
+  readonly requests: AgentNS.Message[][] = [];
   /** `send` 期间的一个钩子（用例在这里推进假时钟、或改脚本） */
   beforeSend?: () => void;
 
@@ -322,9 +340,27 @@ export class FakeAgent implements ChatAgent {
     return message;
   }
 
+  /** core 的 `pushInbox`：缺 id / 时间就地补，推完广播 `inbox` */
+  pushInbox(
+    entry: Omit<AgentNS.InboxEntry, "messageId" | "createdAt"> & { messageId?: string },
+  ): AgentNS.InboxEntry {
+    const pushed: AgentNS.InboxEntry = {
+      messageId: entry.messageId ?? generateMessageId(),
+      source: entry.source,
+      priority: entry.priority,
+      content: entry.content,
+      createdAt: new Date().toISOString(),
+    };
+    this.inbox.push(pushed);
+    this.events.emit("inbox", { agent: this, entry: pushed });
+    return pushed;
+  }
+
   abort(): void {
     this.abortCalls += 1;
     this.aborted = true;
+    // core 的 `abort()` 同样清空 inbox（用户按停 = 排队的话不发了）：快照里的「已排队」靠它归零
+    this.inbox.splice(0, this.inbox.length);
     for (const message of this.messages) {
       if (
         message.status === AgentNSValue.MessageStatus.Pending ||
@@ -343,85 +379,149 @@ export class FakeAgent implements ChatAgent {
     return this.messages;
   }
 
+  /**
+   * 一轮的骨架：外循环 + 内循环，与 core 的 `run()` 同一个形状（D2 的两个插入点都在这里）。
+   *
+   * 低优先插入点在「内循环全停下之后」：插进去了才再开一圈 —— 这是外循环唯一的正常出口。
+   */
   private async run(): Promise<void> {
-    for (const round of this.rounds) {
-      if (this.aborted) return;
-      const receiver = this.append(Message.Assistant());
-      receiver.status = AgentNSValue.MessageStatus.Writing;
-      this.events.emit("open");
-
-      if (round.gate) await round.gate;
-      if (this.aborted) return;
-
-      for (const delta of round.deltas ?? []) {
+    let cursor = 0;
+    for (;;) {
+      // 内循环：脚本里带 toolCalls 的一轮要求继续（工具结果还得回给模型），其余是停下
+      let needContinue = false;
+      do {
         if (this.aborted) return;
-        const chunk = toChunk(delta);
-        // 攒消息用 core 的同一份实现：宿主存下来的那条与客户端攒出来的逐字一致
-        applyChunk(receiver, chunk);
-        this.events.emit("chunk-parsed", receiver, chunk);
-      }
+        const round = this.rounds[cursor];
+        // 脚本跑完 = 模型没有下一轮要说（与 core 的「needContinue 停下」同义）
+        if (!round) break;
+        cursor += 1;
+        needContinue = await this.runRound(round);
+        if (this.aborted) return;
+        // 高优先级插入点：与 core 同一处 —— 这一圈内循环刚收尾（工具结果已 append、下一次
+        // 请求的占位还没补）。插进去了就得再转一圈，否则那几条只是躺在 messages 里没人回。
+        if (this.drainInbox("high")) needContinue = true;
+      } while (needContinue);
 
-      if (round.usage) {
-        const tail = usageChunk(round.usage);
-        applyChunk(receiver, tail);
-        this.events.emit("chunk-parsed", receiver, tail);
-      }
       if (this.aborted) return;
-      receiver.status = AgentNSValue.MessageStatus.Completed;
+      // 低优先级插入点：内循环全停下、 reconcile* 之后（假件里没有 reconcile 这一步）
+      if (!this.drainInbox("low")) return;
+    }
+  }
 
-      if (!round.toolCalls?.length) return;
+  /** 跑一轮（= core 的一次请求 + 它引发的工具调用）；返回「模型是否还要求继续」 */
+  private async runRound(round: FakeRound): Promise<boolean> {
+    // 请求体就是「此刻的 messages」：先快照一份，用例才能问「下一次请求里带着它吗」
+    this.requests.push([...this.messages]);
 
-      const calls: AgentNS.ToolCall[] = round.toolCalls.map((call, index) => ({
-        index,
-        id: call.id,
-        type: "function",
-        function: { name: call.name, arguments: call.arguments ?? "{}" },
-      }));
-      receiver.tool_calls = calls;
+    const receiver = this.append(Message.Assistant());
+    receiver.status = AgentNSValue.MessageStatus.Writing;
+    this.events.emit("open");
 
-      // 并行工具：先把结果消息都追加出来（于是「在等哪几个」是全的），再逐个定型
-      const results = calls.map((call) => this.append(Message.Tool(call)));
-      if (round.subAgent && calls[0]) {
-        const started = subAgentContext(this, calls[0], round.subAgent);
-        this.events.emit("sub-agent-start", started);
-        // 子 Agent 跑起来了：先把它已有的消息报一遍（客户端据此算「它说了几句」），
-        // 再逐片推正文 —— 这两件都是子 Agent **自己**的事件，宿主只是转发
-        const inner = started.subAgent as unknown as FakeSubAgent;
-        for (const message of inner.messages) inner.events.emit("message", message);
-        const receiver = inner.messages[inner.messages.length - 1];
-        for (const text of round.subAgent.stream ?? []) {
-          if (receiver) {
-            const chunk = {
-              choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
-            };
-            // 与 core 的 `parseStreamData` 同一个顺序：先攒进消息，再广播
-            // （不先攒的话，假件里那条消息永远是空的，而真 core 里它已经长了）
-            applyChunk(receiver, chunk as Parameters<typeof applyChunk>[1]);
-            inner.events.emit("chunk-parsed", receiver, chunk);
-          }
+    if (round.gate) await round.gate;
+    if (this.aborted) return false;
+
+    for (const delta of round.deltas ?? []) {
+      if (this.aborted) return false;
+      const chunk = toChunk(delta);
+      // 攒消息用 core 的同一份实现：宿主存下来的那条与客户端攒出来的逐字一致
+      applyChunk(receiver, chunk);
+      this.events.emit("chunk-parsed", receiver, chunk);
+    }
+
+    if (round.usage) {
+      const tail = usageChunk(round.usage);
+      applyChunk(receiver, tail);
+      this.events.emit("chunk-parsed", receiver, tail);
+    }
+    if (this.aborted) return false;
+    receiver.status = AgentNSValue.MessageStatus.Completed;
+
+    if (!round.toolCalls?.length) return false;
+
+    const calls: AgentNS.ToolCall[] = round.toolCalls.map((call, index) => ({
+      index,
+      id: call.id,
+      type: "function",
+      function: { name: call.name, arguments: call.arguments ?? "{}" },
+    }));
+    receiver.tool_calls = calls;
+
+    // 并行工具：先把结果消息都追加出来（于是「在等哪几个」是全的），再逐个定型
+    const results = calls.map((call) => this.append(Message.Tool(call)));
+    if (round.subAgent && calls[0]) {
+      const started = subAgentContext(this, calls[0], round.subAgent);
+      this.events.emit("sub-agent-start", started);
+      // 子 Agent 跑起来了：先把它已有的消息报一遍（客户端据此算「它说了几句」），
+      // 再逐片推正文 —— 这两件都是子 Agent **自己**的事件，宿主只是转发
+      const inner = started.subAgent as unknown as FakeSubAgent;
+      for (const message of inner.messages) inner.events.emit("message", message);
+      const receiver = inner.messages[inner.messages.length - 1];
+      for (const text of round.subAgent.stream ?? []) {
+        if (receiver) {
+          const chunk = {
+            choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
+          };
+          // 与 core 的 `parseStreamData` 同一个顺序：先攒进消息，再广播
+          // （不先攒的话，假件里那条消息永远是空的，而真 core 里它已经长了）
+          applyChunk(receiver, chunk as Parameters<typeof applyChunk>[1]);
+          inner.events.emit("chunk-parsed", receiver, chunk);
         }
       }
-      if (round.toolGate) await round.toolGate;
-
-      for (const [index, result] of results.entries()) {
-        if (this.aborted) return;
-        const call = calls[index]!;
-        result.content = `ok:${call.function?.name ?? ""}`;
-        result.status = AgentNSValue.MessageStatus.Completed;
-        if (round.toolSubAgentUsage) result.subAgentUsage = round.toolSubAgentUsage;
-        this.events.emit("message", result);
-        // 钩子载荷的形状按 core 的 `ToolCallEndContext` 给；假 agent 不是真的 core `Agent`
-        this.events.emit("tool-call-end", {
-          agent: this,
-          toolCall: call,
-          result,
-        } as unknown as ToolCallEndContext);
-      }
-
-      if (round.subAgent && calls[0]) {
-        this.events.emit("sub-agent-end", subAgentContext(this, calls[0], round.subAgent));
-      }
     }
+    if (round.toolGate) await round.toolGate;
+
+    for (const [index, result] of results.entries()) {
+      if (this.aborted) return false;
+      const call = calls[index]!;
+      result.content = `ok:${call.function?.name ?? ""}`;
+      result.status = AgentNSValue.MessageStatus.Completed;
+      if (round.toolSubAgentUsage) result.subAgentUsage = round.toolSubAgentUsage;
+      this.events.emit("message", result);
+      // 钩子载荷的形状按 core 的 `ToolCallEndContext` 给；假 agent 不是真的 core `Agent`
+      this.events.emit("tool-call-end", {
+        agent: this,
+        toolCall: call,
+        result,
+      } as unknown as ToolCallEndContext);
+    }
+
+    if (round.subAgent && calls[0]) {
+      this.events.emit("sub-agent-end", subAgentContext(this, calls[0], round.subAgent));
+    }
+
+    return true;
+  }
+
+  /**
+   * 取走某一档优先级的条目，按入队顺序落成 `Message.User`（core 的 `insertInbox` 同一份语义）。
+   *
+   * 走 `append()`（不是 `messages.push`）：落地的那条同样要广播 `message`，宿主正是按这条事件
+   * 把它记进本轮产出并落库的 —— 少了它，「排队的消息」在宿主眼里等于没发生。
+   *
+   * 摘除用 `splice` 逐个摘（不重建数组）：`inbox` 是公开字段，换掉数组实例会让外部快照
+   * 指向一份死队列，与 core 的处理一致。
+   *
+   * @returns 有没有真的插进去（外循环靠它判断要不要再转一圈）
+   */
+  private drainInbox(priority: AgentNS.InboxPriority): boolean {
+    const taken: AgentNS.InboxEntry[] = [];
+    for (let index = 0; index < this.inbox.length; ) {
+      const entry = this.inbox[index]!;
+      if (entry.priority !== priority) {
+        index += 1;
+        continue;
+      }
+      taken.push(entry);
+      this.inbox.splice(index, 1);
+    }
+    for (const entry of taken) {
+      // 正文的取舍（非 user 来源加一行来源注释）用 core 同一个纯函数，不在这里再造一份
+      const message = Message.User(inboxEntryContent(entry));
+      // id 用入队时定的那个（D5）：另生成一个，客户端就会把同一条画两遍
+      message.id = entry.messageId;
+      this.append(message);
+    }
+    return taken.length > 0;
   }
 }
 

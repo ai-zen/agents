@@ -1,15 +1,25 @@
 /**
  * `RunRegistry` —— 「这段对话正在跑哪一轮」的唯一一处（architecture §4 / PRD D14）。
  *
- * 为什么要有它：一段对话同时跑一轮（PRD D14）。再来请求时**直接拒**并说明「正忙」，
- * 不排队也不自动打断 —— 中止是用户的显式动作，只有用户能按。
+ * 为什么要有它：一段对话同时跑一轮（PRD D14）。再来请求时本注册表**直接拒**并说明「正忙」。
  *
- * 为什么它是注册表而不是散在服务里的布尔：服务层要问「现在忙不忙」，接线层的
- * `conversation.abort` 要找到那一轮去中止；两处问的必须是同一份事实，所以只留一处
- * （`isRunning` 只有这里一个实现，见 PRD D14）。服务层只需要窄接口 `RunsView`，
- * 本类结构上就满足它，不必包一层。
+ * ## 为什么它是注册表，而不是散在服务里的布尔
  *
- * 环的内存真相在 `ChatRunner` 那一轮自己手里（消息、生成态），本文件只记「谁在跑」——
+ * 服务层要问「现在忙不忙」，接线层的 `conversation.abort` 要找到那一轮去中止；两处问的必须
+ * 是同一份事实，所以只留一处（`isRunning` 只有这里一个实现，见 PRD D14）。服务层只需要窄
+ * 接口 `RunsView`，本类结构上就满足它，不必包一层。
+ *
+ * ## 它为什么不是排队执行器（也不能改成那个）
+ *
+ * 「用户跑中再发一句话」那条口子走的是 core 的 inbox，不是这里（PRD D3：
+ * `conversation.send` → `ChatRunner.enqueue` → 那一轮 agent 的 `pushInbox`）。这一条仍然是
+ * 一道**硬保证**：交接回合、撤回、问题答复都靠 `busy` 这一支把「这段对话现在不能动」说清楚
+ * （`HandoffService` / `ConversationService.revert` / `QuestionService.answer`）。把这里改成
+ * 「来一个排一个」，等于把「先来后到」那套语义摊到这三个调用方头上，而它们要的是一个当下的
+ * 「不行」。同理，`conversation.send` 的排队分支也只对**正在跑的那一轮**说话：拿不到那一轮
+ * 就回老路径，不在这里排一个跨轮次的全局队列。
+ *
+ * 一轮的内存真相在 `ChatRunner` 那一轮自己手里（消息、生成态），本文件只记「谁在跑」——
  * 跑的内容不往这里存第二份。
  */
 
@@ -113,8 +123,12 @@ export class RunRegistry implements RunsView {
   /**
    * 占位：这段对话开始跑一轮。
    *
-   * 已经在跑就抛 `HostError("busy")` —— PRD D14：直接拒并说明「正忙」，不排队、不自动打断。
-   * `detail` 带上「上一次是什么时候开始的」，让界面能说清「它在忙什么」而不是干巴巴一句忙。
+   * 已经在跑就抛 `HostError("busy")` —— PRD D14：直接拒并说明「正忙」。`detail` 带上「上一次
+   * 是什么时候开始的」，让界面能说清「它在忙什么」而不是干巴巴一句忙。
+   *
+   * 「用户跑中再发一句话」不经过这一道：那条口子在 `conversation.send` 就分流到
+   * `ChatRunner.enqueue` 了（D3），压根不会走到 `start()`。这里抛 `busy` 的几种情形都是
+   * **别的动作**撞上了正在跑的一轮（交接、撤回、答问题，以及排队分支兜底之后的那个 `send`）。
    */
   start(conversationId: string): RunHandle {
     const existing = this.runs.get(conversationId);

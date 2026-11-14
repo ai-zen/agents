@@ -278,6 +278,10 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
     const accepted = await client.queue.next();
     if (!isSuccess(accepted)) throw new Error(`受理没成功：${JSON.stringify(accepted)}`);
     const acceptedResult = accepted.result as ConversationSendResult;
+    // 空闲时发的是新的一轮：助手消息 id 必须在（`null` 只属于跑中排队的受理）
+    if (acceptedResult.assistantMessageId === null) {
+      throw new Error(`空闲发送的回包里没有助手消息 id：${JSON.stringify(acceptedResult)}`);
+    }
     expect(acceptedResult.assistantMessageId.length).toBeGreaterThan(0);
 
     const run = await collectRun();

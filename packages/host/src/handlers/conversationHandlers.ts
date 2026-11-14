@@ -2,8 +2,9 @@
  * `conversation.*`：一段对话的身份、历史与一轮的运行。
  *
  * 这里只做「参数 → 交给服务/运行时 → 把结果翻译成契约形状」。业务判断在
- * `ConversationService` 与 `ChatRunner` 里：比如「忙就拒」在 `RunRegistry`、
- * 「模型解析不出来」在服务层，本文件不重新判断一遍。
+ * `ConversationService` 与 `ChatRunner` 里：比如「一段对话同时只跑一轮」在 `RunRegistry`、
+ * 「跑中发送排进那一轮的 inbox」在 `ChatRunner.enqueue`（D3）、「模型解析不出来」在服务层，
+ * 本文件不重新判断一遍。
  *
  * 唯一在接线层做的拼装是 `conversation.state` 的现场快照：它要把三处事实合起来
  * （服务层给的视图、运行时给的这一轮、库里消息求和的用量），而这三样分别属于三个持有者，
@@ -149,10 +150,20 @@ export function createConversationHandlers(deps: ConversationHandlerDeps): Handl
 // ---------------------------------------------------------------------------
 
 /**
- * `conversation.send`：受理一轮。
+ * `conversation.send`：受理一句用户输入。
  *
  * 先把草稿落成真行（R56：首次 `send` 时才写 `conversations`）：FK 要求消息所属的对话已经存在，
  * 而且后端的一切（重连、列表、删除）都按「存在即能查」处理。
+ *
+ * ## 两条受理路（PRD D3）
+ *
+ * 1. **这段对话正跑着一轮** → 这一句排进**那一轮**的 inbox，立即回 `queued: true`（不再 `busy`）：
+ *    不打断正在说的那一段，core 在轮末把它落成一条用户消息。
+ * 2. 其余情况（空闲 / 刚跑完还没结算干净）→ 老路径 `runner.run()`：开新的一轮，忙就 `busy`。
+ *
+ * 为什么入队的定夺不在这一层：「跑着的那一轮」只在 `ChatRunner` 里（它手上才有 agent）；
+ * 这里只负责把回执翻译成契约形状。`assertSendable`（D23）在两条路之前就过了 —— 排队不是
+ * 绕过问题闸门的通道。
  *
  * 素材关系行不在这里写：它跟着「用户消息落库那一刻」走（`ChatRunner` 注入的
  * `linkMessageAssets` 扫落库内容里的 `__asset_id`），所以重试与重写都不会重复记。
@@ -165,11 +176,29 @@ async function sendTurn(
   params: ConversationSendParams,
   language: Language,
 ): Promise<ConversationSendResult> {
-  // D23：有一段挡着的问题（交接确认、不可撤销动作的确认）就先答它再发
+  // D23：有一段挡着的问题（交接确认、不可撤销动作的确认）就先答它再发。
+  // 排队也不是绕道：这个闸门在两条受理路之前。
   await deps.assertSendable?.(params.conversationId);
 
   // R56：草稿在第一条用户消息之前不落库，这里把它写成真行（同一个 id）
   await deps.conversations.ensurePersisted(params.conversationId);
+
+  // D3：跑中发送 → 排进那一轮的 inbox。`null` = 现在没有能排进去的一轮，落到下面的老路径。
+  const queued = await deps.runner.enqueue({
+    conversationId: params.conversationId,
+    input: params.input,
+    language,
+  });
+  if (queued) {
+    // 排队的话还没有属于它的助手消息（流还是那一轮原来那条），所以这里是 `null`（D3/D5）
+    return {
+      userMessageId: queued.userMessageId,
+      assistantMessageId: null,
+      queued: true,
+      attachments: queued.attachments.map((outcome) => localizeOutcome(outcome, language)),
+      acceptedAt: queued.acceptedAt,
+    };
+  }
 
   const turn = await deps.runner.run({
     conversationId: params.conversationId,
@@ -316,6 +345,8 @@ export function idleRunState(
     conversationId,
     status: "idle",
     assistantMessageId: null,
+    // 没在跑的一轮就没有谁的入队可排：这里是 0，不是「未知」（D3）
+    inboxPending: 0,
     startedAt: null,
     settledAt: null,
     generation: null,
