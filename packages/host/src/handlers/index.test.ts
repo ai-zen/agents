@@ -179,7 +179,7 @@ describe("handler 表", () => {
 });
 
 describe("能力清单（F-E5 / F-E6 / F-F9）", () => {
-  it("每个方法都在清单里，标题与说明的文案键真的存在", () => {
+  it("每个方法都在清单里，且清单项只有契约事实（没有文案字段）", () => {
     const capabilities = createCapabilities();
     expect(capabilities.map((item) => item.method)).toEqual([...METHOD_NAMES]);
 

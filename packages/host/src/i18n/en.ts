@@ -165,6 +165,4 @@ export const en = {
   // 自动命名（D2）：起不出名就保持原名，这句只在内部结果与日志里出现
   "autoName.failed": "No name came out of it, so the original one stays: {reason}",
 
-  // 每个方法一条标题（`capability.<方法名>`）加一句说明（`.detail`）；
-  // 编号与阻塞 / 不可撤销属性见 `handlers/capabilities.ts`
 } as const;
