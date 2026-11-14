@@ -504,15 +504,17 @@ export interface AttachmentOutcome {
 // ---------------------------------------------------------------------------
 
 /**
- * 状态栏每一块的事实。块名固定，块内结构按块名不同而不同（判别式联合）。
+ * 状态栏每一块的事实。块 id 固定，块内结构按 id 不同而不同（判别式联合）。
  *
  * 这样的好处是：宿主给的是可排版的块，客户端决定摆哪几块、摆在哪（PRD F-I6 /
  * 「宿主给能力、客户端给交互」），双方都不需要解析一整行字符串。
+ *
+ * **块名（助手 / 模型 / 上下文 …）不在这里**：那是界面的词汇，归客户端 —— 同一块在
+ * 不同界面上叫法可能不同，也可能干脆不显示名字。宿主只给 id 与 facts。
  */
 export type StatusBlock =
   | {
       id: "agent";
-      label: LocalizedText;
       /**
        * 助手块的三个事实。
        *
@@ -524,15 +526,14 @@ export type StatusBlock =
     }
   | {
       id: "model";
-      label: LocalizedText;
       facts: ModelState;
     }
-  | { id: "thinking"; label: LocalizedText; facts: ThinkingState }
-  | { id: "context"; label: LocalizedText; facts: ContextState }
-  | { id: "usage"; label: LocalizedText; facts: UsageSnapshot }
-  | { id: "cwd"; label: LocalizedText; facts: FolderFact }
-  | { id: "tools"; label: LocalizedText; facts: { running: RunningTool[] } }
-  | { id: "subagents"; label: LocalizedText; facts: { items: SubAgentSnapshot[] } };
+  | { id: "thinking"; facts: ThinkingState }
+  | { id: "context"; facts: ContextState }
+  | { id: "usage"; facts: UsageSnapshot }
+  | { id: "cwd"; facts: FolderFact }
+  | { id: "tools"; facts: { running: RunningTool[] } }
+  | { id: "subagents"; facts: { items: SubAgentSnapshot[] } };
 
 /** 状态栏块的 id */
 export type StatusBlockId = StatusBlock["id"];

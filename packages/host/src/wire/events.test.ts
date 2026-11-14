@@ -13,7 +13,7 @@ import { zeroUsage } from "./states.js";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 
-const localized = (key: "status.idle" | "label.cwd") =>
+const localized = (key: "status.idle") =>
   ({ code: key, messageKey: key, params: {}, message: key }) as const;
 
 describe("事件表", () => {
@@ -155,7 +155,7 @@ describe("事件表", () => {
         id: "n-1",
         level: "warning",
         duration: null,
-        text: localized("label.cwd"),
+        text: localized("status.idle"),
         conversationId: "c-1",
         createdAt: NOW,
       },

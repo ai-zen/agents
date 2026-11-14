@@ -87,14 +87,6 @@ export const zh = {
   "usage.withSubAgents": "累计里有 {value} 来自子 Agent",
 
   // ---- 状态栏各块的标签（PRD F-I6）----
-  "label.agent": "助手",
-  "label.model": "模型",
-  "label.thinking": "思考强度",
-  "label.context": "上下文",
-  "label.usage": "用量",
-  "label.cwd": "目录",
-  "label.tools": "在跑的工具",
-  "label.subagents": "子 Agent",
 
   // ---- `@` 补全（PRD F-H5 / D7）----
   "completion.scanning": "还在读项目的文件清单，再多打几个字它就出来了。",

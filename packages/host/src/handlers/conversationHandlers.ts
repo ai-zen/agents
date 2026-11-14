@@ -278,7 +278,7 @@ async function conversationStateOf(
       thinking: conversation.thinking,
       usage,
       questions: deps.questionsFor ? await deps.questionsFor(conversationId) : [],
-      statusBlocks: statusBlocksOf({ conversation, agent, run, context, usage, language }),
+      statusBlocks: statusBlocksOf({ conversation, agent, run, context, usage }),
       updatedAt: now,
     },
     // 这份消息就是上面算用量与上下文用的那一次读取，不是又读一遍
@@ -321,14 +321,6 @@ export interface StatusBlockInput {
   context: ContextState;
   /** 累计用量 */
   usage: UsageSnapshot;
-  /** 收件人的语言（块的标签是给人看的一句话） */
-  language: Language;
-}
-
-/** 块的标签（`label.agent` / `label.model` …，PRD F-I6：宿主给块名，客户端排版） */
-function blockLabel(id: StatusBlockId, language: Language): StatusBlock["label"] {
-  const messageKey = `label.${id}` as MessageKey;
-  return { code: messageKey, messageKey, params: {}, message: render(language, messageKey) };
 }
 
 /**
@@ -343,49 +335,41 @@ function blockLabel(id: StatusBlockId, language: Language): StatusBlock["label"]
  * （`input.agent`）：本函数保持同步纯函数，不在这里做 IO。
  */
 export function statusBlocksOf(input: StatusBlockInput): StatusBlock[] {
-  const { conversation, agent, run, context, usage, language } = input;
+  const { conversation, agent, run, context, usage } = input;
   const generation = run.generation;
   const runningTools = generation?.phase === "awaiting_tools" ? generation.runningTools : [];
 
   const blocks: Record<StatusBlockId, StatusBlock> = {
     agent: {
       id: "agent",
-      label: blockLabel("agent", language),
       facts: { agentId: conversation.agentId, name: agent.name, available: agent.available },
     },
     model: {
       id: "model",
-      label: blockLabel("model", language),
       facts: conversation.model,
     },
     thinking: {
       id: "thinking",
-      label: blockLabel("thinking", language),
       facts: conversation.thinking,
     },
     context: {
       id: "context",
-      label: blockLabel("context", language),
       facts: context,
     },
     usage: {
       id: "usage",
-      label: blockLabel("usage", language),
       facts: usage,
     },
     cwd: {
       id: "cwd",
-      label: blockLabel("cwd", language),
       facts: conversation.folder,
     },
     tools: {
       id: "tools",
-      label: blockLabel("tools", language),
       facts: { running: runningTools },
     },
     subagents: {
       id: "subagents",
-      label: blockLabel("subagents", language),
       facts: { items: run.subagents },
     },
   };

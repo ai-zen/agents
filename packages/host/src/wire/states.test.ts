@@ -273,9 +273,8 @@ describe("状态栏块（PRD F-I6）", () => {
       "subagents",
     ]);
 
-    const label = { code: "label.cwd", messageKey: "label.cwd", params: {}, message: "Folder" } as const;
-    const cwdBlock: StatusBlock = { id: "cwd", label, facts: { cwd: "/tmp/x", exists: false } };
-    const toolsBlock: StatusBlock = { id: "tools", label, facts: { running: [] } };
+    const cwdBlock: StatusBlock = { id: "cwd", facts: { cwd: "/tmp/x", exists: false } };
+    const toolsBlock: StatusBlock = { id: "tools", facts: { running: [] } };
 
     // 判别式联合：按 id 收窄后拿到的就是对应块的事实
     expect(cwdBlock.id === "cwd" && cwdBlock.facts.exists).toBe(false);

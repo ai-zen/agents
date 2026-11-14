@@ -91,14 +91,6 @@ export const en = {
   "usage.withSubAgents": "the total includes {value} from helper agents",
 
   // ---- 状态栏各块的标签（PRD F-I6：宿主给块名，客户端排版）----
-  "label.agent": "Assistant",
-  "label.model": "Model",
-  "label.thinking": "Thinking",
-  "label.context": "Context",
-  "label.usage": "Usage",
-  "label.cwd": "Folder",
-  "label.tools": "Tools running",
-  "label.subagents": "Helper agents",
 
   // ---- `@` 补全（PRD F-H5 / D7）----
   "completion.scanning": "Still reading the project's file list — a few more characters and it will fill in.",

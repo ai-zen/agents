@@ -343,9 +343,8 @@ describe("conversation.state 的状态栏块（PRD F-I6 / 裁定 R65）", () => 
     const subagents = state.statusBlocks.find((block) => block.id === "subagents");
     expect(subagents?.id === "subagents" && subagents.facts.items).toEqual(state.run.subagents);
 
-    // 标签按连接语言给（D8）
-    const labels = state.statusBlocks.map((block) => block.label.message);
-    expect(labels[0]).toBe(render("en", "label.agent"));
+    // 块名不在这里：宿主只给 id 与 facts，名字归客户端（PRD F-I6）
+    expect(state.statusBlocks.every((block) => !("label" in block))).toBe(true);
   });
 
   it("助手被删之后，助手块回 null（名字与可用性都没有可报的事实）", async () => {
