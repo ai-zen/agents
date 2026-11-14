@@ -3,13 +3,13 @@
  * 用取名模型（缺省回落兜底模型）；起不出名就保持原名；写回时 `nameIsAuto` 继续为真。
  */
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { AgentNS } from "@ai-zen/agents-core";
 import { ConfigManager } from "@ai-zen/agents-sdk";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { ConversationRepository } from "../storage/ConversationRepository.js";
 import { Database } from "../storage/Database.js";
@@ -51,28 +51,29 @@ const BASE_CONFIG = {
 };
 
 async function setup(config: Record<string, unknown> = BASE_CONFIG): Promise<Harness> {
-  const dir = await mkdtemp(join(tmpdir(), "ai-zen-autonaming-"));
-  const db = new Database(join(dir, "ai-zen.db"));
-  await migrate(db);
+  const configPath = await writeConfig(config);
+  return buildHarness(configPath);
+}
 
-  const configPath = join(dir, "config.json");
+let dir: string;
+let db: Database;
+let workspaces: WorkspaceRepository;
+let conversations: ConversationRepository;
+let messages: MessageRepository;
+let notices: NoticeRepository;
+/** 这个用例里已经写过几份配置文件（每次 `setup` 一份，互不覆盖） */
+let configSeq = 0;
+
+/** 写一份配置到自己的文件：`ConfigManager` 每次读盘、无缓存，换配置不用换库 */
+async function writeConfig(config: Record<string, unknown>): Promise<string> {
+  configSeq += 1;
+  const configPath = join(dir, `config-${configSeq}.json`);
   await writeFile(configPath, JSON.stringify(config), "utf-8");
+  return configPath;
+}
 
-  const workspaces = new WorkspaceRepository(db);
-  const conversations = new ConversationRepository(db);
-  const messages = new MessageRepository(db);
-  const notices = new NoticeRepository(db);
-  await workspaces.create({ id: "w1", name: "项目一", cwd: join(dir, "project"), createdAt: 1 });
-  await conversations.create({
-    id: "c1",
-    workspaceId: "w1",
-    name: "2026-01-01 00:00",
-    agentId: "a1",
-    modelId: "m-big",
-    createdAt: 1,
-    updatedAt: 1,
-  });
-
+/** 一套服务实例（收集调用、可换行为、事件数组、时钟都只活在实例上） */
+function buildHarness(configPath: string): Harness {
   const calls: CompletionCall[] = [];
   const events: Array<{ name: string; payload: unknown }> = [];
   const behaviour = { reply: async (): Promise<string> => "  修复登录页  " };
@@ -121,13 +122,52 @@ async function seedFirstTurn(harness: Harness, conversationId = "c1"): Promise<v
 
 let harness: Harness;
 
+// 整个文件共用一个库：`new + migrate` 每用例 55ms，清表只是一条 DELETE 批次。
+beforeAll(async () => {
+  dir = await mkdtemp(join(tmpdir(), "ai-zen-autonaming-"));
+  db = new Database(join(dir, "ai-zen.db"));
+  await migrate(db);
+
+  workspaces = new WorkspaceRepository(db);
+  conversations = new ConversationRepository(db);
+  messages = new MessageRepository(db);
+  notices = new NoticeRepository(db);
+});
+
 beforeEach(async () => {
+  // 只清业务表；`meta` 绝不碰（migrate 靠 meta.schemaVersion 判断跑不跑）
+  await db.tx((tx) => [
+    tx.run("DELETE FROM notices"),
+    tx.run("DELETE FROM questions"),
+    tx.run("DELETE FROM workspaces"),
+    tx.run("DELETE FROM assets"),
+    tx.run("DELETE FROM credentials"),
+  ]);
+  // 配置是写进磁盘的：把上一条用例留下的那份（连同变体配置）全部清掉，再回到基准
+  for (const name of await readdir(dir)) {
+    if (name.startsWith("config") && name.endsWith(".json")) {
+      await rm(join(dir, name), { force: true });
+    }
+  }
+  configSeq = 0;
+
+  await workspaces.create({ id: "w1", name: "项目一", cwd: join(dir, "project"), createdAt: 1 });
+  await conversations.create({
+    id: "c1",
+    workspaceId: "w1",
+    name: "2026-01-01 00:00",
+    agentId: "a1",
+    modelId: "m-big",
+    createdAt: 1,
+    updatedAt: 1,
+  });
+
   harness = await setup();
 });
 
-afterEach(async () => {
-  await harness.db.close();
-  await rm(harness.dir, { recursive: true, force: true });
+afterAll(async () => {
+  await db.close();
+  await rm(dir, { recursive: true, force: true });
 });
 
 describe("自动命名的触发条件（D2 / F-C4）", () => {
@@ -152,15 +192,11 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
   });
 
   it("没配取名模型就回落兜底模型", async () => {
+    // 换一份配置不需要换库：`ConfigManager` 每次读盘，换个 config 文件就够
     const bare = await setup({ ...BASE_CONFIG, namingModel: undefined });
-    try {
-      await seedFirstTurn(bare);
-      await bare.service.afterTurn("c1");
-      expect(bare.calls[0]?.modelId).toBe("m-big");
-    } finally {
-      await bare.db.close();
-      await rm(bare.dir, { recursive: true, force: true });
-    }
+    await seedFirstTurn(bare);
+    await bare.service.afterTurn("c1");
+    expect(bare.calls[0]?.modelId).toBe("m-big");
   });
 
   it("用户改过名字就不动它（nameIsAuto 为假）", async () => {
@@ -175,16 +211,11 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
 
   it("开关关掉就一次请求都不发", async () => {
     const off = await setup({ ...BASE_CONFIG, autoTitle: false });
-    try {
-      await seedFirstTurn(off);
-      const outcome = await off.service.afterTurn("c1");
-      expect(outcome).toMatchObject({ named: false, skipped: "disabled" });
-      expect(off.calls).toHaveLength(0);
-      expect((await off.conversations.get("c1"))?.name).toBe("2026-01-01 00:00");
-    } finally {
-      await off.db.close();
-      await rm(off.dir, { recursive: true, force: true });
-    }
+    await seedFirstTurn(off);
+    const outcome = await off.service.afterTurn("c1");
+    expect(outcome).toMatchObject({ named: false, skipped: "disabled" });
+    expect(off.calls).toHaveLength(0);
+    expect((await off.conversations.get("c1"))?.name).toBe("2026-01-01 00:00");
   });
 
   it("第二轮之后不再起名（第一轮这个条件不成立了）", async () => {
@@ -217,30 +248,20 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
       namingModel: undefined,
       defaultModel: undefined,
     });
-    try {
-      await seedFirstTurn(noModel);
-      const outcome = await noModel.service.afterTurn("c1");
-      expect(outcome).toMatchObject({ named: false, skipped: "no_model" });
-      expect(noModel.calls).toHaveLength(0);
-      expect((await noModel.conversations.get("c1"))?.name).toBe("2026-01-01 00:00");
-    } finally {
-      await noModel.db.close();
-      await rm(noModel.dir, { recursive: true, force: true });
-    }
+    await seedFirstTurn(noModel);
+    const outcome = await noModel.service.afterTurn("c1");
+    expect(outcome).toMatchObject({ named: false, skipped: "no_model" });
+    expect(noModel.calls).toHaveLength(0);
+    expect((await noModel.conversations.get("c1"))?.name).toBe("2026-01-01 00:00");
   });
 
   it("配置指向一个不存在的模型也等于没有取名模型", async () => {
     const broken = await setup({ ...BASE_CONFIG, namingModel: "没有这个模型" });
-    try {
-      await seedFirstTurn(broken);
-      expect(await broken.service.afterTurn("c1")).toMatchObject({
-        named: false,
-        skipped: "no_model",
-      });
-    } finally {
-      await broken.db.close();
-      await rm(broken.dir, { recursive: true, force: true });
-    }
+    await seedFirstTurn(broken);
+    expect(await broken.service.afterTurn("c1")).toMatchObject({
+      named: false,
+      skipped: "no_model",
+    });
   });
 });
 

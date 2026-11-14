@@ -134,9 +134,4 @@ export class QuestionRepository {
     );
     return result.changes;
   }
-
-  async delete(id: string): Promise<number> {
-    const result = await this.db.run("DELETE FROM questions WHERE id = ?", [id]);
-    return result.changes;
-  }
 }

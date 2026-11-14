@@ -7,7 +7,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { AssetRepository } from "../storage/AssetRepository.js";
 import { ConversationRepository } from "../storage/ConversationRepository.js";
@@ -50,7 +50,9 @@ let assets: AssetRepository;
 let sweeps: string[][];
 let clock: number;
 
-beforeEach(async () => {
+// 整个文件共用一个库：`new + migrate` 每用例 55ms，清表只是一条 DELETE 批次。
+// 目录类事实（projectDir 存在、missingDir 不存在）是静态的，也只准备一次。
+beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "ai-zen-services-workspaces-"));
   projectDir = join(dir, "project");
   await mkdir(projectDir, { recursive: true });
@@ -61,6 +63,20 @@ beforeEach(async () => {
   conversations = new ConversationRepository(db);
   messages = new MessageRepository(db);
   assets = new AssetRepository(db);
+});
+
+beforeEach(async () => {
+  // 只清业务表；`meta` 绝不碰（migrate 靠 meta.schemaVersion 判断跑不跑）。
+  // `workspaces` 级联 conversations → messages → conversation_assets，删完再删素材行。
+  await db.tx((tx) => [
+    tx.run("DELETE FROM notices"),
+    tx.run("DELETE FROM questions"),
+    tx.run("DELETE FROM workspaces"),
+    tx.run("DELETE FROM assets"),
+    tx.run("DELETE FROM credentials"),
+  ]);
+  // 项目目录本身是外部资源（宿主不碰），用例之间复用的就是同一个路径
+  await mkdir(projectDir, { recursive: true });
   runtime = new FakeRuntime();
   sweeps = [];
   clock = 1_000;
@@ -79,7 +95,7 @@ beforeEach(async () => {
   });
 });
 
-afterEach(async () => {
+afterAll(async () => {
   await db.close();
   await rm(dir, { recursive: true, force: true });
 });

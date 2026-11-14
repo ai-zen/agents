@@ -7,7 +7,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { ConversationRepository } from "../storage/ConversationRepository.js";
 import { Database } from "../storage/Database.js";
@@ -46,37 +46,14 @@ interface Harness {
   clock: { value: number };
 }
 
-async function setup(): Promise<Harness> {
-  const dir = await mkdtemp(join(tmpdir(), "ai-zen-questions-"));
-  const db = new Database(join(dir, "ai-zen.db"));
-  await migrate(db);
+let dir: string;
+let db: Database;
+let questions: QuestionRepository;
+let conversations: ConversationRepository;
+let workspaces: WorkspaceRepository;
 
-  const questions = new QuestionRepository(db);
-  const conversations = new ConversationRepository(db);
-  const workspaces = new WorkspaceRepository(db);
-  const messages = new MessageRepository(db);
-  void messages;
-
-  await workspaces.create({ id: "w1", name: "项目一", cwd: join(dir, "project"), createdAt: 1 });
-  await conversations.create({
-    id: "c1",
-    workspaceId: "w1",
-    name: "2026-01-01 00:00",
-    agentId: "a1",
-    modelId: "m1",
-    createdAt: 1,
-    updatedAt: 1,
-  });
-  await conversations.create({
-    id: "c2",
-    workspaceId: "w1",
-    name: "2026-01-01 00:01",
-    agentId: "a1",
-    modelId: "m1",
-    createdAt: 2,
-    updatedAt: 2,
-  });
-
+/** 实例级状态（事件、时钟、假运行时、交接替身）每用例重建；仓储与库复用 */
+function makeHarness(): Harness {
   const running = new Set<string>();
   const guard = { overGuard: false };
   const handoffCalls: HandoffCall[] = [];
@@ -132,13 +109,56 @@ async function askHandoff(harness: Harness, conversationId = "c1"): Promise<stri
 
 let harness: Harness;
 
-beforeEach(async () => {
-  harness = await setup();
+// 整个文件共用一个库：`new + migrate` 每用例 55ms，清表只是一条 DELETE 批次。
+// 真要「关库再重开」的那条用例自带库（见「生命周期」那一段）。
+beforeAll(async () => {
+  dir = await mkdtemp(join(tmpdir(), "ai-zen-questions-"));
+  db = new Database(join(dir, "ai-zen.db"));
+  await migrate(db);
+
+  questions = new QuestionRepository(db);
+  conversations = new ConversationRepository(db);
+  workspaces = new WorkspaceRepository(db);
 });
 
-afterEach(async () => {
-  await harness.db.close();
-  await rm(harness.dir, { recursive: true, force: true });
+beforeEach(async () => {
+  // 只清业务表；`meta` 绝不碰（migrate 靠 meta.schemaVersion 判断跑不跑）
+  await db.tx((tx) => [
+    tx.run("DELETE FROM notices"),
+    tx.run("DELETE FROM questions"),
+    tx.run("DELETE FROM workspaces"),
+    tx.run("DELETE FROM assets"),
+    tx.run("DELETE FROM credentials"),
+  ]);
+  // 硬线那条用例会在共享目录里写一份 config.json：每用例先回到「没有这份文件」的基准
+  await rm(join(dir, "config.json"), { force: true });
+
+  await workspaces.create({ id: "w1", name: "项目一", cwd: join(dir, "project"), createdAt: 1 });
+  await conversations.create({
+    id: "c1",
+    workspaceId: "w1",
+    name: "2026-01-01 00:00",
+    agentId: "a1",
+    modelId: "m1",
+    createdAt: 1,
+    updatedAt: 1,
+  });
+  await conversations.create({
+    id: "c2",
+    workspaceId: "w1",
+    name: "2026-01-01 00:01",
+    agentId: "a1",
+    modelId: "m1",
+    createdAt: 2,
+    updatedAt: 2,
+  });
+
+  harness = makeHarness();
+});
+
+afterAll(async () => {
+  await db.close();
+  await rm(dir, { recursive: true, force: true });
 });
 
 describe("问题对象的基本形状（D22）", () => {
@@ -370,17 +390,55 @@ describe("越过硬线两端都拒绝，问题继续挂着（D23 / F-D10）", ()
 
 describe("生命周期（D22：有状态、可持久化）", () => {
   it("重开库之后问题与回答都还在", async () => {
-    const id = await askHandoff(harness);
-    await harness.service.answer({ questionId: id, value: "summary" }, { answeredBy: "conn-1" });
+    // 这条要真「关库再重开」：共享夹具下 close 会把整个文件共用的库关掉，所以自带一个库
+    const ownDir = await mkdtemp(join(tmpdir(), "ai-zen-questions-reopen-"));
+    const ownFile = join(ownDir, "ai-zen.db");
+    let reopened: Database | undefined;
+    const own = new Database(ownFile);
+    try {
+      await migrate(own);
+      const ownWorkspaces = new WorkspaceRepository(own);
+      const ownConversations = new ConversationRepository(own);
+      await ownWorkspaces.create({
+        id: "w1",
+        name: "项目一",
+        cwd: join(ownDir, "project"),
+        createdAt: 1,
+      });
+      await ownConversations.create({
+        id: "c1",
+        workspaceId: "w1",
+        name: "2026-01-01 00:00",
+        agentId: "a1",
+        modelId: "m1",
+        createdAt: 1,
+        updatedAt: 1,
+      });
 
-    await harness.db.close();
-    const reopened = new Database(join(harness.dir, "ai-zen.db"));
-    await migrate(reopened);
-    const service = new QuestionService({ questions: new QuestionRepository(reopened) });
-    const listed = await service.list({ conversationId: "c1" });
-    expect(listed.questions[0]?.state).toBe("answered");
-    expect(listed.questions[0]?.answer?.value).toBe("summary");
-    await reopened.close();
+      const service = new QuestionService({
+        questions: new QuestionRepository(own),
+        handoff: { start: async () => ({ newConversationId: "c2" }) },
+      });
+      const asked = await service.askHandoff({
+        conversationId: "c1",
+        promptTokens: 800,
+        handoffTokens: 1000,
+      });
+      const id = asked.id;
+      await service.answer({ questionId: id, value: "summary" }, { answeredBy: "conn-1" });
+
+      await own.close();
+      reopened = new Database(ownFile);
+      await migrate(reopened);
+      const reopenedService = new QuestionService({ questions: new QuestionRepository(reopened) });
+      const listed = await reopenedService.list({ conversationId: "c1" });
+      expect(listed.questions[0]?.state).toBe("answered");
+      expect(listed.questions[0]?.answer?.value).toBe("summary");
+    } finally {
+      await own.close();
+      await reopened?.close();
+      await rm(ownDir, { recursive: true, force: true });
+    }
   });
 });
 

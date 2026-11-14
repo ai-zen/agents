@@ -3,7 +3,7 @@
  * PRD D13）、改名不改顺序、名字是不是自动起的（R35）、按名字搜索与 LIKE 通配符转义。
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,11 +23,25 @@ function input(fields: Omit<ConversationCreateInput, "agentId" | "modelId">): Co
   return { ...IDENTITY, ...fields };
 }
 
-beforeEach(async () => {
+// 库与迁移整个文件只做一次（起 worker + migrate 是每条用例的大头），每个用例只清表。
+beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "ai-zen-storage-conversations-"));
   db = new Database(join(dir, "ai-zen.db"));
   await migrate(db);
   repo = new ConversationRepository(db);
+});
+
+beforeEach(async () => {
+  await db.tx((tx) => [
+    // meta 不清：migrate 靠它判断跑不跑
+    tx.run("DELETE FROM notices"),
+    tx.run("DELETE FROM questions"),
+    // workspaces 必须在 assets 之前：删 workspace 级联删掉 conversation_assets 关系行，
+    // 之后 assets 的 ON DELETE RESTRICT 才不会拦
+    tx.run("DELETE FROM workspaces"), // 级联 conversations → messages → conversation_assets
+    tx.run("DELETE FROM assets"), // 级联 asset_vendor_files
+    tx.run("DELETE FROM credentials"),
+  ]);
 
   await db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES (?, ?, ?, ?)", [
     "w1",
@@ -43,7 +57,7 @@ beforeEach(async () => {
   ]);
 });
 
-afterEach(async () => {
+afterAll(async () => {
   await db.close();
   await rm(dir, { recursive: true, force: true });
 });

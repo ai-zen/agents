@@ -1,9 +1,12 @@
 /**
  * `Database` 门面与 worker 的协作测试：建库、四条执行通道、事务里的读与写、关闭语义。
- * 每个用例都在自己的一次性临时目录里开库，不碰仓库目录、也不碰用户的 `~/.ai-zen`。
+ * 库开在一次性临时目录里，不碰仓库目录、也不碰用户的 `~/.ai-zen`。
+ *
+ * 库整个文件只建一次，每个用例只把用例自己建的 `t` 删掉；验证 `close()` 语义的那两条
+ * 天生要销毁库，它们自己在同一个临时目录里另开一个（见下面的 `ownDatabase`）。
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,18 +15,40 @@ import { Database } from "./Database.js";
 let dir: string;
 let db: Database;
 
-beforeEach(async () => {
+/**
+ * 要销毁库的用例在这里另开一个（同一个临时目录、另一个文件名，由 `afterAll` 统一关掉）。
+ *
+ * 这些用例里用 `const db = ownDatabase(...)` 遮蔽外层那个共享库，所以用例正文（包括断言）
+ * 一行不用改，读到的就是自己的那个。
+ */
+const ownDbs: Database[] = [];
+
+function ownDatabase(fileName: string): Database {
+  const own = new Database(join(dir, fileName));
+  ownDbs.push(own);
+  return own;
+}
+
+beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "ai-zen-storage-db-"));
   db = new Database(join(dir, "ai-zen.db"));
 });
 
-afterEach(async () => {
+beforeEach(async () => {
+  // 这组用例不跑迁移，只拿 `t` 当沙盘：上一条用例建的那张表先拆掉
+  await db.run("DROP TABLE IF EXISTS t");
+});
+
+afterAll(async () => {
+  for (const own of ownDbs) await own.close();
   await db.close();
   await rm(dir, { recursive: true, force: true });
 });
 
 describe("Database", () => {
   it("建库后能跑 all / get / run，并按 WAL 模式打开", async () => {
+    // 「建库」这条要的是一个还不存在的库文件（共享库已被 beforeEach 开过了），所以自己开一个
+    const db = ownDatabase("fresh-create.db");
     const journal = await db.get<{ journal_mode: string }>("PRAGMA journal_mode");
     expect(journal?.journal_mode).toBe("wal");
 
@@ -135,6 +160,8 @@ describe("Database", () => {
   });
 
   it("close 之后所有调用都直接 reject，close 本身可重复调用", async () => {
+    // 这条要把库销毁掉（后面的用例还要用共享库），所以自己开一个
+    const db = ownDatabase("close-repeat.db");
     await db.get("SELECT 1");
     await db.close();
     await db.close();
@@ -146,6 +173,8 @@ describe("Database", () => {
   });
 
   it("close 会把仍在排队的请求 reject 掉，不留悬挂 Promise", async () => {
+    // 同上：这条要连 worker 一起关掉，用自己那个库
+    const db = ownDatabase("close-pending.db");
     // 塞一条慢语句（递归 CTE 制造延迟），趁它还没跑完就关闭；
     // 先挂上 catch 处理器，避免 close 里的同步 reject 变成未处理的 rejection
     const slow = db

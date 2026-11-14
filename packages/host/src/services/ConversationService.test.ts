@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { ConfigManager } from "@ai-zen/agents-sdk";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { AssetRepository } from "../storage/AssetRepository.js";
 import { ConversationRepository } from "../storage/ConversationRepository.js";
@@ -88,29 +88,38 @@ const BASE_CONFIG = {
 let harness: Harness;
 let clock: number;
 
-async function setup(config: Record<string, unknown> = BASE_CONFIG): Promise<Harness> {
-  const dir = await mkdtemp(join(tmpdir(), "ai-zen-services-conversations-"));
-  const projectDir = join(dir, "project");
-  await mkdir(projectDir, { recursive: true });
+// 静态部分（临时数据根 / 库 / 配置与助手文件）整个文件只建一次，见 beforeAll
+let dir: string;
+let projectDir: string;
+let db: Database;
+let configPath: string;
+let workspaces: WorkspaceRepository;
+let conversations: ConversationRepository;
+let messages: MessageRepository;
+let assets: AssetRepository;
+let questions: QuestionRepository;
 
-  const db = new Database(join(dir, "ai-zen.db"));
-  await migrate(db);
+/** 推理档位预设（静态文件，用例可能改写它，所以每个用例开头重写一遍） */
+const REASONING_PRESETS = {
+  "test-preset": {
+    levels: {
+      low: { reasoning_effort: "low" },
+      high: { reasoning_effort: "high" },
+    },
+  },
+};
 
-  const configPath = join(dir, "config.json");
+/**
+ * 写本用例的配置。
+ *
+ * `ConfigManager` 每次读盘、没有缓存：换一份配置不需要换库，写另一份 `config.json` 就够。
+ */
+async function writeConfig(config: Record<string, unknown> = BASE_CONFIG): Promise<void> {
   await writeFile(configPath, JSON.stringify(config), "utf-8");
-  await writeFile(
-    join(dir, "reasoning-presets.json"),
-    JSON.stringify({
-      "test-preset": {
-        levels: {
-          low: { reasoning_effort: "low" },
-          high: { reasoning_effort: "high" },
-        },
-      },
-    }),
-    "utf-8",
-  );
+}
 
+/** 助手定义（有用例会改写 `agents/a1.json`，所以每个用例开头重写一遍） */
+async function writeAgentFiles(): Promise<void> {
   await mkdir(join(dir, "agents"), { recursive: true });
   const agent = (id: string, name: string, extra: Record<string, unknown>) => ({
     id,
@@ -130,13 +139,16 @@ async function setup(config: Record<string, unknown> = BASE_CONFIG): Promise<Har
     JSON.stringify(agent("a2", "没绑模型的助手", {})),
     "utf-8",
   );
+}
 
+/**
+ * 一个用例的那一层内存状态（服务实例 / 假运行时 / 事件与清扫记录）。
+ *
+ * 库与磁盘上的静态文件是共用的，这一层每用例重建：用例之间的内存状态（草稿、`running`、
+ * 推出去的事件）不互相串。
+ */
+async function buildHarness(): Promise<Harness> {
   const runtime = new FakeRuntime();
-  const workspaces = new WorkspaceRepository(db);
-  const conversations = new ConversationRepository(db);
-  const messages = new MessageRepository(db);
-  const assets = new AssetRepository(db);
-  const questions = new QuestionRepository(db);
   clock = 1_700_000_000_000;
   const events: Array<{ name: string; payload: unknown }> = [];
   const sweeps: string[][] = [];
@@ -195,13 +207,50 @@ async function createPersisted(
   return { conversation: created.conversation };
 }
 
-beforeEach(async () => {
-  harness = await setup();
+/**
+ * 静态部分只建一次：临时数据根、库（`migrate` 只跑一次）、配置与助手文件、仓储。
+ */
+beforeAll(async () => {
+  dir = await mkdtemp(join(tmpdir(), "ai-zen-services-conversations-"));
+  projectDir = join(dir, "project");
+  await mkdir(projectDir, { recursive: true });
+
+  db = new Database(join(dir, "ai-zen.db"));
+  await migrate(db);
+
+  configPath = join(dir, "config.json");
+  await writeConfig();
+  await writeFile(join(dir, "reasoning-presets.json"), JSON.stringify(REASONING_PRESETS), "utf-8");
+  await writeAgentFiles();
+
+  workspaces = new WorkspaceRepository(db);
+  conversations = new ConversationRepository(db);
+  messages = new MessageRepository(db);
+  assets = new AssetRepository(db);
+  questions = new QuestionRepository(db);
 });
 
-afterEach(async () => {
-  await harness.db.close();
-  await rm(harness.dir, { recursive: true, force: true });
+beforeEach(async () => {
+  // 清表：`meta` 不能清（`migrate` 靠 `meta.schemaVersion` 判断要不要跑迁移），
+  // `messages_fts` 不用手动同步（`DELETE FROM messages` 的触发器自己维护索引）。
+  await db.tx((tx) => [
+    tx.run("DELETE FROM notices"),
+    tx.run("DELETE FROM questions"),
+    tx.run("DELETE FROM workspaces"), // 级联 conversations → messages → conversation_assets
+    tx.run("DELETE FROM assets"), // 级联 asset_vendor_files
+    tx.run("DELETE FROM credentials"),
+  ]);
+  // 上一个用例可能改过磁盘上的配置文件 / 助手定义：每个用例开头重写回基准那一份
+  await writeConfig();
+  await writeFile(join(dir, "reasoning-presets.json"), JSON.stringify(REASONING_PRESETS), "utf-8");
+  await writeAgentFiles();
+
+  harness = await buildHarness();
+});
+
+afterAll(async () => {
+  await db.close();
+  await rm(dir, { recursive: true, force: true });
 });
 
 describe("ConversationService.create（身份创建时定死，L7 / R18）", () => {
@@ -266,41 +315,32 @@ describe("ConversationService.create（身份创建时定死，L7 / R18）", () 
   });
 
   it("模型三级都解析不出来时报 config_invalid，文案是「给助手挑个模型」那条（R38），不写库", async () => {
-    const bare = await setup({ ...BASE_CONFIG, defaultModel: undefined });
-    try {
-      await expect(
-        createPersisted(bare.service, { workspaceId: "w1", agentId: "a2" }),
-      ).rejects.toMatchObject({
-        code: "config_invalid",
-        messageKey: "error.modelUnresolved",
-        detail: { agentId: "a2", defaultModel: null },
-      });
-      expect(await bare.conversations.list()).toEqual([]);
-    } finally {
-      await bare.db.close();
-      await rm(bare.dir, { recursive: true, force: true });
-    }
+    // 换一份配置不需要换库（`ConfigManager` 每次读盘），`beforeEach` 会把它写回基准那一份
+    await writeConfig({ ...BASE_CONFIG, defaultModel: undefined });
+    await expect(
+      createPersisted(harness.service, { workspaceId: "w1", agentId: "a2" }),
+    ).rejects.toMatchObject({
+      code: "config_invalid",
+      messageKey: "error.modelUnresolved",
+      detail: { agentId: "a2", defaultModel: null },
+    });
+    expect(await harness.conversations.list()).toEqual([]);
   });
 
   it("配置指向不存在的模型时也用同一条文案，原因在 detail 里", async () => {
-    const broken = await setup({
+    await writeConfig({
       ...BASE_CONFIG,
       // 助手 a2 没绑模型，兜底层指向一个配置里没有的模型
       defaultModel: "不存在的模型",
     });
-    try {
-      await expect(
-        createPersisted(broken.service, { workspaceId: "w1", agentId: "a2" }),
-      ).rejects.toMatchObject({
-        code: "config_invalid",
-        messageKey: "error.modelUnresolved",
-        detail: { modelId: "不存在的模型", level: "global", agentId: "a2" },
-      });
-      expect(await broken.conversations.list()).toEqual([]);
-    } finally {
-      await broken.db.close();
-      await rm(broken.dir, { recursive: true, force: true });
-    }
+    await expect(
+      createPersisted(harness.service, { workspaceId: "w1", agentId: "a2" }),
+    ).rejects.toMatchObject({
+      code: "config_invalid",
+      messageKey: "error.modelUnresolved",
+      detail: { modelId: "不存在的模型", level: "global", agentId: "a2" },
+    });
+    expect(await harness.conversations.list()).toEqual([]);
   });
 });
 

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { AgentNS } from "@ai-zen/agents-core";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { ConversationRepository } from "../storage/ConversationRepository.js";
 import { Database } from "../storage/Database.js";
@@ -55,14 +55,28 @@ function fakeSummarizer(): ConversationSummarizer & { calls: string[][] } {
 
 let summarizer: ReturnType<typeof fakeSummarizer>;
 
-beforeEach(async () => {
+// 整个文件共用一个库：`new + migrate` 每用例 55ms，清表只是一条 DELETE 批次
+beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "ai-zen-services-search-"));
   db = new Database(join(dir, "ai-zen.db"));
   await migrate(db);
 
-  const workspaces = new WorkspaceRepository(db);
   conversations = new ConversationRepository(db);
   messages = new MessageRepository(db);
+});
+
+beforeEach(async () => {
+  // 只清业务表；`meta` 绝不碰（migrate 靠 meta.schemaVersion 判断跑不跑）。
+  // `messages` 的 FTS 索引由 messages_fts_* 触发器跟着级联删除维护，不用手动同步。
+  await db.tx((tx) => [
+    tx.run("DELETE FROM notices"),
+    tx.run("DELETE FROM questions"),
+    tx.run("DELETE FROM workspaces"),
+    tx.run("DELETE FROM assets"),
+    tx.run("DELETE FROM credentials"),
+  ]);
+
+  const workspaces = new WorkspaceRepository(db);
   summarizer = fakeSummarizer();
   service = new SearchService({ conversations, messages, summarize: summarizer });
 
@@ -103,7 +117,7 @@ beforeEach(async () => {
   });
 });
 
-afterEach(async () => {
+afterAll(async () => {
   await db.close();
   await rm(dir, { recursive: true, force: true });
 });

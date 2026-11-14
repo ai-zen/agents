@@ -3,7 +3,7 @@
  * 是否连带清掉它名下的对话由外键决定，这里顺带断言一次。
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,14 +15,28 @@ let dir: string;
 let db: Database;
 let repo: WorkspaceRepository;
 
-beforeEach(async () => {
+// 库与迁移整个文件只做一次（起 worker + migrate 是每条用例的大头），每个用例只清表。
+beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "ai-zen-storage-workspaces-"));
   db = new Database(join(dir, "ai-zen.db"));
   await migrate(db);
   repo = new WorkspaceRepository(db);
 });
 
-afterEach(async () => {
+beforeEach(async () => {
+  await db.tx((tx) => [
+    // meta 不清：migrate 靠它判断跑不跑
+    tx.run("DELETE FROM notices"),
+    tx.run("DELETE FROM questions"),
+    // workspaces 必须在 assets 之前：删 workspace 级联删掉 conversation_assets 关系行，
+    // 之后 assets 的 ON DELETE RESTRICT 才不会拦
+    tx.run("DELETE FROM workspaces"), // 级联 conversations → messages → conversation_assets
+    tx.run("DELETE FROM assets"), // 级联 asset_vendor_files
+    tx.run("DELETE FROM credentials"),
+  ]);
+});
+
+afterAll(async () => {
   await db.close();
   await rm(dir, { recursive: true, force: true });
 });

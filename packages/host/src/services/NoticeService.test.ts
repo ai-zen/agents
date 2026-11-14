@@ -7,7 +7,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { NoticeRepository } from "../storage/NoticeRepository.js";
 import { Database } from "../storage/Database.js";
@@ -26,18 +26,12 @@ interface Harness {
   events: Array<{ name: EventName; payload: unknown }>;
   /** 手动推进的时钟（毫秒） */
   clock: { value: number };
-  reopen(): Promise<Database>;
 }
 
-async function setup(clockStart = 1_700_000_000_000): Promise<Harness> {
-  const dir = await mkdtemp(join(tmpdir(), "ai-zen-notices-"));
-  const dbFile = join(dir, "ai-zen.db");
-  const db = new Database(dbFile);
-  await migrate(db);
-
-  const notices = new NoticeRepository(db);
+/** 一条通知服务的实例级状态（事件数组、时钟）在用例之间重建就够，库不用重建 */
+function buildHarness(dir: string, db: Database, notices: NoticeRepository): Harness {
   const events: Harness["events"] = [];
-  const clock = { value: clockStart };
+  const clock = { value: 1_700_000_000_000 };
   const service = new NoticeService({
     notices,
     now: () => clock.value,
@@ -45,43 +39,39 @@ async function setup(clockStart = 1_700_000_000_000): Promise<Harness> {
       events.push({ name, payload });
     },
   });
-
-  const harness: Harness = {
-    dir,
-    dbFile,
-    db,
-    notices,
-    service,
-    events,
-    clock,
-    reopen: async () => {
-      await db.close();
-      const reopened = new Database(dbFile);
-      await migrate(reopened);
-      harness.db = reopened;
-      harness.notices = new NoticeRepository(reopened);
-      harness.service = new NoticeService({
-        notices: harness.notices,
-        now: () => clock.value,
-        emit: (name, payload) => {
-          events.push({ name, payload });
-        },
-      });
-      return reopened;
-    },
-  };
-  return harness;
+  return { dir, dbFile: join(dir, "ai-zen.db"), db, notices, service, events, clock };
 }
 
+let dir: string;
+let db: Database;
+let notices: NoticeRepository;
 let harness: Harness;
 
-beforeEach(async () => {
-  harness = await setup();
+// 整个文件共用一个库：`new + migrate` 每用例 55ms，清表只是一条 DELETE 批次。
+// 真要「关库再重开」的两条用例自带库（见下面 describe("通知持久化")）。
+beforeAll(async () => {
+  dir = await mkdtemp(join(tmpdir(), "ai-zen-notices-"));
+  const dbFile = join(dir, "ai-zen.db");
+  db = new Database(dbFile);
+  await migrate(db);
+  notices = new NoticeRepository(db);
 });
 
-afterEach(async () => {
-  await harness.db.close();
-  await rm(harness.dir, { recursive: true, force: true });
+beforeEach(async () => {
+  // 只清业务表；`meta` 绝不碰（migrate 靠 meta.schemaVersion 判断跑不跑）
+  await db.tx((tx) => [
+    tx.run("DELETE FROM notices"),
+    tx.run("DELETE FROM questions"),
+    tx.run("DELETE FROM workspaces"),
+    tx.run("DELETE FROM assets"),
+    tx.run("DELETE FROM credentials"),
+  ]);
+  harness = buildHarness(dir, db, notices);
+});
+
+afterAll(async () => {
+  await db.close();
+  await rm(dir, { recursive: true, force: true });
 });
 
 describe("通知的持续时间（L3 / R15）", () => {
@@ -143,32 +133,75 @@ describe("通知的持续时间（L3 / R15）", () => {
 });
 
 describe("通知持久化（L3：重启不丢）", () => {
+  /**
+   * 这两条要真「关库再重开」。共享夹具下 close 会把整个文件共用的库关掉，
+   * 所以它们各自带一个库：mkdtemp → migrate → 写 → close → 在同一份文件上重开。
+   */
   it("永久通知换一个进程（重开库）之后还在", async () => {
-    const created = await harness.service.create({
-      level: "error",
-      code: "notice.logError",
-      params: { summary: "写库失败" },
-    });
+    const ownDir = await mkdtemp(join(tmpdir(), "ai-zen-notices-reopen-"));
+    const ownFile = join(ownDir, "ai-zen.db");
+    let db2: Database | undefined;
+    const first = new Database(ownFile);
+    try {
+      await migrate(first);
+      const service = new NoticeService({ notices: new NoticeRepository(first) });
+      const created = await service.create({
+        level: "error",
+        code: "notice.logError",
+        params: { summary: "写库失败" },
+      });
 
-    await harness.reopen();
+      await first.close();
+      db2 = new Database(ownFile);
+      await migrate(db2);
+      const reopened = new NoticeService({ notices: new NoticeRepository(db2) });
 
-    const listed = await harness.service.list();
-    expect(listed.notices.map((notice) => notice.id)).toEqual([created.id]);
-    expect(listed.notices[0]?.text.messageKey).toBe("notice.logError");
-    expect(listed.notices[0]?.text.params).toEqual({ summary: "写库失败" });
+      const listed = await reopened.list();
+      expect(listed.notices.map((notice) => notice.id)).toEqual([created.id]);
+      expect(listed.notices[0]?.text.messageKey).toBe("notice.logError");
+      expect(listed.notices[0]?.text.params).toEqual({ summary: "写库失败" });
+    } finally {
+      await first.close();
+      await db2?.close();
+      await rm(ownDir, { recursive: true, force: true });
+    }
   });
 
   it("带持续时间但还没到点的通知，重开库之后也还在", async () => {
-    const created = await harness.service.create({
-      level: "info",
-      code: "notice.settingsSaved",
-      duration: 60,
-    });
-    await harness.reopen();
-    harness.clock.value += 30_000;
-    expect((await harness.service.list()).notices.map((notice) => notice.id)).toEqual([created.id]);
-    harness.clock.value += 30_000;
-    expect((await harness.service.list()).notices).toHaveLength(0);
+    const ownDir = await mkdtemp(join(tmpdir(), "ai-zen-notices-reopen-"));
+    const ownFile = join(ownDir, "ai-zen.db");
+    const clock = { value: 1_700_000_000_000 };
+    let db2: Database | undefined;
+    const first = new Database(ownFile);
+    try {
+      await migrate(first);
+      const service = new NoticeService({
+        notices: new NoticeRepository(first),
+        now: () => clock.value,
+      });
+      const created = await service.create({
+        level: "info",
+        code: "notice.settingsSaved",
+        duration: 60,
+      });
+
+      await first.close();
+      db2 = new Database(ownFile);
+      await migrate(db2);
+      const reopened = new NoticeService({
+        notices: new NoticeRepository(db2),
+        now: () => clock.value,
+      });
+
+      clock.value += 30_000;
+      expect((await reopened.list()).notices.map((notice) => notice.id)).toEqual([created.id]);
+      clock.value += 30_000;
+      expect((await reopened.list()).notices).toHaveLength(0);
+    } finally {
+      await first.close();
+      await db2?.close();
+      await rm(ownDir, { recursive: true, force: true });
+    }
   });
 });
 

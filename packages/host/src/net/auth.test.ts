@@ -5,7 +5,7 @@
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { resolvePaths, type HostPaths } from "../config.js";
 import { CredentialRepository, hashCredential } from "../storage/CredentialRepository.js";
@@ -21,7 +21,8 @@ let paths: HostPaths;
 let db: Database;
 let credentials: CredentialRepository;
 
-beforeEach(async () => {
+// 数据根、库与迁移整个文件只做一次（起 worker + migrate 是每条用例的大头）。
+beforeAll(async () => {
   dir = await makeTempDir("auth");
   paths = resolvePaths(dir.path);
   db = new Database(paths.dbFile);
@@ -29,7 +30,21 @@ beforeEach(async () => {
   credentials = new CredentialRepository(db);
 });
 
-afterEach(async () => {
+beforeEach(async () => {
+  await db.tx((tx) => [
+    // meta 不清：migrate 靠它判断跑不跑
+    tx.run("DELETE FROM notices"),
+    tx.run("DELETE FROM questions"),
+    tx.run("DELETE FROM workspaces"), // 级联 conversations → messages → conversation_assets
+    tx.run("DELETE FROM assets"), // 级联 asset_vendor_files
+    tx.run("DELETE FROM credentials"),
+  ]);
+  // 交付文件也要清：不清就轮到上一条用例留下的那串，
+  //「交付文件被手删了再造一串」那条就不成立了
+  await fs.rm(join(paths.runDir, "token"), { force: true });
+});
+
+afterAll(async () => {
   await db.close();
   await dir.remove();
 });
@@ -142,5 +157,16 @@ describe("createLocalCredential", () => {
     expect(rotated.token).not.toBe(first.token);
     expect(await readLocalToken(paths)).toBe(rotated.token);
     expect(await verify(db, rotated.token)).not.toBeNull();
+  });
+});
+
+describe("摘要（`hashCredential`）", () => {
+  it("同一串明文永远得到同一摘要，且摘要里不含明文", () => {
+    // 纯函数：不碰库、不碰盘，所以留在这里而不是另一个文件里再建一次库
+    const token = "plain-secret-token";
+    const hash = hashCredential(token);
+    expect(hash).toBe(hashCredential(token));
+    expect(hash).toHaveLength(64);
+    expect(hash).not.toContain(token);
   });
 });

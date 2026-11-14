@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { AgentNS } from "@ai-zen/agents-core";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { Database } from "../storage/Database.js";
 import { ConversationRepository } from "../storage/ConversationRepository.js";
@@ -24,16 +24,36 @@ let service: MessageService;
 let messages: MessageRepository;
 let conversations: ConversationRepository;
 
-beforeEach(async () => {
+/**
+ * 清表：整个文件共用一个库，每个用例开头把上一个用例写进去的行清掉。
+ *
+ * `meta` 不能清 —— `migrate` 靠 `meta.schemaVersion` 判断要不要跑迁移；
+ * `messages_fts` 不用手动同步 —— `DELETE FROM workspaces` 级联删 `messages` 时触发器自己维护。
+ */
+async function clearTables(): Promise<void> {
+  await db.tx((tx) => [
+    tx.run("DELETE FROM notices"),
+    tx.run("DELETE FROM questions"),
+    tx.run("DELETE FROM workspaces"),
+    tx.run("DELETE FROM assets"),
+    tx.run("DELETE FROM credentials"),
+  ]);
+}
+
+beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "ai-zen-services-messages-"));
   db = new Database(join(dir, "ai-zen.db"));
   await migrate(db);
 
-  const workspaces = new WorkspaceRepository(db);
   conversations = new ConversationRepository(db);
   messages = new MessageRepository(db);
   service = new MessageService({ conversations, messages });
+});
 
+beforeEach(async () => {
+  await clearTables();
+
+  const workspaces = new WorkspaceRepository(db);
   await workspaces.create({ id: "w1", name: "项目一", cwd: "/tmp/one", createdAt: 1 });
   await conversations.create({
     id: "c1",
@@ -78,7 +98,7 @@ beforeEach(async () => {
   });
 });
 
-afterEach(async () => {
+afterAll(async () => {
   await db.close();
   await rm(dir, { recursive: true, force: true });
 });

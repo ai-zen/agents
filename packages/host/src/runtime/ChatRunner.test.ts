@@ -261,6 +261,19 @@ describe("ChatRunner：受理", () => {
     expect(build.scope.cwd).toBe("/tmp/ai-zen-project");
     expect(build.history).toEqual([]);
   });
+
+  it("会话行上的思考档位也一并交给工厂（档位属于模型，由这里透传）", async () => {
+    const custom = createHarness({ conversation: makeConversation({ thinkingLevel: "high" }) });
+
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "你好" },
+    });
+    await turn.done;
+
+    // 非空值才有说服力：硬编码 null 也能让「档位为 null」那种断言通过
+    expect(custom.builds[0]!.thinkingLevel).toBe("high");
+  });
 });
 
 describe("ChatRunner：六态与增量", () => {

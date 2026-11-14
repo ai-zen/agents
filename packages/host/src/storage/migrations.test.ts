@@ -1,10 +1,11 @@
 /**
  * 建表与迁移的验收：全新库能建起来、重复迁移幂等、外键级联真的删、FTS 索引与主表一致。
  *
- * 每个用例自己开一次性临时目录里的库，结束后删掉，不碰仓库与用户数据根。
+ * 库与迁移整个文件只建一次（临时目录里，结束后删掉，不碰仓库与用户数据根），每个用例只清表；
+ * 两条天生要全新库的用例（没迁移过的、要看着迁移刚跑过一趟的）自己另开一个库。
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,12 +16,45 @@ import { MetaRepository } from "./MetaRepository.js";
 let dir: string;
 let db: Database;
 
-beforeEach(async () => {
+/**
+ * 天生要自己的库的用例（没迁移过的全新库、要看着迁移真的跑一遍的）在这里另开一个库：
+ * 同一个临时目录、另一个文件名，由 `afterAll` 统一关掉。
+ *
+ * 这些用例里用 `const db = ownDatabase(...)` 遮蔽外层那个共享库，所以用例正文（包括断言）
+ * 一行不用改，读到的就是自己的那个。
+ */
+const ownDbs: Database[] = [];
+
+function ownDatabase(fileName: string): Database {
+  const own = new Database(join(dir, fileName));
+  ownDbs.push(own);
+  return own;
+}
+
+// 库与迁移整个文件只做一次（起 worker + migrate 是每条用例的大头），每个用例只清表。
+// 用例正文里那几次 `migrate(db)` 保留原样：在共享库上它们退化成一次版本号读取（幂等），
+// 正是这组用例要验的东西之一。
+beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "ai-zen-storage-migrations-"));
   db = new Database(join(dir, "ai-zen.db"));
+  await migrate(db);
 });
 
-afterEach(async () => {
+beforeEach(async () => {
+  await db.tx((tx) => [
+    // meta 不清：migrate 靠它判断跑不跑
+    tx.run("DELETE FROM notices"),
+    tx.run("DELETE FROM questions"),
+    // workspaces 必须在 assets 之前：删 workspace 级联删掉 conversation_assets 关系行，
+    // 之后 assets 的 ON DELETE RESTRICT 才不会拦
+    tx.run("DELETE FROM workspaces"), // 级联 conversations → messages → conversation_assets
+    tx.run("DELETE FROM assets"), // 级联 asset_vendor_files
+    tx.run("DELETE FROM credentials"),
+  ]);
+});
+
+afterAll(async () => {
+  for (const own of ownDbs) await own.close();
   await db.close();
   await rm(dir, { recursive: true, force: true });
 });
@@ -34,6 +68,9 @@ async function tableNames(database: Database): Promise<string[]> {
 
 describe("migrate", () => {
   it("全新库跑一次就建齐所有表，版本号落到最新", async () => {
+    // 这条要的是「迁移刚刚真的跑过一趟」（下面断言建库时间 >= 本用例开始），
+    // 共享库的 meta 是文件级那一趟写的，不成立 —— 所以自己开一个全新库。
+    const db = ownDatabase("fresh-migrate.db");
     const before = Date.now();
     await migrate(db);
 
@@ -62,6 +99,9 @@ describe("migrate", () => {
   });
 
   it("重复迁移不炸，版本号不会倒退", async () => {
+    // 这条验的是「全新库上第一次 migrate 真的跑完、再跑两次也不炸」：
+    // 共享库已经迁过，第一次就退化成空跑了，所以自己开一个全新库
+    const db = ownDatabase("fresh-migrate-repeat.db");
     await migrate(db);
     await expect(migrate(db)).resolves.toBeUndefined();
     await expect(migrate(db)).resolves.toBeUndefined();
@@ -123,6 +163,8 @@ describe("migrate", () => {
   });
 
   it("全新库（还没跑迁移）读 schemaVersion 得到 0 而不是抛错", async () => {
+    // 要一个**没迁移过**的库：共享库已经迁完，这里自己开一个
+    const db = ownDatabase("fresh-unmigrated.db");
     const meta = new MetaRepository(db);
     expect(await meta.getSchemaVersion()).toBe(0);
     expect(await meta.getState()).toBeUndefined();
@@ -159,6 +201,15 @@ describe("外键与级联", () => {
        VALUES (?, ?, ?, ?)`,
       ["c1", "msg1", "as1", 5],
     );
+    // 挂在对话上的通知与问题：级联的另一半（这两张表的 CASCADE 只在这里钉）
+    await db.run(
+      `INSERT INTO notices (id, level, code, params, durationMs, conversationId, createdAt)
+       VALUES ('n1', 'info', 'notice.settingsSaved', NULL, NULL, 'c1', 6)`,
+    );
+    await db.run(
+      `INSERT INTO questions (id, conversationId, kind, payload, state, createdAt, updatedAt)
+       VALUES ('q1', 'c1', 'handoff', '{}', 'pending', 7, 7)`,
+    );
   }
 
   it("删 workspace 连带删它的 conversations / messages / 引用关系", async () => {
@@ -172,12 +223,15 @@ describe("外键与级联", () => {
     expect(await db.all("SELECT id FROM assets")).toEqual([{ id: "as1" }]);
   });
 
-  it("删 conversation 连带删 messages 与引用关系（素材行留着）", async () => {
+  it("删 conversation 连带删 messages / 引用关系 / 通知 / 问题（素材行留着）", async () => {
     await seed();
     await db.run("DELETE FROM conversations WHERE id = ?", ["c1"]);
 
     expect(await db.all("SELECT id FROM messages")).toEqual([]);
     expect(await db.all("SELECT assetId FROM conversation_assets")).toEqual([]);
+    // 通知与问题是挂在对话上的：对话没了它们也没有落脚的语义
+    expect(await db.all("SELECT id FROM notices")).toEqual([]);
+    expect(await db.all("SELECT id FROM questions")).toEqual([]);
     expect(await db.all("SELECT id FROM assets")).toEqual([{ id: "as1" }]);
   });
 

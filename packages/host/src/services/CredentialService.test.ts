@@ -6,7 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { CredentialRepository, hashCredential } from "../storage/CredentialRepository.js";
 import { Database } from "../storage/Database.js";
@@ -19,15 +19,21 @@ let db: Database;
 let repo: CredentialRepository;
 let service: CredentialService;
 
-beforeEach(async () => {
+// 整个文件共用一个库：`new + migrate` 每用例要 55ms，而清表只是一条 DELETE 批次
+beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "ai-zen-services-credentials-"));
   db = new Database(join(dir, "ai-zen.db"));
   await migrate(db);
   repo = new CredentialRepository(db);
+});
+
+beforeEach(async () => {
+  // 只清业务表；`meta` 绝不碰（migrate 靠 meta.schemaVersion 判断跑不跑）
+  await db.tx((tx) => [tx.run("DELETE FROM credentials")]);
   service = new CredentialService({ credentials: repo, now: () => 1_700_000_000_000 });
 });
 
-afterEach(async () => {
+afterAll(async () => {
   await db.close();
   await rm(dir, { recursive: true, force: true });
 });

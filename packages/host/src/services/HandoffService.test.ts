@@ -11,7 +11,7 @@ import { join } from "node:path";
 
 import { AgentNS } from "@ai-zen/agents-core";
 import { completeOnce, ConfigManager } from "@ai-zen/agents-sdk";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { FakeAgent } from "../runtime/TestSupport.js";
 import { createFakeScope } from "../runtime/TestSupport.js";
@@ -106,23 +106,34 @@ interface Harness {
 
 const SKILL_MARKER = "SKILL-MARKER-交接规范";
 
-async function setup(): Promise<Harness> {
-  const dir = await mkdtemp(join(tmpdir(), "ai-zen-handoff-"));
-  const projectDir = join(dir, "project");
+let dir: string;
+let projectDir: string;
+let skillsDir: string;
+let db: Database;
+let configPath: string;
+let workspaces: WorkspaceRepository;
+let conversations: ConversationRepository;
+let messages: MessageRepository;
+let questions: QuestionRepository;
+
+/**
+ * 静态那一份：库 + `config.json` + `agents/a1.json` + 磁盘上的 handoff Skill。
+ * 这些都是「一个文件一个库」下真正只需准备一次的东西。
+ */
+async function prepareStatic(): Promise<void> {
+  dir = await mkdtemp(join(tmpdir(), "ai-zen-handoff-"));
+  projectDir = join(dir, "project");
   await mkdir(projectDir, { recursive: true });
 
-  const db = new Database(join(dir, "ai-zen.db"));
+  db = new Database(join(dir, "ai-zen.db"));
   await migrate(db);
 
-  const workspaces = new WorkspaceRepository(db);
-  const conversations = new ConversationRepository(db);
-  const messages = new MessageRepository(db);
-  const assets = new AssetRepository(db);
-  const questions = new QuestionRepository(db);
-  const notices = new NoticeRepository(db);
-  void notices;
+  workspaces = new WorkspaceRepository(db);
+  conversations = new ConversationRepository(db);
+  messages = new MessageRepository(db);
+  questions = new QuestionRepository(db);
 
-  const configPath = join(dir, "config.json");
+  configPath = join(dir, "config.json");
   await writeFile(
     configPath,
     JSON.stringify({
@@ -147,7 +158,7 @@ async function setup(): Promise<Harness> {
     "utf-8",
   );
   // 磁盘上的 handoff Skill：正常路径下模板来自它（读不到才用 SDK 的兜底模板）
-  const skillsDir = join(dir, "skills");
+  skillsDir = join(dir, "skills");
   await mkdir(join(skillsDir, "handoff"), { recursive: true });
   await writeFile(
     join(skillsDir, "handoff", "SKILL.md"),
@@ -164,14 +175,20 @@ async function setup(): Promise<Harness> {
     ].join("\n"),
     "utf-8",
   );
+}
 
+/**
+ * 每用例那一份：项目行、一段有内容的对话，以及实例级状态（Scope 记账、agent 上下文、
+ * 对话服务的草稿表）。库与配置不在这里重做。
+ */
+async function seedHarness(): Promise<Harness> {
   await workspaces.create({ id: "w1", name: "项目一", cwd: projectDir, createdAt: 1 });
 
   const conversationService = new ConversationService({
     conversations,
     messages,
     workspaces,
-    assets,
+    assets: new AssetRepository(db),
     questions,
     configManager: new ConfigManager(configPath),
     runtime: new FakeRuntime(),
@@ -260,15 +277,33 @@ function sdkExecutor(skillDirs: string[]): HandoffExecutor {
 let harness: Harness;
 let conversationId: string;
 
+// 整个文件共用一个库：`new + migrate` 每用例 55ms，清表只是一条 DELETE 批次。
+beforeAll(async () => {
+  await prepareStatic();
+});
+
 beforeEach(async () => {
-  harness = await setup();
+  // 只清业务表；`meta` 绝不碰（migrate 靠 meta.schemaVersion 判断跑不跑）。
+  // `workspaces` 级联 conversations → messages → conversation_assets，删完再删素材行。
+  await db.tx((tx) => [
+    tx.run("DELETE FROM notices"),
+    tx.run("DELETE FROM questions"),
+    tx.run("DELETE FROM workspaces"),
+    tx.run("DELETE FROM assets"),
+    tx.run("DELETE FROM credentials"),
+  ]);
+  // 项目目录里的 `.ai-zen/handoffs` 是用例写下的产物（有的用例还断言它「不存在」），
+  // 共享目录下必须每个用例先回到干净状态；配置与 agents/ 、skills/ 是静态的，不动。
+  await rm(join(projectDir, ".ai-zen"), { recursive: true, force: true });
+
+  harness = await seedHarness();
   const rows = await harness.conversations.list();
   conversationId = rows[0]?.id ?? "";
 });
 
-afterEach(async () => {
-  await harness.db.close();
-  await rm(harness.dir, { recursive: true, force: true });
+afterAll(async () => {
+  await db.close();
+  await rm(dir, { recursive: true, force: true });
 });
 
 describe("交接文档写进项目（D19 / F-D6）", () => {

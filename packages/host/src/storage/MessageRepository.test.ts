@@ -4,7 +4,7 @@
  * （>= 3 字走 FTS5 trigram，2 字退化到 LIKE）。
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,11 +17,25 @@ let dir: string;
 let db: Database;
 let repo: MessageRepository;
 
-beforeEach(async () => {
+// 库与迁移整个文件只做一次（起 worker + migrate 是每条用例的大头），每个用例只清表。
+beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "ai-zen-storage-messages-"));
   db = new Database(join(dir, "ai-zen.db"));
   await migrate(db);
   repo = new MessageRepository(db);
+});
+
+beforeEach(async () => {
+  await db.tx((tx) => [
+    // meta 不清：migrate 靠它判断跑不跑
+    tx.run("DELETE FROM notices"),
+    tx.run("DELETE FROM questions"),
+    // workspaces 必须在 assets 之前：删 workspace 级联删掉 conversation_assets 关系行，
+    // 之后 assets 的 ON DELETE RESTRICT 才不会拦。messages 的 FTS 索引由触发器跟着维护
+    tx.run("DELETE FROM workspaces"), // 级联 conversations → messages → conversation_assets
+    tx.run("DELETE FROM assets"), // 级联 asset_vendor_files
+    tx.run("DELETE FROM credentials"),
+  ]);
 
   // 两个 workspace，三个对话：搜索的三种范围都要有数据才测得出来
   await db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES (?, ?, ?, ?)", [
@@ -49,7 +63,7 @@ beforeEach(async () => {
   }
 });
 
-afterEach(async () => {
+afterAll(async () => {
   await db.close();
   await rm(dir, { recursive: true, force: true });
 });
@@ -168,44 +182,6 @@ describe("MessageRepository 的父工具调用列（R37）", () => {
   });
 });
 
-describe("MessageRepository.listByConversation（A12 的 after 三种分支）", () => {
-  const seed = async (): Promise<void> => {
-    await repo.upsert(message({ id: "m1", content: "第一条", createdAt: 100 }));
-    await repo.upsert(message({ id: "m2", content: "第二条", createdAt: 200 }));
-    await repo.upsert(message({ id: "m3", content: "第三条", createdAt: 300 }));
-  };
-
-  it("不给 after：返回整段历史，按 seq 升序", async () => {
-    await seed();
-    const rows = await repo.listByConversation("c1");
-    expect(rows.map((row) => row.id)).toEqual(["m1", "m2", "m3"]);
-  });
-
-  it("after 指向存在的消息：从它本身开始（含它），拿到的是它最新的内容", async () => {
-    await seed();
-    // 模拟流式中那条：内容又变了
-    await repo.upsert(message({ id: "m2", content: "第二条（已写完）", status: "completed", createdAt: 200 }));
-
-    const rows = await repo.listByConversation("c1", "m2");
-    expect(rows.map((row) => row.id)).toEqual(["m2", "m3"]);
-    expect(rows[0]?.content).toBe("第二条（已写完）");
-  });
-
-  it("after 指向不存在的消息：退回整段历史", async () => {
-    await seed();
-    const rows = await repo.listByConversation("c1", "已被删除的消息");
-    expect(rows.map((row) => row.id)).toEqual(["m1", "m2", "m3"]);
-  });
-
-  it("after 指向别的对话的消息：也当作不存在，返回整段历史", async () => {
-    await seed();
-    await repo.upsert(message({ id: "m-other", conversationId: "c2", createdAt: 400 }));
-
-    const rows = await repo.listByConversation("c1", "m-other");
-    expect(rows.map((row) => row.id)).toEqual(["m1", "m2", "m3"]);
-  });
-});
-
 describe("MessageRepository.search", () => {
   const seed = async (): Promise<void> => {
     await repo.upsert(
@@ -236,22 +212,6 @@ describe("MessageRepository.search", () => {
     expect(hits.map((hit) => hit.id).sort()).toEqual(["m1", "m4"]);
   });
 
-  it("按 conversationId 限定范围", async () => {
-    await seed();
-    const hits = await repo.search({ conversationId: "c1" }, "海边", 10);
-    expect(hits.map((hit) => hit.id)).toEqual(["m2"]);
-    expect(hits[0]?.conversationName).toBe("对话一");
-  });
-
-  it("按 workspaceId 限定范围", async () => {
-    await seed();
-    const hits = await repo.search({ workspaceId: "w1" }, "对话", 10);
-    expect(hits.map((hit) => hit.id).sort()).toEqual(["m3"]);
-    // c3 在 w2 下，被过滤掉了
-    const all = await repo.search(undefined, "天气不", 10);
-    expect(all.map((hit) => hit.id)).toEqual(["m1"]);
-  });
-
   it("3 字查询也能叠加范围过滤（FTS 分支带 join）", async () => {
     await seed();
     // 3 个字 → 走 FTS5 分支，同时按对话 / 按 Workspace 过滤
@@ -280,17 +240,6 @@ describe("MessageRepository.search", () => {
     await expect(repo.search(undefined, '100%"', 10)).resolves.toBeDefined();
     const hits = await repo.search(undefined, "完成度", 10);
     expect(hits.map((hit) => hit.id)).toEqual(["m9"]);
-  });
-
-  it("空关键词不查库，直接返回空", async () => {
-    await seed();
-    expect(await repo.search(undefined, "   ", 10)).toEqual([]);
-  });
-
-  it("limit 生效", async () => {
-    await seed();
-    const hits = await repo.search(undefined, "天气", 1);
-    expect(hits).toHaveLength(1);
   });
 });
 

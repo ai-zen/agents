@@ -14,7 +14,7 @@ import { join } from "node:path";
 
 import type { AgentNS } from "@ai-zen/agents-core";
 import type { Endpoint, Model } from "@ai-zen/agents-sdk";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { resolvePaths, type HostPaths } from "../config.js";
 import { AssetRepository } from "../storage/AssetRepository.js";
@@ -68,13 +68,31 @@ function model(vision: boolean): Model {
   };
 }
 
-beforeEach(async () => {
+/**
+ * 整个文件共用一个库：`migrate` + 建实例只跑一次，每个用例只付一条 `DELETE` 批次。
+ */
+beforeAll(async () => {
   dir = await makeTempDir("assets");
   paths = resolvePaths(dir.path);
   assetsDir = paths.assetsDir;
   db = new Database(paths.dbFile);
   await migrate(db);
   repo = new AssetRepository(db);
+});
+
+beforeEach(async () => {
+  // 整个文件共用一个库（见 beforeAll）：这里把上一个用例写进去的行清掉。
+  // `meta` 不能清（`migrate` 靠它判断要不要跑迁移），FTS 由触发器跟着维护。
+  await db.tx((tx) => [
+    tx.run("DELETE FROM notices"),
+    tx.run("DELETE FROM questions"),
+    tx.run("DELETE FROM workspaces"),
+    tx.run("DELETE FROM assets"),
+    tx.run("DELETE FROM credentials"),
+  ]);
+  // 素材文件也要清：好几条用例断言「assets 目录里只剩这几份」
+  await fs.rm(assetsDir, { recursive: true, force: true });
+  await fs.mkdir(assetsDir, { recursive: true });
 
   await db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/w1', 1)");
   await db.run(
@@ -104,7 +122,7 @@ beforeEach(async () => {
   });
 });
 
-afterEach(async () => {
+afterAll(async () => {
   await db.close();
   await dir.remove();
 });
@@ -491,7 +509,9 @@ describe("按引用清理", () => {
   });
 
   it("assets 目录外的路径一概不碰", async () => {
-    const outside = join(dir.path, "ai-zen.db");
+    // 哨兵文件放在数据根下（assets/ 之外）。整个文件共用一个库，所以这里不能拿
+    // `ai-zen.db` 当哨兵：写它会盖掉正在用的库文件。库里那份路径仍留在下面那条入参里。
+    const outside = join(dir.path, "outside-the-assets-dir.txt");
     await fs.writeFile(outside, "keep me", "utf8");
 
     const removed = await service.removeFiles(["../ai-zen.db", outside]);
