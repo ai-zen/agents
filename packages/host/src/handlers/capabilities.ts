@@ -1,27 +1,28 @@
 /**
- * 能力清单（PRD F-E5 / F-E6 / F-F9，裁定 R6）。
+ * 能力清单（PRD F-E6 / F-F9，裁定 R6）。
  *
- * 清单是「帮助页与指令菜单渲染用的那一份真相」，所以它必须与契约同步：每一项对应
- * `MethodMap` 里的一个方法名，编号取 PRD §4 那一行的能力号（`wire/methods.ts` 里每个方法
- * 的注释就写着自己的编号）。没有编号的方法用契约注释里记的那条决定编号（`workspace.*` 是
- * `D9`/`D10`/`D11`：PRD §4 当初没给项目单列能力行），不另编一个。
- *
- * 三件事刻意分开：
- *   - **标题与说明**：`LocalizedText`，按连接语言渲染（D8），文案键在 `i18n/`；
+ * 清单是**契约事实**，不是界面文案。一项里只有编号、域、方法名与两条属性：
  *   - **`blocking`**：执行期间会不会占住这段对话（F-E6 让界面显示「正在执行什么」）；
  *   - **`destructive`**：有不可撤销的后果（F-F9 的二次确认）。
  *
+ * 「这个能力叫什么、怎么跟用户说」一个字都不在这里 —— 那是界面的活，归客户端（见
+ * `CapabilityView` 的注释与 PRD F-E5 的订正）。从前这里还有 `title` / `description`
+ * 两条 `LocalizedText`（`capability.*` 126 条文案），唯一消费者是 CLI 的 `/help`；
+ * `/help` 改用自己的命令表渲染之后，那些键一并删掉了。
+ *
+ * 清单必须与契约同步：每一项对应 `MethodMap` 里的一个方法名，编号取 PRD §4 那一行的能力号
+ * （`wire/methods.ts` 里每个方法的注释就写着自己的编号）。没有编号的方法用契约注释里记的
+ * 决定编号（`workspace.*` 是 `D9`/`D10`/`D11`：PRD §4 当初没给项目单列能力行），不另编一个。
+ *
  * 编号撞车的场合（几个方法服务同一条能力，例如 `config.saveEndpoint` / `config.deleteEndpoint`
  * 都属于 F-F2）用 `<编号>#<动作>` 做 id：编号仍是 PRD 的那个，id 保持唯一，客户端可以按 id 存
- * 展开状态。顺序与 `METHOD_NAMES` 一致，帮助页读起来就是「按域分组的办法清单」。
+ * 展开状态。顺序与 `METHOD_NAMES` 一致。
  */
 
-import { DEFAULT_LANGUAGE, render } from "../i18n/index.js";
-import type { Language, MessageKey } from "../i18n/index.js";
 import { methodDomain } from "../wire/index.js";
-import type { CapabilityView, LocalizedText, MethodName } from "../wire/index.js";
+import type { CapabilityView, MethodName } from "../wire/index.js";
 
-/** 一项能力的固定事实（标题与说明在 i18n 里，按方法名取） */
+/** 一项能力的固定事实 */
 interface CapabilityFact {
   method: MethodName;
   /** PRD §4 的能力编号；项目域那几条用契约注释里记的决定编号 */
@@ -125,21 +126,6 @@ const FACTS: readonly CapabilityFact[] = [
   { method: "search.messages", prd: "F-C6", blocking: false, destructive: false },
 ];
 
-/** 标题的文案键（`capability.<方法名>`） */
-function titleKey(method: MethodName): MessageKey {
-  return `capability.${method}` as MessageKey;
-}
-
-/** 说明的文案键（`capability.<方法名>.detail`） */
-function detailKey(method: MethodName): MessageKey {
-  return `capability.${method}.detail` as MessageKey;
-}
-
-/** 一句话：码 + 参数 + 按给定语言渲染的句子（存码不存句子，D8） */
-function text(key: MessageKey, language: Language): LocalizedText {
-  return { code: key, messageKey: key, params: {}, message: render(language, key) };
-}
-
 /** 动作名（`conversation.send` → `send`），编号撞车时用来给 id 去重 */
 function actionOf(method: MethodName): string {
   return method.slice(method.indexOf(".") + 1);
@@ -148,10 +134,9 @@ function actionOf(method: MethodName): string {
 /**
  * 造能力清单。
  *
- * 默认语言渲染一份：`host.hello` 与 `host.capabilities` 的出参都要能在不知道收件人语言时
- * 先给出形状，客户端按自己的语言用 `messageKey` + `params` 重渲染（D8 的同一套口径）。
+ * 与语言无关：清单里没有一个句子，`host.hello`（只取 id）与 `host.capabilities` 出的是同一份。
  */
-export function createCapabilities(language: Language = DEFAULT_LANGUAGE): CapabilityView[] {
+export function createCapabilities(): CapabilityView[] {
   const used = new Set<string>();
   return FACTS.map((fact) => {
     // 同一个编号下的第二个及以后的方法：`<编号>#<动作>`
@@ -160,8 +145,6 @@ export function createCapabilities(language: Language = DEFAULT_LANGUAGE): Capab
     return {
       id,
       domain: methodDomain(fact.method),
-      title: text(titleKey(fact.method), language),
-      description: text(detailKey(fact.method), language),
       method: fact.method,
       blocking: fact.blocking,
       destructive: fact.destructive,

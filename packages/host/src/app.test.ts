@@ -204,17 +204,6 @@ async function exists(path: string): Promise<boolean> {
 }
 
 /** 按指定语言调一个方法（文案随连接语言变的那些接口要用它） */
-async function callInLanguage<M extends MethodName>(
-  app: HostApp,
-  method: M,
-  params: MethodParams<M>,
-  language: ConnectionInfo["language"],
-): Promise<MethodResult<M>> {
-  const handler = app.handlers[method];
-  if (!handler) throw new Error(`方法未注册：${method}`);
-  return await handler({ method, params, connection: { ...CONNECTION, language } });
-}
-
 afterEach(async () => {
   for (const client of clients.splice(0)) await client.close().catch(() => undefined);
   for (const app of apps.splice(0)) await app.stop("requested").catch(() => undefined);
@@ -321,9 +310,8 @@ describe("HostApp 的组装", () => {
     expect(version.startedAt).toBe(app.startedAt);
 
     const capabilities = await callMethod(app, "host.capabilities");
-    // 清单是真实的那一份：每个方法一条，标题与说明都有句子（F-E5）
+    // 清单是真实的那一份：每个方法一条（清单里没有文案，句子归客户端，见 PRD F-E5）
     expect(capabilities.capabilities.map((item) => item.method)).toEqual([...METHOD_NAMES]);
-    expect(capabilities.capabilities[0]?.title.message.length).toBeGreaterThan(0);
     expect(capabilities.capabilities[0]?.id).toMatch(/^(F-[A-Z]\d+|D\d+)(#\w+)?$/);
 
     // 升级判定：磁盘版本与正在跑的一样 → 已经是最新，不重启（D4 / F-E3）
@@ -1196,23 +1184,6 @@ describe("缺省语言（D8 / 裁定 R58）", () => {
     });
   });
 
-  it("host.capabilities 按连接语言渲染，id 与顺序不变（R57 / R58）", async () => {
-    const fixture = await makeFixture();
-    const app = await startApp(fixture);
-
-    const english = await callInLanguage(app, "host.capabilities", {}, "en");
-    const chinese = await callInLanguage(app, "host.capabilities", {}, "zh");
-
-    expect(english.capabilities.map((item) => item.id)).toEqual(
-      chinese.capabilities.map((item) => item.id),
-    );
-    expect(english.capabilities.map((item) => item.method)).toEqual(
-      chinese.capabilities.map((item) => item.method),
-    );
-    expect(english.capabilities[0]?.title.message).not.toBe(chinese.capabilities[0]?.title.message);
-    // 同一份事实：码与参数不动，只有句子换了语言
-    expect(english.capabilities[0]?.title.messageKey).toBe(chinese.capabilities[0]?.title.messageKey);
-  });
 });
 
 // ---------------------------------------------------------------------------

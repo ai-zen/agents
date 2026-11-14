@@ -13,7 +13,6 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { createHost } from "../app.js";
 import type { HostApp } from "../app.js";
-import { hasMessage } from "../i18n/index.js";
 import type { ConnectionInfo } from "../net/index.js";
 import { isError, makeTempDir, TestClient, type TempDir } from "../net/TestSupport.js";
 import { METHOD_NAMES } from "../wire/index.js";
@@ -190,10 +189,14 @@ describe("能力清单（F-E5 / F-E6 / F-F9）", () => {
     for (const item of capabilities) {
       // 编号要么是 PRD 的能力号（F-xx），要么是契约注释里记的决定号（D-xx）
       expect(item.id).toMatch(/^(F-[A-Z]\d+|D\d+)(#\w+)?$/);
-      expect(hasMessage(item.title.messageKey)).toBe(true);
-      expect(hasMessage(item.description.messageKey)).toBe(true);
-      expect(item.title.message.length).toBeGreaterThan(0);
-      expect(item.description.message.length).toBeGreaterThan(0);
+      // 清单里只有事实：没有文案字段（句子归客户端，PRD F-E5）
+      expect(Object.keys(item).sort()).toEqual([
+        "blocking",
+        "destructive",
+        "domain",
+        "id",
+        "method",
+      ]);
     }
   });
 

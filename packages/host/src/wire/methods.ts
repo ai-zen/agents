@@ -73,9 +73,14 @@ export interface CapabilityView {
   /** 稳定能力编号（PRD §4 的编号，如 `F-C8`） */
   id: string;
   domain: MethodDomain;
-  title: LocalizedText;
-  description: LocalizedText;
-  /** 对应的方法名；纯事实类能力（如生成六态）没有方法，为空 */
+  /**
+   * 对应的方法名；纯事实类能力（如生成六态）没有方法，为空
+   *
+   * 清单里**没有标题与说明**：一份能力叫什么、怎么跟用户说，是界面的文案（归客户端）。
+   * 从前这里有 `title` / `description` 两个 `LocalizedText`，唯一的消费者是 CLI 的
+   * `/help`；客户端改成用自己的命令表渲染后（PRD F-E5 已订正），那两个字段与宿主 i18n
+   * 的 126 条 `capability.*` 文案一起删了 —— 留着就是没人读的字符串，迟早跟界面说的不一样。
+   */
   method: MethodName | null;
   /** 执行期间会阻塞对话（PRD F-E6：界面要能显示「正在执行什么」） */
   blocking: boolean;

@@ -212,7 +212,7 @@ const [found, written] = await db.tx((q) => [
 
 ## 6. 接线：一条 WS 上的 JSON-RPC
 
-**首帧 `hello`**：`{ token, language?, clientInfo: { name, version, platform? } }`（`src/wire/methods.ts` 的 `HostHelloParams`）。凭证不放在 URL 查询串里（会进日志与进程表）；未 `hello` 成功的连接只放行 `hello`，其余方法与二进制帧都回 `unauthorized`。`language` 挂在连接上，断开即忘；没带时用 `config.json` 的 `language`（缺省英文，裁定 R58）。`hello` 成功时一并回：协商出的 `language`、`hostVersion`、`protocolVersion`、`startedAt`、**能力 id 列表 `capabilities`（`string[]`，裁定 R57）**、附件上限 `limits`。完整的清单（标题、说明、属性）走 `host.capabilities`。
+**首帧 `hello`**：`{ token, language?, clientInfo: { name, version, platform? } }`（`src/wire/methods.ts` 的 `HostHelloParams`）。凭证不放在 URL 查询串里（会进日志与进程表）；未 `hello` 成功的连接只放行 `hello`，其余方法与二进制帧都回 `unauthorized`。`language` 挂在连接上，断开即忘；没带时用 `config.json` 的 `language`（缺省英文，裁定 R58）。`hello` 成功时一并回：协商出的 `language`、`hostVersion`、`protocolVersion`、`startedAt`、**能力 id 列表 `capabilities`（`string[]`，裁定 R57）**、附件上限 `limits`。完整的清单（编号、域、方法名、`blocking` / `destructive`）走 `host.capabilities` —— 清单里没有文案，与语言无关。
 
 **方法名**：`<域>.<动作>`。契约里共 **63** 个方法（`src/wire/methods.ts` 的 `METHOD_NAMES`，13 个域）：
 
@@ -306,7 +306,9 @@ const [found, written] = await db.tx((q) => [
 
 事件只描述「发生了什么变化」，需要完整对象时客户端回宿主拉（`conversation.state` / `message.list`），这样多端同时在线时不会出现「一份数据在推送里长成另一种形状」。
 
-**能力清单（A13）**：`host.capabilities` 回完整清单、`hello` 只回 id 列表（裁定 R57），粒度是**每个契约方法一条**（63 条，与 `METHOD_NAMES` 逐条对应），每项带 `id`（PRD 能力号；同号多方法时为 `<编号>#<动作>`，如 `F-F2#deleteEndpoint`）、`domain`、`title` / `description`（`LocalizedText`，键为 `capability.<方法名>` / `capability.<方法名>.detail`；**自 2026-11-14 起零读者** —— `/help` 改用 CLI 本地词条，见 PRD F-E5 的订正；这两个字段去留待定，删的话要连 R58 一起改）、`method`、`blocking`（执行期间占住这段对话，F-E6）、`destructive`（不可撤销，F-F9 的二次确认）。`workspace.*` 那几条在 PRD §4 没有单列能力号，`id` 用契约注释里记的决定号（`D9` / `D10` / `D11`）。清单与 `METHOD_NAMES` 一一对应（id 与顺序与语言无关），标题与说明按**连接的语言**渲染（裁定 R58：存码不存句子，出网前重渲染）；用例钉住这两条。
+**能力清单（A13）**：`host.capabilities` 回完整清单、`hello` 只回 id 列表（裁定 R57），粒度是**每个契约方法一条**（63 条，与 `METHOD_NAMES` 逐条对应），每项带 `id`（PRD 能力号；同号多方法时为 `<编号>#<动作>`，如 `F-F2#deleteEndpoint`）、`domain`、`method`、`blocking`（执行期间占住这段对话，F-E6）、`destructive`（不可撤销，F-F9 的二次确认）。`workspace.*` 那几条在 PRD §4 没有单列能力号，`id` 用契约注释里记的决定号（`D9` / `D10` / `D11`）。清单与 `METHOD_NAMES` 一一对应，id 与顺序固定。
+
+**清单里没有文案**（2026-11-14）：一项里一个字都不描述「这个能力叫什么、怎么跟用户说」—— 那是界面的活，归客户端（PRD F-E5 已订正）。原来的 `title` / `description` 两个 `LocalizedText`（`capability.<方法名>` / `.detail`，两种语言共 252 条）唯一消费者是 CLI 的 `/help`，`/help` 改用本地命令表后一并删掉，`createCapabilities()` 也不再收语言参数（R58 只约束带文案的出参）。用例钉住「清单里只有 `blocking` / `destructive` / `domain` / `id` / `method` 五个字段」。
 
 ## 8. 与 core / SDK 的边界
 
@@ -420,3 +422,4 @@ afterAll(async () => { await db.close(); await rm(dir, { recursive: true, force:
 | 2026-11-13 | W11：引用方式改成**内容段上的本地扩展字段 `__asset_id`**（不再往 `image_url.url` / `file.file_id` 里塞 `asset://`）。`assets` 去掉 `conversationId` / `messageId` 两列，`sha256` 改成全局 `UNIQUE`（去重从「对话内」改成「全局」）；新增关系表 `conversation_assets`（`UNIQUE(messageId, assetId)`、`assetId` 为 `ON DELETE RESTRICT`、索引 `assetId` / `conversationId`），消息落库那一刻扫 `content` 里的 `__asset_id` 写行，撤回 / 删对话由外键级联删行，删完之后 `COUNT(*)` 归零才删素材行与文件（`AssetService.sweepUnreferenced`）。「所有 `__` 开头的字段都是本地扩展、发送前一概剥离」落成 `wire/states.ts` 的两个纯函数 `stripLocalExtensions` / `localAssetIdOf`，`resolveHistory` 出的每一段都过白名单，且同一 `(素材, 端点)` 两轮算出来的段逐字节相同。客户端加 `localAssetIdOf` / `getSectionAsset`（按扩展字段取字节，不解析 scheme）。§5 补第三张表与「归零才删」的落点，§6 补全局去重与取回口径。 |
 | 2026-11-13 | W14-A：素材尺寸（裁定 R76）。`assets.width` / `height` 不再恒空 —— `AssetService.finalizeUpload` 把临时文件改名成正式文件之后读一次文件头，由 `src/services/imageSize.ts` 的 `readImageSize`（纯函数，零依赖）从 PNG 的 IHDR 块 / JPEG 的 SOF 段解出宽高写进这一行；其它格式、截断文件、解不出来的字节都写 `NULL`，不重试、不告警。`AssetRef` 与 `asset.get` 回的就是这一行，所以客户端拿到的 `width` / `height` 是上传那一刻量出来的真值。§5 的 `assets` 行按此回改。 |
 | 2026-11-14 | W3：契约面跟上新契约。方法表 **65 → 63**（13 个域、无 `credential` 域）：新增 `agent.restoreFactory`、`config.saveMcp` / `config.deleteMcp`（取代 `config.patchMcps` 的整层替换）；删 `host.usage` 与 `credential.list/create/revoke` —— **删的是契约面，能力仍在**（`CredentialService`、`CredentialRepository`、`<数据根>/run/token` 与 `agents-host token create\|list\|revoke` 一字未动，`Credential*` 形状只留给那三个子命令）；§6 桥接名单后「其余 60 条」改成 59。A12 补 `around` 的取法（40 条窗口 / 命中才给 `anchor` / 没命中回空页不报错 / 与 `after` 同给时 `around` 优先 / 消费者只有桌面端搜索定位），A13 的条数 65 → 63。§3 补「视图与入参的几处形状」（`AgentView.messages` / `function`、`DiscoveryEntryView` 的传输字段与 `extra`、`DiscoveryLayerView.scope`、`McpOauthView` 的掩码口径、`ModelInput.tokenThresholds` 可选），§7 能力清单条数同步。§8 把 `@ai-zen/agents-client` 列成「共享连接层」并写清它这一轮定的三件事（npx 拉起 `spawnHostViaNpx`、阶段回调四态、`AbortSignal` 取消），明确「怎么画屏」不归它。 || 2026-11-14 | 测试口径落文（§11，原「变更记录」顺延为 §12）：默认套件关隔离 + 一个文件一个库里的一条 `tx` 清表 + 事实归属表 + 删用例的三条判据。默认套件从 79.5s 降到 20.3s，用例 801 → 761。 |
+| 2026-11-14 | 能力清单去掉 `title` / `description`：`/help` 改由 CLI 自己的命令表渲染（PRD F-E5 订正），那两个字段与 i18n 的 `capability.*` 252 条文案零消费者，连同 `localizeCapabilities`、`createCapabilities(language)` 的语言参数、`callInLanguage` 夹具一起删；A13 / §7 / hello 段同步 |

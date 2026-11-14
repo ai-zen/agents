@@ -2,8 +2,8 @@
  * `host.*`：进程事实（PRD F-E5 / D4 / L4）。
  *
  * 三件事在这里：
- *   - `version` / `capabilities`：报事实，供帮助页与指令菜单渲染（能力清单只在配置层维护一份，
- *     这里不编造）；
+ *   - `version` / `capabilities`：报事实（能力清单只在配置层维护一份，这里不编造；
+ *     清单里没有文案 —— 一份能力怎么跟用户说，归客户端）；
  *   - `upgrade`：比磁盘上的版本与正在跑的版本，确认新版本真的落盘了才安排重启（D4 / F-E3）；
  *   - `shutdown`：受理一次收尾请求。真正退不退由单根的退出判据决定（PRD L4 / 裁定 R53）。
  *
@@ -18,9 +18,7 @@
  * 没有任何客户端消费，已从契约面删除。
  */
 
-import type { Language } from "../i18n/index.js";
 import type { HandlerTable } from "../net/index.js";
-import { relocalizeText } from "../services/NoticeService.js";
 import type {
   CapabilityView,
   HostReloadParams,
@@ -60,10 +58,8 @@ export function createHostHandlers(deps: HostHandlerDeps): HandlerTable {
       pid: process.pid,
     }),
 
-    "host.capabilities": (context) => ({
-      // 清单按这条连接的语言出句子（裁定 R58）：id / 顺序与语言无关（R57）
-      capabilities: localizeCapabilities(deps.capabilities(), context.connection.language),
-    }),
+    // 清单里没有一个句子，所以不按连接语言重渲染（R58 只约束带文案的出参）
+    "host.capabilities": () => ({ capabilities: deps.capabilities() }),
 
     "host.shutdown": (context) => {
       deps.requestStop(context.params.reason);
@@ -76,21 +72,4 @@ export function createHostHandlers(deps: HostHandlerDeps): HandlerTable {
     // 重载不重启（F-E1 / F-E2 / R63）：与改配置走同一条生效路径，回同一份报告
     "host.reload": async (context) => await deps.reload(context.params),
   };
-}
-
-/**
- * 能力清单按这条连接的语言重渲染（裁定 R58）。
- *
- * 清单本身由配置层按缺省语言产出（每项的标题与说明都带着 `messageKey` + `params`），这里只把
- * 句子换成收件人的语言 —— 与通知、问题出网前那一跳同一个口径（D8：存码不存句子）。
- */
-function localizeCapabilities(
-  capabilities: readonly CapabilityView[],
-  language: Language,
-): CapabilityView[] {
-  return capabilities.map((capability) => ({
-    ...capability,
-    title: relocalizeText(capability.title, language),
-    description: relocalizeText(capability.description, language),
-  }));
 }

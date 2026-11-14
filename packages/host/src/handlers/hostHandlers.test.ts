@@ -147,12 +147,17 @@ describe("host.version / host.capabilities", () => {
     expect(version.startedAt).toBe(app.startedAt);
     expect(version.pid).toBe(process.pid);
 
-    // 能力清单是真的那一份：契约里每个方法一条，带 PRD 编号与本地化好的标题（F-E5 / R6）
+    // 能力清单是真的那一份：契约里每个方法一条，带 PRD 编号与两条属性（F-E6 / F-F9 / R6）
     const capabilities = await callMethod(app, "host.capabilities");
     expect(capabilities.capabilities.length).toBe(METHOD_NAMES.length);
     const send = capabilities.capabilities.find((item) => item.method === "conversation.send");
-    expect(send).toMatchObject({ id: "F-C2", blocking: true, destructive: false });
-    expect(send?.title.message.length).toBeGreaterThan(0);
+    expect(send).toEqual({
+      id: "F-C2",
+      domain: "conversation",
+      method: "conversation.send",
+      blocking: true,
+      destructive: false,
+    });
   });
 });
 

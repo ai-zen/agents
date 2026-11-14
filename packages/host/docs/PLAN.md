@@ -173,7 +173,7 @@
 | W1-11 | `host.upgrade` / `host.shutdown` 都还在；CLI 的 `/upgrade` 与 `/shutdown` 各接它们 | `cli/src/commands/handlers.ts`:813（`host.upgrade`）、:948（`host.shutdown { reason: "cli" }`） |
 | W1-12 | 没有 `model.restoreFactoryImage`（`grep -rn restoreFactoryImage src/` 为空），防下一棒「顺手补对称」 | 同上 grep |
 
-**capabilities / i18n 同步**：能力清单 63 条与 `METHOD_NAMES` 一一对应（`capabilities.ts` 里每方法一条），i18n 的 `capability.*` 键集合与清单一致（用例钉住两套语言键集合相同）。`architecture.md` 的方法表 / A12 / A13 / §7 已同批对齐（W3-3）。
+**capabilities 同步**：能力清单 63 条与 `METHOD_NAMES` 一一对应（`capabilities.ts` 里每方法一条）。i18n 的 `capability.*` 键已在 2026-11-14 全部删除（清单里不再有文案，见 PRD F-E5 的订正），用例改为钉「清单只有 `blocking` / `destructive` / `domain` / `id` / `method` 五个字段」。`architecture.md` 的方法表 / A12 / A13 / §7 已同批对齐（W3-3）。
 
 ---
 

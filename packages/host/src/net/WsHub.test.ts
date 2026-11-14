@@ -55,8 +55,6 @@ const CAPABILITIES: CapabilityView[] = [
   {
     id: "F-C8",
     domain: "conversation",
-    title: { code: "cap", messageKey: "label.agent", params: {}, message: "Revert" },
-    description: { code: "cap", messageKey: "label.agent", params: {}, message: "Revert messages" },
     method: "conversation.revert",
     blocking: false,
     destructive: true,
