@@ -171,7 +171,7 @@ export function helloResult(overrides: Partial<HostHelloResult> = {}): HostHello
   };
 }
 
-/** 一份 `conversation.state` 的 `state`（空闲、零用量） */
+/** 一份 `conversation.state` 的 `state`（空闲、零用量、没排队） */
 export function conversationState(
   conversationId: string,
   overrides: Partial<ConversationState> = {},
@@ -183,6 +183,8 @@ export function conversationState(
       conversationId,
       status: "idle",
       assistantMessageId: null,
+      // 空闲时没有哪一轮在跑，也就没有谁的队列可排（契约：空闲恒为 0，不是「未知」）
+      inboxPending: 0,
       startedAt: null,
       settledAt: null,
       generation: null,
