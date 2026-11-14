@@ -360,16 +360,16 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * 把某一档优先级的条目**按入队顺序**全部从 `inbox` 里取走。
+   * 把某一档优先级的条目**按入队顺序**全部从 `inbox` 里取走；不传 `priority` 就是全取。
    *
    * 用 `splice` 逐个摘而不是重建数组：`inbox` 是公开字段，外部可能拿着它做快照，
    * 换掉数组实例等于让那些引用指向一份不存在的排队队列。
    */
-  private drainInbox(priority: AgentNS.InboxPriority): AgentNS.InboxEntry[] {
+  private drainInbox(priority?: AgentNS.InboxPriority): AgentNS.InboxEntry[] {
     const taken: AgentNS.InboxEntry[] = [];
     for (let i = 0; i < this.inbox.length;) {
       const entry = this.inbox[i]!;
-      if (entry.priority !== priority) {
+      if (priority !== undefined && entry.priority !== priority) {
         i++;
         continue;
       }
@@ -380,15 +380,16 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * 取走某一档优先级的条目，逐条落成 User 消息；返回「是否真的插进了东西」。
+   * 取走某一档优先级的条目（不传 `priority` 就是全取），逐条落成 User 消息；返回「是否真的
+   * 插进了东西」。
    *
    * 走 `append`（而不是 `messages.push`）：落地的那条也得广播 `message`，否则订阅方永远
    * 不知道屏幕上该多一条（宿主正是按这条事件落库的）。
    *
-   * 返回值是外循环唯一的防死循环判据：一条都没插就说明这一档已经空了，再转一圈只会拿到
-   * 一模一样的请求。
+   * 返回值是各处防死循环的唯一判据：一条都没插就说明这一档（或整个队列）已经空了，再转一圈
+   * 只会拿到一模一样的请求。
    */
-  private insertInbox(priority: AgentNS.InboxPriority): boolean {
+  private insertInbox(priority?: AgentNS.InboxPriority): boolean {
     const entries = this.drainInbox(priority);
     for (const entry of entries) {
       this.append(inboxEntryMessage(entry));
@@ -423,6 +424,59 @@ export class Agent extends AgentContext {
       throw new Error(`inner-loops-start 被插件拒绝: ${loopsDenied}`);
     }
 
+    // 内循环组（内循环 + 外循环）：一路跑到 inbox 里再没有低优先条目为止。
+    await this.runLoops(sendCtx);
+
+    // 整组内循环结束：含多轮工具调用，messages 为完整结果（正常/error/abort 均到达此处）
+    await this.dispatchHook("onInnerLoopsEnd", sendCtx);
+
+    // ★ 整组的最后一个取件点：收尾钩子之后**再判一次** inbox。
+    //
+    // ## 为什么取件点必须排在钩子之后
+    //
+    // `onInnerLoopsEnd` 是「这一组已经跑完」的唯一通知点，而插件在这一跳里做的事可能
+    // 很慢、也可能顺手入队（SDK 的 `AutoMigratePlugin` 正是在这个钩子里问用户要不要迁移
+    // —— 「用户在这一段时间里说的话」与「agent 刚停下」本来就是同一件事）。取件点若排在
+    // 钩子**之前**，这一段推进来的条目就再也等不到取件者：调用方（宿主）已经回了
+    // `queued` 并让客户端乐观画了一条，可这一轮不会再取 —— 那条内容既不落成消息、也不进
+    // 任何一次请求，屏幕上就是这么凭空少一句。窗口跨度是「最后一次取件 → `send()` 返回」，
+    // 宿主那边整个可入队区间都压在它上面，所以它必须由这一层兜住，不能留给调用方自律。
+    //
+    // ## 语义没有变
+    //
+    // 低优先级仍然是「agent 停下之后插入」：只是把「停下」的判定点挪到收尾钩子之后，
+    // 让钩子里的入队也算这一轮。到这一步已经没有「内循环轮末」可等了，再等就是下一次
+    // `send()`（那时候这一条已经不属于这一轮），所以这里**不分优先级**，按入队顺序一起落。
+    //
+    // ## 中止与死循环
+    //
+    // 中止（`runAborted`）时不再取件、也不再续圈：`abort()` 已经把 inbox 清空，清空之后
+    // 才到的条目留给下一轮 —— 与改动前一致。循环只在**真的插进了条目**时才多跑一趟，于是
+    // 「插件不在钩子里入队」的常态下这一次判空就退出，一次请求都不多发。
+    while (!this.runAborted && this.insertInbox()) {
+      await this.runLoops(sendCtx);
+    }
+
+    // 清空整组 + 当前轮活跃任务记录
+    this.clearPendingTasks();
+
+    return this.messages;
+  }
+
+  /**
+   * 内循环组：一圈接一圈地跑，直到 inbox 里再没有低优先条目。
+   *
+   * ## 为什么它从 `run()` 里拆出来
+   *
+   * 整组首尾的两个钩子（`onInnerLoopsStart` / `onInnerLoopsEnd`）是「一次 send 各一次」的
+   * 硬契约，而同一组内循环需要被跑**不止一趟**：`onInnerLoopsEnd` 与 `onAfterSend` 这两个
+   * 收尾钩子里推进来的条目也算这一轮（见 `run()` 末尾、`send()` 末尾那两个取件点）。循环
+   * 留在 `run()` 里，就只能在「再转一圈」与「不重发钩子」之间二选一 —— 拆出来之后，钩子
+   * 各发一次归 `run()` 管，循环跑几趟归本方法管，两件事互不牵制。
+   *
+   * `sendCtx` 一路透传：同一次 send 里各圈拿到的是同一个上下文实例（与改动前一致）。
+   */
+  private async runLoops(sendCtx: SendContext): Promise<void> {
     // 外循环：一次 send 里，内循环可能被 inbox 反复续起来 —— 高优先条目把已经停下的内循环
     // 重新点亮，低优先条目则让整组内循环（连同末尾的 reconcile*）再跑一遍。
     let needContinue = true;
@@ -552,7 +606,7 @@ export class Agent extends AgentContext {
 
       // 被叫停的这一轮到此收工：abort() 已经把 inbox 清空，所以这里既不再取条目，
       // 也不再开新的一圈 —— 与改动前一致，abort 之后 run 只把 reconcile* 与
-      // onInnerLoopsEnd 走完就返回。
+      // onInnerLoopsEnd 走完就返回（`onInnerLoopsEnd` 之后那个取件点也被 `runAborted` 挡着）。
       if (this.runAborted) break;
 
       // 低优先级插入点：内循环全部停下、reconcile* 也收完尾之后。插进去了才开下一圈；
@@ -560,15 +614,18 @@ export class Agent extends AgentContext {
       if (!this.insertInbox("low")) break;
       needContinue = true;
     }
+  }
 
-    // 整组内循环结束：含多轮工具调用，messages 为完整结果（正常/error/abort 均到达此处）
-    await this.dispatchHook("onInnerLoopsEnd", sendCtx);
-
-    // 清空整组 + 当前轮活跃任务记录
+  /**
+   * 收工：清空整组与当前轮的任务记录。
+   *
+   * `run()` 的正常出口调一次；`send()` 在收尾钩子之后又续了圈的情况下**要再调一次** ——
+   * 那几圈是在 `run()` 清过之后跑的，记录留着不清，下一次 `abort()` 会翻到这些已经结束的
+   * 任务，把它们的状态改成 `Aborted`（`abort()` 只遍历活跃集合，那正是它唯一的信息来源）。
+   */
+  private clearPendingTasks(): void {
     this.innerLoopsTasks.clear();
     this.innerLoopTasks.clear();
-
-    return this.messages;
   }
 
   formatTools() {
@@ -797,6 +854,12 @@ export class Agent extends AgentContext {
   /**
    * 发一条用户消息，等整组内循环跑完。
    *
+   * ## 「返回 = 这一轮真的结束了」
+   *
+   * 钩子里推进 `inbox` 的那些条目也算这一轮：`onInnerLoopsEnd` 之后由 `run()` 兜一次、
+   * `onAfterSend` 之后由本方法兜一次（见末尾那个 while）。所以返回时 inbox 里不该再有
+   * 「这一轮该处理却没处理」的条目 —— 宿主的「已排队」承诺靠的就是这一条。
+   *
    * 返回 this.messages，且是**在 onAfterSend 之后**取的：插件可以整体替换消息列表（迁移 / 保存）。
    */
   async send(content: AgentNS.MessageContentSection[] | string) {
@@ -821,6 +884,22 @@ export class Agent extends AgentContext {
     // onAfterSend 钩子：可做迁移、保存等后处理（如替换 this.messages 重开会话），
     // 故返回值必须在钩子之后取，不能用 run() 的快照。
     await this.dispatchHook("onAfterSend", ctx);
+
+    // ★ `send()` 这一侧的最后一个取件点：钩子里推进来的条目也必须落地。
+    //
+    // 与 `run()` 末尾那个取件点同一个理由：收尾钩子等用户、等 IO 时是**无界**的，而入队的人
+    // 已经拿到了「排队了」的回执（宿主回 `queued: true`、客户端画了一条）。差别只在于这里
+    // 连 `onInnerLoopsEnd` 都走完了 —— 要再跑的是完整的内循环组，且 **不能**重发整组首尾
+    // 钩子（一次 send 各一次）：所以调 `runLoops()`，不是 `run()`。
+    //
+    // `send()` 的对外语义因此仍然是「返回时这一轮真的结束了」：只要 inbox 里还有条目，就不会
+    // 带着它们交还。中止路径照旧 —— `runAborted` 时不再取件、不再续圈（`abort()` 已清空 inbox）。
+    while (!this.runAborted && this.insertInbox()) {
+      await this.runLoops(ctx);
+    }
+
+    // 上面续的圈是在 `run()` 清过任务记录之后跑的，这里再清一遍（见 clearPendingTasks）
+    this.clearPendingTasks();
 
     return this.messages;
   }

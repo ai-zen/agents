@@ -298,6 +298,111 @@ describe("Agent.inbox", () => {
     });
   });
 
+  describe("收尾钩子之后的取件点（整组的最后一个取件点）", () => {
+    it("onInnerLoopsEnd 里入队的条目照样落地，并进下一次请求", async () => {
+      // 真实形态：插件在整组收尾钩子里问用户（SDK 的 `AutoMigratePlugin` 就干这个），
+      // 用户在那一段时间里说的话通过 `pushInbox` 进来 —— 它属于**这一轮**。
+      //
+      // 这一条故意走 `run()`（不是 `send()`）：`run()` 末尾那个取件点是它唯一的救命人，
+      // 去掉那个取件点它就红 —— 于是两道防线各有一条用例自己盯着。
+      const { client, create, bodies } = createRecordingClient([
+        textRound("第一轮说完了"),
+        textRound("钩子里那两条也回了"),
+      ]);
+      const agent = new Agent({ client, model: "gpt-4", messages: [Message.System("助手")] });
+
+      const onInnerLoopsStart = vi.fn();
+      const onInnerLoopsEnd = vi.fn();
+      let low: AgentNS.InboxEntry | undefined;
+      let high: AgentNS.InboxEntry | undefined;
+      agent.use({
+        onInnerLoopsStart,
+        onInnerLoopsEnd: (ctx) => {
+          onInnerLoopsEnd();
+          low = ctx.agent.pushInbox({ source: "user", priority: "low", content: "钩子里来的（低）" });
+          high = ctx.agent.pushInbox({ source: "tool", priority: "high", content: "钩子里来的（高）" });
+        },
+      });
+
+      // `run()` 的收尾同样只把整组首尾两个钩子各发一次（不是每圈一次）
+      agent.append(Message.User("你好"));
+      await agent.run();
+
+      // 取件点挪到钩子之后，但钩子本身仍是一次 send 各一次（不是每圈一次）
+      expect(onInnerLoopsStart).toHaveBeenCalledTimes(1);
+      expect(onInnerLoopsEnd).toHaveBeenCalledTimes(1);
+
+      // ① 两条都落成了 User 消息：不是留在 inbox 里等一个不会再来的取件者
+      expect(agent.inbox).toHaveLength(0);
+      const landedIds = agent.messages.map((m) => m.id);
+      expect(landedIds).toContain(low!.messageId);
+      expect(landedIds).toContain(high!.messageId);
+      const landedUser = agent.messages
+        .filter((m) => m.role === AgentNS.Role.User)
+        .map((m) => m.content);
+      expect(landedUser.slice(1)).toEqual([
+        "钩子里来的（低）",
+        "// 这条消息来自 tool 自动推送\n\n钩子里来的（高）",
+      ]);
+
+      // ② 真的多跑了一轮请求，且第二请求里两条都在（按入队顺序，先低后高）
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(bodies[0].messages)).not.toContain("钩子里来的");
+      expect(
+        messagesOfRole(bodies[1], AgentNS.Role.User).map((m: any) => m.content),
+      ).toEqual([
+        "你好",
+        "钩子里来的（低）",
+        "// 这条消息来自 tool 自动推送\n\n钩子里来的（高）",
+      ]);
+    });
+
+    it("onAfterSend 里入队的条目也落地：send() 返回时这一轮真的结束了", async () => {
+      const { client, create, bodies } = createRecordingClient([
+        textRound("这一轮说完了"),
+        textRound("收尾钩子里那条也回了"),
+      ]);
+      const agent = new Agent({ client, model: "gpt-4", messages: [Message.System("助手")] });
+
+      const onInnerLoopsEnd = vi.fn();
+      const onAfterSend = vi.fn();
+      let entry: AgentNS.InboxEntry | undefined;
+      agent.use({
+        onInnerLoopsEnd,
+        onAfterSend: (ctx) => {
+          onAfterSend();
+          entry = ctx.agent.pushInbox({
+            source: "user",
+            priority: "low",
+            content: "收尾钩子里来的",
+            messageId: "host-queued-1",
+          });
+        },
+      });
+
+      const messages = await agent.send("你好");
+
+      // `onAfterSend` 一次 send 一次；整组收尾钩子也没有因为续圈被重发
+      expect(onAfterSend).toHaveBeenCalledTimes(1);
+      expect(onInnerLoopsEnd).toHaveBeenCalledTimes(1);
+
+      // 落地：id 就是入队时定的那个（宿主已经把它回过客户端了），inbox 取空
+      expect(agent.inbox).toHaveLength(0);
+      expect(entry!.messageId).toBe("host-queued-1");
+      const landed = messages.find((m) => m.id === "host-queued-1")!;
+      expect(landed).toBeDefined();
+      expect(landed.role).toBe(AgentNS.Role.User);
+      expect(landed.content).toBe("收尾钩子里来的");
+
+      // 并且真的为它跑了一轮：第二次请求里最后一条用户消息就是它，回来的是第二轮那句话
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(lastMessage(bodies[1]).role).toBe(AgentNS.Role.User);
+      expect(lastMessage(bodies[1]).content).toBe("收尾钩子里来的");
+      expect(messages.at(-1)!.content).toBe("收尾钩子里那条也回了");
+      expect(messages.at(-1)!.status).toBe(AgentNS.MessageStatus.Completed);
+    });
+  });
+
   describe("条目落地成消息", () => {
     it("source 为 tool 时正文首行是来源注释", () => {
       const content = inboxEntryContent({

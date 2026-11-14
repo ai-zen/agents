@@ -882,6 +882,8 @@ class TurnSession implements ChatTurn {
     } finally {
       // `send()` 返回 = 这一轮再没有轮末插入点：此刻起排进来的条目一句也不会被发出去。
       // 门必须在这里关上 —— `settle()` 还要写库，那一段时间在 `RunRegistry` 眼里仍然「在跑」。
+      // （core 侧的对称保证：`send()` 返回时 inbox 已经被取空，所以关门的这一刻不欠任何
+      // 已经回过 `queued` 的条目 —— 工单 J。）
       this.closeEnqueue();
     }
   }
@@ -1328,9 +1330,11 @@ class TurnSession implements ChatTurn {
       this.options.onError?.(error, "final-write");
     }
 
-    // 收工那一刻 inbox 里还有东西 = 它们是在最后一个插入点之后推进来的（`send()` 已经
-    // 走到收尾钩子），这一轮不会再取走它们。不吭声最糟：客户端按回包画了一条，屏幕上
-    // 却永远等不到它。至少让日志里有一行。
+    // 收工那一刻 inbox 里还有东西 = 出事了。core 保证 `send()` 的返回点已经把各处取件点
+    // （含整组收尾钩子 `onInnerLoopsEnd` 与 `onAfterSend` 之后那两处）全走完（工单 J），
+    // 所以正常路径上这里必然是空的；还有存货意味着有人在最后一个取件点**之后**才推进来
+    // （插件在更晚的异步尾巴上 push，或 abort 清空之后又来的）。不吭声最糟：客户端按回包
+    // 画了一条，屏幕上却永远等不到它。至少让日志里有一行。
     const leftover = this.agent?.inbox ?? [];
     if (leftover.length > 0) {
       const ids = leftover.map((entry) => entry.messageId).join(", ");
