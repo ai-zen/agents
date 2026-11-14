@@ -536,6 +536,8 @@ describe("端到端集成：真进程 + 真连接", () => {
 
     const conversationsAfter = (await callThrough(back, "conversation.list", { workspaceId: workspace.id })) as ConversationListResult;
     expect(conversationsAfter.conversations.map((item) => item.id)).toEqual([conversationId]);
+    // F-I3 的「在跑」那一格：刚重启的宿主上没有这一轮，键在、值是 null（客户端不必分辨缺字段）
+    expect(conversationsAfter.conversations[0]?.run).toBeNull();
 
     const questionsAfter = (await callThrough(back, "question.list", { conversationId })) as QuestionListResult;
     expect(questionsAfter.questions.map((item) => item.id)).toEqual([questionId]);

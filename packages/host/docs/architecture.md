@@ -199,6 +199,7 @@ const [found, written] = await db.tx((q) => [
 |---|---|---|
 | `listByConversation` | 只数**主线**（`parentToolCallId IS NULL`），子 Agent 的消息不在结果里；`hidden` 的默认不返回（要就传 `includeHidden`） | 侧栏摘要 `ConversationSummary.messageCount`（`ConversationService.toSummary`）、`conversation.changed.messageCount`、`conversation.state` 的用量与上下文（`usage` / `context` 都从这份消息列表算）、`message.list` |
 | `countByConversation` | 数 `messages` 表里这段对话的**全部行**，只筛 `hidden` 一列 | 删除代价 `consequences.messages`（`conversation.delete` 与 `workspace.remove` 的 `dryRun` 与非 `dryRun` 都用它） |
+| `listDelegated` | 数的是**子 Agent 那一半**的行（`parentToolCallId IS NOT NULL`），与 `listByConversation` 正好互补；`hidden` 的默认不返回 | `MessageService.subAgents`：`conversation.state` / `conversation.abort` 空闲现场里的 `run.subagents`（重开一段跑过子 Agent 的对话，页签不该是空的；一次委派是否真的派出去过，唯一确凿的证据就是这里有一行） |
 
 所以一段跑过子 Agent 的对话，「侧栏显示几条」会小于「删掉它会少多少行」，两个数不互相换算，也不互为校验：一处是读路径的主线视图，一处是删除的代价。`hidden` 的消息两边都不算（它在界面上从来没出现过）。两处代码（`MessageRepository` 与两个服务）各自有注释说明「这里是哪个数、为什么与另一处不同」。
 

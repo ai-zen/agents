@@ -310,6 +310,17 @@ export interface ConversationSummary {
   lastMessageAt: string | null;
   /** 现在是否在跑一轮（PRD F-I3） */
   running: boolean;
+  /**
+   * 这段对话此刻的运行状态：`null` = 没在跑，在跑就是 `{ status: "running", startedAt }`。
+   *
+   * 与 `running` 是同一件事实的两种说法，但条目不重：活跃会话列表要按「什么时候开始的」
+   * 排，而一个布尔说不出时间。`status` 用 `RunState` 的那一组取值（客户端不必为列表再造一套
+   * 取值表），`startedAt` 是这一轮的开始时刻（与 `RunState.startedAt` 同口径）。
+   *
+   * 只有「此刻在跑」这一种情况会给出非 `null` 值：跑完的轮次在宿主里已经没有了（`RunRegistry`
+   * 结算即删），那些历史事实在 `conversation.state` / `run.state` 里，不在列表里。
+   */
+  run: { status: RunState["status"]; startedAt: string | null } | null;
   /** 是否有问题挂着没答（PRD F-I9） */
   hasPendingQuestion: boolean;
 }

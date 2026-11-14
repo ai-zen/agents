@@ -24,10 +24,17 @@ import { ConversationService } from "./ConversationService.js";
 import type { ConversationRuntimePort } from "./ConversationService.js";
 import type { ConversationCreateParams, ConversationView } from "../wire/index.js";
 
-/** 运行时只提供两件事实：忙不忙、删掉之后的中止（模型与档位在会话行上） */
+/** 运行时只提供几件事实：忙不忙、这一轮从什么时候开始、删掉之后的中止（模型与档位在会话行上） */
 class FakeRuntime implements ConversationRuntimePort {
   readonly running = new Set<string>();
   readonly forgotten: string[] = [];
+  /**
+   * 「在跑的那段是什么时候开始的」这一格。
+   *
+   * 故意做成可选项：不赋值就是「这个替身不知道这件事」，服务层按没在跑算（与真端口上
+   * 那个可选项同义，用例得能分别验「注入了」与「没注入」两条路）。
+   */
+  runState?: ConversationRuntimePort["runState"];
 
   isRunning(conversationId: string): boolean {
     return this.running.has(conversationId);
@@ -87,6 +94,9 @@ const BASE_CONFIG = {
 
 let harness: Harness;
 let clock: number;
+
+/** 「这一轮从什么时候开始」的固定取值（用例只验它被原样报出来，不验时间本身的来历） */
+const STARTED_AT = "2026-11-15T03:00:00.000Z";
 
 // 静态部分（临时数据根 / 库 / 配置与助手文件）整个文件只建一次，见 beforeAll
 let dir: string;
@@ -400,6 +410,33 @@ describe("ConversationService.list（D13）", () => {
     harness.runtime.running.delete(created.conversation.id);
     const again = await harness.service.get({ conversationId: created.conversation.id });
     expect(again.conversation.running).toBe(false);
+  });
+
+  it("条目里的 run 说清「这段在跑 + 什么时候开始的」，没在跑的那段是 null（F-I3）", async () => {
+    const busy = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    const idle = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    harness.runtime.running.add(busy.conversation.id);
+    harness.runtime.runState = (conversationId) =>
+      harness.runtime.running.has(conversationId)
+        ? { status: "running", startedAt: STARTED_AT }
+        : null;
+
+    const listed = await harness.service.list({ workspaceId: "w1" });
+    const byId = new Map(listed.conversations.map((item) => [item.id, item]));
+
+    expect(byId.get(busy.conversation.id)?.run).toEqual({ status: "running", startedAt: STARTED_AT });
+    expect(byId.get(idle.conversation.id)?.run).toBeNull();
+    // 既有字段的含义不变：`running` 还是那个布尔（说话的是同一份事实）
+    expect(byId.get(busy.conversation.id)?.running).toBe(true);
+    expect(byId.get(idle.conversation.id)?.running).toBe(false);
+  });
+
+  it("这一格没注入时一律按没在跑算：服务层不自己猜（端口缺一小格不该编一个值）", async () => {
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    harness.runtime.running.add(created.conversation.id);
+
+    const listed = await harness.service.list({ workspaceId: "w1" });
+    expect(listed.conversations[0]?.run).toBeNull();
   });
 });
 

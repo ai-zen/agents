@@ -11,6 +11,9 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { AgentNS as AgentNSValue } from "@ai-zen/agents-core";
+import type { AgentNS } from "@ai-zen/agents-core";
+
 import { createHost } from "../app.js";
 import type { HostApp } from "../app.js";
 import { render } from "../i18n/index.js";
@@ -415,5 +418,157 @@ describe("conversation.state 的 includeMessages（要不要连消息一起回�
       sent.userMessageId,
       sent.assistantMessageId,
     ]);
+  });
+});
+
+/** 一轮：先委派一次子 Agent（工具调用 `call-9` / 工具名 `researcher`），拿到结果后再吐一句 */
+function delegatingRound(options: { failed?: boolean } = {}): FakeAgent {
+  const inner: AgentNS.Message[] = [
+    {
+      id: "inner-u",
+      role: AgentNSValue.Role.User,
+      status: AgentNSValue.MessageStatus.Completed,
+      content: "查一下这个问题的资料",
+    },
+    {
+      id: "inner-a",
+      role: AgentNSValue.Role.Assistant,
+      status:
+        options.failed === true
+          ? AgentNSValue.MessageStatus.Error
+          : AgentNSValue.MessageStatus.Completed,
+      content: options.failed === true ? "查不下去了" : "查到了",
+    },
+  ];
+  return new FakeAgent([
+    {
+      deltas: [{ content: "我派一个子 Agent 去查。" }],
+      toolCalls: [{ id: "call-9", name: "researcher", arguments: "{}" }],
+      subAgent: { name: "researcher", messages: inner },
+      // core 在子 Agent 收尾时把这次委派（含孙级）的用量钉在工具结果消息上
+      toolSubAgentUsage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
+    },
+    { deltas: [{ content: "它查完了。" }] },
+  ]);
+}
+
+/**
+ * 一段对话重复打开时，库里那批消息能不能把子 Agent 捞回来（F-I7）。
+ *
+ * 这一组验的是「现场快照的两条路都贴合」：`conversation.state` 与 `conversation.abort` 的
+ * 回包里都带 `run`，两处都该看得见历次委派。
+ */
+describe("空闲现场里的子 Agent（F-I7：重开一段对话，页签不该空）", () => {
+  it("跑过子 Agent 的对话重开时，subagents 从库里捞回来（名字 / 状态 / 用量 / 条数）", async () => {
+    const { app, conversationId } = await makeHarness({
+      createAgent: async () => delegatingRound(),
+    });
+    await callMethod(app, "conversation.send", { conversationId, input: { content: "派个活" } });
+    await settle(app, conversationId);
+
+    const { state } = await callMethod(app, "conversation.state", { conversationId });
+    expect(state.run.status).toBe("idle");
+    expect(state.run.subagents).toHaveLength(1);
+
+    const snapshot = state.run.subagents[0]!;
+    // 关联就是那次委派的工具调用 id（子 Agent 的消息行上 `parentToolCallId` 记着它）
+    expect(snapshot.toolCallId).toBe("call-9");
+    // 名字只能来自主线上那次工具调用的 `function.name`
+    expect(snapshot.name).toBe("researcher");
+    // 父工具结果写成了完成 → 这次委派跑完了
+    expect(snapshot.status).toBe("done");
+    // 条数与库里那段话一致（`message.list` 带 `toolCallId` 读回来的就是它）
+    const delegated = await callMethod(app, "message.list", {
+      conversationId,
+      toolCallId: "call-9",
+    });
+    expect(snapshot.messageCount).toBe(delegated.messages.length);
+    expect(snapshot.messageCount).toBe(2);
+    // 用量是 core 钉在父工具结果消息上的那一份（含孙级）
+    expect(snapshot.usage).toEqual({ prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 });
+    // 开始时刻是子 Agent 第一条消息落库的时刻（库里唯一的「开始」事实）
+    expect(Number.isNaN(Date.parse(snapshot.startedAt))).toBe(false);
+    // 推不出来的两格宁可空着：库里没有「委派结束」的时刻，也没给人话原因
+    expect(snapshot.finishedAt).toBeNull();
+    expect(snapshot.problem).toBeNull();
+  });
+
+  it("从没委派过的对话：subagents 仍是空数组（不凭空造一个）", async () => {
+    const { app, conversationId } = await makeHarness();
+    await callMethod(app, "conversation.send", { conversationId, input: { content: "聊一句" } });
+    await settle(app, conversationId);
+
+    const { state } = await callMethod(app, "conversation.state", { conversationId });
+    expect(state.run.subagents).toEqual([]);
+  });
+
+  it("子 Agent 自己出过错的那次委派，空闲时推成 error（不瞎说成 done）", async () => {
+    const { app, conversationId } = await makeHarness({
+      createAgent: async () => delegatingRound({ failed: true }),
+    });
+    await callMethod(app, "conversation.send", { conversationId, input: { content: "派个活" } });
+    await settle(app, conversationId);
+
+    const { state } = await callMethod(app, "conversation.state", { conversationId });
+    const snapshot = state.run.subagents[0]!;
+    expect(snapshot.status).toBe("error");
+    // 状态是「出错」，但原因不在库里能拼成一句人话的那一层：不说，不编
+    expect(snapshot.problem).toBeNull();
+  });
+
+  it("abort 回包里的空闲现场也带着子 Agent（两条路径同一份事实）", async () => {
+    const { app, conversationId } = await makeHarness({
+      createAgent: async () => delegatingRound(),
+    });
+    await callMethod(app, "conversation.send", { conversationId, input: { content: "派个活" } });
+    await settle(app, conversationId);
+
+    const result = await callMethod(app, "conversation.abort", { conversationId });
+    expect(result.aborted).toBe(false);
+    expect(result.run.status).toBe("idle");
+    expect(result.run.subagents.map((item) => item.toolCallId)).toEqual(["call-9"]);
+  });
+});
+
+/**
+ * `conversation.list` 的「这段在跑」那一格（F-I3：CLI 的活跃会话列表按它排）。
+ *
+ * 事实只有一个来源：`RunRegistry`。这里经真接线（`app.ts` → `ConversationRuntimePort`）验，
+ * 不是验一个替身。
+ */
+describe("conversation.list 带「在跑」那一格（F-I3）", () => {
+  it("在跑的对话条目带 run（status + startedAt），跑完就回到 null", async () => {
+    const gate: Deferred<void> = deferred();
+    const { app, conversationId, workspaceId } = await makeHarness({
+      createAgent: async () => new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢" }] }]),
+    });
+    await callMethod(app, "conversation.send", { conversationId, input: { content: "慢慢说" } });
+
+    const during = await callMethod(app, "conversation.list", { workspaceId });
+    const running = during.conversations.find((item) => item.id === conversationId);
+    expect(running?.run?.status).toBe("running");
+    // 开始时刻就是注册表登记这一轮的时刻（不是拉列表的时刻，列表也不会在现场里算时间）
+    expect(running?.run?.startedAt).toBe(app.runRegistry.summary(conversationId)?.startedAt);
+    // 既有字段的含义不变：`running` 与 `run` 说的是同一件事
+    expect(running?.running).toBe(true);
+
+    gate.resolve();
+    await settle(app, conversationId);
+
+    const after = await callMethod(app, "conversation.list", { workspaceId });
+    const idle = after.conversations.find((item) => item.id === conversationId);
+    expect(idle?.run).toBeNull();
+    expect(idle?.running).toBe(false);
+  });
+
+  it("空闲的对话是 null：不是缺这一格，也不是 status idle", async () => {
+    const { app, workspaceId } = await makeHarness();
+
+    const listed = await callMethod(app, "conversation.list", { workspaceId });
+    expect(listed.conversations).toHaveLength(1);
+    const entry = listed.conversations[0]!;
+    // 键在（客户端不用分辨「没这个字段」与「没在跑」），值是 null
+    expect("run" in entry).toBe(true);
+    expect(entry.run).toBeNull();
   });
 });

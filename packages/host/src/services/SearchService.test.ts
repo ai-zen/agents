@@ -47,6 +47,8 @@ function fakeSummarizer(): ConversationSummarizer & { calls: string[][] } {
       messageCount: 0,
       lastMessageAt: null,
       running: false,
+      // 搜索服务不关心运行状态：这一格按「没在跑」给
+      run: null,
       hasPendingQuestion: false,
     }));
   };

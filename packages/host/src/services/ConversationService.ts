@@ -69,6 +69,7 @@ import type {
   ConversationView,
   MessageInput,
   ModelSource,
+  RunState,
   ThinkingState,
 } from "../wire/index.js";
 import { assetIdsOf } from "./AssetService.js";
@@ -78,8 +79,9 @@ import { toFolderFact } from "./WorkspaceService.js";
 /**
  * 运行时注入给对话服务的窄接口。
  *
- * 只剩两件运行时才知道的事：
+ * 只剩三件运行时才知道的事：
  *   - 这段对话现在有没有在跑一轮（PRD F-I3 / D14，真相在 `RunRegistry` 一处）；
+ *   - 这一轮从什么时候开始（`conversation.list` 的活跃会话列表要按它排，F-I3）；
  *   - 对话被删掉之后，把这一轮的现场丢掉（中止在跑的轮次）。
  *
  * 模型与思考档位不在这里：它们存在会话行上（`modelId` / `thinkingLevel`），服务层自己读写库。
@@ -90,6 +92,14 @@ import { toFolderFact } from "./WorkspaceService.js";
 export interface ConversationRuntimePort {
   /** 这段对话现在是否在跑一轮 */
   isRunning(conversationId: string): boolean;
+  /**
+   * 这段对话此刻的运行状态：在跑给 `{ status, startedAt }`，没在跑给 `null`。
+   *
+   * 与 `isRunning` 问的是同一件事，多的那一格是「什么时候开始的」。**可以不注入**：
+   * 缺省按「没在跑」算（`ConversationSummary.run` 出 `null`）—— 一格可有可无的事实不该
+   * 让不关心它的调用方（用例里的窄替身、脚本）被迫实现一遍。
+   */
+  runState?(conversationId: string): { status: RunState["status"]; startedAt: string | null } | null;
   /** 对话（或它的项目）被删掉之后，中止在跑的轮次并清掉现场 */
   forget(conversationId: string): void | Promise<void>;
 }
@@ -770,6 +780,8 @@ export class ConversationService {
       messageCount: stored.length,
       lastMessageAt: stored.length === 0 ? null : iso(latestCreatedAt(stored)),
       running: this.runtime.isRunning(row.id),
+      // 「在跑」那一格比布尔多一个开始时刻（活跃会话列表按它排）；没注入这一格的替身按没在跑算
+      run: this.runtime.runState?.(row.id) ?? null,
       hasPendingQuestion: pendingCount > 0,
     };
   }

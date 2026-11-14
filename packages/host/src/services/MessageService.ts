@@ -3,7 +3,8 @@
  *
  * 对应能力编号：A12 / L5（按消息 id 续拉：命中则从它开始且含它自身的最新内容，不命中返回全部）、
  * F-C6（`around` 定位取窗，供客户端把搜索命中的那条摆到眼前）、F-I7（`toolCallId` 取子 Agent
- * 自己的消息）、F-D9（会话创建时那条 `hidden` 的 cwd 消息默认不出网）、
+ * 自己的消息；`subAgents` 把历次委派从库里拼回子 Agent 快照）、
+ * F-D9（会话创建时那条 `hidden` 的 cwd 消息默认不出网）、
  * R21 / R22（消息原样用 core 的 `AgentNS.Message`，不额外挂时间戳这类外壳字段）。
  *
  * `toAgentMessage` 是这个仓库里「存储行 → core 消息」的唯一一份实现：对话服务算用量、判断
@@ -20,7 +21,12 @@ import type { ConversationRepository } from "../storage/ConversationRepository.j
 import type { MessageRepository } from "../storage/MessageRepository.js";
 import type { Conversation, StoredMessage } from "../storage/types.js";
 import { HostError } from "../wire/errors.js";
-import type { MessageListParams, MessageListResult } from "../wire/index.js";
+import type {
+  MessageListParams,
+  MessageListResult,
+  SubAgentSnapshot,
+  SubAgentStatus,
+} from "../wire/index.js";
 
 /**
  * 草稿（R56）：刚建出来、还没发过消息的对话在库里没有行。
@@ -194,6 +200,135 @@ export function readUsage(data: Record<string, unknown> | null | undefined): Age
 }
 
 /**
+ * 子 Agent 的名字认不出来时的通用名。
+ *
+ * 与运行器那一侧同一个兜底（`ChatRunner` 的 `subAgentName`）：库里只留下委派工具的名字，
+ * 子 Agent 自己的显示名从来没落过库，认不出就报通用名，不编一个像真的。
+ */
+const FALLBACK_SUB_AGENT_NAME = "sub-agent";
+
+/**
+ * 主线上与一次委派有关的三样事实（按工具调用 id 索引）。
+ *
+ * 三样都只在主线消息里：工具调用的 `function.name` 是这次委派的工具名，工具结果那条消息的
+ * 状态是这次委派最硬的终态证据，它上面的 `subAgentUsage` 是 core 在收尾时钉上去的这次委派
+ * （含其孙级）用量。
+ */
+interface DelegationCall {
+  /** 委派工具的名字；认不出来时为 `null` */
+  name: string | null;
+  /** 这次委派的工具结果消息；还没落库（那一轮没写完就没了）时为 `null` */
+  result: AgentNS.Message | null;
+  /** 发起这次委派的那条助手消息是否被中止过 */
+  aborted: boolean;
+}
+
+/**
+ * 从主线那一页里捞出与委派有关的三样事实（按工具调用 id 索引）。
+ *
+ * 只扫调用方已经读到的那一页：工具调用在助手消息的 `tool_calls` 上，工具结果是一条
+ * `role === tool` 的消息，两者用 `tool_call_id` 对上同一个 id。
+ */
+function delegationCallsOf(
+  messages: readonly AgentNS.Message[],
+): Map<string, DelegationCall> {
+  const calls = new Map<string, DelegationCall>();
+  const entry = (id: string): DelegationCall => {
+    const existing = calls.get(id);
+    if (existing !== undefined) return existing;
+    const created: DelegationCall = { name: null, result: null, aborted: false };
+    calls.set(id, created);
+    return created;
+  };
+
+  for (const message of messages) {
+    for (const toolCall of message.tool_calls ?? []) {
+      const id = toolCall.id;
+      if (id === undefined || id.length === 0) continue;
+      const call = entry(id);
+      const name = toolCall.function?.name;
+      if (name !== undefined) call.name = name;
+      // 发起委派的那条助手消息被中止过：这次委派是被叫停的，不是自己跑完的
+      if (message.status === AgentNS.MessageStatus.Aborted) call.aborted = true;
+    }
+    if (message.role === AgentNS.Role.Tool && message.tool_call_id !== undefined) {
+      const call = entry(message.tool_call_id);
+      call.result = message;
+      // 工具结果那条消息上也带工具名：早期数据里工具调用本身没落下来时用它兜底
+      if (call.name === null && message.name !== undefined) call.name = message.name;
+    }
+  }
+  return calls;
+}
+
+/**
+ * 一次委派空闲时的状态：只从库里的事实推，推不出来就按最弱的那一档给。
+ *
+ * 顺序是**从硬到软**：
+ *   1. 子 Agent 自己吐过一条 `error` 消息 → `error`（与运行器 `ChatRunner.onSubAgentEnd`
+ *      同一口径：子 Agent 内部出过错，父工具结果说什么都盖不过它）；
+ *   2. 父工具结果那条消息的状态 → 完成 / 出错 / 中止；
+ *   3. 结果不在（那一轮没写完就没了）：发起它的助手消息被中止过就是 `aborted`，否则 `error`
+ *      —— 契约里没有「悄悄消失」这一档（与 `ChatRunner.finalizedSubagents` 同口径）。
+ *
+ * 「听起来还行就当 done」那种推法在这里是禁止的：`done` 是一句结论，拿不到证据就说到不了。
+ */
+function subAgentStatusOf(
+  group: readonly StoredMessage[],
+  call: DelegationCall | undefined,
+): SubAgentStatus {
+  if (group.some((row) => row.status === AgentNS.MessageStatus.Error)) return "error";
+  const result = call?.result;
+  if (result?.status === AgentNS.MessageStatus.Error) return "error";
+  if (result?.status === AgentNS.MessageStatus.Aborted) return "aborted";
+  if (result?.status === AgentNS.MessageStatus.Completed) return "done";
+  return call?.aborted === true ? "aborted" : "error";
+}
+
+/**
+ * 「子 Agent 那一半的行」+「主线那一页」→ 子 Agent 快照（F-I7）。
+ *
+ * 分组的键就是 `parentToolCallId`：一次委派一组，组内那些行就是子 Agent 说过的话。
+ * 只从行里拼得出条数与开始时刻，其余三样（名字 / 用量 / 终态）从主线那一页里按工具调用 id 取。
+ * 推不出来的两格宁可空着也不编：`finishedAt`（库里没有「委派结束」的时刻）与
+ * `problem`（原因要给成按连接语言渲染的句子，那是接线层的事，这里只给状态）。
+ */
+function subAgentSnapshotsOf(
+  messages: readonly AgentNS.Message[],
+  rows: readonly StoredMessage[],
+): SubAgentSnapshot[] {
+  const groups = new Map<string, StoredMessage[]>();
+  for (const row of rows) {
+    const toolCallId = row.parentToolCallId;
+    if (toolCallId === null || toolCallId.length === 0) continue;
+    const group = groups.get(toolCallId);
+    if (group === undefined) groups.set(toolCallId, [row]);
+    else group.push(row);
+  }
+  if (groups.size === 0) return [];
+
+  const calls = delegationCallsOf(messages);
+  const snapshots: SubAgentSnapshot[] = [];
+  for (const [toolCallId, group] of groups) {
+    const call = calls.get(toolCallId);
+    snapshots.push({
+      toolCallId,
+      name: call?.name ?? FALLBACK_SUB_AGENT_NAME,
+      status: subAgentStatusOf(group, call),
+      // 子 Agent 的第一条消息就是这次委派的开始：它的创建时刻是库里最接近「开始」的事实
+      startedAt: new Date(Math.min(...group.map((row) => row.createdAt))).toISOString(),
+      // 库里没有「这次委派结束」的时刻：子 Agent 消息的 `updatedAt` 记的是它自己创建的时刻，
+      // 唯一能当结束时刻用的父工具结果创建时刻又不在主线那一页里（`AgentNS.Message` 不带时间戳，R21）
+      finishedAt: null,
+      messageCount: group.length,
+      usage: call?.result?.subAgentUsage ?? null,
+      problem: null,
+    });
+  }
+  return snapshots;
+}
+
+/**
  * `around` 取的窗口条数（PRD F-C6 的定位）。
  *
  * `message.list` 没有 `limit`：它一直是「一段对话全给」，`around` 只是把这一段收成一窗，
@@ -282,6 +417,27 @@ export class MessageService {
       options,
     );
     return this.respond(conversation.id, rows, anchor, around);
+  }
+
+  /**
+   * 这段对话历次委派过的子 Agent（F-I7：跑完再打开这段对话，「子代理」页签不该是空的）。
+   *
+   * 两处读数合成一份快照，理由各占一半：
+   *   - **子 Agent 那一半**来自 `messages` 表里 `parentToolCallId` 非空的行（`listDelegated`）：
+   *     它才是「这次委派真的派出去过」的确凿证据，也给出条数与开始时刻；
+   *   - **主线那一页**由调用方传进来，不在这里再读一遍：调用方（`conversation.state` /
+   *     `conversation.abort`）本来就为用量与上下文读过整段，同一段话读两次只会让两份快照
+   *     之间多一道缝。工具名 / 这次委派的用量 / 终态证据都在那一页里。
+   *
+   * `messages` 要的是**整段主线**（`list` 不给 `after` / `around` 的那一份）：给一窗的话，
+   * 落在窗外的委派就看不出名字与终态了，而“看漏”在这里比“多读”更难解释。
+   */
+  async subAgents(
+    conversationId: string,
+    messages: readonly AgentNS.Message[],
+  ): Promise<SubAgentSnapshot[]> {
+    const rows = await this.messages.listDelegated(conversationId);
+    return subAgentSnapshotsOf(messages, rows);
   }
 
   /** 把一次读到的行拼成出参；`around` 给了就收成一窗（命中不在里面就是空页） */

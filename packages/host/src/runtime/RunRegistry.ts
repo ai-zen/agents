@@ -138,6 +138,16 @@ export class RunRegistry implements RunsView {
     return this.runs.has(conversationId);
   }
 
+  /**
+   * 某段对话这一轮的摘要（`conversation.list` 的「在跑」那一格用它）；没在跑时 `null`。
+   *
+   * 与 {@link list} 同一份内容，只是一次只问一段：列表要为每段对话问一次，扫一遍全体
+   * 会让「翻一页侧栏」变成 N×N。
+   */
+  summary(conversationId: string): RunSummary | null {
+    return this.runs.get(conversationId)?.summary() ?? null;
+  }
+
   /** 当前在跑的全部轮次（根对象判「能不能退出」时用） */
   list(): RunSummary[] {
     return [...this.runs.values()].map((run) => run.summary());

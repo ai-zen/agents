@@ -1122,6 +1122,12 @@ export class HostApp {
   private createConversationRuntime(): ConversationRuntimePort {
     return {
       isRunning: (conversationId) => this.runRegistry.isRunning(conversationId),
+      // 活跃会话列表那一格：注册表只知道「谁在跑 + 什么时候开始的」，这里照它报，
+      // 不自己算一个「看起来像在跑」的第二真相
+      runState: (conversationId) => {
+        const run = this.runRegistry.summary(conversationId);
+        return run ? { status: "running", startedAt: run.startedAt } : null;
+      },
       forget: (conversationId) => {
         this.chatRunner.forget(conversationId);
       },

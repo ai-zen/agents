@@ -59,6 +59,22 @@ describe("RunRegistry", () => {
     expect(runs.list().map((run) => run.conversationId).sort()).toEqual(["c-1", "c-2"]);
   });
 
+  it("summary 只问一段：在跑给开始时刻，没在跑给 null（活跃会话列表那一格）", () => {
+    expect(runs.summary("c-1")).toBeNull();
+
+    clock.advance(5_000);
+    const handle = runs.start("c-1");
+
+    // 与 list() 同一份内容，只是不必把全体扫一遍
+    expect(runs.summary("c-1")).toEqual(runs.list()[0]);
+    expect(runs.summary("c-1")?.startedAt).toBe(handle.startedAt);
+    expect(runs.summary("c-2")).toBeNull();
+
+    // 结算之后这一轮就没了：那一格回到「没在跑」
+    runs.finish("c-1");
+    expect(runs.summary("c-1")).toBeNull();
+  });
+
   it("歧义：开始时刻用注入的时钟（ISO 8601）", () => {
     const handle = runs.start("c-1");
     expect(handle.startedAt).toBe(new Date(clock.now()).toISOString());

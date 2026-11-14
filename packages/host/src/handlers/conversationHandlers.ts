@@ -7,7 +7,9 @@
  *
  * 唯一在接线层做的拼装是 `conversation.state` 的现场快照：它要把三处事实合起来
  * （服务层给的视图、运行时给的这一轮、库里消息求和的用量），而这三样分别属于三个持有者，
- * 只有接线层同时看得见它们。状态栏的块**不在这里拼**：那是界面的事（PRD F-I6），
+ * 只有接线层同时看得见它们。空闲时的子 Agent 快照也在这里合：服务层把「子 Agent 那一半」的行
+ * 拼回 `SubAgentSnapshot`（`MessageService.subAgents`），主线那一页用同一次读取的另一半 ——
+ * 一遍话读两次，两份快照之间必有一道缝。状态栏的块**不在这里拼**：那是界面的事（PRD F-I6），
  * 八块要的事实各自都在契约里有一份，客户端自己取。
  *
  * 一段对话的三处跨界钩子也在这里接（它们分属三个服务，契约里的位置却是同一对方法）：
@@ -46,6 +48,7 @@ import type {
   ConversationView,
   QuestionView,
   RunState,
+  SubAgentSnapshot,
   UsageSnapshot,
 } from "../wire/index.js";
 import { localizeOutcome } from "./assetHandlers.js";
@@ -241,15 +244,19 @@ async function runStateOf(
   const turn = deps.runner.turn(conversationId);
   if (turn) return turn.runState();
   const page = await deps.messages.list({ conversationId });
-  return idleRunState(conversationId, usageOfMessages(page.messages, deps.now()));
+  return idleRunState(
+    conversationId,
+    usageOfMessages(page.messages, deps.now()),
+    await deps.messages.subAgents(conversationId, page.messages),
+  );
 }
 
 /**
  * 一段对话的现场（PRD L5：重连先拉状态）。
  *
  * 拼装顺序：视图（身份 / 思考档 / 目录）→ 运行状态（在跑就用这一轮自己的快照）→
- * 用量（在跑用这一轮，空闲就用库里消息求和）→ 上下文阈值（跟着模型走）→ 挂在这段对话上的问题
- * → 状态栏的块（PRD F-I6）。
+ * 用量（在跑用这一轮，空闲就用库里消息求和）→ 上下文阈值（跟着模型走）→ 挂在这段对话上的问题。
+ * 空闲时运行状态里还要有历次委派的子 Agent（重开一段对话，「子代理」页签不该是空的）。
  */
 async function conversationStateOf(
   deps: ConversationHandlerDeps,
@@ -263,7 +270,14 @@ async function conversationStateOf(
   const usage = turn ? turn.runState().usage : usageOfMessages(page.messages, now);
   const config = await deps.readConfig();
   const model = config.models.find((item) => item.id === conversation.model.modelId);
-  const run = turn ? turn.runState() : idleRunState(conversationId, usage);
+  // 子 Agent 快照也只用这一份 `page.messages`（子 Agent 那一半由服务层按 `parentToolCallId` 补）
+  const run = turn
+    ? turn.runState()
+    : idleRunState(
+        conversationId,
+        usage,
+        await deps.messages.subAgents(conversationId, page.messages),
+      );
   const context = contextOf(page.messages, model);
 
   return {
@@ -285,8 +299,19 @@ async function conversationStateOf(
 // 纯函数：把几处事实拼成契约形状
 // ---------------------------------------------------------------------------
 
-/** 空闲的现场：没有在跑的一轮，但历史用量还在 */
-export function idleRunState(conversationId: string, usage: UsageSnapshot): RunState {
+/**
+ * 空闲的现场：没有在跑的一轮，但历史用量与历次委派还在。
+ *
+ * `subagents` 是入参而不是现取的：本函数是纯函数（没有库访问能力，也没有「从哪去问」的
+ * 分支），而子 Agent 快照要把库里两处事实合起来（子 Agent 那一半的行、主线那一页的工具名
+ * 与用量）。拼这一步交给调用方（`MessageService.subAgents`），调用方本来就为用量与上下文
+ * 读过那段话，两处共用同一份，快照之间不会差一瞬。
+ */
+export function idleRunState(
+  conversationId: string,
+  usage: UsageSnapshot,
+  subagents: SubAgentSnapshot[],
+): RunState {
   return {
     conversationId,
     status: "idle",
@@ -296,7 +321,7 @@ export function idleRunState(conversationId: string, usage: UsageSnapshot): RunS
     generation: null,
     outcome: null,
     problem: null,
-    subagents: [],
+    subagents,
     usage,
   };
 }
