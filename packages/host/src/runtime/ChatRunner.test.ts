@@ -1693,6 +1693,75 @@ describe("ChatRunner：跑中发送进 inbox（D3：不打断、也不回 busy�
     expect(settlement.run.inboxPending).toBe(0);
   });
 
+  it("排队那条在落地那一刻就写库：写入顺序与最终 seq 都排在它引出的回答之前", async () => {
+    const toolGate = deferred<void>();
+    const agent = new FakeAgent([
+      // ①模型要一个工具 →（等工具期间用户插一句）→ ②工具跑完后它落地 → ③模型回它
+      {
+        deltas: [{ content: "我查一下。" }],
+        toolCalls: [{ id: "call-1", name: "read", arguments: "{}" }],
+        toolGate: toolGate.promise,
+      },
+      { deltas: [{ content: "查到了，回你插的那句。" }] },
+    ]);
+    const custom = createHarness({ agent });
+
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "看看文件" },
+    });
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (agent.messages.some((message) => message.role === AgentNSValue.Role.Tool)) break;
+      await flushMicrotasks();
+    }
+
+    const queued = await custom.runner.enqueue({
+      conversationId: CONVERSATION_ID,
+      input: { content: "跑着的时候插一句" },
+    });
+    expect(queued).not.toBeNull();
+    // 还在 inbox 里排着 = 还不是一条消息：库里此刻没有它（写库发生在落地那一刻）
+    expect(custom.store.peek(queued!.userMessageId)).toBeUndefined();
+
+    // 推进时钟：受理时刻与落地时刻要能分辨，`createdAt` 那条断言靠它
+    const acceptedAtMs = custom.clock.now();
+    custom.clock.advance(5_000);
+
+    toolGate.resolve();
+    const settlement = await turn.done;
+
+    // 它引出的那条回答 = 第二轮（工具轮之后）那条助手消息
+    const assistants = settlement.produced.filter(
+      (message) => message.role === AgentNSValue.Role.Assistant,
+    );
+    expect(assistants).toHaveLength(2);
+    const reply = assistants[1]!;
+
+    // ① 写入顺序：排队那条的**第一笔**写在回答的第一笔之前（`writes` 就是 upsert 的先后）
+    const firstWriteAt = (id: string): number =>
+      custom.store.writes.findIndex((row) => row.id === id);
+    expect(firstWriteAt(queued!.userMessageId)).toBeGreaterThanOrEqual(0);
+    expect(firstWriteAt(reply.id)).toBeGreaterThan(firstWriteAt(queued!.userMessageId));
+
+    // ② 最终 seq：`RecordingMessageStore` 取「这条消息第一次写入的先后」当 seq，与真仓储的
+    //    `MAX(seq)+1` 按插入顺序给同一个口径 —— 读回来的这段就是库里的顺序
+    const page = await custom.store.listByConversation(CONVERSATION_ID);
+    const seqOf = (id: string): number | undefined => page.find((row) => row.id === id)?.seq;
+    expect(seqOf(queued!.userMessageId)).toBeDefined();
+    expect(seqOf(reply.id)).toBeDefined();
+    expect(seqOf(queued!.userMessageId)!).toBeLessThan(seqOf(reply.id)!);
+    // 读者看到的是「用户插一句 → 助手回它」，中间不夹别的
+    const ids = page.map((row) => row.id);
+    expect(ids.indexOf(queued!.userMessageId) + 1).toBe(ids.indexOf(reply.id));
+
+    // ③ 幂等：落地写一笔、收尾再覆盖一笔，同一个 id 不会变成两行
+    expect(custom.store.historyOf(queued!.userMessageId)).toHaveLength(2);
+    expect(page.filter((row) => row.id === queued!.userMessageId)).toHaveLength(1);
+
+    // ④ createdAt 取落地那一刻（不是受理那一刻，也不是收尾那一刻）
+    expect(custom.store.peek(queued!.userMessageId)?.createdAt).toBe(acceptedAtMs + 5_000);
+  });
+
   it("abort 丢弃排队条目：inboxPending 归零，那一句永远不落地", async () => {
     const gate = deferred<void>();
     const agent = new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢慢说" }] }]);

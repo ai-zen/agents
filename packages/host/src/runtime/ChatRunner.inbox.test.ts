@@ -436,6 +436,92 @@ describe("真 core Agent 跑在真 ChatRunner 里：跑中发送进 inbox（D3�
   });
 
   // -------------------------------------------------------------------------
+  // 落库时机：排队那条必须在**落地那一刻**就写，不能等到收尾
+  //
+  // 真机上量出来的顺序错位：`seq` 是 `MAX(seq)+1` 按插入顺序给的，助手消息边流边写先落，
+  // 排队那句若等到 `persistFinal` 才第一次写，就排到了它引出的回答后面 —— 重开对话读到的
+  // 转录成了「助手说完 → 助手又说 → 用户冒最后一句」。
+  // -------------------------------------------------------------------------
+
+  it("排队落地那一刻就写库：库里它的 seq 排在它引出的那条回答之前", async () => {
+    const timeline: TimelineEntry[] = [];
+    const started = deferred<void>();
+    const result = deferred<string>();
+    const { client } = createScriptedClient(
+      [toolCallRound("read_file"), textRound("看到了，顺手回了你那句。")],
+      timeline,
+    );
+
+    const harness = createHarness({
+      timeline,
+      createAgent: async () => {
+        const agent = new Agent({
+          client,
+          model: "gpt-4",
+          tools: [gatedTool({ name: "read_file", started, result })],
+        });
+        watch(agent, timeline);
+        return agent;
+      },
+    });
+
+    const turn = await harness.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "看看这个文件" },
+    });
+    await started.promise;
+
+    const queued = await harness.runner.enqueue({
+      conversationId: CONVERSATION_ID,
+      input: { content: "跑着的时候插一句" },
+    });
+    expect(queued).not.toBeNull();
+    // 还在 inbox 里排着 = 还不是一条消息：库里此刻当然不该有它
+    expect(harness.store.peek(queued!.userMessageId)).toBeUndefined();
+
+    // 推进时钟，让「受理时刻」与「落地时刻」是两个可分辨的值（createdAt 断言靠它）
+    const acceptedAtMs = Date.parse(queued!.acceptedAt);
+    harness.clock.advance(5_000);
+
+    result.resolve("文件内容：hello");
+    const settlement = await turn.done;
+
+    // 它引出的那条回答 = 第二轮（工具轮之后）那条助手消息
+    const assistants = settlement.produced.filter(
+      (message) => message.role === AgentNSValue.Role.Assistant,
+    );
+    expect(assistants).toHaveLength(2);
+    const reply = assistants[1]!;
+
+    // ① 写入顺序：排队那条的**第一笔写入**在回答的第一笔之前（`writes` 就是 upsert 的先后）
+    const firstWriteAt = (id: string): number =>
+      harness.store.writes.findIndex((row) => row.id === id);
+    expect(firstWriteAt(queued!.userMessageId)).toBeGreaterThanOrEqual(0);
+    expect(firstWriteAt(reply.id)).toBeGreaterThan(firstWriteAt(queued!.userMessageId));
+
+    // ② 最终 seq 顺序：`RecordingMessageStore` 的 seq 取「这条消息第一次写入的先后」，与真仓储
+    //    的 `MAX(seq)+1` 按插入顺序给是同一个口径 —— 所以读回来的这段转录就是库里的顺序
+    const page = await harness.store.listByConversation(CONVERSATION_ID);
+    const seqOf = (id: string): number | undefined =>
+      page.find((row) => row.id === id)?.seq;
+    expect(seqOf(queued!.userMessageId)).toBeDefined();
+    expect(seqOf(reply.id)).toBeDefined();
+    expect(seqOf(queued!.userMessageId)!).toBeLessThan(seqOf(reply.id)!);
+    // 读者看到的是「用户插一句 → 助手回它」，中间不夹别的（这句排在自己回答的紧前面）
+    const ids = page.map((row) => row.id);
+    expect(ids.indexOf(queued!.userMessageId) + 1).toBe(ids.indexOf(reply.id));
+
+    // ③ 幂等：落地写一笔、收尾再覆盖一笔，库里仍然只有一行（没有第二条、seq 也没被改掉）
+    expect(harness.store.historyOf(queued!.userMessageId)).toHaveLength(2);
+    expect(page.filter((row) => row.id === queued!.userMessageId)).toHaveLength(1);
+    expect(harness.store.peek(queued!.userMessageId)?.role).toBe(AgentNSValue.Role.User);
+
+    // ④ createdAt 取落地那一刻（不是受理那一刻，也不是收尾那一刻）
+    expect(harness.store.peek(queued!.userMessageId)?.createdAt).toBe(acceptedAtMs + 5_000);
+    expect(harness.store.peek(queued!.userMessageId)?.createdAt).not.toBe(acceptedAtMs);
+  });
+
+  // -------------------------------------------------------------------------
   // 收尾边界：回「排队了」就必须落地（core 的最后一个取件点排在整组收尾钩子之后）
   //
   // 两处边界各一条用例：`onInnerLoopsEnd`（整组收尾钩子）与 `onAfterSend`（send 的收尾

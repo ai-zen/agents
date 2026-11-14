@@ -336,6 +336,56 @@ describe("conversation.send", () => {
     expect(same).toHaveLength(1);
   });
 
+  it("库里的顺序（seq）：排队那句排在它引出的回答之前，读回来是「用户插一句 → 助手回它」", async () => {
+    const firstGate: Deferred<void> = deferred();
+    const replyGate: Deferred<void> = deferred();
+    const agent = new FakeAgent([
+      { gate: firstGate.promise, deltas: [{ content: "先答" }] },
+      { gate: replyGate.promise, deltas: [{ content: "回你插的那句" }] },
+    ]);
+    const { app, conversationId } = await makeHarness({ createAgent: async () => agent });
+
+    const first: ConversationSendResult = await callMethod(app, "conversation.send", {
+      conversationId,
+      input: { content: "第一句" },
+    });
+
+    // 先让边流边写的节流点（200ms）过去：之后每一条助手消息都是**当片就写**，
+    // 「谁先落库」便不再取决于节流巧合，用例才真的钉得住顺序（不是赌时间）
+    await wait(250);
+
+    const queued: ConversationSendResult = await callMethod(app, "conversation.send", {
+      conversationId,
+      input: { content: "跑着的时候插一句" },
+    });
+    expect(queued.queued).toBe(true);
+
+    // 第一轮吐正文（当片落库）→ 轮末那句排队的落地 → 第二轮起来卡在 replyGate
+    firstGate.resolve();
+    await waitForRun(app, conversationId, (run) => run.inboxPending === 0);
+    // 再让一次节流点过去：回答的首片也要「当片落库」，否则它可能落在收尾那一批里（顺序就被掩盖了）
+    await wait(250);
+
+    replyGate.resolve();
+    await settle(app, conversationId);
+
+    // 真库读回来的一页（`message.list` 按 `seq` 升序）：排队那句必须排在它引出的回答之前。
+    // 它若等到收尾才第一次写，真仓储会给它一个更大的 `seq`，转录就成了
+    // 「助手说完 → 助手又说 → 用户冒最后一句」，而且最后那句永远没有回答。
+    const page = await callMethod(app, "message.list", { conversationId });
+    expect(page.messages.map((message) => [message.role, message.content])).toEqual([
+      [AgentNSValue.Role.User, "第一句"],
+      [AgentNSValue.Role.Assistant, "先答"],
+      [AgentNSValue.Role.User, "跑着的时候插一句"],
+      [AgentNSValue.Role.Assistant, "回你插的那句"],
+    ]);
+    // 落地那条就是回包里那个 id，且只有一条（写两次是覆盖，不是两行）
+    expect(
+      page.messages.filter((message) => message.id === queued.userMessageId),
+    ).toHaveLength(1);
+    expect(page.messages.some((message) => message.id === first.userMessageId)).toBe(true);
+  });
+
   it("run.state 的 inboxPending：入队后 > 0、落地后归 0、空闲时为 0", async () => {
     const firstGate: Deferred<void> = deferred();
     const secondGate: Deferred<void> = deferred();

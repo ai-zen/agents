@@ -919,10 +919,13 @@ class TurnSession implements ChatTurn {
   private onMessage(message: AgentNS.Message): void {
     if (this.queuedIds.delete(message.id)) {
       // 排队的那条落地了：core 在轮末把它 append 进来，id 是入队时定的那个（D5），
-      // 所以这里既不重新认领、也不换 id。现在才把它记进 `producedIds` —— 落地顺序就是
-      // 追加顺序，`persistFinal` 那一批写下去的 `seq` 才排得对。
+      // 所以这里既不重新认领、也不换 id。现在才把它记进 `producedIds`。
       this.createdAtOf.set(message.id, this.clock.now());
       if (!this.producedIds.includes(message.id)) this.producedIds.push(message.id);
+      // **落地这一刻就写库**（不能拖到 `persistFinal`）：`seq` 是 `MAX(seq)+1` 按插入顺序
+      // 给的，而助手消息是边流边写的 —— 排队这一句若等到收尾才第一次写，它就会排到
+      // 它引出的那条回答**之后**（真机上量出来的颠倒）。见 `persistLandedQueued`。
+      this.persistLandedQueued(message);
       // 排队的少了一条（core 落地时已经从 inbox 里摘走），客户端据此收起一个「已排队」
       this.pushRunState();
       return;
@@ -1269,6 +1272,49 @@ class TurnSession implements ChatTurn {
       .catch((error: unknown) => this.options.onError?.(error, "sub-agent-stream-write"));
   }
 
+  /**
+   * 排队落地的那条用户消息：**落地这一刻**写下它的行（而不是等到收尾）。
+   *
+   * ## 为什么必须是这一刻
+   *
+   * `seq` 由存储层按插入顺序给（`MAX(seq)+1`，见 `MessageRepository` 的 UPSERT），而助手消息是
+   * 边流边写的（`scheduleStreamWrite`）。排队那句要是等到 `persistFinal` 才第一次写，它的
+   * `seq` 就排在**它引出的那一轮回答之后** —— 客户端重开这段对话时读到的转录成了
+   * 「助手说完 → 助手又说 → 用户冒一句」，而且最后那句永远没有回答它的助手消息。
+   * 普通（非排队）用户消息没有这个毛病：它在 `run()` 受理时就写行了。
+   *
+   * ## 为什么写行与记素材关系绑在一起
+   *
+   * `conversation_assets.messageId` 的外键指着 `messages.id`，所以只能「先写行、再记关系」;
+   * 老路径也是这个顺序（受理时写行 → 紧接着 `linkMessageAssets`）。排队这条晚落地，但口径
+   * 一样，只是搬到了它真正成为一条消息的那一刻。
+   *
+   * 写进串行链（`writeChain`）而不是当场 await：`onMessage` 是同步的事件处理器，接不住
+   * Promise；而链上已经有边流边写与子 Agent 的写，跟着排队才能保证落盘顺序与事件顺序一致，
+   * 也让 `settle()` 的 `flushWrites()` 自然等到它写完。
+   *
+   * 落库正文用 `queuedStored` 那一份（`__asset_id` 形态），与主消息同一个口径：发给模型的
+   * 是厂商产物，库里不能绑死在这次发送的端点上。
+   */
+  private persistLandedQueued(message: AgentNS.Message): void {
+    // 落地时刻（onMessage 刚记下的那一份）：库里的时间线要与它在对话里的位置一致，
+    // 用受理时刻会把它拉到这一轮开头，用收尾时刻会把它推到回答后面，两个都不对
+    const createdAt = this.createdAtOf.get(message.id) ?? this.clock.now();
+    const row = toRow(message, this.conversationId, createdAt);
+    const stored = this.queuedStored.get(message.id);
+    if (stored !== undefined) {
+      row.content = stored as unknown as MessageUpsertInput["content"];
+    }
+    this.writeChain = this.writeChain
+      .then(async () => {
+        // 同一 id 再写是覆盖（仓储 `ON CONFLICT (id) DO UPDATE`：`seq` 与 `createdAt` 保留
+        // 第一次写入时的值），所以收尾那一遍不会把这条换成两行、也不会改掉它的 `seq`
+        await this.options.messages.upsert(row);
+        await this.linkQueuedAssets([message]);
+      })
+      .catch((error: unknown) => this.options.onError?.(error, "queued-landing-write"));
+  }
+
   /** 一批行按同一份额度写下去（子 Agent 的消息一次写一拍）；与边流边写共用一条串行链 */
   private enqueueWrites(rows: MessageUpsertInput[]): void {
     if (rows.length === 0) return;
@@ -1413,6 +1459,11 @@ class TurnSession implements ChatTurn {
    *
    * 除了本轮产出的消息，还要兜住两种情况：助手占位在 agent 建起来之前就结束了（装配失败、
    * 或被立刻中止），库里那条占位必须有个终态，否则客户端会看到一条永远在写的消息。
+   *
+   * **这一写不是所有消息的首次写入**：助手消息边流边写、普通用户消息在受理时就写、排队落地
+   * 的用户消息在落地那一刻写（`persistLandedQueued`）。这里是「把终态盖回去」的那一遍 ——
+   * 尤其用户消息，第一次写入时它还只是一条刚落地的行。所以它必须留在，但不能再被当成
+   * 「排队那条第一次出现的时刻」。
    */
   private async persistFinal(outcome: RunOutcome, produced: AgentNS.Message[]): Promise<void> {
     const rows = produced.map((message) => {
@@ -1453,23 +1504,26 @@ class TurnSession implements ChatTurn {
       });
     }
 
+    // 收尾这一写是**终态回写**：所有消息都要，包括本轮落地时已经写过行的那几句排队消息
+    // （`persistLandedQueued`）。同一 id 的重复写只是覆盖（仓储 `ON CONFLICT (id) DO UPDATE`，
+    // `seq` / `createdAt` 保留第一次的值），所以它不会把那条变成两行、也不会把它的 `seq`
+    // 改到回答后面 —— 但前提是落地那一刻已经写过一次，不能靠它当首次写入。
     if (rows.length > 0) await this.options.messages.upsertMany(rows);
-
-    // 排队落地的用户消息也要记「这条消息引用了哪些素材」（F-H7）：与外键方向有关 ——
-    // `conversation_assets.messageId` 指着 `messages.id`，所以只能等行真的写下去之后再记。
-    // 老路径在受理时就记（那次消息行是先写的），排队这一条晚好一会儿才落地，就只能落在这里。
-    await this.linkQueuedAssets(produced);
   }
 
   /**
-   * 排队落地的那些用户消息 → 素材关系行。
+   * 排队落地的那些用户消息 → 素材关系行（F-H7）。
+   *
+   * 调用点是 {@link persistLandedQueued} 里紧跟着行写入的那一步：外键方向决定了只能「先写行、
+   * 再记关系」（`conversation_assets.messageId` 指着 `messages.id`）。放到收尾就算晚了 ——
+   * 那时这条消息已经该在库里了。
    *
    * 失败不当成这一轮的失败（消息已经发出去了）：记不下来只是引用计数少一行，删字节会晚一步。
    */
-  private async linkQueuedAssets(produced: readonly AgentNS.Message[]): Promise<void> {
+  private async linkQueuedAssets(landed: readonly AgentNS.Message[]): Promise<void> {
     const link = this.options.linkMessageAssets;
     if (!link) return;
-    for (const message of produced) {
+    for (const message of landed) {
       const content = this.queuedStored.get(message.id);
       // 只有排队进来的那些在 `queuedStored` 里（主消息走受理那一处，不在这里重记一遍）
       if (content === undefined) continue;
