@@ -183,8 +183,8 @@ export function conversationState(
       conversationId,
       status: "idle",
       assistantMessageId: null,
-      // 空闲时没有哪一轮在跑，也就没有谁的队列可排（契约：空闲恒为 0，不是「未知」）
-      inboxPending: 0,
+      // 空闲时没有哪一轮在跑，也就没有谁的队列可排（契约：空闲是空数组，不是「未知」）
+      inbox: [],
       startedAt: null,
       settledAt: null,
       generation: null,
