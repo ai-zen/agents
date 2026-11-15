@@ -1574,7 +1574,9 @@ describe("ChatRunner：跑中发送进 inbox（D14：不打断、也不回 busy�
     ).toBeNull();
   });
 
-  it("agent 还没装上就来的那一句：等它装上再入队（有界等待，不是回 busy）", async () => {
+  it("agent 还没装上就来的那一句：当场受理，装上那一刻进它的 inbox", async () => {
+    // 改前：`enqueue` 在装配窗口里挂在一个 promise + 定时器上等（`waitEnqueueable`，上界 10s）；
+    // 改后：这几句先收进 `pending`，`attach()` 里一次冲进 inbox —— 不等、不回 busy。
     const build = deferred<ChatAgent>();
     const sendGate = deferred<void>();
     const agent = new FakeAgent([
@@ -1589,22 +1591,21 @@ describe("ChatRunner：跑中发送进 inbox（D14：不打断、也不回 busy�
     });
     await flushMicrotasks();
 
-    // 轮次已登记、agent 还在装配：这一次 enqueue 应该等着，而不是当场回 null
-    let settledWith: QueuedTurn | null | undefined;
-    const pending = custom.runner
-      .enqueue({ conversationId: CONVERSATION_ID, input: { content: "装配期间发的" } })
-      .then((value) => {
-        settledWith = value;
-        return value;
-      });
-    await flushMicrotasks();
-    expect(settledWith).toBeUndefined();
-
-    build.resolve(agent);
-    const queued = await pending;
-
+    // 轮次已登记、agent 还在装配：当场就回回执（同步，不隔任何等待）
+    const queued = await custom.runner.enqueue({
+      conversationId: CONVERSATION_ID,
+      input: { content: "装配期间发的" },
+    });
     expect(queued).not.toBeNull();
+    expect(agent.inbox).toHaveLength(0);
+    // 客户端看得见「已排队 1 条」：缓冲着的也算
+    expect(custom.lastRunState().inboxPending).toBe(1);
+
+    // 装好那一刻：条目被 `deliver` 进它的 inbox（id 还是入队时那个）
+    build.resolve(agent);
+    await flushMicrotasks();
     expect(agent.inbox.map((entry) => entry.messageId)).toEqual([queued!.userMessageId]);
+    expect(custom.lastRunState().inboxPending).toBe(1);
 
     // 这一轮按原来的脚本跑完，排进来的那一句在轮末落地
     sendGate.resolve();

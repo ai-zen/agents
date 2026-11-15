@@ -19,7 +19,7 @@
  * 用户输入投给**那一轮的 agent**（core 的 `deliver`），由它在轮末落成一条 User 消息。于是
  * 「不打断」与「不丢」同时成立：流还是原来那条流，用户的话排在工具轮收尾的边界上。
  * 宿主在这里只做两件事：定死那条消息的 id（D5，客户端先画的那条与落地的是同一条），报出
- * `RunState.inboxPending`。两个不变量见 `TurnSession.enqueue` / `waitEnqueueable` 的注释。
+ * `RunState.inboxPending`。不变量见 `TurnSession.enqueue` 的注释。
  *
  * ## 三处刻意交给 core 的事
  *
@@ -359,16 +359,6 @@ export interface ChatRunnerOptions {
 /** 边流边写的缺省节流：200ms 一次，兼顾「客户端断了丢得少」与「写盘次数」 */
 export const DEFAULT_STREAM_WRITE_INTERVAL_MS = 200;
 
-/**
- * 「等这一轮的 agent 装上再入队」的上界（毫秒）。
- *
- * `RunRegistry` 从 `start()` 到 agent `attach()` 之间有一段看不见的空窗：读会话行、拿 Scope
- * （首次进某个项目要 MCP 发现）、修复历史、准备素材（可能要上传厂商）、装配 agent。正常是
- * 几十到几百毫秒，卡在某个外部调用上时可能是无限久。继续挂着等，客户端那侧只是一直转圈 ——
- * 到点就放弃排队、回 `busy` 兜底，让用户自己决定是等还是按停（D14）。
- */
-export const QUEUE_READY_TIMEOUT_MS = 10_000;
-
 // ---------------------------------------------------------------------------
 // 六态里那些「每片都要摸一遍」的小工具
 // ---------------------------------------------------------------------------
@@ -671,17 +661,18 @@ class TurnSession implements ChatTurn {
   private writeChain: Promise<void> = Promise.resolve();
 
   /**
-   * 这一轮还能不能接新话（`conversation.send` 的排队分支靠它定夺，PRD D14）。
+   * 这一轮不再接新话（`send()` 返回了 / 用户按了停 / 已经结算）。
    *
-   * 三态，转换只有四处：
-   *   - `pending` → `open`：`attach()` 里 agent 装上了；
-   *   - `open` → `closed`：`send()` 返回了（这一轮再没有轮末插入点）或用户按了停；
-   *   - `pending` → `closed`：装配就失败了，或用户还没跑就先按了停；
-   *   - `settle()` 兜底关一次（正常路径上它已经是 `closed` 了）。
+   * 三处置位：`attemptOnce` 的 finally（这一轮再没有轮末插入点）、`takeAbortSnapshot`、
+   * `settle` 兜底。
    */
-  private enqueueState: "pending" | "open" | "closed" = "pending";
-  /** 正在等「这一轮能不能排」的那些调用方（装配期间来的那几句在这里排着） */
-  private readonly enqueueWaiters = new Set<(ready: boolean) => void>();
+  private closed = false;
+  /**
+   * 装配期间收到的投递：agent 还没装上，先存着，装好就冲进它的 inbox。
+   *
+   * 取舍：`pending` 里那几条随这一轮失败一起丢（与「已经进了 inbox 但这一轮没取走」同一个命）。
+   */
+  private pending: AgentNS.InboxInput[] = [];
   /**
    * 已经排队、还没落地的消息 id（落地时据此把它们记进 `producedIds`，按**落地顺序**落库）。
    *
@@ -743,70 +734,37 @@ class TurnSession implements ChatTurn {
   }
 
   /**
-   * 这一刻能不能把新话排进这一轮（PRD D14 的排队分支）。
-   *
-   * `pending`（轮次已登记、agent 还在装配）时会等，最多等 `timeoutMs`；`closed` 立刻 `false`。
-   *
-   * ## 为什么是「等」而不是「直接回 busy」
-   *
-   * `RunRegistry` 从 `start()` 到 `attach()` 之间有一段看不见的空窗：读会话行、拿 Scope
-   * （首次进某个项目要 MCP 发现）、修复历史、准备素材（可能要上传厂商）、装配 agent。这一段
-   * 可能好几秒，而「刚发完第一句紧接着发第二句」正是最常撞上它的时刻 —— 那一刻回 `busy`
-   * 等于这一单什么都没改。等它装好（正常是毫秒级）再入队，用户看到的就是「已排队」。
-   *
-   * ## 为什么要有上界
-   *
-   * 装配卡在某个不应答的 MCP 服务上时，一直等会让这条请求一直挂着（客户端那侧只是转圈）。
-   * 到点回 `false`，调用方回 `busy` 兜底（D14：它不再是跑中发送的答复），把选择权交回用户。
-   */
-  async waitEnqueueable(timeoutMs: number): Promise<boolean> {
-    if (this.enqueueState === "open") return true;
-    if (this.enqueueState === "closed") return false;
-    return await new Promise<boolean>((resolve) => {
-      let settled = false;
-      const finish = (ready: boolean): void => {
-        if (settled) return;
-        settled = true;
-        this.enqueueWaiters.delete(finish);
-        cancel();
-        resolve(ready);
-      };
-      // 到点按「排不进去」处理：等下去只是把这条请求挂着
-      const cancel = this.clock.setTimeout(() => finish(false), timeoutMs);
-      this.enqueueWaiters.add(finish);
-    });
-  }
-
-  /**
    * 把一句用户输入排进这一轮（PRD D14）。
    *
-   * 返回 `null` = 这一轮接不了：agent 还没装上、这一轮已经跑完（正在收尾写库）、或者用户刚
-   * 按了停。三种都不是错误 —— 调用方回老路径（`run()`），由它决定「开新一轮」还是「回 `busy` 兜底」。
+   * 返回 `null` = 这一轮接不了（已经收工 / 被叫停）：调用方回老路径（`run()`），由它决定
+   * 「开新一轮」还是「回 `busy` 兜底」。agent 还没装上不算接不了 —— 先收进 `pending`，
+   * `attach()` 那一刻冲进它的 inbox。
    *
    * ## 为什么「判能不能排」与「推」之间不允许有 await
    *
    * 中间一旦让出执行权，就可能出现「判完还开着、推的时候已经关上」：条目推进一个再也不会
-   * 被取走的 inbox，而我们已经回了客户端 `queued: true` —— 那就是一句假话。所以除了入口那次
-   * `waitEnqueueable`，这里全程同步。
+   * 被取走的 inbox，而我们已经回了客户端 `queued: true` —— 那就是一句假话。所以这里全程同步。
    */
   enqueue(input: {
     content: AgentNS.MessageContent;
     storedContent?: AgentNS.MessageContent;
     attachments: AttachmentOutcome[];
   }): QueuedTurn | null {
-    if (this.enqueueState !== "open" || !this.agent) return null;
-    if (this.aborted || this.handle.aborted) return null;
+    if (this.closed || this.aborted || this.handle.aborted) return null;
 
     // 消息 id 现在就定死（D5）：客户端马上要按它画一条，落地那条必须用同一个
     const userMessageId = generateMessageId();
-    this.agent.deliver({
+    const entry: AgentNS.InboxInput = {
       messageId: userMessageId,
       // 用户自己说的话：不带「这条消息来自…自动推送」那行注释（core 只给非 user 来源加）
       source: "user",
       // 高优先：落点是「工具轮跑完的边界」—— 不打断模型正在吐的那一段，又能尽快接住
       priority: "high",
       content: input.content,
-    });
+    };
+    // 装配期间先存着（谁也不用等），装好了就冲进它的 inbox
+    if (this.agent) this.agent.deliver(entry);
+    else this.pending.push(entry);
     // 先认下这个 id：落地时 core 那条消息带着它回来，`claimId` 不该再改一遍
     this.knownIds.add(userMessageId);
     this.queuedIds.add(userMessageId);
@@ -824,25 +782,6 @@ class TurnSession implements ChatTurn {
       attachments: input.attachments,
       acceptedAt: this.nowIso(),
     };
-  }
-
-  /** agent 装上了：装配期间排着的那些调用方可以入队了 */
-  private openEnqueue(): void {
-    if (this.enqueueState !== "pending") return;
-    this.enqueueState = "open";
-    this.flushEnqueueWaiters(true);
-  }
-
-  /** 这一轮不再接新话（跑完了 / 被叫停 / 正在收尾）：排着的一律按「排不进去」放走 */
-  private closeEnqueue(): void {
-    if (this.enqueueState === "closed") return;
-    this.enqueueState = "closed";
-    this.flushEnqueueWaiters(false);
-  }
-
-  private flushEnqueueWaiters(ready: boolean): void {
-    for (const waiter of [...this.enqueueWaiters]) waiter(ready);
-    this.enqueueWaiters.clear();
   }
 
   /** 真正跑一轮。`ChatRunner` 在受理之后立刻叫它，不等结果 */
@@ -883,9 +822,7 @@ class TurnSession implements ChatTurn {
     } finally {
       // `send()` 返回 = 这一轮再没有轮末插入点：此刻起排进来的条目一句也不会被发出去。
       // 门必须在这里关上 —— `settle()` 还要写库，那一段时间在 `RunRegistry` 眼里仍然「在跑」。
-      // （core 侧的对称保证：`send()` 返回时 inbox 已经被取空，所以关门的这一刻不欠任何
-      // 已经回过 `queued` 的条目 —— 工单 J。）
-      this.closeEnqueue();
+      this.closed = true;
     }
   }
 
@@ -912,8 +849,8 @@ class TurnSession implements ChatTurn {
       this.agent?.abort();
     });
 
-    // 装好了：装配期间来的那几句可以排队了（见 `waitEnqueueable`）
-    this.openEnqueue();
+    // 装好了：装配期间收下的那几句现在冲进它的 inbox（随这一轮失败一起丢，不单独追）
+    for (const entry of this.pending.splice(0)) agent.deliver(entry);
   }
 
   /** core 追加了一条消息：认领 id、记时间、更新六态里那些跟消息有关的部分 */
@@ -1343,8 +1280,8 @@ class TurnSession implements ChatTurn {
   /** 中止那一刻在途的消息：core 会把它们标成 Aborted，这里的 id 用来保证库里也记 Aborted（D15） */
   private takeAbortSnapshot(): void {
     this.aborted = true;
-    // 用户按停 = 这一轮不再接新话，所以入队门此刻就关
-    this.closeEnqueue();
+    // 用户按停 = 这一轮不再接新话，所以这里就把门关上
+    this.closed = true;
     for (const message of this.agent?.messages ?? []) {
       if (
         message.status === AgentNSValue.MessageStatus.Pending ||
@@ -1364,8 +1301,8 @@ class TurnSession implements ChatTurn {
   private async settle(): Promise<void> {
     if (this.settledAtMs !== null) return;
     this.settledAtMs = this.clock.now();
-    // 兜底：装配就失败 / 没走完 `send()` 的那几条路径也把入队门关上
-    this.closeEnqueue();
+    // 兜底：装配就失败 / 没走完 `send()` 的那几条路径也把门关上
+    this.closed = true;
 
     const outcome = this.outcome();
     const produced = this.producedMessages();
@@ -1378,16 +1315,11 @@ class TurnSession implements ChatTurn {
     }
 
     // 收工那一刻 inbox 里还有东西 = 这一轮欠着一句没落地。正常路径上这里应当是空的：取件点
-    // 在 core 的 `run()` 里（一段跑完一组就取一次），`send()` 的 `finally` 又会把剩下的叫醒成
-    // 下一段。
+    // 在 core 的 `run()` 里（一段跑完一组就取一次），而收尾钩子之后投进来的条目 core 已经不再
+    // 顺手带走 —— 这一轮又马上要丢掉 agent，所以它们确实丢了，得吭声。
     //
-    // 两种"还剩下"是**预期**的，不该报出声：
-    //   ① 用户按了停 —— core 的 `abort()` 不再清空 inbox（有意的语义变更：一条来自别的会话的
-    //      投递不该被「用户按停」这个无关动作抹掉），排队的那几句留在那儿等下一次外部驱动；
-    //   ② 收尾钩子（`onInnerLoopsEnd` / `onAfterSend`）里投进来的条目 —— 它们已经由 `send()`
-    //      `finally` 起的那一段接手，宿主这一轮不等它（那一嗓子在 `send()` 返回时就结束了）。
-    // 其余情形（插件在更晚的异步尾巴上投递）仍然要有声音：客户端按回包画了一条，屏幕上却永远
-    // 等不到它，不吭声最糟。
+    // 只有一种「还剩下」是**预期**的，不报：用户按了停 —— core 的 `abort()` 不再清空 inbox
+    // （有意的语义变更：一条来自别的会话的投递不该被「用户按停」这个无关动作抹掉）。
     const leftover = this.agent?.inbox ?? [];
     if (leftover.length > 0 && !this.aborted && !this.handle.aborted) {
       const ids = leftover.map((entry) => entry.messageId).join(", ");
@@ -1587,8 +1519,8 @@ class TurnSession implements ChatTurn {
       assistantMessageId: this.assistantMessageId,
       // 排队数直接问这一轮的 agent（core 的 `inbox`），不自己另记一份：数组就是真相，
       // 另记的数与它会分叉（`abort()` 不再清空 inbox 之后，更没有"归零"这个可依赖的时刻了）。
-      // 收工之后 agent 已经丢了，所以是 0。
-      inboxPending: this.agent?.inbox.length ?? 0,
+      // 装配期间 agent 还没有，这个数由 `pending` 缓存的几条给出；收工之后两边都是 0。
+      inboxPending: (this.agent?.inbox.length ?? 0) + this.pending.length,
       startedAt: new Date(this.startedAtMs).toISOString(),
       settledAt: settledAt !== null ? new Date(settledAt).toISOString() : null,
       generation: settledAt !== null ? null : this.generation,
@@ -1866,29 +1798,19 @@ export class ChatRunner {
    * 把一句用户输入排进**正在跑的那一轮**（PRD D14：跑中发送不打断、也不拒）。
    *
    * 返回 `null` 表示「这一段对话现在没有能排进去的一轮」：没在跑（`turns` 里没有这一段的
-   * 现场）、刚登记轮次而 agent 还没装上且等超了上界（`QUEUE_READY_TIMEOUT_MS`）、或者这一轮
-   * 已经跑完正在收尾。调用方拿到 `null` 就回老路径（`run()`）—— 于是「空闲时发送」与
-   * 「刚好跑完时发送」都走老路，只有真正在跑的时候才排队。
+   * 现场）、或者这一轮已经跑完 / 被叫停。调用方拿到 `null` 就回老路径（`run()`）—— 于是
+   * 「空闲时发送」与「刚好跑完时发送」都走老路，只有真正在跑的时候才排队。
+   * agent 还在装配不算：那几句先收着，装好就冲进它的 inbox。
    *
    * ## 为什么入队这件事长在 `ChatRunner` 上，而不是让接线层直接摸 agent
    *
    * 附件准备（F-H7 的选路，可能要上传厂商文件）、消息 id 的口径、落库那一份内容、
    * `run.state` 推送 —— 全都在这一层。接线层只该拿到一份回执，再由它翻译成契约形状。
-   *
-   * ## 顺序是刻意的：先等得进来，再做附件准备
-   *
-   * 附件准备可能是这几步里最慢的一跳（厂商 Files API）。放在「等 agent 装上」之前做，等于
-   * 让一个马上就要结束的轮次陪着我们上传一遍。代价是：真到了「等完发现这一轮已经收工」时，
-   * 老路径会把附件再准备一次 —— 罕见，且素材层自己按 sha256 / 厂商 file_id 缓存，重复一次
-   * 不产生额外副作用。
    */
   async enqueue(params: ChatRunParams): Promise<QueuedTurn | null> {
     const { conversationId } = params;
     const turn = this.turns.get(conversationId);
     if (!turn) return null;
-
-    // 装配期间来的那几句在这里等（有界）：等到 agent 装上，或者这一轮先收工/被叫停
-    if (!(await turn.waitEnqueueable(QUEUE_READY_TIMEOUT_MS))) return null;
 
     const conversation = await this.options.conversations.get(conversationId);
     if (!conversation) return null;

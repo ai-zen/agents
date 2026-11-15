@@ -130,6 +130,15 @@ function messagesOfRole(body: any, role: AgentNS.Role): any[] {
 }
 
 /**
+ * 非 user 来源落地后的正文：注释行（来源 + ISO 时间）+ 空行 + 原文。
+ *
+ * 时间取条目自己的 `createdAt`（投递那一刻才生成），所以断言这里只校验 ISO 形状。
+ */
+function withSourceNote(source: string, body: string): RegExp {
+  return new RegExp(`^// 这条消息来自 ${source} 自动推送（[\\dT:.Z-]+）\\n\\n${body}$`);
+}
+
+/**
  * 一个只在**第一次**触发时干活的钩子体（用来把「投递发生在跑的过程中」做成确定性的一刻）。
  *
  * 为什么投递要放在钩子里：`deliver()` 在静止态会立刻把段叫起来，于是「跑中投递」这条路径
@@ -154,8 +163,13 @@ async function settled(agent: Agent): Promise<void> {
 
 describe("Agent.inbox", () => {
   describe("deliver / clearInbox", () => {
-    it("缺 id 与时间时就地补齐，条目进队列，回执带回那个 id", () => {
-      const agent = new Agent({ client: {} as any, model: "gpt-4" });
+    it("缺 id 与时间时就地补齐，条目进队列，回执带回那个 id", async () => {
+      const { client } = createRecordingClient([textRound("收到")]);
+      const agent = new Agent({ client, model: "gpt-4" });
+
+      // 静止态投递会立刻落地（先 `flushInbox` 再叫醒），所以条目本身从入队事件上取
+      const entries: AgentNS.InboxEntry[] = [];
+      agent.events.on("inbox", (ctx: InboxContext) => entries.push(ctx.entry));
 
       const receipt = agent.deliver({ source: "user", priority: "high", content: "插一句" });
 
@@ -163,13 +177,18 @@ describe("Agent.inbox", () => {
       expect(receipt.messageId).toBeTruthy();
       expect(receipt.accepted).toBe(true);
       // 条目本身：id / createdAt 都在入队时补好
-      expect(agent.inbox).toHaveLength(1);
-      expect(agent.inbox[0]!.messageId).toBe(receipt.messageId);
-      expect(Number.isFinite(Date.parse(agent.inbox[0]!.createdAt))).toBe(true);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]!.messageId).toBe(receipt.messageId);
+      expect(Number.isFinite(Date.parse(entries[0]!.createdAt))).toBe(true);
+      // 落地那条就是它
+      expect(agent.messages.at(-1)!.id).toBe(receipt.messageId);
+
+      await settled(agent);
     });
 
-    it("传了 messageId 就用传的那个", () => {
-      const agent = new Agent({ client: {} as any, model: "gpt-4" });
+    it("传了 messageId 就用传的那个", async () => {
+      const { client } = createRecordingClient([textRound("收到")]);
+      const agent = new Agent({ client, model: "gpt-4" });
 
       const receipt = agent.deliver({
         source: "tool",
@@ -179,11 +198,15 @@ describe("Agent.inbox", () => {
       });
 
       expect(receipt.messageId).toBe("host-msg-1");
-      expect(agent.inbox[0]!.messageId).toBe("host-msg-1");
+      // 落地那条用的也是这个 id（宿主先把它回过客户端）
+      expect(agent.messages.at(-1)!.id).toBe("host-msg-1");
+
+      await settled(agent);
     });
 
-    it("投递完广播 inbox 事件，载荷带 agent 与 entry", () => {
-      const agent = new Agent({ client: {} as any, model: "gpt-4" });
+    it("投递完广播 inbox 事件，载荷带 agent 与 entry", async () => {
+      const { client } = createRecordingClient([textRound("收到")]);
+      const agent = new Agent({ client, model: "gpt-4" });
 
       const seen: InboxContext[] = [];
       agent.events.on("inbox", (ctx: InboxContext) => seen.push(ctx));
@@ -193,24 +216,38 @@ describe("Agent.inbox", () => {
       expect(seen).toHaveLength(1);
       expect(seen[0]!.agent).toBe(agent);
       expect(seen[0]!.entry.messageId).toBe(receipt.messageId);
-      expect(seen[0]!.entry).toBe(agent.inbox[0]);
+
+      await settled(agent);
     });
 
-    it("一条消息都没有的 agent：只入队、不叫醒（起段只会撞上 run 的空消息校验）", () => {
-      // `deliver` 是 fire-and-forget：真在这儿起段，`run()` 抛的空消息错没人接得住。
-      // 条目留在队列里不会丢 —— 这个 agent 有了第一条消息之后的下一次驱动会带走它。
-      const agent = new Agent({ client: {} as any, model: "gpt-4" });
+    it("一条消息都没有的 agent：投递照样把它叫起来，落地之后就是这一段", async () => {
+      // 口径改了：旧版在这里拦一手（怕撞上 `run()` 的空消息校验）；现在「唤醒前先 `flushInbox`」
+      // 会先 append 一条 `Message.User`，那条校验自然过 —— 一条投递就是一段对话的起点。
+      const { client, create, bodies } = createRecordingClient([textRound("那就从这儿开始")]);
+      const agent = new Agent({ client, model: "gpt-4" });
 
       const receipt = agent.deliver({ source: "user", priority: "high", content: "先排着" });
 
       expect(receipt.accepted).toBe(true);
-      expect(receipt.woke).toBe(false);
-      expect(agent.runStatus).toBe("idle");
-      expect(agent.inbox).toHaveLength(1);
+      expect(receipt.woke).toBe(true);
+      // 同步就已经落地：队列空了，消息进了 messages
+      expect(agent.inbox).toHaveLength(0);
+      expect(agent.messages.at(-1)!.content).toBe("先排着");
+
+      await settled(agent);
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(lastMessage(bodies[0]).content).toBe("先排着");
+      expect(agent.messages.at(-1)!.content).toBe("那就从这儿开始");
     });
 
-    it("clearInbox 清空并返回被丢掉的条目（core 自己不再调它：按停不碰 inbox）", () => {
-      const agent = new Agent({ client: {} as any, model: "gpt-4" });
+    it("clearInbox 清空并返回被丢掉的条目（core 自己不再调它：按停不碰 inbox）", async () => {
+      // 投递要在**段正在跑**时发生：静止态投递会立刻落地，队列里留不下东西
+      const ctx = gatedClient([textRound("一")]);
+      const agent = new Agent({ client: ctx.client, model: "gpt-4" });
+      agent.append(Message.User("你好"));
+      const running = agent.run();
+      await vi.waitFor(() => expect(ctx.create).toHaveBeenCalledTimes(1));
+
       agent.deliver({ source: "user", priority: "high", content: "A" });
       agent.deliver({ source: "tool", priority: "low", content: "B" });
 
@@ -218,6 +255,9 @@ describe("Agent.inbox", () => {
 
       expect(dropped.map((entry) => entry.content)).toEqual(["A", "B"]);
       expect(agent.inbox).toHaveLength(0);
+
+      ctx.releases[0]!();
+      await running;
     });
 
     it("清空后 inbox 仍是同一个数组实例（外部快照不会指向一份死队列）", () => {
@@ -372,7 +412,7 @@ describe("Agent.inbox", () => {
 
       // ①②工具轮 + ③被 low 续起来的最后一轮
       expect(create).toHaveBeenCalledTimes(3);
-      expect(lastMessage(bodies[2]).content).toBe("// 这条消息来自 tool 自动推送\n\n异步工具结果");
+      expect(lastMessage(bodies[2]).content).toMatch(withSourceNote("tool", "异步工具结果"));
     });
 
     it("队列里同时有 high 与 low：这一圈只插 high，low 留到下一次", async () => {
@@ -433,7 +473,7 @@ describe("Agent.inbox", () => {
       // 工具轮后的下一次请求（第二圈）里没有它：那一圈 `needContinue` 为 true，这一组还要接着调工具
       expect(JSON.stringify(bodies[1].messages)).not.toContain("异步工具结果");
       // 整组停下之后的那一轮（第三圈）末条才是它
-      expect(lastMessage(bodies[2]).content).toBe("// 这条消息来自 tool 自动推送\n\n异步工具结果");
+      expect(lastMessage(bodies[2]).content).toMatch(withSourceNote("tool", "异步工具结果"));
     });
 
     it("段正在跑时投递的 low：woke === false，且这一组的请求里都没有它", async () => {
@@ -471,9 +511,7 @@ describe("Agent.inbox", () => {
       // 第二圈停下 → 这一圈末才轮到 low，并且真的为它又跑了一圈
       releases[1]!();
       await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(3));
-      expect(lastMessage(bodies[2]).content).toBe(
-        "// 这条消息来自 tool 自动推送\n\n后台任务跑完了",
-      );
+      expect(lastMessage(bodies[2]).content).toMatch(withSourceNote("tool", "后台任务跑完了"));
 
       releases[2]!();
       await runPromise;
@@ -481,7 +519,7 @@ describe("Agent.inbox", () => {
     });
   });
 
-  describe("唤醒前落地（deliver / send 的 finally）与收尾钩子里的投递", () => {
+  describe("唤醒前落地（deliver）与收尾钩子里的投递", () => {
     it("onInnerLoopsEnd 里投递的条目：这一段不取（取件点在钩子之前），等下一次驱动", async () => {
       // 口径变了两次，记在这里：
       // - 改前①：`run()` 末尾还有一次取件循环排在本钩子**之后**，钩子里那条当场被取走；
@@ -556,16 +594,10 @@ describe("Agent.inbox", () => {
       expect(agent.messages.at(-1)!.content).toBe("这就是回你的那句");
     });
 
-    it("onAfterSend 里投递的条目：send() 返回时它已经落地并跑完一轮（send 会等它）", async () => {
-      // 口径（从「send 不等它」正回来）：`send()` 的对外语义是「返回时这一轮真的结束了」——
-      // 宿主拿这个返回当「settle 并丢弃 agent」的信号（在它之后调 `settle()`、把 agent 从
-      // 注册表里摘掉）。所以收尾钩子里投进来的那条必须在此**之前**处理完：fire-and-forget
-      // 会让消息在 agent 被丢弃之后才落地，写不进库 —— 正是 `154d396` 修过的那个坑。
-      //
-      // 取证方式：`await agent.send(...)` 之后**同步**断言，不隔任何等待、不靠计时。
-      // 「被处理了」也不止是「落成 User」：落成发生在起段后的第一个 await 之前，光看它
-      // fire-and-forget 也能绿。必须看到为它跑出来的那一轮定型了 —— `create` 第 2 次、
-      // 最后一条 assistant 的正文是对它的回答、状态 Completed。
+    it("onAfterSend 里投递的条目：由下一次外部驱动落地，这一次 send 不带它", async () => {
+      // 口径改了：旧版 `send()` 的 `finally` 会把钩子里投进来的条目顺手带走（再跑一段、并且等
+      // 它）；现在 `finally` 只置 `sendStatus`，钩子里的投递归下一轮 —— `send()` 少一次 await，
+      // 代价是这次返回时队列里还排着一条。
       const { client, create, bodies } = createRecordingClient([
         textRound("这一轮说完了"),
         textRound("收尾钩子里那条也回了"),
@@ -586,38 +618,50 @@ describe("Agent.inbox", () => {
 
       await agent.send("你好");
 
-      // 受理期间（`sendStatus === "sending"`）投递不起段：回执说没叫醒 —— 它由 `finally` 里
-      // 那一跳叫醒，并且那一跳被 awaited
+      // 受理期间（`sendStatus === "sending"`）投递不起段：回执说没叫醒
       expect(receipt!.woke).toBe(false);
-      // 返回即静止：没有还挂在跑到一半的第二段
       expect(agent.runStatus).toBe("idle");
-      // 条目已被取走，并落成 User 消息（id 就是投递时给的那个：宿主已经把它回过客户端了）
+      // 这一次 send 没有带走它：条目还在队列里，也没落成消息、没多跑一轮
+      expect(agent.inbox.map((entry) => entry.messageId)).toEqual(["host-queued-1"]);
+      expect(agent.messages.some((m) => m.id === "host-queued-1")).toBe(false);
+      expect(create).toHaveBeenCalledTimes(1);
+
+      // 下一次外部驱动（`deliver` 在静止态先 `flushInbox` 再叫醒）才把它落地并跑一轮
+      agent.deliver({ source: "user", priority: "low", content: "下一段的话" });
+      await settled(agent);
+
       expect(agent.inbox).toHaveLength(0);
       const landed = agent.messages.find((m) => m.id === "host-queued-1")!;
       expect(landed.role).toBe(AgentNS.Role.User);
       expect(landed.content).toBe("收尾钩子里来的");
-      // 而且为它真的跑了一轮，那一轮的成型结果已经在手边
       expect(create).toHaveBeenCalledTimes(2);
-      expect(lastMessage(bodies[1]).content).toBe("收尾钩子里来的");
+      expect(lastMessage(bodies[1]).content).toBe("下一段的话");
+      // 落地顺序按入队顺序：钩子里那条在「下一段的话」之前
+      const users = agent.messages.filter((m) => m.role === AgentNS.Role.User).map((m) => m.id);
+      expect(users.indexOf("host-queued-1")).toBeLessThan(users.length - 1);
       expect(agent.messages.at(-1)!.content).toBe("收尾钩子里那条也回了");
       expect(agent.messages.at(-1)!.status).toBe(AgentNS.MessageStatus.Completed);
     });
   });
 
   describe("条目落地成消息", () => {
-    it("source 为 tool 时正文首行是来源注释", () => {
+    it("source 为 tool 时正文首行是「来源 + 创建时间」的注释", () => {
+      const createdAt = "2026-11-15T10:23:04.000Z";
       const content = inboxEntryContent({
         messageId: "m1",
         source: "tool",
         priority: "low",
         content: "后台任务跑完了",
-        createdAt: new Date().toISOString(),
+        createdAt,
       });
 
       expect(typeof content).toBe("string");
-      expect((content as string).split("\n")[0]).toBe("// 这条消息来自 tool 自动推送");
+      // 首行既有来源也有 ISO 时间（外部通知可能是很久以前发生的，模型得能判时效）
+      const firstLine = (content as string).split("\n")[0]!;
+      expect(firstLine).toBe("// 这条消息来自 tool 自动推送（2026-11-15T10:23:04.000Z）");
+      expect(firstLine).toContain(createdAt);
       // 注释行之后空一行再接正文
-      expect(content).toBe("// 这条消息来自 tool 自动推送\n\n后台任务跑完了");
+      expect(content).toBe("// 这条消息来自 tool 自动推送（2026-11-15T10:23:04.000Z）\n\n后台任务跑完了");
     });
 
     it("source 为 user 时原样，没有注释行", () => {
@@ -626,10 +670,12 @@ describe("Agent.inbox", () => {
         source: "user",
         priority: "high",
         content: "用户原话",
-        createdAt: new Date().toISOString(),
+        createdAt: "2026-11-15T10:23:04.000Z",
       });
 
       expect(content).toBe("用户原话");
+      // 用户自己说的话不该被加批注（哪怕只是来源与时间）
+      expect(content as string).not.toContain("//");
     });
 
     it("分段内容：注释作为第一段 text 段插进去，图片段原封不动留着", () => {
@@ -642,7 +688,7 @@ describe("Agent.inbox", () => {
         source: "tool",
         priority: "high",
         content: [{ type: "text", text: "截图见附件" }, image],
-        createdAt: new Date().toISOString(),
+        createdAt: "2026-11-15T10:23:04.000Z",
       });
 
       expect(Array.isArray(content)).toBe(true);
@@ -650,7 +696,7 @@ describe("Agent.inbox", () => {
       expect(sections).toHaveLength(3);
       expect(sections[0]).toEqual({
         type: "text",
-        text: "// 这条消息来自 tool 自动推送\n\n",
+        text: "// 这条消息来自 tool 自动推送（2026-11-15T10:23:04.000Z）\n\n",
       });
       expect(sections[1]).toEqual({ type: "text", text: "截图见附件" });
       expect(sections[2]).toBe(image);
@@ -672,7 +718,9 @@ describe("Agent.inbox", () => {
 
       const landed = agent.messages.find((m) => m.id === "host-msg-42")!;
       expect(landed.role).toBe(AgentNS.Role.User);
-      expect((landed.content as string).split("\n")[0]).toBe("// 这条消息来自 tool 自动推送");
+      expect((landed.content as string).split("\n")[0]).toMatch(
+        /^\/\/ 这条消息来自 tool 自动推送（[\dT:.Z-]+）$/,
+      );
     });
   });
 
@@ -740,16 +788,25 @@ describe("Agent.inbox", () => {
       expect(agent.runStatus).toBe("terminated");
     });
 
-    it("静止时按停：落到 terminated，且一条条目都不丢", async () => {
-      const agent = new Agent({ client: {} as any, model: "gpt-4" });
+    it("按停只停段，不删数据：队列原样留着，段落到 terminated", async () => {
+      const ctx = gatedClient([textRound("一")]);
+      const agent = new Agent({ client: ctx.client, model: "gpt-4" });
+      agent.append(Message.User("你好"));
+      const running = agent.run();
+      await vi.waitFor(() => expect(ctx.create).toHaveBeenCalledTimes(1));
+
       agent.deliver({ source: "tool", priority: "low", content: "排队的那条" });
       expect(agent.inbox).toHaveLength(1);
 
-      // 没在跑的时候按停 = 直接 terminated（用 stopping 会卡住没人收尾）
       agent.abort();
-      expect(agent.runStatus).toBe("terminated");
+      expect(agent.runStatus).toBe("stopping");
       // 按停只停段，不删数据
       expect(agent.inbox.map((entry) => entry.content)).toEqual(["排队的那条"]);
+
+      ctx.releases[0]!();
+      await running;
+      expect(agent.inbox).toHaveLength(1);
+      expect(agent.runStatus).toBe("terminated");
     });
   });
 

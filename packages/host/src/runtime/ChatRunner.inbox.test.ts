@@ -522,106 +522,21 @@ describe("真 core Agent 跑在真 ChatRunner 里：跑中发送进 inbox（D14�
   });
 
   // -------------------------------------------------------------------------
-  // 收尾边界：回「排队了」就必须落地（core 的最后一个取件点排在整组收尾钩子之后）
+  // 收尾边界：core 的 `send()` 不再顺手带走钩子里投进来的条目
   //
-  // 两处边界各一条用例：`onInnerLoopsEnd`（整组收尾钩子）与 `onAfterSend`（send 的收尾
-  // 钩子）。现实里这两跳是**无界**的（SDK 的 `AutoMigratePlugin` 就在 `onInnerLoopsEnd`
-  // 里问用户），所以「宿主回了 queued、这一轮却再也不取」这个窗口必须由 core 兜住。
+  // 改前：`send()` 的 `finally` 会把收尾钩子（`onInnerLoopsEnd` / `onAfterSend`）期间投进来的
+  // 条目 `flushInbox` + `run` 一遍，于是宿主回了 `queued` 就一定落地（工单 J）。
+  // 改后：core 不管它们了（省掉那次 await）。宿主这一轮收工就把 agent 丢掉，所以这两处边界上
+  // 排进来的那一句**确实丢了** —— 这条用例钉的是「丢了要有声音」，不许静悄悄吞掉。
   // -------------------------------------------------------------------------
 
-  /**
-   * 「回了排队，就一定落地」的口径 —— 两条收尾边界用例共用。
-   *
-   * 五件事，缺一条都算这句凭空消失：
-   *   ① `message` 事件与 `settlement.messages` 里有它，id 与回包一致（客户端按 id 覆盖）；
-   *   ② 库里有这一行（重开对话看到的就是它）；
-   *   ③ 它进了**下一次**请求（不是躺在 `messages` 里没人看见）；
-   *   ④ 排队数归零，且不再有 `inbox-leftover` 那条内部错误；
-   *   ⑤ 这一轮本身照常收工（边界上的一条没有把它变成失败，也没有被当成 abort）。
-   */
-  function expectQueuedLanded(input: {
-    harness: Harness;
-    /** core 的 agent（收工后宿主会丢掉它，所以要传取值函数） */
-    coreAgent: () => Agent | undefined;
-    queued: QueuedTurn;
-    settlement: TurnSettlement;
-    /** 每一次模型请求的请求体 */
-    bodies: any[];
-    /** 那条排队内容的正文 */
-    content: string;
-  }): void {
-    const { harness, queued, settlement, bodies, content } = input;
-
-    // ① 落地成消息：事件一次、结算快照里有它、id 与回包一致
-    const landedEvents = harness.timeline.filter(
-      (entry) => entry.kind === "message" && entry.id === queued.userMessageId,
-    );
-    expect(landedEvents).toHaveLength(1);
-    expect((landedEvents[0] as { role: AgentNS.Role }).role).toBe(AgentNSValue.Role.User);
-
-    const landed = settlement.messages.find((message) => message.id === queued.userMessageId);
-    expect(landed).toBeDefined();
-    expect(landed!.role).toBe(AgentNSValue.Role.User);
-    expect(landed!.content).toBe(content);
-
-    // ② 库里也有这一行
-    const row = harness.store.peek(queued.userMessageId);
-    expect(row).toBeDefined();
-    expect(row!.role).toBe(AgentNSValue.Role.User);
-    expect(row!.content).toBe(content);
-
-    // ③ 进了第二次请求：第一次请求里还没有它
-    expect(bodies).toHaveLength(2);
-    expect(
-      (bodies[0].messages as Array<{ content: unknown }>).some(
-        (message) => message.content === content,
-      ),
-    ).toBe(false);
-    const second = bodies[1].messages as Array<{ role: string; content: unknown }>;
-    const landedAt = second.findIndex((message) => message.content === content);
-    expect(landedAt).toBeGreaterThanOrEqual(0);
-    expect(second[landedAt]!.role).toBe(AgentNSValue.Role.User);
-
-    // ④ 排队数：入队后 1、落地后 0（看宿主推出来的 run.state，不只信快照）
-    const states = harness.runStates();
-    const pendingAt = states.findIndex(
-      (run) => run.status === "running" && run.inboxPending === 1,
-    );
-    expect(pendingAt).toBeGreaterThanOrEqual(0);
-    const drainedAt = states.findIndex(
-      (run, index) => index > pendingAt && run.status === "running" && run.inboxPending === 0,
-    );
-    expect(drainedAt).toBeGreaterThan(pendingAt);
-    expect(settlement.run.inboxPending).toBe(0);
-    // core 那一侧也真的取空了（不是「宿主当没看见」）
-    expect(input.coreAgent()!.inbox).toHaveLength(0);
-    // 兜底日志不该再响：它响说明还有条目落在最后一个取件点之后
-    expect(harness.errors.filter((error) => error.context === "inbox-leftover")).toHaveLength(0);
-
-    // ⑤ 这一轮照常收工
-    expect(settlement.outcome).toBe("completed");
-    expect(settlement.run.outcome).toBe("completed");
-    expect(settlement.problem).toBeNull();
-    expect(harness.runs.isRunning(CONVERSATION_ID)).toBe(false);
-    const assistants = settlement.messages.filter(
-      (message) => message.role === AgentNSValue.Role.Assistant,
-    );
-    expect(assistants).toHaveLength(2);
-    for (const message of assistants) {
-      expect(message.status).toBe(AgentNSValue.MessageStatus.Completed);
-    }
-  }
-
-  it("收尾边界（onInnerLoopsEnd 里）入队：回了排队，那条就一定在这一轮里落地", async () => {
+  it("收尾钩子里入队的那一句：这一轮不带它，结算时按 inbox-leftover 出声", async () => {
     const timeline: TimelineEntry[] = [];
     let coreAgent: Agent | undefined;
     const insideWindow = deferred<void>();
     const releaseWindow = deferred<void>();
     const content = "边界上来的这一句";
-    const { client, bodies } = createScriptedClient(
-      [textRound("就这一轮"), textRound("边界上来的那句也回了")],
-      timeline,
-    );
+    const { client, bodies } = createScriptedClient([textRound("就这一轮")], timeline);
 
     const harness = createHarness({
       timeline,
@@ -629,9 +544,8 @@ describe("真 core Agent 跑在真 ChatRunner 里：跑中发送进 inbox（D14�
         const agent = new Agent({ client, model: "gpt-4" });
         watch(agent, timeline);
         coreAgent = agent;
-        // 用例自己在真 Agent 上装一个插件：把「整组收尾」那一刻卡住（core 会
-        // `await dispatchHook("onInnerLoopsEnd")`），于是边界是可到达、可停留的一刻 ——
-        // 现实里这一段是**无界**的（`AutoMigratePlugin` 在这里问用户）。
+        // 把「整组收尾」那一刻卡住（core 会 `await dispatchHook("onInnerLoopsEnd")`）：
+        // 现实里这一段是**无界**的（`AutoMigratePlugin` 就在这里问用户）。
         agent.use({
           onInnerLoopsEnd: async () => {
             insideWindow.resolve();
@@ -647,72 +561,32 @@ describe("真 core Agent 跑在真 ChatRunner 里：跑中发送进 inbox（D14�
       input: { content: "第一句" },
     });
 
-    // 停在这一刻：内循环已停、reconcile* 已收尾，正卡在整组收尾钩子里
     await insideWindow.promise;
 
     const queued = await harness.runner.enqueue({
       conversationId: CONVERSATION_ID,
       input: { content },
     });
-
-    // 宿主此刻还没关门（`closeEnqueue` 在 `send()` 返回之后），所以它回的是「排队了」——
-    // 这句话既然说出去了，下面就必须兑现。
+    // 门是在 `send()` 返回之后才关的，所以这一刻它回的是「排队了」
     expect(queued).not.toBeNull();
     expect(turn.runState().inboxPending).toBe(1);
 
     releaseWindow.resolve();
     const settlement = await turn.done;
 
-    expectQueuedLanded({ harness, coreAgent: () => coreAgent, queued: queued!, settlement, bodies, content });
-  });
-
-  it("收尾边界（onAfterSend 里）入队：同样在这一轮里落地", async () => {
-    const timeline: TimelineEntry[] = [];
-    let coreAgent: Agent | undefined;
-    const insideWindow = deferred<void>();
-    const releaseWindow = deferred<void>();
-    const content = "收尾钩子里上来的这一句";
-    const { client, bodies } = createScriptedClient(
-      [textRound("就这一轮"), textRound("收尾钩子里那句也回了")],
-      timeline,
-    );
-
-    const harness = createHarness({
-      timeline,
-      createAgent: async () => {
-        const agent = new Agent({ client, model: "gpt-4" });
-        watch(agent, timeline);
-        coreAgent = agent;
-        // 另一处收尾边界：`send()` 的 `onAfterSend`（迁移 / 保存插件在这里做后处理，
-        // 也可能顺手把用户的话排进来）。
-        agent.use({
-          onAfterSend: async () => {
-            insideWindow.resolve();
-            await releaseWindow.promise;
-          },
-        });
-        return agent;
-      },
-    });
-
-    const turn = await harness.runner.run({
-      conversationId: CONVERSATION_ID,
-      input: { content: "第一句" },
-    });
-
-    // 停在这一刻：整组内循环已经跑完（`onInnerLoopsEnd` 也发过了），正卡在 `onAfterSend`
-    await insideWindow.promise;
-
-    const queued = await harness.runner.enqueue({
-      conversationId: CONVERSATION_ID,
-      input: { content },
-    });
-    expect(queued).not.toBeNull();
-    expect(turn.runState().inboxPending).toBe(1);
-
-    releaseWindow.resolve();
-    const settlement = await turn.done;
-
-    expectQueuedLanded({ harness, coreAgent: () => coreAgent, queued: queued!, settlement, bodies, content });
+    // ① 这一轮只发过一次请求：没有为它再跑一圈
+    expect(bodies).toHaveLength(1);
+    // ② 它没落地、也没进库（agent 收工即弃，队列跟着走）
+    expect(settlement.messages.some((message) => message.id === queued!.userMessageId)).toBe(false);
+    expect(harness.store.peek(queued!.userMessageId)).toBeUndefined();
+    expect(coreAgent!.inbox.map((entry) => entry.messageId)).toEqual([queued!.userMessageId]);
+    // ③ 但这不是静悄悄：结算时按 leftover 报一声
+    expect(
+      harness.errors.filter((error) => error.context === "inbox-leftover").length,
+    ).toBeGreaterThan(0);
+    // ④ 这一轮本身照常收工（边界上的一句没有把它变成失败，也没有被当成 abort）
+    expect(settlement.outcome).toBe("completed");
+    expect(settlement.run.outcome).toBe("completed");
+    expect(harness.runs.isRunning(CONVERSATION_ID)).toBe(false);
   });
 });

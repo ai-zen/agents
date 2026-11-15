@@ -5,12 +5,18 @@ import { Message } from "./Message.js";
 const SOURCE_USER = "user";
 
 /**
- * inbox 条目落成消息内容的**唯一实现**：用户来源原样，其他来源在正文最前面加一行注释。
+ * inbox 条目落成消息内容的**唯一实现**：用户来源原样，其他来源在正文最前面加一行注释（来源 +
+ * 创建时间）。
  *
  * ## 为什么来源只写进正文，不落成消息字段
  *
  * 库里每条消息的列是既有契约，为一条纯展示用的来源信息加列会连带改持久化、重读与两端
  * 客户端；而「谁推的这条」对模型与用户都只要**看得见**就够了 —— 一行注释两种读者都满足。
+ *
+ * ## 为什么时间也写进这行注释
+ *
+ * 外部通知可能是很久以前发生的（排队、重试、别的会话攒下的结果）。模型拿到它得能判断时效性，
+ * 否则会把一条陈年结果当成刚刚发生的事。时间就用条目自己的 `createdAt`，不另算一份。
  *
  * ## 为什么分段内容不是「转成纯文本再拼」
  *
@@ -24,7 +30,7 @@ export function inboxEntryContent(entry: AgentNS.InboxEntry): AgentNS.MessageCon
   if (entry.source === SOURCE_USER) return entry.content;
 
   // 注释行 + 一个空行：与正文拉开，模型与终端里都不会把它读成正文的第一句
-  const note = `// 这条消息来自 ${entry.source} 自动推送\n\n`;
+  const note = `// 这条消息来自 ${entry.source} 自动推送（${entry.createdAt}）\n\n`;
   if (!Array.isArray(entry.content)) return `${note}${entry.content}`;
 
   const noteSection: AgentNS.TextContentSection = { type: "text", text: note };

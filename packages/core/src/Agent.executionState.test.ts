@@ -153,7 +153,11 @@ describe("Agent 段状态：deliver 的两个判据", () => {
     await runPromise;
 
     expect(agent.inbox).toHaveLength(0);
-    expect(users(agent)).toEqual(["先说一句", "// 这条消息来自 tool 自动推送\n\n跑着的时候来的"]);
+    expect(users(agent)).toEqual([
+      "先说一句",
+      // 非 user 来源的正文首行带「来源 + 创建时间」（时间在投递那一刻才定，校验其 ISO 形状）
+      expect.stringMatching(/^\/\/ 这条消息来自 tool 自动推送（[\dT:.Z-]+）\n\n跑着的时候来的$/),
+    ]);
     expect(agent.messages.at(-1)!.content).toBe("第二轮");
     expect(bodies).toHaveLength(2);
     expect(agent.runStatus).toBe("idle");
@@ -461,7 +465,10 @@ describe("Agent 段状态：send 的收尾", () => {
     expect(events).toEqual(["idle→running", "running→stopping", "stopping→terminated"]);
   });
 
-  it("受理期间投递的条目：send() 返回时它已经被处理完（不是 fire-and-forget）", async () => {
+  it("受理期间投递的条目：这次 send 不带它，滞留到下一次驱动", async () => {
+    // 改前：`send()` 的 `finally` 会把 receipt 那条 `flushInbox` + `run`，且 await 那一跳。
+    // 改后：`finally` 只置 `sendStatus = "idle"`，钩子里投进来的条目留在队列里，等下一次外部
+    // 驱动（`deliver` / 下一次 `send`）落地（理由：`send()` 不必为“顺手带走”多等一次）。
     const { client, create } = scriptedClient([textRound("一"), textRound("二")]);
     const agent = makeAgent(client);
 
@@ -474,13 +481,20 @@ describe("Agent 段状态：send 的收尾", () => {
 
     await agent.send("你好");
 
-    // 同步断言（`await` 之后不隔任何等待）：`send()` 返回 = 这一轮真的结束了。
-    // 宿主持有这个假设（返回即 settle、即丢弃 agent），队列里剩下的东西必须在此之前处理完。
+    // 同步断言（`await` 之后不隔任何等待）：返回时它仍在队列里，也没多跑一轮
+    expect(agent.inbox.map((entry) => entry.messageId)).toEqual([receipt!.messageId]);
+    expect(agent.messages.some((m) => m.id === receipt!.messageId)).toBe(false);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(agent.runStatus).toBe("idle");
+
+    // 下一次驱动（静止态 `deliver`）把它落地并跑一轮
+    agent.deliver({ source: "user", priority: "low", content: "下一句" });
+    await vi.waitFor(() => expect(agent.runStatus).toBe("idle"));
+
     expect(agent.inbox).toHaveLength(0);
     const landed = agent.messages.find((m) => m.id === receipt!.messageId)!;
     expect(landed.role).toBe(AgentNS.Role.User);
     expect(landed.content).toBe("钩子里来的");
-    // 「被处理了」不止是落成 User，还包括为它跑出来的那一轮真的定型了
     expect(create).toHaveBeenCalledTimes(2);
     expect(agent.messages.at(-1)!.content).toBe("二");
   });
