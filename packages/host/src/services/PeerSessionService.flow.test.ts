@@ -121,6 +121,7 @@ function createHarness(options: {
     runs,
     agents: new AgentRegistry({
       scopes,
+      runs,
       createAgent: async (context) => {
         const agent = new FakeAgent(
           context.conversationId === PARENT_ID ? options.parentRounds() : options.childRounds(),

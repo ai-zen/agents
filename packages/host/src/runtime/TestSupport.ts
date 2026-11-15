@@ -315,6 +315,17 @@ export class FakeAgent implements ChatAgent {
   abortCalls = 0;
   aborted = false;
   /**
+   * core 的段状态（`AgentNS.RunStatus`），按同一套语义演练：
+   *
+   *   - `send()` 起一段 → `running`，跑完回 `idle`；
+   *   - `abort()` 把状态推成 `stopping`（跑中）/ `terminated`（静止时按停是一跳）；
+   *   - 被叫停的那一段收尾时落 `terminated`，下一次 `send()` 从 `terminated` 解冻。
+   *
+   * 宿主不看它（`ChatAgent` 上没有这个字段），用例看它 —— 「常驻之后 agent 的状态还对不对」
+   * 只能落在这个字段上。
+   */
+  runStatus: AgentNS.RunStatus = "idle";
+  /**
    * 排队待发的内容（core 的 `Agent.inbox` 同一份形状）。
    *
    * 宿主只读它（`RunState.inbox`），写入走 {@link deliver} —— 与真 Agent 一样。
@@ -363,6 +374,10 @@ export class FakeAgent implements ChatAgent {
   abort(): void {
     this.abortCalls += 1;
     this.aborted = true;
+    // 与 core 同一口径：静止时按停是一跳（idle → terminated，不经 stopping）；跑中的那一段
+    // 在自己的收尾里落 terminated（见 `send`）。
+    if (this.runStatus === "idle") this.runStatus = "terminated";
+    else if (this.runStatus === "running") this.runStatus = "stopping";
     // 与 core 同一口径：按停只停这一段，**不碰 inbox**（排队的那几句等下一次外部驱动）。
     // 旧版这里会 `splice(0)`，那是被推翻的旧语义。
     for (const message of this.messages) {
@@ -377,9 +392,14 @@ export class FakeAgent implements ChatAgent {
 
   async send(content: AgentNS.MessageContent): Promise<AgentNS.Message[]> {
     this.sendCalls += 1;
+    // 与 core 同义：一次 `send` 就是「起一段」，静止态（包括上一段被叫停后的 `terminated`）
+    // 都能被解冻 —— 常驻之后同一个实例会被一段一段地驱动，这一条必须演对。
+    this.aborted = false;
+    this.runStatus = "running";
     this.beforeSend?.();
     this.append(Message.User(content));
     await this.run();
+    this.runStatus = this.aborted ? "terminated" : "idle";
     return this.messages;
   }
 

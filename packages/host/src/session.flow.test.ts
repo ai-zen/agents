@@ -110,7 +110,7 @@ const ROUND_ONE_DELTAS: AgentNS.Delta[] = [
   },
 ];
 
-/** 假 agent 工厂：每次装配都给一个新的 `FakeAgent`（agent 用完即弃，PRD D28） */
+/** 假 agent 工厂：每次装配都给一个新的 `FakeAgent`（agent 常驻：一段对话只装配一次，跨轮复用） */
 const createAgent: AgentFactory = async () =>
   new FakeAgent([
     {

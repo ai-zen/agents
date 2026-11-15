@@ -980,6 +980,25 @@ describe("配置生效", () => {
     expect(app.scopeRegistry.workspaceIds().length).toBe(2);
   });
 
+  it("生效时也换掉受影响的 agent：每个刷过的项目都 markStale 一次（配置改了就生效的唯一保证）", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture);
+    const { workspace } = await callMethod(app, "workspace.create", {
+      cwd: fixture.workspaceDir.path,
+    });
+    // 让这个项目有一个存在的 Scope（刷的范围就是「现存的那些」）
+    await app.scopeRegistry.create(workspace.id);
+
+    // `Scope.refresh()` 刷得动能力，刷不动已经建好的模型客户端 —— 所以必须显式让 agent 陈旧
+    const markStale = vi.spyOn(app.agentRegistry, "markStale");
+    try {
+      await callMethod(app, "config.patch", { patch: { limits: { maxToolOutput: 2048 } } });
+      expect(markStale.mock.calls.map((call) => call[0])).toEqual([workspace.id]);
+    } finally {
+      markStale.mockRestore();
+    }
+  });
+
   it("推出去的通知按收件人那条连接的语言重新渲染（D8 / localizeEvent）", async () => {
     const fixture = await makeFixture();
     const app = await startApp(fixture);

@@ -127,6 +127,7 @@ function createHarness(options: {
 
   const agents = new AgentRegistry({
     scopes,
+    runs,
     createAgent: async (context) => {
       builds.push(context);
       if (options.buildAgent) return await options.buildAgent(context);
@@ -409,7 +410,7 @@ describe("ChatRunner：边流边写（PRD D15）", () => {
 });
 
 describe("ChatRunner：结算", () => {
-  it("跑完 agent 即丢，而 Scope 仍在（与旧行为最大的差别）", async () => {
+  it("跑完 agent 仍在（常驻），Scope 也仍在（两者的生灭都不挂钩在一轮上）", async () => {
     const agent = new FakeAgent(plainRounds());
     const custom = createHarness({ agent });
 
@@ -435,11 +436,14 @@ describe("ChatRunner：结算", () => {
     expect(custom.pushed("usage")).toHaveLength(1);
     expect(custom.pushed("conversation.changed")[0]?.change).toBe("messages_persisted");
 
-    // agent 已经被丢掉：登记里没了，结算之后再叫停也不会碰到它
-    expect(custom.agents.get(CONVERSATION_ID)).toBeUndefined();
-    expect(custom.agents.conversationIds()).toEqual([]);
+    // agent 常驻：结算不摘登记，下一段拿到的还是它（旧行为在这里是「跑完即丢」）
+    expect(custom.agents.get(CONVERSATION_ID)).toBe(agent);
+    expect(custom.agents.conversationIds()).toEqual([CONVERSATION_ID]);
+    // 只是留着，不是“还在跑”：结算之后再叫停不会碰到它（那一轮已经没了）
     turn.abort("已经跑完了");
     expect(agent.abortCalls).toBe(0);
+    // 结算之后的快照里没有「还排着的东西」：inbox 说的是这一轮的事，而这一轮已收工
+    expect(run.inbox).toEqual([]);
 
     // 而 Scope 一直在（没有空闲计时、没有自动回收）：推多久都不会自己消失，
     // 也没人收到「MCP 关闭」那一下 —— 它活到显式 dispose 或进程退出
@@ -480,6 +484,7 @@ describe("ChatRunner：结算", () => {
       runs: custom.runs,
       agents: new AgentRegistry({
         scopes: custom.scopes,
+        runs: custom.runs,
         createAgent: async () => {
           throw new Error("模型没配端点");
         },
@@ -883,6 +888,7 @@ describe("ChatRunner：中止（PRD D14 / D15）", () => {
       runs: custom.runs,
       agents: new AgentRegistry({
         scopes: custom.scopes,
+        runs: custom.runs,
         createAgent: () => new Promise<ChatAgent>((resolve) => (releaseBuild = resolve)),
       }),
       emit: () => undefined,
@@ -1259,6 +1265,7 @@ describe("ChatRunner：与真实存储对接", () => {
         runs,
         agents: new AgentRegistry({
           scopes,
+          runs,
           createAgent: async () => new FakeAgent(plainRounds()),
         }),
         emit: () => undefined,
@@ -2036,5 +2043,381 @@ describe("ChatRunner：跑中发送进 inbox（D14：不打断、也不回 busy�
     const row = custom.store.peek(queued!.userMessageId)!;
     expect(JSON.stringify(row.content)).toContain("__asset_id");
     expect(JSON.stringify(row.content)).not.toContain("file-abc");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// agent 常驻：一段对话一个，跨轮复用（只在显式 / 配置变更时销毁）
+//
+// 改前：`attemptOnce` 里 `agents.create`、`settle` 里无条件 `dispose` —— 一轮一个、跑完即丢。
+// 改后：`attemptOnce` 里 `agents.ensure`（get-or-create）、`settle` 只做这一段的结算。
+// 于是两条必须同时守住：历史只能有一份（内存是真相）、订在 agent 上的监听随这一轮摘掉。
+// ---------------------------------------------------------------------------
+
+describe("ChatRunner：agent 常驻（跨轮复用）", () => {
+  it("同一段对话连跑两轮：`agents.get` 前后是同一个实例，第二段不再装配", async () => {
+    const custom = createHarness({ agentFactory: () => new FakeAgent(plainRounds()) });
+
+    const first = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "第一句" },
+    });
+    await first.done;
+    const before = custom.agents.get(CONVERSATION_ID);
+    expect(before).toBeDefined();
+
+    const second = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "第二句" },
+    });
+    await second.done;
+    const after = custom.agents.get(CONVERSATION_ID);
+
+    // 引用相等就是「常驻」本身
+    expect(after).toBe(before);
+    // 只装配过一次：第二段直接交还同一个对象
+    expect(custom.builds).toHaveLength(1);
+    // 同一段对话仍然同时只跑一轮（RunRegistry 的职责没变）
+    expect(custom.runs.isRunning(CONVERSATION_ID)).toBe(false);
+  });
+
+  it("两轮之间历史不重复：agent.messages 与库里条数一致，落库的 seq 连续", async () => {
+    const custom = createHarness({ agentFactory: () => new FakeAgent(plainRounds()) });
+
+    const first = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "第一句" },
+    });
+    await first.done;
+    const second = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "第二句" },
+    });
+    const secondSettlement = await second.done;
+
+    const agent = custom.agents.get(CONVERSATION_ID)!;
+    const page = await custom.store.listByConversation(CONVERSATION_ID, undefined, {
+      includeHidden: true,
+    });
+
+    // ① 条数与库里一致：上一段的历史没有被重新 push 一遍（有的话这里会多出一倍）
+    expect(agent.messages).toHaveLength(page.length);
+    // ② 逐条对上（顺序也一致）：内存就是库里那些行的同一条时间线
+    expect(agent.messages.map((message) => message.id)).toEqual(page.map((row) => row.id));
+    // ③ 没有重复 id（双份历史最直接的形状）
+    expect(new Set(agent.messages.map((message) => message.id)).size).toBe(
+      agent.messages.length,
+    );
+    // ④ 两轮各一条 user、一条 assistant
+    expect(page.filter((row) => row.role === AgentNSValue.Role.User)).toHaveLength(2);
+    expect(page.filter((row) => row.role === AgentNSValue.Role.Assistant)).toHaveLength(2);
+    // ⑤ 落库的 seq 连续（没有空档、也没有同号）
+    expect(page.map((row) => row.seq)).toEqual(page.map((_row, index) => index + 1));
+    // ⑥ 第二段的用量只算第二段（累计 = 历史 + 本轮，不是两份历史）
+    expect(secondSettlement.usage.turn.total_tokens).toBe(12);
+    expect(secondSettlement.usage.total.total_tokens).toBe(24);
+  });
+
+  it("首次装配仍然从库里读历史：agent 被回收之后，下一段按库里的历史重新装配", async () => {
+    const custom = createHarness({ agentFactory: () => new FakeAgent(plainRounds()) });
+
+    const first = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "第一句" },
+    });
+    await first.done;
+    const firstAgent = custom.agents.get(CONVERSATION_ID)!;
+    const pageAfterFirst = await custom.store.listByConversation(CONVERSATION_ID, undefined, {
+      includeHidden: true,
+    });
+    expect(pageAfterFirst.length).toBeGreaterThan(0);
+
+    // 模拟「这个 agent 已经不在了」（进程重启 / 被显式回收）：登记的只有引用，摘掉即可
+    custom.agents.dispose(CONVERSATION_ID);
+
+    const second = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "第二句" },
+    });
+    await second.done;
+    const rebuilt = custom.agents.get(CONVERSATION_ID)!;
+
+    expect(rebuilt).not.toBe(firstAgent);
+    // 装配时交给工厂的历史 = 库里的全部历史（reconcile + resolveHistory 那两步照旧跑了）
+    expect(custom.builds).toHaveLength(2);
+    expect(custom.builds[1]!.history.map((message) => message.id)).toEqual(
+      pageAfterFirst.map((row) => row.id),
+    );
+    // 新 agent 的 messages 开头就是这份历史（push 进去了，一条不少）
+    expect(rebuilt.messages.slice(0, pageAfterFirst.length).map((message) => message.id)).toEqual(
+      pageAfterFirst.map((row) => row.id),
+    );
+  });
+
+  it("两轮之间投进 inbox 的那一条，会被下一段带走（常驻的直接收益）", async () => {
+    const custom = createHarness({ agentFactory: () => new FakeAgent(plainRounds()) });
+
+    const first = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "第一句" },
+    });
+    await first.done;
+
+    const agent = custom.agents.get(CONVERSATION_ID) as FakeAgent;
+    expect(agent.inbox).toHaveLength(0);
+
+    // 结算之后有人往这个（常驻的）agent 里投了一句：这一单不做唤醒，它就躺在队列里等着
+    agent.deliver({ source: "user", priority: "high", content: "跨段带来的这一句" });
+    expect(agent.inbox).toHaveLength(1);
+    // 没有东西会自己把它叫起来（唤醒是下一单的事）
+    expect(custom.runs.isRunning(CONVERSATION_ID)).toBe(false);
+    expect(agent.sendCalls).toBe(1);
+
+    const second = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "第二句" },
+    });
+    const settlement = await second.done;
+
+    // ① 它落成了一条 user 消息（在下一段里），并进了这一段的产出
+    const landed = settlement.produced.find(
+      (message) => message.content === "跨段带来的这一句",
+    );
+    expect(landed).toBeDefined();
+    expect(landed!.role).toBe(AgentNSValue.Role.User);
+    // ② 队列取空了
+    expect(agent.inbox).toHaveLength(0);
+    // ③ 也进库了（照常落库，与这一轮自己发的那句同一个口径）
+    const page = await custom.store.listByConversation(CONVERSATION_ID);
+    const carried = page.filter((row) => row.content === "跨段带来的这一句");
+    expect(carried).toHaveLength(1);
+    expect(carried[0]!.role).toBe(AgentNSValue.Role.User);
+  });
+
+  it("abort 之后 agent 留在内存、runStatus 是 terminated，下一次外部驱动仍能跑", async () => {
+    const gate = deferred<void>();
+    const agent = new FakeAgent([{ gate: gate.promise, deltas: [{ content: "被打断" }] }]);
+    const custom = createHarness({ agent });
+
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "第一句" },
+    });
+    await flushMicrotasks();
+    turn.abort("用户按了停");
+    gate.resolve();
+    const settlement = await turn.done;
+
+    expect(settlement.outcome).toBe("aborted");
+    // 不 dispose：实例还在登记里，段状态是「被叫停且已收尾」
+    expect(custom.agents.get(CONVERSATION_ID)).toBe(agent);
+    expect(agent.runStatus).toBe("terminated");
+    // 中止的语义没变：库里的在途消息照旧落成 Aborted
+    expect(custom.store.peek(turn.assistantMessageId)?.status).toBe(
+      AgentNSValue.MessageStatus.Aborted,
+    );
+
+    // 下一次外部驱动仍然能跑（同一个实例从 terminated 解冻），不是「一次性」的
+    const second = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "再来一句" },
+    });
+    const secondSettlement = await second.done;
+
+    expect(secondSettlement.outcome).toBe("completed");
+    expect(custom.agents.get(CONVERSATION_ID)).toBe(agent);
+    expect(agent.sendCalls).toBe(2);
+    expect(agent.runStatus).toBe("idle");
+  });
+
+  it("结算之后 agent 上的事件不再叫到已经收工的那一段（监听随这一轮摘掉）", async () => {
+    const agent = new FakeAgent(plainRounds());
+    const custom = createHarness({ agent });
+
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "第一句" },
+    });
+    await turn.done;
+    const writes = custom.store.writes.length;
+    const states = custom.pushed("run.state").length;
+
+    // 直接朝这个（常驻的）agent 上广播：没有监听，就不该有任何反应（不认领 id、不推状态、不写库）
+    agent.append(Message.Assistant());
+
+    expect(custom.store.writes).toHaveLength(writes);
+    expect(custom.pushed("run.state")).toHaveLength(states);
+  });
+
+  it("一个已经结算的句柄再按一次停，按不到那个（现在给下一段用的）agent 上", async () => {
+    const agent = new FakeAgent(plainRounds());
+    const custom = createHarness({ agent });
+
+    const first = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "第一句" },
+    });
+    await first.done;
+    const abortsBefore = agent.abortCalls;
+
+    first.abort("这一轮早跑完了");
+
+    expect(agent.abortCalls).toBe(abortsBefore);
+    expect(agent.runStatus).toBe("idle");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 配置生效：受影响的 agent 要换掉（`Scope.refresh()` 刷不动已经建好的模型客户端）
+// ---------------------------------------------------------------------------
+
+describe("ChatRunner：配置生效时换掉 agent", () => {
+  it("空闲的当场销毁：下一段按新配置重新装配出一个新实例", async () => {
+    const custom = createHarness({ agentFactory: () => new FakeAgent(plainRounds()) });
+
+    const first = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "第一句" },
+    });
+    await first.done;
+    const firstAgent = custom.agents.get(CONVERSATION_ID)!;
+
+    // 配置改完：`refreshScopesFor` 会调这一下。这一段对话没在跑 → 没什么要等的，立即换掉
+    const marked = custom.agents.markStale(WORKSPACE_ID);
+    expect(marked).toEqual([]);
+    expect(custom.agents.get(CONVERSATION_ID)).toBeUndefined();
+
+    const second = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "第二句" },
+    });
+    await second.done;
+
+    expect(custom.agents.get(CONVERSATION_ID)).not.toBe(firstAgent);
+    expect(custom.builds).toHaveLength(2);
+  });
+
+  it("正在跑的那一段：只打标记，结算之后才销毁（那一段用旧配置跑完，不被打断）", async () => {
+    const gate = deferred<void>();
+    const custom = createHarness({
+      agentFactory: () => new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢慢来" }] }]),
+    });
+
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "第一句" },
+    });
+    await flushMicrotasks();
+    const running = custom.agents.get(CONVERSATION_ID)!;
+
+    const marked = custom.agents.markStale(WORKSPACE_ID);
+    expect(marked).toEqual([CONVERSATION_ID]);
+    // 还在跑：登记没被摘（这一轮还得用它跑完），只是带上了标记
+    expect(custom.agents.get(CONVERSATION_ID)).toBe(running);
+    expect(turn.runState().status).toBe("running");
+
+    gate.resolve();
+    const settlement = await turn.done;
+
+    // 这一轮照常跑完、照常结算（没有变成 aborted / error）
+    expect(settlement.outcome).toBe("completed");
+    // 结算那一刻兑现标记：登记没了，标记也跟着消失
+    expect(custom.agents.get(CONVERSATION_ID)).toBeUndefined();
+    expect(custom.agents.isStale(CONVERSATION_ID)).toBe(false);
+
+    // 下一段重新装配（= 复活）
+    const second = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "第二句" },
+    });
+    await second.done;
+
+    expect(custom.agents.get(CONVERSATION_ID)).not.toBe(running);
+    expect(custom.builds).toHaveLength(2);
+  });
+
+  it("没打标记的 agent 结算之后留着（只有陈旧才换，别把它当成了每轮都换）", async () => {
+    const custom = createHarness({ agentFactory: () => new FakeAgent(plainRounds()) });
+
+    const first = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "第一句" },
+    });
+    await first.done;
+    const agent = custom.agents.get(CONVERSATION_ID);
+
+    // 换掉的是「配置改过的那个 workspace 下的」：别的 workspace 打标记不影响它
+    expect(custom.agents.markStale("ws-none")).toEqual([]);
+    expect(custom.agents.get(CONVERSATION_ID)).toBe(agent);
+    expect(custom.agents.isStale(CONVERSATION_ID)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 装配事实变了就得换 agent（常驻不能把「改了下一段生效」这条吞掉）
+//
+// 改前：一轮一装配，会话行上的模型 / 思考档位每轮都重读一遍，改了下一段自然生效。
+// 改后：agent 常驻，`run()` 复用之前先问 `agents.fits`；不匹配就丢掉重建（并回库里重读历史，
+// 按新模型重新还原素材）。
+// ---------------------------------------------------------------------------
+
+describe("ChatRunner：会话的模型 / 档位改了，下一段按新事实重新装配", () => {
+  it("换了模型：手里那个被换掉，新 agent 拿到的是新模型，历史仍完整", async () => {
+    const conversation = makeConversation();
+    const custom = createHarness({
+      conversation,
+      agentFactory: () => new FakeAgent(plainRounds()),
+    });
+
+    const first = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "第一句" },
+    });
+    await first.done;
+    const before = custom.agents.get(CONVERSATION_ID)!;
+    const pageAfterFirst = await custom.store.listByConversation(CONVERSATION_ID);
+    expect(custom.builds[0]!.modelId).toBe("model-1");
+
+    // `conversation.setModel` 改的是会话行：这一段对话现在用 model-2
+    conversation.modelId = "model-2";
+
+    const second = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "第二句" },
+    });
+    await second.done;
+
+    const after = custom.agents.get(CONVERSATION_ID)!;
+    expect(after).not.toBe(before);
+    // 新装配那一刻读到的是新模型
+    expect(custom.builds).toHaveLength(2);
+    expect(custom.builds[1]!.modelId).toBe("model-2");
+    // 历史没有丢：走的是「从库里读」那条路（顺带按新模型重新还原素材）
+    expect(custom.builds[1]!.history.map((message) => message.id)).toEqual(
+      pageAfterFirst.map((row) => row.id),
+    );
+    expect(after.messages.slice(0, pageAfterFirst.length).map((message) => message.id)).toEqual(
+      pageAfterFirst.map((row) => row.id),
+    );
+  });
+
+  it("事实没变就不换：白跑的装配一次也不多做", async () => {
+    const custom = createHarness({ agentFactory: () => new FakeAgent(plainRounds()) });
+
+    const first = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "第一句" },
+    });
+    await first.done;
+    const agent = custom.agents.get(CONVERSATION_ID);
+
+    const second = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "第二句" },
+    });
+    await second.done;
+
+    expect(custom.agents.get(CONVERSATION_ID)).toBe(agent);
+    expect(custom.builds).toHaveLength(1);
   });
 });

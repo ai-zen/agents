@@ -506,13 +506,16 @@ export class HostApp {
         this.logger.error("平级会话出错", { context, error: describeError(error) });
       },
     });
-    // agent 工厂只造一次：交接回合与普通对话用同一个（跑完即弃，D28）
+    // agent 工厂只造一次：交接回合与普通对话用同一个（普通对话的 agent 常驻，装配一次跨轮复用；
+    // 交接回合自己一行一装配、跑完即弃）
     const createAgent = options.createAgent ?? this.defaultAgentFactory();
     // agent 的持有者：「agent 从哪来」唯一的入口。它内部先要 Scope（幂等），
     // 于是 Scope → Agent 的依赖顺序写在代码里，而不是靠调用方记得先要 Scope
     this.agentRegistry = new AgentRegistry({
       scopes: this.scopeRegistry,
       createAgent,
+      // 「这段对话有没有在跑一轮」只有 `RunRegistry` 一处（`markStale` 判空闲 / 在跑用它）
+      runs: this.runRegistry,
     });
     this.noticeService = new NoticeService({
       notices: this.notices,
@@ -1278,11 +1281,16 @@ export class HostApp {
   }
 
   /**
-   * 刷新配置改动涉及的、**已经存在**的 Scope（就地刷，不重建）。
+   * 刷新配置改动涉及的、**已经存在**的 Scope（就地刷，不重建），并换掉受影响的 agent。
    *
    * 刷哪些按改动范围定：只改了某个项目的 MCP（`workspace` 作用域）→ 只刷那几个项目现有的
    * Scope；其余改动（端点 / 模型 / 上限 / 用户级 MCP）影响所有 Scope → 现存的全都刷。
    * 没有的跳过：不为刷新去创建一个 Scope（下一段对话 `create` 时会按新配置建）。
+   *
+   * 为什么刷完还要 `markStale`：`Scope.refresh()` 刷得动能力（工具、MCP），刷**不**动已经建好的
+   * 模型客户端 —— `createModel(scope.config, …)` 是装配那一刻读的。agent 现在又是常驻的（装配
+   * 一次用很多段），不显式换掉的话“改了配置就生效”就不再成立。所以对每个目标 workspace 打一次
+   * 陈旧标记：空闲的 agent 当场销毁，在跑的那一段由 `ChatRunner` 在结算时销毁，下一段重新装配。
    */
   private async refreshScopesFor(change: ConfigApplyChange): Promise<string[]> {
     const existing = this.scopeRegistry.workspaceIds();
@@ -1293,6 +1301,15 @@ export class HostApp {
     const targets = wanted.filter((workspaceId) => existing.includes(workspaceId));
     for (const workspaceId of targets) {
       await this.scopeRegistry.refreshWorkspace(workspaceId);
+      // 能力已经换新的了；手里还拿着旧模型客户端的 agent 也一起换掉（这就是本单“配置改动
+      // 最迟下一段生效”的全部机关，见 `AgentRegistry.markStale`）
+      const pending = this.agentRegistry.markStale(workspaceId);
+      if (pending.length > 0) {
+        this.logInfo("配置生效：正在跑的那几段结算之后换掉 agent", {
+          workspaceId,
+          conversationIds: pending,
+        });
+      }
     }
     return targets;
   }

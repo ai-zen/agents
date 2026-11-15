@@ -244,7 +244,7 @@ function createHarness(options: {
     },
     scopes,
     runs,
-    agents: new AgentRegistry({ scopes, createAgent: options.createAgent }),
+    agents: new AgentRegistry({ scopes, runs, createAgent: options.createAgent }),
     emit: (name, payload) => {
       events.push({ name, payload });
     },
@@ -527,8 +527,9 @@ describe("真 core Agent 跑在真 ChatRunner 里：跑中发送进 inbox（D14�
   //
   // 改前：`send()` 的 `finally` 会把收尾钩子（`onInnerLoopsEnd` / `onAfterSend`）期间投进来的
   // 条目 `flushInbox` + `run` 一遍，于是宿主回了 `queued` 就一定落地（工单 J）。
-  // 改后：core 不管它们了（省掉那次 await）。宿主这一轮收工就把 agent 丢掉，所以这两处边界上
-  // 排进来的那一句**确实丢了** —— 这条用例钉的是「丢了要有声音」，不许静悄悄吞掉。
+  // 改后：core 不管它们了（省掉那次 await）。宿主这一轮收工**不带它**：以前 agent 跑完就丢，
+  // 那句也就跟着没了；现在 agent 常驻，它还留在那个 agent 的队列里，等下一次外部驱动的那一段
+  // 带走 —— 但“这一轮没接住它”仍然是一个不该无声发生的事实，所以结算时照旧报一声。
   // -------------------------------------------------------------------------
 
   it("收尾钩子里入队的那一句：这一轮不带它，结算时按 inbox-leftover 出声", async () => {
@@ -577,7 +578,7 @@ describe("真 core Agent 跑在真 ChatRunner 里：跑中发送进 inbox（D14�
 
     // ① 这一轮只发过一次请求：没有为它再跑一圈
     expect(bodies).toHaveLength(1);
-    // ② 它没落地、也没进库（agent 收工即弃，队列跟着走）
+    // ② 它没落地、也没进库（这一轮不带它；常驻之后它还留在 agent 的队列里，等下一次驱动）
     expect(settlement.messages.some((message) => message.id === queued!.userMessageId)).toBe(false);
     expect(harness.store.peek(queued!.userMessageId)).toBeUndefined();
     expect(coreAgent!.inbox.map((entry) => entry.messageId)).toEqual([queued!.userMessageId]);
