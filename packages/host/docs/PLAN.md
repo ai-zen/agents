@@ -34,17 +34,19 @@
 
 ## 1. 现状快照（2026-11-15 实跑，不是估计）
 
-| 仓 | 分支 / HEAD | 未提交 | 类型检查 | 用例 |
+| 仓 / 包 | 分支 / HEAD | 未提交 | 类型检查 | 用例 |
 |---|---|---|---|---|
-| `agents`（host） | `feat/server-rewrite` / `a501730`（本波只在它上面叠一个 `.md` 提交） | 0（本轮只改 `.md`） | `tsc --noEmit -p tsconfig.json` **0 错** | **796 绿 / 54 文件**（22.9s） |
-| `agents`（client） | `feat/server-rewrite` / 同上 | 0（同上） | `tsc --noEmit -p tsconfig.json` **0 错** | **110 绿 / 11 文件**（2.1s） |
-| `cli`（TUI CLI） | `main` / `fb29f4e`（本波只在它上面叠一个 `.md` 提交） | 0（本轮只改 `docs/*.md` 与两个 README） | `tsc --noEmit -p tsconfig.test.json` **0 错** | 默认集 **953 绿 / 63 文件**（17.9s）；真进程 e2e 本轮**未复跑** |
-| `desktop` | `feat/new-server` / `0b34dc0` | 0 | 本轮**未复跑**（只改了夹具与 `chat.send` 的 `queued` 分支） | 同上（上一轮记的是 main 121 + 3 跳过 / render 70 / 8 文件） |
+| `agents`（host） | `feat/server-rewrite` / `016c726`（本波只在它上面叠注释与 `.md` 提交） | 0（只有未跟踪的 `.ai-zen/**`） | `tsc --noEmit -p tsconfig.test.json` **0 错** | **906 绿 / 59 文件**（26.1s）；真进程 e2e **9 绿 / 2 文件** |
+| `agents`（core） | `feat/server-rewrite` / 同上 | 0（同上） | `tsc --noEmit -p tsconfig.json` **0 错** | **232 绿 / 17 跳过**（249） |
+| `agents`（sdk） | `feat/server-rewrite` / 同上 | 0（同上） | `tsc --noEmit -p tsconfig.test.json` **0 错** | **714 绿** |
+| `agents`（client） | `feat/server-rewrite` / 同上 | 0（同上） | `tsc --noEmit -p tsconfig.json` **0 错** | **110 绿 / 11 文件**（2.3s） |
+| `cli`（TUI CLI） | `main` / `889f22f`（本波只在它上面叠一个 `.md` 提交） | 0（工作区干净） | `tsc --noEmit -p tsconfig.test.json` **0 错** | 默认集 **960 绿**；真进程 e2e 本轮**未复跑** |
+| `desktop` | `feat/new-server` / `a7e7a0c` | 0（工作区干净） | 本轮**未复跑** | main **130 绿 / 3 跳过**；render **83 绿** |
 | `cli-old-archive`（旧 TUI CLI 冻结快照） | detached @ `pre-split-20261111` / `ace42a0` | 0（只读目录；只有 README 首行那行归档声明是新增内容） | 不参与 | 只读参照物，不是迁移对象 |
 
 **结论**：契约面已经定稿 —— **62 个方法 / 6 个事件**（`METHOD_NAMES` 实测 62 条；2026-11-14 删掉 `host.capabilities` 后 63 → 62，能力清单连同 252 条 `capability.*` 文案一起下架，见 PRD F-E5 的订正），文档与代码在这一轮对齐（`architecture.md` 的方法表逐条核过）。「host ↔ TUI CLI」这条链已经通了**并且发过一版**：`@ai-zen/agents-host@0.1.0-alpha.1`（上游 `@ai-zen/agents-core@4.6.0-alpha.0` / `@ai-zen/agents-sdk@1.2.0-alpha.0` 同批发布）。`cli-old` 已降级为只读归档（`cli-old-archive`）。
 
-**干完的与剩下的**：W1（契约补齐）、W2（CLI 收口）、W3（归档与文档）、W6（运行期可输入与重开回看，见 §7.6）**完成**；剩下两笔 —— **W4**（桌面端完整问答视图，优先级最低）与 **W5**（兜底治理，等契约与客户端定型后再动）。
+**干完的与剩下的**（agent 常驻 / 投递收口之后）：W1（契约补齐）、W2（CLI 收口）、W3（归档与文档）、W6（运行期可输入与重开回看，见 §7.6）**完成**；剩下两笔 —— **W4**（桌面端完整问答视图，优先级最低）与 **W5**（兜底治理，等契约与客户端定型后再动）。
 
 ## 2. 波次总览
 
