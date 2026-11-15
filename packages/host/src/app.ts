@@ -522,6 +522,9 @@ export class HostApp {
       // `chatRunner` 在 §7 才造出来（比这里晚），所以这里闭包住 `this`，调用那一刻才去拿
       // —— 与 `peerSessions` 的晚绑定同一个理由。
       onStatus: (event) => this.chatRunner.onAgentStatus(event),
+      // 入队那一刻的来源（`InboxEntry.source`）：自起段结算时报给宿主的就是它 ——
+      // 「这一段是被谁叫起来的」只有投递方知道（见 `ChatRunner.noteInbox`）。
+      onInbox: (event) => this.chatRunner.noteInbox(event.conversationId, event.entry.source),
     });
     this.noticeService = new NoticeService({
       notices: this.notices,
@@ -1083,6 +1086,12 @@ export class HostApp {
       handoff: (context) => this.handoffFor(context),
       // 档位名 → 参数补丁要用思考策略表；配置变更后会重读，所以这里给一个现读入口
       thinkingPresets: () => this.presets,
+      // 压缩的归一规则按**会话类型**分：派生会话（平级会话开出来的子会话）没人盯着它，
+      // 越线就自己压；用户会话把「要不要压」交还给宿主的提问路径（`askHandoffAfterSettle`）。
+      isDerivedSession: (context) => this.peerSessions.isPeerSession(context.conversationId),
+      // 插件压完记一笔：会话行上写 `auto`（`manual` 那条由 `HandoffService` 自己写）
+      onCompacted: (context, mode) =>
+        this.conversationService.markCompacted(context.conversationId, mode),
     });
     return async (context) => {
       const agent = await assembled(context);
@@ -1126,6 +1135,10 @@ export class HostApp {
    * 问与答之后的事都归 `QuestionService`。
    */
   private async askHandoffAfterSettle(facts: TurnSettledFacts): Promise<void> {
+    // 派生会话（平级会话开出来的那一段）不归这里问：它自己压（`AutoMigratePlugin` 的
+    // `resolveMode` 回 `"self"`）。不拦的话用户亲自在子会话里说话那一轮会两套都上手 ——
+    // 插件已经在压，这里再挂一个问题。
+    if (this.peerSessions.isPeerSession(facts.conversationId)) return;
     // 自动推送叫起来的轮次没有人在看这条连接：给一段没人盯着的对话挂交接问题是噪音。
     // 要问就等用户自己说话那一轮（那一轮结算时报的就是 `"user"`）。
     if (facts.source !== "user") return;

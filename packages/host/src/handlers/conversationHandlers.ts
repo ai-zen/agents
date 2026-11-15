@@ -318,6 +318,13 @@ async function conversationStateOf(
       thinking: conversation.thinking,
       usage,
       questions: deps.questionsFor ? await deps.questionsFor(conversationId) : [],
+      // 压缩标记：`ConversationView` 已经带着（它 extends `ConversationSummary`），这里只挪个位置
+      ...(conversation.compactedAt === undefined || conversation.compactionMode === undefined
+        ? {}
+        : {
+            compactedAt: conversation.compactedAt,
+            compactionMode: conversation.compactionMode,
+          }),
       updatedAt: now,
     },
     // 这份消息就是上面算用量与上下文用的那一次读取，不是又读一遍

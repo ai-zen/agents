@@ -140,6 +140,7 @@ import type { EventMap, EventName } from "../wire/events.js";
 import type {
   AssemblingToolCall,
   AttachmentOutcome,
+  CompactionMode,
   GenerationPhaseName,
   GenerationState,
   InboxItem,
@@ -233,6 +234,19 @@ export interface AgentStatusEvent {
   from: AgentNS.RunStatus;
   /** 变化后的段状态（`idle` / `running` / `stopping` / `terminated`） */
   to: AgentNS.RunStatus;
+}
+
+/**
+ * 一条内容进了这段对话的 inbox（core 的 `inbox` 事件载荷 + 它是哪段对话）。
+ *
+ * 「这一段是被谁叫起来的」只有入队那一刻答得出来（`entry.source`）：投递走的是 agent 自己的
+ * inbox，不经过宿主，等 `status → running` 时再回头看已经分不清「谁叫的」与「队列里还剩谁」。
+ * 所以 `AgentRegistry` 把这条事件原样转出来，宿主记下最近一条（见 `ChatRunner.noteInbox`）。
+ */
+export interface AgentInboxEvent {
+  conversationId: string;
+  agent: ChatAgent;
+  entry: AgentNS.InboxEntry;
 }
 
 /**
@@ -555,12 +569,13 @@ function round2(value: number): number {
 const SOURCE_USER = "user";
 
 /**
- * 自起段报给 `TurnSettledFacts.source` 的那个值。
+ * 自起段报给 `TurnSettledFacts.source` 的**兜底**值。
  *
- * 那一段不是用户本人受理的（是某个来源投递进来、把 agent 叫醒的），所以它**不是** `"user"`：
- * 结算那一跳（R59：要不要问交接线的问题）只对用户本人叫起来的轮次开口。用这个值而不是某个
- * 具体来源名：投递进 inbox 的条目可以有好几种来源，而「这一段是谁叫起来的」在这一层只答得出
- * 「不是用户，是投递」。
+ * 正常情况下那一段的来源是叫醒它的那条 inbox 条目的 `source`（见 `ChatRunner.noteInbox`）：
+ * 「这一段是被谁叫起来的」这个事实只有投递方知道，报出来才不会把一次会话间投递说成某个
+ * 笼统的东西。真不知道时（不是 inbox 叫起来的，例如交接回合自己 `send()` 起的那一段）
+ * 才落到这个值：它依旧不是 `"user"` —— 结算那一跳（R59：要不要问交接线的问题）只对
+ * 用户本人叫起来的轮次开口。
  */
 const SOURCE_INBOX = "inbox";
 
@@ -819,6 +834,11 @@ interface SelfStartedTurnInit extends TurnSessionInitBase {
   kind: "self-started";
   /** 正在跑这一段的那一个 agent：现场当场就订上它的事件总线（不能等一个 await） */
   agent: ChatAgent;
+  /**
+   * 这一段是被**谁**叫起来的：投进 inbox 那条条目的 `source`（`ChatRunner.noteInbox` 记的
+   * 最近一条）。不知道时是 {@link SOURCE_INBOX}。
+   */
+  source: string;
 }
 
 type TurnSessionInit = AcceptedTurnInit | SelfStartedTurnInit;
@@ -1023,8 +1043,8 @@ class TurnSession implements ChatTurn {
       this.content = "";
       this.storedContent = undefined;
       this.language = options.defaultLanguage ?? DEFAULT_LANGUAGE;
-      // 这一段不是用户本人叫起来的（是某个来源投递进来的），所以它结算时不问交接（R59）
-      this.source = SOURCE_INBOX;
+      // 这一段是某条 inbox 条目叫起来的：结算时报的就是它的来源（没人看着的那种来源不会问交接）
+      this.source = init.source;
       this.attachments = [];
       this.userMessageId = null;
       this.assistantMessageId = null;
@@ -2223,6 +2243,14 @@ export class ChatRunner {
    */
   private readonly waitlists = new Map<string, DeliveryInput[]>();
   /**
+   * 每段对话「最近一条投进 inbox 的条目是谁推的」—— 自起段结算时报给宿主的来源。
+   *
+   * 为何不另存一份「谁在跑」：这里只是**一条观察值**（`TurnSettledFacts.source`），不参与任何
+   * 判断，「在跑」的真相仍然只在 `turns` / `RunRegistry`。投递方与唤醒是两件事，而这个映射
+   * 只记后者要报的那个值。
+   */
+  private readonly inboxSources = new Map<string, string>();
+  /**
    * 每段对话的投递串行链：**同一段对话的投递不并行**。
    *
    * 「结算 → 投递 → 再起段」这条链中间有 await（要装配 agent、要读会话行），两条投递同时走到
@@ -2239,6 +2267,17 @@ export class ChatRunner {
   /** 宿主分配消息 id（PRD L6）：缺省 `crypto.randomUUID`，测试可注入递增 id */
   private newId(): string {
     return (this.options.newId ?? defaultNewId)();
+  }
+
+  /**
+   * core 的 `inbox` 事件转进来：记下这条条目是谁推的。
+   *
+   * 「这一段是被谁叫起来的」只有投递方知道（条目的 `source`），而自起段建现场那一刻（`status`）
+   * 拿不到它 —— 投递走的是 agent 自己的 inbox，不经过宿主。于是投递方一入队就把来源记在这里，
+   * 建现场时取一次（取完就清，不留给下一段）。
+   */
+  noteInbox(conversationId: string, source: string): void {
+    this.inboxSources.set(conversationId, source);
   }
 
   /**
@@ -2339,12 +2378,17 @@ export class ChatRunner {
     }
 
     const nowMs = this.clock.now();
+    // 叫醒它的那条条目的来源（`noteInbox` 记的最近一条）：取完就清，不留给下一段。
+    // 没有（不是 inbox 叫起来的）就落到兜底值 —— 它仍然不是 `"user"`。
+    const source = this.inboxSources.get(conversationId) ?? SOURCE_INBOX;
+    this.inboxSources.delete(conversationId);
     // 回调里要拿现场去「只摘自己那一份」，而现场这时才在造
     let session: TurnSession;
     session = new TurnSession(this.options, {
       kind: "self-started",
       conversationId,
       agent,
+      source,
       // 这一段开始前的历史：此刻 core 还没把 inbox 落地（`status` 先于 `message`），
       // 所以这份快照正好是「上一段结束时的样子」（usage 的累计与结算报的 `messages` 都靠它）
       history: [...agent.messages],
@@ -2820,6 +2864,8 @@ export class ChatRunner {
     this.disposeRuntime(conversationId);
     // 这段对话已经不在了：攒着的待投内容也就没有去处（留着只会在删掉之后凭空跑出一段）
     this.waitlists.delete(conversationId);
+    // 同理，那条「最近一次投递是谁推的」也不再有意义（留着只会让下一段报错来源）
+    this.inboxSources.delete(conversationId);
     // 这一段对话已经不在了，它的 agent 也就不该继续挂在 Scope 的账上 —— 否则紧接着的
     // `scopes.dispose`（删项目）会被一个正在收尾的对话挡下来。丢的只是登记，那个 agent
     // 仍由它自己那一轮握在手里跑完收尾（停与结算不受影响）。
@@ -2896,6 +2942,20 @@ export interface SdkAgentFactoryOptions {
    * 交接服务自己会在交接回合往 agent 上装工具守卫。
    */
   handoff?: HandoffProvider;
+  /**
+   * 这一段是不是**派生会话**（`PeerSessionService` 认得的那一段）——「要不要自己压」的唯一判据。
+   *
+   * 不传 = 一律当用户会话（越线之后交还给宿主的提问路径）。判据只能由接线层给：派生关系的
+   * 唯一真相是 `PeerSessionService` 的进程内记录（不落库），本文件不另记一份。
+   */
+  isDerivedSession?: (context: AgentBuildContext) => boolean;
+  /**
+   * 压缩完成之后的回声（`mode` 说压的是哪一种）：宿主用它落会话行上的压缩标记。
+   *
+   * 只有插件压的那条路会叫它（`auto`）；用户答完问题之后压的那条在 `HandoffService` 里
+   * 自己写（`manual`）。不传则不记（用例里的装配不需要观测）。
+   */
+  onCompacted?: (context: AgentBuildContext, mode: CompactionMode) => void | Promise<void>;
   /**
    * 工具刷新时机；缺省读 SDK 配置的 `autoRefreshTools`，再缺省 `inner-loop-start`。
    *
@@ -2983,7 +3043,8 @@ async function readAgentDefinition(
  * 装的东西与阈值来源（PRD D27：阈值属 SDK 的 `AppConfig` / 模型配置，不在这里另起一套）：
  *   - `ContextGuardPlugin`：硬线，`tokenThresholds.guard`；
  *   - `SubAgentGuardInstallerPlugin`：同一个硬线递归装到子 Agent 与孙级（PRD F-D8）；
- *   - `AutoMigratePlugin`：交接线，`tokenThresholds.handoff`（需注入交接服务）；
+ *   - `AutoMigratePlugin`：交接线，`tokenThresholds.handoff`（需注入交接服务）。
+ *     越线自压的只有**派生会话**（`isDerivedSession`）；用户会话交还给宿主的提问路径；
  *   - `AutoRefreshToolsPlugin`：改完能力不用重启（PRD F-E2）；
  *   - `UnknownToolHintPlugin`：未知工具时给出 MCP 场景的引导。
  */
@@ -3027,9 +3088,15 @@ export function createSdkAgentFactory(options: SdkAgentFactoryOptions = {}): Age
           new AutoMigratePlugin({
             service: handoff,
             handoffTokens: thresholds.handoff,
-            // R59 / PRD §5：宿主不替用户决定「要不要迁移」——问用户的是
-            // `QuestionService.askHandoff`（一轮结算之后），这里一律跳过本次迁移。
-            resolveMode: () => null,
+            // 归一规则按**会话类型**分，不按轮次来源分：
+            //   - 派生会话（平级会话开出来的那一段）没人盯着它，越线就自己压（`"self"`）；
+            //   - 用户会话把「要不要压」交还给宿主：一轮结算之后问用户
+            //     （`askHandoffAfterSettle`），这里回 `null` = 本次不迁移。
+            resolveMode: () => (options.isDerivedSession?.(context) === true ? "self" : null),
+            // 压完记一笔：宿主写会话行上的 `compactedAt` / `compactionMode = "auto"`
+            ...(options.onCompacted === undefined
+              ? {}
+              : { onMigrated: () => options.onCompacted?.(context, "auto" as const) }),
           }),
         );
       }

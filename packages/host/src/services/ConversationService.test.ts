@@ -438,6 +438,24 @@ describe("ConversationService.list（D13）", () => {
     const listed = await harness.service.list({ workspaceId: "w1" });
     expect(listed.conversations[0]?.run).toBeNull();
   });
+
+  it("压缩标记出网：没压过的条目不带这两格，压过之后带时刻与来源", async () => {
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+
+    // 没压过：两格整对省略（空 = 没压过，不是「不知道」）
+    const fresh = await harness.service.get({ conversationId: created.conversation.id });
+    expect(fresh.conversation.compactedAt).toBeUndefined();
+    expect(fresh.conversation.compactionMode).toBeUndefined();
+
+    await harness.service.markCompacted(created.conversation.id, "auto");
+
+    const after = await harness.service.get({ conversationId: created.conversation.id });
+    expect(after.conversation.compactionMode).toBe("auto");
+    expect(typeof after.conversation.compactedAt).toBe("string");
+    // 侧栏摘要与视图是同一份口径（摘要 extends 自同一个形状）
+    const listed = await harness.service.list({ workspaceId: "w1" });
+    expect(listed.conversations[0]?.compactionMode).toBe("auto");
+  });
 });
 
 describe("ConversationService.get / rename / pin", () => {

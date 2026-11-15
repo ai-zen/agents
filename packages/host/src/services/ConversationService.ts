@@ -44,6 +44,7 @@ import type { Conversation, StoredMessage, WorkspaceRow } from "../storage/types
 import { HostError } from "../wire/errors.js";
 import type { ConversationChangeKind } from "../wire/events.js";
 import type {
+  CompactionMode,
   ContextState,
   ConversationCreateParams,
   ConversationCreateResult,
@@ -370,6 +371,9 @@ export class ConversationService {
       modelId: model.id,
       // 新建的会话不选档位：思考强度跟随助手定义上的那份（F-B6）
       thinkingLevel: null,
+      // 新建的会话没压过：两条压缩路径各写各的（`markCompacted`）
+      compactedAt: null,
+      compactionMode: null,
       createdAt,
       updatedAt: createdAt,
     };
@@ -783,7 +787,30 @@ export class ConversationService {
       // 「在跑」那一格比布尔多一个开始时刻（活跃会话列表按它排）；没注入这一格的替身按没在跑算
       run: this.runtime.runState?.(row.id) ?? null,
       hasPendingQuestion: pendingCount > 0,
+      // 压缩那两格：成对出现，没压过就整对省略（空 = 没压过，不是「不知道」）
+      ...(row.compactedAt === null || row.compactionMode === null
+        ? {}
+        : {
+            compactedAt: iso(row.compactedAt),
+            compactionMode: row.compactionMode,
+          }),
     };
+  }
+
+  /**
+   * 记一次压缩（会话行上的 `compactedAt` / `compactionMode`）。
+   *
+   * 两条压缩路径共用这一处：派生会话被 `AutoMigratePlugin` 自动压 → `auto`；用户答完交接问题、
+   * 宿主开新对话 → `manual`（那一条在 `HandoffService` 里写，落的是同样两列）。
+   *
+   * 写库失败照抛：调用方（插件的迁移后回声）会把「标不出来」记成一条日志，而那一段上下文
+   * 已经压过了 —— 标记是观测事实，不是状态机的输入。
+   */
+  async markCompacted(conversationId: string, mode: CompactionMode): Promise<void> {
+    const row = await this.conversations.get(conversationId);
+    if (!row) return;
+    await this.conversations.markCompacted(row.id, mode, this.now());
+    this.emitChanged(row.id, row.workspaceId, "settings_changed", null);
   }
 
   /** 拼一段对话的完整形状，顺带把 `setModel` 要的上下文占用一起算出来 */

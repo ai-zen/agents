@@ -50,6 +50,8 @@ function makeConversation(): Conversation {
     agentId: "default",
     modelId: "model-1",
     thinkingLevel: null,
+    compactedAt: null,
+    compactionMode: null,
     pinned: false,
     nameIsAuto: true,
     createdAt: 0,
@@ -151,6 +153,8 @@ function createHarness(options: {
     runs,
     createAgent: async (context) => await options.createAgent(context),
     onStatus: (event) => runner?.onAgentStatus(event),
+    // 与 `app.ts` 同一条接线：入队那一刻的来源就是自起段结算时报的那一个
+    onInbox: (event) => runner?.noteInbox(event.conversationId, event.entry.source),
   });
 
   runner = new ChatRunner({
@@ -266,8 +270,9 @@ describe("ChatRunner.deliver：会话间投递的唯一入口", () => {
     expect(last.status).toBe("settled");
     expect(last.assistantMessageId).toBe(settlement.assistantMessageId);
 
-    // 这一段不是用户本人叫起来的（`source` 不是 `"user"`：交接线不会给没人看的对话挂问题）
-    expect(harness.settledFacts.map((facts) => facts.source)).not.toContain("user");
+    // 这一段不是用户本人叫起来的：结算报的 `source` 就是叫醒它的那条条目的来源
+    // （`"补测试"`）—— 不是笼统的 `"inbox"`，交接线那条判断也就看得见「谁叫的」
+    expect(harness.settledFacts.map((facts) => facts.source)).toEqual(["补测试"]);
     // agent 常驻：投递叫起来的那一段跑完，它还在登记表里
     expect(harness.registry.get(CONVERSATION_ID)).toBe(agent);
   });

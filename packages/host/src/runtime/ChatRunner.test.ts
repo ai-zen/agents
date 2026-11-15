@@ -65,6 +65,8 @@ function makeConversation(overrides: Partial<Conversation> = {}): Conversation {
     agentId: "default",
     modelId: "model-1",
     thinkingLevel: null,
+    compactedAt: null,
+    compactionMode: null,
     nameIsAuto: true,
     createdAt: 0,
     updatedAt: 0,
@@ -1083,70 +1085,173 @@ describe("ChatRunner：用量三个口径（PRD F-I5）", () => {
   });
 });
 
-describe("真装配：交接线插件不替用户决定迁移（R59 / PRD §5）", () => {
-  it("越过交接线也不自动迁移：装配时传的 resolveMode 一律回 null", async () => {
+describe("真装配：压缩按会话类型归一（派生会话自动压 / 用户会话交还给提问）", () => {
+  /** 压缩标记写在这一刻（断言它落到了会话行上） */
+  const COMPACTED_AT = 4242;
+
+  /** 装配现场：真 Scope（交接线 100）+ 真 SDK agent + 真库里的那一行会话 */
+  interface Assembly {
+    agent: ChatAgent;
+    /** 插件真的调了 `service.migrate` 的那几次（替身记账） */
+    migrations: Array<{ promptTokens: number; handoffTokens: number; mode?: string }>;
+    conversations: ConversationRepository;
+    cleanup(): Promise<void>;
+  }
+
+  /** 按给定会话类型装配一次（`derived` 决定 `resolveMode` 回 `"self"` 还是 `null`） */
+  async function assemble(options: { derived?: boolean; busy?: boolean } = {}): Promise<Assembly> {
     const dir = await mkdtemp(join(tmpdir(), "ai-zen-sdk-factory-"));
+    const agentsDir = join(dir, "agents");
+    await mkdir(agentsDir, { recursive: true });
+    await writeFile(
+      join(agentsDir, "a1.json"),
+      JSON.stringify({ id: "a1", name: "助手", modelId: "model-1", messages: [], custom: true }),
+      "utf-8",
+    );
+
+    const scope = new Scope({
+      cwd: dir,
+      agentsDir,
+      getConfig: () => ({
+        endpoints: [{ id: "e1", name: "端点", baseUrl: "https://example.test/v1", apiKey: "k" }],
+        models: [
+          {
+            id: "model-1",
+            name: "模型",
+            endpointId: "e1",
+            tokenThresholds: { handoff: 100, guard: 200 },
+          },
+        ],
+      }),
+    });
+
+    // 真库：压缩标记要真的落到会话行上（`onCompacted` 就是 app.ts 里那条接线）
+    const db = new Database(join(dir, "ai-zen.db"));
+    await migrate(db);
+    const conversations = new ConversationRepository(db);
+    await db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES (?, ?, ?, ?)", [
+      WORKSPACE_ID,
+      "项目",
+      dir,
+      1,
+    ]);
+    await conversations.create({
+      id: CONVERSATION_ID,
+      workspaceId: WORKSPACE_ID,
+      name: "会话",
+      agentId: "a1",
+      modelId: "model-1",
+      createdAt: 1,
+    });
+
+    // 交接服务替身：`busy` 与 `migrate` 是插件唯一用到的两格
+    const migrations: Assembly["migrations"] = [];
+    const handoff = {
+      busy: options.busy ?? false,
+      migrate: async (input: { promptTokens: number; handoffTokens: number; mode?: string }) => {
+        migrations.push(input);
+        // 真服务回的是 HandoffContext：插件靠它报「实际用了哪个执行者」
+        return { mode: input.mode ?? "self" };
+      },
+    } as unknown as HandoffService;
+
+    const factory = createSdkAgentFactory({
+      handoff: () => handoff,
+      isDerivedSession: () => options.derived === true,
+      onCompacted: async (context, mode) => {
+        await conversations.markCompacted(context.conversationId, mode, COMPACTED_AT);
+      },
+    });
+    const agent = await factory({
+      conversationId: CONVERSATION_ID,
+      workspaceId: WORKSPACE_ID,
+      agentId: "a1",
+      modelId: "model-1",
+      thinkingLevel: null,
+      scope,
+      history: [],
+    });
+
+    return {
+      agent,
+      migrations,
+      conversations,
+      cleanup: async () => {
+        await db.close();
+        await rm(dir, { recursive: true, force: true });
+      },
+    };
+  }
+
+  /** 装配出来的那个交接线插件（`Agent.use` 之后就在 `_plugins` 里） */
+  function autoMigrateOf(agent: ChatAgent): AutoMigratePlugin {
+    const plugins = (agent as unknown as { _plugins: unknown[] })._plugins;
+    const found = plugins.find((plugin) => plugin instanceof AutoMigratePlugin);
+    if (!found) throw new Error("装配里没有 AutoMigratePlugin");
+    return found as AutoMigratePlugin;
+  }
+
+  /** 让插件看见一次「刚跑完、用量是这么多」的 send */
+  async function afterSend(agent: ChatAgent, promptTokens: number): Promise<void> {
+    await autoMigrateOf(agent).onAfterSend({
+      agent: { lastUsage: { prompt_tokens: promptTokens, completion_tokens: 1, total_tokens: promptTokens + 1 } },
+    } as unknown as SendContext);
+  }
+
+  it("派生会话越过交接线：自己压（migrate 被调一次，mode 是 self），会话行记 auto", async () => {
+    const assembly = await assemble({ derived: true });
     try {
-      const agentsDir = join(dir, "agents");
-      await mkdir(agentsDir, { recursive: true });
-      await writeFile(
-        join(agentsDir, "a1.json"),
-        JSON.stringify({ id: "a1", name: "助手", modelId: "model-1", messages: [], custom: true }),
-        "utf-8",
-      );
+      // 交接线是 100（配置里那个模型的 tokenThresholds.handoff）：9999 远超它
+      await afterSend(assembly.agent, 9999);
 
-      // 真 Scope：配置里那个模型配了交接线 100
-      const scope = new Scope({
-        cwd: dir,
-        agentsDir,
-        getConfig: () => ({
-          endpoints: [{ id: "e1", name: "端点", baseUrl: "https://example.test/v1", apiKey: "k" }],
-          models: [
-            {
-              id: "model-1",
-              name: "模型",
-              endpointId: "e1",
-              tokenThresholds: { handoff: 100, guard: 200 },
-            },
-          ],
-        }),
+      expect(assembly.migrations).toHaveLength(1);
+      expect(assembly.migrations[0]).toMatchObject({
+        promptTokens: 9999,
+        // 与 askHandoffAfterSettle 同一个来源：生效模型上的那条线，不另算一份
+        handoffTokens: 100,
+        mode: "self",
       });
-
-      const migrations: unknown[] = [];
-      const handoff = {
-        busy: false,
-        migrate: async (input: unknown) => {
-          migrations.push(input);
-        },
-      } as unknown as HandoffService;
-
-      const factory = createSdkAgentFactory({ handoff: () => handoff });
-      const agent = await factory({
-        conversationId: CONVERSATION_ID,
-        workspaceId: WORKSPACE_ID,
-        agentId: "a1",
-        modelId: "model-1",
-        thinkingLevel: null,
-        scope,
-        history: [],
+      // 压缩标记落到会话行上：`auto`（派生会话没人看着，插件自己压）
+      expect(await assembly.conversations.get(CONVERSATION_ID)).toMatchObject({
+        compactedAt: COMPACTED_AT,
+        compactionMode: "auto",
       });
-
-      const plugins = (agent as unknown as { _plugins: unknown[] })._plugins;
-      const autoMigrate = plugins.find((plugin) => plugin instanceof AutoMigratePlugin) as
-        | AutoMigratePlugin
-        | undefined;
-      expect(autoMigrate).toBeDefined();
-
-      // 用量已经远超交接线：插件仍然不问、也不迁移（问用户的是 QuestionService）
-      await autoMigrate?.onAfterSend({
-        agent: { lastUsage: { prompt_tokens: 9999, completion_tokens: 1, total_tokens: 10000 } },
-      } as unknown as SendContext);
-      expect(migrations).toEqual([]);
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await assembly.cleanup();
+    }
+  });
+
+  it("用户会话越过交接线：插件不迁移（要不要压交还给宿主的提问路径），行上也没有标记", async () => {
+    const assembly = await assemble({ derived: false });
+    try {
+      await afterSend(assembly.agent, 9999);
+
+      // `resolveMode` 回 null = 本次不迁移：压不压由一轮结算之后的那个问题决定
+      expect(assembly.migrations).toEqual([]);
+      expect(await assembly.conversations.get(CONVERSATION_ID)).toMatchObject({
+        compactedAt: null,
+        compactionMode: null,
+      });
+    } finally {
+      await assembly.cleanup();
+    }
+  });
+
+  it("递归防护：交接回合自己产生的 onAfterSend 不再触发迁移（service.busy 让行）", async () => {
+    const assembly = await assemble({ derived: true, busy: true });
+    try {
+      // 交接回合本身就是一次 send，它的 onAfterSend 会再到这里：busy 时必须让行
+      await afterSend(assembly.agent, 9999);
+      expect(assembly.migrations).toEqual([]);
+      expect(await assembly.conversations.get(CONVERSATION_ID)).toMatchObject({
+        compactionMode: null,
+      });
+    } finally {
+      await assembly.cleanup();
     }
   });
 });
+
 
 describe("ChatRunner：接口面", () => {
   it("`RunRegistry` 本身就是服务层要的那个窄接口（只问忙不忙）", () => {

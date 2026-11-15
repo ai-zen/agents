@@ -52,6 +52,8 @@ function conversation(id: string, overrides: Partial<Conversation> = {}): Conver
     agentId: "default",
     modelId: "model-1",
     thinkingLevel: null,
+    compactedAt: null,
+    compactionMode: null,
     nameIsAuto: true,
     createdAt: 0,
     updatedAt: 0,

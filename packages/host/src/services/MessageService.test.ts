@@ -274,6 +274,8 @@ describe("MessageService.list 的取法（A12）", () => {
           agentId: "a1",
           modelId: "m1",
           thinkingLevel: null,
+          compactedAt: null,
+          compactionMode: null,
           createdAt: 1,
           updatedAt: 1,
         },

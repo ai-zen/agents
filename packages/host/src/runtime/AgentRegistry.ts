@@ -44,7 +44,13 @@
 import type { AgentNS } from "@ai-zen/agents-core";
 import type { Scope } from "@ai-zen/agents-sdk";
 
-import type { AgentBuildContext, AgentFactory, AgentStatusEvent, ChatAgent } from "./ChatRunner.js";
+import type {
+  AgentBuildContext,
+  AgentFactory,
+  AgentInboxEvent,
+  AgentStatusEvent,
+  ChatAgent,
+} from "./ChatRunner.js";
 import type { RunsView } from "./RunRegistry.js";
 
 /**
@@ -99,6 +105,15 @@ export interface AgentRegistryOptions {
    * 不注入就不订：本注册表就只做登记（测试里多数用例不关心段边界）。
    */
   onStatus?: (event: AgentStatusEvent) => void;
+  /**
+   * 往这段对话的 inbox 里入队了一条（core 的 `inbox` 事件 + 它是哪段对话）—— 装配好一个 agent
+   * 就订上它，不注入就不订。
+   *
+   * 与 `onStatus` 同一个理由订在这里：消费方（`ChatRunner`）要的是「这段对话 + 条目的来源」，
+   * 而「这段对话」只有本注册表知道。消费它的是**一条观察值**（自起段结算时报给宿主的
+   * `source`），归谁叫醒、能不能叫醒仍归 core。
+   */
+  onInbox?: (event: AgentInboxEvent) => void;
 }
 
 /** 一条登记：agent、它落在哪个 Scope 上、按什么装配事实造出来的、以及「等这一段跑完就换掉」的标记 */
@@ -119,8 +134,8 @@ interface AgentEntry {
    * `ChatRunner` 问一句 `isStale` 再 `dispose`。
    */
   stale: boolean;
-  /** 取消订在它上面的 `status` 监听（`dispose` 时摘，见 `onStatus`） */
-  offStatus?: () => void;
+  /** 取消订在它上面的 `status` / `inbox` 监听（`dispose` 时摘，见 `watch`） */
+  offWatch?: () => void;
 }
 
 /** 从那三项事实里取一份归一化的快照（`undefined` 与 `null` 同义：都是「没有」） */
@@ -142,12 +157,14 @@ export class AgentRegistry {
   private readonly createAgent: AgentFactory;
   private readonly runs: RunsView;
   private readonly onStatus?: (event: AgentStatusEvent) => void;
+  private readonly onInbox?: (event: AgentInboxEvent) => void;
 
   constructor(options: AgentRegistryOptions) {
     this.scopes = options.scopes;
     this.createAgent = options.createAgent;
     this.runs = options.runs;
     this.onStatus = options.onStatus;
+    this.onInbox = options.onInbox;
   }
 
   /**
@@ -170,33 +187,44 @@ export class AgentRegistry {
       agent,
       built: factsOf(input),
       stale: false,
-      offStatus: this.watch(input.conversationId, agent),
+      offWatch: this.watch(input.conversationId, agent),
     });
     return agent;
   }
 
   /**
-   * 订上这个 agent 的段边界（`status`），并补上「哪段对话」。
+   * 订上这个 agent 的两条观察线（`status` 段边界、`inbox` 入队），并补上「哪段对话」。
    *
-   * 载荷原样透传 `from` / `to`：本文件不对段状态做任何解释，只负责把「谁的事」说清楚。
+   * 载荷原样透传：本文件不对段状态与 inbox 条目做任何解释，只负责把「谁的事」说清楚。
    *
    * 订阅本身没有生命周期问题（`EventBus` 挂在 agent 对象上，agent 没了监听也一起没了），
    * 摘的原因不是泄漏而是「别叫到一个已经不在登记表里的 agent 上」—— 它可能正在被换掉，
    * 而消费方（`ChatRunner`）已经按「这段对话现在是新那个」在数现场了。
    */
   private watch(conversationId: string, agent: ChatAgent): (() => void) | undefined {
+    const offs: Array<() => void> = [];
     const onStatus = this.onStatus;
-    if (!onStatus) return undefined;
-    const forward = (ctx: { from: AgentNS.RunStatus; to: AgentNS.RunStatus }): void => {
-      onStatus({ conversationId, agent, from: ctx.from, to: ctx.to });
-    };
-    const handle = agent.events.on("status", forward);
-    if (typeof handle === "function") return handle as () => void;
-    if (typeof handle === "object" && handle !== null) {
-      const disposable = handle as { dispose?: () => void };
-      if (typeof disposable.dispose === "function") return () => disposable.dispose!();
+    if (onStatus) {
+      const off = toUnsubscribe(
+        agent.events.on("status", (ctx: { from: AgentNS.RunStatus; to: AgentNS.RunStatus }) => {
+          onStatus({ conversationId, agent, from: ctx.from, to: ctx.to });
+        }),
+      );
+      if (off) offs.push(off);
     }
-    return undefined;
+    const onInbox = this.onInbox;
+    if (onInbox) {
+      const off = toUnsubscribe(
+        agent.events.on("inbox", (ctx: { entry: AgentNS.InboxEntry }) => {
+          onInbox({ conversationId, agent, entry: ctx.entry });
+        }),
+      );
+      if (off) offs.push(off);
+    }
+    if (offs.length === 0) return undefined;
+    return () => {
+      for (const off of offs) off();
+    };
   }
 
   /**
@@ -307,6 +335,21 @@ export class AgentRegistry {
     const entry = this.entries.get(conversationId);
     if (!entry) return;
     this.entries.delete(conversationId);
-    entry.offStatus?.();
+    entry.offWatch?.();
   }
+}
+
+/**
+ * `events.on` 的返回值归一成「取消订阅」一个函数。
+ *
+ * 两种形态都认（取消函数 / 可 `dispose` 的句柄）；认不出来就当作订不上（返回 `undefined`）——
+ * 那不该是错误，只是一个观察点没接上。
+ */
+function toUnsubscribe(handle: unknown): (() => void) | undefined {
+  if (typeof handle === "function") return handle as () => void;
+  if (typeof handle === "object" && handle !== null) {
+    const disposable = handle as { dispose?: () => void };
+    if (typeof disposable.dispose === "function") return () => disposable.dispose!();
+  }
+  return undefined;
 }

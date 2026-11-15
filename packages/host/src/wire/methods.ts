@@ -13,6 +13,7 @@ import type { Language } from "../i18n/index.js";
 import type {
   AssetRef,
   AttachmentOutcome,
+  CompactionMode,
   ContextState,
   ConversationState,
   FolderFact,
@@ -323,6 +324,15 @@ export interface ConversationSummary {
   run: { status: RunState["status"]; startedAt: string | null } | null;
   /** 是否有问题挂着没答（PRD F-I9） */
   hasPendingQuestion: boolean;
+  /**
+   * 这段会话最近一次压缩的时刻（ISO 8601）；省略 = 从来没压过。
+   *
+   * 压缩的唯一痕迹从前只是消息上的 `omit` 位 + 一条交接断点消息 —— 那是「压过」的结果，
+   * 说不出「谁促成的」。与 `compactionMode` 合起来才答得出：什么时候、自动还是手动。
+   */
+  compactedAt?: string;
+  /** 那次压缩是怎么来的（与 `compactedAt` 成对出现，取值见 `CompactionMode`） */
+  compactionMode?: CompactionMode;
 }
 
 /**

@@ -172,6 +172,10 @@ i18n/         文案（en 基准 / zh）
 
 **`hidden` 的含义就是「这条不给人看」**（core `AgentNS.Message.hidden`）：它仍参与模型上下文（`ChatRunner.reconcile` 取历史时显式带上），但 `message.list` 默认不返回、侧栏条数与删除代价都不数它；客户端按这个字段决定不展示。临时对话（`TransientRunner`）不落库，同一条 cwd 消息只拼在内存的发送内容里（`agent.append` 一条 `hidden` 消息）。
 
+**压缩按「会话类型」归一，不按轮次来源**：交接线插件（`AutoMigratePlugin`，装在 `ChatRunner.createSdkAgentFactory`）的 `resolveMode` 只答一件事 —— 这一段是不是**派生会话**（平级会话开出来的子会话，判据是 `PeerSessionService.isPeerSession`，派生关系仍只活在进程内记录里、不落库）。派生会话没人盯着它，越线就自己压（`"self"`，不弹任何问题）；用户会话回 `null` = 本次不迁移，要不要压交还给宿主：一轮结算之后由 `app.ts` 的 `askHandoffAfterSettle` 在**用户自己那一轮**问，答了才压。于是「非 `user` 来源不问」那条守卫只管「问」这件事，不再顺手把派生会话的压缩也掐掉；派生会话一律不问（哪怕用户亲自在子会话里说话那一轮）。两条路径各自在会话行上留标记（`compactedAt` / `compactionMode`）：插件压的记 `auto`，用户答完之后压的（`HandoffService` 开新对话那一步）记 `manual`。
+
+**自起段报的来源就是叫醒它的那条条目**：`deliver()` 叫醒的那一段结算时，`TurnSettledFacts.source` 报的是那条 `InboxEntry.source`（`AgentRegistry.onInbox` → `ChatRunner.noteInbox` 记最近一条），不再是笼统的 `"inbox"` —— 「这一段是被谁叫起来的」只有投递方答得出，交接线那条判断（`source === "user"` 才问）也就跟着准了。
+
 **没有空闲计时**：Scope 建出来就一直在，直到有人显式 `dispose(id)`（Workspace 被删）或
 `disposeAll()`（进程收尾）。L4 说的「10 分钟无活动」与 D28 说的「Scope 空闲 10 分钟」曾共用
 唯一那个计时器，那个计时器已撤掉 —— 不再有「谁都不用了所以可以拆」这种判断，因为
@@ -208,12 +212,12 @@ const [found, written] = await db.tx((q) => [
 
 回调里的 `all` / `get` / `run` 只**登记**语句（拿到的是带下标的凭据），回调返回后整批一次性送进 worker：`BEGIN IMMEDIATE` → 按登记顺序逐条执行 → `COMMIT`，任一条失败整批 `ROLLBACK`。结果按回调返回的凭据（数组或单条）对回调用方。这个形状的边界是：**读到的值回不到 JS 里去决定下一条写什么**（那需要 worker 等主线程）；需要按读到的值分支的场合，把条件写进 SQL（裁定 R31）。回调自己抛错时批次还没发出去，库里没有改动。
 
-表骨架（`src/storage/migrations.ts`，眼下只有 v1）：
+表骨架（`src/storage/migrations.ts`，眼下到 v2）：
 
 | 表 | 关键列 |
 |---|---|
 | `workspaces` | `id`、`name`、`cwd`（不可变、`UNIQUE`）、`createdAt` —— 没有 `updatedAt` 列（R34） |
-| `conversations` | `id`、`workspaceId`（级联删）、`name`、`nameIsAuto`（0/1，DEFAULT 1，R35）、`pinned`、`agentId`（NOT NULL）、`modelId`（NOT NULL，R18，可改）、`thinkingLevel`（可空：空 = 跟随助手定义）、`createdAt`、`updatedAt`；索引 `(workspaceId, pinned DESC, createdAt DESC)` |
+| `conversations` | `id`、`workspaceId`（级联删）、`name`、`nameIsAuto`（0/1，DEFAULT 1，R35）、`pinned`、`agentId`（NOT NULL）、`modelId`（NOT NULL，R18，可改）、`thinkingLevel`（可空：空 = 跟随助手定义）、`compactedAt` / `compactionMode`（v2 加，都可空：空 = 从来没压过；`auto` = 派生会话自动压，`manual` = 用户答完之后压）、`createdAt`、`updatedAt`；索引 `(workspaceId, pinned DESC, createdAt DESC)` |
 | `messages` | `id`（宿主分配，请求发出前就有）、`conversationId`（级联删）、`seq`（与对话内唯一）、`role`、`status`、`omit`、`content`(json)、`data`(json)、`searchText`、`parentToolCallId`（可空，R37）、`createdAt`、`updatedAt`；索引 `(conversationId, seq)`、`(parentToolCallId)` |
 | `assets` | `id`、`name`、`path`、`mime`、`bytes`、`sha256`（`NOT NULL`、**`UNIQUE` = 全局去重**）、`width` / `height`（可空：落定时按 PNG（IHDR）/ JPEG（SOF 段）的文件头解出，量不到为 `NULL`）、`createdAt`。**没有** `conversationId` / `messageId` 两列：归属在 `conversation_assets`，一张图可以被好几段对话引用 |
 | `conversation_assets` | `conversationId`（级联删）、`messageId`（级联删）、`assetId`（**`ON DELETE RESTRICT`**：还有引用时物理删不掉）、`createdAt`；`UNIQUE (messageId, assetId)`，索引 `(assetId)`、`(conversationId)`。「几张会话引用了它」= `COUNT(DISTINCT conversationId)` |
@@ -251,7 +255,7 @@ const [found, written] = await db.tx((q) => [
 
 **边流边写**：运行时以内存里的消息为真相，同一条消息行按节流 upsert；装载/崩溃恢复复用 core 的 `reconcileAbortedToolRounds(fill)` + `reconcileAbortedMessages(keep)`，所以 `status` / `omit` 两列必须落盘（PRD D15）。**排队落地的用户消息是这条的唯一例外**：它在**落地那一刻**就写第一笔（`persistLandedQueued`），否则 `seq` 会排到它引出的回答之后 —— 因果见 §4 的「排队消息的首次写入」。`persistFinal` 对所有消息都还在，只是对这些消息不再是首次写入。
 
-**迁移**：`meta.schemaVersion` + 顺序迁移脚本，启动时逐级在事务里跑（结构改动与版本号同一次提交）；不识别任何旧数据（L1）。R14/R18 等结构裁定直接落在 v1 的建表语句里，没有追加 v2（这套表结构还没随版本发出去，R32）。
+**迁移**：`meta.schemaVersion` + 顺序迁移脚本，启动时逐级在事务里跑（结构改动与版本号同一次提交）；不识别任何旧数据（L1）。R14/R18 等结构裁定直接落在 v1 的建表语句里（这套表结构还没随版本发出去，R32）。**v2 是第一条真正的追补条目**：它只用 `ALTER TABLE conversations ADD COLUMN` 加 `compactedAt` / `compactionMode` 两列，v1 的建表语句一个字没改 —— 已经装上升过 v1 的库不会重跑旧条目，改旧条目会让两台机器的表结构悄悄分叉；新加的列对旧库与旧数据都成立（NULL = 从来没压过，正是旧数据的真相）。
 
 **库之外的两份文件**：`config.json`（配置唯一真相，`HostPaths.configFile`）与 `host.json`（宿主自己的设置：端口那一档，`HostPaths.hostConfigFile`）；日志的落点由 `HostPaths.logsDir` 给出，详见 §2。
 
@@ -474,3 +478,4 @@ afterAll(async () => { await db.close(); await rm(dir, { recursive: true, force:
 | 2026-11-15 | 运行器补「跑中入队」：§4 的一轮时序拆成两条受理路（跑中 → `ChatRunner.enqueue` → core `pushInbox`；否则 `RunRegistry.start`，`busy` 只剩兜底），补四个取件点（`high` / `low` / `onInnerLoopsEnd` 之后 / `onAfterSend` 之后）与「判能不能排与推之间不允许有 await」「只有真插进条目才续圈」两条不变量；补「排队消息的首次写入必须在落地那一刻」（`seq` 的因果，`persistLandedQueued`）。§5 的「边流边写」注明这条例外，读数表下方补三条读数（`listByConversation` / `listDelegated` / `countByConversation`）的加减关系。`ConversationRuntimePort` 从两件事变三件（多一个可选的 `runState`，`conversation.list` 的 `run` 用它） |
 | 2026-11-15 | 取件点收成一个：core 的 inbox 取件只在 `runLoops()` 的内循环末（`high` 先取，`!needContinue` 时才问 `low`），段首的落地改由 `deliver()` 的 `flushInbox()` 负责（`flushInbox` 只有这一个调用方）；`abort()` 不再清空 inbox（要作废排队得显式 `clearInbox()`），取件判据从 `runAborted` 换成 `runStatus === "running"`。宿主侧的 `TurnSession.enqueueState` / `waitEnqueueable` / `QUEUE_READY_TIMEOUT_MS` 一并不在，装配期改用 `TurnSession.pending` 数组缓冲、`attach()` 那一刻冲进 inbox。`RunState.inboxPending` 换成 `RunState.inbox`（`InboxItem[]`：`messageId` / `source` / `createdAt` / `preview`，顺序即取件顺序，计数取 `inbox.length`），客户端据此在输入框上方回显排队区。一处有意接受的退化：收尾钩子（`onInnerLoopsEnd` / `onAfterSend`）期间投进来的条目不再被带走，只由 `ChatRunner.settle()` 的 `inbox-leftover` 告警出声 |
 | 2026-11-15 | **平级会话阶段 1**（PRD D33 / F-C16–F-C19）：§3 对象图的服务从 15 个变 16 个（新增 `PeerSessionService`：建另一段会话 → 记进程内记录 → 跑完结果投回并发起者），§1 新增 **A14**（编排元数据不落库、投递复用 `ChatRunner.enqueue` / `run` 两条现成路径、「谁在调我」用 `WeakMap<agent, conversationId>` 记、不给 core 的 `Agent` 加字段），§8 的 SDK 边界补 `PeerSessionsScopePlugin`（能力从端口进来，不给端口就不产出）。§9 登记两条缺口：阶段 2/3 未做、重启后编排元数据消失（退化成普通会话）。另一处口径纠正：投递的 `source` 就是可读 label 原样（不再套「会话「…」」），来源注释仍由 core 的 `inboxEntryContent` 统一生成 —— 落库那份与发给模型那份一致（`withSourceNote` 在 `run()` 与 `TurnSession.enqueue` 两处各过一道，带 `storedContent` 的入队条目不再分叉） |
+| 2026-11-15 | **压缩补成常驻 agent 能用的样子**（§4 / §5）：交接线插件真的装上并按**会话类型**归一 —— 派生会话（`PeerSessionService.isPeerSession`，仍是进程内记录）越线就自己压（`resolveMode` 回 `"self"`，不弹问题），用户会话回 `null` 把「要不要压」交还给宿主的提问路径，`askHandoffAfterSettle` 因此多一条派生会话守卫（「非 `user` 来源不问」只管「问」）。`AutoMigratePlugin` 多一个 `onMigrated` 回声（迁移**成功之后**才叫，报实际执行者），宿主用它写 `compactions…`；`HandoffService` 开新对话那一步写 `manual`。**迁移 v2**：`conversations` 加 `compactedAt` / `compactionMode`（都可空，v1 的建表语句不动），`ConversationSummary` / `ConversationState` 带上这两格（可选，省略 = 没压过）。观测值一处修正：自起段结算报的 `TurnSettledFacts.source` 改成叫醒它的那条 inbox 条目的 `source`（`AgentRegistry.onInbox` → `ChatRunner.noteInbox`），不再是固定的 `"inbox"` |（PRD D33 / F-C16–F-C19）：§3 对象图的服务从 15 个变 16 个（新增 `PeerSessionService`：建另一段会话 → 记进程内记录 → 跑完结果投回并发起者），§1 新增 **A14**（编排元数据不落库、投递复用 `ChatRunner.enqueue` / `run` 两条现成路径、「谁在调我」用 `WeakMap<agent, conversationId>` 记、不给 core 的 `Agent` 加字段），§8 的 SDK 边界补 `PeerSessionsScopePlugin`（能力从端口进来，不给端口就不产出）。§9 登记两条缺口：阶段 2/3 未做、重启后编排元数据消失（退化成普通会话）。另一处口径纠正：投递的 `source` 就是可读 label 原样（不再套「会话「…」」），来源注释仍由 core 的 `inboxEntryContent` 统一生成 —— 落库那份与发给模型那份一致（`withSourceNote` 在 `run()` 与 `TurnSession.enqueue` 两处各过一道，带 `storedContent` 的入队条目不再分叉） |

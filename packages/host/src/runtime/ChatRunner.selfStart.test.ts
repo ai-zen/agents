@@ -56,6 +56,8 @@ function makeConversation(): Conversation {
     agentId: "default",
     modelId: "model-1",
     thinkingLevel: null,
+    compactedAt: null,
+    compactionMode: null,
     pinned: false,
     nameIsAuto: true,
     createdAt: 0,

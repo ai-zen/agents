@@ -457,6 +457,24 @@ describe("交接之后开新对话（D18）", () => {
     expect(result.conversation.id).toBe(conversationId);
   });
 
+  it("压缩标记落在被压的那一段上：`new_conversation` 记 manual，`document_only` 不记", async () => {
+    const service = harness.buildService({ execute: sdkExecutor([]) });
+
+    // 只产文档：上下文一个字都没动，不算压缩
+    await service.start({ conversationId, mode: "summary", then: "document_only" });
+    expect(await harness.conversations.get(conversationId)).toMatchObject({
+      compactedAt: null,
+      compactionMode: null,
+    });
+
+    // 答完之后的那条压法（D18：旧对话被压下去、开新对话）：行上记 manual + 一个时刻
+    // （时刻取宿主时钟；本用例里两个服务各带一个假时钟，所以只断言「记了、是个时刻」）
+    await service.start({ conversationId, mode: "summary", then: "new_conversation" });
+    const row = await harness.conversations.get(conversationId);
+    expect(row?.compactionMode).toBe("manual");
+    expect(typeof row?.compactedAt).toBe("number");
+  });
+
   it("只产文档不换会话（F-D4）", async () => {
     const service = harness.buildService({ execute: sdkExecutor([]) });
     const result = await service.start({ conversationId, mode: "summary", then: "document_only" });

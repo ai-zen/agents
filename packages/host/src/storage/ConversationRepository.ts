@@ -5,11 +5,21 @@
  * 所以 `orderBy` 里没有 `updatedAt`。
  */
 
+import type { CompactionMode } from "../wire/states.js";
 import type { Database } from "./Database.js";
 import type { Conversation, ConversationCreateInput, ConversationRow } from "./types.js";
 
 /** 读写路径共用的列清单（顺序与 `toConversation` 的形状一致） */
 const COLUMNS =
+  "id, workspaceId, name, nameIsAuto, pinned, agentId, modelId, thinkingLevel, compactedAt, compactionMode, createdAt, updatedAt";
+
+/**
+ * 新建对话时显式写的那几列。
+ *
+ * 不复用 `COLUMNS`：压缩那两列（v2 加的）在新建时一定是 NULL（新会话没压过），把 NULL 写进
+ * 列清单只会让占位符与入参两处各自多两项、还得对着数。让它们走表的缺省值更省事，也更准。
+ */
+const INSERT_COLUMNS =
   "id, workspaceId, name, nameIsAuto, pinned, agentId, modelId, thinkingLevel, createdAt, updatedAt";
 
 /** 列表/搜索统一用这个顺序：置顶在前，再按创建时间倒序（PRD D13） */
@@ -38,7 +48,7 @@ export class ConversationRepository {
   async create(input: ConversationCreateInput): Promise<void> {
     const updatedAt = input.updatedAt ?? input.createdAt;
     await this.db.run(
-      `INSERT INTO conversations (${COLUMNS}) VALUES (?, ?, ?, 1, 0, ?, ?, ?, ?, ?)`,
+      `INSERT INTO conversations (${INSERT_COLUMNS}) VALUES (?, ?, ?, 1, 0, ?, ?, ?, ?, ?)`,
       [
         input.id,
         input.workspaceId,
@@ -131,6 +141,27 @@ export class ConversationRepository {
     const result = await this.db.run(
       "UPDATE conversations SET thinkingLevel = ?, updatedAt = ? WHERE id = ?",
       [thinkingLevel, updatedAt, id],
+    );
+    return result.changes;
+  }
+
+  /**
+   * 记一次压缩（两条压缩路径各自写，不互相覆盖别的列）。
+   *
+   * 为什么不动 `updatedAt`：那一列是「最后一次结构性变化」的时间（改名 / 换模型 / 改档位），
+   * 压缩是上下文层的事，而且它总是紧跟着一轮跑完发生 —— 写进去只会让「最后修改」变成
+   * 「最后一次说话」，那不是这一列的意思。
+   *
+   * @returns 改动的行数（对话已经不存在时是 0，不是错）
+   */
+  async markCompacted(
+    id: string,
+    mode: CompactionMode,
+    compactedAt: number,
+  ): Promise<number> {
+    const result = await this.db.run(
+      "UPDATE conversations SET compactedAt = ?, compactionMode = ? WHERE id = ?",
+      [compactedAt, mode, id],
     );
     return result.changes;
   }

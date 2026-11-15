@@ -198,6 +198,19 @@ export class PeerSessionService implements PeerSessionPort {
   }
 
   /**
+   * 这段会话是不是「派生会话」—— 即由一段对话开出来的子会话（本进程内还认得的那一段）。
+   *
+   * 判据只有 `records` 这一处（进程内记录，不落库）：重启之后子会话就是一段普通会话，
+   * 这里会答 `false`，它于是回到「用户会话」那一套（越线时问用户）。
+   *
+   * 宿主拿它做两件事：① 装配 agent 时决定压缩方式（派生会话自动压，用户会话问用户）；
+   * ② 一轮结算之后决定要不要挂交接问题（派生会话不问）。
+   */
+  isPeerSession(conversationId: string): boolean {
+    return this.records.has(conversationId);
+  }
+
+  /**
    * 开一段平级会话：建会话 → 落真行 → 开跑 → **立刻**回 `{ sessionId, label }`。
    *
    * 两种失败是**结构化拒绝**（返回结果，不抛错）：调用方自己已经是平级会话（`depth_exceeded`，

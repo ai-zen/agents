@@ -13,6 +13,7 @@
  */
 
 import type { AgentNS } from "@ai-zen/agents-core";
+import type { CompactionMode } from "../wire/states.js";
 
 /** 消息状态，取值与 core 的 `AgentNS.MessageStatus` 对齐 */
 export type MessageStatus = "pending" | "writing" | "completed" | "error" | "aborted" | "unknown";
@@ -55,6 +56,15 @@ export interface ConversationRow {
    * 对应不同参数），换模型时这一列被清空，展开只在装配 agent 那一刻做。
    */
   thinkingLevel: string | null;
+  /**
+   * 这段会话上一次压缩的时刻（毫秒）；`null` = 从来没压过。
+   *
+   * 压缩只动 `messages`（`omit` 位 + 交接断点），会话行上原本一点痕迹也没有 —— 于是「自动压的
+   * 还是用户答完压的」既不能区分也无从观测。这两列就是那个痕迹，由两条压缩路径各自写。
+   */
+  compactedAt: number | null;
+  /** 上一次压缩是谁促成的（`null` = 没压过）：`auto` = 派生会话自动压，`manual` = 用户答完问题后压 */
+  compactionMode: CompactionMode | null;
   createdAt: number;
   /** 最后一次结构性变化的时间；排序只看 pinned + createdAt，不看它（D13） */
   updatedAt: number;

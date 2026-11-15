@@ -203,6 +203,24 @@ export const MIGRATIONS: Migration[] = [
        END`,
     ],
   },
+  {
+    /**
+     * v2：会话上的压缩标记。
+     *
+     * 压缩从前只留两处痕迹：消息上的 `omit` 位与一条交接断点消息 —— 那是「压过」的结果，
+     * 说不出「什么时候压的、自动还是手动」。两列补上这个事实：`compactedAt` 是时刻（可空），
+     * `compactionMode` 是 `"auto"`（派生会话自动压）/ `"manual"`（用户答完交接问题后压）。
+     *
+     * 为什么是 `ALTER TABLE ADD COLUMN` 而不是改 v1 的建表语句：已经装上升过 v1 的库不会重跑
+     * 旧条目，改旧条目会让两台机器的表结构悄悄分叉（见本文件开头的注释）。加法两列对所有旧库
+     * 都成立，且新列默认 NULL（= 从来没压过）刚好就是旧数据的真相。
+     */
+    version: 2,
+    statements: [
+      `ALTER TABLE conversations ADD COLUMN compactedAt INTEGER`,
+      `ALTER TABLE conversations ADD COLUMN compactionMode TEXT`,
+    ],
+  },
 ];
 
 /**

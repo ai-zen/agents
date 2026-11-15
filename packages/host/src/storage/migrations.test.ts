@@ -75,7 +75,7 @@ describe("migrate", () => {
     await migrate(db);
 
     const meta = new MetaRepository(db);
-    expect(await meta.getSchemaVersion()).toBe(1);
+    expect(await meta.getSchemaVersion()).toBe(MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 1);
     expect((await meta.getState())?.createdAt).toBeGreaterThan(0);
     // 建库时间就是这一跳写的（不是 0、也不是未来时间）
     expect((await meta.getState())?.createdAt).toBeGreaterThanOrEqual(before);
@@ -152,6 +152,49 @@ describe("migrate", () => {
     const parentToolCallId = messageColumns.find((column) => column.name === "parentToolCallId");
     // 可空：顶层消息没有父工具调用
     expect(parentToolCallId).toMatchObject({ notnull: 0, dflt_value: null });
+  });
+
+  it("v2：新库直接到最新版本，压缩两列存在且可空", async () => {
+    const db = ownDatabase("fresh-v2.db");
+    await migrate(db);
+
+    expect(await new MetaRepository(db).getSchemaVersion()).toBe(2);
+    const columns = await db.all<{ name: string; notnull: number; dflt_value: string | null }>(
+      "PRAGMA table_info('conversations')",
+    );
+    for (const name of ["compactedAt", "compactionMode"]) {
+      const column = columns.find((candidate) => candidate.name === name);
+      // 可空、无缺省：NULL 就是「从来没压过」
+      expect(column).toMatchObject({ notnull: 0, dflt_value: null });
+    }
+  });
+
+  it("v2：已经升过 v1 的库跑一次 upgrade，两列补上且旧行是 NULL", async () => {
+    const db = ownDatabase("upgrade-v1-to-v2.db");
+    // 只跑 v1 那一条，模拟「上一版已经装上升过级的库」
+    const v1 = MIGRATIONS.find((migration) => migration.version === 1);
+    if (!v1) throw new Error("MIGRATIONS 里没有 v1");
+    await db.tx((tx) => {
+      for (const statement of v1.statements) tx.run(statement);
+      tx.run("INSERT INTO meta (id, schemaVersion, createdAt) VALUES (1, 1, ?)", [1]);
+    });
+    // 旧库里的一行（v1 的表结构里没有压缩那两列）
+    await db.run(
+      "INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目一', '/tmp/v1', 1)",
+    );
+    await db.run(
+      `INSERT INTO conversations (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
+       VALUES ('c1', 'w1', '旧对话', 0, 'a1', 'm1', 2, 2)`,
+    );
+
+    await migrate(db);
+
+    expect(await new MetaRepository(db).getSchemaVersion()).toBe(2);
+    const row = await db.get<{ compactedAt: number | null; compactionMode: string | null }>(
+      "SELECT compactedAt, compactionMode FROM conversations WHERE id = 'c1'",
+    );
+    // 旧数据的真相就是「没压过」：两列都是 NULL
+    expect(row).toEqual({ compactedAt: null, compactionMode: null });
   });
 
   it("迁移后仍然是 WAL 且外键约束是开着的", async () => {

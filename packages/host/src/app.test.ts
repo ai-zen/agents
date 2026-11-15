@@ -1153,6 +1153,49 @@ describe("到交接线才提问（R59 / F-D2）", () => {
     // 用量（1500）明明越过了交接线（1000），但这一轮不是用户叫起来的：不挂问题
     expect((await callMethod(app, "question.list", { state: "pending" })).questions).toEqual([]);
   });
+
+  it("派生会话不问：它自己会压（插件的那条路），问题这套不介入", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture, {
+      createAgent: async () =>
+        new FakeAgent([
+          {
+            deltas: [{ content: "查到了" }],
+            usage: { prompt_tokens: 1500, completion_tokens: 5, total_tokens: 1505 },
+          },
+        ]),
+    });
+    const { workspace } = await callMethod(app, "workspace.create", {
+      cwd: fixture.workspaceDir.path,
+    });
+    const parent = await seedConversation(app, workspace.id);
+
+    // 一段真的派生会话：父对话那边的模型开了一段（`PeerSessionService` 的进程内记录就是判据）
+    const caller = new FakeAgent();
+    app.peerSessions.bind(caller, parent.id);
+    const created = await app.peerSessions.create({
+      caller: caller as unknown as Parameters<typeof app.peerSessions.create>[0]["caller"],
+      prompt: "去把这件事查清楚",
+    });
+    if (!created.ok) throw new Error(`派生会话没开成：${created.reason}`);
+    // 那一段的第一轮由父对话投递唤醒（`source` 是「父对话」），结算时本来就不会问
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if (app.chatRunner.turn(created.sessionId) === undefined) break;
+      await wait(10);
+    }
+
+    // 用户本人接着在这段派生会话里说话：这一轮的 source 就是 `"user"`。
+    // 不问的判据是**会话类型**（派生会话一律自动压），不是这一轮的来源。
+    const turn = await app.chatRunner.run({
+      conversationId: created.sessionId,
+      input: { content: "接着说" },
+    });
+    await turn.done;
+    await wait(50);
+
+    // 用量（1500）明明越过了交接线（1000），这段派生会话也不挂问题
+    expect((await callMethod(app, "question.list", { state: "pending" })).questions).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------

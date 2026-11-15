@@ -544,6 +544,23 @@ export interface ConversationState {
   usage: UsageSnapshot;
   /** 挂在这段对话上的问题（含已回答/已过期的，客户端按状态决定要不要显示） */
   questions: QuestionView[];
+  /**
+   * 这段对话最近一次压缩的时刻（ISO 8601）；省略 = 从来没压过。
+   *
+   * 与 `compactionMode` 成对出现：光有时刻说不出「是谁决定压的」，光有方式说不出「什么时候」。
+   */
+  compactedAt?: string;
+  /** 那次压缩是怎么来的：`auto` = 派生会话自动压，`manual` = 用户答完交接问题之后压 */
+  compactionMode?: CompactionMode;
   /** 这份快照的时间 */
   updatedAt: string;
 }
+
+/**
+ * 一次压缩是谁促成的（`conversations.compactionMode` 的取值）。
+ *
+ * 两条路径各自落一种，于是「这段会话为什么被压了」在数据上答得出来：
+ *   - `auto`：派生会话（平级会话开出来的那一段）越过交接线，`AutoMigratePlugin` 自己压的；
+ *   - `manual`：用户在交接问题上答了「自交接 / 独立摘要」，宿主答完才压的。
+ */
+export type CompactionMode = "auto" | "manual";

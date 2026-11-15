@@ -42,6 +42,7 @@ import type { Conversation, WorkspaceRow } from "../storage/types.js";
 import type { ConversationRepository } from "../storage/ConversationRepository.js";
 import { HostError } from "../wire/errors.js";
 import type {
+  CompactionMode,
   ConversationCreateParams,
   ConversationCreateResult,
   ConversationGetParams,
@@ -96,6 +97,13 @@ export interface HandoffConversationPort {
    * 交接开的新对话第一条就是宿主写的摘要，于是它（与普通对话的首发一样）马上就有行。
    */
   ensurePersisted(conversationId: string): Promise<unknown>;
+  /**
+   * 把「这段会话被压过」记到会话行上（`compactedAt` / `compactionMode`）。
+   *
+   * 交接开新对话（D18）就是这条路径：它与派生会话的自压（插件里的 `auto`）是两种来源，
+   * 所以标记要写得能区分（这里一律 `manual`）。
+   */
+  markCompacted(conversationId: string, mode: CompactionMode): Promise<void>;
 }
 
 /** 取消交接（用户按了取消）。与「交接失败」分开：前者回到交接前，后者要说明原因。 */
@@ -451,6 +459,13 @@ export class HandoffService {
     // 摘要写得进库的前提是这段对话已经有行了（R56：消息的外键指向 `conversations`）
     await this.conversationViews.ensurePersisted(newConversationId);
 
+    // 旧的那段被压下去了：会话行上记一笔（`manual`）。这一步顺手推了旧对话的
+    // `conversation.changed`（`settings_changed`），所以下面不再为它单独推一条。
+    // 写失败不影响已经做完的交接（文档在、新对话也开了）：标记是观测事实，不是交接的一步。
+    await this.conversationViews
+      .markCompacted(conversation.id, "manual")
+      .catch(() => undefined);
+
     const summary = await this.excerpt(document.path);
     const content = render(language, "handoff.newConversationSummary", {
       path: document.path,
@@ -479,13 +494,6 @@ export class HandoffService {
       workspaceId: conversation.workspaceId,
       change: "created",
       messageCount: 1,
-      at: iso(createdAt),
-    });
-    this.emit?.("conversation.changed", {
-      conversationId: conversation.id,
-      workspaceId: conversation.workspaceId,
-      change: "settings_changed",
-      messageCount: null,
       at: iso(createdAt),
     });
     return newConversationId;

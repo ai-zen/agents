@@ -85,9 +85,31 @@ describe("ConversationRepository", () => {
       modelId: "model-1",
       // 新建的会话不选档位：跟随助手定义上的那份参数
       thinkingLevel: null,
+      // 新会话没压过：压缩那两列要等某一次真正的压缩才写（见 markCompacted）
+      compactedAt: null,
+      compactionMode: null,
       createdAt: 500,
       updatedAt: 500,
     });
+  });
+
+  it("压缩标记：写一次就落两列，且不动 updatedAt（压缩不是结构性变化）", async () => {
+    await repo.create(input({ id: "c1", workspaceId: "w1", name: "原名", createdAt: 100 }));
+    expect(await repo.markCompacted("c1", "auto", 900)).toBe(1);
+
+    expect(await repo.get("c1")).toMatchObject({
+      compactedAt: 900,
+      compactionMode: "auto",
+      // 结构那一列还是创建时那个
+      updatedAt: 100,
+    });
+
+    // 再压一次（手动）就盖成新的那一份：只留最近一次的事实
+    await repo.markCompacted("c1", "manual", 1500);
+    expect(await repo.get("c1")).toMatchObject({ compactedAt: 1500, compactionMode: "manual" });
+
+    // 对话不存在时是 0 行，不是错
+    expect(await repo.markCompacted("c-missing", "auto", 1)).toBe(0);
   });
 
   it("换模型写这一列并顺手清掉档位；选档位只动那一列", async () => {
