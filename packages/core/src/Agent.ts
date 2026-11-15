@@ -406,6 +406,20 @@ export class Agent extends AgentContext {
    * `woke` 只是观测（「这次是不是我把它叫醒的」）：调用方可以据此决定要不要等它跑；它不是
    * 投递方该拿来控制 agent 的开关，也不参与任何内部决策。
    *
+   * ## 唤醒这一拍的事件次序：`status` 先于 `message`
+   *
+   * 一次唤醒对外是两件事：`status`（这一段开始了）与 `message`（队列里的那条落地成 User
+   * 消息）。次序是 **`status` 在前**。
+   *
+   * 为什么：想知道「这一段开始了」只有 `status` 一条路，而「这一段里发生了什么」是 `message`
+   * 一条条报的。谁按 `status → running` 建**这一段的现场**（宿主就是这么做的：建现场、订上
+   * `message`、开始落库），下面那条刚落地的 User 消息才有主；反过来的话，那条消息的广播发生
+   * 在还没有人认领它的时候，它就永久错过了那一段 —— 既不落库，也不进那一轮的产出。
+   *
+   * 于是本方法把「起段」拆成两拍：先 `setRunStatus("running")`（发 `status`），再
+   * `flushInbox()`（发 `message`），最后才进段体。`send()` 那一路仍是老次序（校验 → 置位 →
+   * 段体），两条路对外都是「`status` 先于这一段的第一条 `message`」。
+   *
    * ## 为什么唤醒**之前**就把队列落地（`flushInbox`）
    *
    * 对话是被这条内容唤醒的，那「唤醒」与「模型看得见这条」就必须是同一拍。`run()` 的第一轮
@@ -415,19 +429,30 @@ export class Agent extends AgentContext {
    */
   deliver(input: AgentNS.InboxInput): AgentNS.DeliveryReceipt {
     const entry = this.enqueueInbox(input);
-    // 先算「能不能叫醒」，再叫醒：`run()` 会在同步段里把 `runStatus` 改成 running，
+    // 先算「能不能叫醒」，再叫醒：下面那句 `setRunStatus("running")` 会把 `runStatus` 改掉，
     // 晚了再算就永远是 false。
     const parked = this.runStatus === "idle" || this.runStatus === "terminated";
-    // 不判 `messages` 空不空：紧跟着的 `flushInbox()` 会先 append 成 `Message.User`，`run()`
-    // 那句「至少要有一条消息」的校验自然过。真想「空对话被投递开段」是调用方的特殊目的，
-    // 不该在这里拦。
+    // 不判 `messages` 空不空：紧跟着的 `flushInbox()` 会先 append 成 `Message.User`，这一段至少
+    // 有一条消息可发（`run()` 那句「至少要有一条消息」的校验属于 `send()` 那一路；这里不经过
+    // 它，也就不必再过一遍）。真想「空对话被投递开段」是调用方的特殊目的，不该在这里拦。
     if (parked && this.sendStatus === "idle") {
-      // 落地必须排在 `run()` 之前（见上文），但**不能**提到「叫不叫醒」的判定之前：没叫醒的
-      // 那条（段在跑 / 受理在途）要留给那一段自己的取件点按优先级带走，
-      // 这里不许抢跑 —— 抢了就等于「跑中的 high 被当成唤醒内容落进当前那一圈」，还丢了它
-      // 「先于 low」的次序。
+      // 三拍的次序是硬契约（见方法头「唤醒这一拍的事件次序」）：宣告这一段开始了 → 队列落地 →
+      // 跑。宣告排在落地之前，按 `status` 建现场的人才接得住紧接着落地的那条 User 消息。
+      this.setRunStatus("running");
+      // 落地排在段体之前，但**不能**提到「叫不叫醒」的判定之前：没叫醒的那条（段在跑 / 受理
+      // 在途）要留给那一段自己的取件点按优先级带走，这里不许抢跑 —— 抢了就等于「跑中的 high
+      // 被当成唤醒内容落进当前那一圈」，还丢了它「先于 low」的次序。
       this.flushInbox();
-      void this.run();
+      // 走 `runStarted()` 而不是 `run()`：段状态上面已经置过了，`run()` 的单飞会把自己挡回去。
+      // 上下文在落地**之后**取：这一次请求的请求体就是「带着刚落地的这条」的 `messages`。
+      //
+      // 段体自己抛出来的东西（比如收尾钩子被插件拒绝）在这条路上没有 await 的人，接着报成
+      // `error` 事件 —— 与段内出错走同一个出口。不接的话就是一个没人管的 Promise 拒绝
+      // （`void` 掉一个会 reject 的 Promise，在 Node 15+ 上默认是杀进程），而这一段其实
+      // 什么都没跑成、正该报错。
+      void this.runStarted(this.defaultSendContext()).catch((error: unknown) => {
+        this.events.emit("error", error);
+      });
       return { messageId: entry.messageId, accepted: true, woke: true };
     }
     return { messageId: entry.messageId, accepted: true, woke: false };
@@ -561,9 +586,11 @@ export class Agent extends AgentContext {
   /**
    * 跑**一段**：单飞 + 整组钩子 + 一组内循环。
    *
-   * 这是「什么时候跑」的唯一实现。两个入口都走它：
-   * - `send()`：自己 append 了 User 消息，等这一段跑完；
-   * - `deliver()`：在静止态把自己叫醒（不等）。
+   * 两个入口共用段体 {@link runStarted}：
+   * - `send()` → 本方法：自己 append 了 User 消息，等这一段跑完；
+   * - `deliver()`：在静止态把自己叫醒（不等）。它**不走本方法** —— 段状态必须在把队列落地
+   *   **之前**就置成 `running`（见那个方法头的「唤醒这一拍的事件次序」），于是置位由它自己
+   *   做，段体还是同一个 `runStarted`。
    *
    * `deliver()` 在叫它之前已经把队列落成 User 消息（`flushInbox`），所以**本方法不在段首取件**：
    * 段内唯一的取件点在内循环末（见 `runLoops`）。
@@ -599,15 +626,19 @@ export class Agent extends AgentContext {
       throw new Error("You need to send at least one message as a receive message");
     }
 
-    // 直接 run() 时的兜底上下文
-    const sendCtx: SendContext = ctx ?? {
-      agent: this,
-      content: "",
-      messages: [...this.messages],
-    };
-
     // 起段：同步置位，中间没有 await（见方法头）
     this.setRunStatus("running");
+    return await this.runStarted(ctx ?? this.defaultSendContext());
+  }
+
+  /**
+   * 段状态已经是 `running` 之后的段体：一组内循环 + 收尾钩子 + 段尾状态。
+   *
+   * 两个入口共用它：`run()`（自己置位）与 `deliver()`（置位排在把队列落地**之前**，见那里的
+   * 「唤醒这一拍的事件次序」）。它**不管单飞、也不管置位** —— 那两件事是「要不要起段」的判断，
+   * 属于入口；这里只跑一段已经决定要跑的段。
+   */
+  private async runStarted(sendCtx: SendContext): Promise<AgentNS.Message[]> {
     try {
       // 整组内循环开始（一次 send 仅一次）；Assistant 占位由每次内循环开头统一追加
       const loopsDenied = await this.dispatchHook("onInnerLoopsStart", sendCtx);
@@ -637,6 +668,16 @@ export class Agent extends AgentContext {
     }
 
     return this.messages;
+  }
+
+  /**
+   * 没有一次 `send()` 受理在背后时的兜底插件上下文（`run()` / `deliver()` 起段用）。
+   *
+   * `deliver()` 在把队列落地**之后**才取它：这一次请求的请求体就是「带着刚落地的那些」的
+   * `messages`。
+   */
+  private defaultSendContext(): SendContext {
+    return { agent: this, content: "", messages: [...this.messages] };
   }
 
   /**
