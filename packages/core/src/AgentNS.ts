@@ -136,6 +136,72 @@ export namespace AgentNS {
     createdAt: string;
   }
 
+  /**
+   * 投递一条待发内容时的入参：条目本身，除了那两个由入队时补的字段（`messageId` /
+   * `createdAt`）。
+   *
+   * `messageId` 允许由投递方定死：宿主先把 id 告诉客户端（乐观回显），落地那条消息用同一个，
+   * 同一条内容才不会画两遍。
+   */
+  export type InboxInput = Omit<InboxEntry, "messageId" | "createdAt"> & {
+    messageId?: string;
+  };
+
+  /**
+   * `deliver()` 的回执 —— 投递是同步的，回执描述的是「这一次投递发生了什么」，不是「什么时候跑完」。
+   */
+  export interface DeliveryReceipt {
+    /** 落地那条 User 消息时会用的 id（投递方给的那个，或入队时补的那个） */
+    messageId: string;
+    /** 收下了没有。**恒 true**：inbox 是队列，只进不出（拒绝投递这条路不存在） */
+    accepted: boolean;
+    /** 这次投递是不是它把段叫醒的（纯观测：调用方可以据此判断「要不要等它跑」） */
+    woke: boolean;
+  }
+
+  /**
+   * **段**的运行状态：这个 agent 现在跑不跑。
+   *
+   * 四态、两静两动，对称性是「静止态 × {正常结束, 被叫停}」与「活动态 × {接受工作, 停止接受}」：
+   *
+   * ```
+   *            send / deliver（外部驱动，解冻）
+   *   idle ───────────────────────────────▶ running ──┐
+   *     ▲                                    │        │ 段自然收尾
+   *     │ 段自然收尾                          │ abort() │（inbox 取空、没有待续的轮）
+   *     └────────────────────────────────────┘    │
+   *                                              ▼  ▼
+   *   terminated ◀──── run() 的 finally ──── stopping     idle
+   *   （上一段被叫停）
+   * ```
+   *
+   * - `idle`：没在跑。上一段是正常结束的（或者还一段都没跑过）。
+   * - `running`：跑着，接受工作（`deliver` 进来的条目由取件点取走）。
+   * - `stopping`：被 `abort()` 按停了，**收尾还没完**（reconcile / 收尾钩子 / 写库）。
+   *   这个中间态是必需的，不是犹豫：abort 之后若直接回 `idle` / `terminated`，外部一投递就能
+   *   起新段，而旧段还在写同一份 `messages` —— 那正是「两段并跑」这个 bug 的入口。
+   * - `terminated`：上一段是被人叫停的，且已经彻底收尾（可观测：UI 该显示「已停止」）。
+   *   它与 `idle` 的行为一致（都不自动跑），差别只在语义与可观测。
+   *
+   * 两条硬规则：
+   * 1. **只有 `running` 才取件、才续圈**（其余三态一条都不取）；
+   * 2. **静止态不会自己动**：只有外部驱动（`send` / `deliver`）能起段。
+   *
+   * 与「阶段 / phase」（核心 `run.state` 里的六态）不是一回事：阶段是「在跑的过程里走到哪一步」，
+   * 本状态是「跑不跑」。后者是前者的前置条件，不是它的一个取值。
+   */
+  export type RunStatus = "idle" | "running" | "stopping" | "terminated";
+
+  /**
+   * 一次 `send()` 的**受理流程**走到哪 —— 与「段跑不跑」（{@link RunStatus}）是两件事。
+   *
+   * `send()` 的范围比一段长：`onBeforeSend` 在段之前、`onAfterSend` 在段之后，两头都是 await。
+   * 这段时间里 `runStatus` 可能已经是 `idle`（段跑完了、钩子还挂着），但这次受理还没结束 ——
+   * 此时若有投递进来，它属于「这次 send 的尾巴」，该由这次 send 的 `run()` / `finally` 带走，
+   * 而不是另起一段（另起一段就会在别人还在写 `messages` 的时候再写一遍）。
+   */
+  export type SendStatus = "idle" | "sending";
+
   export interface Delta {
     name?: string;
     content?: MessageContent;

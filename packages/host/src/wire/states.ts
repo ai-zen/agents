@@ -127,7 +127,8 @@ export interface RunState {
    * 还没落成消息的排队条目数（PRD D14：用户在这轮跑的时候说的话）。
    *
    * 数字直接取**这一轮 agent 的 mailbox**（core 的 `Agent.inbox.length`），宿主不另记一份：
-   * core 的 `abort()` 会清空 inbox（用户按停 = 排队的话不发了），另记的数会在那一瞬漂掉。
+   * 数组本身就是真相，另记的数随时可能与它分叉（core 的 `abort()` 不再清空 inbox 之后，
+   * 连「某个时刻必归零」这个可依赖的参照点都没有了）。
    * 空闲时它恒为 `0`（不是「未知」）：没有在跑的一轮，就没有谁的队列可排。
    */
   inboxPending: number;

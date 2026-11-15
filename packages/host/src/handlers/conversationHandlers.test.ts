@@ -431,7 +431,7 @@ describe("conversation.send", () => {
     expect(idle.state.run.inboxPending).toBe(0);
   });
 
-  it("abort 丢弃排队条目：回包的 run 里 inboxPending 为 0，那一句也不落库", async () => {
+  it("abort 不丢排队条目：回包的 run 里 inboxPending 保持 1，那一句仍不落库", async () => {
     const gate: Deferred<void> = deferred();
     const agent = new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢慢说" }] }]);
     const { app, conversationId } = await makeHarness({ createAgent: async () => agent });
@@ -447,8 +447,9 @@ describe("conversation.send", () => {
       conversationId,
     });
     expect(aborted.aborted).toBe(true);
-    // 用户按停 = 排队的话不发了：core 的 abort 已清空 inbox
-    expect(aborted.run.inboxPending).toBe(0);
+    // 口径已变（core 的 `abort()` 不再清空 inbox）：按停只停这一段，排队的那句仍在队列里，
+    // 所以回包里的排队数是 1 —— 等下一次外部驱动才会发出。
+    expect(aborted.run.inboxPending).toBe(1);
 
     gate.resolve();
     await settle(app, conversationId);

@@ -16,7 +16,7 @@
  * ## 跑中发送走 inbox，不走第二轮（PRD D14）
  *
  * `conversation.send` 发现这一段已经有一轮在跑时，调的是 {@link ChatRunner.enqueue}：把那一句
- * 用户输入推给**那一轮的 agent**（core 的 `pushInbox`），由它在轮末落成一条 User 消息。于是
+ * 用户输入投给**那一轮的 agent**（core 的 `deliver`），由它在轮末落成一条 User 消息。于是
  * 「不打断」与「不丢」同时成立：流还是原来那条流，用户的话排在工具轮收尾的边界上。
  * 宿主在这里只做两件事：定死那条消息的 id（D5，客户端先画的那条与落地的是同一条），报出
  * `RunState.inboxPending`。两个不变量见 `TurnSession.enqueue` / `waitEnqueueable` 的注释。
@@ -171,18 +171,19 @@ export interface ChatAgent {
    * 排队待发的内容（core 的 `Agent.inbox`，PRD D14）。
    *
    * 宿主**只读**它：`RunState.inboxPending` 就是这份数组的长度。不自己另记一份计数 ——
-   * core 的 `abort()` 会把 inbox 清空，另记的数会在那一瞬与真相分叉。
+   * 数组本身是唯一真相，另记的数随时可能与它分叉。
    */
   inbox: AgentNS.InboxEntry[];
   /**
-   * 推一条待发内容；core 在轮末（工具轮收尾之后 / 整组停下之后）把它落成一条 User 消息。
+   * 投一条待发内容（core 的 `deliver`）；core 在轮末（工具轮收尾之后 / 整段停下之后）把它落成
+   * 一条 User 消息，静止态时会顺手把段叫起来。
    *
-   * `messageId` 允许由推的人定死：宿主已经把 id 告诉客户端了（D5），落地那条必须用同一个，
+   * `messageId` 允许由投的人定死：宿主已经把 id 告诉客户端了（D5），落地那条必须用同一个，
    * 否则同一条内容会在屏幕上画两遍。
+   *
+   * 回执里的 `woke` 宿主不看：跑中入队必然 `woke === false`（这一轮本来就在跑）。
    */
-  pushInbox(
-    entry: Omit<AgentNS.InboxEntry, "messageId" | "createdAt"> & { messageId?: string },
-  ): AgentNS.InboxEntry;
+  deliver(input: AgentNS.InboxInput): AgentNS.DeliveryReceipt;
   /** 事件广播口（core 的 `EventBus`）；本文件只用 `on` */
   events: { on(name: string, handler: (...args: never[]) => void): unknown };
 }
@@ -798,7 +799,7 @@ class TurnSession implements ChatTurn {
 
     // 消息 id 现在就定死（D5）：客户端马上要按它画一条，落地那条必须用同一个
     const userMessageId = generateMessageId();
-    this.agent.pushInbox({
+    this.agent.deliver({
       messageId: userMessageId,
       // 用户自己说的话：不带「这条消息来自…自动推送」那行注释（core 只给非 user 来源加）
       source: "user",
@@ -1342,7 +1343,7 @@ class TurnSession implements ChatTurn {
   /** 中止那一刻在途的消息：core 会把它们标成 Aborted，这里的 id 用来保证库里也记 Aborted（D15） */
   private takeAbortSnapshot(): void {
     this.aborted = true;
-    // 用户按停 = 排队的那些话不发了（core 的 `abort()` 会清空 inbox），所以入队门此刻就关
+    // 用户按停 = 这一轮不再接新话，所以入队门此刻就关
     this.closeEnqueue();
     for (const message of this.agent?.messages ?? []) {
       if (
@@ -1376,13 +1377,19 @@ class TurnSession implements ChatTurn {
       this.options.onError?.(error, "final-write");
     }
 
-    // 收工那一刻 inbox 里还有东西 = 出事了。core 保证 `send()` 的返回点已经把各处取件点
-    // （含整组收尾钩子 `onInnerLoopsEnd` 与 `onAfterSend` 之后那两处）全走完（工单 J），
-    // 所以正常路径上这里必然是空的；还有存货意味着有人在最后一个取件点**之后**才推进来
-    // （插件在更晚的异步尾巴上 push，或 abort 清空之后又来的）。不吭声最糟：客户端按回包
-    // 画了一条，屏幕上却永远等不到它。至少让日志里有一行。
+    // 收工那一刻 inbox 里还有东西 = 这一轮欠着一句没落地。正常路径上这里应当是空的：取件点
+    // 在 core 的 `run()` 里（一段跑完一组就取一次），`send()` 的 `finally` 又会把剩下的叫醒成
+    // 下一段。
+    //
+    // 两种"还剩下"是**预期**的，不该报出声：
+    //   ① 用户按了停 —— core 的 `abort()` 不再清空 inbox（有意的语义变更：一条来自别的会话的
+    //      投递不该被「用户按停」这个无关动作抹掉），排队的那几句留在那儿等下一次外部驱动；
+    //   ② 收尾钩子（`onInnerLoopsEnd` / `onAfterSend`）里投进来的条目 —— 它们已经由 `send()`
+    //      `finally` 起的那一段接手，宿主这一轮不等它（那一嗓子在 `send()` 返回时就结束了）。
+    // 其余情形（插件在更晚的异步尾巴上投递）仍然要有声音：客户端按回包画了一条，屏幕上却永远
+    // 等不到它，不吭声最糟。
     const leftover = this.agent?.inbox ?? [];
-    if (leftover.length > 0) {
+    if (leftover.length > 0 && !this.aborted && !this.handle.aborted) {
       const ids = leftover.map((entry) => entry.messageId).join(", ");
       this.options.onError?.(
         new Error(`这一轮已经收工，inbox 里还剩 ${leftover.length} 条没被取走：${ids}`),
@@ -1578,8 +1585,9 @@ class TurnSession implements ChatTurn {
       conversationId: this.conversationId,
       status: settledAt !== null ? "settled" : "running",
       assistantMessageId: this.assistantMessageId,
-      // 排队数直接问这一轮的 agent（core 的 `inbox`），不自己另记一份：`abort()` 会清空
-      // inbox，另记的数会在那一瞬与真相分叉。收工之后 agent 已经丢了，所以是 0。
+      // 排队数直接问这一轮的 agent（core 的 `inbox`），不自己另记一份：数组就是真相，
+      // 另记的数与它会分叉（`abort()` 不再清空 inbox 之后，更没有"归零"这个可依赖的时刻了）。
+      // 收工之后 agent 已经丢了，所以是 0。
       inboxPending: this.agent?.inbox.length ?? 0,
       startedAt: new Date(this.startedAtMs).toISOString(),
       settledAt: settledAt !== null ? new Date(settledAt).toISOString() : null,

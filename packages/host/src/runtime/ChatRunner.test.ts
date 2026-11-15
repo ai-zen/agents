@@ -451,7 +451,7 @@ describe("ChatRunner：结算", () => {
         abort: () => undefined,
         // 装配就没成：这一轮从没打开过入队门，inbox 这两个口不该被叫到
         inbox: [],
-        pushInbox: () => {
+        deliver: () => {
           throw new Error("不该被叫");
         },
         events: { on: () => undefined },
@@ -1243,7 +1243,7 @@ class ScriptedAgent implements ChatAgent {
 
   constructor(private readonly script: Array<{ deltas?: string[] }>) {}
 
-  pushInbox(): AgentNS.InboxEntry {
+  deliver(): AgentNS.DeliveryReceipt {
     throw new Error("ScriptedAgent 不承接 inbox（只用它验素材路径）");
   }
 
@@ -1762,7 +1762,10 @@ describe("ChatRunner：跑中发送进 inbox（D14：不打断、也不回 busy�
     expect(custom.store.peek(queued!.userMessageId)?.createdAt).toBe(acceptedAtMs + 5_000);
   });
 
-  it("abort 丢弃排队条目：inboxPending 归零，那一句永远不落地", async () => {
+  it("abort 不丢排队条目：inboxPending 保持 1，那一句仍不落地（等下一次驱动）", async () => {
+    // 口径已变（core 侧的语义变更，有意）：`abort()` 不再 `clearInbox()`。
+    // 一条来自别的会话的投递不该被「用户按停」这个无关动作抹掉，所以这一轮被中止之后，
+    // 队列里的那一句**还在**，`inboxPending` 保持 1；它只是不在这一轮落地。
     const gate = deferred<void>();
     const agent = new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢慢说" }] }]);
     const custom = createHarness({ agent });
@@ -1781,16 +1784,17 @@ describe("ChatRunner：跑中发送进 inbox（D14：不打断、也不回 busy�
     expect(turn.runState().inboxPending).toBe(1);
 
     turn.abort("用户按了停");
-    // core 的 abort 会清空 inbox：快照里的排队数同步归零（宿主没有第二份计数可漂）
-    expect(agent.inbox).toHaveLength(0);
-    expect(turn.runState().inboxPending).toBe(0);
+    // 数据是数据：inbox 不动，宿主读到的排队数也就不动（宿主没有第二份计数可漂）
+    expect(agent.inbox).toHaveLength(1);
+    expect(turn.runState().inboxPending).toBe(1);
 
     gate.resolve();
     const settlement = await turn.done;
 
     expect(settlement.outcome).toBe("aborted");
+    // 收工之后 agent 已经丢了，排队数回 0（没有在跑的一轮，就没有谁的队列可排）
     expect(settlement.run.inboxPending).toBe(0);
-    // 那一句既没进内存消息，也没进库
+    // 那一句既没进内存消息，也没进库（它留在那条队列里，等下一次外部驱动）
     expect(settlement.messages.some((message) => message.id === queued!.userMessageId)).toBe(false);
     expect(custom.store.peek(queued!.userMessageId)).toBeUndefined();
   });

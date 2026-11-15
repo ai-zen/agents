@@ -23,7 +23,7 @@
  * ## 它为什么不是排队执行器（也不能改成那个）
  *
  * 「用户跑中再发一句话」那条口子走的是 core 的 inbox，不是这里（PRD D14：
- * `conversation.send` → `ChatRunner.enqueue` → 那一轮 agent 的 `pushInbox`）。这一条仍然是
+ * `conversation.send` → `ChatRunner.enqueue` → 那一轮 agent 的 `deliver`）。这一条仍然是
  * 一道**硬保证**：交接回合、撤回、问题答复都靠 `busy` 这一支把「这段对话现在不能动」说清楚
  * （`HandoffService` / `ConversationService.revert` / `QuestionService.answer`）。把这里改成
  * 「来一个排一个」，等于把「先来后到」那套语义摊到这三个调用方头上，而它们要的是一个当下的

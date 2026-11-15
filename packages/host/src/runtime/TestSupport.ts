@@ -304,7 +304,7 @@ export class RecordingEventBus {
  * `open` → 每片 `chunk-parsed` → 工具消息 → `tool-call-end`），攒消息用的是 core 的
  * `applyChunk`，于是 ChatRunner 看到的事件序列与真 agent 一致。
  *
- * `inbox` 也按 core 的语义做（`pushInbox` 推、轮末 `drainInbox` 落成 `Message.User`）：
+ * `inbox` 也按 core 的语义做（`deliver` 投、轮末 `drainInbox` 落成 `Message.User`）：
  * 宿主跑中发送那一半就是靠它验的。做成「记一笔就算收到」的假件，用例断的是假货。
  */
 export class FakeAgent implements ChatAgent {
@@ -316,7 +316,7 @@ export class FakeAgent implements ChatAgent {
   /**
    * 排队待发的内容（core 的 `Agent.inbox` 同一份形状）。
    *
-   * 宿主只读它的长度（`RunState.inboxPending`），写入走 {@link pushInbox} —— 与真 Agent 一样。
+   * 宿主只读它的长度（`RunState.inboxPending`），写入走 {@link deliver} —— 与真 Agent 一样。
    */
   inbox: AgentNS.InboxEntry[] = [];
   /**
@@ -340,27 +340,30 @@ export class FakeAgent implements ChatAgent {
     return message;
   }
 
-  /** core 的 `pushInbox`：缺 id / 时间就地补，推完广播 `inbox` */
-  pushInbox(
-    entry: Omit<AgentNS.InboxEntry, "messageId" | "createdAt"> & { messageId?: string },
-  ): AgentNS.InboxEntry {
+  /**
+   * core 的 `deliver`：缺 id / 时间就地补，入队，广播 `inbox`。
+   *
+   * 回执的 `woke` 恒为 `false`：本假件不是真 Agent，没有「段」这回事（它的单飞由
+   * {@link FakeAgent.aborted} 一个布尔量演着）。宿主不看这个字段，所以这里不假装。
+   */
+  deliver(input: AgentNS.InboxInput): AgentNS.DeliveryReceipt {
     const pushed: AgentNS.InboxEntry = {
-      messageId: entry.messageId ?? generateMessageId(),
-      source: entry.source,
-      priority: entry.priority,
-      content: entry.content,
+      messageId: input.messageId ?? generateMessageId(),
+      source: input.source,
+      priority: input.priority,
+      content: input.content,
       createdAt: new Date().toISOString(),
     };
     this.inbox.push(pushed);
     this.events.emit("inbox", { agent: this, entry: pushed });
-    return pushed;
+    return { messageId: pushed.messageId, accepted: true, woke: false };
   }
 
   abort(): void {
     this.abortCalls += 1;
     this.aborted = true;
-    // core 的 `abort()` 同样清空 inbox（用户按停 = 排队的话不发了）：快照里的「已排队」靠它归零
-    this.inbox.splice(0, this.inbox.length);
+    // 与 core 同一口径：按停只停这一段，**不碰 inbox**（排队的那几句等下一次外部驱动）。
+    // 旧版这里会 `splice(0)`，那是被推翻的旧语义。
     for (const message of this.messages) {
       if (
         message.status === AgentNSValue.MessageStatus.Pending ||
