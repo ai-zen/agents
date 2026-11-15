@@ -418,7 +418,7 @@ describe("推送（PRD L5 / R47）", () => {
         conversationId: "c-1",
         status: "running",
         assistantMessageId: "a-1",
-        inboxPending: 0,
+        inbox: [],
         startedAt: NOW,
         settledAt: null,
         generation: { phase: "thinking", since: NOW, chars: 3 },

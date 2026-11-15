@@ -316,7 +316,7 @@ export class FakeAgent implements ChatAgent {
   /**
    * 排队待发的内容（core 的 `Agent.inbox` 同一份形状）。
    *
-   * 宿主只读它的长度（`RunState.inboxPending`），写入走 {@link deliver} —— 与真 Agent 一样。
+   * 宿主只读它（`RunState.inbox`），写入走 {@link deliver} —— 与真 Agent 一样。
    */
   inbox: AgentNS.InboxEntry[] = [];
   /**

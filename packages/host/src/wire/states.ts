@@ -112,11 +112,26 @@ export type RunOutcome = "completed" | "aborted" | "error";
 export type RunStatus = "idle" | "running" | "settled";
 
 /**
+ * 一条还没落成消息的排队条目（{@link RunState.inbox} 的一项）。
+ *
+ * 它是宿主拼好的一行摘要，不是 `content` 原文 —— 理由见 `RunState.inbox` 的第二段。
+ */
+export interface InboxItem {
+  messageId: string;
+  /** 与 core 的 `InboxEntry.source` 同值（"user" / "session" / ...），客户端据此决定要不要标来源 */
+  source: string;
+  /** 入队时刻（ISO 8601） */
+  createdAt: string;
+  /** 一行摘要（宿主拼好）：文本段按顺序拼接、空白折叠、超 120 字截断加 `…`；非文本段记 `[图片]` / `[文件]` */
+  preview: string;
+}
+
+/**
  * 一轮的运行状态快照（`run.state` 事件的载荷、`conversation.state` 的一部分）。
  *
  * 重连的客户端靠它把界面恢复成「正在发生什么」（PRD L5）：`status` 说这一轮在不在跑，
  * `generation` 说跑到哪一态，`usage` 说花了多少，`subagents` 说有哪些子 Agent 在跑/跑过，
- * `inboxPending` 说还有几句排队的话没落地。
+ * `inbox` 说还有哪几句排队的话没落地。
  */
 export interface RunState {
   conversationId: string;
@@ -124,14 +139,16 @@ export interface RunState {
   /** 本轮那条助手消息的 id（请求发出前就分配，PRD L6）；空闲时为空 */
   assistantMessageId: string | null;
   /**
-   * 还没落成消息的排队条目数（PRD D14：用户在这轮跑的时候说的话）。
+   * 还没落成消息的排队条目（PRD D14：用户在这轮跑的时候说的话），顺序即取件顺序：
+   * 在跑的 agent 的 `inbox` 在前，装配期缓冲的那几条在后。空闲时是空数组。
    *
-   * 数字直接取**这一轮 agent 的 mailbox**（core 的 `Agent.inbox.length`），宿主不另记一份：
-   * 数组本身就是真相，另记的数随时可能与它分叉（core 的 `abort()` 不再清空 inbox 之后，
-   * 连「某个时刻必归零」这个可依赖的参照点都没有了）。
-   * 空闲时它恒为 `0`（不是「未知」）：没有在跑的一轮，就没有谁的队列可排。
+   * 为什么替掉原来的计数：计数是数组的长度，另给一份数就会与之分叉；客户端要显示内容，
+   * 数组本身就是真相。
+   *
+   * 为什么只给一行摘要（{@link InboxItem.preview}）而不是 `content` 原文：`run.state` 每次
+   * 六态变化都推一次，而 `content` 段里可能带图片/文件的原始数据，搬原文等于每次推一遍附件。
    */
-  inboxPending: number;
+  inbox: InboxItem[];
   startedAt: string | null;
   settledAt: string | null;
   /** `status === "running"` 时是六态之一；其余情况为空 */

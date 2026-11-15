@@ -363,7 +363,7 @@ describe("conversation.send", () => {
 
     // 第一轮吐正文（当片落库）→ 轮末那句排队的落地 → 第二轮起来卡在 replyGate
     firstGate.resolve();
-    await waitForRun(app, conversationId, (run) => run.inboxPending === 0);
+    await waitForRun(app, conversationId, (run) => run.inbox.length === 0);
     // 再让一次节流点过去：回答的首片也要「当片落库」，否则它可能落在收尾那一批里（顺序就被掩盖了）
     await wait(250);
 
@@ -387,7 +387,7 @@ describe("conversation.send", () => {
     expect(page.messages.some((message) => message.id === first.userMessageId)).toBe(true);
   });
 
-  it("run.state 的 inboxPending：入队后 > 0、落地后归 0、空闲时为 0", async () => {
+  it("run.state 的 inbox：入队后 1 条、落地后清空、空闲时为空", async () => {
     const firstGate: Deferred<void> = deferred();
     const secondGate: Deferred<void> = deferred();
     const agent = new FakeAgent([
@@ -398,8 +398,8 @@ describe("conversation.send", () => {
     const { app, conversationId } = await makeHarness({ createAgent: async () => agent });
 
     await callMethod(app, "conversation.send", { conversationId, input: { content: "第一句" } });
-    // 没排队时就是在跑，也是 0（不是「未知」也不是 1）
-    expect((await callMethod(app, "conversation.state", { conversationId })).state.run.inboxPending).toBe(0);
+    // 没排队时就是在跑，也是空（不是「未知」也不是 1 条）
+    expect((await callMethod(app, "conversation.state", { conversationId })).state.run.inbox).toEqual([]);
 
     const queued: ConversationSendResult = await callMethod(app, "conversation.send", {
       conversationId,
@@ -408,7 +408,7 @@ describe("conversation.send", () => {
     expect(queued.queued).toBe(true);
     // 入队之后：“已排队 1 条”
     const pending = await callMethod(app, "conversation.state", { conversationId });
-    expect(pending.state.run.inboxPending).toBe(1);
+    expect(pending.state.run.inbox).toHaveLength(1);
     expect(pending.state.run.status).toBe("running");
 
     // 放行第一轮 → 那一条在轮末落地 → 第二轮卡着，现场里应当归 0
@@ -416,22 +416,22 @@ describe("conversation.send", () => {
     const afterLanded = await waitForRun(
       app,
       conversationId,
-      (run) => run.inboxPending === 0 && run.status === "running",
+      (run) => run.inbox.length === 0 && run.status === "running",
     );
-    expect(afterLanded.inboxPending).toBe(0);
+    expect(afterLanded.inbox).toEqual([]);
     // 而且它真的落地了（不是被当成“已消费”而丢掉）
     expect(agent.messages.map((message) => message.id)).toContain(queued.userMessageId);
 
     secondGate.resolve();
     await settle(app, conversationId);
 
-    // 空闲：恒为 0
+    // 空闲：恒为空
     const idle = await callMethod(app, "conversation.state", { conversationId });
     expect(idle.state.run.status).toBe("idle");
-    expect(idle.state.run.inboxPending).toBe(0);
+    expect(idle.state.run.inbox).toEqual([]);
   });
 
-  it("abort 不丢排队条目：回包的 run 里 inboxPending 保持 1，那一句仍不落库", async () => {
+  it("abort 不丢排队条目：回包的 run 里 inbox 保持 1 条，那一句仍不落库", async () => {
     const gate: Deferred<void> = deferred();
     const agent = new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢慢说" }] }]);
     const { app, conversationId } = await makeHarness({ createAgent: async () => agent });
@@ -448,8 +448,8 @@ describe("conversation.send", () => {
     });
     expect(aborted.aborted).toBe(true);
     // 口径已变（core 的 `abort()` 不再清空 inbox）：按停只停这一段，排队的那句仍在队列里，
-    // 所以回包里的排队数是 1 —— 等下一次外部驱动才会发出。
-    expect(aborted.run.inboxPending).toBe(1);
+    // 所以回包里的排队条目还是 1 条 —— 等下一次外部驱动才会发出。
+    expect(aborted.run.inbox).toHaveLength(1);
 
     gate.resolve();
     await settle(app, conversationId);

@@ -1554,8 +1554,8 @@ describe("ChatRunner：跑中发送进 inbox（D14：不打断、也不回 busy�
     expect(agent.inbox[0]!.source).toBe("user");
     expect(agent.inbox[0]!.content).toBe("顺便问一句");
 
-    // 客户端看得见「已排队 1 条」（RunState.inboxPending 读的就是这份数组）
-    expect(custom.lastRunState().inboxPending).toBe(1);
+    // 客户端看得见「这一条排上了」（RunState.inbox 就是这份数组）
+    expect(custom.lastRunState().inbox).toHaveLength(1);
 
     gate.resolve();
     await turn.done;
@@ -1598,14 +1598,14 @@ describe("ChatRunner：跑中发送进 inbox（D14：不打断、也不回 busy�
     });
     expect(queued).not.toBeNull();
     expect(agent.inbox).toHaveLength(0);
-    // 客户端看得见「已排队 1 条」：缓冲着的也算
-    expect(custom.lastRunState().inboxPending).toBe(1);
+    // 客户端看得见「这一条排上了」：缓冲着的也算
+    expect(custom.lastRunState().inbox).toHaveLength(1);
 
     // 装好那一刻：条目被 `deliver` 进它的 inbox（id 还是入队时那个）
     build.resolve(agent);
     await flushMicrotasks();
     expect(agent.inbox.map((entry) => entry.messageId)).toEqual([queued!.userMessageId]);
-    expect(custom.lastRunState().inboxPending).toBe(1);
+    expect(custom.lastRunState().inbox).toHaveLength(1);
 
     // 这一轮按原来的脚本跑完，排进来的那一句在轮末落地
     sendGate.resolve();
@@ -1664,7 +1664,7 @@ describe("ChatRunner：跑中发送进 inbox（D14：不打断、也不回 busy�
       input: { content: "顺便看下这个" },
     });
     expect(queued).not.toBeNull();
-    expect(custom.lastRunState().inboxPending).toBe(1);
+    expect(custom.lastRunState().inbox).toHaveLength(1);
 
     toolGate.resolve();
     const settlement = await turn.done;
@@ -1690,8 +1690,8 @@ describe("ChatRunner：跑中发送进 inbox（D14：不打断、也不回 busy�
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.at(-1)!.content).toBe("顺便看下这个");
     expect(rows.at(-1)!.role).toBe(AgentNSValue.Role.User);
-    // 结算快照里也是 0：收工之后没有「还在排」这一档
-    expect(settlement.run.inboxPending).toBe(0);
+    // 结算快照里也是空：收工之后没有「还在排」这一档
+    expect(settlement.run.inbox).toEqual([]);
   });
 
   it("排队那条在落地那一刻就写库：写入顺序与最终 seq 都排在它引出的回答之前", async () => {
@@ -1763,10 +1763,10 @@ describe("ChatRunner：跑中发送进 inbox（D14：不打断、也不回 busy�
     expect(custom.store.peek(queued!.userMessageId)?.createdAt).toBe(acceptedAtMs + 5_000);
   });
 
-  it("abort 不丢排队条目：inboxPending 保持 1，那一句仍不落地（等下一次驱动）", async () => {
+  it("abort 不丢排队条目：inbox 保持 1 条，那一句仍不落地（等下一次驱动）", async () => {
     // 口径已变（core 侧的语义变更，有意）：`abort()` 不再 `clearInbox()`。
     // 一条来自别的会话的投递不该被「用户按停」这个无关动作抹掉，所以这一轮被中止之后，
-    // 队列里的那一句**还在**，`inboxPending` 保持 1；它只是不在这一轮落地。
+    // 队列里的那一句**还在**，`inbox` 保持 1 条；它只是不在这一轮落地。
     const gate = deferred<void>();
     const agent = new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢慢说" }] }]);
     const custom = createHarness({ agent });
@@ -1782,19 +1782,19 @@ describe("ChatRunner：跑中发送进 inbox（D14：不打断、也不回 busy�
       input: { content: "还没发出去的那句" },
     });
     expect(queued).not.toBeNull();
-    expect(turn.runState().inboxPending).toBe(1);
+    expect(turn.runState().inbox).toHaveLength(1);
 
     turn.abort("用户按了停");
-    // 数据是数据：inbox 不动，宿主读到的排队数也就不动（宿主没有第二份计数可漂）
+    // 数据是数据：inbox 不动，宿主读到的排队条目也就不动（宿主没有第二份可漂）
     expect(agent.inbox).toHaveLength(1);
-    expect(turn.runState().inboxPending).toBe(1);
+    expect(turn.runState().inbox).toHaveLength(1);
 
     gate.resolve();
     const settlement = await turn.done;
 
     expect(settlement.outcome).toBe("aborted");
-    // 收工之后 agent 已经丢了，排队数回 0（没有在跑的一轮，就没有谁的队列可排）
-    expect(settlement.run.inboxPending).toBe(0);
+    // 收工之后 agent 已经丢了，排队条目回空（没有在跑的一轮，就没有谁的队列可排）
+    expect(settlement.run.inbox).toEqual([]);
     // 那一句既没进内存消息，也没进库（它留在那条队列里，等下一次外部驱动）
     expect(settlement.messages.some((message) => message.id === queued!.userMessageId)).toBe(false);
     expect(custom.store.peek(queued!.userMessageId)).toBeUndefined();

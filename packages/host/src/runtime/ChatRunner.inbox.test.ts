@@ -8,7 +8,7 @@
  *   - `ChatRunner.test.ts` / `conversationHandlers.test.ts` 的 inbox 用例用的是
  *     `TestSupport.FakeAgent` —— 它按 core 的语义**自己实现了一遍**轮末插入。
  *
- * 两边都绿说明不了「真 core 的插入点 + 宿主认定领的 id / 落库 / `inboxPending` 串在一起」通。
+ * 两边都绿说明不了「真 core 的插入点 + 宿主认定领的 id / 落库 / `RunState.inbox` 串在一起」通。
  * 本文件只钉这一条：`AgentFactory` 返回真 `Agent`，其余（仓储、运行表、Scope、事件推送）
  * 全是宿主的真件，假件只用在模型那一侧。
  *
@@ -327,7 +327,7 @@ describe("真 core Agent 跑在真 ChatRunner 里：跑中发送进 inbox（D14�
     ]);
 
     // 条目进的是真 core Agent 的 inbox：高优先（工具轮收尾的边界）、来源是用户本人、id 就是回包那个
-    expect(turn.runState().inboxPending).toBe(1);
+    expect(turn.runState().inbox).toHaveLength(1);
     expect(coreAgent!.inbox).toHaveLength(1);
     expect(coreAgent!.inbox[0]!.messageId).toBe(queued!.userMessageId);
     expect(coreAgent!.inbox[0]!.priority).toBe("high");
@@ -367,17 +367,17 @@ describe("真 core Agent 跑在真 ChatRunner 里：跑中发送进 inbox（D14�
     expect(queuedIndex).toBeGreaterThan(toolIndex);
     expect(second[queuedIndex]!.role).toBe(AgentNSValue.Role.User);
 
-    // ---- ③ inboxPending：入队后 1、落地后 0（看宿主推出来的 run.state，不只信快照）----
+    // ---- ③ inbox：入队后 1 条、落地后空（看宿主推出来的 run.state，不只信快照）----
     const states = harness.runStates();
     const pendingAt = states.findIndex(
-      (run) => run.status === "running" && run.inboxPending === 1,
+      (run) => run.status === "running" && run.inbox.length === 1,
     );
     expect(pendingAt).toBeGreaterThanOrEqual(0);
     const drainedAt = states.findIndex(
-      (run, index) => index > pendingAt && run.status === "running" && run.inboxPending === 0,
+      (run, index) => index > pendingAt && run.status === "running" && run.inbox.length === 0,
     );
     expect(drainedAt).toBeGreaterThan(pendingAt);
-    expect(settlement.run.inboxPending).toBe(0);
+    expect(settlement.run.inbox).toEqual([]);
 
     // ---- ④ 第一轮没有被 abort：工具结果完成、两条助手消息都完成、整轮 completed ----
     expect(settlement.outcome).toBe("completed");
@@ -569,7 +569,7 @@ describe("真 core Agent 跑在真 ChatRunner 里：跑中发送进 inbox（D14�
     });
     // 门是在 `send()` 返回之后才关的，所以这一刻它回的是「排队了」
     expect(queued).not.toBeNull();
-    expect(turn.runState().inboxPending).toBe(1);
+    expect(turn.runState().inbox).toHaveLength(1);
 
     releaseWindow.resolve();
     const settlement = await turn.done;
@@ -588,5 +588,100 @@ describe("真 core Agent 跑在真 ChatRunner 里：跑中发送进 inbox（D14�
     expect(settlement.outcome).toBe("completed");
     expect(settlement.run.outcome).toBe("completed");
     expect(harness.runs.isRunning(CONVERSATION_ID)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 契约：`run.state.inbox` 里装的是条目本身（客户端排队区要显示内容，不光是个数）
+// ---------------------------------------------------------------------------
+
+describe("run.state 的排队条目：`inbox` 装的是条目本身", () => {
+  it("跑中 enqueue → `inbox` 里就是这一条；落地成消息之后变空", async () => {
+    const timeline: TimelineEntry[] = [];
+    let coreAgent: Agent | undefined;
+    const started = deferred<void>();
+    const result = deferred<string>();
+    const { client } = createScriptedClient(
+      [toolCallRound("read_file"), textRound("看完了。")],
+      timeline,
+    );
+
+    const harness = createHarness({
+      timeline,
+      createAgent: async () => {
+        const agent = new Agent({
+          client,
+          model: "gpt-4",
+          tools: [gatedTool({ name: "read_file", started, result })],
+        });
+        watch(agent, timeline);
+        coreAgent = agent;
+        return agent;
+      },
+    });
+
+    const turn = await harness.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "看看这个文件" },
+    });
+
+    // 等这一轮真的走到「工具正在跑」那一刻，再插一句
+    await started.promise;
+    const queued = await harness.runner.enqueue({
+      conversationId: CONVERSATION_ID,
+      input: { content: "顺便看下这个" },
+    });
+    expect(queued).not.toBeNull();
+
+    // 入队那一刻的条目：id 是宿主定的那个，来源是用户本人，摘要就是发出去的那句
+    const inbox = turn.runState().inbox;
+    expect(inbox).toHaveLength(1);
+    expect(inbox[0]!.messageId).toBe(queued!.userMessageId);
+    expect(inbox[0]!.source).toBe("user");
+    expect(inbox[0]!.preview).toBe("顺便看下这个");
+    expect(Number.isNaN(new Date(inbox[0]!.createdAt).getTime())).toBe(false);
+
+    // 放行工具，让它落地（core 在工具轮收尾时把它 append 进来）
+    result.resolve("文件内容：hello");
+    const settlement = await turn.done;
+
+    expect(settlement.messages.some((message) => message.id === queued!.userMessageId)).toBe(true);
+    expect(coreAgent!.inbox).toHaveLength(0);
+    expect(settlement.run.inbox).toEqual([]);
+  });
+
+  it("装配期间（agent 还没 attach）enqueue → 走 `pending` 那一半，`inbox` 里也有这一条", async () => {
+    const timeline: TimelineEntry[] = [];
+    const build = deferred<ChatAgent>();
+    const { client } = createScriptedClient(
+      [textRound("先答"), textRound("再答")],
+      timeline,
+    );
+
+    const harness = createHarness({ timeline, createAgent: async () => await build.promise });
+
+    const turn = await harness.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "第一句" },
+    });
+
+    // agent 还在装配：这一句只能收进 `pending`，但客户端照样要看见它
+    const queued = await harness.runner.enqueue({
+      conversationId: CONVERSATION_ID,
+      input: { content: "装配期间发的" },
+    });
+    expect(queued).not.toBeNull();
+
+    const inbox = turn.runState().inbox;
+    expect(inbox).toHaveLength(1);
+    expect(inbox[0]!.messageId).toBe(queued!.userMessageId);
+    expect(inbox[0]!.source).toBe("user");
+    expect(inbox[0]!.preview).toBe("装配期间发的");
+
+    // 装好之后这一轮照常跑完，那一句在轮末落地
+    build.resolve(new Agent({ client, model: "gpt-4" }));
+    const settlement = await turn.done;
+    expect(settlement.messages.some((message) => message.id === queued!.userMessageId)).toBe(true);
+    expect(settlement.run.inbox).toEqual([]);
   });
 });

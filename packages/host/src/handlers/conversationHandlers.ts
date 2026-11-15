@@ -346,8 +346,8 @@ export function idleRunState(
     conversationId,
     status: "idle",
     assistantMessageId: null,
-    // 没在跑的一轮就没有谁的入队可排：这里是 0，不是「未知」（D14）
-    inboxPending: 0,
+    // 没在跑的一轮就没有谁的入队可排：这里是空数组，不是「未知」（D14）
+    inbox: [],
     startedAt: null,
     settledAt: null,
     generation: null,

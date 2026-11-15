@@ -49,7 +49,7 @@ describe("事件表", () => {
         conversationId: "c-1",
         status: "running",
         assistantMessageId: "m-2",
-        inboxPending: 0,
+        inbox: [],
         startedAt: NOW,
         settledAt: null,
         generation: { phase: "awaiting_tools", since: NOW, runningTools: [] },

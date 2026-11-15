@@ -19,7 +19,8 @@
  * 用户输入投给**那一轮的 agent**（core 的 `deliver`），由它在轮末落成一条 User 消息。于是
  * 「不打断」与「不丢」同时成立：流还是原来那条流，用户的话排在工具轮收尾的边界上。
  * 宿主在这里只做两件事：定死那条消息的 id（D5，客户端先画的那条与落地的是同一条），报出
- * `RunState.inboxPending`。不变量见 `TurnSession.enqueue` 的注释。
+ * `RunState.inbox`（客户端的排队区靠它显示条目本身，不光是个数）。不变量见
+ * `TurnSession.enqueue` 的注释。
  *
  * ## 三处刻意交给 core 的事
  *
@@ -79,6 +80,7 @@ import type {
   AttachmentOutcome,
   GenerationPhaseName,
   GenerationState,
+  InboxItem,
   MessageInput,
   ProblemFact,
   RunOutcome,
@@ -170,8 +172,8 @@ export interface ChatAgent {
   /**
    * 排队待发的内容（core 的 `Agent.inbox`，PRD D14）。
    *
-   * 宿主**只读**它：`RunState.inboxPending` 就是这份数组的长度。不自己另记一份计数 ——
-   * 数组本身是唯一真相，另记的数随时可能与它分叉。
+   * 宿主**只读**它：`RunState.inbox` 就是这份数组（装配期的 `pending` 接在后面）。不自己另记
+   * 一份 —— 数组本身是唯一真相，另记的一份随时可能与它分叉。
    */
   inbox: AgentNS.InboxEntry[];
   /**
@@ -672,7 +674,7 @@ class TurnSession implements ChatTurn {
    *
    * 取舍：`pending` 里那几条随这一轮失败一起丢（与「已经进了 inbox 但这一轮没取走」同一个命）。
    */
-  private pending: AgentNS.InboxInput[] = [];
+  private pending: AgentNS.InboxEntry[] = [];
   /**
    * 已经排队、还没落地的消息 id（落地时据此把它们记进 `producedIds`，按**落地顺序**落库）。
    *
@@ -754,13 +756,15 @@ class TurnSession implements ChatTurn {
 
     // 消息 id 现在就定死（D5）：客户端马上要按它画一条，落地那条必须用同一个
     const userMessageId = generateMessageId();
-    const entry: AgentNS.InboxInput = {
+    const entry: AgentNS.InboxEntry = {
       messageId: userMessageId,
       // 用户自己说的话：不带「这条消息来自…自动推送」那行注释（core 只给非 user 来源加）
       source: "user",
       // 高优先：落点是「工具轮跑完的边界」—— 不打断模型正在吐的那一段，又能尽快接住
       priority: "high",
       content: input.content,
+      // 入队时刻在这里定下（装配期的那几条也一样）：`run.state.inbox` 要按它显示「排了多久」
+      createdAt: this.nowIso(),
     };
     // 装配期间先存着（谁也不用等），装好了就冲进它的 inbox
     if (this.agent) this.agent.deliver(entry);
@@ -773,7 +777,7 @@ class TurnSession implements ChatTurn {
       this.queuedStored.set(userMessageId, input.storedContent);
     }
 
-    // 客户端要看得见「已排队 N 条」：`inboxPending` 这会儿刚多了一条
+    // 客户端要看得见**这一条**排上了：`inbox` 这会儿刚多了一项（内容摘要、来源、入队时刻都在里面）
     this.pushRunState();
 
     return {
@@ -1517,10 +1521,10 @@ class TurnSession implements ChatTurn {
       conversationId: this.conversationId,
       status: settledAt !== null ? "settled" : "running",
       assistantMessageId: this.assistantMessageId,
-      // 排队数直接问这一轮的 agent（core 的 `inbox`），不自己另记一份：数组就是真相，
-      // 另记的数与它会分叉（`abort()` 不再清空 inbox 之后，更没有"归零"这个可依赖的时刻了）。
-      // 装配期间 agent 还没有，这个数由 `pending` 缓存的几条给出；收工之后两边都是 0。
-      inboxPending: (this.agent?.inbox.length ?? 0) + this.pending.length,
+      // 排队条目直接问这一轮的 agent（core 的 `inbox`），不自己另记一份：数组就是真相，
+      // 另记的一份会与它分叉。顺序即取件顺序：在跑的 agent 的队列在前（core 先取它），
+      // 装配期缓冲在 `pending` 里的那几条在后（attach 才进 inbox）。收工之后两边都空。
+      inbox: [...(this.agent?.inbox ?? []), ...this.pending].map((entry) => toInboxItem(entry)),
       startedAt: new Date(this.startedAtMs).toISOString(),
       settledAt: settledAt !== null ? new Date(settledAt).toISOString() : null,
       generation: settledAt !== null ? null : this.generation,
@@ -1555,6 +1559,45 @@ class TurnSession implements ChatTurn {
   private nowIso(): string {
     return new Date(this.clock.now()).toISOString();
   }
+}
+
+/** 排队条目摘要的长度上限（`preview` 是一行，客户端不滚动） */
+const INBOX_PREVIEW_LIMIT = 120;
+
+/**
+ * core 的 `InboxEntry` → 契约里的 `InboxItem`（只换掉内容：原文换成一行摘要）。
+ *
+ * `run.state` 每次六态变化都推一次，所以这里不能带 `content` 原文：段里可能装着图片/文件的
+ * 原始数据，搬原文等于每推一次状态就重发一遍附件。
+ */
+function toInboxItem(entry: AgentNS.InboxEntry): InboxItem {
+  return {
+    messageId: entry.messageId,
+    source: entry.source,
+    createdAt: entry.createdAt,
+    preview: inboxPreview(entry.content),
+  };
+}
+
+/** 排队条目的一行摘要：文本按顺序拼接，非文本段记成 `[图片]` / `[文件]`，最后折叠空白 + 截断 */
+function inboxPreview(content: AgentNS.MessageContent): string {
+  if (typeof content === "string") return clampPreview(content);
+  const parts: string[] = [];
+  for (const section of content) {
+    if (section.type === "text") parts.push(section.text);
+    else if (section.type === "image_url") parts.push("[图片]");
+    else parts.push("[文件]");
+  }
+  return clampPreview(parts.join(" "));
+}
+
+/** 连续空白折叠成单空格并 trim；超过上限截断并补 `…` */
+function clampPreview(text: string): string {
+  const collapsed = text.replace(/\s+/g, " ").trim();
+  const chars = [...collapsed];
+  return chars.length > INBOX_PREVIEW_LIMIT
+    ? `${chars.slice(0, INBOX_PREVIEW_LIMIT).join("")}…`
+    : collapsed;
 }
 
 /** 六态里「正在拼的工具调用」：从 core 正在拼的消息上取，参数长度给出一个可见的进度 */
