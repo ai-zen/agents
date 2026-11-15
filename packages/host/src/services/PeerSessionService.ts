@@ -48,7 +48,7 @@
  *
  * ## 投递：本文件只把内容交给执行者，不猜
  *
- * 见 {@link PeerSessionService.deliver}：`chatRunner.deliver(parentConversationId, { content,
+ * 见 {@link PeerSessionService.settleSegment}：`chatRunner.deliver(parentConversationId, { content,
  * source })`。那一个入口自己解决「agent 在不在、父对话在不在跑、在结算、要不要攒一批」四件
  * 事 —— 从前本文件靠「先 `enqueue`（拿到 `null` 说明空闲）再 `run`、`run` 抛错就记 dropped」
  * 猜出来，猜错了就是两种真事故：多起一段没有上下文的段（消息不落库），或者把一条本该落地

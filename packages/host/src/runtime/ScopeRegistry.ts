@@ -23,7 +23,7 @@
  * `dispose` 遇到还活着的 agent 时抛 {@link ScopeBusyError}（带着 `conversationId` 列表），
  * 而不是顺手把那些对话掐掉：级联会静默掐死正在跑的对话，而显式 API 的价值就是「动作要有意识」。
  * 调用方的顺序是：先让会话停下（`ChatRunner.abort` / `forget`）+ 丢掉 agent
- * （`AgentRegistry.dispose`），再回来销毁 Scope。
+ * （`AgentRegistry.discard`），再回来销毁 Scope。
  *
  * `disposeAll` 是**收尾**用的，不拒绝：进程要退出了，那时已经没有「稍后再拆」这回事。
  *
@@ -51,8 +51,18 @@ import type { PeerSessionPort } from "@ai-zen/agents-sdk";
  * `setTimeout` 返回「取消函数」而不是句柄：假时钟与真定时器都能实现它，调用方不必知道
  * 句柄长什么样，也就不需要 `clearTimeout` 的第二个入口。
  *
- * 本文件自己**不再用**它做任何回收（空闲计时已撤）；它留着是因为 `RunRegistry`、
- * `CompletionService` 与接线层仍在用同一个口径的时钟。
+ * 本文件自己**完全不用**它：空闲计时已撤，构造参数里也不再有 `clock`。导出留着是因为
+ * 真正的消费者在别处，用的还是同一个口径：`ChatRunner.ts` 里两个类（`ChatRunner` 用
+ * `now()` 记时间戳、`setTimeout` 做写库节流，`TurnSession` 也拿它记时刻）、`RunRegistry`
+ * （`Run.startedAt`）与接线层 `app.ts`（`options.clock` 注入点，再往下分给各服务），
+ * `runtime/index.ts` 只是转手再导出；测试助手 `TestSupport.ManualClock` 实现的就是它。
+ * `services/CompletionService` **不在**此列 —— 它自带形状相同的
+ * `CompletionClock` / `systemCompletionClock`，不引用这一份。
+ *
+ * 归属上这里只是「历史上的家」：它本来为 Scope 的空闲回收而生，回收撤掉之后没有任何
+ * ScopeRegistry 的代码碰它。真要收拢，它该搬到一个不依赖任何东西的叶子模块
+ * （如 `runtime/clock.ts`），这样 `ChatRunner` / `RunRegistry` 不必为了一个时钟去 import
+ * ScopeRegistry。本轮不动导出（那会牵动一圈 import）。
  */
 export interface Clock {
   /** 当前时刻（毫秒，`Date.now()` 口径） */
