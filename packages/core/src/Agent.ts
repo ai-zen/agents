@@ -462,7 +462,7 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * 跑一段：单飞 → 一组内循环 → 收尾钩子 → 段尾状态。
+   * 跑一段：单飞 → 一组内循环（含续圈）→ 收尾钩子 → 段尾状态。
    *
    * 两个入口共用：`send()`（自己 append 了 User 消息，等这一段跑完）、`deliver()`（`wake`：
    * 先把队列整体落地再跑，不等）。置位与起段之间**没有 await** —— 两个几乎同时进来的调用，
@@ -495,9 +495,134 @@ export class Agent extends AgentContext {
         throw new Error(`inner-loops-start 被插件拒绝: ${loopsDenied}`);
       }
 
-      // 整组内循环一条直线：段首不取件（被 `deliver` 叫起来的段已在起段时落完队列），
-      // 段内唯一的取件点在内循环末。要不要再跑一组由那一圈自己说。
-      await this.runLoops(sendCtx);
+      // 内循环：一圈 = 一次 API 请求 + 它引发的工具调用。段首不取件（被叫醒的段已在起段时
+      // 落完队列），段内唯一的取件点在内循环末；续圈只有两个理由 —— 模型要下一轮，或者取件
+      // 点插进了东西。
+      let needContinue = true;
+      while (needContinue) {
+        needContinue = false;
+
+        // 内循环开头统一添加 Assistant 占位：若最后一条不是 Pending 的 Assistant 则追加，
+        // 使 run 无论从 send（末尾 User）还是手动追加（末尾任意）都能自洽启动
+        const last = this.messages.at(-1) as Message | undefined;
+        if (
+          !last ||
+          last.role !== AgentNS.Role.Assistant ||
+          last.status !== AgentNS.MessageStatus.Pending
+        ) {
+          this.append(Message.Assistant());
+        }
+
+        const currentReceiver = this.messages.at(-1) as Message;
+        const currentController = new AbortController();
+        const pendingTask: PendingTask = {
+          controller: currentController,
+          receiver: currentReceiver,
+        };
+        // 整组记录 + 当前轮活跃任务
+        this.innerLoopsTasks.add(pendingTask);
+        this.innerLoopTasks.add(pendingTask);
+
+        // 每次请求前分发钩子（可刷新工具定义、安全护栏等）
+        const loopDenied = await this.dispatchHook("onInnerLoopStart", sendCtx);
+        if (loopDenied !== undefined) {
+          throw new Error(`inner-loop-start 被插件拒绝: ${loopDenied}`);
+        }
+
+        const messages = this.formatHistory();
+        const tools = this.formatTools();
+
+        try {
+          // 通过官方 SDK 发起流式对话请求（连接建立后即进入 Writing）
+          const stream = (await this.client.chat.completions.create(
+            {
+              // 先铺模型参数（temperature 等；可含厂商特有字段，如 DeepSeek thinking），
+              // 再写框架契约 —— **顺序不能反**：model / messages / tools / stream /
+              // stream_options 是框架自己保证的，配置里写同名键也不能把它们改掉
+              // （否则 `stream: false` 之类会直接把流式解析打崩）。
+              ...this.modelConfig,
+              model: this.model,
+              messages,
+              tools,
+              stream: true,
+              stream_options: { include_usage: true },
+            } as any,
+            { signal: currentController.signal },
+          )) as unknown as AsyncIterable<ChatCompletionChunk>;
+
+          (currentReceiver as AgentNS.Message).status = AgentNS.MessageStatus.Writing;
+          this.events.emit("open");
+
+          await this.parseStreamData(currentReceiver, stream);
+
+          const receiverStatus = currentReceiver.status as AgentNS.MessageStatus | undefined;
+          if (
+            receiverStatus === AgentNS.MessageStatus.Aborted ||
+            receiverStatus === AgentNS.MessageStatus.Error
+          ) {
+            // 本轮 assistant 已中止/出错：任务完成，finally 统一移除
+            continue;
+          }
+
+          currentReceiver.status = AgentNS.MessageStatus.Completed;
+
+          if (await this.handleToolCall(currentReceiver)) {
+            if (
+              (currentReceiver.status as AgentNS.MessageStatus | undefined) ===
+                AgentNS.MessageStatus.Aborted ||
+              (currentReceiver.status as AgentNS.MessageStatus | undefined) ===
+                AgentNS.MessageStatus.Error
+            ) {
+              // 本轮 assistant 被中止/出错：任务完成，finally 统一移除
+              continue;
+            }
+
+            // 需要继续下一轮：下一轮内循环开头统一追加 Assistant 占位
+            needContinue = true;
+          }
+
+          // 每次 内循环 完成（一次 API 请求 + 可能的工具调用）
+          await this.dispatchHook("onInnerLoopEnd", sendCtx);
+
+          // 取件点（**全 core 唯一一处**）：这一圈刚收尾（工具结果已进 messages）、下一圈的
+          // Assistant 占位还没补，此刻插进来的 User 消息排在工具结果之后，模型下一圈就能看见。
+          // 读法就是「high 先；这一组要停了，再给 low」：high 赶的是工具轮边界，low 等整组停下。
+          // 只有 running 才取：stopping / terminated / idle 一条都不取。
+          if (this.isRunning) {
+            if (this.takeInbox("high")) {
+              needContinue = true;
+            } else if (!needContinue && this.takeInbox("low")) {
+              needContinue = true;
+            }
+          }
+        } catch (error: any) {
+          currentReceiver.status = AgentNS.MessageStatus.Error;
+          currentReceiver.content = error.message;
+          // 错误正文落在消息上：先让订阅方看到这条消息的新样子，再报「这一轮出错了」
+          this.emitMessage(currentReceiver);
+          this.events.emit("error", error);
+        } finally {
+          // 每轮结束统一触发（无论正常/continue/异常）
+          this.events.emit("finally");
+          // 本轮 assistant 任务已完成，从活跃集合移除；
+          // 整组记录（innerLoopsTasks）保留至 run 结束统一清空
+          this.innerLoopTasks.delete(pendingTask);
+        }
+      }
+
+      // 归一化工具调用轮次：中断/不完整的轮次按策略统一为「整轮进出」，
+      // 保证 assistant（含 tool_calls）与其结果一一配对，避免服务端报错。
+      // 此处所有工具任务已 settled（handleToolCall 内 await Promise.all），无竞态。
+      reconcileAbortedToolRounds(
+        this.messages,
+        this.abortedToolRoundStrategy,
+        this.abortedToolRoundReason,
+      );
+
+      // 被中断的 assistant（不带工具调用）按策略决定去留：`keep` 时保留已输出的内容/思考，
+      // 让模型下一轮能接着半截往下说（`drop` 时 Aborted 消息不进历史）。
+      // 必须排在工具轮次归一之后：带 `tool_calls` 的消息已由上一个函数处理，此处只收尾纯内容消息。
+      reconcileAbortedMessages(this.messages, this.abortedMessageStrategy);
 
       // 整组内循环结束：含多轮工具调用，messages 为完整结果（正常/error/abort 均到达此处）。
       // 排在最后一圈取件点**之后**：到这里这一组真的不跑了（被 `abort` 按停时也不再取件），
@@ -518,160 +643,6 @@ export class Agent extends AgentContext {
   /** 没有一次`send()`在背后时的插件上下文（`run()` / `deliver()` 起段用） */
   private defaultSendContext(): SendContext {
     return { agent: this, content: "", messages: [...this.messages] };
-  }
-
-  /**
-   * 跑一组内循环：一圈接一圈，直到模型不再要求继续；然后 reconcile* 收尾。
-   *
-   * ## 为什么它从 `run()` 里拆出来
-   *
-   * 整组首尾的两个钩子（`onInnerLoopsStart` / `onInnerLoopsEnd`）是「一段各一次」的硬契约，
-   * 而「一圈接一圈」是另一件事：圈要续多少次由取件点与 `needContinue` 决定，与钩子发几次
-   * 无关。拆出来之后，`run()` 是一条直线（起段 → 一组内循环 → 收尾钩子 → 段状态），续圈与
-   * 停下的全部判据都只在本文里。
-   *
-   * `sendCtx` 一路透传：同一次 send 里各圈拿到的是同一个上下文实例（与改动前一致）。
-   */
-  private async runLoops(sendCtx: SendContext): Promise<void> {
-    // 内循环（一次 API 请求 + 它引发的工具调用）。
-    //
-    // 需要继续的条件只有两个：模型要下一轮（`needContinue`）、或轮末取件插进了东西
-    // （见循环末那个插入点）。
-    let needContinue = true;
-    while (needContinue) {
-      needContinue = false;
-
-      // 内循环开头统一添加 Assistant 占位：若最后一条不是 Pending 的 Assistant 则追加，
-      // 使 run 无论从 send（末尾 User）还是手动追加（末尾任意）都能自洽启动
-      const last = this.messages.at(-1) as Message | undefined;
-      if (
-        !last ||
-        last.role !== AgentNS.Role.Assistant ||
-        last.status !== AgentNS.MessageStatus.Pending
-      ) {
-        this.append(Message.Assistant());
-      }
-
-      const currentReceiver = this.messages.at(-1) as Message;
-      const currentController = new AbortController();
-      const pendingTask: PendingTask = {
-        controller: currentController,
-        receiver: currentReceiver,
-      };
-      // 整组记录 + 当前轮活跃任务
-      this.innerLoopsTasks.add(pendingTask);
-      this.innerLoopTasks.add(pendingTask);
-
-      // 每次请求前分发钩子（可刷新工具定义、安全护栏等）
-      const loopDenied = await this.dispatchHook("onInnerLoopStart", sendCtx);
-      if (loopDenied !== undefined) {
-        throw new Error(`inner-loop-start 被插件拒绝: ${loopDenied}`);
-      }
-
-      const messages = this.formatHistory();
-      const tools = this.formatTools();
-
-      try {
-        // 通过官方 SDK 发起流式对话请求（连接建立后即进入 Writing）
-        const stream = (await this.client.chat.completions.create(
-          {
-            // 先铺模型参数（temperature 等；可含厂商特有字段，如 DeepSeek thinking），
-            // 再写框架契约 —— **顺序不能反**：model / messages / tools / stream /
-            // stream_options 是框架自己保证的，配置里写同名键也不能把它们改掉
-            // （否则 `stream: false` 之类会直接把流式解析打崩）。
-            ...this.modelConfig,
-            model: this.model,
-            messages,
-            tools,
-            stream: true,
-            stream_options: { include_usage: true },
-          } as any,
-          { signal: currentController.signal },
-        )) as unknown as AsyncIterable<ChatCompletionChunk>;
-
-        (currentReceiver as AgentNS.Message).status = AgentNS.MessageStatus.Writing;
-        this.events.emit("open");
-
-        await this.parseStreamData(currentReceiver, stream);
-
-        const receiverStatus = currentReceiver.status as AgentNS.MessageStatus | undefined;
-        if (
-          receiverStatus === AgentNS.MessageStatus.Aborted ||
-          receiverStatus === AgentNS.MessageStatus.Error
-        ) {
-          // 本轮 assistant 已中止/出错：任务完成，finally 统一移除
-          continue;
-        }
-
-        currentReceiver.status = AgentNS.MessageStatus.Completed;
-
-        if (await this.handleToolCall(currentReceiver)) {
-          if (
-            (currentReceiver.status as AgentNS.MessageStatus | undefined) ===
-              AgentNS.MessageStatus.Aborted ||
-            (currentReceiver.status as AgentNS.MessageStatus | undefined) ===
-              AgentNS.MessageStatus.Error
-          ) {
-            // 本轮 assistant 被中止/出错：任务完成，finally 统一移除
-            continue;
-          }
-
-          // 需要继续下一轮：下一轮内循环开头统一追加 Assistant 占位
-          needContinue = true;
-        }
-
-        // 每次 内循环 完成（一次 API 请求 + 可能的工具调用）
-        await this.dispatchHook("onInnerLoopEnd", sendCtx);
-
-        // 取件点（**全 core 唯一一处**）：这一圈刚收尾（工具结果已进 messages）、下一圈的
-        // Assistant 占位还没补，此刻插进来的 User 消息排在工具结果之后，模型下一圈就能看见。
-        // 读法就是「high 先；这一组要停了，再给 low」：high 赶的是工具轮边界，low 等整组停下。
-        // 只有 running 才取：stopping / terminated / idle 一条都不取。
-        if (this.isRunning) {
-          if (this.takeInbox("high")) {
-            needContinue = true;
-          } else if (!needContinue && this.takeInbox("low")) {
-            needContinue = true;
-          }
-        }
-      } catch (error: any) {
-        currentReceiver.status = AgentNS.MessageStatus.Error;
-        currentReceiver.content = error.message;
-        // 错误正文落在消息上：先让订阅方看到这条消息的新样子，再报「这一轮出错了」
-        this.emitMessage(currentReceiver);
-        this.events.emit("error", error);
-      } finally {
-        // 每轮结束统一触发（无论正常/continue/异常）
-        this.events.emit("finally");
-        // 本轮 assistant 任务已完成，从活跃集合移除；
-        // 整组记录（innerLoopsTasks）保留至 run 结束统一清空
-        this.innerLoopTasks.delete(pendingTask);
-      }
-    }
-
-    // 归一化工具调用轮次：中断/不完整的轮次按策略统一为「整轮进出」，
-    // 保证 assistant（含 tool_calls）与其结果一一配对，避免服务端报错。
-    // 此处所有工具任务已 settled（handleToolCall 内 await Promise.all），无竞态。
-    reconcileAbortedToolRounds(
-      this.messages,
-      this.abortedToolRoundStrategy,
-      this.abortedToolRoundReason,
-    );
-
-    // 被中断的 assistant（不带工具调用）按策略决定去留：`keep` 时保留已输出的内容/思考，
-    // 让模型下一轮能接着半截往下说（`drop` 时 Aborted 消息不进历史）。
-    // 必须排在工具轮次归一之后：带 `tool_calls` 的消息已由上一个函数处理，此处只收尾纯内容消息。
-    reconcileAbortedMessages(this.messages, this.abortedMessageStrategy);
-
-    // 本方法到此结束：单圈内的「取件 → 续圈」已经全在上面那个循环里说完。
-    //
-    // - **低优先级取件点就在内循环末**（与 high 同一个插入点，只多一个 `!needContinue` 判据）：
-    //   `!needContinue` 那一刻就是「这一圈跑完没人要下一圈了」，正是 low 该进的时刻 ——
-    //   它不必等到 reconcile* 之后：那两个函数改的是已经发出去的 assistant / tool 消息，
-    //   与「末尾再插一条 User」不打架（插进来的 User 在它们眼里只是历史里的一条）。
-    // - **被叫停时不需要 `break`**：插入点自带 `isRunning` 判据，`stopping` / `terminated`
-    //   一律不取件、不续圈。
-    // - **循环退出后不再取件**：段首的落地归 `deliver()`（`takeInbox`），本方法不兼第二个职责。
   }
 
   /**
