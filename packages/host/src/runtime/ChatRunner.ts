@@ -80,7 +80,7 @@
  * `turns` / `RunRegistry`**，别处再记一份「在跑」就会与它们分叉。
  *
  * 两段窗口（`turns` 里还有现场、或 `runs` 还说在跑）里投进去的条目不会当场落地，而是进
- * 会话级待投列表（`waitlists`），等那一段结算完（`finishRuntime`）一次性 `deliverAll` ——
+ * 会话级待投列表（`waitlists`），等那一段结算完（`finishRuntime`）一次性 `deliver([...])` ——
  * 那一次落地既是「一条也不丢」，也是最省的一次请求（N 条同批落成 N 条 user message）。
  *
  * ## 三处刻意交给 core 的事
@@ -275,8 +275,8 @@ export interface ChatAgent {
    */
   inbox: AgentNS.InboxEntry[];
   /**
-   * 投一条待发内容（core 的 `deliver`）；core 在轮末（工具轮收尾之后 / 整段停下之后）把它落成
-   * 一条 User 消息，静止态时会顺手把段叫起来。
+   * 投一条待发内容（core 的 `deliver`，单条形态）；core 在轮末（工具轮收尾之后 / 整段停下之后）
+   * 把它落成一条 User 消息，静止态时会顺手把段叫起来。
    *
    * `messageId` 允许由投的人定死：宿主已经把 id 告诉客户端了（D5），落地那条必须用同一个，
    * 否则同一条内容会在屏幕上画两遍。
@@ -285,15 +285,16 @@ export interface ChatAgent {
    */
   deliver(input: AgentNS.InboxInput): AgentNS.DeliveryReceipt;
   /**
-   * 整批投一条（core 的 `deliverAll`）：**全部入队之后只唤醒一次**。
+   * 整批投（core 的 `deliver`，一批形态）：**全部入队之后只唤醒一次**。
    *
-   * 与 `deliver` 的区别只在「N 条同时到达」时的落地形状：`deliver` 一条一条投会变成「第 1 条
-   * 落地起段、其余 N-1 条在段内下一次取件点才落地」，而本方法让 N 条在**同一拍**落成 N 条
-   * User 消息（静止态）或落在**同一个**内循环边界（跑着）—— 一次模型请求就看见全部 N 条。
+   * 与单条的区别只在「N 条同时到达」时的落地形状：一条一条投会变成「第 1 条落地起段、其余
+   * N-1 条在段内下一次取件点才落地」，而一批让 N 条在**同一拍**落成 N 条 User 消息（静止态）
+   * 或落在**同一个**内循环边界（跑着）—— 一次模型请求就看见全部 N 条。
    *
-   * `ChatRunner.deliver` 攒够一批之后就走它：会话间投递天然是「几条一起到」的。
+   * 本文件的会话级投递（`ChatRunner.deliver`）攒够一批之后就走它：会话间投递天然是「几条
+   * 一起到」的。空数组 core 那边直接返回 `[]`（不入队、不叫醒）。
    */
-  deliverAll(inputs: AgentNS.InboxInput[]): AgentNS.DeliveryReceipt[];
+  deliver(inputs: AgentNS.InboxInput[]): AgentNS.DeliveryReceipt[];
   /** 事件广播口（core 的 `EventBus`）；本文件只用 `on`，返回值当「取消订阅」的句柄用 */
   events: { on(name: string, handler: (...args: never[]) => void): unknown };
 }
@@ -2238,7 +2239,7 @@ export class ChatRunner {
    *   2. **受理窗口**：`conversation.send` 已经 `runs.start`，现场却还没建（受理那半段在读库）。
    *      此刻投进去同样是「core 起段、宿主没有接住它的现场」。
    *
-   * 两段的出口相同：那一段（或那次受理）**结算之后**，把攒下的整批 `deliverAll` 出去。于是
+   * 两段的出口相同：那一段（或那次受理）**结算之后**，把攒下的整批 `deliver([...])` 出去。于是
    * 「攒够了一起投」既是正确性要求（一条也不能丢），也顺带成了最省的一次请求。
    */
   private readonly waitlists = new Map<string, DeliveryInput[]>();
@@ -2254,7 +2255,8 @@ export class ChatRunner {
    * 每段对话的投递串行链：**同一段对话的投递不并行**。
    *
    * 「结算 → 投递 → 再起段」这条链中间有 await（要装配 agent、要读会话行），两条投递同时走到
-   * `deliverAll` 就会各自叫醒一次。core 的单飞能保证不成两段，但「投递」这件事本身也不该并行：
+   * `deliver([...])`（一批形态）就会各自叫醒一次。core 的单飞能保证不成两段，但「投递」这件事
+   * 本身也不该并行：
    * 串起来之后，同一段对话的投递顺序 = 到达顺序，攒批也只攒一次。
    */
   private readonly deliveries = new Map<string, Promise<void>>();
@@ -2632,6 +2634,10 @@ export class ChatRunner {
   /**
    * 投一条内容给某段对话 —— **会话间投递的唯一入口**，调用方不必判断任何东西。
    *
+   * 与 core 的 `deliver` 撞名但不同层：那个是 **agent 级**的（投给一个 agent 的 inbox，收
+   * `InboxInput`），这个是**会话级**的（按 `conversationId` 找 agent / 攒批 / 复活，收
+   * `DeliveryInput`）；两名字各自稳定，不在这一层改名。
+   *
    * 它自己解决三件事（从前这三件散在 `PeerSessionService` 里，靠「先 enqueue、`null` 就 run、
    * `run` 抛错就记 dropped」猜出来的）：
    *
@@ -2640,7 +2646,7 @@ export class ChatRunner {
    * 2. **跑着 / 正在结算就攒着**：这一段还接话就交给它（那一段的取件点会带走，不新起一段）；
    *    接不了（正在结算）或现场还没建（受理中）就挂在会话级待投列表里，等那一段结算完一起投
    *    —— 这就是把「core 已 idle、宿主 `RunRegistry` 还没 finish」那一段落后窗口关掉的地方；
-   * 3. **攒够了一起投**：结算之后把待投列表里攒下的条目**一次性** `deliverAll` 出去
+   * 3. **攒够了一起投**：结算之后把待投列表里攒下的条目**一次性** `deliver([...])` 出去
    *    （= 一次 `flushInbox` 落成多条 user message、一次模型请求）。空闲时直接投。
    *
    * ## 为什么返回 `Promise<void>` 而不是回执
@@ -2652,8 +2658,8 @@ export class ChatRunner {
    *
    * 「结算 → 投递 → 再起段」这条链上有 await（装配 agent、读会话行），所以：
    *   - 同一段对话的投递走**一条串行链**（{@link serialized}）：来两条就排两次，不会各自叫醒；
-   *   - 每次进 `deliverAll` 之前都**再判一次**现场（`turns` / `RunRegistry`）—— 装配期间起了新段
-   *     的话，这一批就交给那一段，而不是再起一段；
+   *   - 每次真正投出去之前（`flushWaitlist`）都**再判一次**现场（`turns` / `RunRegistry`）——
+   *     装配期间起了新段的话，这一批就交给那一段，而不是再起一段；
    *   - core 自己的单飞是最后一道：真投到一段正在跑的 agent 上，它只会入队、不会起第二段。
    */
   async deliver(conversationId: string, input: DeliveryInput): Promise<void> {
@@ -2707,8 +2713,8 @@ export class ChatRunner {
       return;
     }
 
-    // 空闲：整批一起投（一次 `deliverAll` = 一次 `flushInbox` 落成多条 user message、一次请求）
-    agent.deliverAll(
+    // 空闲：整批一起投（一次 `deliver([...])` = 一次 `flushInbox` 落成多条 user message、一次请求）
+    agent.deliver(
       batch.map((entry) => ({
         content: entry.content,
         source: entry.source,

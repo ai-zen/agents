@@ -353,33 +353,35 @@ export class FakeAgent implements ChatAgent {
   }
 
   /**
-   * core 的 `deliver`：缺 id / 时间就地补，入队，广播 `inbox`。
+   * core 的 `deliver`：缺 id / 时间就地补，入队，广播 `inbox`；两种入参都收（一条拿一个回执，
+   * 一批拿等长的数组），与 core 同形。
    *
    * 回执的 `woke` 恒为 `false`：本假件不是真 Agent，没有「段」这回事（它的单飞由
    * {@link FakeAgent.aborted} 一个布尔量演着）。宿主不看这个字段，所以这里不假装。
-   */
-  deliver(input: AgentNS.InboxInput): AgentNS.DeliveryReceipt {
-    const pushed: AgentNS.InboxEntry = {
-      messageId: input.messageId ?? generateMessageId(),
-      source: input.source,
-      priority: input.priority,
-      content: input.content,
-      createdAt: new Date().toISOString(),
-    };
-    this.inbox.push(pushed);
-    this.events.emit("inbox", { agent: this, entry: pushed });
-    return { messageId: pushed.messageId, accepted: true, woke: false };
-  }
-
-  /**
-   * core 的 `deliverAll`：整批入队（本假件就是逐条 {@link deliver}）。
    *
-   * 它同样不演「叫醒」：假件没有段的生命周期（`status` 的往返是 core 的事），真 Agent 那一路
-   * 由 `ChatRunner.selfStart.test.ts` / `ChatRunner.deliver.test.ts` 用真 core `Agent` 钉。
-   * 宿主侧要的只是「这一批条目进队列了」，那一条这里演得准。
+   * 一批形态也只是逐条入队：假件没有「段」，也就没有「全部入队之后只唤醒一次」里的那个唤醒；
+   * 宿主侧要的只是「这一批条目进队列了」，那一条这里演得准。真 Agent 那一路由
+   * `ChatRunner.selfStart.test.ts` / `ChatRunner.deliver.test.ts` 用真 core `Agent` 钉。
    */
-  deliverAll(inputs: AgentNS.InboxInput[]): AgentNS.DeliveryReceipt[] {
-    return inputs.map((input) => this.deliver(input));
+  deliver(input: AgentNS.InboxInput): AgentNS.DeliveryReceipt;
+  deliver(inputs: AgentNS.InboxInput[]): AgentNS.DeliveryReceipt[];
+  deliver(
+    input: AgentNS.InboxInput | AgentNS.InboxInput[],
+  ): AgentNS.DeliveryReceipt | AgentNS.DeliveryReceipt[] {
+    const inputs = Array.isArray(input) ? input : [input];
+    const receipts = inputs.map((item) => {
+      const pushed: AgentNS.InboxEntry = {
+        messageId: item.messageId ?? generateMessageId(),
+        source: item.source,
+        priority: item.priority,
+        content: item.content,
+        createdAt: new Date().toISOString(),
+      };
+      this.inbox.push(pushed);
+      this.events.emit("inbox", { agent: this, entry: pushed });
+      return { messageId: pushed.messageId, accepted: true as const, woke: false as const };
+    });
+    return Array.isArray(input) ? receipts : receipts[0]!;
   }
 
   abort(): void {

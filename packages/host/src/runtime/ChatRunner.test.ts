@@ -473,9 +473,6 @@ describe("ChatRunner：结算", () => {
         deliver: () => {
           throw new Error("不该被叫");
         },
-        deliverAll: () => {
-          throw new Error("不该被叫");
-        },
         events: { on: () => undefined },
       },
     });
@@ -1543,11 +1540,7 @@ class ScriptedAgent implements ChatAgent {
 
   constructor(private readonly script: Array<{ deltas?: string[] }>) {}
 
-  deliver(): AgentNS.DeliveryReceipt {
-    throw new Error("ScriptedAgent 不承接 inbox（只用它验素材路径）");
-  }
-
-  deliverAll(): AgentNS.DeliveryReceipt[] {
+  deliver(): never {
     throw new Error("ScriptedAgent 不承接 inbox（只用它验素材路径）");
   }
 
