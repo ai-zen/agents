@@ -57,6 +57,7 @@
 | **W5 兜底治理** | `retry` / `fallback` / `catch` 密集文件逐文件清理 | 三列清单全覆盖；留的每条指得出消费者 | W1–W3 | ⬜ 未开始（依赖已就绪） |
 | **W6 运行期可输入与重开回看** | 跑中发送进 inbox（D14 改写）、`queued` 回包、排队数进运行状态、重开后子代理页签、会话列表带运行状态；客户端侧：运行中可输入、`/sessions`、状态栏对齐旧版 | PRD D14 / F-C12–F-C15 / F-I14 / F-I15 各有代码落点与用例；真 core 跑进真 `ChatRunner` 取到证 | W1 | **✅ 完成**（2026-11-15，落地方式见 §7.6） |
 | **W7 平级会话阶段 1** | 一段对话里的模型开另一段会话（`create_session` / `read_session_status`），跑完把结果投回并发起者，空闲时**唤醒**发起者 | PRD D33 / F-C16–F-C19 各有代码落点与用例；投递三分支（在跑 → 入队 / 空闲 → `run` / 失败 → `dropped` 出声）各有证据；阶段 2/3 的清单写清「没做」 | W6（复用它的跑中入队） | **✅ 完成**（2026-11-15，落地方式见 §7.7） |
+| **W8 agent 常驻与投递收口** | agent 从「每轮重新装配即弃」变成「常驻、一段对话一个、跨轮复用」；Scope 去掉空闲回收；配置改动改成就地刷新；投递收敛成一个入口；平级会话进阶段 2 | PRD D28 / D34–D38 各有代码落点（`文件:行区间` 见 §7.8）；代码里没有空闲计时、没有「谁在用」的引用计数；`send_to_session` / 回投跟结算 / 段开始复位 / 并发限额各有落点 | W6、W7 | **✅ 完成**（2026-11-15，落地方式见 §7.8） |
 
 ---
 
@@ -433,7 +434,7 @@ conversation.send
 
 三条不变量：① 只有**真的插进了条目**才续圈（防死循环：插件从不入队时这一次判空就退出，一次请求都不多发）；② 取件与续圈的判据是 `runStatus === "running"`（`stopping` / `terminated` / `idle` 一条都不取）；`abort()` **不碰** inbox —— inbox 是数据，终止不等于删除，被叫停的段没取走的条目等下一次外部驱动时一起发出，要作废排队得显式 `clearInbox()`；③ `TurnSession.enqueue` 里「判能不能排」与「推」之间**不允许有 await**（否则会出现「判完还开着、推的时候已关上」，条目落进一个再也不会被取走的 inbox，而宿主已经回了 `queued`）。装配期间来的那几句收进 `TurnSession.pending` 数组，`attach()` 那一刻按入队顺序冲进它的 inbox —— 不等待、也没有超时。
 
-**一处有意接受的退化**：收尾钩子（`onInnerLoopsEnd` / `onAfterSend`）期间投进来的条目，core 不再顺手带走；宿主这一轮收工即丢 agent，所以那几条**真的丢了**，只由 `ChatRunner.settle()` 的 `inbox-leftover` 告警出声（用户按停的那一轮不报：那是预期的）。于是「回了 `queued` 就一定落地」只在「取件点还够得着」的范围里成立：钩子窗口里回出去的 `queued` 不保证落地。
+**收尾钩子里的投递不归这一段消化**：`onInnerLoopsEnd` / `onAfterSend` 期间投进来的条目，core 不再顺手带走；这一段不会再发它们，只由 `ChatRunner.settle()` 的 `inbox-leftover` 告警出声（用户按停的那一轮不报：那是预期的）。agent 常驻之后条目本身**不丢**：它们留在 inbox 里，等下一次外部驱动的那一段取走（见 §7.8）；但「钩子窗口里回出去的 `queued` 不保证在这一轮落地」这条仍成立。
 
 ### 7.6.2 为什么排队消息的**首次写入**必须在落地那一刻
 
@@ -477,15 +478,18 @@ conversation.send
 
 | 条 | 落点（文件:行区间） | 一句话 |
 |---|---|---|
-| F-C16 建 | `packages/host/src/services/PeerSessionService.ts:189-279` | `create`：深度守卫 → 建会话（`agentId` 缺省继承父对话）→ `ensurePersisted` → `run` 开跑 → 立刻回 `{ sessionId, label }`，结算挂在 `void turn.done.then(...)` 上 |
-| F-C16 认人 | `packages/host/src/services/PeerSessionService.ts:180-187` | `bind(agent, conversationId)` 记一笔 `WeakMap`：core 的 `Agent` 上没有 `conversationId`，工具只拿得到 `ctx.agent` |
-| F-C16 拒绝 | `packages/host/src/services/PeerSessionService.ts:400-418` | `isModelUnresolved` 只看码不看文案（`config_invalid` / `not_found+entity=model`），于是「拿不到模型」是一条结构化拒绝而不是抛错 |
-| F-C17 问 | `packages/host/src/services/PeerSessionService.ts:281-298` | `status`：查不到就 `gone`（不抛错），拿得到就 `clip(..., 300)` 的摘要，**不给全量消息** |
-| F-C16 / F-C17 工具面 | `packages/sdk/src/scope/plugins/peers/peerSessionTools.ts:141-206`（`create_session`）、`:207-259`（`read_session_status`）、`PeerSessionsScopePlugin.ts:26-44`（不给端口就不产出工具） | 形状与用例说明都在 SDK 这一层；宿主实现端口，**SDK 不依赖 host** |
-| F-C18 投递 | `packages/host/src/services/PeerSessionService.ts:300-343` | `deliver`：先 `enqueue`（在跑 = 排进这一轮），拿 `null` 就 `run`（唤醒）；两步都投不出去 → `dropped` 并出声一次，不重试不补投 |
-| F-C18 不问交接 | `packages/host/src/app.ts:1108-1111` | `askHandoffAfterSettle` 的第一句就是 `if (facts.source !== "user") return` —— 唤醒轮次不挂问题 |
-| 接线 | `packages/host/src/app.ts:490-503`（端口注入，`run` / `enqueue` 晚绑定）、`:1056`（`createWorkspaceScopeFactory` 的 `peerSessions`）、`:1071`（造出 agent 之后 `bind`）、`packages/host/src/runtime/ScopeRegistry.ts:337-363`（给了端口才 `scope.use(new PeerSessionsScopePlugin(...))`） | 口子只有这四处；不给端口 = 老行为一个字不变 |
-| F-C19 来源注释 | `packages/host/src/runtime/ChatRunner.ts:410-426`（`withSourceNote`，唯一入口，拼装归 core 的 `inboxEntryContent`）、`:790-831`（`TurnSession.enqueue`，`storedContent` 也过它）、`:1291-1308`（`persistLandedQueued`：落库那份整份覆盖行内容 —— 所以注释必须在**入队时**就加）、`:1921-1936`（`ChatRunner.enqueue` 是跑中入队的入口） | 一句话：**发给模型的那份与落库的那份必须是同一份**，只有 `source === "user"` 原样 |
+| F-C16 建 | `packages/host/src/services/PeerSessionService.ts:286-373` | `create`：深度守卫 → 并发限额（`runningPeersOf` 数到 4 就 `too_many_peers`）→ 建会话（`agentId` 缺省继承父对话）→ `ensurePersisted` → `run` 开跑 → 立刻回 `{ sessionId, label }`（结果由这一段自己的结算回投，见下一行） |
+| F-C16 认人 | `packages/host/src/services/PeerSessionService.ts:256-258` | `bind(agent, conversationId)` 记一笔 `WeakMap`：core 的 `Agent` 上没有 `conversationId`，工具只拿得到 `ctx.agent` |
+| F-C16 拒绝 | `packages/host/src/services/PeerSessionService.ts:636-647`（`isModelUnresolved`，调用点在 `:328`） | 只看码不看文案（`config_invalid` / `not_found+entity=model`），于是「拿不到模型」是一条结构化拒绝而不是抛错 |
+| F-C17 问 | `packages/host/src/services/PeerSessionService.ts:381-392` | `status`：查不到就 `gone`（不抛错），拿得到就 `clip(..., 300)` 的摘要，**不给全量消息** |
+| F-C16 / F-C17 / F-C20 工具面 | `packages/sdk/src/scope/plugins/peers/peerSessionTools.ts:232-296`（`create_session`）、`:298-341`（`read_session_status`）、`:344-392`（`send_to_session`）、`PeerSessionsScopePlugin.ts:22-45`（不给端口就不产出工具） | 形状与用例说明都在 SDK 这一层；宿主实现端口，**SDK 不依赖 host** |
+| F-C18 / F-C21 回投 | `packages/host/src/services/PeerSessionService.ts:462-483`（`settleSegment`：一段结算 → 是派生会话就 `chatRunner.deliver` 投回父对话，一段一次）、`packages/host/src/runtime/ChatRunner.ts:2773-2795`（`deliver`：一个入口，内部包了复活 / 交给那一段 / 攒批三件） | 回投**不跟着 `create_session`**（那一句已删，否则第一段会投两遍）；父对话不存在才记 `dropped` 并出声一次，不重试不补投（归阶段 3） |
+| F-C21 段开始复位 | `packages/host/src/services/PeerSessionService.ts:407-411`（`onSegmentStart`）、`packages/host/src/app.ts:529-532`（`to === "running"` 那一拍接线） | 记录复位成 `running` + `resultDelivered = "pending"`：`read_session_status` 不在跑着时答 `idle`，并发限额也数得到 |
+| F-C21 并发限额 | `packages/host/src/services/PeerSessionService.ts:124`（`MAX_RUNNING_PEERS = 4`）、`:594-601`（`runningPeersOf`）、`:310-316`（超了回 `too_many_peers`） | 只数 `state === "running"`；`idle` / `failed` / `aborted` 不占名额 |
+| F-C20 发一句 | `packages/host/src/services/PeerSessionService.ts:538-551`（`send`）、`:560-572`（`rejectionOf`：血缘校验） | 只有父↔子能发；平级之间 `not_allowed`、查不到 `gone`，两种都是返回值；成功回 `{ ok: true, state }` → 工具面出 `{ accepted: true, state, hint }` |
+| F-C18 不问交接 | `packages/host/src/app.ts:1158-1190` | `askHandoffAfterSettle` 先看派生会话（`:1162`）、再看 `if (facts.source !== "user") return` —— 唤醒轮次不挂问题 |
+| 接线 | `packages/host/src/app.ts:496-503`（端口注入，`run` / `deliver` 晚绑定）、`:1100`（`createWorkspaceScopeFactory` 的 `peerSessions`）、`:1121`（造出 agent 之后 `bind`）、`packages/host/src/runtime/ScopeRegistry.ts:368`（给了端口才 `scope.use(new PeerSessionsScopePlugin(...))`） | 口子只有这四处；不给端口 = 老行为一个字不变 |
+| F-C19 来源注释 | `packages/host/src/runtime/ChatRunner.ts:625-633`（`withSourceNote`，唯一入口，拼装归 core 的 `inboxEntryContent`）、`:1154-1203`（`TurnSession.enqueue`，`storedContent` 也过它）、`:1804-1821`（`persistLandedQueued`：落库那份整份覆盖行内容 —— 所以注释必须在**入队时**就加）、`:2717-2732`（`ChatRunner.enqueue` 是跑中入队的入口） | 一句话：**发给模型的那份与落库的那份必须是同一份**，只有 `source === "user"` 原样 |
 
 ### 7.7.2 证据
 
@@ -498,7 +502,25 @@ conversation.send
 
 **反向验证记录**：把 `deliver` 的 `source` 改回 `会话「${label}」` 会红 `PeerSessionService*.test.ts` 四条；把 `TurnSession.enqueue` 里那一道 `withSourceNote` 拿掉，新用例红在「库里第 0 段是「看看这张」而不是注释行」。
 
-**本波没做**（阶段 2/3，别当已支持）：`send_to_session`、并发限额、超时与 `abort`、`/sessions` 的「agent 建的」标记、重启孤儿处理、补投。
+**本波没做**（阶段 3，别当已支持）：超时与 `abort`、`/sessions` 的「agent 建的」标记、`peer_sessions` 表与重启孤儿处理 / 补投。（阶段 2 的 `send_to_session`、回投跟结算、段开始复位、并发限额已在 §7.8 落地。）
+
+## 7.8 W8 agent 常驻与投递收口（2026-11-15，已完成）
+
+> 需求侧已写进 PRD（**D28 改写** + **D34–D38** + F-C20 / F-C21 / F-D11），本节只写落点。这一轮是**按代码事实回改文档**：动笔前逐条读代码核对过，改的全是「现在是什么」，带日期的历史行原样保留。
+
+| 条 | 落点（文件:行区间） | 一句话 |
+|---|---|---|
+| D28 agent 常驻 | `packages/host/src/runtime/AgentRegistry.ts:1-60`（类注释：一段对话一个、跨轮复用，`messages` 是内存真相）、`:243-271`（`acquire`：在且合用 → 复用同一个实例）、`packages/host/src/runtime/ChatRunner.ts:2526-2536`（`run()` 里 history 的来源二分：有 agent 就从它内存里取，首次装配才读库）、`:1317-1322`（`attach`：只有首次装配才 push 历史）、`:1870-1935`（`settle`：不再丢 agent，交 `complete` 判陈旧） | 常驻的全部机关就是 `acquire`；历史只有一份 |
+| D28 Scope 生命周期 | `packages/host/src/runtime/ScopeRegistry.ts:164-183`（`create` / `get` / `workspaceIds`）、`:209-233`（`refreshWorkspace`）、`:236-266`（`dispose` / `disposeAll`）、`:100-116`（`ScopeBusyError` 带 `conversationIds`） | 公开面只有这六个方法；撞上活着的 agent 只**拒绝**、不级联 |
+| D28 存活策略一处 | `packages/host/src/runtime/AgentRegistry.ts:243-350`（`acquire` / `complete` / `discard` / `invalidate` / `disposeAll` + 两个只读观测口）、`:126-160`（`AgentLifecycleReason` 的七个取值）、`packages/host/src/app.ts:539-541`（`onLifecycle` 落信息级日志） | 「这段对话为什么没有 agent」只有一个答案源 |
+| D34 配置就地刷新 | `packages/host/src/app.ts:1335-1360`（`refreshScopesFor`：刷已存在的 + `invalidate`）、`:1309-1320`（`createApplyPort`：报 `refreshedWorkspaceIds`）、`packages/sdk/src/scope/Scope.ts:186-193`（`refresh`：先换配置再让各插件 `discover`）、`packages/host/src/runtime/ScopeRegistry.ts:209-233`（失败不外抛）、`packages/host/src/services/ConfigService.ts:73-92`（字段语义注释）、`packages/host/src/wire/methods.ts:973`（出网字段） | 配置改动**不拆任何 Scope**；agent 靠 `invalidate` 换 |
+| D35 投递一个入口 | `packages/core/src/Agent.ts:385-508`（`deliver` 单条 / 一批：整批只唤醒一次、空数组返回 `[]`）、`:423-436`（「`status` 先于第一条 `message`」那条次序契约）、`packages/host/src/runtime/ChatRunner.ts:2773-2795`（会话级 `deliver`）、`:2799-2860`（`flushWaitlist`：交给那一段 / 复活 / 攒批）、`:490-520`（`DeliveryOutcome` 的三个 `state`） | **唤醒**与**复活**是两个词；回执只说「投递那一刻对方是什么状态」 |
+| D36 自起的段 | `packages/host/src/runtime/ChatRunner.ts:2413-2479`（`onAgentStatus` → `startSelfRun`：同步建现场）、`:876-900`（`self-started` 这一段是什么、两条 id 都不预分配）、`:1405-1418`（自起段里被 core 落地的那条 user 消息当场写库） | 有完整 turn 上下文（落库 / `run.state` / 可 abort / 正常结算） |
+| D37 退出判据 | `packages/host/src/app.ts:848-860`（`checkExit`：只判连接与在跑的轮次）、`:862-905`（`doStop`：`agents.disposeAll` → `scopes.disposeAll`） | 「手里还有 Scope」不再是判据；没有空闲计时器 |
+| D38 平级会话阶段 2 | `packages/host/src/services/PeerSessionService.ts:538-551`（`send`）、`:560-572`（`rejectionOf`：血缘 / `gone` / `not_allowed`）、`:407-411`（`onSegmentStart` 复位）、`:462-483`（`settleSegment`：一段一次回投）、`:124` + `:594-601` + `:310-316`（限额 4 / 计数 / `too_many_peers`）、`packages/sdk/src/scope/plugins/peers/peerSessionTools.ts:344-392`（`send_to_session`）、`packages/host/src/app.ts:529-532`（段开始接线）、`:615-621`（回投挂在 `onTurnSettled` 上） | 回投跟**结算**，不跟 `create_session` |
+| F-D11 压缩归一 | `packages/host/src/storage/migrations.ts:206-223`（迁移 v2 加 `compactedAt` / `compactionMode`）、`packages/host/src/runtime/ChatRunner.ts:3220-3232`（`AutoMigratePlugin` + `resolveMode` → `"self"` / `null`）、`packages/host/src/app.ts:1110-1115`（`isDerivedSession` / `onCompacted`）、`:1158-1166`（`askHandoffAfterSettle` 的两条守卫：派生会话不问、`source !== "user"` 不问）、`packages/host/src/services/ConversationService.ts:801-813`（`markCompacted`）、`packages/host/src/services/HandoffService.ts:462-467`（`then: "new_conversation"` 才记 `manual`）、`packages/host/src/services/PeerSessionService.ts:274-278`（`isPeerSession`） | 派生会话自己压（`auto`）；用户会话仍在停下来的那一轮问 |
+
+**自证（文档改动不跑测试）**：任务里那条门禁 grep（七个旧词）除带日期的历史行外为空；`git diff --stat` 里没有 `src/` 下的任何文件。
 
 ## 8. 人的决策
 
@@ -564,7 +586,7 @@ conversation.send
 | 路径 | 是什么 |
 |---|---|
 | `agents/packages/host/docs/PRD.md` | 需求唯一来源（89 条能力 + 锁定决策 L / D） |
-| `agents/packages/host/docs/architecture.md` | 宿主结构（A1–A13） |
+| `agents/packages/host/docs/architecture.md` | 宿主结构（A1–A15） |
 | `agents/packages/host/docs/plan-questions.md` | 实施者自决与待核（QD 条目） |
 | `agents/packages/host/docs/PLAN.md` | **本文件** |
 | `agents/.ai-zen/handoffs/*.md` | 交接记录（历史，不假造过去，不改） |

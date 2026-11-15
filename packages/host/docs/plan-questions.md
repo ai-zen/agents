@@ -44,8 +44,8 @@
 - [src/runtime/ChatRunner.ts] D3/R1 的临时对话不入库、不推流式事件，而 `ChatRunner` 的骨架就是「落库 + 推事件」：临时对话要不要一个不落库的变体（只借 Scope、跑完把消息一次返回），还是它根本不走 `ChatRunner`？
 - [src/runtime/ChatRunner.ts] `createSdkAgentFactory` 的交接线插件要注入 `HandoffService`（用它的 `busy` 与交接回合钩子）；未注入时 `AutoMigratePlugin` 与交接工具守卫都不装 —— 没有交接服务就无从交接。这个降级要不要在装配处报一次 warn／通知？
 - [src/runtime/ChatRunner.ts] 服务层的 `ConversationRuntimePort` 里有「临时换模型 / 临时思考档位 / forget」三样进程内状态，但它们只有装配 agent 时才用得上：我在 `SdkAgentFactoryOptions` 留了 `resolveModelId` / `resolveModelParams` 两个缝，`ChatRunner.forget()` 也已提供；这三样状态的**持有者**要不要放进 `runtime/`（现在只有服务层契约、没有实现者）？
-- [src/runtime/ScopeRegistry.ts] `recycleAll()`（配置变更重连 MCP，F-E2）我实现成「空闲的立刻销毁，正被持有的打标记、最后一次 `release` 时销毁」，避免把跑到一半的那一轮的工具能力抽掉；若裁定要「立刻全部销毁」，改一处即可。
-- [src/runtime/ScopeRegistry.ts] plan §1 的回调名是 `onIdle(cb)`、任务描述是 `onAllRecycled(cb)`：我按后者实现（语义「全部回收完，根对象据此判退出」），文档回改时以哪个为准？
+- ~~[src/runtime/ScopeRegistry.ts] `recycleAll()`（配置变更重连 MCP，F-E2）我实现成「空闲的立刻销毁，正被持有的打标记、最后一次 `release` 时销毁」……~~ **已改口径（2026-11-15，以代码为准）**：配置变更不再拆任何 Scope，改成对已存在的 Scope 调 `refresh()` 就地重读配置 + 让各插件重新发现（MCP 连接按定义对账断旧的），实例还是同一个；agent 靠 `AgentRegistry.invalidate` 换掉（空闲的当场退役、在跑的结算时退役）。`ScopeRegistry` 现在的公开面只有 `create` / `get` / `refreshWorkspace` / `dispose` / `disposeAll` / `workspaceIds`（PRD D34）。
+- ~~[src/runtime/ScopeRegistry.ts] plan §1 的回调名是 `onIdle(cb)`、任务描述是 `onAllRecycled(cb)`……~~ **无对象了（2026-11-15，以代码为准）**：空闲回收整个撤掉了，既没有 `onIdle` 也没有「全部回收完」这个回调 —— Scope 不再自己消失（PRD D28）。
 - [src/runtime/ScopeRegistry.ts] `createWorkspaceScopeFactory` 只做 SDK 口径的装配（`allInOne` 五类插件 + `init()`）；MCP 的 5 层链（L9）与 skills / tools / sub-agents 的各层目录要由接线层按 cwd 算好传进来（这两件事归配置层 W4-G）。
 - [src/runtime/RunRegistry.ts] （自决）忙即拒的 `HostError("busy")` 在 `detail` 里带 `{ conversationId, startedAt, aborted }`：文案键 `error.busy` 没有占位符，所以「在忙什么」这个事实只放结构化字段里，不改文案。
 - [src/runtime/ChatRunner.ts] （自决）一轮的用量三个口径定为：`turn` = 本轮全部产出消息的 `sumUsage`（含本轮子 Agent）、`total` = 历史 + 本轮、`subAgent` = 全部消息里 `subAgentUsage` 之和；`rate` 按输出 token / 秒、两位小数。
@@ -65,7 +65,7 @@
 - [src/net/WsHub.ts] R47 的缓冲按「请求参数里的 `conversationId`」挂起该对话的推送，回包写完按序放行：这意味着 `message.list`、`conversation.abort` 这类同对话的请求也会短暂缓冲同对话的事件。认这个口径，还是只对 `conversation.send` 这类「受理即返回」的方法缓冲？
 - [src/app.ts] R13 说 `HostPaths` 加 `configFile`，但 `config.ts` 里没有这个字段：我在 `app.ts` 按 `<dataRoot>/config.json` 拼出来交给 SDK 的 `ConfigManager`。要让 `config.ts` 补这个字段（并把 R13 的落点写对）吗？
 - [src/app.ts] 启动时调了一次 SDK 的 `ConfigManager.bootstrap()`（目录 + config.json + 默认助手 / 子 Agent + mcp.json + 出厂 skills + 思考策略表）：这属于「配置层」的财产，本轮由单根代做，W4-G 若有别的口径（例如只 `ensureDirs`、其余由 ConfigService 管）请指定。
-- [src/app.ts] 退出判据缺一个触发源：`WsHub` 只提供 `connectionInfos()`（拉），没有「连接数变化」的回调，所以「最后一条连接走了」由 `app.ts` 里 1s 的巡检定时器发现（`ScopeRegistry.onAllRecycled` 与每轮结算各能立刻触发一次重算）。要不要在 `net/WsHub` 补一个 `onConnectionsChanged` 回调以去掉巡检？
+- ~~[src/app.ts] 退出判据缺一个触发源：`WsHub` 只提供 `connectionInfos()`（拉），没有「连接数变化」的回调……~~ **已补（2026-11-15，以代码为准）**：`WsHub` 现在有 `onConnectionsChanged`，1s 巡检早已撤掉；退出判据只剩两条（连接数 0 且已经握过手、没有在跑的轮次），`ScopeRegistry` 也不再参与判据（PRD D37）。
 - [src/app.ts] L4 的「没有活对话也没有连接后进程退出」在刚启动时会把「还没人来连」判成该退出：我加了「至少服务过一条连接（握手成功或连上过）之后才判退出」的口径。认不认？
 - [src/app.ts] `conversation.state` 没有服务层实现者（`ConversationService` 只有 get/list/rename/…）：我在 `app.ts` 把「视图 + 这一轮的 `RunState` + 库里消息求和 + 模型阈值」拼成 `ConversationState`；其中 `questions` 与 `statusBlocks` 先空着（问题对象归 W4-H、状态栏块归 W4，PRD F-I6）。要不要把它收进 `ConversationService`（或新建一个 StateService）？
 - ~~[src/app.ts] `host.usage` 的三个范围（对话 / 项目 / 整机）现在靠「遍历对话 + 逐个 `messageService.list` 求和」实现：要不要仓储补一个按项目 / 整机的用量聚合查询，免得按对话逐个拉全量消息？~~ **作废（2026-11-14）**：`host.usage` 已从契约面整体删除（裁定 W1-9；`METHOD_NAMES` 现为 63 条，里面没有它）。用量只剩 `conversation.state.usage` 一个口径（`UsageSnapshot` 的 `turn` / `total` / `subAgent` / `rate`），「项目 / 整机」聚合没有任何客户端需要 —— 这个问题因此没有对象了：既没有 `host.usage` 可优化，也不该为它给仓储加聚合查询。原文留在这里，当「为什么删」的记录。
@@ -91,7 +91,7 @@
 - [src/services/ConfigService.ts] `config.saveEndpoint` 的密钥口径：省略 = 保留；传回来的值恰好等于当前掩码 = 当作没改；空串 = 清掉。第三种是唯一能删除密钥的写法，需要客户端明确这么做。
 - [src/services/ConfigService.ts] `config.get` 的 `issues` 我出了 6 类：端点没密钥（warning）、模型指向不存在的端点（error）、`handoff >= guard`（warning）、默认模型 / 迁移模型 / 取名模型指向不存在（error）、默认图片模型指向不存在（error）、默认助手不存在（warning）。`code` 用稳定小写下划线串（`endpoint_no_key` / `model_endpoint_missing` / `threshold_order` / `default_model_missing` / `default_image_model_missing` / `default_agent_missing`）。这是客户端要分支的稳定码，要 PM 过一遍。
 - [src/services/ConfigService.ts] `ConfigApplyReport.restartRequired` 我恒为 `false`（F-E2：改完配置靠重连生效）。如果以后有「必须重启才生效」的配置项（例如监听端口），这个字段由那一处置 true。
-- [src/services/ConfigService.ts] 「让改动生效」做成注入点 `ConfigApplyPort.apply(change) → { recycledWorkspaceIds, noticeId }`：配置服务只描述「变了什么」，回收 Scope（`ScopeRegistry.recycleAll()`）与合成通知（F-F9）归组装层。未注入时回报 `recycledWorkspaceIds: []`、`noticeId: null`。单根要记得注入。
+- [src/services/ConfigService.ts] 「让改动生效」做成注入点 `ConfigApplyPort.apply(change) → { refreshedWorkspaceIds, noticeId }`：配置服务只描述「变了什么」，刷 Scope（`ScopeRegistry.refreshWorkspace`）与合成通知（F-F9）归组装层。未注入时回报 `refreshedWorkspaceIds: []`、`noticeId: null`。（2026-11-15 校正：字段名是 `refreshedWorkspaceIds`，语义是「已**就地刷新**」而不是「已回收」。）
 - [src/services/CompletionService.ts] 不新增依赖的前提下，「glob」是手写的递归遍历（跳过 `node_modules` / `.git` / `dist`，不跟符号链接、深度上限 32）。要真 glob 语义（`**` 之类）得引依赖，或让 PM 指定用 `node:fs` 的 `glob`。
 - [src/services/CompletionService.ts] 第一次问 `completion.files` 我**立刻回 `scanning` 并在后台扫**（`completion.scanning` 的文案正是「再多打几个字符它就出来了」），扫完之后的请求才回 `ready`。所以 UI 第一下必然看到「还在读」。认不认？另外我留了 `prefetch(workspaceId)`，组装层可以在项目打开时预热一次，让第一次按 `@` 就是 `ready`。
 - [src/services/CompletionService.ts] 扫描超时（5s）时我把已经读到的那些照常给出去并标 `problem = completion.timedOut`（一条都没读到时才是 `unavailable`）。另外加了 `completion.noFolder`（目录已不存在）与 `completion.truncated`（到 20000 条上限）两条键。
@@ -116,7 +116,7 @@
 - [src/services/NoticeService.ts] 事件的按连接本地化（`WsHub` 的 `localizeEvent`）我提供 `createEventLocalizer()`，同时覆盖 `notice` 与 `question` 两类载荷（其余事件原样返回）；接线层注入它即可，不需要每个服务各接一份。
 - [src/services/QuestionService.ts] 问题「挡不挡着对话」的缺省值是**挡**（两种 kind 都是）：问题就是为「停下来问」而造的，不挡就是白问。`blocking` 仍可由创建方显式给 `false`，但目前没任何创建方那么写。
 - [src/app.ts] 单实例的「活着」用 `process.kill(pid, 0)` 探活（不额外连一次端口）：pid 被系统复用时会把一个陌生进程当成「已有实例」并去挂靠它的地址。要不要在探活之后再校验 `host.json` 里的 `host:port` 真的连得上？
-- [src/app.ts] 退出判据缺一个触发源：`WsHub` 只提供 `connectionInfos()`（拉），没有「连接数变化」的回调。按「不另起计时器（A10）」的口径，判据只在 `ScopeRegistry.onAllRecycled` 与每轮结算时重算，于是「连过、但没建过 Scope 就断开」的进程会一直活着（旧的 1s 巡检方案已按裁定撤掉）。补齐要在 `net/WsHub` 加 `onConnectionsChanged`，那个文件不在 W3-F 的范围。
+- ~~[src/app.ts] 退出判据缺一个触发源：`WsHub` 只提供 `connectionInfos()`（拉），没有「连接数变化」的回调……~~ **已补（2026-11-15，以代码为准）**：`WsHub.onConnectionsChanged` 已在，「连过、但没建过 Scope 就断开」那种进程现在会正常收尾退出；判据不看 Scope（PRD D37）。
 - [src/app.ts] 挂靠别人的实例时（单实例发现已有进程在跑），本进程仍然建库、跑迁移、`ConfigManager.bootstrap()`（这些都是 `HostApp.create` 里做的）。要不要让「挂靠」这条路连库都不开？
 - [src/app.ts] `--port 0`（让系统分配）我在 `app.ts` 里单独放行：`config.resolveListenTarget` 把 0 当非法端口、会回落到 8790。R12 要不要把「0 表示让系统分配」写进合法端口？
 - [src/handlers/index.ts] handler 表现在由 `createHandlers(deps)` 拼，W4 的域（config/agent/model/notice/question/handoff/completion）要进同一张表，就得改 `handlers/index.ts` 并在 `app.ts` 里造好它们要的服务 —— 这两处都在 W3-F 的文件范围里，需要指派由谁接、按什么顺序接（眼下它们自然落 `unsupported`）。
@@ -134,7 +134,7 @@
 - [src/i18n/en.ts, src/i18n/zh.ts] 能力清单的标题与说明必须是 `LocalizedText`，也就必须落在 i18n 键上（`capability.<方法名>` 与 `capability.<方法名>.detail`）：我按「只做加法」两语言各加了 126 个键。i18n 不在 W4-X 的可改清单里，这一处请 W1-B 或 PM 过一遍语气与用词（键名与清单一一对应，用例会钉住「每个方法都有键」）。
 - [src/app.ts] `host.upgrade` 的「重启」我实现成「磁盘版本已经比运行版本新（或请求的目标版本已落盘）→ 安排一次收尾，进程退出，由启动方式/宿主重新拉起」；宿主自己 `exec` 回自己没有做 —— 「谁负责重新拉起」是产品口径（本地客户端拉起 / systemd / 手动），不该由宿主假设。要宿主自己 re-exec 的话，下一轮在 `cli.ts` 里补。
 - [src/storage/migrations.ts] `notices.conversationId` 按 R32 直接改进 v1（这套表结构还没随版本发出去），没有追加 v2。它是可空外键 + `ON DELETE CASCADE`：删对话时它名下的通知跟着走，全局通知（NULL）不受影响。
-- [src/app.ts] 配置生效（`ConfigApplyPort`）的回收粒度：只改某个项目的 MCP（`workspace` 作用域）→ 只拆那个项目的 Scope；其余改动（端点 / 模型 / 上限 / 用户级 MCP / 默认项）影响所有 Scope → `recycleAll()`。报告里的 `recycledWorkspaceIds` 对「正被持有」的 Scope 表示「已打标记、等最后一次 release 再销毁」（R52），不是「此刻已经销毁」；同时合成一条 `info` + 3 秒的通知（F-F9）。
+- [src/app.ts] 配置生效（`ConfigApplyPort`）的刷新粒度：只改某个项目的 MCP（`workspace` 作用域）→ 只刷那几个项目**已存在**的 Scope；其余改动（端点 / 模型 / 上限 / 用户级 MCP / 默认项）影响所有 Scope → 现存的全都刷（不存在的跳过，不为刷新去创建一个）。报告里的 `refreshedWorkspaceIds` 语义是「已就地刷新」（实例还是同一个，能力已重读），同时合成一条 `info` + 3 秒的通知（F-F9）。（2026-11-15 校正：不再有「拆 / 等最后一次 release」这回事，见 PRD D34。）
 - [src/app.ts] 退出判据补上了第四个触发源 `WsHub.onConnectionsChanged`（W3-F 记的缺口），并且「服务过」的判定收紧成「有连接握过手」：只看「连上来过」会让端口扫描器留下的空连接把宿主送走。另一个后果是「最后一条连接断开且什么都不欠」时进程会自己退 —— 这正是 L4 的口径，但本机客户端要能接受「重连时宿主可能已被重新拉起」。
 - [src/app.ts] R50 的那条警告改成「第一次装配 agent 时推一次」，不是启动时推：交接插件的有无是**装配能力**的事实，启动就推会让一次正常安装在通知栏里永久挂着一条警告（永久通知只能手动清，L3）。
 - [src/host.integration.test.ts] 契约里没有「提一个问题」的方法（问题的产生方是交接线 / 不可撤销动作的二次确认，都在宿主内部）。集成用例因此在进程之间用同一个库写一行问题再读回来。客户端若要能自己造问题（调试、测试、脚本），需要在契约里加一条 `question.ask`。
