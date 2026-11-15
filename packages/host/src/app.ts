@@ -1,5 +1,5 @@
 /**
- * `HostApp` —— 单根对象：把零件接成一台真能跑、能被连的服务（architecture §3 / §4）。
+ * `HostApp` —— 单根对象：把零件接成一台真能跑、能被连的服务（PLAN §3 / §4）。
  *
  * 这个文件的边界是三件事：
  *
@@ -8,7 +8,7 @@
  *   2. **启停**：`start()` 决定监听在哪、把**实际**地址写进发现文件；`stop()` 对称地拆回去
  *      （摘发现文件、断连接、关上传、销毁 Scope、关库）。
  *   3. **判据**：什么时候「什么都不欠了」可以退出（PRD L4 / 裁定 R53），以及启动时
- *      「这台机器上是不是已经有人在服务」（单实例，architecture §2）。
+ *      「这台机器上是不是已经有人在服务」（单实例，PLAN §8）。
  *
  * 方法实现不在这里：每个域的 handler 在 `handlers/`，由 {@link createHandlers} 拼成一张表交给
  * `WsHub`。本文件只给它们提供持有者（服务、运行时、配置、时钟）与几个只有它才接得起来的钩子：
@@ -779,7 +779,7 @@ export class HostApp {
       return this.listening;
     }
 
-    // 本地实例的凭证交付：客户端首次连接时直接取这份（PRD A5 / architecture §2）
+    // 本地实例的凭证交付：客户端首次连接时直接取这份（PLAN A5 / §8）
     if (this.local) await createLocalCredential(this.db, this.paths);
     this.presets = await this.configManager.readReasoningPresets();
 
@@ -960,7 +960,7 @@ export class HostApp {
   }
 
   /**
-   * 启动时的单实例自查（architecture §2：发现文件是「这台机器上谁在服务」的唯一真相）。
+   * 启动时的单实例自查（PLAN §8：发现文件是「这台机器上谁在服务」的唯一真相）。
    *
    * 三种情况分开处理：
    *   - 没有文件：没人服务，正常起；

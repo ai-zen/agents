@@ -1,5 +1,5 @@
 /**
- * handler 表的唯一出口（architecture §3 / §6）。
+ * handler 表的唯一出口（PLAN §3 / §6）。
  *
  * `WsHub` 只认一张表：方法名 → 实现。方法名的真相在 `wire/methods.ts`（`MethodMap`），
  * 这里把每个有实现者的域拼起来交给接线层。

@@ -1,5 +1,5 @@
 /**
- * `ScopeRegistry` —— key（workspaceId / 临时对话的目录键）→ `Scope` 的持有者（architecture §4）。
+ * `ScopeRegistry` —— key（workspaceId / 临时对话的目录键）→ `Scope` 的持有者（PLAN §4）。
  *
  * 一个 Workspace 一个 Scope（PRD D9）：同一 Workspace 下的多段对话复用同一个 Scope。
  * 这个文件只回答两个问题：**现在有没有**（`create` 幂等 get-or-create / `get` 只看不建）、
@@ -13,7 +13,7 @@
  *     `disposeAll()`（进程收尾）。中间不会因为「没人用」而消失 —— 也没有「没人用」这个
  *     可判定的状态：Scope 是能力容器，它不属于某一段对话；
  *   - 因此本文件不再记引用计数（那是自动回收的输入），也不再持有计时器
- *     （architecture §4 曾经唯一的那个空闲计时已撤掉）。
+ *     （PLAN §4 曾经唯一的那个空闲计时已撤掉）。
  *
  * 「这个 Scope 上还活着几个 agent」是 `AgentRegistry` 的账，不是这里的账：本文件只在
  * `dispose` 时**问一句**（{@link ScopeRegistryOptions.liveConversations}），有活的就拒绝。

@@ -50,7 +50,7 @@ export function createWorkspaceHandlers(deps: WorkspaceHandlerDeps): HandlerTabl
  *   1. 先记下名下的对话（删完就问不出来了，而运行时里它们的现场要一起丢）；
  *   2. 服务层删行（它顺带让运行时忘掉那几段对话的临时覆盖，以及删完之后清归零的素材字节）；
  *   3. 逐段对话丢掉这一轮的现场，并推一条 `deleted`（多端在线时对方界面靠它去拉）；
- *   4. 销毁这个 Workspace 的 Scope —— MCP 连接在这里断开（architecture §4 销毁缘由之一）。
+ *   4. 销毁这个 Workspace 的 Scope —— MCP 连接在这里断开（PLAN §4 销毁缘由之一）。
  *
  * 第 3 步已经把名下那几段对话的现场丢了（`forget`：叫停 + 摘掉 agent 登记），于是第 4 步
  * 不会因为「还活着的 agent」被拒绝。真撞上了（比如某个 agent 不是经 `AgentRegistry` 造的），

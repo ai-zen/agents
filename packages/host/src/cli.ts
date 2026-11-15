@@ -269,7 +269,7 @@ async function runTokenRevoke(paths: HostPaths, credentialId: string): Promise<v
  * `serve`：前台起服务。
  *
  * 启动后打印四样东西：实际监听地址（端口可能是系统分配的）、版本、发现文件、本地凭证交付文件
- * —— 客户端要连的就是前两个，本机免输凭证靠的是第三个（PRD A5 / architecture §2）。
+ * —— 客户端要连的就是前两个，本机免输凭证靠的是第三个（PLAN A5 / §8）。
  * 日志落在哪儿也报一行（PRD F-J2：界面被占满时那是唯一的去处）。
  *
  * 端口的三档来源（D25 / 裁定 R67）：`--port` > `<数据根>/host.json` 的 `port` > 默认 8790。

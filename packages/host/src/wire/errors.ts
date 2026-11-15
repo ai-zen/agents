@@ -8,7 +8,7 @@ import {
 /**
  * 业务码与错误类。
  *
- * 分工（architecture §6）：JSON-RPC 的 `error.code` 是数字（协议层），`error.data` 里才是
+ * 分工（PLAN §6）：JSON-RPC 的 `error.code` 是数字（协议层），`error.data` 里才是
  * 产品要用的三样东西 ——
  *   - `data.code`：**稳定业务码**，小写下划线，客户端据此分支（换文案不该改它）；
  *   - `data.message`：已按连接语言渲染好的人话（PRD D8：宿主自己做多语言）；

@@ -17,7 +17,7 @@ const localized = (key: "question.handoff.prompt") =>
   ({ code: key, messageKey: key, params: {}, message: key }) as const;
 
 describe("事件表", () => {
-  it("就是 architecture §7 的那六个事件", () => {
+  it("就是 PLAN §6 的那六个事件", () => {
     expect([...EVENT_NAMES]).toEqual([
       "run.state",
       "message.delta",

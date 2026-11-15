@@ -869,7 +869,7 @@ export class ConversationService {
   /**
    * 推一条 `conversation.changed`（L5 / D22：两个窗口同时开着时，对方界面靠它去拉）。
    *
-   * 只报「什么变了 + 够用的定位信息」，不搬整个对象（architecture §7）。
+   * 只报「什么变了 + 够用的定位信息」，不搬整个对象（PLAN §6）。
    */
   private emitChanged(
     conversationId: string,

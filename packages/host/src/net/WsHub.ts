@@ -1,5 +1,5 @@
 /**
- * `WsHub` —— 一条 WebSocket 上的接线层（architecture A2 / §6）。
+ * `WsHub` —— 一条 WebSocket 上的接线层（PLAN A2 / §8）。
  *
  * 它只做四件事，一件也不多做：
  *

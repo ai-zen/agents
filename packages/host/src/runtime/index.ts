@@ -1,7 +1,7 @@
 /**
  * 运行时的出口：Scope 的持有、agent 的持有、轮次占位、一轮的执行者。
  *
- * 这几块是「比 service 更长寿」的那一层（architecture §3）：`ScopeRegistry` /
+ * 这几块是「比 service 更长寿」的那一层（PLAN §3）：`ScopeRegistry` /
  * `AgentRegistry` / `RunRegistry` 随进程存活，ChatRunner 无状态（每轮现造），
  * 都由单根注入依赖，不导出任何模块级单例。
  */

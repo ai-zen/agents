@@ -364,7 +364,7 @@ export class MessageService {
   }
 
   /**
-   * 读一段对话的消息（architecture A12 / PRD F-C6）。
+   * 读一段对话的消息（PLAN A12 / PRD F-C6）。
    *
    * - 不给 `after`、也不给 `around`：整段历史；
    * - 给了 `after` 且该 id 就在这段对话里：**从这条开始**（含它，内容是最新的，可能是流式中那条的

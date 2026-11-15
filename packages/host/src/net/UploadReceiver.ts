@@ -1,5 +1,5 @@
 /**
- * 上传接收器：`asset.begin` → 若干二进制帧 → `asset.end`（architecture A11 / PRD D5、F-H8）。
+ * 上传接收器：`asset.begin` → 若干二进制帧 → `asset.end`（PLAN A11 / PRD D5、F-H8）。
  *
  * 三段式的分工：
  *   1. `asset.begin`（JSON-RPC 请求）：声明用途、类型、总字节数。**超限在这里就拒**（PRD D5：

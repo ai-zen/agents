@@ -1,5 +1,5 @@
 /**
- * `AgentRegistry` —— agent **存活管理的唯一拥有者**（architecture §4）。
+ * `AgentRegistry` —— agent **存活管理的唯一拥有者**（PLAN §4）。
  *
  * 「agent 还活着没有」这个事实只有一处：本文件的 `entries`。「它该不该活着」这个策略也
  * 只在这里 —— 别处（`ChatRunner` / 交接 / 收尾）只报事件，不再自己判生灭。

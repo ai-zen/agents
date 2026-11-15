@@ -33,7 +33,7 @@ import type {
 /**
  * 方法表：方法名 → 入参 / 出参。
  *
- * 命名按 `<域>.<动作>`（architecture §6）。每一段前的注释写清它服务 PRD §4 的哪条能力
+ * 命名按 `<域>.<动作>`（PLAN §6）。每一段前的注释写清它服务 PRD §4 的哪条能力
  * 编号，以及那条能力的落点为什么在宿主 —— 这是接线与前端对齐时唯一的索引。
  *
  * 两条贯穿全表的口径：
@@ -91,7 +91,7 @@ export interface ReferenceList {
 // ---------------------------------------------------------------------------
 
 /**
- * `hello` 入参（architecture §6：首帧 `hello`，凭证不放 URL 查询串）。
+ * `hello` 入参（PLAN §6：首帧 `hello`，凭证不放 URL 查询串）。
  *
  * `language` 挂在连接上、断开即忘（PRD D8）；缺省用配置里的默认语言。
  */
@@ -624,7 +624,7 @@ export interface ConversationTransientResult {
 // ---------------------------------------------------------------------------
 
 /**
- * `message.list` 入参（architecture A12 / PRD L5 / F-I7 / F-C6）。
+ * `message.list` 入参（PLAN A12 / PRD L5 / F-I7 / F-C6）。
  *
  * - 不给 `after`、也不给 `around`：返回这段对话的全部消息；
  * - 给了 `after` 且该 id 存在：**从这条开始**（含它本身，内容是**最新**的）+ 其后全部；
@@ -1548,7 +1548,7 @@ export interface CredentialRevokeResult {
 export type AssetPurpose = "message_image";
 
 /**
- * `asset.begin` 入参（architecture A11 三段式的第一段 / PRD F-H8）。
+ * `asset.begin` 入参（PLAN A11 三段式的第一段 / PRD F-H8）。
  *
  * 声明总长、用途、类型与归属的对话。超限在这里就拒（PRD D5：20MB/张，不接收完再说不行）。
  */
@@ -1824,7 +1824,7 @@ export interface SearchMessagesResult {
 /**
  * 方法名 → `{ params, result }`。
  *
- * 这是宿主与客户端之间唯一的方法清单：接线层按它分发（architecture §6），
+ * 这是宿主与客户端之间唯一的方法清单：接线层按它分发（PLAN §6），
  * 客户端按它接线。（帮助与指令菜单归客户端自己，理由见 `HostHelloResult` 的注释。）
  */
 export interface MethodMap {

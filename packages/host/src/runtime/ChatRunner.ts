@@ -1,5 +1,5 @@
 /**
- * `ChatRunner` —— 一轮对话的执行者（architecture §4 那张时序）。
+ * `ChatRunner` —— 一轮对话的执行者（PLAN §5 那张时序）。
  *
  * ## 一轮的骨架
  *
@@ -773,7 +773,7 @@ function fromRow(row: StoredMessage): AgentNS.Message {
  * 造一条失败事实。
  *
  * `message` 用缺省语言渲染一份：落库/推送里总要有一句现成的话给日志和排查用；
- * 真正面向某个连接的语言由接线层按 `code` / `messageKey` / `params` 重新渲染（architecture §6）。
+ * 真正面向某个连接的语言由接线层按 `code` / `messageKey` / `params` 重新渲染（PLAN §8）。
  */
 function problem(
   code: string,

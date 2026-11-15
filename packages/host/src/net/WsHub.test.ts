@@ -186,7 +186,7 @@ async function connectAuthorized(language?: Language): Promise<TestClient> {
 // 握手与鉴权
 // ---------------------------------------------------------------------------
 
-describe("握手与鉴权（PRD A5 / D8）", () => {
+describe("握手与鉴权（PLAN A5 / D8）", () => {
   it("没有 hello 的请求一律 unauthorized，握手之后才放行", async () => {
     await startHub();
     const client = await connect();
@@ -279,7 +279,7 @@ describe("握手与鉴权（PRD A5 / D8）", () => {
 // 分发与错误
 // ---------------------------------------------------------------------------
 
-describe("分发与错误（architecture §6）", () => {
+describe("分发与错误（PLAN §6）", () => {
   it("正确凭证可以调到注入的 handler", async () => {
     await startHub();
     const client = await connectAuthorized();

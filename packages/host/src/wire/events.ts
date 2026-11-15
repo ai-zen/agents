@@ -3,7 +3,7 @@ import type { AgentNS } from "@ai-zen/agents-core";
 import type { NoticeView, QuestionView, RunState, UsageSnapshot } from "./states.js";
 
 /**
- * 事件（宿主 → 客户端的推送，见 architecture §7）。
+ * 事件（宿主 → 客户端的推送，见 PLAN §6）。
  *
  * 推送是 JSON-RPC 通知（无 id），`params` 里带事件名与数据；不重放、不需要 ack —— 断线即作废，
  * 重连由客户端按 D5 自己拉状态与消息。所以这里的每个事件都只是「在线时的一脚提醒」：
@@ -113,7 +113,7 @@ export interface UsagePayload {
 /**
  * 事件名 → 载荷。
  *
- * 名称按 architecture §7 定：`run.state`、`message.delta`、`conversation.changed`、
+ * 名称按 PLAN §6 定：`run.state`、`message.delta`、`conversation.changed`、
  * `notice`、`question`、`usage`。
  */
 export interface EventMap {

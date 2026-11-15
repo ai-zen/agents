@@ -3,7 +3,7 @@ import { HostError, jsonRpcCode, toErrorData, type ErrorData } from "./errors.js
 import type { EventName, EventPayload } from "./events.js";
 
 /**
- * JSON-RPC 2.0 帧（architecture §6）。
+ * JSON-RPC 2.0 帧（PLAN A4）。
  *
  * 以标准为底，产品形状长在 `params` / `result`（PRD A4）。标准里对我们有负担的部分不用，
  * 具体是：
