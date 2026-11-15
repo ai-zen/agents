@@ -272,12 +272,12 @@ describe("Agent.inbox", () => {
     });
   });
 
-  describe("deliverAll（整批投递）", () => {
+  describe("deliver（整批形态）", () => {
     it("静止态整批投递：N 条一次落地成 N 条 User 消息、只起一段、只一次请求", async () => {
       const { client, create, bodies } = createRecordingClient([textRound("三条都收到了")]);
       const agent = new Agent({ client, model: "gpt-4", messages: [Message.System("助手")] });
 
-      const receipts = agent.deliverAll([
+      const receipts = agent.deliver([
         { source: "user", priority: "high", content: "甲", messageId: "batch-1" },
         { source: "会话「补测试」", priority: "high", content: "乙" },
         { source: "会话「复查」", priority: "low", content: "丙" },
@@ -326,7 +326,7 @@ describe("Agent.inbox", () => {
         seen.push(`message:${message.role}`),
       );
 
-      agent.deliverAll([
+      agent.deliver([
         { source: "user", priority: "high", content: "一" },
         { source: "user", priority: "high", content: "二" },
       ]);
@@ -347,7 +347,7 @@ describe("Agent.inbox", () => {
       let receipts: AgentNS.DeliveryReceipt[] | undefined;
       agent.use({
         onInnerLoopEnd: once(() => {
-          receipts = agent.deliverAll([
+          receipts = agent.deliver([
             { source: "user", priority: "high", content: "甲" },
             { source: "user", priority: "high", content: "乙" },
             { source: "user", priority: "high", content: "丙" },
@@ -378,7 +378,7 @@ describe("Agent.inbox", () => {
       const { client, create } = createRecordingClient([textRound("不该被请求到")]);
       const agent = new Agent({ client, model: "gpt-4", messages: [Message.System("助手")] });
 
-      const receipts = agent.deliverAll([]);
+      const receipts = agent.deliver([]);
 
       expect(receipts).toEqual([]);
       expect(agent.runStatus).toBe("idle");
@@ -387,7 +387,7 @@ describe("Agent.inbox", () => {
       expect(create).not.toHaveBeenCalled();
     });
 
-    it("单条 `deliver` 与 `deliverAll([...])` 是同一个行为（两半实现只有一份）", async () => {
+    it("单条 `deliver(entry)` 与整批 `deliver([entry])` 同形（一个方法、两种入参）", async () => {
       const one = createRecordingClient([textRound("一")]);
       const singleAgent = new Agent({
         client: one.client,
@@ -407,7 +407,7 @@ describe("Agent.inbox", () => {
         content: "一条",
         messageId: "same-1",
       });
-      const batch = batchAgent.deliverAll([
+      const batch = batchAgent.deliver([
         { source: "user", priority: "high", content: "一条", messageId: "same-1" },
       ]);
       await settled(singleAgent);
