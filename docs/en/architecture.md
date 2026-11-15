@@ -407,4 +407,4 @@ Which gives these operating rules:
 - [MCP](mcp.md) — MCP integration and lifecycle
 - [`packages/host/README.md`](../../packages/host/README.md) — the host: per-method semantics, session-layer details, operating notes
 - [`packages/client/README.md`](../../packages/client/README.md) — the connection layer: three layers, three hard constraints plus grep checks
-- [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md) — source of truth for the SDK design
+- [`PLAN.md`](../../PLAN.md) — requirements / implementation source of truth for the SDK (structure and code locations)

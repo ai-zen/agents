@@ -241,7 +241,7 @@ export interface NoticeRow {
   id: string;
   /** 语气档位（PRD L3 的三档），取值由上层定义，存储层不判断 */
   level: string;
-  /** 文案码：库里存码 + 参数，读出时按连接语言渲染（architecture.md §6） */
+  /** 文案码：库里存码 + 参数，读出时按连接语言渲染（`PRD.md` 的契约口径：推送里存码不存句子） */
   code: string;
   /** JSON：文案参数 */
   params: string | null;

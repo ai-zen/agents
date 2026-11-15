@@ -35,7 +35,7 @@ const EXIT_FAILURE = 1;
  * 命令行的语言。
  *
  * 宿主的产品文案是「按连接的语言」渲染的（PRD D8），而命令行没有连接、也就没有协商入口，
- * 所以它与自己的说明文字用同一种语言。这一点已在 `docs/plan-questions.md` 记过。
+ * 所以它与自己的说明文字用同一种语言。这一点记在 `PRD.md` 的裁定表里。
  */
 const CLI_LANGUAGE: Language = "zh";
 

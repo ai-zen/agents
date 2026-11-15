@@ -17,7 +17,7 @@ import { HostError } from "./wire/errors.js";
  * 数据在哪」随启动方式漂移。数据根只有一个来源：显式参数 → `AI_ZEN_DIR` → 用户目录下的 `~/.ai-zen`。
  */
 
-/** 数据根下的路径（`architecture.md` §2 的目录图） */
+/** 数据根下的路径（`PLAN.md` §8 的数据根目录树） */
 export interface HostPaths {
   /** 数据根（`AI_ZEN_DIR`，缺省 `~/.ai-zen`） */
   dataRoot: string;

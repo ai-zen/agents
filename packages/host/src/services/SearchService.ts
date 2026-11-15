@@ -114,7 +114,7 @@ export class SearchService {
    *
    * `offset` 由服务层切片：仓储的搜索按相关度/时间排好序后一次取 `offset + limit` 条，
    * 这里再切掉前 `offset` 条。于是 `total` 在不超过「取数上限」时是准确的条数，超过时是
-   * 一个下界（仓储没有单独的数数入口，见 `docs/plan-questions.md`）。
+   * 一个下界（仓储没有单独的数数入口，见 `PRD.md` R36）。
    */
   async messages(params: SearchMessagesParams): Promise<SearchMessagesResult> {
     const query = typeof params.query === "string" ? params.query.trim() : "";

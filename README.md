@@ -82,7 +82,7 @@ SDK layer built on top of `@ai-zen/agents-core`, providing shared business logic
 - **Plugins** — autoMigrate, autoRefreshTools, contextGuard, unknownToolHint
 - **Scope + ScopePlugin** — Orchestration container (config / `cwd` / agentsDir + three-phase capability pipeline) with pluggable capability sources (5 standard plugins via `allInOne`)
 
-[View SDK docs →](./packages/sdk/docs/sdk-design-v1.md)
+[View SDK docs →](./PLAN.md#9-sdk-边界)
 
 ## Scripts
 

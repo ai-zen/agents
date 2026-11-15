@@ -9,7 +9,7 @@ outline: deep
 `@ai-zen/agents-sdk` 是建立在 `@ai-zen/agents-core` 之上的**引擎 / 能力层**，为 CLI / Desktop 提供统一 Agent 运行时。
 
 - **安装**：`npm install @ai-zen/agents-sdk`（依赖 `@ai-zen/agents-core`，以 `workspace:^` 关联）。
-- **设计真相源**：[`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md)。
+- **需求 / 实施真相源**：[`PRD.md`](../../PRD.md)（需求与决策）、[`PLAN.md`](../../PLAN.md)（结构与落点）。
 
 ## Scope —— 全局上下文 + 能力装配编排容器
 
@@ -273,7 +273,7 @@ agent.use(new AutoMigratePlugin({ service: handoffService, handoffTokens: 250_00
 
 ## 消费模式（完整）
 
-详见 [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md) 的「消费模式（完整示例）」与「与 Core 的边界」章节。
+边界与落点见 [`PLAN.md`](../../PLAN.md) 的「SDK 边界」一节。
 
 ## 相关文档
 
@@ -281,4 +281,4 @@ agent.use(new AutoMigratePlugin({ service: handoffService, handoffTokens: 250_00
 - [架构](architecture.md)
 - [Core API](core.md) —— 运行时底层 API
 - [MCP](mcp.md) —— SDK 的 MCP 连接管理
-- [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md) —— SDK 设计真相源
+- [`PLAN.md`](../../PLAN.md) —— SDK 的需求 / 实施真相源

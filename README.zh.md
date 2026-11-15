@@ -82,7 +82,7 @@ TypeScript 核心库，可在 Node.js 和浏览器环境中使用。
 - **插件** — autoMigrate、autoRefreshTools、contextGuard、unknownToolHint
 - **Scope + ScopePlugin** — 编排容器（配置 / `cwd` / agentsDir + 三阶段能力管线）+ 可插拔能力来源（经 `allInOne` 装配 5 个标准插件）
 
-[查看 SDK 文档 →](./packages/sdk/docs/sdk-design-v1.md)
+[查看 SDK 文档 →](./PLAN.md#9-sdk-边界)
 
 ## 脚本命令
 

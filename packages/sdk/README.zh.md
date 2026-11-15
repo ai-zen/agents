@@ -4,7 +4,7 @@ AI-Zen SDK — 共享业务逻辑层，为 CLI 和 Desktop 提供统一的 Agent
 
 ## 真相源
 
-**[`docs/sdk-design-v1.md`](./docs/sdk-design-v1.md)** 是本包的唯一设计真相源。所有实现必须与文档一致。
+**[`../../PRD.md`](../../PRD.md)**（需求）与 **[`../../PLAN.md`](../../PLAN.md)**（实施）是本包行为的唯一真相源。所有实现必须与它们一致。
 ## 架构
 
 ```
@@ -110,7 +110,7 @@ await scope.dispose(); // 断开 MCP、释放插件资源
 | `generate_image` | 配置了 `defaultImageModel` 才注册 | 根据文字描述生成图片 |
 | `view_image` | 仅视觉模型可用（Agent 的 `modelId` 解析为 `vision: true` 的模型） | 查看/分析图片：本地图片自动经 Files API 上传，网络 URL 直接引用 |
 
-工具输出保护：`AppConfig.maxToolOutput`（字符数，缺省 32768）是工具输出的统一上限，超限时由各工具自行处置——`exec` 分文件落盘 `stdout.log` / `stderr.log`（返回各流头尾预览），`find_text` / `glob` / `ls` 落盘 `result.json`（返回头部预览），`read` 仅警告并提示用 `range` 分批读取。落盘目录为 `<tmpdir>/ai-zen/tool-output/<工具名>-<时间戳>-<随机串>/`，每次调用独立、不自清理。详见 [`docs/sdk-design-v1.md`](docs/sdk-design-v1.md)。
+工具输出保护：`AppConfig.maxToolOutput`（字符数，缺省 32768）是工具输出的统一上限，超限时由各工具自行处置——`exec` 分文件落盘 `stdout.log` / `stderr.log`（返回各流头尾预览），`find_text` / `glob` / `ls` 落盘 `result.json`（返回头部预览），`read` 仅警告并提示用 `range` 分批读取。落盘目录为 `<tmpdir>/ai-zen/tool-output/<工具名>-<时间戳>-<随机串>/`，每次调用独立、不自清理。口径与边界见 [`../../PLAN.md`](../../PLAN.md) §9；具体行为以代码为准。
 
 中断策略进配置：`AppConfig.abortedMessageStrategy`（`keep` / `drop`，出厂 `keep`——中断后模型能接着半截往下说）与 `AppConfig.abortedToolRoundStrategy`（`fill` / `drop`，出厂 `fill`——整轮进出，`tool_calls` 必须与结果配对）。`createAgent()` 不传参数时直接取 `scope.config`，于是策略只有一个真相源。
 
@@ -134,7 +134,7 @@ SDK 是 **English-only**：所有面向模型与面向用户的文案（工具 s
 - **缓存前缀不再可比。** prompt 缓存按前缀匹配；语言一旦进入 SDK，同一条代码路径就有了多个前缀形态，基准测试失去单一变量。
 - **基准与排查需要单一形态。** 性能数据、bug 复现、工具调用成功率都要能横向比较；行为若随 locale 漂移，任何结论都得先问「你是什么语言」。
 
-「模型跟随用户语言」由一条语言中立的 system prompt 指令承担 —— `Always reply in the same language the user writes in.` —— 按**每条消息**自适应，比按安装实例绑定 locale 更准确，也不需要 SDK 参与。完整论述见 [`docs/sdk-design-v1.md`](docs/sdk-design-v1.md)。
+「模型跟随用户语言」由一条语言中立的 system prompt 指令承担 —— `Always reply in the same language the user writes in.` —— 按**每条消息**自适应，比按安装实例绑定 locale 更准确，也不需要 SDK 参与。边界见 [`../../PLAN.md`](../../PLAN.md) §9。
 
 ## 设计原则
 

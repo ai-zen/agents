@@ -9,7 +9,7 @@ outline: deep
 `@ai-zen/agents-sdk` is the **engine / capability layer** built on top of `@ai-zen/agents-core`, providing a unified Agent runtime for CLI / Desktop.
 
 - **Installation**: `npm install @ai-zen/agents-sdk` (depends on `@ai-zen/agents-core`, linked via `workspace:^`).
-- **Source of truth**: [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md) .
+- **Requirements / implementation source of truth**: [`PRD.md`](../../PRD.md) (requirements and decisions), [`PLAN.md`](../../PLAN.md) (structure and code locations).
 
 ## Scope — global context + capability assembly orchestrator
 
@@ -271,7 +271,7 @@ agent.use(new AutoMigratePlugin({ service: handoffService, handoffTokens: 250_00
 
 ## Consumption pattern (complete)
 
-See the "Consumption pattern (complete example)" and "Boundary with Core" sections in [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md).
+See the "SDK boundary" section of [`PLAN.md`](../../PLAN.md).
 
 ## Related documentation
 
@@ -279,4 +279,4 @@ See the "Consumption pattern (complete example)" and "Boundary with Core" sectio
 - [Architecture](architecture.md)
 - [Core API](core.md) — low-level runtime API
 - [MCP](mcp.md) — the SDK's MCP connection management
-- [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md) — source of truth for the SDK design
+- [`PLAN.md`](../../PLAN.md) — requirements / implementation source of truth for the SDK

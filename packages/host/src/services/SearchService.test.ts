@@ -234,7 +234,7 @@ describe("SearchService.messages（按内容）", () => {
     expect(second.hits[0]?.messageId).not.toBe(first.hits[0]?.messageId);
   });
 
-  it("total 在取数上限内是准确条数，超了就是个下界（见 plan-questions）", async () => {
+  it("total 在取数上限内是准确条数，超了就是个下界（见 PRD R36）", async () => {
     expect((await service.messages({ query: "天气", limit: 10 })).total).toBe(2);
     // 只取 1 条时仓储没告诉我们一共有多少条，只能给出「至少这么多」
     expect((await service.messages({ query: "天气", limit: 1 })).total).toBe(1);

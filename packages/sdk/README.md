@@ -4,7 +4,7 @@ AI-Zen SDK — shared business logic layer providing a unified Agent runtime for
 
 ## Source of Truth
 
-**[`docs/sdk-design-v1.md`](./docs/sdk-design-v1.md)** is the single source of truth for this package's design. All implementations must stay consistent with the document.
+**[`../../PRD.md`](../../PRD.md)** (requirements) and **[`../../PLAN.md`](../../PLAN.md)** (implementation) are the single sources of truth for this package's behaviour. All implementations must stay consistent with them.
 
 ## Architecture
 
@@ -111,7 +111,7 @@ Conditionally injected based on the active model / config:
 | `generate_image` | Only when `defaultImageModel` is configured | Generate an image from a text description |
 | `view_image` | Only for vision models (the agent's `modelId` resolves to a model with `vision: true`) | View / analyze an image: local images are auto-uploaded via the Files API, network URLs are referenced directly |
 
-Tool output protection: `AppConfig.maxToolOutput` (in characters, default 32768) is the unified ceiling for tool output. Each tool handles overflow itself — `exec` dumps `stdout.log` / `stderr.log` separately (returning head/tail previews per stream), `find_text` / `glob` / `ls` dump `result.json` (returning a head preview), and `read` only warns and suggests batched reads via `range`. Dumps go to `<tmpdir>/ai-zen/tool-output/<tool>-<timestamp>-<random>/`, one directory per call, with no self-cleanup. See [`docs/sdk-design-v1.md`](docs/sdk-design-v1.md).
+Tool output protection: `AppConfig.maxToolOutput` (in characters, default 32768) is the unified ceiling for tool output. Each tool handles overflow itself — `exec` dumps `stdout.log` / `stderr.log` separately (returning head/tail previews per stream), `find_text` / `glob` / `ls` dump `result.json` (returning a head preview), and `read` only warns and suggests batched reads via `range`. Dumps go to `<tmpdir>/ai-zen/tool-output/<tool>-<timestamp>-<random>/`, one directory per call, with no self-cleanup. Targets and boundaries: [`../../PLAN.md`](../../PLAN.md) §9; the exact behaviour lives in the code.
 
 Interrupt strategies live in the config: `AppConfig.abortedMessageStrategy` (`keep` / `drop`, factory `keep` — the model can continue the half-sentence after an interrupt) and `AppConfig.abortedToolRoundStrategy` (`fill` / `drop`, factory `fill` — whole rounds go in or out, because `tool_calls` must pair with results). `createAgent()` reads them from `scope.config` when no explicit option is passed, keeping a single source of truth.
 
@@ -135,7 +135,7 @@ This is a performance boundary, not a convenience choice — **SDK behaviour and
 - **Cache prefixes stop being comparable.** Prompt caching matches on the prefix; letting language into the SDK multiplies the prefix shapes of one code path and removes the single variable that benchmarks rely on.
 - **Diagnosis needs one shape.** Performance data, bug reproductions and tool-call success rates have to be comparable across users; once behaviour drifts with locale, every conclusion needs a "what language are you on?" qualifier first.
 
-Following the user's language is handled by one language-neutral instruction in the factory system prompt — `Always reply in the same language the user writes in.` — which adapts per **message** rather than per installation, and needs no locale plumbing in the SDK. Full rationale: [`docs/sdk-design-v1.md`](docs/sdk-design-v1.md).
+Following the user's language is handled by one language-neutral instruction in the factory system prompt — `Always reply in the same language the user writes in.` — which adapts per **message** rather than per installation, and needs no locale plumbing in the SDK. Boundary: [`../../PLAN.md`](../../PLAN.md) §9.
 
 ## Design Principles
 

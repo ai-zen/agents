@@ -213,7 +213,7 @@ export class MessageRepository {
   }
 
   /**
-   * 按对话取消息（architecture.md A12 的 `message.list` 口径）。
+   * 按对话取消息（`PLAN.md` A12 的 `message.list` 口径）。
    *
    * - 不给 `after`：整段历史，按 `seq` 升序。
    * - 给了 `after` 且这个 id 存在：**从它本身开始**（含它，内容是最新的）+ 之后全部。

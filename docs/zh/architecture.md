@@ -368,4 +368,4 @@ packages/host/src/
 - [MCP](mcp.md) —— MCP 接入与生命周期
 - [`packages/host/README.md`](../../packages/host/README.md) —— 宿主：方法逐个语义、会话层细节、运维口径
 - [`packages/client/README.md`](../../packages/client/README.md) —— 连接层：三个层次、三条硬约束与 grep 检验
-- [`packages/sdk/docs/sdk-design-v1.md`](../../packages/sdk/docs/sdk-design-v1.md) —— SDK 设计真相源
+- [`PLAN.md`](../../PLAN.md) —— SDK 的需求 / 实施真相源（结构与落点）
