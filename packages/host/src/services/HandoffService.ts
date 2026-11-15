@@ -76,10 +76,14 @@ export interface QuestionMarker {
   ): Promise<number>;
 }
 
-/** 借 / 还 Scope 的窄接口（结构上 `ScopeRegistry` 满足） */
-export interface ScopeBorrower {
-  acquire(workspaceId: string): Promise<Awaited<ReturnType<ScopeRegistry["acquire"]>>>;
-  release(workspaceId: string): void;
+/**
+ * 取 Scope 的口子（结构上 `ScopeRegistry` 满足）：幂等 get-or-create。
+ *
+ * 没有「归还」：交接回合用完不还，那个项目的 Scope 活到显式 dispose / 进程退出 ——
+ * 它带着 MCP 连接，下一次这一轮（或这一段对话）还能直接复用。
+ */
+export interface ScopeProvider {
+  create(workspaceId: string): Promise<Awaited<ReturnType<ScopeRegistry["create"]>>>;
 }
 
 /** 对话视图的窄接口（结构上 `ConversationService` 满足：开新对话、取旧对话的完整形状） */
@@ -197,8 +201,8 @@ export interface HandoffServiceDeps {
   messages: MessageRepository;
   /** 开新对话 / 取旧对话的完整形状 */
   conversationViews: HandoffConversationPort;
-  /** 借 Scope 装配 agent（与一轮对话共用同一份 Scope 计数） */
-  scopes: ScopeBorrower;
+  /** 取 Scope 装配 agent（幂等 get-or-create；用完不还，活到显式 dispose / 进程退出） */
+  scopes: ScopeProvider;
   /** 装配 agent 的工厂（与 `ChatRunner` 用同一个；跑完即弃，D28） */
   createAgent: AgentFactory;
   /** 写文档那一步；缺省走 SDK */
@@ -234,7 +238,7 @@ export class HandoffService {
   private readonly workspaces: WorkspaceRepository;
   private readonly messages: MessageRepository;
   private readonly conversationViews: HandoffConversationPort;
-  private readonly scopes: ScopeBorrower;
+  private readonly scopes: ScopeProvider;
   private readonly createAgent: AgentFactory;
   private readonly execute: HandoffExecutor;
   private readonly runs?: RunsView;
@@ -370,14 +374,14 @@ export class HandoffService {
     return { documents };
   }
 
-  /** 装配 agent、把历史装进去、交给执行者写文档（Scope 用完就当轮归还，D28） */
+  /** 装配 agent、把历史装进去、交给执行者写文档（Scope 用完不还，D28：它与 MCP 同生共死） */
   private async runHandoffRound(
     conversation: Conversation,
     handoffDir: string,
     mode: HandoffMode,
     language: Language,
   ): Promise<HandoffExecutionResult> {
-    const scope = await this.scopes.acquire(conversation.workspaceId);
+    const scope = await this.scopes.create(conversation.workspaceId);
     try {
       const history = await this.loadHistory(conversation.id);
       const agent = await this.createAgent({
@@ -395,9 +399,8 @@ export class HandoffService {
       return await this.execute({ agent, handoffDir, mode });
     } catch (error) {
       throw this.toHostError(error, conversation.id, language);
-    } finally {
-      this.scopes.release(conversation.workspaceId);
     }
+    // 没有 finally：没有借用就没有归还（agent 本身仍然跑完即弃）
   }
 
   /** 这一轮交给 agent 的历史：库里还在上下文里的那些（`omit` 的不发） */

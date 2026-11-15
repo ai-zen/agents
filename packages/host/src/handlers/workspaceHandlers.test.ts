@@ -72,8 +72,6 @@ async function startApp(): Promise<HostApp> {
     aiZenDir: dataRoot.path,
     port: 0,
     local: true,
-    // 空闲回收调长：要用例看的是「删项目时主动销毁」，不是空闲到点
-    scopeIdleTimeoutMs: 10 * 60 * 1000,
     exit: () => undefined,
     logger: { warn: () => undefined, error: () => undefined },
   });
@@ -165,9 +163,8 @@ describe("workspace.remove 的跨层补齐", () => {
     const conversation = await seedConversation(app, workspace.id);
     const assetPath = await seedAsset(app, conversation.id);
 
-    await app.scopeRegistry.acquire(workspace.id);
-    app.scopeRegistry.release(workspace.id);
-    expect(app.scopeRegistry.size()).toBe(1);
+    await app.scopeRegistry.create(workspace.id);
+    expect(app.scopeRegistry.workspaceIds().length).toBe(1);
 
     const dryRun = await callMethod(app, "workspace.remove", {
       workspaceId: workspace.id,
@@ -177,7 +174,7 @@ describe("workspace.remove 的跨层补齐", () => {
     expect(dryRun.consequences.conversations).toBe(1);
     expect(dryRun.consequences.assets).toBe(1);
     // 什么都没动
-    expect(app.scopeRegistry.size()).toBe(1);
+    expect(app.scopeRegistry.workspaceIds().length).toBe(1);
     expect(await exists(assetPath)).toBe(true);
     expect(app.chatRunner.turn(conversation.id)).toBeUndefined();
     const still = await callMethod(app, "conversation.list", { workspaceId: workspace.id });
@@ -191,15 +188,14 @@ describe("workspace.remove 的跨层补齐", () => {
     const conversation = await seedConversation(app, workspace.id);
     const assetPath = await seedAsset(app, conversation.id);
 
-    await app.scopeRegistry.acquire(workspace.id);
-    app.scopeRegistry.release(workspace.id);
-    expect(app.scopeRegistry.size()).toBe(1);
+    await app.scopeRegistry.create(workspace.id);
+    expect(app.scopeRegistry.workspaceIds().length).toBe(1);
 
     const removed = await callMethod(app, "workspace.remove", { workspaceId: workspace.id });
     expect(removed.removed).toBe(true);
     expect(removed.consequences.conversations).toBe(1);
     // Scope 销毁 = MCP 连接在这里断开
-    expect(app.scopeRegistry.size()).toBe(0);
+    expect(app.scopeRegistry.workspaceIds().length).toBe(0);
     expect(await exists(assetPath)).toBe(false);
     const remaining = await callMethod(app, "conversation.list", { workspaceId: workspace.id });
     expect(remaining.total).toBe(0);

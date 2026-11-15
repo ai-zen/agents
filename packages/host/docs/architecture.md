@@ -90,9 +90,10 @@ HostApp（根：组装、启动、退出）
 │  ├─ CompletionService、DiscoveryService、HandoffService、NoticeService、QuestionService、AutoNaming
 │  └─ PeerSessionService      平级会话：建另一段会话、记进程内记录、跑完把结果投回并唤醒发起者（A14）
 ├─ 运行时（有状态，比 service 更长寿）
-│  ├─ ScopeRegistry             workspaceId → Scope + 依赖计数 + 空闲计时
+│  ├─ ScopeRegistry             key（workspaceId / 临时目录键）→ Scope：显式 create / dispose，无空闲计时
+│  ├─ AgentRegistry             conversationId → 活着的 agent（agent 唯一的来源；先要 Scope 再装配）
 │  ├─ RunRegistry               conversationId → 运行中的那一轮
-│  ├─ ChatRunner                一轮的流式循环（借 Scope、产出事件、落库）
+│  ├─ ChatRunner                一轮的流式循环（向注册表要 agent、产出事件、落库）
 │  └─ TransientRunner           临时对话的一轮（不落库、不推流式事件）
 ├─ 接入
 │  ├─ WsHub                连接集合、鉴权、语言、JSON-RPC 分发、推送缓冲
@@ -112,7 +113,7 @@ wire/         契约：methods（方法表）、frames（帧）、errors（业�
 net/          WsHub、auth、discovery、UploadReceiver
 handlers/     方法实现（一域一文件）+ capabilities（能力清单）+ index（HandlerTable 与桥接名单）
 services/     薄服务 + Logger（日志文件与轮转）
-runtime/      ScopeRegistry、RunRegistry、ChatRunner、TransientRunner
+runtime/      ScopeRegistry、AgentRegistry、RunRegistry、ChatRunner、TransientRunner
 storage/      Database、dbWorker、Repository、migrations
 i18n/         文案（en 基准 / zh）
 ```
@@ -136,11 +137,19 @@ i18n/         文案（en 基准 / zh）
    ├─ 这段对话正在跑一轮 → ChatRunner.enqueue → 那一轮 agent 的 deliver（PRD D14：排队，不打断、不回 busy）
    │                        └─ core 在内循环末把它落成一条 User 消息（全 core 只有一个取件点，见下）
    └─ 否则 → RunRegistry.start（真在跑则抛 HostError("busy")：只剩排队窗口没打开时的兜底）
-        → 借 Scope（ScopeRegistry.acquire：懒创建或复用，依赖 +1）
-        → 装配 agent（模型/助手/权限来自 SDK，跑完即弃）
+        → 要 Scope（ScopeRegistry.create：幂等 get-or-create，没有依赖计数）
+        → 造 agent（AgentRegistry.create：内部再确认一次 Scope；跑完即弃）
         → 流式：增量推事件；同一条消息边流边写
-        → 内循环结束：写一次（D15）→ agent 释放 → ScopeRegistry.release（依赖 −1，归零则起 10 分钟计时）
+        → 内循环结束：写一次（D15）→ AgentRegistry.dispose（只丢引用）→ RunRegistry.finish
+          （Scope 仍在：它活到显式 dispose 或进程退出）
 ```
+
+**三个实例的生灭都是显式的**：`Workspace ──1:1── Scope ──1:N── Agent ──1:1── 会话实例`。
+创建自上而下（`agents.create` 先确保 Scope 存在，调用方不必背顺序）；回收自下而上
+（`scopes.dispose` 撞上还活着的 agent 就拒绝，抛 `ScopeBusyError` 带着 `conversationId` 列表，
+不级联）。没有引用计数、没有计时器、没有自动回收：活着就是有人显式持有它。
+会话实例的登记/摘除也收在 `ChatRunner.createRuntime` / `disposeRuntime` 一对方法里
+（寿命不变：仍然一轮一个）。
 
 **跑中入队（PRD D14 / F-C12 / F-C13）**：`conversation.send` 先问 `ChatRunner.enqueue`，问的是「这一轮还能不能接新话」——就看 `TurnSession` 的三个布尔（`closed`：`send()` 已返回、再没有轮末取件点；`aborted` / `handle.aborted`：这一轮按了停），任一成立就回 `null`、由调用方走老口径。agent 还在装配时那几句收进 `pending` 数组，`attach()` 那一刻按入队顺序 `deliver` 进它的 inbox —— 不等待、也没有超时。**判「能不能排」与「推」之间不允许有 await**：中间让出一次执行权就可能「判完还开着、推的时候已关上」，条目落进一个再也不会被取走的 inbox，而宿主已经回了 `queued: true`。条目由 core 取走，**全 core 只有一个取件点**：
 
@@ -163,13 +172,26 @@ i18n/         文案（en 基准 / zh）
 
 **`hidden` 的含义就是「这条不给人看」**（core `AgentNS.Message.hidden`）：它仍参与模型上下文（`ChatRunner.reconcile` 取历史时显式带上），但 `message.list` 默认不返回、侧栏条数与删除代价都不数它；客户端按这个字段决定不展示。临时对话（`TransientRunner`）不落库，同一条 cwd 消息只拼在内存的发送内容里（`agent.append` 一条 `hidden` 消息）。
 
-**计时器只有一处**：`ScopeRegistry` 持有唯一那份空闲计时。L4 说的「10 分钟无活动」和 D28 说的「Scope 空闲 10 分钟」，是同一个计时器的两个说法，不各写一份。全部 Scope 都回收完时它回调 `onAllRecycled(cb)`（`src/runtime/ScopeRegistry.ts`），单根据此重算退出判据。
+**没有空闲计时**：Scope 建出来就一直在，直到有人显式 `dispose(id)`（Workspace 被删）或
+`disposeAll()`（进程收尾）。L4 说的「10 分钟无活动」与 D28 说的「Scope 空闲 10 分钟」曾共用
+唯一那个计时器，那个计时器已撤掉 —— 不再有「谁都不用了所以可以拆」这种判断，因为
+「谁在用」不是 Scope 该记的账（要问就问 `AgentRegistry.conversationIds(workspaceId)`）。
 
-**进程退出**：判据是「连接数 0、已经握过手（`served`）、没有在跑的轮次、`ScopeRegistry.size()` 为 0」。触发源有四个，都不另起计时器：`ScopeRegistry.onAllRecycled`、每轮结算（`onTurnSettled`）、`WsHub.onConnectionsChanged`、`host.shutdown`。进程退出连带断开所有 MCP 连接，这是已知代价（MCP 服务器自己拉起的外部进程可能随之结束，取决于那个 MCP server 的实现）。
+**进程退出**：判据是「连接数 0、已经握过手（`served`）、没有在跑的轮次、
+`ScopeRegistry.workspaceIds()` 为 0」。触发源只有两个，都不另起计时器：每轮结算
+（`onTurnSettled`）、`WsHub.onConnectionsChanged`。Scope 仍在条件里：它不再自己消失，
+所以「手里还有 Scope」= 这个进程还持着那几套能力（MCP 连接就在里面），要走就显式收尾
+（`stop()` / `shutdown()`）。进程退出连带断开所有 MCP 连接，这是已知代价（MCP 服务器自己
+拉起的外部进程可能随之结束，取决于那个 MCP server 的实现）。
 
-**收尾（`stop()`）的顺序**：摘发现文件 → 回收 Scope → 断连接 → 清理上传 → 关库 → 关日志（先写最后一笔，再 flush 并关流，PRD F-J2）。同一次收尾还负责清掉升级自检的定时器（裁定 R66）。
+**收尾（`stop()`）的顺序**：摘发现文件 → 销毁 Scope（`disposeAll`）→ 断连接 → 清理上传 → 关库 → 关日志（先写最后一笔，再 flush 并关流，PRD F-J2）。同一次收尾还负责清掉升级自检的定时器（裁定 R66）。
 
-**Scope 被销毁的两个原因**：(1) 空闲 10 分钟（`release` 后计时到点）；(2) Workspace 被删（`disposeWorkspace(id)`）。**配置改动不再是销毁原因**：`refreshWorkspace(id)` 就地把那个 Scope 的配置重读一遍、各插件重新发现一轮（MCP 连接按新的声明对账断开），实例还是同一个，正在跑的那一轮也不会被抽掉能力（PRD F-E2）。`disposeAll()` 只剩收尾那一条路（进程要退出，MCP 连接得跟 Scope 一起断）。
+**Scope 被销毁的两个原因（都是显式动作）**：(1) Workspace 被删（`dispose(workspaceId)`）；
+(2) 进程收尾（`disposeAll()`）。前者撞上还活着的 agent 会**拒绝**（`ScopeBusyError`），
+调用方的顺序是「先停会话 / 丢掉 agent，再销毁 Scope」；后者不拒绝 —— 进程马上就要没了，
+没有「稍后再拆」这回事。**配置改动不是销毁原因**：`refreshWorkspace(id)` 就地把那个 Scope
+的配置重读一遍、各插件重新发现一轮（MCP 连接按新的声明对账断开），实例还是同一个，正在跑的
+那一轮也不会被抽掉能力（PRD F-E2）。
 
 ## 5. 存储
 

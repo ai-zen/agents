@@ -11,10 +11,12 @@
  *   4. `message.list` 拉回这一轮的消息（用户 + 助手 + 工具结果）；
  *   5. `conversation.state` 返回现场（跑完是空闲）；
  *   6. 关掉服务器 → 用**同一个数据根**再起一个 → `message.list` 仍拿回同一批消息；
- *   7. 断开所有连接 + 等 Scope 回收 → `onAllRecycled` 触发退出判据（`reason: idle`）。
+ *   7. 断开连接之后进程不自己退（Scope 还在，它不会自己消失）→ 显式收尾时 Scope 连同 MCP
+ *      连接一起销毁（`reason: idle` 的 `ExitFacts` 里 `scopes: 1`）。
  *
- * 退出判据不靠轮询：触发源只有「Scope 全部回收」与「一轮结算」两处（裁定 R53）。所以第 7 步
- * 的顺序是「连接先断、Scope 后回收」：回收那一刻判据才看到「没有连接」。
+ * 退出判据不靠轮询：触发源只有「一轮结算」与「连接数变化」两处（裁定 R53）。
+ * 本单之后 Scope 不再有空闲计时，所以「手里还有 Scope」就是「这个进程还持着那套能力」，
+ * 它只能被显式收尾（`stop` / `shutdown`）送走。
  */
 
 import { promises as fs } from "node:fs";
@@ -153,8 +155,6 @@ async function startHost(): Promise<HostApp> {
     port: 0,
     local: true,
     createAgent,
-    // 空闲回收调到 150ms：用例不能真等十分钟，又要在「连接断开之后」才回收（第 7 步）
-    scopeIdleTimeoutMs: 150,
     exit: (facts) => {
       exits.push(facts);
     },
@@ -372,18 +372,13 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
     expect(restored.messages[1]?.content).toBe("你好。");
     expect(restored.messages[3]?.content).toBe("完事。");
 
-    // ---- 步骤 7：连接断开 + Scope 回收 → 进程退出判据成立 ----
-    let recycled = 0;
-    app.scopeRegistry.onAllRecycled(() => {
-      recycled += 1;
-    });
-
-    // 再跑一轮，让这个进程手里真的有一个 Scope 要回收
+    // ---- 步骤 7：连接断开不自己退；显式收尾才销毁 Scope ----
+    // 先跑一轮，让这个进程手里真的有一个 Scope（它不会自己消失）
     client.request("conversation.send", { conversationId, input: { content: "第二句" } });
     const secondAccepted = await client.queue.next();
     expect(isSuccess(secondAccepted)).toBe(true);
-    // 受理即借了 Scope（这一轮跑到结算才还）
-    expect(app.scopeRegistry.size()).toBe(1);
+    // 受理时就把 Scope 要来了（这一轮结束后它仍在）
+    expect(app.scopeRegistry.workspaceIds()).toEqual([workspace.id]);
     await collectRun();
 
     // 连发两轮之后库里的 cwd 消息仍然只有一条（每轮不再注入，F-D9）
@@ -397,18 +392,24 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
     expect(hiddenMessages).toHaveLength(1);
     expect(hiddenMessages[0]?.id).toBe(cwdMessage?.id);
 
-    // 连接还在：即便 Scope 空闲到点被回收，也不该判「该退出了」
+    // 连接还在：不判「该退出了」
     await app.checkExit();
     expect(exits.length).toBe(1);
 
-    // 连接断开之后：没有连接、没有在跑的轮次、Scope 全部回收 → 退出
+    // 连接断开之后也不自己退：手里还有 Scope（没有空闲计时，它不会自己消失），
+    // 进程活到显式收尾 —— 这是与旧行为最大的差别（旧行为里 10 分钟空闲后会退）
     await client.close();
     client = null;
-    await waitFor(() => recycled > 0);
-    expect(app.scopeRegistry.size()).toBe(0);
-    await waitFor(() => exits.length > 1);
-    expect(exits[exits.length - 1]).toEqual({ reason: "idle", connections: 0, runs: 0, scopes: 0 });
-    expect(app.running).toBe(false);
+    await wait(50);
+    await app.checkExit();
+    expect(exits.length).toBe(1);
+    expect(app.running).toBe(true);
+
+    // 显式收尾：Scope 全部销毁（MCP 连接在这里断开，D28 同生共死）
+    const finalFacts = await app.shutdown("idle");
+    expect(finalFacts).toEqual({ reason: "idle", connections: 0, runs: 0, scopes: 1 });
+    expect(exits[exits.length - 1]).toEqual(finalFacts);
+    expect(app.scopeRegistry.workspaceIds()).toEqual([]);
     app = null;
   }, 30000);
 });

@@ -234,7 +234,7 @@ describe("HostApp 的组装", () => {
     expect(app.configManager.configPath).toBe(join(fixture.dataRoot.path, "config.json"));
     await expect(app.db.all("SELECT 1 AS one")).resolves.toBeDefined();
     // 运行时
-    expect(app.scopeRegistry.size()).toBe(0);
+    expect(app.scopeRegistry.workspaceIds().length).toBe(0);
     expect(app.runRegistry.size()).toBe(0);
     // 服务层要的两件运行时事实（模型与档位在会话行上，不在这里）
     expect(app.conversationRuntime.isRunning("没有这段对话")).toBe(false);
@@ -440,18 +440,16 @@ describe("Scope 工厂", () => {
     expect(paths.subAgentsPaths).toHaveLength(2);
 
     // 真装配一次（默认工厂，不注入替身）：Scope 的 cwd 就是项目的 cwd
-    const scope = await app.scopeRegistry.acquire(workspace.id);
+    const scope = await app.scopeRegistry.create(workspace.id);
     expect(scope.cwd).toBe(fixture.workspaceDir.path);
-    app.scopeRegistry.release(workspace.id);
 
     // 临时对话按目录借同一个通道（D3：只借 Scope，与 Workspace 无关）
     const transientKey = transientScopeKey(fixture.workspaceDir.path);
-    const transientScope = await app.scopeRegistry.acquire(transientKey);
+    const transientScope = await app.scopeRegistry.create(transientKey);
     expect(transientScope.cwd).toBe(fixture.workspaceDir.path);
-    app.scopeRegistry.release(transientKey);
 
     await app.scopeRegistry.disposeAll();
-    expect(app.scopeRegistry.size()).toBe(0);
+    expect(app.scopeRegistry.workspaceIds().length).toBe(0);
   });
 });
 
@@ -542,12 +540,10 @@ describe("退出判据", () => {
     expect(app.running).toBe(true);
   });
 
-  it("有连接时不判；连接断开且 Scope 回收之后（onAllRecycled）才退", async () => {
+  it("有连接时不判；连接走了但手里还有 Scope 也不退（Scope 不会自己消失）", async () => {
     const fixture = await makeFixture();
     const exits: ExitFacts[] = [];
     const app = await startApp(fixture, {
-      // 空闲回收调到几十毫秒：用例不能真等十分钟
-      scopeIdleTimeoutMs: 30,
       exit: (facts) => {
         exits.push(facts);
       },
@@ -557,28 +553,24 @@ describe("退出判据", () => {
     const { workspace } = await callMethod(app, "workspace.create", {
       cwd: fixture.workspaceDir.path,
     });
-    await app.scopeRegistry.acquire(workspace.id);
+    // 手里有一个 Scope：它不会自己消失（没有空闲计时、也没有引用计数）
+    await app.scopeRegistry.create(workspace.id);
 
     // 有连接 → 什么都不欠也不退（连接就是「还有人等着说话」）
     await app.checkExit();
     expect(exits).toEqual([]);
 
-    // 依赖归零 → 空闲到点 → 销毁 → onAllRecycled → 判据成立
-    // 这一次连接还开着，所以仍然不退
-    app.scopeRegistry.release(workspace.id);
-    await wait(120);
-    expect(app.scopeRegistry.size()).toBe(0);
-    expect(exits).toEqual([]);
-
-    // 再借一次、断开连接、再归还：这次什么都不欠了
-    await app.scopeRegistry.acquire(workspace.id);
+    // 连接断开也不退：这个进程还持着那套能力（MCP 连接在里面），
+    // 要退就显式收尾 —— 收尾会把 Scope 连同 MCP 连接一起关掉
     await client.close();
+    await wait(50);
     await app.checkExit();
     expect(exits).toEqual([]);
-    app.scopeRegistry.release(workspace.id);
-    await wait(150);
-    expect(exits).toEqual([{ reason: "idle", connections: 0, runs: 0, scopes: 0 }]);
-    expect(app.running).toBe(false);
+    expect(app.running).toBe(true);
+
+    const facts = await app.shutdown("requested");
+    expect(facts).toEqual({ reason: "requested", connections: 0, runs: 0, scopes: 1 });
+    expect(app.scopeRegistry.workspaceIds()).toEqual([]);
   });
 
   it("收尾只做一次、交棒只交一次", async () => {
@@ -714,27 +706,23 @@ describe("删除路径", () => {
     expect(await exists(assetPath)).toBe(false);
   });
 
-  it("删项目会回收它的 Scope 并连名下对话一起清（R43）", async () => {
+  it("删项目会销毁它的 Scope 并连名下对话一起清（R43）", async () => {
     const fixture = await makeFixture();
-    const app = await startApp(fixture, {
-      // 空闲回收调长：这一条要看的是「删项目时被主动销毁」，不是空闲到点
-      scopeIdleTimeoutMs: 10 * 60 * 1000,
-    });
+    const app = await startApp(fixture);
     const { workspace } = await callMethod(app, "workspace.create", {
       cwd: fixture.workspaceDir.path,
     });
     await seedConversation(app, workspace.id);
 
-    // 借一次 Scope 再还（依赖归零，但空闲计时还没到）
-    await app.scopeRegistry.acquire(workspace.id);
-    app.scopeRegistry.release(workspace.id);
-    expect(app.scopeRegistry.size()).toBe(1);
+    // 先把这个项目的 Scope 建出来（它不会自己消失）
+    await app.scopeRegistry.create(workspace.id);
+    expect(app.scopeRegistry.workspaceIds().length).toBe(1);
 
     const result = await callMethod(app, "workspace.remove", { workspaceId: workspace.id });
     expect(result.removed).toBe(true);
     expect(result.consequences.conversations).toBe(1);
     // Scope 被主动销毁（MCP 连接在这里断开），名下对话也没了
-    expect(app.scopeRegistry.size()).toBe(0);
+    expect(app.scopeRegistry.workspaceIds().length).toBe(0);
     const remaining = await callMethod(app, "conversation.list", { workspaceId: workspace.id });
     expect(remaining.total).toBe(0);
   });
@@ -866,14 +854,13 @@ async function callThroughPush(
 describe("配置生效", () => {
   it("生效 = 就地刷新同一个 Scope：实例不变、读到新值、不销毁任何一个", async () => {
     const fixture = await makeFixture();
-    const app = await startApp(fixture, { scopeIdleTimeoutMs: 10 * 60 * 1000 });
+    const app = await startApp(fixture);
     const { workspace } = await callMethod(app, "workspace.create", {
       cwd: fixture.workspaceDir.path,
     });
-    // 让这个项目有一个 Scope 可刷（空闲计时调长了，不会自己走）
-    const scope = await app.scopeRegistry.acquire(workspace.id);
-    app.scopeRegistry.release(workspace.id);
-    expect(app.scopeRegistry.size()).toBe(1);
+    // 让这个项目有一个 Scope 可刷（它不会自己消失）
+    const scope = await app.scopeRegistry.create(workspace.id);
+    expect(app.scopeRegistry.workspaceIds().length).toBe(1);
     expect(scope.config.maxToolOutput).not.toBe(2048);
 
     // 配置生效不该销毁任何 Scope（销毁 = `dispose()`：MCP 连接也会一起断）
@@ -889,8 +876,8 @@ describe("配置生效", () => {
     }
 
     // 刷的是「已经存在的那个」：同一个对象，不是拆了重建出来的另一个
-    expect(app.scopeRegistry.peek(workspace.id)).toBe(scope);
-    expect(app.scopeRegistry.size()).toBe(1);
+    expect(app.scopeRegistry.get(workspace.id)).toBe(scope);
+    expect(app.scopeRegistry.workspaceIds().length).toBe(1);
     // 而且它读到的是新值（config 是活的：refresh() 时跟着换掉）
     expect(scope.config.maxToolOutput).toBe(2048);
     expect(scope.env.config.maxToolOutput).toBe(2048);
@@ -907,18 +894,17 @@ describe("配置生效", () => {
 
   it("只改某个项目的 MCP：只刷那几个项目已经存在的 Scope，别的项目不碰", async () => {
     const fixture = await makeFixture();
-    const app = await startApp(fixture, { scopeIdleTimeoutMs: 10 * 60 * 1000 });
+    const app = await startApp(fixture);
     const first = await callMethod(app, "workspace.create", { cwd: fixture.workspaceDir.path });
     const secondCwd = join(fixture.workspaceDir.path, "second");
     await fs.mkdir(secondCwd, { recursive: true });
     const second = await callMethod(app, "workspace.create", { cwd: secondCwd });
 
     for (const workspaceId of [first.workspace.id, second.workspace.id]) {
-      await app.scopeRegistry.acquire(workspaceId);
-      app.scopeRegistry.release(workspaceId);
+      await app.scopeRegistry.create(workspaceId);
     }
-    const firstScope = app.scopeRegistry.peek(first.workspace.id);
-    const secondScope = app.scopeRegistry.peek(second.workspace.id);
+    const firstScope = app.scopeRegistry.get(first.workspace.id);
+    const secondScope = app.scopeRegistry.get(second.workspace.id);
 
     const saved = await callMethod(app, "config.saveMcp", {
       scope: "workspace",
@@ -928,9 +914,9 @@ describe("配置生效", () => {
 
     // 只刷改到的那个项目；两个 Scope 都还是原来那个实例（一个都没重建）
     expect(saved.applied.refreshedWorkspaceIds).toEqual([first.workspace.id]);
-    expect(app.scopeRegistry.peek(first.workspace.id)).toBe(firstScope);
-    expect(app.scopeRegistry.peek(second.workspace.id)).toBe(secondScope);
-    expect(app.scopeRegistry.size()).toBe(2);
+    expect(app.scopeRegistry.get(first.workspace.id)).toBe(firstScope);
+    expect(app.scopeRegistry.get(second.workspace.id)).toBe(secondScope);
+    expect(app.scopeRegistry.workspaceIds().length).toBe(2);
   });
 
   it("推出去的通知按收件人那条连接的语言重新渲染（D8 / localizeEvent）", async () => {
@@ -959,13 +945,12 @@ describe("配置生效", () => {
 describe("从磁盘重载（F-E1 / R63）", () => {
   it("host.reload 刷新受影响 Scope、合成一条通知，并回与 config.patch 同一份报告", async () => {
     const fixture = await makeFixture();
-    const app = await startApp(fixture, { scopeIdleTimeoutMs: 10 * 60 * 1000 });
+    const app = await startApp(fixture);
     const { workspace } = await callMethod(app, "workspace.create", {
       cwd: fixture.workspaceDir.path,
     });
-    const scope = await app.scopeRegistry.acquire(workspace.id);
-    app.scopeRegistry.release(workspace.id);
-    expect(app.scopeRegistry.size()).toBe(1);
+    const scope = await app.scopeRegistry.create(workspace.id);
+    expect(app.scopeRegistry.workspaceIds().length).toBe(1);
 
     const reloaded = await callMethod(app, "host.reload", {});
 
@@ -980,8 +965,8 @@ describe("从磁盘重载（F-E1 / R63）", () => {
     });
     expect(reloaded.applied.refreshedWorkspaceIds).toEqual([workspace.id]);
     // 重载同样只刷不拆：还是同一个 Scope
-    expect(app.scopeRegistry.peek(workspace.id)).toBe(scope);
-    expect(app.scopeRegistry.size()).toBe(1);
+    expect(app.scopeRegistry.get(workspace.id)).toBe(scope);
+    expect(app.scopeRegistry.workspaceIds().length).toBe(1);
     expect(reloaded.applied.noticeId).not.toBeNull();
     expect(reloaded.applied.restartRequired).toBe(false);
     // 配置本身没被改（重载只读不写）

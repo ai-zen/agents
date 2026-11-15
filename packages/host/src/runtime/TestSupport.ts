@@ -32,8 +32,9 @@ import type { Clock } from "./ScopeRegistry.js";
 /**
  * 手动推进的时钟：`advance(ms)` 依次执行到点的定时器。
  *
- * 空闲回收要等 10 分钟，用例不可能真等；把时间做成可注入的之后，回收逻辑照原样跑，
- * 只是「十分钟」变成了 `advance(10 * 60 * 1000)`。
+ * 时间可注入之后，「等十分钟」「等节流点」这些事在用例里都是一句 `advance(...)`。
+ * 注意：Scope 的回收**不再**用它（空闲计时已撤），但 `RunRegistry`、写库节流与
+ * 若干用例自己的计时期待仍然要一份可控时间。
  */
 export class ManualClock implements Clock {
   private current: number;

@@ -2,7 +2,7 @@
  * 临时对话（PRD D3 / F-A2 / R1 / R49）：一次请求跑一轮，零痕迹。
  *
  * 五件「没有」就是它的定义：**没有 id、不落库、不进对话列表、不可 attach、不推流式事件**。
- * 所以本文件的结构是刻意做窄的 —— 它没有库、没有事件出口、没有轮次注册表，只有「借一个
+ * 所以本文件的结构是刻意做窄的 —— 它没有库、没有事件出口、没有轮次注册表，只有「要一个
  * Scope、跑一轮、把结果一次交回去」。做不到的事情（落库、推流）在这里不是被判断掉，而是
  * 根本没有可用的通道。
  *
@@ -12,16 +12,16 @@
  * 加开关会让每一条写库路径后面都跟一个 `if`，而临时对话在语义上又确实是一次「跑一轮」。
  * 于是执行逻辑复用 core 的同一套（`agent.send()` 跑完整组内循环），落库与推送这一层换掉。
  *
- * ## Scope 的借用口径
+ * ## Scope 的口径
  *
  * D3 的原话是「只借 Scope，与 Workspace 无关」：临时对话没有 Workspace 身份，它只认一个
- * `cwd`（相对路径的解析基准）。所以这里不用 `workspaceId` 去借，而是用
+ * `cwd`（相对路径的解析基准）。所以这里不用 `workspaceId` 去要，而是用
  * `transientScopeKey(cwd)` 这个**按目录**的键（见 {@link transientScopeKey}）：
  *
- *   - 同一个目录连着跑两次临时对话，会命中同一个 Scope（借还计数加一减一）；
+ *   - 同一个目录连着跑两次临时对话，会命中同一个 Scope（`create` 是幂等的 get-or-create）；
  *   - 键里带着 cwd，于是 Scope 的创建方（接线层）能直接从键里解析出目录来装配能力；
- *   - 回收仍然交给持有那份空闲计时的 `ScopeRegistry`（A10：计时器只有一处），
- *     本文件不自建缓存、也不自建计时器。
+ *   - 跑完**不还**：没有引用计数、没有归还这回事。那个目录的 Scope 活到显式 dispose 或
+ *     进程退出（它带着那个项目的 MCP 连接，下一次同一目录的临时对话还能直接复用）。
  */
 
 import type { AgentNS } from "@ai-zen/agents-core";
@@ -54,10 +54,9 @@ export function cwdOfTransientScopeKey(key: string): string | null {
   return key.startsWith("transient:") ? key.slice("transient:".length) : null;
 }
 
-/** 借 / 还 Scope 的窄接口（结构上 `ScopeRegistry` 满足） */
-export interface TransientScopeBorrower {
-  acquire(key: string): Promise<Scope>;
-  release(key: string): void;
+/** 取 Scope 的口子（结构上 `ScopeRegistry` 满足）：幂等 get-or-create，没有「归还」 */
+export interface TransientScopes {
+  create(key: string): Promise<Scope>;
 }
 
 /** 装配临时对话用的 agent：比 `AgentFactory` 少两个身份字段（它没有对话、没有 Workspace） */
@@ -93,8 +92,8 @@ export function transientAgentFactoryFrom(createAgent: AgentFactory): TransientA
 }
 
 export interface TransientRunnerDeps {
-  /** 借 Scope 的入口（接的是持有空闲计时的那一个，A10） */
-  scopes: TransientScopeBorrower;
+  /** 取 Scope 的入口（幂等 get-or-create；跑完不还，Scope 活到显式 dispose / 进程退出） */
+  scopes: TransientScopes;
   createAgent: TransientAgentFactory;
   /** 配置唯一入口：没点名助手时用它读默认助手（`AppConfig.defaultAgent`） */
   configManager: ConfigManager;
@@ -103,7 +102,7 @@ export interface TransientRunnerDeps {
 
 /** 一次临时对话的结果里，`problem` 是「跑完了但这轮不算成功」时的那份说明 */
 export class TransientRunner {
-  private readonly scopes: TransientScopeBorrower;
+  private readonly scopes: TransientScopes;
   private readonly createAgent: TransientAgentFactory;
   private readonly configManager: ConfigManager;
   private readonly now: () => number;
@@ -138,7 +137,7 @@ export class TransientRunner {
 
     const agentId = await this.resolveAgentId(params.agentId);
     const scopeKey = transientScopeKey(cwd);
-    const scope = await this.scopes.acquire(scopeKey);
+    const scope = await this.scopes.create(scopeKey);
     try {
       const agent = await this.createAgent({
         scope,
@@ -168,10 +167,9 @@ export class TransientRunner {
       return { message, subagents: [], problem: problemOf(message, language) };
     } catch (error) {
       throw this.toHostError(error, cwd, language);
-    } finally {
-      // 与一轮普通对话一致：跑完就还（agent 本身跑完即弃，D28）
-      this.scopes.release(scopeKey);
     }
+    // 没有 finally：跑完不「还」Scope —— 那个目录的能力容器不属于这一次请求
+    // （agent 本身仍然跑完即弃，D28）
   }
 
   /** 这一轮用哪个助手：入参点名优先，否则配置里的默认助手（没有就说不清用哪个） */

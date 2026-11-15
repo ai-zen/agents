@@ -6,7 +6,7 @@
  *   1. **组装**：按对象图的顺序 `new` 出依赖（库 → 仓储 → 配置 → 运行时 → 服务 → 接线），
  *      每一层都靠构造参数注入；没有模块级单例、没有反射扫描、不读进程工作目录。
  *   2. **启停**：`start()` 决定监听在哪、把**实际**地址写进发现文件；`stop()` 对称地拆回去
- *      （摘发现文件、断连接、关上传、回收 Scope、关库）。
+ *      （摘发现文件、断连接、关上传、销毁 Scope、关库）。
  *   3. **判据**：什么时候「什么都不欠了」可以退出（PRD L4 / 裁定 R53），以及启动时
  *      「这台机器上是不是已经有人在服务」（单实例，architecture §2）。
  *
@@ -14,7 +14,7 @@
  * `WsHub`。本文件只给它们提供持有者（服务、运行时、配置、时钟）与几个只有它才接得起来的钩子：
  *   - **配置生效**（`ConfigApplyPort`）：改完配置要刷新受影响的 Scope（F-E2）并发一条通知（F-F9）；
  *   - **Scope 装配**（`ScopeRegistry` 的工厂）：能力目录由 `DiscoveryService` 按 cwd 算好（R54/L9）；
- *   - **退出判据**（`checkExit`）：连接数、在跑的轮次、Scope 三个来源都收敛到一处。
+ *   - **退出判据**（`checkExit`）：连接数、在跑的轮次、还活着的 Scope 三个来源都收敛到一处。
  */
 
 import { readFileSync } from "node:fs";
@@ -41,6 +41,7 @@ import {
 } from "./net/index.js";
 import type { HandlerTable, HubLogger, HostFileInfo } from "./net/index.js";
 import {
+  AgentRegistry,
   ChatRunner,
   createSdkAgentFactory,
   createWorkspaceScopeFactory,
@@ -165,11 +166,9 @@ export interface HostAppOptions {
   createAgent?: AgentFactory;
   /** 造 Scope 的工厂；缺省按 SDK 口径装配（用例可以给不带能力的空 Scope） */
   createScope?: ScopeFactory;
-  /** Scope 空闲回收时长（PRD D28 缺省 10 分钟；用例调小以免真等） */
-  scopeIdleTimeoutMs?: number;
   /** 交接服务（SDK 口径，装交接线插件用）；未注入时不装插件并推一条警告通知（裁定 R50） */
   handoff?: (context: AgentBuildContext) => HandoffService | undefined;
-  /** 时钟（Scope 回收计时与用例里的时间推进） */
+  /** 时钟（轮次回收、退出判据与用例里的时间推进） */
   clock?: Clock;
   /** 真退出时做什么；缺省 `process.exit(0)` */
   exit?: ExitHook;
@@ -265,6 +264,8 @@ export class HostApp {
 
   // ---- 运行时 ----
   readonly scopeRegistry: ScopeRegistry;
+  /** agent 的持有者（`AgentRegistry`）：`scope.dispose` 撞上还活着的 agent 就是问它 */
+  readonly agentRegistry: AgentRegistry;
   readonly runRegistry: RunRegistry;
   /**
    * 服务层要的两件运行时事实：忙不忙、删掉之后的中止。
@@ -341,7 +342,6 @@ export class HostApp {
   private checking = false;
   /** 这条进程至少被用过一次：没有它，刚起来的进程会在第一个客户端连上来之前就判自己该退 */
   private served = false;
-  private stopAllRecycled: (() => void) | null = null;
   /** 思考策略表快照（装配 agent 时要把档位名展开成参数，而那一层是同步的） */
   private presets: ReasoningPresets | null = null;
   /** 推送入口（造好之前为 `null`：这时没有任何连接可推） */
@@ -398,10 +398,11 @@ export class HostApp {
     const injectedScopeFactory = options.createScope;
     this.scopeRegistry = new ScopeRegistry({
       createScope: injectedScopeFactory ?? ((key) => this.defaultScopeFactory()(key)),
-      idleTimeoutMs: options.scopeIdleTimeoutMs,
-      clock: this.clock,
+      // 「这个 Scope 上还活着哪几段对话」只有 `AgentRegistry` 知道（它在下面几行才造好）：
+      // 这里给一个现读的入口，`dispose` 被叫到时才问
+      liveConversations: (workspaceId) => this.agentRegistry.conversationIds(workspaceId),
       onError: (error, workspaceId) => {
-        this.logger.error("回收 Scope 失败", { workspaceId, error: describeError(error) });
+        this.logger.error("销毁 Scope 失败", { workspaceId, error: describeError(error) });
       },
     });
     this.runRegistry = new RunRegistry({ clock: this.clock });
@@ -503,6 +504,12 @@ export class HostApp {
     });
     // agent 工厂只造一次：交接回合与普通对话用同一个（跑完即弃，D28）
     const createAgent = options.createAgent ?? this.defaultAgentFactory();
+    // agent 的持有者：「agent 从哪来」唯一的入口。它内部先要 Scope（幂等），
+    // 于是 Scope → Agent 的依赖顺序写在代码里，而不是靠调用方记得先要 Scope
+    this.agentRegistry = new AgentRegistry({
+      scopes: this.scopeRegistry,
+      createAgent,
+    });
     this.noticeService = new NoticeService({
       notices: this.notices,
       emit: (name, payload) => this.emitEvent(name, payload),
@@ -564,8 +571,7 @@ export class HostApp {
       conversations: this.conversations,
       scopes: this.scopeRegistry,
       runs: this.runRegistry,
-      createAgent,
-      handoff: (context) => this.handoffProvider(context),
+      agents: this.agentRegistry,
       emit: (name, payload) => this.emitEvent(name, payload),
       clock: this.clock,
       prepareAttachments: (context) => this.assetService.prepareAttachments(context),
@@ -756,9 +762,6 @@ export class HostApp {
     this.listening = actual;
     this.ownsHostFile = true;
     this.phase = "running";
-    this.stopAllRecycled = this.scopeRegistry.onAllRecycled(() => {
-      void this.checkExit();
-    });
     this.startVersionCheck();
     this.logInfo("宿主开始监听", {
       host: actual.host,
@@ -770,7 +773,7 @@ export class HostApp {
   }
 
   /**
-   * 收尾：对称于 `start()` —— 摘发现文件 → 回收 Scope → 断连接 → 关上传 → 关库。
+   * 收尾：对称于 `start()` —— 摘发现文件 → 销毁 Scope → 断连接 → 关上传 → 关库。
    *
    * 幂等：`host.shutdown`、判据、信号处理器都可能先到，只有第一次真的做事。
    * 挂靠别人的实例时不摘发现文件（那份不属于本进程）。
@@ -791,12 +794,17 @@ export class HostApp {
   }
 
   /**
-   * 退出判据（PRD L4 / 裁定 R53）：没有连接、没有在跑的轮次、Scope 全部回收 —— 什么都不欠了。
+   * 退出判据（PRD L4 / 裁定 R53）：没有连接、没有在跑的轮次、也没有活着的 Scope —— 什么都不欠了。
    *
-   * 触发源有三个，都不另起计时器（A10：计时器只有一处，即 `ScopeRegistry` 里那份空闲计时）：
-   *   - `ScopeRegistry.onAllRecycled`：Scope 全部拆完那一刻；
+   * 触发源只有两个，都不另起计时器：
    *   - 每轮结算（`onTurnSettled`）：最后一件欠着的事可能是刚跑完的这一轮；
    *   - `WsHub.onConnectionsChanged`：最后一条连接走了。
+   *
+   * **Scope 仍然是判据的一部分**，但它现在不会自己消失（没有空闲计时、没有引用计数）：
+   * 活着就是有人显式持有它。于是「手里还有 Scope」意味着这个进程还持着那几套能力
+   * （MCP 连接就在里面），不该自己走 —— 要走就显式 `stop()` / `shutdown()`（收尾里
+   * `disposeAll` 会把它们连同 MCP 连接一起关掉）。反过来若把这个条件去掉，最后一个连接
+   * 断开就会连带拆掉全部 Scope，那等于把「回收」藏到了进程退出里，与本单的口径相反。
    *
    * 两个防止误退的口子：
    *   1. **还没被真正用过**时不判：只有握过手（凭证被接受）的连接才算「有人用过它」，
@@ -810,7 +818,7 @@ export class HostApp {
       if (this.hub.connectionInfos().length > 0) return;
       if (!this.served) return;
       if (this.runRegistry.size() > 0) return;
-      if (this.scopeRegistry.size() > 0) return;
+      if (this.scopeRegistry.workspaceIds().length > 0) return;
       await this.shutdown("idle");
     } finally {
       this.checking = false;
@@ -822,15 +830,14 @@ export class HostApp {
       reason,
       connections: this.hub.connectionInfos().length,
       runs: this.runRegistry.size(),
-      scopes: this.scopeRegistry.size(),
+      // 收尾那一刻还持有着几个 Scope（接下来 `disposeAll` 会把它们全部销毁）
+      scopes: this.scopeRegistry.workspaceIds().length,
     };
 
     const ownsHostFile = this.ownsHostFile;
     this.phase = "stopped";
     this.ownsHostFile = false;
     this.listening = null;
-    this.stopAllRecycled?.();
-    this.stopAllRecycled = null;
     this.stopVersionCheck();
 
     if (ownsHostFile) {
@@ -840,11 +847,12 @@ export class HostApp {
         this.logger.warn("清理发现文件失败", { error: describeError(error) });
       }
     }
-    // Scope 一起拆掉：MCP 连接是它持有的，进程退出之后没有别人会替它关（D28 同生共死）
+    // Scope 一起拆掉：MCP 连接是它持有的，进程退出之后没有别人会替它关（D28 同生共死）。
+    // `disposeAll` 不拒绝（收尾时「还有 agent 活着」不是要挡住销毁的理由）
     try {
       await this.scopeRegistry.disposeAll();
     } catch (error) {
-      this.logger.warn("收尾时回收 Scope 失败", { error: describeError(error) });
+      this.logger.warn("收尾时销毁 Scope 失败", { error: describeError(error) });
     }
     await this.hub.close();
     // 关上传：还没结束的分片按 `begin` 记的临时文件清掉，不留垃圾在 assets/ 下
@@ -867,7 +875,7 @@ export class HostApp {
   /**
    * 起一个低频自检：磁盘上的版本号变了（且已经是新的）就收尾退出，由启动方式重拉。
    *
-   * 这个定时器不是退出判据的触发源（A10：计时器只有 `ScopeRegistry` 那一份负责回收），
+   * 这个定时器不是退出判据的触发源（判据只看连接、在跑的轮次与还活着的 Scope），
    * 它只把「包已经换了」这个事实变成一次重启。缺省的启动方式带 `unref()`：
    * 只有它还在跑时，也不该拦住进程退出。
    */
@@ -1036,7 +1044,7 @@ export class HostApp {
 
   /** 缺省的 Scope 工厂：按 SDK 口径装能力，能力目录由发现服务按 cwd 算好（R54 / L9） */
   private defaultScopeFactory(): ScopeFactory {
-    // 一次 acquire 只算一遍路径：四个目录同属「这个 cwd 的能力布局」
+    // 一次 create 只算一遍路径：四个目录同属「这个 cwd 的能力布局」
     const abilityPaths = (cwd: string) => this.discoveryService.scopeAbilityPaths(cwd);
     return createWorkspaceScopeFactory({
       // 两个来源：Workspace（按 id 查库）与临时对话（键里带着 cwd，D3「只借 Scope」）
@@ -1271,7 +1279,7 @@ export class HostApp {
    *
    * 刷哪些按改动范围定：只改了某个项目的 MCP（`workspace` 作用域）→ 只刷那几个项目现有的
    * Scope；其余改动（端点 / 模型 / 上限 / 用户级 MCP）影响所有 Scope → 现存的全都刷。
-   * 没有的跳过：不为刷新去创建一个 Scope（下一段对话 acquire 时会按新配置建）。
+   * 没有的跳过：不为刷新去创建一个 Scope（下一段对话 `create` 时会按新配置建）。
    */
   private async refreshScopesFor(change: ConfigApplyChange): Promise<string[]> {
     const existing = this.scopeRegistry.workspaceIds();

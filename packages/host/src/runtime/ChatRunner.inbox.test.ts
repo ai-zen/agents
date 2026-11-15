@@ -43,6 +43,7 @@ import type {
   TurnSettlement,
 } from "./ChatRunner.js";
 import { ChatRunner } from "./ChatRunner.js";
+import { AgentRegistry } from "./AgentRegistry.js";
 import { RunRegistry } from "./RunRegistry.js";
 import { ScopeRegistry } from "./ScopeRegistry.js";
 import {
@@ -226,7 +227,7 @@ function createHarness(options: {
   const store = new RecordingMessageStore();
   const conversation = makeConversation();
   const { scope } = createFakeScope("/tmp/ai-zen-inbox");
-  const scopes = new ScopeRegistry({ createScope: async () => scope, clock });
+  const scopes = new ScopeRegistry({ createScope: async () => scope });
   const runs = new RunRegistry({ clock });
   const events: Harness["events"] = [];
   const errors: Harness["errors"] = [];
@@ -243,7 +244,7 @@ function createHarness(options: {
     },
     scopes,
     runs,
-    createAgent: options.createAgent,
+    agents: new AgentRegistry({ scopes, createAgent: options.createAgent }),
     emit: (name, payload) => {
       events.push({ name, payload });
     },

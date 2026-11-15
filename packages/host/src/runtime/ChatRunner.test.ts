@@ -35,6 +35,7 @@ import type {
   TurnSettledFacts,
 } from "./ChatRunner.js";
 import { ChatRunner, createSdkAgentFactory, DEFAULT_STREAM_WRITE_INTERVAL_MS } from "./ChatRunner.js";
+import { AgentRegistry } from "./AgentRegistry.js";
 import { RunRegistry } from "./RunRegistry.js";
 import { ScopeRegistry } from "./ScopeRegistry.js";
 import type { FakeRound } from "./TestSupport.js";
@@ -76,6 +77,8 @@ interface Harness {
   store: RecordingMessageStore;
   runs: RunRegistry;
   scopes: ScopeRegistry;
+  /** agent 的持有者：一轮跑完要从这里消失，Scope 则仍在 */
+  agents: AgentRegistry;
   clock: ManualClock;
   plugin: RecordingScopePlugin;
   events: Array<{ name: EventName; payload: EventMap[EventName] }>;
@@ -114,13 +117,22 @@ function createHarness(options: {
 
   const conversation = options.conversation ?? makeConversation();
   const { scope, plugin } = createFakeScope("/tmp/ai-zen-project");
-  const scopes = new ScopeRegistry({ createScope: async () => scope, clock });
+  const scopes = new ScopeRegistry({ createScope: async () => scope });
   const runs = new RunRegistry({ clock });
 
   const events: Array<{ name: EventName; payload: EventMap[EventName] }> = [];
   const builds: AgentBuildContext[] = [];
   let idCursor = 0;
   const agent = options.agent ?? new FakeAgent(options.rounds ?? []);
+
+  const agents = new AgentRegistry({
+    scopes,
+    createAgent: async (context) => {
+      builds.push(context);
+      if (options.buildAgent) return await options.buildAgent(context);
+      return options.agentFactory ? options.agentFactory() : agent;
+    },
+  });
 
   const runner = new ChatRunner({
     messages: store,
@@ -129,11 +141,7 @@ function createHarness(options: {
     },
     scopes,
     runs,
-    createAgent: async (context) => {
-      builds.push(context);
-      if (options.buildAgent) return await options.buildAgent(context);
-      return options.agentFactory ? options.agentFactory() : agent;
-    },
+    agents,
     emit: (name, payload) => {
       events.push({ name, payload });
     },
@@ -160,6 +168,7 @@ function createHarness(options: {
     store,
     runs,
     scopes,
+    agents,
     clock,
     plugin,
     events,
@@ -219,7 +228,7 @@ describe("ChatRunner：受理", () => {
     ).rejects.toMatchObject({ code: "not_found" });
 
     expect(harness.runs.size()).toBe(0);
-    expect(harness.scopes.size()).toBe(0);
+    expect(harness.scopes.workspaceIds()).toEqual([]);
     expect(harness.store.writes).toEqual([]);
   });
 
@@ -400,7 +409,7 @@ describe("ChatRunner：边流边写（PRD D15）", () => {
 });
 
 describe("ChatRunner：结算", () => {
-  it("跑完 agent 即丢、Scope 依赖归零，结算态与用量一起推出去（PRD D28 / F-I5）", async () => {
+  it("跑完 agent 即丢，而 Scope 仍在（与旧行为最大的差别）", async () => {
     const agent = new FakeAgent(plainRounds());
     const custom = createHarness({ agent });
 
@@ -426,16 +435,20 @@ describe("ChatRunner：结算", () => {
     expect(custom.pushed("usage")).toHaveLength(1);
     expect(custom.pushed("conversation.changed")[0]?.change).toBe("messages_persisted");
 
-    // agent 已经被丢掉：结算之后再叫停不会碰到它
+    // agent 已经被丢掉：登记里没了，结算之后再叫停也不会碰到它
+    expect(custom.agents.get(CONVERSATION_ID)).toBeUndefined();
+    expect(custom.agents.conversationIds()).toEqual([]);
     turn.abort("已经跑完了");
     expect(agent.abortCalls).toBe(0);
 
-    // Scope 的依赖已归还：空闲满 10 分钟才回收（MCP 关闭回调在回收时才被调）
-    expect(custom.plugin.disposeCalls).toBe(0);
-    custom.clock.advance(TEN_MINUTES);
+    // 而 Scope 一直在（没有空闲计时、没有自动回收）：推多久都不会自己消失，
+    // 也没人收到「MCP 关闭」那一下 —— 它活到显式 dispose 或进程退出
+    expect(custom.scopes.get(WORKSPACE_ID)).toBeDefined();
+    expect(custom.scopes.workspaceIds()).toEqual([WORKSPACE_ID]);
+    custom.clock.advance(TEN_MINUTES * 24);
     await flushMicrotasks();
-    expect(custom.plugin.disposeCalls).toBe(1);
-    expect(custom.scopes.size()).toBe(0);
+    expect(custom.scopes.get(WORKSPACE_ID)).toBeDefined();
+    expect(custom.plugin.disposeCalls).toBe(0);
   });
 
   it("装配 agent 失败：助手占位有个终态（error），失败原因进结算态", async () => {
@@ -465,9 +478,12 @@ describe("ChatRunner：结算", () => {
       },
       scopes: custom.scopes,
       runs: custom.runs,
-      createAgent: async () => {
-        throw new Error("模型没配端点");
-      },
+      agents: new AgentRegistry({
+        scopes: custom.scopes,
+        createAgent: async () => {
+          throw new Error("模型没配端点");
+        },
+      }),
       emit: () => undefined,
       clock: custom.clock,
       newId: () => `srv-fail`,
@@ -865,7 +881,10 @@ describe("ChatRunner：中止（PRD D14 / D15）", () => {
       conversations: { get: async () => makeConversation() },
       scopes: custom.scopes,
       runs: custom.runs,
-      createAgent: () => new Promise<ChatAgent>((resolve) => (releaseBuild = resolve)),
+      agents: new AgentRegistry({
+        scopes: custom.scopes,
+        createAgent: () => new Promise<ChatAgent>((resolve) => (releaseBuild = resolve)),
+      }),
       emit: () => undefined,
       clock: custom.clock,
       newId: () => `srv-early`,
@@ -1230,7 +1249,7 @@ describe("ChatRunner：与真实存储对接", () => {
 
       const clock = new ManualClock();
       const { scope } = createFakeScope(dir);
-      const scopes = new ScopeRegistry({ createScope: async () => scope, clock });
+      const scopes = new ScopeRegistry({ createScope: async () => scope });
       const runs = new RunRegistry({ clock });
       let idCursor = 0;
       const runner = new ChatRunner({
@@ -1238,7 +1257,10 @@ describe("ChatRunner：与真实存储对接", () => {
         conversations,
         scopes,
         runs,
-        createAgent: async () => new FakeAgent(plainRounds()),
+        agents: new AgentRegistry({
+          scopes,
+          createAgent: async () => new FakeAgent(plainRounds()),
+        }),
         emit: () => undefined,
         clock,
         newId: () => `db-${++idCursor}`,

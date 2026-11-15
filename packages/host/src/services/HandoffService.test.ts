@@ -26,7 +26,7 @@ import { migrate } from "../storage/migrations.js";
 import type { ConversationRuntimePort } from "./ConversationService.js";
 import { ConversationService } from "./ConversationService.js";
 import { HandoffCancelledError, createSdkHandoffExecutor, HandoffService, handoffDirFor } from "./HandoffService.js";
-import type { HandoffExecutor, ScopeBorrower } from "./HandoffService.js";
+import type { HandoffExecutor, ScopeProvider } from "./HandoffService.js";
 import { NoticeService } from "./NoticeService.js";
 import { NoticeRepository } from "../storage/NoticeRepository.js";
 
@@ -68,20 +68,15 @@ class FakeRuntime implements ConversationRuntimePort {
   forget(): void {}
 }
 
-/** 借 Scope 的记账实现：真 Scope（cwd 显式给），只记借还与用哪个鍵 */
-class RecordingScopes implements ScopeBorrower {
+/** 取 Scope 的记账实现：真 Scope（cwd 显式给），只记拿过哪些键（没有归还这回事） */
+class RecordingScopes implements ScopeProvider {
   readonly acquired: string[] = [];
-  readonly released: string[] = [];
 
   constructor(private readonly cwd: string) {}
 
-  async acquire(key: string) {
+  async create(key: string) {
     this.acquired.push(key);
     return createFakeScope(this.cwd).scope;
-  }
-
-  release(key: string): void {
-    this.released.push(key);
   }
 }
 
@@ -539,11 +534,11 @@ describe("前置条件", () => {
     ).rejects.toMatchObject({ code: "invalid_params" });
   });
 
-  it("用完把 Scope 还回去（借还各一次）", async () => {
+  it("用完不还 Scope（没有借用这回事：它活到显式 dispose / 进程退出）", async () => {
     const service = harness.buildService({ execute: sdkExecutor([]) });
     await service.start({ conversationId, mode: "summary", then: "document_only" });
+    // 只拿过一次（幂等 get-or-create），而且拿完就没再动它
     expect(harness.scopes.acquired).toEqual(["w1"]);
-    expect(harness.scopes.released).toEqual(["w1"]);
   });
 });
 

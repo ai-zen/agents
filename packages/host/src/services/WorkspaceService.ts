@@ -58,7 +58,7 @@ export interface WorkspaceServiceDeps {
   sweepAssets?: AssetSweeper;
   /**
    * 运行时钩子：删项目会连带删掉它名下的对话，这些对话在运行时里可能还留着
-   * 临时覆盖、空闲计时之类的东西，删之前一并请它扔掉。
+   * 现场（`ChatRunner.turns` 里那一轮、`AgentRegistry` 里那个 agent），删之前一并请它扔掉。
    */
   runtime: ConversationRuntimePort;
   /** 时钟，测试注入用；缺省 `Date.now` */

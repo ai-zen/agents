@@ -20,6 +20,7 @@ import type { Agent } from "@ai-zen/agents-core";
 
 import type { ChatTurn, TurnSettledFacts } from "../runtime/ChatRunner.js";
 import { ChatRunner } from "../runtime/ChatRunner.js";
+import { AgentRegistry } from "../runtime/AgentRegistry.js";
 import { RunRegistry } from "../runtime/RunRegistry.js";
 import { ScopeRegistry } from "../runtime/ScopeRegistry.js";
 import type { FakeRound } from "../runtime/TestSupport.js";
@@ -107,7 +108,7 @@ function createHarness(options: {
   const rows = new Map<string, Conversation>([[PARENT_ID, conversation(PARENT_ID)]]);
   const creator = new RegisteringCreator(rows);
   const { scope } = createFakeScope("/tmp/ai-zen-peer");
-  const scopes = new ScopeRegistry({ createScope: async () => scope, clock });
+  const scopes = new ScopeRegistry({ createScope: async () => scope });
   const runs = new RunRegistry({ clock });
   const agents = new Map<string, Agent>();
   const settled: TurnSettledFacts[] = [];
@@ -118,15 +119,18 @@ function createHarness(options: {
     conversations: { get: async (id: string) => rows.get(id) },
     scopes,
     runs,
-    createAgent: async (context) => {
-      const agent = new FakeAgent(
-        context.conversationId === PARENT_ID ? options.parentRounds() : options.childRounds(),
-      );
-      // 宿主就是这么做的（`app.ts` 的 `defaultAgentFactory`）：造出 agent 之后登记它属于哪段会话
-      service.bind(agent, context.conversationId);
-      agents.set(context.conversationId, agent as unknown as Agent);
-      return agent;
-    },
+    agents: new AgentRegistry({
+      scopes,
+      createAgent: async (context) => {
+        const agent = new FakeAgent(
+          context.conversationId === PARENT_ID ? options.parentRounds() : options.childRounds(),
+        );
+        // 宿主就是这么做的（`app.ts` 的 `defaultAgentFactory`）：造出 agent 之后登记它属于哪段会话
+        service.bind(agent, context.conversationId);
+        agents.set(context.conversationId, agent as unknown as Agent);
+        return agent;
+      },
+    }),
     emit: () => {},
     clock,
     newId: () => `srv-${(idCursor += 1)}`,

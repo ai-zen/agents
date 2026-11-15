@@ -18,24 +18,19 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Scope } from "@ai-zen/agents-sdk";
 import { FakeAgent, createFakeScope } from "./TestSupport.js";
 import { TransientRunner, cwdOfTransientScopeKey, transientScopeKey } from "./TransientRunner.js";
-import type { TransientAgentFactory, TransientScopeBorrower } from "./TransientRunner.js";
+import type { TransientAgentFactory, TransientScopes } from "./TransientRunner.js";
 
-/** 借 Scope 的记账实现：真 Scope（cwd 从键里解析），只记借还 */
-class RecordingScopes implements TransientScopeBorrower {
-  readonly acquired: string[] = [];
-  readonly released: string[] = [];
+/** 取 Scope 的记账实现：真 Scope（cwd 从键里解析），只记拿过哪些键 */
+class RecordingScopes implements TransientScopes {
+  readonly created: string[] = [];
   readonly scopes: Scope[] = [];
 
-  async acquire(key: string): Promise<Scope> {
-    this.acquired.push(key);
+  async create(key: string): Promise<Scope> {
+    this.created.push(key);
     const cwd = cwdOfTransientScopeKey(key) ?? "/";
     const { scope } = createFakeScope(cwd);
     this.scopes.push(scope);
     return scope;
-  }
-
-  release(key: string): void {
-    this.released.push(key);
   }
 }
 
@@ -148,29 +143,29 @@ describe("一次请求跑一轮，结果一次返回（D3）", () => {
   });
 });
 
-describe("只借 Scope，与 Workspace 无关（D3）", () => {
-  it("按 cwd 借、按同一个键还", async () => {
+describe("只取 Scope，与 Workspace 无关（D3）", () => {
+  it("按 cwd 取，同一个键下去（没有归还这回事）", async () => {
     await harness.runner.run({ cwd: "/tmp/project", input: { content: "x" } });
-    expect(harness.scopes.acquired).toEqual([transientScopeKey("/tmp/project")]);
-    expect(harness.scopes.released).toEqual([transientScopeKey("/tmp/project")]);
+    expect(harness.scopes.created).toEqual([transientScopeKey("/tmp/project")]);
     expect(transientScopeKey("/tmp/project")).toBe("transient:/tmp/project");
     expect(cwdOfTransientScopeKey("transient:/tmp/project")).toBe("/tmp/project");
     expect(cwdOfTransientScopeKey("w1")).toBeNull();
   });
 
-  it("不同目录借的是不同的 Scope", async () => {
+  it("不同目录要的是不同的 Scope", async () => {
     await harness.runner.run({ cwd: "/tmp/a", input: { content: "x" } });
     await harness.runner.run({ cwd: "/tmp/b", input: { content: "y" } });
-    expect(harness.scopes.acquired).toEqual(["transient:/tmp/a", "transient:/tmp/b"]);
-    expect(harness.scopes.released).toEqual(["transient:/tmp/a", "transient:/tmp/b"]);
+    expect(harness.scopes.created).toEqual(["transient:/tmp/a", "transient:/tmp/b"]);
   });
 
-  it("跑挂了也要把 Scope 还回去", async () => {
+  it("跑挂了 Scope 也不回收（它不属于这一次请求）", async () => {
     harness.behaviour.fail = new Error("端点 500");
     await expect(
       harness.runner.run({ cwd: "/tmp/project", input: { content: "x" } }),
     ).rejects.toMatchObject({ code: "internal" });
-    expect(harness.scopes.released).toEqual([transientScopeKey("/tmp/project")]);
+    // 拿过的那一个还在手里（本文件没有销毁它的口子），跑挂了也不动它
+    expect(harness.scopes.created).toEqual([transientScopeKey("/tmp/project")]);
+    expect(harness.scopes.scopes).toHaveLength(1);
   });
 });
 
@@ -220,7 +215,7 @@ describe("失败与结局的说明", () => {
       code: "invalid_params",
       detail: { field: "cwd" },
     });
-    expect(harness.scopes.acquired).toEqual([]);
+    expect(harness.scopes.created).toEqual([]);
   });
 
   it("没点名助手、配置里也没有默认助手 → config_invalid（说不清用哪个）", async () => {
@@ -229,7 +224,7 @@ describe("失败与结局的说明", () => {
       await expect(
         bare.runner.run({ cwd: "/tmp/project", input: { content: "x" } }),
       ).rejects.toMatchObject({ code: "config_invalid" });
-      expect(bare.scopes.acquired).toEqual([]);
+      expect(bare.scopes.created).toEqual([]);
     } finally {
       await rm(bare.dir, { recursive: true, force: true });
     }

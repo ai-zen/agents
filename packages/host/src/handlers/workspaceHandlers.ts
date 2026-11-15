@@ -22,7 +22,7 @@ export interface WorkspaceHandlerDeps {
   conversations: ConversationService;
   /** 名下的对话在运行时里可能还留着现场，删之前一并丢掉 */
   runner: ChatRunner;
-  /** 删项目要把它的 Scope 一起回收（MCP 连接在这里断开） */
+  /** 删项目要把它的 Scope 一起销毁（MCP 连接在这里断开） */
   scopes: ScopeRegistry;
   /**
    * 推 `conversation.changed`（L5 / D22：删项目带走的那几段对话也要让别的窗口知道）。
@@ -50,7 +50,11 @@ export function createWorkspaceHandlers(deps: WorkspaceHandlerDeps): HandlerTabl
  *   1. 先记下名下的对话（删完就问不出来了，而运行时里它们的现场要一起丢）；
  *   2. 服务层删行（它顺带让运行时忘掉那几段对话的临时覆盖，以及删完之后清归零的素材字节）；
  *   3. 逐段对话丢掉这一轮的现场，并推一条 `deleted`（多端在线时对方界面靠它去拉）；
- *   4. 回收这个 Workspace 的 Scope —— MCP 连接在这里断开（architecture §4 销毁缘由之二）。
+ *   4. 销毁这个 Workspace 的 Scope —— MCP 连接在这里断开（architecture §4 销毁缘由之一）。
+ *
+ * 第 3 步已经把名下那几段对话的现场丢了（`forget`：叫停 + 摘掉 agent 登记），于是第 4 步
+ * 不会因为「还活着的 agent」被拒绝。真撞上了（比如某个 agent 不是经 `AgentRegistry` 造的），
+ * `scopes.dispose` 的错误照原样上抛：那是程序错误，不该被这里默默吞掉。
  *
  * `dryRun` 只走第 2 步：它要的只是代价，不该有任何副作用。
  */
@@ -75,7 +79,7 @@ async function removeWorkspace(
         at: (deps.now ?? (() => new Date().toISOString()))(),
       });
     }
-    await deps.scopes.disposeWorkspace(params.workspaceId);
+    await deps.scopes.dispose(params.workspaceId);
   }
   return { removed: report.removed, consequences: report.consequences };
 }

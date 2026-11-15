@@ -1,38 +1,58 @@
 /**
- * `ScopeRegistry` —— workspaceId → `Scope` 的持有者、依赖计数与空闲回收（architecture §4 / PRD D28）。
+ * `ScopeRegistry` —— key（workspaceId / 临时对话的目录键）→ `Scope` 的持有者（architecture §4）。
  *
- * 一个 Workspace 一个 Scope（PRD D9）：同一 Workspace 下的多段对话复用同一个 Scope，
- * 所以这里记的是**依赖计数**而不是「谁在打开它」。计数归零之后不立刻拆，而是起一个
- * 10 分钟的空闲计时；计时到点才真正销毁 —— 销毁就是 `Scope.dispose()`，它会逆序调用各插件的
- * `dispose()`，MCP 插件在那里断开它自持的全部连接，于是「Scope 与 MCP 连接同生共死」
- * 不用第二套代码来表达。
+ * 一个 Workspace 一个 Scope（PRD D9）：同一 Workspace 下的多段对话复用同一个 Scope。
+ * 这个文件只回答两个问题：**现在有没有**（`create` 幂等 get-or-create / `get` 只看不建）、
+ * **什么时候拆**（`dispose` / `disposeAll`）。
  *
- * 计时器只有这一处（architecture §4 A10）：L4 说的「10 分钟无活动」与 D28 说的
- * 「Scope 空闲 10 分钟」是同一个计时器的两个说法，别处不再另起一份。
+ * ## 没有空闲计时、没有引用计数、没有自动回收
  *
- * Scope 会被销毁的两种场合（architecture §4）：空闲到点、Workspace 被删。两者都收敛到
- * 本文件的 `dispose`，区别只在「谁来叫」。
+ * 实例活着就是因为有人显式持有它：
+ *
+ *   - 建出来之后一直活着，直到有人调 `dispose(workspaceId)`（Workspace 被删）或
+ *     `disposeAll()`（进程收尾）。中间不会因为「没人用」而消失 —— 也没有「没人用」这个
+ *     可判定的状态：Scope 是能力容器，它不属于某一段对话；
+ *   - 因此本文件不再记引用计数（那是自动回收的输入），也不再持有计时器
+ *     （architecture §4 曾经唯一的那个空闲计时已撤掉）。
+ *
+ * 「这个 Scope 上还活着几个 agent」是 `AgentRegistry` 的账，不是这里的账：本文件只在
+ * `dispose` 时**问一句**（{@link ScopeRegistryOptions.liveConversations}），有活的就拒绝。
+ *
+ * ## 回收自下而上：撞上活着的 agent 就拒绝，不级联
+ *
+ * `dispose` 遇到还活着的 agent 时抛 {@link ScopeBusyError}（带着 `conversationId` 列表），
+ * 而不是顺手把那些对话掐掉：级联会静默掐死正在跑的对话，而显式 API 的价值就是「动作要有意识」。
+ * 调用方的顺序是：先让会话停下（`ChatRunner.abort` / `forget`）+ 丢掉 agent
+ * （`AgentRegistry.dispose`），再回来销毁 Scope。
+ *
+ * `disposeAll` 是**收尾**用的，不拒绝：进程要退出了，那时已经没有「稍后再拆」这回事。
+ *
+ * ## 销毁就是 `Scope.dispose()`
+ *
+ * 它会逆序调用各插件的 `dispose()`，MCP 插件在那里断开它自持的全部连接，于是
+ * 「Scope 与 MCP 连接同生共死」不用第二套代码来表达 —— 只是时机从「空闲到点」变成
+ * 「显式 dispose / 进程退出」。
  *
  * **配置改动不是销毁场合**：配置改动的本质是「磁盘上几个 json 变了」，`refresh()`
  * （重读配置 + 各插件重新发现）就能让它生效，Scope 实例还是同一个 —— 见
  * `refreshWorkspace`。
  *
- * 时间与 Scope 的创建方式都从构造参数进来：测试用假时钟推进十分钟，接线层提供真实的
- * SDK 装配（见本文件末尾的 `createWorkspaceScopeFactory`）。
+ * Scope 的创建方式从构造参数进来：接线层提供真实的 SDK 装配（见本文件末尾的
+ * `createWorkspaceScopeFactory`）。
  */
 
 import type { AllInOneOptions, AppConfig, ToolEnvDeps } from "@ai-zen/agents-sdk";
 import { allInOne, PeerSessionsScopePlugin, Scope } from "@ai-zen/agents-sdk";
 import type { PeerSessionPort } from "@ai-zen/agents-sdk";
 
-/** 空闲回收的缺省时长：10 分钟（PRD D28） */
-export const DEFAULT_SCOPE_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
-
 /**
  * 计时入口。
  *
  * `setTimeout` 返回「取消函数」而不是句柄：假时钟与真定时器都能实现它，调用方不必知道
  * 句柄长什么样，也就不需要 `clearTimeout` 的第二个入口。
+ *
+ * 本文件自己**不再用**它做任何回收（空闲计时已撤）；它留着是因为 `RunRegistry`、
+ * `CompletionService` 与接线层仍在用同一个口径的时钟。
  */
 export interface Clock {
   /** 当前时刻（毫秒，`Date.now()` 口径） */
@@ -49,14 +69,14 @@ export const systemClock: Clock = {
   now: () => Date.now(),
   setTimeout: (handler, ms) => {
     const timer = setTimeout(handler, ms);
-    // 空闲回收计时不该单独把进程钉住：真要退出时由根对象按「什么都不欠了」判断
+    // 计时不该单独把进程钉住：真要退出时由根对象按「什么都不欠了」判断
     timer.unref?.();
     return () => clearTimeout(timer);
   },
 };
 
 /**
- * 造一个 Scope 的方式（按 workspaceId）。
+ * 造一个 Scope 的方式（按 key）。
  *
  * 之所以是外部注入而不是本文件自己 `new Scope(...)`：装配 Scope 需要取配置的端口、能力路径、
  * MCP 配置的 5 层链（PRD L9）—— 那些都是配置层的财产；本文件只管「什么时候有、什么时候拆」。
@@ -64,35 +84,56 @@ export const systemClock: Clock = {
  */
 export type ScopeFactory = (workspaceId: string) => Promise<Scope>;
 
+/**
+ * 「这个 Scope 上还活着哪几段对话」—— 由 `AgentRegistry` 提供（结构上它满足）。
+ *
+ * 只有 `dispose` 用它：撞上活的就拒绝。不注入时当作「没有活着的 agent」
+ * （单独用本文件的小工具、用例里的假注册表都属于这种情形）。
+ */
+export type LiveConversationsQuery = (workspaceId: string) => string[];
+
+/**
+ * 还活着的 agent 挡着，Scope 不能销毁。
+ *
+ * 形状是有意的扁的：`conversationIds` 直接可以报给调用方/日志，不必再去别处查一遍。
+ */
+export class ScopeBusyError extends Error {
+  readonly workspaceId: string;
+  /** 还活着的对话（`AgentRegistry` 里的那些），按登记顺序 */
+  readonly conversationIds: string[];
+
+  constructor(workspaceId: string, conversationIds: string[]) {
+    super(
+      `Scope "${workspaceId}" is still running ${conversationIds.length} conversation(s): ` +
+        `${conversationIds.join(", ")}`,
+    );
+    this.name = "ScopeBusyError";
+    this.workspaceId = workspaceId;
+    this.conversationIds = [...conversationIds];
+  }
+}
+
 export interface ScopeRegistryOptions {
-  /** 懒创建：只有 `acquire` 到不存在的 workspaceId 时才叫它 */
+  /** 懒创建：只有 `create` 到不存在的 key 时才叫它 */
   createScope: ScopeFactory;
-  /** 空闲回收时长，缺省 10 分钟 */
-  idleTimeoutMs?: number;
-  /** 计时入口，缺省真实时钟 */
-  clock?: Clock;
+  /** 查「这个 Scope 上还活着哪几段对话」（`AgentRegistry.conversationIds` 结构上满足） */
+  liveConversations?: LiveConversationsQuery;
   /** 销毁 / 刷新 Scope 时抛出的错误往哪里报（缺省吞掉：这事失败不该让调用方以为业务失败了） */
   onError?: (error: unknown, workspaceId: string) => void;
 }
 
-/** 一个 Workspace 对应的一条记录 */
+/** 一个 key 对应的一条记录 */
 class ScopeEntry {
   readonly workspaceId: string;
   /**
    * 创建中的 Promise；与 `resolved` 指向同一个 Scope。
    *
-   * 在构造函数里就把它起来：`acquire` 登记完条目之后才能有人 await 到它，
+   * 在构造函数里就把它起来：`create` 登记完条目之后才能有人 await 到它，
    * 而构造函数是同步跑完的，所以不存在「拿到条目但 Promise 还没赋值」的窗口。
    */
   readonly created: Promise<Scope>;
   /** 创建完成后才有值 */
   resolved?: Scope;
-  /** 依赖计数：当前有多少个调用方正拿着它 */
-  refs = 1;
-  /** 空闲计时器的取消函数 */
-  cancelIdle?: () => void;
-  /** 宿主收尾时它正被持有：等最后一次 release 再销毁（不在别人用着的时候拆能力） */
-  disposeWhenFree = false;
   /** 正在销毁（幂等） */
   disposing?: Promise<void>;
 
@@ -105,39 +146,43 @@ class ScopeEntry {
 export class ScopeRegistry {
   private readonly entries = new Map<string, ScopeEntry>();
   private readonly createScope: ScopeFactory;
-  private readonly idleTimeoutMs: number;
-  private readonly clock: Clock;
+  private readonly liveConversations?: LiveConversationsQuery;
   private readonly onError?: (error: unknown, workspaceId: string) => void;
-  private readonly allRecycledListeners = new Set<() => void>();
 
   constructor(options: ScopeRegistryOptions) {
     this.createScope = options.createScope;
-    this.idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_SCOPE_IDLE_TIMEOUT_MS;
-    this.clock = options.clock ?? systemClock;
+    this.liveConversations = options.liveConversations;
     this.onError = options.onError;
   }
 
   /**
-   * 借一个 Scope：没有就懒创建，依赖计数 +1，并取消空闲计时。
+   * 取一个 Scope：没有就建，有就原样返回（幂等 get-or-create）。
    *
-   * 并发的两次 `acquire` 只会创建一次（两个调用方等同一个 Promise）。
+   * 并发的两次 `create` 只会创建一次（两个调用方等同一个 Promise）。
+   * 调用方不必背顺序：`AgentRegistry.create` 内部就是这么确保「Scope 先于 agent 存在」的。
    */
-  acquire(workspaceId: string): Promise<Scope> {
+  create(workspaceId: string): Promise<Scope> {
     const existing = this.entries.get(workspaceId);
-    if (existing) {
-      existing.refs += 1;
-      this.cancelIdle(existing);
-      return existing.created;
-    }
+    if (existing) return existing.created;
 
-    // 先登记再创建：创建过程中再来的 acquire 会命中这条记录、等同一个 Promise
-    const entry = new ScopeEntry(workspaceId, (created) => this.create(created));
+    // 先登记再创建：创建过程中再来的 create 会命中这条记录、等同一个 Promise
+    const entry = new ScopeEntry(workspaceId, (created) => this.build(created));
     this.entries.set(workspaceId, entry);
     return entry.created;
   }
 
-  /** 创建失败时不留下坏条目：下一次 acquire 重新尝试 */
-  private async create(entry: ScopeEntry): Promise<Scope> {
+  /** 看而不建：已经建好就返回它，没有或还在建就返回 `undefined` */
+  get(workspaceId: string): Scope | undefined {
+    return this.entries.get(workspaceId)?.resolved;
+  }
+
+  /** 当前持有哪几个（报告「刷了哪些项目的 Scope」、判退出用） */
+  workspaceIds(): string[] {
+    return [...this.entries.keys()];
+  }
+
+  /** 创建失败时不留下坏条目：下一次 create 重新尝试 */
+  private async build(entry: ScopeEntry): Promise<Scope> {
     try {
       const scope = await this.createScope(entry.workspaceId);
       entry.resolved = scope;
@@ -151,45 +196,13 @@ export class ScopeRegistry {
   }
 
   /**
-   * 归还：依赖计数 −1。归零后按两种场合分叉 ——
-   * 平时起 10 分钟空闲计时；若宿主正在收尾（`disposeAll`）要求它销毁，就立刻销毁。
-   */
-  release(workspaceId: string): void {
-    const entry = this.entries.get(workspaceId);
-    if (!entry) return;
-    entry.refs = Math.max(0, entry.refs - 1);
-    if (entry.refs > 0) return;
-
-    if (entry.disposeWhenFree) {
-      void this.dispose(entry);
-      return;
-    }
-    this.scheduleIdle(entry);
-  }
-
-  /** 看而不借：已经建好就返回它，没有或还在建就返回 `undefined` */
-  peek(workspaceId: string): Scope | undefined {
-    return this.entries.get(workspaceId)?.resolved;
-  }
-
-  /** 当前持有几个 Scope（含正在创建的） */
-  size(): number {
-    return this.entries.size;
-  }
-
-  /** 当前持有哪几个（报告「刷了哪些项目的 Scope」用） */
-  workspaceIds(): string[] {
-    return [...this.entries.keys()];
-  }
-
-  /**
-   * 就地刷新某一个 Workspace 的 Scope —— 配置改完之后用（PRD F-E2：改完即生效）。
+   * 就地刷新某一个 Scope —— 配置改完之后用（PRD F-E2：改完即生效）。
    *
    * 刷的是 `Scope.refresh()`：重读配置 + 各插件重新发现（MCP 连接跟着对账），**实例还是同一个**。
    * 所以正在跑的那一轮不会被抽掉能力，而它读到的配置已经是磁盘上新那一份。
    *
    * 只对已经存在的条目动手：不存在就什么也不做（不为刷新去创建一个 Scope —— 下一段对话
-   * `acquire` 时会按新配置建）。正在创建中的条目等它建完再刷。
+   * `create` 时会按新配置建）。正在创建中的条目等它建完再刷。
    *
    * 刷新失败不往外抛：一个项目的 MCP 文件写坏了不该让整次「配置生效」变成失败（走 `onError`）。
    */
@@ -213,75 +226,47 @@ export class ScopeRegistry {
   }
 
   /**
+   * 销毁某一个 Scope —— Workspace 被删（或别的「这个能力容器不要了」的显式场合）时用。
+   *
+   * **撞上还活着的 agent 就拒绝**（{@link ScopeBusyError}，带着 `conversationId` 列表）：
+   * 不级联、不静默掐掉正在跑的对话。调用方要先停会话、丢掉 agent，再回来调它。
+   *
+   * 不存在就什么也不做（幂等）；销毁之后 `get` 为 `undefined`，再 `create` 得到新实例。
+   */
+  async dispose(workspaceId: string): Promise<void> {
+    const entry = this.entries.get(workspaceId);
+    if (!entry) return;
+
+    const live = this.liveConversations?.(workspaceId) ?? [];
+    if (live.length > 0) throw new ScopeBusyError(workspaceId, live);
+
+    await this.disposeEntry(entry);
+  }
+
+  /**
    * 全部销毁 —— 宿主收尾（`doStop`）时用：进程要退出了，MCP 连接是 Scope 持有的，
    * 没有别人会替它关（D28 同生共死）。
    *
-   * 没人用的立刻销毁；正被持有的打上标记，等最后一次 `release` 再销毁。
+   * 与 `dispose` 的差别只有一条：**不拒绝**。收尾时「还有 agent 活着」不是要挡住销毁的理由
+   * （进程马上就要没），而且这里没有「稍后再拆」这回事。
    *
    * 配置改动**不走这里**：那是 `refreshWorkspace` 的事。
    */
   async disposeAll(): Promise<void> {
-    const entries = [...this.entries.values()];
-    await Promise.all(
-      entries.map((entry) => {
-        if (entry.refs > 0) {
-          entry.disposeWhenFree = true;
-          return Promise.resolve();
-        }
-        return this.dispose(entry);
-      }),
-    );
+    await Promise.all([...this.entries.values()].map((entry) => this.disposeEntry(entry)));
   }
 
   /**
-   * 销毁某一个 Workspace 的 Scope —— Workspace 被删时用。
-   *
-   * 与 `disposeAll` 的区别：这里不等引用归零，因为 Workspace 已经不在了，
-   * 再留着这个 Scope 也没有下一个调用方。
-   */
-  disposeWorkspace(workspaceId: string): Promise<void> {
-    const entry = this.entries.get(workspaceId);
-    if (!entry) return Promise.resolve();
-    return this.dispose(entry);
-  }
-
-  /**
-   * 全部回收之后通知根对象（architecture §4：根对象据此判断进程能不能退出）。
-   *
-   * 返回取消订阅的函数。
-   */
-  onAllRecycled(listener: () => void): () => void {
-    this.allRecycledListeners.add(listener);
-    return () => {
-      this.allRecycledListeners.delete(listener);
-    };
-  }
-
-  private scheduleIdle(entry: ScopeEntry): void {
-    this.cancelIdle(entry);
-    entry.cancelIdle = this.clock.setTimeout(() => {
-      entry.cancelIdle = undefined;
-      void this.dispose(entry);
-    }, this.idleTimeoutMs);
-  }
-
-  private cancelIdle(entry: ScopeEntry): void {
-    entry.cancelIdle?.();
-    entry.cancelIdle = undefined;
-  }
-
-  /**
-   * 销毁：先把条目从表里摘掉（之后 acquire 会重建），再等创建完成并 `dispose()`。
+   * 销毁：先把条目从表里摘掉（之后 create 会重建），再等创建完成并 `dispose()`。
    *
    * 创建还没完成就得销毁时也要等它 —— 否则刚建出来的 Scope 没人拆，MCP 连接会漏。
    */
-  private dispose(entry: ScopeEntry): Promise<void> {
+  private disposeEntry(entry: ScopeEntry): Promise<void> {
     entry.disposing ??= this.doDispose(entry);
     return entry.disposing;
   }
 
   private async doDispose(entry: ScopeEntry): Promise<void> {
-    this.cancelIdle(entry);
     if (this.entries.get(entry.workspaceId) === entry) {
       this.entries.delete(entry.workspaceId);
     }
@@ -294,26 +279,12 @@ export class ScopeRegistry {
       scope = undefined;
     }
 
-    if (scope) {
-      try {
-        // Scope.dispose() 逆序调用各插件的 dispose()：MCP 连接在这里断开（D28 同生共死）
-        await scope.dispose();
-      } catch (error) {
-        this.onError?.(error, entry.workspaceId);
-      }
-    }
-
-    this.notifyAllRecycled();
-  }
-
-  private notifyAllRecycled(): void {
-    if (this.entries.size > 0) return;
-    for (const listener of [...this.allRecycledListeners]) {
-      try {
-        listener();
-      } catch {
-        // 通知是「可以判退出了」这种事的广播，一个监听器出问题不该影响别的
-      }
+    if (!scope) return;
+    try {
+      // Scope.dispose() 逆序调用各插件的 dispose()：MCP 连接在这里断开（D28 同生共死）
+      await scope.dispose();
+    } catch (error) {
+      this.onError?.(error, entry.workspaceId);
     }
   }
 }

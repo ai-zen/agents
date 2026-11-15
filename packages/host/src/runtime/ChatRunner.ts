@@ -5,13 +5,20 @@
  *
  * ```
  * RunRegistry.start（这一段对话同时只跑一轮；已经在跑的那一轮由 conversation.send 排队，D14）
- *   → 借 Scope（ScopeRegistry.acquire：懒创建或复用，依赖 +1）
+ *   → 要 Scope（ScopeRegistry.create：幂等 get-or-create）
  *   → 分配两个消息 id 并落库（用户消息 + 助手占位，PRD L6：id 在请求发出前就有）
- *   → 装配 agent（可注入的工厂；跑完即弃，PRD D28）
+ *   → 造 agent（AgentRegistry.create：它内部再确认一次 Scope；跑完即弃，PRD D28）
  *   → 流式：每片增量推 `message.delta`；同一时刻更新六态并推 `run.state`；同一条消息边流边写（D15）
- *   → 内循环结束：写一次最终版（F-C2）→ 释放 agent → RunRegistry.finish → ScopeRegistry.release
+ *   → 内循环结束：写一次最终版（F-C2）→ AgentRegistry.dispose（只丢引用）→ RunRegistry.finish
  *   → 推结算态 `run.state` + `usage`
  * ```
+ *
+ * ## 三个实例的显式生灭
+ *
+ * `Scope` / `Agent` / 会话实例（`TurnSession`）都由一对显式 API 管生灭，没有空闲计时、
+ * 没有引用计数、没有自动回收：`scopes.create` / `agents.create` / `createRuntime` 负责生，
+ * `agents.dispose` / `disposeRuntime` 负责灭（Scope 活到显式 `scopes.dispose` 或进程退出）。
+ * 这一单里 agent 的寿命照旧（一轮一个、跑完即丢），变的只是「谁在什么时候调这些 API」写在了明处。
  *
  * ## 跑中发送走 inbox，不走第二轮（PRD D14）
  *
@@ -90,6 +97,7 @@ import type {
   SubAgentSnapshot,
   UsageSnapshot,
 } from "../wire/states.js";
+import type { AgentRegistry } from "./AgentRegistry.js";
 import type { RunHandle, RunRegistry } from "./RunRegistry.js";
 import type { Clock, ScopeRegistry } from "./ScopeRegistry.js";
 import { systemClock } from "./ScopeRegistry.js";
@@ -331,16 +339,21 @@ export interface ReconcileResult {
 export interface ChatRunnerOptions {
   messages: MessageStore;
   conversations: ConversationStore;
+  /**
+   * Scope 的持有者（能力容器）。
+   *
+   * 本文件只用它的 `create`（受理时确保这段对话的 Scope 存在，并拿它读配置里的阈值）。
+   * 销毁 Scope 不是一轮的事：它活到显式 `dispose` 或进程退出。
+   */
   scopes: ScopeRegistry;
   runs: RunRegistry;
-  /** 造 agent 的工厂；不注入时按 SDK 口径装配（交接服务由 `handoff` 提供） */
-  createAgent?: AgentFactory;
   /**
-   * 交接服务：注入之后每一轮都装交接线插件（R59 / R50）；不注入时那个插件就不装。
+   * agent 的持有者：**agent 唯一的来源**。
    *
-   * 只在不注入 `createAgent` 时生效（两边都注入时以 `createAgent` 为准）。
+   * 造（`create`，内部先确保 Scope）与丢（`dispose`，只丢引用）都走它，本文件不再自己调
+   * agent 工厂 —— 于是「agent 从哪来、活多久」只写在一个地方。
    */
-  handoff?: HandoffProvider;
+  agents: AgentRegistry;
   emit: ChatEventEmitter;
   clock?: Clock;
   /** 宿主分配消息 id；缺省用 `crypto.randomUUID` */
@@ -600,9 +613,8 @@ function toProblem(error: unknown): ProblemFact {
 
 interface TurnSessionInit {
   conversation: Conversation;
+  /** 受理时要到的那个 Scope（读配置用；agent 由 `AgentRegistry` 挂在同一个 Scope 上） */
   scope: Scope;
-  /** 造 agent 的工厂（由 `ChatRunner` 在受理时定下：注入的那个，或按 SDK 口径装配的那个） */
-  createAgent: AgentFactory;
   /** 还原之后的历史（`__asset_id` 已按当时的模型 / 端点换过） */
   history: AgentNS.Message[];
   content: AgentNS.MessageContent;
@@ -637,7 +649,6 @@ class TurnSession implements ChatTurn {
 
   private readonly conversation: Conversation;
   private readonly scope: Scope;
-  private readonly createAgent: AgentFactory;
   /** 还原后的历史（这一轮实际交给 agent 的那份） */
   private history: AgentNS.Message[];
   /** 这一轮发给模型的内容（`prepareAttachments` 的产物） */
@@ -736,7 +747,6 @@ class TurnSession implements ChatTurn {
     this.conversation = init.conversation;
     this.conversationId = init.conversation.id;
     this.scope = init.scope;
-    this.createAgent = init.createAgent;
     this.history = init.history;
     this.content = init.content;
     this.storedContent = init.storedContent ?? init.content;
@@ -852,15 +862,18 @@ class TurnSession implements ChatTurn {
     }
   }
 
-  /** 一次尝试：建 agent → 把历史与用户输入发出去；失败原样上抛，由 `execute` 记成这一轮的结局 */
+  /**
+   * 一次尝试：造 agent → 把历史与用户输入发出去；失败原样上抛，由 `execute` 记成这一轮的结局。
+   *
+   * agent 从 `AgentRegistry.create` 来（它内部先确保 Scope 存在），本文件不再自己拼装配顺序。
+   */
   private async attemptOnce(): Promise<void> {
-    const agent = await this.createAgent({
+    const agent = await this.options.agents.create({
       conversationId: this.conversationId,
       workspaceId: this.conversation.workspaceId,
       agentId: this.conversation.agentId,
       modelId: this.conversation.modelId,
       thinkingLevel: this.conversation.thinkingLevel,
-      scope: this.scope,
       history: [...this.history],
     });
     this.attach(agent);
@@ -1387,9 +1400,11 @@ class TurnSession implements ChatTurn {
     // 本轮产出先捡出来，否则用量与 `done` 的载荷会跟着 agent 一起消失。
     this.detached = produced;
     this.agent = undefined;
+    // 登记也一起摘掉：只丢引用（停已经停过、库已经写完，`AgentRegistry.dispose` 不碰那些）。
+    // 不摘的话它还「活着」，`scopes.dispose` 会被它挡下来 —— 而这一轮确实已经不欠什么了。
+    this.options.agents.dispose(this.conversationId);
 
     this.options.runs.finish(this.conversationId);
-    this.options.scopes.release(this.conversation.workspaceId);
 
     const usage = this.usageSnapshot();
     const run = this.buildRunState();
@@ -1745,31 +1760,46 @@ export class ChatRunner {
     return (this.options.newId ?? defaultNewId)();
   }
 
-  /** 缺省的 agent 工厂（不注入 `createAgent` 时用）：按 SDK 口径装配，交接服务来自 `handoff` */
-  private agentFactory(): AgentFactory {
-    return this.options.createAgent ?? createSdkAgentFactory({ handoff: this.options.handoff });
+  /**
+   * 登记一段对话的运行时（会话实例）—— 会话实例的「生」只有这一个入口。
+   *
+   * 寿命不变（仍然一轮一个）：登记在受理之后，摘除在结算/丢弃时（{@link disposeRuntime}）。
+   * 改成常驻（由 core 的 `status` 事件驱动）是下一单的事。
+   */
+  private createRuntime(session: TurnSession): void {
+    this.turns.set(session.conversationId, session);
+  }
+
+  /**
+   * 摘掉一段对话的运行时 —— 会话实例的「灭」只有这一个入口。
+   *
+   * 只丢引用：叫停（`abort`）与落库结算都是 `TurnSession` 自己的事，这里不替它做。
+   */
+  private disposeRuntime(conversationId: string): void {
+    this.turns.delete(conversationId);
   }
 
   /**
    * 受理一轮：占位、落两条消息、把执行放到后台，然后把两个 id 还给调用方（PRD L6 / F-I12）。
    *
    * 已经在跑就抛 `busy`（D14 里它只剩兜底）；对话不存在则 `not_found`。任何一种失败都不会
-   * 留下一个占着不动的轮次，也不会让 Scope 的依赖计数多算一次。
+   * 留下一个占着不动的轮次，也不会凭空留着半个会话实例。
    */
   async run(params: ChatRunParams): Promise<ChatTurn> {
     const { conversationId } = params;
     const handle = this.options.runs.start(conversationId);
     const language = params.language ?? this.options.defaultLanguage ?? DEFAULT_LANGUAGE;
 
-    let workspaceId: string | undefined;
     let session: TurnSession | undefined;
     try {
       const conversation = await this.options.conversations.get(conversationId);
       if (!conversation) {
         throw new HostError("not_found", { params: { entity: "conversation" } });
       }
-      workspaceId = conversation.workspaceId;
-      const scope = await this.options.scopes.acquire(workspaceId);
+      // 先把能力容器要到手（幂等）：这一轮要拿它读配置（硬线 / 交接线），而 agent 由
+      // `AgentRegistry.create` 挂在同一个 Scope 上。workspace 不在了就在这里失败，
+      // 而不是等到后台那一轮里才发现。
+      const scope = await this.options.scopes.create(conversation.workspaceId);
 
       // 装载即修复：上一次进程如果是在写的时候没的，这里把在途消息修成可继续的状态
       const stored = await this.reconcile(conversationId);
@@ -1831,7 +1861,6 @@ export class ChatRunner {
       session = new TurnSession(this.options, {
         conversation,
         scope,
-        createAgent: this.agentFactory(),
         history,
         content,
         // 没给 `storedContent` 时不给这一项：`TurnSession` 自己退回去用 `content`（两份同源）
@@ -1845,17 +1874,16 @@ export class ChatRunner {
         acceptedAt,
         startedAtMs: nowMs,
         onSettled: () => {
-          this.turns.delete(conversationId);
+          this.disposeRuntime(conversationId);
         },
       });
     } catch (error) {
       this.options.runs.finish(conversationId);
-      if (workspaceId !== undefined) this.options.scopes.release(workspaceId);
       throw error;
     }
 
     // 受理完成：执行交给后台，事件从这一刻起会陆续推给在线客户端
-    this.turns.set(session.conversationId, session);
+    this.createRuntime(session);
     void session.execute();
     return session;
   }
@@ -1948,7 +1976,11 @@ export class ChatRunner {
   forget(conversationId: string): void {
     const turn = this.turns.get(conversationId);
     turn?.abort("conversation removed");
-    this.turns.delete(conversationId);
+    this.disposeRuntime(conversationId);
+    // 这一段对话已经不在了，它的 agent 也就不该继续挂在 Scope 的账上 —— 否则紧接着的
+    // `scopes.dispose`（删项目）会被一个正在收尾的对话挡下来。丢的只是登记，那个 agent
+    // 仍由它自己那一轮握在手里跑完收尾（停与结算不受影响）。
+    this.options.agents.dispose(conversationId);
   }
 
   /**

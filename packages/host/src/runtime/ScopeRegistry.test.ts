@@ -1,184 +1,229 @@
 /**
- * `ScopeRegistry` 的用例：懒创建、依赖计数、10 分钟空闲回收、与 MCP 同生共死、全部销毁后的通知，
- * 以及配置生效那条路（`refreshWorkspace`：就地刷，不销毁重建）。
+ * `ScopeRegistry` 的用例：幂等 get-or-create、显式 `dispose`（撞上存活 agent 就拒绝）、
+ * `disposeAll` 收尾、与 MCP 同生共死，以及配置生效那条路（`refreshWorkspace`：就地刷，不销毁重建）。
  *
- * 时间用假时钟（`ManualClock`）推进，不真等十分钟；Scope 用真的 SDK `Scope` 装一个记账式
- * 插件，于是「回收 = `Scope.dispose()` = MCP 连接断开」这条链路是完整跑的，断言落在插件的
- * `disposeCalls` 上。
+ * 这一层刻意**没有**空闲计时、引用计数与自动回收，所以这里也不再推进假时钟去等回收：
+ * 「建出来就一直在」本身就是被钉住的语义（`Scope` 用真的 SDK 实例装一个记账式插件，
+ * 于是「销毁 = `Scope.dispose()` = MCP 连接断开」这条链路是完整跑的，断言落在 `disposeCalls`）。
  */
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { Scope } from "@ai-zen/agents-sdk";
 import type { AppConfig } from "@ai-zen/agents-sdk";
 
-import {
-  createWorkspaceScopeFactory,
-  DEFAULT_SCOPE_IDLE_TIMEOUT_MS,
-  ScopeRegistry,
-} from "./ScopeRegistry.js";
-import {
-  createFakeScope,
-  flushMicrotasks,
-  ManualClock,
-  RecordingScopePlugin,
-} from "./TestSupport.js";
+import { createWorkspaceScopeFactory, ScopeBusyError, ScopeRegistry } from "./ScopeRegistry.js";
+import { createFakeScope, flushMicrotasks, ManualClock, RecordingScopePlugin } from "./TestSupport.js";
 
-const TEN_MINUTES = 10 * 60 * 1000;
-
-let clock: ManualClock;
-
-beforeEach(() => {
-  clock = new ManualClock();
-});
-
-/** 记录每次创建：返回同一个 Scope（一个 Workspace 一个 Scope） */
+/** 记录每次创建：按 workspaceId 造一个真 Scope（一个 Workspace 一个 Scope） */
 function createTrackingFactory(): {
   factory: (workspaceId: string) => Promise<Scope>;
-  plugin: RecordingScopePlugin;
   created: string[];
+  pluginOf: (workspaceId: string) => RecordingScopePlugin;
+  disposeCalls: () => number;
 } {
   const created: string[] = [];
-  const { scope, plugin } = createFakeScope();
+  const plugins = new Map<string, RecordingScopePlugin>();
+  const scopes = new Map<string, Scope>();
   return {
     factory: async (workspaceId: string) => {
       created.push(workspaceId);
+      const { scope, plugin } = createFakeScope(`/tmp/${workspaceId}`);
+      plugins.set(workspaceId, plugin);
+      scopes.set(workspaceId, scope);
       return scope;
     },
-    plugin,
     created,
+    pluginOf: (workspaceId) => plugins.get(workspaceId)!,
+    disposeCalls: () => [...plugins.values()].reduce((total, item) => total + item.disposeCalls, 0),
   };
 }
 
-describe("ScopeRegistry", () => {
-  it("同一个 Workspace 只建一个 Scope，第二次 acquire 拿到同一个实例", async () => {
+describe("ScopeRegistry：幂等的 get-or-create", () => {
+  it("同一个 Workspace 只建一个 Scope，第二次 create 拿到同一个实例", async () => {
     const { factory, created } = createTrackingFactory();
-    const registry = new ScopeRegistry({ createScope: factory, clock });
+    const registry = new ScopeRegistry({ createScope: factory });
 
-    const first = await registry.acquire("ws-1");
-    const second = await registry.acquire("ws-1");
+    const first = await registry.create("ws-1");
+    const second = await registry.create("ws-1");
 
     expect(created).toEqual(["ws-1"]);
     expect(second).toBe(first);
-    expect(registry.size()).toBe(1);
-    expect(registry.peek("ws-1")).toBe(first);
-    expect(registry.peek("ws-2")).toBeUndefined();
+    expect(registry.workspaceIds()).toEqual(["ws-1"]);
+    expect(registry.get("ws-1")).toBe(first);
+    expect(registry.get("ws-2")).toBeUndefined();
   });
 
-  it("并发 acquire 只会创建一次", async () => {
+  it("并发 create 只会创建一次", async () => {
     const { factory, created } = createTrackingFactory();
-    const registry = new ScopeRegistry({ createScope: factory, clock });
+    const registry = new ScopeRegistry({ createScope: factory });
 
-    const [a, b] = await Promise.all([registry.acquire("ws-1"), registry.acquire("ws-1")]);
+    const [a, b] = await Promise.all([registry.create("ws-1"), registry.create("ws-1")]);
 
     expect(created).toEqual(["ws-1"]);
     expect(a).toBe(b);
   });
 
-  it("依赖计数归零后要空闲满 10 分钟才回收，回收即调 Scope.dispose()（MCP 关闭）", async () => {
-    const { factory, plugin } = createTrackingFactory();
-    const registry = new ScopeRegistry({ createScope: factory, clock });
-
-    const scope = await registry.acquire("ws-1");
-    registry.release("ws-1");
-
-    // 9 分 59 秒：还在
-    clock.advance(TEN_MINUTES - 1000);
-    expect(registry.peek("ws-1")).toBe(scope);
-    expect(plugin.disposeCalls).toBe(0);
-
-    // 到点：回收，插件的 dispose（= MCP 断开）被调用
-    clock.advance(1000);
-    await flushMicrotasks();
-    expect(registry.peek("ws-1")).toBeUndefined();
-    expect(registry.size()).toBe(0);
-    expect(plugin.disposeCalls).toBe(1);
-  });
-
-  it("归零后又被借走：空闲计时取消，不会在别人用着时被拆掉", async () => {
-    const { factory, plugin } = createTrackingFactory();
-    const registry = new ScopeRegistry({ createScope: factory, clock });
-
-    await registry.acquire("ws-1");
-    registry.release("ws-1");
-    clock.advance(TEN_MINUTES - 1000);
-
-    const again = await registry.acquire("ws-1");
-    clock.advance(TEN_MINUTES * 2);
-
-    expect(registry.peek("ws-1")).toBe(again);
-    expect(plugin.disposeCalls).toBe(0);
-    expect(clock.pending()).toBe(0);
-
-    // 真正没人用了才开始计时
-    registry.release("ws-1");
-    clock.advance(TEN_MINUTES);
-    await flushMicrotasks();
-    expect(plugin.disposeCalls).toBe(1);
-  });
-
-  it("依赖计数没归零就不计时（两段对话共用同一个 Scope）", async () => {
-    const { factory, created } = createTrackingFactory();
-    const registry = new ScopeRegistry({ createScope: factory, clock });
-
-    await registry.acquire("ws-1");
-    await registry.acquire("ws-1");
-    registry.release("ws-1");
-
-    clock.advance(TEN_MINUTES * 3);
-    await flushMicrotasks();
-    expect(registry.peek("ws-1")).toBeDefined();
-    expect(clock.pending()).toBe(0);
-
-    registry.release("ws-1");
-    clock.advance(TEN_MINUTES);
-    await flushMicrotasks();
-    expect(registry.peek("ws-1")).toBeUndefined();
-    expect(created).toEqual(["ws-1"]);
-  });
-
-  it("全部回收之后通知根对象（进程能不能退出看这一条）", async () => {
-    const { factory } = createTrackingFactory();
-    const registry = new ScopeRegistry({ createScope: factory, clock });
-    let notified = 0;
-    const off = registry.onAllRecycled(() => {
-      notified += 1;
+  it("创建失败不留下坏条目：下一次 create 重新尝试", async () => {
+    let attempts = 0;
+    const { scope } = createFakeScope();
+    const registry = new ScopeRegistry({
+      createScope: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("工作目录不见了");
+        return scope;
+      },
     });
 
-    await registry.acquire("ws-1");
-    registry.release("ws-1");
-    clock.advance(TEN_MINUTES);
-    await flushMicrotasks();
-    expect(notified).toBe(1);
+    await expect(registry.create("ws-1")).rejects.toThrow("工作目录不见了");
+    expect(registry.workspaceIds()).toEqual([]);
 
-    off();
-    await registry.acquire("ws-2");
-    registry.release("ws-2");
-    clock.advance(TEN_MINUTES);
+    await expect(registry.create("ws-1")).resolves.toBe(scope);
+    expect(attempts).toBe(2);
+  });
+});
+
+describe("ScopeRegistry：没有自动回收", () => {
+  it("create 之后没有任何计时器能把它收掉（推进远超原 10 分钟仍在）", async () => {
+    const clock = new ManualClock();
+    const { factory, pluginOf } = createTrackingFactory();
+    const registry = new ScopeRegistry({ createScope: factory });
+
+    const scope = await registry.create("ws-1");
+    // 本文件一个定时器都不该排（原来的 10 分钟空闲计时已撤掉）
+    expect(clock.pending()).toBe(0);
+
+    clock.advance(10 * 60 * 1000 * 24);
     await flushMicrotasks();
-    expect(notified).toBe(1);
+
+    expect(registry.get("ws-1")).toBe(scope);
+    expect(pluginOf("ws-1").disposeCalls).toBe(0);
+    expect(clock.pending()).toBe(0);
   });
 
-  it("disposeAll：空闲的立刻销毁，被持有的等最后一次 release 再销毁", async () => {
-    const { factory, plugin } = createTrackingFactory();
-    const registry = new ScopeRegistry({ createScope: factory, clock });
+  it("构造函数不再接受 clock / idleTimeoutMs（只认 createScope / liveConversations / onError）", () => {
+    // 类型层面已经把这两个参数删掉了（下面两条 @ts-expect-error 就是在钉这件事），
+    // 运行时多塞进去的键也不会被读到 —— 没有空闲回收的代码路径了
+    const createScope = async () => createFakeScope().scope;
+    const withIdle = new ScopeRegistry({
+      createScope,
+      // @ts-expect-error 空闲计时已撤：这个键不再属于构造参数
+      idleTimeoutMs: 1,
+    });
+    const withClock = new ScopeRegistry({
+      createScope,
+      // @ts-expect-error 时钟不再参与 Scope 的生命周期
+      clock: new ManualClock(),
+    });
 
-    await registry.acquire("ws-idle");
-    registry.release("ws-idle");
-    await registry.acquire("ws-busy");
+    expect(withIdle.workspaceIds()).toEqual([]);
+    expect(withClock.workspaceIds()).toEqual([]);
+  });
+});
+
+describe("ScopeRegistry：显式 dispose", () => {
+  it("dispose 之后 get 为 undefined，再 create 得到新实例", async () => {
+    const { factory, disposeCalls } = createTrackingFactory();
+    const registry = new ScopeRegistry({ createScope: factory });
+
+    const first = await registry.create("ws-1");
+    await registry.dispose("ws-1");
+
+    expect(registry.get("ws-1")).toBeUndefined();
+    expect(registry.workspaceIds()).toEqual([]);
+    // 销毁 = Scope.dispose()：插件的 dispose（= MCP 断开）被调用
+    expect(disposeCalls()).toBe(1);
+
+    const second = await registry.create("ws-1");
+    expect(second).not.toBe(first);
+    expect(registry.get("ws-1")).toBe(second);
+  });
+
+  it("dispose 不存在的 Workspace 是幂等的空操作", async () => {
+    const { factory, disposeCalls } = createTrackingFactory();
+    const registry = new ScopeRegistry({ createScope: factory });
+
+    await registry.dispose("ws-none");
+    expect(disposeCalls()).toBe(0);
+  });
+
+  it("撞上还活着的 agent 就拒绝，错误里带着 conversationId 列表；agent 丢掉之后就能销毁", async () => {
+    const { factory, disposeCalls } = createTrackingFactory();
+    // 活着的 agent 由 `AgentRegistry` 报（这里用同一形状的假件）
+    let live = ["c-1", "c-2"];
+    const registry = new ScopeRegistry({
+      createScope: factory,
+      liveConversations: (workspaceId) => (workspaceId === "ws-1" ? live : []),
+    });
+
+    await registry.create("ws-1");
+
+    const error = await registry.dispose("ws-1").catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ScopeBusyError);
+    expect((error as ScopeBusyError).workspaceId).toBe("ws-1");
+    expect((error as ScopeBusyError).conversationIds).toEqual(["c-1", "c-2"]);
+    expect((error as Error).message).toContain("c-1");
+    // 拒绝就是拒绝：Scope 还在，谁也没被掐掉
+    expect(registry.get("ws-1")).toBeDefined();
+    expect(disposeCalls()).toBe(0);
+
+    // 调用方先让会话停下 / 丢掉 agent，再回来销毁
+    live = [];
+    await registry.dispose("ws-1");
+    expect(registry.get("ws-1")).toBeUndefined();
+    expect(disposeCalls()).toBe(1);
+  });
+
+  it("不注入 liveConversations 时当作「没有活着的 agent」（单独用本文件的场合）", async () => {
+    const { factory, disposeCalls } = createTrackingFactory();
+    const registry = new ScopeRegistry({ createScope: factory });
+
+    await registry.create("ws-1");
+    await registry.dispose("ws-1");
+
+    expect(disposeCalls()).toBe(1);
+  });
+
+  it("disposeAll：全部销毁（收尾用，撞上活着的 agent 也不拒绝）", async () => {
+    const { factory, disposeCalls } = createTrackingFactory();
+    const registry = new ScopeRegistry({
+      createScope: factory,
+      // 收尾时「还有 agent 活着」不是要挡住销毁的理由
+      liveConversations: () => ["c-1"],
+    });
+
+    await registry.create("ws-a");
+    await registry.create("ws-b");
+    expect(registry.workspaceIds().sort()).toEqual(["ws-a", "ws-b"]);
 
     await registry.disposeAll();
-    await flushMicrotasks();
 
-    // 空闲的那个已经没了；被持有的那个还在（不在别人用着的时候抽能力）
-    expect(registry.size()).toBe(1);
-    expect(registry.peek("ws-busy")).toBeDefined();
-
-    registry.release("ws-busy");
-    await flushMicrotasks();
-    expect(registry.size()).toBe(0);
-    expect(plugin.disposeCalls).toBe(2);
+    expect(registry.workspaceIds()).toEqual([]);
+    expect(disposeCalls()).toBe(2);
   });
 
+  it("Scope.dispose() 抛错不影响销毁完成，错误交给 onError", async () => {
+    const errors: string[] = [];
+    const registry = new ScopeRegistry({
+      createScope: async () => {
+        const { scope } = createFakeScope();
+        scope.dispose = async () => {
+          throw new Error("MCP 服务器不理我");
+        };
+        return scope;
+      },
+      onError: (error) => errors.push(String(error)),
+    });
+
+    await registry.create("ws-1");
+    await registry.dispose("ws-1");
+    await flushMicrotasks();
+
+    expect(registry.workspaceIds()).toEqual([]);
+    expect(errors.join()).toContain("MCP 服务器不理我");
+  });
+});
+
+describe("ScopeRegistry：配置生效走 refresh，不销毁重建", () => {
   it("refreshWorkspace：就地刷同一个 Scope（重读配置 + 重新发现），不销毁也不重建", async () => {
     let config: AppConfig = { endpoints: [], models: [] };
     const plugin = new RecordingScopePlugin();
@@ -192,91 +237,29 @@ describe("ScopeRegistry", () => {
         created += 1;
         return scope;
       },
-      clock,
     });
-    await registry.acquire("ws-1");
-    registry.release("ws-1");
+    await registry.create("ws-1");
 
     const next: AppConfig = { endpoints: [], models: [], maxToolOutput: 1234 };
     config = next;
     await registry.refreshWorkspace("ws-1");
 
     // 刷的是同一个实例：读到的配置是新的，能力重新发现了一轮，但谁也没被销毁
-    expect(registry.peek("ws-1")).toBe(scope);
+    expect(registry.get("ws-1")).toBe(scope);
     expect(scope.config).toBe(next);
     expect(plugin.discoverCalls).toBe(2); // init 一次 + 刷新一次
     expect(plugin.disposeCalls).toBe(0);
     expect(created).toBe(1);
-    expect(registry.size()).toBe(1);
   });
 
   it("refreshWorkspace：不存在的就不刷（不为刷新去创建一个 Scope）", async () => {
     const { factory, created } = createTrackingFactory();
-    const registry = new ScopeRegistry({ createScope: factory, clock });
+    const registry = new ScopeRegistry({ createScope: factory });
 
     await registry.refreshWorkspace("ws-unknown");
 
     expect(created).toEqual([]);
-    expect(registry.size()).toBe(0);
-  });
-
-  it("disposeWorkspace：Workspace 被删时不等引用归零", async () => {
-    const { factory, plugin } = createTrackingFactory();
-    const registry = new ScopeRegistry({ createScope: factory, clock });
-
-    await registry.acquire("ws-1");
-    await registry.disposeWorkspace("ws-1");
-    await flushMicrotasks();
-
-    expect(registry.peek("ws-1")).toBeUndefined();
-    expect(plugin.disposeCalls).toBe(1);
-
-    // 再 acquire 会重新建
-    await registry.acquire("ws-1");
-    expect(registry.peek("ws-1")).toBeDefined();
-  });
-
-  it("创建失败不留下坏条目：下一次 acquire 重新尝试", async () => {
-    let attempts = 0;
-    const { scope } = createFakeScope();
-    const registry = new ScopeRegistry({
-      createScope: async () => {
-        attempts += 1;
-        if (attempts === 1) throw new Error("工作目录不见了");
-        return scope;
-      },
-      clock,
-    });
-
-    await expect(registry.acquire("ws-1")).rejects.toThrow("工作目录不见了");
-    expect(registry.size()).toBe(0);
-
-    await expect(registry.acquire("ws-1")).resolves.toBe(scope);
-    expect(attempts).toBe(2);
-  });
-
-  it("回收过程中 Scope.dispose() 抛错不影响回收完成，错误交给 onError", async () => {
-    const errors: string[] = [];
-    const registry = new ScopeRegistry({
-      createScope: async () => {
-        const { scope } = createFakeScope();
-        scope.dispose = async () => {
-          throw new Error("MCP 服务器不理我");
-        };
-        return scope;
-      },
-      clock,
-      onError: (error) => errors.push(String(error)),
-    });
-
-    await registry.acquire("ws-1");
-    registry.release("ws-1");
-    clock.advance(TEN_MINUTES);
-    await flushMicrotasks();
-    await flushMicrotasks();
-
-    expect(registry.size()).toBe(0);
-    expect(errors.join()).toContain("MCP 服务器不理我");
+    expect(registry.workspaceIds()).toEqual([]);
   });
 });
 
@@ -337,11 +320,5 @@ describe("createWorkspaceScopeFactory", () => {
     });
 
     await expect(createScope("ws-missing")).rejects.toThrow("ws-missing");
-  });
-});
-
-describe("空闲回收的缺省时长", () => {
-  it("是 10 分钟（PRD D28）", () => {
-    expect(DEFAULT_SCOPE_IDLE_TIMEOUT_MS).toBe(TEN_MINUTES);
   });
 });
