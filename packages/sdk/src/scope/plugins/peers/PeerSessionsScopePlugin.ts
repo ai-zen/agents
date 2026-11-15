@@ -6,10 +6,11 @@ import type { Scope, FilterOutput } from "../../Scope.js";
 import type { ScopeCandidates, ScopePlugin } from "../../ScopePlugin.js";
 
 /**
- * 平级会话插件 —— 把宿主给的端口装成两个工具（`create_session` / `read_session_status`）。
+ * 平级会话插件 —— 把宿主给的端口装成三个工具（`create_session` / `read_session_status` /
+ * `send_to_session`）。
  *
  * 与 `SubAgentsScopePlugin` 同构（`id` / `candidates` / `instantiate`）：自己不发现任何东西
- * （平级会话不是磁盘上的定义，是宿主的运行时能力），候选名是固定的两个。
+ * （平级会话不是磁盘上的定义，是宿主的运行时能力），候选名是固定的三个。
  *
  * **不给端口就什么都不产出**：`candidates()` 回空、`instantiate()` 回空数组 —— 没有宿主接线
  * 的 SDK 用户（CLI 脚本、用例、只有 Scope 的库使用者）看到的能力面一个字都不变。
