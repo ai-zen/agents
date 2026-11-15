@@ -263,6 +263,29 @@ describe("createWorkspaceScopeFactory", () => {
     ]);
   });
 
+  it("给了平级会话端口才装 `peer-sessions` 插件（两个工具），不给就不装", async () => {
+    const common = {
+      resolveWorkspace: async () => ({ cwd: "/tmp/ai-zen-project" }),
+      getConfig: () => ({ endpoints: [], models: [] }),
+      agentsDir: "/tmp/ai-zen/agents",
+    };
+
+    const withoutPort = await createWorkspaceScopeFactory(common)("ws-1");
+    expect(withoutPort.plugins.map((plugin) => plugin.id)).not.toContain("peer-sessions");
+
+    const port = {
+      create: async () => ({ ok: false as const, reason: "depth_exceeded" as const, hint: "no" }),
+      status: async () => ({ state: "gone" as const }),
+    };
+    const withPort = await createWorkspaceScopeFactory({ ...common, peerSessions: port })("ws-1");
+    expect(withPort.plugins.map((plugin) => plugin.id)).toContain("peer-sessions");
+    // 端口在 → 两个工具的候选名就出现在 `tools` 维度里（权限过滤之前的那一份）
+    const plugin = withPort.getPluginById("peer-sessions");
+    expect(plugin?.candidates(withPort, {} as never)).toEqual({
+      tools: ["create_session", "read_session_status"],
+    });
+  });
+
   it("Workspace 不存在时抛错（不静默造一个没有 cwd 的 Scope）", async () => {
     const createScope = createWorkspaceScopeFactory({
       resolveWorkspace: async () => undefined,

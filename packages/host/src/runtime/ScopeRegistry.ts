@@ -18,7 +18,8 @@
  */
 
 import type { AllInOneOptions, AppConfig, ToolEnvDeps } from "@ai-zen/agents-sdk";
-import { allInOne, Scope } from "@ai-zen/agents-sdk";
+import { allInOne, PeerSessionsScopePlugin, Scope } from "@ai-zen/agents-sdk";
+import type { PeerSessionPort } from "@ai-zen/agents-sdk";
 
 /** 空闲回收的缺省时长：10 分钟（PRD D28） */
 export const DEFAULT_SCOPE_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -288,6 +289,9 @@ export class ScopeRegistry {
  * Skill、MCP、子 Agent 五类插件），然后 `init()` 做首次能力发现。MCP 插件自带连接管理器，
  * 于是「Scope 建好 = MCP 配置已发现」，`dispose()` 时连接一起断。
  *
+ * 多给一个 `peerSessions` 端口时再装一个 `PeerSessionsScopePlugin`（平级会话的两个工具）：
+ * 那是宿主注入的能力，不是磁盘上的目录，所以不在 `allInOne` 里。
+ *
  * 工作目录、配置、各能力路径都由接线层给：本文件不去问进程当前目录，也不猜数据根。
  */
 export interface WorkspaceScopeFactoryOptions {
@@ -305,6 +309,12 @@ export interface WorkspaceScopeFactoryOptions {
   subAgentsPaths?: AbilityPathOption;
   /** MCP 配置文件的 5 层链（PRD L9），按 cwd 算好 */
   mcpPaths?: (cwd: string) => string[];
+  /**
+   * 平级会话的端口（宿主实现）：给了才装 `PeerSessionsScopePlugin`。
+   *
+   * 不给就没有那两个工具 —— 「这个宿主能不能开平级会话」是一个装配事实，不是一个开关。
+   */
+  peerSessions?: PeerSessionPort;
   /** 出网/外部依赖的注入点（测试替身） */
   deps?: ToolEnvDeps;
 }
@@ -346,6 +356,8 @@ export function createWorkspaceScopeFactory(
       deps: options.deps,
     });
     scope.use(...allInOne(abilityPaths));
+    // 平级会话：能力来自宿主端口（不给就不装，老行为一个字不变）
+    if (options.peerSessions) scope.use(new PeerSessionsScopePlugin(options.peerSessions));
     await scope.init();
     return scope;
   };

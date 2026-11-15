@@ -77,6 +77,7 @@ import { createSdkHandoffService, HandoffService as HandoffDocumentsService } fr
 import { Logger } from "./services/Logger.js";
 import { ModelService } from "./services/ModelService.js";
 import { NoticeService, createEventLocalizer } from "./services/NoticeService.js";
+import { PeerSessionService } from "./services/PeerSessionService.js";
 import { QuestionService, createConversationGuardProbe } from "./services/QuestionService.js";
 import {
   AssetRepository,
@@ -291,6 +292,12 @@ export class HostApp {
   readonly noticeService: NoticeService;
   readonly questionService: QuestionService;
   readonly handoffService: HandoffDocumentsService;
+  /**
+   * 平级会话（阶段 1）：模型在一段对话里开另一段对话，那边跑完把结果推回来。
+   *
+   * 记录只活在进程内（不建表）：重启之后子会话就是一段普通会话，这里查不到它。
+   */
+  readonly peerSessions: PeerSessionService;
   readonly autoNaming: AutoNaming;
 
   // ---- 接入 ----
@@ -477,6 +484,23 @@ export class HostApp {
     this.completionService = new CompletionService({ findWorkspace });
 
     // ---- 6. 通知、问题、交接、自动命名（它们互相引用，都靠注入） ----
+    // 平级会话：建会话归 `ConversationService`（与 `conversation.create` 同一条路），开跑与唤醒归
+    // `ChatRunner`。后者在 §7 才造出来，所以这里只闭包住 `this`：两个动作都是「调用那一刻才去拿」
+    // （与 `createConversationRuntime` 里 `forget` 的晚绑定同一个理由）。
+    this.peerSessions = new PeerSessionService({
+      conversations: this.conversations,
+      conversationCreator: this.conversationService,
+      messages: this.messages,
+      chatRunner: {
+        run: (params) => this.chatRunner.run(params),
+        enqueue: (params) => this.chatRunner.enqueue(params),
+      },
+      now: () => this.clock.now(),
+      // 结果没送到父对话**不许静默丢**：这一处就是那一次出声（阶段 1 不补投）
+      onError: (error, context) => {
+        this.logger.error("平级会话出错", { context, error: describeError(error) });
+      },
+    });
     // agent 工厂只造一次：交接回合与普通对话用同一个（跑完即弃，D28）
     const createAgent = options.createAgent ?? this.defaultAgentFactory();
     this.noticeService = new NoticeService({
@@ -1028,6 +1052,8 @@ export class HostApp {
       toolsPaths: (cwd) => abilityPaths(cwd).toolsPaths,
       subAgentsPaths: (cwd) => abilityPaths(cwd).subAgentsPaths,
       mcpPaths: (cwd) => abilityPaths(cwd).mcpPaths,
+      // 平级会话的两个工具（`create_session` / `read_session_status`）靠这个端口落地
+      peerSessions: this.peerSessions,
     });
   }
 
@@ -1038,7 +1064,13 @@ export class HostApp {
       // 档位名 → 参数补丁要用思考策略表；配置变更后会重读，所以这里给一个现读入口
       thinkingPresets: () => this.presets,
     });
-    return assembled;
+    return async (context) => {
+      const agent = await assembled(context);
+      // 「这个 agent 是哪段会话的」只能由宿主记：core 的 `Agent` 上没有 `conversationId`，
+      // 而平级会话的工具只拿得到 `ctx.agent`（不给 core 加字段，这里记一笔就够了）
+      this.peerSessions.bind(agent, context.conversationId);
+      return agent;
+    };
   }
 
   /**

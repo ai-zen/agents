@@ -53,6 +53,21 @@ export { UserToolsScopePlugin } from "./scope/plugins/usertools/UserToolsScopePl
 export { SkillsScopePlugin } from "./scope/plugins/skills/SkillsScopePlugin.js";
 export { McpScopePlugin } from "./scope/plugins/mcp/McpScopePlugin.js";
 export { SubAgentsScopePlugin } from "./scope/plugins/subagents/SubAgentsScopePlugin.js";
+// 平级会话（阶段 1）：能力来自宿主注入的端口，不给端口就不产出任何工具
+export { PeerSessionsScopePlugin } from "./scope/plugins/peers/PeerSessionsScopePlugin.js";
+export {
+  PEER_SESSION_TOOL_NAMES,
+  CREATE_SESSION_TOOL,
+  READ_SESSION_STATUS_TOOL,
+} from "./scope/plugins/peers/peerSessionTools.js";
+export type {
+  PeerSessionPort,
+  PeerSessionCreated,
+  PeerSessionStatus,
+  PeerSessionState,
+  PeerSessionRejectReason,
+  PeerSessionCreateInput,
+} from "./scope/plugins/peers/peerSessionTools.js";
 export { allInOne } from "./scope/plugins/allInOne.js";
 export type { AllInOneOptions } from "./scope/plugins/allInOne.js";
 
