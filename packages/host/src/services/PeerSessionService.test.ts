@@ -115,14 +115,15 @@ class FakeTurn {
   }
 }
 
-/** 记账式执行者：`enqueue` 的答案、`run` 抛不抛错都由用例说了算 */
+/** 记账式执行者：投递收了没有（`deliverError`）、`run` 抛不抛错都由用例说了算 */
 class FakeRunner implements PeerSessionRunner {
   readonly runCalls: ChatRunParams[] = [];
-  readonly enqueueCalls: ChatRunParams[] = [];
-  /** true = 父对话正在跑（enqueue 收下这一条），false = 父对话空闲（enqueue 回 null） */
-  parentBusy = false;
-  /** 设了就让 `run` 抛错（唤醒被 busy 挡住 / 父对话被删） */
+  /** 每一次投递（**唯一**的投递入口：服务不再自己判断父对话在不在跑） */
+  readonly deliverCalls: Array<{ conversationId: string; content: AgentNS.MessageContent; source: string }> = [];
+  /** 设了就让 `run` 抛错（子会话开跑失败 / 父对话被删） */
   runError: unknown;
+  /** 设了就让 `deliver` 抛错（父对话不存在：**唯一**会拒绝投递的情形） */
+  deliverError: unknown;
   private readonly turns: FakeTurn[] = [];
 
   async run(params: ChatRunParams): Promise<ChatTurn> {
@@ -133,15 +134,12 @@ class FakeRunner implements PeerSessionRunner {
     return turn as unknown as ChatTurn;
   }
 
-  async enqueue(params: ChatRunParams): Promise<QueuedTurn | null> {
-    this.enqueueCalls.push(params);
-    if (!this.parentBusy) return null;
-    return {
-      conversationId: params.conversationId,
-      userMessageId: "queued-1",
-      attachments: [],
-      acceptedAt: new Date(0).toISOString(),
-    };
+  async deliver(
+    conversationId: string,
+    input: { content: AgentNS.MessageContent; source: string },
+  ): Promise<void> {
+    this.deliverCalls.push({ conversationId, content: input.content, source: input.source });
+    if (this.deliverError !== undefined) throw this.deliverError;
   }
 
   /** 某段会话最近一次开起来的一轮 */
@@ -311,7 +309,7 @@ describe("create：建完即回", () => {
 });
 
 describe("投递：跑完把结果送回父对话", () => {
-  it("父对话空闲 → 走 run（唤醒），正文是子会话最后一条助手消息的摘要", async () => {
+  it("父对话空闲 → 一次 `chatRunner.deliver`（服务不判断在不在跑），正文是子会话最后一条助手消息", async () => {
     const h = createHarness();
     await h.service.create({ caller: h.parentAgent, prompt: "把登录页的测试补齐", label: "补测试" });
     h.say("c-child-1", "默认用户说的话", AgentNS.Role.User);
@@ -320,13 +318,13 @@ describe("投递：跑完把结果送回父对话", () => {
     h.runner.turnOf("c-child-1").settle("completed");
     await settle();
 
-    // 先试 enqueue（父对话没在跑 → null），再 run 起一轮：这就是「唤醒」
-    expect(h.runner.enqueueCalls).toHaveLength(1);
-    expect(h.runner.runCalls).toHaveLength(2);
-    const delivered = h.runner.runCalls[1]!;
+    // 投递只有一处：不需要「先 enqueue 再 run」那两级猜测，也没有第二个 run
+    expect(h.runner.deliverCalls).toHaveLength(1);
+    expect(h.runner.runCalls).toHaveLength(1);
+    const delivered = h.runner.deliverCalls[0]!;
     expect(delivered.conversationId).toBe(PARENT_ID);
     // 正文只说子会话最后一句，不带那一整段对话
-    expect(delivered.input.content).toBe("补了 3 个用例，全绿。");
+    expect(delivered.content).toBe("补了 3 个用例，全绿。");
     // source 就是正文开头那行注释里的来源，label 原样（拼注释归 core）
     expect(delivered.source).toBe("补测试");
 
@@ -335,24 +333,23 @@ describe("投递：跑完把结果送回父对话", () => {
     expect(h.service.record("c-child-1")?.resultDelivered).toBe("delivered");
   });
 
-  it("父对话正在跑 → 走 enqueue（不新起一轮）", async () => {
+  it("受理即 delivered：执行者怎么投（入队 / 攒批 / 唤醒 / 复活）与本文件无关", async () => {
     const h = createHarness();
-    h.runner.parentBusy = true;
     await h.service.create({ caller: h.parentAgent, prompt: "A" });
     h.say("c-child-1", "做完了");
 
     h.runner.turnOf("c-child-1").settle("completed");
     await settle();
 
-    expect(h.runner.enqueueCalls).toHaveLength(1);
-    expect(h.runner.enqueueCalls[0]).toMatchObject({
+    // 服务只把内容交给执行者，然后立刻记账 —— 剩下的（入队 / 攒批 / 唤醒 / 复活）都在那一处
+    expect(h.runner.deliverCalls).toHaveLength(1);
+    expect(h.runner.deliverCalls[0]).toMatchObject({
       conversationId: PARENT_ID,
-      input: { content: "做完了" },
+      content: "做完了",
       source: "会话 1",
     });
-    // 只有子会话那一轮，没有第二个 run
-    expect(h.runner.runCalls).toHaveLength(1);
     expect(h.service.record("c-child-1")?.resultDelivered).toBe("delivered");
+    expect(h.errors).toEqual([]);
   });
 
   it("失败时正文写明原因（句子，不是错误栈），标题与摘要之间空一行", async () => {
@@ -369,7 +366,7 @@ describe("投递：跑完把结果送回父对话", () => {
     });
     await settle();
 
-    const body = h.runner.runCalls[1]!.input.content as string;
+    const body = h.runner.deliverCalls[0]!.content as string;
     expect(body.split("\n\n")[0]).toBe("子会话失败了：内部错误（socket hang up）");
     expect(body.endsWith("我改到一半")).toBe(true);
 
@@ -383,7 +380,7 @@ describe("投递：跑完把结果送回父对话", () => {
     h.runner.turnOf("c-child-1").settle("aborted");
     await settle();
 
-    const body = h.runner.runCalls[1]!.input.content as string;
+    const body = h.runner.deliverCalls[0]!.content as string;
     expect(body.startsWith("子会话被中止了")).toBe(true);
     expect(body).toContain("没有留下任何正文");
 
@@ -391,20 +388,20 @@ describe("投递：跑完把结果送回父对话", () => {
     expect(status.state).toBe("aborted");
   });
 
-  it("唤醒被 busy 挡住 / 父对话已删 → 记 dropped 并出声一次，不重试不补投", async () => {
+  it("父对话不存在（投递被拒）→ 记 dropped 并出声一次，不重试不补投", async () => {
     const h = createHarness();
     await h.service.create({ caller: h.parentAgent, prompt: "A" });
     h.say("c-child-1", "做完了");
-    h.runner.runError = new HostError("busy", { detail: { conversationId: PARENT_ID } });
+    // 唯一会拒绝投递的情形：那段对话已经不存在（执行者的 `not_found`）
+    h.runner.deliverError = new HostError("not_found", { params: { entity: "conversation" } });
 
     h.runner.turnOf("c-child-1").settle("completed");
     await settle();
 
     const record = h.service.record("c-child-1");
     expect(record?.resultDelivered).toBe("dropped");
-    // 只试过一次：不重试
-    expect(h.runner.enqueueCalls).toHaveLength(1);
-    expect(h.runner.runCalls).toHaveLength(2);
+    // 只投过一次：不重试、不补投
+    expect(h.runner.deliverCalls).toHaveLength(1);
     // 出声一次（不许静默丢）
     expect(h.errors).toHaveLength(1);
     expect(h.errors[0]!.context).toContain("没能投递");
@@ -440,7 +437,7 @@ describe("read_session_status", () => {
     h.runner.turnOf("c-child-1").settle("completed");
     await settle();
 
-    const body = h.runner.runCalls[1]!.input.content as string;
+    const body = h.runner.deliverCalls[0]!.content as string;
     expect(body.length).toBeLessThanOrEqual(1001);
   });
 

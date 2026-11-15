@@ -11,8 +11,8 @@
  * 2. **记**：进程内 `Map<sessionId, record>`。不建表、不加迁移：阶段 1 的语义是「agent 自己开
  *    一段会话、跑完把结果送回去」，重启之后这些元数据没了，子会话就是一段普通会话
  *    （`/sessions` 里照样看得见、用户照样能接着用，`read_session_status` 对它回 `gone`）。
- * 3. **推**：子会话结算之后，把结果投回父对话 —— 父对话在跑就入队（`enqueue`），空闲就
- *    **唤醒**（`run`，起一轮真 turn，模型自己接着干）。
+ * 3. **推**：子会话结算之后，把结果投回父对话 —— 具体怎么投（父对话在跑就入队、空闲就唤醒、
+ *    正在结算就先攒着）**不是本文件的事**，全交给 `chatRunner.deliver` 一个入口。
  *
  * ## 「谁在调我」为什么靠 `bind`
  *
@@ -21,11 +21,16 @@
  * `ctx.agent` 认领调用方。**不给 core 的 `Agent` 加字段**：那是另一个包的类型，而且是
  * 「每次一轮、用完即弃」的对象，宿主侧记一笔就够，也不会泄漏（WeakMap 跟着 agent 一起回收）。
  *
- * ## 投递的并发与竞态（本文件唯一的新机制）
+ * ## 投递：本文件只把内容交给执行者，不猜
  *
- * 见 {@link PeerSessionService.deliver}：`enqueue` 拿到的回执说「父对话正在跑，条目会在它这一轮
- * 里落地」；`null` 说明父对话空闲，于是 `run()` 起一轮 —— 那就是唤醒。`run()` 抛错（收尾竞态
- * 的 `busy`、父对话被删的 `not_found`）只记 `dropped` 并出声，**不重试、不补投**（阶段 2 的事）。
+ * 见 {@link PeerSessionService.deliver}：`chatRunner.deliver(parentConversationId, { content,
+ * source })`。那一个入口自己解决「agent 在不在、父对话在不在跑、在结算、要不要攒一批」四件
+ * 事 —— 从前本文件靠「先 `enqueue`（拿到 `null` 说明空闲）再 `run`、`run` 抛错就记 dropped」
+ * 猜出来，猜错了就是两种真事故：多起一段没有上下文的段（消息不落库），或者把一条本该落地
+ * 的结果当失败丢掉。
+ *
+ * 于是 `resultDelivered` 的语义也跟着变了：**投递被受理就是 `delivered`**（执行者保证「迟早
+ * 落地、不丢」），只有父对话不存在才 `dropped` 并出声一次。
  */
 
 import { AgentNS } from "@ai-zen/agents-core";
@@ -39,7 +44,7 @@ import type {
   PeerSessionStatus,
 } from "@ai-zen/agents-sdk";
 
-import type { ChatRunParams, ChatTurn, QueuedTurn } from "../runtime/ChatRunner.js";
+import type { ChatRunParams, ChatTurn } from "../runtime/ChatRunner.js";
 import type { StoredMessage } from "../storage/types.js";
 import type { ConversationCreateParams, ConversationCreateResult } from "../wire/index.js";
 import type { ProblemFact, RunOutcome } from "../wire/states.js";
@@ -82,10 +87,16 @@ export interface PeerSessionConversationCreator {
   ensurePersisted(conversationId: string): Promise<unknown>;
 }
 
-/** 一轮的执行者（`ChatRunner` 结构上满足；两件只有它知道的事：跑中入队、空闲开一轮） */
+/** 一轮的执行者（`ChatRunner` 结构上满足）：平级会话只做两件事 —— 把子会话开跑、把结果投回去 */
 export interface PeerSessionRunner {
   run(params: ChatRunParams): Promise<ChatTurn>;
-  enqueue(params: ChatRunParams): Promise<QueuedTurn | null>;
+  /**
+   * 把一条内容投给某段对话（**唯一**的投递入口）。
+   *
+   * 执行者负责全部判断：agent 不在就按历史复活、父对话在跑就交给那一段、正在结算就先攒着，
+   * 攒够了一次性落地。**只有「那段对话不存在」才 reject** —— 调用方据此记 `dropped`。
+   */
+  deliver(conversationId: string, input: { content: AgentNS.MessageContent; source: string }): Promise<void>;
 }
 
 /** 平级会话服务的依赖（窄接口：本文件不认识整个宿主） */
@@ -303,9 +314,12 @@ export class PeerSessionService implements PeerSessionPort {
    * 三步，顺序不能换：
    *   1. 先按结局改状态（`idle` / `failed` / `aborted`）；
    *   2. 读子会话最后一条助手消息、截断，失败 / 中止时正文里写明原因（用句子，不甩错误栈）；
-   *   3. 投递：先 `enqueue`（父对话在跑 = 条目会落进它这一轮），拿到 `null` 说明空闲，于是
-   *      `run()` **唤醒**它；`run()` 抛错（收尾竞态 / 父对话被删）记 `dropped` 并出声一次，
-   *      不重试、不补投（阶段 2）。
+   *   3. 投递：**一句 `chatRunner.deliver`**。父对话在跑、空闲、正在结算、agent 还在不在，
+   *      都不是本文件要判断的事（那些判断只有一个地方该做，理由见文件头「投递」那一段）。
+   *
+   * `resultDelivered` 跟着改成「受理即 `delivered`」：执行者保证这一条迟早落地（在跑的段取走、
+   * 正在结算就攒到结算之后一起投、agent 不在就按历史复活），所以本文件没有「投不进去」这个
+   * 状态可记 —— 除了**父对话不存在**（那一条是真的没有去处，记 `dropped` 并出声一次）。
    *
    * `source` 就是正文那行注释里的来源，**label 原样**（`补测试` / 会话 1）：拼注释归 core 的
    * `inboxEntryContent`，本文件不自己拼那一行 —— 否则壳里壳外两种写法迟早分叉。**不再套
@@ -319,24 +333,15 @@ export class PeerSessionService implements PeerSessionPort {
   ): Promise<void> {
     record.state = stateOf(outcome);
 
-    const params: ChatRunParams = {
-      conversationId: record.parentConversationId,
-      input: { content: await this.resultBody(record, outcome, problem) },
-      source: record.label,
-    };
-
     try {
-      const queued = await this.deps.chatRunner.enqueue(params);
-      if (queued) {
-        // 父对话正在跑：这一条会在它这一轮里落地（不新起一轮，也不打断它）
-        record.resultDelivered = "delivered";
-        return;
-      }
-      // 父对话空闲：起一轮真 turn —— 这就是「自动唤醒」，模型自己接着干
-      await this.deps.chatRunner.run(params);
+      await this.deps.chatRunner.deliver(record.parentConversationId, {
+        content: await this.resultBody(record, outcome, problem),
+        source: record.label,
+      });
+      // 受理 = 迟早落地（攒批、复活都由执行者兜着）：不必等它跑完，也不必再试一次
       record.resultDelivered = "delivered";
     } catch (error) {
-      // 投递链上的任何失误都只落在这一处：记 `dropped` 并出声一次（不重试、不补投 —— 阶段 2）
+      // 唯一会走到这里的情形是父对话已经不存在：记 `dropped` 并出声一次（不重试、不补投）
       record.resultDelivered = "dropped";
       this.onError(error, "平级会话的结果没能投递给父对话");
     }

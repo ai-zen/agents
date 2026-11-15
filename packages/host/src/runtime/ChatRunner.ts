@@ -72,6 +72,17 @@
  *   3. `→ running` 时 `turns` 里已经有现场（`conversation.send` 那一轮）就**什么都不做** ——
  *      那是普通轮次，绝不能再建第二个现场。
  *
+ * ## 会话间投递：一个入口（{@link ChatRunner.deliver}）
+ *
+ * 别的会话跑完之后把结果投回来，走的是 `deliver(conversationId, { content, source })`：调用方
+ * 不判断「父对话在不在跑」，那三件事（agent 不在就复活、正在结算就攒着、攒够了一起投）由本
+ * 文件自己解决。它必须自己解决的理由在 `deliver` 的注释里，一句话是：**判据只在
+ * `turns` / `RunRegistry`**，别处再记一份「在跑」就会与它们分叉。
+ *
+ * 两段窗口（`turns` 里还有现场、或 `runs` 还说在跑）里投进去的条目不会当场落地，而是进
+ * 会话级待投列表（`waitlists`），等那一段结算完（`finishRuntime`）一次性 `deliverAll` ——
+ * 那一次落地既是「一条也不丢」，也是最省的一次请求（N 条同批落成 N 条 user message）。
+ *
  * ## 三处刻意交给 core 的事
  *
  * 1. **消息与增量不重新定义**：`AgentNS.Message` / `AgentNS.Delta` / `AgentNS.MessageStatus` /
@@ -259,6 +270,16 @@ export interface ChatAgent {
    * 回执里的 `woke` 宿主不看：跑中入队必然 `woke === false`（这一轮本来就在跑）。
    */
   deliver(input: AgentNS.InboxInput): AgentNS.DeliveryReceipt;
+  /**
+   * 整批投一条（core 的 `deliverAll`）：**全部入队之后只唤醒一次**。
+   *
+   * 与 `deliver` 的区别只在「N 条同时到达」时的落地形状：`deliver` 一条一条投会变成「第 1 条
+   * 落地起段、其余 N-1 条在段内下一次取件点才落地」，而本方法让 N 条在**同一拍**落成 N 条
+   * User 消息（静止态）或落在**同一个**内循环边界（跑着）—— 一次模型请求就看见全部 N 条。
+   *
+   * `ChatRunner.deliver` 攒够一批之后就走它：会话间投递天然是「几条一起到」的。
+   */
+  deliverAll(inputs: AgentNS.InboxInput[]): AgentNS.DeliveryReceipt[];
   /** 事件广播口（core 的 `EventBus`）；本文件只用 `on`，返回值当「取消订阅」的句柄用 */
   events: { on(name: string, handler: (...args: never[]) => void): unknown };
 }
@@ -411,6 +432,18 @@ export interface QueuedTurn {
   attachments: AttachmentOutcome[];
   /** 入队时刻（ISO 8601） */
   acceptedAt: string;
+}
+
+/**
+ * 一条「会话间投递」的内容：正文 + 来源（core 的 `InboxEntry.source` 同义）。
+ *
+ * 不带附件、不带 `messageId`：投递方（别的会话）不掌握这条消息在宿主侧怎么落，落库那一份、
+ * 消息 id、来源注释全由宿主 + core 自己算。
+ */
+export interface DeliveryInput {
+  content: AgentNS.MessageContent;
+  /** 正文最前面那行注释里的来源名（`"user"` = 用户本人，不加注释） */
+  source: string;
 }
 
 /** 一轮的结局 */
@@ -2174,6 +2207,29 @@ export class ChatRunner {
    * 「有没有在跑」仍然只问 `RunRegistry.isRunning`，两张表不由这里合并。
    */
   private readonly turns = new Map<string, TurnSession>();
+  /**
+   * 会话级待投列表：**这一批投不进去时先攒着的地方**（按 conversationId 开，条目保持到达顺序）。
+   *
+   * 只有两段窗口会用到它，两段都是「投进去会起一段没有上下文的段」的时刻：
+   *
+   *   1. **落后窗口**：core 的 `runStatus` 已经是 `idle`，而宿主这边的现场还在（这一段正在结算：
+   *      `closed` 已置位、`RunRegistry` 还没 `finish`）。此刻投进去，core 会把 agent 叫醒跑一段，
+   *      而 `onAgentStatus` 看到 `turns` 里还有现场就什么都不建 —— 那一段的消息于是没人落库。
+   *   2. **受理窗口**：`conversation.send` 已经 `runs.start`，现场却还没建（受理那半段在读库）。
+   *      此刻投进去同样是「core 起段、宿主没有接住它的现场」。
+   *
+   * 两段的出口相同：那一段（或那次受理）**结算之后**，把攒下的整批 `deliverAll` 出去。于是
+   * 「攒够了一起投」既是正确性要求（一条也不能丢），也顺带成了最省的一次请求。
+   */
+  private readonly waitlists = new Map<string, DeliveryInput[]>();
+  /**
+   * 每段对话的投递串行链：**同一段对话的投递不并行**。
+   *
+   * 「结算 → 投递 → 再起段」这条链中间有 await（要装配 agent、要读会话行），两条投递同时走到
+   * `deliverAll` 就会各自叫醒一次。core 的单飞能保证不成两段，但「投递」这件事本身也不该并行：
+   * 串起来之后，同一段对话的投递顺序 = 到达顺序，攒批也只攒一次。
+   */
+  private readonly deliveries = new Map<string, Promise<void>>();
 
   constructor(options: ChatRunnerOptions) {
     this.options = options;
@@ -2206,6 +2262,18 @@ export class ChatRunner {
   private disposeRuntime(conversationId: string, session?: TurnSession): void {
     if (session && this.turns.get(conversationId) !== session) return;
     this.turns.delete(conversationId);
+  }
+
+  /**
+   * 一段真的结算完了：摘现场 → 再看一眼待投列表。
+   *
+   * 两步的顺序是这段代码的全部意义：**先**把现场摘掉（`turns` 空、`runs` 已经 `finish`），
+   * **再**投。反过来的话，投进去的那一批会把 agent 叫醒跑一段，而 `onAgentStatus` 看到 `turns`
+   * 里还有现场就什么都不建 —— 那一段的消息于是没人落库（这就是要关掉的落后窗口）。
+   */
+  private finishRuntime(conversationId: string, session?: TurnSession): void {
+    this.disposeRuntime(conversationId, session);
+    this.flushWaited(conversationId);
   }
 
   // ---- 自起的段：agent 被 `deliver()` 叫醒跑起来的那一段 ----
@@ -2283,7 +2351,7 @@ export class ChatRunner {
       handle,
       acceptedAt: new Date(nowMs).toISOString(),
       startedAtMs: nowMs,
-      onSettled: () => this.disposeRuntime(conversationId, session),
+      onSettled: () => this.finishRuntime(conversationId, session),
     });
     this.createRuntime(session);
     // 现场已经就位（并且已经订上 `message`）：推一次「这一段跑起来了」
@@ -2422,11 +2490,13 @@ export class ChatRunner {
         acceptedAt,
         startedAtMs: nowMs,
         onSettled: () => {
-          this.disposeRuntime(conversationId, session);
+          this.finishRuntime(conversationId, session);
         },
       });
     } catch (error) {
       this.options.runs.finish(conversationId);
+      // 受理失败 = 这一段没有现场了：攒着的待投内容不能跟着这次失败一起烂在列表里
+      this.flushWaited(conversationId);
       throw error;
     }
 
@@ -2513,6 +2583,227 @@ export class ChatRunner {
     });
   }
 
+  // ---- 会话间投递：`deliver` 这一个入口 ----
+
+  /**
+   * 投一条内容给某段对话 —— **会话间投递的唯一入口**，调用方不必判断任何东西。
+   *
+   * 它自己解决三件事（从前这三件散在 `PeerSessionService` 里，靠「先 enqueue、`null` 就 run、
+   * `run` 抛错就记 dropped」猜出来的）：
+   *
+   * 1. **agent 不在就复活**：`agents.get` 为空 → 按库里的历史重新装配（`reconcile` +
+   *    `resolveHistory`，与 `run()` 首次装配同一条路），历史一条不少地 push 进新 agent；
+   * 2. **跑着 / 正在结算就攒着**：这一段还接话就交给它（那一段的取件点会带走，不新起一段）；
+   *    接不了（正在结算）或现场还没建（受理中）就挂在会话级待投列表里，等那一段结算完一起投
+   *    —— 这就是把「core 已 idle、宿主 `RunRegistry` 还没 finish」那一段落后窗口关掉的地方；
+   * 3. **攒够了一起投**：结算之后把待投列表里攒下的条目**一次性** `deliverAll` 出去
+   *    （= 一次 `flushInbox` 落成多条 user message、一次模型请求）。空闲时直接投。
+   *
+   * ## 为什么返回 `Promise<void>` 而不是回执
+   *
+   * 「投递被受理」= 它迟早会落地；调用方（平级会话）只需要知道「收下了没有」。会话不存在是
+   * **唯一**的拒绝（抛 `not_found`）；那一批内容是真的没有去处，调用方据此记 `dropped`。
+   *
+   * ## 重入怎么防
+   *
+   * 「结算 → 投递 → 再起段」这条链上有 await（装配 agent、读会话行），所以：
+   *   - 同一段对话的投递走**一条串行链**（{@link serialized}）：来两条就排两次，不会各自叫醒；
+   *   - 每次进 `deliverAll` 之前都**再判一次**现场（`turns` / `RunRegistry`）—— 装配期间起了新段
+   *     的话，这一批就交给那一段，而不是再起一段；
+   *   - core 自己的单飞是最后一道：真投到一段正在跑的 agent 上，它只会入队、不会起第二段。
+   */
+  async deliver(conversationId: string, input: DeliveryInput): Promise<void> {
+    // ① 这一段还接话：推进它（不新起一段，也不打断它；落地由它自己的取件点负责）
+    const turn = this.turns.get(conversationId);
+    if (turn?.enqueue({ content: input.content, source: input.source, attachments: [] })) return;
+
+    // ② 其余情形先攒着（正在结算 / 受理中 / 空闲三种都先走这一格）
+    this.wait(conversationId, input);
+    // ③ 空闲才真的投；结算窗口里的那一批由那一段的结算末尾自己 flush（`finishRuntime`）
+    await this.serialized(conversationId, () => this.flushWaitlist(conversationId));
+  }
+
+  /**
+   * 把待投列表里攒下的条目投出去 —— 投得成就清空，投不成（正在结算 / 受理中）就原样留着。
+   *
+   * 全程只在**这一条串行链**上被调用（`deliver` 与 `finishRuntime` 都走 {@link serialized}），
+   * 所以它里面的 await 不会与同一段对话的另一次投递交错。
+   */
+  private async flushWaitlist(conversationId: string): Promise<void> {
+    const waiting = this.waitlists.get(conversationId);
+    if (!waiting || waiting.length === 0) return;
+    // 先摘下来：这一批就是「这一次投递要投的全部内容」，按到达顺序
+    const batch = waiting.splice(0, waiting.length);
+    if (waiting.length === 0) this.waitlists.delete(conversationId);
+
+    // 这一段还接话：交给它（一次取件点把整批取走，段还是原来那一段）
+    const turn = this.turns.get(conversationId);
+    if (turn && this.handToTurn(conversationId, turn, batch)) return;
+
+    // 正在结算 / 现场还没建：放回去，等那一段结算完（`finishRuntime`）再来
+    if (this.isDeliveryBlocked(conversationId)) {
+      this.park(conversationId, batch);
+      return;
+    }
+
+    const conversation = await this.options.conversations.get(conversationId);
+    if (!conversation) {
+      // 这段对话已经不在了：这一批没有去处（**唯一**会拒绝投递的情形）
+      throw new HostError("not_found", { params: { entity: "conversation" } });
+    }
+
+    // agent 不在就复活（走出这段窗口的只有「有历史、没有 agent」那一种）
+    const agent = await this.ensureAgent(conversationId, conversation);
+
+    // 装配期间世界又变了：起了新段就交给它，进了结算就再放回去（这一批一条都没投出去）
+    const born = this.turns.get(conversationId);
+    if (born && this.handToTurn(conversationId, born, batch)) return;
+    if (this.isDeliveryBlocked(conversationId)) {
+      this.park(conversationId, batch);
+      return;
+    }
+
+    // 空闲：整批一起投（一次 `deliverAll` = 一次 `flushInbox` 落成多条 user message、一次请求）
+    agent.deliverAll(
+      batch.map((entry) => ({
+        content: entry.content,
+        source: entry.source,
+        // 与跑中排队同一个档位：赶工具轮的边界，不打断正在吐的那一段
+        priority: "high" as const,
+      })),
+    );
+  }
+
+  /**
+   * 把一批内容交给**正在跑的那一段**。
+   *
+   * 返回 `false` 表示那一段不接话（已经收工 / 被叫停，正在结算）—— 调用方据此挂回待投列表。
+   *
+   * 「能不能接」的判定是同步的（`TurnSession.enqueue` 只看这一轮自己的几个标记），所以第一条
+   * 接下了、后面的一定也接得下；真接不下就把那一条留在待投列表里等下一次（宁可晚，不能丢）。
+   */
+  private handToTurn(
+    conversationId: string,
+    turn: TurnSession,
+    batch: DeliveryInput[],
+  ): boolean {
+    const first = batch[0];
+    if (!first) return true;
+    if (!turn.enqueue({ content: first.content, source: first.source, attachments: [] })) {
+      return false;
+    }
+    for (let index = 1; index < batch.length; index += 1) {
+      const entry = batch[index]!;
+      if (!turn.enqueue({ content: entry.content, source: entry.source, attachments: [] })) {
+        this.wait(conversationId, entry);
+      }
+    }
+    return true;
+  }
+
+  /**
+   * 这一段对话现在**投不进**吗 —— 判据只来自 `turns`（现场）与 `RunRegistry`（运行表）。
+   *
+   * 现场还在 = 那一段在跑或在结算（`turns` 里摘掉才是「结算真的完了」）；运行表还说在跑 =
+   * 受理了、现场还没建。本文件不另记一份「在跑」（两份随时会分叉）。
+   */
+  private isDeliveryBlocked(conversationId: string): boolean {
+    return this.turns.has(conversationId) || this.options.runs.isRunning(conversationId);
+  }
+
+  /** 把一条内容排进这段对话的待投列表（队尾：保持到达顺序） */
+  private wait(conversationId: string, input: DeliveryInput): void {
+    const waiting = this.waitlists.get(conversationId);
+    if (waiting) {
+      waiting.push(input);
+      return;
+    }
+    this.waitlists.set(conversationId, [input]);
+  }
+
+  /** 把一整批放回待投列表的**队首**（它们比后来者先到） */
+  private park(conversationId: string, batch: DeliveryInput[]): void {
+    if (batch.length === 0) return;
+    const waiting = this.waitlists.get(conversationId);
+    if (!waiting) {
+      this.waitlists.set(conversationId, [...batch]);
+      return;
+    }
+    waiting.unshift(...batch);
+  }
+
+  /**
+   * 同一段对话的投递串行化：前一条（哪怕是失败的那条）跑完才跑下一条。
+   *
+   * 链尾自我清理：没有在途投递时把登记删掉，免得一张 Map 跟着对话数一直长。
+   */
+  private serialized(conversationId: string, task: () => Promise<void>): Promise<void> {
+    const previous = this.deliveries.get(conversationId) ?? Promise.resolve();
+    // 前一条失败不挡后一条：每一批各自结算自己的成败
+    const run = previous.then(task, task);
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.deliveries.set(conversationId, tail);
+    void tail.then(() => {
+      if (this.deliveries.get(conversationId) === tail) this.deliveries.delete(conversationId);
+    });
+    return run;
+  }
+
+  /**
+   * 结算末尾（现场刚摘掉）再看一眼待投列表：有攒着的就投 —— 这一刻 `turns` 空了、`runs` 也
+   * `finish` 了，投进去起的段才有现场可建。
+   */
+  private flushWaited(conversationId: string): void {
+    if (!this.waitlists.get(conversationId)?.length) return;
+    void this.serialized(conversationId, () => this.flushWaitlist(conversationId)).catch(
+      (error: unknown) => {
+        // 这一跳没有调用方（是结算顺手做的），所以只能报出去：会话被删是最可能的原因
+        this.options.onError?.(error, "会话间投递");
+      },
+    );
+  }
+
+  /**
+   * 拿到这段会话现在该用的 agent —— 没有（或不合用）就按库里的事实**重新装配**。
+   *
+   * 与 `run()` 首次装配同一条路：常驻的那个还合用（`agents.fits`：模型 / 思考档位没改）就直接
+   * 用；不合用先丢掉，再 `reconcile`（装载即修复）+ `resolveHistory`（按当前模型还原素材）+
+   * `ensure`（真的装配）。新装配的那个手里还是空的，历史要 push 进去 —— 复用的那个不 push
+   * （它的 `messages` 就是这段对话的真相）。
+   */
+  private async ensureAgent(
+    conversationId: string,
+    conversation: Conversation,
+  ): Promise<ChatAgent> {
+    const live = this.options.agents.get(conversationId);
+    if (live !== undefined && this.options.agents.fits(conversationId, conversation)) return live;
+    if (live !== undefined) this.options.agents.dispose(conversationId);
+
+    const stored = await this.reconcile(conversationId);
+    const history = await this.resolveHistory(
+      conversationId,
+      stored.messages,
+      conversation.modelId,
+    );
+
+    const existed = this.options.agents.get(conversationId) !== undefined;
+    const agent = await this.options.agents.ensure({
+      conversationId,
+      workspaceId: conversation.workspaceId,
+      agentId: conversation.agentId,
+      modelId: conversation.modelId,
+      thinkingLevel: conversation.thinkingLevel,
+      history: [...history],
+    });
+    // 复活的这个手里是空的：历史得 push 进去（`run()` 那条路在 `attach` 里做同一件事）。
+    // `existed` 是「装的这一刻它已经在」：那种情形 `messages` 是真相，再 push 一遍就是双份。
+    if (!existed && agent.messages.length === 0) agent.messages.push(...history);
+    return agent;
+  }
+
   /** 中止（转发给 `RunRegistry`：中止的唯一入口在那里） */
   abort(conversationId: string, reason?: string): boolean {
     return this.options.runs.abort(conversationId, reason);
@@ -2527,6 +2818,8 @@ export class ChatRunner {
     const turn = this.turns.get(conversationId);
     turn?.abort("conversation removed");
     this.disposeRuntime(conversationId);
+    // 这段对话已经不在了：攒着的待投内容也就没有去处（留着只会在删掉之后凭空跑出一段）
+    this.waitlists.delete(conversationId);
     // 这一段对话已经不在了，它的 agent 也就不该继续挂在 Scope 的账上 —— 否则紧接着的
     // `scopes.dispose`（删项目）会被一个正在收尾的对话挡下来。丢的只是登记，那个 agent
     // 仍由它自己那一轮握在手里跑完收尾（停与结算不受影响）。

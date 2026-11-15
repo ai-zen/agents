@@ -489,16 +489,17 @@ export class HostApp {
     this.completionService = new CompletionService({ findWorkspace });
 
     // ---- 6. 通知、问题、交接、自动命名（它们互相引用，都靠注入） ----
-    // 平级会话：建会话归 `ConversationService`（与 `conversation.create` 同一条路），开跑与唤醒归
-    // `ChatRunner`。后者在 §7 才造出来，所以这里只闭包住 `this`：两个动作都是「调用那一刻才去拿」
-    // （与 `createConversationRuntime` 里 `forget` 的晚绑定同一个理由）。
+    // 平级会话：建会话归 `ConversationService`（与 `conversation.create` 同一条路），开跑归
+    // `ChatRunner.run`、把结果投回来归 `ChatRunner.deliver`（一个入口：agent 复活 / 正在结算
+    // 就攒着 / 攒够了一起投都在那一处）。后者在 §7 才造出来，所以这里只闭包住 `this`：
+    // 两个动作都是「调用那一刻才去拿」（与 `createConversationRuntime` 里 `forget` 的晚绑定同一个理由）。
     this.peerSessions = new PeerSessionService({
       conversations: this.conversations,
       conversationCreator: this.conversationService,
       messages: this.messages,
       chatRunner: {
         run: (params) => this.chatRunner.run(params),
-        enqueue: (params) => this.chatRunner.enqueue(params),
+        deliver: (conversationId, input) => this.chatRunner.deliver(conversationId, input),
       },
       now: () => this.clock.now(),
       // 结果没送到父对话**不许静默丢**：这一处就是那一次出声（阶段 1 不补投）

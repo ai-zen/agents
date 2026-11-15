@@ -371,6 +371,17 @@ export class FakeAgent implements ChatAgent {
     return { messageId: pushed.messageId, accepted: true, woke: false };
   }
 
+  /**
+   * core 的 `deliverAll`：整批入队（本假件就是逐条 {@link deliver}）。
+   *
+   * 它同样不演「叫醒」：假件没有段的生命周期（`status` 的往返是 core 的事），真 Agent 那一路
+   * 由 `ChatRunner.selfStart.test.ts` / `ChatRunner.deliver.test.ts` 用真 core `Agent` 钉。
+   * 宿主侧要的只是「这一批条目进队列了」，那一条这里演得准。
+   */
+  deliverAll(inputs: AgentNS.InboxInput[]): AgentNS.DeliveryReceipt[] {
+    return inputs.map((input) => this.deliver(input));
+  }
+
   abort(): void {
     this.abortCalls += 1;
     this.aborted = true;
