@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 import { AgentNS } from "@ai-zen/agents-core";
 import type { Agent } from "@ai-zen/agents-core";
 
-import type { ChatRunParams, ChatTurn, QueuedTurn, TurnSettlement } from "../runtime/ChatRunner.js";
+import type { ChatRunParams, ChatTurn, DeliveryOutcome, QueuedTurn, TurnSettlement } from "../runtime/ChatRunner.js";
 import type { Conversation, StoredMessage } from "../storage/types.js";
 import type { ConversationView, ConversationCreateParams, ConversationCreateResult } from "../wire/index.js";
 import { HostError } from "../wire/errors.js";
@@ -126,6 +126,8 @@ class FakeRunner implements PeerSessionRunner {
   runError: unknown;
   /** 设了就让 `deliver` 抛错（父对话不存在：**唯一**会拒绝投递的情形） */
   deliverError: unknown;
+  /** 下一次投递的回执 `state`（缺省 `idle`：假件不演那三支现场） */
+  deliverState: DeliveryOutcome["state"] = "idle";
   private readonly turns: FakeTurn[] = [];
 
   async run(params: ChatRunParams): Promise<ChatTurn> {
@@ -139,9 +141,10 @@ class FakeRunner implements PeerSessionRunner {
   async deliver(
     conversationId: string,
     input: { content: AgentNS.MessageContent; source: string },
-  ): Promise<void> {
+  ): Promise<DeliveryOutcome> {
     this.deliverCalls.push({ conversationId, content: input.content, source: input.source });
     if (this.deliverError !== undefined) throw this.deliverError;
+    return { accepted: true, state: this.deliverState };
   }
 
   /** 某段会话最近一次开起来的一轮 */
@@ -156,6 +159,8 @@ interface Harness {
   service: PeerSessionService;
   creator: FakeCreator;
   runner: FakeRunner;
+  /** 会话行（「库里」那一份）：用例可以直接塞一段别的会话进来 */
+  conversations: Map<string, Conversation>;
   /** 父对话那个 agent（工具回调里 `ctx.agent` 就是它） */
   parentAgent: Agent;
   /** 记账式消息仓储：按 conversationId 存行 */
@@ -199,6 +204,7 @@ function createHarness(): Harness {
     service,
     creator,
     runner,
+    conversations,
     parentAgent,
     messages,
     errors,
@@ -410,6 +416,133 @@ describe("投递：跑完把结果送回父对话", () => {
     // 状态照落：这一轮确实跑完了
     const status = await h.service.status({ caller: h.parentAgent, sessionId: "c-child-1" });
     expect(status.state).toBe("idle");
+  });
+});
+
+describe("send_to_session：血缘、来源名、回执", () => {
+  it("父→子：投递到那个子会话，`state` 原样回给工具", async () => {
+    const h = createHarness();
+    await h.service.create({ caller: h.parentAgent, prompt: "A" });
+    h.runner.deliverState = "running";
+
+    const sent = await h.service.send({
+      caller: h.parentAgent,
+      sessionId: "c-child-1",
+      content: "再把边界用例也补上",
+    });
+
+    expect(sent).toEqual({ ok: true, state: "running" });
+    expect(h.runner.deliverCalls).toHaveLength(1);
+    expect(h.runner.deliverCalls[0]).toMatchObject({
+      conversationId: "c-child-1",
+      content: "再把边界用例也补上",
+    });
+  });
+
+  it("子→父：父对话不是 `records` 里的会话也能发（它是我的父，靠我自己那条记录答）", async () => {
+    const h = createHarness();
+    await h.service.create({ caller: h.parentAgent, prompt: "A" });
+    const childAgent = { name: "child" } as unknown as Agent;
+    h.bind(childAgent, "c-child-1");
+    h.runner.deliverState = "idle";
+
+    const sent = await h.service.send({
+      caller: childAgent,
+      sessionId: PARENT_ID,
+      content: "需要更多信息",
+    });
+
+    expect(sent).toEqual({ ok: true, state: "idle" });
+    expect(h.runner.deliverCalls[0]).toMatchObject({
+      conversationId: PARENT_ID,
+      content: "需要更多信息",
+    });
+  });
+
+  it("平级之间不许互发 → not_allowed，一句也不投", async () => {
+    const h = createHarness();
+    await h.service.create({ caller: h.parentAgent, prompt: "A" }); // c-child-1
+    await h.service.create({ caller: h.parentAgent, prompt: "B" }); // c-child-2
+    const firstChild = { name: "child-1" } as unknown as Agent;
+    h.bind(firstChild, "c-child-1");
+
+    const sent = await h.service.send({
+      caller: firstChild,
+      sessionId: "c-child-2",
+      content: "你那边进展如何",
+    });
+
+    expect(sent).toEqual({ ok: false, reason: "not_allowed" });
+    expect(h.runner.deliverCalls).toEqual([]);
+  });
+
+  it("不存在的 id（重启之后 / 被删 / 压根不是会话）→ gone，一句也不投", async () => {
+    const h = createHarness();
+
+    const sent = await h.service.send({
+      caller: h.parentAgent,
+      sessionId: "c-nope",
+      content: "在吗",
+    });
+
+    expect(sent).toEqual({ ok: false, reason: "gone" });
+    expect(h.runner.deliverCalls).toEqual([]);
+  });
+
+  it("来源名由宿主解析：父发文时用会话行上的 `name`，peer 发父时用它自己的 `label`", async () => {
+    const h = createHarness();
+    await h.service.create({ caller: h.parentAgent, prompt: "A", label: "补测试" });
+
+    // 父 → 子：调用者是普通会话，名字来自会话行（这个假仓储里 `name` 就是 id）
+    await h.service.send({ caller: h.parentAgent, sessionId: "c-child-1", content: "接着做" });
+    expect(h.runner.deliverCalls[0]!.source).toBe("会话「c-parent」");
+
+    // 子 → 父：调用者自己是 peer，用它自己的 label（不是会话行上的名字）
+    const childAgent = { name: "child" } as unknown as Agent;
+    h.bind(childAgent, "c-child-1");
+    await h.service.send({ caller: childAgent, sessionId: PARENT_ID, content: "做完了" });
+    expect(h.runner.deliverCalls[1]!.source).toBe("会话「补测试」");
+  });
+});
+
+describe("create_session 的并发限额：每个父对话最多 4 个在跑的", () => {
+  it("4 个在跑时第 5 个被拒（too_many_peers），一个跑完之后又能建", async () => {
+    const h = createHarness();
+    for (let i = 0; i < 4; i += 1) {
+      const created = await h.service.create({ caller: h.parentAgent, prompt: `任务 ${i}` });
+      expect(created.ok).toBe(true);
+    }
+    expect(h.creator.created).toHaveLength(4);
+
+    const fifth = await h.service.create({ caller: h.parentAgent, prompt: "第五个" });
+    expect(fifth.ok).toBe(false);
+    if (fifth.ok) throw new Error("unreachable");
+    expect(fifth.reason).toBe("too_many_peers");
+    expect(fifth.hint).toBeTruthy();
+    // 拒绝不许留下副作用：没有建会话、也没有开跑
+    expect(h.creator.created).toHaveLength(4);
+    expect(h.runner.runCalls).toHaveLength(4);
+
+    // 其中一个跑完（记录状态变 idle）→ 名额又有了
+    h.runner.turnOf("c-child-1").settle("completed");
+    await settle();
+    expect(h.service.record("c-child-1")?.state).toBe("idle");
+
+    const sixth = await h.service.create({ caller: h.parentAgent, prompt: "再开一个" });
+    expect(sixth.ok).toBe(true);
+    expect(h.creator.created).toHaveLength(5);
+  });
+
+  it("限额按**父对话**分别算：另一个父对话不受影响", async () => {
+    const h = createHarness();
+    for (let i = 0; i < 4; i += 1) await h.service.create({ caller: h.parentAgent, prompt: `A${i}` });
+
+    const otherParent = { name: "other" } as unknown as Agent;
+    h.bind(otherParent, "c-other-parent");
+    h.conversations.set("c-other-parent", conversation("c-other-parent"));
+
+    const created = await h.service.create({ caller: otherParent, prompt: "我这边的活" });
+    expect(created.ok).toBe(true);
   });
 });
 

@@ -1,17 +1,24 @@
 /**
- * 平级会话服务（阶段 1）—— 一段对话里的模型**开另一段对话**，那边跑完把结果**推送回**发起者。
+ * 平级会话服务 —— 一段对话里的模型**开另一段对话**、之后还能**接着跟它说话**，那边跑完把结果
+ * **推送回**发起者。
  *
- * 对应技术方案 `.ai-zen/plans/20261115-peer-sessions.md` 的阶段 1：只有「建 → 跑 → 推回 →
- * 被唤醒」这条最小闭环，没有 `send_to_session`、没有并发限额、没有超时、不落库、没有 UI 标记。
+ * 对应技术方案 `.ai-zen/plans/20261115-peer-sessions.md`：阶段 1 是「建 → 跑 → 推回 → 被唤醒」
+ * 的最小闭环；**阶段 2 第一块**加了三样东西：`send_to_session`（模型能继续跟子会话说话）、
+ * `create_session` 的并发限额（每个父对话同时最多 {@link MAX_RUNNING_PEERS} 个在跑的）、以及
+ * 投递回执（`chatRunner.deliver` 回「投递那一刻对方是什么状态」）。仍然**不落库**、没有超时 /
+ * 看门狗、没有 UI 标记。
  *
- * ## 三件它负责的事
+ * ## 四件它负责的事
  *
  * 1. **建**：按 `conversation.create` 同一条路开一段会话（草稿 → 落真行），拿到 conversationId
  *    就是 `sessionId`，立刻开跑并**立刻返回**（不等结果 —— 等待就等于子代理，那已经存在了）。
- * 2. **记**：进程内 `Map<sessionId, record>`。不建表、不加迁移：阶段 1 的语义是「agent 自己开
+ * 2. **记**：进程内 `Map<sessionId, record>`。不建表、不加迁移：这一层的语义是「agent 自己开
  *    一段会话、跑完把结果送回去」，重启之后这些元数据没了，子会话就是一段普通会话
- *    （`/sessions` 里照样看得见、用户照样能接着用，`read_session_status` 对它回 `gone`）。
- * 3. **推**：子会话结算之后，把结果投回父对话 —— 具体怎么投（父对话在跑就入队、空闲就唤醒、
+ *    （`/sessions` 里照样看得见、用户照样能接着用，`read_session_status` / `send_to_session`
+ *    对它回 `gone`）。
+ * 3. **接着说话**：{@link PeerSessionService.send} —— 与 `create` 同构的窄端口（只收 `caller`），
+ *    血缘校验（只有父↔子之间能互发）与来源名解析都在这一层。
+ * 4. **推**：子会话结算之后，把结果投回父对话 —— 具体怎么投（父对话在跑就入队、空闲就唤醒、
  *    正在结算就先攒着）**不是本文件的事**，全交给 `chatRunner.deliver` 一个入口。
  *
  * ## 「谁在调我」为什么靠 `bind`
@@ -40,11 +47,13 @@ import type {
   PeerSessionCreated,
   PeerSessionPort,
   PeerSessionRejectReason,
+  PeerSessionSendInput,
+  PeerSessionSent,
   PeerSessionState,
   PeerSessionStatus,
 } from "@ai-zen/agents-sdk";
 
-import type { ChatRunParams, ChatTurn } from "../runtime/ChatRunner.js";
+import type { ChatRunParams, ChatTurn, DeliveryOutcome } from "../runtime/ChatRunner.js";
 import type { StoredMessage } from "../storage/types.js";
 import type { ConversationCreateParams, ConversationCreateResult } from "../wire/index.js";
 import type { ProblemFact, RunOutcome } from "../wire/states.js";
@@ -72,6 +81,23 @@ const SOURCE_FROM_PARENT = "父对话";
 /** 结果正文的截断长度（模型看到的正文不必比这更长） */
 const RESULT_CHARS = 1000;
 
+/**
+ * 每个**父对话**同时最多能有多少个**在跑**的平级会话。
+ *
+ * 「在跑」= 记录上的 `state === "running"`；`idle` / `failed` / `aborted` 都不占名额（那几段已经
+ * 收工了，用户要接着用它们与本限额无关）。超出了就是一条结构化拒绝 `too_many_peers`：让模型先
+ * 等一批跑完、或者把活分给更少的会话，比让它一口气开 20 段把端点和额度烧光要好。
+ *
+ * 判据只用 `records`（不新增字段、不建表）：名额这东西跟着「谁在跑」走，而「谁在跑」写在同一
+ * 条记录上。
+ */
+const MAX_RUNNING_PEERS = 4;
+
+/** `send_to_session` 正文注释里的来源名：`会话「<调用者的名字>」`（拼注释归 core） */
+function senderSource(name: string): string {
+  return `会话「${name}」`;
+}
+
 /** `read_session_status` 里那条摘要的截断长度（**绝不给全量消息**，否则模型会拿它当上下文搬运） */
 const STATUS_CHARS = 300;
 
@@ -95,15 +121,24 @@ export interface PeerSessionRunner {
    *
    * 执行者负责全部判断：agent 不在就按历史复活、父对话在跑就交给那一段、正在结算就先攒着，
    * 攒够了一次性落地。**只有「那段对话不存在」才 reject** —— 调用方据此记 `dropped`。
+   *
+   * 回执是 {@link DeliveryOutcome}：收下了，以及**投递那一刻**对方是 `running` / `idle` /
+   * `settling`（`send_to_session` 把 `state` 原样回给模型）。
    */
-  deliver(conversationId: string, input: { content: AgentNS.MessageContent; source: string }): Promise<void>;
+  deliver(
+    conversationId: string,
+    input: { content: AgentNS.MessageContent; source: string },
+  ): Promise<DeliveryOutcome>;
 }
 
 /** 平级会话服务的依赖（窄接口：本文件不认识整个宿主） */
 export interface PeerSessionServiceDeps {
-  /** 只读父对话那一行：项目 / 助手 / 模型的口径来源 */
+  /**
+   * 只读会话那一行：项目 / 助手 / 模型的口径来源，以及**名字**（`send_to_session` 的来源名
+   * 用它 —— 来源名由宿主解析，不许调用方传）。
+   */
   conversations: {
-    get(id: string): Promise<{ id: string; workspaceId: string; agentId: string } | undefined>;
+    get(id: string): Promise<{ id: string; workspaceId: string; agentId: string; name: string } | undefined>;
   };
   /** 子会话的诞生 */
   conversationCreator: PeerSessionConversationCreator;
@@ -213,9 +248,10 @@ export class PeerSessionService implements PeerSessionPort {
   /**
    * 开一段平级会话：建会话 → 落真行 → 开跑 → **立刻**回 `{ sessionId, label }`。
    *
-   * 两种失败是**结构化拒绝**（返回结果，不抛错）：调用方自己已经是平级会话（`depth_exceeded`，
-   * 防无限分身）、子会话三级解析拿不到模型（`model_unresolved`）。其余错误照抛 —— 那是接线或
-   * 环境出了真问题，编一个「拒绝」给模型反而误导它。
+   * 三种失败是**结构化拒绝**（返回结果，不抛错）：调用方自己已经是平级会话（`depth_exceeded`，
+   * 防无限分身）、这个父对话手头已经在跑的平级会话到了 {@link MAX_RUNNING_PEERS} 个
+   * （`too_many_peers`）、子会话三级解析拿不到模型（`model_unresolved`）。其余错误照抛 —— 那是
+   * 接线或环境出了真问题，编一个「拒绝」给模型反而误导它。
    */
   async create(input: PeerSessionCreateInput): Promise<PeerSessionCreated> {
     const parentConversationId = this.identityOf(input.caller);
@@ -238,7 +274,19 @@ export class PeerSessionService implements PeerSessionPort {
       );
     }
 
-    // 2. 子会话：与 `conversation.create` 同一条路（`agentId` 缺省 = 父对话那一个，模型走三级解析）
+    // 2. 并发限额：这个父对话手头**在跑**的平级会话满了就不建（在 `conversationCreator.create`
+    //    之前判：拒绝不许留下副作用 —— 一段建出来又跑不了的会话比一条拒绝糟得多）
+    const running = this.runningPeersOf(parentConversationId);
+    if (running >= MAX_RUNNING_PEERS) {
+      return rejected(
+        "too_many_peers",
+        `This conversation already has ${MAX_RUNNING_PEERS} peer sessions running at the same ` +
+          "time. Wait for some of them to finish (their results are pushed back to me), or give " +
+          "the work to fewer sessions instead of opening another one.",
+      );
+    }
+
+    // 3. 子会话：与 `conversation.create` 同一条路（`agentId` 缺省 = 父对话那一个，模型走三级解析）
     let created: ConversationCreateResult;
     try {
       created = await this.deps.conversationCreator.create({
@@ -259,10 +307,10 @@ export class PeerSessionService implements PeerSessionPort {
     }
 
     const sessionId = created.conversation.id;
-    // 3. 草稿落成真行：`chatRunner.run` 只认库里那一行（R56）
+    // 4. 草稿落成真行：`chatRunner.run` 只认库里那一行（R56）
     await this.deps.conversationCreator.ensurePersisted(sessionId);
 
-    // 4. 先记账再开跑（`state: "running"` / `resultDelivered: "pending"`）：跑完的投递要靠它
+    // 5. 先记账再开跑（`state: "running"` / `resultDelivered: "pending"`）：跑完的投递要靠它
     const record: PeerSessionRecord = {
       sessionId,
       parentConversationId,
@@ -274,7 +322,7 @@ export class PeerSessionService implements PeerSessionPort {
     };
     this.records.set(sessionId, record);
 
-    // 5. 开跑（受理即回）：子会话第一句的 source 写「父对话」，正文最前面那行注释由 core 加
+    // 6. 开跑（受理即回）：子会话第一句的 source 写「父对话」，正文最前面那行注释由 core 加
     let turn: ChatTurn;
     try {
       turn = await this.deps.chatRunner.run({
@@ -289,7 +337,7 @@ export class PeerSessionService implements PeerSessionPort {
       throw error;
     }
 
-    // 6. 跑完就投递（这一条只会发生一次：唤醒预算天然是 1）
+    // 7. 跑完就投递（这一条只会发生一次：唤醒预算天然是 1）
     void turn.done.then(
       (settlement) => this.deliver(record, settlement.outcome, settlement.problem),
       (error: unknown) => {
@@ -334,10 +382,15 @@ export class PeerSessionService implements PeerSessionPort {
    * 正在结算就攒到结算之后一起投、agent 不在就按历史复活），所以本文件没有「投不进去」这个
    * 状态可记 —— 除了**父对话不存在**（那一条是真的没有去处，记 `dropped` 并出声一次）。
    *
+   * 回执（`DeliveryOutcome`）在这里**不记**：它描述的是「投递那一刻父对话是什么状态」，那是给
+   * `send_to_session` 回给模型看的信息；结果回投的场景下没有谁要读它（父对话在不在跑不影响
+   * 「这一条会不会落地」）。**丢掉不看是有意为之**，不是忘了。
+   *
    * `source` 就是正文那行注释里的来源，**label 原样**（`补测试` / 会话 1）：拼注释归 core 的
-   * `inboxEntryContent`，本文件不自己拼那一行 —— 否则壳里壳外两种写法迟早分叉。**不再套
-   * 「会话「…」」**：缺省 label 本身就是 `会话 N`，再套一层引号与「会话」前缀，模型读到的
-   * 就是「来自 会话「会话 1」 自动推送」这种套娃话。
+   * `inboxEntryContent`，本文件不自己拼那一行 —— 否则壳里壳外两种写法迟早分叉。这里**不套**
+   * 「会话「…」」：缺省 label 本身就是 `会话 N`，再套一层引号与「会话」前缀，模型读到的就是
+   * 「来自 会话「会话 1」 自动推送」这种套娃话。（`send_to_session` 那一路的调用者是**另一段
+   * 会话**而不是「这个子会话的结果」，所以它套了那一层，见 {@link senderSource}。）
    */
   private async deliver(
     record: PeerSessionRecord,
@@ -387,6 +440,96 @@ export class PeerSessionService implements PeerSessionPort {
       if (text.trim().length > 0) return text;
     }
     return "";
+  }
+
+  /**
+   * 跟一段平级会话**接着说话**（`send_to_session`）。
+   *
+   * 与 `create` / `status` 同构的窄端口：**只收 `caller`**，不收 `label` 也不收来源名 —— 来源名
+   * 由宿主解析（见 {@link senderSource}），模型 / 调用方说什么都不算数。
+   *
+   * ## 血缘校验就在这一层
+   *
+   * 「谁是谁的父」只写在 `records` 里（进程内，不落库），`AgentRegistry` 与 `Agent` 上都没有
+   * 这个事实，所以判断只能在这一层。两条合法关系：
+   *
+   *   - **我是它的父**：`records.get(sessionId).parentConversationId === 我`；
+   *   - **它是我的父**：我自己那条记录的 `parentConversationId === sessionId`（父对话是普通
+   *     会话，它自己**不在** `records` 里 —— 所以这一句要靠我自己那条记录来答，不能反过来查）。
+   *
+   * 其余一律 `not_allowed`：**平级之间不许互发**（两段同父的子会话互不知道对方存在，让它们通
+   * 话等于凭空造出一张没人负责的图），自己发给自己也不行。查不到目标记录、且它不是我的父 →
+   * `gone`。两种拒绝都是**返回结果**，不抛错：模型要能按字段分支。
+   *
+   * ## 已知边界：`records` 不落库，所以重启之后一律 `gone`
+   *
+   * 宿主重启之后 `records` 是空的，`send_to_session` 对任何 id 都答 `gone`（那段会话作为普通
+   * 会话还在库里，用户仍旧能接管它、接着说话）。跨重启的稳定语义（孤儿、补投）留给阶段 3 的
+   * `peer_sessions` 表 —— 本文件不偷偷加表。
+   */
+  async send(input: PeerSessionSendInput): Promise<PeerSessionSent> {
+    const callerConversationId = this.identityOf(input.caller);
+    const rejection = this.rejectionOf(callerConversationId, input.sessionId);
+    // 两种拒绝都是返回结果（不抛错）：模型要能按字段分支自己改变策略
+    if (rejection) return { ok: false, reason: rejection };
+
+    const source = senderSource(await this.nameOf(callerConversationId));
+    const outcome = await this.deps.chatRunner.deliver(input.sessionId, {
+      content: input.content,
+      source,
+    });
+    // `state` 原样回给工具（`running` 排在它这一轮末尾 / `idle` 会把它叫起来 / `settling` 先攒着）
+    return { ok: true, state: outcome.state };
+  }
+
+  /**
+   * 没血缘时的拒绝原因（`undefined` = 这一条可以发）。
+   *
+   * 顺序不能换：**先看「它是我的父」**（那一条只能靠我自己那条记录答 —— 父对话是普通会话，
+   * 它自己不在 `records` 里），再看目标在不在 `records` 里（不在 → `gone`），最后才判
+   * 「我是它的父」。
+   */
+  private rejectionOf(
+    callerConversationId: string,
+    sessionId: string,
+  ): "gone" | "not_allowed" | undefined {
+    // 它是我的父
+    if (this.records.get(callerConversationId)?.parentConversationId === sessionId) return undefined;
+    // 查不到这条记录：不是我的父，也不是我知道的任何平级会话
+    if (!this.records.has(sessionId)) return "gone";
+    // 我是它的父；平级之间、自己发给自己都在这一支被挡下
+    return this.records.get(sessionId)?.parentConversationId === callerConversationId
+      ? undefined
+      : "not_allowed";
+  }
+
+  /**
+   * 调用方的可读名字（正文注释里那一句「来自 会话「…」」）。
+   *
+   * 自己就是平级会话 → 用它自己的 `label`（模型认识的那个名字）；否则用会话行上的 `name`
+   * （用户给这段会话起的名字）。两者都是**宿主的事实**，不进工具参数。
+   */
+  private async nameOf(conversationId: string): Promise<string> {
+    const own = this.records.get(conversationId);
+    if (own) return own.label;
+    const row = await this.deps.conversations.get(conversationId);
+    if (!row) {
+      // 会话行都没了：这条消息没有可信的署名（编一个名字出来只会让目标误会来源）
+      throw new Error(
+        `Cannot send to a peer session: conversation "${conversationId}" no longer exists`,
+      );
+    }
+    return row.name;
+  }
+
+  /** 这个父对话手头**在跑**的平级会话有几个（限额的判据：只看 `records`） */
+  private runningPeersOf(parentConversationId: string): number {
+    let count = 0;
+    for (const record of this.records.values()) {
+      if (record.parentConversationId !== parentConversationId) continue;
+      if (record.state === "running") count += 1;
+    }
+    return count;
   }
 
   /** 调用方是哪段会话的（没登记过就是接线漏了：编一个会话 id 出来只会更糟） */

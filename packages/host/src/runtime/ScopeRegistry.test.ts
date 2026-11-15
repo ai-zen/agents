@@ -289,7 +289,7 @@ describe("createWorkspaceScopeFactory", () => {
     ]);
   });
 
-  it("给了平级会话端口才装 `peer-sessions` 插件（两个工具），不给就不装", async () => {
+  it("给了平级会话端口才装 `peer-sessions` 插件（三个工具），不给就不装", async () => {
     const common = {
       resolveWorkspace: async () => ({ cwd: "/tmp/ai-zen-project" }),
       getConfig: () => ({ endpoints: [], models: [] }),
@@ -302,13 +302,14 @@ describe("createWorkspaceScopeFactory", () => {
     const port = {
       create: async () => ({ ok: false as const, reason: "depth_exceeded" as const, hint: "no" }),
       status: async () => ({ state: "gone" as const }),
+      send: async () => ({ ok: false as const, reason: "gone" as const }),
     };
     const withPort = await createWorkspaceScopeFactory({ ...common, peerSessions: port })("ws-1");
     expect(withPort.plugins.map((plugin) => plugin.id)).toContain("peer-sessions");
-    // 端口在 → 两个工具的候选名就出现在 `tools` 维度里（权限过滤之前的那一份）
+    // 端口在 → 三个工具的候选名就出现在 `tools` 维度里（权限过滤之前的那一份）
     const plugin = withPort.getPluginById("peer-sessions");
     expect(plugin?.candidates(withPort, {} as never)).toEqual({
-      tools: ["create_session", "read_session_status"],
+      tools: ["create_session", "read_session_status", "send_to_session"],
     });
   });
 

@@ -25,7 +25,7 @@ import { Agent, AgentNS as AgentNSValue } from "@ai-zen/agents-core";
 
 import type { Conversation } from "../storage/types.js";
 import type { RunState } from "../wire/states.js";
-import type { AgentBuildContext, ChatAgent, TurnSettledFacts } from "./ChatRunner.js";
+import type { AgentBuildContext, ChatAgent, DeliveryOutcome, TurnSettledFacts } from "./ChatRunner.js";
 import { ChatRunner } from "./ChatRunner.js";
 import { AgentRegistry } from "./AgentRegistry.js";
 import { RunRegistry } from "./RunRegistry.js";
@@ -243,10 +243,12 @@ describe("ChatRunner.deliver：会话间投递的唯一入口", () => {
     const agent = await parkAgent(harness);
 
     const before = harness.runStates().length;
-    await harness.runner.deliver(CONVERSATION_ID, {
+    const outcome = await harness.runner.deliver(CONVERSATION_ID, {
       content: "登录页的测试补齐了",
       source: "补测试",
     });
+    // 回执：这一条把它**叫醒**了（投递那一刻它是空闲的）
+    expect(outcome).toEqual({ accepted: true, state: "idle" });
 
     // 现场在投递那一拍就建好了（自起段：`status(running)` → `startSelfRun`）
     const live = harness.runner.turn(CONVERSATION_ID);
@@ -297,7 +299,12 @@ describe("ChatRunner.deliver：会话间投递的唯一入口", () => {
     });
     await harness.waitFor(() => parentTurn.runState().status === "running");
 
-    await harness.runner.deliver(CONVERSATION_ID, { content: "子会话说完了", source: "会话 1" });
+    const outcome = await harness.runner.deliver(CONVERSATION_ID, {
+      content: "子会话说完了",
+      source: "会话 1",
+    });
+    // 回执：交给了在跑的那一段（条目会在它这一轮里落地，不新起一段）
+    expect(outcome).toEqual({ accepted: true, state: "running" });
 
     // 还是那一段：没有第二个现场，条目在它的 inbox 里（等取件点带走）
     expect(harness.runner.turn(CONVERSATION_ID)).toBe(parentTurn);
@@ -330,11 +337,11 @@ describe("ChatRunner.deliver：会话间投递的唯一入口", () => {
       textRound("第二段的回答。"),
     ]);
     /** 投递那一刻看到的事实（在 `onTurnSettled` 里取） */
-    const atDelivery: { liveTurn: boolean; coreIdle: boolean } = {
+    const atDelivery: { liveTurn: boolean; coreIdle: boolean; state?: string } = {
       liveTurn: false,
       coreIdle: false,
     };
-    let delivering: Promise<void> | undefined;
+    let delivering: Promise<DeliveryOutcome> | undefined;
     let coreAgent: Agent | undefined;
 
     const harness = createHarness({
@@ -353,6 +360,9 @@ describe("ChatRunner.deliver：会话间投递的唯一入口", () => {
           content: "结算窗口里到达的结果",
           source: "补测试",
         });
+        void delivering.then((outcome) => {
+          atDelivery.state = outcome.state;
+        });
         // 攒着：这一刻既没有新段，也还没落成任何消息
         expect(runner.turn(CONVERSATION_ID)?.runState().status).toBe("settled");
       },
@@ -369,6 +379,8 @@ describe("ChatRunner.deliver：会话间投递的唯一入口", () => {
     expect(atDelivery.liveTurn).toBe(true);
     expect(atDelivery.coreIdle).toBe(true);
     await delivering!;
+    // 回执不是 `idle`（那时它还没空闲）：这一段还在结算，条目先攒着，结算完才投
+    expect(atDelivery.state).toBe("settling");
 
     // 这一段结算完之后，攒下的那一批才投出去（= 起**新**一段，有完整现场）
     await harness.waitFor(() => harness.store.writes.filter((row) => row.conversationId === CONVERSATION_ID).length >= 4);

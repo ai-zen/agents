@@ -464,6 +464,28 @@ export interface DeliveryInput {
   source: string;
 }
 
+/**
+ * 一次投递的**受理回执**：收下了，以及「收下的那一刻对方是什么状态」。
+ *
+ * 只有 `accepted` 一个取值（恒 `true`）：投递唯一会失败的情形是「那段对话不存在」，那种情况
+ * 直接 reject（现状不变），所以这里没有 `accepted: false` 这一支 —— 编一个用不到的失败码只会
+ * 让调用方去处理一件不可能发生的事。
+ *
+ * `state` 是**当场可判**的事实，不是结果：
+ *   - `running`：交给了在跑的那一段，条目会在它这一轮里落地；
+ *   - `idle`：这一条会把它叫醒（自起段）；
+ *   - `settling`：先攒进会话级待投列表，等这一段结算完再投。
+ *
+ * **刻意不报 `woke`**：待投列表那条路上的唤醒发生在结算之后，同步回一个「叫醒了」就是撒谎
+ * —— 投递那一刻它还没被叫醒。「叫醒没叫醒」由调用方按 `idle` 自己说（那是它能说清的话）。
+ */
+export interface DeliveryOutcome {
+  /** 恒 `true`：唯一会失败的情形是「那段对话不存在」，那种情况直接 reject（见上） */
+  accepted: true;
+  /** 投递那一刻对方处于什么状态 —— 由调用方决定怎么跟用户 / 模型说 */
+  state: "running" | "idle" | "settling";
+}
+
 /** 一轮的结局 */
 export interface TurnSettlement {
   conversationId: string;
@@ -2719,10 +2741,16 @@ export class ChatRunner {
    * 3. **攒够了一起投**：结算之后把待投列表里攒下的条目**一次性** `deliver([...])` 出去
    *    （= 一次 `flushInbox` 落成多条 user message、一次模型请求）。空闲时直接投。
    *
-   * ## 为什么返回 `Promise<void>` 而不是回执
+   * ## 回执里有什么、没有什么
    *
-   * 「投递被受理」= 它迟早会落地；调用方（平级会话）只需要知道「收下了没有」。会话不存在是
-   * **唯一**的拒绝（抛 `not_found`）；那一批内容是真的没有去处，调用方据此记 `dropped`。
+   * 「投递被受理」= 它迟早会落地；调用方（平级会话）除了「收下了没有」还要知道**投递那一刻
+   * 对方是什么状态** —— 那决定它怎么跟模型 / 用户说（「排在它这一轮末尾」/「把它叫起来了」/
+   * 「它正在收尾，这一条排在后面」）。于是返回 {@link DeliveryOutcome}：`accepted` 恒 `true`，
+   * 加上当场可判的 `state`。
+   *
+   * 会话不存在是**唯一**的拒绝（抛 `not_found`）；那一批内容是真的没有去处，调用方据此记
+   * `dropped`。**不报 `woke`**：待投列表那条路上的唤醒发生在结算之后（见上），同步回一个
+   * 「叫醒了」就是撒谎。
    *
    * ## 重入怎么防
    *
@@ -2732,15 +2760,24 @@ export class ChatRunner {
    *     装配期间起了新段的话，这一批就交给那一段，而不是再起一段；
    *   - core 自己的单飞是最后一道：真投到一段正在跑的 agent 上，它只会入队、不会起第二段。
    */
-  async deliver(conversationId: string, input: DeliveryInput): Promise<void> {
+  async deliver(conversationId: string, input: DeliveryInput): Promise<DeliveryOutcome> {
     // ① 这一段还接话：推进它（不新起一段，也不打断它；落地由它自己的取件点负责）
     const turn = this.turns.get(conversationId);
-    if (turn?.enqueue({ content: input.content, source: input.source, attachments: [] })) return;
+    if (turn?.enqueue({ content: input.content, source: input.source, attachments: [] })) {
+      return { accepted: true, state: "running" };
+    }
 
-    // ② 其余情形先攒着（正在结算 / 受理中 / 空闲三种都先走这一格）
+    // ② 收下的这一刻对方是什么状态：判据与下面那条串行链用的是同一份（{@link isDeliveryBlocked}）。
+    // 现场还在（结算窗口）或运行表还说在跑（受理中）都走「攒着」那一路；其余就是空闲。
+    // **当场判、判完就定**：这里不能等 `await` 之后再判 —— 那一刻世界已经变了，报出去的
+    // 就是一件没发生过的事。
+    const state = this.isDeliveryBlocked(conversationId) ? "settling" : "idle";
+
+    // ③ 其余情形先攒着（正在结算 / 受理中 / 空闲三种都先走这一格）
     this.wait(conversationId, input);
-    // ③ 空闲才真的投；结算窗口里的那一批由那一段的结算末尾自己 flush（`finishRuntime`）
+    // ④ 空闲才真的投；结算窗口里的那一批由那一段的结算末尾自己 flush（`finishRuntime`）
     await this.serialized(conversationId, () => this.flushWaitlist(conversationId));
+    return { accepted: true, state };
   }
 
   /**
