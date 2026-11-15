@@ -101,7 +101,7 @@ describe("resolvePaths", () => {
 });
 
 describe("resolveListenTarget", () => {
-  it("本地实例只监听回环（PRD A6）", () => {
+  it("本地实例只监听回环（PLAN A6）", () => {
     expect(resolveListenTarget({ local: true })).toEqual({ host: LOOPBACK_HOST, port: DEFAULT_PORT });
     expect(LOOPBACK_HOST).toBe("127.0.0.1");
   });

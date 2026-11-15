@@ -158,7 +158,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
     }
   }
 
-  // 监听地址决定了这是哪种实例（PRD A6：本地实例只监听回环）
+  // 监听地址决定了这是哪种实例（PLAN A6：本地实例只监听回环）
   if (parsed.host !== undefined) {
     if (isLoopbackHost(parsed.host)) {
       parsed.local = true;
@@ -204,7 +204,7 @@ function parsePort(value: string): number {
   return port;
 }
 
-/** 这个地址是不是回环（本地实例只监听回环，PRD A6） */
+/** 这个地址是不是回环（本地实例只监听回环，PLAN A6） */
 function isLoopbackHost(host: string): boolean {
   return host === "localhost" || host === "::1" || host.startsWith("127.");
 }

@@ -36,7 +36,7 @@ export type BizCode =
   | "busy"
   /** 上传或请求体超限（PRD D5：图片 20MB/张） */
   | "payload_too_large"
-  /** 协议里我们不用的那部分，或某个能力在本宿主不提供（PRD A4） */
+  /** 协议里我们不用的那部分，或某个能力在本宿主不提供（PLAN A4） */
   | "unsupported"
   /** 宿主内部错误，细节只在日志里 */
   | "internal"
@@ -92,7 +92,7 @@ const DEFAULT_MESSAGE_KEY: Record<BizCode, MessageKey> = {
  *
  * 标准里只有少数几个数字码有意义（-32700 解析、-32600 非法请求、-32601 无此方法、
  * -32602 参数、-32603 内部）；产品层面的处境统一落在 `-32000 .. -32099` 这段
- * 「实现自定义」区间，真伪以 `data.code` 为准（PRD A4：不按标准的错误码空间走）。
+ * 「实现自定义」区间，真伪以 `data.code` 为准（PLAN A4：不按标准的错误码空间走）。
  */
 const JSON_RPC_CODE: Record<BizCode, number> = {
   invalid_params: -32602,

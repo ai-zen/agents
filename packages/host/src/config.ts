@@ -72,10 +72,10 @@ export const AI_ZEN_DIR_ENV = "AI_ZEN_DIR";
 /** 默认端口（PRD D25） */
 export const DEFAULT_PORT = 8790;
 
-/** 本地实例监听的地址（PRD A6：本地实例只监听回环） */
+/** 本地实例监听的地址（PLAN A6：本地实例只监听回环） */
 export const LOOPBACK_HOST = "127.0.0.1";
 
-/** 对外实例监听的地址（创建者自己起、自己配凭证，PRD A6） */
+/** 对外实例监听的地址（创建者自己起、自己配凭证，PLAN A6） */
 export const PUBLIC_HOST = "0.0.0.0";
 
 /**
@@ -129,7 +129,7 @@ export interface ListenTargetInput {
   port?: number;
   /** 配置文件里的端口（第二优先） */
   configPort?: number;
-  /** 是不是本地实例：`true` 只监听回环，`false` 监听对外地址（PRD A6） */
+  /** 是不是本地实例：`true` 只监听回环，`false` 监听对外地址（PLAN A6） */
   local: boolean;
 }
 

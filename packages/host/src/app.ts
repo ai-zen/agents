@@ -162,7 +162,7 @@ export interface HostAppOptions {
   configPort?: number;
   /** 显式指定监听地址（优先级高于 `local` 推出的那个） */
   host?: string;
-  /** 本地实例只监听回环（PRD A6）；缺省 `true` */
+  /** 本地实例只监听回环（PLAN A6）；缺省 `true` */
   local?: boolean;
   /** 宿主版本；缺省读包元数据 */
   version?: string;
@@ -315,7 +315,7 @@ export class HostApp {
   readonly version: string;
   /** 进程启动时刻（ISO 8601） */
   readonly startedAt: string;
-  /** 是不是本地实例（PRD A6：决定监听范围与要不要发本地凭证交付文件） */
+  /** 是不是本地实例（PLAN A6：决定监听范围与要不要发本地凭证交付文件） */
   readonly local: boolean;
 
   private readonly options: HostAppOptions;

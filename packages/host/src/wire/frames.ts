@@ -5,7 +5,7 @@ import type { EventName, EventPayload } from "./events.js";
 /**
  * JSON-RPC 2.0 帧（PLAN A4）。
  *
- * 以标准为底，产品形状长在 `params` / `result`（PRD A4）。标准里对我们有负担的部分不用，
+ * 以标准为底，产品形状长在 `params` / `result`。标准里对我们有负担的部分不用，
  * 具体是：
  *   - **批量请求**：帧是数组时直接拒（`unsupported`）—— 一条连接上并发靠多条请求就够，
  *     批量会带来「数组里部分成功」这种没法向用户解释的结果；

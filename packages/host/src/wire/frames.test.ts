@@ -111,7 +111,7 @@ describe("parseFrame", () => {
     }
   });
 
-  it("批量请求直接拒（PRD A4：不用标准的那部分）", () => {
+  it("批量请求直接拒（PLAN A4：不用标准的那部分）", () => {
     const error = expectHostError(
       () =>
         parseFrame([
