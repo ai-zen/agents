@@ -406,7 +406,7 @@ README 首行写「不要改、不要当实现依据」。
 ## 7.6 W6 运行期可输入与重开回看（2026-11-15，已完成）
 
 > 本轮改的是**行为**，不是契约形状：`conversation.send` 在跑中不再回 `busy`，改成排队；`RunState` 多一格
-> `inboxPending`；`ConversationSummary` 多一格 `run`。需求侧已写进 PRD（**D14 改写** + F-C12–F-C15 / F-I14 / F-I15），
+> `inbox`（排队条目本身，客户端据此在输入框上方回显排队区）；`ConversationSummary` 多一格 `run`。需求侧已写进 PRD（**D14 改写** + F-C12–F-C15 / F-I14 / F-I15），
 > 本节只写拆法与落点。
 
 ### 7.6.1 运行器：跑中入队的路径
@@ -416,20 +416,23 @@ conversation.send
   → assertSendable（D23 的问题闸门：排队不是绕道）
   → ensurePersisted（R56：草稿落成真行）
   → ChatRunner.enqueue  ── 拿到 → 回 { userMessageId, assistantMessageId: null, queued: true, attachments, acceptedAt }
-  └─ 拿到 null（装配没完成 / 这一轮已收尾 / 刚按了停）→ 老路径 ChatRunner.run()（这时才可能 busy）
-       → 那一轮 agent 的 pushInbox({ messageId, source: "user", priority: "high", content })
-       → core 在轮末落成 Message.User（落地走 agent.append，所以同样广播 message 事件、宿主照它落库）
+  └─ 拿到 null（这一轮已收尾 / 刚按了停）→ 老路径 ChatRunner.run()（这时才可能 busy）
+       → 那一轮 agent 的 deliver({ messageId, source: "user", priority: "high", content })
+       → core 在内循环末落成 Message.User（落地走 agent.append，所以同样广播 message 事件、宿主照它落库）
 ```
 
-**四个取件点**（core `Agent.run()` / `send()`）：
+**一个取件点**（core `Agent.runLoops()` 的内循环末；段首不取件）：
 
 | 优先级 | 取件点 | 语义 |
 |---|---|---|
-| `high` | 每圈内循环末尾（`onInnerLoopEnd` 之后、下一次 Assistant 占位之前） | 工具轮跑完的边界：工具结果已在 `messages` 里，插进来的 User 排在它之后，下一次请求天然看得见 |
-| `low` | 内循环全部停下、两个 `reconcile*` 之后 | agent 停下之后插入 |
-| — | `onInnerLoopsEnd` 之后、`onAfterSend` 之后各再判一次（不分优先级，按入队顺序） | **「只要回了 `queued` 就一定落地」的落点**：取件点若排在收尾钩子之前，那段窗口（跨度＝「最后一次取件 → `send()` 返回」）里回出去的 `queued` 就是假话（SDK 的 `AutoMigratePlugin` 就在这个钩子里问用户，窗口是无界的） |
+| `high` | 每圈内循环末尾（`onInnerLoopEnd` 之后、下一次 Assistant 占位之前），无条件先取 | 工具轮跑完的边界：工具结果已在 `messages` 里，插进来的 User 排在它之后，下一次请求天然看得见 |
+| `low` | 同一个取件点，只在 `!needContinue`（这一组要停了）时再问一次 | agent 停下之后插入。`else if` 而不是两个独立 if：这一圈 `high` 进了就说明队列里还有话要说，`low` 更该排在它之后。当前非测试代码里没有 `low` 的生产者（宿主只投 `high`），这一档留着给外部投递 |
 
-三条不变量：① 只有**真的插进了条目**才续圈（防死循环）；② `abort()` 清空 inbox，`runAborted` 之后四个取件点都不再取（用户按停 ＝ 排队的不发了）；③ `TurnSession.enqueue` 里「判能不能排」与「推」之间**不允许有 await**（否则会出现「判完还开着、推的时候已关上」，条目落进一个再也不会被取走的 inbox，而宿主已经回了 `queued`）。装配期间来的那几句在 `waitEnqueueable` 里等，上界 `QUEUE_READY_TIMEOUT_MS` = 10s，到点回老口径。
+段首那一次不算取件：把段叫醒的投递在 `deliver()` 里已经用 `flushInbox()` 把队列**整体**落成 User 消息（不看优先级、按入队顺序），而且排在 `run()` 之前 —— 唤醒与「模型看得见这条」是同一拍。`flushInbox()` 只有 `deliver()` 一个调用方。
+
+三条不变量：① 只有**真的插进了条目**才续圈（防死循环：插件从不入队时这一次判空就退出，一次请求都不多发）；② 取件与续圈的判据是 `runStatus === "running"`（`stopping` / `terminated` / `idle` 一条都不取）；`abort()` **不碰** inbox —— inbox 是数据，终止不等于删除，被叫停的段没取走的条目等下一次外部驱动时一起发出，要作废排队得显式 `clearInbox()`；③ `TurnSession.enqueue` 里「判能不能排」与「推」之间**不允许有 await**（否则会出现「判完还开着、推的时候已关上」，条目落进一个再也不会被取走的 inbox，而宿主已经回了 `queued`）。装配期间来的那几句收进 `TurnSession.pending` 数组，`attach()` 那一刻按入队顺序冲进它的 inbox —— 不等待、也没有超时。
+
+**一处有意接受的退化**：收尾钩子（`onInnerLoopsEnd` / `onAfterSend`）期间投进来的条目，core 不再顺手带走；宿主这一轮收工即丢 agent，所以那几条**真的丢了**，只由 `ChatRunner.settle()` 的 `inbox-leftover` 告警出声（用户按停的那一轮不报：那是预期的）。于是「回了 `queued` 就一定落地」只在「取件点还够得着」的范围里成立：钩子窗口里回出去的 `queued` 不保证落地。
 
 ### 7.6.2 为什么排队消息的**首次写入**必须在落地那一刻
 
@@ -439,14 +442,14 @@ conversation.send
 
 | 条 | 落点（包 + 文件） | 证据 |
 |---|---|---|
-| F-C12 跑中发送 | `packages/host/src/handlers/conversationHandlers.ts`（`sendTurn` 的分流与 `queued` 回包）、`packages/host/src/runtime/ChatRunner.ts`（`ChatRunner.enqueue` / `TurnSession.enqueue` / `waitEnqueueable`）、`packages/host/src/wire/methods.ts`（`ConversationSendResult.queued`） | `ChatRunner.inbox.test.ts`（真 core Agent 跑进真 ChatRunner：「工具正跑着时 enqueue → 工具轮后落地 → 第二轮请求里带着它，且第一轮没被 abort」）；`conversationHandlers.test.ts`：「跑的时侯第二句不再被拒：它排进那一轮的 inbox，回包说 queued」 |
-| F-C13 插入点与收尾取件 | `packages/core/src/Agent.ts`（`runLoops()` 的两个插入点、`run()` 与 `send()` 末尾的兜底取件）、`packages/core/src/Inbox.ts`（落成 `Message.User`、来源注释） | `packages/core/src/Agent.inbox.test.ts`（19 条：高 / 低优先级、来源注释、中止、空 inbox 与改动前一致、顺序、id 被尊重）；`ChatRunner.inbox.test.ts` 的两条收尾边界用例：「收尾边界（`onInnerLoopsEnd` 里）入队：回了排队，那条就一定在这一轮里落地」/「…（`onAfterSend` 里）入队」 |
+| F-C12 跑中发送 | `packages/host/src/handlers/conversationHandlers.ts`（`sendTurn` 的分流与 `queued` 回包）、`packages/host/src/runtime/ChatRunner.ts`（`ChatRunner.enqueue` / `TurnSession.enqueue`）、`packages/host/src/wire/methods.ts`（`ConversationSendResult.queued`） | `ChatRunner.inbox.test.ts`（真 core Agent 跑进真 ChatRunner：「工具正跑着时 enqueue → 工具轮后落地 → 第二轮请求里带着它，且第一轮没被 abort」）；`conversationHandlers.test.ts`：「跑的时侯第二句不再被拒：它排进那一轮的 inbox，回包说 queued」 |
+| F-C13 取件点与落地 | `packages/core/src/Agent.ts`（`runLoops()` 内循环末的那个取件点：`high` 先取，`!needContinue` 时才问 `low`；唤醒前的落地在 `deliver()` 的 `flushInbox()`）、`packages/core/src/Inbox.ts`（落成 `Message.User`、来源注释带创建时间） | `packages/core/src/Agent.inbox.test.ts`（26 条：高 / 低优先级、唤醒前落地、来源注释（含时间）、中止不删队列、空 inbox 与改动前一致、顺序、id 被尊重）；`ChatRunner.inbox.test.ts` 的「收尾钩子里入队的那一句：这一轮不带它，结算时按 `inbox-leftover` 出声」（退化要有声音） |
 | F-C14 落地即写库 | `packages/host/src/runtime/ChatRunner.ts` 的 `persistLandedQueued` / `linkQueuedAssets` | `ChatRunner.inbox.test.ts` 的「排队落地那一刻就写库：库里它的 `seq` 排在它引出的那条回答之前」；`ChatRunner.test.ts` 的「排队那条在落地那一刻就写库：写入顺序与最终 `seq` 都排在它引出的回答之前」（假 agent 版）；`conversationHandlers.test.ts` 的「库里的顺序（`seq`）：排队那句排在它引出的回答之前…」 |
 | F-C15 会话列表带运行状态 | `packages/host/src/wire/methods.ts`（`ConversationSummary.run`）、`packages/host/src/services/ConversationService.ts`（`ConversationRuntimePort.runState`，可选）、`packages/host/src/runtime/RunRegistry.ts`（`summary`） | `RunRegistry.test.ts` 的「summary 只问一段：在跑给开始时刻，没在跑给 null」；`ConversationService.test.ts` 的 `run` 一组；`host.integration.test.ts` 的「重启后 `run` 为 `null`」 |
-| F-I14 `inboxPending` | `packages/host/src/wire/states.ts`、`packages/host/src/runtime/ChatRunner.ts`（`buildRunState` 现读 `agent.inbox.length`）、`packages/host/src/handlers/conversationHandlers.ts`（空闲恒 0） | `conversationHandlers.test.ts` 的「run.state 的 inboxPending：入队后 > 0、落地后归 0、空闲时为 0」与「abort 丢弃排队条目：回包的 run 里 inboxPending 为 0，那一句也不落库」 |
+| F-I14 `RunState.inbox` | `packages/host/src/wire/states.ts`（`InboxItem`：`messageId` / `source` / `createdAt` / `preview`）、`packages/host/src/runtime/ChatRunner.ts`（`buildRunState` 现读 `[...agent.inbox, ...pending]` 再过 `toInboxItem`）、`packages/host/src/handlers/conversationHandlers.ts`（空闲给空数组） | `conversationHandlers.test.ts` 的「run.state 的 inbox：入队后 1 条、落地后清空、空闲时为空」与「abort 不丢排队条目：回包的 run 里 inbox 保持 1 条，那一句仍不落库」；`ChatRunner.inbox.test.ts` 的「跑中 enqueue → `inbox` 里就是这一条；落地成消息之后变空」与「装配期间（agent 还没 attach）enqueue → 走 `pending` 那一半，`inbox` 里也有这一条」 |
 | F-I15 重开后子代理页签 | `packages/host/src/services/MessageService.ts`（`subAgents`）、`packages/host/src/storage/MessageRepository.ts`（`listDelegated`）、`packages/host/src/handlers/conversationHandlers.ts`（`idleRunState` 收 `subagents` 入参） | `MessageService.test.ts` 的 `subAgents` 一组（「名字 / 用量 / 条数 / 开始时刻都从库里来…」「子 Agent 自己吐过 error 行时，父工具结果说什么都盖不过它」「从没委派过就是空数组」）；`MessageRepository.test.ts` 的「listDelegated 只给子 Agent 那一半」；`conversationHandlers.test.ts` 的「跑过子 Agent 的对话重开时，subagents 从库里捞回来」「子 Agent 自己出过错的那次委派，空闲时推成 error」「abort 回包里的空闲现场也带着子 Agent」 |
 
-**反向验证记录（提交说明里都有）**：去掉低 / 高优先插入点各红一批；去掉 `onInnerLoopsEnd` 之后的兜底取件会红「回了 `queued` 却没落地」；把「落地即写库」改回收尾写会红库序三条；把 `idleRunState` 的 `subagents` 改回 `[]` 红三条；把 `toSummary` 的 `run` 改回 `null` 红一条。
+**反向验证记录（提交说明里都有）**：去掉低 / 高优先那一档取件各红一批；去掉唤醒前的 `flushInbox()` 会红「被投递叫醒的段空跑一圈」；收尾钩子里的投递改成「不带走」之后，钉的是「丢了要有声音」（`inbox-leftover`）；把「落地即写库」改回收尾写会红库序三条；把 `idleRunState` 的 `subagents` 改回 `[]` 红三条；把 `toSummary` 的 `run` 改回 `null` 红一条。
 
 ### 7.6.4 客户端侧（同一轮，已落地）
 

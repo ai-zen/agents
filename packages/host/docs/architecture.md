@@ -131,8 +131,8 @@ i18n/         文案（en 基准 / zh）
 
 ```
 请求到达（conversation.send）
-   ├─ 这段对话正在跑一轮 → ChatRunner.enqueue → 那一轮 agent 的 pushInbox（PRD D14：排队，不打断、不回 busy）
-   │                        └─ core 在轮末把它落成一条 User 消息（两个插入点＋两个收尾取件点，见下）
+   ├─ 这段对话正在跑一轮 → ChatRunner.enqueue → 那一轮 agent 的 deliver（PRD D14：排队，不打断、不回 busy）
+   │                        └─ core 在内循环末把它落成一条 User 消息（全 core 只有一个取件点，见下）
    └─ 否则 → RunRegistry.start（真在跑则抛 HostError("busy")：只剩排队窗口没打开时的兜底）
         → 借 Scope（ScopeRegistry.acquire：懒创建或复用，依赖 +1）
         → 装配 agent（模型/助手/权限来自 SDK，跑完即弃）
@@ -140,15 +140,18 @@ i18n/         文案（en 基准 / zh）
         → 内循环结束：写一次（D15）→ agent 释放 → ScopeRegistry.release（依赖 −1，归零则起 10 分钟计时）
 ```
 
-**跑中入队（PRD D14 / F-C12 / F-C13）**：`conversation.send` 先问 `ChatRunner.enqueue`，问的是「这一轮还能不能接新话」——`TurnSession.enqueueState` 三态（装配中 `pending` / 可接 `open` / 已收尾 `closed`），装配期间来的那几句在 `waitEnqueueable` 里等，上界 `QUEUE_READY_TIMEOUT_MS` = **10s**（到点回老口径，把选择权交回用户）。**判「能不能排」与「推」之间不允许有 await**：中间让出一次执行权就可能「判完还开着、推的时候已关上」，条目落进一个再也不会被取走的 inbox，而宿主已经回了 `queued: true`。条目由 core 取走，四个取件点：
+**跑中入队（PRD D14 / F-C12 / F-C13）**：`conversation.send` 先问 `ChatRunner.enqueue`，问的是「这一轮还能不能接新话」——就看 `TurnSession` 的三个布尔（`closed`：`send()` 已返回、再没有轮末取件点；`aborted` / `handle.aborted`：这一轮按了停），任一成立就回 `null`、由调用方走老口径。agent 还在装配时那几句收进 `pending` 数组，`attach()` 那一刻按入队顺序 `deliver` 进它的 inbox —— 不等待、也没有超时。**判「能不能排」与「推」之间不允许有 await**：中间让出一次执行权就可能「判完还开着、推的时候已关上」，条目落进一个再也不会被取走的 inbox，而宿主已经回了 `queued: true`。条目由 core 取走，**全 core 只有一个取件点**：
 
 | 优先级 | 取件点 | 语义 |
 |---|---|---|
-| `high` | 每圈内循环末尾（`onInnerLoopEnd` 之后、下一次 Assistant 占位之前） | 「工具轮跑完」的边界：此刻工具结果已 append 进 `messages`，插进来的 User 排在它之后，下一次请求天然看得见；不打断模型正在吐的那一段 |
-| `low` | 内循环全部停下、`reconcileAbortedToolRounds` / `reconcileAbortedMessages` 之后 | 「agent 停下之后插入」 |
-| — | `onInnerLoopsEnd` 之后、`onAfterSend` 之后各再判一次（不分优先级，按入队顺序一起落） | 收尾钩子里推进来的条目也算这一轮。取件点若排在钩子**之前**，那段窗口里回出去的 `queued` 就是一句假话（「最后一次取件 → `send()` 返回」这一段整个压在它上面，SDK 的 `AutoMigratePlugin` 还在钩子里问用户）。**「回了 `queued` 就一定落地」的硬保证就落在这一行** |
+| `high` | 每圈内循环末尾（`onInnerLoopEnd` 之后、下一次 Assistant 占位之前），无条件先取 | 「工具轮跑完」的边界：此刻工具结果已 append 进 `messages`，插进来的 User 排在它之后，下一次请求天然看得见；不打断模型正在吐的那一段 |
+| `low` | 同一个取件点，只在 `!needContinue`（这一组要停了）时再问一次 | 「agent 停下之后插入」。`else if` 而不是两个独立 if：这一圈 `high` 进了就说明队列里还有话要说，`low` 更该排在它之后。这一档留着给外部投递：当前非测试代码里没有 `low` 的生产者（宿主只投 `high`） |
 
-只有**真的插进了条目**才续圈（防死循环：插件从不入队时这一次判空就退出，一次请求都不多发）；`abort()` 清空 inbox、`runAborted` 之后四个取件点都不再取 —— 用户按停 ＝ 排队的不发了。落地本身在 core 的 `Inbox.ts`：`source === "user"` 原样贴，其他来源在正文首行加 `// 这条消息来自 <source> 自动推送`（分段内容把注释作为第一段 text 插进去，图片段原样留着），消息 id 用**入队那一刻定死的那个**（宿主已经把 id 告诉客户端了，落地换一个会让同一条内容画两遍）。
+段首不取件：把段叫醒的那条投递在 `deliver()` 里已经先用 `flushInbox()` 把队列**整体**落成 User 消息（不看优先级、按入队顺序），而且摆在 `run()` 之前 —— 于是「唤醒」与「模型看得见这条」是同一拍。`flushInbox()` 只有 `deliver()` 一个调用方。
+
+**收尾钩子里的投递这一次不带走（有意接受的退化）**：`onInnerLoopsEnd` / `onAfterSend` 期间投进来的条目，core 不再在段尾补一次取件；宿主这一轮收工即丢 agent，所以那几条**确实丢了**，没有别的补偿，只由 `ChatRunner.settle()` 的 `inbox-leftover` 告警出声（用户按停的那一轮不报：那是预期的）。于是「回了 `queued` 就一定落地」只在「取件点还够得着」的范围里成立：钩子窗口里回出去的 `queued` 不保证落地。
+
+只有**真的插进了条目**才续圈（防死循环：插件从不入队时这一次判空就退出，一次请求都不多发）。取件与续圈的判据是 `runStatus === "running"`（`stopping` / `terminated` / `idle` 一条都不取）；`abort()` **不碰** inbox —— inbox 是数据，终止不等于删除，被叫停的段没取走的条目等下一次外部驱动时一起发出，要作废排队得显式 `clearInbox()`。落地本身在 core 的 `Inbox.ts`：`source === "user"` 原样贴，其他来源在正文首行加 `// 这条消息来自 {source} 自动推送（{createdAt}）`（分段内容把注释作为第一段 text 插进去，图片段原样留着），消息 id 用**入队那一刻定死的那个**（宿主已经把 id 告诉客户端了，落地换一个会让同一条内容画两遍）。
 
 **排队消息的首次写入在落地那一刻（PRD F-C14）**：`seq` 是 `MAX(seq)+1`，按**插入顺序**给 —— 客户端读回来就按它排，它是唯一的排序依据。而助手消息是边流边写的（`scheduleStreamWrite` 到节流点就写一片）。排队落地的用户消息若等到 `persistFinal` 才首次写，它拿到的 `seq` 会比「它引出的那一轮回答」更大：重开这段对话读到的转录成了「助手说完 → 助手又说 → 用户冒最后一句」，最后那句永远没有回答。所以 `onMessage` 的排队落地分支立刻 `persistLandedQueued`：写行进同一条 `writeChain`（与边流边写串行），正文用 `queuedStored` 那一份 `__asset_id` 形态，紧跟着 `linkQueuedAssets` 记素材关系行（`conversation_assets.messageId` 的外键指着 `messages.id`，只能先写行再记关系），`createdAt` 取**落地**那一刻。`persistFinal` 仍在，但它只做终态覆盖：`ON CONFLICT (id) DO UPDATE` 不碰 `seq` / `createdAt`，于是落地写一次、收尾覆盖一次，仍是一行。
 
@@ -443,3 +446,4 @@ afterAll(async () => { await db.close(); await rm(dir, { recursive: true, force:
 | 2026-11-14 | 状态栏块名搬回客户端：`StatusBlock` 去掉 `label`（8 块 × 2 语言 = 16 条界面词汇），宿主只给 `id` + `facts` + 顺序（`STATUS_BLOCK_IDS`）；CLI 用本地词条 `status.block.<id>` 渲染。`statusBlocksOf` 不再收 `language`，`blockLabel()` 与 i18n 的 `label.*` 8 组键一起删。同一口径的第二个案例（第一个是能力清单的 `title`/`description`）：**界面文案归界面，宿主只给事实** |
 | 2026-11-14 | 状态栏的**块整个搬回客户端**（同一把尺子的第三步，也是最后一步）：`statusBlocks` 从 `conversation.state` 删除，`StatusBlock` / `StatusBlockId` / `STATUS_BLOCK_IDS` / `statusBlocksOf` / `StatusBlockInput` 一并不在宿主持有。原因不是审美而是 bug：那份副本只在 `conversation.state` 被拉的那一刻成立，而拉状态只发生在「打开对话 / 换模型 / `host.reload`」——于是聊天过程中上下文百分比、模型名、本轮 tokens、正在跑的工具**全冻在打开对话那一刻**（`/model`、`/thinking` 之后状态栏也不变，`本轮` 永远是 0）。同一批事实存两份，其中一份必然过期。八块要的事实各自在契约里本来就有：助手（新增 `ConversationView.agent = { agentId, name, available }`，`available` 的判定仍由 `AgentService.describe` 给，`ConversationService` 通过 `describeAgent` 端口要结论、不重写一份）、模型 / 思考档 / 目录在视图，上下文与用量在 `ConversationState`，工具与子 Agent 在 `run`。CLI 用 `cli/src/status-blocks.ts` 的 `statusBlocksOf` 现拼，顺序归它自己 |
 | 2026-11-15 | 运行器补「跑中入队」：§4 的一轮时序拆成两条受理路（跑中 → `ChatRunner.enqueue` → core `pushInbox`；否则 `RunRegistry.start`，`busy` 只剩兜底），补四个取件点（`high` / `low` / `onInnerLoopsEnd` 之后 / `onAfterSend` 之后）与「判能不能排与推之间不允许有 await」「只有真插进条目才续圈」两条不变量；补「排队消息的首次写入必须在落地那一刻」（`seq` 的因果，`persistLandedQueued`）。§5 的「边流边写」注明这条例外，读数表下方补三条读数（`listByConversation` / `listDelegated` / `countByConversation`）的加减关系。`ConversationRuntimePort` 从两件事变三件（多一个可选的 `runState`，`conversation.list` 的 `run` 用它） |
+| 2026-11-15 | 取件点收成一个：core 的 inbox 取件只在 `runLoops()` 的内循环末（`high` 先取，`!needContinue` 时才问 `low`），段首的落地改由 `deliver()` 的 `flushInbox()` 负责（`flushInbox` 只有这一个调用方）；`abort()` 不再清空 inbox（要作废排队得显式 `clearInbox()`），取件判据从 `runAborted` 换成 `runStatus === "running"`。宿主侧的 `TurnSession.enqueueState` / `waitEnqueueable` / `QUEUE_READY_TIMEOUT_MS` 一并不在，装配期改用 `TurnSession.pending` 数组缓冲、`attach()` 那一刻冲进 inbox。`RunState.inboxPending` 换成 `RunState.inbox`（`InboxItem[]`：`messageId` / `source` / `createdAt` / `preview`，顺序即取件顺序，计数取 `inbox.length`），客户端据此在输入框上方回显排队区。一处有意接受的退化：收尾钩子（`onInnerLoopsEnd` / `onAfterSend`）期间投进来的条目不再被带走，只由 `ChatRunner.settle()` 的 `inbox-leftover` 告警出声 |
