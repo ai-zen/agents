@@ -516,6 +516,11 @@ export class HostApp {
       createAgent,
       // 「这段对话有没有在跑一轮」只有 `RunRegistry` 一处（`markStale` 判空闲 / 在跑用它）
       runs: this.runRegistry,
+      // 一段的边界（core 的 `status`）：agent 被 `deliver()` 叫醒自己跑起来的那一段没有
+      // `conversation.send` 的受理，它的现场只能从这条事件里建（见 `ChatRunner.onAgentStatus`）。
+      // `chatRunner` 在 §7 才造出来（比这里晚），所以这里闭包住 `this`，调用那一刻才去拿
+      // —— 与 `peerSessions` 的晚绑定同一个理由。
+      onStatus: (event) => this.chatRunner.onAgentStatus(event),
     });
     this.noticeService = new NoticeService({
       notices: this.notices,

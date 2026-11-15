@@ -32,8 +32,10 @@ export {
   DEFAULT_STREAM_WRITE_INTERVAL_MS,
 } from "./ChatRunner.js";
 export type {
+  AcceptedTurn,
   AgentBuildContext,
   AgentFactory,
+  AgentStatusEvent,
   AttachmentPreparation,
   AttachmentPreparer,
   ChatAgent,

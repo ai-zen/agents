@@ -41,9 +41,10 @@
  * 先停（可选）→ `agents.dispose` → `scopes.dispose`。
  */
 
+import type { AgentNS } from "@ai-zen/agents-core";
 import type { Scope } from "@ai-zen/agents-sdk";
 
-import type { AgentBuildContext, AgentFactory, ChatAgent } from "./ChatRunner.js";
+import type { AgentBuildContext, AgentFactory, AgentStatusEvent, ChatAgent } from "./ChatRunner.js";
 import type { RunsView } from "./RunRegistry.js";
 
 /**
@@ -88,6 +89,16 @@ export interface AgentRegistryOptions {
    * 本文件不自己记第二份「在跑」，否则两份随时会分叉。
    */
   runs: RunsView;
+  /**
+   * 一段的边界（core 的 `status` 事件 + 它是哪段对话）—— 装配好一个 agent 就订上它。
+   *
+   * 为什么要在这里订：`AgentRegistry` 是「agent 从哪来」的唯一入口，也就知道「这个 agent 是
+   * 哪段对话的」。而 `status` 的消费方（`ChatRunner`）要的正是这个对应关系 —— 让消费方反过来
+   * 拿 agent 去查表，等于把「谁是谁的」再存一份。
+   *
+   * 不注入就不订：本注册表就只做登记（测试里多数用例不关心段边界）。
+   */
+  onStatus?: (event: AgentStatusEvent) => void;
 }
 
 /** 一条登记：agent、它落在哪个 Scope 上、按什么装配事实造出来的、以及「等这一段跑完就换掉」的标记 */
@@ -108,6 +119,8 @@ interface AgentEntry {
    * `ChatRunner` 问一句 `isStale` 再 `dispose`。
    */
   stale: boolean;
+  /** 取消订在它上面的 `status` 监听（`dispose` 时摘，见 `onStatus`） */
+  offStatus?: () => void;
 }
 
 /** 从那三项事实里取一份归一化的快照（`undefined` 与 `null` 同义：都是「没有」） */
@@ -128,11 +141,13 @@ export class AgentRegistry {
   private readonly scopes: ScopeProvider;
   private readonly createAgent: AgentFactory;
   private readonly runs: RunsView;
+  private readonly onStatus?: (event: AgentStatusEvent) => void;
 
   constructor(options: AgentRegistryOptions) {
     this.scopes = options.scopes;
     this.createAgent = options.createAgent;
     this.runs = options.runs;
+    this.onStatus = options.onStatus;
   }
 
   /**
@@ -148,13 +163,40 @@ export class AgentRegistry {
   async create(input: AgentCreateInput): Promise<ChatAgent> {
     const scope = await this.scopes.create(input.workspaceId);
     const agent = await this.createAgent({ ...input, scope });
+    // 先摘旧的订阅（同一段对话的新 agent 顶掉旧的登记，旧的那个不再被谁持有）
+    this.dispose(input.conversationId);
     this.entries.set(input.conversationId, {
       workspaceId: input.workspaceId,
       agent,
       built: factsOf(input),
       stale: false,
+      offStatus: this.watch(input.conversationId, agent),
     });
     return agent;
+  }
+
+  /**
+   * 订上这个 agent 的段边界（`status`），并补上「哪段对话」。
+   *
+   * 载荷原样透传 `from` / `to`：本文件不对段状态做任何解释，只负责把「谁的事」说清楚。
+   *
+   * 订阅本身没有生命周期问题（`EventBus` 挂在 agent 对象上，agent 没了监听也一起没了），
+   * 摘的原因不是泄漏而是「别叫到一个已经不在登记表里的 agent 上」—— 它可能正在被换掉，
+   * 而消费方（`ChatRunner`）已经按「这段对话现在是新那个」在数现场了。
+   */
+  private watch(conversationId: string, agent: ChatAgent): (() => void) | undefined {
+    const onStatus = this.onStatus;
+    if (!onStatus) return undefined;
+    const forward = (ctx: { from: AgentNS.RunStatus; to: AgentNS.RunStatus }): void => {
+      onStatus({ conversationId, agent, from: ctx.from, to: ctx.to });
+    };
+    const handle = agent.events.on("status", forward);
+    if (typeof handle === "function") return handle as () => void;
+    if (typeof handle === "object" && handle !== null) {
+      const disposable = handle as { dispose?: () => void };
+      if (typeof disposable.dispose === "function") return () => disposable.dispose!();
+    }
+    return undefined;
   }
 
   /**
@@ -262,6 +304,9 @@ export class AgentRegistry {
    * 幂等：没登记就什么也不做。
    */
   dispose(conversationId: string): void {
+    const entry = this.entries.get(conversationId);
+    if (!entry) return;
     this.entries.delete(conversationId);
+    entry.offStatus?.();
   }
 }
