@@ -44,7 +44,12 @@ export type { UserToolFile } from "./scope/plugins/usertools/discover.js";
 
 // Scope — 全局上下文 + 能力装配编排容器
 export { Scope } from "./scope/Scope.js";
-export type { FilterOutput, ExcludeOptions, FilterOptions } from "./scope/Scope.js";
+export type {
+  FilterOutput,
+  ExcludeOptions,
+  FilterOptions,
+  ScopeConfigSource,
+} from "./scope/Scope.js";
 
 // ScopePlugin — 能力插件契约 + 标准插件
 export type { ScopePlugin, ScopeCandidates } from "./scope/ScopePlugin.js";

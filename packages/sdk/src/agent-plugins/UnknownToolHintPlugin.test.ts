@@ -9,7 +9,7 @@ const MIN_CONFIG: AppConfig = { endpoints: [], models: [] };
 
 /** 构造带（或不带）MCP 插件的 Scope */
 function mockScope(opts?: { mcpPaths?: string[] }): Scope {
-  const scope = new Scope({ config: MIN_CONFIG, agentsDir: "" });
+  const scope = new Scope({ getConfig: () => MIN_CONFIG, agentsDir: "" });
   if (opts?.mcpPaths?.length) {
     scope.use(new McpScopePlugin({ paths: opts.mcpPaths }));
   }

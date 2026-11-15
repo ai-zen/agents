@@ -46,9 +46,8 @@ async function checkPaths() {
 
 /** 用真实路径装配一个标准 Scope（allInOne）并完成发现 */
 async function makeScope(): Promise<Scope> {
-  const config = await new ConfigManager(TEST_CONFIG).read();
   const scope = new Scope({
-    config,
+    getConfig: () => new ConfigManager(TEST_CONFIG).read(),
     agentsDir: TEST_AGENTS_DIR,
   }).use(
     ...allInOne({

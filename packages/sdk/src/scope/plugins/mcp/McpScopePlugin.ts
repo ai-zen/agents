@@ -16,6 +16,9 @@ import type { ScopeCandidates, ScopePlugin } from "../../ScopePlugin.js";
  *   - `read_mcp_resource`   读取已连接 server 的资源
  * 三个元工具名恒上报 `tools` 维度；`mcpManager` 由本插件私有持有，
  * 有配置路径时在构造时创建，`dispose()` 时统一断开。
+ *
+ * 每次 `discover()` 除了重读 mcp 文件，还会把连接与发现结果对账一次（`reconcileConnections`）：
+ * 于是「改了 mcp 配置」= 刷一次 Scope，不需要把 Scope 拆掉重建。
  */
 export class McpScopePlugin implements ScopePlugin {
   static readonly ID = "mcp";
@@ -32,7 +35,28 @@ export class McpScopePlugin implements ScopePlugin {
 
   async discover(scope: Scope): Promise<void> {
     const files = this.paths.map((p) => (isAbsolute(p) ? p : join(scope.cwd, p)));
-    this.servers = await discoverMcpServers(files);
+    const discovered = await discoverMcpServers(files);
+    await this.reconcileConnections(discovered);
+    this.servers = discovered;
+  }
+
+  /**
+   * 让连接跟着发现结果对账。
+   *
+   * 连接是按**定义**建立的：声明改了而连接不动，等于「配置改了但实际没生效」。所以
+   *   - 这次发现里消失的 server → 断开它的连接（连同缓存的状态 / 清单一起失效）；
+   *   - 定义变了的 server → 断开旧连接，下一次调用时按新定义懒连；
+   *   - 新增的 server → 不主动连（保持懒连接：没人调用就不起进程 / 不建链）；
+   *   - 定义没变的 → 一个字节都不动（连接与清单原样留着）。
+   *
+   * 对账在 `refresh()` / `init()` 里跑，于是「配置改了」只需刷一次 Scope，不必重建它。
+   */
+  private async reconcileConnections(discovered: McpServerConfig[]): Promise<void> {
+    const manager = this.mcpManager;
+    if (!manager) return;
+    for (const id of staleMcpConnections(this.servers, discovered)) {
+      await manager.disconnect(id);
+    }
   }
 
   /** 是否配置了 MCP（供外部代码判定，如 UnknownToolHintPlugin） */
@@ -72,4 +96,52 @@ export class McpScopePlugin implements ScopePlugin {
   async dispose(): Promise<void> {
     await this.mcpManager?.disconnectAll();
   }
+}
+
+/**
+ * 对账结论：这些 server 的连接必须断掉。
+ *
+ * 两类：已经不在这次发现里的（配置里删了 / 被禁用），以及定义变了的（连接不能再按旧定义用）。
+ * 新增的不在结论里 —— 新增不主动连，保持懒连接。
+ */
+export function staleMcpConnections(
+  previous: readonly McpServerConfig[],
+  discovered: readonly McpServerConfig[],
+): string[] {
+  const nextById = new Map(discovered.map((config) => [config.id, config]));
+  const stale: string[] = [];
+  for (const before of previous) {
+    const after = nextById.get(before.id);
+    if (!after || definitionFingerprint(before) !== definitionFingerprint(after)) {
+      stale.push(before.id);
+    }
+  }
+  return stale;
+}
+
+/**
+ * 「定义」的指纹：哪些字段变了就算连接不能再用。
+ *
+ * 算进来的是**连接事实**：transport 以及各 transport 的落地参数（command / args / env /
+ * url / headers / oauth）。不算 `description` —— 它只影响 `load_mcp` 给人看的那段文字，
+ * 与怎么连无关，改它不该把一条好连接断掉（新描述下一次实例化就带上了）。
+ * `id` 也不进指纹：按 id 配对的，同一 id 才比。
+ *
+ * 键顺序用排序后的规范化 JSON 抹平（同一份配置不同写法不该被当成「变了」）。
+ */
+function definitionFingerprint(config: McpServerConfig): string {
+  const { id: _id, description: _description, ...definition } = config;
+  return canonicalJson(definition);
+}
+
+/** 递归按键名排序的 JSON：对象字段顺序不算差异 */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
 }

@@ -389,6 +389,13 @@ export class McpConnectionManager {
 
   // ---- 断开 ----
 
+  /**
+   * 断开**单个** server（不影响别的 server）。
+   *
+   * 状态与清单一起失效：断开之后 `getState()` 回到 `disconnected`、`getManifest()` 为空，
+   * 下一次 `connect()` 会按新的定义重新建链（懒连）。MCP 插件的发现对账就靠它落地 ——
+   * 声明变了而旧连接还在，等于「配置改了但实际没生效」。
+   */
   async disconnect(name: string): Promise<void> {
     const entry = this.servers.get(name);
     if (!entry || entry.state === "disconnected") return;

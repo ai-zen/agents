@@ -80,7 +80,7 @@ describe("集成：端到端 Agent 组装", () => {
       "---\nname: code-review\ndescription: 代码审查\n---\n# Code Review",
     );
 
-    const scope = new Scope({ config, agentsDir }).use(
+    const scope = new Scope({ getConfig: () => config, agentsDir }).use(
       ...allInOne({
         subAgentsPaths: [subAgentsDir],
         skillsPaths: [skillsDir],

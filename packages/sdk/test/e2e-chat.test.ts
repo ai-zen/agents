@@ -49,7 +49,7 @@ const config = {
 };
 
 const scope = new Scope({
-  config,
+  getConfig: () => config,
   agentsDir: join(tmpdir(), "ai-zen-e2e-chat", "agents"),
 });
 

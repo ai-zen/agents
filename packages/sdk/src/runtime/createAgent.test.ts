@@ -54,7 +54,7 @@ async function makeScope(
   } = {},
 ): Promise<Scope> {
   const scope = new Scope({
-    config: { ...config, ...opts.config },
+    getConfig: () => ({ ...config, ...opts.config }),
     agentsDir: join(dir, "agents"),
     cwd: dir,
   }).use(...allInOne(opts));
@@ -317,11 +317,11 @@ describe("createAgent", () => {
   it("中断策略取自 scope.config；显式参数优先", async () => {
     await writeAgentFile("my-agent");
     const scope = new Scope({
-      config: {
+      getConfig: () => ({
         ...config,
         abortedMessageStrategy: "drop",
         abortedToolRoundStrategy: "drop",
-      },
+      }),
       agentsDir: join(dir, "agents"),
       cwd: dir,
     }).use(...allInOne());
