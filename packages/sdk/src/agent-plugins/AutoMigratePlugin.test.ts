@@ -118,6 +118,66 @@ describe("AutoMigratePlugin", () => {
     ).resolves.toBeUndefined();
   });
 
+  it("迁移成功之后才回声（onMigrated 带上实际执行者与用量）", async () => {
+    const { service, migrate } = stubService();
+    migrate.mockResolvedValueOnce({ mode: "summary" } as any);
+    const onMigrated = vi.fn(async () => {});
+
+    await new AutoMigratePlugin({
+      service,
+      handoffTokens: MAX_HANDOFF_TOKENS,
+      resolveMode: async () => "self" as const,
+      onMigrated,
+    }).onAfterSend(buildCtx(MAX_HANDOFF_TOKENS + 1));
+
+    // 实际用的是降级后的 `summary`：回声报事实，不报「请求的那个」
+    expect(onMigrated).toHaveBeenCalledWith({
+      promptTokens: MAX_HANDOFF_TOKENS + 1,
+      handoffTokens: MAX_HANDOFF_TOKENS,
+      mode: "summary",
+    });
+  });
+
+  it("迁移失败时没有回声（没压成就不该记「压过了」）", async () => {
+    const { service, migrate } = stubService();
+    migrate.mockRejectedValueOnce(new Error("boom"));
+    const onMigrated = vi.fn(async () => {});
+    setLogger({ info: () => {}, warn: () => {}, error: () => {} });
+    try {
+      await new AutoMigratePlugin({
+        service,
+        handoffTokens: MAX_HANDOFF_TOKENS,
+        resolveMode: async () => "self" as const,
+        onMigrated,
+      }).onAfterSend(buildCtx(MAX_HANDOFF_TOKENS + 1));
+    } finally {
+      setLogger({ info: console.log, warn: console.warn, error: console.error });
+    }
+
+    expect(onMigrated).not.toHaveBeenCalled();
+  });
+
+  it("回声自己抛错不影响迁移（只记日志）", async () => {
+    const { service, migrate } = stubService();
+    const errors: string[] = [];
+    setLogger({ info: () => {}, warn: () => {}, error: (m) => errors.push(m) });
+    try {
+      await new AutoMigratePlugin({
+        service,
+        handoffTokens: MAX_HANDOFF_TOKENS,
+        resolveMode: async () => "self" as const,
+        onMigrated: async () => {
+          throw new Error("db down");
+        },
+      }).onAfterSend(buildCtx(MAX_HANDOFF_TOKENS + 1));
+    } finally {
+      setLogger({ info: console.log, warn: console.warn, error: console.error });
+    }
+
+    expect(migrate).toHaveBeenCalledTimes(1);
+    expect(errors.some((line) => line.includes("onMigrated"))).toBe(true);
+  });
+
   it("用户取消不记 error 日志（默认 logger 是 console.error，TUI 下会撕画面）", async () => {
     const { service, migrate } = stubService();
     migrate.mockRejectedValueOnce(new HandoffAbortedError());
