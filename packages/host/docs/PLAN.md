@@ -56,6 +56,7 @@
 | **W4 桌面端完整问答视图** | 标准完整问答视图（优先级最低） | 真 GUI 竖切一遍（六步，见 §6）；`question.list/answer` 有调用点 | 无（排期在 W3 之后） | ⬜ 未开始 |
 | **W5 兜底治理** | `retry` / `fallback` / `catch` 密集文件逐文件清理 | 三列清单全覆盖；留的每条指得出消费者 | W1–W3 | ⬜ 未开始（依赖已就绪） |
 | **W6 运行期可输入与重开回看** | 跑中发送进 inbox（D14 改写）、`queued` 回包、排队数进运行状态、重开后子代理页签、会话列表带运行状态；客户端侧：运行中可输入、`/sessions`、状态栏对齐旧版 | PRD D14 / F-C12–F-C15 / F-I14 / F-I15 各有代码落点与用例；真 core 跑进真 `ChatRunner` 取到证 | W1 | **✅ 完成**（2026-11-15，落地方式见 §7.6） |
+| **W7 平级会话阶段 1** | 一段对话里的模型开另一段会话（`create_session` / `read_session_status`），跑完把结果投回并发起者，空闲时**唤醒**发起者 | PRD D33 / F-C16–F-C19 各有代码落点与用例；投递三分支（在跑 → 入队 / 空闲 → `run` / 失败 → `dropped` 出声）各有证据；阶段 2/3 的清单写清「没做」 | W6（复用它的跑中入队） | **✅ 完成**（2026-11-15，落地方式见 §7.7） |
 
 ---
 
@@ -459,6 +460,45 @@ conversation.send
 | `desktop` | 夹具跟上新契约；`chat.send` 认 `queued`（不 `beginTurn`、乐观回显 + 一句中文提示） |
 
 **这两仓的文档同步归各自的仓**：`cli/docs/{zh,en}/**` 与两个 README 在这一轮一起改（命令表补 `/sessions`、状态栏口径、运行中可输入），宿主这一侧只改 PRD / PLAN / architecture。
+
+## 7.7 W7 平级会话阶段 1（2026-11-15，已完成）
+
+> 需求侧已写进 PRD（**D33** + F-C16–F-C19），技术方案是 `.ai-zen/plans/20261115-peer-sessions.md`（不改它），本节只写拆法与落点。
+
+口径五句：
+
+1. **建完即回**：`create_session` 建会话 → 草稿落真行 → 开跑 → 立刻回 `{ sessionId, label }`，不等结果（等待就等于子代理，那个已经存在）。
+2. **两个工具**：`create_session` / `read_session_status`（后者只给状态 + 最近一条摘要 ~300 字，**绝不给全量消息**）；工具说明与回包都要求模型**别轮询**。
+3. **自动唤醒**（本波唯一真新的机制）：父对话在跑 → `enqueue`（结果排进它这一轮）；空闲 → `run` 起一轮真 turn。唤醒那一轮 `source` 不是 `"user"`，所以交接询问不问。
+4. **深度一层 + 结构化拒绝**：平级会话再开 → `depth_exceeded`；三级解析拿不到模型 → `model_unresolved`。都是返回值，不抛错。
+5. **不落库 + 计费不合并**：编排元数据只在 `Map` 里（重启后退化成普通会话，`read_session_status` 回 `gone`）；子会话用量只在它自己那一轮，不进父对话的 `subAgentUsage`。
+
+### 7.7.1 落点
+
+| 条 | 落点（文件:行区间） | 一句话 |
+|---|---|---|
+| F-C16 建 | `packages/host/src/services/PeerSessionService.ts:189-279` | `create`：深度守卫 → 建会话（`agentId` 缺省继承父对话）→ `ensurePersisted` → `run` 开跑 → 立刻回 `{ sessionId, label }`，结算挂在 `void turn.done.then(...)` 上 |
+| F-C16 认人 | `packages/host/src/services/PeerSessionService.ts:180-187` | `bind(agent, conversationId)` 记一笔 `WeakMap`：core 的 `Agent` 上没有 `conversationId`，工具只拿得到 `ctx.agent` |
+| F-C16 拒绝 | `packages/host/src/services/PeerSessionService.ts:400-418` | `isModelUnresolved` 只看码不看文案（`config_invalid` / `not_found+entity=model`），于是「拿不到模型」是一条结构化拒绝而不是抛错 |
+| F-C17 问 | `packages/host/src/services/PeerSessionService.ts:281-298` | `status`：查不到就 `gone`（不抛错），拿得到就 `clip(..., 300)` 的摘要，**不给全量消息** |
+| F-C16 / F-C17 工具面 | `packages/sdk/src/scope/plugins/peers/peerSessionTools.ts:141-206`（`create_session`）、`:207-259`（`read_session_status`）、`PeerSessionsScopePlugin.ts:26-44`（不给端口就不产出工具） | 形状与用例说明都在 SDK 这一层；宿主实现端口，**SDK 不依赖 host** |
+| F-C18 投递 | `packages/host/src/services/PeerSessionService.ts:300-343` | `deliver`：先 `enqueue`（在跑 = 排进这一轮），拿 `null` 就 `run`（唤醒）；两步都投不出去 → `dropped` 并出声一次，不重试不补投 |
+| F-C18 不问交接 | `packages/host/src/app.ts:1108-1111` | `askHandoffAfterSettle` 的第一句就是 `if (facts.source !== "user") return` —— 唤醒轮次不挂问题 |
+| 接线 | `packages/host/src/app.ts:490-503`（端口注入，`run` / `enqueue` 晚绑定）、`:1056`（`createWorkspaceScopeFactory` 的 `peerSessions`）、`:1071`（造出 agent 之后 `bind`）、`packages/host/src/runtime/ScopeRegistry.ts:337-363`（给了端口才 `scope.use(new PeerSessionsScopePlugin(...))`） | 口子只有这四处；不给端口 = 老行为一个字不变 |
+| F-C19 来源注释 | `packages/host/src/runtime/ChatRunner.ts:410-426`（`withSourceNote`，唯一入口，拼装归 core 的 `inboxEntryContent`）、`:790-831`（`TurnSession.enqueue`，`storedContent` 也过它）、`:1291-1308`（`persistLandedQueued`：落库那份整份覆盖行内容 —— 所以注释必须在**入队时**就加）、`:1921-1936`（`ChatRunner.enqueue` 是跑中入队的入口） | 一句话：**发给模型的那份与落库的那份必须是同一份**，只有 `source === "user"` 原样 |
+
+### 7.7.2 证据
+
+| 事实 | 用例 |
+|---|---|
+| 建完即回、深度一层、`model_unresolved`、投递三条分支、失败 / 中止写成句子、~300 字截断 | `packages/host/src/services/PeerSessionService.test.ts`（15 条，窄替身：只钉服务自己的判断） |
+| 条目**真的**落进父对话那一轮、唤醒那一轮的 `source` 与正文逐字、用量不进 `subAgentUsage` | `packages/host/src/services/PeerSessionService.flow.test.ts`（3 条，真 `ChatRunner` + 真仓储 + 假模型流） |
+| 唤醒轮次的 `source` 非 `user` → 不问交接 | `packages/host/src/app.test.ts:1016` 的「自动推送叫起来的轮次不问：没人看着这条连接，交接问题是噪音」 |
+| 带 `storedContent` 的入队条目：库里那份也以注释行开头（注释只加一次，`__asset_id` 段原封不动） | `packages/host/src/runtime/ChatRunner.test.ts` 的「非 user 来源 + 带附件：库里那份也带注释行」 |
+
+**反向验证记录**：把 `deliver` 的 `source` 改回 `会话「${label}」` 会红 `PeerSessionService*.test.ts` 四条；把 `TurnSession.enqueue` 里那一道 `withSourceNote` 拿掉，新用例红在「库里第 0 段是「看看这张」而不是注释行」。
+
+**本波没做**（阶段 2/3，别当已支持）：`send_to_session`、并发限额、超时与 `abort`、`/sessions` 的「agent 建的」标记、重启孤儿处理、补投。
 
 ## 8. 人的决策
 

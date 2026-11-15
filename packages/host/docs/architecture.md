@@ -27,6 +27,7 @@
 | A11 | 上传走同一条 WS 上的**二进制帧**（三段式），不用 base64 字符串 | 本轮 Q9 |
 | A12 | `message.list` 有**两种按 id 的取法**：① `after=<id>` —— 该 id **存在**就返回它**最新的内容**及之后全部；该 id **不存在**就返回全部（断线补拉与删除后重拉共用这一条规则）。② `around=<id>`（F-C6 定位）—— 该 id 在本次可见集里就**以它为中心取一窗**（40 条，前后尽量均分，命中那条一定在里面）且 `anchor` 报成它；**不在**可见集里（已撤回 / 换过库 / 是 `hidden` 而这次没要）就回**空页 + `anchor: null`**，**不报错**（消息可能刚被撤回，那不是一次失败的请求）。两者同时给时 `around` 优先、`after` 被忽略；`toolCallId` 决定读哪一段（子 Agent 自己那一段），两个定位参数都只在那一堆里生效 | 本轮 Q10 + W1-8 |
 | A13 | ~~能力清单的粒度是「契约里每个方法一条」~~ **已废（2026-11-14）**：`host.capabilities`、`hello.capabilities`、`handlers/capabilities.ts` 与 `CapabilityView` 都删了 —— 两端一个消费者都没有；清单里剩下的 `blocking` / `destructive` 也没人读（阻塞判断在客户端命令表，二次确认在各端的确认框） | — |
+| A14 | **平级会话的编排元数据不落库，只活在宿主进程内**（`PeerSessionService.records` 一个 `Map`）；投递复用两条现成路径 —— 父对话在跑 `ChatRunner.enqueue`、空闲 `ChatRunner.run`（唤醒），不为它另做执行器；「谁在调我」用 `WeakMap<agent, conversationId>` 记，**不给 core 的 `Agent` 加字段** | PRD D33 / F-C16–F-C18 |
 
 ## 2. 进程与接线
 
@@ -83,10 +84,11 @@ HostApp（根：组装、启动、退出）
 │  ├─ *Repository          只做 SQL，不含业务（一表一文件）
 │  ├─ i18n                 render / normalizeLanguage（en 基准、zh；未知语言回落 en）
 │  └─ Logger               日志落 `logs/host.log`（按大小轮转）、warn / error 同时上通知
-├─ 服务（一服务一文件，薄，共 15 个）
+├─ 服务（一服务一文件，薄，共 16 个）
 │  ├─ WorkspaceService、ConversationService、MessageService、AgentService
 │  ├─ ModelService、ConfigService、AssetService、SearchService、CredentialService
-│  └─ CompletionService、DiscoveryService、HandoffService、NoticeService、QuestionService、AutoNaming
+│  ├─ CompletionService、DiscoveryService、HandoffService、NoticeService、QuestionService、AutoNaming
+│  └─ PeerSessionService      平级会话：建另一段会话、记进程内记录、跑完把结果投回并唤醒发起者（A14）
 ├─ 运行时（有状态，比 service 更长寿）
 │  ├─ ScopeRegistry             workspaceId → Scope + 依赖计数 + 空闲计时
 │  ├─ RunRegistry               conversationId → 运行中的那一轮
@@ -334,7 +336,7 @@ const [found, written] = await db.tx((q) => [
 | 归谁 | 内容 |
 |---|---|
 | `@ai-zen/agents-core` | `Agent`、流式 `applyChunk`、消息与工具调用结构（`AgentNS.Message` / `MessageContent` / `ToolCall` / `Delta` / `Usage`）、中止修复（`reconcileAbortedToolRounds` / `reconcileAbortedMessages`） |
-| `@ai-zen/agents-sdk` | `Scope`（能力装配）、`allInOne` 五类插件（内置工具 / 用户工具 / Skill / MCP / 子 Agent）、`ConfigManager`、`createAgent` / `SdkAgent`、`HandoffService`、各插件的 `discover*`、出厂 Skill 与思考策略表、`fileToContentSection` |
+| `@ai-zen/agents-sdk` | `Scope`（能力装配）、`allInOne` 五类插件（内置工具 / 用户工具 / Skill / MCP / 子 Agent）、`PeerSessionsScopePlugin`（平级会话的两个工具；**能力从端口进来**，不给端口就不产出）、`ConfigManager`、`createAgent` / `SdkAgent`、`HandoffService`、各插件的 `discover*`、出厂 Skill 与思考策略表、`fileToContentSection` |
 | `@ai-zen/agents-client`（共享连接层） | 「确保有一个能连的宿主」：`ensureHost`（有就上、没有就拉一个）、`spawnHostViaNpx`（现下现起）、`Client`（连接 / 调用 / 事件分派 / 补拉 / 重连）、`settings`、`resume`、`upload`。它不知道自己被谁用，也不画任何界面 |
 | 宿主 | 进程与接线、凭证、Workspace 与对话的生命周期、Scope 的持有与回收、持久化、i18n 文案、通知与问题对象、上传 |
 
@@ -358,6 +360,8 @@ const [found, written] = await db.tx((q) => [
 |---|---|
 | 子 Agent 消息回看（PRD F-I7） | `messages.parentToolCallId` 列已落库（R37），`MessageRepository.listByParentToolCallId(conversationId, parentToolCallId)` 也有了；但生产路径里没有写入该列的调用方（只有用例在用），也没有方法把它暴露出去。眼下 `message.list(toolCallId)` 按消息自己的 `tool_call_id` 过滤，取到的是那次委派的工具结果消息 |
 | 「客户端自造问题」 | 契约里只有 `question.list` / `question.answer`。问题对象由宿主内部产生（交接线、不可撤销动作的二次确认），没有让客户端或脚本提问的方法（`host.integration.test.ts` 的 `seedQuestion` 因此绕开契约，直开库调 `QuestionService.ask` 造一行） |
+| 平级会话的阶段 2/3（PRD D33） | 阶段 1 只做了「建 → 跑 → 推回 → 被唤醒」：`send_to_session`、并发限额、超时与 `abort`、`/sessions` 的「agent 建的」标记、重启孤儿处理、补投**都还没有** |
+| 平级会话的编排元数据不落库 | `PeerSessionService.records` 只是一个进程内 `Map`（没有表、没有迁移）：重启之后子会话就是**普通会话**（`/sessions` 里看得见、能接着用），`read_session_status` 对它回 `gone`；投递丢了只记 `dropped` 并报一次错，**不重试、不补投**（补投归阶段 2） |
 
 ## 10. 待拍板
 
@@ -447,3 +451,4 @@ afterAll(async () => { await db.close(); await rm(dir, { recursive: true, force:
 | 2026-11-14 | 状态栏的**块整个搬回客户端**（同一把尺子的第三步，也是最后一步）：`statusBlocks` 从 `conversation.state` 删除，`StatusBlock` / `StatusBlockId` / `STATUS_BLOCK_IDS` / `statusBlocksOf` / `StatusBlockInput` 一并不在宿主持有。原因不是审美而是 bug：那份副本只在 `conversation.state` 被拉的那一刻成立，而拉状态只发生在「打开对话 / 换模型 / `host.reload`」——于是聊天过程中上下文百分比、模型名、本轮 tokens、正在跑的工具**全冻在打开对话那一刻**（`/model`、`/thinking` 之后状态栏也不变，`本轮` 永远是 0）。同一批事实存两份，其中一份必然过期。八块要的事实各自在契约里本来就有：助手（新增 `ConversationView.agent = { agentId, name, available }`，`available` 的判定仍由 `AgentService.describe` 给，`ConversationService` 通过 `describeAgent` 端口要结论、不重写一份）、模型 / 思考档 / 目录在视图，上下文与用量在 `ConversationState`，工具与子 Agent 在 `run`。CLI 用 `cli/src/status-blocks.ts` 的 `statusBlocksOf` 现拼，顺序归它自己 |
 | 2026-11-15 | 运行器补「跑中入队」：§4 的一轮时序拆成两条受理路（跑中 → `ChatRunner.enqueue` → core `pushInbox`；否则 `RunRegistry.start`，`busy` 只剩兜底），补四个取件点（`high` / `low` / `onInnerLoopsEnd` 之后 / `onAfterSend` 之后）与「判能不能排与推之间不允许有 await」「只有真插进条目才续圈」两条不变量；补「排队消息的首次写入必须在落地那一刻」（`seq` 的因果，`persistLandedQueued`）。§5 的「边流边写」注明这条例外，读数表下方补三条读数（`listByConversation` / `listDelegated` / `countByConversation`）的加减关系。`ConversationRuntimePort` 从两件事变三件（多一个可选的 `runState`，`conversation.list` 的 `run` 用它） |
 | 2026-11-15 | 取件点收成一个：core 的 inbox 取件只在 `runLoops()` 的内循环末（`high` 先取，`!needContinue` 时才问 `low`），段首的落地改由 `deliver()` 的 `flushInbox()` 负责（`flushInbox` 只有这一个调用方）；`abort()` 不再清空 inbox（要作废排队得显式 `clearInbox()`），取件判据从 `runAborted` 换成 `runStatus === "running"`。宿主侧的 `TurnSession.enqueueState` / `waitEnqueueable` / `QUEUE_READY_TIMEOUT_MS` 一并不在，装配期改用 `TurnSession.pending` 数组缓冲、`attach()` 那一刻冲进 inbox。`RunState.inboxPending` 换成 `RunState.inbox`（`InboxItem[]`：`messageId` / `source` / `createdAt` / `preview`，顺序即取件顺序，计数取 `inbox.length`），客户端据此在输入框上方回显排队区。一处有意接受的退化：收尾钩子（`onInnerLoopsEnd` / `onAfterSend`）期间投进来的条目不再被带走，只由 `ChatRunner.settle()` 的 `inbox-leftover` 告警出声 |
+| 2026-11-15 | **平级会话阶段 1**（PRD D33 / F-C16–F-C19）：§3 对象图的服务从 15 个变 16 个（新增 `PeerSessionService`：建另一段会话 → 记进程内记录 → 跑完结果投回并发起者），§1 新增 **A14**（编排元数据不落库、投递复用 `ChatRunner.enqueue` / `run` 两条现成路径、「谁在调我」用 `WeakMap<agent, conversationId>` 记、不给 core 的 `Agent` 加字段），§8 的 SDK 边界补 `PeerSessionsScopePlugin`（能力从端口进来，不给端口就不产出）。§9 登记两条缺口：阶段 2/3 未做、重启后编排元数据消失（退化成普通会话）。另一处口径纠正：投递的 `source` 就是可读 label 原样（不再套「会话「…」」），来源注释仍由 core 的 `inboxEntryContent` 统一生成 —— 落库那份与发给模型那份一致（`withSourceNote` 在 `run()` 与 `TurnSession.enqueue` 两处各过一道，带 `storedContent` 的入队条目不再分叉） |
