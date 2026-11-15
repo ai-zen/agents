@@ -980,7 +980,7 @@ describe("配置生效", () => {
     expect(app.scopeRegistry.workspaceIds().length).toBe(2);
   });
 
-  it("生效时也换掉受影响的 agent：每个刷过的项目都 markStale 一次（配置改了就生效的唯一保证）", async () => {
+  it("生效时也换掉受影响的 agent：每个刷过的项目都 invalidate 一次（配置改了就生效的唯一保证）", async () => {
     const fixture = await makeFixture();
     const app = await startApp(fixture);
     const { workspace } = await callMethod(app, "workspace.create", {
@@ -990,12 +990,12 @@ describe("配置生效", () => {
     await app.scopeRegistry.create(workspace.id);
 
     // `Scope.refresh()` 刷得动能力，刷不动已经建好的模型客户端 —— 所以必须显式让 agent 陈旧
-    const markStale = vi.spyOn(app.agentRegistry, "markStale");
+    const invalidate = vi.spyOn(app.agentRegistry, "invalidate");
     try {
       await callMethod(app, "config.patch", { patch: { limits: { maxToolOutput: 2048 } } });
-      expect(markStale.mock.calls.map((call) => call[0])).toEqual([workspace.id]);
+      expect(invalidate.mock.calls.map((call) => call[0])).toEqual([workspace.id]);
     } finally {
-      markStale.mockRestore();
+      invalidate.mockRestore();
     }
   });
 

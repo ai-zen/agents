@@ -3,7 +3,7 @@
  *
  * ## 它要自己解决的三件事（本文件逐条取证）
  *
- * 1. **agent 不在就复活**：显式 `agents.dispose` 之后投递，还是能按库里的历史重新装配出来再跑，
+ * 1. **agent 不在就复活**：显式 `agents.discard` 之后投递，还是能按库里的历史重新装配出来再跑，
  *    `seq` 连续、历史完整；
  * 2. **跑着 / 正在结算都投得进去**：跑着就交给那一段（不新起一段），正在结算（落后窗口：core 已
  *    `idle`、`turns` 里还有现场）就攒着，等这一段结算完一起投；
@@ -204,14 +204,19 @@ function createHarness(options: {
 
 /** 把 agent 装配起来并停在那儿（不经过 `conversation.send`）—— 与「上一段早已跑完」同一个状态 */
 async function parkAgent(harness: Harness): Promise<ChatAgent> {
-  return await harness.registry.ensure({
-    conversationId: CONVERSATION_ID,
-    workspaceId: WORKSPACE_ID,
-    agentId: "default",
-    modelId: "model-1",
-    thinkingLevel: null,
-    history: [],
-  });
+  // 会话行上的三项事实既是装配入参，也是 `acquire` 判「合不合用」的据
+  const conversation = makeConversation();
+  return await harness.registry.acquire(
+    {
+      conversationId: CONVERSATION_ID,
+      workspaceId: WORKSPACE_ID,
+      agentId: conversation.agentId,
+      modelId: conversation.modelId,
+      thinkingLevel: conversation.thinkingLevel,
+      history: [],
+    },
+    conversation,
+  );
 }
 
 /** 库里这段对话的主线行（`seq` 由存储层按插入顺序给） */
@@ -446,9 +451,9 @@ describe("ChatRunner.deliver：会话间投递的唯一入口", () => {
   });
 
   // -------------------------------------------------------------------------
-  // ⑤ 复活：`agents.dispose` 之后投递 → 按历史装配新 agent 再跑
+  // ⑤ 复活：`agents.discard` 之后投递 → 按历史装配新 agent 再跑
   // -------------------------------------------------------------------------
-  it("复活：显式 `agents.dispose` 之后投递 → 自动装配（reconcile + resolveHistory），历史完整、seq 连续", async () => {
+  it("复活：显式 `agents.discard` 之后投递 → 自动装配（reconcile + resolveHistory），历史完整、seq 连续", async () => {
     const { client, bodies } = createScriptedClient([
       textRound("第一段的回答。"),
       textRound("复活之后的回答。"),
@@ -465,8 +470,8 @@ describe("ChatRunner.deliver：会话间投递的唯一入口", () => {
     // 第一次装配跑过一次历史还原（那时库里还没有消息）；之后 `run()` 从 agent 内存里取历史
     expect(harness.historyResolutions).toEqual([0]);
 
-    // 显式丢掉登记 = 下一个投递必须自己把 agent 装回来
-    harness.registry.dispose(CONVERSATION_ID);
+    // 显式丢掉登记（对话被删那条路）= 下一个投递必须自己把 agent 装回来
+    harness.registry.discard(CONVERSATION_ID);
     expect(harness.registry.get(CONVERSATION_ID)).toBeUndefined();
 
     await harness.runner.deliver(CONVERSATION_ID, {

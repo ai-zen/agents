@@ -225,14 +225,19 @@ function createHarness(options: {
 
 /** 把 agent 装配起来并停在那儿（不经过 `conversation.send`）—— 与「上一段早已跑完」同一个状态 */
 async function parkAgent(harness: Harness): Promise<ChatAgent> {
-  return await harness.registry.ensure({
-    conversationId: CONVERSATION_ID,
-    workspaceId: WORKSPACE_ID,
-    agentId: "default",
-    modelId: "model-1",
-    thinkingLevel: null,
-    history: [],
-  });
+  // 会话行上的三项事实既是装配入参，也是 `acquire` 判「合不合用」的据
+  const conversation = makeConversation();
+  return await harness.registry.acquire(
+    {
+      conversationId: CONVERSATION_ID,
+      workspaceId: WORKSPACE_ID,
+      agentId: conversation.agentId,
+      modelId: conversation.modelId,
+      thinkingLevel: conversation.thinkingLevel,
+      history: [],
+    },
+    conversation,
+  );
 }
 
 // ---------------------------------------------------------------------------

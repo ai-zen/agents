@@ -515,7 +515,7 @@ export class HostApp {
     this.agentRegistry = new AgentRegistry({
       scopes: this.scopeRegistry,
       createAgent,
-      // 「这段对话有没有在跑一轮」只有 `RunRegistry` 一处（`markStale` 判空闲 / 在跑用它）
+      // 「这段对话有没有在跑一轮」只有 `RunRegistry` 一处（`invalidate` 判空闲 / 在跑用它）
       runs: this.runRegistry,
       // 一段的边界（core 的 `status`）：agent 被 `deliver()` 叫醒自己跑起来的那一段没有
       // `conversation.send` 的受理，它的现场只能从这条事件里建（见 `ChatRunner.onAgentStatus`）。
@@ -525,6 +525,12 @@ export class HostApp {
       // 入队那一刻的来源（`InboxEntry.source`）：自起段结算时报给宿主的就是它 ——
       // 「这一段是被谁叫起来的」只有投递方知道（见 `ChatRunner.noteInbox`）。
       onInbox: (event) => this.chatRunner.noteInbox(event.conversationId, event.entry.source),
+      // 每做一次生灭决定就记一笔：「这段对话的 agent 为什么不在」从前没人答得上来，
+      // 现在理由就从唯一拥有者所在的那个文件里报出来（`reason` 是闭集，见
+      // `AgentLifecycleReason`）。落到文件日志的信息级：是诊断用的流水，不是给用户看的事件。
+      onLifecycle: (event) => {
+        this.logInfo("agent 生灭", event);
+      },
     });
     this.noticeService = new NoticeService({
       notices: this.notices,
@@ -863,7 +869,9 @@ export class HostApp {
       }
     }
     // Scope 一起拆掉：MCP 连接是它持有的，进程退出之后没有别人会替它关（D28 同生共死）。
-    // `disposeAll` 不拒绝（收尾时「还有 agent 活着」不是要挡住销毁的理由）
+    // `disposeAll` 不拒绝（收尾时「还有 agent 活着」不是要挡住销毁的理由）。
+    // agent 的登记先丢（只丢引用：进程都要退了，没有「稍后再丢」这回事）。
+    this.agentRegistry.disposeAll();
     try {
       await this.scopeRegistry.disposeAll();
     } catch (error) {
@@ -1306,10 +1314,10 @@ export class HostApp {
    * Scope；其余改动（端点 / 模型 / 上限 / 用户级 MCP）影响所有 Scope → 现存的全都刷。
    * 没有的跳过：不为刷新去创建一个 Scope（下一段对话 `create` 时会按新配置建）。
    *
-   * 为什么刷完还要 `markStale`：`Scope.refresh()` 刷得动能力（工具、MCP），刷**不**动已经建好的
+   * 为什么刷完还要 `invalidate`：`Scope.refresh()` 刷得动能力（工具、MCP），刷**不**动已经建好的
    * 模型客户端 —— `createModel(scope.config, …)` 是装配那一刻读的。agent 现在又是常驻的（装配
-   * 一次用很多段），不显式换掉的话“改了配置就生效”就不再成立。所以对每个目标 workspace 打一次
-   * 陈旧标记：空闲的 agent 当场销毁，在跑的那一段由 `ChatRunner` 在结算时销毁，下一段重新装配。
+   * 一次用很多段），不显式换掉的话“改了配置就生效”就不再成立。所以对每个目标 workspace 调一次
+   * `invalidate`：空闲的 agent 当场退役，在跑的那一段由 `ChatRunner` 在结算时退役，下一段重新装配。
    */
   private async refreshScopesFor(change: ConfigApplyChange): Promise<string[]> {
     const existing = this.scopeRegistry.workspaceIds();
@@ -1321,8 +1329,8 @@ export class HostApp {
     for (const workspaceId of targets) {
       await this.scopeRegistry.refreshWorkspace(workspaceId);
       // 能力已经换新的了；手里还拿着旧模型客户端的 agent 也一起换掉（这就是本单“配置改动
-      // 最迟下一段生效”的全部机关，见 `AgentRegistry.markStale`）
-      const pending = this.agentRegistry.markStale(workspaceId);
+      // 最迟下一段生效”的全部机关，见 `AgentRegistry.invalidate`）
+      const pending = this.agentRegistry.invalidate(workspaceId);
       if (pending.length > 0) {
         this.logInfo("配置生效：正在跑的那几段结算之后换掉 agent", {
           workspaceId,

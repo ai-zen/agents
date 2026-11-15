@@ -2155,7 +2155,7 @@ describe("ChatRunner：跑中发送进 inbox（D14：不打断、也不回 busy�
 // agent 常驻：一段对话一个，跨轮复用（只在显式 / 配置变更时销毁）
 //
 // 改前：`attemptOnce` 里 `agents.create`、`settle` 里无条件 `dispose` —— 一轮一个、跑完即丢。
-// 改后：`attemptOnce` 里 `agents.ensure`（get-or-create）、`settle` 只做这一段的结算。
+// 改后：`attemptOnce` 里 `agents.acquire`（在就复用 / 不合用就重建）、`settle` 只做这一段的结算。
 // 于是两条必须同时守住：历史只能有一份（内存是真相）、订在 agent 上的监听随这一轮摘掉。
 // ---------------------------------------------------------------------------
 
@@ -2238,7 +2238,7 @@ describe("ChatRunner：agent 常驻（跨轮复用）", () => {
     expect(pageAfterFirst.length).toBeGreaterThan(0);
 
     // 模拟「这个 agent 已经不在了」（进程重启 / 被显式回收）：登记的只有引用，摘掉即可
-    custom.agents.dispose(CONVERSATION_ID);
+    custom.agents.discard(CONVERSATION_ID);
 
     const second = await custom.runner.run({
       conversationId: CONVERSATION_ID,
@@ -2387,8 +2387,8 @@ describe("ChatRunner：配置生效时换掉 agent", () => {
     await first.done;
     const firstAgent = custom.agents.get(CONVERSATION_ID)!;
 
-    // 配置改完：`refreshScopesFor` 会调这一下。这一段对话没在跑 → 没什么要等的，立即换掉
-    const marked = custom.agents.markStale(WORKSPACE_ID);
+    // 配置改完：`refreshScopesFor` 会调这一下。这一段对话没在跑 → 没什么要等的，立即退役
+    const marked = custom.agents.invalidate(WORKSPACE_ID);
     expect(marked).toEqual([]);
     expect(custom.agents.get(CONVERSATION_ID)).toBeUndefined();
 
@@ -2415,7 +2415,7 @@ describe("ChatRunner：配置生效时换掉 agent", () => {
     await flushMicrotasks();
     const running = custom.agents.get(CONVERSATION_ID)!;
 
-    const marked = custom.agents.markStale(WORKSPACE_ID);
+    const marked = custom.agents.invalidate(WORKSPACE_ID);
     expect(marked).toEqual([CONVERSATION_ID]);
     // 还在跑：登记没被摘（这一轮还得用它跑完），只是带上了标记
     expect(custom.agents.get(CONVERSATION_ID)).toBe(running);
@@ -2426,9 +2426,8 @@ describe("ChatRunner：配置生效时换掉 agent", () => {
 
     // 这一轮照常跑完、照常结算（没有变成 aborted / error）
     expect(settlement.outcome).toBe("completed");
-    // 结算那一刻兑现标记：登记没了，标记也跟着消失
+    // 结算那一刻兑现标记：登记没了（陈旧才退役，下一段 acquire 重新装配）
     expect(custom.agents.get(CONVERSATION_ID)).toBeUndefined();
-    expect(custom.agents.isStale(CONVERSATION_ID)).toBe(false);
 
     // 下一段重新装配（= 复活）
     const second = await custom.runner.run({
@@ -2452,9 +2451,9 @@ describe("ChatRunner：配置生效时换掉 agent", () => {
     const agent = custom.agents.get(CONVERSATION_ID);
 
     // 换掉的是「配置改过的那个 workspace 下的」：别的 workspace 打标记不影响它
-    expect(custom.agents.markStale("ws-none")).toEqual([]);
+    expect(custom.agents.invalidate("ws-none")).toEqual([]);
     expect(custom.agents.get(CONVERSATION_ID)).toBe(agent);
-    expect(custom.agents.isStale(CONVERSATION_ID)).toBe(false);
+    expect(custom.builds).toHaveLength(1);
   });
 });
 
@@ -2462,7 +2461,7 @@ describe("ChatRunner：配置生效时换掉 agent", () => {
 // 装配事实变了就得换 agent（常驻不能把「改了下一段生效」这条吞掉）
 //
 // 改前：一轮一装配，会话行上的模型 / 思考档位每轮都重读一遍，改了下一段自然生效。
-// 改后：agent 常驻，`run()` 复用之前先问 `agents.fits`；不匹配就丢掉重建（并回库里重读历史，
+// 改后：agent 常驻，`acquire` 内部判合用；不匹配就丢掉重建（并回库里重读历史，
 // 按新模型重新还原素材）。
 // ---------------------------------------------------------------------------
 

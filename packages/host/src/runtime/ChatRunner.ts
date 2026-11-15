@@ -7,17 +7,19 @@
  * RunRegistry.start（这一段对话同时只跑一轮；已经在跑的那一轮由 conversation.send 排队，D14）
  *   → 要 Scope（ScopeRegistry.create：幂等 get-or-create）
  *   → 分配两个消息 id 并落库（用户消息 + 助手占位，PRD L6：id 在请求发出前就有）
- *   → 拿 agent（AgentRegistry.ensure：常驻，同一段对话跨轮复用同一个实例）
+ *   → 拿 agent（AgentRegistry.acquire：常驻，同一段对话跨轮复用同一个实例）
  *   → 流式：每片增量推 `message.delta`；同一时刻更新六态并推 `run.state`；同一条消息边流边写（D15）
- *   → 内循环结束：写一次最终版（F-C2）→ 陈旧才 dispose（配置改过）→ RunRegistry.finish
+ *   → 内循环结束：写一次最终版（F-C2）→ 结算（陈旧才退役，配置改过）→ RunRegistry.finish
  *   → 推结算态 `run.state` + `usage`
  * ```
  *
  * ## 三个实例的显式生灭
  *
  * `Scope` / `Agent` / 会话实例（`TurnSession`）都由一对显式 API 管生灭，没有空闲计时、
- * 没有引用计数、没有自动回收：`scopes.create` / `agents.ensure` / `createRuntime` 负责生，
- * `agents.dispose` / `disposeRuntime` 负责灭（Scope 活到显式 `scopes.dispose` 或进程退出）。
+ * 没有引用计数、没有自动回收：`scopes.create` / `agents.acquire` / `createRuntime` 负责生，
+ * `agents.complete`（结算）/ `agents.discard`（对话被删）/ `disposeRuntime` 负责灭
+ * （Scope 活到显式 `scopes.dispose` 或进程退出）。agent 生灭的**全部判据**都在
+ * `AgentRegistry` 里（见那个文件的判据表），本文件只报事件、不自己判。
  *
  * **agent 是常驻的**：一段对话一个，跨轮复用，结算时**不**销毁（见下一节）。会话实例仍是一轮
  * 一个：它是「这一段的现场」（六态、写库节流、本轮产出），结算完就该摘掉。
@@ -32,15 +34,16 @@
  *    （`detachListeners`）。同理，本轮产出在 `settle` 开头就拍下来（`roundProduced`），
  *    不能再靠「agent 已经消失」这件事。
  * 3. **装配事实变了就不复用**：模型 / 思考档位存在会话行上（`conversation.setModel` /
- *    `setThinking`），而模型客户端是装配那一刻读的 —— `run()` 复用之前先问一句
- *    `agents.fits`，不匹配就丢掉重建（从前一轮一装配，这类改动下一段自然生效）。
+ *    `setThinking`），而模型客户端是装配那一刻读的 —— 这件事由 `agents.acquire` 内部判
+ *    （它要的就是会话行上那三项事实），不合用就丢掉重建（从前一轮一装配，这类改动下一段
+ *    自然生效）。本文件只需要知道「这次是不是真装了一个新的」——决定历史要不要 push 进去。
  *
  * ## 配置改过的 agent 什么时候换掉
  *
  * `Scope.refresh()` 刷得动能力，刷不动已经建好的模型客户端（装配时读的），所以配置改动靠
- * 「换掉 agent」生效：`AgentRegistry.markStale` 给这个 Workspace 下的 agent 打标记（空闲的当场
- * 销毁），这里在**结算那一刻**兑现标记 —— 陈旧 → `agents.dispose`，下一轮 `ensure` 按新配置
- * 重新装配。于是「配置改动最迟下一段生效」照旧。
+ * 「换掉 agent」生效：`AgentRegistry.invalidate` 给这个 Workspace 下的 agent 打标记（空闲的
+ * 当场退役），这里在**结算那一刻**兑现标记 —— 调一次 `agents.complete`，陈旧就退役，下一轮
+ * `acquire` 按新配置重新装配。于是「配置改动最迟下一段生效」照旧。
  *
  * ## 跑中发送走 inbox，不走第二轮（PRD D14）
  *
@@ -407,7 +410,7 @@ export interface ChatTurn {
    * 结算之后 resolve（写库、`RunRegistry.finish`、推结算态都已完成）。
    *
    * agent **不在这里释放**：它常驻，留给下一段（只有配置改过的那种「陈旧」agent 会在结算时
-   * 被换掉，那也不是这一轮的事，见 `AgentRegistry.markStale`）。
+   * 被换掉，那也不是这一轮的事，见 `AgentRegistry.invalidate` / `complete`）。
    */
   readonly done: Promise<TurnSettlement>;
   /** 中止这一轮（与 `conversation.abort` 走同一条路：用户显式动作，PRD D14） */
@@ -496,11 +499,12 @@ export interface ChatRunnerOptions {
   scopes: ScopeRegistry;
   runs: RunRegistry;
   /**
-   * agent 的持有者：**agent 唯一的来源**。
+   * agent 存活管理的唯一拥有者（它是「agent 唯一的来源」）。
    *
-   * 拿（`ensure`，get-or-create：常驻所以下一段拿到的是同一个实例）、丢（`dispose`，只丢引用）、
-   * 以及「配置改过该换掉哪个」（`markStale` / `isStale`）都走它，本文件不再自己调 agent
-   * 工厂 —— 于是「agent 从哪来、活多久」只写在一个地方。
+   * 拿（`acquire`：在且合用就复用，不在 / 不合用就装配）、结算（`complete`：陈旧才退役）、
+   * 对话被删（`discard`：只丢引用）、配置生效（`invalidate`）、收尾（`disposeAll`）都走它。
+   * 本文件不再自己调 agent 工厂，也不再自己判「复不复用」—— 于是「agent 从哪来、活多久」
+   * 只写在一个地方。
    */
   agents: AgentRegistry;
   emit: ChatEventEmitter;
@@ -812,6 +816,13 @@ interface AcceptedTurnInit extends TurnSessionInitBase {
   scope: Scope;
   /** 还原之后的历史（`__asset_id` 已按当时的模型 / 端点换过） */
   history: AgentNS.Message[];
+  /**
+   * 真装配那一刻要的历史（按**现在**的事实读库 + 还原素材）。
+   *
+   * 只在一条路上用得到：手里那个 agent 不合用、被 `acquire` 重建了。那时本轮的占位行已经
+   * 落库，所以它是「这一轮之前那些行」（界限由 `run()` 拍，`TurnSession` 自己不知道）。
+   */
+  rebuildHistory: () => Promise<AgentNS.Message[]>;
   content: AgentNS.MessageContent;
   /** 落库用的内容；不给时就是 `content` */
   storedContent?: AgentNS.MessageContent;
@@ -893,6 +904,16 @@ class TurnSession implements ChatTurn {
   private resolveFacts!: () => void;
   /** 还原后的历史（这一轮实际交给 agent 的那份） */
   private history: AgentNS.Message[];
+  /**
+   * 这一段先前的思考：`history` 是**受理那一刻**拍的（按当时的模型还原过）。
+   *
+   * 万一段中才发现手里那个 agent 不合用（会话行上的模型 / 档位改过）—— `acquire` 会重建它，
+   * 重建要的那份历史得按**现在**的事实重新读库 + 还原素材（换模型本来就该重走那一步）。
+   * 这件事只能由 `run()` 接上（它知道这段对话与那两条预分配的 id），于是这里只留一个口子。
+   *
+   * 自起段没有：它不装配 agent（agent 已经在、正被它拿着跑）。
+   */
+  private readonly rebuildHistory?: () => Promise<AgentNS.Message[]>;
   /** 这一轮发给模型的内容（`prepareAttachments` 的产物）；自起段没有（它不是受理来的） */
   private content: AgentNS.MessageContent;
   /**
@@ -1036,6 +1057,7 @@ class TurnSession implements ChatTurn {
       this.attachments = init.attachments;
       this.userMessageId = init.userMessageId;
       this.assistantMessageId = init.assistantMessageId;
+      this.rebuildHistory = init.rebuildHistory;
       // 受理时两件都已到手，没有要等的
       this.resolveFacts();
     } else {
@@ -1203,24 +1225,40 @@ class TurnSession implements ChatTurn {
   /**
    * 一次尝试：拿 agent → 把历史与用户输入发出去；失败原样上抛，由 `execute` 记成这一轮的结局。
    *
-   * agent 从 `AgentRegistry.ensure` 来（get-or-create：常驻，同一段对话跨轮都是同一个实例）。
-   * 本文件不再自己拼装配顺序，也不再决定「它跑完就没」—— 那是 `settle` 与 `markStale` 的事。
+   * agent 从 `AgentRegistry.acquire` 来（在且合用就复用，不在就装配，事实变了就重建 ——
+   * 判据全在那边）。本文件不再自己拼装配顺序，也不再决定「它跑完就没」：那是结算时
+   * `agents.complete` 与配置生效时 `agents.invalidate` 的事。
    */
   private async attemptOnce(): Promise<void> {
     // 只有受理路径走到这里（自起段没有要发出去的内容，不走本方法），而受理时一定读到了会话行
     const conversation = this.conversation!;
-    // 先看一眼它是不是已经在（在 = 历史就是它内存里那份，`attach` 不再 push）
-    const reused = this.options.agents.get(this.conversationId) !== undefined;
-    const agent = await this.options.agents.ensure({
-      conversationId: this.conversationId,
-      workspaceId: conversation.workspaceId,
-      agentId: conversation.agentId,
-      modelId: conversation.modelId,
-      thinkingLevel: conversation.thinkingLevel,
-      // 只在真装配时用得到：已有 agent 时这个字段被忽略（`ensure` 直接交还那个实例）
-      history: [...this.history],
-    });
-    this.attach(agent, !reused);
+    // 先看一眼它是不是已经在：在 = 历史就是它内存里那份（`run()` 没读库、`attach` 不必 push）
+    const live = this.options.agents.get(this.conversationId);
+    const agent = await this.options.agents.acquire(
+      {
+        conversationId: this.conversationId,
+        workspaceId: conversation.workspaceId,
+        agentId: conversation.agentId,
+        modelId: conversation.modelId,
+        thinkingLevel: conversation.thinkingLevel,
+        // 只在真装配时用得到：已有且合用时这个字段被忽略（`acquire` 直接交还那个实例）
+        history: [...this.history],
+      },
+      conversation,
+    );
+    // 交回来的不是原来那个 = 真的装了一个新的（首次装配 / 装配事实变了）：历史要 push 进去。
+    //
+    // 事实变了那一路 `run()` 手里那份是按**旧**事实还原的（那时还不知道会不会复用），所以
+    // 这里按现在的事实重读一次库 —— 换模型本来就该把历史里的素材重走一遍（F-H7）。
+    if (agent !== live) {
+      if (live !== undefined) {
+        const rebuilt = await this.rebuildHistory?.();
+        if (rebuilt) this.history = rebuilt;
+      }
+      this.attach(agent, true);
+    } else {
+      this.attach(agent, false);
+    }
 
     // 装配 agent 期间用户就按了停：不再发请求，直接按中止结算
     if (this.handle.aborted) {
@@ -1842,20 +1880,18 @@ class TurnSession implements ChatTurn {
       );
     }
 
-    // agent 不再跑完即弃：它留在 `AgentRegistry` 里，下一段 `ensure` 拿到的就是它（连同它的
+    // agent 不再跑完即弃：它留在 `AgentRegistry` 里，下一段 `acquire` 拿到的就是它（连同它的
     // messages、inbox 与装好的模型客户端）。所以这里**没有** `this.agent = undefined`，也没有
-    // 无条件的 `agents.dispose`。
+    // 无条件的退役 —— 留不留由 `complete` 按「配置改过没有」判。
     this.options.runs.finish(this.conversationId);
 
-    // 陈旧标记的兑现处：配置改过、而它当时正在跑（`AgentRegistry.markStale` 只打标记不强行停），
-    // 现在这一段真的结束了 —— 丢掉登记，下一段 `ensure` 按新配置重新装配（= 复活）。
+    // 陈旧标记的兑现处：配置改过、而它当时正在跑（`AgentRegistry.invalidate` 只打标记不强行
+    // 停），现在这一段真的结束了 —— 陈旧就退役，下一段 `acquire` 按新配置重新装配（= 复活）。
     //
-    // 顺序：先 `runs.finish` 再判陈旧。两步之间没有 await，`markStale` 插不进来；而反过来
-    // （先判后 finish）插进来的 `markStale` 会看见「还在跑」而只打标记 —— 那个标记就没人再
-    // 来兑现了（这一段已经过了检查点）。先 finish 则它看见「空闲」，当场就能销毁。
-    if (this.options.agents.isStale(this.conversationId)) {
-      this.options.agents.dispose(this.conversationId);
-    }
+    // 顺序：先 `runs.finish` 再结算。两步之间没有 await，`invalidate` 插不进来；而反过来
+    // （先判后 finish）插进来的 `invalidate` 会看见「还在跑」而只打标记 —— 那个标记就没人再
+    // 来兑现了（这一段已经过了检查点）。先 finish 则它看见「空闲」，当场就能退役。
+    this.options.agents.complete(this.conversationId);
 
     // 这一轮的句柄到此就不该再能按到那个（现在常驻的）agent 上：摘掉中止订阅。
     // 结算之后用户再按一次「停」，`RunRegistry` 已经不认这一轮；如果订阅还在，那一下会传到
@@ -2444,29 +2480,27 @@ export class ChatRunner {
         throw new HostError("not_found", { params: { entity: "conversation" } });
       }
       // 先把能力容器要到手（幂等）：这一轮要拿它读配置（硬线 / 交接线），而 agent 由
-      // `AgentRegistry.ensure` 挂在同一个 Scope 上。workspace 不在了就在这里失败，
+      // `AgentRegistry.acquire` 挂在同一个 Scope 上。workspace 不在了就在这里失败，
       // 而不是等到后台那一轮里才发现。
       const scope = await this.options.scopes.create(conversation.workspaceId);
 
-      // 历史从哪来：**agent 已经在且还合用，就从它内存里来**（常驻之后它的 messages 就是这段
-      // 对话的真相，库里那些行只是快照 —— 再读一遍库既多一次 IO，又得再 push 一遍，于是同一个
-      // 历史会在 agent 里存两份）。
+      // 历史从哪来：**agent 已经在就从它内存里来**（常驻之后它的 messages 就是这段对话的真相，
+      // 库里那些行只是快照 —— 再读一遍库既多一次 IO，又得再 push 一遍，于是同一个历史会在
+      // agent 里存两份）。它合不合用是 `acquire` 的事（模型 / 思考档位改了它会重建）；这里只
+      // 按「在不在」决定读不读库 —— **首次装配才读库**。
       //
-      // “还合用”也是常驻必须自己守住的一条：模型 / 思考档位存在会话行上（`conversation.setModel`
-      // / `setThinking`），而模型客户端是装配那一刻读的。从前一轮一装配，改了下一段自然生效；
-      // 手里这个不重建就还是旧的。不匹配就丢掉，走下面那条首次装配的路（顺带按新模型把历史里的
-      // 素材重新还原一遍 —— 换模型本来就该重走这一步）。
+      // 万一它其实不合用（会话行上的模型 / 档位在这期间改了），重建那一路要的那份历史在
+      // `attemptOnce` 里补读一次 —— 那里才知道真的重建了（那时才知道该按新事实重走一遍素材）。
       const live = this.options.agents.get(conversationId);
-      const reusable = live !== undefined && this.options.agents.fits(conversationId, conversation);
-      if (live !== undefined && !reusable) this.options.agents.dispose(conversationId);
       let history: AgentNS.Message[];
-      if (reusable && live) {
+      if (live) {
         // 只拍一份快照：数组本身还会被这一轮接着追加，`usage` / `done` 要的是“本轮开始前”那份
         history = [...live.messages];
       } else {
-        // 装载即修复：上一次进程如果是在写的时候没的，这里把在途消息修成可继续的状态
-        const stored = await this.reconcile(conversationId);
-        history = await this.resolveHistory(conversationId, stored.messages, conversation.modelId);
+        // 首次装配：装载即修复（上一次进程如果是在写的时候没的，这里把在途消息修成可继续的
+        // 状态）+ 按当前模型还原素材（F-H7）。必须在下面两次落库之前做完 —— `reconcile` 会把
+        // 「在途」的行当成被中断的，本轮刚落的那两行也在它眼里。
+        history = await this.storedHistory(conversationId, conversation, { repair: true });
       }
       const prepared = await this.prepare(params, conversation);
 
@@ -2524,6 +2558,14 @@ export class ChatRunner {
         conversation,
         scope,
         history,
+        // 段中才发现手里那个不合用时（模型 / 档位改过 → `acquire` 重建）要的那份历史：
+        // 按**现在**的事实重新读库 + 还原素材。此刻本轮的占位行已落库，于是不 `reconcile`
+        // （它会把刚落的 pending 行当成「被中断」），并把这轮自己写的那两行排除掉。
+        rebuildHistory: () =>
+          this.storedHistory(conversationId, conversation, {
+            repair: false,
+            exclude: [userId, assistantId],
+          }),
         content,
         // 没给 `storedContent` 时不给这一项：`TurnSession` 自己退回去用 `content`（两份同源）
         ...(prepared.storedContent === undefined ? {} : { storedContent }),
@@ -2552,6 +2594,34 @@ export class ChatRunner {
     // 这条路上两条 id 都在上面分配好了（自起段不走这里，它没有预分配），类型上收窄一次：
     // 「受理即有两个 id」是 `conversation.send` 这条路的契约（L6 / F-I12）。
     return session as AcceptedTurn;
+  }
+
+  /**
+   * 库里这段对话的历史 + 按当前模型还原过的素材（F-H7）。
+   *
+   * `repair`：读之前先跑一次 `reconcile`（装载即修复，PRD D15）。**只有「这一轮的两条占位行
+   * 还没落库」时才能为真** —— `reconcile` 会把在途行当成「上一段进程死在写它的路上」，刚落的
+   * 占位行也会被它修成 `aborted`。受理之后要读库就传 `false`，并把这一轮自己写进去的那几条用
+   * `exclude` 排掉：历史是「这一轮之前」那些。
+   */
+  private async storedHistory(
+    conversationId: string,
+    conversation: Conversation,
+    options: { repair: boolean; exclude?: Array<string | null> },
+  ): Promise<AgentNS.Message[]> {
+    let messages: AgentNS.Message[];
+    if (options.repair) {
+      messages = (await this.reconcile(conversationId)).messages;
+    } else {
+      // 历史要连 `hidden` 的一起取：那些消息只是不给人看，模型下一轮照样得看到它们
+      const rows = await this.options.messages.listByConversation(conversationId, undefined, {
+        includeHidden: true,
+      });
+      messages = rows.map(fromRow);
+    }
+    const excluded = new Set(options.exclude ?? []);
+    const wanted = excluded.size === 0 ? messages : messages.filter((one) => !excluded.has(one.id));
+    return await this.resolveHistory(conversationId, wanted, conversation.modelId);
   }
 
   /**
@@ -2817,40 +2887,49 @@ export class ChatRunner {
   }
 
   /**
-   * 拿到这段会话现在该用的 agent —— 没有（或不合用）就按库里的事实**重新装配**。
+   * 拿到这段会话现在该用的 agent —— 不在（或不合用）就按库里的事实**重新装配**。
    *
-   * 与 `run()` 首次装配同一条路：常驻的那个还合用（`agents.fits`：模型 / 思考档位没改）就直接
-   * 用；不合用先丢掉，再 `reconcile`（装载即修复）+ `resolveHistory`（按当前模型还原素材）+
-   * `ensure`（真的装配）。新装配的那个手里还是空的，历史要 push 进去 —— 复用的那个不 push
-   * （它的 `messages` 就是这段对话的真相）。
+   * 只有这一个入口需要「先读库再装配」：投递进来时 agent 可能早就不在了（进程重启过、配置换过、
+   * 对话被别处丢过），而这一段得从库里的历史接着跑。与 `run()` 首次装配同一条路：`reconcile`
+   * （装载即修复）+ `resolveHistory`（按当前模型还原素材）→ `acquire`（在且合用就复用，不在 /
+   * 不合用就装配）。新装配的那个手里还是空的，历史要 push 进去 —— 复用的那个不 push（它的
+   * `messages` 就是这段对话的真相）。
+   *
+   * 「要不要读库」按 `get` 判：有活着的就不读（常驻的那个还带着全部历史）；不在就一定要读。
+   * 活着但不合用的那一种由 `acquire` 重建，它要的历史得按**现在**的事实还原 —— 上面没读库，
+   * 所以在下面补一次。
    */
   private async ensureAgent(
     conversationId: string,
     conversation: Conversation,
   ): Promise<ChatAgent> {
     const live = this.options.agents.get(conversationId);
-    if (live !== undefined && this.options.agents.fits(conversationId, conversation)) return live;
-    if (live !== undefined) this.options.agents.dispose(conversationId);
+    const history =
+      live === undefined
+        ? await this.storedHistory(conversationId, conversation, { repair: true })
+        : [...live.messages];
 
-    const stored = await this.reconcile(conversationId);
-    const history = await this.resolveHistory(
-      conversationId,
-      stored.messages,
-      conversation.modelId,
+    const agent = await this.options.agents.acquire(
+      {
+        conversationId,
+        workspaceId: conversation.workspaceId,
+        agentId: conversation.agentId,
+        modelId: conversation.modelId,
+        thinkingLevel: conversation.thinkingLevel,
+        history: [...history],
+      },
+      conversation,
     );
-
-    const existed = this.options.agents.get(conversationId) !== undefined;
-    const agent = await this.options.agents.ensure({
-      conversationId,
-      workspaceId: conversation.workspaceId,
-      agentId: conversation.agentId,
-      modelId: conversation.modelId,
-      thinkingLevel: conversation.thinkingLevel,
-      history: [...history],
-    });
-    // 复活的这个手里是空的：历史得 push 进去（`run()` 那条路在 `attach` 里做同一件事）。
-    // `existed` 是「装的这一刻它已经在」：那种情形 `messages` 是真相，再 push 一遍就是双份。
-    if (!existed && agent.messages.length === 0) agent.messages.push(...history);
+    // 交回来的不是原来那个 = 真的装了一个新的：它手里是空的，历史得 push 进去（`run()` 那条路
+    // 在 `attach` 里做同一件事）。活着但不合用那一路上面没读库 —— 那一份是按旧事实还原的，
+    // 这里按现在的事实重读一次（这一刻这段对话没有在跑的段，`reconcile` 安全）。
+    if (agent !== live && agent.messages.length === 0) {
+      const assembled =
+        live === undefined
+          ? history
+          : await this.storedHistory(conversationId, conversation, { repair: true });
+      agent.messages.push(...assembled);
+    }
     return agent;
   }
 
@@ -2873,9 +2952,9 @@ export class ChatRunner {
     // 同理，那条「最近一次投递是谁推的」也不再有意义（留着只会让下一段报错来源）
     this.inboxSources.delete(conversationId);
     // 这一段对话已经不在了，它的 agent 也就不该继续挂在 Scope 的账上 —— 否则紧接着的
-    // `scopes.dispose`（删项目）会被一个正在收尾的对话挡下来。丢的只是登记，那个 agent
-    // 仍由它自己那一轮握在手里跑完收尾（停与结算不受影响）。
-    this.options.agents.dispose(conversationId);
+    // `scopes.dispose`（删项目）会被一个正在收尾的对话挡下来。丢的只是登记（`discard` 不
+    // abort、不结算），那个 agent 仍由它自己那一轮握在手里跑完收尾。
+    this.options.agents.discard(conversationId);
   }
 
   /**

@@ -21,7 +21,14 @@ export type {
 } from "./ScopeRegistry.js";
 
 export { AgentRegistry } from "./AgentRegistry.js";
-export type { AgentCreateInput, AgentRegistryOptions } from "./AgentRegistry.js";
+export type {
+  AgentAssemblyFacts,
+  AgentCreateInput,
+  AgentLifecycleAction,
+  AgentLifecycleEvent,
+  AgentLifecycleReason,
+  AgentRegistryOptions,
+} from "./AgentRegistry.js";
 
 export { RunRegistry } from "./RunRegistry.js";
 export type { RunHandle, RunRegistryOptions, RunSummary, RunsView } from "./RunRegistry.js";
