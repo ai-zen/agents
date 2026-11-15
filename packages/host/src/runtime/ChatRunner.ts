@@ -369,6 +369,14 @@ export interface ChatRunParams {
 export interface TurnSettledFacts {
   conversationId: string;
   outcome: RunOutcome;
+  /**
+   * 这一轮的失败事实（与 `TurnSettlement.problem` 同一份；`completed` / `aborted` 时是 `null`）。
+   *
+   * 结算时**顺带**带上它，是因为「这一段为什么没跑完」只有这一段自己知道：把结果转述给别人
+   * 的那条链路（平级会话把派生会话这一段的结果投回父对话）要写清原因，就得有这一格 —— 让它
+   * 再去翻消息表猜一遍，猜出来的只会是「原因不明」。
+   */
+  problem: ProblemFact | null;
   /** 这一轮是谁叫起来的（与 `ChatRunParams.source` 同义；`"user"` = 用户本人发的） */
   source: string;
   /** 这一轮的 `prompt_tokens`（结算快照里的本轮用量） */
@@ -1974,6 +1982,8 @@ class TurnSession implements ChatTurn {
       onSettled({
         conversationId: this.conversationId,
         outcome,
+        // 结算之后要把这一段的结果转述出去的那条链路要用它（见 `TurnSettledFacts.problem`）
+        problem: this.problem,
         source: this.source,
         promptTokens: usage.turn.prompt_tokens,
         handoffTokens: model?.tokenThresholds.handoff ?? 0,

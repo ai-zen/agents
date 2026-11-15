@@ -18,8 +18,20 @@
  *    对它回 `gone`）。
  * 3. **接着说话**：{@link PeerSessionService.send} —— 与 `create` 同构的窄端口（只收 `caller`），
  *    血缘校验（只有父↔子之间能互发）与来源名解析都在这一层。
- * 4. **推**：子会话结算之后，把结果投回父对话 —— 具体怎么投（父对话在跑就入队、空闲就唤醒、
- *    正在结算就先攒着）**不是本文件的事**，全交给 `chatRunner.deliver` 一个入口。
+ * 4. **推**：子会话**每一段**结算之后，把这一段的结果投回父对话 —— 具体怎么投（父对话在跑就
+ *    入队、空闲就唤醒、正在结算就先攒着）**不是本文件的事**，全交给 `chatRunner.deliver` 一个
+ *    入口。
+ *
+ * ## 「推」为什么挂在「一次结算」上，而不是挂在 `create` 上
+ *
+ * 阶段 1 的回投写在 `create` 里（`turn.done.then(...)`）：于是只有 `create_session` 开出来的
+ * **第一段**有结果回投，之后 `send_to_session` 把子会话叫起来跑的**第二段、第三段…**跑完什么
+ * 都没有推回去 —— 工具文案里那句「结果跑完会自动推回来」在那条路上是假话。
+ *
+ * 现在只认一条规则：**一段结算 → 若这段会话是派生会话（`records` 里有它）→ 把这一段的结果
+ * 投回它的父对话**。触发源用现成的 `ChatRunner.onTurnSettled`（`app.ts` 已经在那儿接交接线
+ * 提问），本文件只多接一跳 {@link PeerSessionService.settleSegment} —— 不新增事件、不另立订阅。
+ * 一段一次，不多不少：`create` 里那一句已经删掉，否则第一段会被投两遍。
  *
  * ## 「谁在调我」为什么靠 `bind`
  *
@@ -37,7 +49,8 @@
  * 的结果当失败丢掉。
  *
  * 于是 `resultDelivered` 的语义也跟着变了：**投递被受理就是 `delivered`**（执行者保证「迟早
- * 落地、不丢」），只有父对话不存在才 `dropped` 并出声一次。
+ * 落地、不丢」），只有父对话不存在才 `dropped` 并出声一次。它记的是**最近一次结算**的那一笔
+ * （一段一条结果，字段不攒总量）。
  */
 
 import { AgentNS } from "@ai-zen/agents-core";
@@ -53,7 +66,12 @@ import type {
   PeerSessionStatus,
 } from "@ai-zen/agents-sdk";
 
-import type { ChatRunParams, ChatTurn, DeliveryOutcome } from "../runtime/ChatRunner.js";
+import type {
+  ChatRunParams,
+  ChatTurn,
+  DeliveryOutcome,
+  TurnSettledFacts,
+} from "../runtime/ChatRunner.js";
 import type { StoredMessage } from "../storage/types.js";
 import type { ConversationCreateParams, ConversationCreateResult } from "../wire/index.js";
 import type { ProblemFact, RunOutcome } from "../wire/states.js";
@@ -71,7 +89,11 @@ export interface PeerSessionRecord {
   state: Exclude<PeerSessionState, "gone">;
   /** 开跑时刻（毫秒） */
   startedAt: number;
-  /** 结果有没有送到父对话手上 */
+  /**
+   * **最近一次结算**的那条结果有没有送到父对话手上（`pending` = 还没结算过一次）。
+   *
+   * 一段一条结果：第二段、第三段结算时会被重写，所以它是「最后那一段的账」，不是累计量。
+   */
   resultDelivered: "pending" | "delivered" | "dropped";
 }
 
@@ -322,10 +344,11 @@ export class PeerSessionService implements PeerSessionPort {
     };
     this.records.set(sessionId, record);
 
-    // 6. 开跑（受理即回）：子会话第一句的 source 写「父对话」，正文最前面那行注释由 core 加
-    let turn: ChatTurn;
+    // 6. 开跑（受理即回）：子会话第一句的 source 写「父对话」，正文最前面那行注释由 core 加。
+    //    这里**不挂**任何跟这一轮结果的东西：回投跟着结算走（见 `settleSegment`），不是跟着
+    //    `create` 走 —— 否则第一段会被投两遍（`onTurnSettled` 那一路已经投了一次）。
     try {
-      turn = await this.deps.chatRunner.run({
+      await this.deps.chatRunner.run({
         conversationId: sessionId,
         input: { content: input.prompt },
         source: SOURCE_FROM_PARENT,
@@ -337,16 +360,7 @@ export class PeerSessionService implements PeerSessionPort {
       throw error;
     }
 
-    // 7. 跑完就投递（这一条只会发生一次：唤醒预算天然是 1）
-    void turn.done.then(
-      (settlement) => this.deliver(record, settlement.outcome, settlement.problem),
-      (error: unknown) => {
-        record.state = "failed";
-        record.resultDelivered = "dropped";
-        this.onError(error, "平级会话结算失败");
-      },
-    );
-
+    // 7. 就这么回（结果由这一段自己的结算负责推回来：`ChatRunner.onTurnSettled` → `settleSegment`）
     return { ok: true, sessionId, label: record.label };
   }
 
@@ -370,13 +384,38 @@ export class PeerSessionService implements PeerSessionPort {
   }
 
   /**
-   * 把子会话的结果投回父对话（**唯一的新机制**）。
+   * **一段结算** → 若这段会话是派生会话，就把这一段的结果投回它的父对话。
    *
-   * 三步，顺序不能换：
-   *   1. 先按结局改状态（`idle` / `failed` / `aborted`）；
-   *   2. 读子会话最后一条助手消息、截断，失败 / 中止时正文里写明原因（用句子，不甩错误栈）；
-   *   3. 投递：**一句 `chatRunner.deliver`**。父对话在跑、空闲、正在结算、agent 还在不在，
+   * 由 `app.ts` 那条已有的 `onTurnSettled` 一跳进来（与交接线提问并列，
+   * `void this.peerSessions.settleSegment(facts)`）：触发源就是 `ChatRunner` 结算时本来就会报的
+   * 那一条，**不新增事件、不另立订阅**。
+   *
+   * 四步，顺序不能换：
+   *   1. `records` 里没有这段会话 → 直接返回（它不是派生会话：用户会话、以及**父对话自己**那一段
+   *      都走这一支 —— 父不是 peer，它的结算本来就不该回投给任何人）；
+   *   2. 是 peer → 按这一段结局改记录状态（`idle` / `failed` / `aborted`，用 `stateOf`）；
+   *   3. 读子会话最后一条助手消息、截断，失败 / 中止时正文里写明原因（用句子，不甩错误栈）；
+   *   4. 投递：**一句 `chatRunner.deliver`**。父对话在跑、空闲、正在结算、agent 还在不在，
    *      都不是本文件要判断的事（那些判断只有一个地方该做，理由见文件头「投递」那一段）。
+   *
+   * ## 为什么**不**按 `facts.source` 过滤
+   *
+   * 派生会话的段有两种叫法：`create_session` 起的第一段（`source: "父对话"`）与之后被投递叫醒
+   * 的自起段（`source` 是投递方给的来源名）。只认「不是用户发的」会漏掉前者，只认自起段会漏掉
+   * 后者；而「该不该回投」的真判据只有一个 —— **这段会话在不在 `records` 里**。来源不参与判断。
+   *
+   * ## 这条链会不会自己循环（必须想清楚的那一条）
+   *
+   * 会走到回投的段只有「派生会话的段」。三种情形都收得住：
+   *
+   *   - **深度只有一层**：peer 不能再开 peer（`create` 的 `depth_exceeded`），所以「子 → 父 →
+   *     祖父」最多两跳；最后一跳那段会话不在 `records` 里，不会继续回投 —— 链子自己断在那里。
+   *   - **父 ↔ 子之间可以来回**：父 `send_to_session` → 子跑完回投 → 父被唤醒 → 父再
+   *     `send_to_session` …… 这**不是机制自激**：每一轮都要模型主动发一次工具调用，是模型自己
+   *     的选择，不是结算钩子自己生出来的。所以这里**不做预算 / 熔断**（多一层限制会误伤
+   *     「接着干」这个正当用法）。
+   *   - 回投把**父对话**叫起来的那一段结算时，`records` 里没有父对话 → 第一步就返回，不会二次
+   *     回投（这就是「父被唤醒的那一段不能当成需要回投的段」这条要求落成代码的地方）。
    *
    * `resultDelivered` 跟着改成「受理即 `delivered`」：执行者保证这一条迟早落地（在跑的段取走、
    * 正在结算就攒到结算之后一起投、agent 不在就按历史复活），所以本文件没有「投不进去」这个
@@ -392,16 +431,17 @@ export class PeerSessionService implements PeerSessionPort {
    * 「来自 会话「会话 1」 自动推送」这种套娃话。（`send_to_session` 那一路的调用者是**另一段
    * 会话**而不是「这个子会话的结果」，所以它套了那一层，见 {@link senderSource}。）
    */
-  private async deliver(
-    record: PeerSessionRecord,
-    outcome: RunOutcome,
-    problem: ProblemFact | null,
-  ): Promise<void> {
-    record.state = stateOf(outcome);
+  async settleSegment(facts: TurnSettledFacts): Promise<void> {
+    // ① 不是派生会话（用户会话 / 父对话自己那一段）：这段结算与回投无关
+    const record = this.records.get(facts.conversationId);
+    if (!record) return;
+
+    // ② 先按结局改状态（`idle` / `failed` / `aborted`）：这一段已经收工了
+    record.state = stateOf(facts.outcome);
 
     try {
       await this.deps.chatRunner.deliver(record.parentConversationId, {
-        content: await this.resultBody(record, outcome, problem),
+        content: await this.resultBody(record, facts.outcome, facts.problem),
         source: record.label,
       });
       // 受理 = 迟早落地（攒批、复活都由执行者兜着）：不必等它跑完，也不必再试一次

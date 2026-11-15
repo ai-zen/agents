@@ -1,9 +1,11 @@
 /**
- * 平级会话服务（阶段 1）的验收：**建完即回**、深度只有一层、模型解析不出来是结构化拒绝、
- * 跑完把结果投回父对话（在跑就入队、空闲就唤醒）、送不到只记 `dropped` 并出声一次。
+ * 平级会话服务的验收：**建完即回**、深度只有一层、模型解析不出来是结构化拒绝、**每一段结算**
+ * 把结果投回父对话（在跑就入队、空闲就唤醒）、送不到只记 `dropped` 并出声一次。
  *
  * 这里用窄替身（假 creator / 假 runner / 记账式消息仓储）：本文件要钉的是**服务自己的判断**
- * （先 enqueue 还是先 run、截多少字、状态怎么落），而不是 `ChatRunner` 的时序。
+ * （哪段会话才回投、截多少字、状态怎么落），而不是 `ChatRunner` 的时序。回投的触发源就是
+ * `ChatRunner.onTurnSettled` 那条事实（`app.ts` 也接在那一处），所以用例直接报一段结算给
+ * `settleSegment` —— 与真实路径同一个入口，不是去摸私有方法。
  * 「条目真的落进父对话那一轮」与「唤醒那一轮 `source` 不是 user」在
  * `PeerSessionService.flow.test.ts` 里用真 `ChatRunner` 钉。
  */
@@ -12,11 +14,17 @@ import { describe, expect, it } from "vitest";
 import { AgentNS } from "@ai-zen/agents-core";
 import type { Agent } from "@ai-zen/agents-core";
 
-import type { ChatRunParams, ChatTurn, DeliveryOutcome, QueuedTurn, TurnSettlement } from "../runtime/ChatRunner.js";
+import type {
+  ChatRunParams,
+  ChatTurn,
+  DeliveryOutcome,
+  TurnSettlement,
+  TurnSettledFacts,
+} from "../runtime/ChatRunner.js";
 import type { Conversation, StoredMessage } from "../storage/types.js";
 import type { ConversationView, ConversationCreateParams, ConversationCreateResult } from "../wire/index.js";
 import { HostError } from "../wire/errors.js";
-import { zeroUsage } from "../wire/states.js";
+import type { ProblemFact, RunOutcome } from "../wire/states.js";
 import { PeerSessionService } from "./PeerSessionService.js";
 import type { PeerSessionConversationCreator, PeerSessionRunner } from "./PeerSessionService.js";
 
@@ -89,32 +97,42 @@ class FakeCreator implements PeerSessionConversationCreator {
   }
 }
 
-/** 一轮的替身：`done` 由用例在想要的时刻结算 */
+/**
+ * 一轮的替身：只演「这一段开着」。
+ *
+ * `done` 永不 resolve —— `create` 不再靠它把结果推回去（改前那一句 `turn.done.then(...)` 已经
+ * 删了，一段的结果跟着**结算事件**走，见 {@link settledFacts}）。一个假 turn 没有真结算，
+ * 也就不该假装有。
+ */
 class FakeTurn {
   readonly conversationId: string;
-  private resolveDone!: (settlement: TurnSettlement) => void;
-  readonly done: Promise<TurnSettlement>;
+  readonly done: Promise<TurnSettlement> = new Promise<TurnSettlement>(() => {});
 
   constructor(conversationId: string) {
     this.conversationId = conversationId;
-    this.done = new Promise<TurnSettlement>((resolve) => {
-      this.resolveDone = resolve;
-    });
   }
+}
 
-  /** 结算这一轮（`outcome` 决定记录状态与投递正文） */
-  settle(outcome: TurnSettlement["outcome"], problem: TurnSettlement["problem"] = null): void {
-    this.resolveDone({
-      conversationId: this.conversationId,
-      assistantMessageId: `${this.conversationId}-a`,
-      outcome,
-      problem,
-      messages: [],
-      produced: [],
-      usage: zeroUsage(new Date(0).toISOString()),
-      run: {} as TurnSettlement["run"],
-    });
-  }
+/**
+ * 一段结算的事实 —— `ChatRunner.notifySettled` 实际报的那一份（只填本文件读的几格）。
+ *
+ * 这就是 `app.ts` 那条 `onTurnSettled` 传进 `settleSegment` 的东西：用例走同一个入口，不再
+ * 直接去推 `turn.done`。
+ */
+function settledFacts(
+  conversationId: string,
+  outcome: RunOutcome = "completed",
+  problem: ProblemFact | null = null,
+): TurnSettledFacts {
+  return {
+    conversationId,
+    outcome,
+    problem,
+    source: "父对话",
+    promptTokens: 0,
+    handoffTokens: 0,
+    language: "zh",
+  };
 }
 
 /** 记账式执行者：投递收了没有（`deliverError`）、`run` 抛不抛错都由用例说了算 */
@@ -128,14 +146,12 @@ class FakeRunner implements PeerSessionRunner {
   deliverError: unknown;
   /** 下一次投递的回执 `state`（缺省 `idle`：假件不演那三支现场） */
   deliverState: DeliveryOutcome["state"] = "idle";
-  private readonly turns: FakeTurn[] = [];
 
   async run(params: ChatRunParams): Promise<ChatTurn> {
     this.runCalls.push(params);
     if (this.runError !== undefined) throw this.runError;
-    const turn = new FakeTurn(params.conversationId);
-    this.turns.push(turn);
-    return turn as unknown as ChatTurn;
+    // 受理即回：这个假 turn 只证明「这一段开起来了」，结算由用例显式报给 `settleSegment`
+    return new FakeTurn(params.conversationId) as unknown as ChatTurn;
   }
 
   async deliver(
@@ -145,13 +161,6 @@ class FakeRunner implements PeerSessionRunner {
     this.deliverCalls.push({ conversationId, content: input.content, source: input.source });
     if (this.deliverError !== undefined) throw this.deliverError;
     return { accepted: true, state: this.deliverState };
-  }
-
-  /** 某段会话最近一次开起来的一轮 */
-  turnOf(conversationId: string): FakeTurn {
-    const found = this.turns.filter((turn) => turn.conversationId === conversationId).at(-1);
-    if (!found) throw new Error(`no turn for ${conversationId}`);
-    return found;
   }
 }
 
@@ -220,10 +229,7 @@ function createHarness(): Harness {
   };
 }
 
-/** 等到后台的投递跑完（`void turn.done.then(...)` 里那一串 await） */
-async function settle(): Promise<void> {
-  for (let i = 0; i < 8; i += 1) await new Promise((resolve) => setImmediate(resolve));
-}
+
 
 describe("create：建完即回", () => {
   it("返回 { sessionId, label }，子会话还在跑（不 await 它的结果）", async () => {
@@ -323,8 +329,7 @@ describe("投递：跑完把结果送回父对话", () => {
     h.say("c-child-1", "默认用户说的话", AgentNS.Role.User);
     h.say("c-child-1", "补了 3 个用例，全绿。", AgentNS.Role.Assistant);
 
-    h.runner.turnOf("c-child-1").settle("completed");
-    await settle();
+    await h.service.settleSegment(settledFacts("c-child-1"));
 
     // 投递只有一处：不需要「先 enqueue 再 run」那两级猜测，也没有第二个 run
     expect(h.runner.deliverCalls).toHaveLength(1);
@@ -346,8 +351,7 @@ describe("投递：跑完把结果送回父对话", () => {
     await h.service.create({ caller: h.parentAgent, prompt: "A" });
     h.say("c-child-1", "做完了");
 
-    h.runner.turnOf("c-child-1").settle("completed");
-    await settle();
+    await h.service.settleSegment(settledFacts("c-child-1"));
 
     // 服务只把内容交给执行者，然后立刻记账 —— 剩下的（入队 / 攒批 / 唤醒 / 复活）都在那一处
     expect(h.runner.deliverCalls).toHaveLength(1);
@@ -365,14 +369,15 @@ describe("投递：跑完把结果送回父对话", () => {
     await h.service.create({ caller: h.parentAgent, prompt: "A" });
     h.say("c-child-1", "我改到一半");
 
-    h.runner.turnOf("c-child-1").settle("error", {
-      code: "internal",
-      messageKey: "error.internal",
-      params: {},
-      message: "内部错误",
-      detail: { reason: "socket hang up" },
-    });
-    await settle();
+    await h.service.settleSegment(
+      settledFacts("c-child-1", "error", {
+        code: "internal",
+        messageKey: "error.internal",
+        params: {},
+        message: "内部错误",
+        detail: { reason: "socket hang up" },
+      }),
+    );
 
     const body = h.runner.deliverCalls[0]!.content as string;
     expect(body.split("\n\n")[0]).toBe("子会话失败了：内部错误（socket hang up）");
@@ -385,8 +390,7 @@ describe("投递：跑完把结果送回父对话", () => {
   it("中止也是句子（说的是「被中止」，不是「失败」）", async () => {
     const h = createHarness();
     await h.service.create({ caller: h.parentAgent, prompt: "A" });
-    h.runner.turnOf("c-child-1").settle("aborted");
-    await settle();
+    await h.service.settleSegment(settledFacts("c-child-1", "aborted"));
 
     const body = h.runner.deliverCalls[0]!.content as string;
     expect(body.startsWith("子会话被中止了")).toBe(true);
@@ -403,8 +407,7 @@ describe("投递：跑完把结果送回父对话", () => {
     // 唯一会拒绝投递的情形：那段对话已经不存在（执行者的 `not_found`）
     h.runner.deliverError = new HostError("not_found", { params: { entity: "conversation" } });
 
-    h.runner.turnOf("c-child-1").settle("completed");
-    await settle();
+    await h.service.settleSegment(settledFacts("c-child-1"));
 
     const record = h.service.record("c-child-1");
     expect(record?.resultDelivered).toBe("dropped");
@@ -416,6 +419,104 @@ describe("投递：跑完把结果送回父对话", () => {
     // 状态照落：这一轮确实跑完了
     const status = await h.service.status({ caller: h.parentAgent, sessionId: "c-child-1" });
     expect(status.state).toBe("idle");
+  });
+});
+
+describe("回投挂在「每一段结算」上（一段一次，不多不少）", () => {
+  it("父对话自己那一段结算 → 一次回投都没有（它不是 peer）", async () => {
+    const h = createHarness();
+    await h.service.create({ caller: h.parentAgent, prompt: "A" }); // 只为让 records 里有东西
+
+    // 父对话（普通会话，不在 `records` 里）自己跑完一段：结算照样会报进来
+    await h.service.settleSegment(settledFacts(PARENT_ID));
+    // 顺带：某个压根不是平级会话的会话也一样（重启之后 `records` 空掉的那种）
+    await h.service.settleSegment(settledFacts("c-user-session"));
+
+    expect(h.runner.deliverCalls).toEqual([]);
+  });
+
+  it("同一段只投一次：结算报一次就只投一次（不会因为 create 那一跳再补一次）", async () => {
+    const h = createHarness();
+    await h.service.create({ caller: h.parentAgent, prompt: "A", label: "补测试" });
+    h.say("c-child-1", "第一段说完了。");
+
+    // 第一段就是 `create_session` 起的那一段：改前它靠 `create` 里的 `turn.done.then(...)` 回投，
+    // 现在只靠这一条结算。要是两处都还在，这里就会看见两次投递。
+    await h.service.settleSegment(settledFacts("c-child-1"));
+
+    expect(h.runner.deliverCalls).toHaveLength(1);
+    expect(h.runner.deliverCalls[0]).toMatchObject({
+      conversationId: PARENT_ID,
+      content: "第一段说完了。",
+      source: "补测试",
+    });
+  });
+
+  it("之后 `send_to_session` 叫起来的第二段结算 → 又投一次，正文是第二段说的那句话", async () => {
+    const h = createHarness();
+    await h.service.create({ caller: h.parentAgent, prompt: "A", label: "补测试" });
+    h.say("c-child-1", "第一段说完了。");
+    await h.service.settleSegment(settledFacts("c-child-1"));
+
+    // 父接着跟子说话（`send_to_session` 那一路），子会话被叫起来跑第二段
+    await h.service.send({ caller: h.parentAgent, sessionId: "c-child-1", content: "再补一句" });
+    h.say("c-child-1", "第二段：补上了边界用例。");
+    // 自起段的 `source` 不是 `"user"`（是投递方给的来源名）—— 回投不按来源过滤，照样走这一条
+    await h.service.settleSegment({ ...settledFacts("c-child-1"), source: "会话「c-parent」" });
+
+    // 投递记录里第 0 次是第一段回投、第 1 次是这一句 `send_to_session` 本身、第 2 次是第二段回投
+    expect(h.runner.deliverCalls.map((call) => call.conversationId)).toEqual([
+      PARENT_ID,
+      "c-child-1",
+      PARENT_ID,
+    ]);
+    expect(h.runner.deliverCalls[2]).toMatchObject({
+      conversationId: PARENT_ID,
+      content: "第二段：补上了边界用例。",
+      source: "补测试",
+    });
+    // 一段一条账：`resultDelivered` 记的是最近那一段（第二段）的投递
+    expect(h.service.record("c-child-1")?.resultDelivered).toBe("delivered");
+  });
+
+  it("嵌套一跳：只要 `records` 里有它，就投给它记下的 `parentConversationId`", async () => {
+    const h = createHarness();
+    // 第一层：父对话 → c-child-1（`h.service` 的 records 里有它）
+    await h.service.create({ caller: h.parentAgent, prompt: "第一层", label: "第一层" });
+
+    // 第二层：另起一个服务实例（=另一份 records），把 c-child-1 当父。在它眼里 c-child-1 不是
+    // peer，所以这一层建得出来；工具那一路开不出来（同一份 records 里 depth_exceeded 挡着），
+    // 但回投的判据只有一条 —— records 里有没有它。
+    const inner = new PeerSessionService({
+      conversations: { get: async (id) => h.conversations.get(id) ?? h.creator.rows.get(id) },
+      conversationCreator: h.creator,
+      messages: { listByConversation: async (id) => h.messages.get(id) ?? [] },
+      chatRunner: h.runner,
+      now: () => Date.UTC(2026, 0, 1, 0, 0, 0),
+      onError: () => {},
+    });
+    const childAgent = { name: "child" } as unknown as Agent;
+    inner.bind(childAgent, "c-child-1");
+    const nested = await inner.create({ caller: childAgent, prompt: "第二层", label: "第二层" });
+    if (!nested.ok) throw new Error("unreachable");
+
+    // 孙辈那段结算 → 投给它的父（c-child-1），不是一路跳到最初的父对话
+    h.say(nested.sessionId, "第二层说完了。");
+    await inner.settleSegment(settledFacts(nested.sessionId));
+    expect(h.runner.deliverCalls).toHaveLength(1);
+    expect(h.runner.deliverCalls[0]).toMatchObject({
+      conversationId: "c-child-1",
+      content: "第二层说完了。",
+    });
+
+    // 中间那层（c-child-1）自己结算 → 投给它记下的父（最初的父对话）
+    h.say("c-child-1", "第一层说完了。");
+    await h.service.settleSegment(settledFacts("c-child-1"));
+    expect(h.runner.deliverCalls).toHaveLength(2);
+    expect(h.runner.deliverCalls[1]).toMatchObject({
+      conversationId: PARENT_ID,
+      content: "第一层说完了。",
+    });
   });
 });
 
@@ -524,8 +625,7 @@ describe("create_session 的并发限额：每个父对话最多 4 个在跑的"
     expect(h.runner.runCalls).toHaveLength(4);
 
     // 其中一个跑完（记录状态变 idle）→ 名额又有了
-    h.runner.turnOf("c-child-1").settle("completed");
-    await settle();
+    await h.service.settleSegment(settledFacts("c-child-1"));
     expect(h.service.record("c-child-1")?.state).toBe("idle");
 
     const sixth = await h.service.create({ caller: h.parentAgent, prompt: "再开一个" });
@@ -569,8 +669,7 @@ describe("read_session_status", () => {
     await h.service.create({ caller: h.parentAgent, prompt: "A" });
     h.say("c-child-1", "长".repeat(5000));
 
-    h.runner.turnOf("c-child-1").settle("completed");
-    await settle();
+    await h.service.settleSegment(settledFacts("c-child-1"));
 
     const body = h.runner.deliverCalls[0]!.content as string;
     expect(body.length).toBeLessThanOrEqual(1001);

@@ -9,6 +9,9 @@
  *   4. **`send_to_session`**：在跑 → `state: "running"`（条目在那一段的取件点落地，不新起段）；
  *      空闲 → `state: "idle"`（真的把它叫起来，自起段落库）；对方还没收工 → `state: "settling"`
  *      （先攚着，结算完再落地）；正文注释里的来源名是**调用者**（父用会话名 / peer 用自己的 label）。
+ *   5. **回投挂在每一段结算上**：`create_session` 起的第一段只投**一次**（不是两次），之后
+ *      `send_to_session` 叫起来的第二段结算**又**投一次 —— 这一条钉的就是「回投跟结算走，不跟
+ *      `create` 走」（改前第二段跑完什么都不回投）。
  *
  * 投递只有**一个入口**（`chatRunner.deliver`）：服务不再先 `enqueue` 再 `run`，所以这里也不
  * 再有「猜爸爸在不在跑」的断言，只有「投进去之后它到底落在哪」的断言。
@@ -194,6 +197,9 @@ function createHarness(options: {
     streamWriteIntervalMs: 0,
     onTurnSettled: (facts) => {
       settled.push(facts);
+      // 与 `app.ts` 同一条接线：一段结算 → 若这段会话是派生会话，就把这一段的结果投回父对话
+      // （回投不在这里判，`settleSegment` 只看 `records` 里有没有它）
+      void service.settleSegment(facts);
     },
   });
 
@@ -300,6 +306,12 @@ function deliveredRows(h: Harness): Array<{ id: string; content: unknown }> {
   return [...byId.values()];
 }
 
+/** 父对话那个 agent 的 inbox（假 agent 不会取件，于是「投了几次」就数它） */
+function parentInbox(h: Harness): AgentNS.InboxEntry[] {
+  const agent = h.agents.get(PARENT_ID) as unknown as FakeAgent | undefined;
+  return agent ? agent.inbox : [];
+}
+
 describe("平级会话：子会话跑完 → 父对话收到结果", () => {
   it("父对话空闲 → 投递把它叫醒跑一段（真 turn + 落库），正文以来源注释开头", async () => {
     const h = createHarness({
@@ -393,6 +405,62 @@ describe("平级会话：子会话跑完 → 父对话收到结果", () => {
     // 放行父对话，让它安静收尾
     parentGate.resolve();
     await parentTurn.done;
+  });
+});
+
+describe("回投挂在「每一段结算」上（真 ChatRunner）", () => {
+  it("子会话第一段（create_session 起的那段）结算 → 只回投一次，不是两次", async () => {
+    const h = createHarness({
+      childRounds: () => [{ deltas: [{ content: "第一段：查完了。" }] }],
+      // 父对话用假 agent（不会自起段）：这一条要数的是「投了几次」，不是「被叫起来之后干了什么」
+      parentAgent: () => new FakeAgent([]),
+    });
+    const seeding = await h.runner.run({ conversationId: PARENT_ID, input: { content: "先热身" } });
+    await seeding.done;
+
+    const created = await h.service.create({ caller: callerOf(h), prompt: "去查一下", label: "查" });
+    if (!created.ok) throw new Error("unreachable");
+    await h.waitFor(() => parentInbox(h).length >= 1);
+    await h.idle();
+
+    // 一次，不是两次：改前那一句 `turn.done.then(...)` 与这一条结算都还在的话，这里会是 2
+    expect(parentInbox(h)).toHaveLength(1);
+    expect(parentInbox(h)[0]!.source).toBe("查");
+    expect(String(parentInbox(h)[0]!.content)).toContain("第一段：查完了。");
+    expect(h.service.record(created.sessionId)?.resultDelivered).toBe("delivered");
+  });
+
+  it("之后父 send_to_session → 子第二段结算 → 又回投一次（本单修的那个洞）", async () => {
+    const h = createHarness({
+      // 真 core `Agent`：第二段是被投递**叫醒**的自起段，只有真的段才演得出来
+      childAgent: () => scriptedAgent(["第一段：查完了。", "第二段：边界用例也补上了。"]),
+      parentAgent: () => new FakeAgent([]),
+    });
+    const seeding = await h.runner.run({ conversationId: PARENT_ID, input: { content: "先热身" } });
+    await seeding.done;
+
+    const created = await h.service.create({ caller: callerOf(h), prompt: "去查一下", label: "查" });
+    if (!created.ok) throw new Error("unreachable");
+    // 第一段跑完 → 回投一次（父对话是假 agent，条目留在它的 inbox 里）
+    await h.waitFor(() => parentInbox(h).length === 1 && h.turnOf(created.sessionId) === undefined);
+    await h.idle();
+
+    // 父接着跟子说话：子会话空闲 → 被叫起来跑第二段
+    const sent = await h.service.send({
+      caller: callerOf(h),
+      sessionId: created.sessionId,
+      content: "再补一下边界用例",
+    });
+    expect(sent).toEqual({ ok: true, state: "idle" });
+
+    // 第二段结算 → 又回投一次（改前：这条路上什么都没推回来）
+    await h.waitFor(() => parentInbox(h).length >= 2);
+    await h.idle();
+
+    expect(parentInbox(h)).toHaveLength(2);
+    // 正文是**第二段**最后说的那句话，不是第一段的
+    expect(String(parentInbox(h)[1]!.content)).toContain("第二段：边界用例也补上了。");
+    expect(parentInbox(h)[1]!.source).toBe("查");
   });
 });
 

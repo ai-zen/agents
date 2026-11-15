@@ -826,6 +826,8 @@ describe("ChatRunner：一轮结算之后报事实（R59）", () => {  it("结�
     expect(settled[0]).toMatchObject({
       conversationId: CONVERSATION_ID,
       outcome: "completed",
+      // 跑完的段没有失败事实（失败 / 中止时这一格才非空：派生会话靠它把原因转述出去）
+      problem: null,
       promptTokens: 120,
       language: "zh",
     });

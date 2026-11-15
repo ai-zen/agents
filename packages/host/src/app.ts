@@ -606,6 +606,11 @@ export class HostApp {
       // R59：一轮结算之后宿主自己判断要不要问交接线的问题（D22：在对话停下之后）
       onTurnSettled: (facts) => {
         void this.askHandoffAfterSettle(facts);
+        // 平级会话的**回投**也挂在这一条结算上：一段结算 → 是派生会话就把这一段的结果投回父对话。
+        // 「哪一段该回投」只有这一处判（`records` 里有它才算），所以 `create_session` 的第一段与
+        // 之后 `send_to_session` 叫起来的每一段走的是同一条路 —— 从这里接而不是从 `create` 里接，
+        // 就是这一单修的那个洞。不新增事件、不另立订阅（`peerSessions` 的晚绑定同 §6 的理由）。
+        void this.peerSessions.settleSegment(facts);
       },
       onError: (error, context) => {
         this.logger.error("一轮对话写库失败", { context, error: describeError(error) });
