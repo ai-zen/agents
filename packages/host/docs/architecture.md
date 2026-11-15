@@ -169,7 +169,7 @@ i18n/         文案（en 基准 / zh）
 
 **收尾（`stop()`）的顺序**：摘发现文件 → 回收 Scope → 断连接 → 清理上传 → 关库 → 关日志（先写最后一笔，再 flush 并关流，PRD F-J2）。同一次收尾还负责清掉升级自检的定时器（裁定 R66）。
 
-**Scope 被销毁的三个原因**：(1) 空闲 10 分钟（`release` 后计时到点）；(2) Workspace 被删（`disposeWorkspace(id)`）；(3) 配置变更需要重连 MCP（PRD F-E2，`recycleAll()`，正被持有的 Scope 打标记、等最后一次 `release` 再销毁）。
+**Scope 被销毁的两个原因**：(1) 空闲 10 分钟（`release` 后计时到点）；(2) Workspace 被删（`disposeWorkspace(id)`）。**配置改动不再是销毁原因**：`refreshWorkspace(id)` 就地把那个 Scope 的配置重读一遍、各插件重新发现一轮（MCP 连接按新的声明对账断开），实例还是同一个，正在跑的那一轮也不会被抽掉能力（PRD F-E2）。`disposeAll()` 只剩收尾那一条路（进程要退出，MCP 连接得跟 Scope 一起断）。
 
 ## 5. 存储
 

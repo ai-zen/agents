@@ -396,7 +396,7 @@ describe("端到端集成：真进程 + 真连接", () => {
     })) as ConfigPatchResult;
     // 上面那一轮 send 借过这个项目的 Scope（发过消息的对话按项目装配能力），
     // 于是「改配置回收受影响 Scope」这一跳回报的就是它
-    expect(patched.applied.recycledWorkspaceIds).toEqual([workspace.id]);
+    expect(patched.applied.refreshedWorkspaceIds).toEqual([workspace.id]);
     expect(patched.applied.noticeId).not.toBeNull();
     expect(patched.config.limits.maxToolOutput).toBe(4096);
 

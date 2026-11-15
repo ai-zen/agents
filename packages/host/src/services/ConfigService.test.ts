@@ -34,10 +34,10 @@ let configManager: ConfigManager;
 let applyPort: FakeApply;
 let service: ConfigService;
 
-/** 只记账、并回报「回收了哪个项目的 Scope + 合成哪条通知」的假生效口 */
+/** 只记账、并回报「刷新了哪个项目的 Scope + 合成哪条通知」的假生效口 */
 class FakeApply implements ConfigApplyPort {
   readonly changes: ConfigApplyChange[] = [];
-  outcome: ConfigApplyOutcome = { recycledWorkspaceIds: ["ws-1"], noticeId: "notice-1" };
+  outcome: ConfigApplyOutcome = { refreshedWorkspaceIds: ["ws-1"], noticeId: "notice-1" };
 
   apply(change: ConfigApplyChange): ConfigApplyOutcome {
     this.changes.push(change);
@@ -294,7 +294,7 @@ describe("ConfigService.patch / setDefaults", () => {
       agents: false,
       mcp: false,
     });
-    expect(applied.recycledWorkspaceIds).toEqual(["ws-1"]);
+    expect(applied.refreshedWorkspaceIds).toEqual(["ws-1"]);
     expect(applied.noticeId).toBe("notice-1");
     expect(applied.restartRequired).toBe(false);
     expect(applyPort.changes[0]?.sections).toEqual(["defaults", "limits", "behavior"]);

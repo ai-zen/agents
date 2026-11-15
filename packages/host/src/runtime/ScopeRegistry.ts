@@ -10,8 +10,12 @@
  * 计时器只有这一处（architecture §4 A10）：L4 说的「10 分钟无活动」与 D28 说的
  * 「Scope 空闲 10 分钟」是同一个计时器的两个说法，别处不再另起一份。
  *
- * Scope 会被销毁的三种场合（architecture §4）：空闲到点、Workspace 被删、配置变更要重连 MCP。
- * 三者都收敛到本文件的 `dispose`，区别只在「谁来叫」。
+ * Scope 会被销毁的两种场合（architecture §4）：空闲到点、Workspace 被删。两者都收敛到
+ * 本文件的 `dispose`，区别只在「谁来叫」。
+ *
+ * **配置改动不是销毁场合**：配置改动的本质是「磁盘上几个 json 变了」，`refresh()`
+ * （重读配置 + 各插件重新发现）就能让它生效，Scope 实例还是同一个 —— 见
+ * `refreshWorkspace`。
  *
  * 时间与 Scope 的创建方式都从构造参数进来：测试用假时钟推进十分钟，接线层提供真实的
  * SDK 装配（见本文件末尾的 `createWorkspaceScopeFactory`）。
@@ -54,7 +58,7 @@ export const systemClock: Clock = {
 /**
  * 造一个 Scope 的方式（按 workspaceId）。
  *
- * 之所以是外部注入而不是本文件自己 `new Scope(...)`：装配 Scope 需要配置快照、能力路径、
+ * 之所以是外部注入而不是本文件自己 `new Scope(...)`：装配 Scope 需要取配置的端口、能力路径、
  * MCP 配置的 5 层链（PRD L9）—— 那些都是配置层的财产；本文件只管「什么时候有、什么时候拆」。
  * 接线层若不想自己写，用本文件末尾的 `createWorkspaceScopeFactory`。
  */
@@ -67,7 +71,7 @@ export interface ScopeRegistryOptions {
   idleTimeoutMs?: number;
   /** 计时入口，缺省真实时钟 */
   clock?: Clock;
-  /** 销毁 Scope 时抛出的错误往哪里报（缺省吞掉：回收失败不该让调用方以为业务失败了） */
+  /** 销毁 / 刷新 Scope 时抛出的错误往哪里报（缺省吞掉：这事失败不该让调用方以为业务失败了） */
   onError?: (error: unknown, workspaceId: string) => void;
 }
 
@@ -87,8 +91,8 @@ class ScopeEntry {
   refs = 1;
   /** 空闲计时器的取消函数 */
   cancelIdle?: () => void;
-  /** 配置变更时它正被持有：等最后一次 release 再销毁（不在别人用着的时候拆能力） */
-  recycleWhenFree = false;
+  /** 宿主收尾时它正被持有：等最后一次 release 再销毁（不在别人用着的时候拆能力） */
+  disposeWhenFree = false;
   /** 正在销毁（幂等） */
   disposing?: Promise<void>;
 
@@ -148,7 +152,7 @@ export class ScopeRegistry {
 
   /**
    * 归还：依赖计数 −1。归零后按两种场合分叉 ——
-   * 平时起 10 分钟空闲计时；若期间发生过配置变更（`recycleAll`）要求它重建，就立刻销毁。
+   * 平时起 10 分钟空闲计时；若宿主正在收尾（`disposeAll`）要求它销毁，就立刻销毁。
    */
   release(workspaceId: string): void {
     const entry = this.entries.get(workspaceId);
@@ -156,7 +160,7 @@ export class ScopeRegistry {
     entry.refs = Math.max(0, entry.refs - 1);
     if (entry.refs > 0) return;
 
-    if (entry.recycleWhenFree) {
+    if (entry.disposeWhenFree) {
       void this.dispose(entry);
       return;
     }
@@ -173,23 +177,55 @@ export class ScopeRegistry {
     return this.entries.size;
   }
 
-  /** 当前持有哪几个（配置改动后要报告「回收了哪些项目的 Scope」） */
+  /** 当前持有哪几个（报告「刷了哪些项目的 Scope」用） */
   workspaceIds(): string[] {
     return [...this.entries.keys()];
   }
 
   /**
-   * 全部回收 —— 配置改完要重连 MCP 时用（PRD F-E2：改完即生效，靠重连而不是重启）。
+   * 就地刷新某一个 Workspace 的 Scope —— 配置改完之后用（PRD F-E2：改完即生效）。
    *
-   * 没人用的立刻销毁；正被持有的打上标记，等最后一次 `release` 再销毁。这样正在跑的那一轮
-   * 不会在写到一半时被抽掉能力，而它结束后下一段对话拿到的已经是按新配置建的 Scope。
+   * 刷的是 `Scope.refresh()`：重读配置 + 各插件重新发现（MCP 连接跟着对账），**实例还是同一个**。
+   * 所以正在跑的那一轮不会被抽掉能力，而它读到的配置已经是磁盘上新那一份。
+   *
+   * 只对已经存在的条目动手：不存在就什么也不做（不为刷新去创建一个 Scope —— 下一段对话
+   * `acquire` 时会按新配置建）。正在创建中的条目等它建完再刷。
+   *
+   * 刷新失败不往外抛：一个项目的 MCP 文件写坏了不该让整次「配置生效」变成失败（走 `onError`）。
    */
-  async recycleAll(): Promise<void> {
+  async refreshWorkspace(workspaceId: string): Promise<void> {
+    const entry = this.entries.get(workspaceId);
+    if (!entry) return;
+
+    let scope: Scope | undefined;
+    try {
+      scope = entry.resolved ?? (await entry.created);
+    } catch {
+      // 创建本来就没成：没有东西可刷（创建失败时条目已被摘掉）
+      return;
+    }
+
+    try {
+      await scope.refresh();
+    } catch (error) {
+      this.onError?.(error, workspaceId);
+    }
+  }
+
+  /**
+   * 全部销毁 —— 宿主收尾（`doStop`）时用：进程要退出了，MCP 连接是 Scope 持有的，
+   * 没有别人会替它关（D28 同生共死）。
+   *
+   * 没人用的立刻销毁；正被持有的打上标记，等最后一次 `release` 再销毁。
+   *
+   * 配置改动**不走这里**：那是 `refreshWorkspace` 的事。
+   */
+  async disposeAll(): Promise<void> {
     const entries = [...this.entries.values()];
     await Promise.all(
       entries.map((entry) => {
         if (entry.refs > 0) {
-          entry.recycleWhenFree = true;
+          entry.disposeWhenFree = true;
           return Promise.resolve();
         }
         return this.dispose(entry);
@@ -200,7 +236,7 @@ export class ScopeRegistry {
   /**
    * 销毁某一个 Workspace 的 Scope —— Workspace 被删时用。
    *
-   * 与 `recycleAll` 的区别：这里不等引用归零，因为 Workspace 已经不在了，
+   * 与 `disposeAll` 的区别：这里不等引用归零，因为 Workspace 已经不在了，
    * 再留着这个 Scope 也没有下一个调用方。
    */
   disposeWorkspace(workspaceId: string): Promise<void> {
@@ -285,9 +321,10 @@ export class ScopeRegistry {
 /**
  * 按 SDK 口径装配 Scope 的现成工厂。
  *
- * 装配内容：`new Scope({ config, cwd, agentsDir })` + `allInOne(...)`（内置工具、用户工具、
+ * 装配内容：`new Scope({ getConfig, cwd, agentsDir })` + `allInOne(...)`（内置工具、用户工具、
  * Skill、MCP、子 Agent 五类插件），然后 `init()` 做首次能力发现。MCP 插件自带连接管理器，
- * 于是「Scope 建好 = MCP 配置已发现」，`dispose()` 时连接一起断。
+ * 于是「Scope 建好 = MCP 配置已发现」，`dispose()` 时连接一起断；配置改了则是 `refresh()`
+ * （重读配置 + MCP 连接对账），不用重建 Scope。
  *
  * 多给一个 `peerSessions` 端口时再装一个 `PeerSessionsScopePlugin`（平级会话的两个工具）：
  * 那是宿主注入的能力，不是磁盘上的目录，所以不在 `allInOne` 里。
@@ -297,7 +334,7 @@ export class ScopeRegistry {
 export interface WorkspaceScopeFactoryOptions {
   /** 按 workspaceId 取工作目录（Workspace 的 cwd 不可变，PRD D9） */
   resolveWorkspace(workspaceId: string): Promise<{ cwd: string } | undefined>;
-  /** 取当前配置：配置改过之后再 acquire 会拿到新的那一份 */
+  /** 取当前配置的端口：**原样交给 Scope**，于是 `refresh()` 每次都会现读磁盘 */
   getConfig(): AppConfig | Promise<AppConfig>;
   /** Agent 定义目录（SDK 的 `createAgent` 从这里读定义） */
   agentsDir: string;
@@ -342,7 +379,6 @@ export function createWorkspaceScopeFactory(
     if (!workspace) {
       throw new Error(`Workspace "${workspaceId}" not found`);
     }
-    const config = await options.getConfig();
     const abilityPaths: AllInOneOptions = {
       skillsPaths: pathsFor(options.skillsPaths, workspace.cwd),
       toolsPaths: pathsFor(options.toolsPaths, workspace.cwd),
@@ -350,7 +386,8 @@ export function createWorkspaceScopeFactory(
       mcpPaths: options.mcpPaths?.(workspace.cwd),
     };
     const scope = new Scope({
-      config,
+      // 端口原样转交：首份由 init() 读，之后每次 refresh() 都重读（配置改了不重建 Scope）
+      getConfig: () => options.getConfig(),
       cwd: workspace.cwd,
       agentsDir: options.agentsDir,
       deps: options.deps,

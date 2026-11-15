@@ -144,7 +144,7 @@ export function createFakeScope(cwd = "/tmp/ai-zen-ws"): {
   plugin: RecordingScopePlugin;
 } {
   const plugin = new RecordingScopePlugin();
-  const scope = new Scope({ config: minimalConfig(), agentsDir: `${cwd}/agents`, cwd });
+  const scope = new Scope({ getConfig: () => minimalConfig(), agentsDir: `${cwd}/agents`, cwd });
   scope.use(plugin);
   return { scope, plugin };
 }

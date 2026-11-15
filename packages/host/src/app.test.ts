@@ -33,6 +33,7 @@ import {
 } from "./net/TestSupport.js";
 import { BRIDGED_METHODS } from "./handlers/index.js";
 import { FakeAgent } from "./runtime/TestSupport.js";
+import { Scope } from "@ai-zen/agents-sdk";
 import { transientScopeKey } from "./runtime/TransientRunner.js";
 import { Database } from "./storage/index.js";
 import { METHOD_NAMES } from "./wire/index.js";
@@ -449,7 +450,7 @@ describe("Scope 工厂", () => {
     expect(transientScope.cwd).toBe(fixture.workspaceDir.path);
     app.scopeRegistry.release(transientKey);
 
-    await app.scopeRegistry.recycleAll();
+    await app.scopeRegistry.disposeAll();
     expect(app.scopeRegistry.size()).toBe(0);
   });
 });
@@ -863,30 +864,73 @@ async function callThroughPush(
 // ---------------------------------------------------------------------------
 
 describe("配置生效", () => {
-  it("改完配置会回收 Scope、合成一条通知，并把两样事实回给调用方", async () => {
+  it("生效 = 就地刷新同一个 Scope：实例不变、读到新值、不销毁任何一个", async () => {
     const fixture = await makeFixture();
     const app = await startApp(fixture, { scopeIdleTimeoutMs: 10 * 60 * 1000 });
     const { workspace } = await callMethod(app, "workspace.create", {
       cwd: fixture.workspaceDir.path,
     });
-    // 让这个项目有一个 Scope 可回收（空闲计时调长了，不会自己走）
-    await app.scopeRegistry.acquire(workspace.id);
+    // 让这个项目有一个 Scope 可刷（空闲计时调长了，不会自己走）
+    const scope = await app.scopeRegistry.acquire(workspace.id);
     app.scopeRegistry.release(workspace.id);
     expect(app.scopeRegistry.size()).toBe(1);
+    expect(scope.config.maxToolOutput).not.toBe(2048);
 
-    const applied = await callMethod(app, "config.patch", {
-      patch: { behavior: { autoRefreshTools: "inner-loop-start" } },
-    });
+    // 配置生效不该销毁任何 Scope（销毁 = `dispose()`：MCP 连接也会一起断）
+    const dispose = vi.spyOn(Scope.prototype, "dispose");
+    let applied: MethodResult<"config.patch">;
+    try {
+      applied = await callMethod(app, "config.patch", {
+        patch: { limits: { maxToolOutput: 2048 } },
+      });
+      expect(dispose).not.toHaveBeenCalled();
+    } finally {
+      dispose.mockRestore();
+    }
 
-    // 受影响的 Scope 被回收（下一段对话会用新配置重建）
-    expect(applied.applied.recycledWorkspaceIds).toEqual([workspace.id]);
-    expect(app.scopeRegistry.size()).toBe(0);
+    // 刷的是「已经存在的那个」：同一个对象，不是拆了重建出来的另一个
+    expect(app.scopeRegistry.peek(workspace.id)).toBe(scope);
+    expect(app.scopeRegistry.size()).toBe(1);
+    // 而且它读到的是新值（config 是活的：refresh() 时跟着换掉）
+    expect(scope.config.maxToolOutput).toBe(2048);
+    expect(scope.env.config.maxToolOutput).toBe(2048);
+
+    // 报告里点名「这些项目的 Scope 已就地刷新」
+    expect(applied.applied.refreshedWorkspaceIds).toEqual([workspace.id]);
     // 一次改动合成一条通知（F-F9）
     expect(applied.applied.noticeId).not.toBeNull();
     const listed = await callMethod(app, "notice.list");
     expect(listed.notices.map((notice) => notice.id)).toContain(applied.applied.noticeId);
     // 没有需要重启才生效的项（F-E2）
     expect(applied.applied.restartRequired).toBe(false);
+  });
+
+  it("只改某个项目的 MCP：只刷那几个项目已经存在的 Scope，别的项目不碰", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture, { scopeIdleTimeoutMs: 10 * 60 * 1000 });
+    const first = await callMethod(app, "workspace.create", { cwd: fixture.workspaceDir.path });
+    const secondCwd = join(fixture.workspaceDir.path, "second");
+    await fs.mkdir(secondCwd, { recursive: true });
+    const second = await callMethod(app, "workspace.create", { cwd: secondCwd });
+
+    for (const workspaceId of [first.workspace.id, second.workspace.id]) {
+      await app.scopeRegistry.acquire(workspaceId);
+      app.scopeRegistry.release(workspaceId);
+    }
+    const firstScope = app.scopeRegistry.peek(first.workspace.id);
+    const secondScope = app.scopeRegistry.peek(second.workspace.id);
+
+    const saved = await callMethod(app, "config.saveMcp", {
+      scope: "workspace",
+      workspaceId: first.workspace.id,
+      entry: { id: "demo", transport: "stdio", command: "node" },
+    });
+
+    // 只刷改到的那个项目；两个 Scope 都还是原来那个实例（一个都没重建）
+    expect(saved.applied.refreshedWorkspaceIds).toEqual([first.workspace.id]);
+    expect(app.scopeRegistry.peek(first.workspace.id)).toBe(firstScope);
+    expect(app.scopeRegistry.peek(second.workspace.id)).toBe(secondScope);
+    expect(app.scopeRegistry.size()).toBe(2);
   });
 
   it("推出去的通知按收件人那条连接的语言重新渲染（D8 / localizeEvent）", async () => {
@@ -913,13 +957,13 @@ describe("配置生效", () => {
 });
 
 describe("从磁盘重载（F-E1 / R63）", () => {
-  it("host.reload 回收受影响 Scope、合成一条通知，并回与 config.patch 同一份报告", async () => {
+  it("host.reload 刷新受影响 Scope、合成一条通知，并回与 config.patch 同一份报告", async () => {
     const fixture = await makeFixture();
     const app = await startApp(fixture, { scopeIdleTimeoutMs: 10 * 60 * 1000 });
     const { workspace } = await callMethod(app, "workspace.create", {
       cwd: fixture.workspaceDir.path,
     });
-    await app.scopeRegistry.acquire(workspace.id);
+    const scope = await app.scopeRegistry.acquire(workspace.id);
     app.scopeRegistry.release(workspace.id);
     expect(app.scopeRegistry.size()).toBe(1);
 
@@ -934,8 +978,10 @@ describe("从磁盘重载（F-E1 / R63）", () => {
       agents: true,
       mcp: true,
     });
-    expect(reloaded.applied.recycledWorkspaceIds).toEqual([workspace.id]);
-    expect(app.scopeRegistry.size()).toBe(0);
+    expect(reloaded.applied.refreshedWorkspaceIds).toEqual([workspace.id]);
+    // 重载同样只刷不拆：还是同一个 Scope
+    expect(app.scopeRegistry.peek(workspace.id)).toBe(scope);
+    expect(app.scopeRegistry.size()).toBe(1);
     expect(reloaded.applied.noticeId).not.toBeNull();
     expect(reloaded.applied.restartRequired).toBe(false);
     // 配置本身没被改（重载只读不写）
@@ -1111,7 +1157,7 @@ describe("对话的三个钩子", () => {
     // 不推流式事件：回包之后队列里不该再冒出增量或六态
     await wait(120);
     expect(client.queue.size()).toBe(0);
-    app.scopeRegistry.recycleAll();
+    app.scopeRegistry.disposeAll();
   });
 });
 

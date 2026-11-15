@@ -1071,7 +1071,7 @@ describe("真装配：交接线插件不替用户决定迁移（R59 / PRD §5）
       const scope = new Scope({
         cwd: dir,
         agentsDir,
-        config: {
+        getConfig: () => ({
           endpoints: [{ id: "e1", name: "端点", baseUrl: "https://example.test/v1", apiKey: "k" }],
           models: [
             {
@@ -1081,7 +1081,7 @@ describe("真装配：交接线插件不替用户决定迁移（R59 / PRD §5）
               tokenThresholds: { handoff: 100, guard: 200 },
             },
           ],
-        },
+        }),
       });
 
       const migrations: unknown[] = [];
@@ -1279,7 +1279,7 @@ describe("真装配：会话级模型与思考档位（F-B4 / F-B6）", () => {
     return new Scope({
       cwd: dir,
       agentsDir,
-      config: {
+      getConfig: () => ({
         endpoints: [{ id: "e1", name: "端点", baseUrl: "https://example.test/v1", apiKey: "k" }],
         models: [
           {
@@ -1297,7 +1297,7 @@ describe("真装配：会话级模型与思考档位（F-B4 / F-B6）", () => {
           },
         ],
         defaultModel: "model-2",
-      },
+      }),
     });
   }
 

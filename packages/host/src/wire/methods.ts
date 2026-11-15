@@ -177,7 +177,7 @@ export interface HostShutdownResult {
  * `host.reload` 出参：与 `config.patch` 同一份形状（`config` + `applied`）。
  *
  * `config` 是重载之后读到的配置（密钥仍是掩码），`applied` 说明重载了什么、哪些项目的 Scope
- * 被回收（随后按需重建）、合成的那一条通知是谁。客户端因此可以用与改配置同一套提示。
+ * 已就地刷新（不是被重建）、合成的那一条通知是谁。客户端因此可以用与改配置同一套提示。
  */
 export interface HostReloadResult {
   config: ConfigView;
@@ -943,7 +943,7 @@ export interface ConfigPatch {
 /**
  * 改完配置后「做了什么」（PRD F-E2：改完不用重启就生效）。
  *
- * 哪些东西被重载、哪些 Scope 被回收重连 MCP，都作为事实回报 —— 界面据此提示「已生效」，
+ * 哪些东西被重载、哪些 Scope 已就地刷新能力，都作为事实回报 —— 界面据此提示「已生效」，
  * 用户不必去猜要不要重启。
  */
 export interface ConfigApplyReport {
@@ -955,9 +955,13 @@ export interface ConfigApplyReport {
     agents: boolean;
     mcp: boolean;
   };
-  /** 因为配置变化被回收（随后会重建）的 Workspace Scope */
-  recycledWorkspaceIds: string[];
-  /** 是否还需要重启才生效（配置变更走重连，PRD F-E2） */
+  /**
+   * 这些 Workspace 的 Scope 已**就地刷新**（重读配置 + 重新发现能力）。
+   *
+   * 不是被重建：Scope 实例还是同一个，正在跑的那一轮也不会被抽掉能力。
+   */
+  refreshedWorkspaceIds: string[];
+  /** 是否还需要重启才生效（配置变更靠刷新能力生效，PRD F-E2） */
   restartRequired: boolean;
   /** 这次改动合成的一条通知（PRD F-F9：一次改动合成一条通知） */
   noticeId: string | null;

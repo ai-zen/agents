@@ -7,7 +7,8 @@
  *   1. **读得安全**：端点密钥读出即掩码（F-F2），明文不出网；顺带把「这份配置哪里不对」
  *      结构化地报出来（F-A8：配错了要能当场修，问题指到具体字段）。
  *   2. **写得及时**：每次写都回报「应用了什么」—— 哪些能力被重载、哪些 Workspace 的 Scope
- *      被回收（随之重连 MCP）。改完不用重启（F-E2），客户端据此提示「已生效」。
+ *      已就地刷新（重读配置 + 重新发现能力，不重建 Scope）。改完不用重启（F-E2），客户端据此
+ *      提示「已生效」。
  *   3. **删得干净**：被引用的端点拒删并列出引用者（F-F2），默认项指向的东西不存在时
  *      要能指出来（F-F7）。
  *
@@ -70,8 +71,12 @@ export interface ConfigApplyChange {
 
 /** 改动生效之后能从组装层问到的事实 */
 export interface ConfigApplyOutcome {
-  /** 因为配置变化被回收（随后会重建）的 Workspace Scope */
-  recycledWorkspaceIds?: string[];
+  /**
+   * 已经**就地刷新**的 Workspace Scope。
+   *
+   * 语义是「能力刷新」，不是「被重建」：Scope 实例还是同一个，只是重读了配置、重新发现了能力。
+   */
+  refreshedWorkspaceIds?: string[];
   /** 这次改动合成的那一条通知（F-F9：一次改动合成一条通知） */
   noticeId?: string | null;
 }
@@ -79,8 +84,8 @@ export interface ConfigApplyOutcome {
 /**
  * 「让改动生效」的注入点。
  *
- * 谁能回收 Scope、谁能发通知，都是组装层知道的事（`ScopeRegistry` / 通知中心）；
- * 配置服务只描述「变了什么」，由这一跳去动手、并回报真的回收了哪些。
+ * 谁能刷新 Scope、谁能发通知，都是组装层知道的事（`ScopeRegistry` / 通知中心）；
+ * 配置服务只描述「变了什么」，由这一跳去动手、并回报真的刷新了哪些。
  */
 export interface ConfigApplyPort {
   apply(change: ConfigApplyChange): Promise<ConfigApplyOutcome> | ConfigApplyOutcome;
@@ -98,7 +103,7 @@ export interface ConfigServiceOptions {
   agents?: AgentRepository;
   /** 按 workspaceId 取 cwd（MCP 的 workspace 作用域要落到项目里） */
   findWorkspace?: WorkspaceCwdLookup;
-  /** 让改动生效的注入点；不注入时回报「已重载配置、没有 Scope 被回收」 */
+  /** 让改动生效的注入点；不注入时回报「已重载配置、没有 Scope 需要刷新」 */
   apply?: ConfigApplyPort;
   /** 时钟，测试注入用；缺省 `Date.now` */
   now?: () => number;
@@ -269,7 +274,7 @@ export class ConfigService {
    * `host.reload`（PRD F-E1 / 裁定 R63）：从磁盘重读一遍，让改动生效。
    *
    * 不写盘：改的是磁盘上的东西（`config.json`、助手定义、技能 / 工具目录、MCP 文件），这里只
-   * 把「哪几类要重新装配」交给注入的生效一跳（回收受影响的 Scope + 合成一条通知），出参与
+   * 把「哪几类要重新装配」交给注入的生效一跳（刷新受影响的 Scope + 合成一条通知），出参与
    * `config.patch` 同一份形状，客户端于是可以用同一套提示。
    */
   async reload(): Promise<HostReloadResult> {
@@ -281,8 +286,8 @@ export class ConfigService {
       applied: {
         appliedAt: new Date(this.now()).toISOString(),
         reloaded,
-        recycledWorkspaceIds: outcome.recycledWorkspaceIds ?? [],
-        // 重载本身不需要重启：Scope 回收之后下一次请求会按新读到的磁盘状态重建
+        refreshedWorkspaceIds: outcome.refreshedWorkspaceIds ?? [],
+        // 重载本身不需要重启：受影响的 Scope 已经就地刷过，剩下的下一轮发现会读到新磁盘状态
         restartRequired: false,
         noticeId: outcome.noticeId ?? null,
       },
@@ -747,8 +752,8 @@ export class ConfigService {
         agents: change.agents === true,
         mcp,
       },
-      recycledWorkspaceIds: outcome.recycledWorkspaceIds ?? [],
-      // 配置变更走「重连能力」这条路（F-E2），没有需要重启才生效的配置项
+      refreshedWorkspaceIds: outcome.refreshedWorkspaceIds ?? [],
+      // 配置变更靠「刷新能力」生效（F-E2），没有需要重启才生效的配置项
       restartRequired: false,
       noticeId: outcome.noticeId ?? null,
     };

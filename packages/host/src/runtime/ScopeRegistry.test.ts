@@ -1,5 +1,6 @@
 /**
- * `ScopeRegistry` 的用例：懒创建、依赖计数、10 分钟空闲回收、与 MCP 同生共死、全部回收后的通知。
+ * `ScopeRegistry` 的用例：懒创建、依赖计数、10 分钟空闲回收、与 MCP 同生共死、全部销毁后的通知，
+ * 以及配置生效那条路（`refreshWorkspace`：就地刷，不销毁重建）。
  *
  * 时间用假时钟（`ManualClock`）推进，不真等十分钟；Scope 用真的 SDK `Scope` 装一个记账式
  * 插件，于是「回收 = `Scope.dispose()` = MCP 连接断开」这条链路是完整跑的，断言落在插件的
@@ -7,7 +8,8 @@
  */
 
 import { beforeEach, describe, expect, it } from "vitest";
-import type { Scope } from "@ai-zen/agents-sdk";
+import { Scope } from "@ai-zen/agents-sdk";
+import type { AppConfig } from "@ai-zen/agents-sdk";
 
 import {
   createWorkspaceScopeFactory,
@@ -156,7 +158,7 @@ describe("ScopeRegistry", () => {
     expect(notified).toBe(1);
   });
 
-  it("recycleAll：空闲的立刻回收，被持有的等最后一次 release 再回收", async () => {
+  it("disposeAll：空闲的立刻销毁，被持有的等最后一次 release 再销毁", async () => {
     const { factory, plugin } = createTrackingFactory();
     const registry = new ScopeRegistry({ createScope: factory, clock });
 
@@ -164,7 +166,7 @@ describe("ScopeRegistry", () => {
     registry.release("ws-idle");
     await registry.acquire("ws-busy");
 
-    await registry.recycleAll();
+    await registry.disposeAll();
     await flushMicrotasks();
 
     // 空闲的那个已经没了；被持有的那个还在（不在别人用着的时候抽能力）
@@ -175,6 +177,47 @@ describe("ScopeRegistry", () => {
     await flushMicrotasks();
     expect(registry.size()).toBe(0);
     expect(plugin.disposeCalls).toBe(2);
+  });
+
+  it("refreshWorkspace：就地刷同一个 Scope（重读配置 + 重新发现），不销毁也不重建", async () => {
+    let config: AppConfig = { endpoints: [], models: [] };
+    const plugin = new RecordingScopePlugin();
+    const scope = new Scope({ getConfig: () => config, agentsDir: "/tmp/ws/agents", cwd: "/tmp/ws" });
+    scope.use(plugin);
+    await scope.init();
+
+    let created = 0;
+    const registry = new ScopeRegistry({
+      createScope: async () => {
+        created += 1;
+        return scope;
+      },
+      clock,
+    });
+    await registry.acquire("ws-1");
+    registry.release("ws-1");
+
+    const next: AppConfig = { endpoints: [], models: [], maxToolOutput: 1234 };
+    config = next;
+    await registry.refreshWorkspace("ws-1");
+
+    // 刷的是同一个实例：读到的配置是新的，能力重新发现了一轮，但谁也没被销毁
+    expect(registry.peek("ws-1")).toBe(scope);
+    expect(scope.config).toBe(next);
+    expect(plugin.discoverCalls).toBe(2); // init 一次 + 刷新一次
+    expect(plugin.disposeCalls).toBe(0);
+    expect(created).toBe(1);
+    expect(registry.size()).toBe(1);
+  });
+
+  it("refreshWorkspace：不存在的就不刷（不为刷新去创建一个 Scope）", async () => {
+    const { factory, created } = createTrackingFactory();
+    const registry = new ScopeRegistry({ createScope: factory, clock });
+
+    await registry.refreshWorkspace("ws-unknown");
+
+    expect(created).toEqual([]);
+    expect(registry.size()).toBe(0);
   });
 
   it("disposeWorkspace：Workspace 被删时不等引用归零", async () => {

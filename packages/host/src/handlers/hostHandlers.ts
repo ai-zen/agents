@@ -9,7 +9,7 @@
  * `host.hello` / `host.setLanguage` / `asset.*` 由接线层自己接管（语言是连接状态、
  * 上传要按连接分帧），这里不重复注册。
  *
- * `host.reload`（F-E1）在这里只做转发：重载是「让磁盘上的改动生效」，那条路（回收 Scope、
+ * `host.reload`（F-E1）在这里只做转发：重载是「让磁盘上的改动生效」，那条路（刷新 Scope、
  * 合成一条通知）的持有者是配置服务。
  *
  * 用量不在这一域（裁定 2026-11-13）：F-I5 的「本轮 / 累计（含子 Agent）/ 速率」由
@@ -33,7 +33,7 @@ export interface HostHandlerDeps {
   startedAt: string;
   /** 请求收尾（`host.shutdown`）：单根排程，先让回包写出去 */
   requestStop: (reason?: string) => void;
-  /** 从磁盘重载（`host.reload`）：配置服务那边跑「生效」那条路（回收 Scope + 合成通知） */
+  /** 从磁盘重载（`host.reload`）：配置服务那边跑「生效」那条路（刷新 Scope + 合成通知） */
   reload: () => Promise<HostReloadResult>;
   /** 升级判定与重启排程（磁盘版本归单根去读，这里只把结论转给客户端） */
   upgrade: HostUpgradeHandler;

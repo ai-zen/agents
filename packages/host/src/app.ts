@@ -12,7 +12,7 @@
  *
  * 方法实现不在这里：每个域的 handler 在 `handlers/`，由 {@link createHandlers} 拼成一张表交给
  * `WsHub`。本文件只给它们提供持有者（服务、运行时、配置、时钟）与几个只有它才接得起来的钩子：
- *   - **配置生效**（`ConfigApplyPort`）：改完配置要回收受影响的 Scope（F-E2）并发一条通知（F-F9）；
+ *   - **配置生效**（`ConfigApplyPort`）：改完配置要刷新受影响的 Scope（F-E2）并发一条通知（F-F9）；
  *   - **Scope 装配**（`ScopeRegistry` 的工厂）：能力目录由 `DiscoveryService` 按 cwd 算好（R54/L9）；
  *   - **退出判据**（`checkExit`）：连接数、在跑的轮次、Scope 三个来源都收敛到一处。
  */
@@ -547,7 +547,7 @@ export class HostApp {
       emit: (name, payload) => this.emitEvent(name, payload),
       now: () => this.clock.now(),
     });
-    // 配置改完的「生效」一跳：回收 Scope（重连 MCP）+ 合成一条通知（F-E2 / F-F9）
+    // 配置改完的「生效」一跳：刷新 Scope（重读配置 + 重新发现，MCP 连接跟着对账）+ 合成一条通知
     this.configService = new ConfigService({
       configManager: this.configManager,
       models: this.modelService,
@@ -842,7 +842,7 @@ export class HostApp {
     }
     // Scope 一起拆掉：MCP 连接是它持有的，进程退出之后没有别人会替它关（D28 同生共死）
     try {
-      await this.scopeRegistry.recycleAll();
+      await this.scopeRegistry.disposeAll();
     } catch (error) {
       this.logger.warn("收尾时回收 Scope 失败", { error: describeError(error) });
     }
@@ -996,7 +996,7 @@ export class HostApp {
       questionsFor: async (conversationId) =>
         (await this.questionService.list({ conversationId })).questions,
       upgrade: (params) => this.upgradeHost(params),
-      // 从磁盘重载（F-E1 / R63）：走配置服务那条「生效」路（回收 Scope + 合成一条通知）；
+      // 从磁盘重载（F-E1 / R63）：走配置服务那条「生效」路（刷新 Scope + 合成一条通知）；
       // 思考策略表是启动时的快照，重载时一并重读（否则改完档位表要等 setThinking 才生效）
       reload: async () => {
         const report = await this.configService.reload();
@@ -1246,36 +1246,44 @@ export class HostApp {
   // -------------------------------------------------------------------------
 
   /**
-   * 把「配置变了」这件事办成两件具体的事：回收受影响的能力、合成一条通知。
+   * 把「配置变了」这件事办成两件具体的事：刷新受影响的能力、合成一条通知。
    *
-   * 回收的粒度按改动范围分：只改了某个项目的 MCP（`workspace` 作用域）→ 只拆那个项目的
-   * Scope；其余改动（端点 / 模型 / 上限 / 用户级 MCP）影响所有 Scope → 全部回收。
-   * `recycleAll` 对正被持有的 Scope 是「打完标记等它释放」，所以报告里的 id 是
-   * 「将会重建的那些」—— 正在跑的那一轮不会在写到一半时被抽掉能力（R52）。
+   * 配置改动的本质是「磁盘上几个 json 变了」——**不拆任何 Scope**：对已经建好的那个调一次
+   * `Scope.refresh()`（重读配置 + 各插件重新发现，MCP 连接跟着对账），实例还是同一个，
+   * 正在跑的那一轮也不会被抽掉能力（R52）。
    */
   private createApplyPort(): ConfigApplyPort {
     return {
       apply: async (change: ConfigApplyChange): Promise<ConfigApplyOutcome> => {
-        const recycledWorkspaceIds = await this.recycleScopesFor(change);
+        const refreshedWorkspaceIds = await this.refreshScopesFor(change);
         const notice = await this.noticeService.create({
           level: "info",
           code: "notice.settingsApplied",
           duration: APPLIED_NOTICE_SECONDS,
         });
-        return { recycledWorkspaceIds, noticeId: notice.id };
+        return { refreshedWorkspaceIds, noticeId: notice.id };
       },
     };
   }
 
-  private async recycleScopesFor(change: ConfigApplyChange): Promise<string[]> {
-    const held = this.scopeRegistry.workspaceIds();
-    if (change.mcp && !change.config && change.workspaceIds.length > 0) {
-      const targets = change.workspaceIds.filter((id) => held.includes(id));
-      for (const workspaceId of targets) await this.scopeRegistry.disposeWorkspace(workspaceId);
-      return targets;
+  /**
+   * 刷新配置改动涉及的、**已经存在**的 Scope（就地刷，不重建）。
+   *
+   * 刷哪些按改动范围定：只改了某个项目的 MCP（`workspace` 作用域）→ 只刷那几个项目现有的
+   * Scope；其余改动（端点 / 模型 / 上限 / 用户级 MCP）影响所有 Scope → 现存的全都刷。
+   * 没有的跳过：不为刷新去创建一个 Scope（下一段对话 acquire 时会按新配置建）。
+   */
+  private async refreshScopesFor(change: ConfigApplyChange): Promise<string[]> {
+    const existing = this.scopeRegistry.workspaceIds();
+    const wanted =
+      change.mcp && !change.config && change.workspaceIds.length > 0
+        ? change.workspaceIds
+        : existing;
+    const targets = wanted.filter((workspaceId) => existing.includes(workspaceId));
+    for (const workspaceId of targets) {
+      await this.scopeRegistry.refreshWorkspace(workspaceId);
     }
-    await this.scopeRegistry.recycleAll();
-    return held;
+    return targets;
   }
 
   // -------------------------------------------------------------------------
