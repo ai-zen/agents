@@ -1069,10 +1069,14 @@ export class HostApp {
   /**
    * 一轮结算之后：到了交接线就在对话停下之后问用户（R59 / F-D2 / D22）。
    *
-   * 三个前提任缺一条都不问：模型配了交接线且这一轮真的越过了它、对话已经停下（不在流式中途）、
-   * 没有已挂着的交接问题（多端看到的是同一行）。问与答之后的事都归 `QuestionService`。
+   * 前提任缺一条都不问：模型配了交接线且这一轮真的越过了它、这一轮是用户本人叫起来的、
+   * 对话已经停下（不在流式中途）、没有已挂着的交接问题（多端看到的是同一行）。
+   * 问与答之后的事都归 `QuestionService`。
    */
   private async askHandoffAfterSettle(facts: TurnSettledFacts): Promise<void> {
+    // 自动推送叫起来的轮次没有人在看这条连接：给一段没人盯着的对话挂交接问题是噪音。
+    // 要问就等用户自己说话那一轮（那一轮结算时报的就是 `"user"`）。
+    if (facts.source !== "user") return;
     if (facts.handoffTokens <= 0) return;
     if (facts.promptTokens < facts.handoffTokens) return;
     if (this.runRegistry.isRunning(facts.conversationId)) return;

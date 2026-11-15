@@ -46,6 +46,7 @@ import {
   addUsage,
   AgentNS as AgentNSValue,
   generateMessageId,
+  inboxEntryContent,
   reconcileAbortedMessages,
   reconcileAbortedToolRounds,
   sumUsage,
@@ -239,6 +240,12 @@ export interface ChatRunParams {
   input: MessageInput;
   /** 这一轮是哪条连接发起的语言（D8；缺省用注入的默认语言） */
   language?: Language;
+  /**
+   * 这一轮是谁叫起来的（core 的 `InboxEntry.source` 同义）：
+   * `"user"`（缺省）= 用户自己发的；其他值 = 某个外部来源自动推送，正文最前面会带一行
+   * `// 这条消息来自 <source> 自动推送（<时间>）`。
+   */
+  source?: string;
 }
 
 /**
@@ -251,6 +258,8 @@ export interface ChatRunParams {
 export interface TurnSettledFacts {
   conversationId: string;
   outcome: RunOutcome;
+  /** 这一轮是谁叫起来的（与 `ChatRunParams.source` 同义；`"user"` = 用户本人发的） */
+  source: string;
   /** 这一轮的 `prompt_tokens`（结算快照里的本轮用量） */
   promptTokens: number;
   /** 生效模型的交接线；`0` 表示没配 */
@@ -393,6 +402,27 @@ function toolKey(toolCall: AgentNS.ToolCall): string {
 /** 两位小数（速率是给人看的一个数，不是账目） */
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+/** 唯一一个不需要加来源注释的 source：用户本人说的话（与 core 的 `InboxEntry.source` 同义） */
+const SOURCE_USER = "user";
+
+/**
+ * 正文按来源包一层：`"user"`（或缺省）原样返回，其他来源在正文最前面加一行
+ * `// 这条消息来自 <source> 自动推送（<时间>）`。
+ *
+ * 拼装不在这里写第二遍：注释的形状（`注释\n\n正文` / 分段内容在最前面插一段 text）归 core 的
+ * `inboxEntryContent`，宿主只是把同一个纯函数用在「宿主自己造 user 消息」这条路上 —— 于是
+ * 自动推送的消息不论从 inbox 落地还是从这一轮直接发出，读者看到的是同一行话。
+ */
+function withSourceNote(
+  content: AgentNS.MessageContent,
+  source: string,
+  messageId: string,
+  createdAt: string,
+): AgentNS.MessageContent {
+  if (source === SOURCE_USER) return content;
+  return inboxEntryContent({ messageId, source, priority: "high", content, createdAt });
 }
 
 // ---------------------------------------------------------------------------
@@ -583,6 +613,8 @@ interface TurnSessionInit {
   assistantMessageId: string;
   handle: RunHandle;
   language: Language;
+  /** 这一轮是谁叫起来的（`ChatRunParams.source` 定下来的那一份） */
+  source: string;
   acceptedAt: string;
   startedAtMs: number;
   /** 结算收尾之后通知一声（`ChatRunner` 用它把这一轮从「现场」表里摘掉） */
@@ -613,6 +645,13 @@ class TurnSession implements ChatTurn {
   /** 落库的内容（`__asset_id` 形态）：它就是用户挂的那几张图 */
   private readonly storedContent: AgentNS.MessageContent;
   private readonly language: Language;
+  /**
+   * 这一轮是谁叫起来的（与 `ChatRunParams.source` 同义）。
+   *
+   * 两个用处：跑中入队的条目带上它（core 落地时据此加来源注释）、结算时报给
+   * `TurnSettledFacts`（自动推送叫起来的轮次不问交接）。
+   */
+  private readonly source: string;
   private readonly handle: RunHandle;
   private readonly options: ChatRunnerOptions;
   private readonly clock: Clock;
@@ -702,6 +741,7 @@ class TurnSession implements ChatTurn {
     this.content = init.content;
     this.storedContent = init.storedContent ?? init.content;
     this.language = init.language;
+    this.source = init.source;
     this.attachments = init.attachments;
     this.userMessageId = init.userMessageId;
     this.assistantMessageId = init.assistantMessageId;
@@ -751,6 +791,8 @@ class TurnSession implements ChatTurn {
     content: AgentNS.MessageContent;
     storedContent?: AgentNS.MessageContent;
     attachments: AttachmentOutcome[];
+    /** 这一条是谁推来的（缺省 `"user"`）；落地时由 core 据此决定要不要加来源注释 */
+    source?: string;
   }): QueuedTurn | null {
     if (this.closed || this.aborted || this.handle.aborted) return null;
 
@@ -758,8 +800,9 @@ class TurnSession implements ChatTurn {
     const userMessageId = generateMessageId();
     const entry: AgentNS.InboxEntry = {
       messageId: userMessageId,
-      // 用户自己说的话：不带「这条消息来自…自动推送」那行注释（core 只给非 user 来源加）
-      source: "user",
+      // 来源照抄投递方：`"user"`（缺省）不带「这条消息来自…自动推送」那行注释，其他来源由
+      // core 在落地那一刻（`inboxEntryContent`）加上 —— 这里不自己拼那句话
+      source: input.source ?? SOURCE_USER,
       // 高优先：落点是「工具轮跑完的边界」—— 不打断模型正在吐的那一段，又能尽快接住
       priority: "high",
       content: input.content,
@@ -1388,6 +1431,7 @@ class TurnSession implements ChatTurn {
       onSettled({
         conversationId: this.conversationId,
         outcome,
+        source: this.source,
         promptTokens: usage.turn.prompt_tokens,
         handoffTokens: model?.tokenThresholds.handoff ?? 0,
         language: this.language,
@@ -1734,6 +1778,20 @@ export class ChatRunner {
       const userId = this.newId();
       const assistantId = this.newId();
 
+      // 这一轮是谁叫起来的：缺省就是用户本人发的话（那时一个字都不动）。其他来源（将来由别的
+      // 会话的结果唤醒）把来源写进正文最前面那行注释 —— 否则模型会把那条结果当成用户说的话。
+      const source = params.source ?? SOURCE_USER;
+      // 两份内容各包各的（且都只包一次）：落库那份决定用户下次回看时看到什么，发给模型那份
+      // 决定模型看到什么。core 的 inbox 落地路径也是这两份一致（`inboxEntryMessage` 用包过的
+      // 内容当消息内容）；`storedContent` 没给时两份本来就是同一份，包出来的也各自独立。
+      const content = withSourceNote(prepared.content, source, userId, acceptedAt);
+      const storedContent = withSourceNote(
+        prepared.storedContent ?? prepared.content,
+        source,
+        userId,
+        acceptedAt,
+      );
+
       // 用户消息与助手占位都在请求返回之前落库（L6：客户端拿着这两个 id 接流）。
       // 用户消息存的是 `__asset_id` 形态（`storedContent`），不是这一次发送的产物
       await this.options.messages.upsertMany([
@@ -1743,7 +1801,7 @@ export class ChatRunner {
           role: AgentNSValue.Role.User as string,
           status: AgentNSValue.MessageStatus.Completed as string,
           omit: false,
-          content: (prepared.storedContent ?? prepared.content) as unknown as MessageUpsertInput["content"],
+          content: storedContent as unknown as MessageUpsertInput["content"],
           data: null,
           createdAt: nowMs,
         },
@@ -1759,16 +1817,19 @@ export class ChatRunner {
         },
       ]);
 
-      // 用户消息刚落库：把 content 里的 `__asset_id` 记成关系行（同一 message+asset 只一行）
-      await this.linkMessageAssets(conversationId, userId, prepared.storedContent ?? prepared.content);
+      // 用户消息刚落库：把 content 里的 `__asset_id` 记成关系行（同一 message+asset 只一行）。
+      // 扫的是落库那一份（来源注释只是前面多一段文本，`__asset_id` 段原封不动地还在后面）
+      await this.linkMessageAssets(conversationId, userId, storedContent);
 
       session = new TurnSession(this.options, {
         conversation,
         scope,
         createAgent: this.agentFactory(),
         history,
-        content: prepared.content,
-        ...(prepared.storedContent === undefined ? {} : { storedContent: prepared.storedContent }),
+        content,
+        // 没给 `storedContent` 时不给这一项：`TurnSession` 自己退回去用 `content`（两份同源）
+        ...(prepared.storedContent === undefined ? {} : { storedContent }),
+        source,
         attachments: prepared.attachments,
         userMessageId: userId,
         assistantMessageId: assistantId,
@@ -1863,6 +1924,7 @@ export class ChatRunner {
       content: prepared.content,
       attachments: prepared.attachments,
       ...(prepared.storedContent === undefined ? {} : { storedContent: prepared.storedContent }),
+      ...(params.source === undefined ? {} : { source: params.source }),
     });
   }
 

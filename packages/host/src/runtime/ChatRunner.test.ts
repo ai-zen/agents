@@ -616,6 +616,111 @@ describe("ChatRunner：cwd 不再按轮拼进消息（F-D9）", () => {
   });
 });
 
+describe("ChatRunner：这一轮是谁叫起来的（source）", () => {
+  /** 将来唤醒这一轮的那个来源（取值口径与 core 的 `InboxEntry.source` 一致） */
+  const AUTO_SOURCE = "会话「会话 3」";
+
+  /** core 给非 user 来源加的那行注释（形状归 core 的 `inboxEntryContent`，这里只按它的口径断言） */
+  function noteOf(source: string, createdAt: string): string {
+    return `// 这条消息来自 ${source} 自动推送（${createdAt}）`;
+  }
+
+  it("非 user 来源：落库那份与交给 agent 那份都以来源注释开头，正文在其后", async () => {
+    const agent = new FakeAgent(plainRounds());
+    const custom = createHarness({ agent });
+
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "别的会话跑完了，结果是这样" },
+      source: AUTO_SOURCE,
+    });
+    const settlement = await turn.done;
+
+    const expected = `${noteOf(AUTO_SOURCE, turn.acceptedAt)}\n\n别的会话跑完了，结果是这样`;
+
+    // ① 库里那份：用户下次回看到的就是它
+    expect(custom.store.peek(turn.userMessageId)?.content).toBe(expected);
+    // ② 交给 agent 那份：模型这一轮收到的用户消息，与库里那份逐字相同（注释只包一次）
+    const sent = agent.messages.filter((message) => message.id === turn.userMessageId);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.content).toBe(expected);
+    // 结算快照里的同一份内容也是它
+    expect(settlement.produced.find((m) => m.id === turn.userMessageId)?.content).toBe(expected);
+  });
+
+  it("不给 source（用户自己发的）：两份都原样，一个字都不变", async () => {
+    const agent = new FakeAgent(plainRounds());
+    const custom = createHarness({ agent });
+
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "在吗" },
+    });
+    await turn.done;
+
+    expect(custom.store.peek(turn.userMessageId)?.content).toBe("在吗");
+    const sent = agent.messages.filter((message) => message.id === turn.userMessageId);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.content).toBe("在吗");
+  });
+
+  it("跑中入队也穿透来源：带 source 的那条落地带注释，不带的原样", async () => {
+    const toolGate = deferred<void>();
+    const agent = new FakeAgent([
+      {
+        deltas: [{ content: "我查一下。" }],
+        toolCalls: [{ id: "call-1", name: "read", arguments: "{}" }],
+        toolGate: toolGate.promise,
+      },
+      { deltas: [{ content: "查到了。" }] },
+    ]);
+    const custom = createHarness({ agent });
+
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "看看文件" },
+    });
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (agent.messages.some((message) => message.role === AgentNSValue.Role.Tool)) break;
+      await flushMicrotasks();
+    }
+
+    const pushed = await custom.runner.enqueue({
+      conversationId: CONVERSATION_ID,
+      input: { content: "会话 3 的结果" },
+      source: AUTO_SOURCE,
+    });
+    const typed = await custom.runner.enqueue({
+      conversationId: CONVERSATION_ID,
+      input: { content: "我自己补一句" },
+    });
+    expect(pushed).not.toBeNull();
+    expect(typed).not.toBeNull();
+
+    // 来源照抄进 inbox 条目：落地时由 core 决定要不要加注释（宿主不自己拼那句话）
+    expect(agent.inbox.map((entry) => entry.source)).toEqual([AUTO_SOURCE, "user"]);
+    expect(agent.inbox.map((entry) => entry.content)).toEqual(["会话 3 的结果", "我自己补一句"]);
+
+    toolGate.resolve();
+    const settlement = await turn.done;
+
+    const landedOf = (id: string) => settlement.messages.find((message) => message.id === id);
+    // core 落地那一刻（`inboxEntryContent`）给它加了注释行，正文在注释之后
+    // （注释里的时间是条目自己的 `createdAt`，所以这一条按形状断言）
+    const pushedContent = landedOf(pushed!.userMessageId)?.content;
+    expect(typeof pushedContent).toBe("string");
+    const [noteLine, ...body] = (pushedContent as string).split("\n\n");
+    expect(noteLine).toMatch(/^\/\/ 这条消息来自 会话「会话 3」 自动推送（.+）$/);
+    expect(body.join("\n\n")).toBe("会话 3 的结果");
+    // 同一份内容进了库（用户回看时看到的也是它）
+    expect(custom.store.peek(pushed!.userMessageId)?.content).toBe(pushedContent);
+
+    // 不给来源的那条：一个字都不变
+    expect(landedOf(typed!.userMessageId)?.content).toBe("我自己补一句");
+    expect(custom.store.peek(typed!.userMessageId)?.content).toBe("我自己补一句");
+  });
+});
+
 describe("ChatRunner：一轮结算之后报事实（R59）", () => {  it("结算时回调 onTurnSettled，带本轮用量 / 交接线 / 语言", async () => {
     const settled: TurnSettledFacts[] = [];
     const custom = createHarness({
