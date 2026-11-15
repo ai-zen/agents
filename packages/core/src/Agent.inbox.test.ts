@@ -272,6 +272,156 @@ describe("Agent.inbox", () => {
     });
   });
 
+  describe("deliverAll（整批投递）", () => {
+    it("静止态整批投递：N 条一次落地成 N 条 User 消息、只起一段、只一次请求", async () => {
+      const { client, create, bodies } = createRecordingClient([textRound("三条都收到了")]);
+      const agent = new Agent({ client, model: "gpt-4", messages: [Message.System("助手")] });
+
+      const receipts = agent.deliverAll([
+        { source: "user", priority: "high", content: "甲", messageId: "batch-1" },
+        { source: "会话「补测试」", priority: "high", content: "乙" },
+        { source: "会话「复查」", priority: "low", content: "丙" },
+      ]);
+
+      // 回执与入参一一对应；`woke` 是**整批一次**行为，于是每条都是 true
+      expect(receipts).toHaveLength(3);
+      expect(receipts[0]!.messageId).toBe("batch-1");
+      expect(receipts.map((receipt) => receipt.accepted)).toEqual([true, true, true]);
+      expect(receipts.map((receipt) => receipt.woke)).toEqual([true, true, true]);
+
+      // 同步就已经全部落地（`flushInbox` 不看优先级：静止态每一条都是这一段存在的理由）
+      expect(agent.inbox).toHaveLength(0);
+      const users = agent.messages.filter((message) => message.role === AgentNS.Role.User);
+      expect(users.map((message) => message.id)).toEqual(
+        receipts.map((receipt) => receipt.messageId),
+      );
+      // 第一条（source 为 user）原样，后两条各自带来源注释
+      expect(users[0]!.content).toBe("甲");
+      expect(users[1]!.content as string).toMatch(withSourceNote("会话「补测试」", "乙"));
+      expect(users[2]!.content as string).toMatch(withSourceNote("会话「复查」", "丙"));
+
+      await settled(agent);
+
+      // 只起了一段、只有一次请求：那一次请求里三条都在（没有「先落一条起段、其余下个边界」）
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(
+        messagesOfRole(bodies[0], AgentNS.Role.User).map((message: any) => message.content),
+      ).toHaveLength(3);
+      // assistant 只有一条（多起一段就会多一条回答）
+      const assistants = agent.messages.filter(
+        (message) => message.role === AgentNS.Role.Assistant,
+      );
+      expect(assistants).toHaveLength(1);
+      expect(assistants[0]!.content).toBe("三条都收到了");
+      expect(agent.runStatus).toBe("idle");
+    });
+
+    it("静止态整批投递：`status(running)` 仍先于本段第一条 `message`", async () => {
+      const { client } = createRecordingClient([textRound("收到")]);
+      const agent = new Agent({ client, model: "gpt-4", messages: [Message.System("助手")] });
+
+      const seen: string[] = [];
+      agent.events.on("status", (ctx: { to: AgentNS.RunStatus }) => seen.push(`status:${ctx.to}`));
+      agent.events.on("message", (message: AgentNS.Message) =>
+        seen.push(`message:${message.role}`),
+      );
+
+      agent.deliverAll([
+        { source: "user", priority: "high", content: "一" },
+        { source: "user", priority: "high", content: "二" },
+      ]);
+      await settled(agent);
+
+      // 第一拍必须是「这一段开始了」，紧接着才是那两条 User 消息
+      expect(seen[0]).toBe("status:running");
+      expect(seen.slice(1, 3)).toEqual(["message:user", "message:user"]);
+    });
+
+    it("跑中的整批投递：三条在同一次内循环边界落地，只多一次请求", async () => {
+      const { client, create, bodies } = createRecordingClient([
+        textRound("先回一句"),
+        textRound("三条一起收到了"),
+      ]);
+      const agent = new Agent({ client, model: "gpt-4", messages: [Message.System("助手")] });
+
+      let receipts: AgentNS.DeliveryReceipt[] | undefined;
+      agent.use({
+        onInnerLoopEnd: once(() => {
+          receipts = agent.deliverAll([
+            { source: "user", priority: "high", content: "甲" },
+            { source: "user", priority: "high", content: "乙" },
+            { source: "user", priority: "high", content: "丙" },
+          ]);
+        }),
+      });
+
+      agent.append(Message.User("开始"));
+      await agent.run();
+
+      // 跑中投递不算叫醒（段本来就在跑），整批一个值
+      expect(receipts!.map((receipt) => receipt.woke)).toEqual([false, false, false]);
+
+      // 第一圈收尾 → 三条 high 被**同一个**取件点一次取走 → 第二圈
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(
+        messagesOfRole(bodies[1], AgentNS.Role.User).map((message: any) => message.content),
+      ).toEqual(["开始", "甲", "乙", "丙"]);
+      expect(
+        agent.messages
+          .filter((message) => message.role === AgentNS.Role.User)
+          .map((message) => message.content),
+      ).toEqual(["开始", "甲", "乙", "丙"]);
+      expect(agent.inbox).toHaveLength(0);
+    });
+
+    it("空白批：不起段、不叫醒、不落地任何消息", async () => {
+      const { client, create } = createRecordingClient([textRound("不该被请求到")]);
+      const agent = new Agent({ client, model: "gpt-4", messages: [Message.System("助手")] });
+
+      const receipts = agent.deliverAll([]);
+
+      expect(receipts).toEqual([]);
+      expect(agent.runStatus).toBe("idle");
+      expect(agent.inbox).toHaveLength(0);
+      expect(agent.messages).toHaveLength(1); // 只有那条 System
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it("单条 `deliver` 与 `deliverAll([...])` 是同一个行为（两半实现只有一份）", async () => {
+      const one = createRecordingClient([textRound("一")]);
+      const singleAgent = new Agent({
+        client: one.client,
+        model: "gpt-4",
+        messages: [Message.System("助手")],
+      });
+      const two = createRecordingClient([textRound("一")]);
+      const batchAgent = new Agent({
+        client: two.client,
+        model: "gpt-4",
+        messages: [Message.System("助手")],
+      });
+
+      const single = singleAgent.deliver({
+        source: "user",
+        priority: "high",
+        content: "一条",
+        messageId: "same-1",
+      });
+      const batch = batchAgent.deliverAll([
+        { source: "user", priority: "high", content: "一条", messageId: "same-1" },
+      ]);
+      await settled(singleAgent);
+      await settled(batchAgent);
+
+      expect(single).toEqual({ messageId: "same-1", accepted: true, woke: true });
+      expect(batch).toEqual([single]);
+      // 两条路落出来的段同形（同样的消息序列）
+      expect(batchAgent.messages.map((message) => message.role)).toEqual(
+        singleAgent.messages.map((message) => message.role),
+      );
+    });
+  });
+
   describe("取件点（内循环末）：high", () => {
     it("工具跑完之后立即插入：下一次请求里出现这条 User，且排在工具结果之后", async () => {
       const { client, create, bodies } = createRecordingClient([
@@ -661,7 +811,9 @@ describe("Agent.inbox", () => {
       expect(firstLine).toBe("// 这条消息来自 tool 自动推送（2026-11-15T10:23:04.000Z）");
       expect(firstLine).toContain(createdAt);
       // 注释行之后空一行再接正文
-      expect(content).toBe("// 这条消息来自 tool 自动推送（2026-11-15T10:23:04.000Z）\n\n后台任务跑完了");
+      expect(content).toBe(
+        "// 这条消息来自 tool 自动推送（2026-11-15T10:23:04.000Z）\n\n后台任务跑完了",
+      );
     });
 
     it("source 为 user 时原样，没有注释行", () => {

@@ -386,6 +386,9 @@ export class Agent extends AgentContext {
   /**
    * 投递一条待发内容：**同步**入队，静止态顺手把段叫醒，立刻返回回执。
    *
+   * 它就是 {@link deliverAll} 的单条形态（`deliverAll([input])[0]`），两半的实现只有一份。
+   * 客户端发消息、「一条就要一条」的场合继续用它。
+   *
    * ## 两个平级的输入口之一
    *
    * `send(content)` 是「我发起，等我跑完」；`deliver(entry)` 是「这条给你，有空就跑」。
@@ -428,7 +431,36 @@ export class Agent extends AgentContext {
    * 取件点带走、再问一遍。所以落地排在 `run()` 之前 —— `flushInbox` 的唯一调用方就是这里。
    */
   deliver(input: AgentNS.InboxInput): AgentNS.DeliveryReceipt {
-    const entry = this.enqueueInbox(input);
+    return this.deliverAll([input])[0]!;
+  }
+
+  /**
+   * 整批投递：**先把全部条目入队，再只唤醒一次**。
+   *
+   * ## 为什么需要它（`deliver` 一条一条投是不够的）
+   *
+   * 静止态投第一条就 `flushInbox()` + 起段，于是「N 条同时到达」会变成「1 条落地起段，另外
+   * N-1 条在段内下一次内循环边界才落地」—— 那是**两处**取件时刻、两次请求，而不是一次整批。
+   * 本方法把「入队」全部做完之后才问一次「要不要叫醒」：静止态于是 `flushInbox()` 一次落成
+   * N 条 User 消息（这一段第一圈请求里就带着全部 N 条），跑着则全部交给那一段的取件点
+   * （同一档优先级在同一个边界被 `drainInbox` 一次取走）。
+   *
+   * 事件次序契约一个字没变：静止态整批投递时仍然 `status(running)` 先于本段第一条 `message`
+   * —— 置位仍由本方法自己拍，见这三拍。
+   *
+   * ## 空白批不叫醒
+   *
+   * `inputs` 为空时什么都不做（返回空数组）：没有条目的「叫醒」只会跑出一段对着旧历史自说
+   * 自话的空段。
+   *
+   * ## 回执
+   *
+   * 与入参一一对应（`messageId` 各自的、`accepted` 恒 true）；`woke` 这一批是**同一个值** ——
+   * 叫醒是一次行为，不属于某一条。
+   */
+  deliverAll(inputs: AgentNS.InboxInput[]): AgentNS.DeliveryReceipt[] {
+    if (inputs.length === 0) return [];
+    const entries = inputs.map((input) => this.enqueueInbox(input));
     // 先算「能不能叫醒」，再叫醒：下面那句 `setRunStatus("running")` 会把 `runStatus` 改掉，
     // 晚了再算就永远是 false。
     const parked = this.runStatus === "idle" || this.runStatus === "terminated";
@@ -436,8 +468,10 @@ export class Agent extends AgentContext {
     // 有一条消息可发（`run()` 那句「至少要有一条消息」的校验属于 `send()` 那一路；这里不经过
     // 它，也就不必再过一遍）。真想「空对话被投递开段」是调用方的特殊目的，不该在这里拦。
     if (parked && this.sendStatus === "idle") {
-      // 三拍的次序是硬契约（见方法头「唤醒这一拍的事件次序」）：宣告这一段开始了 → 队列落地 →
-      // 跑。宣告排在落地之前，按 `status` 建现场的人才接得住紧接着落地的那条 User 消息。
+      // 三拍的次序是硬契约（见 `deliver` 的「唤醒这一拍的事件次序」）：宣告这一段开始了 →
+      // 队列落地 → 跑。宣告排在落地之前，按 `status` 建现场的人才接得住紧接着落地的那几条
+      // User 消息。整批的好处正在「落地只发生一次」：`flushInbox` 一次掏空队列，这一段的第一
+      // 圈请求里就带着全部 N 条。
       this.setRunStatus("running");
       // 落地排在段体之前，但**不能**提到「叫不叫醒」的判定之前：没叫醒的那条（段在跑 / 受理
       // 在途）要留给那一段自己的取件点按优先级带走，这里不许抢跑 —— 抢了就等于「跑中的 high
@@ -453,17 +487,17 @@ export class Agent extends AgentContext {
       void this.runStarted(this.defaultSendContext()).catch((error: unknown) => {
         this.events.emit("error", error);
       });
-      return { messageId: entry.messageId, accepted: true, woke: true };
+      return entries.map((entry) => ({ messageId: entry.messageId, accepted: true, woke: true }));
     }
-    return { messageId: entry.messageId, accepted: true, woke: false };
+    return entries.map((entry) => ({ messageId: entry.messageId, accepted: true, woke: false }));
   }
 
   /**
-   * `deliver()` 的内部实现：补齐 id / 时间、推进数组、广播 `inbox`。
+   * `deliver()` / `deliverAll()` 的内部实现：补齐 id / 时间、推进数组、广播 `inbox`。
    *
    * 为什么它不对外：入队与「叫不叫醒」是同一件事的两半。拆成两个公开方法，调用方迟早只调
    * 一半 —— 推进去却不叫醒（条目滞留在队列里，直到下一次外部驱动）、或者叫醒却没推进去
-   * （空跑一段）。`deliver` 是唯一入口，两半就永远成对。
+   * （空跑一段）。两个投递入口是仅有的入口，两半就永远成对。
    * `messageId` 允许由投递方在**入队时**定下（宿主先把它告诉客户端做乐观回显，落地那条消息
    * 用同一个 id，同一条内容才不会画两遍）。
    */
@@ -573,8 +607,8 @@ export class Agent extends AgentContext {
    * 的每一条都是这一段存在的理由，谁先谁后只按入队顺序 —— 只落 high 会把 low 留在队列里，
    * 被叫醒的这一段就成了「半段」，还得靠下一次驱动补完。
    *
-   * 唯一调用方是 `deliver()`（静止态投递把段叫起来）。**唤醒前的落地只有这一个实现**，别在
-   * 段里再加第二个。
+   * 唯一调用方是 `deliverAll()`（静止态投递把段叫起来；单条 `deliver` 走的是同一个方法）。
+   * **唤醒前的落地只有这一个实现**，别在段里再加第二个。
    *
    * 用 `splice(0)` 一次掏空而不是 `drainInbox`：不看优先级，也就没有「逐条比一下」的必要；
    * 数组实例本身不换（外部拿着 `inbox` 的快照不会指向一份死队列）。
