@@ -14,7 +14,7 @@
  * `WsHub`。本文件只给它们提供持有者（服务、运行时、配置、时钟）与几个只有它才接得起来的钩子：
  *   - **配置生效**（`ConfigApplyPort`）：改完配置要刷新受影响的 Scope（F-E2）并发一条通知（F-F9）；
  *   - **Scope 装配**（`ScopeRegistry` 的工厂）：能力目录由 `DiscoveryService` 按 cwd 算好（R54/L9）；
- *   - **退出判据**（`checkExit`）：连接数、在跑的轮次、还活着的 Scope 三个来源都收敛到一处。
+ *   - **退出判据**（`checkExit`）：连接数与在跑的轮次两个来源都收敛到一处。
  */
 
 import { readFileSync } from "node:fs";
@@ -131,7 +131,11 @@ export interface ExitFacts {
   connections: number;
   /** 那一刻还在跑的轮次数（`idle` 时为 0） */
   runs: number;
-  /** 那一刻还持有几个 Workspace Scope（`idle` 时为 0） */
+  /**
+   * 收尾那一刻还持有几个 Workspace Scope（接下来 `disposeAll` 会把它们全部销毁）。
+   *
+   * 它**不是**判据，`idle` 时也可以大于 0：手里还剩 Scope 不代表还欠活。
+   */
   scopes: number;
 }
 
@@ -794,17 +798,16 @@ export class HostApp {
   }
 
   /**
-   * 退出判据（PRD L4 / 裁定 R53）：没有连接、没有在跑的轮次、也没有活着的 Scope —— 什么都不欠了。
+   * 退出判据（PRD L4 / 裁定 R53）：没有连接、没有在跑的轮次 —— 这个进程就没有存在意义了。
    *
    * 触发源只有两个，都不另起计时器：
    *   - 每轮结算（`onTurnSettled`）：最后一件欠着的事可能是刚跑完的这一轮；
    *   - `WsHub.onConnectionsChanged`：最后一条连接走了。
    *
-   * **Scope 仍然是判据的一部分**，但它现在不会自己消失（没有空闲计时、没有引用计数）：
-   * 活着就是有人显式持有它。于是「手里还有 Scope」意味着这个进程还持着那几套能力
-   * （MCP 连接就在里面），不该自己走 —— 要走就显式 `stop()` / `shutdown()`（收尾里
-   * `disposeAll` 会把它们连同 MCP 连接一起关掉）。反过来若把这个条件去掉，最后一个连接
-   * 断开就会连带拆掉全部 Scope，那等于把「回收」藏到了进程退出里，与本单的口径相反。
+   * 判据只剩「连接」与「在跑的轮次」两条：连接的开关是一个**明确事件**，不是计时器，而
+   * 「有人连着 / 有一轮在跑」才是「这个进程还有用」的判据。手里还持有 Scope 不构成欠活 ——
+   * 它们的存在意义就是服务连接，最后一个客户端走了就显式收尾
+   * （`shutdown` → `doStop` → `disposeAll`，Scope 与 MCP 连接一起拆）然后退出。
    *
    * 两个防止误退的口子：
    *   1. **还没被真正用过**时不判：只有握过手（凭证被接受）的连接才算「有人用过它」，
@@ -817,8 +820,8 @@ export class HostApp {
     try {
       if (this.hub.connectionInfos().length > 0) return;
       if (!this.served) return;
+      // 还有一轮在跑：不能把它掐死，等这一轮结算后由 `onTurnSettled` 再判一次
       if (this.runRegistry.size() > 0) return;
-      if (this.scopeRegistry.workspaceIds().length > 0) return;
       await this.shutdown("idle");
     } finally {
       this.checking = false;
@@ -875,7 +878,7 @@ export class HostApp {
   /**
    * 起一个低频自检：磁盘上的版本号变了（且已经是新的）就收尾退出，由启动方式重拉。
    *
-   * 这个定时器不是退出判据的触发源（判据只看连接、在跑的轮次与还活着的 Scope），
+   * 这个定时器不是退出判据的触发源（判据只看连接与在跑的轮次），
    * 它只把「包已经换了」这个事实变成一次重启。缺省的启动方式带 `unref()`：
    * 只有它还在跑时，也不该拦住进程退出。
    */

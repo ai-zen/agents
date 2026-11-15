@@ -32,7 +32,7 @@ import {
   type TempDir,
 } from "./net/TestSupport.js";
 import { BRIDGED_METHODS } from "./handlers/index.js";
-import { FakeAgent } from "./runtime/TestSupport.js";
+import { createFakeScope, deferred, FakeAgent } from "./runtime/TestSupport.js";
 import { Scope } from "@ai-zen/agents-sdk";
 import { transientScopeKey } from "./runtime/TransientRunner.js";
 import { Database } from "./storage/index.js";
@@ -525,6 +525,23 @@ function pathsOf(fixture: Fixture) {
 // 退出判据（PRD L4 / R53）
 // ---------------------------------------------------------------------------
 
+/** 一轮的 `send` 被闸门按住的假 agent：结算由用例放行，用来钉住「跑着的时候不退」 */
+class GatedAgent extends FakeAgent {
+  constructor(private readonly gate: Promise<void>) {
+    super([
+      {
+        deltas: [{ content: "跑完了" }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      },
+    ]);
+  }
+
+  async send(content: Parameters<FakeAgent["send"]>[0]): ReturnType<FakeAgent["send"]> {
+    await this.gate;
+    return await super.send(content);
+  }
+}
+
 describe("退出判据", () => {
   it("还没被用过时不判退出（刚起来的进程在等客户端）", async () => {
     const fixture = await makeFixture();
@@ -540,37 +557,81 @@ describe("退出判据", () => {
     expect(app.running).toBe(true);
   });
 
-  it("有连接时不判；连接走了但手里还有 Scope 也不退（Scope 不会自己消失）", async () => {
+  it("连过然后断开、也没有在跑的轮次 → 收尾并退出（手里还剩 Scope 也照退）", async () => {
     const fixture = await makeFixture();
     const exits: ExitFacts[] = [];
+    // 真 `Scope` + 记账式插件：收尾时「Scope 被销掉、插件的 `dispose` 被调到」这条链路是真的
+    const fake = createFakeScope(fixture.workspaceDir.path);
     const app = await startApp(fixture, {
       exit: (facts) => {
         exits.push(facts);
       },
+      createScope: async () => fake.scope,
+    });
+    const disposeAll = vi.spyOn(app.scopeRegistry, "disposeAll");
+
+    const client = await connect(app);
+    const { workspace } = await callMethod(app, "workspace.create", {
+      cwd: fixture.workspaceDir.path,
+    });
+    // 手里握着一个 Scope：它不会自己消失（没有空闲计时、也没有引用计数）
+    await app.scopeRegistry.create(workspace.id);
+
+    // 有连接 → 不判（连接就是「还有人等着说话」）
+    await app.checkExit();
+    expect(exits).toEqual([]);
+
+    // 连接断开、也没有在跑的轮次 → 什么都不欠了：收尾（`disposeAll` 把 Scope 与 MCP 连接一起拆）并退出
+    await client.close();
+    await until(() => exits.length === 1, "最后一个客户端断开后应当收尾并退出");
+    expect(disposeAll).toHaveBeenCalledTimes(1);
+    expect(fake.plugin.disposeCalls).toBe(1);
+    expect(app.scopeRegistry.workspaceIds()).toEqual([]);
+    expect(app.running).toBe(false);
+    // 事实是「收尾那一刻还持有 1 个 Scope」（随后被 `disposeAll` 拆掉），不是 0
+    expect(exits[0]).toEqual({ reason: "idle", connections: 0, runs: 0, scopes: 1 });
+  });
+
+  it("还有一轮在跑就不退；那一轮结算之后才退", async () => {
+    const fixture = await makeFixture();
+    const exits: ExitFacts[] = [];
+    // 闸门按住这一轮的 `send`：放行之前 `runRegistry` 里一直有它
+    const gate = deferred<void>();
+    const fake = createFakeScope(fixture.workspaceDir.path);
+    const app = await startApp(fixture, {
+      exit: (facts) => {
+        exits.push(facts);
+      },
+      createScope: async () => fake.scope,
+      createAgent: async () => new GatedAgent(gate.promise),
     });
 
     const client = await connect(app);
     const { workspace } = await callMethod(app, "workspace.create", {
       cwd: fixture.workspaceDir.path,
     });
-    // 手里有一个 Scope：它不会自己消失（没有空闲计时、也没有引用计数）
-    await app.scopeRegistry.create(workspace.id);
+    const conversation = await seedConversation(app, workspace.id);
 
-    // 有连接 → 什么都不欠也不退（连接就是「还有人等着说话」）
-    await app.checkExit();
-    expect(exits).toEqual([]);
+    await callMethod(app, "conversation.send", {
+      conversationId: conversation.id,
+      input: { content: "慢慢答" },
+    });
+    expect(app.runRegistry.size()).toBe(1);
 
-    // 连接断开也不退：这个进程还持着那套能力（MCP 连接在里面），
-    // 要退就显式收尾 —— 收尾会把 Scope 连同 MCP 连接一起关掉
+    // 连接断了，但这一轮还在跑：还有活欠着，不退
     await client.close();
     await wait(50);
     await app.checkExit();
     expect(exits).toEqual([]);
     expect(app.running).toBe(true);
 
-    const facts = await app.shutdown("requested");
-    expect(facts).toEqual({ reason: "requested", connections: 0, runs: 0, scopes: 1 });
+    // 放行 → 这一轮结算 → `onTurnSettled` 再判一次 → 收尾退出
+    gate.resolve();
+    await until(() => exits.length === 1, "最后一轮结算之后应当收尾并退出");
+    expect(exits[0]).toEqual({ reason: "idle", connections: 0, runs: 0, scopes: 1 });
+    expect(fake.plugin.disposeCalls).toBe(1);
     expect(app.scopeRegistry.workspaceIds()).toEqual([]);
+    expect(app.running).toBe(false);
   });
 
   it("收尾只做一次、交棒只交一次", async () => {
