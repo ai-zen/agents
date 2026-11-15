@@ -167,7 +167,7 @@ describe("Agent.inbox", () => {
       const { client } = createRecordingClient([textRound("收到")]);
       const agent = new Agent({ client, model: "gpt-4" });
 
-      // 静止态投递会立刻落地（先 `flushInbox` 再叫醒），所以条目本身从入队事件上取
+      // 静止态投递会立刻落地（先 `takeInbox` 再叫醒），所以条目本身从入队事件上取
       const entries: AgentNS.InboxEntry[] = [];
       agent.events.on("inbox", (ctx: InboxContext) => entries.push(ctx.entry));
 
@@ -221,7 +221,7 @@ describe("Agent.inbox", () => {
     });
 
     it("一条消息都没有的 agent：投递照样把它叫起来，落地之后就是这一段", async () => {
-      // 口径改了：旧版在这里拦一手（怕撞上 `run()` 的空消息校验）；现在「唤醒前先 `flushInbox`」
+      // 口径改了：旧版在这里拦一手（怕撞上 `run()` 的空消息校验）；现在「唤醒前先 `takeInbox`」
       // 会先 append 一条 `Message.User`，那条校验自然过 —— 一条投递就是一段对话的起点。
       const { client, create, bodies } = createRecordingClient([textRound("那就从这儿开始")]);
       const agent = new Agent({ client, model: "gpt-4" });
@@ -289,7 +289,7 @@ describe("Agent.inbox", () => {
       expect(receipts.map((receipt) => receipt.accepted)).toEqual([true, true, true]);
       expect(receipts.map((receipt) => receipt.woke)).toEqual([true, true, true]);
 
-      // 同步就已经全部落地（`flushInbox` 不看优先级：静止态每一条都是这一段存在的理由）
+      // 同步就已经全部落地（`takeInbox` 不看优先级：静止态每一条都是这一段存在的理由）
       expect(agent.inbox).toHaveLength(0);
       const users = agent.messages.filter((message) => message.role === AgentNS.Role.User);
       expect(users.map((message) => message.id)).toEqual(
@@ -583,7 +583,7 @@ describe("Agent.inbox", () => {
       agent.append(Message.User("开始"));
       await agent.run();
 
-      // 第一圈停下：`insertInbox("high")` 进了东西 → 续一圈，**low 那一档连问都不问**
+      // 第一圈停下：`takeInbox("high")` 进了东西 → 续一圈，**low 那一档连问都不问**
       expect(create).toHaveBeenCalledTimes(3);
       expect(messagesOfRole(bodies[1], AgentNS.Role.User).map((m: any) => m.content)).toEqual([
         "开始",
@@ -714,7 +714,7 @@ describe("Agent.inbox", () => {
 
     it("deliver 唤醒的段：唤醒前就落地，第一圈请求里就有它（不空跑）", async () => {
       // 这是「唤醒」与「模型看得见这条」必须同一拍的那一条：`deliver()` 在 `run()` **之前**
-      // `flushInbox()`。不先落地，`run()` 的第一圈请求里根本没有这条 —— 它会对着旧历史先回一句
+      // `takeInbox()`。不先落地，`run()` 的第一圈请求里根本没有这条 —— 它会对着旧历史先回一句
       // （白花一次请求，界面上还多一句无意义回答），然后这条才被轮末取件点带走、再问一遍。
       const { client, create, bodies } = createRecordingClient([textRound("这就是回你的那句")]);
       const agent = new Agent({ client, model: "gpt-4", messages: [Message.System("助手")] });
@@ -776,7 +776,7 @@ describe("Agent.inbox", () => {
       expect(agent.messages.some((m) => m.id === "host-queued-1")).toBe(false);
       expect(create).toHaveBeenCalledTimes(1);
 
-      // 下一次外部驱动（`deliver` 在静止态先 `flushInbox` 再叫醒）才把它落地并跑一轮
+      // 下一次外部驱动（`deliver` 在静止态先 `takeInbox` 再叫醒）才把它落地并跑一轮
       agent.deliver({ source: "user", priority: "low", content: "下一段的话" });
       await settled(agent);
 

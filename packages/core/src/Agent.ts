@@ -207,25 +207,18 @@ export class Agent extends AgentContext {
   runStatus: AgentNS.RunStatus = "idle";
 
   /**
-   * 这一次 `send()` 的受理流程走到哪（语义见 {@link AgentNS.SendStatus}）。
-   *
-   * 与 `runStatus` 是两个字段而不是一个，因为它们回答的是两个问题：`runStatus` 说「段在不在
-   * 跑」，`sendStatus` 说「有没有一次受理正卡在段的前后」。`send()` 的范围比一段长（
-   * `onBeforeSend` 在段前、`onAfterSend` 在段后，两头都是 await），只有两个都看，`deliver()`
-   * 才能既不漏叫醒、也不多起一段（见 `deliver` 的注释）。
+   * 有没有一次 `send()` 正卡在段的前后（`onBeforeSend` / `onAfterSend` 都是 await）。
+   * 与 `runStatus` 是两个问题：那个说「段在不在跑」，这个说「受理在不在途」。
    */
   sendStatus: AgentNS.SendStatus = "idle";
 
   /**
-   * 排队待发的内容：`deliver()` 投进来，两个时刻落成 User 消息 —— 唤醒前（`flushInbox`，
-   * 整体不分优先级）、段内（内循环末的取件点，按 high / low 分派）。
+   * 排队待发的内容：`deliver()` 投进来，两个时刻落成 User 消息 —— 唤醒前整体落地（不分优先级）、
+   * 段内内循环末按 high / low 取件。
    *
-   * 公开可读（宿主据此展示「已排队 N 条」），写入走 `deliver()` / `clearInbox()`。
-   * 数组实例自始至终是同一个（推进用 `push`、取走与清空用 `splice`），所以拿着它做快照
-   * 的调用方不会抱到一份过期的副本。
-   *
-   * 它是**数据**，不是状态：`abort()` 不碰它（一条来自别的会话的投递不该被「用户按停」这个
-   * 无关动作抹掉）；一条被中止的段没取走的条目留着，等下一次外部驱动时一起发出。
+   * 公开可读（宿主据此展示排队条目），写入只走 `deliver()` / `clearInbox()`。数组实例自始至终
+   * 是同一个（推进用 `push`、取走用 `splice`），拿它做快照的调用方不会抱到过期副本。
+   * 它是**数据**不是状态：`abort()` 不碰它，没被取走的条目留给下一次外部驱动。
    */
   inbox: AgentNS.InboxEntry[] = [];
 
@@ -322,23 +315,10 @@ export class Agent extends AgentContext {
   private innerLoopTasks: Set<PendingTask> = new Set();
 
   /**
-   * 用户按停。**只改状态与在跑的任务，不碰 `inbox`。**
+   * 用户按停：只改状态与在跑的任务，**不碰 inbox**（排队是数据，作废得显式 `clearInbox`）。
    *
-   * ## 为什么按停要分两种情形
-   *
-   * - 有段在跑（`running`）：先落到 `stopping` —— 这是「已不接受工作」与「还没结束」同时
-   *   成立的那个态。abort 之后那一段还要把 reconcile、`onInnerLoopsEnd`、写库收尾走完；
-   *   这段时间里既不能回 `running`（外部一投递就能起新段，旧段还在写同一份 `messages`，
-   *   就是两段并跑），也不能直接给 `terminated`（那等于谎称「已经停了」，而下一次投递会立刻
-   *   起新段）。`stopping → terminated` 只由那一段自己的 `finally` 发出。
-   * - 没有段在跑：直接 `terminated`（「空跑时按停也是停」）。若在这里用 `stopping`，没人会来
-   *   收尾，状态就永远卡在那个中间态上。
-   *
-   * ## 为什么不 `clearInbox()`
-   *
-   * inbox 里可能是**别的会话**投递来的东西（父对话、异步工具的结论），「用户按了这一段的停」
-   * 与「那些事实作废」是两件事。按停只停**这一段**；排队的条目留着，等下一次外部驱动时一起
-   * 发出。真要作废排队，那是一个显式动作（调用方自己 `clearInbox()`），不该由 abort 替用户猜。
+   * 有段在跑就落 `stopping`（「已不接受工作、还没收完」），由那一段自己的 `finally` 推到
+   * `terminated`；没有段在跑就直接 `terminated` —— 否则没人来收尾，状态永远卡在中间态。
    */
   abort() {
     if (this.runStatus === "running") {
@@ -353,14 +333,7 @@ export class Agent extends AgentContext {
     if (!this.isStopping) this.setRunStatus("terminated");
   }
 
-  /**
-   * 段在跑（接受工作、取件、续圈）。
-   *
-   * 为什么写成 getter 而不是每次就地比较：这两个判据在多处用（`run()` 的单飞早退、
-   * `runLoops()` 的取件点），两处各写一遍 `=== "running"` 就是两份会漂的真相；且 `run()`
-   * 里先早退、后置位，就地比较会让类型系统把字段收窄成早退后的那两个值，反而看不见后面
-   * `setRunStatus("running")` 改出来的结果。
-   */
+  /** 段在跑（接受工作、取件、续圈） */
   private get isRunning(): boolean {
     return this.runStatus === "running";
   }
@@ -371,11 +344,18 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * 改 `runStatus` 的唯一入口：**真正变了**才广播 `status`（载荷 `{ agent, from, to }`）。
+   * 能不能把静止的那一段叫起来：静止态（`idle` / `terminated`）**且**没有 `send` 受理在途。
    *
-   * 未发生变化时一条事件都不发 —— 订阅方拿到 `status` 就可以当作「变了」用，不必自己比对；
-   * 也避免「`abort()` 连按两下」在界面上刷出一串重复的「已停止」。
+   * 受理在途（`sendStatus === "sending"`）时会话正卡在 `onBeforeSend` / `onAfterSend` 里，
+   * 此刻另起一段就会与那次 send 的 `messages` 写入交错。
    */
+  private get canWake(): boolean {
+    return (
+      (this.runStatus === "idle" || this.runStatus === "terminated") && this.sendStatus === "idle"
+    );
+  }
+
+  /** 改 `runStatus` 的唯一入口：真正变了才广播 `status`（`{ agent, from, to }`） */
   private setRunStatus(next: AgentNS.RunStatus): void {
     const from = this.runStatus;
     if (from === next) return;
@@ -383,130 +363,46 @@ export class Agent extends AgentContext {
     this.events.emit("status", { agent: this, from, to: next } satisfies StatusContext);
   }
 
-  /** 投递一条待发内容（单条形态） */
+  /** 投递一条待发内容 */
   deliver(input: AgentNS.InboxInput): AgentNS.DeliveryReceipt;
-  /**
-   * 投递一批：**全部入队之后只唤醒一次**，静止态队列一次落地成多条 User 消息；跑着则全部交给
-   * 那一段的取件点（按 high/low 在段内取）。**空数组什么都不做**：不入队、不唤醒、返回 `[]`
-   * —— 一次「没有条目的叫醒」只会跑出一段对着旧历史自说自话的空段。
-   */
+  /** 投递一批：全部入队之后只唤醒一次（静止态队列一次落地成多条 User 消息） */
   deliver(inputs: AgentNS.InboxInput[]): AgentNS.DeliveryReceipt[];
   /**
-   * 投递待发内容：**同步**入队，静止态顺手把段叫醒，立刻返回回执。
+   * 投递：同步入队，静止态顺手把段叫醒，立刻返回回执。
    *
-   * 一个方法、两种入参：给一条拿单个回执，给一批拿等长的回执数组。整批形态是为「N 条同时
-   * 到达」准备的 —— 一条一条投会变成「第 1 条落地起段、其余 N-1 条在段内下一个边界才落地」
-   * （两处取件时刻、两次请求）；整批则是入队全部做完之后才问一次「要不要叫醒」，于是静止态
-   * `flushInbox()` 一次落成 N 条 User 消息（这一段第一圈请求里就带着全部 N 条），跑着则全部
-   * 交给那一段的取件点（同一档优先级在同一个边界被 `drainInbox` 一次取走）。
+   * 「该不该跑」的判断权在这里，不在调用方：`send` 是「我发起、等我跑完」，`deliver` 是
+   * 「这条给你，有空就跑」。一批只在**全部入队之后**问一次要不要唤醒，所以静止态是「一次
+   * 取件落成 N 条 User 消息、一次请求」，跑着则全部交给那一段自己的取件点。
    *
-   * ## 两个平级的输入口之一
-   *
-   * `send(content)` 是「我发起，等我跑完」；`deliver(entry)` 是「这条给你，有空就跑」。
-   * 后者是 inbox 意义上的投递：调用方（别的会话、异步工具、宿主）不掌握 agent 的节奏，也就不该
-   * 由它判断「该不该跑」—— 判断权在这里。
-   *
-   * ## 为什么判两个字段（`runStatus` 与 `sendStatus`）
-   *
-   * - `runStatus === "running" | "stopping"`：段在跑或在收尾 —— **不能起第二段**（那会两段并跑、
-   *   写同一份 `messages`）。条目留在队列里，那一段自己的取件点会取走它（`running` 时）或者
-   *   留给下一次驱动（`stopping` 时，见下面 `terminated` 那一行）。
-   * - `runStatus === "idle" | "terminated"`：静止态，看起来可以叫醒 —— 但如果此刻 `sendStatus
-   *   === "sending"`，说明正有一次受理卡在段的前后（`onBeforeSend` 还没走完，或者段已收尾、
-   *   `onAfterSend` 还挂着）。这时候另起一段，就会与那次 send 的 `messages` 写入交错。所以只
-   *   叫醒静止态且没有受理在途的那一次投递；受理在途时投进来的条目留在队列里，等下一次外部
-   *   驱动（`deliver` / 下一次 `send`）再落地。
-   *
-   * `woke` 只是观测（「这次是不是我把它叫醒的」）：调用方可以据此决定要不要等它跑；它不是
-   * 投递方该拿来控制 agent 的开关，也不参与任何内部决策。
-   *
-   * ## 唤醒这一拍的事件次序：`status` 先于 `message`
-   *
-   * 一次唤醒对外是两件事：`status`（这一段开始了）与 `message`（队列里的那条 / 那批落地成
-   * User 消息）。次序是 **`status` 在前**。
-   *
-   * 为什么：想知道「这一段开始了」只有 `status` 一条路，而「这一段里发生了什么」是 `message`
-   * 一条条报的。谁按 `status → running` 建**这一段的现场**（宿主就是这么做的：建现场、订上
-   * `message`、开始落库），下面那条刚落地的 User 消息才有主；反过来的话，那条消息的广播发生
-   * 在还没有人认领它的时候，它就永久错过了那一段 —— 既不落库，也不进那一轮的产出。
-   *
-   * 于是本方法把「起段」拆成两拍：先 `setRunStatus("running")`（发 `status`），再
-   * `flushInbox()`（发 `message`），最后才进段体。`send()` 那一路仍是老次序（校验 → 置位 →
-   * 段体），两条路对外都是「`status` 先于这一段的第一条 `message`」。
-   *
-   * ## 为什么唤醒**之前**就把队列落地（`flushInbox`）
-   *
-   * 对话是被这条内容唤醒的，那「唤醒」与「模型看得见这条」就必须是同一拍。`run()` 的第一轮
-   * 请求是照着 `messages` 组请求体的：不先落地，模型这一次请求里根本没有这条 —— 它只会顺着
-   * 旧历史自说自话一回（界面上于是多出一句对旧历史的无意义回答），然后这条才被内循环末的
-   * 取件点带走、再问一遍。所以落地排在 `run()` 之前 —— `flushInbox` 的唯一调用方就是这里。
-   *
-   * ## 空批：不入队、不叫醒、返回 `[]`
-   *
-   * `deliver([])` 在这里就掉头：没有条目可入队，也就没有「唤醒」可言 —— 一次没有内容的叫醒
-   * 只会跑出一段对着旧历史自说自话的空段。它不会静默变成一次空跑。
-   *
-   * ## 回执
-   *
-   * 与入参一一对应（`messageId` 各自的、`accepted` 恒 true）；一批的 `woke` 是**同一个值** ——
-   * 叫醒是一次行为，不属于某一条。单条形态仍返回单个回执。
+   * 唤醒时的事件次序是契约：`status(running)` 先、本段第一条 `message` 后 —— 宿主按前者
+   * 建这一段的现场，晚一步那条刚落地的消息就没人认领（见 `run`）。
    */
   deliver(
     input: AgentNS.InboxInput | AgentNS.InboxInput[],
   ): AgentNS.DeliveryReceipt | AgentNS.DeliveryReceipt[] {
-    // 两种入参走同一段：一批只是「入队全部 → 只问一次要不要叫醒」，单条就是那批的一条
-    const batch = Array.isArray(input);
-    const inputs = batch ? input : [input];
-    if (inputs.length === 0) return [];
-    const entries = inputs.map((entry) => this.enqueueInbox(entry));
-    // 先算「能不能叫醒」，再叫醒：下面那句 `setRunStatus("running")` 会把 `runStatus` 改掉，
-    // 晚了再算就永远是 false。
-    const parked = this.runStatus === "idle" || this.runStatus === "terminated";
-    // 不判 `messages` 空不空：紧跟着的 `flushInbox()` 会先 append 成 `Message.User`，这一段至少
-    // 有一条消息可发（`run()` 那句「至少要有一条消息」的校验属于 `send()` 那一路；这里不经过
-    // 它，也就不必再过一遍）。真想「空对话被投递开段」是调用方的特殊目的，不该在这里拦。
-    // 能不能叫醒：静止态（且没有 send 受理在途）才算；结果落在 `woke` 里给回执用。
-    let woke = false;
-    if (parked && this.sendStatus === "idle") {
-      // 三拍的次序是硬契约（见上面「唤醒这一拍的事件次序」）：宣告这一段开始了 →
-      // 队列落地 → 跑。宣告排在落地之前，按 `status` 建现场的人才接得住紧接着落地的那几条
-      // User 消息。整批的好处正在「落地只发生一次」：`flushInbox` 一次掏空队列，这一段的第一
-      // 圈请求里就带着全部 N 条。
-      this.setRunStatus("running");
-      // 落地排在段体之前，但**不能**提到「叫不叫醒」的判定之前：没叫醒的那条（段在跑 / 受理
-      // 在途）要留给那一段自己的取件点按优先级带走，这里不许抢跑 —— 抢了就等于「跑中的 high
-      // 被当成唤醒内容落进当前那一圈」，还丢了它「先于 low」的次序。
-      this.flushInbox();
-      // 走 `runStarted()` 而不是 `run()`：段状态上面已经置过了，`run()` 的单飞会把自己挡回去。
-      // 上下文在落地**之后**取：这一次请求的请求体就是「带着刚落地的这条」的 `messages`。
-      //
-      // 段体自己抛出来的东西（比如收尾钩子被插件拒绝）在这条路上没有 await 的人，接着报成
-      // `error` 事件 —— 与段内出错走同一个出口。不接的话就是一个没人管的 Promise 拒绝
-      // （`void` 掉一个会 reject 的 Promise，在 Node 15+ 上默认是杀进程），而这一段其实
-      // 什么都没跑成、正该报错。
-      void this.runStarted(this.defaultSendContext()).catch((error: unknown) => {
-        this.events.emit("error", error);
-      });
-      woke = true;
+    const batch = Array.isArray(input) ? input : [input];
+    if (batch.length === 0) return [];
+
+    const entries = batch.map((entry) => this.enqueueInbox(entry));
+    // 唤醒的判定要在起段之前取：`run` 会同步把状态改成 running，晚取永远是 false
+    const woke = this.canWake;
+    if (woke) {
+      // 段体自己抛出来的东西在这条路上没有 await 的人，接着报成 error 事件（与段内出错同出口）
+      void this.run(undefined, true).catch((error: unknown) => this.events.emit("error", error));
     }
-    // 回执与入参一一对应（`messageId` 各自的、`accepted` 恒 true）；`woke` 是同一个值 ——
-    // 叫醒是一次行为，不属于某一条。单条形态仍返回那一个回执本身（不是「没人要的数组」）。
+
     const receipts: AgentNS.DeliveryReceipt[] = entries.map((entry) => ({
       messageId: entry.messageId,
       accepted: true,
       woke,
     }));
-    return batch ? receipts : receipts[0]!;
+    return Array.isArray(input) ? receipts : receipts[0]!;
   }
 
   /**
-   * `deliver()` 的内部实现：补齐 id / 时间、推进数组、广播 `inbox`。
+   * 入队一条：补 id 与时刻、推进数组、广播 `inbox`。
    *
-   * 为什么它不对外：入队与「叫不叫醒」是同一件事的两半。把入队单独开放出去，调用方迟早只
-   * 调一半 —— 推进去却不叫醒（条目滞留在队列里，直到下一次外部驱动）、或者叫醒却没推进去
-   * （空跑一段）。`deliver` 是唯一的投递入口，两半就永远成对。
-   * `messageId` 允许由投递方在**入队时**定下（宿主先把它告诉客户端做乐观回显，落地那条消息
-   * 用同一个 id，同一条内容才不会画两遍）。
+   * `messageId` 允许投递方定死 —— 宿主先把它告诉客户端做乐观回显，落地那条消息用同一个 id。
    */
   private enqueueInbox(input: AgentNS.InboxInput): AgentNS.InboxEntry {
     const pushed: AgentNS.InboxEntry = {
@@ -522,164 +418,76 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * 清空 inbox，返回被丢掉的那些条目（按入队顺序）。
-   *
-   * **core 自己不再调它**：`abort()` 已经不碰 inbox 了（见 `abort` 的注释）。留着它是给「作废
-   * 排队」这个**显式动作**用的 —— 那是一个决定，得由调用方（客户端 / 宿主）自己下，不能由
-   * 「用户按了停」替它猜。
+   * 清空 inbox 并返回被丢掉的条目。core 自己从不调它 ——「作废排队」是调用方的显式决定，
+   * 不该由「用户按了停」替它猜。
    */
   clearInbox(): AgentNS.InboxEntry[] {
     return this.inbox.splice(0, this.inbox.length);
   }
 
-  /**
-   * 追加一条消息，并**立刻**广播出去（事件名 `message`）。
-   *
-   * ## 为什么覆写（而不是让调用方各自广播）
-   *
-   * 三处 append 都在 core 内部：用户消息（`send`）、占位 assistant（内循环开头）、工具结果
-   * （`handleToolCall`，执行前）。外部想「知道多了哪一条」只有扫 `messages` 做差集一条路 ——
-   * 那需要自己记住推过哪些，而这份记忆与数组本身是两个会漂的事实。广播点放在唯一的追加口上，
-   * 订阅方就只需要「按 id 覆盖」这一条规则。
-   *
-   * ## 载荷是消息本身
-   *
-   * 不是 `{ agent, message, index }`：订阅方要的就是「哪一条」，`message.id` 唯一标识它，
-   * 位置由接收方按自己的列表算（线上的那条事件同样只带消息，见协议 `session-message`）。
-   */
+  /** 追加一条消息并立刻广播 `message`：广播点放在唯一的追加口上，订阅方只需「按 id 覆盖」 */
   append(message: AgentNS.Message): AgentNS.Message {
     const appended = super.append(message);
     this.emitMessage(appended);
     return appended;
   }
 
-  /**
-   * 就地改完之后重发一次**同一条**消息（同 id，订阅方按 id 覆盖）。
-   *
-   * 两处调用：工具结果定型（`markResult` 把 `pending` 翻成终态）、一轮出错（`run` 的 catch
-   * 把错误正文写进 assistant）。它们都不追加新消息，但「那条消息」变了 —— 只靠追加事件，
-   * 订阅方会永远停在 `pending` 上。
-   */
+  /** 就地改完之后重发同一条（同 id）：只靠追加事件，订阅方会永远停在 `pending` 上 */
   private emitMessage(message: AgentNS.Message): void {
     this.events.emit("message", message);
   }
 
   /**
-   * 把某一档优先级的条目**按入队顺序**全部从 `inbox` 里取走（另一档原样留着）。
+   * 取走 inbox 里的条目、逐条落成 User 消息；返回「是否真的取到了」。
    *
-   * 用 `splice` 逐个摘而不是重建数组：`inbox` 是公开字段，外部可能拿着它做快照，
-   * 换掉数组实例等于让那些引用指向一份不存在的排队队列。
+   * 不给 `priority` = 全取（段还没开始，每条都是这一段存在的理由，只按入队顺序）；给了 = 只取
+   * 那一档（段内的取件点：high 赶工具轮边界、low 等整组停下）。返回值是取件点防死循环的唯一
+   * 判据 —— 一条都没取到就说明这一档空了，再转一圈只会拿到一模一样的请求。
+   *
+   * 用 `splice` 逐个摘而不是换数组：`inbox` 是公开字段，外部可能拿着它做快照。
    */
-  private drainInbox(priority: AgentNS.InboxPriority): AgentNS.InboxEntry[] {
+  private takeInbox(priority?: AgentNS.InboxPriority): boolean {
     const taken: AgentNS.InboxEntry[] = [];
     for (let i = 0; i < this.inbox.length;) {
       const entry = this.inbox[i]!;
-      // 只取这一档：另一档原样留在队列里（high 与 low 的时刻不同，不能一起被带走）
-      if (entry.priority !== priority) {
+      if (priority !== undefined && entry.priority !== priority) {
         i++;
         continue;
       }
       taken.push(entry);
       this.inbox.splice(i, 1);
     }
-    return taken;
+    for (const entry of taken) this.append(inboxEntryMessage(entry));
+    return taken.length > 0;
   }
 
   /**
-   * 取走**某一档**优先级的条目，逐条落成 User 消息；返回「是否真的插进了东西」。
+   * 跑一段：单飞 → 一组内循环 → 收尾钩子 → 段尾状态。
    *
-   * 走 `append`（而不是 `messages.push`）：落地的那条也得广播 `message`，否则订阅方永远
-   * 不知道屏幕上该多一条（宿主正是按这条事件落库的）。
+   * 两个入口共用：`send()`（自己 append 了 User 消息，等这一段跑完）、`deliver()`（`wake`：
+   * 先把队列整体落地再跑，不等）。置位与起段之间**没有 await** —— 两个几乎同时进来的调用，
+   * 后一个必然看到 `running` 而返回，这是「不会两段并跑」的全部秘密。
    *
-   * 返回值是取件点防死循环的唯一判据：一条都没插就说明这一档已经空了，再转一圈只会拿到
-   * 一模一样的请求。
+   * `wake` 时 `status(running)` 先发、队列后落地：前者是「这一段开始了」的唯一信号，宿主按它
+   * 建现场；反过来的话，那条刚落地的 User 消息广播时还没人认领，就永久错过了这一段。
    *
-   * 它现在只有**一个**调用方（`runLoops()` 的内循环末），且必须带优先级 —— 那里要分两次问
-   * 「high 有没有」「low 该不该进」。唤醒前的整体落地不用它，用不看优先级的 {@link flushInbox}。
+   * @returns 本段结束时的消息数组；没起段（已有段在跑 / 在收尾）时 `undefined`
    */
-  private insertInbox(priority: AgentNS.InboxPriority): boolean {
-    const entries = this.drainInbox(priority);
-    for (const entry of entries) {
-      this.append(inboxEntryMessage(entry));
-    }
-    return entries.length > 0;
-  }
-
-  /**
-   * 起一段之前，把队列**整体**落成 User 消息（唤醒前插好内容）。与 `insertInbox` 的区别是
-   * 它**不看优先级**。
-   *
-   * 为什么要有一个不看优先级的落地口：优先级说的是「段**内**哪一刻该进」（high 赶在工具轮
-   * 边界、low 等整组停下），而这里说的是「段**还没开始**」。段没开始就没有「圈」可言，队列里
-   * 的每一条都是这一段存在的理由，谁先谁后只按入队顺序 —— 只落 high 会把 low 留在队列里，
-   * 被叫醒的这一段就成了「半段」，还得靠下一次驱动补完。
-   *
-   * 唯一调用方是 `deliver()`（静止态投递把段叫起来；单条与整批都走同一个方法）。
-   * **唤醒前的落地只有这一个实现**，别在段里再加第二个。
-   *
-   * 用 `splice(0)` 一次掏空而不是 `drainInbox`：不看优先级，也就没有「逐条比一下」的必要；
-   * 数组实例本身不换（外部拿着 `inbox` 的快照不会指向一份死队列）。
-   */
-  private flushInbox(): void {
-    for (const entry of this.inbox.splice(0)) this.append(inboxEntryMessage(entry));
-  }
-
-  /**
-   * 跑**一段**：单飞 + 整组钩子 + 一组内循环。
-   *
-   * 两个入口共用段体 {@link runStarted}：
-   * - `send()` → 本方法：自己 append 了 User 消息，等这一段跑完；
-   * - `deliver()`：在静止态把自己叫醒（不等）。它**不走本方法** —— 段状态必须在把队列落地
-   *   **之前**就置成 `running`（见那个方法头的「唤醒这一拍的事件次序」），于是置位由它自己
-   *   做，段体还是同一个 `runStarted`。
-   *
-   * `deliver()` 在叫它之前已经把队列落成 User 消息（`flushInbox`），所以**本方法不在段首取件**：
-   * 段内唯一的取件点在内循环末（见 `runLoops`）。
-   *
-   * ## 单飞是结构性的
-   *
-   * 已经在跑（`running`）或在收尾（`stopping`）就直接返回，绝不开第二段 —— 并发两次 `send`
-   * 出两个段的旧口子就此关上（以前靠宿主的 `RunRegistry` 挡，core 自己不挡）。
-   * "直接返回" 的语义是「这种事已经有别人在做」，不是失败，也不抛错。
-   *
-   * ## 为什么 "置位" 与 "起段" 之间不许有 await
-   *
-   * `setRunStatus("running")` 之后紧接着就是同步的 try，中间没有让出执行权的地方 —— 于是
-   * 两个几乎同时进来的调用里，后一个必然看到 `running` 而返回。中间一旦 await（比如先读库、
-   * 先算历史），两个调用就都能看到 `idle`，两段并跑。
-   *
-   * ## `stopping` 不可逆
-   *
-   * `stopping` 时本方法直接返回，**不会把状态拉回 `running`**：那一段的收尾还没完，谁都不能
-   * 插进去。它只能由自己的 `finally` 推到 `terminated`。
-   *
-   * @param ctx 插件上下文（由 send() 传入；直接调用 run() 时构造默认上下文）
-   * @returns 本段结束时的消息数组；没起段（已有一段在跑）时返回 `undefined`
-   */
-  async run(ctx?: SendContext): Promise<AgentNS.Message[] | undefined> {
-    // 单飞：已有段（running）或在收尾（stopping）就不起第二段
+  async run(ctx?: SendContext, wake = false): Promise<AgentNS.Message[] | undefined> {
+    // 单飞：已有段在跑或在收尾，绝不开第二段（「这种事已经有人在做」，不是失败）
     if (this.isRunning || this.isStopping) return;
-
-    // 空消息校验：至少需要一条消息（如 send 追加的 User 消息）。
-    // 校验排在 `setRunStatus("running")` **之前**：起一段却一行都发不出去，没必要先在
-    // `status` 事件里宣告一次「跑起来了」。
-    if (!this.messages.length) {
+    // 空消息校验只对 `send()` 那一路可能成立（`wake` 刚把队列落成消息），且要排在置位之前：
+    // 起一段却一行都发不出去，没必要先在 `status` 里宣告一次「跑起来了」
+    if (!wake && !this.messages.length) {
       throw new Error("You need to send at least one message as a receive message");
     }
 
-    // 起段：同步置位，中间没有 await（见方法头）
     this.setRunStatus("running");
-    return await this.runStarted(ctx ?? this.defaultSendContext());
-  }
+    // 唤醒前的整批落地：排在置位**之后**（次序契约），排在段体之前（第一圈请求里就要带着它）
+    if (wake) this.takeInbox();
+    // 上下文在落地之后取：这一次请求的请求体就是「带着刚落地的那些」的 messages
+    const sendCtx = ctx ?? this.defaultSendContext();
 
-  /**
-   * 段状态已经是 `running` 之后的段体：一组内循环 + 收尾钩子 + 段尾状态。
-   *
-   * 两个入口共用它：`run()`（自己置位）与 `deliver()`（置位排在把队列落地**之前**，见那里的
-   * 「唤醒这一拍的事件次序」）。它**不管单飞、也不管置位** —— 那两件事是「要不要起段」的判断，
-   * 属于入口；这里只跑一段已经决定要跑的段。
-   */
-  private async runStarted(sendCtx: SendContext): Promise<AgentNS.Message[]> {
     try {
       // 整组内循环开始（一次 send 仅一次）；Assistant 占位由每次内循环开头统一追加
       const loopsDenied = await this.dispatchHook("onInnerLoopsStart", sendCtx);
@@ -687,12 +495,8 @@ export class Agent extends AgentContext {
         throw new Error(`inner-loops-start 被插件拒绝: ${loopsDenied}`);
       }
 
-      // 一整组内循环，一条直线。
-      //
-      // **段首不取件、段末也不再取一次**：把段叫起来的 `deliver()` 在叫它之前已经把队列落成
-      // User 消息了（见 `flushInbox`），段内唯一的取件点在内循环末（见 `runLoops`）。于是
-      // 「取件」全 core 只剩一处判据 —— 本方法不再决定「要不要再跑一组」，要不要由那一圈的
-      // 取件点自己说。
+      // 整组内循环一条直线：段首不取件（被 `deliver` 叫起来的段已在起段时落完队列），
+      // 段内唯一的取件点在内循环末。要不要再跑一组由那一圈自己说。
       await this.runLoops(sendCtx);
 
       // 整组内循环结束：含多轮工具调用，messages 为完整结果（正常/error/abort 均到达此处）。
@@ -711,12 +515,7 @@ export class Agent extends AgentContext {
     return this.messages;
   }
 
-  /**
-   * 没有一次 `send()` 受理在背后时的兜底插件上下文（`run()` / `deliver()` 起段用）。
-   *
-   * `deliver()` 在把队列落地**之后**才取它：这一次请求的请求体就是「带着刚落地的那些」的
-   * `messages`。
-   */
+  /** 没有一次`send()`在背后时的插件上下文（`run()` / `deliver()` 起段用） */
   private defaultSendContext(): SendContext {
     return { agent: this, content: "", messages: [...this.messages] };
   }
@@ -824,27 +623,14 @@ export class Agent extends AgentContext {
         // 每次 内循环 完成（一次 API 请求 + 可能的工具调用）
         await this.dispatchHook("onInnerLoopEnd", sendCtx);
 
-        // 取件点（**全 core 唯一一处**）：这一圈内循环刚收尾（工具结果已 append 进 messages）、
-        // 下一次内循环开头的 Assistant 占位还没补。此刻插进来的 User 消息排在工具结果之后，
-        // 模型下一次请求天然看得见。插进去了就得再转一圈，否则这份内容只是躺在 messages 里
-        // 没人回。
-        //
-        // 两档一起在这里分派，读法就是「high 先，还不停就给 low」：
-        // - `insertInbox("high")`：不管这一组还要不要继续，high 都当场落地（它赶的就是工具轮的
-        //   边界：结果刚到手、下一圈还没开头，此时插进去模型下一圈就能看到）。
-        // - `insertInbox("low")`：只在 `!needContinue` 时试 —— 那个判据的含义就是「这一组要停了」
-        //   （模型不再要下一轮）。low 本来就是「等这一段安静下来再说话」的东西，不是打断。
-        //   `needContinue` 已为 true（模型还要接着调工具）时，low 那一档根本不问：它留给这一组
-        //   真正停下之后的那一圈。`else if` 而不是两个独立 if 也是这个意思：本圈 high 进了就说明
-        //   队列里还有话要说，low 更该排在 high 之后。
-        //
-        // 判据从 `!runAborted`（这一段被叫停就不取）换成了 `runStatus === "running"`（只有跑着
-        // 才取）：`stopping` / `terminated` / `idle` 都不取 —— 与旧口径相比多盖住了「已经收完尾
-        // 的段」不该再出手的情形，少掉了「叫停之后还要看一个临时标志」这条隐式约定。
+        // 取件点（**全 core 唯一一处**）：这一圈刚收尾（工具结果已进 messages）、下一圈的
+        // Assistant 占位还没补，此刻插进来的 User 消息排在工具结果之后，模型下一圈就能看见。
+        // 读法就是「high 先；这一组要停了，再给 low」：high 赶的是工具轮边界，low 等整组停下。
+        // 只有 running 才取：stopping / terminated / idle 一条都不取。
         if (this.isRunning) {
-          if (this.insertInbox("high")) {
+          if (this.takeInbox("high")) {
             needContinue = true;
-          } else if (!needContinue && this.insertInbox("low")) {
+          } else if (!needContinue && this.takeInbox("low")) {
             needContinue = true;
           }
         }
@@ -885,7 +671,7 @@ export class Agent extends AgentContext {
     //   与「末尾再插一条 User」不打架（插进来的 User 在它们眼里只是历史里的一条）。
     // - **被叫停时不需要 `break`**：插入点自带 `isRunning` 判据，`stopping` / `terminated`
     //   一律不取件、不续圈。
-    // - **循环退出后不再取件**：段首的落地归 `deliver()`（`flushInbox`），本方法不兼第二个职责。
+    // - **循环退出后不再取件**：段首的落地归 `deliver()`（`takeInbox`），本方法不兼第二个职责。
   }
 
   /**
@@ -1123,31 +909,12 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * 发一条用户消息，等**这一轮真的结束**（含收尾钩子里投进来的条目带来的后续段）。
+   * 发一条用户消息，等这一段真的结束（含收尾钩子带来的后续段）。
    *
-   * ## 两个入口之一：这个等，那个不等
-   *
-   * `send(content)` 是「我发起，等我跑完」；`deliver(entry)` 是「这条给你，有空就跑」。
-   * 差别不在入队（两者都把内容交给同一个 inbox / 同一个段），而在**节奏归谁**：前者归调用方
-   * （await），后者归 agent（fire-and-forget）。
-   *
-   * ## 钩子为什么在 `send()` 里、而不在 `run()` 里
-   *
-   * `onBeforeSend` / `onAfterSend` 是「一次**受理**」的边界（权限、保存、迁移），而一个段可以
-   * 不是受理起的（`deliver` 也会起段）。把这两个钩子搬进 `run()`，被投递叫醒的段就会跑保存 /
-   * 迁移钩子，语义就错了（一次投递被当成一次发送）。所以它们留在这里，且一头一尾各一次。
-   *
-   * ## 返回口很谨慎地说「这一轮结束了」
-   *
-   * 返回值在 `onAfterSend` 之后取（插件可以整体替换 `messages`）。`send()` 不在收尾时顺手带走
-   * 受理期间投进来的条目：它们留在 inbox 里，等下一次外部驱动（`deliver` / 下一次 `send`）落地。
-   * 钩子里投递 = 交给下一轮，这一次受理不管。
-   *
-   * ## `stopping` 时的已知行为
-   *
-   * 若调用时 `runStatus === "stopping"`（用户刚按停、上一段还在收尾），`run()` 会立即返回：
-   * 这条 User 消息已经 append 进 `messages`，但这一遭不会跑。这是已知且照实的 —— 它不是
-   * 错误，而是「用户在按停的同一瞬又发了一句」的真实后果；下一段会把它一起发出。
+   * 与 `deliver` 的分工是「节奏归谁」：这里归调用方（await），那里归 agent（有空间就跑）。
+   * `onBeforeSend` / `onAfterSend` 是**受理**的边界，所以只在这一路上，不在 `run` 里 ——
+   * 被投递叫醒的段不是一次受理。\`stopping\` 时 `run` 立刻返回：这条消息已进 `messages`，
+   * 这一遭不跑，下一段一起发出。
    */
   async send(content: AgentNS.MessageContentSection[] | string): Promise<AgentNS.Message[]> {
     // 插件上下文（消息快照仅供读取）

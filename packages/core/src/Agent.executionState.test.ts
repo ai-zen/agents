@@ -114,7 +114,7 @@ describe("Agent 段状态：deliver 的两个判据", () => {
     expect(receipt.accepted).toBe(true);
     expect(receipt.woke).toBe(true);
     expect(agent.runStatus).toBe("running");
-    // 唤醒前就落地了（`deliver` 里的 `flushInbox`）：队列同步空掉，那条已经躺在 `messages` 里 ——
+    // 唤醒前就落地了（`deliver` 里的 `takeInbox`）：队列同步空掉，那条已经躺在 `messages` 里 ——
     // 所以第一圈请求一定看得到它。
     // 改前这里是「条目还在队列里，等着段首取件」；改后取件点只剩内循环末，唤醒前的落地归 `deliver`。
     expect(agent.inbox).toHaveLength(0);
@@ -466,7 +466,7 @@ describe("Agent 段状态：send 的收尾", () => {
   });
 
   it("受理期间投递的条目：这次 send 不带它，滞留到下一次驱动", async () => {
-    // 改前：`send()` 的 `finally` 会把 receipt 那条 `flushInbox` + `run`，且 await 那一跳。
+    // 改前：`send()` 的 `finally` 会把 receipt 那条落地 + `run`，且 await 那一跳。
     // 改后：`finally` 只置 `sendStatus = "idle"`，钩子里投进来的条目留在队列里，等下一次外部
     // 驱动（`deliver` / 下一次 `send`）落地（理由：`send()` 不必为“顺手带走”多等一次）。
     const { client, create } = scriptedClient([textRound("一"), textRound("二")]);
