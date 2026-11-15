@@ -12,6 +12,9 @@
  *   5. **回投挂在每一段结算上**：`create_session` 起的第一段只投**一次**（不是两次），之后
  *      `send_to_session` 叫起来的第二段结算**又**投一次 —— 这一条钉的就是「回投跟结算走，不跟
  *      `create` 走」（改前第二段跑完什么都不回投）。
+ *   6. **段开始那一拍**（`onSegmentStart`）：被投递叫起来跑的那一段期间 `read_session_status` 答
+ *      `running`（改前答 `idle`），并发限额因此数得到这些段；这一段结算后回到 `idle`，这一段
+ *      的账也从 `pending` 重新记。
  *
  * 投递只有**一个入口**（`chatRunner.deliver`）：服务不再先 `enqueue` 再 `run`，所以这里也不
  * 再有「猜爸爸在不在跑」的断言，只有「投进去之后它到底落在哪」的断言。
@@ -181,8 +184,12 @@ function createHarness(options: {
       return agent;
     },
     // 一段的边界（core 的 `status`）：agent 被 `deliver()` 叫醒的那一段没有受理，现场只能从
-    // 这条事件里建（与 `app.ts` 同一条接线）
-    onStatus: (event) => runner?.onAgentStatus(event),
+    // 这条事件里建（与 `app.ts` 同一条接线）；`to === "running"` 那一拍还要告诉平级会话
+    // 「这一段开始了」（派生会话回到 running）—— `app.ts` 里也是这么接的
+    onStatus: (event) => {
+      runner?.onAgentStatus(event);
+      if (event.to === "running") service.onSegmentStart(event.conversationId);
+    },
   });
 
   runner = new ChatRunner({
@@ -275,6 +282,35 @@ function scriptedAgent(texts: string[]): ChatAgent {
       completions: {
         create: async () => {
           const data = round();
+          return {
+            async *[Symbol.asyncIterator]() {
+              for (const item of data) yield item;
+            },
+          };
+        },
+      },
+    },
+  } as unknown as ConstructorParameters<typeof Agent>[0]["client"];
+  return new Agent({ client, model: "gpt-4" }) as unknown as ChatAgent;
+}
+
+/**
+ * 同 {@link scriptedAgent}，但第 n 次请求可以先用一个卡点停住（`script[n].gate`）。
+ *
+ * 「这一段正跑着的那一刻」因此是可精确到达的：段边界 `status → running` 已经报过、模型还没回，
+ * 记录上就该是 `running`（而不是等它跑完再看结果）。不 sleep、不赌定时器。
+ */
+function gatedScriptedAgent(script: Array<{ text: string; gate?: Promise<void> }>): ChatAgent {
+  let cursor = 0;
+  const rounds = script.slice();
+  const client = {
+    chat: {
+      completions: {
+        create: async () => {
+          const round = rounds[cursor] ?? { text: "（脚本用完了）" };
+          cursor += 1;
+          if (round.gate) await round.gate;
+          const data = [chunk({ content: round.text }), chunk({}, "stop")];
           return {
             async *[Symbol.asyncIterator]() {
               for (const item of data) yield item;
@@ -461,6 +497,139 @@ describe("回投挂在「每一段结算」上（真 ChatRunner）", () => {
     // 正文是**第二段**最后说的那句话，不是第一段的
     expect(String(parentInbox(h)[1]!.content)).toContain("第二段：边界用例也补上了。");
     expect(parentInbox(h)[1]!.source).toBe("查");
+  });
+});
+
+describe("段开始：被投递叫起来跑的那一段（真 ChatRunner + 真 core Agent）", () => {
+  it("自起段在跑期间 `read_session_status` 答 running，这一段结算之后答 idle", async () => {
+    const gate: Deferred<void> = deferred<void>();
+    const h = createHarness({
+      // 真 core `Agent`：只有真的段才演得出「被投递叫起来的第二段」（假件没有段边界）
+      childAgent: () =>
+        gatedScriptedAgent([{ text: "第一段说完了。" }, { text: "第二段：收到，接着做。", gate: gate.promise }]),
+      parentAgent: () => new FakeAgent([]),
+    });
+    const seeding = await h.runner.run({ conversationId: PARENT_ID, input: { content: "先热身" } });
+    await seeding.done;
+
+    const created = await h.service.create({ caller: callerOf(h), prompt: "先去查一下", label: "查" });
+    if (!created.ok) throw new Error("unreachable");
+    // 第一段真的跑完并结算了（记录上是 idle）
+    await h.waitFor(
+      () =>
+        h.turnOf(created.sessionId) === undefined &&
+        h.service.record(created.sessionId)?.state === "idle",
+    );
+    await h.idle();
+
+    // 父接着跟它说话：子会话空闲 → 被投递叫起来跑第二段（这一段卡在模型那一侧）
+    const sent = await h.service.send({
+      caller: callerOf(h),
+      sessionId: created.sessionId,
+      content: "再补一下边界用例",
+    });
+    expect(sent).toEqual({ ok: true, state: "idle" });
+
+    // 它正跑着：`read_session_status` 必须答 running（改前这里答 idle —— 那是假话）
+    const during = await h.service.status({ caller: callerOf(h), sessionId: created.sessionId });
+    expect(during.state).toBe("running");
+
+    // 放行这一段，它结算之后照旧答 idle（收尾归 `settleSegment`）
+    gate.resolve();
+    await h.waitFor(() => h.service.record(created.sessionId)?.state === "idle");
+    const after = await h.service.status({ caller: callerOf(h), sessionId: created.sessionId });
+    expect(after.state).toBe("idle");
+  });
+
+  it("段开始复位这一段的账：投完（delivered）又被叫起来跑 → 结算时重新从 pending 走到 delivered", async () => {
+    const gate: Deferred<void> = deferred<void>();
+    const h = createHarness({
+      childAgent: () =>
+        gatedScriptedAgent([{ text: "第一段说完了。" }, { text: "第二段：都补上了。", gate: gate.promise }]),
+      parentAgent: () => new FakeAgent([]),
+    });
+    const seeding = await h.runner.run({ conversationId: PARENT_ID, input: { content: "先热身" } });
+    await seeding.done;
+
+    const created = await h.service.create({ caller: callerOf(h), prompt: "去查一下", label: "查" });
+    if (!created.ok) throw new Error("unreachable");
+    // 第一段结算 → 这一段的结果投回父对话（父对话是假 agent，条目留在它的 inbox 里）
+    await h.waitFor(() => h.service.record(created.sessionId)?.resultDelivered === "delivered");
+    await h.idle();
+    expect(parentInbox(h)).toHaveLength(1);
+
+    // 又被叫起来跑一段：段一开始账就重新记（不清零的话，这里还挂着上一段的 delivered）
+    const sent = await h.service.send({
+      caller: callerOf(h),
+      sessionId: created.sessionId,
+      content: "再补一句",
+    });
+    expect(sent).toEqual({ ok: true, state: "idle" });
+    expect(h.service.record(created.sessionId)?.resultDelivered).toBe("pending");
+
+    // 这一段结算 → 又走到 delivered，父对话那边多一条（一段一条结果，两段就两条）
+    gate.resolve();
+    await h.waitFor(() => h.service.record(created.sessionId)?.resultDelivered === "delivered");
+    await h.idle();
+    expect(h.service.record(created.sessionId)?.state).toBe("idle");
+    expect(parentInbox(h)).toHaveLength(2);
+    expect(String(parentInbox(h)[1]!.content)).toContain("第二段：都补上了。");
+  });
+
+  it("并发限额数得到自起段：4 个 peer 都被投递叫起来跑时，第 5 个 create 被 too_many_peers 拒", async () => {
+    const gates = new Map<string, Deferred<void>>();
+    const h = createHarness({
+      // 每个子会话一个卡点：它的第二段（被投递叫起来的那一段）停在 running 上，不会自己跑完
+      childAgent: (conversationId) => {
+        const gate: Deferred<void> = deferred<void>();
+        gates.set(conversationId, gate);
+        return gatedScriptedAgent([
+          { text: "第一段说完了。" },
+          { text: "第二段：收到。", gate: gate.promise },
+        ]);
+      },
+      parentAgent: () => new FakeAgent([]),
+    });
+    const seeding = await h.runner.run({ conversationId: PARENT_ID, input: { content: "先热身" } });
+    await seeding.done;
+
+    const sessions: string[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      const created = await h.service.create({ caller: callerOf(h), prompt: `任务 ${i}`, label: `任务 ${i}` });
+      if (!created.ok) throw new Error(`派生会话没开成：${created.reason}`);
+      sessions.push(created.sessionId);
+    }
+    // 4 个的第一段都跑完并结算了：这一刻记录全是 idle，限额数不到任何在跑的
+    await h.waitFor(
+      () => sessions.every((id) => h.service.record(id)?.state === "idle" && h.turnOf(id) === undefined),
+    );
+    await h.idle();
+
+    // 4 个都用**投递**叫起来跑（不经过 `create` 起的第一段）
+    for (const id of sessions) {
+      const sent = await h.service.send({ caller: callerOf(h), sessionId: id, content: "接着做" });
+      expect(sent).toEqual({ ok: true, state: "idle" });
+    }
+
+    // 这 4 段都在跑：限额只数 `state === "running"`，所以现在数得到 4 个（改前这里是 4 个 idle）
+    expect(sessions.map((id) => h.service.record(id)?.state)).toEqual([
+      "running",
+      "running",
+      "running",
+      "running",
+    ]);
+
+    // 第 5 个必须被拒：4 个名额都被「正跑着的那几段」占着（改前它会被放行）
+    const fifth = await h.service.create({ caller: callerOf(h), prompt: "第五个" });
+    expect(fifth.ok).toBe(false);
+    if (fifth.ok) throw new Error("unreachable");
+    expect(fifth.reason).toBe("too_many_peers");
+    // 拒绝不许留下副作用：一条新会话都没建
+    expect(h.creator.created).toHaveLength(4);
+
+    // 放行，让这 4 段安静收尾
+    for (const gate of gates.values()) gate.resolve();
+    await h.waitFor(() => sessions.every((id) => h.service.record(id)?.state === "idle"));
   });
 });
 

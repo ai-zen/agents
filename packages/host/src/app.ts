@@ -521,7 +521,15 @@ export class HostApp {
       // `conversation.send` 的受理，它的现场只能从这条事件里建（见 `ChatRunner.onAgentStatus`）。
       // `chatRunner` 在 §7 才造出来（比这里晚），所以这里闭包住 `this`，调用那一刻才去拿
       // —— 与 `peerSessions` 的晚绑定同一个理由。
-      onStatus: (event) => this.chatRunner.onAgentStatus(event),
+      //
+      // `to === "running"` 这一拍还要跟平级会话说一声「这一段开始了」：派生会话被投递叫起来的
+      // 那几段从前没有复位点，`read_session_status` 会在它正跑着时答 `idle`，并发限额（只数
+      // `running`）也数不到它们。`idle` / `stopping` / `terminated` 都不动 —— 收尾那一拍归
+      // `settleSegment`。
+      onStatus: (event) => {
+        this.chatRunner.onAgentStatus(event);
+        if (event.to === "running") this.peerSessions.onSegmentStart(event.conversationId);
+      },
       // 入队那一刻的来源（`InboxEntry.source`）：自起段结算时报给宿主的就是它 ——
       // 「这一段是被谁叫起来的」只有投递方知道（见 `ChatRunner.noteInbox`）。
       onInbox: (event) => this.chatRunner.noteInbox(event.conversationId, event.entry.source),

@@ -33,6 +33,12 @@
  * 提问），本文件只多接一跳 {@link PeerSessionService.settleSegment} —— 不新增事件、不另立订阅。
  * 一段一次，不多不少：`create` 里那一句已经删掉，否则第一段会被投两遍。
  *
+ * ## 另一端：段开始
+ *
+ * 结算那一拍把记录收成 `idle` / `failed` / `aborted`；**段开始**那一拍（{@link
+ * PeerSessionService.onSegmentStart}）要把它复位成 `running` —— 否则被叫起来跑的那一段期间，
+ * 记录里一直挂着上一段的结局。
+ *
  * ## 「谁在调我」为什么靠 `bind`
  *
  * core 的 `Agent` 上没有 `conversationId`（那是宿主的财产），所以宿主在造出 agent 之后调
@@ -90,9 +96,11 @@ export interface PeerSessionRecord {
   /** 开跑时刻（毫秒） */
   startedAt: number;
   /**
-   * **最近一次结算**的那条结果有没有送到父对话手上（`pending` = 还没结算过一次）。
+   * **当前这一段**的结果投出去了没有（`pending` = 这一段还没结算、还没投）。
    *
-   * 一段一条结果：第二段、第三段结算时会被重写，所以它是「最后那一段的账」，不是累计量。
+   * 段一开始就复位成 `pending`（见 {@link onSegmentStart}），这一段结算时写成 `delivered` /
+   * `dropped`。所以它记的是「眼下这一段」的账，不是累计量；上一段的 `delivered` 留在上面就成了
+   * 「这一段已经投出去了」这句假话。
    */
   resultDelivered: "pending" | "delivered" | "dropped";
 }
@@ -381,6 +389,26 @@ export class PeerSessionService implements PeerSessionPort {
       startedAt: new Date(record.startedAt).toISOString(),
       ...(lastMessage.length > 0 ? { lastMessage } : {}),
     };
+  }
+
+  /**
+   * **一段开始** → 若这段会话是派生会话，把记录复位成「这一段正在跑」。
+   *
+   * 必要性就两句：`read_session_status` 要诚实（它正跑着的时候不能答 `idle`）；`create_session`
+   * 的并发限额只数 `state === "running"`，这些段要数得到。
+   *
+   * 所以两格都要复位：`state → "running"`，`resultDelivered → "pending"`（这一段的账重新开始
+   * 记，上一段的 `delivered` 不许挂在新的一段上）。
+   *
+   * 由 `app.ts` 那条已在处理段边界的 `onStatus` 一跳进来，只认 `to === "running"`；`idle` /
+   * `stopping` / `terminated` 那一拍不动 —— 收尾归 {@link settleSegment}。判据只有 `records`：
+   * 不在里面的会话（用户会话、父对话自己、重启前的旧会话）什么都不发生。
+   */
+  onSegmentStart(conversationId: string): void {
+    const record = this.records.get(conversationId);
+    if (!record) return;
+    record.state = "running";
+    record.resultDelivered = "pending";
   }
 
   /**

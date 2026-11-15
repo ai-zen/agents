@@ -646,6 +646,70 @@ describe("create_session 的并发限额：每个父对话最多 4 个在跑的"
   });
 });
 
+describe("段开始：派生会话回到 running（`state` 的复位点）", () => {
+  it("派生会话的段开始 → `state` 回 running，`resultDelivered` 复位成 pending", async () => {
+    const h = createHarness();
+    await h.service.create({ caller: h.parentAgent, prompt: "A" });
+    h.say("c-child-1", "第一段说完了。");
+    // 第一段结算：状态收成 idle，这一段的结果已投出去
+    await h.service.settleSegment(settledFacts("c-child-1"));
+    expect(h.service.record("c-child-1")).toMatchObject({ state: "idle", resultDelivered: "delivered" });
+
+    // 它又被叫起来跑一段（`send_to_session` / 回投唤醒）：段一开始的那一拍
+    h.service.onSegmentStart("c-child-1");
+
+    const status = await h.service.status({ caller: h.parentAgent, sessionId: "c-child-1" });
+    expect(status.state).toBe("running");
+    // 这一段的账重新开始记：上一段的 `delivered` 不许挂在新的一段上
+    expect(h.service.record("c-child-1")?.resultDelivered).toBe("pending");
+
+    // 这一段结算之后照旧答 idle（收尾归 `settleSegment`，不归段开始）
+    h.say("c-child-1", "第二段说完了。");
+    await h.service.settleSegment(settledFacts("c-child-1"));
+    expect((await h.service.status({ caller: h.parentAgent, sessionId: "c-child-1" })).state).toBe(
+      "idle",
+    );
+    expect(h.service.record("c-child-1")?.resultDelivered).toBe("delivered");
+  });
+
+  it("不是派生会话的段开始 → 什么都不发生（用户会话 / 父对话自己都不在 `records` 里）", async () => {
+    const h = createHarness();
+    await h.service.create({ caller: h.parentAgent, prompt: "A", label: "补测试" });
+    const before = { ...h.service.record("c-child-1")! };
+
+    // 普通用户会话的段开始：宿主照样会报进来，这里必须是个空动作
+    h.service.onSegmentStart("c-user-session");
+    // 父对话自己那一段也一样
+    h.service.onSegmentStart(PARENT_ID);
+
+    expect(h.service.record("c-child-1")).toEqual(before);
+    // 那两段会话在记录里本来就没有：查状态仍旧是 gone（不会因为这一拍凭空多出一条记录）
+    expect(await h.service.status({ caller: h.parentAgent, sessionId: "c-user-session" })).toEqual({
+      state: "gone",
+    });
+    expect(await h.service.status({ caller: h.parentAgent, sessionId: PARENT_ID })).toEqual({
+      state: "gone",
+    });
+  });
+
+  it("限额数得到被叫起来跑的段：4 个都回到 running 时第 5 个 create 被拒", async () => {
+    const h = createHarness();
+    for (let i = 0; i < 4; i += 1) await h.service.create({ caller: h.parentAgent, prompt: `A${i}` });
+    // 4 个第一段都结算了：这时候记录全是 idle，限额数不到任何东西
+    for (let i = 1; i <= 4; i += 1) await h.service.settleSegment(settledFacts(`c-child-${i}`));
+
+    // 4 个都被投递叫起来跑（不经过 `create` 起的第一段）
+    for (let i = 1; i <= 4; i += 1) h.service.onSegmentStart(`c-child-${i}`);
+
+    const fifth = await h.service.create({ caller: h.parentAgent, prompt: "第五个" });
+    expect(fifth.ok).toBe(false);
+    if (fifth.ok) throw new Error("unreachable");
+    expect(fifth.reason).toBe("too_many_peers");
+    // 拒绝不许留下副作用
+    expect(h.creator.created).toHaveLength(4);
+  });
+});
+
 describe("read_session_status", () => {
   it("查不到（重启之后 / 被删）→ gone，不抛错", async () => {
     const h = createHarness();
