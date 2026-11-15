@@ -114,7 +114,11 @@ describe("Agent 段状态：deliver 的两个判据", () => {
     expect(receipt.accepted).toBe(true);
     expect(receipt.woke).toBe(true);
     expect(agent.runStatus).toBe("running");
-    expect(agent.inbox.map((entry) => entry.messageId)).toEqual([receipt.messageId]);
+    // 唤醒前就落地了（`deliver` 里的 `flushInbox`）：队列同步空掉，那条已经躺在 `messages` 里 ——
+    // 所以第一圈请求一定看得到它。
+    // 改前这里是「条目还在队列里，等着段首取件」；改后取件点只剩内循环末，唤醒前的落地归 `deliver`。
+    expect(agent.inbox).toHaveLength(0);
+    expect(agent.messages.at(-1)!.id).toBe(receipt.messageId);
 
     await settled(agent);
 
@@ -155,8 +159,14 @@ describe("Agent 段状态：deliver 的两个判据", () => {
     expect(agent.runStatus).toBe("idle");
   });
 
-  it('send 受理期间（sendStatus === "sending"）投递：不起段，条目由那次 send 的 run() 带走', async () => {
-    const { client, create, bodies } = scriptedClient([textRound("一")]);
+  it('send 受理期间（sendStatus === "sending"）投递：不起段，条目由那次 send 的那一段在轮末插进去', async () => {
+    // 口径变了（改前 / 改后）：
+    // - 改前：`run()` 段的第一件事就是取件，所以 `onBeforeSend` 里投的这条会在**第一圈请求之前**
+    //   落成 User 消息（只有 1 次请求）；
+    // - 改后：`run()` 不再在段首取件，而 `send()` 的 `finally` 只负责「受理结束之后」那一跳。
+    //   受理**当中**投的这条于是走段内唯一的取件点——内循环末，且它是 `high`，所以第一次请求
+    //   先发出（看不到它）、轮末插进、再跑一圈。代价是这一圈，好处是取件只有一处判据。
+    const { client, create, bodies } = scriptedClient([textRound("一"), textRound("二")]);
     const agent = makeAgent(client);
     const events = watchStatus(agent);
 
@@ -175,11 +185,12 @@ describe("Agent 段状态：deliver 的两个判据", () => {
     expect(receipt!.woke).toBe(false);
     expect(agent.inbox).toHaveLength(0);
     // 只有一段（这次 send 的段），不是两段
-    expect(create).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledTimes(2);
     expect(events.filter((point) => point === "idle→running")).toHaveLength(1);
-    // 条目在第一次请求之前就被这一段落成了 User 消息
+    // 条目在**第二圈**请求里（第一圈发出去时它还只排在队列里）
     expect(users(agent)).toEqual(["你好", "钩子里投的"]);
-    expect(bodies[0].messages.at(-1).content).toBe("钩子里投的");
+    expect(JSON.stringify(bodies[0].messages)).not.toContain("钩子里投的");
+    expect(bodies[1].messages.at(-1).content).toBe("钩子里投的");
   });
 
   it("有人直接 await agent.run() 时投递：不起第二段，条目在段末被取走", async () => {
