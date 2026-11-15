@@ -411,3 +411,66 @@ describe("Agent 段状态：status 事件", () => {
     expect(events).toEqual(["idle→terminated"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 受理的收尾（`send()` 的 finally）
+// ---------------------------------------------------------------------------
+
+describe("Agent 段状态：send 的收尾", () => {
+  it("受理期间被 abort：终止态不复活，inbox 一条不多一条不少", async () => {
+    const ctx = gatedClient([textRound("不该跑完")]);
+    const agent = makeAgent(ctx.client);
+    const events = watchStatus(agent);
+
+    // 投递发生在这次受理的**收尾钩子**里：`sendStatus === "sending"`，`deliver()` 刻意
+    // 没叫醒，于是「这张条目要不要在 send 的 finally 里起一段」成了一个必须表态的问题。
+    agent.use({
+      onAfterSend: () => {
+        agent.deliver({ source: "tool", priority: "low", content: "受理期间来的" });
+      },
+    });
+
+    const sending = agent.send("你好");
+    await vi.waitFor(() => expect(ctx.create).toHaveBeenCalledTimes(1));
+    expect(agent.runStatus).toBe("running");
+
+    // 用户在这一段跑到一半时按停
+    agent.abort();
+    ctx.releases[0]!();
+
+    await sending;
+
+    // 终止态只有外部驱动（`send` / `deliver` 的调用本身）能解冻。这一次 send 的收尾是
+    // **内部**收尾，不是外部驱动 —— 它不许把状态从 terminated 拉回 running 再跑一段。
+    expect(agent.runStatus).toBe("terminated");
+    // 条目原样留着（等下一次外部驱动），既没被丢掉，也没被这一跳偷偷跑掉
+    expect(agent.inbox.map((entry) => entry.content)).toEqual(["受理期间来的"]);
+    expect(ctx.create).toHaveBeenCalledTimes(1);
+    // 全程只有这一段，没有多出来的 running
+    expect(events).toEqual(["idle→running", "running→stopping", "stopping→terminated"]);
+  });
+
+  it("受理期间投递的条目：send() 返回时它已经被处理完（不是 fire-and-forget）", async () => {
+    const { client, create } = scriptedClient([textRound("一"), textRound("二")]);
+    const agent = makeAgent(client);
+
+    let receipt: AgentNS.DeliveryReceipt | undefined;
+    agent.use({
+      onAfterSend: () => {
+        receipt = agent.deliver({ source: "user", priority: "low", content: "钩子里来的" });
+      },
+    });
+
+    await agent.send("你好");
+
+    // 同步断言（`await` 之后不隔任何等待）：`send()` 返回 = 这一轮真的结束了。
+    // 宿主持有这个假设（返回即 settle、即丢弃 agent），队列里剩下的东西必须在此之前处理完。
+    expect(agent.inbox).toHaveLength(0);
+    const landed = agent.messages.find((m) => m.id === receipt!.messageId)!;
+    expect(landed.role).toBe(AgentNS.Role.User);
+    expect(landed.content).toBe("钩子里来的");
+    // 「被处理了」不止是落成 User，还包括为它跑出来的那一轮真的定型了
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(agent.messages.at(-1)!.content).toBe("二");
+  });
+});

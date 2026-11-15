@@ -391,22 +391,20 @@ describe("Agent.inbox", () => {
       expect(lastMessage(bodies[1]).content).toBe("钩子里来的");
     });
 
-    it("onAfterSend 里投递的条目：由 send() 的 finally 起下一段带走（send 不等它）", async () => {
-      // 第二段的第一次请求被卡住（`create` 里 await 一个手动 resolve 的 Promise）：
-      // 于是「send() 已经返回了、而下一段还在跑」是一个可到达、可停留的一刻 ——
-      // 「send 不等它」就靠这一刻取证，不靠计时。
-      const bodies: any[] = [];
-      let releaseSecond!: () => void;
-      const secondGate = new Promise<void>((resolve) => {
-        releaseSecond = resolve;
-      });
-      const create = vi.fn(async (body: any) => {
-        bodies.push(body);
-        if (bodies.length === 1) return makeStream(textRound("这一轮说完了"));
-        await secondGate;
-        return makeStream(textRound("收尾钩子里那条也回了"));
-      });
-      const client = { chat: { completions: { create } } } as any;
+    it("onAfterSend 里投递的条目：send() 返回时它已经落地并跑完一轮（send 会等它）", async () => {
+      // 口径（从「send 不等它」正回来）：`send()` 的对外语义是「返回时这一轮真的结束了」——
+      // 宿主拿这个返回当「settle 并丢弃 agent」的信号（在它之后调 `settle()`、把 agent 从
+      // 注册表里摘掉）。所以收尾钩子里投进来的那条必须在此**之前**处理完：fire-and-forget
+      // 会让消息在 agent 被丢弃之后才落地，写不进库 —— 正是 `154d396` 修过的那个坑。
+      //
+      // 取证方式：`await agent.send(...)` 之后**同步**断言，不隔任何等待、不靠计时。
+      // 「被处理了」也不止是「落成 User」：落成发生在起段后的第一个 await 之前，光看它
+      // fire-and-forget 也能绿。必须看到为它跑出来的那一轮定型了 —— `create` 第 2 次、
+      // 最后一条 assistant 的正文是对它的回答、状态 Completed。
+      const { client, create, bodies } = createRecordingClient([
+        textRound("这一轮说完了"),
+        textRound("收尾钩子里那条也回了"),
+      ]);
       const agent = new Agent({ client, model: "gpt-4", messages: [Message.System("助手")] });
 
       let receipt: AgentNS.DeliveryReceipt | undefined;
@@ -423,19 +421,18 @@ describe("Agent.inbox", () => {
 
       await agent.send("你好");
 
-      // 受理期间（`sendStatus === "sending"`）投递不起段：回执说没叫醒
+      // 受理期间（`sendStatus === "sending"`）投递不起段：回执说没叫醒 —— 它由 `finally` 里
+      // 那一跳叫醒，并且那一跳被 awaited
       expect(receipt!.woke).toBe(false);
-      // 但 `send()` 返回的那一刻，下一段已经在跑了 —— 它没有被这一次受理 await
-      expect(agent.runStatus).toBe("running");
-
-      // 放行第二段：条目被它落成 User 消息，并真的进了一次请求
-      releaseSecond();
-      await settled(agent);
-      expect(create).toHaveBeenCalledTimes(2);
+      // 返回即静止：没有还挂在跑到一半的第二段
+      expect(agent.runStatus).toBe("idle");
+      // 条目已被取走，并落成 User 消息（id 就是投递时给的那个：宿主已经把它回过客户端了）
       expect(agent.inbox).toHaveLength(0);
       const landed = agent.messages.find((m) => m.id === "host-queued-1")!;
       expect(landed.role).toBe(AgentNS.Role.User);
       expect(landed.content).toBe("收尾钩子里来的");
+      // 而且为它真的跑了一轮，那一轮的成型结果已经在手边
+      expect(create).toHaveBeenCalledTimes(2);
       expect(lastMessage(bodies[1]).content).toBe("收尾钩子里来的");
       expect(agent.messages.at(-1)!.content).toBe("收尾钩子里那条也回了");
       expect(agent.messages.at(-1)!.status).toBe(AgentNS.MessageStatus.Completed);

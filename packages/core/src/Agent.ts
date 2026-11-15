@@ -1006,7 +1006,7 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * 发一条用户消息，等**包含它的那一段**跑完。
+   * 发一条用户消息，等**这一轮真的结束**（含收尾钩子里投进来的条目带来的后续段）。
    *
    * ## 两个入口之一：这个等，那个不等
    *
@@ -1020,12 +1020,14 @@ export class Agent extends AgentContext {
    * 不是受理起的（`deliver` 也会起段）。把这两个钩子搬进 `run()`，被投递叫醒的段就会跑保存 /
    * 迁移钩子，语义就错了（一次投递被当成一次发送）。所以它们留在这里，且一头一尾各一次。
    *
-   * ## 返回口很谨慎地说「我这一段跑完了」
+   * ## 返回口很谨慎地说「这一轮结束了」
    *
    * 返回值在 `onAfterSend` 之后取（插件可以整体替换 `messages`）。
-   * `finally` 里可能又起一段（受理期间投进来的条目）：那一段不等 —— 不等它才能不被
-   * 一个无界的钩子/投递挂死，代价是「返回 = 所有排队条目都已落地」这个旧口径不再成立，
-   * 收窄成「返回 = 我这一段跑完了，剩下的由下一段带走」。
+   * `finally` 里可能又起一段（受理期间投进来的条目）：**那一段也等** —— 返回时这一轮真的
+   * 结束了，队列里剩下的东西已经被处理完。宿主拿「`send()` 返回」当「这一轮结束」用（随后
+   * settle、丢弃 agent），fire-and-forget 会让消息在 agent 被丢掉之后才落地，于是「回了
+   * `queued` 就一定落地」又破了。等它挂死的风险由「终止态不起段」与「收尾的失败只走 `error`
+   * 事件」两条兜着，不靠不等。
    *
    * ## `stopping` 时的已知行为
    *
@@ -1065,10 +1067,33 @@ export class Agent extends AgentContext {
       this.sendStatus = "idle";
       // 取件兜底②：受理期间（尤其两个收尾钩子里）投进来的条目。那一段时间 `sendStatus`
       // 是 `sending`，`deliver()` 刻意没起段 —— 不能让它白等，也不能在钩子里与本次受理
-      // 抢着写 `messages`。到了这一跳（受理真的结束了），把段叫起来由它带走。
+      // 抢着写 `messages`。这一跳是「受理真的结束了」的最后一刻，由这里把段叫起来带走。
       //
       // 用 `run()`（不是 `runLoops()`）：这是新的一段，整组首尾钩子该各发一次。
-      if (this.inbox.length > 0) void this.run();
+      //
+      // 两个条件缺一不可：
+      //   1. **不是终止态** —— 终止态只有外部驱动（`send` / `deliver` 的调用本身）能解冻，
+      //      而这次 send 的收尾是**内部**收尾，不算外部驱动；否则就是「用户按了停，却被自己
+      //      那次 send 的 finally 又拉起来跑了一轮」（`run()` 只挡 `running` / `stopping`，
+      //      对 `terminated` 是放行的，那一跳会把状态悄悄拉回 `running`）。
+      //   2. **inbox 非空** —— 队列本来就是数据，没东西就不该空跑一段（也免得撞上 `run()`
+      //      的空消息校验）。
+      //
+      // 这里 `await`（不是 `void`）：`send()` 的对外语义是「返回时这一轮真的结束了」，宿主
+      // 持有这个假设（返回即 settle、即丢弃 agent）。fire-and-forget 会让这一段在宿主丢弃
+      // agent 之后才落地，消息就写不进库了 —— 正是 `154d396` 修过的那个坑。
+      //
+      // `stopping` 时 `run()` 会单飞早退（立刻返回），这是对的：正在收尾的段不接受新工作，
+      // 条目留到下一次外部驱动。
+      //
+      // 这一段的失败不顶掉本次 send 已经很清楚的错误：吞掉并走 `error` 事件。
+      if (this.runStatus !== "terminated" && this.inbox.length > 0) {
+        try {
+          await this.run();
+        } catch (error) {
+          this.events.emit("error", error);
+        }
+      }
     }
 
     return this.messages;
