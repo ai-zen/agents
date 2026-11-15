@@ -817,7 +817,14 @@ class TurnSession implements ChatTurn {
     this.queuedIds.add(userMessageId);
     this.createdAtOf.set(userMessageId, this.clock.now());
     if (input.storedContent !== undefined) {
-      this.queuedStored.set(userMessageId, input.storedContent);
+      // 落库那一份也要过**同一个**注释函数（与 `run()` 里处理 `storedContent` 的写法一致）：
+      // 落地时 `persistLandedQueued` 是拿它整份覆盖行内容的，不过这一道，「非 user 来源 + 带
+      // 附件」的条目就会分叉 —— 模型看到的那份带注释，库里那份是原始内容。`source === "user"`
+      // 时它原样返回，用户自己发的消息一个字不变；注释只加这一次，`__asset_id` 段原封不动。
+      this.queuedStored.set(
+        userMessageId,
+        withSourceNote(input.storedContent, entry.source, userMessageId, entry.createdAt),
+      );
     }
 
     // 客户端要看得见**这一条**排上了：`inbox` 这会儿刚多了一项（内容摘要、来源、入队时刻都在里面）

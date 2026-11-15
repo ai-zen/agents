@@ -307,8 +307,10 @@ export class PeerSessionService implements PeerSessionPort {
    *      `run()` **唤醒**它；`run()` 抛错（收尾竞态 / 父对话被删）记 `dropped` 并出声一次，
    *      不重试、不补投（阶段 2）。
    *
-   * `source` 就是正文那行注释里的来源（`会话「<label>」`）：拼注释归 core 的
-   * `inboxEntryContent`，本文件不自己拼那一行 —— 否则壳里壳外两种写法迟早分叉。
+   * `source` 就是正文那行注释里的来源，**label 原样**（`补测试` / 会话 1）：拼注释归 core 的
+   * `inboxEntryContent`，本文件不自己拼那一行 —— 否则壳里壳外两种写法迟早分叉。**不再套
+   * 「会话「…」」**：缺省 label 本身就是 `会话 N`，再套一层引号与「会话」前缀，模型读到的
+   * 就是「来自 会话「会话 1」 自动推送」这种套娃话。
    */
   private async deliver(
     record: PeerSessionRecord,
@@ -320,7 +322,7 @@ export class PeerSessionService implements PeerSessionPort {
     const params: ChatRunParams = {
       conversationId: record.parentConversationId,
       input: { content: await this.resultBody(record, outcome, problem) },
-      source: `会话「${record.label}」`,
+      source: record.label,
     };
 
     try {

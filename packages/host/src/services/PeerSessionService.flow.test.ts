@@ -1,7 +1,8 @@
 /**
  * 平级会话的**接线**验收（真 `ChatRunner` + 假 agent + 假模型流）：
  *
- *   1. 子会话跑完 → 父对话收到一条**以来源注释开头的**用户消息（`会话「X」`，拼注释的是 core）；
+ *   1. 子会话跑完 → 父对话收到一条**以来源注释开头的**用户消息（来源就是 label 原样，
+ *      拼注释的是 core）；
  *   2. 父对话**正在跑** → 那条结果排进它这一轮（`run.inbox` 里出现），不新起一轮；
  *   3. 父对话**空闲** → 起一轮真 turn（`TurnSettledFacts.source` 不是 `"user"`，所以交接线不问）；
  *   4. 子会话的用量记在**它自己那一轮**，**不**进父对话的 `subAgentUsage`。
@@ -223,7 +224,7 @@ describe("平级会话：子会话跑完 → 父对话收到结果", () => {
     expect(rows).toHaveLength(1);
     const content = rows[0]!.content as string;
     // 逐字：core 的 `inboxEntryContent` 拼的那一行 + 子会话最后一条助手消息
-    expect(content.split("\n\n")[0]).toMatch(/^\/\/ 这条消息来自 会话「补测试」 自动推送（.+）$/);
+    expect(content.split("\n\n")[0]).toMatch(/^\/\/ 这条消息来自 补测试 自动推送（.+）$/);
     expect(content.split("\n\n")[1]).toBe("补了 3 个用例，全绿。");
 
     // 唤醒那一轮的 `source` 不是 `user`：所以交接线不会给没人看的对话挂问题
@@ -231,7 +232,7 @@ describe("平级会话：子会话跑完 → 父对话收到结果", () => {
       (facts) => facts.conversationId === PARENT_ID && facts.source !== "user",
     );
     expect(wake).toHaveLength(1);
-    expect(wake[0]!.source).toBe("会话「补测试」");
+    expect(wake[0]!.source).toBe("补测试");
     expect(wake[0]!.conversationId).toBe(PARENT_ID);
     // 子会话自己那一轮的来源是「父对话」（它的正文最前面那行注释也这么写）
     const childSettled = h.settled.filter((facts) => facts.conversationId === created.sessionId);
@@ -261,7 +262,8 @@ describe("平级会话：子会话跑完 → 父对话收到结果", () => {
     expect(h.turnOf(PARENT_ID)).toBe(parentTurn);
     const inbox = parentTurn.runState().inbox;
     expect(inbox).toHaveLength(1);
-    expect(inbox[0]!.source).toBe("会话「会话 1」");
+    // 缺省 label 本身就是「会话 N」：source 原样用它，于是正文读作「来自 会话 1 自动推送」
+    expect(inbox[0]!.source).toBe("会话 1");
     expect(inbox[0]!.preview).toBe("子会话说完了");
 
     // 放行父对话，让它安静收尾

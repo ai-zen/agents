@@ -327,8 +327,8 @@ describe("投递：跑完把结果送回父对话", () => {
     expect(delivered.conversationId).toBe(PARENT_ID);
     // 正文只说子会话最后一句，不带那一整段对话
     expect(delivered.input.content).toBe("补了 3 个用例，全绿。");
-    // source 就是正文开头那行注释里的来源（拼注释归 core）
-    expect(delivered.source).toBe("会话「补测试」");
+    // source 就是正文开头那行注释里的来源，label 原样（拼注释归 core）
+    expect(delivered.source).toBe("补测试");
 
     const status = await h.service.status({ caller: h.parentAgent, sessionId: "c-child-1" });
     expect(status.state).toBe("idle");
@@ -348,7 +348,7 @@ describe("投递：跑完把结果送回父对话", () => {
     expect(h.runner.enqueueCalls[0]).toMatchObject({
       conversationId: PARENT_ID,
       input: { content: "做完了" },
-      source: "会话「会话 1」",
+      source: "会话 1",
     });
     // 只有子会话那一轮，没有第二个 run
     expect(h.runner.runCalls).toHaveLength(1);

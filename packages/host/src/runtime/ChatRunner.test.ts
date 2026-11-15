@@ -719,6 +719,64 @@ describe("ChatRunner：这一轮是谁叫起来的（source）", () => {
     expect(landedOf(typed!.userMessageId)?.content).toBe("我自己补一句");
     expect(custom.store.peek(typed!.userMessageId)?.content).toBe("我自己补一句");
   });
+
+  it("非 user 来源 + 带附件：库里那份也带注释行，__asset_id 段原封不动", async () => {
+    const toolGate = deferred<void>();
+    const agent = new FakeAgent([
+      {
+        deltas: [{ content: "我查一下。" }],
+        toolCalls: [{ id: "call-1", name: "read", arguments: "{}" }],
+        toolGate: toolGate.promise,
+      },
+      { deltas: [{ content: "查到了。" }] },
+    ]);
+    const custom = createHarness({
+      agent,
+      // 带 `storedContent` 的那一档：落地时它整份覆盖行内容（真实现是 `AssetService`）
+      prepareAttachments: async ({ input }) => ({
+        content: input.content,
+        attachments: [],
+        storedContent: STORED_CONTENT,
+      }),
+    });
+
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "看看文件" },
+    });
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (agent.messages.some((message) => message.role === AgentNSValue.Role.Tool)) break;
+      await flushMicrotasks();
+    }
+
+    const queued = await custom.runner.enqueue({
+      conversationId: CONVERSATION_ID,
+      input: { content: "会话 3 的结果" },
+      source: AUTO_SOURCE,
+    });
+    expect(queued).not.toBeNull();
+
+    toolGate.resolve();
+    const settlement = await turn.done;
+
+    // ① 发给模型那份：注释行还是 core 拼的那一行（只加一次）
+    const landed = settlement.messages.find((message) => message.id === queued!.userMessageId);
+    expect((landed?.content as string).split("\n\n")[0]).toMatch(
+      /^\/\/ 这条消息来自 会话「会话 3」 自动推送（.+）$/,
+    );
+
+    // ② 库里那份：不再与模型那份分叉 —— 同样以注释行开头（而且只加这一次）
+    const stored = custom.store.peek(queued!.userMessageId)
+      ?.content as unknown as LocalMessageContentSection[];
+    expect(Array.isArray(stored)).toBe(true);
+    const note = stored[0] as unknown as { type: string; text: string };
+    expect(note.type).toBe("text");
+    // 注释里的时间是条目自己的 `createdAt`，这里按形状断言
+    expect(note.text).toMatch(/^\/\/ 这条消息来自 会话「会话 3」 自动推送（.+）\n\n$/);
+    expect(JSON.stringify(stored).match(/这条消息来自/g)).toHaveLength(1);
+    // ③ 素材引用段原封不动地留在后面（只是前面多了一段文本）
+    expect(stored.slice(1)).toEqual(STORED_CONTENT);
+  });
 });
 
 describe("ChatRunner：一轮结算之后报事实（R59）", () => {  it("结算时回调 onTurnSettled，带本轮用量 / 交接线 / 语言", async () => {
