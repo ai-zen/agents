@@ -358,6 +358,7 @@ ChatRunner.deliver(conversationId, { content, source }) → DeliveryOutcome
 | 平级会话阶段 3 | 超时与 `abort`、`/sessions` 的「agent 建的」标记、`peer_sessions` 表与跨重启的孤儿 / 补投 —— 都还没有 |
 | **inbox 未消费部分的持久化与恢复**（待做） | **读的那一半已就绪**：`agent.inboxPending` 给出此刻没被取走的条目（条目全是纯数据，直接 JSON 存）。**写的那一半一件都没有**：宿主没把未消费条目落库，core 也还没有「原样放回」的口子（`restore`）。做时注意三条（机制与理由见 `CORE.md` §3「未消费的条目要能存下来再放回去」）：① 恢复不能走 `push` —— 它会重写 `createdAt`，重启后所有条目都变成「刚刚」，主动骗模型；②「取走」没有事件（钥匙被取走完全没信号），所以只能**快照覆盖写**，不能增量维护；③ 顺序上先写消息、再读 `inboxPending` 覆盖写，反过来会重复。 |
 | 桌面端问答视图（W4） | `question.*` 在 `desktop/packages/main` 已接上（`chat.questions` / `chat.answerQuestion`），但整块视图、22 项零入口与真 GUI 竖切都未做 |
+| **desktop 未跟改（另一个仓）** | `desktop/packages/{main,shared,render}` 都 `link:` 本地 agents 包，但 `shared` / `render` 还把 `@ai-zen/agents-core` 钉在 `^4.1.0` —— 与 `5.0.0-alpha.0` 对不上，会在他俩的树里落两份 core。它读的 `InboxItem.source` 也已是判别结构。本仓没装 desktop 的依赖（那边连 `tsc` 都没有），所以**行级影响未核实**；动它要装 electron 那一套，属于另一个 workspace。 |
 | 6 条「有方法、没入口」的契约面 | `config.patch` / `getDiscovery` / `saveMcp` / `deleteMcp`、`agent.*`（6 条）、`model.*`（7 条）、`completion.files`、`notice.*`（3 条）、`conversation.state.statusBlocks`（已删）等在两端都没有完整消费面；删或留按 PRD §4 的判据逐条定 |
 | 兜底治理第二遍 | 只做了契约面与一轮文件清扫；`retry` / `fallback` / `catch` 密集文件还有未过一遍的 |
 | 「该说而没说」的提示 | 宿主词典里那批零产出文案已删，但它们对应的提示本身仍是需求缺口（PRD Q11）：删对话 / 删工作区之后确认一句、撞硬线、撤回之后、子 Agent 结束、附件超限…… |

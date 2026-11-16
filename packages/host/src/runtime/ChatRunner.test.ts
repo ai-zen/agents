@@ -46,7 +46,6 @@ import {
   FakeAgent,
   flushMicrotasks,
   ManualClock,
-  RecordingEventBus,
   RecordingMessageStore,
   RecordingScopePlugin,
   type Deferred,
@@ -464,22 +463,10 @@ describe("ChatRunner：结算", () => {
 
   it("装配 agent 失败：助手占位有个终态（error），失败原因进结算态", async () => {
     const custom = createHarness({
-      agent: {
-        messages: [],
-        append: () => {
-          throw new Error("不该被叫");
-        },
-        send: async () => {
-          throw new Error("不该被叫");
-        },
-        abort: () => undefined,
-        // 装配就没成：这一轮从没打开过入队门，inbox 这两个口不该被叫到
-        inbox: [],
-        deliver: () => {
-          throw new Error("不该被叫");
-        },
-        events: { on: () => undefined },
-      },
+      // 装配就没成：这一轮的 agent 根本没造出来，所以这里只需要一个「造不出来」的现场，
+      // 不需要假 agent —— 那三个已经不存在的口（`send` / `deliver` / `inbox`）正是在这一步
+      // 之前就该被用掉的东西
+      agent: undefined,
     });
     const broken = new ChatRunner({
       messages: custom.store,
@@ -1346,6 +1333,7 @@ describe("ChatRunner：接口面", () => {
       status: AgentNSValue.MessageStatus.Completed,
       omit: true,
       parentToolCallId: null,
+      source: null,
       content: [{ index: 0, type: "text", text: "带图的回答" }, { index: 1, type: "image_url", image_url: { url: "https://example.com/a.png" } }],
       data: {
         reasoning_content: "想过",

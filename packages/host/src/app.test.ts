@@ -1145,7 +1145,7 @@ describe("到交接线才提问（R59 / F-D2）", () => {
     const turn = await app.chatRunner.run({
       conversationId: conversation.id,
       input: { content: "会话 3 的结果" },
-      source: "会话「会话 3」",
+      source: { kind: "agent", label: "会话「会话 3」" },
     });
     await turn.done;
     await wait(50);

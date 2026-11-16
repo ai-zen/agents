@@ -54,6 +54,7 @@ function row(conversationId: string, role: string, text: string, seq = 1): Store
     id: `${conversationId}-m${seq}`,
     conversationId,
     parentToolCallId: null,
+    source: null,
     seq,
     role,
     status: AgentNS.MessageStatus.Completed as string,
