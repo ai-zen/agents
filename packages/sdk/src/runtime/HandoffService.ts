@@ -710,18 +710,15 @@ export class HandoffService {
         resolve(end);
       };
 
+      // 状态事件按到达值分名（`CORE.md` §10）：订阅「到了哪一格」，不必再看 `to`
+      offs.push(agent.on("state:busy", () => void (sawBusy = true)));
       offs.push(
-        agent.on("state", (event) => {
-          if (event.to === "busy") {
-            sawBusy = true;
-          } else if (event.to === "idle" && sawBusy) {
-            // 只认「忙过之后的闲」：投递之前那一段（队列里还压着别人的货）的闲不是我的
-            finish("idle");
-          } else if (event.to === "paused") {
-            finish("paused");
-          }
+        agent.on("state:idle", () => {
+          // 只认「忙过之后的闲」：投递之前那一段（队列里还压着别人的货）的闲不是我的
+          if (sawBusy) finish("idle");
         }),
       );
+      offs.push(agent.on("state:paused", () => finish("paused")));
       offs.push(agent.on("stopped", () => finish("dead")));
       offs.push(agent.on("killed", () => finish("dead")));
       // 取消也要能打断「等闲」（`CORE.md` §5 那个死角：等子 agent 闲同样得能被掐断）

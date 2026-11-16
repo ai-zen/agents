@@ -47,7 +47,7 @@ type Listener = (payload: any) => void;
  * 实现。所以这个替身要模拟的就是那条路的三个可观测点：
  *   - `start()`：幂等，返回一句「到死才 resolve」的 promise；
  *   - `push(entry)`：落一条 user 消息 → 变忙 → （跑 `onSend`）→ 追加回执 → 变闲；
- *   - `on("state" | "stopped" | "killed")`：订阅，返回取消函数。
+ *   - `on("state:idle" | "state:busy" | "state:paused" | "stopped" | "killed")`：订阅，返回取消函数。
  *
  * `state` 的转移必须走 `setState`（同值不发），否则订阅方会被同一次转移喂两次。
  */
@@ -120,7 +120,8 @@ class FakeAgent {
     const from = this.state;
     if (from === next) return;
     this.state = next;
-    this.emit("state", { agent: this, from, to: next });
+    // 与 core 同口径：状态事件按到达值分名（CORE.md §10）
+    this.emit(`state:${next}`, { agent: this, from });
   }
 
   // ---- 死活 ----

@@ -371,8 +371,6 @@ export interface TurnSettledFacts {
    * 再去翻消息表猜一遍，猜出来的只会是「原因不明」。
    */
   problem: ProblemFact | null;
-  /** 这一轮是谁叫起来的（与 `ChatRunParams.source` 同一份判别结构；`kind: "user"` = 用户本人发的） */
-  source: AgentNS.MessageSource;
   /** 这一轮的 `prompt_tokens`（结算快照里的本轮用量） */
   promptTokens: number;
   /** 生效模型的交接线；`0` 表示没配 */
@@ -918,11 +916,6 @@ interface SelfStartedTurnInit extends TurnSessionInitBase {
   kind: "self-started";
   /** 正在跑这一段的那一个 agent：现场当场就订上它的事件（不能等一个 await） */
   agent: ChatAgent;
-  /**
-   * 这一段是被**谁**叫起来的：建现场那一刻现读排队区（`agent.inboxPending`）里最后一条带
-   * 正文的条目的 `source`（见 `ChatRunner.sourceOf`）。不知道时是 {@link SOURCE_INBOX}。
-   */
-  source: AgentNS.MessageSource;
 }
 
 type TurnSessionInit = AcceptedTurnInit | SelfStartedTurnInit;
@@ -1015,7 +1008,13 @@ class TurnSession implements ChatTurn {
    * 两个用处：跑中入队的条目带上它（core 落地时据此加来源注释）、结算时报给
    * `TurnSettledFacts`（自动推送叫起来的轮次不问交接）。
    */
-  private readonly source: AgentNS.MessageSource;
+  /**
+   * **受理来的那一段**是谁叫起来的（投递进队列时带上它，core 落地那条 user 消息与来源注释都用它）。
+   *
+   * 自起段没有这一份：它不是「谁叫起来的」那种东西 —— 那一段的正文与来源由投递方给 core，
+   * 宿主不必（也不该）去猜。
+   */
+  private readonly source?: AgentNS.MessageSource;
   private readonly handle: RunHandle;
   private readonly options: ChatRunnerOptions;
   private readonly clock: Clock;
@@ -1158,8 +1157,7 @@ class TurnSession implements ChatTurn {
       this.content = "";
       this.storedContent = undefined;
       this.language = options.defaultLanguage ?? DEFAULT_LANGUAGE;
-      // 这一段是某条 inbox 条目叫起来的：结算时报的就是它的来源（没人看着的那种来源不会问交接）
-      this.source = init.source;
+      // 自起段没有「谁叫起来的」这一份（见字段注释）
       this.attachments = [];
       this.userMessageId = null;
       this.assistantMessageId = null;
@@ -1391,7 +1389,8 @@ class TurnSession implements ChatTurn {
     // 同步入队，立刻返回（关门之后会抛 `closed`：那就按失败结算，不静默吞）
     agent.push({
       content: this.content,
-      source: this.source,
+      // 受理来的段一定有来源（构造时分流：`accepted` 那一支必给）；自起段走不到这一句
+      source: this.source as AgentNS.MessageSource,
       // 落点是「工具轮跑完的边界」的新一轮不在跑（`runs.start` 已经拦住了），这里仍用 high：
       // 它与「跑中入队」是同一档语义（尽快接住），而且「外循环只取一批」两种档位当下等价
       priority: "high",
@@ -2234,7 +2233,6 @@ class TurnSession implements ChatTurn {
         outcome,
         // 结算之后要把这一段的结果转述出去的那条链路要用它（见 `TurnSettledFacts.problem`）
         problem: this.problem,
-        source: this.source,
         promptTokens: usage.turn.prompt_tokens,
         handoffTokens: model?.tokenThresholds.handoff ?? 0,
         language: this.language,
@@ -2466,25 +2464,6 @@ class TurnSession implements ChatTurn {
 /** 排队条目摘要的长度上限（`preview` 是一行，客户端不滚动） */
 const INBOX_PREVIEW_LIMIT = 120;
 
-/**
- * 这一刻排队区里**最后一条带正文的**条目是谁推的 —— 「这一段是被谁叫起来的」。
- *
- * 读的是 `agent.inboxPending`（现读，不取走）。只看带正文的：钥匙（`InboxKey`）没有 `source`，
- * 它答不了这个问题；一条带正文的都没有（只压着钥匙、或被取空了）就返回 `undefined`，
- * 调用方落兜底值（`SOURCE_INBOX`）。
- *
- * 为何看「最后一条」而不是「第一条」：一次投递多条时，「叫醒」这件事由最后到达的那条定义
- * （与从前「最近一条 `inboxAdded`」的口径一致）。
- */
-function sourceOfPending(agent: ChatAgent): AgentNS.MessageSource | undefined {
-  const pending = agent.inboxPending;
-  for (let index = pending.length - 1; index >= 0; index -= 1) {
-    const entry = pending[index]!;
-    // `InboxEntry` 是联合类型：先收窄，`source` 才存在
-    if (entry.content !== undefined) return entry.source;
-  }
-  return undefined;
-}
 
 /**
  * 一条**还没推进 core** 的入参 → 排队区那一行（装配窗口用，见 `TurnSession.inboxItems`）。
@@ -2769,17 +2748,13 @@ export class ChatRunner {
     }
 
     const nowMs = this.clock.now();
-    // 叫醒它的那条条目的来源：**现读**排队区（`agent.inboxPending`）。这一刻（`state → busy`）
-    // core 还没把这一批取走（它先 `refreshState` 再 `takeAll`），所以「刚压进来那些」就在里面。
-    // 一条都没有 / 只有钥匙就落到兜底值 —— 它仍然不是 `{ kind: "user" }`。
-    const source = sourceOfPending(agent) ?? SOURCE_INBOX;
+
     // 回调里要拿现场去「只摘自己那一份」，而现场这时才在造
     let session: TurnSession;
     session = new TurnSession(this.options, {
       kind: "self-started",
       conversationId,
       agent,
-      source,
       // 这一段开始前的历史：此刻 core 还没把 inbox 落地（`busy` 先于 `messageAdded`），
       // 所以这份快照正好是「上一段结束时的样子」（usage 的累计与结算报的 `messages` 都靠它）
       history: [...agent.messages],

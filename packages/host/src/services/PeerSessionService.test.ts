@@ -129,7 +129,6 @@ function settledFacts(
     conversationId,
     outcome,
     problem,
-    source: { kind: "agent", label: "父对话" },
     promptTokens: 0,
     handoffTokens: 0,
     language: "zh",
@@ -466,11 +465,8 @@ describe("回投挂在「每一段结算」上（一段一次，不多不少）"
     // 父接着跟子说话（`send_to_session` 那一路），子会话被叫起来跑第二段
     await h.service.send({ caller: h.parentAgent, sessionId: "c-child-1", content: "再补一句" });
     h.say("c-child-1", "第二段：补上了边界用例。");
-    // 自起段的 `source` 不是 `"user"`（是投递方给的来源名）—— 回投不按来源过滤，照样走这一条
-    await h.service.settleTurn({
-      ...settledFacts("c-child-1"),
-      source: { kind: "agent", label: "会话「c-parent」" },
-    });
+    // 被投递叫起来的那一段结算：回投不按来源过滤，照样走这一条
+    await h.service.settleTurn(settledFacts("c-child-1"));
 
     // 投递记录里第 0 次是第一段回投、第 1 次是这一句 `send_to_session` 本身、第 2 次是第二段回投
     expect(h.runner.deliverCalls.map((call) => call.conversationId)).toEqual([

@@ -1155,9 +1155,6 @@ export class HostApp {
     // `resolveMode` 回 `"self"`）。不拦的话用户亲自在子会话里说话那一轮会两套都上手 ——
     // 插件已经在压，这里再挂一个问题。
     if (this.peerSessions.isPeerSession(facts.conversationId)) return;
-    // 自动推送叫起来的轮次没有人在看这条连接：给一段没人盯着的对话挂交接问题是噪音。
-    // 要问就等用户自己说话那一轮（那一轮结算时报的就是 `{ kind: "user" }`）。
-    if (facts.source.kind !== "user") return;
     if (facts.handoffTokens <= 0) return;
     if (facts.promptTokens < facts.handoffTokens) return;
     if (this.runRegistry.isRunning(facts.conversationId)) return;

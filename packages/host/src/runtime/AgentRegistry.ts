@@ -458,11 +458,17 @@ export class AgentRegistry {
    * 载荷原样透传：本文件不对三格做任何解释，只负责把「谁的事」说清楚。
    */
   private watch(conversationId: string, agent: ChatAgent): () => void {
-    return agent.on("state", (payload) => {
-      for (const observer of this.stateObservers) {
-        observer({ conversationId, agent, from: payload.from, to: payload.to });
-      }
-    });
+    // 状态事件按到达值分名（`CORE.md` §10）：三格各订一条，`to` 就是事件名那一段
+    const offs = (["busy", "idle", "paused"] as const).map((to) =>
+      agent.on(`state:${to}` as const, (payload) => {
+        for (const observer of this.stateObservers) {
+          observer({ conversationId, agent, from: payload.from, to });
+        }
+      }),
+    );
+    return () => {
+      for (const off of offs) off();
+    };
   }
 
   /**

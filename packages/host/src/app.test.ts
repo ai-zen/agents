@@ -1124,36 +1124,6 @@ describe("到交接线才提问（R59 / F-D2）", () => {
     expect(asked[0]?.options.map((option) => option.value)).toEqual(["self", "summary", "decline"]);
   });
 
-  it("自动推送叫起来的轮次不问：没人看着这条连接，交接问题是噪音", async () => {
-    const fixture = await makeFixture();
-    const app = await startApp(fixture, {
-      createAgent: async () =>
-        new FakeAgent([
-          {
-            deltas: [{ content: "结果是这些" }],
-            usage: { prompt_tokens: 1500, completion_tokens: 5, total_tokens: 1505 },
-          },
-        ]),
-    });
-    const { workspace } = await callMethod(app, "workspace.create", {
-      cwd: fixture.workspaceDir.path,
-    });
-    const conversation = await seedConversation(app, workspace.id);
-
-    // `conversation.send` 的线上参数里没有来源（来源不是内容的一部分），所以这里直接起一轮 ——
-    // 这一单开的口子在 `ChatRunner.run(params.source)` 上
-    const turn = await app.chatRunner.run({
-      conversationId: conversation.id,
-      input: { content: "会话 3 的结果" },
-      source: { kind: "agent", label: "会话「会话 3」" },
-    });
-    await turn.done;
-    await wait(50);
-
-    // 用量（1500）明明越过了交接线（1000），但这一轮不是用户叫起来的：不挂问题
-    expect((await callMethod(app, "question.list", { state: "pending" })).questions).toEqual([]);
-  });
-
   it("派生会话不问：它自己会压（插件的那条路），问题这套不介入", async () => {
     const fixture = await makeFixture();
     const app = await startApp(fixture, {
@@ -1178,14 +1148,13 @@ describe("到交接线才提问（R59 / F-D2）", () => {
       prompt: "去把这件事查清楚",
     });
     if (!created.ok) throw new Error(`派生会话没开成：${created.reason}`);
-    // 那一段的第一轮由父对话投递唤醒（`source` 是「父对话」），结算时本来就不会问
+    // 等那一段跑完（它由父对话投递唤醒）
     for (let attempt = 0; attempt < 200; attempt += 1) {
       if (app.chatRunner.turn(created.sessionId) === undefined) break;
       await wait(10);
     }
 
-    // 用户本人接着在这段派生会话里说话：这一轮的 source 就是 `"user"`。
-    // 不问的判据是**会话类型**（派生会话一律自动压），不是这一轮的来源。
+    // 用户本人接着在这段派生会话里说话
     const turn = await app.chatRunner.run({
       conversationId: created.sessionId,
       input: { content: "接着说" },
@@ -1193,8 +1162,10 @@ describe("到交接线才提问（R59 / F-D2）", () => {
     await turn.done;
     await wait(50);
 
-    // 用量（1500）明明越过了交接线（1000），这段派生会话也不挂问题
-    expect((await callMethod(app, "question.list", { state: "pending" })).questions).toEqual([]);
+    // 用量（1500）明明越过了交接线（1000），这段派生会话也不挂问题 ——
+    // 判据是**会话类型**（派生会话自己压），与这一轮的来源无关
+    const pending = (await callMethod(app, "question.list", { state: "pending" })).questions;
+    expect(pending.filter((question) => question.conversationId === created.sessionId)).toEqual([]);
   });
 });
 

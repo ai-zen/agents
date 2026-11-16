@@ -37,13 +37,15 @@ export async function runRound(
 
   const idle = new Promise<void>((resolve) => {
     let sawBusy = false;
-    const off = agent.on("state", (event) => {
-      if (event.to === "busy") sawBusy = true;
-      else if (event.to === "idle" && sawBusy) {
-        off();
+    const offs: Array<() => void> = [];
+    offs.push(agent.on("state:busy", () => void (sawBusy = true)));
+    offs.push(
+      agent.on("state:idle", () => {
+        if (!sawBusy) return;
+        for (const off of offs.splice(0)) off();
         resolve();
-      }
-    });
+      }),
+    );
   });
 
   agent.push({ content, priority: "low", source: { kind: "user" } });

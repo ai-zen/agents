@@ -177,9 +177,11 @@ function createHarness(options: {
     createAgent: async (context) => {
       const agent = await options.createAgent(context);
       // 用例自己旁听三格（宿主那一份订阅在 `ChatRunner` 内部：装配处自动订上）
-      agent.on("state", (ctx) => {
-        states.push({ from: ctx.from, to: ctx.to });
-      });
+      for (const to of ["busy", "idle", "paused"] as const) {
+        agent.on(`state:${to}` as const, (ctx) => {
+          states.push({ from: ctx.from, to });
+        });
+      }
       return agent;
     },
   });
@@ -240,6 +242,25 @@ async function parkAgent(harness: Harness): Promise<ChatAgent> {
   return agent;
 }
 
+/**
+ * 抓那一段的现场。
+ *
+ * `busy` 是 core 在外循环头报的，比 `push()` 返回晚一拍 —— 所以不能「push 完再回头找」。
+ * 正确姿势是**先挂钩子再 push**：`state:busy` 一到就同步去 `turns` 里拿（那一刻现场刚建好，
+ * 而 core 还没把这一批落地）。这同时也在验证那条不变量：**现场赶得上落地**。
+ */
+function captureTurn(
+  harness: Harness,
+  agent: ChatAgent,
+): Promise<NonNullable<ReturnType<Harness["runner"]["turn"]>>> {
+  return new Promise((resolve) => {
+    agent.on("state:busy", () => {
+      const turn = harness.runner.turn(CONVERSATION_ID);
+      if (turn) resolve(turn);
+    });
+  });
+}
+
 // ---------------------------------------------------------------------------
 // ① 那一段落库：那条 user 消息的 id 就是投递时定死的那个
 // ---------------------------------------------------------------------------
@@ -260,6 +281,7 @@ describe("被别人叫起来的那一段：agent 被 `push()` 推起来跑的那
 
     // ---- 投递：agent 在静止态，`push` 把它叫起来跑一段（宿主从此没有受理过任何东西）----
     const pushedId = "peer-1";
+    const captured = captureTurn(harness, agent!);
     agent!.push({
       messageId: pushedId,
       content: "父会话那边有新进展",
@@ -267,10 +289,9 @@ describe("被别人叫起来的那一段：agent 被 `push()` 推起来跑的那
       priority: "high",
     });
 
-    // 现场是**同步**建好的：`push` 返回时这一段已经在 `turns` 里（它紧接着就要广播那条消息）
-    const live = harness.runner.turn(CONVERSATION_ID);
-    expect(live).toBeDefined();
-    const settlement: TurnSettlement = await live!.done;
+    // 现场在**落地之前**建好：`busy` 早于那批消息的 `messageAdded`
+    const live = await captured;
+    const settlement: TurnSettlement = await live.done;
 
     // ---- ① user 消息：id 就是投递时定的那个，内容是 core 落地的那份（带来源注释）----
     const userRow = harness.store.peek(pushedId);
@@ -314,18 +335,21 @@ describe("被别人叫起来的那一段：agent 被 `push()` 推起来跑的那
 
     const seen: string[] = [];
     agent.on("inboxAdded", () => seen.push("inbox"));
-    agent.on("state", (ctx) => seen.push(`state:${ctx.to}`));
+    for (const to of ["busy", "idle", "paused"] as const) {
+      agent.on(`state:${to}` as const, () => seen.push(`state:${to}`));
+    }
     agent.on("messageAdded", (ctx) => {
       if (ctx.message.role === AgentNSValue.Role.User) seen.push(`message:${ctx.message.id}`);
     });
 
+    const captured = captureTurn(harness, agent);
     agent.push({
       messageId: "peer-2",
       content: "投递一句",
       source: { kind: "agent", label: "会话「X」" },
       priority: "high",
     });
-    const live = harness.runner.turn(CONVERSATION_ID)!;
+    const live = await captured;
     await live.done;
 
     // 宿主能接住那条消息，全靠「宣告这一段开始了」排在「队列落地」之前：
@@ -345,13 +369,14 @@ describe("被别人叫起来的那一段：agent 被 `push()` 推起来跑的那
     const agent = await parkAgent(harness);
 
     const before = harness.runStates().length;
+    const captured = captureTurn(harness, agent);
     agent.push({
       messageId: "peer-3",
       content: "投递一句",
       source: { kind: "agent", label: "会话「X」" },
       priority: "high",
     });
-    const live = harness.runner.turn(CONVERSATION_ID)!;
+    const live = await captured;
     const settlement = await live.done;
 
     const states = harness.runStates().slice(before);
@@ -383,13 +408,14 @@ describe("被别人叫起来的那一段：agent 被 `push()` 推起来跑的那
     });
     const agent = await parkAgent(harness);
 
+    const captured = captureTurn(harness, agent);
     agent.push({
       messageId: "peer-4",
       content: "投递一句",
       source: { kind: "agent", label: "会话「X」" },
       priority: "high",
     });
-    const live = harness.runner.turn(CONVERSATION_ID)!;
+    const live = await captured;
     // 关键：它 resolve（不卡住）—— 结算不靠「总得有一条 assistant」才走得完
     const settlement = await live.done;
 
@@ -437,13 +463,14 @@ describe("被别人叫起来的那一段：agent 被 `push()` 推起来跑的那
     });
     const agent = await parkAgent(harness);
 
+    const captured = captureTurn(harness, agent);
     agent.push({
       messageId: "peer-5",
       content: "投递一句",
       source: { kind: "agent", label: "会话「X」" },
       priority: "high",
     });
-    const live = harness.runner.turn(CONVERSATION_ID)!;
+    const live = await captured;
     expect(live).toBeDefined();
 
     // 等它真的走到「工具正在跑」那一刻
@@ -525,13 +552,14 @@ describe("被别人叫起来的那一段：agent 被 `push()` 推起来跑的那
     const harness = createHarness({ createAgent: async () => new Agent({ client, model: "gpt-4" }) });
     const agent = await parkAgent(harness);
 
+    const captured = captureTurn(harness, agent);
     agent.push({
       messageId: "peer-6",
       content: "投递一句",
       source: { kind: "agent", label: "会话「X」" },
       priority: "high",
     });
-    const live = harness.runner.turn(CONVERSATION_ID)!;
+    const live = await captured;
     const firstSettlement = await live.done;
     expect(firstSettlement.outcome).toBe("completed");
 

@@ -274,11 +274,6 @@ describe("ChatRunner.deliver：会话间投递的唯一入口", () => {
     expect(last.status).toBe("settled");
     expect(last.assistantMessageId).toBe(settlement.assistantMessageId);
 
-    // 这一段不是用户本人叫起来的：结算报的 `source` 就是叫醒它的那条条目的来源
-    // （`{ kind: "agent", label: "补测试" }`）—— 不是笼统的兜底值，交接线那条判断也就看得见「谁叫的」
-    expect(harness.settledFacts.map((facts) => facts.source)).toEqual([
-      { kind: "agent", label: "补测试" },
-    ]);
     // agent 常驻：投递叫起来的那一段跑完，它还在登记表里
     expect(harness.registry.get(CONVERSATION_ID)).toBe(agent);
   });

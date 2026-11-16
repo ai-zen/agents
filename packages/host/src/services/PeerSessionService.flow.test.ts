@@ -407,19 +407,10 @@ describe("平级会话：子会话跑完 → 父对话收到结果", () => {
     ]);
     expect(parentRows[3]!.content).toBe("收到，我接着干。");
 
-    // 叫醒那一轮的 `source` 不是 `{ kind: "user" }`：所以交接线不会给没人看的对话挂问题
-    // （来源是 core 的判别结构，投递那一条带的是「哪个会话推的」）
-    const wake = h.settled.filter(
-      (facts) => facts.conversationId === PARENT_ID && facts.source.kind !== "user",
-    );
-    expect(wake).toHaveLength(1);
-    expect(wake[0]!.conversationId).toBe(PARENT_ID);
-    expect(wake[0]!.source).toEqual({ kind: "agent", label: "补测试" });
-    // 子会话自己那一轮的来源是「父对话」（它的正文最前面那行注释也这么写）
-    const childSettled = h.settled.filter((facts) => facts.conversationId === created.sessionId);
-    expect(childSettled.map((facts) => facts.source)).toEqual([
-      { kind: "agent", label: "父对话" },
-    ]);
+    // 父对话确实被这条结果叫起来跑了一段（结算事实只看属于哪段对话，不看"谁叫的"）
+    const wake = h.settled.filter((facts) => facts.conversationId === PARENT_ID);
+    expect(wake.length).toBeGreaterThanOrEqual(1);
+    expect(wake.at(-1)!.outcome).toBe("completed");
   });
 
   it("父对话正在跑 → 那条结果排进它这一轮（run.inbox 里出现），不新起一轮", async () => {
