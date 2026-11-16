@@ -84,6 +84,16 @@ function createMockClient(rounds: AnyChunk[][]) {
 }
 
 /** 轮询等待条件成立（最多等 1s） */
+/**
+ * 等到它**真的停下来**：闲 且 队列空。
+ *
+ * 只看 `state === "idle"` 不够了 —— 状态由外循环的位置决定，push 之后要等外循环头
+ * 才变忙，所以「刚 push 完就问一次」会立刻通过。
+ */
+async function settled(agent: Agent): Promise<void> {
+  await until(() => agent.state === "idle" && agent.inboxSize === 0);
+}
+
 async function until(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 1000;
   while (!predicate()) {
@@ -144,7 +154,7 @@ describe("Agent 投递", () => {
     void agent.start();
 
     agent.push(user("在吗"));
-    await until(() => agent.state === "idle");
+    await settled(agent);
 
     const messages = agent.messages;
     expect(messages.map((m) => m.role)).toEqual([
@@ -170,7 +180,7 @@ describe("Agent 投递", () => {
     void agent.start();
 
     agent.push(); // 拧钥匙：不给正文
-    await until(() => agent.state === "idle");
+    await settled(agent);
 
     expect(create).toHaveBeenCalledTimes(1);
     expect(agent.messages.map((m) => m.role)).toEqual([
@@ -242,7 +252,7 @@ describe("Agent 暂停", () => {
     await until(() => agent.messages.some((m) => m.status === AgentNS.MessageStatus.Aborted));
 
     agent.resume();
-    await until(() => agent.state === "idle");
+    await settled(agent);
 
     agent.stop();
     await agent.start();
@@ -266,7 +276,7 @@ describe("Agent 错误", () => {
     void agent.start();
     agent.push(user("在吗"));
     // 出错之后 state 会回到 idle：出错不终结 agent
-    await until(() => agent.state === "idle");
+    await settled(agent);
 
     const assistant = agent.messages.at(-1)!;
     expect(assistant.status).toBe(AgentNS.MessageStatus.Error);
@@ -304,7 +314,7 @@ describe("Agent 修复", () => {
 
     void agent.start();
     agent.push(user("接着问"));
-    await until(() => agent.state === "idle");
+    await settled(agent);
 
     expect(agent.messages.some((m) => m.id === "half")).toBe(false);
     expect(removed.map((m) => m.id)).toEqual(["half"]);
@@ -347,7 +357,7 @@ describe("Agent 工具", () => {
     void agent.start();
 
     agent.push(user("跑两个工具"));
-    await until(() => agent.state === "idle");
+    await settled(agent);
 
     const toolMessages = agent.messages.filter((m) => m.role === AgentNS.Role.Tool);
     expect(toolMessages.map((m) => m.tool_call_id)).toEqual(["c1", "c2"]);
@@ -462,7 +472,7 @@ describe("Agent runOnce", () => {
 
     void agent.start();
     agent.push(user("跑一下"));
-    await until(() => agent.state === "idle");
+    await settled(agent);
 
     const toolMsg = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
     // 不再被 core 套上「工具 X 被拒绝：」的前缀 —— 那句文案本来就是写给模型读的
@@ -503,7 +513,7 @@ describe("Agent runOnce", () => {
 
     void agent.start();
     agent.push(user("跑一下"));
-    await until(() => agent.state === "idle");
+    await settled(agent);
 
     const toolMsg = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
     expect(toolMsg.content).toContain("护栏写崩了");
@@ -527,7 +537,7 @@ describe("Agent runOnce", () => {
 
     void agent.start();
     agent.push(user("说话"));
-    await until(() => agent.state === "idle");
+    await settled(agent);
 
     expect(agent.messages.at(-1)!.content).toBe("依旧正常");
     expect(failed).toHaveLength(1);
@@ -571,7 +581,7 @@ describe("Agent runOnce", () => {
 
     return (async () => {
       void agent.start();
-      await until(() => agent.state === "idle" && taken.length > 0);
+      await until(() => taken.length > 0); await settled(agent);
 
       expect(taken).toHaveLength(1);
       // 两条都被取走了：一条带正文、一条是钥匙

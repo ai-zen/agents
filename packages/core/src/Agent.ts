@@ -109,7 +109,6 @@ export interface LifecycleEvent {
 export interface StateEvent {
   agent: Agent;
   from: AgentNS.AgentState;
-  to: AgentNS.AgentState;
 }
 export interface InboxAddedEvent {
   agent: Agent;
@@ -213,7 +212,9 @@ export interface AgentEvents {
   started: LifecycleEvent;
   stopped: LifecycleEvent;
   killed: LifecycleEvent;
-  state: StateEvent;
+  "state:idle": StateEvent;
+  "state:busy": StateEvent;
+  "state:paused": StateEvent;
   inboxAdded: InboxAddedEvent;
   inboxTaken: InboxTakenEvent;
   inboxCleared: InboxClearedEvent;
@@ -264,8 +265,9 @@ export class Agent extends AgentContext {
   private killed = false;
   /** 暂停中：不取件、不开新圈 */
   private paused = false;
-  /** 手上正干着活（一批的整个跨度） */
-  private busy = false;
+  /** 暂停那道闸：`resume` 放行它，`stop` / `kill` 也放行它 */
+  private resumeTx?: () => void = undefined;
+  private resumeRx: Promise<void> = new Promise<void>((tx) => (this.resumeTx = tx));
   /** 一次性 agent 已经吃过一次投递了（自此关收） */
   private fed = false;
 
@@ -273,8 +275,6 @@ export class Agent extends AgentContext {
   private runPromise?: Promise<void>;
   /** 当前这一圈的中断装置 */
   private currentTurn?: Turn;
-  /** 所有 `waitUntil` 的唤醒器 */
-  private waiters: Array<() => void> = [];
 
   constructor(options: PickRequired<AgentContext, "client" | "model">) {
     super(options);
@@ -389,14 +389,12 @@ export class Agent extends AgentContext {
   start(): Promise<void> {
     if (this.runPromise) return this.runPromise;
 
-    this.runPromise = this.loop()
+    this.runPromise = this.outerLoop()
       .catch((error: unknown) => {
         this.emit("failed", { agent: this, error: error as Error });
       })
       .finally(() => {
-        this.busy = false;
         this.currentTurn = undefined;
-        this.refreshState();
       });
 
     this.emit("started", { agent: this });
@@ -416,7 +414,7 @@ export class Agent extends AgentContext {
     this.closed = true;
     if (this.paused) this.clearInbox();
     this.inbox.done();
-    this.notify();
+    this.openGate(); // 关门就是「别再等了」：别把循环留在暂停闸上
     void this.dispatchHook("onStop", { agent: this });
   }
 
@@ -428,22 +426,32 @@ export class Agent extends AgentContext {
     this.clearInbox();
     this.inbox.done();
     this.abortTurn();
-    this.notify();
+    this.openGate();
     void this.dispatchHook("onKill", { agent: this });
   }
 
   /**
-   * 暂停：掐掉在途的网络请求与工具。agent 不死，接着等。
+   * **优雅暂停**：只挂闸，不掐在途。
    *
+   * 手上这批算已经开始 —— 让它跑完，从下一批起不再取。要立刻停就用 `abort`。
    * 幂等；已经关了/死了就是空动作。
    */
-  abort(): void {
-    if (this.paused || this.killed || this.closed) return;
+  suspend(): void {
+    if (this.killed || this.closed || this.paused) return;
     this.paused = true;
-    this.abortTurn();
-    this.refreshState();
-    this.notify();
+    this.setState("paused");
     void this.dispatchHook("onPause", { agent: this });
+  }
+
+  /**
+   * **暴力中断**：掐掉在途的请求与工具，并且**必然伴随暂停**。
+   *
+   * 掐完不能再往下走，所以它顺带就是 `suspend()`；反过来暂停不必中断。
+   */
+  abort(): void {
+    if (this.killed || this.closed) return;
+    this.suspend();
+    this.abortTurn();
   }
 
   /**
@@ -455,8 +463,8 @@ export class Agent extends AgentContext {
   resume(): void {
     if (!this.paused) return;
     this.paused = false;
-    this.refreshState();
-    this.notify();
+    this.setState("idle");
+    this.openGate();
     void this.dispatchHook("onResume", { agent: this });
   }
 
@@ -498,8 +506,6 @@ export class Agent extends AgentContext {
 
     this.inbox.push(entry);
     this.emit("inboxAdded", { agent: this, entry });
-    this.refreshState();
-    this.notify();
   }
 
   /**
@@ -537,7 +543,7 @@ export class Agent extends AgentContext {
       // 一次性 agent 只有一条因果链（就是我自己），所以这里的「等闲」是有归属的 ——
       // 共享会话上做同一件事毫无意义，见 `CORE.md` §1。
       this.push(input);
-      await this.waitUntil(() => this.state === "idle", options?.signal);
+      await this.waitForState("idle", options?.signal);
       this.stop();
       await death;
       return this.messages;
@@ -557,8 +563,6 @@ export class Agent extends AgentContext {
   clearInbox(): AgentNS.InboxEntry[] {
     const entries = this.inbox.takeAll();
     if (entries.length) this.emit("inboxCleared", { agent: this, entries });
-    this.refreshState();
-    this.notify();
     return entries;
   }
 
@@ -603,55 +607,48 @@ export class Agent extends AgentContext {
   /**
    * 外循环：等一批事件 → 修历史 → 落地 → 内循环。
    *
-   * 用同步的 `takeAll()` 而不是 `asTakeAll()` 的迭代器：迭代器一旦挂起，到货的那批就被它
-   * 吞下来了 —— 而暂停要求「不取件」，被吞下来的那一批要么丢了要么得再塞回去（塞回去就
-   * 排到了暂停期间后来的条目后面）。同步取件没有这个窗口。
+   * 一句 `for await` 就够 —— **队列自己就是 inbox，也是那根唤醒信号**：空着时它挂在自己的
+   * `pushRx` 上，不需要 core 再维护第二套唤醒器。
+   *
+   * 暂停那道闸等两处（进来之前一次、每批尾部一次）：于是批与批之间不取件，暂停期间到达的
+   * 货就躺在队列里 —— 界面看得见条数、能持久化、恢复能捞回来。
+   *
+   * **手上已取出的那批算已经开始**：优雅暂停从下一批生效，不把它收回 —— 它可能已经落了
+   * 消息、跑了一半工具，塞回队头只会造成重复落地。要立刻停就用 `abort`。
    */
-  private async loop(): Promise<void> {
-    while (true) {
-      await this.waitUntil(() => !this.paused || this.closed || this.killed);
-      if (this.shouldDie()) break;
+  private async outerLoop(): Promise<void> {
+    await this.pauseGate();
 
-      if (this.inbox.size === 0) {
-        await this.waitUntil(() => this.inbox.size > 0 || this.closed || this.killed || this.paused);
-        continue;
+    for await (const entries of this.inbox.asTakeAll()) {
+      this.setState("busy");
+
+      // ① 修一遍历史 —— **唯一一次**回头看历史的地方（`CORE.md` §6），在进圈之前
+      this.repair();
+
+      // ② 落地：带正文的落一条 user 消息，钥匙什么都不落
+      for (const entry of entries) {
+        const message = inboxEntryMessage(entry);
+        if (message) this.append(message);
+      }
+      // 落地完了才报「这些已经离开队列」（理由见 `InboxTakenEvent`）
+      this.emit("inboxTaken", { agent: this, entries });
+
+      // ③ 内循环
+      const ctx: OuterLoopContext = { agent: this, entries };
+      await this.dispatchHook("onOuterLoopStart", ctx);
+      await this.innerLoops();
+      await this.dispatchHook("onOuterLoopEnd", ctx);
+
+      // 只有真的空了才叫「闲」—— 手上没活但队列还压着不算
+      if (this.inbox.size === 0 && !this.paused && !this.closed && !this.killed) {
+        this.setState("idle");
       }
 
-      this.busy = true;
-      this.refreshState();
-
-      const entries = this.inbox.takeAll();
-      try {
-        await this.runBatch(entries);
-      } finally {
-        this.busy = false;
-        this.refreshState();
-      }
+      await this.pauseGate();
     }
 
     this.emit(this.killed ? "killed" : "stopped", { agent: this });
-    this.refreshState();
-  }
-
-  /** 一批事件走完一圈 */
-  private async runBatch(entries: AgentNS.InboxEntry[]): Promise<void> {
-    const ctx: OuterLoopContext = { agent: this, entries };
-
-    // ① 修一遍历史 —— **唯一一次**回头看历史的地方（`CORE.md` §6），在进圈之前
-    this.repair();
-
-    // ② 落地：带正文的落一条 user 消息，钥匙什么都不落
-    for (const entry of entries) {
-      const message = inboxEntryMessage(entry);
-      if (message) this.append(message);
-    }
-    // 落地完了才报「这些已经离开队列」（理由见 `InboxTakenEvent`）
-    if (entries.length) this.emit("inboxTaken", { agent: this, entries });
-
-    // ③ 内循环
-    await this.dispatchHook("onOuterLoopStart", ctx);
-    await this.innerLoops();
-    await this.dispatchHook("onOuterLoopEnd", ctx);
+    this.setState(this.paused ? "paused" : "idle");
   }
 
   /**
@@ -905,60 +902,64 @@ export class Agent extends AgentContext {
   // -------------------------------------------------------------------------
 
   /**
-   * 按「忙 / 闲 / 暂停」重算一次。
+   * 换一格。
    *
-   * **闲 = 队列空 且 不忙**。中间那一拍（手上没活、但队列里还压着）不报闲 —— 否则等在外面的
-   * 子 agent 会在半截处收走结果。暂停压过一切：暂停时队列里有没有货都显示暂停。
+   * **没有「重算状态」这一步**，五处置位就够了：`start()` 是闲、投递（有货就是忙）与外循环头
+   * 是忙、外循环尾（队列真空了且没暂停）是闲、`suspend` / `abort` 是暂停、`resume` 还给闲。
+   *
+   * 事件按到达值分名（`state:idle` / `state:busy` / `state:paused`）—— 于是「等到某一格」
+   * 就是 `events.promise("state:idle")`，不需要再维护一套条件变量。
    */
-  private refreshState(): void {
-    if (this.paused) return this.setState("paused");
-    const working = this.runPromise !== undefined && (this.busy || this.inbox.size > 0);
-    this.setState(working ? "busy" : "idle");
-  }
-
   private setState(next: AgentNS.AgentState): void {
     const from = this.state;
     if (from === next) return;
     this.state = next;
-    this.emit("state", { agent: this, from, to: next });
+    this.emit(`state:${next}` as const, { agent: this, from });
     if (next === "idle") void this.dispatchHook("onIdle", { agent: this });
-    this.notify();
-  }
-
-  /** 死透了吗：被硬杀，或者关了门且排空了 */
-  private shouldDie(): boolean {
-    if (this.killed) return true;
-    if (!this.closed) return false;
-    // 暂停中 `stop`：不跑 + 关门，存量作废（`clearInbox` 已在 stop 里做过）
-    return this.inbox.size === 0 || this.paused;
   }
 
   // -------------------------------------------------------------------------
   // 等待
   // -------------------------------------------------------------------------
 
-  /** 等到 `predicate` 成立；`signal` 一响就立刻返回（不等对方听不听话） */
-  private async waitUntil(predicate: () => boolean, signal?: AbortSignal): Promise<void> {
-    while (!predicate()) {
-      if (signal?.aborted) return;
-      await new Promise<void>((resolve) => {
-        const done = () => {
-          const i = this.waiters.indexOf(done);
-          if (i >= 0) this.waiters.splice(i, 1);
-          signal?.removeEventListener("abort", done);
-          resolve();
-        };
-        this.waiters.push(done);
-        signal?.addEventListener("abort", done, { once: true });
-      });
-    }
+  /**
+   * 暂停那道闸：暂停中就挂在这儿，`resume` / `stop` / `kill` 都能放行它。
+   *
+   * 只认 `resume` 会在「暂停中 stop」时死锁 —— 循环挂在一个永远不来的恢复上。
+   */
+  private pauseGate(): Promise<void> {
+    return this.paused ? this.resumeRx : Promise.resolve();
   }
 
-  /** 把所有人的等待放行一次，让他们各自重算 `predicate` */
-  private notify(): void {
-    const waiters = this.waiters;
-    this.waiters = [];
-    for (const waiter of waiters) waiter();
+  /** 放行闸，并换上一条新的（下一轮暂停才有得挂） */
+  private openGate(): void {
+    this.resumeTx?.();
+    this.resumeRx = new Promise<void>((tx) => (this.resumeTx = tx));
+  }
+
+  /**
+   * 等到某一格（`runOnce` 的「等闲」用它）。
+   *
+   * 先看当前值再等事件：`once` 型等待在「注册前已经满足」时会永远等不到。
+   * `signal` 一响立刻返回 —— 取消不该被一个可能永远不变的状态卡住。
+   */
+  private waitForState(target: AgentNS.AgentState, signal?: AbortSignal): Promise<void> {
+    if (this.state === target) return Promise.resolve();
+
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        subscription.dispose();
+        signal?.removeEventListener("abort", finish);
+        resolve();
+      };
+      const subscription = this.bus.once(`state:${target}`, finish);
+
+      if (signal?.aborted) return finish();
+      signal?.addEventListener("abort", finish, { once: true });
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -986,7 +987,6 @@ export class Agent extends AgentContext {
       if (message) this.append(message);
     }
     this.emit("inboxTaken", { agent: this, entries });
-    this.refreshState();
     return true;
   }
 
