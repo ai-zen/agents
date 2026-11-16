@@ -42,7 +42,6 @@ export type {
   AcceptedTurn,
   AgentBuildContext,
   AgentFactory,
-  AgentInboxEvent,
   AgentStateEvent,
   AttachmentPreparation,
   AttachmentPreparer,

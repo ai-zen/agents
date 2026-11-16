@@ -12,7 +12,7 @@
  *   5. **回投挂在每一段结算上**：`create_session` 起的第一段只投**一次**（不是两次），之后
  *      `send_to_session` 叫起来的第二段结算**又**投一次 —— 这一条钉的就是「回投跟结算走，不跟
  *      `create` 走」（改前第二段跑完什么都不回投）。
- *   6. **段开始那一拍**（`onSegmentStart`）：被投递叫起来跑的那一段期间 `read_session_status` 答
+ *   6. **轮开始那一拍**（`onTurnStart`）：被投递叫起来跑的那一段期间 `read_session_status` 答
  *      `running`（改前答 `idle`），并发限额因此数得到这些段；这一段结算后回到 `idle`，这一段
  *      的账也从 `pending` 重新记。
  *
@@ -192,16 +192,16 @@ function createHarness(options: {
     clock,
     newId: () => `srv-${(idCursor += 1)}`,
     streamWriteIntervalMs: 0,
-    // 与 `app.ts` 同一条接线：三格变到 `busy` 那一拍要告诉平级会话「这一段开始了」
+    // 与 `app.ts` 同一条接线：三格变到 `busy` 那一拍要告诉平级会话「这一轮开始了」
     // （派生会话回到 running；`ChatRunner` 内部的建现场/收尾不靠这个口）
     onState: (event) => {
-      if (event.to === "busy") service.onSegmentStart(event.conversationId);
+      if (event.to === "busy") service.onTurnStart(event.conversationId);
     },
     onTurnSettled: (facts) => {
       settled.push(facts);
       // 与 `app.ts` 同一条接线：一段结算 → 若这段会话是派生会话，就把这一段的结果投回父对话
-      // （回投不在这里判，`settleSegment` 只看 `records` 里有没有它）
-      void service.settleSegment(facts);
+      // （回投不在这里判，`settleTurn` 只看 `records` 里有没有它）
+      void service.settleTurn(facts);
     },
   });
 
@@ -513,7 +513,7 @@ describe("回投挂在「每一段结算」上（真 ChatRunner）", () => {
   });
 });
 
-describe("段开始：被投递叫起来跑的那一段（真 ChatRunner + 真 core Agent）", () => {
+describe("轮开始：被投递叫起来跑的那一段（真 ChatRunner + 真 core Agent）", () => {
   it("自起段在跑期间 `read_session_status` 答 running，这一段结算之后答 idle", async () => {
     const gate: Deferred<void> = deferred<void>();
     const h = createHarness({
@@ -547,14 +547,14 @@ describe("段开始：被投递叫起来跑的那一段（真 ChatRunner + 真 c
     const during = await h.service.status({ caller: callerOf(h), sessionId: created.sessionId });
     expect(during.state).toBe("running");
 
-    // 放行这一段，它结算之后照旧答 idle（收尾归 `settleSegment`）
+    // 放行这一段，它结算之后照旧答 idle（收尾归 `settleTurn`）
     gate.resolve();
     await h.waitFor(() => h.service.record(created.sessionId)?.state === "idle");
     const after = await h.service.status({ caller: callerOf(h), sessionId: created.sessionId });
     expect(after.state).toBe("idle");
   });
 
-  it("段开始复位这一段的账：投完（delivered）又被叫起来跑 → 结算时重新从 pending 走到 delivered", async () => {
+  it("轮开始复位这一段的账：投完（delivered）又被叫起来跑 → 结算时重新从 pending 走到 delivered", async () => {
     const gate: Deferred<void> = deferred<void>();
     const h = createHarness({
       childAgent: () =>

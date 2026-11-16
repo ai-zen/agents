@@ -346,9 +346,10 @@ describe("真 core Agent 跑在真 ChatRunner 里：跑中发送进 inbox（D14�
       "userMessageId",
     ]);
 
-    // 条目进的是真 core Agent 的队列（core 只给个数）：内容与来源读宿主那份排队区镜像
-    // （`inboxAdded` 那一刻记下来的，客户端看到的也是它）
+    // 条目进的是真 core Agent 的队列：`inboxPending` 是那份队列的现读，而 `RunState.inbox`
+    // 就是照着它现拼的（宿主不存镜像，所以两边必然一致）
     expect(coreAgent!.inboxSize).toBe(1);
+    expect(coreAgent!.inboxPending.map((entry) => entry.content)).toEqual(["顺便看下这个"]);
     expect(turn.runState().inbox).toHaveLength(1);
     expect(turn.runState().inbox[0]!.messageId).toBe(queued!.userMessageId);
     expect(turn.runState().inbox[0]!.source).toEqual({ kind: "user" });

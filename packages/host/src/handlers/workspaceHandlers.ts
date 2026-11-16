@@ -49,12 +49,16 @@ export function createWorkspaceHandlers(deps: WorkspaceHandlerDeps): HandlerTabl
  * 顺序是有意的：
  *   1. 先记下名下的对话（删完就问不出来了，而运行时里它们的现场要一起丢）；
  *   2. 服务层删行（它顺带让运行时忘掉那几段对话的临时覆盖，以及删完之后清归零的素材字节）；
- *   3. 逐段对话丢掉这一轮的现场，并推一条 `deleted`（多端在线时对方界面靠它去拉）；
- *   4. 销毁这个 Workspace 的 Scope —— MCP 连接在这里断开（PLAN §4 销毁缘由之一）。
+ *   3. 逐段对话丢掉这一轮的现场（`forget` 顺带把那个 agent 硬着陆：对话被删了，它不该再烧
+ *      token、再往库里写），并推一条 `deleted`（多端在线时对方界面靠它去拉）；
+ *   4. 把这个 Workspace 下**还剩的** agent 全部杀干净（`killScope`），再销毁它的 Scope ——
+ *      MCP 连接在销毁那一刻断开（PLAN §4 销毁缘由之一）。
  *
- * 第 3 步已经把名下那几段对话的现场丢了（`forget`：叫停 + 摘掉 agent 登记），于是第 4 步
- * 不会因为「还活着的 agent」被拒绝。真撞上了（比如某个 agent 不是经 `AgentRegistry` 造的），
- * `scopes.dispose` 的错误照原样上抛：那是程序错误，不该被这里默默吞掉。
+ * 第 3 步已经逐段办过了，第 4 步为何还要再杀一遍：`ScopeRegistry.dispose` 的拒绝判据是「这个
+ * Scope 上还挂着 agent」，而那个账在 `AgentRegistry` 里。第 3 步靠调用方遍历 `doomed`，漏一段
+ * （比如删完成与列表之间新建的）就会让第 4 步被拒；而「拆 Scope 之前它下面没有活着的 agent」
+ * 应该是结构性的。真撞上了（比如某个 agent 不是经 `AgentRegistry` 造的），`scopes.dispose` 的
+ * 错误照原样上抛：那是程序错误，不该被这里默默吞掉。
  *
  * `dryRun` 只走第 2 步：它要的只是代价，不该有任何副作用。
  */
@@ -79,6 +83,7 @@ async function removeWorkspace(
         at: (deps.now ?? (() => new Date().toISOString()))(),
       });
     }
+    deps.runner.killScope(params.workspaceId);
     await deps.scopes.dispose(params.workspaceId);
   }
   return { removed: report.removed, consequences: report.consequences };

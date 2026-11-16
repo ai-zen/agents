@@ -260,20 +260,22 @@ describe("AgentRegistry：acquire 把「在就复用 / 不合用就重建」合�
   });
 });
 
-describe("AgentRegistry：discard 只丢引用", () => {
-  it("discard 之后 get 为 undefined，agent 本身没被停，登记也没了", async () => {
+describe("AgentRegistry：kill 硬着陆 + 丢引用（对话 / 项目被删那条路）", () => {
+  it("kill 之后 get 为 undefined，agent 真的死了（再 push 抛 closed），登记也没了", async () => {
     const harness = createHarness();
     const agent = (await harness.agents.acquire(input(), facts())) as FakeAgent;
 
-    harness.agents.discard(CONVERSATION_ID);
+    harness.agents.kill(CONVERSATION_ID);
 
     expect(harness.agents.get(CONVERSATION_ID)).toBeUndefined();
     expect(harness.agents.conversationIds()).toEqual([]);
-    // 「不 abort、不结算」就是这条的全部内容
-    expect(agent.abortCalls).toBe(0);
-    expect(agent.sendCalls).toBe(0);
+    // 「硬着陆」就是这条的全部内容：agent 死了而不是被摘掉就完了 —— 再往里推就抛 closed
+    // （于是不会有一个“没人认领的活 agent”在后台接着烧 token）
+    expect(() =>
+      agent.push({ content: "对话已经删了", priority: "high", source: { kind: "user" } }),
+    ).toThrow();
     // 幂等：没登记就什么也不做，也不再多报一条
-    harness.agents.discard(CONVERSATION_ID);
+    harness.agents.kill(CONVERSATION_ID);
     expect(harness.agents.get(CONVERSATION_ID)).toBeUndefined();
     expect(harness.trace()).toEqual(["built:never-built", "retired:conversation-deleted"]);
   });
@@ -295,7 +297,7 @@ describe("AgentRegistry：discard 只丢引用", () => {
 });
 
 describe("回收自下而上：agent 活着就拆不了 Scope", () => {
-  it("discard 之后 scopes.dispose 才成功（顺序写在代码里）", async () => {
+  it("kill 之后 scopes.dispose 才成功（顺序写在代码里）", async () => {
     const harness = createHarness();
     await harness.agents.acquire(input(), facts());
 
@@ -305,7 +307,7 @@ describe("回收自下而上：agent 活着就拆不了 Scope", () => {
     expect(harness.scopes.get(WORKSPACE_ID)).toBeDefined();
     expect(harness.plugin.disposeCalls).toBe(0);
 
-    harness.agents.discard(CONVERSATION_ID);
+    harness.agents.kill(CONVERSATION_ID);
     await harness.scopes.dispose(WORKSPACE_ID);
 
     expect(harness.scopes.get(WORKSPACE_ID)).toBeUndefined();
@@ -315,13 +317,31 @@ describe("回收自下而上：agent 活着就拆不了 Scope", () => {
   it("Scope 被销毁之后再 acquire 会重新建一个（agent 照样拿得到 Scope）", async () => {
     const harness = createHarness();
     await harness.agents.acquire(input(), facts());
-    harness.agents.discard(CONVERSATION_ID);
+    harness.agents.kill(CONVERSATION_ID);
     await harness.scopes.dispose(WORKSPACE_ID);
 
     const agent = await harness.agents.acquire(input(), facts());
 
     expect(harness.createdScopes).toEqual([WORKSPACE_ID, WORKSPACE_ID]);
     expect(harness.agents.get(CONVERSATION_ID)).toBe(agent);
+  });
+
+  it("killAll(workspaceId)：只硬着陆那个项目下的，别的项目不动", async () => {
+    const harness = createHarness();
+    const mine = (await harness.agents.acquire(input({ conversationId: "c-1" }), facts())) as FakeAgent;
+    const other = (await harness.agents.acquire(
+      input({ conversationId: "c-2", workspaceId: "ws-2" }),
+      facts(),
+    )) as FakeAgent;
+
+    harness.agents.killAll(WORKSPACE_ID);
+
+    expect(harness.agents.conversationIds()).toEqual(["c-2"]);
+    // 那一个死了（push 抛 closed），另一个还活着
+    expect(() => mine.push({ content: "x", priority: "high", source: { kind: "user" } })).toThrow();
+    expect(() =>
+      other.push({ content: "y", priority: "high", source: { kind: "user" } }),
+    ).not.toThrow();
   });
 });
 
@@ -440,7 +460,7 @@ describe("AgentRegistry：complete 兑现陈旧标记", () => {
 });
 
 describe("AgentRegistry：disposeAll（收尾）", () => {
-  it("全部退役，每段报一条 `shutdown`，之后登记表是空的", async () => {
+  it("全部硬着陆，每段报一条 `shutdown`，之后登记表是空的", async () => {
     const harness = createHarness();
     const one = (await harness.agents.acquire(input({ conversationId: "c-1" }), facts())) as FakeAgent;
     const two = (await harness.agents.acquire(input({ conversationId: "c-2" }), facts())) as FakeAgent;
@@ -448,9 +468,10 @@ describe("AgentRegistry：disposeAll（收尾）", () => {
     harness.agents.disposeAll();
 
     expect(harness.agents.conversationIds()).toEqual([]);
-    // 收尾只丢引用：进程要退了，但 abort / 结算不是这里的事
-    expect(one.abortCalls).toBe(0);
-    expect(two.abortCalls).toBe(0);
+    // 收尾不等排空：进程要退了，那些存量没有去处 —— 所以是 kill（硬着陆），不是 stop。
+    // 验收方式：两个实例都已经关门（再 push 抛 closed）。
+    expect(() => one.push({ content: "x", priority: "high", source: { kind: "user" } })).toThrow();
+    expect(() => two.push({ content: "y", priority: "high", source: { kind: "user" } })).toThrow();
     expect(harness.trace()).toEqual([
       "built:never-built",
       "built:never-built",
@@ -471,7 +492,7 @@ describe("AgentRegistry：onLifecycle 是「为什么这段对话没有 agent」
     await harness.agents.acquire(input({ modelId: "model-2" }), facts({ modelId: "model-2" }));
     harness.agents.invalidate(WORKSPACE_ID);
     await harness.agents.acquire(input({ modelId: "model-2" }), facts({ modelId: "model-2" }));
-    harness.agents.discard(CONVERSATION_ID);
+    harness.agents.kill(CONVERSATION_ID);
 
     expect(harness.trace()).toEqual([
       "built:never-built",
@@ -505,7 +526,7 @@ describe("AgentRegistry：onLifecycle 是「为什么这段对话没有 agent」
 
     const agent = await agents.acquire(input(), facts());
     agents.complete(CONVERSATION_ID);
-    agents.discard(CONVERSATION_ID);
+    agents.kill(CONVERSATION_ID);
 
     expect(agents.get(CONVERSATION_ID)).toBeUndefined();
     expect(agent).toBeDefined();

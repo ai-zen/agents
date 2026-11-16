@@ -285,7 +285,7 @@ describe("conversation.send", () => {
     });
     expect(first.userMessageId.length).toBeGreaterThan(0);
 
-    // core 的 inbox 只给一个数（`inboxSize`）：条目本身只能从 `inboxAdded` 事件上看
+    // 入队的那些 id 从事件上收（宿主的排队区是现读 `agent.inboxPending` 拼的，不再存镜像）
     const queuedIds: string[] = [];
     agent.on("inboxAdded", ({ entry }) => {
       if (entry.content !== undefined && entry.messageId !== undefined) {

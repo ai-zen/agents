@@ -30,13 +30,13 @@
  *
  * 现在只认一条规则：**一段结算 → 若这段会话是派生会话（`records` 里有它）→ 把这一段的结果
  * 投回它的父对话**。触发源用现成的 `ChatRunner.onTurnSettled`（`app.ts` 已经在那儿接交接线
- * 提问），本文件只多接一跳 {@link PeerSessionService.settleSegment} —— 不新增事件、不另立订阅。
+ * 提问），本文件只多接一跳 {@link PeerSessionService.settleTurn} —— 不新增事件、不另立订阅。
  * 一段一次，不多不少：`create` 里那一句已经删掉，否则第一段会被投两遍。
  *
  * ## 另一端：段开始
  *
  * 结算那一拍把记录收成 `idle` / `failed` / `aborted`；**段开始**那一拍（{@link
- * PeerSessionService.onSegmentStart}）要把它复位成 `running` —— 否则被叫起来跑的那一段期间，
+ * PeerSessionService.onTurnStart}）要把它复位成 `running` —— 否则被叫起来跑的那一段期间，
  * 记录里一直挂着上一段的结局。
  *
  * ## 「谁在调我」为什么靠 `bind`
@@ -48,7 +48,7 @@
  *
  * ## 投递：本文件只把内容交给执行者，不猜
  *
- * 见 {@link PeerSessionService.settleSegment}：`chatRunner.deliver(parentConversationId, { content,
+ * 见 {@link PeerSessionService.settleTurn}：`chatRunner.deliver(parentConversationId, { content,
  * source })`。那一个入口自己解决「agent 在不在、父对话在不在跑、在结算、要不要攒一批」四件
  * 事 —— 从前本文件靠「先 `enqueue`（拿到 `null` 说明空闲）再 `run`、`run` 抛错就记 dropped」
  * 猜出来，猜错了就是两种真事故：多起一段没有上下文的段（消息不落库），或者把一条本该落地
@@ -98,7 +98,7 @@ export interface PeerSessionRecord {
   /**
    * **当前这一段**的结果投出去了没有（`pending` = 这一段还没结算、还没投）。
    *
-   * 段一开始就复位成 `pending`（见 {@link onSegmentStart}），这一段结算时写成 `delivered` /
+   * 段一开始就复位成 `pending`（见 {@link onTurnStart}），这一轮结算时写成 `delivered` /
    * `dropped`。所以它记的是「眼下这一段」的账，不是累计量；上一段的 `delivered` 留在上面就成了
    * 「这一段已经投出去了」这句假话。
    */
@@ -358,7 +358,7 @@ export class PeerSessionService implements PeerSessionPort {
     this.records.set(sessionId, record);
 
     // 6. 开跑（受理即回）：子会话第一句的 source 写「父对话」，正文最前面那行注释由 core 加。
-    //    这里**不挂**任何跟这一轮结果的东西：回投跟着结算走（见 `settleSegment`），不是跟着
+    //    这里**不挂**任何跟这一轮结果的东西：回投跟着结算走（见 `settleTurn`），不是跟着
     //    `create` 走 —— 否则第一段会被投两遍（`onTurnSettled` 那一路已经投了一次）。
     try {
       await this.deps.chatRunner.run({
@@ -373,7 +373,7 @@ export class PeerSessionService implements PeerSessionPort {
       throw error;
     }
 
-    // 7. 就这么回（结果由这一段自己的结算负责推回来：`ChatRunner.onTurnSettled` → `settleSegment`）
+    // 7. 就这么回（结果由这一段自己的结算负责推回来：`ChatRunner.onTurnSettled` → `settleTurn`）
     return { ok: true, sessionId, label: record.label };
   }
 
@@ -397,19 +397,19 @@ export class PeerSessionService implements PeerSessionPort {
   }
 
   /**
-   * **一段开始** → 若这段会话是派生会话，把记录复位成「这一段正在跑」。
+   * **一轮开始** → 若这段会话是派生会话，把记录复位成「这一轮正在跑」。
    *
    * 必要性就两句：`read_session_status` 要诚实（它正跑着的时候不能答 `idle`）；`create_session`
-   * 的并发限额只数 `state === "running"`，这些段要数得到。
+   * 的并发限额只数 `state === "running"`，这些轮要数得到。
    *
-   * 所以两格都要复位：`state → "running"`，`resultDelivered → "pending"`（这一段的账重新开始
-   * 记，上一段的 `delivered` 不许挂在新的一段上）。
+   * 所以两格都要复位：`state → "running"`，`resultDelivered → "pending"`（这一轮的账重新开始
+   * 记，上一轮的 `delivered` 不许挂在新的一轮上）。
    *
-   * 由 `app.ts` 那条已在处理段边界的 `onStatus` 一跳进来，只认 `to === "running"`；`idle` /
-   * `stopping` / `terminated` 那一拍不动 —— 收尾归 {@link settleSegment}。判据只有 `records`：
+   * 由 `app.ts` 那条已在处理一轮边界的 `onState` 一跳进来（`state → busy` 是「这一轮开始了」）；
+   * `idle` / `paused` 那一拍不动 —— 收尾归 {@link settleTurn}。判据只有 `records`：
    * 不在里面的会话（用户会话、父对话自己、重启前的旧会话）什么都不发生。
    */
-  onSegmentStart(conversationId: string): void {
+  onTurnStart(conversationId: string): void {
     const record = this.records.get(conversationId);
     if (!record) return;
     record.state = "running";
@@ -417,10 +417,10 @@ export class PeerSessionService implements PeerSessionPort {
   }
 
   /**
-   * **一段结算** → 若这段会话是派生会话，就把这一段的结果投回它的父对话。
+   * **一轮结算** → 若这段会话是派生会话，就把这一轮的结果投回它的父对话。
    *
    * 由 `app.ts` 那条已有的 `onTurnSettled` 一跳进来（与交接线提问并列，
-   * `void this.peerSessions.settleSegment(facts)`）：触发源就是 `ChatRunner` 结算时本来就会报的
+   * `void this.peerSessions.settleTurn(facts)`）：触发源就是 `ChatRunner` 结算时本来就会报的
    * 那一条，**不新增事件、不另立订阅**。
    *
    * 四步，顺序不能换：
@@ -464,7 +464,7 @@ export class PeerSessionService implements PeerSessionPort {
    * 「来自 会话「会话 1」 自动推送」这种套娃话。（`send_to_session` 那一路的调用者是**另一段
    * 会话**而不是「这个子会话的结果」，所以它套了那一层，见 {@link senderSource}。）
    */
-  async settleSegment(facts: TurnSettledFacts): Promise<void> {
+  async settleTurn(facts: TurnSettledFacts): Promise<void> {
     // ① 不是派生会话（用户会话 / 父对话自己那一段）：这段结算与回投无关
     const record = this.records.get(facts.conversationId);
     if (!record) return;

@@ -9,7 +9,7 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createHost } from "../app.js";
 import type { HostApp } from "../app.js";
@@ -191,8 +191,13 @@ describe("workspace.remove 的跨层补齐", () => {
     await app.scopeRegistry.create(workspace.id);
     expect(app.scopeRegistry.workspaceIds().length).toBe(1);
 
+    // 拆 Scope 之前先把那个项目下还剩的 agent 全部硬着陆（`kill`，不是 `stop`：
+    // 项目都要没了，那些 agent 手里的能力马上随 Scope 一起没）
+    const killScope = vi.spyOn(app.chatRunner, "killScope");
+
     const removed = await callMethod(app, "workspace.remove", { workspaceId: workspace.id });
     expect(removed.removed).toBe(true);
+    expect(killScope).toHaveBeenCalledWith(workspace.id);
     expect(removed.consequences.conversations).toBe(1);
     // Scope 销毁 = MCP 连接在这里断开
     expect(app.scopeRegistry.workspaceIds().length).toBe(0);

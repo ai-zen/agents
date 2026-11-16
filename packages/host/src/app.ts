@@ -602,14 +602,14 @@ export class HostApp {
         // 「哪一段该回投」只有这一处判（`records` 里有它才算），所以 `create_session` 的第一段与
         // 之后 `send_to_session` 叫起来的每一段走的是同一条路 —— 从这里接而不是从 `create` 里接，
         // 就是这一单修的那个洞。不新增事件、不另立订阅（`peerSessions` 的晚绑定同 §6 的理由）。
-        void this.peerSessions.settleSegment(facts);
+        void this.peerSessions.settleTurn(facts);
       },
       // 三格变化的旁听口：`to === "busy"` 那一拍要跟平级会话说一声「这一段开始了」——
       // 派生会话被投递叫起来的那几段从前没有复位点，`read_session_status` 会在它正跑着时答
       // `idle`，并发限额（只数 `running`）也数不到它们。`idle` / `paused` 都不动（收尾那一拍
       // 归 `onTurnSettled`）。宿主侧建现场 / 收尾那一跳在 `ChatRunner` 内部完成，不靠这个口。
       onState: (event) => {
-        if (event.to === "busy") this.peerSessions.onSegmentStart(event.conversationId);
+        if (event.to === "busy") this.peerSessions.onTurnStart(event.conversationId);
       },
       onError: (error, context) => {
         this.logger.error("一轮对话写库失败", { context, error: describeError(error) });
@@ -872,9 +872,13 @@ export class HostApp {
         this.logger.warn("清理发现文件失败", { error: describeError(error) });
       }
     }
-    // Scope 一起拆掉：MCP 连接是它持有的，进程退出之后没有别人会替它关（D28 同生共死）。
+    // Scope 一起拆掉：MCP 连接是它持有的，进程退出之后没有别的 agent 会替它关（D28 同生共死）。
     // `disposeAll` 不拒绝（收尾时「还有 agent 活着」不是要挡住销毁的理由）。
-    // agent 的登记先丢（只丢引用：进程都要退了，没有「稍后再丢」这回事）。
+    //
+    // agent 的登记先杀掉（不是「丢引用」）：进程要退了，那些 agent 不会再有下一批可跑，而它们
+    // 手里还有在途的请求与排着的条目 —— 留着只会让它们在剩下的那几毫秒里继续烧 token。
+    // 为何是 `kill` 而不是 `stop`：`stop` 是「存量走完」，而这里没人会来读那些结果（收尾流程
+    // 接下来就关库），等它排空没有任何意义。也不等它排空：这一步不 await（“尽力 kill”）。
     this.agentRegistry.disposeAll();
     try {
       await this.scopeRegistry.disposeAll();

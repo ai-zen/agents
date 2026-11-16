@@ -3,8 +3,8 @@
  *
  * ## 它要自己解决的三件事（本文件逐条取证）
  *
- * 1. **agent 不在就复活**：显式 `agents.discard` 之后投递，还是能按库里的历史重新装配出来再跑，
- *    `seq` 连续、历史完整；
+ * 1. **agent 不在就复活**：`agents.kill`（那一个已经死了、不可复活）之后投递，还是能按库里的
+ *    历史重新装配一个再跑，`seq` 连续、历史完整；
  * 2. **跑着 / 正在结算都投得进去**：跑着就交给那一段（不新起一段），正在结算（落后窗口：core 已
  *    `idle`、`turns` 里还有现场）就攒着，等这一段结算完一起投；
  * 3. **攒够了一起投**：连续投 3 条（中间不让出事件循环）→ 同一次内循环边界落成 3 条 user 消息、
@@ -462,9 +462,9 @@ describe("ChatRunner.deliver：会话间投递的唯一入口", () => {
   });
 
   // -------------------------------------------------------------------------
-  // ⑤ 复活：`agents.discard` 之后投递 → 按历史装配新 agent 再跑
+  // ⑤ 复活：agent 被 kill / 退役之后投递 → 按历史装配新 agent 再跑
   // -------------------------------------------------------------------------
-  it("复活：显式 `agents.discard` 之后投递 → 自动装配（reconcile + resolveHistory），历史完整、seq 连续", async () => {
+  it("复活：`agents.kill` 之后投递 → 自动装配（reconcile + resolveHistory），历史完整、seq 连续", async () => {
     const { client, bodies } = createScriptedClient([
       textRound("第一段的回答。"),
       textRound("复活之后的回答。"),
@@ -481,9 +481,13 @@ describe("ChatRunner.deliver：会话间投递的唯一入口", () => {
     // 第一次装配跑过一次历史还原（那时库里还没有消息）；之后 `run()` 从 agent 内存里取历史
     expect(harness.historyResolutions).toEqual([0]);
 
-    // 显式丢掉登记（对话被删那条路）= 下一个投递必须自己把 agent 装回来
-    harness.registry.discard(CONVERSATION_ID);
+    // 硬着陆那个 agent（= 它彻底不能用了）：下一个投递必须自己把新的装回来
+    harness.registry.kill(CONVERSATION_ID);
     expect(harness.registry.get(CONVERSATION_ID)).toBeUndefined();
+    // 被 kill 的那个**不可复活**：它已经关门，再往里投就抛 closed（所以交付必须走新装配）
+    expect(() =>
+      original!.push({ content: "往死的那一个投", priority: "high", source: { kind: "user" } }),
+    ).toThrow();
 
     await harness.runner.deliver(CONVERSATION_ID, {
       content: "复活之后再投一句",

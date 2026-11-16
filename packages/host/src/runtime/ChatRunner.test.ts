@@ -737,7 +737,7 @@ describe("ChatRunner：这一轮是谁叫起来的（source）", () => {
     expect(pushed).not.toBeNull();
     expect(typed).not.toBeNull();
 
-    // 两条都真的进了 core 的队列（core 只给个数，内容读宿主那份镜像 —— 客户端看的也是它）
+    // 两条都真的进了 core 的队列（core 只给个数，条目本身现读 `inboxPending` —— 客户端看的也是它）
     expect(agent.inboxSize).toBe(2);
     const queue = custom.lastRunState().inbox;
     expect(queue.map((item) => item.source)).toEqual([AUTO_SOURCE, { kind: "user" }]);
@@ -1827,8 +1827,8 @@ describe("ChatRunner：跑中发送进 inbox（D14：不打断、也不回 busy�
     // 条目真的进了这一轮 agent 的队列（core 只给个数）
     expect(agent.inboxSize).toBe(1);
 
-    // 客户端看得见「这一条排上了」：`RunState.inbox` 是宿主按 `inboxAdded` 记的那份镜像
-    // （core 只给数字，条目本身只有入队那一刻的事件里有）
+    // 客户端看得见「这一条排上了」：`RunState.inbox` 是**现读** `agent.inboxPending` 拼的
+    // （core 取走条目时不发事件，所以不能靠事件自建一份镜像）
     const inbox = custom.lastRunState().inbox;
     expect(inbox).toHaveLength(1);
     expect(inbox[0]!.messageId).toBe(queued!.userMessageId);
@@ -1837,6 +1837,56 @@ describe("ChatRunner：跑中发送进 inbox（D14：不打断、也不回 busy�
 
     gate.resolve();
     await turn.done;
+  });
+
+  it("丢一条 `inboxAdded` 通知：排队区照样正确（现读 `inboxPending`，不靠通知维护镜像）", async () => {
+    // 这条用例钉的是本次改动的全部意义：core 在**取走**条目时不发任何事件（钥匙连消息都不落），
+    // 所以「靠 `inboxAdded` / `messageAdded` 维护一份镜像」必然与真队列分叉，而分叉之后无法
+    // 重读自愈。现在排队区是现读的：通知丢了也好、漏猜一次取走也好，看到的都是真队列。
+    const toolGate = deferred<void>();
+    const agent = new FakeAgent([
+      {
+        deltas: [{ content: "我查一下。" }],
+        toolCalls: [{ id: "call-1", name: "read", arguments: "{}" }],
+        toolGate: toolGate.promise,
+      },
+      { deltas: [{ content: "查到了。" }] },
+    ]);
+    // 把这条通知整个吞掉（模拟“宿主没收到 / 丢了一条”）
+    const emit = agent.emit.bind(agent);
+    agent.emit = ((type: string, payload: unknown) => {
+      if (type === "inboxAdded") return;
+      (emit as (this: void, t: string, p: unknown) => void)(type, payload);
+    }) as typeof agent.emit;
+
+    const custom = createHarness({ agent });
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "看看文件" },
+    });
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (agent.messages.some((message) => message.role === AgentNSValue.Role.Tool)) break;
+      await flushMicrotasks();
+    }
+
+    const queued = await custom.runner.enqueue({
+      conversationId: CONVERSATION_ID,
+      input: { content: "丢通知也要看得见" },
+    });
+    expect(queued).not.toBeNull();
+    // 通知被吞了，队列里那一条依然看得见（内容、来源、入队时刻都对）
+    expect(agent.inboxPending).toHaveLength(1);
+    const inbox = custom.lastRunState().inbox;
+    expect(inbox).toHaveLength(1);
+    expect(inbox[0]!.messageId).toBe(queued!.userMessageId);
+    expect(inbox[0]!.source).toEqual({ kind: "user" });
+    expect(inbox[0]!.preview).toBe("丢通知也要看得见");
+
+    // 反过来也不靠通知：那一条被 core 取走（落成消息）之后，排队区自己就空了
+    toolGate.resolve();
+    const settlement = await turn.done;
+    expect(agent.inboxPending).toHaveLength(0);
+    expect(settlement.run.inbox).toEqual([]);
   });
 
   it("这一轮收工之后不再入队：回 null，让调用方回老路径", async () => {
@@ -2068,8 +2118,9 @@ describe("ChatRunner：跑中发送进 inbox（D14：不打断、也不回 busy�
     expect(turn.runState().inbox).toHaveLength(1);
 
     turn.abort("用户按了停");
-    // 数据是数据：队列不动（core 的 `abort` 不清空 inbox）
+    // 数据是数据：队列不动（core 的 `abort` 不清空 inbox）—— 现读一下就能作证
     expect(agent.inboxSize).toBe(1);
+    expect(agent.inboxPending.map((entry) => entry.content)).toEqual(["还没发出去的那句"]);
     // 而这一段到此就结束了（core 报 `paused` → 结算），所以它不再报「我这轮还排着什么」
     expect(turn.runState().status).toBe("settled");
 
@@ -2077,8 +2128,10 @@ describe("ChatRunner：跑中发送进 inbox（D14：不打断、也不回 busy�
     const settlement = await turn.done;
 
     expect(settlement.outcome).toBe("aborted");
-    // 收工之后 agent 已经丢了，排队条目回空（没有在跑的一轮，就没有谁的队列可排）
+    // 已结算的那一轮报空：`inbox` 说的是「**这一轮**还排着什么」，而这一轮已经不再取件了。
+    // （它不是说「队列空了」：那一句真的还在 core 的队列里，等下一次被叫起来的那一段带走。）
     expect(settlement.run.inbox).toEqual([]);
+    expect(agent.inboxPending).toHaveLength(1);
     // 那一句既没进内存消息，也没进库（它留在那条队列里，等下一次外部驱动）
     expect(settlement.messages.some((message) => message.id === queued!.userMessageId)).toBe(false);
     expect(custom.store.peek(queued!.userMessageId)).toBeUndefined();
@@ -2122,7 +2175,7 @@ describe("ChatRunner：跑中发送进 inbox（D14：不打断、也不回 busy�
     expect(queued!.attachments).toHaveLength(1);
     expect(queued!.attachments[0]!.assetId).toBe("a1");
     // 进 core 队列的是**转换之后**的内容：core 落地时直接拿它当消息内容
-    // （core 只给个数，内容读宿主那份排队区镜像里的摘要 —— 那条消息的正文不搬进 run.state）
+    // （排队区的摘要就取在这一份上 —— 那条消息的正文不搬进 run.state）
     expect(prepared).toHaveLength(2);
     expect(agent.inboxSize).toBe(1);
     expect(custom.lastRunState().inbox[0]!.preview).toBe("看图 [文件]");
@@ -2223,8 +2276,8 @@ describe("ChatRunner：agent 常驻（跨轮复用）", () => {
     });
     expect(pageAfterFirst.length).toBeGreaterThan(0);
 
-    // 模拟「这个 agent 已经不在了」（进程重启 / 被显式回收）：登记的只有引用，摘掉即可
-    custom.agents.discard(CONVERSATION_ID);
+    // 模拟「这个 agent 已经不在了」（进程重启 / 被显式 kill / 被退役）：登记没了，下一段只能重新装配
+    custom.agents.kill(CONVERSATION_ID);
 
     const second = await custom.runner.run({
       conversationId: CONVERSATION_ID,
@@ -2245,8 +2298,42 @@ describe("ChatRunner：agent 常驻（跨轮复用）", () => {
     );
   });
 
-  it("结算之后推一条进这个（常驻的）agent：它自己起来跑一段，宿主接住并落库", async () => {
-    const custom = createHarness({ agentFactory: () => new FakeAgent(plainRounds()) });
+  it("对话被删（`forget`）：那个 agent 被硬着陆，不是只摘登记；排着的条目随之作废", async () => {
+    // 用户删了这段对话 → 它不该再烧 token、再往库里写。所以选 `kill` 而不是 `stop`：
+    // `stop` 是「存量走完」，而这里的存量是要发给一个已经不存在的对话的。
+    const gate = deferred<void>();
+    const agent = new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢慢说" }] }]);
+    const custom = createHarness({ agent });
+
+    const turn = await custom.runner.run({
+      conversationId: CONVERSATION_ID,
+      input: { content: "第一句" },
+    });
+    await flushMicrotasks();
+    const queued = await custom.runner.enqueue({
+      conversationId: CONVERSATION_ID,
+      input: { content: "还没发出去的那句" },
+    });
+    expect(queued).not.toBeNull();
+    expect(agent.inboxPending).toHaveLength(1);
+
+    custom.runner.forget(CONVERSATION_ID);
+
+    // ① 登记没了（紧接着的 `scopes.dispose` 才拆得动）
+    expect(custom.agents.get(CONVERSATION_ID)).toBeUndefined();
+    // ② 那个实例真的死了：kill 清了队列，且再 push 抱 `AgentError("closed")`
+    expect(agent.inboxPending).toHaveLength(0);
+    expect(() =>
+      agent.push({ content: "删完之后又有人投", priority: "high", source: { kind: "user" } }),
+    ).toThrow();
+
+    gate.resolve();
+    const settlement = await turn.done;
+    // 这一轮按「用户删了」收场，不是 completed
+    expect(settlement.outcome).toBe("aborted");
+  });
+
+  it("结算之后推一条进这个（常驻的）agent：它自己起来跑一段，宿主接住并落库", async () => {    const custom = createHarness({ agentFactory: () => new FakeAgent(plainRounds()) });
 
     const first = await custom.runner.run({
       conversationId: CONVERSATION_ID,
