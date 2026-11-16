@@ -62,6 +62,27 @@
 - **`start` 返回的 promise 永不 reject**：失败不终结 agent。唯一会让它炸的是 core 自己写崩了 —— 那是 bug，就该炸得响。
 - **身份从外面给**：构造时一个 `id`，core 只拿它写错误消息与日志，不参与任何逻辑。
 
+### 投递的三个口子
+
+| 口子 | 干什么 | 等不等 |
+|---|---|---|
+| `push(input?)` | 塞进 inbox，立刻返回；已关门则抛 `closed`；不给 `input` = 只拧钥匙 | 不等 |
+| `send(input?, { signal })` | 塞 + **等到闲**；不给 `input` = 只拧钥匙 | 等 |
+| `runOnce(input?, { signal })` | 起 → 塞 → 等闲 → 关门 → 等死透 → 交回 `messages` | 等 |
+
+`runOnce` **不是第六个死活动作**：它是 `start` / `send` / `stop` 的复合，只是把一次性会话那几步收成一句，并且仍然受「死了就死透，复活 = 新建」管 —— 跑完这个 agent 就没了。
+
+后两个共用同一个「等闲」：**塞进去，等到队列空了且不忙**。§4 那句「中间那一拍（手上没活、但队列里还压着）不报闲」正是为它定的 —— 否则等在外面的人会在半截处收走结果。并发 `send` 因此天然合并成一批，不需要额外协调。
+
+暂停中 `send` 会一直等着：暂停不取件，队列不空就不闲。要脱身就给 `signal`。`runOnce` 是刚起来的，撞不上这个。
+
+### 误用直接炸，不走 `AgentError`
+
+`AgentError` 那三个码（§7）是给「会挂到 `message.error`、会落库、读回来要能 `instanceof` 重建」的错误用的。下面两件是**写错代码**，当场裸 `Error` 抛掉，不给它们一套要被序列化的形状：
+
+- `runOnce()` 时 `messages` 是空的 —— 没燃料拧钥匙，发出去就是一个空请求；
+- 在已经 `start()` 的常驻 agent 上调 `runOnce()` —— 它结尾那句 `stop()` 会真的关掉一个长期会话。
+
 ---
 
 ## 2. 循环：两层，不递归
@@ -70,13 +91,15 @@
 start()
  └─ for await (一批 of inbox.asTakeAll())     ← 外循环：等一批事件
       修一遍历史（删残局 / 补配对 / 定型）      ← 唯一的地方，见 §6
-      落地这一批（一条事件 = 一条用户消息）
+      落地这一批（带正文的落一条 user 消息，钥匙不落）
       while (true)                            ← 内循环：一次请求 + 它引出的工具
           发请求 → 收流
           if (这次没有工具调用) break
           跑工具（并行）
           if (takeAll(高) 非空) continue       ← 唯一取件点
 ```
+
+外循环那「一批」里可能有**只拧钥匙、不带正文**的条目（§3）—— 它落地成零条消息，作用只是把这一圈叫起来。
 
 **为什么内循环的续行条件是「刚才有工具调用」。** 工具是模型要的，跑完必须把结果再喂回去问一次，所以「有工具调用 → 必须再来一圈」；没有工具调用就是这一轮说完了。没有第二个判据。
 
@@ -97,9 +120,13 @@ export type AgentNS.MessageSource =
   | { kind: "agent"; label: string }    // 「补测试」「会话 1」
   | { kind: "system"; label: string };  // 宿主、定时器、外部系统
 
-export interface InboxEntry {
-  /** 落地成 User 消息时用的 id，由投递方给定 —— 客户端据此乐观回显 */
-  messageId: string;
+/** 带正文的条目：落地成一条 User 消息 */
+export interface InboxEntryWithContent {
+  /**
+   * 落地成 User 消息时用的 id，由投递方给定 —— 客户端据此乐观回显；缺省则由 core 生成。
+   * 只有会落地的条目才有这一格。
+   */
+  messageId?: string;
   /** core 补：进来的时刻。注释里用它让模型判断时效 */
   createdAt: string;
   /** 高：内循环里工具跑完后可取；低：只有外循环可取 */
@@ -109,8 +136,27 @@ export interface InboxEntry {
   content: AgentNS.MessageContent;
 }
 
-/** 投递入参 = 去掉 core 补的那两格 */
-export type InboxInput = Omit<InboxEntry, "messageId" | "createdAt"> & { messageId?: string };
+/**
+ * **钥匙**：把这一圈叫起来，自己不落地成任何消息。
+ *
+ * 存在的唯一理由是「输入已经在 `messages` 里了」—— 委派的子 agent、装载好历史的一次性会话，
+ * 都是这种情形：燃料装好了，只差拧一下。没有正文就没有消息，所以没有 `messageId`，
+ * 也没有 `source`。
+ *
+ * `priority` 恒为 `low`：内循环只看 high，钥匙天然取不到。
+ */
+export interface InboxKey {
+  createdAt: string;
+  priority: "low";
+  content?: undefined;
+}
+
+export type InboxEntry = InboxEntryWithContent | InboxKey;
+
+/** 投递入参：带正文的（`messageId` / `createdAt` 由 core 补），或者什么都不给 = 拧钥匙 */
+export type InboxInput =
+  | (Omit<InboxEntryWithContent, "messageId" | "createdAt"> & { messageId?: string })
+  | { content?: undefined };
 ```
 
 **`source` 为什么是判别结构而不是字符串。** 用字符串就得约定 `"user"` 是保留字 —— 一个恰好叫 `user` 的 agent 就把它顶翻了。
@@ -122,8 +168,12 @@ export type InboxInput = Omit<InboxEntry, "messageId" | "createdAt"> & { message
 | 谁取 | 怎么取 |
 |---|---|
 | 内循环 | `takeAll(e => e.priority === "high")` —— 同步检查 |
-| 外循环 | `asTakeAll()` —— 空则挂起，有货就是一批 |
+| 外循环 | `takeAll()` + 自己的一根唤醒信号 —— 空则挂起，有货一次取干 |
 | 暂停中 | 不取件，park 在 `resume()` 那个信号上 |
+
+**外循环用同步的 `takeAll()`，不用 `asTakeAll()` 的迭代器。** 迭代器一旦挂起，到货的那批就被它吞下来了；而「暂停中不取件」要求那一刻一条也不拿 —— 被吞下来的那批要么丢了，要么得塞回去，塞回去就排到了暂停期间后来的条目后面。同步取件没有这个窗口：不暂停时才调它，一调完立刻到手。
+
+（`asTakeAll()` 仍然是队列自己的能力，只是 core 这一侧不用它 —— 见 §13。）
 
 **为什么是一条队列而不是两条道。** 两条道（高一条、低一条）要合并成一批就得给每条事件加一个递增序号来还原先后；一条队列里顺序天然就是到达顺序，序号不用存在。而且「高优先级」和「两个取件点」本来就是一一对应的：内循环只看高，外循环全取 —— 谓词正好表达这件事。
 
@@ -131,15 +181,15 @@ export type InboxInput = Omit<InboxEntry, "messageId" | "createdAt"> & { message
 
 ### 落地
 
-只干三件事：
+**没有正文的条目（钥匙）直接跳过**：它只负责把这一圈叫起来。其余的只干三件事：
 
-1. 用条目给的 `messageId` 建消息：`{ id, role: "user", status: Completed, source, content: inboxEntryContent(entry) }`
+1. 用条目给的 `messageId`（缺省则生成）建消息：`{ id, role: "user", status: Completed, source, content: inboxEntryContent(entry) }`
 2. `source.kind !== "user"` 时，正文最前面加一行 `// 这条消息来自 <label> 自动推送（<createdAt>）` + 一个空行；`user` 原样返回
 3. 多模态内容（段数组）时，注释**插成最前面一段 `text`**，段序保持不变 —— 拼成字符串等于把图片段整段丢掉
 
 - 注释**只加一次**，`__asset_id` 段原封不动。
 - 时间用条目自己的 `createdAt`：外部通知可能是很久以前发生的，模型得能判断时效，否则会把陈年结果当成刚刚发生的事。
-- 一条事件 = **一条**用户消息，永不合并正文。
+- 一次唤醒落**零或一条**用户消息（零就是钥匙），**永不合并正文**。
 - 暂停期间照收、不取；解除后攒下的**一起**落地、**一起**回答。
 - 关门后再来 → 抛 `closed`。
 
@@ -191,7 +241,7 @@ export type InboxInput = Omit<InboxEntry, "messageId" | "createdAt"> & { message
 
 **暂停期天然是收尸期**：这一圈停在哪儿，迟到的结果陆陆续续回来，直接丢、不写消息。所以不需要「给每一圈编号」那套机制 —— 没有下一圈可以串。
 
-**一个必须防的死角**：子 agent 那处「等它闲」也要能被 `abortRx` 打断，否则子 agent 卡住就是父永远等。
+**一个必须防的死角**：子 agent 那处「等它闲」也要能被 `abortRx` 打断，否则子 agent 卡住就是父永远等。对外就是 `runOnce(input, { signal })` 那个 `signal`（§1）。
 
 ---
 
@@ -303,14 +353,26 @@ export interface AgentNS.Message {
 
 subagent 是 core 的一等概念，不是外部业务。core 欠四样：
 
-1. **委派的动作**：跑它、等它闲、拿结果、收尸。
+1. **委派的动作**：跑它、等它闲、拿结果、收尸 —— 对外就是一个 `runOnce()`（§1）。
 2. **血缘**：谁在调我、我是谁的子。没有它，结果投回、「最多一层」、状态查询都做不了。
 3. **统一事件**：委派边界两个（`subAgentStarted` / `subAgentFinished`），加上子 agent 自己的一切（消息、原始片、工具）**走同一套事件名**，只加「哪个子 agent + 哪个工具调用」两格 —— 不为它另起一套平行名字。
 4. **两个缝**：`onSubAgentStart`（可拒）/ `onSubAgentEnd`。
 
-**core 不欠的只有一件**：怎么把那个子 agent 造出来。模型解析、Scope 装配、读子 agent 定义文件，从注入的回调进来 —— 形态就是 `AgentToolLazy`（工具的形状、参数、取结果归 core；`buildAgent` 由外面给）。eager 那个删：它跟 Lazy 重合度 100%，唯一区别是「什么时候造」，而它自己那份深拷贝 + 换引用正是「唯二真相」的坏示范。
+**core 不欠的只有一件**：怎么把那个子 agent 造出来。模型解析、Scope 装配、读子 agent 定义文件，从注入的回调进来 —— 形态就是 `AgentToolLazy`（工具的形状、参数、取结果归 core；`buildAgent` 由外面给）。eager 那个删：它跟 Lazy 重合度 100%，唯一区别是「什么时候造」。
 
-等它闲必须能被中断打断；用量钉在委派那条 tool 消息上。
+### 委派 = 燃料 + 一把钥匙
+
+交给委派动作的 agent，`messages` 里已经装好了历史，末尾那条 user 就是这一趟要回答的问题。所以**不把消息搬进 inbox**：`runOnce()` 不给正文，就是拧钥匙（§1、§3）。
+
+由此 `AgentToolLazy` 的形态基本不动 —— `await agent.run()` 换成 `await agent.runOnce(undefined, { signal: ctx.signal })`。其余照旧：
+
+- 模板注入（`messages` + `injectArgs` 深拷贝后替 `agent.messages`）—— 构造期换引用，§12 明确合法；
+- `onSubAgentStart` 可拒、`onSubAgentEnd` 收尾；
+- `sumUsage(agent.messages)` 钉到本次委派的 tool 消息上（收尸之后算，不再是 agent 自己的事；排在 `onSubAgentEnd` 之前）。
+
+中断不再需要 `signal.addEventListener("abort", () => agent.abort())` 那段手工联动 —— 信号直接交给 `runOnce`。
+
+**只有 `source` 这一格要补**：模板和 `buildAgent` 装的历史里的 `role: user` 消息没有 `source`，而 §3 要求一律带。规矩与 §14 的「宿主注入的 cwd 消息由宿主自己填」是同一条 —— **谁注入谁填**，所以委派工具注入模板时给每条 `role: user` 补 `{ kind: "agent", label: <工具名> }`（已有 `source` 的不覆盖）。
 
 ---
 
@@ -356,6 +418,12 @@ start()
 外加死活与委派：`onStart` / `onPause` / `onResume` / `onIdle` / `onStop` / `onKill` / `onSubAgentStart` / `onSubAgentEnd`。
 
 **同位置：钩子在前（还能改），事件在后（已经定了）。**
+
+### 哪些钩子能拒
+
+只有三个：`onInnerLoopStart`（这一圈根本没发出去）、`onToolStart`（这个工具没给出有效结果）、`onSubAgentStart`（这次委派不跑）。
+
+`onOuterLoopStart` **不能拒** —— 此刻这一批已经从队列里取出来了，拒了这批就没主了。「要不要处理这一批」的判决必须发生在投递之前。
 
 ### 三个能力要求
 
