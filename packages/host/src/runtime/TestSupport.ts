@@ -31,8 +31,8 @@ import type { Clock } from "./ScopeRegistry.js";
  * 手动推进的时钟：`advance(ms)` 依次执行到点的定时器。
  *
  * 时间可注入之后，「等十分钟」「等节流点」这些事在用例里都是一句 `advance(...)`。
- * 注意：Scope 的回收**不再**用它（空闲计时已撤），但 `RunRegistry`、写库节流与
- * 若干用例自己的计时期待仍然要一份可控时间。
+ * 注意：Scope 的回收**不再**用它（空闲计时已撤），但写库节流、消息落库时间与若干用例自己的
+ * 计时期待仍然要一份可控时间（`ChatRunner` 的桥是常驻的，它的节流计时全靠这一份）。
  */
 export class ManualClock implements Clock {
   private current: number;

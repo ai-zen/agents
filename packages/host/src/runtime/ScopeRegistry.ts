@@ -52,17 +52,16 @@ import type { PeerSessionPort } from "@ai-zen/agents-sdk";
  * 句柄长什么样，也就不需要 `clearTimeout` 的第二个入口。
  *
  * 本文件自己**完全不用**它：空闲计时已撤，构造参数里也不再有 `clock`。导出留着是因为
- * 真正的消费者在别处，用的还是同一个口径：`ChatRunner.ts` 里两个类（`ChatRunner` 用
- * `now()` 记时间戳、`setTimeout` 做写库节流，`TurnSession` 也拿它记时刻）、`RunRegistry`
- * （`Run.startedAt`）与接线层 `app.ts`（`options.clock` 注入点，再往下分给各服务），
- * `runtime/index.ts` 只是转手再导出；测试助手 `TestSupport.ManualClock` 实现的就是它。
- * `services/CompletionService` **不在**此列 —— 它自带形状相同的
- * `CompletionClock` / `systemCompletionClock`，不引用这一份。
+ * 真正的消费者在别处，用的还是同一个口径：`ChatRunner.ts` 里两个类都拿它（`ChatRunner` 用
+ * `now()` 记时间戳，`ConversationBridge` 用它做写库节流的计时与消息落库时间）与接线层
+ * `app.ts`（`options.clock` 注入点，再往下分给各服务），`runtime/index.ts` 只是转手再导出；
+ * 测试助手 `TestSupport.ManualClock` 实现的就是它。`services/CompletionService` **不在**此列
+ * —— 它自带形状相同的 `CompletionClock` / `systemCompletionClock`，不引用这一份。
  *
  * 归属上这里只是「历史上的家」：它本来为 Scope 的空闲回收而生，回收撤掉之后没有任何
  * ScopeRegistry 的代码碰它。真要收拢，它该搬到一个不依赖任何东西的叶子模块
- * （如 `runtime/clock.ts`），这样 `ChatRunner` / `RunRegistry` 不必为了一个时钟去 import
- * ScopeRegistry。本轮不动导出（那会牵动一圈 import）。
+ * （如 `runtime/clock.ts`），这样 `ChatRunner` 不必为了一个时钟去 import ScopeRegistry。
+ * 本轮不动导出（那会牵动一圈 import）。
  */
 export interface Clock {
   /** 当前时刻（毫秒，`Date.now()` 口径） */

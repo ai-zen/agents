@@ -34,13 +34,13 @@ interface Harness {
   /** 每次造出来的假 agent */
   created: FakeAgent[];
   createdScopes: string[];
-  /** 「正在跑一轮」的那几段对话（`invalidate` 只认这个来源） */
+  /** 「正在跑」的那几段对话：判据就是 agent 身上那一格（`state === "busy"`） */
   running: Set<string>;
   /** 每次生灭决定的记录（`onLifecycle` 收到的原样） */
   lifecycle: AgentLifecycleEvent[];
-  /** 把一段对话标成「正在跑一轮」（在实例上模拟 RunRegistry 的答案） */
+  /** 把一段对话的 agent 标成「手上正干着活」（就是置那一格，不另记一份账） */
   markRunning(conversationId: string): void;
-  /** 把一段对话标回「空闲」 */
+  /** 把那一格标回「闲」 */
   markIdle(conversationId: string): void;
   /** 这段对话报过的 `action:reason`（顺序即发生顺序） */
   trace(conversationId?: string): string[];
@@ -67,11 +67,9 @@ function createHarness(
   const builds: AgentBuildContext[] = [];
   const created: FakeAgent[] = [];
   const lifecycle: AgentLifecycleEvent[] = [];
-  // 真单根里这是 `RunRegistry`；这里只要它回答的那一句
   const running = new Set<string>();
   const agents: AgentRegistry = new AgentRegistry({
     scopes,
-    runs: { isRunning: (conversationId: string) => running.has(conversationId) },
     createAgent: async (context) => {
       builds.push(context);
       if (options.build) return await options.build(context);
@@ -91,8 +89,17 @@ function createHarness(
     createdScopes,
     running,
     lifecycle,
-    markRunning: (conversationId) => void running.add(conversationId),
-    markIdle: (conversationId) => void running.delete(conversationId),
+    // 「有没有在跑」直接读 agent 身上那一格（`CORE.md` §4）：这就是生产里 `invalidate` 的判据
+    markRunning: (conversationId) => {
+      running.add(conversationId);
+      const agent = agents.get(conversationId);
+      if (agent) agent.state = "busy";
+    },
+    markIdle: (conversationId) => {
+      running.delete(conversationId);
+      const agent = agents.get(conversationId);
+      if (agent) agent.state = "idle";
+    },
     trace: (conversationId) =>
       lifecycle
         .filter((event) => conversationId === undefined || event.conversationId === conversationId)
@@ -520,7 +527,6 @@ describe("AgentRegistry：onLifecycle 是「为什么这段对话没有 agent」
     const scopes = new ScopeRegistry({ createScope: async () => scope });
     const agents = new AgentRegistry({
       scopes,
-      runs: { isRunning: () => false },
       createAgent: async () => new FakeAgent([]),
     });
 

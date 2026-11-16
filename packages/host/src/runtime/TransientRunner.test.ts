@@ -101,9 +101,9 @@ describe("一次请求跑一轮，结果一次返回（D3）", () => {
     expect(result.message.role).toBe(AgentNS.Role.Assistant);
     expect(result.message.content).toBe("一次性回答");
     expect(result.problem).toBeNull();
-    expect(result.subagents).toEqual([]);
-    // 没有第二份「拼好的正文」之类的重复字段：结果只有这三样
-    expect(Object.keys(result).sort()).toEqual(["message", "problem", "subagents"]);
+    // 没有第二份「拼好的正文」之类的重复字段：结果只有这两样（子 Agent 不另给快照，
+    // 它们说过的话在那条委派的消息里，要翻就按工具调用 id 取）
+    expect(Object.keys(result).sort()).toEqual(["message", "problem"]);
   });
 
   it("跑一轮就是一次 runOnce，历史永远是空的（没有可续接的东西）", async () => {

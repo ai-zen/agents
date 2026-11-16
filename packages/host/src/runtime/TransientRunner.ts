@@ -171,7 +171,9 @@ export class TransientRunner {
           detail: { cwd, agentId },
         });
       }
-      return { message, subagents: [], problem: problemOf(message, language) };
+      // 子 Agent 不另给快照（`ConversationTransientResult`）：它们说过的话在那条委派的消息里，
+      // 真要翻就按工具调用 id 取（F-I7）
+      return { message, problem: problemOf(message, language) };
     } catch (error) {
       throw this.toHostError(error, cwd, language);
     }

@@ -309,7 +309,7 @@ describe("createWorkspaceScopeFactory", () => {
     // 端口在 → 三个工具的候选名就出现在 `tools` 维度里（权限过滤之前的那一份）
     const plugin = withPort.getPluginById("peer-sessions");
     expect(plugin?.candidates(withPort, {} as never)).toEqual({
-      tools: ["create_session", "read_session_status", "send_to_session"],
+      tools: ["create_session", "read_session_status", "postMessage"],
     });
   });
 
