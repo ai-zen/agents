@@ -57,7 +57,7 @@ describe("reconcileAbortedToolRounds", () => {
     expect(results.every(included)).toBe(true);
   });
 
-  it("drop：assistant 被中断、部分结果完成 → 整轮出列", () => {
+  it("drop：assistant 被中断、部分结果完成 → 整轮真删", () => {
     const messages: AgentNS.Message[] = [
       Message.System("sys"),
       assistantWithCalls(["a", "b"], AgentNS.MessageStatus.Aborted),
@@ -65,14 +65,12 @@ describe("reconcileAbortedToolRounds", () => {
       toolResult("b", AgentNS.MessageStatus.Aborted),
     ];
 
-    reconcileAbortedToolRounds(messages, "drop");
+    const removed = reconcileAbortedToolRounds(messages, "drop");
 
-    expect(messages[1]!.omit).toBe(true);
-    expect(messages[2]!.omit).toBe(true);
-    expect(messages[3]!.omit).toBe(true);
-    // 整轮都不纳入 → 不产生孤儿
-    expect(included(messages[1]!)).toBe(false);
-    expect(included(messages[2]!)).toBe(false);
+    // 整轮都没了：不产生孤儿，也不留下半个轮次
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.role).toBe(AgentNS.Role.System);
+    expect(removed).toHaveLength(3);
   });
 
   it("一致轮次（全在）不受影响", () => {

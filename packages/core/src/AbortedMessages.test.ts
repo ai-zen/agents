@@ -27,16 +27,19 @@ const included = (m: AgentNS.Message) =>
   (m.status == undefined || m.status === AgentNS.MessageStatus.Completed) && !m.omit;
 
 describe("reconcileAbortedMessages", () => {
-  it("drop（默认）：被中断的思考与内容都不进历史", () => {
+  it("drop（默认）：被中断的半截**真删**，并把删掉的那条交回去", () => {
     const messages: AgentNS.Message[] = [
       Message.System("sys"),
       abortedAssistant({ reasoning: "让我想想…", content: "答案是 4" }),
     ];
 
-    reconcileAbortedMessages(messages);
+    const removed = reconcileAbortedMessages(messages);
 
-    expect(messages[1]!.status).toBe(AgentNS.MessageStatus.Aborted);
-    expect(included(messages[1]!)).toBe(false);
+    // 内存里没了（库里由宿主按 messageRemoved 删行）
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.role).toBe(AgentNS.Role.System);
+    expect(removed).toHaveLength(1);
+    expect(removed[0]!.content).toBe("答案是 4");
   });
 
   it("keep：保留已输出的内容（恢复为 Completed）", () => {

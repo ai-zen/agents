@@ -38,7 +38,6 @@ describe("ToolCallContext", () => {
         agent,
         tool_call: { function: { name: "fn", arguments: "{invalid json}" } },
         resultMessage: resultMsg,
-        allowJsonParseError: true,
       });
 
       expect(ctx.parsedArgs).toBeUndefined();
@@ -46,18 +45,18 @@ describe("ToolCallContext", () => {
       expect(typeof ctx.parseError).toBe("string");
     });
 
-    it("解析失败且 allowJsonParseError=false 时应抛出异常", () => {
+    it("参数烂只有一种行为：不抛，交给上层当成「没给出有效结果」", () => {
       const agent = createMockAgent();
       const resultMsg = Message.Tool({ id: "1", function: { name: "fn" } });
 
-      expect(() => {
-        new ToolCallContext({
-          agent,
-          tool_call: { function: { name: "fn", arguments: "{invalid}" } },
-          resultMessage: resultMsg,
-          allowJsonParseError: false,
-        });
-      }).toThrow();
+      const ctx = new ToolCallContext({
+        agent,
+        tool_call: { function: { name: "fn", arguments: "{invalid}" } },
+        resultMessage: resultMsg,
+      });
+
+      expect(ctx.parsedArgs).toBeUndefined();
+      expect(ctx.parseError).toBeDefined();
     });
 
     it("arguments 为 undefined 时 parsed_args 应为 undefined", () => {
@@ -75,21 +74,18 @@ describe("ToolCallContext", () => {
     });
   });
 
-  describe("preventDefault", () => {
-    it("调用后 is_prevent_default 应变为 true", () => {
-      const agent = createMockAgent();
-      const resultMsg = Message.Tool({ id: "1", function: { name: "fn" } });
+  it("工具自己不再能停圈：没有 preventDefault", () => {
+    const agent = createMockAgent();
+    const resultMsg = Message.Tool({ id: "1", function: { name: "fn" } });
 
-      const ctx = new ToolCallContext({
-        agent,
-        tool_call: { function: { name: "fn", arguments: "{}" } },
-        result_message: resultMsg,
-      });
-
-      expect(ctx.isPreventDefault).toBe(false);
-      ctx.preventDefault();
-      expect(ctx.isPreventDefault).toBe(true);
+    const ctx = new ToolCallContext({
+      agent,
+      tool_call: { function: { name: "fn", arguments: "{}" } },
+      resultMessage: resultMsg,
     });
+
+    expect((ctx as any).preventDefault).toBeUndefined();
+    expect((ctx as any).isPreventDefault).toBeUndefined();
   });
 
   describe("构造函数 - 字段赋值", () => {

@@ -3,7 +3,7 @@ import { AgentNS } from "./AgentNS.js";
 /**
  * 「工具调用轮次不完整」的处理策略。
  *
- * - `drop`：整轮丢弃（assistant + 其全部工具结果都不发给模型）
+ * - `drop`：整轮丢掉（assistant + 其全部工具结果都不进历史，**真删**，配 `messageRemoved`）
  * - `fill`：保留整轮（恢复 assistant，并给未完成的工具结果补上原因）
  */
 export type AbortedToolRoundStrategy = "drop" | "fill";
@@ -36,17 +36,10 @@ function keyOfResult(m: AgentNS.Message): string {
  * assistant 消息与其结果消息**同进同出**，从而满足服务端「N 个 tool_calls 必须有 N 条
  * 结果」的约束。
  *
- * ## 为什么需要
- *
- * `abort()` 会把在途消息**各自**标记为 `Aborted`，而 `formatHistory()` 又**只按 status
- * 独立过滤**——二者都不把一个工具轮次当作整体。于是并行工具执行中被中断时：
- * 带 `tool_calls` 的 assistant 被剔除，而部分已完成的工具结果仍被保留 →
- * 留下没有父调用的 `role:"tool"` 孤儿消息 → 服务端报错（反之亦然，结果数 < 调用数）。
- *
  * ## 范围
  *
- * **仅处理「被中断」（含 `Aborted` 状态）的轮次**。其它状态（如 `allowJsonParseError=false`
- * 时工具报错标记的 `Error`）不受本函数影响。
+ * **仅处理「被中断」（含 `Aborted` 状态）的轮次**。其它状态（如工具报错标记的 `Error`）
+ * 不受本函数影响 —— 那种轮次是配平的，模型看得到「这个工具失败了」。
  *
  * ## 判定与处理
  *
@@ -54,18 +47,22 @@ function keyOfResult(m: AgentNS.Message): string {
  * - assistant 会被纳入、但并非全部结果都在（部分被剔除）；或
  * - assistant 不会被纳入、却仍有结果在（孤儿）。
  *
- * 「全在」或「全不在」都视为一致（不处理），因此不会"复活"一个被完整中断的轮次。
+ * 「全在」或「全不在」都视为一致（不处理），因此不会「复活」一个被完整中断的轮次。
  *
- * - `drop`：整轮出列（assistant 与其结果均置 `omit`）
+ * - `drop`：整轮**真删**（内存与库里都消失，随之补发 `messageRemoved`）
  * - `fill`：整轮入列（恢复 assistant 为 Completed；未完成的结果补原因并置 Completed）
  *
  * 幂等，可重复调用。
+ *
+ * @returns 被删掉的消息（按原顺序）。`fill` 策略下永远是空数组。
  */
 export function reconcileAbortedToolRounds(
   messages: AgentNS.Message[],
   strategy: AbortedToolRoundStrategy = "fill",
   reason: string = DEFAULT_ABORTED_TOOL_ROUND_REASON,
-): void {
+): AgentNS.Message[] {
+  const doomed = new Set<AgentNS.Message>();
+
   for (let i = 0; i < messages.length; i++) {
     const assistant = messages[i]!;
     if (assistant.role !== AgentNS.Role.Assistant) continue;
@@ -113,9 +110,9 @@ export function reconcileAbortedToolRounds(
     if (!inconsistent) continue;
 
     if (strategy === "drop") {
-      // 整轮出列：assistant 与其结果都不发给模型
-      assistant.omit = true;
-      for (const r of present) r.omit = true;
+      // 整轮出列：assistant 与其结果都不进历史（真删）
+      doomed.add(assistant);
+      for (const r of present) doomed.add(r);
       continue;
     }
 
@@ -131,4 +128,13 @@ export function reconcileAbortedToolRounds(
       }
     }
   }
+
+  if (doomed.size === 0) return [];
+
+  const removed = messages.filter((m) => doomed.has(m));
+  // 就地删（不换数组：`messages` 是唯一真相，交给别人之后只许就地改）
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (doomed.has(messages[i]!)) messages.splice(i, 1);
+  }
+  return removed;
 }

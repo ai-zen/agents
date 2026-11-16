@@ -1,11 +1,12 @@
+import AsyncQueue from "@ai-zen/async-queue";
 import EventBus from "@ai-zen/event-bus";
 import type { ChatCompletionChunk } from "openai/resources/chat/completions";
 import { AgentNS } from "./AgentNS.js";
 import { AgentContext } from "./AgentContext.js";
-import type { UnknownToolContext } from "./AgentContext.js";
+import { AgentError } from "./AgentError.js";
 import { PickRequired } from "./Common.js";
 import { ToolCallContext } from "./ToolCallContext.js";
-import { Message, generateMessageId } from "./Message.js";
+import { Message } from "./Message.js";
 import { inboxEntryMessage } from "./Inbox.js";
 import { Tool } from "./Tool.js";
 import { reconcileAbortedToolRounds } from "./AbortedToolRounds.js";
@@ -14,227 +15,889 @@ import { applyChunk } from "./applyChunk.js";
 import { formatContentSection } from "./formatContent.js";
 
 // ---------------------------------------------------------------------------
-// 插件接口
+// 钩子：缝在哪儿（说位置，不说发生了什么事 —— 后者归事件）
 // ---------------------------------------------------------------------------
 
-/**
- * 插件钩子统一返回值：返回 string = 短路（拒绝/中断/提供结果），
- * 返回 undefined/void = 放行（继续后续插件或默认行为）。
- */
+/** 钩子统一返回值：返回 string = 拒（这一圈/这次调用不跑），返回 undefined/void = 放行 */
 export type HookResult = string | void | Promise<string | void>;
 
-/**
- * Agent 插件上下文：当前 Agent + 发送内容 + 消息列表快照。
- *
- * 注意：
- * - messages 是当前 agent 消息数组的**快照**（浅拷贝），插件不应直接修改它。
- *   所有消息变更应通过 agent 上的方法进行。
- */
-export interface SendContext {
+/** 外循环一圈的上下文（这一批事件） */
+export interface OuterLoopContext {
   agent: Agent;
-  content: string;
-  /** 当前 agent 消息数组的浅拷贝快照，仅供读取，不应直接修改 */
-  messages: AgentNS.Message[];
+  /** 这一圈取到的这批条目（可能含只拧钥匙不带正文的） */
+  entries: AgentNS.InboxEntry[];
 }
 
 /**
- * 子 Agent 委派上下文：一次「主 Agent 委派子 Agent」的边界。
+ * 内循环一圈的上下文。
  *
- * - `agent` 与其余各 ctx 约定一致，指**宿主（主）Agent**，即发起委派、分发本钩子的 Agent；
- * - `subAgent` 为**子 Agent**实例（onSubAgentStart 时已构建完成、尚未 run；onSubAgentEnd 时已运行结束）；
- * - `toolCallContext` 为触发本次委派的工具调用上下文（含 parsedArgs / signal / resultMessage）。
+ * `body` 是**这次要发出去的请求体**，不是 `agent.messages` —— 它是按白名单重排的一份快照，
+ * 一次性的。钩子可以直接改它的 `messages`：素材还原（库里只存引用、发送时才变成真东西）
+ * 走的就是这一缝。这条不成立，宿主就只能让 core 认识素材，而 core 不该认识。
  */
-export interface SubAgentContext {
-  /** 宿主（主）Agent —— 发起委派者 */
+export interface InnerLoopContext {
   agent: Agent;
-  /** 子 Agent 实例 */
+  body: Record<string, unknown> & { messages: unknown[] };
+}
+
+/** 工具钩子的上下文（`toolCall` 就是交给 `Tool.exec` 的那个实例） */
+export interface ToolHookContext {
+  agent: Agent;
+  toolCall: ToolCallContext;
+}
+
+/** 委派边界的上下文（`agent` 是发起委派的宿主，`subAgent` 是被委派的那个） */
+export interface SubAgentHookContext {
+  agent: Agent;
   subAgent: Agent;
-  /** 触发本次委派的工具调用上下文 */
   toolCallContext: ToolCallContext;
 }
 
 /**
- * 单个工具调用结束（结果已定型）的事件载荷 —— `tool-call-end`。
+ * 插件接口。
  *
- * 为何需要这个事件：一轮里的并行工具是 `Promise.all` 跑的，`finally` 只在**整轮**
- * 结束后发一次。于是「edit 已经回来了、只剩 exec 在跑」这个中间状态外界根本观测不到，
- * 任何按「正在等谁」展示的界面都只好把整轮的工具名一起报出来，在用户看来就是「明明
- * 在等 exec，却写着 edit」。本事件每个工具各发一次，谁先跑完谁先发。
+ * | 钩子 | 能不能拒 | 说明 |
+ * |---|---|---|
+ * | `onInit` | 不能 | 注册后初始化（`init()`），与死活无关 |
+ * | `onStart` / `onPause` / `onResume` / `onIdle` / `onStop` / `onKill` | 不能 | 死活与状态的边 |
+ * | `onOuterLoopStart` / `onOuterLoopEnd` | 不能 | 一圈的开始 / 结束 |
+ * | `onInnerLoopStart` | **能拒** | 排在造 assistant 占位**之前**，拒了历史里一个字都不多 |
+ * | `onInnerLoopEnd` | 不能 | 一圈结束 |
+ * | `onToolStart` | **能拒** | 拒了就是「这个工具没给出有效结果」，原因作为 tool 消息回给模型 |
+ * | `onToolEnd` | 不能 | 工具跑完了 |
+ * | `onSubAgentStart` | **能拒** | 拒了这次委派不跑 |
+ * | `onSubAgentEnd` | 不能 | 委派结束（子 agent 已经跑完，撤不回来了） |
  *
- * 与 `onToolCall`（事件名 `tool-call`，执行**前**的拦截点）成对，方向相反。
- */
-export interface ToolCallEndContext {
-  /** 宿主 Agent */
-  agent: Agent;
-  /** 本次调用（含 `index` / `id` / `function.name`） */
-  toolCall: AgentNS.ToolCall;
-  /**
-   * 已定型的结果消息（`role: "tool"`）。
-   *
-   * `status` 是最终值：`completed` / `error` / `aborted`（被 `abort()` 中止的工具
-   * 即使跑完也不算成功）。消费方直接读它，不必再回 `agent.messages` 里反查。
-   */
-  result: AgentNS.Message;
-}
-
-/**
- * 事件载荷 —— `inbox`：有人往 `agent.inbox` 里推了一条待发内容。
- *
- * 载荷带 `agent`（哪个 Agent 收的）与 `entry`（推的那条本身）：「推成功」这件事的发生
- * 时刻只有推的人自己知道，宿主/客户端据此点亮「已排队 N 条」，而不必轮询 `inbox`。
- */
-export interface InboxContext {
-  /** 收下这条条目的 Agent */
-  agent: Agent;
-  /** 原样投递进来的那条条目（含已补齐的 `messageId` / `createdAt`） */
-  entry: AgentNS.InboxEntry;
-}
-
-/**
- * 事件载荷 —— `status`：`runStatus` 真正变了一次（一段的边界）。
- *
- * ## 为什么单立一个事件，而不是拿 `finally` 冒充
- *
- * `finally`（每**次内循环**结束，一次 API 请求 + 它的工具调用）与 `status`（每**段**边界）
- * 是两个粒度：一段里可以有好几圈内循环，也可能一圈都没跑起来（`deliver` 叫醒时 inbox 里
- * 只有被 `abort` 冻住的条目）。拿 `finally` 推「跑不跑」，宿主就会在段中间收到一串假的
- * 「跑完了」；拿 `status` 推六态，界面又会在每一圈里跳一次。两者混用正是这里最容易出错的
- * 地方，所以分成两个事件，各自只说自己那一层。
- *
- * 载荷没有 `reason`：段边界只有四种转换（起段 / 自然收尾 / 按停 / 收尾完成），`from` 与 `to`
- * 已经把它们完全区分开了，再带一个 `reason` 就是第二份可能漂移的事实。
- */
-export interface StatusContext {
-  /** 状态变化的就是这个 Agent */
-  agent: Agent;
-  /** 变化前的段状态 */
-  from: AgentNS.RunStatus;
-  /** 变化后的段状态 */
-  to: AgentNS.RunStatus;
-}
-
-/**
- * Agent 插件接口。每个插件单一职责，通过钩子介入 Agent 生命周期。
- *
- * 所有钩子统一「返回值可短路」：返回字符串时短路（各钩子语义见下表），
- * 返回 undefined/void 时放行。多个插件按注册顺序调用，任一返回字符串即短路。
- *
- * | 钩子 | 入参 | 返回 string 的语义 |
- * |------|------|---------------------|
- * | `onInit` | — | 初始化，不短路 |
- * | `onBeforeSend` | SendContext | 拒绝 send（抛错中断） |
- * | `onAfterSend` | SendContext | 仅短路后续插件 |
- * | `onInnerLoopStart` | SendContext | 中断本轮（抛错） |
- * | `onInnerLoopEnd` | SendContext | 仅短路后续插件 |
- * | `onInnerLoopsStart` | SendContext | 中断整组（抛错） |
- * | `onInnerLoopsEnd` | SendContext | 仅短路后续插件 |
- * | `onToolCall` | ToolCallContext | 拒绝该工具，原因作为工具结果回给 LLM |
- * | `onUnknownTool` | UnknownToolContext | 作为工具结果返回；undefined 走默认提示 |
- * | `onSubAgentStart` | SubAgentContext | 拒绝本次委派（原因作为工具结果回给 LLM） |
- * | `onSubAgentEnd` | SubAgentContext | 仅短路后续插件 |
+ * `onOuterLoopStart` **不能拒**：此刻这一批已经从队列里取出来了，拒了这批就没主了。
+ * 「要不要处理这一批」的判决应该发生在投递之前 —— 投了就得有人跑。
  */
 export interface AgentPlugin {
-  onInit?(): Promise<void>;
-  onBeforeSend?(ctx: SendContext): HookResult;
-  onAfterSend?(ctx: SendContext): HookResult;
-  onInnerLoopStart?(ctx: SendContext): HookResult;
-  onInnerLoopEnd?(ctx: SendContext): HookResult;
-  onInnerLoopsStart?(ctx: SendContext): HookResult;
-  onInnerLoopsEnd?(ctx: SendContext): HookResult;
-  /**
-   * 单个工具调用执行前触发（收同一个 ToolCallContext 实例）。
-   * 返回字符串 = 拒绝该工具（不执行，原因作为工具结果回给 LLM，继续下一轮）；
-   * 返回 undefined = 放行。多个插件按注册顺序调用，任一返回字符串即拒绝（短路）。
-   */
-  onToolCall?(ctx: ToolCallContext): HookResult;
-  /**
-   * LLM 调用未注册工具时触发。
-   * 返回字符串 = 作为工具结果返回给 LLM；
-   * 返回 undefined = 继续（最终使用 Agent 默认提示，或 SdkAgent 覆盖的智能提示）。
-   */
-  onUnknownTool?(ctx: UnknownToolContext): HookResult;
-  /**
-   * 子 Agent 委派开始前触发（子 Agent 已构建完成、尚未 run）。
-   * 返回字符串 = 拒绝本次委派（子 Agent 不运行，原因作为工具结果回给 LLM，继续下一轮）；
-   * 返回 undefined = 放行。多个插件按注册顺序调用，任一返回字符串即拒绝（短路）。
-   */
-  onSubAgentStart?(ctx: SubAgentContext): HookResult;
-  /**
-   * 子 Agent 结束后触发（子 Agent 所有轮次完成，含 tool_calls 多轮递归）。
-   * 返回字符串 = 仅短路后续插件（子 Agent 已运行完成，无法撤销）；
-   * 返回 undefined = 放行。
-   */
-  onSubAgentEnd?(ctx: SubAgentContext): HookResult;
+  onInit?(): HookResult;
+  onStart?(): HookResult;
+  onPause?(): HookResult;
+  onResume?(): HookResult;
+  onIdle?(): HookResult;
+  onStop?(): HookResult;
+  onKill?(): HookResult;
+  onOuterLoopStart?(ctx: OuterLoopContext): HookResult;
+  onOuterLoopEnd?(ctx: OuterLoopContext): HookResult;
+  onInnerLoopStart?(ctx: InnerLoopContext): HookResult;
+  onInnerLoopEnd?(ctx: InnerLoopContext): HookResult;
+  onToolStart?(ctx: ToolHookContext): HookResult;
+  onToolEnd?(ctx: ToolHookContext): HookResult;
+  onSubAgentStart?(ctx: SubAgentHookContext): HookResult;
+  onSubAgentEnd?(ctx: SubAgentHookContext): HookResult;
 }
 
-/** 钩子名 → kebab-case 事件名（dispatchHook 内 events.emit 使用） */
-const HOOK_EVENTS: Record<string, string> = {
-  onBeforeSend: "before-send",
-  onAfterSend: "after-send",
-  onInnerLoopStart: "inner-loop-start",
-  onInnerLoopEnd: "inner-loop-end",
-  onInnerLoopsStart: "inner-loops-start",
-  onInnerLoopsEnd: "inner-loops-end",
-  onToolCall: "tool-call",
-  onUnknownTool: "unknown-tool",
-  onSubAgentStart: "sub-agent-start",
-  onSubAgentEnd: "sub-agent-end",
-};
+// ---------------------------------------------------------------------------
+// 事件：说发生了什么
+// ---------------------------------------------------------------------------
 
-interface PendingTask {
+export interface LifecycleEvent {
+  agent: Agent;
+}
+export interface StateEvent {
+  agent: Agent;
+  from: AgentNS.AgentState;
+  to: AgentNS.AgentState;
+}
+export interface InboxAddedEvent {
+  agent: Agent;
+  entry: AgentNS.InboxEntry;
+}
+export interface InboxClearedEvent {
+  agent: Agent;
+  entries: AgentNS.InboxEntry[];
+}
+export interface MessageEvent {
+  agent: Agent;
+  message: AgentNS.Message;
+}
+/**
+ * 原始片的来源。三格让接收方直接知道往哪儿放：
+ * 自己的消息、某个子 agent 的、还是子 agent 某个工具调用里的。
+ */
+export type DeltaSource =
+  | { message: AgentNS.Message }
+  | { subAgent: Agent; toolCall?: AgentNS.ToolCall };
+
+export interface DeltaEvent {
+  agent: Agent;
+  /** 原片本身，一个字节都不动 */
+  chunk: unknown;
+  source: DeltaSource;
+}
+export interface RequestSentEvent {
+  agent: Agent;
+  /** 要发出去的那份请求体（一次性的，不是 `agent.messages`） */
+  body: Record<string, unknown>;
+}
+export interface ResponseFinishedEvent {
+  agent: Agent;
+  message: AgentNS.Message;
+}
+export interface ToolStartedEvent {
+  agent: Agent;
+  toolCall: AgentNS.ToolCall;
+}
+export interface ToolFinishedEvent {
+  agent: Agent;
+  toolCall: AgentNS.ToolCall;
+  result: AgentNS.Message;
+}
+export interface SubAgentEvent {
+  agent: Agent;
+  subAgent: Agent;
+  toolCall?: AgentNS.ToolCall;
+}
+export interface DeniedEvent {
+  agent: Agent;
+  hook: string;
+  reason: string;
+}
+export interface FailedEvent {
+  agent: Agent;
+  error: AgentError | Error;
+  /** 出错的那条消息（如果有）—— 与 `message.error` 是同一个实例 */
+  message?: AgentNS.Message;
+}
+
+/**
+ * 事件表。**带出去的是活对象本身，不是拷贝** —— 收到事件的人手里攥着的就是那条消息、
+ * 那条条目、那片原片。拷贝 = 第二份事实，交出去那一刻就开始过期。
+ *
+ * 事件只是通知，**不是唯一信息源**：晚到、重复、丢一条都不影响正确性，读活对象就自愈。
+ */
+export interface AgentEvents {
+  started: LifecycleEvent;
+  stopped: LifecycleEvent;
+  killed: LifecycleEvent;
+  state: StateEvent;
+  inboxAdded: InboxAddedEvent;
+  inboxCleared: InboxClearedEvent;
+  messageAdded: MessageEvent;
+  messageChanged: MessageEvent;
+  messageRemoved: MessageEvent;
+  delta: DeltaEvent;
+  requestSent: RequestSentEvent;
+  responseFinished: ResponseFinishedEvent;
+  toolStarted: ToolStartedEvent;
+  toolFinished: ToolFinishedEvent;
+  subAgentStarted: SubAgentEvent;
+  subAgentFinished: SubAgentEvent;
+  denied: DeniedEvent;
+  failed: FailedEvent;
+}
+
+// ---------------------------------------------------------------------------
+// Agent
+// ---------------------------------------------------------------------------
+
+/** 当圈的中断装置：寿命**只到这一圈**，下一圈是全新的 */
+interface Turn {
   controller: AbortController;
-  receiver: AgentNS.Message;
+  /** `Promise.race` 的伙伴：不管对方听不听话，`await` 立刻返回 */
+  abortRx: Promise<void>;
+  aborted: boolean;
 }
 
 export class Agent extends AgentContext {
-  events = new EventBus();
+  /** 三格：忙 / 闲 / 暂停（语义见 `AgentNS.AgentState`） */
+  state: AgentNS.AgentState = "idle";
 
-  /**
-   * 这一段跑不跑（四态，语义见 {@link AgentNS.RunStatus}）。
-   *
-   * ## 为什么它必须是一个显式字段
-   *
-   * 改动之前「在不在跑」没有权威字段，只有三个互相不说话的碎片：`innerLoopTasks`（两次
-   * 内循环之间的空档里它是空的，但那一整段明明还在跑）、`innerLoopsTasks`（一段结束才清，
-   * 与「在跑」不对应）、`runAborted`（在 `run()` 开头复位，说的是「这一段」不是状态）。
-   * 于是 core 自己回答不了「能不能起新段」，只好由宿主代劳 —— 而宿主一漏，就是两段并跑。
-   *
-   * ## 谁写它
-   *
-   * 只有 `setRunStatus()`（`run()` 起段与收尾、`abort()`）；外部只读。置位与「起段」之间
-   * **不许有 await** —— 这是「不会并跑」的全部秘密。
-   */
-  runStatus: AgentNS.RunStatus = "idle";
-
-  /**
-   * 有没有一次 `send()` 正卡在段的前后（`onBeforeSend` / `onAfterSend` 都是 await）。
-   * 与 `runStatus` 是两个问题：那个说「段在不在跑」，这个说「受理在不在途」。
-   */
-  sendStatus: AgentNS.SendStatus = "idle";
-
-  /**
-   * 排队待发的内容：`deliver()` 投进来，两个时刻落成 User 消息 —— 唤醒前整体落地（不分优先级）、
-   * 段内内循环末按 high / low 取件。
-   *
-   * 公开可读（宿主据此展示排队条目），写入只走 `deliver()` / `clearInbox()`。数组实例自始至终
-   * 是同一个（推进用 `push`、取走用 `splice`），拿它做快照的调用方不会抱到过期副本。
-   * 它是**数据**不是状态：`abort()` 不碰它，没被取走的条目留给下一次外部驱动。
-   */
-  inbox: AgentNS.InboxEntry[] = [];
-
-  /** 已注册的插件列表 */
   private _plugins: AgentPlugin[] = [];
+  private bus = new EventBus();
+  /** 唯一的一条队列。钥匙也在里面，只是它没有正文 */
+  private inbox = new AsyncQueue<AgentNS.InboxEntry>();
+
+  /** `stop()` 调过：关门，不再接输入，存量走完才死 */
+  private closed = false;
+  /** `kill()` 调过：硬着陆，存量作废 */
+  private killed = false;
+  /** 暂停中：不取件、不开新圈 */
+  private paused = false;
+  /** 手上正干着活（一批的整个跨度） */
+  private busy = false;
+
+  /** `start()` 的那句 promise：到死才 resolve，且不 reject */
+  private runPromise?: Promise<void>;
+  /** 当前这一圈的中断装置 */
+  private currentTurn?: Turn;
+  /** 所有 `waitUntil` 的唤醒器 */
+  private waiters: Array<() => void> = [];
 
   constructor(options: PickRequired<AgentContext, "client" | "model">) {
     super(options);
   }
 
+  // -------------------------------------------------------------------------
+  // 事件与插件
+  // -------------------------------------------------------------------------
+
+  /** 订阅一个事件，返回取消函数（订阅者自己管生命周期） */
+  on<K extends keyof AgentEvents>(type: K, handler: (payload: AgentEvents[K]) => void): () => void {
+    const subscription = this.bus.on(type as string, handler as (...args: any[]) => any);
+    return () => subscription.dispose();
+  }
+
+  private emit<K extends keyof AgentEvents>(type: K, payload: AgentEvents[K]): void {
+    this.bus.emit(type as string, payload);
+  }
+
+  /** 注册一个插件 */
+  use(plugin: AgentPlugin): void {
+    this._plugins.push(plugin);
+  }
+
+  /** 初始化所有已注册插件 */
+  async init(): Promise<void> {
+    for (const plugin of this._plugins) {
+      await plugin.onInit?.();
+    }
+  }
+
+  /**
+   * 按注册顺序跑钩子，任一返回 string 即短路并返回该字符串。
+   *
+   * 钩子只管插件；**事件不从这里发**（事件说「发生了什么事」，钩子说「缝在哪儿」）。
+   */
+  async dispatchHook(
+    hook: keyof AgentPlugin,
+    ctx?: OuterLoopContext | InnerLoopContext | ToolHookContext | SubAgentHookContext,
+  ): Promise<string | undefined> {
+    for (const plugin of this._plugins) {
+      const fn = (plugin as Record<string, unknown>)[hook as string];
+      if (typeof fn !== "function") continue;
+      const r = await (fn as (ctx?: unknown) => HookResult).call(plugin, ctx);
+      if (r !== undefined) return r;
+    }
+    return undefined;
+  }
+
+  /**
+   * 委派边界：先跑钩子（能改、能拒），再发事件（已定）。
+   *
+   * `onSubAgentStart` 拒了就不发 `subAgentStarted` —— 那一次委派本来就没开始。
+   */
+  async dispatchSubAgentHook(
+    hook: "onSubAgentStart" | "onSubAgentEnd",
+    ctx: SubAgentHookContext,
+  ): Promise<string | undefined> {
+    const denied = await this.dispatchHook(hook, ctx);
+    const payload: SubAgentEvent = {
+      agent: this,
+      subAgent: ctx.subAgent,
+      toolCall: ctx.toolCallContext.tool_call,
+    };
+
+    if (hook === "onSubAgentStart") {
+      if (denied === undefined) this.emit("subAgentStarted", payload);
+    } else {
+      this.emit("subAgentFinished", payload);
+    }
+
+    return denied;
+  }
+
+  // -------------------------------------------------------------------------
+  // 死活：五个动作
+  // -------------------------------------------------------------------------
+
+  /**
+   * 起来等事件。返回一个**到死才 resolve** 的 promise，且**永不 reject**。
+   *
+   * 幂等：重复调返回同一句 promise。失败不终结 agent —— 一轮请求挂了就是一轮挂了，
+   * 记在那条消息的 `error` 上、报一个 `failed` 事件，循环接着等下一个事件。
+   * core 自己写崩了也走这条路（报 `failed` 再退出循环）：它不该让调用方在 `await` 上
+   * 接到一个「框架 bug」形状的拒绝，那样调用方只能把 bug 当业务处理。
+   */
+  start(): Promise<void> {
+    if (this.runPromise) return this.runPromise;
+
+    this.runPromise = this.loop()
+      .catch((error: unknown) => {
+        this.emit("failed", { agent: this, error: error as Error });
+      })
+      .finally(() => {
+        this.busy = false;
+        this.currentTurn = undefined;
+        this.refreshState();
+      });
+
+    this.emit("started", { agent: this });
+    void this.dispatchHook("onStart");
+    return this.runPromise;
+  }
+
+  /**
+   * 关门：不再接输入，**存量走完**，排空才死（血流干的死）。
+   *
+   * 暂停中调它就是「不跑 + 关门，存量作废」—— 暂停说的是「现在别跑」，stop 说的是
+   * 「以后也别跑」，两句叠起来就是不跑。不解除暂停再跑一遍存量，因为那等于用户按了
+   * 暂停却看见它又开口。
+   */
+  stop(): void {
+    if (this.closed || this.killed) return;
+    this.closed = true;
+    if (this.paused) this.clearInbox();
+    this.inbox.done();
+    this.notify();
+    void this.dispatchHook("onStop");
+  }
+
+  /** 硬着陆：立刻死，存量作废 */
+  kill(): void {
+    if (this.killed) return;
+    this.killed = true;
+    this.closed = true;
+    this.clearInbox();
+    this.inbox.done();
+    this.abortTurn();
+    this.notify();
+    void this.dispatchHook("onKill");
+  }
+
+  /**
+   * 暂停：掐掉在途的网络请求与工具。agent 不死，接着等。
+   *
+   * 幂等；已经关了/死了就是空动作。
+   */
+  abort(): void {
+    if (this.paused || this.killed || this.closed) return;
+    this.paused = true;
+    this.abortTurn();
+    this.refreshState();
+    this.notify();
+    void this.dispatchHook("onPause");
+  }
+
+  /**
+   * 解除暂停。**只置意愿、不立刻取件** —— 等这一圈收完，外循环自然回到顶部再看队列。
+   *
+   * 为什么不在这里顺手取件：用户手快连点 `abort`/`resume` 时这一圈还在收尸，
+   * 此刻去取件就变成两个东西同时写 `messages`。
+   */
+  resume(): void {
+    if (!this.paused) return;
+    this.paused = false;
+    this.refreshState();
+    this.notify();
+    void this.dispatchHook("onResume");
+  }
+
+  // -------------------------------------------------------------------------
+  // 投递：push / send / runOnce
+  // -------------------------------------------------------------------------
+
+  /**
+   * 塞进 inbox，立刻返回。
+   *
+   * **关门之后抛 `AgentError("closed")`**，不静默丢：塞的人可能是另一个 agent，
+   * 他得知道自己投失败了才能改投（宿主接住这个错，就去做「新装一个再投」）。
+   *
+   * 不给 `input`（或给一个没有正文的）= 拧钥匙：只把这一圈叫起来，不落地任何消息。
+   */
+  push(input?: AgentNS.InboxInput): void {
+    if (this.closed || this.killed) {
+      throw new AgentError("closed", `往已经关了的 agent(${this.id}) 投递`);
+    }
+
+    const entry: AgentNS.InboxEntry =
+      input?.content === undefined
+        ? { createdAt: new Date().toISOString(), priority: "low", content: undefined }
+        : {
+            messageId: input.messageId ?? this.newMessageId(),
+            createdAt: new Date().toISOString(),
+            priority: input.priority,
+            source: input.source,
+            content: input.content,
+          };
+
+    this.inbox.push(entry);
+    this.emit("inboxAdded", { agent: this, entry });
+    this.refreshState();
+    this.notify();
+  }
+
+  /**
+   * 塞一条 + **等到闲**；不给内容 = 只拧钥匙。
+   *
+   * 「等闲」的判据是 `state === "idle"`，而闲的定义是「队列空 且 不忙」——
+   * 所以并发 `send` 天然合并成一批：第二个人塞的时候队列非空，就不会提前返回。
+   *
+   * ⚠️ 先 `start()` 再 `send()`，两句之间不要 `await`。反过来会一直等下去
+   *（塞进去了，但没人在取）。
+   */
+  async send(
+    input?: AgentNS.InboxInput,
+    options?: { signal?: AbortSignal },
+  ): Promise<AgentNS.Message[]> {
+    this.push(input);
+    await this.waitUntil(() => this.state === "idle", options?.signal);
+    return this.messages;
+  }
+
+  /**
+   * 跑一次到死：起 → 塞 → 等闲 → 关门 → 死透 → 交回消息。
+   *
+   * **不是第六个死活动作**，是 `start` / `send` / `stop` 的复合，只是把一次性会话那几步
+   * 收成一句。跑完之后这个 agent 就没了（死了就死透，复活 = 新建）。
+   *
+   * 返回的 `messages` 就是 `agent.messages` 本身，不拷贝。
+   */
+  async runOnce(
+    input?: AgentNS.InboxInput,
+    options?: { signal?: AbortSignal },
+  ): Promise<AgentNS.Message[]> {
+    if (this.runPromise) {
+      throw new Error("runOnce() 只能用在还没 start() 的 agent 上：它会把这个 agent 关掉");
+    }
+    if (input?.content === undefined && this.messages.length === 0) {
+      throw new Error("runOnce() 时 messages 是空的：没有燃料，拧钥匙只会发一个空请求");
+    }
+
+    const death = this.start();
+
+    // 前端掉线 / 父 agent 被 abort：掐在途、关门、死透，然后把已经跑出来的那部分交回去
+    const onAbort = () => {
+      this.abort();
+      this.stop();
+    };
+    options?.signal?.addEventListener("abort", onAbort, { once: true });
+
+    try {
+      await this.send(input, options);
+      this.stop();
+      await death;
+      return this.messages;
+    } catch (error) {
+      this.kill();
+      await death;
+      throw error;
+    } finally {
+      options?.signal?.removeEventListener("abort", onAbort);
+    }
+  }
+
+  /**
+   * 清空 inbox 并返回被丢掉的条目。core 自己从不主动调它 ——「作废排队」是调用方的
+   * 显式决定，不该由「用户按了停」替它猜（唯一例外：暂停中 `stop` / `kill`）。
+   */
+  clearInbox(): AgentNS.InboxEntry[] {
+    const entries = this.inbox.takeAll();
+    if (entries.length) this.emit("inboxCleared", { agent: this, entries });
+    this.refreshState();
+    this.notify();
+    return entries;
+  }
+
+  /** 排队中还有几条（宿主显示「待发 N 条」用） */
+  get inboxSize(): number {
+    return this.inbox.size;
+  }
+
+  // -------------------------------------------------------------------------
+  // 外循环
+  // -------------------------------------------------------------------------
+
+  /**
+   * 外循环：等一批事件 → 修历史 → 落地 → 内循环。
+   *
+   * 用同步的 `takeAll()` 而不是 `asTakeAll()` 的迭代器：迭代器一旦挂起，到货的那批就被它
+   * 吞下来了 —— 而暂停要求「不取件」，被吞下来的那一批要么丢了要么得再塞回去（塞回去就
+   * 排到了暂停期间后来的条目后面）。同步取件没有这个窗口。
+   */
+  private async loop(): Promise<void> {
+    while (true) {
+      await this.waitUntil(() => !this.paused || this.closed || this.killed);
+      if (this.shouldDie()) break;
+
+      if (this.inbox.size === 0) {
+        await this.waitUntil(() => this.inbox.size > 0 || this.closed || this.killed || this.paused);
+        continue;
+      }
+
+      this.busy = true;
+      this.refreshState();
+
+      const entries = this.inbox.takeAll();
+      try {
+        await this.runBatch(entries);
+      } finally {
+        this.busy = false;
+        this.refreshState();
+      }
+    }
+
+    this.emit(this.killed ? "killed" : "stopped", { agent: this });
+    this.refreshState();
+  }
+
+  /** 一批事件走完一圈 */
+  private async runBatch(entries: AgentNS.InboxEntry[]): Promise<void> {
+    const ctx: OuterLoopContext = { agent: this, entries };
+
+    // ① 修一遍历史 —— **唯一一次**回头看历史的地方（`CORE.md` §6），在进圈之前
+    this.repair();
+
+    // ② 落地：带正文的落一条 user 消息，钥匙什么都不落
+    for (const entry of entries) {
+      const message = inboxEntryMessage(entry);
+      if (message) this.append(message);
+    }
+
+    // ③ 内循环
+    await this.dispatchHook("onOuterLoopStart", ctx);
+    await this.innerLoops();
+    await this.dispatchHook("onOuterLoopEnd", ctx);
+  }
+
+  /**
+   * 修一遍历史：把遗留的 `writing` / `pending` 定型、按「丢」删掉残局、按「填」补上
+   * 未配对的工具结果。
+   *
+   * 判定依据只有两样：消息的 `status`，以及 `tool_calls` 与 tool 消息的配对关系。
+   * **不需要知道原因** —— 中断、出错、崩溃三种来路，落到这一步看到的是同一份脏数据。
+   */
+  private repair(): void {
+    const removed = [
+      ...reconcileAbortedToolRounds(
+        this.messages,
+        this.abortedToolRoundStrategy,
+        this.abortedToolRoundReason,
+      ),
+      ...reconcileAbortedMessages(this.messages, this.abortedMessageStrategy),
+    ];
+    for (const message of removed) this.emit("messageRemoved", { agent: this, message });
+  }
+
+  // -------------------------------------------------------------------------
+  // 内循环
+  // -------------------------------------------------------------------------
+
+  /**
+   * 一次请求 + 它引出的工具，循环到「刚才没有工具调用」为止。
+   *
+   * 续行条件只有一条：**刚才有工具调用**。工具是模型要的，跑完必须把结果再喂回去问一次；
+   * 没有工具调用就是这一轮说完了。没有第二个判据。
+   */
+  private async innerLoops(): Promise<void> {
+    while (true) {
+      if (this.paused || this.killed) return;
+
+      const ctx = this.buildInnerLoopContext();
+
+      // 钩子排在造 assistant 占位**之前**：拒了就不会留下一条永远 Pending 的幽灵消息
+      const denied = await this.dispatchHook("onInnerLoopStart", ctx);
+      if (denied !== undefined) {
+        this.emit("denied", { agent: this, hook: "onInnerLoopStart", reason: denied });
+        return;
+      }
+      if (this.paused || this.killed) return;
+
+      const assistant = new Message({
+        id: this.newMessageId(),
+        role: AgentNS.Role.Assistant,
+        status: AgentNS.MessageStatus.Pending,
+      });
+      this.append(assistant);
+
+      const hadTools = await this.runTurn(assistant, ctx);
+
+      await this.dispatchHook("onInnerLoopEnd", ctx);
+
+      if (!hadTools) return;
+      // 唯一的取件点：这一圈刚收尾（工具结果已进 messages）、下一圈还没开始。
+      // 内循环只看 high —— 低优先级与钥匙它连看都不看。
+      this.landHigh();
+    }
+  }
+
+  private buildInnerLoopContext(): InnerLoopContext {
+    const body = {
+      // 先铺模型参数（temperature 等；可含厂商特有字段），再写框架契约 —— **顺序不能反**：
+      // model / messages / tools / stream / stream_options 是框架自己保证的，
+      // 配置里写同名键也不能把它们改掉（否则 `stream: false` 会直接把流式解析打崩）。
+      ...this.modelConfig,
+      model: this.model,
+      messages: this.formatHistory() as unknown[],
+      tools: this.formatTools(),
+      stream: true,
+      stream_options: { include_usage: true },
+    } as Record<string, unknown> & { messages: unknown[] };
+
+    return { agent: this, body };
+  }
+
+  /** 这一圈：发请求 → 收流 → 跑工具。返回「刚才有没有工具调用」 */
+  private async runTurn(assistant: Message, ctx: InnerLoopContext): Promise<boolean> {
+    const turn = this.newTurn();
+    this.currentTurn = turn;
+
+    try {
+      this.emit("requestSent", { agent: this, body: ctx.body });
+
+      let stream: AsyncIterable<ChatCompletionChunk>;
+      try {
+        stream = (await this.client.chat.completions.create(ctx.body as any, {
+          signal: turn.controller.signal,
+        })) as unknown as AsyncIterable<ChatCompletionChunk>;
+      } catch (error) {
+        throw this.toAgentError(error, "request-failed", turn);
+      }
+
+      assistant.status = AgentNS.MessageStatus.Writing;
+
+      try {
+        for await (const chunk of stream) {
+          this.emit("delta", { agent: this, chunk, source: { message: assistant } });
+          applyChunk(assistant, chunk);
+        }
+      } catch (error) {
+        throw this.toAgentError(error, "stream-failed", turn);
+      }
+
+      if (turn.aborted) {
+        assistant.status = AgentNS.MessageStatus.Aborted;
+        return false;
+      }
+
+      assistant.status = AgentNS.MessageStatus.Completed;
+      this.emit("responseFinished", { agent: this, message: assistant });
+
+      return await this.runTools(assistant, turn);
+    } catch (error) {
+      // 被掐断的那一轮不是「出错」：它有自己的状态，也不报 `failed`
+      if (turn.aborted) {
+        assistant.status = AgentNS.MessageStatus.Aborted;
+        this.touch(assistant);
+        return false;
+      }
+
+      const agentError = error instanceof AgentError ? error : new AgentError("stream-failed", String(error));
+      assistant.status = AgentNS.MessageStatus.Error;
+      // 同一个实例：既挂在这条消息上，也进 `failed` 事件
+      assistant.error = agentError;
+      this.touch(assistant);
+      this.emit("failed", { agent: this, error: agentError, message: assistant });
+      return false;
+    } finally {
+      this.currentTurn = undefined;
+    }
+  }
+
+  /** 把任意来路的错误收成 `AgentError`；被掐断的走 `aborted`，不收 */
+  private toAgentError(error: unknown, code: "request-failed" | "stream-failed", turn: Turn): unknown {
+    if (turn.aborted) return error;
+    if (error instanceof AgentError) return error;
+    const message = error instanceof Error ? error.message : String(error);
+    return new AgentError(code, message, { cause: error });
+  }
+
+  /** 这一圈的中断装置：全新的 controller + `abortRx`，寿命只到这一圈 */
+  private newTurn(): Turn {
+    const controller = new AbortController();
+    const turn: Turn = {
+      controller,
+      aborted: false,
+      abortRx: new Promise<void>((resolve) => {
+        controller.signal.addEventListener("abort", () => resolve(), { once: true });
+      }),
+    };
+    return turn;
+  }
+
+  private abortTurn(): void {
+    const turn = this.currentTurn;
+    if (!turn) return;
+    turn.aborted = true;
+    turn.controller.abort();
+  }
+
+  // -------------------------------------------------------------------------
+  // 工具
+  // -------------------------------------------------------------------------
+
+  /**
+   * 并行跑同一圈里的多个工具，**按调用顺序落地** tool 消息（不按完成顺序）。
+   *
+   * 失败即「没给出有效结果」：参数烂、执行挂、工具不存在、钩子拒 —— 同一件事，
+   * 一条 tool 消息回给模型，引擎不停圈、不重试。
+   */
+  private async runTools(assistant: Message, turn: Turn): Promise<boolean> {
+    const calls = (assistant.tool_calls ?? []).filter((tc) => tc.type === "function" && tc.function);
+    if (calls.length === 0) return false;
+
+    // 先按调用顺序把 tool 消息建好（Pending）：落地顺序由这里定死，与谁先跑完无关
+    const jobs = calls.map((call) => ({ call, result: this.append(Message.Tool(call)) }));
+
+    await Promise.all(jobs.map(({ call, result }) => this.runOneTool(call, result, turn)));
+
+    return true;
+  }
+
+  private async runOneTool(
+    call: AgentNS.ToolCall,
+    result: Message,
+    turn: Turn,
+  ): Promise<void> {
+    this.emit("toolStarted", { agent: this, toolCall: call });
+
+    /** 定型：先按新状态重发这条消息，再报「这个工具跑完了」 */
+    const settle = (status: AgentNS.MessageStatus) => {
+      result.status = turn.aborted ? AgentNS.MessageStatus.Aborted : status;
+      this.touch(result);
+      this.emit("toolFinished", { agent: this, toolCall: call, result });
+    };
+
+    const matched = this.tools.find(
+      (tool) => tool.function.name === call.function?.name && tool.type === "function",
+    );
+
+    const ctx = new ToolCallContext({
+      agent: this,
+      tool_call: call,
+      tool: matched,
+      resultMessage: result,
+      signal: turn.controller.signal,
+    });
+
+    try {
+      // ① 钩子拒：停止的两条路之一
+      const denied = await this.dispatchHook("onToolStart", { agent: this, toolCall: ctx });
+      if (denied !== undefined) {
+        result.content = `工具 ${call.function?.name} 被拒绝：${denied}`;
+        settle(AgentNS.MessageStatus.Completed);
+        await this.dispatchHook("onToolEnd", { agent: this, toolCall: ctx });
+        return;
+      }
+
+      // ② 参数烂 = 没给出有效结果
+      if (ctx.parseError) {
+        result.content = `参数解析错误: ${ctx.parseError}\n请检查你提供的参数格式，确保是合法的 JSON。`;
+        settle(AgentNS.MessageStatus.Completed);
+        await this.dispatchHook("onToolEnd", { agent: this, toolCall: ctx });
+        return;
+      }
+
+      // ③ 工具不存在 = 同一件事
+      if (!matched) {
+        result.content = `未知工具: ${call.function?.name}，没有找到对应的工具实现。`;
+        settle(AgentNS.MessageStatus.Completed);
+        await this.dispatchHook("onToolEnd", { agent: this, toolCall: ctx });
+        return;
+      }
+
+      // ④ 真跑：与 `abortRx` 赛跑 —— 不管工具听不听话，`await` 立刻能返回
+      result.content = (await Promise.race([
+        matched.exec(ctx),
+        turn.abortRx.then(() => undefined),
+      ])) as AgentNS.MessageContent | undefined;
+
+      settle(AgentNS.MessageStatus.Completed);
+    } catch (error: any) {
+      // 工具消息是**例外**：它的 `content` 本来就是给模型读的结果，错误文本就该在里面
+      result.content = `执行工具 ${call.function?.name} 时出错: ${error?.message ?? String(error)}`;
+      settle(AgentNS.MessageStatus.Completed);
+    }
+
+    await this.dispatchHook("onToolEnd", { agent: this, toolCall: ctx });
+  }
+
+  // -------------------------------------------------------------------------
+  // 状态
+  // -------------------------------------------------------------------------
+
+  /**
+   * 按「忙 / 闲 / 暂停」重算一次。
+   *
+   * **闲 = 队列空 且 不忙**。中间那一拍（手上没活、但队列里还压着）不报闲 —— 否则等在外面的
+   * 子 agent 会在半截处收走结果。暂停压过一切：暂停时队列里有没有货都显示暂停。
+   */
+  private refreshState(): void {
+    if (this.paused) return this.setState("paused");
+    const working = this.runPromise !== undefined && (this.busy || this.inbox.size > 0);
+    this.setState(working ? "busy" : "idle");
+  }
+
+  private setState(next: AgentNS.AgentState): void {
+    const from = this.state;
+    if (from === next) return;
+    this.state = next;
+    this.emit("state", { agent: this, from, to: next });
+    if (next === "idle") void this.dispatchHook("onIdle");
+    this.notify();
+  }
+
+  /** 死透了吗：被硬杀，或者关了门且排空了 */
+  private shouldDie(): boolean {
+    if (this.killed) return true;
+    if (!this.closed) return false;
+    // 暂停中 `stop`：不跑 + 关门，存量作废（`clearInbox` 已在 stop 里做过）
+    return this.inbox.size === 0 || this.paused;
+  }
+
+  // -------------------------------------------------------------------------
+  // 等待
+  // -------------------------------------------------------------------------
+
+  /** 等到 `predicate` 成立；`signal` 一响就立刻返回（不等对方听不听话） */
+  private async waitUntil(predicate: () => boolean, signal?: AbortSignal): Promise<void> {
+    while (!predicate()) {
+      if (signal?.aborted) return;
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          const i = this.waiters.indexOf(done);
+          if (i >= 0) this.waiters.splice(i, 1);
+          signal?.removeEventListener("abort", done);
+          resolve();
+        };
+        this.waiters.push(done);
+        signal?.addEventListener("abort", done, { once: true });
+      });
+    }
+  }
+
+  /** 把所有人的等待放行一次，让他们各自重算 `predicate` */
+  private notify(): void {
+    const waiters = this.waiters;
+    this.waiters = [];
+    for (const waiter of waiters) waiter();
+  }
+
+  // -------------------------------------------------------------------------
+  // 消息
+  // -------------------------------------------------------------------------
+
+  /** 追加一条消息并广播 `messageAdded` —— 广播点放在唯一的追加口上 */
+  append(message: AgentNS.Message): AgentNS.Message {
+    const appended = super.append(message);
+    this.emit("messageAdded", { agent: this, message: appended });
+    return appended;
+  }
+
+  /** 就地改完之后重发同一条（同 id）：只靠「新增」事件，订阅方会永远停在 `pending` 上 */
+  private touch(message: AgentNS.Message): void {
+    this.emit("messageChanged", { agent: this, message });
+  }
+
+  /** 取走 inbox 里的 high 条目并落成 user 消息（内循环唯一的取件点） */
+  private landHigh(): boolean {
+    const entries = this.inbox.takeAll((entry) => entry.priority === "high");
+    if (entries.length === 0) return false;
+    for (const entry of entries) {
+      const message = inboxEntryMessage(entry);
+      if (message) this.append(message);
+    }
+    this.refreshState();
+    return true;
+  }
+
   /**
    * 最近一次 API 响应的 token 用量。
    *
-   * **派生值，不是独立状态**：取 `messages` 中最近一条未 `omit`、带 `usage` 的 assistant 消息。
-   * 用量本就随消息持久化，此处只是读最后一条，故迁移 / 替换 `messages` 后自动跟随，
-   * 不会出现「字段与消息各存一份、改了一处另一处过期」的问题。只读，无 setter。
+   * **派生值，不是独立状态**：取 `messages` 中最近一条未 `omit`、带 `usage` 的 assistant
+   * 消息。用量本就随消息持久化，此处只是读最后一条。
    */
   get lastUsage(): AgentNS.Usage | undefined {
     for (let i = this.messages.length - 1; i >= 0; i--) {
@@ -246,416 +909,9 @@ export class Agent extends AgentContext {
     return undefined;
   }
 
-  /**
-   * 注册一个插件。
-   * 可以在 init() 之前或之后调用，但生命周期钩子仅在 send/run 时生效。
-   */
-  use(plugin: AgentPlugin): void {
-    this._plugins.push(plugin);
-  }
-
-  /**
-   * 初始化所有已注册插件（执行各插件 onInit）。
-   */
-  async init(): Promise<void> {
-    for (const plugin of this._plugins) {
-      await plugin.onInit?.();
-    }
-  }
-
-  /**
-   * 统一钩子分发：先发出**非阻塞**的 kebab-case 事件（events.emit，同步广播、不短路），
-   * 再按注册顺序**阻塞**调用插件钩子，任一返回字符串即短路并返回该字符串。
-   *
-   * 事件与插件收口在同一个入口：
-   * - 事件监听器（agent.events.on）获得的是非阻塞通知（不影响流程）
-   * - 插件钩子（agent.use）获得的是阻塞的可短路回调（可干预流程）
-   *
-   * 公开可见：子 Agent 委派边界（`onSubAgentStart` / `onSubAgentEnd`）由发起委派的工具
-   * （`AgentTool` / `AgentToolLazy`）在宿主 Agent 上分发，故此处不设 private。
-   *
-   * @returns 短路字符串（undefined 表示全部放行）
-   */
-  async dispatchHook(
-    hook: keyof AgentPlugin,
-    ctx: SendContext | ToolCallContext | UnknownToolContext | SubAgentContext,
-  ): Promise<string | undefined> {
-    // 非阻塞事件广播（不 await、不短路）
-    this.events.emit(HOOK_EVENTS[hook as string], ctx);
-
-    // 阻塞插件分发（短路）
-    let result: string | undefined;
-    for (const plugin of this._plugins) {
-      const fn = plugin[hook];
-      if (typeof fn !== "function") continue;
-      const r = await (fn as (ctx: any) => HookResult).call(plugin, ctx);
-      if (r !== undefined) {
-        result = r;
-        break;
-      }
-    }
-    return result;
-  }
-
-  /**
-   * 整组内循环（一次 send）产生的所有消息任务：每轮 assistant + 每个工具结果，
-   * 各带 AbortController（中止其产生）。全程保留（不随完成移出），run 结束统一清空；
-   * 供整组追踪/审计使用（abort 不遍历本集合，见 innerLoopTasks）。
-   */
-  private innerLoopsTasks: Set<PendingTask> = new Set();
-
-  /**
-   * 当前内循环（单轮）进行中的消息任务：内循环开始时记录，完成时清除。
-   * 只保留未完成任务；abort 统一遍历本集合：中止 controller + 标记 receiver 为 Aborted。
-   *
-   * 它**只做这件事**：不再兼任「在不在跑」（那是 `runStatus` 的活）。两次内循环之间的空档
-   * （reconcile、收尾钩子）里它是空的，但那一整段明明还在跑 —— 这正是当初三个碎片里最会
-   * 骗人的那一个。
-   */
-  private innerLoopTasks: Set<PendingTask> = new Set();
-
-  /**
-   * 用户按停：只改状态与在跑的任务，**不碰 inbox**（排队是数据，作废得显式 `clearInbox`）。
-   *
-   * 有段在跑就落 `stopping`（「已不接受工作、还没收完」），由那一段自己的 `finally` 推到
-   * `terminated`；没有段在跑就直接 `terminated` —— 否则没人来收尾，状态永远卡在中间态。
-   */
-  abort() {
-    if (this.runStatus === "running") {
-      this.setRunStatus("stopping");
-      this.innerLoopTasks.forEach((task) => {
-        task.controller.abort();
-        task.receiver.status = AgentNS.MessageStatus.Aborted;
-      });
-      return;
-    }
-    // 已经在 stopping 时不再往前推一步：收尾归那一段自己（第二次按停是空动作）
-    if (!this.isStopping) this.setRunStatus("terminated");
-  }
-
-  /** 段在跑（接受工作、取件、续圈） */
-  private get isRunning(): boolean {
-    return this.runStatus === "running";
-  }
-
-  /** 段在收尾（被 `abort()` 按停，还没收完）：不接受新段，也不再取件 */
-  private get isStopping(): boolean {
-    return this.runStatus === "stopping";
-  }
-
-  /**
-   * 能不能把静止的那一段叫起来：静止态（`idle` / `terminated`）**且**没有 `send` 受理在途。
-   *
-   * 受理在途（`sendStatus === "sending"`）时会话正卡在 `onBeforeSend` / `onAfterSend` 里，
-   * 此刻另起一段就会与那次 send 的 `messages` 写入交错。
-   */
-  private get canWake(): boolean {
-    return (
-      (this.runStatus === "idle" || this.runStatus === "terminated") && this.sendStatus === "idle"
-    );
-  }
-
-  /** 改 `runStatus` 的唯一入口：真正变了才广播 `status`（`{ agent, from, to }`） */
-  private setRunStatus(next: AgentNS.RunStatus): void {
-    const from = this.runStatus;
-    if (from === next) return;
-    this.runStatus = next;
-    this.events.emit("status", { agent: this, from, to: next } satisfies StatusContext);
-  }
-
-  /** 投递一条待发内容 */
-  deliver(input: AgentNS.InboxInput): AgentNS.DeliveryReceipt;
-  /** 投递一批：全部入队之后只唤醒一次（静止态队列一次落地成多条 User 消息） */
-  deliver(inputs: AgentNS.InboxInput[]): AgentNS.DeliveryReceipt[];
-  /**
-   * 投递：同步入队，静止态顺手把段叫醒，立刻返回回执。
-   *
-   * 「该不该跑」的判断权在这里，不在调用方：`send` 是「我发起、等我跑完」，`deliver` 是
-   * 「这条给你，有空就跑」。一批只在**全部入队之后**问一次要不要唤醒，所以静止态是「一次
-   * 取件落成 N 条 User 消息、一次请求」，跑着则全部交给那一段自己的取件点。
-   *
-   * 唤醒时的事件次序是契约：`status(running)` 先、本段第一条 `message` 后 —— 宿主按前者
-   * 建这一段的现场，晚一步那条刚落地的消息就没人认领（见 `run`）。
-   */
-  deliver(
-    input: AgentNS.InboxInput | AgentNS.InboxInput[],
-  ): AgentNS.DeliveryReceipt | AgentNS.DeliveryReceipt[] {
-    const batch = Array.isArray(input) ? input : [input];
-    if (batch.length === 0) return [];
-
-    const entries = batch.map((entry) => this.enqueueInbox(entry));
-    // 唤醒的判定要在起段之前取：`run` 会同步把状态改成 running，晚取永远是 false
-    const woke = this.canWake;
-    if (woke) {
-      // 段体自己抛出来的东西在这条路上没有 await 的人，接着报成 error 事件（与段内出错同出口）
-      void this.run(undefined, true).catch((error: unknown) => this.events.emit("error", error));
-    }
-
-    const receipts: AgentNS.DeliveryReceipt[] = entries.map((entry) => ({
-      messageId: entry.messageId,
-      accepted: true,
-      woke,
-    }));
-    return Array.isArray(input) ? receipts : receipts[0]!;
-  }
-
-  /**
-   * 入队一条：补 id 与时刻、推进数组、广播 `inbox`。
-   *
-   * `messageId` 允许投递方定死 —— 宿主先把它告诉客户端做乐观回显，落地那条消息用同一个 id。
-   */
-  private enqueueInbox(input: AgentNS.InboxInput): AgentNS.InboxEntry {
-    const pushed: AgentNS.InboxEntry = {
-      messageId: input.messageId ?? generateMessageId(),
-      source: input.source,
-      priority: input.priority,
-      content: input.content,
-      createdAt: new Date().toISOString(),
-    };
-    this.inbox.push(pushed);
-    this.events.emit("inbox", { agent: this, entry: pushed } satisfies InboxContext);
-    return pushed;
-  }
-
-  /**
-   * 清空 inbox 并返回被丢掉的条目。core 自己从不调它 ——「作废排队」是调用方的显式决定，
-   * 不该由「用户按了停」替它猜。
-   */
-  clearInbox(): AgentNS.InboxEntry[] {
-    return this.inbox.splice(0, this.inbox.length);
-  }
-
-  /** 追加一条消息并立刻广播 `message`：广播点放在唯一的追加口上，订阅方只需「按 id 覆盖」 */
-  append(message: AgentNS.Message): AgentNS.Message {
-    const appended = super.append(message);
-    this.emitMessage(appended);
-    return appended;
-  }
-
-  /** 就地改完之后重发同一条（同 id）：只靠追加事件，订阅方会永远停在 `pending` 上 */
-  private emitMessage(message: AgentNS.Message): void {
-    this.events.emit("message", message);
-  }
-
-  /**
-   * 取走 inbox 里的条目、逐条落成 User 消息；返回「是否真的取到了」。
-   *
-   * 不给 `priority` = 全取（段还没开始，每条都是这一段存在的理由，只按入队顺序）；给了 = 只取
-   * 那一档（段内的取件点：high 赶工具轮边界、low 等整组停下）。返回值是取件点防死循环的唯一
-   * 判据 —— 一条都没取到就说明这一档空了，再转一圈只会拿到一模一样的请求。
-   *
-   * 用 `splice` 逐个摘而不是换数组：`inbox` 是公开字段，外部可能拿着它做快照。
-   */
-  private takeInbox(priority?: AgentNS.InboxPriority): boolean {
-    const taken: AgentNS.InboxEntry[] = [];
-    for (let i = 0; i < this.inbox.length;) {
-      const entry = this.inbox[i]!;
-      if (priority !== undefined && entry.priority !== priority) {
-        i++;
-        continue;
-      }
-      taken.push(entry);
-      this.inbox.splice(i, 1);
-    }
-    for (const entry of taken) this.append(inboxEntryMessage(entry));
-    return taken.length > 0;
-  }
-
-  /**
-   * 跑一段：单飞 → 一组内循环（含续圈）→ 收尾钩子 → 段尾状态。
-   *
-   * 两个入口共用：`send()`（自己 append 了 User 消息，等这一段跑完）、`deliver()`（`wake`：
-   * 先把队列整体落地再跑，不等）。置位与起段之间**没有 await** —— 两个几乎同时进来的调用，
-   * 后一个必然看到 `running` 而返回，这是「不会两段并跑」的全部秘密。
-   *
-   * `wake` 时 `status(running)` 先发、队列后落地：前者是「这一段开始了」的唯一信号，宿主按它
-   * 建现场；反过来的话，那条刚落地的 User 消息广播时还没人认领，就永久错过了这一段。
-   *
-   * @returns 本段结束时的消息数组；没起段（已有段在跑 / 在收尾）时 `undefined`
-   */
-  async run(ctx?: SendContext, wake = false): Promise<AgentNS.Message[] | undefined> {
-    // 单飞：已有段在跑或在收尾，绝不开第二段（「这种事已经有人在做」，不是失败）
-    if (this.isRunning || this.isStopping) return;
-    // 空消息校验只对 `send()` 那一路可能成立（`wake` 刚把队列落成消息），且要排在置位之前：
-    // 起一段却一行都发不出去，没必要先在 `status` 里宣告一次「跑起来了」
-    if (!wake && !this.messages.length) {
-      throw new Error("You need to send at least one message as a receive message");
-    }
-
-    this.setRunStatus("running");
-    // 唤醒前的整批落地：排在置位**之后**（次序契约），排在段体之前（第一圈请求里就要带着它）
-    if (wake) this.takeInbox();
-    // 上下文在落地之后取：这一次请求的请求体就是「带着刚落地的那些」的 messages
-    const sendCtx = ctx ?? this.defaultSendContext();
-
-    try {
-      // 整组内循环开始（一次 send 仅一次）；Assistant 占位由每次内循环开头统一追加
-      const loopsDenied = await this.dispatchHook("onInnerLoopsStart", sendCtx);
-      if (loopsDenied !== undefined) {
-        throw new Error(`inner-loops-start 被插件拒绝: ${loopsDenied}`);
-      }
-
-      // 内循环：一圈 = 一次 API 请求 + 它引发的工具调用。段首不取件（被叫醒的段已在起段时
-      // 落完队列），段内唯一的取件点在内循环末；续圈只有两个理由 —— 模型要下一轮，或者取件
-      // 点插进了东西。
-      let needContinue = true;
-      while (needContinue) {
-        needContinue = false;
-
-        // 内循环开头统一添加 Assistant 占位：若最后一条不是 Pending 的 Assistant 则追加，
-        // 使 run 无论从 send（末尾 User）还是手动追加（末尾任意）都能自洽启动
-        const last = this.messages.at(-1) as Message | undefined;
-        if (
-          !last ||
-          last.role !== AgentNS.Role.Assistant ||
-          last.status !== AgentNS.MessageStatus.Pending
-        ) {
-          this.append(Message.Assistant());
-        }
-
-        const currentReceiver = this.messages.at(-1) as Message;
-        const currentController = new AbortController();
-        const pendingTask: PendingTask = {
-          controller: currentController,
-          receiver: currentReceiver,
-        };
-        // 整组记录 + 当前轮活跃任务
-        this.innerLoopsTasks.add(pendingTask);
-        this.innerLoopTasks.add(pendingTask);
-
-        // 每次请求前分发钩子（可刷新工具定义、安全护栏等）
-        const loopDenied = await this.dispatchHook("onInnerLoopStart", sendCtx);
-        if (loopDenied !== undefined) {
-          throw new Error(`inner-loop-start 被插件拒绝: ${loopDenied}`);
-        }
-
-        const messages = this.formatHistory();
-        const tools = this.formatTools();
-
-        try {
-          // 通过官方 SDK 发起流式对话请求（连接建立后即进入 Writing）
-          const stream = (await this.client.chat.completions.create(
-            {
-              // 先铺模型参数（temperature 等；可含厂商特有字段，如 DeepSeek thinking），
-              // 再写框架契约 —— **顺序不能反**：model / messages / tools / stream /
-              // stream_options 是框架自己保证的，配置里写同名键也不能把它们改掉
-              // （否则 `stream: false` 之类会直接把流式解析打崩）。
-              ...this.modelConfig,
-              model: this.model,
-              messages,
-              tools,
-              stream: true,
-              stream_options: { include_usage: true },
-            } as any,
-            { signal: currentController.signal },
-          )) as unknown as AsyncIterable<ChatCompletionChunk>;
-
-          (currentReceiver as AgentNS.Message).status = AgentNS.MessageStatus.Writing;
-          this.events.emit("open");
-
-          await this.parseStreamData(currentReceiver, stream);
-
-          const receiverStatus = currentReceiver.status as AgentNS.MessageStatus | undefined;
-          if (
-            receiverStatus === AgentNS.MessageStatus.Aborted ||
-            receiverStatus === AgentNS.MessageStatus.Error
-          ) {
-            // 本轮 assistant 已中止/出错：任务完成，finally 统一移除
-            continue;
-          }
-
-          currentReceiver.status = AgentNS.MessageStatus.Completed;
-
-          if (await this.handleToolCall(currentReceiver)) {
-            if (
-              (currentReceiver.status as AgentNS.MessageStatus | undefined) ===
-                AgentNS.MessageStatus.Aborted ||
-              (currentReceiver.status as AgentNS.MessageStatus | undefined) ===
-                AgentNS.MessageStatus.Error
-            ) {
-              // 本轮 assistant 被中止/出错：任务完成，finally 统一移除
-              continue;
-            }
-
-            // 需要继续下一轮：下一轮内循环开头统一追加 Assistant 占位
-            needContinue = true;
-          }
-
-          // 每次 内循环 完成（一次 API 请求 + 可能的工具调用）
-          await this.dispatchHook("onInnerLoopEnd", sendCtx);
-
-          // 取件点（**全 core 唯一一处**）：这一圈刚收尾（工具结果已进 messages）、下一圈的
-          // Assistant 占位还没补，此刻插进来的 User 消息排在工具结果之后，模型下一圈就能看见。
-          // 读法就是「high 先；这一组要停了，再给 low」：high 赶的是工具轮边界，low 等整组停下。
-          // 只有 running 才取：stopping / terminated / idle 一条都不取。
-          if (this.isRunning) {
-            if (this.takeInbox("high")) {
-              needContinue = true;
-            } else if (!needContinue && this.takeInbox("low")) {
-              needContinue = true;
-            }
-          }
-        } catch (error: any) {
-          currentReceiver.status = AgentNS.MessageStatus.Error;
-          currentReceiver.content = error.message;
-          // 错误正文落在消息上：先让订阅方看到这条消息的新样子，再报「这一轮出错了」
-          this.emitMessage(currentReceiver);
-          this.events.emit("error", error);
-        } finally {
-          // 每轮结束统一触发（无论正常/continue/异常）
-          this.events.emit("finally");
-          // 本轮 assistant 任务已完成，从活跃集合移除；
-          // 整组记录（innerLoopsTasks）保留至 run 结束统一清空
-          this.innerLoopTasks.delete(pendingTask);
-        }
-      }
-
-      // 归一化工具调用轮次：中断/不完整的轮次按策略统一为「整轮进出」，
-      // 保证 assistant（含 tool_calls）与其结果一一配对，避免服务端报错。
-      // 此处所有工具任务已 settled（handleToolCall 内 await Promise.all），无竞态。
-      reconcileAbortedToolRounds(
-        this.messages,
-        this.abortedToolRoundStrategy,
-        this.abortedToolRoundReason,
-      );
-
-      // 被中断的 assistant（不带工具调用）按策略决定去留：`keep` 时保留已输出的内容/思考，
-      // 让模型下一轮能接着半截往下说（`drop` 时 Aborted 消息不进历史）。
-      // 必须排在工具轮次归一之后：带 `tool_calls` 的消息已由上一个函数处理，此处只收尾纯内容消息。
-      reconcileAbortedMessages(this.messages, this.abortedMessageStrategy);
-
-      // 整组内循环结束：含多轮工具调用，messages 为完整结果（正常/error/abort 均到达此处）。
-      // 排在最后一圈取件点**之后**：到这里这一组真的不跑了（被 `abort` 按停时也不再取件），
-      // 所以本钩子里投进来的条目属于下一段，留到下一次外部驱动。
-      await this.dispatchHook("onInnerLoopsEnd", sendCtx);
-    } finally {
-      // 收工：清空整组与当前段的任务记录（不清的话，下一次 `abort()` 会翻到这些已经结束的
-      // 任务，把它们的状态改成 `Aborted` —— `abort()` 只遍历活跃集合，那正是它唯一的信息来源）
-      this.clearPendingTasks();
-      // 段结束：正常收尾回 `idle`；被叫停的（`stopping`）落到 `terminated` —— 后者是
-      // 「收尾真的做完了」，不是「按下停的那一瞬」。
-      this.setRunStatus(this.isStopping ? "terminated" : "idle");
-    }
-
-    return this.messages;
-  }
-
-  /** 没有一次`send()`在背后时的插件上下文（`run()` / `deliver()` 起段用） */
-  private defaultSendContext(): SendContext {
-    return { agent: this, content: "", messages: [...this.messages] };
-  }
-
-  /**
-   * 收工：清空整组与当前段的任务记录。
-   *
-   * `run()` 的 `finally` 调它（每段一次）—— 段内可能跑了好几组内循环，任务记录一直攒到
-   * 段尾；不清的话，下一次 `abort()` 会翻到这些已经结束的任务，把它们的状态改成 `Aborted`
-   * （`abort()` 只遍历活跃集合，那正是它唯一的信息来源）。
-   */
-  private clearPendingTasks(): void {
-    this.innerLoopsTasks.clear();
-    this.innerLoopTasks.clear();
-  }
+  // -------------------------------------------------------------------------
+  // 请求体
+  // -------------------------------------------------------------------------
 
   formatTools() {
     if (!this.tools?.length) return undefined;
@@ -671,32 +927,23 @@ export class Agent extends AgentContext {
     }));
   }
 
-  /**
-   * 一条消息内容发给模型的那一份：字符串原样返回，数组逐段交给 {@link Agent.formatContentSection}。
-   *
-   * 委派与不委派由它自己判：字符串上没有段，也就没有段级字段可认。
-   */
+  /** 一条消息内容发给模型的那一份：字符串原样，数组逐段交给 `formatContentSection` */
   formatContent(content: AgentNS.MessageContent): AgentNS.MessageContent {
     if (!Array.isArray(content)) return content;
     return content.map((section) => this.formatContentSection(section));
   }
 
-  /**
-   * 一段内容发给模型的那一份：按段类型取认识的字段重建（默认口径见 core 的
-   * `formatContentSection`）。
-   *
-   * 它是内容字段的扩展点：覆写本方法就换掉逐段的规则，`formatContent` 与 `formatHistory`
-   * 都会跟着走这条路。
-   */
+  /** 一段内容发给模型的那一份：按段类型取认识的字段重建（内容字段的扩展点） */
   formatContentSection(section: AgentNS.MessageContentSection): AgentNS.MessageContentSection {
     return formatContentSection(section);
   }
 
+  /** 按白名单重排一份历史（只留模型认识的字段，`__` 开头的键一律剥掉） */
   formatHistory() {
     return this.messages
       .filter(
         (message) =>
-          (message.status == undefined || message.status == AgentNS.MessageStatus.Completed) &&
+          (message.status === undefined || message.status === AgentNS.MessageStatus.Completed) &&
           !message.omit,
       )
       .map((message) => ({
@@ -708,217 +955,5 @@ export class Agent extends AgentContext {
         reasoning_content: message.reasoning_content ?? undefined,
         name: message.name ?? undefined,
       }));
-  }
-
-  /**
-   * 消费一条流：每片广播两条事件，攒消息的规则在 {@link applyChunk}。
-   *
-   * 顺序是硬契约：`chunk`（原始片，**解析之前**）→ `applyChunk` → `chunk-parsed`
-   * （两参：正在拼的 assistant 消息 + 那片原始 chunk）。解析抛错的那一片照样留下 `chunk`
-   * ——「这片到了」与「这片解出来了」是两件事。
-   *
-   * 攒消息本身**不在这里写**：见 `applyChunk.ts` 的文件头（第二份实现 = 漂移起点）。
-   */
-  async parseStreamData(receiver: AgentNS.Message, stream: AsyncIterable<ChatCompletionChunk>) {
-    for await (const chunk of stream) {
-      this.events.emit("chunk", chunk);
-      applyChunk(receiver, chunk);
-      this.events.emit("chunk-parsed", receiver, chunk);
-    }
-
-    this.events.emit("parsed", receiver);
-  }
-
-  /**
-   * Handle the tool call.
-   * @returns A boolean value indicating whether a new round of chat is needed.
-   */
-  async handleToolCall(receiver: AgentNS.Message): Promise<boolean> {
-    const tasks: AgentNS.ToolCall[] = [];
-
-    if (receiver.tool_calls?.length) {
-      tasks.push(
-        ...receiver.tool_calls.filter(
-          (toolCall) => toolCall.type == "function" && toolCall.function,
-        ),
-      );
-    }
-
-    if (receiver.function_call) {
-      tasks.push({ function: receiver.function_call });
-    }
-
-    if (tasks.length === 0) return false;
-
-    // 并行执行所有工具，每个工具独立处理结果，互不影响
-    const results = await Promise.all(
-      tasks.map(async (task) => {
-        const resultReceiver = this.append(
-          task.id ? Message.Tool(task) : Message.Function(task.function!),
-        );
-
-        // 工具执行前就记录（整组 + 当前轮活跃任务），abort 可统一中止/标记；
-        // 完成后从活跃集合移除，整组保留至 run 结束统一清空
-        const toolTask: PendingTask = {
-          controller: new AbortController(),
-          receiver: resultReceiver,
-        };
-        this.innerLoopsTasks.add(toolTask);
-        this.innerLoopTasks.add(toolTask);
-
-        /** 工具执行完成：若该任务已被 abort（abort 后工具仍会跑完），保持 Aborted 不被覆盖；
-         *  任务完成即从当前轮活跃集合移除。
-         *
-         *  发射 `tool-call-end` 放在这里（而不是各个 return 前）：它既是**唯一**的结果定型点
-         *  （`status` 在这里才被 clamp 成 Aborted），又躺在每个工具自己的闭包里，天然
-         *  per-tool —— 并行时谁先跑完谁先发，不必等 `Promise.all` 收齐。 */
-        const markResult = (status: AgentNS.MessageStatus) => {
-          resultReceiver.status = toolTask.controller.signal.aborted
-            ? AgentNS.MessageStatus.Aborted
-            : status;
-          this.innerLoopTasks.delete(toolTask);
-          // 定型就是「这条消息变了」：先按新状态重发它，再报「这个工具跑完了」这个时刻
-          this.emitMessage(resultReceiver);
-          // 载荷里的状态取**已 clamp** 的 `resultReceiver.status`：被中止的工具不能报成 completed
-          this.events.emit("tool-call-end", {
-            agent: this,
-            toolCall: task,
-            result: resultReceiver,
-          } satisfies ToolCallEndContext);
-        };
-
-        try {
-          const matchedTool: Tool | undefined = this.tools.find(
-            (tool) => tool.function.name == task.function!.name && tool.type == "function",
-          );
-
-          // 统一上下文：一个类贯穿「拦截决策 → 执行」，onToolCall 与 Tool.exec 收同一实例。
-          // 参数解析（JSON.parse）在构造函数中完成；allowJsonParseError=false 且非法时
-          // 构造函数抛错 → 走下方 catch（标记 Error，不过拦截钩子）。
-          const ctx = new ToolCallContext({
-            agent: this,
-            tool_call: task,
-            tool: matchedTool,
-            resultMessage: resultReceiver,
-            allowJsonParseError: this.allowJsonParseError,
-            // 注入工具执行的中止信号：abort() 会中止 toolTask.controller →
-            // signal 触发 → 工具实现可监听 signal 真正中断执行
-            signal: toolTask.controller.signal,
-          });
-
-          // 工具拦截钩子：返回字符串 = 拒绝（原因作为工具结果返回给 LLM，继续下一轮）
-          const denied = await this.dispatchHook("onToolCall", ctx);
-          if (denied !== undefined) {
-            resultReceiver.content = `工具 ${task.function!.name} 被拒绝：${denied}`;
-            markResult(AgentNS.MessageStatus.Completed);
-            return { isPreventDefault: false, status: resultReceiver.status };
-          }
-
-          // 如果 JSON 解析失败且允许容错，将错误信息作为结果返回给 AI
-          if (ctx.parseError) {
-            resultReceiver.content = `参数解析错误: ${ctx.parseError}\n请检查你提供的参数格式，确保是合法的 JSON。`;
-            markResult(AgentNS.MessageStatus.Completed);
-            return { isPreventDefault: false, status: resultReceiver.status };
-          }
-
-          if (!matchedTool) {
-            const hint = await this.dispatchHook("onUnknownTool", {
-              toolCall: task,
-              availableTools: [...this.tools],
-            });
-            resultReceiver.content = hint !== undefined ? hint : this.defaultUnknownTool(task);
-          } else {
-            resultReceiver.content = await matchedTool.exec(ctx);
-          }
-          markResult(AgentNS.MessageStatus.Completed);
-
-          return {
-            isPreventDefault: ctx.isPreventDefault,
-            status: resultReceiver.status,
-          };
-        } catch (error: any) {
-          if (this.allowJsonParseError) {
-            // 工具执行异常时，将错误信息返回给 AI 继续
-            resultReceiver.content = `执行工具 ${task.function!.name} 时出错: ${error?.message}`;
-            markResult(AgentNS.MessageStatus.Completed);
-            return { isPreventDefault: false, status: resultReceiver.status };
-          }
-
-          // allowJsonParseError=false 时，标记为 Error（已被 abort 则保持 Aborted）
-          resultReceiver.content = error?.message;
-          markResult(AgentNS.MessageStatus.Error);
-          return { isPreventDefault: true, status: resultReceiver.status };
-        }
-      }),
-    );
-
-    // 任一工具要求停止（preventDefault）或标记为 Error，就不再开下一轮
-    const shouldStop = results.some(
-      (r) => r.isPreventDefault || r.status === AgentNS.MessageStatus.Error,
-    );
-
-    return !shouldStop;
-  }
-
-  /**
-   * 未知工具默认提示（简单文本兜底）。
-   * 需要更智能的提示（如根据上下文引导）时，请通过 `onUnknownTool` 插件提供，
-   * 插件返回 undefined 时最终回落到此默认提示。
-   */
-  private defaultUnknownTool(toolCall: AgentNS.ToolCall): string {
-    return `未知工具: ${toolCall.function?.name}，没有找到对应的工具实现。`;
-  }
-
-  get isHasPendingMessage() {
-    return (
-      this.messages.some(
-        (message) =>
-          message.status === AgentNS.MessageStatus.Pending ||
-          message.status == AgentNS.MessageStatus.Writing,
-      ) ?? false
-    );
-  }
-
-  /**
-   * 发一条用户消息，等这一段真的结束（含收尾钩子带来的后续段）。
-   *
-   * 与 `deliver` 的分工是「节奏归谁」：这里归调用方（await），那里归 agent（有空间就跑）。
-   * `onBeforeSend` / `onAfterSend` 是**受理**的边界，所以只在这一路上，不在 `run` 里 ——
-   * 被投递叫醒的段不是一次受理。\`stopping\` 时 `run` 立刻返回：这条消息已进 `messages`，
-   * 这一遭不跑，下一段一起发出。
-   */
-  async send(content: AgentNS.MessageContentSection[] | string): Promise<AgentNS.Message[]> {
-    // 插件上下文（消息快照仅供读取）
-    const ctx: SendContext = {
-      agent: this,
-      content: typeof content === "string" ? content : "",
-      messages: [...this.messages],
-    };
-
-    // 受理开始：从这一刻到 finally，`deliver()` 不会另起段（见 deliver 的注释）。
-    // 置位与下面的钩子之间没有 await 以外的东西：先置位再进钩子，钩子里的投递就不会被
-    // 当成「静止态的投递」而另起一段。
-    this.sendStatus = "sending";
-    try {
-      // onBeforeSend 钩子：可刷新工具等；返回 string 则拒绝本次发送
-      const denied = await this.dispatchHook("onBeforeSend", ctx);
-      if (denied !== undefined) {
-        throw new Error(`send 被插件拒绝: ${denied}`);
-      }
-
-      this.append(Message.User(content));
-
-      // 跑一整段（Assistant 占位由内循环开头统一追加）。
-      // `stopping` / `running` 时它是空动作（单飞）：User 消息已 append，这一遭不跑。
-      await this.run(ctx);
-
-      // onAfterSend 钩子：可做迁移、保存等后处理（如替换 this.messages 重开会话），
-      // 故返回值必须在钩子之后取，不能用 run() 的快照。
-      await this.dispatchHook("onAfterSend", ctx);
-    } finally {
-      this.sendStatus = "idle";
-    }
-
-    return this.messages;
   }
 }

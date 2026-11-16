@@ -94,16 +94,16 @@ describe("AgentToolLazy 子 Agent 委派边界", () => {
     host.use({ onSubAgentStart: () => "任务上下文不完整", onSubAgentEnd: endHook });
     const startEvent = vi.fn();
     const endEvent = vi.fn();
-    host.events.on("sub-agent-start", startEvent);
-    host.events.on("sub-agent-end", endEvent);
+    host.on("subAgentStarted", startEvent);
+    host.on("subAgentFinished", endEvent);
 
     const result = await tool.exec(buildCtx(host));
 
     expect(result).toBe("任务上下文不完整");
     expect(childClient.chat.completions.create).not.toHaveBeenCalled();
     expect(endHook).not.toHaveBeenCalled();
-    // 非阻塞事件：开始事件仍广播，结束事件不触发
-    expect(startEvent).toHaveBeenCalledTimes(1);
+    // 拒了就没什么「开始」可言：钩子在前（能拒），事件在后（已定）
+    expect(startEvent).not.toHaveBeenCalled();
     expect(endEvent).not.toHaveBeenCalled();
   });
 
@@ -120,7 +120,7 @@ describe("AgentToolLazy 子 Agent 委派边界", () => {
     const endHook = vi.fn(() => "结束提示");
     host.use({ onSubAgentEnd: endHook });
     const endEvent = vi.fn();
-    host.events.on("sub-agent-end", endEvent);
+    host.on("subAgentFinished", endEvent);
 
     const result = await tool.exec(buildCtx(host));
 

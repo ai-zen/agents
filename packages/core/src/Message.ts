@@ -1,4 +1,5 @@
 import { AgentNS } from "./AgentNS.js";
+import type { AgentError } from "./AgentError.js";
 import { PickRequired } from "./Common.js";
 
 export class Message implements AgentNS.Message {
@@ -16,6 +17,8 @@ export class Message implements AgentNS.Message {
   subAgentUsage?: AgentNS.Usage | undefined;
   hidden?: boolean | undefined;
   omit?: boolean | undefined;
+  source?: AgentNS.MessageSource | undefined;
+  error?: AgentError | undefined;
 
   constructor(options: PickRequired<Message | "role">) {
     if (!options.role) throw new Error("Message must have a role");
@@ -33,6 +36,8 @@ export class Message implements AgentNS.Message {
     this.subAgentUsage = options.subAgentUsage;
     this.hidden = options.hidden;
     this.omit = options.omit;
+    this.source = options.source;
+    this.error = options.error;
   }
 
   static System(content = "") {
@@ -51,11 +56,12 @@ export class Message implements AgentNS.Message {
     });
   }
 
-  static User(content: AgentNS.MessageContentSection[] | string) {
+  static User(content: AgentNS.MessageContentSection[] | string, source?: AgentNS.MessageSource) {
     return new Message({
       role: AgentNS.Role.User,
       content,
       status: AgentNS.MessageStatus.Completed,
+      source,
     });
   }
 

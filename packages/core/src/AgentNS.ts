@@ -1,4 +1,5 @@
 import type { JSONSchema7 } from "json-schema";
+import type { AgentError } from "./AgentError.js";
 
 /**
  * Agent Abstraction Layer
@@ -105,102 +106,91 @@ export namespace AgentNS {
     subAgentUsage?: Usage;
     hidden?: boolean;
     omit?: boolean;
-  }
-
-  /**
-   * inbox 条目的优先级，决定它落成 User 消息的时机：
-   * - `high`：一轮**内**循环（一次请求 + 它引发的工具调用）结束后立即插入；
-   * - `low`：整组内循环停下（agent 这一轮不再继续）之后才插入。
-   */
-  export type InboxPriority = "high" | "low";
-
-  /**
-   * 排进 Agent inbox 的一条待发内容。
-   *
-   * 它**不是**消息：落地那一刻才变成一条 `Message`（`role: "user"`），来源信息不落到
-   * 消息字段上（见 `inboxEntryContent`）。
-   */
-  export interface InboxEntry {
     /**
-     * 落成那条 User 消息时用的 id。
+     * 这条 user 消息从哪儿来。**所有 `role: user` 的消息都必须有**，包括宿主注入的
+     * 隐藏 cwd 消息（填 `{ kind: "system", label: "cwd" }`）。
      *
-     * 之所以在**入队时**就定下来：宿主把它先告诉客户端（乐观回显），落地时用同一个 id，
-     * 同一条内容才不会显示两遍（客户端按 id 去重/覆盖）。
+     * 不做「没有 source 就是用户」那种缺省：宿主注入的隐藏消息会被数进「用户说的话」，
+     * 自动命名的判据（这段只有一条用户消息）就永远不成立。一律带上之后判据只剩一个：
+     * `source.kind === "user"`。
      */
-    messageId: string;
-    /** `"user"` | `"tool"` | 其他人类可读来源名（只作展示与正文注释用） */
-    source: string;
-    priority: InboxPriority;
-    content: MessageContent;
-    /** 入队时刻（ISO 字符串） */
-    createdAt: string;
+    source?: MessageSource;
+    /**
+     * 这条消息自己出的错 —— 与 `failed` 事件载荷是**同一个实例**，不另造一个形状。
+     *
+     * 错误文本绝不要塞进 `content`：`content` 是模型说的话，塞进去之后只要「保留半截」
+     * 策略一生效，模型下一轮就会看到自己「说」了一段 `ECONNREFUSED`。
+     * 例外是 `role: tool`：那条消息的 `content` 本来就是给模型读的**结果**。
+     */
+    error?: AgentError;
   }
 
   /**
-   * 投递一条待发内容时的入参：条目本身，除了那两个由入队时补的字段（`messageId` /
-   * `createdAt`）。
+   * 这条 user 消息从哪儿来。
    *
-   * `messageId` 允许由投递方定死：宿主先把 id 告诉客户端（乐观回显），落地那条消息用同一个，
-   * 同一条内容才不会画两遍。
+   * 三格都是文字，**不带任何活引用** —— 消息要落库，而 `Agent` 带着 `client`、事件
+   * 监听器、自己那份 `messages`：JSON 序列化直接成环抛错，硬裁掉之后同一个字段就变成
+   * 「活的时候有、读回来没有」，形状当场变形。要「点进去看那个子会话」，需要的是会话 id
+   *（宿主的财产），不是 agent 引用 —— core 给 label，宿主自己映射。
    */
-  export type InboxInput = Omit<InboxEntry, "messageId" | "createdAt"> & {
+  export type MessageSource =
+    /** 用户本人说的话 */
+    | { kind: "user" }
+    /** 另一个 agent 推来的（「补测试」「会话 1」） */
+    | { kind: "agent"; label: string }
+    /** 宿主、定时器、外部系统注入的（含那条隐藏的 cwd 消息） */
+    | { kind: "system"; label: string };
+
+  /** 带正文的条目：落地成一条 User 消息 */
+  export interface InboxEntryWithContent {
+    /**
+     * 落地成 User 消息时用的 id，由投递方给定 —— 客户端据此乐观回显；缺省则由 core 生成。
+     * 只有会落地的条目才有这一格。
+     */
     messageId?: string;
-  };
-
-  /**
-   * `deliver()` 的回执 —— 投递是同步的，回执描述的是「这一次投递发生了什么」，不是「什么时候跑完」。
-   */
-  export interface DeliveryReceipt {
-    /** 落地那条 User 消息时会用的 id（投递方给的那个，或入队时补的那个） */
-    messageId: string;
-    /** 收下了没有。**恒 true**：inbox 是队列，只进不出（拒绝投递这条路不存在） */
-    accepted: boolean;
-    /** 这次投递是不是它把段叫醒的（纯观测：调用方可以据此判断「要不要等它跑」） */
-    woke: boolean;
+    /** core 补：进来的时刻。注释里用它让模型判断时效 */
+    createdAt: string;
+    /** 高：内循环里工具跑完后可取；低：只有外循环可取 */
+    priority: "high" | "low";
+    source: MessageSource;
+    /** 原样搬进消息的正文，可以是多模态段数组 */
+    content: MessageContent;
   }
 
   /**
-   * **段**的运行状态：这个 agent 现在跑不跑。
+   * **钥匙**：把这一圈叫起来，自己不落地成任何消息。
    *
-   * 四态、两静两动，对称性是「静止态 × {正常结束, 被叫停}」与「活动态 × {接受工作, 停止接受}」：
+   * 存在的唯一理由是「输入已经在 `messages` 里了」—— 委派的子 agent、装载好历史的一次性
+   * 会话，都是这种情形：燃料装好了，只差拧一下。没有正文就没有消息，所以没有 `messageId`，
+   * 也没有 `source`。
    *
-   * ```
-   *            send / deliver（外部驱动，解冻）
-   *   idle ───────────────────────────────▶ running ──┐
-   *     ▲                                    │        │ 段自然收尾
-   *     │ 段自然收尾                          │ abort() │（inbox 取空、没有待续的轮）
-   *     └────────────────────────────────────┘    │
-   *                                              ▼  ▼
-   *   terminated ◀──── run() 的 finally ──── stopping     idle
-   *   （上一段被叫停）
-   * ```
-   *
-   * - `idle`：没在跑。上一段是正常结束的（或者还一段都没跑过）。
-   * - `running`：跑着，接受工作（`deliver` 进来的条目由取件点取走）。
-   * - `stopping`：被 `abort()` 按停了，**收尾还没完**（reconcile / 收尾钩子 / 写库）。
-   *   这个中间态是必需的，不是犹豫：abort 之后若直接回 `idle` / `terminated`，外部一投递就能
-   *   起新段，而旧段还在写同一份 `messages` —— 那正是「两段并跑」这个 bug 的入口。
-   * - `terminated`：上一段是被人叫停的，且已经彻底收尾（可观测：UI 该显示「已停止」）。
-   *   它与 `idle` 的行为一致（都不自动跑），差别只在语义与可观测。
-   *
-   * 两条硬规则：
-   * 1. **只有 `running` 才取件、才续圈**（其余三态一条都不取）；
-   * 2. **静止态不会自己动**：只有外部驱动（`send` / `deliver`）能起段。
-   *
-   * 与「阶段 / phase」（核心 `run.state` 里的六态）不是一回事：阶段是「在跑的过程里走到哪一步」，
-   * 本状态是「跑不跑」。后者是前者的前置条件，不是它的一个取值。
+   * `priority` 恒为 `low`：内循环只看 high，钥匙天然取不到。
    */
-  export type RunStatus = "idle" | "running" | "stopping" | "terminated";
+  export interface InboxKey {
+    createdAt: string;
+    priority: "low";
+    content?: undefined;
+  }
+
+  export type InboxEntry = InboxEntryWithContent | InboxKey;
+
+  /** 投递入参：带正文的（`messageId` / `createdAt` 由 core 补），或者什么都不给 = 拧钥匙 */
+  export type InboxInput =
+    | (Omit<InboxEntryWithContent, "messageId" | "createdAt"> & { messageId?: string })
+    | { content?: undefined };
 
   /**
-   * 一次 `send()` 的**受理流程**走到哪 —— 与「段跑不跑」（{@link RunStatus}）是两件事。
+   * 三格：忙 / 闲 / 暂停。
    *
-   * `send()` 的范围比一段长：`onBeforeSend` 在段之前、`onAfterSend` 在段之后，两头都是 await。
-   * 这段时间里 `runStatus` 可能已经是 `idle`（段跑完了、钩子还挂着），但这次受理还没结束 ——
-   * 此时若有投递进来，它属于「这次 send 的尾巴」，该由这次 send 的 `run()` / `finally` 带走，
-   * 而不是另起一段（另起一段就会在别人还在写 `messages` 的时候再写一遍）。
+   * - `busy`：跑着（这一圈里干着活）；
+   * - `idle`：队列空 **且** 不忙。中间那一拍（手上没活、但队列里还压着）**不报闲** ——
+   *   否则等在外面的子 agent 会在半截处收走结果；
+   * - `paused`：暂停。暂停是模式，不是忙碌度：暂停时队列里有没有货都显示暂停。
+   *
+   * 不报第四格「出过错」：**出过错是事实，不是状态**（读那条消息的 `status` / `error`）。
+   * 其余的「在不在想」「在等哪几个工具」全部读活消息与 delta 流推断，不存第二份状态。
    */
-  export type SendStatus = "idle" | "sending";
+  export type AgentState = "busy" | "idle" | "paused";
 
   export interface Delta {
     name?: string;
