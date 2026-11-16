@@ -100,10 +100,11 @@ export interface Endpoint {
  * 上下文用量阈值 —— 与模型的真实窗口无关，只描述「用量到了这条线该怎么办」。
  *
  * 两个阈值语义不同，消费方也不同：
- *   - `handoff`：软线。`AutoMigratePlugin` 在响应返回后拿 `usage.prompt_tokens` 比它，
+ *   - `handoff`：软线。`AutoMigratePlugin` 在 agent 闲下来之后拿 `usage.prompt_tokens` 比它，
  *     超过即触发任务交接（交接本身还要再发 1~2 次请求，所以这条线必须留足余量）。
- *   - `guard`：硬线。`ContextGuardPlugin` 在**每次请求前**比它，超过即抛
- *     `ContextOverflowError` 中断本轮——这是最后一道保护，宁可报错也不要发出必然失败的请求。
+ *   - `guard`：硬线。`ContextGuardPlugin` 在**每次请求前**比它，超过即**拒这一圈**
+ *     （`onInnerLoopStart` 返回理由 → core 报 `denied`，这一轮压根没发出去）——
+ *     这是最后一道保护，宁可报错也不要发出必然失败的请求。
  *
  * 建议 `guard ≈ handoff × 1.5`，给交接留出缓冲；两者都是绝对值，配置里写多少就是多少，
  * 不做任何倍数换算（阈值就该是能直接读懂的数字）。
@@ -298,7 +299,8 @@ export interface AppConfig {
    *
    * - `inner-loop-start`：`onInnerLoopStart`，**每次请求前**刷（每次工具回合都能看见新装的
    *   能力）。**出厂默认**；
-   * - `outer-loop-start`：`onBeforeSend`，整个 `send()` 开头刷一次，要等下一轮才生效，开销最小；
+   * - `outer-loop-start`：`onOuterLoopStart`，每一批事件开头刷一次（一圈一次），
+   *   要等下一轮才生效，开销最小；
    * - `off`：不刷，只靠 `/reload`。
    *
    * 缺省（`undefined`）按 `inner-loop-start` 算 —— 装配方读它时不要写「undefined 就不装」。

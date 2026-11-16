@@ -1,5 +1,5 @@
 import { resolve as resolvePath } from "node:path";
-import type { AgentPlugin, ToolCallContext } from "@ai-zen/agents-core";
+import type { AgentPlugin, ToolHookContext } from "@ai-zen/agents-core";
 
 /**
  * 交接回合的工具守卫 —— 保证「原 agent 停下手头一切工作」不只是提示词约定。
@@ -10,13 +10,15 @@ import type { AgentPlugin, ToolCallContext } from "@ai-zen/agents-core";
  *   - `edit` / `batch_edit` / `rm` / `rename` / `mkdir` / `copy`：一律拒绝；
  *   - 读取类工具与其他工具：放行。
  *
- * 拒绝方式是**软拒绝**（返回字符串）：core 的 `onToolCall` 语义会把该字符串作为
- * 工具结果回给模型并继续下一轮，因此模型能读到引导（「只允许写交接文档」）并转回正题。
- * 反例：抛错会让该工具结果标记为 Error 且 `isPreventDefault`，整轮交接直接中断。
+ * 拒绝方式是**软拒绝**（返回字符串）：core 的 `onToolStart` 语义会把该字符串作为那条
+ * tool 消息的正文回给模型并继续下一圈，因此模型能读到引导（「只允许写交接文档」）并转回正题。
+ * 反例：抛错会穿到 `start()` 外面把整个循环打死（agent 变成僵尸），整轮交接直接停摆。
  *
  * 边界（必须如实记录，不要误以为是安全边界）：
  *   - **挡不住 `exec`**：`echo > file`、`cat > file <<EOF` 永远能绕过。本插件降低的是
  *     「顺手改代码」的误操作概率，不是沙箱。
+ *   - **料不到的参数不算放行**：参数解析失败时 `parsedArgs` 为 `undefined`，`write` 会被
+ *     当成「没给路径」而拒绝（宁可让模型重试一次，也不放一个看不清的写操作）。
  *   - 一次性：`arm()` 后生效，`disarm()` 后完全让行。`Agent.use()` 没有移除 API，
  *     故用「同一实例 + 开关」而非反复注册，避免插件数组无限增长。
  */
@@ -52,14 +54,14 @@ export class HandoffGuardPlugin implements AgentPlugin {
     return this.handoffPath !== undefined;
   }
 
-  onToolCall(ctx: ToolCallContext): string | undefined {
+  onToolStart({ toolCall }: ToolHookContext): string | undefined {
     const handoffPath = this.handoffPath;
     if (handoffPath == null) return;
 
-    const name = ctx.tool_call?.function?.name ?? "";
+    const name = toolCall.tool_call?.function?.name ?? "";
 
     if (name === "write") {
-      const raw = ctx.parsedArgs?.path;
+      const raw = toolCall.parsedArgs?.path;
       if (typeof raw === "string" && resolvePath(this.cwd, raw) === handoffPath) {
         return;
       }

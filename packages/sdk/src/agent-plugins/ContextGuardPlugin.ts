@@ -1,5 +1,5 @@
 import { ContextOverflowError } from "../shared/errors.js";
-import type { AgentPlugin, SendContext } from "@ai-zen/agents-core";
+import type { AgentPlugin, InnerLoopContext } from "@ai-zen/agents-core";
 
 export interface ContextGuardOptions {
   /**
@@ -23,7 +23,7 @@ export interface ContextGuardOptions {
  * 上下文安全护栏插件。
  *
  * 在每次内循环**发请求前**检测上一轮用量（usage.prompt_tokens）：超过 `guardTokens`
- * 即抛 `ContextOverflowError` 中断对话，交由上层向用户报错。
+ * 就**拒绝这一圈**，交由上层向用户报错。
  *
  * 与迁移插件职责分离：
  * - `ContextGuardPlugin`：硬线，只做「严重超限即中断」的安全兜底，绝不继续对话/迁移；
@@ -40,6 +40,17 @@ export interface ContextGuardOptions {
  * );
  * agent.use(new AutoMigratePlugin({ service: handoffService, handoffTokens: handoff }));
  * ```
+ *
+ * ## 为什么是「返回字符串」而不是「抛错」
+ *
+ * 新 core（`CORE.md` §11）里 `onInnerLoopStart` 能拒：**返回 string = 这一圈压根没发出去**
+ * —— 不会留下一类「永远 Pending 的助手占位」，core 报一个 `denied` 事件（带钩子名与理由），
+ * 然后回外循环等下一个事件，循环还活着。
+ *
+ * 抛错不是「更硬的拒绝」：钩子里的异常会穿到 `start()` 外面，把整个循环打死
+ * （`start()` 的 promise 直接 resolve、循环不再取件），agent 从此变成「塞进去也不动」的
+ * 僵尸。这也是为什么老的「抛 `ContextOverflowError` 让上层接住」不能照搬 —— 上层现在能从
+ * `denied` 事件和 `message` 的历史里看到同一件事，不需要一个把 agent 弄死的异常。
  */
 export class ContextGuardPlugin implements AgentPlugin {
   private readonly guardTokens: number;
@@ -50,7 +61,8 @@ export class ContextGuardPlugin implements AgentPlugin {
     this.isSuspended = options.isSuspended;
   }
 
-  async onInnerLoopStart(ctx: SendContext): Promise<void> {
+  /** 返回 string = 拒这一圈（这一圈不会发出去，历史里一个字都不多） */
+  async onInnerLoopStart(ctx: InnerLoopContext): Promise<string | undefined> {
     // 交接/迁移回合让行（见 `isSuspended`）
     if (this.isSuspended?.()) return;
 
@@ -59,7 +71,9 @@ export class ContextGuardPlugin implements AgentPlugin {
     if (promptTokens == null) return;
 
     if (promptTokens > this.guardTokens) {
-      throw new ContextOverflowError(promptTokens, this.guardTokens);
+      // 理由就是给用户看的那句话：`denied` 事件里只有字符串这一个通道，
+      // 所以用量与阈值一并写进去（`ContextOverflowError` 只用来拼这句话，不往外抛）
+      return new ContextOverflowError(promptTokens, this.guardTokens).message;
     }
   }
 }

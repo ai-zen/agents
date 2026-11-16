@@ -92,7 +92,7 @@ export function createLoadSkillTool(
  * 只展示 subAgent: true 的 Skill，枚举中自动排除不支持子 Agent 模式的 skill。
  *
  * 工具由 AgentToolLazy 承载：子 Agent 在 exec 时构建，从而复用统一的委派边界
- * （onSubAgentStart / onSubAgentEnd 钩子与 sub-agent-start / sub-agent-end 事件）。
+ * （onSubAgentStart / onSubAgentEnd 钩子与 subAgentStarted / subAgentFinished 事件）。
  * 子 Agent 沿用父 Agent 的工具能力（不做权限过滤），但剔除 call_skill_sub_agent 自身，
  * 避免 skill 链式自递归。
  */
@@ -139,7 +139,8 @@ export function createCallSkillSubAgentTool(
       },
     },
     // 初始消息依赖运行时参数（skill_id → SKILL.md 内容），故不传 messages 模板，
-    // 由 buildAgent 读取 SKILL.md 后自行决定；abort 联动与委派边界由 AgentToolLazy 统一处理
+    // 由 buildAgent 读取 SKILL.md 后自行决定；中断信号与委派边界由 AgentToolLazy 统一处理
+    // （父的 `abort` 直接把 signal 交给子 agent 的 `runOnce`，不再有手工联动）
     buildAgent: async (
       parsedArgs: Record<string, unknown>,
       ctx: ToolCallContext,
@@ -172,6 +173,9 @@ export function createCallSkillSubAgentTool(
         modelConfig: parentAgent.modelConfig,
         messages: [Message.System(skill.content), Message.User(task)],
         tools,
+        // 技能子 Agent 同样走委派：`buildAgent` 造出来的必须是**一次性**
+        // （`CORE.md` §9）。它跑完就死透，不与父会话共用寿命。
+        lifetime: "one-shot",
       });
     },
   });

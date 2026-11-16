@@ -1,4 +1,4 @@
-import type { AgentPlugin, SendContext } from "@ai-zen/agents-core";
+import type { AgentPlugin, InnerLoopContext, OuterLoopContext } from "@ai-zen/agents-core";
 import type { SdkAgent } from "../runtime/SdkAgent.js";
 
 /**
@@ -9,12 +9,15 @@ import type { SdkAgent } from "../runtime/SdkAgent.js";
  * | 档位 | 钩子 | 会话中新装的 MCP / skill / 工具什么时候能被模型看见 |
  * |------|------|---------------------------------------------|
  * | `inner-loop-start` | `onInnerLoopStart`（每次请求发出前） | 同一轮里下一次请求就看见（含工具回合的空档） |
- * | `outer-loop-start` | `onBeforeSend`（整个 `send()` 开头） | 下一轮对话才看见；一轮只刷一次，开销最小 |
+ * | `outer-loop-start` | `onOuterLoopStart`（每一批事件开头，一圈只刷一次） | 下一轮对话才看见；一轮只刷一次，开销最小 |
  * | `off` | 不装插件 | 只靠 `/reload` |
  *
  * 为什么不是「每轮固定刷一次」：一次 `refresh()` 会重扫 MCP 配置、按需建连接，
  * 长工具链的一轮里可能要跑好几次。默认 `inner-loop-start` 是时效优先的取舍，
  * 嫌开销大就换成 `outer-loop-start`。
+ *
+ * 档位名沿用 `outer-loop-start`（配置里写着它）：它映射到的钩子就是 core 的外循环开头
+ * —— 原来是 `onBeforeSend`（一次 `send()` 的开头），而 `send()` 已经不存在了。
  */
 export type AutoRefreshWhen = "inner-loop-start" | "outer-loop-start";
 
@@ -38,22 +41,20 @@ export class AutoRefreshToolsPlugin implements AgentPlugin {
   }
 
   /** 内循环开始（每次请求前）：能力变化在同一轮里就能生效 */
-  async onInnerLoopStart(ctx: SendContext): Promise<void> {
+  async onInnerLoopStart(ctx: InnerLoopContext): Promise<void> {
     if (this.when !== "inner-loop-start") return;
-    await refreshTools(ctx);
+    await refreshTools(ctx.agent as SdkAgent);
   }
 
-  /** 外循环开始（整个 `send()` 一次）：最省，代价是要等到下一轮 */
-  async onBeforeSend(ctx: SendContext): Promise<void> {
+  /** 外循环开始（这一批事件的开头）：最省，代价是要等到下一轮 */
+  async onOuterLoopStart(ctx: OuterLoopContext): Promise<void> {
     if (this.when !== "outer-loop-start") return;
-    await refreshTools(ctx);
+    await refreshTools(ctx.agent as SdkAgent);
   }
 }
 
 /** 重新发现 + 按新结果重建工具集（两个档位共用同一段，免得两处漂） */
-async function refreshTools(ctx: SendContext): Promise<void> {
-  const agent = ctx.agent as SdkAgent;
-
+async function refreshTools(agent: SdkAgent): Promise<void> {
   await agent.scope.refresh({ silent: true });
 
   agent.tools = agent.scope.buildTools(agent.definition, {

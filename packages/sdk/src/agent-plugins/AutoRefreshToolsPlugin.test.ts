@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import type { InnerLoopContext, OuterLoopContext } from "@ai-zen/agents-core";
 import { AutoRefreshToolsPlugin } from "./AutoRefreshToolsPlugin.js";
 import { SdkAgent } from "../runtime/SdkAgent.js";
 
@@ -44,16 +45,16 @@ describe("AutoRefreshToolsPlugin", () => {
     const plugin = new AutoRefreshToolsPlugin();
     expect(plugin).toBeDefined();
     expect(typeof plugin.onInnerLoopStart).toBe("function");
-    expect(typeof plugin.onBeforeSend).toBe("function");
+    expect(typeof plugin.onOuterLoopStart).toBe("function");
   });
 
   it("调用 scope.refresh()", async () => {
     const scope = mockScope();
     const agent = createTestAgent({ scope });
     const plugin = new AutoRefreshToolsPlugin();
-    const ctx = { agent, content: "hello", messages: agent.messages };
+    const innerCtx: InnerLoopContext = { agent, body: { messages: [] } };
 
-    await plugin.onInnerLoopStart!(ctx);
+    await plugin.onInnerLoopStart!(innerCtx);
     expect(scope.refresh).toHaveBeenCalledTimes(1);
   });
 
@@ -61,9 +62,9 @@ describe("AutoRefreshToolsPlugin", () => {
     const scope = mockScope();
     const agent = createTestAgent({ scope });
     const plugin = new AutoRefreshToolsPlugin();
-    const ctx = { agent, content: "hello", messages: agent.messages };
+    const innerCtx: InnerLoopContext = { agent, body: { messages: [] } };
 
-    await plugin.onInnerLoopStart!(ctx);
+    await plugin.onInnerLoopStart!(innerCtx);
     expect(scope.buildTools).toHaveBeenCalledTimes(1);
   });
 
@@ -75,9 +76,9 @@ describe("AutoRefreshToolsPlugin", () => {
     expect(agent.tools).toEqual([]);
 
     const plugin = new AutoRefreshToolsPlugin();
-    const ctx = { agent, content: "hello", messages: agent.messages };
+    const innerCtx: InnerLoopContext = { agent, body: { messages: [] } };
 
-    await plugin.onInnerLoopStart!(ctx);
+    await plugin.onInnerLoopStart!(innerCtx);
     expect(agent.tools).toBe(fakeTools);
   });
 
@@ -86,9 +87,9 @@ describe("AutoRefreshToolsPlugin", () => {
     const permissions = { tools: { allow: ["read"] } };
     const agent = createTestAgent({ scope, permissions });
     const plugin = new AutoRefreshToolsPlugin();
-    const ctx = { agent, content: "hello", messages: agent.messages };
+    const innerCtx: InnerLoopContext = { agent, body: { messages: [] } };
 
-    await plugin.onInnerLoopStart!(ctx);
+    await plugin.onInnerLoopStart!(innerCtx);
     expect(scope.buildTools).toHaveBeenCalledWith(
       expect.objectContaining({ permissions }),
       expect.any(Object),
@@ -99,9 +100,9 @@ describe("AutoRefreshToolsPlugin", () => {
     const scope = mockScope();
     const agent = createTestAgent({ scope, permissions: undefined });
     const plugin = new AutoRefreshToolsPlugin();
-    const ctx = { agent, content: "hello", messages: agent.messages };
+    const innerCtx: InnerLoopContext = { agent, body: { messages: [] } };
 
-    await plugin.onInnerLoopStart!(ctx);
+    await plugin.onInnerLoopStart!(innerCtx);
     expect(scope.buildTools).toHaveBeenCalledWith(
       expect.objectContaining({ permissions: undefined }),
       expect.any(Object),
@@ -126,9 +127,9 @@ describe("AutoRefreshToolsPlugin", () => {
       },
     });
     const plugin = new AutoRefreshToolsPlugin();
-    const ctx = { agent, content: "hello", messages: agent.messages };
+    const innerCtx: InnerLoopContext = { agent, body: { messages: [] } };
 
-    await plugin.onInnerLoopStart!(ctx);
+    await plugin.onInnerLoopStart!(innerCtx);
     expect(scope.buildTools).toHaveBeenCalledWith(expect.any(Object), {
       exclude: { subagents: ["my_agent_func"] },
     });
@@ -147,15 +148,15 @@ describe("AutoRefreshToolsPlugin", () => {
       },
     });
     const plugin = new AutoRefreshToolsPlugin();
-    const ctx = { agent, content: "hello", messages: agent.messages };
+    const innerCtx: InnerLoopContext = { agent, body: { messages: [] } };
 
-    await plugin.onInnerLoopStart!(ctx);
+    await plugin.onInnerLoopStart!(innerCtx);
     expect(scope.buildTools).toHaveBeenCalledWith(expect.any(Object), {
       exclude: { subagents: undefined },
     });
   });
 
-  it("作为插件注册到 Agent 后在 send 时自动触发", async () => {
+  it("作为插件注册到 Agent 后在每一圈请求前自动触发", async () => {
     const scope = mockScope();
     const agent = createTestAgent({ scope });
     const plugin = new AutoRefreshToolsPlugin();
@@ -163,8 +164,8 @@ describe("AutoRefreshToolsPlugin", () => {
     agent.use(plugin);
     await agent.init();
 
-    const ctx = { agent, content: "hello", messages: agent.messages };
-    await plugin.onInnerLoopStart!(ctx);
+    const innerCtx: InnerLoopContext = { agent, body: { messages: [] } };
+    await plugin.onInnerLoopStart!(innerCtx);
 
     expect(scope.refresh).toHaveBeenCalledTimes(1);
     expect(scope.buildTools).toHaveBeenCalledTimes(1);
@@ -176,11 +177,11 @@ describe("AutoRefreshToolsPlugin", () => {
 
     const agent = createTestAgent({ scope });
     const plugin = new AutoRefreshToolsPlugin();
-    const ctx = { agent, content: "hello", messages: agent.messages };
+    const innerCtx: InnerLoopContext = { agent, body: { messages: [] } };
 
-    await plugin.onInnerLoopStart!(ctx);
-    await plugin.onInnerLoopStart!(ctx);
-    await plugin.onInnerLoopStart!(ctx);
+    await plugin.onInnerLoopStart!(innerCtx);
+    await plugin.onInnerLoopStart!(innerCtx);
+    await plugin.onInnerLoopStart!(innerCtx);
 
     expect(scope.refresh).toHaveBeenCalledTimes(3);
     expect(scope.buildTools).toHaveBeenCalledTimes(3);
@@ -193,12 +194,13 @@ describe("AutoRefreshToolsPlugin", () => {
     const scope = mockScope();
     const agent = createTestAgent({ scope });
     const plugin = new AutoRefreshToolsPlugin({ when: "outer-loop-start" });
-    const ctx = { agent, content: "hello", messages: agent.messages };
+    const innerCtx: InnerLoopContext = { agent, body: { messages: [] } };
+    const outerCtx: OuterLoopContext = { agent, entries: [] };
 
-    await plugin.onInnerLoopStart!(ctx);
+    await plugin.onInnerLoopStart!(innerCtx);
     expect(scope.refresh).not.toHaveBeenCalled();
 
-    await plugin.onBeforeSend!(ctx);
+    await plugin.onOuterLoopStart!(outerCtx);
     expect(scope.refresh).toHaveBeenCalledTimes(1);
   });
 
@@ -206,12 +208,13 @@ describe("AutoRefreshToolsPlugin", () => {
     const scope = mockScope();
     const agent = createTestAgent({ scope });
     const plugin = new AutoRefreshToolsPlugin();
-    const ctx = { agent, content: "hello", messages: agent.messages };
+    const innerCtx: InnerLoopContext = { agent, body: { messages: [] } };
+    const outerCtx: OuterLoopContext = { agent, entries: [] };
 
-    await plugin.onBeforeSend!(ctx);
+    await plugin.onOuterLoopStart!(outerCtx);
     expect(scope.refresh).not.toHaveBeenCalled();
 
-    await plugin.onInnerLoopStart!(ctx);
+    await plugin.onInnerLoopStart!(innerCtx);
     expect(scope.refresh).toHaveBeenCalledTimes(1);
   });
 });

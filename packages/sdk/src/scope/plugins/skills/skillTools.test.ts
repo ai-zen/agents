@@ -209,7 +209,7 @@ describe("createCallSkillSubAgentTool", () => {
     ).rejects.toThrow("does not support SubAgent mode");
   });
 
-  it("委派边界：分发 onSubAgentStart 与 sub-agent-start，子 Agent 沿用父工具集并剔除 call_skill_sub_agent", async () => {
+  it("委派边界：分发 onSubAgentStart 与 subAgentStarted，子 Agent 沿用父工具集并剔除 call_skill_sub_agent", async () => {
     writeSkill("git", "# Git operations guide\n\n## Committing code\nUse git commit", {
       subAgent: true,
     });
@@ -223,7 +223,8 @@ describe("createCallSkillSubAgentTool", () => {
       },
     });
     const startEvent = vi.fn();
-    host.events.on("sub-agent-start", startEvent);
+    // 事件名换成新 core 的那一套（旧的 kebab-case 全部不存在了）
+    host.on("subAgentStarted", startEvent);
 
     const result = await tool.exec(
       buildCtx(host, { skill_id: "git", task: "commit these changes" }),
@@ -237,5 +238,9 @@ describe("createCallSkillSubAgentTool", () => {
     // 初始消息来自 SKILL.md 与 task 参数
     expect(String(captured!.messages[0].content)).toContain("Git operations guide");
     expect(captured!.messages[1].content).toBe("commit these changes");
+    // 委派造出来的必须是**一次性** agent（core 的 `buildAgent` 契约）
+    expect(captured!.lifetime).toBe("one-shot");
+    // 注入的那条 user 消息由委派工具补 `source`（谁注入谁填）
+    expect(captured!.messages[1].source).toEqual({ kind: "agent", label: "call_skill_sub_agent" });
   });
 });

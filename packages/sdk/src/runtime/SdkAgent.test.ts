@@ -3,6 +3,7 @@ import { AgentNS, Tool, Message } from "@ai-zen/agents-core";
 import type { AgentPlugin } from "@ai-zen/agents-core";
 import { SdkAgent } from "./SdkAgent.js";
 import { CallbackTool } from "@ai-zen/agents-core";
+import { sendRound } from "../test-support/agent-round.js";
 
 // ---------------------------------------------------------------------------
 // mock helpers
@@ -29,7 +30,7 @@ function stopChunk(): AnyChunk {
 /** 创建 Mock OpenAI client（返回固定回复） */
 function createMockClient(rounds: AnyChunk[][] = [[chunk({ content: "回复" }), stopChunk()]]) {
   let callCount = 0;
-  const create = vi.fn(async () => {
+  const create = vi.fn(async (_body?: any, _options?: any) => {
     const data = rounds[callCount] ?? [];
     callCount++;
     return {
@@ -140,67 +141,107 @@ describe("SdkAgent", () => {
     });
   });
 
-  describe("send() — 插件钩子（真实 send 流程 + mock client）", () => {
-    it("按顺序执行 onBeforeSend → 消息处理 → onAfterSend", async () => {
+  describe("一轮（push + start）— 插件钩子（真实流程 + mock client）", () => {
+    it("按顺序执行 onInnerLoopStart → 消息处理 → onOuterLoopEnd", async () => {
       const client = createMockClient([[chunk({ content: "ok" }), stopChunk()]]);
       const agent = createTestAgent({ client });
       const callOrder: string[] = [];
 
       agent.use({
-        onBeforeSend: async () => {
-          callOrder.push("beforeSend");
+        onOuterLoopStart: async () => {
+          callOrder.push("outerLoopStart");
         },
-        onAfterSend: async () => {
-          callOrder.push("afterSend");
+        onInnerLoopStart: async () => {
+          callOrder.push("innerLoopStart");
+        },
+        onOuterLoopEnd: async () => {
+          callOrder.push("outerLoopEnd");
         },
       });
 
-      await agent.send("hello");
+      await sendRound(agent, "hello");
 
-      expect(callOrder).toEqual(["beforeSend", "afterSend"]);
+      expect(callOrder).toEqual(["outerLoopStart", "innerLoopStart", "outerLoopEnd"]);
       expect(agent.messages.at(-1)!.status).toBe(AgentNS.MessageStatus.Completed);
     });
 
-    it("onBeforeSend 插件收到 SendContext（agent / content / messages）", async () => {
+    it("onInnerLoopStart 收到 InnerLoopContext（agent / body.messages）", async () => {
       const agent = createTestAgent();
-      const onBeforeSend = vi.fn();
-      agent.use({ onBeforeSend });
+      const onInnerLoopStart = vi.fn();
+      agent.use({ onInnerLoopStart });
 
-      await agent.send("hello");
+      await sendRound(agent, "hello");
 
-      expect(onBeforeSend).toHaveBeenCalledTimes(1);
-      const ctx = onBeforeSend.mock.calls[0][0];
+      expect(onInnerLoopStart).toHaveBeenCalledTimes(1);
+      const ctx = onInnerLoopStart.mock.calls[0]![0] as any;
       expect(ctx.agent).toBe(agent);
-      expect(ctx.content).toBe("hello");
-      expect(Array.isArray(ctx.messages)).toBe(true);
+      // body 是这次要发出去的请求体：里面有 model 与已经排好的 messages
+      expect(ctx.body.model).toBe("test-model");
+      expect(Array.isArray(ctx.body.messages)).toBe(true);
+    });
+
+    it("onInnerLoopStart 能改请求体里的 messages（素材还原走的就是这一缝）", async () => {
+      const client = createMockClient([[chunk({ content: "ok" }), stopChunk()]]);
+      const agent = createTestAgent({ client });
+
+      agent.use({
+        onInnerLoopStart: (ctx) => {
+          // 把「库里的引用」换成真东西：这里只是把它换成一个标记串
+          ctx.body.messages = [{ role: "user", content: "REWRITTEN" }];
+        },
+      });
+
+      await sendRound(agent, "hello");
+
+      // 真发出去的那份请求体用的是改过之后的消息，而 agent.messages 没被改
+      const sentBody = client.chat.completions.create.mock.calls[0]![0];
+      expect(sentBody.messages).toEqual([{ role: "user", content: "REWRITTEN" }]);
+      expect(agent.messages.some((m) => m.content === "REWRITTEN")).toBe(false);
     });
 
     it("多个插件按注册顺序执行钩子", async () => {
       const agent = createTestAgent();
       const order: number[] = [];
       agent.use({
-        onBeforeSend: async () => {
+        onInnerLoopStart: async () => {
           order.push(1);
         },
       });
       agent.use({
-        onBeforeSend: async () => {
+        onInnerLoopStart: async () => {
           order.push(2);
         },
       });
       agent.use({
-        onBeforeSend: async () => {
+        onInnerLoopStart: async () => {
           order.push(3);
         },
       });
 
-      await agent.send("hi");
+      await sendRound(agent, "hi");
 
       expect(order).toEqual([1, 2, 3]);
     });
+
+    it("onInnerLoopStart 返回字符串 = 拒这一圈：请求没发出去、历史里也不留占位", async () => {
+      const client = createMockClient([[chunk({ content: "ok" }), stopChunk()]]);
+      const agent = createTestAgent({ client });
+      const denied: string[] = [];
+      agent.on("denied", (event) => denied.push(event.reason));
+
+      agent.use({ onInnerLoopStart: () => "not this round" });
+
+      const before = agent.messages.length;
+      await sendRound(agent, "hello");
+
+      expect(client.chat.completions.create).not.toHaveBeenCalled();
+      // 只有那条 user 消息（拒发生在造 assistant 占位之前，不会留下幽灵消息）
+      expect(agent.messages.length).toBe(before + 1);
+      expect(denied).toEqual(["not this round"]);
+    });
   });
 
-  describe("send() — 插件 onToolCall 钩子", () => {
+  describe("一轮 — 插件 onToolStart 钩子", () => {
     it("任一插件返回字符串即拒绝（短路），全部放行则执行", async () => {
       const denyTool = new CallbackTool({
         function: {
@@ -230,20 +271,20 @@ describe("SdkAgent", () => {
 
       const agent = createTestAgent({ client, tools: [denyTool] });
       agent.use({
-        onToolCall: (ctx) =>
-          ctx.tool_call.function?.name === "blockedTool"
+        onToolStart: ({ toolCall }) =>
+          toolCall.tool_call.function?.name === "blockedTool"
             ? "Plugin rejected: not allowed"
             : undefined,
       });
 
-      await agent.send("hi");
+      await sendRound(agent, "hi");
 
       expect(denyTool.callback).not.toHaveBeenCalled();
       const toolResult = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
       expect(toolResult.content).toContain("Plugin rejected");
     });
 
-    it("插件 onToolCall 收到同一个 ToolCallContext 实例", async () => {
+    it("插件 onToolStart 收到同一个 ToolCallContext 实例", async () => {
       const tool = new CallbackTool({
         function: {
           name: "okTool",
@@ -277,13 +318,13 @@ describe("SdkAgent", () => {
 
       const agent = createTestAgent({ client, tools: [tool] });
       agent.use({
-        onToolCall: (ctx) => {
-          hookCtx = ctx;
+        onToolStart: ({ toolCall }) => {
+          hookCtx = toolCall;
           return undefined;
         },
       });
 
-      await agent.send("hi");
+      await sendRound(agent, "hi");
 
       expect(hookCtx).toBeDefined();
       expect(execCtx).toBeDefined();

@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AgentError, Agent, CallbackTool } from "@ai-zen/agents-core";
 import { HandoffAbortedError, HandoffService } from "./HandoffService.js";
 import { HandoffGuardPlugin } from "./HandoffGuardPlugin.js";
 import { FALLBACK_HANDOFF_TEMPLATE } from "../config/factory-skills.js";
@@ -29,7 +30,7 @@ function docContent(padding = 600): string {
 }
 
 interface FakeAgentOptions {
-  /** 每次 send 时的行为（默认什么都不做） */
+  /** 每次投递时的行为（默认什么都不做） */
   onSend?: (content: string, call: number, agent: FakeAgent) => void | Promise<void>;
   /** 是否具备 write 工具（默认有） */
   writeTool?: boolean;
@@ -37,7 +38,19 @@ interface FakeAgentOptions {
   definitionMessages?: any[];
 }
 
-/** 假 agent：只实现 HandoffService 用到的表面（send / use / tools / messages / definition / client） */
+type Listener = (payload: any) => void;
+
+/**
+ * 假 agent：只实现 `HandoffService` 用到的表面。
+ *
+ * 新 core 里**没有 `send()`** 了（`CORE.md` §1）：自交接那一轮靠「`push` 一条指令 + 等闲」
+ * 实现。所以这个替身要模拟的就是那条路的三个可观测点：
+ *   - `start()`：幂等，返回一句「到死才 resolve」的 promise；
+ *   - `push(entry)`：落一条 user 消息 → 变忙 → （跑 `onSend`）→ 追加回执 → 变闲；
+ *   - `on("state" | "stopped" | "killed")`：订阅，返回取消函数。
+ *
+ * `state` 的转移必须走 `setState`（同值不发），否则订阅方会被同一次转移喂两次。
+ */
 class FakeAgent {
   messages: any[];
   definition: { messages: any[] };
@@ -46,9 +59,18 @@ class FakeAgent {
   modelConfig: Record<string, unknown> = {};
   lastUsage: any = { prompt_tokens: 999 };
   scope = { cwd: process.cwd() };
+  /** 投进来的指令正文（等价于旧 `send()` 收到的内容） */
   sent: string[] = [];
   plugins: any[] = [];
   client: any;
+  /** 常驻会话：自交接要求 agent 能「再问一轮」 */
+  lifetime = "resident";
+  state: "busy" | "idle" | "paused" = "idle";
+
+  private listeners = new Map<string, Set<Listener>>();
+  private closed = false;
+  private death?: Promise<void>;
+  private resolveDeath?: () => void;
 
   constructor(public options: FakeAgentOptions = {}) {
     this.messages = options.messages ?? [
@@ -81,13 +103,65 @@ class FakeAgent {
     this.plugins.push(plugin);
   }
 
-  async send(content: string): Promise<any> {
+  // ---- 事件（core 的 `on()` 返回取消函数） ----
+
+  on(type: string, handler: Listener): () => void {
+    let set = this.listeners.get(type);
+    if (!set) this.listeners.set(type, (set = new Set()));
+    set.add(handler);
+    return () => set.delete(handler);
+  }
+
+  private emit(type: string, payload: any): void {
+    for (const handler of this.listeners.get(type) ?? []) handler(payload);
+  }
+
+  private setState(next: "busy" | "idle" | "paused"): void {
+    const from = this.state;
+    if (from === next) return;
+    this.state = next;
+    this.emit("state", { agent: this, from, to: next });
+  }
+
+  // ---- 死活 ----
+
+  start(): Promise<void> {
+    this.death ??= new Promise<void>((resolve) => (this.resolveDeath = resolve));
+    return this.death;
+  }
+
+  stop(): void {
+    this.closed = true;
+    this.emit("stopped", { agent: this });
+    this.resolveDeath?.();
+  }
+
+  kill(): void {
+    this.closed = true;
+    this.emit("killed", { agent: this });
+    this.resolveDeath?.();
+  }
+
+  // ---- 投递 ----
+
+  push(entry: any): void {
+    if (this.closed) {
+      throw new AgentError("closed", "往已经关了的 agent 投递");
+    }
+    const content = entry.content as string;
     this.sent.push(content);
-    await this.options.onSend?.(content, this.sent.length, this);
-    // 模拟 core：追加 user 指令 + assistant 回执
-    this.messages.push({ role: "user", content });
-    this.messages.push({ role: "assistant", content: "Handoff document written." });
-    return this.messages;
+    // 真 core：一批开头先落 user 消息，再发请求
+    this.messages.push({ role: "user", content, source: entry.source });
+    this.setState("busy");
+
+    const finish = () => {
+      // 模拟 core：追加 assistant 回执，然后回到「闲」
+      this.messages.push({ role: "assistant", content: "Handoff document written." });
+      this.setState("idle");
+    };
+    const result = this.options.onSend?.(content, this.sent.length, this);
+    if (result instanceof Promise) void result.then(finish);
+    else finish();
   }
 }
 
@@ -332,6 +406,32 @@ describe("handoff", () => {
     expect(agent.plugins.filter((p) => p instanceof HandoffGuardPlugin)).toHaveLength(1);
   });
 
+  it("agent 已经关门时不投递、不做 summary，直接把 closed 往上抛", async () => {
+    // `push` 在关门之后抛 `AgentError("closed")`（CORE.md §1）。那不是「文档没写出来」，
+    // 而是「这个会话已经不在了」—— 降级 summary 会为一个死掉的会话白烧一轮全量输入。
+    const { service } = await makeService();
+    const agent = new FakeAgent();
+    agent.stop();
+
+    await expect(service.handoff({ agent: asAgent(agent) })).rejects.toBeInstanceOf(AgentError);
+    expect(agent.sent).toHaveLength(0);
+    expect(agent.client.chat.completions.create).not.toHaveBeenCalled();
+  });
+
+  it("agent 处于暂停时不投递（暂停不取件），直接降级 summary", async () => {
+    // 暂停中 `push` 只会排队，等 resume 之后突然自己跑起来 —— 那是「用户按了暂停却看见
+    // 它又开口」。所以这一轮当没跑成，走逃生模式（summary 不经过 agent）。
+    const { service } = await makeService();
+    const agent = new FakeAgent();
+    agent.state = "paused";
+
+    const ctx = await service.handoff({ agent: asAgent(agent) });
+
+    expect(agent.sent).toHaveLength(0);
+    expect(ctx.mode).toBe("summary");
+    expect(existsSync(ctx.handoffPath)).toBe(true);
+  });
+
   it("summary 模型不返回内容时抛错", async () => {
     const { service } = await makeService();
     const agent = new FakeAgent({ writeTool: false });
@@ -393,6 +493,147 @@ describe("handoff", () => {
     expect(service.busy).toBe(true);
     await pending;
     expect(service.busy).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// self 模式：真 core 跑一轮
+// ---------------------------------------------------------------------------
+
+/**
+ * 这一组不接假 agent：`push` + 等闲这条新路完全依赖 core 的真实状态转移
+ * （`push` 同步变忙 → 一圈跑完变闲），假件把它演得太随意就验不出任何东西。
+ */
+describe("self 模式：真 core（push + 等闲，没有 send()）", () => {
+  /**
+   * 造一个客户端：流式请求（会话那一轮）回「模型要求调 write」+ 收尾文本，
+   * 非流式请求（`summary` 目录那一次 `completeOnce`）直接回一篇完整文档。
+   */
+  function makeStreams(handoffPathOf: (body: any) => string) {
+    let round = 0;
+    const create = vi.fn(async (body: any) => {
+      // 非流式 = summary 那条路（`completeOnce` 不带 stream）
+      if (body.stream !== true) {
+        return { choices: [{ message: { content: docContent() } }] };
+      }
+      round++;
+      const chunks =
+        round === 1
+          ? [
+              {
+                id: "c1",
+                object: "chat.completion.chunk",
+                created: 0,
+                model: "m",
+                choices: [
+                  {
+                    index: 0,
+                    delta: {
+                      tool_calls: [
+                        {
+                          index: 0,
+                          id: "call-1",
+                          type: "function",
+                          function: {
+                            name: "write",
+                            arguments: JSON.stringify({
+                              path: handoffPathOf(body),
+                              content: docContent(),
+                            }),
+                          },
+                        },
+                      ],
+                    },
+                    finish_reason: null,
+                  },
+                ],
+              },
+              {
+                id: "c2",
+                object: "chat.completion.chunk",
+                created: 0,
+                model: "m",
+                choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+              },
+            ]
+          : [
+              {
+                id: "c3",
+                object: "chat.completion.chunk",
+                created: 0,
+                model: "m",
+                choices: [{ index: 0, delta: { content: "written" }, finish_reason: null }],
+              },
+              {
+                id: "c4",
+                object: "chat.completion.chunk",
+                created: 0,
+                model: "m",
+                choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+              },
+            ];
+      return {
+        async *[Symbol.asyncIterator]() {
+          for (const chunk of chunks) yield chunk;
+        },
+      };
+    });
+    return { client: { chat: { completions: { create } } } as any, create };
+  }
+
+  it("把指令投进去、等这一轮收完、再校验落盘（模式仍是 self）", async () => {
+    const { service } = await makeService();
+    const writeTool = new CallbackTool({
+      function: {
+        name: "write",
+        description: "写文件",
+        parameters: { type: "object", properties: {}, required: [] },
+      },
+      callback: async (args: any) => {
+        await fs.writeFile(args.path, args.content, "utf-8");
+        return "ok";
+      },
+    });
+
+    // 指令正文里带了交接文档的绝对路径（`createHandoffInstruction` 拼的），模型照它写
+    const { client } = makeStreams((body) =>
+      /Handoff document absolute path: (.+)/.exec(String(body.messages.at(-1).content))![1]!.trim(),
+    );
+    const agent = new Agent({ client, model: "m", tools: [writeTool] });
+
+    const ctx = await service.handoff({ agent: agent as any });
+
+    expect(ctx.mode).toBe("self");
+    expect(existsSync(ctx.handoffPath)).toBe(true);
+    // 交接回合真的落在了这个会话里（一条指令 + 两条 assistant + 一条 tool 结果）
+    expect(agent.messages.length).toBeGreaterThan(1);
+    expect(agent.messages.some((m) => m.role === "tool")).toBe(true);
+
+    agent.kill();
+  });
+
+  it("模型不写文档时重试一次，两次都空则降级 summary（真 core 也一样）", async () => {
+    const { service } = await makeService();
+    const { client } = makeStreams(() => "/nonexistent/path.md");
+    // write 工具存在（否则自交接不可用），但模型调的是一个不写盘的方向：这里让它每次都失败
+    const writeTool = new CallbackTool({
+      function: {
+        name: "write",
+        description: "写文件",
+        parameters: { type: "object", properties: {}, required: [] },
+      },
+      callback: async () => {
+        throw new Error("nope");
+      },
+    });
+    const agent = new Agent({ client, model: "m", tools: [writeTool] });
+
+    const ctx = await service.handoff({ agent: agent as any });
+
+    expect(ctx.mode).toBe("summary");
+    expect(existsSync(ctx.handoffPath)).toBe(true);
+
+    agent.kill();
   });
 });
 

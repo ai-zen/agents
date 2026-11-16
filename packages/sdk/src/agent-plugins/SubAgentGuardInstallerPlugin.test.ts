@@ -1,7 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { Agent, AgentNS, Message } from "@ai-zen/agents-core";
-import type { SendContext, SubAgentContext } from "@ai-zen/agents-core";
-import { ContextOverflowError } from "../shared/errors.js";
+import type { InnerLoopContext, SubAgentHookContext } from "@ai-zen/agents-core";
 import { ContextGuardPlugin } from "./ContextGuardPlugin.js";
 import { SubAgentGuardInstallerPlugin } from "./SubAgentGuardInstallerPlugin.js";
 
@@ -9,9 +8,9 @@ const MAX_TOKENS = 100;
 /** 子 Agent 与主 Agent 共用同一个绝对阈值 guardTokens（到线即中断，无倍数） */
 const HARD_LIMIT = MAX_TOKENS;
 
-/** 组装 SendContext（仅 agent.lastUsage 参与护栏判定） */
-function createSendCtx(agent: unknown): SendContext {
-  return { agent, content: "", messages: [] } as unknown as SendContext;
+/** 组装 `onInnerLoopStart` 的 ctx（仅 agent.lastUsage 参与护栏判定） */
+function createInnerLoopCtx(agent: unknown): InnerLoopContext {
+  return { agent, body: { messages: [] } } as unknown as InnerLoopContext;
 }
 
 /** 子 Agent 桩：只观察安装器向它装了什么 */
@@ -34,13 +33,12 @@ function pluginOf<T>(use: ReturnType<typeof vi.fn>, type: new (...args: never[])
   return found as T;
 }
 
-/** 假子 Agent 的 `SendContext`：护栏只看 `ctx.agent.lastUsage`，其余无关 */
-function overLimitSendCtx(guardTokens: number): SendContext {
+/** 假子 Agent 的 `onInnerLoopStart` ctx：护栏只看 `ctx.agent.lastUsage`，其余无关 */
+function overLimitInnerLoopCtx(guardTokens: number): InnerLoopContext {
   return {
     agent: { lastUsage: { prompt_tokens: guardTokens + 1 } },
-    content: "",
-    messages: [],
-  } as unknown as SendContext;
+    body: { messages: [] },
+  } as unknown as InnerLoopContext;
 }
 
 /** 真实 Agent 实例（不发起请求，仅用于钩子分发） */
@@ -66,13 +64,13 @@ function setUsage(agent: Agent, promptTokens: number): void {
   );
 }
 
-/** 构造委派上下文 */
-function createSubAgentCtx(subAgent: Agent, host: Agent = {} as Agent): SubAgentContext {
+/** 构造委派上下文（core 的 `SubAgentHookContext`：agent / subAgent / toolCallContext） */
+function createSubAgentCtx(subAgent: Agent, host: Agent = {} as Agent): SubAgentHookContext {
   return {
     agent: host,
     subAgent,
     toolCallContext: {} as never,
-  } as SubAgentContext;
+  } as SubAgentHookContext;
 }
 
 describe("SubAgentGuardInstallerPlugin", () => {
@@ -88,7 +86,7 @@ describe("SubAgentGuardInstallerPlugin", () => {
     expect(installedNames(use)).toEqual(["ContextGuardPlugin", "SubAgentGuardInstallerPlugin"]);
   });
 
-  it("安插后对子 Agent 立即生效（无需 init）：用量超硬上限即中断", async () => {
+  it("安插后对子 Agent 立即生效（无需 init）：用量超硬上限即拒这一圈", async () => {
     const subAgent = createRealAgent();
     const installer = new SubAgentGuardInstallerPlugin({
       guardTokens: MAX_TOKENS,
@@ -97,9 +95,10 @@ describe("SubAgentGuardInstallerPlugin", () => {
     installer.onSubAgentStart(createSubAgentCtx(subAgent));
     setUsage(subAgent, HARD_LIMIT + 1);
 
+    // 拒绝 = 返回字符串（这一圈不发出去）；抛错会穿到 start() 外面把循环打死
     await expect(
-      subAgent.dispatchHook("onInnerLoopStart", createSendCtx(subAgent)),
-    ).rejects.toThrow(ContextOverflowError);
+      subAgent.dispatchHook("onInnerLoopStart", createInnerLoopCtx(subAgent)),
+    ).resolves.toEqual(expect.any(String));
   });
 
   it("用量恰好等于硬上限时放行（判定为「超过」才中断）", async () => {
@@ -112,7 +111,7 @@ describe("SubAgentGuardInstallerPlugin", () => {
     setUsage(subAgent, HARD_LIMIT);
 
     await expect(
-      subAgent.dispatchHook("onInnerLoopStart", createSendCtx(subAgent)),
+      subAgent.dispatchHook("onInnerLoopStart", createInnerLoopCtx(subAgent)),
     ).resolves.toBeUndefined();
   });
 
@@ -125,7 +124,7 @@ describe("SubAgentGuardInstallerPlugin", () => {
     installer.onSubAgentStart(createSubAgentCtx(subAgent));
 
     await expect(
-      subAgent.dispatchHook("onInnerLoopStart", createSendCtx(subAgent)),
+      subAgent.dispatchHook("onInnerLoopStart", createInnerLoopCtx(subAgent)),
     ).resolves.toBeUndefined();
   });
 
@@ -137,13 +136,13 @@ describe("SubAgentGuardInstallerPlugin", () => {
     setUsage(subAgent, 1000); // 恰好等于硬线 → 放行（判定为「超过」才中断）
 
     await expect(
-      subAgent.dispatchHook("onInnerLoopStart", createSendCtx(subAgent)),
+      subAgent.dispatchHook("onInnerLoopStart", createInnerLoopCtx(subAgent)),
     ).resolves.toBeUndefined();
 
     setUsage(subAgent, 1001);
     await expect(
-      subAgent.dispatchHook("onInnerLoopStart", createSendCtx(subAgent)),
-    ).rejects.toThrow(ContextOverflowError);
+      subAgent.dispatchHook("onInnerLoopStart", createInnerLoopCtx(subAgent)),
+    ).resolves.toEqual(expect.any(String));
   });
 
   it("孙级传染：子 Agent 再委派时，孙 Agent 同样被安插", async () => {
@@ -176,14 +175,14 @@ describe("SubAgentGuardInstallerPlugin", () => {
 
     // 交接中：用量明显超线也不拦
     await expect(
-      subAgent.dispatchHook("onInnerLoopStart", createSendCtx(subAgent)),
+      subAgent.dispatchHook("onInnerLoopStart", createInnerLoopCtx(subAgent)),
     ).resolves.toBeUndefined();
 
     // 交接结束：同一颗插件、同一份用量，立刻恢复拦截
     suspended = false;
     await expect(
-      subAgent.dispatchHook("onInnerLoopStart", createSendCtx(subAgent)),
-    ).rejects.toThrow(ContextOverflowError);
+      subAgent.dispatchHook("onInnerLoopStart", createInnerLoopCtx(subAgent)),
+    ).resolves.toEqual(expect.any(String));
   });
 
   it("孙级也带上了让行判断：递归安插出的安装器把 isSuspended 一路传下去", async () => {
@@ -201,12 +200,12 @@ describe("SubAgentGuardInstallerPlugin", () => {
 
     const grandGuard = pluginOf(use, ContextGuardPlugin);
     await expect(
-      grandGuard.onInnerLoopStart(overLimitSendCtx(HARD_LIMIT)),
+      grandGuard.onInnerLoopStart(overLimitInnerLoopCtx(HARD_LIMIT)),
     ).resolves.toBeUndefined();
 
     suspended = false;
-    await expect(grandGuard.onInnerLoopStart(overLimitSendCtx(HARD_LIMIT))).rejects.toThrow(
-      ContextOverflowError,
+    await expect(grandGuard.onInnerLoopStart(overLimitInnerLoopCtx(HARD_LIMIT))).resolves.toEqual(
+      expect.any(String),
     );
 
     // 再往下一层（曾孙）：递归出的安装器本身也得带着让行，否则缺口只是往下挪一层
@@ -216,7 +215,7 @@ describe("SubAgentGuardInstallerPlugin", () => {
     grandInstaller.onSubAgentStart(createSubAgentCtx(greatGrandChild, grandChild));
 
     await expect(
-      pluginOf(greatUse, ContextGuardPlugin).onInnerLoopStart(overLimitSendCtx(HARD_LIMIT)),
+      pluginOf(greatUse, ContextGuardPlugin).onInnerLoopStart(overLimitInnerLoopCtx(HARD_LIMIT)),
     ).resolves.toBeUndefined();
   });
 });

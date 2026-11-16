@@ -370,15 +370,15 @@ describe("端到端：真实文件系统路径", () => {
       // 注册并触发 autoRefreshTools
       agent.use(new AutoRefreshToolsPlugin());
 
-      // 模拟 onBeforeSend
-      const ctx = { agent, content: "hello", messages: agent.messages };
+      // 内循环开头那一缝的 ctx（新 core：`{ agent, body }`）
+      const ctx = { agent, body: { messages: [] } };
 
       // 先 init
-      agent.init();
+      await agent.init();
 
-      // 执行 onBeforeSend（通过模拟）
+      // 执行 onInnerLoopStart（默认 `inner-loop-start` 档）
       const plugin = (agent as any)._plugins[0];
-      await plugin.onBeforeSend(ctx);
+      await plugin.onInnerLoopStart(ctx);
 
       // 刷新后工具列表应仍然完整
       const afterNames = agent.tools.map((t: Tool) => t.function.name);

@@ -28,6 +28,7 @@ import { createModel } from "../src/runtime/createModel.js";
 import { SdkAgent } from "../src/runtime/SdkAgent.js";
 import { ViewImageTool } from "../src/scope/plugins/builtin/ViewImageTool.js";
 import { BUILTIN_TOOL_CLASSES } from "../src/scope/plugins/builtin/index.js";
+import { sendRound } from "../src/test-support/agent-round.js";
 
 // ---------------------------------------------------------------------------
 // 简单图片生成（白底 + 红色实心圆，PNG）
@@ -258,7 +259,8 @@ describe.runIf(!skip)("view_image 端到端（真实 DeepSeek API）", () => {
         tools: [viewImageTool],
       });
 
-      const messages = await agent.send(
+      const messages = await sendRound(
+        agent,
         `请使用 view_image 工具查看这张图片：${imgPath}，然后告诉我图片的内容。`,
       );
 

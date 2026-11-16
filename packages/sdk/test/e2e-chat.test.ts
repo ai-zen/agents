@@ -1,8 +1,8 @@
 /**
  * 真实聊天端到端测试（需 API Key）。
  *
- * 使用 DeepSeek API 测试完整的 send() 链路：
- *   createModel → SdkAgent → agent.send()
+ * 使用 DeepSeek API 测试完整的一轮链路：
+ *   createModel → SdkAgent → start() / push() / 等闲（新 core 没有 `send()`）
  *
  * 运行方式：
  *   npm test -- --testPathPattern "test/e2e-chat"
@@ -18,6 +18,7 @@ import { Scope } from "../src/scope/Scope.js";
 import { createModel } from "../src/runtime/createModel.js";
 import { SdkAgent } from "../src/runtime/SdkAgent.js";
 import { BUILTIN_TOOL_CLASSES } from "../src/scope/plugins/builtin/index.js";
+import { runRound, sendRound, stopAgent } from "../src/test-support/agent-round.js";
 
 // ---------------------------------------------------------------------------
 // 配置
@@ -76,7 +77,7 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
       messages: [Message.System("你是一个简洁的助手，用一句话回复。")],
     });
 
-    const messages = await agent.send("请说'你好，世界'");
+    const messages = await sendRound(agent, "请说'你好，世界'");
 
     expect(messages.length).toBeGreaterThan(0);
     const lastMsg = messages[messages.length - 1];
@@ -118,7 +119,8 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
       tools,
     });
 
-    const messages = await agent.send(
+    const messages = await sendRound(
+      agent,
       `请用 read 读取 package.json 文件，告诉我这个包的 name 和 version。文件路径: ${pkgPath}`,
     );
 
@@ -150,10 +152,11 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
       messages: [Message.System("你是一个助手。记住用户说的信息。")],
     });
 
-    // 第一轮
-    await agent.send("我的名字叫小明，我今年25岁。");
+    // 第一轮（常驻会话：`runRound` 不关门，可以接着跑下一轮）
+    await runRound(agent, "我的名字叫小明，我今年25岁。");
     // 第二轮
-    const messages = await agent.send("我叫什么名字？今年多大？");
+    const messages = await runRound(agent, "我叫什么名字？今年多大？");
+    await stopAgent(agent);
 
     const lastContent = messages
       .filter((m) => m.role === "assistant")

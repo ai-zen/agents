@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
-import { AgentNS, Message } from "@ai-zen/agents-core";
+import { AgentError, AgentNS, Message } from "@ai-zen/agents-core";
 import type OpenAI from "openai";
 import { getLogger, type Logger } from "../shared/logger.js";
 import { readSkill } from "../scope/plugins/skills/discover.js";
@@ -142,7 +142,7 @@ export interface HandoffParams {
    * 两种执行者都要认它：
    *   - `summary`：直接作为 `chat.completions.create` 的 RequestOptions 传下去，
    *     请求会真的被中断（否则该请求根本无从取消）；
-   *   - `self`：`agent.abort()` 不抛错，所以每个 `send()` 之后要主动检查 `aborted`。
+   *   - `self`：agent 被 `abort()` 了（`paused`），所以每一轮之后要主动检查取不取消。
    */
   signal?: AbortSignal;
 }
@@ -163,9 +163,10 @@ export interface MigrateParams extends HandoffParams {
  * 模板的唯一真相源是 `handoff` Skill（`SKILL.md`）；代码只负责
  * 「读正文 → 注入 → 校验文件 → 读不到时用兜底模板」，不持有第二份章节清单。
  *
- * 重入：`handoff()` 与 `migrate()` 共用 `busy` 标志。交接回合本身也是一次 `send()`，
- * 若不在 busy 期间让 `AutoMigratePlugin` / `ContextGuardPlugin` 让行，就会「交接触发迁移、
- * 迁移再触发交接」无限递归，或在最满的时刻被护栏直接击杀。
+ * 重入：`handoff()` 与 `migrate()` 共用 `busy` 标志。交接回合本身就是「往同一个 agent
+ * 里再投一轮」（`push` 一条指令），它跑完后 agent 会再变闲一次 —— 若不在 busy 期间让
+ * `AutoMigratePlugin` / `ContextGuardPlugin` 让行，就会「交接触发迁移、迁移再触发交接」
+ * 无限递归，或在最满的时刻被护栏直接拒掉。
  *
  * 取消：取消句柄由服务自己持有（{@link HandoffService.abort}），而不是只认调用方传进来的
  * `signal` —— 自动迁移由 `AutoMigratePlugin` 直接驱动，调用方根本没有机会把 signal 递进来，
@@ -309,6 +310,9 @@ export class HandoffService {
    *
    * 为什么不内联全文：接手方第一次真正需要的是「去哪里取交接」，读一次文件的输入成本
    * 与内联全文相当，但内联会让每条请求都携带全文；路径方案把成本推迟到真正需要时。
+   *
+   * `source` 必须带（`CORE.md` §3「所有 `role: user` 的消息都必须有 source」）：这条不是
+   * 用户说的话，是宿主注入的，所以是 `system` + label。
    */
   static createPostMessages(handoffPath: string): AgentNS.Message[] {
     const content = [
@@ -318,7 +322,7 @@ export class HandoffService {
       "Read that file first with the read tool, and once you understand the context and the unfinished work, continue helping the user with the task.",
     ].join("\n");
 
-    return [Message.User(content)];
+    return [Message.User(content, { kind: "system", label: "handoff" })];
   }
 
   /** 序列化消息为 `[role]: content` 文本（仅 `summary` 模式使用） */
@@ -340,8 +344,9 @@ export class HandoffService {
    * 取消进行中的交接/迁移（用户按 Ctrl+C）。没有进行中的交接时是 no-op。
    *
    * 边界：本方法只保证「停下 + 回退」——不再重试、不降级 summary、不迁移，并把会话
-   * 退回交接前。**它不负责立刻掐断正在跑的模型请求**：`self` 模式的回合是
-   * `agent.send()`，调用方通常要同时 `agent.abort()`（TUI 就是这么做的）；`summary`
+   * 退回交接前。**它不负责立刻掐断正在跑的模型请求**：`self` 模式的那一轮是往常驻 agent 里
+   * `push()` 的一条指令，调用方通常要同时 `agent.abort()`（TUI 就是这么做的 ——
+   * 那一按会让 agent 停在 `paused`，本服务随之把这一轮判成「没跑完」）；`summary`
    * 模式的那次请求拿的是本服务合并出的 signal，会被真正中断。
    */
   abort(): void {
@@ -502,7 +507,7 @@ export class HandoffService {
 
       if (mode === "self" && !this.supportsSelfHandoff(agent)) {
         this.logger.warn(
-          "[handoff] agent has no write tool or send capability, falling back to standalone summary mode",
+          "[handoff] agent has no write tool or is not a resident session, falling back to standalone summary mode",
         );
         mode = "summary";
       }
@@ -569,9 +574,15 @@ export class HandoffService {
     await this.discardPartialFile(handoffPath, existedBefore);
   }
 
-  /** 自交接是否可用：需要 `write` 工具 + `send` 能力 */
+  /**
+   * 自交接是否可用：需要 `write` 工具，且 agent 是**常驻**的。
+   *
+   * 为什么要看 `lifetime`：自交接靠「往同一个会话里投一轮指令」实现，而一次性 agent
+   * 开跑即关收（第二次 `push` 抛 `closed`），且跑完就死透（`CORE.md` §1）—— 它根本没
+   * 有「再问一轮」这种能力。
+   */
   private supportsSelfHandoff(agent: SdkAgent): boolean {
-    if (typeof agent.send !== "function") return false;
+    if (agent.lifetime === "one-shot") return false;
     return Boolean(agent.tools?.some((tool) => tool.function?.name === "write"));
   }
 
@@ -580,13 +591,14 @@ export class HandoffService {
    *
    * 失败判定（任一成立即视为失败，交由上层单向降级 summary）：
    *   - 文件不存在 / 小于阈值；
-   *   - 模型/工具链抛错（例如没有权限、被护栏中断）。
+   *   - 模型/工具链抛错（例如没有权限、被护栏拒绝）；
+   *   - 这一轮压根没跑完（agent 被 `abort()` 暂停、或已经被关门/硬杀）。
    *
    * **取消不算失败**：`signal` 已触发时抛 {@link HandoffAbortedError}，既不走
-   * 「文件没写好→重试一次」也不降级 summary。 这条分支必须显式写：
-   * `agent.abort()` 不抛错（core 把消息标记为 Aborted 后正常返回），否则「用户
-   * 按了 Ctrl+C」会被下面的文件校验误判成「模型没写出文档」，于是重试一轮、再降级
-   * 一轮 —— 用户以为取消了，实际多烧了两轮全量输入。
+   * 「文件没写好→重试一次」也不降级 summary。 这条分支必须显式写：`agent.abort()` 不抛错
+   * （core 把在途请求掉、消息标记成 Aborted 然后正常返回），否则「用户按了 Ctrl+C」会被
+   * 下面的文件校验误判成「模型没写出文档」，于是重试一轮、再降级一轮 —— 用户以为取消了，
+   * 实际多烧了两轮全量输入。
    *
    * 取消的善后（删文档、截消息）不在这里做：交给 {@link runHandoff} 的 catch 一处处理，
    * 因为「文档已写出但还没校验」的取消根本进不到本方法的 catch。
@@ -609,37 +621,127 @@ export class HandoffService {
     guard.arm(handoffPath, cwd);
 
     try {
-      await agent.send(
+      const first = await this.pushInstructionRound(
+        agent,
         HandoffService.createHandoffInstruction({
           skillContent,
           handoffPath,
           toolsAvailable: true,
         }),
+        signal,
       );
       // `agent.abort()` 不抛错，必须主动检查（见方法注释）
       this.throwIfAborted(signal);
+      // 这一轮没跑完（暂停 / 关门 / 硬杀）：产物没意义，也别再往里投 ——
+      // 暂停中不取件，再投只会把一条陈旧指令留在队列里，等 resume 之后突然自己跑起来
+      if (first !== "idle") return false;
 
       if (await this.isHandoffFileReady(handoffPath)) return true;
 
       this.logger.warn(
         `[handoff] handoff document missing or too small, retrying once: ${handoffPath}`,
       );
-      await agent.send(
+      const second = await this.pushInstructionRound(
+        agent,
         [
           `The handoff document does not exist or is too small to deliver: ${handoffPath}`,
           "Use the write tool right now to write the **complete** handoff document to that path (use the path exactly as given) and do nothing else.",
         ].join("\n"),
+        signal,
       );
       this.throwIfAborted(signal);
+      if (second !== "idle") return false;
 
       return await this.isHandoffFileReady(handoffPath);
     } catch (err: any) {
+      // agent 已经关门：不是「文档没写出来」，是「这个会话已经不在了」。降级 summary 会
+      // 为一个死掉的会话白烧一轮全量输入，所以直接把 `closed` 往上交（调用方该知道这件事）
+      if (err instanceof AgentError && err.code === "closed") throw err;
       if (isAbortError(err, signal)) throw new HandoffAbortedError();
       this.logger.error(`[handoff] self handoff round failed: ${err?.message ?? err}`);
       return false;
     } finally {
       guard.disarm();
     }
+  }
+
+  /**
+   * 往**常驻** agent 里投一条指令，等这一轮真的收完。
+   *
+   * ## 为什么是「push + 订阅 state」
+   *
+   * core 重写后没有 `send()` 了（`CORE.md` §1：「常驻会话只 `push`，不看返回值」）：
+   * 「等」这种动作看不见不由我引起的变化，唯一可靠的替代是**订阅**。于是这里先订阅
+   * `state`、再 `push` —— 顺序不能反：push 之后状态已经变了，晚一步就错过「这一轮开始了」
+   * 那一拍，随后第一次报闲会被误当成「我这一轮跑完了」。
+   *
+   * ## `start()`：老 `send()` 隐含的那件事
+   *
+   * 老的 `send()` 是对「这个 agent」发起的，没起来也能顺手跑一段。新 core 的循环只听
+   * `start()`，所以这里先把它叫起来：`start()` 幂等（已起来就返回同一句 promise），
+   * **不能 await** —— 它到死才 resolve。宿主正常会话里这一句是空动作。
+   *
+   * ## 返回「这一轮怎么结束的」而不是「成没成」
+   *
+   * 三种结束方式对调用方意义不同（`idle` 才能去校验产物），所以分开报：
+   *   - `idle`：跑完了；
+   *   - `paused`：被 `abort()` 暂停/掉；
+   *   - `dead`：关门/硬杀，循环已经结束。
+   *
+   * 第四种情况不在这里表达：`push` 在关门之后会直接抛 `AgentError("closed")` —— 那是
+   * 「调用方违约」（往一个已经没有的会话里塞东西），就该往上抛，不该被归成一种“结束方式”。
+   */
+  private async pushInstructionRound(
+    agent: SdkAgent,
+    content: string,
+    signal?: AbortSignal,
+  ): Promise<"idle" | "paused" | "dead"> {
+    // 暂停中不取件：此刻投进去只会排在队列里，等 resume 后突然自己跑起来
+    if (agent.state === "paused") return "paused";
+
+    // 叫起来（幂等；不 await —— 那句 promise 到死才 resolve）
+    void agent.start();
+
+    const ended = new Promise<"idle" | "paused" | "dead">((resolve) => {
+      let sawBusy = false;
+      const offs: Array<() => void> = [];
+      const finish = (end: "idle" | "paused" | "dead") => {
+        for (const off of offs.splice(0)) off();
+        resolve(end);
+      };
+
+      offs.push(
+        agent.on("state", (event) => {
+          if (event.to === "busy") {
+            sawBusy = true;
+          } else if (event.to === "idle" && sawBusy) {
+            // 只认「忙过之后的闲」：投递之前那一段（队列里还压着别人的货）的闲不是我的
+            finish("idle");
+          } else if (event.to === "paused") {
+            finish("paused");
+          }
+        }),
+      );
+      offs.push(agent.on("stopped", () => finish("dead")));
+      offs.push(agent.on("killed", () => finish("dead")));
+      // 取消也要能打断「等闲」（`CORE.md` §5 那个死角：等子 agent 闲同样得能被掐断）
+      const onAbort = () => finish("paused");
+      signal?.addEventListener("abort", onAbort, { once: true });
+      // 正常收尾时把 signal 上的监听一起摘掉：调用方的 signal 可能活得比这一轮长得多
+      offs.push(() => signal?.removeEventListener("abort", onAbort));
+    });
+
+    agent.push({
+      content,
+      priority: "low",
+      // 这条指令是**宿主侧**（`/handoff` 命令、自动迁移）注入的，不是用户说的话 ——
+      // 按「谁注入谁填」给它一个 system 来源（`CORE.md` §3）
+      source: { kind: "system", label: "handoff" },
+    });
+
+    // 关门之后投递会抛 `AgentError("closed")`（`CORE.md` §1）：不接、不归类，
+    // 让它往上走到 {@link runSelfHandoff} 的 catch（那里把 closed 原样再往上交）
+    return await ended;
   }
 
   /** 独立摘要：一次模型调用，用同一份 Skill 正文作为规范 */

@@ -136,7 +136,13 @@ export type { AgentModel } from "./runtime/createModel.js";
 export { completeOnce } from "./runtime/completeOnce.js";
 export type { CompleteOnceInput } from "./runtime/completeOnce.js";
 export { SdkAgent } from "./runtime/SdkAgent.js";
-export type { AgentPlugin, SendContext } from "./runtime/SdkAgent.js";
+export type {
+  AgentPlugin,
+  InnerLoopContext,
+  OuterLoopContext,
+  SubAgentHookContext,
+  ToolHookContext,
+} from "./runtime/SdkAgent.js";
 export { createAgent } from "./runtime/createAgent.js";
 export type { CreateAgentOptions } from "./runtime/createAgent.js";
 // 模型三级解析（唯一实现）：档位类型也导出，服务端与客户端要按它渲染「当前生效档」

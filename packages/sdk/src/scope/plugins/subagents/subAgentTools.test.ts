@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { Agent, AgentNS, Message } from "@ai-zen/agents-core";
+import { Agent, AgentNS, Message, ToolCallContext } from "@ai-zen/agents-core";
 import { createSubAgentTool } from "./subAgentTools.js";
 import type { Scope } from "../../Scope.js";
 import type { AgentDefinition } from "../../../types/index.js";
@@ -81,5 +81,45 @@ describe("createSubAgentTool", () => {
     const tool = createSubAgentTool(def, scope);
     expect(tool).toBeDefined();
     expect(tool.function.name).toBe("agent_one");
+  });
+
+  it("buildAgent 造出来的子 Agent 是「一次性」的，且注入的 user 消息带 source", async () => {
+    // 委派 = 燃料 + 一把钥匙（CORE.md §9）：`buildAgent` 只能造一次性 agent，
+    // 否则它既没人 stop、又会把「结果靠事件回来」的能力错配给一个用完就扔的节点。
+    const scope = mockScope();
+    const def = sampleDef("sa1", "agent_one");
+    def.modelId = "gpt4"; // 有独立模型 → 不必碰父 agent 的 client
+
+    const tool = createSubAgentTool(def, scope);
+    const host = new Agent({ client: {} as never, model: "parent-model", tools: [tool] });
+
+    let captured: Agent | undefined;
+    host.use({
+      onSubAgentStart: ({ subAgent }) => {
+        captured = subAgent;
+        // 拒掉这次委派：本用例只关心「造出来的是什么」，不想真跑请求
+        return "denied by test";
+      },
+    });
+
+    const result = await tool.exec(
+      new ToolCallContext({
+        agent: host,
+        tool_call: {
+          id: "1",
+          type: "function",
+          function: { name: "agent_one", arguments: JSON.stringify({ task: "do it" }) },
+        },
+        resultMessage: Message.Tool({ id: "r1", function: { name: "agent_one" } }),
+      }),
+    );
+
+    expect(result).toBe("denied by test");
+    expect(captured).toBeDefined();
+    expect(captured!.lifetime).toBe("one-shot");
+    // 模板里那条 user 消息没有 source（定义文件是 JSON，不带这个概念）：委派工具补
+    const userMessage = captured!.messages.find((m) => m.role === AgentNS.Role.User)!;
+    expect(userMessage.source).toEqual({ kind: "agent", label: "agent_one" });
+    expect(userMessage.content).toBe("do it");
   });
 });

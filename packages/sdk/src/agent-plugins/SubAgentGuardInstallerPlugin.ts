@@ -6,15 +6,15 @@
  * 远程会话的子 Agent 就会裸奔；把它放进 SDK，CLI 与服务端才能装同一份护栏、
  * 共享同一套阈值语义。
  *
- * 背景：SDK 的子 Agent 由 `AgentTool` / `AgentToolLazy` 在委派时 `new Agent({...})` 构建，
- * 新建实例不携带任何插件（`Agent._plugins` 每实例私有，不向子 Agent 传播），且子 Agent 走
- * `run()` 而非 `send()`（`onBeforeSend` / `onAfterSend` 不会触发）。因此主 Agent 上的
- * `ContextGuardPlugin` 对子 Agent 完全无效：子 Agent 的内循环没有上下文 token 护栏。
+ * 背景：SDK 的子 Agent 由 `AgentToolLazy` 在委派时 `new Agent({ lifetime: "one-shot", ... })`
+ * 构建（core 的 `buildAgent` 回调），新建实例不携带任何插件（`Agent` 的插件表每实例私有，
+ * 不向子 Agent 传播），且子 Agent 走 `runOnce()`（一次性的那一条路），主 Agent 上的
+ * `ContextGuardPlugin` 对它完全无效：子 Agent 的内循环没有上下文 token 护栏。
  *
- * 介入点：core 的 `onSubAgentStart` 钩子在「子 Agent 已构建、尚未 run()」时由宿主 Agent
- * 分发，载荷携带子 Agent 实例。`use()` 只是把插件推入 `_plugins`，而钩子分发每次都实时遍历
- * 该列表，故在钩子内安插对**本次 run 立即生效**（无需 init；AgentTool 也不会调用子 Agent 的
- * init）。
+ * 介入点：core 的 `onSubAgentStart` 钩子在「子 Agent 已构建、尚未 `runOnce()`」时由宿主 Agent
+ * 分发，载荷携带子 Agent 实例。`use()` 只是把插件推入插件表，而钩子分发每次都实时遍历
+ * 该列表，故在钩子内安插对**本次 runOnce 立即生效**（无需 init；`AgentToolLazy` 也不会调用
+ * 子 Agent 的 init）。
  *
  * 约束口径（与主 Agent 同款，一项不落）：把主 Agent 同款的 `ContextGuardPlugin` 装到子 Agent 上
  * —— 同一个 `guardTokens`（当前模型的 `tokenThresholds.guard`），使「请求前用量超过硬线即中断」
@@ -27,17 +27,19 @@
  * 都要带上，否则孙级又会把让行丢掉（同一个缺口往下挪一层而已）。
  * **不设**轮次上限，**不设**工具调用次数上限。
  *
- * 中断语义：抛错即结束子 Agent 的 run；异常经 `AgentTool` 的 finally（分发 onSubAgentEnd）
- * 上抛至父 Agent，因父 Agent 默认 `allowJsonParseError = true` 而降级为一条工具结果文本
- * （`执行工具 X 时出错: …`），父 Agent 继续下一轮——即「软中断」：停掉越界的子 Agent，但不
- * 终止用户对话（如需硬停，父 Agent 须设 allowJsonParseError=false）。
+ * 中断语义（core 重写之后变了，这是必须知道的一条）：护栏在 `onInnerLoopStart` 里**返回
+ * 拒绝字符串**（`CORE.md` §11「哪些钩子能拒」），于是子 Agent 的那一圈**压根没发出去** ——
+ * 历史里一个字都不多，core 报 `denied`，委派工具照常收尾。父 Agent 这边拿到的是子 Agent
+ * 已装好的历史（委派工具交回 `messages` 的最后一条），**不是**一段「执行工具时出错」的异常
+ * 文本 —— 新 core 里钩子抛错会穿到 `start()` 外面把循环打死，反而连收尾都做不干净。
  *
- * 覆盖范围：core 只有两条委派路径（`AgentTool` / `AgentToolLazy`），均分发 onSubAgentStart，
- * 故本插件对**全部**子 Agent 生效。SDK 的 `call_skill_sub_agent`（技能子 Agent）同样由
+ * 覆盖范围：core 的委派路径是 `AgentToolLazy`，它分发 onSubAgentStart / onSubAgentEnd，
+ * 故本插件对**全部**子 Agent 生效。SDK 的 `call_skill_sub_agent`（技能子 Agent）与
+ * `createSubAgentTool` 造出来的那些（名称取自定义的 `function.name`）同样由
  * `AgentToolLazy` 承载、走同一委派边界，因此也在覆盖范围内。
  */
 
-import type { AgentPlugin, SubAgentContext } from "@ai-zen/agents-core";
+import type { AgentPlugin, SubAgentHookContext } from "@ai-zen/agents-core";
 import { ContextGuardPlugin } from "./ContextGuardPlugin.js";
 
 export interface SubAgentGuardOptions {
@@ -69,7 +71,7 @@ export class SubAgentGuardInstallerPlugin implements AgentPlugin {
     this.isSuspended = options.isSuspended;
   }
 
-  onSubAgentStart({ subAgent }: SubAgentContext): void {
+  onSubAgentStart({ subAgent }: SubAgentHookContext): void {
     // 与主 Agent 完全同款：同一个 guardTokens 绝对阈值 + 同一个让行判断
     subAgent.use(
       new ContextGuardPlugin({
