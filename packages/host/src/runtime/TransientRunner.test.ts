@@ -39,11 +39,9 @@ interface Harness {
   runner: TransientRunner;
   scopes: RecordingScopes;
   agentCalls: Array<{ agentId: string; modelId: string | null; historyLength: number }>;
-  /** 造出来的假 agent（看它手里最后有哪些消息） */
+  /** 造出来的假 agent（看它手里最后有哪些消息 / 模型收到了什么） */
   agents: FakeAgent[];
-  /** 这一轮真正发给模型的内容 */
-  sentContents: Array<AgentNS.MessageContent>;
-  behaviour: { fail: Error | null; status: AgentNS.MessageStatus | null; deltas: AgentNS.Delta[] };
+  behaviour: { fail: Error | null; deltas: AgentNS.Delta[] };
 }
 
 async function setup(config: Record<string, unknown> = { defaultAgent: "a1" }): Promise<Harness> {
@@ -55,10 +53,8 @@ async function setup(config: Record<string, unknown> = { defaultAgent: "a1" }): 
   const scopes = new RecordingScopes();
   const agentCalls: Harness["agentCalls"] = [];
   const agents: FakeAgent[] = [];
-  const sentContents: Array<AgentNS.MessageContent> = [];
   const behaviour: Harness["behaviour"] = {
     fail: null,
-    status: null,
     deltas: [{ content: "一次性回答" }],
   };
 
@@ -68,28 +64,11 @@ async function setup(config: Record<string, unknown> = { defaultAgent: "a1" }): 
       modelId: context.modelId,
       historyLength: context.history.length,
     });
-    const agent = new FakeAgent([{ deltas: behaviour.deltas }]);
+    // 真 core `Agent` + 脚本里的假流：模型那一侧可脚本化（`fail` 模拟端点 500）
+    const agent = new FakeAgent([
+      behaviour.fail ? { fail: behaviour.fail, deltas: [] } : { deltas: behaviour.deltas },
+    ]);
     agents.push(agent);
-    if (behaviour.fail) {
-      agent.send = async () => {
-        throw behaviour.fail;
-      };
-    } else if (behaviour.status) {
-      const status = behaviour.status;
-      const send = agent.send.bind(agent);
-      agent.send = async (content) => {
-        const messages = await send(content);
-        const last = messages[messages.length - 1];
-        if (last) last.status = status;
-        return messages;
-      };
-    }
-    // 把真正发给模型的内容记下来（在所有「换掉 send」的分支之后包一层，包在最外层）
-    const send = agent.send.bind(agent);
-    agent.send = async (content) => {
-      sentContents.push(content);
-      return await send(content);
-    };
     return agent;
   };
 
@@ -99,7 +78,7 @@ async function setup(config: Record<string, unknown> = { defaultAgent: "a1" }): 
     configManager: new ConfigManager(configPath),
   });
 
-  return { dir, runner, scopes, agentCalls, agents, sentContents, behaviour };
+  return { dir, runner, scopes, agentCalls, agents, behaviour };
 }
 
 let harness: Harness;
@@ -127,7 +106,7 @@ describe("一次请求跑一轮，结果一次返回（D3）", () => {
     expect(Object.keys(result).sort()).toEqual(["message", "problem", "subagents"]);
   });
 
-  it("跑一轮就是一次 send，历史永远是空的（没有可续接的东西）", async () => {
+  it("跑一轮就是一次 runOnce，历史永远是空的（没有可续接的东西）", async () => {
     await harness.runner.run({ cwd: "/tmp/project", input: { content: "第一次" } });
     expect(harness.agentCalls).toEqual([{ agentId: "a1", modelId: null, historyLength: 0 }]);
   });
@@ -159,10 +138,11 @@ describe("只取 Scope，与 Workspace 无关（D3）", () => {
   });
 
   it("跑挂了 Scope 也不回收（它不属于这一次请求）", async () => {
+    // 请求失败（端点 500）现在落在那条消息上（见「失败与结局的说明」）：
+    // 无论成不成，Scope 都不还 —— 它属于那个目录，不属于这一次请求
     harness.behaviour.fail = new Error("端点 500");
-    await expect(
-      harness.runner.run({ cwd: "/tmp/project", input: { content: "x" } }),
-    ).rejects.toMatchObject({ code: "internal" });
+    const result = await harness.runner.run({ cwd: "/tmp/project", input: { content: "x" } });
+    expect(result.problem?.code).toBe("transient.error");
     // 拿过的那一个还在手里（本文件没有销毁它的口子），跑挂了也不动它
     expect(harness.scopes.created).toEqual([transientScopeKey("/tmp/project")]);
     expect(harness.scopes.scopes).toHaveLength(1);
@@ -176,8 +156,10 @@ describe("告诉模型「现在在哪个目录」（F-D9）", () => {
       "zh",
     );
 
-    // 发出去的正文不再附注入段
-    expect(harness.sentContents[0]).toBe("一句话回答我");
+    // 发出去的正文不再附注入段：模型第一次请求里最后一条 user 消息就是用户打的那句
+    const request = harness.agents[0]?.requests[0] ?? [];
+    const userMessages = request.filter((message) => message.role === AgentNS.Role.User);
+    expect(userMessages.at(-1)?.content).toBe("一句话回答我");
 
     // 而 agent 收到的第一条是那条 hidden 的 user 消息，正文带 cwd
     const cwdMessage = harness.agents[0]?.messages[0];
@@ -188,24 +170,17 @@ describe("告诉模型「现在在哪个目录」（F-D9）", () => {
 });
 
 describe("失败与结局的说明", () => {
-  it("执行抛错：报 internal + 「这次一次性请求没跑完」那条文案", async () => {
+  it("请求失败不再是一个异常：core 把它记在那条消息上，结果照样带回来（problem 说明）", async () => {
+    // core 重写之后「请求没连上」是**世界里发生的事**，不是调用方的异常（`CORE.md` §7）：
+    // 它落在 `message.status = error` / `message.error` 上，一轮照常收尾。临时对话于是回到
+    // 「结果 + 一句说明」这个形状，而不是把异常甩给调用方。
     harness.behaviour.fail = new Error("端点 500");
-    await expect(
-      harness.runner.run({ cwd: "/tmp/project", input: { content: "x" } }),
-    ).rejects.toMatchObject({
-      code: "internal",
-      messageKey: "error.transientFailed",
-      detail: { reason: "端点 500" },
-    });
-  });
-
-  it("跑完但结局是错误：消息照样带回来，problem 说明", async () => {
-    harness.behaviour.status = AgentNS.MessageStatus.Error;
     const result = await harness.runner.run({
       cwd: "/tmp/project",
       input: { content: "x" },
     });
     expect(result.message.status).toBe(AgentNS.MessageStatus.Error);
+    expect(result.message.error).toBeInstanceOf(Error);
     expect(result.problem?.messageKey).toBe("error.transientFailed");
     expect(result.problem?.code).toBe("transient.error");
   });

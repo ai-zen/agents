@@ -18,6 +18,11 @@
  *    （没有单独的列）。给用户看的读取路径（`message.list`、侧栏条数、删除代价）默认把它
  *    排除；要连它一起取的地方（模型的历史、排查问题）显式传 `includeHidden`。
  *
+ * 5. **`source` 是判别结构**：core 的 `AgentNS.MessageSource`（`{kind:"user"}` /
+ *    `{kind:"agent",label}` / `{kind:"system",label}`）在本表是一列 `TEXT`，存它的 JSON。
+ *    写入时序列化、读回来反序列化，两个方向同一个形状；旧行这一列是 NULL（= 没记过），
+ *    兼容与升级策略在 {@link toSource}。
+ *
  * FTS 索引的同步交给 `messages` 上的触发器（同样在 migrations.ts 里建），所以本文件
  * 写消息时只写 `messages` 表，不需要额外维护索引。
  */
@@ -41,7 +46,7 @@ const TRIGRAM_MIN_LENGTH = 3;
 const SNIPPET_LENGTH = 160;
 
 const COLUMNS =
-  "id, conversationId, seq, role, status, omit, content, data, searchText, parentToolCallId, createdAt, updatedAt";
+  "id, conversationId, seq, role, status, omit, content, data, searchText, source, parentToolCallId, createdAt, updatedAt";
 
 /**
  * 「这条消息给用户看」的条件：`data.hidden` 不为真。
@@ -72,7 +77,7 @@ const UPSERT_SQL = `
     ?,
     ?,
     (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE conversationId = ?),
-    ?, ?, ?, ?, ?, ?, ?,
+    ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?
   )
   ON CONFLICT (id) DO UPDATE SET
@@ -82,6 +87,9 @@ const UPSERT_SQL = `
     content          = excluded.content,
     data             = excluded.data,
     searchText       = excluded.searchText,
+    -- 来源是**投递那一刻**的事实，之后的每一遍写（流式、收尾）都带着同一份；
+    -- 没带的那几遍（例如只改状态的写）不许把它抹成 NULL。
+    source           = COALESCE(excluded.source, messages.source),
     parentToolCallId = COALESCE(excluded.parentToolCallId, messages.parentToolCallId),
     updatedAt        = excluded.updatedAt
 `;
@@ -128,6 +136,31 @@ function toContent(value: unknown): AgentNS.MessageContent | null {
   return null;
 }
 
+/**
+ * `source` 列的反序列化：core 的 `AgentNS.MessageSource` 是**判别结构**，库里存的是它的 JSON。
+ *
+ * 三种输入都要接住：
+ *   1. 合法的判别结构（`{kind:"user"}` / `{kind:"agent",label}` / `{kind:"system",label}`）
+ *      —— 原样返回；`label` 不是字符串的按空串算（宁可少一句话，不要让整行读不出来）；
+ *   2. **旧形态：一个字符串**（这一列出现之前把来源当自由字符串的写法，或手写的 `'user'`）。
+ *      读回来升成结构：`"user"` → `{kind:"user"}`，其余 → `{kind:"system", label: 那个串}`；
+ *   3. NULL / 坏数据 → `null`，意思是「没有记过来源」，**不默认成用户**（`CORE.md` §3：
+ *      不做「没有 source 就是用户」那种缺省）。
+ */
+function toSource(value: unknown): AgentNS.MessageSource | null {
+  if (typeof value === "string") {
+    if (value === "user") return { kind: "user" };
+    return { kind: "system", label: value };
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const record = value as { kind?: unknown; label?: unknown };
+  if (record.kind === "user") return { kind: "user" };
+  if (record.kind === "agent" || record.kind === "system") {
+    return { kind: record.kind, label: typeof record.label === "string" ? record.label : "" };
+  }
+  return null;
+}
+
 function toStoredMessage(row: MessageRow): StoredMessage {
   const data = parseJson(row.data);
   return {
@@ -139,6 +172,7 @@ function toStoredMessage(row: MessageRow): StoredMessage {
     status: row.status,
     omit: row.omit !== 0,
     content: toContent(parseJson(row.content)),
+    source: toSource(parseJson(row.source)),
     data: typeof data === "object" && data !== null && !Array.isArray(data)
       ? (data as Record<string, unknown>)
       : null,
@@ -162,6 +196,7 @@ function upsertParams(input: MessageUpsertInput): SQLInputValue[] {
     contentJson,
     dataJson,
     searchText,
+    input.source === undefined || input.source === null ? null : JSON.stringify(input.source),
     input.parentToolCallId ?? null,
     input.createdAt,
     input.createdAt,
@@ -202,6 +237,16 @@ export class MessageRepository {
     await this.db.tx((tx) => {
       for (const input of inputs) tx.run(UPSERT_SQL, upsertParams(input));
     });
+  }
+
+  /**
+   * 物理删掉一条消息（core 的「丢」= 真删，`CORE.md` §6）。
+   *
+   * 运行时的 `messageRemoved` 事件走它：core 在一圈开头修历史时删掉的残局，库里也必须消失 ——
+   * 否则用户会看见一条模型那边已经不存在的消息。关系行（`conversation_assets`）跟着外键级联走。
+   */
+  async delete(id: string): Promise<void> {
+    await this.db.run(`DELETE FROM messages WHERE id = ?`, [id]);
   }
 
   async get(id: string): Promise<StoredMessage | undefined> {

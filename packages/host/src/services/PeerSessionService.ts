@@ -105,8 +105,13 @@ export interface PeerSessionRecord {
   resultDelivered: "pending" | "delivered" | "dropped";
 }
 
-/** 子会话第一轮的用户输入是谁推来的（正文最前面那行注释就写它） */
-const SOURCE_FROM_PARENT = "父对话";
+/**
+ * 子会话第一轮的用户输入是谁推来的（core 在正文最前面那行注释里写的就是这个 `label`）。
+ *
+ * 形状是 core 的 `AgentNS.MessageSource` 判别结构：`kind: "agent"` 说的是「另一个 agent 推来的」，
+ * `label` 是给人看的那个名字。宿主不再拿字符串比来源。
+ */
+const SOURCE_FROM_PARENT: AgentNS.MessageSource = { kind: "agent", label: "父对话" };
 
 /** 结果正文的截断长度（模型看到的正文不必比这更长） */
 const RESULT_CHARS = 1000;
@@ -123,9 +128,9 @@ const RESULT_CHARS = 1000;
  */
 const MAX_RUNNING_PEERS = 4;
 
-/** `send_to_session` 正文注释里的来源名：`会话「<调用者的名字>」`（拼注释归 core） */
-function senderSource(name: string): string {
-  return `会话「${name}」`;
+/** `send_to_session` 正文注释里的来源：`会话「<调用者的名字>」`（拼注释归 core） */
+function senderSource(name: string): AgentNS.MessageSource {
+  return { kind: "agent", label: `会话「${name}」` };
 }
 
 /** `read_session_status` 里那条摘要的截断长度（**绝不给全量消息**，否则模型会拿它当上下文搬运） */
@@ -157,7 +162,7 @@ export interface PeerSessionRunner {
    */
   deliver(
     conversationId: string,
-    input: { content: AgentNS.MessageContent; source: string },
+    input: { content: AgentNS.MessageContent; source: AgentNS.MessageSource },
   ): Promise<DeliveryOutcome>;
 }
 
@@ -470,7 +475,9 @@ export class PeerSessionService implements PeerSessionPort {
     try {
       await this.deps.chatRunner.deliver(record.parentConversationId, {
         content: await this.resultBody(record, facts.outcome, facts.problem),
-        source: record.label,
+        // 这是子会话这一段的**结果**被推回父对话：对父对话而言它来自另一个 agent
+        // （`label` 原样就是那个子会话的名字）
+        source: { kind: "agent", label: record.label },
       });
       // 受理 = 迟早落地（攒批、复活都由执行者兜着）：不必等它跑完，也不必再试一次
       record.resultDelivered = "delivered";

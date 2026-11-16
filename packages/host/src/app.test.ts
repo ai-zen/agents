@@ -525,21 +525,21 @@ function pathsOf(fixture: Fixture) {
 // 退出判据（PRD L4 / R53）
 // ---------------------------------------------------------------------------
 
-/** 一轮的 `send` 被闸门按住的假 agent：结算由用例放行，用来钉住「跑着的时候不退」 */
-class GatedAgent extends FakeAgent {
-  constructor(private readonly gate: Promise<void>) {
-    super([
-      {
-        deltas: [{ content: "跑完了" }],
-        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
-      },
-    ]);
-  }
-
-  async send(content: Parameters<FakeAgent["send"]>[0]): ReturnType<FakeAgent["send"]> {
-    await this.gate;
-    return await super.send(content);
-  }
+/**
+ * 一轮请求被闸门按住的假 agent：结算由用例放行，用来钉住「跑着的时候不退」。
+ *
+ * 「按住」耍在脚本那一层（`FakeRound.gate`：请求发出、首片之前就停在那里），不是在宿主
+ * 与 agent 之间插一道 —— 宿主现在不 `await` 任何一个 agent 动作（`push` 同步入队就返回），
+ * 在那一层按住就什么都证明不了。
+ */
+function gatedRound(gate: Promise<void>): FakeAgent {
+  return new FakeAgent([
+    {
+      gate,
+      deltas: [{ content: "跑完了" }],
+      usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+    },
+  ]);
 }
 
 describe("退出判据", () => {
@@ -603,7 +603,7 @@ describe("退出判据", () => {
         exits.push(facts);
       },
       createScope: async () => fake.scope,
-      createAgent: async () => new GatedAgent(gate.promise),
+      createAgent: async () => gatedRound(gate.promise),
     });
 
     const client = await connect(app);

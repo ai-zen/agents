@@ -11,6 +11,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "./Database.js";
 import { migrate, MIGRATIONS } from "./migrations.js";
+
+/** 最新一级的版本号（断言「升到顶」而不是钉死某个数字） */
+const LATEST_VERSION = Math.max(...MIGRATIONS.map((migration) => migration.version));
 import { MetaRepository } from "./MetaRepository.js";
 
 let dir: string;
@@ -141,6 +144,7 @@ describe("migrate", () => {
 
   it("表结构钉住两列真值：名字是否自动起（R35）与子 Agent 的父工具调用（R37）", async () => {
     await migrate(db);
+    void LATEST_VERSION;
 
     type ColumnInfo = { name: string; notnull: number; dflt_value: string | null };
     const conversationColumns = await db.all<ColumnInfo>("PRAGMA table_info('conversations')");
@@ -158,7 +162,8 @@ describe("migrate", () => {
     const db = ownDatabase("fresh-v2.db");
     await migrate(db);
 
-    expect(await new MetaRepository(db).getSchemaVersion()).toBe(2);
+    // 版本号跟的是「最新那一级」（v3 加的是 messages.source）
+    expect(await new MetaRepository(db).getSchemaVersion()).toBe(LATEST_VERSION);
     const columns = await db.all<{ name: string; notnull: number; dflt_value: string | null }>(
       "PRAGMA table_info('conversations')",
     );
@@ -189,12 +194,44 @@ describe("migrate", () => {
 
     await migrate(db);
 
-    expect(await new MetaRepository(db).getSchemaVersion()).toBe(2);
+    expect(await new MetaRepository(db).getSchemaVersion()).toBe(LATEST_VERSION);
     const row = await db.get<{ compactedAt: number | null; compactionMode: string | null }>(
       "SELECT compactedAt, compactionMode FROM conversations WHERE id = 'c1'",
     );
     // 旧数据的真相就是「没压过」：两列都是 NULL
     expect(row).toEqual({ compactedAt: null, compactionMode: null });
+  });
+
+  it("v3：messages 多一列 source（存来源判别结构的 JSON），旧行是 NULL", async () => {
+    const db = ownDatabase("upgrade-v2-to-v3.db");
+    // 只跑到 v2，模拟「上一版已经装上升过级的库」
+    const older = MIGRATIONS.filter((migration) => migration.version <= 2);
+    await db.tx((tx) => {
+      for (const migration of older) for (const statement of migration.statements) tx.run(statement);
+      tx.run("INSERT INTO meta (id, schemaVersion, createdAt) VALUES (1, 2, ?)", [1]);
+    });
+    await db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/v2', 1)");
+    await db.run(
+      `INSERT INTO conversations (id, workspaceId, name, agentId, modelId, createdAt, updatedAt)
+       VALUES ('c1', 'w1', '旧对话', 'a1', 'm1', 2, 2)`,
+    );
+    await db.run(
+      `INSERT INTO messages (id, conversationId, seq, role, status, content, createdAt, updatedAt)
+       VALUES ('m1', 'c1', 1, 'user', 'completed', '"老消息"', 3, 3)`,
+    );
+
+    await migrate(db);
+
+    expect(await new MetaRepository(db).getSchemaVersion()).toBe(LATEST_VERSION);
+    const column = (
+      await db.all<{ name: string; notnull: number; dflt_value: string | null }>(
+        "PRAGMA table_info('messages')",
+      )
+    ).find((candidate) => candidate.name === "source");
+    // 可空：旧行没有记过来源，那不是「用户说的」，而是「不知道」
+    expect(column).toMatchObject({ notnull: 0, dflt_value: null });
+    const row = await db.get<{ source: string | null }>("SELECT source FROM messages WHERE id = 'm1'");
+    expect(row).toEqual({ source: null });
   });
 
   it("迁移后仍然是 WAL 且外键约束是开着的", async () => {

@@ -32,6 +32,8 @@ export const en = {
   "error.handoffDeclined": "Handoff was declined, so this conversation carries on as it is.",
   "error.questionPending": "There's an unanswered question ({question}). Answer it before sending something new.",
   "error.contextGuard": "This conversation reached its {limit}-token limit at {used} tokens, so the request was stopped before it could fail.",
+  // 某个钩子在请求发出前拒了这一圈（core 的 `denied` 事件）：历史上一个字都没多
+  "error.denied": "This turn was stopped before it was sent: {reason}",
 
   // ---- 通知：三档语气，`duration` 决定是否到点消失（PRD L3 / F-I8）----
   "notice.settingsApplied": "Settings applied — no restart needed.",

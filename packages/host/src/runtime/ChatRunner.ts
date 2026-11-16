@@ -1,17 +1,45 @@
 /**
  * `ChatRunner` —— 一轮对话的执行者（PLAN §5 那张时序）。
  *
- * ## 一轮的骨架
+ * ## 一轮的骨架（core 重写之后：**不等 promise，只订阅**）
  *
  * ```
  * RunRegistry.start（这一段对话同时只跑一轮；已经在跑的那一轮由 conversation.send 排队，D14）
  *   → 要 Scope（ScopeRegistry.create：幂等 get-or-create）
  *   → 分配两个消息 id 并落库（用户消息 + 助手占位，PRD L6：id 在请求发出前就有）
  *   → 拿 agent（AgentRegistry.acquire：常驻，同一段对话跨轮复用同一个实例）
- *   → 流式：每片增量推 `message.delta`；同一时刻更新六态并推 `run.state`；同一条消息边流边写（D15）
- *   → 内循环结束：写一次最终版（F-C2）→ 结算（陈旧才退役，配置改过）→ RunRegistry.finish
- *   → 推结算态 `run.state` + `usage`
+ *   → `agent.start()`（幂等，不等它：那句 promise 到死才 resolve）+ `agent.push(...)`（同步入队，立刻返回）
+ *   → core 广播 messageAdded / messageChanged / messageRemoved / delta / tool* / subAgent*：
+ *       宿主就地 upsert / delete 那一行、推 `message.delta`、推进六态并推 `run.state`
+ *   → core 广播 `state → idle`：这一段收工 → 写终版 → 结算（陈旧才退役）→ RunRegistry.finish
  * ```
+ *
+ * **这里没有 core 的「段」，也没有「等它闲」。** 旧宿主有一整套跟「段」绑死的机器：四态
+ * `AgentNS.RunStatus`（idle / running / **stopping** / **terminated**）、两态 `SendStatus`、
+ * `DeliveryReceipt.woke`、`agent.events.on("status")`、以及「等这一段结算完再一次刷库」。
+ * 那些**全部随 core 的重写删掉了** —— core 里没有任何对应物，**不给它们找映射**（`CORE.md` §1）：
+ * 写库改成逐条 upsert（消息事件），状态改成三格（`state`），入队改成 `push`。
+ *
+ * 留下的是**宿主自己的账**，它们由事件推起来、不由「我去等」：`RunRegistry`（这段对话现在
+ * 有没有活欠着 —— 退出判据与 `conversation.abort` 要它）、`RunState`（推给客户端的快照）、
+ * `TurnSession`（一轮的现场：写库节流、本轮产出、排队区镜像）。`TurnSession` 是"一轮"，
+ * 不是 core 的"一段"：它的开始与结束都由 core 的 `state` 事件报上来（见 `onAgentState`）。
+ *
+ * 替换模型只有一句话：**写库订阅消息事件，状态读 `state` 事件 + 随时重读 `agent.state`，
+ * 具体在干什么读活消息。** 一个建立在「我去等」上的设计看不见不由我引起的变化：会话可以被
+ * 任意别的触发方（另一个 agent、定时器、外部系统）从闲推到忙，等的那个「闲」是别人那一轮的
+ * 终点，跟我这条输入没有任何因果关系。所以本文件**不 await 任何一个 agent 动作**：
+ *
+ * | 需要什么 | 从哪儿来 |
+ * |---|---|
+ * | 写库 | `messageAdded` / `messageChanged` / `messageRemoved`，逐条 upsert / delete |
+ * | 「在生成 / 空闲 / 已暂停」 | `state` 事件（三格）+ 随时重读 `agent.state` |
+ * | 具体在干什么 | 活消息的 `status` / `content` / `tool_calls`（不向 core 问） |
+ * | 某个会话的 agent 没了 | `stopped` / `killed` 事件 |
+ * | 队列里压着几条 | `inboxAdded` / `inboxCleared`；`agent.inboxSize` 只有数字 |
+ * | 「起来了吗」 | `agent.started`（布尔只读事实） |
+ * | 出错 | `failed`（载荷 `error` 与那条消息的 `message.error` 是**同一个实例**） |
+ * | 被拒 | `denied`（`{hook, reason, detail?}`，`detail` 是结构化事实） |
  *
  * ## 三个实例的显式生灭
  *
@@ -21,8 +49,8 @@
  * （Scope 活到显式 `scopes.dispose` 或进程退出）。agent 生灭的**全部判据**都在
  * `AgentRegistry` 里（见那个文件的判据表），本文件只报事件、不自己判。
  *
- * **agent 是常驻的**：一段对话一个，跨轮复用，结算时**不**销毁（见下一节）。会话实例仍是一轮
- * 一个：它是「这一段的现场」（六态、写库节流、本轮产出），结算完就该摘掉。
+ * **agent 是常驻的**：一段对话一个，跨轮复用，结算时**不**销毁。会话实例仍是一段一个：它是
+ * 「这一段的现场」（六态、写库节流、本轮产出），结算完就该摘掉。
  *
  * ## 常驻带来的一对约束（本文件必须自己守住）
  *
@@ -48,31 +76,31 @@
  * ## 跑中发送走 inbox，不走第二轮（PRD D14）
  *
  * `conversation.send` 发现这一段已经有一轮在跑时，调的是 {@link ChatRunner.enqueue}：把那一句
- * 用户输入投给**那一轮的 agent**（core 的 `deliver`），由它在轮末落成一条 User 消息。于是
- * 「不打断」与「不丢」同时成立：流还是原来那条流，用户的话排在工具轮收尾的边界上。
+ * 用户输入 `agent.push(...)` 进**那一轮的 agent** 的 inbox，由 core 在取件点把它落成一条 User
+ * 消息。于是「不打断」与「不丢」同时成立：流还是原来那条流，用户的话排在工具轮收尾的边界上。
  * 宿主在这里只做两件事：定死那条消息的 id（D5，客户端先画的那条与落地的是同一条），报出
  * `RunState.inbox`（客户端的排队区靠它显示条目本身，不光是个数）。不变量见
  * `TurnSession.enqueue` 的注释。
  *
- * ## 自起的段：agent 被 `deliver()` 叫醒的那一段
+ * ## 被「别人」叫起来的那一段
  *
- * agent 是常驻的、inbox 在 agent 里，于是 `agent.deliver(entry)` 在静止态会**把 agent 叫醒跑
- * 一段** —— 那一段没有 `conversation.send` 的受理，也就没有受理时落的那两条占位行。但它仍然
- * 是「一段对话里正在跑的那一段」，所以它必须有自己的现场（落库、推 `run.state`、可 abort、
- * 能结算）：
+ * agent 是常驻的、inbox 在 agent 里，于是别的会话投进来的条目（`ChatRunner.deliver`）在静止
+ * 态会**把 agent 叫醒跑一段** —— 那一段没有 `conversation.send` 的受理，也就没有受理时落的
+ * 那两条占位行。但它仍然是「这段对话里正在跑的那一段」，所以它必须有自己的现场（落库、推
+ * `run.state`、可 abort、能结算）：
  *
  * ```
- * agent.deliver(entry)
- *   → core 发 status(running)           宿主在这一拍**同步**建现场（turns 里登记 + 订上 agent）
- *   → core 把 inbox 落地（message 事件）  那条 user 消息 id 是投递方定死的那个，认领但不改写
- *   → core 跑完一段 → status(idle | terminated)
+ * agent.push(entry)
+ *   → core 发 state(busy)               宿主在这一拍**同步**建现场（turns 里登记 + 订上 agent）
+ *   → core 把 inbox 落地（messageAdded）  那条 user 消息 id 是投递方定死的那个，认领但不改写
+ *   → core 跑完一批 → state(idle | paused)
  *   → 宿主走同一套结算（写终版、runs.finish、推 run.state、兑现陈旧标记）
  * ```
  *
  * 三处与受理那一轮不同，其余全同：
  *   1. 现场是**同步**建的（上面第二拍紧跟着就广播消息，不能等一次读库），会话行与 Scope 随后补；
  *   2. 不写占位行，两条 id 都是跑着才定（见 `claimId`）；
- *   3. `→ running` 时 `turns` 里已经有现场（`conversation.send` 那一轮）就**什么都不做** ——
+ *   3. `→ busy` 时 `turns` 里已经有现场（`conversation.send` 那一轮）就**什么都不做** ——
  *      那是普通轮次，绝不能再建第二个现场。
  *
  * ## 会话间投递：一个入口（{@link ChatRunner.deliver}）
@@ -83,31 +111,33 @@
  * `turns` / `RunRegistry`**，别处再记一份「在跑」就会与它们分叉。
  *
  * 两段窗口（`turns` 里还有现场、或 `runs` 还说在跑）里投进去的条目不会当场落地，而是进
- * 会话级待投列表（`waitlists`），等那一段结算完（`finishRuntime`）一次性 `deliver([...])` ——
+ * 会话级待投列表（`waitlists`），等那一段结算完（`finishRuntime`）一次性 `push` 下去 ——
  * 那一次落地既是「一条也不丢」，也是最省的一次请求（N 条同批落成 N 条 user message）。
  *
  * ## 三处刻意交给 core 的事
  *
  * 1. **消息与增量不重新定义**：`AgentNS.Message` / `AgentNS.Delta` / `AgentNS.MessageStatus` /
- *    `Usage` 全部原样用 core 的导出；攒消息用 core 的 `applyChunk`，求和用 core 的 `sumUsage`，
- *    中止修复用 core 的 `reconcileAbortedToolRounds` / `reconcileAbortedMessages`。
- * 2. **agent 循环不重写**：装配好的 agent 由 core 的 `send()` 驱动（内循环、工具并行、中止、
- *    收尾归一都在 core 里）。本文件只订阅它广播出来的事件，把「发生了什么」变成持久化与推送。
+ *    `AgentNS.MessageSource` / `Usage` 全部原样用 core 的导出；求和用 core 的 `sumUsage`，
+ *    装载存档时的一次性收拾用 core 的 `reconcileAbortedToolRounds` / `reconcileAbortedMessages`。
+ * 2. **agent 循环不重写**：装配好的 agent 由 core 自己的循环驱动（`start` + `push`；内循环、
+ *    工具并行、中止、进圈前的修复都在 core 里）。本文件只订阅它广播出来的事件，把「发生了什么」
+ *    变成持久化与推送。
  * 3. **状态不存两处**：运行中的消息以内存（core 手里那份 `agent.messages`）为真相，库里的行是
  *    快照；`isRunning` 只在 `RunRegistry` 一处。
  *
  * ## 为什么要认领 core 追加的消息 id
  *
- * 消息 id 由宿主分配（PRD L6），而 assistant 占位是 core 在 `run()` 里自己 `append` 的
- * （它的 `Message` 构造会自己生成 id）。所以本文件在 `message` 事件里把「这一轮头两条」认领成
- * 宿主已经发给客户端的 id —— 客户端的 `message.delta` 与 `message.list` 才接得上同一条消息。
- * 后续工具轮次里 core 追加的消息同样在这一处被换成宿主分配的 id（`id` 不参与 core 的任何
- * 判断，换掉只会让它对客户端更一致）。
+ * 消息 id 由宿主分配（PRD L6），而 assistant 占位是 core 自己 `append` 的（它的 `Message`
+ * 构造会自己生成 id）。所以本文件在 `messageAdded` 里把「这一轮头两条」认领成宿主已经发给
+ * 客户端的 id —— 客户端的 `message.delta` 与 `message.list` 才接得上同一条消息。后续工具轮次里
+ * core 追加的消息同样在这一处被换成宿主分配的 id（`id` 不参与 core 的任何判断，换掉只会让
+ * 它对客户端更一致）。
  */
 
 import type { AgentNS } from "@ai-zen/agents-core";
 import {
   addUsage,
+  AgentError,
   AgentNS as AgentNSValue,
   generateMessageId,
   inboxEntryContent,
@@ -115,7 +145,7 @@ import {
   reconcileAbortedToolRounds,
   sumUsage,
 } from "@ai-zen/agents-core";
-import type { SubAgentContext, ToolCallEndContext } from "@ai-zen/agents-core";
+import type { Agent, AgentEvents } from "@ai-zen/agents-core";
 import type {
   AgentDefinition,
   AppConfig,
@@ -168,6 +198,13 @@ import { systemClock } from "./ScopeRegistry.js";
 export interface MessageStore {
   upsert(input: MessageUpsertInput): Promise<void>;
   upsertMany(inputs: MessageUpsertInput[]): Promise<void>;
+  /**
+   * 物理删掉一条消息（core 的「丢」= 真删，`CORE.md` §6）。
+   *
+   * `messageRemoved` 事件的落点：core 在一圈开头修历史时删掉的残局，库里也必须消失 ——
+   * 否则用户会看见一条模型那边已经不存在的消息。
+   */
+  delete(id: string): Promise<void>;
   /**
    * 按对话取主线消息。
    *
@@ -224,26 +261,30 @@ export type AgentFactory = (context: AgentBuildContext) => Promise<ChatAgent>;
 export type HandoffProvider = (context: AgentBuildContext) => HandoffService | undefined;
 
 /**
- * 一段的边界（core 的 `status` 事件载荷 + 它是哪段对话）。
+ * 一段的边界（core 的 `state` 事件载荷 + 它是哪段对话）。
+ *
+ * core 的三格是 `busy` / `idle` / `paused`（`CORE.md` §4）：`busy` 说「手上干着活」、`idle`
+ * 说「队列也空了」、`paused` 说「暂停」—— 没有第四格「出过错」（那是事实，读消息的
+ * `status`）。也不用它表达「死没死」：那个看 `stopped` / `killed` 事件与 `agent.started`。
  *
  * core 的载荷是 `{ agent, from, to }`：`agent` 有了，但「哪段对话」只有宿主知道 —— 所以由
  * `AgentRegistry`（它按 conversationId 登记）在转达时补上这一格，消费方（`ChatRunner`）
  * 不必反过来拿 agent 去查表。
  */
-export interface AgentStatusEvent {
+export interface AgentStateEvent {
   conversationId: string;
   agent: ChatAgent;
-  /** 变化前的段状态 */
-  from: AgentNS.RunStatus;
-  /** 变化后的段状态（`idle` / `running` / `stopping` / `terminated`） */
-  to: AgentNS.RunStatus;
+  /** 变化前的三格 */
+  from: AgentNS.AgentState;
+  /** 变化后的三格（`busy` / `idle` / `paused`） */
+  to: AgentNS.AgentState;
 }
 
 /**
- * 一条内容进了这段对话的 inbox（core 的 `inbox` 事件载荷 + 它是哪段对话）。
+ * 一条内容进了这段对话的 inbox（core 的 `inboxAdded` 事件载荷 + 它是哪段对话）。
  *
  * 「这一段是被谁叫起来的」只有入队那一刻答得出来（`entry.source`）：投递走的是 agent 自己的
- * inbox，不经过宿主，等 `status → running` 时再回头看已经分不清「谁叫的」与「队列里还剩谁」。
+ * inbox，不经过宿主，等 `state → busy` 时再回头看已经分不清「谁叫的」与「队列里还剩谁」。
  * 所以 `AgentRegistry` 把这条事件原样转出来，宿主记下最近一条（见 `ChatRunner.noteInbox`）。
  */
 export interface AgentInboxEvent {
@@ -253,54 +294,14 @@ export interface AgentInboxEvent {
 }
 
 /**
- * 本文件驱动的那部分 agent 表面。
+ * 本文件驱动的那个 agent —— **就是 core 的 `Agent` 本身**（`SdkAgent` extends 它）。
  *
- * core 的 `Agent` 与 SDK 的 `SdkAgent` 都满足它；测试里的假 agent 也满足它，
- * 于是「一轮怎么跑」的用例不必真的连模型。
+ * 从前这里是一份宿主自己写的窄接口（`send` / `deliver` / `events` / `inbox` 数组），把 core 的
+ * `Agent` 挡在后面：于是 `agent.send()` / `agent.deliver()` / `events.on("status")` 这些调用
+ * **根本不受类型检查**，`tsc` 一条也报不出来。那一层挡板就是这类 bug 的温床，现在去掉了：
+ * 宿主只认 core 的真实形状，假件（`TestSupport.FakeAgent`）也必须是真 `Agent`。
  */
-export interface ChatAgent {
-  /**
-   * 这段对话的消息数组（内存真相；agent 常驻，于是它跨轮累积）。
-   *
-   * 本文件只读它（算用量、取历史），首次装配时把从库里读来的历史 push 进去 —— 已有 agent
-   * 时不 push（那段历史就在它自己这里）。
-   */
-  messages: AgentNS.Message[];
-  append(message: AgentNS.Message): AgentNS.Message;
-  /** core 的 `send()`：跑完整组内循环（含多轮工具调用）后返回消息数组 */
-  send(content: AgentNS.MessageContent): Promise<AgentNS.Message[]>;
-  abort(): void;
-  /**
-   * 排队待发的内容（core 的 `Agent.inbox`，PRD D14）。
-   *
-   * 宿主**只读**它：`RunState.inbox` 就是这份数组（装配期的 `pending` 接在后面）。不自己另记
-   * 一份 —— 数组本身是唯一真相，另记的一份随时可能与它分叉。
-   */
-  inbox: AgentNS.InboxEntry[];
-  /**
-   * 投一条待发内容（core 的 `deliver`，单条形态）；core 在轮末（工具轮收尾之后 / 整段停下之后）
-   * 把它落成一条 User 消息，静止态时会顺手把段叫起来。
-   *
-   * `messageId` 允许由投的人定死：宿主已经把 id 告诉客户端了（D5），落地那条必须用同一个，
-   * 否则同一条内容会在屏幕上画两遍。
-   *
-   * 回执里的 `woke` 宿主不看：跑中入队必然 `woke === false`（这一轮本来就在跑）。
-   */
-  deliver(input: AgentNS.InboxInput): AgentNS.DeliveryReceipt;
-  /**
-   * 整批投（core 的 `deliver`，一批形态）：**全部入队之后只唤醒一次**。
-   *
-   * 与单条的区别只在「N 条同时到达」时的落地形状：一条一条投会变成「第 1 条落地起段、其余
-   * N-1 条在段内下一次取件点才落地」，而一批让 N 条在**同一拍**落成 N 条 User 消息（静止态）
-   * 或落在**同一个**内循环边界（跑着）—— 一次模型请求就看见全部 N 条。
-   *
-   * 本文件的会话级投递（`ChatRunner.deliver`）攒够一批之后就走它：会话间投递天然是「几条
-   * 一起到」的。空数组 core 那边直接返回 `[]`（不入队、不叫醒）。
-   */
-  deliver(inputs: AgentNS.InboxInput[]): AgentNS.DeliveryReceipt[];
-  /** 事件广播口（core 的 `EventBus`）；本文件只用 `on`，返回值当「取消订阅」的句柄用 */
-  events: { on(name: string, handler: (...args: never[]) => void): unknown };
-}
+export type ChatAgent = Agent;
 
 /** 把已上传的素材变成真正发出去的内容段（PRD F-H7）；不给就原样用 `input.content` */
 export interface AttachmentPreparation {
@@ -352,11 +353,15 @@ export interface ChatRunParams {
   /** 这一轮是哪条连接发起的语言（D8；缺省用注入的默认语言） */
   language?: Language;
   /**
-   * 这一轮是谁叫起来的（core 的 `InboxEntry.source` 同义）：
-   * `"user"`（缺省）= 用户自己发的；其他值 = 某个外部来源自动推送，正文最前面会带一行
-   * `// 这条消息来自 <source> 自动推送（<时间>）`。
+   * 这一轮是谁叫起来的 —— core 的 `AgentNS.MessageSource`（**判别结构**）：
+   *
+   * - 缺省 `{ kind: "user" }` = 用户本人发的（正文一个字不改）；
+   * - 其他来源（平级会话、宿主自己的注入）由 core 在落地那一刻给正文最前面加一行
+   *   `// 这条消息来自 <label> 自动推送（<时间>）`（`inboxEntryContent`）。
+   *
+   * 宿主不再自己拼那句话，也不再拿字符串比来源：`kind` 是判别格，`label` 是给人看的那个名字。
    */
-  source?: string;
+  source?: AgentNS.MessageSource;
 }
 
 /**
@@ -377,8 +382,8 @@ export interface TurnSettledFacts {
    * 再去翻消息表猜一遍，猜出来的只会是「原因不明」。
    */
   problem: ProblemFact | null;
-  /** 这一轮是谁叫起来的（与 `ChatRunParams.source` 同义；`"user"` = 用户本人发的） */
-  source: string;
+  /** 这一轮是谁叫起来的（与 `ChatRunParams.source` 同一份判别结构；`kind: "user"` = 用户本人发的） */
+  source: AgentNS.MessageSource;
   /** 这一轮的 `prompt_tokens`（结算快照里的本轮用量） */
   promptTokens: number;
   /** 生效模型的交接线；`0` 表示没配 */
@@ -461,15 +466,15 @@ export interface QueuedTurn {
 }
 
 /**
- * 一条「会话间投递」的内容：正文 + 来源（core 的 `InboxEntry.source` 同义）。
+ * 一条「会话间投递」的内容：正文 + 来源（core 的 `AgentNS.MessageSource`）。
  *
  * 不带附件、不带 `messageId`：投递方（别的会话）不掌握这条消息在宿主侧怎么落，落库那一份、
  * 消息 id、来源注释全由宿主 + core 自己算。
  */
 export interface DeliveryInput {
   content: AgentNS.MessageContent;
-  /** 正文最前面那行注释里的来源名（`"user"` = 用户本人，不加注释） */
-  source: string;
+  /** 这条内容从哪儿来（`{kind:"user"}` = 用户本人，不加注释） */
+  source: AgentNS.MessageSource;
 }
 
 /**
@@ -481,11 +486,12 @@ export interface DeliveryInput {
  *
  * `state` 是**当场可判**的事实，不是结果：
  *   - `running`：交给了在跑的那一段，条目会在它这一轮里落地；
- *   - `idle`：这一条会把它叫醒（自起段）；
+ *   - `idle`：这一条会把它叫醒（发起一段由别人叫起来的工作）；
  *   - `settling`：先攒进会话级待投列表，等这一段结算完再投。
  *
  * **刻意不报 `woke`**：待投列表那条路上的唤醒发生在结算之后，同步回一个「叫醒了」就是撒谎
  * —— 投递那一刻它还没被叫醒。「叫醒没叫醒」由调用方按 `idle` 自己说（那是它能说清的话）。
+ * （core 的 `push` 也没有回执 —— 它只管入队，不告诉你“我叫醒了一个 agent 没有”。）
  */
 export interface DeliveryOutcome {
   /** 恒 `true`：唯一会失败的情形是「那段对话不存在」，那种情况直接 reject（见上） */
@@ -561,6 +567,12 @@ export interface ChatRunnerOptions {
   onTurnSettled?: (facts: TurnSettledFacts) => void;
   /** 内部错误的去处（写库失败、回收失败等）；缺省忽略 */
   onError?: (error: unknown, context: string) => void;
+  /**
+   * 三格变化的对外观察口（接线层用它把「这一段开始了」告诉别人，例如平级会话的状态）。
+   *
+   * 本文件内部已经处理了这一跳（建现场 / 收尾），这一项只是**多一路旁听**：不注入就没有听众。
+   */
+  onState?: (event: AgentStateEvent) => void;
 }
 
 /** 边流边写的缺省节流：200ms 一次，兼顾「客户端断了丢得少」与「写盘次数」 */
@@ -600,36 +612,52 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-/** 唯一一个不需要加来源注释的 source：用户本人说的话（与 core 的 `InboxEntry.source` 同义） */
-const SOURCE_USER = "user";
+/** 唯一一个不需要加来源注释的 source：用户本人说的话（core 的 `{ kind: "user" }`） */
+const SOURCE_USER: AgentNS.MessageSource = { kind: "user" };
 
 /**
- * 自起段报给 `TurnSettledFacts.source` 的**兜底**值。
+ * 「被 inbox 叫起来、但不知道是谁推的」那一段报给 `TurnSettledFacts.source` 的**兜底**值。
  *
  * 正常情况下那一段的来源是叫醒它的那条 inbox 条目的 `source`（见 `ChatRunner.noteInbox`）：
  * 「这一段是被谁叫起来的」这个事实只有投递方知道，报出来才不会把一次会话间投递说成某个
- * 笼统的东西。真不知道时（不是 inbox 叫起来的，例如交接回合自己 `send()` 起的那一段）
- * 才落到这个值：它依旧不是 `"user"` —— 结算那一跳（R59：要不要问交接线的问题）只对
- * 用户本人叫起来的轮次开口。
+ * 笼统的东西。真不知道时（条目本身是钥匙、或者不是 inbox 叫起来的，例如交接回合往同一个
+ * agent 里再投一条指令）才落到这个值：它依旧不是 `{ kind: "user" }` —— 结算那一跳（R59：
+ * 要不要问交接线的问题）只对用户本人叫起来的轮次开口。
  */
-const SOURCE_INBOX = "inbox";
+const SOURCE_INBOX: AgentNS.MessageSource = { kind: "system", label: "inbox" };
+
+/** 宿主自己注入的东西：只有 `label` 不同（`cwd` / `handoff` …）；谁注入谁填（`CORE.md` §3） */
+function hostSource(label: string): AgentNS.MessageSource {
+  return { kind: "system", label };
+}
+
+/** 这条来源要不要在正文前面加一行「自动推送」注释（`{ kind: "user" }` 不加） */
+function needsNote(source: AgentNS.MessageSource | undefined): boolean {
+  return source !== undefined && source.kind !== "user";
+}
 
 /**
- * 正文按来源包一层：`"user"`（或缺省）原样返回，其他来源在正文最前面加一行
- * `// 这条消息来自 <source> 自动推送（<时间>）`。
+ * 正文按来源包一层：`{ kind: "user" }`（或缺省）原样返回，其他来源在正文最前面加一行
+ * `// 这条消息来自 <label> 自动推送（<时间>）`。
  *
  * 拼装不在这里写第二遍：注释的形状（`注释\n\n正文` / 分段内容在最前面插一段 text）归 core 的
- * `inboxEntryContent`，宿主只是把同一个纯函数用在「宿主自己造 user 消息」这条路上 —— 于是
- * 自动推送的消息不论从 inbox 落地还是从这一轮直接发出，读者看到的是同一行话。
+ * `inboxEntryContent`，宿主只是把同一个纯函数用在「宿主自己写落库那一份」这条路上 —— 于是
+ * 自动推送的消息不论从 inbox 落地还是从库里读回来，读者看到的是同一行话。
  */
 function withSourceNote(
   content: AgentNS.MessageContent,
-  source: string,
+  source: AgentNS.MessageSource | undefined,
   messageId: string,
   createdAt: string,
 ): AgentNS.MessageContent {
-  if (source === SOURCE_USER) return content;
-  return inboxEntryContent({ messageId, source, priority: "high", content, createdAt });
+  if (!needsNote(source)) return content;
+  return inboxEntryContent({
+    messageId,
+    source: source!,
+    priority: "high",
+    content,
+    createdAt,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -725,6 +753,8 @@ function toRow(
     status: (statusOverride ?? message.status ?? AgentNSValue.MessageStatus.Unknown) as string,
     omit: message.omit === true,
     content: (message.content ?? null) as unknown as MessageUpsertInput["content"],
+    // 来源是 core 的判别结构：仓储那边序列化成 JSON 存在 `source` 列里
+    source: message.source ?? null,
     data: Object.keys(data).length > 0 ? data : null,
     parentToolCallId: parentToolCallId ?? null,
     createdAt,
@@ -761,6 +791,8 @@ function fromRow(row: StoredMessage): AgentNS.Message {
     message.finish_reason = data.finish_reason as AgentNS.FinishReason;
   }
   if (typeof data.hidden === "boolean") message.hidden = data.hidden;
+  // `source` 是判别结构（不是字符串）：仓储已经把那一列反序列化好了，这里原样搬
+  if (row.source) message.source = row.source;
   message.omit = row.omit;
   return message;
 }
@@ -791,30 +823,50 @@ function problem(
   return fact;
 }
 
-/** SDK 的 `ContextOverflowError` 形状（只认字段，避免为一次判断引入 SDK 的运行时依赖面） */
-function asContextOverflow(
-  error: unknown,
+/**
+ * `denied` 的 `detail` 里认一下上下文护栏的结构事实（`promptTokens` / `guardTokens`）。
+ *
+ * 为什么不能只看 `reason`：那一格是写给**模型或人**读的文案。护栏到底因为哪两个数字拒的，
+ * 只能从结构化的 `detail` 里读 —— 去 parse 句子就是 CORE.md §10 明确说的那条邪路。
+ */
+function asContextOverflowDetail(
+  detail: unknown,
 ): { promptTokens: number; guardTokens: number } | undefined {
-  if (!isRecord(error)) return undefined;
-  if (error.name !== "ContextOverflowError") return undefined;
-  const { promptTokens, guardTokens } = error;
+  if (!isRecord(detail)) return undefined;
+  const { promptTokens, guardTokens } = detail;
   if (typeof promptTokens !== "number" || typeof guardTokens !== "number") return undefined;
   return { promptTokens, guardTokens };
 }
 
-/** 任意抛出物 → 失败事实：到了硬线就说硬线，其余都归为内部错误 + 原始原因 */
+/** 任意抛出物 → 失败事实：core 的 `AgentError` 带上它的 `code`，其余都归为内部错误 + 原始原因 */
 function toProblem(error: unknown): ProblemFact {
-  const overflow = asContextOverflow(error);
+  if (error instanceof AgentError) {
+    return problem("internal", "error.internal", {}, { reason: error.message, code: error.code });
+  }
+  const reason = error instanceof Error ? error.message : String(error);
+  return problem("internal", "error.internal", {}, { reason });
+}
+
+/**
+ * 一个钩子拒了这一圈 → 失败事实（core 的 `denied` 事件）。
+ *
+ * 两格分开读：`reason` 是写给模型 / 人读的文案，`detail` 才是给程序看的结构化事实。
+ * 宿主现在按「是不是上下文溢出」分流 —— 判据是 `detail` 里的两个数字，不是文案里那几个词。
+ *
+ * `detail` 里没有那两个数字时（例如护栏只交回了一句现成的话）落到 `error.denied`：
+ * 这一条说的是「这一轮在发出去之前就被拦下了」，不是「宿主内部出错」。
+ */
+function toDeniedProblem(reason: string, detail: unknown): ProblemFact {
+  const overflow = asContextOverflowDetail(detail);
   if (overflow) {
     return problem(
       "context_guard",
       "error.contextGuard",
       { limit: overflow.guardTokens, used: overflow.promptTokens },
-      overflow,
+      { ...overflow, reason },
     );
   }
-  const reason = error instanceof Error ? error.message : String(error);
-  return problem("internal", "error.internal", {}, { reason });
+  return problem("denied", "error.denied", { reason }, detail ?? { reason });
 }
 
 // ---------------------------------------------------------------------------
@@ -859,28 +911,28 @@ interface AcceptedTurnInit extends TurnSessionInitBase {
   attachments: AttachmentOutcome[];
   language: Language;
   /** 这一轮是谁叫起来的（`ChatRunParams.source` 定下来的那一份） */
-  source: string;
+  source: AgentNS.MessageSource;
   userMessageId: string;
   assistantMessageId: string;
 }
 
 /**
- * 自起段：agent 被 `deliver()` 叫醒跑起来的那一段（没有 `conversation.send` 的受理）。
+ * 被「别人」叫起来的那一段：agent 被 `push()` 推起来跑的那一批（没有 `conversation.send` 的受理）。
  *
  * 它没有受理，也就没有预分配的两条 id、没有要发出去的内容、没有附件，有的只是「哪个 agent
- * 正在跑这一段」。会话行与 Scope 也**不在这里**：这一段是在 `status` 事件里**同步**建的
- * （迟一拍就错过 core 紧接着 `flushInbox()` 广播的那条 user 消息，见 `ChatRunner.onAgentStatus`），
+ * 正在跑这一段」。会话行与 Scope 也**不在这里**：这一段是在 `state → busy` 事件里**同步**建的
+ * （迟一拍就错过 core 紧接着 `messageAdded` 广播的那些消息，见 `ChatRunner.onAgentState`），
  * 那是同步上下文，读不了库。它们随后由 `ChatRunner.hydrate` 补上。
  */
 interface SelfStartedTurnInit extends TurnSessionInitBase {
   kind: "self-started";
-  /** 正在跑这一段的那一个 agent：现场当场就订上它的事件总线（不能等一个 await） */
+  /** 正在跑这一段的那一个 agent：现场当场就订上它的事件（不能等一个 await） */
   agent: ChatAgent;
   /**
    * 这一段是被**谁**叫起来的：投进 inbox 那条条目的 `source`（`ChatRunner.noteInbox` 记的
    * 最近一条）。不知道时是 {@link SOURCE_INBOX}。
    */
-  source: string;
+  source: AgentNS.MessageSource;
 }
 
 type TurnSessionInit = AcceptedTurnInit | SelfStartedTurnInit;
@@ -894,10 +946,11 @@ type TurnSessionInit = AcceptedTurnInit | SelfStartedTurnInit;
  * ## 两种段，同一个现场
  *
  * - `kind: "accepted"`：`conversation.send` 受理的那一段。两条 id 与占位行都在受理时定了。
- * - `kind: "self-started"`：agent 被 `deliver()` 叫醒自己跑起来的那一段。它没有受理人、
+ * - `kind: "self-started"`：agent 被别人的投递推起来自己跑的那一批。它没有受理人、
  *   没有占位行、不写任何占位行，两条 id 都是**跑着才定**的（见 `claimId`）。
  *
  * 后面的结算、落库、`runs.finish`、推 `run.state` 两边完全同一套 —— 差别只在 id 从哪来。
+ * **两边结束的方式也一样**：core 报 `state → idle`/`paused`（没人再等什么 promise）。
  */
 class TurnSession implements ChatTurn {
   readonly conversationId: string;
@@ -913,7 +966,7 @@ class TurnSession implements ChatTurn {
   readonly attachments: AttachmentOutcome[];
   readonly acceptedAt: string;
   readonly done: Promise<TurnSettlement>;
-  /** 这一段是自起段吗（`status` 事件里建的现场）—— 结算时几处分支只看这一个标记 */
+  /** 这一段是「被别人叫起来的」吗（`state → busy` 里建的现场）—— 结算时几处分支只看这一个标记 */
   readonly selfStarted: boolean;
 
   /**
@@ -955,12 +1008,12 @@ class TurnSession implements ChatTurn {
   private readonly storedContent?: AgentNS.MessageContent;
   private readonly language: Language;
   /**
-   * 这一轮是谁叫起来的（与 `ChatRunParams.source` 同义）。
+   * 这一轮是谁叫起来的（`ChatRunParams.source`，core 的判别结构）。
    *
    * 两个用处：跑中入队的条目带上它（core 落地时据此加来源注释）、结算时报给
    * `TurnSettledFacts`（自动推送叫起来的轮次不问交接）。
    */
-  private readonly source: string;
+  private readonly source: AgentNS.MessageSource;
   private readonly handle: RunHandle;
   private readonly options: ChatRunnerOptions;
   private readonly clock: Clock;
@@ -1012,10 +1065,14 @@ class TurnSession implements ChatTurn {
    */
   private roundProduced?: AgentNS.Message[];
   /**
-   * 订在 agent（及其子 Agent）事件总线上的监听：agent 常驻，它的寿命不再与本轮一致。
+   * 订在 agent 上的监听：agent 常驻，它的寿命不再与本轮一致。
    *
-   * 不摘的后果不是泄漏，而是错乱：下一段每次 `message` / `chunk-parsed` 广播都会叫到**已经
+   * 不摘的后果不是泄漏，而是错乱：下一段每次 `messageAdded` / `delta` 广播都会叫到**已经
    * 结算过的**这一轮上（认领 id、推 `run.state`、再写一遍库）。所以 `settle` 里逐条取消。
+   *
+   * 订阅的是 core 的事件（`agent.on(type, fn)` 返回取消函数）：消息三条管落库、`delta` 管
+   * 流式、`tool*` / `subAgent*` 管六态、`failed` / `denied` 管失败事实、`inbox*` 管排队区、
+   * `stopped` / `killed` 管「agent 没了也得把这一段结掉」。
    */
   private readonly listeners: Array<() => void> = [];
   /**
@@ -1029,18 +1086,19 @@ class TurnSession implements ChatTurn {
   private writeChain: Promise<void> = Promise.resolve();
 
   /**
-   * 这一轮不再接新话（`send()` 返回了 / 用户按了停 / 已经结算）。
+   * 这一轮不再接新话（已结算 / 用户按了停 / agent 已经关门）。
    *
-   * 三处置位：`attemptOnce` 的 finally（这一轮再没有轮末插入点）、`takeAbortSnapshot`、
-   * `settle` 兜底。
+   * 三处置位：真的结算完、`takeAbortSnapshot`、`settle` 兜底。
    */
   private closed = false;
+  /** core 报过 `busy` 吗（只认「忙过之后的闲」：投递之前那一拍的闲不是我的） */
+  private sawBusy = false;
   /**
-   * 装配期间收到的投递：agent 还没装上，先存着，装好就冲进它的 inbox。
+   * 装配期间收到的投递：agent 还没装上，先存着，装好就推给它。
    *
    * 取舍：`pending` 里那几条随这一轮失败一起丢（与「已经进了 inbox 但这一轮没取走」同一个命）。
    */
-  private pending: AgentNS.InboxEntry[] = [];
+  private pending: AgentNS.InboxInput[] = [];
   /**
    * 已经排队、还没落地的消息 id（落地时据此把它们记进 `producedIds`，按**落地顺序**落库）。
    *
@@ -1055,6 +1113,14 @@ class TurnSession implements ChatTurn {
    * 无关的引用（F-H7）。core 落地那一刻只认 id 与内容，落库的内容在我们手里。
    */
   private readonly queuedStored = new Map<string, AgentNS.MessageContent>();
+  /**
+   * 排队区镜像（`RunState.inbox`）。
+   *
+   * core 的 `agent.inboxSize` 只给一个**数字**，没有内容 —— 而客户端的排队区要显示条目本身。
+   * 条目是在`inboxAdded` 那一刻唯一有内容的时刻（事件带的是活条目），所以这里记一份镜像：
+   * `inboxCleared` 清空、那条消息落地时移掉。
+   */
+  private readonly queuedItems: InboxItem[] = [];
 
   constructor(options: ChatRunnerOptions, init: TurnSessionInit) {
     this.options = options;
@@ -1092,7 +1158,9 @@ class TurnSession implements ChatTurn {
       this.resolveFacts();
     } else {
       this.selfStarted = true;
-      // 自起段：没有发出去的内容、没有要落库的素材那一份、没有任何预分配的 id
+      // 这一段是 core 报了 `busy` 才被建的：那就是「忙过」
+      this.sawBusy = true;
+      // 没有发出去的内容、没有要落库的素材那一份、没有任何预分配的 id
       this.content = "";
       this.storedContent = undefined;
       this.language = options.defaultLanguage ?? DEFAULT_LANGUAGE;
@@ -1101,7 +1169,7 @@ class TurnSession implements ChatTurn {
       this.attachments = [];
       this.userMessageId = null;
       this.assistantMessageId = null;
-      // 就地订上这个 agent：core 紧接着就 `flushInbox()`，那条 user 消息的广播就在下一拍
+      // 就地订上这个 agent：core 紧接着就落地那批条目（`messageAdded`），不能等一次 await
       this.attach(init.agent, false);
     }
 
@@ -1131,7 +1199,7 @@ class TurnSession implements ChatTurn {
   }
 
   /**
-   * 自起段「这一段跑起来了」的那一次推送（`ChatRunner` 在订好事件之后立刻叫它）。
+   * 这一段「跑起来了」的那一次推送（被叫起来那一段：建好现场就推）。
    *
    * 普通轮次不需要：`execute()` 一上来就推一次（受理即回，客户端那一刻就该看到 running）。
    */
@@ -1155,27 +1223,46 @@ class TurnSession implements ChatTurn {
     content: AgentNS.MessageContent;
     storedContent?: AgentNS.MessageContent;
     attachments: AttachmentOutcome[];
-    /** 这一条是谁推来的（缺省 `"user"`）；落地时由 core 据此决定要不要加来源注释 */
-    source?: string;
+    /** 这一条是谁推来的（缺省 `{ kind: "user" }`）；落地时由 core 据此决定要不要加来源注释 */
+    source?: AgentNS.MessageSource;
   }): QueuedTurn | null {
     if (this.closed || this.aborted || this.handle.aborted) return null;
 
     // 消息 id 现在就定死（D5）：客户端马上要按它画一条，落地那条必须用同一个
     const userMessageId = generateMessageId();
-    const entry: AgentNS.InboxEntry = {
+    const createdAt = this.nowIso();
+    const source = input.source ?? SOURCE_USER;
+    const entry: AgentNS.InboxInput = {
       messageId: userMessageId,
-      // 来源照抄投递方：`"user"`（缺省）不带「这条消息来自…自动推送」那行注释，其他来源由
-      // core 在落地那一刻（`inboxEntryContent`）加上 —— 这里不自己拼那句话
-      source: input.source ?? SOURCE_USER,
+      // 来源照抄投递方：`{ kind: "user" }`（缺省）不带「这条消息来自…自动推送」那行注释，
+      // 其他来源由 core 在落地那一刻（`inboxEntryContent`）加上 —— 这里不自己拼那句话
+      source,
       // 高优先：落点是「工具轮跑完的边界」—— 不打断模型正在吐的那一段，又能尽快接住
       priority: "high",
       content: input.content,
-      // 入队时刻在这里定下（装配期的那几条也一样）：`run.state.inbox` 要按它显示「排了多久」
-      createdAt: this.nowIso(),
     };
-    // 装配期间先存着（谁也不用等），装好了就冲进它的 inbox
-    if (this.agent) this.agent.deliver(entry);
-    else this.pending.push(entry);
+    // 客户端要看得见**这一条**排上了：先记进排队区镜像（core 那边的 `inboxAdded` 会再来一次，
+    // 那里按 `messageId` 去重）
+    this.rememberQueued({
+      messageId: userMessageId,
+      source,
+      priority: "high",
+      content: input.content,
+      createdAt,
+    });
+    // 装配期间先存着（谁也不用等），装好了就推给它
+    if (this.agent) {
+      try {
+        this.agent.push(entry);
+      } catch {
+        // `push` 只在 agent 已经关门（或一次性 agent 已经吃过一次）时抛「closed」：
+        // 那就是「这一轮接不了」，回 null 让调用方回老路径（`run()`）。
+        // 不静默地当成收到了：条目进了队列却永远不会被取走才是真正的谎话。
+        return null;
+      }
+    } else {
+      this.pending.push(entry);
+    }
     // 先认下这个 id：落地时 core 那条消息带着它回来，`claimId` 不该再改一遍
     this.knownIds.add(userMessageId);
     this.queuedIds.add(userMessageId);
@@ -1183,11 +1270,11 @@ class TurnSession implements ChatTurn {
     if (input.storedContent !== undefined) {
       // 落库那一份也要过**同一个**注释函数（与 `run()` 里处理 `storedContent` 的写法一致）：
       // 落地时 `persistLandedQueued` 是拿它整份覆盖行内容的，不过这一道，「非 user 来源 + 带
-      // 附件」的条目就会分叉 —— 模型看到的那份带注释，库里那份是原始内容。`source === "user"`
+      // 附件」的条目就会分叉 —— 模型看到的那份带注释，库里那份是原始内容。`{kind:"user"}`
       // 时它原样返回，用户自己发的消息一个字不变；注释只加这一次，`__asset_id` 段原封不动。
       this.queuedStored.set(
         userMessageId,
-        withSourceNote(input.storedContent, entry.source, userMessageId, entry.createdAt),
+        withSourceNote(input.storedContent, source, userMessageId, createdAt),
       );
     }
 
@@ -1198,11 +1285,16 @@ class TurnSession implements ChatTurn {
       conversationId: this.conversationId,
       userMessageId,
       attachments: input.attachments,
-      acceptedAt: this.nowIso(),
+      acceptedAt: createdAt,
     };
   }
 
-  /** 真正跑一轮。`ChatRunner` 在受理之后立刻叫它，不等结果 */
+  /**
+   * 真正起一轮。`ChatRunner` 在受理之后立刻叫它，**不等结果**（不等就是不等：见文件头）。
+   *
+   * 受理失败（拿着不到 agent）在这里就收尾：失败事实记上、直接结算（占位行要有个终态）。
+   * 成功发出去之后就不再往后看 —— 这一段的结束由 core 的 `state → idle|paused` 报上来。
+   */
   async execute(): Promise<void> {
     try {
       this.pushRunState();
@@ -1211,18 +1303,13 @@ class TurnSession implements ChatTurn {
       // 一轮就是一次尝试：失败原样记成这一轮的结局。厂商那侧的降级（Files API 失败改内联、
       // 模型看不了图转为文字）在 SDK 的选路里，这里不重发。
       this.recordFailure(error);
-    } finally {
       await this.settle();
     }
   }
 
   /**
-   * 自起段的收尾入口：core 报「这一段跑完了」（`status → idle | terminated`）时叫它（见
-   * `ChatRunner.onAgentStatus`）。
-   *
-   * 与 {@link execute} 的差别只在于**没有 `attemptOnce`**：这一段不是宿主发起的 —— 内容已经由
-   * core 从 inbox 落地并跑完，宿主这边只剩结算（写终版、`runs.finish`、推 `run.state`）。
-   * 失败也不在这里记：那一路由订在 agent 上的 `error` 事件走 `recordFailure`。
+   * 收尾入口：core 报「这一段跑完了」（`state → idle`，或暂停）时叫它（见
+   * `ChatRunner.onAgentState`）。被叫起来的那一段与受理的那一轮走的是**同一扇门**。
    *
    * 一段里一条 assistant 也没出（开局就失败 / 一开头就被按停）同样走到这里：`settle()` 不依赖
    * `assistantMessageId` 非空，没占位行就不写占位行，但库、`run.state`、`runs.finish` 一件不少。
@@ -1231,9 +1318,19 @@ class TurnSession implements ChatTurn {
     void this.settle();
   }
 
+  /** core 报了 `busy`（这一段真的开始干活了）—— 只用于「忙过之后的闲才算我跑完了」 */
+  markBusy(): void {
+    this.sawBusy = true;
+  }
+
+  /** 这一段看到过 `busy` 吗 */
+  get busySeen(): boolean {
+    return this.sawBusy;
+  }
+
   /**
-   * 补上装配事实（会话行 + Scope）。只有自起段会调：它在 `status` 事件里同步建现场，
-   * 那一刻读不了库（见 `ChatRunner.onAgentStatus` 的「为什么建现场必须同步」）。
+   * 补上装配事实（会话行 + Scope）。只有被叫起来的那一段会调：它在 `state` 事件里同步建现场，
+   * 那一刻读不了库（见 `ChatRunner.onAgentState` 的「为什么建现场必须同步」）。
    */
   hydrate(conversation: Conversation, scope: Scope): void {
     this.conversation = conversation;
@@ -1253,14 +1350,18 @@ class TurnSession implements ChatTurn {
   }
 
   /**
-   * 一次尝试：拿 agent → 把历史与用户输入发出去；失败原样上抛，由 `execute` 记成这一轮的结局。
+   * 一次尝试：拿 agent → 把用户输入推给它;失败原样上抛，由 `execute` 记成这一轮的结局。
+   *
+   * **推完就返回**：不 await 任何 agent 动作。这一段的结束由 core 的 `state` 事件报上来
+   * （`ChatRunner.onAgentState`）—— 一个建立在「我去等」上的设计看不见不由我引起的变化
+   * （`CORE.md` §1）。
    *
    * agent 从 `AgentRegistry.acquire` 来（在且合用就复用，不在就装配，事实变了就重建 ——
    * 判据全在那边）。本文件不再自己拼装配顺序，也不再决定「它跑完就没」：那是结算时
    * `agents.complete` 与配置生效时 `agents.invalidate` 的事。
    */
   private async attemptOnce(): Promise<void> {
-    // 只有受理路径走到这里（自起段没有要发出去的内容，不走本方法），而受理时一定读到了会话行
+    // 只有受理路径走到这里（被叫起来那一段没有要发出去的内容，不走本方法），而受理时一定读到了会话行
     const conversation = this.conversation!;
     // 先看一眼它是不是已经在：在 = 历史就是它内存里那份（`run()` 没读库、`attach` 不必 push）
     const live = this.options.agents.get(this.conversationId);
@@ -1296,13 +1397,33 @@ class TurnSession implements ChatTurn {
       agent.abort();
       return;
     }
-    try {
-      await agent.send(this.content);
-    } finally {
-      // `send()` 返回 = 这一轮再没有轮末插入点：此刻起排进来的条目一句也不会被发出去。
-      // 门必须在这里关上 —— `settle()` 还要写库，那一段时间在 `RunRegistry` 眼里仍然「在跑」。
-      this.closed = true;
-    }
+    // 暂停中再发话 = 用户按了「继续」：`resume` 只置意愿、不取件，取件点还是 core 的
+    this.wake(agent);
+    // 同步入队，立刻返回（关门之后会抛 `closed`：那就按失败结算，不静默吞）
+    agent.push({
+      content: this.content,
+      source: this.source,
+      // 落点是「工具轮跑完的边界」的新一轮不在跑（`runs.start` 已经拦住了），这里仍用 high：
+      // 它与「跑中入队」是同一档语义（尽快接住），而且「外循环只取一批」两种档位当下等价
+      priority: "high",
+      messageId: this.userMessageId ?? undefined,
+    });
+    // 注意：**这里不关门**。`push` 一返回这一批还在跑，此刻排进来的条目 core 仍会在它自己的
+    // 取件点取走（这正是 D14「跑中发送」要的）；门在结算开头才关（`settle`）—— 那一刻起这一轮
+    // 再没有取件点，收进来的条目只会等到下一批（结算里的 `inbox-leftover` 会把它报出来）。
+  }
+
+  /**
+   * 把 agent 叫起来（幂等、不 await），并把「暂停」解掉。
+   *
+   * 两件事都得做，而且只能在这里做：
+   *   - `start()`：core 的循环只听它，而且那句 promise 到死才 resolve（不能等）；已经起来就返回同一句；
+   *   - `resume()`：用户上一轮按过「停」的话 agent 现在是 `paused`，不解除就永远不会再取件。
+   *     用户又发了一条话，那就是「继续」——不需要他先开口两次。
+   */
+  private wake(agent: ChatAgent): void {
+    if (agent.state === "paused") agent.resume();
+    if (!agent.started) void agent.start();
   }
 
   // ---- 装配：把 core 的事件接到本文件 ----
@@ -1322,28 +1443,42 @@ class TurnSession implements ChatTurn {
   }
 
   /**
-   * 把 core 的事件接到本文件（`attach` 与自起段的构造函数共用）。
+   * 把 core 的事件接到本文件（`attach` 与被叫起来那一段的构造函数共用）。
    *
-   * 拆出来是因为自起段要「到场就订上」：`attach` 除了订阅还要接历史（push），而自起段那一步
-   * 是空动作。拆完之后两边订的是**同一套**事件 —— 少订一个，自起段就会出现「落了库但没推
-   * 流式」之类的半边现场。
+   * 拆出来是因为现场要「到场就订上」：`attach` 除了订阅还要接历史（push），而建现场时那一步
+   * 是空动作。拆完之后两边订的是**同一套**事件 —— 少订一个，就会出现「落了库但没推流式」
+   * 之类的半边现场。
+   *
+   * 订的全是 core 的真事件名（旧 kebab-case 那一套全没了）：
+   *   - `messageAdded` / `messageChanged` / `messageRemoved`：**逐条** upsert / delete；
+   *   - `delta`：原始片（带着来源：自己的消息 / 某个子 agent 的某个工具调用）；
+   *   - `toolStarted` / `toolFinished`：六态的「在等哪几个工具」；
+   *   - `subAgentStarted` / `subAgentFinished`：委派边界（子 agent 自己的消息由 core 按同一套
+   *     名字转发到父身上，带 `subAgent` / `via` 两格）；
+   *   - `failed` / `denied`：失败与被拒；
+   *   - `inboxAdded` / `inboxCleared`：排队区；
+   *   - `stopped` / `killed`：agent 没了（这一段的结算不能被卡住）。
    */
   private listen(agent: ChatAgent): void {
-    this.subscribe(agent.events, "message", (message: AgentNS.Message) => this.onMessage(message));
-    this.subscribe(agent.events, "open", () => this.enterAwaitingFirstToken());
-    this.subscribe(agent.events, "chunk-parsed", (receiver: AgentNS.Message, chunk: RawChunk) =>
-      this.onChunk(receiver, chunk),
+    this.on(agent, "messageAdded", (event) =>
+      this.onMessageAdded(event.message, event.subAgent, event.via),
     );
-    this.subscribe(agent.events, "error", (error: unknown) => this.recordFailure(error));
-    this.subscribe(agent.events, "tool-call-end", (ctx: ToolCallEndContext) =>
-      this.onToolCallEnd(ctx),
+    this.on(agent, "messageChanged", (event) =>
+      this.onMessageChanged(event.message, event.subAgent, event.via),
     );
-    this.subscribe(agent.events, "sub-agent-start", (ctx: SubAgentContext) =>
-      this.onSubAgentStart(ctx),
-    );
-    this.subscribe(agent.events, "sub-agent-end", (ctx: SubAgentContext) =>
-      this.onSubAgentEnd(ctx),
-    );
+    this.on(agent, "messageRemoved", (event) => this.onMessageRemoved(event.message, event.subAgent));
+    this.on(agent, "delta", (event) => this.onDelta(event));
+    this.on(agent, "toolStarted", (event) => this.onToolStarted(event.toolCall, event.subAgent));
+    this.on(agent, "toolFinished", (event) => this.onToolFinished(event.toolCall, event.subAgent));
+    this.on(agent, "subAgentStarted", (event) => this.onSubAgentStart(event.subAgent, event.toolCall));
+    this.on(agent, "subAgentFinished", (event) => this.onSubAgentEnd(event.subAgent, event.toolCall));
+    this.on(agent, "failed", (event) => this.onFailed(event.error, event.message));
+    this.on(agent, "denied", (event) => this.onDenied(event));
+    this.on(agent, "inboxAdded", (event) => this.onInboxAdded(event.entry));
+    this.on(agent, "inboxCleared", () => this.onInboxCleared());
+    // agent 死了：这一段不能再等「闲」（它永远不会来了）
+    this.on(agent, "stopped", () => this.finish());
+    this.on(agent, "killed", () => this.finish());
 
     // 中止只有一个入口：RunRegistry 的句柄（服务层的 abort 也走这里）。
     // 它挂在**这一轮的** `RunHandle` 上（不是 agent 上），所以结算末尾单独摘（`offAbort`）。
@@ -1352,30 +1487,32 @@ class TurnSession implements ChatTurn {
       this.agent?.abort();
     });
 
-    // 装好了：装配期间收下的那几句现在冲进它的 inbox（随这一轮失败一起丢，不单独追）
-    for (const entry of this.pending.splice(0)) agent.deliver(entry);
+    // 装好了：装配期间收下那几句现在推给它（随这一轮失败一起丢，不单独追）
+    for (const entry of this.pending.splice(0)) {
+      try {
+        agent.push(entry);
+      } catch (error) {
+        this.options.onError?.(error, "push-pending");
+      }
+    }
   }
 
   /**
-   * 订一个事件，并把「取消订阅」收在 {@link listeners} 里。
+   * 订一个 core 事件，并把「取消订阅」收在 {@link listeners} 里。
    *
-   * 三种事件口都接得住：core 的 `EventBus.on` 返回 `Disposable`（`{ dispose() }`）、测试里的
-   * 记账总线返回函数、最小假件返回 `undefined`（那样就不会被摘，但没有真实总线也就没有后患）。
+   * core 的 `agent.on(type, fn)` 返回的就是取消函数（`CORE.md` §15-3：订阅者自己管生命周期）。
+   * 收下来的理由不是泄漏，而是错乱：agent 常驻，没摘的监听会在下一段被叫醒，拿一个已经
+   * 结算过的现场去认领 id / 推状态 / 写库。
    */
-  private subscribe(
-    events: { on(name: string, handler: (...args: never[]) => void): unknown },
-    name: string,
-    handler: (...args: never[]) => void,
-  ): void {
-    const off = toUnsubscribe(events.on(name, handler));
-    if (off) this.listeners.push(off);
+  private on<K extends keyof AgentEvents>(agent: ChatAgent, type: K, handler: (payload: AgentEvents[K]) => void): void {
+    const off = agent.on(type, handler);
+    if (typeof off === "function") this.listeners.push(off);
   }
 
   /**
-   * 把订在 agent（与子 Agent）上的监听全部摘掉 —— 这一轮的子就在这一刻结束。
+   * 把订在 agent 上的监听全部摘掉 —— 这一轮的生命就在这一刻结束。
    *
-   * agent 常驻，事件总线也就不再随它一起死：没摘的监听会在下一段被叫醒，拿一个已经结算过的
-   * 现场去认领 id / 推状态 / 写库。
+   * agent 常驻，事件监听也就不再随它一起死：没摘的监听会在下一段被叫醒。
    */
   private detachListeners(): void {
     for (const off of this.listeners.splice(0)) {
@@ -1387,10 +1524,33 @@ class TurnSession implements ChatTurn {
     }
   }
 
-  /** core 追加了一条消息：认领 id、记时间、更新六态里那些跟消息有关的部分 */
-  private onMessage(message: AgentNS.Message): void {
+  /**
+   * core 追加了一条消息：认领 id、记时间、**这一刻就写那一行**。
+   *
+   * 子 agent 的消息由 core 按同一套事件名转发上来（带 `subAgent` / `via`），所以这条路径也是
+   * 子 agent 的消息入口 —— 这里只做两件事：给它定一个宿主 id（第一次见就定死，客户端靠它拼
+   * 消息与流），再刷新快照里的条数。
+   */
+  private onMessageAdded(
+    message: AgentNS.Message,
+    subAgent?: ChatAgent,
+    via?: AgentNS.ToolCall,
+  ): void {
+    if (subAgent) {
+      const toolCallId = via?.id ?? "";
+      const known = this.subAgentIds.has(message);
+      this.onSubAgentMessage(toolCallId, message);
+      // 子 agent 的消息也要**逐条**落库（`messageAdded` / `messageChanged` / `delta` 三条路）。
+      // 只在流式与收尾时写会让顺序颠倒：那条问题要到收尾才第一次写，于是排到它引出的回答后面。
+      if (!known) this.enqueueSubAgentWrite(toolCallId, message);
+      return;
+    }
+
+    // 一条排队的内容落地了（不论是本段排的还是被叫起来那一段排的）：排队区里不再有它
+    this.forgetQueued(message.id);
+
     if (this.queuedIds.delete(message.id)) {
-      // 排队的那条落地了：core 在轮末把它 append 进来，id 是入队时定的那个（D5），
+      // 排队的那条落地了：core 在取件点把它 append 进来，id 是入队时定的那个（D5），
       // 所以这里既不重新认领、也不换 id。现在才把它记进 `producedIds`。
       this.createdAtOf.set(message.id, this.clock.now());
       if (!this.producedIds.includes(message.id)) this.producedIds.push(message.id);
@@ -1399,6 +1559,7 @@ class TurnSession implements ChatTurn {
       // 它引出的那条回答**之后**（真机上量出来的颠倒）。见 `persistLandedQueued`。
       this.persistLandedQueued(message);
       // 排队的少了一条（core 落地时已经从 inbox 里摘走），客户端据此收起一个「已排队」
+      this.forgetQueued(message.id);
       this.pushRunState();
       return;
     }
@@ -1408,12 +1569,12 @@ class TurnSession implements ChatTurn {
       this.createdAtOf.set(message.id, this.clock.now());
       if (!this.producedIds.includes(message.id)) this.producedIds.push(message.id);
       if (this.selfStarted && message.role === AgentNSValue.Role.User) {
-        // 自起段里由 core 落地的那条 user 消息（投递进来的条目，不是跑中排队那一半）：
-        // **这一刻就写库**。不能等到收尾那一次：`seq` 按插入顺序给，而这一段的助手消息是边流
-        // 边写的 —— 等到收尾才首次写它，库里它就会排到它引出的那条回答**之后**（与
-        // `persistLandedQueued` 同一个道理，普通轮次的这条消息在受理时就写过了）。
+        // 被叫起来那一段里由 core 落地的那条 user 消息：**这一刻就写库**。不能等到收尾那一次：
+        // `seq` 按插入顺序给，而这一段的助手消息是边流边写的 —— 等到收尾才首次写它，库里它就
+        // 会排到它引出的那条回答**之后**（普通轮次的这条消息在受理时就写过了）。
         this.enqueueWrite(message);
         // 队列被取走了一条，客户端据此收起「已排队」
+        this.forgetQueued(message.id);
         this.pushRunState();
       }
     }
@@ -1422,20 +1583,55 @@ class TurnSession implements ChatTurn {
       if (message.status === AgentNSValue.MessageStatus.Pending) {
         // 新一轮内循环的占位：接下来要拼的就是它
         this.streaming = message;
-        this.setGeneration({ phase: "connected", since: this.sinceFor("connected") });
+        // 占位出现 = 请求要发了（core 的 `requestSent` 紧跟其后）：报「等首字」
+        this.enterAwaitingFirstToken();
+      } else {
+        this.enqueueWrite(message);
       }
       return;
     }
 
-    if (
-      message.role === AgentNSValue.Role.Tool ||
-      message.role === AgentNSValue.Role.Function
-    ) {
-      this.trackRunningTool(message);
+    if (message.role === AgentNSValue.Role.Tool || message.role === AgentNSValue.Role.Function) {
       // 工具结果一出现就落一行（状态还是 pending）：进程中间没了，装载时能看出
       // 「这个工具参与了、但没定型」，而不是压根不知道它存在
       this.enqueueWrite(message);
     }
+  }
+
+  /**
+   * core 就地改了一条消息（定型、出错、被中断）：**重发同一条**（同 id）。
+   *
+   * 只靠 `messageAdded`，订阅方会永远停在 `pending` 上（`CORE.md` §10）。所以这一条同样
+   * 逐条 upsert —— 写库的「一条消息一个落点」就是这两条事件。
+   */
+  private onMessageChanged(
+    message: AgentNS.Message,
+    subAgent?: ChatAgent,
+    via?: AgentNS.ToolCall,
+  ): void {
+    if (subAgent) {
+      // 子 agent 的那条定型了：同样要盖回去（否则它永远停在 `pending`）
+      this.enqueueSubAgentWrite(via?.id ?? "", message);
+      return;
+    }
+    this.enqueueWrite(message);
+  }
+
+  /**
+   * core 删了一条消息（「丢」= 真删，`CORE.md` §6）：库里也必须消失。
+   *
+   * 内存那份已经不在了，所以这里只能拿 id 去删；同时从本轮的产出里摘掉（结算/用量/快照
+   * 都不能再算它）。
+   */
+  private onMessageRemoved(message: AgentNS.Message, subAgent?: ChatAgent): void {
+    const id = subAgent ? this.subAgentIds.get(message) : message.id;
+    if (id === undefined) return;
+    const index = this.producedIds.indexOf(id);
+    if (index >= 0) this.producedIds.splice(index, 1);
+    this.queuedStored.delete(id);
+    this.writeChain = this.writeChain
+      .then(() => this.options.messages.delete(id))
+      .catch((error: unknown) => this.options.onError?.(error, "message-remove"));
   }
 
   /**
@@ -1446,7 +1642,7 @@ class TurnSession implements ChatTurn {
    * 头两条（用户消息、助手占位）用受理时预分配、已经告诉客户端的 id，之后 core 追加的每一条
    * 各自要一个新 id（id 由宿主分配，PRD L6）。
    *
-   * ## 自起段（一路 `??=`，不覆盖）
+   * ## 被叫起来那一段（一路 `??=`，不覆盖）
    *
    * - 第一条 user 消息：**就是 core 从 inbox 落地的那条**，id 是投递方入队时定死的那个，
    *   宿主认领它（记下来，用于后面的 `storedContent` / 结算）但**不改写**：改写会让同一条
@@ -1458,7 +1654,7 @@ class TurnSession implements ChatTurn {
     if (message.role === AgentNSValue.Role.User && !this.userIdUsed) {
       this.userIdUsed = true;
       if (this.userMessageId === null) {
-        // 自起段：认领 core 落地时用的那个 id，原样返回（不改写）
+        // 被叫起来那一段：认领 core 落地时用的那个 id，原样返回（不改写）
         this.userMessageId = message.id;
       }
       return this.userMessageId;
@@ -1469,18 +1665,33 @@ class TurnSession implements ChatTurn {
       message.status === AgentNSValue.MessageStatus.Pending
     ) {
       this.assistantIdUsed = true;
-      // 自起段：首次见到占位那一刻分配并登记（普通轮次这里是受理时那个 id，不变）
+      // 被叫起来那一段：首次见到占位那一刻分配并登记（普通轮次这里是受理时那个 id）
       this.assistantMessageId ??= this.newId();
       return this.assistantMessageId;
     }
     return this.newId();
   }
 
-  /** 一片增量：推事件（core 的 `AgentNS.Delta` 原样）+ 推进六态 + 节流写库 */
-  private onChunk(receiver: AgentNS.Message, chunk: RawChunk): void {
-    const delta = chunk.choices?.[0]?.delta;
+  /**
+   * 一片原始片（core 的 `delta`）：推事件 + 推进六态 + 节流写库。
+   *
+   * 来源只在 `source` 那一格里（`{ message }` 还是 `{ subAgent, toolCall }`），不再去猜。
+   */
+  private onDelta(event: AgentEvents["delta"]): void {
+    const delta = (event.chunk as RawChunk | undefined)?.choices?.[0]?.delta;
     // 只有外层字段的收尾片（带 usage / finish_reason）不产生增量事件
     if (!delta) return;
+
+    const source = event.source;
+    if ("subAgent" in source) {
+      const toolCallId = source.toolCall?.id ?? "";
+      const receiver = source.subAgent.messages.at(-1);
+      if (!receiver) return;
+      this.onSubAgentChunk(toolCallId, receiver, delta);
+      return;
+    }
+
+    const receiver = source.message;
     const seq = this.deltaSeq.get(receiver.id) ?? 0;
     this.deltaSeq.set(receiver.id, seq + 1);
     this.options.emit("message.delta", {
@@ -1496,14 +1707,33 @@ class TurnSession implements ChatTurn {
   }
 
   /**
-   * 一个工具定型了（L8 的「在等哪几个工具」）。
+   * core 说「这个工具要跑了」（六态里的「在等工具」）。
    *
-   * 剩下还有工具没定型就继续报「在等工具」，并把列表缩到还在跑的那些（并行时逐个减少）。
-   * 都定型了就不该停在「在等工具」：那一态描述的是一件已经不成立的事，此时回到「连上」
+   * 并行时列表里有几个就是几个，逐个走。子 agent 里的工具也转发上来（带 `subAgent`），
+   * 但那是子 agent 的事，不进父的六态。
+   */
+  private onToolStarted(toolCall: AgentNS.ToolCall, subAgent?: ChatAgent): void {
+    if (subAgent) return;
+    const key = toolKey(toolCall);
+    if (this.runningTools.has(key)) return;
+    this.runningTools.set(key, { toolCall, startedAt: this.nowIso() });
+    this.setGeneration({
+      phase: "awaiting_tools",
+      since: this.sinceFor("awaiting_tools"),
+      runningTools: [...this.runningTools.values()],
+    });
+  }
+
+  /**
+   * 一个工具结束了（L8 的「在等哪几个工具」）。
+   *
+   * 剩下还有工具没结束就继续报「在等工具」，并把列表缩到还在跑的那些（并行时逐个减少）。
+   * 都结束了就不该停在「在等工具」：那一态描述的是一件已经不成立的事，此时回到「连上」
    * （接下来要么是下一轮的首字，要么这一轮结束）。
    */
-  private onToolCallEnd(ctx: ToolCallEndContext): void {
-    this.runningTools.delete(toolKey(ctx.toolCall));
+  private onToolFinished(toolCall: AgentNS.ToolCall, subAgent?: ChatAgent): void {
+    if (subAgent) return;
+    this.runningTools.delete(toolKey(toolCall));
     if (this.runningTools.size === 0) {
       this.setGeneration({ phase: "connected", since: this.sinceFor("connected") });
       return;
@@ -1515,36 +1745,32 @@ class TurnSession implements ChatTurn {
     });
   }
 
-  private onSubAgentStart(ctx: SubAgentContext): void {
-    const toolCallId = ctx.toolCallContext.tool_call.id ?? "";
+  /**
+   * 委派开始了（core 的 `subAgentStarted`）。
+   *
+   * 子 agent 自己说的话/流的片不用再单独订阅：core 把它们按**同一套事件名**转发到父身上
+   * （`messageAdded` / `delta`，带 `subAgent` / `via` 两格）。旧版这里订的是子 agent 自己的
+   * 总线，还漏过「子 agent 活过这一段」的摘除时机。
+   */
+  private onSubAgentStart(subAgent: ChatAgent, toolCall?: AgentNS.ToolCall): void {
+    const toolCallId = toolCall?.id ?? "";
     const snapshot: SubAgentSnapshot = {
       toolCallId,
-      name: subAgentName(ctx.subAgent),
+      name: subAgentName(subAgent),
       status: "running",
       startedAt: this.nowIso(),
       finishedAt: null,
-      messageCount: ctx.subAgent.messages.length,
+      messageCount: subAgent.messages.length,
       usage: null,
       problem: null,
     };
     this.subagents.set(toolCallId, snapshot);
 
-    // 子 Agent 说的话也要过线（F-I7）：它跑在自己的 Agent 实例里，宿主不转发的话，
-    // 客户端只能等它跑完去读库 —— 中间整段时间屏幕上是一个字都没有的。
-    // 订的是子 Agent 自己的总线（随它一起没），但同样记进 `listeners`：子 Agent 活过这一段时
-    // 也不该再叫到一个已结算的现场上。
-    this.subscribe(ctx.subAgent.events, "message", (message: AgentNS.Message) => {
-      this.onSubAgentMessage(toolCallId, message);
-    });
-    this.subscribe(
-      ctx.subAgent.events,
-      "chunk-parsed",
-      (receiver: AgentNS.Message, chunk: RawChunk) => {
-        this.onSubAgentChunk(toolCallId, receiver, chunk);
-      },
-    );
+    // 子 agent 开局手里的那些消息（工具装好的历史 / 模板）先落一行：它们不会再触发 `messageAdded`，
+    // 等着收尾那一次写就会排到它自己说出的回答之后（`seq` 按插入顺序给）。
+    for (const message of subAgent.messages) this.enqueueSubAgentWrite(toolCallId, message);
 
-    const running = this.runningTools.get(toolKey(ctx.toolCallContext.tool_call));
+    const running = this.runningTools.get(toolKey(toolCall ?? {}));
     if (running) running.subagent = snapshot;
     this.pushRunState();
   }
@@ -1561,9 +1787,7 @@ class TurnSession implements ChatTurn {
   }
 
   /** 子 Agent 的一片增量：推成 `message.delta`（带 `toolCallId`）+ 节流写库 */
-  private onSubAgentChunk(toolCallId: string, receiver: AgentNS.Message, chunk: RawChunk): void {
-    const delta = chunk.choices?.[0]?.delta;
-    if (!delta) return;
+  private onSubAgentChunk(toolCallId: string, receiver: AgentNS.Message, delta: AgentNS.Delta): void {
     const messageId = this.subAgentIdOf(receiver);
     const seq = this.deltaSeq.get(messageId) ?? 0;
     this.deltaSeq.set(messageId, seq + 1);
@@ -1588,20 +1812,20 @@ class TurnSession implements ChatTurn {
     return id;
   }
 
-  private onSubAgentEnd(ctx: SubAgentContext): void {
-    const toolCallId = ctx.toolCallContext.tool_call.id ?? "";
+  private onSubAgentEnd(subAgent: ChatAgent, toolCall?: AgentNS.ToolCall): void {
+    const toolCallId = toolCall?.id ?? "";
     const existing = this.subagents.get(toolCallId);
     if (!existing) return;
 
-    const usage = sumUsage(ctx.subAgent.messages);
-    const failed = ctx.subAgent.messages.some(
+    const usage = sumUsage(subAgent.messages);
+    const failed = subAgent.messages.some(
       (message) => message.status === AgentNSValue.MessageStatus.Error,
     );
     existing.status = this.aborted ? "aborted" : failed ? "error" : "done";
     existing.finishedAt = this.nowIso();
     existing.usage = usage;
     if (failed) {
-      const reason = lastErrorText(ctx.subAgent.messages);
+      const reason = lastErrorText(subAgent.messages);
       existing.problem = problem("subagent.failed", "message.subagentFailed", {
         name: existing.name,
         reason,
@@ -1609,7 +1833,7 @@ class TurnSession implements ChatTurn {
     }
 
     // F-I7：子 Agent 说过的话也落库（挂在那次委派的工具调用上），条数就是真落下去的条数
-    const rows = this.persistSubAgent(toolCallId, ctx.subAgent.messages);
+    const rows = this.persistSubAgent(toolCallId, subAgent.messages);
     existing.messageCount = rows;
     this.pushRunState();
   }
@@ -1639,21 +1863,70 @@ class TurnSession implements ChatTurn {
     return rows.length;
   }
 
-  /** 工具结果消息一出现就算「开始等它」；并行时列表里有几个就是几个（PRD L8） */
-  private trackRunningTool(message: AgentNS.Message): void {
-    const call: AgentNS.ToolCall = {
-      id: message.tool_call_id,
-      type: "function",
-      function: { name: message.name ?? "" },
-    };
-    const key = message.tool_call_id ? `id:${message.tool_call_id}` : toolKey(call);
-    if (this.runningTools.has(key)) return;
-    this.runningTools.set(key, { toolCall: call, startedAt: this.nowIso() });
-    this.setGeneration({
-      phase: "awaiting_tools",
-      since: this.sinceFor("awaiting_tools"),
-      runningTools: [...this.runningTools.values()],
+  /**
+   * core 报了一条 `failed`：记成这一段的失败事实。
+   *
+   * 载荷的 `error` 与那条消息的 `message.error` 是**同一个实例**（`CORE.md` §7），所以这里
+   * 不另外造一份。被叫停的那一轮不算失败（core 那时不报 `failed`，这里再防一手）。
+   */
+  private onFailed(error: unknown, message?: AgentNS.Message): void {
+    if (this.aborted || this.handle.aborted) return;
+    this.problem = toProblem(error);
+    void message;
+    this.pushRunState();
+  }
+
+  /**
+   * core 报了一条 `denied`：某个钩子拒了，这一圈压根没跑。
+   *
+   * 只有 `onInnerLoopStart` 被拒才是「这一轮没发出去」—— 那是一个结局。`onToolStart` 拒只
+   * 影响一个工具（core 会把理由写成那条 tool 消息的正文），`onSubAgentStart` 拒只影响那一次
+   * 委派，两者都不是这一轮失败了。
+   */
+  private onDenied(event: AgentEvents["denied"]): void {
+    if (this.aborted || this.handle.aborted) return;
+    if (event.hook !== "onInnerLoopStart") return;
+    this.problem = toDeniedProblem(event.reason, event.detail);
+    this.pushRunState();
+  }
+
+  /**
+   * core 入队了一条（可能不是本段推的：别的会话、交接回合、宿主自己）。
+   *
+   * `RunState.inbox` 要的是「条目本身」，而 core 只给一个数字（`inboxSize`）：内容与来源在
+   * 入队那一刻只有一个自由——事件。所以这里把带正文的条目记下来当镜像，落地时 /
+   * `inboxCleared` 时移除。钥匙（没有正文）不进排队区：它不是一句话，没东西可显示。
+   */
+  private onInboxAdded(entry: AgentNS.InboxEntry): void {
+    if (entry.content === undefined) return;
+    // 自己这一轮那条不排队：它就是要被回答的那一句（`run()` 已经写进库了）
+    if (this.userMessageId !== null && entry.messageId === this.userMessageId) return;
+    // 本段自己入队时已经记过一条（装配期先入的也一样）：同一条内容不记两遍
+    if (this.queuedItems.some((item) => item.messageId === entry.messageId)) return;
+    this.rememberQueued(entry);
+    this.pushRunState();
+  }
+
+  /** 往排队区镜像里记一条（带正文的条目才有东西可显示） */
+  private rememberQueued(entry: AgentNS.InboxEntryWithContent): void {
+    this.queuedItems.push({
+      messageId: entry.messageId ?? "",
+      source: entry.source,
+      createdAt: entry.createdAt,
+      preview: inboxPreview(entry.content),
     });
+  }
+
+  /** core 把 inbox 清空了（`kill`、或暂停中 `stop`）：镜像也跟着清 */
+  private onInboxCleared(): void {
+    this.queuedItems.length = 0;
+    this.pushRunState();
+  }
+
+  /** 一条排队消息已经落地（或已经不在了）：从排队区镜像里摘掉 */
+  private forgetQueued(messageId: string): void {
+    const index = this.queuedItems.findIndex((item) => item.messageId === messageId);
+    if (index >= 0) this.queuedItems.splice(index, 1);
   }
 
   // ---- 六态 ----
@@ -1733,14 +2006,19 @@ class TurnSession implements ChatTurn {
 
   private enqueueWrite(message: AgentNS.Message): void {
     this.lastWriteAt = this.clock.now();
-    const row = toRow(
-      message,
-      this.conversationId,
-      this.createdAtOf.get(message.id) ?? this.clock.now(),
-      this.abortedInFlight.has(message.id) ? AgentNSValue.MessageStatus.Aborted : undefined,
-    );
+    // 行的内容**在真正写的这一刻**才从活消息上取：core 是先发 `delta` 再把那一片攒进消息的
+    // （`emit` 之后才 `applyChunk`），同步取快照会写下一份比内存落后一片的行。
     this.writeChain = this.writeChain
-      .then(() => this.options.messages.upsert(row))
+      .then(() =>
+        this.options.messages.upsert(
+          toRow(
+            message,
+            this.conversationId,
+            this.createdAtOf.get(message.id) ?? this.clock.now(),
+            this.abortedInFlight.has(message.id) ? AgentNSValue.MessageStatus.Aborted : undefined,
+          ),
+        ),
+      )
       .catch((error: unknown) => this.options.onError?.(error, "stream-write"));
   }
 
@@ -1765,15 +2043,18 @@ class TurnSession implements ChatTurn {
 
   private enqueueSubAgentWrite(toolCallId: string, message: AgentNS.Message): void {
     const id = this.subAgentIdOf(message);
-    const row = toRow(
-      { ...message, id },
-      this.conversationId,
-      this.createdAtOf.get(id) ?? this.clock.now(),
-      undefined,
-      toolCallId,
-    );
     this.writeChain = this.writeChain
-      .then(() => this.options.messages.upsert(row))
+      .then(() =>
+        this.options.messages.upsert(
+          toRow(
+            { ...message, id },
+            this.conversationId,
+            this.createdAtOf.get(id) ?? this.clock.now(),
+            undefined,
+            toolCallId,
+          ),
+        ),
+      )
       .catch((error: unknown) => this.options.onError?.(error, "sub-agent-stream-write"));
   }
 
@@ -1870,11 +2151,11 @@ class TurnSession implements ChatTurn {
   private async settle(): Promise<void> {
     if (this.settledAtMs !== null) return;
     this.settledAtMs = this.clock.now();
-    // 兜底：装配就失败 / 没走完 `send()` 的那几条路径也把门关上
+    // 兜底：装配就失败 / 还没推出去的那几条路径也把门关上
     this.closed = true;
 
-    // 先把装配事实等到手：自起段建现场时读不了库（见 `onAgentStatus`），会话行与 Scope 是
-    // 随后补的，而下面几处（`conversation.changed` 的 `workspaceId`、交接线的模型阈值）要用它们。
+    // 先把装配事实等到手：被叫起来那一段建现场时读不了库（见 `onAgentState`），会话行与 Scope
+    // 是随后补的，而下面几处（`conversation.changed` 的 `workspaceId`、交接线的模型阈值）要用它们。
     // 普通轮次在受理时就有，这个 await 是空转。
     await this.factsReady;
 
@@ -1895,17 +2176,18 @@ class TurnSession implements ChatTurn {
     }
 
     // 收工那一刻 inbox 里还有东西 = 这一轮欠着一句没落地。正常路径上这里应当是空的：取件点
-    // 在 core 的 `run()` 里（一段跑完一组就取一次），而收尾钩子之后投进来的条目 core 已经不再
-    // 顺手带走 —— 这一轮不会再发它们，所以得吭声。（agent 常驻之后它们**不会被丢**：留在
-    // inbox 里等下一次外部驱动的那一段带走，但「这一轮没接住」仍是一个不该无声发生的事实。）
+    // 在 core 的循环里（一批取一次），而收尾钩子之后投进来的条目 core 已经不再顺手带走 ——
+    // 这一轮不会再发它们，所以得吭声。（agent 常驻之后它们**不会被丢**：留在 inbox 里等下一次
+    // 被叫起来的那一段带走，但「这一轮没接住」仍是一个不该无声发生的事实。）
     //
-    // 只有一种「还剩下」是**预期**的，不报：用户按了停 —— core 的 `abort()` 不再清空 inbox
+    // 数字问 core（`inboxSize`），不拿队列内容：core 只给个数（`CORE.md` 那张表）。
+    //
+    // 只有一种「还剩下」是**预期**的，不报：用户按了停 —— core 的 `abort()` 不清空 inbox
     // （有意的语义变更：一条来自别的会话的投递不该被「用户按停」这个无关动作抹掉）。
-    const leftover = this.agent?.inbox ?? [];
-    if (leftover.length > 0 && !this.aborted && !this.handle.aborted) {
-      const ids = leftover.map((entry) => entry.messageId).join(", ");
+    const leftover = this.agent?.inboxSize ?? 0;
+    if (leftover > 0 && !this.aborted && !this.handle.aborted) {
       this.options.onError?.(
-        new Error(`这一轮已经收工，inbox 里还剩 ${leftover.length} 条没被取走：${ids}`),
+        new Error(`这一轮已经收工，inbox 里还剩 ${leftover} 条没被取走`),
         "inbox-leftover",
       );
     }
@@ -1937,7 +2219,7 @@ class TurnSession implements ChatTurn {
       at: this.nowIso(),
     });
     this.options.emit("usage", { conversationId: this.conversationId, usage, at: this.nowIso() });
-    // 装配事实没到位（自起段补不到会话行）：没有 `workspaceId` 可报，这一跳跳过 ——
+    // 装配事实没到位（被叫起来那一段补不到会话行）：没有 `workspaceId` 可报，这一跳跳过 ——
     // 库里那几行已经写了，客户端下一次 `conversation.state` 照样能拿到。
     const workspaceId = this.conversation?.workspaceId;
     if (workspaceId !== undefined) {
@@ -1974,7 +2256,7 @@ class TurnSession implements ChatTurn {
   private notifySettled(outcome: RunOutcome, usage: UsageSnapshot): void {
     const onSettled = this.options.onTurnSettled;
     if (!onSettled) return;
-    // 装配事实没到位（自起段补不到会话行）时：没有模型阈值可报，用 `0`（= 没配，不问交接）
+    // 装配事实没到位（被叫起来那一段补不到会话行）时：没有模型阈值可报，用 `0`（= 没配，不问交接）
     const model = this.scope?.config.models.find(
       (candidate) => candidate.id === this.conversation?.modelId,
     );
@@ -2124,20 +2406,19 @@ class TurnSession implements ChatTurn {
 
   buildRunState(): RunState {
     const settledAt = this.settledAtMs;
-    // 排队条目直接问这一轮的 agent（core 的 `inbox`），不自己另记一份：数组就是真相，
-    // 另记的一份会与它分叉。顺序即取件顺序：在跑的 agent 的队列在前（core 先取它），
-    // 装配期缓冲在 `pending` 里的那几条在后（attach 才进 inbox）。
+    // 排队条目读本段自己的镜像（{@link queuedItems}）：core 只给个数（`inboxSize`），而客户端的
+    // 排队区要显示条目本身。镜像由 `inboxAdded` 建、落地/`inboxCleared` 时摘。
     //
     // 结算之后一律报空：`inbox` 说的是「**这一轮**还排着什么」，而结算完的这一轮已经没有
     // 排队这回事 —— core 不再取件（下一个取件点是下一段）。agent 常驻之后它的队列里可能
     // 真的还留着条目（下一段会带走，见 `settle` 里的 leftover），但那不是这一轮的事，
     // 报出去只会让客户端的排队区在一条已结算的轮次上挂着一个挂件。
-    const inbox = settledAt !== null ? [] : [...(this.agent?.inbox ?? []), ...this.pending];
+    const inbox = settledAt !== null ? [] : [...this.queuedItems];
     return {
       conversationId: this.conversationId,
       status: settledAt !== null ? "settled" : "running",
       assistantMessageId: this.assistantMessageId,
-      inbox: inbox.map((entry) => toInboxItem(entry)),
+      inbox,
       startedAt: new Date(this.startedAtMs).toISOString(),
       settledAt: settledAt !== null ? new Date(settledAt).toISOString() : null,
       generation: settledAt !== null ? null : this.generation,
@@ -2178,21 +2459,11 @@ class TurnSession implements ChatTurn {
 const INBOX_PREVIEW_LIMIT = 120;
 
 /**
- * core 的 `InboxEntry` → 契约里的 `InboxItem`（只换掉内容：原文换成一行摘要）。
+ * 排队条目的一行摘要：文本按顺序拼接，非文本段记成 `[图片]` / `[文件]`，最后折叠空白 + 截断。
  *
- * `run.state` 每次六态变化都推一次，所以这里不能带 `content` 原文：段里可能装着图片/文件的
- * 原始数据，搬原文等于每推一次状态就重发一遍附件。
+ * `run.state` 每次六态变化都推一次，所以排队区里不能带 `content` 原文：段里可能装着图片/文件的
+ * 原始数据，搬原文等于每推一次状态就重发一遍附件。钥匙（没有正文的条目）不进来 —— 它不是一句话。
  */
-function toInboxItem(entry: AgentNS.InboxEntry): InboxItem {
-  return {
-    messageId: entry.messageId,
-    source: entry.source,
-    createdAt: entry.createdAt,
-    preview: inboxPreview(entry.content),
-  };
-}
-
-/** 排队条目的一行摘要：文本按顺序拼接，非文本段记成 `[图片]` / `[文件]`，最后折叠空白 + 截断 */
 function inboxPreview(content: AgentNS.MessageContent): string {
   if (typeof content === "string") return clampPreview(content);
   const parts: string[] = [];
@@ -2301,24 +2572,24 @@ export class ChatRunner {
    *
    * 只有两段窗口会用到它，两段都是「投进去会起一段没有上下文的段」的时刻：
    *
-   *   1. **落后窗口**：core 的 `runStatus` 已经是 `idle`，而宿主这边的现场还在（这一段正在结算：
+   *   1. **落后窗口**：core 已经是 `idle`，而宿主这边的现场还在（这一段正在结算：
    *      `closed` 已置位、`RunRegistry` 还没 `finish`）。此刻投进去，core 会把 agent 叫醒跑一段，
-   *      而 `onAgentStatus` 看到 `turns` 里还有现场就什么都不建 —— 那一段的消息于是没人落库。
+   *      而 `onAgentState` 看到 `turns` 里还有现场就什么都不建 —— 那一段的消息于是没人落库。
    *   2. **受理窗口**：`conversation.send` 已经 `runs.start`，现场却还没建（受理那半段在读库）。
-   *      此刻投进去同样是「core 起段、宿主没有接住它的现场」。
+   *      此刻投进去同样是「core 起了一段、宿主没有接住它的现场」。
    *
-   * 两段的出口相同：那一段（或那次受理）**结算之后**，把攒下的整批 `deliver([...])` 出去。于是
+   * 两段的出口相同：那一段（或那次受理）**结算之后**，把攒下的整批一次 `push` 下去。于是
    * 「攒够了一起投」既是正确性要求（一条也不能丢），也顺带成了最省的一次请求。
    */
   private readonly waitlists = new Map<string, DeliveryInput[]>();
   /**
-   * 每段对话「最近一条投进 inbox 的条目是谁推的」—— 自起段结算时报给宿主的来源。
+   * 每段对话「最近一条投进 inbox 的条目是谁推的」—— 被叫起来那一段结算时报给宿主的来源。
    *
    * 为何不另存一份「谁在跑」：这里只是**一条观察值**（`TurnSettledFacts.source`），不参与任何
    * 判断，「在跑」的真相仍然只在 `turns` / `RunRegistry`。投递方与唤醒是两件事，而这个映射
    * 只记后者要报的那个值。
    */
-  private readonly inboxSources = new Map<string, string>();
+  private readonly inboxSources = new Map<string, AgentNS.MessageSource>();
   /**
    * 每段对话的投递串行链：**同一段对话的投递不并行**。
    *
@@ -2332,6 +2603,18 @@ export class ChatRunner {
   constructor(options: ChatRunnerOptions) {
     this.options = options;
     this.clock = options.clock ?? systemClock;
+    // 三格与入队的观察口长在注册表那侧（它才知道「这个 agent 是哪段对话的」，而且是 agent
+    // 唯一的来源）。**在这里注册**而不是让接线层去接：少一个接线点就少一条「结算永远等下去」
+    // 的静默坏法。
+    options.agents.observeState((event) => {
+      this.onAgentState(event);
+      // 面向接线层的那一路旁听（例如平级会话要知道「这一段开始了」）—— 只是观察，不参与判据
+      this.options.onState?.(event);
+    });
+    options.agents.observeInbox((event) => {
+      // 只有带正文的条目能回答「这一段是被谁叫起来的」：钥匙没有 `source`
+      if (event.entry.content !== undefined) this.noteInbox(event.conversationId, event.entry.source);
+    });
   }
 
   /** 宿主分配消息 id（PRD L6）：缺省 `crypto.randomUUID`，测试可注入递增 id */
@@ -2340,13 +2623,14 @@ export class ChatRunner {
   }
 
   /**
-   * core 的 `inbox` 事件转进来：记下这条条目是谁推的。
+   * core 的 `inboxAdded` 事件转进来：记下这条条目是谁推的。
    *
-   * 「这一段是被谁叫起来的」只有投递方知道（条目的 `source`），而自起段建现场那一刻（`status`）
-   * 拿不到它 —— 投递走的是 agent 自己的 inbox，不经过宿主。于是投递方一入队就把来源记在这里，
-   * 建现场时取一次（取完就清，不留给下一段）。
+   * 「这一段是被谁叫起来的」只有投递方知道（条目的 `source`），而被叫起来那一段建现场那一刻
+   * （`state → busy`）拿不到它 —— 投递走的是 agent 自己的 inbox，不经过宿主。于是投递方一入队
+   * 就把来源记在这里，建现场时取一次（取完就清，不留给下一段）。
    */
-  noteInbox(conversationId: string, source: string): void {
+  noteInbox(conversationId: string, source: AgentNS.MessageSource | undefined): void {
+    if (!source) return;
     this.inboxSources.set(conversationId, source);
   }
 
@@ -2377,7 +2661,7 @@ export class ChatRunner {
    * 一段真的结算完了：摘现场 → 再看一眼待投列表。
    *
    * 两步的顺序是这段代码的全部意义：**先**把现场摘掉（`turns` 空、`runs` 已经 `finish`），
-   * **再**投。反过来的话，投进去的那一批会把 agent 叫醒跑一段，而 `onAgentStatus` 看到 `turns`
+   * **再**投。反过来的话，投进去的那一批会把 agent 叫醒跑一段，而 `onAgentState` 看到 `turns`
    * 里还有现场就什么都不建 —— 那一段的消息于是没人落库（这就是要关掉的落后窗口）。
    */
   private finishRuntime(conversationId: string, session?: TurnSession): void {
@@ -2385,55 +2669,64 @@ export class ChatRunner {
     this.flushWaited(conversationId);
   }
 
-  // ---- 自起的段：agent 被 `deliver()` 叫醒跑起来的那一段 ----
+  // ---- 被叫起来的那一段：agent 被 `push()` 推起来跑的那一批 ----
 
   /**
-   * 接住 agent 报上来的一段边界（`status` 事件）—— 「自起的段」的全部入口。
+   * 接住 agent 报上来的三格变化（`state` 事件）—— 「被别人叫起来那一段」的全部入口。
    *
-   * ## 为什么入口是 `status`
+   * ## 为什么入口是 `state`
    *
-   * 自起段从头到尾不经过宿主：`agent.deliver(entry)` 在静止态把 agent 叫醒，core 自己把队列
-   * 落地、自己跑完、自己收尾。宿主唯一能知道「一段开始了 / 一段结束了」的时刻就是 core 广播的
-   * `status`。所以 agent 常驻期都在听它（`AgentRegistry` 装配时订上，见
-   * `AgentRegistryOptions.onStatus`），由接线层转进这里。
+   * 那一段从头到尾不经过宿主：`agent.push(entry)` 在静止态把 agent 叫醒，core 自己把队列落地、
+   * 自己跑完、自己收尾。宿主唯一能知道「一段开始了 / 一段结束了」的时刻就是 core 广播的
+   * `state`。所以 agent 常驻期都在听它（`AgentRegistry` 装配时订上，见
+   * `AgentRegistryOptions.onState`），由接线层转进这里。
    *
    * ## 为什么建现场这一跳必须同步（这里没有 await）
    *
-   * core 定的次序是「`status → running` → 队列落地（`message`）→ 跑」。本方法返回之后紧接着
-   * 就是那几条 user 消息的广播，所以现场要在这里就地建好、就地订上 `message` —— 让出一次执行权
+   * core 定的次序是「`state → busy` → 队列落地（`messageAdded`）→ 跑」。本方法返回之后紧接着
+   * 就是那几条 user 消息的广播，所以现场要在这里就地建好、就地订上那套事件 —— 让出一次执行权
    * （哪怕只是 `await` 一次读库）就会错过它们，那几条消息于是既不落库、也不进这一段的产出。
    * 会话行与 Scope 因此只能随后补（`hydrate`）。
    *
    * ## 普通轮次完全照旧
    *
-   * `conversation.send` 那一轮在 `run()` 里就建好了现场，所以 `→ running` 到这里是空动作 ——
+   * `conversation.send` 那一轮在 `run()` 里就建好了现场，所以 `→ busy` 到这里是空动作 ——
    * 绝不能建第二个（两套现场会把同一条消息记两遍、结算两次，断言见用例
    * “普通轮次不会多出一个 TurnSession”）。
    */
-  onAgentStatus(event: AgentStatusEvent): void {
-    const { conversationId, agent, to } = event;
+  onAgentState(event: AgentStateEvent): void {
+    const { conversationId, to } = event;
     const turn = this.turns.get(conversationId);
 
-    if (to === "running") {
-      if (turn) return;
-      this.startSelfRun(conversationId, agent);
+    if (to === "busy") {
+      if (turn) {
+        // 普通轮次（`conversation.send` 已经建了现场）：只记「忙过」，不动现场
+        turn.markBusy();
+        return;
+      }
+      this.startSelfRun(conversationId, event.agent);
       return;
     }
 
-    // 段结束（`idle` 正常收尾 / `terminated` 被叫停收完尾）：自起段走它自己的结算路径。
-    // 普通轮次在这里是空动作 —— 它的结算由 `execute()` 自己走（`send()` 返回之后）。
-    if (turn?.selfStarted) turn.finish();
+    // 这一批跑完了（`idle`）/ 被暂停（`paused`）：**两种段的结算走同一扇门**。
+    //
+    // 只认「忙过之后的闲」：这一轮之前那一拍的闲不是我的。这条守卫两种段都要 ——
+    // 受理之前 agent 可能正好从 `paused` 解回 `idle`（用户上一轮按过停），那一跳与
+    // 「我这一轮跑完了」是两件事，把它当成结算会让这一轮在推出去之前就收工。
+    // `paused` 不设这道门：暂停是用户的显式动作，这一轮当场就结束了。
+    if (to === "idle" && !turn?.busySeen) return;
+    turn?.finish();
   }
 
   /**
-   * 给一段自起的段建现场：先占位（`RunRegistry`）、再建 `TurnSession`（就地订上 agent）、
+   * 给一段被叫起来的工作建现场：先占位（`RunRegistry`）、再建 `TurnSession`（就地订上 agent）、
    * 推一次 `run.state`，最后去补装配事实。
    *
    * 占位排在建现场之前有两个原因：`RunHandle` 是现场的构造参数（中止订阅就挂在它上面），
    * 而它同时是「这一段对话现在忙」的唯一来源 —— 客户端那一刻按 `conversation.abort` 必须能找到
    * 这一段。
    *
-   * 此刻不该有别的轮次在跑（有的话 `turns` 里就有现场，`onAgentStatus` 已经返回了），所以
+   * 此刻不该有别的轮次在跑（有的话 `turns` 里就有现场，`onAgentState` 已经返回了），所以
    * `runs.start` 撞上 `busy` 只剩一种情形：上一段的 `RunRegistry` 还没 `finish`（它正在写库
    * 结算，而 core 已经收完尾、又能被叫醒了）。那种情形下这一段本来就没有现场可建 —— 报出来，
    * 不静默吞。
@@ -2449,7 +2742,7 @@ export class ChatRunner {
 
     const nowMs = this.clock.now();
     // 叫醒它的那条条目的来源（`noteInbox` 记的最近一条）：取完就清，不留给下一段。
-    // 没有（不是 inbox 叫起来的）就落到兜底值 —— 它仍然不是 `"user"`。
+    // 没有（条目是钥匙 / 不是 inbox 叫起来的）就落到兜底值 —— 它仍然不是 `{ kind: "user" }`。
     const source = this.inboxSources.get(conversationId) ?? SOURCE_INBOX;
     this.inboxSources.delete(conversationId);
     // 回调里要拿现场去「只摘自己那一份」，而现场这时才在造
@@ -2459,7 +2752,7 @@ export class ChatRunner {
       conversationId,
       agent,
       source,
-      // 这一段开始前的历史：此刻 core 还没把 inbox 落地（`status` 先于 `message`），
+      // 这一段开始前的历史：此刻 core 还没把 inbox 落地（`busy` 先于 `messageAdded`），
       // 所以这份快照正好是「上一段结束时的样子」（usage 的累计与结算报的 `messages` 都靠它）
       history: [...agent.messages],
       handle,
@@ -2468,15 +2761,15 @@ export class ChatRunner {
       onSettled: () => this.finishRuntime(conversationId, session),
     });
     this.createRuntime(session);
-    // 现场已经就位（并且已经订上 `message`）：推一次「这一段跑起来了」
+    // 现场已经就位（并且已经订上那套事件）：推一次「这一段跑起来了」
     session.announce();
     void this.hydrate(conversationId, session);
   }
 
   /**
-   * 补上自起段的装配事实（会话行 + Scope）。
+   * 补上被叫起来那一段的装配事实（会话行 + Scope）。
    *
-   * 建现场那一刻读不了库（见 `onAgentStatus`），所以这两件在这里补。补不到（对话刚被删 /
+   * 建现场那一刻读不了库（见 `onAgentState`），所以这两件在这里补。补不到（对话刚被删 /
    * Scope 建不起来）不算「什么都没发生」：记成这一段的失败事实，让结算照常走完 —— 那一段真的
    * 跑过，它的消息就在 agent 里，落库与 `runs.finish` 都不能卡住。
    */
@@ -2541,13 +2834,14 @@ export class ChatRunner {
       const userId = this.newId();
       const assistantId = this.newId();
 
-      // 这一轮是谁叫起来的：缺省就是用户本人发的话（那时一个字都不动）。其他来源（将来由别的
-      // 会话的结果唤醒）把来源写进正文最前面那行注释 —— 否则模型会把那条结果当成用户说的话。
+      // 这一轮是谁叫起来的：缺省就是用户本人发的话（那时一个字都不动）。其他来源（平级会话
+      // 推来的结果、宿主自己的注入）由 **core** 在落地那一刻给正文最前面加一行来源注释 ——
+      // 宿主不自己拼那句话，也不再拿字符串比来源（`CORE.md` §3 / §10）。
       const source = params.source ?? SOURCE_USER;
-      // 两份内容各包各的（且都只包一次）：落库那份决定用户下次回看时看到什么，发给模型那份
-      // 决定模型看到什么。core 的 inbox 落地路径也是这两份一致（`inboxEntryMessage` 用包过的
-      // 内容当消息内容）；`storedContent` 没给时两份本来就是同一份，包出来的也各自独立。
-      const content = withSourceNote(prepared.content, source, userId, acceptedAt);
+      // 两份各包各的（且都只包一次）：落库那份决定用户下次回看时看到什么，发给 core 那份决定
+      // 模型看到什么（core 自己会按 `source` 包上注释，所以递给它的必须是**原文**）。
+      // `storedContent` 没给时两份本来就是同一份，包出来的也各自独立。
+      const content = prepared.content;
       const storedContent = withSourceNote(
         prepared.storedContent ?? prepared.content,
         source,
@@ -2565,6 +2859,9 @@ export class ChatRunner {
           status: AgentNSValue.MessageStatus.Completed as string,
           omit: false,
           content: storedContent as unknown as MessageUpsertInput["content"],
+          // 来源从受理那一刻就落库（列存的就是判别结构的 JSON）：即使这一轮还没跑完、进程没了，
+          // “这句话是谁说的”依然答得出来
+          source,
           data: null,
           createdAt: nowMs,
         },
@@ -2575,6 +2872,7 @@ export class ChatRunner {
           status: AgentNSValue.MessageStatus.Pending as string,
           omit: false,
           content: null,
+          source: null,
           data: null,
           createdAt: nowMs,
         },
@@ -2599,8 +2897,8 @@ export class ChatRunner {
             exclude: [userId, assistantId],
           }),
         content,
-        // 没给 `storedContent` 时不给这一项：`TurnSession` 自己退回去用 `content`（两份同源）
-        ...(prepared.storedContent === undefined ? {} : { storedContent }),
+        // 落库那一份总是给（它是带来源注释、且是 `__asset_id` 形态的那一份）
+        storedContent,
         source,
         attachments: prepared.attachments,
         userMessageId: userId,
@@ -2736,7 +3034,7 @@ export class ChatRunner {
   /**
    * 投一条内容给某段对话 —— **会话间投递的唯一入口**，调用方不必判断任何东西。
    *
-   * 与 core 的 `deliver` 撞名但不同层：那个是 **agent 级**的（投给一个 agent 的 inbox，收
+   * 与 core 的 `push` 不同层：那个是 **agent 级**的（投给一个 agent 的 inbox，收
    * `InboxInput`），这个是**会话级**的（按 `conversationId` 找 agent / 攒批 / 复活，收
    * `DeliveryInput`）；两名字各自稳定，不在这一层改名。
    *
@@ -2748,8 +3046,9 @@ export class ChatRunner {
    * 2. **跑着 / 正在结算就攒着**：这一段还接话就交给它（那一段的取件点会带走，不新起一段）；
    *    接不了（正在结算）或现场还没建（受理中）就挂在会话级待投列表里，等那一段结算完一起投
    *    —— 这就是把「core 已 idle、宿主 `RunRegistry` 还没 finish」那一段落后窗口关掉的地方；
-   * 3. **攒够了一起投**：结算之后把待投列表里攒下的条目**一次性** `deliver([...])` 出去
-   *    （= 一次 `flushInbox` 落成多条 user message、一次模型请求）。空闲时直接投。
+   * 3. **攒够了一起投**：结算之后把待投列表里攒下的条目**逐个 `push`** 出去（连续 push 且不让
+   *    出执行权，core 的取件点在同一个循环上把它们一次取干 = 一条模型请求看见全部 N 条）。
+   *    空闲时直接投。
    *
    * ## 回执里有什么、没有什么
    *
@@ -2764,11 +3063,11 @@ export class ChatRunner {
    *
    * ## 重入怎么防
    *
-   * 「结算 → 投递 → 再起段」这条链上有 await（装配 agent、读会话行），所以：
+   * 「结算 → 投递 → 再叫起来」这条链上有 await（装配 agent、读会话行），所以：
    *   - 同一段对话的投递走**一条串行链**（{@link serialized}）：来两条就排两次，不会各自叫醒；
    *   - 每次真正投出去之前（`flushWaitlist`）都**再判一次**现场（`turns` / `RunRegistry`）——
-   *     装配期间起了新段的话，这一批就交给那一段，而不是再起一段；
-   *   - core 自己的单飞是最后一道：真投到一段正在跑的 agent 上，它只会入队、不会起第二段。
+   *     装配期间起了新现场的话，这一批就交给那一段，而不是再叫一次；
+   *   - core 自己的单飞是最后一道：真推到一段正在跑的 agent 上，它只会入队、不会跑第二轮。
    */
   async deliver(conversationId: string, input: DeliveryInput): Promise<DeliveryOutcome> {
     // ① 这一段还接话：推进它（不新起一段，也不打断它；落地由它自己的取件点负责）
@@ -2830,15 +3129,30 @@ export class ChatRunner {
       return;
     }
 
-    // 空闲：整批一起投（一次 `deliver([...])` = 一次 `flushInbox` 落成多条 user message、一次请求）
-    agent.deliver(
-      batch.map((entry) => ({
-        content: entry.content,
-        source: entry.source,
-        // 与跑中排队同一个档位：赶工具轮的边界，不打断正在吐的那一段
-        priority: "high" as const,
-      })),
-    );
+    // 空闲：整批一起推（**连续同步 push**：不让出执行权的话，core 的取件点在同一个循环上
+    // 把它们一次取干 —— 一次模型请求就看见全部 N 条）
+    this.wake(agent);
+    for (const entry of batch) {
+      try {
+        agent.push({
+          content: entry.content,
+          source: entry.source,
+          // 与跑中排队同一个档位：赶工具轮的边界，不打断正在吐的那一段
+          priority: "high",
+        });
+      } catch (error) {
+        // 关门之后投递会抛 `closed`：这一批投不进去了，放回待投列表等下一次（不静默丢）
+        this.park(conversationId, [entry]);
+        this.options.onError?.(error, "peer-delivery");
+        return;
+      }
+    }
+  }
+
+  /** 把一段对话的 agent 叫起来（幂等、不 await）：`start` 到死才 resolve，不能等 */
+  private wake(agent: ChatAgent): void {
+    if (agent.state === "paused") agent.resume();
+    if (!agent.started) void agent.start();
   }
 
   /**
@@ -2977,6 +3291,7 @@ export class ChatRunner {
           : await this.storedHistory(conversationId, conversation, { repair: true });
       agent.messages.push(...assembled);
     }
+    // 它在注册表那一侧已经订上了观察线（`AgentRegistry.watch`）
     return agent;
   }
 
@@ -3244,7 +3559,7 @@ export function createSdkAgentFactory(options: SdkAgentFactoryOptions = {}): Age
 
     agent.use(new UnknownToolHintPlugin({ scope: context.scope }));
 
-    // 插件在 send 之前 init（例如工具刷新插件的首次准备）
+    // 插件在第一次请求之前 init（例如工具刷新插件的首次准备）
     await agent.init();
     return agent;
   };

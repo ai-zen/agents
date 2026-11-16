@@ -138,11 +138,11 @@ function createHarness(options: {
   /** 子会话说什么（每次装配 agent 时现算；返回 `FakeRound[]`） */
   childRounds?: () => FakeRound[];
   /**
-   * 父对话的 agent 怎么造。缺省是假 agent（不演「叫醒」：假件没有段的生命周期）。
+   * 父对话的 agent 怎么造。缺省用 `TestSupport.FakeAgent`（它本身就是**真** core `Agent`，
+   * 只是模型那一侧换成脚本）。
    *
-   * 要看「投递把父对话叫起来跑了一段」时给它一个**真** core `Agent`（`scriptedAgent`）——
-   * 那一路的全部难点（`status(running)` → 宿主同步建现场 → 落地 → 结算）都在 core 里，假件
-   * 演不出来。
+   * 要看「投递把父对话叫起来跑了一段」时给它一个脚本化的 agent（`scriptedAgent`）——那一路的
+   * 难点（`state(busy)` → 宿主同步建现场 → 落地 → 结算）都在 core 里，脚本只决定它说什么。
    */
   parentAgent?: () => ChatAgent;
   /** 子会话的 agent 怎么造（给了就用它，不看 `childRounds`） */
@@ -161,9 +161,6 @@ function createHarness(options: {
   const settled: TurnSettledFacts[] = [];
 
   let idCursor = 0;
-  // `chatRunner` 比 `agentRegistry` 后造：接线层（`app.ts`）也是这么接的 —— 闭包住一个可变引用，
-  // 调用那一刻才去取
-  let runner: ChatRunner | undefined;
   const registry = new AgentRegistry({
     scopes,
     runs,
@@ -183,16 +180,9 @@ function createHarness(options: {
       agents.set(context.conversationId, agent as unknown as Agent);
       return agent;
     },
-    // 一段的边界（core 的 `status`）：agent 被 `deliver()` 叫醒的那一段没有受理，现场只能从
-    // 这条事件里建（与 `app.ts` 同一条接线）；`to === "running"` 那一拍还要告诉平级会话
-    // 「这一段开始了」（派生会话回到 running）—— `app.ts` 里也是这么接的
-    onStatus: (event) => {
-      runner?.onAgentStatus(event);
-      if (event.to === "running") service.onSegmentStart(event.conversationId);
-    },
   });
 
-  runner = new ChatRunner({
+  const runner = new ChatRunner({
     messages: store,
     conversations: { get: async (id: string) => rows.get(id) },
     scopes,
@@ -202,6 +192,11 @@ function createHarness(options: {
     clock,
     newId: () => `srv-${(idCursor += 1)}`,
     streamWriteIntervalMs: 0,
+    // 与 `app.ts` 同一条接线：三格变到 `busy` 那一拍要告诉平级会话「这一段开始了」
+    // （派生会话回到 running；`ChatRunner` 内部的建现场/收尾不靠这个口）
+    onState: (event) => {
+      if (event.to === "busy") service.onSegmentStart(event.conversationId);
+    },
     onTurnSettled: (facts) => {
       settled.push(facts);
       // 与 `app.ts` 同一条接线：一段结算 → 若这段会话是派生会话，就把这一段的结果投回父对话
@@ -343,9 +338,23 @@ function deliveredRows(h: Harness): Array<{ id: string; content: unknown }> {
 }
 
 /** 父对话那个 agent 的 inbox（假 agent 不会取件，于是「投了几次」就数它） */
-function parentInbox(h: Harness): AgentNS.InboxEntry[] {
-  const agent = h.agents.get(PARENT_ID) as unknown as FakeAgent | undefined;
-  return agent ? agent.inbox : [];
+/**
+ * 「投进父对话的那些条目」——读的是**落地之后的那几行**。
+ *
+ * core 的 `agent.inboxSize` 只给一个数字（没有内容也没有来源），而一条投递迟早会落成一条
+ * user 消息；落库那一份带着 `source`（判别结构的 JSON），于是「投了几次、每次是谁推的」
+ * 都能从库里答出来。
+ */
+function parentInbox(h: Harness): Array<{ id: string; source?: unknown; content?: unknown }> {
+  const byId = new Map<string, { id: string; source?: unknown; content?: unknown }>();
+  for (const row of h.store.writes) {
+    if (row.conversationId !== PARENT_ID) continue;
+    if (row.role !== AgentNS.Role.User) continue;
+    const source = row.source as { kind?: string } | undefined;
+    if (!source || source.kind === "user") continue;
+    byId.set(row.id, { id: row.id, source: row.source, content: row.content });
+  }
+  return [...byId.values()];
 }
 
 describe("平级会话：子会话跑完 → 父对话收到结果", () => {
@@ -398,16 +407,19 @@ describe("平级会话：子会话跑完 → 父对话收到结果", () => {
     ]);
     expect(parentRows[3]!.content).toBe("收到，我接着干。");
 
-    // 叫醒那一轮的 `source` 不是 `user`：所以交接线不会给没人看的对话挂问题
-    // （自起段的来源在宿主这一层只答得出「不是用户，是投递」，见 `SOURCE_INBOX`）
+    // 叫醒那一轮的 `source` 不是 `{ kind: "user" }`：所以交接线不会给没人看的对话挂问题
+    // （来源是 core 的判别结构，投递那一条带的是「哪个会话推的」）
     const wake = h.settled.filter(
-      (facts) => facts.conversationId === PARENT_ID && facts.source !== "user",
+      (facts) => facts.conversationId === PARENT_ID && facts.source.kind !== "user",
     );
     expect(wake).toHaveLength(1);
     expect(wake[0]!.conversationId).toBe(PARENT_ID);
+    expect(wake[0]!.source).toEqual({ kind: "agent", label: "补测试" });
     // 子会话自己那一轮的来源是「父对话」（它的正文最前面那行注释也这么写）
     const childSettled = h.settled.filter((facts) => facts.conversationId === created.sessionId);
-    expect(childSettled.map((facts) => facts.source)).toEqual(["父对话"]);
+    expect(childSettled.map((facts) => facts.source)).toEqual([
+      { kind: "agent", label: "父对话" },
+    ]);
   });
 
   it("父对话正在跑 → 那条结果排进它这一轮（run.inbox 里出现），不新起一轮", async () => {
@@ -434,8 +446,9 @@ describe("平级会话：子会话跑完 → 父对话收到结果", () => {
     expect(h.turnOf(PARENT_ID)).toBe(parentTurn);
     const inbox = parentTurn.runState().inbox;
     expect(inbox).toHaveLength(1);
-    // 缺省 label 本身就是「会话 N」：source 原样用它，于是正文读作「来自 会话 1 自动推送」
-    expect(inbox[0]!.source).toBe("会话 1");
+    // 缺省 label 本身就是「会话 N」：source 原样带上它（判别结构里的 `label`），
+    // 于是正文读作「来自 会话 1 自动推送」
+    expect(inbox[0]!.source).toEqual({ kind: "agent", label: "会话 1" });
     expect(inbox[0]!.preview).toBe("子会话说完了");
 
     // 放行父对话，让它安静收尾
@@ -461,7 +474,7 @@ describe("回投挂在「每一段结算」上（真 ChatRunner）", () => {
 
     // 一次，不是两次：改前那一句 `turn.done.then(...)` 与这一条结算都还在的话，这里会是 2
     expect(parentInbox(h)).toHaveLength(1);
-    expect(parentInbox(h)[0]!.source).toBe("查");
+    expect(parentInbox(h)[0]!.source).toEqual({ kind: "agent", label: "查" });
     expect(String(parentInbox(h)[0]!.content)).toContain("第一段：查完了。");
     expect(h.service.record(created.sessionId)?.resultDelivered).toBe("delivered");
   });
@@ -496,7 +509,7 @@ describe("回投挂在「每一段结算」上（真 ChatRunner）", () => {
     expect(parentInbox(h)).toHaveLength(2);
     // 正文是**第二段**最后说的那句话，不是第一段的
     expect(String(parentInbox(h)[1]!.content)).toContain("第二段：边界用例也补上了。");
-    expect(parentInbox(h)[1]!.source).toBe("查");
+    expect(parentInbox(h)[1]!.source).toEqual({ kind: "agent", label: "查" });
   });
 });
 
@@ -665,7 +678,11 @@ describe("send_to_session：接着说话（真 ChatRunner）", () => {
   it("对方在跑 → state running，条目在那一段的取件点落地（不新起段）", async () => {
     const childGate: Deferred<void> = deferred<void>();
     const h = createHarness({
-      childRounds: () => [{ gate: childGate.promise, deltas: [{ content: "我正在跑" }] }],
+      // 两轮：①跑着的时候被塞进来一条，②工具/取件点落地之后模型会被**再问一次**
+      childRounds: () => [
+        { gate: childGate.promise, deltas: [{ content: "我正在跑" }] },
+        { deltas: [{ content: "收到你说的那句。" }] },
+      ],
       parentAgent: () => new FakeAgent([{ deltas: [{ content: "收到" }] }]),
     });
     // 父对话先跑一轮：拿它那个 agent 当 `ctx.agent`
@@ -693,7 +710,7 @@ describe("send_to_session：接着说话（真 ChatRunner）", () => {
     const inbox = childTurn.runState().inbox;
     expect(inbox).toHaveLength(1);
     // 来源名由宿主解析：调用者是普通会话，用会话行上的 `name`
-    expect(inbox[0]!.source).toBe("会话「c-parent」");
+    expect(inbox[0]!.source).toEqual({ kind: "agent", label: "会话「c-parent」" });
     expect(inbox[0]!.preview).toBe("顺便把这句也带上");
 
     childGate.resolve();
@@ -706,7 +723,10 @@ describe("send_to_session：接着说话（真 ChatRunner）", () => {
     expect(sentRows).toHaveLength(1);
     expect(String(sentRows[0]!.content)).toContain("顺便把这句也带上");
     expect(String(sentRows[0]!.content)).toContain("// 这条消息来自 会话「c-parent」 自动推送");
-    expect(rows.filter((row) => row.role === AgentNS.Role.Assistant)).toHaveLength(1);
+    // 落地之后 core 照常把结果再问一次：第二段回答也在库里（还是同一个现场，没起第二段）
+    const assistants = rows.filter((row) => row.role === AgentNS.Role.Assistant);
+    expect(assistants).toHaveLength(2);
+    expect(assistants[1]!.content).toBe("收到你说的那句。");
   });
 
   it("对方空闲 → state idle，真的把它叫起来（自起段多一条 user + 一条 assistant）", async () => {

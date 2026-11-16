@@ -152,9 +152,6 @@ function createHarness(options: {
     scopes,
     runs,
     createAgent: async (context) => await options.createAgent(context),
-    onStatus: (event) => runner?.onAgentStatus(event),
-    // 与 `app.ts` 同一条接线：入队那一刻的来源就是自起段结算时报的那一个
-    onInbox: (event) => runner?.noteInbox(event.conversationId, event.entry.source),
   });
 
   runner = new ChatRunner({
@@ -245,7 +242,7 @@ describe("ChatRunner.deliver：会话间投递的唯一入口", () => {
     const before = harness.runStates().length;
     const outcome = await harness.runner.deliver(CONVERSATION_ID, {
       content: "登录页的测试补齐了",
-      source: "补测试",
+      source: { kind: "agent", label: "补测试" },
     });
     // 回执：这一条把它**叫醒**了（投递那一刻它是空闲的）
     expect(outcome).toEqual({ accepted: true, state: "idle" });
@@ -278,8 +275,10 @@ describe("ChatRunner.deliver：会话间投递的唯一入口", () => {
     expect(last.assistantMessageId).toBe(settlement.assistantMessageId);
 
     // 这一段不是用户本人叫起来的：结算报的 `source` 就是叫醒它的那条条目的来源
-    // （`"补测试"`）—— 不是笼统的 `"inbox"`，交接线那条判断也就看得见「谁叫的」
-    expect(harness.settledFacts.map((facts) => facts.source)).toEqual(["补测试"]);
+    // （`{ kind: "agent", label: "补测试" }`）—— 不是笼统的兜底值，交接线那条判断也就看得见「谁叫的」
+    expect(harness.settledFacts.map((facts) => facts.source)).toEqual([
+      { kind: "agent", label: "补测试" },
+    ]);
     // agent 常驻：投递叫起来的那一段跑完，它还在登记表里
     expect(harness.registry.get(CONVERSATION_ID)).toBe(agent);
   });
@@ -301,7 +300,7 @@ describe("ChatRunner.deliver：会话间投递的唯一入口", () => {
 
     const outcome = await harness.runner.deliver(CONVERSATION_ID, {
       content: "子会话说完了",
-      source: "会话 1",
+      source: { kind: "agent", label: "会话 1" },
     });
     // 回执：交给了在跑的那一段（条目会在它这一轮里落地，不新起一段）
     expect(outcome).toEqual({ accepted: true, state: "running" });
@@ -310,7 +309,7 @@ describe("ChatRunner.deliver：会话间投递的唯一入口", () => {
     expect(harness.runner.turn(CONVERSATION_ID)).toBe(parentTurn);
     const inbox = parentTurn.runState().inbox;
     expect(inbox).toHaveLength(1);
-    expect(inbox[0]!.source).toBe("会话 1");
+    expect(inbox[0]!.source).toEqual({ kind: "agent", label: "会话 1" });
     expect(inbox[0]!.preview).toBe("子会话说完了");
 
     gate.resolve();
@@ -355,10 +354,10 @@ describe("ChatRunner.deliver：会话间投递的唯一入口", () => {
         // 只在第一段结算时投一次
         if (delivering) return;
         atDelivery.liveTurn = runner.turn(CONVERSATION_ID) !== undefined;
-        atDelivery.coreIdle = coreAgent!.runStatus === "idle";
+        atDelivery.coreIdle = coreAgent!.state === "idle";
         delivering = runner.deliver(CONVERSATION_ID, {
           content: "结算窗口里到达的结果",
-          source: "补测试",
+          source: { kind: "agent", label: "补测试" },
         });
         void delivering.then((outcome) => {
           atDelivery.state = outcome.state;
@@ -420,9 +419,9 @@ describe("ChatRunner.deliver：会话间投递的唯一入口", () => {
     await parkAgent(harness);
 
     // 三句之间**没有** await：它们必须被攒成一批
-    const first = harness.runner.deliver(CONVERSATION_ID, { content: "甲", source: "会话 1" });
-    const second = harness.runner.deliver(CONVERSATION_ID, { content: "乙", source: "会话 2" });
-    const third = harness.runner.deliver(CONVERSATION_ID, { content: "丙", source: "会话 3" });
+    const first = harness.runner.deliver(CONVERSATION_ID, { content: "甲", source: { kind: "agent", label: "会话 1" } });
+    const second = harness.runner.deliver(CONVERSATION_ID, { content: "乙", source: { kind: "agent", label: "会话 2" } });
+    const third = harness.runner.deliver(CONVERSATION_ID, { content: "丙", source: { kind: "agent", label: "会话 3" } });
     await Promise.all([first, second, third]);
 
     const live = harness.runner.turn(CONVERSATION_ID);
@@ -488,7 +487,7 @@ describe("ChatRunner.deliver：会话间投递的唯一入口", () => {
 
     await harness.runner.deliver(CONVERSATION_ID, {
       content: "复活之后再投一句",
-      source: "会话 1",
+      source: { kind: "agent", label: "会话 1" },
     });
 
     const live = harness.runner.turn(CONVERSATION_ID);
@@ -535,7 +534,7 @@ describe("ChatRunner.deliver：会话间投递的唯一入口", () => {
     const harness = createHarness({ createAgent: async () => new Agent({ client, model: "gpt-4" }) });
 
     await expect(
-      harness.runner.deliver("c-missing", { content: "没有人收了", source: "会话 1" }),
+      harness.runner.deliver("c-missing", { content: "没有人收了", source: { kind: "agent", label: "会话 1" } }),
     ).rejects.toMatchObject({ code: "not_found" });
     expect(harness.runner.turn("c-missing")).toBeUndefined();
     expect(harness.runs.isRunning("c-missing")).toBe(false);

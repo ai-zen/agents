@@ -128,7 +128,7 @@ function settledFacts(
     conversationId,
     outcome,
     problem,
-    source: "父对话",
+    source: { kind: "agent", label: "父对话" },
     promptTokens: 0,
     handoffTokens: 0,
     language: "zh",
@@ -139,7 +139,11 @@ function settledFacts(
 class FakeRunner implements PeerSessionRunner {
   readonly runCalls: ChatRunParams[] = [];
   /** 每一次投递（**唯一**的投递入口：服务不再自己判断父对话在不在跑） */
-  readonly deliverCalls: Array<{ conversationId: string; content: AgentNS.MessageContent; source: string }> = [];
+  readonly deliverCalls: Array<{
+    conversationId: string;
+    content: AgentNS.MessageContent;
+    source: AgentNS.MessageSource;
+  }> = [];
   /** 设了就让 `run` 抛错（子会话开跑失败 / 父对话被删） */
   runError: unknown;
   /** 设了就让 `deliver` 抛错（父对话不存在：**唯一**会拒绝投递的情形） */
@@ -156,7 +160,7 @@ class FakeRunner implements PeerSessionRunner {
 
   async deliver(
     conversationId: string,
-    input: { content: AgentNS.MessageContent; source: string },
+    input: { content: AgentNS.MessageContent; source: AgentNS.MessageSource },
   ): Promise<DeliveryOutcome> {
     this.deliverCalls.push({ conversationId, content: input.content, source: input.source });
     if (this.deliverError !== undefined) throw this.deliverError;
@@ -242,7 +246,7 @@ describe("create：建完即回", () => {
     expect(h.runner.runCalls[0]).toMatchObject({
       conversationId: "c-child-1",
       input: { content: "把登录页的测试补齐" },
-      source: "父对话",
+      source: { kind: "agent", label: "父对话" },
     });
     expect(h.creator.persisted).toEqual(["c-child-1"]);
 
@@ -338,8 +342,8 @@ describe("投递：跑完把结果送回父对话", () => {
     expect(delivered.conversationId).toBe(PARENT_ID);
     // 正文只说子会话最后一句，不带那一整段对话
     expect(delivered.content).toBe("补了 3 个用例，全绿。");
-    // source 就是正文开头那行注释里的来源，label 原样（拼注释归 core）
-    expect(delivered.source).toBe("补测试");
+    // source 就是正文开头那行注释里的来源：core 的判别结构，label 原样（拼注释归 core）
+    expect(delivered.source).toEqual({ kind: "agent", label: "补测试" });
 
     const status = await h.service.status({ caller: h.parentAgent, sessionId: "c-child-1" });
     expect(status.state).toBe("idle");
@@ -358,7 +362,7 @@ describe("投递：跑完把结果送回父对话", () => {
     expect(h.runner.deliverCalls[0]).toMatchObject({
       conversationId: PARENT_ID,
       content: "做完了",
-      source: "会话 1",
+      source: { kind: "agent", label: "会话 1" },
     });
     expect(h.service.record("c-child-1")?.resultDelivered).toBe("delivered");
     expect(h.errors).toEqual([]);
@@ -448,7 +452,7 @@ describe("回投挂在「每一段结算」上（一段一次，不多不少）"
     expect(h.runner.deliverCalls[0]).toMatchObject({
       conversationId: PARENT_ID,
       content: "第一段说完了。",
-      source: "补测试",
+      source: { kind: "agent", label: "补测试" },
     });
   });
 
@@ -462,7 +466,10 @@ describe("回投挂在「每一段结算」上（一段一次，不多不少）"
     await h.service.send({ caller: h.parentAgent, sessionId: "c-child-1", content: "再补一句" });
     h.say("c-child-1", "第二段：补上了边界用例。");
     // 自起段的 `source` 不是 `"user"`（是投递方给的来源名）—— 回投不按来源过滤，照样走这一条
-    await h.service.settleSegment({ ...settledFacts("c-child-1"), source: "会话「c-parent」" });
+    await h.service.settleSegment({
+      ...settledFacts("c-child-1"),
+      source: { kind: "agent", label: "会话「c-parent」" },
+    });
 
     // 投递记录里第 0 次是第一段回投、第 1 次是这一句 `send_to_session` 本身、第 2 次是第二段回投
     expect(h.runner.deliverCalls.map((call) => call.conversationId)).toEqual([
@@ -473,7 +480,7 @@ describe("回投挂在「每一段结算」上（一段一次，不多不少）"
     expect(h.runner.deliverCalls[2]).toMatchObject({
       conversationId: PARENT_ID,
       content: "第二段：补上了边界用例。",
-      source: "补测试",
+      source: { kind: "agent", label: "补测试" },
     });
     // 一段一条账：`resultDelivered` 记的是最近那一段（第二段）的投递
     expect(h.service.record("c-child-1")?.resultDelivered).toBe("delivered");
@@ -596,13 +603,13 @@ describe("send_to_session：血缘、来源名、回执", () => {
 
     // 父 → 子：调用者是普通会话，名字来自会话行（这个假仓储里 `name` 就是 id）
     await h.service.send({ caller: h.parentAgent, sessionId: "c-child-1", content: "接着做" });
-    expect(h.runner.deliverCalls[0]!.source).toBe("会话「c-parent」");
+    expect(h.runner.deliverCalls[0]!.source).toEqual({ kind: "agent", label: "会话「c-parent」" });
 
     // 子 → 父：调用者自己是 peer，用它自己的 label（不是会话行上的名字）
     const childAgent = { name: "child" } as unknown as Agent;
     h.bind(childAgent, "c-child-1");
     await h.service.send({ caller: childAgent, sessionId: PARENT_ID, content: "做完了" });
-    expect(h.runner.deliverCalls[1]!.source).toBe("会话「补测试」");
+    expect(h.runner.deliverCalls[1]!.source).toEqual({ kind: "agent", label: "会话「补测试」" });
   });
 });
 

@@ -285,6 +285,14 @@ describe("conversation.send", () => {
     });
     expect(first.userMessageId.length).toBeGreaterThan(0);
 
+    // core 的 inbox 只给一个数（`inboxSize`）：条目本身只能从 `inboxAdded` 事件上看
+    const queuedIds: string[] = [];
+    agent.on("inboxAdded", ({ entry }) => {
+      if (entry.content !== undefined && entry.messageId !== undefined) {
+        queuedIds.push(entry.messageId);
+      }
+    });
+
     const second: ConversationSendResult = await callMethod(app, "conversation.send", {
       conversationId,
       input: { content: "第二句" },
@@ -295,8 +303,8 @@ describe("conversation.send", () => {
     expect(second.assistantMessageId).toBeNull();
     expect(second.userMessageId.length).toBeGreaterThan(0);
     expect(second.userMessageId).not.toBe(first.userMessageId);
-    // 条目真的进了这一轮 agent 的 inbox（不是只回了一句 queued）
-    expect(agent.inbox.map((entry) => entry.messageId)).toEqual([second.userMessageId]);
+    // 条目真的进了这一轮 agent 的 inbox（不是只回了一句 queued），id 就是回包那个
+    expect(queuedIds).toEqual([second.userMessageId]);
 
     gate.resolve();
     await settle(app, conversationId);
@@ -431,7 +439,7 @@ describe("conversation.send", () => {
     expect(idle.state.run.inbox).toEqual([]);
   });
 
-  it("abort 不丢排队条目：回包的 run 里 inbox 保持 1 条，那一句仍不落库", async () => {
+  it("abort 不丢排队条目：那一句仍在 agent 的 inbox 里，但不落库", async () => {
     const gate: Deferred<void> = deferred();
     const agent = new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢慢说" }] }]);
     const { app, conversationId } = await makeHarness({ createAgent: async () => agent });
@@ -447,9 +455,10 @@ describe("conversation.send", () => {
       conversationId,
     });
     expect(aborted.aborted).toBe(true);
-    // 口径已变（core 的 `abort()` 不再清空 inbox）：按停只停这一段，排队的那句仍在队列里，
-    // 所以回包里的排队条目还是 1 条 —— 等下一次外部驱动才会发出。
-    expect(aborted.run.inbox).toHaveLength(1);
+    // core 的 `abort()` 只掐在途，**不清 inbox**：排队的那一句仍在 agent 的队列里（`inboxSize` 是 1）。
+    // 但这一轮已经按停、不再取件（下一个取件点是下一轮），所以回包里那一轮的排队区是空的。
+    expect(agent.inboxSize).toBe(1);
+    expect(aborted.run.inbox).toEqual([]);
 
     gate.resolve();
     await settle(app, conversationId);
@@ -513,8 +522,8 @@ describe("conversation.send", () => {
     ).rejects.toSatisfy(
       (error: unknown) => HostError.is(error) && error.code === "question_pending",
     );
-    // 那一句没有进 inbox
-    expect(agent.inbox).toHaveLength(0);
+    // 那一句没有进 inbox（core 只给个数）
+    expect(agent.inboxSize).toBe(0);
 
     gate.resolve();
     await settle(app, conversationId);
@@ -687,6 +696,8 @@ describe("conversation.state 的 includeMessages（要不要连消息一起回�
 
 /** 一轮：先委派一次子 Agent（工具调用 `call-9` / 工具名 `researcher`），拿到结果后再吐一句 */
 function delegatingRound(options: { failed?: boolean } = {}): FakeAgent {
+  // 子 agent 是个一次性 agent：手里只有那一句问题，答案由它自己那一轮流式吐出来。
+  // （从前这条用例让子 agent 开局面就带一条助手消息，于是 core 又追加一条 → 条数对不上。）
   const inner: AgentNS.Message[] = [
     {
       id: "inner-u",
@@ -694,23 +705,20 @@ function delegatingRound(options: { failed?: boolean } = {}): FakeAgent {
       status: AgentNSValue.MessageStatus.Completed,
       content: "查一下这个问题的资料",
     },
-    {
-      id: "inner-a",
-      role: AgentNSValue.Role.Assistant,
-      status:
-        options.failed === true
-          ? AgentNSValue.MessageStatus.Error
-          : AgentNSValue.MessageStatus.Completed,
-      content: options.failed === true ? "查不下去了" : "查到了",
-    },
   ];
   return new FakeAgent([
     {
       deltas: [{ content: "我派一个子 Agent 去查。" }],
       toolCalls: [{ id: "call-9", name: "researcher", arguments: "{}" }],
-      subAgent: { name: "researcher", messages: inner },
-      // core 在子 Agent 收尾时把这次委派（含孙级）的用量钉在工具结果消息上
-      toolSubAgentUsage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
+      subAgent: {
+        name: "researcher",
+        messages: inner,
+        // 这次委派的用量（含孙级）由 core 钉在父工具结果消息上
+        usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
+        ...(options.failed === true
+          ? { fail: new Error("查不下去了") }
+          : { stream: ["查到了"] }),
+      },
     },
     { deltas: [{ content: "它查完了。" }] },
   ]);

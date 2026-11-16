@@ -221,6 +221,21 @@ export const MIGRATIONS: Migration[] = [
       `ALTER TABLE conversations ADD COLUMN compactionMode TEXT`,
     ],
   },
+  {
+    /**
+     * v3：消息的来源。
+     *
+     * core 的 `AgentNS.MessageSource` 从「自由字符串」变成了**判别结构**
+     * （`{kind:"user"}` / `{kind:"agent", label}` / `{kind:"system", label}`）：用字符串就得
+     * 把 `"user"` 当保留字，一个恰好叫 `user` 的 agent 就把它顶翻了（`CORE.md` §3）。
+     *
+     * 存的是那段 JSON（`TEXT`），读回来反序列化成同一个形状。旧行这一列是 NULL —— 那不是
+     * 「用户说的」，而是「不知道」：这一列出现之前的行没有记过来源。`MessageRepository` 的
+     * `toSource` 还兼容「这一列里存的是字符串」的旧形态（早先把来源当自由字符串那种写法）。
+     */
+    version: 3,
+    statements: [`ALTER TABLE messages ADD COLUMN source TEXT`],
+  },
 ];
 
 /**

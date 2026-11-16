@@ -118,8 +118,14 @@ export type RunStatus = "idle" | "running" | "settled";
  */
 export interface InboxItem {
   messageId: string;
-  /** 与 core 的 `InboxEntry.source` 同值（"user" / "session" / ...），客户端据此决定要不要标来源 */
-  source: string;
+  /**
+   * 这条条目的来源，core 的 `AgentNS.MessageSource` **原样**（判别结构）。
+   *
+   * 从前这里是一个自由字符串（`"user"` / `"会话 1"` …）。core 改成判别结构之后，宿主不再
+   * 自己解释它：`kind` 说「谁说的」，`label` 说「哪个来源」。客户端按 `kind` 分支即可，
+   * 不必再去比字符串。
+   */
+  source: AgentNS.MessageSource;
   /** 入队时刻（ISO 8601） */
   createdAt: string;
   /** 一行摘要（宿主拼好）：文本段按顺序拼接、空白折叠、超 120 字截断加 `…`；非文本段记 `[图片]` / `[文件]` */

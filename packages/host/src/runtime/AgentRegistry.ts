@@ -47,14 +47,13 @@
  * 「有没有在跑」只有 `RunRegistry` 一个来源（构造参数 `runs`），本文件不另记一份。
  */
 
-import type { AgentNS } from "@ai-zen/agents-core";
 import type { Scope } from "@ai-zen/agents-sdk";
 
 import type {
   AgentBuildContext,
   AgentFactory,
   AgentInboxEvent,
-  AgentStatusEvent,
+  AgentStateEvent,
   ChatAgent,
 } from "./ChatRunner.js";
 import type { RunsView } from "./RunRegistry.js";
@@ -136,25 +135,6 @@ export interface AgentRegistryOptions {
    */
   runs: RunsView;
   /**
-   * 一段的边界（core 的 `status` 事件 + 它是哪段对话）—— 装配好一个 agent 就订上它。
-   *
-   * 为什么要在这里订：`AgentRegistry` 是「agent 从哪来」的唯一入口，也就知道「这个 agent 是
-   * 哪段对话的」。而 `status` 的消费方（`ChatRunner`）要的正是这个对应关系 —— 让消费方反过来
-   * 拿 agent 去查表，等于把「谁是谁的」再存一份。
-   *
-   * 不注入就不订：本注册表就只做登记（测试里多数用例不关心段边界）。
-   */
-  onStatus?: (event: AgentStatusEvent) => void;
-  /**
-   * 往这段对话的 inbox 里入队了一条（core 的 `inbox` 事件 + 它是哪段对话）—— 装配好一个 agent
-   * 就订上它，不注入就不订。
-   *
-   * 与 `onStatus` 同一个理由订在这里：消费方（`ChatRunner`）要的是「这段对话 + 条目的来源」，
-   * 而「这段对话」只有本注册表知道。消费它的是**一条观察值**（自起段结算时报给宿主的
-   * `source`），归谁叫醒、能不能叫醒仍归 core。
-   */
-  onInbox?: (event: AgentInboxEvent) => void;
-  /**
    * 每做一次生灭决定就报一条（{@link AgentLifecycleEvent}）—— 接线层接到日志上即可。
    *
    * 存在的理由：从前「这段对话的 agent 为什么不在」没人答得上来（没建过 / 不合用 / 配置换掉 /
@@ -176,6 +156,8 @@ interface AgentEntry {
    * 会话行上的模型 / 档位是会变的，而模型客户端是装配那一刻定的。
    */
   built: AgentAssemblyFacts;
+  /** 取消订在它上面的两条观察线（退役时摘） */
+  offWatch?: () => void;
   /**
    * 陈旧标记（配置改过，装配时读到的那份已经过期）。
    *
@@ -183,8 +165,6 @@ interface AgentEntry {
    * `ChatRunner` 调 `complete`，陈旧就退役。
    */
   stale: boolean;
-  /** 取消订在它上面的 `status` / `inbox` 监听（退役时摘，见 `watch`） */
-  offWatch?: () => void;
 }
 
 /** 从那三项事实里取一份归一化的快照（`undefined` 与 `null` 同义：都是「没有」） */
@@ -203,6 +183,15 @@ function factsOf(input: {
 export class AgentRegistry {
   private readonly entries = new Map<string, AgentEntry>();
   /**
+   * 三格与入队的观察者（`ChatRunner` 在构造时把自己注册进来）。
+   *
+   * 为什么订阅在这里、而不在消费方：宿主手上的每个 agent 都是本文件发出去的（装配那一刻
+   * 才知道「它是哪段对话的」）。订阅安在装配处，「一段跑完了」这件事就不靠谁记得接线 ——
+   * 忘一个接线点会让结算永远等下去，而那是一种**静默**的坏法。
+   */
+  private readonly stateObservers = new Set<(event: AgentStateEvent) => void>();
+  private readonly inboxObservers = new Set<(event: AgentInboxEvent) => void>();
+  /**
    * 「这段对话上一次是因为什么没有 agent 的」——只记**还会回来**的那几种理由
    * （对话删了 / 进程收尾之后没人再问）。
    *
@@ -213,16 +202,12 @@ export class AgentRegistry {
   private readonly scopes: ScopeProvider;
   private readonly createAgent: AgentFactory;
   private readonly runs: RunsView;
-  private readonly onStatus?: (event: AgentStatusEvent) => void;
-  private readonly onInbox?: (event: AgentInboxEvent) => void;
   private readonly onLifecycle?: (event: AgentLifecycleEvent) => void;
 
   constructor(options: AgentRegistryOptions) {
     this.scopes = options.scopes;
     this.createAgent = options.createAgent;
     this.runs = options.runs;
-    this.onStatus = options.onStatus;
-    this.onInbox = options.onInbox;
     this.onLifecycle = options.onLifecycle;
   }
 
@@ -325,6 +310,22 @@ export class AgentRegistry {
     this.retired.clear();
   }
 
+  /**
+   * 注册一个「三格变了」的观察者，返回注销函数。
+   *
+   * 观察者接到的事件已经带上「哪段对话」（本文件按 conversationId 登记，只有它知道）。
+   */
+  observeState(observer: (event: AgentStateEvent) => void): () => void {
+    this.stateObservers.add(observer);
+    return () => this.stateObservers.delete(observer);
+  }
+
+  /** 注册一个「inbox 多了一条」的观察者，返回注销函数 */
+  observeInbox(observer: (event: AgentInboxEvent) => void): () => void {
+    this.inboxObservers.add(observer);
+    return () => this.inboxObservers.delete(observer);
+  }
+
   /** 这段对话现在挂着的 agent（没有就 `undefined`）：观察与「谁还活着」用 */
   get(conversationId: string): ChatAgent | undefined {
     return this.entries.get(conversationId)?.agent;
@@ -403,6 +404,28 @@ export class AgentRegistry {
   }
 
   /**
+   * 订上这个 agent 的两条观察线（`state` 三格、`inboxAdded` 入队），并补上「哪段对话」。
+   *
+   * 载荷原样透传：本文件不对三格与 inbox 条目做任何解释，只负责把「谁的事」说清楚。
+   */
+  private watch(conversationId: string, agent: ChatAgent): () => void {
+    const offState = agent.on("state", (payload) => {
+      for (const observer of this.stateObservers) {
+        observer({ conversationId, agent, from: payload.from, to: payload.to });
+      }
+    });
+    const offInbox = agent.on("inboxAdded", (payload) => {
+      for (const observer of this.inboxObservers) {
+        observer({ conversationId, agent, entry: payload.entry });
+      }
+    });
+    return () => {
+      offState();
+      offInbox();
+    };
+  }
+
+  /**
    * 摘掉一条登记（**只丢引用**），返回摘下来的那条 —— 不报事件、不记理由。
    *
    * `retire` 与「新装配的顶掉旧的」共用它：两件事都只是「不再登记为活着」，区别只在要不要
@@ -425,53 +448,4 @@ export class AgentRegistry {
     this.onLifecycle?.({ conversationId, action, reason });
   }
 
-  /**
-   * 订上这个 agent 的两条观察线（`status` 段边界、`inbox` 入队），并补上「哪段对话」。
-   *
-   * 载荷原样透传：本文件不对段状态与 inbox 条目做任何解释，只负责把「谁的事」说清楚。
-   *
-   * 订阅本身没有生命周期问题（`EventBus` 挂在 agent 对象上，agent 没了监听也一起没了），
-   * 摘的原因不是泄漏而是「别叫到一个已经不在登记表里的 agent 上」—— 它可能正在被换掉，
-   * 而消费方（`ChatRunner`）已经按「这段对话现在是新那个」在数现场了。
-   */
-  private watch(conversationId: string, agent: ChatAgent): (() => void) | undefined {
-    const offs: Array<() => void> = [];
-    const onStatus = this.onStatus;
-    if (onStatus) {
-      const off = toUnsubscribe(
-        agent.events.on("status", (ctx: { from: AgentNS.RunStatus; to: AgentNS.RunStatus }) => {
-          onStatus({ conversationId, agent, from: ctx.from, to: ctx.to });
-        }),
-      );
-      if (off) offs.push(off);
-    }
-    const onInbox = this.onInbox;
-    if (onInbox) {
-      const off = toUnsubscribe(
-        agent.events.on("inbox", (ctx: { entry: AgentNS.InboxEntry }) => {
-          onInbox({ conversationId, agent, entry: ctx.entry });
-        }),
-      );
-      if (off) offs.push(off);
-    }
-    if (offs.length === 0) return undefined;
-    return () => {
-      for (const off of offs) off();
-    };
-  }
-}
-
-/**
- * `events.on` 的返回值归一成「取消订阅」一个函数。
- *
- * 两种形态都认（取消函数 / 可 `dispose` 的句柄）；认不出来就当作订不上（返回 `undefined`）——
- * 那不该是错误，只是一个观察点没接上。
- */
-function toUnsubscribe(handle: unknown): (() => void) | undefined {
-  if (typeof handle === "function") return handle as () => void;
-  if (typeof handle === "object" && handle !== null) {
-    const disposable = handle as { dispose?: () => void };
-    if (typeof disposable.dispose === "function") return () => disposable.dispose!();
-  }
-  return undefined;
 }

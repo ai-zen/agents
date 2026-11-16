@@ -497,6 +497,10 @@ export class ConversationService {
       status: AgentNS.MessageStatus.Completed as string,
       omit: false,
       content: injectedContextOf(workspace.cwd, language),
+      // 宿主自己注入的那条消息，**宿主自己填 `source`**（`CORE.md` §3「一律带」/ §14
+      // 「宿主注入的由宿主自己填」）：它不是用户说的话，所以不能落成 `{ kind: "user" }` ——
+      // 否则「这段只有一条用户消息」那种判据会把它数进去。
+      source: { kind: "system", label: "cwd" },
       data: { hidden: true },
       createdAt: this.now(),
     });

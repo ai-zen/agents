@@ -28,6 +28,8 @@ export const zh = {
   "error.handoffDeclined": "这次不交接，对话继续往下跑。",
   "error.questionPending": "还有一个问题没回答（{question}）。先回答它，再发新内容。",
   "error.contextGuard": "这段对话在第 {used} 个 token 时到了 {limit} 这条线，请求在发出去之前就停下了。",
+  // 某个钩子在请求发出前拒了这一圈（core 的 `denied` 事件）：历史上一个字都没多
+  "error.denied": "这一轮在发出去之前就被拦下了：{reason}",
 
   // ---- 通知：三档语气 + 是否到点消失（PRD L3 / F-I8）----
   "notice.settingsApplied": "配置已生效，不用重启。",

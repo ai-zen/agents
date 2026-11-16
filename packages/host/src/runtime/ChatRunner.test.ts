@@ -13,7 +13,8 @@ import { join } from "node:path";
 import type { AgentNS } from "@ai-zen/agents-core";
 import { AgentNS as AgentNSValue, applyChunk, Message } from "@ai-zen/agents-core";
 import { AutoMigratePlugin, Scope } from "@ai-zen/agents-sdk";
-import type { HandoffService, SendContext } from "@ai-zen/agents-sdk";
+import type { HandoffService } from "@ai-zen/agents-sdk";
+import type { OuterLoopContext } from "@ai-zen/agents-core";
 
 import {
   ConversationRepository,
@@ -328,11 +329,15 @@ describe("ChatRunner：六态与增量", () => {
     // 两个工具都定型之后不再停在「在等工具」：那一态描述的事已经不成立，回到「连上」，
     // 接着是下一轮的首字与正文（L8：并行时逐个减少，减到空就换态）
     expect(custom.phases()).toEqual([
+      // 受理即推一次（「刚连上」；自己那一句不排队，所以入队不再另推一次）
       "connected",
       "awaiting_first_token",
       "thinking",
       "generating",
+      // 两个工具调用各拼出一片（片到一片就变一次列表）
       "assembling_tool_calls",
+      "assembling_tool_calls",
+      // 并行两个工具：逐个开始、逐个结束（列表逐个缩到空才换态）
       "awaiting_tools",
       "awaiting_tools",
       "awaiting_tools",
@@ -511,22 +516,24 @@ describe("ChatRunner：结算", () => {
   });
 
   it("子 Agent 的委派被记进 RunState，用完的用量含它的那一份", async () => {
+    // 一次真的委派：core 的 `AgentToolLazy` 造一个一次性子 agent、跑它、收尸，
+    // 把它的用量钉在那条工具结果消息上 —— 宿主只是订阅 `subAgentStarted/Finished`。
     const custom = createHarness({
       rounds: [
         {
-          deltas: [{ tool_calls: [{ index: 0, id: "t1", type: "function", function: { name: "delegate", arguments: "{}" } }] }],
           toolCalls: [{ id: "t1", name: "delegate" }],
-          toolSubAgentUsage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
           subAgent: {
             name: "helper",
             messages: [
               {
-                id: "sub-1",
-                role: AgentNSValue.Role.Assistant,
+                id: "sub-u",
+                role: AgentNSValue.Role.User,
                 status: AgentNSValue.MessageStatus.Completed,
-                usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 },
+                content: "办一下",
               },
             ],
+            stream: ["办好了"],
+            usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 },
           },
         },
       ],
@@ -543,7 +550,8 @@ describe("ChatRunner：结算", () => {
     expect(snapshot.name).toBe("helper");
     expect(snapshot.toolCallId).toBe("t1");
     expect(snapshot.status).toBe("done");
-    expect(snapshot.messageCount).toBe(1);
+    // 「问题 + 它说的那句」= 2 条（与 core 里那个子 agent 的 messages 一致）
+    expect(snapshot.messageCount).toBe(2);
     expect(snapshot.usage).toEqual({ prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 });
     expect(snapshot.finishedAt).not.toBeNull();
   });
@@ -556,6 +564,7 @@ describe("ChatRunner：结算", () => {
           toolCalls: [{ id: "call-9", name: "delegate" }],
           subAgent: {
             name: "helper",
+            // 子 agent 开局手里只有那条问题；「方案是这样」是它这一轮自己说出来的
             messages: [
               {
                 id: "inner-u",
@@ -563,13 +572,8 @@ describe("ChatRunner：结算", () => {
                 status: AgentNSValue.MessageStatus.Completed,
                 content: "把方案说一下",
               },
-              {
-                id: "inner-a",
-                role: AgentNSValue.Role.Assistant,
-                status: AgentNSValue.MessageStatus.Completed,
-                content: "方案是这样",
-              },
             ],
+            stream: ["方案是这样"],
           },
         },
       ],
@@ -585,7 +589,10 @@ describe("ChatRunner：结算", () => {
     expect(settlement.run.subagents[0]?.messageCount).toBe(2);
 
     // 落库的两条都带 parentToolCallId（回看靠它），且不在主线历史里
-    const subRows = custom.store.writes.filter((row) => row.parentToolCallId === "call-9");
+    // （流式时会先写一条还没长出正文的行，所以这里读的是**最终版**）
+    const subRows = (await custom.store.listByConversation(CONVERSATION_ID)).filter(
+      (row) => row.parentToolCallId === "call-9",
+    );
     expect(subRows.map((row) => row.content)).toEqual(["把方案说一下", "方案是这样"]);
     expect(subRows.every((row) => row.conversationId === CONVERSATION_ID)).toBe(true);
   });
@@ -640,13 +647,11 @@ describe("ChatRunner：cwd 不再按轮拼进消息（F-D9）", () => {
 });
 
 describe("ChatRunner：这一轮是谁叫起来的（source）", () => {
-  /** 将来唤醒这一轮的那个来源（取值口径与 core 的 `InboxEntry.source` 一致） */
-  const AUTO_SOURCE = "会话「会话 3」";
+  /** 叫起这一轮的那个来源 —— core 的判别结构（不再是自由字符串） */
+  const AUTO_SOURCE: AgentNS.MessageSource = { kind: "agent", label: "会话「会话 3」" };
 
   /** core 给非 user 来源加的那行注释（形状归 core 的 `inboxEntryContent`，这里只按它的口径断言） */
-  function noteOf(source: string, createdAt: string): string {
-    return `// 这条消息来自 ${source} 自动推送（${createdAt}）`;
-  }
+  const NOTE = /^\/\/ 这条消息来自 会话「会话 3」 自动推送（.+）$/;
 
   it("非 user 来源：落库那份与交给 agent 那份都以来源注释开头，正文在其后", async () => {
     const agent = new FakeAgent(plainRounds());
@@ -659,16 +664,26 @@ describe("ChatRunner：这一轮是谁叫起来的（source）", () => {
     });
     const settlement = await turn.done;
 
-    const expected = `${noteOf(AUTO_SOURCE, turn.acceptedAt)}\n\n别的会话跑完了，结果是这样`;
+    // ① 库里那份：用户下次回看到的就是它（注释里的时间是宿主自己的时钟）
+    const stored = custom.store.peek(turn.userMessageId)?.content as string;
+    const [storedNote, ...storedBody] = stored.split("\n\n");
+    expect(storedNote).toMatch(NOTE);
+    expect(storedBody.join("\n\n")).toBe("别的会话跑完了，结果是这样");
 
-    // ① 库里那份：用户下次回看到的就是它
-    expect(custom.store.peek(turn.userMessageId)?.content).toBe(expected);
-    // ② 交给 agent 那份：模型这一轮收到的用户消息，与库里那份逐字相同（注释只包一次）
+    // ② 交给 agent 那份：那条 user 消息由 **core** 从 inbox 落地，注释也是 core 按 `source` 加的
+    //    （时间取条目自己的 `createdAt`），所以这里按形状断言 —— 注释只包一次
     const sent = agent.messages.filter((message) => message.id === turn.userMessageId);
     expect(sent).toHaveLength(1);
-    expect(sent[0]?.content).toBe(expected);
-    // 结算快照里的同一份内容也是它
-    expect(settlement.produced.find((m) => m.id === turn.userMessageId)?.content).toBe(expected);
+    const sentContent = sent[0]?.content as string;
+    const [sentNote, ...sentBody] = sentContent.split("\n\n");
+    expect(sentNote).toMatch(NOTE);
+    expect(sentBody.join("\n\n")).toBe("别的会话跑完了，结果是这样");
+
+    // 结算快照里的同一份内容就是它
+    expect(settlement.produced.find((m) => m.id === turn.userMessageId)?.content).toBe(sentContent);
+
+    // ③ 来源本身落进了那一列（core 的判别结构，不是字符串）
+    expect(custom.store.peek(turn.userMessageId)?.source).toEqual(AUTO_SOURCE);
   });
 
   it("不给 source（用户自己发的）：两份都原样，一个字都不变", async () => {
@@ -682,9 +697,11 @@ describe("ChatRunner：这一轮是谁叫起来的（source）", () => {
     await turn.done;
 
     expect(custom.store.peek(turn.userMessageId)?.content).toBe("在吗");
+    expect(custom.store.peek(turn.userMessageId)?.source).toEqual({ kind: "user" });
     const sent = agent.messages.filter((message) => message.id === turn.userMessageId);
     expect(sent).toHaveLength(1);
     expect(sent[0]?.content).toBe("在吗");
+    expect(sent[0]?.source).toEqual({ kind: "user" });
   });
 
   it("跑中入队也穿透来源：带 source 的那条落地带注释，不带的原样", async () => {
@@ -720,9 +737,11 @@ describe("ChatRunner：这一轮是谁叫起来的（source）", () => {
     expect(pushed).not.toBeNull();
     expect(typed).not.toBeNull();
 
-    // 来源照抄进 inbox 条目：落地时由 core 决定要不要加注释（宿主不自己拼那句话）
-    expect(agent.inbox.map((entry) => entry.source)).toEqual([AUTO_SOURCE, "user"]);
-    expect(agent.inbox.map((entry) => entry.content)).toEqual(["会话 3 的结果", "我自己补一句"]);
+    // 两条都真的进了 core 的队列（core 只给个数，内容读宿主那份镜像 —— 客户端看的也是它）
+    expect(agent.inboxSize).toBe(2);
+    const queue = custom.lastRunState().inbox;
+    expect(queue.map((item) => item.source)).toEqual([AUTO_SOURCE, { kind: "user" }]);
+    expect(queue.map((item) => item.preview)).toEqual(["会话 3 的结果", "我自己补一句"]);
 
     toolGate.resolve();
     const settlement = await turn.done;
@@ -1054,10 +1073,22 @@ describe("ChatRunner：用量三个口径（PRD F-I5）", () => {
       history,
       rounds: [
         {
-          deltas: [{ tool_calls: [{ index: 0, id: "t1", type: "function", function: { name: "delegate", arguments: "{}" } }] }],
           usage: { prompt_tokens: 200, completion_tokens: 20, total_tokens: 220 },
           toolCalls: [{ id: "t1", name: "delegate" }],
-          toolSubAgentUsage: { prompt_tokens: 30, completion_tokens: 3, total_tokens: 33 },
+          // 真委派：子 agent 那一份用量由 core 算出来，钉在那条工具结果消息的 `subAgentUsage` 上
+          subAgent: {
+            name: "helper",
+            messages: [
+              {
+                id: "sub-u",
+                role: AgentNSValue.Role.User,
+                status: AgentNSValue.MessageStatus.Completed,
+                content: "办一下",
+              },
+            ],
+            stream: ["办好了"],
+            usage: { prompt_tokens: 30, completion_tokens: 3, total_tokens: 33 },
+          },
         },
       ],
     });
@@ -1190,11 +1221,19 @@ describe("真装配：压缩按会话类型归一（派生会话自动压 / 用�
     return found as AutoMigratePlugin;
   }
 
-  /** 让插件看见一次「刚跑完、用量是这么多」的 send */
+  /**
+   * 让插件看见一次「一圈跑完了、用量是这么多」。
+   *
+   * core 重写之后插件落在 `onIdle`（`onAfterSend` 已删除）：它不带 ctx，agent 是在
+   * `onOuterLoopStart` 那一刻认领的 —— 所以这里按 core 的真实次序演一遍。
+   */
   async function afterSend(agent: ChatAgent, promptTokens: number): Promise<void> {
-    await autoMigrateOf(agent).onAfterSend({
-      agent: { lastUsage: { prompt_tokens: promptTokens, completion_tokens: 1, total_tokens: promptTokens + 1 } },
-    } as unknown as SendContext);
+    const stub = {
+      lastUsage: { prompt_tokens: promptTokens, completion_tokens: 1, total_tokens: promptTokens + 1 },
+    };
+    const plugin = autoMigrateOf(agent);
+    plugin.onOuterLoopStart?.({ agent: stub } as unknown as OuterLoopContext);
+    await plugin.onIdle?.();
   }
 
   it("派生会话越过交接线：自己压（migrate 被调一次，mode 是 self），会话行记 auto", async () => {
@@ -1236,10 +1275,10 @@ describe("真装配：压缩按会话类型归一（派生会话自动压 / 用�
     }
   });
 
-  it("递归防护：交接回合自己产生的 onAfterSend 不再触发迁移（service.busy 让行）", async () => {
+  it("递归防护：交接回合自己产生的 onIdle 不再触发迁移（service.busy 让行）", async () => {
     const assembly = await assemble({ derived: true, busy: true });
     try {
-      // 交接回合本身就是一次 send，它的 onAfterSend 会再到这里：busy 时必须让行
+      // 交接回合本身也是往同一个 agent 里推一轮，它收尾时 `onIdle` 会再到这里：busy 时必须让行
       await afterSend(assembly.agent, 9999);
       expect(assembly.migrations).toEqual([]);
       expect(await assembly.conversations.get(CONVERSATION_ID)).toMatchObject({
@@ -1527,61 +1566,6 @@ describe("真装配：会话级模型与思考档位（F-B4 / F-B6）", () => {
 // 素材：落库形态（__asset_id）
 // ---------------------------------------------------------------------------
 
-/** 一个可脚本化的 agent：按脚本逐片吐出正文 */
-class ScriptedAgent implements ChatAgent {
-  messages: AgentNS.Message[] = [];
-  readonly events = new RecordingEventBus();
-  sendCalls = 0;
-  /**
-   * 这个桩不承接 inbox：它只演「一轮跑完」的素材落库路径。
-   *
-   * 真承接（推得进去、轮末落地）的那一份是 `FakeAgent`，D14 的用例都走那条。
-   * 这里故意硬失败：万一有人以为「推一下就算收到了」，就在用例里当场报错。
-   */
-  inbox: AgentNS.InboxEntry[] = [];
-
-  constructor(private readonly script: Array<{ deltas?: string[] }>) {}
-
-  deliver(): never {
-    throw new Error("ScriptedAgent 不承接 inbox（只用它验素材路径）");
-  }
-
-  append(message: AgentNS.Message): AgentNS.Message {
-    this.messages.push(message);
-    this.events.emit("message", message);
-    return message;
-  }
-
-  abort(): void {
-    for (const message of this.messages) {
-      if (
-        message.status === AgentNSValue.MessageStatus.Pending ||
-        message.status === AgentNSValue.MessageStatus.Writing
-      ) {
-        message.status = AgentNSValue.MessageStatus.Aborted;
-      }
-    }
-  }
-
-  async send(content: AgentNS.MessageContent): Promise<AgentNS.Message[]> {
-    const step = this.script[this.sendCalls] ?? this.script[this.script.length - 1];
-    this.sendCalls += 1;
-    this.append(Message.User(content));
-
-    const receiver = this.append(Message.Assistant());
-    receiver.status = AgentNSValue.MessageStatus.Writing;
-    for (const text of step?.deltas ?? []) {
-      const chunk = {
-        choices: [{ delta: { content: text } }],
-      } as unknown as Parameters<typeof applyChunk>[1];
-      applyChunk(receiver, chunk);
-      this.events.emit("chunk-parsed", receiver, chunk);
-    }
-    receiver.status = AgentNSValue.MessageStatus.Completed;
-    return this.messages;
-  }
-}
-
 /** 落库用的内容：素材段只有本地扩展字段（真实现是 `AssetService.prepareAttachments`） */
 const STORED_CONTENT: LocalMessageContentSection[] = [
   { type: "text", text: "看看这张" },
@@ -1590,18 +1574,9 @@ const STORED_CONTENT: LocalMessageContentSection[] = [
 
 describe("素材：落库只存 __asset_id", () => {
   it("用户消息落库用的是 storedContent，发给 agent 的是转换后的内容", async () => {
-    const sent: AgentNS.MessageContent[] = [];
+    const agent = new FakeAgent([{ deltas: [{ content: "好" }] }]);
     const custom = createHarness({
-      rounds: [],
-      agentFactory: () => {
-        const agent = new ScriptedAgent([{ deltas: ["好"] }]);
-        const send = agent.send.bind(agent);
-        agent.send = async (content: AgentNS.MessageContent) => {
-          sent.push(content);
-          return await send(content);
-        };
-        return agent;
-      },
+      agent,
       prepareAttachments: async () => ({
         // 发出去的那一份带厂商产物
         content: [
@@ -1619,7 +1594,9 @@ describe("素材：落库只存 __asset_id", () => {
     });
     await turn.done;
 
-    // 发给模型的是厂商能吃的段
+    // 发给模型的是厂商能吃的段（模型第一次请求里那条用户消息）
+    const sent = agent.requests[0]!.filter((message) => message.id === turn.userMessageId);
+    expect(sent).toHaveLength(1);
     expect(JSON.stringify(sent[0])).toContain("file-abc");
     // 库里只有我们的引用
     expect(custom.store.peek(turn.userMessageId)?.content).toEqual(STORED_CONTENT);
@@ -1780,7 +1757,8 @@ describe("ChatRunner：子 Agent 说的话也推给客户端", () => {
 
     const streamed = custom.pushed("message.delta").find((payload) => payload.toolCallId === "call-8");
     expect(streamed).toBeDefined();
-    const row = custom.store.writes.find((write) => write.id === streamed!.messageId);
+    // 流式推出去的那个 id 就是库里那一行（收尾之后再读，读到的就是终版）
+    const row = custom.store.peek(streamed!.messageId);
     expect(row).toBeDefined();
     // 挂在这次委派上，且带上子 Agent 说的正文
     expect(row!.parentToolCallId).toBe("call-8");
@@ -1846,15 +1824,16 @@ describe("ChatRunner：跑中发送进 inbox（D14：不打断、也不回 busy�
     expect(queued!.attachments).toEqual([]);
     expect(Date.parse(queued!.acceptedAt)).toBe(custom.clock.now());
 
-    // 条目进的是这一轮 agent 的 inbox：高优先（工具轮收尾的边界落地），来源是用户本人
-    expect(agent.inbox).toHaveLength(1);
-    expect(agent.inbox[0]!.messageId).toBe(queued!.userMessageId);
-    expect(agent.inbox[0]!.priority).toBe("high");
-    expect(agent.inbox[0]!.source).toBe("user");
-    expect(agent.inbox[0]!.content).toBe("顺便问一句");
+    // 条目真的进了这一轮 agent 的队列（core 只给个数）
+    expect(agent.inboxSize).toBe(1);
 
-    // 客户端看得见「这一条排上了」（RunState.inbox 就是这份数组）
-    expect(custom.lastRunState().inbox).toHaveLength(1);
+    // 客户端看得见「这一条排上了」：`RunState.inbox` 是宿主按 `inboxAdded` 记的那份镜像
+    // （core 只给数字，条目本身只有入队那一刻的事件里有）
+    const inbox = custom.lastRunState().inbox;
+    expect(inbox).toHaveLength(1);
+    expect(inbox[0]!.messageId).toBe(queued!.userMessageId);
+    expect(inbox[0]!.source).toEqual({ kind: "user" });
+    expect(inbox[0]!.preview).toBe("顺便问一句");
 
     gate.resolve();
     await turn.done;
@@ -1896,15 +1875,20 @@ describe("ChatRunner：跑中发送进 inbox（D14：不打断、也不回 busy�
       input: { content: "装配期间发的" },
     });
     expect(queued).not.toBeNull();
-    expect(agent.inbox).toHaveLength(0);
+    expect(agent.inboxSize).toBe(0);
     // 客户端看得见「这一条排上了」：缓冲着的也算
-    expect(custom.lastRunState().inbox).toHaveLength(1);
+    expect(custom.lastRunState().inbox.map((item) => item.messageId)).toEqual([
+      queued!.userMessageId,
+    ]);
 
-    // 装好那一刻：条目被 `deliver` 进它的 inbox（id 还是入队时那个）
+    // 装好那一刻：条目被 `push` 进它的 inbox（id 还是入队时那个）。
+    // 它可能当场就被这一批取走（两次 push 之间 core 的循环还没转起来，于是同一批取干），
+    // 所以「进去了没有」看的是「在队列里 或者 已经落成消息」。
     build.resolve(agent);
     await flushMicrotasks();
-    expect(agent.inbox.map((entry) => entry.messageId)).toEqual([queued!.userMessageId]);
-    expect(custom.lastRunState().inbox).toHaveLength(1);
+    expect(
+      agent.inboxSize > 0 || agent.messages.some((message) => message.id === queued!.userMessageId),
+    ).toBe(true);
 
     // 这一轮按原来的脚本跑完，排进来的那一句在轮末落地
     sendGate.resolve();
@@ -1973,8 +1957,8 @@ describe("ChatRunner：跑中发送进 inbox（D14：不打断、也不回 busy�
     expect(landed).toBeDefined();
     expect(landed!.role).toBe(AgentNSValue.Role.User);
     expect(landed!.content).toBe("顺便看下这个");
-    // 轮末消费掉：inbox 空了
-    expect(agent.inbox).toHaveLength(0);
+    // 轮末消费掉：inbox 空了（core 只给个数）
+    expect(agent.inboxSize).toBe(0);
 
     // 下一次请求里带着它，且排在工具结果之后（模型下一轮天然看得见）
     const second = agent.requests[1];
@@ -2062,10 +2046,10 @@ describe("ChatRunner：跑中发送进 inbox（D14：不打断、也不回 busy�
     expect(custom.store.peek(queued!.userMessageId)?.createdAt).toBe(acceptedAtMs + 5_000);
   });
 
-  it("abort 不丢排队条目：inbox 保持 1 条，那一句仍不落地（等下一次驱动）", async () => {
+  it("abort 不丢排队条目：它留在 core 的队列里，只是不在这一段落地（等下一次被叫起来）", async () => {
     // 口径已变（core 侧的语义变更，有意）：`abort()` 不再 `clearInbox()`。
     // 一条来自别的会话的投递不该被「用户按停」这个无关动作抹掉，所以这一轮被中止之后，
-    // 队列里的那一句**还在**，`inbox` 保持 1 条；它只是不在这一轮落地。
+    // 队列里的那一句**还在**（`agent.inboxSize` 仍是 1）；它只是不在这一段落地。
     const gate = deferred<void>();
     const agent = new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢慢说" }] }]);
     const custom = createHarness({ agent });
@@ -2084,9 +2068,10 @@ describe("ChatRunner：跑中发送进 inbox（D14：不打断、也不回 busy�
     expect(turn.runState().inbox).toHaveLength(1);
 
     turn.abort("用户按了停");
-    // 数据是数据：inbox 不动，宿主读到的排队条目也就不动（宿主没有第二份可漂）
-    expect(agent.inbox).toHaveLength(1);
-    expect(turn.runState().inbox).toHaveLength(1);
+    // 数据是数据：队列不动（core 的 `abort` 不清空 inbox）
+    expect(agent.inboxSize).toBe(1);
+    // 而这一段到此就结束了（core 报 `paused` → 结算），所以它不再报「我这轮还排着什么」
+    expect(turn.runState().status).toBe("settled");
 
     gate.resolve();
     const settlement = await turn.done;
@@ -2136,12 +2121,11 @@ describe("ChatRunner：跑中发送进 inbox（D14：不打断、也不回 busy�
     // 排队不等于「附件被静默丢掉」：结局照常回
     expect(queued!.attachments).toHaveLength(1);
     expect(queued!.attachments[0]!.assetId).toBe("a1");
-    // 进 inbox 的是**转换之后**的内容：core 落地时直接拿它当消息内容
+    // 进 core 队列的是**转换之后**的内容：core 落地时直接拿它当消息内容
+    // （core 只给个数，内容读宿主那份排队区镜像里的摘要 —— 那条消息的正文不搬进 run.state）
     expect(prepared).toHaveLength(2);
-    expect(agent.inbox[0]!.content).toEqual([
-      { type: "text", text: "看图" },
-      { type: "file", file_id: "file-abc" },
-    ]);
+    expect(agent.inboxSize).toBe(1);
+    expect(custom.lastRunState().inbox[0]!.preview).toBe("看图 [文件]");
 
     gate.resolve();
     await turn.done;
@@ -2261,7 +2245,7 @@ describe("ChatRunner：agent 常驻（跨轮复用）", () => {
     );
   });
 
-  it("两轮之间投进 inbox 的那一条，会被下一段带走（常驻的直接收益）", async () => {
+  it("结算之后推一条进这个（常驻的）agent：它自己起来跑一段，宿主接住并落库", async () => {
     const custom = createHarness({ agentFactory: () => new FakeAgent(plainRounds()) });
 
     const first = await custom.runner.run({
@@ -2271,37 +2255,37 @@ describe("ChatRunner：agent 常驻（跨轮复用）", () => {
     await first.done;
 
     const agent = custom.agents.get(CONVERSATION_ID) as FakeAgent;
-    expect(agent.inbox).toHaveLength(0);
+    expect(agent.inboxSize).toBe(0);
+    const callsBefore = agent.sendCalls;
+    const statesBefore = custom.pushed("run.state").length;
 
-    // 结算之后有人往这个（常驻的）agent 里投了一句：这一单不做唤醒，它就躺在队列里等着
-    agent.deliver({ source: "user", priority: "high", content: "跨段带来的这一句" });
-    expect(agent.inbox).toHaveLength(1);
-    // 没有东西会自己把它叫起来（唤醒是下一单的事）
-    expect(custom.runs.isRunning(CONVERSATION_ID)).toBe(false);
-    expect(agent.sendCalls).toBe(1);
+    // 结算之后有人往这个（常驻的）agent 里推了一句：core 的 `push` 会顺手把 agent 叫起来跑
+    // **一段由别人叫起来的工作**（`CORE.md` §1：常驻会话只 push，不看返回值）。
+    agent.push({ source: { kind: "user" }, priority: "high", content: "跨段带来的这一句" });
 
-    const second = await custom.runner.run({
-      conversationId: CONVERSATION_ID,
-      input: { content: "第二句" },
-    });
-    const settlement = await second.done;
+    // 宿主从 `state → busy` 接住这一段（建现场 → 落库 → 结算），完全不靠「谁在等」
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if (custom.store.writes.some((row) => row.content === "跨段带来的这一句")) break;
+      await flushMicrotasks();
+    }
 
-    // ① 它落成了一条 user 消息（在下一段里），并进了这一段的产出
-    const landed = settlement.produced.find(
-      (message) => message.content === "跨段带来的这一句",
-    );
-    expect(landed).toBeDefined();
-    expect(landed!.role).toBe(AgentNSValue.Role.User);
-    // ② 队列取空了
-    expect(agent.inbox).toHaveLength(0);
-    // ③ 也进库了（照常落库，与这一轮自己发的那句同一个口径）
+    // ① 它落成了一条 user 消息，并且进了库（与这一轮自己发的那句同一个口径）
     const page = await custom.store.listByConversation(CONVERSATION_ID);
     const carried = page.filter((row) => row.content === "跨段带来的这一句");
     expect(carried).toHaveLength(1);
     expect(carried[0]!.role).toBe(AgentNSValue.Role.User);
+    // ② 队列取空了，模型又被问了一次
+    expect(agent.inboxSize).toBe(0);
+    expect(agent.sendCalls).toBeGreaterThan(callsBefore);
+    // ③ 这一段也是「一段」：宿主推过 run.state（并把它结算成了 settled）
+    expect(custom.pushed("run.state").length).toBeGreaterThan(statesBefore);
+    expect(custom.lastRunState().status).toBe("settled");
+    // ④ agent 还是同一个实例（常驻）
+    expect(custom.agents.get(CONVERSATION_ID)).toBe(agent);
+    expect(custom.builds).toHaveLength(1);
   });
 
-  it("abort 之后 agent 留在内存、runStatus 是 terminated，下一次外部驱动仍能跑", async () => {
+  it("abort 之后 agent 留在内存、三格是 paused，下一次用户发话仍能跑", async () => {
     const gate = deferred<void>();
     const agent = new FakeAgent([{ gate: gate.promise, deltas: [{ content: "被打断" }] }]);
     const custom = createHarness({ agent });
@@ -2316,15 +2300,15 @@ describe("ChatRunner：agent 常驻（跨轮复用）", () => {
     const settlement = await turn.done;
 
     expect(settlement.outcome).toBe("aborted");
-    // 不 dispose：实例还在登记里，段状态是「被叫停且已收尾」
+    // 不 dispose：实例还在登记里；三格是 `paused`（core 的暂停是模式，不是「死了」）
     expect(custom.agents.get(CONVERSATION_ID)).toBe(agent);
-    expect(agent.runStatus).toBe("terminated");
+    expect(agent.state).toBe("paused");
     // 中止的语义没变：库里的在途消息照旧落成 Aborted
     expect(custom.store.peek(turn.assistantMessageId)?.status).toBe(
       AgentNSValue.MessageStatus.Aborted,
     );
 
-    // 下一次外部驱动仍然能跑（同一个实例从 terminated 解冻），不是「一次性」的
+    // 下一次用户发话仍然能跑（同一个实例从 paused 被 `resume` 回来），不是「一次性」的
     const second = await custom.runner.run({
       conversationId: CONVERSATION_ID,
       input: { content: "再来一句" },
@@ -2334,7 +2318,7 @@ describe("ChatRunner：agent 常驻（跨轮复用）", () => {
     expect(secondSettlement.outcome).toBe("completed");
     expect(custom.agents.get(CONVERSATION_ID)).toBe(agent);
     expect(agent.sendCalls).toBe(2);
-    expect(agent.runStatus).toBe("idle");
+    expect(agent.state).toBe("idle");
   });
 
   it("结算之后 agent 上的事件不再叫到已经收工的那一段（监听随这一轮摘掉）", async () => {
@@ -2370,7 +2354,7 @@ describe("ChatRunner：agent 常驻（跨轮复用）", () => {
     first.abort("这一轮早跑完了");
 
     expect(agent.abortCalls).toBe(abortsBefore);
-    expect(agent.runStatus).toBe("idle");
+    expect(agent.state).toBe("idle");
   });
 });
 

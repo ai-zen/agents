@@ -517,22 +517,6 @@ export class HostApp {
       createAgent,
       // 「这段对话有没有在跑一轮」只有 `RunRegistry` 一处（`invalidate` 判空闲 / 在跑用它）
       runs: this.runRegistry,
-      // 一段的边界（core 的 `status`）：agent 被 `deliver()` 叫醒自己跑起来的那一段没有
-      // `conversation.send` 的受理，它的现场只能从这条事件里建（见 `ChatRunner.onAgentStatus`）。
-      // `chatRunner` 在 §7 才造出来（比这里晚），所以这里闭包住 `this`，调用那一刻才去拿
-      // —— 与 `peerSessions` 的晚绑定同一个理由。
-      //
-      // `to === "running"` 这一拍还要跟平级会话说一声「这一段开始了」：派生会话被投递叫起来的
-      // 那几段从前没有复位点，`read_session_status` 会在它正跑着时答 `idle`，并发限额（只数
-      // `running`）也数不到它们。`idle` / `stopping` / `terminated` 都不动 —— 收尾那一拍归
-      // `settleSegment`。
-      onStatus: (event) => {
-        this.chatRunner.onAgentStatus(event);
-        if (event.to === "running") this.peerSessions.onSegmentStart(event.conversationId);
-      },
-      // 入队那一刻的来源（`InboxEntry.source`）：自起段结算时报给宿主的就是它 ——
-      // 「这一段是被谁叫起来的」只有投递方知道（见 `ChatRunner.noteInbox`）。
-      onInbox: (event) => this.chatRunner.noteInbox(event.conversationId, event.entry.source),
       // 每做一次生灭决定就记一笔：「这段对话的 agent 为什么不在」从前没人答得上来，
       // 现在理由就从唯一拥有者所在的那个文件里报出来（`reason` 是闭集，见
       // `AgentLifecycleReason`）。落到文件日志的信息级：是诊断用的流水，不是给用户看的事件。
@@ -619,6 +603,13 @@ export class HostApp {
         // 之后 `send_to_session` 叫起来的每一段走的是同一条路 —— 从这里接而不是从 `create` 里接，
         // 就是这一单修的那个洞。不新增事件、不另立订阅（`peerSessions` 的晚绑定同 §6 的理由）。
         void this.peerSessions.settleSegment(facts);
+      },
+      // 三格变化的旁听口：`to === "busy"` 那一拍要跟平级会话说一声「这一段开始了」——
+      // 派生会话被投递叫起来的那几段从前没有复位点，`read_session_status` 会在它正跑着时答
+      // `idle`，并发限额（只数 `running`）也数不到它们。`idle` / `paused` 都不动（收尾那一拍
+      // 归 `onTurnSettled`）。宿主侧建现场 / 收尾那一跳在 `ChatRunner` 内部完成，不靠这个口。
+      onState: (event) => {
+        if (event.to === "busy") this.peerSessions.onSegmentStart(event.conversationId);
       },
       onError: (error, context) => {
         this.logger.error("一轮对话写库失败", { context, error: describeError(error) });
@@ -1161,8 +1152,8 @@ export class HostApp {
     // 插件已经在压，这里再挂一个问题。
     if (this.peerSessions.isPeerSession(facts.conversationId)) return;
     // 自动推送叫起来的轮次没有人在看这条连接：给一段没人盯着的对话挂交接问题是噪音。
-    // 要问就等用户自己说话那一轮（那一轮结算时报的就是 `"user"`）。
-    if (facts.source !== "user") return;
+    // 要问就等用户自己说话那一轮（那一轮结算时报的就是 `{ kind: "user" }`）。
+    if (facts.source.kind !== "user") return;
     if (facts.handoffTokens <= 0) return;
     if (facts.promptTokens < facts.handoffTokens) return;
     if (this.runRegistry.isRunning(facts.conversationId)) return;

@@ -1,10 +1,10 @@
 /**
- * 取证：「自起的段」—— agent 被 `deliver()` 叫醒跑起来的那一段，宿主必须接住它。
+ * 取证：**被别人叫起来的那一段** —— agent 被 `push()` 推起来跑的那批，宿主必须接住它。
  *
  * ## 这一段为什么需要取证
  *
- * agent 是常驻的、inbox 在 agent 里，所以 `agent.deliver(entry)` 在静止态会**把 agent 叫醒跑一段**
- * （core 的 `deliver()` → `flushInbox()` → `run()`）。但那一段没有 `conversation.send` 的受理：
+ * agent 是常驻的、inbox 在 agent 里，所以别的会话/定时器往它里面 `push()` 一条，静止的 agent
+ * 就会被叫起来跑一段（core 的 `push` → 队列 → 外循环）。但那一段没有 `conversation.send` 的受理：
  * 没有受理就没有 `TurnSession`，于是它既不落库、也不推 `run.state`、`conversation.abort` 还找不到
  * 它 —— 用户在界面上看到的是「agent 自己跑了一趟，一个字都没留下」。
  *
@@ -12,9 +12,9 @@
  *
  * ## 为什么用真 core `Agent`
  *
- * 这一条的**全部难点都在时序上**：core 先广播 `status`（这一段开始了）、紧接着才把 inbox 落地成
- * User 消息（`message` 事件），宿主必须在第一拍就把现场建好并订上 `message`，第二拍才接得住那条
- * 消息。用假 agent 就测不到这件事 —— 假件的顺序是我们自己写的，红不了也绿不了。
+ * 这一条的**全部难点都在时序上**：core 先广播 `state → busy`（这一段开始了）、紧接着才把队列
+ * 落地成 User 消息（`messageAdded`），宿主必须在第一拍就把现场建好并订上那套事件，第二拍才接得住
+ * 那条消息。用假 agent 就测不到这件事 —— 假件的顺序是我们自己写的，红不了也绿不了。
  * 于是这里与 `ChatRunner.inbox.test.ts` 同一套做法：`AgentFactory` 返回真 `Agent`，其余（仓储、
  * 运行表、Scope、事件推送）全是宿主的真件，假件只用在模型那一侧。
  *
@@ -150,8 +150,8 @@ interface Harness {
   events: Array<{ name: EventName; payload: EventMap[EventName] }>;
   /** `onError` 收到的东西（内部错误的去处） */
   errors: Array<{ error: unknown; context: string }>;
-  /** core 广播的段边界（`status`），按发生顺序 */
-  statuses: Array<{ from: AgentNS.RunStatus; to: AgentNS.RunStatus }>;
+  /** core 广播的三格变化（`state`），按发生顺序 */
+  states: Array<{ from: AgentNS.AgentState; to: AgentNS.AgentState }>;
   pushed: <E extends EventName>(name: E) => Array<EventMap[E]>;
   runStates: () => RunState[];
 }
@@ -168,27 +168,23 @@ function createHarness(options: {
   const runs = new RunRegistry({ clock });
   const events: Harness["events"] = [];
   const errors: Harness["errors"] = [];
-  const statuses: Harness["statuses"] = [];
+  const states: Harness["states"] = [];
   let idCursor = 0;
 
-  // `chatRunner` 比 `agentRegistry` 后造：接线层（`app.ts`）也是这么接的 —— 闭包住一个可变引用，
-  // 调用那一刻才去取
-  let runner: ChatRunner | undefined;
   const registry = new AgentRegistry({
     scopes,
     runs,
     createAgent: async (context) => {
       const agent = await options.createAgent(context);
-      // 与生产同一个口径：段边界从 core 的 `status` 事件来
-      agent.events.on("status", (ctx: { from: AgentNS.RunStatus; to: AgentNS.RunStatus }) => {
-        statuses.push({ from: ctx.from, to: ctx.to });
+      // 用例自己旁听三格（宿主那一份订阅在 `ChatRunner` 内部：装配处自动订上）
+      agent.on("state", (ctx) => {
+        states.push({ from: ctx.from, to: ctx.to });
       });
       return agent;
     },
-    onStatus: (event) => runner?.onAgentStatus(event),
   });
 
-  runner = new ChatRunner({
+  const runner = new ChatRunner({
     messages: store,
     conversations: {
       get: async (id: string) => (id === conversation.id ? conversation : undefined),
@@ -217,7 +213,7 @@ function createHarness(options: {
     runs,
     events,
     errors,
-    statuses,
+    states,
     pushed,
     runStates: () => pushed("run.state").map((payload) => payload.run),
   };
@@ -227,7 +223,7 @@ function createHarness(options: {
 async function parkAgent(harness: Harness): Promise<ChatAgent> {
   // 会话行上的三项事实既是装配入参，也是 `acquire` 判「合不合用」的据
   const conversation = makeConversation();
-  return await harness.registry.acquire(
+  const agent = await harness.registry.acquire(
     {
       conversationId: CONVERSATION_ID,
       workspaceId: WORKSPACE_ID,
@@ -238,14 +234,18 @@ async function parkAgent(harness: Harness): Promise<ChatAgent> {
     },
     conversation,
   );
+  // 宿主在装配处就把它叫起来等事件（`ChatRunner` 的观察口在 `acquire` 之后做同一件事），
+  // 于是之后任何人 `push` 一条都能被看见
+  void agent.start();
+  return agent;
 }
 
 // ---------------------------------------------------------------------------
-// ① 自起段落库：那条 user 消息的 id 就是投递时定死的那个
+// ① 那一段落库：那条 user 消息的 id 就是投递时定死的那个
 // ---------------------------------------------------------------------------
 
-describe("自起的段：agent 被 `deliver()` 叫醒的那一段由宿主接住", () => {
-  it("自起段落库：user 消息 id 就是投递时那个（带来源注释），assistant 正常完成，seq 连续", async () => {
+describe("被别人叫起来的那一段：agent 被 `push()` 推起来跑的那批由宿主接住", () => {
+  it("那一段落库：user 消息 id 就是推的时候那个（带来源注释），assistant 正常完成，seq 连续", async () => {
     const { client } = createScriptedClient([textRound("第一句的回答"), textRound("收到，我来跟进。")]);
     const harness = createHarness({ createAgent: async () => new Agent({ client, model: "gpt-4" }) });
 
@@ -258,21 +258,22 @@ describe("自起的段：agent 被 `deliver()` 叫醒的那一段由宿主接住
     const agent = harness.registry.get(CONVERSATION_ID);
     expect(agent).toBeDefined();
 
-    // ---- 投递：agent 在静止态，core 把它叫醒跑一段（宿主从此没有受理过任何东西）----
-    const receipt = agent!.deliver({
+    // ---- 投递：agent 在静止态，`push` 把它叫起来跑一段（宿主从此没有受理过任何东西）----
+    const pushedId = "peer-1";
+    agent!.push({
+      messageId: pushedId,
       content: "父会话那边有新进展",
-      source: "会话「另一个」",
+      source: { kind: "agent", label: "会话「另一个」" },
       priority: "high",
     });
-    expect(receipt.woke).toBe(true);
 
-    // 现场是**同步**建好的：`deliver` 返回时这一段已经在 `turns` 里（它紧接着就要广播那条消息）
+    // 现场是**同步**建好的：`push` 返回时这一段已经在 `turns` 里（它紧接着就要广播那条消息）
     const live = harness.runner.turn(CONVERSATION_ID);
     expect(live).toBeDefined();
     const settlement: TurnSettlement = await live!.done;
 
     // ---- ① user 消息：id 就是投递时定的那个，内容是 core 落地的那份（带来源注释）----
-    const userRow = harness.store.peek(receipt.messageId);
+    const userRow = harness.store.peek(pushedId);
     expect(userRow).toBeDefined();
     expect(userRow!.role).toBe(AgentNSValue.Role.User);
     expect(userRow!.status).toBe(AgentNSValue.MessageStatus.Completed);
@@ -295,10 +296,10 @@ describe("自起的段：agent 被 `deliver()` 叫醒的那一段由宿主接住
     const rows = await harness.store.listByConversation(CONVERSATION_ID);
     expect(rows.map((row) => row.seq)).toEqual([1, 2, 3, 4]);
     const order = rows.map((row) => row.id);
-    expect(order.indexOf(receipt.messageId)).toBe(2);
+    expect(order.indexOf(pushedId)).toBe(2);
     expect(order.indexOf(assistantId!)).toBe(3);
     // 那条 user 消息先写、回答后写：`seq` 按插入顺序给，反过来就成了「回答在提问之前」
-    expect(order.indexOf(receipt.messageId)).toBeLessThan(order.indexOf(assistantId!));
+    expect(order.indexOf(pushedId)).toBeLessThan(order.indexOf(assistantId!));
 
     // ---- ④ 一段正常收尾 ----
     expect(settlement.outcome).toBe("completed");
@@ -306,40 +307,50 @@ describe("自起的段：agent 被 `deliver()` 叫醒的那一段由宿主接住
     expect(harness.runs.isRunning(CONVERSATION_ID)).toBe(false);
   });
 
-  it("自起段的事件次序：`status → running` 先于那条 user 消息的 `message` 广播", async () => {
+  it("事件次序：`state → busy` 先于那条 user 消息的 `messageAdded`", async () => {
     const { client } = createScriptedClient([textRound("收到。")]);
     const harness = createHarness({ createAgent: async () => new Agent({ client, model: "gpt-4" }) });
     const agent = await parkAgent(harness);
 
-    const userEvents: string[] = [];
-    const statusesBefore: string[] = [];
-    agent.events.on("message", (message: AgentNS.Message) => {
-      if (message.role === AgentNSValue.Role.User) userEvents.push(`message:${message.id}`);
-    });
-    agent.events.on("status", (ctx: { to: AgentNS.RunStatus }) => {
-      statusesBefore.push(`status:${ctx.to}`);
+    const seen: string[] = [];
+    agent.on("inboxAdded", () => seen.push("inbox"));
+    agent.on("state", (ctx) => seen.push(`state:${ctx.to}`));
+    agent.on("messageAdded", (ctx) => {
+      if (ctx.message.role === AgentNSValue.Role.User) seen.push(`message:${ctx.message.id}`);
     });
 
-    const receipt = agent.deliver({ content: "投递一句", source: "会话「X」", priority: "high" });
+    agent.push({
+      messageId: "peer-2",
+      content: "投递一句",
+      source: { kind: "agent", label: "会话「X」" },
+      priority: "high",
+    });
     const live = harness.runner.turn(CONVERSATION_ID)!;
     await live.done;
 
     // 宿主能接住那条消息，全靠「宣告这一段开始了」排在「队列落地」之前：
     // 反过来的话，user 消息广播时还没有现场，它就永久没人认领（不落库、不进产出）
-    expect(statusesBefore[0]).toBe("status:running");
-    expect(userEvents).toEqual([`message:${receipt.messageId}`]);
+    const busyAt = seen.indexOf("state:busy");
+    const messageAt = seen.indexOf("message:peer-2");
+    expect(busyAt).toBeGreaterThanOrEqual(0);
+    expect(messageAt).toBeGreaterThan(busyAt);
   });
 
   // -------------------------------------------------------------------------
   // ② 自起段推 `run.state`
   // -------------------------------------------------------------------------
-  it("自起段推 run.state：先 `running`（还没有助手 id），结算后 `settled`", async () => {
+  it("那一段推 run.state：先 `running`（还没有助手 id），结算后 `settled`", async () => {
     const { client } = createScriptedClient([textRound("收到。")]);
     const harness = createHarness({ createAgent: async () => new Agent({ client, model: "gpt-4" }) });
     const agent = await parkAgent(harness);
 
     const before = harness.runStates().length;
-    agent.deliver({ content: "投递一句", source: "会话「X」", priority: "high" });
+    agent.push({
+      messageId: "peer-3",
+      content: "投递一句",
+      source: { kind: "agent", label: "会话「X」" },
+      priority: "high",
+    });
     const live = harness.runner.turn(CONVERSATION_ID)!;
     const settlement = await live.done;
 
@@ -357,38 +368,44 @@ describe("自起的段：agent 被 `deliver()` 叫醒的那一段由宿主接住
     expect(last.inbox).toEqual([]);
   });
 
-  it("自起段一条 assistant 都没出（开局就失败）：结算照常跑完，不卡住、不凭空补占位行", async () => {
+  it("那一段一条 assistant 都没出（开局就被拒）：结算照常跑完，不卡住、不凭空补占位行", async () => {
     const { client } = createScriptedClient([textRound("不会被请求到")]);
     let coreAgent: Agent | undefined;
     const harness = createHarness({
       createAgent: async () => {
         const agent = new Agent({ client, model: "gpt-4" });
-        // 段体一共就抛在第一条内循环之前：一条 assistant 占位也不会 append
-        agent.use({ onInnerLoopsStart: () => "这一段不许跑" } as never);
+        // 内循环还没开始就被拒：core 报 `denied`，一条 assistant 占位都不会 append
+        // （`onInnerLoopStart` 排在造占位之前，`CORE.md` §11）
+        agent.use({ onInnerLoopStart: () => "这一段不许跑" });
         coreAgent = agent;
         return agent;
       },
     });
     const agent = await parkAgent(harness);
 
-    const receipt = agent.deliver({ content: "投递一句", source: "会话「X」", priority: "high" });
+    agent.push({
+      messageId: "peer-4",
+      content: "投递一句",
+      source: { kind: "agent", label: "会话「X」" },
+      priority: "high",
+    });
     const live = harness.runner.turn(CONVERSATION_ID)!;
     // 关键：它 resolve（不卡住）—— 结算不靠「总得有一条 assistant」才走得完
     const settlement = await live.done;
 
     // 一段里没出过 assistant：就没有助手 id，也不该凭空补一条空回答
     expect(settlement.assistantMessageId).toBeNull();
-    expect(settlement.produced.map((message) => message.id)).toEqual([receipt.messageId]);
+    expect(settlement.produced.map((message) => message.id)).toEqual(["peer-4"]);
 
     // 落库照常：只有投递那条 user 消息，没有凭空多出的 assistant 行
     const rows = await harness.store.listByConversation(CONVERSATION_ID);
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.id).toBe(receipt.messageId);
+    expect(rows[0]!.id).toBe("peer-4");
     expect(rows[0]!.role).toBe(AgentNSValue.Role.User);
     // 运行表、现场、段状态都收干净了（agent 仍常驻，只是回 idle）
     expect(harness.runs.isRunning(CONVERSATION_ID)).toBe(false);
     expect(harness.runner.turn(CONVERSATION_ID)).toBeUndefined();
-    expect(coreAgent!.runStatus).toBe("idle");
+    expect(coreAgent!.state).toBe("idle");
     // 结算态照样推出去（“一段结束”这个事实不因“没出 assistant”而丢）——
     // 这里不断言 `outcome`：段体抛出去的那个错误走的是 core 的 `error` 事件，它比段尾
     // `status` 晚一拍，结算那一刻收到与否是一个时序细节（本单没改那一处，见回报）。
@@ -401,11 +418,11 @@ describe("自起的段：agent 被 `deliver()` 叫醒的那一段由宿主接住
   // ③ 自起段可 abort
   // -------------------------------------------------------------------------
 
-  it("自起段可 abort：`conversation.abort` 能找到这一段、把 agent 掐停，结算 outcome=aborted", async () => {
+  it("那一段可 abort：`conversation.abort` 能找到这一段、把 agent 掐停，结算 outcome=aborted", async () => {
     const started = deferred<void>();
     const result = deferred<string>();
     const { client } = createScriptedClient([toolCallRound("read_file")]);
-    // 段状态（`runStatus`）不在宿主的 `ChatAgent` 表面里（宿主不看它）：用例留住真 core `Agent`
+    // 三格（`state`）不在宿主的 `ChatAgent` 表面里（宿主不看它）：用例留住真 core `Agent`
     let coreAgent: Agent | undefined;
     const harness = createHarness({
       createAgent: async () => {
@@ -420,7 +437,12 @@ describe("自起的段：agent 被 `deliver()` 叫醒的那一段由宿主接住
     });
     const agent = await parkAgent(harness);
 
-    const receipt = agent.deliver({ content: "投递一句", source: "会话「X」", priority: "high" });
+    agent.push({
+      messageId: "peer-5",
+      content: "投递一句",
+      source: { kind: "agent", label: "会话「X」" },
+      priority: "high",
+    });
     const live = harness.runner.turn(CONVERSATION_ID)!;
     expect(live).toBeDefined();
 
@@ -431,8 +453,8 @@ describe("自起的段：agent 被 `deliver()` 叫醒的那一段由宿主接住
 
     // 用户按停：`conversation.abort` 走 `RunRegistry`，必须能找到这一段
     expect(harness.runner.abort(CONVERSATION_ID)).toBe(true);
-    // core 那侧进「收尾中」：中止真的送到 agent 上了（不是只在宿主这侧记了一笔）
-    expect(coreAgent!.runStatus).toBe("stopping");
+    // core 那侧进了暂停：中止真的送到 agent 上了（不是只在宿主这侧记了一笔）
+    expect(coreAgent!.state).toBe("paused");
 
     // 放行工具，让这一段自己收完尾（abort 不会替工具 reject）
     result.resolve("文件内容：hello");
@@ -441,21 +463,21 @@ describe("自起的段：agent 被 `deliver()` 叫醒的那一段由宿主接住
     expect(settlement.outcome).toBe("aborted");
     expect(settlement.run.outcome).toBe("aborted");
     // 投递那条 user 消息照常在库里（它已经被说出来了），id 仍是投递时那个
-    expect(harness.store.peek(receipt.messageId)).toBeDefined();
+    expect(harness.store.peek("peer-5")).toBeDefined();
     // 在途的工具结果以中止态落库（D15）
     const rows = await harness.store.listByConversation(CONVERSATION_ID);
     const aborted = rows.filter((row) => row.status === AgentNSValue.MessageStatus.Aborted);
     expect(aborted.length).toBeGreaterThan(0);
     // 运行表收干净了
     expect(harness.runs.isRunning(CONVERSATION_ID)).toBe(false);
-    expect(coreAgent!.runStatus).toBe("terminated");
+    expect(coreAgent!.state).toBe("paused");
   });
 
   // -------------------------------------------------------------------------
   // ④ 不重复建上下文（本单最重要的回归护栏）
   // -------------------------------------------------------------------------
 
-  it("普通 `conversation.send` 那一段：`status → running` 不会再建第二个 TurnSession", async () => {
+  it("普通 `conversation.send` 那一段：`state → busy` 不会再建第二个 TurnSession", async () => {
     const started = deferred<void>();
     const result = deferred<string>();
     const { client } = createScriptedClient([toolCallRound("read_file"), textRound("看完了。")]);
@@ -498,12 +520,17 @@ describe("自起的段：agent 被 `deliver()` 叫醒的那一段由宿主接住
   // ⑤ 自起段结束后 agent 仍常驻，下一段还能继续
   // -------------------------------------------------------------------------
 
-  it("自起段结束后 agent 仍常驻，下一段（普通发送）还能接着跑", async () => {
+  it("那一段结束后 agent 仍常驻，下一段（普通发送）还能接着跑", async () => {
     const { client } = createScriptedClient([textRound("自起段的回答"), textRound("下一段的回答")]);
     const harness = createHarness({ createAgent: async () => new Agent({ client, model: "gpt-4" }) });
     const agent = await parkAgent(harness);
 
-    agent.deliver({ content: "投递一句", source: "会话「X」", priority: "high" });
+    agent.push({
+      messageId: "peer-6",
+      content: "投递一句",
+      source: { kind: "agent", label: "会话「X」" },
+      priority: "high",
+    });
     const live = harness.runner.turn(CONVERSATION_ID)!;
     const firstSettlement = await live.done;
     expect(firstSettlement.outcome).toBe("completed");

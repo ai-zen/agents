@@ -10,6 +10,8 @@
  *   仓储反序列化后就是同一个形状，服务层与运行时不必在两种形状之间翻译。
  * - `role` / `status` 仍以字符串存取（取值与 `AgentNS.Role` / `AgentNS.MessageStatus` 一致），
  *   收敛成 core 的枚举发生在服务层。
+ * - `source` 是 core 的 `AgentNS.MessageSource`（**判别结构**，不是字符串）：库里存它的 JSON，
+ *   读回来反序列化成同一个形状（兼容策略见 `MessageRepository.toSource`）。
  */
 
 import type { AgentNS } from "@ai-zen/agents-core";
@@ -107,6 +109,8 @@ export interface MessageRow {
   data: string | null;
   /** 供全文检索的纯文本（从 content 抽出来的正文，不含 JSON 键名） */
   searchText: string;
+  /** JSON：这条 user 消息从哪儿来（core 的 `AgentNS.MessageSource`）；NULL = 不知道（旧行 / 非 user） */
+  source: string | null;
   /** 子 Agent 消息挂在哪次工具调用上；顶层消息为 NULL（R37） */
   parentToolCallId: string | null;
   createdAt: number;
@@ -124,6 +128,8 @@ export interface StoredMessage {
   omit: boolean;
   /** 已反序列化的正文：core 的内容形状；`null` 表示这条消息没有正文 */
   content: AgentNS.MessageContent | null;
+  /** 这条消息的来源（core 的判别结构）；`null` = 没有记录（非 user 消息、或这一列出现之前的旧行） */
+  source: AgentNS.MessageSource | null;
   data: Record<string, unknown> | null;
   createdAt: number;
   updatedAt: number;
@@ -140,6 +146,8 @@ export interface MessageUpsertInput {
   status: string;
   /** core 的内容形状；不给表示这条消息没有正文 */
   content?: AgentNS.MessageContent | null;
+  /** core 的来源形状（判别结构）；不给表示这条消息没有来源可记 */
+  source?: AgentNS.MessageSource | null;
   data?: Record<string, unknown> | null;
   omit?: boolean;
   /** 子 Agent 消息要挂的父工具调用 id；不给表示顶层消息（R37） */

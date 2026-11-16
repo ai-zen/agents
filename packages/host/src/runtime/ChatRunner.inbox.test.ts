@@ -87,11 +87,28 @@ function makeConversation(): Conversation {
  */
 type TimelineEntry =
   | { kind: "message"; id: string; role: AgentNS.Role; status: AgentNS.MessageStatus | undefined }
+  | { kind: "settled"; id: string; role: AgentNS.Role; status: AgentNS.MessageStatus | undefined }
   | { kind: "request" };
 
 function watch(agent: Agent, timeline: TimelineEntry[]): void {
-  agent.events.on("message", (message: AgentNS.Message) => {
-    timeline.push({ kind: "message", id: message.id, role: message.role, status: message.status });
+  // core 现在只有 `messageAdded`（旧 kebab-case 的 `message` 已删）：时间线记的还是「某一刻
+  // 多了一条消息」这件事，快照取当时的 id / 角色 / 状态（宿主会就地改那个对象）
+  agent.on("messageAdded", (event) => {
+    timeline.push({
+      kind: "message",
+      id: event.message.id,
+      role: event.message.role,
+      status: event.message.status,
+    });
+  });
+  // core 就地改一条时发的是 `messageChanged`（同 id）：定型那一刻只有它知道
+  agent.on("messageChanged", (event) => {
+    timeline.push({
+      kind: "settled",
+      id: event.message.id,
+      role: event.message.role,
+      status: event.message.status,
+    });
   });
 }
 
@@ -329,13 +346,13 @@ describe("真 core Agent 跑在真 ChatRunner 里：跑中发送进 inbox（D14�
       "userMessageId",
     ]);
 
-    // 条目进的是真 core Agent 的 inbox：高优先（工具轮收尾的边界）、来源是用户本人、id 就是回包那个
+    // 条目进的是真 core Agent 的队列（core 只给个数）：内容与来源读宿主那份排队区镜像
+    // （`inboxAdded` 那一刻记下来的，客户端看到的也是它）
+    expect(coreAgent!.inboxSize).toBe(1);
     expect(turn.runState().inbox).toHaveLength(1);
-    expect(coreAgent!.inbox).toHaveLength(1);
-    expect(coreAgent!.inbox[0]!.messageId).toBe(queued!.userMessageId);
-    expect(coreAgent!.inbox[0]!.priority).toBe("high");
-    expect(coreAgent!.inbox[0]!.source).toBe("user");
-    expect(coreAgent!.inbox[0]!.content).toBe("顺便看下这个");
+    expect(turn.runState().inbox[0]!.messageId).toBe(queued!.userMessageId);
+    expect(turn.runState().inbox[0]!.source).toEqual({ kind: "user" });
+    expect(turn.runState().inbox[0]!.preview).toBe("顺便看下这个");
 
     // 放行工具，让这一轮自己跑完
     result.resolve("文件内容：hello");
@@ -372,9 +389,7 @@ describe("真 core Agent 跑在真 ChatRunner 里：跑中发送进 inbox（D14�
 
     // ---- ③ inbox：入队后 1 条、落地后空（看宿主推出来的 run.state，不只信快照）----
     const states = harness.runStates();
-    const pendingAt = states.findIndex(
-      (run) => run.status === "running" && run.inbox.length === 1,
-    );
+    const pendingAt = states.findIndex((run) => run.status === "running" && run.inbox.length === 1);
     expect(pendingAt).toBeGreaterThanOrEqual(0);
     const drainedAt = states.findIndex(
       (run, index) => index > pendingAt && run.status === "running" && run.inbox.length === 0,
@@ -416,7 +431,7 @@ describe("真 core Agent 跑在真 ChatRunner 里：跑中发送进 inbox（D14�
     const toolSettledAt = indexOf(
       timeline,
       (entry) =>
-        entry.kind === "message" &&
+        entry.kind === "settled" &&
         entry.role === AgentNSValue.Role.Tool &&
         entry.status === AgentNSValue.MessageStatus.Completed,
     );
@@ -525,22 +540,28 @@ describe("真 core Agent 跑在真 ChatRunner 里：跑中发送进 inbox（D14�
   });
 
   // -------------------------------------------------------------------------
-  // 收尾边界：core 的 `send()` 不再顺手带走钩子里投进来的条目
+  // 收尾边界的口径（core 重写之后变了，这一条钉的是新的真相）
   //
-  // 改前：`send()` 的 `finally` 会把收尾钩子（`onInnerLoopsEnd` / `onAfterSend`）期间投进来的
-  // 条目 `flushInbox` + `run` 一遍，于是宿主回了 `queued` 就一定落地（工单 J）。
-  // 改后：core 不管它们了（省掉那次 await）。宿主这一轮收工**不带它**：以前 agent 跑完就丢，
-  // 那句也就跟着没了；现在 agent 常驻，它还留在那个 agent 的队列里，等下一次外部驱动的那一段
-  // 带走 —— 但“这一轮没接住它”仍然是一个不该无声发生的事实，所以结算时照旧报一声。
+  // 改前：`send()` 的 `finally` 会把收尾钩子期间投进来的条目 `flushInbox` + `run` 一遍，
+  // 于是宿主回了 `queued` 就一定落在**这一轮**里。
+  // 改后：一轮的边界是 core 的 `state`（忙闲三格），钩子期间投进来的条目**不进这一批** ——
+  // 它留在队列里，由紧接的下一批（宿主接住的那一段）带走。于是：
+  //   ① 宿主**不再等**任何东西：这一批收尾的那一刻 core 立刻转下一批，两者是两段；
+  //   ② 条目也不会丢：它被下一段取走、落成消息、落库。
+  // （`inbox-leftover` 那条诊断仍在，但它只报「结算那一刻队列里还剩几条」—— 现在下一批可能
+  // 已经先把它取走了，所以它不再是稳定信号，这条用例不再钉它。）
   // -------------------------------------------------------------------------
 
-  it("收尾钩子里入队的那一句：这一轮不带它，结算时按 inbox-leftover 出声", async () => {
+  it("收尾钩子里入队的那一句：这一轮报 leftover，紧接的下一段把它带走（不丢）", async () => {
     const timeline: TimelineEntry[] = [];
     let coreAgent: Agent | undefined;
     const insideWindow = deferred<void>();
     const releaseWindow = deferred<void>();
     const content = "边界上来的这一句";
-    const { client, bodies } = createScriptedClient([textRound("就这一轮")], timeline);
+    const { client, bodies } = createScriptedClient(
+      [textRound("就这一轮"), textRound("边界上那句我也回了")],
+      timeline,
+    );
 
     const harness = createHarness({
       timeline,
@@ -548,10 +569,9 @@ describe("真 core Agent 跑在真 ChatRunner 里：跑中发送进 inbox（D14�
         const agent = new Agent({ client, model: "gpt-4" });
         watch(agent, timeline);
         coreAgent = agent;
-        // 把「整组收尾」那一刻卡住（core 会 `await dispatchHook("onInnerLoopsEnd")`）：
-        // 现实里这一段是**无界**的（`AutoMigratePlugin` 就在这里问用户）。
+        // 把「一轮收尾」那一刻卡住（core 会 `await dispatchHook("onInnerLoopEnd")`）
         agent.use({
-          onInnerLoopsEnd: async () => {
+          onInnerLoopEnd: async () => {
             insideWindow.resolve();
             await releaseWindow.promise;
           },
@@ -571,33 +591,33 @@ describe("真 core Agent 跑在真 ChatRunner 里：跑中发送进 inbox（D14�
       conversationId: CONVERSATION_ID,
       input: { content },
     });
-    // 门是在 `send()` 返回之后才关的，所以这一刻它回的是「排队了」
+    // 这一轮还在跑，所以这一刻它回的是「排队了」
     expect(queued).not.toBeNull();
     expect(turn.runState().inbox).toHaveLength(1);
 
     releaseWindow.resolve();
     const settlement = await turn.done;
 
-    // ① 这一轮只发过一次请求：没有为它再跑一圈
-    expect(bodies).toHaveLength(1);
-    // ② 它没落地、也没进库（这一轮不带它；常驻之后它还留在 agent 的队列里，等下一次驱动）
-    expect(settlement.messages.some((message) => message.id === queued!.userMessageId)).toBe(false);
-    expect(harness.store.peek(queued!.userMessageId)).toBeUndefined();
-    expect(coreAgent!.inbox.map((entry) => entry.messageId)).toEqual([queued!.userMessageId]);
-    // ③ 但这不是静悄悄：结算时按 leftover 报一声
-    expect(
-      harness.errors.filter((error) => error.context === "inbox-leftover").length,
-    ).toBeGreaterThan(0);
-    // ④ 这一轮本身照常收工（边界上的一句没有把它变成失败，也没有被当成 abort）
+    // ① 这一轮本身照常收工（边界上那一句没有把它变成失败，也没有被当成 abort）
     expect(settlement.outcome).toBe("completed");
     expect(settlement.run.outcome).toBe("completed");
+
+    // ② 它不会丢：紧接的下一段（core 自己转起来的那一批）把它取走、落成消息、落库，
+    //    并据此又问了一次模型（所以这一次是两轮请求）
+    expect(bodies.length).toBeGreaterThanOrEqual(2);
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if (harness.store.peek(queued!.userMessageId)) break;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    const row = harness.store.peek(queued!.userMessageId);
+    expect(row).toBeDefined();
+    expect(row!.content).toBe(content);
+    const lastBody = bodies.at(-1) as { messages: Array<{ content: unknown }> };
+    expect(lastBody.messages.some((message) => message.content === content)).toBe(true);
+    expect(coreAgent!.inboxSize).toBe(0);
     expect(harness.runs.isRunning(CONVERSATION_ID)).toBe(false);
   });
 });
-
-// ---------------------------------------------------------------------------
-// 契约：`run.state.inbox` 里装的是条目本身（客户端排队区要显示内容，不光是个数）
-// ---------------------------------------------------------------------------
 
 describe("run.state 的排队条目：`inbox` 装的是条目本身", () => {
   it("跑中 enqueue → `inbox` 里就是这一条；落地成消息之后变空", async () => {
@@ -641,7 +661,7 @@ describe("run.state 的排队条目：`inbox` 装的是条目本身", () => {
     const inbox = turn.runState().inbox;
     expect(inbox).toHaveLength(1);
     expect(inbox[0]!.messageId).toBe(queued!.userMessageId);
-    expect(inbox[0]!.source).toBe("user");
+    expect(inbox[0]!.source).toEqual({ kind: "user" });
     expect(inbox[0]!.preview).toBe("顺便看下这个");
     expect(Number.isNaN(new Date(inbox[0]!.createdAt).getTime())).toBe(false);
 
@@ -650,7 +670,7 @@ describe("run.state 的排队条目：`inbox` 装的是条目本身", () => {
     const settlement = await turn.done;
 
     expect(settlement.messages.some((message) => message.id === queued!.userMessageId)).toBe(true);
-    expect(coreAgent!.inbox).toHaveLength(0);
+    expect(coreAgent!.inboxSize).toBe(0);
     expect(settlement.run.inbox).toEqual([]);
   });
 
@@ -679,7 +699,7 @@ describe("run.state 的排队条目：`inbox` 装的是条目本身", () => {
     const inbox = turn.runState().inbox;
     expect(inbox).toHaveLength(1);
     expect(inbox[0]!.messageId).toBe(queued!.userMessageId);
-    expect(inbox[0]!.source).toBe("user");
+    expect(inbox[0]!.source).toEqual({ kind: "user" });
     expect(inbox[0]!.preview).toBe("装配期间发的");
 
     // 装好之后这一轮照常跑完，那一句在轮末落地
