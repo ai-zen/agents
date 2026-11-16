@@ -193,6 +193,8 @@ export type InboxInput =
 
 ### 谁取
 
+**宿主还要能「看一眼」**：`inboxPending` 给出此刻没被取走的条目（数组是拷贝，条目是同一个）。理由很实在 —— `inboxAdded` / `inboxCleared` 是通知，只靠它们自建镜像的话，丢一条就与真队列永久分叉，而队列内容又读不回来。有了这个，§10 那句「丢一条不致命」才真的成立。
+
 | 谁取 | 怎么取 |
 |---|---|
 | 内循环 | `takeAll(e => e.priority === "high")` —— 同步检查 |
@@ -531,7 +533,8 @@ start()
 |---|---|
 | `takeAll(filterCallback?)` | **同步、不等待**取干此刻所有匹配的；不匹配的**留在原地、顺序不变**；可能返回空数组 |
 | `asTakeAll()` | 视图，`AsyncIterable<T[]>`：空则挂起，有货一次取干，**永不吐空数组**，`done()` 后把剩的吐完再结束 |
-| `LinkedQueue` 补能力 | 能从中间摘（现在只有 `push` / `shift`） |
+| `LinkedQueue` 补能力 | 能从中间摘（`takeWhere`）、能只读遍历（`toArray`） |
+| `snapshot()` | 只读快照：按顺序抄一份，一个都不取走（1.6.0 补） |
 
 **不加 `.filter()`**：TC39 的异步迭代器辅助方法已经有 `filter` / `map` / `take` / `toArray` 这一批，加同名方法将来会和自己打架。我们要的本来也不是「视图」，是「此刻有什么，不等待地取走」。
 

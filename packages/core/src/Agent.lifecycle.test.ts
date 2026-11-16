@@ -535,4 +535,22 @@ describe("Agent runOnce", () => {
     agent.stop();
     await agent.start();
   });
+
+  it("inboxPending 给出还没取走的条目，且一个都不取走", () => {
+    const { client } = createMockClient([]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+
+    agent.push(user("一"));
+    agent.push(); // 钥匙：没有正文
+
+    const pending = agent.inboxPending;
+    expect(pending).toHaveLength(2);
+    expect(pending[0]!.content).toBe("一");
+    expect(pending[1]!.content).toBeUndefined();
+    // 看一眼不取走
+    expect(agent.inboxSize).toBe(2);
+    expect(agent.inboxPending).toHaveLength(2);
+
+    agent.kill();
+  });
 });
