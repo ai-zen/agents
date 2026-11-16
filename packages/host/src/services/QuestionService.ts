@@ -11,8 +11,8 @@
  *    读出时按调用方给的语言渲染。一条问题存死一种语言，换个连接就错了。
  * 2. **答完之后接着往下走**（D22）：`answer` 的副作用是宿主自己做掉的 —— 答「自交接 /
  *    独立摘要」就当场开始交接，客户端不必再发一次 `handoff.start`。
- * 3. **越线两端都拒绝时问题继续挂着**（D23 / F-D10）：答不下去的那些路径（对话正在跑、
- *    已经过了硬线而用户选了「就在这段里继续」）都不动这一行状态，所以问题不会被悄悄关掉。
+ * 3. **越线两端都拒绝时问题继续挂着**（D23 / F-D10）：答不下去的那些路径（那边忙着、已经过了
+ *    硬线而用户选了「就在这段里继续」）都不动这一行状态，所以问题不会被悄悄关掉。
  *    本文件里没有「自动过期」「答错一次就作废」这类隐式转移。
  */
 
@@ -23,13 +23,13 @@ import type { ConfigManager } from "@ai-zen/agents-sdk";
 import { DEFAULT_LANGUAGE, hasMessage, render } from "../i18n/index.js";
 import type { Language, MessageKey } from "../i18n/index.js";
 import type { ChatEventEmitter } from "../runtime/ChatRunner.js";
-import type { RunsView } from "../runtime/RunRegistry.js";
 import type { ConversationRepository } from "../storage/ConversationRepository.js";
 import type { MessageRepository } from "../storage/MessageRepository.js";
 import type { QuestionPatch, QuestionRepository } from "../storage/QuestionRepository.js";
 import type { Question } from "../storage/types.js";
 import { HostError } from "../wire/errors.js";
 import type {
+  ConversationStatus,
   HandoffStartParams,
   LocalizedText,
   QuestionAnswer,
@@ -108,10 +108,20 @@ export interface QuestionGuardProbe {
   overGuard(conversationId: string): Promise<boolean>;
 }
 
+/**
+ * 「这段对话现在忙着吗」的口。
+ *
+ * 只读现读的那一格（`ChatRunner.state().status`），不读运行表 —— 那份账已经随旧模型一起
+ * 废掉了。答一个问题会当场开始交接（一次模型调用），所以那边正忙着的时候不能答。
+ */
+export interface QuestionStatusPort {
+  status(conversationId: string): ConversationStatus;
+}
+
 export interface QuestionServiceDeps {
   questions: QuestionRepository;
-  /** 「这段对话正在跑一轮」的唯一真相；不注入时按「没在跑」处理 */
-  runs?: RunsView;
+  /** 现读那一格；不注入时按「不忙」处理 */
+  runtime?: QuestionStatusPort;
   /** 硬线判定；不注入时按「没过线」处理 */
   guard?: QuestionGuardProbe;
   /** 交接入口（答完接着交接，D22）；不注入时答完只改状态、不触发交接 */
@@ -270,7 +280,7 @@ function toView(question: Question, language: Language): QuestionView {
 
 export class QuestionService {
   private readonly questions: QuestionRepository;
-  private readonly runs?: RunsView;
+  private readonly runtime?: QuestionStatusPort;
   private readonly guard?: QuestionGuardProbe;
   private readonly handoff?: QuestionHandoffPort;
   private readonly emit?: ChatEventEmitter;
@@ -279,7 +289,7 @@ export class QuestionService {
 
   constructor(deps: QuestionServiceDeps) {
     this.questions = deps.questions;
-    this.runs = deps.runs;
+    this.runtime = deps.runtime;
     this.guard = deps.guard;
     this.handoff = deps.handoff;
     this.emit = deps.emit;
@@ -429,7 +439,7 @@ export class QuestionService {
    *   1. 已经答过 / 已失效的直接回当前状态（多端同时点，后到的那一端看到的是「已经答了」，
    *      不重复触发副作用）；
    *   2. 值不在候选里 → `invalid_params`；
-   *   3. 对话正在跑一轮 → `busy`（D22：交接在对话停下之后触发，不在流式中途）；
+   *   3. 那边忙着 → `busy`（D22：交接在对话停下之后才做，插进它正在干的那一批里会把记忆改到一半）；
    *   4. 过了硬线又选了「就在这段里继续」 → `context_guard`，**问题继续挂着**（D23）；
    *   5. 改状态 → 该交接就当场交接。
    *
@@ -463,9 +473,9 @@ export class QuestionService {
     }
 
     const conversationId = question.conversationId;
-    if (this.runs?.isRunning(conversationId) === true) {
+    if (this.runtime?.status(conversationId) === "busy") {
       throw new HostError("busy", {
-        detail: { conversationId, questionId: question.id, reason: "turn_in_flight" },
+        detail: { conversationId, questionId: question.id, reason: "conversation_busy" },
       });
     }
 
@@ -575,7 +585,7 @@ function handoffModeOf(kind: QuestionKind, value: string): "self" | "summary" | 
  * 按配置与历史算「这段对话是不是已经过了硬线」。
  *
  * 硬线跟着模型走（`tokenThresholds.guard`，D27），用量取最近一条带用量的消息：
- * 与 `conversation.state` 里那份 `ContextState` 是同一个口径（都看 `usage.prompt_tokens`）。
+ * 口径与 `app.ts` 那条变闲时的判断一致：都看最近一条带用量的消息的 `usage.prompt_tokens`。
  */
 export function createConversationGuardProbe(deps: {
   conversations: ConversationRepository;

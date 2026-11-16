@@ -7,17 +7,12 @@
  * 七步（与交付报告一一对应）：
  *   1. 本地凭证从 `<数据根>/run/token` 拿到 → `hello` 成功；不带凭证 / 凭证不对被拒；
  *   2. `workspace.create` → `conversation.create`；
- *   3. `conversation.send` 一轮：收 `message.delta`、收 `run.state` 的六态推进、收最终结算；
- *   4. `message.list` 拉回这一轮的消息（用户 + 助手 + 工具结果）；
- *   5. `conversation.state` 返回现场（跑完是空闲）；
- *   6. 关掉服务器 → 用**同一个数据根**再起一个 → `message.list` 仍拿回同一批消息；
- *   7. 最后一个客户端断开、也没有在跑的轮次 → 进程显式收尾后退出（`reason: idle` 的
- *      `ExitFacts` 里 `scopes: 1`：收尾那一刻还持有 Scope，随后连同 MCP 连接一起销毁）。
- *
- * 退出判据不靠轮询：触发源只有「一轮结算」与「连接数变化」两处（裁定 R53）。
- * 新的口径下判据只有两条：有人连着、或者有一轮在跑 —— 那才是「这个进程还有用」。
- * 手里还剩 Scope 不构成欠活（它们的存在意义就是服务连接），所以最后一个客户端断开之后
- * 收尾（`disposeAll` 把 Scope 与 MCP 连接一起关）并退出。
+ *   3. `conversation.send` 一句：收 `message.delta` 与四格（忙 → 闲）；
+ *   4. `message.list` 拉回这段对话的消息（用户 + 助手 + 工具结果）；
+ *   5. `conversation.state` 返回读数（闲着、队里空着）；
+ *   6. 客户端断开 → 宿主**不**收尾（关宿主是显式动作，PRD 4.12）；再连回来消息还在；
+ *   7. `host.shutdown` → 进程收尾一次（`ExitFacts` 里 `scopes: 1`：收尾那一刻还持有 Scope，
+ *      随后连同 MCP 连接一起销毁）→ 用**同一个数据根**再起一个，消息仍拿得回来。
  */
 
 import { promises as fs } from "node:fs";
@@ -49,7 +44,7 @@ import type {
   ConversationStateResult,
   MessageDeltaPayload,
   MessageListResult,
-  RunStatePayload,
+  StatePayload,
   WorkspaceCreateResult,
 } from "./wire/index.js";
 
@@ -165,6 +160,20 @@ async function startHost(): Promise<HostApp> {
   return created;
 }
 
+/**
+ * 等下一个**响应**帧（中间插进来的推送先跳过）。
+ *
+ * 事件与回包会交错到达：`client.queue.next()` 只看「下一帧」，在这一条链路上不够用。
+ */
+async function nextResponse(): Promise<ReceivedFrame> {
+  const connection = client;
+  if (!connection) throw new Error("客户端不在");
+  for (;;) {
+    const frame = await connection.queue.next();
+    if (!isNotification(frame)) return frame;
+  }
+}
+
 /** 等一个条件成立（轮询；超时算用例失败） */
 async function waitFor(condition: () => boolean, timeoutMs = 4000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -176,21 +185,20 @@ async function waitFor(condition: () => boolean, timeoutMs = 4000): Promise<void
 }
 
 /**
- * 从帧队列里读到这一轮推送结束为止，顺手把增量与六态收集起来。
+ * 读到这段对话重新闲下来为止，顺手把增量与四格收集起来。
  *
- * 结算时宿主连推三条（`run.state` → `usage` → `conversation.changed`），所以等到最后那条
- * 才算这一轮的事说完 —— 提前返回会把剩下的帧留给下一次调用，那属于用例自己的时序错误。
+ * 投递之后只剩「消息自己的事件」（`message.added` / `message.delta` / `message.changed`）与
+ * 「四格」（`state`）两类推送：前者是过程，后者说明它是不是还在干。读到 `state: idle`
+ * 就算这一段的事说完了。
  */
 async function collectRun(timeoutMs = 5000): Promise<{
   deltas: MessageDeltaPayload[];
-  phases: string[];
-  settled: RunStatePayload;
+  statuses: string[];
 }> {
   const connection = client;
   if (!connection) throw new Error("客户端不在");
   const deltas: MessageDeltaPayload[] = [];
-  const phases: string[] = [];
-  let settled: RunStatePayload | null = null;
+  const statuses: string[] = [];
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
@@ -200,18 +208,13 @@ async function collectRun(timeoutMs = 5000): Promise<{
       deltas.push(frame.params as MessageDeltaPayload);
       continue;
     }
-    if (frame.method === "run.state") {
-      const payload = frame.params as RunStatePayload;
-      const phase = payload.run.generation?.phase;
-      if (phase !== undefined && phases[phases.length - 1] !== phase) phases.push(phase);
-      if (payload.run.status === "settled") settled = payload;
-      continue;
-    }
-    if (frame.method === "conversation.changed" && settled !== null) {
-      return { deltas, phases, settled };
+    if (frame.method === "state") {
+      const payload = frame.params as StatePayload;
+      if (statuses[statuses.length - 1] !== payload.status) statuses.push(payload.status);
+      if (payload.status === "idle") return { deltas, statuses };
     }
   }
-  throw new Error("没等到这一轮的推送收尾");
+  throw new Error("没等到这段对话闲下来");
 }
 
 // ---------------------------------------------------------------------------
@@ -271,37 +274,25 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
     const conversationId = createdConversation.id;
     expect(conversationId.length).toBeGreaterThan(0);
 
-    // ---- 步骤 3：一轮对话（受理即返回两个 id，事件随后到） ----
+    // ---- 步骤 3：投一句（回执只有那条用户消息的 id，其余靠事件） ----
     client.request("conversation.send", {
       conversationId,
       input: { content: "你好" },
     });
-    const accepted = await client.queue.next();
+    const accepted = await nextResponse();
     if (!isSuccess(accepted)) throw new Error(`受理没成功：${JSON.stringify(accepted)}`);
     const acceptedResult = accepted.result as ConversationSendResult;
-    // 空闲时发的是新的一轮：助手消息 id 必须在（`null` 只属于跑中排队的受理）
-    if (acceptedResult.assistantMessageId === null) {
-      throw new Error(`空闲发送的回包里没有助手消息 id：${JSON.stringify(acceptedResult)}`);
-    }
-    expect(acceptedResult.assistantMessageId.length).toBeGreaterThan(0);
+    // 回执只有用户消息 id 与附件结局：没有状态、没有「叫醒了没有」、没有结果
+    expect(Object.keys(acceptedResult).sort()).toEqual(["attachments", "userMessageId"]);
+    expect(acceptedResult.userMessageId.length).toBeGreaterThan(0);
 
     const run = await collectRun();
-    // 六态推进：连上 → 等首字 → 在想 → 在输出 → 拼工具调用 → 等工具
-    expect(run.phases).toEqual(
-      expect.arrayContaining([
-        "connected",
-        "awaiting_first_token",
-        "thinking",
-        "generating",
-        "assembling_tool_calls",
-        "awaiting_tools",
-      ]),
-    );
-    // 增量都挂在助手消息上，最终结算说「跑完了」
+    // 四格：这一段结束时报「闲」（更细的阶段由客户端按消息与增量自己推，宿主不报）
+    expect(run.statuses).toContain("idle");
+    // 增量都挂在同一条助手消息上
     expect(run.deltas.length).toBeGreaterThan(0);
-    expect(run.deltas[0]?.messageId).toBe(acceptedResult.assistantMessageId);
-    expect(run.settled.run.outcome).toBe("completed");
-    expect(run.settled.run.usage.turn.total_tokens).toBe(42);
+    const assistantMessageId = run.deltas[0]?.messageId ?? "";
+    expect(assistantMessageId.length).toBeGreaterThan(0);
 
     // ---- 步骤 4：消息拉回来是 core 的形状 ----
     const listed = await client.call("message.list", { conversationId });
@@ -314,7 +305,7 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
       AgentNSValue.Role.Assistant,
     ]);
     expect(page.messages[0]?.id).toBe(acceptedResult.userMessageId);
-    expect(page.messages[1]?.id).toBe(acceptedResult.assistantMessageId);
+    expect(page.messages[1]?.id).toBe(assistantMessageId);
     // 用户那条就是用户打的那一句（cwd 不再按轮拼进来，F-D9）
     expect(page.messages[0]?.content).toBe("你好");
     expect(page.messages[0]?.hidden).toBeUndefined();
@@ -337,56 +328,41 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
       expect(message.status).toBe(AgentNSValue.MessageStatus.Completed);
     }
 
-    // ---- 步骤 5：现场快照（跑完就是空闲） ----
-    const stateFrame = await client.call("conversation.state", { conversationId });
+    // ---- 步骤 5：读数（四格 + 待办 + 时刻，没有用量也没有阶段） ----
+    client.request("conversation.state", { conversationId });
+    const stateFrame = await nextResponse();
+    if (!isSuccess(stateFrame)) throw new Error(`读数没拿到：${JSON.stringify(stateFrame)}`);
     const snapshot = (stateFrame.result as ConversationStateResult).state;
-    expect(snapshot.run.status).toBe("idle");
-    expect(snapshot.usage.total.total_tokens).toBe(42);
-    expect(snapshot.context.guardThreshold).toBe(2000);
+    expect(Object.keys(snapshot).sort()).toEqual(["at", "conversationId", "inbox", "status"]);
+    expect(snapshot.status).toBe("idle");
+    expect(snapshot.inbox).toEqual([]);
     expect(snapshot.conversationId).toBe(conversationId);
 
-    // ---- 步骤 6：最后一个客户端断开 → 宿主自己收尾退出；同一个数据根再起一个 ----
-    // 这一秒没有在跑的轮次（上面那一轮已结算），所以断开就是「什么都不欠了」
+    // ---- 步骤 6：最后一个客户端断开，宿主**不**收尾（关宿主是显式动作，PRD 4.12） ----
     await client.close();
     client = null;
-    await waitFor(() => exits.length === 1);
-    const firstFacts = exits[0]!;
-    expect(firstFacts).toEqual({ reason: "idle", connections: 0, runs: 0, scopes: 1 });
-    expect(app.running).toBe(false);
-    expect(app.scopeRegistry.workspaceIds()).toEqual([]);
-    app = null;
+    await wait(80);
+    expect(exits).toEqual([]);
+    expect(app.running).toBe(true);
 
-    // 发现文件在收尾时被摘掉了（客户端不再指向一个已经不存在的进程）
-    const runDir = await fs.readdir(join(dataRoot.path, "run"));
-    expect(runDir).not.toContain("host.json");
-
-    app = await startHost();
-    const secondTarget = app.address;
-    const secondToken = await readLocalToken(app.paths);
-    // 交付文件里那串仍然有效，重启不会每次都换凭证
-    expect(secondToken).toBe(localToken);
-
-    client = await TestClient.connect(`ws://127.0.0.1:${secondTarget?.port ?? 0}/`);
-    await client.hello(secondToken ?? "");
-
+    // 再连回来：还是同一个进程，消息一条不少
+    client = await TestClient.connect(url);
+    await client.hello(localToken);
     const relisted = await client.call("message.list", { conversationId });
     const restored = relisted.result as MessageListResult;
     expect(restored.messages.map((message) => message.id)).toEqual(
       page.messages.map((message) => message.id),
     );
-    expect(restored.messages[1]?.content).toBe("你好。");
-    expect(restored.messages[3]?.content).toBe("完事。");
 
-    // ---- 步骤 7：最后一个客户端断开 + 没有在跑的轮次 → 收尾并退出 ----
-    // 先跑一轮，让这个进程手里真的有一个 Scope（它不会自己消失，只能被收尾拆掉）
+    // ---- 步骤 7：显式关宿主 → 收尾一次（Scope 与 MCP 连接一起拆）→ 同一个数据根再起一个 ----
+    // 先让这个进程手里真的有一个 Scope：跑过一段对话之后它就拿着（它不会自己消失）
     client.request("conversation.send", { conversationId, input: { content: "第二句" } });
-    const secondAccepted = await client.queue.next();
+    const secondAccepted = await nextResponse();
     expect(isSuccess(secondAccepted)).toBe(true);
-    // 受理时就把 Scope 要来了（这一轮结束后它仍在）
     expect(app.scopeRegistry.workspaceIds()).toEqual([workspace.id]);
     await collectRun();
 
-    // 连发两轮之后库里的 cwd 消息仍然只有一条（每轮不再注入，F-D9）
+    // 连发两轮之后库里的 cwd 消息仍然只有一条（每段不再注入，F-D9）
     const afterSecond = await client.call("message.list", {
       conversationId,
       includeHidden: true,
@@ -397,21 +373,34 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
     expect(hiddenMessages).toHaveLength(1);
     expect(hiddenMessages[0]?.id).toBe(cwdMessage?.id);
 
-    // 连接还在：不判「该退出了」（上面那次自动收尾是上一段进程的事）
-    await app.checkExit();
-    expect(exits.length).toBe(1);
-    expect(app.scopeRegistry.workspaceIds()).toEqual([workspace.id]);
-
-    // 连接断开、也没有在跑的轮次 → 判据成立（触发源是 `onConnectionsChanged`，不是计时器）：
-    // 显式收尾，Scope 与 MCP 连接一起拆，然后退出
-    await client.close();
-    client = null;
-    await waitFor(() => exits.length === 2);
-    const finalFacts = exits[1]!;
-    // 收尾那一刻的持有数（1），不是「退出时还剩几个」（0：`disposeAll` 刚把它们拆掉）
-    expect(finalFacts).toEqual({ reason: "idle", connections: 0, runs: 0, scopes: 1 });
+    client.request("host.shutdown", {});
+    expect(isSuccess(await nextResponse())).toBe(true);
+    await waitFor(() => exits.length === 1);
+    const facts = exits[0]!;
+    // 收尾那一刻还持有 1 个 Scope（随后被 `disposeAll` 拆掉）
+    expect(facts).toMatchObject({ reason: "requested", scopes: 1 });
     expect(app.scopeRegistry.workspaceIds()).toEqual([]);
     expect(app.running).toBe(false);
+    await client.close();
+    client = null;
     app = null;
+
+    // 发现文件在收尾时被摘掉了（客户端不再指向一个已经不存在的进程）
+    const runDir = await fs.readdir(join(dataRoot.path, "run"));
+    expect(runDir).not.toContain("host.json");
+
+    // 同一个数据根再起一个：消息还在库里，交付文件里那串凭证仍然有效
+    app = await startHost();
+    const secondTarget = app.address;
+    const secondToken = await readLocalToken(app.paths);
+    expect(secondToken).toBe(localToken);
+
+    client = await TestClient.connect(`ws://127.0.0.1:${secondTarget?.port ?? 0}/`);
+    await client.hello(secondToken ?? "");
+
+    const afterRestart = await client.call("message.list", { conversationId });
+    const reloaded = afterRestart.result as MessageListResult;
+    expect(reloaded.messages.slice(0, 4).map((message) => message.content)).toContain("你好。");
+    expect(reloaded.messages.map((message) => message.id)).toContain(acceptedResult.userMessageId);
   }, 30000);
 });

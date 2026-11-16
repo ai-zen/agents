@@ -536,8 +536,8 @@ describe("端到端集成：真进程 + 真连接", () => {
 
     const conversationsAfter = (await callThrough(back, "conversation.list", { workspaceId: workspace.id })) as ConversationListResult;
     expect(conversationsAfter.conversations.map((item) => item.id)).toEqual([conversationId]);
-    // F-I3 的「在跑」那一格：刚重启的宿主上没有这一轮，键在、值是 null（客户端不必分辨缺字段）
-    expect(conversationsAfter.conversations[0]?.run).toBeNull();
+    // F-I3 的那两格：刚重启的宿主上这段对话没有 agent、队里也空着（现读的结果，不是落库的字段）
+    expect(conversationsAfter.conversations[0]).toMatchObject({ status: "dead", inboxPending: 0 });
 
     const questionsAfter = (await callThrough(back, "question.list", { conversationId })) as QuestionListResult;
     expect(questionsAfter.questions.map((item) => item.id)).toEqual([questionId]);

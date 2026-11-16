@@ -149,8 +149,9 @@ async function connect(port: number): Promise<TestClient> {
 /**
  * 发一个请求并等它的回包，中间插进来的推送（事件）先跳过。
  *
- * 发过消息的那个进程在跑一轮（端点不存在，很快以失败收尾），`run.state` / `conversation.changed`
- * 会与后面的回包交错到达；`TestClient.call` 按到达顺序取帧，在这段流程里不够用。
+ * 发过消息的那个进程正在干活（端点不存在，很快以失败收尾），`state` / `message.changed` /
+ * `conversation.changed` 会与后面的回包交错到达；`TestClient.call` 按到达顺序取帧，在这段
+ * 流程里不够用。
  */
 async function callSkippingEvents(
   client: TestClient,
@@ -335,8 +336,8 @@ describe("进程冒烟：命令行起服务 → 连接 → 建项目/对话 → 
     const beforeSend = await client.call("conversation.list", {});
     expect((beforeSend.result as ConversationListResult).total).toBe(0);
 
-    // 发一条：首次 send 用同一个 id 落库（端点不存在，那一轮会以失败收尾，
-    // 但「受理即落库」与模型答不答得上来无关）
+    // 发一条：首次 send 用同一个 id 落库（端点不存在，那次回答会以失败收束，
+    // 但「投递即落库」与模型答不答得上来无关）
     await client.call("conversation.send", { conversationId, input: { content: "你好" } });
 
     const conversations = await callSkippingEvents(client, "conversation.list", {});
@@ -373,7 +374,7 @@ describe("进程冒烟：命令行起服务 → 连接 → 建项目/对话 → 
     expect(storedMessages.length).toBeGreaterThan(0);
     expect(storedMessages[0]?.role).toBe("user");
 
-    // ---- 6. 再收尾一次：这一轮也走「摘发现文件 → 关库 → 退出 0」 ----
+    // ---- 6. 再收尾一次：这一次也走「摘发现文件 → 关库 → 退出 0」 ----
     await again.close();
     expect(await stop(second)).toBe(0);
     await expect(fs.access(join(dataRoot, "run", "host.json"))).rejects.toBeTruthy();

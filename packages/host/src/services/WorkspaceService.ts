@@ -57,8 +57,8 @@ export interface WorkspaceServiceDeps {
   /** 引用归零的素材交给它删行删文件；不注入时字节会留在盘上（引用行已经没了） */
   sweepAssets?: AssetSweeper;
   /**
-   * 运行时钩子：删项目会连带删掉它名下的对话，这些对话在运行时里可能还留着
-   * 现场（`ChatRunner.turns` 里那一轮、`AgentRegistry` 里那个 agent），删之前一并请它扔掉。
+   * 运行时钩子：删项目会连带删掉它名下的对话，这些对话在运行时里可能还留着现场
+   * （`ChatRunner` 手上那条桥、`AgentRegistry` 里那个 agent），删之前一并请它扔掉。
    */
   runtime: ConversationRuntimePort;
   /** 时钟，测试注入用；缺省 `Date.now` */

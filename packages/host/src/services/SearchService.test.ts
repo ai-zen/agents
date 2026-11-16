@@ -46,9 +46,9 @@ function fakeSummarizer(): ConversationSummarizer & { calls: string[][] } {
       updatedAt: new Date(row.updatedAt).toISOString(),
       messageCount: 0,
       lastMessageAt: null,
-      running: false,
-      // 搜索服务不关心运行状态：这一格按「没在跑」给
-      run: null,
+      // 搜索服务不关心那两格：按「没有 agent、队里空着」给
+      status: "dead",
+      inboxPending: 0,
       hasPendingQuestion: false,
     }));
   };

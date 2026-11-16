@@ -34,7 +34,6 @@ import type { HandoffMode, SdkAgent } from "@ai-zen/agents-sdk";
 import { DEFAULT_LANGUAGE, render } from "../i18n/index.js";
 import type { Language } from "../i18n/index.js";
 import type { AgentFactory, ChatAgent, ChatEventEmitter } from "../runtime/ChatRunner.js";
-import type { RunsView } from "../runtime/RunRegistry.js";
 import type { ScopeRegistry } from "../runtime/ScopeRegistry.js";
 import type { MessageRepository } from "../storage/MessageRepository.js";
 import type { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
@@ -80,11 +79,21 @@ export interface QuestionMarker {
 /**
  * 取 Scope 的口子（结构上 `ScopeRegistry` 满足）：幂等 get-or-create。
  *
- * 没有「归还」：交接回合用完不还，那个项目的 Scope 活到显式 dispose / 进程退出 ——
- * 它带着 MCP 连接，下一次这一轮（或这一段对话）还能直接复用。
+ * 没有「归还」：那个一次性驱动者用完不还，项目的 Scope 活到显式 dispose / 进程退出 ——
+ * 它带着 MCP 连接，下一次（或这一段对话）还能直接复用。
  */
 export interface ScopeProvider {
   create(workspaceId: string): Promise<Awaited<ReturnType<ScopeRegistry["create"]>>>;
+}
+
+/**
+ * 「把这段按住」的那个口（结构上 `AgentRegistry` 满足：`get` 现读这段对话挂着谁）。
+ *
+ * 按住用的是 core 的动作（`agent.suspend()`：只挂闸，不掐在途；从下一批起不再取件），
+ * 也不再借运行表当锁 —— 那份账本身是旧模型的产物。
+ */
+export interface HandoffAgentHolder {
+  get(conversationId: string): { suspend(): void; resume(): void; state: string } | undefined;
 }
 
 /** 对话视图的窄接口（结构上 `ConversationService` 满足：开新对话、取旧对话的完整形状） */
@@ -116,7 +125,7 @@ export class HandoffCancelledError extends Error {
 
 /** 一次交接写文档的那一步要什么 */
 export interface HandoffExecutionInput {
-  /** 这一轮装配出来的 agent（历史已经装进去了） */
+  /** 这一次装配出来的驱动者 agent（历史已经装进去了） */
   agent: ChatAgent;
   /** 文档目录（绝对路径） */
   handoffDir: string;
@@ -215,8 +224,13 @@ export interface HandoffServiceDeps {
   createAgent: AgentFactory;
   /** 写文档那一步；缺省走 SDK */
   execute?: HandoffExecutor;
-  /** 「这段对话正在跑一轮」的唯一真相（D22：交接在对话停下之后触发） */
-  runs?: RunsView;
+  /**
+   * 活着的 agent 的持有者（`AgentRegistry.get`）。
+   *
+   * 交接期间要把这段对话按住（`agent.suspend()`）：写文档的那一次请求与这段对话的记忆是同一份，
+   * 同时往里塞话会让新来的话落进正在被抄写的那份记忆里。不注入时不按（用例里的窄替身）。
+   */
+  agents?: HandoffAgentHolder;
   /** 答完之后把那条问题标成已答（`handoff.start` 直接调用时用得上） */
   questions?: QuestionMarker;
   /** 通知通道（「文档写好了」这条提示，F-I8） */
@@ -249,7 +263,7 @@ export class HandoffService {
   private readonly scopes: ScopeProvider;
   private readonly createAgent: AgentFactory;
   private readonly execute: HandoffExecutor;
-  private readonly runs?: RunsView;
+  private readonly agents?: HandoffAgentHolder;
   private readonly questions?: QuestionMarker;
   private readonly notices?: NoticeService;
   private readonly emit?: ChatEventEmitter;
@@ -263,7 +277,7 @@ export class HandoffService {
     this.scopes = deps.scopes;
     this.createAgent = deps.createAgent;
     this.execute = deps.execute ?? createSdkHandoffExecutor({ skillDirs: deps.skillDirs });
-    this.runs = deps.runs;
+    this.agents = deps.agents;
     this.questions = deps.questions;
     this.notices = deps.notices;
     this.emit = deps.emit;
@@ -273,9 +287,15 @@ export class HandoffService {
   /**
    * 开始一次交接（PRD F-D2 / F-D3 / F-D4 / F-D5）。
    *
-   * 顺序：确认对话停下 → 借 Scope 装配 agent 并装入历史 → 写文档 →（按 `then`）开新对话。
-   * 「对话正在跑」直接 `busy`：交接回合本身就是一次模型调用，插在流式中途会把这一轮的
-   * 消息数组改到一半（D22 明确交接在停下之后触发）。
+   * 顺序：把这段对话按住 → 借 Scope 装配一个一次性驱动者并装入历史 → 写文档 →（按 `then`）
+   * 开新对话 → 放开。
+   *
+   * 「按住」用的是 core 的动作（`agent.suspend()`）：写文档的那一次请求与这段对话的记忆是同
+   * 一份，它的正文正在被抄写；同时让它继续取件，新来的话就会落进一份写了一半的记忆里。
+   * **不借运行表当锁**（那是旧模型的产物）：闲着的对话同样会被按住。
+   *
+   * 结束时把闸放开（除非它本来就已经是暂停格）：交接是一次有限的按住，不是永久停用 ——
+   * `document_only` 这种交接做完之后用户还要接着在这段对话里说话。
    */
   async start(
     params: HandoffStartParams,
@@ -298,49 +318,70 @@ export class HandoffService {
         },
       });
     }
-    if (this.runs?.isRunning(conversation.id) === true) {
-      throw new HostError("busy", {
-        detail: { conversationId: conversation.id, action: "handoff" },
-      });
-    }
 
-    const workspace = await this.requireWorkspace(conversation.workspaceId);
-    const handoffDir = handoffDirFor(workspace.cwd);
-    const executed = await this.runHandoffRound(conversation, handoffDir, params.mode, language);
-    const document = await this.describeDocument(executed.path, executed.usedMode);
+    const hold = this.hold(conversation.id);
+    try {
+      const workspace = await this.requireWorkspace(conversation.workspaceId);
+      const handoffDir = handoffDirFor(workspace.cwd);
+      const executed = await this.runHandoffRound(conversation, handoffDir, params.mode, language);
+      const document = await this.describeDocument(executed.path, executed.usedMode);
 
-    const degraded = executed.usedMode !== params.mode;
-    const problem = degraded ? degradeFact(params.mode, executed.usedMode, language) : null;
+      const degraded = executed.usedMode !== params.mode;
+      const problem = degraded ? degradeFact(params.mode, executed.usedMode, language) : null;
 
-    let newConversationId: string | null = null;
-    if (params.then === "new_conversation") {
-      newConversationId = await this.openFollowUpConversation(conversation, document, language);
-    }
-    if (params.questionId !== undefined) {
-      await this.markQuestionAnswered(params.questionId, executed.usedMode);
-    }
-    if (this.notices) {
-      await this.notices.create(
-        {
-          level: "info",
-          code: "notice.handoffWritten",
-          params: { path: document.path },
-          duration: 8,
-          conversationId: conversation.id,
-        },
-        language,
-      );
-    }
+      let newConversationId: string | null = null;
+      if (params.then === "new_conversation") {
+        newConversationId = await this.openFollowUpConversation(conversation, document, language);
+      }
+      if (params.questionId !== undefined) {
+        await this.markQuestionAnswered(params.questionId, executed.usedMode);
+      }
+      if (this.notices) {
+        await this.notices.create(
+          {
+            level: "info",
+            code: "notice.handoffWritten",
+            params: { path: document.path },
+            duration: 8,
+            conversationId: conversation.id,
+          },
+          language,
+        );
+      }
 
-    const view = (await this.conversationViews.get({ conversationId: conversation.id })).conversation;
+      const view = (await this.conversationViews.get({ conversationId: conversation.id }))
+        .conversation;
+      return {
+        document,
+        requestedMode: params.mode,
+        usedMode: executed.usedMode,
+        degraded,
+        problem,
+        conversation: view,
+        newConversationId,
+      };
+    } finally {
+      hold.release();
+    }
+  }
+
+  /**
+   * 按住这段对话（take），返回放开它的那一手。
+   *
+   * 两个边界：
+   *   - agent 不在（死格）：没有可按的东西，放手时也不能凭空造一个 —— 直接空动作；
+   *   - 它**本来就**是暂停格（用户按过中断 / 暂停）：那意味着用户的意愿就是「先别跑」，
+   *     交接做完时不能替他把闸放开。
+   */
+  private hold(conversationId: string): { release: () => void } {
+    const agent = this.agents?.get(conversationId);
+    if (!agent) return { release: () => undefined };
+    const alreadyPaused = agent.state === "paused";
+    agent.suspend();
     return {
-      document,
-      requestedMode: params.mode,
-      usedMode: executed.usedMode,
-      degraded,
-      problem,
-      conversation: view,
-      newConversationId,
+      release: () => {
+        if (!alreadyPaused) agent.resume();
+      },
     };
   }
 
@@ -397,7 +438,7 @@ export class HandoffService {
         workspaceId: conversation.workspaceId,
         agentId: conversation.agentId,
         modelId: conversation.modelId,
-        // 交接回合用的是与普通一轮同一个 agent 口径（会话级模型与档位）
+        // 写文档的驱动者与普通对话同一个 agent 口径（会话级模型与档位）
         thinkingLevel: conversation.thinkingLevel,
         scope,
         history,
@@ -411,7 +452,7 @@ export class HandoffService {
     // 没有 finally：没有借用就没有归还（agent 本身仍然跑完即弃）
   }
 
-  /** 这一轮交给 agent 的历史：库里还在上下文里的那些（`omit` 的不发） */
+  /** 交给驱动者的历史：库里还在上下文里的那些（`omit` 的不发） */
   private async loadHistory(conversationId: string): Promise<AgentNS.Message[]> {
     const rows = await this.messages.listByConversation(conversationId);
     return rows.filter((row) => !row.omit).map((row) => toAgentMessage(row));
@@ -437,7 +478,7 @@ export class HandoffService {
    *
    * 身份与旧的那段完全一致（同 Workspace、同助手、同模型），旧对话一行都不动。第一条消息
    * 是**宿主注入**的交接摘要（`hidden`：不是用户打的字，界面上可以折起来），系统提示仍由
-   * 助手定义提供 —— 接手的那一轮装配 agent 时会自然带上。
+   * 助手定义提供 —— 接手的那一段装配 agent 时会自然带上。
    */
   private async openFollowUpConversation(
     conversation: Conversation,
@@ -493,7 +534,6 @@ export class HandoffService {
       conversationId: newConversationId,
       workspaceId: conversation.workspaceId,
       change: "created",
-      messageCount: 1,
       at: iso(createdAt),
     });
     return newConversationId;

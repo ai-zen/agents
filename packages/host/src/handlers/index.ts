@@ -18,9 +18,6 @@
  * 而那是「这个宿主没有这个功能」的意思，不该用来掩盖「忘了接」。
  */
 
-import type { AppConfig } from "@ai-zen/agents-sdk";
-
-import type { Language } from "../i18n/index.js";
 import type { HandlerTable } from "../net/index.js";
 import type { ChatEventEmitter, ChatRunner, ScopeRegistry } from "../runtime/index.js";
 import type { TransientRunner } from "../runtime/TransientRunner.js";
@@ -36,7 +33,7 @@ import type { NoticeService } from "../services/NoticeService.js";
 import type { QuestionService } from "../services/QuestionService.js";
 import type { SearchService } from "../services/SearchService.js";
 import type { WorkspaceService } from "../services/WorkspaceService.js";
-import type { MethodName, QuestionView, HostReloadResult } from "../wire/index.js";
+import type { MethodName, HostReloadResult } from "../wire/index.js";
 import type { EventMap, EventName } from "../wire/events.js";
 import { createAgentHandlers } from "./agentHandlers.js";
 import { createAssetHandlers } from "./assetHandlers.js";
@@ -113,30 +110,22 @@ export interface HandlerDeps {
   transient: TransientRunner;
 
   // ---- 配置与时钟 ----
-  /** 读配置（上下文阈值跟着模型走，PRD F-D1 / D27） */
-  readConfig: () => Promise<AppConfig>;
   /** 刷新思考策略表快照（`conversation.setThinking` 之前调一次） */
   refreshThinkingPresets: () => Promise<void>;
   /** 时钟：契约里的时间一律 ISO 8601 字符串 */
   now: () => string;
+  /** 写一条日志（`conversation.abort` 的 `reason` 只有这一个去处） */
+  log: (message: string, detail?: unknown) => void;
   /** 推事件（`conversation.changed` 这类多端同步信号）；不注入时不推 */
   emit?: <E extends EventName>(name: E, payload: EventMap[E]) => void;
 
-  // ---- 跨服务的对话钩子（分属三个服务，契约里却是同一对方法的位置）----
+  // ---- 跨服务的对话钩子 ----
   /** 有挡着的问题就拒发（D23）；发之前问一句 */
   assertSendable: (conversationId: string) => Promise<void>;
-  /** 一轮结算之后起一次自动命名（D2） */
-  autoNameAfterTurn: (conversationId: string, language: Language) => Promise<void>;
-  /** 结算后钩子失败的去处（命名没跑成不该让已经结算的一轮变成失败） */
-  onHookError: (error: unknown, hook: string) => void;
-  /** 现场快照里那段对话的问题（D22：多端看同一批） */
-  questionsFor: (conversationId: string) => Promise<QuestionView[]>;
 
   // ---- 进程动作 ----
-  /** 请求收尾（`host.shutdown`）；真正的退出判定在单根 */
+  /** 请求收尾（`host.shutdown`） */
   requestStop: (reason?: string) => void;
-  /** 一轮结算之后重算退出判据（L4：这是「什么都不欠了」的触发源之一） */
-  onTurnSettled: () => void;
   /** 升级判定与重启排程（`host.upgrade`：比磁盘版本与运行版本） */
   upgrade: (params: { targetVersion?: string }) => Promise<{
     state: "already_latest" | "restart_scheduled" | "not_available";
@@ -168,18 +157,14 @@ export function createHandlers(deps: HandlerDeps): HandlerTable {
     ...createConversationHandlers({
       conversations: deps.conversations,
       messages: deps.messages,
+      // 素材准备搬到了接线层：发一句之前的选路要问模型与端点，那是素材服务的事
+      assets: deps.assets,
       runner: deps.runner,
-      readConfig: deps.readConfig,
-      // 状态栏助手块的名字与可用性（PRD F-I6）：只借用 `AgentService.describe` 这一个只读口
-      agents: deps.agents,
       refreshThinkingPresets: deps.refreshThinkingPresets,
       now: deps.now,
-      onTurnSettled: deps.onTurnSettled,
+      log: deps.log,
       assertSendable: deps.assertSendable,
-      autoNameAfterTurn: deps.autoNameAfterTurn,
-      onHookError: deps.onHookError,
-      questionsFor: deps.questionsFor,
-      // 临时对话：一次调用跑一轮、不落库、不推流式事件（R1 / R49）
+      // 临时对话：一次调用给一条结果、不落库、不推流式事件（R1 / R49）
       runTransient: async (params, language) => await deps.transient.run(params, language),
     }),
     ...createMessageHandlers(deps),

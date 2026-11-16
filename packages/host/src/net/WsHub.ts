@@ -144,13 +144,6 @@ export interface WsHubOptions {
   defaultLanguage?: DefaultLanguageSource;
   /** 推送出网前的按连接本地化（不注入则原样搬运） */
   localizeEvent?: EventLocalizer;
-  /**
-   * 连接数变化时回调（参数是这一刻的连接数）。
-   *
-   * 单根靠它发现「最后一条连接走了」：那正是退出判据的一个触发源（PRD L4 / A10：
-   * 回收计时只有一处，所以这里只报事实、不自带定时器）。
-   */
-  onConnectionsChanged?: (count: number) => void;
   /** 时钟，缺省 `Date.now` */
   clock?: () => number;
   /** 日志；缺省安静 */
@@ -288,7 +281,6 @@ export class WsHub {
       state.holds.clear();
       this.connections.delete(state.id);
     }
-    this.notifyConnectionsChanged();
 
     if (!server) return;
     await new Promise<void>((resolve) => {
@@ -356,17 +348,6 @@ export class WsHub {
     return [...this.connections.values()].map((state) => toConnectionInfo(state));
   }
 
-  /** 报一次连接数变化；回调自己抛错不影响连接本身 */
-  private notifyConnectionsChanged(): void {
-    const listener = this.options.onConnectionsChanged;
-    if (!listener) return;
-    try {
-      listener(this.connections.size);
-    } catch (error) {
-      this.logger.warn("连接数变化回调抛错", { error: describeError(error) });
-    }
-  }
-
   // -------------------------------------------------------------------------
   // 连接
   // -------------------------------------------------------------------------
@@ -383,7 +364,6 @@ export class WsHub {
       holds: new Map(),
     };
     this.connections.set(state.id, state);
-    this.notifyConnectionsChanged();
 
     socket.on("message", (data: RawData, isBinary: boolean) => {
       void this.onFrame(state, data, isBinary).catch((error: unknown) => {
@@ -401,7 +381,6 @@ export class WsHub {
   private drop(state: ConnectionState): void {
     if (!this.connections.delete(state.id)) return;
     state.holds.clear();
-    this.notifyConnectionsChanged();
     void this.options.uploads?.abortConnection(state.id).catch((error: unknown) => {
       this.logger.warn("断线清理上传失败", { connectionId: state.id, error });
     });
@@ -850,20 +829,23 @@ function conversationKeyOfParams(params: unknown): string | null {
 /**
  * 事件载荷里的对话 id。
  *
- * 六种事件都挂着某段对话（通知与问题的 `conversationId` 可能是 `null`：那是全局的，
- * 不受任何对话的缓冲影响）。这一处让 `push` 的调用方不必自己传 key。
+ * 九个事件里七个直接在顶层带 `conversationId`；通知与问题是嵌套的，而且那个字段可以是
+ * `null`（全局的：不受任何对话的缓冲影响）。这一处让 `push` 的调用方不必自己传 key。
  */
 function conversationKeyOf<E extends EventName>(event: E, payload: EventMap[E]): string | null {
   switch (event) {
-    case "run.state":
-    case "message.delta":
-    case "conversation.changed":
-    case "usage":
-      return nonEmpty((payload as EventMap["run.state"]).conversationId);
     case "notice":
       return nonEmpty((payload as EventMap["notice"]).notice.conversationId);
     case "question":
       return nonEmpty((payload as EventMap["question"]).question.conversationId);
+    case "message.added":
+    case "message.delta":
+    case "message.changed":
+    case "message.removed":
+    case "state":
+    case "error":
+    case "conversation.changed":
+      return nonEmpty((payload as EventMap["state"]).conversationId);
     default:
       return null;
   }

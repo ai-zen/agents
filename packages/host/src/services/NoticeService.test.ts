@@ -280,8 +280,8 @@ describe("按语言渲染（D8）", () => {
     const english = localize("notice", payload, "en");
     expect(english.notice.text.message).toBe("Settings applied — no restart needed.");
     // 只有带 `LocalizedText` 的事件过这一层：其余事件原样搬运（同一个对象，不复制）
-    const other = { conversationId: "c1", status: "idle" } as unknown as EventMap["run.state"];
-    expect(localize("run.state", other, "zh")).toBe(other);
+    const other: EventMap["state"] = { conversationId: "c1", status: "idle", at: "2026-01-01T00:00:00.000Z" };
+    expect(localize("state", other, "zh")).toBe(other);
   });
 });
 

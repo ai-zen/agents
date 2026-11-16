@@ -10,14 +10,14 @@
  * 两条贯穿这个文件的边界：
  *   1. **项目与助手创建即定死**：`workspaceId` / `agentId` 由 `create` 解析后落库，此后没有
  *      任何方法改它们。模型与思考档位不在这条线上：它们是这段会话自己的，存在会话行上、可以改。
- *   2. **服务层不缓存 agent、不驻留对话状态**：`running` 与「删掉之后的现场清理」都从注入的
- *      {@link ConversationRuntimePort} 现取现放；模型与档位在库里，不在内存里存第二份。
+ *   2. **服务层不缓存 agent、不驻留对话状态**：这段对话此刻落在哪一格、队里压着几条，都从注入的
+ *      {@link ConversationRuntimePort} 现取；模型与档位在库里，不在内存里存第二份。
  */
 
 import { randomUUID } from "node:crypto";
 import { isAbsolute, join, resolve } from "node:path";
 
-import { AgentNS, ZERO_USAGE } from "@ai-zen/agents-core";
+import { AgentNS } from "@ai-zen/agents-core";
 import { AgentRepository, resolveModel } from "@ai-zen/agents-sdk";
 import type {
   AgentDefinition,
@@ -45,7 +45,6 @@ import { HostError } from "../wire/errors.js";
 import type { ConversationChangeKind } from "../wire/events.js";
 import type {
   CompactionMode,
-  ContextState,
   ConversationCreateParams,
   ConversationCreateResult,
   ConversationDeleteParams,
@@ -66,42 +65,36 @@ import type {
   ConversationSetModelResult,
   ConversationSetThinkingParams,
   ConversationSetThinkingResult,
+  ConversationStatus,
   ConversationSummary,
   ConversationView,
   MessageInput,
   ModelSource,
-  RunState,
   ThinkingState,
 } from "../wire/index.js";
 import { assetIdsOf } from "./AssetService.js";
-import { readUsage, toAgentMessage } from "./MessageService.js";
+import { toAgentMessage } from "./MessageService.js";
 import { toFolderFact } from "./WorkspaceService.js";
 
 /**
  * 运行时注入给对话服务的窄接口。
  *
- * 只剩三件运行时才知道的事：
- *   - 这段对话现在有没有在跑一轮（PRD F-I3 / D14，真相在 `RunRegistry` 一处）；
- *   - 这一轮从什么时候开始（`conversation.list` 的活跃会话列表要按它排，F-I3）；
- *   - 对话被删掉之后，把这一轮的现场丢掉（中止在跑的轮次）。
+ * 只有两件运行时才知道的事：
+ *   - 这段对话此刻落在哪一格（四格现读，PRD 4.4：死 / 忙 / 闲 / 暂停）；
+ *   - 队里还压着几条（侧栏那一格现读的 `inboxPending`）；
+ *   - 对话（或它的项目）被删掉之后，把这段对话的现场丢掉（`ChatRunner.forget`）。
  *
  * 模型与思考档位不在这里：它们存在会话行上（`modelId` / `thinkingLevel`），服务层自己读写库。
  *
- * 服务层只按它读写，不 import `runtime/` 里的任何实现、也不自己存一份 —— 两份状态迟早
+ * 服务层只按它读，不 import `runtime/` 里的任何实现、也不自己存一份 —— 两份状态迟早
  * 有一份先漂（D28：agent 用完即弃、对话不驻留）。
  */
 export interface ConversationRuntimePort {
-  /** 这段对话现在是否在跑一轮 */
-  isRunning(conversationId: string): boolean;
-  /**
-   * 这段对话此刻的运行状态：在跑给 `{ status, startedAt }`，没在跑给 `null`。
-   *
-   * 与 `isRunning` 问的是同一件事，多的那一格是「什么时候开始的」。**可以不注入**：
-   * 缺省按「没在跑」算（`ConversationSummary.run` 出 `null`）—— 一格可有可无的事实不该
-   * 让不关心它的调用方（用例里的窄替身、脚本）被迫实现一遍。
-   */
-  runState?(conversationId: string): { status: RunState["status"]; startedAt: string | null } | null;
-  /** 对话（或它的项目）被删掉之后，中止在跑的轮次并清掉现场 */
+  /** 这段对话此刻那一格（`ChatRunner.state` 现读，不落库、不推算） */
+  status(conversationId: string): ConversationStatus;
+  /** 队里还压着几条没落成消息的条目（侧栏摘要的那一格） */
+  inboxPending(conversationId: string): number;
+  /** 对话（或它的项目）被删掉之后，丢掉这段对话的现场（摘桥 + agent 硬着陆） */
   forget(conversationId: string): void | Promise<void>;
 }
 
@@ -384,7 +377,7 @@ export class ConversationService {
       [[workspace.id, workspace]],
       [[agent.id, agent]],
     );
-    const { view } = await this.composeView(draft, context);
+    const view = await this.composeView(draft, context);
     return { conversation: view };
   }
 
@@ -400,7 +393,7 @@ export class ConversationService {
    * `not_found`、也免得那条隐藏的 cwd 消息被写两遍。
    *
    * 落行那一刻同时写上这段对话的第一条消息：一条 `hidden` 的 `user` 消息，告诉模型这段对话
-   * 对应的 cwd（PRD F-D9）。它最先写，所以 `seq` 在真实用户消息之前；之后每轮都不再重写。
+   * 对应的 cwd（PRD F-D9）。它最先写，所以 `seq` 在真实用户消息之前；之后永不重写。
    * cwd 从这段对话的 Workspace 取（不是进程工作目录）；`workspaceId` 建会话时就定死了，
    * 这里只读不改。
    *
@@ -468,7 +461,7 @@ export class ConversationService {
       });
     }
     // 草稿变成真行那一刻才第一次出现在其它窗口的侧栏里，所以这里补一条 `created`
-    this.emitChanged(row.id, row.workspaceId, "created", 0);
+    this.emitChanged(row.id, row.workspaceId, "created");
     return row;
   }
 
@@ -509,7 +502,7 @@ export class ConversationService {
   /** 按 id 打开一段对话（PRD F-A6：宿主只提供「按 id 打开」） */
   async get(params: ConversationGetParams): Promise<ConversationGetResult> {
     const conversation = await this.requireConversation(params.conversationId);
-    const { view } = await this.composeView(
+    const view = await this.composeView(
       conversation,
       await this.viewContext(await this.readConfig()),
     );
@@ -530,7 +523,7 @@ export class ConversationService {
     }
 
     const view = await this.reloadView(conversation.id);
-    this.emitChanged(view.id, view.workspaceId, "renamed", view.messageCount);
+    this.emitChanged(view.id, view.workspaceId, "renamed");
     return { conversation: view };
   }
 
@@ -553,7 +546,7 @@ export class ConversationService {
     }
 
     const view = await this.reloadView(conversation.id);
-    this.emitChanged(view.id, view.workspaceId, "pinned", view.messageCount);
+    this.emitChanged(view.id, view.workspaceId, "pinned");
     return { conversation: view };
   }
 
@@ -578,7 +571,7 @@ export class ConversationService {
       }
       this.drafts.forget(conversation.id);
       await this.runtime.forget(conversation.id);
-      this.emitChanged(conversation.id, draft.workspaceId, "deleted", null);
+      this.emitChanged(conversation.id, draft.workspaceId, "deleted");
       return { removed: true, consequences: draftConsequences, assetIds: [] };
     }
 
@@ -605,7 +598,7 @@ export class ConversationService {
     if (removed) {
       // 关系行已经随外键没了：现在问「还剩几张引用」，归零的那几份才删字节
       await this.sweepAssets?.(assetIds);
-      this.emitChanged(conversation.id, conversation.workspaceId, "deleted", null);
+      this.emitChanged(conversation.id, conversation.workspaceId, "deleted");
     }
     return { removed, consequences, assetIds };
   }
@@ -615,12 +608,12 @@ export class ConversationService {
    *
    * 撤回到某条**用户消息之前**：那条消息及其后全部硬删，被撤回的内容按 core 的内容形状
    * 回给客户端填回输入框（只有纯文本段 + 当时带的素材 id，R62 / F-H3「带图消息连图一起
-   * 恢复」）。不留删除痕迹（R10）；正在跑一轮时拒绝，不然删的正是流式还在写的那几条。
+   * 恢复」）。不留删除痕迹（R10）；agent 正忙时拒绝 —— 不然删的正是它正在写的那几条。
    */
   async revert(params: ConversationRevertParams): Promise<ConversationRevertResult> {
     const row = await this.requireConversation(params.conversationId);
     const anchorId = requireId(params.beforeMessageId, "beforeMessageId");
-    if (this.runtime.isRunning(row.id)) {
+    if (this.runtime.status(row.id) === "busy") {
       throw new HostError("busy", { detail: { conversationId: row.id, action: "revert" } });
     }
 
@@ -646,7 +639,7 @@ export class ConversationService {
      * 回填输入框要挂的素材（R62：只给纯文本 + assetIds，图靠 id 复原）。
      *
      * 两个来源合并：
-     *   - `conversation_assets`：消息落库时记下的关系行（这条消息与它之前几轮引用过的都在里面）；
+     *   - `conversation_assets`：消息落库时记下的关系行（这段对话引用过的素材都在里面）；
      *   - 消息内容里的 `__asset_id`：同一张图可以被好几条消息引用，而关系行是按消息记的 ——
      *     这条消息自己挂了哪几张，content 永远是那个事实。
      */
@@ -661,8 +654,12 @@ export class ConversationService {
     const doomedAssetIds = await this.collectAssetsOfMessages(removedMessageIds);
     await this.messages.deleteAfter(row.id, anchor.id, { includeSelf: true });
     await this.sweepAssets?.(doomedAssetIds);
-    const remaining = (await this.messages.listByConversation(row.id)).length;
-    this.emitChanged(row.id, row.workspaceId, "message_removed", remaining);
+    // 删掉的那几条逐条报出去：消息有自己的事件（`message.removed`），客户端按 id 摘掉它们。
+    // 不给剩下的条数：条数客户端自己数（事件只说「哪一条没了」）。
+    const at = iso(this.now());
+    for (const messageId of removedMessageIds) {
+      this.emit?.("message.removed", { conversationId: row.id, messageId, at });
+    }
     return { removedMessageIds, restoredInput };
   }
 
@@ -698,15 +695,12 @@ export class ConversationService {
     }
 
     const updated = model.id === row.modelId ? row : await this.writeModel(row, model.id);
-    const { view, context } = await this.composeView(
-      updated,
-      await this.viewContext(config),
-    );
+    const view = await this.composeView(updated, await this.viewContext(config));
     // 换了的模型会出现在别的窗口的状态栏上（L5 / D22），推一条让它们去拉
     if (updated.modelId !== row.modelId) {
-      this.emitChanged(row.id, row.workspaceId, "settings_changed", null);
+      this.emitChanged(row.id, row.workspaceId, "settings_changed");
     }
-    return { conversation: view, model: view.model, context };
+    return { conversation: view, model: view.model };
   }
 
   /**
@@ -746,7 +740,7 @@ export class ConversationService {
 
     const updated = await this.writeThinkingLevel(row, level);
     const agent = await this.loadAgent(row.agentId, context);
-    this.emitChanged(row.id, row.workspaceId, "settings_changed", null);
+    this.emitChanged(row.id, row.workspaceId, "settings_changed");
     return { thinking: this.buildThinking(updated, model, agent, context.presets) };
   }
 
@@ -787,9 +781,9 @@ export class ConversationService {
       // `countByConversation`，数的是表里的全部行（只筛 `hidden`），所以同一段对话这两处数字可以不等。
       messageCount: stored.length,
       lastMessageAt: stored.length === 0 ? null : iso(latestCreatedAt(stored)),
-      running: this.runtime.isRunning(row.id),
-      // 「在跑」那一格比布尔多一个开始时刻（活跃会话列表按它排）；没注入这一格的替身按没在跑算
-      run: this.runtime.runState?.(row.id) ?? null,
+      // 侧栏那个圆点与「压着几条」都是**现读**：这一格不在库里，不是会话字段
+      status: this.runtime.status(row.id),
+      inboxPending: this.runtime.inboxPending(row.id),
       hasPendingQuestion: pendingCount > 0,
       // 压缩那两格：成对出现，没压过就整对省略（空 = 没压过，不是「不知道」）
       ...(row.compactedAt === null || row.compactionMode === null
@@ -814,14 +808,14 @@ export class ConversationService {
     const row = await this.conversations.get(conversationId);
     if (!row) return;
     await this.conversations.markCompacted(row.id, mode, this.now());
-    this.emitChanged(row.id, row.workspaceId, "settings_changed", null);
+    this.emitChanged(row.id, row.workspaceId, "settings_changed");
   }
 
-  /** 拼一段对话的完整形状，顺带把 `setModel` 要的上下文占用一起算出来 */
+  /** 拼一段对话的完整形状（身份 / 模型 / 思考档 / 目录） */
   private async composeView(
     row: Conversation,
     context: ViewContext,
-  ): Promise<{ view: ConversationView; context: ContextState }> {
+  ): Promise<ConversationView> {
     const stored = await this.messages.listByConversation(row.id);
     const pending = await this.questions.listByConversation(row.id, "pending");
     const workspace = await this.loadWorkspace(row.workspaceId, context);
@@ -842,7 +836,7 @@ export class ConversationService {
       thinking: this.buildThinking(row, model, agent, context.presets),
       folder: await toFolderFact(workspace.cwd),
     };
-    return { view, context: buildContext(model, lastUsage(stored)) };
+    return view;
   }
 
   /**
@@ -863,29 +857,24 @@ export class ConversationService {
   /** 改完之后重新读一遍再拼视图：改名与置顶都要回写后的完整对象 */
   private async reloadView(conversationId: string): Promise<ConversationView> {
     const row = await this.requireConversation(conversationId);
-    const { view } = await this.composeView(
-      row,
-      await this.viewContext(await this.readConfig()),
-    );
-    return view;
+    return await this.composeView(row, await this.viewContext(await this.readConfig()));
   }
 
   /**
    * 推一条 `conversation.changed`（L5 / D22：两个窗口同时开着时，对方界面靠它去拉）。
    *
-   * 只报「什么变了 + 够用的定位信息」，不搬整个对象（PLAN §6）。
+   * 只报「什么变了 + 够用的定位信息」，不搬整个对象（PLAN §6）。消息的增删改不在这里：
+   * 那三件事有自己的事件（带整条消息），这里也没有消息条数 —— 条数客户端自己数。
    */
   private emitChanged(
     conversationId: string,
     workspaceId: string,
     change: ConversationChangeKind,
-    messageCount: number | null,
   ): void {
     this.emit?.("conversation.changed", {
       conversationId,
       workspaceId,
       change,
-      messageCount,
       at: iso(this.now()),
     });
   }
@@ -1147,34 +1136,8 @@ function latestCreatedAt(stored: StoredMessage[]): number {
   );
 }
 
-/** 最近一次请求的用量：从后往前找第一条带 `usage` 的消息（assistant 才有，core 口径） */
-function lastUsage(stored: StoredMessage[]): AgentNS.Usage {
-  for (let index = stored.length - 1; index >= 0; index -= 1) {
-    const usage = readUsage(stored[index]?.data);
-    if (usage) return usage;
-  }
-  return { ...ZERO_USAGE };
-}
-
 /** 消息内容里是否有图片段（core 的 `image_url` 段） */
 function contentHasImage(content: AgentNS.MessageContent | undefined): boolean {
   if (!content || typeof content === "string") return false;
   return content.some((section) => section.type === "image_url");
-}
-
-/**
- * 上下文占用（PRD F-D1 / D27）：最近一次请求的用量 + 这个模型的两条阈值。
- *
- * 阈值跟着模型走，所以换模型之后要用新模型的阈值重算；比例由客户端自己算。
- */
-function buildContext(model: Model | undefined, usage: AgentNS.Usage): ContextState {
-  const handoffThreshold = model?.tokenThresholds.handoff ?? 0;
-  const guardThreshold = model?.tokenThresholds.guard ?? 0;
-  return {
-    usage,
-    handoffThreshold,
-    guardThreshold,
-    overHandoff: handoffThreshold > 0 && usage.prompt_tokens >= handoffThreshold,
-    overGuard: guardThreshold > 0 && usage.prompt_tokens >= guardThreshold,
-  };
 }

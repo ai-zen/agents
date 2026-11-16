@@ -327,32 +327,6 @@ export class MessageRepository {
   }
 
   /**
-   * 按对话取「子 Agent 说过的话」那一半（F-I7 的空闲回看与重开后的子 Agent 页签）。
-   *
-   * 与 {@link listByConversation} 正好互补：那边只要主线（`parentToolCallId IS NULL`），这里只要
-   * 子 Agent 的另一半。一次取回整段对话的全部委派产物，`parentToolCallId` 就是「这段话属于
-   * 哪一次委派」的唯一痕迹 —— 上层据此把历次委派重新拼成子 Agent 快照，不必先知道有哪些
-   * 工具调用 id（那些 id 只活在主线消息的 `tool_calls` 里，而一次委派是否**真的**派出去过，
-   * 唯一确凿的证据是这张表里有它的子消息）。
-   *
-   * 顺序照 `seq` 升序：同一次委派的消息连在一起，跨委派的先后也保持原样。
-   */
-  async listDelegated(
-    conversationId: string,
-    options: MessageListOptions = {},
-  ): Promise<StoredMessage[]> {
-    const rows = await this.db.all<MessageRow>(
-      `SELECT ${COLUMNS} FROM messages
-       WHERE conversationId = ?
-         AND parentToolCallId IS NOT NULL
-         AND (? = 1 OR ${VISIBLE_ONLY})
-       ORDER BY seq ASC`,
-      [conversationId, options.includeHidden === true ? 1 : 0],
-    );
-    return rows.map(toStoredMessage);
-  }
-
-  /**
    * 全文搜索（PRD D16：按聊天内容、可只搜一个 Workspace）。
    *
    * @param scope 一段对话内 / 一个 Workspace 下 / 不限（`undefined` 由调用方显式传入

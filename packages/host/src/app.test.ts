@@ -1,5 +1,5 @@
 /**
- * `HostApp`（单根）的验收：组装、启停对称、单实例、退出判据、删除路径的跨层补齐。
+ * `HostApp`（单根）的验收：组装、启停对称、单实例、收尾、删除路径的跨层补齐。
  *
  * 这里关心的是「谁被接上了、什么时刻会发生什么」，所以有一部分用例直接调用 handler 表
  * （省掉网络这一层），需要看连接数变化的那几条才真开 WebSocket —— 端到端那条完整链路在
@@ -32,7 +32,7 @@ import {
   type TempDir,
 } from "./net/TestSupport.js";
 import { BRIDGED_METHODS } from "./handlers/index.js";
-import { createFakeScope, deferred, FakeAgent } from "./runtime/TestSupport.js";
+import { createFakeScope, FakeAgent } from "./runtime/TestSupport.js";
 import { Scope } from "@ai-zen/agents-sdk";
 import { transientScopeKey } from "./runtime/TransientRunner.js";
 import { Database } from "./storage/index.js";
@@ -235,9 +235,9 @@ describe("HostApp 的组装", () => {
     await expect(app.db.all("SELECT 1 AS one")).resolves.toBeDefined();
     // 运行时
     expect(app.scopeRegistry.workspaceIds().length).toBe(0);
-    expect(app.runRegistry.size()).toBe(0);
-    // 服务层要的两件运行时事实（模型与档位在会话行上，不在这里）
-    expect(app.conversationRuntime.isRunning("没有这段对话")).toBe(false);
+    // 服务层要的运行时事实（模型与档位在会话行上，不在这里）
+    expect(app.conversationRuntime.status("没有这段对话")).toBe("dead");
+    expect(app.conversationRuntime.inboxPending("没有这段对话")).toBe(0);
     expect(typeof app.conversationRuntime.forget).toBe("function");
     // 服务
     expect(typeof app.workspaceService.create).toBe("function");
@@ -522,118 +522,10 @@ function pathsOf(fixture: Fixture) {
 }
 
 // ---------------------------------------------------------------------------
-// 退出判据（PRD L4 / R53）
+// 收尾（PRD 4.12：关宿主是显式动作，没有「没人连着就自己退」这回事）
 // ---------------------------------------------------------------------------
 
-/**
- * 一轮请求被闸门按住的假 agent：结算由用例放行，用来钉住「跑着的时候不退」。
- *
- * 「按住」耍在脚本那一层（`FakeRound.gate`：请求发出、首片之前就停在那里），不是在宿主
- * 与 agent 之间插一道 —— 宿主现在不 `await` 任何一个 agent 动作（`push` 同步入队就返回），
- * 在那一层按住就什么都证明不了。
- */
-function gatedRound(gate: Promise<void>): FakeAgent {
-  return new FakeAgent([
-    {
-      gate,
-      deltas: [{ content: "跑完了" }],
-      usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
-    },
-  ]);
-}
-
-describe("退出判据", () => {
-  it("还没被用过时不判退出（刚起来的进程在等客户端）", async () => {
-    const fixture = await makeFixture();
-    const exits: ExitFacts[] = [];
-    const app = await startApp(fixture, {
-      exit: (facts) => {
-        exits.push(facts);
-      },
-    });
-
-    await app.checkExit();
-    expect(exits).toEqual([]);
-    expect(app.running).toBe(true);
-  });
-
-  it("连过然后断开、也没有在跑的轮次 → 收尾并退出（手里还剩 Scope 也照退）", async () => {
-    const fixture = await makeFixture();
-    const exits: ExitFacts[] = [];
-    // 真 `Scope` + 记账式插件：收尾时「Scope 被销掉、插件的 `dispose` 被调到」这条链路是真的
-    const fake = createFakeScope(fixture.workspaceDir.path);
-    const app = await startApp(fixture, {
-      exit: (facts) => {
-        exits.push(facts);
-      },
-      createScope: async () => fake.scope,
-    });
-    const disposeAll = vi.spyOn(app.scopeRegistry, "disposeAll");
-
-    const client = await connect(app);
-    const { workspace } = await callMethod(app, "workspace.create", {
-      cwd: fixture.workspaceDir.path,
-    });
-    // 手里握着一个 Scope：它不会自己消失（没有空闲计时、也没有引用计数）
-    await app.scopeRegistry.create(workspace.id);
-
-    // 有连接 → 不判（连接就是「还有人等着说话」）
-    await app.checkExit();
-    expect(exits).toEqual([]);
-
-    // 连接断开、也没有在跑的轮次 → 什么都不欠了：收尾（`disposeAll` 把 Scope 与 MCP 连接一起拆）并退出
-    await client.close();
-    await until(() => exits.length === 1, "最后一个客户端断开后应当收尾并退出");
-    expect(disposeAll).toHaveBeenCalledTimes(1);
-    expect(fake.plugin.disposeCalls).toBe(1);
-    expect(app.scopeRegistry.workspaceIds()).toEqual([]);
-    expect(app.running).toBe(false);
-    // 事实是「收尾那一刻还持有 1 个 Scope」（随后被 `disposeAll` 拆掉），不是 0
-    expect(exits[0]).toEqual({ reason: "idle", connections: 0, runs: 0, scopes: 1 });
-  });
-
-  it("还有一轮在跑就不退；那一轮结算之后才退", async () => {
-    const fixture = await makeFixture();
-    const exits: ExitFacts[] = [];
-    // 闸门按住这一轮的 `send`：放行之前 `runRegistry` 里一直有它
-    const gate = deferred<void>();
-    const fake = createFakeScope(fixture.workspaceDir.path);
-    const app = await startApp(fixture, {
-      exit: (facts) => {
-        exits.push(facts);
-      },
-      createScope: async () => fake.scope,
-      createAgent: async () => gatedRound(gate.promise),
-    });
-
-    const client = await connect(app);
-    const { workspace } = await callMethod(app, "workspace.create", {
-      cwd: fixture.workspaceDir.path,
-    });
-    const conversation = await seedConversation(app, workspace.id);
-
-    await callMethod(app, "conversation.send", {
-      conversationId: conversation.id,
-      input: { content: "慢慢答" },
-    });
-    expect(app.runRegistry.size()).toBe(1);
-
-    // 连接断了，但这一轮还在跑：还有活欠着，不退
-    await client.close();
-    await wait(50);
-    await app.checkExit();
-    expect(exits).toEqual([]);
-    expect(app.running).toBe(true);
-
-    // 放行 → 这一轮结算 → `onTurnSettled` 再判一次 → 收尾退出
-    gate.resolve();
-    await until(() => exits.length === 1, "最后一轮结算之后应当收尾并退出");
-    expect(exits[0]).toEqual({ reason: "idle", connections: 0, runs: 0, scopes: 1 });
-    expect(fake.plugin.disposeCalls).toBe(1);
-    expect(app.scopeRegistry.workspaceIds()).toEqual([]);
-    expect(app.running).toBe(false);
-  });
-
+describe("收尾", () => {
   it("收尾只做一次、交棒只交一次", async () => {
     const fixture = await makeFixture();
     const exits: ExitFacts[] = [];
@@ -700,8 +592,8 @@ describe("删除路径", () => {
     expect(await app.assetService.get(ref.assetId)).toBeUndefined();
     expect(await app.assets.countReferences(ref.assetId)).toBe(0);
     expect(assetMessageId.length).toBeGreaterThan(0);
-    // 运行时那边这段对话的现场被丢掉了
-    expect(app.chatRunner.turn(conversation.id)).toBeUndefined();
+    // 运行时那边这段对话的现场被丢掉了（现在是死格）
+    expect(app.chatRunner.state(conversation.id).status).toBe("dead");
   });
 
   it("同一张图贴到两个对话：磁盘一份、素材一行、关系两行；删掉一个不算完，删掉最后一个才清字节", async () => {
@@ -1069,18 +961,19 @@ describe("从磁盘重载（F-E1 / R63）", () => {
 });
 
 describe("到交接线才提问（R59 / F-D2）", () => {
-  /** 建一段对话并跑一轮，等它结算 */
-  async function runAndSettle(app: HostApp, workspaceId: string): Promise<void> {
+  /** 建一段对话、投一句，等它闲下来（交接线判断就挂在那一拍） */
+  async function sendAndWaitIdle(app: HostApp, workspaceId: string): Promise<void> {
     const conversation = await seedConversation(app, workspaceId);
     await callMethod(app, "conversation.send", {
       conversationId: conversation.id,
       input: { content: "说点什么" },
     });
     for (let attempt = 0; attempt < 200; attempt += 1) {
-      if (app.chatRunner.turn(conversation.id) === undefined) return;
+      const now = app.chatRunner.state(conversation.id);
+      if (now.status === "idle" && now.inbox.length === 0) return;
       await wait(10);
     }
-    throw new Error("这一轮没有结算");
+    throw new Error("这段对话没有闲下来");
   }
 
   it("越过交接线才问，未到线不问", async () => {
@@ -1105,14 +998,14 @@ describe("到交接线才提问（R59 / F-D2）", () => {
 
     // 交接线是 1000（见上面的 CONFIG）：这一轮只用了 500，不问
     promptTokens = 500;
-    await runAndSettle(app, workspace.id);
+    await sendAndWaitIdle(app, workspace.id);
     await wait(50);
     const quiet = await callMethod(app, "question.list", { state: "pending" });
     expect(quiet.questions).toEqual([]);
 
     // 这一轮 1500：到线了，问
     promptTokens = 1500;
-    await runAndSettle(app, workspace.id);
+    await sendAndWaitIdle(app, workspace.id);
     let asked: Awaited<ReturnType<typeof callMethod<"question.list">>>["questions"] = [];
     for (let attempt = 0; attempt < 200; attempt += 1) {
       asked = (await callMethod(app, "question.list", { state: "pending" })).questions;
@@ -1148,18 +1041,24 @@ describe("到交接线才提问（R59 / F-D2）", () => {
       prompt: "去把这件事查清楚",
     });
     if (!created.ok) throw new Error(`派生会话没开成：${created.reason}`);
-    // 等那一段跑完（它由父对话投递唤醒）
+    // 等它把第一句干完、闲下来（变闲那一拍才可能问交接）
     for (let attempt = 0; attempt < 200; attempt += 1) {
-      if (app.chatRunner.turn(created.sessionId) === undefined) break;
+      const now = app.chatRunner.state(created.sessionId);
+      if (now.status === "idle" && now.inbox.length === 0) break;
       await wait(10);
     }
 
-    // 用户本人接着在这段派生会话里说话
-    const turn = await app.chatRunner.run({
-      conversationId: created.sessionId,
-      input: { content: "接着说" },
+    // 用户本人接着在这段派生会话里说一句（同一段对话，来源是用户本人）
+    await app.chatRunner.deliver(created.sessionId, {
+      content: "接着说",
+      source: { kind: "user" },
+      mayStart: true,
     });
-    await turn.done;
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const now = app.chatRunner.state(created.sessionId);
+      if (now.status === "idle" && now.inbox.length === 0) break;
+      await wait(10);
+    }
     await wait(50);
 
     // 用量（1500）明明越过了交接线（1000），这段派生会话也不挂问题 ——
@@ -1204,10 +1103,10 @@ describe("对话的三个钩子", () => {
     const page = await callMethod(app, "message.list", { conversationId: conversation.id });
     expect(page.messages).toEqual([]);
 
-    // 现场快照里也看得到这条问题（D22 / L5：重连先拉状态就知道有东西在等回答）
+    // 读数里没有问题这一格（问题归它自己的通道：`question.list`）；这一段此刻也没有 agent
     const snapshot = await callMethod(app, "conversation.state", { conversationId: conversation.id });
-    expect(snapshot.state.questions.map((item) => item.id)).toHaveLength(1);
-    expect(snapshot.state.questions[0]?.blocking).toBe(true);
+    expect("questions" in snapshot.state).toBe(false);
+    expect(snapshot.state.status).toBe("dead");
   });
 
   it("临时对话：跑完把消息交回来，库里一条都没有，也不推流式事件（R1 / R49）", async () => {

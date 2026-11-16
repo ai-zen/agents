@@ -67,7 +67,10 @@ function makeHarness(): Harness {
   const make = (): QuestionService =>
     new QuestionService({
       questions,
-      runs: { isRunning: (conversationId: string) => running.has(conversationId) },
+      // 那边忙不忙是现读的一格（从前问的是运行表）
+      runtime: {
+        status: (conversationId: string) => (running.has(conversationId) ? "busy" : "idle"),
+      },
       guard: { overGuard: async () => guard.overGuard } satisfies QuestionGuardProbe,
       handoff: {
         start: async (params: HandoffStartParams, language?: string) => {
@@ -336,8 +339,8 @@ describe("答完之后接着往下走（D22）", () => {
   });
 });
 
-describe("交接在对话停下之后触发（D22）", () => {
-  it("对话正在跑一轮时拒绝回答，问题继续挂着", async () => {
+describe("交接在那边闲下来之后才做（D22）", () => {
+  it("那边正忙着时拒绝回答，问题继续挂着", async () => {
     const id = await askHandoff(harness);
     harness.running.add("c1");
 

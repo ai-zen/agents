@@ -23,10 +23,11 @@ import { MessageRepository } from "../storage/MessageRepository.js";
 import { QuestionRepository } from "../storage/QuestionRepository.js";
 import { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
 import { migrate } from "../storage/migrations.js";
+import type { ConversationStatus } from "../wire/index.js";
 import type { ConversationRuntimePort } from "./ConversationService.js";
 import { ConversationService } from "./ConversationService.js";
 import { HandoffCancelledError, createSdkHandoffExecutor, HandoffService, handoffDirFor } from "./HandoffService.js";
-import type { HandoffExecutor, ScopeProvider } from "./HandoffService.js";
+import type { HandoffAgentHolder, HandoffExecutor, ScopeProvider } from "./HandoffService.js";
 import { NoticeService } from "./NoticeService.js";
 import { NoticeRepository } from "../storage/NoticeRepository.js";
 
@@ -54,17 +55,12 @@ function echoingClient(): SummaryClient {
 
 /** 对话服务要的那个窄接口：交接用例不需要临时模型 / 临时档位 */
 class FakeRuntime implements ConversationRuntimePort {
-  isRunning(): boolean {
-    return false;
+  status(): ConversationStatus {
+    return "dead";
   }
-  getModelOverride(): string | null {
-    return null;
+  inboxPending(): number {
+    return 0;
   }
-  setModelOverride(): void {}
-  getThinkingOverride(): string | null {
-    return null;
-  }
-  setThinkingOverride(): void {}
   forget(): void {}
 }
 
@@ -94,7 +90,7 @@ interface Harness {
   buildService(options?: {
     execute?: HandoffExecutor;
     skillDirs?: string[];
-    runs?: { isRunning(conversationId: string): boolean };
+    agents?: HandoffAgentHolder;
     notices?: NoticeService;
   }): HandoffService;
 }
@@ -243,7 +239,7 @@ async function seedHarness(): Promise<Harness> {
         scopes,
         createAgent,
         execute: options.execute ?? sdkExecutor(options.skillDirs ?? []),
-        ...(options.runs ? { runs: options.runs } : {}),
+        ...(options.agents ? { agents: options.agents } : {}),
         ...(options.notices ? { notices: options.notices } : {}),
         questions,
         now: () => 1_700_000_010_000,
@@ -513,15 +509,57 @@ describe("交接之后开新对话（D18）", () => {
 });
 
 describe("前置条件", () => {
-  it("对话正在跑一轮时拒绝交接（D22：停下之后才交接）", async () => {
+  it("交接期间把这段对话按住（core 的 `suspend`），做完再放开", async () => {
+    const calls: string[] = [];
     const service = harness.buildService({
       execute: sdkExecutor([]),
-      runs: { isRunning: () => true },
+      agents: {
+        get: () => ({
+          suspend: () => calls.push("suspend"),
+          resume: () => calls.push("resume"),
+          state: "idle",
+        }),
+      },
+    });
+    await service.start({ conversationId, mode: "summary", then: "document_only" });
+    // 写文档那一刻它不再取件（新来的话不会落进被抄写的那份记忆），做完把闸放开
+    expect(calls).toEqual(["suspend", "resume"]);
+  });
+
+  it("本来就是暂停着的对话：按住完不替用户放开", async () => {
+    const calls: string[] = [];
+    const service = harness.buildService({
+      execute: sdkExecutor([]),
+      agents: {
+        get: () => ({
+          suspend: () => calls.push("suspend"),
+          resume: () => calls.push("resume"),
+          state: "paused",
+        }),
+      },
+    });
+    await service.start({ conversationId, mode: "summary", then: "document_only" });
+    expect(calls).toEqual(["suspend"]);
+  });
+
+  it("写文档失败时也要把闸放开（否则这段对话再也动不了）", async () => {
+    const calls: string[] = [];
+    const service = harness.buildService({
+      execute: async () => {
+        throw new Error("模型挂了");
+      },
+      agents: {
+        get: () => ({
+          suspend: () => calls.push("suspend"),
+          resume: () => calls.push("resume"),
+          state: "idle",
+        }),
+      },
     });
     await expect(
       service.start({ conversationId, mode: "summary", then: "document_only" }),
-    ).rejects.toMatchObject({ code: "busy" });
-    expect(harness.scopes.acquired).toEqual([]);
+    ).rejects.toMatchObject({ code: "internal" });
+    expect(calls).toEqual(["suspend", "resume"]);
   });
 
   it("对话不存在报 not_found", async () => {

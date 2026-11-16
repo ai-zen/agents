@@ -22,22 +22,21 @@ import { AgentNS } from "@ai-zen/agents-core";
 import { HostError } from "../wire/errors.js";
 import { ConversationService } from "./ConversationService.js";
 import type { ConversationRuntimePort } from "./ConversationService.js";
-import type { ConversationCreateParams, ConversationView } from "../wire/index.js";
+import type { ConversationCreateParams, ConversationStatus, ConversationView } from "../wire/index.js";
 
-/** 运行时只提供几件事实：忙不忙、这一轮从什么时候开始、删掉之后的中止（模型与档位在会话行上） */
+/** 运行时只提供三件事实：这一刻落在哪一格、队里压着几条、删掉之后丢现场（模型与档位在会话行上） */
 class FakeRuntime implements ConversationRuntimePort {
+  /** 摆成「忙」的那几段（其余都是闲的） */
   readonly running = new Set<string>();
+  /** 每段队里压着几条（不摆就是 0） */
+  readonly pending = new Map<string, number>();
   readonly forgotten: string[] = [];
-  /**
-   * 「在跑的那段是什么时候开始的」这一格。
-   *
-   * 故意做成可选项：不赋值就是「这个替身不知道这件事」，服务层按没在跑算（与真端口上
-   * 那个可选项同义，用例得能分别验「注入了」与「没注入」两条路）。
-   */
-  runState?: ConversationRuntimePort["runState"];
 
-  isRunning(conversationId: string): boolean {
-    return this.running.has(conversationId);
+  status(conversationId: string): ConversationStatus {
+    return this.running.has(conversationId) ? "busy" : "idle";
+  }
+  inboxPending(conversationId: string): number {
+    return this.pending.get(conversationId) ?? 0;
   }
   forget(conversationId: string): void {
     this.forgotten.push(conversationId);
@@ -94,9 +93,6 @@ const BASE_CONFIG = {
 
 let harness: Harness;
 let clock: number;
-
-/** 「这一轮从什么时候开始」的固定取值（用例只验它被原样报出来，不验时间本身的来历） */
-const STARTED_AT = "2026-11-15T03:00:00.000Z";
 
 // 静态部分（临时数据根 / 库 / 配置与助手文件）整个文件只建一次，见 beforeAll
 let dir: string;
@@ -392,7 +388,7 @@ describe("ConversationService.list（D13）", () => {
     expect(page.total).toBe(2);
   });
 
-  it("running 与 hasPendingQuestion 都从注入的那一侧现取", async () => {
+  it("status 与 hasPendingQuestion 都从注入的那一侧现取", async () => {
     const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     harness.runtime.running.add(created.conversation.id);
     await harness.questions.create({
@@ -405,38 +401,27 @@ describe("ConversationService.list（D13）", () => {
     });
 
     const listed = await harness.service.list({ workspaceId: "w1" });
-    expect(listed.conversations[0]).toMatchObject({ running: true, hasPendingQuestion: true });
+    expect(listed.conversations[0]).toMatchObject({ status: "busy", hasPendingQuestion: true });
 
     harness.runtime.running.delete(created.conversation.id);
     const again = await harness.service.get({ conversationId: created.conversation.id });
-    expect(again.conversation.running).toBe(false);
+    expect(again.conversation.status).toBe("idle");
   });
 
-  it("条目里的 run 说清「这段在跑 + 什么时候开始的」，没在跑的那段是 null（F-I3）", async () => {
+  it("条目带 status 与 inboxPending：两格都是现读的（F-I3）", async () => {
     const busy = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const idle = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     harness.runtime.running.add(busy.conversation.id);
-    harness.runtime.runState = (conversationId) =>
-      harness.runtime.running.has(conversationId)
-        ? { status: "running", startedAt: STARTED_AT }
-        : null;
+    harness.runtime.pending.set(busy.conversation.id, 2);
 
     const listed = await harness.service.list({ workspaceId: "w1" });
     const byId = new Map(listed.conversations.map((item) => [item.id, item]));
 
-    expect(byId.get(busy.conversation.id)?.run).toEqual({ status: "running", startedAt: STARTED_AT });
-    expect(byId.get(idle.conversation.id)?.run).toBeNull();
-    // 既有字段的含义不变：`running` 还是那个布尔（说话的是同一份事实）
-    expect(byId.get(busy.conversation.id)?.running).toBe(true);
-    expect(byId.get(idle.conversation.id)?.running).toBe(false);
-  });
-
-  it("这一格没注入时一律按没在跑算：服务层不自己猜（端口缺一小格不该编一个值）", async () => {
-    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
-    harness.runtime.running.add(created.conversation.id);
-
-    const listed = await harness.service.list({ workspaceId: "w1" });
-    expect(listed.conversations[0]?.run).toBeNull();
+    expect(byId.get(busy.conversation.id)).toMatchObject({ status: "busy", inboxPending: 2 });
+    expect(byId.get(idle.conversation.id)).toMatchObject({ status: "idle", inboxPending: 0 });
+    // 再也没有「跑 + 开始时刻」那一格：那是对「一次运行」的记账
+    expect("run" in (byId.get(busy.conversation.id) ?? {})).toBe(false);
+    expect("running" in (byId.get(busy.conversation.id) ?? {})).toBe(false);
   });
 
   it("压缩标记出网：没压过的条目不带这两格，压过之后带时刻与来源", async () => {
@@ -682,19 +667,25 @@ describe("多端在线同步（L5 / D22：conversation.changed）", () => {
     await harness.service.revert({ conversationId: id, beforeMessageId: "u1" });
     await harness.service.delete({ conversationId: id });
 
+    // 撤回不在 `conversation.changed` 里：消息有自己的事件（下面单独看）
     expect(changes().map((payload) => payload.change)).toEqual([
       "renamed",
       "pinned",
-      "message_removed",
       "deleted",
     ]);
     for (const payload of changes()) {
       expect(payload.conversationId).toBe(id);
       expect(payload.workspaceId).toBe("w1");
       expect(typeof payload.at).toBe("string");
+      // 条数不在推送里：客户端自己数
+      expect("messageCount" in payload).toBe(false);
     }
-    // 撤回推的是「还剩几条」（客户端按它决定要不要重拉）
-    expect(changes()[2]?.messageCount).toBe(0);
+    // 撤回删掉的那几条各自推一条 `message.removed`（客户端按 id 摘掉它们）
+    const removed = harness.events
+      .filter((event) => event.name === "message.removed")
+      .map((event) => event.payload as Record<string, unknown>);
+    expect(removed.map((payload) => payload.messageId)).toEqual(["u1", "a1"]);
+    for (const payload of removed) expect(payload.conversationId).toBe(id);
   });
 
   it("读路径不推；换模型与调档各推一条 settings_changed（它们会出现在别的窗口的状态栏上）", async () => {
@@ -712,7 +703,7 @@ describe("多端在线同步（L5 / D22：conversation.changed）", () => {
       "settings_changed",
       "settings_changed",
     ]);
-    expect(changes()[0]?.messageCount).toBeNull();
+    expect("messageCount" in (changes()[0] ?? {})).toBe(false);
   });
 });
 
@@ -865,9 +856,8 @@ describe("ConversationService.setModel（F-B4 / D20：会话级、落库）", ()
     const result = await harness.service.setModel({ conversationId: id, modelId: "m3" });
     expect(result.conversation.model).toMatchObject({ modelId: "m3", source: "conversation" });
     expect(result.model.modelId).toBe("m3");
-    // 阈值跟着新模型走
-    expect(result.context.handoffThreshold).toBe(60);
-    expect(result.context.guardThreshold).toBe(160);
+    // 上下文占用不在这里给：客户端按消息上的用量自己算（宿主不算、不存、不报）
+    expect("context" in result).toBe(false);
     // 库里那一行就是新模型；再打开读到的也是它（不是内存里的临时值）
     expect((await harness.conversations.get(id))?.modelId).toBe("m3");
     const reopened = await harness.service.get({ conversationId: id });
@@ -954,30 +944,6 @@ describe("ConversationService.setModel（F-B4 / D20：会话级、落库）", ()
     await expect(
       harness.service.setModel({ conversationId: created.conversation.id, modelId: "没有这个模型" }),
     ).rejects.toMatchObject({ code: "not_found" });
-  });
-
-  it("上下文占用取最近一次请求的用量", async () => {
-    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
-    const id = created.conversation.id;
-    await harness.messages.upsert({
-      id: "a1",
-      conversationId: id,
-      role: "assistant",
-      status: "completed",
-      content: "回复",
-      data: { usage: { prompt_tokens: 120, completion_tokens: 10, total_tokens: 130 } },
-      createdAt: 5,
-    });
-
-    const result = await harness.service.setModel({ conversationId: id, modelId: "m3" });
-    expect(result.context.usage).toEqual({
-      prompt_tokens: 120,
-      completion_tokens: 10,
-      total_tokens: 130,
-    });
-    // 120 过了 m3 的交接线（60）与硬线（160）之间
-    expect(result.context.overHandoff).toBe(true);
-    expect(result.context.overGuard).toBe(false);
   });
 
   it("还没落库的草稿也能换模型与调档：落库时按草稿里的写", async () => {

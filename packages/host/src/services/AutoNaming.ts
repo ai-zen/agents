@@ -3,8 +3,8 @@
  *
  * 触发条件三件事同时成立才起名，缺一不动：
  *
- *   1. **第一轮结束之后**（本文件按「这段对话里只有一条用户消息」判定：第一轮刚结束就是这个
- *      形状，第二轮之后就不再满足）；
+ *   1. **这段对话里第一次说话的答复已经落地之后**（本文件按「这段对话里只有一条用户消息」判定：
+ *      那个时刻就是这个形状，之后就不再满足）；
  *   2. **用户没改过名字**（`conversations.nameIsAuto`，R35 的那一列；不由名字内容反推）；
  *   3. **开关开着**（`AppConfig.autoTitle`，缺省视为开 —— 老配置里没有这个字段，用户的意图
  *      显然是「按出厂的样子跑」）。
@@ -144,9 +144,9 @@ export class AutoNaming {
   /**
    * 本进程里已经起过名的对话。
    *
-   * 库里的 `nameIsAuto` 区分不了「没起过」与「自动起过」（R35 两条都置 1），而「第一轮」
-   * 这条判定在同一个轮次里连续调两次时会重复成立。这一份只防「同一进程内重复起名」，
-   * 重启后若仍是第一轮会再起一次 —— 那次起名同样只在第一轮里发生。
+   * 库里的 `nameIsAuto` 区分不了「没起过」与「自动起过」（R35 两条都置 1），而「只有一条
+   * 用户消息」这条判定在连着调两次时会重复成立。这一份只防「同一进程内重复起名」，
+   * 重启后若仍是那个形状会再起一次 —— 那次起名同样只在那一个时刻发生。
    */
   private readonly named = new Set<string>();
 
@@ -163,10 +163,10 @@ export class AutoNaming {
   }
 
   /**
-   * 一轮结束之后调一次（接线层在 `conversation.send` 结算后调用）。
+   * 变闲那一刻调一次（`app.ts` 把它接在 `ChatRunner.onIdle` 上）。
    *
-   * 这个方法是幂等且可反复调用的：条件不成立时什么都不做（直接返回原因），所以接在每一轮
-   * 之后都不会多做一次请求 —— 第二轮之后 `not_first_turn` 会把后面的调用全部挡住。
+   * 这个方法是幂等且可反复调用的：条件不成立时什么都不做（直接返回原因），所以接在每一次
+   * 变闲上都不会多做一次请求 —— 之后 `not_first_turn` 会把后面的调用全部挡住。
    */
   async afterTurn(conversationId: string, language: Language = DEFAULT_LANGUAGE): Promise<AutoNameOutcome> {
     const conversation = await this.conversations.get(conversationId);
@@ -218,7 +218,6 @@ export class AutoNaming {
       conversationId: conversation.id,
       workspaceId: conversation.workspaceId,
       change: "renamed",
-      messageCount: messages.length,
       at: iso(updatedAt),
     });
     if (this.notices) {

@@ -1,62 +1,38 @@
 /**
- * 平级会话服务 —— 一段对话里的模型**开另一段对话**、之后还能**接着跟它说话**，那边跑完把结果
- * **推送回**发起者。
+ * 平级会话服务 —— 一段对话里的模型**开另一段对话**，之后还能**接着跟它说话**、能**问它现在怎么样**。
  *
- * 对应技术方案 `.ai-zen/plans/20261115-peer-sessions.md`：阶段 1 是「建 → 跑 → 推回 → 被唤醒」
- * 的最小闭环；**阶段 2 第一块**加了三样东西：`send_to_session`（模型能继续跟子会话说话）、
- * `create_session` 的并发限额（每个父对话同时最多 {@link MAX_RUNNING_PEERS} 个在跑的）、以及
- * 投递回执（`chatRunner.deliver` 回「投递那一刻对方是什么状态」）。仍然**不落库**、没有超时 /
- * 看门狗、没有 UI 标记。
- *
- * ## 四件它负责的事
+ * 对应技术方案 `.ai-zen/plans/20261115-peer-sessions.md`。本文件只做四件事：
  *
  * 1. **建**：按 `conversation.create` 同一条路开一段会话（草稿 → 落真行），拿到 conversationId
- *    就是 `sessionId`，立刻开跑并**立刻返回**（不等结果 —— 等待就等于子代理，那已经存在了）。
- * 2. **记**：进程内 `Map<sessionId, record>`。不建表、不加迁移：这一层的语义是「agent 自己开
- *    一段会话、跑完把结果送回去」，重启之后这些元数据没了，子会话就是一段普通会话
- *    （`/sessions` 里照样看得见、用户照样能接着用，`read_session_status` / `send_to_session`
- *    对它回 `gone`）。
- * 3. **接着说话**：{@link PeerSessionService.send} —— 与 `create` 同构的窄端口（只收 `caller`），
- *    血缘校验（只有父↔子之间能互发）与来源名解析都在这一层。
- * 4. **推**：子会话**每一段**结算之后，把这一段的结果投回父对话 —— 具体怎么投（父对话在跑就
- *    入队、空闲就唤醒、正在结算就先攒着）**不是本文件的事**，全交给 `chatRunner.deliver` 一个
- *    入口。
+ *    就是 `sessionId`，把第一句交出去，**立刻返回**（不等它回答完 —— 等待就等于子代理，那已经
+ *    存在了）。
+ * 2. **记**：进程内 `Map<sessionId, record>`。不建表、不加迁移：这一层的语义是「agent 自己开了
+ *    一段会话」，重启之后这些元数据没了，子会话就是一段普通会话（`/sessions` 里照样看得见、
+ *    用户照样能接着用，两个工具对它回 `gone`）。
+ * 3. **答状态**：{@link PeerSessionService.status} —— 它现在忙不忙**现读**（`chatRunner.state`），
+ *    不存镜像，也没有「上一次跑成什么样」这种字段。
+ * 4. **接着说话**：{@link PeerSessionService.send} —— 直接把一句内容交给执行者，**不看关系**：
+ *    「能不能发」只有一条判据，就是目标在不在。
  *
- * ## 「推」为什么挂在「一次结算」上，而不是挂在 `create` 上
+ * ## 记录里为什么没有「状态」这一格
  *
- * 阶段 1 的回投写在 `create` 里（`turn.done.then(...)`）：于是只有 `create_session` 开出来的
- * **第一段**有结果回投，之后 `send_to_session` 把子会话叫起来跑的**第二段、第三段…**跑完什么
- * 都没有推回去 —— 工具文案里那句「结果跑完会自动推回来」在那条路上是假话。
- *
- * 现在只认一条规则：**一段结算 → 若这段会话是派生会话（`records` 里有它）→ 把这一段的结果
- * 投回它的父对话**。触发源用现成的 `ChatRunner.onTurnSettled`（`app.ts` 已经在那儿接交接线
- * 提问），本文件只多接一跳 {@link PeerSessionService.settleTurn} —— 不新增事件、不另立订阅。
- * 一段一次，不多不少：`create` 里那一句已经删掉，否则第一段会被投两遍。
- *
- * ## 另一端：段开始
- *
- * 结算那一拍把记录收成 `idle` / `failed` / `aborted`；**段开始**那一拍（{@link
- * PeerSessionService.onTurnStart}）要把它复位成 `running` —— 否则被叫起来跑的那一段期间，
- * 记录里一直挂着上一段的结局。
+ * 一段对话现在是什么状态是**活对象身上的事实**（忙 / 闲 / 暂停 / 死），只有执行者读得到。
+ * 在记录里存一份 `state` 就要有人负责在两处同步它（谁开始、谁结束、谁被中断），而同步点漏一个
+ * 就是一句假话 —— 模型会因此对着一段早就停了的会话等结果。所以这里只存**不变的元数据**
+ * （谁开的、叫什么名字、几层、什么时候开的），状态一律现读。
  *
  * ## 「谁在调我」为什么靠 `bind`
  *
  * core 的 `Agent` 上没有 `conversationId`（那是宿主的财产），所以宿主在造出 agent 之后调
  * {@link PeerSessionService.bind} 记一笔 `WeakMap`（agent → conversationId），工具回调里用
  * `ctx.agent` 认领调用方。**不给 core 的 `Agent` 加字段**：那是另一个包的类型，而且是
- * 「每次一轮、用完即弃」的对象，宿主侧记一笔就够，也不会泄漏（WeakMap 跟着 agent 一起回收）。
+ * 「用完即弃」的对象，宿主侧记一笔就够，也不会泄漏（WeakMap 跟着 agent 一起回收）。
  *
- * ## 投递：本文件只把内容交给执行者，不猜
+ * ## 投递不在这里判
  *
- * 见 {@link PeerSessionService.settleTurn}：`chatRunner.deliver(parentConversationId, { content,
- * source })`。那一个入口自己解决「agent 在不在、父对话在不在跑、在结算、要不要攒一批」四件
- * 事 —— 从前本文件靠「先 `enqueue`（拿到 `null` 说明空闲）再 `run`、`run` 抛错就记 dropped」
- * 猜出来，猜错了就是两种真事故：多起一段没有上下文的段（消息不落库），或者把一条本该落地
- * 的结果当失败丢掉。
- *
- * 于是 `resultDelivered` 的语义也跟着变了：**投递被受理就是 `delivered`**（执行者保证「迟早
- * 落地、不丢」），只有父对话不存在才 `dropped` 并出声一次。它记的是**最近一次结算**的那一笔
- * （一段一条结果，字段不攒总量）。
+ * 见 {@link PeerSessionService.send}：一句 `chatRunner.deliver(...)`，收下了就回 `{ ok }`。
+ * 「目标在不在」「它忙不忙」都不是本文件的事 —— 忙不是拒绝的理由（队列本来就收），而不在
+ * 那条真错误由执行者按 `HostError` 抛出来。
  */
 
 import { AgentNS } from "@ai-zen/agents-core";
@@ -68,73 +44,63 @@ import type {
   PeerSessionRejectReason,
   PeerSessionSendInput,
   PeerSessionSent,
-  PeerSessionState,
   PeerSessionStatus,
 } from "@ai-zen/agents-sdk";
 
-import type {
-  ChatRunParams,
-  ChatTurn,
-  DeliveryOutcome,
-  TurnSettledFacts,
-} from "../runtime/ChatRunner.js";
+import type { DeliveryInput } from "../runtime/ChatRunner.js";
 import type { StoredMessage } from "../storage/types.js";
+import { HostError } from "../wire/errors.js";
 import type { ConversationCreateParams, ConversationCreateResult } from "../wire/index.js";
-import type { ProblemFact, RunOutcome } from "../wire/states.js";
+import type { ConversationStatus } from "../wire/states.js";
 
-/** 一条平级会话的进程内记录（**不落库**：重启即消失，理由见文件头） */
+/**
+ * 一条平级会话的进程内记录（**不落库**：重启即消失，理由见文件头）。
+ *
+ * 只有不随时间变的四样事实 + 一个名字。状态不在这里（理由见文件头「记录里为什么没有状态」）。
+ */
 export interface PeerSessionRecord {
   /** 子会话的 conversationId（工具返回给模型的就是它） */
   sessionId: string;
-  /** 谁开的这段会话 */
-  parentConversationId: string;
-  /** 可读名字：投递正文与 `read_session_status` 都用它（模型记不住 UUID） */
-  label: string;
-  /** 1 = 由一段对话直接发起（阶段 1 只允许这一层） */
-  depth: number;
-  state: Exclude<PeerSessionState, "gone">;
-  /** 开跑时刻（毫秒） */
-  startedAt: number;
   /**
-   * **当前这一段**的结果投出去了没有（`pending` = 这一段还没结算、还没投）。
+   * 谁开的这段会话 —— 血缘，用来展示（「我是它的父」这类信息）与记住这段会话从哪来。
    *
-   * 段一开始就复位成 `pending`（见 {@link onTurnStart}），这一轮结算时写成 `delivered` /
-   * `dropped`。所以它记的是「眼下这一段」的账，不是累计量；上一段的 `delivered` 留在上面就成了
-   * 「这一段已经投出去了」这句假话。
+   * 它**不参与投递的判据**：投给谁能成只看目标在不在（见文件头「投递不在这里判」）。
    */
-  resultDelivered: "pending" | "delivered" | "dropped";
+  parentConversationId: string;
+  /** 可读名字（模型记不住 UUID，`read_session_status` 用它报「这是哪一段」） */
+  label: string;
+  /** 1 = 由一段对话直接发起（只允许这一层）：创建那一刻用，投递不用 */
+  depth: number;
+  /** 开出来的时刻（毫秒；出网时转 ISO 8601） */
+  startedAt: number;
 }
 
 /**
- * 子会话第一轮的用户输入是谁推来的（core 在正文最前面那行注释里写的就是这个 `label`）。
+ * 子会话第一句的用户输入是谁推来的（core 在正文最前面那行注释里写的就是这个 `label`）。
  *
  * 形状是 core 的 `AgentNS.MessageSource` 判别结构：`kind: "agent"` 说的是「另一个 agent 推来的」，
- * `label` 是给人看的那个名字。宿主不再拿字符串比来源。
+ * `label` 是给人看的那个名字。宿主不拿字符串比来源。
  */
 const SOURCE_FROM_PARENT: AgentNS.MessageSource = { kind: "agent", label: "父对话" };
 
-/** 结果正文的截断长度（模型看到的正文不必比这更长） */
-const RESULT_CHARS = 1000;
+/** `read_session_status` 里那条摘要的截断长度（**绝不给全量消息**，否则模型会拿它当上下文搬运） */
+const STATUS_CHARS = 300;
 
 /**
- * 每个**父对话**同时最多能有多少个**在跑**的平级会话。
+ * 每个**父对话**同时最多能有多少个平级会话在忙着。
  *
- * 「在跑」= 记录上的 `state === "running"`；`idle` / `failed` / `aborted` 都不占名额（那几段已经
- * 收工了，用户要接着用它们与本限额无关）。超出了就是一条结构化拒绝 `too_many_peers`：让模型先
- * 等一批跑完、或者把活分给更少的会话，比让它一口气开 20 段把端点和额度烧光要好。
+ * 超出了就是一条结构化拒绝 `too_many_peers`：让模型先等一批干完、或者把活分给更少的会话，
+ * 比让它一口气开 20 段把端点和额度烧光要好。
  *
- * 判据只用 `records`（不新增字段、不建表）：名额这东西跟着「谁在跑」走，而「谁在跑」写在同一
- * 条记录上。
+ * 判据是**现读**：`chatRunner.state(sessionId).status === "busy"`。这一层不记「谁在忙」，
+ * 所以也不会与执行者那边漂。
  */
 const MAX_RUNNING_PEERS = 4;
 
-/** `send_to_session` 正文注释里的来源：`会话「<调用者的名字>」`（拼注释归 core） */
+/** `postMessage` 正文注释里的来源：`会话「<调用者的名字>」`（拼注释归 core） */
 function senderSource(name: string): AgentNS.MessageSource {
   return { kind: "agent", label: `会话「${name}」` };
 }
-
-/** `read_session_status` 里那条摘要的截断长度（**绝不给全量消息**，否则模型会拿它当上下文搬运） */
-const STATUS_CHARS = 300;
 
 /** 子会话的诞生：与 `conversation.create` 处理器同一条路（草稿 + 三级模型解析） */
 export interface PeerSessionConversationCreator {
@@ -142,35 +108,33 @@ export interface PeerSessionConversationCreator {
   /**
    * 草稿落成库里那一行。
    *
-   * `ChatRunner.run` 认的是**库里那一行**（R56：没有用户消息的对话不写库），所以子会话开跑
-   * 之前必须走这一道 —— 与 `conversation.send` 里那一句同义。
+   * 消息行、素材关系行都按 `conversationId` 挂外键，所以子会话收到第一句之前必须走这一道 ——
+   * 与 `conversation.send` 里那一句同义。
    */
   ensurePersisted(conversationId: string): Promise<unknown>;
 }
 
-/** 一轮的执行者（`ChatRunner` 结构上满足）：平级会话只做两件事 —— 把子会话开跑、把结果投回去 */
+/** 执行者（`ChatRunner` 结构上满足）：本文件只用它的两个口 —— 投一句、现读一格 */
 export interface PeerSessionRunner {
-  run(params: ChatRunParams): Promise<ChatTurn>;
   /**
    * 把一条内容投给某段对话（**唯一**的投递入口）。
    *
-   * 执行者负责全部判断：agent 不在就按历史复活、父对话在跑就交给那一段、正在结算就先攒着，
-   * 攒够了一次性落地。**只有「那段对话不存在」才 reject** —— 调用方据此记 `dropped`。
-   *
-   * 回执是 {@link DeliveryOutcome}：收下了，以及**投递那一刻**对方是 `running` / `idle` /
-   * `settling`（`send_to_session` 把 `state` 原样回给模型）。
+   * 它自己判「对话在不在、agent 活不活」；`await` 的边界就是「已入队」，回执只有消息 id。
+   * 目标不存在时按 `HostError` 抛（`not_found` / `conversation_dead`）。
    */
   deliver(
     conversationId: string,
-    input: { content: AgentNS.MessageContent; source: AgentNS.MessageSource },
-  ): Promise<DeliveryOutcome>;
+    input: DeliveryInput,
+  ): Promise<{ userMessageId: string }>;
+  /** 现读：这一段此刻落在哪一格（忙 / 闲 / 暂停 / 死） */
+  state(conversationId: string): { status: ConversationStatus };
 }
 
 /** 平级会话服务的依赖（窄接口：本文件不认识整个宿主） */
 export interface PeerSessionServiceDeps {
   /**
-   * 只读会话那一行：项目 / 助手 / 模型的口径来源，以及**名字**（`send_to_session` 的来源名
-   * 用它 —— 来源名由宿主解析，不许调用方传）。
+   * 只读会话那一行：项目 / 助手 / 模型的口径来源，以及**名字**（`postMessage` 的来源名
+   * 用它 —— 来源名由宿主解析，不许调用方传），外加「这段会话还在不在」。
    */
   conversations: {
     get(id: string): Promise<{ id: string; workspaceId: string; agentId: string; name: string } | undefined>;
@@ -179,12 +143,10 @@ export interface PeerSessionServiceDeps {
   conversationCreator: PeerSessionConversationCreator;
   /** 读子会话最后一条助手消息（主线消息，按 seq 升序） */
   messages: { listByConversation(conversationId: string): Promise<StoredMessage[]> };
-  /** 一轮的执行者 */
+  /** 执行者 */
   chatRunner: PeerSessionRunner;
   /** 时钟（毫秒；`startedAt` 出网时转 ISO 8601） */
   now?: () => number;
-  /** 出错的去处（投递失败**不许静默丢**：这条就是那一次出声） */
-  onError?: (error: unknown, context: string) => void;
 }
 
 /** 一条结构化拒绝（返回结果，不抛错：模型要能读懂并改变策略） */
@@ -192,16 +154,17 @@ function rejected(reason: PeerSessionRejectReason, hint: string): PeerSessionCre
   return { ok: false, reason, hint };
 }
 
-/** 一轮的结局 → 记录状态（`completed` 就是「跑完了、现在闲着」） */
-function stateOf(outcome: RunOutcome): Exclude<PeerSessionState, "gone"> {
-  switch (outcome) {
-    case "error":
-      return "failed";
-    case "aborted":
-      return "aborted";
-    default:
-      return "idle";
-  }
+/**
+ * 现读的那一格 → `read_session_status` 报的那一格：**逐格同名**，不翻译也不补格子。
+ *
+ * 两端都是闭集：宿主说 `busy` / `idle` / `paused` / `dead`，SDK 报的就是这四个；多出来的
+ * `gone` 不是一格状态，而是「这段会话的记录 / 会话行找不到了」（见 {@link status}）。
+ *
+ * 所以本文件没有 `failed`：失败是某一次回答上的事实（消息上的 `error` 与结束原因），不是
+ * 一段对话此刻的状态；把「上一次失败了」挂在状态上，就会在它下一次好好回答时继续说假话。
+ */
+function statusOf(status: ConversationStatus): PeerSessionStatus["state"] {
+  return status;
 }
 
 /** 一段消息里的纯文本（分段内容只取文本段，与自动命名同一个口径） */
@@ -222,25 +185,13 @@ function clip(text: string, limit: number): string {
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}…` : trimmed;
 }
 
-/** 失败原因写成句子（`ProblemFact.message` 已经是渲染好的一句；`detail.reason` 短则附上） */
-function failureReason(problem: ProblemFact | null): string {
-  if (!problem) return "原因不明";
-  const detail = problem.detail;
-  const raw =
-    detail !== null && typeof detail === "object" && typeof (detail as { reason?: unknown }).reason === "string"
-      ? (detail as { reason: string }).reason
-      : undefined;
-  return raw && raw.length > 0 ? `${problem.message}（${clip(raw, 200)}）` : problem.message;
-}
-
 export class PeerSessionService implements PeerSessionPort {
   private readonly records = new Map<string, PeerSessionRecord>();
   /**
    * 「这个 agent 是哪段会话的」—— 宿主在造出 agent 之后登记（见 {@link bind}）。
    *
-   * 键用 `object` 而不是 `Agent`：工厂那一侧拿到的是宿主自己的 `ChatAgent` 表面（测试里甚至是
-   * 替身），而工具那一侧给的是 core 的 `Agent`。两者是同一个对象，能当 `WeakMap` 的键就行 ——
-   * 它不跟着任何东西泄漏（agent 用完即弃，键跟着回收）。
+   * 键用 `object` 而不是 `Agent`：工厂那一侧拿到的是宿主自己的 `ChatAgent` 表面（测试里甚至
+   * 是替身），而工具那一侧给的是 core 的 `Agent`。两者是同一个对象，能当 `WeakMap` 的键就行。
    */
   private readonly identities = new WeakMap<object, string>();
   /** 缺省名字的序号（`会话 1` / `会话 2` …） */
@@ -274,28 +225,32 @@ export class PeerSessionService implements PeerSessionPort {
    * 这里会答 `false`，它于是回到「用户会话」那一套（越线时问用户）。
    *
    * 宿主拿它做两件事：① 装配 agent 时决定压缩方式（派生会话自动压，用户会话问用户）；
-   * ② 一轮结算之后决定要不要挂交接问题（派生会话不问）。
+   * ② 变闲那一拍决定要不要挂交接问题（派生会话不问，它自己压）。
    */
   isPeerSession(conversationId: string): boolean {
     return this.records.has(conversationId);
   }
 
   /**
-   * 开一段平级会话：建会话 → 落真行 → 开跑 → **立刻**回 `{ sessionId, label }`。
+   * 开一段平级会话：建会话 → 落真行 → 把第一句交出去 → **立刻**回 `{ sessionId, label }`。
    *
    * 三种失败是**结构化拒绝**（返回结果，不抛错）：调用方自己已经是平级会话（`depth_exceeded`，
-   * 防无限分身）、这个父对话手头已经在跑的平级会话到了 {@link MAX_RUNNING_PEERS} 个
-   * （`too_many_peers`）、子会话三级解析拿不到模型（`model_unresolved`）。其余错误照抛 —— 那是
-   * 接线或环境出了真问题，编一个「拒绝」给模型反而误导它。
+   * 防无限分身）、这个父对话手头忙着 4 个平级会话（`too_many_peers`）、子会话三级解析拿不到
+   * 模型（`model_unresolved`）。其余错误照抛 —— 那是接线或环境出了真问题，编一个「拒绝」给
+   * 模型反而误导它。
+   *
+   * 这里**不挂任何「等它答完」的东西**：回答本身会以消息的形式出现，父对话要看就说一句
+   * `postMessage`、或者自己接着干活。等待等于子代理，而那已经存在了。
    */
   async create(input: PeerSessionCreateInput): Promise<PeerSessionCreated> {
     const parentConversationId = this.identityOf(input.caller);
     const parent = await this.deps.conversations.get(parentConversationId);
     if (!parent) {
-      // 父对话已经不在了（被删）：没有可投递的去处，也没有可继承的项目 / 助手
-      throw new Error(
-        `Cannot open a peer session: conversation "${parentConversationId}" no longer exists`,
-      );
+      // 父对话已经不在了（被删）：没有可继承的项目 / 助手，也没有可回的地方
+      throw new HostError("not_found", {
+        params: { entity: "conversation" },
+        detail: { conversationId: parentConversationId, reason: "parent_gone" },
+      });
     }
 
     // 1. 深度守卫（只有一层）：一个平级会话不许再开平级会话
@@ -309,15 +264,13 @@ export class PeerSessionService implements PeerSessionPort {
       );
     }
 
-    // 2. 并发限额：这个父对话手头**在跑**的平级会话满了就不建（在 `conversationCreator.create`
-    //    之前判：拒绝不许留下副作用 —— 一段建出来又跑不了的会话比一条拒绝糟得多）
-    const running = this.runningPeersOf(parentConversationId);
-    if (running >= MAX_RUNNING_PEERS) {
+    // 2. 并发限额：这个父对话手头忙着的平级会话满了就不建（在 `create` 之前判：拒绝不许留下
+    //    副作用 —— 一段建出来又没人管的会话比一条拒绝糟得多）
+    if (this.busyPeersOf(parentConversationId) >= MAX_RUNNING_PEERS) {
       return rejected(
         "too_many_peers",
-        `This conversation already has ${MAX_RUNNING_PEERS} peer sessions running at the same ` +
-          "time. Wait for some of them to finish (their results are pushed back to me), or give " +
-          "the work to fewer sessions instead of opening another one.",
+        `This conversation already has ${MAX_RUNNING_PEERS} peer sessions busy at the same ` +
+          "time. Give the work to fewer sessions instead of opening another one.",
       );
     }
 
@@ -342,54 +295,53 @@ export class PeerSessionService implements PeerSessionPort {
     }
 
     const sessionId = created.conversation.id;
-    // 4. 草稿落成真行：`chatRunner.run` 只认库里那一行（R56）
+    // 4. 草稿落成真行：消息要挂在这段对话上（外键）
     await this.deps.conversationCreator.ensurePersisted(sessionId);
 
-    // 5. 先记账再开跑（`state: "running"` / `resultDelivered: "pending"`）：跑完的投递要靠它
+    // 5. 先记账：投出去之后马上就有工具回执，记录必须在那一刻之前就在（`read_session_status`
+    //    可能紧跟着到达）
     const record: PeerSessionRecord = {
       sessionId,
       parentConversationId,
       label: input.label ?? this.nextLabel(),
       depth: (own?.depth ?? 0) + 1,
-      state: "running",
       startedAt: this.now(),
-      resultDelivered: "pending",
     };
     this.records.set(sessionId, record);
 
-    // 6. 开跑（受理即回）：子会话第一句的 source 写「父对话」，正文最前面那行注释由 core 加。
-    //    这里**不挂**任何跟这一轮结果的东西：回投跟着结算走（见 `settleTurn`），不是跟着
-    //    `create` 走 —— 否则第一段会被投两遍（`onTurnSettled` 那一路已经投了一次）。
-    try {
-      await this.deps.chatRunner.run({
-        conversationId: sessionId,
-        input: { content: input.prompt },
-        source: SOURCE_FROM_PARENT,
-      });
-    } catch (error) {
-      record.state = "failed";
-      record.resultDelivered = "dropped";
-      this.onError(error, "平级会话开跑失败");
-      throw error;
-    }
+    // 6. 把第一句交出去（受理即回）：来源写「父对话」，正文最前面那行注释由 core 加。
+    //
+    //    `mayStart: true` 是因为这里就是创建者：**刚建出来的对话由创建者装上驱动者**。
+    //    执行者的判据一个字不改 —— 「投给已存在但没有驱动者的对话」仍然是 `conversation_dead`，
+    //    那条判据是这套模型的一部分。
+    await this.deps.chatRunner.deliver(sessionId, {
+      content: input.prompt,
+      source: SOURCE_FROM_PARENT,
+      mayStart: true,
+    });
 
-    // 7. 就这么回（结果由这一段自己的结算负责推回来：`ChatRunner.onTurnSettled` → `settleTurn`）
+    // 7. 就这么回，不等它答完
     return { ok: true, sessionId, label: record.label };
   }
 
   /**
-   * 问一段平级会话的状态。
+   * 问一段平级会话现在怎么样。
    *
-   * 查不到记录就是 `gone`（**不抛错**：模型不该因为查了一个删掉的 / 重启前的会话而断掉这一轮）。
-   * 记录存在时多给两格：可读名字与最后一条助手消息的截断摘要（~300 字，绝不给全量）。
+   * 查不到就是 `gone`（**不抛错**：模型不该因为查了一个删掉的 / 重启前的会话而断掉它手上的活）：
+   * 判据两条 —— 记录里没有它，或者对话行已经不在（被用户删了）。两件事对调用方是同一个答复。
+   *
+   * 记录在、对话也在：那一格**现读**（不存镜像），再加个可读名字与最后一条助手消息的截断摘要
+   * （~300 字，绝不给全量）。
    */
   async status(input: { caller: Agent; sessionId: string }): Promise<PeerSessionStatus> {
     const record = this.records.get(input.sessionId);
     if (!record) return { state: "gone" };
+    const row = await this.deps.conversations.get(input.sessionId);
+    if (!row) return { state: "gone" };
 
     const lastMessage = clip(await this.lastAssistantText(record.sessionId), STATUS_CHARS);
     return {
-      state: record.state,
+      state: statusOf(this.deps.chatRunner.state(input.sessionId).status),
       label: record.label,
       startedAt: new Date(record.startedAt).toISOString(),
       ...(lastMessage.length > 0 ? { lastMessage } : {}),
@@ -397,185 +349,30 @@ export class PeerSessionService implements PeerSessionPort {
   }
 
   /**
-   * **一轮开始** → 若这段会话是派生会话，把记录复位成「这一轮正在跑」。
+   * 跟一段平级会话**接着说话**（`postMessage`）。
    *
-   * 必要性就两句：`read_session_status` 要诚实（它正跑着的时候不能答 `idle`）；`create_session`
-   * 的并发限额只数 `state === "running"`，这些轮要数得到。
+   * 只有一件事要做：`deliver`。**不看关系** —— 谁都能给谁说话（投递不看关系是整套模型的
+   * 一条硬规矩）；「目标不在」是唯一会失败的情形，而那是 `HostError`（`not_found` /
+   * `conversation_dead`），不是一条「拒绝」返回值。
    *
-   * 所以两格都要复位：`state → "running"`，`resultDelivered → "pending"`（这一轮的账重新开始
-   * 记，上一轮的 `delivered` 不许挂在新的一轮上）。
-   *
-   * 由 `app.ts` 那条已在处理一轮边界的 `onState` 一跳进来（`state → busy` 是「这一轮开始了」）；
-   * `idle` / `paused` 那一拍不动 —— 收尾归 {@link settleTurn}。判据只有 `records`：
-   * 不在里面的会话（用户会话、父对话自己、重启前的旧会话）什么都不发生。
-   */
-  onTurnStart(conversationId: string): void {
-    const record = this.records.get(conversationId);
-    if (!record) return;
-    record.state = "running";
-    record.resultDelivered = "pending";
-  }
-
-  /**
-   * **一轮结算** → 若这段会话是派生会话，就把这一轮的结果投回它的父对话。
-   *
-   * 由 `app.ts` 那条已有的 `onTurnSettled` 一跳进来（与交接线提问并列，
-   * `void this.peerSessions.settleTurn(facts)`）：触发源就是 `ChatRunner` 结算时本来就会报的
-   * 那一条，**不新增事件、不另立订阅**。
-   *
-   * 四步，顺序不能换：
-   *   1. `records` 里没有这段会话 → 直接返回（它不是派生会话：用户会话、以及**父对话自己**那一段
-   *      都走这一支 —— 父不是 peer，它的结算本来就不该回投给任何人）；
-   *   2. 是 peer → 按这一段结局改记录状态（`idle` / `failed` / `aborted`，用 `stateOf`）；
-   *   3. 读子会话最后一条助手消息、截断，失败 / 中止时正文里写明原因（用句子，不甩错误栈）；
-   *   4. 投递：**一句 `chatRunner.deliver`**。父对话在跑、空闲、正在结算、agent 还在不在，
-   *      都不是本文件要判断的事（那些判断只有一个地方该做，理由见文件头「投递」那一段）。
-   *
-   * ## 为什么**不**按 `facts.source` 过滤
-   *
-   * 派生会话的段有两种叫法：`create_session` 起的第一段（`source: "父对话"`）与之后被投递叫醒
-   * 的自起段（`source` 是投递方给的来源名）。只认「不是用户发的」会漏掉前者，只认自起段会漏掉
-   * 后者；而「该不该回投」的真判据只有一个 —— **这段会话在不在 `records` 里**。来源不参与判断。
-   *
-   * ## 这条链会不会自己循环（必须想清楚的那一条）
-   *
-   * 会走到回投的段只有「派生会话的段」。三种情形都收得住：
-   *
-   *   - **深度只有一层**：peer 不能再开 peer（`create` 的 `depth_exceeded`），所以「子 → 父 →
-   *     祖父」最多两跳；最后一跳那段会话不在 `records` 里，不会继续回投 —— 链子自己断在那里。
-   *   - **父 ↔ 子之间可以来回**：父 `send_to_session` → 子跑完回投 → 父被唤醒 → 父再
-   *     `send_to_session` …… 这**不是机制自激**：每一轮都要模型主动发一次工具调用，是模型自己
-   *     的选择，不是结算钩子自己生出来的。所以这里**不做预算 / 熔断**（多一层限制会误伤
-   *     「接着干」这个正当用法）。
-   *   - 回投把**父对话**叫起来的那一段结算时，`records` 里没有父对话 → 第一步就返回，不会二次
-   *     回投（这就是「父被唤醒的那一段不能当成需要回投的段」这条要求落成代码的地方）。
-   *
-   * `resultDelivered` 跟着改成「受理即 `delivered`」：执行者保证这一条迟早落地（在跑的段取走、
-   * 正在结算就攒到结算之后一起投、agent 不在就按历史复活），所以本文件没有「投不进去」这个
-   * 状态可记 —— 除了**父对话不存在**（那一条是真的没有去处，记 `dropped` 并出声一次）。
-   *
-   * 回执（`DeliveryOutcome`）在这里**不记**：它描述的是「投递那一刻父对话是什么状态」，那是给
-   * `send_to_session` 回给模型看的信息；结果回投的场景下没有谁要读它（父对话在不在跑不影响
-   * 「这一条会不会落地」）。**丢掉不看是有意为之**，不是忘了。
-   *
-   * `source` 就是正文那行注释里的来源，**label 原样**（`补测试` / 会话 1）：拼注释归 core 的
-   * `inboxEntryContent`，本文件不自己拼那一行 —— 否则壳里壳外两种写法迟早分叉。这里**不套**
-   * 「会话「…」」：缺省 label 本身就是 `会话 N`，再套一层引号与「会话」前缀，模型读到的就是
-   * 「来自 会话「会话 1」 自动推送」这种套娃话。（`send_to_session` 那一路的调用者是**另一段
-   * 会话**而不是「这个子会话的结果」，所以它套了那一层，见 {@link senderSource}。）
-   */
-  async settleTurn(facts: TurnSettledFacts): Promise<void> {
-    // ① 不是派生会话（用户会话 / 父对话自己那一段）：这段结算与回投无关
-    const record = this.records.get(facts.conversationId);
-    if (!record) return;
-
-    // ② 先按结局改状态（`idle` / `failed` / `aborted`）：这一段已经收工了
-    record.state = stateOf(facts.outcome);
-
-    try {
-      await this.deps.chatRunner.deliver(record.parentConversationId, {
-        content: await this.resultBody(record, facts.outcome, facts.problem),
-        // 这是子会话这一段的**结果**被推回父对话：对父对话而言它来自另一个 agent
-        // （`label` 原样就是那个子会话的名字）
-        source: { kind: "agent", label: record.label },
-      });
-      // 受理 = 迟早落地（攒批、复活都由执行者兜着）：不必等它跑完，也不必再试一次
-      record.resultDelivered = "delivered";
-    } catch (error) {
-      // 唯一会走到这里的情形是父对话已经不存在：记 `dropped` 并出声一次（不重试、不补投）
-      record.resultDelivered = "dropped";
-      this.onError(error, "平级会话的结果没能投递给父对话");
-    }
-  }
-
-  /** 投递正文：失败 / 中止时先说清原因，再附上子会话最后说的话（都截断） */
-  private async resultBody(
-    record: PeerSessionRecord,
-    outcome: RunOutcome,
-    problem: ProblemFact | null,
-  ): Promise<string> {
-    const summary = clip(await this.lastAssistantText(record.sessionId), RESULT_CHARS);
-    const head =
-      outcome === "error"
-        ? `子会话失败了：${failureReason(problem)}`
-        : outcome === "aborted"
-          ? "子会话被中止了，下面是它停下之前说的最后一句话"
-          : null;
-    if (head === null) return summary.length > 0 ? summary : "子会话跑完了，但没有留下任何正文。";
-    return summary.length > 0 ? `${head}\n\n${summary}` : `${head}（它没有留下任何正文）。`;
-  }
-
-  /** 子会话最后一条**有正文的**助手消息（工具消息、占位都不算） */
-  private async lastAssistantText(conversationId: string): Promise<string> {
-    const rows = await this.deps.messages.listByConversation(conversationId);
-    for (let index = rows.length - 1; index >= 0; index -= 1) {
-      const row = rows[index]!;
-      if (row.role !== AgentNS.Role.Assistant) continue;
-      const text = textOf(row.content);
-      if (text.trim().length > 0) return text;
-    }
-    return "";
-  }
-
-  /**
-   * 跟一段平级会话**接着说话**（`send_to_session`）。
-   *
-   * 与 `create` / `status` 同构的窄端口：**只收 `caller`**，不收 `label` 也不收来源名 —— 来源名
-   * 由宿主解析（见 {@link senderSource}），模型 / 调用方说什么都不算数。
-   *
-   * ## 血缘校验就在这一层
-   *
-   * 「谁是谁的父」只写在 `records` 里（进程内，不落库），`AgentRegistry` 与 `Agent` 上都没有
-   * 这个事实，所以判断只能在这一层。两条合法关系：
-   *
-   *   - **我是它的父**：`records.get(sessionId).parentConversationId === 我`；
-   *   - **它是我的父**：我自己那条记录的 `parentConversationId === sessionId`（父对话是普通
-   *     会话，它自己**不在** `records` 里 —— 所以这一句要靠我自己那条记录来答，不能反过来查）。
-   *
-   * 其余一律 `not_allowed`：**平级之间不许互发**（两段同父的子会话互不知道对方存在，让它们通
-   * 话等于凭空造出一张没人负责的图），自己发给自己也不行。查不到目标记录、且它不是我的父 →
-   * `gone`。两种拒绝都是**返回结果**，不抛错：模型要能按字段分支。
+   * 回执只有「收下了」（`{ ok: true }`）：它忙不忙、什么时候取件、取走之后做什么，都不是
+   * 投递这一刻能定下的事实 —— 本工具从不等结果，也不回状态。
    *
    * ## 已知边界：`records` 不落库，所以重启之后一律 `gone`
    *
-   * 宿主重启之后 `records` 是空的，`send_to_session` 对任何 id 都答 `gone`（那段会话作为普通
-   * 会话还在库里，用户仍旧能接管它、接着说话）。跨重启的稳定语义（孤儿、补投）留给阶段 3 的
-   * `peer_sessions` 表 —— 本文件不偷偷加表。
+   * 宿主重启之后 `records` 是空的，`status` 对任何 id 都答 `gone`（那段会话作为普通会话还在
+   * 库里，用户仍旧能接管它、接着说话）。跨重启的稳定语义（孤儿、补投）留给以后那张表 ——
+   * 本文件不偷偷加表。
    */
   async send(input: PeerSessionSendInput): Promise<PeerSessionSent> {
     const callerConversationId = this.identityOf(input.caller);
-    const rejection = this.rejectionOf(callerConversationId, input.sessionId);
-    // 两种拒绝都是返回结果（不抛错）：模型要能按字段分支自己改变策略
-    if (rejection) return { ok: false, reason: rejection };
-
     const source = senderSource(await this.nameOf(callerConversationId));
-    const outcome = await this.deps.chatRunner.deliver(input.sessionId, {
+    await this.deps.chatRunner.deliver(input.sessionId, {
       content: input.content,
       source,
     });
-    // `state` 原样回给工具（`running` 排在它这一轮末尾 / `idle` 会把它叫起来 / `settling` 先攒着）
-    return { ok: true, state: outcome.state };
-  }
-
-  /**
-   * 没血缘时的拒绝原因（`undefined` = 这一条可以发）。
-   *
-   * 顺序不能换：**先看「它是我的父」**（那一条只能靠我自己那条记录答 —— 父对话是普通会话，
-   * 它自己不在 `records` 里），再看目标在不在 `records` 里（不在 → `gone`），最后才判
-   * 「我是它的父」。
-   */
-  private rejectionOf(
-    callerConversationId: string,
-    sessionId: string,
-  ): "gone" | "not_allowed" | undefined {
-    // 它是我的父
-    if (this.records.get(callerConversationId)?.parentConversationId === sessionId) return undefined;
-    // 查不到这条记录：不是我的父，也不是我知道的任何平级会话
-    if (!this.records.has(sessionId)) return "gone";
-    // 我是它的父；平级之间、自己发给自己都在这一支被挡下
-    return this.records.get(sessionId)?.parentConversationId === callerConversationId
-      ? undefined
-      : "not_allowed";
+    // 回执只有「收下了」：它忙不忙、什么时候取件都不是这一句话能定下的事实
+    return { ok: true };
   }
 
   /**
@@ -590,19 +387,20 @@ export class PeerSessionService implements PeerSessionPort {
     const row = await this.deps.conversations.get(conversationId);
     if (!row) {
       // 会话行都没了：这条消息没有可信的署名（编一个名字出来只会让目标误会来源）
-      throw new Error(
-        `Cannot send to a peer session: conversation "${conversationId}" no longer exists`,
-      );
+      throw new HostError("not_found", {
+        params: { entity: "conversation" },
+        detail: { conversationId, reason: "caller_gone" },
+      });
     }
     return row.name;
   }
 
-  /** 这个父对话手头**在跑**的平级会话有几个（限额的判据：只看 `records`） */
-  private runningPeersOf(parentConversationId: string): number {
+  /** 这个父对话手头**忙着**的平级会话有几个（限额的判据：现读执行者那一格） */
+  private busyPeersOf(parentConversationId: string): number {
     let count = 0;
     for (const record of this.records.values()) {
       if (record.parentConversationId !== parentConversationId) continue;
-      if (record.state === "running") count += 1;
+      if (this.deps.chatRunner.state(record.sessionId).status === "busy") count += 1;
     }
     return count;
   }
@@ -612,7 +410,7 @@ export class PeerSessionService implements PeerSessionPort {
     const conversationId = this.identities.get(caller);
     if (!conversationId) {
       throw new Error(
-        "Cannot open a peer session: this agent is not bound to any conversation " +
+        "Cannot reach a peer session: this agent is not bound to any conversation " +
           "(the host must call PeerSessionService.bind(agent, conversationId) when it builds one)",
       );
     }
@@ -628,8 +426,15 @@ export class PeerSessionService implements PeerSessionPort {
     return this.deps.now ? this.deps.now() : Date.now();
   }
 
-  private onError(error: unknown, context: string): void {
-    this.deps.onError?.(error, context);
+  private async lastAssistantText(conversationId: string): Promise<string> {
+    const rows = await this.deps.messages.listByConversation(conversationId);
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+      const row = rows[index]!;
+      if (row.role !== AgentNS.Role.Assistant) continue;
+      const text = textOf(row.content);
+      if (text.trim().length > 0) return text;
+    }
+    return "";
   }
 }
 

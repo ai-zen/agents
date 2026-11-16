@@ -180,28 +180,6 @@ describe("MessageRepository 的父工具调用列（R37）", () => {
     expect(children[0]?.parentToolCallId).toBe("call-1");
     expect(await repo.listByParentToolCallId("c1", "没这个调用")).toEqual([]);
   });
-
-  it("listDelegated 只给子 Agent 那一半：主线一条也不混进来（两条读法正好互补）", async () => {
-    await repo.upsert(message({ id: "top-1", createdAt: 100 }));
-    await repo.upsert(message({ id: "child-1", parentToolCallId: "call-1", createdAt: 200 }));
-    await repo.upsert(message({ id: "child-2", parentToolCallId: "call-2", createdAt: 300 }));
-    await repo.upsert(message({ id: "top-2", createdAt: 400 }));
-    // 另一段对话里的委派不跟这段混在一起
-    await repo.upsert(
-      message({ id: "elsewhere", conversationId: "c2", parentToolCallId: "call-1", createdAt: 500 }),
-    );
-
-    const delegated = await repo.listDelegated("c1");
-    expect(delegated.map((row) => row.id)).toEqual(["child-1", "child-2"]);
-    // 与主线那一条正好互补：两边的并集就是这段对话的全部行
-    const topLevel = await repo.listByConversation("c1");
-    expect([...topLevel, ...delegated].map((row) => row.id).sort()).toEqual([
-      "child-1",
-      "child-2",
-      "top-1",
-      "top-2",
-    ]);
-  });
 });
 
 describe("MessageRepository.search", () => {

@@ -109,9 +109,7 @@ function handlers(): HandlerTable {
       });
       return {
         userMessageId: "u-1",
-        assistantMessageId: "a-1",
         attachments: [],
-        acceptedAt: NOW,
       };
     },
 
@@ -412,27 +410,9 @@ describe("推送（PRD L5 / R47）", () => {
     first.request("workspace.list", {});
     await first.queue.next();
 
-    hub.push("run.state", {
+    hub.push("state", {
       conversationId: "c-1",
-      run: {
-        conversationId: "c-1",
-        status: "running",
-        assistantMessageId: "a-1",
-        inbox: [],
-        startedAt: NOW,
-        settledAt: null,
-        generation: { phase: "thinking", since: NOW, chars: 3 },
-        outcome: null,
-        problem: null,
-        subagents: [],
-        usage: {
-          turn: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-          total: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-          subAgent: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-          rate: { value: 0, unit: "tokens_per_second", basis: "completion" },
-          updatedAt: NOW,
-        },
-      },
+      status: "busy",
       at: NOW,
     });
     expect(isNotification(await first.queue.next())).toBe(true);
@@ -448,7 +428,6 @@ describe("推送（PRD L5 / R47）", () => {
       conversationId: "c-1",
       workspaceId: "ws-1",
       change: "renamed",
-      messageCount: 2,
       at: NOW,
     });
     const frame = await second.queue.next();
@@ -510,7 +489,6 @@ describe("推送（PRD L5 / R47）", () => {
       conversationId: "c-1",
       workspaceId: "ws-1",
       change: "renamed",
-      messageCount: 0,
       at: NOW,
     });
 
@@ -531,12 +509,12 @@ describe("推送（PRD L5 / R47）", () => {
       "another-conversation",
     );
 
-    // 2) 然后是回包（受理即返回，客户端据此拿到两个 id）
+    // 2) 然后是回包（受理即返回，客户端据此拿到那条用户消息的 id）
     const response = await client.queue.next();
     expect(isSuccess(response)).toBe(true);
     expect((response as { result: ConversationSendResult }).result).toMatchObject({
       userMessageId: "u-1",
-      assistantMessageId: "a-1",
+      attachments: [],
     });
 
     // 3) 最后才是这段对话被缓冲的增量
