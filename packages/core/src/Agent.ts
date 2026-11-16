@@ -119,6 +119,20 @@ export interface InboxClearedEvent {
   agent: Agent;
   entries: AgentNS.InboxEntry[];
 }
+/**
+ * 这些条目**已经离开队列**（被取走了），并且它们该落的消息已经落好了。
+ *
+ * 为什么取走也要说一声：持久化要求「inbox 一有变化就入库」。只报进队不报取走的话，
+ * 宿主只能靠快照覆盖，那就不再实时了；而靠增量又必然对不上（钥匙被取走完全无声）。
+ *
+ * 为什么排在落地**之后**：崩溃点若落在两者之间，
+ * - 「消息已落、条目还在」→ 恢复时按 `messageId` 去重就能收拾（可救）；
+ * - 反过来「条目没了、消息没落」→ 那条话凭空消失（不可救）。
+ */
+export interface InboxTakenEvent {
+  agent: Agent;
+  entries: AgentNS.InboxEntry[];
+}
 export interface MessageEvent {
   agent: Agent;
   message: AgentNS.Message;
@@ -201,6 +215,7 @@ export interface AgentEvents {
   killed: LifecycleEvent;
   state: StateEvent;
   inboxAdded: InboxAddedEvent;
+  inboxTaken: InboxTakenEvent;
   inboxCleared: InboxClearedEvent;
   messageAdded: MessageEvent;
   messageChanged: MessageEvent;
@@ -630,6 +645,8 @@ export class Agent extends AgentContext {
       const message = inboxEntryMessage(entry);
       if (message) this.append(message);
     }
+    // 落地完了才报「这些已经离开队列」（理由见 `InboxTakenEvent`）
+    if (entries.length) this.emit("inboxTaken", { agent: this, entries });
 
     // ③ 内循环
     await this.dispatchHook("onOuterLoopStart", ctx);
@@ -968,6 +985,7 @@ export class Agent extends AgentContext {
       const message = inboxEntryMessage(entry);
       if (message) this.append(message);
     }
+    this.emit("inboxTaken", { agent: this, entries });
     this.refreshState();
     return true;
   }

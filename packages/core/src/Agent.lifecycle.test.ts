@@ -553,4 +553,37 @@ describe("Agent runOnce", () => {
 
     agent.kill();
   });
+
+  it("inboxTaken 在落地之后报，带的是被取走的那些条目（含钥匙）", () => {
+    const { client } = createMockClient([textStream("好")]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+
+    const taken: any[] = [];
+    const addedBefore: number[] = [];
+    agent.on("inboxTaken", (payload) => {
+      taken.push(payload);
+      // 落地必须先发生：报告这一刻，消息已经在了
+      addedBefore.push(agent.messages.filter((m) => m.role === AgentNS.Role.User).length);
+    });
+
+    agent.push(user("一句"));
+    agent.push(); // 钥匙
+
+    return (async () => {
+      void agent.start();
+      await until(() => agent.state === "idle" && taken.length > 0);
+
+      expect(taken).toHaveLength(1);
+      // 两条都被取走了：一条带正文、一条是钥匙
+      expect(taken[0].entries).toHaveLength(2);
+      expect(taken[0].entries[1].content).toBeUndefined();
+      // 报之前那条 user 消息已经落地了
+      expect(addedBefore[0]).toBe(1);
+      // 队列已空
+      expect(agent.inboxPending).toHaveLength(0);
+
+      agent.stop();
+      await agent.start();
+    })();
+  });
 });
