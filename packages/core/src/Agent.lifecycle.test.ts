@@ -138,13 +138,15 @@ describe("Agent 死活", () => {
 });
 
 describe("Agent 投递", () => {
-  it("send 落一条 user 消息，等到闲才返回", async () => {
+  it("push 落一条 user 消息；跑完之后自己回声（不靠等 promise）", async () => {
     const { client } = createMockClient([textStream("你好")]);
     const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
     void agent.start();
 
-    const messages = await agent.send(user("在吗"));
+    agent.push(user("在吗"));
+    await until(() => agent.state === "idle");
 
+    const messages = agent.messages;
     expect(messages.map((m) => m.role)).toEqual([
       AgentNS.Role.User,
       AgentNS.Role.Assistant,
@@ -167,7 +169,8 @@ describe("Agent 投递", () => {
     });
     void agent.start();
 
-    await agent.send(); // 拧钥匙：不给正文
+    agent.push(); // 拧钥匙：不给正文
+    await until(() => agent.state === "idle");
 
     expect(create).toHaveBeenCalledTimes(1);
     expect(agent.messages.map((m) => m.role)).toEqual([
@@ -227,7 +230,7 @@ describe("Agent 暂停", () => {
     });
     void agent.start();
 
-    void agent.send(user("慢慢来"));
+    agent.push(user("慢慢来"));
     await until(() => agent.state === "busy");
     await until(() => signal !== undefined);
 
@@ -261,8 +264,9 @@ describe("Agent 错误", () => {
     agent.on("failed", (payload) => failed.push(payload));
 
     void agent.start();
-    // 出错之后 state 会回到 idle —— send 等得到
-    await agent.send(user("在吗"));
+    agent.push(user("在吗"));
+    // 出错之后 state 会回到 idle：出错不终结 agent
+    await until(() => agent.state === "idle");
 
     const assistant = agent.messages.at(-1)!;
     expect(assistant.status).toBe(AgentNS.MessageStatus.Error);
@@ -299,7 +303,8 @@ describe("Agent 修复", () => {
     agent.on("messageRemoved", ({ message }) => removed.push(message));
 
     void agent.start();
-    await agent.send(user("接着问"));
+    agent.push(user("接着问"));
+    await until(() => agent.state === "idle");
 
     expect(agent.messages.some((m) => m.id === "half")).toBe(false);
     expect(removed.map((m) => m.id)).toEqual(["half"]);
@@ -341,7 +346,8 @@ describe("Agent 工具", () => {
     });
     void agent.start();
 
-    await agent.send(user("跑两个工具"));
+    agent.push(user("跑两个工具"));
+    await until(() => agent.state === "idle");
 
     const toolMessages = agent.messages.filter((m) => m.role === AgentNS.Role.Tool);
     expect(toolMessages.map((m) => m.tool_call_id)).toEqual(["c1", "c2"]);
@@ -360,6 +366,7 @@ describe("Agent runOnce", () => {
       client,
       model: "m",
       newMessageId: makeIds(),
+      lifetime: "one-shot",
       messages: [Message.System("sys"), Message.User("干件事", { kind: "agent", label: "测试" })],
     });
 
@@ -373,7 +380,7 @@ describe("Agent runOnce", () => {
 
   it("没有燃料就抛裸 Error", async () => {
     const { client } = createMockClient([]);
-    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds(), lifetime: "one-shot" });
 
     await expect(agent.runOnce()).rejects.toThrow(/messages 是空的/);
   });
@@ -384,11 +391,48 @@ describe("Agent runOnce", () => {
       client,
       model: "m",
       newMessageId: makeIds(),
+      lifetime: "one-shot",
       messages: [Message.User("x", { kind: "user" })],
     });
     void agent.start();
 
     await expect(agent.runOnce()).rejects.toThrow(/只能用在还没 start/);
+
+    agent.kill();
+    await agent.start();
+  });
+
+  it("常驻 agent 不许 runOnce", async () => {
+    const { client } = createMockClient([]);
+    const agent = new Agent({
+      client,
+      model: "m",
+      newMessageId: makeIds(),
+      messages: [Message.User("x", { kind: "user" })],
+    });
+
+    await expect(agent.runOnce()).rejects.toThrow(/lifetime/);
+  });
+
+  it("一次性 agent 开跑即关收：第二次投递抛 closed", async () => {
+    let signal: AbortSignal | undefined;
+    const create = vi.fn(async (_body: any, options: any) => {
+      signal = options?.signal;
+      return makeHangingStream(options?.signal);
+    });
+    const agent = new Agent({
+      client: { chat: { completions: { create } } } as any,
+      model: "m",
+      newMessageId: makeIds(),
+      lifetime: "one-shot",
+      messages: [Message.User("干件事", { kind: "user" })],
+    });
+
+    void agent.start();
+    agent.push(); // 这一次是发起它的那一次
+    await until(() => agent.state === "busy");
+
+    expect(() => agent.push(user("偷偷再塞一条"))).toThrow(AgentError);
 
     agent.kill();
     await agent.start();

@@ -41,6 +41,12 @@ export class AgentContext {
    */
   abortedMessageStrategy: AbortedMessageStrategy;
   /**
+   * 寿命：常驻还是只用一次。构造期定死，不许改（语义见 `AgentNS.AgentLifetime`）。
+   *
+   * 默认 `resident` —— 它是能力更大的那个；想要「跑完就死」得显式声明。
+   */
+  lifetime: AgentNS.AgentLifetime;
+  /**
    * 造消息 id 的唯一来源。助手占位、投递时没给 id 的条目，都问它。
    *
    * 从外面注入的好处：宿主想让 id 与自己的库对齐（或测试里要可预测），
@@ -53,6 +59,7 @@ export class AgentContext {
     if (!options.model) throw new Error("AgentContext must have a model");
     this.client = options.client;
     this.model = options.model;
+    this.lifetime = options.lifetime ?? "resident";
     this.newMessageId = options.newMessageId ?? generateMessageId;
     this.id = options.id ?? this.newMessageId();
     this.modelConfig = options.modelConfig ?? {};

@@ -192,6 +192,17 @@ export namespace AgentNS {
    */
   export type AgentState = "busy" | "idle" | "paused";
 
+  /**
+   * 寿命：常驻还是只用一次。构造期定死，不许改。
+   *
+   * 它不只是「活多久」，是**能力差**（`CORE.md` §1）：
+   * - `resident`：`start` / `stop`；任何人可以 `push` 多次；将来可以接「结果靠事件
+   *   回来」的工具 —— 因为结果回来时它还在。
+   * - `one-shot`：`runOnce()` 专用；**开跑即关收**（第二次 `push` 抛 `closed`）；
+   *   不许接真异步工具 —— 栈一退就没收件人了。
+   */
+  export type AgentLifetime = "resident" | "one-shot";
+
   export interface Delta {
     name?: string;
     content?: MessageContent;

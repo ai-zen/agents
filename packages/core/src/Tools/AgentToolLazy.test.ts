@@ -53,7 +53,7 @@ describe("AgentToolLazy 子 Agent 委派边界", () => {
 
   it("onSubAgentStart 载荷区分主/子 Agent，放行后返回子 Agent 结果", async () => {
     const childClient = createMockClient("子Agent结果");
-    const child = new Agent({ client: childClient, model: "gpt-4" });
+    const child = new Agent({ client: childClient, model: "gpt-4", lifetime: "one-shot" });
     const tool = buildTool(child);
     const host = new Agent({
       client: createMockClient(),
@@ -81,7 +81,7 @@ describe("AgentToolLazy 子 Agent 委派边界", () => {
 
   it("onSubAgentStart 返回字符串时拒绝委派：子 Agent 不 run、原因作为工具结果", async () => {
     const childClient = createMockClient("子Agent结果");
-    const child = new Agent({ client: childClient, model: "gpt-4" });
+    const child = new Agent({ client: childClient, model: "gpt-4", lifetime: "one-shot" });
     const tool = buildTool(child);
     const host = new Agent({
       client: createMockClient(),
@@ -108,7 +108,11 @@ describe("AgentToolLazy 子 Agent 委派边界", () => {
   });
 
   it("onSubAgentEnd 在子 Agent 完成后触发，且不影响工具结果", async () => {
-    const child = new Agent({ client: createMockClient("子Agent结果"), model: "gpt-4" });
+    const child = new Agent({
+      client: createMockClient("子Agent结果"),
+      model: "gpt-4",
+      lifetime: "one-shot",
+    });
     const tool = buildTool(child);
     const host = new Agent({
       client: createMockClient(),
@@ -133,6 +137,7 @@ describe("AgentToolLazy 子 Agent 委派边界", () => {
     const child = new Agent({
       client: createMockClient("子Agent结果"),
       model: "gpt-4",
+      lifetime: "one-shot",
       messages: [Message.System("动态提示"), Message.User("动态任务")],
     });
     const tool = new AgentToolLazy({
@@ -163,7 +168,7 @@ describe("AgentToolLazy 子 Agent 委派边界", () => {
       description: "测试",
       parameters: { type: "object", properties: {}, required: [] },
     };
-    const buildAgent = () => new Agent({ client: createMockClient(), model: "gpt-4" });
+    const buildAgent = () => new Agent({ client: createMockClient(), model: "gpt-4", lifetime: "one-shot" });
 
     expect(() => new AgentToolLazy({ function: fn, buildAgent })).not.toThrow();
     expect(

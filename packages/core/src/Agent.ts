@@ -218,6 +218,8 @@ export class Agent extends AgentContext {
   private paused = false;
   /** 手上正干着活（一批的整个跨度） */
   private busy = false;
+  /** 一次性 agent 已经吃过一次投递了（自此关收） */
+  private fed = false;
 
   /** `start()` 的那句 promise：到死才 resolve，且不 reject */
   private runPromise?: Promise<void>;
@@ -401,6 +403,14 @@ export class Agent extends AgentContext {
     if (this.closed || this.killed) {
       throw new AgentError("closed", `往已经关了的 agent(${this.id}) 投递`);
     }
+    // 一次性 agent 只有一条因果链：发起它的那一次投递。之后关收，
+    // 别人塞进来的东西会让「等闲」重新变成瞎等（`CORE.md` §1）。
+    if (this.lifetime === "one-shot") {
+      if (this.fed) {
+        throw new AgentError("closed", `一次性 agent(${this.id}) 只接受第一次投递`);
+      }
+      this.fed = true;
+    }
 
     const entry: AgentNS.InboxEntry =
       input?.content === undefined
@@ -420,24 +430,6 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * 塞一条 + **等到闲**；不给内容 = 只拧钥匙。
-   *
-   * 「等闲」的判据是 `state === "idle"`，而闲的定义是「队列空 且 不忙」——
-   * 所以并发 `send` 天然合并成一批：第二个人塞的时候队列非空，就不会提前返回。
-   *
-   * ⚠️ 先 `start()` 再 `send()`，两句之间不要 `await`。反过来会一直等下去
-   *（塞进去了，但没人在取）。
-   */
-  async send(
-    input?: AgentNS.InboxInput,
-    options?: { signal?: AbortSignal },
-  ): Promise<AgentNS.Message[]> {
-    this.push(input);
-    await this.waitUntil(() => this.state === "idle", options?.signal);
-    return this.messages;
-  }
-
-  /**
    * 跑一次到死：起 → 塞 → 等闲 → 关门 → 死透 → 交回消息。
    *
    * **不是第六个死活动作**，是 `start` / `send` / `stop` 的复合，只是把一次性会话那几步
@@ -449,6 +441,9 @@ export class Agent extends AgentContext {
     input?: AgentNS.InboxInput,
     options?: { signal?: AbortSignal },
   ): Promise<AgentNS.Message[]> {
+    if (this.lifetime !== "one-shot") {
+      throw new Error("runOnce() 只能用在 lifetime 为 \"one-shot\" 的 agent 上：它会把这个 agent 关掉");
+    }
     if (this.runPromise) {
       throw new Error("runOnce() 只能用在还没 start() 的 agent 上：它会把这个 agent 关掉");
     }
@@ -466,7 +461,10 @@ export class Agent extends AgentContext {
     options?.signal?.addEventListener("abort", onAbort, { once: true });
 
     try {
-      await this.send(input, options);
+      // 一次性 agent 只有一条因果链（就是我自己），所以这里的「等闲」是有归属的 ——
+      // 共享会话上做同一件事毫无意义，见 `CORE.md` §1。
+      this.push(input);
+      await this.waitUntil(() => this.state === "idle", options?.signal);
       this.stop();
       await death;
       return this.messages;
