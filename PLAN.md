@@ -356,6 +356,7 @@ ChatRunner.deliver(conversationId, { content, source }) → DeliveryOutcome
 | 子 Agent 消息回看（PRD F-I7） | `messages.parentToolCallId` 列与 `MessageRepository.listByParentToolCallId` 都在，但**生产路径没有写入方**；`message.list(toolCallId)` 取到的是那次委派的工具结果消息 |
 | 客户端自造问题 | 契约只有 `question.list` / `question.answer`；问题由宿主内部产生（交接线 / 二次确认）。集成用例因此绕开契约直开库造一行 |
 | 平级会话阶段 3 | 超时与 `abort`、`/sessions` 的「agent 建的」标记、`peer_sessions` 表与跨重启的孤儿 / 补投 —— 都还没有 |
+| **inbox 未消费部分的持久化与恢复**（待做） | **读的那一半已就绪**：`agent.inboxPending` 给出此刻没被取走的条目（条目全是纯数据，直接 JSON 存）。**写的那一半一件都没有**：宿主没把未消费条目落库，core 也还没有「原样放回」的口子（`restore`）。做时注意三条（机制与理由见 `CORE.md` §3「未消费的条目要能存下来再放回去」）：① 恢复不能走 `push` —— 它会重写 `createdAt`，重启后所有条目都变成「刚刚」，主动骗模型；②「取走」没有事件（钥匙被取走完全没信号），所以只能**快照覆盖写**，不能增量维护；③ 顺序上先写消息、再读 `inboxPending` 覆盖写，反过来会重复。 |
 | 桌面端问答视图（W4） | `question.*` 在 `desktop/packages/main` 已接上（`chat.questions` / `chat.answerQuestion`），但整块视图、22 项零入口与真 GUI 竖切都未做 |
 | 6 条「有方法、没入口」的契约面 | `config.patch` / `getDiscovery` / `saveMcp` / `deleteMcp`、`agent.*`（6 条）、`model.*`（7 条）、`completion.files`、`notice.*`（3 条）、`conversation.state.statusBlocks`（已删）等在两端都没有完整消费面；删或留按 PRD §4 的判据逐条定 |
 | 兜底治理第二遍 | 只做了契约面与一轮文件清扫；`retry` / `fallback` / `catch` 密集文件还有未过一遍的 |
