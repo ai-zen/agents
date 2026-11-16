@@ -1,6 +1,6 @@
 # 宿主实施方案（PLAN）—— 结构、时序、落点、波次
 
-> 本文件是 `packages/host` **怎么搭 / 先做什么 / 落在哪个文件的哪几行**的唯一来源：结构 `A##`、对象图与生命周期、一轮与一次投递的时序、落点表、波次 `W#`、欠账、变更记录。
+> 本文件是 `packages/host` **怎么搭 / 先做什么 / 落在哪个文件的哪几行**的唯一来源：结构 `A##`、对象图与生命周期、投递与事件通道、落点表、波次 `W#`、欠账、变更记录。
 > 需求与决策见 `PRD.md`（`F-##` / `L##` / `D##` / `R##`）。**一个事实只写一处**：需求在 PRD，结构与生灭时序在本文件；互相指路只写一行「见 PRD D28」。
 > **core（引擎）的需求与机制见 `CORE.md`**；本文件只管宿主，不重复 core 的任何一条事实。
 > 本文件里的 `A##` 编号被代码注释引用（如 `MessageRepository.ts` 的「A12 的 `message.list` 口径」），**不能改号、不能改含义**。
@@ -9,7 +9,7 @@
 
 ## 1. 目录与分层
 
-单根 + 薄 service + 一层仓储，按需扩展，不预摆空层。不用模块级单例、不用反射扫描；依赖从根显式注入，跨服务协作（删对话 → 释放运行中的轮次）用显式钩子声明，不靠事件总线兜。
+单根 + 薄 service + 一层仓储，按需扩展，不预摆空层。不用模块级单例、不用反射扫描；依赖从根显式注入，跨服务协作（删对话 → 结束它那个 agent）用显式钩子声明，不靠事件总线兜。
 
 ```
 app.ts        单根：组装、启动、退出
@@ -39,13 +39,13 @@ i18n/         文案（en 基准 / zh）
 | A6 | 启动方式决定监听范围：本地实例只监听回环；对外实例由创建者起、自己配凭证并分发 |
 | A7 | `node:sqlite` + worker 线程 + WAL；全文检索用 FTS5 `trigram` |
 | A8 | 分层照桌面端：单根 + 薄 service + 一层仓储，按需扩展，不预摆空层 |
-| A9 | **agent 常驻**：一段对话一个、跨轮复用——它的 `messages` 就是这段对话的内存真相（下一轮不再读 history，也不重复 push）。**Scope 没有空闲回收**（见 PRD D28） |
+| A9 | **agent 常驻**：一段对话一个，活到显式退役 —— 它的 `messages` 就是这段对话的内存真相（装配一次，之后不读库、不重复 push）。**Scope 没有空闲回收**（见 PRD D28） |
 | A10 | 「agent 该不该活着」的判据**只有一处**：`AgentRegistry` 的 `acquire` / `complete` / `discard` / `invalidate` / `disposeAll`，外加观察用的 `onLifecycle`；别处只报事件。没有任何空闲计时器 |
 | A11 | 上传走同一条 WS 上的**二进制帧**（三段式），不用 base64 字符串 |
 | A12 | `message.list` 有**两种按 id 的取法**：① `after=<id>`——该 id **存在**就返回它**最新的内容**及之后全部；**不存在**就返回全部（断线补拉与删除后重拉共用这一条）。② `around=<id>`——该 id 在本次可见集里就**以它为中心取一窗**（40 条，前后尽量均分，命中那条一定在里面）且 `anchor` 报成它；**不在**可见集里（已撤回 / 换过库 / 是 `hidden` 而这次没要）回**空页 + `anchor: null`**，**不报错**。两者同时给时 `around` 优先；`toolCallId` 决定读哪一段，两个定位参数都只在那一堆里生效 |
 | A13 | ~~能力清单的粒度是「契约里每个方法一条」~~ **已废**（2026-11-14）：`host.capabilities`、`hello.capabilities` 与 `CapabilityView` 都删了，两端一个消费者都没有 |
-| A14 | **平级会话的编排元数据不落库**，只活在宿主进程内（`PeerSessionService.records` 一个 `Map`）；回投挂在**每一次段结算**上，不为它另做执行器；「谁在调我」用 `WeakMap<agent, conversationId>` 记，**不给 core 的 `Agent` 加字段** |
-| A15 | **投递只有一个入口**：core 的 `deliver`（单条 / 一批，整批只唤醒一次）与宿主的 `ChatRunner.deliver`。**唤醒**（agent 活着、起一段）与**复活**（agent 不在、按库里历史重装）是两个词，不混用 |
+| A14 | **平级会话只做三件事**：建一段会话、往任意会话投一条、问一段会话的状态。进程内记录只放**可读名**；**血缘是持久身份**（会话行上，给历史展示用），**投递不按血缘校验**；**状态不存**，问的时候现读 agent 那一格。**没有「跑完把结果投回去」这种东西** —— 会话间通信只有投递（PRD 4.6）。「谁在发」用 `WeakMap<agent, conversationId>` 记（只用来填来源标记），**不给 core 的 `Agent` 加字段** |
+| A15 | **投递只有一个入口**（宿主 `ChatRunner.deliver`，core 侧是 `agent.push`）：塞进队列就完了，**回执只有「收下 / 被拒」**，不带状态、不带结果。**唤醒**（活着的 agent 被推起来）与**复活**（agent 不在、按库里历史重装）是两个词，不混用；**禁止等**（唯一例外是没有第二个触发方的一次性对话，PRD 4.3） |
 
 ---
 
@@ -63,13 +63,12 @@ HostApp（根：组装、启动、退出）
 │  ├─ WorkspaceService、ConversationService、MessageService、AgentService
 │  ├─ ModelService、ConfigService、AssetService、SearchService、CredentialService
 │  ├─ CompletionService、DiscoveryService、HandoffService、NoticeService、QuestionService、AutoNaming
-│  └─ PeerSessionService      平级会话：建另一段会话 / 接着说话、记进程内记录、每一段结算把结果投回并唤醒发起者（A14）
+│  └─ PeerSessionService      平级会话：建一段会话、往任意会话投一条、问一段的状态（A14；不记状态、不回投）
 ├─ 运行时（有状态，比 service 更长寿）
 │  ├─ ScopeRegistry            workspaceId → Scope：显式 create / get / refreshWorkspace / dispose / disposeAll / workspaceIds，无空闲计时
 │  ├─ AgentRegistry            conversationId → 活着的 agent（agent 唯一的来源；常驻、跨轮复用；存活判据只在这里）
-│  ├─ RunRegistry              conversationId → 运行中的那一轮
-│  ├─ ChatRunner               一轮的流式循环（向注册表要 agent、产出事件、落库）
-│  └─ TransientRunner          临时对话的一轮（不落库、不推流式事件）
+│  ├─ ChatRunner               会话 ⇄ agent 的桥：订事件照着写库、投递、中断、现读状态
+│  └─ TransientRunner          一次性对话（不落库、不推流式事件，`runOnce` 跑到头）
 ├─ 接入
 │  ├─ WsHub                连接集合、鉴权、语言、JSON-RPC 分发、推送缓冲
 │  ├─ UploadReceiver       同一条 WS 上的二进制分帧落盘
@@ -86,80 +85,92 @@ HostApp（根：组装、启动、退出）
 | `DiscoveryLayerView.scope` | 同上：MCP 5 层里只有 2 层非空 | 直接认「哪一层可写」，不再按 `editable` + `depth` 反推 |
 | `McpOauthView` 的掩码 | `DiscoveryService` + `services/secretMask.ts` 的 `maskSecret` | 与 `EndpointView` 的 `apiKeyMasked` / `apiKeySet` 同一套；回写省略 = 保留磁盘原值 |
 | `ModelInput.tokenThresholds` 可选 | `ModelService`：`create` 省略套出厂默认、`update` 省略不动 | 建模型不必自己抄两个数 |
-| `ConversationSummary.run` / `.agent` | `ConversationService.toSummary` + 端口 `runState` / `describeAgent` | 侧栏说得出「在跑、什么时候开始的」与助手可用性；状态栏八块由客户端现拼（PRD F-I6） |
+| `ConversationSummary.state` / `.inboxPending` / `.agent` | `ConversationService.toSummary` + 端口 `state` / `describeAgent`；状态是**查询那一刻现读**的四格，不落库、不是字段 | 侧栏说得出「这段现在忙 / 闲 / 暂停 / 死、队里还压着几条」与助手可用性；状态栏八块由客户端现拼（PRD F-I6） |
 
 ---
 
 ## 4. 生命周期
 
-**三个实例的生灭都是显式的**：`Workspace ──1:1── Scope ──1:N── Agent ──1:1── 会话现场`。
+**生灭都是显式的**：`Workspace ──1:1── Scope ──1:N── Agent` —— 到 agent 为止，没有第五个对象（「死」就是它不在）。
 
 创建自上而下（`agents.acquire` 先向 `ScopeRegistry` 要 Scope，它是幂等 get-or-create，调用方不必背顺序）；回收自下而上（`scopes.dispose` 撞上还活着的 agent 就**拒绝**，抛 `ScopeBusyError` 带 `conversationIds`，不级联）。没有空闲计时、没有自动回收：活着就是有人显式持有它。
 
-**存活策略只有一处（`AgentRegistry`）**：`acquire`（在且合用 → 复用；不在 → 装配；装配事实变了 → 丢掉重建）、`complete`（结算：陈旧才退役）、`discard`（对话 / 项目被删：只丢引用）、`invalidate`（配置生效：空闲的当场退役、在跑的只打标记）、`disposeAll`（进程收尾）。每一步报一条 `onLifecycle`：`action` = `built` / `reused` / `rebuilt` / `retired`，`reason` 是**闭集**（`never-built` / `assembly-facts-unchanged` / `assembly-facts-changed` / `config-changed` / `stale-on-settle` / `conversation-deleted` / `shutdown`）——「这段对话为什么没有 agent」的唯一答案就在这条流里。会话现场的登记 / 摘除收在 `ChatRunner.createRuntime` / `disposeRuntime` 一对方法里（寿命仍是「一轮一个」；常驻的是 agent，不是它）。
+**存活策略只有一处（`AgentRegistry`）**：`acquire`（在且合用 → 复用；不在 → 装配；装配事实变了 → 丢掉重建）、`complete`（变闲那一刻看一眼：陈旧才退役）、`discard`（对话 / 项目被删：只丢引用）、`invalidate`（配置生效：空闲的当场退役、在跑的只打标记）、`disposeAll`（进程收尾）。每一步报一条 `onLifecycle`：`action` = `built` / `reused` / `rebuilt` / `retired`，`reason` 是**闭集**（`never-built` / `assembly-facts-unchanged` / `assembly-facts-changed` / `config-changed` / `stale-on-settle` / `conversation-deleted` / `shutdown`）——「这段对话为什么没有 agent」的唯一答案就在这条流里。`ChatRunner` 不再持有「一段现场」这种东西：它把监听订在 agent 上（订一次，活到 agent 退役），事件来一条处理一条。
 
-**Scope 被销毁的两个原因（都是显式动作）**：① Workspace 被删（`dispose(workspaceId)`）；② 进程收尾（`disposeAll()`）。前者撞上还活着的 agent 会拒绝，调用方顺序是「先停会话 / 丢掉 agent，再销毁 Scope」；后者不拒绝。**配置改动不是销毁原因**：`refreshWorkspace(id)` 就地把配置重读一遍、各插件重新发现一轮（MCP 连接按新声明对账断开），实例还是同一个，正在跑的那一轮也不会被抽掉能力；刷完再对同一个 Workspace 调一次 `agents.invalidate`（PRD D34）。
+**Scope 被销毁的两个原因（都是显式动作）**：① Workspace 被删（`dispose(workspaceId)`）；② 进程收尾（`disposeAll()`）。前者撞上还活着的 agent 会拒绝，调用方顺序是「先停会话 / 丢掉 agent，再销毁 Scope」；后者不拒绝。**配置改动不是销毁原因**：`refreshWorkspace(id)` 就地把配置重读一遍、各插件重新发现一轮（MCP 连接按新声明对账断开），实例还是同一个，正在干活的那个也不会被抽掉能力；刷完再对同一个 Workspace 调一次 `agents.invalidate`（PRD D34）。
 
 **一段对话的诞生**（PRD R56 / F-D9）：`conversation.create` 只定身份并发一个 id，不写库；首次 `conversation.send` 时 `ConversationService.ensurePersisted` 才写行，**落行那一刻同时写这段对话的第一条消息**——一条 `role: user`、`hidden: true` 的 cwd 消息（正文由 `injectedContextOf` 拼）。它最先写，所以 `seq` 在真实用户消息之前；之后每轮都不再写、也不往用户消息里拼任何东西。cwd 取 `workspaces.cwd`，`workspaceId` 创建即定死。
 
-**会话级模型与思考档位**（PRD L7 / R70–R72）：存在 `conversations.modelId` / `thinkingLevel` 上，改了就落库。装配 agent 时从这里取：`modelId` 直接给 SDK 的三级解析，`thinkingLevel` 按该模型引用的策略表展开成参数补丁、叠在助手定义的 `modelParams` 之上（同一模型才叠）。展开发生在 `ChatRunner.createSdkAgentFactory` 的 `conversationModelParams`，档位名本身不进请求；换模型时档位清空。服务层要的运行时接口因此只剩三件（`ConversationRuntimePort`）：忙不忙、这一轮从什么时候开始（可选）、删掉之后的中止。
+**会话级模型与思考档位**（PRD L7 / R70–R72）：存在 `conversations.modelId` / `thinkingLevel` 上，改了就落库。装配 agent 时从这里取：`modelId` 直接给 SDK 的三级解析，`thinkingLevel` 按该模型引用的策略表展开成参数补丁、叠在助手定义的 `modelParams` 之上（同一模型才叠）。展开发生在 `ChatRunner.createSdkAgentFactory` 的 `conversationModelParams`，档位名本身不进请求；换模型时档位清空。服务层要的运行时接口因此只剩两件（`ConversationRuntimePort`）：**现在忙不忙**（现读 agent 那一格）与**删掉之后的中止**（`forget`）。
 
-**进程退出**（PRD D37）：判据两条——连接数 0（且已经握过手）、没有在跑的轮次。触发源只有两个，都不另起计时器：每轮结算（`onTurnSettled`）、`WsHub.onConnectionsChanged`。「手里还有 Scope」**不是**判据：最后一个客户端走了就显式收尾（`stop()` → `doStop` → `disposeAll()`，Scope 与 MCP 连接一起拆）然后退出。进程退出连带断开所有 MCP 连接，这是已知代价。
+**进程退出**（PRD 1.7 / 4.12）：**只有三个原因** —— 用户显式关闭（命令 + 一次二次确认）、进程被外部杀掉、机器没了。**连接数不参与任何判断**：agent 常驻的意思就是「有没有客户端连着，跟它活不活无关」，所以既没有「最后一个客户端走了就收尾」，也没有「把手上的活干完再退」—— 不自动退出这件事把这两条一起取消了（`checkExit` 与其两个触发源作废）。
 
-**收尾（`stop()`）的顺序**：摘发现文件 → 销毁 Scope → 断连接 → 清理上传 → 关库 → 关日志（先写最后一笔，再 flush 并关流，PRD F-J2）。同一次收尾还负责清掉升级自检的定时器。
-
----
-
-## 5. 一轮的时序、一次投递的时序
-
-### 5.1 一轮（`conversation.send` 受理的那一段）
-
-```
-conversation.send
- ├─ assertSendable            有挡着的问题 → question_pending（排队不是绕道，PRD D23）
- ├─ ensurePersisted           草稿落成真行 + 那条 hidden 的 cwd 消息（R56 / F-D9）
- ├─ ChatRunner.enqueue        这一轮还接话吗？
- │    拿到  → 立刻回 { userMessageId, assistantMessageId: null, queued: true, attachments, acceptedAt }
- │            （消息 id 在入队那一刻定死，客户端据此乐观回显，落地那条用同一个 id）
- └─ 拿到 null（已收尾 / 刚按停 / 装配失败）→ ChatRunner.run()
-      ├─ RunRegistry.start   真在跑才抛 busy（只剩「排队窗口没打开」这一种兜底）
-      ├─ ScopeRegistry.create（幂等 get-or-create，不记「谁在用」）
-      ├─ AgentRegistry.acquire（在且合用 → 复用同一个实例；不在 → 装配；装配事实变了 → 重建）
-      ├─ 流式：message.delta 推增量；同一条消息边流边写（节流 upsert）
-      ├─ 内循环末：唯一取件点（`high` 无条件先取；`!needContinue` 时才问 `low`）
-      └─ settle()：终态写一次 → AgentRegistry.complete（陈旧才退役）→ RunRegistry.finish
-            → onTurnSettled → askHandoffAfterSettle（只认 source === "user"）/ peerSessions.settleSegment
-            → checkExit()
-```
-
-**两条不变量**：① 「判能不能排」与「推」之间**不允许有 await**（中间让出执行权就会出现「判完还开着、推时已关上」，条目落进再也不会被取走的 inbox，而宿主已经回了 `queued`）；② 只有**真的插进了条目**才续圈（防死循环）。装配期间来的那几句收进 `TurnSession.pending`，`attach()` 那一刻按入队顺序冲进 inbox —— 不等待、没有超时。
-
-**取件点只有一个**（core `runLoops()` 的内循环末）：`high` 在「工具轮跑完」的边界落地（工具结果已在 `messages` 里，插进来的 User 排在它之后，下一次请求天然看得见，也不打断模型正在吐的那一段）；`low` 在同一处、只在 `!needContinue` 时问一次（`else if` 而不是两个独立 if）。**段首不取件**：把段叫醒的那条投递在 `deliver()` 里已经用 `flushInbox()` 把队列整体落成 User 消息（不看优先级、按入队顺序），而且排在 `run()` 之前 —— 唤醒与「模型看得见这条」是同一拍。取件与续圈的判据是 `runStatus === "running"`；`abort()` 不碰 inbox。
-
-**收尾钩子里的投递不归这一段消化**：`onInnerLoopsEnd` / `onAfterSend` 期间投进来的条目 core 不再带走，只由 `settle()` 的 `inbox-leftover` 告警出声（用户按停的那一轮不报）。条目本身不丢：留在 inbox 等下一次外部驱动取走（这期间 agent 若因配置换过 / 项目被删而退役，队列随之消失）。
-
-**排队消息的首次写入在落地那一刻**（PRD F-C14）：`seq` 是 `MAX(seq)+1` 按插入顺序给，是转录顺序的唯一依据；助手消息边流边写。所以 `onMessage` 的排队落地分支立刻 `persistLandedQueued`（同一条 `writeChain`，正文用「落地那一刻」的 `__asset_id` 形态，紧跟着 `linkQueuedAssets` 记关系行，`createdAt` 取落地时刻）；`persistFinal` 只做终态覆盖（`ON CONFLICT (id) DO UPDATE` 不碰 `seq` / `createdAt`，仍是一行）。
-
-**非 `user` 来源的正文**：`withSourceNote` 在 `run()` 与 `TurnSession.enqueue` 两处都过（后者的 `storedContent` 也过），拼装本身归 core 的 `inboxEntryContent` —— **发给模型的那份与落库的那份必须是同一份**。
-
-### 5.2 一次投递（`ChatRunner.deliver`）
-
-```
-ChatRunner.deliver(conversationId, { content, source }) → DeliveryOutcome
- ├─ serialized(conversationId)：同一段的投递走一条串行链，顺序 = 到达顺序
- ├─ 现场三分支（每次真投之前都再判一次现场）
- │   ① 这一段还接话      → TurnSession.enqueue，交给那一段
- │   ② agent 不在（复活）→ agents.acquire（reconcile + resolveHistory 按库里历史重装）→ 投进 inbox → 起一段
- │   ③ 正在结算 / 受理中 → 会话级 waitlist，finishRuntime 时整批 deliver([...])
- ├─ core 侧 deliver(inputs)：整批入队后**只唤醒一次**；flushInbox() 把队列整体落成 User 消息（排在 run() 之前）
- └─ 事件次序契约：一次唤醒对外是 status(running) **先**、本段第一条 message **后**
-```
-
-**自起的段**（PRD D36）：建现场那一拍必须**同步**（`onAgentStatus` → `startSelfRun`）——迟一拍就错过 core 紧接着 `flushInbox()` 广播的那条 user 消息；会话行与 Scope 随后由 `hydrate` 补。它没有预分配的两条 id：user 消息的 id 来自投递条目（认领但不改写，改写了客户端会把同一条内容画两遍），assistant 的 id 在第一次见到占位时才分配；一段里一条 assistant 都没出时照实报 `null`。
-
-**回投跟着结算、不跟着 `create_session`**（PRD D38）：`settleSegment` 挂在 `onTurnSettled` 上，派生会话的**每一段**都投一次，一段一次；段开始那一拍（`onSegmentStart`，由 `onStatus` 在 `to === "running"` 时转进来）把记录复位成 `running` 并置 `resultDelivered = "pending"`。会话不存在是唯一的拒绝（`not_found`）。
+**显式关闭时的收尾顺序（`stop()`）**：摘发现文件 → 销毁 Scope → 断连接 → 清理上传 → 关库 → 关日志（先写最后一笔，再 flush 并关流，PRD F-J2）。同一次收尾还负责清掉升级自检的定时器。
 
 ---
+
+## 5. 投递、变闲那一刻、事件通道
+
+宿主与一段对话之间只有三个口：**投递**（往里塞）、**中断**（掐在途）、**观测**（读当下 + 收事件）。没有「开始一次运行」「结算一次运行」这种口 —— 那要先有边界，而边界不存在。
+
+### 5.1 唯一的对外动作：投递
+
+```
+conversation.send / postMessage / 定时器 / 外部程序
+ └─ ChatRunner.deliver(conversationId, { content, source, attachments? })
+      ├─ 目标不存在              → 拒（not_found），错回给投递方那次调用
+      ├─ 目标是死的（没有 agent）→ 拒；唯一例外是界面上那个发送按钮（先复活再投，PRD 1.2）
+      └─ 活着                    → 入队（忙 / 闲 / 暂停一律收；暂停只收不取）
+            ├─ agent 不在（首次装配）→ reconcile + resolveHistory 读库 → acquire → 历史装进去
+            └─ agent 在             → 直接 push；它自己从闲变忙、自己取走
+      回执：收下了（userMessageId + 每个附件最后怎么走的）／被拒。
+```
+
+**判据只有两条**：目标在不在、活不活。不判「有没有资格发给我」（投递不看关系，A14）；不判「它忙不忙」（忙不是拒绝的理由，队列本来就收）；不判「这条会不会被处理」（PRD 4.13 不承诺）。
+
+**回执里没有状态、没有「叫醒了没有」、没有结果**：那三样都是对未来的断言，而未来只能靠观测。
+
+**投递不等**。`await` 的边界就是「已入队」：读库、装配、push 都在这一条里做完，之后的事归 agent 自己。唯一允许等的是**一次性对话**（没有第二个触发方，PRD 4.3）—— 那里用 `runOnce` 跑到头。
+
+**装配期间的投递**先收着，装好按到达顺序一次推给它 —— 不等待、没有超时、不丢。
+
+**待办（队列）每一刻现读** `agent.inboxPending`，不存镜像：一份会与真队列分叉的副本没有存在的理由。
+
+### 5.2 唯一的判断：变闲那一刻
+
+agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下事实**的判断 —— 整个宿主只有这一处「到点了要考虑点什么」：
+
+1. 这段是不是派生会话？是 → 不问交接（它的自动交接开关在**创建时**写成「开」，自己压，PRD 4.5）。
+2. 最后一次请求的 `prompt_tokens`（就在最后那条 assistant 消息上，不求这一批的和）有没有越过配置里的交接线？
+3. 有没有已经挂着的题？
+4. 三条都成立 → 问（`QuestionService.askHandoff`）。
+
+四步全是**读**：没有「这次运行的结果」、没有产出清单、没有结局。答完之后的事归 `QuestionService`（一次性驱动者写文档、换记忆、旧记忆存成另一段会话）。
+
+同一拍还有一件确定性的事：`AgentRegistry.complete`（配置改过才退役）。**不催退出** —— 宿主不因为没人连着而收尾（§4）。
+
+**没有任何「跑完把结果投给谁」的动作**：会话间通信只有投递（PRD 4.6）。派生会话变闲时什么都不发。
+
+### 5.3 事件通道：三条粒度
+
+宿主不统计、不推断，只把到达的事实按粒度送出去（落库走同一批事件）：
+
+| 粒度 | 事件 | 载荷 | 谁在用 |
+|---|---|---|---|
+| 追加一条 | `message.added` | 完整消息对象（id / role / status / content / source / tool_calls…） | 客户端建槽；宿主写行 |
+| 流式一片 | `message.delta` | core 的 `AgentNS.Delta` 原样 + `messageId` + 消息内 `seq` | 客户端跑同一个 `applyChunk` 增量 |
+| 一圈收口 | `message.changed` | 完整消息对象（此刻的 status / tool_calls / finish_reason / usage 都在上面） | 客户端整条替换；宿主覆盖写行 |
+| 事后改写 | `message.changed` / `message.removed` | 同上 ／ 被删的那条（中止、出错、`drop`、`omit`） | 同上 |
+| 状态 | `state` | `{ conversationId, state }`，取值 `busy` / `idle` / `paused` / `dead`（**变了才发**） | 客户端自己那四格 |
+| 出错 | `error` | core 的 `AgentError` 完整对象（`code` / `message` / `detail`）+ 它挂在哪条消息上 | 日志、排查、要技术细节的地方；**消息行里另存一份「回显用」的失败事实**（码 + 文案键 + 参数），活得比进程长（PRD 4.15） |
+
+**不为字段变化单独发事件**：一条 delta 流 + 一圈收口一条整对象就够了。「status 从 writing 变 completed」不单独播 —— 收口那条整对象里带着它。**消息上的字段一律整条带**：`hidden` / `usage` / `tool_calls` / `omit` / 回显用的失败事实都不挑 —— `hidden` 只是客户端不显示，请求里照发。
+
+**预填消息同样走 `message.added`**：core 每一圈开头追加的那条 `status: pending` 的 assistant 消息、工具结果、落地的用户消息、注入的 cwd / 交接摘要，都从 `append()` 那一个口广播。客户端先有槽，delta 才挂得上。
+
+**宿主不做的事**（写在这里是为了不再长回来）：不算用量（每条消息自带 `usage`，客户端自己合计）、不算速率、不维护「请求中 / 思考中 / 输出中」这类阶段（客户端按事件到达自己推）、不报「这一段用了多少」（「这一段」不可定义）。
+
+**落库 = 同一个镜子的另一份**：`message.added` / `message.changed` 到了就写那一行（边流边写只是节流，不是「提前写」），`message.removed` 到了就删。**没有「最后统一写一遍」**：那等于假设有一个终局。
 
 ## 6. 契约面
 
@@ -167,7 +178,7 @@ ChatRunner.deliver(conversationId, { content, source }) → DeliveryOutcome
 - **点数沿革**：65 → 63（W3：+`agent.restoreFactory`、+`config.saveMcp` / `config.deleteMcp`，−`host.usage`、−`credential.list/create/revoke`、−`config.patchMcps`）→ **62**（删 `host.capabilities`）。每一笔的理由都在 PRD 里（R6 / R57 / F-E5 / F-I5 / L13）。
 - **`credential.*` 删的是契约面、不是能力**：`CredentialService`、`CredentialRepository`、`<数据根>/run/token`、`agents-host token create|list|revoke` 一字未动，`Credential*` 形状只留给那三个子命令。别因为 `grep credential.* wire/methods.ts` 找不到方法名就以为能力没了（PRD L13）。
 - **桥接名单 4 条**（不在 handler 表里）：`host.hello`、`host.setLanguage`、`asset.begin`、`asset.end` 由 `WsHub` 自己处理，其余 **58** 条进注入的 `HandlerTable`。理由：凭证与语言是**连接状态**；上传要按 `connectionId` 分帧落盘、断线按连接清理。分发顺序是 `hello` → 未握手拒绝 → 已知方法名校验 → 连接级方法 → 上传方法 → handler 表；表里没有的名字回 `unsupported`（`detail.reason = handler_not_registered`）。`handlers/index.test.ts` 钉住「每个方法要么在表里、要么在桥接名单里，且两边不重叠」。
-- **事件** 6 个（`run.state` / `message.delta` / `conversation.changed` / `notice` / `question` / `usage`）。`run.state` 发**全量快照**而不是差量；`message.delta` 只搬 core 的 `AgentNS.Delta`，不带状态快照（R25）。
+- **事件** 9 个：`message.added` / `message.delta` / `message.changed` / `message.removed` / `state` / `error` / `conversation.changed` / `notice` / `question`。前六个是客户端重建 `messages` 与那四格的全部原料（三条粒度见 §5.3），**宿主不在这之上再加聚合**：没有 `run.state`，没有 `usage`。
 - **业务码** 13 个（`src/wire/errors.ts` 的 `BizCode`），数字码只做粗分类。
 - **`message.list` 的取法**见 A12；`around` 的消费者只有桌面端（搜索命中定位），CLI 一阶段不消费。
 - **`hello`**：`{ token, language?, clientInfo }`。凭证不放 URL 查询串（会进日志与进程表）；未握手的连接只放行 `hello`。成功时回协商出的 `language`、`hostVersion`、`protocolVersion`、`startedAt`、附件上限 `limits`（能力清单已删，不再回）。
@@ -188,7 +199,7 @@ ChatRunner.deliver(conversationId, { content, source }) → DeliveryOutcome
 
 **全文检索**：`messages_fts` 是挂在 `messages` 上的外部内容表，只索引 `searchText`。两条实测约束：`unicode61` 下整段中文是一个 token（用错就搜不到）；`trigram` 的查询词至少 3 个字符，少于 3 个时 `MessageRepository.search` 走 `LIKE` 子串。
 
-**边流边写**：运行时以内存里的消息为真相，同一条消息行按节流 upsert，所以 `status` / `omit` 必须落盘。**崩溃恢复不归宿主**：装载时它只负责把库里的行读出来交给 agent，修不修、怎么修由 core 在进圈开头自己收拾（见 `CORE.md` §6）。**排队落地的用户消息是唯一例外**：落地那一刻就写第一笔（§5.1）。
+**边流边写**：运行时以内存里的消息为真相，同一条消息行按节流 upsert，所以 `status` / `omit` 必须落盘。**崩溃恢复不归宿主**：装载时它只负责把库里的行读出来交给 agent，修不修、怎么修由 core 在进圈开头自己收拾（见 `CORE.md` §6）。**排队落地的用户消息是唯一例外**：落地那一刻就写第一笔（§5.3）。
 
 **迁移**：`meta.schemaVersion` + 顺序迁移脚本，启动时逐级在事务里跑；不识别任何旧数据（PRD L1）。R14 / R18 这类结构裁定直接落在 v1 建表语句里（这套表结构还没随版本发出去）。**v2 是第一条真正的追补条目**：只用 `ALTER TABLE conversations ADD COLUMN` 加两列，v1 建表语句一个字不改 —— 已升过 v1 的库不会重跑旧条目，改旧条目会让两台机器的表结构悄悄分叉。
 
@@ -252,7 +263,7 @@ ChatRunner.deliver(conversationId, { content, source }) → DeliveryOutcome
    - 阶段 2 **过滤**：`filter(definition)` 汇总各插件 `candidates()` 的四维候选名 → 应用 `exclude`（优先级高于权限）→ 四维权限过滤；
    - 阶段 3 **实例化**：`instantiate(filtered)` 遍历各插件产出工具实例，后注册覆盖先注册。
    三条硬性质：**候选 ≠ 实例**（`candidates()` 只报名称，是否注册由 `instantiate()` 定）；**可用性判断内聚在插件**（产出该工具的插件自己判 `isAvailable`）；`candidates` / `instantiate` 同步、`discover` / `dispose` 可异步。
-3. **能力从端口注入，SDK 不依赖宿主**：插件只认端口接口，不认宿主的服务。范例是 `PeerSessionsScopePlugin` —— 构造时给 `PeerSessionPort`，**不给端口就什么都不产出**（`candidates()` 回空、`instantiate()` 回空数组），于是只有 `Scope` 的库使用者看到的能力面一个字都不变。会话是宿主的财产（id、落库、模型解析、跑一轮、投回结果全在那边），端口是唯一的一处接线，分层因此不用破例。
+3. **能力从端口注入，SDK 不依赖宿主**：插件只认端口接口，不认宿主的服务。范例是 `PeerSessionsScopePlugin` —— 构造时给 `PeerSessionPort`，**不给端口就什么都不产出**（`candidates()` 回空、`instantiate()` 回空数组），于是只有 `Scope` 的库使用者看到的能力面一个字都不变。会话是宿主的财产（id、落库、模型解析、投递、状态现读全在那边），端口是唯一的一处接线，分层因此不用破例。
    同理：`Scope` 实例创建后 `config / cwd / agentsDir` 不变，`refresh()` 只让插件重新发现能力，**不重建 Scope、也不重建插件实例**（PRD D34 的 SDK 侧依据）；内置工具以 `ToolEnv.cwd` 为相对路径基准，不依赖全局 `process.cwd()`，多个 Scope 才能并行服务不同目录。
 
 ---
@@ -261,37 +272,35 @@ ChatRunner.deliver(conversationId, { content, source }) → DeliveryOutcome
 
 > 格式：`文件:行区间` + 一句话。行号取自本文件落笔时的 HEAD（`abea82a`），代码若大幅变动以符号名为准。
 
-### 10.1 一轮与投递
+### 10.1 投递与事件
 
 | 条 | 落点 | 一句话 |
 |---|---|---|
-| 跑中入队入口 | `packages/host/src/runtime/ChatRunner.ts:2717-2732` | `enqueue`：这一轮还接话就收，收不了回 `null` 让调用方走老路径 |
-| 入队判定与 `pending` | `ChatRunner.ts:1154-1203` | `TurnSession.enqueue`：三个布尔判关门；装配期收进 `pending`，`attach()` 时按序冲进 inbox |
+| 投递入口 | `ChatRunner.deliver` | 判两件（目标在不在、活不活）→ 入队；回执只有收下 / 被拒 |
+| 装配期缓冲 | `TurnSession.pending`（并进常驻桥） | agent 还没就位时先收着，装好按到达顺序一次推 —— 不等待、没有超时 |
 | 取件点 | `packages/core/src/Agent.ts`（`runLoops()` 内循环末）+ `Inbox.ts` | `high` 先取、`!needContinue` 才问 `low`；落地成 `Message.User` 并加来源注释 |
 | 落地即写库 | `ChatRunner.ts:1804-1821` | `persistLandedQueued`：先写行再 `linkQueuedAssets`，`createdAt` 取落地时刻 |
 | 来源注释 | `ChatRunner.ts:625-633` | `withSourceNote` 是唯一入口，拼装归 core 的 `inboxEntryContent` |
-| 跑中状态里的排队 | `ChatRunner.ts` 的 `buildRunState` + `wire/states.ts` 的 `InboxItem` | 现读 `[...agent.inbox, ...pending]`，计数取 `inbox.length` |
-| 投递入口 | `ChatRunner.ts:2773-2795` | `deliver`：一个入口，回 `DeliveryOutcome` |
-| 投递的三分支 | `ChatRunner.ts:2799-2860` | `flushWaitlist`：交给那一段 / 复活 / 攒批，每次真投前再判一次现场 |
-| 回执形状 | `ChatRunner.ts:490-520` | `DeliveryOutcome` 的三个 `state`：`running` / `idle` / `settling` |
-| 自起的段 | `ChatRunner.ts:2419-2479`（`onAgentStatus` → `startSelfRun`）、`:876-892`（`self-started` 段） | 建现场同步；两条 id 都不预分配 |
-| 自起段的 user 消息落地写库 | `ChatRunner.ts:1405-1418` | 与排队落地同一个道理：`seq` 不能排到它引出的回答之后 |
-| 历史只有一份 | `ChatRunner.ts:2526-2536`（`run()` 二分）、`:1318-1326`（`attach`）、`:1870-1935`（`settle`） | 有 agent 就从它内存里取，首次装配才读库；结算不丢 agent，交 `complete` 判陈旧 |
+| 待办回显 | `agent.inboxPending` → `wire/states.ts` 的 `InboxItem` | 现读，不存镜像；条数取证 |
+| 状态四格 | `AgentRegistry.get(id)?.state` | 忙 / 闲 / 暂停；查不到 = 死。不落库、不是字段、不推算 |
+| 变闲那一刻 | `ChatRunner.onAgentState`（`state:idle`）→ `app` 的那一个判断 | 全宿主唯一一处：派生会话？越软线？挂着题？→ 问 |
+| 历史只有一份 | `ChatRunner.run()` 的二分 + `attach` | 有 agent 就从它内存里取，首次装配才读库 |
+
+**待拆的旧形状**（现在还在）：`run` / `enqueue` 两条受理路、助手占位行、`DeliveryOutcome.state`、`settle()` 与 `TurnSettledFacts`、`RunState` 与 `run.state` / `usage` 两个事件、`RunRegistry`。
 
 ### 10.2 平级会话
 
 | 条 | 落点 | 一句话 |
 |---|---|---|
-| 建（F-C16） | `packages/host/src/services/PeerSessionService.ts:286-373` | 深度守卫 → 并发限额 → 建会话 → `ensurePersisted` → `run` → 立刻回 `{ sessionId, label }` |
-| 认人 | `PeerSessionService.ts:256-258` | `bind(agent, conversationId)` 记一笔 `WeakMap`：core 的 `Agent` 上没有 `conversationId` |
+| 建（F-C16） | `packages/host/src/services/PeerSessionService.ts:286-373` | 建会话 → `ensurePersisted` → 投第一条 → 立刻回 `{ sessionId, label }`（不等结果） |
+| 认人 | `PeerSessionService.ts:256-258` | `bind(agent, conversationId)` 记一笔 `WeakMap`：只用来填来源名，不参与判断 |
 | 模型解析失败的识别 | `PeerSessionService.ts:636-647`（调用点 `:328`） | 只看码不看文案，于是「拿不到模型」是结构化拒绝而不是抛错 |
-| 问（F-C17） | `PeerSessionService.ts:381-392` | 查不到就 `gone`；拿到就给 ~300 字摘要，**不给全量消息** |
-| 发一句（F-C20） | `PeerSessionService.ts:538-551`、`:560-572`（`rejectionOf`） | 只有父↔子能发；平级之间 `not_allowed`、查不到 `gone`，两种都是返回值 |
-| 回投（F-C18 / F-C21） | `PeerSessionService.ts:462-483`（`settleSegment`） | 一段结算投一次，**不跟 `create_session`** |
-| 段开始复位 | `PeerSessionService.ts:407-411` + `packages/host/src/app.ts:529-532` | `to === "running"` 那一拍复位成 `running` |
-| 并发限额 | `PeerSessionService.ts:124`（= 4）、`:594-601`、`:310-316` | 只数 `running`；`idle` / `failed` / `aborted` 不占名额 |
-| 工具面 | `packages/sdk/src/scope/plugins/peers/peerSessionTools.ts:232-296` / `:298-341` / `:344-392`、`PeerSessionsScopePlugin.ts:22-45` | 形状与用例归 SDK；宿主实现端口，**SDK 不依赖 host** |
-| 不问交接 | `app.ts:1158-1190` | `askHandoffAfterSettle` 先看派生会话、再看 `source !== "user"` |
+| 问（F-C17） | `PeerSessionService.ts:381-392` | 现读 agent 那一格 + ~300 字摘要，**不给全量消息** |
+| 发一句（F-C20） | `PeerSessionService.ts:538-551` | 一次投递；**不校验血缘**，回执只有收下 / 被拒 |
+| 工具面 | `packages/sdk/src/scope/plugins/peers/peerSessionTools.ts`、`PeerSessionsScopePlugin.ts:22-45` | 形状与用例归 SDK；宿主实现端口，**SDK 不依赖 host**。发话那个工具按 PRD 4.6 只有 `postMessage` 一个名（现名 `send_to_session`，待统一） |
+| 不问交接 | `app` 的变闲判断 | 看的是「派生会话」这一格（创建时写进会话行），**不看来源** |
+
+**待拆的旧形状**：`settleTurn`（回投）、`onTurnStart`（记录复位）、`resultDelivered`、`rejectionOf`（血缘拒绝）、并发限额里数 `running` 的那一份状态。
 
 ### 10.3 Scope / Agent / 配置生效 / 退出
 
@@ -302,16 +311,16 @@ ChatRunner.deliver(conversationId, { content, source }) → DeliveryOutcome
 | agent 存活策略 | `packages/host/src/runtime/AgentRegistry.ts:243-350` | `acquire` / `complete` / `discard` / `invalidate` / `disposeAll` + 两个只读观测口 |
 | 生命周期理由闭集 | `AgentRegistry.ts:109-117` | `AgentLifecycleReason` 的七个取值；`onLifecycle` 只是观察 |
 | 配置就地刷新 | `app.ts:1335-1360`（`refreshScopesFor`）、`:1309-1320`（`createApplyPort`）、`packages/sdk/src/scope/Scope.ts` 的 `refresh` | 刷已存在的 Scope + `invalidate`，**不拆任何 Scope** |
-| 退出判据 | `app.ts:848-860`（`checkExit`）、`:862-905`（`doStop`） | 只判连接与在跑的轮次；收尾把 Scope 与 MCP 一起拆 |
-| 压缩归一（F-D11） | `storage/migrations.ts:206-223`、`ChatRunner.ts:3220-3232`、`app.ts:1110-1115`、`services/HandoffService.ts:460-467` | 派生会话自己压（`auto`）；用户会话在停下来的那一轮问；只产文档不记 `manual` |
+| 关闭宿主 | `app.ts:862-905`（`doStop`） | 只有显式关闭这一条路（`host.shutdown` 命令 + 二次确认）；收尾把 Scope 与 MCP 一起拆。`checkExit` / 连接数回调那两个入口**作废** |
+| 压缩归一（F-D11） | `storage/migrations.ts:206-223`、`ChatRunner.ts:3220-3232`、`app.ts:1110-1115`、`services/HandoffService.ts:460-467` | 派生会话自己压（`auto`）；用户会话在变闲那一刻问；只产文档不记 `manual` |
 
 ### 10.4 服务与存储
 
 | 条 | 落点 | 一句话 |
 |---|---|---|
 | 会话草稿落库 | `packages/host/src/services/ConversationService.ts:409-430` | `ensurePersisted`：写行 + 那条 hidden 的 cwd 消息，并发去重 |
-| 运行时端口 | `ConversationService.ts:93-109` | 忙不忙 / 在跑什么时候开始（可选）/ `forget` |
-| 侧栏摘要 | `ConversationService.ts:766`（`toSummary`） | 主线条数 + `run` + 助手可用性 |
+| 运行时端口 | `ConversationService.ts:93-109` | 忙不忙（现读 agent）/ `forget` |
+| 侧栏摘要 | `ConversationService.ts:766`（`toSummary`） | 主线条数 + 四格状态读数 + 待办条数 + 助手可用性 |
 | `message.list` 的 `around` | `packages/host/src/services/MessageService.ts:337`（`AROUND_WINDOW = 40`）、`:388`（`list`） | 命中不在可见集就回空页 + `anchor: null`，不报错 |
 | 子 Agent 快照 | `MessageService.ts:435` + `storage/MessageRepository.ts:295`（`listDelegated`） | 重开一段跑过子 Agent 的对话，页签不空 |
 | 三个条数口径 | `MessageRepository.ts:238` / `:295` / `:408` | 主线 / 子 Agent 一半 / 全部行，三者加减 |
@@ -325,7 +334,7 @@ ChatRunner.deliver(conversationId, { content, source }) → DeliveryOutcome
 | 条 | 落点 | 一句话 |
 |---|---|---|
 | 桥接名单 | `packages/host/src/handlers/index.ts:76` | 4 条连接级方法不进 handler 表 |
-| 推送缓冲与语言 | `packages/host/src/net/WsHub.ts:146`（`localizeEvent`）、`:349-361`（推送前重渲染 + 连接数回调） | 按 `conversationId` 挂起，回包写完放行 |
+| 推送缓冲与语言 | `packages/host/src/net/WsHub.ts:146`（`localizeEvent`）、`:349-361`（推送前重渲染；连接数变化只用于观测，不参与任何收尾判断） | 按 `conversationId` 挂起，回包写完放行 |
 | 二进制帧 | `packages/host/src/net/UploadReceiver.ts:483` / `:498`、`:329`（`abortConnection`） | 编码只有一份，断线按连接清理 |
 | 路径与端口 | `packages/host/src/config.ts:21`（`HostPaths`）、`:146`（`resolveListenTarget`）、`:214`（`readHostSettings`） | 数据根只有一个来源；端口三档 |
 
@@ -341,7 +350,7 @@ ChatRunner.deliver(conversationId, { content, source }) → DeliveryOutcome
 | **W4 桌面端完整问答视图** | 问答面板 → 完整视图 → 22 项零入口 → 体验欠账；真 GUI 竖切六步（连上 / 流式 / 作答交接问题 / 撤回 / 搜索命中并定位 / 置顶） | ⬜ 未开始（优先级最低） |
 | **W5 兜底治理** | `retry` / `fallback` / `catch` 密集文件逐文件清；判据是**必要性**（不是「能删就删」）：不可能发生的条件删掉、真实会发生的坏输入与外部失败留着并写清「谁会走到」 | 第一遍完成；第二遍只在有新证据时做 |
 | **W6 运行期可输入与重开回看** | 跑中发送进 inbox、`queued` 回包、排队数进运行状态、重开后子代理页签、会话列表带运行状态；客户端侧运行中输入与 `/sessions` | ✅ 完成 |
-| **W7 平级会话阶段 1** | `create_session` / `read_session_status`、建完即回、结果投回并唤醒发起者 | ✅ 完成 |
+| **W7 平级会话阶段 1** | `create_session` / `read_session_status`、建完即回（其中「结果投回并唤醒发起者」已被 PRD 4.6 判死，见 §14） | ✅ 完成（回投那半已废） |
 | **W8 agent 常驻与投递收口** | agent 常驻跨轮复用、Scope 去空闲回收、配置改成就地刷新、投递收敛成一个入口、平级会话进阶段 2 | ✅ 完成 |
 | **W9 文档收敛** | 四份 docs + SDK 设计文档 + 四份计划草稿收敛成仓根 `PRD.md` + `PLAN.md`；`R1–R79` 补回 PRD；7 处代码注释与 8 处链接改指新文档 | ✅ 完成（本轮） |
 
@@ -355,7 +364,7 @@ ChatRunner.deliver(conversationId, { content, source }) → DeliveryOutcome
 |---|---|
 | 子 Agent 消息回看（PRD F-I7） | `messages.parentToolCallId` 列与 `MessageRepository.listByParentToolCallId` 都在，但**生产路径没有写入方**；`message.list(toolCallId)` 取到的是那次委派的工具结果消息 |
 | 客户端自造问题 | 契约只有 `question.list` / `question.answer`；问题由宿主内部产生（交接线 / 二次确认）。集成用例因此绕开契约直开库造一行 |
-| 平级会话阶段 3 | 超时与 `abort`、`/sessions` 的「agent 建的」标记、`peer_sessions` 表与跨重启的孤儿 / 补投 —— 都还没有 |
+| 平级会话阶段 3 | 超时与 `abort`、`/sessions` 的「agent 建的」标记、`peer_sessions` 表与跨重启的孤儿 —— 都还没有。**「补投」不再是欠账**：回投这件事本身作废（PRD 4.6：通信只有投递） |
 | **inbox 未消费部分的持久化与恢复**（待做） | **要实时，不攒批**：`messages` 逐条 upsert/delete；`inbox` 挂三条事件 —— `inboxAdded` 插行、`inboxTaken` 删行（core 已补，排在落地之后）、`inboxCleared` 清空。**读的一半已就绪**（`agent.inboxPending`，用于对账重读：事件丢了也不致命）。**写的那一半一件都没有**：宿主没落这两样，core 也还没有「原样放回」的口子（`restore`，不能走 `push` —— 它会重写 `createdAt`）。恢复：`messages` 读回即真相；inbox 行读回后放回队列，**按 `messageId` 去重**（已在 `messages` 里的扔掉）。机制与理由见 `CORE.md` §3「未消费的条目要能存下来再放回去」。 |
 | 桌面端问答视图（W4） | `question.*` 在 `desktop/packages/main` 已接上（`chat.questions` / `chat.answerQuestion`），但整块视图、22 项零入口与真 GUI 竖切都未做 |
 | **desktop 未跟改（另一个仓）** | `desktop/packages/{main,shared,render}` 都 `link:` 本地 agents 包，但 `shared` / `render` 还把 `@ai-zen/agents-core` 钉在 `^4.1.0` —— 与 `5.0.0-alpha.0` 对不上，会在他俩的树里落两份 core。它读的 `InboxItem.source` 也已是判别结构。本仓没装 desktop 的依赖（那边连 `tsc` 都没有），所以**行级影响未核实**；动它要装 electron 那一套，属于另一个 workspace。 |
@@ -410,4 +419,5 @@ ChatRunner.deliver(conversationId, { content, source }) → DeliveryOutcome
 | 2026-11-15 | **压缩补成常驻 agent 能用的样子**（§4 / §5）：交接线插件真的装上并按**会话类型**归一 —— 派生会话（`PeerSessionService.isPeerSession`，仍是进程内记录）越线就自己压（`resolveMode` 回 `"self"`，不弹问题），用户会话回 `null` 把「要不要压」交还给宿主的提问路径，`askHandoffAfterSettle` 因此多一条派生会话守卫（「非 `user` 来源不问」只管「问」）。`AutoMigratePlugin` 多一个 `onMigrated` 回声（迁移**成功之后**才叫，报实际执行者），宿主用它写 `compactions…`；`HandoffService` 开新对话那一步写 `manual`。**迁移 v2**：`conversations` 加 `compactedAt` / `compactionMode`（都可空，v1 的建表语句不动），`ConversationSummary` / `ConversationState` 带上这两格（可选，省略 = 没压过）。观测值一处修正：自起段结算报的 `TurnSettledFacts.source` 改成叫醒它的那条 inbox 条目的 `source`（`AgentRegistry.onInbox` → `ChatRunner.noteInbox`），不再是固定的 `"inbox"` |
 | 2026-11-15 | **按代码事实回改（agent 常驻这一轮）**：§1 **A9 改写**（agent 常驻、短对话一个实例跨轮复用，`messages` 是内存真相；Scope 没有空闲回收）、**A10 改写**（「agent 该不该活着」的判据只在 `AgentRegistry` 五个方法 + 观察用的 `onLifecycle`；没有空闲计时器）、**A14 改写**（回投挂在每一次段结算上，投递收敛成一个入口）、新增 **A15**（投递只有一个入口；「唤醒」与「复活」两个词）。§3 对象图三行跟上（`ScopeRegistry` 的公开面、`AgentRegistry` 常驻、`PeerSessionService` 多了「接着说话」与「每一段结算回投」）。§4 一轮时序改成 `acquire` / `complete`（不再有「每轮重新装配即弃」与 `AgentRegistry.dispose`）；§4 三个实例段补「存活策略只有一处」与 `onLifecycle` 的理由闭集（`ScopeBusyError` 带 `conversationIds`）；§4 收尾钩子那段不再说「那几条真丢」（agent 常驻，条目留在 inbox 等下一次外部驱动）；新增三段：自起的段（D36）、投递只有一个入口（D35）、平级会话阶段 2（D38）；压缩段补「只产文档不记 `manual`」；「没有空闲计时」与「进程退出」两段按 D28 / D37 重写（Scope 不再进退出判据）；配置改动那段补一句 `agents.invalidate`。§9 两条平级会话缺口改成阶段 3 口径 |
 | 2026-11-15 | **文档收敛（本轮）**：宿主 docs 四份（PRD 332 / PLAN 620 / 架构 519 / 实施问答 267 行）与 SDK 设计文档（1401 行）合并成仓根 `PRD.md`（需求与决策）+ `PLAN.md`（结构 / 时序 / 落点 / 波次），总行数 ≤1200，`.ai-zen/plans/` 下的四份计划草稿一并删除；`R1–R79` 从上一次删除的 `.ai-zen/plan-server-rewrite.md`（`git show e66c1b3:`）抽回 PRD 的裁定表，`R77–R79` 从交接记录抽回，`R68` / `R69` 取自 `git show e9fe4a1:.ai-zen/plan-clients.md`；实施问答里仍成立的结论按同一口径并入 PRD（`QD` 这个词全仓零命中，不再使用）；本表两处结构损坏按内容修好（W3 与「测试口径落文」粘连成一行、「平级会话阶段 1」重复一份被截断后串进「压缩」那一行）；7 处代码注释与 16 处文档链接改指新文档 |
+| 2026-11-16 | **按「没有轮」重写宿主形状**（用户判词）：删掉「一次运行」这套骨架 —— `run`/`enqueue` 两条受理路合成一个 `deliver`、`TurnSettledFacts`+`settle()` 换成「变闲那一刻读当下事实」、`RunRegistry` 与助手占位行作废、`RunState` / `run.state` / `usage` 事件不再存在（状态只有四格 + 待办，用量与细节阶段归客户端自己算）；**回投整个作废**（PRD 4.6：会话间通信只有投递）；§5 整节重写成「投递 / 变闲那一刻 / 事件通道三条粒度」；A14、A15、§3、§4、§6 事件面、§10.1–10.2 落点表跟着重写。代码尚未跟上，待拆清单在 §10.1 / §10.2 末尾。**进程退出判据作废**：连接数为 0 不再触发任何收尾 —— agent 常驻就是常驻，有没有客户端连着与它无关；`checkExit` 那一套（含两个触发源）删 |
 | 2026-11-16 | 新增仓根 `CORE.md`：core（引擎）的需求与决策单独成文 —— 边界、五个动作（start / stop / abort / resume / kill）、双循环、一条队列 + `takeAll` / `asTakeAll`、三格状态、中断（signal + abortRx，寿命一圈）、两套收尾策略、`AgentError` 一个类三码、工具并行、subagent 属 core 概念、事件与钩子的命名口径（事件说发生了什么 / 钩子说缝在哪儿）、`messages` 唯一引用的时机规则。`PRD.md` 与 `PLAN.md` 各加一行指路，并把 §9 的 core 归属行改成「本表只划归属，需求见 CORE.md」 |
