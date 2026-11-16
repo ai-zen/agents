@@ -48,9 +48,9 @@ describe("帧守卫", () => {
   });
 
   it("通知帧：无 id（或 id 为 null）", () => {
-    expect(isNotificationFrame({ jsonrpc: "2.0", method: "run.state", params: {} })).toBe(true);
-    expect(isNotificationFrame({ jsonrpc: "2.0", id: null, method: "run.state" })).toBe(true);
-    expect(isNotificationFrame({ jsonrpc: "2.0", id: 2, method: "run.state" })).toBe(false);
+    expect(isNotificationFrame({ jsonrpc: "2.0", method: "state", params: {} })).toBe(true);
+    expect(isNotificationFrame({ jsonrpc: "2.0", id: null, method: "state" })).toBe(true);
+    expect(isNotificationFrame({ jsonrpc: "2.0", id: 2, method: "state" })).toBe(false);
     expect(isNotificationFrame({ jsonrpc: "2.0" })).toBe(false);
     expect(isNotificationFrame(undefined)).toBe(false);
   });

@@ -9,7 +9,6 @@ import {
   type EventPayload,
   type MessageDeltaPayload,
 } from "./events.js";
-import { zeroUsage } from "./states.js";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 
@@ -17,14 +16,17 @@ const localized = (key: "question.handoff.prompt") =>
   ({ code: key, messageKey: key, params: {}, message: key }) as const;
 
 describe("事件表", () => {
-  it("就是 PLAN §6 的那六个事件", () => {
+  it("就是 PLAN §6 的那九个事件", () => {
     expect([...EVENT_NAMES]).toEqual([
-      "run.state",
+      "message.added",
       "message.delta",
+      "message.changed",
+      "message.removed",
+      "state",
+      "error",
       "conversation.changed",
       "notice",
       "question",
-      "usage",
     ]);
   });
 
@@ -35,32 +37,10 @@ describe("事件表", () => {
   });
 
   it("isEventName 只认表里的事件", () => {
-    expect(isEventName("run.state")).toBe(true);
+    expect(isEventName("state")).toBe(true);
     expect(isEventName("notice")).toBe(true);
     expect(isEventName("run.phase")).toBe(false);
     expect(isEventName(null)).toBe(false);
-  });
-
-  it("run.state 带完整运行状态（六态、结局、子 Agent、用量）", () => {
-    const payload: EventPayload<"run.state"> = {
-      conversationId: "c-1",
-      at: NOW,
-      run: {
-        conversationId: "c-1",
-        status: "running",
-        assistantMessageId: "m-2",
-        inbox: [],
-        startedAt: NOW,
-        settledAt: null,
-        generation: { phase: "awaiting_tools", since: NOW, runningTools: [] },
-        outcome: null,
-        problem: null,
-        subagents: [],
-        usage: zeroUsage(NOW),
-      },
-    };
-    expect(payload.run.generation?.phase).toBe("awaiting_tools");
-    expect(payload.run.status).toBe("running");
   });
 
   it("message.delta 的增量就是 core 的 Delta，属于哪一段由它自己的字段说明", () => {
@@ -129,12 +109,12 @@ describe("事件表", () => {
   });
 
   it("conversation.changed 覆盖结构变化的那几种", () => {
+    // 消息的增删改有自己的事件（带整条消息），所以这里没有「消息落库了」/「消息删了」两格，
+    // 也不带消息条数 —— 条数客户端自己数。
     const kinds: ConversationChangeKind[] = [
       "created",
       "renamed",
       "pinned",
-      "messages_persisted",
-      "message_removed",
       "settings_changed",
       "deleted",
     ];
@@ -143,14 +123,23 @@ describe("事件表", () => {
         conversationId: "c-1",
         workspaceId: "w-1",
         change,
-        messageCount: change === "deleted" ? null : 3,
         at: NOW,
       };
       expect(payload.change).toBe(change);
     }
   });
 
-  it("notice / question 推的是完整对象；usage 推三个数字", () => {
+  it("state 的载荷就是那一格本身（变了才发，不带别的）", () => {
+    const payload: EventPayload<"state"> = { conversationId: "c-1", status: "busy", at: NOW };
+    expect(payload.status).toBe("busy");
+    // 四格都装得下；死 = 宿主那边连 agent 对象都没有
+    for (const status of ["dead", "busy", "idle", "paused"] as const) {
+      const changed: EventPayload<"state"> = { ...payload, status };
+      expect(changed.status).toBe(status);
+    }
+  });
+
+  it("notice / question 推的是完整对象", () => {
     const notice: EventPayload<"notice"> = {
       notice: {
         id: "n-1",
@@ -180,8 +169,5 @@ describe("事件表", () => {
       at: NOW,
     };
     expect(question.question.options[0].value).toBe("self");
-
-    const usage: EventPayload<"usage"> = { conversationId: "c-1", usage: zeroUsage(NOW), at: NOW };
-    expect(usage.usage.turn.total_tokens).toBe(0);
   });
 });

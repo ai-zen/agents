@@ -84,7 +84,7 @@ describe("PRD §4 的落点能力都有方法承接", () => {
     expect(subagent.toolCallId).toBe("t-1");
   });
 
-  it("`conversation.send` 入参用 core 的内容形状，出参给出两个 id 与附件结局", () => {
+  it("`conversation.send` 入参用 core 的内容形状，出参给出落地的消息 id 与附件结局", () => {
     const params: ConversationSendParams = {
       conversationId: "c-1",
       input: {
@@ -94,7 +94,6 @@ describe("PRD §4 的落点能力都有方法承接", () => {
     };
     const result: ConversationSendResult = {
       userMessageId: "m-1",
-      assistantMessageId: "m-2",
       attachments: [
         {
           assetId: "a-1",
@@ -103,10 +102,9 @@ describe("PRD §4 的落点能力都有方法承接", () => {
           problem: null,
         },
       ],
-      acceptedAt: "2026-01-01T00:00:00.000Z",
     };
     expect(params.input.assetIds).toEqual(["a-1"]);
-    expect(result.assistantMessageId).toBe("m-2");
+    expect(result.userMessageId).toBe("m-1");
     expect(result.attachments[0].section?.type).toBe("image_url");
   });
 
@@ -152,7 +150,6 @@ describe("PRD §4 的落点能力都有方法承接", () => {
   it("`conversation.transient` 回一条 core 的助手消息（内容/用量都在上面）", () => {
     const result: ConversationTransientResult = {
       message: { id: "m-1", role: AgentNS.Role.Assistant, content: "一次性回答", usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } },
-      subagents: [],
       problem: null,
     };
     expect(result.message.content).toBe("一次性回答");
@@ -195,7 +192,7 @@ describe("PRD §4 的落点能力都有方法承接", () => {
       "F-C7": ["conversation.create"],
       "F-C8": ["conversation.revert"],
       "F-C10": ["conversation.delete"],
-      "F-D1": ["conversation.state"], // 两条阈值
+      "F-D1": ["conversation.state"], // 重连先拉读数（四格 + 待办）；阈值由客户端按消息上的 usage 算
       "F-D2": ["question.list", "question.answer"],
       "F-D3": ["handoff.start"],
       "F-D4": ["handoff.start"],
@@ -225,7 +222,7 @@ describe("PRD §4 的落点能力都有方法承接", () => {
       "F-H8": ["asset.begin", "asset.end"],
       "F-I2": ["message.list"],
       "F-I3": ["conversation.state"],
-      "F-I5": ["conversation.state"], // 用量快照（本轮 / 累计含子 Agent / 速率）就在它的 `usage` 上
+      "F-I5": ["conversation.state"], // 用量在每条消息的 `usage` 上，客户端自己合计（子 Agent 的那份也在）
       "F-I6": ["conversation.state"],
       "F-I7": ["message.list", "conversation.state"],
       "F-I8": ["notice.list", "notice.dismiss", "notice.clear"],
@@ -259,7 +256,7 @@ describe("已删掉的方法不许自己长回来（裁定 2026-11-13）", () =>
   /**
    * 防的回归：有人照着旧 PRD / 旧客户端代码把方法加回 `MethodMap` 或 `METHOD_NAMES`。
    *
-   * 这两组删的是「契约面」不是「能力」：用量看 `conversation.state.usage`（F-I5），
+   * 这两组删的是「契约面」不是「能力」：用量看消息上的 `usage`（F-I5），
    * 凭据管理是宿主的入口（`agents-host token create|list|revoke`）。方法一旦回到表里，
    * 客户端就会以为这条路由通了，而宿主并不想提供它。
    */

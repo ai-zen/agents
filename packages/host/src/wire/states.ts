@@ -1,5 +1,4 @@
 import type { AgentNS } from "@ai-zen/agents-core";
-import { ZERO_USAGE } from "@ai-zen/agents-core";
 
 import type { MessageKey } from "../i18n/index.js";
 
@@ -17,9 +16,12 @@ import type { MessageKey } from "../i18n/index.js";
  *   - 消息状态 / 角色 / 结束原因 = `AgentNS.MessageStatus` / `AgentNS.Role` / `AgentNS.FinishReason`；
  *   - 流式增量 = `AgentNS.Delta`；用量 = `AgentNS.Usage`（求和用 core 的 `sumUsage`）。
  *
- * 本文件只装 core 没有的**产品事实**：生成六态、通知分档、问题对象、上下文阈值、
- * 状态栏块、素材引用，以及「哪个对话 / 哪一轮」这类薄外壳。外壳里的消息、内容、工具调用、
- * 用量字段装的就是 core 的那几个类型，没有第二份定义。
+ * 本文件只装 core 没有的**产品事实**：对话此刻落在哪一格、待办的一行、思考档位、模型块、
+ * 通知分档、问题对象、素材引用。外壳里的消息、内容、工具调用、用量字段装的就是 core 的
+ * 那几个类型，没有第二份定义。
+ *
+ * 这里**没有**用量快照、没有「请求中 / 思考中 / 输出中」这类阶段：用量在每一条消息的
+ * `usage` 上，阶段由客户端按到达的事件自己推 —— 宿主不算、不存、不报（PRD 硬规矩 7）。
  *
  * 时间用 ISO 8601 字符串（与 SDK 的 `createdAt` / `updatedAt` 同口径）；id 是字符串，
  * 由宿主分配（PRD L6）。
@@ -52,69 +54,31 @@ export interface LocalizedText {
  *
  * 在 `LocalizedText` 之上多一个 `detail`：结构化的原因（哪个工具、哪条错误、还差什么），
  * 让客户端能做出「点一下把失败的工具重跑」这种交互，而不必去解析句子。
+ *
+ * 它在三处出现，都是「这一处的失败原因」：消息上的失败事实（活得比进程长，PRD 4.15）、
+ * 一个附件的结局（{@link AttachmentOutcome}）、一层发现来源坏在哪（`methods.ts` 的
+ * `DiscoveryLayerView`）。
  */
 export interface ProblemFact extends LocalizedText {
   detail?: unknown;
 }
 
 // ---------------------------------------------------------------------------
-// 生成六态（PRD L8 / F-I3）
+// 对话此刻的读数（PRD 4.4 的四格 / PLAN §10.1）
 // ---------------------------------------------------------------------------
 
-/** 拼装中的工具调用：名字已到、参数还在流里 */
-export interface AssemblingToolCall {
-  /** 正在拼的那个调用，core 原样（`id` / `index` / `function.name` / `function.arguments`） */
-  toolCall: AgentNS.ToolCall;
-  /** 已收到的参数字符数，用来给「正在拼」一个可见的进度 */
-  argumentsChars: number;
-}
-
-/** 正在跑的工具：等工具态里列出来的就是这些（并行时只含还在跑的，PRD L8） */
-export interface RunningTool {
-  /** 被执行的调用，core 原样（工具名在 `function.name` 上） */
-  toolCall: AgentNS.ToolCall;
-  startedAt: string;
-  /** 该工具是子 Agent 委派时带上它的快照（PRD F-I7） */
-  subagent?: SubAgentSnapshot;
-}
-
 /**
- * 生成六态。每一态带它自己那份事实，取一个态就够画状态栏，不必再回头问别处。
+ * 一段对话此刻处于哪一格 —— 只有四个值，死 = 连 agent 对象都没有。
  *
- * 六态与 PRD L8 的六个说法一一对应：连上 / 等首字 / 在想 / 在输出 / 拼工具调用 / 等工具。
- * 「等哪几个工具」是列表而不是布尔：并行时有几个还在跑就列几个（PRD L8 括注）。
+ * 这四格是 agent 身上的直接事实（core 的 `AgentNS.AgentState` 三格 + 「查不到对象」），
+ * 不落库、不是会话字段、不推算。客户端要分得开「闲」与「暂停」，因为前者会理你、后者不会。
  */
-export type GenerationState =
-  | { phase: "connected"; since: string }
-  | { phase: "awaiting_first_token"; since: string }
-  | { phase: "thinking"; since: string; chars: number }
-  | { phase: "generating"; since: string; chars: number }
-  | { phase: "assembling_tool_calls"; since: string; toolCalls: AssemblingToolCall[] }
-  | { phase: "awaiting_tools"; since: string; runningTools: RunningTool[] };
-
-/** 六态的名字（客户端按它取图标/文案，事件里也用这组值） */
-export type GenerationPhaseName = GenerationState["phase"];
-
-/** 六态的取值表，运行时校验与测试遍历用 */
-export const GENERATION_PHASES: readonly GenerationPhaseName[] = [
-  "connected",
-  "awaiting_first_token",
-  "thinking",
-  "generating",
-  "assembling_tool_calls",
-  "awaiting_tools",
-];
-
-/** 一轮的结局；`aborted` 是用户的显式动作，和 `error` 不是一回事（PRD D14） */
-export type RunOutcome = "completed" | "aborted" | "error";
-
-/** 这段对话当前的运行状态：空闲 / 在跑 / 已结束 */
-export type RunStatus = "idle" | "running" | "settled";
+export type ConversationStatus = "dead" | "busy" | "idle" | "paused";
 
 /**
- * 一条还没落成消息的排队条目（{@link RunState.inbox} 的一项）。
+ * 一条还没落成消息的排队条目（{@link ConversationState.inbox} 的一项）。
  *
- * 它是宿主拼好的一行摘要，不是 `content` 原文 —— 理由见 `RunState.inbox` 的第二段。
+ * 它是宿主拼好的一行摘要，不是 `content` 原文 —— 理由见 {@link ConversationState.inbox}。
  */
 export interface InboxItem {
   messageId: string;
@@ -133,138 +97,31 @@ export interface InboxItem {
 }
 
 /**
- * 一轮的运行状态快照（`run.state` 事件的载荷、`conversation.state` 的一部分）。
+ * 一段对话此刻的读数：落在哪一格、队里还压着什么、读数的时刻。
  *
- * 重连的客户端靠它把界面恢复成「正在发生什么」（PRD L5）：`status` 说这一轮在不在跑，
- * `generation` 说跑到哪一态，`usage` 说花了多少，`subagents` 说有哪些子 Agent 在跑/跑过，
- * `inbox` 说还有哪几句排队的话没落地。
+ * 重连的客户端拿这一份把界面的四格与待办摆回原样，再按 `message.list`（带 `after`）补齐消息。
+ * 更细的阶段（请求中 / 思考中 / 输出中）与用量**不在这里**：客户端按到达的事件自己推、
+ * 按消息上的 `usage` 自己合计。
  */
-export interface RunState {
+export interface ConversationState {
   conversationId: string;
-  status: RunStatus;
-  /** 本轮那条助手消息的 id（请求发出前就分配，PRD L6）；空闲时为空 */
-  assistantMessageId: string | null;
+  /** 此刻的读数，不落库、不是会话字段 */
+  status: ConversationStatus;
   /**
-   * 还没落成消息的排队条目（PRD D14：用户在这轮跑的时候说的话），顺序即取件顺序：
-   * 在跑的 agent 的 `inbox` 在前，装配期缓冲的那几条在后。空闲时是空数组。
+   * 还没落成消息的排队条目（现读 agent 的队列，顺序即取件顺序）。
    *
-   * 为什么替掉原来的计数：计数是数组的长度，另给一份数就会与之分叉；客户端要显示内容，
-   * 数组本身就是真相。
-   *
-   * 为什么只给一行摘要（{@link InboxItem.preview}）而不是 `content` 原文：`run.state` 每次
-   * 六态变化都推一次，而 `content` 段里可能带图片/文件的原始数据，搬原文等于每次推一遍附件。
+   * 现读而不存镜像：一份会与真队列分叉的副本没有存在的理由（PLAN §5.1）。它只给一行摘要
+   * （{@link InboxItem.preview}）而不是 `content` 原文 —— 队列里可能压着带图片/文件的输入，
+   * 搬原文等于每次读数都把附件搬一遍。
    */
   inbox: InboxItem[];
-  startedAt: string | null;
-  settledAt: string | null;
-  /** `status === "running"` 时是六态之一；其余情况为空 */
-  generation: GenerationState | null;
-  /** `status === "settled"` 时的结局 */
-  outcome: RunOutcome | null;
-  /** 出错停下时的原因（`status === "settled"` 且 `outcome === "error"`） */
-  problem: ProblemFact | null;
-  /** 本轮涉及的全部子 Agent（PRD F-I7：存在、状态、失败要显示失败） */
-  subagents: SubAgentSnapshot[];
-  /** 本轮用量（PRD F-I5 的「本轮」一侧） */
-  usage: UsageSnapshot;
+  /** 这份读数的时间 */
+  at: string;
 }
 
 // ---------------------------------------------------------------------------
-// 子 Agent（PRD F-I7）
+// 思考强度与模型块（PRD F-B7 / F-I6）
 // ---------------------------------------------------------------------------
-
-/** 子 Agent 的运行状态：跑完就是跑完，失败就是失败，不合并成一个「结束」 */
-export type SubAgentStatus = "running" | "done" | "error" | "aborted";
-
-/**
- * 子 Agent 的快照：某次委派产生的一个子 Agent。
- *
- * `toolCallId` 是它挂在哪一个工具调用下面（客户端据此把它塞进对应工具调用的折叠区），
- * `messageCount` 说明它有几句可回看的话，取用 `message.list` 带上 `toolCallId`。
- *
- * `usage` 是这一个子 Agent（含其孙级）的求和结果，形状就是 core 的 `Usage`
- * （求和使用 core 的 `sumUsage`）。
- */
-export interface SubAgentSnapshot {
-  toolCallId: string;
-  name: string;
-  status: SubAgentStatus;
-  startedAt: string;
-  finishedAt: string | null;
-  messageCount: number;
-  usage: AgentNS.Usage | null;
-  problem: ProblemFact | null;
-}
-
-// ---------------------------------------------------------------------------
-// 用量（PRD F-I5）
-// ---------------------------------------------------------------------------
-
-/** 速率的统计口径：按输出 token 算，还是按总量算 */
-export type RateBasis = "completion" | "total";
-
-/**
- * 用量快照：本轮 / 累计 / 速率（PRD F-I5）。
- *
- * 三个口径里装的是同一份 core `Usage`，字段名与取值照 core（`prompt_tokens` /
- * `completion_tokens` / `total_tokens`）：
- *   - `turn`：当前这一轮请求；
- *   - `total`：这段对话至今，含子 Agent（含孙级）—— 这是 PRD 明确要求的：漏了子 Agent，
- *     用户会发现账单比界面大；
- *   - `subAgent`：累计里由子 Agent 贡献的那部分，单独再给一份是为了让「累计里有多少是
- *     子 Agent 花的」这件事本身可见。
- */
-export interface UsageSnapshot {
-  /** 本轮（当前这一轮请求） */
-  turn: AgentNS.Usage;
-  /** 累计（这段对话至今，含子 Agent） */
-  total: AgentNS.Usage;
-  /** 累计里由子 Agent 贡献的部分 */
-  subAgent: AgentNS.Usage;
-  /** 速率 */
-  rate: {
-    value: number;
-    unit: "tokens_per_second";
-    basis: RateBasis;
-  };
-  /** 这份快照算到哪一刻 */
-  updatedAt: string;
-}
-
-/** 一份零值用量快照（三个口径都是 core 的零值 `Usage`） */
-export function zeroUsage(now: string): UsageSnapshot {
-  return {
-    turn: { ...ZERO_USAGE },
-    total: { ...ZERO_USAGE },
-    subAgent: { ...ZERO_USAGE },
-    rate: { value: 0, unit: "tokens_per_second", basis: "completion" },
-    updatedAt: now,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// 上下文与思考强度（PRD F-D1 / F-B7）
-// ---------------------------------------------------------------------------
-
-/**
- * 上下文占用的当轮事实：最近一次请求的用量 + 两条线的绝对值（PRD F-D1 / D27）。
- *
- * 比例由客户端自己算（前端不做算术的另一面是：宿主把原始数字给全）。
- * 「还装得下多少」看的是 `usage.prompt_tokens`；`overHandoff` / `overGuard` 是宿主
- * 判定出的结论，客户端不必自己比大小。
- */
-export interface ContextState {
-  /** 最近一次请求的用量，core 原样 */
-  usage: AgentNS.Usage;
-  /** 交接线（软线，SDK 的 `tokenThresholds.handoff`） */
-  handoffThreshold: number;
-  /** 硬线（`tokenThresholds.guard`） */
-  guardThreshold: number;
-  /** 是否已过交接线（该问用户要不要交接了） */
-  overHandoff: boolean;
-  /** 是否已过硬线（这一轮不再发出请求，PRD F-D1 / D23） */
-  overGuard: boolean;
-}
 
 /** 思考强度的取值来源：跟随默认 / 手动设了某档 / 这个模型不可调（PRD F-B7） */
 export type ThinkingSource = "following_default" | "manual" | "not_adjustable";
@@ -275,6 +132,9 @@ export type ThinkingSource = "following_default" | "manual" | "not_adjustable";
  * `levels` 是该模型可选的全部档位名（来自思考策略表）；`selected` 是当前档位；
  * `params` 是这一档**展开后的请求参数**（档位名存在会话行上，展开发生在装配 agent 那一刻）。
  * `following_default` 表示这段会话没设过档位，用的是助手定义上的那份参数。
+ *
+ * 它是会话行视图（`ConversationView.thinking` / `AgentView.thinking`）的一格，不在
+ * `conversation.state` 的读数里：档位没变就不必每次读数都带一遍。
  */
 export interface ThinkingState {
   /** 引用的思考策略名（模型上配的那个） */
@@ -514,7 +374,7 @@ export interface MessageInput {
 export type AttachmentDelivery = "file_reference" | "inline" | "text_fallback" | "dropped";
 
 /**
- * 一个附件这一轮的结局（PRD F-H7：失败要告警、全失败退回纯文本、不假成功）。
+ * 一个附件的结局（PRD F-H7：失败要告警、全失败退回纯文本、不假成功）。
  *
  * 宿主说清「它最后是怎么走的」「变成了哪个内容段」与「没成功的原因」，客户端据此显示
  * 告警或保持沉默。`section` 用的是 core 的内容段类型：内联图片是 `image_url` 段、
@@ -529,38 +389,9 @@ export interface AttachmentOutcome {
   problem: ProblemFact | null;
 }
 
-/**
- * 一段对话的现场：在跑哪一轮、上下文用了多少、有没有问题挂着、用量多少。
- *
- * 重连的客户端拿这一份就能把界面摆回原样，再按 `message.list`（带 `after`）补齐消息。
- *
- * **这里没有状态栏的块**（PRD F-I6）。块是「取哪几处事实、按什么顺序摆」，属于界面的排版：
- * 八块要的事实全都已经在契约里各自有一份 —— 助手与模型与目录在 `ConversationView`，
- * 上下文、思考档、用量在下面这几行，工具与子 Agent 在 `run` 里。界面自己拼即可。
- *
- * 曾经有过一份宿主拼好的 `statusBlocks`：它只在 `conversation.state` 被拉的那一刻成立，
- * 于是聊天过程中「上下文百分比 / 模型名 / 本轮 tokens / 正在跑的工具」全冻在打开对话那一刻
- * —— 一份拼好的副本没有刷新通道，而按块再推一份又会把同一批事实讲两遍。
- */
-export interface ConversationState {
-  conversationId: string;
-  run: RunState;
-  context: ContextState;
-  thinking: ThinkingState;
-  usage: UsageSnapshot;
-  /** 挂在这段对话上的问题（含已回答/已过期的，客户端按状态决定要不要显示） */
-  questions: QuestionView[];
-  /**
-   * 这段对话最近一次压缩的时刻（ISO 8601）；省略 = 从来没压过。
-   *
-   * 与 `compactionMode` 成对出现：光有时刻说不出「是谁决定压的」，光有方式说不出「什么时候」。
-   */
-  compactedAt?: string;
-  /** 那次压缩是怎么来的：`auto` = 派生会话自动压，`manual` = 用户答完交接问题之后压 */
-  compactionMode?: CompactionMode;
-  /** 这份快照的时间 */
-  updatedAt: string;
-}
+// ---------------------------------------------------------------------------
+// 压缩（会话行上的一格）
+// ---------------------------------------------------------------------------
 
 /**
  * 一次压缩是谁促成的（`conversations.compactionMode` 的取值）。
@@ -568,5 +399,8 @@ export interface ConversationState {
  * 两条路径各自落一种，于是「这段会话为什么被压了」在数据上答得出来：
  *   - `auto`：派生会话（平级会话开出来的那一段）越过交接线，`AutoMigratePlugin` 自己压的；
  *   - `manual`：用户在交接问题上答了「自交接 / 独立摘要」，宿主答完才压的。
+ *
+ * 它与 `compactedAt` 是会话行上的一格，跟着 `ConversationSummary` / `ConversationView` 走，
+ * 不在 `conversation.state` 的读数里。
  */
 export type CompactionMode = "auto" | "manual";

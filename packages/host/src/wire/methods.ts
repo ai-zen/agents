@@ -14,8 +14,8 @@ import type {
   AssetRef,
   AttachmentOutcome,
   CompactionMode,
-  ContextState,
   ConversationState,
+  ConversationStatus,
   FolderFact,
   LocalizedText,
   MessageInput,
@@ -25,8 +25,6 @@ import type {
   ProblemFact,
   QuestionState,
   QuestionView,
-  RunState,
-  SubAgentSnapshot,
   ThinkingState,
 } from "./states.js";
 
@@ -309,19 +307,10 @@ export interface ConversationSummary {
   updatedAt: string;
   messageCount: number;
   lastMessageAt: string | null;
-  /** 现在是否在跑一轮（PRD F-I3） */
-  running: boolean;
-  /**
-   * 这段对话此刻的运行状态：`null` = 没在跑，在跑就是 `{ status: "running", startedAt }`。
-   *
-   * 与 `running` 是同一件事实的两种说法，但条目不重：活跃会话列表要按「什么时候开始的」
-   * 排，而一个布尔说不出时间。`status` 用 `RunState` 的那一组取值（客户端不必为列表再造一套
-   * 取值表），`startedAt` 是这一轮的开始时刻（与 `RunState.startedAt` 同口径）。
-   *
-   * 只有「此刻在跑」这一种情况会给出非 `null` 值：跑完的轮次在宿主里已经没有了（`RunRegistry`
-   * 结算即删），那些历史事实在 `conversation.state` / `run.state` 里，不在列表里。
-   */
-  run: { status: RunState["status"]; startedAt: string | null } | null;
+  /** 此刻那一格：死 / 忙 / 闲 / 暂停（现读 agent，不落库、不是会话字段；侧栏那个圆点读它） */
+  status: ConversationStatus;
+  /** 队里还压着几条（现读） */
+  inboxPending: number;
   /** 是否有问题挂着没答（PRD F-I9） */
   hasPendingQuestion: boolean;
   /**
@@ -416,27 +405,14 @@ export interface ConversationGetResult {
   conversation: ConversationView;
 }
 
-/** `conversation.state` 入参（PRD L5：重连先拉状态） */
+/** `conversation.state` 入参（PRD L5：重连先拉读数） */
 export interface ConversationStateParams {
   conversationId: string;
-  /**
-   * 连消息本体一起回（默认 `false`）。
-   *
-   * 客户端打开一段对话时本来就要「现场 + 消息」两件事，分两次调会在两份快照之间留一道缝
-   * （第二次请求发出前又落了一条消息，现场说的用量就对不上消息）；带上这个开关一次拿齐。
-   * 只要现场、不要消息的调用方（状态栏轮询）不必为消息付费。
-   */
-  includeMessages?: boolean;
 }
 
-/** `conversation.state` 出参：一段对话的现场（六态、阈值、问题、用量、状态栏块） */
+/** `conversation.state` 出参：一段对话此刻的读数（四格 + 待办） */
 export interface ConversationStateResult {
   state: ConversationState;
-  /**
-   * `includeMessages: true` 时的整段消息，与 `message.list` 同一形状、同一顺序（含流式中那条的最新内容）。
-   * 没要的时候这个键不出现 —— 不是空数组，空数组的含义是「对话里没有消息」。
-   */
-  messages?: AgentNS.Message[];
 }
 
 /** `conversation.rename` 入参（PRD D1 / F-C3：改名不改身份、不改排序） */
@@ -478,15 +454,16 @@ export interface ConversationDeleteResult {
 }
 
 /**
- * `conversation.send` 入参（PRD F-C2 / L6 / D14 / F-H7 / F-D10）。
+ * `conversation.send` 入参（PRD 4.2 / 5.1：唯一的对外动作是投递）。
  *
- * 两种受理，取决于这段对话当时在不在跑：
- *   - 空闲 → 开一轮（宿主先占位，再分配用户消息与助手消息的 id，L6：助手消息 id 在请求
- *     发出之前就有，然后开始流式）；
- *   - 正在跑 → 这一句排进**那一轮**的 inbox（D14：不打断、也不再回 `busy`）。
+ * 投递只有两条判据：目标在不在、活不活（PLAN §5.1）。忙不忙不是判据 —— 活着就收下入队，
+ * 忙 / 闲 / 暂停一律收（暂停只收不取），什么时候取走是它自己的事，与投递方无关。
+ * 所以这里没有「开一次」「排进哪一次」这种说法：进了队列就是进了队列。
  *
  * 用户输入用 core 的内容形状（`MessageInput`），图片的传输路径由宿主定（F-H7）。
  * 有问题在挡着这段对话时会被拒（`question_pending`，D23 / F-D10）—— 排队不是绕过它的通道。
+ * 目标是死的（宿主那边没有 agent 对象）时也是拒（`not_found`）：界面上那个发送按钮先复活再投，
+ * 那是客户端的事 —— 投递本身不叫醒死者（PRD 4.4）。
  */
 export interface ConversationSendParams {
   conversationId: string;
@@ -494,31 +471,24 @@ export interface ConversationSendParams {
 }
 
 /**
- * `conversation.send` 出参：受理即返回两个 id（PRD F-I12：受理了就不会静默丢）。
+ * `conversation.send` 出参：收下了（PLAN §5.1 的「回执只有收下 / 被拒」）。
  *
- * ## 两半含义，由 `queued` 区分
+ * 回执里没有状态、没有「叫醒了没有」、没有结果 —— 那三样都是对未来的断言，而未来只能靠
+ * 观测（`conversation.state` + 事件）去读。只有两样是投递那一刻就定下、过后也不会变的：
+ * `userMessageId` 与每个附件的结局。
  *
- * - `queued` 缺省 = 老路径：受理了**新的一轮**，两个 id 都在，客户端拿助手 id 接流。
- * - `queued: true` = 这一句排进了**正在跑的那一轮**（D14）。此时 `assistantMessageId` 是
- *   `null`：排队的话还没有「这一次要被回答的助手消息」—— 它落成用户消息之后由那一轮接着跑，
- *   流还是那一轮原来的那条流。
- *
- * `userMessageId` 两种情形下都是**落地那条消息的 id**：排队时宿主在入队这一刻就定死它
- * （D5），客户端先按它画一条乐观回显，几秒后库里回来的那条用的是同一个 id，同一条内容不会
- * 显示两遍。
+ * `userMessageId` 就是**落地那条消息的 id**：宿主在入队这一刻就定死它，客户端先按它画一条
+ * 乐观回显，之后库里回来的那条用的是同一个 id，同一条内容不会显示两遍。
  *
  * `attachments` 说明每个附件最后是怎么走的（文件引用 / 内联 / 退化成文字 / 没发出去），
- * 失败与降级都带原因，拿不到结果时不报成功（F-H7）。排队的那一句同样走一遍素材准备，
- * 结局照常回 —— 排队不等于「附件被静默丢掉」。
+ * 失败与降级都带原因，拿不到结果时不报成功（F-H7）。收下但还没被取走的那一条同样走一遍
+ * 素材准备，结局照常回 —— 排队不等于「附件被静默丢掉」。
  */
 export interface ConversationSendResult {
+  /** 投递那一刻就定死的消息 id：落地那条消息用的就是它 */
   userMessageId: string;
-  /** 排队受理（`queued: true`）时为空：那一句还没有属于它的助手消息 */
-  assistantMessageId: string | null;
-  /** `true` = 排进了正在跑的那一轮；缺省 = 老路径，受理了新的一轮 */
-  queued?: boolean;
+  /** 每个附件最后是怎么走的（沿用现有 AttachmentOutcome 形状） */
   attachments: AttachmentOutcome[];
-  acceptedAt: string;
 }
 
 /**
@@ -529,10 +499,9 @@ export interface ConversationAbortParams {
   reason?: string;
 }
 
-/** `conversation.abort` 出参：中止后的运行状态（`aborted: false` 表示本来就没在跑） */
+/** `conversation.abort` 出参：打到了没有（`signalled: false` = 那个对象本来就不在，无从下手） */
 export interface ConversationAbortResult {
-  aborted: boolean;
-  run: RunState;
+  signalled: boolean;
 }
 
 /**
@@ -567,12 +536,15 @@ export interface ConversationSetModelParams {
   modelId: string | null;
 }
 
-/** `conversation.setModel` 出参 */
+/**
+ * `conversation.setModel` 出参。
+ *
+ * 上下文占用不在这里给：它由客户端按消息上的 `usage` 自己算（宿主不算、不存、不报），
+ * 阈值也不需要随这一次写入带过去。
+ */
 export interface ConversationSetModelResult {
   conversation: ConversationView;
   model: ConversationModelState;
-  /** 换模型后上下文占用要重算（阈值跟着模型走，PRD D27） */
-  context: ContextState;
 }
 
 /**
@@ -593,13 +565,13 @@ export interface ConversationSetThinkingResult {
 }
 
 /**
- * `conversation.transient` 入参（PRD F-A2 / D3：临时对话）。
+ * `conversation.transient` 入参（PRD F-A2 / D3 / 4.3：一次性对话）。
  *
- * 一次请求跑一轮、结果返回后内存清空：无 id、不可 attach、不入库、不进列表；只借 Scope，
+ * 跑到头就散：结果回来之后内存清空，无 id、不可 attach、不入库、不进列表；只借 Scope，
  * 与 Workspace 无关，所以这里要显式的 `cwd` 而不是 `workspaceId`。
  */
 export interface ConversationTransientParams {
-  /** 这一轮在哪个目录里跑（相对路径的解析基准） */
+  /** 在哪个目录里跑（相对路径的解析基准） */
   cwd: string;
   input: MessageInput;
   agentId?: string;
@@ -607,15 +579,17 @@ export interface ConversationTransientParams {
 }
 
 /**
- * `conversation.transient` 出参：这一轮产出的那条助手消息（不产生任何可回看的 id）。
+ * `conversation.transient` 出参：那条助手消息（不产生任何可回看的 id）。
  *
- * 内容、思考、工具调用、结束原因、用量都在 core 的 `AgentNS.Message` 上；要「这一轮一共花了
- * 多少」用 core 的 `sumUsage([message])`（它把自身用量与子 Agent 用量一起算）。
+ * 内容、思考、工具调用、结束原因、用量都在 core 的 `AgentNS.Message` 上；要「一共花了多少」
+ * 用 core 的 `sumUsage([message])`（它把自身用量与子 Agent 用量一起算 —— 子 Agent 的那份就在
+ * 那条工具消息的 `subAgentUsage` 上）。
+ *
+ * 子 Agent 不另给快照：它们说过的话在消息里，真要翻就按那个委派的工具调用 id 取（F-I7）。
  */
 export interface ConversationTransientResult {
-  /** 这一轮产出的助手消息，core 原样 */
+  /** 那条助手消息，core 原样 */
   message: AgentNS.Message;
-  subagents: SubAgentSnapshot[];
   problem: ProblemFact | null;
 }
 
@@ -1862,14 +1836,14 @@ export interface MethodMap {
   /** D11 / F-F9：连带删名下对话，删前给出代价；目录本身宿主不碰。 */
   "workspace.remove": { params: WorkspaceRemoveParams; result: WorkspaceRemoveResult };
 
-  // ---- conversation.*：一段对话的身份、历史、一轮的运行 ----
+  // ---- conversation.*：一段对话的身份、历史、四格与待办 ----
   /** F-C5 / D13：默认创建时间倒序 + 手动置顶。 */
   "conversation.list": { params: ConversationListParams; result: ConversationListResult };
   /** F-A3 / F-C7 / L7：开新会话；项目与助手在创建时定死（模型与档位归会话）。 */
   "conversation.create": { params: ConversationCreateParams; result: ConversationCreateResult };
   /** F-A6：按 id 打开（「接着上次聊」的记住工作归客户端）。 */
   "conversation.get": { params: ConversationGetParams; result: ConversationGetResult };
-  /** L5 / F-I3 / F-I5 / F-I6 / F-D1：重连拉状态（六态、阈值、问题、用量、状态栏块）。 */
+  /** L5 / F-I3：重连拉此刻的读数（四格 + 待办），可连消息一次拿齐。 */
   "conversation.state": { params: ConversationStateParams; result: ConversationStateResult };
   /** D1 / F-C3：改名不改身份、不改排序。 */
   "conversation.rename": { params: ConversationRenameParams; result: ConversationRenameResult };
@@ -1877,9 +1851,9 @@ export interface MethodMap {
   "conversation.pin": { params: ConversationPinParams; result: ConversationPinResult };
   /** F-C10 / D17：硬删，图片按引用清理；删除前给出代价。 */
   "conversation.delete": { params: ConversationDeleteParams; result: ConversationDeleteResult };
-  /** F-C2 / L6 / D14 / F-H7 / F-D10：一轮的起点（忙则拒、id 先分配、问题挡着则拒）。 */
+  /** F-C2 / F-H7 / F-D10：投递一句（忙也收、id 投递时就定、问题挡着则拒）。 */
   "conversation.send": { params: ConversationSendParams; result: ConversationSendResult };
-  /** D14（§4 未单列，能力落在「一段对话同时只跑一轮」上）：中止是用户的显式动作。 */
+  /** D14：中止是用户的显式动作（打击在途的网络请求与工具，并停在暂停那一格）。 */
   "conversation.abort": { params: ConversationAbortParams; result: ConversationAbortResult };
   /** F-C8 / D24：撤回到某条用户消息之前，其后硬删，内容回填输入框。 */
   "conversation.revert": { params: ConversationRevertParams; result: ConversationRevertResult };
@@ -1890,7 +1864,7 @@ export interface MethodMap {
     params: ConversationSetThinkingParams;
     result: ConversationSetThinkingResult;
   };
-  /** F-A2 / D3：临时对话，一次请求跑一轮、零痕迹。 */
+  /** F-A2 / D3：一次性对话，跑到头就散、零痕迹。 */
   "conversation.transient": {
     params: ConversationTransientParams;
     result: ConversationTransientResult;

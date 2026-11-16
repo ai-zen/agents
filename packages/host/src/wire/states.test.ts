@@ -1,81 +1,33 @@
-import { addUsage, AgentNS, sumUsage, ZERO_USAGE } from "@ai-zen/agents-core";
+import { AgentNS } from "@ai-zen/agents-core";
 import { describe, expect, it } from "vitest";
 
 import {
-  GENERATION_PHASES,
   MAX_ASSETS_PER_MESSAGE,
   MAX_ASSET_BYTES,
   NOTICE_LEVELS,
   QUESTION_KINDS,
   QUESTION_STATES,
   localAssetIdOf,
-  zeroUsage,
-  type LocalMessageContentSection,
-  type AssemblingToolCall,
   type AttachmentOutcome,
-  type ContextState,
-  type GenerationState,
+  type ConversationStatus,
+  type LocalMessageContentSection,
   type MessageInput,
-  type RunningTool,
-  type UsageSnapshot,
 } from "./states.js";
 
-const NOW = "2026-01-01T00:00:00.000Z";
+describe("对话此刻的四格（PRD 4.4 / PLAN §10.1）", () => {
+  it("就是 core 的三格加一格「死」：恰好四个值，不多不少", () => {
+    // 三格照 core 的 `AgentState`（忙 / 闲 / 暂停），第四格是「宿主那边连 agent 对象都没有」
+    const core: AgentNS.AgentState[] = ["busy", "idle", "paused"];
+    const all: ConversationStatus[] = [...core, "dead"];
+    expect(all).toEqual(["busy", "idle", "paused", "dead"]);
 
-describe("生成六态（PRD L8 / F-I3）", () => {
-  it("就是 L8 的那六个说法，一个不少", () => {
-    expect([...GENERATION_PHASES]).toEqual([
-      "connected",
-      "awaiting_first_token",
-      "thinking",
-      "generating",
-      "assembling_tool_calls",
-      "awaiting_tools",
-    ]);
-  });
-
-  it("每一态带自己那份事实（判别式联合在编译期就挡住缺字段）", () => {
-    // 工具调用用 core 的形状：id / index / function.name / function.arguments
-    const assembling: AssemblingToolCall = {
-      toolCall: { index: 0, id: "t1", type: "function", function: { name: "read", arguments: '{"pa' } },
-      argumentsChars: 4,
-    };
-    const running: RunningTool = {
-      toolCall: { index: 0, id: "t1", type: "function", function: { name: "read", arguments: "{}" } },
-      startedAt: NOW,
-    };
-
-    const states: GenerationState[] = [
-      { phase: "connected", since: NOW },
-      { phase: "awaiting_first_token", since: NOW },
-      { phase: "thinking", since: NOW, chars: 12 },
-      { phase: "generating", since: NOW, chars: 130 },
-      { phase: "assembling_tool_calls", since: NOW, toolCalls: [assembling] },
-      {
-        phase: "awaiting_tools",
-        since: NOW,
-        runningTools: [
-          running,
-          { ...running, toolCall: { ...running.toolCall, id: "t2", function: { name: "grep" } } },
-        ],
-      },
-    ];
-
-    // 六态都能被同一个函数处理，且不丢态
-    for (const state of states) {
-      expect(GENERATION_PHASES).toContain(state.phase);
-    }
-    // 并行工具只列还在跑的那几个：两把同时在跑就两条
-    const awaiting = states[5];
-    expect(awaiting.phase === "awaiting_tools" && awaiting.runningTools.length).toBe(2);
-    // 工具名与 id 都在 core 的字段上，没有第二份
-    expect(assembling.toolCall.function?.name).toBe("read");
-    expect(running.toolCall.id).toBe("t1");
-  });
-
-  it("thinking 与 generating 分开，是两态而不是一个「输出中」", () => {
-    expect(GENERATION_PHASES).toContain("thinking");
-    expect(GENERATION_PHASES).toContain("generating");
+    // 两个方向都不多不少：减掉 core 三格只剩 `dead`，而 core 三格全在这一格里
+    // （任一方向多了或少了值，下面两行就不再是 `true` / `never`，编译就红）
+    type OnlyDead = Exclude<ConversationStatus, AgentNS.AgentState>;
+    const onlyDead: OnlyDead extends "dead" ? true : false = true;
+    type UnknownCoreState = Exclude<AgentNS.AgentState, ConversationStatus>;
+    const coreStatesAllKnown: UnknownCoreState extends never ? true : false = true;
+    expect(onlyDead && coreStatesAllKnown).toBe(true);
   });
 });
 
@@ -201,60 +153,6 @@ describe("问题对象（PRD D22）", () => {
   it("种类与生命周期状态都齐", () => {
     expect([...QUESTION_KINDS]).toEqual(["handoff", "confirmation"]);
     expect([...QUESTION_STATES]).toEqual(["pending", "answered", "expired", "cancelled"]);
-  });
-});
-
-describe("用量（PRD F-I5）", () => {
-  it("三个口径里装的是 core 的 Usage，字段名照 core", () => {
-    const usage = zeroUsage(NOW);
-    expect(Object.keys(usage)).toEqual(
-      expect.arrayContaining(["turn", "total", "subAgent", "rate", "updatedAt"]),
-    );
-    expect(usage.rate).toEqual({ value: 0, unit: "tokens_per_second", basis: "completion" });
-    expect(usage.turn).toEqual(ZERO_USAGE);
-    expect(Object.keys(usage.total)).toEqual(["prompt_tokens", "completion_tokens", "total_tokens"]);
-  });
-
-  it("聚合口径只是外壳：求和用 core 的 addUsage / sumUsage", () => {
-    const turn: AgentNS.Usage = { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 };
-    const subAgent: AgentNS.Usage = { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 };
-    const usage: UsageSnapshot = {
-      ...zeroUsage(NOW),
-      turn,
-      subAgent,
-      total: addUsage(turn, subAgent),
-    };
-
-    expect(usage.total.total_tokens).toBe(135);
-    expect(usage.total.total_tokens).toBe(usage.turn.total_tokens + usage.subAgent.total_tokens);
-
-    // 一条 assistant 消息 + 一条带子 Agent 用量的 tool 消息，sumUsage 把两者都算进去
-    const messages: AgentNS.Message[] = [
-      { id: "m-1", role: AgentNS.Role.Assistant, usage: turn },
-      { id: "m-2", role: AgentNS.Role.Tool, subAgentUsage: subAgent },
-    ];
-    expect(sumUsage(messages)).toEqual(usage.total);
-  });
-
-  it("zeroUsage 每次给新对象（调用方改不坏共享的零值）", () => {
-    const a = zeroUsage(NOW);
-    a.turn.prompt_tokens = 7;
-    expect(zeroUsage(NOW).turn.prompt_tokens).toBe(0);
-    expect(ZERO_USAGE.prompt_tokens).toBe(0);
-  });
-});
-
-describe("上下文阈值（PRD F-D1 / D27）", () => {
-  it("阈值是两条线的绝对值，占用看 core Usage 的 prompt_tokens", () => {
-    const context: ContextState = {
-      usage: { prompt_tokens: 900, completion_tokens: 40, total_tokens: 940 },
-      handoffThreshold: 800,
-      guardThreshold: 1000,
-      overHandoff: true,
-      overGuard: false,
-    };
-    expect(context.usage.prompt_tokens).toBeGreaterThan(context.handoffThreshold);
-    expect(context.usage.prompt_tokens).toBeLessThan(context.guardThreshold);
   });
 });
 

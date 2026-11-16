@@ -13,6 +13,9 @@ export const zh = {
   "error.invalidParams": "这次请求里有不对的地方：{field}。",
   "error.notFound": "找不到这个 id 对应的{entity}。",
   "error.busy": "这段对话还在跑上一轮。等它跑完，或者先停下它。",
+  // 对话存在但没人驱动它（PRD 1.2）：外面投不进去，只有从界面上发话会先把它叫起来
+  "error.conversationDead":
+    "这段对话现在是死的，外面投不进去 —— 只有在界面上发一句话，才会先把它叫起来再投。",
   "error.payloadTooLarge": "这个文件是 {size}，超过了 {limit} 的上限。",
   "error.unsupported": "宿主处理不了{what}。",
   "error.internal": "宿主内部出错了，细节写进日志里了。",
@@ -40,8 +43,6 @@ export const zh = {
   "notice.configRecovered": "配置文件 {path} 坏了，已恢复出厂设置。",
   "notice.handoffWritten": "交接文档已写到 {path}。",
   "notice.autoNamed": "给这段对话起名叫「{name}」。",
-
-  // ---- 生成六态（PRD L8 / F-I3）----
 
   // ---- 问题对象（PRD D22 / F-I9）----
   "question.handoff.prompt": "这段对话已用到上下文预算的 {percent}%。接下来怎么办？",

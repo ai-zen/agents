@@ -30,10 +30,20 @@ export type BizCode =
   /** 目标对象不存在（对话、消息、问题、附件……） */
   | "not_found"
   /**
-   * 这段对话正在跑上一轮，而这个动作插不进去（PRD D14：`busy` 只剩兜底 ——
-   * 「跑中再发一句话」走那一轮的 inbox 排队，不回它）
+   * 此刻不能动这段对话的记忆 —— 它正忙着。
+   *
+   * 判据是**现读 agent 那一格**（忙 / 闲 / 暂停），不是「宿主记着有人在跑」：忙的时候记忆
+   * 不许从外面改（撤回、编辑、换记忆这类动作），要影响它只能投递。投递本身**不看**这一格 ——
+   * 忙也照收（PRD 4.1 / PLAN §5.1）。
    */
   | "busy"
+  /**
+   * 目标对话存在，但它现在没有驱动者（死的）—— 外部来源不能唤醒死者，只有界面上的发送按钮
+   * 能先复活再投（PRD 1.2）。
+   *
+   * 与 `busy` 同档：两者说的都是「这段对话此刻不接这一手」，区别只在那一格是忙还是死。
+   */
+  | "conversation_dead"
   /** 上传或请求体超限（PRD D5：图片 20MB/张） */
   | "payload_too_large"
   /** 协议里我们不用的那部分，或某个能力在本宿主不提供（PLAN A4） */
@@ -59,6 +69,7 @@ export const BIZ_CODES: readonly BizCode[] = [
   "invalid_params",
   "not_found",
   "busy",
+  "conversation_dead",
   "payload_too_large",
   "unsupported",
   "internal",
@@ -76,6 +87,7 @@ const DEFAULT_MESSAGE_KEY: Record<BizCode, MessageKey> = {
   invalid_params: "error.invalidParams",
   not_found: "error.notFound",
   busy: "error.busy",
+  conversation_dead: "error.conversationDead",
   payload_too_large: "error.payloadTooLarge",
   unsupported: "error.unsupported",
   internal: "error.internal",
@@ -108,6 +120,7 @@ const JSON_RPC_CODE: Record<BizCode, number> = {
   handoff_declined: -32011,
   question_pending: -32012,
   context_guard: -32013,
+  conversation_dead: -32014,
 };
 
 /** 业务码对应的 JSON-RPC 数字码 */

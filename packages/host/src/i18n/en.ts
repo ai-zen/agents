@@ -14,6 +14,9 @@ export const en = {
   "error.invalidParams": "Part of this request doesn't look right: {field}.",
   "error.notFound": "There's no {entity} with that id.",
   "error.busy": "This conversation is still working on the previous turn. Stop it or wait for it to finish.",
+  // 对话存在但没人驱动它（PRD 1.2）：外面投不进去，只有从界面上发话会先把它叫起来
+  "error.conversationDead":
+    "This conversation has nothing driving it right now, so nothing can be sent into it from outside. Sending from the app wakes it up first.",
   "error.payloadTooLarge": "That file is {size}, which is over the {limit} limit.",
   "error.unsupported": "The host can't handle {what}.",
   "error.internal": "Something broke on the host. The log has the details.",
@@ -44,8 +47,6 @@ export const en = {
   "notice.configRecovered": "Config file {path} was broken; factory settings restored.",
   "notice.handoffWritten": "Handoff document written to {path}.",
   "notice.autoNamed": "Named this conversation \"{name}\".",
-
-  // ---- 生成六态（PRD L8 / F-I3）：每一态一句人话，事实在 run.state 字段里 ----
 
   // ---- 问题对象（PRD D22 / F-I9）----
   "question.handoff.prompt": "This conversation is at {percent}% of the context budget set for it. How should we continue?",

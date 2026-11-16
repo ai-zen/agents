@@ -241,7 +241,7 @@ export function errResponse(
   };
 }
 
-/** 通知帧：宿主推送事件用（`notification("run.state", payload)`） */
+/** 通知帧：宿主推送事件用（`notification("state", payload)`） */
 export function notification<E extends EventName>(
   event: E,
   payload: EventPayload<E>,
