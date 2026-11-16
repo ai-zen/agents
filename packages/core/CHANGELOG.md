@@ -1,5 +1,16 @@
 # Changelog
 
+## [5.0.0-alpha.1] - 2026-11-16
+
+> Republish only. `5.0.0-alpha.0` went out through `npm publish`, which left
+> `"@ai-zen/agents-testing": "workspace:*"` untouched in the published
+> `devDependencies` — `pnpm publish` is what rewrites the workspace protocol, and this
+> package has no `workspace:` entry under `dependencies` to catch the mistake for us.
+>
+> Harmless for consumers (npm ignores a dependency's devDependencies), but anyone who
+> unpacks the tarball and runs `npm install` inside it hits an unsupported protocol. No
+> code changed.
+
 ## [5.0.0-alpha.0] - 2026-11-16
 
 > The engine was rewritten against `CORE.md`, its own requirement doc. The old `Agent.ts` carried
