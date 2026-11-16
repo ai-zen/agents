@@ -40,6 +40,16 @@ export interface InnerLoopContext {
   body: Record<string, unknown> & { messages: unknown[] };
 }
 
+/**
+ * 死活与状态类钩子的上下文。
+ *
+ * 为什么它们也要带 `agent`：插件在这几个时刻通常正需要读/改它（例如「闲下来之后把会话
+ * 重开一轮」要先拿到 agent）。不带就得先去别的钩子里「认领」一个，那是多余的中间态。
+ */
+export interface LifecycleContext {
+  agent: Agent;
+}
+
 /** 工具钩子的上下文（`toolCall` 就是交给 `Tool.exec` 的那个实例） */
 export interface ToolHookContext {
   agent: Agent;
@@ -73,12 +83,12 @@ export interface SubAgentHookContext {
  */
 export interface AgentPlugin {
   onInit?(): HookResult;
-  onStart?(): HookResult;
-  onPause?(): HookResult;
-  onResume?(): HookResult;
-  onIdle?(): HookResult;
-  onStop?(): HookResult;
-  onKill?(): HookResult;
+  onStart?(ctx: LifecycleContext): HookResult;
+  onPause?(ctx: LifecycleContext): HookResult;
+  onResume?(ctx: LifecycleContext): HookResult;
+  onIdle?(ctx: LifecycleContext): HookResult;
+  onStop?(ctx: LifecycleContext): HookResult;
+  onKill?(ctx: LifecycleContext): HookResult;
   onOuterLoopStart?(ctx: OuterLoopContext): HookResult;
   onOuterLoopEnd?(ctx: OuterLoopContext): HookResult;
   onInnerLoopStart?(ctx: InnerLoopContext): HookResult;
@@ -112,6 +122,10 @@ export interface InboxClearedEvent {
 export interface MessageEvent {
   agent: Agent;
   message: AgentNS.Message;
+  /** 这条消息属于某个子 agent（委派工具转发上来时才有） */
+  subAgent?: Agent;
+  /** 是哪一次委派引起的（与 `subAgent` 同现） */
+  via?: AgentNS.ToolCall;
 }
 /**
  * 原始片的来源。三格让接收方直接知道往哪儿放：
@@ -139,11 +153,17 @@ export interface ResponseFinishedEvent {
 export interface ToolStartedEvent {
   agent: Agent;
   toolCall: AgentNS.ToolCall;
+  /** 这个工具跑在某个子 agent 里（委派工具转发上来时才有） */
+  subAgent?: Agent;
+  /** 是哪一次委派引起的 */
+  via?: AgentNS.ToolCall;
 }
 export interface ToolFinishedEvent {
   agent: Agent;
   toolCall: AgentNS.ToolCall;
   result: AgentNS.Message;
+  subAgent?: Agent;
+  via?: AgentNS.ToolCall;
 }
 export interface SubAgentEvent {
   agent: Agent;
@@ -154,6 +174,13 @@ export interface DeniedEvent {
   agent: Agent;
   hook: string;
   reason: string;
+  /**
+   * 结构性的事实，给宿主/插件用（例如上下文护栏的 `promptTokens` / 阈值）。
+   *
+   * 为什么不塞进 `reason`：那一格是写给**模型或人**读的文案；一旦有人想按数字判断
+   * （宿主现在就按「是不是上下文溢出」分流），就只能去 parse 字符串。
+   */
+  detail?: unknown;
 }
 export interface FailedEvent {
   agent: Agent;
@@ -192,6 +219,12 @@ export interface AgentEvents {
 // ---------------------------------------------------------------------------
 // Agent
 // ---------------------------------------------------------------------------
+
+/**
+ * 能拒的钩子。它们崩了要**fail-closed** —— 坏的护栏放行等于没有护栏。
+ * 其余位置崩了当没说话（fail-open），只为不把 agent 打死。
+ */
+const GATE_HOOKS = new Set<string>(["onInnerLoopStart", "onToolStart", "onSubAgentStart"]);
 
 /** 当圈的中断装置：寿命**只到这一圈**，下一圈是全新的 */
 interface Turn {
@@ -242,7 +275,13 @@ export class Agent extends AgentContext {
     return () => subscription.dispose();
   }
 
-  private emit<K extends keyof AgentEvents>(type: K, payload: AgentEvents[K]): void {
+  /**
+   * 发一个事件。
+   *
+   * 公开是因为委派工具要把子 agent 的事件**按同一套名字**发到父身上（§9-3）：
+   * 不为子 agent 另起一套平行名字，只多「哪个子 agent + 哪个工具调用」两格。
+   */
+  emit<K extends keyof AgentEvents>(type: K, payload: AgentEvents[K]): void {
     this.bus.emit(type as string, payload);
   }
 
@@ -265,13 +304,32 @@ export class Agent extends AgentContext {
    */
   async dispatchHook(
     hook: keyof AgentPlugin,
-    ctx?: OuterLoopContext | InnerLoopContext | ToolHookContext | SubAgentHookContext,
+    ctx?:
+      | LifecycleContext
+      | OuterLoopContext
+      | InnerLoopContext
+      | ToolHookContext
+      | SubAgentHookContext,
   ): Promise<string | undefined> {
+    const isGate = GATE_HOOKS.has(hook as string);
+
     for (const plugin of this._plugins) {
       const fn = (plugin as Record<string, unknown>)[hook as string];
       if (typeof fn !== "function") continue;
-      const r = await (fn as (ctx?: unknown) => HookResult).call(plugin, ctx);
-      if (r !== undefined) return r;
+
+      try {
+        const r = await (fn as (ctx?: unknown) => HookResult).call(plugin, ctx);
+        if (r !== undefined) return r;
+      } catch (error) {
+        // 插件抛错**不许把 agent 打死**：异常会一路穿出 `start()`，循环就永久停在那儿，
+        // 而且 `closed` / `killed` 都还是 false —— 一个看起来活着、塞进去也不动的僵尸。
+        const wrapped = error instanceof Error ? error : new Error(String(error));
+        this.emit("failed", { agent: this, error: wrapped });
+
+        // 门（能拒的那三个）崩了就关上：坏的护栏不该放行。
+        // 其余位置当它没说话，接着问下一个插件。
+        if (isGate) return `插件 ${String(hook)} 抛错：${wrapped.message}`;
+      }
     }
     return undefined;
   }
@@ -327,7 +385,7 @@ export class Agent extends AgentContext {
       });
 
     this.emit("started", { agent: this });
-    void this.dispatchHook("onStart");
+    void this.dispatchHook("onStart", { agent: this });
     return this.runPromise;
   }
 
@@ -344,7 +402,7 @@ export class Agent extends AgentContext {
     if (this.paused) this.clearInbox();
     this.inbox.done();
     this.notify();
-    void this.dispatchHook("onStop");
+    void this.dispatchHook("onStop", { agent: this });
   }
 
   /** 硬着陆：立刻死，存量作废 */
@@ -356,7 +414,7 @@ export class Agent extends AgentContext {
     this.inbox.done();
     this.abortTurn();
     this.notify();
-    void this.dispatchHook("onKill");
+    void this.dispatchHook("onKill", { agent: this });
   }
 
   /**
@@ -370,7 +428,7 @@ export class Agent extends AgentContext {
     this.abortTurn();
     this.refreshState();
     this.notify();
-    void this.dispatchHook("onPause");
+    void this.dispatchHook("onPause", { agent: this });
   }
 
   /**
@@ -384,7 +442,7 @@ export class Agent extends AgentContext {
     this.paused = false;
     this.refreshState();
     this.notify();
-    void this.dispatchHook("onResume");
+    void this.dispatchHook("onResume", { agent: this });
   }
 
   // -------------------------------------------------------------------------
@@ -488,6 +546,22 @@ export class Agent extends AgentContext {
     this.notify();
     return entries;
   }
+
+  /**
+   * 起来了吗（`start()` 调过没有）。
+   *
+   * 与 `state` 是两件事：没起来的 agent 也是 `idle`，光看 `state` 分不出「在等事件」
+   * 和「压根没开始等」。
+   */
+  get started(): boolean {
+    return this.runPromise !== undefined;
+  }
+
+  /** 谁在调我。只有委派造出来的子 agent 有；活引用，不许进 `source`（§3） */
+  parent?: Agent;
+
+  /** 我造出来、还活着的子 agent（收尸时摘掉） */
+  readonly children = new Set<Agent>();
 
   /** 排队中还有几条（宿主显示「待发 N 条」用） */
   get inboxSize(): number {
@@ -734,19 +808,8 @@ export class Agent extends AgentContext {
     return true;
   }
 
-  private async runOneTool(
-    call: AgentNS.ToolCall,
-    result: Message,
-    turn: Turn,
-  ): Promise<void> {
+  private async runOneTool(call: AgentNS.ToolCall, result: Message, turn: Turn): Promise<void> {
     this.emit("toolStarted", { agent: this, toolCall: call });
-
-    /** 定型：先按新状态重发这条消息，再报「这个工具跑完了」 */
-    const settle = (status: AgentNS.MessageStatus) => {
-      result.status = turn.aborted ? AgentNS.MessageStatus.Aborted : status;
-      this.touch(result);
-      this.emit("toolFinished", { agent: this, toolCall: call, result });
-    };
 
     const matched = this.tools.find(
       (tool) => tool.function.name === call.function?.name && tool.type === "function",
@@ -760,46 +823,51 @@ export class Agent extends AgentContext {
       signal: turn.controller.signal,
     });
 
+    /** 定型：先改状态并重发这条消息。`toolFinished` 要等到 `onToolEnd` **之后**才发（钩子在前） */
+    const finalize = (status: AgentNS.MessageStatus) => {
+      result.status = turn.aborted ? AgentNS.MessageStatus.Aborted : status;
+      this.touch(result);
+    };
+
     try {
-      // ① 钩子拒：停止的两条路之一
+      // ① 钩子拒 —— 停止的两条路之一。
+      //    返回的字符串**就是**这条 tool 消息的正文：拒绝理由与「未知工具提示」都要能
+      //    直接写给模型读，core 不再在前面加自己的前缀话术。
       const denied = await this.dispatchHook("onToolStart", { agent: this, toolCall: ctx });
       if (denied !== undefined) {
-        result.content = `工具 ${call.function?.name} 被拒绝：${denied}`;
-        settle(AgentNS.MessageStatus.Completed);
-        await this.dispatchHook("onToolEnd", { agent: this, toolCall: ctx });
-        return;
-      }
-
-      // ② 参数烂 = 没给出有效结果
-      if (ctx.parseError) {
+        result.content = denied;
+        finalize(AgentNS.MessageStatus.Completed);
+        this.emit("denied", {
+          agent: this,
+          hook: "onToolStart",
+          reason: denied,
+          detail: { toolCall: call },
+        });
+      } else if (ctx.parseError) {
+        // ② 参数烂 = 没给出有效结果
         result.content = `参数解析错误: ${ctx.parseError}\n请检查你提供的参数格式，确保是合法的 JSON。`;
-        settle(AgentNS.MessageStatus.Completed);
-        await this.dispatchHook("onToolEnd", { agent: this, toolCall: ctx });
-        return;
-      }
-
-      // ③ 工具不存在 = 同一件事
-      if (!matched) {
+        finalize(AgentNS.MessageStatus.Completed);
+      } else if (!matched) {
+        // ③ 工具不存在 = 同一件事。钩子（如果有话要说）已经在上一步给出文案了
         result.content = `未知工具: ${call.function?.name}，没有找到对应的工具实现。`;
-        settle(AgentNS.MessageStatus.Completed);
-        await this.dispatchHook("onToolEnd", { agent: this, toolCall: ctx });
-        return;
+        finalize(AgentNS.MessageStatus.Completed);
+      } else {
+        // ④ 真跑：与 `abortRx` 赛跑 —— 不管工具听不听话，`await` 立刻能返回
+        result.content = (await Promise.race([
+          matched.exec(ctx),
+          turn.abortRx.then(() => undefined),
+        ])) as AgentNS.MessageContent | undefined;
+        finalize(AgentNS.MessageStatus.Completed);
       }
-
-      // ④ 真跑：与 `abortRx` 赛跑 —— 不管工具听不听话，`await` 立刻能返回
-      result.content = (await Promise.race([
-        matched.exec(ctx),
-        turn.abortRx.then(() => undefined),
-      ])) as AgentNS.MessageContent | undefined;
-
-      settle(AgentNS.MessageStatus.Completed);
     } catch (error: any) {
       // 工具消息是**例外**：它的 `content` 本来就是给模型读的结果，错误文本就该在里面
       result.content = `执行工具 ${call.function?.name} 时出错: ${error?.message ?? String(error)}`;
-      settle(AgentNS.MessageStatus.Completed);
+      finalize(AgentNS.MessageStatus.Completed);
     }
 
+    // 同位置：钩子在前（还能看一眼结果），事件在后（已经定了）
     await this.dispatchHook("onToolEnd", { agent: this, toolCall: ctx });
+    this.emit("toolFinished", { agent: this, toolCall: call, result });
   }
 
   // -------------------------------------------------------------------------
@@ -823,7 +891,7 @@ export class Agent extends AgentContext {
     if (from === next) return;
     this.state = next;
     this.emit("state", { agent: this, from, to: next });
-    if (next === "idle") void this.dispatchHook("onIdle");
+    if (next === "idle") void this.dispatchHook("onIdle", { agent: this });
     this.notify();
   }
 

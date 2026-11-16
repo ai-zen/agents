@@ -437,4 +437,102 @@ describe("Agent runOnce", () => {
     agent.kill();
     await agent.start();
   });
+
+  it("onToolStart 拒：tool 消息正文就是那个字符串，且补 denied 事件", async () => {
+    class Echo extends Tool {
+      function = { name: "echo", description: "e", parameters: {} } as any;
+      async exec() {
+        return "不该跑";
+      }
+    }
+    const { client } = createMockClient([
+      toolCallStream([{ id: "c1", name: "echo" }]),
+      textStream("好"),
+    ]);
+    const agent = new Agent({
+      client,
+      model: "m",
+      newMessageId: makeIds(),
+      tools: [new Echo()],
+    });
+
+    const denieds: any[] = [];
+    agent.on("denied", (payload) => denieds.push(payload));
+    agent.use({ onToolStart: () => "这个工具现在不许用" });
+
+    void agent.start();
+    agent.push(user("跑一下"));
+    await until(() => agent.state === "idle");
+
+    const toolMsg = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
+    // 不再被 core 套上「工具 X 被拒绝：」的前缀 —— 那句文案本来就是写给模型读的
+    expect(toolMsg.content).toBe("这个工具现在不许用");
+    expect(denieds).toHaveLength(1);
+    expect(denieds[0].hook).toBe("onToolStart");
+    expect(denieds[0].detail.toolCall.function.name).toBe("echo");
+
+    agent.stop();
+    await agent.start();
+  });
+
+  it("门钩子抛错按「拒」处理（fail-closed），并把错报成 failed", async () => {
+    class Echo extends Tool {
+      function = { name: "echo", description: "e", parameters: {} } as any;
+      async exec() {
+        return "不该跑";
+      }
+    }
+    const { client } = createMockClient([
+      toolCallStream([{ id: "c1", name: "echo" }]),
+      textStream("好"),
+    ]);
+    const agent = new Agent({
+      client,
+      model: "m",
+      newMessageId: makeIds(),
+      tools: [new Echo()],
+    });
+
+    const failed: any[] = [];
+    agent.on("failed", (payload) => failed.push(payload));
+    agent.use({
+      onToolStart: () => {
+        throw new Error("护栏写崩了");
+      },
+    });
+
+    void agent.start();
+    agent.push(user("跑一下"));
+    await until(() => agent.state === "idle");
+
+    const toolMsg = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
+    expect(toolMsg.content).toContain("护栏写崩了");
+    expect(failed.some((p) => String(p.error.message).includes("护栏写崩了"))).toBe(true);
+
+    agent.stop();
+    await agent.start();
+  });
+
+  it("非门钩子抛错当它没说话（fail-open），这一圈照跑", async () => {
+    const { client } = createMockClient([textStream("依旧正常")]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+
+    const failed: any[] = [];
+    agent.on("failed", (payload) => failed.push(payload));
+    agent.use({
+      onOuterLoopStart: () => {
+        throw new Error("刷工具失败了");
+      },
+    });
+
+    void agent.start();
+    agent.push(user("说话"));
+    await until(() => agent.state === "idle");
+
+    expect(agent.messages.at(-1)!.content).toBe("依旧正常");
+    expect(failed).toHaveLength(1);
+
+    agent.stop();
+    await agent.start();
+  });
 });

@@ -180,4 +180,83 @@ describe("AgentToolLazy 子 Agent 委派边界", () => {
         }),
     ).toThrow("must end with a user message");
   });
+
+  it("血缘：跑的时候挂在父的 children 上，收尸后摘掉", async () => {
+    const child = new Agent({
+      client: createMockClient("结果"),
+      model: "gpt-4",
+      lifetime: "one-shot",
+    });
+    const host = new Agent({
+      client: createMockClient(),
+      model: "gpt-4",
+      messages: [Message.System("主助手")],
+      tools: [buildTool(child)],
+    });
+
+    let seenDuring = 0;
+    host.on("subAgentStarted", () => {
+      seenDuring = host.children.size;
+    });
+
+    await buildTool(child).exec(buildCtx(host));
+
+    expect(seenDuring).toBe(1);
+    expect(child.parent).toBe(host);
+    // 收尸之后摘掉：`children` 说的是「还活着的」
+    expect(host.children.size).toBe(0);
+  });
+
+  it("子 agent 的事件按同一套名字转发到父，带 subAgent 与 via", async () => {
+    const child = new Agent({
+      client: createMockClient("结果"),
+      model: "gpt-4",
+      lifetime: "one-shot",
+    });
+    const host = new Agent({
+      client: createMockClient(),
+      model: "gpt-4",
+      messages: [Message.System("主助手")],
+      tools: [buildTool(child)],
+    });
+
+    const deltas: any[] = [];
+    const added: any[] = [];
+    host.on("delta", (payload) => deltas.push(payload));
+    host.on("messageAdded", (payload) => added.push(payload));
+
+    await buildTool(child).exec(buildCtx(host));
+
+    // 子 agent 的原始片转上来了，来源说清楚是谁、哪次委派引起的
+    expect(deltas.length).toBeGreaterThan(0);
+    expect(deltas[0].subAgent).toBeUndefined();
+    expect(deltas[0].source.subAgent).toBe(child);
+    expect(deltas[0].source.toolCall.function.name).toBe("lazyFn");
+    // 子 agent 的消息也转上来了，带上两格标记
+    expect(added.some((p) => p.subAgent === child)).toBe(true);
+    expect(added.find((p) => p.subAgent === child).via.function.name).toBe("lazyFn");
+  });
+
+  it("子 agent 那一圈被拒时不复读父的问题，而是说「没产出」", async () => {
+    const child = new Agent({
+      client: createMockClient("不该被调用"),
+      model: "gpt-4",
+      lifetime: "one-shot",
+    });
+    // 子 agent 自己的内循环被拒 → 一个字都不产出
+    child.use({ onInnerLoopStart: () => "上下文超了" });
+
+    const host = new Agent({
+      client: createMockClient(),
+      model: "gpt-4",
+      messages: [Message.System("主助手")],
+      tools: [buildTool(child)],
+    });
+
+    const result = await buildTool(child).exec(buildCtx(host));
+
+    expect(result).toBe("上下文超了");
+    expect(result).not.toContain("{{task}}");
+    expect(result).not.toBe("写代码");
+  });
 });
