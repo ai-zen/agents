@@ -64,6 +64,34 @@ export interface SubAgentHookContext {
 }
 
 /**
+ * 父 agent 名册上的一项：**一次委派的一笔账**（`CORE.md` §17）。
+ *
+ * 子 agent 不是一段会话、不入库，跑完就散；但「这段对话派过几个子 agent、它们各自说了什么」
+ * 必须答得出来。所以派遣时在父身上留这一项，要查子 agent 说过的话就顺
+ * 「父的名册 → `agent` → 它的 `messages`」取 —— 那些话只在**子 agent 自己那个对象**里。
+ *
+ * `agent` 是**活引用**（和事件里带出去的是同一个东西，不是拷贝）：它就是那一栏消息的唯一真相。
+ * 于是这一项不能序列化、不能进库 —— 与 `source` 里不许放 `Agent` 引用是同一条理由。
+ */
+export interface SubAgentEntry {
+  /** 委派那次工具调用的 id：客户端据此把子 agent 的话分到那一栏（§10） */
+  toolCallId: string;
+  /** 被委派的那个 agent 本身（活引用） */
+  agent: Agent;
+  /**
+   * 这次委派用的工具名（= 模型调用的那个委派工具的名字）。
+   *
+   * core 只认识这一个「名字」：子 agent 的助手名在助手定义里，那是外部的财产（`buildAgent`
+   * 交出来的），core 不读定义文件。所以这里报的是「谁被调用来干的这活」，不是「它是谁」。
+   */
+  name: string;
+  /** 派遣时刻（ISO 8601） */
+  startedAt: string;
+  /** 结束时刻；`null` = 还在跑。结束时**只填这一格、不移除整项** */
+  endedAt: string | null;
+}
+
+/**
  * 插件接口。
  *
  * | 钩子 | 能不能拒 | 说明 |
@@ -352,7 +380,12 @@ export class Agent extends AgentContext {
   /**
    * 委派边界：先跑钩子（能改、能拒），再发事件（已定）。
    *
-   * `onSubAgentStart` 拒了就不发 `subAgentStarted` —— 那一次委派本来就没开始。
+   * `onSubAgentStart` 拒了就不发 `subAgentStarted` —— 那一次委派本来就没开始，也不上名册：
+   * 没造出来的东西不该挂在世上（与血缘「拒了把关系撤回去」是同一件事）。
+   *
+   * 名册的两个时刻都在这里（`CORE.md` §17）：派遣时加一项，结束时只把 `endedAt` 填上 ——
+   * 写在这一处是因为 `subAgentStarted` / `subAgentFinished` 这两拍本来就只在这里发，
+   * 名册与事件于是永远同步，不存在「事件发了、账没记」的中间态。
    */
   async dispatchSubAgentHook(
     hook: "onSubAgentStart" | "onSubAgentEnd",
@@ -366,8 +399,26 @@ export class Agent extends AgentContext {
     };
 
     if (hook === "onSubAgentStart") {
-      if (denied === undefined) this.emit("subAgentStarted", payload);
+      if (denied === undefined) {
+        // 先记账、再发事件：订阅方在 `subAgentStarted` 那一刻就该能从名册里读到这一项
+        //（和「先记血缘、再问钩子」同一条理由：发出去的事件里不许有摸不到的东西）。
+        this.subAgentRegistry.push({
+          toolCallId: ctx.toolCallContext.tool_call.id ?? "",
+          agent: ctx.subAgent,
+          name:
+            ctx.toolCallContext.tool_call.function?.name ??
+            ctx.toolCallContext.tool?.function.name ??
+            "",
+          startedAt: new Date().toISOString(),
+          endedAt: null,
+        });
+        this.emit("subAgentStarted", payload);
+      }
     } else {
+      // 结束只是**标注**，不是移除：父照样答得出它跑过什么、最后说了什么（§17）。
+      // 找不到对应的那一项说明派遣那一拍压根没记（被拒了），没什么可标的。
+      const entry = this.findSubAgentEntry(ctx.toolCallContext.tool_call.id ?? "", ctx.subAgent);
+      if (entry && entry.endedAt === null) entry.endedAt = new Date().toISOString();
       this.emit("subAgentFinished", payload);
     }
 
@@ -582,6 +633,33 @@ export class Agent extends AgentContext {
   /** 我造出来、还活着的子 agent（收尸时摘掉） */
   readonly children = new Set<Agent>();
 
+  /**
+   * 子 agent 的名册：**只给外面读**（`CORE.md` §17）。
+   *
+   * 三个时刻：派遣时加一项、结束时把 `endedAt` 填上（不移除）、外循环每一批的开头清空上一批。
+   *
+   * 三条纪律：
+   * - **它不参与任何内部判断**：内循环、取件、续圈、状态三格、中断都不看它。清空点选在哪儿
+   *   因此不影响正确性，只影响「外面什么时候读到空」；
+   * - **它是名册，不是消息的唯一真相**：子 agent 说过的话在 `entry.agent.messages` 里，
+   *   这里只存指针；所以它跟着 agent 活在内存里，一死、一重启就一起没了（不入库）；
+   * - **给出去的是拷贝的数组 + 活的项**：读到的是一份临时数组，`push` / `splice` 它改不到名册
+   *   本身；而读到的项就是内部那一项（`endedAt` 什么时候填上，读到就是什么）。
+   */
+  get subAgents(): readonly SubAgentEntry[] {
+    return [...this.subAgentRegistry];
+  }
+
+  /** 名册本体（`subAgents` 的只读视图就是它的一份拷贝） */
+  private readonly subAgentRegistry: SubAgentEntry[] = [];
+
+  /** 按「工具调用 + 那个 agent」找一项：同一 id 不可能派两次，但两项都对上才算数 */
+  private findSubAgentEntry(toolCallId: string, agent: Agent): SubAgentEntry | undefined {
+    return this.subAgentRegistry.find(
+      (entry) => entry.toolCallId === toolCallId && entry.agent === agent,
+    );
+  }
+
   /** 排队中还有几条（宿主显示「待发 N 条」用） */
   get inboxSize(): number {
     return this.inbox.size;
@@ -620,6 +698,11 @@ export class Agent extends AgentContext {
     await this.pauseGate();
 
     for await (const entries of this.inbox.asTakeAll()) {
+      // 名册的清空点：外循环每一批的开头（上一批的子 agent 到这儿就不再登记，`CORE.md` §17）。
+      // 放在这里是因为它是**这批活的开头**，而且是唯一一个「上一批已经彻底跑完、这批还没动」
+      // 的时刻。它只是给外面读的便利 —— 下面没有任何一行代码回头看这份名册。
+      this.subAgentRegistry.length = 0;
+
       this.setState("busy");
 
       // ① 修一遍历史 —— **唯一一次**回头看历史的地方（`CORE.md` §6），在进圈之前

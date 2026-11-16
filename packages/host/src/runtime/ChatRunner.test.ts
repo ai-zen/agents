@@ -251,7 +251,13 @@ describe("ChatRunner.deliver：死对话一律拒，只有创建者能叫起来�
     harness.runner.forget(CONVERSATION_ID);
     await harness.settle();
     expect(harness.registry.get(CONVERSATION_ID)).toBeUndefined();
-    expect(harness.runner.state(CONVERSATION_ID)).toEqual({ status: "dead", inbox: [] });
+    expect(harness.runner.state(CONVERSATION_ID)).toEqual({
+      status: "dead",
+      inbox: [],
+      // 死了就没有名册、也不在交接态：子 agent 的话只在它自己那个对象里，agent 没了就一起没了
+      subAgents: [],
+      handoff: null,
+    });
 
     // 外面投进来：拒（这一条路不许死而复生）
     await expect(harness.deliver(userSays("外面的一句"))).rejects.toMatchObject({
@@ -365,7 +371,13 @@ describe("ChatRunner.state：现读四格与待办", () => {
 
   it("没 agent 就是死：四格里的「死」不是一格状态，是没有对象", async () => {
     const harness = createHarness();
-    expect(harness.runner.state(CONVERSATION_ID)).toEqual({ status: "dead", inbox: [] });
+    expect(harness.runner.state(CONVERSATION_ID)).toEqual({
+      status: "dead",
+      inbox: [],
+      // 死了就没有名册、也不在交接态：子 agent 的话只在它自己那个对象里，agent 没了就一起没了
+      subAgents: [],
+      handoff: null,
+    });
 
     await harness.deliver(userSays("起来"));
     await harness.waitIdle();
@@ -447,7 +459,13 @@ describe("ChatRunner：一段对话一条桥", () => {
     const pushedAtDeath = harness.pushed.length;
     await harness.settle();
     expect(harness.pushed.length).toBe(pushedAtDeath);
-    expect(harness.runner.state(CONVERSATION_ID)).toEqual({ status: "dead", inbox: [] });
+    expect(harness.runner.state(CONVERSATION_ID)).toEqual({
+      status: "dead",
+      inbox: [],
+      // 死了就没有名册、也不在交接态：子 agent 的话只在它自己那个对象里，agent 没了就一起没了
+      subAgents: [],
+      handoff: null,
+    });
   });
 });
 
@@ -455,8 +473,8 @@ describe("ChatRunner：一段对话一条桥", () => {
 // 子 Agent
 // ---------------------------------------------------------------------------
 
-describe("ChatRunner：子 Agent 的消息也落库", () => {
-  it("委派里子 agent 说的那句落成一行，挂在那次委派的工具调用上", async () => {
+describe("ChatRunner：子 Agent 的消息不落库，只推事件", () => {
+  it("子 agent 说的话一行也不写库，事件照推（带那次委派的 toolCallId）", async () => {
     const harness = createHarness({
       rounds: [
         {
@@ -480,19 +498,24 @@ describe("ChatRunner：子 Agent 的消息也落库", () => {
     await harness.deliver(userSays("交给助手"));
     await harness.waitIdle();
 
-    // 子 agent 说过的话也落库（F-I7），挂在那次委派的工具调用 id 上（同一条会被写多遍：
-    // 开局那一批、边流边写、结束整批 —— 覆盖同一个 id，内容集合才是要看的东西）
+    // 子 agent 的话**不入库**（`CORE.md` §17）：它是临时工，不是一段会话。库是这条对话的转录，
+    // 而它的话只在它自己那个对象里（要查就走 `messagesOf` 的名册那条路）
     const delegated = harness.store.writes.filter((row) => row.parentToolCallId === "t1");
-    expect(delegated.length).toBeGreaterThan(0);
-    expect([...new Set(delegated.map((row) => row.content))].sort()).toEqual([
-      "办一下",
-      "办好了",
-    ].sort());
-    // 推出去时带 `toolCallId`，客户端据此把它归到那次委派那一栏
+    expect(delegated).toEqual([]);
+
+    // 推出去时带 `toolCallId`，客户端据此把它归到那次委派那一栏（事件是重建那一栏的唯一来源）
     const deltas = harness.eventsOf("message.delta") as Array<{ toolCallId?: string }>;
     expect(deltas.some((payload) => payload.toolCallId === "t1")).toBe(true);
     const added = harness.eventsOf("message.added") as Array<{ toolCallId?: string }>;
     expect(added.some((payload) => payload.toolCallId === "t1")).toBe(true);
+
+    // 名册：现读 core 的登记，跑完只看 `endedAt` 标上（不移除）
+    const readout = harness.runner.state(CONVERSATION_ID);
+    expect(readout.subAgents).toEqual([{ toolCallId: "t1", name: "delegate", state: "ended" }]);
+
+    // 它说过的话顺「父的名册 → 那个子 agent → 它的 `messages`」取：开局的任务 + 它的回答
+    const subMessages = harness.runner.messagesOf(CONVERSATION_ID, { toolCallId: "t1" });
+    expect(subMessages?.map((message) => message.content)).toEqual(["办一下", "办好了"]);
   });
 });
 

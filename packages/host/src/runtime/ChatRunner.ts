@@ -74,6 +74,18 @@
  * `messageAdded` / `messageChanged` / `responseFinished` 到了就写那一行，`messageRemoved` 到了
  * 就删。边流边写只是**节流**，不是「提前写」；**没有「最后统一写一遍」** —— 那等于假设有一个
  * 终局。崩溃恢复靠 {@link ChatRunner.reconcile}（装载即修复），不靠终局那一笔。
+ *
+ * 两处**不写库**，各有各的理由：
+ *
+ * - **子 agent 的消息一律不落库**（`CORE.md` §17 / PLAN §7）。子 agent 本质是一次同步工具
+ *   调用，「恢复它」等于恢复一个跑到一半的工具调用 —— 副作用已经发生、不能重滚也不能重放，
+ *   而工具调用这个抽象里没有「恢复」。所以它的话只在它自己那个对象里，要查就顺
+ *   {@link ChatRunner.messagesOf} 的 `toolCallId` 那条路取；事件照推，客户端那几栏照样拼
+ *   得起来（事件是客户端重建的唯一来源）。
+ * - **交接态下只跳过写库**（PLAN §5.3）：写文档期间产生的消息不进库（它们马上要随旧记忆
+ *   一起被替掉），但 `message.added` / `message.delta` / `message.changed` / `message.removed`
+ *   **照推** —— 用户得看得见它在写。开关是 {@link ChatRunner.beginHandoff} /
+ *   {@link ChatRunner.endHandoff}。
  */
 
 import type { AgentNS } from "@ai-zen/agents-core";
@@ -305,6 +317,36 @@ export interface ReconcileResult {
   messages: AgentNS.Message[];
   /** 被改写的消息 id（状态或 `omit` 变了） */
   repairedIds: string[];
+}
+
+/**
+ * 子 agent 那一栏的一行（{@link ConversationReadout.subAgents}）。
+ *
+ * `state` 取子 agent 自己的三格（`busy` / `idle` / `paused`），或者 `ended` —— 两者取后者更诚实：
+ * 一次性子 agent 跑完后那个格会停在 `idle`，把已经散场的东西报成「闲」等于告诉界面它还在。
+ * 所以只要名册上有了 `endedAt`，这里就是 `ended`。
+ */
+export interface SubAgentReadout {
+  /** 委派那次工具调用的 id（客户端靠它分栏，也是 `messagesOf` 的入参） */
+  toolCallId: string;
+  /** 这次委派用的工具名 */
+  name: string;
+  state: AgentNS.AgentState | "ended";
+}
+
+/**
+ * 一段对话此刻的读数（{@link ChatRunner.state} 的返回）。
+ *
+ * 四个字段全是**现读**：三格读 agent、待办读队列、名册读 core 的登记、交接读本文件那张标记表。
+ * 没有一份是对别的什么东西的副本，所以也没有「什么时候刷新」这回事。
+ */
+export interface ConversationReadout {
+  status: ConversationStatus;
+  inbox: InboxItem[];
+  /** 本批派出去的子 agent（现读 core 名册：派遣加项、结束只填 `endedAt`、外循环每批开头清空） */
+  subAgents: SubAgentReadout[];
+  /** 在交接态就是开始时刻；不在就是 `null` */
+  handoff: { since: string } | null;
 }
 
 export interface ChatRunnerOptions {
@@ -759,12 +801,14 @@ class ConversationBridge {
   private readonly queuedIds = new Set<string>();
   /** 投递条目的**落库那一份**内容（`__asset_id` 形态）：核心看到的是厂商产物，库里要留引用 */
   private readonly queuedStored = new Map<string, AgentNS.MessageContent>();
-  /** 子 Agent 的消息 → 宿主分配的 id（客户端靠它与落库那行对上） */
+  /**
+   * 子 Agent 的消息 → 宿主分配的 id。
+   *
+   * 子 agent 的话**不落库**了，但这个映射照旧保留：客户端的 `message.delta` / `message.added`
+   * 都是按宿主 id 挂的，`message.removed` 也得按同一个 id 才删得对。id 在第一次见到那条消息时
+   * 定死，之后一路用这一个（另给一个，客户端就会把同一条当成两条）。
+   */
   private readonly subAgentIds = new WeakMap<AgentNS.Message, string>();
-  /** 子 Agent 消息的节流写（每条约一个 interval 写一次） */
-  private readonly subWriteAt = new Map<string, number>();
-  /** 已经整批写过的委派（`subAgentFinished` 重复到达时不重复写一遍） */
-  private readonly persistedSubAgents = new Set<string>();
 
   /** 桥已经被拆了：之后到达的事件一概不再处理（拆到一半还在飞的那些） */
   private closed = false;
@@ -777,17 +821,26 @@ class ConversationBridge {
    * 出去了（{@link announceDead}），再让两边各记一份「还在不在」就是第二份事实。
    */
   private readonly onDeath: () => void;
+  /**
+   * 这段对话此刻在不在交接态（问 `ChatRunner`，不在桥里另存一份）。
+   *
+   * 为什么问外面：交接态是**对话**的属性，而桥会换（agent 被换掉、装配事实变了）。存在桥上的
+   * 话，换一条桥就把「正在交接」这一格弄丢了 —— 于是交接写文档期间的那些消息就开始进库。
+   */
+  private readonly handoffActive: () => boolean;
 
   constructor(
     options: ChatRunnerOptions,
     conversationId: string,
     agent: ChatAgent,
     onDeath: () => void,
+    handoffActive: () => boolean,
   ) {
     this.options = options;
     this.conversationId = conversationId;
     this.agent = agent;
     this.onDeath = onDeath;
+    this.handoffActive = handoffActive;
     this.clock = options.clock ?? systemClock;
     this.newId = options.newId ?? defaultNewId;
     this.listen();
@@ -880,8 +933,11 @@ class ConversationBridge {
    *   - `responseFinished`：一次回应结束（那条 assistant 的 status / tool_calls / finish_reason /
    *     usage 都在上面）→ 整条覆盖写 + `message.changed`；
    *   - `delta`：原始片（带着来源：自己的消息 / 某个子 agent 的某个工具调用）；
-   *   - `subAgentStarted` / `subAgentFinished`：委派边界（子 agent 自己的消息由 core 按同一套
-   *     名字转发到父身上，带 `subAgent` / `via` 两格）；
+   *   - `subAgentStarted`：委派边界。子 agent 开局手里的那几条（装好的历史 / 模板）由这里补推
+   *     一遍 `message.added` —— 它们不会再触发事件，而事件现在是客户端重建子 agent 那一栏的
+   *     **唯一**来源（那些话不落库了，`PLAN §7`）；
+   *   - `subAgentFinished` **不订**：结束只改 core 名册上的 `endedAt`，宿主这边没有任何要写、
+   *     要推的东西（子 agent 最后那句话已经随着 `message.changed` / `delta` 走过了）。
    *   - `failed` / `denied`：失败与被拒；
    *   - `state:busy` / `state:paused` / `state:idle`：四格里的三格（「死」在桥灭的那一刻报：
    *     `stopped` / `killed` 是其中两种理由，退役 / 关门另两种理由由 `close` 补上）；
@@ -902,9 +958,6 @@ class ConversationBridge {
     this.on(agent, "delta", (event) => this.onDelta(event));
     this.on(agent, "subAgentStarted", (event) =>
       this.onSubAgentStart(event.subAgent, event.toolCall),
-    );
-    this.on(agent, "subAgentFinished", (event) =>
-      this.onSubAgentEnd(event.subAgent, event.toolCall),
     );
     this.on(agent, "failed", (event) => this.onFailed(event.error, event.message));
     this.on(agent, "denied", (event) => this.onDenied(event));
@@ -955,10 +1008,9 @@ class ConversationBridge {
     if (this.closed) return;
     if (subAgent) {
       const toolCallId = via?.id ?? "";
-      // 子 Agent 的消息**也落库**（F-I7）：落的是宿主给它定的那个 id，稍后
-      // `message.list { toolCallId }` 取回来的就是它。core 的对象原样不动 —— 出网与落库都用一份
-      // 换了 id 的副本（`hostCopyOf`）
-      this.enqueueSubAgentWrite(toolCallId, message);
+      // 子 Agent 的消息**不落库**（`CORE.md` §17）：它的话只在子 agent 自己那个对象里，要查就顺
+      // `messagesOf(conversationId, { toolCallId })`。这一路由推事件 —— 事件是客户端重建那一栏的
+      // 唯一来源。core 的对象原样不动：出网用一份换了 id 的副本（`hostCopyOf`）
       this.options.emit("message.added", {
         conversationId: this.conversationId,
         message: this.hostCopyOf(message),
@@ -1003,7 +1055,7 @@ class ConversationBridge {
     if (this.closed) return;
     if (subAgent) {
       const toolCallId = via?.id ?? "";
-      this.enqueueSubAgentWrite(toolCallId, message);
+      // 同上：不落库，只推事件
       this.options.emit("message.changed", {
         conversationId: this.conversationId,
         message: this.hostCopyOf(message),
@@ -1126,18 +1178,29 @@ class ConversationBridge {
   // ---- 子 Agent（委派） ----
 
   /**
-   * 一次委派开始了：子 agent 开局手里那些消息（装好的历史 / 模板）先落一行。
+   * 委派那一拍要补的事：子 agent 开局手里那几条消息（装好的历史 / 模板）**推一遍 `message.added`**。
    *
-   * 它们不会再触发 `messageAdded`，等到委派结束才写就会排到它自己说出的回答之后（`seq` 按插入
-   * 顺序给）。事件不补发：子 agent 那一栏是按 `message.list { toolCallId }` 拉的。
+   * 为什么要补这一推：它们不会再触发任何事件（模板是直接装进 `agent.messages` 的，比如
+   * `AgentToolLazy.injectArgs` 换引用那一步），而子 agent 的话现在**不入库** —— 不补的话，
+   * 客户端那一栏就只剩下它后来吐的字，它开局拿到的任务描述永远看不见。
+   *
+   * 这三条一起说明了本文件对子 agent 的口径：**事件给界面重建，库是这条对话的转录**，
+   * 子 agent 的话只进前者（`CORE.md` §17）。
    */
   private onSubAgentStart(subAgent: ChatAgent, toolCall?: AgentNS.ToolCall): void {
     if (this.closed) return;
     const toolCallId = toolCall?.id ?? "";
-    for (const message of subAgent.messages) this.enqueueSubAgentWrite(toolCallId, message);
+    for (const message of subAgent.messages) {
+      this.options.emit("message.added", {
+        conversationId: this.conversationId,
+        message: this.hostCopyOf(message),
+        toolCallId,
+        at: this.nowIso(),
+      });
+    }
   }
 
-  /** 子 Agent 的一片增量：推成 `message.delta`（带 `toolCallId`）+ 节流写库 */
+  /** 子 Agent 的一片增量：推成 `message.delta`（带 `toolCallId`，客户端据此分栏）；不写库 */
   private onSubAgentChunk(
     toolCallId: string,
     receiver: AgentNS.Message,
@@ -1154,37 +1217,14 @@ class ConversationBridge {
       at: this.nowIso(),
       toolCallId,
     });
-    this.scheduleSubAgentWrite(toolCallId, receiver);
-  }
-
-  /** 一次委派结束了：把它说过的那些话整批写一遍（挂在那次委派的工具调用上，F-I7） */
-  private onSubAgentEnd(subAgent: ChatAgent, toolCall?: AgentNS.ToolCall): void {
-    if (this.closed) return;
-    this.persistSubAgent(toolCall?.id ?? "", subAgent.messages);
-  }
-
-  /**
-   * 把子 Agent 的消息落库（F-I7）。
-   *
-   * 同一次委派只整批写一遍（`subAgentFinished` 重复到达时不重复写）；每条都拿**宿主已经发给
-   * 客户端的**那个 id（`subAgentIds`）—— 另给一个新 id 会让客户端把同一条消息当成两条。
-   * 挂上 `parentToolCallId`，`seq` 由仓储在对话内递增。
-   */
-  private persistSubAgent(toolCallId: string, messages: readonly AgentNS.Message[]): void {
-    if (this.persistedSubAgents.has(toolCallId)) return;
-    this.persistedSubAgents.add(toolCallId);
-    const rows = messages.map((message) =>
-      this.rowOf(message, { parentToolCallId: toolCallId, id: this.subAgentIdOf(message) }),
-    );
-    this.enqueueWrites(rows);
   }
 
   /**
    * 子 Agent 那条消息的 id：第一次见就定下来，之后一直用这一个。
    *
    * 与主线同一条规矩（消息 id 由宿主分配）：子 agent 的消息在**它自己的内存**里，而客户端要按
-   * id 才拼得起来；id 必须在第一次见到这条消息时定死，否则「流式时推出去的 id」与「结束后落库
-   * 的 id」会是两个，客户端就会以为那是两条消息。
+   * id 才拼得起来；id 必须在第一次见到这条消息时定死 —— 否则「流式时推出去的那个 id」与「后面
+   * 那条改事件里的 id」会是两个，客户端就把同一句话当成两条消息。
    *
    * 定下来的只是**宿主这个 id**：`message.id` 一个字不动（那是 core 的财产，见 `hostCopyOf`）。
    * 映射记在 {@link subAgentIds} 里（`WeakMap`：core 的对象 ↔ 宿主 id）。
@@ -1286,21 +1326,17 @@ class ConversationBridge {
    * 落库正文优先用**投递时记下的那一份**（与端点无关的 `__asset_id` 形态）：核心看到的是厂商的
    * `file_id` / base64，那些都是「这一次发送的产物」，不该进库。
    *
-   * `id` 只有一种场合要给：子 Agent 的消息（core 那边是它自己的 id，宿主另外分配了出网 / 落库
-   * 用的那个，见 `hostCopyOf`）。给的是宿主 id 时，core 的对象一个字不动。
+   * 子 agent 的消息走不到这里：它们不落库（`CORE.md` §17）。`parentToolCallId` 那一列于是永远
+   * 是 `null` —— 列与它的读取口留着是为了已经存下来的旧行，不是给新写入用的。
    */
-  private rowOf(
-    message: AgentNS.Message,
-    extra: { parentToolCallId?: string; problem?: ProblemFact; id?: string } = {},
-  ): MessageUpsertInput {
-    const id = extra.id ?? message.id;
+  private rowOf(message: AgentNS.Message, problem?: ProblemFact): MessageUpsertInput {
     const row = toRow(
-      id === message.id ? message : { ...message, id },
+      message,
       this.conversationId,
-      this.createdAtOf.get(id) ?? this.clock.now(),
-      extra,
+      this.createdAtOf.get(message.id) ?? this.clock.now(),
+      problem === undefined ? {} : { problem },
     );
-    const stored = this.queuedStored.get(id);
+    const stored = this.queuedStored.get(message.id);
     if (stored !== undefined) row.content = stored as unknown as MessageUpsertInput["content"];
     return row;
   }
@@ -1325,11 +1361,15 @@ class ConversationBridge {
    *
    * 行的内容**在真正写的这一刻**才从活消息上取：core 是先发 `delta` 再把那一片攒进消息的
    * （`emit` 之后才 `applyChunk`），同步取快照会写下一份比内存落后一片的行。
+   *
+   * **交接态下整条跳过**（PLAN §5.3）：写文档期间产生的消息不进库 —— 它们马上要随旧记忆一起被
+   * 替掉。但事件照推（调用方在调本方法之前已经推过了），所以用户看得见它在写。
    */
   private enqueueWrite(message: AgentNS.Message, problem?: ProblemFact): void {
+    if (this.handoffActive()) return;
     this.lastWriteAt = this.clock.now();
     this.writeChain = this.writeChain
-      .then(() => this.options.messages.upsert(this.rowOf(message, { problem })))
+      .then(() => this.options.messages.upsert(this.rowOf(message, problem)))
       .catch((error: unknown) => this.options.onError?.(error, "message-write"));
   }
 
@@ -1342,8 +1382,13 @@ class ConversationBridge {
    *
    * 为什么写行与记素材关系绑在一起：`conversation_assets.messageId` 的外键指着 `messages.id`，
    * 所以只能「先写行、再记关系」。
+   *
+   * **交接态下同样整条跳过**：交接期间投进来的那几句话属于「关于交接的那场对话」，它们与写文档
+   * 的助手消息一样要随旧记忆一起被替掉（PLAN §5.3）。它们仍然落进了 `messages`、仍然推了
+   * `message.added` —— 用户看得见，只是不入库。
    */
   private persistLanded(message: AgentNS.Message): void {
+    if (this.handoffActive()) return;
     this.lastWriteAt = this.clock.now();
     this.writeChain = this.writeChain
       .then(async () => {
@@ -1374,46 +1419,12 @@ class ConversationBridge {
   }
 
   /**
-   * 子 Agent 消息的节流写（与主线同一份节奏）。
+   * 把挂着的节流写收干净（桥灭之前、「变闲那一刻」、开始交接之前都要做）。
    *
-   * 不写的话，子 Agent 在跑的那几十分钟里库里什么都没有：客户端切过去是一页空白，中途断线也
-   * 一个字不剩。写完不丢终版：`subAgentFinished` 时 `persistSubAgent` 用同一批 id 再写一次。
+   * 公开是因为「开始交接」那一拍需要它：交接前已经发生的消息属于转录，得先写下去；
+   * 交接期间的不属于，挂上标记后一律不写。
    */
-  private scheduleSubAgentWrite(toolCallId: string, message: AgentNS.Message): void {
-    const interval = this.options.streamWriteIntervalMs ?? DEFAULT_STREAM_WRITE_INTERVAL_MS;
-    const id = this.subAgentIdOf(message);
-    if (interval <= 0) {
-      this.enqueueSubAgentWrite(toolCallId, message);
-      return;
-    }
-    const now = this.clock.now();
-    if (now - (this.subWriteAt.get(id) ?? 0) < interval) return;
-    this.subWriteAt.set(id, now);
-    this.enqueueSubAgentWrite(toolCallId, message);
-  }
-
-  private enqueueSubAgentWrite(toolCallId: string, message: AgentNS.Message): void {
-    this.lastWriteAt = this.clock.now();
-    // 宿主 id 在第一次见到这条消息时就定下（流式时推出去的就是它），落库不能另给一个
-    const id = this.subAgentIdOf(message);
-    this.writeChain = this.writeChain
-      .then(() =>
-        this.options.messages.upsert(this.rowOf(message, { parentToolCallId: toolCallId, id })),
-      )
-      .catch((error: unknown) => this.options.onError?.(error, "sub-agent-write"));
-  }
-
-  /** 一批行按同一份额度写下去（子 Agent 的消息一次写一拍）；与边流边写共用一条串行链 */
-  private enqueueWrites(rows: MessageUpsertInput[]): void {
-    if (rows.length === 0) return;
-    this.lastWriteAt = this.clock.now();
-    this.writeChain = this.writeChain
-      .then(() => this.options.messages.upsertMany(rows))
-      .catch((error: unknown) => this.options.onError?.(error, "sub-agent-batch-write"));
-  }
-
-  /** 把挂着的节流写收干净（桥灭之前、以及「变闲那一刻」都要做） */
-  private async flushWrites(): Promise<void> {
+  async flushWrites(): Promise<void> {
     this.writeTimer?.();
     this.writeTimer = undefined;
     await this.writeChain;
@@ -1431,16 +1442,27 @@ class ConversationBridge {
 /**
  * 一段对话 ⇄ 它的 agent 之间的那层：**投递 / 中断 / 现读**，外加三件结构性的动作。
  *
- * 它自己不长记性：手上只有两张表 ——
+ * 它自己不长记性：手上只有三张表 ——
  *   - {@link bridges}：这段对话此刻有没有桥（桥在不在 = agent 在不在，严丝合缝）；
  *   - {@link assemblingBuffers}：装配窗口里收着的那几条投递（还没推进 core 的队列，装好按到达
- *     顺序一次推给它）。那是**真的缓冲**，不是排队区的镜像。
+ *     顺序一次推给它）。那是**真的缓冲**，不是排队区的镜像；
+ *   - {@link handoffs}：哪几段对话在交接态（`beginHandoff` / `endHandoff` 两个口）。
+ *
+ * 三张表都是「此刻的现场」，没有一张是另一份事实的副本。
  */
 export class ChatRunner {
   private readonly options: ChatRunnerOptions;
   private readonly clock: Clock;
   /** 活着的那几条桥（对话 id → 桥） */
   private readonly bridges = new Map<string, ConversationBridge>();
+  /**
+   * 在交接态的对话（对话 id → 开始时刻）。
+   *
+   * 存在这里而不是 agent 上：交接是**对话**的处境，而 agent 会换（配置改了、装配事实变了）。
+   * 它的唯一作用是让桥「不写库」（{@link ConversationBridge} 的 `handoffActive`）—— 不参与任何
+   * 流程判断：照样收件、照样取件、照样跑，只是那些消息不进库。
+   */
+  private readonly handoffs = new Map<string, { since: string }>();
   /**
    * 装配窗口里收着的投递（对话 id → 条目，保持到达顺序）。
    *
@@ -1582,7 +1604,7 @@ export class ChatRunner {
   // ---- 现读 ----
 
   /**
-   * 现读：四格 + 待办。**不落库、不推算、不存镜像**。
+   * 现读：四格 + 待办 + 子 agent 名册 + 交接态。**不落库、不推算、不存镜像**。
    *
    * - 没有 agent 对象、手上也没有缓冲的投递 = `dead`，待办报空；
    * - 没有 agent 但**装配窗口里缓冲了几条** = `busy`：agent 还没装好，但那几条确实排着 ——
@@ -1591,19 +1613,28 @@ export class ChatRunner {
    * - 待办现读 `agent.inboxPending`（顺序即取件顺序），再加上装配窗口里还没推进 core 的那几条。
    *
    * 钥匙（没有正文的条目）不列进来：它不落地、没有来源，硬塞进一行只能给它编一个假 id。
+   *
+   * `subAgents` / `handoff` 两格同样是**现读**：前者读 core 名册（`agent.subAgents`），后者
+   * 读本文件那张交接标记表（不是 agent 的事 —— 交接是对话在这一刻的处境）。
    */
-  state(conversationId: string): { status: ConversationStatus; inbox: InboxItem[] } {
+  state(conversationId: string): ConversationReadout {
     const agent = this.options.agents.get(conversationId);
+    // 交接态与 agent 在不在无关：标记是这段对话的，读完就丢，不存第二份
+    const handoff = this.handoffs.get(conversationId);
+    const handoffReadout = handoff === undefined ? null : { since: handoff.since };
     // 装配窗口里那几条（装好之后按到达顺序一次推给 agent，顺序即取件顺序）
     const buffered = (this.assemblingBuffers.get(conversationId) ?? []).map((entry) =>
       toInboxItem(entry.input, entry.createdAt),
     );
 
     if (!agent) {
-      // 真的没有 agent、也没有缓冲，才是死
-      if (buffered.length === 0) return { status: "dead", inbox: [] };
+      // 真的没有 agent、也没有缓冲，才是死。死了就没有名册：子 agent 的话只在它自己那个对象
+      // 里，agent 都没了，那些话也就一起没了（`CORE.md` §17）
+      if (buffered.length === 0) {
+        return { status: "dead", inbox: [], subAgents: [], handoff: handoffReadout };
+      }
       // 装配窗口：agent 还没装好，但这几条确实排着
-      return { status: "busy", inbox: buffered };
+      return { status: "busy", inbox: buffered, subAgents: [], handoff: handoffReadout };
     }
 
     const bridge = this.bridges.get(conversationId);
@@ -1613,7 +1644,80 @@ export class ChatRunner {
         : // 桥还没有（装配窗口）或者手里那个 agent 已经换了人：同样现读 core 的真队列
           inboxItemsOf(agent);
 
-    return { status: agent.state, inbox: [...buffered, ...pending] };
+    return {
+      status: agent.state,
+      inbox: [...buffered, ...pending],
+      subAgents: agent.subAgents.map((entry) => ({
+        toolCallId: entry.toolCallId,
+        name: entry.name,
+        // 子 agent 的三格直读；但「跑完了」是本文件比它自己那个格更诚实的一格：
+        // 一次性子 agent 死透了 state 也还是 `idle`，把它报成「闲」等于告诉界面它还在。
+        // 所以只要名册上有了 `endedAt`，就报 `ended`。
+        state: entry.endedAt === null ? entry.agent.state : ("ended" as const),
+      })),
+      handoff: handoffReadout,
+    };
+  }
+
+  /**
+   * 这段对话此刻的消息 —— **列表读取只有一个来源**（PLAN §7）：活着读内存，死了读库。
+   *
+   * - 没有 agent → `null`。那不是「空」，是「我这边没有」：调用方据此去读库（这段对话已经没有
+   *   驱动者了，库就是它的全部）；
+   * - 给了 `toolCallId` → 顺「父的名册 → 那一个子 agent → 它的 `messages`」取。名册上没有那一项
+   *   （这一批已经翻过去了、或者进程重启过）同样回 `null` —— 子 agent 不落库，它的话只在它自己
+   *   那个对象里（`CORE.md` §17）；
+   * - 否则就是 `agent.messages`，**顺序即数组顺序**（不再排 `seq`：内存里没有第二份顺序）。
+   *
+   * 返回的是 `agent.messages` **本身**，不是拷贝：它是唯一真相，交出去的那一份就是正在长的那一份
+   * （`CORE.md` §12）。
+   */
+  messagesOf(
+    conversationId: string,
+    options?: { toolCallId?: string },
+  ): AgentNS.Message[] | null {
+    const agent = this.options.agents.get(conversationId);
+    if (!agent) return null;
+
+    const toolCallId = options?.toolCallId;
+    if (toolCallId === undefined) return agent.messages;
+
+    const entry = agent.subAgents.find((candidate) => candidate.toolCallId === toolCallId);
+    return entry?.agent.messages ?? null;
+  }
+
+  // ---- 交接态 ----
+
+  /**
+   * 进入交接态：从此这段对话的消息**不写库**，但事件照推（PLAN §5.3）。
+   *
+   * 三件事：
+   *   1. 幂等：已在交接态就什么也不做 —— `since` 保留第一次那一拍（重入不该把「什么时候开始的」
+   *      抹掉）；
+   *   2. 先把**已经发生**的那一笔写干净（交接前的消息属于转录，交接期间的不属于）。顺序很要紧：
+   *      先挂牌、再冲写 —— 否则冲写期间新到的消息会挤进来，变成「交接期间也进了库」；
+   *   3. 冲写不等（本方法是同步的）：它是收尾动作，没有调用方需要等它；失败只记日志。
+   *
+   * 为什么不把标记存到 agent 上：交接是**对话**在这一刻的处境，不是 agent 的属性 —— agent 中途被
+   * 换掉（配置改了、装配事实变了）时标记不该跟着消失。
+   */
+  beginHandoff(conversationId: string): void {
+    if (this.handoffs.has(conversationId)) return;
+    this.handoffs.set(conversationId, { since: this.nowIso() });
+    void this.bridges
+      .get(conversationId)
+      ?.flushWrites()
+      .catch((error: unknown) => this.options.onError?.(error, "handoff-flush"));
+  }
+
+  /**
+   * 退出交接态：清掉标记，之后的消息照旧写库。
+   *
+   * 不需要补写：交接期间那些消息本来就不该进库（它们随旧记忆一起被替掉，客户端靠一条
+   * `memory_replaced` 全量重拉）。
+   */
+  endHandoff(conversationId: string): void {
+    this.handoffs.delete(conversationId);
   }
 
   // ---- 桥的生灭 ----
@@ -1632,8 +1736,13 @@ export class ChatRunner {
       // 旧的那条要灭：它订的是一个已经退役（或者是刚被顶掉的）agent，这一段也得报一格「死」
       existing.close();
     }
-    const bridge = new ConversationBridge(this.options, conversationId, agent, () =>
-      this.dropBridge(conversationId),
+    const bridge = new ConversationBridge(
+      this.options,
+      conversationId,
+      agent,
+      () => this.dropBridge(conversationId),
+      // 交接态问 `ChatRunner`（标记是对话的，桥会换）：换一条桥不把「正在交接」弄丢
+      () => this.handoffs.has(conversationId),
     );
     this.bridges.set(conversationId, bridge);
     return bridge;

@@ -49,6 +49,7 @@ export type {
   ChatAgent,
   ChatEventEmitter,
   ChatRunnerOptions,
+  ConversationReadout,
   ConversationStore,
   DeliveryInput,
   HandoffProvider,
@@ -56,6 +57,7 @@ export type {
   MessageStore,
   ReconcileResult,
   SdkAgentFactoryOptions,
+  SubAgentReadout,
 } from "./ChatRunner.js";
 
 export { ConversationDrafts } from "./ConversationDrafts.js";
