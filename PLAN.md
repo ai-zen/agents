@@ -378,7 +378,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 
 | 欠账 | 现状 |
 |---|---|
-| 子 Agent 消息回看（PRD F-I7） | `messages.parentToolCallId` 列与 `MessageRepository.listByParentToolCallId` 都在，但**生产路径没有写入方**；`message.list(toolCallId)` 取到的是那次委派的工具结果消息 |
+| 子 Agent 消息回看（PRD F-I7） | **不是欠账，是结论**：子 agent 的消息不入库（`CORE.md` §17），`message.list { toolCallId }` 走内存（`ChatRunner.messagesOf`）；库里那条 `parentToolCallId` 只服务旧行 |
 | 客户端自造问题 | 契约只有 `question.list` / `question.answer`；问题由宿主内部产生（交接线 / 二次确认）。集成用例因此绕开契约直开库造一行 |
 | 平级会话阶段 3 | 超时与 `abort`、`/sessions` 的「agent 建的」标记、`peer_sessions` 表与跨重启的孤儿 —— 都还没有。**「补投」不再是欠账**：回投这件事本身作废（PRD 4.6：通信只有投递） |
 | **inbox 未消费部分的持久化与恢复**（待做） | **要实时，不攒批**：`messages` 逐条 upsert/delete；`inbox` 挂三条事件 —— `inboxAdded` 插行、`inboxTaken` 删行（core 已补，排在落地之后）、`inboxCleared` 清空。**读的一半已就绪**（`agent.inboxPending`，用于对账重读：事件丢了也不致命）。**写的那一半一件都没有**：宿主没落这两样，core 也还没有「原样放回」的口子（`restore`，不能走 `push` —— 它会重写 `createdAt`）。恢复：`messages` 读回即真相；inbox 行读回后放回队列，**按 `messageId` 去重**（已在 `messages` 里的扔掉）。机制与理由见 `CORE.md` §3「未消费的条目要能存下来再放回去」。 |
