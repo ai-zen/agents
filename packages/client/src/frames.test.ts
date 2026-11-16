@@ -21,10 +21,10 @@ describe("出站", () => {
 
 describe("入站", () => {
   it("无 id 的帧是通知（事件就是这么来的）", () => {
-    const frame = parseIncoming('{"jsonrpc":"2.0","method":"run.state","params":{"a":1}}');
+    const frame = parseIncoming('{"jsonrpc":"2.0","method":"state","params":{"a":1}}');
     expect(frame?.kind).toBe("notification");
     if (frame?.kind === "notification") {
-      expect(frame.frame.method).toBe("run.state");
+      expect(frame.frame.method).toBe("state");
       expect(frame.frame.params).toEqual({ a: 1 });
     }
   });

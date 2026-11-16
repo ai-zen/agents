@@ -8,7 +8,7 @@
  * | 一条已经握过手的连接：`call` / `subscribe` / `close` / `reconnect` | {@link Client}（`client.ts`） |
  * | 「有就上、没有就拉一个」 | {@link ensureHost}（`connection.ts`） |
  * | 记住上次连的是哪台、说哪种语言 | `settings.ts` |
- * | 断线之后补拉（状态 + 消息） | `resume.ts`（`resume` / `mergeResumed` / `lastMessageId`） |
+ * | 断线之后把镜像补回来（四格 + 消息） | `mirror.ts`（`ConversationMirror`）/ {@link Client.resync} |
  * | 重连几次、等多久 | `reconnect.ts` |
  * | 把图片传上去、回一个能放进消息的引用 | `upload.ts`（`uploadAsset` / `uploadAssets`） |
  * | 按素材 id 把内容取回来（历史里的 `__asset_id`） | `asset.ts`（`getAsset` / `getSectionAsset`） |
@@ -25,8 +25,9 @@ export { Client } from "./client.js";
 export type {
   CallOptions,
   ClientOptions,
+  ContractCaller,
   MethodCallArgs,
-  ResumeOutcome,
+  SyncOutcome,
   Unsubscribe,
 } from "./client.js";
 
@@ -70,8 +71,8 @@ export type {
 export { ClientError, fromHostError, isClientError, localError } from "./errors.js";
 export type { ClientErrorCode, LocalErrorCode } from "./errors.js";
 
-export { mergeResumed, lastMessageId, resumeConversation } from "./resume.js";
-export type { ContractCaller, ResumeMode, ResumedConversation } from "./resume.js";
+export { ConversationMirror, toMirrorEvent } from "./mirror.js";
+export type { MirrorEvent, MirrorSnapshot, SubAgentColumn } from "./mirror.js";
 
 export {
   DEFAULT_CHUNK_SIZE,
@@ -141,12 +142,12 @@ export type {
   ClientInfo,
   HostHelloParams,
   HostHelloResult,
-  // 状态形状（`conversation.state` 与事件载荷里有）
+  // 状态形状（`conversation.state` 读回来、`state` 事件推过来的那一格）
   ConversationState,
+  ConversationStatus,
+  InboxItem,
   NoticeView,
   QuestionView,
-  RunState,
-  UsageSnapshot,
   // 错误
   BizCode,
   ErrorData,

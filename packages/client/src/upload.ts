@@ -41,7 +41,7 @@ import type { AssetRef } from "@ai-zen/agents-host";
 
 import { encodeChunkFrame } from "./chunkFrame.js";
 import { ClientError, localError } from "./errors.js";
-import type { ContractCaller } from "./resume.js";
+import type { ContractCaller } from "./client.js";
 
 /** 单张附件的缺省上限：与 PRD D5 一致（20MB/张） */
 export const DEFAULT_MAX_ASSET_BYTES = 20 * 1024 * 1024;

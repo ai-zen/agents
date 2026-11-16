@@ -29,7 +29,7 @@
 import type { AgentNS } from "@ai-zen/agents-core";
 import type { AssetRef, AssetVariant, LocalMessageContentSection } from "@ai-zen/agents-host";
 
-import type { ContractCaller } from "./resume.js";
+import type { ContractCaller } from "./client.js";
 
 /** `getAsset` 的入参：要哪一份、要哪一档 */
 export interface GetAssetOptions {

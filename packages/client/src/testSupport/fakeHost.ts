@@ -11,8 +11,8 @@
  *
  *   · 握手被拒（真宿主只认它自己的凭证，但拒的理由和时机由它决定）；
  *   · 一个字都不回（握手超时、调用超时这两条路）；
- *   · 中途把连接掐掉（断线 → 重连 → 补拉那条链）；
- *   · 按需推事件（`message.delta` 这类只有跑一轮才会有的推送）。
+ *   · 中途把连接掐掉（断线 → 重连 → 补镜像那条链）；
+ *   · 按需推事件（`message.delta` 这类只有真跑起来才会有的推送）。
  *
  * 夹具（`helloResult` / `conversationState` / `assistantMessage`）用的都是**契约里的类型**：
  * 宿主改了形状而这里没跟上时，`tsc` 会先报错。
@@ -27,6 +27,7 @@ import type {
   AgentNS as AgentNSTypes,
   ConversationState,
   HostHelloResult,
+  MessageListResult,
 } from "@ai-zen/agents-host";
 
 /** 一条入站消息（`opcode` 1 = 文本） */
@@ -171,53 +172,33 @@ export function helloResult(overrides: Partial<HostHelloResult> = {}): HostHello
   };
 }
 
-/** 一份 `conversation.state` 的 `state`（空闲、零用量、没排队） */
+/**
+ * 一份 `conversation.state` 的 `state`：一段对话此刻的读数 = 四格里的一格 + 队里还压着什么 + 读数的时刻。
+ *
+ * 这里**没有**用量、没有「请求中 / 思考中 / 输出中」这类阶段：用量在每条消息的 `usage` 上，
+ * 阶段由客户端按到达的事件自己推。
+ */
 export function conversationState(
   conversationId: string,
   overrides: Partial<ConversationState> = {},
 ): ConversationState {
-  const zero = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   return {
     conversationId,
-    run: {
-      conversationId,
-      status: "idle",
-      assistantMessageId: null,
-      // 空闲时没有哪一轮在跑，也就没有谁的队列可排（契约：空闲是空数组，不是「未知」）
-      inbox: [],
-      startedAt: null,
-      settledAt: null,
-      generation: null,
-      outcome: null,
-      problem: null,
-      subagents: [],
-      usage: {
-        turn: zero,
-        total: zero,
-        subAgent: zero,
-        rate: { value: 0, unit: "tokens_per_second", basis: "completion" },
-        updatedAt: "2026-01-01T00:00:00.000Z",
-      },
-    },
-    context: {
-      usage: zero,
-      handoffThreshold: 1000,
-      guardThreshold: 2000,
-      overHandoff: false,
-      overGuard: false,
-    },
-    thinking: { preset: null, levels: [], selected: null, source: "not_adjustable", params: {} },
-    usage: {
-      turn: zero,
-      total: zero,
-      subAgent: zero,
-      rate: { value: 0, unit: "tokens_per_second", basis: "completion" },
-      updatedAt: "2026-01-01T00:00:00.000Z",
-    },
-    questions: [],
-    updatedAt: "2026-01-01T00:00:00.000Z",
+    status: "idle",
+    // 空闲时队里没有东西（契约：空闲是空数组，不是「未知」）
+    inbox: [],
+    at: "2026-01-01T00:00:00.000Z",
     ...overrides,
   };
+}
+
+/** 一条 `message.list` 的回执：`anchor` 是命中的那条（没命中 / 没给 `after` 就是 `null`） */
+export function listed(
+  conversationId: string,
+  messages: AgentNSTypes.Message[],
+  anchor: string | null = null,
+): MessageListResult {
+  return { conversationId, anchor, messages };
 }
 
 /** 一条 assistant 消息（`AgentNS.Message` 原样，不包外壳） */

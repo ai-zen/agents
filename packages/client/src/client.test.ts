@@ -1,5 +1,5 @@
 /**
- * `Client` 的验收：握手、调用、事件、重连补拉、关闭。
+ * `Client` 的验收：握手、调用、事件、镜像（打开 / 重连补回）、关闭。
  *
  * 全部跑在真 WebSocket 上（`testSupport/fakeHost.ts` 起的假宿主），所以被断言的是**线上**
  * 的形状：第一帧是不是 `host.hello`、凭证有没有混进 URL、`after` 有没有真的带出去。
@@ -9,14 +9,14 @@ import { afterEach, describe, expect, it, expectTypeOf } from "vitest";
 
 import type { ClientInfo, EventPayload, MethodResult } from "@ai-zen/agents-host";
 
-import { Client, type ResumeOutcome } from "./client.js";
+import { Client, type SyncOutcome } from "./client.js";
 import { ClientError } from "./errors.js";
-import { mergeResumed } from "./resume.js";
 import {
   assistantMessage,
   conversationState,
   FakeMethodError,
   helloResult,
+  listed,
   startFakeHost,
   userMessage,
   type FakeHost,
@@ -212,13 +212,12 @@ describe("事件", () => {
     const host = await startFake();
     const client = await connect(host);
 
-    const states: EventPayload<"run.state">[] = [];
+    const states: EventPayload<"state">[] = [];
     const deltas: EventPayload<"message.delta">[] = [];
-    client.subscribe("run.state", (payload) => states.push(payload));
+    client.subscribe("state", (payload) => states.push(payload));
     client.subscribe("message.delta", (payload) => deltas.push(payload));
 
-    const run = conversationState("c1").run;
-    host.push("run.state", { conversationId: "c1", run, at: "2026-01-01T00:00:01.000Z" });
+    host.push("state", { conversationId: "c1", status: "busy", at: "2026-01-01T00:00:01.000Z" });
     host.push("message.delta", {
       conversationId: "c1",
       messageId: "m1",
@@ -230,7 +229,7 @@ describe("事件", () => {
     host.push("some.future.event", { whatever: true });
 
     await waitFor(() => states.length === 1 && deltas.length === 1);
-    expect(states[0]?.run.conversationId).toBe("c1");
+    expect(states[0]?.status).toBe("busy");
     expect(deltas[0]?.delta.content).toBe("你");
     expect(client.connected).toBe(true);
   });
@@ -276,8 +275,102 @@ describe("事件", () => {
   });
 });
 
-describe("重连补拉", () => {
-  it("断线 → 重连 → 按 anchor 续传（宿主回了 anchor 就是续传）", async () => {
+describe("镜像：打开一段对话", () => {
+  it("先读四格、再拉全量，拉取期间到达的事件按顺序补上", async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const host = await startFake({
+      methods: {
+        "conversation.state": (params) => ({
+          state: conversationState((params as { conversationId: string }).conversationId),
+        }),
+        "message.list": async () => {
+          // 卡住这一跳，好在「订阅之后、快照落地之前」这一段里推事件
+          await gate;
+          return listed("c1", [userMessage("m1", "问")]);
+        },
+      },
+    });
+    const client = await connect(host);
+
+    const opening = client.open("c1");
+    // 等到 message.list 已经发出去了，说明订阅那一步已经完成
+    await waitFor(() => host.frames.some((frame) => frame.method === "message.list"));
+
+    host.push("message.added", {
+      conversationId: "c1",
+      message: assistantMessage("m2", "答"),
+      at: "2026-01-01T00:00:01.000Z",
+    });
+    host.push("message.delta", {
+      conversationId: "c1",
+      messageId: "m2",
+      seq: 0,
+      delta: { content: "到一半" },
+      at: "2026-01-01T00:00:02.000Z",
+    });
+    host.push("state", { conversationId: "c1", status: "busy", at: "2026-01-01T00:00:03.000Z" });
+    release();
+
+    const mirror = await opening;
+
+    // 四格的现读值先到（idle），之后到达的 state 事件比它新，于是留在 busy
+    expect(mirror.status).toBe("busy");
+    // 快照那一条 + 拉取期间新到的那一条，增量也折进去了
+    expect(mirror.messages.map((message) => message.id)).toEqual(["m1", "m2"]);
+    expect(mirror.messages[1]?.content).toBe("答到一半");
+    // 消息是整段拉的（没有 after）
+    const frames = host.frames.filter((frame) => frame.method === "message.list");
+    expect(frames[0]?.params).toEqual({ conversationId: "c1" });
+    expect(client.mirror("c1")).toBe(mirror);
+  });
+
+  it("同一段对话开两次：只拉一次快照，第二次拿的是同一个镜像", async () => {
+    const host = await startFake({
+      methods: {
+        "conversation.state": (params) => ({
+          state: conversationState((params as { conversationId: string }).conversationId),
+        }),
+        "message.list": () => listed("c1", []),
+      },
+    });
+    const client = await connect(host);
+
+    const first = await client.open("c1");
+    const second = await client.open("c1");
+    expect(second).toBe(first);
+    expect(host.frames.filter((frame) => frame.method === "message.list")).toHaveLength(1);
+  });
+
+  it("关掉镜像之后，那段的事件不再折进来", async () => {
+    const host = await startFake({
+      methods: {
+        "conversation.state": (params) => ({
+          state: conversationState((params as { conversationId: string }).conversationId),
+        }),
+        "message.list": () => listed("c1", []),
+      },
+    });
+    const client = await connect(host);
+
+    const mirror = await client.open("c1");
+    client.closeMirror("c1");
+    host.push("message.added", {
+      conversationId: "c1",
+      message: userMessage("m1", "问"),
+      at: "2026-01-01T00:00:01.000Z",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mirror.messages).toEqual([]);
+    expect(client.mirror("c1")).toBeUndefined();
+  });
+});
+
+describe("重连：把镜像补回来", () => {
+  it("按本地最后一条 id 补：锚点还在 → 替换 + 追加", async () => {
     const host = await startFake({
       methods: {
         "conversation.state": (params) => ({
@@ -285,18 +378,24 @@ describe("重连补拉", () => {
         }),
         "message.list": (params) => {
           const query = params as { conversationId: string; after?: string };
-          return {
-            conversationId: query.conversationId,
-            anchor: query.after ?? null,
-            messages: [assistantMessage("m2", "答完了"), userMessage("m3", "接着问")],
-          };
+          // 第一次是全量（打开），之后按 `after` 续传
+          if (query.after === undefined) {
+            return listed("c1", [userMessage("m1", "问"), assistantMessage("m2", "答到一半")]);
+          }
+          return listed(
+            "c1",
+            [assistantMessage("m2", "答完了"), userMessage("m3", "接着问")],
+            query.after,
+          );
         },
       },
     });
     const client = await connect(host);
-    const outcomes: ResumeOutcome[] = [];
-    client.onResume((outcome) => outcomes.push(outcome));
-    client.track("c1", "m2");
+    const outcomes: SyncOutcome[] = [];
+    client.onSync((outcome) => outcomes.push(outcome));
+
+    const mirror = await client.open("c1");
+    expect(mirror.messages.map((message) => message.content)).toEqual(["问", "答到一半"]);
 
     let lost = 0;
     client.onClose(() => {
@@ -307,53 +406,39 @@ describe("重连补拉", () => {
 
     await client.reconnect();
 
-    const listed = host.frames.filter((frame) => frame.method === "message.list");
-    expect(listed).toHaveLength(1);
-    // A12：`after` 带的是本地最后一条的 id（含自身最新内容）
-    expect(listed[0]?.params).toEqual({ conversationId: "c1", after: "m2" });
+    const requests = host.frames.filter((frame) => frame.method === "message.list");
+    expect(requests).toHaveLength(2);
+    // 该 id 还在：交出去的就是它（含它自身的最新内容 + 之后全部）
+    expect(requests[1]?.params).toEqual({ conversationId: "c1", after: "m2" });
+
+    // 锚点那条是**替换**，不是又追加一条
+    expect(mirror.messages.map((message) => message.content)).toEqual(["问", "答完了", "接着问"]);
 
     expect(outcomes).toHaveLength(1);
     const outcome = outcomes[0];
     expect(outcome?.ok).toBe(true);
-    if (outcome?.ok) {
-      expect(outcome.resumed.mode).toBe("anchor");
-      expect(outcome.resumed.anchor).toBe("m2");
-      expect(outcome.resumed.state.conversationId).toBe("c1");
-    }
-
-    // 续传的拼法：anchor 那条**整体替换**（不是再追加一条）
-    const local = [userMessage("m1", "问"), assistantMessage("m2", "答到一半")];
-    const merged = mergeResumed(local, outcome?.ok ? outcome.resumed : ({} as never));
-    expect(merged.map((message) => message.content)).toEqual(["问", "答完了", "接着问"]);
+    if (outcome?.ok) expect(outcome.mirror).toBe(mirror);
   });
 
-  it("anchor 没命中（宿主回 null）→ 全量补，本地整份换掉", async () => {
+  it("锚点不在（宿主回 anchor: null）→ 服务端给的是全量，整段替换", async () => {
     const host = await startFake({
       methods: {
         "conversation.state": (params) => ({
           state: conversationState((params as { conversationId: string }).conversationId),
         }),
-        "message.list": () => ({
-          conversationId: "c1",
-          anchor: null,
-          messages: [userMessage("x1", "新的一段")],
-        }),
+        "message.list": (params) => {
+          const query = params as { conversationId: string; after?: string };
+          if (query.after === undefined) return listed("c1", [userMessage("m1", "会被撤回的那条")]);
+          return listed("c1", [userMessage("x1", "现在只剩这条")]);
+        },
       },
     });
     const client = await connect(host);
-    const outcomes: ResumeOutcome[] = [];
-    client.onResume((outcome) => outcomes.push(outcome));
-    client.track("c1", "已删除的那条");
+    const mirror = await client.open("c1");
+    expect(mirror.messages).toHaveLength(1);
 
-    await client.reconnect();
-
-    const outcome = outcomes[0];
-    expect(outcome?.ok).toBe(true);
-    if (outcome?.ok) {
-      expect(outcome.resumed.mode).toBe("full");
-      expect(outcome.resumed.anchor).toBeNull();
-      expect(mergeResumed([userMessage("old", "旧的")], outcome.resumed)).toHaveLength(1);
-    }
+    await client.resync("c1");
+    expect(mirror.messages.map((message) => message.id)).toEqual(["x1"]);
   });
 
   it("两个调用方同时重连：只连一次（第二次拿的是同一条结果）", async () => {
@@ -369,28 +454,40 @@ describe("重连补拉", () => {
     expect(client.connected).toBe(true);
   });
 
-  it("补拉失败（那段对话没了）报在 onResume 上，连接照旧可用", async () => {
+  it("补不回来（那段对话没了）报在 onSync 上，连接照旧可用", async () => {
+    // 「gone」这段：打开时还在，重连时已经没了
+    const seen = new Map<string, number>();
     const host = await startFake({
       methods: {
-        "conversation.state": () => {
-          throw new FakeMethodError({ code: "not_found", message: "这段对话不存在了" });
+        "conversation.state": (params) => {
+          const conversationId = (params as { conversationId: string }).conversationId;
+          const times = (seen.get(conversationId) ?? 0) + 1;
+          seen.set(conversationId, times);
+          if (conversationId === "gone" && times > 1) {
+            throw new FakeMethodError({ code: "not_found", message: "这段对话不存在了" });
+          }
+          return { state: conversationState(conversationId) };
         },
+        "message.list": (params) =>
+          listed((params as { conversationId: string }).conversationId, [
+            userMessage("m1", "问"),
+          ]),
       },
     });
     const client = await connect(host);
-    const outcomes: ResumeOutcome[] = [];
-    client.onResume((outcome) => outcomes.push(outcome));
-    client.track("gone");
+    const outcomes: SyncOutcome[] = [];
+    client.onSync((outcome) => outcomes.push(outcome));
+
+    // 两段都打开：一段重连时补得回来，另一段补不上
+    await client.open("c1");
+    await client.open("gone");
 
     await client.reconnect();
 
-    expect(outcomes).toHaveLength(1);
-    const outcome = outcomes[0];
-    expect(outcome?.ok).toBe(false);
-    if (outcome && !outcome.ok) {
-      expect(outcome.conversationId).toBe("gone");
-      expect(outcome.error.code).toBe("not_found");
-    }
+    expect(outcomes.map((outcome) => outcome.conversationId).sort()).toEqual(["c1", "gone"]);
+    const failed = outcomes.find((outcome) => outcome.conversationId === "gone");
+    expect(failed?.ok).toBe(false);
+    if (failed && !failed.ok) expect(failed.error.code).toBe("not_found");
     expect(client.connected).toBe(true);
   });
 });
@@ -420,9 +517,9 @@ describe("类型（编译期）", () => {
     expectTypeOf<Awaited<ReturnType<typeof client.call<"host.version">>>>().toEqualTypeOf<
       MethodResult<"host.version">
     >();
-    // 事件名与载荷按 `EventMap` 收窄：`run.state` 的载荷里没有 `delta`
-    client.subscribe("run.state", (payload) => {
-      expectTypeOf(payload.run.conversationId).toEqualTypeOf<string>();
+    // 事件名与载荷按 `EventMap` 收窄：`state` 的载荷里只有那一格
+    client.subscribe("state", (payload) => {
+      expectTypeOf(payload.status).toEqualTypeOf<import("@ai-zen/agents-host").ConversationStatus>();
     });
     await client.close();
   });

@@ -176,8 +176,8 @@ describe("调用与错误", () => {
   });
 });
 
-describe("补拉（A12 的真语义）", () => {
-  it("空对话：state 拉得回来，消息是空的、mode 是全量", async () => {
+describe("镜像对真实例（打开一段空对话）", () => {
+  it("四格读得回来，消息是空的", async () => {
     const client = await connect("zh");
     const { workspace } = await client.call("workspace.create", { cwd: workspaceDir });
     const created = await client.call("conversation.create", {
@@ -187,12 +187,12 @@ describe("补拉（A12 的真语义）", () => {
     if (!created.conversation) throw new Error("对话没建出来");
     const conversationId = created.conversation.id;
 
-    const resumed = await client.resume(conversationId);
+    const mirror = await client.open(conversationId);
 
-    expect(resumed.state.conversationId).toBe(conversationId);
-    expect(resumed.state.run.status).toBe("idle");
-    expect(resumed.messages).toEqual([]);
-    expect(resumed.mode).toBe("full");
+    expect(mirror.conversationId).toBe(conversationId);
+    // 刚建出来的会话没有 agent 对象：死格就是「连 agent 都没有」
+    expect(["dead", "idle"]).toContain(mirror.status);
+    expect(mirror.messages).toEqual([]);
   });
 });
 
@@ -211,8 +211,8 @@ describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () =>
     if (!created.conversation) throw new Error("对话没建出来");
     const conversationId = created.conversation.id;
 
-    // 草稿落库靠第一轮 `conversation.send`（它内部调 `ensurePersisted`）：先发一句话，
-    // 再把这一轮停掉 —— 这一段的目的是「让对话在库里有一行」，不是为了跑模型
+    // 草稿落库靠第一次 `conversation.send`（它内部调 `ensurePersisted`）：先发一句话，
+    // 再把这边停掉 —— 这一段的目的是「让对话在库里有一行」，不是为了跑模型
     await client.call("conversation.send", { conversationId, input: { content: "先落库" } });
     await client.call("conversation.abort", { conversationId }).catch(() => undefined);
     await idle(client, conversationId);
@@ -246,7 +246,7 @@ describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () =>
     const written = await fs.readFile(join(dataRoot, "assets", fileName));
     expect(new Uint8Array(written)).toEqual(PAYLOAD);
 
-    // 带着 assetId 发一轮：`attachments` 里就是这一张的结局
+    // 带着 assetId 发一次：`attachments` 里就是这一张的结局
     const accepted = await client.call("conversation.send", {
       conversationId,
       input: { content: "看看这张", assetIds: [asset.assetId] },
@@ -261,7 +261,7 @@ describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () =>
       expect(accepted.attachments[0]?.problem?.message).toBeTruthy();
     }
 
-    // 这一轮会去连配置里的假端点（必然失败），收摊时把它停掉
+    // 这一投会去连配置里的假端点（必然失败），收摊时把它停掉
     await client.call("conversation.abort", { conversationId }).catch(() => undefined);
   }, 30_000);
 
@@ -336,14 +336,14 @@ describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () =>
   }, 30_000);
 });
 
-/** 等这段对话不在跑（`conversation.send` 在跑的时候会 `busy`） */
+/** 等这段对话不再忙（`conversation.send` 投进去之后它会忙一阵） */
 async function idle(client: Client, conversationId: string): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const { state } = await client.call("conversation.state", { conversationId });
-    if (state.run.status !== "running") return;
+    if (state.status !== "busy") return;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  throw new Error("这一轮一直没有结算");
+  throw new Error("这段对话一直没有闲下来");
 }
 
 describe("ensureHost 对真实例", () => {
