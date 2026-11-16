@@ -3,6 +3,39 @@
 All notable changes to `@ai-zen/agents-host` are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versions use SemVer.
 
+## [0.1.0-alpha.8] - 2026-11-16
+
+> Follows `@ai-zen/agents-core` 5.0.0-alpha.0. The host had grown a whole notion of "a segment" —
+> a four-state run status, a send status, a delivery receipt that said whether the agent had been
+> woken, and a rule that the database was flushed only once a segment settled. The engine never had
+> that notion; it was invented here to cover for the fact that the host was waiting on a promise.
+
+### Changed
+
+- Persistence follows message events now: `messageAdded` / `messageChanged` / `messageRemoved`,
+  one row at a time. Whoever pushed a message no longer matters — the row appears when the message
+  appears. "Flush once the segment settles" is gone.
+- UI state derives from the engine's three cells plus lifecycle events, not from a host-side run status.
+- Context overflow is recognised from `denied` (structured `detail`), not from an exception name.
+- The pending queue is read live from `inboxPending` instead of being mirrored from notifications:
+  the engine emits nothing when an entry is taken, and a key is taken silently, so a mirror could
+  diverge permanently and could never re-read itself back into agreement.
+- Tools refresh on `onOuterLoopStart`; migration runs on `onIdle`.
+- `source` on messages is a discriminated object; stored as JSON in a new `TEXT` column, with old
+  string values upgraded on read.
+
+### Removed
+
+- `DeliveryReceipt` / `woke`, `RunStatus` four states, `SendStatus`, `ChatAgent` (the local duck-type
+  shim that hid the engine's real surface from the type checker).
+
+### Fixed
+
+- Agents are actually killed when they should be: conversation deleted → `kill`; scope disposed →
+  `killScope`; process shutdown → `disposeAll`. Previously they were only dereferenced, so a paused
+  agent lived until the process died.
+- The hidden cwd message injected at the start of a conversation now carries `source`.
+
 ## [0.1.0-alpha.7] - 2026-11-14
 
 > Sub-agent output now crosses the wire. A delegated sub-agent runs inside its own `Agent` in this
