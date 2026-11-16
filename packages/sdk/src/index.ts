@@ -64,7 +64,7 @@ export {
   PEER_SESSION_TOOL_NAMES,
   CREATE_SESSION_TOOL,
   READ_SESSION_STATUS_TOOL,
-  SEND_TO_SESSION_TOOL,
+  POST_MESSAGE_TOOL,
 } from "./scope/plugins/peers/peerSessionTools.js";
 export type {
   PeerSessionPort,
@@ -75,7 +75,7 @@ export type {
   PeerSessionCreateInput,
   PeerSessionSent,
   PeerSessionSendInput,
-  PeerSessionSendState,
+  PeerSessionSendRejectReason,
 } from "./scope/plugins/peers/peerSessionTools.js";
 export { allInOne } from "./scope/plugins/allInOne.js";
 export type { AllInOneOptions } from "./scope/plugins/allInOne.js";

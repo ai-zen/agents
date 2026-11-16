@@ -4,43 +4,67 @@ import type { Agent, Tool, ToolCallContext } from "@ai-zen/agents-core";
 /**
  * 平级会话（peer session）的三个工具 —— **只负责把模型的话翻译成端口调用**。
  *
- * 端口（{@link PeerSessionPort}）由宿主实现：开一段会话、开跑、之后接着跟它说话、跑完把结果投回
- * 发起者，全都是宿主的事（会话是宿主的财产，SDK 不认识会话）。SDK 这一侧只有三件东西：参数说明，
- * 以及**给模型看的那几句话**（结果会自动推回来别轮询；接着发的话排在哪；记不住 `sessionId` 就靠
- * `label`）。
+ * 端口（{@link PeerSessionPort}）由宿主实现：开一段会话、把一句话投进去、现读它此刻落在哪一格，
+ * 都是宿主的事（会话是宿主的财产，SDK 不认识会话）。SDK 这一侧只有三样东西：参数说明、
+ * **给模型看的那几句话**（别轮询：她说完会自己 `postMessage` 回来；记不住 `sessionId` 就靠
+ * `label`），以及三个工具各自的返回形状。
  *
- * 为什么这几句话必须同时出现在 description 与返回文案两处：模型只读它拿到的东西 —— 第一次只看
- * 得到 description，之后每次调用只看得到返回值。少写一处，模型就会开始忙等轮询
- * （`read_session_status` 一个接一个），而每轮轮询都要烧一次模型调用。
+ * ## 为什么这几句话必须同时出现在 description 与返回文案两处
+ *
+ * 模型只读它拿到的东西 —— 第一次只看得到 description，之后每次调用只看得到返回值。少写一处，
+ * 模型就会开始忙等轮询（`read_session_status` 一个接一个），而每次轮询都要烧一次模型调用。
+ *
+ * ## 投递不承诺任何未来
+ *
+ * `postMessage` 的回执只有「收下了」。那边忙不忙、什么时候取件、取走之后会做什么，**都不是
+ * 这一句话能定下的**，写在回执里就是对未来的断言 —— 而未来只能靠观测（`read_session_status`）
+ * 与对方自己发来的话去读。所以本文件的回执里没有「把它叫起来了」「排在它手头那批后面」这类话。
+ *
+ * ## 投递不看关系
+ *
+ * 谁都能给谁投：`postMessage` 只问「目标在不在、活不活」，不问「你俩是什么关系」。平级之间
+ * 能不能互发、发了对方理不理，靠的是 agent 自己的知识（它在提示里就知道自己跟谁在说话），
+ * 不是一道校验。只有**创建**还有「只限一层」这条产品限制，它写在 `create_session` 那边。
  */
 
-/** `create_session`：开一段平级会话，受理即回 */
+/** `create_session`：开一段平级会话，建完即回 */
 export const CREATE_SESSION_TOOL = "create_session";
-/** `read_session_status`：只问状态 + 一条摘要，绝不返回全量消息 */
+/** `read_session_status`：只问状态 + 一句摘要，绝不返回全量消息 */
 export const READ_SESSION_STATUS_TOOL = "read_session_status";
-/** `send_to_session`：继续跟已经存在的那段平级会话说一句（不等结果） */
-export const SEND_TO_SESSION_TOOL = "send_to_session";
+/** `postMessage`：给另一段会话投一句话（不等结果，投递不看关系） */
+export const POST_MESSAGE_TOOL = "postMessage";
 
 /** 本插件向 `tools` 维度贡献的候选名（顺序即展示顺序） */
 export const PEER_SESSION_TOOL_NAMES = [
   CREATE_SESSION_TOOL,
   READ_SESSION_STATUS_TOOL,
-  SEND_TO_SESSION_TOOL,
+  POST_MESSAGE_TOOL,
 ] as const;
 
 /**
- * 平级会话的状态。
+ * 一段会话此刻落在哪一格 —— **四格 + `gone`**。
  *
- * 前四个是记录里的状态；`gone` 只出现在 `read_session_status` 的答案里：这段会话的记录
- * 找不到了（被删掉，或者宿主重启之后那份进程内记录没了 —— 那时它就是一段普通会话）。
+ * 前四格是活对象身上的直接事实（与宿主的 `ConversationStatus` 逐格对应）：`busy` 手上有活、
+ * `idle` 闲着、`paused` 暂停（收话不动）、`dead` 没有 agent 对象。
+ *
+ * `gone` 只出现在 `read_session_status` 的答案里：这段会话找不到了（被删掉，或者宿主重启之后
+ * 那份进程内记录没了 —— 那时它就是一段普通会话）。
+ *
+ * 这里**没有** `running` / `failed` / `aborted` 这类值：失败是某条消息上的事实（那条消息的
+ * `status` / `error`），不是一段对话此刻的状态；把「上一次失败了」挂成状态，就会在它下一次
+ * 好好说话时继续说假话。
  */
-export type PeerSessionState = "running" | "idle" | "failed" | "aborted" | "gone";
+export type PeerSessionState = "busy" | "idle" | "paused" | "dead" | "gone";
 
 /**
  * `create_session` 被**结构化拒绝**的原因。
  *
  * 拒绝是返回结果而不是异常：模型要能读懂并改变策略（「这层不能开分身了，那我自己做」
- * 「这个助手没有可用模型，换一个」「先等已有的跑完」），异常只会把它这一轮打断。
+ * 「这个助手没有可用模型，换一个」「手头那几个还忙，先等一等或分给更少的会话」），异常只会
+ * 把它这一步打断。
+ *
+ * 三条都是**创建**的限制：`postMessage` 没有「只限一层」「限额」这类判据 —— 投递只看目标
+ * 在不在、活不活。
  */
 export type PeerSessionRejectReason = "depth_exceeded" | "model_unresolved" | "too_many_peers";
 
@@ -48,7 +72,7 @@ export type PeerSessionRejectReason = "depth_exceeded" | "model_unresolved" | "t
  * `create_session` 的答案。
  *
  * 成功只给两个字段：`sessionId`（子会话的 conversationId）与可读的 `label`。**没有结果** ——
- * 「建完即回，不等子会话跑完」是整个方案的定盘星：等待就等于子代理，那已经存在了。
+ * 建完即回：这里从来不等那边答完，也不会有任何东西被推回给发起者。
  */
 export type PeerSessionCreated =
   | { ok: true; sessionId: string; label: string }
@@ -57,31 +81,39 @@ export type PeerSessionCreated =
 /**
  * `read_session_status` 的答案。
  *
- * `lastMessage` 是子会话最后一条助手消息的**截断摘要**（宿主侧 ~300 字），不是全量消息：
+ * `lastMessage` 是那段会话最后一条助手消息的**截断摘要**（宿主侧 ~300 字），不是全量消息：
  * 给了原文，模型就会把它当上下文搬运，token 立刻炸，而且绕过了我们自己的上下文管理。
  */
 export interface PeerSessionStatus {
+  /** 四格 + `gone`（见 {@link PeerSessionState}） */
   state: PeerSessionState;
   label?: string;
   startedAt?: string;
+  /** 最近一句的摘要（截断；拿不到就不出现） */
   lastMessage?: string;
 }
 
 /**
- * `send_to_session` 的答案。
+ * `postMessage` 被拒绝的两种原因 —— 就是投递的两条判据。
  *
- * 成功只给 `state`：**投递那一刻**对方处于什么状态（`running` = 这一条排在它这一轮末尾；
- * `idle` = 这一条会把它叫起来；`settling` = 它正在收尾，这一条排在后面）。不是「已经跑完了」——
- * 本工具从不等结果。
+ * `gone`：这段会话不在（被删了，或者宿主重启之后那份进程内记录没了）；
+ * `dead`：会话在，但那边没有 agent 对象，投过去也没有人会取件。
  *
- * 两种拒绝：`gone`（这段会话没有了：被删了，或者宿主重启之后那份进程内记录没了）、
- * `not_allowed`（它与我之间没有父子关系：平级会话之间不许互发）。
+ * 两者对模型是同一类答复：这句话没投出去，别等回音。
+ */
+export type PeerSessionSendRejectReason = "gone" | "dead";
+
+/**
+ * `postMessage` 的答案。
+ *
+ * 成功只有 `ok`，一个字段都不多：投递那一刻能定下的只有「收下了」。那边忙不忙、什么时候取件
+ * 都不是回执该说的话（那是对未来的断言）。
  */
 export type PeerSessionSent =
-  | { ok: true; state: "running" | "idle" | "settling" }
-  | { ok: false; reason: "gone" | "not_allowed" };
+  | { ok: true }
+  | { ok: false; reason: PeerSessionSendRejectReason };
 
-/** `send_to_session` 的入参（`caller` 由插件从 `ToolCallContext` 取，不由模型给） */
+/** `postMessage` 的入参（`caller` 由插件从 `ToolCallContext` 取，不由模型给） */
 export interface PeerSessionSendInput {
   /** 谁在调这个工具（`ctx.agent`）—— 宿主据此认领「哪一段会话在说话」与消息署名 */
   caller: Agent;
@@ -91,7 +123,7 @@ export interface PeerSessionSendInput {
 
 /** `create_session` 的入参（`caller` 由插件从 `ToolCallContext` 取，不由模型给） */
 export interface PeerSessionCreateInput {
-  /** 谁在调这个工具（`ctx.agent`）—— 宿主据此认领「哪一段会话在开分身」 */
+  /** 谁在调这个工具（`ctx.agent`）—— 宿主据此认领「哪一段会话在开新会话」 */
   caller: Agent;
   prompt: string;
   agentId?: string;
@@ -105,116 +137,105 @@ export interface PeerSessionCreateInput {
  * 不给端口时插件不产出任何工具 —— 老行为一个字不变。
  */
 export interface PeerSessionPort {
+  /**
+   * 开一段会话，**建完立刻回** `{ sessionId, label }`。
+   *
+   * 「立刻」是这一格的全部意思：不许在里面等那边答完、不许挂 `.then` 去接任何后续事实。
+   * 拒绝照 {@link PeerSessionCreated} 的样子回，不抛错。
+   */
   create(input: PeerSessionCreateInput): Promise<PeerSessionCreated>;
+  /** 现读那一格 + 一句摘要（不存镜像：状态是活对象身上的事实） */
   status(input: { caller: Agent; sessionId: string }): Promise<PeerSessionStatus>;
   /**
-   * 继续跟一段已有的平级会话说一句（不返回结果：结果跑完会自己推回来）。
+   * 把一句话投给一段会话（**不等结果，也不回状态**）。
    *
-   * 与 `create` / `status` 同构：**只收 `caller`**，不收来源名 / label —— 正文那行「来自 会话「…」
-   * 自动推送」由宿主按调用方解析（模型说自己是谁不算数）。
+   * 与 `create` / `status` 同构：**只收 `caller`**，不收来源名 / label —— 正文那行
+   * 「来自 会话「…」」由宿主按调用方解析（模型说自己是谁不算数）。
+   *
+   * 收下了就是 `{ ok: true }`；没投出去给原因（{@link PeerSessionSendRejectReason}）。
    */
   send(input: PeerSessionSendInput): Promise<PeerSessionSent>;
 }
 
-/** ① 结果会自动推回来、别轮询；② 记不住 `sessionId` 就靠 `label` */
-const CREATE_HINT =
-  "The result of this session is pushed back to me automatically when it settles — that push " +
-  "wakes me up, so do not poll it (and do not call read_session_status in a loop). Keep `label` " +
-  "next to `sessionId`: if I forget the id later, `label` is how I name this session.";
+/**
+ * 「别轮询」那半句：**她说完会自己 postMessage 回来**。
+ *
+ * 这是唯一一句能替模型省下轮询的话：投递不看关系（谁都能给谁投），所以对方真有话要说时不必
+ * 等谁去问。
+ */
+const NO_POLL_HINT =
+  "Do not poll it: when that session has something for me it calls postMessage on me itself.";
+
+/** 「靠 label 认会话」那半句：`sessionId` 是 UUID，长对话里记不住 */
+const LABEL_HINT =
+  "Keep `label` next to `sessionId`: if I forget the id later, `label` is how I name this session.";
 
 /** 拒绝各自的一句话：说清「为什么」与「接下来能做什么」（宿主没给 hint 时用它） */
 const REJECT_HINTS: Record<PeerSessionRejectReason, string> = {
   depth_exceeded:
-    "This conversation is itself a peer session, and peer sessions cannot open further peer " +
-    "sessions (one level only). Do the work here instead, or report back and let the conversation " +
-    "that started this one spawn it.",
+    "This conversation is itself a peer session, and peer sessions cannot open further ones " +
+    "(creating is one level only — posting a message is not limited this way). Do the work here " +
+    "instead, or report back and let the conversation that started this one open it.",
   model_unresolved:
-    "No model could be resolved for that peer session (no session override, no modelId on the " +
-    "agent definition, no global default model). Pass `modelId`, or pass an `agentId` that has a " +
-    "model bound.",
+    "No model could be resolved for that session (no session override, no modelId on the agent " +
+    "definition, no global default model). Pass `modelId`, or pass an `agentId` that has a model " +
+    "bound.",
   too_many_peers:
-    "This conversation already has the maximum number of peer sessions running at the same time. " +
-    "Wait for some of them to finish (their results are pushed back to me automatically), or give " +
+    "This conversation already has the maximum number of peer sessions busy at the same time. " +
+    "Wait until some of them are free (read_session_status tells me which one is idle), or give " +
     "the work to fewer sessions instead of opening another one.",
 };
 
 /**
- * `send_to_session` 被拒绝的两种原因各自的一句话（端口只回原因，不给文案）。
+ * `postMessage` 被拒绝的两种原因各自的一句话（端口只回原因，不给文案）。
  *
- * `gone` 要说清「不会再有回音」（否则模型会等一条永远不会到的结果），`not_allowed` 要说清
- * 「自己把活干掉」，两者都不建议重试。
+ * 两条都要说清「这句话没投出去、不会有人回音」，否则模型会等一条永远不会到的话。两者都不建议
+ * 重试：目标还在就等它自己说话，目标已经不在就自己把活干掉。
  */
-const SEND_REJECT_HINTS: Record<"gone" | "not_allowed", string> = {
+const SEND_REJECT_HINTS: Record<PeerSessionSendRejectReason, string> = {
   gone:
-    "There is no record of this session any more: it was deleted, or the host restarted and that " +
-    "in-process record is gone (it is now an ordinary conversation that still shows up in the " +
-    "session list). Nothing was sent and no result will arrive — do the work here instead.",
-  not_allowed:
-    "That session is not related to this one: only a conversation and the peer sessions it " +
-    "started can talk to each other, and peer sessions cannot message each other. Nothing was " +
-    "sent — handle it here, or report back and let the conversation that started this one relay.",
+    "There is no such session any more: it was deleted, or the host restarted and that in-process " +
+    "record is gone (it is now an ordinary conversation that still shows up in the session list). " +
+    "Nothing was sent and no answer will arrive — do the work here instead.",
+  dead:
+    "That session exists but there is no agent behind it any more, so nobody will take the " +
+    "message. Nothing was sent and no answer will arrive — do the work here instead.",
 };
 
 /**
- * `send_to_session` 成功时每个 `state` 一句给模型的话。
+ * `postMessage` 收下之后给模型的一句话。
  *
- * 三句必须都在（少一句模型就会开始忙等，或者记不住是哪段会话）：
- *   ① 对方在跑 → 这一条排在它这一轮末尾；对方空闲 → 这一条会把它叫起来；
- *   ② **不要等结果**，跑完会自动推回来；
- *   ③ 记不住 `sessionId` 就靠 `label` 认。
- * 「排在末尾 / 叫起来 / 先攒着」只差头一句，后两句三支一模一样。
+ * 只说三件当场能定下的事：① 这句话进了那边的待办；② 这里不等结果、也不会有东西自己推回来；
+ * ③ 记不住 `sessionId` 就靠 `label` 认。**不写**「它现在在忙 / 会把它叫起来」——那是对方的
+ * 情形，投递这一刻答不出来，写下来就是编。
  */
-const SEND_TAIL =
-  "Do not wait for a result: this message does not come back here, the result of that session " +
-  "is pushed back to me automatically when it settles and that push wakes me up. If I forget the " +
-  "`sessionId`, the `label` returned by create_session is how I name this session.";
+const SEND_ACCEPTED_HINT =
+  "Accepted: the message is in that session's queue now. This call does not come back and nothing " +
+  `is pushed to me automatically. ${NO_POLL_HINT} ${LABEL_HINT}`;
 
-/** `send_to_session` 成功回执里的 `state`（与宿主的 `DeliveryOutcome.state` 同义） */
-export type PeerSessionSendState = "running" | "idle" | "settling";
-
-function sendHint(state: PeerSessionSendState): string {
-  switch (state) {
-    case "running":
-      return (
-        "It is running, so this message waits in line and is picked up at the end of its current " +
-        `turn. ${SEND_TAIL}`
-      );
-    case "idle":
-      return `It was idle, so this message wakes it up and it starts a new turn. ${SEND_TAIL}`;
-    case "settling":
-      return (
-        "It is finishing its current turn, so this message is held and delivered as soon as that " +
-        `turn settles. ${SEND_TAIL}`
-      );
-  }
-}
-
-/** 每个状态一句给模型的话（同样带着「别轮询」与「靠 label」两句） */
+/** 每一格一句给模型的话（都带着「别轮询」与「靠 label」两句） */
 function statusHint(state: PeerSessionState): string {
   switch (state) {
-    case "running":
-      return (
-        "It is still running. Its result will be pushed to me automatically when it settles — do " +
-        "not poll it. If I forget the `sessionId`, the `label` identifies this session."
-      );
+    case "busy":
+      return `It is busy: it has work in hand right now. ${NO_POLL_HINT} ${LABEL_HINT}`;
     case "idle":
+      return `It is idle: it exists and has nothing in hand at this moment. ${NO_POLL_HINT} ${LABEL_HINT}`;
+    case "paused":
       return (
-        "It finished and its result was already pushed to me automatically. Do not poll it again. " +
-        "If I forget the `sessionId`, the `label` identifies this session."
+        "It is paused: it exists but is not taking anything in until it is resumed (from the " +
+        `outside, not by me), so nothing happens there by itself. ${NO_POLL_HINT} ${LABEL_HINT}`
       );
-    case "failed":
-    case "aborted":
+    case "dead":
       return (
-        "It stopped without finishing; the result (including why it stopped) was already pushed " +
-        "to me automatically. Do not poll it again. If I forget the `sessionId`, the `label` " +
-        "identifies this session."
+        "There is no agent behind that session any more (it is dead): nothing will be taken in " +
+        `there and no answer will arrive. Do the work here instead. ${LABEL_HINT}`
       );
     case "gone":
       return (
-        "There is no record of this session any more: it was deleted, or the host restarted and " +
+        "There is no record of that session any more: it was deleted, or the host restarted and " +
         "that in-process record is gone (in that case it is now an ordinary conversation that " +
-        "still shows up in the session list). Do not wait for a result that will never arrive; if " +
-        "I only remember the `label`, that session can no longer be looked up by it."
+        "still shows up in the session list). No answer will arrive there. If I only remember the " +
+        "`label`, that session can no longer be looked up by it."
       );
   }
 }
@@ -222,10 +243,10 @@ function statusHint(state: PeerSessionState): string {
 /**
  * 造三个工具（顺序即返回顺序）。
  *
- * 三个工具都是即时返回的 `CallbackTool`：真正的等待在宿主那一侧（子会话自己跑）。
+ * 三个工具都是即时返回的 `CallbackTool`：真正的等待在宿主那一侧（那边的 agent 自己跑）。
  */
 export function createPeerSessionTools(port: PeerSessionPort): Tool[] {
-  return [createSessionTool(port), readSessionStatusTool(port), sendToSessionTool(port)];
+  return [createSessionTool(port), readSessionStatusTool(port), postMessageTool(port)];
 }
 
 /** `create_session({ prompt, agentId?, modelId?, label? })` → `{ sessionId, label }` */
@@ -234,14 +255,15 @@ function createSessionTool(port: PeerSessionPort): Tool {
     function: {
       name: CREATE_SESSION_TOOL,
       description: [
-        "Open a PEER SESSION: a separate, full conversation with its own agent that works on",
-        "`prompt` in parallel with me (own context, own usage, and it stays readable in the",
-        "session list afterwards). Use it for work that can happen alongside this conversation",
-        "instead of blocking it.",
-        "This call returns as soon as the session is accepted — it does NOT wait for the work to",
-        "finish, so do not expect the result here.",
-        "The result is pushed back to me automatically when that session settles, and that push",
-        "wakes me up so I can carry on: do not poll it repeatedly.",
+        "Open a PEER SESSION: a separate conversation with its own agent that works on `prompt`",
+        "alongside this one (own context, own usage, and it stays readable in the session list",
+        "afterwards). Use it for work that can happen in parallel with mine instead of blocking me.",
+        "This call returns as soon as the session exists: it does not wait for any answer and no",
+        "answer is delivered to me here.",
+        "Talk to it afterwards with postMessage; do not poll it — when that session has something",
+        "for me it calls postMessage on me itself.",
+        "Creating is limited to one level (a peer session cannot open another one); posting a",
+        "message is not limited that way — any conversation may post a message to any other.",
         "Remember the returned `label` as well as `sessionId`: in a long conversation I may no",
         "longer recall the id, and the label is how I refer to this session.",
       ].join(" "),
@@ -251,26 +273,26 @@ function createSessionTool(port: PeerSessionPort): Tool {
           prompt: {
             type: "string",
             description:
-              "What that session should do. Write it as a self-contained task: the peer session " +
+              "What that session should do. Write it as a self-contained task: the new session " +
               "starts from an empty context and cannot see this conversation.",
           },
           agentId: {
             type: "string",
             description:
-              "Agent (by id) that runs the peer session (optional, defaults to the agent of this " +
+              "Agent (by id) that runs the new session (optional, defaults to the agent of this " +
               "conversation)",
           },
           modelId: {
             type: "string",
             description:
-              "Model id for the peer session (optional, defaults to the usual resolution: session " +
+              "Model id for the new session (optional, defaults to the usual resolution: session " +
               "> agent definition > global default)",
           },
           label: {
             type: "string",
             description:
               'Short readable name for this session (optional, e.g. "run the tests"). It is what ' +
-              "the pushed-back result says and what read_session_status shows.",
+              "read_session_status shows and what I use to refer to it later.",
           },
         },
         required: ["prompt"],
@@ -289,7 +311,11 @@ function createSessionTool(port: PeerSessionPort): Tool {
       // 结构化拒绝：模型能按字段分支，不用去读自由文本（宿主没给 hint 时用 SDK 这一份）
       if (!created.ok)
         return { rejected: created.reason, hint: created.hint ?? REJECT_HINTS[created.reason] };
-      return { sessionId: created.sessionId, label: created.label, hint: CREATE_HINT };
+      return {
+        sessionId: created.sessionId,
+        label: created.label,
+        hint: `${NO_POLL_HINT} ${LABEL_HINT}`,
+      };
     },
   });
 }
@@ -300,12 +326,12 @@ function readSessionStatusTool(port: PeerSessionPort): Tool {
     function: {
       name: READ_SESSION_STATUS_TOOL,
       description: [
-        "Check a peer session created earlier: its state (running / idle / failed / aborted /",
-        "gone) plus a short digest of its last assistant message — never the full conversation,",
-        "so do not use it to fetch results or context.",
-        "The result is pushed back to me automatically when that session settles and that push",
-        "wakes me up: this tool is for a single check (is it still running? is it gone?), not for",
-        "polling in a loop.",
+        "Check a session created earlier: the one state it is in right now (busy / idle / paused /",
+        "dead / gone) plus a short digest of its last assistant message — never the full",
+        "conversation, so do not use it to fetch context.",
+        "This is a single check, not a waiting loop: whether it is busy, idle or gone is a fact",
+        "about this moment only, and it does not tell me when anything will happen. Do not poll —",
+        "when that session has something for me it calls postMessage on me itself.",
         "If I no longer remember the `sessionId`, the `label` returned by create_session is what",
         "identifies the session — it comes back in the answer, so I can tell them apart.",
       ].join(" "),
@@ -340,20 +366,21 @@ function readSessionStatusTool(port: PeerSessionPort): Tool {
   });
 }
 
-/** `send_to_session({ sessionId, content })` → `{ accepted, state }` / `{ rejected, hint }` */
-function sendToSessionTool(port: PeerSessionPort): Tool {
+/** `postMessage({ sessionId, content })` → `{ accepted, hint }` / `{ rejected, hint }` */
+function postMessageTool(port: PeerSessionPort): Tool {
   return new CallbackTool({
     function: {
-      name: SEND_TO_SESSION_TOOL,
+      name: POST_MESSAGE_TOOL,
       description: [
-        "Send another message to a PEER SESSION created earlier by create_session — it is how I",
-        "carry on with that session instead of starting a new one.",
-        "If that session is running, this message is queued and picked up at the end of its",
-        "current turn; if it is idle, this message wakes it up and it starts a new turn. Either",
-        "way the call returns immediately.",
-        "Do not wait for a result here: this message does not come back, and the result of that",
-        "session is pushed back to me automatically when it settles (that push wakes me up), so do",
-        "not poll it.",
+        "Post a message to another conversation (a session created by create_session, or any",
+        "conversation I know the id of) — it is how I talk to that side instead of opening a new",
+        "session. Whoever it is, the message is accepted as long as that conversation exists and",
+        "has a live agent: posting does not depend on how the two of us are related.",
+        "The call returns whether the message was taken. It does not wait for anything: no answer",
+        "comes back here and nothing is delivered to me automatically — when that side has",
+        "something to tell me it posts a message to me itself.",
+        "Do not poll it: how it acts on the message is its own business, and read_session_status",
+        "only tells me which state it is in at that moment.",
         "If I no longer remember the `sessionId`, the `label` returned by create_session is how I",
         "identify that session.",
       ].join(" "),
@@ -369,8 +396,8 @@ function sendToSessionTool(port: PeerSessionPort): Tool {
           content: {
             type: "string",
             description:
-              "What to say to that session. Write it as a self-contained instruction: it cannot " +
-              "see this conversation, it only has its own history.",
+              "What to say to that side. Write it as a self-contained instruction: it cannot see " +
+              "this conversation, it only has its own history.",
           },
         },
         required: ["sessionId", "content"],
@@ -386,7 +413,7 @@ function sendToSessionTool(port: PeerSessionPort): Tool {
 
       // 结构化拒绝：模型能按字段分支，不用去读自由文本
       if (!sent.ok) return { rejected: sent.reason, hint: SEND_REJECT_HINTS[sent.reason] };
-      return { accepted: true, state: sent.state, hint: sendHint(sent.state) };
+      return { accepted: true, hint: SEND_ACCEPTED_HINT };
     },
   });
 }
