@@ -76,6 +76,14 @@ function makeAgent(client: OpenAI) {
     lastUsage: {},
     client,
     use() {},
+    // 两道闸的最小表面：summary 那一档会自己关闸，收尾时开回来
+    isOutputPaused: false,
+    pauseOutput() {
+      this.isOutputPaused = true;
+    },
+    resumeOutput() {
+      this.isOutputPaused = false;
+    },
   };
 }
 

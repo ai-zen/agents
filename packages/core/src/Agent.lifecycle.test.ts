@@ -226,6 +226,28 @@ describe("Agent 投递", () => {
   });
 });
 
+describe("Agent 中断", () => {
+  it("abort 有自己的事实：闸已经关着也照发（拿闸猜不出「谁按的停」）", async () => {
+    const { client } = createMockClient([]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+    void agent.start();
+
+    const seen: string[] = [];
+    agent.on("aborted", () => seen.push("aborted"));
+    agent.on("output:paused", () => seen.push("output:paused"));
+
+    agent.pauseOutput();
+    agent.abort();
+    agent.abort();
+
+    // 闸那一下只有第一次翻得动（后面一声不响），但「按了停」发生几次就是几条事实
+    expect(seen).toEqual(["output:paused", "aborted", "aborted"]);
+
+    agent.kill();
+    await agent.start();
+  });
+});
+
 describe("Agent 关输入", () => {
   it("pauseInput 之后投递进不来；resumeInput 之后又进得来", async () => {
     const { client } = createMockClient([]);

@@ -521,7 +521,7 @@ describe("自交接：同一个驱动者写（PRD 4.5）", () => {
     );
   });
 
-  it("空闲时投一条指令 → 它的工具结果说写了 → 提交（全程不碰暂停）", async () => {
+  it("空闲时投一条指令 → 它的工具结果说写了 → 提交（关闸一次、提交后开回来）", async () => {
     const built = harness.build();
     const outcomes: string[] = [];
     built.driver.on("toolFinished", (payload) => {
@@ -535,8 +535,9 @@ describe("自交接：同一个驱动者写（PRD 4.5）", () => {
     expect(built.instructions).toHaveLength(1);
     expect(outcomes).toEqual(["write"]);
     expect(await readdir(handoffDirFor(harness.projectDir))).toHaveLength(1);
-    // 全程既没按暂停也没放行：入口「先闲着」已经够了
-    expect(built.driverCalls).toEqual([]);
+    // 闸只动两下：这一批收口时关上（别人的话进不来），记忆换完开回来
+    expect(built.driverCalls).toEqual(["pauseOutput", "resumeOutput"]);
+    expect(built.driver.isOutputPaused).toBe(false);
   });
 
   it("写不出来就单向降级到独立摘要，并说清楚退了哪一档（F-D7）", async () => {
@@ -546,8 +547,8 @@ describe("自交接：同一个驱动者写（PRD 4.5）", () => {
     await built.service.start({ conversationId, mode: "self", then: "document_only" });
     await built.settle();
 
-    // 同一档再问了一次之后仍旧不够 → 降级到摘要那一档（它写进了同一个目录）
-    expect(built.instructions).toHaveLength(2);
+    // 只投一次：写出来的太小就是没写成 → 降级到摘要那一档（它写进了同一个目录）
+    expect(built.instructions).toHaveLength(1);
     const dir = handoffDirFor(harness.projectDir);
     expect(await readdir(dir)).toHaveLength(1);
     const listed = await notices.list({});
@@ -829,8 +830,8 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
     expect(rows[0]?.content).toBe(cwdMessage?.content);
     expect(rows[1]?.content).toBe(breakpoint?.content);
 
-    // 换记忆不等于换人：没按过暂停、也没替谁恢复
-    expect(built.driverCalls).toEqual([]);
+    // 换记忆不等于换人：闸只关过一次、开过一次，队列不重建；换完之后闸是开的
+    expect(built.driverCalls).toEqual(["pauseOutput", "resumeOutput"]);
     expect(built.driver.isOutputPaused).toBe(false);
   });
 

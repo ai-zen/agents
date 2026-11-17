@@ -497,6 +497,8 @@ export class HandoffService {
   private async runHandoff(params: HandoffParams, migrating: boolean): Promise<HandoffContext> {
     const { agent, promptTokens, handoffTokens, signal } = params;
     const requestedMode = params.mode ?? this.defaultMode;
+    // 这一趟之前闸就关着（用户让它停）：那它不是这一趟关的，也不由这一趟开回来
+    const pausedBefore = agent.isOutputPaused;
     const handoffPath = join(this.handoffDirPath, HandoffService.createHandoffFileName(new Date()));
     const model = this.model ?? agent.model;
     const messageCountBefore = agent.messages.length;
@@ -544,6 +546,9 @@ export class HandoffService {
       }
 
       if (mode === "summary") {
+        // 这一档没有「那一批」（不投指令、不进队列），所以没人替它关闸 —— 生成摘要之前自己关。
+        // 闸的作用与 self 那一路一致：交接期间别人的话一件都不许落进即将被换掉的记忆。
+        if (!agent.isOutputPaused) agent.pauseOutput();
         historyText = HandoffService.serializeMessages(agent.messages.filter((m) => !m.omit));
         handoffDoc = await this.generateSummary(agent, historyText, handoffPath, signal);
         await this.writeHandoffFile(handoffPath, handoffDoc);
@@ -568,9 +573,17 @@ export class HandoffService {
       };
 
       await this.safeHook(this.onHandoff, ctx);
+      // 记忆换定了才开闸：此刻才进来的话落进的就是**新记忆**。
+      // 只开这一趟自己关的那一道 —— 进来之前就关着的（用户让它停）不归这一趟管。
+      if (!pausedBefore) agent.resumeOutput();
       return ctx;
     } catch (err) {
-      if (!(err instanceof HandoffAbortedError) && !isAbortError(err, signal)) throw err;
+      if (!(err instanceof HandoffAbortedError) && !isAbortError(err, signal)) {
+        // 不是取消：这一趟到此为止，闸得开回来，否则这段会话从此停在「暂停」上没人再叫它
+        if (!pausedBefore) agent.resumeOutput();
+        throw err;
+      }
+      // 取消：闸是用户按停关上的（或者这一趟关了、结果被掐），不替他把闸开回来
       await this.restoreBeforeHandoff({ agent, messageCountBefore, handoffPath, existedBefore });
       throw new HandoffAbortedError();
     }
@@ -625,6 +638,10 @@ export class HandoffService {
    * PRD 3.6），以及把上面那两个事实报回来。于是「只许写这份文档」与「写完了没有」用的是同一份
    * 输入 —— 工具参数里的路径，谁也绕不过谁。
    *
+   * **只投一次**：没写出来就是没写出来，不「再问一次」。第二次投递要能跑就得先把闸开开，
+   * 一开闸，这期间用户压着的件就跟着那一批一起被取走，而那一趟仍然要换记忆 —— 同一个误伤。
+   * 一次投递、一次结论：闸只关一次、开一次，没有第二个拿货口。
+   *
    * 失败（文件不存在 / 小于阈值 / 模型压根没调写工具 / 这一段没了）交上层单向降级 summary；
    * **取消不算失败**：用户按了中断就抛 {@link HandoffAbortedError}，既不重试也不降级。取消的
    * 善后（删文档、截消息）不在这里做 —— 交给 {@link runHandoff} 的 catch 一处处理。
@@ -648,33 +665,25 @@ export class HandoffService {
      *   - 「谁做限制谁放宽」—— 限制在护栏自己身上，放宽也必须写在护栏的选项里。
      */
     try {
-      // 两次机会：模型可能只回一句「写好了」而文件没落盘，也可能写得太短，再问一次就够
-      const instructions = [
-        HandoffService.createHandoffInstruction({ skillContent, handoffPath, toolsAvailable: true }),
-        [
-          `The handoff document does not exist or is too small to deliver: ${handoffPath}`,
-          "Use the write tool right now to write the **complete** handoff document to that path (use the path exactly as given) and do nothing else.",
-        ].join("\n"),
-      ];
+      const instruction = HandoffService.createHandoffInstruction({
+        skillContent,
+        handoffPath,
+        toolsAvailable: true,
+      });
 
-      for (const instruction of instructions) {
-        // 每条指令都要一份自己的观察点：上一个的结论不留给下一个看
-        const watch = guard.arm(handoffPath, cwd);
-        const outcome = await this.pushAndWatch(agent, watch, instruction, signal);
-        // `agent.abort()` 不抛错，取消要主动看一眼（见方法注释）
-        this.throwIfAborted(signal);
-        // 那一下被掐（用户把它叫停了）：回到交接前，不重试也不降级
-        if (outcome === "interrupted") throw new HandoffAbortedError();
-        // 这一段已经不在了：没有可写的东西，也别为一个死掉的会话白烧一次全量输入
-        if (outcome === "gone") return false;
-        if (outcome === "written") {
-          // 等这一批收口：此后这一段的消息不再增长，上层要换掉的就是定了的这一份
-          await this.waitRoundOver(watch, signal);
-          if (await this.isHandoffFileReady(handoffPath)) return true;
-        }
-      }
-      // 两次都没落成：交上层单向降级到 summary
-      return false;
+      const watch = guard.arm(handoffPath, cwd);
+      const outcome = await this.pushAndWatch(agent, watch, instruction, signal);
+      // `agent.abort()` 不抛错，取消要主动看一眼（见方法注释）
+      this.throwIfAborted(signal);
+      // 那一下被掐（用户把它叫停了）：回到交接前，不降级
+      if (outcome === "interrupted") throw new HandoffAbortedError();
+      // 这一段已经不在了：没有可写的东西，也别为一个死掉的会话白烧一次全量输入
+      if (outcome === "gone") return false;
+      // 这一批收口了还没见到那次写：模型只说了句「写好了」而一个字没写，交上层降级
+      if (outcome !== "written") return false;
+      // 等这一批收口：此后这一段的消息不再增长，上层要换掉的就是定了的这一份
+      await this.waitRoundOver(watch, signal);
+      return await this.isHandoffFileReady(handoffPath);
     } catch (err: any) {
       // 取消不是失败：它要一路走到 {@link runHandoff} 的收尾那里（删半成品、截消息）
       if (err instanceof HandoffAbortedError) throw err;

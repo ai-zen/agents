@@ -98,6 +98,7 @@ export interface SubAgentEntry {
  * |---|---|---|
  * | `onInit` | 不能 | 注册后初始化（`init()`），与死活无关 |
  * | `onStart` / `onOutputPaused` / `onOutputResumed` / `onIdle` / `onStop` / `onKill` | 不能 | 死活与状态的边 |
+ * | `onAbort` | 不能 | 有人按了停（闸本来关着也照发） |
  * | `onOuterLoopStart` / `onOuterLoopEnd` | 不能 | 一圈的开始 / 结束 |
  * | `onInnerLoopStart` | **能拒** | 排在造 assistant 占位**之前**，拒了历史里一个字都不多 |
  * | `onInnerLoopEnd` | 不能 | 一圈结束 |
@@ -116,6 +117,8 @@ export interface AgentPlugin {
   onOutputPaused?(ctx: LifecycleContext): HookResult;
   /** 不取件开关翻回（又开始取件） */
   onOutputResumed?(ctx: LifecycleContext): HookResult;
+  /** 有人按了停（`abort()`）；闸本来关着也照发 */
+  onAbort?(ctx: LifecycleContext): HookResult;
   onIdle?(ctx: LifecycleContext): HookResult;
   onStop?(ctx: LifecycleContext): HookResult;
   onKill?(ctx: LifecycleContext): HookResult;
@@ -157,6 +160,16 @@ export interface OutputEvent {
  * 载荷同样只带 agent（现读 `agent.isInputPaused`）。它与输出闸是两道闸，两条事件不互相冒充。
  */
 export interface InputEvent {
+  agent: Agent;
+}
+
+/**
+ * 有人按了停（`abort()`）。
+ *
+ * 它是**意图**，不是闸的副作用：闸可能本来就是关着的（那样 `output:paused` 一条都不发），
+ * 但「这一下停」发生了。想读「掐没掐到东西」看那一条消息的 `status`（`aborted`）。
+ */
+export interface AbortedEvent {
   agent: Agent;
 }
 
@@ -268,6 +281,7 @@ export interface AgentEvents {
   "output:resumed": OutputEvent;
   "input:paused": InputEvent;
   "input:resumed": InputEvent;
+  aborted: AbortedEvent;
   inboxAdded: InboxAddedEvent;
   inboxTaken: InboxTakenEvent;
   inboxCleared: InboxClearedEvent;
@@ -606,8 +620,12 @@ export class Agent extends AgentContext {
    */
   abort(): void {
     if (this.inbox.isDone) return;
-    this.pauseOutput();
+    // 先掐在途，再翻闸（翻闸那一步会发 `output:paused`），最后才报「有人按了停」——
+    // 三件的顺序就是因果顺序：掐断 → 从此不取 → 这个事实
     this.abortTurn();
+    this.pauseOutput();
+    this.emit("aborted", { agent: this });
+    void this.dispatchHook("onAbort", { agent: this });
   }
 
   /**

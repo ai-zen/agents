@@ -32,11 +32,10 @@ function docContent(padding = 600): string {
 /**
  * 模型那一侧的脚本：从交接指令里认出这次的文档路径，然后调一次写工具把它落盘。
  *
- * `only` 给「只在第几次投递时写」（验再问一次那条路）；`body` 给「写出来但不够长」。
+ * `body` 给「写出来但不够长」。
  */
-function writeScript(options: { body?: string; only?: number } = {}): FakeAgentOptions["onSend"] {
-  return async (_content, nth, self) => {
-    if (options.only !== undefined && nth !== options.only) return;
+function writeScript(options: { body?: string } = {}): FakeAgentOptions["onSend"] {
+  return async (_content, _nth, self) => {
     await self.callWrite(self.handoffPathOf(), options.body ?? docContent());
   };
 }
@@ -82,8 +81,34 @@ class FakeAgent {
   /** 常驻会话：自交接要求 agent 能「再问一次」 */
   lifetime = "resident";
   state: "working" | "idle" = "idle";
-  /** 还收不收件（另一处状态，不影响 `state`） */
-  isOutputPaused = false;
+  /** 还取不取件（另一处状态，不影响 `state`） */
+  private outputPaused = false;
+
+  get isOutputPaused(): boolean {
+    return this.outputPaused;
+  }
+
+  /** 关输出闸（与 core 同口径：发事件 + 跑钩子） */
+  pauseOutput(): void {
+    if (this.outputPaused) return;
+    this.outputPaused = true;
+    this.emit("output:paused", { agent: this });
+    void this.dispatch("onOutputPaused", { agent: this });
+  }
+
+  /** 用户按了停（与 core 同口径：关闸 + 报「有人按了停」） */
+  abort(): void {
+    this.pauseOutput();
+    void this.dispatch("onAbort", { agent: this });
+  }
+
+  /** 开输出闸 */
+  resumeOutput(): void {
+    if (!this.outputPaused) return;
+    this.outputPaused = false;
+    this.emit("output:resumed", { agent: this });
+    void this.dispatch("onOutputResumed", { agent: this });
+  }
 
   private listeners = new Map<string, Set<Listener>>();
   private closed = false;
@@ -374,25 +399,63 @@ describe("handoff", () => {
     expect(agent.sent[0]).not.toContain(FALLBACK_HANDOFF_TEMPLATE.split("\n")[0] + "\n");
   });
 
-  it("self 模式：第一次没写出来就再问一次，第二次写出来了即采用", async () => {
-    const { service } = await makeService();
-    // 第一次投递什么都不写（模型只回了句话），第二次才动笔
-    const agent = new FakeAgent({ onSend: writeScript({ only: 2 }) });
+  it("交接期间关着输出闸：换记忆那一刻还关着，换完才开回来", async () => {
+    let pausedAtCommit: boolean | undefined;
+    const { service } = await makeService({
+      onHandoff: (ctx) => {
+        // 宿主换记忆就发生在这一钩子里：此刻闸必须是关的，否则这期间落进来的话会被一起挪进存档
+        pausedAtCommit = (ctx.agent as any).isOutputPaused;
+      },
+    });
+    const agent = new FakeAgent({ onSend: writeScript() });
 
     const ctx = await service.handoff({ agent: asAgent(agent) });
 
-    expect(agent.sent).toHaveLength(2);
     expect(ctx.mode).toBe("self");
-    expect(existsSync(ctx.handoffPath)).toBe(true);
+    expect(pausedAtCommit).toBe(true);
+    expect(agent.isOutputPaused).toBe(false);
   });
 
-  it("self 模式：两次都写得过小 → 单向降级 summary（阈值 400 字节）", async () => {
+  it("summary 那一档也一样关着闸：这一段没有「那一批」，就自己关", async () => {
+    let pausedAtCommit: boolean | undefined;
+    const { service } = await makeService({
+      mode: "summary",
+      onHandoff: (ctx) => {
+        pausedAtCommit = (ctx.agent as any).isOutputPaused;
+      },
+    });
+    // 没有 write 工具 → 自交接不可用，必然走摘要
+    const agent = new FakeAgent({ writeTool: false });
+
+    const ctx = await service.handoff({ agent: asAgent(agent) });
+
+    expect(ctx.mode).toBe("summary");
+    expect(pausedAtCommit).toBe(true);
+    expect(agent.isOutputPaused).toBe(false);
+  });
+
+  it("取消（用户按了停）之后不替他把闸开回来", async () => {
+    const { service } = await makeService();
+    const agent = new FakeAgent({
+      onSend: (_content, _nth, self) => {
+        // 用户在这一批里按了中断
+        self.abort();
+      },
+    });
+
+    await expect(service.handoff({ agent: asAgent(agent) })).rejects.toThrow(HandoffAbortedError);
+
+    // 停是他的意愿：交接收尾不许顺手把它开回来
+    expect(agent.isOutputPaused).toBe(true);
+  });
+
+  it("self 模式：写得过小 → 单向降级 summary（阈值 400 字节）", async () => {
     const { service } = await makeService();
     const agent = new FakeAgent({ onSend: writeScript({ body: "too short" }) });
 
     const ctx = await service.handoff({ agent: asAgent(agent) });
 
-    expect(agent.sent).toHaveLength(2); // 第一次没落成 + 再问一次
+    expect(agent.sent).toHaveLength(1); // 只投一次：没有第二次机会
     expect(ctx.requestedMode).toBe("self");
     expect(ctx.mode).toBe("summary");
     // summary 由服务调用模型并落盘
@@ -465,7 +528,7 @@ describe("handoff", () => {
     // 它又开口」。所以这一趟当没跑成，走逃生模式（summary 不经过 agent）。
     const { service } = await makeService();
     const agent = new FakeAgent();
-    agent.isOutputPaused = true;
+    agent.pauseOutput();
 
     const ctx = await service.handoff({ agent: asAgent(agent) });
 
@@ -648,7 +711,7 @@ describe("self 模式：真 core（投指令 + 看那次写工具的结果，没
     agent.kill();
   });
 
-  it("模型不写文档时重试一次，两次都空则降级 summary（真 core 也一样）", async () => {
+  it("模型不写文档（工具失败）→ 降级 summary（真 core 也一样）", async () => {
     const { service } = await makeService();
     const { client } = makeStreams(() => "/nonexistent/path.md");
     // write 工具存在（否则自交接不可用），但模型调的是一个不写盘的方向：这里让它每次都失败
@@ -867,7 +930,7 @@ describe("取消（AbortSignal）", () => {
       service.handoff({ agent: asAgent(agent), mode: "self", signal: ac.signal }),
     ).rejects.toThrow(HandoffAbortedError);
 
-    // 只投了一次：取消不能被当成「文档没写好」而触发再问一次
+    // 只投了一次：取消不能被当成「文档没写好」而去降级 summary
     expect(agent.sent).toHaveLength(1);
     // 一路降到 summary 会再发一次模型请求——必须没有
     expect(agent.client.chat.completions.create).not.toHaveBeenCalled();

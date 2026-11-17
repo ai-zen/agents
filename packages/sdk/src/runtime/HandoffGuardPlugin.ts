@@ -44,6 +44,9 @@ export interface SelfHandoffWatch {
  * 2. **那次写文档的结果**：`onToolEnd` 认出「写文件的工具 + 路径等于交接路径」那一次，结果
  *    回来就落定；这一批收口了还没见到它，就是「没写出来」。判据是那次调用的输入与结果，
  *    不是状态，也不是模型的话。
+ * 3. **关输出闸**：指令被取走那一拍关掉，直到提交之后才由服务开回来 —— 交接要换的是整份记忆，
+ *    换之前落进来的话会被一起挪进存档。关在这里、开在服务里，两头都是「这一趟」说的话。
+ *    「用户按了停」不靠这道闸认，靠 `onAbort`（`abort()` 有自己的事实，闸只是它的副作用）。
  *
  * 边界（如实记录，不要当成安全边界）：
  *   - **挡不住 `exec`**：`echo > file`、`cat > file <<EOF` 永远能绕过。本插件降低的是
@@ -155,10 +158,18 @@ export class HandoffGuardPlugin implements AgentPlugin {
     this.conclude?.(status === AgentNS.MessageStatus.Aborted ? "interrupted" : "written");
   }
 
-  /** 这一批从队里取走了：里面带着交接那条指令，这一批的收口才算我的 */
-  onOuterLoopStart({ entries }: OuterLoopContext): void {
+  /**
+   * 这一批从队里取走了：里面带着交接那条指令 —— 这一批的收口才算我的，并且**从这一拍起关掉输出闸**。
+   *
+   * 为什么关：交接要换的是整份记忆，换之前落进来的话会被一起挪进存档，等于从新记忆里消失。
+   * 时机只能在这一拍：指令已经取出来了（`onOuterLoopStart` 在落地之后、内循环之前），
+   * 而下一批还没开始取；投递那一刻关会把自己这条指令一起关在外面。
+   */
+  onOuterLoopStart({ agent, entries }: OuterLoopContext): void {
     if (this.handoffPath == null) return;
-    if (entries.some((entry) => isHandoffEntry(entry))) this.carrying = true;
+    if (!entries.some((entry) => isHandoffEntry(entry))) return;
+    this.carrying = true;
+    agent.pauseOutput();
   }
 
   /**
@@ -173,8 +184,8 @@ export class HandoffGuardPlugin implements AgentPlugin {
     this.concludeRound?.();
   }
 
-  /** 用户按了中断（`abort()` 一定翻上这个开关）：这一趟不写了，也不算写失败 */
-  onOutputPaused(): void {
+  /** 有人按了停：这一趟不写了，也不算写失败（`onAbort` 是意图本身，不是闸的副作用） */
+  onAbort(): void {
     if (this.handoffPath == null) return;
     this.conclude?.("interrupted");
   }

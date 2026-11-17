@@ -27,7 +27,7 @@
 | `start` | 起来等事件。返回一个**到死才 resolve** 的 promise，且**不 reject** |
 | `stop` | 关门（不再接输入），**存量走完**，排空才死 |
 | `pauseOutput` | **翻上不取件开关**：只是从此不再取件（`isOutputPaused = true`），不掐在途。手上这一批跑完，从下一批起不再取 |
-| `abort` | **暴力中断**：掐掉在途的网络请求与工具 —— 它就是「掐在途 + `pauseOutput()`」，**必然伴随「不再取件」**（掐完不能往下走）。反过来不成立：`pauseOutput()` 不掐在途 |
+| `abort` | **暴力中断**：掐掉在途的网络请求与工具 —— 它就是「掐在途 + `pauseOutput()` + 报一条 `aborted`」，**必然伴随「不再取件」**（掐完不能往下走）。反过来不成立：`pauseOutput()` 不掐在途 |
 | `resumeOutput` | **翻回不取件开关**：又开始取件，**只翻 `isOutputPaused`**，`state` 那一格不碰（队列里有货的话，外循环自己取走、自己报 `working`） |
 | `kill` | 硬着陆：立刻死，存量作废 |
 
@@ -521,6 +521,7 @@ subagent 是 core 的一等概念，不是外部业务。core 欠四样：
 | `state:idle` / `state:working` | 对外那一格到了哪一格（事件名就是那一格；只由循环的位置决定） | `from` |
 | `output:paused` / `output:resumed` | 从下一批起不取件了 / 又开始取件（另一处状态，与 `state` 无关） | — （现读 `agent.isOutputPaused`） |
 | `input:paused` / `input:resumed` | 投递关了 / 又开了（又一道闸，与上一条互不冒充） | — （现读 `agent.isInputPaused`） |
+| `aborted` | 有人按了停（意图本身，不是闸的副作用：闸本来关着也照发） | 掐没掐到东西看那条消息的 `status` |
 | `inboxAdded` / `inboxTaken` / `inboxCleared` | 收到一条 / 这些被取走了 / 被清空 | 条目本身（`inboxTaken` 是被取走的那一批）|
 | `messageAdded` / `messageChanged` / `messageRemoved` | 多了一条 / 某条变了 / 某条被删了 | 那条消息本身 |
 | `delta` | **原始片到了** | 原片 + 来源（哪条消息 / 哪个子 agent 的哪个工具调用） |
@@ -558,7 +559,7 @@ start()
       └─ onOuterLoopEnd                       一圈结束（准备回顶部）
 ```
 
-外加死活与委派：`onStart` / `onOutputPaused` / `onOutputResumed` / `onIdle` / `onStop` / `onKill` / `onSubAgentStart` / `onSubAgentEnd`。
+外加死活与委派：`onStart` / `onOutputPaused` / `onOutputResumed` / `onAbort` / `onIdle` / `onStop` / `onKill` / `onSubAgentStart` / `onSubAgentEnd`。
 
 **同位置：钩子在前（还能改），事件在后（已经定了）。**
 
@@ -577,7 +578,7 @@ start()
 - **能拒的那三个是门，崩了就关上**（fail-closed）。坏的护栏放行等于没护栏，上下文护栏尤其不能例外。
 - **其余位置崩了当它没说话**（fail-open），接着问下一个插件。
 
-两种都报一个 `failed`。`onIdle` / `onStart` / `onStop` / `onOutputPaused` / `onOutputResumed` / `onKill` **都带 `{ agent }`**：插件在这几个时刻通常正需要读/改它（比如「闲下来之后重新开一次」），不带就要先去别的钩子里「认领」一个 agent。
+两种都报一个 `failed`。`onIdle` / `onStart` / `onStop` / `onOutputPaused` / `onOutputResumed` / `onAbort` / `onKill` **都带 `{ agent }`**：插件在这几个时刻通常正需要读/改它（比如「闲下来之后重新开一次」），不带就要先去别的钩子里「认领」一个 agent。
 
 ### 三个能力要求
 
