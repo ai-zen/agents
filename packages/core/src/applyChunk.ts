@@ -111,14 +111,17 @@ export function applyChunk(receiver: AgentNS.Message, chunk: ChatCompletionChunk
       }
 
       if (!receiver.tool_calls[index]) {
+        // 顺序不能反：先铺这一片原样的字段，再把它里面那个 `function` 换成归一过的一份。
+        // 反过来的话，`...deltaToolCall` 里的 `function` 会把上面那份整个盖掉 ——
+        // 首片只给 `name` 不给 `arguments` 时，攒参数的串就变成了 `undefined`。
         receiver.tool_calls[index] = {
+          ...deltaToolCall,
           index,
           function: {
             name: "",
             arguments: "",
             ...deltaToolCall.function,
           },
-          ...deltaToolCall,
         };
       }
 
@@ -131,16 +134,14 @@ export function applyChunk(receiver: AgentNS.Message, chunk: ChatCompletionChunk
       }
 
       if (deltaToolCall.function?.arguments) {
+        // 攒到此刻的那一段（厂商显式给了 `arguments: undefined` 时也不能变成 "undefined"）
+        const accumulated = receiver.tool_calls[index]["function"]!["arguments"] ?? "";
         // 两种厂商行为都要认：有的把「到目前为止的整串」重发（本次串以已攒的为前缀），
         // 有的只发新增那一段（向前接上）。
-        if (
-          deltaToolCall.function.arguments.startsWith(
-            receiver.tool_calls[index]["function"]!["arguments"]!,
-          )
-        ) {
+        if (deltaToolCall.function.arguments.startsWith(accumulated)) {
           receiver.tool_calls[index]["function"]!["arguments"] = deltaToolCall.function.arguments;
         } else {
-          receiver.tool_calls[index]["function"]!["arguments"] += deltaToolCall.function.arguments;
+          receiver.tool_calls[index]["function"]!["arguments"] = accumulated + deltaToolCall.function.arguments;
         }
       }
     }
@@ -160,7 +161,7 @@ export function applyChunk(receiver: AgentNS.Message, chunk: ChatCompletionChunk
     }
 
     if (delta_.function_call.arguments) {
-      receiver.function_call!.arguments += delta_.function_call.arguments;
+      receiver.function_call!.arguments = (receiver.function_call!.arguments ?? "") + delta_.function_call.arguments;
     }
   }
 

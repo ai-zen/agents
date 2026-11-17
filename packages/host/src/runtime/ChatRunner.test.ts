@@ -345,6 +345,28 @@ describe("ChatRunner.abort：打到活着的 agent 上", () => {
     await harness.settle();
     expect(harness.runner.abort(CONVERSATION_ID)).toBe(false);
   });
+
+  it("中断之后：用户点发送＝继续（开闸），别的来源不开闸", async () => {
+    const gate = deferred<void>();
+    const harness = createHarness({
+      rounds: [{ gate: gate.promise, deltas: [{ content: "说到一半" }] }],
+    });
+
+    await harness.deliver(userSays("开跑"));
+    await harness.waitFor(() => harness.registry.get(CONVERSATION_ID)?.state === "working");
+    harness.runner.abort(CONVERSATION_ID);
+    gate.resolve();
+    await harness.settle();
+    expect(harness.runner.state(CONVERSATION_ID).status).toBe("paused");
+
+    // 自动推来的那一条：只是排队，不替他把闸开开（那不是他按的）
+    await harness.deliver(userSays("外面推的", { mayStart: false }));
+    expect(harness.registry.get(CONVERSATION_ID)!.isOutputPaused).toBe(true);
+
+    // 用户点发送：开闸
+    await harness.deliver(userSays("继续"));
+    expect(harness.registry.get(CONVERSATION_ID)!.isOutputPaused).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

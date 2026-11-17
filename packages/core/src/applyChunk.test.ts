@@ -104,6 +104,28 @@ describe("applyChunk：工具调用", () => {
     expect(message.tool_calls![0].function!.arguments).toBe('{"a":1}');
   });
 
+  it("首片只给名字（没有 `arguments`），后续片续参数：不能拼出 `undefined{...}`", () => {
+    const message = receiver();
+    applyChunk(message, chunk({ tool_calls: [{ index: 0, id: "call_1", function: { name: "write" } }] }));
+    applyChunk(message, chunk({ tool_calls: [{ index: 0, function: { arguments: "{\"path\"" } }] }));
+    applyChunk(message, chunk({ tool_calls: [{ index: 0, function: { arguments: ":\"a.ts\"}" } }] }));
+
+    const call = message.tool_calls![0];
+    expect(call.function!.name).toBe("write");
+    expect(call.function!.arguments).toBe('{"path":"a.ts"}');
+  });
+
+  it("厂商显式给 `arguments: undefined` 也当没给", () => {
+    const message = receiver();
+    applyChunk(
+      message,
+      chunk({ tool_calls: [{ index: 0, function: { name: "read", arguments: undefined } }] }),
+    );
+    applyChunk(message, chunk({ tool_calls: [{ index: 0, function: { arguments: "{}" } }] }));
+
+    expect(message.tool_calls![0].function!.arguments).toBe("{}");
+  });
+
   it("并行调用按 `index` 分开攒", () => {
     const message = receiver();
     applyChunk(message, chunk({ tool_calls: [{ index: 0, function: { name: "read" } }] }));

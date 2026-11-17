@@ -465,6 +465,45 @@ describe("Agent 工具", () => {
   });
 });
 
+describe("Agent 工具段里按中断", () => {
+  it("工具跑到一半 abort：这一批到此为止，不再向模型要下一圈", async () => {
+    let toolStarted = false;
+    class Hanging extends Tool {
+      function = { name: "hang", description: "h", parameters: {} } as any;
+      async exec(ctx: ToolCallContext) {
+        toolStarted = true;
+        await new Promise<void>((resolve) => {
+          ctx.signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        return "不该被用到";
+      }
+    }
+
+    const { client, create } = createMockClient([
+      toolCallStream([{ id: "c1", name: "hang" }]),
+      textStream("接着把话说完"),
+    ]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds(), tools: [new Hanging()] });
+    void agent.start();
+
+    agent.push(user("跑个会挂住的工具"));
+    await until(() => toolStarted);
+    agent.abort();
+
+    // 等这一批真的收尾（工具消息定型、队列空、回到闲）
+    await settled(agent);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(agent.messages.some((m) => m.content === "接着把话说完")).toBe(false);
+    // 那条 tool 消息定型为 aborted，不是「跑完了」
+    expect(agent.messages.find((m) => m.role === AgentNS.Role.Tool)!.status).toBe(
+      AgentNS.MessageStatus.Aborted,
+    );
+
+    agent.kill();
+    await agent.start();
+  });
+});
+
 describe("Agent runOnce", () => {
   it("跑一次就死，把消息交回来", async () => {
     const { client, create } = createMockClient([textStream("一次性结果")]);

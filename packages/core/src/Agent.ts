@@ -997,7 +997,10 @@ export class Agent extends AgentContext {
       assistant.status = AgentNS.MessageStatus.Completed;
       this.emit("responseFinished", { agent: this, message: assistant });
 
-      return await this.runTools(assistant, turn);
+      const hadTools = await this.runTools(assistant, turn);
+      // 工具段里按了中断：这一批到此为止 —— 再向模型要一圈，它就会把整段话接着说完，
+      // 用户按的那一下等于没按（`abortRx` 只让正在跑的工具立刻返回，不知道之后该不该续）
+      return turn.aborted ? false : hadTools;
     } catch (error) {
       // 被掐断的那一轮不是「出错」：它有自己的状态，也不报 `failed`
       if (turn.aborted) {

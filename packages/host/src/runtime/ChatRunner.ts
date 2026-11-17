@@ -1551,6 +1551,9 @@ export class ChatRunner {
 
     const live = this.options.agents.get(conversationId);
     if (live) {
+      // 用户点「发送」就是「继续」：中断之后闸还关着，先把闸开开再投 —— 不然这条只能排队，
+      // 而他等的是一句回答。别的来源（自动推送 / 子 agent 回件）不开闸：那不是他按的。
+      if (input.mayStart === true) live.resumeOutput();
       this.bridgeFor(conversationId, live).push(entry);
       return { userMessageId };
     }
