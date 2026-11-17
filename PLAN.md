@@ -99,7 +99,7 @@ HostApp（根：组装、启动、退出）
 
 **Scope 被销毁的两个原因（都是显式动作）**：① Workspace 被删（`dispose(workspaceId)`）；② 进程收尾（`disposeAll()`）。前者撞上还活着的 agent 会拒绝，调用方顺序是「先停会话 / 丢掉 agent，再销毁 Scope」；后者不拒绝。**配置改动不是销毁原因**：`refreshWorkspace(id)` 就地把配置重读一遍、各插件重新发现一轮（MCP 连接按新声明对账断开），实例还是同一个，正在干活的那个也不会被抽掉能力；刷完再对同一个 Workspace 调一次 `agents.invalidate`（PRD D34）。
 
-**一段对话的诞生**（PRD R56 / F-D9）：`conversation.create` 只定身份并发一个 id，不写库；首次 `conversation.send` 时 `ConversationService.ensurePersisted` 才写行，**落行那一刻同时写这段对话的第一条消息**——一条 `role: user`、`hidden: true` 的 cwd 消息（正文由 `injectedContextOf` 拼）。它最先写，所以 `seq` 在真实用户消息之前；之后每轮都不再写、也不往用户消息里拼任何东西。cwd 取 `workspaces.cwd`，`workspaceId` 创建即定死。
+**一段对话的诞生**（PRD R56 / F-D9）：`conversation.create` 只定身份并发一个 id，不写库；首次 `conversation.send` 时 `ConversationService.ensurePersisted` 才写行，**落行那一刻同时写这段对话的第一条消息**——一条 `role: user`、`hidden: true`、`source` 为 `{ kind: "system", label: "cwd" }` 的 cwd 消息，**正文就是那个路径**（不是一句渲染过的话 —— 这条消息是隐藏的、用户看不见，模型要的就是路径；交接换完记忆时 SDK 生成的那一条同形同文）。它最先写，所以 `seq` 在真实用户消息之前；之后每轮都不再写、也不往用户消息里拼任何东西。cwd 取 `workspaces.cwd`，`workspaceId` 创建即定死。
 
 **会话级模型与思考档位**（PRD L7 / R70–R72）：存在 `conversations.modelId` / `thinkingLevel` 上，改了就落库。装配 agent 时从这里取：`modelId` 直接给 SDK 的三级解析，`thinkingLevel` 按该模型引用的策略表展开成参数补丁、叠在助手定义的 `modelParams` 之上（同一模型才叠）。展开发生在 `ChatRunner.createSdkAgentFactory` 的 `conversationModelParams`，档位名本身不进请求；换模型时档位清空。**这两手只允许空闲时做**（判词）：非空闲一律拒（`busy` + `detail.reason = "working"`），一个字节都不写库；空闲时改完当场让那个驱动者退役（`AgentRegistry.invalidateConversation`），下一句话按新事实重新装配 —— 没有「忙的时候打标记、变闲再兑现」那一套（那套只服务全局配置生效，PRD 4.11 改配置不杀任何会话）。服务层要的运行时接口因此只剩四件（`ConversationRuntimePort`）：**现在忙不忙 / 队里几条**（现读 agent 那一格）、**删掉之后的现场丢弃**（`forget`）、**这一段手上有没有活**（`agentState`，没 agent 回 `null`）与**让这一段空闲的驱动者退役**（`invalidateAgent`）。
 
@@ -160,7 +160,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 - **隔离靠「交接态」**（`beginHandoff` / `endHandoff`）：这段在写文档期间产生的消息**不进库**（否则「关于交接的那场对话」会进转录、进历史、进条数），但 `message.added` / `message.delta` / `message.changed` **照常推** —— 用户得看得见它在写。
 - **「写完了没有」看工具结果**：写文档那次工具调用的 `toolFinished` + 一次落盘校验（`MIN_HANDOFF_BYTES`）；两次都不成立 → 单向降级到独立交接，再不行就是失败通知。不看状态、不等 idle。
 - **提交与回滚都推 `memory_replaced`**，客户端据此 `message.list` 全量整段替换，把那批只在内存里的写作痕迹清掉。断线重连的客户端天然看不到它们（库里没有）。
-- **提交点之后是「换记忆」**（PRD 4.5）：文档通过校验（`documentReady` + `describeDocument`）之后，**一个 `tx`**（`ConversationRepository.replaceMemory`）做三件 —— 插一行 `已存档_<原名>` 会话（项目 / 助手 / 模型 / 思考档位**以及两条阈值、自动交接开关、血缘这四格**照抄，创建时刻是交接那一刻 —— **交接不产生新身份**，血缘跟着走）、把原会话的**全部消息行**改挂到它名下（`seq` / `createdAt` 原样不动，素材关系行跟着搬）、在原会话写回一条 `role: system` + `hidden`、正文**只带文档路径**的断点消息。随后内存里 `agent.messages` **原地**换成「系统提示 + 同一条断点」（不重建 agent、不动队列与两个开关），再按顺序推 `memory_replaced`（原会话）与 `created`（存档那段）。失败或取消则整批不成，**一段存档会话都不留**。
+- **提交点之后是「换记忆」**（PRD 4.5），分工是死的：**新记忆长什么样由 SDK 那一处算**（哪些旧消息留、哪些 `omit`、断点消息 `role: system` + `hidden` + 只带路径、文档不到 400 字节算没写出来 —— 外部使用者用 SDK 时是同一份），**宿主只负责把它落到库**：**一个 `tx`**（`ConversationRepository.replaceMemory`）插一行 `已存档_<原名>` 会话（项目 / 助手 / 模型 / 思考档位**以及两条阈值、自动交接开关、血缘这四格**照抄，创建时刻是交接那一刻 —— **交接不产生新身份**，血缘跟着走）、把原会话的**全部消息行**改挂到它名下（`seq` / `createdAt` 原样不动，素材关系行跟着搬）、在原会话写回 SDK 算好的那条断点消息。随后内存里 `agent.messages` **原地**换成同一份（不重建 agent、不动队列与两个开关），再按顺序推 `memory_replaced`（原会话）与 `created`（存档那段）。失败或取消则整批不成，**一段存档会话都不留**。`[用户]`
 
 ### 5.4 事件通道：三条粒度
 
@@ -174,6 +174,8 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 | 事后改写 | `message.changed` / `message.removed` | 同上 ／ 被删的那条（中止、出错、`drop`、`omit`） | 同上 |
 | 状态 | `state` | `{ conversationId, status }`，取值 `busy` / `idle` / `paused` / `dead`（**变了才发**） | 客户端自己那四格 |
 | 出错 | `error` | core 的 `AgentError` 完整对象（`code` / `message` / `detail`）+ 它挂在哪条消息上 | 日志、排查、要技术细节的地方；**消息行里另存一份「回显用」的失败事实**（码 + 文案键 + 参数），活得比进程长（PRD 4.15） |
+
+- `conversation.changed` 的 `change` 取值里有 `handoff_started` 一格：交接**开始**那一刻推它（界面据此直说「正在交接」、输入框不给发、只留中断）；收口仍只有 `memory_replaced`。`[用户]`
 
 **不为字段变化单独发事件**：一条 delta 流 + 一圈收口一条整对象就够了。「status 从 writing 变 completed」不单独播 —— 收口那条整对象里带着它。**消息上的字段一律整条带**：`hidden` / `usage` / `tool_calls` / `omit` / 回显用的失败事实都不挑 —— `hidden` 只是客户端不显示，请求里照发。
 
@@ -194,10 +196,11 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 
 ## 6. 契约面
 
-- **方法**：`<域>.<动作>`，共 **64** 条、13 个域（`src/wire/methods.ts` 的 `METHOD_NAMES`）。分域点数：`host` 6、`workspace` 5、`conversation` 15、`message` 1、`question` 2、`notice` 3、`config` 8、`agent` 8、`model` 8、`asset` 3、`completion` 1、`handoff` 2、`search` 2。
-- **点数沿革**：65 → 63（W3：+`agent.restoreFactory`、+`config.saveMcp` / `config.deleteMcp`，−`host.usage`、−`credential.list/create/revoke`、−`config.patchMcps`）→ 62（删 `host.capabilities`）→ 63（W6-E：+`conversation.clearInbox`，清空待办归客户端）→ **64**（W11：+`conversation.setThresholds`，两条阈值的会话级覆盖有了写入口）。
+- **方法**：`<域>.<动作>`，共 **66** 条、13 个域（`src/wire/methods.ts` 的 `METHOD_NAMES`）。分域点数：`host` 6、`workspace` 5、`conversation` 17、`message` 1、`question` 2、`notice` 3、`config` 8、`agent` 8、`model` 8、`asset` 3、`completion` 1、`handoff` 2、`search` 2。
+- **暂停与继续**：`conversation.pause` / `conversation.resume`，入参 `{ conversationId }`、出参 `{ paused: boolean }`。暂停**只翻输出闸、不掐在途**（手上这批跑完、从下一批起不取）；继续**只开闸、不投任何东西**（压着的待办按原顺序接着跑）。没有驱动者时回 `{ paused: false }`（不是错误）；**交接期间两者都拒**（`busy` / `handoff_in_progress`）。`[用户]`
+- **点数沿革**：65 → 63（W3：+`agent.restoreFactory`、+`config.saveMcp` / `config.deleteMcp`，−`host.usage`、−`credential.list/create/revoke`、−`config.patchMcps`）→ 62（删 `host.capabilities`）→ 63（W6-E：+`conversation.clearInbox`，清空待办归客户端）→ 64（W11：+`conversation.setThresholds`，两条阈值的会话级覆盖有了写入口）→ **66**（W12：+`conversation.pause` / `conversation.resume`，暂停与继续各有自己的按钮）。
 - **`credential.*` 删的是契约面、不是能力**：`CredentialService`、`CredentialRepository`、`<数据根>/run/token`、`agents-host token create|list|revoke` 一字未动，`Credential*` 形状只留给那三个子命令。别因为 `grep credential.* wire/methods.ts` 找不到方法名就以为能力没了（PRD L13）。
-- **桥接名单 4 条**（不在 handler 表里）：`host.hello`、`host.setLanguage`、`asset.begin`、`asset.end` 由 `WsHub` 自己处理，其余 **60** 条进注入的 `HandlerTable`。理由：凭证与语言是**连接状态**；上传要按 `connectionId` 分帧落盘、断线按连接清理。分发顺序是 `hello` → 未握手拒绝 → 已知方法名校验 → 连接级方法 → 上传方法 → handler 表；表里没有的名字回 `unsupported`（`detail.reason = handler_not_registered`）。`handlers/index.test.ts` 钉住「每个方法要么在表里、要么在桥接名单里，且两边不重叠」。
+- **桥接名单 4 条**（不在 handler 表里）：`host.hello`、`host.setLanguage`、`asset.begin`、`asset.end` 由 `WsHub` 自己处理，其余 **62** 条进注入的 `HandlerTable`。理由：凭证与语言是**连接状态**；上传要按 `connectionId` 分帧落盘、断线按连接清理。分发顺序是 `hello` → 未握手拒绝 → 已知方法名校验 → 连接级方法 → 上传方法 → handler 表；表里没有的名字回 `unsupported`（`detail.reason = handler_not_registered`）。`handlers/index.test.ts` 钉住「每个方法要么在表里、要么在桥接名单里，且两边不重叠」。
 - **事件** 9 个：`message.added` / `message.delta` / `message.changed` / `message.removed` / `state` / `error` / `conversation.changed` / `notice` / `question`。前六个是客户端重建 `messages` 与那四格的全部原料（三条粒度见 §5.4），**宿主不在这之上再加聚合**：没有 `run.state`，没有 `usage`。
 - **业务码** 13 个（`src/wire/errors.ts` 的 `BizCode`），数字码只做粗分类。
 - **`message.list` 的取法**见 A12；`around` 的消费者只有桌面端（搜索命中定位），CLI 一阶段不消费。

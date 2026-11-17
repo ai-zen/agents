@@ -503,7 +503,7 @@ subagent 是 core 的一等概念，不是外部业务。core 欠四样：
 
 ### 血缘与事件转发：落在委派工具里
 
-- **血缘**：发委派那一刻 `subAgent.parent = 宿主`、`宿主.children.add(subAgent)`，收尸时从 `children` 摘掉（`children` 说的是「还活着的」）。**先记关系再问 `onSubAgentStart`**，拒了把关系撤回去 —— `subAgentStarted` 是在钩子之后发的，订阅方要在那一刻就能摸到关系。
+- **血缘只有名册一份**（`subAgentRegistry`）：一行一个子 agent，记 `toolCallId` / `name` / `startedAt` / `endedAt`（`endedAt === null` 就是「还活着」）。派遣那一刻加一行，结束**只填 `endedAt`、不删** —— 父要答得出它跑过什么。**没有 `parent` / `children` 这两个反向指针**：同一段关系不写第二遍，外面要问「这一段派出了谁、还活着吗」就读名册。**先记名册再问 `onSubAgentStart`**，拒了把那一行撤掉 —— `subAgentStarted` 是在钩子之后发的，订阅方要在那一刻就能摸到它。`[用户]`
 - **事件转发**：子 agent 的消息、原始片、工具事件**按同一套名字**转到父身上，只多两格：`subAgent`（这些事发生在谁身上）与 `via`（是哪一次委派引起的）。`delta` 走它的 `source` 第二格。
 - **`state` 不转发**：父自己的 `working` / `idle` 是父的，子 agent 的混进来之后，「这个 agent 现在在不在干」就没人答得上来。
 
@@ -564,6 +564,8 @@ start()
 外加死活与委派：`onStart` / `onOutputPaused` / `onOutputResumed` / `onAbort` / `onIdle` / `onStop` / `onKill` / `onSubAgentStart` / `onSubAgentEnd`。
 
 **同位置：钩子在前（还能改），事件在后（已经定了）。**
+
+- **死活那一格的事件先于钩子**：`setState()` 发完 `state:*` 才跑 `onIdle`，`start()` 发完 `started` 才跑 `onStart`。理由：`setState()` 是同步边界、钩子是异步的，硬凑「先钩子」只能凑出假序；而订阅方（宿主）要在钩子跑之前就看到那一格。其余位置仍是「钩子在前、事件在后」。`[用户]`
 
 ### 哪些钩子能拒
 
