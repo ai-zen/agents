@@ -6,6 +6,21 @@
 
 ---
 
+## 进度（2026-11-18）
+
+已完成并提交（按序）：`b4e3965` 三份需求文档定稿 → `84d57a9` core（修 8 处错 / 删与新模型冲突的旧形状 / 恢复 inbox 三事件）→ `8f3693e` sdk（记忆形状只在 SDK 一处算，闸交给宿主）→ `4cd7d30` host（题进内存、判断收一处、交接期间不收件、宿主只落库）→ `f2133f3` host（改名与零调用清理）→ `b9d5ae0` core+client（那一片增量只留 `AgentNS.Delta`）→ `f89aa7c` client+wire（删 `seq`、镜像占位不再借「死」）→ `43499fe` client（三处加载收成一个 `loadSnapshot`）。
+
+**验收状态**：五包 `dist` 按 core → sdk → testing → client → host 重建成功；单测 core 131 / sdk 752 / testing 7 / client 131 / host 848，host e2e 9，全绿；`tsc` 全 0。
+
+**还没做的**（有理由，不是遗漏）：
+
+- 客户端镜像还没消费 `conversation.changed(handoff_started)`：事件已经发了，但 `ConversationMirror` 只在 `applyReadout` 那一刻更新 `handoff`，所以长时间在线的窗口仍然学不到「交接开始了」。PRD 4.5「界面要直说正在交接、输入框不给发、只留中断」差这一跳。
+- `MessageListParams.around` / `.includeHidden`：契约字段，消费者在仓库外的桌面端（PLAN W4），**留**。
+- `streamWriteIntervalMs`：给测试留的旋钮，**留**，已标注不当契约。
+- `docs/zh|en` 里提到 `sumUsage` 的段落是旧口径 —— 周边文档，按约定不动。
+
+---
+
 ## 0. 工作方式（硬约束）
 
 - **先定性、再拍板、后动手**；一个主题一个提交，中文 conventional commits（正文写「改前 / 改后 / 为什么」）。
