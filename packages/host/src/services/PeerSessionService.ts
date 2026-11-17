@@ -12,7 +12,8 @@
  *    「模型认得的那声名字」—— 它不需要落库（会话行上的 `name` 是另一个东西：那是人给这段
  *    会话起的名字）。
  * 3. **答状态**：{@link PeerSessionService.status} —— 它现在忙不忙**现读**（`chatRunner.state`），
- *    不存镜像，也没有「上一次跑成什么样」这种字段。
+ *    外加**最近一句说了什么**（`agent.messages` 里最后那条助手消息的正文，截断到 300 字）；
+ *    不存镜像，也没有「上一次跑成什么样」这种字段，更不把消息数组交出去。
  * 4. **接着说话**：{@link PeerSessionService.send} —— 直接把一句内容交给执行者，**不看关系**：
  *    「能不能发」只有一条判据，就是目标在不在。
  *
@@ -81,6 +82,14 @@ type PeerSessionOriginInput = {
 const SOURCE_FROM_PARENT: AgentNS.MessageSource = { kind: "agent", label: "父对话" };
 
 /**
+ * `read_session_status` 里那条摘要的截断长度。
+ *
+ * **绝不给全量消息**：需求只要「最近一句说了什么（一小段摘要）」（`PRD.md` 2.3 / 4.6、
+ * `PLAN.md` 10.2）。300 字够模型认出「它说到哪了」，又不至于把对方的上下文搬过来烧 token。
+ */
+const STATUS_CHARS = 300;
+
+/**
  * 每个**父对话**同时最多能有多少个平级会话在忙着。
  *
  * 超出了就是一条结构化拒绝 `too_many_peers`：让模型先等一批干完、或者把活分给更少的会话，
@@ -94,6 +103,43 @@ const MAX_RUNNING_PEERS = 4;
 /** `postMessage` 正文注释里的来源：`会话「<调用者的名字>」`（拼注释归 core） */
 function senderSource(name: string): AgentNS.MessageSource {
   return { kind: "agent", label: `会话「${name}」` };
+}
+
+/** 一条消息里的纯文本（分段内容只取文本段，与自动命名同一个口径） */
+function textOf(content: AgentNS.MessageContent | null | undefined): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((section) => ("text" in section && typeof section.text === "string" ? section.text : ""))
+      .filter((text) => text.length > 0)
+      .join("\n");
+  }
+  return "";
+}
+
+/**
+ * 最近一条**助手**消息的正文（没有就是空串）。
+ *
+ * 从**内存里的 `agent.messages`** 里倒着找（状态是现读，摘要也一样：不查库、不另存一份）。
+ * 只找助手消息：用户说的话是「谁让它干的」，不是「它最近说了什么」。正文是空白的那些
+ * （只有工具调用、或者还在写的空壳）跳过。
+ */
+function lastAssistantText(messages: AgentNS.Message[] | null): string {
+  if (messages === null) return "";
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]!;
+    if (message.role !== AgentNS.Role.Assistant) continue;
+    const text = textOf(message.content);
+    if (text.trim().length > 0) return text;
+  }
+  return "";
+}
+
+/** 截断到上限（超了加一个省略号：读者要知道「后面还有」）；空白就是 `null` */
+function clip(text: string, limit: number): string | null {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return null;
+  return trimmed.length > limit ? `${trimmed.slice(0, limit)}…` : trimmed;
 }
 
 /** 子会话的诞生：与 `conversation.create` 处理器同一条路（草稿 + 三级模型解析） */
@@ -128,6 +174,13 @@ export interface PeerSessionRunner {
   ): Promise<{ userMessageId: string }>;
   /** 现读：这一段此刻落在哪一格（忙 / 闲 / 暂停 / 死） */
   state(conversationId: string): { status: ConversationStatus };
+  /**
+   * 这一段此刻**在内存里的**消息 —— 就是 `agent.messages` 本身（`ChatRunner.messagesOf` 结构上
+   * 满足）：活着读内存，没有 agent 就是 `null`（那时也就不可能有人「刚说过一句」）。
+   *
+   * 摘要走这一口而不走 `deps.messages`：状态与摘要是同一刻的同一段，两者必须同源。
+   */
+  messagesOf(conversationId: string): AgentNS.Message[] | null;
 }
 
 /** 平级会话服务的依赖（窄接口：本文件不认识整个宿主） */
@@ -147,7 +200,7 @@ export interface PeerSessionServiceDeps {
       name: string;
       /** 谁开的这段会话；`null` = 用户建的（本文件用它判「只限一层」） */
       lineage: string | null;
-      /** 开出来的时刻：`read_session_status` 的 `startedAt` 就是它（会话行上的事实） */
+      /** 开出来的时刻（会话行上的事实；`read_session_status` 不报这一格 —— 需求里没有它） */
       createdAt: number;
     } | undefined>;
     /**
@@ -162,8 +215,10 @@ export interface PeerSessionServiceDeps {
   /**
    * 消息仓储。
    *
-   * `read_session_status` 的摘要那一格随 SDK 的形状一起没了（`PeerSessionStatus` 只剩
-   * `status` 与 `label`），所以本服务现在不读它 —— 接线照旧给着，清它归后面那一批收零调用符号。
+   * `read_session_status` 的摘要那一格**不从库读**：它要的是「这一段此刻说到哪了」，那是活
+   * 对象身上的事实（`chatRunner.messagesOf` 交回的 `agent.messages`，见 {@link PeerSessionRunner}）。
+   * 查库会把两件事搞错 —— 写库是异步的（刚说的那句话可能还没落行），而且状态与摘要会从
+   * 「同一刻的同一段」变成两个来源。接线照旧给着，清它归后面那一批收零调用符号。
    */
   messages: { listByConversation(conversationId: string): Promise<StoredMessage[]> };
   /** 执行者 */
@@ -323,7 +378,8 @@ export class PeerSessionService implements PeerSessionPort {
   }
 
   /**
-   * 问一段平级会话现在怎么样。
+   * 问一段平级会话现在怎么样 —— **只答两件事：忙不忙 + 最近一句说了什么**（需求原话，`PRD.md`
+   * 4.6 / `PLAN.md` 10.2）。
    *
    * 找不到就是判别式的另一支（`{ found: false, status: null }`，**不抛错**：模型不该因为查了一段
    * 已经不存在的会话而断掉它手上的活）：判据只剩一条 —— **会话行在不在**（被用户删了就不在）。
@@ -332,18 +388,26 @@ export class PeerSessionService implements PeerSessionPort {
    * 现在血缘在会话行上（`lineage`），重启前后一段会话是不是兄弟会话是库里的事实，所以这里不再
    * 看进程内那张表 —— 它只提供可读名，没有就退回行上的 `name`（那也是一句真话）。
    *
-   * 那一格**现读**（不存镜像），外加一个可读名字；消息摘要不在这里（SDK 的 `PeerSessionStatus`
-   * 只剩 `status` 与 `label` 两格：摘要会把上下文搬过去）。
+   * 三格全**现读**，不存镜像：状态读执行者那一格，摘要读那一段 `agent.messages` 里最后一条
+   * 助手消息的正文（截断到 300 字）。**不给消息数组、不给条数、不给历史** —— 给了就等于把对方
+   * 的上下文搬过来，token 会炸（`PRD.md` 2.3）；也**没有** `startedAt`：需求里没有这一格。
    */
   async status(input: { caller: Agent; sessionId: string }): Promise<PeerSessionStatus> {
     const row = await this.deps.conversations.get(input.sessionId);
     // 找不到 = 判别式的另一支：`status: null`（四格都是活对象身上的事实，找不到就没有对象可读）
     if (!row) return { found: false, status: null };
 
+    // 摘要从内存里取（不查库）：就是那一段自己的 `agent.messages`，与状态同一刻、同一来源
+    const lastMessage = clip(
+      lastAssistantText(this.deps.chatRunner.messagesOf(input.sessionId)),
+      STATUS_CHARS,
+    );
+
     return {
       found: true,
       status: statusOf(this.deps.chatRunner.state(input.sessionId).status),
       label: this.labels.get(row.id) ?? row.name,
+      lastMessage,
     };
   }
 

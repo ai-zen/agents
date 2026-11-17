@@ -64,7 +64,7 @@ function recordingPort(answers: {
     },
     async status(input) {
       statuses.push(input);
-      return answers.status ?? { found: true, status: "busy", label: "会话 1" };
+      return answers.status ?? { found: true, status: "busy", label: "会话 1", lastMessage: null };
     },
     async send(input) {
       sends.push(input);
@@ -288,28 +288,46 @@ describe("postMessage：只回「收下了」", () => {
   });
 });
 
-describe("read_session_status：四格 + 「没有这一段」，只给状态", () => {
+describe("read_session_status：四格 + 「没有这一段」，只给「忙不忙 + 最近一句摘要」", () => {
   it("PeerSessionStatus 两种形状各自成立（判别式，编译期与运行期都钉住）", () => {
-    // 编译期：这两支都是合法形状，`status` 在找不到那一支只能是 null
-    const found: PeerSessionStatus = { found: true, status: "busy", label: "会话 1" };
+    // 编译期：这两支都是合法形状，`status` 在找不到那一支只能是 null；
+    // 找到那一支必有 `lastMessage`（摘要或 null），没有消息数组、没有 startedAt
+    const found: PeerSessionStatus = {
+      found: true,
+      status: "busy",
+      label: "会话 1",
+      lastMessage: "先看看登录页",
+    };
+    const empty: PeerSessionStatus = { found: true, status: "idle", label: "会话 2", lastMessage: null };
     const notFound: PeerSessionStatus = { found: false, status: null };
 
-    expect(found).toEqual({ found: true, status: "busy", label: "会话 1" });
+    expect(found).toEqual({
+      found: true,
+      status: "busy",
+      label: "会话 1",
+      lastMessage: "先看看登录页",
+    });
+    expect(empty.lastMessage).toBeNull();
     expect(notFound).toEqual({ found: false, status: null });
     // 四格就是宿主 states.ts 那四个词（gone 不在里面：它不是第五格）
     const four: ConversationStatus[] = ["dead", "busy", "idle", "paused"];
     expect(four).toHaveLength(4);
   });
 
-  it("找到了：found / status / label 原样出现，并带上 hint", async () => {
+  it("找到了：found / status / label / lastMessage 原样出现，并带上 hint", async () => {
     const { port, statuses } = recordingPort({
-      status: { found: true, status: "idle", label: "会话 1" },
+      status: { found: true, status: "idle", label: "会话 1", lastMessage: "登录页查过了" },
     });
     const [, statusTool] = createPeerSessionTools(port);
 
     const result = await call(statusTool, { sessionId: "session-1" });
     expect(statuses).toEqual([{ caller: fakeAgent, sessionId: "session-1" }]);
-    expect(result).toMatchObject({ found: true, status: "idle", label: "会话 1" });
+    expect(result).toMatchObject({
+      found: true,
+      status: "idle",
+      label: "会话 1",
+      lastMessage: "登录页查过了",
+    });
     expect((result as { hint: string }).hint.toLowerCase()).toContain("do not poll");
   });
 
@@ -332,7 +350,7 @@ describe("read_session_status：四格 + 「没有这一段」，只给状态", 
   it("四格各自都有一句：活着的三格说「别轮询」，死格说「自己做」", async () => {
     const live: ConversationStatus[] = ["busy", "idle", "paused"];
     for (const status of live) {
-      const { port } = recordingPort({ status: { found: true, status, label: "s" } });
+      const { port } = recordingPort({ status: { found: true, status, label: "s", lastMessage: null } });
       const [, statusTool] = createPeerSessionTools(port);
       const result = (await call(statusTool, { sessionId: "s" })) as {
         status: string;
@@ -344,7 +362,7 @@ describe("read_session_status：四格 + 「没有这一段」，只给状态", 
       expect(result.hint).toContain("postMessage");
     }
 
-    const dead = recordingPort({ status: { found: true, status: "dead", label: "s" } });
+    const dead = recordingPort({ status: { found: true, status: "dead", label: "s", lastMessage: null } });
     const [, deadTool] = createPeerSessionTools(dead.port);
     const deadResult = (await call(deadTool, { sessionId: "s" })) as { hint: string };
     expect(deadResult.hint.toLowerCase()).toContain("no answer will arrive");
@@ -352,7 +370,7 @@ describe("read_session_status：四格 + 「没有这一段」，只给状态", 
   });
 
   it("没有 running / failed / aborted / gone 这些值（失败是消息上的事实，不是状态）", async () => {
-    const { port } = recordingPort({ status: { found: true, status: "paused", label: "s" } });
+    const { port } = recordingPort({ status: { found: true, status: "paused", label: "s", lastMessage: null } });
     const [, statusTool] = createPeerSessionTools(port);
 
     const description = statusTool.function.description ?? "";
@@ -360,18 +378,48 @@ describe("read_session_status：四格 + 「没有这一段」，只给状态", 
     expect(description).toContain("dead");
     expect(description).not.toContain("failed");
     expect(description).not.toContain("aborted");
-    // 摘要不是这条路该给的东西：给了原文模型就会当上下文搬运
+    // 摘要只是摘要：给了原文模型就会当上下文搬运（需求：只给「忙不忙 + 最近一句摘要」）
     expect(description).toContain("never the full conversation");
+    expect(description).toContain("never its history");
+    expect(description).toContain("`lastMessage`");
     expect(description).toContain("`label`");
+    // 工具说明里写明「别轮询」
+    expect(description.toLowerCase()).toContain("do not poll");
   });
 
-  it("答案里没有摘要与开启时刻那两格（需求里没有它们，是另一条路的事）", async () => {
-    const { port } = recordingPort({ status: { found: true, status: "busy", label: "s" } });
+  it("hint 说清「只有摘要」：不是全量、不是历史，而且别轮询", async () => {
+    for (const status of ["busy", "idle", "paused", "dead"] as const) {
+      const { port } = recordingPort({
+        status: { found: true, status, label: "s", lastMessage: "好了" },
+      });
+      const [, statusTool] = createPeerSessionTools(port);
+      const result = (await call(statusTool, { sessionId: "s" })) as { hint: string };
+
+      expect(result.hint).toContain("`lastMessage`");
+      expect(result.hint).toContain("never its full conversation");
+      expect(result.hint).toContain("never its history");
+    }
+    const live = recordingPort({ status: { found: true, status: "busy", label: "s", lastMessage: null } });
+    const [, liveTool] = createPeerSessionTools(live.port);
+    const liveResult = (await call(liveTool, { sessionId: "s" })) as { hint: string };
+    expect(liveResult.hint.toLowerCase()).toContain("do not poll");
+  });
+
+  it("答案里只有「忙不忙 + 最近一句摘要」：没有 startedAt、没有消息数组、没有条数", async () => {
+    const { port } = recordingPort({
+      status: { found: true, status: "busy", label: "s", lastMessage: "先看看登录页" },
+    });
     const [, statusTool] = createPeerSessionTools(port);
 
     const result = (await call(statusTool, { sessionId: "s" })) as Record<string, unknown>;
+    // 摘要那一格在（需求要的就是它）
+    expect(result.lastMessage).toBe("先看看登录页");
+    // 全量与历史一概不在：给了就是把对方的上下文搬进来
+    expect("messages" in result).toBe(false);
+    expect("messageCount" in result).toBe(false);
+    expect("history" in result).toBe(false);
+    // 需求里没有「什么时候开的这一格」
     expect("startedAt" in result).toBe(false);
-    expect("lastMessage" in result).toBe(false);
     expect(typeof result.hint).toBe("string");
   });
 });

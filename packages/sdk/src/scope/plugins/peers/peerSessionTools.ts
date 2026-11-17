@@ -83,12 +83,23 @@ export type PeerSessionCreated =
  * `found: false` 那支的 `status` 就是 `null`：找不到不是一个状态格（四格都是活对象身上的事实，
  * 找不到就没有对象可读）。把它挤进同一格会让模型把「会话被删了」当成一种可等的情形。
  *
- * 只有两个字段：摘要与消息事件是另一条路，本形状不带（给了原文，模型就会把它当上下文搬运，
- * token 立刻炸，而且绕过了我们自己的上下文管理）。
+ * 有这一段时只有三格：**忙不忙**（`status`）、**叫什么**（`label`）、**最近一句说了什么**
+ * （`lastMessage`：最近一条助手消息的正文摘要，截断到 300 字，超出以省略号收尾；它还没说过话
+ * 就是 `null`）—— 这就是需求说的「忙不忙 + 最近一句摘要」的全部（`PRD.md` 2.3 / 4.6、
+ * `PLAN.md` 10.2）。
+ *
+ * **不给全量消息，也不给历史**（没有消息数组、没有条数、没有原文）：给了原文模型就会把它当
+ * 上下文搬运，token 立刻炸，而且绕过了我们自己的上下文管理。
  */
 export type PeerSessionStatus =
   | { found: false; status: null }
-  | { found: true; status: ConversationStatus; label: string };
+  | {
+      found: true;
+      status: ConversationStatus;
+      label: string;
+      /** 最近一条助手消息的正文摘要（最多 300 字 + 省略号）；还没说过话就是 `null` */
+      lastMessage: string | null;
+    };
 
 /**
  * `postMessage` 被拒绝的两种原因 —— 就是投递的两条判据。
@@ -141,7 +152,10 @@ export interface PeerSessionPort {
    * 拒绝照 {@link PeerSessionCreated} 的样子回，不抛错。
    */
   create(input: PeerSessionCreateInput): Promise<PeerSessionCreated>;
-  /** 现读那一格（不存镜像：状态是活对象身上的事实）；找不到就是 `found: false` */
+  /**
+   * 现读那一格**加上最近一句的摘要**（不存镜像：状态是活对象身上的事实）；找不到就是
+   * `found: false`。摘要只是「最近一条助手消息的开头一段」，不是消息列表。
+   */
   status(input: { caller: Agent; sessionId: string }): Promise<PeerSessionStatus>;
   /**
    * 把一句话投给一段会话（**不等结果，也不回状态**）。
@@ -200,6 +214,17 @@ const SEND_REJECT_HINTS: Record<PeerSessionSendRejectReason, string> = {
 };
 
 /**
+ * 「摘要那一格」那半句：答案里另给一格**最近一句**的摘要 —— 不是全量、不是历史。
+ *
+ * 写它的理由与 {@link NO_POLL_HINT} 一样：模型会照着自己拿到的那段话理解能力边界，不说清
+ * 「这只是摘要」，它下一句就会以为自己在读对方的对话。
+ */
+const EXCERPT_HINT =
+  "`lastMessage` in this answer is only the beginning of the last thing it said (cut at 300 " +
+  "characters), and it is all I get: never its full conversation, never its history, no message " +
+  "count — do not use this answer to fetch context.";
+
+/**
  * 「收下了」那半句：只说两件当场能定下的事 —— ① 已进那边的待办；② 别轮询。
  *
  * **不写**「它现在在忙 / 会把它叫起来」，也不写「不会自动推给我」：后者与「她说完会自己
@@ -210,22 +235,26 @@ const SEND_ACCEPTED_HINT =
   "Accepted: the message is in that session's queue now. This call does not come back. " +
   `${NO_POLL_HINT} ${LABEL_HINT}`;
 
-/** 每一格一句给模型的话（活着的三格都带着「别轮询」与「靠 label」两句） */
+/**
+ * 每一格一句给模型的话（四格都带着「摘要只是摘要」与「靠 label」两句，活着的三格再加「别轮询」）。
+ *
+ * 需求那一句「只给忙不忙 + 最近一句摘要」在这里说全：这一格是状态，那一格是摘要，**没有第三格**。
+ */
 function statusHint(status: ConversationStatus): string {
   switch (status) {
     case "busy":
-      return `It is busy: it has work in hand right now. ${NO_POLL_HINT} ${LABEL_HINT}`;
+      return `It is busy: it has work in hand right now. ${NO_POLL_HINT} ${EXCERPT_HINT} ${LABEL_HINT}`;
     case "idle":
-      return `It is idle: it exists and has nothing in hand at this moment. ${NO_POLL_HINT} ${LABEL_HINT}`;
+      return `It is idle: it exists and has nothing in hand at this moment. ${NO_POLL_HINT} ${EXCERPT_HINT} ${LABEL_HINT}`;
     case "paused":
       return (
         "It is paused: it exists but is not taking anything in until it is resumed (from the " +
-        `outside, not by me), so nothing happens there by itself. ${NO_POLL_HINT} ${LABEL_HINT}`
+        `outside, not by me), so nothing happens there by itself. ${NO_POLL_HINT} ${EXCERPT_HINT} ${LABEL_HINT}`
       );
     case "dead":
       return (
         "There is no agent behind that session any more (it is dead): nothing will be taken in " +
-        `there and no answer will arrive. Do the work here instead. ${LABEL_HINT}`
+        `there and no answer will arrive. Do the work here instead. ${EXCERPT_HINT} ${LABEL_HINT}`
       );
   }
 }
@@ -317,15 +346,20 @@ function createSessionTool(port: PeerSessionPort): Tool {
   });
 }
 
-/** `read_session_status({ sessionId })` → `{ found, status, label?, hint }` */
+/** `read_session_status({ sessionId })` → `{ found, status, label, lastMessage, hint }` */
 function readSessionStatusTool(port: PeerSessionPort): Tool {
   return new CallbackTool({
     function: {
       name: READ_SESSION_STATUS_TOOL,
       description: [
-        "Check a session created earlier: the one state it is in right now (busy / idle / paused /",
-        "dead), or that there is no such session any more (found: false) — never the full",
-        "conversation, so do not use it to fetch context.",
+        "Check a session created earlier: which one state it is in right now (busy / idle / paused /",
+        "dead), or that there is no such session any more (found: false).",
+        "About that session the answer gives exactly two facts: whether it is busy (that one state)",
+        "and `lastMessage` — a short excerpt of the last thing it said (cut at 300 characters; null",
+        "while it has not said anything yet); the `label` is only the name it was created with.",
+        "That excerpt is all I get: the answer is never the full conversation",
+        "and never its history, it carries no message list and no message count, and it does not",
+        "say what that session is doing — so do not use it to fetch context.",
         "This is a single check, not a waiting loop: which of those states it is in (or that it",
         "is not there any more) is a fact about this moment only, and it does not tell me when",
         "anything will happen. Do not poll —",
@@ -354,7 +388,15 @@ function readSessionStatusTool(port: PeerSessionPort): Tool {
       });
       // 两种形状原样转给模型：找不到就是 `found: false` + `status: null`，不挤进四格里
       if (!status.found) return { found: false, status: null, hint: NOT_FOUND_HINT };
-      return { found: true, status: status.status, label: status.label, hint: statusHint(status.status) };
+      // 有这一段就给三格：那一个状态、那个名字、最近一句的摘要（`null` = 还没说过话）。
+      // 消息数组 / 条数 / 历史一概不带：需求要的就是「忙不忙 + 最近一句摘要」。
+      return {
+        found: true,
+        status: status.status,
+        label: status.label,
+        lastMessage: status.lastMessage,
+        hint: statusHint(status.status),
+      };
     },
   });
 }

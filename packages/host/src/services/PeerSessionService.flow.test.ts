@@ -248,7 +248,13 @@ describe("问状态：那一格现读", () => {
       caller: harness.caller,
       sessionId: created.sessionId,
     });
-    expect(status).toEqual({ found: true, status: "idle", label: created.label });
+    // 忙不忙现读，最近一句从那一段**内存里的** `agent.messages` 取（不查库）：她刚说的就是「回答」
+    expect(status).toEqual({
+      found: true,
+      status: "idle",
+      label: created.label,
+      lastMessage: "回答",
+    });
   });
 
   it("那一段的 agent 不在了（有人杀了它）→ 答 dead：会话行还在，只是没人接着跑", async () => {
@@ -264,8 +270,9 @@ describe("问状态：那一格现读", () => {
       caller: harness.caller,
       sessionId: created.sessionId,
     });
-    // 「死」是四格里的最后一格（查不到对象），不是「不在了」：会话行还在
-    expect(status).toEqual({ found: true, status: "dead", label: created.label });
+    // 「死」是四格里的最后一格（查不到对象），不是「不在了」：会话行还在；
+    // 也没有内存可读，所以最近一句是 null（会话行上的旧消息不是「它刚说的」）
+    expect(status).toEqual({ found: true, status: "dead", label: created.label, lastMessage: null });
   });
 
   it("那一段的会话行没了（用户删了它）→ 答 `found: false`，别让调用方等一个不会来的结果", async () => {

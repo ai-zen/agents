@@ -67,6 +67,17 @@ function row(conversationId: string, role: string, text: string, seq = 1): Store
   };
 }
 
+/**
+ * 内存里的一条消息（`agent.messages` 的那一格）：本服务只读 `role` 与 `content`。
+ *
+ * 为什么直接造 core 的 `Message` 而不是落一行：摘要从**内存**里取（不查库）—— 那正是「现读」的意思。
+ */
+let saidSeq = 0;
+function said(role: AgentNS.Role, content: AgentNS.MessageContent): AgentNS.Message {
+  saidSeq += 1;
+  return { id: `said-${saidSeq}`, role, content };
+}
+
 /** 子会话的诞生：与 `conversation.create` 一样把新会话登记进「库里」 */
 class FakeCreator implements PeerSessionConversationCreator {
   readonly created: ConversationCreateParams[] = [];
@@ -106,10 +117,12 @@ class FakeCreator implements PeerSessionConversationCreator {
   }
 }
 
-/** 执行者：只记「谁收到了什么」，状态表由用例摆 */
+/** 执行者：只记「谁收到了什么」，状态与内存消息表由用例摆 */
 class FakeRunner implements PeerSessionRunner {
   readonly deliveries: Array<{ conversationId: string; input: DeliveryInput }> = [];
   readonly statuses = new Map<string, ConversationStatus>();
+  /** 每段会话此刻在内存里的消息（`agent.messages`）；没摆过就是 `null`（= 没有 agent 对象） */
+  readonly memory = new Map<string, AgentNS.Message[]>();
   /** 让 `deliver` 抛这个错（试「目标不存在」那条） */
   failWith?: unknown;
 
@@ -125,6 +138,10 @@ class FakeRunner implements PeerSessionRunner {
   state(conversationId: string): { status: ConversationStatus } {
     return { status: this.statuses.get(conversationId) ?? "dead" };
   }
+
+  messagesOf(conversationId: string): AgentNS.Message[] | null {
+    return this.memory.get(conversationId) ?? null;
+  }
 }
 
 interface Harness {
@@ -135,6 +152,8 @@ interface Harness {
   caller: Agent;
   /** 摆一段会话的「库里那一行」与它的消息 */
   seed(conversationId: string, messages?: StoredMessage[]): void;
+  /** 摆「那一段此刻在内存里说了什么」（`agent.messages`：状态与摘要都从这里现读） */
+  say(conversationId: string, ...messages: AgentNS.Message[]): void;
 }
 
 function makeHarness(): Harness {
@@ -169,6 +188,12 @@ function makeHarness(): Harness {
         creator.rows.set(conversationId, conversation(conversationId));
       }
       stored.set(conversationId, messages);
+    },
+    say: (conversationId, ...messages) => {
+      if (!creator.rows.has(conversationId)) {
+        creator.rows.set(conversationId, conversation(conversationId));
+      }
+      runner.memory.set(conversationId, messages);
     },
   };
 }
@@ -323,9 +348,123 @@ describe("status：那一格现读，名字用进程内那条（没有就退回�
         sessionId: created.sessionId,
       });
 
-      expect(result).toEqual({ found: true, status, label: created.label });
+      expect(result).toEqual({ found: true, status, label: created.label, lastMessage: null });
     });
   }
+
+  it("最近一条助手消息 → `lastMessage` 是它的正文摘要", async () => {
+    const harness = makeHarness();
+    const created = await harness.service.create({ caller: harness.caller, prompt: "干点活" });
+    if (!created.ok) throw new Error("没建成");
+    harness.say(
+      created.sessionId,
+      said(AgentNS.Role.User, "查一下登录页"),
+      said(AgentNS.Role.Assistant, "查过了：表单校验没做，先补上再谈样式。"),
+    );
+
+    const result = await harness.service.status({
+      caller: harness.caller,
+      sessionId: created.sessionId,
+    });
+
+    // 摘要就是「它最近一句说了什么」（用户说的那句不算：那是我让它干的活）
+    expect(result).toMatchObject({
+      found: true,
+      label: created.label,
+      lastMessage: "查过了：表单校验没做，先补上再谈样式。",
+    });
+  });
+
+  it("正文超 300 字 → 截到 300 字再加一个省略号（绝不给全量）", async () => {
+    const harness = makeHarness();
+    const created = await harness.service.create({ caller: harness.caller, prompt: "干点活" });
+    if (!created.ok) throw new Error("没建成");
+    const long = "一".repeat(400);
+    harness.say(
+      created.sessionId,
+      said(AgentNS.Role.User, "说个长点的"),
+      said(AgentNS.Role.Assistant, long),
+    );
+
+    const result = await harness.service.status({
+      caller: harness.caller,
+      sessionId: created.sessionId,
+    });
+    if (!result.found) throw new Error("这一段该找得到");
+
+    // 300 字正文 + 一个省略号 = 301 个字；第 301 个字以后的一个都没漏进来
+    expect(result.lastMessage).toBe(`${"一".repeat(300)}…`);
+    expect(result.lastMessage).toHaveLength(301);
+    expect(result.lastMessage?.endsWith("…")).toBe(true);
+    expect(result.lastMessage).not.toContain("一".repeat(301));
+  });
+
+  it("正文正好 300 字不动它（不让模型以为「后面还有」）", async () => {
+    const harness = makeHarness();
+    const created = await harness.service.create({ caller: harness.caller, prompt: "干点活" });
+    if (!created.ok) throw new Error("没建成");
+    harness.say(created.sessionId, said(AgentNS.Role.Assistant, "二".repeat(300)));
+
+    const result = await harness.service.status({
+      caller: harness.caller,
+      sessionId: created.sessionId,
+    });
+    if (!result.found) throw new Error("这一段该找得到");
+
+    expect(result.lastMessage).toBe("二".repeat(300));
+    expect(result.lastMessage).toHaveLength(300);
+  });
+
+  it("没有消息 / 只有用户消息 / 正文是空白 → `lastMessage: null`（它还没说过话）", async () => {
+    const harness = makeHarness();
+    // ① 一条消息都没有（刚建出来、话还排在队里）
+    const fresh = await harness.service.create({ caller: harness.caller, prompt: "干点活" });
+    if (!fresh.ok) throw new Error("没建成");
+    harness.say(fresh.sessionId);
+
+    // ② 只有用户消息（最后一条是「我」说的，不是它说的）
+    const asked = await harness.service.create({ caller: harness.caller, prompt: "再干点活" });
+    if (!asked.ok) throw new Error("没建成");
+    harness.say(asked.sessionId, said(AgentNS.Role.User, "干点活"));
+
+    // ③ 有助手消息，但正文是空白（只有工具调用那一轮）
+    const blank = await harness.service.create({ caller: harness.caller, prompt: "接着干" });
+    if (!blank.ok) throw new Error("没建成");
+    harness.say(
+      blank.sessionId,
+      said(AgentNS.Role.User, "接着干"),
+      said(AgentNS.Role.Assistant, "   \n  "),
+      said(AgentNS.Role.Assistant, [{ type: "text", text: "" }]),
+    );
+
+    for (const sessionId of [fresh.sessionId, asked.sessionId, blank.sessionId]) {
+      const result = await harness.service.status({ caller: harness.caller, sessionId });
+      expect(result).toMatchObject({ found: true, lastMessage: null });
+    }
+  });
+
+  it("返回里只有四格：没有 `startedAt`、没有消息数组 / 条数 / 历史", async () => {
+    const harness = makeHarness();
+    const created = await harness.service.create({ caller: harness.caller, prompt: "干点活" });
+    if (!created.ok) throw new Error("没建成");
+    harness.say(
+      created.sessionId,
+      said(AgentNS.Role.User, "干点活"),
+      said(AgentNS.Role.Assistant, "好了"),
+    );
+
+    const result = await harness.service.status({
+      caller: harness.caller,
+      sessionId: created.sessionId,
+    });
+
+    // 只给「忙不忙 + 最近一句摘要」（加上那个名字）：多一格就是把对方的上下文搬过来了
+    expect(Object.keys(result).sort()).toEqual(["found", "label", "lastMessage", "status"]);
+    expect("startedAt" in result).toBe(false);
+    expect("messages" in result).toBe(false);
+    expect("messageCount" in result).toBe(false);
+    expect("history" in result).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -510,6 +510,9 @@ export class HostApp {
         deliver: (conversationId, input) => this.chatRunner.deliver(conversationId, input),
         // 状态现读：平级会话那边只留可读名（什么都不存，存了就要有人同步两份）
         state: (conversationId) => this.chatRunner.state(conversationId),
+        // 摘要也现读：`read_session_status` 要的「最近一句」就是那一段 `agent.messages` 的尾巴
+        // （不查库：状态与摘要必须同一刻、同一来源）
+        messagesOf: (conversationId) => this.chatRunner.messagesOf(conversationId),
       },
     });
     // agent 工厂只造一次：普通对话与压缩那几条路用它装配（常驻的 agent 装配一次跨多次投递复用，
