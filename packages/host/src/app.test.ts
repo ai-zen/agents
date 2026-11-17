@@ -265,9 +265,9 @@ describe("HostApp 的组装", () => {
     // 本地实例启动时备好交付文件（客户端直接取）
     expect(await exists(app.paths.tokenFile)).toBe(true);
 
-    // 收尾：摘发现文件 + 关库（对称于 start）
+    // 收尾：摘发现文件 + 断连接 + 拆 Scope + 关库（对称于 start）
     const facts = await app.stop("requested");
-    expect(facts).toEqual({ reason: "requested", connections: 0, runs: 0, scopes: 0 });
+    expect(facts).toEqual({ reason: "requested", connections: 0, scopes: 0 });
     expect(app.running).toBe(false);
     expect(await readHostFile(app.paths)).toBeNull();
     await expect(app.db.all("SELECT 1")).rejects.toBeTruthy();

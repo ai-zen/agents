@@ -57,7 +57,6 @@ export const zh = {
   "message.injectedContext": "这段是宿主加进来的，不是你输入的：{summary}",
   // 会话创建时那条 hidden 消息里的那句事实（PRD F-D9：cwd 来自对话所属项目，不是宿主进程的目录）
   "message.injectedContext.cwd": "当前目录是 {cwd}",
-  "message.subagentFailed": "子 Agent {name} 失败了：{reason}",
   "message.imageAsText": "{model} 看不了图片，{name} 改成用文字描述发过去。",
 
   // ---- 用量（PRD F-I5）----

@@ -53,6 +53,8 @@ const CONFIG = JSON.stringify(
         name: "Other Model",
         endpointId: "fake",
         tokenThresholds: { handoff: 1200, guard: 1800 },
+        // 带上出厂那张档位表：验「换思考档位」那一手时它要有可调的档
+        reasoningPreset: "openai",
         custom: true,
       },
     ],
@@ -504,8 +506,12 @@ describe("conversation.setThresholds（PRD 1.4 / 4.7：两条阈值有上游默�
       expect(decisions).toEqual([]);
       expect(app.agentRegistry.get(conversationId)).toBe(before);
 
-      // 对照：换模型改的是装配事实，下一次装配按新事实重造
+      // 对照：换模型改的是装配事实 —— 空闲时改完那个驱动者当场退役，
+      // 下一句话按新事实重新装配（不靠投递时发现手里那个不合用）
       await callMethod(app, "conversation.setModel", { conversationId, modelId: "other-model" });
+      expect(decisions).toEqual(["retired:assembly-facts-changed"]);
+      expect(app.agentRegistry.get(conversationId)).toBeUndefined();
+
       await callMethod(app, "conversation.send", { conversationId, input: { content: "换完再说一句" } });
       await idle(app, conversationId);
       expect(decisions).toEqual([
@@ -516,6 +522,83 @@ describe("conversation.setThresholds（PRD 1.4 / 4.7：两条阈值有上游默�
     } finally {
       off();
     }
+  });
+});
+
+describe("conversation.setModel / setThinking：只允许空闲时改（改完当场让驱动者退役）", () => {
+  it("忙时一律拒（`busy` + `not_idle`），会话行一个字节都没写", async () => {
+    const gate: Deferred<void> = deferred();
+    const { app, conversationId } = await makeHarness({
+      createAgent: async () => new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢" }] }]),
+    });
+
+    await callMethod(app, "conversation.send", { conversationId, input: { content: "慢慢说" } });
+    expect(app.chatRunner.state(conversationId).status).toBe("busy");
+    const before = await app.conversations.get(conversationId);
+    const driver = app.agentRegistry.get(conversationId);
+    expect(driver).toBeDefined();
+
+    // 换模型：拒
+    await expect(
+      callMethod(app, "conversation.setModel", { conversationId, modelId: "other-model" }),
+    ).rejects.toMatchObject({ code: "busy", detail: { conversationId, reason: "not_idle" } });
+    // 换思考档位：拒（这一条先于「这个模型能不能调档」那些校验）
+    await expect(
+      callMethod(app, "conversation.setThinking", { conversationId, level: "low" }),
+    ).rejects.toMatchObject({ code: "busy", detail: { conversationId, reason: "not_idle" } });
+
+    // 一个字节都没写库：模型、档位、更新时间都还是原样
+    const after = await app.conversations.get(conversationId);
+    expect(after?.modelId).toBe(before?.modelId);
+    expect(after?.thinkingLevel).toBe(before?.thinkingLevel);
+    expect(after?.updatedAt).toBe(before?.updatedAt);
+    // 驱动者也没被动过：它手上那批活还在跑
+    expect(app.agentRegistry.get(conversationId)).toBe(driver);
+
+    gate.resolve();
+    await idle(app, conversationId);
+  });
+
+  it("暂停（`consumptionPaused`）时允许改：它手上没活", async () => {
+    const { app, conversationId } = await makeHarness();
+    await callMethod(app, "conversation.send", { conversationId, input: { content: "先说一句" } });
+    await idle(app, conversationId);
+    // 中断之后不再收件（对外报「暂停」），但手上一批活已经完了 —— 这是空闲，不是忙
+    const aborted = await callMethod(app, "conversation.abort", { conversationId });
+    expect(aborted.signalled).toBe(true);
+    expect(app.chatRunner.state(conversationId).status).toBe("paused");
+
+    const changed = await callMethod(app, "conversation.setModel", {
+      conversationId,
+      modelId: "other-model",
+    });
+    expect(changed.conversation.modelId).toBe("other-model");
+    expect((await app.conversations.get(conversationId))?.modelId).toBe("other-model");
+    // 出厂配置变了：那个驱动者当场退役
+    expect(app.agentRegistry.get(conversationId)).toBeUndefined();
+
+    // 没有 agent（死的）也一样能改：档位照样落库
+    const thinking = await callMethod(app, "conversation.setThinking", {
+      conversationId,
+      level: "low",
+    });
+    expect(thinking.thinking.levels).toContain("low");
+    expect((await app.conversations.get(conversationId))?.thinkingLevel).toBe("low");
+  });
+
+  it("从来没有 agent 的对话也能改（没有驱动者就没有手上那批活）", async () => {
+    const { app, conversationId } = await makeHarness();
+    expect(app.chatRunner.state(conversationId).status).toBe("dead");
+
+    const changed = await callMethod(app, "conversation.setModel", {
+      conversationId,
+      modelId: "other-model",
+    });
+
+    expect(changed.conversation.modelId).toBe("other-model");
+    expect((await app.conversations.get(conversationId))?.modelId).toBe("other-model");
+    // 没有 agent 可退役，也就一个生灭决定都没有
+    expect(app.agentRegistry.get(conversationId)).toBeUndefined();
   });
 });
 

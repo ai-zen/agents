@@ -108,6 +108,8 @@ interface Harness {
   warmUp(): Promise<void>;
   /** 把后台的写库推进到「没有立即的后续」为止 */
   flush(): Promise<void>;
+  /** 把一段会话从「库里」删掉（用户删了它：会话行不再在了） */
+  drop(conversationId: string): void;
   waitFor(check: () => boolean): Promise<void>;
   /** 某段对话主线的行 */
   rows(conversationId: string): Promise<Array<{ role: string; content: unknown }>>;
@@ -161,6 +163,9 @@ function makeHarness(rounds: FakeRound[]): Harness {
     caller,
     flush: async () => {
       for (let index = 0; index < 20; index += 1) await flushMicrotasks();
+    },
+    drop: (conversationId) => {
+      rows.delete(conversationId);
     },
     waitFor: async (check) => {
       for (let index = 0; index < 200; index += 1) {
@@ -246,7 +251,7 @@ describe("问状态：那一格现读", () => {
     expect(status.lastMessage).toBe("回答");
   });
 
-  it("那一段的 agent 不在了（有人杀了它）→ 答 gone，别让调用方等一个不会来的结果", async () => {
+  it("那一段的 agent 不在了（有人杀了它）→ 答 dead：会话行还在，只是没人接着跑", async () => {
     const harness = makeHarness([{ deltas: [{ content: "回答" }] }]);
     await harness.warmUp();
     const created = await harness.service.create({ caller: harness.caller, prompt: "干点活" });
@@ -259,12 +264,30 @@ describe("问状态：那一格现读", () => {
       caller: harness.caller,
       sessionId: created.sessionId,
     });
-    expect(status.state).toBe("gone");
+    // 「死」是四格里的最后一格（查不到对象），不是「不在了」：会话行还在
+    expect(status.state).toBe("dead");
+  });
+
+  it("那一段的会话行没了（用户删了它）→ 答 gone，别让调用方等一个不会来的结果", async () => {
+    const harness = makeHarness([{ deltas: [{ content: "回答" }] }]);
+    await harness.warmUp();
+    const created = await harness.service.create({ caller: harness.caller, prompt: "干点活" });
+    if (!created.ok) throw new Error("没建成");
+    await harness.waitFor(() => harness.runner.state(created.sessionId).status === "idle");
+    // 会话行没了：判据只剩「这一段还在不在」，`gone` 只说这一件事
+    harness.drop(created.sessionId);
+    harness.runner.forget(created.sessionId);
+
+    const status = await harness.service.status({
+      caller: harness.caller,
+      sessionId: created.sessionId,
+    });
+    expect(status).toEqual({ state: "gone" });
   });
 });
 
 describe("接着说话：一句投进去就回，不等它答", () => {
-  it("投给闲着的子会话 → 回 idle，这句以调用者的名字为来源落地", async () => {
+  it("投给闲着的子会话 → 回「收下了」，这句以调用者的名字为来源落地", async () => {
     const harness = makeHarness([{ deltas: [{ content: "回答" }] }]);
     await harness.warmUp();
     const created = await harness.service.create({ caller: harness.caller, prompt: "开头" });
@@ -277,8 +300,8 @@ describe("接着说话：一句投进去就回，不等它答", () => {
       sessionId: created.sessionId,
       content: "再说一句",
     });
-    // 投递那一刻它闲着：这一句会把它叫起来
-    expect(sent).toEqual({ ok: true, state: "idle" });
+    // 回执只有「收下了」：它忙着还是闲着、什么时候取件，都不是投递那一刻能定下的事实
+    expect(sent).toEqual({ ok: true });
 
     await harness.waitFor(() => harness.runner.state(created.sessionId).inbox.length === 0);
     await harness.flush();

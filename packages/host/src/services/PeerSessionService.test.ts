@@ -288,15 +288,15 @@ describe("create：建会话 → 落真行 → 把第一句交出去 → 立刻�
 // 问状态：现读
 // ---------------------------------------------------------------------------
 
-describe("status：那一格现读，记录只给名字与来路", () => {
-  it("记录里没有它 → `gone`（重启后 / 没见过的 id 都走这条）", async () => {
+describe("status：那一格现读，名字用进程内那条（没有就退回会话行）", () => {
+  it("会话行里没有它 → `gone`（重启后 / 没见过的 id 都走这条）", async () => {
     const harness = makeHarness();
     await expect(
       harness.service.status({ caller: harness.caller, sessionId: "c-unknown" }),
     ).resolves.toEqual({ state: "gone" });
   });
 
-  it("记录还在但对话行没了（用户删了这段会话）→ `gone`", async () => {
+  it("会话行没了（用户删了这段会话）→ `gone`：判据只有「这一段还在不在」", async () => {
     const harness = makeHarness();
     const created = await harness.service.create({ caller: harness.caller, prompt: "干点活" });
     if (!created.ok) throw new Error("没建成");
@@ -307,13 +307,10 @@ describe("status：那一格现读，记录只给名字与来路", () => {
     ).resolves.toEqual({ state: "gone" });
   });
 
-  for (const [status, expected] of [
-    ["busy", "running"],
-    ["idle", "idle"],
-    ["paused", "aborted"],
-    ["dead", "gone"],
-  ] as const) {
-    it(`现读是 ${status} → 报 ${expected}`, async () => {
+  // 四格逐格同名：宿主说 `busy` / `idle` / `paused` / `dead`，SDK 报的就是这四个。
+  // `gone` 不是一格状态，是「会话行找不到了」（上面两条），所以不在这一张表里。
+  for (const status of ["busy", "idle", "paused", "dead"] as const) {
+    it(`现读是 ${status} → 报 ${status}（逐格同名，不翻译）`, async () => {
       const harness = makeHarness();
       const created = await harness.service.create({ caller: harness.caller, prompt: "干点活" });
       if (!created.ok) throw new Error("没建成");
@@ -325,7 +322,7 @@ describe("status：那一格现读，记录只给名字与来路", () => {
         sessionId: created.sessionId,
       });
 
-      expect(result.state).toBe(expected);
+      expect(result.state).toBe(status);
       expect(result.label).toBe(created.label);
       expect(result.startedAt).toBe(new Date(1_700_000_000_000).toISOString());
     });
@@ -376,7 +373,8 @@ describe("send：直接把这一句交出去，不看关系", () => {
       content: "帮我看看这个",
     });
 
-    expect(result).toEqual({ ok: true, state: "idle" });
+    // 回执只有「收下了」：那边闲着这件事不在回执里
+    expect(result).toEqual({ ok: true });
     expect(harness.runner.deliveries[0]).toEqual({
       conversationId: "c-stranger",
       input: { content: "帮我看看这个", source: { kind: "agent", label: "会话「父对话」" } },
@@ -397,18 +395,16 @@ describe("send：直接把这一句交出去，不看关系", () => {
       content: "说一句",
     });
 
-    expect(harness.runner.deliveries[0]!.input.source).toEqual({
+    // 第 0 条是 `create` 投进去的那第一句（来源「父对话」），这一条是 `send` 投的
+    expect(harness.runner.deliveries[1]!.input.source).toEqual({
       kind: "agent",
       label: `会话「${child.label}」`,
     });
   });
 
-  for (const [status, expected] of [
-    ["busy", "running"],
-    ["idle", "idle"],
-    ["paused", "settling"],
-  ] as const) {
-    it(`回执那一格是投完之后现读的：${status} → ${expected}`, async () => {
+  // 回执不看那边忙不忙：投递那一刻能定下的只有「收下了」，状态是对未来的断言
+  for (const status of ["busy", "idle", "paused"] as const) {
+    it(`回执只有「收下了」：那边是 ${status} 也不带状态`, async () => {
       const harness = makeHarness();
       harness.seed("c-stranger");
       harness.runner.statuses.set("c-stranger", status);
@@ -419,7 +415,8 @@ describe("send：直接把这一句交出去，不看关系", () => {
         content: "说一句",
       });
 
-      expect(result).toEqual({ ok: true, state: expected });
+      expect(result).toEqual({ ok: true });
+      expect("state" in result).toBe(false);
     });
   }
 

@@ -328,14 +328,24 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
       expect(message.status).toBe(AgentNSValue.MessageStatus.Completed);
     }
 
-    // ---- 步骤 5：读数（四格 + 待办 + 时刻，没有用量也没有阶段） ----
+    // ---- 步骤 5：读数（四格 + 待办 + 子 agent 名册 + 交接态 + 时刻，没有用量也没有阶段） ----
     client.request("conversation.state", { conversationId });
     const stateFrame = await nextResponse();
     if (!isSuccess(stateFrame)) throw new Error(`读数没拿到：${JSON.stringify(stateFrame)}`);
     const snapshot = (stateFrame.result as ConversationStateResult).state;
-    expect(Object.keys(snapshot).sort()).toEqual(["at", "conversationId", "inbox", "status"]);
+    expect(Object.keys(snapshot).sort()).toEqual([
+      "at",
+      "conversationId",
+      "handoff",
+      "inbox",
+      "status",
+      "subAgents",
+    ]);
     expect(snapshot.status).toBe("idle");
     expect(snapshot.inbox).toEqual([]);
+    // 这一段没派过子 agent、也不在交接态：两格都是现读，没有就是空的
+    expect(snapshot.subAgents).toEqual([]);
+    expect(snapshot.handoff).toBeNull();
     expect(snapshot.conversationId).toBe(conversationId);
 
     // ---- 步骤 6：最后一个客户端断开，宿主**不**收尾（关宿主是显式动作，PRD 4.12） ----

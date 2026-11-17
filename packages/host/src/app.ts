@@ -1188,9 +1188,12 @@ export class HostApp {
   /**
    * 服务层要的那个窄接口（`ConversationRuntimePort`）。
    *
-   * 两件都是**现读**（`ChatRunner.state`）：这一段此刻落在哪一格、队里还压着几条。删掉之后
-   * 的现场清理指向 `ChatRunner.forget`（摘桥 + agent 硬着陆）。两条都只能晚绑定：服务比执行者
-   * 先造出来，所以这里闭包住 `this`，调用那一刻才去拿 `chatRunner`。
+   * 前两件是**现读**（`ChatRunner.state`）：这一段此刻落在哪一格、队里还压着几条。删掉之后
+   * 的现场清理指向 `ChatRunner.forget`（摘桥 + agent 硬着陆）。换模型 / 换思考档位那一手要的
+   * 两件也在这一格里：**手上有没有活**（`AgentRegistry.get` 拿到那个 agent，只读 `state`）与
+   * **让这一段空闲的驱动者退役**（`AgentRegistry.invalidateConversation`）。
+   *
+   * 全都只能晚绑定：服务比执行者先造出来，所以这里闭包住 `this`，调用那一刻才去拿它。
    */
   private createConversationRuntime(): ConversationRuntimePort {
     return {
@@ -1198,6 +1201,11 @@ export class HostApp {
       inboxPending: (conversationId) => this.chatRunner.state(conversationId).inbox.length,
       forget: (conversationId) => {
         this.chatRunner.forget(conversationId);
+      },
+      // 没有 agent（死的）回 `null`：那种对话也能换模型（没有人手上那批活可打岔）
+      agentState: (conversationId) => this.agentRegistry.get(conversationId)?.state ?? null,
+      invalidateAgent: (conversationId) => {
+        this.agentRegistry.invalidateConversation(conversationId);
       },
     };
   }

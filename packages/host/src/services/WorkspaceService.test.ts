@@ -9,6 +9,8 @@ import { join } from "node:path";
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { AgentNS } from "@ai-zen/agents-core";
+
 import { AssetRepository } from "../storage/AssetRepository.js";
 import { ConversationRepository } from "../storage/ConversationRepository.js";
 import { Database } from "../storage/Database.js";
@@ -32,6 +34,11 @@ class FakeRuntime implements ConversationRuntimePort {
   forget(conversationId: string): void {
     this.forgotten.push(conversationId);
   }
+  /** 项目这一层不换模型：这一段永远「没有 agent」 */
+  agentState(): AgentNS.AgentState | null {
+    return null;
+  }
+  invalidateAgent(): void {}
 }
 
 let dir: string;

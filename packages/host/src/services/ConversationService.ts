@@ -11,7 +11,8 @@
  * 两条贯穿这个文件的边界：
  *   1. **项目与助手创建即定死**：`workspaceId` / `agentId` 由 `create` 解析后落库，此后没有
  *      任何方法改它们。模型、思考档位与两条阈值不在这条线上：它们是这段会话自己的，存在会话
- *      行上、可以改 —— 前两个进驱动者的出厂配置（改了要重建），两条阈值不进（改了不重建）。
+ *      行上、可以改 —— 前两个进驱动者的出厂配置（改了要重建，而且**只允许空闲时改**），两条
+ *      阈值不进（改了不重建）。
  *   2. **服务层不缓存 agent、不驻留对话状态**：这段对话此刻落在哪一格、队里压着几条，都从注入的
  *      {@link ConversationRuntimePort} 现取；模型与档位在库里，不在内存里存第二份。
  */
@@ -99,12 +100,14 @@ export interface ConversationOriginInput {
 /**
  * 运行时注入给对话服务的窄接口。
  *
- * 只有两件运行时才知道的事：
+ * 只有运行时才知道的几件事：
  *   - 这段对话此刻落在哪一格（四格现读，PRD 4.4：死 / 忙 / 闲 / 暂停）；
  *   - 队里还压着几条（侧栏那一格现读的 `inboxPending`）；
- *   - 对话（或它的项目）被删掉之后，把这段对话的现场丢掉（`ChatRunner.forget`）。
+ *   - 对话（或它的项目）被删掉之后，把这段对话的现场丢掉（`ChatRunner.forget`）；
+ *   - 换模型 / 换思考档位这两手的两件事：它**手上有没有活**（`agentState`），以及改完之后让那个
+ *     驱动者退役（`invalidateAgent` —— 出厂配置变了，它不能留着）。
  *
- * 模型与思考档位不在这里：它们存在会话行上（`modelId` / `thinkingLevel`），服务层自己读写库。
+ * 模型与思考档位本身不在这里：它们存在会话行上（`modelId` / `thinkingLevel`），服务层自己读写库。
  *
  * 服务层只按它读，不 import `runtime/` 里的任何实现、也不自己存一份 —— 两份状态迟早
  * 有一份先漂（D28：agent 用完即弃、对话不驻留）。
@@ -116,6 +119,18 @@ export interface ConversationRuntimePort {
   inboxPending(conversationId: string): number;
   /** 对话（或它的项目）被删掉之后，丢掉这段对话的现场（摘桥 + agent 硬着陆） */
   forget(conversationId: string): void | Promise<void>;
+  /**
+   * 这段对话**手上有没有活**（core 的那一格 `agent.state` 原样给出）：没有 agent（死的）回 `null`。
+   *
+   * 只读 `state`，不看 `consumptionPaused` —— 那是另一处状态（从下一批起还收不收件），不收件
+   * 挡着也算手上没活。换模型 / 换思考档位的判据就是这一格（`assertIdle`）。
+   */
+  agentState(conversationId: string): AgentNS.AgentState | null;
+  /**
+   * 这一段对话的出厂配置变了（模型 / 思考档位换过）：手里那个驱动者不能留着，让注册表处置它
+   * （`AgentRegistry.invalidateConversation`：空闲的当场退役，在跑的只打标记）。
+   */
+  invalidateAgent(conversationId: string): void;
 }
 
 /** `conversation.delete` 的结果：wire 字段 + 交给 asset 层按引用清的文件清单 */
@@ -726,11 +741,19 @@ export class ConversationService {
    * 同时把这段会话的思考档位清成「跟随助手定义」—— 档位是模型的档位，同一个名字在不同
    * 模型上对应不同参数，留着就变成把旧模型的参数发给新模型。
    *
+   * **只允许空闲时换**（用户判词）：这段对话手上还有活时一律拒（`busy` +
+   * `reason: "not_idle"`），一个字节都不写库。理由：模型与思考参数是驱动者**装配那一刻**读的，
+   * 忙的时候改它，手里那批还会按旧事实跑完、下一批按新事实跑 —— 同一段对话里两批用了两个模型。
+   * 空闲时改完则**当场让那个驱动者退役**（`runtime.invalidateAgent`）—— 出厂配置变了，它不能
+   * 留着；下一句话按新事实重新装配。
+   *
    * `modelId: null` 表示回到助手定义上那个模型（它也没绑时用配置里的兜底）。
    * 历史里已经有图、而新模型不看图时拒绝（D20），并说明原因。
    */
   async setModel(params: ConversationSetModelParams): Promise<ConversationSetModelResult> {
     const row = await this.requireConversation(params.conversationId);
+    // 判据在最前面：非空闲就直接拒，后面的校验与写库一步都不走
+    this.assertIdle(row.id);
     const config = await this.readConfig();
 
     const modelId = params.modelId == null
@@ -751,6 +774,9 @@ export class ConversationService {
     }
 
     const updated = model.id === row.modelId ? row : await this.writeModel(row, model.id);
+    // 出厂配置变了（模型进了驱动者的装配事实），所以那个驱动者不能留着：空闲的那一支当场退役，
+    // 下一句话按新事实重新装配
+    if (updated.modelId !== row.modelId) this.runtime.invalidateAgent(row.id);
     const view = await this.composeView(updated, await this.viewContext(config));
     // 换了的模型会出现在别的窗口的状态栏上（L5 / D22），推一条让它们去拉
     if (updated.modelId !== row.modelId) {
@@ -766,11 +792,17 @@ export class ConversationService {
    * 不同参数。`level: null` 表示回到「跟随助手定义」。改助手默认档是另一个动作
    * （`agent.setThinking`）。
    *
+   * **只允许空闲时改**（与 `setModel` 同一条判词、同一个判据 `assertIdle`）：忙时一律拒，一个
+   * 字节都不写库；空闲时改完同样当场让那个驱动者退役 —— 档位展开出来的参数也进驱动者的出厂
+   * 配置。
+   *
    * 档位名必须在该模型引用的策略表里 —— 表里没有的档发出去只会换来一句 400；模型没有
    * 可调档位时整件事不成立（`unsupported`）。
    */
   async setThinking(params: ConversationSetThinkingParams): Promise<ConversationSetThinkingResult> {
     const row = await this.requireConversation(params.conversationId);
+    // 判据在最前面：非空闲就直接拒（先于「这个模型能不能调档」那些校验）
+    this.assertIdle(row.id);
     const context = await this.viewContext(await this.readConfig());
     const model = this.effectiveModel(row, context.config);
     if (!model) {
@@ -795,6 +827,8 @@ export class ConversationService {
     }
 
     const updated = await this.writeThinkingLevel(row, level);
+    // 出厂配置变了（档位展开的参数进了驱动者的装配事实）：空闲的那个当场退役，下一句按新事实装
+    if (updated.thinkingLevel !== row.thinkingLevel) this.runtime.invalidateAgent(row.id);
     const agent = await this.loadAgent(row.agentId, context);
     this.emitChanged(row.id, row.workspaceId, "settings_changed");
     return { thinking: this.buildThinking(updated, model, agent, context.presets) };
@@ -1040,6 +1074,24 @@ export class ConversationService {
       params: { entity: "conversation" },
       detail: { conversationId },
     });
+  }
+
+  /**
+   * 换模型 / 换思考档位之前那一条判据：**这段对话手上没活**。
+   *
+   * 判据就是交接入口那一条（`HandoffService.start`）：`agent.state === "idle"` 才算空闲。
+   * 另两种都放行：
+   *   - `consumptionPaused` 挡着（对外报「暂停」）也算空闲 —— 它手上没活；
+   *   - 没有 agent（死的）也放行 —— 没有驱动者，就没有「手上那一批活」可打岔。
+   *
+   * 拒的时候一个字节都不写库：这两手改的是驱动者的出厂配置（模型客户端 / 思考参数），忙的时候
+   * 改它，手里那批还会按旧事实跑完、下一批按新事实跑 —— 同一段对话里两批用了两个模型。
+   */
+  private assertIdle(conversationId: string): void {
+    const state = this.runtime.agentState(conversationId);
+    if (state !== null && state !== "idle") {
+      throw new HostError("busy", { detail: { conversationId, reason: "not_idle" } });
+    }
   }
 
   private async requireWorkspace(workspaceId: string): Promise<WorkspaceRow> {

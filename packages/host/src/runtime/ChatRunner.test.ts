@@ -172,9 +172,14 @@ function createHarness(options: { rounds?: FakeRound[] } = {}): Harness {
   return harness;
 }
 
-/** 造一条用户投递（最常走的那条路） */
+/**
+ * 造一条用户投递（最常走的那条路）。
+ *
+ * 这一段的第一句都从界面投进来（这个用例集模拟的就是「用户发消息」那一条路）：对话还没有驱动者时
+ * 只有创建者能把它叫起来，所以第一句带 `mayStart`。后面几句加不加都一样（已经活着就不看这一格）。
+ */
 function userSays(content: string, extra: Partial<DeliveryInput> = {}): DeliveryInput {
-  return { content, source: { kind: "user" }, ...extra };
+  return { content, source: { kind: "user" }, mayStart: true, ...extra };
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +225,8 @@ describe("ChatRunner.deliver：投递进来，事件到了写一条", () => {
     await harness.deliver({
       content: "登录页的测试补齐了",
       source: { kind: "agent", label: "补测试" },
+      // 这一段还没有驱动者，第一条由创建者叫起来（来源是谁与能不能起来是两回事）
+      mayStart: true,
     });
     await harness.waitIdle();
 
@@ -265,7 +272,9 @@ describe("ChatRunner.deliver：死对话一律拒，只有创建者能叫起来�
     });
 
     // 外面投进来：拒（这一条路不许死而复生）
-    await expect(harness.deliver(userSays("外面的一句"))).rejects.toMatchObject({
+    await expect(
+      harness.deliver(userSays("外面的一句", { mayStart: false })),
+    ).rejects.toMatchObject({
       code: "conversation_dead",
     });
     expect(harness.registry.get(CONVERSATION_ID)).toBeUndefined();

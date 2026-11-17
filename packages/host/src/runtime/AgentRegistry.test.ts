@@ -3,7 +3,9 @@
  *
  * 五条判据各有一组（`acquire` 的复用/重建、`complete` 的陈旧兑现、`invalidate` 的两种结局、
  * `discard` 只丢引用、`disposeAll` 收尾），外加**生命周期事件**那一组 —— 它是「这段对话为什么
- * 没有 agent」的唯一答案，所以每条路径报出的 `action` + `reason` 都钉住。
+ * 没有 agent」的唯一答案，所以每条路径报出的 `action` + `reason` 都钉住。换模型 / 换思考档位
+ * 那一手（`invalidateConversation`）单独一组：它同样是一对分支（空闲当场退役 / 在跑只打标记），
+ * 只是范围到一段对话。
  *
  * 还有两条结构性的事：agent 替调用方把 Scope 先要出来（创建自上而下），以及 agent 活着就拆不了
  * Scope（回收自下而上）。这里用真的 `ScopeRegistry`（假工厂造真 Scope），于是那两条顺序是整条
@@ -421,6 +423,63 @@ describe("AgentRegistry：invalidate（配置改过的生效手段）", () => {
       "retired:config-changed",
       "rebuilt:config-changed",
     ]);
+  });
+});
+
+describe("AgentRegistry：invalidateConversation（换模型 / 换思考档位那一手）", () => {
+  it("空闲的当场退役（理由 assembly-facts-changed），下一次 acquire 按新事实重造", async () => {
+    const harness = createHarness();
+    const first = await harness.agents.acquire(input(), facts());
+
+    expect(harness.agents.invalidateConversation(CONVERSATION_ID)).toBe(true);
+
+    expect(harness.agents.get(CONVERSATION_ID)).toBeUndefined();
+    expect(harness.trace()).toEqual(["built:never-built", "retired:assembly-facts-changed"]);
+
+    const second = await harness.agents.acquire(input(), facts({ modelId: "model-2" }));
+    expect(second).not.toBe(first);
+    expect(harness.trace()).toEqual([
+      "built:never-built",
+      "retired:assembly-facts-changed",
+      "rebuilt:assembly-facts-changed",
+    ]);
+  });
+
+  it("只动这一段：同项目的另一段一个不动", async () => {
+    const harness = createHarness();
+    const mine = await harness.agents.acquire(input(), facts());
+    const other = await harness.agents.acquire(input({ conversationId: "c-2" }), facts());
+
+    harness.agents.invalidateConversation(CONVERSATION_ID);
+
+    expect(harness.agents.get(CONVERSATION_ID)).toBeUndefined();
+    expect(harness.agents.get("c-2")).toBe(other);
+    expect(mine).not.toBe(other);
+  });
+
+  it("在跑的只打标记（不打断那批活），`complete` 之后才退役", async () => {
+    const harness = createHarness();
+    const agent = await harness.agents.acquire(input(), facts());
+    harness.markRunning(CONVERSATION_ID);
+
+    expect(harness.agents.invalidateConversation(CONVERSATION_ID)).toBe(false);
+    // 还在登记里，只是带上了标记
+    expect(harness.agents.get(CONVERSATION_ID)).toBe(agent);
+    expect(harness.trace()).toEqual(["built:never-built"]);
+    expect((agent as FakeAgent).abortCalls).toBe(0);
+
+    harness.markIdle(CONVERSATION_ID);
+    harness.agents.complete(CONVERSATION_ID);
+
+    expect(harness.agents.get(CONVERSATION_ID)).toBeUndefined();
+    expect(harness.trace()).toEqual(["built:never-built", "retired:stale-on-settle"]);
+  });
+
+  it("没有这一段时什么也不做（回 false，不报事件）", () => {
+    const harness = createHarness();
+
+    expect(harness.agents.invalidateConversation(CONVERSATION_ID)).toBe(false);
+    expect(harness.trace()).toEqual([]);
   });
 });
 

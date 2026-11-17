@@ -24,13 +24,18 @@ import { ConversationService } from "./ConversationService.js";
 import type { ConversationRuntimePort } from "./ConversationService.js";
 import type { ConversationCreateParams, ConversationStatus, ConversationView } from "../wire/index.js";
 
-/** 运行时只提供三件事实：这一刻落在哪一格、队里压着几条、删掉之后丢现场（模型与档位在会话行上） */
+/**
+ * 运行时只提供四件事实：这一刻落在哪一格、队里压着几条、删掉之后丢现场、换完模型让驱动者退役
+ * （模型与档位本身在会话行上）
+ */
 class FakeRuntime implements ConversationRuntimePort {
   /** 摆成「忙」的那几段（其余都是闲的） */
   readonly running = new Set<string>();
   /** 每段队里压着几条（不摆就是 0） */
   readonly pending = new Map<string, number>();
   readonly forgotten: string[] = [];
+  /** 被要求「让这一段空闲的驱动者退役」的对话（换模型 / 换档位那一手） */
+  readonly invalidated: string[] = [];
 
   status(conversationId: string): ConversationStatus {
     return this.running.has(conversationId) ? "busy" : "idle";
@@ -40,6 +45,13 @@ class FakeRuntime implements ConversationRuntimePort {
   }
   forget(conversationId: string): void {
     this.forgotten.push(conversationId);
+  }
+  agentState(conversationId: string): AgentNS.AgentState | null {
+    // 这一段没有驱动者时才是 `null`（死格）：用例里的 `running` 只表示忙
+    return this.running.has(conversationId) ? "working" : "idle";
+  }
+  invalidateAgent(conversationId: string): void {
+    this.invalidated.push(conversationId);
   }
 }
 
@@ -659,6 +671,15 @@ describe("多端在线同步（L5 / D22：conversation.changed）", () => {
       status: "completed",
       content: "第一句",
       createdAt: 10,
+    });
+    // 那一句引出的回答：撤回是「从锚点开始（含它）全删」，所以它也得在库里，两条各推一条 `message.removed`
+    await harness.messages.upsert({
+      id: "a1",
+      conversationId: id,
+      role: "assistant",
+      status: "completed",
+      content: "第一句的回答",
+      createdAt: 11,
     });
     harness.events.length = 0;
 

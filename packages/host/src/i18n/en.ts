@@ -61,7 +61,6 @@ export const en = {
   "message.injectedContext": "Sent by the host, not typed by you: {summary}",
   // 会话创建时那条 hidden 消息里的那句事实（PRD F-D9：cwd 来自对话所属项目，不是宿主进程的目录）
   "message.injectedContext.cwd": "the current folder is {cwd}",
-  "message.subagentFailed": "The helper agent {name} failed: {reason}",
   "message.imageAsText": "{model} can't look at images, so {name} was described in text instead.",
 
   // ---- 用量（PRD F-I5）：三个数字分开给，句子只是给人看的拼装 ----

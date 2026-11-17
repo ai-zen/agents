@@ -101,7 +101,7 @@ HostApp（根：组装、启动、退出）
 
 **一段对话的诞生**（PRD R56 / F-D9）：`conversation.create` 只定身份并发一个 id，不写库；首次 `conversation.send` 时 `ConversationService.ensurePersisted` 才写行，**落行那一刻同时写这段对话的第一条消息**——一条 `role: user`、`hidden: true` 的 cwd 消息（正文由 `injectedContextOf` 拼）。它最先写，所以 `seq` 在真实用户消息之前；之后每轮都不再写、也不往用户消息里拼任何东西。cwd 取 `workspaces.cwd`，`workspaceId` 创建即定死。
 
-**会话级模型与思考档位**（PRD L7 / R70–R72）：存在 `conversations.modelId` / `thinkingLevel` 上，改了就落库。装配 agent 时从这里取：`modelId` 直接给 SDK 的三级解析，`thinkingLevel` 按该模型引用的策略表展开成参数补丁、叠在助手定义的 `modelParams` 之上（同一模型才叠）。展开发生在 `ChatRunner.createSdkAgentFactory` 的 `conversationModelParams`，档位名本身不进请求；换模型时档位清空。服务层要的运行时接口因此只剩两件（`ConversationRuntimePort`）：**现在忙不忙**（现读 agent 那一格）与**删掉之后的中止**（`forget`）。
+**会话级模型与思考档位**（PRD L7 / R70–R72）：存在 `conversations.modelId` / `thinkingLevel` 上，改了就落库。装配 agent 时从这里取：`modelId` 直接给 SDK 的三级解析，`thinkingLevel` 按该模型引用的策略表展开成参数补丁、叠在助手定义的 `modelParams` 之上（同一模型才叠）。展开发生在 `ChatRunner.createSdkAgentFactory` 的 `conversationModelParams`，档位名本身不进请求；换模型时档位清空。**这两手只允许空闲时做**（判词）：非空闲一律拒（`busy` + `detail.reason = "not_idle"`），一个字节都不写库；空闲时改完当场让那个驱动者退役（`AgentRegistry.invalidateConversation`），下一句话按新事实重新装配 —— 没有「忙的时候打标记、变闲再兑现」那一套（那套只服务全局配置生效，PRD 4.11 改配置不杀任何会话）。服务层要的运行时接口因此只剩四件（`ConversationRuntimePort`）：**现在忙不忙 / 队里几条**（现读 agent 那一格）、**删掉之后的现场丢弃**（`forget`）、**这一段手上有没有活**（`agentState`，没 agent 回 `null`）与**让这一段空闲的驱动者退役**（`invalidateAgent`）。
 
 **进程退出**（PRD 1.7 / 4.12）：**只有三个原因** —— 用户显式关闭（命令 + 一次二次确认）、进程被外部杀掉、机器没了。**连接数不参与任何判断**：agent 常驻的意思就是「有没有客户端连着，跟它活不活无关」，所以既没有「最后一个客户端走了就收尾」，也没有「把手上的活干完再退」—— 不自动退出这件事把这两条一起取消了（`checkExit` 与其两个触发源作废）。
 
@@ -182,6 +182,15 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 **宿主不做的事**（写在这里是为了不再长回来）：不算用量（每条消息自带 `usage`，客户端自己合计）、不算速率、不维护「请求中 / 思考中 / 输出中」这类阶段（客户端按事件到达自己推）、不报「这一段用了多少」（「这一段」不可定义）。
 
 **落库 = 同一个镜子的另一份**：`message.added` / `message.changed` 到了就写那一行（边流边写只是节流，不是「提前写」），`message.removed` 到了就删。**没有「最后统一写一遍」**：那等于假设有一个终局。
+
+### 5.5 换模型 / 换思考强度：只允许空闲时
+
+**判词：「只允许空闲时候换模型换思考强度。」** 于是没有「忙的时候打标记、变闲再兑现」那一套 —— 非空闲就拒，空闲时改完当场换人。
+
+- **判据一条，与交接入口同一个**：`agent.state === "idle"` 才算空闲（`consumptionPaused` 挡着也算空闲 —— 它手上没活）。没有 agent（死的）也放行：没有驱动者，就没有「手上那批活」可打岔。
+- **拒就是拒**：`HostError("busy", { detail: { conversationId, reason: "not_idle" } })`，**一个字节都不写库**（判据摆在参数校验与写行之前）。
+- **允许时**：写会话行 → 立刻 `AgentRegistry.invalidateConversation(conversationId)` → 回 `ConversationView`。那个驱动者不能留着：模型客户端与思考参数都是装配那一刻读的，留着它就是「换了模型还在用旧的客户端」；下一句话按新事实重新装配。
+- **两条阈值不是这一回事**：它们不进驱动者的出厂配置（宿主按会话行现读），所以改它们**不碰 agent、不重建** —— 与这两手正好相反。
 
 ## 6. 契约面
 
@@ -338,9 +347,10 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 |---|---|---|
 | Scope 公开面 | `packages/host/src/runtime/ScopeRegistry.ts:174-192`（create / get / workspaceIds）、`:219-236`（refreshWorkspace）、`:246-267`（dispose / disposeAll） | 只有这六个方法；没有任何空闲计时 |
 | Scope 拒绝级联 | `ScopeRegistry.ts:110-123` | `ScopeBusyError` 带 `conversationIds`，撞上活着的 agent 只拒绝 |
-| agent 存活策略 | `packages/host/src/runtime/AgentRegistry.ts:243-350` | `acquire` / `complete` / `discard` / `invalidate` / `disposeAll` + 两个只读观测口 |
+| agent 存活策略 | `packages/host/src/runtime/AgentRegistry.ts`（`acquire` / `complete` / `kill` / `killAll` / `invalidate` / `invalidateConversation` / `disposeAll`） | 「该不该活着」只有这一处；两个只读观测口（`get` / `conversationIds`） |
 | 生命周期理由闭集 | `AgentRegistry.ts:109-117` | `AgentLifecycleReason` 的七个取值；`onLifecycle` 只是观察 |
 | 配置就地刷新 | `app.ts:1335-1360`（`refreshScopesFor`）、`:1309-1320`（`createApplyPort`）、`packages/sdk/src/scope/Scope.ts` 的 `refresh` | 刷已存在的 Scope + `invalidate`，**不拆任何 Scope** |
+| 换模型 / 换思考档位的退役 | `AgentRegistry.ts`（`invalidateConversation`）、`ConversationService.ts`（`setModel` / `setThinking` 里的 `assertIdle` + `runtime.invalidateAgent`） | 只允许空闲时改；改完当场让这一段空闲的驱动者退役 |
 | 关闭宿主 | `app.ts:862-905`（`doStop`） | 只有显式关闭这一条路（`host.shutdown` 命令 + 二次确认）；收尾把 Scope 与 MCP 一起拆。`checkExit` / 连接数回调那两个入口**作废** |
 | 压缩归一（F-D11） | `storage/migrations.ts:206-223`、`ChatRunner.ts:3220-3232`、`app.ts:1110-1115`、`services/HandoffService.ts:460-467` | 派生会话自己压（`auto`）；用户会话在变闲那一刻问；只产文档不记 `manual` |
 
@@ -349,7 +359,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 | 条 | 落点 | 一句话 |
 |---|---|---|
 | 会话草稿落库 | `packages/host/src/services/ConversationService.ts:409-430` | `ensurePersisted`：写行 + 那条 hidden 的 cwd 消息，并发去重 |
-| 运行时端口 | `ConversationService.ts:93-109` | 忙不忙（现读 agent）/ `forget` |
+| 运行时端口 | `ConversationService.ts`（`ConversationRuntimePort`）、`app.ts`（`createConversationRuntime`） | 哪一格 / 队里几条（现读）、`forget`、`agentState`、`invalidateAgent` |
 | 侧栏摘要 | `ConversationService.ts:766`（`toSummary`） | 主线条数 + 四格状态读数 + 待办条数 + 助手可用性 |
 | `message.list` 的 `around` | `packages/host/src/services/MessageService.ts:337`（`AROUND_WINDOW = 40`）、`:388`（`list`） | 命中不在可见集就回空页 + `anchor: null`，不报错 |
 | 三个条数口径 | `MessageRepository.ts:238` / `:295` / `:408` | 主线 / 子 Agent 一半 / 全部行，三者加减 |

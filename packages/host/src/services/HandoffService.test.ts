@@ -5,9 +5,10 @@
  *
  * 四件口径：
  *
- * 1. `start()` 只回「已经开始」，那一趟在后台跑。所以每个用例都靠一条 **`memory_replaced`**
- *    事件等它收尾 —— 提交与回滚都推它，于是「跑完了没有」这件事有一个确定的答案，
- *    而不是靠睡一会儿。
+ * 1. `start()` 只回「已经开始」，那一趟在后台跑。所以每个用例都靠那条**摘牌**（`endHandoff`，
+ *    `runToEnd` 的 `finally` 里最后一个动作）等它收尾 —— 提交与回滚都从那里过去，于是「跑完了没有」
+ *    这件事有一个确定的答案，而不是靠睡一会儿。只看 `memory_replaced` 不够：那条在提交点就推了，
+ *    后面还有 `afterCommit`（开新对话 / 标压缩 / 把题标已答）。
  * 2. 自交接「写完了没有」只看**那次写文档的工具调用的结果**（`toolFinished`）加一道落盘校验，
  *    不看状态事件，也不看模型说的话。
  * 3. 入口判据只有一条：**那段对话闲着才发起**。非空闲（忙 / 暂停 / 没有 agent）直接拒，
@@ -83,7 +84,7 @@ function echoingClient(): SummaryClient {
   return client as unknown as SummaryClient;
 }
 
-/** 对话服务要的那个窄接口：交接用例不需要临时模型 / 临时档位 */
+/** 对话服务要的那个窄接口：交接用例不需要临时模型 / 临时档位，也没有活着的驱动者 */
 class FakeRuntime implements ConversationRuntimePort {
   status(): ConversationStatus {
     return "dead";
@@ -92,6 +93,11 @@ class FakeRuntime implements ConversationRuntimePort {
     return 0;
   }
   forget(): void {}
+  /** 没有 agent（死格）：换模型 / 换档位那条路对这一段永远放行 */
+  agentState(): AgentNS.AgentState | null {
+    return null;
+  }
+  invalidateAgent(): void {}
 }
 
 /** 取 Scope 的记账实现：真 Scope（cwd 显式给），只记拿过哪些键（没有归还这回事） */
@@ -160,6 +166,14 @@ interface Built {
    * 自交接有没有写文档（`false` 时驱动者照旧调写工具，但盘上什么都没落 —— 验「降级」那条路）
    */
   writesDocument: boolean;
+  /**
+   * 一次交接的跑法：起一趟、等它收尾。
+   *
+   * 「收尾了」= 挂的那块牌子摘了（`endHandoff`）：它是 `runToEnd` 的 `finally` 里最后一步，
+   * 四条结局（成功 / 降级 / 失败 / 取消）都从那里过。不能只看 `memory_replaced` —— 那条在**提交点**
+   * 就推了，而它后面还有 `afterCommit`（开新对话 / 标压缩 / 把题标已答），以及在 `finally` 里的
+   * 截记忆与摘牌：停在那里断言等于只测了一半（而 `afterCommit` 里的差错是吞掉上报的，看不见）。
+   */
   settle(): Promise<void>;
 }
 
@@ -341,6 +355,9 @@ async function seedHarness(): Promise<Harness> {
       const instructions: string[] = [];
       const writesDocument = options.writesDocument ?? true;
       let delivered = 0;
+      /** 这一趟真的走完了的记号（摘牌次数）与等着它的人（`settle` 一个一个等） */
+      let ends = 0;
+      const endWaiters: Array<() => void> = [];
 
       /**
        * 投递口（真 `ChatRunner` 结构上就是它）：把指令塞进**这个驱动者**的队列，并让它跑起来。
@@ -355,6 +372,8 @@ async function seedHarness(): Promise<Harness> {
         },
         endHandoff: (conversationId) => {
           runnerCalls.push(`end:${conversationId}`);
+          ends += 1;
+          for (const wake of endWaiters.splice(0)) wake();
         },
         deliver: async (conversationId, input) => {
           delivered += 1;
@@ -408,7 +427,14 @@ async function seedHarness(): Promise<Harness> {
         events: log,
         writesDocument,
         settle: async () => {
+          // 「我是第几趟」在**起跑之前**就得数清楚：回滚那条路上摘牌紧跟在事件后面，
+          // 等 await 回来时可能已经数过了
+          const target = ends + 1;
+          // 先确认这一趟真的跑起来了（`memory_replaced` 是提交与回滚都会推的那一条），再等摘牌
           await log.settled;
+          while (ends < target) {
+            await new Promise<void>((resolve) => endWaiters.push(resolve));
+          }
         },
       };
     },

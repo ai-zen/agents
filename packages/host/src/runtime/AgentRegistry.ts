@@ -12,7 +12,8 @@
  * | `complete` | 变闲那一刻（core 的 `state:idle`） | 陈旧（配置换过）就退役，否则留着（常驻） |
  * | `kill` | 对话 / 项目被删 | **`agent.kill()`（立刻死，存量作废）** + 丢引用 |
  * | `killAll` | 项目/Scope 被显式处置 | 同一个 Workspace 下的 agent 全部 `kill()` + 丢引用 |
- * | `invalidate` | 配置生效 | 空闲的当场退役（不计入返回）；正在跑的只打标记（计入返回），等它 `complete` |
+ * | `invalidate` | 全局配置生效（整个 Workspace） | 空闲的当场退役（不计入返回）；正在跑的只打标记（计入返回），等它 `complete` |
+ * | `invalidateConversation` | 这一段对话的出厂配置变了（换模型 / 换思考档位） | 与 `invalidate` 同一对分支：空闲的当场退役；在跑的只打标记 |
  * | `disposeAll` | 进程收尾 | 全部 `kill()` 后丢引用 |
  * | `get` | 观测 | 这段对话现在挂着谁（只读） |
  * | `conversationIds` | 观测 | 还活着哪几段（可按键 Workspace 过滤，只读） |
@@ -46,7 +47,8 @@
  *     `ChatRunner.forget`（先丢掉那条桥，再 `kill`）→ `scopes.dispose`。
  *   - `complete` 兑现陈旧标记：它闲下来了，但配置换过，手里这个的模型客户端是旧的 →
  *     退役，下一次 `acquire` 按新配置重新装配。
- *   - `invalidate` 撞上空闲的那个：没什么要等的，当场退役（它不会再被谁取走）。
+ *   - `invalidate` / `invalidateConversation` 撞上空闲的那个：没什么要等的，当场退役（它不会
+ *     再被谁取走）。
  *
  * 后两种**不 kill**：那是「换一个新的」，而它手上那一批还得用旧配置跑完。
  *
@@ -110,7 +112,7 @@ export type AgentLifecycleAction = "built" | "reused" | "rebuilt" | "retired";
  * |---|---|---|
  * | `never-built` | `built` | 这段对话从来没有过 agent |
  * | `assembly-facts-unchanged` | `reused` | 手里那个还是照现在的事实造的 |
- * | `assembly-facts-changed` | `retired` + `rebuilt` | 模型 / 思考档位 / 助手换了，旧的按旧事实造的 |
+ * | `assembly-facts-changed` | `retired`（`invalidateConversation` / `acquire`）+ `rebuilt`（`acquire`） | 模型 / 思考档位 / 助手换了，旧的按旧事实造的 |
  * | `config-changed` | `retired` | 配置生效，`invalidate` 撞上**空闲**的那个 |
  * | `stale-on-settle` | `retired` | 配置生效时它正干着活（只打了标记），变闲那一刻才兑现 |
  * | `conversation-deleted` | `retired` | `kill` / `killAll`：对话或项目被删 |
@@ -326,6 +328,11 @@ export class AgentRegistry {
    *
    * 不收件、但手上有活的那种（那批正在跑）算「在干」：那批跑完照样报闲，标记到那一刻兑现。
    *
+   * **「只打标记」那一支只为这条路留着**：全局配置生效（PRD 4.11 / D34）**不杀任何会话** ——
+   * 用户改的是「以后都用什么」，正在跑的那一批不该被打断，所以它只挂一个标记，等自己闲下来
+   * 再换人。换模型 / 换思考档位那条路（{@link invalidateConversation}）用的也是这一支，但那边
+   * 的前提是「已经确认空闲」，标记基本撞不到。
+   *
    * @returns 被打上标记、但还没退役的 `conversationId`（闲的那些不在里面：它们已经没了）
    */
   invalidate(workspaceId: string): string[] {
@@ -334,8 +341,7 @@ export class AgentRegistry {
     for (const conversationId of [...this.entries.keys()]) {
       const entry = this.entries.get(conversationId);
       if (!entry || entry.workspaceId !== workspaceId) continue;
-      if (entry.agent.state === "working") {
-        entry.stale = true;
+      if (this.markStaleIfWorking(entry)) {
         marked.push(conversationId);
         continue;
       }
@@ -343,6 +349,33 @@ export class AgentRegistry {
       this.retire(conversationId, "config-changed");
     }
     return marked;
+  }
+
+  /**
+   * **这一段对话**的出厂配置变了（换模型 / 换思考档位改的就是它）：手里那个驱动者不能留着。
+   *
+   * 为什么不能留：模型客户端与思考参数都是装配那一刻读的（`createModel(scope.config, …)` +
+   * `conversationModelParams`），会话行改了也不会跟着变 —— 留着它就等于「换了模型还在用旧的
+   * 客户端」。所以改完会话行当场退役：下一句话按新事实重新装配，中间不留一个「半新半旧」的
+   * 驱动者（不搞「先打标记、变闲再兑现」那一套）。
+   *
+   * 与 {@link invalidate} 是同一对分支、同一个实现（判据都只有 `agent.state`，见
+   * {@link markStaleIfWorking}），区别只在**范围**：那一个按 Workspace 刷（全局配置生效，
+   * PRD 4.11 / D34），这一个只动一段对话（用户改了这一段以后用什么）。
+   *
+   * 「在跑」那一支在这里基本撞不到：调用方（`ConversationService.setModel` / `setThinking`）
+   * 已经先按「`agent.state === "idle"` 才允许改」拒过一遍。留着它不是重复判断，而是兜住两次
+   * 判断之间的空档（判过之后它自己又跑起来了）：那一刻正确的做法与全局那条一样 —— 不打断，
+   * 打上标记等它闲下来由 {@link complete} 兑现。
+   *
+   * @returns 真的退役了没有（在跑的、没有登记的，都回 `false`）
+   */
+  invalidateConversation(conversationId: string): boolean {
+    const entry = this.entries.get(conversationId);
+    if (!entry) return false;
+    if (this.markStaleIfWorking(entry)) return false;
+    this.retire(conversationId, "assembly-facts-changed");
+    return true;
   }
 
   /** 收尾：全部硬着陆（进程要退了，没有「稍后再死」这回事）。幂等。 */
@@ -395,6 +428,19 @@ export class AgentRegistry {
   }
 
   /**
+   * 「手上有没有活」这一处判据（`invalidate` 与 `invalidateConversation` 共用）：在跑就打上陈旧
+   * 标记并回 `true`，闲着回 `false`（由调用方退役）。
+   *
+   * 只读 `agent.state`（`working` / `idle`，`CORE.md` §4）：`consumptionPaused` 是**另一处状态**
+   * （从下一批起还收不收件），不是「手上有活」。
+   */
+  private markStaleIfWorking(entry: AgentEntry): boolean {
+    if (entry.agent.state !== "working") return false;
+    entry.stale = true;
+    return true;
+  }
+
+  /**
    * 手里那个 agent 是不是还按**这段对话现在的事实**造出来的 —— `acquire` 的唯一判据。
    *
    * 私有：调用方不该「复用前问一句」（那是它反问自己的实现细节），只该说「我要一段有事要办」。
@@ -442,8 +488,9 @@ export class AgentRegistry {
    * 丢掉一条登记并按理由报一次 `retired`（没有登记就什么也不做，也不报）。
    *
    * 只丢引用：不 abort、不 kill、不落库、不推事件 —— 「换一个新的」那几条路（`complete` 兑现
-   * 陈旧标记、`invalidate` 撞上空闲的、装配事实变了重建）用这一条，因为它们手上那一批可能
-   * 还要把话说完。真正要它死的三条路（对话被删 / 项目被删 / 进程收尾）走 {@link killEntry}。
+   * 陈旧标记、`invalidate` / `invalidateConversation` 撞上空闲的、装配事实变了重建）用这一条，
+   * 因为它们手上那一批可能还要把话说完。真正要它死的三条路（对话被删 / 项目被删 / 进程收尾）
+   * 走 {@link killEntry}。
    */
   private retire(conversationId: string, reason: AgentLifecycleReason): void {
     if (!this.drop(conversationId)) return;
