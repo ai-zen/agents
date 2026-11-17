@@ -30,7 +30,7 @@ describe("Tool 基类", () => {
         },
       } as Tool["function"];
       async exec(ctx: ToolCallContext) {
-        return `executed ${ctx.function_call.name}`;
+        return `executed ${ctx.tool_call.function?.name}`;
       }
     })();
 
@@ -75,7 +75,7 @@ describe("Tool 基类", () => {
     })();
 
     const mockCtx = {
-      function_call: { name: "greet", arguments: '{"name":"世界"}' },
+      tool_call: { function: { name: "greet", arguments: '{"name":"世界"}' } },
       parsedArgs: { name: "世界" },
     } as any;
 

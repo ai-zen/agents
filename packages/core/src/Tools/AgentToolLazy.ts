@@ -1,6 +1,5 @@
 import { Agent, type SubAgentHookContext } from "../Agent.js";
 import { AgentNS } from "../AgentNS.js";
-import { sumUsage } from "../Usage.js";
 import { ToolCallContext } from "../ToolCallContext.js";
 import { Tool } from "../Tool.js";
 
@@ -59,12 +58,9 @@ export class AgentToolLazy implements Tool {
       AgentToolLazy.fillSource(agent.messages, label);
     }
 
-    // 血缘先记上，再问钩子：`subAgentStarted` 是在 `dispatchSubAgentHook` 里发的，
-    // 订阅方要在那一刻就能从 `parent` / `children` 摸到关系（§9-2「造点和记关系是同一次动作」）。
-    // 拒了就把关系撤回去 —— 没造出来的东西不该挂在世上。
-    agent.parent = ctx.agent;
-    ctx.agent.children.add(agent);
-
+    // 血缘**不在这里记**：只有名册一份（§17）。`dispatchSubAgentHook` 在发 `subAgentStarted`
+    // 之前就把这一项压进父的名册，订阅方在那一刻就已经能从 `host.subAgents` 摸到它。
+    // 拒了就什么都没发生 —— 没造出来的东西不该挂在世上。
     const subCtx: SubAgentHookContext = {
       agent: ctx.agent,
       subAgent: agent,
@@ -72,8 +68,6 @@ export class AgentToolLazy implements Tool {
     };
     const denied = await ctx.agent.dispatchSubAgentHook("onSubAgentStart", subCtx);
     if (denied !== undefined) {
-      ctx.agent.children.delete(agent);
-      agent.parent = undefined;
       return denied;
     }
 
@@ -93,10 +87,6 @@ export class AgentToolLazy implements Tool {
     } finally {
       offDenied();
       for (const off of forwarded) off();
-      ctx.agent.children.delete(agent);
-      // 把子 Agent（含其孙级）的累计用量钉到本次委派的工具结果消息上，
-      // 使其随消息持久化、并可被 sumUsage() 统一求和
-      ctx.resultMessage.subAgentUsage = sumUsage(agent.messages);
       await ctx.agent.dispatchSubAgentHook("onSubAgentEnd", subCtx);
     }
 

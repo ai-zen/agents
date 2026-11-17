@@ -93,17 +93,12 @@ export namespace AgentNS {
     /**
      * 产生本条 assistant 消息的那次 API 响应的 token 用量。
      * 由流式响应的最后一个 chunk 写入；仅 assistant 消息会有值。
-     * `Agent.lastUsage`（最近一次用量）即由本字段派生，不存在第二份拷贝。
+     * 「上一轮的用量」就是本会话最后一条带 `usage` 的 assistant 消息 —— 读法只有这一种，
+     * 不存在第二份快照。
      * 将本会话全部 assistant 消息的 `usage` 求和，即计费口径的累计消耗
      * （每轮请求都会重发完整历史，故求和 = 实际消耗）。
      */
     usage?: Usage;
-    /**
-     * 本条**工具消息**内「内部委派」产生的累计 token 用量（如子 Agent 委派）。
-     * 由委派路径（`AgentTool` / `AgentToolLazy`）在子 Agent 结束后写入，随消息持久化；
-     * 与 `usage`（本条消息自身那次响应）互斥出现。求和请用 `sumUsage()`。
-     */
-    subAgentUsage?: Usage;
     hidden?: boolean;
     omit?: boolean;
     /**

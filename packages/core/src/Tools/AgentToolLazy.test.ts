@@ -97,6 +97,9 @@ describe("AgentToolLazy 子 Agent 委派边界", () => {
     host.on("subAgentStarted", startEvent);
     host.on("subAgentFinished", endEvent);
 
+    const deniedEvents: any[] = [];
+    host.on("denied", (payload) => deniedEvents.push(payload));
+
     const result = await tool.exec(buildCtx(host));
 
     expect(result).toBe("任务上下文不完整");
@@ -105,6 +108,10 @@ describe("AgentToolLazy 子 Agent 委派边界", () => {
     // 拒了就没什么「开始」可言：钩子在前（能拒），事件在后（已定）
     expect(startEvent).not.toHaveBeenCalled();
     expect(endEvent).not.toHaveBeenCalled();
+    // 拒这件事本身要报出来（与另两道门同口径），理由原样带出去
+    expect(deniedEvents).toHaveLength(1);
+    expect(deniedEvents[0].hook).toBe("onSubAgentStart");
+    expect(deniedEvents[0].reason).toBe("任务上下文不完整");
   });
 
   it("onSubAgentEnd 在子 Agent 完成后触发，且不影响工具结果", async () => {
@@ -181,7 +188,7 @@ describe("AgentToolLazy 子 Agent 委派边界", () => {
     ).toThrow("must end with a user message");
   });
 
-  it("血缘：跑的时候挂在父的 children 上，收尸后摘掉", async () => {
+  it("血缘只在名册上：`subAgentStarted` 那一刻就能从父的 `subAgents` 摸到这一项，结束时只填 `endedAt`", async () => {
     const child = new Agent({
       client: createMockClient("结果"),
       model: "gpt-4",
@@ -194,17 +201,22 @@ describe("AgentToolLazy 子 Agent 委派边界", () => {
       tools: [buildTool(child)],
     });
 
-    let seenDuring = 0;
+    let names = -1;
+    let endedAtDuring = "未读到";
     host.on("subAgentStarted", () => {
-      seenDuring = host.children.size;
+      names = host.subAgents.length;
+      endedAtDuring = String(host.subAgents[0]!.endedAt);
     });
 
     await buildTool(child).exec(buildCtx(host));
 
-    expect(seenDuring).toBe(1);
-    expect(child.parent).toBe(host);
-    // 收尸之后摘掉：`children` 说的是「还活着的」
-    expect(host.children.size).toBe(0);
+    // 发事件那一刻名册里已经有它（先记名字、再发事件）
+    expect(names).toBe(1);
+    expect(endedAtDuring).toBe("null");
+    // 结束只标注、不移除：父照样答得出它跑过什么（§17）
+    expect(host.subAgents).toHaveLength(1);
+    expect(host.subAgents[0]!.agent).toBe(child);
+    expect(host.subAgents[0]!.endedAt).not.toBeNull();
   });
 
   it("子 agent 的事件按同一套名字转发到父，带 subAgent 与 via", async () => {

@@ -66,9 +66,8 @@ describe("applyChunk：内容段数组（视觉 / 多段）", () => {
   /**
    * 分段流的形状是「首片声明这一段（只有 `index`，不带 `text`），后续片才带正文」。
    *
-   * 首片就带 `text` 的形状今天会被拼两遍（`...deltaSection` 已经把值放进去，后面又 `+=`
-   * 一次）—— 那是本函数从 `Agent.parseStreamData` 原样搬过来时就有的行为，没有在这次
-   * 抽取里改；仓库里没有任何一处会发出这种形状（`testing` 的假模型只发字符串 delta）。
+   * 首片就带正文的形状也要对：首片**只放声明字段**、正文一律走 `+=` —— 两件都做的话
+   * （先 `...deltaSection` 再 `+=`）首片自带的 `"A"` 会变成 `"AA"`。
    */
   it("按 `index` 分段累加文本", () => {
     const message = receiver();
@@ -76,6 +75,55 @@ describe("applyChunk：内容段数组（视觉 / 多段）", () => {
     applyChunk(message, chunk({ content: [{ index: 0, text: "前半" }] }));
     applyChunk(message, chunk({ content: [{ index: 0, text: "后半" }] }));
     expect(message.content).toEqual([{ index: 0, type: "text", text: "前半后半" }]);
+  });
+
+  it("首片自带正文：只算一遍（`\"A\"` 不会变成 `\"AA\"`）", () => {
+    const message = receiver();
+    applyChunk(message, chunk({ content: [{ index: 0, type: "text", text: "A" }] }));
+    applyChunk(message, chunk({ content: [{ index: 0, text: "B" }] }));
+    expect(message.content).toEqual([{ index: 0, type: "text", text: "AB" }]);
+  });
+
+  it("首片带 `image_url`：`url` 就是那个字符串，不是 `[object Object]…`", () => {
+    const message = receiver();
+    applyChunk(
+      message,
+      chunk({
+        content: [
+          { index: 0, type: "image_url", image_url: { url: "https://example.com/a.png" } },
+        ],
+      }),
+    );
+    expect(message.content).toEqual([
+      { index: 0, type: "image_url", image_url: { url: "https://example.com/a.png" } },
+    ]);
+  });
+
+  it("一片带两个内容段：两段都在，顺序按 `index`（不是只看第 0 个）", () => {
+    const message = receiver();
+    applyChunk(
+      message,
+      chunk({
+        content: [
+          { index: 0, type: "text", text: "先看图" },
+          { index: 1, type: "image_url", image_url: { url: "https://example.com/b.png" } },
+        ],
+      }),
+    );
+    expect(message.content).toEqual([
+      { index: 0, type: "text", text: "先看图" },
+      { index: 1, type: "image_url", image_url: { url: "https://example.com/b.png" } },
+    ]);
+  });
+
+  it("已是段数组时来了字符串 delta：已有段不丢，新内容自己成一段 text", () => {
+    const message = receiver();
+    applyChunk(message, chunk({ content: [{ index: 0, type: "text", text: "已有" }] }));
+    applyChunk(message, chunk({ content: "后来又一句" }));
+    expect(message.content).toEqual([
+      { index: 0, type: "text", text: "已有" },
+      { type: "text", text: "后来又一句" },
+    ]);
   });
 });
 
@@ -131,6 +179,26 @@ describe("applyChunk：工具调用", () => {
     applyChunk(message, chunk({ tool_calls: [{ index: 0, function: { name: "read" } }] }));
     applyChunk(message, chunk({ tool_calls: [{ index: 1, function: { name: "exec" } }] }));
     expect(message.tool_calls!.map((call) => call.function!.name)).toEqual(["read", "exec"]);
+  });
+
+  it("一片带两个调用：两个都在，按 `index` 归位（不是只看第 0 个）", () => {
+    const message = receiver();
+    applyChunk(
+      message,
+      chunk({
+        tool_calls: [
+          { index: 0, id: "call_1", type: "function", function: { name: "read", arguments: '{"p":1}' } },
+          { index: 1, id: "call_2", type: "function", function: { name: "exec", arguments: '{"cmd":"ls"}' } },
+        ],
+      }),
+    );
+
+    expect(message.tool_calls!.map((call) => call.id)).toEqual(["call_1", "call_2"]);
+    expect(message.tool_calls!.map((call) => call.function!.name)).toEqual(["read", "exec"]);
+    expect(message.tool_calls!.map((call) => call.function!.arguments)).toEqual([
+      '{"p":1}',
+      '{"cmd":"ls"}',
+    ]);
   });
 });
 

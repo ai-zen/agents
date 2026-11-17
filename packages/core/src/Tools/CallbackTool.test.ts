@@ -141,6 +141,6 @@ describe("CallbackTool", () => {
 
     await tool.exec(ctx);
     expect(receivedCtx).toBeInstanceOf(ToolCallContext);
-    expect(receivedCtx.function_call.name).toBe("contextCheck");
+    expect(receivedCtx.tool_call.function.name).toBe("contextCheck");
   });
 });

@@ -1,10 +1,14 @@
 /**
  * core 往外给的错误。
  *
- * 只有三个码，每一个都在描述**世界**里发生了什么：
+ * 四个码，每一个都在描述**世界**里发生了什么：
  * - `request-failed`：没连上、没拿到回应；
  * - `stream-failed`：拿到了回应，但流断了或回应不合规；
- * - `closed`：往已经关了的 agent 塞东西（调用方违约）。
+ * - `closed`：agent 已经终结（`stop()` / `kill()` 动过），再找它也没人接；
+ * - `input_paused`：输入闸暂时关着（有人 `pauseInput()`），`resumeInput()` 之后还能投。
+ *
+ * 后两个的区别是调用方唯一需要分的那一刀：**等一等再投**（`input_paused`）与**改投别处**
+ *（`closed`）。压成一个码的话，投递方只能拿「再试一次」去撞一个永远不会再收的队列。
  *
  * ## 一个类、一个实例、两个地方用
  *
@@ -27,8 +31,10 @@ export type AgentErrorCode =
   | "request-failed"
   /** 拿到了回应，但流断了或回应不合规 */
   | "stream-failed"
-  /** 往已经关了的 agent 塞东西（调用方违约） */
-  | "closed";
+  /** agent 已经终结（`stop()` / `kill()` 动过）：再等也不会有人来取 */
+  | "closed"
+  /** 输入闸暂时关着（`pauseInput()` 之后、`resumeInput()` 之前）：等一等还能投 */
+  | "input_paused";
 
 export class AgentError extends Error {
   readonly code: AgentErrorCode;

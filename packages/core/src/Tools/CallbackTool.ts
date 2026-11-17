@@ -17,7 +17,7 @@ export class CallbackTool extends Tool {
     let result;
 
     if (this.callback) {
-      // 回调拿到解析后的参数与完整 ctx（要 agent / signal / preventDefault 都不必另存闭包）
+      // 回调拿到解析后的参数与完整 ctx（要 agent / signal / 那条工具调用都不必另存闭包）
       result = await this.callback(ctx.parsedArgs, ctx);
     }
 

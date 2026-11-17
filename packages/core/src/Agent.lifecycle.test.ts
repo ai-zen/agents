@@ -31,8 +31,8 @@ function textStream(text: string): AnyChunk[] {
 /**
  * 带工具调用的流。
  *
- * 每个调用单独一片 —— 这是厂商的真实形状（`applyChunk` 一次只处理 `delta.tool_calls[0]`，
- * 靠 `index` 归位）。
+ * 每个调用单独一片 —— 这是常见的真实形状（`applyChunk` 也认「一片带多个」并靠 `index` 归位，
+ * 那种形状在 `applyChunk.test.ts` 里钉）。
  */
 function toolCallStream(calls: Array<{ id: string; name: string; args?: string }>): AnyChunk[] {
   return [
@@ -112,6 +112,17 @@ const user = (content: string): AgentNS.InboxInput => ({
   source: { kind: "user" },
   priority: "low",
 });
+
+/** 接一次 push，把它抛的 `AgentError` 的码交出来（没抛就是 `undefined`） */
+function codeOf(run: () => void): string | undefined {
+  try {
+    run();
+  } catch (error) {
+    expect(error).toBeInstanceOf(AgentError);
+    return (error as AgentError).code;
+  }
+  return undefined;
+}
 
 // ---------------------------------------------------------------------------
 
@@ -223,6 +234,158 @@ describe("Agent 投递", () => {
 
     await agent.start();
     expect(agent.messages).toHaveLength(0);
+  });
+
+  it("push 分得清「输入闸暂时关着」与「agent 已经终结」", async () => {
+    const { client } = createMockClient([]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+    void agent.start();
+
+    // 暂时不收：等一等还能投
+    agent.pauseInput();
+    expect(codeOf(() => agent.push(user("一")))).toBe("input_paused");
+
+    agent.resumeInput();
+    expect(codeOf(() => agent.push(user("二")))).toBeUndefined();
+
+    // 已经终结：再等也不会有人来取
+    agent.kill();
+    expect(codeOf(() => agent.push(user("三")))).toBe("closed");
+
+    await agent.start();
+  });
+});
+
+describe("Agent 死亡事件", () => {
+  it("没 start() 过也不吞事件：stop() 发一条 stopped，kill() 不再补一条", async () => {
+    const { client } = createMockClient([]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+
+    const seen: string[] = [];
+    agent.on("stopped", () => seen.push("stopped"));
+    agent.on("killed", () => seen.push("killed"));
+
+    agent.stop();
+    agent.stop();
+    expect(seen).toEqual(["stopped"]);
+
+    // kill() 之后不再补发 stopped：一个 agent 只有一条「死」
+    agent.kill();
+    agent.kill();
+    expect(seen).toEqual(["stopped"]);
+
+    // 之后才 start()：外循环立刻跑到出口，但不会再报第二条
+    await agent.start();
+    expect(seen).toEqual(["stopped"]);
+  });
+
+  it("没 start() 过就 kill()：只发一条 killed", async () => {
+    const { client } = createMockClient([]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+
+    const seen: string[] = [];
+    agent.on("stopped", () => seen.push("stopped"));
+    agent.on("killed", () => seen.push("killed"));
+
+    agent.kill();
+    expect(seen).toEqual(["killed"]);
+
+    await agent.start();
+    agent.stop();
+    expect(seen).toEqual(["killed"]);
+  });
+
+  it("先关门、后 start()：存量跑完后 state 仍然是 idle（不会卡在 working 上）", async () => {
+    const { client } = createMockClient([textStream("还是答了")]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+
+    const seen: string[] = [];
+    agent.on("stopped", () => seen.push("stopped"));
+
+    agent.push(user("这一条还在队里"));
+    agent.stop();
+    // 没起来过：只能由本体当场说
+    expect(seen).toEqual(["stopped"]);
+
+    // 起来之后存量照跑（关门是「以后不再收」，不是「手上这些不跑」）
+    await agent.start();
+
+    expect(agent.messages.at(-1)!.content).toBe("还是答了");
+    expect(agent.state).toBe("idle");
+    expect(seen).toEqual(["stopped"]);
+  });
+
+  it("死在干活的中途：`killed` 回调里 state 已经是 idle，之后不再有 state:idle", async () => {
+    const create = vi.fn(async (_body: any, options: any) => makeHangingStream(options?.signal));
+    const agent = new Agent({
+      client: { chat: { completions: { create } } } as any,
+      model: "m",
+      newMessageId: makeIds(),
+    });
+
+    let stateAtDeath: string | undefined;
+    let idleAfterDeath = 0;
+    let dead = false;
+    agent.on("killed", () => {
+      stateAtDeath = agent.state;
+      dead = true;
+    });
+    agent.on("state:idle", () => {
+      if (dead) idleAfterDeath += 1;
+    });
+
+    const death = agent.start();
+    agent.push(user("慢慢来"));
+    await until(() => agent.state === "working");
+
+    agent.kill();
+    await death;
+
+    // 订阅方在「死」那一刻读到的已经是死后那一格（不是 working）
+    expect(stateAtDeath).toBe("idle");
+    // 死后的 agent 不再冒状态事件
+    expect(idleAfterDeath).toBe(0);
+    expect(agent.state).toBe("idle");
+  });
+
+  it("关门放完血才死：`stopped` 那一刻同样是 idle，之后不再有 state:idle", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const create = vi.fn(async () => {
+      await gate;
+      return makeStream(textStream("答完了"));
+    });
+    const agent = new Agent({
+      client: { chat: { completions: { create } } } as any,
+      model: "m",
+      newMessageId: makeIds(),
+    });
+
+    let stateAtDeath: string | undefined;
+    let idleAfterDeath = 0;
+    let dead = false;
+    agent.on("stopped", () => {
+      stateAtDeath = agent.state;
+      dead = true;
+    });
+    agent.on("state:idle", () => {
+      if (dead) idleAfterDeath += 1;
+    });
+
+    const death = agent.start();
+    agent.push(user("问一句"));
+    await until(() => agent.state === "working");
+
+    agent.stop();
+    // 关门了但存量还在跑：此刻还没死，所以还没报 stopped
+    expect(stateAtDeath).toBeUndefined();
+    release();
+    await death;
+
+    expect(stateAtDeath).toBe("idle");
+    expect(idleAfterDeath).toBe(0);
+    // 存量真的跑完了才死
+    expect(agent.messages.at(-1)!.content).toBe("答完了");
   });
 });
 
@@ -505,6 +668,37 @@ describe("Agent 工具段里按中断", () => {
 });
 
 describe("Agent runOnce", () => {
+  it("「等闲」不是一步通过：这一批跑完之前不会关门", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const create = vi.fn(async () => {
+      await gate;
+      return makeStream(textStream("一次性结果"));
+    });
+    const agent = new Agent({
+      client: { chat: { completions: { create } } } as any,
+      model: "m",
+      newMessageId: makeIds(),
+      lifetime: "one-shot",
+      messages: [Message.System("sys"), Message.User("干件事", { kind: "agent", label: "测试" })],
+    });
+
+    const done = agent.runOnce();
+
+    // 这一批真的开始了（请求在飞，状态已经是 working）……
+    await until(() => agent.state === "working");
+    await until(() => create.mock.calls.length === 1);
+    // ……而 `runOnce` 还在等它跑完：门没关（还在等闲，不是一 push 完就一步通过）
+    expect(agent.isInputPaused).toBe(false);
+
+    release();
+    const messages = await done;
+
+    expect(messages.at(-1)!.content).toBe("一次性结果");
+    // 跑完才关门
+    expect(agent.isInputPaused).toBe(true);
+  });
+
   it("跑一次就死，把消息交回来", async () => {
     const { client, create } = createMockClient([textStream("一次性结果")]);
     const agent = new Agent({
@@ -681,6 +875,30 @@ describe("Agent runOnce", () => {
     await agent.start();
   });
 
+  it("非门钩子返回 string 不短路：后面插件的同名钩子照样跑", async () => {
+    const { client } = createMockClient([textStream("正常")]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+
+    const calls: string[] = [];
+    // `onOuterLoopStart` 不是门：它返回的那个字符串没人读，不该把后面的插件跳掉
+    agent.use({ onOuterLoopStart: () => "这句话没人读" });
+    agent.use({
+      onOuterLoopStart: () => {
+        calls.push("second");
+      },
+    });
+
+    void agent.start();
+    agent.push(user("说话"));
+    await settled(agent);
+
+    expect(calls).toEqual(["second"]);
+    expect(agent.messages.at(-1)!.content).toBe("正常");
+
+    agent.stop();
+    await agent.start();
+  });
+
   it("inboxPending 给出还没取走的条目，且一个都不取走", () => {
     const { client } = createMockClient([]);
     const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
@@ -699,36 +917,90 @@ describe("Agent runOnce", () => {
     agent.kill();
   });
 
-  it("inboxTaken 在落地之后报，带的是被取走的那些条目（含钥匙）", () => {
+  it("inboxAdded：投进来的每一条都报一次，带的是那一条（含钥匙）", () => {
+    const { client } = createMockClient([]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+
+    const added: any[] = [];
+    agent.on("inboxAdded", (payload) => added.push(payload));
+
+    agent.push(user("一句"));
+    agent.push(); // 钥匙：没有正文
+
+    expect(added).toHaveLength(2);
+    // 载荷就是队列里那一条：`createdAt` / `source` / 正文都在
+    expect(added[0].entry.content).toBe("一句");
+    expect(added[0].entry.source).toEqual({ kind: "user" });
+    expect(typeof added[0].entry.createdAt).toBe("string");
+    expect(added[1].entry.content).toBeUndefined();
+    // 投进来还没有人取走：队列里就是这两条
+    expect(agent.inboxPending).toHaveLength(2);
+
+    agent.kill();
+  });
+
+  it("inboxCleared：清空时报一次，带被丢掉的那些；本来就空就什么都不报", () => {
+    const { client } = createMockClient([]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+
+    const cleared: any[] = [];
+    agent.on("inboxCleared", (payload) => cleared.push(payload));
+
+    // 空队列清一次不算变化
+    expect(agent.clearInbox()).toEqual([]);
+    expect(cleared).toHaveLength(0);
+
+    agent.push(user("一"));
+    agent.push(user("二"));
+    const dropped = agent.clearInbox();
+
+    expect(dropped).toHaveLength(2);
+    expect(cleared).toHaveLength(1);
+    // 带的就是丢掉的那两条，原顺序
+    expect(cleared[0].entries).toHaveLength(2);
+    expect(cleared[0].entries[0].content).toBe("一");
+    expect(cleared[0].entries[1].content).toBe("二");
+    expect(agent.inboxPending).toHaveLength(0);
+
+    agent.kill();
+  });
+
+  it("inboxTaken 在落地之后报，带的是被取走的那些条目（含钥匙）", async () => {
     const { client } = createMockClient([textStream("好")]);
     const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
 
     const taken: any[] = [];
     const addedBefore: number[] = [];
+    const order: string[] = [];
+    agent.on("messageAdded", (payload) => {
+      const message = (payload as { message?: AgentNS.Message }).message;
+      if (message?.role === AgentNS.Role.User) order.push("messageAdded");
+    });
     agent.on("inboxTaken", (payload) => {
+      order.push("inboxTaken");
       taken.push(payload);
-      // 落地必须先发生：报告这一刻，消息已经在了
+      // 落地必须先发生：报这一刻，消息已经在了
       addedBefore.push(agent.messages.filter((m) => m.role === AgentNS.Role.User).length);
     });
 
     agent.push(user("一句"));
     agent.push(); // 钥匙
 
-    return (async () => {
-      void agent.start();
-      await until(() => taken.length > 0); await settled(agent);
+    void agent.start();
+    await until(() => taken.length > 0);
+    await settled(agent);
 
-      expect(taken).toHaveLength(1);
-      // 两条都被取走了：一条带正文、一条是钥匙
-      expect(taken[0].entries).toHaveLength(2);
-      expect(taken[0].entries[1].content).toBeUndefined();
-      // 报之前那条 user 消息已经落地了
-      expect(addedBefore[0]).toBe(1);
-      // 队列已空
-      expect(agent.inboxPending).toHaveLength(0);
+    expect(taken).toHaveLength(1);
+    // 两条都被取走了：一条带正文、一条是钥匙
+    expect(taken[0].entries).toHaveLength(2);
+    expect(taken[0].entries[1].content).toBeUndefined();
+    // 报之前那条 user 消息已经落地了，事件次序也是落地在前
+    expect(addedBefore[0]).toBe(1);
+    expect(order).toEqual(["messageAdded", "inboxTaken"]);
+    // 队列已空
+    expect(agent.inboxPending).toHaveLength(0);
 
-      agent.stop();
-      await agent.start();
-    })();
+    agent.stop();
+    await agent.start();
   });
 });

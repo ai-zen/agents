@@ -24,16 +24,15 @@ export class ToolCallContext {
   agent: Agent;
 
   /**
-   * 统一形状的工具调用：tool_calls 格式 `{ id?, type?, function: { name, arguments } }`；
-   * 旧版 function_call 已包装为无 id / type 的 `{ function }` 形状。
+   * 统一形状的工具调用：`{ id?, type?, function: { name, arguments } }`。
+   *
+   * 要读名字 / 参数就读 `tool_call.function` —— 这里不再另存一份 `function_call` 兼容字段：
+   * 一个概念只该有一种形状，两份迟早会漂（而漂的时候两边都看着像是真的）。
    */
   tool_call: AgentNS.ToolCall;
 
   /** 匹配到的已注册工具（未注册则为 undefined，此时那条 tool 消息里是「未知工具」） */
   tool?: Tool;
-
-  /** 兼容字段：等价于 `tool_call.function`，旧工具实现（如 callback 里访问 this.function_call.name）可直接使用 */
-  function_call: AgentNS.FunctionCall;
 
   /** 已解析的工具参数；解析失败时为 `undefined`（此时 `parseError` 有值） */
   parsedArgs: any;
@@ -60,13 +59,13 @@ export class ToolCallContext {
     this.agent = options.agent;
     this.tool_call = options.tool_call;
     this.tool = options.tool;
-    this.function_call = options.tool_call.function ?? {};
     this.resultMessage = options.resultMessage;
     this.signal = options.signal;
 
-    if (this.function_call.arguments) {
+    const functionCall = this.tool_call.function;
+    if (functionCall?.arguments) {
       try {
-        this.parsedArgs = JSON.parse(this.function_call.arguments);
+        this.parsedArgs = JSON.parse(functionCall.arguments);
       } catch (e: any) {
         this.parsedArgs = undefined;
         this.parseError = e?.message;
@@ -74,10 +73,3 @@ export class ToolCallContext {
     }
   }
 }
-
-/**
- * @deprecated 别名，与 ToolCallContext 是同一个类（`new` / `instanceof` / 类型注解都成立）。
- * 新代码直接用 ToolCallContext。
- */
-export const FunctionCallContext = ToolCallContext;
-export type FunctionCallContext = ToolCallContext;

@@ -173,21 +173,27 @@ export interface AbortedEvent {
   agent: Agent;
 }
 
+/**
+ * 队列有三个时刻会说话：`inboxAdded` / `inboxTaken` / `inboxCleared`（`CORE.md` §3）。
+ *
+ * 持久化就挂在这三条上 —— **inbox 一有变化就入库**，不攒批、不靠定时快照。三条都是
+ * 「通知」而不是唯一信息源：任何时候都能用 `agent.inboxPending` 重读真队列，与库里的那份对一遍
+ * （只留事件、不留重读，那半就是唯一信息源，而它必漏）。
+ *
+ * 进来一条。载荷是**那一条**（带 `messageId` / `createdAt` / `source` 与正文；钥匙没有正文）。
+ */
 export interface InboxAddedEvent {
   agent: Agent;
   entry: AgentNS.InboxEntry;
 }
-export interface InboxClearedEvent {
-  agent: Agent;
-  entries: AgentNS.InboxEntry[];
-}
-/**
- * 这些条目**已经离开队列**（被取走了），并且它们该落的消息已经落好了。
+
+/** 这些条目**已经离开队列**（被取走了），并且它们该落的消息已经落好了。
  *
  * 为什么取走也要说一声：持久化要求「inbox 一有变化就入库」。只报进队不报取走的话，
- * 宿主只能靠快照覆盖，那就不再实时了；而靠增量又必然对不上（钥匙被取走完全无声）。
+ * 宿主只能靠快照覆盖，那就不再实时了；而靠增量又必然对不上（钥匙被取走完全无声 ——
+ * 它不落消息，取走了就像没存在过）。
  *
- * 为什么排在落地**之后**：崩溃点若落在两者之间，
+ * 为什么排在落地**之后**（`CORE.md` §3、`PRD.md` 4.5）：崩溃点若落在两者之间，
  * - 「消息已落、条目还在」→ 恢复时按 `messageId` 去重就能收拾（可救）；
  * - 反过来「条目没了、消息没落」→ 那条话凭空消失（不可救）。
  */
@@ -195,6 +201,13 @@ export interface InboxTakenEvent {
   agent: Agent;
   entries: AgentNS.InboxEntry[];
 }
+
+/** 队列被**清空**（作废，不是取走）：载荷是被丢掉的那些，原顺序。 */
+export interface InboxClearedEvent {
+  agent: Agent;
+  entries: AgentNS.InboxEntry[];
+}
+
 export interface MessageEvent {
   agent: Agent;
   message: AgentNS.Message;
@@ -304,27 +317,47 @@ export interface AgentEvents {
 // ---------------------------------------------------------------------------
 
 /**
- * 能拒的钩子。它们崩了要**fail-closed** —— 坏的护栏放行等于没有护栏。
+ * 能拒的钩子：返回 string 就是判决（这次不跑），**只有它们短路**后面的插件。
+ *
+ * 它们崩了还要**fail-closed** —— 坏的护栏放行等于没有护栏；
  * 其余位置崩了当没说话（fail-open），只为不把 agent 打死。
  */
-const GATE_HOOKS = new Set<string>(["onInnerLoopStart", "onToolStart", "onSubAgentStart"]);
+const DENIABLE_HOOKS = new Set<string>(["onInnerLoopStart", "onToolStart", "onSubAgentStart"]);
 
-/** 当圈的中断装置：寿命**只到这一圈**，下一圈是全新的 */
-interface Turn {
+/** 在途的那一圈（一次请求 + 它引出的工具）：寿命**只到这一圈**，下一圈是全新的 */
+interface Inflight {
   controller: AbortController;
   /** `Promise.race` 的伙伴：不管对方听不听话，`await` 立刻返回 */
   abortRx: Promise<void>;
-  aborted: boolean;
 }
 
 export class Agent extends AgentContext {
   /**
+   * 这一格的存储。**外面读不到它、也写不进来** —— 读写两个口在下面。
+   *
+   * 为什么不让它是个 public 字段：`state` 是「在干 / 闲」，它说谎的时候没有任何东西会报错
+   *（订阅方只会安静地按错的那一格做决定）。收成「私有存储 + 私有写入器」之后，「换格」
+   * 只剩 {@link setState} 一条路 —— 它连事件与钩子一起发，不会有人只改值不发通知。
+   */
+  private _state: AgentNS.AgentState = "idle";
+
+  /**
    * 对外那一格：在干 / 闲，**只由循环的位置决定**（语义见 `AgentNS.AgentState`）。
    *
-   * 收不收件（{@link isOutputPaused}）不参与它的判断 —— 不取件中投进来的那批照跑，
+   * 取不取件（{@link isOutputPaused}）不参与它的判断 —— 不取件中投进来的那批照跑，
    * 跑完照样报闲。
    */
-  state: AgentNS.AgentState = "idle";
+  get state(): AgentNS.AgentState {
+    return this._state;
+  }
+
+  /**
+   * 写这一格：**私有**。唯一的合法写法是 {@link setState}（换值 + 发事件 + 跑 `onIdle`）；
+   * 只有「死」那一处直接赋值（{@link markDead}），理由写在那里。
+   */
+  private set state(next: AgentNS.AgentState) {
+    this._state = next;
+  }
 
   private _plugins: AgentPlugin[] = [];
   private bus = new EventBus();
@@ -340,15 +373,31 @@ export class Agent extends AgentContext {
    */
   private inbox = new AsyncQueue<AgentNS.InboxEntry>();
 
-  /** `kill()` 调过：硬着陆，存量作废。**只管「死没死」**（收不收件问队列的 `isInputPaused`） */
+  /** `kill()` 调过：硬着陆，存量作废。**只管「死没死」**（还收不收新货问队列的 `isInputPaused`） */
   private killed = false;
+  /**
+   * `stop()` 调过 —— **自己的判重**，不借队列的 `isDone`。
+   *
+   * 两者不是一回事：`isDone` 说的是「以后没有新货」，这里问的是「`stop()` 这个动作做过没有」。
+   * 借 `isDone` 当判据的话，`kill()` 之后再 `stop()` 会因为「已经 done 了」提前返回，
+   * `onStop` 钩子永不跑 —— 而它该跑（那是「有人要求关门」的那道缝）。
+   */
+  private stopRequested = false;
+  /**
+   * 「死」这件事实说过了 —— `stopped` / `killed` 加起来**只发一条**。
+   *
+   * 为什么还要一个布尔：这件事有两个说出口（{@link stop} / {@link kill} 本体 —— 没
+   * `start()` 过时外循环永远跑不到出口；以及外循环出口 —— 那时存量才真的跑完），
+   * 两个出口都得能说，就得有人保证不说第二遍。
+   */
+  private deathSaid = false;
   /** 一次性 agent 已经吃过一次投递了（自此关收） */
   private fed = false;
 
   /** `start()` 的那句 promise：到死才 resolve，且不 reject */
   private runPromise?: Promise<void>;
-  /** 当前这一圈的中断装置 */
-  private currentTurn?: Turn;
+  /** 在途的那一圈（没有正在发请求 / 跑工具的一圈时是 `undefined`） */
+  private inflight?: Inflight;
 
   constructor(options: PickRequired<AgentContext, "client" | "model">) {
     super(options);
@@ -387,7 +436,12 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * 按注册顺序跑钩子，任一返回 string 即短路并返回该字符串。
+   * 按注册顺序跑钩子。
+   *
+   * **只有能拒的钩子（{@link DENIABLE_HOOKS}）才短路**：它返回 string 就是「这次不跑」，
+   * 后面的插件不必再问。其余钩子的返回值**没有读者**（`setState` / `stop` / `kill` 那些位置
+   * 根本不看），让它们短路等于「一个顺手 `return "好"` 的插件把后面所有插件都跳过了」，
+   * 而它自己还以为只是说了句话。非门钩子给了非 `undefined` 就当没给（丢掉，不抛）。
    *
    * 钩子只管插件；**事件不从这里发**（事件说「发生了什么事」，钩子说「缝在哪儿」）。
    */
@@ -400,7 +454,7 @@ export class Agent extends AgentContext {
       | ToolHookContext
       | SubAgentHookContext,
   ): Promise<string | undefined> {
-    const isGate = GATE_HOOKS.has(hook as string);
+    const deniable = DENIABLE_HOOKS.has(hook as string);
 
     for (const plugin of this._plugins) {
       const fn = (plugin as Record<string, unknown>)[hook as string];
@@ -408,7 +462,8 @@ export class Agent extends AgentContext {
 
       try {
         const r = await (fn as (ctx?: unknown) => HookResult).call(plugin, ctx);
-        if (r !== undefined) return r;
+        // 门：一个字就是判决。非门：返回值没人读，丢掉，接着问下一个插件。
+        if (deniable && r !== undefined) return r;
       } catch (error) {
         // 插件抛错**不许把 agent 打死**：异常会一路穿出 `start()`，循环就永久停在那儿，
         // 而且 `killed` 还是 false、输入闸也还开着 —— 一个看起来活着、塞进去也不动的僵尸。
@@ -417,7 +472,7 @@ export class Agent extends AgentContext {
 
         // 门（能拒的那三个）崩了就关上：坏的护栏不该放行。
         // 其余位置当它没说话，接着问下一个插件。
-        if (isGate) return `插件 ${String(hook)} 抛错：${wrapped.message}`;
+        if (deniable) return `插件 ${String(hook)} 抛错：${wrapped.message}`;
       }
     }
     return undefined;
@@ -459,6 +514,15 @@ export class Agent extends AgentContext {
           endedAt: null,
         });
         this.emit("subAgentStarted", payload);
+      } else {
+        // 另外两道门（`onInnerLoopStart` / `onToolStart`）被拒时都发 `denied`，这里也发 ——
+        // 「这次委派没跑」是订阅方听得见的一格事实，而理由（那个字符串）也正是那条工具消息的正文。
+        this.emit("denied", {
+          agent: this,
+          hook: "onSubAgentStart",
+          reason: denied,
+          detail: { toolCall: ctx.toolCallContext.tool_call, subAgent: ctx.subAgent },
+        });
       }
     } else {
       // 结束只是**标注**，不是移除：父照样答得出它跑过什么、最后说了什么（§17）。
@@ -491,7 +555,7 @@ export class Agent extends AgentContext {
         this.emit("failed", { agent: this, error: error as Error });
       })
       .finally(() => {
-        this.currentTurn = undefined;
+        this.inflight = undefined;
       });
 
     this.emit("started", { agent: this });
@@ -504,7 +568,7 @@ export class Agent extends AgentContext {
    *
    * 三件事全交给队列的三个口，core 自己不记状态：
    * - `pauseInput()`：此后 `push()` 由队列抛 `QueueInputPausedError`，core 翻成
-   *   `AgentError("closed")`（对外错误码不变）；
+   *   `AgentError("closed")`（这个 agent 已经终结）；
    * - `resumeOutput()`：**不能省**。`done()` 只是「以后没有新货」这个信号，它**不突破输出闸** ——
    *   不取件中调 stop 时消费者正挂在闸上，不翻回来它就永远挂在那儿：存量没人取，
    *   `stopped` 也发不出来（以前那道「等开关翻开」的等待就是以放行它来收尾的）；
@@ -512,14 +576,23 @@ export class Agent extends AgentContext {
    *
    * 不取件（{@link isOutputPaused}）中调它**不作废存量**：不取件说的是「现在别跑」，
    * stop 说的是「以后也别跑」，两句叠起来的正确读法是「把手上这些跑完为止」。
+   *
+   * **次序定死：先翻闸与关门 → 再跑钩子 → 最后才说「死」**（{@link markDead}）。
+   * 「已经死了」这个事实最后落地：钩子那一刻还能读到一个「正在收尾」的 agent，而订阅方
+   * 听到 `stopped` 时，闸、队列、`state` 三样都已经是死后该有的样子。起来了的 agent 由
+   * 外循环出口说（存量真跑完了才算死），没 `start()` 过的只能由这里当场说 —— 那时外循环
+   * 永远不会跑到出口。
+   *
+   * 幂等判据是 {@link stopRequested}（**不是**队列的 `isDone`）：见那个字段的注释。
    */
   stop(): void {
-    // 幂等：`done()` 过就是已经关了（`stop` 与 `kill` 都会把它置上，那就是原来的「closed」）
-    if (this.inbox.isDone) return;
+    if (this.stopRequested) return;
+    this.stopRequested = true;
     this.pauseInput();
     this.inbox.resumeOutput();
     this.inbox.done();
     void this.dispatchHook("onStop", { agent: this });
+    if (!this.started) this.markDead();
   }
 
   /**
@@ -533,6 +606,9 @@ export class Agent extends AgentContext {
    * - 翻闸是为**挂在闸上的循环**：不翻回来，迭代器永远停在闸上，收尾走不完、`killed` 发不出来。
    *   清空是同步的，消费者在微任务里才被唤到，所以队里的货一定是先被清掉、
    *   再轮到它看见空队列 + `isDone` 而收尾。
+   *
+   * **次序与 `stop()` 同一条**：翻闸与清空 → 钩子 → 事件。`kill()` 之后不会补发 `stopped`：
+   * 死只有一条（{@link markDead}），而 `killed` 优先于 `stopped`。
    */
   kill(): void {
     if (this.killed) return;
@@ -543,6 +619,7 @@ export class Agent extends AgentContext {
     this.inbox.done();
     this.abortTurn();
     void this.dispatchHook("onKill", { agent: this });
+    if (!this.started) this.markDead();
   }
 
   /**
@@ -650,11 +727,14 @@ export class Agent extends AgentContext {
   /**
    * 塞进 inbox，立刻返回。
    *
-   * **关门之后抛 `AgentError("closed")`**，不静默丢：塞的人可能是另一个 agent，
-   * 他得知道自己投失败了才能改投（宿主接住这个错，就去做「新装一个再投」）。
-   * 但「关门了」这个判据**不在 core 里**：core 只是把队列的拒绝翻成自己的错误码 ——
-   * `pauseInput()` 之后 `inbox.push()` 抛 `QueueInputPausedError`，此处翻成 `AgentError("closed")`，
-   * 对外的码与原来一模一样（宿主按 `closed` 分流「这个会话不在了」）。
+   * **投不进去就抛 `AgentError`**，不静默丢：塞的人可能是另一个 agent，他得知道自己投失败了
+   * 才能改投（宿主接住这个错，就去做「新装一个再投」）。而「投不进去」有两种，**调用方必须能
+   * 分开**（它们要做的事完全不同）：
+   * - `closed`：这个 agent 已经终结（`stop()` / `kill()` 动过），再等也不会有人来取；
+   * - `input_paused`：只是输入闸暂时关着（有人 `pauseInput()`），`resumeInput()` 之后还能投。
+   *
+   * 两个码都由 core 定，判断依据是队列自己的两格（`QueueInputPausedError` 只说「不收」，
+   * `isDone` 才分得出是哪一种）。队列不认识 agent 的码，这边也不去猜队列的内部状态。
    *
    * 不给 `input`（或给一个没有正文的）= 拧钥匙：只把这一圈叫起来，不落地任何消息。
    */
@@ -682,15 +762,19 @@ export class Agent extends AgentContext {
     try {
       this.inbox.push(entry);
     } catch (error) {
-      // 关输入是**队列判的**（`pauseInput()` 之后它一个都不收）。core 只负责把这件事
-      // 翻成自己那一套码：调用方看到的仍是 `AgentError("closed")`。别的异常原样往上抛 ——
-      // 那不是「关门」，不该冒充一个业务码。
+      // 不收是**队列判的**（`pauseInput()` 之后它一个都不收），但那一个错误码盖着两件事：
+      // 这个 agent 已经终结（`isDone`）还是只是输入闸暂时关着。别的异常原样往上抛 ——
+      // 那不是「不收」，不该冒充一个业务码。
       if (error instanceof QueueInputPausedError) {
-        throw new AgentError("closed", `往已经关了的 agent(${this.id}) 投递`);
+        if (this.inbox.isDone) {
+          throw new AgentError("closed", `往已经关了的 agent(${this.id}) 投递`);
+        }
+        throw new AgentError("input_paused", `agent(${this.id}) 的输入闸暂时关着`);
       }
       throw error;
     }
 
+    // 进队就是一次变化：持久化挂在 `inboxAdded` 上（`CORE.md` §3）。抛出去的那两种不是变化
     this.emit("inboxAdded", { agent: this, entry });
   }
 
@@ -749,7 +833,9 @@ export class Agent extends AgentContext {
    * 走的是队列的 `clear()`，**不是 `takeAll()`**：清空是「作废」，不是「取件」。
    * 取件要看输出闸（不取件时一件都不给，那是暂时的、货还排着队），作废不看 —— 所以
    * {@link pauseOutput} 期间调它照样清得掉，宿主那条 `/clear` 才不会在暂停中失效。
-   * 事件 `inboxCleared` 仍由 agent 发：队列不认识事件。
+   *
+   * 清空也是变化，所以报 `inboxCleared`（持久化挂在它上面，`CORE.md` §3）。事件仍由 agent 发:
+   * 队列不认识事件。空队列清一次什么都不发 —— 没变化就没有「一有变化就入库」。
    */
   clearInbox(): AgentNS.InboxEntry[] {
     const entries = this.inbox.clear();
@@ -766,12 +852,6 @@ export class Agent extends AgentContext {
   get started(): boolean {
     return this.runPromise !== undefined;
   }
-
-  /** 谁在调我。只有委派造出来的子 agent 有；活引用，不许进 `source`（§3） */
-  parent?: Agent;
-
-  /** 我造出来、还活着的子 agent（收尸时摘掉） */
-  readonly children = new Set<Agent>();
 
   /**
    * 子 agent 的名册：**只给外面读**（`CORE.md` §17）。
@@ -808,9 +888,9 @@ export class Agent extends AgentContext {
   /**
    * 看一眼排队区：按入队顺序给出此刻还没被取走的条目，**一个都不取走**。
    *
-   * 为什么要有它：`inboxAdded` / `inboxCleared` 是「通知」，不是唯一信息源。宿主只靠
-   * 通知自建镜像的话，丢一条就与真队列永久分叉 —— 而它又没法重读自愈。有了这个，
-   * §10 那句「事件只是通知」才真的成立。
+   * 三个时刻的事件（`inboxAdded` / `inboxTaken` / `inboxCleared`）是**通知**，不是唯一信息源：
+   * 宿主 subscribe 它们做持久化，同时用这里**现读**真队列与库里的那份对一遍 —— 事件丢一条、
+   * 重复一条都不致命（`CORE.md` §3、§10）。所以这里给的是「重读的那一半」，不是镜像。
    *
    * 返回的数组是拷贝，**条目本身还是那一个**（不会给出过期副本）。
    */
@@ -859,7 +939,7 @@ export class Agent extends AgentContext {
         const message = inboxEntryMessage(entry);
         if (message) this.append(message);
       }
-      // 落地完了才报「这些已经离开队列」（理由见 `InboxTakenEvent`）
+      // 落地完了才报「这些已经离开队列」（理由见 `InboxTakenEvent`：宁可重，不可丢）
       this.emit("inboxTaken", { agent: this, entries });
 
       // ③ 内循环
@@ -876,8 +956,10 @@ export class Agent extends AgentContext {
       }
     }
 
-    this.emit(this.killed ? "killed" : "stopped", { agent: this });
-    this.setState("idle");
+    // 走到这儿就是「死透了」：不再有货，这一批也都跑完了。
+    // 只走 {@link markDead}：它先把 `state` 直接置成 `idle`（不发 `state:idle`）再报事件 ——
+    // 死后的 agent 不该再冒出一格状态，而订阅方在 `stopped` / `killed` 那一刻就该读到 `idle`。
+    this.markDead();
   }
 
   /**
@@ -963,8 +1045,8 @@ export class Agent extends AgentContext {
 
   /** 这一圈：发请求 → 收流 → 跑工具。返回「刚才有没有工具调用」 */
   private async runTurn(assistant: Message, ctx: InnerLoopContext): Promise<boolean> {
-    const turn = this.newTurn();
-    this.currentTurn = turn;
+    const inflight = this.newTurn();
+    this.inflight = inflight;
 
     try {
       this.emit("requestSent", { agent: this, body: ctx.body });
@@ -972,10 +1054,10 @@ export class Agent extends AgentContext {
       let stream: AsyncIterable<ChatCompletionChunk>;
       try {
         stream = (await this.client.chat.completions.create(ctx.body as any, {
-          signal: turn.controller.signal,
+          signal: inflight.controller.signal,
         })) as unknown as AsyncIterable<ChatCompletionChunk>;
       } catch (error) {
-        throw this.toAgentError(error, "request-failed", turn);
+        throw this.toAgentError(error, "request-failed", inflight);
       }
 
       assistant.status = AgentNS.MessageStatus.Writing;
@@ -986,10 +1068,10 @@ export class Agent extends AgentContext {
           applyChunk(assistant, chunk);
         }
       } catch (error) {
-        throw this.toAgentError(error, "stream-failed", turn);
+        throw this.toAgentError(error, "stream-failed", inflight);
       }
 
-      if (turn.aborted) {
+      if (inflight.controller.signal.aborted) {
         assistant.status = AgentNS.MessageStatus.Aborted;
         return false;
       }
@@ -997,13 +1079,13 @@ export class Agent extends AgentContext {
       assistant.status = AgentNS.MessageStatus.Completed;
       this.emit("responseFinished", { agent: this, message: assistant });
 
-      const hadTools = await this.runTools(assistant, turn);
+      const hadTools = await this.runTools(assistant, inflight);
       // 工具段里按了中断：这一批到此为止 —— 再向模型要一圈，它就会把整段话接着说完，
       // 用户按的那一下等于没按（`abortRx` 只让正在跑的工具立刻返回，不知道之后该不该续）
-      return turn.aborted ? false : hadTools;
+      return inflight.controller.signal.aborted ? false : hadTools;
     } catch (error) {
       // 被掐断的那一轮不是「出错」：它有自己的状态，也不报 `failed`
-      if (turn.aborted) {
+      if (inflight.controller.signal.aborted) {
         assistant.status = AgentNS.MessageStatus.Aborted;
         this.touch(assistant);
         return false;
@@ -1017,36 +1099,41 @@ export class Agent extends AgentContext {
       this.emit("failed", { agent: this, error: agentError, message: assistant });
       return false;
     } finally {
-      this.currentTurn = undefined;
+      this.inflight = undefined;
     }
   }
 
   /** 把任意来路的错误收成 `AgentError`；被掐断的走 `aborted`，不收 */
-  private toAgentError(error: unknown, code: "request-failed" | "stream-failed", turn: Turn): unknown {
-    if (turn.aborted) return error;
+  private toAgentError(
+    error: unknown,
+    code: "request-failed" | "stream-failed",
+    inflight: Inflight,
+  ): unknown {
+    if (inflight.controller.signal.aborted) return error;
     if (error instanceof AgentError) return error;
     const message = error instanceof Error ? error.message : String(error);
     return new AgentError(code, message, { cause: error });
   }
 
   /** 这一圈的中断装置：全新的 controller + `abortRx`，寿命只到这一圈 */
-  private newTurn(): Turn {
+  private newTurn(): Inflight {
     const controller = new AbortController();
-    const turn: Turn = {
+    return {
       controller,
-      aborted: false,
       abortRx: new Promise<void>((resolve) => {
         controller.signal.addEventListener("abort", () => resolve(), { once: true });
       }),
     };
-    return turn;
   }
 
+  /**
+   * 掐在途：`abort()` 与 `kill()` 都走它。
+   *
+   * 名字留着 —— 它说的是**动作**。而「这一圈被掐过没有」**不另存一格**：
+   * `controller.signal.aborted` 就是那一格，多存一份 `aborted` 迟早会与 controller 不同步。
+   */
   private abortTurn(): void {
-    const turn = this.currentTurn;
-    if (!turn) return;
-    turn.aborted = true;
-    turn.controller.abort();
+    this.inflight?.controller.abort();
   }
 
   // -------------------------------------------------------------------------
@@ -1059,19 +1146,23 @@ export class Agent extends AgentContext {
    * 失败即「没给出有效结果」：参数烂、执行挂、工具不存在、钩子拒 —— 同一件事，
    * 一条 tool 消息回给模型，引擎不停圈、不重试。
    */
-  private async runTools(assistant: Message, turn: Turn): Promise<boolean> {
+  private async runTools(assistant: Message, inflight: Inflight): Promise<boolean> {
     const calls = (assistant.tool_calls ?? []).filter((tc) => tc.type === "function" && tc.function);
     if (calls.length === 0) return false;
 
     // 先按调用顺序把 tool 消息建好（Pending）：落地顺序由这里定死，与谁先跑完无关
     const jobs = calls.map((call) => ({ call, result: this.append(Message.Tool(call)) }));
 
-    await Promise.all(jobs.map(({ call, result }) => this.runOneTool(call, result, turn)));
+    await Promise.all(jobs.map(({ call, result }) => this.runOneTool(call, result, inflight)));
 
     return true;
   }
 
-  private async runOneTool(call: AgentNS.ToolCall, result: Message, turn: Turn): Promise<void> {
+  private async runOneTool(
+    call: AgentNS.ToolCall,
+    result: Message,
+    inflight: Inflight,
+  ): Promise<void> {
     this.emit("toolStarted", { agent: this, toolCall: call });
 
     const matched = this.tools.find(
@@ -1083,12 +1174,12 @@ export class Agent extends AgentContext {
       tool_call: call,
       tool: matched,
       resultMessage: result,
-      signal: turn.controller.signal,
+      signal: inflight.controller.signal,
     });
 
     /** 定型：先改状态并重发这条消息。`toolFinished` 要等到 `onToolEnd` **之后**才发（钩子在前） */
     const finalize = (status: AgentNS.MessageStatus) => {
-      result.status = turn.aborted ? AgentNS.MessageStatus.Aborted : status;
+      result.status = inflight.controller.signal.aborted ? AgentNS.MessageStatus.Aborted : status;
       this.touch(result);
     };
 
@@ -1118,7 +1209,7 @@ export class Agent extends AgentContext {
         // ④ 真跑：与 `abortRx` 赛跑 —— 不管工具听不听话，`await` 立刻能返回
         result.content = (await Promise.race([
           matched.exec(ctx),
-          turn.abortRx.then(() => undefined),
+          inflight.abortRx.then(() => undefined),
         ])) as AgentNS.MessageContent | undefined;
         finalize(AgentNS.MessageStatus.Completed);
       }
@@ -1138,7 +1229,7 @@ export class Agent extends AgentContext {
   // -------------------------------------------------------------------------
 
   /**
-   * 换一格（只换 `state` 这一处；收不收件走 `output:paused` / `output:resumed`，
+   * 换一格（只换 `state` 这一处；取不取件走 `output:paused` / `output:resumed`，
    * 不从这里过）。
    *
    * **没有「重算状态」这一步**，三处置位就够了：`start()` 是 `idle`、外循环头（取到一批）
@@ -1147,7 +1238,7 @@ export class Agent extends AgentContext {
    * —— 它们只翻那个开关。
    *
    * 事件按到达值分名（`state:idle` / `state:working`）—— 于是「等到某一格」
-   * 就是 `events.promise("state:idle")`，不需要再维护一套条件变量。
+   * 就是订 `state:idle` 那一类事件，不需要再维护一套条件变量。
    */
   private setState(next: AgentNS.AgentState): void {
     const from = this.state;
@@ -1157,29 +1248,71 @@ export class Agent extends AgentContext {
     if (next === "idle") void this.dispatchHook("onIdle", { agent: this });
   }
 
+  /**
+   * 说「死了」—— `stopped` / `killed` 的**唯一出口**，一个 agent 只说一条。
+   *
+   * 两处会走到这里：{@link stop} / {@link kill} 本体（没 `start()` 过，外循环永远跑不到出口），
+   * 以及外循环出口（存量真的跑完了）。谁先到谁说，第二个到的一声不响。
+   *
+   * **先把 `state` 直接置成 `idle`，再发事件**：订阅方在 `stopped` / `killed` 回调里读到的
+   * `state` 必须已经是死后那一格。反过来的话，它读到的是 `working` —— 会有东西对着一个已经
+   * 死透的 agent 去做「等它闲下来」这类决定，而那个闲永远不来。
+   *
+   * 这里**绕开 `setState`** 是有意的：`setState` 会再发一条 `state:idle`，而「死了」已经由
+   * 下面那条事件说了 —— 一个已经不在了的 agent 不该在死后又冒出一格状态。
+   *
+   * 「事件只发一条」与「状态必须落到 `idle`」是两件事：门关在 `start()` 之前、后来才
+   * `start()` 的那种情形（存量还要跑完）走到这里时，事件早发过了，但这一批的尾部仍要
+   * 把状态拉回 `idle` —— 否则一个已经死透的 agent 会永远停在 `working` 上。
+   */
+  private markDead(): void {
+    this.state = "idle";
+    if (this.deathSaid) return;
+    this.deathSaid = true;
+    this.emit(this.killed ? "killed" : "stopped", { agent: this });
+  }
+
   // -------------------------------------------------------------------------
   // 等待
   // -------------------------------------------------------------------------
 
   /**
-   * 等到某一格（`runOnce` 的「等闲」用它）。
+   * 等到某一格，且（目标为 `idle` 时）**这一批真的跑完了**（`runOnce` 的「等闲」用它）。
+   *
+   * 为什么「到了那一格」不够：`state` 是循环的位置，`push()` 之后、外循环取到那批之前它
+   * **还是 `idle`** —— 只看 `state === "idle"`，`runOnce` 的等待会在这一批还没开始时一步通过，
+   * 那就等于没等。所以判据是「`state` 到了目标 **且** 队列里没有压着的条目」：前者说循环停在
+   * 那一格，后者说没有还没被取走的货；两条同时成立才是「真的闲下来了」。
+   *
+   * 什么时候重新判：只有「换格」与「死」这几个时机 —— 批的边界恰好就在它们身上
+   *（取到一批 → `working`；这批跑完 → `idle`；死 → `stopped` / `killed`）。排队区自己的变化
+   * 不发事件（它是现读的，{@link inboxPending}），所以这里也不订它。
    *
    * 先看当前值再等事件：`once` 型等待在「注册前已经满足」时会永远等不到。
    * `signal` 一响立刻返回 —— 取消不该被一个可能永远不变的状态卡住。
    */
   private waitForState(target: AgentNS.AgentState, signal?: AbortSignal): Promise<void> {
-    if (this.state === target) return Promise.resolve();
+    const reached = () => this.state === target && (target !== "idle" || this.inbox.size === 0);
+
+    if (reached()) return Promise.resolve();
 
     return new Promise<void>((resolve) => {
-      let settled = false;
+      let fired = false;
+      const disposables: Array<{ dispose: () => void }> = [];
       const finish = () => {
-        if (settled) return;
-        settled = true;
-        subscription.dispose();
+        if (fired) return;
+        fired = true;
+        for (const disposable of disposables) disposable.dispose();
         signal?.removeEventListener("abort", finish);
         resolve();
       };
-      const subscription = this.bus.once(`state:${target}`, finish);
+      const check = () => {
+        if (reached()) finish();
+      };
+
+      for (const type of ["state:working", "state:idle", "stopped", "killed"] as const) {
+        disposables.push(this.bus.on(type, check));
+      }
 
       if (signal?.aborted) return finish();
       signal?.addEventListener("abort", finish, { once: true });
@@ -1203,31 +1336,15 @@ export class Agent extends AgentContext {
   }
 
   /** 取走 inbox 里的 high 条目并落成 user 消息（内循环唯一的取件点） */
-  private landHigh(): boolean {
+  private landHigh(): void {
     const entries = this.inbox.takeAll((entry) => entry.priority === "high");
-    if (entries.length === 0) return false;
+    if (entries.length === 0) return;
     for (const entry of entries) {
       const message = inboxEntryMessage(entry);
       if (message) this.append(message);
     }
+    // 与外循环那处同一口径：**落地之后**才报「这些被取走了」
     this.emit("inboxTaken", { agent: this, entries });
-    return true;
-  }
-
-  /**
-   * 最近一次 API 响应的 token 用量。
-   *
-   * **派生值，不是独立状态**：取 `messages` 中最近一条未 `omit`、带 `usage` 的 assistant
-   * 消息。用量本就随消息持久化，此处只是读最后一条。
-   */
-  get lastUsage(): AgentNS.Usage | undefined {
-    for (let i = this.messages.length - 1; i >= 0; i--) {
-      const message = this.messages[i]!;
-      if (message.role === AgentNS.Role.Assistant && !message.omit && message.usage) {
-        return message.usage;
-      }
-    }
-    return undefined;
   }
 
   // -------------------------------------------------------------------------
