@@ -40,21 +40,20 @@
  *   1. **旧记忆成为另一段会话**：新插一行 `conversations`（名字 `已存档_<原名>`，项目 / 助手 /
  *      模型 / 思考档位以及两条阈值、自动交接开关、血缘**照抄**，创建时刻是交接那一刻），
  *      把原会话的全部消息行改挂到它名下；
- *   2. **原会话换记忆**：把 **SDK 算好的那份记忆**写到原会话名下（那条 cwd 消息（`role: user` +
- *      `hidden`，正文是项目目录）与 `role: system` + `hidden`、正文只带文档路径的断点消息都是 SDK
- *      给的那两条）；内存里 `agent.messages` **原地**换成同一份（不重建 agent、不动它的队列与两个开关：
+ *   2. **原会话换记忆**：把 **SDK 算好的那份记忆**写到原会话名下（系统提示那几条 + 一条
+ *      `role: system` + `hidden`、正文只带文档路径的断点消息，就是 SDK 给的那一份）；内存里
+ *      `agent.messages` **原地**换成同一份（不重建 agent、不动它的队列与两个开关：
  *      换记忆不等于换人）；
  *   3. **两条事件**：先 `memory_replaced`（这段的记忆换过了），再 `created`（那段 `已存档_…`
  *      出现了）。
  *
  * **分工是死的**（`PRD.md` 4.5「谁算记忆、谁落库」）：
  *
- * - 「换完之后记忆长什么样」**只有 SDK 一处算** —— 哪些旧消息留（`omit` / `prune`）、cwd 消息与断点
- *   消息的形状、文档够不够长（不到 400 字节算没写出来）全在 SDK 的 `HandoffService.migrate()` 里算完，
+ * - 「换完之后记忆长什么样」**只有 SDK 一处算** —— 哪些旧消息留（`omit` / `prune`）、断点消息的
+ *   形状、文档够不够长（不到 400 字节算没写出来）全在 SDK 的 `HandoffService.migrate()` 里算完，
  *   外部使用者用 SDK 时也是同一份；
  * - 宿主**只做「把这份记忆落到库」**：就是本文件那个 `tx`（`ConversationRepository.replaceMemory`）
- *   加两条事件。cwd 消息与断点消息都用 SDK 算出来的那两条（目录也由宿主递进去：`workspaces.cwd`），
- *   这里不自己拼。
+ *   加两条事件。断点消息就是 SDK 算出来的那一条，这里不自己拼。
  *
  * 1 与 2 的落库部分在一个 `tx` 里，所以崩在中间也不会留下「旧的已存档、新的没上岗」的第三种状态；
  * 失败则整批回滚，一段存档会话都不留。
@@ -199,14 +198,6 @@ export interface HandoffExecutionInput {
   agent: ChatAgent;
   /** 文档目录（绝对路径） */
   handoffDir: string;
-  /**
-   * 这一段所属项目的目录（`workspaces.cwd`）。
-   *
-   * 只透传给 SDK，让它往新记忆里生成那条 cwd 消息（`role: user` + `hidden` + `source: cwd`）：
-   * 换手之后接手的那一代得知道自己在哪个目录里干活（`PRD.md` 4.8）。宿主**不自己拼那条消息**
-   * —— 记忆长什么样只有 SDK 一处算（`PRD.md` 4.5）。
-   */
-  cwd: string;
   /** 请求的执行者 */
   mode: HandoffMode;
   /**
@@ -272,7 +263,8 @@ export interface SdkHandoffServiceOptions extends SdkHandoffExecutorOptions {
 /**
  * 按 cwd 造一个 SDK 的交接服务（接线层给 `createSdkAgentFactory` 的 `handoff` 注入点用）。
  *
- * 两桩宿主事实在这里定下：
+ * 那个 `cwd` 只用来算**文档落点**（`handoffDirFor(cwd)`）—— 新记忆长什么样不靠它：换完的记忆是
+ * 「系统提示 + 断点」两截，没有 cwd 消息。两桩宿主事实在这里定下：
  *   - `strategy: "prune"`：宿主把旧记忆整段挂成另一段存档会话，原会话这边就该腾空（只留系统提示
  *     + 断点）。`omit` 那一路会把旧消息留在同一个数组里，与「改挂到存档名下」对不上；
  *   - `commitMemory`：**自动交接那条路真的会换记忆**，就靠这一格；不给就只剩 SDK 自己改内存。
@@ -284,8 +276,6 @@ export function createSdkHandoffService(
   return new SdkHandoffService({
     handoffDir: handoffDirFor(cwd),
     strategy: "prune",
-    // 换记忆时那条 cwd 消息就取项目目录（自动交接的 `migrate()` 是插件叫的，入参里带不了它）
-    cwd,
     skillDirs: options.skillDirs ?? [],
     client: options.client,
     model: options.model,
@@ -311,8 +301,6 @@ export function createSdkHandoffExecutor(
       handoffDir: input.handoffDir,
       // 宿主把旧记忆整段挂成另一段存档会话，所以原会话这边腾空（只留系统提示 + 断点）
       strategy: "prune",
-      // 换记忆时那条 cwd 消息取项目目录（由宿主递进来，SDK 不自己猜）
-      cwd: input.cwd,
       skillDirs: input.skillDirs,
       client: options.client,
       model: options.model,
@@ -327,8 +315,6 @@ export function createSdkHandoffExecutor(
       const context = await service.migrate({
         agent: input.agent as unknown as SdkAgent,
         mode: input.mode,
-        // 新记忆里那条 cwd 消息的正文就是这个目录（项目，不是进程工作目录）
-        cwd: input.cwd,
         promptTokens: input.promptTokens,
         handoffTokens: input.handoffTokens,
       });
@@ -597,8 +583,6 @@ export class HandoffDocumentService {
       const executed = await this.execute({
         agent: driver,
         handoffDir,
-        // 这一段所属项目的目录：SDK 拿它生成新记忆里那条 cwd 消息（宿主不自己拼）
-        cwd: workspace.cwd,
         mode: run.mode,
         skillDirs,
         commitMemory: async (commit) => {
@@ -666,8 +650,7 @@ export class HandoffDocumentService {
    *
    * **哪些行要写**：新记忆开头那几条**不隐藏的 system 消息**是助手定义带来的系统提示，它们不是
    * 库里的行（创建对话时也不写它们），所以跳过；其余每一条都按原样写成行 —— 宿主用的策略是
-   * `prune`，于是那几条就是 SDK 算出来的 cwd 消息（`role: user` + `hidden` + 正文是项目目录）
-   * 与断点消息（`role: system` + `hidden` + 只带路径）。
+   * `prune`，于是那一条就是 SDK 算出来的断点消息（`role: system` + `hidden` + 只带路径）。
    *
    * 第 1 步失败就什么都不算换过（`runToEnd` 那边走回滚）：库里仍是交接前那一份、一段存档会话
    * 都不留 —— 那个 `tx` 要么整批成，要么整批不成。

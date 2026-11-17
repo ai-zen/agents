@@ -752,7 +752,7 @@ describe("独立交接（一次性驱动者 + 记忆副本）", () => {
 });
 
 describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
-  it("提交之后：原会话只剩 SDK 算好的 cwd 消息与断点，旧记忆整段挂到 `已存档_<原名>` 名下", async () => {
+  it("提交之后：原会话只剩 SDK 算好的那条断点，旧记忆整段挂到 `已存档_<原名>` 名下", async () => {
     const built = harness.build();
     const before = await harness.messages.listByConversation(conversationId, undefined, {
       includeHidden: true,
@@ -761,21 +761,14 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
     await built.service.start({ conversationId, mode: "summary", then: "document_only" });
     await built.settle();
 
-    // 原会话：库里只剩两条 `hidden` 消息 —— SDK 算出来的 cwd 消息与断点
+    // 原会话：库里只剩一条 `hidden` 消息 —— SDK 算出来的那条断点（交接后没有 cwd 消息）
     const left = await harness.messages.listByConversation(conversationId, undefined, {
       includeHidden: true,
     });
-    expect(left).toHaveLength(2);
-
-    // 先 cwd（你在哪个目录里干活），后断点（旧记忆到这里为止）
-    const cwdRow = left[0];
-    expect(cwdRow?.role).toBe(AgentNS.Role.User);
-    expect(cwdRow?.data).toMatchObject({ hidden: true });
-    expect(cwdRow?.source).toEqual({ kind: "system", label: "cwd" });
-    expect(cwdRow?.content).toBe(harness.projectDir);
+    expect(left).toHaveLength(1);
 
     // 形状由 SDK 定：`role: system` + `hidden` + 正文只有那份文档的路径
-    const breakpointRow = left[1];
+    const breakpointRow = left[0];
     expect(breakpointRow?.role).toBe(AgentNS.Role.System);
     expect(breakpointRow?.data).toMatchObject({ hidden: true });
     const path = breakpointRow?.content as string;
@@ -814,14 +807,10 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
     await built.settle();
 
     expect(built.driver.messages).toBe(memory);
-    // 系统提示 + cwd 消息 + 断点：内存那份与库里同一份（系统提示不是库里的行，所以库里只有两条）
-    expect(built.driver.messages).toHaveLength(3);
+    // 系统提示 + 断点：内存那份与库里同一份（系统提示不是库里的行，所以库里只有一条）
+    expect(built.driver.messages).toHaveLength(2);
     expect(built.driver.messages[0]?.content).toBe(DRIVER_SYSTEM_PROMPT);
-    const cwdMessage = built.driver.messages[1];
-    expect(cwdMessage?.role).toBe(AgentNS.Role.User);
-    expect(cwdMessage?.hidden).toBe(true);
-    expect(cwdMessage?.content).toBe(harness.projectDir);
-    const breakpoint = built.driver.messages[2];
+    const breakpoint = built.driver.messages[1];
     expect(breakpoint?.role).toBe(AgentNS.Role.System);
     expect(breakpoint?.hidden).toBe(true);
 
@@ -829,46 +818,12 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
     const rows = await harness.messages.listByConversation(conversationId, undefined, {
       includeHidden: true,
     });
-    expect(rows.map((row) => row.id)).toEqual([cwdMessage?.id, breakpoint?.id]);
-    expect(rows[1]?.content).toBe(breakpoint?.content);
+    expect(rows.map((row) => row.id)).toEqual([breakpoint?.id]);
+    expect(rows[0]?.content).toBe(breakpoint?.content);
 
     // 换记忆不等于换人：闸只关过一次、开过一次，队列不重建；换完之后闸是开的
     expect(built.driverCalls).toEqual(["pauseOutput", "resumeOutput"]);
     expect(built.driver.isOutputPaused).toBe(false);
-  });
-
-  it("新记忆里第一条（扣掉系统提示）是 cwd 消息：正文是项目目录，库里写回的行也带着它", async () => {
-    const built = harness.build();
-    await built.service.start({ conversationId, mode: "self", then: "document_only" });
-    await built.settle();
-
-    // 内存：系统提示 + cwd 消息 + 断点 —— 顺序是死的（`PLAN.md` §4：cwd 最先写、断点是分隔）
-    expect(built.driver.messages.map((message) => message.role)).toEqual([
-      AgentNS.Role.System,
-      AgentNS.Role.User,
-      AgentNS.Role.System,
-    ]);
-    const cwdMessage = built.driver.messages[1]!;
-    expect(cwdMessage.role).toBe(AgentNS.Role.User);
-    expect(cwdMessage.hidden).toBe(true);
-    // 宿主注入的不是用户说的话：来源填 system + label（`CORE.md` §3）
-    expect(cwdMessage.source).toEqual({ kind: "system", label: "cwd" });
-    // 正文就是这一段所属项目的目录（`workspaces.cwd`，不是进程工作目录）
-    expect(cwdMessage.content).toBe(harness.projectDir);
-    // 断点排在它后面：正文是那份文档的路径
-    expect(
-      String(built.driver.messages[2]?.content).startsWith(handoffDirFor(harness.projectDir)),
-    ).toBe(true);
-
-    // 库里写回的行与内存同一份：第一条就是那条 cwd 消息
-    const rows = await harness.messages.listByConversation(conversationId, undefined, {
-      includeHidden: true,
-    });
-    expect(rows.map((row) => row.id)).toEqual([cwdMessage.id, built.driver.messages[2]?.id]);
-    expect(rows[0]?.role).toBe(AgentNS.Role.User);
-    expect(rows[0]?.content).toBe(harness.projectDir);
-    expect(rows[0]?.source).toEqual({ kind: "system", label: "cwd" });
-    expect(rows[0]?.data).toMatchObject({ hidden: true });
   });
 
   it("推两条变更：先「这段的记忆换过了」，再「那段已存档的出现了」", async () => {
@@ -902,10 +857,10 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
     await harness.conversations.delete(archivedId);
     expect(await harness.conversations.get(archivedId)).toBeUndefined();
     expect(await harness.messages.listByConversation(archivedId)).toHaveLength(0);
-    // 删一段就是删那一段：原会话那两条（cwd 消息 + 断点）还在
+    // 删一段就是删那一段：原会话那条断点还在
     expect(
       await harness.messages.listByConversation(conversationId, undefined, { includeHidden: true }),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
   });
 
   it("失败时不留存档会话，原会话的消息一条不动", async () => {
@@ -963,11 +918,11 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
     await built.service.start({ conversationId, mode: "self", then: "document_only" });
     await built.settle();
 
-    // 记忆仍然是「系统提示 + cwd 消息 + 一条断点」：第一次那两条属于旧记忆，不该留在原会话里
-    expect(built.driver.messages).toHaveLength(3);
+    // 记忆仍然是「系统提示 + 一条断点」：第一次那条属于旧记忆，不该留在原会话里
+    expect(built.driver.messages).toHaveLength(2);
     expect(built.driver.messages[0]?.content).toBe(DRIVER_SYSTEM_PROMPT);
-    expect(built.driver.messages[2]?.hidden).toBe(true);
-    expect(built.driver.messages[2]?.role).toBe(AgentNS.Role.System);
+    expect(built.driver.messages[1]?.hidden).toBe(true);
+    expect(built.driver.messages[1]?.role).toBe(AgentNS.Role.System);
 
     // 两段存档各自拿着交接前那一份：第一段是整段历史，第二段是上一次那条断点（库里一条行）
     const archived = (await harness.conversations.list()).filter((row) =>
@@ -981,9 +936,9 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
         ).length,
       ),
     );
-    // 第一段是交接前那一整段（创建时的 cwd 消息 + 两条对话），第二段只有上一次那两条（cwd 消息
-    // + 断点）：系统提示不被搬走（它不在库里，也不是旧记忆的一部分），旧的两条也没被当成提示留下
-    expect(counts.sort((left, right) => left - right)).toEqual([2, 3]);
+    // 第一段是交接前那一整段（创建时的 cwd 消息 + 两条对话），第二段只有上一次那一条（断点）：
+    // 系统提示不被搬走（它不在库里，也不是旧记忆的一部分），旧的那一条也没被当成提示留下
+    expect(counts.sort((left, right) => left - right)).toEqual([1, 3]);
   });
 });
 
@@ -1063,14 +1018,12 @@ describe("自动交接：兄弟会话越线（插件那一路）", () => {
     const left = await harness.messages.listByConversation(conversationId, undefined, {
       includeHidden: true,
     });
-    expect(left).toHaveLength(2);
-    // 先 cwd（项目目录），后断点
-    expect(left[0]?.role).toBe(AgentNS.Role.User);
-    expect(left[0]?.content).toBe(harness.projectDir);
-    expect(left[1]?.role).toBe(AgentNS.Role.System);
-    expect(left[1]?.data).toMatchObject({ hidden: true });
+    expect(left).toHaveLength(1);
+    // 只有断点（交接后没有 cwd 消息）
+    expect(left[0]?.role).toBe(AgentNS.Role.System);
+    expect(left[0]?.data).toMatchObject({ hidden: true });
     // 内存与库同一份
-    expect(built.driver.messages.at(-1)?.id).toBe(left[1]?.id);
+    expect(built.driver.messages.at(-1)?.id).toBe(left[0]?.id);
 
     // ② 两条会话变更都推了（先「这段换过了」再「那段出现了」）
     expect(built.events.changed.map((change) => change.change)).toEqual([
@@ -1087,35 +1040,6 @@ describe("自动交接：兄弟会话越线（插件那一路）", () => {
     expect(row?.compactionMode).toBe("auto");
     expect(row?.compactedAt).not.toBeNull();
     expect(modes).toEqual(["self"]);
-  });
-
-  it("自动那条路换完：新记忆里第一条（扣掉系统提示）也是那条 cwd 消息，库里写回的行同样带着它", async () => {
-    // 兄弟会话：会话行上的自动交接开着
-    await harness.conversations.setAutoHandoff(conversationId, true, 1_700_000_005_000);
-    const built = harness.build();
-    const plugin = autoHandoff(built);
-    crossTheLine(built.driver);
-
-    plugin.onOuterLoopStart({ agent: built.driver as unknown as any, entries: [] });
-    await plugin.onIdle();
-
-    // 内存：系统提示 + cwd 消息 + 断点
-    expect(built.driver.messages[0]?.content).toBe(DRIVER_SYSTEM_PROMPT);
-    const cwdMessage = built.driver.messages[1]!;
-    expect(cwdMessage.role).toBe(AgentNS.Role.User);
-    expect(cwdMessage.hidden).toBe(true);
-    expect(cwdMessage.source).toEqual({ kind: "system", label: "cwd" });
-    // cwd 由宿主递进去（这条路上是 `createSdkHandoffService(项目目录)`），正文就是项目目录
-    expect(cwdMessage.content).toBe(harness.projectDir);
-    expect(built.driver.messages[2]?.role).toBe(AgentNS.Role.System);
-
-    // 库里写回的行与内存同一份
-    const rows = await harness.messages.listByConversation(conversationId, undefined, {
-      includeHidden: true,
-    });
-    expect(rows[0]?.id).toBe(cwdMessage.id);
-    expect(rows[0]?.content).toBe(harness.projectDir);
-    expect(rows[0]?.source).toEqual({ kind: "system", label: "cwd" });
   });
 
   it("文档不到 400 字节 → 降级到独立摘要（不是静默成功）", async () => {
@@ -1154,8 +1078,8 @@ describe("自动交接：兄弟会话越线（插件那一路）", () => {
     const left = await harness.messages.listByConversation(conversationId, undefined, {
       includeHidden: true,
     });
-    expect(left).toHaveLength(2);
-    const path = left[1]?.content as string;
+    expect(left).toHaveLength(1);
+    const path = left[0]?.content as string;
     expect(await readFile(path, "utf-8")).toContain("## Handoff from the model");
     expect(await harness.conversations.list()).toHaveLength(2);
   });

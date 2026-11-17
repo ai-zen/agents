@@ -1123,9 +1123,8 @@ export class HostApp {
    * 缺省的交接服务：按这次装配的 cwd 造 SDK 口径的那个（文档落 `<cwd>/.ai-zen/handoffs`）。
    *
    * `context.scope.cwd` 就是这一段所属项目的 `workspaces.cwd`（`ScopeRegistry` 按项目行装配），
-   * 所以它同时是两件事的输入：**文档目录**落在它下面，以及换记忆时那条 cwd 消息的正文 ——
-   * 换手之后接手的那一代得知道自己在哪个目录里干活（`PRD.md` 4.8）。后者仍由 SDK 在算新记忆时
-   * 生成（记忆长什么样只在一处算，`PRD.md` 4.5），宿主只是把这个目录递进去。
+   * 它用来算**文档落点**：`<cwd>/.ai-zen/handoffs`。新记忆长什么样不靠它 —— 换完的记忆就是
+   * 「系统提示 + 断点」两截（目录随时问 `cwd` 工具即可，不必往新记忆里塞一条）。
    */
   private defaultHandoffProvider(): HandoffProvider {
     return (context) =>

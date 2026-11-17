@@ -7,7 +7,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { ConfigManager, HandoffService } from "@ai-zen/agents-sdk";
+import { ConfigManager } from "@ai-zen/agents-sdk";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { AssetRepository } from "../storage/AssetRepository.js";
@@ -1255,32 +1255,6 @@ describe("会话创建时那条 hidden 的 cwd 消息（F-D9）", () => {
     expect(cwdMessage.content).toBe(harness.projectDir);
     expect(cwdMessage.seq).toBeLessThan(all[1]!.seq);
     expect(all[1]?.id).toBe("u1");
-  });
-
-  it("与交接换完记忆时 SDK 生成的那一条逐字段同形同文（一个概念一种形状）", async () => {
-    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
-    const rows = await harness.messages.listByConversation(created.conversation.id, undefined, {
-      includeHidden: true,
-    });
-    const seeded = rows[0]!;
-
-    // 交接换完记忆那一份由 SDK 造（`HandoffService.createCwdMessage`，宿主只是把它写成行）
-    const handedOver = HandoffService.createCwdMessage(harness.projectDir);
-
-    // 直接把两者的 role / hidden / source / content 摆在一起比：一处不同都算「两种形状」
-    expect({
-      role: seeded.role,
-      hidden: (seeded.data as { hidden?: unknown } | null)?.hidden,
-      source: seeded.source,
-      content: seeded.content,
-    }).toEqual({
-      role: handedOver.role,
-      hidden: handedOver.hidden,
-      source: handedOver.source,
-      content: handedOver.content,
-    });
-    // 那一条的正文也是路径（两边都不是渲染过的话）
-    expect(handedOver.content).toBe(harness.projectDir);
   });
 
   it("不进侧栏计数、也不进删除代价计数", async () => {

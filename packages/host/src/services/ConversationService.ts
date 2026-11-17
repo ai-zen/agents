@@ -473,8 +473,9 @@ export class ConversationService {
    * （不是进程工作目录）；`workspaceId` 建会话时就定死了，这里只读不改。
    *
    * **正文就是那个路径**，不按连接语言渲染（D8 不适用）：这条消息是隐藏的、用户看不见，
-   * 模型要的就是路径本身，所以这里不收 `language` —— 交接换完记忆时 SDK 生成的那一条
-   * （`HandoffService.createCwdMessage`）同形同文，一个概念只有一种形状。
+   * 模型要的就是路径本身，所以这里不收 `language`。
+   *
+   * 只在创建时写这一次：交接换完之后的记忆里**没有**这条（目录随时问 `cwd` 工具）。
    */
   async ensurePersisted(conversationId: string): Promise<Conversation> {
     const id = requireId(conversationId, "conversationId");
@@ -547,11 +548,11 @@ export class ConversationService {
   /**
    * 写会话开头那条 `hidden` 的 cwd 消息（PRD F-D9）。
    *
-   * 形状与 SDK 交接换完记忆时生成的那一条（`HandoffService.createCwdMessage`）**同形同文**
-   * （`PLAN.md` §4、`CORE.md` §3）：`role: user` + `hidden`（模型在上下文里能看到它，界面上
+   * 形状是死的（`PLAN.md` §4、`CORE.md` §3）：`role: user` + `hidden`（模型在上下文里能看到它，界面上
    * 不展示，core 的 `Message.hidden`）+ `source { kind: "system", label: "cwd" }`，**正文就是
-   * 那个路径**。不拼一句渲染过的话：这条消息用户看不见，模型要的就是路径；同一个概念只有
-   * 一种形状，别在这里再造第二种。
+   * 那个路径**。不拼一句渲染过的话：这条消息用户看不见，模型要的就是路径。
+   *
+   * 只写在**创建那一刻**：交接换完之后的记忆里没有这条（目录随时问 `cwd` 工具）。
    *
    * cwd 来自这段对话所属的 Workspace（PRD D9：一段对话绑一个项目，cwd 创建即定死），
    * 不读进程工作目录。

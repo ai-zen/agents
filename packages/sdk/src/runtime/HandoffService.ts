@@ -28,9 +28,8 @@ export type HandoffMode = "self" | "summary";
  *   模板那几条不标；
  * - `prune`：物理剔除旧消息，只留 `definition.messages`（系统提示等模板）。
  *
- * 两种算出来的都是「**同一份形状**」：模板 + （给了 `cwd` 时的 cwd 消息）+ 交接断点（`role: system`
- * + `hidden` + 只带路径）。宿主的落库方式决定了它用哪种 —— 它把旧记忆整段挂成另一段存档会话，
- * 所以那一条路用 `prune`。
+ * 两种算出来的都是「**同一份形状**」：模板 + 交接断点（`role: system` + `hidden` + 只带路径）。
+ * 宿主的落库方式决定了它用哪种 —— 它把旧记忆整段挂成另一段存档会话，所以那一条路用 `prune`。
  */
 export type MigrationStrategy = "omit" | "prune";
 
@@ -121,13 +120,6 @@ export interface HandoffServiceOptions {
   mode?: HandoffMode;
   /** 换记忆之后的旧历史怎么处置，默认 `omit`（可被 `migrate()` 的参数覆盖） */
   strategy?: MigrationStrategy;
-  /**
-   * 换记忆时那条 cwd 消息的**缺省**目录（可被 `migrate()` 的 `cwd` 覆盖；都不给就不生成）。
-   *
-   * 只有「服务跟着一段对话 / 一个项目造」的那条路需要它：自动交接的 `migrate()` 是插件叫的，
-   * 调用方没有机会在那一次入参里带 `cwd`，于是把项目目录留在服务的构造参数上。
-   */
-  cwd?: string;
   /** 查找 `handoff` Skill 的目录列表（优先级从高到低）；为空则直接用兜底模板 */
   skillDirs?: string[];
   /** `summary` 模式所用客户端（可选；未传则回退到 agent.client） */
@@ -156,7 +148,7 @@ export interface HandoffServiceOptions {
   /**
    * **落库的接缝**：`migrate()` 把算好的记忆交给它，由调用方落库。
    *
-   * 它**不改变记忆长什么样**：哪些旧消息留、哪些标 `omit`、cwd 消息与断点消息的形状（`role: system` + `hidden` + 正文只带路径）、文档够不够长（不到 `minHandoffBytes` 算没写出来）—— 全在
+   * 它**不改变记忆长什么样**：哪些旧消息留、哪些标 `omit`、断点消息的形状（`role: system` + `hidden` + 正文只带路径）、文档够不够长（不到 `minHandoffBytes` 算没写出来）—— 全在
    * `migrate()` 这一处算完（`PRD.md` 4.5）。接缝只决定「这份记忆落在哪儿」：
    *   - **不注入**：SDK 自己把它换到 `agent.messages` 上 —— 外部使用者走的就是这条；
    *   - **注入**：SDK 一个字节都不动 `agent.messages`，由调用方落到库、落到内存（宿主走这条）。
@@ -168,7 +160,7 @@ export interface HandoffServiceOptions {
 
 /** 交给 {@link HandoffServiceOptions.commitMemory} 的那一份 */
 export interface MemoryCommit {
-  /** 换完之后这段记忆**就是**这一份（开头那几条系统提示原样在里面，给了 `cwd` 时还带一条 cwd 消息） */
+  /** 换完之后这段记忆**就是**这一份（开头那几条系统提示原样在里面，末尾一条交接断点） */
   memory: AgentNS.Message[];
   /** 这份记忆指向的那份交接文档（断点消息里带的就是它） */
   handoffPath: string;
@@ -181,13 +173,6 @@ export interface HandoffParams {
   agent: SdkAgent;
   /** 本次执行者（覆盖构造时的默认值） */
   mode?: HandoffMode;
-  /**
-   * 这一段所属项目的目录（`workspaces.cwd`）。给了就在新记忆里生成一条 cwd 消息。
-   *
-   * 它**只影响新记忆里多不多那一条**，不参与写文档：换手之后驱动者得知道自己在哪个目录里干活
-   * （`PRD.md` 4.8），而那件事在这一层算 —— 宿主只把这个目录递进来，不自己拼那条消息。
-   */
-  cwd?: string;
   /** 当前 prompt token 用量（可选，仅透传给钩子） */
   promptTokens?: number;
   /** 上下文阈值（可选，仅透传给钩子） */
@@ -239,8 +224,6 @@ export class HandoffService {
   private readonly handoffDirPath: string;
   private readonly defaultMode: HandoffMode;
   private readonly defaultStrategy: MigrationStrategy;
-  /** 换记忆时那条 cwd 消息的缺省目录（`migrate()` 的 `cwd` 覆盖它；都没有就不生成那一条） */
-  private readonly defaultCwd?: string;
   private readonly minHandoffBytes: number;
   private readonly skillDirs: string[];
   private readonly client?: OpenAI;
@@ -268,7 +251,6 @@ export class HandoffService {
       handoffDir,
       mode,
       strategy,
-      cwd,
       minHandoffBytes,
       skillDirs,
       client,
@@ -284,7 +266,6 @@ export class HandoffService {
     this.handoffDirPath = resolvePath(handoffDir ?? join(process.cwd(), ".ai-zen", "handoffs"));
     this.defaultMode = mode ?? "self";
     this.defaultStrategy = strategy ?? "omit";
-    this.defaultCwd = cwd;
     // 400 字节是文档里的数（`PRD.md` 3.6 / 4.5），不在这里再发明一个
     this.minHandoffBytes = minHandoffBytes ?? 400;
     this.skillDirs = skillDirs ?? [];
@@ -370,29 +351,6 @@ export class HandoffService {
   }
 
   /**
-   * cwd 消息：换完记忆之后，接手的那一代「我在哪个目录里干活」的那一条。
-   *
-   * 形状与宿主落行那一刻写的那条**同形**（`PLAN.md` §4、`CORE.md` §3）：`role: user` +
-   * `hidden`（照常进上下文，界面上不展示）+ `source: { kind: "system", label: "cwd" }` ——
-   * 它是宿主注入的，不是用户说的话，不填来源就会被数进「用户说的话」（自动命名的判据就永远
-   * 不成立）。正文就是那个路径。
-   *
-   * 它排在交接断点**之前**：创建的落行口径里（`PLAN.md` §4「一段对话的诞生」）cwd 是该段最先写的
-   * 一条，断点说的是「旧记忆到这里为止」，于是接手的那一代先看见目录、再看见断点。
-   *
-   * **只有这一处造它**：外部使用者用 SDK 时也是这一条，宿主落库时落的也是这一条。
-   */
-  static createCwdMessage(cwd: string): AgentNS.Message {
-    return new Message({
-      role: AgentNS.Role.User,
-      content: cwd,
-      status: AgentNS.MessageStatus.Completed,
-      hidden: true,
-      source: { kind: "system", label: "cwd" },
-    });
-  }
-
-  /**
    * 交接断点消息：换完记忆之后，接手的那一代看到的那一条。
    *
    * 形状是死的（`PRD.md` 3.6 / 4.5、`PLAN.md` §5.3）：`role: system` + `hidden`（不给人看，
@@ -445,14 +403,12 @@ export class HandoffService {
    *   1. 先跟 {@link handoff} 一样把文档写出来（写不出来就降级、再不行就抛）；
    *   2. 然后**算出换完之后那段记忆长什么样**（{@link planMemory}）并把它交给接缝。
    *
-   * 「长什么样」只有这一处算：哪些旧消息留（`omit` / `prune`）、cwd 消息与断点消息的形状
+   * 「长什么样」只有这一处算：哪些旧消息留（`omit` / `prune`）、断点消息的形状
    * （`role: system` + `hidden` + 只带路径）、文档够不够长（不到 `minHandoffBytes` 算没写出来，在
    * `runSelfHandoff` 里判）—— 外部使用者用 SDK 时也是这一份，宿主不另写一遍（`PRD.md` 4.5）。
    *
-   * `cwd` 只决定新记忆里**多不多那一条 cwd 消息**：入参给了（或构造时给了 {@link
-   * HandoffServiceOptions.cwd}）就生成一条 `role: user` / `hidden` / `source: system+cwd` 的消息
-   * —— 换手之后接手的那一代得知道自己在哪个目录里干活（`PRD.md` 4.8）；都没给就不生成
-   * （外部使用者自己决定要不要那一格）。
+   * 换完的记忆就是「模板（系统提示）+ 断点消息」这两截：**没有** cwd 消息 —— 目录随时问 `cwd`
+   * 工具就行，不必往新记忆里塞一条（那一条只在创建对话时写一次）。
    *
    * 落点在哪儿就看有没有注入 {@link HandoffServiceOptions.commitMemory}：
    *   - **没注入**：SDK 自己把 `agent.messages` **原地**换成新记忆（外部使用者的路）。用 `splice`
@@ -470,7 +426,6 @@ export class HandoffService {
         ctx.agent,
         ctx.handoffPath,
         params.strategy ?? this.defaultStrategy,
-        params.cwd ?? this.defaultCwd,
       );
 
       if (this.commitMemory) {
@@ -490,8 +445,7 @@ export class HandoffService {
    * 换完之后那段记忆**就是**这一份 —— 全仓唯一一处算它。
    *
    * 开头是模板（`definition.messages`：系统提示那几条，它们不是旧记忆的一部分，换完还得在），
-   * 末尾是交接断点（{@link createPostMessages}），断点前面那一条是 cwd 消息
-   * （{@link createCwdMessage}，只在给了 `cwd` 时有）。中间那段看策略：
+   * 末尾是交接断点（{@link createPostMessages}）—— 一条，只有它。中间那段看策略：
    *   - `prune`：一条不留（旧记忆整段腾空）；
    *   - `omit`：原样留着但标 `omit: true`（不再发给模型，仍可回看）—— 模板那几条不标。
    *
@@ -504,14 +458,10 @@ export class HandoffService {
     agent: SdkAgent,
     handoffPath: string,
     strategy: MigrationStrategy,
-    cwd?: string,
   ): AgentNS.Message[] {
     const templateMessages = agent.definition?.messages ?? [];
-    // 顺序是死的：cwd（「你在哪儿」）在前，断点（「旧记忆到这里为止」）在后
-    const tail = [
-      ...(cwd === undefined ? [] : [HandoffService.createCwdMessage(cwd)]),
-      ...HandoffService.createPostMessages(handoffPath),
-    ];
+    // 尾巴只有一条：断点（「旧记忆到这里为止」）
+    const tail = HandoffService.createPostMessages(handoffPath);
 
     if (strategy === "prune") return [...templateMessages, ...tail];
 
