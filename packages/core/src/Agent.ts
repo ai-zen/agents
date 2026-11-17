@@ -1,4 +1,4 @@
-import AsyncQueue from "@ai-zen/async-queue";
+import AsyncQueue, { QueueInputPausedError } from "@ai-zen/async-queue";
 import EventBus from "@ai-zen/event-bus";
 import type { ChatCompletionChunk } from "openai/resources/chat/completions";
 import { AgentNS } from "./AgentNS.js";
@@ -303,18 +303,20 @@ export class Agent extends AgentContext {
 
   private _plugins: AgentPlugin[] = [];
   private bus = new EventBus();
-  /** 唯一的一条队列。钥匙也在里面，只是它没有正文 */
+  /**
+   * 唯一的一条队列。钥匙也在里面，只是它没有正文。
+   *
+   * **它的三个开关就是 core 的那三处状态，core 不另存一份**（存两份就得在两处同时改，
+   * 迟早漂出一份「以为还在收件、其实闸早关了」）：
+   * - 收不收件 = `isInputPaused` —— `stop()` / `kill()` 各自 `pauseInput()`；
+   * - 以后还有没有新货 = `isDone` —— `stop()` / `kill()` 各自 `done()`（它取代了原来的
+   *   `closed` 字段：**关门就是「不再有货」，不是另一处状态**）；
+   * - 此刻取不取件 = `isOutputPaused` —— {@link consumptionPaused} 直接读它。
+   */
   private inbox = new AsyncQueue<AgentNS.InboxEntry>();
 
-  /** `stop()` 调过：关门，不再接输入，存量走完才死 */
-  private closed = false;
-  /** `kill()` 调过：硬着陆，存量作废 */
+  /** `kill()` 调过：硬着陆，存量作废。**只管「死没死」**（收不收件问队列的 `isInputPaused`） */
   private killed = false;
-  /** 收不收件：true = **从下一批起**不再取件（手上这批照跑） */
-  private _consumptionPaused = false;
-  /** 上面那个开关翻上时外循环等的那个等待者：`resumeConsumption` 放行它，`stop` / `kill` 也放行它 */
-  private intakeWaiterTx?: () => void = undefined;
-  private intakeWaiterRx: Promise<void> = new Promise<void>((tx) => (this.intakeWaiterTx = tx));
   /** 一次性 agent 已经吃过一次投递了（自此关收） */
   private fed = false;
 
@@ -384,7 +386,7 @@ export class Agent extends AgentContext {
         if (r !== undefined) return r;
       } catch (error) {
         // 插件抛错**不许把 agent 打死**：异常会一路穿出 `start()`，循环就永久停在那儿，
-        // 而且 `closed` / `killed` 都还是 false —— 一个看起来活着、塞进去也不动的僵尸。
+        // 而且 `killed` 还是 false、输入闸也还开着 —— 一个看起来活着、塞进去也不动的僵尸。
         const wrapped = error instanceof Error ? error : new Error(String(error));
         this.emit("failed", { agent: this, error: wrapped });
 
@@ -475,28 +477,46 @@ export class Agent extends AgentContext {
   /**
    * 关门：不再接输入，**存量走完**，排空才死（血流干的死）。
    *
-   * 不取件（`consumptionPaused`）中调它就是「不跑 + 关门，存量作废」—— 不取件说的是
-   * 「现在别跑」，stop 说的是「以后也别跑」，两句叠起来就是不跑。不翻回收件再跑一遍存量，
-   * 因为那等于用户让它停了却看见它又开口。
+   * 三件事全交给队列的三个口，core 自己不记状态：
+   * - `pauseInput()`：此后 `push()` 由队列抛 `QueueInputPausedError`，core 翻成
+   *   `AgentError("closed")`（对外错误码不变）；
+   * - `resumeOutput()`：**不能省**。`done()` 只是「以后没有新货」这个信号，它**不突破输出闸** ——
+   *   不取件中调 stop 时消费者正挂在闸上，不翻回来它就永远挂在那儿：存量没人取，
+   *   `stopped` 也发不出来（以前那道「等开关翻开」的等待就是以放行它来收尾的）；
+   * - `done()`：宣告没有新货，迭代器取空存量后自己收尾。
+   *
+   * 不取件（{@link consumptionPaused}）中调它**不作废存量**：不取件说的是「现在别跑」，
+   * stop 说的是「以后也别跑」，两句叠起来的正确读法是「把手上这些跑完为止」。
    */
   stop(): void {
-    if (this.closed || this.killed) return;
-    this.closed = true;
-    if (this.consumptionPaused) this.clearInbox();
+    // 幂等：`done()` 过就是已经关了（`stop` 与 `kill` 都会把它置上，那就是原来的「closed」）
+    if (this.inbox.isDone) return;
+    this.inbox.pauseInput();
+    this.inbox.resumeOutput();
     this.inbox.done();
-    this.releaseIntakeWaiters(); // 关门就是「别再等了」：别把循环留在「等开关翻开」那道等待上
     void this.dispatchHook("onStop", { agent: this });
   }
 
-  /** 硬着陆：立刻死，存量作废 */
+  /**
+   * 硬着陆：立刻死，存量作废。
+   *
+   * 与 `stop()` 只差两处：**存心作废存量**（`clearInbox()`）与**掐在途**（`abortTurn()`）。
+   *
+   * 翻输出闸（`resumeOutput()`）与清空是两件事，都要，但理由不同：
+   * - 清空**不看那道闸** —— 它走的是队列的 `clear()`（作废，不是取件），闸关着也照样清得掉。
+   *   以前用 `takeAll()` 当清空，就被闸挡住了（「暂停中清不掉」），那是把作废当成了取件；
+   * - 翻闸是为**挂在闸上的循环**：不翻回来，迭代器永远停在闸上，收尾走不完、`killed` 发不出来。
+   *   清空是同步的，消费者在微任务里才被唤到，所以队里的货一定是先被清掉、
+   *   再轮到它看见空队列 + `isDone` 而收尾。
+   */
   kill(): void {
     if (this.killed) return;
     this.killed = true;
-    this.closed = true;
+    this.inbox.pauseInput();
+    this.inbox.resumeOutput();
     this.clearInbox();
     this.inbox.done();
     this.abortTurn();
-    this.releaseIntakeWaiters();
     void this.dispatchHook("onKill", { agent: this });
   }
 
@@ -505,21 +525,27 @@ export class Agent extends AgentContext {
    *
    * `true` 说的是「从下一批起不再取件」：批与批之间不取，手上那批照跑。
    * 想知道「它现在在不在干活」读 {@link state}，不要看这处开关。
+   *
+   * 它是队列那个**输出闸的现读**（`inbox.isOutputPaused`），core 不另存一份 ——
+   * 本方法在 core 里没有对应的字段，权威在队列。
    */
   get consumptionPaused(): boolean {
-    return this._consumptionPaused;
+    return this.inbox.isOutputPaused;
   }
 
   /**
    * **翻上不取件开关**：只是从此不取件，不掐在途。
    *
    * 手上这批算已经开始 —— 让它跑完，从下一批起不再取。要立刻停就用 `abort`。
-   * 它**只翻那个开关**：{@link state} 一个字节都不变（跑完该报闲就报闲，开关仍是 true）。
+   * 它**只关队列的输出闸**：{@link state} 一个字节都不变（跑完该报闲就报闲，闸仍是关着）。
+   * 事件 `consumption:paused` 仍由 agent 发 —— 那是给**外面**的通知，队列不认识事件。
    * 幂等；已经关了/死了就是空动作。
    */
   pauseConsumption(): void {
-    if (this.killed || this.closed || this._consumptionPaused) return;
-    this._consumptionPaused = true;
+    // `isDone` = 已经在收尾路上了（stop / kill 动过）。那时再关输出闸会把「把血放干」
+    // 挂在一个再没人翻回来的闸上（`done()` 不突破输出闸），所以门口就拦住。
+    if (this.inbox.isDone || this.inbox.isOutputPaused) return;
+    this.inbox.pauseOutput();
     this.emit("consumption:paused", { agent: this });
     void this.dispatchHook("onConsumptionPaused", { agent: this });
   }
@@ -532,7 +558,7 @@ export class Agent extends AgentContext {
    * 掐在途一定伴随不取件，不取件不必掐在途。
    */
   abort(): void {
-    if (this.killed || this.closed) return;
+    if (this.inbox.isDone) return;
     this.pauseConsumption();
     this.abortTurn();
   }
@@ -540,15 +566,15 @@ export class Agent extends AgentContext {
   /**
    * **翻回不取件开关**：又开始取件，**只翻开关、不碰 {@link state}**。
    *
-   * 队列里有货的话，外循环一从「等开关翻开」那道等待上下来就自己取走、自己报 `working` ——
-   * 那件事归它报，这里不替它说。也不在这里顺手取件：用户手快连点 `abort` /
-   * `resumeConsumption` 时这一圈还在收尸，此刻去取件就变成两个东西同时写 `messages`。
+   * 开的是队列的输出闸：挂在闸上的消费者被**一次性全部放行**，按原顺序接着取 ——
+   * 队列里有货的话，外循环一被放行就自己取走、自己报 `working`，那件事归它报，这里不替它说。
+   * 也不在这里顺手取件：用户手快连点 `abort` / `resumeConsumption` 时这一圈还在收尸，
+   * 此刻去取件就变成两个东西同时写 `messages`。
    */
   resumeConsumption(): void {
-    if (!this._consumptionPaused) return;
-    this._consumptionPaused = false;
+    if (!this.inbox.isOutputPaused) return;
+    this.inbox.resumeOutput();
     this.emit("consumption:resumed", { agent: this });
-    this.releaseIntakeWaiters();
     void this.dispatchHook("onConsumptionResumed", { agent: this });
   }
 
@@ -561,13 +587,13 @@ export class Agent extends AgentContext {
    *
    * **关门之后抛 `AgentError("closed")`**，不静默丢：塞的人可能是另一个 agent，
    * 他得知道自己投失败了才能改投（宿主接住这个错，就去做「新装一个再投」）。
+   * 但「关门了」这个判据**不在 core 里**：core 只是把队列的拒绝翻成自己的错误码 ——
+   * `pauseInput()` 之后 `inbox.push()` 抛 `QueueInputPausedError`，此处翻成 `AgentError("closed")`，
+   * 对外的码与原来一模一样（宿主按 `closed` 分流「这个会话不在了」）。
    *
    * 不给 `input`（或给一个没有正文的）= 拧钥匙：只把这一圈叫起来，不落地任何消息。
    */
   push(input?: AgentNS.InboxInput): void {
-    if (this.closed || this.killed) {
-      throw new AgentError("closed", `往已经关了的 agent(${this.id}) 投递`);
-    }
     // 一次性 agent 只有一条因果链：发起它的那一次投递。之后关收，
     // 别人塞进来的东西会让「等闲」重新变成瞎等（`CORE.md` §1）。
     if (this.lifetime === "one-shot") {
@@ -588,7 +614,18 @@ export class Agent extends AgentContext {
             content: input.content,
           };
 
-    this.inbox.push(entry);
+    try {
+      this.inbox.push(entry);
+    } catch (error) {
+      // 关输入是**队列判的**（`pauseInput()` 之后它一个都不收）。core 只负责把这件事
+      // 翻成自己那一套码：调用方看到的仍是 `AgentError("closed")`。别的异常原样往上抛 ——
+      // 那不是「关门」，不该冒充一个业务码。
+      if (error instanceof QueueInputPausedError) {
+        throw new AgentError("closed", `往已经关了的 agent(${this.id}) 投递`);
+      }
+      throw error;
+    }
+
     this.emit("inboxAdded", { agent: this, entry });
   }
 
@@ -641,11 +678,16 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * 清空 inbox 并返回被丢掉的条目。core 自己从不主动调它 ——「作废排队」是调用方的
-   * 显式决定，不该由「用户按了停」替它猜（唯一例外：暂停中 `stop` / `kill`）。
+   * 清空 inbox（作废排队）并返回被丢掉的条目。core 自己从不主动调它 ——「作废排队」是调用方的
+   * 显式决定，不该由「用户按了停」替它猜（唯一例外：`kill()` —— 硬着陆就是「这些永远不跑了」）。
+   *
+   * 走的是队列的 `clear()`，**不是 `takeAll()`**：清空是「作废」，不是「取件」。
+   * 取件要看输出闸（不取件时一件都不给，那是暂时的、货还排着队），作废不看 —— 所以
+   * {@link pauseConsumption} 期间调它照样清得掉，宿主那条 `/clear` 才不会在暂停中失效。
+   * 事件 `inboxCleared` 仍由 agent 发：队列不认识事件。
    */
   clearInbox(): AgentNS.InboxEntry[] {
-    const entries = this.inbox.takeAll();
+    const entries = this.inbox.clear();
     if (entries.length) this.emit("inboxCleared", { agent: this, entries });
     return entries;
   }
@@ -724,6 +766,10 @@ export class Agent extends AgentContext {
    * 不取件的等待有两处（进来之前一次、每批尾部一次）：于是批与批之间不取件，不取件期间
    * 到达的货就躺在队列里 —— 界面看得见条数、能持久化、恢复能捞回来。
    *
+   * 这两处等待**不用 core 自己写**：不取件就是把队列的输出闸关上（`pauseOutput()`），
+   * `asTakeAll()` 自己会停在闸上 —— 一件不取、不退出，闸一开就按原顺序接着取。
+   * core 只负责翻闸（{@link pauseConsumption} / {@link resumeConsumption}），不养第二个唤醒器。
+   *
    * `state` 那一格**不由 `consumptionPaused` 决定**：取到一批就是 `working`，这批跑完且队列
    * 真空就是 `idle` —— 哪怕那个开关还开着。两处状态各报各的，于是「不取件期间投进来的那批
    * 跑完了」和「仍旧不取件」两件事都报得出来。
@@ -732,8 +778,6 @@ export class Agent extends AgentContext {
    * 消息、跑了一半工具，塞回队头只会造成重复落地。要立刻停就用 `abort`。
    */
   private async outerLoop(): Promise<void> {
-    await this.awaitIntakeOpen();
-
     for await (const entries of this.inbox.asTakeAll()) {
       // 名册的清空点：外循环每一批的开头（上一批的子 agent 到这儿就不再登记，`CORE.md` §17）。
       // 放在这里是因为它是**这批活的开头**，而且是唯一一个「上一批已经彻底跑完、这批还没动」
@@ -760,12 +804,11 @@ export class Agent extends AgentContext {
       await this.dispatchHook("onOuterLoopEnd", ctx);
 
       // 只有真的空了才叫「闲」—— 手上没活但队列还压着不算。
-      // consumptionPaused 不参与这一判：不取件中跑完这批就是闲，那个开关该开着还开着
-      if (this.inbox.size === 0 && !this.closed && !this.killed) {
+      // consumptionPaused 不参与这一判：不取件中跑完这批就是闲，那个闸该关着还关着。
+      // `isDone`（stop / kill 动过）也不报闲：这已经在收尾路上了，报闲等于告诉外面「还能接着投」。
+      if (this.inbox.size === 0 && !this.inbox.isDone) {
         this.setState("idle");
       }
-
-      await this.awaitIntakeOpen();
     }
 
     this.emit(this.killed ? "killed" : "stopped", { agent: this });
@@ -801,8 +844,8 @@ export class Agent extends AgentContext {
    * 续行条件只有一条：**刚才有工具调用**。工具是模型要的，跑完必须把结果再喂回去问一次；
    * 没有工具调用就是这一次说完了。没有第二个判据。
    *
-   * **这一圈不看那个开关**：`consumptionPaused` 只在批边界生效（`outerLoop` 那两处
-   * `awaitIntakeOpen`），而手上已经取出来的那批算已经开始 —— 它要把这一批跑完，从下一批起才不再取
+   * **这一圈不看那个闸**：不取件是队列输出闸的事（`inbox.isOutputPaused`），而闸只在**取件**
+   * 那一刻起作用；手上已经取出来的那批算已经开始 —— 它要把这一批跑完，从下一批起才不再取
    * （`CORE.md` §2）。所以下面只判 `killed`：死了才不发请求。要立刻停用 `abort`。
    */
   private async innerLoops(): Promise<void> {
@@ -1049,27 +1092,6 @@ export class Agent extends AgentContext {
   // -------------------------------------------------------------------------
   // 等待
   // -------------------------------------------------------------------------
-
-  /**
-   * 等不取件开关翻开：`consumptionPaused` 为 true 就停在这儿，`resumeConsumption` /
-   * `stop` / `kill` 都能放行它。
-   *
-   * 只认 `resumeConsumption` 会在「不取件中 stop」时死锁 —— 循环挂在一个永远不来的放行上。
-   */
-  private awaitIntakeOpen(): Promise<void> {
-    return this._consumptionPaused ? this.intakeWaiterRx : Promise.resolve();
-  }
-
-  /**
-   * 放行挂在「等开关翻开」上的那个等待者，并换上一条新的（下一次不取件才有得挂）。
-   *
-   * 这是**内部**的放行动作，不发 `consumption:resumed`：`stop` / `kill` 也会走它，而它们不是
-   * 「又开始收件」（那件事由 `stopped` / `killed` 说）。
-   */
-  private releaseIntakeWaiters(): void {
-    this.intakeWaiterTx?.();
-    this.intakeWaiterRx = new Promise<void>((tx) => (this.intakeWaiterTx = tx));
-  }
 
   /**
    * 等到某一格（`runOnce` 的「等闲」用它）。
