@@ -441,6 +441,85 @@ describe("镜像：打开一段对话", () => {
     ).toEqual([]);
   });
 
+  it("`handoff_started` 直接进镜像那一格：不必重拉 `conversation.state`", async () => {
+    const host = await startFake({
+      methods: {
+        "conversation.state": (params) => ({
+          state: conversationState((params as { conversationId: string }).conversationId),
+        }),
+        "message.list": () => listed("c1", [userMessage("m1", "问")]),
+      },
+    });
+    const client = await connect(host);
+    const mirror = await client.open("c1");
+    // 打开这一拍不在交接
+    expect(mirror.handoff).toBeNull();
+
+    host.push("conversation.changed", {
+      conversationId: "c1",
+      workspaceId: "w1",
+      change: "handoff_started",
+      at: "2026-01-01T00:00:07.000Z",
+    });
+
+    // 镜像那一格当场变（界面据此把输入框拦住、只留中断），不必等重拉读数
+    await waitFor(() => mirror.handoff !== null);
+    expect(mirror.handoff).toEqual({ since: "2026-01-01T00:00:07.000Z" });
+
+    // 别的 kind（`renamed`）不动那一格：收口只认 `memory_replaced`
+    host.push("conversation.changed", {
+      conversationId: "c1",
+      workspaceId: "w1",
+      change: "renamed",
+      at: "2026-01-01T00:00:08.000Z",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mirror.handoff).toEqual({ since: "2026-01-01T00:00:07.000Z" });
+
+    // 这条事件只改镜像那一格：没有因此多拉一次读数，也没多拉一次消息
+    expect(host.frames.filter((frame) => frame.method === "conversation.state")).toHaveLength(1);
+    expect(host.frames.filter((frame) => frame.method === "message.list")).toHaveLength(1);
+    expect(mirror.messages.map((message) => message.id)).toEqual(["m1"]);
+  });
+
+  it("`memory_replaced` 把交接态清回 null（不必等重拉的读数回来）", async () => {
+    let stateCalls = 0;
+    const host = await startFake({
+      methods: {
+        "conversation.state": (params) => {
+          stateCalls += 1;
+          // 首载那一读照常回；`memory_replaced` 之后的重拉卡住不回来（读数一直迟到）
+          if (stateCalls > 1) return new Promise(() => undefined);
+          return { state: conversationState((params as { conversationId: string }).conversationId) };
+        },
+        "message.list": () => listed("c1", []),
+      },
+    });
+    const client = await connect(host);
+    const mirror = await client.open("c1");
+
+    host.push("conversation.changed", {
+      conversationId: "c1",
+      workspaceId: "w1",
+      change: "handoff_started",
+      at: "2026-01-01T00:00:07.000Z",
+    });
+    await waitFor(() => mirror.handoff !== null);
+
+    host.push("conversation.changed", {
+      conversationId: "c1",
+      workspaceId: "w1",
+      change: "memory_replaced",
+      at: "2026-01-01T00:00:09.000Z",
+    });
+
+    // 收口这件事由事件本身说清：要么重拉的读数卡住，要么它的答案还是旧的，交接态都已经是 null
+    await waitFor(() => mirror.handoff === null);
+    // 重拉确实发起了（它只是还没把读数送回来）
+    await waitFor(() => stateCalls === 2);
+    expect(mirror.handoff).toBeNull();
+  });
+
   it("`memory_replaced` → 全量整段替换镜像，顺带把「正在交接」收掉", async () => {
     // 这段记忆「换过之后」的样子，由假宿主在下面换掉
     let current = [userMessage("m1", "旧记忆里的那句")];

@@ -26,7 +26,9 @@
  *    （不是「死」—— 死是四格里带「发话前先复活」动作的那一格，拿它当「还没读到」的占位是借词），
  *    读到 `conversation.state` 的现读值之后才有一格；
  * ③ `conversation.state` 的另外两格：子 agent **名册**（只用来铺栏）与**交接态**
- *    （非空即「正在交接」）。
+ *    （非空即「正在交接」）。交接态还有一条在线时的来路：`conversation.changed` 的
+ *    `handoff_started` 把它置起来、`memory_replaced` 把它收掉（见 {@link ConversationMirror} 的
+ *    `conversationChanged`）—— 不然长时间在线、不重拉读数的窗口永远学不到「交接开始了」。
  *
  * 子 agent 那一栏的消息**一律来自事件**（每条消息事件都带 `toolCallId`）：子 agent 不入库，
  * 也就没有第二个地方可以补 —— 重连之后靠名册把栏铺回来，内容靠之后的事件继续长。
@@ -45,6 +47,7 @@
 import { applyChunk } from "@ai-zen/agents-core";
 import type {
   AgentNS,
+  ConversationChangeKind,
   ConversationState,
   ConversationStatus,
   EventPayload,
@@ -53,15 +56,17 @@ import type {
 /**
  * 与镜像有关的一条事件（事件名 + 载荷，判别结构）。
  *
- * 另外四个事件与镜像无关：`notice` / `question` / `error` / `conversation.changed` —— 它们说的
- * 不是「哪条消息怎么了」，也不是四格。
+ * 另外三个事件与镜像无关：`notice` / `question` / `error` —— 它们说的不是「哪条消息怎么了」，
+ * 也不是四格。`conversation.changed` **认领**，但只认其中两格：`handoff_started` 与
+ * `memory_replaced`（见 {@link ConversationMirror} 的 `conversationChanged`）。
  */
 export type MirrorEvent =
   | { kind: "message.added"; payload: EventPayload<"message.added"> }
   | { kind: "message.delta"; payload: EventPayload<"message.delta"> }
   | { kind: "message.changed"; payload: EventPayload<"message.changed"> }
   | { kind: "message.removed"; payload: EventPayload<"message.removed"> }
-  | { kind: "state"; payload: EventPayload<"state"> };
+  | { kind: "state"; payload: EventPayload<"state"> }
+  | { kind: "conversation.changed"; payload: EventPayload<"conversation.changed"> };
 
 /**
  * 一条事件折成 {@link MirrorEvent}；与镜像无关的事件返回 `null`。
@@ -81,6 +86,11 @@ export function toMirrorEvent(event: string, payload: unknown): MirrorEvent | nu
       return { kind: "message.removed", payload: payload as EventPayload<"message.removed"> };
     case "state":
       return { kind: "state", payload: payload as EventPayload<"state"> };
+    case "conversation.changed":
+      return {
+        kind: "conversation.changed",
+        payload: payload as EventPayload<"conversation.changed">,
+      };
     default:
       return null;
   }
@@ -214,7 +224,8 @@ export class ConversationMirror {
    * 一条攒起来的。名册被清空（下一批开始了）不等于那些话没说过 —— 所以已经攒下的栏原样留着。
    *
    * 交接态非空就是「正在交接」：界面要把它与四格分开显示（交接期间输入框拦住、只留中断）。
-   * 它什么时候消失由 `memory_replaced` 那条事件带着重拉决定 —— 交接收尾时宿主会推它。
+   * 读数只是它的一条来路：在线时 `handoff_started` 那条事件会把它置起来（见
+   * {@link ConversationMirror} 的 `conversationChanged`），`memory_replaced` 会把它收掉。
    */
   applyReadout(state: Pick<ConversationState, "status" | "subAgents" | "handoff">): void {
     this.statusValue = state.status;
@@ -279,6 +290,9 @@ export class ConversationMirror {
       case "message.delta":
         this.delta(event.payload, options.replay === true);
         return;
+      case "conversation.changed":
+        this.conversationChanged(event.payload.change, event.payload.at);
+        return;
     }
   }
 
@@ -290,6 +304,28 @@ export class ConversationMirror {
   // -------------------------------------------------------------------------
   // 内部
   // -------------------------------------------------------------------------
+
+  /**
+   * `conversation.changed` 里只有两格与交接态有关：
+   *
+   *   · `handoff_started` —— 交接**开始**这一拍。置成「正在交接」，`since` 就是这条事件的 `at`
+   *     （与 `applyReadout` 收到的那一格同形）。两件事都靠它：长时间在线、不重拉读数的窗口靠它
+   *     学到「交接开始了」；收口那一拍（`memory_replaced`）要等交接跑完才有，不能靠它开头。
+   *   · `memory_replaced` —— **收口**。交接提交（记忆已经换掉）与回滚（记忆回到交接前）两处都推
+   *     它 —— 所以「成功 / 失败 / 取消」在这条上已经收成了同一件事：收到就清回 `null`（那一刻
+   *     记忆已经换完，交接结束了）。
+   *
+   * 其余 change（`created` / `renamed` / `pinned` / `settings_changed` / `deleted`）与交接态无关，
+   * 一格都不动。
+   *
+   * 这里**只改交接态这一格**：不触发 `message.list` / `conversation.state` —— 要不要重拉是
+   * `Client` 那一层的事（`memory_replaced` 的重拉见 `client.ts` 的 `reloadOnMemoryReplaced`），
+   * 镜像自己不去拉任何东西。
+   */
+  private conversationChanged(change: ConversationChangeKind, at: string): void {
+    if (change === "handoff_started") this.handoffValue = { since: at };
+    else if (change === "memory_replaced") this.handoffValue = null;
+  }
 
   private added(message: AgentNS.Message, toolCallId: string | undefined, replay: boolean): void {
     const column = this.columnOf(toolCallId);

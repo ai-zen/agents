@@ -723,8 +723,11 @@ export class Client implements ContractCaller {
    * 一条事件 → 镜像：那段对话正在拉快照就先进队列，否则当场折进去。
    *
    * 事件带 `conversationId` 是契约里每一条事件都有的定位信息；没有它的（将来的新事件）这里
-   * 就不认领 —— 与镜像无关的事件（`notice` / `question` / `error` / `conversation.changed`）
-   * 由 `toMirrorEvent` 回空。
+   * 就不认领 —— 与镜像无关的事件（`notice` / `question` / `error`）由 `toMirrorEvent` 回空。
+   *
+   * `conversation.changed` 在这里也过一道：镜像只认它里面与交接态有关的那两格
+   * （`handoff_started` / `memory_replaced`），其余 change 一格不动 —— 这条事件只改镜像那一格，
+   * **不**触发任何拉取（`memory_replaced` 的重拉在 {@link Client.reloadOnMemoryReplaced}，是另一件事）。
    */
   private routeToMirror(method: string, payload: unknown): void {
     const mirror = this.mirrors.size > 0 ? this.mirrorByPayload(payload) : undefined;
@@ -752,7 +755,11 @@ export class Client implements ContractCaller {
    *
    * 交接期间这段对话写出来的那几条只在内存里、从不落库（宿主那边只跳过写库，事件照推）。所以
    * 提交或回滚之后，客户端手里那几条是**库里根本不存在**的消息 —— 宿主推这一条就是让这里
-   * **整段替换**：重拉一次 `conversation.state`（顺带把「正在交接」收掉）与 `message.list` 全量。
+   * **整段替换**：重拉一次 `conversation.state` 与 `message.list` 全量。
+   *
+   * 「正在交接」那一格不靠这次重拉收：它在事件到达的那一刻就被镜像自己清掉了
+   * （`mirror.ts` 的 `conversationChanged`，提交与回滚推的都是这一格），所以读数没回来之前界面
+   * 就已经不在交接态上了。
    *
    * 同这一段正在拉快照时不再并发拉第二份（`snapshotWhileBuffering` 自己会串起来），拉取期间
    * 到达的事件照旧先攒后补。
