@@ -142,7 +142,7 @@ export interface HandoffParams {
    * 两种执行者都要认它：
    *   - `summary`：直接作为 `chat.completions.create` 的 RequestOptions 传下去，
    *     请求会真的被中断（否则该请求根本无从取消）；
-   *   - `self`：agent 被 `abort()` 了（`paused`），所以每一轮之后要主动检查取不取消。
+   *   - `self`：agent 被 `abort()` 了（闸挂上），所以每一趟之后要主动检查取不取消。
    */
   signal?: AbortSignal;
 }
@@ -346,7 +346,7 @@ export class HandoffService {
    * 边界：本方法只保证「停下 + 回退」——不再重试、不降级 summary、不迁移，并把会话
    * 退回交接前。**它不负责立刻掐断正在跑的模型请求**：`self` 模式的那一轮是往常驻 agent 里
    * `push()` 的一条指令，调用方通常要同时 `agent.abort()`（TUI 就是这么做的 ——
-   * 那一按会让 agent 停在 `paused`，本服务随之把这一轮判成「没跑完」）；`summary`
+   * 那一按会给 agent 挂上闸，本服务随之把这一趟判成「没跑完」）；`summary`
    * 模式的那次请求拿的是本服务合并出的 signal，会被真正中断。
    */
   abort(): void {
@@ -685,7 +685,7 @@ export class HandoffService {
    *
    * 三种结束方式对调用方意义不同（`idle` 才能去校验产物），所以分开报：
    *   - `idle`：跑完了；
-   *   - `paused`：被 `abort()` 暂停/掉；
+   *   - `paused`：被 `abort()` 掉了（闸挂着），或者取消信号响了；
    *   - `dead`：关门/硬杀，循环已经结束。
    *
    * 第四种情况不在这里表达：`push` 在关门之后会直接抛 `AgentError("closed")` —— 那是
@@ -696,8 +696,8 @@ export class HandoffService {
     content: string,
     signal?: AbortSignal,
   ): Promise<"idle" | "paused" | "dead"> {
-    // 暂停中不取件：此刻投进去只会排在队列里，等 resume 后突然自己跑起来
-    if (agent.state === "paused") return "paused";
+    // 闸挂着就不取件：此刻投进去只会排在队列里，等 resume 后突然自己跑起来
+    if (agent.paused) return "paused";
 
     // 叫起来（幂等；不 await —— 那句 promise 到死才 resolve）
     void agent.start();
@@ -718,7 +718,7 @@ export class HandoffService {
           if (sawBusy) finish("idle");
         }),
       );
-      offs.push(agent.on("state:paused", () => finish("paused")));
+      offs.push(agent.on("gate:held", () => finish("paused")));
       offs.push(agent.on("stopped", () => finish("dead")));
       offs.push(agent.on("killed", () => finish("dead")));
       // 取消也要能打断「等闲」（`CORE.md` §5 那个死角：等子 agent 闲同样得能被掐断）

@@ -47,9 +47,11 @@ type Listener = (payload: any) => void;
  * 实现。所以这个替身要模拟的就是那条路的三个可观测点：
  *   - `start()`：幂等，返回一句「到死才 resolve」的 promise；
  *   - `push(entry)`：落一条 user 消息 → 变忙 → （跑 `onSend`）→ 追加回执 → 变闲；
- *   - `on("state:idle" | "state:busy" | "state:paused" | "stopped" | "killed")`：订阅，返回取消函数。
+ *   - `on("state:idle" | "state:busy" | "gate:held" | "stopped" | "killed")`：订阅，返回取消函数。
  *
  * `state` 的转移必须走 `setState`（同值不发），否则订阅方会被同一次转移喂两次。
+ * 忙/闲与闸是**两处状态**（与 core 同口径）：`state` 只说循环的位置，`paused` 只管「从下一批
+ * 起还取不取」。
  */
 class FakeAgent {
   messages: any[];
@@ -65,7 +67,9 @@ class FakeAgent {
   client: any;
   /** 常驻会话：自交接要求 agent 能「再问一轮」 */
   lifetime = "resident";
-  state: "busy" | "idle" | "paused" = "idle";
+  state: "busy" | "idle" = "idle";
+  /** 闸：挂着就不取件（另一处状态，不影响 `state`） */
+  paused = false;
 
   private listeners = new Map<string, Set<Listener>>();
   private closed = false;
@@ -116,7 +120,7 @@ class FakeAgent {
     for (const handler of this.listeners.get(type) ?? []) handler(payload);
   }
 
-  private setState(next: "busy" | "idle" | "paused"): void {
+  private setState(next: "busy" | "idle"): void {
     const from = this.state;
     if (from === next) return;
     this.state = next;
@@ -424,7 +428,7 @@ describe("handoff", () => {
     // 它又开口」。所以这一轮当没跑成，走逃生模式（summary 不经过 agent）。
     const { service } = await makeService();
     const agent = new FakeAgent();
-    agent.state = "paused";
+    agent.paused = true;
 
     const ctx = await service.handoff({ agent: asAgent(agent) });
 

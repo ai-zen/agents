@@ -138,6 +138,17 @@ export interface StateEvent {
   agent: Agent;
   from: AgentNS.AgentState;
 }
+
+/**
+ * 闸动了：挂上（`gate:held`）/ 打开（`gate:open`）。
+ *
+ * 载荷只带 agent —— 「现在挂着没有」现读 `agent.paused`，不在这里再报一份。
+ * 闸与忙/闲是两处状态，所以闸的变化**不冒充**「到了哪一格」：它只说自己动了。
+ */
+export interface GateEvent {
+  agent: Agent;
+}
+
 export interface InboxAddedEvent {
   agent: Agent;
   entry: AgentNS.InboxEntry;
@@ -242,7 +253,8 @@ export interface AgentEvents {
   killed: LifecycleEvent;
   "state:idle": StateEvent;
   "state:busy": StateEvent;
-  "state:paused": StateEvent;
+  "gate:held": GateEvent;
+  "gate:open": GateEvent;
   inboxAdded: InboxAddedEvent;
   inboxTaken: InboxTakenEvent;
   inboxCleared: InboxClearedEvent;
@@ -279,7 +291,11 @@ interface Turn {
 }
 
 export class Agent extends AgentContext {
-  /** 三格：忙 / 闲 / 暂停（语义见 `AgentNS.AgentState`） */
+  /**
+   * 对外那一格：忙 / 闲，**只由循环的位置决定**（语义见 `AgentNS.AgentState`）。
+   *
+   * 闸（{@link paused}）不参与它的判断 —— 暂停中投进来的那批照跑，跑完照样报闲。
+   */
   state: AgentNS.AgentState = "idle";
 
   private _plugins: AgentPlugin[] = [];
@@ -291,9 +307,9 @@ export class Agent extends AgentContext {
   private closed = false;
   /** `kill()` 调过：硬着陆，存量作废 */
   private killed = false;
-  /** 暂停中：不取件、不开新圈 */
-  private paused = false;
-  /** 暂停那道闸：`resume` 放行它，`stop` / `kill` 也放行它 */
+  /** 闸：挂上之后**从下一批起**不再取件（手上这批照跑） */
+  private _paused = false;
+  /** 闸那道闸：`resume` 放行它，`stop` / `kill` 也放行它 */
   private resumeTx?: () => void = undefined;
   private resumeRx: Promise<void> = new Promise<void>((tx) => (this.resumeTx = tx));
   /** 一次性 agent 已经吃过一次投递了（自此关收） */
@@ -465,7 +481,7 @@ export class Agent extends AgentContext {
     this.closed = true;
     if (this.paused) this.clearInbox();
     this.inbox.done();
-    this.openGate(); // 关门就是「别再等了」：别把循环留在暂停闸上
+    this.releasePauseGate(); // 关门就是「别再等了」：别把循环留在闸上
     void this.dispatchHook("onStop", { agent: this });
   }
 
@@ -477,20 +493,31 @@ export class Agent extends AgentContext {
     this.clearInbox();
     this.inbox.done();
     this.abortTurn();
-    this.openGate();
+    this.releasePauseGate();
     void this.dispatchHook("onKill", { agent: this });
+  }
+
+  /**
+   * 闸此刻挂着没有 —— **另一处状态**，与忙/闲互不影响。
+   *
+   * 它管的是「从下一批起还取不取」：挂着时批与批之间不取件，手上那批照跑。
+   * 想知道「它现在在不在干活」读 {@link state}，不要看这一格。
+   */
+  get paused(): boolean {
+    return this._paused;
   }
 
   /**
    * **优雅暂停**：只挂闸，不掐在途。
    *
    * 手上这批算已经开始 —— 让它跑完，从下一批起不再取。要立刻停就用 `abort`。
+   * 它**只动闸**：忙/闲那一格一个字节都不变（跑完该报闲就报闲，闸仍挂着）。
    * 幂等；已经关了/死了就是空动作。
    */
   suspend(): void {
-    if (this.killed || this.closed || this.paused) return;
-    this.paused = true;
-    this.setState("paused");
+    if (this.killed || this.closed || this._paused) return;
+    this._paused = true;
+    this.emit("gate:held", { agent: this });
     void this.dispatchHook("onPause", { agent: this });
   }
 
@@ -506,16 +533,17 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * 解除暂停。**只置意愿、不立刻取件** —— 等这一圈收完，外循环自然回到顶部再看队列。
+   * 解除暂停：**只开闸、不碰忙/闲**。
    *
-   * 为什么不在这里顺手取件：用户手快连点 `abort`/`resume` 时这一圈还在收尸，
+   * 队列里有货的话，外循环一从闸上下来就自己取走、自己报忙 —— 那件事归它报，这里不替它说。
+   * 也不在这里顺手取件：用户手快连点 `abort` / `resume` 时这一圈还在收尸，
    * 此刻去取件就变成两个东西同时写 `messages`。
    */
   resume(): void {
-    if (!this.paused) return;
-    this.paused = false;
-    this.setState("idle");
-    this.openGate();
+    if (!this._paused) return;
+    this._paused = false;
+    this.emit("gate:open", { agent: this });
+    this.releasePauseGate();
     void this.dispatchHook("onResume", { agent: this });
   }
 
@@ -639,7 +667,7 @@ export class Agent extends AgentContext {
    * 三个时刻：派遣时加一项、结束时把 `endedAt` 填上（不移除）、外循环每一批的开头清空上一批。
    *
    * 三条纪律：
-   * - **它不参与任何内部判断**：内循环、取件、续圈、状态三格、中断都不看它。清空点选在哪儿
+   * - **它不参与任何内部判断**：内循环、取件、续圈、忙/闲、中断都不看它。清空点选在哪儿
    *   因此不影响正确性，只影响「外面什么时候读到空」；
    * - **它是名册，不是消息的唯一真相**：子 agent 说过的话在 `entry.agent.messages` 里，
    *   这里只存指针；所以它跟着 agent 活在内存里，一死、一重启就一起没了（不入库）；
@@ -688,8 +716,11 @@ export class Agent extends AgentContext {
    * 一句 `for await` 就够 —— **队列自己就是 inbox，也是那根唤醒信号**：空着时它挂在自己的
    * `pushRx` 上，不需要 core 再维护第二套唤醒器。
    *
-   * 暂停那道闸等两处（进来之前一次、每批尾部一次）：于是批与批之间不取件，暂停期间到达的
+   * 闸等两处（进来之前一次、每批尾部一次）：于是批与批之间不取件，暂停期间到达的
    * 货就躺在队列里 —— 界面看得见条数、能持久化、恢复能捞回来。
+   *
+   * 忙/闲**不由闸决定**：取到一批就是忙，这批跑完且队列真空就是闲 —— 哪怕闸挂着。
+   * 两处状态各报各的，于是「暂停中投进来的那批跑完了」和「闸还挂着」两件事都报得出来。
    *
    * **手上已取出的那批算已经开始**：优雅暂停从下一批生效，不把它收回 —— 它可能已经落了
    * 消息、跑了一半工具，塞回队头只会造成重复落地。要立刻停就用 `abort`。
@@ -722,8 +753,9 @@ export class Agent extends AgentContext {
       await this.innerLoops();
       await this.dispatchHook("onOuterLoopEnd", ctx);
 
-      // 只有真的空了才叫「闲」—— 手上没活但队列还压着不算
-      if (this.inbox.size === 0 && !this.paused && !this.closed && !this.killed) {
+      // 只有真的空了才叫「闲」—— 手上没活但队列还压着不算。
+      // 闸不参与这一判：暂停中跑完这批就是闲，闸该挂还挂着（两处状态各说各的）
+      if (this.inbox.size === 0 && !this.closed && !this.killed) {
         this.setState("idle");
       }
 
@@ -731,7 +763,7 @@ export class Agent extends AgentContext {
     }
 
     this.emit(this.killed ? "killed" : "stopped", { agent: this });
-    this.setState(this.paused ? "paused" : "idle");
+    this.setState("idle");
   }
 
   /**
@@ -763,7 +795,7 @@ export class Agent extends AgentContext {
    * 续行条件只有一条：**刚才有工具调用**。工具是模型要的，跑完必须把结果再喂回去问一次；
    * 没有工具调用就是这一次说完了。没有第二个判据。
    *
-   * **这一圈不看暂停**：暂停只在批边界生效（`outerLoop` 那两处 `pauseGate`），而手上已经
+   * **这一圈不看闸**：闸只在批边界生效（`outerLoop` 那两处 `pauseGate`），而手上已经
    * 取出来的那批算已经开始 —— 它要把这一批跑完，从下一批起才不再取（`CORE.md` §2）。
    * 所以下面只判 `killed`：死了才不发请求。要立刻停用 `abort`。
    */
@@ -989,12 +1021,12 @@ export class Agent extends AgentContext {
   // -------------------------------------------------------------------------
 
   /**
-   * 换一格。
+   * 换一格（只换忙/闲这一处；闸走 `gate:held` / `gate:open`，不从这里过）。
    *
-   * **没有「重算状态」这一步**，五处置位就够了：`start()` 是闲、投递（有货就是忙）与外循环头
-   * 是忙、外循环尾（队列真空了且没暂停）是闲、`suspend` / `abort` 是暂停、`resume` 还给闲。
+   * **没有「重算状态」这一步**，三处置位就够了：`start()` 是闲、外循环头（取到一批）是忙、
+   * 外循环尾（队列真空了）是闲。`suspend` / `resume` / `abort` 一格都不置 —— 它们只动闸。
    *
-   * 事件按到达值分名（`state:idle` / `state:busy` / `state:paused`）—— 于是「等到某一格」
+   * 事件按到达值分名（`state:idle` / `state:busy`）—— 于是「等到某一格」
    * 就是 `events.promise("state:idle")`，不需要再维护一套条件变量。
    */
   private setState(next: AgentNS.AgentState): void {
@@ -1010,16 +1042,21 @@ export class Agent extends AgentContext {
   // -------------------------------------------------------------------------
 
   /**
-   * 暂停那道闸：暂停中就挂在这儿，`resume` / `stop` / `kill` 都能放行它。
+   * 闸：挂着就停在这儿，`resume` / `stop` / `kill` 都能放行它。
    *
    * 只认 `resume` 会在「暂停中 stop」时死锁 —— 循环挂在一个永远不来的恢复上。
    */
   private pauseGate(): Promise<void> {
-    return this.paused ? this.resumeRx : Promise.resolve();
+    return this._paused ? this.resumeRx : Promise.resolve();
   }
 
-  /** 放行闸，并换上一条新的（下一轮暂停才有得挂） */
-  private openGate(): void {
+  /**
+   * 放行挂在闸上的那个等待者，并换上一条新的（下一次挂闸才有得挂）。
+   *
+   * 这是**内部**的放行动作，不发 `gate:open`：`stop` / `kill` 也会走它，而它们不是「用户按了
+   * 继续」（那件事由 `stopped` / `killed` 说）。
+   */
+  private releasePauseGate(): void {
     this.resumeTx?.();
     this.resumeRx = new Promise<void>((tx) => (this.resumeTx = tx));
   }

@@ -573,7 +573,7 @@ describe("自交接：同一个驱动者写（PRD 4.5）", () => {
 
   it("暂停着的对话也不让跑：不替用户把它叫醒", async () => {
     const built = harness.build();
-    // 用户按过中断 / 暂停：那一格就是他的意愿，交接不得去改它
+    // 用户按过中断 / 暂停：闸挂着就是他的意愿，交接不得去开它
     built.driver.suspend();
     built.driver.calls.length = 0;
 
@@ -581,8 +581,8 @@ describe("自交接：同一个驱动者写（PRD 4.5）", () => {
       built.service.start({ conversationId, mode: "self", then: "document_only" }),
     ).rejects.toMatchObject({ code: "busy", detail: { reason: "not_idle" } });
 
-    // 一格未动、一条指令未投
-    expect(built.driver.state).toBe("paused");
+    // 闸还挂着（没人去动它）、一条指令未投
+    expect(built.driver.paused).toBe(true);
     expect(built.driverCalls).toEqual([]);
     expect(built.runnerCalls).toEqual([]);
   });
@@ -601,7 +601,7 @@ describe("自交接：同一个驱动者写（PRD 4.5）", () => {
     driver.abort();
     await built.settle();
 
-    expect(driver.state).toBe("paused");
+    expect(driver.paused).toBe(true);
     const listed = await notices.list({});
     expect(
       listed.notices.some((notice) => notice.text.messageKey === "error.handoffDeclined"),

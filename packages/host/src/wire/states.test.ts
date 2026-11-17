@@ -15,19 +15,20 @@ import {
 } from "./states.js";
 
 describe("对话此刻的四格（PRD 4.4 / PLAN §10.1）", () => {
-  it("就是 core 的三格加一格「死」：恰好四个值，不多不少", () => {
-    // 三格照 core 的 `AgentState`（忙 / 闲 / 暂停），第四格是「宿主那边连 agent 对象都没有」
-    const core: AgentNS.AgentState[] = ["busy", "idle", "paused"];
-    const all: ConversationStatus[] = [...core, "dead"];
+  it("core 报两格（忙 / 闲），加一格「闸挂着」与一格「死」：恰好四个值，不多不少", () => {
+    // 前两格照 core 的 `AgentState`（忙 / 闲 = 循环的位置）；后两格是宿主自己那两件事：
+    // 「闸挂着」= `agent.paused`，「死」= 宿主那边连 agent 对象都没有
+    const agentStates: AgentNS.AgentState[] = ["busy", "idle"];
+    const all: ConversationStatus[] = [...agentStates, "paused", "dead"];
     expect(all).toEqual(["busy", "idle", "paused", "dead"]);
 
-    // 两个方向都不多不少：减掉 core 三格只剩 `dead`，而 core 三格全在这一格里
-    // （任一方向多了或少了值，下面两行就不再是 `true` / `never`，编译就红）
-    type OnlyDead = Exclude<ConversationStatus, AgentNS.AgentState>;
-    const onlyDead: OnlyDead extends "dead" ? true : false = true;
+    // 两个方向都不多不少：core 的两格全在这一格里，而减掉 core 两格只剩宿主那两件事
+    // （任一方向多了或少了值，下面两行就不再是 `true`，编译就红）
     type UnknownCoreState = Exclude<AgentNS.AgentState, ConversationStatus>;
     const coreStatesAllKnown: UnknownCoreState extends never ? true : false = true;
-    expect(onlyDead && coreStatesAllKnown).toBe(true);
+    type HostOnlyState = Exclude<ConversationStatus, AgentNS.AgentState>;
+    const hostOnlyStates: HostOnlyState extends "paused" | "dead" ? true : false = true;
+    expect(coreStatesAllKnown && hostOnlyStates).toBe(true);
   });
 });
 

@@ -50,17 +50,22 @@
  *
  * 后两种**不 kill**：那是「换一个新的」，而它手上那一批还得用旧配置跑完。
  *
- * 「有没有在跑」直接读 agent 身上那一格（`agent.state === "busy"`，`CORE.md` §4）：状态不是
+ * 「有没有在跑」直接读 agent 手上那一格（`agent.state === "busy"`，`CORE.md` §4）：状态不是
  * 第二份账，是循环此刻走到哪儿。本文件不另记一份「在跑」 —— 从前那本账叫 `RunRegistry`，
  * 它随「没有轮」一起废掉了。
+ *
+ * 「闸挂着」是**另一处状态**（`agent.paused`）：它说的是「从下一批起还取不取」，不是
+ * 「手上有活」。两件事各有各的格，所以本文件判「手上有没有活」只看 `state`。
  */
 
 import type { Scope } from "@ai-zen/agents-sdk";
 
+import { statusOfAgent } from "./ChatRunner.js";
 import type {
   AgentBuildContext,
   AgentFactory,
   AgentStateEvent,
+  AgentStatusValue,
   ChatAgent,
 } from "./ChatRunner.js";
 
@@ -158,7 +163,7 @@ interface AgentEntry {
    * 会话行上的模型 / 档位是会变的，而模型客户端是装配那一刻定的。
    */
   built: AgentAssemblyFacts;
-  /** 取消订在它上面的那条观察线（`state` 三格；退役时摘） */
+  /** 取消订在它上面的那条观察线（那一格；退役时摘） */
   offWatch?: () => void;
   /**
    * 陈旧标记（配置改过，装配时读到的那份已经过期）。
@@ -185,7 +190,7 @@ function factsOf(input: {
 export class AgentRegistry {
   private readonly entries = new Map<string, AgentEntry>();
   /**
-   * 三格的观察者（`ChatRunner` 在构造时把自己注册进来）。
+   * 那一格的观察者（`ChatRunner` 在构造时把自己注册进来）。
    *
    * 为什么订阅在这里、而不在消费方：宿主手上的每个 agent 都是本文件发出去的（装配那一刻
    * 才知道「它是哪段对话的」）。订阅安在装配处，「一段跑完了」这件事就不靠谁记得接线 ——
@@ -193,11 +198,11 @@ export class AgentRegistry {
    *
    * 从前这里还有一路「inbox 多了一条」的观察者（供 `ChatRunner` 记排队区镜像）：那个镜像已经
    * 删了 —— 排队区改成现读 `agent.inboxPending`（core 取走条目时不发事件，靠通知自建镜像只能
-   * 与真队列分叉）。本文件于是只观察三格。
+   * 与真队列分叉）。本文件于是只观察那一格。
    */
   private readonly stateObservers = new Set<(event: AgentStateEvent) => void>();
   /**
-   * 生灭决定的观察者（与三格那一路同一个形状，见 {@link observeLifecycle}）。
+   * 生灭决定的观察者（与那一格那一路同一个形状，见 {@link observeLifecycle}）。
    *
    * 它与构造参数 `onLifecycle` 的区别只在**谁订**：那一个是接线层的日志口，这一个给
    * `ChatRunner` —— 它要凭 `action: "retired"` 把那段对话的常驻桥拆掉（bridge 的生灭只能
@@ -314,12 +319,14 @@ export class AgentRegistry {
    * 为什么要换掉 agent（而不是就地刷）：`Scope.refresh()` 刷得动能力（工具、MCP），刷不动
    * 已经建好的模型客户端 —— `createModel(scope.config, …)` 是**装配那一刻**读的。
    *
-   * 两种情形分开办（判据是 agent 身上那一格，不是别的账本）：
-   *   - **空闲/暂停**的当场退役：它手上没有活，而它也不会再被谁取走；
+   * 两种情形分开办（判据是手上有没有活，不是别的账本，也与闸无关）：
+   *   - **闲**的当场退役：它手上没有活，而它也不会再被谁取走；
    *   - **忙**的只打标记，并且在返回值里报出来：它手上那一批还得用旧配置跑完（不打断用户），
    *     标记由 {@link complete} 在变闲那一刻兑现。
    *
-   * @returns 被打上标记、但还没退役的 `conversationId`（空闲的那些不在里面：它们已经没了）
+   * 闸挂着但手上有活的那种（暂停中那批正在跑）算「忙」：那批跑完照样报闲，标记到那一刻兑现。
+   *
+   * @returns 被打上标记、但还没退役的 `conversationId`（闲的那些不在里面：它们已经没了）
    */
   invalidate(workspaceId: string): string[] {
     const marked: string[] = [];
@@ -332,7 +339,7 @@ export class AgentRegistry {
         marked.push(conversationId);
         continue;
       }
-      // 空闲/暂停：没什么要等的，直接丢掉登记（只丢引用：停与写库都不是这里的事）
+      // 手上没活（闲）：没什么要等的，直接丢掉登记（只丢引用：停与写库都不是这里的事）
       this.retire(conversationId, "config-changed");
     }
     return marked;
@@ -346,7 +353,7 @@ export class AgentRegistry {
   }
 
   /**
-   * 注册一个「三格变了」的观察者，返回注销函数。
+   * 注册一个「那一格变了」的观察者，返回注销函数。
    *
    * 观察者接到的事件已经带上「哪段对话」（本文件按 conversationId 登记，只有它知道）。
    */
@@ -470,19 +477,30 @@ export class AgentRegistry {
   }
 
   /**
-   * 订上这个 agent 的三格观察线，并补上「哪段对话」。
+   * 订上这个 agent 的那一格观察线，并补上「哪段对话」。
    *
-   * 载荷原样透传：本文件不对三格做任何解释，只负责把「谁的事」说清楚。
+   * 订的是 core 的**四处**：忙 / 闲两格（循环的位置），加上闸的挂 / 开。报给外面的仍是
+   * 三值（忙 / 闲 / 暂停）—— 合成那一下由 `statusOfAgent` 做，本文件不解释它，只负责把
+   * 「谁的事」说清楚。
    */
   private watch(conversationId: string, agent: ChatAgent): () => void {
-    // 状态事件按到达值分名（`CORE.md` §10）：三格各订一条，`to` 就是事件名那一段
-    const offs = (["busy", "idle", "paused"] as const).map((to) =>
-      agent.on(`state:${to}` as const, (payload) => {
-        for (const observer of this.stateObservers) {
-          observer({ conversationId, agent, from: payload.from, to });
-        }
-      }),
-    );
+    // 对外真的变了才报：暂停中那批跑起来（忙）对外仍是「暂停」，那不是一次变化
+    const report = (from: AgentStatusValue) => {
+      const to = statusOfAgent(agent);
+      if (to === from) return;
+      for (const observer of this.stateObservers) {
+        observer({ conversationId, agent, from, to });
+      }
+    };
+
+    const offs = [
+      // 两格：`from` 是上一个循环位置；闸挂着时对外报的却是「暂停」
+      agent.on("state:busy", (payload) => report(agent.paused ? "paused" : payload.from)),
+      agent.on("state:idle", (payload) => report(agent.paused ? "paused" : payload.from)),
+      // 闸：挂上之前对外报的就是循环那一格；打开之前对外报的一定是「暂停」
+      agent.on("gate:held", () => report(agent.state)),
+      agent.on("gate:open", () => report("paused")),
+    ];
     return () => {
       for (const off of offs) off();
     };

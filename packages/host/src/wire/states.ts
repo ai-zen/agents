@@ -70,8 +70,9 @@ export interface ProblemFact extends LocalizedText {
 /**
  * 一段对话此刻处于哪一格 —— 只有四个值，死 = 连 agent 对象都没有。
  *
- * 这四格是 agent 身上的直接事实（core 的 `AgentNS.AgentState` 三格 + 「查不到对象」），
- * 不落库、不是会话字段、不推算。客户端要分得开「闲」与「暂停」，因为前者会理你、后者不会。
+ * 这四格是**合成值**：core 只报两格（`busy` / `idle`，由循环的位置决定），暂停是**另一处状态**
+ * （闸挂着：`agent.paused`），死是「查不到对象」。不落库、不是会话字段、不推算。
+ * 客户端要分得开「闲」与「暂停」，因为前者会理你、后者不会。
  */
 export type ConversationStatus = "dead" | "busy" | "idle" | "paused";
 
@@ -102,7 +103,7 @@ export interface InboxItem {
  * 子 agent 不是一段会话、不入库（`CORE.md` §17）：它的话只在它自己那个对象里，名册在父
  * 身上。所以这一栏只能是**现读**，没有第二个来源可读。
  *
- * `state` 三格之外多一个 `ended`：一次性子 agent 跑完之后它自己那一格会停在 `idle`，把
+ * `state` 两格之外多一个 `ended`：一次性子 agent 跑完之后它自己那一格会停在 `idle`，把
  * 已经散场的东西报成「闲」等于告诉界面它还在 —— 名册上有了结束时刻就是 `ended`。
  */
 export interface SubAgentFact {
@@ -110,7 +111,7 @@ export interface SubAgentFact {
   toolCallId: string;
   /** 这次委派用的工具名 */
   name: string;
-  /** 子 agent 自己的三格，或者「已经散场」 */
+  /** 子 agent 自己的两格（忙 / 闲），或者「已经散场」 */
   state: AgentNS.AgentState | "ended";
 }
 
@@ -121,7 +122,7 @@ export interface SubAgentFact {
  * 更细的阶段（请求中 / 思考中 / 输出中）与用量**不在这里**：客户端按到达的事件自己推、
  * 按消息上的 `usage` 自己合计。
  *
- * `subAgents` / `handoff` 两格与前三格同一个口径：**现读**，不落库、不是会话字段、不推算。
+ * `subAgents` / `handoff` 两格与前面那几格同一个口径：**现读**，不落库、不是会话字段、不推算。
  * 它们只在这一个方法上出现 —— `conversation.list`（侧栏）不带，因为侧栏不需要为每段对话
  * 去问一次它的驱动者。
  */

@@ -227,7 +227,7 @@ describe("Agent 投递", () => {
 });
 
 describe("Agent 暂停", () => {
-  it("abort 掐在途、state 变暂停；resume 之后接着跑", async () => {
+  it("abort 掐在途、闸挂上；resume 之后接着跑", async () => {
     let signal: AbortSignal | undefined;
     const create = vi.fn(async (_body: any, options: any) => {
       signal = options?.signal;
@@ -245,7 +245,9 @@ describe("Agent 暂停", () => {
     await until(() => signal !== undefined);
 
     agent.abort();
-    expect(agent.state).toBe("paused");
+    // 闸挂上了，而忙/闲那一格还停在「忙」：两处状态各说各的（这批跑完才报闲）
+    expect(agent.paused).toBe(true);
+    expect(agent.state).toBe("busy");
     expect(signal!.aborted).toBe(true);
 
     // 被掐断的那一条定型为 aborted，不是 error

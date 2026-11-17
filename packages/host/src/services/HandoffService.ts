@@ -411,10 +411,13 @@ export class HandoffService {
   /**
    * 开始一次交接（PRD F-D2 / F-D3 / F-D4 / F-D5 / 4.5）。
    *
-   * 入口判据：**这段对话此刻必须闲着**（`agent.state === "idle"`）。忙 / 暂停 / 没有 agent
-   * 一律当场拒（`HostError("busy")`，`detail.reason = "not_idle"`）—— 非空闲就不让它跑，
-   * 调用方自己挑个空的时候再来。不编排「先叫停、再按住、等变闲、再放行」这些花样：
+   * 入口判据：**这段对话此刻闲着、且闸没挂**（`agent.state === "idle"` 且 `!agent.paused`）。
+   * 忙 / 暂停 / 没有 agent 一律当场拒（`HostError("busy")`，`detail.reason = "not_idle"`）——
+   * 非空闲就不让它跑，调用方自己挑个空的时候再来。不编排「先叫停、再按住、等变闲、再放行」这些花样：
    * 它闲着就够了，整趟交接不需要暂停，也不需要放行。
+   *
+   * 两样分开判：`state` 说「它手上有没有活」（忙 / 闲），`paused` 说「闸挂着没有」——
+   * 闸挂着时投进来的指令只会排队，等 resume 之后突然自己跑起来。
    *
    * 过了判据之后三步，然后立刻返回：
    *   1. **挂牌**（`beginHandoff`）——这一趟写出来的消息不落库，但事件照推；
@@ -453,10 +456,10 @@ export class HandoffService {
       });
     }
 
-    // 入口判据：非空闲就不让跑。忙 / 暂停时手上的活还没完（待办里也可能压着别人的话），
+    // 入口判据：闲下来且闸没挂才让跑。忙 / 暂停时手上的活还没完（待办里也可能压着别人的话），
     // 这时候投交接指令只能排在它后面；没有 agent 更是没有人可写。三种都是「等它闲了再来」
     const agent = this.agents?.get(conversation.id);
-    if (!agent || agent.state !== "idle") {
+    if (!agent || agent.state !== "idle" || agent.paused) {
       throw new HostError("busy", {
         detail: { conversationId: conversation.id, reason: "not_idle" },
       });
@@ -734,8 +737,8 @@ export class HandoffService {
         );
       }),
     );
-    // 驱动者落到暂停格就是「用户按了中断」（PRD 4.4：中断之后落在暂停格）：放弃这次交接
-    offs.push(agent.on("state:paused", () => finish("interrupted")));
+    // 闸挂上就是「用户按了中断」（PRD 4.4：中断之后闸就挂着）：放弃这次交接
+    offs.push(agent.on("gate:held", () => finish("interrupted")));
     offs.push(agent.on("stopped", () => finish("gone")));
     offs.push(agent.on("killed", () => finish("gone")));
     return {
