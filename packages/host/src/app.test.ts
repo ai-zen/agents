@@ -841,8 +841,9 @@ describe("配置生效", () => {
       dispose.mockRestore();
     }
 
-    // 刷的是「已经存在的那个」：同一个对象，不是拆了重建出来的另一个
-    expect(app.scopeRegistry.get(workspace.id)).toBe(scope);
+    // 刷的是「已经存在的那个」：同一个对象，不是拆了重建出来的另一个（`create` 是幂等的
+    // get-or-create：条目在就原样交还它，所以引用相等就是「没重建」）
+    expect(await app.scopeRegistry.create(workspace.id)).toBe(scope);
     expect(app.scopeRegistry.workspaceIds().length).toBe(1);
     // 而且它读到的是新值（config 是活的：refresh() 时跟着换掉）
     expect(scope.config.maxToolOutput).toBe(2048);
@@ -869,8 +870,8 @@ describe("配置生效", () => {
     for (const workspaceId of [first.workspace.id, second.workspace.id]) {
       await app.scopeRegistry.create(workspaceId);
     }
-    const firstScope = app.scopeRegistry.get(first.workspace.id);
-    const secondScope = app.scopeRegistry.get(second.workspace.id);
+    const firstScope = await app.scopeRegistry.create(first.workspace.id);
+    const secondScope = await app.scopeRegistry.create(second.workspace.id);
 
     const saved = await callMethod(app, "config.saveMcp", {
       scope: "workspace",
@@ -880,8 +881,8 @@ describe("配置生效", () => {
 
     // 只刷改到的那个项目；两个 Scope 都还是原来那个实例（一个都没重建）
     expect(saved.applied.refreshedWorkspaceIds).toEqual([first.workspace.id]);
-    expect(app.scopeRegistry.get(first.workspace.id)).toBe(firstScope);
-    expect(app.scopeRegistry.get(second.workspace.id)).toBe(secondScope);
+    expect(await app.scopeRegistry.create(first.workspace.id)).toBe(firstScope);
+    expect(await app.scopeRegistry.create(second.workspace.id)).toBe(secondScope);
     expect(app.scopeRegistry.workspaceIds().length).toBe(2);
   });
 
@@ -950,7 +951,7 @@ describe("从磁盘重载（F-E1 / R63）", () => {
     });
     expect(reloaded.applied.refreshedWorkspaceIds).toEqual([workspace.id]);
     // 重载同样只刷不拆：还是同一个 Scope
-    expect(app.scopeRegistry.get(workspace.id)).toBe(scope);
+    expect(await app.scopeRegistry.create(workspace.id)).toBe(scope);
     expect(app.scopeRegistry.workspaceIds().length).toBe(1);
     expect(reloaded.applied.noticeId).not.toBeNull();
     expect(reloaded.applied.restartRequired).toBe(false);

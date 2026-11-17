@@ -969,7 +969,7 @@ export class ConversationService {
    * 记一次压缩（会话行上的 `compactedAt` / `compactionMode`）。
    *
    * 两条压缩路径共用这一处：派生会话被 `AutoMigratePlugin` 自动压 → `auto`；用户答完交接问题、
-   * 宿主开新对话 → `manual`（那一条在 `HandoffService` 里写，落的是同样两列）。
+   * 宿主开新对话 → `manual`（那一条在 `HandoffDocumentService` 里写，落的是同样两列）。
    *
    * 写库失败照抛：调用方（插件的迁移后回声）会把「标不出来」记成一条日志，而那一段上下文
    * 已经压过了 —— 标记是观测事实，不是状态机的输入。

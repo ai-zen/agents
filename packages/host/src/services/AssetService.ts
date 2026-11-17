@@ -394,7 +394,7 @@ export class AssetService {
       }
 
       records.push(record);
-      const outcome = await this.deliver(record, target);
+      const outcome = await this.sendAsset(record, target);
       attachments.push(outcome);
       if (outcome.section !== null) collected.push(outcome.section);
     }
@@ -453,7 +453,7 @@ export class AssetService {
         const outcome =
           record === null || record === undefined
             ? null
-            : await this.deliver(record, target, { quiet: true });
+            : await this.sendAsset(record, target, { quiet: true });
         sections.push(outcome?.section ?? unavailableSection(assetId, record));
       }
       // 只换内容、不动消息本体（id / 角色 / 状态都是 core 那一份）
@@ -495,7 +495,10 @@ export class AssetService {
   }
 
   /**
-   * 一张素材的送达过程：读出字节来源、交给 SDK 转换、把结论译成 wire 上的「怎么走的」。
+   * 一张素材的送达：读出字节来源、交给 SDK 转换、把结论译成 wire 上的「怎么走的」。
+   *
+   * 名字按它对模型做的事取（`sendAsset`）：它把一张素材送进这一份内容，不是「投递一条消息」
+   * —— 宿主里叫 `deliver` 的是那一件事（`ChatRunner.deliver`）。
    *
    * 抛错不往上扔：一张图没送出去不该让整轮消息发不出去（F-H7 的「全失败退回纯文本」前提是
    * 其余内容照发），所以这里收敛成一个 `dropped` 的结局并上报。
@@ -503,7 +506,7 @@ export class AssetService {
    * `quiet` 是历史重放用的：重放是每一轮的内部动作，一张旧图今天没送出去不等于用户刚做错了什么，
    * 不再往 `onProblem` 里塞一条（发送链上的告警留给“用户这一轮挂的图”）。
    */
-  private async deliver(
+  private async sendAsset(
     record: AssetRecord,
     target: AttachmentModelContext,
     options: { quiet?: boolean } = {},

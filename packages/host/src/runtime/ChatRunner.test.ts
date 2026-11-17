@@ -277,12 +277,15 @@ describe("ChatRunner.deliver：死对话一律拒，只有创建者能叫起来�
     harness.runner.forget(CONVERSATION_ID);
     await harness.settle();
     expect(harness.registry.get(CONVERSATION_ID)).toBeUndefined();
+    // 读数的形状就是 wire 的 `ConversationState`：这一段是谁、以及这一刻是什么时候，也一起报
     expect(harness.runner.state(CONVERSATION_ID)).toEqual({
+      conversationId: CONVERSATION_ID,
       status: "dead",
       inbox: [],
       // 死了就没有名册、也不在交接态：子 agent 的话只在它自己那个对象里，agent 没了就一起没了
       subAgents: [],
       handoff: null,
+      at: new Date(harness.clock.now()).toISOString(),
     });
 
     // 外面投进来：拒（这一条路不许死而复生）
@@ -583,12 +586,15 @@ describe("ChatRunner.state：现读四格与待办", () => {
 
   it("没 agent 就是死：四格里的「死」不是一格状态，是没有对象", async () => {
     const harness = createHarness();
+    // 读数的形状就是 wire 的 `ConversationState`：这一段是谁、以及这一刻是什么时候，也一起报
     expect(harness.runner.state(CONVERSATION_ID)).toEqual({
+      conversationId: CONVERSATION_ID,
       status: "dead",
       inbox: [],
       // 死了就没有名册、也不在交接态：子 agent 的话只在它自己那个对象里，agent 没了就一起没了
       subAgents: [],
       handoff: null,
+      at: new Date(harness.clock.now()).toISOString(),
     });
 
     await harness.deliver(userSays("起来"));
@@ -671,12 +677,15 @@ describe("ChatRunner：一段对话一条桥", () => {
     const pushedAtDeath = harness.pushed.length;
     await harness.settle();
     expect(harness.pushed.length).toBe(pushedAtDeath);
+    // 读数的形状就是 wire 的 `ConversationState`：这一段是谁、以及这一刻是什么时候，也一起报
     expect(harness.runner.state(CONVERSATION_ID)).toEqual({
+      conversationId: CONVERSATION_ID,
       status: "dead",
       inbox: [],
       // 死了就没有名册、也不在交接态：子 agent 的话只在它自己那个对象里，agent 没了就一起没了
       subAgents: [],
       handoff: null,
+      at: new Date(harness.clock.now()).toISOString(),
     });
   });
 });
@@ -808,17 +817,21 @@ describe("ChatRunner.reconcile：装载即修复", () => {
       createdAt: 3,
     });
 
-    const result = await harness.runner.reconcile(CONVERSATION_ID);
+    // 造这三行时的写不算：下面比的是「修复这一跳又写了哪几行」
+    const written = harness.store.writes.length;
 
-    expect(result.messages.map((message) => message.status)).toEqual([
+    const messages = await harness.runner.reconcile(CONVERSATION_ID);
+
+    expect(messages.map((message) => message.status)).toEqual([
       AgentNSValue.MessageStatus.Completed,
       // 已经吐出来的那半截留在上下文里（keep）
       AgentNSValue.MessageStatus.Completed,
       // 一个字都没输出的那条没有信息量，留在 aborted
       AgentNSValue.MessageStatus.Aborted,
     ]);
-    // 只写真变了的那两行（m1 一个字不动）
-    expect(result.repairedIds).toEqual(["m2", "m3"]);
+    // 只写真变了的那两行（m1 一个字不动）：返回值就是修完之后的消息（「写了哪几行」不在里面了，
+    // 所以看仓储的记账）
+    expect(harness.store.writes.slice(written).map((row) => row.id)).toEqual(["m2", "m3"]);
     expect(harness.store.peek("m3")?.status).toBe(AgentNSValue.MessageStatus.Aborted);
   });
 });

@@ -154,10 +154,14 @@ export interface WsHubOptions {
 // 连接状态
 // ---------------------------------------------------------------------------
 
-/** 一段对话的推送缓冲：`depth` 是「还有几个请求没回包」，归零时按序放行 */
-interface PushHold {
+/**
+ * 一段对话的推送：`depth` 是「还有几个请求没回包」，归零时把压着的帧按序放行。
+ *
+ * 压着的是「怎么造这一帧」的意图（惰性构造）而不是渲染好的帧：放行时才按那时的连接语言渲染。
+ */
+interface DeferredPush {
   depth: number;
-  /** 排队的帧（惰性构造：放行时才按那时的连接语言渲染） */
+  /** 压着的帧（惰性构造：放行时才按那时的连接语言渲染） */
   queue: (() => JsonRpcNotificationFrame)[];
 }
 
@@ -168,8 +172,8 @@ interface ConnectionState {
   clientInfo: ClientInfo | null;
   credentialId: string | null;
   authorized: boolean;
-  /** conversationId → 尚未放行的推送 */
-  holds: Map<string, PushHold>;
+  /** conversationId → 压着还没放行的推送 */
+  deferred: Map<string, DeferredPush>;
 }
 
 /** 安静日志（缺省值，不导出：不让它变成别处共享的全局） */
@@ -278,7 +282,7 @@ export class WsHub {
       await this.options.uploads?.abortConnection(state.id).catch((error: unknown) => {
         this.logger.warn("清理上传失败", { error });
       });
-      state.holds.clear();
+      state.deferred.clear();
       this.connections.delete(state.id);
     }
 
@@ -308,22 +312,8 @@ export class WsHub {
   push<E extends EventName>(event: E, payload: EventMap[E]): void {
     const key = conversationKeyOf(event, payload);
     for (const state of this.connections.values()) {
-      this.deliver(state, key, () => this.frameFor(state, event, payload));
+      this.dispatch(state, key, () => this.frameFor(state, event, payload));
     }
-  }
-
-  /** 推一个事件给指定连接；连接不在（已断开）时返回 `false` */
-  pushTo<E extends EventName>(
-    connectionId: string,
-    event: E,
-    payload: EventMap[E],
-  ): boolean {
-    const state = this.connections.get(connectionId);
-    if (!state) return false;
-    this.deliver(state, conversationKeyOf(event, payload), () =>
-      this.frameFor(state, event, payload),
-    );
-    return true;
   }
 
   /**
@@ -361,7 +351,7 @@ export class WsHub {
       clientInfo: null,
       credentialId: null,
       authorized: false,
-      holds: new Map(),
+      deferred: new Map(),
     };
     this.connections.set(state.id, state);
 
@@ -380,7 +370,7 @@ export class WsHub {
   /** 连接断开：把它的上传与缓冲一起扔掉（订阅就是「它在不在这个集合里」） */
   private drop(state: ConnectionState): void {
     if (!this.connections.delete(state.id)) return;
-    state.holds.clear();
+    state.deferred.clear();
     void this.options.uploads?.abortConnection(state.id).catch((error: unknown) => {
       this.logger.warn("断线清理上传失败", { connectionId: state.id, error });
     });
@@ -400,7 +390,7 @@ export class WsHub {
     try {
       frame = parseFrame(toText(data));
     } catch (error) {
-      this.send(state, this.errorFrame(extractId(toText(data)), error, state.language));
+      this.writeFrame(state, this.errorFrame(extractId(toText(data)), error, state.language));
       return;
     }
 
@@ -413,7 +403,7 @@ export class WsHub {
       return;
     }
     // 客户端发来的响应：我们的协议里没有「宿主向客户端请求」这回事
-    this.send(
+    this.writeFrame(
       state,
       this.errorFrame(
         null,
@@ -429,7 +419,7 @@ export class WsHub {
   private async onBinary(state: ConnectionState, bytes: Uint8Array): Promise<void> {
     const uploads = this.options.uploads;
     if (!uploads) {
-      this.send(
+      this.writeFrame(
         state,
         this.errorFrame(
           null,
@@ -443,7 +433,7 @@ export class WsHub {
       return;
     }
     if (!state.authorized) {
-      this.send(
+      this.writeFrame(
         state,
         this.errorFrame(
           null,
@@ -456,7 +446,7 @@ export class WsHub {
     try {
       await uploads.receiveBinary(state.id, bytes);
     } catch (error) {
-      this.send(state, this.chunkErrorFrame(error, bytes, state.language));
+      this.writeFrame(state, this.chunkErrorFrame(error, bytes, state.language));
     }
   }
 
@@ -499,7 +489,7 @@ export class WsHub {
     params: unknown,
   ): Promise<void> {
     const holdKey = conversationKeyOfParams(params);
-    if (holdKey !== null) this.hold(state, holdKey);
+    if (holdKey !== null) this.defer(state, holdKey);
 
     let response: JsonRpcResponseFrame;
     try {
@@ -509,9 +499,9 @@ export class WsHub {
       response = this.errorFrame(id, error, state.language);
     }
 
-    this.send(state, response);
+    this.writeFrame(state, response);
     // 回包已经交给 socket（ws 按调用顺序写出），这时候放行不会插到回包前面
-    if (holdKey !== null) this.release(state, holdKey);
+    if (holdKey !== null) this.flush(state, holdKey);
   }
 
   /** 通知帧（客户端发来的、不需要回包）：照常执行，出错时用 `id: null` 报一次 */
@@ -521,13 +511,13 @@ export class WsHub {
     params: unknown,
   ): Promise<void> {
     const holdKey = conversationKeyOfParams(params);
-    if (holdKey !== null) this.hold(state, holdKey);
+    if (holdKey !== null) this.defer(state, holdKey);
     try {
       await this.invoke(state, method, params);
     } catch (error) {
-      this.send(state, this.errorFrame(null, error, state.language));
+      this.writeFrame(state, this.errorFrame(null, error, state.language));
     }
-    if (holdKey !== null) this.release(state, holdKey);
+    if (holdKey !== null) this.flush(state, holdKey);
   }
 
   // -------------------------------------------------------------------------
@@ -657,52 +647,68 @@ export class WsHub {
   }
 
   // -------------------------------------------------------------------------
-  // 推送缓冲（R47）
+  // 推送：该压就压、该写就写（R47）
   // -------------------------------------------------------------------------
 
-  private hold(state: ConnectionState, key: string): void {
-    const existing = state.holds.get(key);
+  /** 压住一段对话的推送：每来一个带 `conversationId` 的请求，这一段的深度加一 */
+  private defer(state: ConnectionState, key: string): void {
+    const existing = state.deferred.get(key);
     if (existing) {
       existing.depth += 1;
       return;
     }
-    state.holds.set(key, { depth: 1, queue: [] });
+    state.deferred.set(key, { depth: 1, queue: [] });
   }
 
   /**
-   * 放行一段对话的推送。
+   * 放行一段对话压着的推送。
    *
    * 只有最后一层请求回包之后才真的放（同一对话同时有两个请求在飞时，先回包的那一个不该把
    * 后一个还没回包时产生的事件抢在前面发出去）。
    */
-  private release(state: ConnectionState, key: string): void {
-    const hold = state.holds.get(key);
-    if (!hold) return;
-    hold.depth -= 1;
-    if (hold.depth > 0) return;
-    state.holds.delete(key);
-    for (const makeFrame of hold.queue) this.send(state, makeFrame());
+  private flush(state: ConnectionState, key: string): void {
+    const push = state.deferred.get(key);
+    if (!push) return;
+    push.depth -= 1;
+    if (push.depth > 0) return;
+    state.deferred.delete(key);
+    for (const makeFrame of push.queue) this.writeFrame(state, makeFrame());
   }
 
-  /** 发一帧：按对话的缓冲、连接状态一起看，该排队就排队 */
-  private deliver(
+  /**
+   * 一个事件落到这条连接上：**该压就压、该写就写**。
+   *
+   * 两件事分得很清楚，名字就是它们的分界：
+   *
+   *   - **压**（{@link defer} 压出来的那一格还在）：这一段有请求没回包，先把「怎么造这一帧」
+   *     的意图塞进队列，等回包写完那一拍由 {@link flush} 按序放行 —— 客户端不该在拿到 id
+   *     之前就收到这段对话的事件（R47）；
+   *   - **写**（{@link writeFrame}）：没有要等的回包，帧直接出去。
+   *
+   * 还没握手的连接一帧都不写（连推送都不给）。
+   */
+  private dispatch(
     state: ConnectionState,
     conversationId: string | null,
     makeFrame: () => JsonRpcNotificationFrame,
   ): void {
     if (!state.authorized) return;
     if (conversationId !== null) {
-      const hold = state.holds.get(conversationId);
-      if (hold) {
-        // 排队的是一段「怎么造这一帧」的意图，不是某个已经渲染好的帧：放行时用那时的语言重算
-        hold.queue.push(makeFrame);
+      const push = state.deferred.get(conversationId);
+      if (push) {
+        // 压着的是一段「怎么造这一帧」的意图，不是某个已经渲染好的帧：放行时用那时的语言重算
+        push.queue.push(makeFrame);
         return;
       }
     }
-    this.send(state, makeFrame());
+    this.writeFrame(state, makeFrame());
   }
 
-  private send(state: ConnectionState, frame: JsonRpcResponseFrame | JsonRpcNotificationFrame): void {
+  /** 真的往 socket 上写一帧（连接已经不在就直接丢掉，不抛给调用方） */
+  private writeFrame(
+    state: ConnectionState,
+    frame: JsonRpcResponseFrame | JsonRpcNotificationFrame,
+  ): void {
     if (state.socket.readyState !== WebSocket.OPEN) return;
     try {
       state.socket.send(JSON.stringify(frame));

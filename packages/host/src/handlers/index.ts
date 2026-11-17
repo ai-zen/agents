@@ -26,7 +26,7 @@ import type { AssetService } from "../services/AssetService.js";
 import type { CompletionService } from "../services/CompletionService.js";
 import type { ConfigService } from "../services/ConfigService.js";
 import type { ConversationService } from "../services/ConversationService.js";
-import type { HandoffService } from "../services/HandoffService.js";
+import type { HandoffDocumentService } from "../services/HandoffDocumentService.js";
 import type { MessageService } from "../services/MessageService.js";
 import type { ModelService } from "../services/ModelService.js";
 import type { NoticeService } from "../services/NoticeService.js";
@@ -101,7 +101,7 @@ export interface HandlerDeps {
   completion: CompletionService;
   notices: NoticeService;
   questions: QuestionService;
-  handoff: HandoffService;
+  handoff: HandoffDocumentService;
 
   // ---- 运行时 ----
   runner: ChatRunner;
@@ -161,7 +161,6 @@ export function createHandlers(deps: HandlerDeps): HandlerTable {
       assets: deps.assets,
       runner: deps.runner,
       refreshThinkingPresets: deps.refreshThinkingPresets,
-      now: deps.now,
       log: deps.log,
       assertSendable: deps.assertSendable,
       // 临时对话：一次调用给一条结果、不落库、不推流式事件（R1 / R49）

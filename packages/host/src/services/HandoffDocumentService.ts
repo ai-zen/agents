@@ -1,5 +1,9 @@
 /**
- * 交接服务：把「这段对话装不下了」这件事办成一份写进项目的文档，以及（按选择）后面接着的那段。
+ * 交接文档服务：把「这段对话装不下了」这件事办成一份写进项目的文档，以及（按选择）后面接着的那段。
+ *
+ * 名字里那个 Document 是故意的：SDK 也有一个 `HandoffService`（写文档、算新记忆的是它），
+ * 而本文件是**宿主那一侧**的事 —— 入口判据、`tx` 落库、两条事件、闸开关。两个同名不同事的东西
+ * 混在一个名字里，读代码的人很快就会以为「换记忆」是这里算的。
  *
  * 对应能力编号：F-D2（三种选择）、F-D3 / D18（交接之后接着走）、F-D4（只产文档，可反复打磨）、
  * F-D5（一步完成）、F-D6 / D19（文档写进 `<cwd>/.ai-zen/handoffs/`）、F-D7（降级要说明；
@@ -46,7 +50,7 @@
  * **分工是死的**（`PRD.md` 4.5「谁算记忆、谁落库」）：
  *
  * - 「换完之后记忆长什么样」**只有 SDK 一处算** —— 哪些旧消息留（`omit` / `prune`）、cwd 消息与断点
- *   消息的形状、文档够不够长（不到 400 字节算没写出来）全在 `HandoffService.migrate()` 里算完，
+ *   消息的形状、文档够不够长（不到 400 字节算没写出来）全在 SDK 的 `HandoffService.migrate()` 里算完，
  *   外部使用者用 SDK 时也是同一份；
  * - 宿主**只做「把这份记忆落到库」**：就是本文件那个 `tx`（`ConversationRepository.replaceMemory`）
  *   加两条事件。cwd 消息与断点消息都用 SDK 算出来的那两条（目录也由宿主递进去：`workspaces.cwd`），
@@ -259,7 +263,7 @@ export interface SdkHandoffServiceOptions extends SdkHandoffExecutorOptions {
   /**
    * 落库的接缝（SDK 的 `commitMemory`）：自动交接那条路的记忆就是从这里落进库的。
    *
-   * 与手动那条路（`HandoffService.memoryCommitter`）注入的是**同一份回调** —— 记忆长什么样
+   * 与手动那条路（`HandoffDocumentService.memoryCommitter`）注入的是**同一份回调** —— 记忆长什么样
    * 只有 SDK 那一处算，宿主只决定它落在哪儿（`PRD.md` 4.5）。
    */
   commitMemory?: (commit: MemoryCommit) => void | Promise<void>;
@@ -352,7 +356,7 @@ interface HandoffRun {
   language: Language;
 }
 
-export interface HandoffServiceDeps {
+export interface HandoffDocumentServiceDeps {
   conversations: ConversationRepository;
   workspaces: WorkspaceRepository;
   messages: MessageRepository;
@@ -449,7 +453,7 @@ function systemPromptOf(messages: readonly AgentNS.Message[]): AgentNS.Message[]
   return prompt;
 }
 
-export class HandoffService {
+export class HandoffDocumentService {
   private readonly conversations: ConversationRepository;
   private readonly workspaces: WorkspaceRepository;
   private readonly messages: MessageRepository;
@@ -471,7 +475,7 @@ export class HandoffService {
    */
   private readonly inFlight = new Set<string>();
 
-  constructor(deps: HandoffServiceDeps) {
+  constructor(deps: HandoffDocumentServiceDeps) {
     this.conversations = deps.conversations;
     this.workspaces = deps.workspaces;
     this.messages = deps.messages;

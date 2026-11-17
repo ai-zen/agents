@@ -18,11 +18,11 @@
  */
 
 import type { HandlerTable } from "../net/WsHub.js";
-import type { HandoffService } from "../services/HandoffService.js";
+import type { HandoffDocumentService } from "../services/HandoffDocumentService.js";
 
 export interface HandoffHandlerDeps {
-  /** 只要本域用到的那两个方法（结构上 `HandoffService` 满足，用例可以给替身） */
-  handoff: Pick<HandoffService, "start" | "listDocuments">;
+  /** 只要本域用到的那两个方法（结构上 `HandoffDocumentService` 满足，用例可以给替身） */
+  handoff: Pick<HandoffDocumentService, "start" | "listDocuments">;
 }
 
 /** 本域注册的方法 */

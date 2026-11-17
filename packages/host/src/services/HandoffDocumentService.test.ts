@@ -46,14 +46,14 @@ import {
   createSdkHandoffExecutor,
   createSdkHandoffService,
   HandoffCancelledError,
-  HandoffService,
+  HandoffDocumentService,
   handoffDirFor,
-} from "./HandoffService.js";
+} from "./HandoffDocumentService.js";
 import type {
   HandoffAgentHolder,
   HandoffExecutor,
   HandoffRunnerPort,
-} from "./HandoffService.js";
+} from "./HandoffDocumentService.js";
 import { NoticeService } from "./NoticeService.js";
 
 /** 摘要模式用的假客户端：把「指令 + 正文」回声出来，于是一眼能看出模板来自哪一份 */
@@ -163,7 +163,7 @@ function watchEvents(): { log: EventLog; emit: ChatEventEmitter } {
 
 /** 一次交接的跑法：起一趟、等它收尾 */
 interface Built {
-  service: HandoffService;
+  service: HandoffDocumentService;
   driver: RecordingAgent;
   driverCalls: string[];
   runnerCalls: string[];
@@ -401,7 +401,7 @@ async function seedHarness(): Promise<Harness> {
       // 模板目录按 cwd 现算（生产上就是「项目里放一份同名 Skill 覆盖全局那份」）
       const templateDirs = options.skillDirs ?? [join(skillsDir)];
 
-      const service = new HandoffService({
+      const service = new HandoffDocumentService({
         conversations,
         workspaces,
         messages,

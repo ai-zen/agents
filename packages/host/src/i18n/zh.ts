@@ -99,5 +99,4 @@ export const zh = {
   "handoff.newConversationSummary":
     "这段对话接着上一段。交接文档在 {path}，先读它，再接着做这件事。\n\n交接摘要：\n{summary}",
   "handoff.degradeReason.fallback": "这次助手自己没能把文档写出来",
-  "autoName.failed": "没起出名字，保持原来的名字：{reason}",
 } satisfies Record<keyof typeof en, string>;

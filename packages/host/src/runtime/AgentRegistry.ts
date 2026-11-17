@@ -16,7 +16,7 @@
  * | `invalidateConversation` | 这一段对话的出厂配置变了（换模型 / 换思考档位） | 与 `invalidate` 同一对分支：空闲的当场退役；在跑的只打标记 |
  * | `disposeAll` | 进程收尾 | 全部 `kill()` 后丢引用 |
  * | `get` | 观测 | 这段对话现在挂着谁（只读） |
- * | `conversationIds` | 观测 | 还活着哪几段（可按键 Workspace 过滤，只读） |
+ * | `conversationIds` | 观测 | 还活着哪几段（按 Workspace，只读） |
  *
  * 每一步都报一条 {@link AgentLifecycleEvent}（`onLifecycle`）—— 「这段对话为什么没有 agent」
  * 的唯一答案就在那条流里（`reason` 说人话）。它只是观察：不注入就不报，报错也不影响判据；
@@ -112,7 +112,7 @@ export type AgentLifecycleAction = "built" | "reused" | "rebuilt" | "retired";
  * | `assembly-facts-unchanged` | `reused` | 手里那个还是照现在的事实造的 |
  * | `assembly-facts-changed` | `retired`（`invalidateConversation` / `acquire`）+ `rebuilt`（`acquire`） | 模型 / 思考档位 / 助手换了，旧的按旧事实造的 |
  * | `config-changed` | `retired` | 配置生效，`invalidate` 撞上**空闲**的那个 |
- * | `stale-on-settle` | `retired` | 配置生效时它正干着活（只打了标记），变闲那一刻才兑现 |
+ * | `stale-on-idle` | `retired` | 配置生效时它正干着活（只打了标记），变闲那一刻才兑现 |
  * | `conversation-deleted` | `retired` | `kill` / `killAll`：对话或项目被删 |
  * | `shutdown` | `retired` | `disposeAll`：进程收尾 |
  */
@@ -121,7 +121,7 @@ export type AgentLifecycleReason =
   | "assembly-facts-unchanged"
   | "assembly-facts-changed"
   | "config-changed"
-  | "stale-on-settle"
+  | "stale-on-idle"
   | "conversation-deleted"
   | "shutdown";
 
@@ -272,7 +272,7 @@ export class AgentRegistry {
   complete(conversationId: string): void {
     const entry = this.entries.get(conversationId);
     if (!entry || !entry.stale) return;
-    this.retire(conversationId, "stale-on-settle");
+    this.retire(conversationId, "stale-on-idle");
   }
 
   /**
@@ -299,15 +299,15 @@ export class AgentRegistry {
    * 意义（它们服务的就是这个项目），而且它们手里的 MCP 连接与工具马上就要随 Scope 一起没。
    * 先 kill 再 `scopes.dispose`，于是「拆 Scope」不会因为还挂着活 agent 而被拒绝。
    *
-   * `workspaceId` 不给 = 全部（收尾用，见 {@link disposeAll}）。
+   * 只接 Workspace：本方法就是「那个项目不要了」这一个意思（收尾那种「全部」在
+   * {@link disposeAll} 里，不靠一个可选参数混进来）。
    */
-  killAll(workspaceId?: string): void {
+  killAll(workspaceId: string): void {
     // 先取键的快照：循环体里会往 `entries` 里删
     for (const conversationId of [...this.entries.keys()]) {
       const entry = this.entries.get(conversationId);
-      if (!entry) continue;
-      if (workspaceId !== undefined && entry.workspaceId !== workspaceId) continue;
-      this.killEntry(conversationId, workspaceId === undefined ? "shutdown" : "conversation-deleted");
+      if (!entry || entry.workspaceId !== workspaceId) continue;
+      this.killEntry(conversationId, "conversation-deleted");
     }
   }
 
@@ -376,7 +376,10 @@ export class AgentRegistry {
 
   /** 收尾：全部硬着陆（进程要退了，没有「稍后再死」这回事）。幂等。 */
   disposeAll(): void {
-    this.killAll();
+    // 「全部」只在这里：不靠 `killAll` 的可选参数，收尾那一条路自己把每一条都弄死
+    for (const conversationId of [...this.entries.keys()]) {
+      this.killEntry(conversationId, "shutdown");
+    }
     // 收尾之后没人再来问「为什么它不在」了：理由不用留着
     this.retired.clear();
   }
@@ -400,15 +403,19 @@ export class AgentRegistry {
   }
 
   /**
-   * 还活着哪几段对话（可以按 Workspace 过滤）。
+   * 这个 Workspace 下还活着哪几段对话。
    *
-   * 两个用处：`ScopeRegistry.dispose` 被挡下来时的拒绝理由（`ScopeBusyError.conversationIds`），
-   * 以及观测（用例/日志问「现在还有谁活着」）。
+   * 用处有两个：`ScopeRegistry.dispose` 被挡下来时的拒绝理由
+   * （`ScopeBusyError.conversationIds`）—— 「这个能力容器上还挂着谁」；以及只读的观测（用例/日志
+   * 问「这个项目下现在还有谁活着」）。
+   *
+   * 只按 Workspace 答：没有「不给 = 全部」那一支 —— 生产侧没有人问那个问题，多一个可选参数
+   * 只是多一条能写错的旁路。
    */
-  conversationIds(workspaceId?: string): string[] {
+  conversationIds(workspaceId: string): string[] {
     const ids: string[] = [];
     for (const [conversationId, entry] of this.entries) {
-      if (workspaceId === undefined || entry.workspaceId === workspaceId) ids.push(conversationId);
+      if (entry.workspaceId === workspaceId) ids.push(conversationId);
     }
     return ids;
   }

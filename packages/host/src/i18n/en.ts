@@ -118,7 +118,4 @@ export const en = {
   // 降级的原因（`handoff.degraded` 的 {reason} 就是这句话）
   "handoff.degradeReason.fallback":
     "the assistant couldn't write the document itself this time",
-  // 自动命名（D2）：起不出名就保持原名，这句只在内部结果与日志里出现
-  "autoName.failed": "No name came out of it, so the original one stays: {reason}",
-
 } as const;

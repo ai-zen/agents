@@ -76,7 +76,10 @@ import { CompletionService } from "./services/CompletionService.js";
 import { ConfigService } from "./services/ConfigService.js";
 import type { ConfigApplyChange, ConfigApplyOutcome, ConfigApplyPort } from "./services/ConfigService.js";
 import { DiscoveryService } from "./services/DiscoveryService.js";
-import { createSdkHandoffService, HandoffService as HandoffDocumentsService } from "./services/HandoffService.js";
+import {
+  createSdkHandoffService,
+  HandoffDocumentService,
+} from "./services/HandoffDocumentService.js";
 import { Logger } from "./services/Logger.js";
 import { ModelService } from "./services/ModelService.js";
 import { NoticeService, createEventLocalizer } from "./services/NoticeService.js";
@@ -298,7 +301,7 @@ export class HostApp {
   readonly completionService: CompletionService;
   readonly noticeService: NoticeService;
   readonly questionService: QuestionService;
-  readonly handoffService: HandoffDocumentsService;
+  readonly handoffService: HandoffDocumentService;
   /**
    * 平级会话：模型在一段对话里开另一段对话，之后还能接着跟它说话。
    *
@@ -534,7 +537,7 @@ export class HostApp {
     this.fileLogger?.setNotifier(async (level, summary) => {
       await this.noticeService.log(level, summary);
     });
-    this.handoffService = new HandoffDocumentsService({
+    this.handoffService = new HandoffDocumentService({
       conversations: this.conversations,
       workspaces: this.workspaces,
       messages: this.messages,
@@ -1081,7 +1084,7 @@ export class HostApp {
       // （兄弟会话）没人盯着它，越线就自己压；关着的那一段（用户建的）把「要不要压」交还给宿主
       // 的提问路径（{@link askHandoffOnIdle}）。开关是会话行上的列，所以那条判断重启也不变形。
       wantsAutoHandoff: (context) => this.autoHandoffOf(context.conversationId),
-      // 插件压完记一笔：会话行上写 `auto`（`manual` 那条由 `HandoffService` 自己写）
+      // 插件压完记一笔：会话行上写 `auto`（`manual` 那条由 `HandoffDocumentService` 自己写）
       onCompacted: (context, mode) =>
         this.conversationService.markCompacted(context.conversationId, mode),
       // 自动交接的收口（成功/失败都到这儿，取消不到）：把闸开回来。
@@ -1252,12 +1255,12 @@ export class HostApp {
   /**
    * 变闲那一拍：给这段对话起一次名字（D2）。
    *
-   * `AutoNaming.afterTurn` 自己是幂等的（条件不成立就什么都不做，之后它自己会停），
+   * `AutoNaming.nameIfUnnamed` 自己是幂等的（条件不成立就什么都不做，之后它自己会停），
    * 所以这里不必先判什么。起不出名只记日志：名字是锦上添花，不该给用户留一条失败提示。
    */
   private autoNameOnIdle(conversationId: string): void {
     void this.autoNaming
-      .afterTurn(conversationId, this.options.defaultLanguage ?? DEFAULT_LANGUAGE)
+      .nameIfUnnamed(conversationId, this.options.defaultLanguage ?? DEFAULT_LANGUAGE)
       .catch((error: unknown) => {
         this.logger.warn("自动命名失败", { conversationId, error: describeError(error) });
       });

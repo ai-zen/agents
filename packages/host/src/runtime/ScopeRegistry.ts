@@ -2,7 +2,7 @@
  * `ScopeRegistry` —— key（workspaceId / 临时对话的目录键）→ `Scope` 的持有者（PLAN §4）。
  *
  * 一个 Workspace 一个 Scope（PRD D9）：同一 Workspace 下的多段对话复用同一个 Scope。
- * 这个文件只回答两个问题：**现在有没有**（`create` 幂等 get-or-create / `get` 只看不建）、
+ * 这个文件只回答两个问题：**现在有没有**（`create` 幂等 get-or-create）、
  * **什么时候拆**（`dispose` / `disposeAll`）。
  *
  * ## 没有空闲计时、没有引用计数、没有自动回收
@@ -23,7 +23,7 @@
  * `dispose` 遇到还活着的 agent 时抛 {@link ScopeBusyError}（带着 `conversationId` 列表），
  * 而不是顺手把那些对话掐掉：级联会静默掐死正在跑的对话，而显式 API 的价值就是「动作要有意识」。
  * 调用方的顺序是：先让会话停下（`ChatRunner.abort` / `forget`）+ 丢掉 agent
- * （`AgentRegistry.discard`），再回来销毁 Scope。
+ * （`AgentRegistry.kill` / `killAll`），再回来销毁 Scope。
  *
  * `disposeAll` 是**收尾**用的，不拒绝：进程要退出了，那时已经没有「稍后再拆」这回事。
  *
@@ -180,11 +180,6 @@ export class ScopeRegistry {
     return entry.created;
   }
 
-  /** 看而不建：已经建好就返回它，没有或还在建就返回 `undefined` */
-  get(workspaceId: string): Scope | undefined {
-    return this.entries.get(workspaceId)?.resolved;
-  }
-
   /** 当前持有哪几个（报告「刷了哪些项目的 Scope」、判退出用） */
   workspaceIds(): string[] {
     return [...this.entries.keys()];
@@ -240,7 +235,7 @@ export class ScopeRegistry {
    * **撞上还活着的 agent 就拒绝**（{@link ScopeBusyError}，带着 `conversationId` 列表）：
    * 不级联、不静默掐掉正在跑的对话。调用方要先停会话、丢掉 agent，再回来调它。
    *
-   * 不存在就什么也不做（幂等）；销毁之后 `get` 为 `undefined`，再 `create` 得到新实例。
+   * 不存在就什么也不做（幂等）；销毁之后再 `create` 得到新实例。
    */
   async dispose(workspaceId: string): Promise<void> {
     const entry = this.entries.get(workspaceId);

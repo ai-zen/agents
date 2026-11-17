@@ -246,7 +246,7 @@ export class Database {
     const worker = new Worker(resolveWorkerUrl(), {
       workerData: { dbPath: this.dbPath },
     });
-    worker.on("message", (response: WorkerResponse) => this.settle(response));
+    worker.on("message", (response: WorkerResponse) => this.resolveResponse(response));
     // worker 崩溃 / 退出：把所有挂起请求 reject 掉，否则调用方会一直等下去
     worker.on("error", (error) => this.failAll(toError(error)));
     worker.on("exit", () => this.failAll(new Error("SQLite worker 已退出")));
@@ -254,9 +254,10 @@ export class Database {
     return worker;
   }
 
-  private settle(response: WorkerResponse): void {
+  /** 一条 worker 回执 → 它对应的那个等待者 */
+  private resolveResponse(response: WorkerResponse): void {
     const pending = this.pending.get(response.id);
-    if (!pending) return; // 关闭流程里的回执等，没有对应的等待者
+    if (!pending) return; // 关闭流程里的回执：没有对应的等待者
     this.pending.delete(response.id);
     if (response.ok) pending.resolve(response.result);
     else pending.reject(new Error(response.error));

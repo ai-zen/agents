@@ -58,9 +58,4 @@ export class ConversationDrafts implements ConversationDraftStore {
   forget(conversationId: string): void {
     this.drafts.delete(conversationId);
   }
-
-  /** 现在挂着几份草稿（诊断与用例用；不参与业务判断） */
-  size(): number {
-    return this.drafts.size;
-  }
 }

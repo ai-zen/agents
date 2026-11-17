@@ -47,8 +47,6 @@ export interface ConversationHandlerDeps {
   runner: ChatRunner;
   /** 刷新思考档位表快照（`setThinking` 之前调一次：改完读回的参数要用当前表） */
   refreshThinkingPresets: () => Promise<void>;
-  /** 时钟（ISO 8601 时间戳） */
-  now: () => string;
   /**
    * 写一条日志。
    *
@@ -257,13 +255,13 @@ async function resume(
 /**
  * `conversation.state`：一段对话此刻的读数（PRD L5：重连先拉读数）。
  *
- * 四格与待办由 `ChatRunner.state` 现读（不落库、不推算）；`at` 是这份读数的时刻。
- * 会话不存在（连草稿都没有）仍按老口径报 `not_found` —— 这里先问一次服务层，就是为了让
- * 「这段对话没了」与「这段对话闲着」是两种答复。
+ * 形状就是契约里的 `ConversationState`，而 `ChatRunner.state` 返的**就是那一份**（同一个形状
+ * 只在一处定义）—— 所以这里不再手工摆一遍字段，只在读之前先问一次服务层，让「这段对话没了」
+ * 与「这段对话闲着」是两种答复。
  *
- * 另外两格同样是现读，同样不落库、不是会话字段：`subAgents`（子 agent 名册，客户端据此铺栏，
- * 之后按事件增量）与 `handoff`（非空就是「正在交接」，与四格分开显示 —— 交接期间这段对话照旧
- * 是忙 / 闲 / 暂停）。`conversation.list` 不带它们：侧栏不需要为每段对话去问一次驱动者。
+ * 四格 / 待办 / 子 agent 名册 / 交接态都是现读，不落库、不是会话字段（口径见
+ * `ConversationState` 自己的注释）。`conversation.list` 不带它们：侧栏不需要为每段对话去问
+ * 一次驱动者。
  *
  * 消息本体不在这里给：客户端打开一段对话走的是「先订阅，再 `message.list` 拉全量」。
  */
@@ -272,15 +270,5 @@ async function readState(
   conversationId: string,
 ): Promise<{ state: ConversationState }> {
   await deps.conversations.get({ conversationId });
-  // 四格 / 待办 / 子 agent 名册 / 交接态：四样都是现读（agent 与那两张现场表），不落库
-  const { status, inbox, subAgents, handoff } = deps.runner.state(conversationId);
-  const state: ConversationState = {
-    conversationId,
-    status,
-    inbox,
-    subAgents,
-    handoff,
-    at: deps.now(),
-  };
-  return { state };
+  return { state: deps.runner.state(conversationId) };
 }

@@ -48,9 +48,8 @@ describe("ScopeRegistry：幂等的 get-or-create", () => {
 
     expect(created).toEqual(["ws-1"]);
     expect(second).toBe(first);
+    // 「现在有没有」只有一个口：`workspaceIds` 报持有哪几个（看而不建的那个口已删）
     expect(registry.workspaceIds()).toEqual(["ws-1"]);
-    expect(registry.get("ws-1")).toBe(first);
-    expect(registry.get("ws-2")).toBeUndefined();
   });
 
   it("并发 create 只会创建一次", async () => {
@@ -95,7 +94,8 @@ describe("ScopeRegistry：没有自动回收", () => {
     clock.advance(10 * 60 * 1000 * 24);
     await flushMicrotasks();
 
-    expect(registry.get("ws-1")).toBe(scope);
+    // 还是原来那个（`create` 幂等：条目在就交还它自己）
+    expect(await registry.create("ws-1")).toBe(scope);
     expect(pluginOf("ws-1").disposeCalls).toBe(0);
     expect(clock.pending()).toBe(0);
   });
@@ -121,21 +121,20 @@ describe("ScopeRegistry：没有自动回收", () => {
 });
 
 describe("ScopeRegistry：显式 dispose", () => {
-  it("dispose 之后 get 为 undefined，再 create 得到新实例", async () => {
+  it("dispose 之后不再持有它，再 create 得到新实例", async () => {
     const { factory, disposeCalls } = createTrackingFactory();
     const registry = new ScopeRegistry({ createScope: factory });
 
     const first = await registry.create("ws-1");
     await registry.dispose("ws-1");
 
-    expect(registry.get("ws-1")).toBeUndefined();
     expect(registry.workspaceIds()).toEqual([]);
     // 销毁 = Scope.dispose()：插件的 dispose（= MCP 断开）被调用
     expect(disposeCalls()).toBe(1);
 
     const second = await registry.create("ws-1");
     expect(second).not.toBe(first);
-    expect(registry.get("ws-1")).toBe(second);
+    expect(await registry.create("ws-1")).toBe(second);
   });
 
   it("dispose 不存在的 Workspace 是幂等的空操作", async () => {
@@ -163,13 +162,13 @@ describe("ScopeRegistry：显式 dispose", () => {
     expect((error as ScopeBusyError).conversationIds).toEqual(["c-1", "c-2"]);
     expect((error as Error).message).toContain("c-1");
     // 拒绝就是拒绝：Scope 还在，谁也没被掐掉
-    expect(registry.get("ws-1")).toBeDefined();
+    expect(registry.workspaceIds()).toEqual(["ws-1"]);
     expect(disposeCalls()).toBe(0);
 
     // 调用方先让会话停下 / 丢掉 agent，再回来销毁
     live = [];
     await registry.dispose("ws-1");
-    expect(registry.get("ws-1")).toBeUndefined();
+    expect(registry.workspaceIds()).toEqual([]);
     expect(disposeCalls()).toBe(1);
   });
 
@@ -245,7 +244,7 @@ describe("ScopeRegistry：配置生效走 refresh，不销毁重建", () => {
     await registry.refreshWorkspace("ws-1");
 
     // 刷的是同一个实例：读到的配置是新的，能力重新发现了一轮，但谁也没被销毁
-    expect(registry.get("ws-1")).toBe(scope);
+    expect(await registry.create("ws-1")).toBe(scope);
     expect(scope.config).toBe(next);
     expect(plugin.discoverCalls).toBe(2); // init 一次 + 刷新一次
     expect(plugin.disposeCalls).toBe(0);

@@ -2,6 +2,10 @@
  * 自动命名的验收（D2 / F-C4 / R35）：只在「名字还是创建时间默认值 + 开关开着」时才起名；
  * 用取名模型（缺省回落兜底模型）；起不出名就保持原名；写回时 `nameIsAuto` 继续为真；
  * 判据里**没有**任何「数消息条数」的条件 —— 换记忆之后那一段不会再被重新起名。
+ *
+ * 断言的全是**看得见的后果**：名字变了没有、请求发了几次、推了几条事件。`nameIfUnnamed` 回的是
+ * `void`（生产侧那个后台钩子只要它不抛），所以「为什么没起名」不靠返回值而是靠这些后果去钉 ——
+ * 那八格的清单也就住在这里（见下面的 `AutoNameSkip`）。
  */
 
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
@@ -9,8 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { AgentNS } from "@ai-zen/agents-core";
-import { ConfigManager } from "@ai-zen/agents-sdk";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { ConfigManager } from "@ai-zen/agents-sdk";import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { ConversationRepository } from "../storage/ConversationRepository.js";
 import { Database } from "../storage/Database.js";
@@ -127,6 +130,38 @@ async function seedFirstTurn(harness: Harness, conversationId = "c1"): Promise<v
 
 let harness: Harness;
 
+/**
+ * 「为什么这次没起名」的八格闭集 —— **只住在这里**。
+ *
+ * 从前它是 `AutoNaming` 对外的一份返回值（`{ named, name, skipped, problem }`），而生产侧没有
+ * 任何调用方读它（`app.ts` 那一侧本来就 `void` 掉返回值、`.catch` 只记日志）。既然没人分支，
+ * 就不该让一个八格联合类型住在生产代码里：它能表达的只是「现在走的是哪一条返回」，而每一条的
+ * 后果都可以直接断言（改没改名、发没发请求、抛没抛），后者才是用例该钉的东西。
+ */
+type AutoNameSkip =
+  | "conversation_missing"
+  | "config_unreadable"
+  | "disabled"
+  /** 用户把名字改成了别的（`nameIsAuto` 为假）：这个名字归用户，永不再动 */
+  | "renamed_by_user"
+  /** 名字不是默认值、也不是用户改的 —— 那就已经自动起过了，永不再动 */
+  | "already_named"
+  | "no_model"
+  | "empty_title"
+  | "call_failed";
+
+/** 八格里每一格对应哪一条用例（漏一格写在 `Record` 里就编译不过） */
+const COVERED: Record<AutoNameSkip, string> = {
+  conversation_missing: "对话不存在时不抛错、不发请求",
+  config_unreadable: "配置读不出来：保持原名、不发请求",
+  disabled: "开关关着就一次请求都不发",
+  renamed_by_user: "用户改过名字就不动它",
+  already_named: "已经自动起过（含换记忆之后）就不再动",
+  no_model: "没有可用的取名模型就保持原名",
+  empty_title: "模型给了空串：保持原名、不报错",
+  call_failed: "调用失败：保持原名、不抛错",
+};
+
 // 整个文件共用一个库：`new + migrate` 每用例 55ms，清表只是一条 DELETE 批次。
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "ai-zen-autonaming-"));
@@ -175,19 +210,34 @@ afterAll(async () => {
 });
 
 describe("自动命名的触发条件（D2 / F-C4）", () => {
+  it("八格闭集都有用例钉着（它们从前是返回值里的 `skipped`）", () => {
+    expect(Object.keys(COVERED).sort()).toEqual(
+      [
+        "already_named",
+        "call_failed",
+        "config_unreadable",
+        "conversation_missing",
+        "disabled",
+        "empty_title",
+        "no_model",
+        "renamed_by_user",
+      ].sort(),
+    );
+  });
+
   it("名字还是创建时间默认值、开关开着 → 起名并写回（nameIsAuto 保持为真）", async () => {
     await seedFirstTurn(harness);
-    const outcome = await harness.service.afterTurn("c1");
+    await harness.service.nameIfUnnamed("c1");
 
-    expect(outcome).toMatchObject({ named: true, name: "修复登录页", skipped: null, problem: null });
     const row = await harness.conversations.get("c1");
     expect(row?.name).toBe("修复登录页");
     expect(row?.nameIsAuto).toBe(true);
+    expect(harness.calls).toHaveLength(1);
   });
 
   it("用「取名模型」：配了 namingModel 就用它", async () => {
     await seedFirstTurn(harness);
-    await harness.service.afterTurn("c1");
+    await harness.service.nameIfUnnamed("c1");
     expect(harness.calls).toHaveLength(1);
     expect(harness.calls[0]?.modelId).toBe("m-small");
     // 喂给模型的是开头那两句
@@ -199,7 +249,7 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
     // 换一份配置不需要换库：`ConfigManager` 每次读盘，换个 config 文件就够
     const bare = await setup({ ...BASE_CONFIG, namingModel: undefined });
     await seedFirstTurn(bare);
-    await bare.service.afterTurn("c1");
+    await bare.service.nameIfUnnamed("c1");
     expect(bare.calls[0]?.modelId).toBe("m-big");
   });
 
@@ -207,19 +257,43 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
     await seedFirstTurn(harness);
     await harness.conversations.renameByUser("c1", "我自己起的名字", 10);
 
-    const outcome = await harness.service.afterTurn("c1");
-    expect(outcome).toMatchObject({ named: false, skipped: "renamed_by_user" });
+    await harness.service.nameIfUnnamed("c1");
     expect(harness.calls).toHaveLength(0);
+    expect(harness.events).toHaveLength(0);
     expect((await harness.conversations.get("c1"))?.name).toBe("我自己起的名字");
   });
 
   it("开关关掉就一次请求都不发", async () => {
     const off = await setup({ ...BASE_CONFIG, autoTitle: false });
     await seedFirstTurn(off);
-    const outcome = await off.service.afterTurn("c1");
-    expect(outcome).toMatchObject({ named: false, skipped: "disabled" });
+
+    await off.service.nameIfUnnamed("c1");
     expect(off.calls).toHaveLength(0);
     expect((await off.conversations.get("c1"))?.name).toBe(DEFAULT_NAME);
+  });
+
+  it("配置读不出来：保持原名、不发请求", async () => {
+    // 真的读坏一份配置很难造（`ConfigManager` 会恢复出厂），所以这里换一个会抛的读盘口：
+    // 这一格要验的是「读不出配置就当场收手」，不是配置怎么坏的
+    const broken = new AutoNaming({
+      conversations: harness.conversations,
+      messages: harness.messages,
+      configManager: {
+        read: async () => {
+          throw new Error("配置读不出来");
+        },
+      } as unknown as ConfigManager,
+      complete: async (input) => {
+        harness.calls.push(input);
+        return "不该走到这里";
+      },
+      now: () => 1_700_000_100_000,
+    });
+    await seedFirstTurn(harness);
+
+    await broken.nameIfUnnamed("c1");
+    expect(harness.calls).toHaveLength(0);
+    expect((await harness.conversations.get("c1"))?.name).toBe(DEFAULT_NAME);
   });
 
   it("第二次说话之后照样起名：判据里不数消息条数", async () => {
@@ -234,8 +308,8 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
     });
 
     // 名字还是默认值 → 还是该起名。这一段已经有两句用户话了，但「几句」不是判据
-    const outcome = await harness.service.afterTurn("c1");
-    expect(outcome).toMatchObject({ named: true, name: "修复登录页" });
+    await harness.service.nameIfUnnamed("c1");
+    expect((await harness.conversations.get("c1"))?.name).toBe("修复登录页");
     expect(harness.calls).toHaveLength(1);
   });
 
@@ -272,18 +346,18 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
       },
     ]);
 
-    const outcome = await harness.service.afterTurn("c2");
-    expect(outcome).toMatchObject({ named: false, name: "修复登录页", skipped: "already_named" });
+    await harness.service.nameIfUnnamed("c2");
     expect(harness.calls).toHaveLength(0);
+    expect(harness.events).toHaveLength(0);
     expect((await harness.conversations.get("c2"))?.name).toBe("修复登录页");
   });
 
   it("连着调两次只起一次名（第二次名字已不是默认值）", async () => {
     await seedFirstTurn(harness);
-    await harness.service.afterTurn("c1");
-    const again = await harness.service.afterTurn("c1");
-    expect(again).toMatchObject({ named: false, skipped: "already_named" });
+    await harness.service.nameIfUnnamed("c1");
+    await harness.service.nameIfUnnamed("c1");
     expect(harness.calls).toHaveLength(1);
+    expect(harness.events).toHaveLength(1);
   });
 
   it("没有可用的取名模型就保持原名", async () => {
@@ -293,8 +367,8 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
       defaultModel: undefined,
     });
     await seedFirstTurn(noModel);
-    const outcome = await noModel.service.afterTurn("c1");
-    expect(outcome).toMatchObject({ named: false, skipped: "no_model" });
+
+    await noModel.service.nameIfUnnamed("c1");
     expect(noModel.calls).toHaveLength(0);
     expect((await noModel.conversations.get("c1"))?.name).toBe(DEFAULT_NAME);
   });
@@ -302,10 +376,10 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
   it("配置指向一个不存在的模型也等于没有取名模型", async () => {
     const broken = await setup({ ...BASE_CONFIG, namingModel: "没有这个模型" });
     await seedFirstTurn(broken);
-    expect(await broken.service.afterTurn("c1")).toMatchObject({
-      named: false,
-      skipped: "no_model",
-    });
+
+    await broken.service.nameIfUnnamed("c1");
+    expect(broken.calls).toHaveLength(0);
+    expect((await broken.conversations.get("c1"))?.name).toBe(DEFAULT_NAME);
   });
 });
 
@@ -313,31 +387,27 @@ describe("起不出名就保持原名（D2）", () => {
   it("模型回了个空串：名字一动不动，也不报错", async () => {
     await seedFirstTurn(harness);
     harness.behaviour.reply = async () => "   \n  ";
-    const outcome = await harness.service.afterTurn("c1");
 
-    expect(outcome).toMatchObject({ named: false, name: DEFAULT_NAME, skipped: "empty_title" });
+    await harness.service.nameIfUnnamed("c1");
     expect((await harness.conversations.get("c1"))?.name).toBe(DEFAULT_NAME);
+    expect(harness.events).toHaveLength(0);
   });
 
-  it("调用失败：保持原名，事实记在 problem 里", async () => {
+  it("调用失败：保持原名、不抛错（后台钩子不把失败变成一个新事件）", async () => {
     await seedFirstTurn(harness);
     harness.behaviour.reply = async () => {
       throw new Error("端点 401");
     };
-    const outcome = await harness.service.afterTurn("c1");
 
-    expect(outcome.named).toBe(false);
-    expect(outcome.skipped).toBe("call_failed");
-    expect(outcome.problem?.messageKey).toBe("autoName.failed");
-    expect(outcome.problem?.detail).toMatchObject({ reason: "端点 401" });
+    await expect(harness.service.nameIfUnnamed("c1")).resolves.toBeUndefined();
+    expect(harness.calls).toHaveLength(1);
+    expect(harness.events).toHaveLength(0);
     expect((await harness.conversations.get("c1"))?.name).toBe(DEFAULT_NAME);
   });
 
-  it("对话不存在时给个明确原因，不抛错（这是后台钩子）", async () => {
-    expect(await harness.service.afterTurn("没有这段")).toMatchObject({
-      named: false,
-      skipped: "conversation_missing",
-    });
+  it("对话不存在时不抛错（这是后台钩子）", async () => {
+    await expect(harness.service.nameIfUnnamed("没有这段")).resolves.toBeUndefined();
+    expect(harness.calls).toHaveLength(0);
   });
 });
 
@@ -345,21 +415,24 @@ describe("标题清洗", () => {
   it("去掉引号、Title: 前缀、换行里的解释、结尾标点，并限长", async () => {
     await seedFirstTurn(harness);
     harness.behaviour.reply = async () => 'Title: "修复登录页。"\n\n理由是用户说提交没反应';
-    expect((await harness.service.afterTurn("c1")).name).toBe("修复登录页");
+
+    await harness.service.nameIfUnnamed("c1");
+    expect((await harness.conversations.get("c1"))?.name).toBe("修复登录页");
   });
 
   it("超长的名字截到侧栏放得下", async () => {
     await seedFirstTurn(harness);
     harness.behaviour.reply = async () => "很".repeat(200);
-    const outcome = await harness.service.afterTurn("c1");
-    expect(outcome.name).toHaveLength(60);
+
+    await harness.service.nameIfUnnamed("c1");
+    expect((await harness.conversations.get("c1"))?.name).toHaveLength(60);
   });
 });
 
 describe("起名之后的副作用", () => {
   it("推一条 conversation.changed(renamed) 与一条 info 通知", async () => {
     await seedFirstTurn(harness);
-    await harness.service.afterTurn("c1", "zh");
+    await harness.service.nameIfUnnamed("c1", "zh");
 
     expect(harness.events).toHaveLength(1);
     expect(harness.events[0]?.name).toBe("conversation.changed");

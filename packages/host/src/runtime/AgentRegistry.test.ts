@@ -176,7 +176,7 @@ describe("AgentRegistry：agent 唯一的来源（先把 Scope 要出来）", ()
     expect(agent).toBe(harness.created[0]);
     // Scope 被建出来了，而且工厂拿到的就是它（调用方没有背「先要 Scope」的顺序）
     expect(harness.createdScopes).toEqual([WORKSPACE_ID]);
-    expect(harness.builds[0]?.scope).toBe(harness.scopes.get(WORKSPACE_ID));
+    expect(harness.builds[0]?.scope).toBe(await harness.scopes.create(WORKSPACE_ID));
     expect(harness.agents.get(CONVERSATION_ID)).toBe(agent);
   });
 
@@ -202,8 +202,8 @@ describe("AgentRegistry：agent 唯一的来源（先把 Scope 要出来）", ()
     await expect(harness.agents.acquire(input(), facts())).rejects.toThrow("模型端点没配");
 
     expect(harness.agents.get(CONVERSATION_ID)).toBeUndefined();
-    expect(harness.agents.conversationIds()).toEqual([]);
-    expect(harness.scopes.get(WORKSPACE_ID)).toBeDefined();
+    expect(harness.agents.conversationIds(WORKSPACE_ID)).toEqual([]);
+    expect(harness.scopes.workspaceIds()).toEqual([WORKSPACE_ID]);
     expect(harness.plugin.disposeCalls).toBe(0);
   });
 
@@ -310,7 +310,7 @@ describe("AgentRegistry：kill 硬着陆 + 丢引用（对话 / 项目被删那�
     harness.agents.kill(CONVERSATION_ID);
 
     expect(harness.agents.get(CONVERSATION_ID)).toBeUndefined();
-    expect(harness.agents.conversationIds()).toEqual([]);
+    expect(harness.agents.conversationIds(WORKSPACE_ID)).toEqual([]);
     // 「硬着陆」就是这条的全部内容：agent 死了而不是被摘掉就完了 —— 再往里推就抛 closed
     // （于是不会有一个“没人认领的活 agent”在后台接着烧 token）
     expect(() =>
@@ -322,7 +322,7 @@ describe("AgentRegistry：kill 硬着陆 + 丢引用（对话 / 项目被删那�
     expect(harness.trace()).toEqual(["built:never-built", "retired:conversation-deleted"]);
   });
 
-  it("conversationIds 报出活着的对话，可以按 Workspace 过滤", async () => {
+  it("conversationIds 报出这个 Workspace 下活着的对话（别的项目不算）", async () => {
     const harness = createHarness();
     await harness.agents.acquire(input({ conversationId: "c-1" }), facts());
     await harness.agents.acquire(input({ conversationId: "c-2" }), facts());
@@ -331,7 +331,6 @@ describe("AgentRegistry：kill 硬着陆 + 丢引用（对话 / 项目被删那�
       facts(),
     );
 
-    expect(harness.agents.conversationIds().sort()).toEqual(["c-1", "c-2", "c-3"]);
     expect(harness.agents.conversationIds(WORKSPACE_ID).sort()).toEqual(["c-1", "c-2"]);
     expect(harness.agents.conversationIds("ws-2")).toEqual(["c-3"]);
     expect(harness.agents.conversationIds("ws-none")).toEqual([]);
@@ -346,13 +345,13 @@ describe("回收自下而上：agent 活着就拆不了 Scope", () => {
     const error = await harness.scopes.dispose(WORKSPACE_ID).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(ScopeBusyError);
     expect((error as ScopeBusyError).conversationIds).toEqual([CONVERSATION_ID]);
-    expect(harness.scopes.get(WORKSPACE_ID)).toBeDefined();
+    expect(harness.scopes.workspaceIds()).toEqual([WORKSPACE_ID]);
     expect(harness.plugin.disposeCalls).toBe(0);
 
     harness.agents.kill(CONVERSATION_ID);
     await harness.scopes.dispose(WORKSPACE_ID);
 
-    expect(harness.scopes.get(WORKSPACE_ID)).toBeUndefined();
+    expect(harness.scopes.workspaceIds()).toEqual([]);
     expect(harness.plugin.disposeCalls).toBe(1);
   });
 
@@ -378,7 +377,7 @@ describe("回收自下而上：agent 活着就拆不了 Scope", () => {
 
     harness.agents.killAll(WORKSPACE_ID);
 
-    expect(harness.agents.conversationIds()).toEqual(["c-2"]);
+    expect(harness.agents.conversationIds("ws-2")).toEqual(["c-2"]);
     // 那一个死了（push 抛 closed），另一个还活着
     expect(() => mine.push({ content: "x", priority: "high", source: { kind: "user" } })).toThrow();
     expect(() =>
@@ -413,7 +412,7 @@ describe("AgentRegistry：invalidate（配置改过的生效手段）", () => {
     expect(harness.agents.get(CONVERSATION_ID)).toBe(agent);
     expect(harness.trace()).toEqual(["built:never-built"]);
 
-    // 结算那一刻 `ChatRunner` 调 `complete`：陈旧 → 退役
+    // 变闲那一刻 `ChatRunner` 调 `complete`：陈旧 → 退役
     await harness.markIdle(CONVERSATION_ID);
     harness.agents.complete(CONVERSATION_ID);
 
@@ -421,7 +420,7 @@ describe("AgentRegistry：invalidate（配置改过的生效手段）", () => {
     expect((agent as FakeAgent).abortCalls).toBe(0);
     expect(harness.trace()).toEqual([
       "built:never-built",
-      "retired:stale-on-settle",
+      "retired:stale-on-idle",
     ]);
   });
 
@@ -505,7 +504,7 @@ describe("AgentRegistry：invalidateConversation（换模型 / 换思考档位�
     harness.agents.complete(CONVERSATION_ID);
 
     expect(harness.agents.get(CONVERSATION_ID)).toBeUndefined();
-    expect(harness.trace()).toEqual(["built:never-built", "retired:stale-on-settle"]);
+    expect(harness.trace()).toEqual(["built:never-built", "retired:stale-on-idle"]);
   });
 
   it("没有这一段时什么也不做（回 false，不报事件）", () => {
@@ -532,8 +531,8 @@ describe("AgentRegistry：complete 兑现陈旧标记", () => {
     expect(harness.builds).toHaveLength(2);
     expect(harness.trace()).toEqual([
       "built:never-built",
-      "retired:stale-on-settle",
-      "rebuilt:stale-on-settle",
+      "retired:stale-on-idle",
+      "rebuilt:stale-on-idle",
     ]);
   });
 
@@ -566,7 +565,7 @@ describe("AgentRegistry：disposeAll（收尾）", () => {
 
     harness.agents.disposeAll();
 
-    expect(harness.agents.conversationIds()).toEqual([]);
+    expect(harness.agents.conversationIds(WORKSPACE_ID)).toEqual([]);
     // 收尾不等排空：进程要退了，那些存量没有去处 —— 所以是 kill（硬着陆），不是 stop。
     // 验收方式：两个实例都已经关门（再 push 抛 closed）。
     expect(() => one.push({ content: "x", priority: "high", source: { kind: "user" } })).toThrow();

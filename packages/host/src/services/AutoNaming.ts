@@ -29,13 +29,12 @@ import { AgentNS } from "@ai-zen/agents-core";
 import type { AppConfig, ConfigManager } from "@ai-zen/agents-sdk";
 import { completeOnce, createModelFromConfig } from "@ai-zen/agents-sdk";
 
-import { DEFAULT_LANGUAGE, render } from "../i18n/index.js";
+import { DEFAULT_LANGUAGE } from "../i18n/index.js";
 import type { Language } from "../i18n/index.js";
 import type { ChatEventEmitter } from "../runtime/ChatRunner.js";
 import type { ConversationRepository } from "../storage/ConversationRepository.js";
 import type { MessageRepository } from "../storage/MessageRepository.js";
 import type { Conversation } from "../storage/types.js";
-import type { ProblemFact } from "../wire/index.js";
 import { defaultConversationName } from "./ConversationService.js";
 import { toAgentMessage } from "./MessageService.js";
 import type { NoticeService } from "./NoticeService.js";
@@ -64,31 +63,6 @@ export type TitleCompleter = (input: {
   user: string;
   modelId: string;
 }) => Promise<string>;
-
-/** 为什么这次没起名（内部结果，用于测试与日志；不出网） */
-export type AutoNameSkip =
-  | "conversation_missing"
-  | "config_unreadable"
-  | "disabled"
-  /** 用户把名字改成了别的（`nameIsAuto` 为假）：这个名字归用户，永不再动 */
-  | "renamed_by_user"
-  /** 名字不是默认值、也不是用户改的 —— 那就已经自动起过了，永不再动 */
-  | "already_named"
-  | "no_model"
-  | "empty_title"
-  | "call_failed";
-
-/** 一次自动命名的结果 */
-export interface AutoNameOutcome {
-  /** 这次有没有真的改名 */
-  named: boolean;
-  /** 结果名字（没改名时是原来的名字） */
-  name: string;
-  /** 没改名时是原因；改了就为 `null` */
-  skipped: AutoNameSkip | null;
-  /** 起不出名的事实（失败时给结构化原因，便于日志与测试断言） */
-  problem: ProblemFact | null;
-}
 
 export interface AutoNamingDeps {
   conversations: ConversationRepository;
@@ -164,56 +138,61 @@ export class AutoNaming {
   }
 
   /**
-   * 变闲那一刻调一次（`app.ts` 把它接在 `ChatRunner.onIdle` 上）。
+   * 名字还是创建时间默认值就给它起一个名（`app.ts` 把它接在 `ChatRunner.onIdle` 上）。
    *
-   * 这个方法是幂等且可反复调用的：条件不成立时什么都不做（直接返回原因），所以接在每一次
-   * 变闲上都不会多做一次请求 —— 起过名之后名字就不再是默认值，后面的调用都从这里掉头，
+   * 名字即判据：这个方法幂等且可反复调 —— 条件不成立时什么都不做（当场返回），所以接在每一
+   * 次变闲上都不会多做一次请求：起过名之后名字就不再是默认值，后面的调用都从这里掉头，
    * 不必在内存里另记一份「谁起过了」。
+   *
+   * 回 `void`：它是后台钩子，调用方不要结果（`app.ts` 那一侧也只看它抛不抛）。「为什么没起名」
+   * 是八种情形，它们就写在下面的分支上 —— 不包成返回值往外传，因为没有任何调用方会拿它分支
+   * （从前那个 `skipped` 字段只有用例在读，那是用例在养一份生产不需要的形状）。
    */
-  async afterTurn(conversationId: string, language: Language = DEFAULT_LANGUAGE): Promise<AutoNameOutcome> {
+  async nameIfUnnamed(
+    conversationId: string,
+    language: Language = DEFAULT_LANGUAGE,
+  ): Promise<void> {
     const conversation = await this.conversations.get(conversationId);
-    if (!conversation) {
-      return skip("conversation_missing", "", null);
-    }
+    // 对话不在（刚被删）：后台钩子不该抛错
+    if (!conversation) return;
 
     let config: AppConfig;
     try {
       config = await this.configManager.read();
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      return skip("config_unreadable", conversation.name, failure(reason, language));
+    } catch {
+      // 配置读不出来：保持原名（名字是锦上添花，不值得为它丢一个错到日志以外的地方）
+      return;
     }
 
-    if (config.autoTitle === false) return skip("disabled", conversation.name, null);
+    // 开关关着：一次请求都不发
+    if (config.autoTitle === false) return;
 
     // 判据只有这一条：名字还是不是那个「创建时间默认值」。不是它 → 永不再动（用户改过，
     // 或已经自动起过 —— `nameIsAuto` 只用来把这两种情形分别说清楚，不参与「起不起名」）
-    if (conversation.name !== defaultConversationName(conversation.createdAt)) {
-      const reason: AutoNameSkip = conversation.nameIsAuto ? "already_named" : "renamed_by_user";
-      return skip(reason, conversation.name, null);
-    }
+    if (conversation.name !== defaultConversationName(conversation.createdAt)) return;
 
     // 取名模型：配了就用它，否则回落兜底模型；配置里找不到这个模型也等于「没有取名模型」
     const namingModelId = config.namingModel ?? config.defaultModel;
-    if (!namingModelId) return skip("no_model", conversation.name, null);
+    if (!namingModelId) return;
     const namingModel = config.models.find((model) => model.id === namingModelId);
-    if (!namingModel) return skip("no_model", conversation.name, null);
+    if (!namingModel) return;
 
     // 正文只取这一段的两端（第一条用户消息 + 最后一条助手回复）：不数条数，也就不必筛条数
     const rows = await this.messages.listByConversation(conversation.id);
     const user = buildPrompt(rows.map((row) => toAgentMessage(row)));
-    if (user.length === 0) return skip("empty_title", conversation.name, null);
+    if (user.length === 0) return;
 
     let title: string;
     try {
       title = await this.complete({ system: TITLE_INSTRUCTION, user, modelId: namingModel.id });
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      return skip("call_failed", conversation.name, failure(reason, language));
+    } catch {
+      // 调用失败（端点报错 / 超时）：保持原名，不重试、不报错
+      return;
     }
 
     const name = sanitizeTitle(title);
-    if (name.length === 0) return skip("empty_title", conversation.name, null);
+    // 模型给了个空串（或者只有标点 / 引号）：同样保持原名
+    if (name.length === 0) return;
 
     const updatedAt = this.now();
     await this.conversations.applyAutoName(conversation.id, name, updatedAt);
@@ -235,7 +214,6 @@ export class AutoNaming {
         language,
       );
     }
-    return { named: true, name, skipped: null, problem: null };
   }
 
   /**
@@ -265,21 +243,4 @@ function buildPrompt(messages: AgentNS.Message[]): string {
   ]
     .filter((line) => line.length > 0)
     .join("\n\n");
-}
-
-/** 没改名：带上原因 */
-function skip(reason: AutoNameSkip, name: string, problem: ProblemFact | null): AutoNameOutcome {
-  return { named: false, name, skipped: reason, problem };
-}
-
-/** 起不出名的事实（`autoName.failed`：不报错，只是记下为什么保持原名） */
-function failure(reason: string, language: Language): ProblemFact {
-  const params = { reason };
-  return {
-    code: "autoName.failed",
-    messageKey: "autoName.failed",
-    params,
-    message: render(language, "autoName.failed", params),
-    detail: { reason },
-  };
 }
