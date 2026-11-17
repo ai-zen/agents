@@ -70,7 +70,7 @@ export type {
   PeerSessionPort,
   PeerSessionCreated,
   PeerSessionStatus,
-  PeerSessionState,
+  ConversationStatus,
   PeerSessionRejectReason,
   PeerSessionCreateInput,
   PeerSessionSent,
@@ -163,6 +163,7 @@ export type {
   HandoffMode,
   HandoffParams,
   HandoffServiceOptions,
+  MemoryCommit,
   MigrateParams,
   MigrationStrategy,
 } from "./runtime/HandoffService.js";

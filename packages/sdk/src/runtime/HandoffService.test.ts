@@ -24,7 +24,7 @@ const SKILL_CONTENT = [
   "## 🔔 First Step for the Next Agent",
 ].join("\n");
 
-/** 生成足够大的交接文档正文（默认超过 400 字节阈值） */
+/** 生成交接文档正文（形状与真件一致；写多长都不影响判据） */
 function docContent(padding = 600): string {
   return `## 💬 Conversation Breakpoint\nBreakpoint content from the previous round\n## 🔔 First Step for the Next Agent\n- run npm test\n${"x".repeat(padding)}`;
 }
@@ -32,11 +32,12 @@ function docContent(padding = 600): string {
 /**
  * 模型那一侧的脚本：从交接指令里认出这次的文档路径，然后调一次写工具把它落盘。
  *
- * `body` 给「写出来但不够长」。
+ * `body` 可以给得比 `docContent()` 短 —— “写出来不到 400 字节算没写出来”那条就靠它验
+ * （`PRD.md` 3.6）。
  */
-function writeScript(options: { body?: string } = {}): FakeAgentOptions["onSend"] {
+function writeScript(body: string = docContent()): FakeAgentOptions["onSend"] {
   return async (_content, _nth, self) => {
-    await self.callWrite(self.handoffPathOf(), options.body ?? docContent());
+    await self.callWrite(self.handoffPathOf(), body);
   };
 }
 
@@ -72,7 +73,6 @@ class FakeAgent {
   tools: any[];
   model = "fake-model";
   modelConfig: Record<string, unknown> = {};
-  lastUsage: any = { prompt_tokens: 999 };
   scope = { cwd: process.cwd() };
   /** 投进来的指令正文（等价于旧 `send()` 收到的内容） */
   sent: string[] = [];
@@ -157,10 +157,10 @@ class FakeAgent {
     return undefined;
   }
 
-  /** 这次交接的文档路径（指令里给的就是绝对路径；重试那句也带着它） */
+  /** 这次交接的文档路径（指令里给的绝对路径） */
   handoffPathOf(): string {
     const content = this.sent.at(-1) ?? "";
-    return /(?:absolute path:|too small to deliver:)\s*(\S+\.md)/.exec(content)?.[1] ?? "";
+    return /absolute path:\s*(\S+\.md)/.exec(content)?.[1] ?? "";
   }
 
   /**
@@ -317,15 +317,30 @@ describe("HandoffService 静态工具", () => {
     expect(prompt).not.toContain("write tool");
   });
 
-  it("createPostMessages 只给路径并要求先 read", () => {
+  it("createPostMessages 的形状是死的：system + hidden、正文只带路径", () => {
     const messages = HandoffService.createPostMessages("/tmp/handoffs/x.md");
 
     expect(messages).toHaveLength(1);
-    expect(messages[0].role).toBe("user");
-    expect(messages[0].content).toContain("/tmp/handoffs/x.md");
-    expect(messages[0].content).toContain("read");
-    // 不再内联全文
-    expect(messages[0].content).not.toContain("## 💬 Conversation Breakpoint");
+    const breakpoint = messages[0]!;
+    // `role: system` + `hidden`（不给人看，但照常进上下文）—— PRD 3.6 / 4.5
+    expect(breakpoint.role).toBe("system");
+    expect(breakpoint.hidden).toBe(true);
+    // 正文只有路径：不带全文，也不带自己编的指令句
+    expect(breakpoint.content).toBe("/tmp/handoffs/x.md");
+  });
+
+  it("createCwdMessage 的形状与宿主落行那一刻那条同形：user + hidden + source:cwd、正文是路径", () => {
+    const message = HandoffService.createCwdMessage("/tmp/project-a");
+
+    // `role: user` + `hidden`（照常进上下文，界面上不展示）—— PLAN §4 的创建口径
+    expect(message.role).toBe("user");
+    expect(message.hidden).toBe(true);
+    // 宿主注入的不是用户说的话，一律带来源（CORE §3；自动命名的判据看的就是它）
+    expect(message.source).toEqual({ kind: "system", label: "cwd" });
+    // 正文就是那个路径
+    expect(message.content).toBe("/tmp/project-a");
+    // 它是一条新消息，不会被 omit 掉
+    expect(message.omit).toBeFalsy();
   });
 
   it("serializeMessages 序列化为 [role]: content", () => {
@@ -399,7 +414,7 @@ describe("handoff", () => {
     expect(agent.sent[0]).not.toContain(FALLBACK_HANDOFF_TEMPLATE.split("\n")[0] + "\n");
   });
 
-  it("交接期间关着输出闸：换记忆那一刻还关着，换完才开回来", async () => {
+  it("交接期间关着输出闸，但 SDK 不开闸（开闸在宿主交接收口）", async () => {
     let pausedAtCommit: boolean | undefined;
     const { service } = await makeService({
       onHandoff: (ctx) => {
@@ -408,15 +423,18 @@ describe("handoff", () => {
       },
     });
     const agent = new FakeAgent({ onSend: writeScript() });
+    const resume = vi.spyOn(agent, "resumeOutput");
 
     const ctx = await service.handoff({ agent: asAgent(agent) });
 
     expect(ctx.mode).toBe("self");
     expect(pausedAtCommit).toBe(true);
-    expect(agent.isOutputPaused).toBe(false);
+    // 拿到写文档结果时换记忆还没发生：此刻开闸会让这期间落进来的话落进旧记忆
+    expect(resume).not.toHaveBeenCalled();
+    expect(agent.isOutputPaused).toBe(true);
   });
 
-  it("summary 那一档也一样关着闸：这一段没有「那一批」，就自己关", async () => {
+  it("summary 那一档也一样：自己关闸，也不开回来", async () => {
     let pausedAtCommit: boolean | undefined;
     const { service } = await makeService({
       mode: "summary",
@@ -426,12 +444,14 @@ describe("handoff", () => {
     });
     // 没有 write 工具 → 自交接不可用，必然走摘要
     const agent = new FakeAgent({ writeTool: false });
+    const resume = vi.spyOn(agent, "resumeOutput");
 
     const ctx = await service.handoff({ agent: asAgent(agent) });
 
     expect(ctx.mode).toBe("summary");
     expect(pausedAtCommit).toBe(true);
-    expect(agent.isOutputPaused).toBe(false);
+    expect(resume).not.toHaveBeenCalled();
+    expect(agent.isOutputPaused).toBe(true);
   });
 
   it("取消（用户按了停）之后不替他把闸开回来", async () => {
@@ -449,22 +469,6 @@ describe("handoff", () => {
     expect(agent.isOutputPaused).toBe(true);
   });
 
-  it("self 模式：写得过小 → 单向降级 summary（阈值 400 字节）", async () => {
-    const { service } = await makeService();
-    const agent = new FakeAgent({ onSend: writeScript({ body: "too short" }) });
-
-    const ctx = await service.handoff({ agent: asAgent(agent) });
-
-    expect(agent.sent).toHaveLength(1); // 只投一次：没有第二次机会
-    expect(ctx.requestedMode).toBe("self");
-    expect(ctx.mode).toBe("summary");
-    // summary 由服务调用模型并落盘
-    expect(agent.client.chat.completions.create).toHaveBeenCalledTimes(1);
-    expect(ctx.handoffDoc).toContain("## 💬 Conversation Breakpoint");
-    const written = await fs.readFile(ctx.handoffPath, "utf-8");
-    expect(written).toBe(ctx.handoffDoc);
-  });
-
   it("agent 无 write 工具时直接走 summary", async () => {
     const { service } = await makeService();
     const agent = new FakeAgent({ writeTool: false });
@@ -476,20 +480,31 @@ describe("handoff", () => {
     expect(existsSync(ctx.handoffPath)).toBe(true);
   });
 
-  it("交接回合不改写 lastUsage（护栏让行由 isSuspended 负责）", async () => {
+  it("写得过小 → 单向降级 summary（阈值 400 字节）", async () => {
     const { service } = await makeService();
-    let usageAtSend: unknown = "not executed";
-    const agent = new FakeAgent({
-      onSend: async (_c, _n, self) => {
-        usageAtSend = self.lastUsage;
-        await self.callWrite(self.handoffPathOf(), docContent());
-      },
-    });
+    const agent = new FakeAgent({ onSend: writeScript("too short") });
 
-    await service.handoff({ agent: asAgent(agent) });
+    const ctx = await service.handoff({ agent: asAgent(agent) });
 
-    // lastUsage 是从 messages 派生的只读值，交接不再去动它
-    expect(usageAtSend).toEqual({ prompt_tokens: 999 });
+    expect(agent.sent).toHaveLength(1); // 只投一次：没有第二次机会
+    expect(ctx.requestedMode).toBe("self");
+    // 文件写出来了，但不到 400 字节 —— 算没写出来（PRD 3.6 / 4.5）
+    expect(ctx.mode).toBe("summary");
+    // summary 由服务调用模型并落盘
+    expect(agent.client.chat.completions.create).toHaveBeenCalledTimes(1);
+    expect(ctx.handoffDoc).toContain("## 💬 Conversation Breakpoint");
+    const written = await fs.readFile(ctx.handoffPath, "utf-8");
+    expect(written).toBe(ctx.handoffDoc);
+  });
+
+  it("minHandoffBytes 可调：调小之后短文档算写出来了", async () => {
+    const { service } = await makeService({ minHandoffBytes: 5 });
+    const agent = new FakeAgent({ onSend: writeScript("够短但过线") });
+
+    const ctx = await service.handoff({ agent: asAgent(agent) });
+
+    expect(ctx.mode).toBe("self");
+    expect(agent.client.chat.completions.create).not.toHaveBeenCalled();
   });
 
   it("交接回合期间守卫 armed，结束后 disarm", async () => {
@@ -565,33 +580,17 @@ describe("handoff", () => {
     await expect(nested).rejects.toThrow("A handoff is already in progress");
   });
 
-  it("handoff 时 migrating 为 false（不改动会话语义）", async () => {
-    let migrating: unknown;
-    const { service } = await makeService({
-      onHandoff: (ctx) => {
-        migrating = ctx.migrating;
-      },
-    });
-    const agent = new FakeAgent({
-      onSend: writeScript(),
-    });
-
-    await service.handoff({ agent: asAgent(agent) });
-
-    expect(migrating).toBe(false);
-  });
-
-  it("busy 在流程结束后复位", async () => {
+  it("handingOff 在流程结束后复位", async () => {
     const { service } = await makeService();
     const agent = new FakeAgent({
       onSend: writeScript(),
     });
 
-    expect(service.busy).toBe(false);
+    expect(service.handingOff).toBe(false);
     const pending = service.handoff({ agent: asAgent(agent) });
-    expect(service.busy).toBe(true);
+    expect(service.handingOff).toBe(true);
     await pending;
-    expect(service.busy).toBe(false);
+    expect(service.handingOff).toBe(false);
   });
 });
 
@@ -737,60 +736,55 @@ describe("self 模式：真 core（投指令 + 看那次写工具的结果，没
 });
 
 // ---------------------------------------------------------------------------
-// migrate：交接 + 开新会话
+// migrate：写文档 **+ 换记忆**（记忆长什么样只有这一处算）
 // ---------------------------------------------------------------------------
 
+/**
+ * 这一组的预设：假 agent 开局是 `[system 模板, user, assistant]`，模板那一条在 `definition.messages`。
+ * 自交接会投一条指令、跑一趟写工具，所以交接回合本身也会多出两条消息。
+ */
 describe("migrate", () => {
-  function selfAgent(): FakeAgent {
-    return new FakeAgent({
-      onSend: writeScript(),
-    });
+  function selfAgent(body?: string): FakeAgent {
+    return new FakeAgent({ onSend: writeScript(body) });
   }
 
-  it("prune：物理剔除历史，只留模板 + 交接断点", async () => {
+  it("prune：物理剔除旧记忆，只留模板 + 交接断点", async () => {
     const { service } = await makeService({ strategy: "prune" });
     const agent = selfAgent();
 
     const ctx = await service.migrate({ agent: asAgent(agent) });
 
-    expect(agent.messages).toHaveLength(2); // definition.messages(1) + 断点(1)
+    // 模板（system 提示）1 条 + 断点 1 条
+    expect(agent.messages).toHaveLength(2);
+    expect(agent.messages[0]?.role).toBe("system");
+    expect(agent.messages[0]?.content).toBe("You are a helper.");
+
     const breakpoint = agent.messages.at(-1)!;
-    expect(breakpoint.role).toBe("user");
-    expect(breakpoint.content).toContain(ctx.handoffPath);
-    expect(breakpoint.content).toContain("read");
+    expect(breakpoint.role).toBe("system");
+    expect(breakpoint.hidden).toBe(true);
+    // 正文只带路径
+    expect(breakpoint.content).toBe(ctx.handoffPath);
     expect(breakpoint.omit).toBeFalsy();
   });
 
-  it("definition 没有 messages 时按空模板处理（不抛原生 TypeError）", async () => {
-    const { service } = await makeService({ strategy: "prune" });
-    const agent = selfAgent();
-    // 手写的 definition 可能根本没有 messages；交接回合此时已跑完，
-    // 抛 TypeError 对调用方毫无可操作性
-    agent.definition = {} as unknown as { messages: any[] };
-
-    const ctx = await service.migrate({ agent: asAgent(agent) });
-
-    expect(agent.messages).toHaveLength(1); // 只剩交接断点
-    expect(agent.messages[0]!.content).toContain(ctx.handoffPath);
-  });
-
-  it("omit（默认）：历史标记 omit，断点不标记", async () => {
+  it("omit（默认）：历史标 omit，模板与断点不标", async () => {
     const { service } = await makeService();
     const agent = selfAgent();
+    const historyBefore = agent.messages.length;
 
     const ctx = await service.migrate({ agent: asAgent(agent) });
 
-    // 原 3 条 + 交接回合 2 条 = 5 条历史，末尾再加 1 条断点
-    expect(agent.messages).toHaveLength(6);
+    // 旧消息一条不删（模板 1 + 历史 2 + 交接回合 2），末尾再加 1 条断点
+    expect(agent.messages).toHaveLength(historyBefore + 2 + 1);
     const breakpoint = agent.messages.at(-1)!;
-    expect(breakpoint.content).toContain(ctx.handoffPath);
+    expect(breakpoint.content).toBe(ctx.handoffPath);
     expect(breakpoint.omit).toBeFalsy();
-    // 首条（模板 system）不省略，其余历史标记 omit
-    expect(agent.messages[0].omit).toBeFalsy();
-    expect(agent.messages.slice(1, -1).every((m) => m.omit === true)).toBe(true);
+    // 模板那一条不 omit，其余旧消息全标上
+    expect(agent.messages[0]?.omit).toBeFalsy();
+    expect(agent.messages.slice(1, -1).every((message) => message.omit === true)).toBe(true);
   });
 
-  it("migrate 参数 strategy 覆盖构造默认", async () => {
+  it("strategy 参数覆盖构造默认", async () => {
     const { service } = await makeService(); // 默认 omit
     const agent = selfAgent();
 
@@ -799,7 +793,32 @@ describe("migrate", () => {
     expect(agent.messages).toHaveLength(2);
   });
 
-  it("onBeforeHandoff / onHandoff / onMigrated 依次收到上下文", async () => {
+  it("definition 没有 messages 时按空模板处理（不抛原生 TypeError）", async () => {
+    const { service } = await makeService({ strategy: "prune" });
+    const agent = selfAgent();
+    // 手写的定义可能根本没有 messages；交接回合此时已跑完，抛 TypeError 对调用方毫无可操作性
+    agent.definition = {} as unknown as { messages: any[] };
+
+    const ctx = await service.migrate({ agent: asAgent(agent) });
+
+    expect(agent.messages).toHaveLength(1); // 只剩交接断点
+    expect(agent.messages[0]?.content).toBe(ctx.handoffPath);
+  });
+
+  it("summary 模式下 prune 也把文档落盘，断点仍只给路径", async () => {
+    const { service } = await makeService({ strategy: "prune" });
+    const agent = new FakeAgent({ writeTool: false });
+
+    const ctx = await service.migrate({ agent: asAgent(agent) });
+
+    expect(ctx.mode).toBe("summary");
+    const written = await fs.readFile(ctx.handoffPath, "utf-8");
+    expect(written).toContain("## 💬 Conversation Breakpoint");
+    expect(agent.messages.at(-1)?.content).toBe(ctx.handoffPath);
+    expect(agent.messages.at(-1)?.content).not.toContain("## 💬 Conversation Breakpoint");
+  });
+
+  it("onBeforeHandoff / onHandoff / onMigrated 依次收到上下文，且 onMigrated 只叫一次", async () => {
     const order: string[] = [];
     const { service } = await makeService({
       strategy: "prune",
@@ -808,7 +827,6 @@ describe("migrate", () => {
         expect(ctx.mode).toBe("self");
         expect(ctx.handoffDoc).toBeUndefined();
         expect(ctx.messageCountBefore).toBe(3);
-        expect(ctx.migrating).toBe(true); // 钩子可据此区分 /handoff 与 /migrate
       },
       onHandoff: (ctx) => {
         order.push("handoff");
@@ -816,6 +834,7 @@ describe("migrate", () => {
       },
       onMigrated: (ctx) => {
         order.push("migrated");
+        // 这一拍记忆已经是新的那一份了
         expect(ctx.agent.messages).toHaveLength(2);
       },
     });
@@ -846,17 +865,210 @@ describe("migrate", () => {
     expect(existsSync(ctx.handoffPath)).toBe(true);
     expect(agent.messages).toHaveLength(2);
   });
+});
 
-  it("summary 模式下 prune 也把文档落盘，断点仍只给路径", async () => {
+// ---------------------------------------------------------------------------
+// migrate 的 cwd 消息：换手之后接手的那一代得知道自己在哪个目录里干活（PRD 4.8）
+// ---------------------------------------------------------------------------
+
+/**
+ * 「换完之后记忆长什么样」仍然只在这一处算，所以那条 cwd 消息也在这里造：宿主只把项目目录
+ * 递进来（`migrate({ cwd })`），不自己拼消息、不自己往记忆里插。
+ */
+describe("migrate 的 cwd 消息（PRD 4.8 / PLAN §4）", () => {
+  /** 模板为空的一代：这样「新记忆第一条」就是 cwd 那一条，不用先扣掉系统提示 */
+  function bareAgent(body?: string): FakeAgent {
+    return new FakeAgent({ onSend: writeScript(body), definitionMessages: [] });
+  }
+
+  it("给了 cwd：新记忆第一条就是它（user + hidden + source:cwd），断点在它后面", async () => {
     const { service } = await makeService({ strategy: "prune" });
-    const agent = new FakeAgent({ writeTool: false });
+    const agent = bareAgent();
+
+    const ctx = await service.migrate({ agent: asAgent(agent), cwd: "/tmp/project-a" });
+
+    expect(agent.messages).toHaveLength(2);
+    const cwdMessage = agent.messages[0]!;
+    expect(cwdMessage.role).toBe("user");
+    expect(cwdMessage.hidden).toBe(true);
+    expect(cwdMessage.source).toEqual({ kind: "system", label: "cwd" });
+    expect(cwdMessage.content).toBe("/tmp/project-a");
+    // 断点是「旧记忆到这里为止」的分隔，排在 cwd 之后
+    expect(agent.messages[1]?.content).toBe(ctx.handoffPath);
+    expect(agent.messages[1]?.role).toBe("system");
+  });
+
+  it("有模板时：系统提示仍最先，cwd 紧挨着断点之前", async () => {
+    const { service } = await makeService({ strategy: "prune" });
+    const agent = new FakeAgent({ onSend: writeScript() });
+
+    const ctx = await service.migrate({ agent: asAgent(agent), cwd: "/tmp/project-b" });
+
+    expect(agent.messages.map((message) => message.role)).toEqual(["system", "user", "system"]);
+    expect(agent.messages[0]?.content).toBe("You are a helper.");
+    expect(agent.messages[1]?.content).toBe("/tmp/project-b");
+    expect(agent.messages[2]?.content).toBe(ctx.handoffPath);
+  });
+
+  it("omit 策略：旧历史标 omit，cwd 与断点不标", async () => {
+    const { service } = await makeService(); // 默认 omit
+    const agent = bareAgent();
+    const historyBefore = agent.messages.length;
+
+    const ctx = await service.migrate({ agent: asAgent(agent), cwd: "/tmp/project-c" });
+
+    expect(agent.messages).toHaveLength(historyBefore + 2 + 2);
+    // 新加的那两条在末尾：cwd 在前、断点在后，都不 omit
+    const cwdMessage = agent.messages.at(-2)!;
+    expect(cwdMessage.content).toBe("/tmp/project-c");
+    expect(cwdMessage.omit).toBeFalsy();
+    expect(agent.messages.at(-1)?.content).toBe(ctx.handoffPath);
+    expect(agent.messages.at(-1)?.omit).toBeFalsy();
+    // 旧历史（含交接回合）全标上
+    expect(agent.messages.slice(0, -2).every((message) => message.omit === true)).toBe(true);
+  });
+
+  it("没给 cwd：就没有那一条（外部使用者自己决定）", async () => {
+    const { service } = await makeService({ strategy: "prune" });
+    const agent = bareAgent();
+
+    const ctx = await service.migrate({ agent: asAgent(agent) });
+
+    expect(agent.messages).toHaveLength(1);
+    expect(agent.messages[0]?.content).toBe(ctx.handoffPath);
+    expect(
+      agent.messages.some(
+        (message) => message.source?.kind === "system" && message.source.label === "cwd",
+      ),
+    ).toBe(false);
+  });
+
+  it("构造时给了 cwd：migrate 不带也生成（自动交接那条路的接法）", async () => {
+    // 自动交接的 `migrate()` 是插件叫的，调用方没机会在入参里带 cwd，所以缺省值挂在服务上
+    const { service } = await makeService({ strategy: "prune", cwd: "/tmp/project-default" });
+    const agent = bareAgent();
+
+    await service.migrate({ agent: asAgent(agent) });
+
+    expect(agent.messages[0]?.content).toBe("/tmp/project-default");
+  });
+
+  it("入参的 cwd 覆盖构造时的缺省", async () => {
+    const { service } = await makeService({ strategy: "prune", cwd: "/tmp/project-default" });
+    const agent = bareAgent();
+
+    await service.migrate({ agent: asAgent(agent), cwd: "/tmp/project-asked" });
+
+    expect(agent.messages[0]?.content).toBe("/tmp/project-asked");
+  });
+
+  it("注入落库接缝：回调拿到的那一份里同样带着那条 cwd 消息", async () => {
+    const seen: Array<{ memory: AgentNS.Message[] }> = [];
+    const { service } = await makeService({
+      strategy: "prune",
+      commitMemory: (commit) => {
+        seen.push(commit);
+      },
+    });
+    const agent = bareAgent();
+
+    await service.migrate({ agent: asAgent(agent), cwd: "/tmp/project-d" });
+
+    expect(seen).toHaveLength(1);
+    const memory = seen[0]!.memory;
+    expect(memory).toHaveLength(2);
+    expect(memory[0]).toMatchObject({
+      role: "user",
+      hidden: true,
+      source: { kind: "system", label: "cwd" },
+      content: "/tmp/project-d",
+    });
+    // SDK 没动内存（这一趟的落点由调用方决定），但交出去的那一份就是它
+    expect(agent.messages.some((message) => message.content === "/tmp/project-d")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// migrate 的落库接缝：一处实现 + 可接管
+// ---------------------------------------------------------------------------
+
+describe("migrate 的落库接缝（commitMemory）", () => {
+  it("不注入：SDK 自己换 agent.messages（外部使用者走的那条）", async () => {
+    const { service } = await makeService({ strategy: "prune" });
+    const agent = new FakeAgent({ onSend: writeScript() });
+    // 记忆就是这个数组（换是原地换：同一个数组、不换引用，CORE.md §12）
+    const memory = agent.messages;
+
+    const ctx = await service.migrate({ agent: asAgent(agent) });
+
+    expect(agent.messages).toBe(memory);
+    expect(agent.messages).toHaveLength(2);
+    expect(agent.messages.at(-1)?.content).toBe(ctx.handoffPath);
+  });
+
+  it("注入：agent.messages 一个字节都不动，回调拿到的是同一份结果", async () => {
+    const seen: Array<{ memory: any[]; handoffPath: string; mode: string }> = [];
+    const { service } = await makeService({
+      strategy: "prune",
+      commitMemory: (commit) => {
+        seen.push(commit as any);
+      },
+    });
+    const agent = new FakeAgent({ onSend: writeScript() });
+    const memory = agent.messages;
+
+    const ctx = await service.migrate({ agent: asAgent(agent) });
+
+    // 接缝只决定「落在哪儿」：SDK 没把新记忆换上去（旧记忆一条没剔、断点也没追）
+    expect(agent.messages).toBe(memory);
+    expect(agent.messages.at(-1)?.content).toBe("Handoff document written.");
+    expect(agent.messages.some((message) => message.content === ctx.handoffPath)).toBe(false);
+
+    // 回调拿到的那一份与「不注入时 SDK 会换成的那一份」逐条相同（同一份算出来的结果）
+    expect(seen).toHaveLength(1);
+    const commit = seen[0]!;
+    expect(commit.handoffPath).toBe(ctx.handoffPath);
+    expect(commit.mode).toBe("self");
+    expect(commit.memory).toHaveLength(2);
+    expect(commit.memory[0]?.content).toBe("You are a helper.");
+    expect(commit.memory[1]).toMatchObject({
+      role: "system",
+      hidden: true,
+      content: ctx.handoffPath,
+    });
+  });
+
+  it("400 字节门槛在两条路上都生效：不注入", async () => {
+    const { service } = await makeService({ strategy: "prune" });
+    const agent = new FakeAgent({ onSend: writeScript("too short") });
+
+    const ctx = await service.migrate({ agent: asAgent(agent) });
+
+    // 自交接没写过 400 字节 → 单向降级到独立摘要，记忆照旧换
+    expect(ctx.requestedMode).toBe("self");
+    expect(ctx.mode).toBe("summary");
+    expect(agent.messages).toHaveLength(2);
+    expect(agent.messages.at(-1)?.content).toBe(ctx.handoffPath);
+  });
+
+  it("400 字节门槛在两条路上都生效：注入（降级也交同一份结果给回调）", async () => {
+    const seen: string[] = [];
+    const { service } = await makeService({
+      strategy: "prune",
+      commitMemory: (commit) => {
+        seen.push(commit.mode);
+      },
+    });
+    const agent = new FakeAgent({ onSend: writeScript("too short") });
 
     const ctx = await service.migrate({ agent: asAgent(agent) });
 
     expect(ctx.mode).toBe("summary");
-    const written = await fs.readFile(ctx.handoffPath, "utf-8");
-    expect(written).toContain("## 💬 Conversation Breakpoint");
-    expect(agent.messages.at(-1)!.content).not.toContain("## 💬 Conversation Breakpoint");
+    // 降级之后仍然走同一个接缝（落库这一段不因执行者不同而分叉）
+    expect(seen).toEqual(["summary"]);
+    // SDK 没动内存：交接回合那一条指令与回执都还在（旧记忆一条没剔）
+    expect(agent.messages.at(-1)?.content).toBe("Handoff document written.");
+    expect(agent.messages.some((message) => message.content === ctx.handoffPath)).toBe(false);
   });
 });
 
@@ -877,33 +1089,12 @@ describe("取消（AbortSignal）", () => {
     await service.handoff({ agent: asAgent(agent), mode: "summary", signal: ac.signal });
 
     // 第二个参数才是 RequestOptions；放进 body 不会被 SDK 当成取消信号。
-    // 传下去的是「服务句柄 + 调用方 signal」的合集，不是调用方那个对象本身
+    // 传下去的就是调用方递进来的那一个（服务自己不持有句柄）
     const [, requestOptions] = agent.client.chat.completions.create.mock.calls[0]!;
     const passed = (requestOptions as { signal?: AbortSignal }).signal;
     expect(passed).toBeInstanceOf(AbortSignal);
     ac.abort();
     expect(passed!.aborted).toBe(true);
-  });
-
-  it("summary 请求进行中被服务 abort() 拦住 → 请求 signal 触发、不落盘", async () => {
-    const { service, dir } = await makeService();
-    const agent = new FakeAgent({ writeTool: false });
-    let seen: AbortSignal | undefined;
-    agent.client.chat.completions.create.mockImplementationOnce(
-      async (_body?: unknown, options?: { signal?: AbortSignal }) => {
-        seen = options?.signal;
-        service.abort();
-        throw abortError();
-      },
-    );
-
-    await expect(service.handoff({ agent: asAgent(agent), mode: "summary" })).rejects.toThrow(
-      HandoffAbortedError,
-    );
-
-    // 自动迁移这条路没有外部 signal，只有服务自身的句柄能中止这次请求
-    expect(seen?.aborted).toBe(true);
-    expect(await fs.readdir(dir)).toEqual([]);
   });
 
   it("summary 请求被取消 → 抛 HandoffAbortedError（不是普通失败），且不落盘", async () => {
@@ -958,35 +1149,6 @@ describe("取消（AbortSignal）", () => {
     expect(await fs.readdir(dir)).toEqual([]);
   });
 
-  it("migrate 被取消后回到交接前：历史逐条不变、不留断点、不留文档", async () => {
-    const { service, dir } = await makeService({ strategy: "prune" });
-    const ac = new AbortController();
-    const agent = new FakeAgent({ onSend: () => void ac.abort() });
-    const before = JSON.parse(JSON.stringify(agent.messages));
-
-    await expect(service.migrate({ agent: asAgent(agent), signal: ac.signal })).rejects.toThrow(
-      HandoffAbortedError,
-    );
-
-    // 断点消息没有被注入，交接回合也没留在历史里
-    expect(agent.messages).toEqual(before);
-    expect(await fs.readdir(dir)).toEqual([]);
-  });
-
-  it("服务自身的 abort() 就能取消（自动迁移这条路递不进 signal）", async () => {
-    const { service, dir } = await makeService();
-    // 自动迁移由 AutoMigratePlugin 直接调 migrate()，调用方没有 signal 可传，
-    // 服务不自己持有取消句柄的话，Ctrl+C 会被当成「文档没写出来」→ 重试 → 降级
-    const agent = new FakeAgent({ onSend: () => service.abort() });
-
-    await expect(service.handoff({ agent: asAgent(agent) })).rejects.toThrow(HandoffAbortedError);
-
-    expect(agent.sent).toHaveLength(1);
-    expect(agent.client.chat.completions.create).not.toHaveBeenCalled();
-    expect(agent.messages).toHaveLength(3);
-    expect(await fs.readdir(dir)).toEqual([]);
-  });
-
   it("取消后 agent.messages 逐条回到交接前（不留半截交接回合）", async () => {
     const { service } = await makeService();
     const ac = new AbortController();
@@ -1019,28 +1181,17 @@ describe("取消（AbortSignal）", () => {
     expect(await fs.readdir(dir)).toEqual([]);
   });
 
-  it("提交点之后（文档已校验通过）的取消不再打断迁移", async () => {
+  it("提交点之后的取消不再打断这一趟（文档已经写好）", async () => {
     const ac = new AbortController();
-    // onHandoff 只在文档通过校验后触发 = 提交点：此后停下会留下「已存档但未剔除」的
-    // 第三种状态，比让迁移做完更糟，所以这里只验「迁移照常完成」
-    const { service } = await makeService({ strategy: "prune", onHandoff: () => ac.abort() });
+    // onHandoff 只在文档写好后才触发 = 提交点：此后停下会留下「文档已落盘但被当成未完成」
+    // 的第三种状态，所以跨过这一步的事不再响应取消
+    const { service } = await makeService({ onHandoff: () => ac.abort() });
     const agent = new FakeAgent({
       onSend: writeScript(),
     });
 
-    const ctx = await service.migrate({ agent: asAgent(agent), signal: ac.signal });
+    const ctx = await service.handoff({ agent: asAgent(agent), signal: ac.signal });
 
-    expect(existsSync(ctx.handoffPath)).toBe(true);
-    expect(agent.messages).toHaveLength(2);
-  });
-
-  it("没有进行中的交接时 abort() 是 no-op（不污染下一次交接）", async () => {
-    const { service } = await makeService();
-    const agent = new FakeAgent();
-
-    service.abort();
-
-    const ctx = await service.handoff({ agent: asAgent(agent), mode: "summary" });
     expect(existsSync(ctx.handoffPath)).toBe(true);
   });
 

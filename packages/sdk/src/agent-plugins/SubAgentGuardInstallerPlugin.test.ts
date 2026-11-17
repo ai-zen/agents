@@ -8,7 +8,7 @@ const MAX_TOKENS = 100;
 /** 子 Agent 与主 Agent 共用同一个绝对阈值 guardTokens（到线即中断，无倍数） */
 const HARD_LIMIT = MAX_TOKENS;
 
-/** 组装 `onInnerLoopStart` 的 ctx（仅 agent.lastUsage 参与护栏判定） */
+/** 组装 `onInnerLoopStart` 的 ctx（仅 agent.messages 上的用量参与护栏判定） */
 function createInnerLoopCtx(agent: unknown): InnerLoopContext {
   return { agent, body: { messages: [] } } as unknown as InnerLoopContext;
 }
@@ -33,10 +33,21 @@ function pluginOf<T>(use: ReturnType<typeof vi.fn>, type: new (...args: never[])
   return found as T;
 }
 
-/** 假子 Agent 的 `onInnerLoopStart` ctx：护栏只看 `ctx.agent.lastUsage`，其余无关 */
+/** 假子 Agent 的 `onInnerLoopStart` ctx：护栏只看 `ctx.agent.messages` 上的用量，其余无关 */
 function overLimitInnerLoopCtx(guardTokens: number): InnerLoopContext {
+  const messages = [
+    new Message({
+      role: AgentNS.Role.Assistant,
+      content: "上一轮回复",
+      usage: {
+        prompt_tokens: guardTokens + 1,
+        completion_tokens: 0,
+        total_tokens: guardTokens + 1,
+      },
+    }),
+  ];
   return {
-    agent: { lastUsage: { prompt_tokens: guardTokens + 1 } },
+    agent: { messages },
     body: { messages: [] },
   } as unknown as InnerLoopContext;
 }
@@ -47,7 +58,7 @@ function createRealAgent(): Agent {
 }
 
 /**
- * 设置子 Agent 上一轮的用量：`lastUsage` 是从 messages 派生的只读值，
+ * 设置子 Agent 上一轮的用量：用量只存在消息上（最后一条带 `usage` 的 assistant 消息），
  * 所以这里造一条带 usage 的 assistant 消息（等价于流式响应写入后的状态）。
  */
 function setUsage(agent: Agent, promptTokens: number): void {

@@ -6,6 +6,7 @@ import type {
   ToolCallContext,
   ToolHookContext,
 } from "@ai-zen/agents-core";
+import { WRITE_TOOL_NAME } from "../scope/plugins/builtin/WriteTool.js";
 
 /** 交接那条指令的来源标签（`HandoffService` 投递时填的就是它，这里按同一个值认回来） */
 export const HANDOFF_SOURCE_LABEL = "handoff";
@@ -44,8 +45,8 @@ export interface SelfHandoffWatch {
  * 2. **那次写文档的结果**：`onToolEnd` 认出「写文件的工具 + 路径等于交接路径」那一次，结果
  *    回来就落定；这一批收口了还没见到它，就是「没写出来」。判据是那次调用的输入与结果，
  *    不是状态，也不是模型的话。
- * 3. **关输出闸**：指令被取走那一拍关掉，直到提交之后才由服务开回来 —— 交接要换的是整份记忆，
- *    换之前落进来的话会被一起挪进存档。关在这里、开在服务里，两头都是「这一趟」说的话。
+ * 3. **关输出闸**：指令被取走那一拍关掉。**开闸不在 SDK**：开闸的时刻是「记忆换定了」，
+ *    而换记忆在宿主那一侧（SDK 这一趟只产出文档），由宿主在交接收口开。
  *    「用户按了停」不靠这道闸认，靠 `onAbort`（`abort()` 有自己的事实，闸只是它的副作用）。
  *
  * 边界（如实记录，不要当成安全边界）：
@@ -134,7 +135,7 @@ export class HandoffGuardPlugin implements AgentPlugin {
 
     const name = toolCall.tool_call?.function?.name ?? "";
 
-    if (name === "write") {
+    if (name === WRITE_TOOL_NAME) {
       if (this.documentPathOf(toolCall) === handoffPath) return;
       return `During the handoff round the only allowed write is the handoff document: ${handoffPath} (pass that path to write exactly as given), start writing now.`;
     }
@@ -203,7 +204,7 @@ export class HandoffGuardPlugin implements AgentPlugin {
 
   /** 这一次工具调用写的是哪个路径（不是 `write`、或参数里没有路径 → undefined） */
   private documentPathOf(toolCall: ToolCallContext): string | undefined {
-    if (toolCall.tool_call?.function?.name !== "write") return undefined;
+    if (toolCall.tool_call?.function?.name !== WRITE_TOOL_NAME) return undefined;
     const raw = toolCall.parsedArgs?.path;
     if (typeof raw !== "string" || raw.trim() === "") return undefined;
     return resolvePath(this.cwd, raw);

@@ -42,19 +42,18 @@ export const PEER_SESSION_TOOL_NAMES = [
 ] as const;
 
 /**
- * 一段会话此刻落在哪一格 —— **四格 + `gone`**。
+ * 一段会话此刻落在哪一格 —— **四格**，与宿主 `host/src/wire/states.ts` 的 `ConversationStatus`
+ * 同口径：`busy` 手上有活、`idle` 闲着、`paused` 暂停（收话不动）、`dead` 没有 agent 对象。
  *
- * 前四格是活对象身上的直接事实（与宿主的 `ConversationStatus` 逐格对应）：`busy` 手上有活、
- * `idle` 闲着、`paused` 暂停（收话不动）、`dead` 没有 agent 对象。
- *
- * `gone` 只出现在 `read_session_status` 的答案里：这段会话找不到了（会话行被删了）。它不看
- * 进程内存过什么 —— 血缘与会话本身在库里，重启之后仍是一段认得出的会话。
+ * 这里是**流到模型与工具结果里的那一份**（SDK 不依赖宿主，所以不引宿主的类型，只保证两边的
+ * 四个词一模一样）。
  *
  * 这里**没有** `running` / `failed` / `aborted` 这类值：失败是某条消息上的事实（那条消息的
  * `status` / `error`），不是一段对话此刻的状态；把「上一次失败了」挂成状态，就会在它下一次
- * 好好说话时继续说假话。
+ * 好好说话时继续说假话。也**不再有** `gone`：会话找不到是「没有这一段」，不是第五格
+ * （见 {@link PeerSessionStatus} 的 `found: false`）。
  */
-export type PeerSessionState = "busy" | "idle" | "paused" | "dead" | "gone";
+export type ConversationStatus = "dead" | "busy" | "idle" | "paused";
 
 /**
  * `create_session` 被**结构化拒绝**的原因。
@@ -79,19 +78,17 @@ export type PeerSessionCreated =
   | { ok: false; reason: PeerSessionRejectReason; hint?: string };
 
 /**
- * `read_session_status` 的答案。
+ * `read_session_status` 的答案 —— **判别式**：要么「没有这一段」，要么「有这一段、落在四格之一」。
  *
- * `lastMessage` 是那段会话最后一条助手消息的**截断摘要**（宿主侧 ~300 字），不是全量消息：
- * 给了原文，模型就会把它当上下文搬运，token 立刻炸，而且绕过了我们自己的上下文管理。
+ * `found: false` 那支的 `status` 就是 `null`：找不到不是一个状态格（四格都是活对象身上的事实，
+ * 找不到就没有对象可读）。把它挤进同一格会让模型把「会话被删了」当成一种可等的情形。
+ *
+ * 只有两个字段：摘要与消息事件是另一条路，本形状不带（给了原文，模型就会把它当上下文搬运，
+ * token 立刻炸，而且绕过了我们自己的上下文管理）。
  */
-export interface PeerSessionStatus {
-  /** 四格 + `gone`（见 {@link PeerSessionState}） */
-  state: PeerSessionState;
-  label?: string;
-  startedAt?: string;
-  /** 最近一句的摘要（截断；拿不到就不出现） */
-  lastMessage?: string;
-}
+export type PeerSessionStatus =
+  | { found: false; status: null }
+  | { found: true; status: ConversationStatus; label: string };
 
 /**
  * `postMessage` 被拒绝的两种原因 —— 就是投递的两条判据。
@@ -144,7 +141,7 @@ export interface PeerSessionPort {
    * 拒绝照 {@link PeerSessionCreated} 的样子回，不抛错。
    */
   create(input: PeerSessionCreateInput): Promise<PeerSessionCreated>;
-  /** 现读那一格 + 一句摘要（不存镜像：状态是活对象身上的事实） */
+  /** 现读那一格（不存镜像：状态是活对象身上的事实）；找不到就是 `found: false` */
   status(input: { caller: Agent; sessionId: string }): Promise<PeerSessionStatus>;
   /**
    * 把一句话投给一段会话（**不等结果，也不回状态**）。
@@ -203,19 +200,19 @@ const SEND_REJECT_HINTS: Record<PeerSessionSendRejectReason, string> = {
 };
 
 /**
- * `postMessage` 收下之后给模型的一句话。
+ * 「收下了」那半句：只说两件当场能定下的事 —— ① 已进那边的待办；② 别轮询。
  *
- * 只说三件当场能定下的事：① 这句话进了那边的待办；② 这里不等结果、也不会有东西自己推回来；
- * ③ 记不住 `sessionId` 就靠 `label` 认。**不写**「它现在在忙 / 会把它叫起来」——那是对方的
- * 情形，投递这一刻答不出来，写下来就是编。
+ * **不写**「它现在在忙 / 会把它叫起来」，也不写「不会自动推给我」：后者与「她说完会自己
+ * postMessage 回来」相互打脸，而且两者都是对未来的断言。真正能说的只有
+ * {@link NO_POLL_HINT} 那一句（“真要说话时会自己发过来”），它刚好把「别轮询」说清。
  */
 const SEND_ACCEPTED_HINT =
-  "Accepted: the message is in that session's queue now. This call does not come back and nothing " +
-  `is pushed to me automatically. ${NO_POLL_HINT} ${LABEL_HINT}`;
+  "Accepted: the message is in that session's queue now. This call does not come back. " +
+  `${NO_POLL_HINT} ${LABEL_HINT}`;
 
-/** 每一格一句给模型的话（都带着「别轮询」与「靠 label」两句） */
-function statusHint(state: PeerSessionState): string {
-  switch (state) {
+/** 每一格一句给模型的话（活着的三格都带着「别轮询」与「靠 label」两句） */
+function statusHint(status: ConversationStatus): string {
+  switch (status) {
     case "busy":
       return `It is busy: it has work in hand right now. ${NO_POLL_HINT} ${LABEL_HINT}`;
     case "idle":
@@ -230,15 +227,15 @@ function statusHint(state: PeerSessionState): string {
         "There is no agent behind that session any more (it is dead): nothing will be taken in " +
         `there and no answer will arrive. Do the work here instead. ${LABEL_HINT}`
       );
-    case "gone":
-      return (
-        "There is no record of that session any more: it was deleted, or the host restarted and " +
-        "that in-process record is gone (in that case it is now an ordinary conversation that " +
-        "still shows up in the session list). No answer will arrive there. If I only remember the " +
-        "`label`, that session can no longer be looked up by it."
-      );
   }
 }
+
+/** 会话根本找不到（`found: false`）时给模型的一句话：这不是第五格，是「没有这一段」 */
+const NOT_FOUND_HINT =
+  "There is no record of that session any more: it was deleted, or the host restarted and " +
+  "that in-process record is gone (in that case it is now an ordinary conversation that " +
+  "still shows up in the session list). No answer will arrive there. If I only remember the " +
+  "`label`, that session can no longer be looked up by it.";
 
 /**
  * 造三个工具（顺序即返回顺序）。
@@ -320,17 +317,18 @@ function createSessionTool(port: PeerSessionPort): Tool {
   });
 }
 
-/** `read_session_status({ sessionId })` → `{ state, label?, startedAt?, lastMessage?, hint }` */
+/** `read_session_status({ sessionId })` → `{ found, status, label?, hint }` */
 function readSessionStatusTool(port: PeerSessionPort): Tool {
   return new CallbackTool({
     function: {
       name: READ_SESSION_STATUS_TOOL,
       description: [
         "Check a session created earlier: the one state it is in right now (busy / idle / paused /",
-        "dead / gone) plus a short digest of its last assistant message — never the full",
+        "dead), or that there is no such session any more (found: false) — never the full",
         "conversation, so do not use it to fetch context.",
-        "This is a single check, not a waiting loop: whether it is busy, idle or gone is a fact",
-        "about this moment only, and it does not tell me when anything will happen. Do not poll —",
+        "This is a single check, not a waiting loop: which of those states it is in (or that it",
+        "is not there any more) is a fact about this moment only, and it does not tell me when",
+        "anything will happen. Do not poll —",
         "when that session has something for me it calls postMessage on me itself.",
         "If I no longer remember the `sessionId`, the `label` returned by create_session is what",
         "identifies the session — it comes back in the answer, so I can tell them apart.",
@@ -354,14 +352,9 @@ function readSessionStatusTool(port: PeerSessionPort): Tool {
         caller: ctx.agent,
         sessionId: typeof input.sessionId === "string" ? input.sessionId : "",
       });
-      // 键的出现与否本身就是信息：`label` / `startedAt` / `lastMessage` 拿不到就不出现
-      return {
-        state: status.state,
-        ...(status.label === undefined ? {} : { label: status.label }),
-        ...(status.startedAt === undefined ? {} : { startedAt: status.startedAt }),
-        ...(status.lastMessage === undefined ? {} : { lastMessage: status.lastMessage }),
-        hint: statusHint(status.state),
-      };
+      // 两种形状原样转给模型：找不到就是 `found: false` + `status: null`，不挤进四格里
+      if (!status.found) return { found: false, status: null, hint: NOT_FOUND_HINT };
+      return { found: true, status: status.status, label: status.label, hint: statusHint(status.status) };
     },
   });
 }

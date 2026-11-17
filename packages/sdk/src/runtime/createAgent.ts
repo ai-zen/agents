@@ -113,8 +113,6 @@ export async function createAgent(
     client,
     model,
     modelConfig,
-    // 合出来的是哪一级，客户端要把「当前生效档」标在选择器上
-    modelLevel: resolved.level,
     // 在 createAgent 层做模板快照（拷贝），隔离 definition.messages 的引用。
     // AgentContext.messages 是 mutable 运行时数组，若直接把 definition.messages
     // 传入，对话期间 append() 会反向污染 Agent 定义模板——definition.messages

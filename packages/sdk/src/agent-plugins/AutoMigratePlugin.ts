@@ -2,6 +2,7 @@ import { AgentError } from "@ai-zen/agents-core";
 import type { AgentPlugin, OuterLoopContext } from "@ai-zen/agents-core";
 import { HandoffAbortedError } from "../runtime/HandoffService.js";
 import type { HandoffMode, HandoffService } from "../runtime/HandoffService.js";
+import { lastPromptTokens } from "../runtime/lastPromptTokens.js";
 import { getLogger } from "../shared/logger.js";
 import type { SdkAgent } from "../runtime/SdkAgent.js";
 
@@ -41,6 +42,14 @@ export interface AutoMigrateOptions {
    * 钩子抛错只记一条日志：迁移已经完成，标不出来是观测问题，不该反过来让这一轮报错。
    */
   onMigrated?: (info: AutoMigrateTriggerInfo & { mode: HandoffMode }) => void | Promise<void>;
+  /**
+   * 迁移**没成**的回声（可选）：模型没有写出来、写出来不够长、落库失败……
+   *
+   * **取消不算失败**（用户按了停那条不叫它）：那是回到交接前，没什么要收尾的。
+   * 宿主拿它把输出闸开回来 —— 闸是交接那一批的批头关上的，而开闸只有宿主能决定
+   * （SDK 不认识「记忆换完了」这件事，见 `HandoffService.runHandoff` 的注释）。
+   */
+  onFailed?: (info: AutoMigrateTriggerInfo & { error: unknown }) => void | Promise<void>;
 }
 
 /**
@@ -59,20 +68,20 @@ export interface AutoMigrateOptions {
  *
  * ## 为什么落在 `onIdle`（旧的 `onAfterSend` 已删除）
  *
- * 迁移是「**彻底不动了才做**」的事：它要在原会话里再跑一个交接回合、然后把整段历史
- * 标 `omit` / 物理剔除、换掉 `agent.messages` 的引用。「这一圈答完了」还不够 ——
+ * 迁移是「**彻底不动了才做**」的事：它要在原会话里再跑一个交接回合写文档，换记忆则在
+ * 宿主那一侧（服务只管产出文档）。「这一圈答完了」还不够 ——
  * 内循环可能还要接着跑工具、队列里可能还压着别的投递，那些都还在写同一个数组。
- * `onIdle` 的语义正是「手上没活、队列也空」（`CORE.md` §4），此刻换历史引用才不会
+ * `onIdle` 的语义正是「手上没活、队列也空」（`CORE.md` §4），此刻开工才不会
  * 踩到正在跑的圈；而 `onOuterLoopEnd` 只保证「这一批跑完了」，队列里可能还有货。
  *
  * ## 两层让行（缺一不可）
- *   - `service.busy`：交接回合本身就是「往同一个 agent 里再投一轮」，它跑完后 agent 又会
- *     变闲一次，`onIdle` 会再次到这里；不跳过就会「交接触发迁移 → 迁移再交接」无限递归；
- *   - 交接回合结束后的用量也仍可能超阈值，故 busy 判断必须覆盖整个交接 + 迁移过程。
+ *   - `service.handingOff`：交接回合本身就是「往同一个 agent 里再投一轮」，它跑完后 agent 又会
+ *     变闲一次，`onIdle` 会再次到这里；不跳过就会「交接触发交接 → 交接再交接」无限递归；
+ *   - 交接回合结束后的用量也仍可能超阈值，故 handingOff 判断必须覆盖整个交接过程。
  *
  * ## `onIdle()` 不带 ctx：agent 从 `onOuterLoopStart` 认领
  *
- * core 的死活钩子（`onIdle` / `onStart` / `onStop` …）没有参数，而迁移必须有 agent。
+ * core 的死活钩子（`onIdle` / `onStart` / `onStop` …）没有参数，而交接必须有 agent。
  * 于是这里在 `onOuterLoopStart`（每一批事件开头必到，且排在 `onIdle` 之前）把 agent
  * 记下来 —— 那一步只做登记，不做任何判断。
  */
@@ -85,7 +94,7 @@ export class AutoMigratePlugin implements AgentPlugin {
     this.options = options;
   }
 
-  /** 只登记 agent：`onIdle()` 没有 ctx，而迁移需要它。不做任何判断。 */
+  /** 只登记 agent：`onIdle()` 没有 ctx，而交接需要它。不做任何判断。 */
   onOuterLoopStart(ctx: OuterLoopContext): void {
     this.agent = ctx.agent as SdkAgent;
   }
@@ -94,39 +103,44 @@ export class AutoMigratePlugin implements AgentPlugin {
     const agent = this.agent;
     if (!agent) return;
 
-    const { service, handoffTokens, resolveMode, onMigrated } = this.options;
+    const { service, handoffTokens, resolveMode, onMigrated, onFailed } = this.options;
 
-    // 交接/迁移进行中：让行（防递归）
-    if (service.busy) return;
+    // 交接进行中（本服务这一趟还在跑）：让行（防递归）
+    if (service.handingOff) return;
 
-    const promptTokens = agent.lastUsage?.prompt_tokens;
+    // 上一轮 prompt 用量：只从消息上读（与 `ContextGuardPlugin` 同一份事实、同一个读法）
+    const promptTokens = lastPromptTokens(agent);
     if (promptTokens == null) return;
     if (promptTokens <= handoffTokens) return;
 
     try {
       const mode = resolveMode ? await resolveMode({ promptTokens, handoffTokens }) : undefined;
-      if (mode === null) return; // 用户选择跳过本次迁移
+      if (mode === null) return; // 用户选择跳过本次交接
 
+      // 自动交接走 `migrate()`：**写文档 + 换记忆**。记忆长什么样只有 SDK 这一处算，
+      // 落在哪儿看服务有没有注入落库接缝（宿主注入了，于是它落库、落内存；外部使用者没注入，
+      // 于是 SDK 自己换 `agent.messages`）—— 不是两套实现，是同一份结果两个落点。
       const migrated = await service.migrate({
         agent,
         promptTokens,
         handoffTokens,
         mode: mode ?? undefined,
       });
-      // 迁移已经完成（历史已 omit / prune，断点已注入）：这时候才报「压过了」
+      // 记忆已经换完：这时候才报「压过了」（实际执行者以服务报的为准）
       await this.notifyMigrated(onMigrated, {
         promptTokens,
         handoffTokens,
-        mode: migrated?.mode ?? mode ?? "self",
+        mode: migrated.mode,
       });
     } catch (err: any) {
       // 用户主动取消不是失败：服务已把会话退回交接前，这里再报错只会在界面上
       // 凭空多一条「迁移失败」（默认 logger 是 console.error，TUI 下直接撕画面）
       if (err instanceof HandoffAbortedError) return;
-      // agent 已经关门/被硬杀（`stop()` / `kill()` 之后又走到 idle）：没什么可迁移的。
+      // agent 已经关门/被硬杀（`stop()` / `kill()` 之后又走到 idle）：没什么可交接的。
       // 不报错、也不降级 summary —— 那会为一个已经没有的会话白烧一轮全量输入。
       if (err instanceof AgentError && err.code === "closed") return;
-      getLogger().error(`[autoMigrate] migration failed: ${err?.message ?? err}`);
+      getLogger().error(`[autoMigrate] handoff failed: ${err?.message ?? err}`);
+      await this.notifyFailed(onFailed, { promptTokens, handoffTokens, error: err });
     }
   }
 
@@ -140,6 +154,19 @@ export class AutoMigratePlugin implements AgentPlugin {
       await hook(info);
     } catch (err: any) {
       getLogger().error(`[autoMigrate] onMigrated hook failed: ${err?.message ?? err}`);
+    }
+  }
+
+  /** 没成那一拍的回声：同样只记日志（这一趟就是要告诉宿主一声，它崩了不该变成第二件坏事） */
+  private async notifyFailed(
+    hook: AutoMigrateOptions["onFailed"],
+    info: AutoMigrateTriggerInfo & { error: unknown },
+  ): Promise<void> {
+    if (!hook) return;
+    try {
+      await hook(info);
+    } catch (err: any) {
+      getLogger().error(`[autoMigrate] onFailed hook failed: ${err?.message ?? err}`);
     }
   }
 }

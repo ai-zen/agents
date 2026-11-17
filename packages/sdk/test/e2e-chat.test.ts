@@ -63,7 +63,6 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
     const model = createModel(scope, "deepseek-flash");
     const agent = new SdkAgent({
       scope,
-      modelLevel: "agent",
       definition: {
         id: "test",
         name: "Test",
@@ -96,7 +95,6 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
 
     const agent = new SdkAgent({
       scope,
-      modelLevel: "agent",
       definition: {
         id: "test-tool",
         name: "Test Tool",
@@ -138,7 +136,6 @@ describe.runIf(!skip)("真实聊天（DeepSeek API）", () => {
     const model = createModel(scope, "deepseek-flash");
     const agent = new SdkAgent({
       scope,
-      modelLevel: "agent",
       definition: {
         id: "test-multi",
         name: "Test Multi",

@@ -246,7 +246,6 @@ describe.runIf(!skip)("view_image 端到端（真实 DeepSeek API）", () => {
 
       const agent = new SdkAgent({
         scope,
-        modelLevel: "agent",
         definition: DEFINITION(VISION_MODEL_ID, "view-test", "View Test"),
         client: model.client,
         model: model.model,

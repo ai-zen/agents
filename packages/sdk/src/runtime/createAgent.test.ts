@@ -197,7 +197,6 @@ describe("createAgent", () => {
 
     // 运行期看到的就是覆盖后的模型（状态栏 / 阀值 / 插件都读 definition.modelId）
     expect(agent.definition.modelId).toBe("gpt4-mini");
-    expect(agent.modelLevel).toBe("session");
     // 磁盘上的定义一个字没动：覆盖只属于这一段会话
     const onDisk = await new AgentRepository(join(dir, "agents")).read("my-agent");
     expect(onDisk!.modelId).toBe("gpt4");
@@ -210,7 +209,6 @@ describe("createAgent", () => {
     const agent = await createAgent(scope, "my-agent");
 
     expect(agent.definition.modelId).toBe("gpt4");
-    expect(agent.modelLevel).toBe("agent");
   });
 
   it("Agent 定义没绑模型时用 config.defaultModel 兜底", async () => {
@@ -220,7 +218,6 @@ describe("createAgent", () => {
     const agent = await createAgent(scope, "my-agent");
 
     expect(agent.definition.modelId).toBe("gpt4-mini");
-    expect(agent.modelLevel).toBe("global");
   });
 
   it("会话级覆盖与全局兜底同时在场时取会话级（三级顺序不许乱）", async () => {
@@ -230,7 +227,6 @@ describe("createAgent", () => {
     const agent = await createAgent(scope, "my-agent", { modelId: "gpt4" });
 
     expect(agent.definition.modelId).toBe("gpt4");
-    expect(agent.modelLevel).toBe("session");
   });
 
   /**
@@ -280,8 +276,7 @@ describe("createAgent", () => {
 
       const agent = await createAgent(scope, "my-agent");
 
-      expect(agent.modelLevel).toBe("agent");
-      expect(agent.modelConfig).toEqual({ temperature: 0.3, reasoning_effort: "low" });
+        expect(agent.modelConfig).toEqual({ temperature: 0.3, reasoning_effort: "low" });
     });
 
     it("全局兜底：没有任何一层的参数，只用模型出厂参数", async () => {
@@ -296,8 +291,7 @@ describe("createAgent", () => {
         modelParams: { reasoning_effort: "max" },
       });
 
-      expect(agent.modelLevel).toBe("global");
-      expect(agent.modelConfig).toEqual({ thinking: { type: "enabled" } });
+        expect(agent.modelConfig).toEqual({ thinking: { type: "enabled" } });
     });
   });
 

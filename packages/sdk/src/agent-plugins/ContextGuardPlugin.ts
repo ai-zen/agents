@@ -1,5 +1,6 @@
 import { ContextOverflowError } from "../shared/errors.js";
 import type { AgentPlugin, InnerLoopContext } from "@ai-zen/agents-core";
+import { lastPromptTokens } from "../runtime/lastPromptTokens.js";
 
 export interface ContextGuardOptions {
   /**
@@ -12,9 +13,9 @@ export interface ContextGuardOptions {
   /**
    * 临时让行：返回 `true` 时本轮不做超限判定（默认 `false`）。
    *
-   * 用于交接/迁移回合 —— 那些回合本身就是「上下文已满」时才发起的，若不放宽必定被打回。
+   * 用于交接回合 —— 那种回合本身就是「上下文已满」时才发起的，若不放宽必定被打回。
    * 语义是「谁做限制谁放宽」：限制在护栏自己身上，放宽也必须由护栏自己表达，
-   * 而不是由调用方去改写用量数据。典型接线：`isSuspended: () => handoffService.busy`。
+   * 而不是由调用方去改写用量数据。典型接线：`isSuspended: () => handoffService.handingOff`。
    */
   isSuspended?: () => boolean;
 }
@@ -25,9 +26,9 @@ export interface ContextGuardOptions {
  * 在每次内循环**发请求前**检测上一轮用量（usage.prompt_tokens）：超过 `guardTokens`
  * 就**拒绝这一圈**，交由上层向用户报错。
  *
- * 与迁移插件职责分离：
- * - `ContextGuardPlugin`：硬线，只做「严重超限即中断」的安全兜底，绝不继续对话/迁移；
- * - `AutoMigratePlugin`：软线（`tokenThresholds.handoff`），在正常范围内做交接迁移。
+ * 与自动交接插件职责分离：
+ * - `ContextGuardPlugin`：硬线，只做「严重超限即中断」的安全兜底，绝不继续对话/交接；
+ * - `AutoMigratePlugin`：软线（`tokenThresholds.handoff`），在正常范围内做自动交接。
  *   两条线都是绝对值，`guard` 应当明显大于 `handoff`，交接回合的额外请求才有余量。
  *
  * ```ts
@@ -35,7 +36,7 @@ export interface ContextGuardOptions {
  * agent.use(
  *   new ContextGuardPlugin({
  *     guardTokens: guard,
- *     isSuspended: () => handoffService.busy, // 交接回合让行
+ *     isSuspended: () => handoffService.handingOff, // 交接回合让行
  *   }),
  * );
  * agent.use(new AutoMigratePlugin({ service: handoffService, handoffTokens: handoff }));
@@ -63,10 +64,11 @@ export class ContextGuardPlugin implements AgentPlugin {
 
   /** 返回 string = 拒这一圈（这一圈不会发出去，历史里一个字都不多） */
   async onInnerLoopStart(ctx: InnerLoopContext): Promise<string | undefined> {
-    // 交接/迁移回合让行（见 `isSuspended`）
+    // 交接回合让行（见 `isSuspended`）
     if (this.isSuspended?.()) return;
 
-    const promptTokens = ctx.agent.lastUsage?.prompt_tokens;
+    // 上一轮的 prompt 用量：只从消息上读（同一份事实、不另立快照，见 `lastPromptTokens`）
+    const promptTokens = lastPromptTokens(ctx.agent);
     // 首轮请求前尚无用量数据，跳过（只能在发出首轮请求、拿到 usage 后才有据可查）
     if (promptTokens == null) return;
 

@@ -73,10 +73,9 @@ function makeAgent(client: OpenAI) {
     tools: [],
     model: "fake-model",
     modelConfig: { temperature: 0.3 },
-    lastUsage: {},
     client,
     use() {},
-    // 两道闸的最小表面：summary 那一档会自己关闸，收尾时开回来
+    // 闸的最小表面：summary 那一档会自己关闸；开闸归宿主，SDK 不再调 `resumeOutput`
     isOutputPaused: false,
     pauseOutput() {
       this.isOutputPaused = true;

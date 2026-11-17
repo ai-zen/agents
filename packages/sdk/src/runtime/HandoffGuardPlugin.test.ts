@@ -144,7 +144,7 @@ describe("HandoffGuardPlugin：写这份文档的结果", () => {
 
     const agent = gateAgent();
     guard.onOuterLoopStart({ agent, entries: [handoffEntry()] } as any);
-    guard.onOuterLoopEnd({ agent, entries: [handoffEntry()] } as any);
+    guard.onOuterLoopEnd();
 
     expect(await watch.outcome).toBe("missing");
     // 指令被取走那一拍闸就关上了（别人的话一条也进不来）
@@ -157,7 +157,7 @@ describe("HandoffGuardPlugin：写这份文档的结果", () => {
 
     const agent = gateAgent();
     guard.onOuterLoopStart({ agent, entries: [handoffEntry()] } as any);
-    guard.onOuterLoopEnd({ agent, entries: [handoffEntry()] } as any);
+    guard.onOuterLoopEnd();
 
     expect(await watch.outcome).toBe("missing");
     await expect(watch.over).resolves.toBeUndefined();
@@ -170,7 +170,7 @@ describe("HandoffGuardPlugin：写这份文档的结果", () => {
     const agent = gateAgent();
     guard.onOuterLoopStart({ agent, entries: [handoffEntry()] } as any);
     guard.onToolEnd(toolEnd("write", { path: HANDOFF }));
-    guard.onOuterLoopEnd({ agent, entries: [handoffEntry()] } as any);
+    guard.onOuterLoopEnd();
 
     expect(await watch.outcome).toBe("written");
     await expect(watch.over).resolves.toBeUndefined();
@@ -185,7 +185,7 @@ describe("HandoffGuardPlugin：写这份文档的结果", () => {
     // 这一批里没有交接那条指令（别人的话）
     const agent = gateAgent();
     guard.onOuterLoopStart({ agent, entries: [{ priority: "low", source: { kind: "user" } }] } as any);
-    guard.onOuterLoopEnd({ agent, entries: [handoffEntry()] } as any);
+    guard.onOuterLoopEnd();
     await Promise.resolve();
 
     expect(overYet).toBe(false);
@@ -221,7 +221,7 @@ describe("HandoffGuardPlugin：写这份文档的结果", () => {
     const second = guard.arm(HANDOFF, CWD);
     const agent = gateAgent();
     guard.onOuterLoopStart({ agent, entries: [handoffEntry()] } as any);
-    guard.onOuterLoopEnd({ agent, entries: [handoffEntry()] } as any);
+    guard.onOuterLoopEnd();
     expect(await second.outcome).toBe("missing");
   });
 
