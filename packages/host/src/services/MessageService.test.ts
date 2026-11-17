@@ -295,6 +295,82 @@ describe("MessageService.list 的取法（A12）", () => {
   });
 });
 
+describe("活着读内存，死了读库（PLAN §7）", () => {
+  /** 一份「内存里长这样」的口：给什么就回什么，`null` 表示我这边没有 */
+  function liveOf(answer: (id: string, options?: { toolCallId?: string }) => AgentNS.Message[] | null) {
+    return new MessageService({
+      conversations,
+      messages,
+      live: { messagesOf: (id, options) => answer(id, options) },
+    });
+  }
+
+  const inMemory: AgentNS.Message[] = [
+    { id: "live-1", role: AgentNS.Role.User, status: AgentNS.MessageStatus.Completed, content: "内存第一条" },
+    { id: "live-2", role: AgentNS.Role.Assistant, status: AgentNS.MessageStatus.Completed, content: "内存第二条" },
+    { id: "live-hidden", role: AgentNS.Role.User, status: AgentNS.MessageStatus.Completed, content: "交接注入的", hidden: true },
+    { id: "live-3", role: AgentNS.Role.User, status: AgentNS.MessageStatus.Completed, content: "内存第三条" },
+  ];
+
+  it("有 agent 就用内存那一份（顺序即数组顺序，不是库里的 seq）", async () => {
+    const live = liveOf(() => inMemory);
+    const page = await live.list({ conversationId: "c1" });
+    // 库里那三条一条都不该出现：内存那份才是真身
+    expect(page.messages.map((message) => message.id)).toEqual(["live-1", "live-2", "live-3"]);
+    expect(page.anchor).toBeNull();
+  });
+
+  it("`after` / `around` / `includeHidden` 都在那个数组上算", async () => {
+    const live = liveOf(() => inMemory);
+
+    const after = await live.list({ conversationId: "c1", after: "live-2" });
+    expect(after.anchor).toBe("live-2");
+    expect(after.messages.map((message) => message.id)).toEqual(["live-2", "live-3"]);
+
+    // `after` 不在 → 全量 + 空 anchor
+    const miss = await live.list({ conversationId: "c1", after: "没有这条" });
+    expect(miss.anchor).toBeNull();
+    expect(miss.messages.map((message) => message.id)).toEqual(["live-1", "live-2", "live-3"]);
+
+    // `around` 命中：窗口收在数组上（这几条全在窗口里）
+    const around = await live.list({ conversationId: "c1", around: "live-2" });
+    expect(around.anchor).toBe("live-2");
+    expect(around.messages.map((message) => message.id)).toEqual([
+      "live-1",
+      "live-2",
+      "live-3",
+    ]);
+
+    // `around` 不在 → 空页 + 空 anchor，不报错
+    const empty = await live.list({ conversationId: "c1", around: "没有这条" });
+    expect(empty).toEqual({ conversationId: "c1", anchor: null, messages: [] });
+
+    // `hidden` 默认不给人看，要就显式要
+    const withHidden = await live.list({ conversationId: "c1", includeHidden: true });
+    expect(withHidden.messages.map((message) => message.id)).toEqual([
+      "live-1",
+      "live-2",
+      "live-hidden",
+      "live-3",
+    ]);
+  });
+
+  it("子 agent 那一栏：名册上有就取它自己的消息，没有才回落到库", async () => {
+    const sub: AgentNS.Message[] = [
+      { id: "sub-1", role: AgentNS.Role.User, status: AgentNS.MessageStatus.Completed, content: "派活" },
+      { id: "sub-2", role: AgentNS.Role.Assistant, status: AgentNS.MessageStatus.Completed, content: "做完了" },
+    ];
+    const live = liveOf((_id, options) => (options?.toolCallId === "call-1" ? sub : null));
+
+    const page = await live.list({ conversationId: "c1", toolCallId: "call-1" });
+    expect(page.messages.map((message) => message.id)).toEqual(["sub-1", "sub-2"]);
+
+    // 名册上没有这一项（那一批翻过去了 / 进程重启过）→ `null` → 读库（旧行那条路）
+    const fallback = await live.list({ conversationId: "c1", toolCallId: "call-9" });
+    expect(fallback.messages).toEqual([]);
+  });
+});
+
 describe("MessageService.list 的 around（F-C6 的定位）", () => {
   /** 往一段新对话里灌 n 条按顺序的消息；`around` 要足够的条数才看得出「窗口」 */
   async function seedLong(count: number): Promise<void> {

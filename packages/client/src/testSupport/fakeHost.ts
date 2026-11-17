@@ -173,7 +173,8 @@ export function helloResult(overrides: Partial<HostHelloResult> = {}): HostHello
 }
 
 /**
- * 一份 `conversation.state` 的 `state`：一段对话此刻的读数 = 四格里的一格 + 队里还压着什么 + 读数的时刻。
+ * 一份 `conversation.state` 的 `state`：一段对话此刻的读数 = 四格里的一格 + 队里还压着什么 +
+ * 子 agent 名册 + 交接态 + 读数的时刻。
  *
  * 这里**没有**用量、没有「请求中 / 思考中 / 输出中」这类阶段：用量在每条消息的 `usage` 上，
  * 阶段由客户端按到达的事件自己推。
@@ -187,6 +188,9 @@ export function conversationState(
     status: "idle",
     // 空闲时队里没有东西（契约：空闲是空数组，不是「未知」）
     inbox: [],
+    // 名册与交接态都是现读：默认没有子 agent、不在交接
+    subAgents: [],
+    handoff: null,
     at: "2026-01-01T00:00:00.000Z",
     ...overrides,
   };

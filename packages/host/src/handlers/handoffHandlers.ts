@@ -1,10 +1,19 @@
 /**
  * `handoff.*` 两个方法的接线（PRD F-D3 / F-D4 / F-D5 / F-D6 / F-D7 / D18 / D19）。
  *
- * `handoff.start` 的失败形态有两种，客户端要能分开看：
- *   - 用户取消 → 业务码 `handoff_declined`（不是失败，会话回到交接前，F-D7）；
- *   - 真失败 → `internal` + `error.handoffFailed`（带上原因）。
- * 降级不是失败：结果是成功的，`degraded` / `problem` 里说明退到了哪一档。
+ * ## `handoff.start` 只回「已经开始」
+ *
+ * 交接要跑一阵（写文档、换记忆、旧记忆成另一段会话），而这个方法是一个 RPC —— 它有回执、
+ * 要尽快返回。所以它不等那一趟跑完：文档路径、有没有降级、成功 / 取消 / 失败，全部走
+ * **通知**（`NoticeService`，PRD 4.9）与 `conversation.changed` 的 `memory_replaced` 告知，
+ * 界面要知道「现在正在交接」就读 `conversation.state.handoff`。
+ *
+ * ## 接线层不替它做任何编排
+ *
+ * 从前这里是「先 `abort()` 掐掉在途，再开始」—— 那条中断语义已经作废（用户判词：非空闲时
+ * 不让跑就行了）。现在只有一条判据，而且它在服务里：**这段对话闲着才发起**，忙 / 暂停 /
+ * 没有 agent 一律回 `busy`（`detail.reason = "not_idle"`），调用方自己等它闲了再来。
+ * 于是这里不必碰中断口，本域也就不再向接线层要 `runner`。
  */
 
 import type { HandlerTable } from "../net/WsHub.js";

@@ -149,11 +149,22 @@ export interface ErrorPayload {
  *
  * 消息的增删改**不在这里**：那三件事有自己的事件（带整条消息），所以这里没有
  * 「消息落库了」「消息删了」这两格，也不带消息条数 —— 条数客户端自己数。
+ *
+ * - `created` / `renamed` / `pinned` / `settings_changed` / `deleted`：会话**行**上的事；
+ * - `memory_replaced`：这段对话的**记忆**被换过 —— 交接提交（记忆已经换掉）与交接回滚
+ *   （记忆回到交接前）两处都推它。交接期间产生的那批消息只在内存里、从不落库（PLAN §5.3），
+ *   所以客户端收到它就去 `message.list` 全量整段替换镜像，把那些痕迹清掉。
+ *   它**不是** `settings_changed`：那个说的是会话这一行变了，与记忆无关。
  */
 export type ConversationChangeKind =
-  "created" | "renamed" | "pinned" | "settings_changed" | "deleted";
+  | "created"
+  | "renamed"
+  | "pinned"
+  | "settings_changed"
+  | "memory_replaced"
+  | "deleted";
 
-/** `conversation.changed`：改名、置顶、改设置、删除这类会话行上的结构变化 */
+/** `conversation.changed`：改名、置顶、改设置、换过记忆、删除这类会话上的结构变化 */
 export interface ConversationChangedPayload {
   conversationId: string;
   /** 所属 Workspace；对话被删后仍带上，便于客户端把它从对应列表里摘掉 */

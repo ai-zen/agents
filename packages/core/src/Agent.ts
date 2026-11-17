@@ -761,11 +761,15 @@ export class Agent extends AgentContext {
    * 一次请求 + 它引出的工具，循环到「刚才没有工具调用」为止。
    *
    * 续行条件只有一条：**刚才有工具调用**。工具是模型要的，跑完必须把结果再喂回去问一次；
-   * 没有工具调用就是这一轮说完了。没有第二个判据。
+   * 没有工具调用就是这一次说完了。没有第二个判据。
+   *
+   * **这一圈不看暂停**：暂停只在批边界生效（`outerLoop` 那两处 `pauseGate`），而手上已经
+   * 取出来的那批算已经开始 —— 它要把这一批跑完，从下一批起才不再取（`CORE.md` §2）。
+   * 所以下面只判 `killed`：死了才不发请求。要立刻停用 `abort`。
    */
   private async innerLoops(): Promise<void> {
     while (true) {
-      if (this.paused || this.killed) return;
+      if (this.killed) return;
 
       const ctx = this.buildInnerLoopContext();
 
@@ -775,7 +779,7 @@ export class Agent extends AgentContext {
         this.emit("denied", { agent: this, hook: "onInnerLoopStart", reason: denied });
         return;
       }
-      if (this.paused || this.killed) return;
+      if (this.killed) return;
 
       const assistant = new Message({
         id: this.newMessageId(),

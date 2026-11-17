@@ -1,6 +1,12 @@
 /**
- * `handoff.*` 的接线验收：语言从连接传下去、两种失败形态（取消 / 真失败）原样交给接线层、
- * 文档列表原样交回。
+ * `handoff.*` 的接线验收：语言从连接传下去、起始参数原样递下去、文档列表原样交回。
+ *
+ * 两条口径：
+ *
+ * 1. `handoff.start` 只回「已经开始」，所以这里**没有**「取消 / 失败怎么回给调用方」这两条 ——
+ *    那一趟在后台跑，结局走通知与 `conversation.changed`（见 `services/HandoffService.test.ts`）。
+ * 2. 接线层**不掐在途、不编排**（那条中断语义已作废）：入口判据「非空闲就拒」在服务里，
+ *    本域的 deps 因此不再要 `runner`。
  */
 
 import { describe, expect, it } from "vitest";
@@ -32,25 +38,12 @@ function call<M extends MethodName>(
   };
 }
 
-/** 交接服务的替身：记下被怎么调，返回一份最小结果 */
+/** 交接服务的替身：记下被怎么调，返回「已经开始」 */
 function fakeHandoff() {
   const calls: Array<{ params: HandoffStartParams; language: Language | undefined }> = [];
   const listCalls: HandoffListDocumentsParams[] = [];
   let failure: HostError | null = null;
-  const result: HandoffStartResult = {
-    document: {
-      path: "/p/.ai-zen/handoffs/20260101-000000.md",
-      bytes: 512,
-      writtenAt: "2026-01-01T00:00:00.000Z",
-      mode: "summary",
-    },
-    requestedMode: "summary",
-    usedMode: "summary",
-    degraded: false,
-    problem: null,
-    conversation: {} as HandoffStartResult["conversation"],
-    newConversationId: "c2",
-  };
+  const result: HandoffStartResult = { started: true };
   const documents: HandoffListDocumentsResult = {
     documents: [
       {
@@ -87,7 +80,7 @@ function fakeHandoff() {
 }
 
 describe("handoff.* 接线", () => {
-  it("起始参数与连接语言一起递下去", async () => {
+  it("把起始参数与连接语言原样递下去（接线层不多做一步）", async () => {
     const fake = fakeHandoff();
     const handlers = createHandoffHandlers({ handoff: fake.service });
 
@@ -108,33 +101,39 @@ describe("handoff.* 接线", () => {
     expect(returned).toBe(fake.result);
   });
 
-  it("用户取消（handoff_declined）原样抛给接线层：它不是失败", async () => {
+  it("非空闲被拒时原样抛给调用方（busy 是服务那边判的，接线层不改写）", async () => {
     const fake = fakeHandoff();
-    fake.fail(new HostError("handoff_declined", { detail: { reason: "cancelled" } }));
+    fake.fail(
+      new HostError("busy", { detail: { conversationId: "c1", reason: "not_idle" } }),
+    );
     const handlers = createHandoffHandlers({ handoff: fake.service });
 
     await expect(
       handlers["handoff.start"]?.(
-        call("handoff.start", { conversationId: "c1", mode: "self", then: "document_only" }, "en"),
+        call("handoff.start", { conversationId: "c1", mode: "self", then: "document_only" }, "zh"),
       ),
-    ).rejects.toMatchObject({ code: "handoff_declined" });
+    ).rejects.toMatchObject({ code: "busy", detail: { reason: "not_idle" } });
   });
 
-  it("真失败（internal + 交接没走通）也原样抛", async () => {
+  it("参数不对照样在这里被拒（校验在返回「已经开始」之前）", async () => {
     const fake = fakeHandoff();
     fake.fail(
-      new HostError("internal", {
-        messageKey: "error.handoffFailed",
-        params: { reason: "写不出文档" },
+      new HostError("invalid_params", {
+        params: { field: "mode" },
+        detail: { field: "mode", value: "prune" },
       }),
     );
     const handlers = createHandoffHandlers({ handoff: fake.service });
 
     await expect(
       handlers["handoff.start"]?.(
-        call("handoff.start", { conversationId: "c1", mode: "summary", then: "document_only" }, "en"),
+        call(
+          "handoff.start",
+          { conversationId: "c1", mode: "prune" as unknown as "self", then: "document_only" },
+          "en",
+        ),
       ),
-    ).rejects.toMatchObject({ code: "internal", messageKey: "error.handoffFailed" });
+    ).rejects.toMatchObject({ code: "invalid_params" });
   });
 
   it("文档列表按项目取，原样交回", async () => {

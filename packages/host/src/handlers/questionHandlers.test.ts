@@ -61,7 +61,7 @@ async function setup(): Promise<Harness> {
   const repository = new QuestionRepository(db);
   const questions = new QuestionService({
     questions: repository,
-    handoff: { start: async () => ({ newConversationId: "c2" }) },
+    handoff: { start: async () => ({ started: true }) },
     now: () => 1_700_000_000_000,
   });
   return { dir, db, questions, repository };
@@ -106,13 +106,13 @@ describe("question.* 接线", () => {
       call("question.answer", { questionId: asked.id, value: "decline" }, "en", "conn-42"),
     );
     expect(answered?.question.answer).toMatchObject({ value: "decline", answeredBy: "conn-42" });
-    expect(answered?.effects).toEqual({ handoffStarted: false, newConversationId: null });
+    expect(answered?.effects).toEqual({ handoffStarted: false });
 
     const stored = await harness.repository.get(asked.id);
     expect(stored?.state).toBe("answered");
   });
 
-  it("答「自交接」时把副作用带回来", async () => {
+  it("答「自交接」时把「触发了交接」这一格带回来（不等它跑完）", async () => {
     const handlers = createQuestionHandlers({ questions: harness.questions });
     const asked = await harness.questions.askHandoff({
       conversationId: "c1",
@@ -122,7 +122,7 @@ describe("question.* 接线", () => {
     const answered = await handlers["question.answer"]?.(
       call("question.answer", { questionId: asked.id, value: "self" }, "en"),
     );
-    expect(answered?.effects).toEqual({ handoffStarted: true, newConversationId: "c2" });
+    expect(answered?.effects).toEqual({ handoffStarted: true });
   });
 
   it("错误原样抛给接线层（HostError 由它渲染）", async () => {

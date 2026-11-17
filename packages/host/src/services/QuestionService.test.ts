@@ -41,7 +41,7 @@ interface Harness {
   guard: { overGuard: boolean };
   handoffCalls: HandoffCall[];
   /** 交接替身这一轮的行为（用例可以换掉它来演「取消」「失败」） */
-  handoffBehaviour: { run: () => Promise<{ newConversationId: string | null }> };
+  handoffBehaviour: { run: () => Promise<{ started: true }> };
   events: Array<{ name: string; payload: unknown }>;
   clock: { value: number };
 }
@@ -60,8 +60,8 @@ function makeHarness(): Harness {
   const events: Array<{ name: string; payload: unknown }> = [];
   const clock = { value: 1_700_000_000_000 };
 
-  const handoffBehaviour: { run: () => Promise<{ newConversationId: string | null }> } = {
-    run: async () => ({ newConversationId: "c2" }),
+  const handoffBehaviour: { run: () => Promise<{ started: true }> } = {
+    run: async () => ({ started: true }),
   };
 
   const make = (): QuestionService =>
@@ -262,7 +262,7 @@ describe("多端看到同一个问题（D22 / F-I9）", () => {
 
     const again = await harness.otherConnection.answer({ questionId: id, value: "summary" });
     expect(again.question.answer?.value).toBe("self");
-    expect(again.effects).toEqual({ handoffStarted: false, newConversationId: null });
+    expect(again.effects).toEqual({ handoffStarted: false });
     expect(harness.handoffCalls).toHaveLength(1);
   });
 
@@ -274,7 +274,7 @@ describe("多端看到同一个问题（D22 / F-I9）", () => {
 });
 
 describe("答完之后接着往下走（D22）", () => {
-  it("选「自交接」就当场开始交接，并把新对话 id 带回来", async () => {
+  it("选「自交接」就当场开始交接（回执只说触发了它）", async () => {
     const id = await askHandoff(harness);
     const answered = await harness.service.answer(
       { questionId: id, value: HANDOFF_OPTION_SELF },
@@ -289,7 +289,8 @@ describe("答完之后接着往下走（D22）", () => {
     });
     // 交接回合说的是这条连接的语言
     expect(harness.handoffCalls[0]?.language).toBe("zh");
-    expect(answered.effects).toEqual({ handoffStarted: true, newConversationId: "c2" });
+    // 回执只有「触发了交接」：文档写到哪、有没有降级走通知（PRD 4.9）
+    expect(answered.effects).toEqual({ handoffStarted: true });
   });
 
   it("选「独立摘要」用 summary 那一档", async () => {
@@ -302,23 +303,11 @@ describe("答完之后接着往下走（D22）", () => {
     const id = await askHandoff(harness);
     const answered = await harness.service.answer({ questionId: id, value: HANDOFF_OPTION_DECLINE });
     expect(harness.handoffCalls).toHaveLength(0);
-    expect(answered.effects).toEqual({ handoffStarted: false, newConversationId: null });
+    expect(answered.effects).toEqual({ handoffStarted: false });
     expect(answered.question.state).toBe("answered");
   });
 
-  it("用户取消交接不算失败：问题已答、没有新对话（F-D7）", async () => {
-    harness.handoffBehaviour.run = async () => {
-      const { HostError } = await import("../wire/errors.js");
-      throw new HostError("handoff_declined", { detail: { reason: "cancelled" } });
-    };
-    const id = await askHandoff(harness);
-    const answered = await harness.service.answer({ questionId: id, value: HANDOFF_OPTION_SELF });
-
-    expect(answered.question.state).toBe("answered");
-    expect(answered.effects).toEqual({ handoffStarted: false, newConversationId: null });
-  });
-
-  it("交接真的失败时把错误抛出去（不能假装答完就没事）", async () => {
+  it("交接入口当场就拒（参数不对这类）时照样抛出去：不能假装答完就没事", async () => {
     harness.handoffBehaviour.run = async () => {
       const { HostError } = await import("../wire/errors.js");
       throw new HostError("internal", { messageKey: "error.handoffFailed", params: { reason: "x" } });
@@ -420,7 +409,7 @@ describe("生命周期（D22：有状态、可持久化）", () => {
 
       const service = new QuestionService({
         questions: new QuestionRepository(own),
-        handoff: { start: async () => ({ newConversationId: "c2" }) },
+        handoff: { start: async () => ({ started: true }) },
       });
       const asked = await service.askHandoff({
         conversationId: "c1",

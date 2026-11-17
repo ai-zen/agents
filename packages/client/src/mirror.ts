@@ -1,5 +1,6 @@
 /**
- * 一段对话的**镜像**：按到达的事件把 `messages` 重建出来，另外记住四格里的那一格。
+ * 一段对话的**镜像**：按到达的事件把 `messages` 重建出来，另外记住四格里的那一格、
+ * 子 agent 名册与交接态。
  *
  * ## 为什么要镜像，以及它凭什么与宿主逐字一致
  *
@@ -14,11 +15,16 @@
  * **不自己写**这套规则，直接调 core 的 `applyChunk`：宿主跑 agent 时攒消息用的就是它，同一份
  * 函数在两边跑，攒出来的那条消息与宿主存下来的逐字一致。这就是「完美镜像」的全部保证。
  *
- * ## 只管两样东西
+ * ## 只管这三样东西
  *
  * ① `messages`：主线一栏 + 按 `toolCallId` 归好的子 Agent 各栏；
  * ② 四格 `status`（忙 / 闲 / 暂停 / 死），来自 `state` 事件；还没收到事件时用
- *    `conversation.state` 的现读值初始化。
+ *    `conversation.state` 的现读值初始化；
+ * ③ `conversation.state` 的另外两格：子 agent **名册**（只用来铺栏）与**交接态**
+ *    （非空即「正在交接」）。
+ *
+ * 子 agent 那一栏的消息**一律来自事件**（每条消息事件都带 `toolCallId`）：子 agent 不入库，
+ * 也就没有第二个地方可以补 —— 重连之后靠名册把栏铺回来，内容靠之后的事件继续长。
  *
  * 用量**不在这里**：每条消息自带 `usage`，要显示就自己求和（core 的 `sumUsage`）——客户端不
  * 为了用量再养一条事件与一份汇总，那两份东西与消息上的事实迟早对不上。
@@ -31,7 +37,12 @@
  */
 
 import { applyChunk } from "@ai-zen/agents-core";
-import type { AgentNS, ConversationStatus, EventPayload } from "@ai-zen/agents-host";
+import type {
+  AgentNS,
+  ConversationState,
+  ConversationStatus,
+  EventPayload,
+} from "@ai-zen/agents-host";
 
 /**
  * 与镜像有关的一条事件（事件名 + 载荷，判别结构）。
@@ -75,6 +86,18 @@ export interface SubAgentColumn {
   messages: readonly AgentNS.Message[];
 }
 
+/**
+ * 名册上的一行：哪一个子 agent、叫什么、跑到哪一格了（`conversation.state.subAgents` 原样）。
+ *
+ * 它只用来**铺栏**（重连之后一次问清有哪些栏），栏里的消息一律来自事件（`toolCallId`）——
+ * 子 agent 的消息不入库，也就没有第二个地方可以补。
+ */
+export interface SubAgentFact {
+  toolCallId: string;
+  name: string;
+  state: AgentNS.AgentState | "ended";
+}
+
 /** 镜像的一份只读样子（给界面与用例看，不是另一份数据） */
 export interface MirrorSnapshot {
   conversationId: string;
@@ -83,6 +106,10 @@ export interface MirrorSnapshot {
   messages: readonly AgentNS.Message[];
   /** 按 `toolCallId` 归好的子 Agent 各栏 */
   subAgents: SubAgentColumn[];
+  /** 名册（现读的那一份；没读过就是空） */
+  roster: SubAgentFact[];
+  /** 非空就是「正在交接」（与四格分开：交接期间这段照旧是忙 / 闲 / 暂停） */
+  handoff: { since: string } | null;
 }
 
 /**
@@ -105,12 +132,14 @@ function chunkOf(delta: AgentNS.Delta): Chunk {
   return { choices: [{ index: 0, delta, finish_reason: null }] } as unknown as Chunk;
 }
 
-/** 一段对话的镜像：主线一栏、子 Agent 各一栏、四格里那一格 */
+/** 一段对话的镜像：主线一栏、子 Agent 各一栏、四格里那一格，外加名册与交接态 */
 export class ConversationMirror {
   readonly conversationId: string;
   private statusValue: ConversationStatus;
   private main: AgentNS.Message[] = [];
   private readonly columns = new Map<string, AgentNS.Message[]>();
+  private rosterValue: SubAgentFact[] = [];
+  private handoffValue: { since: string } | null = null;
   /**
    * 「这一条是从快照里来的」—— 只在打开对话的那一小段时间有意义。
    *
@@ -128,6 +157,16 @@ export class ConversationMirror {
   /** 四格里的那一格 */
   get status(): ConversationStatus {
     return this.statusValue;
+  }
+
+  /** 名册（现读的那一份；客户端只用它铺栏） */
+  get roster(): readonly SubAgentFact[] {
+    return this.rosterValue;
+  }
+
+  /** 正在交接就是它的开始时刻；不在交接就是 `null` */
+  get handoff(): { since: string } | null {
+    return this.handoffValue;
   }
 
   /** 主线消息 */
@@ -150,6 +189,8 @@ export class ConversationMirror {
         toolCallId,
         messages: [...messages],
       })),
+      roster: [...this.rosterValue],
+      handoff: this.handoffValue,
     };
   }
 
@@ -164,10 +205,29 @@ export class ConversationMirror {
   }
 
   /**
-   * 整段替换主线（`message.list` 的全量，或重连时本地最后一条 id 已经不在）。
+   * 收下 `conversation.state` 的三格（四格里的那一格 + 名册 + 交接态）。
+   *
+   * 名册只**加栏、不删栏**：它说的是「这一段此刻有哪几个子 agent」，而栏里的消息是事件一条
+   * 一条攒起来的。名册被清空（下一批开始了）不等于那些话没说过 —— 所以已经攒下的栏原样留着。
+   *
+   * 交接态非空就是「正在交接」：界面要把它与四格分开显示（交接期间输入框拦住、只留中断）。
+   * 它什么时候消失由 `memory_replaced` 那条事件带着重拉决定 —— 交接收尾时宿主会推它。
+   */
+  applyReadout(state: Pick<ConversationState, "status" | "subAgents" | "handoff">): void {
+    this.statusValue = state.status;
+    this.rosterValue = [...state.subAgents];
+    this.handoffValue = state.handoff;
+    // 名册上有的栏先摆出来（空栏也是一栏），之后到达的事件往里面长
+    for (const fact of state.subAgents) this.columnOf(fact.toolCallId);
+  }
+
+  /**
+   * 整段替换主线（`message.list` 的全量、重连时本地最后一条 id 已经不在、`memory_replaced`
+   * 之后的重拉）。
    *
    * 子 Agent 那几栏**不动**：`message.list` 不带 `toolCallId` 时只回主线，把它们清掉等于把
-   * 手里已有的那几栏凭空丢掉；真要重取某一栏，单独 `message.list { toolCallId }` 走一次。
+   * 手里已有的那几栏凭空丢掉；而子 agent 的消息不入库，**没有**「再拉一次某一栏」这回事
+   * （重连之后靠名册把栏铺回来，内容靠之后的事件继续长）。
    */
   replaceAll(messages: readonly AgentNS.Message[]): void {
     this.main = [...messages];

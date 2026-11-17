@@ -93,14 +93,13 @@ export interface QuestionAnswerContext {
 /**
  * 答完之后的副作用入口（交接那一步）。
  *
- * 类型故意只声明本服务用得到的那一部分（`newConversationId`）：交接服务返回的字段比这多，
+ * 类型故意只声明本服务用得到的那一部分（`started`）：交接服务返回的字段比这多，
  * 结构上照样满足，免得两个服务为了一个字段互相 import 具体类。
+ *
+ * 它**不等那一趟跑完**：交接一旦开始就回「开始了」，文档写到哪、有没有降级走通知（PRD 4.9）。
  */
 export interface QuestionHandoffPort {
-  start(
-    params: HandoffStartParams,
-    language?: Language,
-  ): Promise<{ newConversationId: string | null }>;
+  start(params: HandoffStartParams, language?: Language): Promise<{ started: true }>;
 }
 
 /** 硬线判定口：这段对话现在是不是已经过了硬线（PRD F-D1 / D23） */
@@ -473,7 +472,10 @@ export class QuestionService {
     }
 
     const conversationId = question.conversationId;
-    if (this.runtime?.status(conversationId) === "busy") {
+    // 非空闲就拒：交接要它闲着（`handoff.start` 的判据是 `not_idle`），所以这里也不能只在
+    // 「忙」时拒 —— 暂停 / 没有驱动者时把题标成已答、再让交接被拒，用户会看到一次失败而题没了
+    const state = this.runtime?.status(conversationId);
+    if (state !== undefined && state !== "idle") {
       throw new HostError("busy", {
         detail: { conversationId, questionId: question.id, reason: "conversation_busy" },
       });
@@ -522,6 +524,9 @@ export class QuestionService {
    *
    * 只在问题已经落成 `answered` 之后才跑：答不下去的那些情况（越线、对话在跑）
    * 在写状态之前就返回了，所以这里不需要再判断一遍。
+   *
+   * 这里**不等交接跑完**：交接一旦开始，回执只有「触发了它」这一格。用户要看的是结果
+   * （交接开始了 / 降级了 / 取消了），那走通知（PRD 4.9），不往答题的回执里塞。
    */
   private async applyEffects(
     input: {
@@ -536,23 +541,15 @@ export class QuestionService {
     if (input.kind !== "handoff" || input.handoffMode === null || !this.handoff) {
       return noEffects();
     }
-    try {
-      const started = await this.handoff.start(
-        {
-          conversationId: input.conversationId,
-          mode: input.handoffMode,
-          then: "new_conversation",
-        },
-        language,
-      );
-      return { handoffStarted: true, newConversationId: started.newConversationId };
-    } catch (error) {
-      // 用户取消了交接（F-D7：回到交接前，不重试、不报错）：问题已答，只是没有交出文档
-      if (HostError.is(error) && error.code === "handoff_declined") {
-        return noEffects();
-      }
-      throw error;
-    }
+    await this.handoff.start(
+      {
+        conversationId: input.conversationId,
+        mode: input.handoffMode,
+        then: "new_conversation",
+      },
+      language,
+    );
+    return { handoffStarted: true };
   }
 
   private async requireQuestion(questionId: string): Promise<Question> {
@@ -570,7 +567,7 @@ export class QuestionService {
 
 /** 没有副作用 */
 function noEffects(): QuestionAnswerResult["effects"] {
-  return { handoffStarted: false, newConversationId: null };
+  return { handoffStarted: false };
 }
 
 /** 这个候选值要不要交接、用哪种执行者（只有交接问题有这一层语义） */

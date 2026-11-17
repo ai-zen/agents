@@ -1,5 +1,5 @@
 /**
- * `conversation.*`：一段对话的身份、历史，以及「投递一句 / 中断 / 现读」这三个动作。
+ * `conversation.*`：一段对话的身份、历史，以及「投递一句 / 中断 / 清空待办 / 现读」这几个动作。
  *
  * 这里只做「参数 → 交给服务或运行时 → 把结果翻译成契约形状」。业务判断不在这里：
  * 会话行归 `ConversationService`，投递 / 中断 / 四格归 `ChatRunner`，素材选路归
@@ -88,6 +88,11 @@ export function createConversationHandlers(deps: ConversationHandlerDeps): Handl
       await readState(deps, context.params.conversationId),
 
     "conversation.abort": async (context) => await abort(deps, context.params),
+
+    // 清空待办：直接转 core（`agent.clearInbox()`），本层不加任何判断
+    "conversation.clearInbox": async (context) => ({
+      cleared: deps.runner.clearInbox(context.params.conversationId),
+    }),
 
     "conversation.setThinking": async (context) => {
       // 档位表先刷新一次再改：改完读回的「展开后的参数」要用当前表
@@ -212,6 +217,10 @@ async function abort(
  * 会话不存在（连草稿都没有）仍按老口径报 `not_found` —— 这里先问一次服务层，就是为了让
  * 「这段对话没了」与「这段对话闲着」是两种答复。
  *
+ * 另外两格同样是现读，同样不落库、不是会话字段：`subAgents`（子 agent 名册，客户端据此铺栏，
+ * 之后按事件增量）与 `handoff`（非空就是「正在交接」，与四格分开显示 —— 交接期间这段对话照旧
+ * 是忙 / 闲 / 暂停）。`conversation.list` 不带它们：侧栏不需要为每段对话去问一次驱动者。
+ *
  * 消息本体不在这里给：客户端打开一段对话走的是「先订阅，再 `message.list` 拉全量」。
  */
 async function readState(
@@ -219,11 +228,14 @@ async function readState(
   conversationId: string,
 ): Promise<{ state: ConversationState }> {
   await deps.conversations.get({ conversationId });
-  const { status, inbox } = deps.runner.state(conversationId);
+  // 四格 / 待办 / 子 agent 名册 / 交接态：四样都是现读（agent 与那两张现场表），不落库
+  const { status, inbox, subAgents, handoff } = deps.runner.state(conversationId);
   const state: ConversationState = {
     conversationId,
     status,
     inbox,
+    subAgents,
+    handoff,
     at: deps.now(),
   };
   return { state };

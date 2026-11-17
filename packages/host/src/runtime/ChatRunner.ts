@@ -1601,6 +1601,22 @@ export class ChatRunner {
     return true;
   }
 
+  /**
+   * 清空这段对话的待办，返回清掉几条（core 的 `agent.clearInbox()`）。
+   *
+   * 待办只有两处，与 {@link ChatRunner.state} 读的是同一对：agent 身上那个队列，以及装配
+   * 窗口里还没推进去的那几条。两处一起清 —— 读完马上清与清完再看是同一件事。
+   *
+   * 没有 agent 就没有队列可清：回 `0`，不是错误（那段对话真的一条待办都没有）。
+   */
+  clearInbox(conversationId: string): number {
+    const buffered = this.assemblingBuffers.get(conversationId)?.length ?? 0;
+    if (buffered > 0) this.assemblingBuffers.delete(conversationId);
+    const agent = this.options.agents.get(conversationId);
+    const pending = agent ? agent.clearInbox().length : 0;
+    return buffered + pending;
+  }
+
   // ---- 现读 ----
 
   /**

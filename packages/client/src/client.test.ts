@@ -367,6 +367,105 @@ describe("镜像：打开一段对话", () => {
     expect(mirror.messages).toEqual([]);
     expect(client.mirror("c1")).toBeUndefined();
   });
+  it("`conversation.state` 的两格进镜像：名册铺栏、交接态非空即「正在交接」", async () => {
+    const host = await startFake({
+      methods: {
+        "conversation.state": () => ({
+          state: conversationState("c1", {
+            status: "paused",
+            subAgents: [{ toolCallId: "call-1", name: "explore", state: "busy" }],
+            handoff: { since: "2026-01-01T00:00:05.000Z" },
+          }),
+        }),
+        "message.list": () => listed("c1", []),
+      },
+    });
+    const client = await connect(host);
+
+    const mirror = await client.open("c1");
+    expect(mirror.status).toBe("paused");
+    // 名册那一条先把栏摆出来（内容之后靠事件长）
+    expect(mirror.roster).toEqual([{ toolCallId: "call-1", name: "explore", state: "busy" }]);
+    expect(mirror.subAgent("call-1")).toEqual([]);
+    // 非空就是「正在交接」（与四格分开：这段照旧是暂停格）
+    expect(mirror.handoff).toEqual({ since: "2026-01-01T00:00:05.000Z" });
+
+    // 之后到达的消息事件按 toolCallId 归进那一栏，**不调 message.list { toolCallId }**
+    host.push("message.added", {
+      conversationId: "c1",
+      message: assistantMessage("s1", "子 agent 说的话"),
+      toolCallId: "call-1",
+      at: "2026-01-01T00:00:06.000Z",
+    });
+    await waitFor(() => mirror.subAgent("call-1").length === 1);
+    expect(mirror.messages).toEqual([]);
+    expect(host.frames.some((frame) => frame.method === "message.list")).toBe(true);
+    expect(
+      host.frames.filter(
+        (frame) =>
+          frame.method === "message.list" &&
+          (frame.params as { toolCallId?: string }).toolCallId !== undefined,
+      ),
+    ).toEqual([]);
+  });
+
+  it("`memory_replaced` → 全量整段替换镜像，顺带把「正在交接」收掉", async () => {
+    // 这段记忆「换过之后」的样子，由假宿主在下面换掉
+    let current = [userMessage("m1", "旧记忆里的那句")];
+    let state = conversationState("c1", {
+      subAgents: [],
+      handoff: { since: "2026-01-01T00:00:05.000Z" },
+    });
+    const host = await startFake({
+      methods: {
+        "conversation.state": () => ({ state }),
+        "message.list": () => listed("c1", current),
+      },
+    });
+    const client = await connect(host);
+    const mirror = await client.open("c1");
+    expect(mirror.messages.map((message) => message.id)).toEqual(["m1"]);
+    expect(mirror.handoff).not.toBeNull();
+
+    // 交接收尾：记忆换过了 —— 旧的没了，交接期间那几条也不在库里
+    current = [userMessage("m2", "换过之后的第一句")];
+    state = conversationState("c1");
+    host.push("conversation.changed", {
+      conversationId: "c1",
+      workspaceId: "w1",
+      change: "memory_replaced",
+      at: "2026-01-01T00:00:09.000Z",
+    });
+
+    await waitFor(() => mirror.messages.length === 1 && mirror.messages[0]?.id === "m2");
+    expect(mirror.handoff).toBeNull();
+    // 全量重拉（不带 after）：这是一次整段替换，不是续传
+    const pulls = host.frames.filter((frame) => frame.method === "message.list");
+    expect(pulls.at(-1)?.params).toEqual({ conversationId: "c1" });
+  });
+
+  it("别的 kind（`settings_changed`）不触发重拉", async () => {
+    const host = await startFake({
+      methods: {
+        "conversation.state": (params) => ({
+          state: conversationState((params as { conversationId: string }).conversationId),
+        }),
+        "message.list": () => listed("c1", [userMessage("m1", "问")]),
+      },
+    });
+    const client = await connect(host);
+    const mirror = await client.open("c1");
+
+    host.push("conversation.changed", {
+      conversationId: "c1",
+      workspaceId: "w1",
+      change: "renamed",
+      at: "2026-01-01T00:00:09.000Z",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mirror.messages.map((message) => message.id)).toEqual(["m1"]);
+    expect(host.frames.filter((frame) => frame.method === "message.list")).toHaveLength(1);
+  });
 });
 
 describe("重连：把镜像补回来", () => {

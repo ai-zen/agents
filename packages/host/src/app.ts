@@ -460,6 +460,12 @@ export class HostApp {
       messages: this.messages,
       // 刚建出来、还没发过消息的对话在库里没有行（R56）：读消息/现场时按草稿认它
       drafts: this.conversationDrafts,
+      // 列表读取只有一个来源：活着读内存，死了读库（PLAN §7）。`chatRunner` 在 §7 才造出来，
+      // 所以这里只闭包一步（调用那一刻才去拿）
+      live: {
+        messagesOf: (conversationId, options) =>
+          this.chatRunner.messagesOf(conversationId, options),
+      },
     });
     this.searchService = new SearchService({
       conversations: this.conversations,
@@ -535,11 +541,23 @@ export class HostApp {
       conversationViews: this.conversationService,
       scopes: this.scopeRegistry,
       createAgent,
-      // 交接期间把这段对话按住（`agent.suspend()`）：写文档的那一次请求与它的记忆是同一份
+      // 入口判据读的那一格与自交接的驱动者是同一个：这一段现在挂着谁（忙 / 闲 / 暂停由它自己报）
       agents: { get: (conversationId) => this.agentRegistry.get(conversationId) },
+      // 交接态与投递两个口：挂牌期间只跳过写库、事件照推；指令从投递唯一的入口进去。
+      // `chatRunner` 在 §7 才造出来，所以这里闭包住 `this`，调用那一刻才去拿（同一个理由：
+      // 平级会话那两个口也是这么接的）
+      runner: {
+        beginHandoff: (conversationId) => this.chatRunner.beginHandoff(conversationId),
+        endHandoff: (conversationId) => this.chatRunner.endHandoff(conversationId),
+        deliver: (conversationId, input) => this.chatRunner.deliver(conversationId, input),
+      },
       questions: this.questions,
       notices: this.noticeService,
       emit: (name, payload) => this.emitEvent(name, payload),
+      // 后台那一趟里不该打断交接的差错（通知没写进去、提交之后开新对话失败）落日志
+      onError: (error, context) => {
+        this.logger.error("交接出错", { context, error: describeError(error) });
+      },
       now: () => this.clock.now(),
     });
     this.questionService = new QuestionService({

@@ -7,6 +7,18 @@
  * id 取，不另拼一份快照）、F-D9（会话创建时那条 `hidden` 的 cwd 消息默认不出网）、
  * R21 / R22（消息原样用 core 的 `AgentNS.Message`，不额外挂时间戳这类外壳字段）。
  *
+ * ## 列表读取只有一个来源：活着读内存，死了读库（PLAN §7）
+ *
+ * 有驱动者就从它的 `messages` 现读（那才是真身，库里那份可能滞后几百毫秒、也可能压根没有 ——
+ * 比如交接正在写的那几条），没有驱动者才读数据库（那时库就是它的全部）。**没有「正在交接
+ * 所以改读库」这种例外**：交接期间的草稿照样看得见，那正是「在做什么要正常回显」。
+ *
+ * `after` / `around` / `includeHidden` 这三种取法因此要在**两个来源上算同一套语义**：
+ * 主线的取法在 `StoredMessage[]` 与 `AgentNS.Message[]` 上各算一次（`windowAround` 与
+ * {@link MemoryView}），子 Agent 那一栏同理 —— 但它的内存来源是「父的名册 → 那个子 agent」。
+ *
+ * **读路径上什么都不写**：不补、不删、不修 —— 修复只在装配那一刻（`ChatRunner.reconcile`）做。
+ *
  * `toAgentMessage` 是这个仓库里「存储行 → core 消息」的唯一一份实现：对话服务算用量、判断
  * 历史里有没有图也要走它，免得同一行在两处被读出两个样子。
  *
@@ -39,6 +51,26 @@ export interface MessageServiceDeps {
   messages: MessageRepository;
   /** 草稿注册表（R56）；不注入时只认库里已有的行 */
   drafts?: MessageDraftLookup;
+  /**
+   * 「这段对话此刻在内存里长什么样」的口（`ChatRunner.messagesOf`，结构上满足）。
+   *
+   * 不注入 = 一律读库（用例里的窄替身）。生产一定注入：一段对话活着的时候，库里的那份是
+   * 滞后的一份，内存里那份才是真身。
+   */
+  live?: LiveMessageLookup;
+}
+
+/**
+ * 读内存的那一个口（{@link MessageServiceDeps.live}）。
+ *
+ * 返回值是**数组本身**（`agent.messages`），不是拷贝；`null` 表示「我这边没有」——
+ * 没有驱动者，或者名册上没有这个子 agent —— 调用方据此回落到库里。
+ */
+export interface LiveMessageLookup {
+  messagesOf(
+    conversationId: string,
+    options?: { toolCallId?: string },
+  ): AgentNS.Message[] | null;
 }
 
 /** 角色取值表：库里的字符串认不出来时归 `Unknown`，不猜 */
@@ -209,7 +241,11 @@ const AROUND_WINDOW = 40;
  * 前面先给一半（`floor((size-1)/2)` 条），剩下的额度全给后面；命中靠近两端时窗口自然短一些。
  * 命中不在 `rows` 里时回 `null` —— 调用方给空页（这条可能刚被撤回/换过库）。
  */
-function windowAround(rows: StoredMessage[], around: string, size: number): StoredMessage[] | null {
+function windowAround<T extends { id: string }>(
+  rows: T[],
+  around: string,
+  size: number,
+): T[] | null {
   const index = rows.findIndex((row) => row.id === around);
   if (index < 0) return null;
   const before = Math.floor((size - 1) / 2);
@@ -218,19 +254,37 @@ function windowAround(rows: StoredMessage[], around: string, size: number): Stor
   return rows.slice(start, end);
 }
 
+/** 内存那一份的取法（与库那一份的语义逐条相同，只是算在 `AgentNS.Message[]` 上） */
+interface MemoryView {
+  includeHidden: boolean;
+  after: string | undefined;
+  around: string | undefined;
+  /**
+   * 这一份是不是某个子 Agent 的全部消息。
+   *
+   * 是的话 `after` 只用来定 `anchor`：子 Agent 那一栏的取法一直是「那个子 agent 的全部消息」，
+   * `after` 不切它（与库那一份的 `listByParentToolCallId` 同一口径）。
+   */
+  column: boolean;
+}
+
 export class MessageService {
   private readonly conversations: ConversationRepository;
   private readonly messages: MessageRepository;
   private readonly drafts?: MessageDraftLookup;
+  private readonly live?: LiveMessageLookup;
 
   constructor(deps: MessageServiceDeps) {
     this.conversations = deps.conversations;
     this.messages = deps.messages;
     this.drafts = deps.drafts;
+    this.live = deps.live;
   }
 
   /**
    * 读一段对话的消息（PLAN A12 / PRD F-C6）。
+   *
+   * 取法只有一套，**两个来源各算一次**（活着读内存、死了读库），语义逐条相同：
    *
    * - 不给 `after`、也不给 `around`：整段历史；
    * - 给了 `after` 且该 id 就在这段对话里：**从这条开始**（含它，内容是最新的，可能是流式中那条的
@@ -242,11 +296,9 @@ export class MessageService {
    *   `around` 与 `after` 同时给时**只认 `around`**：两者是两种取法（一个「从这里往下」、一个
    *   「围绕这里」），混在一起没有唯一答案。
    *
-   * `toolCallId` 取某个子 Agent 自己的消息（PRD F-I7）：它按消息落库时记下的
-   * `parentToolCallId` 取（那次委派的工具调用 id），走的是另一条查询 —— 子 Agent 的消息不在
-   * 主线历史里（`listByConversation` 只给主线），所以两个参数同时给时 `after` 只用来定 `anchor`，
-   * 结果集仍是那个子 Agent 的全部消息。`around` 同此：`toolCallId` 决定读哪一段，`around`
-   * 只在那一段里定位。
+   * `toolCallId` 取某个子 Agent 自己的消息（PRD F-I7）：子 Agent 的消息不在主线历史里，所以
+   * 两个参数同时给时 `after` 只用来定 `anchor`，结果集仍是那个子 Agent 的全部消息。`around`
+   * 同此：`toolCallId` 决定读哪一段，`around` 只在那一段里定位。
    *
    * `hidden` 的消息（会话创建时那条 cwd 消息、交接摘要）默认不回：core 的这个字段就是
    * 「这条不给人看」。要看到它们（排查、或客户端显式要）就传 `includeHidden`。
@@ -256,6 +308,23 @@ export class MessageService {
     const options = { includeHidden: params.includeHidden === true };
     const around = idParam(params.around);
     const after = idParam(params.after);
+    const toolCallId = idParam(params.toolCallId);
+
+    // 内存优先（PLAN §7）：活着读内存，死了读库。`null` = 我这边没有 —— 没有驱动者，
+    // 或者名册上已经没有这个子 agent（那一批翻过去了 / 进程重启过）
+    const live =
+      this.live?.messagesOf(
+        conversation.id,
+        toolCallId === undefined ? undefined : { toolCallId },
+      ) ?? null;
+    if (live !== null) {
+      return this.fromMemory(live, conversation.id, {
+        includeHidden: options.includeHidden,
+        after,
+        around,
+        column: toolCallId !== undefined,
+      });
+    }
 
     // `around` 优先：它给了就完全不管 `after`（连 `anchor` 也不由 `after` 定）
     let anchor: string | null = null;
@@ -266,8 +335,9 @@ export class MessageService {
       }
     }
 
-    const toolCallId = idParam(params.toolCallId);
     if (toolCallId !== undefined) {
+      // 库里那一条只服务旧行：这个仓库现在没有「子 agent 的消息落库」的生产者
+      // （子 agent 不入库，`CORE.md` §17），但读法仍然成立
       const delegated = await this.messages.listByParentToolCallId(
         conversation.id,
         toolCallId,
@@ -283,6 +353,40 @@ export class MessageService {
       options,
     );
     return this.respond(conversation.id, rows, anchor, around);
+  }
+
+  /**
+   * 内存那一份的取法：与库那一份逐条同义，只是算在 `agent.messages` 上。
+   *
+   * 顺序就是数组顺序（内存里没有第二份顺序，不排 `seq`）；`hidden` 默认滤掉；`after` 给
+   * 「它 + 之后全部」，那条不在就给全量；`around` 给一窗，不在就给空页 + 空 `anchor`。
+   */
+  private fromMemory(
+    messages: AgentNS.Message[],
+    conversationId: string,
+    view: MemoryView,
+  ): MessageListResult {
+    const visible = view.includeHidden
+      ? messages
+      : messages.filter((message) => message.hidden !== true);
+
+    if (view.around !== undefined) {
+      const window = windowAround(visible, view.around, AROUND_WINDOW);
+      if (window === null) return { conversationId, anchor: null, messages: [] };
+      return { conversationId, anchor: view.around, messages: [...window] };
+    }
+
+    if (view.after !== undefined) {
+      const index = visible.findIndex((message) => message.id === view.after);
+      if (index >= 0) {
+        return {
+          conversationId,
+          anchor: view.after,
+          messages: view.column ? [...visible] : visible.slice(index),
+        };
+      }
+    }
+    return { conversationId, anchor: null, messages: [...visible] };
   }
 
   /** 把一次读到的行拼成出参；`around` 给了就收成一窗（命中不在里面就是空页） */

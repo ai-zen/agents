@@ -108,6 +108,30 @@ describe("四条到达事件", () => {
     mirror.apply({ kind: "message.added", payload: addedEvent(assistantMessage("s1", "子"), "call-1") });
     expect(mirror.lastMessageId()).toBe("m1");
   });
+
+  it("applyReadout 收下名册与交接态，名册只加栏不删栏", () => {
+    const mirror = mirrorOf();
+    mirror.applyReadout({
+      status: "busy",
+      subAgents: [{ toolCallId: "call-1", name: "explore", state: "busy" }],
+      handoff: { since: AT },
+    });
+
+    expect(mirror.status).toBe("busy");
+    expect(mirror.roster).toEqual([{ toolCallId: "call-1", name: "explore", state: "busy" }]);
+    // 名册上有的栏先摆出来（还是空的），之后的事件往里面长
+    expect(mirror.subAgent("call-1")).toEqual([]);
+    expect(mirror.handoff).toEqual({ since: AT });
+
+    mirror.apply({ kind: "message.added", payload: addedEvent(assistantMessage("s1", "子"), "call-1") });
+    expect(mirror.subAgent("call-1").map((message) => message.id)).toEqual(["s1"]);
+
+    // 下一批开始了：名册空了，但说过的话还在那一栏里
+    mirror.applyReadout({ status: "idle", subAgents: [], handoff: null });
+    expect(mirror.roster).toEqual([]);
+    expect(mirror.handoff).toBeNull();
+    expect(mirror.subAgent("call-1").map((message) => message.id)).toEqual(["s1"]);
+  });
 });
 
 describe("快照的两种接法", () => {

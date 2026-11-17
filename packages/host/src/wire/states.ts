@@ -97,11 +97,33 @@ export interface InboxItem {
 }
 
 /**
- * 一段对话此刻的读数：落在哪一格、队里还压着什么、读数的时刻。
+ * 子 agent 名册的一行（{@link ConversationState.subAgents}）。
+ *
+ * 子 agent 不是一段会话、不入库（`CORE.md` §17）：它的话只在它自己那个对象里，名册在父
+ * 身上。所以这一栏只能是**现读**，没有第二个来源可读。
+ *
+ * `state` 三格之外多一个 `ended`：一次性子 agent 跑完之后它自己那一格会停在 `idle`，把
+ * 已经散场的东西报成「闲」等于告诉界面它还在 —— 名册上有了结束时刻就是 `ended`。
+ */
+export interface SubAgentFact {
+  /** 委派那次工具调用的 id（客户端靠它分栏，也是 `message.list { toolCallId }` 的入参） */
+  toolCallId: string;
+  /** 这次委派用的工具名 */
+  name: string;
+  /** 子 agent 自己的三格，或者「已经散场」 */
+  state: AgentNS.AgentState | "ended";
+}
+
+/**
+ * 一段对话此刻的读数：落在哪一格、队里还压着什么、名册上有哪些子 agent、是不是正在交接。
  *
  * 重连的客户端拿这一份把界面的四格与待办摆回原样，再按 `message.list`（带 `after`）补齐消息。
  * 更细的阶段（请求中 / 思考中 / 输出中）与用量**不在这里**：客户端按到达的事件自己推、
  * 按消息上的 `usage` 自己合计。
+ *
+ * `subAgents` / `handoff` 两格与前三格同一个口径：**现读**，不落库、不是会话字段、不推算。
+ * 它们只在这一个方法上出现 —— `conversation.list`（侧栏）不带，因为侧栏不需要为每段对话
+ * 去问一次它的驱动者。
  */
 export interface ConversationState {
   conversationId: string;
@@ -115,6 +137,21 @@ export interface ConversationState {
    * 搬原文等于每次读数都把附件搬一遍。
    */
   inbox: InboxItem[];
+  /**
+   * 这段对话此刻派出去的子 agent（现读父的名册）。
+   *
+   * 死了就是空数组：名册跟着驱动者走，它没了，那些话也一起没了。客户端拿它铺子 agent 那一栏，
+   * 之后按事件（`toolCallId`）增量重建每一栏 —— 那一栏的消息**不从 `message.list` 补**
+   * （子 agent 不入库，重连之后也只有这一份名册）。
+   */
+  subAgents: SubAgentFact[];
+  /**
+   * 在交接态就是开始时刻；不在就是 `null`。
+   *
+   * 它不是四格里的任何一格：交接期间这段对话照旧是忙 / 闲 / 暂停，而「正在交接」是另一件事，
+   * 界面要分开显示（交接期间输入框拦住、只留中断按钮）。
+   */
+  handoff: { since: string } | null;
   /** 这份读数的时间 */
   at: string;
 }

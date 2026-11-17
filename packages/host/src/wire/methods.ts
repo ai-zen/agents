@@ -505,6 +505,22 @@ export interface ConversationAbortResult {
 }
 
 /**
+ * `conversation.clearInbox` 入参。
+ *
+ * 待办是「已经收下、还没被取走」的那些话。**待办本身属于客户端自己的事**：有没有东西、
+ * 有几条，它从 `conversation.state.inbox` 就看得到；要清空就调这个方法，不必自己一条一条
+ * 算帐。宿主这一侧只是把它交到 core（`agent.clearInbox()`）。
+ */
+export interface ConversationClearInboxParams {
+  conversationId: string;
+}
+
+/** `conversation.clearInbox` 出参：清掉了几条（`0` = 本来就没东西，不是错误） */
+export interface ConversationClearInboxResult {
+  cleared: number;
+}
+
+/**
  * `conversation.revert` 入参（PRD F-C8 / D24）。
  *
  * 撤回到某条用户消息**之前**：其后消息硬删，被撤回的内容回填输入框（回填内容由宿主给事实）。
@@ -609,6 +625,10 @@ export interface ConversationTransientResult {
  * 「从这条开始而不是它的下一条」是故意的：重连的客户端上次拿到的最后一条可能正是流式中那条，
  * 它的内容已经变了；从它自己重新拿，就天然是「最新内容 + 之后的」。
  *
+ * **读的是它此刻的样子，不是库里的快照**（PLAN §7）：这段对话有驱动者就从它的内存读，没有
+ * 才读库。所以打开、续拉、定位这几种取法都在同一个来源上算 —— `after` / `around` /
+ * `includeHidden` 的语义不因为来源不同而变一套。
+ *
  * `toolCallId` 用来取某个子 Agent 自己的消息（PRD F-I7：子 Agent 的消息可回看）。
  *
  * `hidden` 的消息（会话创建时那条 cwd 消息、交接摘要）默认**不返回**：core 的 `hidden` 就是
@@ -675,12 +695,14 @@ export interface QuestionListResult {
 
 /**
  * `question.answer` 出参里的后续动作（PRD D22：答完就接着往下走，客户端不必再发一次请求）。
+ *
+ * 只回「触发了什么」，**不等那件事做完**：交接要不要另起驱动者、文档写到哪、有没有降级、
+ * 用了几秒 —— 都是「交接自己怎么走的」，它的载体是通知（`notice`）与 `conversation.changed`
+ * 里的 `memory_replaced`，不该憋在这个回执里。
  */
 export interface QuestionEffects {
-  /** 这道题答完后开始交接（D22：交接在对话停下之后触发） */
+  /** 这道题答完之后触发了交接（D22：交接在对话停下之后开始），已经开始了 */
   handoffStarted: boolean;
-  /** 交接顺带开出来的新对话（PRD D18：同 Workspace、同助手） */
-  newConversationId: string | null;
 }
 
 /** `question.answer` 入参（PRD D22 / F-I9：问题能被回答） */
@@ -1669,7 +1691,12 @@ export interface CompletionFilesResult {
 // handoff.*
 // ---------------------------------------------------------------------------
 
-/** 交接执行者：原 agent 自己写，或独立调用摘要（形状沿用 SDK） */
+/**
+ * 交接执行者（形状沿用 SDK）。
+ *
+ * - `self` = **自交接**：这一段对话自己的驱动者写（宿主把指令投进它的队列，它取走这一批就开写）；
+ * - `summary` = **独立交接**：另起一个一次性驱动者，拿当前记忆的副本去写，跑完即散。
+ */
 export type HandoffMode = "self" | "summary";
 
 /** 交接之后做什么：只产出文档，还是顺带开一段新对话（PRD F-D4 / F-D5 / D18） */
@@ -1708,23 +1735,22 @@ export interface HandoffStartParams {
 }
 
 /**
- * `handoff.start` 出参（PRD F-D7：降级要说明，取消不等于失败）。
+ * `handoff.start` 出参：**已经开始了**。
  *
- * `degraded` 说明这次实际退到了哪个执行者、为什么；`newConversationId` 是 `then ===
- * "new_conversation"` 时开出来的新对话（PRD D18：同 Workspace、同助手；旧对话完整保留）。
+ * 交接是一次要跑一阵的事（写文档、换记忆、旧记忆成另一段会话），而这个方法是一个 RPC ——
+ * 它有回执、要尽快返回，所以它只回「开始了吗」，不回「做完了什么样」。
+ *
+ * 文档路径、有没有降级、成功 / 取消 / 失败，全部走**通知**（`NoticeService`，PRD 4.9）与
+ * `conversation.changed` 的 `memory_replaced`（提交与回滚各一条）告知；界面要知道「现在正在
+ * 交接」就读 `conversation.state.handoff`。
+ *
+ * 这里**没有** `path` 这一格：它要等写完才有，而本方法不等写完。
  */
 export interface HandoffStartResult {
-  document: HandoffDocument;
-  /** 用户选的那一档 */
-  requestedMode: HandoffMode;
-  /** 实际用的那一档 */
-  usedMode: HandoffMode;
-  degraded: boolean;
-  /** 降级/取消的原因（成功且未降级时为空） */
-  problem: ProblemFact | null;
-  /** 交接完的旧对话（完整保留，PRD D18） */
-  conversation: ConversationView;
-  newConversationId: string | null;
+  /** 这一次交接已经开始（成功 / 取消 / 失败由通知告知，不在回执里） */
+  started: true;
+  /** 这一次交接没有「文档路径」这一格（见上），写在这里是为了让「它为什么不给路径」有处可查 */
+  path?: never;
 }
 
 /** `handoff.listDocuments` 入参（PRD F-D6：文档写进项目，可反复打磨同一份） */
@@ -1855,6 +1881,11 @@ export interface MethodMap {
   "conversation.send": { params: ConversationSendParams; result: ConversationSendResult };
   /** D14：中止是用户的显式动作（打击在途的网络请求与工具，并停在暂停那一格）。 */
   "conversation.abort": { params: ConversationAbortParams; result: ConversationAbortResult };
+  /** 清空这段对话的待办（客户端自己决定什么时候清，宿主只回清掉几条）。 */
+  "conversation.clearInbox": {
+    params: ConversationClearInboxParams;
+    result: ConversationClearInboxResult;
+  };
   /** F-C8 / D24：撤回到某条用户消息之前，其后硬删，内容回填输入框。 */
   "conversation.revert": { params: ConversationRevertParams; result: ConversationRevertResult };
   /** F-B4 / F-B8 / D20：换这段会话的模型（存会话行）+ 拒绝降级。 */
@@ -1966,7 +1997,13 @@ export interface MethodMap {
   "completion.files": { params: CompletionFilesParams; result: CompletionFilesResult };
 
   // ---- handoff.*：交接与迁移（F-D3 / F-D4 / F-D5 / F-D6 / F-D7 / D18 / D19）----
-  /** F-D4 / F-D5 / F-D3：写交接文档；可选顺带开新对话，旧对话完整保留。 */
+  /**
+   * F-D4 / F-D5 / F-D3：写交接文档；可选顺带开新对话，旧对话完整保留。
+   *
+   * **只有闲着才发起**：忙 / 暂停 / 没有 agent 一律回 `busy`（`detail.reason = "not_idle"`），
+   * 调用方等它闲了再调一次。于是交接全程不按暂停、也不替谁放行 —— 投一条指令进去，它自己
+   * 变忙、自己写完，宿主按工具结果判「写完了没有」。
+   */
   "handoff.start": { params: HandoffStartParams; result: HandoffStartResult };
   /** F-D6 / D19：项目里的交接文档清单（可反复打磨同一份）。 */
   "handoff.listDocuments": {
@@ -2021,6 +2058,7 @@ export const METHOD_NAMES = [
   "conversation.delete",
   "conversation.send",
   "conversation.abort",
+  "conversation.clearInbox",
   "conversation.revert",
   "conversation.setModel",
   "conversation.setThinking",

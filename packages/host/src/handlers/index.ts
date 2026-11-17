@@ -176,6 +176,7 @@ export function createHandlers(deps: HandlerDeps): HandlerTable {
     ...createCompletionHandlers({ completion: deps.completion }),
     ...createNoticeHandlers({ notices: deps.notices }),
     ...createQuestionHandlers({ questions: deps.questions }),
+    // 交接只有一个交给服务层的口：入口判据（先闲着才跑）在服务里，接线层不掐在途
     ...createHandoffHandlers({ handoff: deps.handoff }),
   };
 }

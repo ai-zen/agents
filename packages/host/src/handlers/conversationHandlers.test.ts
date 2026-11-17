@@ -338,6 +338,36 @@ describe("conversation.abort", () => {
   });
 });
 
+describe("conversation.clearInbox", () => {
+  it("清掉这段对话的待办，回清了几条（待办归客户端自己管）", async () => {
+    const gate: Deferred<void> = deferred();
+    const { app, conversationId } = await makeHarness({
+      createAgent: async () => new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢" }] }]),
+    });
+
+    // 第一句在跑，后两句排在待办里
+    await callMethod(app, "conversation.send", { conversationId, input: { content: "第一句" } });
+    await callMethod(app, "conversation.send", { conversationId, input: { content: "排一句" } });
+    await callMethod(app, "conversation.send", { conversationId, input: { content: "再排一句" } });
+    // 「有几条」客户端本来就能从读数的待办那一格里读到
+    expect(app.chatRunner.state(conversationId).inbox).toHaveLength(2);
+
+    const cleared = await callMethod(app, "conversation.clearInbox", { conversationId });
+    expect(cleared).toEqual({ cleared: 2 });
+    expect(app.chatRunner.state(conversationId).inbox).toEqual([]);
+
+    gate.resolve();
+    await idle(app, conversationId);
+  });
+
+  it("没有 agent 就没有待办可清：回 0，不是错误", async () => {
+    const { app, conversationId } = await makeHarness();
+    expect(await callMethod(app, "conversation.clearInbox", { conversationId })).toEqual({
+      cleared: 0,
+    });
+  });
+});
+
 describe("conversation.delete", () => {
   it("删除走服务层，并让运行时丢掉这段对话的现场（R33）", async () => {
     const { app, conversationId } = await makeHarness();
@@ -364,17 +394,27 @@ describe("conversation.delete", () => {
   });
 });
 
-describe("conversation.state：四格 + 待办", () => {
-  it("形状就是那四样：会话 id、那一格、队里压着什么、读数的时刻", async () => {
+describe("conversation.state：四格 + 待办 + 名册 + 交接态", () => {
+  it("形状就是那六样：会话 id、那一格、队里压着什么、子 agent 名册、交接态、读数的时刻", async () => {
     const { app, conversationId } = await makeHarness();
 
     const { state } = await callMethod(app, "conversation.state", { conversationId });
 
-    expect(Object.keys(state).sort()).toEqual(["at", "conversationId", "inbox", "status"]);
+    expect(Object.keys(state).sort()).toEqual([
+      "at",
+      "conversationId",
+      "handoff",
+      "inbox",
+      "status",
+      "subAgents",
+    ]);
     expect(state.conversationId).toBe(conversationId);
     // 一次都没发过话：没有 agent 对象，也没有排着的投递 → 死
     expect(state.status).toBe("dead");
     expect(state.inbox).toEqual([]);
+    // 死了就没有名册（子 agent 的话只在它自己那个对象里），也没在交接
+    expect(state.subAgents).toEqual([]);
+    expect(state.handoff).toBeNull();
     expect(Number.isNaN(Date.parse(state.at))).toBe(false);
   });
 

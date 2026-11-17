@@ -380,7 +380,8 @@ export class Client implements ContractCaller {
     try {
       await this.snapshotWhileBuffering(conversationId, async () => {
         const { state } = await this.call("conversation.state", { conversationId });
-        mirror.applyStatus(state.status);
+        // 四格 + 名册 + 交接态一起收下：名册用来铺子 agent 那几栏（栏里的消息只来自事件）
+        mirror.applyReadout(state);
         const listed = await this.call("message.list", { conversationId });
         mirror.replaceAll(listed.messages);
       });
@@ -422,7 +423,9 @@ export class Client implements ContractCaller {
 
     await this.snapshotWhileBuffering(conversationId, async () => {
       const { state } = await this.call("conversation.state", { conversationId });
-      mirror.applyStatus(state.status);
+      // 交接态在这里也会被读到：交接收尾时宿主推一条 `memory_replaced`（见下面那段），
+      // 于是重连中的窗口里「正在交接」不会一直挂着
+      mirror.applyReadout(state);
       const after = mirror.lastMessageId();
       const listed = await this.call("message.list", {
         conversationId,
@@ -705,6 +708,7 @@ export class Client implements ContractCaller {
    */
   private dispatchEvent(method: string, payload: unknown): void {
     this.routeToMirror(method, payload);
+    this.reloadOnMemoryReplaced(method, payload);
 
     const handlers = this.eventHandlers.get(method);
     if (!handlers) return;
@@ -743,6 +747,43 @@ export class Client implements ContractCaller {
     const conversationId = (payload as { conversationId?: unknown }).conversationId;
     if (typeof conversationId !== "string") return undefined;
     return this.mirrors.get(conversationId);
+  }
+
+  /**
+   * `conversation.changed` 里唯一需要客户端**动一次**的那一格：`memory_replaced`。
+   *
+   * 交接期间这段对话写出来的那几条只在内存里、从不落库（宿主那边只跳过写库，事件照推）。所以
+   * 提交或回滚之后，客户端手里那几条是**库里根本不存在**的消息 —— 宿主推这一条就是让这里
+   * **整段替换**：重拉一次 `conversation.state`（顺带把「正在交接」收掉）与 `message.list` 全量。
+   *
+   * 同这一段正在拉快照时不再并发拉第二份（`snapshotWhileBuffering` 自己会串起来），拉取期间
+   * 到达的事件照旧先攒后补。
+   *
+   * 没打开过这段对话就什么都不做：下次 `open` 本来就是一次全量。
+   */
+  private reloadOnMemoryReplaced(method: string, payload: unknown): void {
+    if (method !== "conversation.changed") return;
+    if (payload === null || typeof payload !== "object") return;
+    const fact = payload as { conversationId?: unknown; change?: unknown };
+    if (fact.change !== "memory_replaced") return;
+    const conversationId = typeof fact.conversationId === "string" ? fact.conversationId : "";
+    const mirror = this.mirrors.get(conversationId);
+    if (!mirror) return;
+    // 拉失败不吵：镜像留在上一份，下一次 `resync`（或再一条 `memory_replaced`）会补上
+    void this.reloadMirror(conversationId, mirror).catch(() => undefined);
+  }
+
+  /** 整段重拉（`memory_replaced` 的唯一出口）：状态与主线一次拿齐，主线整段替换 */
+  private async reloadMirror(
+    conversationId: string,
+    mirror: ConversationMirror,
+  ): Promise<void> {
+    await this.snapshotWhileBuffering(conversationId, async () => {
+      const { state } = await this.call("conversation.state", { conversationId });
+      mirror.applyReadout(state);
+      const listed = await this.call("message.list", { conversationId });
+      mirror.replaceAll(listed.messages);
+    });
   }
 
   /**
