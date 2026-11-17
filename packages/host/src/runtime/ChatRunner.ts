@@ -218,27 +218,10 @@ export type HandoffProvider = (context: AgentBuildContext) => HandoffService | u
 export type AgentStatusValue = "busy" | "idle" | "paused";
 
 /**
- * 那一格的观察形状：core 的两格 + 不收件开关合成出来的三值变化。
- *
- * core 的载荷是 `{ agent, from }`：`agent` 有了，但「哪段对话」只有宿主知道 —— 于是由
- * `AgentRegistry`（它按 conversationId 登记）在转达时补上这一格。
- *
- * 它**不表达死没死**：死 = 没有 agent 对象（`state()` 现读）。
- */
-export interface AgentStateEvent {
-  conversationId: string;
-  agent: ChatAgent;
-  /** 变化前对外报的那一格 */
-  from: AgentStatusValue;
-  /** 变化后对外报的那一格（`busy` / `idle` / `paused`） */
-  to: AgentStatusValue;
-}
-
-/**
  * 两格 + 收不收件 → 对外报的那一格。**合成点只此一处**：别处不许再自己拼一份。
  *
- * 不收件时一律报「暂停」：core 的 `state` 说的是「它手上有没有活」，而 `consumptionPaused`
- * 管的是「从下一批起还收不收件」。两件事各有各的格，所以两者同时成立时（不取件中那批正在跑）
+ * 不收件时一律报「暂停」：core 的 `state` 说的是「它手上有没有活」，`consumptionPaused`
+ * 管的是「从下一批起还收不收件」—— 两件事各有各的格，所以两者同时成立时（不收件中那批正在跑）
  * 也报得出来。
  */
 export function statusOfAgent(agent: ChatAgent): AgentStatusValue {
@@ -428,12 +411,6 @@ export interface ChatRunnerOptions {
   onIdle?: (conversationId: string) => void;
   /** 内部错误的去处（写库失败、装配失败等）；缺省忽略 */
   onError?: (error: unknown, context: string) => void;
-  /**
-   * 那一格的对外观察口（接线层用它把「这段开始干活了」告诉别人，例如平级会话的状态）。
-   *
-   * 这一项只是**多一路旁听**：本文件内部不靠它做任何判断（事件自己会走桥）。
-   */
-  onState?: (event: AgentStateEvent) => void;
 }
 
 /** 边流边写的缺省节流：200ms 一次，兼顾「客户端断了丢得少」与「写盘次数」 */
@@ -1522,8 +1499,6 @@ export class ChatRunner {
     this.options = options;
     this.clock = options.clock ?? systemClock;
 
-    // 那一格的旁听口：注册表那一侧才知道「这个 agent 是哪段对话的」（它是 agent 唯一的来源）
-    options.agents.observeState((event) => this.options.onState?.(event));
     // 生灭决定：`retired` 这一跳就是桥的灭点（agent 换了人 / 被退役 / 被硬着陆都在这里）——
     // 那一刻核心可能已经报过 `killed`，也可能什么都没报（退役不 kill）：桥灭时统一补一格「死」
     options.agents.observeLifecycle((event) => {

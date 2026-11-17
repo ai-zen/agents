@@ -62,11 +62,9 @@
 
 import type { Scope } from "@ai-zen/agents-sdk";
 
-import { statusOfAgent, statusOfState } from "./ChatRunner.js";
 import type {
   AgentBuildContext,
   AgentFactory,
-  AgentStateEvent,
   AgentStatusValue,
   ChatAgent,
 } from "./ChatRunner.js";
@@ -166,7 +164,6 @@ interface AgentEntry {
    */
   built: AgentAssemblyFacts;
   /** 取消订在它上面的那条观察线（那一格；退役时摘） */
-  offWatch?: () => void;
   /**
    * 陈旧标记（配置改过，装配时读到的那份已经过期）。
    *
@@ -202,7 +199,6 @@ export class AgentRegistry {
    * 删了 —— 排队区改成现读 `agent.inboxPending`（core 取走条目时不发事件，靠通知自建镜像只能
    * 与真队列分叉）。本文件于是只观察那一格。
    */
-  private readonly stateObservers = new Set<(event: AgentStateEvent) => void>();
   /**
    * 生灭决定的观察者（与那一格那一路同一个形状，见 {@link observeLifecycle}）。
    *
@@ -386,16 +382,6 @@ export class AgentRegistry {
   }
 
   /**
-   * 注册一个「那一格变了」的观察者，返回注销函数。
-   *
-   * 观察者接到的事件已经带上「哪段对话」（本文件按 conversationId 登记，只有它知道）。
-   */
-  observeState(observer: (event: AgentStateEvent) => void): () => void {
-    this.stateObservers.add(observer);
-    return () => this.stateObservers.delete(observer);
-  }
-
-  /**
    * 注册一个「生灭决定」的观察者，返回注销函数。
    *
    * 与构造参数 `onLifecycle` 报的是同一批事件；分成两个口是因为**两个消费者要的东西不一样**：
@@ -476,7 +462,6 @@ export class AgentRegistry {
       agent,
       built: factsOf(input),
       stale: false,
-      offWatch: this.watch(input.conversationId, agent),
     });
     // 它现在在了：上一次退役留下的那条理由不再成立
     this.retired.delete(input.conversationId);
@@ -523,39 +508,6 @@ export class AgentRegistry {
     this.report(conversationId, "retired", reason);
   }
 
-  /**
-   * 订上这个 agent 的那一格观察线，并补上「哪段对话」。
-   *
-   * 订的是 core 的**四处**：`state` 的两格（循环的位置），加上收件那个开关的翻上 / 翻回。
-   * 报给外面的仍是三值（忙 / 闲 / 暂停）—— 合成那一下由 `statusOfAgent` 做，本文件不解释它，
-   * 只负责把「谁的事」说清楚。
-   */
-  private watch(conversationId: string, agent: ChatAgent): () => void {
-    // 对外真的变了才报：不收件中那批跑起来（`working`）对外仍是「暂停」，那不是一次变化
-    const report = (from: AgentStatusValue) => {
-      const to = statusOfAgent(agent);
-      if (to === from) return;
-      for (const observer of this.stateObservers) {
-        observer({ conversationId, agent, from, to });
-      }
-    };
-
-    const offs = [
-      // 两格：`from` 是上一个循环位置（core 的名字 → 对外的名字）；不收件时对外报的却是「暂停」
-      agent.on("state:working", (payload) =>
-        report(agent.consumptionPaused ? "paused" : statusOfState(payload.from)),
-      ),
-      agent.on("state:idle", (payload) =>
-        report(agent.consumptionPaused ? "paused" : statusOfState(payload.from)),
-      ),
-      // 开关：翻上去之前对外报的就是循环那一格；翻回来之前对外报的一定是「暂停」
-      agent.on("consumption:paused", () => report(statusOfState(agent.state))),
-      agent.on("consumption:resumed", () => report("paused")),
-    ];
-    return () => {
-      for (const off of offs) off();
-    };
-  }
 
   /**
    * 摘掉一条登记（**只丢引用**），返回摘下来的那条 —— 不报事件、不记理由。
@@ -567,7 +519,6 @@ export class AgentRegistry {
     const entry = this.entries.get(conversationId);
     if (!entry) return undefined;
     this.entries.delete(conversationId);
-    entry.offWatch?.();
     return entry;
   }
 

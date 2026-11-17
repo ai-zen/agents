@@ -42,7 +42,6 @@ export {
 export type {
   AgentBuildContext,
   AgentFactory,
-  AgentStateEvent,
   AttachmentHistoryResolver,
   AttachmentPreparation,
   AttachmentPreparer,
