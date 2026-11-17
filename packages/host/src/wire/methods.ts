@@ -307,7 +307,8 @@ export interface ConversationSummary {
    * 这段会话自己定的交接阈值（软线）；`null` = 跟模型走。
    *
    * 它与会话行上的另一格 `guardThreshold` 一起构成 PRD 1.4 那两格：模型上那份是出厂的数字，
-   * 这两列是**这一段自己的覆盖**。`null` 才是常态（没给这一段单独调过）。
+   * 这两列是**这一段自己的覆盖**。`null` 才是常态（没给这一段单独调过）。要改它走
+   * `conversation.setThresholds`（省略 = 不动、显式 `null` = 回到跟模型走）。
    */
   handoffThreshold: number | null;
   /** 这段会话自己定的防护阈值（硬线）；`null` = 跟模型走。口径同上 */
@@ -591,6 +592,37 @@ export interface ConversationSetThinkingParams {
 /** `conversation.setThinking` 出参：展开后的参数与来源（PRD F-B7） */
 export interface ConversationSetThinkingResult {
   thinking: ThinkingState;
+}
+
+/**
+ * `conversation.setThresholds` 入参（PRD 1.4 / 4.7：两条阈值有上游默认、会话可覆盖）。
+ *
+ * 两条阈值量的都是「请求前的输入用量」（绝对 token 数）：`handoffThreshold` 是**软线**
+ * （交接阈值，到它就该换手）、`guardThreshold` 是**硬线**（防护阈值，这一次请求不发）。
+ * 上游默认那一份挂在**模型**上（`tokenThresholds`），会话行上这两格只是这一段自己的覆盖。
+ *
+ * 三态是这一条的全部重点：**省略 = 不动**（没提它就是不打算改它）、**显式 `null` = 回到
+ * 「跟模型走」**、正整数 = 这一段自己的数字。`null` 与省略是两件事，别把省略读成清空。
+ *
+ * 它们**不进驱动者的出厂配置**（出厂配置 = 模型 + 它的参数），由宿主现读，所以改完不用
+ * 重建驱动者 —— 那是 `setModel` / `setThinking` 才要付的代价。
+ */
+export interface ConversationSetThresholdsParams {
+  conversationId: string;
+  /** 交接阈值（软线）；省略 = 不动，`null` = 跟模型走 */
+  handoffThreshold?: number | null;
+  /** 防护阈值（硬线）；省略 = 不动，`null` = 跟模型走 */
+  guardThreshold?: number | null;
+}
+
+/**
+ * `conversation.setThresholds` 出参。
+ *
+ * 给的是改完之后的完整视图：那两格就在 `ConversationSummary` 上，客户端不必再为「改成了多少」
+ * 单独拉一次。上下文占用同样不在这里给（它由客户端按消息上的 `usage` 自己算）。
+ */
+export interface ConversationSetThresholdsResult {
+  conversation: ConversationView;
 }
 
 /**
@@ -1908,6 +1940,11 @@ export interface MethodMap {
     params: ConversationSetThinkingParams;
     result: ConversationSetThinkingResult;
   };
+  /** PRD 1.4 / 4.7：两条阈值的会话级覆盖（省略不动、`null` 回到跟模型走、不进出厂配置）。 */
+  "conversation.setThresholds": {
+    params: ConversationSetThresholdsParams;
+    result: ConversationSetThresholdsResult;
+  };
   /** F-A2 / D3：一次性对话，跑到头就散、零痕迹。 */
   "conversation.transient": {
     params: ConversationTransientParams;
@@ -2075,6 +2112,7 @@ export const METHOD_NAMES = [
   "conversation.revert",
   "conversation.setModel",
   "conversation.setThinking",
+  "conversation.setThresholds",
   "conversation.transient",
   "message.list",
   "question.list",

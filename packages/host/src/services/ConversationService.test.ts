@@ -1071,6 +1071,137 @@ describe("ConversationService.setThinking（F-B6 / F-B7：会话级、落库）"
   });
 });
 
+describe("ConversationService.setThresholds（PRD 1.4 / 4.7：会话行上的覆盖层）", () => {
+  it("给数字：写进会话行，`ConversationView` 里读得到", async () => {
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    const id = created.conversation.id;
+    // 新建的会话两格都是 NULL：跟模型走才是常态
+    expect(created.conversation.handoffThreshold).toBeNull();
+    expect(created.conversation.guardThreshold).toBeNull();
+
+    const result = await harness.service.setThresholds({
+      conversationId: id,
+      handoffThreshold: 100_000,
+      guardThreshold: 150_000,
+    });
+    expect(result.conversation.handoffThreshold).toBe(100_000);
+    expect(result.conversation.guardThreshold).toBe(150_000);
+    // 落的是库里的那一行（不是内存里的临时值）：另开一次读回来的还是这两个数
+    const stored = await harness.conversations.get(id);
+    expect(stored?.handoffThreshold).toBe(100_000);
+    expect(stored?.guardThreshold).toBe(150_000);
+    const reopened = await harness.service.get({ conversationId: id });
+    expect(reopened.conversation).toMatchObject({
+      handoffThreshold: 100_000,
+      guardThreshold: 150_000,
+    });
+    // 会话行变了：推一条让别的窗口去拉（不推就有人拿着旧的那两格）
+    expect(harness.events.at(-1)).toMatchObject({
+      name: "conversation.changed",
+      payload: { conversationId: id, change: "settings_changed" },
+    });
+  });
+
+  it("显式 `null`：回到「跟模型走」，不是清成 0", async () => {
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    const id = created.conversation.id;
+    await harness.service.setThresholds({ conversationId: id, handoffThreshold: 100_000 });
+
+    const cleared = await harness.service.setThresholds({ conversationId: id, handoffThreshold: null });
+    expect(cleared.conversation.handoffThreshold).toBeNull();
+    expect((await harness.conversations.get(id))?.handoffThreshold).toBeNull();
+  });
+
+  it("只给一条：另一条一个字都不动（省略 = 不动）", async () => {
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    const id = created.conversation.id;
+    await harness.service.setThresholds({
+      conversationId: id,
+      handoffThreshold: 100_000,
+      guardThreshold: 150_000,
+    });
+
+    const onlyHandoff = await harness.service.setThresholds({
+      conversationId: id,
+      handoffThreshold: 90_000,
+    });
+    expect(onlyHandoff.conversation.handoffThreshold).toBe(90_000);
+    expect(onlyHandoff.conversation.guardThreshold).toBe(150_000);
+
+    const onlyGuard = await harness.service.setThresholds({ conversationId: id, guardThreshold: null });
+    expect(onlyGuard.conversation.handoffThreshold).toBe(90_000);
+    expect(onlyGuard.conversation.guardThreshold).toBeNull();
+  });
+
+  it("两格都不给：什么也不写，连修改时间都不动，也不推事件", async () => {
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    const id = created.conversation.id;
+    const before = await harness.conversations.get(id);
+    const events = harness.events.length;
+
+    const unchanged = await harness.service.setThresholds({ conversationId: id });
+    expect(unchanged.conversation.handoffThreshold).toBeNull();
+    expect((await harness.conversations.get(id))?.updatedAt).toBe(before?.updatedAt);
+    expect(harness.events.length).toBe(events);
+  });
+
+  it("非法值一律 invalid_params：0 / 负数 / 小数 / 硬线不大于软线", async () => {
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    const id = created.conversation.id;
+
+    // `0` 不收：阈值是绝对 token 数，要「不设这条线」请给 `null`
+    await expect(
+      harness.service.setThresholds({ conversationId: id, handoffThreshold: 0 }),
+    ).rejects.toMatchObject({
+      code: "invalid_params",
+      detail: { field: "handoffThreshold", reason: "not_positive_integer" },
+    });
+    await expect(
+      harness.service.setThresholds({ conversationId: id, guardThreshold: -1 }),
+    ).rejects.toMatchObject({
+      code: "invalid_params",
+      detail: { field: "guardThreshold", reason: "not_positive_integer" },
+    });
+    await expect(
+      harness.service.setThresholds({ conversationId: id, guardThreshold: 1500.5 }),
+    ).rejects.toMatchObject({ code: "invalid_params" });
+    // 硬线必须给软线留出余量（与建模型那条同口径：handoff < guard）
+    await expect(
+      harness.service.setThresholds({ conversationId: id, handoffThreshold: 1000, guardThreshold: 1000 }),
+    ).rejects.toMatchObject({
+      code: "invalid_params",
+      detail: { field: "guardThreshold", reason: "handoff_not_below_guard" },
+    });
+    await expect(
+      harness.service.setThresholds({ conversationId: id, handoffThreshold: 2000, guardThreshold: 1000 }),
+    ).rejects.toMatchObject({ code: "invalid_params" });
+    // 被拒绝时什么都没写
+    expect((await harness.conversations.get(id))?.handoffThreshold).toBeNull();
+  });
+
+  it("只动这两格：模型与思考档位不受影响（它们才是驱动者的装配事实）", async () => {
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    const id = created.conversation.id;
+    await harness.service.setThinking({ conversationId: id, level: "high" });
+
+    await harness.service.setThresholds({ conversationId: id, handoffThreshold: 100_000 });
+
+    const stored = await harness.conversations.get(id);
+    expect(stored?.modelId).toBe("m1");
+    expect(stored?.thinkingLevel).toBe("high");
+  });
+
+  it("还没落库的草稿也能改：落库时按草稿里的写", async () => {
+    const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
+    const id = created.conversation?.id ?? "";
+    await harness.service.setThresholds({ conversationId: id, handoffThreshold: 100_000, guardThreshold: 150_000 });
+
+    const row = await harness.service.ensurePersisted(id);
+    expect(row.handoffThreshold).toBe(100_000);
+    expect(row.guardThreshold).toBe(150_000);
+  });
+});
+
 describe("会话创建时那条 hidden 的 cwd 消息（F-D9）", () => {
   it("落库时最先写一条 hidden 的 user 消息，正文含 cwd、seq 在用户消息之前", async () => {
     const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });

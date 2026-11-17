@@ -47,6 +47,14 @@ const CONFIG = JSON.stringify(
         tokenThresholds: { handoff: 1000, guard: 2000 },
         custom: true,
       },
+      // 第二个模型：只是为了验「换模型会重建驱动者、改阈值不会」这条对照
+      {
+        id: "other-model",
+        name: "Other Model",
+        endpointId: "fake",
+        tokenThresholds: { handoff: 1200, guard: 1800 },
+        custom: true,
+      },
     ],
   },
   null,
@@ -440,6 +448,74 @@ describe("conversation.state：四格 + 待办 + 名册 + 交接态", () => {
     await expect(
       callMethod(app, "conversation.state", { conversationId: "没有这段" }),
     ).rejects.toMatchObject({ code: "not_found" });
+  });
+});
+
+describe("conversation.setThresholds（PRD 1.4 / 4.7：两条阈值有上游默认、会话可覆盖）", () => {
+  it("改完 `ConversationView` 里读得到：省略不动、显式 `null` 回到跟模型走", async () => {
+    const { app, conversationId } = await makeHarness();
+
+    const changed = await callMethod(app, "conversation.setThresholds", {
+      conversationId,
+      handoffThreshold: 800,
+      guardThreshold: 1200,
+    });
+    expect(changed.conversation).toMatchObject({ handoffThreshold: 800, guardThreshold: 1200 });
+
+    // 落库了：另开一次（读库里那一行）拿到的还是这两个数
+    const reopened = await callMethod(app, "conversation.get", { conversationId });
+    expect(reopened.conversation).toMatchObject({ handoffThreshold: 800, guardThreshold: 1200 });
+
+    // 只给一条：另一条一个字都不动
+    const onlyGuard = await callMethod(app, "conversation.setThresholds", {
+      conversationId,
+      guardThreshold: 1500,
+    });
+    expect(onlyGuard.conversation).toMatchObject({ handoffThreshold: 800, guardThreshold: 1500 });
+
+    // 显式 `null`：回到跟模型走（不是 0，也不是省略）
+    const cleared = await callMethod(app, "conversation.setThresholds", {
+      conversationId,
+      handoffThreshold: null,
+    });
+    expect(cleared.conversation.handoffThreshold).toBeNull();
+    expect(cleared.conversation.guardThreshold).toBe(1500);
+  });
+
+  it("改阈值不重建驱动者（与 `setModel` 相反：那一条改的是装配事实）", async () => {
+    const { app, conversationId } = await makeHarness();
+    // 先让它跑一次：这样才有一个活着的驱动者可比
+    await callMethod(app, "conversation.send", { conversationId, input: { content: "先说一句" } });
+    await idle(app, conversationId);
+    const before = app.agentRegistry.get(conversationId);
+    expect(before).toBeDefined();
+
+    const decisions: string[] = [];
+    const off = app.agentRegistry.observeLifecycle((event) =>
+      decisions.push(`${event.action}:${event.reason}`),
+    );
+    try {
+      await callMethod(app, "conversation.setThresholds", {
+        conversationId,
+        handoffThreshold: 800,
+        guardThreshold: 1200,
+      });
+      // 两条阈值不进驱动者的出厂配置：一个生灭决定都没有，手上还是同一个对象
+      expect(decisions).toEqual([]);
+      expect(app.agentRegistry.get(conversationId)).toBe(before);
+
+      // 对照：换模型改的是装配事实，下一次装配按新事实重造
+      await callMethod(app, "conversation.setModel", { conversationId, modelId: "other-model" });
+      await callMethod(app, "conversation.send", { conversationId, input: { content: "换完再说一句" } });
+      await idle(app, conversationId);
+      expect(decisions).toEqual([
+        "retired:assembly-facts-changed",
+        "rebuilt:assembly-facts-changed",
+      ]);
+      expect(app.agentRegistry.get(conversationId)).not.toBe(before);
+    } finally {
+      off();
+    }
   });
 });
 

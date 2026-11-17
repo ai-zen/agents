@@ -1,5 +1,6 @@
 /**
- * 对话服务：一段对话的诞生、改名、置顶、删除、撤回，以及两个「会话级调整」（换模型、换思考档位）。
+ * 对话服务：一段对话的诞生、改名、置顶、删除、撤回，以及三个「会话级调整」（换模型、换思考
+ * 档位、两条阈值）。
  *
  * 对应能力编号：F-C1（稳定 id）、F-C3（可改名字）、F-C5（置顶 + 创建时间倒序）、
  * F-C7（开新会话）、F-C8 / D24（撤回硬删 + 回填输入框）、F-C10 / D17（硬删 + 警告）、
@@ -9,7 +10,8 @@
  *
  * 两条贯穿这个文件的边界：
  *   1. **项目与助手创建即定死**：`workspaceId` / `agentId` 由 `create` 解析后落库，此后没有
- *      任何方法改它们。模型与思考档位不在这条线上：它们是这段会话自己的，存在会话行上、可以改。
+ *      任何方法改它们。模型、思考档位与两条阈值不在这条线上：它们是这段会话自己的，存在会话
+ *      行上、可以改 —— 前两个进驱动者的出厂配置（改了要重建），两条阈值不进（改了不重建）。
  *   2. **服务层不缓存 agent、不驻留对话状态**：这段对话此刻落在哪一格、队里压着几条，都从注入的
  *      {@link ConversationRuntimePort} 现取；模型与档位在库里，不在内存里存第二份。
  */
@@ -65,6 +67,8 @@ import type {
   ConversationSetModelResult,
   ConversationSetThinkingParams,
   ConversationSetThinkingResult,
+  ConversationSetThresholdsParams,
+  ConversationSetThresholdsResult,
   ConversationStatus,
   ConversationSummary,
   ConversationView,
@@ -240,6 +244,27 @@ function requireId(value: string, field: string): string {
     });
   }
   return text;
+}
+
+/**
+ * 两条阈值的取值校验（PRD 1.4 / 4.7）：省略（`undefined`）= 不动、`null` = 回到跟模型走、
+ * 其余必须是**正整数**。
+ *
+ * `0` 不接受：阈值量的是「请求前的输入用量」的绝对 token 数，0 是个没有意义的线 —— 要「这条线
+ * 不设」请给 `null`（它说的是「跟模型走」，不是「关掉」）。负数、小数、`NaN` / `Infinity` 同理。
+ */
+function requireThreshold(
+  value: number | null | undefined,
+  field: string,
+): number | null | undefined {
+  if (value === undefined || value === null) return value;
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    throw new HostError("invalid_params", {
+      params: { field },
+      detail: { field, reason: "not_positive_integer", value },
+    });
+  }
+  return value;
 }
 
 /** 结构相等：思考档位的补丁与助手定义上的参数要能对得上 */
@@ -776,6 +801,68 @@ export class ConversationService {
   }
 
   /**
+   * 写这段会话自己的两条阈值（PRD 1.4 的两格 / 4.7 的「有上游默认、会话可覆盖」）。
+   *
+   * 写的是**会话行**上的 `handoffThreshold`（软线）与 `guardThreshold`（硬线）：省略的那一格
+   * 一个字节都不动，显式 `null` 才是「回到跟模型走」—— 模型上那份 `tokenThresholds` 是上游
+   * 的默认数字。
+   *
+   * **这是宿主现读的配置，不是驱动者的出厂配置。** 出厂配置 = 模型 + 它的参数（模型与思考
+   * 档位），两条阈值压根不在里面：读它们的那条线由宿主按会话行现读。所以这个方法**不碰 agent、
+   * 不碰 Scope、不重建任何东西** —— 与 `setModel` / `setThinking` 正好相反，那两个改的是装配
+   * 事实，改完下一次装配要照新事实重造驱动者。
+   *
+   * 校验与建模型那一条同口径：给了就必须是正整数（`0` / 负数 / 小数都不收），两个都给且都不是
+   * `null` 时要满足 `handoff < guard`（硬线得给软线留出余量）。
+   */
+  async setThresholds(
+    params: ConversationSetThresholdsParams,
+  ): Promise<ConversationSetThresholdsResult> {
+    const row = await this.requireConversation(params.conversationId);
+    const handoffThreshold = requireThreshold(params.handoffThreshold, "handoffThreshold");
+    const guardThreshold = requireThreshold(params.guardThreshold, "guardThreshold");
+
+    // 只在两个都给（且都不是 `null`）时比大小：只给一条时另一条可能是 `null`（跟模型走），
+    // 与它比大小没有意义 —— 那条线的数字此刻不在会话行上
+    if (
+      typeof handoffThreshold === "number" &&
+      typeof guardThreshold === "number" &&
+      guardThreshold <= handoffThreshold
+    ) {
+      throw new HostError("invalid_params", {
+        params: { field: "guardThreshold" },
+        detail: {
+          field: "guardThreshold",
+          reason: "handoff_not_below_guard",
+          handoffThreshold,
+          guardThreshold,
+        },
+      });
+    }
+
+    // 只带真的给了的那几格（`undefined` 不是「写空值」，它连这一列都不该出现在语句里）
+    const patch: { handoffThreshold?: number | null; guardThreshold?: number | null } = {};
+    if (handoffThreshold !== undefined) patch.handoffThreshold = handoffThreshold;
+    if (guardThreshold !== undefined) patch.guardThreshold = guardThreshold;
+
+    // 两格都没给：什么也不写、也不推事件（省略 = 不动），回当下的视图
+    if (patch.handoffThreshold === undefined && patch.guardThreshold === undefined) {
+      return { conversation: await this.reloadView(row.id) };
+    }
+
+    const changed =
+      (patch.handoffThreshold !== undefined && patch.handoffThreshold !== row.handoffThreshold) ||
+      (patch.guardThreshold !== undefined && patch.guardThreshold !== row.guardThreshold);
+
+    const updated = await this.writeThresholds(row, patch);
+    // 这两格在会话行上、也在侧栏摘要里，别的窗口读的是同一行 —— 变了就推一条让它们去拉
+    if (changed) {
+      this.emitChanged(row.id, row.workspaceId, "settings_changed");
+    }
+    return { conversation: await this.reloadView(updated.id) };
+  }
+
+  /**
    * 把一批对话行拼成侧栏用的摘要（列表与搜索共用同一份口径）。
    *
    * `nameIsAuto` 直接读库里的那一列（R35）：它是「这个名字是不是自动起的」的唯一真值，
@@ -1074,6 +1161,27 @@ export class ConversationService {
     }
     await this.conversations.setModel(row.id, modelId, updatedAt);
     return { ...row, modelId, thinkingLevel: null, updatedAt };
+  }
+
+  /**
+   * 把两条阈值写进会话（只写给的那几格，`null` = 回到跟模型走），回写后的行。
+   *
+   * 草稿还没落库时写进草稿（落库那一刻跟着写进去），与 `writeModel` / `writeThinkingLevel`
+   * 同一口径。除 `updatedAt` 之外不碰别的东西，尤其不碰模型与思考档位 —— 这两格与它们无关。
+   */
+  private async writeThresholds(
+    row: Conversation,
+    patch: { handoffThreshold?: number | null; guardThreshold?: number | null },
+  ): Promise<Conversation> {
+    const updatedAt = this.now();
+    const draft = this.drafts.get(row.id);
+    if (draft) {
+      const next: Conversation = { ...draft, ...patch, updatedAt };
+      this.drafts.put(next);
+      return next;
+    }
+    await this.conversations.setThresholds(row.id, patch, updatedAt);
+    return { ...row, ...patch, updatedAt };
   }
 
   /** 把思考档位写进会话（`null` = 回到跟随助手定义），回写后的行 */

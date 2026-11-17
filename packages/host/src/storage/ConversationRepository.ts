@@ -230,6 +230,41 @@ export class ConversationRepository {
   }
 
   /**
+   * 写这段会话自己的两条阈值（PRD 1.4 / 4.7：会话行上的覆盖层）；`null` = 回到跟模型走。
+   *
+   * **只写入参里真的给了的那几格**：省略的那一列一个字节都不动 —— 「不给」与「显式给 `null`」
+   * 是两件事，前者是「别碰它」，后者是「回到跟模型走」。
+   *
+   * 那两列不进驱动者的出厂配置（出厂配置 = 模型 + 它的参数），由宿主现读，所以写它们不牵动
+   * 任何别的东西：不改 `modelId`、不清 `thinkingLevel`、不碰消息。
+   *
+   * @returns 改动的行数（对话已经不存在时是 0，不是错）
+   */
+  async setThresholds(
+    id: string,
+    patch: { handoffThreshold?: number | null; guardThreshold?: number | null },
+    updatedAt: number,
+  ): Promise<number> {
+    const assignments: string[] = [];
+    const values: (number | null)[] = [];
+    if (patch.handoffThreshold !== undefined) {
+      assignments.push("handoffThreshold = ?");
+      values.push(patch.handoffThreshold);
+    }
+    if (patch.guardThreshold !== undefined) {
+      assignments.push("guardThreshold = ?");
+      values.push(patch.guardThreshold);
+    }
+    // 两格都没给就不发语句：空 UPDATE 只会白写一次 `updatedAt`
+    if (assignments.length === 0) return 0;
+    const result = await this.db.run(
+      `UPDATE conversations SET ${assignments.join(", ")}, updatedAt = ? WHERE id = ?`,
+      [...values, updatedAt, id],
+    );
+    return result.changes;
+  }
+
+  /**
    * 记一次压缩（两条压缩路径各自写，不互相覆盖别的列）。
    *
    * 为什么不动 `updatedAt`：那一列是「最后一次结构性变化」的时间（改名 / 换模型 / 改档位），

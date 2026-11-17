@@ -79,6 +79,10 @@ export function createConversationHandlers(deps: ConversationHandlerDeps): Handl
     "conversation.revert": async (context) => await deps.conversations.revert(context.params),
     "conversation.setModel": async (context) => await deps.conversations.setModel(context.params),
 
+    // 两条阈值：会话行上的覆盖层（PRD 1.4 / 4.7），宿主现读，所以本层连转发都不必绕道
+    "conversation.setThresholds": async (context) =>
+      await deps.conversations.setThresholds(context.params),
+
     "conversation.delete": async (context) => await removeConversation(deps, context.params),
 
     "conversation.send": async (context) =>
