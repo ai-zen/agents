@@ -1,5 +1,5 @@
 /**
- * 交接的验收：谁写文档（自交接＝同一个驱动者 / 独立交接＝一次性驱动者）、文档真的落进
+ * 交接的验收：谁写文档（自交接＝同一个驱动者接着写 / 独立摘要＝拿这段记忆去问模型）、文档真的落进
  * `<cwd>/.ai-zen/handoffs/`（D19）、模板来自磁盘上的 `handoff` Skill（读不到用兜底）、
  * 降级要说明（F-D7）、取消不报错（F-D7）、换记忆与存档会话（PRD 4.5）、只产文档不另开对话（F-D4）。
  *
@@ -9,8 +9,8 @@
  *    `runToEnd` 的 `finally` 里最后一个动作）等它收尾 —— 提交与回滚都从那里过去，于是「跑完了没有」
  *    这件事有一个确定的答案，而不是靠睡一会儿。只看 `memory_replaced` 不够：那条在提交点就推了，
  *    后面还有 `afterCommit`（开新对话 / 标压缩 / 把题标已答）。
- * 2. 自交接「写完了没有」只看**那次写文档的工具调用的结果**（`toolFinished`）加一道落盘校验，
- *    不看状态事件，也不看模型说的话。
+ * 2. 「写完了没有」由 SDK 判（那次写文档的工具调用的输入与结果）；宿主只做提交之后那一半 ——
+ *    文档在盘上、够长，就换记忆。
  * 3. 入口判据只有一条：**那段对话闲着才发起**。非空闲（忙 / 暂停 / 没有 agent）直接拒，
  *    交接全程不碰暂停、也不替谁放行。
  * 4. 提交之后**旧记忆是另一段会话**（`已存档_<原名>`）、原会话只留「系统提示 + cwd 消息 +
@@ -22,7 +22,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { AgentNS } from "@ai-zen/agents-core";
+import { AgentNS, Message } from "@ai-zen/agents-core";
 import { completeOnce, ConfigManager } from "@ai-zen/agents-sdk";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -52,7 +52,6 @@ import type {
   HandoffAgentHolder,
   HandoffExecutor,
   HandoffRunnerPort,
-  ScopeProvider,
 } from "./HandoffService.js";
 import { NoticeService } from "./NoticeService.js";
 
@@ -65,11 +64,16 @@ const DOCUMENT_BODY = `## 任务目标\n\n把交接写完。\n\n${"正文。".re
 /** 驱动者开局手里那条系统提示（来自助手定义）：换记忆之后它得还在 */
 const DRIVER_SYSTEM_PROMPT = "你是这个项目的助手";
 
-function echoingClient(): SummaryClient {
+/** 摘要那一跳的请求体（用例据此看「拿的是什么记忆去问的」） */
+type SummaryBody = { messages: Array<{ role: string; content: string }> };
+
+function echoingClient(onRequest?: (body: SummaryBody) => void): SummaryClient {
   const client = {
     chat: {
       completions: {
-        create: async (body: { messages: Array<{ role: string; content: string }> }) => ({
+        create: async (body: SummaryBody) => {
+          onRequest?.(body);
+          return {
           choices: [
             {
               message: {
@@ -77,7 +81,8 @@ function echoingClient(): SummaryClient {
               },
             },
           ],
-        }),
+          };
+        },
       },
     },
   };
@@ -98,18 +103,6 @@ class FakeRuntime implements ConversationRuntimePort {
     return null;
   }
   invalidateAgent(): void {}
-}
-
-/** 取 Scope 的记账实现：真 Scope（cwd 显式给），只记拿过哪些键（没有归还这回事） */
-class RecordingScopes implements ScopeProvider {
-  readonly acquired: string[] = [];
-
-  constructor(private readonly cwd: string) {}
-
-  async create(key: string) {
-    this.acquired.push(key);
-    return createFakeScope(this.cwd).scope;
-  }
 }
 
 /** 记账的驱动者：它就是 core 的 `Agent`（真的循环、真的取件），把「翻上/翻回不取件开关」接过来记一笔 */
@@ -159,13 +152,9 @@ interface Built {
   driver: RecordingAgent;
   driverCalls: string[];
   runnerCalls: string[];
-  /** 投出去的指令（自交接那条路：一条一条看得到） */
+  /** 投出去的指令（SDK 投的：从驱动者的消息里认出来，一条一条看得到） */
   instructions: string[];
   events: EventLog;
-  /**
-   * 自交接有没有写文档（`false` 时驱动者照旧调写工具，但盘上什么都没落 —— 验「降级」那条路）
-   */
-  writesDocument: boolean;
   /**
    * 一次交接的跑法：起一趟、等它收尾。
    *
@@ -186,16 +175,14 @@ interface Harness {
   messages: MessageRepository;
   questions: QuestionRepository;
   conversationService: ConversationService;
-  scopes: RecordingScopes;
-  agentContexts: AgentBuildContext[];
   build(options?: {
     execute?: HandoffExecutor;
     notices?: NoticeService;
     driver?: RecordingAgent;
     /** 驱动者的持有者（缺省就是手上这个 driver；给 `{ get: () => undefined }` 验「没有 agent」那条） */
     holder?: HandoffAgentHolder;
-    /** 驱动者调了写工具但不落盘（用来验「两道都不成立 → 降级」） */
-    writesDocument?: boolean;
+    /** 驱动者写出来的正文（给短的就能验「写得太小 → 退到摘要」那条） */
+    documentBody?: string;
     /** 交接模板的查找目录（不给就用磁盘上那份 Skill） */
     skillDirs?: string[];
   }): Built;
@@ -318,13 +305,6 @@ async function seedHarness(): Promise<Harness> {
     },
   ]);
 
-  const scopes = new RecordingScopes(projectDir);
-  const agentContexts: AgentBuildContext[] = [];
-  const createAgent: AgentFactory = async (context) => {
-    agentContexts.push(context);
-    return new FakeAgent([{ deltas: [{ content: "交接回合" }] }]);
-  };
-
   const harness: Harness = {
     dir,
     projectDir,
@@ -334,38 +314,50 @@ async function seedHarness(): Promise<Harness> {
     messages,
     questions,
     conversationService,
-    scopes,
-    agentContexts,
     build: (options = {}) => {
       /**
-       * 驱动者的脚本：先要一次写工具调用（参数里的路径在投递那一刻按指令补上 —— 真实现里
-       * 那是模型自己填的输入），工具跑完再回一句「写好了」。
+       * 驱动者的脚本：先要一次写工具调用，工具跑完再回一句「写好了」。
        *
-       * 「写完了没有」的事实来源就是这一次工具调用的结果 —— 不是状态，也不是那句话。
+       * 那次调用的参数按**这一次请求体**现算：文档路径写在刚推进去的交接指令里，模型（脚本）
+       * 那一刻才看得见它，于是它写的就是服务要的那一份。`write` 工具是真写盘的那个（见
+       * `TestSupport`），所以「盘上有没有这份文档」是事实，不是演出来的。
        */
+      const body = options.documentBody ?? DOCUMENT_BODY;
       const rounds: FakeRound[] = [
         {
           deltas: [{ content: "这就写" }],
-          toolCalls: [{ id: "call-write", name: "write", arguments: "{}" }],
+          toolCalls: [
+            {
+              id: "call-write",
+              name: "write",
+              arguments: (request: any) => {
+                const path = documentPathFrom(String(request?.messages?.at(-1)?.content ?? ""));
+                return JSON.stringify({ path, content: body });
+              },
+            },
+          ],
         },
         { deltas: [{ content: "写好了" }] },
       ];
       const driver = options.driver ?? new RecordingAgent(rounds, { system: DRIVER_SYSTEM_PROMPT });
       const runnerCalls: string[] = [];
       const instructions: string[] = [];
-      const writesDocument = options.writesDocument ?? true;
-      let delivered = 0;
+      /**
+       * 这一次交接投出去的指令（SDK 投的，宿主不居中转发）：从驱动者的消息里认出来 ——
+       * 来源是「宿主 / handoff」的那条 user 消息就是它。正文前面会带一行来源注释（core 给非
+       * 用户来源的消息加的），断言只看里面有没有那几段字。
+       */
+      driver.on("messageAdded", (payload) => {
+        const message = (payload as { message?: AgentNS.Message }).message;
+        if (message?.role !== AgentNS.Role.User) return;
+        if (message.source?.kind !== "system" || message.source.label !== "handoff") return;
+        instructions.push(typeof message.content === "string" ? message.content : "");
+      });
       /** 这一趟真的走完了的记号（摘牌次数）与等着它的人（`settle` 一个一个等） */
       let ends = 0;
       const endWaiters: Array<() => void> = [];
 
-      /**
-       * 投递口（真 `ChatRunner` 结构上就是它）：把指令塞进**这个驱动者**的队列，并让它跑起来。
-       *
-       * 「模型把它写到盘上」这一半由这里代劳（真实现里是 `write` 工具干的）：指令里带着绝对
-       * 路径，所以把它同时填进那次写工具调用的参数（于是 core 会真的发一条 `toolFinished`）
-       * 并写到那儿 —— 用例验的是「工具结果到了之后服务怎么办」，不是模型的手艺。
-       */
+      /** 交接态那两个开关（真 `ChatRunner` 结构上就是它） */
       const runner: HandoffRunnerPort = {
         beginHandoff: (conversationId) => {
           runnerCalls.push(`begin:${conversationId}`);
@@ -374,25 +366,6 @@ async function seedHarness(): Promise<Harness> {
           runnerCalls.push(`end:${conversationId}`);
           ends += 1;
           for (const wake of endWaiters.splice(0)) wake();
-        },
-        deliver: async (conversationId, input) => {
-          delivered += 1;
-          runnerCalls.push(`deliver:${conversationId}`);
-          instructions.push(typeof input.content === "string" ? input.content : "");
-          const path = documentPathFrom(input.content);
-          const write = rounds[0]?.toolCalls?.[0];
-          if (write && path !== "") {
-            write.arguments = JSON.stringify({ path, content: DOCUMENT_BODY });
-          }
-          if (writesDocument) await writeDocumentAt(path);
-          driver.push({
-            content: input.content,
-            priority: "high",
-            source: input.source,
-            messageId: `handoff-${delivered}`,
-          });
-          if (driver.state === "idle" && !driver.started) void driver.start();
-          return { userMessageId: `handoff-${delivered}` };
         },
       };
 
@@ -406,8 +379,6 @@ async function seedHarness(): Promise<Harness> {
         workspaces,
         messages,
         conversationViews: conversationService,
-        scopes,
-        createAgent,
         execute: options.execute ?? sdkExecutor(),
         agents,
         runner,
@@ -425,7 +396,6 @@ async function seedHarness(): Promise<Harness> {
         runnerCalls,
         instructions,
         events: log,
-        writesDocument,
         settle: async () => {
           // 「我是第几趟」在**起跑之前**就得数清楚：回滚那条路上摘牌紧跟在事件后面，
           // 等 await 回来时可能已经数过了
@@ -449,22 +419,15 @@ function documentPathFrom(instruction: AgentNS.MessageContent): string {
   return /(?:absolute path:|too small to deliver:)\s*(\S+\.md)/.exec(text)?.[1] ?? "";
 }
 
-/** 把文档写到那个路径（真实现里这一步是模型的 `write` 工具干的） */
-async function writeDocumentAt(path: string): Promise<void> {
-  if (path === "") return;
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, DOCUMENT_BODY, "utf-8");
-}
-
 /**
  * 真 SDK 执行者（客户端换成回声替身，不连网）。
  *
  * 走真执行者是为了让用例能看到「读不到 Writer 就降级 summary」这类 SDK 事实，
  * 而只换掉最外层的 HTTP 那一跳。
  */
-function sdkExecutor(): HandoffExecutor {
+function sdkExecutor(onRequest?: (body: SummaryBody) => void): HandoffExecutor {
   return createSdkHandoffExecutor({
-    client: echoingClient(),
+    client: echoingClient(onRequest),
     model: "handoff-model",
     logger: { info: () => {}, warn: () => {}, error: () => {} },
   });
@@ -508,9 +471,7 @@ describe("自交接：同一个驱动者写（PRD 4.5）", () => {
     await built.service.start({ conversationId, mode: "self", then: "document_only" });
     await built.settle();
 
-    // 没有「另起一个一次性驱动者」这回事
-    expect(harness.agentContexts).toHaveLength(0);
-    // 指令确实投给了它，而且带着磁盘上那份 Skill 的正文
+    // 指令确实投给了它（宿主没有另起一个驱动者），而且带着磁盘上那份 Skill 的正文
     expect(built.instructions).toHaveLength(1);
     expect(built.instructions[0]).toContain(SKILL_MARKER);
     const dir = handoffDirFor(harness.projectDir);
@@ -531,12 +492,8 @@ describe("自交接：同一个驱动者写（PRD 4.5）", () => {
     await built.service.start({ conversationId, mode: "self", then: "document_only" });
     await built.settle();
 
-    // 挂牌在指令落地之前，摘牌在收尾那一处
-    expect(built.runnerCalls).toEqual([
-      `begin:${conversationId}`,
-      `deliver:${conversationId}`,
-      `end:${conversationId}`,
-    ]);
+    // 挂牌在指令落地之前，摘牌在收尾那一处（投递不经过宿主：写文档那条指令由 SDK 投）
+    expect(built.runnerCalls).toEqual([`begin:${conversationId}`, `end:${conversationId}`]);
   });
 
   it("「写完了」看那次写工具的结果：工具结果到了 + 盘上够长 → 当场提交", async () => {
@@ -582,14 +539,14 @@ describe("自交接：同一个驱动者写（PRD 4.5）", () => {
     expect(built.driverCalls).toEqual([]);
   });
 
-  it("写不出来就单向降级到独立交接，并说清楚退了哪一档（F-D7）", async () => {
+  it("写不出来就单向降级到独立摘要，并说清楚退了哪一档（F-D7）", async () => {
     const notices = new NoticeService({ notices: new NoticeRepository(harness.db) });
-    // 写工具调用了，但盘上没有那份文档 → 落盘校验这一道不成立
-    const built = harness.build({ notices, writesDocument: false });
+    // 写工具真调了、也真落盘了，但写出来的那一份太小 → 盘上这道校验不成立
+    const built = harness.build({ notices, documentBody: "太短" });
     await built.service.start({ conversationId, mode: "self", then: "document_only" });
     await built.settle();
 
-    // 同一档位再问了一次之后仍旧没写出来 → 另起一次性驱动者写（它写进了同一个目录）
+    // 同一档再问了一次之后仍旧不够 → 降级到摘要那一档（它写进了同一个目录）
     expect(built.instructions).toHaveLength(2);
     const dir = handoffDirFor(harness.projectDir);
     expect(await readdir(dir)).toHaveLength(1);
@@ -621,8 +578,12 @@ describe("自交接：同一个驱动者写（PRD 4.5）", () => {
 
   it("中断（用户按了中断＝放弃交接）→ 回到交接前，并说不交接了", async () => {
     const notices = new NoticeService({ notices: new NoticeRepository(harness.db) });
-    // 这一趟的第一片永远不来：于是「掐在途」必然落在正在跑的那一批上
-    const driver = new RecordingAgent([{ gate: new Promise<void>(() => undefined) }]);
+    // 这一趟的第一片永远不来：于是「掐在途」必然落在正在跑的那一批上。
+    // 第二段只为让这个 agent 手里有 `write` 工具（自交接的前提），它走不到
+    const driver = new RecordingAgent([
+      { gate: new Promise<void>(() => undefined) },
+      { deltas: [{ content: "写好了" }], toolCalls: [{ id: "call-write", name: "write" }] },
+    ]);
     const built = harness.build({ notices, driver });
 
     const working = new Promise<void>((resolve) => {
@@ -664,23 +625,31 @@ describe("独立交接（一次性驱动者 + 记忆副本）", () => {
     expect((await stat(path)).size).toBeGreaterThan(0);
   });
 
-  it("拿的是这段对话的历史（omit 的不给）", async () => {
-    await harness.messages.upsert({
-      id: "msg-omit",
-      conversationId,
-      role: AgentNS.Role.User as string,
-      status: AgentNS.MessageStatus.Completed as string,
-      omit: true,
-      content: "这条已经不在上下文里了",
-      createdAt: 1_700_000_003_000,
+  it("摘要拿的是这段对话的记忆（omit 的不给）", async () => {
+    // 驱动者的记忆就是这段对话的记忆（真实现里由 `ChatRunner` 装配时把历史装进去）
+    const driver = new RecordingAgent([{ deltas: [{ content: "写好了" }] }], {
+      system: DRIVER_SYSTEM_PROMPT,
     });
-    const built = harness.build();
+    driver.messages.push(Message.User("帮我看看这个仓库的测试为什么慢"));
+    driver.messages.push(Message.Assistant("慢在 storage 的每个用例都新开库。"));
+    const omitted = Message.User("这条已经不在上下文里了");
+    omitted.omit = true;
+    driver.messages.push(omitted);
+
+    let asked = "";
+    const built = harness.build({
+      driver,
+      execute: sdkExecutor((body) => {
+        asked = String(body.messages[1]?.content ?? "");
+      }),
+    });
     await built.service.start({ conversationId, mode: "summary", then: "document_only" });
     await built.settle();
 
-    const context = harness.agentContexts[0];
-    expect(context?.conversationId).toBe(conversationId);
-    expect(context?.history.map((message) => message.id)).toEqual(["msg-user", "msg-assistant"]);
+    // 发给模型的是这段记忆（序列化后那句一句都在），已经 omit 的那条不在里面
+    expect(asked).toContain("帮我看看这个仓库的测试为什么慢");
+    expect(asked).toContain("慢在 storage 的每个用例都新开库。");
+    expect(asked).not.toContain("这条已经不在上下文里了");
   });
 
   it("交接之后开新对话（D18）：身份照抄，开场是那条交接摘要", async () => {
@@ -1057,9 +1026,9 @@ describe("前置条件", () => {
     await expect(
       built.service.start({ conversationId, mode: "self", then: "document_only" }),
     ).rejects.toMatchObject({ code: "busy", detail: { reason: "not_idle" } });
+    // 什么都没开始：没挂牌、没投指令
     expect(built.runnerCalls).toEqual([]);
-    // 什么都没开始：没有另起驱动者去写文档
-    expect(harness.agentContexts).toHaveLength(0);
+    expect(built.instructions).toEqual([]);
   });
 
   it("对话不存在报 not_found（这一条在返回「已经开始」之前）", async () => {
@@ -1087,13 +1056,6 @@ describe("前置条件", () => {
     ).rejects.toMatchObject({ code: "invalid_params" });
   });
 
-  it("用完不还 Scope（没有借用这回事：它活到显式 dispose / 进程退出）", async () => {
-    const built = harness.build();
-    await built.service.start({ conversationId, mode: "summary", then: "document_only" });
-    await built.settle();
-    // 只拿过一次（幂等 get-or-create），而且拿完就没再动它
-    expect(harness.scopes.acquired).toEqual(["w1"]);
-  });
 });
 
 describe("项目里的交接文档（F-D6：可反复打磨同一份）", () => {

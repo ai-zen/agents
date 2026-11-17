@@ -5,14 +5,14 @@
  * F-D5（一步完成）、F-D6 / D19（文档写进 `<cwd>/.ai-zen/handoffs/`）、F-D7（降级要说明；
  * 取消＝回到交接前，不重试不报错）、D22（交接在对话停下之后触发，不在流式中途）。
  *
- * ## 谁写这份文档：自交接与独立交接
+ * ## 谁写这份文档：两种执行者，一个实现
  *
- * - **自交接**（`mode: "self"`）：**这一段对话自己的驱动者**接着写。宿主把一条交接指令投进它的
- *   队列（`source: { kind: "system", label: "handoff" }`），它取走这一批就开写 —— 上下文完整、
- *   能用工具核实真实状态，产出质量最好。
- * - **独立交接**（`mode: "summary"`）：另起一个**一次性驱动者**，拿当前记忆的副本去写，跑完即散。
- *   便宜、确定，也是自交接写不出来时**单向降级**的目标（反向永远不发生）。
+ * - **自交接**（`mode: "self"`）：**这一段对话自己的驱动者**接着写 —— 上下文完整、能用工具核实
+ *   真实状态，产出质量最好。
+ * - **独立摘要**（`mode: "summary"`）：一次独立的模型调用，拿这段记忆去写，没有工具。便宜、确定，
+ *   也是自交接写不出来时**单向降级**的目标（反向永远不发生）。
  *
+ * 两种都在 SDK 的交接服务里（`handoff()` → `runSelfHandoff()`），宿主只把它要的那个驱动者交过去。
  * 自交接期间这一段处于**交接态**（`ChatRunner.beginHandoff`）：写文档那一趟的消息**不落库**
  * （它们马上要随旧记忆一起被替掉），但事件照推 —— 用户得看得见它在写（PLAN §5.3）。
  *
@@ -31,7 +31,7 @@
  *
  * ## 提交点之后：换记忆，不是换会话（PRD 4.5）
  *
- * 文档通过校验（`documentReady` + `describeDocument`）就是**提交点**。从那里往后：
+ * 文档落在盘上（`describeDocument` 从磁盘取大小与写入时刻）就是**提交点**。从那里往后：
  *
  *   1. **旧记忆成为另一段会话**：新插一行 `conversations`（名字 `已存档_<原名>`，项目 / 助手 /
  *      模型 / 思考档位照抄，创建时刻是交接那一刻），把原会话的全部消息行改挂到它名下；
@@ -46,42 +46,38 @@
  * 1 与 2 的落库部分在一个 `tx` 里（`ConversationRepository.replaceMemory`），所以崩在中间也不会
  * 留下「旧的已存档、新的没上岗」的第三种状态；失败则整批回滚，一段存档会话都不留。
  *
- * ## 「写完了没有」看工具结果，不看状态
+ * ## 写文档那一趟不在这里
  *
- * 判定不订阅状态事件，也不看模型说的话：硬事实有两样 —— **那次写文档的工具调用的结果**，
- * 以及**盘上那个文件够不够长**（{@link HandoffService} 的 `watchDocumentWrite` 与
- * `documentReady`）。
+ * 「谁写、怎么写、写不出来怎么退一档」全在 SDK 的交接服务里，判据也在那边 —— 它用的是那次写
+ * 文档的工具调用的输入与结果，不订阅状态、不等空闲、不设计时器。宿主这边只剩一件事：把这一段
+ * 此刻那个驱动者交给它，等它给回文档路径。同一条判据曾经两边各写一套，现在只有一套。
  *
  * ## 只在空闲时发起：不按住谁，也不替谁放行
  *
  * `start()` 的入口判据只有一条：**那段对话此刻是 `idle`**。在干 / 不取件 / 没有 agent 一律
  * 当场拒（`HostError("busy")`，`detail.reason = "not_idle"`），让调用方自己挑个空的时候再来。
- * 于是整趟交接既不必按暂停、也不必放行：它闲着 → 投一条指令 → 它自己变忙、自己写完 → 宿主
- * 按工具结果判「写完了没有」→ 提交。别人的话在它忙的时候进来就排在待办里，跑完之后被取走
- * 还是留在那儿都无所谓 —— 记忆随后整段被替换，什么都留不下。
+ * 于是整趟交接既不必按暂停、也不必放行：它闲着 → SDK 投一条指令 → 它自己变忙、自己写完 →
+ * 提交。别人的话在它忙的时候进来就排在待办里，跑完之后被取走还是留在那儿都无所谓 —— 记忆
+ * 随后整段被替换，什么都留不下。
  */
 
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 import { AgentNS, Message } from "@ai-zen/agents-core";
 import type { Logger, ModelParams } from "@ai-zen/agents-sdk";
 import {
   completeOnce,
-  FALLBACK_HANDOFF_TEMPLATE,
-  HANDOFF_SKILL_ID,
   HandoffAbortedError,
   HandoffService as SdkHandoffService,
-  readSkill,
 } from "@ai-zen/agents-sdk";
 import type { HandoffMode, SdkAgent } from "@ai-zen/agents-sdk";
 
 import { DEFAULT_LANGUAGE, render } from "../i18n/index.js";
 import type { Language, MessageKey } from "../i18n/index.js";
-import type { AgentFactory, ChatAgent, ChatEventEmitter } from "../runtime/ChatRunner.js";
+import type { ChatAgent, ChatEventEmitter } from "../runtime/ChatRunner.js";
 import { injectedContextOf } from "../runtime/ChatRunner.js";
-import type { ScopeRegistry } from "../runtime/ScopeRegistry.js";
 import type { MessageRepository } from "../storage/MessageRepository.js";
 import type { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
 import type { Conversation, WorkspaceRow } from "../storage/types.js";
@@ -103,7 +99,6 @@ import type {
   HandoffThen,
   NoticeLevel,
 } from "../wire/index.js";
-import { toAgentMessage } from "./MessageService.js";
 import type { NoticeService } from "./NoticeService.js";
 
 /** 交接文档落点：`<cwd>/.ai-zen/handoffs`（PRD D19） */
@@ -114,29 +109,8 @@ export function handoffDirFor(cwd: string): string {
 /** 新对话开场摘要取多长（交接文档的前若干字符，够模型认出「这是接着上一段的」） */
 const SUMMARY_EXCERPT_CHARS = 800;
 
-/**
- * 「文档算写出来了」的下限（字节）。
- *
- * 比这更小的多半是模型写了个开头就收尾了（同一道坎在 SDK 侧也这么量）。它不是产品质量的判据，
- * 只是「到底有没有落盘、写完没有」的最低限度。
- */
-const MIN_HANDOFF_BYTES = 400;
-
-/** 写文档用的那个工具名（SDK 的 `WriteTool`：参数里是 `path` 与 `content`） */
-const WRITE_TOOL_NAME = "write";
-
 /** 存档那段会话的名字前缀（PRD 4.5：名字是 `已存档_<原名>`） */
 const ARCHIVED_NAME_PREFIX = "已存档_";
-
-/**
- * 等那次写文档的工具结果最多等多久（毫秒）。
- *
- * 等的是「那次工具调用跑完了」这一件事实，不是「这一批收口了」。它必须有尽头：模型完全可以
- * 只回一句「写好了」而根本没调工具 —— 那时永远不会有一次工具结果到来，而这一段还按着、
- * 这一趟还挂在 `inFlight` 里，没有尽头就是永久停车。到点按「这次没写出来」处置（重试一次，
- * 仍不成立就降级）。给得宽是因为写一份长文档本身就要几分钟。
- */
-const HANDOFF_WRITE_WAIT_MS = 5 * 60 * 1000;
 
 /** 交接问题答完 / 交接做完之后推进状态需要的窄接口（结构上 `QuestionRepository` 满足） */
 export interface QuestionMarker {
@@ -148,29 +122,14 @@ export interface QuestionMarker {
 }
 
 /**
- * 取 Scope 的口子（结构上 `ScopeRegistry` 满足）：幂等 get-or-create。
- *
- * 没有「归还」：那个一次性驱动者用完不还，项目的 Scope 活到显式 dispose / 进程退出 ——
- * 它带着 MCP 连接，下一次（或这一段对话）还能直接复用。
- */
-export interface ScopeProvider {
-  create(workspaceId: string): Promise<Awaited<ReturnType<ScopeRegistry["create"]>>>;
-}
-
-/**
  * 交接要的那两个口（`ChatRunner` 结构上满足）。
  *
  * `beginHandoff` / `endHandoff` 是交接态的两个开关：交接期间那段的消息**只跳过写库、事件照推**。
- * `deliver` 是投递唯一的入口 —— 自交接的指令从这里进去，**不给 `mayStart`**：自交接写的是
- * **已经活着**的那个驱动者，交接不是复活死对话的路径（没有驱动者就降级到独立交接）。
+ * 投递不在这里：写文档那条指令由 SDK 直接投给它要的那个驱动者，宿主不居中转发。
  */
 export interface HandoffRunnerPort {
   beginHandoff(conversationId: string): void;
   endHandoff(conversationId: string): void;
-  deliver(
-    conversationId: string,
-    input: { content: AgentNS.MessageContent; source: AgentNS.MessageSource },
-  ): Promise<{ userMessageId: string }>;
 }
 
 /**
@@ -211,7 +170,11 @@ export class HandoffCancelledError extends Error {
 
 /** 一次交接写文档的那一步要什么 */
 export interface HandoffExecutionInput {
-  /** 这一次装配出来的驱动者 agent（历史已经装进去了） */
+  /**
+   * 这一次的驱动者：**这一段对话此刻那个 agent**。
+   *
+   * 它的 `messages` 就是这段对话的记忆本身 —— 自交接由它接着写，独立摘要拿它去问模型。
+   */
   agent: ChatAgent;
   /** 文档目录（绝对路径） */
   handoffDir: string;
@@ -238,8 +201,8 @@ export interface HandoffExecutionResult {
  * 写文档那一步的抽象。
  *
  * 默认实现走 SDK（{@link createSdkHandoffExecutor}）；用例注入替身即可验证「降级」
- * 「取消」这些路径，而不必真连模型。自交接不走它 —— 那条路的驱动者是**这段对话自己的**
- * 那一个（见 {@link HandoffService} 的 `writeBySelfHandoff`）。
+ * 「取消」这些路径，而不必真连模型。两种执行者都从这一个口进：交给 SDK 的是**这一段对话
+ * 此刻那个驱动者**（自交接由它接着写，独立摘要拿它的记忆去问模型）。
  */
 export type HandoffExecutor = (input: HandoffExecutionInput) => Promise<HandoffExecutionResult>;
 
@@ -328,41 +291,13 @@ interface HandoffRun {
   language: Language;
 }
 
-/**
- * 一次「写文档」的结局。
- *
- * 只看两样：那次写文档的工具调用的结果（`written` / `interrupted`）、驱动者还在不在（`gone`）。
- * `missing` 是「等不到那次工具结果」—— 模型没调写工具、或调了别的工具名、或干脆只回了一句话。
- * 模型自己说了什么一概不看：话不是事实。
- */
-type WriteOutcome = "written" | "missing" | "interrupted" | "gone";
-
-/**
- * 工具参数里的目标路径（解析不出来就是 `undefined`：那一次调用本来也没写出去）。
- *
- * 判据取**参数**而不是模型的话 —— 参数是那次调用的输入，模型的话只是它自己的说法。
- */
-function argumentPath(argumentsJson: string | undefined): string | undefined {
-  if (!argumentsJson) return undefined;
-  try {
-    const parsed = JSON.parse(argumentsJson) as { path?: unknown };
-    return typeof parsed?.path === "string" ? parsed.path : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 export interface HandoffServiceDeps {
   conversations: ConversationRepository;
   workspaces: WorkspaceRepository;
   messages: MessageRepository;
   /** 开新对话 / 取旧对话的完整形状 */
   conversationViews: HandoffConversationPort;
-  /** 取 Scope 装配 agent（幂等 get-or-create；用完不还，活到显式 dispose / 进程退出） */
-  scopes: ScopeProvider;
-  /** 装配 agent 的工厂（与 `ChatRunner` 用同一个；跑完即弃，D28） */
-  createAgent: AgentFactory;
-  /** 写文档那一步（独立交接）；缺省走 SDK */
+  /** 写文档那一步（两种执行者都从这里进）；缺省走 SDK */
   execute?: HandoffExecutor;
   /**
    * 活着的 agent 的持有者（`AgentRegistry.get`）。
@@ -439,8 +374,6 @@ export class HandoffService {
   private readonly workspaces: WorkspaceRepository;
   private readonly messages: MessageRepository;
   private readonly conversationViews: HandoffConversationPort;
-  private readonly scopes: ScopeProvider;
-  private readonly createAgent: AgentFactory;
   private readonly execute: HandoffExecutor;
   private readonly agents: HandoffAgentHolder;
   private readonly runner?: HandoffRunnerPort;
@@ -464,8 +397,6 @@ export class HandoffService {
     this.workspaces = deps.workspaces;
     this.messages = deps.messages;
     this.conversationViews = deps.conversationViews;
-    this.scopes = deps.scopes;
-    this.createAgent = deps.createAgent;
     this.execute = deps.execute ?? createSdkHandoffExecutor();
     this.agents = deps.agents;
     this.runner = deps.runner;
@@ -574,11 +505,14 @@ export class HandoffService {
       const handoffDir = handoffDirFor(workspace.cwd);
       // 模板目录按这次交接的项目目录现算（与 SDK 插件同一份口径）
       const skillDirs = this.skillDirs(workspace.cwd);
-      const executed =
-        run.mode === "self"
-          ? await this.writeBySelfHandoff(conversation, driver, handoffDir, skillDirs)
-          : // 独立交接：另起一次性驱动者，拿记忆副本去写（保持原样）
-            await this.writeByIndependent(conversation, handoffDir, run.mode, skillDirs);
+      // 写文档那一趟交给 SDK：它拿这个驱动者去写（自交接）或拿这段记忆去摘要（独立摘要），
+      // 降级方向也由它自己决定。宿主只收结果：文档在哪、实际用了哪一档
+      const executed = await this.execute({
+        agent: driver,
+        handoffDir,
+        mode: run.mode,
+        skillDirs,
+      });
 
       // 提交点：文档已经在盘上、够长。这里之后发生什么都不再回滚（PRD 4.5）
       const document = await this.describeDocument(executed.path, executed.usedMode);
@@ -806,189 +740,6 @@ export class HandoffService {
   }
 
   /**
-   * 自交接：**这一段对话自己的驱动者**写（PRD 4.5）。
-   *
-   * 不另造驱动者、不复制记忆 —— 指令从这里投进它的队列，它取走这一批就开写。
-   *
-   * 判定链（不订阅任何状态事件）：
-   *   1. 先挂上「那次写文档的工具结果」的监听，再把指令投进去（顺序不能反）；
-   *   2. 工具结果说它写了（工具名 `write` + 参数里的路径对得上）→ 再用 `documentReady` 验一次盘；
-   *   3. 两道都成立才算「写完了」；不成立就同一档再问一次，两次都不行就单向降级到独立交接。
-   *
-   * 三条边界：
-   *   - 驱动者由 `runToEnd` 交进来（入口判据刚证明它在）：没有投递口就没有「投进去让它自己写」
-   *     这条路，单向降级到独立交接；
-   *   - 投递不靠任何「先恢复收件」的前置：入口判据已经保证它此刻闲着，指令直接进它的待办；
-   *   - 写不出来（工具结果等不到、盘上文件不存在或太短）也是单向降级 —— 反向永远不发生。
-   *
-   * 这一趟的话不落库：交接态由 `beginHandoff` 挂着（PLAN §5.3），事件照推。
-   */
-  private async writeBySelfHandoff(
-    conversation: Conversation,
-    driver: ChatAgent,
-    handoffDir: string,
-    skillDirs: string[],
-  ): Promise<HandoffExecutionResult> {
-    const runner = this.runner;
-    if (!runner) {
-      return await this.writeByIndependent(conversation, handoffDir, "summary", skillDirs);
-    }
-
-    const path = join(handoffDir, SdkHandoffService.createHandoffFileName(this.date()));
-    // 两次机会：模型常常只回一句「写好了」而文件没落盘，问一次就够（同一道坎 SDK 那边也一样）
-    for (const retry of [false, true]) {
-      const watched = this.watchDocumentWrite(driver, path);
-      try {
-        await runner.deliver(conversation.id, {
-          content: await this.instruction(path, retry, skillDirs),
-          // 这条指令是宿主注入的，不是用户说的话（`CORE.md` §3：所有 user 消息都要有来源）
-          source: { kind: "system", label: "handoff" },
-        });
-        const outcome = await watched.written;
-        // 工具结果被掐（用户把它叫停了＝放弃交接）：回到交接前，不降级也不重试
-        if (outcome === "interrupted") throw new HandoffCancelledError();
-        // 驱动者没了（对话被删 / 被硬杀）：不是「文档没写出来」，是这段对话已经不在了
-        if (outcome === "gone") throw driverGone(conversation.id);
-      } finally {
-        watched.dispose();
-      }
-      // 落盘校验：工具结果说的是「它写了」，盘上够不够长才是事实；两道都成立才算写完了
-      if (await this.documentReady(path)) return { path, usedMode: "self" };
-    }
-    // 写不出来：单向降级到独立交接（另起一次性驱动者 + 记忆副本）
-    return await this.writeByIndependent(conversation, handoffDir, "summary", skillDirs);
-  }
-
-  /**
-   * 独立交接：另起一个**一次性驱动者**，拿当前记忆的副本去写，跑完即散。
-   *
-   * 它有自己的空队列，也不属于任何记忆 —— 所以与这段对话待办里的那些话无关（PRD 4.5）。
-   * Scope 用完不还（D28：它与 MCP 同生共死）。
-   */
-  private async writeByIndependent(
-    conversation: Conversation,
-    handoffDir: string,
-    mode: HandoffMode,
-    skillDirs: string[],
-  ): Promise<HandoffExecutionResult> {
-    const scope = await this.scopes.create(conversation.workspaceId);
-    const history = await this.loadHistory(conversation.id);
-    const agent = await this.createAgent({
-      conversationId: conversation.id,
-      workspaceId: conversation.workspaceId,
-      agentId: conversation.agentId,
-      modelId: conversation.modelId,
-      // 写文档的驱动者与普通对话同一个 agent 口径（会话级模型与档位）
-      thinkingLevel: conversation.thinkingLevel,
-      scope,
-      history,
-    });
-    // 历史逐条追加：agent 里已经有系统提示（来自助手定义），这里补上这段对话说过的话
-    for (const message of history) agent.append(message);
-    return await this.execute({ agent, handoffDir, mode, skillDirs });
-  }
-
-  /**
-   * 订「那次写文档的工具调用跑完了」这一件事。
-   *
-   * 判据是**工具结果**，不是状态：工具名（`write`）与参数里的路径对得上，才算「写文档那一次」。
-   * 模型的话一概不看（它能说「写好了」而一个字没写）。
-   *
-   * 四种结束方式：
-   *   - `written`：那次调用跑完且没被掐（盘上是否真的够长，由 `documentReady` 再说一遍）；
-   *   - `interrupted`：工具结果被掐，或者驱动者被叫停了（用户按了中断＝放弃交接）；
-   *   - `gone`：驱动者没了（对话被删 / 被硬杀）；
-   *   - `missing`：等不到（{@link HANDOFF_WRITE_WAIT_MS} 到点）—— 模型压根没调写工具。
-   *
-   * 先订再投递，顺序不能反：投完之后那次调用可能已经跑完了。
-   */
-  private watchDocumentWrite(
-    agent: ChatAgent,
-    path: string,
-  ): { written: Promise<WriteOutcome>; dispose: () => void } {
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let resolveOutcome: (outcome: WriteOutcome) => void = () => undefined;
-    const written = new Promise<WriteOutcome>((resolve) => {
-      resolveOutcome = resolve;
-    });
-    const offs: Array<() => void> = [];
-    const finish = (outcome: WriteOutcome): void => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      for (const off of offs.splice(0)) off();
-      resolveOutcome(outcome);
-    };
-    timer = setTimeout(() => finish("missing"), HANDOFF_WRITE_WAIT_MS);
-    // 这个上限不该成为「进程为什么还不退」的原因
-    timer.unref?.();
-    offs.push(
-      agent.on("toolFinished", (payload) => {
-        if (!this.writesDocument(payload.toolCall, path)) return;
-        // 工具消息被掐 = 这一下被中断了（`abort()` 那一趟的工具结果标成 Aborted）
-        finish(
-          payload.result.status === AgentNS.MessageStatus.Aborted ? "interrupted" : "written",
-        );
-      }),
-    );
-    // 翻成不取件就是「用户按了中断」（PRD 4.4：中断之后就不再收件）：放弃这次交接
-    offs.push(agent.on("consumption:paused", () => finish("interrupted")));
-    offs.push(agent.on("stopped", () => finish("gone")));
-    offs.push(agent.on("killed", () => finish("gone")));
-    return {
-      written,
-      // 收尾时把监听摘干净、把上限撤掉；还没落定的那条按「这次没写出来」处置
-      dispose: () => finish("missing"),
-    };
-  }
-
-  /** 这一次工具调用是不是「把文档写到那个路径」（判据：工具名 + 参数里的路径） */
-  private writesDocument(toolCall: AgentNS.ToolCall, path: string): boolean {
-    if (toolCall.function?.name !== WRITE_TOOL_NAME) return false;
-    const written = argumentPath(toolCall.function.arguments);
-    return written !== undefined && resolve(written) === resolve(path);
-  }
-
-  /** 交给同一个驱动者的指令：模板来自磁盘上的 `handoff` Skill，读不到用 SDK 的兜底模板 */
-  private async instruction(
-    handoffPath: string,
-    retry: boolean,
-    skillDirs: string[],
-  ): Promise<string> {
-    if (retry) {
-      return [
-        `The handoff document does not exist or is too small to deliver: ${handoffPath}`,
-        "Use the write tool right now to write the **complete** handoff document to that path (use the path exactly as given) and do nothing else.",
-      ].join("\n");
-    }
-    return SdkHandoffService.createHandoffInstruction({
-      skillContent: await this.skillContent(skillDirs),
-      handoffPath,
-      toolsAvailable: true,
-    });
-  }
-
-  /** 磁盘上的 `handoff` Skill 正文（项目里放一份同名 Skill 就覆盖全局那份）；读不到用兜底模板 */
-  private async skillContent(skillDirs: string[]): Promise<string> {
-    if (skillDirs.length > 0) {
-      const skill = await readSkill(skillDirs, HANDOFF_SKILL_ID, { silent: true });
-      if (skill?.content?.trim()) return skill.content;
-    }
-    return FALLBACK_HANDOFF_TEMPLATE;
-  }
-
-  /** 文档写出来了没有：文件在、且不小于 {@link MIN_HANDOFF_BYTES}（不读内容，避免二次读取） */
-  private async documentReady(path: string): Promise<boolean> {
-    try {
-      const stat = await fs.stat(path);
-      return stat.isFile() && stat.size >= MIN_HANDOFF_BYTES;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
    * 把写文档那一趟从记忆里截掉（长度回到 `runToEnd` 记下的那个位置）。
    *
    * 只有没提交的那几种情形会走到它：这批话不属于这段对话的记忆 —— 取消是「回到交接前」，
@@ -1010,12 +761,6 @@ export class HandoffService {
     } catch (error) {
       this.onError?.(error, "handoff-notice");
     }
-  }
-
-  /** 交给驱动者的历史：库里还在上下文里的那些（`omit` 的不发） */
-  private async loadHistory(conversationId: string): Promise<AgentNS.Message[]> {
-    const rows = await this.messages.listByConversation(conversationId);
-    return rows.filter((row) => !row.omit).map((row) => toAgentMessage(row));
   }
 
   /** 文件事实：大小与写入时刻都从磁盘取，不由执行者自己报（它可能是模型） */
@@ -1186,10 +931,5 @@ export class HandoffService {
       });
     }
     return row;
-  }
-
-  /** 宿主时钟的 `Date`（交接文件名按秒取时间戳，SDK 的那个静态方法吃 `Date`） */
-  private date(): Date {
-    return new Date(this.now());
   }
 }

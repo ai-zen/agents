@@ -6,7 +6,8 @@ import { getLogger, type Logger } from "../shared/logger.js";
 import { readSkill } from "../scope/plugins/skills/discover.js";
 import { FALLBACK_HANDOFF_TEMPLATE, HANDOFF_SKILL_ID } from "../config/factory-skills.js";
 import { completeOnce } from "./completeOnce.js";
-import { HandoffGuardPlugin } from "./HandoffGuardPlugin.js";
+import { HandoffGuardPlugin, HANDOFF_SOURCE_LABEL } from "./HandoffGuardPlugin.js";
+import type { SelfHandoffOutcome, SelfHandoffWatch } from "./HandoffGuardPlugin.js";
 import type { SdkAgent } from "./SdkAgent.js";
 
 /**
@@ -34,7 +35,7 @@ export type MigrationStrategy = "omit" | "prune";
  *   - 调用方（如 TUI）要把「用户按了 Ctrl+C」与「交接真的失败了」区分开 ——
  *     前者应静默收尾并提示「已取消」，后者才该报错；
  *   - 它**不可降级**：`self` 被取消后绝不能退到 `summary` 再跑一遍。
- *     把「用户中止」当成「模型没写出文档」，会白白多烧一轮全量输入。
+ *     把「用户中止」当成「模型没写出文档」，会白白多烧一次全量输入。
  */
 export class HandoffAbortedError extends Error {
   constructor() {
@@ -66,6 +67,26 @@ function isAbortError(err: unknown, signal?: AbortSignal): boolean {
  */
 function mergeSignals(own: AbortSignal, external?: AbortSignal): AbortSignal {
   return external ? AbortSignal.any([own, external]) : own;
+}
+
+/**
+ * 让一件承诺与取消信号赛跑：信号响了就用给定的那个值作答。
+ *
+ * 返回的 `stop()` 要把监听摧掉 —— 调用方的 signal 可能活得比这一趟长得多。没有信号时那条
+ * 承诺永不落定，赛跑就等于等另一头。
+ */
+function abortRace<T>(
+  signal: AbortSignal | undefined,
+  whenAborted: T,
+): { raced: Promise<T>; stop: () => void } {
+  let stop = () => undefined as void;
+  const raced = new Promise<T>((resolve) => {
+    if (!signal) return;
+    const onAbort = () => resolve(whenAborted);
+    signal.addEventListener("abort", onAbort, { once: true });
+    stop = () => signal.removeEventListener("abort", onAbort);
+  });
+  return { raced, stop };
 }
 
 /**
@@ -163,15 +184,15 @@ export interface MigrateParams extends HandoffParams {
  * 模板的唯一真相源是 `handoff` Skill（`SKILL.md`）；代码只负责
  * 「读正文 → 注入 → 校验文件 → 读不到时用兜底模板」，不持有第二份章节清单。
  *
- * 重入：`handoff()` 与 `migrate()` 共用 `busy` 标志。交接回合本身就是「往同一个 agent
- * 里再投一轮」（`push` 一条指令），它跑完后 agent 会再变闲一次 —— 若不在 busy 期间让
+ * 重入：`handoff()` 与 `migrate()` 共用 `busy` 标志。自交接本身就是「往同一个 agent 里
+ * 再投一条指令」（`push`），它跑完之后那一段照样会落回闲 —— 若不在 busy 期间让
  * `AutoMigratePlugin` / `ContextGuardPlugin` 让行，就会「交接触发迁移、迁移再触发交接」
  * 无限递归，或在最满的时刻被护栏直接拒掉。
  *
  * 取消：取消句柄由服务自己持有（{@link HandoffService.abort}），而不是只认调用方传进来的
  * `signal` —— 自动迁移由 `AutoMigratePlugin` 直接驱动，调用方根本没有机会把 signal 递进来，
- * 只认外部 signal 的后果是「自动迁移期间按 Ctrl+C 会被当成『文档没写出来』，于是重试一轮、
- * 再降级 summary 一轮，最后照样迁移」。取消后一律回到交接前的状态（见 {@link HandoffService.restoreBeforeHandoff}）。
+ * 只认外部 signal 的后果是「自动迁移期间按 Ctrl+C 会被当成『文档没写出来』，于是再问一次、
+ * 再降级 summary 一遍，最后照样迁移」。取消后一律回到交接前的状态（见 {@link HandoffService.restoreBeforeHandoff}）。
  */
 export class HandoffService {
   /** 交接文档兜底模板（仅在读不到 Skill 时使用） */
@@ -263,7 +284,7 @@ export class HandoffService {
   }
 
   /**
-   * 拼装「本轮交接」指令：`[Skill 正文] + [本次交接参数]`。
+   * 拼装「这次交接」的指令：`[Skill 正文] + [本次交接参数]`。
    *
    * 不在 Skill 正文里发明占位符（本体系没有模板变量引擎），参数一律由代码拼在后面，
    * 这样 Skill 只讲「怎么写」、代码只讲「写到哪、有什么能力」。
@@ -344,7 +365,7 @@ export class HandoffService {
    * 取消进行中的交接/迁移（用户按 Ctrl+C）。没有进行中的交接时是 no-op。
    *
    * 边界：本方法只保证「停下 + 回退」——不再重试、不降级 summary、不迁移，并把会话
-   * 退回交接前。**它不负责立刻掐断正在跑的模型请求**：`self` 模式的那一轮是往常驻 agent 里
+   * 退回交接前。**它不负责立刻掐断正在跑的模型请求**：`self` 模式的那一下是往常驻 agent 里
    * `push()` 的一条指令，调用方通常要同时 `agent.abort()`（TUI 就是这么做的 ——
    * 那一按会让 agent 从下一批起不再收件，本服务随之把这一趟判成「没跑完」）；`summary`
    * 模式的那次请求拿的是本服务合并出的 signal，会被真正中断。
@@ -451,7 +472,7 @@ export class HandoffService {
    *
    * 只删「本次新建」的文件：交接文件名含时间戳，正常不会撞已有文件，但调用方也
    * 可以把 `handoffDir` 指向人工目录；不管怎样都不该删掉别人的文件。
-   * 留着半成品更糟 —— 下一轮接手方会把不完整的内容当成真实交接读进去。
+   * 留着半成品更糟 —— 下一回接手方会把不完整的内容当成真实交接读进去。
    */
   private async discardPartialFile(path: string, existedBefore: boolean): Promise<void> {
     if (existedBefore) return;
@@ -577,9 +598,9 @@ export class HandoffService {
   /**
    * 自交接是否可用：需要 `write` 工具，且 agent 是**常驻**的。
    *
-   * 为什么要看 `lifetime`：自交接靠「往同一个会话里投一轮指令」实现，而一次性 agent
+   * 为什么要看 `lifetime`：自交接靠「往同一个会话里投一条指令」实现，而一次性 agent
    * 开跑即关收（第二次 `push` 抛 `closed`），且跑完就死透（`CORE.md` §1）—— 它根本没
-   * 有「再问一轮」这种能力。
+   * 有「再问一次」这种能力。
    */
   private supportsSelfHandoff(agent: SdkAgent): boolean {
     if (agent.lifetime === "one-shot") return false;
@@ -587,78 +608,81 @@ export class HandoffService {
   }
 
   /**
-   * 自交接回合：让原 agent 停工、核实、写文档，并校验文件确实落盘。
+   * 自交接：让原 agent 停下手里的活，把文档写到那个路径上，并确认它真的落了盘。
    *
-   * 失败判定（任一成立即视为失败，交由上层单向降级 summary）：
-   *   - 文件不存在 / 小于阈值；
-   *   - 模型/工具链抛错（例如没有权限、被护栏拒绝）；
-   *   - 这一轮压根没跑完（agent 被 `abort()` 暂停、或已经被关门/硬杀）。
+   * ## 判据是那次写文档的工具调用
    *
-   * **取消不算失败**：`signal` 已触发时抛 {@link HandoffAbortedError}，既不走
-   * 「文件没写好→重试一次」也不降级 summary。 这条分支必须显式写：`agent.abort()` 不抛错
-   * （core 把在途请求掉、消息标记成 Aborted 然后正常返回），否则「用户按了 Ctrl+C」会被
-   * 下面的文件校验误判成「模型没写出文档」，于是重试一轮、再降级一轮 —— 用户以为取消了，
-   * 实际多烧了两轮全量输入。
+   * 指令投进去之后只等两个事实，两个都来自 core 的钩子（{@link HandoffGuardPlugin}）：
+   *   - 「工具名 `write` + 路径等于交接路径」的那次调用回来了 → 写完了（`onToolEnd`）；
+   *   - 那一批收口了还没见到它 → 没写出来（`onOuterLoopEnd`）。
    *
-   * 取消的善后（删文档、截消息）不在这里做：交给 {@link runHandoff} 的 catch 一处处理，
-   * 因为「文档已写出但还没校验」的取消根本进不到本方法的 catch。
+   * 不看状态、不等 `idle`、不设计时器：模型可以只回一句「写好了」而一个字没写，那种情形下它
+   * 连工具都没调，「这一批收口」这一拍就是结论，不必等谁到点。
+   *
+   * ## 门与判据挂在同一处
+   *
+   * `arm()` 之后守卫同时干两件事：交接期间只放行写这份文档的那次调用（别的写操作软拒，见
+   * PRD 3.6），以及把上面那两个事实报回来。于是「只许写这份文档」与「写完了没有」用的是同一份
+   * 输入 —— 工具参数里的路径，谁也绕不过谁。
+   *
+   * 失败（文件不存在 / 小于阈值 / 模型压根没调写工具 / 这一段没了）交上层单向降级 summary；
+   * **取消不算失败**：用户按了中断就抛 {@link HandoffAbortedError}，既不重试也不降级。取消的
+   * 善后（删文档、截消息）不在这里做 —— 交给 {@link runHandoff} 的 catch 一处处理。
    */
   private async runSelfHandoff(
     agent: SdkAgent,
     handoffPath: string,
     signal?: AbortSignal,
   ): Promise<boolean> {
+    // 已经不收件了（用户让它停）：此刻投进去只会排在队里，等放行之后突然自己跑起来 —— 这一趟当没跑成
+    if (agent.consumptionPaused) return false;
+
     const guard = this.ensureGuard(agent);
     const skillContent = await this.readSkillContent();
     const cwd = (agent as { scope?: { cwd?: string } }).scope?.cwd ?? process.cwd();
 
     /*
-     * 交接回合的护栏让行由 `ContextGuardPlugin.isSuspended` 负责（接线为
-     * `() => handoffService.busy`），这里不再去改写用量数据：
+     * 交接期间护栏的让行由 `ContextGuardPlugin.isSuspended` 负责（接线为
+     * `() => handoffService.busy`），这里不去改写用量数据：
      *   - `lastUsage` 是从 `messages` 派生的只读值，本就不可写；
      *   - 「谁做限制谁放宽」—— 限制在护栏自己身上，放宽也必须写在护栏的选项里。
      */
-    guard.arm(handoffPath, cwd);
-
     try {
-      const first = await this.pushInstructionRound(
-        agent,
-        HandoffService.createHandoffInstruction({
-          skillContent,
-          handoffPath,
-          toolsAvailable: true,
-        }),
-        signal,
-      );
-      // `agent.abort()` 不抛错，必须主动检查（见方法注释）
-      this.throwIfAborted(signal);
-      // 这一轮没跑完（不收件 / 关门 / 硬杀）：产物没意义，也别再往里投 ——
-      // 不收件时它不取件，再投只会把一条陈旧指令留在队列里，等 resumeConsumption 之后突然自己跑起来
-      if (first !== "idle") return false;
-
-      if (await this.isHandoffFileReady(handoffPath)) return true;
-
-      this.logger.warn(
-        `[handoff] handoff document missing or too small, retrying once: ${handoffPath}`,
-      );
-      const second = await this.pushInstructionRound(
-        agent,
+      // 两次机会：模型可能只回一句「写好了」而文件没落盘，也可能写得太短，再问一次就够
+      const instructions = [
+        HandoffService.createHandoffInstruction({ skillContent, handoffPath, toolsAvailable: true }),
         [
           `The handoff document does not exist or is too small to deliver: ${handoffPath}`,
           "Use the write tool right now to write the **complete** handoff document to that path (use the path exactly as given) and do nothing else.",
         ].join("\n"),
-        signal,
-      );
-      this.throwIfAborted(signal);
-      if (second !== "idle") return false;
+      ];
 
-      return await this.isHandoffFileReady(handoffPath);
+      for (const instruction of instructions) {
+        // 每条指令都要一份自己的观察点：上一个的结论不留给下一个看
+        const watch = guard.arm(handoffPath, cwd);
+        const outcome = await this.pushAndWatch(agent, watch, instruction, signal);
+        // `agent.abort()` 不抛错，取消要主动看一眼（见方法注释）
+        this.throwIfAborted(signal);
+        // 那一下被掐（用户把它叫停了）：回到交接前，不重试也不降级
+        if (outcome === "interrupted") throw new HandoffAbortedError();
+        // 这一段已经不在了：没有可写的东西，也别为一个死掉的会话白烧一次全量输入
+        if (outcome === "gone") return false;
+        if (outcome === "written") {
+          // 等这一批收口：此后这一段的消息不再增长，上层要换掉的就是定了的这一份
+          await this.waitRoundOver(watch, signal);
+          if (await this.isHandoffFileReady(handoffPath)) return true;
+        }
+      }
+      // 两次都没落成：交上层单向降级到 summary
+      return false;
     } catch (err: any) {
+      // 取消不是失败：它要一路走到 {@link runHandoff} 的收尾那里（删半成品、截消息）
+      if (err instanceof HandoffAbortedError) throw err;
       // agent 已经关门：不是「文档没写出来」，是「这个会话已经不在了」。降级 summary 会
-      // 为一个死掉的会话白烧一轮全量输入，所以直接把 `closed` 往上交（调用方该知道这件事）
+      // 为一个死掉的会话白烧一次全量输入，所以直接把 `closed` 往上交（调用方该知道这件事）
       if (err instanceof AgentError && err.code === "closed") throw err;
       if (isAbortError(err, signal)) throw new HandoffAbortedError();
-      this.logger.error(`[handoff] self handoff round failed: ${err?.message ?? err}`);
+      this.logger.error(`[handoff] self handoff failed: ${err?.message ?? err}`);
       return false;
     } finally {
       guard.disarm();
@@ -666,79 +690,53 @@ export class HandoffService {
   }
 
   /**
-   * 往**常驻** agent 里投一条指令，等这一轮真的收完。
+   * 把一条指令投进它的队列，然后等这一趟的结论。
    *
-   * ## 为什么是「push + 订阅 state」
-   *
-   * core 重写后没有 `send()` 了（`CORE.md` §1：「常驻会话只 `push`，不看返回值」）：
-   * 「等」这种动作看不见不由我引起的变化，唯一可靠的替代是**订阅**。于是这里先订阅
-   * `state`、再 `push` —— 顺序不能反：push 之后状态已经变了，晚一步就错过「这一轮开始了」
-   * 那一拍，随后第一次报闲会被误当成「我这一轮跑完了」。
-   *
-   * ## `start()`：老 `send()` 隐含的那件事
-   *
-   * 老的 `send()` 是对「这个 agent」发起的，没起来也能顺手跑一段。新 core 的循环只听
-   * `start()`，所以这里先把它叫起来：`start()` 幂等（已起来就返回同一句 promise），
-   * **不能 await** —— 它到死才 resolve。宿主正常会话里这一句是空动作。
-   *
-   * ## 返回「这一轮怎么结束的」而不是「成没成」
-   *
-   * 三种结束方式对调用方意义不同（`idle` 才能去校验产物），所以分开报：
-   *   - `idle`：跑完了；
-   *   - `paused`：被 `abort()` 掉了（`consumptionPaused` 翻了），或者取消信号响了；
-   *   - `dead`：关门/硬杀，循环已经结束。
-   *
-   * 第四种情况不在这里表达：`push` 在关门之后会直接抛 `AgentError("closed")` —— 那是
-   * 「调用方违约」（往一个已经没有的会话里塞东西），就该往上抛，不该被归成一种“结束方式”。
+   * core 只有投递（`CORE.md` §1：常驻会话只 `push`，不看返回值），所以这里投完就等钩子报回来的
+   * 事实，不去问状态。关门之后 `push` 抛 `AgentError("closed")` —— 那是调用方违约，不接，
+   * 让它一路走到 {@link runSelfHandoff} 的 catch（那里原样再往上交）。
    */
-  private async pushInstructionRound(
+  private async pushAndWatch(
     agent: SdkAgent,
+    watch: SelfHandoffWatch,
     content: string,
     signal?: AbortSignal,
-  ): Promise<"idle" | "paused" | "dead"> {
-    // 已经不收件了：此刻投进去只会排在队列里，等 resumeConsumption 后突然自己跑起来
-    if (agent.consumptionPaused) return "paused";
-
+  ): Promise<SelfHandoffOutcome> {
     // 叫起来（幂等；不 await —— 那句 promise 到死才 resolve）
     void agent.start();
-
-    const ended = new Promise<"idle" | "paused" | "dead">((resolve) => {
-      let sawWorking = false;
-      const offs: Array<() => void> = [];
-      const finish = (end: "idle" | "paused" | "dead") => {
-        for (const off of offs.splice(0)) off();
-        resolve(end);
-      };
-
-      // 状态事件按到达值分名（`CORE.md` §10）：订阅「到了哪一格」，不必再看 `to`
-      offs.push(agent.on("state:working", () => void (sawWorking = true)));
-      offs.push(
-        agent.on("state:idle", () => {
-          // 只认「在干过之后的闲」：投递之前那一段（队列里还压着别人的货）的闲不是我的
-          if (sawWorking) finish("idle");
-        }),
-      );
-      offs.push(agent.on("consumption:paused", () => finish("paused")));
-      offs.push(agent.on("stopped", () => finish("dead")));
-      offs.push(agent.on("killed", () => finish("dead")));
-      // 取消也要能打断「等闲」（`CORE.md` §5 那个死角：等子 agent 闲同样得能被掐断）
-      const onAbort = () => finish("paused");
-      signal?.addEventListener("abort", onAbort, { once: true });
-      // 正常收尾时把 signal 上的监听一起摘掉：调用方的 signal 可能活得比这一轮长得多
-      offs.push(() => signal?.removeEventListener("abort", onAbort));
-    });
-
     agent.push({
       content,
       priority: "low",
       // 这条指令是**宿主侧**（`/handoff` 命令、自动迁移）注入的，不是用户说的话 ——
       // 按「谁注入谁填」给它一个 system 来源（`CORE.md` §3）
-      source: { kind: "system", label: "handoff" },
+      source: { kind: "system", label: HANDOFF_SOURCE_LABEL },
     });
+    return await this.waitOutcome(watch, signal);
+  }
 
-    // 关门之后投递会抛 `AgentError("closed")`（`CORE.md` §1）：不接、不归类，
-    // 让它往上走到 {@link runSelfHandoff} 的 catch（那里把 closed 原样再往上交）
-    return await ended;
+  /** 等这一趟的结论；取消信号响了就按「被掐」处置（结论不会比这个更早） */
+  private async waitOutcome(
+    watch: SelfHandoffWatch,
+    signal?: AbortSignal,
+  ): Promise<SelfHandoffOutcome> {
+    if (signal?.aborted) return "interrupted";
+    const { raced, stop } = abortRace(signal, "interrupted" as SelfHandoffOutcome);
+    try {
+      return await Promise.race([watch.outcome, raced]);
+    } finally {
+      stop();
+    }
+  }
+
+  /** 等这一批收口；取消信号响了也放行（收尾统一在 {@link runHandoff} 那一处做） */
+  private async waitRoundOver(watch: SelfHandoffWatch, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return;
+    const { raced, stop } = abortRace<void>(signal, undefined);
+    try {
+      await Promise.race([watch.over, raced]);
+    } finally {
+      stop();
+    }
   }
 
   /** 独立摘要：一次模型调用，用同一份 Skill 正文作为规范 */

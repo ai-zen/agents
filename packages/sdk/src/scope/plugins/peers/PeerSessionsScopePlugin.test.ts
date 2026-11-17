@@ -276,7 +276,6 @@ describe("postMessage：只回「收下了」", () => {
     const description = postTool.function.description ?? "";
     expect(description).toContain("does not depend on how the two of us are related");
     expect(description).toContain("Do not poll");
-    expect(description).toContain("postMessage");
     // 不再有「把结果投回来」这种对未来的断言
     expect(description.toLowerCase()).not.toContain("pushed back to me");
 

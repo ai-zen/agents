@@ -1,9 +1,9 @@
 import { promises as fs } from "node:fs";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AgentError, Agent, CallbackTool } from "@ai-zen/agents-core";
+import { AgentError, Agent, AgentNS, CallbackTool } from "@ai-zen/agents-core";
 import { HandoffAbortedError, HandoffService } from "./HandoffService.js";
 import { HandoffGuardPlugin } from "./HandoffGuardPlugin.js";
 import { FALLBACK_HANDOFF_TEMPLATE } from "../config/factory-skills.js";
@@ -29,6 +29,18 @@ function docContent(padding = 600): string {
   return `## 💬 Conversation Breakpoint\nBreakpoint content from the previous round\n## 🔔 First Step for the Next Agent\n- run npm test\n${"x".repeat(padding)}`;
 }
 
+/**
+ * 模型那一侧的脚本：从交接指令里认出这次的文档路径，然后调一次写工具把它落盘。
+ *
+ * `only` 给「只在第几次投递时写」（验再问一次那条路）；`body` 给「写出来但不够长」。
+ */
+function writeScript(options: { body?: string; only?: number } = {}): FakeAgentOptions["onSend"] {
+  return async (_content, nth, self) => {
+    if (options.only !== undefined && nth !== options.only) return;
+    await self.callWrite(self.handoffPathOf(), options.body ?? docContent());
+  };
+}
+
 interface FakeAgentOptions {
   /** 每次投递时的行为（默认什么都不做） */
   onSend?: (content: string, call: number, agent: FakeAgent) => void | Promise<void>;
@@ -43,11 +55,13 @@ type Listener = (payload: any) => void;
 /**
  * 假 agent：只实现 `HandoffService` 用到的表面。
  *
- * 新 core 里**没有 `send()`** 了（`CORE.md` §1）：自交接那一轮靠「`push` 一条指令 + 等闲」
- * 实现。所以这个替身要模拟的就是那条路的三个可观测点：
+ * 新 core 里**没有 `send()`** 了（`CORE.md` §1）：自交接靠「`push` 一条指令」，判据是那次写文档
+ * 的**工具调用**。所以这个替身要把 core 那条路的三样东西都演出来：
  *   - `start()`：幂等，返回一句「到死才 resolve」的 promise；
- *   - `push(entry)`：落一条 user 消息 → 变 `working` → （跑 `onSend`）→ 追加回执 → 变闲；
- *   - `on("state:idle" | "state:working" | "consumption:paused" | "stopped" | "killed")`：订阅，返回取消函数。
+ *   - `push(entry)`：落一条 user 消息 → 变 `working` → 这一批（`onOuterLoopStart`）→ 跑脚本
+ *     （脚本里用 `callWrite` 模拟模型调写工具）→ 这一批收口（`onOuterLoopEnd`）→ 变闲；
+ *   - `dispatch(hook, ctx)`：与 core 的 `dispatchHook` 同一口径（任一插件返回字符串即短路），
+ *     钩子在前（还能拒）、跑在中间、钩子在后（能看结果）。
  *
  * `state` 的转移必须走 `setState`（同值不发），否则订阅方会被同一次转移喂两次。
  * `state` 与 `consumptionPaused` 是**两处状态**（与 core 同口径）：`state` 只说循环的位置，
@@ -65,7 +79,7 @@ class FakeAgent {
   sent: string[] = [];
   plugins: any[] = [];
   client: any;
-  /** 常驻会话：自交接要求 agent 能「再问一轮」 */
+  /** 常驻会话：自交接要求 agent 能「再问一次」 */
   lifetime = "resident";
   state: "working" | "idle" = "idle";
   /** 还收不收件（另一处状态，不影响 `state`） */
@@ -105,6 +119,50 @@ class FakeAgent {
 
   use(plugin: any): void {
     this.plugins.push(plugin);
+  }
+
+  /** 跑一遍钩子（与 core 的 `dispatchHook` 同一口径：任一插件返回字符串即短路） */
+  async dispatch(hook: string, ctx: any): Promise<string | undefined> {
+    for (const plugin of this.plugins) {
+      const fn = plugin?.[hook];
+      if (typeof fn !== "function") continue;
+      const result = await fn.call(plugin, ctx);
+      if (result !== undefined) return result;
+    }
+    return undefined;
+  }
+
+  /** 这次交接的文档路径（指令里给的就是绝对路径；重试那句也带着它） */
+  handoffPathOf(): string {
+    const content = this.sent.at(-1) ?? "";
+    return /(?:absolute path:|too small to deliver:)\s*(\S+\.md)/.exec(content)?.[1] ?? "";
+  }
+
+  /**
+   * 模拟模型调一次 `write`：门（`onToolStart`，能拒）→ 真的跑（写盘）→ 结果（`onToolEnd`）。
+   *
+   * 三个可观测点与 core 一一对应，于是「谁在什么时候看到什么」与真跑一致。
+   */
+  async callWrite(path: string, body: string): Promise<void> {
+    const toolCall: any = {
+      agent: this,
+      tool_call: {
+        function: { name: "write", arguments: JSON.stringify({ path, content: body }) },
+      },
+      function_call: { name: "write" },
+      parsedArgs: { path, content: body },
+      resultMessage: { status: AgentNS.MessageStatus.Completed, content: "" },
+    };
+    const denied = await this.dispatch("onToolStart", { agent: this, toolCall });
+    if (denied !== undefined) {
+      // 拒了：那条 tool 消息的正文就是拒绝理由，工具不跑
+      toolCall.resultMessage.content = denied;
+      await this.dispatch("onToolEnd", { agent: this, toolCall });
+      return;
+    }
+    await fs.mkdir(dirname(path), { recursive: true });
+    await fs.writeFile(path, body, "utf-8");
+    await this.dispatch("onToolEnd", { agent: this, toolCall });
   }
 
   // ---- 事件（core 的 `on()` 返回取消函数） ----
@@ -155,18 +213,19 @@ class FakeAgent {
     }
     const content = entry.content as string;
     this.sent.push(content);
-    // 真 core：一批开头先落 user 消息，再发请求
+    // 真 core：一批开头先落 user 消息，再进内循环
     this.messages.push({ role: "user", content, source: entry.source });
-    this.setState("working");
+    const batch = [{ ...entry, createdAt: new Date().toISOString() }];
 
-    const finish = () => {
+    void (async () => {
+      this.setState("working");
+      await this.dispatch("onOuterLoopStart", { agent: this, entries: batch });
+      await this.options.onSend?.(content, this.sent.length, this);
+      await this.dispatch("onOuterLoopEnd", { agent: this, entries: batch });
       // 模拟 core：追加 assistant 回执，然后回到「闲」
       this.messages.push({ role: "assistant", content: "Handoff document written." });
       this.setState("idle");
-    };
-    const result = this.options.onSend?.(content, this.sent.length, this);
-    if (result instanceof Promise) void result.then(finish);
-    else finish();
+    })();
   }
 }
 
@@ -262,12 +321,8 @@ describe("handoff", () => {
   it("self 模式：原 agent 在自己会话里写文档，会话不切换", async () => {
     const { service, dir } = await makeService();
     const agent = new FakeAgent({
-      onSend: async (_content, _call, self) => {
-        // 模拟 agent 用 write 工具落盘
-        const [userMsg] = self.sent;
-        const path = userMsg.match(/Handoff document absolute path: (.+)/)![1].trim();
-        await fs.writeFile(path, docContent(), "utf-8");
-      },
+      // 模型用 write 工具把它落盘：钩子按「工具名 + 路径」认出这一次
+      onSend: writeScript(),
     });
 
     const ctx = await service.handoff({ agent: asAgent(agent) });
@@ -292,10 +347,7 @@ describe("handoff", () => {
       skillDirs: [join(missingSkillDir, "nope")], // 不存在 → 走兜底
     });
     const agent = new FakeAgent({
-      onSend: async (_c, _n, self) => {
-        const path = self.sent[0].match(/Handoff document absolute path: (.+)/)![1].trim();
-        await fs.writeFile(path, docContent(), "utf-8");
-      },
+      onSend: writeScript(),
     });
 
     await service.handoff({ agent: asAgent(agent) });
@@ -313,10 +365,7 @@ describe("handoff", () => {
 
     const { service } = await makeService({ skillDirs: [skillRoot] });
     const agent = new FakeAgent({
-      onSend: async (_c, _n, self) => {
-        const path = self.sent[0].match(/Handoff document absolute path: (.+)/)![1].trim();
-        await fs.writeFile(path, docContent(), "utf-8");
-      },
+      onSend: writeScript(),
     });
 
     await service.handoff({ agent: asAgent(agent) });
@@ -325,15 +374,10 @@ describe("handoff", () => {
     expect(agent.sent[0]).not.toContain(FALLBACK_HANDOFF_TEMPLATE.split("\n")[0] + "\n");
   });
 
-  it("self 模式：文件未落盘时重试一次，第二次成功即采用", async () => {
+  it("self 模式：第一次没写出来就再问一次，第二次写出来了即采用", async () => {
     const { service } = await makeService();
-    const agent = new FakeAgent({
-      onSend: async (content, call, self) => {
-        if (call !== 2) return; // 第一次什么都不写
-        const path = content.match(/(\/\S+\.md)/)![1];
-        await fs.writeFile(path, docContent(), "utf-8");
-      },
-    });
+    // 第一次投递什么都不写（模型只回了句话），第二次才动笔
+    const agent = new FakeAgent({ onSend: writeScript({ only: 2 }) });
 
     const ctx = await service.handoff({ agent: asAgent(agent) });
 
@@ -344,16 +388,11 @@ describe("handoff", () => {
 
   it("self 模式：两次都写得过小 → 单向降级 summary（阈值 400 字节）", async () => {
     const { service } = await makeService();
-    const agent = new FakeAgent({
-      onSend: async (_c, _n, self) => {
-        const path = self.sent[0].match(/Handoff document absolute path: (.+)/)![1].trim();
-        await fs.writeFile(path, "too short", "utf-8");
-      },
-    });
+    const agent = new FakeAgent({ onSend: writeScript({ body: "too short" }) });
 
     const ctx = await service.handoff({ agent: asAgent(agent) });
 
-    expect(agent.sent).toHaveLength(2); // 原回合 + 1 次重试
+    expect(agent.sent).toHaveLength(2); // 第一次没落成 + 再问一次
     expect(ctx.requestedMode).toBe("self");
     expect(ctx.mode).toBe("summary");
     // summary 由服务调用模型并落盘
@@ -380,8 +419,7 @@ describe("handoff", () => {
     const agent = new FakeAgent({
       onSend: async (_c, _n, self) => {
         usageAtSend = self.lastUsage;
-        const path = self.sent[0].match(/Handoff document absolute path: (.+)/)![1].trim();
-        await fs.writeFile(path, docContent(), "utf-8");
+        await self.callWrite(self.handoffPathOf(), docContent());
       },
     });
 
@@ -397,8 +435,7 @@ describe("handoff", () => {
       onSend: async (_c, _n, self) => {
         const guard = self.plugins.find((p) => p instanceof HandoffGuardPlugin);
         expect(guard?.armed).toBe(true);
-        const path = self.sent[0].match(/Handoff document absolute path: (.+)/)![1].trim();
-        await fs.writeFile(path, docContent(), "utf-8");
+        await self.callWrite(self.handoffPathOf(), docContent());
       },
     });
 
@@ -413,7 +450,7 @@ describe("handoff", () => {
 
   it("agent 已经关门时不投递、不做 summary，直接把 closed 往上抛", async () => {
     // `push` 在关门之后抛 `AgentError("closed")`（CORE.md §1）。那不是「文档没写出来」，
-    // 而是「这个会话已经不在了」—— 降级 summary 会为一个死掉的会话白烧一轮全量输入。
+    // 而是「这个会话已经不在了」—— 降级 summary 会为一个死掉的会话白烧一次全量输入。
     const { service } = await makeService();
     const agent = new FakeAgent();
     agent.stop();
@@ -425,7 +462,7 @@ describe("handoff", () => {
 
   it("agent 不收件时不投递（不收件就不取件），直接降级 summary", async () => {
     // 不收件时 `push` 只会排队，等 resumeConsumption 之后突然自己跑起来 —— 那是「用户让它停却看见
-    // 它又开口」。所以这一轮当没跑成，走逃生模式（summary 不经过 agent）。
+    // 它又开口」。所以这一趟当没跑成，走逃生模式（summary 不经过 agent）。
     const { service } = await makeService();
     const agent = new FakeAgent();
     agent.consumptionPaused = true;
@@ -473,10 +510,7 @@ describe("handoff", () => {
       },
     });
     const agent = new FakeAgent({
-      onSend: async (_c, _n, self) => {
-        const path = self.sent[0].match(/Handoff document absolute path: (.+)/)![1].trim();
-        await fs.writeFile(path, docContent(), "utf-8");
-      },
+      onSend: writeScript(),
     });
 
     await service.handoff({ agent: asAgent(agent) });
@@ -487,10 +521,7 @@ describe("handoff", () => {
   it("busy 在流程结束后复位", async () => {
     const { service } = await makeService();
     const agent = new FakeAgent({
-      onSend: async (_c, _n, self) => {
-        const path = self.sent[0].match(/Handoff document absolute path: (.+)/)![1].trim();
-        await fs.writeFile(path, docContent(), "utf-8");
-      },
+      onSend: writeScript(),
     });
 
     expect(service.busy).toBe(false);
@@ -502,16 +533,16 @@ describe("handoff", () => {
 });
 
 // ---------------------------------------------------------------------------
-// self 模式：真 core 跑一轮
+// self 模式：真 core 走一遍
 // ---------------------------------------------------------------------------
 
 /**
- * 这一组不接假 agent：`push` + 等闲这条新路完全依赖 core 的真实状态转移
- * （`push` 同步变 `working` → 一圈跑完变闲），假件把它演得太随意就验不出任何东西。
+ * 这一组不接假 agent：判据落在 core 的钩子上（`onToolStart` / `onToolEnd` / `onOuterLoopEnd`），
+ * 由真的循环来发。假件把它演得太随意就验不出任何东西。
  */
-describe("self 模式：真 core（push + 等闲，没有 send()）", () => {
+describe("self 模式：真 core（投指令 + 看那次写工具的结果，没有 send()）", () => {
   /**
-   * 造一个客户端：流式请求（会话那一轮）回「模型要求调 write」+ 收尾文本，
+   * 造一个客户端：流式请求（会话那一次）回「模型要求调 write」+ 收尾文本，
    * 非流式请求（`summary` 目录那一次 `completeOnce`）直接回一篇完整文档。
    */
   function makeStreams(handoffPathOf: (body: any) => string) {
@@ -586,7 +617,7 @@ describe("self 模式：真 core（push + 等闲，没有 send()）", () => {
     return { client: { chat: { completions: { create } } } as any, create };
   }
 
-  it("把指令投进去、等这一轮收完、再校验落盘（模式仍是 self）", async () => {
+  it("把指令投进去、那次写工具的结果回来了、再校验落盘（模式仍是 self）", async () => {
     const { service } = await makeService();
     const writeTool = new CallbackTool({
       function: {
@@ -649,10 +680,7 @@ describe("self 模式：真 core（push + 等闲，没有 send()）", () => {
 describe("migrate", () => {
   function selfAgent(): FakeAgent {
     return new FakeAgent({
-      onSend: async (_c, _n, self) => {
-        const path = self.sent[0].match(/Handoff document absolute path: (.+)/)![1].trim();
-        await fs.writeFile(path, docContent(), "utf-8");
-      },
+      onSend: writeScript(),
     });
   }
 
@@ -839,7 +867,7 @@ describe("取消（AbortSignal）", () => {
       service.handoff({ agent: asAgent(agent), mode: "self", signal: ac.signal }),
     ).rejects.toThrow(HandoffAbortedError);
 
-    // 只发送了一轮：取消不能被当成「文档没写好」而触发重试
+    // 只投了一次：取消不能被当成「文档没写好」而触发再问一次
     expect(agent.sent).toHaveLength(1);
     // 一路降到 summary 会再发一次模型请求——必须没有
     expect(agent.client.chat.completions.create).not.toHaveBeenCalled();
@@ -849,10 +877,12 @@ describe("取消（AbortSignal）", () => {
     const { service, dir } = await makeService();
     const ac = new AbortController();
     const agent = new FakeAgent({
-      onSend: async (content) => {
+      onSend: async (_content, _nth, self) => {
         // 模型已经用 write 工具落了半截内容，然后被取消
-        const path = /Handoff document absolute path: (.+)/.exec(content)![1]!.trim();
-        await fs.writeFile(path, "## 💬 Conversation Breakpoint\nonly half written", "utf-8");
+        await self.callWrite(
+          self.handoffPathOf(),
+          "## 💬 Conversation Breakpoint\nonly half written",
+        );
         ac.abort();
       },
     });
@@ -861,7 +891,7 @@ describe("取消（AbortSignal）", () => {
       service.handoff({ agent: asAgent(agent), mode: "self", signal: ac.signal }),
     ).rejects.toThrow(HandoffAbortedError);
 
-    // 半成品必须清掉：否则下一轮接手方会把不完整内容当成真实交接读进去
+    // 半成品必须清掉：否则下一回的接手方会把不完整内容当成真实交接读进去
     expect(await fs.readdir(dir)).toEqual([]);
   });
 
@@ -932,10 +962,7 @@ describe("取消（AbortSignal）", () => {
     // 第三种状态，比让迁移做完更糟，所以这里只验「迁移照常完成」
     const { service } = await makeService({ strategy: "prune", onHandoff: () => ac.abort() });
     const agent = new FakeAgent({
-      onSend: async (_c, _n, self) => {
-        const path = self.sent[0].match(/Handoff document absolute path: (.+)/)![1].trim();
-        await fs.writeFile(path, docContent(), "utf-8");
-      },
+      onSend: writeScript(),
     });
 
     const ctx = await service.migrate({ agent: asAgent(agent), signal: ac.signal });

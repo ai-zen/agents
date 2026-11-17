@@ -508,8 +508,8 @@ export class HostApp {
         state: (conversationId) => this.chatRunner.state(conversationId),
       },
     });
-    // agent 工厂只造一次：交接的驱动者与普通对话用同一个（普通对话的 agent 常驻，装配一次跨
-    // 多次投递复用；写文档的驱动者自己装配、用完即弃）
+    // agent 工厂只造一次：普通对话与压缩那几条路用它装配（常驻的 agent 装配一次跨多次投递复用，
+    // 一次性的用完即弃）
     const createAgent = options.createAgent ?? this.defaultAgentFactory();
     // agent 的持有者：「agent 从哪来」唯一的入口。它内部先要 Scope（幂等），
     // 于是 Scope → Agent 的依赖顺序写在代码里，而不是靠调用方记得先要 Scope
@@ -538,17 +538,14 @@ export class HostApp {
       workspaces: this.workspaces,
       messages: this.messages,
       conversationViews: this.conversationService,
-      scopes: this.scopeRegistry,
-      createAgent,
       // 入口判据读的那一格与自交接的驱动者是同一个：这一段现在挂着谁（忙 / 闲 / 暂停由它自己报）
       agents: { get: (conversationId) => this.agentRegistry.get(conversationId) },
-      // 交接态与投递两个口：挂牌期间只跳过写库、事件照推；指令从投递唯一的入口进去。
+      // 交接态那两个开关：挂牌期间只跳过写库、事件照推（写文档那条指令由 SDK 直接投给驱动者）。
       // `chatRunner` 在 §7 才造出来，所以这里闭包住 `this`，调用那一刻才去拿（同一个理由：
       // 平级会话那两个口也是这么接的）
       runner: {
         beginHandoff: (conversationId) => this.chatRunner.beginHandoff(conversationId),
         endHandoff: (conversationId) => this.chatRunner.endHandoff(conversationId),
-        deliver: (conversationId, input) => this.chatRunner.deliver(conversationId, input),
       },
       questions: this.questions,
       notices: this.noticeService,

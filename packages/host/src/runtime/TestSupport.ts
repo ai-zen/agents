@@ -8,6 +8,9 @@
  * 本文件只被 `*.test.ts` import（`tsconfig.json` 把它排除在产物之外）。
  */
 
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
+
 import {
   Agent,
   AgentNS,
@@ -269,8 +272,17 @@ export interface FakeRound {
   deltas?: AgentNS.Delta[];
   /** 收尾片带的用量（会经 `applyChunk` 钉到那条助手消息上） */
   usage?: AgentNS.Usage;
-  /** 这一轮模型要求的工具调用；给了就进「等工具」并再开一轮 */
-  toolCalls?: Array<{ id: string; name: string; arguments?: string }>;
+  /**
+   * 这一轮模型要求的工具调用；给了就进「等工具」并再开一轮。
+   *
+   * `arguments` 可以给一个函数：参数按**这一次请求体**现算。交接那条路要的正是这种 ——
+   * 文档路径写在刚推进去的指令里，模型那一刻才看得见它。
+   */
+  toolCalls?: Array<{
+    id: string;
+    name: string;
+    arguments?: string | ((body: any) => string);
+  }>;
   /** 工具真正「跑」之前等这个（用例在「等工具」处插中止） */
   toolGate?: Promise<void>;
   /**
@@ -294,8 +306,12 @@ export interface FakeRound {
 type AgentClient = ConstructorParameters<typeof Agent>[0]["client"];
 type StreamResult = Awaited<ReturnType<AgentClient["chat"]["completions"]["create"]>>;
 
-/** 把脚本里的一轮变成一片异步流 */
-async function* streamOf(round: FakeRound, signal?: AbortSignal): AsyncGenerator<unknown> {
+/** 把脚本里的一轮变成一片异步流（`body` = 这一次请求体：参数里的函数按它现算） */
+async function* streamOf(
+  round: FakeRound,
+  signal?: AbortSignal,
+  body?: unknown,
+): AsyncGenerator<unknown> {
   if (round.gate) await round.gate;
   if (signal?.aborted) return;
 
@@ -316,7 +332,13 @@ async function* streamOf(round: FakeRound, signal?: AbortSignal): AsyncGenerator
           index,
           id: call.id,
           type: "function",
-          function: { name: call.name, arguments: call.arguments ?? "{}" },
+          function: {
+            name: call.name,
+            arguments:
+              typeof call.arguments === "function"
+                ? call.arguments(body)
+                : (call.arguments ?? "{}"),
+          },
         },
       ],
     });
@@ -410,7 +432,7 @@ export class FakeAgent extends Agent {
       const round: FakeRound = rounds[script.cursor] ?? { deltas: [{ content: "（脚本用完了）" }] };
       script.cursor += 1;
       if (round.fail) throw round.fail;
-      const iterator = streamOf(round, requestOptions?.signal);
+      const iterator = streamOf(round, requestOptions?.signal, body);
       return { [Symbol.asyncIterator]: () => iterator } as unknown as StreamResult;
     };
 
@@ -440,6 +462,8 @@ export class FakeAgent extends Agent {
  *
  * - 某一轮带了 `subAgent` 时，那一轮的**第一个**工具是委派：走 core 的 `AgentToolLazy`
  *   （血缘、事件转发、用量汇总都在 core 里发生，这里只给子 agent 的脚本）；
+ * - `write` 是**真的写盘**（参数里给 `path` 与 `content`）：交接那条路要的事实就是「盘上有
+ *   没有这份文档」，回声工具演不出来；
  * - 其余工具是回声（`ok:<名字>`），`toolGate` 时把它按在「跑着」那一刻。
  */
 function toolsOf(rounds: FakeRound[]): Tool[] {
@@ -467,6 +491,28 @@ function toolsOf(rounds: FakeRound[]): Tool[] {
                 ...(spec.fail === undefined ? {} : { fail: spec.fail }),
                 ...(spec.usage === undefined ? {} : { usage: spec.usage }),
               }),
+          }),
+        );
+        continue;
+      }
+      if (call.name === "write") {
+        tools.push(
+          new CallbackTool({
+            function: {
+              name: "write",
+              description: "写文件（用例脚本；真的落盘）",
+              parameters: { type: "object", properties: {} },
+            },
+            callback: async (parsed) => {
+              if (round.toolGate) await round.toolGate;
+              const args = (parsed ?? {}) as { path?: unknown; content?: unknown };
+              if (typeof args.path !== "string" || args.path.trim() === "") {
+                return "write 需要 path";
+              }
+              await mkdir(dirname(args.path), { recursive: true });
+              await writeFile(args.path, String(args.content ?? ""), "utf-8");
+              return "ok:write";
+            },
           }),
         );
         continue;
