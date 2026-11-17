@@ -169,7 +169,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 | 粒度 | 事件 | 载荷 | 谁在用 |
 |---|---|---|---|
 | 追加一条 | `message.added` | 完整消息对象（id / role / status / content / source / tool_calls…） | 客户端建槽；宿主写行 |
-| 流式一片 | `message.delta` | core 的 `AgentNS.Delta` 原样 + `messageId` + 消息内 `seq` | 客户端跑同一个 `applyChunk` 增量 |
+| 流式一片 | `message.delta` | core 的 `AgentNS.Delta` 原样 + `messageId`（**没有 seq**：有序连接上「漏一片」这个处境不存在，断线即作废、靠 `resync` 整段对齐） | 客户端跑同一个 `applyChunk` 增量 |
 | 一圈收口 | `message.changed` | 完整消息对象（此刻的 status / tool_calls / finish_reason / usage 都在上面） | 客户端整条替换；宿主覆盖写行 |
 | 事后改写 | `message.changed` / `message.removed` | 同上 ／ 被删的那条（中止、出错、`drop`、`omit`） | 同上 |
 | 状态 | `state` | `{ conversationId, status }`，取值 `busy` / `idle` / `paused` / `dead`（**变了才发**） | 客户端自己那四格 |

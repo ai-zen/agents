@@ -55,15 +55,17 @@ export interface MessageAddedPayload {
  *
  * 增量本体是 core 的 `AgentNS.Delta`，这一片属于哪一段由它自己带的字段说明：`content` 是
  * 正文、`reasoning_content` 是思考、`tool_calls` 是工具调用（PRD F-I2 的那三段）。
- * 外壳只带定位信息：哪个对话、哪条消息、这条消息内的第几片。
+ * 外壳只带定位信息：哪个对话、哪条消息。
  *
- * `seq` 是这条消息内的递增序号，客户端用它发现「漏了一片」并在重连后重拉整条。
+ * **这里没有「这一片是第几片」**：这条连接是有序 WS，同一段对话的增量按发出顺序一条条到达，
+ * 「乱序」与「中间那一小片丢了」这两种处境都不存在 —— 漏片只可能来自断线，而断线即作废
+ * （见文件开头：不重放、不 ack），客户端靠 `resync`（`message.list` 全量，或带本地最后一条 id
+ * 起的增量）把整段重新对齐。于是序号既没有判断依据、也没有可做的事：它只会让「客户端自己发现
+ * 漏了一片再去补」这条根本不存在的路看起来存在。
  */
 export interface MessageDeltaPayload {
   conversationId: string;
   messageId: string;
-  /** 这条消息内的序号，从 0 开始递增 */
-  seq: number;
   /** 这一片增量，core 原样 */
   delta: AgentNS.Delta;
   /** 这次推送的时刻 */

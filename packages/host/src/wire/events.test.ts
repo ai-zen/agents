@@ -47,7 +47,6 @@ describe("事件表", () => {
     const textDelta: MessageDeltaPayload = {
       conversationId: "c-1",
       messageId: "m-2",
-      seq: 3,
       delta: { content: "你好" },
       at: NOW,
     };
@@ -56,7 +55,6 @@ describe("事件表", () => {
 
     const thinkingDelta: MessageDeltaPayload = {
       ...textDelta,
-      seq: 0,
       delta: { reasoning_content: "先看文件" },
     };
     expect(thinkingDelta.delta.reasoning_content).toBe("先看文件");
@@ -64,7 +62,6 @@ describe("事件表", () => {
     // 工具调用的增量也是 core 的形状：id 先到、名字与参数可能后到
     const toolDelta: MessageDeltaPayload = {
       ...textDelta,
-      seq: 1,
       delta: {
         tool_calls: [
           { index: 0, id: "t-1", type: "function", function: { name: "read", arguments: '{"pa' } },
@@ -78,7 +75,6 @@ describe("事件表", () => {
     // 内容段数组（图片 / 文件）走的也是同一份 Delta
     const sectionDelta: MessageDeltaPayload = {
       ...textDelta,
-      seq: 2,
       delta: { content: [{ index: 0, type: "image_url", image_url: { url: "https://example.test/a.png" } }] },
     };
     expect(Array.isArray(sectionDelta.delta.content) && sectionDelta.delta.content[0].type).toBe(
@@ -91,7 +87,6 @@ describe("事件表", () => {
     const payload: MessageDeltaPayload = {
       conversationId: "c-1",
       messageId: "m-2",
-      seq: 0,
       delta: { content: "你好", reasoning_content: "先看文件" },
       at: NOW,
     };

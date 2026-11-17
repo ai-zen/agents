@@ -14,7 +14,8 @@ import type { MessageKey } from "../i18n/index.js";
  *   - 消息内容 = `AgentNS.MessageContent`、`AgentNS.MessageContentSection`（`text` / `image_url` / `file`）；
  *   - 工具调用 = `AgentNS.ToolCall`、`AgentNS.FunctionCall`；
  *   - 消息状态 / 角色 / 结束原因 = `AgentNS.MessageStatus` / `AgentNS.Role` / `AgentNS.FinishReason`；
- *   - 流式增量 = `AgentNS.Delta`；用量 = `AgentNS.Usage`（求和用 core 的 `sumUsage`）。
+ *   - 流式增量 = `AgentNS.Delta`；用量 = `AgentNS.Usage`（就在每条消息的 `usage` 上，要合计就
+ *     自己把消息上的 `usage` 加起来 —— core 不算、不存、不报，也没有求和函数）。
  *
  * 本文件只装 core 没有的**产品事实**：对话此刻落在哪一格、待办的一行、思考档位、模型块、
  * 通知分档、问题对象、素材引用。外壳里的消息、内容、工具调用、用量字段装的就是 core 的

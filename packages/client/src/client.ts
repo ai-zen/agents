@@ -374,8 +374,9 @@ export class Client implements ContractCaller {
       return existing;
     }
 
-    // 状态先用「死」占位：四格读到之前它什么都还不是，读到现读值就换掉
-    const mirror = new ConversationMirror({ conversationId, status: "dead" });
+    // 状态先空着（`null` = 还没读到）：四格读到之前它什么都还不是，也不借「死」那一格占位 ——
+    // 死是带动作的一格（发话前先复活），而这里只是还没读到；`applyReadout` 之后才有一格
+    const mirror = new ConversationMirror({ conversationId, status: null });
     this.mirrors.set(conversationId, mirror);
     try {
       await this.snapshotWhileBuffering(conversationId, async () => {

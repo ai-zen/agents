@@ -22,16 +22,18 @@
  * ## 只管这三样东西
  *
  * ① `messages`：主线一栏 + 按 `toolCallId` 归好的子 Agent 各栏；
- * ② 四格 `status`（忙 / 闲 / 暂停 / 死），来自 `state` 事件；还没收到事件时用
- *    `conversation.state` 的现读值初始化；
+ * ② 四格 `status`（忙 / 闲 / 暂停 / 死），来自 `state` 事件；还没读到时是 `null`
+ *    （不是「死」—— 死是四格里带「发话前先复活」动作的那一格，拿它当「还没读到」的占位是借词），
+ *    读到 `conversation.state` 的现读值之后才有一格；
  * ③ `conversation.state` 的另外两格：子 agent **名册**（只用来铺栏）与**交接态**
  *    （非空即「正在交接」）。
  *
  * 子 agent 那一栏的消息**一律来自事件**（每条消息事件都带 `toolCallId`）：子 agent 不入库，
  * 也就没有第二个地方可以补 —— 重连之后靠名册把栏铺回来，内容靠之后的事件继续长。
  *
- * 用量**不在这里**：每条消息自带 `usage`，要显示就自己求和（core 的 `sumUsage`）——客户端不
- * 为了用量再养一条事件与一份汇总，那两份东西与消息上的事实迟早对不上。
+ * 用量**不在这里**：每条消息自带 `usage`，要显示就把消息上的 `usage` 自己加起来（core 不管
+ * 用量，没有求和函数）—— 客户端不为了用量再养一条事件与一份汇总，那两份东西与消息上的事实
+ * 迟早对不上。
  *
  * ## 就地改，不返回新对象
  *
@@ -105,7 +107,14 @@ export interface SubAgentFact {
 /** 镜像的一份只读样子（给界面与用例看，不是另一份数据） */
 export interface MirrorSnapshot {
   conversationId: string;
-  status: ConversationStatus;
+  /**
+   * 四格里那一格；`null` = **还没读到**。
+   *
+   * 镜像刚建出来时（打开对话的这一刻）还没读 `conversation.state`，所以它什么都还不是：
+   * 不是「死」—— 死是四格里带「发话前先复活」动作的那一格，把「还没读到」报成死，界面就会
+   * 去提示复活一段其实好端端的对话。拿到读数（`applyReadout`）之后才有一格。
+   */
+  status: ConversationStatus | null;
   /** 主线消息（不属于任何子 Agent 的那些），顺序即对话里的先后 */
   messages: readonly AgentNS.Message[];
   /** 按 `toolCallId` 归好的子 Agent 各栏 */
@@ -119,7 +128,8 @@ export interface MirrorSnapshot {
 /** 一段对话的镜像：主线一栏、子 Agent 各一栏、四格里那一格，外加名册与交接态 */
 export class ConversationMirror {
   readonly conversationId: string;
-  private statusValue: ConversationStatus;
+  /** 四格里那一格；还没读到就是 `null`（见 {@link MirrorSnapshot.status}） */
+  private statusValue: ConversationStatus | null;
   private main: AgentNS.Message[] = [];
   private readonly columns = new Map<string, AgentNS.Message[]>();
   private rosterValue: SubAgentFact[] = [];
@@ -133,13 +143,19 @@ export class ConversationMirror {
    */
   private fromSnapshot = new Set<string>();
 
-  constructor(init: { conversationId: string; status: ConversationStatus }) {
+  /**
+   * `status` 是**打开这一刻已知的那一格**：还没读过 `conversation.state` 就给 `null`（还没读到）。
+   *
+   * 不给它一个四格里的值去占位：死是带动作的一格（发话前先复活），借来当「还不知道」的占位，
+   * 读的人就分不出「这段真的没驱动者」与「我还没读到」。
+   */
+  constructor(init: { conversationId: string; status: ConversationStatus | null }) {
     this.conversationId = init.conversationId;
     this.statusValue = init.status;
   }
 
-  /** 四格里的那一格 */
-  get status(): ConversationStatus {
+  /** 四格里的那一格；还没读到就是 `null` */
+  get status(): ConversationStatus | null {
     return this.statusValue;
   }
 
@@ -190,6 +206,9 @@ export class ConversationMirror {
 
   /**
    * 收下 `conversation.state` 的三格（四格里的那一格 + 名册 + 交接态）。
+   *
+   * 这也是 `status` 从 `null`（还没读到）**真正变成一格**的那一刻；之后由 `state` 事件一路换
+   * 下去（`applyStatus`）。
    *
    * 名册只**加栏、不删栏**：它说的是「这一段此刻有哪几个子 agent」，而栏里的消息是事件一条
    * 一条攒起来的。名册被清空（下一批开始了）不等于那些话没说过 —— 所以已经攒下的栏原样留着。

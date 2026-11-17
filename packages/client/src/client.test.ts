@@ -221,7 +221,6 @@ describe("事件", () => {
     host.push("message.delta", {
       conversationId: "c1",
       messageId: "m1",
-      seq: 0,
       delta: { content: "你" },
       at: "2026-01-01T00:00:02.000Z",
     });
@@ -276,6 +275,40 @@ describe("事件", () => {
 });
 
 describe("镜像：打开一段对话", () => {
+  it("打开那一刻还没读到四格：status 是 null，不是「死」", async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const host = await startFake({
+      methods: {
+        "conversation.state": async (params) => {
+          // 卡住这一跳：镜像已经进表、四格还没读到
+          await gate;
+          return {
+            state: conversationState((params as { conversationId: string }).conversationId),
+          };
+        },
+        "message.list": () => listed("c1", []),
+      },
+    });
+    const client = await connect(host);
+
+    const opening = client.open("c1");
+    await waitFor(() => host.frames.some((frame) => frame.method === "conversation.state"));
+
+    // 还没读到：这一格没有值（不借「死」那一格 —— 那是带「发话前先复活」动作的一格）
+    const pending = client.mirror("c1");
+    expect(pending?.status).toBeNull();
+    expect(pending?.snapshot().status).toBeNull();
+
+    release();
+    const mirror = await opening;
+    // 拿到读数之后才有一格
+    expect(mirror.status).toBe("idle");
+  });
+
   it("先读四格、再拉全量，拉取期间到达的事件按顺序补上", async () => {
     let release: () => void = () => undefined;
     const gate = new Promise<void>((resolve) => {
@@ -308,7 +341,6 @@ describe("镜像：打开一段对话", () => {
     host.push("message.delta", {
       conversationId: "c1",
       messageId: "m2",
-      seq: 0,
       delta: { content: "到一半" },
       at: "2026-01-01T00:00:02.000Z",
     });

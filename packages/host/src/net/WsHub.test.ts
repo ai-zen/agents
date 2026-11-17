@@ -95,7 +95,6 @@ function handlers(): HandlerTable {
       pushFromHandler("message.delta", {
         conversationId: context.params.conversationId,
         messageId: "m-1",
-        seq: 0,
         delta: { content: "hi" },
         at: NOW,
       });
@@ -103,7 +102,6 @@ function handlers(): HandlerTable {
       pushFromHandler("message.delta", {
         conversationId: "another-conversation",
         messageId: "m-2",
-        seq: 0,
         delta: { content: "other" },
         at: NOW,
       });

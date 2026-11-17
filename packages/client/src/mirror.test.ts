@@ -6,6 +6,7 @@
  *   2. 重连补回来的那一份：锚点还在 → 替换 + 追加；锚点不在 → 整段替换。
  *   3. 打开期间攒下的那一批（`replay: true`）：属于快照已包含那些消息的增量不再折一遍。
  *   4. 与镜像无关的事件（`notice` / `question` / `error` / `conversation.changed`）不认领。
+ *   5. `status`：还没读到是 `null`（不借「死」那一格占位），`applyReadout` 之后才有一格。
  *
  * 这里全是纯函数与纯对象：不起 socket、不调契约方法。
  */
@@ -33,10 +34,9 @@ function addedEvent(
 function deltaEvent(
   messageId: string,
   delta: EventPayload<"message.delta">["delta"],
-  seq = 0,
   toolCallId?: string,
 ): EventPayload<"message.delta"> {
-  return { conversationId: "c1", messageId, seq, delta, at: AT, ...(toolCallId ? { toolCallId } : {}) };
+  return { conversationId: "c1", messageId, delta, at: AT, ...(toolCallId ? { toolCallId } : {}) };
 }
 
 function changedEvent(
@@ -51,7 +51,8 @@ function removedEvent(messageId: string, toolCallId?: string): EventPayload<"mes
 }
 
 function mirrorOf(): ConversationMirror {
-  return new ConversationMirror({ conversationId: "c1", status: "idle" });
+  // 刚建出来还没读 `conversation.state`：那一格是 `null`（还没读到），不是四格里的任何一格
+  return new ConversationMirror({ conversationId: "c1", status: null });
 }
 
 describe("四条到达事件", () => {
@@ -85,12 +86,29 @@ describe("四条到达事件", () => {
     const mirror = mirrorOf();
     mirror.apply({ kind: "message.added", payload: addedEvent(userMessage("m1", "问")) });
     mirror.apply({ kind: "message.added", payload: addedEvent(assistantMessage("s1", "子"), "call-1") });
-    mirror.apply({ kind: "message.delta", payload: deltaEvent("s1", { content: "agent" }, 0, "call-1") });
+    mirror.apply({ kind: "message.delta", payload: deltaEvent("s1", { content: "agent" }, "call-1") });
 
     expect(mirror.messages.map((message) => message.id)).toEqual(["m1"]);
     expect(mirror.subAgent("call-1").map((message) => message.content)).toEqual(["子agent"]);
     // 没那一栏就是空数组
     expect(mirror.subAgent("没有这一栏")).toEqual([]);
+  });
+
+  it("还没读到四格时 status 就是 null（不借「死」占位）", () => {
+    const mirror = mirrorOf();
+    // 打开对话的那一刻：事件还没到、`conversation.state` 也还没读
+    expect(mirror.status).toBeNull();
+    expect(mirror.snapshot().status).toBeNull();
+
+    // 读到现读值之后才有一格，之后照旧由 `state` 事件换下去
+    mirror.applyReadout({ status: "dead", subAgents: [], handoff: null });
+    expect(mirror.status).toBe("dead");
+    expect(mirror.snapshot().status).toBe("dead");
+  });
+
+  it("构造函数给的 status 可以是四格里的某一格（重连时手里已经有读数）", () => {
+    const mirror = new ConversationMirror({ conversationId: "c1", status: "paused" });
+    expect(mirror.status).toBe("paused");
   });
 
   it("state 事件换掉那一格", () => {

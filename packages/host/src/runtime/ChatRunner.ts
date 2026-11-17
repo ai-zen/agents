@@ -855,8 +855,6 @@ class ConversationBridge {
   /** 最近一条正在流式增长的消息（节流到点时写它） */
   private streaming?: AgentNS.Message;
 
-  /** 每条消息内的增量序号（客户端靠它发现漏片） */
-  private readonly deltaSeq = new Map<string, number>();
   /** 每条消息第一次出现的时间（库里的 `createdAt`，同一 id 只定一次） */
   private readonly createdAtOf = new Map<string, number>();
   /** 宿主已经认下来的 id（投递带来的 + 自己分配的），再见到就原样用 */
@@ -1181,7 +1179,7 @@ class ConversationBridge {
     });
   }
 
-  /** 一片原始片：只负责节流写那一行 + 推 `message.delta`（`seq` 每条消息自增） */
+  /** 一片原始片：只负责节流写那一行 + 推 `message.delta`（有序 WS，带上定位信息就够） */
   private onDelta(event: AgentEvents["delta"]): void {
     if (this.closed) return;
     const delta = (event.chunk as RawChunk | undefined)?.choices?.[0]?.delta;
@@ -1199,12 +1197,9 @@ class ConversationBridge {
 
     const receiver = source.message;
     this.streaming = receiver;
-    const seq = this.deltaSeq.get(receiver.id) ?? 0;
-    this.deltaSeq.set(receiver.id, seq + 1);
     this.options.emit("message.delta", {
       conversationId: this.conversationId,
       messageId: receiver.id,
-      seq,
       delta,
       at: this.nowIso(),
     });
@@ -1282,12 +1277,9 @@ class ConversationBridge {
     delta: AgentNS.Delta,
   ): void {
     const messageId = this.subAgentIdOf(receiver);
-    const seq = this.deltaSeq.get(messageId) ?? 0;
-    this.deltaSeq.set(messageId, seq + 1);
     this.options.emit("message.delta", {
       conversationId: this.conversationId,
       messageId,
-      seq,
       delta,
       at: this.nowIso(),
       toolCallId,
