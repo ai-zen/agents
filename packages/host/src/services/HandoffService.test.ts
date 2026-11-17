@@ -109,14 +109,14 @@ class FakeRuntime implements ConversationRuntimePort {
 class RecordingAgent extends FakeAgent {
   readonly calls: string[] = [];
 
-  override pauseConsumption(): void {
-    this.calls.push("pauseConsumption");
-    super.pauseConsumption();
+  override pauseOutput(): void {
+    this.calls.push("pauseOutput");
+    super.pauseOutput();
   }
 
-  override resumeConsumption(): void {
-    this.calls.push("resumeConsumption");
-    super.resumeConsumption();
+  override resumeOutput(): void {
+    this.calls.push("resumeOutput");
+    super.resumeOutput();
   }
 }
 
@@ -563,7 +563,7 @@ describe("自交接：同一个驱动者写（PRD 4.5）", () => {
   it("不收件的对话也不让跑：不替用户恢复收件", async () => {
     const built = harness.build();
     // 用户按过中断 / 让停下：不收件就是他的意愿，交接不得去开那个开关
-    built.driver.pauseConsumption();
+    built.driver.pauseOutput();
     built.driver.calls.length = 0;
 
     await expect(
@@ -571,7 +571,7 @@ describe("自交接：同一个驱动者写（PRD 4.5）", () => {
     ).rejects.toMatchObject({ code: "busy", detail: { reason: "not_idle" } });
 
     // 开关还开着（没人去动它）、一条指令未投
-    expect(built.driver.consumptionPaused).toBe(true);
+    expect(built.driver.isOutputPaused).toBe(true);
     expect(built.driverCalls).toEqual([]);
     expect(built.runnerCalls).toEqual([]);
   });
@@ -594,7 +594,7 @@ describe("自交接：同一个驱动者写（PRD 4.5）", () => {
     driver.abort();
     await built.settle();
 
-    expect(driver.consumptionPaused).toBe(true);
+    expect(driver.isOutputPaused).toBe(true);
     const listed = await notices.list({});
     expect(
       listed.notices.some((notice) => notice.text.messageKey === "error.handoffDeclined"),
@@ -831,7 +831,7 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
 
     // 换记忆不等于换人：没按过暂停、也没替谁恢复
     expect(built.driverCalls).toEqual([]);
-    expect(built.driver.consumptionPaused).toBe(false);
+    expect(built.driver.isOutputPaused).toBe(false);
   });
 
   it("推两条变更：先「这段的记忆换过了」，再「那段已存档的出现了」", async () => {

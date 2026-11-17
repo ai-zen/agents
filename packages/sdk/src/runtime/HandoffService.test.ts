@@ -64,8 +64,8 @@ type Listener = (payload: any) => void;
  *     钩子在前（还能拒）、跑在中间、钩子在后（能看结果）。
  *
  * `state` 的转移必须走 `setState`（同值不发），否则订阅方会被同一次转移喂两次。
- * `state` 与 `consumptionPaused` 是**两处状态**（与 core 同口径）：`state` 只说循环的位置，
- * `consumptionPaused` 只管「从下一批起还收不收件」。
+ * `state` 与 `isOutputPaused` 是**两处状态**（与 core 同口径）：`state` 只说循环的位置，
+ * `isOutputPaused` 只管「从下一批起还收不收件」。
  */
 class FakeAgent {
   messages: any[];
@@ -83,7 +83,7 @@ class FakeAgent {
   lifetime = "resident";
   state: "working" | "idle" = "idle";
   /** 还收不收件（另一处状态，不影响 `state`） */
-  consumptionPaused = false;
+  isOutputPaused = false;
 
   private listeners = new Map<string, Set<Listener>>();
   private closed = false;
@@ -461,11 +461,11 @@ describe("handoff", () => {
   });
 
   it("agent 不收件时不投递（不收件就不取件），直接降级 summary", async () => {
-    // 不收件时 `push` 只会排队，等 resumeConsumption 之后突然自己跑起来 —— 那是「用户让它停却看见
+    // 不收件时 `push` 只会排队，等 resumeOutput 之后突然自己跑起来 —— 那是「用户让它停却看见
     // 它又开口」。所以这一趟当没跑成，走逃生模式（summary 不经过 agent）。
     const { service } = await makeService();
     const agent = new FakeAgent();
-    agent.consumptionPaused = true;
+    agent.isOutputPaused = true;
 
     const ctx = await service.handoff({ agent: asAgent(agent) });
 

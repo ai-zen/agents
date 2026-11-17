@@ -635,7 +635,7 @@ export class HandoffService {
     signal?: AbortSignal,
   ): Promise<boolean> {
     // 已经不收件了（用户让它停）：此刻投进去只会排在队里，等放行之后突然自己跑起来 —— 这一趟当没跑成
-    if (agent.consumptionPaused) return false;
+    if (agent.isOutputPaused) return false;
 
     const guard = this.ensureGuard(agent);
     const skillContent = await this.readSkillContent();

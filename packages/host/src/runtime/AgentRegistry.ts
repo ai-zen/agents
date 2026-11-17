@@ -56,7 +56,7 @@
  * 第二份账，是循环此刻走到哪儿。本文件不另记一份「在跑」 —— 从前那本账叫 `RunRegistry`，
  * 它随「没有轮」一起废掉了。
  *
- * 「还收不收件」是**另一处状态**（`agent.consumptionPaused`）：它说的是「从下一批起还收不收件」，
+ * 「还收不收件」是**另一处状态**（`agent.isOutputPaused`）：它说的是「从下一批起还收不收件」，
  * 不是「手上有活」。两件事各有各的格，所以本文件判「手上有没有活」只看 `state`。
  */
 
@@ -417,7 +417,7 @@ export class AgentRegistry {
    * 「手上有没有活」这一处判据（`invalidate` 与 `invalidateConversation` 共用）：在跑就打上陈旧
    * 标记并回 `true`，闲着回 `false`（由调用方退役）。
    *
-   * 只读 `agent.state`（`working` / `idle`，`CORE.md` §4）：`consumptionPaused` 是**另一处状态**
+   * 只读 `agent.state`（`working` / `idle`，`CORE.md` §4）：`isOutputPaused` 是**另一处状态**
    * （从下一批起还收不收件），不是「手上有活」。
    */
   private markStaleIfWorking(entry: AgentEntry): boolean {

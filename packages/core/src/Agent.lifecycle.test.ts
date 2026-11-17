@@ -226,8 +226,80 @@ describe("Agent 投递", () => {
   });
 });
 
+describe("Agent 关输入", () => {
+  it("pauseInput 之后投递进不来；resumeInput 之后又进得来", async () => {
+    const { client } = createMockClient([]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+    void agent.start();
+
+    let paused = 0;
+    let resumed = 0;
+    agent.on("input:paused", () => (paused += 1));
+    agent.on("input:resumed", () => (resumed += 1));
+
+    agent.pauseInput();
+    // 幂等：再关一次不再发事件
+    agent.pauseInput();
+    expect(agent.isInputPaused).toBe(true);
+    expect(paused).toBe(1);
+    expect(() => agent.push(user("进不来"))).toThrow(AgentError);
+
+    agent.resumeInput();
+    agent.resumeInput();
+    expect(agent.isInputPaused).toBe(false);
+    expect(resumed).toBe(1);
+    expect(() => agent.push(user("又进来了"))).not.toThrow();
+
+    agent.kill();
+    await agent.start();
+  });
+
+  it("两道闸互不相干：关输入不动排队区，关输出不动投递", async () => {
+    const { client } = createMockClient([]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+    void agent.start();
+
+    agent.push(user("一"));
+    agent.push(user("二"));
+
+    agent.pauseInput();
+    // 关的是「还收不收」，不是「取不取」：排队区一件不动，输出闸也没翻
+    expect(agent.inboxSize).toBe(2);
+    expect(agent.isOutputPaused).toBe(false);
+
+    agent.pauseOutput();
+    agent.resumeInput();
+    expect(agent.isOutputPaused).toBe(true);
+    expect(() => agent.push(user("三"))).not.toThrow();
+
+    agent.kill();
+    await agent.start();
+  });
+
+  it("关门之后不许再开输入闸：投进去也没人取了", async () => {
+    const { client } = createMockClient([]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+
+    let paused = 0;
+    let resumed = 0;
+    agent.on("input:paused", () => (paused += 1));
+    agent.on("input:resumed", () => (resumed += 1));
+
+    agent.stop();
+    // 关门本来就走过这道闸，于是事件也只有这一条（不多发）
+    expect(agent.isInputPaused).toBe(true);
+    expect(paused).toBe(1);
+
+    agent.resumeInput();
+    expect(agent.isInputPaused).toBe(true);
+    expect(resumed).toBe(0);
+
+    await agent.start();
+  });
+});
+
 describe("Agent 不取件", () => {
-  it("abort 掐在途、从此不收件；resumeConsumption 之后接着跑", async () => {
+  it("abort 掐在途、从此不收件；resumeOutput 之后接着跑", async () => {
     let signal: AbortSignal | undefined;
     const create = vi.fn(async (_body: any, options: any) => {
       signal = options?.signal;
@@ -246,14 +318,14 @@ describe("Agent 不取件", () => {
 
     agent.abort();
     // 开关翻成不取件了，而 state 那一格还停在 working：两处状态各说各的（这批跑完才报闲）
-    expect(agent.consumptionPaused).toBe(true);
+    expect(agent.isOutputPaused).toBe(true);
     expect(agent.state).toBe("working");
     expect(signal!.aborted).toBe(true);
 
     // 被掐断的那一条定型为 aborted，不是 error
     await until(() => agent.messages.some((m) => m.status === AgentNS.MessageStatus.Aborted));
 
-    agent.resumeConsumption();
+    agent.resumeOutput();
     await settled(agent);
 
     agent.stop();

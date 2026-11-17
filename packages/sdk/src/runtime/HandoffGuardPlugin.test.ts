@@ -178,7 +178,7 @@ describe("HandoffGuardPlugin：写这份文档的结果", () => {
   it("用户按了中断 → 被中断；关门 / 硬杀 → 段没了", async () => {
     const paused = new HandoffGuardPlugin();
     const pausedWatch = paused.arm(HANDOFF, CWD);
-    paused.onConsumptionPaused();
+    paused.onOutputPaused();
     expect(await pausedWatch.outcome).toBe("interrupted");
 
     const stopped = new HandoffGuardPlugin();

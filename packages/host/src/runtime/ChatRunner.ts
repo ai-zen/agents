@@ -30,7 +30,7 @@
  * ## 状态只有四格，而且全是读出来的
  *
  * 忙 / 闲 是 agent 手上有没有活（core 的 `AgentNS.AgentState`：`working` / `idle`，只由循环的
- * 位置决定），「暂停」是**另一处状态**（`agent.consumptionPaused` = 从下一批起不收件），
+ * 位置决定），「暂停」是**另一处状态**（`agent.isOutputPaused` = 从下一批起不收件），
  * 「死」= 连 agent 对象都没有、手上也没有排着的投递。四格是这三样合成出来的
  * （{@link statusOfAgent}），不是 core 上的某一格。
  * 宿主不维护「请求中 / 思考中 / 输出中」，不算用量、不算速率 —— 那些由客户端按到达的事件自己推
@@ -210,7 +210,7 @@ export type HandoffProvider = (context: AgentBuildContext) => HandoffService | u
  * 活着的 agent 报给外面的那一格：忙 / 闲 / 暂停。
  *
  * 它**是合成值**，不是 core 上的某一格：core 只报 `working` / `idle`（取到一批就是 `working`、
- * 这批跑完且队列真空就是 `idle`），「收不收件」是**另一处开关**（`agent.consumptionPaused`）。
+ * 这批跑完且队列真空就是 `idle`），「收不收件」是**另一处开关**（`agent.isOutputPaused`）。
  * 两件事合起来才是外面看见的那一格 —— 不收件时一律报「暂停」，与手上有没有活无关。
  *
  * `ConversationStatus` 比它多一格「死」（= 连 agent 对象都没有）。
@@ -220,12 +220,12 @@ export type AgentStatusValue = "busy" | "idle" | "paused";
 /**
  * 两格 + 收不收件 → 对外报的那一格。**合成点只此一处**：别处不许再自己拼一份。
  *
- * 不收件时一律报「暂停」：core 的 `state` 说的是「它手上有没有活」，`consumptionPaused`
+ * 不收件时一律报「暂停」：core 的 `state` 说的是「它手上有没有活」，`isOutputPaused`
  * 管的是「从下一批起还收不收件」—— 两件事各有各的格，所以两者同时成立时（不收件中那批正在跑）
  * 也报得出来。
  */
 export function statusOfAgent(agent: ChatAgent): AgentStatusValue {
-  if (agent.consumptionPaused) return "paused";
+  if (agent.isOutputPaused) return "paused";
   return statusOfState(agent.state);
 }
 
@@ -905,7 +905,7 @@ class ConversationBridge {
       throw error;
     }
 
-    if (!this.agent.consumptionPaused && this.agent.state === "idle" && !this.agent.started) {
+    if (!this.agent.isOutputPaused && this.agent.state === "idle" && !this.agent.started) {
       void this.agent.start();
     }
   }
@@ -954,8 +954,8 @@ class ConversationBridge {
    *   - `subAgentFinished` **不订**：结束只改 core 名册上的 `endedAt`，宿主这边没有任何要写、
    *     要推的东西（子 agent 最后那句话已经随着 `message.changed` / `delta` 走过了）。
    *   - `failed` / `denied`：失败与被拒；
-   *   - `state:working` / `state:idle`：core 的**两格**（循环的位置）；`consumption:paused` /
-   *     `consumption:resumed` 是**另一处开关**（从下一批起还收不收件）。两者在这里合成四格：
+   *   - `state:working` / `state:idle`：core 的**两格**（循环的位置）；`output:paused` /
+   *     `output:resumed` 是**另一处开关**（从下一批起还收不收件）。两者在这里合成四格：
    *     不收件时一律报「暂停」（{@link statusOfAgent}）。
    *     「死」在桥灭的那一刻报：`stopped` / `killed` 是其中两种理由，退役 / 关门另两种理由由 `close` 补上；
    *   - `stopped` / `killed`：agent 没了。
@@ -979,8 +979,8 @@ class ConversationBridge {
     this.on(agent, "failed", (event) => this.onFailed(event.error, event.message));
     this.on(agent, "denied", (event) => this.onDenied(event));
     this.on(agent, "state:working", () => this.emitState(statusOfAgent(agent)));
-    this.on(agent, "consumption:paused", () => this.emitState("paused"));
-    this.on(agent, "consumption:resumed", () => this.emitState(statusOfAgent(agent)));
+    this.on(agent, "output:paused", () => this.emitState("paused"));
+    this.on(agent, "output:resumed", () => this.emitState(statusOfAgent(agent)));
     this.on(agent, "state:idle", () => this.onIdle());
     this.on(agent, "stopped", () => this.onTerminated());
     this.on(agent, "killed", () => this.onTerminated());
@@ -1603,9 +1603,9 @@ export class ChatRunner {
   /**
    * 中断：打到**活着的** agent 上，返回打到没有。
    *
-   * 它是「掐在途」，不是「杀死」：core 的 `abort()` = 掐掉在途请求与工具 + `pauseConsumption()`
+   * 它是「掐在途」，不是「杀死」：core 的 `abort()` = 掐掉在途请求与工具 + `pauseOutput()`
    * （把不取件开关翻上，掐完不能再往下走）。于是中断完报出去就是「暂停」—— 还能继续，待办一条不丢
-   * （PRD 4.4）。`abort` **必然**伴随不取件，反之不成立：`pauseConsumption()` 只翻开关、不掐在途。
+   * （PRD 4.4）。`abort` **必然**伴随不取件，反之不成立：`pauseOutput()` 只翻开关、不掐在途。
    *
    * 不收 `reason`：core 的 `abort()` 本来就不收原因（它只说「掐断」）。契约面那侧
    * （`conversation.abort`）的 `reason` 由接线层写日志，不上行到这里 —— 没有去处的参数不该

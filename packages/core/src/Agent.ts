@@ -97,7 +97,7 @@ export interface SubAgentEntry {
  * | 钩子 | 能不能拒 | 说明 |
  * |---|---|---|
  * | `onInit` | 不能 | 注册后初始化（`init()`），与死活无关 |
- * | `onStart` / `onConsumptionPaused` / `onConsumptionResumed` / `onIdle` / `onStop` / `onKill` | 不能 | 死活与状态的边 |
+ * | `onStart` / `onOutputPaused` / `onOutputResumed` / `onIdle` / `onStop` / `onKill` | 不能 | 死活与状态的边 |
  * | `onOuterLoopStart` / `onOuterLoopEnd` | 不能 | 一圈的开始 / 结束 |
  * | `onInnerLoopStart` | **能拒** | 排在造 assistant 占位**之前**，拒了历史里一个字都不多 |
  * | `onInnerLoopEnd` | 不能 | 一圈结束 |
@@ -113,9 +113,9 @@ export interface AgentPlugin {
   onInit?(): HookResult;
   onStart?(ctx: LifecycleContext): HookResult;
   /** 不取件开关翻上（从此不取件，手上那批照跑） */
-  onConsumptionPaused?(ctx: LifecycleContext): HookResult;
+  onOutputPaused?(ctx: LifecycleContext): HookResult;
   /** 不取件开关翻回（又开始取件） */
-  onConsumptionResumed?(ctx: LifecycleContext): HookResult;
+  onOutputResumed?(ctx: LifecycleContext): HookResult;
   onIdle?(ctx: LifecycleContext): HookResult;
   onStop?(ctx: LifecycleContext): HookResult;
   onKill?(ctx: LifecycleContext): HookResult;
@@ -142,12 +142,21 @@ export interface StateEvent {
 }
 
 /**
- * 不取件开关动了：翻上（`consumption:paused`）/ 翻回（`consumption:resumed`）。
+ * 输出闸动了：翻上（`output:paused`）/ 翻回（`output:resumed`）。
  *
- * 载荷只带 agent —— 「此刻还收不收件」现读 `agent.consumptionPaused`，不在这里再报一份。
+ * 载荷只带 agent —— 「此刻还取不取件」现读 `agent.isOutputPaused`，不在这里再报一份。
  * 它与「在干 / 闲」是两处状态，所以它的变化**不冒充**「到了哪一格」：它只说自己动了。
  */
-export interface ConsumptionEvent {
+export interface OutputEvent {
+  agent: Agent;
+}
+
+/**
+ * 输入闸动了：关上（`input:paused`）/ 打开（`input:resumed`）。
+ *
+ * 载荷同样只带 agent（现读 `agent.isInputPaused`）。它与输出闸是两道闸，两条事件不互相冒充。
+ */
+export interface InputEvent {
   agent: Agent;
 }
 
@@ -255,8 +264,10 @@ export interface AgentEvents {
   killed: LifecycleEvent;
   "state:idle": StateEvent;
   "state:working": StateEvent;
-  "consumption:paused": ConsumptionEvent;
-  "consumption:resumed": ConsumptionEvent;
+  "output:paused": OutputEvent;
+  "output:resumed": OutputEvent;
+  "input:paused": InputEvent;
+  "input:resumed": InputEvent;
   inboxAdded: InboxAddedEvent;
   inboxTaken: InboxTakenEvent;
   inboxCleared: InboxClearedEvent;
@@ -296,7 +307,7 @@ export class Agent extends AgentContext {
   /**
    * 对外那一格：在干 / 闲，**只由循环的位置决定**（语义见 `AgentNS.AgentState`）。
    *
-   * 收不收件（{@link consumptionPaused}）不参与它的判断 —— 不取件中投进来的那批照跑，
+   * 收不收件（{@link isOutputPaused}）不参与它的判断 —— 不取件中投进来的那批照跑，
    * 跑完照样报闲。
    */
   state: AgentNS.AgentState = "idle";
@@ -311,7 +322,7 @@ export class Agent extends AgentContext {
    * - 收不收件 = `isInputPaused` —— `stop()` / `kill()` 各自 `pauseInput()`；
    * - 以后还有没有新货 = `isDone` —— `stop()` / `kill()` 各自 `done()`（它取代了原来的
    *   `closed` 字段：**关门就是「不再有货」，不是另一处状态**）；
-   * - 此刻取不取件 = `isOutputPaused` —— {@link consumptionPaused} 直接读它。
+   * - 此刻取不取件 = `isOutputPaused` —— {@link isOutputPaused} 直接读它。
    */
   private inbox = new AsyncQueue<AgentNS.InboxEntry>();
 
@@ -485,13 +496,13 @@ export class Agent extends AgentContext {
    *   `stopped` 也发不出来（以前那道「等开关翻开」的等待就是以放行它来收尾的）；
    * - `done()`：宣告没有新货，迭代器取空存量后自己收尾。
    *
-   * 不取件（{@link consumptionPaused}）中调它**不作废存量**：不取件说的是「现在别跑」，
+   * 不取件（{@link isOutputPaused}）中调它**不作废存量**：不取件说的是「现在别跑」，
    * stop 说的是「以后也别跑」，两句叠起来的正确读法是「把手上这些跑完为止」。
    */
   stop(): void {
     // 幂等：`done()` 过就是已经关了（`stop` 与 `kill` 都会把它置上，那就是原来的「closed」）
     if (this.inbox.isDone) return;
-    this.inbox.pauseInput();
+    this.pauseInput();
     this.inbox.resumeOutput();
     this.inbox.done();
     void this.dispatchHook("onStop", { agent: this });
@@ -512,7 +523,7 @@ export class Agent extends AgentContext {
   kill(): void {
     if (this.killed) return;
     this.killed = true;
-    this.inbox.pauseInput();
+    this.pauseInput();
     this.inbox.resumeOutput();
     this.clearInbox();
     this.inbox.done();
@@ -521,7 +532,43 @@ export class Agent extends AgentContext {
   }
 
   /**
-   * 此刻还收不收件 —— **另一处状态**，与「在干 / 闲」互不影响。
+   * 此刻**还接不接投递** —— 输入闸的现读（`inbox.isInputPaused`）。
+   *
+   * `true` 说的是「这个门关了」：此后 `push()` 抛 `AgentError("closed")`。
+   * 与 {@link isOutputPaused} 是两道**互不相干**的闸：那道管「取不取」、这道管「收不收」。
+   * 关门（`stop` / `kill`）是这道闸唯一的生产者。
+   */
+  get isInputPaused(): boolean {
+    return this.inbox.isInputPaused;
+  }
+
+  /**
+   * **关上输入闸**：此后投递进不来，手上的活与排队区一件不动。
+   *
+   * 与 {@link pauseOutput} 的区别只有一句话：这道闸拦的是**投递**，那道闸拦的是**取件**。
+   * 事件 `input:paused` 由 agent 发（队列不认识事件），与 `output:paused` 对称。
+   * 幂等；已经关了/死了就是空动作。
+   */
+  pauseInput(): void {
+    if (this.inbox.isInputPaused) return;
+    this.inbox.pauseInput();
+    this.emit("input:paused", { agent: this });
+  }
+
+  /**
+   * **打开输入闸**：又开始接投递。
+   *
+   * 关门之后（`stop` / `kill` 动过）不许再开：那时队列已经宣告没有新货，再放人进来等于把件
+   * 投给一个永远不会再取件的队列。
+   */
+  resumeInput(): void {
+    if (this.inbox.isDone || !this.inbox.isInputPaused) return;
+    this.inbox.resumeInput();
+    this.emit("input:resumed", { agent: this });
+  }
+
+  /**
+   * 此刻还取不取件 —— **另一处状态**，与「在干 / 闲」互不影响。
    *
    * `true` 说的是「从下一批起不再取件」：批与批之间不取，手上那批照跑。
    * 想知道「它现在在不在干活」读 {@link state}，不要看这处开关。
@@ -529,7 +576,7 @@ export class Agent extends AgentContext {
    * 它是队列那个**输出闸的现读**（`inbox.isOutputPaused`），core 不另存一份 ——
    * 本方法在 core 里没有对应的字段，权威在队列。
    */
-  get consumptionPaused(): boolean {
+  get isOutputPaused(): boolean {
     return this.inbox.isOutputPaused;
   }
 
@@ -538,28 +585,28 @@ export class Agent extends AgentContext {
    *
    * 手上这批算已经开始 —— 让它跑完，从下一批起不再取。要立刻停就用 `abort`。
    * 它**只关队列的输出闸**：{@link state} 一个字节都不变（跑完该报闲就报闲，闸仍是关着）。
-   * 事件 `consumption:paused` 仍由 agent 发 —— 那是给**外面**的通知，队列不认识事件。
+   * 事件 `output:paused` 仍由 agent 发 —— 那是给**外面**的通知，队列不认识事件。
    * 幂等；已经关了/死了就是空动作。
    */
-  pauseConsumption(): void {
+  pauseOutput(): void {
     // `isDone` = 已经在收尾路上了（stop / kill 动过）。那时再关输出闸会把「把血放干」
     // 挂在一个再没人翻回来的闸上（`done()` 不突破输出闸），所以门口就拦住。
     if (this.inbox.isDone || this.inbox.isOutputPaused) return;
     this.inbox.pauseOutput();
-    this.emit("consumption:paused", { agent: this });
-    void this.dispatchHook("onConsumptionPaused", { agent: this });
+    this.emit("output:paused", { agent: this });
+    void this.dispatchHook("onOutputPaused", { agent: this });
   }
 
   /**
    * **暴力中断**：掐掉在途的请求与工具。
    *
-   * 它就是「掐在途 + {@link pauseConsumption}」：这一批掐完不能再往下走，所以**必然**把不取件
-   * 开关一并翻上。反过来不成立 —— `pauseConsumption()` 只翻开关、不碰在途的那批：
+   * 它就是「掐在途 + {@link pauseOutput}」：这一批掐完不能再往下走，所以**必然**把不取件
+   * 开关一并翻上。反过来不成立 —— `pauseOutput()` 只翻开关、不碰在途的那批：
    * 掐在途一定伴随不取件，不取件不必掐在途。
    */
   abort(): void {
     if (this.inbox.isDone) return;
-    this.pauseConsumption();
+    this.pauseOutput();
     this.abortTurn();
   }
 
@@ -568,14 +615,14 @@ export class Agent extends AgentContext {
    *
    * 开的是队列的输出闸：挂在闸上的消费者被**一次性全部放行**，按原顺序接着取 ——
    * 队列里有货的话，外循环一被放行就自己取走、自己报 `working`，那件事归它报，这里不替它说。
-   * 也不在这里顺手取件：用户手快连点 `abort` / `resumeConsumption` 时这一圈还在收尸，
+   * 也不在这里顺手取件：用户手快连点 `abort` / `resumeOutput` 时这一圈还在收尸，
    * 此刻去取件就变成两个东西同时写 `messages`。
    */
-  resumeConsumption(): void {
+  resumeOutput(): void {
     if (!this.inbox.isOutputPaused) return;
     this.inbox.resumeOutput();
-    this.emit("consumption:resumed", { agent: this });
-    void this.dispatchHook("onConsumptionResumed", { agent: this });
+    this.emit("output:resumed", { agent: this });
+    void this.dispatchHook("onOutputResumed", { agent: this });
   }
 
   // -------------------------------------------------------------------------
@@ -683,7 +730,7 @@ export class Agent extends AgentContext {
    *
    * 走的是队列的 `clear()`，**不是 `takeAll()`**：清空是「作废」，不是「取件」。
    * 取件要看输出闸（不取件时一件都不给，那是暂时的、货还排着队），作废不看 —— 所以
-   * {@link pauseConsumption} 期间调它照样清得掉，宿主那条 `/clear` 才不会在暂停中失效。
+   * {@link pauseOutput} 期间调它照样清得掉，宿主那条 `/clear` 才不会在暂停中失效。
    * 事件 `inboxCleared` 仍由 agent 发：队列不认识事件。
    */
   clearInbox(): AgentNS.InboxEntry[] {
@@ -768,13 +815,13 @@ export class Agent extends AgentContext {
    *
    * 这两处等待**不用 core 自己写**：不取件就是把队列的输出闸关上（`pauseOutput()`），
    * `asTakeAll()` 自己会停在闸上 —— 一件不取、不退出，闸一开就按原顺序接着取。
-   * core 只负责翻闸（{@link pauseConsumption} / {@link resumeConsumption}），不养第二个唤醒器。
+   * core 只负责翻闸（{@link pauseOutput} / {@link resumeOutput}），不养第二个唤醒器。
    *
-   * `state` 那一格**不由 `consumptionPaused` 决定**：取到一批就是 `working`，这批跑完且队列
+   * `state` 那一格**不由 `isOutputPaused` 决定**：取到一批就是 `working`，这批跑完且队列
    * 真空就是 `idle` —— 哪怕那个开关还开着。两处状态各报各的，于是「不取件期间投进来的那批
    * 跑完了」和「仍旧不取件」两件事都报得出来。
    *
-   * **手上已取出的那批算已经开始**：`pauseConsumption()` 从下一批生效，不把它收回 —— 它可能已经落了
+   * **手上已取出的那批算已经开始**：`pauseOutput()` 从下一批生效，不把它收回 —— 它可能已经落了
    * 消息、跑了一半工具，塞回队头只会造成重复落地。要立刻停就用 `abort`。
    */
   private async outerLoop(): Promise<void> {
@@ -804,7 +851,7 @@ export class Agent extends AgentContext {
       await this.dispatchHook("onOuterLoopEnd", ctx);
 
       // 只有真的空了才叫「闲」—— 手上没活但队列还压着不算。
-      // consumptionPaused 不参与这一判：不取件中跑完这批就是闲，那个闸该关着还关着。
+      // isOutputPaused 不参与这一判：不取件中跑完这批就是闲，那个闸该关着还关着。
       // `isDone`（stop / kill 动过）也不报闲：这已经在收尾路上了，报闲等于告诉外面「还能接着投」。
       if (this.inbox.size === 0 && !this.inbox.isDone) {
         this.setState("idle");
@@ -1070,11 +1117,11 @@ export class Agent extends AgentContext {
   // -------------------------------------------------------------------------
 
   /**
-   * 换一格（只换 `state` 这一处；收不收件走 `consumption:paused` / `consumption:resumed`，
+   * 换一格（只换 `state` 这一处；收不收件走 `output:paused` / `output:resumed`，
    * 不从这里过）。
    *
    * **没有「重算状态」这一步**，三处置位就够了：`start()` 是 `idle`、外循环头（取到一批）
-   * 是 `working`、外循环尾（队列真空了）是 `idle`。`pauseConsumption` / `resumeConsumption` /
+   * 是 `working`、外循环尾（队列真空了）是 `idle`。`pauseOutput` / `resumeOutput` /
    * `abort` 一格都不置
    * —— 它们只翻那个开关。
    *

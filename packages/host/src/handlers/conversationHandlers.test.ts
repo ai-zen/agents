@@ -559,7 +559,7 @@ describe("conversation.setModel / setThinking：只允许空闲时改（改完�
     await idle(app, conversationId);
   });
 
-  it("暂停（`consumptionPaused`）时允许改：它手上没活", async () => {
+  it("暂停（`isOutputPaused`）时允许改：它手上没活", async () => {
     const { app, conversationId } = await makeHarness();
     await callMethod(app, "conversation.send", { conversationId, input: { content: "先说一句" } });
     await idle(app, conversationId);

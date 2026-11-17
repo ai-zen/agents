@@ -18,7 +18,7 @@ import {
 describe("对话此刻的四格（PRD 4.4 / PLAN §10.1）", () => {
   it("core 报两格（working / 闲），加一格「不收件」与一格「死」：对外恰好四个值，不多不少", () => {
     // 前两格照 core 的 `AgentState`（`working` / `idle` = 循环的位置），宿主把它们翻成对外的两个
-    // 名字（`statusOfState`）；后两格是宿主自己那两件事：「不收件」= `agent.consumptionPaused`，
+    // 名字（`statusOfState`）；后两格是宿主自己那两件事：「不收件」= `agent.isOutputPaused`，
     // 「死」= 宿主那边连 agent 对象都没有
     const agentStates: AgentNS.AgentState[] = ["working", "idle"];
     const all: ConversationStatus[] = [...agentStates.map(statusOfState), "paused", "dead"];

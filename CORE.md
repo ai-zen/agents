@@ -26,9 +26,9 @@
 |---|---|
 | `start` | 起来等事件。返回一个**到死才 resolve** 的 promise，且**不 reject** |
 | `stop` | 关门（不再接输入），**存量走完**，排空才死 |
-| `pauseConsumption` | **翻上不取件开关**：只是从此不再收件（`consumptionPaused = true`），不掐在途。手上这一批跑完，从下一批起不再取 |
-| `abort` | **暴力中断**：掐掉在途的网络请求与工具 —— 它就是「掐在途 + `pauseConsumption()`」，**必然伴随「不再收件」**（掐完不能往下走）。反过来不成立：`pauseConsumption()` 不掐在途 |
-| `resumeConsumption` | **翻回不取件开关**：又开始收件，**只翻 `consumptionPaused`**，`state` 那一格不碰（队列里有货的话，外循环自己取走、自己报 `working`） |
+| `pauseOutput` | **翻上不取件开关**：只是从此不再取件（`isOutputPaused = true`），不掐在途。手上这一批跑完，从下一批起不再取 |
+| `abort` | **暴力中断**：掐掉在途的网络请求与工具 —— 它就是「掐在途 + `pauseOutput()`」，**必然伴随「不再取件」**（掐完不能往下走）。反过来不成立：`pauseOutput()` 不掐在途 |
+| `resumeOutput` | **翻回不取件开关**：又开始取件，**只翻 `isOutputPaused`**，`state` 那一格不碰（队列里有货的话，外循环自己取走、自己报 `working`） |
 | `kill` | 硬着陆：立刻死，存量作废 |
 
 ### 为什么是六个
@@ -38,25 +38,25 @@
 | | 等它自己收手 | 立刻掐断 |
 |---|---|---|
 | **以后别跑了**（排队的清空 / 作废） | `stop` —— 血流干的死 | `kill` —— 立刻死，存量作废 |
-| **先别跑**（排队留着） | `pauseConsumption` —— 翻上不取件开关 | `abort` —— 掐完自动翻上开关 |
+| **先别跑**（排队留着） | `pauseOutput` —— 翻上不取件开关 | `abort` —— 掐完自动翻上开关 |
 
-- `stop` / `kill` 动的是**整条命**；`pauseConsumption` / `abort` 动的是**下一批**。
-- `abort` **必然**伴随「不再收件」（掐完不能再往下走），但反过来不成立：`pauseConsumption` 不必 abort。
-- **界面只提供 `abort`**（那个「中断」按钮）：用户按了就得马上停。`pauseConsumption` 留给程序化和内部用（例如交接期间把这段按住）。
+- `stop` / `kill` 动的是**整条命**；`pauseOutput` / `abort` 动的是**下一批**。
+- `abort` **必然**伴随「不再取件」（掐完不能再往下走），但反过来不成立：`pauseOutput` 不必 abort。
+- **界面只提供 `abort`**（那个「中断」按钮）：用户按了就得马上停。`pauseOutput` 留给程序化和内部用（例如交接期间把这段按住）。
 - 别把 `kill` 当成「更快的 `stop`」：它是不作答的 `stop`。
 
-### `resumeConsumption` 为什么是显式开关
+### `resumeOutput` 为什么是显式开关
 
-曾定过「停下之后靠收到用户亲手发的事件来恢复收件」，那样能省一个动作。放弃的理由是**确定性**：一个 agent 不该因为*别人*投了东西就自己动起来。用户按「继续」就是继续，不需要他先开口。
+曾定过「停下之后靠收到用户亲手发的事件来恢复取件」，那样能省一个动作。放弃的理由是**确定性**：一个 agent 不该因为*别人*投了东西就自己动起来。用户按「继续」就是继续，不需要他先开口。
 
-`resumeConsumption` 只**翻回「收件」**，不替谁取件、也不替循环报 `working` / `idle`：开关一松，外循环自己回到取件处。所以「用户手快连点中断 / 继续」也不会出现两个东西同时写 `messages`。
+`resumeOutput` 只**翻回「取件」**，不替谁取件、也不替循环报 `working` / `idle`：开关一松，外循环自己回到取件处。所以「用户手快连点中断 / 继续」也不会出现两个东西同时写 `messages`。
 
-### 不收件中 `stop`
+### 不取件中 `stop`
 
-两句叠起来：不收件说的是「现在别跑」，stop 说的是「以后也别跑」→ **不跑 + 关门，存量作废**。
-不翻回收件再跑一遍存量，因为那等于用户让它停了却看见它又开口。
+两句叠起来：不取件说的是「现在别跑」，stop 说的是「以后也别跑」→ **不跑 + 关门，存量作废**。
+不翻回取件再跑一遍存量，因为那等于用户让它停了却看见它又开口。
 
-所以 **`stop` / `kill` 也必须放行那道等待** —— 否则循环还挂在不收件的等待上等一个永远不来的 `resumeConsumption`，`start()` 的 promise 就永远不 resolve。
+所以 **`stop` / `kill` 也必须放行那道等待** —— 否则循环还挂在不取件的等待上等一个永远不来的 `resumeOutput`，`start()` 的 promise 就永远不 resolve。
 
 ### 一次性
 
@@ -82,7 +82,7 @@
 ### 其余
 
 - **关门之后再塞事件 → 抛 `closed`**。不静默丢：塞的人可能是另一个 agent，他得知道自己投失败了才能改投（宿主接住这个错，就去做「新装一个再投」）。
-- **`start` / `stop` / `kill` / `resumeConsumption` 重复调 → 空动作**（幂等）。只有 `push` 会抛。
+- **`start` / `stop` / `kill` / `resumeOutput` 重复调 → 空动作**（幂等）。只有 `push` 会抛。
 - **`start` 返回的 promise 永不 reject**：失败不终结 agent。唯一会让它炸的是 core 自己写崩了 —— 那是 bug，就该炸得响。
 - **身份从外面给**：构造时一个 `id`，core 只拿它写错误消息与日志，不参与任何逻辑。
 
@@ -111,7 +111,7 @@
 
 （一次性对话若要「投递并等到空闲、但**不关门**」，现在没有对应的口子 —— `runOnce` 结尾会 `stop()`。补不补一个 `send`，见 §15 第 10 条。）
 
-不收件中队列里压着货时，「等人闲」是会一直等下去的（不收件就不取件，队列不空就不 `idle`）。`runOnce` 撞不上这个（刚起来的 agent 不会已经不收件），其余场景要脱身就给 `signal`。
+不取件中队列里压着货时，「等人闲」是会一直等下去的（不取件就不取件，队列不空就不 `idle`）。`runOnce` 撞不上这个（刚起来的 agent 不会已经不取件），其余场景要脱身就给 `signal`。
 
 ### 误用直接炸，不走 `AgentError`
 
@@ -126,7 +126,7 @@
 
 ```
 start() → outerLoop()
- └─ await 不收件的等待                                ← 外面一次：不收件就不开拉
+ └─ await 不取件的等待                                ← 外面一次：不取件就不开拉
     for await (一批 of inbox.asTakeAll())           ← 外循环：队列自己就是信号
         置 `working`（兜底：投递时已经置过）
         修一遍历史（删残局 / 补配对 / 定型）          ← 唯一的地方，见 §6
@@ -134,20 +134,20 @@ start() → outerLoop()
         报 inboxTaken
         onOuterLoopStart → 内循环（while）→ onOuterLoopEnd
         队列真空了 → 置 `idle`
-        await 不收件的等待                           ← 尾部每次：批与批之间不取
+        await 不取件的等待                           ← 尾部每次：批与批之间不取
 ```
 
 外循环就是**一句 `for await`**：队列空着时它自己挂在队列的 `pushRx` 上，不需要另造一根唤醒信号。
 
-**不收件的等待有两处**：进 `for await` 之前一次、每批尾部一次。于是批与批之间不取件，不收件期间到达的货就躺在队列里 —— 界面看得见条数、能持久化、恢复能捞回来。
+**不取件的等待有两处**：进 `for await` 之前一次、每批尾部一次。于是批与批之间不取件，不取件期间到达的货就躺在队列里 —— 界面看得见条数、能持久化、恢复能捞回来。
 
-**`state` 那一格不受 `consumptionPaused` 影响**（§4）：取到一批就置 `working`，这批跑完且队列真空就置 `idle` —— 哪怕 `consumptionPaused` 正是 true。两处状态各报各的，于是「不收件期间投进来的那批跑完了」与「仍然不收件」两件事都报得出来。
+**`state` 那一格不受 `isOutputPaused` 影响**（§4）：取到一批就置 `working`，这批跑完且队列真空就置 `idle` —— 哪怕 `isOutputPaused` 正是 true。两处状态各报各的，于是「不取件期间投进来的那批跑完了」与「仍然不取件」两件事都报得出来。
 
-**`consumptionPaused` 必须被两边放行**：`resumeConsumption` 放它（恢复收件），`stop` / `kill` 也放它（别再等了，直接去死）。只认 `resumeConsumption` 就会在「不收件中 stop」时死锁。
+**`isOutputPaused` 必须被两边放行**：`resumeOutput` 放它（恢复取件），`stop` / `kill` 也放它（别再等了，直接去死）。只认 `resumeOutput` 就会在「不取件中 stop」时死锁。
 
 **外循环里没有「该死了吗」这一判。** 关门、被杀都走 `inbox.done()`：`asTakeAll()` 把剩的吐完就自己结束（§13），循环随之退出 —— 存量走完才死这条由队列保证，不用再写一遍。
 
-**手上已取出的那批算已经开始**：`pauseConsumption()` 从下一批生效，不把它收回 —— 它可能已经落了消息、发过 `inboxTaken`、跑了一半工具，塞回队头只会造成重复落地。要立刻停就用 `abort`。
+**手上已取出的那批算已经开始**：`pauseOutput()` 从下一批生效，不把它收回 —— 它可能已经落了消息、发过 `inboxTaken`、跑了一半工具，塞回队头只会造成重复落地。要立刻停就用 `abort`。
 
 **一批的三拍内联在外循环里，不再单独一个 `runBatch`**：修历史 → 落地 → 内循环本来就是一个动作的三拍，拆开要在两个函数之间来回对顺序；而它只有一个调用方。
 
@@ -227,9 +227,9 @@ export type InboxInput =
 |---|---|
 | 内循环 | `takeAll(e => e.priority === "high")` —— 同步检查 |
 | 外循环 | `for await (const batch of asTakeAll())` —— 空则挂起，有货一次取干 |
-| 不收件中 | 不取件，park 在「等不取件开关翻开」那道等待上（`resumeConsumption()` / `stop` / `kill` 放行） |
+| 不取件中 | 不取件，park 在「等不取件开关翻开」那道等待上（`resumeOutput()` / `stop` / `kill` 放行） |
 
-**外循环就是一句 `for await (const batch of inbox.asTakeAll())`** —— 队列自己就是那根唤醒信号（空着时它在 `pushRx` 上挂起，不另造信号）。不收件中不取件，靠的是**取件边界那两处等**（进 `for await` 之前一次、每批尾部一次），不靠「同步看一眼」：已经取出来的那批算已经开始，跑完为止（§2）。
+**外循环就是一句 `for await (const batch of inbox.asTakeAll())`** —— 队列自己就是那根唤醒信号（空着时它在 `pushRx` 上挂起，不另造信号）。不取件中不取件，靠的是**取件边界那两处等**（进 `for await` 之前一次、每批尾部一次），不靠「同步看一眼」：已经取出来的那批算已经开始，跑完为止（§2）。
 
 （`asTakeAll()` 仍然是队列自己的能力，只是 core 这一侧不用它 —— 见 §13。）
 
@@ -248,7 +248,7 @@ export type InboxInput =
 - 注释**只加一次**，`__asset_id` 段原封不动。
 - 时间用条目自己的 `createdAt`：外部通知可能是很久以前发生的，模型得能判断时效，否则会把陈年结果当成刚刚发生的事。
 - 一次唤醒落**零或一条**用户消息（零就是钥匙），**永不合并正文**。
-- 不收件期间照收、不取；恢复后攒下的**一起**落地、**一起**回答。
+- 不取件期间照收、不取；恢复后攒下的**一起**落地、**一起**回答。
 - 关门后再来 → 抛 `closed`。
 
 ### 未消费的条目要能存下来再放回去（**未实现，待做**）
@@ -284,14 +284,17 @@ export type InboxInput =
 
 ---
 
-## 4. 状态：对外两格 + 一个「收不收件」的开关
+## 4. 状态：对外两格 + 两道闸
 
-两处状态，各说各的，谁也不替谁说话：
+一处对外、两道闸，各说各的，谁也不替谁说话：
 
 | 处 | 成员 | 说的是 | 谁改它 |
 |---|---|---|---|
 | 对外那一格 | `state: "working" \| "idle"` | 「手上有没有活」 | **只有循环的位置**：取到一批 → `working`；这批跑完且队列真空 → `idle` |
-| 内部那道开关 | `consumptionPaused: boolean`（`true` = 从下一批起不收件） | 「还收不收件」 | `pauseConsumption()` 翻上、`resumeConsumption()` 翻回（`stop` / `kill` 也放行它的等待者，但那不是「用户让它继续」） |
+| 输出闸 | `isOutputPaused: boolean`（`true` = 从下一批起不取件） | 「还取不取件」 | `pauseOutput()` 翻上、`resumeOutput()` 翻回（`stop` / `kill` 也放行它的等待者，但那不是「用户让它继续」） |
+| 输入闸 | `isInputPaused: boolean`（`true` = 投递进不来） | 「还接不接投递」 | `pauseInput()` 关上、`resumeInput()` 打开；`stop` / `kill` 是它的生产者（关门就是「以后没有新货」），之后不许再打开 |
+
+两道闸拦的东西不同，一句话分清楚：**输入闸拦投递，输出闸拦取件**。关输入之后 `push()` 抛 `closed`，排队区与手上那批一件不动；关输出之后不再取件，投递照收、货躺在队里。两道闸互不看对方，也不参与 `state` 那一格。
 
 那一格具体谁置：
 
@@ -301,23 +304,24 @@ export type InboxInput =
 | 外循环头（一批开始处理） | `working` | **唯一**置 `working` 的地方：置在这一拍，早于这批落地（`inboxTaken` / `messageAdded`），宿主来得及建现场 |
 | 外循环尾（队列**真的空了**） | `idle` | 「闲 = 队列空」只有这一处能声明 |
 
-- **那一格只由循环的位置决定，`consumptionPaused` 不参与。** 不收件期间投进来的那批照跑（口径如此：手上已取出的算已经开始），跑完就该报 `idle` —— 那个开关该开着还开着。压成一格的话，这一拍只能报一个，另一个必然丢（旧写法就丢在这里：循环头把「不收件」覆盖成「在干」，尾部又因为 `consumptionPaused` 是 true 不肯报闲，于是停在一个其实早已不收件的「在干」）。
+- **那一格只由循环的位置决定，`isOutputPaused` 不参与。** 不取件期间投进来的那批照跑（口径如此：手上已取出的算已经开始），跑完就该报 `idle` —— 那个开关该开着还开着。压成一格的话，这一拍只能报一个，另一个必然丢（旧写法就丢在这里：循环头把「不取件」覆盖成「在干」，尾部又因为 `isOutputPaused` 是 true 不肯报闲，于是停在一个其实早已不取件的「在干」）。
 - **闲 = 队列空**，这条由结构保证：只有循环尾、且队列真空了才声明 `idle`。于是「手上没活但队列还压着」的那一拍不可能被报成 `idle` —— 那会让等在外面的子 agent 在半截处收走结果。
-- **`consumptionPaused` 的作用范围是「从下一批起」**：`pauseConsumption()` / `abort()` 把开关翻上之后，批与批之间不再取件（§2 那两处等待），手上那批不收回。`resumeConsumption()` 只翻开关 —— 队列里有货的话，外循环一从那道等待上下来就自己取走、自己报 `working`。
-- **开关幂等**：已经 `true` 的再 `pauseConsumption()`、已经 `false` 的再 `resumeConsumption()`，都是空动作；已经关门 / 硬杀时两样都不做。
+- **`isOutputPaused` 的作用范围是「从下一批起」**：`pauseOutput()` / `abort()` 把开关翻上之后，批与批之间不再取件（§2 那两处等待），手上那批不收回。`resumeOutput()` 只翻开关 —— 队列里有货的话，外循环一从那道等待上下来就自己取走、自己报 `working`。
+- **开关幂等**：已经 `true` 的再 `pauseOutput()`、已经 `false` 的再 `resumeOutput()`，都是空动作；已经关门 / 硬杀时两样都不做。输入闸同理：已经关着的再 `pauseInput()` 是空动作，而 `resumeInput()` 在关门之后一律不开（那时队列已宣告没有新货，再放人进来等于把件投给一个永远不再取件的队列）。
 - **不报「出过错」**：出过错是事实，不是状态（读消息的 `status`）。
 - **「死」也不是一格**：死 = 没有 agent 对象。
 
-两处状态各有自己的事件（§10）：`state` 那一格按到达值分名 —— `state:working` / `state:idle`，载荷 `{ agent, from }`，所以「等到某一格」写成 `events.promise("state:idle")` 就行；开关另有 `consumption:paused` / `consumption:resumed`，载荷 `{ agent }`，「此刻还收不收件」现读 `agent.consumptionPaused`。
+三处各有自己的事件（§10）：`state` 那一格按到达值分名 —— `state:working` / `state:idle`，载荷 `{ agent, from }`，所以「等到某一格」写成 `events.promise("state:idle")` 就行；输出闸另有 `output:paused` / `output:resumed`，输入闸另有 `input:paused` / `input:resumed`，载荷都是 `{ agent }`，「此刻还收不取件」「还接不接投递」分别现读 `agent.isOutputPaused` / `agent.isInputPaused`。
 
-**合成不归 core 管。** 宿主对外报的「忙 / 闲 / 暂停 / 死」是**两格 + 一个开关 + 「查不到对象」**合出来的（`PRD 4.4`）：`consumptionPaused` 为 true 一律报「暂停」，与手上有没有活无关。core 不合成，也不认识「暂停」这一格。
+**合成不归 core 管。** 宿主对外报的「忙 / 闲 / 暂停 / 死」是**两格 + 一个开关 + 「查不到对象」**合出来的（`PRD 4.4`）：`isOutputPaused` 为 true 一律报「暂停」，与手上有没有活无关。core 不合成，也不认识「暂停」这一格。
 
 ### 其余一律读活对象
 
 | 想知道 | 怎么得到 |
 |---|---|
 | 在不在干活 | 读 `state`（`working` / `idle`） |
-| 还收不收件 | 读 `consumptionPaused`（`true` = 从下一批起不收件） |
+| 还取不取件 | 读 `isOutputPaused`（`true` = 从下一批起不取件） |
+| 还接不接投递 | 读 `isInputPaused`（`true` = 投递已关） |
 | 在想 / 在输出 / 在拼参数 | 读那条助手消息的 `reasoning_content` / `content` / `tool_calls[i].function.arguments` |
 | 在等哪几个工具 | 读 `messages` 里 pending 的 `role: tool` 消息 |
 | 刚才那一圈出了什么错 | 读那条消息的 `error` |
@@ -330,10 +334,10 @@ export type InboxInput =
 
 两种停法，别混：
 
-- **翻上不取件开关（`pauseConsumption`）**：只是从此不再收件。手上这批跑完，从下一批起不取；**不**打断模型流、**不**掐工具。
-- **暴力中断（`abort`）**：发信号，把在途的请求与工具直接掐掉，**并且必然伴随「不再收件」** —— 它就是「掐在途 + `pauseConsumption()`」，反过来不成立。掐完 agent 不死，`consumptionPaused` 就是 true —— 死是 `kill` 的事。
+- **翻上不取件开关（`pauseOutput`）**：只是从此不再取件。手上这批跑完，从下一批起不取；**不**打断模型流、**不**掐工具。
+- **暴力中断（`abort`）**：发信号，把在途的请求与工具直接掐掉，**并且必然伴随「不再取件」** —— 它就是「掐在途 + `pauseOutput()`」，反过来不成立。掐完 agent 不死，`isOutputPaused` 就是 true —— 死是 `kill` 的事。
 
-界面上只给「中断」这一个动作（最及时、最直观）；`pauseConsumption` 留程序化用。
+界面上只给「中断」这一个动作（最及时、最直观）；`pauseOutput` 留程序化用。
 
 下面这两样是**中断**的内部装置：
 
@@ -350,7 +354,7 @@ export type InboxInput =
 - 一个 signal 从 `start` 用到死
 - `abort` 时 `throw` 穿到 `start()` 外面，或者直接 `return` 出外循环
 
-**不收件期天然是收尸期**：这一圈停在哪儿，迟到的结果陆陆续续回来，直接丢、不写消息。所以不需要「给每一圈编号」那套机制 —— 没有下一圈可以串。
+**不取件期天然是收尸期**：这一圈停在哪儿，迟到的结果陆陆续续回来，直接丢、不写消息。所以不需要「给每一圈编号」那套机制 —— 没有下一圈可以串。
 
 **一个必须防的死角**：子 agent 那处「等它闲」也要能被 `abortRx` 打断，否则子 agent 卡住就是父永远等。对外就是 `runOnce(input, { signal })` 那个 `signal`（§1）。
 
@@ -515,7 +519,8 @@ subagent 是 core 的一等概念，不是外部业务。core 欠四样：
 |---|---|---|
 | `started` / `stopped` / `killed` | 起来了 / 走完死了 / 被硬杀 | — |
 | `state:idle` / `state:working` | 对外那一格到了哪一格（事件名就是那一格；只由循环的位置决定） | `from` |
-| `consumption:paused` / `consumption:resumed` | 从下一批起不收件了 / 又开始收件（另一处状态，与 `state` 无关） | — （现读 `agent.consumptionPaused`） |
+| `output:paused` / `output:resumed` | 从下一批起不取件了 / 又开始取件（另一处状态，与 `state` 无关） | — （现读 `agent.isOutputPaused`） |
+| `input:paused` / `input:resumed` | 投递关了 / 又开了（又一道闸，与上一条互不冒充） | — （现读 `agent.isInputPaused`） |
 | `inboxAdded` / `inboxTaken` / `inboxCleared` | 收到一条 / 这些被取走了 / 被清空 | 条目本身（`inboxTaken` 是被取走的那一批）|
 | `messageAdded` / `messageChanged` / `messageRemoved` | 多了一条 / 某条变了 / 某条被删了 | 那条消息本身 |
 | `delta` | **原始片到了** | 原片 + 来源（哪条消息 / 哪个子 agent 的哪个工具调用） |
@@ -553,7 +558,7 @@ start()
       └─ onOuterLoopEnd                       一圈结束（准备回顶部）
 ```
 
-外加死活与委派：`onStart` / `onConsumptionPaused` / `onConsumptionResumed` / `onIdle` / `onStop` / `onKill` / `onSubAgentStart` / `onSubAgentEnd`。
+外加死活与委派：`onStart` / `onOutputPaused` / `onOutputResumed` / `onIdle` / `onStop` / `onKill` / `onSubAgentStart` / `onSubAgentEnd`。
 
 **同位置：钩子在前（还能改），事件在后（已经定了）。**
 
@@ -572,7 +577,7 @@ start()
 - **能拒的那三个是门，崩了就关上**（fail-closed）。坏的护栏放行等于没护栏，上下文护栏尤其不能例外。
 - **其余位置崩了当它没说话**（fail-open），接着问下一个插件。
 
-两种都报一个 `failed`。`onIdle` / `onStart` / `onStop` / `onConsumptionPaused` / `onConsumptionResumed` / `onKill` **都带 `{ agent }`**：插件在这几个时刻通常正需要读/改它（比如「闲下来之后重新开一次」），不带就要先去别的钩子里「认领」一个 agent。
+两种都报一个 `failed`。`onIdle` / `onStart` / `onStop` / `onOutputPaused` / `onOutputResumed` / `onKill` **都带 `{ agent }`**：插件在这几个时刻通常正需要读/改它（比如「闲下来之后重新开一次」），不带就要先去别的钩子里「认领」一个 agent。
 
 ### 三个能力要求
 
@@ -627,11 +632,11 @@ start()
 
 `done()` = **关门 + 血流干的死**。
 
-**队列自己就是 inbox，也是那根唤醒信号。** 外循环一句 `for await (inbox.asTakeAll())` 就够 —— 空着时它挂在自己的 `pushRx` 上。所以 core 里**不需要**再维护一套 `waitUntil` / `waiters` / `notify`：那套东西和 `pushRx` 是同一件事的第二份实现，而两份信号必然有一处忘记叫醒（旧实现里就漏过：不收件中 `stop` 差点叫不醒循环）。
+**队列自己就是 inbox，也是那根唤醒信号。** 外循环一句 `for await (inbox.asTakeAll())` 就够 —— 空着时它挂在自己的 `pushRx` 上。所以 core 里**不需要**再维护一套 `waitUntil` / `waiters` / `notify`：那套东西和 `pushRx` 是同一件事的第二份实现，而两份信号必然有一处忘记叫醒（旧实现里就漏过：不取件中 `stop` 差点叫不醒循环）。
 
-`asTakeAll()` 是**拉式**的：body 不结束就不会 `next()`，所以消费者不在场时货不会被取走。唯一要自己留意的窗口是「不收件开始于队列空着的时候」—— 那一批会被醒来后的生成器取走；按 §2 的口径，它算「已经开始」，不收回。
+`asTakeAll()` 是**拉式**的：body 不结束就不会 `next()`，所以消费者不在场时货不会被取走。唯一要自己留意的窗口是「不取件开始于队列空着的时候」—— 那一批会被醒来后的生成器取走；按 §2 的口径，它算「已经开始」，不收回。
 
-「等到某一格」也不用条件变量：状态变化发 `state:idle` / `state:working` 两条事件，`await events.promise("state:idle")` 就是全部（记得先查当前值 —— `promise()` 是 `once`，注册前已经满足了就永远等不到）。「还收不收件」不在这套里：它问的是「下一批还能不能取」，现读 `agent.consumptionPaused` 就行。
+「等到某一格」也不用条件变量：状态变化发 `state:idle` / `state:working` 两条事件，`await events.promise("state:idle")` 就是全部（记得先查当前值 —— `promise()` 是 `once`，注册前已经满足了就永远等不到）。「还收不取件」不在这套里：它问的是「下一批还能不能取」，现读 `agent.isOutputPaused` 就行。
 
 ---
 
@@ -645,7 +650,7 @@ start()
 | 消息的 `source` | 投递来的 core 原样搬；**宿主注入的（如 cwd）由宿主自己填** | core 不知道那条注入消息从哪来，只知道用户说的不带 label |
 | 素材（`__asset_id` → 真段） | 宿主 | core 一旦认识素材就再也摘不掉 |
 | 上下文阈值、压缩、交接 | SDK 插件（在 `onInnerLoopStart` 判）+ 宿主（问用户、开新会话） | core 只提供「能拒」和「能改」 |
-| 六态、状态栏、文案、i18n | 界面/宿主 | core 只给对外两格（`working` / `idle`）+ 一个「收不收件」的开关与活对象 |
+| 六态、状态栏、文案、i18n | 界面/宿主 | core 只给对外两格（`working` / `idle`）+ 一个「收不取件」的开关与活对象 |
 | 谁有活着的 agent、装配、回收 | 宿主 | 它才知道对话被删、配置改了、进程要退 |
 | 重试、降级、退避 | 外面 | 那是产品策略 |
 | 子 agent 怎么造出来 | 外面（注入回调） | 模型解析、Scope 装配都不归 core |
@@ -662,7 +667,7 @@ start()
 6. **`requestSent` 带请求体**：那份是「要发出去的东西」，一次性的，不是 `messages` 本身。
 7. **`source` 一律带**，不做「缺省即用户」。
 8. **助手占位的 id** 由构造时注入的 `newMessageId()` 给（投递来的消息用条目自带的那个）。
-9. **状态事件按到达值分名**（`state:idle` / `state:working`），开关另给两个事件（`consumption:paused` / `consumption:resumed`），不再发一条带 `to` 的 `state` —— 这样「等到某一格」用 `events.promise(...)` 就够，不用维护条件变量。宿主要跟着改订阅名。
+9. **状态事件按到达值分名**（`state:idle` / `state:working`），两道闸各给两个事件（`output:paused` / `output:resumed`、`input:paused` / `input:resumed`），不再发一条带 `to` 的 `state` —— 这样「等到某一格」用 `events.promise(...)` 就够，不用维护条件变量。宿主要跟着改订阅名。
 10. **一次性对话的「等」现在只有 `runOnce`**（它结尾会 `stop()`）。若将来需要「投递 + 等到空闲、但不关门」，再加一个 `send` —— 那时它就是第三条路，理由与 `runOnce` 相同（只有一条因果链）。
 
 ---
@@ -679,7 +684,7 @@ start()
 | 子 agent 结束 | **只标记结束，不移除** —— 父照样答得出它跑过什么、最后说了什么 |
 | **清空** | 外循环每一轮的开头（取下一批之前）。上一批的子 agent 到这儿就不再登记 |
 
-**清空点在哪不重要。** 它只是**给外面读的便利**，不参与任何内部判断：内循环、队列取件、`state` 与 `consumptionPaused`、中断都不看这份名册。所以「取下一批之前清」和「内循环跑完立即清」都对，选一个写死即可（本文取前者：外循环每批开头）。**外面读的时候也不要依赖它的精确时刻** —— 客户端维护的是自己那份镜像，名册只是「重连后一次问清」的入口。
+**清空点在哪不重要。** 它只是**给外面读的便利**，不参与任何内部判断：内循环、队列取件、`state` 与 `isOutputPaused`、中断都不看这份名册。所以「取下一批之前清」和「内循环跑完立即清」都对，选一个写死即可（本文取前者：外循环每批开头）。**外面读的时候也不要依赖它的精确时刻** —— 客户端维护的是自己那份镜像，名册只是「重连后一次问清」的入口。
 
 **子 agent 的消息跟着名册走，不跟库走 —— 不是为了省一张表。** 它们的 `messages` 在**子 agent 自己那个对象**里；要查就顺「父的登记 → 那一个子 agent → 它的 `messages`」。
 

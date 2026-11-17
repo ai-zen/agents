@@ -412,12 +412,12 @@ export class HandoffService {
    * 开始一次交接（PRD F-D2 / F-D3 / F-D4 / F-D5 / 4.5）。
    *
    * 入口判据：**这段对话此刻闲着、且不收件开关没翻**（`agent.state === "idle"` 且
-   * `!agent.consumptionPaused`）。在干 / 不取件 / 没有 agent 一律当场拒（`HostError("busy")`，
+   * `!agent.isOutputPaused`）。在干 / 不取件 / 没有 agent 一律当场拒（`HostError("busy")`，
    * `detail.reason = "not_idle"`）—— 非空闲就不让它跑，调用方自己挑个空的时候再来。不编排
    * 「先叫停、再按住、等变闲、再放行」这些花样：它闲着就够了，整趟交接不需要暂停，也不需要放行。
    *
-   * 两样分开判：`state` 说「它手上有没有活」（`working` / `idle`），`consumptionPaused` 说
-   * 「从下一批起还收不收件」—— 不收件时投进来的指令只会排队，等 `resumeConsumption` 之后突然自己跑起来。
+   * 两样分开判：`state` 说「它手上有没有活」（`working` / `idle`），`isOutputPaused` 说
+   * 「从下一批起还收不收件」—— 不收件时投进来的指令只会排队，等 `resumeOutput` 之后突然自己跑起来。
    *
    * 过了判据之后三步，然后立刻返回：
    *   1. **挂牌**（`beginHandoff`）——这一趟写出来的消息不落库，但事件照推；
@@ -459,7 +459,7 @@ export class HandoffService {
     // 入口判据：闲下来且不收件开关没翻才让跑。在干 / 不取件时手上的活还没完（待办里也可能压着
     // 别人的话），这时候投交接指令只能排在它后面；没有 agent 更是没有人可写。三种都是「等它闲了再来」
     const agent = this.agents.get(conversation.id);
-    if (!agent || agent.state !== "idle" || agent.consumptionPaused) {
+    if (!agent || agent.state !== "idle" || agent.isOutputPaused) {
       throw new HostError("busy", {
         detail: { conversationId: conversation.id, reason: "not_idle" },
       });

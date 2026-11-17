@@ -122,7 +122,7 @@ export interface ConversationRuntimePort {
   /**
    * 这段对话**手上有没有活**（core 的那一格 `agent.state` 原样给出）：没有 agent（死的）回 `null`。
    *
-   * 只读 `state`，不看 `consumptionPaused` —— 那是另一处状态（从下一批起还收不收件），不收件
+   * 只读 `state`，不看 `isOutputPaused` —— 那是另一处状态（从下一批起还收不收件），不收件
    * 挡着也算手上没活。换模型 / 换思考档位的判据就是这一格（`assertIdle`）。
    */
   agentState(conversationId: string): AgentNS.AgentState | null;
@@ -1081,7 +1081,7 @@ export class ConversationService {
    *
    * 判据就是交接入口那一条（`HandoffService.start`）：`agent.state === "idle"` 才算空闲。
    * 另两种都放行：
-   *   - `consumptionPaused` 挡着（对外报「暂停」）也算空闲 —— 它手上没活；
+   *   - `isOutputPaused` 挡着（对外报「暂停」）也算空闲 —— 它手上没活；
    *   - 没有 agent（死的）也放行 —— 没有驱动者，就没有「手上那一批活」可打岔。
    *
    * 拒的时候一个字节都不写库：这两手改的是驱动者的出厂配置（模型客户端 / 思考参数），忙的时候

@@ -174,7 +174,7 @@ export class HandoffGuardPlugin implements AgentPlugin {
   }
 
   /** 用户按了中断（`abort()` 一定翻上这个开关）：这一趟不写了，也不算写失败 */
-  onConsumptionPaused(): void {
+  onOutputPaused(): void {
     if (this.handoffPath == null) return;
     this.conclude?.("interrupted");
   }
