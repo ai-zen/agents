@@ -116,7 +116,7 @@ export class AgentToolLazy implements Tool {
    * 与 `via`（是哪一次委派引起的）。`delta` 走它的 `source` 第二格。
    *
    * 只转发「子 agent 内部发生了什么」这三类（消息、原始片、工具）；`state` 不转发 ——
-   * 父自己的三格是父的，混进来会让「这个 agent 现在忙不忙」变得没法回答。
+   * 父自己的那一格（`state`）是父的，混进来会让「这个 agent 现在在不在干」变得没法回答。
    */
   private forward(sub: Agent, ctx: ToolCallContext): Array<() => void> {
     const host = ctx.agent;

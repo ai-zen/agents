@@ -421,9 +421,9 @@ export class FakeAgent extends Agent {
       tools: toolsOf(rounds),
     });
     box.agent = this;
-    // 脚本是「一轮一段」的：每一批（`state → busy`）都从第一轮重新演。
+    // 脚本是「一轮一段」的：每一批（`state → working`）都从第一轮重新演。
     // 不重置的话，第二次发话就没有脚本可放（拿到的只会是「脚本用完了」那一句）。
-    this.on("state:busy", () => {
+    this.on("state:working", () => {
       script.cursor = 0;
     });
   }

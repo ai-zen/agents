@@ -101,18 +101,18 @@ class RecordingScopes implements ScopeProvider {
   }
 }
 
-/** 记账的驱动者：它就是 core 的 `Agent`（真的循环、真的取件），把 suspend / resume 接过来记一笔 */
+/** 记账的驱动者：它就是 core 的 `Agent`（真的循环、真的取件），把「翻上/翻回不取件开关」接过来记一笔 */
 class RecordingAgent extends FakeAgent {
   readonly calls: string[] = [];
 
-  override suspend(): void {
-    this.calls.push("suspend");
-    super.suspend();
+  override pauseConsumption(): void {
+    this.calls.push("pauseConsumption");
+    super.pauseConsumption();
   }
 
-  override resume(): void {
-    this.calls.push("resume");
-    super.resume();
+  override resumeConsumption(): void {
+    this.calls.push("resumeConsumption");
+    super.resumeConsumption();
   }
 }
 
@@ -571,18 +571,18 @@ describe("自交接：同一个驱动者写（PRD 4.5）", () => {
     ).toBe(true);
   });
 
-  it("暂停着的对话也不让跑：不替用户把它叫醒", async () => {
+  it("不收件的对话也不让跑：不替用户恢复收件", async () => {
     const built = harness.build();
-    // 用户按过中断 / 暂停：闸挂着就是他的意愿，交接不得去开它
-    built.driver.suspend();
+    // 用户按过中断 / 让停下：不收件就是他的意愿，交接不得去开那个开关
+    built.driver.pauseConsumption();
     built.driver.calls.length = 0;
 
     await expect(
       built.service.start({ conversationId, mode: "self", then: "document_only" }),
     ).rejects.toMatchObject({ code: "busy", detail: { reason: "not_idle" } });
 
-    // 闸还挂着（没人去动它）、一条指令未投
-    expect(built.driver.paused).toBe(true);
+    // 开关还开着（没人去动它）、一条指令未投
+    expect(built.driver.consumptionPaused).toBe(true);
     expect(built.driverCalls).toEqual([]);
     expect(built.runnerCalls).toEqual([]);
   });
@@ -593,15 +593,15 @@ describe("自交接：同一个驱动者写（PRD 4.5）", () => {
     const driver = new RecordingAgent([{ gate: new Promise<void>(() => undefined) }]);
     const built = harness.build({ notices, driver });
 
-    const busy = new Promise<void>((resolve) => {
-      driver.on("state:busy", () => resolve());
+    const working = new Promise<void>((resolve) => {
+      driver.on("state:working", () => resolve());
     });
     await built.service.start({ conversationId, mode: "self", then: "document_only" });
-    await busy;
+    await working;
     driver.abort();
     await built.settle();
 
-    expect(driver.paused).toBe(true);
+    expect(driver.consumptionPaused).toBe(true);
     const listed = await notices.list({});
     expect(
       listed.notices.some((notice) => notice.text.messageKey === "error.handoffDeclined"),
@@ -783,21 +783,21 @@ describe("取消与失败（F-D7）", () => {
     expect(failed?.level).toBe("error");
     expect(failed?.text.params).toMatchObject({ reason: "模型没写出来" });
     // 这一段仍能接着用：没人把它按住，也就不需要谁去放行
-    expect(built.driver.state).not.toBe("busy");
+    expect(built.driver.state).not.toBe("working");
   });
 });
 
 describe("前置条件", () => {
-  it("忙的时候不让跑：handoff.start 直接拒（busy + not_idle）", async () => {
-    // 第一片永远不来：它一直忙（手上的活没完，待办里也不该被插一条交接指令）
+  it("在干的时候不让跑：handoff.start 直接拒（busy + not_idle）", async () => {
+    // 第一片永远不来：它一直在干（手上的活没完，待办里也不该被插一条交接指令）
     const driver = new RecordingAgent([{ gate: new Promise<void>(() => undefined) }]);
     const built = harness.build({ driver });
-    const busy = new Promise<void>((resolve) => {
-      driver.on("state:busy", () => resolve());
+    const working = new Promise<void>((resolve) => {
+      driver.on("state:working", () => resolve());
     });
     driver.push({ content: "先聊一句", priority: "high", source: { kind: "user" } });
     void driver.start();
-    await busy;
+    await working;
 
     await expect(
       built.service.start({ conversationId, mode: "self", then: "document_only" }),
@@ -807,7 +807,7 @@ describe("前置条件", () => {
     expect(built.runnerCalls).toEqual([]);
     expect(built.instructions).toEqual([]);
     expect(driver.abortCalls).toBe(0);
-    expect(driver.state).toBe("busy");
+    expect(driver.state).toBe("working");
   });
 
   it("没有 agent 也不让跑：没有人可写", async () => {

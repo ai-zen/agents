@@ -88,7 +88,7 @@ function createMockClient(rounds: AnyChunk[][]) {
  * 等到它**真的停下来**：闲 且 队列空。
  *
  * 只看 `state === "idle"` 不够了 —— 状态由外循环的位置决定，push 之后要等外循环头
- * 才变忙，所以「刚 push 完就问一次」会立刻通过。
+ * 才变 `working`，所以「刚 push 完就问一次」会立刻通过。
  */
 async function settled(agent: Agent): Promise<void> {
   await until(() => agent.state === "idle" && agent.inboxSize === 0);
@@ -226,8 +226,8 @@ describe("Agent 投递", () => {
   });
 });
 
-describe("Agent 暂停", () => {
-  it("abort 掐在途、闸挂上；resume 之后接着跑", async () => {
+describe("Agent 不取件", () => {
+  it("abort 掐在途、从此不收件；resumeConsumption 之后接着跑", async () => {
     let signal: AbortSignal | undefined;
     const create = vi.fn(async (_body: any, options: any) => {
       signal = options?.signal;
@@ -241,19 +241,19 @@ describe("Agent 暂停", () => {
     void agent.start();
 
     agent.push(user("慢慢来"));
-    await until(() => agent.state === "busy");
+    await until(() => agent.state === "working");
     await until(() => signal !== undefined);
 
     agent.abort();
-    // 闸挂上了，而忙/闲那一格还停在「忙」：两处状态各说各的（这批跑完才报闲）
-    expect(agent.paused).toBe(true);
-    expect(agent.state).toBe("busy");
+    // 开关翻成不取件了，而 state 那一格还停在 working：两处状态各说各的（这批跑完才报闲）
+    expect(agent.consumptionPaused).toBe(true);
+    expect(agent.state).toBe("working");
     expect(signal!.aborted).toBe(true);
 
     // 被掐断的那一条定型为 aborted，不是 error
     await until(() => agent.messages.some((m) => m.status === AgentNS.MessageStatus.Aborted));
 
-    agent.resume();
+    agent.resumeConsumption();
     await settled(agent);
 
     agent.stop();
@@ -442,7 +442,7 @@ describe("Agent runOnce", () => {
 
     void agent.start();
     agent.push(); // 这一次是发起它的那一次
-    await until(() => agent.state === "busy");
+    await until(() => agent.state === "working");
 
     expect(() => agent.push(user("偷偷再塞一条"))).toThrow(AgentError);
 

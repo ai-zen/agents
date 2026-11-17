@@ -1,6 +1,7 @@
 import { AgentNS } from "@ai-zen/agents-core";
 import { describe, expect, it } from "vitest";
 
+import { statusOfState } from "../runtime/ChatRunner.js";
 import {
   MAX_ASSETS_PER_MESSAGE,
   MAX_ASSET_BYTES,
@@ -15,18 +16,20 @@ import {
 } from "./states.js";
 
 describe("对话此刻的四格（PRD 4.4 / PLAN §10.1）", () => {
-  it("core 报两格（忙 / 闲），加一格「闸挂着」与一格「死」：恰好四个值，不多不少", () => {
-    // 前两格照 core 的 `AgentState`（忙 / 闲 = 循环的位置）；后两格是宿主自己那两件事：
-    // 「闸挂着」= `agent.paused`，「死」= 宿主那边连 agent 对象都没有
-    const agentStates: AgentNS.AgentState[] = ["busy", "idle"];
-    const all: ConversationStatus[] = [...agentStates, "paused", "dead"];
+  it("core 报两格（working / 闲），加一格「不收件」与一格「死」：对外恰好四个值，不多不少", () => {
+    // 前两格照 core 的 `AgentState`（`working` / `idle` = 循环的位置），宿主把它们翻成对外的两个
+    // 名字（`statusOfState`）；后两格是宿主自己那两件事：「不收件」= `agent.consumptionPaused`，
+    // 「死」= 宿主那边连 agent 对象都没有
+    const agentStates: AgentNS.AgentState[] = ["working", "idle"];
+    const all: ConversationStatus[] = [...agentStates.map(statusOfState), "paused", "dead"];
     expect(all).toEqual(["busy", "idle", "paused", "dead"]);
 
-    // 两个方向都不多不少：core 的两格全在这一格里，而减掉 core 两格只剩宿主那两件事
+    // 两个方向都不多不少：core 的两格翻过来全在这一格里，而减掉它们只剩宿主那两件事
     // （任一方向多了或少了值，下面两行就不再是 `true`，编译就红）
-    type UnknownCoreState = Exclude<AgentNS.AgentState, ConversationStatus>;
+    type OutwardFromCore = ReturnType<typeof statusOfState>;
+    type UnknownCoreState = Exclude<OutwardFromCore, ConversationStatus>;
     const coreStatesAllKnown: UnknownCoreState extends never ? true : false = true;
-    type HostOnlyState = Exclude<ConversationStatus, AgentNS.AgentState>;
+    type HostOnlyState = Exclude<ConversationStatus, OutwardFromCore>;
     const hostOnlyStates: HostOnlyState extends "paused" | "dead" ? true : false = true;
     expect(coreStatesAllKnown && hostOnlyStates).toBe(true);
   });

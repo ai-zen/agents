@@ -46,12 +46,12 @@ type Listener = (payload: any) => void;
  * 新 core 里**没有 `send()`** 了（`CORE.md` §1）：自交接那一轮靠「`push` 一条指令 + 等闲」
  * 实现。所以这个替身要模拟的就是那条路的三个可观测点：
  *   - `start()`：幂等，返回一句「到死才 resolve」的 promise；
- *   - `push(entry)`：落一条 user 消息 → 变忙 → （跑 `onSend`）→ 追加回执 → 变闲；
- *   - `on("state:idle" | "state:busy" | "gate:held" | "stopped" | "killed")`：订阅，返回取消函数。
+ *   - `push(entry)`：落一条 user 消息 → 变 `working` → （跑 `onSend`）→ 追加回执 → 变闲；
+ *   - `on("state:idle" | "state:working" | "consumption:paused" | "stopped" | "killed")`：订阅，返回取消函数。
  *
  * `state` 的转移必须走 `setState`（同值不发），否则订阅方会被同一次转移喂两次。
- * 忙/闲与闸是**两处状态**（与 core 同口径）：`state` 只说循环的位置，`paused` 只管「从下一批
- * 起还取不取」。
+ * `state` 与 `consumptionPaused` 是**两处状态**（与 core 同口径）：`state` 只说循环的位置，
+ * `consumptionPaused` 只管「从下一批起还收不收件」。
  */
 class FakeAgent {
   messages: any[];
@@ -67,9 +67,9 @@ class FakeAgent {
   client: any;
   /** 常驻会话：自交接要求 agent 能「再问一轮」 */
   lifetime = "resident";
-  state: "busy" | "idle" = "idle";
-  /** 闸：挂着就不取件（另一处状态，不影响 `state`） */
-  paused = false;
+  state: "working" | "idle" = "idle";
+  /** 还收不收件（另一处状态，不影响 `state`） */
+  consumptionPaused = false;
 
   private listeners = new Map<string, Set<Listener>>();
   private closed = false;
@@ -120,7 +120,7 @@ class FakeAgent {
     for (const handler of this.listeners.get(type) ?? []) handler(payload);
   }
 
-  private setState(next: "busy" | "idle"): void {
+  private setState(next: "working" | "idle"): void {
     const from = this.state;
     if (from === next) return;
     this.state = next;
@@ -157,7 +157,7 @@ class FakeAgent {
     this.sent.push(content);
     // 真 core：一批开头先落 user 消息，再发请求
     this.messages.push({ role: "user", content, source: entry.source });
-    this.setState("busy");
+    this.setState("working");
 
     const finish = () => {
       // 模拟 core：追加 assistant 回执，然后回到「闲」
@@ -423,12 +423,12 @@ describe("handoff", () => {
     expect(agent.client.chat.completions.create).not.toHaveBeenCalled();
   });
 
-  it("agent 处于暂停时不投递（暂停不取件），直接降级 summary", async () => {
-    // 暂停中 `push` 只会排队，等 resume 之后突然自己跑起来 —— 那是「用户按了暂停却看见
+  it("agent 不收件时不投递（不收件就不取件），直接降级 summary", async () => {
+    // 不收件时 `push` 只会排队，等 resumeConsumption 之后突然自己跑起来 —— 那是「用户让它停却看见
     // 它又开口」。所以这一轮当没跑成，走逃生模式（summary 不经过 agent）。
     const { service } = await makeService();
     const agent = new FakeAgent();
-    agent.paused = true;
+    agent.consumptionPaused = true;
 
     const ctx = await service.handoff({ agent: asAgent(agent) });
 
@@ -507,7 +507,7 @@ describe("handoff", () => {
 
 /**
  * 这一组不接假 agent：`push` + 等闲这条新路完全依赖 core 的真实状态转移
- * （`push` 同步变忙 → 一圈跑完变闲），假件把它演得太随意就验不出任何东西。
+ * （`push` 同步变 `working` → 一圈跑完变闲），假件把它演得太随意就验不出任何东西。
  */
 describe("self 模式：真 core（push + 等闲，没有 send()）", () => {
   /**

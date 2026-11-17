@@ -113,12 +113,12 @@ describe("四条到达事件", () => {
     const mirror = mirrorOf();
     mirror.applyReadout({
       status: "busy",
-      subAgents: [{ toolCallId: "call-1", name: "explore", state: "busy" }],
+      subAgents: [{ toolCallId: "call-1", name: "explore", state: "working" }],
       handoff: { since: AT },
     });
 
     expect(mirror.status).toBe("busy");
-    expect(mirror.roster).toEqual([{ toolCallId: "call-1", name: "explore", state: "busy" }]);
+    expect(mirror.roster).toEqual([{ toolCallId: "call-1", name: "explore", state: "working" }]);
     // 名册上有的栏先摆出来（还是空的），之后的事件往里面长
     expect(mirror.subAgent("call-1")).toEqual([]);
     expect(mirror.handoff).toEqual({ since: AT });

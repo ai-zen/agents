@@ -13,7 +13,7 @@
  *
  * ## 为什么用真 core `Agent`
  *
- * 事件顺序全在 core 的循环里（`state:busy` 先于落地、取件点在内循环末、`messageChanged` 才是
+ * 事件顺序全在 core 的循环里（`state:working` 先于落地、取件点在内循环末、`messageChanged` 才是
  * 定型）。假 agent 演不出来 —— 它的顺序是我们自己写的，红不了也绿不了。于是与
  * `TestSupport.FakeAgent`（真 `Agent`，只有模型那一侧是脚本）同一套做法，宿主的件全用真的：
  * `AgentRegistry` / `ScopeRegistry` / 记账式消息仓储 / 真的 `emit` 收集器。
@@ -314,7 +314,7 @@ describe("ChatRunner.abort：打到活着的 agent 上", () => {
     });
 
     await harness.deliver(userSays("开跑"));
-    await harness.waitFor(() => harness.registry.get(CONVERSATION_ID)?.state === "busy");
+    await harness.waitFor(() => harness.registry.get(CONVERSATION_ID)?.state === "working");
 
     expect(harness.runner.abort(CONVERSATION_ID)).toBe(true);
     // 中断完是「暂停」：还能继续，agent 还在
@@ -351,7 +351,7 @@ describe("ChatRunner.state：现读四格与待办", () => {
     });
 
     await harness.deliver(userSays("第一条"));
-    await harness.waitFor(() => harness.registry.get(CONVERSATION_ID)?.state === "busy");
+    await harness.waitFor(() => harness.registry.get(CONVERSATION_ID)?.state === "working");
 
     // 它正卡在工具里：下一条只能排着
     await harness.deliver(userSays("第二条"));

@@ -34,7 +34,7 @@ interface Harness {
   /** 每次造出来的假 agent */
   created: FakeAgent[];
   createdScopes: string[];
-  /** 「正在跑」的那几段对话：判据就是 agent 身上那一格（`state === "busy"`） */
+  /** 「正在跑」的那几段对话：判据就是 agent 身上那一格（`state === "working"`） */
   running: Set<string>;
   /** 每次生灭决定的记录（`onLifecycle` 收到的原样） */
   lifecycle: AgentLifecycleEvent[];
@@ -93,7 +93,7 @@ function createHarness(
     markRunning: (conversationId) => {
       running.add(conversationId);
       const agent = agents.get(conversationId);
-      if (agent) agent.state = "busy";
+      if (agent) agent.state = "working";
     },
     markIdle: (conversationId) => {
       running.delete(conversationId);

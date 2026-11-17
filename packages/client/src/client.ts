@@ -52,7 +52,7 @@ import { ClientError, fromHostError, localError } from "./errors.js";
 import { encodeFrame, parseIncoming, requestFrame } from "./frames.js";
 import { ConversationMirror, toMirrorEvent, type MirrorEvent } from "./mirror.js";
 
-/** 取消订阅（`subscribe` / `onClose` / `onResume` 的返回值） */
+/** 取消订阅（`subscribe` / `onClose` / `onSync` 的返回值） */
 export type Unsubscribe = () => void;
 
 /** 单次调用的选项 */

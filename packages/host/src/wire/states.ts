@@ -70,9 +70,9 @@ export interface ProblemFact extends LocalizedText {
 /**
  * 一段对话此刻处于哪一格 —— 只有四个值，死 = 连 agent 对象都没有。
  *
- * 这四格是**合成值**：core 只报两格（`busy` / `idle`，由循环的位置决定），暂停是**另一处状态**
- * （闸挂着：`agent.paused`），死是「查不到对象」。不落库、不是会话字段、不推算。
- * 客户端要分得开「闲」与「暂停」，因为前者会理你、后者不会。
+ * 这四格是**合成值**：core 只报两格（`state`：`working` / `idle`，由循环的位置决定），「暂停」是
+ * **另一处状态**（`agent.consumptionPaused`：从下一批起不收件），死是「查不到对象」。不落库、
+ * 不是会话字段、不推算。客户端要分得开「闲」与「暂停」，因为前者会理你、后者不会。
  */
 export type ConversationStatus = "dead" | "busy" | "idle" | "paused";
 
@@ -111,7 +111,7 @@ export interface SubAgentFact {
   toolCallId: string;
   /** 这次委派用的工具名 */
   name: string;
-  /** 子 agent 自己的两格（忙 / 闲），或者「已经散场」 */
+  /** 子 agent 自己的两格（`working` / `idle`），或者「已经散场」 */
   state: AgentNS.AgentState | "ended";
 }
 

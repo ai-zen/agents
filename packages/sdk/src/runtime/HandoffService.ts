@@ -142,7 +142,7 @@ export interface HandoffParams {
    * 两种执行者都要认它：
    *   - `summary`：直接作为 `chat.completions.create` 的 RequestOptions 传下去，
    *     请求会真的被中断（否则该请求根本无从取消）；
-   *   - `self`：agent 被 `abort()` 了（闸挂上），所以每一趟之后要主动检查取不取消。
+   *   - `self`：agent 被 `abort()` 了（从下一批起不收件），所以每一趟之后要主动检查取不取消。
    */
   signal?: AbortSignal;
 }
@@ -346,7 +346,7 @@ export class HandoffService {
    * 边界：本方法只保证「停下 + 回退」——不再重试、不降级 summary、不迁移，并把会话
    * 退回交接前。**它不负责立刻掐断正在跑的模型请求**：`self` 模式的那一轮是往常驻 agent 里
    * `push()` 的一条指令，调用方通常要同时 `agent.abort()`（TUI 就是这么做的 ——
-   * 那一按会给 agent 挂上闸，本服务随之把这一趟判成「没跑完」）；`summary`
+   * 那一按会让 agent 从下一批起不再收件，本服务随之把这一趟判成「没跑完」）；`summary`
    * 模式的那次请求拿的是本服务合并出的 signal，会被真正中断。
    */
   abort(): void {
@@ -632,8 +632,8 @@ export class HandoffService {
       );
       // `agent.abort()` 不抛错，必须主动检查（见方法注释）
       this.throwIfAborted(signal);
-      // 这一轮没跑完（暂停 / 关门 / 硬杀）：产物没意义，也别再往里投 ——
-      // 暂停中不取件，再投只会把一条陈旧指令留在队列里，等 resume 之后突然自己跑起来
+      // 这一轮没跑完（不收件 / 关门 / 硬杀）：产物没意义，也别再往里投 ——
+      // 不收件时它不取件，再投只会把一条陈旧指令留在队列里，等 resumeConsumption 之后突然自己跑起来
       if (first !== "idle") return false;
 
       if (await this.isHandoffFileReady(handoffPath)) return true;
@@ -685,7 +685,7 @@ export class HandoffService {
    *
    * 三种结束方式对调用方意义不同（`idle` 才能去校验产物），所以分开报：
    *   - `idle`：跑完了；
-   *   - `paused`：被 `abort()` 掉了（闸挂着），或者取消信号响了；
+   *   - `paused`：被 `abort()` 掉了（`consumptionPaused` 翻了），或者取消信号响了；
    *   - `dead`：关门/硬杀，循环已经结束。
    *
    * 第四种情况不在这里表达：`push` 在关门之后会直接抛 `AgentError("closed")` —— 那是
@@ -696,14 +696,14 @@ export class HandoffService {
     content: string,
     signal?: AbortSignal,
   ): Promise<"idle" | "paused" | "dead"> {
-    // 闸挂着就不取件：此刻投进去只会排在队列里，等 resume 后突然自己跑起来
-    if (agent.paused) return "paused";
+    // 已经不收件了：此刻投进去只会排在队列里，等 resumeConsumption 后突然自己跑起来
+    if (agent.consumptionPaused) return "paused";
 
     // 叫起来（幂等；不 await —— 那句 promise 到死才 resolve）
     void agent.start();
 
     const ended = new Promise<"idle" | "paused" | "dead">((resolve) => {
-      let sawBusy = false;
+      let sawWorking = false;
       const offs: Array<() => void> = [];
       const finish = (end: "idle" | "paused" | "dead") => {
         for (const off of offs.splice(0)) off();
@@ -711,14 +711,14 @@ export class HandoffService {
       };
 
       // 状态事件按到达值分名（`CORE.md` §10）：订阅「到了哪一格」，不必再看 `to`
-      offs.push(agent.on("state:busy", () => void (sawBusy = true)));
+      offs.push(agent.on("state:working", () => void (sawWorking = true)));
       offs.push(
         agent.on("state:idle", () => {
-          // 只认「忙过之后的闲」：投递之前那一段（队列里还压着别人的货）的闲不是我的
-          if (sawBusy) finish("idle");
+          // 只认「在干过之后的闲」：投递之前那一段（队列里还压着别人的货）的闲不是我的
+          if (sawWorking) finish("idle");
         }),
       );
-      offs.push(agent.on("gate:held", () => finish("paused")));
+      offs.push(agent.on("consumption:paused", () => finish("paused")));
       offs.push(agent.on("stopped", () => finish("dead")));
       offs.push(agent.on("killed", () => finish("dead")));
       // 取消也要能打断「等闲」（`CORE.md` §5 那个死角：等子 agent 闲同样得能被掐断）

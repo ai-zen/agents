@@ -373,7 +373,7 @@ describe("镜像：打开一段对话", () => {
         "conversation.state": () => ({
           state: conversationState("c1", {
             status: "paused",
-            subAgents: [{ toolCallId: "call-1", name: "explore", state: "busy" }],
+            subAgents: [{ toolCallId: "call-1", name: "explore", state: "working" }],
             handoff: { since: "2026-01-01T00:00:05.000Z" },
           }),
         }),
@@ -385,7 +385,7 @@ describe("镜像：打开一段对话", () => {
     const mirror = await client.open("c1");
     expect(mirror.status).toBe("paused");
     // 名册那一条先把栏摆出来（内容之后靠事件长）
-    expect(mirror.roster).toEqual([{ toolCallId: "call-1", name: "explore", state: "busy" }]);
+    expect(mirror.roster).toEqual([{ toolCallId: "call-1", name: "explore", state: "working" }]);
     expect(mirror.subAgent("call-1")).toEqual([]);
     // 非空就是「正在交接」（与四格分开：这段照旧是暂停格）
     expect(mirror.handoff).toEqual({ since: "2026-01-01T00:00:05.000Z" });

@@ -37,8 +37,8 @@
  *
  * ## 只在空闲时发起：不按住谁，也不替谁放行
  *
- * `start()` 的入口判据只有一条：**那段对话此刻是 `idle`**。忙 / 暂停 / 没有 agent 一律当场拒
- * （`HostError("busy")`，`detail.reason = "not_idle"`），让调用方自己挑个空的时候再来。
+ * `start()` 的入口判据只有一条：**那段对话此刻是 `idle`**。在干 / 不取件 / 没有 agent 一律
+ * 当场拒（`HostError("busy")`，`detail.reason = "not_idle"`），让调用方自己挑个空的时候再来。
  * 于是整趟交接既不必按暂停、也不必放行：它闲着 → 投一条指令 → 它自己变忙、自己写完 → 宿主
  * 按工具结果判「写完了没有」→ 提交。别人的话在它忙的时候进来就排在待办里，跑完之后被取走
  * 还是留在那儿都无所谓 —— 记忆随后整段被替换，什么都留不下。
@@ -411,13 +411,13 @@ export class HandoffService {
   /**
    * 开始一次交接（PRD F-D2 / F-D3 / F-D4 / F-D5 / 4.5）。
    *
-   * 入口判据：**这段对话此刻闲着、且闸没挂**（`agent.state === "idle"` 且 `!agent.paused`）。
-   * 忙 / 暂停 / 没有 agent 一律当场拒（`HostError("busy")`，`detail.reason = "not_idle"`）——
-   * 非空闲就不让它跑，调用方自己挑个空的时候再来。不编排「先叫停、再按住、等变闲、再放行」这些花样：
-   * 它闲着就够了，整趟交接不需要暂停，也不需要放行。
+   * 入口判据：**这段对话此刻闲着、且不收件开关没翻**（`agent.state === "idle"` 且
+   * `!agent.consumptionPaused`）。在干 / 不取件 / 没有 agent 一律当场拒（`HostError("busy")`，
+   * `detail.reason = "not_idle"`）—— 非空闲就不让它跑，调用方自己挑个空的时候再来。不编排
+   * 「先叫停、再按住、等变闲、再放行」这些花样：它闲着就够了，整趟交接不需要暂停，也不需要放行。
    *
-   * 两样分开判：`state` 说「它手上有没有活」（忙 / 闲），`paused` 说「闸挂着没有」——
-   * 闸挂着时投进来的指令只会排队，等 resume 之后突然自己跑起来。
+   * 两样分开判：`state` 说「它手上有没有活」（`working` / `idle`），`consumptionPaused` 说
+   * 「从下一批起还收不收件」—— 不收件时投进来的指令只会排队，等 `resumeConsumption` 之后突然自己跑起来。
    *
    * 过了判据之后三步，然后立刻返回：
    *   1. **挂牌**（`beginHandoff`）——这一趟写出来的消息不落库，但事件照推；
@@ -456,10 +456,10 @@ export class HandoffService {
       });
     }
 
-    // 入口判据：闲下来且闸没挂才让跑。忙 / 暂停时手上的活还没完（待办里也可能压着别人的话），
-    // 这时候投交接指令只能排在它后面；没有 agent 更是没有人可写。三种都是「等它闲了再来」
+    // 入口判据：闲下来且不收件开关没翻才让跑。在干 / 不取件时手上的活还没完（待办里也可能压着
+    // 别人的话），这时候投交接指令只能排在它后面；没有 agent 更是没有人可写。三种都是「等它闲了再来」
     const agent = this.agents?.get(conversation.id);
-    if (!agent || agent.state !== "idle" || agent.paused) {
+    if (!agent || agent.state !== "idle" || agent.consumptionPaused) {
       throw new HostError("busy", {
         detail: { conversationId: conversation.id, reason: "not_idle" },
       });
@@ -619,7 +619,7 @@ export class HandoffService {
    *
    * 三条边界：
    *   - 没有驱动者就没有「同一个驱动者」这回事：单向降级到独立交接；
-   *   - 投递不靠任何「先把闸打开」的前置：入口判据已经保证它此刻闲着，指令直接进它的待办；
+   *   - 投递不靠任何「先恢复收件」的前置：入口判据已经保证它此刻闲着，指令直接进它的待办；
    *   - 写不出来（工具结果等不到、盘上文件不存在或太短）也是单向降级 —— 反向永远不发生。
    *
    * 这一趟的话不落库：交接态由 `beginHandoff` 挂着（PLAN §5.3），事件照推。
@@ -737,8 +737,8 @@ export class HandoffService {
         );
       }),
     );
-    // 闸挂上就是「用户按了中断」（PRD 4.4：中断之后闸就挂着）：放弃这次交接
-    offs.push(agent.on("gate:held", () => finish("interrupted")));
+    // 翻成不取件就是「用户按了中断」（PRD 4.4：中断之后就不再收件）：放弃这次交接
+    offs.push(agent.on("consumption:paused", () => finish("interrupted")));
     offs.push(agent.on("stopped", () => finish("gone")));
     offs.push(agent.on("killed", () => finish("gone")));
     return {

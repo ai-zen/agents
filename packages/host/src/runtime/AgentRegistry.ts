@@ -50,17 +50,17 @@
  *
  * 后两种**不 kill**：那是「换一个新的」，而它手上那一批还得用旧配置跑完。
  *
- * 「有没有在跑」直接读 agent 手上那一格（`agent.state === "busy"`，`CORE.md` §4）：状态不是
+ * 「有没有在跑」直接读 agent 手上那一格（`agent.state === "working"`，`CORE.md` §4）：状态不是
  * 第二份账，是循环此刻走到哪儿。本文件不另记一份「在跑」 —— 从前那本账叫 `RunRegistry`，
  * 它随「没有轮」一起废掉了。
  *
- * 「闸挂着」是**另一处状态**（`agent.paused`）：它说的是「从下一批起还取不取」，不是
- * 「手上有活」。两件事各有各的格，所以本文件判「手上有没有活」只看 `state`。
+ * 「还收不收件」是**另一处状态**（`agent.consumptionPaused`）：它说的是「从下一批起还收不收件」，
+ * 不是「手上有活」。两件事各有各的格，所以本文件判「手上有没有活」只看 `state`。
  */
 
 import type { Scope } from "@ai-zen/agents-sdk";
 
-import { statusOfAgent } from "./ChatRunner.js";
+import { statusOfAgent, statusOfState } from "./ChatRunner.js";
 import type {
   AgentBuildContext,
   AgentFactory,
@@ -319,12 +319,12 @@ export class AgentRegistry {
    * 为什么要换掉 agent（而不是就地刷）：`Scope.refresh()` 刷得动能力（工具、MCP），刷不动
    * 已经建好的模型客户端 —— `createModel(scope.config, …)` 是**装配那一刻**读的。
    *
-   * 两种情形分开办（判据是手上有没有活，不是别的账本，也与闸无关）：
+   * 两种情形分开办（判据是手上有没有活，不是别的账本，也与收不收件无关）：
    *   - **闲**的当场退役：它手上没有活，而它也不会再被谁取走；
-   *   - **忙**的只打标记，并且在返回值里报出来：它手上那一批还得用旧配置跑完（不打断用户），
+   *   - **在干**的只打标记，并且在返回值里报出来：它手上那一批还得用旧配置跑完（不打断用户），
    *     标记由 {@link complete} 在变闲那一刻兑现。
    *
-   * 闸挂着但手上有活的那种（暂停中那批正在跑）算「忙」：那批跑完照样报闲，标记到那一刻兑现。
+   * 不收件、但手上有活的那种（那批正在跑）算「在干」：那批跑完照样报闲，标记到那一刻兑现。
    *
    * @returns 被打上标记、但还没退役的 `conversationId`（闲的那些不在里面：它们已经没了）
    */
@@ -334,7 +334,7 @@ export class AgentRegistry {
     for (const conversationId of [...this.entries.keys()]) {
       const entry = this.entries.get(conversationId);
       if (!entry || entry.workspaceId !== workspaceId) continue;
-      if (entry.agent.state === "busy") {
+      if (entry.agent.state === "working") {
         entry.stale = true;
         marked.push(conversationId);
         continue;
@@ -479,12 +479,12 @@ export class AgentRegistry {
   /**
    * 订上这个 agent 的那一格观察线，并补上「哪段对话」。
    *
-   * 订的是 core 的**四处**：忙 / 闲两格（循环的位置），加上闸的挂 / 开。报给外面的仍是
-   * 三值（忙 / 闲 / 暂停）—— 合成那一下由 `statusOfAgent` 做，本文件不解释它，只负责把
-   * 「谁的事」说清楚。
+   * 订的是 core 的**四处**：`state` 的两格（循环的位置），加上收件那个开关的翻上 / 翻回。
+   * 报给外面的仍是三值（忙 / 闲 / 暂停）—— 合成那一下由 `statusOfAgent` 做，本文件不解释它，
+   * 只负责把「谁的事」说清楚。
    */
   private watch(conversationId: string, agent: ChatAgent): () => void {
-    // 对外真的变了才报：暂停中那批跑起来（忙）对外仍是「暂停」，那不是一次变化
+    // 对外真的变了才报：不收件中那批跑起来（`working`）对外仍是「暂停」，那不是一次变化
     const report = (from: AgentStatusValue) => {
       const to = statusOfAgent(agent);
       if (to === from) return;
@@ -494,12 +494,16 @@ export class AgentRegistry {
     };
 
     const offs = [
-      // 两格：`from` 是上一个循环位置；闸挂着时对外报的却是「暂停」
-      agent.on("state:busy", (payload) => report(agent.paused ? "paused" : payload.from)),
-      agent.on("state:idle", (payload) => report(agent.paused ? "paused" : payload.from)),
-      // 闸：挂上之前对外报的就是循环那一格；打开之前对外报的一定是「暂停」
-      agent.on("gate:held", () => report(agent.state)),
-      agent.on("gate:open", () => report("paused")),
+      // 两格：`from` 是上一个循环位置（core 的名字 → 对外的名字）；不收件时对外报的却是「暂停」
+      agent.on("state:working", (payload) =>
+        report(agent.consumptionPaused ? "paused" : statusOfState(payload.from)),
+      ),
+      agent.on("state:idle", (payload) =>
+        report(agent.consumptionPaused ? "paused" : statusOfState(payload.from)),
+      ),
+      // 开关：翻上去之前对外报的就是循环那一格；翻回来之前对外报的一定是「暂停」
+      agent.on("consumption:paused", () => report(statusOfState(agent.state))),
+      agent.on("consumption:resumed", () => report("paused")),
     ];
     return () => {
       for (const off of offs) off();
