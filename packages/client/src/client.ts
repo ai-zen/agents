@@ -120,6 +120,15 @@ export type SyncOutcome =
   | { ok: true; conversationId: string; mirror: ConversationMirror }
   | { ok: false; conversationId: string; error: ClientError };
 
+/**
+ * 一次快照的落法 —— `message.list` 怎么问、回来怎么并（见 {@link Client.loadSnapshot}）。
+ *
+ *   · `replace`：不带 `after` 问全量，回来后用 `replaceAll` 整段替换主线（首载、`memory_replaced`
+ *     之后的重拉）；
+ *   · `continue`：带本地主线最后一条 id 问增量，回来后按 `anchor` 替换 + 追加（重连补回）。
+ */
+type SnapshotMode = "replace" | "continue";
+
 interface PendingCall {
   resolve: (value: unknown) => void;
   reject: (error: ClientError) => void;
@@ -353,7 +362,7 @@ export class Client implements ContractCaller {
   /**
    * 打开一段对话：**先订阅、再拉全量、把拉取期间到达的事件按序补上**。
    *
-   * 这四步的先后不能换（也是这个方法的全部内容）：
+   * 这四步的先后不能换：
    *   1. **先订阅**：镜像先进 {@link Client.mirrors} 表，并给它开一个缓冲队列。从这一刻起，
    *      与镜像有关的事件一律先进队列 —— 拉取期间发生的事一条都不会丢。
    *   2. **读四格**（`conversation.state`）：先读它，是因为之后再到达的事件总比这个读数值新，
@@ -362,6 +371,10 @@ export class Client implements ContractCaller {
    *   3. **拉全量**（`message.list`，不带 `after`）：整段主线消息。
    *   4. **补事件**：快照落地之后，把队列里的那一批按**到达顺序**折进镜像；属于快照已包含
    *      那些消息的增量不再折一遍（否则同一段字会写两遍，见 `mirror.ts`）。
+   *
+   * 2、3、4 合起来就是 {@link Client.loadSnapshot} 的那一次 `"replace"`（三处快照共用的一处）；
+   * 这个方法的其余内容只有「建镜像」与「拉不下来就把这半份撤掉」—— 后一件事是首载独有的，
+   * 另两处（重连补回、`memory_replaced` 的重拉）都留着手上那一份。
    *
    * 已经在镜像表里的对话直接回那一个（同一段不并发拉两份快照）。拉取失败时**不留半份镜像**：
    * 一个只有事件、没有历史的镜像比没有更糟。
@@ -379,13 +392,7 @@ export class Client implements ContractCaller {
     const mirror = new ConversationMirror({ conversationId, status: null });
     this.mirrors.set(conversationId, mirror);
     try {
-      await this.snapshotWhileBuffering(conversationId, async () => {
-        const { state } = await this.call("conversation.state", { conversationId });
-        // 四格 + 名册 + 交接态一起收下：名册用来铺子 agent 那几栏（栏里的消息只来自事件）
-        mirror.applyReadout(state);
-        const listed = await this.call("message.list", { conversationId });
-        mirror.replaceAll(listed.messages);
-      });
+      await this.loadSnapshot(conversationId, mirror, "replace");
     } catch (error) {
       this.mirrors.delete(conversationId);
       this.buffers.delete(conversationId);
@@ -409,7 +416,8 @@ export class Client implements ContractCaller {
   /**
    * 把镜像补回现在（重连之后自动走一次，也可以手动调）。
    *
-   * 补法只有一条：`message.list { after: 本地主线最后一条 id }`。
+   * 补法只有一条（{@link Client.loadSnapshot} 的 `"continue"`）：
+   * `message.list { after: 本地主线最后一条 id }`。
    *   · 那条还在 → 回的就是「它最新内容 + 之后全部」，本地在它之前的部分留着，从它起整段换成
    *     宿主的（替换 + 追加）；
    *   · 那条不在（被撤回 / 删掉）→ 宿主回全量，本地整段替换。
@@ -422,18 +430,7 @@ export class Client implements ContractCaller {
     const mirror = this.mirrors.get(conversationId);
     if (!mirror) return this.open(conversationId);
 
-    await this.snapshotWhileBuffering(conversationId, async () => {
-      const { state } = await this.call("conversation.state", { conversationId });
-      // 交接态在这里也会被读到：交接收尾时宿主推一条 `memory_replaced`（见下面那段），
-      // 于是重连中的窗口里「正在交接」不会一直挂着
-      mirror.applyReadout(state);
-      const after = mirror.lastMessageId();
-      const listed = await this.call("message.list", {
-        conversationId,
-        ...(after === undefined ? {} : { after }),
-      });
-      mirror.mergeFrom(listed.anchor, listed.messages);
-    });
+    await this.loadSnapshot(conversationId, mirror, "continue");
     return mirror;
   }
 
@@ -774,21 +771,61 @@ export class Client implements ContractCaller {
     void this.reloadMirror(conversationId, mirror).catch(() => undefined);
   }
 
-  /** 整段重拉（`memory_replaced` 的唯一出口）：状态与主线一次拿齐，主线整段替换 */
-  private async reloadMirror(
+  /**
+   * 整段重拉（`memory_replaced` 的唯一出口）。
+   *
+   * 就是 {@link Client.loadSnapshot} 的 `"replace"`：与首载同一份拉法（不带 `after` 的全量 +
+   * 整段替换），**但不建镜像** —— 手上这一份留着，子 Agent 那几栏也留着（`replaceAll` 只换主线；
+   * 子 agent 的消息不入库，重拉也拉不回来）。
+   */
+  private async reloadMirror(conversationId: string, mirror: ConversationMirror): Promise<void> {
+    await this.loadSnapshot(conversationId, mirror, "replace");
+  }
+
+  /**
+   * 拉快照并折进镜像 —— `open`（首载）、`resync`（续传 / 全量）、`memory_replaced` 之后的重拉
+   * （全量替换）**共用的那一处**。
+   *
+   * 随调用点不同的只有两件事：
+   *   1. `mode`：`message.list` 带不带 `after`，回来用 `replaceAll` 还是 `mergeFrom`（见
+   *      {@link SnapshotMode}）；
+   *   2. 失败时镜像怎么办 —— 首载把半份镜像整段丢掉（{@link Client.open}），另两处留着上一份。
+   *
+   * 其余逐字相同，也正是这个方法的内容：先读 `conversation.state`（四格 + 名册 + 交接态一起收下，
+   * 名册用来铺子 agent 那几栏），再拉消息，拉取期间到达的事件先攒后补
+   * （{@link Client.snapshotWhileBuffering}）。三处各写一遍时，任何一处漏掉「先攒后补」或漏读
+   * 一格都没人会发现；收在这里之后，`message.list` 再多一个参数也只改这一行。
+   *
+   * 四格先读：之后再到达的事件总比这个读数值新，补在它后面不会把状态往回拨；反过来的话（先读
+   * 消息、后读状态），补的那一批就会把新的状态覆盖成旧的。交接态也在这里读到，于是重连中的窗口
+   * 里「正在交接」不会一直挂着。
+   */
+  private async loadSnapshot(
     conversationId: string,
     mirror: ConversationMirror,
+    mode: SnapshotMode,
   ): Promise<void> {
     await this.snapshotWhileBuffering(conversationId, async () => {
       const { state } = await this.call("conversation.state", { conversationId });
       mirror.applyReadout(state);
-      const listed = await this.call("message.list", { conversationId });
-      mirror.replaceAll(listed.messages);
+      if (mode === "replace") {
+        const listed = await this.call("message.list", { conversationId });
+        mirror.replaceAll(listed.messages);
+        return;
+      }
+      // 续传：`after` 就是本地主线最后一条（本地一条都没有时等于一次全量），接在哪里看 `anchor`
+      const after = mirror.lastMessageId();
+      const listed = await this.call("message.list", {
+        conversationId,
+        ...(after === undefined ? {} : { after }),
+      });
+      mirror.mergeFrom(listed.anchor, listed.messages);
     });
   }
 
   /**
-   * 拉一次快照，并把拉取期间到达的事件按序补上 —— `open` 与 `resync` 共用的那一条规矩。
+   * 拉一次快照，并把拉取期间到达的事件按序补上 —— {@link Client.loadSnapshot} 用的那一条规矩
+   * （`open` / `resync` / `memory_replaced` 的重拉都经它到这里）。
    *
    * 快照落地之后才补：补的那一批用 `replay: true` 折进去（快照已包含的那几条不再折增量），
    * 补完调 `endReplay()` 解除这条限制（之后到达的增量照常折）。

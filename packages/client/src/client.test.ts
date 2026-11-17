@@ -476,6 +476,72 @@ describe("镜像：打开一段对话", () => {
     expect(pulls.at(-1)?.params).toEqual({ conversationId: "c1" });
   });
 
+  it("`memory_replaced` 的重拉是「全量替换」而不是又一次首载：镜像还是同一个，栏也还在", async () => {
+    // 这段记忆「换过之后」的样子
+    let current = [userMessage("m1", "旧记忆里的那句")];
+    const host = await startFake({
+      methods: {
+        "conversation.state": (params) => ({
+          state: conversationState((params as { conversationId: string }).conversationId, {
+            subAgents: [{ toolCallId: "call-1", name: "explore", state: "working" }],
+          }),
+        }),
+        "message.list": () => listed("c1", current),
+      },
+    });
+    const client = await connect(host);
+    const mirror = await client.open("c1");
+
+    // 子 agent 那一栏的内容只来自事件（不入库，重拉也拉不回来）
+    host.push("message.added", {
+      conversationId: "c1",
+      message: assistantMessage("s1", "子 agent 说的那句"),
+      toolCallId: "call-1",
+      at: "2026-01-01T00:00:06.000Z",
+    });
+    await waitFor(() => mirror.subAgent("call-1").length === 1);
+
+    current = [userMessage("m2", "换过之后的第一句")];
+    host.push("conversation.changed", {
+      conversationId: "c1",
+      workspaceId: "w1",
+      change: "memory_replaced",
+      at: "2026-01-01T00:00:09.000Z",
+    });
+
+    await waitFor(() => mirror.messages[0]?.id === "m2");
+    // 全量替换沿用手上这一份（首载才建表）：换掉镜像对象的话，界面手里那份就停在旧样子上
+    expect(client.mirror("c1")).toBe(mirror);
+    // 主线整段换掉，子 agent 那栏留在原处
+    expect(mirror.messages.map((message) => message.id)).toEqual(["m2"]);
+    expect(mirror.subAgent("call-1").map((message) => message.id)).toEqual(["s1"]);
+  });
+
+  it("首载拉不下来时不留半份镜像：表里没有它，再开一次是完整的首载", async () => {
+    let fail = true;
+    const host = await startFake({
+      methods: {
+        "conversation.state": (params) => ({
+          state: conversationState((params as { conversationId: string }).conversationId),
+        }),
+        "message.list": () => {
+          if (fail) throw new FakeMethodError({ code: "internal", message: "这一下拉不动" });
+          return listed("c1", [userMessage("m1", "问")]);
+        },
+      },
+    });
+    const client = await connect(host);
+
+    const error = await client.open("c1").catch((caught: unknown) => caught);
+    expect((error as ClientError).code).toBe("internal");
+    // 一个只有事件、没有历史的镜像比没有更糟：失败之后镜像表里不留它
+    expect(client.mirror("c1")).toBeUndefined();
+
+    fail = false;
+    const mirror = await client.open("c1");
+    expect(mirror.messages.map((message) => message.id)).toEqual(["m1"]);
+  });
+
   it("别的 kind（`settings_changed`）不触发重拉", async () => {
     const host = await startFake({
       methods: {
@@ -570,6 +636,33 @@ describe("重连：把镜像补回来", () => {
 
     await client.resync("c1");
     expect(mirror.messages.map((message) => message.id)).toEqual(["x1"]);
+  });
+
+  it("本地一条都没有时 resync 不带 after：问的就是全量", async () => {
+    const host = await startFake({
+      methods: {
+        "conversation.state": (params) => ({
+          state: conversationState((params as { conversationId: string }).conversationId),
+        }),
+        "message.list": (params) => {
+          const query = params as { conversationId: string; after?: string };
+          // 本地没有可续的那一条，`after` 不该被交代出去
+          return query.after === undefined
+            ? listed("c1", [])
+            : listed("c1", [userMessage("m9", "不该走这条")], query.after);
+        },
+      },
+    });
+    const client = await connect(host);
+    const mirror = await client.open("c1");
+    expect(mirror.messages).toEqual([]);
+
+    await client.resync("c1");
+
+    const pulls = host.frames.filter((frame) => frame.method === "message.list");
+    expect(pulls).toHaveLength(2);
+    expect(pulls[1]?.params).toEqual({ conversationId: "c1" });
+    expect(mirror.messages).toEqual([]);
   });
 
   it("两个调用方同时重连：只连一次（第二次拿的是同一条结果）", async () => {
