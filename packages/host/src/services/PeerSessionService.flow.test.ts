@@ -46,6 +46,8 @@ function conversation(id: string, overrides: Partial<Conversation> = {}): Conver
     guardThreshold: null,
     autoHandoff: false,
     lineage: null,
+    // 待交接：刚建出来 / 没答过交接题，没有待办
+    pendingHandoff: null,
     nameIsAuto: true,
     createdAt: 0,
     updatedAt: 0,
@@ -246,9 +248,7 @@ describe("问状态：那一格现读", () => {
       caller: harness.caller,
       sessionId: created.sessionId,
     });
-    expect(status.state).toBe("idle");
-    expect(status.label).toBe(created.label);
-    expect(status.lastMessage).toBe("回答");
+    expect(status).toEqual({ found: true, status: "idle", label: created.label });
   });
 
   it("那一段的 agent 不在了（有人杀了它）→ 答 dead：会话行还在，只是没人接着跑", async () => {
@@ -265,16 +265,16 @@ describe("问状态：那一格现读", () => {
       sessionId: created.sessionId,
     });
     // 「死」是四格里的最后一格（查不到对象），不是「不在了」：会话行还在
-    expect(status.state).toBe("dead");
+    expect(status).toEqual({ found: true, status: "dead", label: created.label });
   });
 
-  it("那一段的会话行没了（用户删了它）→ 答 gone，别让调用方等一个不会来的结果", async () => {
+  it("那一段的会话行没了（用户删了它）→ 答 `found: false`，别让调用方等一个不会来的结果", async () => {
     const harness = makeHarness([{ deltas: [{ content: "回答" }] }]);
     await harness.warmUp();
     const created = await harness.service.create({ caller: harness.caller, prompt: "干点活" });
     if (!created.ok) throw new Error("没建成");
     await harness.waitFor(() => harness.runner.state(created.sessionId).status === "idle");
-    // 会话行没了：判据只剩「这一段还在不在」，`gone` 只说这一件事
+    // 会话行没了：判据只剩「这一段还在不在」，`found: false` 只说这一件事
     harness.drop(created.sessionId);
     harness.runner.forget(created.sessionId);
 
@@ -282,7 +282,7 @@ describe("问状态：那一格现读", () => {
       caller: harness.caller,
       sessionId: created.sessionId,
     });
-    expect(status).toEqual({ state: "gone" });
+    expect(status).toEqual({ found: false, status: null });
   });
 });
 

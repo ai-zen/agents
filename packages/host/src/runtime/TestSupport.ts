@@ -227,7 +227,6 @@ function toStored(row: MessageUpsertInput, seq: number): StoredMessage {
     id: row.id,
     conversationId: row.conversationId,
     seq,
-    parentToolCallId: row.parentToolCallId ?? null,
     role: row.role,
     status: row.status,
     omit: row.omit === true,

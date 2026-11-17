@@ -61,7 +61,6 @@ beforeEach(async () => {
   // 只清业务表；`meta` 绝不碰（migrate 靠 meta.schemaVersion 判断跑不跑）
   await db.tx((tx) => [
     tx.run("DELETE FROM notices"),
-    tx.run("DELETE FROM questions"),
     tx.run("DELETE FROM workspaces"),
     tx.run("DELETE FROM assets"),
     tx.run("DELETE FROM credentials"),

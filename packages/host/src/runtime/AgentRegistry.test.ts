@@ -14,6 +14,8 @@
 
 import { describe, expect, it } from "vitest";
 
+import type { AgentNS } from "@ai-zen/agents-core";
+
 import { AgentRegistry } from "./AgentRegistry.js";
 import type {
   AgentAssemblyFacts,
@@ -22,7 +24,8 @@ import type {
 } from "./AgentRegistry.js";
 import type { AgentBuildContext, ChatAgent } from "./ChatRunner.js";
 import { ScopeBusyError, ScopeRegistry } from "./ScopeRegistry.js";
-import { createFakeScope, FakeAgent, RecordingScopePlugin } from "./TestSupport.js";
+import { createFakeScope, deferred, FakeAgent, RecordingScopePlugin } from "./TestSupport.js";
+import type { Deferred } from "./TestSupport.js";
 
 const WORKSPACE_ID = "ws-1";
 const CONVERSATION_ID = "c-1";
@@ -40,12 +43,26 @@ interface Harness {
   running: Set<string>;
   /** 每次生灭决定的记录（`onLifecycle` 收到的原样） */
   lifecycle: AgentLifecycleEvent[];
-  /** 把一段对话的 agent 标成「手上正干着活」（就是置那一格，不另记一份账） */
-  markRunning(conversationId: string): void;
-  /** 把那一格标回「闲」 */
-  markIdle(conversationId: string): void;
+  /**
+   * 让它真的「手上有活」（投一批、等 core 自己报 `state:working`）。
+   *
+   * **不直写 `agent.state`**：那一格是 core 的循环走到哪儿，现在只有 `setState` 能改它（public
+   * 可写字段能让状态说谎）。所以这里走真实途径：那一批的请求被一块 `gate` 按住，于是它确实在跑。
+   */
+  markRunning(conversationId: string): Promise<void>;
+  /** 把那块 `gate` 放掉，等它自己跑完这一批、自己报 `state:idle` */
+  markIdle(conversationId: string): Promise<void>;
   /** 这段对话报过的 `action:reason`（顺序即发生顺序） */
   trace(conversationId?: string): string[];
+}
+
+/** 等这个 agent 真的落到那一格（等的是 core 自己报的事件，不是用例替它设的值） */
+function waitForState(agent: ChatAgent, target: AgentNS.AgentState): Promise<void> {
+  if (agent.state === target) return Promise.resolve();
+  const event = target === "working" ? "state:working" : "state:idle";
+  return new Promise<void>((resolve) => {
+    agent.on(event, () => resolve());
+  });
 }
 
 function createHarness(
@@ -70,13 +87,19 @@ function createHarness(
   const created: FakeAgent[] = [];
   const lifecycle: AgentLifecycleEvent[] = [];
   const running = new Set<string>();
+  /** 每个 agent 手那块「这一批还没跑完」的 `gate`（要用例控制的那个时刻） */
+  const holds = new Map<string, Deferred<void>>();
   const agents: AgentRegistry = new AgentRegistry({
     scopes,
     createAgent: async (context) => {
       builds.push(context);
       if (options.build) return await options.build(context);
       if (options.fail) throw options.fail;
-      const agent = new FakeAgent([{ deltas: [{ content: "好" }] }]);
+      // 请求先被 `gate` 按住：那时它真的在跑（core 取到一批就是 `working`），
+      // 放掉之后这一批自然收口、它自己报 `idle`
+      const hold = deferred<void>();
+      holds.set(context.conversationId, hold);
+      const agent = new FakeAgent([{ gate: hold.promise, deltas: [{ content: "好" }] }]);
       created.push(agent);
       return agent;
     },
@@ -91,16 +114,26 @@ function createHarness(
     createdScopes,
     running,
     lifecycle,
-    // 「有没有在跑」直接读 agent 身上那一格（`CORE.md` §4）：这就是生产里 `invalidate` 的判据
-    markRunning: (conversationId) => {
-      running.add(conversationId);
+    // 「有没有在跑」只能读 agent 身上那一格（`CORE.md` §4）：这里让它真的跑起来，再等那一格
+    markRunning: async (conversationId) => {
       const agent = agents.get(conversationId);
-      if (agent) agent.state = "working";
+      if (!agent) throw new Error(`没有 agent 可跑：${conversationId}`);
+      running.add(conversationId);
+      const working = waitForState(agent, "working");
+      agent.push({
+        content: "占住这一批（用例：让它真的在跑）",
+        priority: "high",
+        source: { kind: "user" },
+      });
+      void agent.start();
+      await working;
     },
-    markIdle: (conversationId) => {
+    markIdle: async (conversationId) => {
       running.delete(conversationId);
       const agent = agents.get(conversationId);
-      if (agent) agent.state = "idle";
+      if (!agent) return;
+      holds.get(conversationId)?.resolve();
+      await waitForState(agent, "idle");
     },
     trace: (conversationId) =>
       lifecycle
@@ -371,7 +404,7 @@ describe("AgentRegistry：invalidate（配置改过的生效手段）", () => {
   it("正在跑的只打标记、不退役，且出现在返回列表里；`complete` 之后才退役", async () => {
     const harness = createHarness();
     const agent = (await harness.agents.acquire(input(), facts())) as FakeAgent;
-    harness.markRunning(CONVERSATION_ID);
+    await harness.markRunning(CONVERSATION_ID);
 
     const marked = harness.agents.invalidate(WORKSPACE_ID);
 
@@ -381,7 +414,7 @@ describe("AgentRegistry：invalidate（配置改过的生效手段）", () => {
     expect(harness.trace()).toEqual(["built:never-built"]);
 
     // 结算那一刻 `ChatRunner` 调 `complete`：陈旧 → 退役
-    harness.markIdle(CONVERSATION_ID);
+    await harness.markIdle(CONVERSATION_ID);
     harness.agents.complete(CONVERSATION_ID);
 
     expect(harness.agents.get(CONVERSATION_ID)).toBeUndefined();
@@ -460,7 +493,7 @@ describe("AgentRegistry：invalidateConversation（换模型 / 换思考档位�
   it("在跑的只打标记（不打断那批活），`complete` 之后才退役", async () => {
     const harness = createHarness();
     const agent = await harness.agents.acquire(input(), facts());
-    harness.markRunning(CONVERSATION_ID);
+    await harness.markRunning(CONVERSATION_ID);
 
     expect(harness.agents.invalidateConversation(CONVERSATION_ID)).toBe(false);
     // 还在登记里，只是带上了标记
@@ -468,7 +501,7 @@ describe("AgentRegistry：invalidateConversation（换模型 / 换思考档位�
     expect(harness.trace()).toEqual(["built:never-built"]);
     expect((agent as FakeAgent).abortCalls).toBe(0);
 
-    harness.markIdle(CONVERSATION_ID);
+    await harness.markIdle(CONVERSATION_ID);
     harness.agents.complete(CONVERSATION_ID);
 
     expect(harness.agents.get(CONVERSATION_ID)).toBeUndefined();
@@ -487,9 +520,9 @@ describe("AgentRegistry：complete 兑现陈旧标记", () => {
   it("陈旧 → 退役，下一次 acquire 重新装配", async () => {
     const harness = createHarness();
     const first = await harness.agents.acquire(input(), facts());
-    harness.markRunning(CONVERSATION_ID);
+    await harness.markRunning(CONVERSATION_ID);
     harness.agents.invalidate(WORKSPACE_ID);
-    harness.markIdle(CONVERSATION_ID);
+    await harness.markIdle(CONVERSATION_ID);
 
     harness.agents.complete(CONVERSATION_ID);
     expect(harness.agents.get(CONVERSATION_ID)).toBeUndefined();

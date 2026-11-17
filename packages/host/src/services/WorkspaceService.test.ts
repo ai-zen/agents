@@ -73,7 +73,6 @@ beforeEach(async () => {
   // `workspaces` 级联 conversations → messages → conversation_assets，删完再删素材行。
   await db.tx((tx) => [
     tx.run("DELETE FROM notices"),
-    tx.run("DELETE FROM questions"),
     tx.run("DELETE FROM workspaces"),
     tx.run("DELETE FROM assets"),
     tx.run("DELETE FROM credentials"),

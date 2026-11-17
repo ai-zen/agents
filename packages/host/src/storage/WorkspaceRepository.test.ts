@@ -27,7 +27,6 @@ beforeEach(async () => {
   await db.tx((tx) => [
     // meta 不清：migrate 靠它判断跑不跑
     tx.run("DELETE FROM notices"),
-    tx.run("DELETE FROM questions"),
     // workspaces 必须在 assets 之前：删 workspace 级联删掉 conversation_assets 关系行，
     // 之后 assets 的 ON DELETE RESTRICT 才不会拦
     tx.run("DELETE FROM workspaces"), // 级联 conversations → messages → conversation_assets

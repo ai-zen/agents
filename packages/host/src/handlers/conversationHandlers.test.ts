@@ -26,6 +26,8 @@ import { HostError } from "../wire/index.js";
 import type {
   ConversationAbortResult,
   ConversationDeleteResult,
+  ConversationPauseResult,
+  ConversationResumeResult,
   ConversationSendResult,
   ConversationView,
   MethodName,
@@ -303,8 +305,8 @@ describe("conversation.send", () => {
     await app.questionService.ask({
       conversationId,
       kind: "confirmation",
-      prompt: { messageKey: "question.blocking" },
-      options: [{ value: "ok", label: { messageKey: "question.blocking" } }],
+      prompt: { messageKey: "question.handoff.prompt", params: { percent: 90 } },
+      options: [{ value: "ok", label: { messageKey: "question.handoff.self" } }],
     });
 
     await expect(
@@ -345,6 +347,57 @@ describe("conversation.abort", () => {
 
     gate.resolve();
     await wait(20);
+  });
+});
+
+describe("conversation.pause / conversation.resume（只翻输出闸）", () => {
+  it("暂停之后读数报 paused，继续之后报 idle；两份回执都是「打完之后还暂停着吗」", async () => {
+    const { app, conversationId } = await makeHarness();
+    await callMethod(app, "conversation.send", { conversationId, input: { content: "说一句" } });
+    await idle(app, conversationId);
+
+    const paused: ConversationPauseResult = await callMethod(app, "conversation.pause", {
+      conversationId,
+    });
+    expect(Object.keys(paused)).toEqual(["paused"]);
+    expect(paused.paused).toBe(true);
+    expect(app.chatRunner.state(conversationId).status).toBe("paused");
+
+    const resumed: ConversationResumeResult = await callMethod(app, "conversation.resume", {
+      conversationId,
+    });
+    expect(resumed).toEqual({ paused: false });
+    expect(app.chatRunner.state(conversationId).status).toBe("idle");
+  });
+
+  it("没有 agent（死的）→ `{ paused: false }`，不是错误", async () => {
+    const { app, conversationId } = await makeHarness();
+    expect(await callMethod(app, "conversation.pause", { conversationId })).toEqual({
+      paused: false,
+    });
+    expect(await callMethod(app, "conversation.resume", { conversationId })).toEqual({
+      paused: false,
+    });
+  });
+
+  it("交接期间两者都被拒（`busy` / `handoff_in_progress`）", async () => {
+    const { app, conversationId } = await makeHarness();
+    app.chatRunner.beginHandoff(conversationId);
+
+    await expect(
+      callMethod(app, "conversation.pause", { conversationId }),
+    ).rejects.toMatchObject({
+      code: "busy",
+      detail: { conversationId, reason: "handoff_in_progress" },
+    });
+    await expect(
+      callMethod(app, "conversation.resume", { conversationId }),
+    ).rejects.toMatchObject({
+      code: "busy",
+      detail: { conversationId, reason: "handoff_in_progress" },
+    });
+
+    app.chatRunner.endHandoff(conversationId);
   });
 });
 
@@ -526,7 +579,7 @@ describe("conversation.setThresholds（PRD 1.4 / 4.7：两条阈值有上游默�
 });
 
 describe("conversation.setModel / setThinking：只允许空闲时改（改完当场让驱动者退役）", () => {
-  it("忙时一律拒（`busy` + `not_idle`），会话行一个字节都没写", async () => {
+  it("忙时一律拒（`busy` + `working`），会话行一个字节都没写", async () => {
     const gate: Deferred<void> = deferred();
     const { app, conversationId } = await makeHarness({
       createAgent: async () => new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢" }] }]),
@@ -541,11 +594,11 @@ describe("conversation.setModel / setThinking：只允许空闲时改（改完�
     // 换模型：拒
     await expect(
       callMethod(app, "conversation.setModel", { conversationId, modelId: "other-model" }),
-    ).rejects.toMatchObject({ code: "busy", detail: { conversationId, reason: "not_idle" } });
+    ).rejects.toMatchObject({ code: "busy", detail: { conversationId, reason: "working" } });
     // 换思考档位：拒（这一条先于「这个模型能不能调档」那些校验）
     await expect(
       callMethod(app, "conversation.setThinking", { conversationId, level: "low" }),
-    ).rejects.toMatchObject({ code: "busy", detail: { conversationId, reason: "not_idle" } });
+    ).rejects.toMatchObject({ code: "busy", detail: { conversationId, reason: "working" } });
 
     // 一个字节都没写库：模型、档位、更新时间都还是原样
     const after = await app.conversations.get(conversationId);

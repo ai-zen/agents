@@ -1,40 +1,44 @@
 /**
- * 问题服务：把「要不要交接 / 要不要登记这个目录 / 确认一下」变成**对象**（PRD D22 / F-I9）。
+ * 问题服务：把「要不要交接 / 确认一下」变成**进程内对象**（PRD 4.10 / D22 / F-I9）。
  *
- * 一个问题的四件事实都在这里：有 id、有状态、有生命周期、可持久化。多端看到的是同一个
- * 对象（库里那一行），所以「另一个窗口已经答过了」这件事不需要另开一条同步通道 ——
- * 第二次拉 `question.list` 就能看到状态变了。
+ * **题不落库。** 题的生命 = 这一段对话活着的这段时间，它的去处只有两个：**被答了**、
+ * **这段对话没了（含意外死）**。没有「关掉」这个动作，没有「过期 / 被取消」两格 —— 所以这里
+ * 没有存储层、没有状态机式的隐式转移，只有一张内存表（按 id 存题，按对话取的时候在它上面筛）。
+ * 多端看到的是**同一个对象**（同一个进程里的同一个引用），所以「另一个窗口已经答过了」不需要
+ * 任何同步通道；丢了的那一份只有跨重启。
  *
- * 三条贯穿本文件的边界：
+ * 四条贯穿本文件的边界：
  *
- * 1. **存码不存句子**（D8）：`questions.payload` 里存的是文案键 + 参数 + 候选项的值，
- *    读出时按调用方给的语言渲染。一条问题存死一种语言，换个连接就错了。
- * 2. **答完之后接着往下走**（D22）：`answer` 的副作用是宿主自己做掉的 —— 答「自交接 /
- *    独立摘要」就当场开始交接，客户端不必再发一次 `handoff.start`。
- * 3. **越线两端都拒绝时问题继续挂着**（D23 / F-D10）：答不下去的那些路径（那边忙着、已经过了
- *    硬线而用户选了「就在这段里继续」）都不动这一行状态，所以问题不会被悄悄关掉。
- *    本文件里没有「自动过期」「答错一次就作废」这类隐式转移。
+ * 1. **存码不存句子**（D8）：题里存的是文案键 + 参数 + 候选项的值，出口处按连接语言渲染。
+ *    一条题存死一种语言，换个连接就错了。因为对象只活在内存里，这条路也不再需要「从库里读出来
+ *    可能被改坏」的防御层 —— 写进对象的就是调用方给的那几个闭集类型。
+ * 2. **答完之后接着往下走**（D22）：`answer` 的副作用是宿主自己做掉的。顺序见
+ *    {@link QuestionService.answer}：**先答完，再判能不能立刻交接**。
+ * 3. **答题不被「忙」拦住**（PRD 4.10）：忙不是答题的拒因 —— 那段正忙着就把「待交接」写在会话行
+ *    上（`pendingHandoff`），等它闲下来再做。所以这里没有「非 idle 就 busy」那道前置检查。
+ * 4. **死的那一刻跟着没**（`dropConversation`）：对话没了（被删、被硬着陆、agent 自己停了），
+ *    挂在上面的题一起清掉 —— 不存在「死对话上挂着的题」。退役不算没（那是换个驱动者接着干）。
  */
 
 import { randomUUID } from "node:crypto";
 
 import type { ConfigManager } from "@ai-zen/agents-sdk";
 
-import { DEFAULT_LANGUAGE, hasMessage, render } from "../i18n/index.js";
+import { DEFAULT_LANGUAGE, render } from "../i18n/index.js";
 import type { Language, MessageKey } from "../i18n/index.js";
 import type { ChatEventEmitter } from "../runtime/ChatRunner.js";
 import type { ConversationRepository } from "../storage/ConversationRepository.js";
 import type { MessageRepository } from "../storage/MessageRepository.js";
-import type { QuestionPatch, QuestionRepository } from "../storage/QuestionRepository.js";
-import type { Question } from "../storage/types.js";
 import { HostError } from "../wire/errors.js";
 import type {
-  ConversationStatus,
+  HandoffMode,
+  HandoffRefusalReason,
   HandoffStartParams,
   LocalizedText,
   QuestionAnswer,
   QuestionAnswerParams,
   QuestionAnswerResult,
+  QuestionEffects,
   QuestionKind,
   QuestionListParams,
   QuestionListResult,
@@ -44,7 +48,7 @@ import type {
 } from "../wire/index.js";
 import { readUsage } from "./MessageService.js";
 
-/** 一句话的「码 + 参数」（库里存的是它，读出时才渲染成一句人话） */
+/** 一句话的「码 + 参数」（题里存的是它，出口处才渲染成一句人话） */
 export interface LocalizedSource {
   messageKey: MessageKey;
   params?: Record<string, unknown>;
@@ -58,7 +62,7 @@ export interface QuestionOptionInput {
   detail?: LocalizedSource | null;
 }
 
-/** 内部「问一个问题」的入口（交接线、登记项目、二次确认都走它） */
+/** 内部「问一个问题」的入口（交接线那一条） */
 export interface AskQuestionInput {
   /** 挂在哪段对话上（问题总是为某一段对话停下来问的） */
   conversationId: string;
@@ -68,17 +72,16 @@ export interface AskQuestionInput {
   /**
    * 是否挡着这段对话（挡着时 `conversation.send` 会被拒，业务码 `question_pending`）。
    *
-   * 缺省按种类定：交接确认与不可撤销动作的确认挡着对话，登记项目不挡 —— 后者与某一段
-   * 对话的生成无关，挡了就变成「必须先答一个跟这次发送没关系的问题」。
+   * 缺省挡着：问题就是为「停下来问」而造的。
    */
   blocking?: boolean;
   /** 出网的稳定码；缺省用 `prompt.messageKey` */
   code?: string;
   /**
-   * 与界面无关、但答完之后用得到的事实（例如「哪个目录待登记」、要接着建哪段对话）。
+   * 与界面无关、但答完之后用得到的事实（例如「要接着建哪段对话」）。
    *
-   * 存进 `questions.payload.data`：它不是文案，不跟着语言变；也不是契约上的东西（客户端
-   * 只看得到渲染好的句子与候选项），宿主答完后自己取用。
+   * 它不是文案，不跟着语言变；也不是契约上的东西（客户端只看得到渲染好的句子与候选项），
+   * 宿主答完后自己取用。
    */
   data?: Record<string, unknown>;
 }
@@ -102,30 +105,34 @@ export interface QuestionHandoffPort {
   start(params: HandoffStartParams, language?: Language): Promise<{ started: true }>;
 }
 
+/**
+ * 「这段现在能不能立刻交接」的口（`ChatRunner.canHandoffNow`，全仓唯一一份判据）。
+ *
+ * 答完之后是**能就当场交接、不能就留待办**：四个拒因原样进回执，客户端不必自己猜为什么
+ * 没开始（`PLAN §5.2` / §5.3）。
+ */
+export interface QuestionHandoffAvailabilityPort {
+  canHandoffNow(conversationId: string): { ok: true } | { ok: false; reason: HandoffRefusalReason };
+}
+
 /** 硬线判定口：这段对话现在是不是已经过了硬线（PRD F-D1 / D23） */
 export interface QuestionGuardProbe {
   overGuard(conversationId: string): Promise<boolean>;
 }
 
-/**
- * 「这段对话现在忙着吗」的口。
- *
- * 只读现读的那一格（`ChatRunner.state().status`），不读运行表 —— 那份账已经随旧模型一起
- * 废掉了。答一个问题会当场开始交接（一次模型调用），所以那边正忙着的时候不能答。
- */
-export interface QuestionStatusPort {
-  status(conversationId: string): ConversationStatus;
-}
-
 export interface QuestionServiceDeps {
-  questions: QuestionRepository;
-  /** 现读那一格；不注入时按「不忙」处理 */
-  runtime?: QuestionStatusPort;
+  /**
+   * 会话行：两处要用它 —— 待交接那一格（`pendingHandoff` 的写读）与「不交接」时关掉自动交接
+   * 开关（PRD 4.10 的「答案的后果要落」）。题本身**不**经它落库。
+   */
+  conversations: ConversationRepository;
+  /** 能不能立刻交接（判据在 `ChatRunner.canHandoffNow`，这里只读）；不注入时按「能」处理 */
+  availability?: QuestionHandoffAvailabilityPort;
   /** 硬线判定；不注入时按「没过线」处理 */
   guard?: QuestionGuardProbe;
   /** 交接入口（答完接着交接，D22）；不注入时答完只改状态、不触发交接 */
   handoff?: QuestionHandoffPort;
-  /** 推 `question` 事件（多端看到同一个，D22） */
+  /** 推 `question` 事件（多端看到同一个，D22）；推 `conversation.changed` 用同一个出口 */
   emit?: ChatEventEmitter;
   now?: () => number;
   newId?: () => string;
@@ -136,159 +143,99 @@ export const HANDOFF_OPTION_SELF = "self";
 export const HANDOFF_OPTION_SUMMARY = "summary";
 export const HANDOFF_OPTION_DECLINE = "decline";
 
-/** 库里那条 payload 解出来的形状（`questions.payload` 的 JSON） */
-interface StoredPayload {
+/**
+ * 一道题（进程内对象）。
+ *
+ * 存的都是「码 + 参数」，没有一句现成的话：渲染在出口处按连接语言做（D8）。
+ */
+interface QuestionRecord {
+  id: string;
+  conversationId: string;
+  kind: QuestionKind;
+  /** 出网的稳定码（缺省 = `prompt.messageKey`） */
   code: string;
-  prompt: { messageKey: string; params: Record<string, unknown> };
+  prompt: { messageKey: MessageKey; params: Record<string, unknown> };
   options: Array<{
     value: string;
-    label: { messageKey: string; params: Record<string, unknown> };
-    detail: { messageKey: string; params: Record<string, unknown> } | null;
+    label: { messageKey: MessageKey; params: Record<string, unknown> };
+    detail: { messageKey: MessageKey; params: Record<string, unknown> } | null;
   }>;
-  blocking: boolean;
   /** 答完之后用得到的事实（不渲染、不出网） */
   data: Record<string, unknown>;
-}
-
-/** 回答的稳定值（`questions.answer` 的 JSON） */
-interface StoredAnswer {
-  value: string;
-  answeredBy: string | null;
+  blocking: boolean;
+  /** 只有两格：挂着等人答 / 已经答了（没有「过期」「被取消」） */
+  state: QuestionState;
+  answer: { value: string; answeredBy: string | null; answeredAt: number } | null;
+  createdAt: number;
+  updatedAt: number;
 }
 
 function iso(ms: number): string {
   return new Date(ms).toISOString();
 }
 
-/** 缺省挡不挡着对话：问题就是为「停下来问」而造的，默认挡着，除非创建时显式说不管 */
-function defaultBlocking(_kind: QuestionKind): boolean {
-  return true;
-}
-
-/** 一个 JSON 值是不是普通对象（解析库里的列用） */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/**
- * 库里那列 JSON → 打字过的载荷。
- *
- * 读不出来时给一份「只有码、没有候选」的形状而不是抛错：一行被手改坏的提问不该让整个
- * `question.list` 打不开，界面上至少能显示 id 与状态。
- */
-function toStoredPayload(value: unknown, fallbackCode: string): StoredPayload {
-  if (!isRecord(value)) {
-    return {
-      code: fallbackCode,
-      prompt: { messageKey: "question.blocking", params: {} },
-      options: [],
-      blocking: false,
-      data: {},
-    };
-  }
-  const prompt = isRecord(value.prompt) ? value.prompt : {};
-  const options = Array.isArray(value.options) ? value.options : [];
-  return {
-    code: typeof value.code === "string" ? value.code : fallbackCode,
-    prompt: {
-      messageKey: typeof prompt.messageKey === "string" ? prompt.messageKey : "question.blocking",
-      params: isRecord(prompt.params) ? prompt.params : {},
-    },
-    options: options.filter(isRecord).map((option) => ({
-      value: typeof option.value === "string" ? option.value : "",
-      label: isRecord(option.label)
-        ? {
-            messageKey:
-              typeof option.label.messageKey === "string"
-                ? option.label.messageKey
-                : "question.blocking",
-            params: isRecord(option.label.params) ? option.label.params : {},
-          }
-        : { messageKey: "question.blocking", params: {} },
-      detail: isRecord(option.detail)
-        ? {
-            messageKey:
-              typeof option.detail.messageKey === "string"
-                ? option.detail.messageKey
-                : "question.blocking",
-            params: isRecord(option.detail.params) ? option.detail.params : {},
-          }
-        : null,
-    })),
-    blocking: value.blocking === true,
-    data: isRecord(value.data) ? value.data : {},
-  };
-}
-
-/** 库里那列 answer 的 JSON → 打字过的回答 */
-function toStoredAnswer(value: unknown): StoredAnswer | null {
-  if (!isRecord(value) || typeof value.value !== "string") return null;
-  return {
-    value: value.value,
-    answeredBy: typeof value.answeredBy === "string" ? value.answeredBy : null,
-  };
-}
-
-/** 渲染一句话（键认不出来时退回「被这个问题挡住了」那句，至少说明有东西在等回答） */
+/** 渲染一句话（键的类型本身就是闭集，不需要「认不出来退回哪句」那一层） */
 function localizeText(
   code: string,
-  source: { messageKey: string; params: Record<string, unknown> },
+  source: { messageKey: MessageKey; params: Record<string, unknown> },
   language: Language,
 ): LocalizedText {
-  const messageKey: MessageKey = hasMessage(source.messageKey)
-    ? source.messageKey
-    : "question.blocking";
   return {
     code,
-    messageKey,
+    messageKey: source.messageKey,
     params: source.params,
-    message: render(language, messageKey, source.params),
+    message: render(language, source.messageKey, source.params),
   };
 }
 
-/** 一行库记录 → 契约上的问题对象（按给定语言渲染） */
-function toView(question: Question, language: Language): QuestionView {
-  const payload = toStoredPayload(question.payload, `question.${question.kind}`);
-  const answer = toStoredAnswer(question.answer);
-  const options: QuestionOption[] = payload.options.map((option) => ({
+/** 对象 → 契约上的问题（按给定语言渲染） */
+function toView(question: QuestionRecord, language: Language): QuestionView {
+  const options: QuestionOption[] = question.options.map((option) => ({
     value: option.value,
-    label: localizeText(payload.code, option.label, language),
-    detail: option.detail === null ? null : localizeText(payload.code, option.detail, language),
+    label: localizeText(question.code, option.label, language),
+    detail: option.detail === null ? null : localizeText(question.code, option.detail, language),
   }));
-  const view: QuestionView = {
+  const answer: QuestionAnswer | null =
+    question.answer === null
+      ? null
+      : {
+          value: question.answer.value,
+          answeredAt: iso(question.answer.answeredAt),
+          answeredBy: question.answer.answeredBy,
+        };
+  return {
     id: question.id,
     conversationId: question.conversationId,
-    kind: question.kind as QuestionKind,
-    state: question.state as QuestionState,
-    prompt: localizeText(payload.code, payload.prompt, language),
+    kind: question.kind,
+    state: question.state,
+    prompt: localizeText(question.code, question.prompt, language),
     options,
-    answer:
-      answer === null
-        ? null
-        : ({
-            value: answer.value,
-            answeredAt: iso(question.answeredAt ?? question.updatedAt),
-            answeredBy: answer.answeredBy,
-          } satisfies QuestionAnswer),
-    blocking: payload.blocking,
+    answer,
+    blocking: question.blocking,
     createdAt: iso(question.createdAt),
     updatedAt: iso(question.updatedAt),
   };
-  return view;
 }
 
 export class QuestionService {
-  private readonly questions: QuestionRepository;
-  private readonly runtime?: QuestionStatusPort;
+  private readonly conversations: ConversationRepository;
+  private readonly availability?: QuestionHandoffAvailabilityPort;
   private readonly guard?: QuestionGuardProbe;
   private readonly handoff?: QuestionHandoffPort;
   private readonly emit?: ChatEventEmitter;
   private readonly now: () => number;
   private readonly newId: () => string;
+  /**
+   * 挂着的那些题（按 id 索引，插入顺序即创建顺序）。
+   *
+   * 一张表就够：按对话取的时候在它上面筛（一段对话上同时挂着的题不会多）。不去维护第二张
+   * 「对话 → 题」的索引 —— 两张表就有「哪一张才是真的」这个第二份事实。
+   */
+  private readonly questions = new Map<string, QuestionRecord>();
 
   constructor(deps: QuestionServiceDeps) {
-    this.questions = deps.questions;
-    this.runtime = deps.runtime;
+    this.conversations = deps.conversations;
+    this.availability = deps.availability;
     this.guard = deps.guard;
     this.handoff = deps.handoff;
     this.emit = deps.emit;
@@ -299,17 +246,19 @@ export class QuestionService {
   /**
    * 问一个问题（内部入口）。
    *
-   * 先落库再推事件：库里那一行是「多端看同一个」的真相（D22），推送只是提醒在线的那几个
-   * 窗口去拉（L5 断线即作废）。
+   * 直接造对象 + 推 `question` 事件：没有「先落库再读回来」那一趟，所以也不会有
+   * 「刚插进去就不见了」这种中间态。题挂着期间它挡着这段对话（`blocking`），
+   * `conversation.send` 由 {@link assertSendable} 拒。
    *
-   * 入参不做形状校验：`kind` 与两个 `messageKey` 的类型本身就是闭集（`QuestionKind` /
-   * `MessageKey`），而这里只有 `askHandoff` 一个调用方，候选项是常量字面量。
+   * 入参不做形状校验：`kind` 与 `messageKey` 的类型本身就是闭集（`QuestionKind` /
+   * `MessageKey`），候选项是常量字面量。
    */
-  async ask(
-    input: AskQuestionInput,
-    language: Language = DEFAULT_LANGUAGE,
-  ): Promise<QuestionView> {
-    const payload: StoredPayload = {
+  async ask(input: AskQuestionInput, language: Language = DEFAULT_LANGUAGE): Promise<QuestionView> {
+    const createdAt = this.now();
+    const question: QuestionRecord = {
+      id: this.newId(),
+      conversationId: input.conversationId,
+      kind: input.kind,
       code: input.code ?? input.prompt.messageKey,
       prompt: { messageKey: input.prompt.messageKey, params: input.prompt.params ?? {} },
       options: input.options.map((option) => ({
@@ -320,26 +269,17 @@ export class QuestionService {
             ? null
             : { messageKey: option.detail.messageKey, params: option.detail.params ?? {} },
       })),
-      blocking: input.blocking ?? defaultBlocking(input.kind),
       data: input.data ?? {},
-    };
-
-    const id = this.newId();
-    const createdAt = this.now();
-    await this.questions.create({
-      id,
-      conversationId: input.conversationId,
-      kind: input.kind,
-      payload,
+      // 缺省挡着：问题就是为「停下来问」而造的
+      blocking: input.blocking ?? true,
       state: "pending",
+      answer: null,
       createdAt,
-    });
+      updatedAt: createdAt,
+    };
+    this.questions.set(question.id, question);
 
-    const stored = await this.questions.get(id);
-    if (!stored) {
-      throw new HostError("internal", { detail: { reason: "question vanished after insert", id } });
-    }
-    const view = toView(stored, language);
+    const view = toView(question, language);
     this.emit?.("question", { question: view, at: iso(createdAt) });
     return view;
   }
@@ -348,7 +288,7 @@ export class QuestionService {
    * 到交接线时问「自交接 / 独立摘要 / 不交接」（PRD F-D2 / D22）。
    *
    * 触发点在**对话停下之后**：这里只负责把问题摆出来，不参与任何流式过程。
-   * `percent` 是给人看的那个数（用量 / 交接线），数字本身留在库里与状态里。
+   * `percent` 是给人看的那个数（用量 / 交接线）。
    */
   async askHandoff(
     input: {
@@ -389,30 +329,37 @@ export class QuestionService {
   }
 
   /**
-   * 列出问题（PRD D22：多端看同一个）。
+   * 这段对话上的题（按创建顺序）。
    *
-   * `conversationId` 可选（R61）：给了就只看那段对话的；不给就看全库（含没挂对话的那些，
-   * 例如「要不要把这个目录登记成项目」）。`state` 两种情况下都生效。
+   * `conversationId` **必填**：没有「全库问题列表」这种读法（PRD 4.10 的「明确不做」）——
+   * 题只属于某一段对话，问「全库有什么题」是为了持久化才存在的形状。也没有 `state` 过滤：
+   * 客户端要的那句话就是「这段现在有没有一道题」。
    */
   async list(
-    params: QuestionListParams = {},
+    params: QuestionListParams,
     language: Language = DEFAULT_LANGUAGE,
   ): Promise<QuestionListResult> {
-    const conversationId =
-      typeof params.conversationId === "string" ? params.conversationId.trim() : "";
-    const rows =
-      conversationId.length > 0
-        ? await this.questions.listByConversation(conversationId, params.state)
-        : await this.questions.listAll(params.state);
-    return { questions: rows.map((row) => toView(row, language)) };
+    const conversationId = params.conversationId;
+    return {
+      questions: this.questionsOf(conversationId).map((question) => toView(question, language)),
+    };
   }
 
-  /** 这段对话上还挂着、且正在挡着它的那些问题（`conversation.send` 的前置检查用它） */
+  /**
+   * 这段对话上还挂着的题有几道（侧栏摘要的 `hasPendingQuestion`）。
+   *
+   * 现读内存：题不落库，所以**不能**问库（问了永远得 0）。
+   */
+  countPending(conversationId: string): number {
+    return this.questionsOf(conversationId).filter((question) => question.state === "pending")
+      .length;
+  }
+
+  /** 这段对话上还挂着、且正在挡着它的那些题（`conversation.send` 的前置检查用它） */
   async blockingQuestions(conversationId: string): Promise<QuestionView[]> {
-    const rows = await this.questions.listByConversation(conversationId, "pending");
-    return rows
-      .map((row) => toView(row, DEFAULT_LANGUAGE))
-      .filter((view) => view.blocking);
+    return this.questionsOf(conversationId)
+      .filter((question) => question.state === "pending" && question.blocking)
+      .map((question) => toView(question, DEFAULT_LANGUAGE));
   }
 
   /**
@@ -432,24 +379,26 @@ export class QuestionService {
   }
 
   /**
-   * 回答一个问题（PRD D22 / F-I9）。
+   * 回答一个问题（PRD 4.10 / F-I9）。
    *
-   * 顺序是刻意的：
-   *   1. 已经答过 / 已失效的直接回当前状态（多端同时点，后到的那一端看到的是「已经答了」，
-   *      不重复触发副作用）；
-   *   2. 值不在候选里 → `invalid_params`；
-   *   3. 那边忙着 → `busy`（D22：交接在对话停下之后才做，插进它正在干的那一批里会把记忆改到一半）；
-   *   4. 过了硬线又选了「就在这段里继续」 → `context_guard`，**问题继续挂着**（D23）；
-   *   5. 改状态 → 该交接就当场交接。
+   * 顺序是刻意的，别调换：
    *
-   * 第 3、4 两步都在写状态之前返回，所以「答不下去」不会把问题弄成一个半答的中间态。
+   *   1. 题不存在 → `not_found`；值不在候选里 → `invalid_params`；已经答过 → 回当前状态、
+   *      **不重复副作用**（多端同时点，后到的那一端看到的是「已经答了」）；
+   *   2. 越过硬线却选了「就在这段里继续」→ `context_guard`，**题仍挂着**（D23）；
+   *   3. **先把题标成已答并推事件** —— 答题本身不被「忙」拦住（PRD 4.10）；
+   *   4. 再看答完之后该发生什么（{@link applyEffects}）：能立刻交接就当场交接，不能就在会话行上
+   *      留一条待交接，等下一次变闲再做。
+   *
+   * 没有「非 idle 就 busy」那道前置检查：那道检查会把「题答了但交接还没做」这个中间态变成
+   * 用户必须重答一次的错误。忙不忙只影响第 4 步**怎么落地**，不影响题能不能被答。
    */
   async answer(
     params: QuestionAnswerParams,
     context: QuestionAnswerContext = {},
   ): Promise<QuestionAnswerResult> {
     const language = context.language ?? DEFAULT_LANGUAGE;
-    const question = await this.requireQuestion(params.questionId);
+    const question = this.requireQuestion(params.questionId);
     const value = typeof params.value === "string" ? params.value.trim() : "";
     if (value.length === 0) {
       throw new HostError("invalid_params", {
@@ -458,35 +407,27 @@ export class QuestionService {
       });
     }
 
-    const payload = toStoredPayload(question.payload, `question.${question.kind}`);
     if (question.state !== "pending") {
-      // 已经在别处答过（或已作废）：不报错、不重复触发副作用，回当前状态
-      return { question: toView(question, language), effects: noEffects() };
+      // 已经在别处答过：不报错、不重复触发副作用，回当前状态
+      return { question: toView(question, language), effects: noEffects(null) };
     }
-    const chosen = payload.options.find((option) => option.value === value);
+    const chosen = question.options.find((option) => option.value === value);
     if (!chosen) {
       throw new HostError("invalid_params", {
         params: { field: "value" },
-        detail: { field: "value", value, options: payload.options.map((option) => option.value) },
+        detail: {
+          field: "value",
+          value,
+          options: question.options.map((option) => option.value),
+        },
       });
     }
 
     const conversationId = question.conversationId;
-    // 非空闲就拒：交接要它闲着（`handoff.start` 的判据是 `not_idle`），所以这里也不能只在
-    // 「忙」时拒 —— 暂停 / 没有驱动者时把题标成已答、再让交接被拒，用户会看到一次失败而题没了
-    const state = this.runtime?.status(conversationId);
-    if (state !== undefined && state !== "idle") {
-      throw new HostError("busy", {
-        detail: { conversationId, questionId: question.id, reason: "conversation_busy" },
-      });
-    }
-
-    const kind = question.kind as QuestionKind;
-    const handoffMode = handoffModeOf(kind, value);
-    const continuesHere = kind === "handoff" && handoffMode === null;
-    if (continuesHere && this.guard) {
+    const handoffMode = handoffModeOf(question.kind, value);
+    // 越线之后仍然选「就在这段里继续」：宿主也拒（D23），题继续挂着等人处理
+    if (question.kind === "handoff" && handoffMode === null && this.guard) {
       if (await this.guard.overGuard(conversationId)) {
-        // D23：越过硬线，宿主也拒绝；这一行**不动**，问题继续挂着等人处理
         throw new HostError("context_guard", {
           detail: {
             conversationId,
@@ -499,48 +440,79 @@ export class QuestionService {
     }
 
     const answeredAt = this.now();
-    const answer: StoredAnswer = { value, answeredBy: context.answeredBy ?? null };
-    const patch: QuestionPatch = {
-      state: "answered",
-      answer,
-      answeredAt,
-      updatedAt: answeredAt,
-    };
-    await this.questions.update(question.id, patch);
+    question.state = "answered";
+    question.answer = { value, answeredBy: context.answeredBy ?? null, answeredAt };
+    question.updatedAt = answeredAt;
 
-    const answeredRow = await this.questions.get(question.id);
-    const view = toView(answeredRow ?? question, language);
+    const view = toView(question, language);
     this.emit?.("question", { question: view, at: iso(answeredAt) });
 
     const effects = await this.applyEffects(
-      { kind, value, handoffMode, conversationId, data: payload.data },
+      {
+        kind: question.kind,
+        value,
+        handoffMode,
+        conversationId,
+      },
       language,
     );
     return { question: view, effects };
   }
 
   /**
-   * 答完之后接着往下走：交接（D22）。
+   * 答完之后接着往下走（PRD 4.10 / `PLAN §5.2`）—— 只在题已经标成 `answered` 之后才跑。
    *
-   * 只在问题已经落成 `answered` 之后才跑：答不下去的那些情况（越线、对话在跑）
-   * 在写状态之前就返回了，所以这里不需要再判断一遍。
+   * 三种情形：
    *
-   * 这里**不等交接跑完**：交接一旦开始，回执只有「触发了它」这一格。用户要看的是结果
-   * （交接开始了 / 降级了 / 取消了），那走通知（PRD 4.9），不往答题的回执里塞。
+   * - **选了交接（自交接 / 独立摘要）**：读 `canHandoffNow`（全仓唯一一份判据）——
+   *   能就当场 `handoff.start`（关输出闸在批头，不是这里的事）；**不能就不交接**，把 mode 写进
+   *   会话行的 `pendingHandoff`，等下一次变闲再做。回执里那一格 `handoffDeferredReason` 说清
+   *   为什么没开始；`null` 表示「要么当场开始了、要么这道题不需要交接」。
+   * - **选了「不交接」**：把这段会话的自动交接开关关掉（PRD 4.10 的「答案的后果要落」）——
+   *   否则下一次撞线又问一遍，等于没记住。关掉是写会话行，所以顺手推一条
+   *   `conversation.changed(settings_changed)`：别的窗口的状态栏得跟着变。
+   * - 别的种类（`confirmation`）：没有后续动作。
+   *
+   * 不等交接跑完：回执只有「开始了 / 留了待办」，文档写到哪走通知（PRD 4.9）。
    */
   private async applyEffects(
     input: {
       kind: QuestionKind;
       value: string;
-      handoffMode: "self" | "summary" | null;
+      handoffMode: HandoffMode | null;
       conversationId: string;
-      data: Record<string, unknown>;
     },
     language: Language,
-  ): Promise<QuestionAnswerResult["effects"]> {
-    if (input.kind !== "handoff" || input.handoffMode === null || !this.handoff) {
-      return noEffects();
+  ): Promise<QuestionEffects> {
+    if (input.kind !== "handoff") return noEffects(null);
+
+    if (input.handoffMode === null) {
+      // 「不交接」：关掉自动交接开关，以后不问（PRD 4.10）
+      const offAt = this.now();
+      await this.conversations.setAutoHandoff(input.conversationId, false, offAt);
+      // 开关是会话行上的一格，别的窗口的状态栏上必须看得见它变了。
+      //
+      // 同一个理由与写法照 `ChatRunner.beginHandoff`：这一格是本服务的动作，而会话行是异步读的
+      // ——推送这一拍拿不到 `workspaceId`，就照实给 `null`（载荷里那一格本来就可空，客户端拿
+      // `conversationId` 定位，不靠 `workspaceId`）。
+      this.emit?.("conversation.changed", {
+        conversationId: input.conversationId,
+        workspaceId: null,
+        change: "settings_changed",
+        at: iso(offAt),
+      });
+      return noEffects(null);
     }
+
+    if (!this.handoff) return noEffects(null);
+
+    const availability = this.availability?.canHandoffNow(input.conversationId) ?? { ok: true };
+    if (!availability.ok) {
+      // 这段不闲（或没有驱动者 / 闸关着 / 已在交接）：留一条待办，等下一次变闲再做
+      await this.writePendingHandoff(input.conversationId, input.handoffMode);
+      return { handoffStarted: false, handoffDeferredReason: availability.reason };
+    }
+
     await this.handoff.start(
       {
         conversationId: input.conversationId,
@@ -549,29 +521,82 @@ export class QuestionService {
       },
       language,
     );
-    return { handoffStarted: true };
+    return { handoffStarted: true, handoffDeferredReason: null };
   }
 
-  private async requireQuestion(questionId: string): Promise<Question> {
+  /**
+   * 这段对话**没了**：挂在上面的题一起清掉，会话行上的待交接也一并清。
+   *
+   * 三条路共用这一个入口：真死（core 的 `stopped` / `killed`、投递撞上一个已经关门的 agent）
+   * 与对话被删 —— 那三条都在 `ChatRunner` 报「死」那一拍，由接线层按 `kind` 分过来。所以这里
+   * 是「题的生命 = 这段对话活着的这段时间」的落点：不存在「死对话上挂着的题」，也不必为它复活谁。
+   *
+   * **退役不走这里**：改配置 / 改模型 / 改思考档 / 装配事实变化之后旧驱动者退役、新驱动者重建，
+   * 对话接着往下走 —— 题与待交接原样留着（清掉它们等于用户改了个模型就丢了正在等的那道题）。
+   *
+   * **不推事件**：「题没了」这件事由 `conversation.changed`（`deleted` / `state: dead`）说，
+   * 多推一条只会让客户端去处理一个它没有槽位的东西。
+   *
+   * 清会话行那一步对「对话已被删」是空操作（行本来就不在了），不需要分支。
+   */
+  async dropConversation(conversationId: string): Promise<void> {
+    for (const [id, question] of this.questions) {
+      if (question.conversationId === conversationId) this.questions.delete(id);
+    }
+    await this.conversations.setPendingHandoff(conversationId, null);
+  }
+
+  /**
+   * 会话行上的待交接 mode（`null` = 没有待办）。
+   *
+   * 它是「答完之后这段不闲」留下的那一笔：读它的是变闲那一拍（`app.ts` 的 `onIdle`），
+   * 兑现或判不能兑现之后由它清掉。
+   */
+  async readPendingHandoff(conversationId: string): Promise<HandoffMode | null> {
+    const conversation = await this.conversations.get(conversationId);
+    return conversation?.pendingHandoff ?? null;
+  }
+
+  /** 写下待交接（`null` = 清掉）。对话已经不在了就是空操作（`setPendingHandoff` 回 0） */
+  async writePendingHandoff(conversationId: string, mode: HandoffMode | null): Promise<void> {
+    await this.conversations.setPendingHandoff(conversationId, mode);
+  }
+
+  /** 这段对话上的题（创建顺序） */
+  private questionsOf(conversationId: string): QuestionRecord[] {
+    const found: QuestionRecord[] = [];
+    for (const question of this.questions.values()) {
+      if (question.conversationId === conversationId) found.push(question);
+    }
+    return found;
+  }
+
+  /** 按 id 找题（不存在就是 `not_found`） */
+  private requireQuestion(questionId: string): QuestionRecord {
     const id = typeof questionId === "string" ? questionId.trim() : "";
-    const row = id.length === 0 ? undefined : await this.questions.get(id);
-    if (!row) {
+    const question = id.length === 0 ? undefined : this.questions.get(id);
+    if (!question) {
       throw new HostError("not_found", {
         params: { entity: "question" },
         detail: { questionId },
       });
     }
-    return row;
+    return question;
   }
 }
 
-/** 没有副作用 */
-function noEffects(): QuestionAnswerResult["effects"] {
-  return { handoffStarted: false };
+/**
+ * 没有后续动作。
+ *
+ * `deferredReason` 只在「该交接但当时不能」时才有值（`canHandoffNow` 那四个词之一）；
+ * 当场开始了、或者这道题根本不需要交接，都是 `null`。
+ */
+function noEffects(deferredReason: HandoffRefusalReason | null): QuestionEffects {
+  return { handoffStarted: false, handoffDeferredReason: deferredReason };
 }
 
 /** 这个候选值要不要交接、用哪种执行者（只有交接问题有这一层语义） */
-function handoffModeOf(kind: QuestionKind, value: string): "self" | "summary" | null {
+function handoffModeOf(kind: QuestionKind, value: string): HandoffMode | null {
   if (kind !== "handoff") return null;
   if (value === HANDOFF_OPTION_SELF) return "self";
   if (value === HANDOFF_OPTION_SUMMARY) return "summary";
@@ -596,8 +621,7 @@ export function createConversationGuardProbe(deps: {
       if (!conversation) return false;
       const config = await deps.configManager.read();
       const model = config.models.find((candidate) => candidate.id === conversation.modelId);
-      const guardThreshold =
-        conversation.guardThreshold ?? model?.tokenThresholds.guard ?? 0;
+      const guardThreshold = conversation.guardThreshold ?? model?.tokenThresholds.guard ?? 0;
       if (guardThreshold <= 0) return false;
 
       const rows = await deps.messages.listByConversation(conversationId);

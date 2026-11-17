@@ -85,7 +85,6 @@ beforeEach(async () => {
   // `meta` 不能清（`migrate` 靠它判断要不要跑迁移），FTS 由触发器跟着维护。
   await db.tx((tx) => [
     tx.run("DELETE FROM notices"),
-    tx.run("DELETE FROM questions"),
     tx.run("DELETE FROM workspaces"),
     tx.run("DELETE FROM assets"),
     tx.run("DELETE FROM credentials"),

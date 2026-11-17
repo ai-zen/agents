@@ -316,7 +316,8 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
     expect(cwdMessage?.hidden).toBe(true);
     expect(cwdMessage?.id).not.toBe(acceptedResult.userMessageId);
     const cwdText = typeof cwdMessage?.content === "string" ? cwdMessage.content : "";
-    expect(cwdText).toContain(workspaceDir.path);
+    // 正文就是那个路径（不是一句渲染过的话）：与交接换完记忆时 SDK 生成的那一条同形同文
+    expect(cwdText).toBe(workspaceDir.path);
     expect((withHidden.result as MessageListResult).messages[1]?.id).toBe(
       acceptedResult.userMessageId,
     );

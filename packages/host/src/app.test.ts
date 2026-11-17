@@ -66,6 +66,15 @@ const CONFIG = JSON.stringify(
         tokenThresholds: { handoff: 1000, guard: 2000 },
         custom: true,
       },
+      // 第二个模型：只为了让「换模型 / 换思考档 ⇒ 驱动者退役」那条路能真走一遍（带出厂那张档位表）
+      {
+        id: "test-model-2",
+        name: "Test Model 2",
+        endpointId: "fake",
+        tokenThresholds: { handoff: 1200, guard: 1800 },
+        reasoningPreset: "openai",
+        custom: true,
+      },
     ],
   },
   null,
@@ -136,11 +145,15 @@ async function startApp(fixture: Fixture, options: HostAppOptions = {}): Promise
  *
  * 这里的用例要看的是删除路径与钩子，所以直接把草稿落成真行，不跑一轮。
  */
-async function seedConversation(app: HostApp, workspaceId: string): Promise<ConversationView> {
+async function seedConversation(
+  app: HostApp,
+  workspaceId: string,
+  options: { modelId?: string } = {},
+): Promise<ConversationView> {
   const created = await callMethod(app, "conversation.create", {
     workspaceId,
     agentId: "default",
-    modelId: "test-model",
+    modelId: options.modelId ?? "test-model",
   });
   if (!created.conversation) throw new Error("conversation.create 没有建出对话");
   await app.conversationService.ensurePersisted(created.conversation.id);
@@ -733,10 +746,10 @@ describe("草稿对话上的上传（R56 / F-H8）", () => {
     expect(await app.assetService.get(asset.assetId)).toBeDefined();
     expect(await app.assets.listAssetIdsByConversation(conversationId)).toEqual([]);
 
-    // 库里只有一条隐藏消息，正文含这段对话的 cwd
+    // 库里只有一条隐藏消息，正文就是这段对话的 cwd（不是一句渲染过的话）
     const hidden = await hiddenMessagesOf(app, conversationId);
     expect(hidden).toHaveLength(1);
-    expect(hidden[0]?.content).toContain(fixture.workspaceDir.path);
+    expect(hidden[0]?.content).toBe(JSON.stringify(fixture.workspaceDir.path));
 
     // 再落一次同一个草稿（例如第二张图、或者紧接着那次 send）：行与 cwd 消息都不该多出来
     await app.conversationService.ensurePersisted(conversationId);
@@ -961,8 +974,8 @@ describe("从磁盘重载（F-E1 / R63）", () => {
 });
 
 describe("到交接线才提问（R59 / F-D2）", () => {
-  /** 建一段对话、投一句，等它闲下来（交接线判断就挂在那一拍） */
-  async function sendAndWaitIdle(app: HostApp, workspaceId: string): Promise<void> {
+  /** 建一段对话、投一句，等它闲下来（交接线判断就挂在那一拍）；回这段对话的 id */
+  async function sendAndWaitIdle(app: HostApp, workspaceId: string): Promise<string> {
     const conversation = await seedConversation(app, workspaceId);
     await callMethod(app, "conversation.send", {
       conversationId: conversation.id,
@@ -970,7 +983,7 @@ describe("到交接线才提问（R59 / F-D2）", () => {
     });
     for (let attempt = 0; attempt < 200; attempt += 1) {
       const now = app.chatRunner.state(conversation.id);
-      if (now.status === "idle" && now.inbox.length === 0) return;
+      if (now.status === "idle" && now.inbox.length === 0) return conversation.id;
       await wait(10);
     }
     throw new Error("这段对话没有闲下来");
@@ -998,22 +1011,23 @@ describe("到交接线才提问（R59 / F-D2）", () => {
 
     // 交接线是 1000（见上面的 CONFIG）：这一轮只用了 500，不问
     promptTokens = 500;
-    await sendAndWaitIdle(app, workspace.id);
+    const quietId = await sendAndWaitIdle(app, workspace.id);
     await wait(50);
-    const quiet = await callMethod(app, "question.list", { state: "pending" });
+    const quiet = await callMethod(app, "question.list", { conversationId: quietId });
     expect(quiet.questions).toEqual([]);
 
     // 这一轮 1500：到线了，问
     promptTokens = 1500;
-    await sendAndWaitIdle(app, workspace.id);
+    const askedId = await sendAndWaitIdle(app, workspace.id);
     let asked: Awaited<ReturnType<typeof callMethod<"question.list">>>["questions"] = [];
     for (let attempt = 0; attempt < 200; attempt += 1) {
-      asked = (await callMethod(app, "question.list", { state: "pending" })).questions;
+      asked = (await callMethod(app, "question.list", { conversationId: askedId })).questions;
       if (asked.length > 0) break;
       await wait(10);
     }
     expect(asked).toHaveLength(1);
     expect(asked[0]?.kind).toBe("handoff");
+    expect(asked[0]?.state).toBe("pending");
     expect(asked[0]?.options.map((option) => option.value)).toEqual(["self", "summary", "decline"]);
   });
 
@@ -1063,8 +1077,9 @@ describe("到交接线才提问（R59 / F-D2）", () => {
 
     // 用量（1500）明明越过了交接线（1000），这段派生会话也不挂问题 ——
     // 判据是**会话行上的自动交接开关**（派生会话开着，自己压），与这一段的来源无关
-    const pending = (await callMethod(app, "question.list", { state: "pending" })).questions;
-    expect(pending.filter((question) => question.conversationId === created.sessionId)).toEqual([]);
+    const pending = (await callMethod(app, "question.list", { conversationId: created.sessionId }))
+      .questions;
+    expect(pending).toEqual([]);
   });
 });
 
@@ -1428,5 +1443,215 @@ describe("升级自检（D4 / F-E3 / 裁定 R66）", () => {
     await app.stop("requested");
     expect(timer.cancels).toHaveLength(1);
     expect(() => timer.tick()).toThrow("自检定时器已经被清掉");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 题与死对话（PRD 4.10 / PLAN §5.2）
+// ---------------------------------------------------------------------------
+
+describe("题与死对话", () => {
+  /** 投一句并等它闲下来（`onIdle` 那一拍就是这里触发的） */
+  async function sendAndWaitIdle(app: HostApp, conversationId: string): Promise<void> {
+    await callMethod(app, "conversation.send", {
+      conversationId,
+      input: { content: "说点什么" },
+    });
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const now = app.chatRunner.state(conversationId);
+      if (now.status === "idle" && now.inbox.length === 0) return;
+      await wait(10);
+    }
+    throw new Error("这段对话没有闲下来");
+  }
+
+  /** 一道挡着这段对话的题（题只由宿主内部产生，用例直接走服务的入口） */
+  async function askBlocking(app: HostApp, conversationId: string): Promise<string> {
+    const asked = await app.questionService.ask({
+      conversationId,
+      kind: "confirmation",
+      prompt: { messageKey: "question.handoff.prompt", params: { percent: 90 } },
+      options: [
+        { value: "yes", label: { messageKey: "question.handoff.self" } },
+        { value: "no", label: { messageKey: "question.handoff.decline" } },
+      ],
+      blocking: true,
+    });
+    return asked.id;
+  }
+
+  it("agent 死的那一刻题跟着没，也不再挡 conversation.send（不推事件）", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture, {
+      createAgent: async () => new FakeAgent([{ deltas: [{ content: "答完了" }] }]),
+    });
+    const { workspace } = await callMethod(app, "workspace.create", {
+      cwd: fixture.workspaceDir.path,
+    });
+    const conversation = await seedConversation(app, workspace.id);
+    await sendAndWaitIdle(app, conversation.id);
+
+    await askBlocking(app, conversation.id);
+    await expect(
+      callMethod(app, "conversation.send", {
+        conversationId: conversation.id,
+        input: { content: "想绕过去" },
+      }),
+    ).rejects.toMatchObject({ code: "question_pending" });
+
+    // 对话被删那条路（`forget` = 硬着陆）：桥灭 → 报「死」→ 挂在上面的题一起没
+    app.chatRunner.forget(conversation.id);
+    await wait(50);
+
+    const listed = await callMethod(app, "question.list", { conversationId: conversation.id });
+    expect(listed.questions).toEqual([]);
+    await expect(app.questionService.assertSendable(conversation.id)).resolves.toBeUndefined();
+    // 会话行上那一格也清干净了
+    expect(await app.questionService.readPendingHandoff(conversation.id)).toBeNull();
+  });
+
+  it("改模型（退役重建）之后：题还在、待交接也还在", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture, {
+      createAgent: async () => new FakeAgent([{ deltas: [{ content: "答完了" }] }]),
+    });
+    const { workspace } = await callMethod(app, "workspace.create", {
+      cwd: fixture.workspaceDir.path,
+    });
+    const conversation = await seedConversation(app, workspace.id);
+    await sendAndWaitIdle(app, conversation.id);
+    // 等「变闲那一拍」彻底走完（它会读一次待交接）：不等的话它那一下读可能落在下面那次写之后
+    await wait(50);
+
+    await askBlocking(app, conversation.id);
+    await app.questionService.writePendingHandoff(conversation.id, "summary");
+    expect(await app.questionService.readPendingHandoff(conversation.id)).toBe("summary");
+
+    // 换模型 = 出厂配置变了：空闲的驱动者当场退役（`invalidateConversation` → `retired`）
+    await callMethod(app, "conversation.setModel", {
+      conversationId: conversation.id,
+      modelId: "test-model-2",
+    });
+    await wait(50);
+    expect(app.agentRegistry.get(conversation.id)).toBeUndefined();
+
+    // 退役不是「这段没了」：题原样挂着（依旧挡着 send），待交接也原样 —— 下一句话按新事实
+    // 重新装配，题还在那儿等他答
+    const listed = await callMethod(app, "question.list", { conversationId: conversation.id });
+    expect(listed.questions).toHaveLength(1);
+    expect(await app.questionService.readPendingHandoff(conversation.id)).toBe("summary");
+    await expect(app.questionService.assertSendable(conversation.id)).rejects.toMatchObject({
+      code: "question_pending",
+    });
+  });
+
+  it("改思考档（同一个退役口）之后：题还在、待交接也还在", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture, {
+      createAgent: async () => new FakeAgent([{ deltas: [{ content: "答完了" }] }]),
+    });
+    const { workspace } = await callMethod(app, "workspace.create", {
+      cwd: fixture.workspaceDir.path,
+    });
+    // 换档要有可调的档：这一段从一开始就用带档位表的那个模型
+    const conversation = await seedConversation(app, workspace.id, { modelId: "test-model-2" });
+    await sendAndWaitIdle(app, conversation.id);
+    // 同上：等变闲那一拍读完待交接再写
+    await wait(50);
+
+    await askBlocking(app, conversation.id);
+    await app.questionService.writePendingHandoff(conversation.id, "self");
+    expect(await app.questionService.readPendingHandoff(conversation.id)).toBe("self");
+
+    await callMethod(app, "conversation.setThinking", {
+      conversationId: conversation.id,
+      level: "low",
+    });
+    await wait(50);
+    // 档位展开出来的参数也是装配事实：那个驱动者当场退役
+    expect(app.agentRegistry.get(conversation.id)).toBeUndefined();
+
+    const listed = await callMethod(app, "question.list", { conversationId: conversation.id });
+    expect(listed.questions).toHaveLength(1);
+    expect(await app.questionService.readPendingHandoff(conversation.id)).toBe("self");
+  });
+
+  it("真死（agent 被 killed）之后：题与待交接都没了", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture, {
+      createAgent: async () => new FakeAgent([{ deltas: [{ content: "答完了" }] }]),
+    });
+    const { workspace } = await callMethod(app, "workspace.create", {
+      cwd: fixture.workspaceDir.path,
+    });
+    const conversation = await seedConversation(app, workspace.id);
+    await sendAndWaitIdle(app, conversation.id);
+
+    await askBlocking(app, conversation.id);
+    await app.questionService.writePendingHandoff(conversation.id, "self");
+
+    // 硬着陆（core 的 `killed`）：这一段真的没了，题与待交接跟着没
+    app.agentRegistry.kill(conversation.id);
+    await wait(50);
+
+    const listed = await callMethod(app, "question.list", { conversationId: conversation.id });
+    expect(listed.questions).toEqual([]);
+    expect(await app.questionService.readPendingHandoff(conversation.id)).toBeNull();
+    await expect(app.questionService.assertSendable(conversation.id)).resolves.toBeUndefined();
+  });
+
+  it("答完之后闲了：变闲那一拍把会话行上的待交接跑起来，跑完清掉", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture, {
+      createAgent: async () => new FakeAgent([{ deltas: [{ content: "答完了" }] }]),
+    });
+    const { workspace } = await callMethod(app, "workspace.create", {
+      cwd: fixture.workspaceDir.path,
+    });
+    const conversation = await seedConversation(app, workspace.id);
+    await sendAndWaitIdle(app, conversation.id);
+
+    // 答完交接题时这段不闲 → 会话行上留下待交接（这条路本身在 `QuestionService` 的用例里钉）
+    await app.questionService.writePendingHandoff(conversation.id, "summary");
+    // 交接那一趟由替身接住：这里验的是「变闲那一拍会不会把它跑起来」
+    const started = vi.spyOn(app.handoffService, "start").mockResolvedValue({ started: true });
+
+    await sendAndWaitIdle(app, conversation.id);
+    await wait(50);
+
+    expect(started).toHaveBeenCalledTimes(1);
+    expect(started.mock.calls[0]?.[0]).toEqual({
+      conversationId: conversation.id,
+      mode: "summary",
+      then: "new_conversation",
+    });
+    expect(await app.questionService.readPendingHandoff(conversation.id)).toBeNull();
+  });
+
+  it("判据说还不能交接：待办原样留着，下一次变闲再看", async () => {
+    const fixture = await makeFixture();
+    const app = await startApp(fixture, {
+      createAgent: async () => new FakeAgent([{ deltas: [{ content: "答完了" }] }]),
+    });
+    const { workspace } = await callMethod(app, "workspace.create", {
+      cwd: fixture.workspaceDir.path,
+    });
+    const conversation = await seedConversation(app, workspace.id);
+    await sendAndWaitIdle(app, conversation.id);
+
+    await app.questionService.writePendingHandoff(conversation.id, "self");
+    const started = vi.spyOn(app.handoffService, "start").mockResolvedValue({ started: true });
+    // 这一拍「接不了」（例如上一趟还没收口）
+    const availability = vi
+      .spyOn(app.chatRunner, "canHandoffNow")
+      .mockReturnValue({ ok: false, reason: "handoff_in_progress" });
+
+    await sendAndWaitIdle(app, conversation.id);
+    await wait(50);
+
+    expect(availability).toHaveBeenCalled();
+    expect(started).not.toHaveBeenCalled();
+    // 原样留着：不是清掉、也不是重写别的 mode
+    expect(await app.questionService.readPendingHandoff(conversation.id)).toBe("self");
   });
 });

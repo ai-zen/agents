@@ -35,13 +35,9 @@ import type {
 import type { ConversationDraftStore } from "../runtime/ConversationDrafts.js";
 import { ConversationDrafts } from "../runtime/ConversationDrafts.js";
 import type { ChatEventEmitter } from "../runtime/ChatRunner.js";
-import { injectedContextOf } from "../runtime/ChatRunner.js";
-import { DEFAULT_LANGUAGE } from "../i18n/index.js";
-import type { Language } from "../i18n/index.js";
 import type { AssetRepository } from "../storage/AssetRepository.js";
 import type { ConversationRepository } from "../storage/ConversationRepository.js";
 import type { MessageRepository } from "../storage/MessageRepository.js";
-import type { QuestionRepository } from "../storage/QuestionRepository.js";
 import type { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
 import type { Conversation, StoredMessage, WorkspaceRow } from "../storage/types.js";
 import { HostError } from "../wire/errors.js";
@@ -123,7 +119,7 @@ export interface ConversationRuntimePort {
    * 这段对话**手上有没有活**（core 的那一格 `agent.state` 原样给出）：没有 agent（死的）回 `null`。
    *
    * 只读 `state`，不看 `isOutputPaused` —— 那是另一处状态（从下一批起还收不收件），不收件
-   * 挡着也算手上没活。换模型 / 换思考档位的判据就是这一格（`assertIdle`）。
+   * 挡着也算手上没活。换模型 / 换思考档位的判据就是这一格（`assertNoWorkInHand`）。
    */
   agentState(conversationId: string): AgentNS.AgentState | null;
   /**
@@ -152,6 +148,15 @@ export interface ConversationRemovalReport extends ConversationDeleteResult {
 export type AssetSweeper = (assetIds: string[]) => Promise<string[]>;
 
 /** 对话服务的依赖；由单根组装后注入 */
+/**
+ * 「这段对话现在挂着几道题」的口（`QuestionService.countPending` 结构上满足）。
+ *
+ * 题不落库（PRD 4.10）：它是进程内对象，所以这个数只能问它。不注入时算 0（= 没有题）。
+ */
+export interface ConversationQuestionPort {
+  countPending(conversationId: string): number;
+}
+
 export interface ConversationServiceDeps {
   conversations: ConversationRepository;
   messages: MessageRepository;
@@ -159,7 +164,8 @@ export interface ConversationServiceDeps {
   assets: AssetRepository;
   /** 引用归零的素材交给它删行删文件；不注入时字节会留在盘上（引用行已经没了） */
   sweepAssets?: AssetSweeper;
-  questions: QuestionRepository;
+  /** 挂在这段上的题有几道（现读内存）；不注入时按「没有题」算 */
+  questions?: ConversationQuestionPort;
   /** 配置唯一入口（SDK）：助手定义在 `<basePath>/agents/`，模型与默认项在 `config.json` 里 */
   configManager: ConfigManager;
   runtime: ConversationRuntimePort;
@@ -315,7 +321,7 @@ export class ConversationService {
   private readonly workspaces: WorkspaceRepository;
   private readonly assets: AssetRepository;
   private readonly sweepAssets?: AssetSweeper;
-  private readonly questions: QuestionRepository;
+  private readonly questions?: ConversationQuestionPort;
   private readonly configManager: ConfigManager;
   private readonly runtime: ConversationRuntimePort;
   private readonly drafts: ConversationDraftStore;
@@ -434,6 +440,8 @@ export class ConversationService {
       // 谁开的这段会话、自动交接开不开：**创建那一刻写死**（用户建 0 / 兄弟会话 1）
       autoHandoff: params.autoHandoff === true,
       lineage: params.lineage ?? null,
+      // 待交接只由「答完交接题、当时不闲」这一条路写；刚建出来的会话没有待办
+      pendingHandoff: null,
       createdAt,
       updatedAt: createdAt,
     };
@@ -459,17 +467,16 @@ export class ConversationService {
    * 每个上传都在 `asset.begin` 里调一次）在这里排队共用同一次写入，免得后到的那次误报
    * `not_found`、也免得那条隐藏的 cwd 消息被写两遍。
    *
-   * 落行那一刻同时写上这段对话的第一条消息：一条 `hidden` 的 `user` 消息，告诉模型这段对话
-   * 对应的 cwd（PRD F-D9）。它最先写，所以 `seq` 在真实用户消息之前；之后永不重写。
-   * cwd 从这段对话的 Workspace 取（不是进程工作目录）；`workspaceId` 建会话时就定死了，
-   * 这里只读不改。
+   * 落行那一刻同时写上这段对话的第一条消息：一条 `role: user`、`hidden`、`source` 为
+   * `{ kind: "system", label: "cwd" }` 的 cwd 消息，告诉模型这段对话对应的 cwd（PRD F-D9）。
+   * 它最先写，所以 `seq` 在真实用户消息之前；之后永不重写。cwd 从这段对话的 Workspace 取
+   * （不是进程工作目录）；`workspaceId` 建会话时就定死了，这里只读不改。
    *
-   * `language` 是这条消息正文的渲染语言（D8：调用方传发起这条连接的语言；不传时用缺省语言）。
+   * **正文就是那个路径**，不按连接语言渲染（D8 不适用）：这条消息是隐藏的、用户看不见，
+   * 模型要的就是路径本身，所以这里不收 `language` —— 交接换完记忆时 SDK 生成的那一条
+   * （`HandoffService.createCwdMessage`）同形同文，一个概念只有一种形状。
    */
-  async ensurePersisted(
-    conversationId: string,
-    language: Language = DEFAULT_LANGUAGE,
-  ): Promise<Conversation> {
+  async ensurePersisted(conversationId: string): Promise<Conversation> {
     const id = requireId(conversationId, "conversationId");
     const existing = await this.conversations.get(id);
     if (existing) {
@@ -478,7 +485,7 @@ export class ConversationService {
     }
     const running = this.persisting.get(id);
     if (running) return await running;
-    const task = this.persistDraft(id, language);
+    const task = this.persistDraft(id);
     this.persisting.set(id, task);
     try {
       return await task;
@@ -488,7 +495,7 @@ export class ConversationService {
   }
 
   /** 草稿 → 库里那一行（含那条隐藏的 cwd 消息）；并发去重由 {@link ensurePersisted} 负责 */
-  private async persistDraft(id: string, language: Language): Promise<Conversation> {
+  private async persistDraft(id: string): Promise<Conversation> {
     const draft = this.drafts.take(id);
     if (!draft) {
       throw new HostError("not_found", {
@@ -513,7 +520,7 @@ export class ConversationService {
         createdAt: draft.createdAt,
         updatedAt: draft.updatedAt,
       });
-      await this.writeCwdMessage(draft, language);
+      await this.writeCwdMessage(draft);
       // 新行默认是「自动命名、未置顶」；草稿期间用户改过名 / 置过顶的，落库时补写一次
       if (draft.nameIsAuto === false) {
         await this.conversations.renameByUser(draft.id, draft.name, draft.updatedAt);
@@ -540,14 +547,16 @@ export class ConversationService {
   /**
    * 写会话开头那条 `hidden` 的 cwd 消息（PRD F-D9）。
    *
-   * 它是一条普通的 `user` 消息，只是 `hidden` 为真：模型在上下文里能看到它，界面上不展示
-   * 它（core 的 `Message.hidden`）。内容用的是 i18n 里那两条既有键的拼装（与临时对话共用
-   * `injectedContextOf`）。
+   * 形状与 SDK 交接换完记忆时生成的那一条（`HandoffService.createCwdMessage`）**同形同文**
+   * （`PLAN.md` §4、`CORE.md` §3）：`role: user` + `hidden`（模型在上下文里能看到它，界面上
+   * 不展示，core 的 `Message.hidden`）+ `source { kind: "system", label: "cwd" }`，**正文就是
+   * 那个路径**。不拼一句渲染过的话：这条消息用户看不见，模型要的就是路径；同一个概念只有
+   * 一种形状，别在这里再造第二种。
    *
    * cwd 来自这段对话所属的 Workspace（PRD D9：一段对话绑一个项目，cwd 创建即定死），
    * 不读进程工作目录。
    */
-  private async writeCwdMessage(draft: Conversation, language: Language): Promise<void> {
+  private async writeCwdMessage(draft: Conversation): Promise<void> {
     const workspace = await this.workspaces.get(draft.workspaceId);
     if (!workspace) {
       // 行已经写进去了、外键指着它，所以这里只可能是库被别处改坏了
@@ -561,7 +570,7 @@ export class ConversationService {
       role: AgentNS.Role.User as string,
       status: AgentNS.MessageStatus.Completed as string,
       omit: false,
-      content: injectedContextOf(workspace.cwd, language),
+      content: workspace.cwd,
       // 宿主自己注入的那条消息，**宿主自己填 `source`**（`CORE.md` §3「一律带」/ §14
       // 「宿主注入的由宿主自己填」）：它不是用户说的话，所以不能落成 `{ kind: "user" }`。
       source: { kind: "system", label: "cwd" },
@@ -649,11 +658,10 @@ export class ConversationService {
     const assetRows = await this.assets.listByConversation(conversation.id);
     const consequences = {
       conversations: 1,
-      // 这个数来自 `countByConversation`：库里这段对话的全部消息行，**含子 Agent 的消息**
-      // （它们落在同一张表、`parentToolCallId` 非空），但**不含 `hidden` 的**（会话创建时那条
-      // cwd 消息、交接摘要）。所以它会比侧栏摘要里的 `messageCount` 大：那个数来自
-      // `listByConversation`，只数主线。两者是两个不同的量（这一处是「删掉会少多少行」的代价，
-      // 那一处是「侧栏显示几句话」），不互相换算。
+      // 这个数来自 `countByConversation`：库里这段对话的消息行，**不含 `hidden` 的**（会话创建时
+      // 那条 cwd 消息、交接摘要）。它与侧栏摘要里的 `messageCount` 数的是同一批行（那边来自
+      // `listByConversation`），两边口径一致：子 Agent 的话不入库（`CORE.md` §17），所以没有
+      // 第二种取法可对。
       messages: await this.messages.countByConversation(conversation.id),
       assets: assetRows.length,
     };
@@ -742,7 +750,7 @@ export class ConversationService {
    * 模型上对应不同参数，留着就变成把旧模型的参数发给新模型。
    *
    * **只允许空闲时换**（用户判词）：这段对话手上还有活时一律拒（`busy` +
-   * `reason: "not_idle"`），一个字节都不写库。理由：模型与思考参数是驱动者**装配那一刻**读的，
+   * `reason: "working"`），一个字节都不写库。理由：模型与思考参数是驱动者**装配那一刻**读的，
    * 忙的时候改它，手里那批还会按旧事实跑完、下一批按新事实跑 —— 同一段对话里两批用了两个模型。
    * 空闲时改完则**当场让那个驱动者退役**（`runtime.invalidateAgent`）—— 出厂配置变了，它不能
    * 留着；下一句话按新事实重新装配。
@@ -753,7 +761,7 @@ export class ConversationService {
   async setModel(params: ConversationSetModelParams): Promise<ConversationSetModelResult> {
     const row = await this.requireConversation(params.conversationId);
     // 判据在最前面：非空闲就直接拒，后面的校验与写库一步都不走
-    this.assertIdle(row.id);
+    this.assertNoWorkInHand(row.id);
     const config = await this.readConfig();
 
     const modelId = params.modelId == null
@@ -792,7 +800,7 @@ export class ConversationService {
    * 不同参数。`level: null` 表示回到「跟随助手定义」。改助手默认档是另一个动作
    * （`agent.setThinking`）。
    *
-   * **只允许空闲时改**（与 `setModel` 同一条判词、同一个判据 `assertIdle`）：忙时一律拒，一个
+   * **只允许空闲时改**（与 `setModel` 同一条判词、同一个判据 `assertNoWorkInHand`）：忙时一律拒，一个
    * 字节都不写库；空闲时改完同样当场让那个驱动者退役 —— 档位展开出来的参数也进驱动者的出厂
    * 配置。
    *
@@ -802,7 +810,7 @@ export class ConversationService {
   async setThinking(params: ConversationSetThinkingParams): Promise<ConversationSetThinkingResult> {
     const row = await this.requireConversation(params.conversationId);
     // 判据在最前面：非空闲就直接拒（先于「这个模型能不能调档」那些校验）
-    this.assertIdle(row.id);
+    this.assertNoWorkInHand(row.id);
     const context = await this.viewContext(await this.readConfig());
     const model = this.effectiveModel(row, context.config);
     if (!model) {
@@ -906,10 +914,14 @@ export class ConversationService {
     const summaries: ConversationSummary[] = [];
     for (const row of rows) {
       const stored = await this.messages.listByConversation(row.id);
-      const pending = await this.questions.listByConversation(row.id, "pending");
-      summaries.push(this.toSummary(row, stored, pending.length));
+      summaries.push(this.toSummary(row, stored, this.pendingQuestions(row.id)));
     }
     return summaries;
+  }
+
+  /** 这段对话上挂着几道题：题在内存里，所以问 `QuestionService`，不查表（查也查不到） */
+  private pendingQuestions(conversationId: string): number {
+    return this.questions?.countPending(conversationId) ?? 0;
   }
 
   /** 一行对话 → 侧栏摘要；`pendingCount` 是挂在这段对话上还没答的问题数 */
@@ -934,9 +946,9 @@ export class ConversationService {
       lineage: row.lineage,
       createdAt: iso(row.createdAt),
       updatedAt: iso(row.updatedAt),
-      // 这个数来自 `listByConversation` 的长度：只有**主线**消息（不含子 Agent 的，那些在同一个
-      // 表里 `parentToolCallId` 非空），也不含 `hidden` 的。删除代价（`consequences.messages`）用的是另一条读数
-      // `countByConversation`，数的是表里的全部行（只筛 `hidden`），所以同一段对话这两处数字可以不等。
+      // 这个数来自 `listByConversation` 的长度：**不含 `hidden` 的**（会话创建时那条 cwd 消息、
+      // 交接摘要）。删除代价（`consequences.messages`）用的是另一条读数 `countByConversation`，
+      // 数的是同一批行（两边都不筛别的）—— 同一段对话不该有两个数。
       messageCount: stored.length,
       lastMessageAt: stored.length === 0 ? null : iso(latestCreatedAt(stored)),
       // 侧栏那个圆点与「压着几条」都是**现读**：这一格不在库里，不是会话字段
@@ -975,7 +987,6 @@ export class ConversationService {
     context: ViewContext,
   ): Promise<ConversationView> {
     const stored = await this.messages.listByConversation(row.id);
-    const pending = await this.questions.listByConversation(row.id, "pending");
     const workspace = await this.loadWorkspace(row.workspaceId, context);
     const agent = await this.loadAgent(row.agentId, context);
     const model = this.effectiveModel(row, context.config);
@@ -988,7 +999,7 @@ export class ConversationService {
       source: this.modelSource(row, agent, context.config),
     };
     const view: ConversationView = {
-      ...this.toSummary(row, stored, pending.length),
+      ...this.toSummary(row, stored, this.pendingQuestions(row.id)),
       agent: await this.agentState(row.agentId),
       model: modelState,
       thinking: this.buildThinking(row, model, agent, context.presets),
@@ -1079,18 +1090,20 @@ export class ConversationService {
   /**
    * 换模型 / 换思考档位之前那一条判据：**这段对话手上没活**。
    *
-   * 判据就是交接入口那一条（`HandoffService.start`）：`agent.state === "idle"` 才算空闲。
-   * 另两种都放行：
-   *   - `isOutputPaused` 挡着（对外报「暂停」）也算空闲 —— 它手上没活；
-   *   - 没有 agent（死的）也放行 —— 没有驱动者，就没有「手上那一批活」可打岔。
+   * 它**不是交接准入** —— 交接那一条是「能不能立刻接手一批」的四条判据（`ChatRunner.canHandoffNow`，
+   * 含输出闸与交接态）。这一手只问一件事：「手上那批活」在不在。所以：
+   *   - `isOutputPaused` 挡着（对外报「暂停」）也放行 —— 闸管的是「从下一批起还取不取」，不是「手上有没有活」；
+   *   - 没有 agent（死的）也放行 —— 没有驱动者，就没有「手上那一批活」可打岔；
+   *   - 交接态也不在这里判：那时没有一个「手上那批活」要等，而谁能不能动这一段由交接自己那一处说了算。
    *
-   * 拒的时候一个字节都不写库：这两手改的是驱动者的出厂配置（模型客户端 / 思考参数），忙的时候
-   * 改它，手里那批还会按旧事实跑完、下一批按新事实跑 —— 同一段对话里两批用了两个模型。
+   * 拒的时候一个字节都不写库（拒因就是那套四个词里的 `working`）：这两手改的是驱动者的出厂
+   * 配置（模型客户端 / 思考参数），忙的时候改它，手里那批还会按旧事实跑完、下一批按新事实跑 ——
+   * 同一段对话里两批用了两个模型。
    */
-  private assertIdle(conversationId: string): void {
+  private assertNoWorkInHand(conversationId: string): void {
     const state = this.runtime.agentState(conversationId);
     if (state !== null && state !== "idle") {
-      throw new HostError("busy", { detail: { conversationId, reason: "not_idle" } });
+      throw new HostError("busy", { detail: { conversationId, reason: "working" } });
     }
   }
 

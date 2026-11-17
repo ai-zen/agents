@@ -47,7 +47,6 @@ beforeEach(async () => {
   await db.tx((tx) => [
     // meta 不清：migrate 靠它判断跑不跑
     tx.run("DELETE FROM notices"),
-    tx.run("DELETE FROM questions"),
     // workspaces 必须在 assets 之前：删 workspace 级联删掉 conversation_assets 关系行，
     // 之后 assets 的 ON DELETE RESTRICT 才不会拦
     tx.run("DELETE FROM workspaces"), // 级联 conversations → messages → conversation_assets
@@ -92,7 +91,6 @@ describe("migrate", () => {
       "conversation_assets",
       "asset_vendor_files",
       "notices",
-      "questions",
       "credentials",
       "meta",
       "messages_fts",
@@ -153,9 +151,8 @@ describe("migrate", () => {
     expect(nameIsAuto).toMatchObject({ notnull: 1, dflt_value: "1" });
 
     const messageColumns = await db.all<ColumnInfo>("PRAGMA table_info('messages')");
-    const parentToolCallId = messageColumns.find((column) => column.name === "parentToolCallId");
-    // 可空：顶层消息没有父工具调用
-    expect(parentToolCallId).toMatchObject({ notnull: 0, dflt_value: null });
+    // v5 之后库里只有一套取法：`parentToolCallId` 那一列已经不在了
+    expect(messageColumns.some((column) => column.name === "parentToolCallId")).toBe(false);
   });
 
   it("v2：新库直接到最新版本，压缩两列存在且可空", async () => {
@@ -234,7 +231,7 @@ describe("migrate", () => {
     expect(row).toEqual({ source: null });
   });
 
-  it("v4：老库升上来，四列都在且默认值正确（老行 autoHandoff = 1，语义落在「开」那一侧）", async () => {
+  it("v4：老库升上来，四列都在；自动交接开关的缺省值落在「问」那一侧（0）", async () => {
     const db = ownDatabase("upgrade-v3-to-v4.db");
     // 只跑到 v3，模拟「上一版已经装上升过级的库」
     const older = MIGRATIONS.filter((migration) => migration.version <= 3);
@@ -261,10 +258,12 @@ describe("migrate", () => {
         dflt_value: null,
       });
     }
-    // 自动交接开关非空、缺省 1：`ADD COLUMN ... NOT NULL` 在 SQLite 里必须给缺省值
+    // 自动交接开关非空、缺省 **0**：`ADD COLUMN ... NOT NULL` 在 SQLite 里必须给缺省值，
+    // 而 0 就是常态那一侧 —— 撞线停下来问一句（PRD 4.10）。「不问」是例外（兄弟会话，
+    // 创建那一刻显式写 1）。
     expect(columns.find((column) => column.name === "autoHandoff")).toMatchObject({
       notnull: 1,
-      dflt_value: "1",
+      dflt_value: "0",
     });
 
     const row = await db.get<{
@@ -275,18 +274,73 @@ describe("migrate", () => {
     }>(
       "SELECT handoffThreshold, guardThreshold, autoHandoff, lineage FROM conversations WHERE id = 'c1'",
     );
-    // 老行：阈值跟模型走、没有血缘；开关落在**「开」**这一侧。
-    // 代码里这一列的读法只有一条：1 = 开 = 撞线自己交班、不问（兄弟会话语义）；
-    // 0 = 关 = 装不下时问用户一次。老行读成 1 不是「认出它是兄弟会话」（v4 之前谁开的只活在
-    // 进程里、重启即失），而是两个值里选了「自己交班」那一侧：升级后的老会话不会因为这一列
-    // 新出现就开始弹题。写入方（创建处）一定显式写，所以这个缺省值只对 v4 之前的行与「将来
-    // 有人漏写」说话。
+    // 旧库不迁移（用户：「旧户直接删了都没关系」）：漏写那一列的行读成 0，
+    // 也就是「撞线问一句」。猜错的代价不对称：多问一句用户答「不交接」就再也不问；
+    // 猜成「不问」则是用户从头到尾不知道发生过什么。
     expect(row).toEqual({
       handoffThreshold: null,
       guardThreshold: null,
-      autoHandoff: 1,
+      autoHandoff: 0,
       lineage: null,
     });
+  });
+
+  it("v5：题表没了、会话行多一格待交接、消息表删掉第二套取法", async () => {
+    const db = ownDatabase("upgrade-v4-to-v5.db");
+    // 只跑到 v4，模拟「上一版已经装上升过级的库」（那时还有 questions 表与 parentToolCallId）
+    const older = MIGRATIONS.filter((migration) => migration.version <= 4);
+    await db.tx((tx) => {
+      for (const migration of older) for (const statement of migration.statements) tx.run(statement);
+      tx.run("INSERT INTO meta (id, schemaVersion, createdAt) VALUES (1, 4, ?)", [1]);
+    });
+    await db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/v4', 1)");
+    await db.run(
+      `INSERT INTO conversations (id, workspaceId, name, agentId, modelId, createdAt, updatedAt)
+       VALUES ('c1', 'w1', '旧对话', 'a1', 'm1', 2, 2)`,
+    );
+    await db.run(
+      `INSERT INTO messages (id, conversationId, seq, role, status, content, searchText, createdAt, updatedAt)
+       VALUES ('m1', 'c1', 1, 'user', 'completed', '"老消息"', '老消息', 3, 3)`,
+    );
+    // 旧库里挂着的一道题：v5 之后它不该再有任何落点
+    await db.run(
+      `INSERT INTO questions (id, conversationId, kind, payload, state, createdAt, updatedAt)
+       VALUES ('q1', 'c1', 'handoff', '{}', 'pending', 4, 4)`,
+    );
+
+    await migrate(db);
+
+    expect(await new MetaRepository(db).getSchemaVersion()).toBe(LATEST_VERSION);
+    // 1. 题表与它的索引一起消失
+    const tables = await tableNames(db);
+    expect(tables).not.toContain("questions");
+    expect(
+      await db.all("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_questions_conversation'"),
+    ).toEqual([]);
+
+    // 2. 会话行多一格待交接：可空，NULL = 没有待办
+    const conversationColumns = await db.all<{
+      name: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>("PRAGMA table_info('conversations')");
+    expect(conversationColumns.find((column) => column.name === "pendingHandoff")).toMatchObject({
+      notnull: 0,
+      dflt_value: null,
+    });
+    expect(await db.get("SELECT pendingHandoff FROM conversations WHERE id = 'c1'")).toEqual({
+      pendingHandoff: null,
+    });
+
+    // 3. 消息表删掉那个列与它的索引（旧行照旧读得出来）
+    const messageColumns = await db.all<{ name: string }>("PRAGMA table_info('messages')");
+    expect(messageColumns.some((column) => column.name === "parentToolCallId")).toBe(false);
+    expect(
+      await db.all(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_messages_parent_tool_call'",
+      ),
+    ).toEqual([]);
+    expect(await db.all("SELECT id FROM messages")).toEqual([{ id: "m1" }]);
   });
 
   it("迁移后仍然是 WAL 且外键约束是开着的", async () => {
@@ -336,14 +390,10 @@ describe("外键与级联", () => {
        VALUES (?, ?, ?, ?)`,
       ["c1", "msg1", "as1", 5],
     );
-    // 挂在对话上的通知与问题：级联的另一半（这两张表的 CASCADE 只在这里钉）
+    // 挂在对话上的通知：级联的另一半（这张表的 CASCADE 只在这里钉）
     await db.run(
       `INSERT INTO notices (id, level, code, params, durationMs, conversationId, createdAt)
        VALUES ('n1', 'info', 'notice.settingsSaved', NULL, NULL, 'c1', 6)`,
-    );
-    await db.run(
-      `INSERT INTO questions (id, conversationId, kind, payload, state, createdAt, updatedAt)
-       VALUES ('q1', 'c1', 'handoff', '{}', 'pending', 7, 7)`,
     );
   }
 
@@ -358,15 +408,14 @@ describe("外键与级联", () => {
     expect(await db.all("SELECT id FROM assets")).toEqual([{ id: "as1" }]);
   });
 
-  it("删 conversation 连带删 messages / 引用关系 / 通知 / 问题（素材行留着）", async () => {
+  it("删 conversation 连带删 messages / 引用关系 / 通知（素材行留着）", async () => {
     await seed();
     await db.run("DELETE FROM conversations WHERE id = ?", ["c1"]);
 
     expect(await db.all("SELECT id FROM messages")).toEqual([]);
     expect(await db.all("SELECT assetId FROM conversation_assets")).toEqual([]);
-    // 通知与问题是挂在对话上的：对话没了它们也没有落脚的语义
+    // 通知是挂在对话上的：对话没了它也没有落脚的语义（题已经不落库了，没有这一层）
     expect(await db.all("SELECT id FROM notices")).toEqual([]);
-    expect(await db.all("SELECT id FROM questions")).toEqual([]);
     expect(await db.all("SELECT id FROM assets")).toEqual([{ id: "as1" }]);
   });
 

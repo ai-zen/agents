@@ -7,14 +7,13 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { ConfigManager } from "@ai-zen/agents-sdk";
+import { ConfigManager, HandoffService } from "@ai-zen/agents-sdk";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { AssetRepository } from "../storage/AssetRepository.js";
 import { ConversationRepository } from "../storage/ConversationRepository.js";
 import { Database } from "../storage/Database.js";
 import { MessageRepository } from "../storage/MessageRepository.js";
-import { QuestionRepository } from "../storage/QuestionRepository.js";
 import { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
 import { migrate } from "../storage/migrations.js";
 import { AgentNS } from "@ai-zen/agents-core";
@@ -67,7 +66,8 @@ interface Harness {
   conversations: ConversationRepository;
   messages: MessageRepository;
   assets: AssetRepository;
-  questions: QuestionRepository;
+  /** 挂在这段上的题（现读内存：题不落库） */
+  questions: { countPending: (conversationId: string) => number; pending: Map<string, number> };
   /** 推出去的事件（`conversation.changed`，L5 / D22） */
   events: Array<{ name: string; payload: unknown }>;
   /** 交给素材层「归零清扫」的素材 id（每调一次记一笔） */
@@ -115,7 +115,10 @@ let workspaces: WorkspaceRepository;
 let conversations: ConversationRepository;
 let messages: MessageRepository;
 let assets: AssetRepository;
-let questions: QuestionRepository;
+/** 题的口：题不落库，只能问 `QuestionService`（这里给一个可以随意摆数的替身） */
+let questions: { countPending: (conversationId: string) => number } & {
+  pending: Map<string, number>;
+};
 
 /** 推理档位预设（静态文件，用例可能改写它，所以每个用例开头重写一遍） */
 const REASONING_PRESETS = {
@@ -245,7 +248,12 @@ beforeAll(async () => {
   conversations = new ConversationRepository(db);
   messages = new MessageRepository(db);
   assets = new AssetRepository(db);
-  questions = new QuestionRepository(db);
+  questions = {
+    pending: new Map<string, number>(),
+    countPending(conversationId: string) {
+      return questions.pending.get(conversationId) ?? 0;
+    },
+  };
 });
 
 beforeEach(async () => {
@@ -253,7 +261,6 @@ beforeEach(async () => {
   // `messages_fts` 不用手动同步（`DELETE FROM messages` 的触发器自己维护索引）。
   await db.tx((tx) => [
     tx.run("DELETE FROM notices"),
-    tx.run("DELETE FROM questions"),
     tx.run("DELETE FROM workspaces"), // 级联 conversations → messages → conversation_assets
     tx.run("DELETE FROM assets"), // 级联 asset_vendor_files
     tx.run("DELETE FROM credentials"),
@@ -263,6 +270,8 @@ beforeEach(async () => {
   await writeFile(join(dir, "reasoning-presets.json"), JSON.stringify(REASONING_PRESETS), "utf-8");
   await writeAgentFiles();
 
+  // 题的口是进程内的一格：每个用例从「没有题挂着」开始
+  questions.pending.clear();
   harness = await buildHarness();
 });
 
@@ -403,14 +412,8 @@ describe("ConversationService.list（D13）", () => {
   it("status 与 hasPendingQuestion 都从注入的那一侧现取", async () => {
     const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     harness.runtime.running.add(created.conversation.id);
-    await harness.questions.create({
-      id: "q1",
-      conversationId: created.conversation.id,
-      kind: "confirmation",
-      payload: {},
-      state: "pending",
-      createdAt: 1,
-    });
+    // 题是进程内对象：这里摆一道挂着的（数从注入的那一侧现取）
+    harness.questions.pending.set(created.conversation.id, 1);
 
     const listed = await harness.service.list({ workspaceId: "w1" });
     expect(listed.conversations[0]).toMatchObject({ status: "busy", hasPendingQuestion: true });
@@ -1224,10 +1227,10 @@ describe("ConversationService.setThresholds（PRD 1.4 / 4.7：会话行上的覆
 });
 
 describe("会话创建时那条 hidden 的 cwd 消息（F-D9）", () => {
-  it("落库时最先写一条 hidden 的 user 消息，正文含 cwd、seq 在用户消息之前", async () => {
+  it("落库时最先写一条 hidden 的 user 消息：正文就是项目目录、seq 在用户消息之前", async () => {
     const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
     const id = created.conversation?.id ?? "";
-    await harness.service.ensurePersisted(id, "zh");
+    await harness.service.ensurePersisted(id);
     // 首次发送的那条用户消息（走仓储落行，`seq` 排在 cwd 消息之后）
     await harness.messages.upsert({
       id: "u1",
@@ -1246,11 +1249,38 @@ describe("会话创建时那条 hidden 的 cwd 消息（F-D9）", () => {
     const cwdMessage = all[0]!;
     expect(cwdMessage.role).toBe(AgentNS.Role.User);
     expect(cwdMessage.data).toMatchObject({ hidden: true });
+    // 宿主注入的不是用户说的话（CORE §3；自动命名的判据看的就是它）
+    expect(cwdMessage.source).toEqual({ kind: "system", label: "cwd" });
+    // **正文就是那个路径**：不是一句渲染过的话（这条消息隐藏、用户看不见，模型要的就是路径）
+    expect(cwdMessage.content).toBe(harness.projectDir);
     expect(cwdMessage.seq).toBeLessThan(all[1]!.seq);
     expect(all[1]?.id).toBe("u1");
-    const content = cwdMessage.content;
-    const text = typeof content === "string" ? content : JSON.stringify(content);
-    expect(text).toContain(harness.projectDir);
+  });
+
+  it("与交接换完记忆时 SDK 生成的那一条逐字段同形同文（一个概念一种形状）", async () => {
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    const rows = await harness.messages.listByConversation(created.conversation.id, undefined, {
+      includeHidden: true,
+    });
+    const seeded = rows[0]!;
+
+    // 交接换完记忆那一份由 SDK 造（`HandoffService.createCwdMessage`，宿主只是把它写成行）
+    const handedOver = HandoffService.createCwdMessage(harness.projectDir);
+
+    // 直接把两者的 role / hidden / source / content 摆在一起比：一处不同都算「两种形状」
+    expect({
+      role: seeded.role,
+      hidden: (seeded.data as { hidden?: unknown } | null)?.hidden,
+      source: seeded.source,
+      content: seeded.content,
+    }).toEqual({
+      role: handedOver.role,
+      hidden: handedOver.hidden,
+      source: handedOver.source,
+      content: handedOver.content,
+    });
+    // 那一条的正文也是路径（两边都不是渲染过的话）
+    expect(handedOver.content).toBe(harness.projectDir);
   });
 
   it("不进侧栏计数、也不进删除代价计数", async () => {
@@ -1287,7 +1317,7 @@ describe("会话创建时那条 hidden 的 cwd 消息（F-D9）", () => {
       return typeof content === "string" ? content : JSON.stringify(content);
     };
     const before = await readCwd();
-    expect(before).toContain(harness.projectDir);
+    expect(before).toBe(harness.projectDir);
 
     // 在另一个项目里开一段新对话、并把两个项目都列一遍（「当前项目」变了）
     await createPersisted(harness.service, { workspaceId: "w2", agentId: "a1" });

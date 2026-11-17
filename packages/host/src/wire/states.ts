@@ -242,8 +242,22 @@ export interface NoticeView {
 }
 
 // ---------------------------------------------------------------------------
-// 问题对象（PRD D22 / D23 / F-I9）
+// 问题对象（PRD 4.10 / D22 / D23 / F-I9）
 // ---------------------------------------------------------------------------
+
+/**
+ * 「这段现在不能立刻接手一批交接」的拒因：**四个词，全仓唯一一套**。
+ *
+ * 判据只有一处（`ChatRunner.canHandoffNow`），这四个词就是它的答案；换模型 / 换思考档位那类
+ * 「手上有活」的判定复用 `working`，不另起 `not_idle`。它们出现在两个地方：判据本身，以及
+ * `question.answer` 的回执（`QuestionEffects.handoffDeferredReason`）—— 客户端据此知道「为什么
+ * 没开始交接」，不必自己猜。所以它定义在契约这一层，运行时从它 import。
+ */
+export type HandoffRefusalReason =
+  | "no_agent"
+  | "working"
+  | "output_paused"
+  | "handoff_in_progress";
 
 /**
  * 问题的种类。
@@ -257,19 +271,19 @@ export type QuestionKind = "handoff" | "confirmation";
 export const QUESTION_KINDS: readonly QuestionKind[] = ["handoff", "confirmation"];
 
 /**
- * 问题的生命周期状态：挂在那里等人答 / 已答 / 过期 / 被取消。
+ * 问题的生命周期状态：挂着等人答 / 已经答了。**只有两格**。
  *
- * 状态是宿主的事：多端看同一个问题时看到的是同一个状态（PRD D22）。
+ * 题的去处只有两个：**被答了**、**这段对话没了（含意外死）**（PRD 4.10）。所以没有「过期」、
+ * 没有「被取消」，也没有「关掉」这个动作 —— 那三种都是持久化时代的格子（题存得久，就需要
+ * 一套清理语义），而题的命只有这一段对话活着的时间。第二个去处不发「题没了」这个事件：
+ * 那段对话的事由 `conversation.changed` / `state: dead` 说。
+ *
+ * 状态是宿主的事：题在内存里就一个对象，多端看到的是同一份（PRD 4.10）。
  */
-export type QuestionState = "pending" | "answered" | "expired" | "cancelled";
+export type QuestionState = "pending" | "answered";
 
 /** 问题状态表 */
-export const QUESTION_STATES: readonly QuestionState[] = [
-  "pending",
-  "answered",
-  "expired",
-  "cancelled",
-];
+export const QUESTION_STATES: readonly QuestionState[] = ["pending", "answered"];
 
 /** 一个候选答案：值 + 显示用的两句（标题与补充说明） */
 export interface QuestionOption {

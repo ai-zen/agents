@@ -29,7 +29,6 @@ beforeEach(async () => {
   await db.tx((tx) => [
     // meta 不清：migrate 靠它判断跑不跑
     tx.run("DELETE FROM notices"),
-    tx.run("DELETE FROM questions"),
     // workspaces 必须在 assets 之前：删 workspace 级联删掉 conversation_assets 关系行，
     // 之后 assets 的 ON DELETE RESTRICT 才不会拦。messages 的 FTS 索引由触发器跟着维护
     tx.run("DELETE FROM workspaces"), // 级联 conversations → messages → conversation_assets
@@ -145,40 +144,16 @@ describe("MessageRepository.upsert", () => {
   });
 });
 
-describe("MessageRepository 的父工具调用列（R37）", () => {
-  it("顶层消息的 parentToolCallId 是 null，子 Agent 消息带上父调用的 id", async () => {
-    await repo.upsert(message({ id: "top" }));
-    await repo.upsert(
-      message({ id: "child", role: "assistant", parentToolCallId: "call-1", createdAt: 200 }),
-    );
+describe("一条取法：库里只有主线消息（CORE §17 / v5）", () => {
+  it("list 与 count 数的是同一批行（没有第二套取法可对）", async () => {
+    await repo.upsert(message({ id: "m1", createdAt: 100 }));
+    await repo.upsert(message({ id: "m2", role: "assistant", createdAt: 200 }));
+    // `hidden` 两边都不算：它在界面上从来没出现过
+    await repo.upsert(message({ id: "cwd", data: { hidden: true }, createdAt: 50 }));
 
-    expect((await repo.get("top"))?.parentToolCallId).toBeNull();
-    expect((await repo.get("child"))?.parentToolCallId).toBe("call-1");
-  });
-
-  it("同一条消息反复写时，不带这一列的写不会把已记下的归属抹掉", async () => {
-    await repo.upsert(message({ id: "child", parentToolCallId: "call-1" }));
-    // 流式过程里的后续写入未必知道归属
-    await repo.upsert(message({ id: "child", content: "写完了", status: "completed" }));
-
-    expect((await repo.get("child"))?.parentToolCallId).toBe("call-1");
-    expect((await repo.get("child"))?.content).toBe("写完了");
-  });
-
-  it("按父工具调用取回子 Agent 的消息：同对话内按 seq 升序、不跨对话", async () => {
-    await repo.upsert(message({ id: "m1", parentToolCallId: "call-1", createdAt: 100 }));
-    await repo.upsert(message({ id: "m3", parentToolCallId: "call-1", createdAt: 300 }));
-    await repo.upsert(message({ id: "other-call", parentToolCallId: "call-2", createdAt: 200 }));
-    await repo.upsert(message({ id: "top", createdAt: 400 }));
-    // 同一个工具调用 id 出现在另一段对话里（不跟 c1 的那几条混在一起）
-    await repo.upsert(
-      message({ id: "elsewhere", conversationId: "c2", parentToolCallId: "call-1", createdAt: 500 }),
-    );
-
-    const children = await repo.listByParentToolCallId("c1", "call-1");
-    expect(children.map((row) => row.id)).toEqual(["m1", "m3"]);
-    expect(children[0]?.parentToolCallId).toBe("call-1");
-    expect(await repo.listByParentToolCallId("c1", "没这个调用")).toEqual([]);
+    const listed = await repo.listByConversation("c1");
+    expect(listed.map((row) => row.id)).toEqual(["m1", "m2"]);
+    expect(await repo.countByConversation("c1")).toBe(listed.length);
   });
 });
 

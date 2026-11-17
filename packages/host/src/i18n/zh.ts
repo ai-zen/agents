@@ -51,12 +51,8 @@ export const zh = {
   "question.handoff.summary": "改成摘要历史",
   "question.handoff.summaryDetail": "更便宜也更确定，但文档没那么多细节。",
   "question.handoff.decline": "就在这段对话里继续",
-  "question.blocking": "这段对话被这个问题挡住了，答了才能继续。",
 
   // ---- 消息与状态的事实叙述 ----
-  "message.injectedContext": "这段是宿主加进来的，不是你输入的：{summary}",
-  // 会话创建时那条 hidden 消息里的那句事实（PRD F-D9：cwd 来自对话所属项目，不是宿主进程的目录）
-  "message.injectedContext.cwd": "当前目录是 {cwd}",
   "message.imageAsText": "{model} 看不了图片，{name} 改成用文字描述发过去。",
 
   // ---- 用量（PRD F-I5）----

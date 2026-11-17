@@ -151,6 +151,9 @@ export interface ErrorPayload {
  * 「消息落库了」「消息删了」这两格，也不带消息条数 —— 条数客户端自己数。
  *
  * - `created` / `renamed` / `pinned` / `settings_changed` / `deleted`：会话**行**上的事；
+ * - `handoff_started`：交接**开始**这一拍。界面上要直说「正在交接」（输入框不给发、只留
+ *   中断），而那条 `memory_replaced` 是**收口**才有的 —— 所以开始这一拍必须自己说一声，
+ *   否则客户端在交接期间一直以为这段还是普通的一格。
  * - `memory_replaced`：这段对话的**记忆**被换过 —— 交接提交（记忆已经换掉）与交接回滚
  *   （记忆回到交接前）两处都推它。交接期间产生的那批消息只在内存里、从不落库（PLAN §5.3），
  *   所以客户端收到它就去 `message.list` 全量整段替换镜像，把那些痕迹清掉。
@@ -161,10 +164,11 @@ export type ConversationChangeKind =
   | "renamed"
   | "pinned"
   | "settings_changed"
+  | "handoff_started"
   | "memory_replaced"
   | "deleted";
 
-/** `conversation.changed`：改名、置顶、改设置、换过记忆、删除这类会话上的结构变化 */
+/** `conversation.changed`：改名、置顶、改设置、交接开始、换过记忆、删除这类会话上的结构变化 */
 export interface ConversationChangedPayload {
   conversationId: string;
   /** 所属 Workspace；对话被删后仍带上，便于客户端把它从对应列表里摘掉 */

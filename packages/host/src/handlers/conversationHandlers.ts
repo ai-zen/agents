@@ -1,5 +1,6 @@
 /**
- * `conversation.*`：一段对话的身份、历史，以及「投递一句 / 中断 / 清空待办 / 现读」这几个动作。
+ * `conversation.*`：一段对话的身份、历史，以及「投递一句 / 中断 / 暂停 / 继续 / 清空待办 / 现读」
+ * 这几个动作。
  *
  * 这里只做「参数 → 交给服务或运行时 → 把结果翻译成契约形状」。业务判断不在这里：
  * 会话行归 `ConversationService`，投递 / 中断 / 四格归 `ChatRunner`，素材选路归
@@ -26,6 +27,8 @@ import type {
   ConversationAbortResult,
   ConversationDeleteParams,
   ConversationDeleteResult,
+  ConversationPauseResult,
+  ConversationResumeResult,
   ConversationSendParams,
   ConversationSendResult,
   ConversationState,
@@ -93,6 +96,14 @@ export function createConversationHandlers(deps: ConversationHandlerDeps): Handl
 
     "conversation.abort": async (context) => await abort(deps, context.params),
 
+    // 暂停 / 继续：只翻输出闸（PRD 4.4）。判据全在 `ChatRunner` 里（没有 agent 回 `false`、
+    // 交接期间拒），本层只把「打完之后是不是暂停着」现读回来
+    "conversation.pause": async (context) =>
+      await pause(deps, context.params.conversationId),
+
+    "conversation.resume": async (context) =>
+      await resume(deps, context.params.conversationId),
+
     // 清空待办：直接转 core（`agent.clearInbox()`），本层不加任何判断
     "conversation.clearInbox": async (context) => ({
       cleared: deps.runner.clearInbox(context.params.conversationId),
@@ -147,7 +158,7 @@ async function sendTurn(
 ): Promise<ConversationSendResult> {
   await deps.assertSendable?.(params.conversationId);
 
-  const conversation = await deps.conversations.ensurePersisted(params.conversationId, language);
+  const conversation = await deps.conversations.ensurePersisted(params.conversationId);
 
   const prepared = await deps.assets.prepareAttachments({
     conversationId: conversation.id,
@@ -212,6 +223,35 @@ async function abort(
     signalled,
   });
   return { signalled };
+}
+
+/**
+ * `conversation.pause`：暂停这段对话 —— **只翻输出闸，不接在途**（PRD 4.4）。
+ *
+ * 手上那批算已经开始，让它跑完；从下一批起不再取。要立刻停就用 `conversation.abort`。
+ * 回的是**打完之后这段是不是暂停着**（现读那一格，不是每次变量）：没有 agent（死的）回 `false`
+ * —— 没有闸可翻，也不是错误；交接期间直接拒（`busy` / `handoff_in_progress`），因为那期间
+ * 闸归交接收口管。
+ */
+async function pause(
+  deps: ConversationHandlerDeps,
+  conversationId: string,
+): Promise<ConversationPauseResult> {
+  deps.runner.pause(conversationId);
+  return { paused: deps.runner.state(conversationId).status === "paused" };
+}
+
+/**
+ * `conversation.resume`：继续 —— **只开闸，不投任何东西**（PRD 4.4）。
+ *
+ * 压着的待办按原顺序接着跑。回的那一格与 {@link pause} 同一口径（打完之后是不是暂停着）。
+ */
+async function resume(
+  deps: ConversationHandlerDeps,
+  conversationId: string,
+): Promise<ConversationResumeResult> {
+  deps.runner.resume(conversationId);
+  return { paused: deps.runner.state(conversationId).status === "paused" };
 }
 
 /**

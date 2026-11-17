@@ -23,13 +23,6 @@ export * from "./frames.js";
 export { AgentNS } from "@ai-zen/agents-core";
 
 /**
- * 用量的零值、逐字段相加与求和：`sumUsage` 会把消息自身用量与子 Agent 用量一起累加，
- * 累计口径与计费一致。用量归客户端自己算（宿主不算、不存、不报），算的时候直接用它，
- * 免得再写第二套加法。
- */
-export { ZERO_USAGE, addUsage, sumUsage } from "@ai-zen/agents-core";
-
-/**
  * 把一片增量攒进一条消息。宿主自己是这么攒的，客户端折 `message.delta` 时用同一份实现，
  * 攒出来的消息与宿主存下来的逐字一致。
  */

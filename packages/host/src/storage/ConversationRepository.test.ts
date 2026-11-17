@@ -35,7 +35,6 @@ beforeEach(async () => {
   await db.tx((tx) => [
     // meta 不清：migrate 靠它判断跑不跑
     tx.run("DELETE FROM notices"),
-    tx.run("DELETE FROM questions"),
     // workspaces 必须在 assets 之前：删 workspace 级联删掉 conversation_assets 关系行，
     // 之后 assets 的 ON DELETE RESTRICT 才不会拦
     tx.run("DELETE FROM workspaces"), // 级联 conversations → messages → conversation_assets
@@ -94,6 +93,8 @@ describe("ConversationRepository", () => {
       // 这条是 `repo.create` 直接建的（没传 autoHandoff / lineage）＝ 用户建的那一侧
       autoHandoff: false,
       lineage: null,
+      // 待交接：创建那一刻没有待办（只有「答完交接题、当时不闲」才会写）
+      pendingHandoff: null,
       createdAt: 500,
       updatedAt: 500,
     });

@@ -1,6 +1,9 @@
 /**
  * `question.*` 的接线验收：语言与连接 id 从 ConnectionInfo 传下去（D8 / D22），
  * 出参原样交回。
+ *
+ * 题在内存里（PRD 4.10），所以这套用例只需要一个服务和一段会话行（待交接/自动交接开关
+ * 写在会话行上），不需要造题的行。
  */
 
 import { mkdtemp, rm } from "node:fs/promises";
@@ -13,7 +16,6 @@ import type { Language } from "../i18n/index.js";
 import type { MethodCallContext } from "../net/WsHub.js";
 import { ConversationRepository } from "../storage/ConversationRepository.js";
 import { Database } from "../storage/Database.js";
-import { QuestionRepository } from "../storage/QuestionRepository.js";
 import { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
 import { migrate } from "../storage/migrations.js";
 import { isMethodName } from "../wire/index.js";
@@ -38,7 +40,7 @@ interface Harness {
   dir: string;
   db: Database;
   questions: QuestionService;
-  repository: QuestionRepository;
+  conversations: ConversationRepository;
 }
 
 async function setup(): Promise<Harness> {
@@ -54,17 +56,19 @@ async function setup(): Promise<Harness> {
     name: "2026-01-01 00:00",
     agentId: "a1",
     modelId: "m1",
+    autoHandoff: false,
     createdAt: 1,
     updatedAt: 1,
   });
 
-  const repository = new QuestionRepository(db);
   const questions = new QuestionService({
-    questions: repository,
+    conversations,
+    // 这段现在能立刻接手交接
+    availability: { canHandoffNow: () => ({ ok: true }) },
     handoff: { start: async () => ({ started: true }) },
     now: () => 1_700_000_000_000,
   });
-  return { dir, db, questions, repository };
+  return { dir, db, questions, conversations };
 }
 
 let harness: Harness;
@@ -87,8 +91,12 @@ describe("question.* 接线", () => {
       handoffTokens: 1000,
     });
 
-    const chinese = await handlers["question.list"]?.(call("question.list", { conversationId: "c1" }, "zh"));
-    const english = await handlers["question.list"]?.(call("question.list", { conversationId: "c1" }, "en"));
+    const chinese = await handlers["question.list"]?.(
+      call("question.list", { conversationId: "c1" }, "zh"),
+    );
+    const english = await handlers["question.list"]?.(
+      call("question.list", { conversationId: "c1" }, "en"),
+    );
 
     expect(chinese?.questions[0]?.prompt.message).toContain("接下来怎么办");
     expect(english?.questions[0]?.prompt.message).toContain("How should we continue");
@@ -106,10 +114,12 @@ describe("question.* 接线", () => {
       call("question.answer", { questionId: asked.id, value: "decline" }, "en", "conn-42"),
     );
     expect(answered?.question.answer).toMatchObject({ value: "decline", answeredBy: "conn-42" });
-    expect(answered?.effects).toEqual({ handoffStarted: false });
+    // 不交接：没有后续动作，也没留下待办
+    expect(answered?.effects).toEqual({ handoffStarted: false, handoffDeferredReason: null });
+    expect(await harness.questions.readPendingHandoff("c1")).toBeNull();
 
-    const stored = await harness.repository.get(asked.id);
-    expect(stored?.state).toBe("answered");
+    const listed = await harness.questions.list({ conversationId: "c1" });
+    expect(listed.questions[0]?.state).toBe("answered");
   });
 
   it("答「自交接」时把「触发了交接」这一格带回来（不等它跑完）", async () => {
@@ -122,13 +132,15 @@ describe("question.* 接线", () => {
     const answered = await handlers["question.answer"]?.(
       call("question.answer", { questionId: asked.id, value: "self" }, "en"),
     );
-    expect(answered?.effects).toEqual({ handoffStarted: true });
+    expect(answered?.effects).toEqual({ handoffStarted: true, handoffDeferredReason: null });
   });
 
   it("错误原样抛给接线层（HostError 由它渲染）", async () => {
     const handlers = createQuestionHandlers({ questions: harness.questions });
     await expect(
-      handlers["question.answer"]?.(call("question.answer", { questionId: "没有这条", value: "self" }, "en")),
+      handlers["question.answer"]?.(
+        call("question.answer", { questionId: "没有这条", value: "self" }, "en"),
+      ),
     ).rejects.toMatchObject({ code: "not_found" });
   });
 

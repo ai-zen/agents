@@ -41,6 +41,8 @@ function conversation(id: string, overrides: Partial<Conversation> = {}): Conver
     guardThreshold: null,
     autoHandoff: false,
     lineage: null,
+    // 待交接：刚建出来 / 没答过交接题，没有待办
+    pendingHandoff: null,
     nameIsAuto: true,
     createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_000_000,
@@ -53,7 +55,6 @@ function row(conversationId: string, role: string, text: string, seq = 1): Store
   return {
     id: `${conversationId}-m${seq}`,
     conversationId,
-    parentToolCallId: null,
     source: null,
     seq,
     role,
@@ -289,14 +290,14 @@ describe("create：建会话 → 落真行 → 把第一句交出去 → 立刻�
 // ---------------------------------------------------------------------------
 
 describe("status：那一格现读，名字用进程内那条（没有就退回会话行）", () => {
-  it("会话行里没有它 → `gone`（重启后 / 没见过的 id 都走这条）", async () => {
+  it("会话行里没有它 → `found: false` + `status: null`（重启后 / 没见过的 id 都走这条）", async () => {
     const harness = makeHarness();
     await expect(
       harness.service.status({ caller: harness.caller, sessionId: "c-unknown" }),
-    ).resolves.toEqual({ state: "gone" });
+    ).resolves.toEqual({ found: false, status: null });
   });
 
-  it("会话行没了（用户删了这段会话）→ `gone`：判据只有「这一段还在不在」", async () => {
+  it("会话行没了（用户删了这段会话）→ 找不到那一段，不是第五格", async () => {
     const harness = makeHarness();
     const created = await harness.service.create({ caller: harness.caller, prompt: "干点活" });
     if (!created.ok) throw new Error("没建成");
@@ -304,57 +305,27 @@ describe("status：那一格现读，名字用进程内那条（没有就退回�
 
     await expect(
       harness.service.status({ caller: harness.caller, sessionId: created.sessionId }),
-    ).resolves.toEqual({ state: "gone" });
+    ).resolves.toEqual({ found: false, status: null });
   });
 
   // 四格逐格同名：宿主说 `busy` / `idle` / `paused` / `dead`，SDK 报的就是这四个。
-  // `gone` 不是一格状态，是「会话行找不到了」（上面两条），所以不在这一张表里。
+  // 「找不到这一段」不是第五格（它是判别式的另一支：`found: false` + `status: null`），
+  // 所以不在这一张表里。
   for (const status of ["busy", "idle", "paused", "dead"] as const) {
     it(`现读是 ${status} → 报 ${status}（逐格同名，不翻译）`, async () => {
       const harness = makeHarness();
       const created = await harness.service.create({ caller: harness.caller, prompt: "干点活" });
       if (!created.ok) throw new Error("没建成");
       harness.runner.statuses.set(created.sessionId, status);
-      harness.seed(created.sessionId, [row(created.sessionId, AgentNS.Role.Assistant, "答案")]);
 
       const result = await harness.service.status({
         caller: harness.caller,
         sessionId: created.sessionId,
       });
 
-      expect(result.state).toBe(status);
-      expect(result.label).toBe(created.label);
-      expect(result.startedAt).toBe(new Date(1_700_000_000_000).toISOString());
+      expect(result).toEqual({ found: true, status, label: created.label });
     });
   }
-
-  it("摘要只说最后一句助手的话，超 300 字截断；没有正文就不给这一格", async () => {
-    const harness = makeHarness();
-    const created = await harness.service.create({ caller: harness.caller, prompt: "干点活" });
-    if (!created.ok) throw new Error("没建成");
-
-    const long = "很长的回答".repeat(100);
-    harness.seed(created.sessionId, [
-      row(created.sessionId, AgentNS.Role.User, "问题", 1),
-      row(created.sessionId, AgentNS.Role.Assistant, long, 2),
-    ]);
-    const withText = await harness.service.status({
-      caller: harness.caller,
-      sessionId: created.sessionId,
-    });
-    expect(withText.lastMessage).toBe(`${long.slice(0, 300)}…`);
-
-    // 只有工具消息（没有正文）时不给摘要这一格
-    const harness2 = makeHarness();
-    const second = await harness2.service.create({ caller: harness2.caller, prompt: "干点活" });
-    if (!second.ok) throw new Error("没建成");
-    harness2.seed(second.sessionId, [row(second.sessionId, AgentNS.Role.Tool, "")]);
-    const noText = await harness2.service.status({
-      caller: harness2.caller,
-      sessionId: second.sessionId,
-    });
-    expect(noText.lastMessage).toBeUndefined();
-  });
 });
 
 // ---------------------------------------------------------------------------

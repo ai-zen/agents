@@ -130,15 +130,12 @@ describe("消息相关概念用的是 core 的类型（R21 纠偏）", () => {
 });
 
 describe("契约出口（客户端只 import 宿主包就够）", () => {
-  it("wire 出口把 core 的类型与用量工具原样再导出", async () => {
+  it("wire 出口把 core 的类型与增量工具原样再导出", async () => {
     const wire = await import("./index.js");
     const core = await import("@ai-zen/agents-core");
 
     // 同一个对象/同一套枚举，而不是抄一份
     expect(wire.AgentNS).toBe(core.AgentNS);
-    expect(wire.sumUsage).toBe(core.sumUsage);
-    expect(wire.addUsage).toBe(core.addUsage);
-    expect(wire.ZERO_USAGE).toBe(core.ZERO_USAGE);
     expect(wire.applyChunk).toBe(core.applyChunk);
     // 方法表、事件表、错误码也在同一个出口上
     expect(wire.METHOD_NAMES).toContain("message.list");
@@ -153,10 +150,10 @@ describe("通知三档（PRD L3 / F-I8）", () => {
   });
 });
 
-describe("问题对象（PRD D22）", () => {
-  it("种类与生命周期状态都齐", () => {
+describe("问题对象（PRD 4.10）", () => {
+  it("种类与生命周期状态都齐（状态只有两格：没有过期 / 没有取消 / 没有关掉）", () => {
     expect([...QUESTION_KINDS]).toEqual(["handoff", "confirmation"]);
-    expect([...QUESTION_STATES]).toEqual(["pending", "answered", "expired", "cancelled"]);
+    expect([...QUESTION_STATES]).toEqual(["pending", "answered"]);
   });
 });
 

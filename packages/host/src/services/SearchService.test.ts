@@ -77,7 +77,6 @@ beforeEach(async () => {
   // `messages` 的 FTS 索引由 messages_fts_* 触发器跟着级联删除维护，不用手动同步。
   await db.tx((tx) => [
     tx.run("DELETE FROM notices"),
-    tx.run("DELETE FROM questions"),
     tx.run("DELETE FROM workspaces"),
     tx.run("DELETE FROM assets"),
     tx.run("DELETE FROM credentials"),

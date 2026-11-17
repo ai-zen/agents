@@ -25,9 +25,6 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { isError, isSuccess, TestClient, wait } from "./net/TestSupport.js";
-import { QuestionService } from "./services/QuestionService.js";
-import type { QuestionRepository } from "./storage/QuestionRepository.js";
-import { Database, QuestionRepository as QuestionRepositoryClass, migrate } from "./storage/index.js";
 import type {
   AgentListResult,
   CompletionFilesResult,
@@ -239,30 +236,6 @@ async function stop(running: RunningHost): Promise<number | null> {
   return await running.exited;
 }
 
-/** 在进程之间往库里写一行问题（问题的产生方在宿主内部，契约里没有「提问」方法） */
-async function seedQuestion(conversationId: string): Promise<string> {
-  const db = new Database(join(dataRoot, "ai-zen.db"));
-  try {
-    await migrate(db);
-    const service = new QuestionService({
-      questions: new QuestionRepositoryClass(db) as QuestionRepository,
-    });
-    const question = await service.ask({
-      conversationId,
-      kind: "confirmation",
-      prompt: { messageKey: "question.handoff.prompt" },
-      options: [
-        { value: "yes", label: { messageKey: "question.handoff.self" } },
-        { value: "no", label: { messageKey: "question.handoff.decline" } },
-      ],
-      blocking: true,
-    });
-    return question.id;
-  } finally {
-    await db.close();
-  }
-}
-
 describe("端到端集成：真进程 + 真连接", () => {
   it("握手 → 项目/对话 → 配置/模型/助手 → 通知 → 问题 → 补全 → 重启后仍在", async () => {
     // =====================================================================
@@ -450,14 +423,12 @@ describe("端到端集成：真进程 + 真连接", () => {
       .join(",")} prefix(src/)=${narrowed.entries.map((entry) => entry.path).join(",")}`);
 
     // =====================================================================
-    // 5a. 问题：造一个（进程之间的那一行）→ 两次 question.list 看到同一个
+    // 5a. 问题：题只在进程里活着（PRD 4.10）—— 这段对话上没有题，拉两次都是空的
     // =====================================================================
     await client.close();
     expect(await stop(first)).toBe(0);
     // 退出后发现文件被摘掉（客户端不会再指向一个不存在的进程）
     await expect(fs.access(join(dataRoot, "run", "host.json"))).rejects.toBeTruthy();
-
-    const questionId = await seedQuestion(conversationId);
 
     const second = startProcess();
     const restarted = await waitForHostFile();
@@ -477,41 +448,22 @@ describe("端到端集成：真进程 + 真连接", () => {
       clientInfo: { name: "integration-b", version: "0.0.0" },
     });
 
-    // 多端看同一个问题（D22）：两个窗口各自拉一次，拿到的是同一行
+    // `question.list` 只问「这一段现在有没有一道题」（PRD 4.10）：重启之后这段没有 agent、
+    // 也没撞过线，所以两个窗口拉到的都是空 —— 题不落库，没有「重启之后还在」这回事
     const listA = (await callThrough(windowA, "question.list", { conversationId })) as QuestionListResult;
     const listB = (await callThrough(windowB, "question.list", { conversationId })) as QuestionListResult;
-    expect(listA.questions.map((item) => item.id)).toEqual([questionId]);
-    expect(listB.questions.map((item) => item.id)).toEqual([questionId]);
-    expect(listA.questions[0]?.state).toBe("pending");
-    expect(listA.questions[0]?.blocking).toBe(true);
-    // 同一行问题按各自连接的语言渲染（D8）
-    expect(listA.questions[0]?.prompt.message).not.toBe(listB.questions[0]?.prompt.message);
-
-    // 挡着的问题会拒掉这一轮发送（D23）
-    windowA.request("conversation.send", { conversationId, input: { content: "你好" } });
-    const blocked = await windowA.queue.next();
-    expect(isError(blocked)).toBe(true);
-    if (isError(blocked)) expect(blocked.error.data.code).toBe("question_pending");
-
-    // 答完之后状态推进（D22 / F-I9）：另一端再拉就看不到 pending 了
-    const answered = (await callThrough(windowA, "question.answer", {
-      questionId,
-      value: "yes",
-    })) as QuestionAnswerResult;
-    expect(answered.question.state).toBe("answered");
-    expect(answered.question.answer?.value).toBe("yes");
-    expect(answered.effects.handoffStarted).toBe(false);
-
-    const afterAnswer = (await callThrough(windowB, "question.list", { conversationId, state: "answered" })) as QuestionListResult;
-    expect(afterAnswer.questions.map((item) => item.id)).toEqual([questionId]);
-    const stillPending = (await callThrough(windowB, "question.list", { conversationId, state: "pending" })) as QuestionListResult;
-    expect(stillPending.questions).toEqual([]);
-    log("question", `id=${questionId} pending→answered 两窗口同一行=${String(
-      listA.questions[0]?.id === listB.questions[0]?.id,
-    )}`);
+    expect(listA.questions).toEqual([]);
+    expect(listB.questions).toEqual([]);
+    // 没有题就不挡投递：这一句照常收下
+    const accepted = (await callThrough(windowA, "conversation.send", {
+      conversationId,
+      input: { content: "你好" },
+    })) as ConversationSendResult;
+    expect(typeof accepted.userMessageId).toBe("string");
+    log("question", `重启之后这一段上挂着 ${listA.questions.length} 道题（题只在进程里）`);
 
     // =====================================================================
-    // 7. 重启之后：项目 / 对话 / 已答问题 / 通知都在（数据在库里，端口换了不丢）
+    // 7. 重启之后：项目 / 对话 / 通知都在（数据在库里，端口换了不丢）；题不在（它不落库）
     // =====================================================================
     // 再触发一条通知，让它跨重启留着（永久通知只能手动清，L3）
     await callThrough(windowA, "config.patch", {
@@ -539,9 +491,9 @@ describe("端到端集成：真进程 + 真连接", () => {
     // F-I3 的那两格：刚重启的宿主上这段对话没有 agent、队里也空着（现读的结果，不是落库的字段）
     expect(conversationsAfter.conversations[0]).toMatchObject({ status: "dead", inboxPending: 0 });
 
+    // 题不落库：重启之后这一段上依然一道题都没有（PRD 4.10 的「题的生命只有这一段对话活着的时间」）
     const questionsAfter = (await callThrough(back, "question.list", { conversationId })) as QuestionListResult;
-    expect(questionsAfter.questions.map((item) => item.id)).toEqual([questionId]);
-    expect(questionsAfter.questions[0]?.state).toBe("answered");
+    expect(questionsAfter.questions).toEqual([]);
 
     const noticesAfter = (await callThrough(back, "notice.list", {})) as NoticeListResult;
     // 上一条被 dismiss 掉了，这一条是重启前刚改配置产生的那一条
@@ -553,9 +505,7 @@ describe("端到端集成：真进程 + 真连接", () => {
         .map((item) => item.id)
         .join(",")} conversation=${conversationsAfter.conversations
         .map((item) => item.id)
-        .join(",")} question=${questionsAfter.questions
-        .map((item) => `${item.id}:${item.state}`)
-        .join(",")} notice=${noticesAfter.notices.length} 条`,
+        .join(",")} question=${questionsAfter.questions.length} 道 notice=${noticesAfter.notices.length} 条`,
     );
 
     // 收尾：断连接 + 让进程自己走（最后一轮请求已经回包了）

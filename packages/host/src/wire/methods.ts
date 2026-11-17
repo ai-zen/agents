@@ -17,13 +17,13 @@ import type {
   ConversationState,
   ConversationStatus,
   FolderFact,
+  HandoffRefusalReason,
   LocalizedText,
   MessageInput,
   ModelState,
   NoticeLevel,
   NoticeView,
   ProblemFact,
-  QuestionState,
   QuestionView,
   ThinkingState,
 } from "./states.js";
@@ -475,9 +475,13 @@ export interface ConversationDeleteResult {
  * 所以这里没有「开一次」「排进哪一次」这种说法：进了队列就是进了队列。
  *
  * 用户输入用 core 的内容形状（`MessageInput`），图片的传输路径由宿主定（F-H7）。
- * 有问题在挡着这段对话时会被拒（`question_pending`，D23 / F-D10）—— 排队不是绕过它的通道。
- * 目标是死的（宿主那边没有 agent 对象）时也是拒（`not_found`）：界面上那个发送按钮先复活再投，
- * 那是客户端的事 —— 投递本身不叫醒死者（PRD 4.4）。
+ *
+ * 三种拒因，各说一件事：
+ *   - 有问题在挡着这段对话（`question_pending`，D23 / F-D10）—— 排队不是绕过它的通道；
+ *   - 目标是死的（宿主那边没有 agent 对象）时是 `conversation_dead`：界面上那个发送按钮先复活
+ *     再投，那是客户端的事 —— 投递本身不叫醒死者（PRD 4.4）；
+ *   - 这段**正在交接**时一律拒（`busy` / `handoff_in_progress`）：那期间投进来的话会跟着旧记忆
+ *     一起被挪进存档，等于从新记忆里消失（PLAN §5.3）。等收口再发。
  */
 export interface ConversationSendParams {
   conversationId: string;
@@ -516,6 +520,36 @@ export interface ConversationAbortParams {
 /** `conversation.abort` 出参：打到了没有（`signalled: false` = 那个对象本来就不在，无从下手） */
 export interface ConversationAbortResult {
   signalled: boolean;
+}
+
+/**
+ * `conversation.pause` 入参：暂停这段对话（PRD 4.4：「暂停」是第三格）。
+ *
+ * 暂停是**从下一批起不取件**那道闸：手上这批算已经开始，让它跑完；从下一批起不再取（收话不动）。
+ * 它**不接在途** —— 要立刻停就用中断（`conversation.abort`：接在途 + 翻闸）。
+ */
+export interface ConversationPauseParams {
+  conversationId: string;
+}
+
+/** `conversation.pause` 出参：打完之后这段是不是暂停着 */
+export interface ConversationPauseResult {
+  /** `paused` = 打完之后这段现在是不是暂停着（死对话没有闸可翻，所以是 `false`） */
+  paused: boolean;
+}
+
+/**
+ * `conversation.resume` 入参：继续（PRD 4.4：「继续」按钮）。
+ *
+ * **只开闸，不投任何东西**：压着的待办按原顺序接着跑。
+ */
+export interface ConversationResumeParams {
+  conversationId: string;
+}
+
+/** `conversation.resume` 出参：打完之后这段是不是暂停着（同 `conversation.pause` 那一格） */
+export interface ConversationResumeResult {
+  paused: boolean;
 }
 
 /**
@@ -642,9 +676,8 @@ export interface ConversationTransientParams {
 /**
  * `conversation.transient` 出参：那条助手消息（不产生任何可回看的 id）。
  *
- * 内容、思考、工具调用、结束原因、用量都在 core 的 `AgentNS.Message` 上；要「一共花了多少」
- * 用 core 的 `sumUsage([message])`（它把自身用量与子 Agent 用量一起算 —— 子 Agent 的那份就在
- * 那条工具消息的 `subAgentUsage` 上）。
+ * 内容、思考、工具调用、结束原因、用量都在 core 的 `AgentNS.Message` 上；要「一共花了多少」，
+ * 就把消息上的 `usage` 拿出来自己加（core 不算、不存、不报用量）。
  *
  * 子 Agent 不另给快照：它们说过的话在消息里，真要翻就按那个委派的工具调用 id 取（F-I7）。
  */
@@ -726,11 +759,15 @@ export interface MessageListResult {
 // question.*
 // ---------------------------------------------------------------------------
 
-/** `question.list` 入参（PRD D22：多端看到同一个问题） */
+/**
+ * `question.list` 入参（PRD 4.10：**这段对话现在有没有一道题**）。
+ *
+ * `conversationId` 必填：题不落库，它只活在「这一段对话活着」的这段时间里 —— 「全库问题列表」
+ * 是持久化时代的形状（要给重启后重开看，才需要一个跨对话的入口），现在没有那个消费者。
+ * 也没有 `state` 过滤：两个状态（`pending` / `answered`）一起给，客户端自己看那一格。
+ */
 export interface QuestionListParams {
-  conversationId?: string;
-  /** 只看某个状态；不传则全部 */
-  state?: QuestionState;
+  conversationId: string;
 }
 
 /** `question.list` 出参 */
@@ -739,15 +776,25 @@ export interface QuestionListResult {
 }
 
 /**
- * `question.answer` 出参里的后续动作（PRD D22：答完就接着往下走，客户端不必再发一次请求）。
+ * `question.answer` 出参里的后续动作（PRD 4.10：先答完，再判能不能立刻交接）。
  *
  * 只回「触发了什么」，**不等那件事做完**：交接要不要另起驱动者、文档写到哪、有没有降级、
  * 用了几秒 —— 都是「交接自己怎么走的」，它的载体是通知（`notice`）与 `conversation.changed`
  * 里的 `memory_replaced`，不该憋在这个回执里。
  */
 export interface QuestionEffects {
-  /** 这道题答完之后触发了交接（D22：交接在对话停下之后开始），已经开始了 */
+  /** 这道题答完之后当场开始了交接（能立刻接手才会是这样，见 `handoffDeferredReason` 为 `null`） */
   handoffStarted: boolean;
+  /**
+   * 没有当场交接时的拒因：`ChatRunner.canHandoffNow` 那四个词之一
+   * （`no_agent` / `working` / `output_paused` / `handoff_in_progress`）。
+   *
+   * 非 `null` 意味着「这道题要交接、但这段现在接不了」，于是那个 mode 已经写进会话行的
+   * `pendingHandoff`，等下一次变闲再做（`PLAN §5.2`）。
+   *
+   * `null` = 不需要交接（选了「不交接」/ 不是交接题）**或**已经当场开始了。
+   */
+  handoffDeferredReason: HandoffRefusalReason | null;
 }
 
 /** `question.answer` 入参（PRD D22 / F-I9：问题能被回答） */
@@ -1766,9 +1813,11 @@ export interface HandoffDocumentInfo {
 }
 
 /**
- * `handoff.start` 入参（PRD F-D3 / F-D4 / F-D5 / F-D7 / D22）。
+ * `handoff.start` 入参（PRD F-D3 / F-D4 / F-D5 / F-D7）。
  *
- * `questionId` 用于「用户刚回答了交接问题」这条路径：带上它，答案与这次交接就对得上。
+ * 没有 `questionId` 这一格：题的状态只由 `QuestionService.answer` 一处写（它先标已答、再
+ * 判能不能交接），所以「直接用 `handoff.start` 交接一次」与某道题无关 —— 第二个人写题的状态
+ * 就是第二份事实。
  */
 export interface HandoffStartParams {
   conversationId: string;
@@ -1776,7 +1825,6 @@ export interface HandoffStartParams {
   mode: HandoffMode;
   /** 后面接什么（PRD F-D4：只产文档；F-D5：一步完成交接 + 开新会话） */
   then: HandoffThen;
-  questionId?: string;
 }
 
 /**
@@ -1926,6 +1974,10 @@ export interface MethodMap {
   "conversation.send": { params: ConversationSendParams; result: ConversationSendResult };
   /** D14：中止是用户的显式动作（打击在途的网络请求与工具，并停在暂停那一格）。 */
   "conversation.abort": { params: ConversationAbortParams; result: ConversationAbortResult };
+  /** PRD 4.4：「暂停」只翻输出闸（手上这批跑完、从下一批起不取件），不接在途。 */
+  "conversation.pause": { params: ConversationPauseParams; result: ConversationPauseResult };
+  /** PRD 4.4：「继续」只开闸（压着的待办按原顺序接着跑），不投任何东西。 */
+  "conversation.resume": { params: ConversationResumeParams; result: ConversationResumeResult };
   /** 清空这段对话的待办（客户端自己决定什么时候清，宿主只回清掉几条）。 */
   "conversation.clearInbox": {
     params: ConversationClearInboxParams;
@@ -2050,8 +2102,9 @@ export interface MethodMap {
   /**
    * F-D4 / F-D5 / F-D3：写交接文档；可选顺带开新对话，旧对话完整保留。
    *
-   * **只有闲着才发起**：在干 / 不收件 / 没有 agent 一律回 `busy`（`detail.reason = "not_idle"`），
-   * 调用方等它闲了再调一次。于是交接全程不按暂停、也不替谁放行 —— 投一条指令进去，它自己
+   * **只有能立刻接手时才能发起**：判断收在 `ChatRunner.canHandoffNow` 那一处，四个拒因分别是
+   * `no_agent` / `working` / `output_paused` / `handoff_in_progress`（一律 `busy`）。调用方等它
+   * 闲了再调一次。于是交接全程不按暂停、也不替谁放行 —— 投一条指令进去，它自己
    * 变忙、自己写完，宿主按工具结果判「写完了没有」。
    */
   "handoff.start": { params: HandoffStartParams; result: HandoffStartResult };
@@ -2108,6 +2161,8 @@ export const METHOD_NAMES = [
   "conversation.delete",
   "conversation.send",
   "conversation.abort",
+  "conversation.pause",
+  "conversation.resume",
   "conversation.clearInbox",
   "conversation.revert",
   "conversation.setModel",

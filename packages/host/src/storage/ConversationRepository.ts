@@ -8,6 +8,7 @@
  * 搬消息行 + 写两条占位消息」必须在同一个事务里（PRD 4.5），拆到两个仓储就只能是两个事务。
  */
 
+import type { HandoffMode } from "../wire/methods.js";
 import type { CompactionMode } from "../wire/states.js";
 import type { Database, RunResult, TxClient, TxStatement } from "./Database.js";
 import { registerMessageUpsert } from "./MessageRepository.js";
@@ -20,7 +21,7 @@ import type {
 
 /** 读写路径共用的列清单（顺序与 `toConversation` 的形状一致） */
 const COLUMNS =
-  "id, workspaceId, name, nameIsAuto, pinned, agentId, modelId, thinkingLevel, compactedAt, compactionMode, handoffThreshold, guardThreshold, autoHandoff, lineage, createdAt, updatedAt";
+  "id, workspaceId, name, nameIsAuto, pinned, agentId, modelId, thinkingLevel, compactedAt, compactionMode, handoffThreshold, guardThreshold, pendingHandoff, autoHandoff, lineage, createdAt, updatedAt";
 
 /**
  * 新建对话时显式写的那几列。
@@ -76,7 +77,16 @@ function toConversation(row: ConversationRow): Conversation {
     pinned: row.pinned !== 0,
     nameIsAuto: row.nameIsAuto !== 0,
     autoHandoff: row.autoHandoff !== 0,
+    // 列上是自由字符串（库里没有枚举类型），认不出来的值按「没有待办」算：它是宿主自己写的
+    // 一格，读到一个说不清的值只可能意味着有人手改过库，那种行不该让整段对话读不出来
+    pendingHandoff: toHandoffMode(row.pendingHandoff),
   };
+}
+
+/** 列上的待交接 mode；只认那两个值，其余（NULL / 认不出来）都是「没有待办」 */
+function toHandoffMode(value: string | null): HandoffMode | null {
+  if (value === "self" || value === "summary") return value;
+  return null;
 }
 
 /** LIKE 的通配符要转义，否则用户搜 "100%" 会变成任意匹配 */
@@ -100,20 +110,19 @@ export class ConversationRepository {
   }
 
   /**
-   * 交接换记忆（PRD 4.5）：旧记忆成为另一段会话，原会话腾空之后换上「cwd + 断点」两条消息。
+   * 交接换记忆（PRD 4.5）：旧记忆成为另一段会话，原会话腾空之后换上 SDK 算好的那几条消息。
    *
-   * 五条语句一批提交，顺序不能换：
+   * 四步一批提交，顺序不能换：
    *   1. 插存档会话行（身份照抄原会话，只有 id / 名字 / 创建时刻是新的）；
    *   2. 把原会话的**全部消息行**改挂到存档名下 —— `seq` / `createdAt` 一个字都不动，搬的是归属；
    *   3. 消息的素材关系行跟着搬（`conversation_assets.conversationId` 也是「这条消息属于哪段
    *      会话」的一份记录，不搬的话删原会话会把它名下那些素材引用一起级联删掉，而消息其实在存档里）；
-   *   4. 在原会话里写 cwd 消息（此时它已经腾空，`seq` 自然从 1 开始）；
-   *   5. 再写断点消息。
+   *   4. 按顺序写回新记忆的那几条行（此时原会话已经腾空，`seq` 自然从 1 开始）。
    *
-   * 4 一定要登记在 5 之前：`seq` 是写的时候现算的，先登记的那条先拿到号 —— 换完记忆这一段
-   * 仍然是「cwd 消息在前、断点在后」，与创建时的口径一致（PRD 4.8）。
+   * 4 里那条断点消息就是 **SDK 算出来的那一条**（`role: system` + `hidden` + 只带路径）：
+   * 仓储不拼消息，它只把给它的行写下去。几条的顺序就按数组顺序 —— 存进去的就是内存里那份。
    *
-   * 为什么这五条必须同一个事务：只成前几条就留下「旧记忆已经存档、原会话却空着」的第三种状态 ——
+   * 为什么这四步必须同一个事务：只成前几步就留下「旧记忆已经存档、原会话却空着」的第三种状态 ——
    * 那正是交接要防的（崩溃安全）。失败整批回滚，库里回到交接前，一段存档会话都不会留下。
    */
   async replaceMemory(input: ConversationMemorySwap): Promise<void> {
@@ -127,8 +136,7 @@ export class ConversationRepository {
         input.archived.id,
         input.conversationId,
       ]);
-      registerMessageUpsert(tx, input.cwdContext);
-      registerMessageUpsert(tx, input.breakpoint);
+      for (const row of input.memory) registerMessageUpsert(tx, row);
     });
   }
 
@@ -281,6 +289,41 @@ export class ConversationRepository {
     const result = await this.db.run(
       "UPDATE conversations SET compactedAt = ?, compactionMode = ? WHERE id = ?",
       [compactedAt, mode, id],
+    );
+    return result.changes;
+  }
+
+  /**
+   * 写会话行上的待交接标记（PLAN §5.2 的 `pendingHandoff`）：`"self"` / `"summary"` / `null`。
+   *
+   * 不动 `updatedAt`：那一列是「最后一次结构性变化」（改名 / 换模型 / 改档位），待交接是一段
+   * 对话自己的进度，不是它的身份变了。也不是会话上的「设置」—— 客户端不该因为它变而重排。
+   *
+   * @returns 改动的行数（对话已经不在了就是 0，不是错：待交接随对话一起没，没什么好写的）
+   */
+  async setPendingHandoff(id: string, mode: HandoffMode | null): Promise<number> {
+    const result = await this.db.run("UPDATE conversations SET pendingHandoff = ? WHERE id = ?", [
+      mode,
+      id,
+    ]);
+    return result.changes;
+  }
+
+  /**
+   * 自动交接开关（PRD 1.4 的「自动交接开关」那一格）。
+   *
+   * 只有一条路会写它：用户答完交接题选了「不交接」（PRD 4.10 的「答案的后果要落」）——
+   * 关掉之后下一次撞线不再问，否则等于没记住。创建那一刻的初值不走这里（见
+   * `registerConversationInsert`：用户建 0 / 兄弟会话 1）。
+   *
+   * 它是一格会话设置，所以照别处的口径记一次修改时间（同 `setPinned` / `setThresholds`）。
+   *
+   * @returns 改动的行数（对话已经不存在时是 0，不是错）
+   */
+  async setAutoHandoff(id: string, autoHandoff: boolean, updatedAt: number): Promise<number> {
+    const result = await this.db.run(
+      "UPDATE conversations SET autoHandoff = ?, updatedAt = ? WHERE id = ?",
+      [autoHandoff ? 1 : 0, updatedAt, id],
     );
     return result.changes;
   }

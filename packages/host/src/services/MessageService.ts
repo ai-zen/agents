@@ -213,8 +213,6 @@ export function toAgentMessage(row: StoredMessage): AgentNS.Message {
   if (finishReason !== undefined) message.finish_reason = toFinishReason(finishReason);
   const usage = asUsage(data.usage);
   if (usage !== undefined) message.usage = usage;
-  const subAgentUsage = asUsage(data.subAgentUsage);
-  if (subAgentUsage !== undefined) message.subAgentUsage = subAgentUsage;
   const hidden = asBoolean(data.hidden);
   if (hidden !== undefined) message.hidden = hidden;
 
@@ -263,7 +261,7 @@ interface MemoryView {
    * 这一份是不是某个子 Agent 的全部消息。
    *
    * 是的话 `after` 只用来定 `anchor`：子 Agent 那一栏的取法一直是「那个子 agent 的全部消息」，
-   * `after` 不切它（与库那一份的 `listByParentToolCallId` 同一口径）。
+   * `after` 不切它。
    */
   column: boolean;
 }
@@ -336,14 +334,9 @@ export class MessageService {
     }
 
     if (toolCallId !== undefined) {
-      // 库里那一条只服务旧行：这个仓库现在没有「子 agent 的消息落库」的生产者
-      // （子 agent 不入库，`CORE.md` §17），但读法仍然成立
-      const delegated = await this.messages.listByParentToolCallId(
-        conversation.id,
-        toolCallId,
-        options,
-      );
-      return this.respond(conversation.id, delegated, anchor, around);
+      // 子 Agent 的话**不入库**（`CORE.md` §17）：这一段没有驱动者（或者名册上已经没有那个子
+      // agent）时，那一栏就是空的。库里没有第二份可读（`parentToolCallId` 随 v5 删了）。
+      return this.respond(conversation.id, [], anchor, around);
     }
 
     // `around` 要的是「整段之后再取窗」，所以这一跳不带 `after`（带了就只剩后半段）

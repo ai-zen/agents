@@ -301,7 +301,7 @@ describe("createWorkspaceScopeFactory", () => {
 
     const port = {
       create: async () => ({ ok: false as const, reason: "depth_exceeded" as const, hint: "no" }),
-      status: async () => ({ state: "gone" as const }),
+      status: async () => ({ found: false as const, status: null }),
       send: async () => ({ ok: false as const, reason: "gone" as const }),
     };
     const withPort = await createWorkspaceScopeFactory({ ...common, peerSessions: port })("ws-1");

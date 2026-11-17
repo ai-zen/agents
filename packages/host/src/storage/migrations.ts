@@ -21,7 +21,8 @@ export interface Migration {
 /**
  * 迁移列表。v1 是建表语句本身：这套表结构当时还没随版本发出去，PM 在 W1 之后的裁定（cwd 唯一、
  * 身份列非空）直接落了进去。再往后改结构时追加新条目（v2 压缩两列、v3 消息来源、v4 会话行上
- * 那四格）—— 已经装上升过级的库不会重跑旧条目，改旧条目会让两台机器的表结构悄悄分叉。
+ * 那四格、v5 题不落库 + 待交接 + 删掉第二套取法）—— 已经装上升过级的库不会重跑旧条目，改旧条目
+ * 会让两台机器的表结构悄悄分叉。
  */
 export const MIGRATIONS: Migration[] = [
   {
@@ -153,7 +154,9 @@ export const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_notices_createdAt ON notices (createdAt)`,
       `CREATE INDEX IF NOT EXISTS idx_notices_conversation ON notices (conversationId)`,
 
-      // questions：有状态、可持久化、多端共享（PRD D22 / F-I9）
+      // questions：v1 时代那张题表（有状态、可持久化、多端共享）。v5 已经把它 DROP 掉 ——
+      // 题改成进程内对象（PRD 4.10 的「只做实时」）。这条建表语句留着不改：已经装上升过 v1
+      // 的库不会重跑旧条目，而改它只会让两台机器的表结构悄悄分叉（见本文件开头）。
       `CREATE TABLE IF NOT EXISTS questions (
          id             TEXT PRIMARY KEY,
          conversationId TEXT NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
@@ -244,12 +247,16 @@ export const MIGRATIONS: Migration[] = [
      * 会话没有覆盖列；自动交接开关与血缘只活在 `PeerSessionService` 的进程内记录里（重启即失，
      * 与 PRD 4.5 / 4.6 直接冲突）。四列都是 `ADD COLUMN`，v1 建表语句一个字不改（理由同 v2）。
      *
-     * 两条阈值可空：NULL = 跟模型走（这一段会话没自己定过）。自动交接开关非空、缺省 1：SQLite 的
-     * `ADD COLUMN ... NOT NULL` 必须给缺省值，而「1」在代码里只有一个读法 —— **开**（撞线自己
-     * 交班、不问，兄弟会话那一侧）。写入方（创建处）一定显式写（用户建 0 / 兄弟 1），所以缺省值
-     * 只在两种情况说话：v4 之前的行，以及将来有人漏写（那就读成「开」）。老行读成「开」不引入
-     * 第三种语义：它不是「认出了这段是兄弟会话」（v4 之前谁开的只活在进程里，重启就没），
-     * 而是两个值里选了「自己交班」那一侧 —— 升级后的老会话不会因为这一列新出现就开始弹题。
+     * 两条阈值可空：NULL = 跟模型走（这一段会话没自己定过）。自动交接开关非空、缺省 **0**：SQLite
+     * 的 `ADD COLUMN ... NOT NULL` 必须给缺省值，而这个缺省值就是「用户建的那一侧」—— **问**
+     * （撞线停下来问一句，PRD 4.10）。写入方（创建处）一定显式写（用户建 0 / 兄弟 1），所以缺省值
+     * 只在两种情况说话：旧库里的行，以及将来有人漏写。
+     *
+     * 缺省从 1 改成 0 的口径（用户拍板：旧库不迁移 —— 「旧户直接删了都没关系」）：从前那个「1」
+     * 是拿「兄弟会话」当缺省，于是升级上来的老会话撞线时**不问、自己交班**；现在的口径反过来
+     * —— 不问是**例外**（兄弟会话，创建那一刻写死 1），常态是问。「缺省值猜错了」这件事的代价
+     * 不对称：猜成「问」最多多问一句（用户答「不交接」就再也不问，PRD 4.10 的「答案的后果要落」），
+     * 猜成「不问」则是用户从头到尾不知道发生过什么。
      *
      * 血缘可空：NULL = 用户建的；非空 = 开这段会话的那段会话的 id。它只是**身份**（历史展示
      * 「由会话 X 创建」），不是通行证 —— 投递不看关系（PRD 1.2 / 4.6）。
@@ -259,10 +266,47 @@ export const MIGRATIONS: Migration[] = [
       // 两条阈值：会话行上的覆盖值；NULL = 跟模型走（`models[].tokenThresholds` 那份）
       `ALTER TABLE conversations ADD COLUMN handoffThreshold INTEGER`,
       `ALTER TABLE conversations ADD COLUMN guardThreshold INTEGER`,
-      // 自动交接开关：0 = 关（用户建的那一侧，装不下时问一次）/ 1 = 开（兄弟会话，撞线自己交班）
-      `ALTER TABLE conversations ADD COLUMN autoHandoff INTEGER NOT NULL DEFAULT 1`,
+      // 自动交接开关：0 = 关（常态，撞线问一句）/ 1 = 开（兄弟会话，撞线自己交班）
+      `ALTER TABLE conversations ADD COLUMN autoHandoff INTEGER NOT NULL DEFAULT 0`,
       // 血缘：谁开的这段会话（父会话 id）；NULL = 用户建的
       `ALTER TABLE conversations ADD COLUMN lineage TEXT`,
+    ],
+  },
+  {
+    /**
+     * v5：题不落库（PRD 4.10 的「只做实时」），会话行上补一格待交接，消息表删掉第二套取法。
+     *
+     * 三件事一起做，因为它们说的是同一件事的三面：**题的生命 = 这段对话活着的这段时间**。
+     *
+     *   1. `DROP TABLE IF EXISTS questions` —— 题改成进程内对象（`services/QuestionService.ts`）：
+     *      它没有消费者就没有意义（答完之后该办的事由宿主办掉，`PRD 4.10`），所以库里那一行
+     *      只会在重启之后变成一个没人认领的孤儿。那条 `idx_questions_conversation` 索引随表
+     *      消失，不必单独 drop。
+     *   2. `conversations.pendingHandoff` —— 答完题之后「这段当时不闲、等它闲下来再交接」那一格
+     *      （`PLAN §5.2`）。它必须落库：「等下一次变闲」可能跨重启，而 restart 之后题已经没了，
+     *      这是**唯一**能带着走的那份事实。`NULL` = 没有待办。
+     *   3. 删 `messages.parentToolCallId` 列与它的索引 —— 子 Agent 的话从来不入库（`CORE.md` §17），
+     *      这一列于是永远 NULL，而它带来的 `listByParentToolCallId`／`listByConversation` 里那句
+     *      `AND parentToolCallId IS NULL` 是「这段对话有多少条消息」的第二种取法。库里只能有一个
+     *      来源，那条取法与它的读取口一起删。
+     *
+     * 为什么用 `DROP COLUMN` 而不是「建新表 + 搬数据 + 换名」：本机 `node:sqlite` 的 SQLite 支持
+     * `ALTER TABLE ... DROP COLUMN`（3.35+，实测 3.53），而这条语句在外部内容表（`messages_fts`
+     * 挂在 `messages` 上、两个触发器也挂在它上面）面前也是安全的：被删的列不在触发器、不在索引、
+     * 不在 `UNIQUE (conversationId, seq)` 里。索引先删是硬要求 —— 列还挂在索引上时 SQLite 会拒绝
+     * `DROP COLUMN`。
+     *
+     * 旧库不迁移（用户：旧户删掉重来都没关系）：这里**没有**任何数据搬迁语句。
+     */
+    version: 5,
+    statements: [
+      // 题改成进程内对象：那张表与它的索引一起消失（索引随表走）
+      `DROP TABLE IF EXISTS questions`,
+      // 答完题留下、等下一次变闲再兑现的那一格：`"self"` / `"summary"`，NULL = 没有待办
+      `ALTER TABLE conversations ADD COLUMN pendingHandoff TEXT`,
+      // 第二种取法先拆索引（列还挂在索引上时 DROP COLUMN 会被拒），再删列
+      `DROP INDEX IF EXISTS idx_messages_parent_tool_call`,
+      `ALTER TABLE messages DROP COLUMN parentToolCallId`,
     ],
   },
 ];

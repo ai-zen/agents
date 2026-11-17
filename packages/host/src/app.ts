@@ -89,7 +89,6 @@ import {
   Database,
   MessageRepository,
   NoticeRepository,
-  QuestionRepository,
   WorkspaceRepository,
   migrate,
 } from "./storage/index.js";
@@ -268,7 +267,6 @@ export class HostApp {
   readonly messages: MessageRepository;
   readonly assets: AssetRepository;
   readonly notices: NoticeRepository;
-  readonly questions: QuestionRepository;
   readonly credentials: CredentialRepository;
 
   // ---- 运行时 ----
@@ -386,7 +384,6 @@ export class HostApp {
     this.messages = new MessageRepository(db);
     this.assets = new AssetRepository(db);
     this.notices = new NoticeRepository(db);
-    this.questions = new QuestionRepository(db);
     this.credentials = new CredentialRepository(db);
 
     /** 助手与子 Agent 的定义仓储（配置层与助手/模型/配置三个服务共用同一份目录） */
@@ -445,7 +442,11 @@ export class HostApp {
       assets: this.assets,
       // 撤回 / 删对话之后同一件事：引用归零的素材才删字节
       sweepAssets: (assetIds) => this.assetService.sweepUnreferenced(assetIds),
-      questions: this.questions,
+      // 侧栏那个「有没有题挂着」的圆点：题在内存里，所以问 `QuestionService`（不查表）。
+      // `questionService` 在本节之后才造出来，所以这里闭包一步（调用那一刻才去拿）
+      questions: {
+        countPending: (conversationId) => this.questionService.countPending(conversationId),
+      },
       configManager: this.configManager,
       runtime: this.conversationRuntime,
       drafts: this.conversationDrafts,
@@ -538,16 +539,18 @@ export class HostApp {
       workspaces: this.workspaces,
       messages: this.messages,
       conversationViews: this.conversationService,
-      // 入口判据读的那一格与自交接的驱动者是同一个：这一段现在挂着谁（忙 / 闲 / 暂停由它自己报）
+      // 自交接的驱动者：这一段现在挂着谁（忙 / 闲 / 暂停由它自己报）
       agents: { get: (conversationId) => this.agentRegistry.get(conversationId) },
-      // 交接态那两个开关：挂牌期间只跳过写库、事件照推（写文档那条指令由 SDK 直接投给驱动者）。
+      // 判据与交接态：能不能接手（`canHandoffNow`）+ 挂牌 / 摘牌。挂牌期间只跳过写库、事件照推
+      // （写文档那条指令由 SDK 直接投给驱动者）。
       // `chatRunner` 在 §7 才造出来，所以这里闭包住 `this`，调用那一刻才去拿（同一个理由：
       // 平级会话那两个口也是这么接的）
       runner: {
+        // 「能不能立刻接手这一批」只有一处判据（四条，在 `ChatRunner` 里）
+        canHandoffNow: (conversationId) => this.chatRunner.canHandoffNow(conversationId),
         beginHandoff: (conversationId) => this.chatRunner.beginHandoff(conversationId),
         endHandoff: (conversationId) => this.chatRunner.endHandoff(conversationId),
       },
-      questions: this.questions,
       notices: this.noticeService,
       emit: (name, payload) => this.emitEvent(name, payload),
       // 交接文档的模板来自磁盘上的 `handoff` Skill（F-D6）：与 SDK 插件同一份目录口径 ——
@@ -561,9 +564,12 @@ export class HostApp {
       now: () => this.clock.now(),
     });
     this.questionService = new QuestionService({
-      questions: this.questions,
-      // 那边忙着就不答（答一个问题会当场开始交接）—— 现读那一格，不问运行表
-      runtime: { status: (conversationId) => this.chatRunner.state(conversationId).status },
+      // 会话行：待交接那一格与自动交接开关都写在它上面；题本身不落库（PRD 4.10）
+      conversations: this.conversations,
+      // 「能不能立刻交接」只有一处判据（`ChatRunner.canHandoffNow`）：能就当场交接，不能就留待办
+      availability: {
+        canHandoffNow: (conversationId) => this.chatRunner.canHandoffNow(conversationId),
+      },
       // 硬线跟着模型走（D27）
       guard: createConversationGuardProbe({
         conversations: this.conversations,
@@ -605,11 +611,29 @@ export class HostApp {
       prepareHistory: (context) => this.assetService.resolveHistory(context),
       // 用户消息落库那一刻扫 content 里的 `__asset_id`，记成关系行（`conversation_assets`）
       linkMessageAssets: (context) => this.assetService.linkMessageAssets(context),
-      // 变闲那一拍：读一次当下事实，决定要不要问交接线、要不要起个名字。这一跳**不带任何
-      // 与「刚刚发生了什么」有关的东西**（没有用量、没有结论）—— 它就是「此刻它闲了」
+      // 变闲那一拍：读一次当下事实 —— 上一次答完留下的待交接先兑现（能就交接），再看要不要
+      // 问交接线、要不要起个名字。这一跳**不带任何与「刚刚发生了什么」有关的东西**（没有用量、
+      // 没有结论）—— 它就是「此刻它闲了」
       onIdle: (conversationId) => {
-        void this.askHandoffOnIdle(conversationId);
+        void this.handoffOnIdle(conversationId);
         this.autoNameOnIdle(conversationId);
+      },
+      // 没有驱动者了那一拍：只有**真的没了**（`terminated`：core 的 `stopped` / `killed`、
+      // 投递撞上已关的门；`forgotten`：对话被删）才让挂在上面的题跟着没（PRD 4.10）。
+      //
+      // `retired` 什么都不做：退役不是「这段没了」，那是换个驱动者接着干（改配置 / 改模型 /
+      // 改思考档 / 装配事实变化），题与待交接必须原样留着 —— 清掉它们等于用户改了个模型就丢了
+      // 正在等的那道题。重建由下一次投递自己完成（`AgentRegistry.acquire`）。
+      // 不推事件 —— 那件事由 `state: dead` 与 `conversation.changed` 说（PRD 4.10）
+      onDead: (conversationId, kind) => {
+        if (kind === "retired") return;
+        void this.questionService.dropConversation(conversationId).catch((error: unknown) => {
+          this.logger.warn("清掉死对话上的题失败", {
+            conversationId,
+            kind,
+            error: describeError(error),
+          });
+        });
       },
       onError: (error, context) => {
         this.logger.error("宿主写库失败", { context, error: describeError(error) });
@@ -631,8 +655,8 @@ export class HostApp {
       findExisting: (input) => this.assetService.findExistingAsset(input),
       // 草稿对话（R56）在第一次带图上传时就落库：素材行按 `conversationId` 挂外键，
       // 所以落库这一步挪到 `asset.begin`（与「第一次 send」同义，`ensurePersisted` 自己幂等）
-      ensureConversation: async (conversationId, language) => {
-        await this.conversationService.ensurePersisted(conversationId, language);
+      ensureConversation: async (conversationId) => {
+        await this.conversationService.ensurePersisted(conversationId);
       },
       onError: (error, context) => {
         this.logger.warn("上传收尾失败", { context, error: describeError(error) });
@@ -1060,6 +1084,12 @@ export class HostApp {
       // 插件压完记一笔：会话行上写 `auto`（`manual` 那条由 `HandoffService` 自己写）
       onCompacted: (context, mode) =>
         this.conversationService.markCompacted(context.conversationId, mode),
+      // 自动交接的收口（成功/失败都到这儿，取消不到）：把闸开回来。
+      // 自动那条路没有 `runToEnd` 那样的收尾，而开闸只在宿主交接收口做（PLAN §5.3）
+      // —— 漏了这一格，兄弟会话越一次线就再也不取件。
+      onHandoffSettled: (context) => {
+        this.handoffService.settleAutoHandoff(context.conversationId);
+      },
     });
     return async (context) => {
       const agent = await assembled(context);
@@ -1086,12 +1116,23 @@ export class HostApp {
     return undefined;
   }
 
-  /** 缺省的交接服务：按这次装配的 cwd 造 SDK 口径的那个（文档落 `<cwd>/.ai-zen/handoffs`） */
+  /**
+   * 缺省的交接服务：按这次装配的 cwd 造 SDK 口径的那个（文档落 `<cwd>/.ai-zen/handoffs`）。
+   *
+   * `context.scope.cwd` 就是这一段所属项目的 `workspaces.cwd`（`ScopeRegistry` 按项目行装配），
+   * 所以它同时是两件事的输入：**文档目录**落在它下面，以及换记忆时那条 cwd 消息的正文 ——
+   * 换手之后接手的那一代得知道自己在哪个目录里干活（`PRD.md` 4.8）。后者仍由 SDK 在算新记忆时
+   * 生成（记忆长什么样只在一处算，`PRD.md` 4.5），宿主只是把这个目录递进去。
+   */
   private defaultHandoffProvider(): HandoffProvider {
     return (context) =>
       createSdkHandoffService(context.scope.cwd, {
         // 模板来自磁盘上的 `handoff` Skill（F-D6）；读不到时 SDK 自己回退到内置模板
         skillDirs: this.discoveryService.scopeAbilityPaths(context.scope.cwd).skillsPaths,
+        // **自动交接那条路的落库接缝**：与手动那条（`runToEnd`）注入的是同一份回调。
+        // 有了它，兄弟会话越线自动交班时记忆真的会换（旧记忆成存档会话、原会话换上断点）、
+        // 闸也真的会开 —— 记忆长什么样仍是 SDK 那一处算（PRD 4.5）
+        commitMemory: this.handoffService.memoryCommitter(context.conversationId),
       });
   }
 
@@ -1104,6 +1145,54 @@ export class HostApp {
   private async autoHandoffOf(conversationId: string): Promise<boolean> {
     const row = await this.conversations.get(conversationId);
     return row?.autoHandoff === true;
+  }
+
+  /**
+   * 变闲那一拍的两件事，**有先后**（PLAN §5.2 / §5.3）：
+   *
+   * 1. 上一次答完留下的待交接（`pendingHandoff`）现在能兑现就兑现 —— 那时这段不闲，所以没交接；
+   * 2. 兑现了就不再问交接线（已经在交接，没理由再问一道）；没兑现（没事 / 仍然接不了）就照旧问。
+   *
+   * 两件事都只读当下事实：没有「刚才那一轮的结果」，也没有用量以外的输入。
+   */
+  private async handoffOnIdle(conversationId: string): Promise<void> {
+    const started = await this.runPendingHandoff(conversationId);
+    if (started) return;
+    await this.askHandoffOnIdle(conversationId);
+  }
+
+  /**
+   * 兑现会话行上的待交接（`pendingHandoff`）：答完交接题时这段不闲，于是把 mode 记在这里，
+   * 等下一次变闲再做（PLAN §5.2）。
+   *
+   * 读一次 `canHandoffNow`（全仓唯一一份判据）：
+   *   - **能** → `handoff.start`，起来之后再清掉那一格；
+   *   - **不能** → 原样留着，下一次变闲再看（这里不报错、不发通知：它不是用户动作，
+   *     只是一段对话自己的进度）。
+   *
+   * 清在 start **之后**：「能」是现读的，从读到 start 之间那几微秒里它可能又忙起来 ——
+   * 那时 start 会拒（`busy`），待办必须还在，否则用户答的那一下就被悄悄丢了。
+   *
+   * @returns 这一拍真的开始了交接
+   */
+  private async runPendingHandoff(conversationId: string): Promise<boolean> {
+    try {
+      const mode = await this.questionService.readPendingHandoff(conversationId);
+      if (mode === null) return false;
+      const availability = this.chatRunner.canHandoffNow(conversationId);
+      if (!availability.ok) return false;
+
+      await this.handoffService.start(
+        { conversationId, mode, then: "new_conversation" },
+        this.options.defaultLanguage ?? DEFAULT_LANGUAGE,
+      );
+      // 起来了才清：交接之后的进度（写到哪、降级、失败）走通知，这一格没有第二件事要说
+      await this.questionService.writePendingHandoff(conversationId, null);
+      return true;
+    } catch (error) {
+      this.logger.warn("待交接没有跑起来", { conversationId, error: describeError(error) });
+      return false;
+    }
   }
 
   /**
@@ -1139,8 +1228,14 @@ export class HostApp {
       if (handoffTokens <= 0) return;
       if (promptTokens < handoffTokens) return;
 
-      const pending = await this.questionService.list({ conversationId, state: "pending" });
-      if (pending.questions.some((question) => question.kind === "handoff")) return;
+      const pending = await this.questionService.list({ conversationId });
+      // 只看**还挂着**的那一道：已经答过的题留在对象里（多端要看到「答了 + 谁答的」），
+      // 它不算「已经挂着一道交接题」
+      if (
+        pending.questions.some((question) => question.kind === "handoff" && question.state === "pending")
+      ) {
+        return;
+      }
 
       await this.questionService.askHandoff(
         { conversationId, promptTokens, handoffTokens },

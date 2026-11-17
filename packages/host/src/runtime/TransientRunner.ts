@@ -31,7 +31,6 @@ import type { ConfigManager, Scope } from "@ai-zen/agents-sdk";
 import { DEFAULT_LANGUAGE, render } from "../i18n/index.js";
 import type { Language } from "../i18n/index.js";
 import type { AgentFactory, ChatAgent } from "./ChatRunner.js";
-import { injectedContextOf } from "./ChatRunner.js";
 import { HostError } from "../wire/errors.js";
 import type {
   ConversationTransientParams,
@@ -146,11 +145,12 @@ export class TransientRunner {
         history: [],
       });
       // F-D9：临时对话也一样告诉模型「当前目录是哪儿」。它不落库，所以这条 `hidden` 消息
-      // 只活在内存里（与那段落库的 cwd 消息同一个形状）；目录就是入参里的那个 cwd
+      // 只活在内存里（与那段落库的 cwd 消息同形同文）；目录就是入参里的那个 cwd，
+      // 正文就是那个路径（不是一句渲染过的话：隐藏消息用户看不见，模型要的就是路径）
       agent.append(
         new Message({
           role: AgentNSValue.Role.User,
-          content: injectedContextOf(cwd, language),
+          content: cwd,
           status: AgentNSValue.MessageStatus.Completed,
           // core 现在要求**所有** user 消息都带 `source`（`CORE.md` §3）：这条是宿主注入的，
           // 谁注入谁填，所以它记成「宿主 / cwd」而不是用户说的话

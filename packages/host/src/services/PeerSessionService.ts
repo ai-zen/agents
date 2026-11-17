@@ -80,9 +80,6 @@ type PeerSessionOriginInput = {
  */
 const SOURCE_FROM_PARENT: AgentNS.MessageSource = { kind: "agent", label: "父对话" };
 
-/** `read_session_status` 里那条摘要的截断长度（**绝不给全量消息**，否则模型会拿它当上下文搬运） */
-const STATUS_CHARS = 300;
-
 /**
  * 每个**父对话**同时最多能有多少个平级会话在忙着。
  *
@@ -162,7 +159,12 @@ export interface PeerSessionServiceDeps {
   };
   /** 子会话的诞生 */
   conversationCreator: PeerSessionConversationCreator;
-  /** 读子会话最后一条助手消息（主线消息，按 seq 升序） */
+  /**
+   * 消息仓储。
+   *
+   * `read_session_status` 的摘要那一格随 SDK 的形状一起没了（`PeerSessionStatus` 只剩
+   * `status` 与 `label`），所以本服务现在不读它 —— 接线照旧给着，清它归后面那一批收零调用符号。
+   */
   messages: { listByConversation(conversationId: string): Promise<StoredMessage[]> };
   /** 执行者 */
   chatRunner: PeerSessionRunner;
@@ -176,32 +178,15 @@ function rejected(reason: PeerSessionRejectReason, hint: string): PeerSessionCre
 /**
  * 现读的那一格 → `read_session_status` 报的那一格：**逐格同名**，不翻译也不补格子。
  *
- * 两端都是闭集：宿主说 `busy` / `idle` / `paused` / `dead`，SDK 报的就是这四个；多出来的
- * `gone` 不是一格状态，而是「这段会话的会话行找不到了」（见 {@link status}）。
+ * 两端都是闭集：宿主说 `busy` / `idle` / `paused` / `dead`，SDK 报的就是这四个（两边的类型
+ * 各自声明，词一模一样，见 SDK 的 `PeerSessionStatus`）。找不到那一段不是第五格：它是判别式的
+ * 另一支（`{ found: false, status: null }`，见 {@link status}）。
  *
  * 所以本文件没有 `failed`：失败是某一次回答上的事实（消息上的 `error` 与结束原因），不是
  * 一段对话此刻的状态；把「上一次失败了」挂在状态上，就会在它下一次好好回答时继续说假话。
  */
-function statusOf(status: ConversationStatus): PeerSessionStatus["state"] {
+function statusOf(status: ConversationStatus): ConversationStatus {
   return status;
-}
-
-/** 一段消息里的纯文本（分段内容只取文本段，与自动命名同一个口径） */
-function textOf(content: AgentNS.MessageContent | null | undefined): string {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((section) => ("text" in section && typeof section.text === "string" ? section.text : ""))
-      .filter((text) => text.length > 0)
-      .join("\n");
-  }
-  return "";
-}
-
-/** 截断到上限（超了加一个省略号：读者要知道「后面还有」） */
-function clip(text: string, limit: number): string {
-  const trimmed = text.trim();
-  return trimmed.length > limit ? `${trimmed.slice(0, limit)}…` : trimmed;
 }
 
 export class PeerSessionService implements PeerSessionPort {
@@ -340,27 +325,25 @@ export class PeerSessionService implements PeerSessionPort {
   /**
    * 问一段平级会话现在怎么样。
    *
-   * 查不到就是 `gone`（**不抛错**：模型不该因为查了一段已经不存在的会话而断掉它手上的活）：
-   * 判据只剩一条 —— **会话行在不在**（被用户删了就不在）。
+   * 找不到就是判别式的另一支（`{ found: false, status: null }`，**不抛错**：模型不该因为查了一段
+   * 已经不存在的会话而断掉它手上的活）：判据只剩一条 —— **会话行在不在**（被用户删了就不在）。
    *
    * 从前这里还要求「进程内有它的记录」：那时血缘只在进程里，重启之后连自己开过哪一段都认不出。
    * 现在血缘在会话行上（`lineage`），重启前后一段会话是不是兄弟会话是库里的事实，所以这里不再
    * 看进程内那张表 —— 它只提供可读名，没有就退回行上的 `name`（那也是一句真话）。
    *
-   * 那一格**现读**（不存镜像），再加个可读名字与最后一条助手消息的截断摘要
-   * （~300 字，绝不给全量）。
+   * 那一格**现读**（不存镜像），外加一个可读名字；消息摘要不在这里（SDK 的 `PeerSessionStatus`
+   * 只剩 `status` 与 `label` 两格：摘要会把上下文搬过去）。
    */
   async status(input: { caller: Agent; sessionId: string }): Promise<PeerSessionStatus> {
     const row = await this.deps.conversations.get(input.sessionId);
-    if (!row) return { state: "gone" };
+    // 找不到 = 判别式的另一支：`status: null`（四格都是活对象身上的事实，找不到就没有对象可读）
+    if (!row) return { found: false, status: null };
 
-    const lastMessage = clip(await this.lastAssistantText(row.id), STATUS_CHARS);
     return {
-      state: statusOf(this.deps.chatRunner.state(input.sessionId).status),
+      found: true,
+      status: statusOf(this.deps.chatRunner.state(input.sessionId).status),
       label: this.labels.get(row.id) ?? row.name,
-      // 开启时刻就是会话行上的创建时间（不再由进程内记一笔）
-      startedAt: new Date(row.createdAt).toISOString(),
-      ...(lastMessage.length > 0 ? { lastMessage } : {}),
     };
   }
 
@@ -440,16 +423,6 @@ export class PeerSessionService implements PeerSessionPort {
   private nextLabel(): string {
     this.labelSeq += 1;
     return `会话 ${this.labelSeq}`;
-  }
-  private async lastAssistantText(conversationId: string): Promise<string> {
-    const rows = await this.deps.messages.listByConversation(conversationId);
-    for (let index = rows.length - 1; index >= 0; index -= 1) {
-      const row = rows[index]!;
-      if (row.role !== AgentNS.Role.Assistant) continue;
-      const text = textOf(row.content);
-      if (text.trim().length > 0) return text;
-    }
-    return "";
   }
 }
 

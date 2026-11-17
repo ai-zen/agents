@@ -85,16 +85,12 @@ describe("handoff.* 接线", () => {
     const handlers = createHandoffHandlers({ handoff: fake.service });
 
     const returned = await handlers["handoff.start"]?.(
-      call(
-        "handoff.start",
-        { conversationId: "c1", mode: "self", then: "new_conversation", questionId: "q1" },
-        "zh",
-      ),
+      call("handoff.start", { conversationId: "c1", mode: "self", then: "new_conversation" }, "zh"),
     );
 
     expect(fake.calls).toEqual([
       {
-        params: { conversationId: "c1", mode: "self", then: "new_conversation", questionId: "q1" },
+        params: { conversationId: "c1", mode: "self", then: "new_conversation" },
         language: "zh",
       },
     ]);
@@ -104,7 +100,7 @@ describe("handoff.* 接线", () => {
   it("非空闲被拒时原样抛给调用方（busy 是服务那边判的，接线层不改写）", async () => {
     const fake = fakeHandoff();
     fake.fail(
-      new HostError("busy", { detail: { conversationId: "c1", reason: "not_idle" } }),
+      new HostError("busy", { detail: { conversationId: "c1", reason: "working" } }),
     );
     const handlers = createHandoffHandlers({ handoff: fake.service });
 
@@ -112,7 +108,7 @@ describe("handoff.* 接线", () => {
       handlers["handoff.start"]?.(
         call("handoff.start", { conversationId: "c1", mode: "self", then: "document_only" }, "zh"),
       ),
-    ).rejects.toMatchObject({ code: "busy", detail: { reason: "not_idle" } });
+    ).rejects.toMatchObject({ code: "busy", detail: { reason: "working" } });
   });
 
   it("参数不对照样在这里被拒（校验在返回「已经开始」之前）", async () => {

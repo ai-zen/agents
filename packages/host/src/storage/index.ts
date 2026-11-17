@@ -25,8 +25,6 @@ export { ConversationRepository } from "./ConversationRepository.js";
 export { MessageRepository } from "./MessageRepository.js";
 export { AssetRepository } from "./AssetRepository.js";
 export { NoticeRepository } from "./NoticeRepository.js";
-export { QuestionRepository } from "./QuestionRepository.js";
 export { CredentialRepository, hashCredential } from "./CredentialRepository.js";
-export type { QuestionPatch } from "./QuestionRepository.js";
 
 export type * from "./types.js";

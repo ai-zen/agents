@@ -33,7 +33,6 @@ let conversations: ConversationRepository;
 async function clearTables(): Promise<void> {
   await db.tx((tx) => [
     tx.run("DELETE FROM notices"),
-    tx.run("DELETE FROM questions"),
     tx.run("DELETE FROM workspaces"),
     tx.run("DELETE FROM assets"),
     tx.run("DELETE FROM credentials"),
@@ -167,7 +166,7 @@ describe("MessageService.list 的取法（A12）", () => {
     await expect(service.list({ conversationId: "没有这段对话" })).rejects.toBeInstanceOf(HostError);
   });
 
-  it("toolCallId 取回子 Agent 自己的消息（按 parentToolCallId，F-I7）", async () => {
+  it("toolCallId 要子 Agent 那一栏：库里没有第二份可读，于是给空页（F-I7 / CORE §17）", async () => {
     // 那次委派本身：assistant 发出工具调用，工具结果也挂着同一个工具调用 id
     await messages.upsert({
       id: "tool-1",
@@ -178,43 +177,11 @@ describe("MessageService.list 的取法（A12）", () => {
       data: { tool_call_id: "call-1" },
       createdAt: 500,
     });
-    // 子 Agent 自己说过的话：落库时记下它是哪次委派里说的
-    for (const [id, role, content] of [
-      ["sub-1", "user", "把方案 A 说一下"],
-      ["sub-2", "assistant", "方案 A 是……"],
-    ] as const) {
-      await messages.upsert({
-        id,
-        conversationId: "c1",
-        role,
-        status: "completed",
-        content,
-        parentToolCallId: "call-1",
-        createdAt: 510,
-      });
-    }
 
+    // 子 Agent 的话不入库（`CORE.md` §17）：这段没有驱动者时，那一栏就是空的 ——
+    // 库里没有第二份（`parentToolCallId` 那一列已随 v5 删掉）
     const result = await service.list({ conversationId: "c1", toolCallId: "call-1" });
-    expect(result.messages.map((message) => message.id)).toEqual(["sub-1", "sub-2"]);
-    expect(result.messages.map((message) => message.role)).toEqual([
-      AgentNS.Role.User,
-      AgentNS.Role.Assistant,
-    ]);
-  });
-
-  it("子 Agent 的消息不混进主线历史（否则模型下一轮会把别人的对话当上下文）", async () => {
-    await messages.upsert({
-      id: "sub-1",
-      conversationId: "c1",
-      role: "assistant",
-      status: "completed",
-      content: "子 Agent 说的",
-      parentToolCallId: "call-1",
-      createdAt: 900,
-    });
-
-    const result = await service.list({ conversationId: "c1" });
-    expect(result.messages.map((message) => message.id)).toEqual(["u1", "a1", "u2"]);
+    expect(result.messages).toEqual([]);
   });
 
   it("hidden 的消息默认不返回，includeHidden 才给（F-D9 的 cwd 消息）", async () => {
@@ -223,7 +190,7 @@ describe("MessageService.list 的取法（A12）", () => {
       conversationId: "c1",
       role: "user",
       status: "completed",
-      content: "当前目录是 /tmp/one",
+      content: "/tmp/one",
       data: { hidden: true },
       createdAt: 5,
     });
@@ -236,29 +203,7 @@ describe("MessageService.list 的取法（A12）", () => {
     expect(withHidden.messages.map((message) => message.id)).toEqual(["u1", "a1", "u2", "cwd"]);
     const cwdMessage = withHidden.messages.at(-1);
     expect(cwdMessage?.hidden).toBe(true);
-    expect(cwdMessage?.content).toBe("当前目录是 /tmp/one");
-  });
-
-  it("hidden 的子 Agent 消息也一样默认不返回", async () => {
-    await messages.upsert({
-      id: "sub-hidden",
-      conversationId: "c1",
-      role: "assistant",
-      status: "completed",
-      content: "子 Agent 的内部提示",
-      data: { hidden: true },
-      parentToolCallId: "call-1",
-      createdAt: 910,
-    });
-
-    const delegated = await service.list({ conversationId: "c1", toolCallId: "call-1" });
-    expect(delegated.messages).toEqual([]);
-    const withHidden = await service.list({
-      conversationId: "c1",
-      toolCallId: "call-1",
-      includeHidden: true,
-    });
-    expect(withHidden.messages.map((message) => message.id)).toEqual(["sub-hidden"]);
+    expect(cwdMessage?.content).toBe("/tmp/one");
   });
 
   it("还没落库的草稿也能读：空消息、不是 not_found（R56）", async () => {
@@ -281,6 +226,8 @@ describe("MessageService.list 的取法（A12）", () => {
           guardThreshold: null,
           autoHandoff: false,
           lineage: null,
+          // 刚建出来 / 没答过交接题：没有待办
+          pendingHandoff: null,
           createdAt: 1,
           updatedAt: 1,
         },
@@ -460,7 +407,7 @@ describe("MessageService.list 的 around（F-C6 的定位）", () => {
       conversationId: "c1",
       role: "user",
       status: "completed",
-      content: "当前目录是 /tmp/one",
+      content: "/tmp/one",
       data: { hidden: true },
       createdAt: 5,
     });
@@ -478,37 +425,14 @@ describe("MessageService.list 的 around（F-C6 的定位）", () => {
     expect(withHidden.messages.map((message) => message.id)).toEqual(["u1", "a1", "u2", "cwd"]);
   });
 
-  it("toolCallId 决定读哪一段，around 只在那一段里定位", async () => {
-    for (const [id, role, content] of [
-      ["sub-1", "user", "把方案 A 说一下"],
-      ["sub-2", "assistant", "方案 A 是……"],
-    ] as const) {
-      await messages.upsert({
-        id,
-        conversationId: "c1",
-        role,
-        status: "completed",
-        content,
-        parentToolCallId: "call-1",
-        createdAt: 510,
-      });
-    }
-
+  it("toolCallId 那一栏在库里没有第二份：空页、不报错", async () => {
     const delegated = await service.list({
-      conversationId: "c1",
-      toolCallId: "call-1",
-      around: "sub-2",
-    });
-    expect(delegated.anchor).toBe("sub-2");
-    expect(delegated.messages.map((message) => message.id)).toEqual(["sub-1", "sub-2"]);
-
-    // 主线上的 id 不在这一段里：那就是没命中
-    const mainline = await service.list({
       conversationId: "c1",
       toolCallId: "call-1",
       around: "u1",
     });
-    expect(mainline.messages).toEqual([]);
+    // 子 Agent 的话不入库（`CORE.md` §17）：没有驱动者时那一栏就是空的
+    expect(delegated.messages).toEqual([]);
   });
 
   it("around 为空串时按没给处理（照旧给整段历史）", async () => {

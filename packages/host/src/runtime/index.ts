@@ -37,7 +37,6 @@ export {
   ChatRunner,
   createSdkAgentFactory,
   DEFAULT_STREAM_WRITE_INTERVAL_MS,
-  injectedContextOf,
 } from "./ChatRunner.js";
 export type {
   AgentBuildContext,

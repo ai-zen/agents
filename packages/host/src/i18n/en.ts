@@ -55,12 +55,8 @@ export const en = {
   "question.handoff.summary": "Summarise the history instead",
   "question.handoff.summaryDetail": "Cheaper and predictable, but the document is less faithful.",
   "question.handoff.decline": "Keep going in this conversation",
-  "question.blocking": "This question is holding the conversation. Answer it to continue.",
 
   // ---- 消息与状态的事实叙述（配结构化字段一起给出）----
-  "message.injectedContext": "Sent by the host, not typed by you: {summary}",
-  // 会话创建时那条 hidden 消息里的那句事实（PRD F-D9：cwd 来自对话所属项目，不是宿主进程的目录）
-  "message.injectedContext.cwd": "the current folder is {cwd}",
   "message.imageAsText": "{model} can't look at images, so {name} was described in text instead.",
 
   // ---- 用量（PRD F-I5）：三个数字分开给，句子只是给人看的拼装 ----

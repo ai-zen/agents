@@ -15,6 +15,7 @@
  */
 
 import type { AgentNS } from "@ai-zen/agents-core";
+import type { HandoffMode } from "../wire/methods.js";
 import type { CompactionMode } from "../wire/states.js";
 
 /** 消息状态，取值与 core 的 `AgentNS.MessageStatus` 对齐 */
@@ -77,6 +78,14 @@ export interface ConversationRow {
   /** 这段会话自己定的防护阈值（硬线）；`null` = 跟模型走。口径同 `handoffThreshold` */
   guardThreshold: number | null;
   /**
+   * 待交接的 mode：答完交接题当时这段不闲、于是留到「下一次变闲」再兑现的那一格（PLAN §5.2）。
+   *
+   * `null` = 没有待办（常态）；`"self"` / `"summary"` = 下一次变闲时用哪一种执行者交接。
+   * 它必须落库：「等下一次变闲」可能跨重启，而题本身不落库（PRD 4.10），重启之后这是**唯一**
+   * 能带着走的那份事实。
+   */
+  pendingHandoff: string | null;
+  /**
    * 0 / 1：自动交接开关（PRD 1.4 的「自动交接开关」那一格）。
    *
    * 1 = 开：撞线自己交班、不问（兄弟会话那一侧）；0 = 关：装不下时问用户一次（用户建的那一侧）。
@@ -96,12 +105,14 @@ export interface ConversationRow {
 }
 
 export interface Conversation
-  extends Omit<ConversationRow, "pinned" | "nameIsAuto" | "autoHandoff"> {
+  extends Omit<ConversationRow, "pinned" | "nameIsAuto" | "autoHandoff" | "pendingHandoff"> {
   pinned: boolean;
   /** 名字仍是自动起的那个（真值来自 `conversations.nameIsAuto` 列，不由名字反推） */
   nameIsAuto: boolean;
   /** 自动交接开关（真值来自 `conversations.autoHandoff` 列）：开 = 撞线自己交班、不问 */
   autoHandoff: boolean;
+  /** 待交接的 mode（真值来自 `conversations.pendingHandoff` 列）；`null` = 没有待办 */
+  pendingHandoff: HandoffMode | null;
 }
 
 export interface ConversationCreateInput {
@@ -130,9 +141,9 @@ export interface ConversationCreateInput {
 }
 
 /**
- * 交接换记忆要的那一批（PRD 4.5）：旧记忆成为另一段会话，原会话腾空之后换上两条占位消息。
+ * 交接换记忆要的那一批（PRD 4.5）：旧记忆成为另一段会话，原会话腾空之后换上**SDK 算好的那份记忆**。
  *
- * 四样合起来是一件事，所以只有这一个入参类型：拆开传就会有人只做其中一两步，而那正是
+ * 三样合起来是一件事，所以只有这一个入参类型：拆开传就会有人只做其中一两步，而那正是
  * 「旧的已存档、新的没上岗」的来源。
  */
 export interface ConversationMemorySwap {
@@ -141,14 +152,13 @@ export interface ConversationMemorySwap {
   /** 存档那一段的会话行：身份照抄原会话，id / 名字 / 创建时刻是新的（`已存档_<原名>`） */
   archived: ConversationCreateInput;
   /**
-   * 写回原会话的 cwd 消息：正文是「当前目录是哪儿」，`hidden`（不给人看，但照常进上下文）。
+   * 写回原会话的那几条消息行 —— 就是 SDK 算好的新记忆里除系统提示之外的那几条。
    *
-   * 它排在断点**之前**：与创建时「cwd 最先写」同一口径，于是换完记忆的这段对话又知道自己
-   * 在哪个目录里干活（PRD 4.8）。
+   * 宿主这一侧用的策略是 `prune`（旧记忆整段搬去存档），所以这里通常只有一条：
+   * `role: system` + `hidden` + 正文只带交接文档路径的断点消息（形状由 SDK 定，
+   * 宿主不另拼一条）。
    */
-  cwdContext: MessageUpsertInput;
-  /** 写回原会话的那条断点消息：正文只带交接文档路径，`hidden`（不给人看，但照常进上下文） */
-  breakpoint: MessageUpsertInput;
+  memory: MessageUpsertInput[];
 }
 
 /* -------------------------------- messages -------------------------------- */
@@ -170,8 +180,6 @@ export interface MessageRow {
   searchText: string;
   /** JSON：这条 user 消息从哪儿来（core 的 `AgentNS.MessageSource`）；NULL = 不知道（旧行 / 非 user） */
   source: string | null;
-  /** 子 Agent 消息挂在哪次工具调用上；顶层消息为 NULL（R37） */
-  parentToolCallId: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -179,8 +187,6 @@ export interface MessageRow {
 export interface StoredMessage {
   id: string;
   conversationId: string;
-  /** 子 Agent 消息所属的父工具调用 id；顶层消息为 `null`（R37） */
-  parentToolCallId: string | null;
   seq: number;
   role: string;
   status: string;
@@ -209,8 +215,6 @@ export interface MessageUpsertInput {
   source?: AgentNS.MessageSource | null;
   data?: Record<string, unknown> | null;
   omit?: boolean;
-  /** 子 Agent 消息要挂的父工具调用 id；不给表示顶层消息（R37） */
-  parentToolCallId?: string | null;
   createdAt: number;
 }
 
@@ -338,45 +342,6 @@ export interface NoticeCreateInput {
   durationMs?: number | null;
   /** 挂在哪段对话上；不给表示全局通知 */
   conversationId?: string | null;
-  createdAt: number;
-}
-
-/* -------------------------------- questions ------------------------------- */
-
-export interface QuestionRow {
-  id: string;
-  conversationId: string;
-  /** 问题种类，取值由上层定义（交接确认、二次确认） */
-  kind: string;
-  /** JSON：候选项、正文等载荷 */
-  payload: string;
-  /** 状态机取值由上层定义，存储层原样存取（PRD D22：有状态、可持久化） */
-  state: string;
-  /** JSON：用户的回答 */
-  answer: string | null;
-  createdAt: number;
-  updatedAt: number;
-  answeredAt: number | null;
-}
-
-export interface Question {
-  id: string;
-  conversationId: string;
-  kind: string;
-  payload: unknown;
-  state: string;
-  answer: unknown;
-  createdAt: number;
-  updatedAt: number;
-  answeredAt: number | null;
-}
-
-export interface QuestionCreateInput {
-  id: string;
-  conversationId: string;
-  kind: string;
-  payload: unknown;
-  state: string;
   createdAt: number;
 }
 

@@ -116,6 +116,8 @@ describe("事件表", () => {
       "renamed",
       "pinned",
       "settings_changed",
+      "handoff_started",
+      "memory_replaced",
       "deleted",
     ];
     for (const change of kinds) {

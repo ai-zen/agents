@@ -161,11 +161,12 @@ describe("告诉模型「现在在哪个目录」（F-D9）", () => {
     const userMessages = request.filter((message) => message.role === AgentNS.Role.User);
     expect(userMessages.at(-1)?.content).toBe("一句话回答我");
 
-    // 而 agent 收到的第一条是那条 hidden 的 user 消息，正文带 cwd
+    // 而 agent 收到的第一条是那条 hidden 的 user 消息：形状与落库那一条同形同文，正文就是路径
     const cwdMessage = harness.agents[0]?.messages[0];
     expect(cwdMessage?.role).toBe(AgentNS.Role.User);
     expect(cwdMessage?.hidden).toBe(true);
-    expect(cwdMessage?.content).toContain("/tmp/project");
+    expect(cwdMessage?.source).toEqual({ kind: "system", label: "cwd" });
+    expect(cwdMessage?.content).toBe("/tmp/project");
   });
 });
 

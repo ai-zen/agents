@@ -11,8 +11,8 @@
  *    中文子串才搜得到；代价是查询词至少要 3 个字符，少于 3 个字符（典型是两字中文）
  *    在 trigram 下必然搜不到，这里退化到 `LIKE` 子串匹配。
  *
- * 3. **子 Agent 的归属**：`parentToolCallId` 记下这条消息是被哪次工具调用派出去产生的
- *    （R37）。怎么写入由上层决定，本文件提供按它取回的一段读取路径。
+ * 3. **表里只有主线消息**：子 Agent 的话不入库（`CORE.md` §17），所以「这段对话有多少条消息」
+ *    只有一条取法（`parentToolCallId` 那一列已随 v5 删除）。
  *
  * 4. **`hidden` 的两条读数**：`hidden` 是 core 的 `Message.hidden`，落在 `data` 列的 JSON 里
  *    （没有单独的列）。给用户看的读取路径（`message.list`、侧栏条数、删除代价）默认把它
@@ -46,7 +46,7 @@ const TRIGRAM_MIN_LENGTH = 3;
 const SNIPPET_LENGTH = 160;
 
 const COLUMNS =
-  "id, conversationId, seq, role, status, omit, content, data, searchText, source, parentToolCallId, createdAt, updatedAt";
+  "id, conversationId, seq, role, status, omit, content, data, searchText, source, createdAt, updatedAt";
 
 /**
  * 「这条消息给用户看」的条件：`data.hidden` 不为真。
@@ -67,9 +67,6 @@ export interface MessageListOptions {
  *
  * `MAX(seq)` 与插入在同一条语句里完成，worker 又是单线程串行执行，所以不会出现两条
  * 消息抢到同一个 seq（`UNIQUE (conversationId, seq)` 是最后一道防线）。
- *
- * `parentToolCallId` 在冲突分支里用 `COALESCE`：流式过程里同一条消息会被反复写，
- * 不带上这一列的那些写不会把已经记下的归属抹掉。
  */
 const UPSERT_SQL = `
   INSERT INTO messages (${COLUMNS})
@@ -77,7 +74,7 @@ const UPSERT_SQL = `
     ?,
     ?,
     (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE conversationId = ?),
-    ?, ?, ?, ?, ?, ?, ?, ?,
+    ?, ?, ?, ?, ?, ?, ?,
     ?, ?
   )
   ON CONFLICT (id) DO UPDATE SET
@@ -90,7 +87,6 @@ const UPSERT_SQL = `
     -- 来源是**投递那一刻**的事实，之后的每一遍写（流式、收尾）都带着同一份；
     -- 没带的那几遍（例如只改状态的写）不许把它抹成 NULL。
     source           = COALESCE(excluded.source, messages.source),
-    parentToolCallId = COALESCE(excluded.parentToolCallId, messages.parentToolCallId),
     updatedAt        = excluded.updatedAt
 `;
 
@@ -180,7 +176,6 @@ function toStoredMessage(row: MessageRow): StoredMessage {
   return {
     id: row.id,
     conversationId: row.conversationId,
-    parentToolCallId: row.parentToolCallId,
     seq: row.seq,
     role: row.role,
     status: row.status,
@@ -211,7 +206,6 @@ function upsertParams(input: MessageUpsertInput): SQLInputValue[] {
     dataJson,
     searchText,
     input.source === undefined || input.source === null ? null : JSON.stringify(input.source),
-    input.parentToolCallId ?? null,
     input.createdAt,
     input.createdAt,
   ];
@@ -280,16 +274,13 @@ export class MessageRepository {
    *   它的内容已经变了，得重新拿最新的。
    * - 给了 `after` 但库里没有这个 id（已删除、或换了库）：退回整段历史。
    *
-   * 三条都只覆盖**主线**消息：子 Agent 的消息虽然落在同一张表，但它们属于另一次对话
-   * 与另一步执行（`parentToolCallId` 非空），回看走 {@link listByParentToolCallId}，
-   * 不能混进主线历史（否则模型下一轮会把别人的对话当成自己的上下文）。
+   * 读到的是这段对话的全部行：子 Agent 的话不入库（`CORE.md` §17），所以这里不需要再筛
+   * 一次归属（`parentToolCallId` 那一列已随 v5 删掉）。
    *
    * 三种情况收敛成一条 SQL：找不到时 `COALESCE` 把下界降成 -1，条件恒真。
    *
-   * 这里数出来的是**主线**的条数（`parentToolCallId IS NULL` 那一半）：子 Agent 的消息落在同一张
-   * 表、但有非空的 `parentToolCallId`，不在本方法的结果里。同样是「这段对话有多少条消息」，
-   * {@link countByConversation} 数的是表里的全部行（不筛那一列，只筛 `hidden`），所以一段跑过
-   * 子 Agent 的对话，`listByConversation().length` 会小于 `countByConversation()`。
+   * **它与 {@link countByConversation} 数的是同一批行**（两边都只看 `hidden`）：同一段对话
+   * 那句「有多少条消息」不应该有两个数。
    *
    * `hidden` 的消息默认不在结果里（侧栏条数、`message.list` 都用这条默认）。要看的那一侧
    * （模型的历史、排查）传 `includeHidden`。
@@ -302,7 +293,6 @@ export class MessageRepository {
     const rows = await this.db.all<MessageRow>(
       `SELECT ${COLUMNS} FROM messages
        WHERE conversationId = ?
-         AND parentToolCallId IS NULL
          AND (? = 1 OR ${VISIBLE_ONLY})
          AND (? IS NULL
               OR seq >= COALESCE(
@@ -316,26 +306,6 @@ export class MessageRepository {
         after ?? null,
         conversationId,
       ],
-    );
-    return rows.map(toStoredMessage);
-  }
-
-  /**
-   * 按父工具调用取子 Agent 的消息（R37 提供的存储能力）。
-   *
-   * 按对话限定范围：工具调用 id 只在它所属的那段对话里有意义。
-   */
-  async listByParentToolCallId(
-    conversationId: string,
-    parentToolCallId: string,
-    options: MessageListOptions = {},
-  ): Promise<StoredMessage[]> {
-    const rows = await this.db.all<MessageRow>(
-      `SELECT ${COLUMNS} FROM messages
-       WHERE conversationId = ? AND parentToolCallId = ?
-         AND (? = 1 OR ${VISIBLE_ONLY})
-       ORDER BY seq ASC`,
-      [conversationId, parentToolCallId, options.includeHidden === true ? 1 : 0],
     );
     return rows.map(toStoredMessage);
   }
@@ -429,11 +399,10 @@ export class MessageRepository {
   }
 
   /**
-   * 数一段对话在 `messages` 表里的全部行数（PRD D17 / F-F9 的代价一侧用它）。
+   * 数一段对话在 `messages` 表里的行数（PRD D17 / F-F9 的代价一侧用它）。
    *
-   * 与 {@link listByConversation} 的差别就在 `parentToolCallId` 这一列：本方法不筛它，所以子 Agent
-   * 的消息也算在内。同一个问题（「这段对话有多少条消息」）于是有两个不同的数，两处的用途不同：
-   * 这里要的是「删掉会让库里少多少行」，那边要的是「主线里能回看多少条」。
+   * 与 {@link listByConversation} 数的是**同一批行**（两边都只看 `hidden`）：同一个问题
+   * （「这段对话有多少条消息」）只应该有一个数。
    *
    * `hidden` 的消息两边都不算：它在界面上从来没出现过，删掉它数进代价里会让用户看到
    * 一个对不上的数字。
