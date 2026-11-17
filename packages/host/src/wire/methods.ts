@@ -303,6 +303,19 @@ export interface ConversationSummary {
   agentId: string;
   /** 这段对话现在用的模型（存会话行上，可改，PRD F-B4） */
   modelId: string;
+  /**
+   * 这段会话自己定的交接阈值（软线）；`null` = 跟模型走。
+   *
+   * 它与会话行上的另一格 `guardThreshold` 一起构成 PRD 1.4 那两格：模型上那份是出厂的数字，
+   * 这两列是**这一段自己的覆盖**。`null` 才是常态（没给这一段单独调过）。
+   */
+  handoffThreshold: number | null;
+  /** 这段会话自己定的防护阈值（硬线）；`null` = 跟模型走。口径同上 */
+  guardThreshold: number | null;
+  /** 自动交接开关：`true` = 撞线自己交班、不问（兄弟会话那侧）/ `false` = 装不下时问用户一次 */
+  autoHandoff: boolean;
+  /** 血缘：谁开的这段会话（父会话 id）；`null` = 用户建的。只用于展示「由会话 X 创建」 */
+  lineage: string | null;
   createdAt: string;
   updatedAt: string;
   messageCount: number;

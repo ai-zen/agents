@@ -2010,12 +2010,14 @@ export interface SdkAgentFactoryOptions {
    */
   handoff?: HandoffProvider;
   /**
-   * 这段对话是不是**派生会话**（`PeerSessionService` 认得的那一段）——「要不要自己压」的唯一判据。
+   * 这一段的**自动交接开关**（会话行上的 `autoHandoff`）—— 「要不要自己压」的唯一判据。
    *
-   * 不传 = 一律当用户会话（越线之后交还给宿主的提问路径）。判据只能由接线层给：派生关系的
-   * 唯一真相是 `PeerSessionService` 的进程内记录（不落库），本文件不另记一份。
+   * 不传 = 一律当关着（越线之后交还给宿主的提问路径）。开关是会变化的列（用户能改、交接存档
+   * 时照抄），所以这里给的是**取值口而不是取好的值**：插件在越线那一刻才问它，于是改开关不必
+   * 重建驱动者（PRD 1.4：「能改且不用重建驱动者」那一行）。判据只能由接线层给：开关在会话行上，
+   * 本文件不碰库。
    */
-  isDerivedSession?: (context: AgentBuildContext) => boolean;
+  wantsAutoHandoff?: (context: AgentBuildContext) => boolean | Promise<boolean>;
   /**
    * 压缩完成之后的回声（`mode` 说压的是哪一种）：宿主用它落会话行上的压缩标记。
    *
@@ -2111,7 +2113,8 @@ async function readAgentDefinition(
  *   - `ContextGuardPlugin`：硬线，`tokenThresholds.guard`；
  *   - `SubAgentGuardInstallerPlugin`：同一个硬线递归装到子 Agent 与孙级（PRD F-D8）；
  *   - `AutoMigratePlugin`：交接线，`tokenThresholds.handoff`（需注入交接服务）。
- *     越线自压的只有**派生会话**（`isDerivedSession`）；用户会话交还给宿主的提问路径；
+ *     越线自压的只有**自动交接开着**的那一段（`wantsAutoHandoff`）；关着的那一段交还给宿主的
+ *     提问路径；
  *   - `AutoRefreshToolsPlugin`：改完能力不用重启（PRD F-E2）；
  *   - `UnknownToolHintPlugin`：未知工具时给出 MCP 场景的引导。
  */
@@ -2155,9 +2158,11 @@ export function createSdkAgentFactory(options: SdkAgentFactoryOptions = {}): Age
           new AutoMigratePlugin({
             service: handoff,
             handoffTokens: thresholds.handoff,
-            // 归一规则按**会话类型**分：派生会话没人盯着它，越线就自己压（`"self"`）；
-            // 用户会话把「要不要压」交还给宿主（变闲那一刻问用户），这里回 `null` = 本次不迁移。
-            resolveMode: () => (options.isDerivedSession?.(context) === true ? "self" : null),
+            // 归一规则按**会话行上的自动交接开关**分：开着的那一段没人盯着它，越线就自己压
+            // （`"self"`）；关着的那一段把「要不要压」交还给宿主（变闲那一刻问用户），这里回
+            // `null` = 本次不迁移。开关在越线那一刻现读（它能改，改了不必重建驱动者）。
+            resolveMode: async () =>
+              (await options.wantsAutoHandoff?.(context)) === true ? "self" : null,
             // 压完记一笔：宿主写会话行上的 `compactedAt` / `compactionMode = "auto"`
             ...(options.onCompacted === undefined
               ? {}

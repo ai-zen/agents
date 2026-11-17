@@ -581,8 +581,9 @@ function handoffModeOf(kind: QuestionKind, value: string): "self" | "summary" | 
 /**
  * 按配置与历史算「这段对话是不是已经过了硬线」。
  *
- * 硬线跟着模型走（`tokenThresholds.guard`，D27），用量取最近一条带用量的消息：
+ * 硬线先看**会话行上的覆盖值**（`guardThreshold`），没有就看模型（`tokenThresholds.guard`，D27）；
  * 口径与 `app.ts` 那条变闲时的判断一致：都看最近一条带用量的消息的 `usage.prompt_tokens`。
+ * 两处都是现读会话行：那一列改了不必重建驱动者（PRD 1.4）。
  */
 export function createConversationGuardProbe(deps: {
   conversations: ConversationRepository;
@@ -595,7 +596,8 @@ export function createConversationGuardProbe(deps: {
       if (!conversation) return false;
       const config = await deps.configManager.read();
       const model = config.models.find((candidate) => candidate.id === conversation.modelId);
-      const guardThreshold = model?.tokenThresholds.guard ?? 0;
+      const guardThreshold =
+        conversation.guardThreshold ?? model?.tokenThresholds.guard ?? 0;
       if (guardThreshold <= 0) return false;
 
       const rows = await deps.messages.listByConversation(conversationId);

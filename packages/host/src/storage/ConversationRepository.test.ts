@@ -88,9 +88,56 @@ describe("ConversationRepository", () => {
       // 新会话没压过：压缩那两列要等某一次真正的压缩才写（见 markCompacted）
       compactedAt: null,
       compactionMode: null,
+      // 两条阈值没给这一段单独调过：NULL = 跟模型走
+      handoffThreshold: null,
+      guardThreshold: null,
+      // 这条是 `repo.create` 直接建的（没传 autoHandoff / lineage）＝ 用户建的那一侧
+      autoHandoff: false,
+      lineage: null,
       createdAt: 500,
       updatedAt: 500,
     });
+  });
+
+  it("自动交接开关与血缘：创建那一刻写死，读回来是同样的意思", async () => {
+    await repo.create(
+      input({
+        id: "c-owner",
+        workspaceId: "w1",
+        name: "父对话",
+        createdAt: 100,
+        // 用户建的那一侧：开关关、没有血缘
+        handoffThreshold: 1_000,
+        guardThreshold: 2_000,
+      }),
+    );
+    await repo.create(
+      input({
+        id: "c-peer",
+        workspaceId: "w1",
+        name: "兄弟会话",
+        createdAt: 200,
+        lineage: "c-owner",
+        autoHandoff: true,
+      }),
+    );
+
+    expect(await repo.get("c-owner")).toMatchObject({
+      autoHandoff: false,
+      lineage: null,
+      handoffThreshold: 1_000,
+      guardThreshold: 2_000,
+    });
+    const peer = await repo.get("c-peer");
+    expect(peer).toMatchObject({
+      autoHandoff: true,
+      lineage: "c-owner",
+      handoffThreshold: null,
+      guardThreshold: null,
+    });
+    // 血缘列反查：谁由这段会话开的（并发限额那条判据的数据来源）
+    expect((await repo.listByLineage("c-owner")).map((row) => row.id)).toEqual(["c-peer"]);
+    expect(await repo.listByLineage("c-peer")).toEqual([]);
   });
 
   it("压缩标记：写一次就落两列，且不动 updatedAt（压缩不是结构性变化）", async () => {

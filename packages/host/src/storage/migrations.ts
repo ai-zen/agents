@@ -19,9 +19,9 @@ export interface Migration {
 }
 
 /**
- * 迁移列表。眼下只有 v1：这套表结构还没随版本发出去，PM 在 W1 之后的裁定（cwd 唯一、
- * 身份列非空）直接落进了 v1 的建表语句。再往后改结构时追加新条目 —— 已经装上升过级的库
- * 不会重跑旧条目，改旧条目会让两台机器的表结构悄悄分叉。
+ * 迁移列表。v1 是建表语句本身：这套表结构当时还没随版本发出去，PM 在 W1 之后的裁定（cwd 唯一、
+ * 身份列非空）直接落了进去。再往后改结构时追加新条目（v2 压缩两列、v3 消息来源、v4 会话行上
+ * 那四格）—— 已经装上升过级的库不会重跑旧条目，改旧条目会让两台机器的表结构悄悄分叉。
  */
 export const MIGRATIONS: Migration[] = [
   {
@@ -235,6 +235,35 @@ export const MIGRATIONS: Migration[] = [
      */
     version: 3,
     statements: [`ALTER TABLE messages ADD COLUMN source TEXT`],
+  },
+  {
+    /**
+     * v4：会话行补上 PRD 说的另外三格（两条阈值 / 自动交接开关 / 血缘，`PRD.md` 1.4 的 11 格）。
+     *
+     * 这四样从前压根不在会话行上：两条阈值挂在**模型**上（`tokenThresholds.handoff/guard`），
+     * 会话没有覆盖列；自动交接开关与血缘只活在 `PeerSessionService` 的进程内记录里（重启即失，
+     * 与 PRD 4.5 / 4.6 直接冲突）。四列都是 `ADD COLUMN`，v1 建表语句一个字不改（理由同 v2）。
+     *
+     * 两条阈值可空：NULL = 跟模型走（这一段会话没自己定过）。自动交接开关非空、缺省 1：SQLite 的
+     * `ADD COLUMN ... NOT NULL` 必须给缺省值，而「1」在代码里只有一个读法 —— **开**（撞线自己
+     * 交班、不问，兄弟会话那一侧）。写入方（创建处）一定显式写（用户建 0 / 兄弟 1），所以缺省值
+     * 只在两种情况说话：v4 之前的行，以及将来有人漏写（那就读成「开」）。老行读成「开」不引入
+     * 第三种语义：它不是「认出了这段是兄弟会话」（v4 之前谁开的只活在进程里，重启就没），
+     * 而是两个值里选了「自己交班」那一侧 —— 升级后的老会话不会因为这一列新出现就开始弹题。
+     *
+     * 血缘可空：NULL = 用户建的；非空 = 开这段会话的那段会话的 id。它只是**身份**（历史展示
+     * 「由会话 X 创建」），不是通行证 —— 投递不看关系（PRD 1.2 / 4.6）。
+     */
+    version: 4,
+    statements: [
+      // 两条阈值：会话行上的覆盖值；NULL = 跟模型走（`models[].tokenThresholds` 那份）
+      `ALTER TABLE conversations ADD COLUMN handoffThreshold INTEGER`,
+      `ALTER TABLE conversations ADD COLUMN guardThreshold INTEGER`,
+      // 自动交接开关：0 = 关（用户建的那一侧，装不下时问一次）/ 1 = 开（兄弟会话，撞线自己交班）
+      `ALTER TABLE conversations ADD COLUMN autoHandoff INTEGER NOT NULL DEFAULT 1`,
+      // 血缘：谁开的这段会话（父会话 id）；NULL = 用户建的
+      `ALTER TABLE conversations ADD COLUMN lineage TEXT`,
+    ],
   },
 ];
 

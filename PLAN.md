@@ -160,7 +160,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 - **隔离靠「交接态」**（`beginHandoff` / `endHandoff`）：这段在写文档期间产生的消息**不进库**（否则「关于交接的那场对话」会进转录、进历史、进条数），但 `message.added` / `message.delta` / `message.changed` **照常推** —— 用户得看得见它在写。
 - **「写完了没有」看工具结果**：写文档那次工具调用的 `toolFinished` + 一次落盘校验（`MIN_HANDOFF_BYTES`）；两次都不成立 → 单向降级到独立交接，再不行就是失败通知。不看状态、不等 idle。
 - **提交与回滚都推 `memory_replaced`**，客户端据此 `message.list` 全量整段替换，把那批只在内存里的写作痕迹清掉。断线重连的客户端天然看不到它们（库里没有）。
-- **提交点之后是「换记忆」**（PRD 4.5）：文档通过校验（`documentReady` + `describeDocument`）之后，**一个 `tx`**（`ConversationRepository.replaceMemory`）做三件 —— 插一行 `已存档_<原名>` 会话（项目 / 助手 / 模型 / 思考档位照抄，创建时刻是交接那一刻）、把原会话的**全部消息行**改挂到它名下（`seq` / `createdAt` 原样不动，素材关系行跟着搬）、在原会话写回一条 `role: system` + `hidden`、正文**只带文档路径**的断点消息。随后内存里 `agent.messages` **原地**换成「系统提示 + 同一条断点」（不重建 agent、不动队列与两个开关），再按顺序推 `memory_replaced`（原会话）与 `created`（存档那段）。失败或取消则整批不成，**一段存档会话都不留**。
+- **提交点之后是「换记忆」**（PRD 4.5）：文档通过校验（`documentReady` + `describeDocument`）之后，**一个 `tx`**（`ConversationRepository.replaceMemory`）做三件 —— 插一行 `已存档_<原名>` 会话（项目 / 助手 / 模型 / 思考档位**以及两条阈值、自动交接开关、血缘这四格**照抄，创建时刻是交接那一刻 —— **交接不产生新身份**，血缘跟着走）、把原会话的**全部消息行**改挂到它名下（`seq` / `createdAt` 原样不动，素材关系行跟着搬）、在原会话写回一条 `role: system` + `hidden`、正文**只带文档路径**的断点消息。随后内存里 `agent.messages` **原地**换成「系统提示 + 同一条断点」（不重建 agent、不动队列与两个开关），再按顺序推 `memory_replaced`（原会话）与 `created`（存档那段）。失败或取消则整批不成，**一段存档会话都不留**。
 
 ### 5.4 事件通道：三条粒度
 
@@ -202,7 +202,20 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 
 **`tx` 是声明式批次，不是「在事务里跑一段 JS」**：回调里的 `all` / `get` / `run` 只**登记**语句（拿到带下标的凭据），回调返回后整批一次性送进 worker：`BEGIN IMMEDIATE` → 按登记顺序逐条执行 → `COMMIT`，任一条失败整批 `ROLLBACK`，结果按凭据对回调用方。边界是**读到的值回不到 JS 里去决定下一条写什么**（要那样得让 worker 等主线程）；需要按读到的值分支的场合，把条件写进 SQL（PRD R19 / R31）。
 
-**表骨架**（`storage/migrations.ts`，眼下到 v2）：`workspaces`（`cwd` 不可变且 `UNIQUE`，**没有** `updatedAt`）、`conversations`（`agentId` / `modelId` NOT NULL、`nameIsAuto`、`thinkingLevel` 可空、`compactedAt` / `compactionMode` 可空）、`messages`（`seq`、`status`、`omit`、`content`、`searchText`、`parentToolCallId`）、`assets`（`sha256` 全局 UNIQUE + 宽高，**不记归属**）、`conversation_assets`（关系行，`assetId` 为 `ON DELETE RESTRICT`）、`asset_vendor_files`（厂商 `file_id` 缓存）、`notices`（`code` + `params` + `durationMs`）、`questions`、`credentials`、`meta` + FTS5 虚表 `messages_fts`（`tokenize='trigram'`，三触发器同步）。
+**表骨架**（`storage/migrations.ts`，眼下到 v4）：`workspaces`（`cwd` 不可变且 `UNIQUE`，**没有** `updatedAt`）、`conversations`（`agentId` / `modelId` NOT NULL、`nameIsAuto`、`thinkingLevel` 可空、`compactedAt` / `compactionMode` 可空、v4 的四列见下）、`messages`（`seq`、`status`、`omit`、`content`、`searchText`、`parentToolCallId`）、`assets`（`sha256` 全局 UNIQUE + 宽高，**不记归属**）、`conversation_assets`（关系行，`assetId` 为 `ON DELETE RESTRICT`）、`asset_vendor_files`（厂商 `file_id` 缓存）、`notices`（`code` + `params` + `durationMs`）、`questions`、`credentials`、`meta` + FTS5 虚表 `messages_fts`（`tokenize='trigram'`，三触发器同步）。
+
+**v4 的四列（PRD 1.4 的 11 格补齐）与分工**：会话行上补 `handoffThreshold` / `guardThreshold` / `autoHandoff` / `lineage`，全走 `ADD COLUMN`，v1 建表语句一个字不改。
+
+| 列 | 谁写 | 谁读 | NULL / 缺省的意思 |
+|---|---|---|---|
+| `handoffThreshold` | 创建时落 `null`；将来「会话设置」那道写入 | `app.ts` 的变闲那一拍（判断要不要问交接题） | `null` = 跟模型走（`models[].tokenThresholds.handoff`），常态 |
+| `guardThreshold` | 同上 | `QuestionService.createConversationGuardProbe`（硬线那一跳） | `null` = 跟模型走（`tokenThresholds.guard`），常态 |
+| `autoHandoff` | **创建那一刻写死**：用户建 = 0、兄弟会话 = 1 | `app.ts` 的变闲那一拍（开着就不问）、`createSdkAgentFactory` 的 `wantsAutoHandoff`（`AutoMigratePlugin` 的 `resolveMode` 那一侧） | `NOT NULL DEFAULT 1`：缺省值只对 v4 之前的行与「漏写」说话，**1 = 开 = 撞线自己交班、不问** |
+| `lineage` | 创建兄弟会话时写（父会话 id）；交接存档行照抄 | 开兄弟会话时的「只限一层」与并发限额（`ConversationRepository.listByLineage`）；展示「由会话 X 创建」 | `null` = 用户建的 |
+
+两条阈值的分工要看清：**模型上那份是出厂的数字，会话行这两列是覆盖层**。宿主的两处判定（变闲那一拍要不要问、越线探针）**现读会话行**，`null` 就退回模型那份 —— 这两处读的是库，所以改它不用重建驱动者；而驱动者出厂时装的两个插件（`ContextGuardPlugin` / `AutoMigratePlugin`）拿的是装配那一刻**模型**那份数字 —— 会话行这两列**不进** agent 的出厂配置，这就是 PRD 1.4「能改且不用重建驱动者」那条界线。
+
+**`PeerSessionService` 的记录只剩可读名**：`label`（模型在 `create_session` 里起的那个名字，重启后退回会话行上的 `name`）。血缘、开关、深度、开启时刻都不再从它读 —— 血缘与开关是上面那两列，深度由血缘推（父会话自己带血缘就是第二层），开启时刻就是 `createdAt`。
 
 **素材分三层**：`assets` 是**唯一真相**（一份字节 + 摘要 + 尺寸，`sha256` 全库唯一）；`conversation_assets` 是**谁引用了它**（归属、「几张会话引用了它」、还能不能删字节都问这张）；`asset_vendor_files` 是**缓存**（这个端点上有就直接用、换端点内联 base64、都没有才上传一次；失败就报失败，不重试 / 不判失效 / 不过期清理）。撤回 / 删对话 / 删项目由外键级联删关系行，没有谁去减计数；素材行与磁盘文件在**消息清理完之后**按引用数判：为 0 才删行再删文件（`AssetService.sweepUnreferenced`）。
 
@@ -218,7 +231,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 
 **边流边写**：运行时以内存里的消息为真相，同一条消息行按节流 upsert，所以 `status` / `omit` 必须落盘。**崩溃恢复不归宿主**：装载时它只负责把库里的行读出来交给 agent，修不修、怎么修由 core 在进圈开头自己收拾（见 `CORE.md` §6）。**排队落地的用户消息是唯一例外**：落地那一刻就写第一笔（§5.4）。
 
-**迁移**：`meta.schemaVersion` + 顺序迁移脚本，启动时逐级在事务里跑；不识别任何旧数据（PRD L1）。R14 / R18 这类结构裁定直接落在 v1 建表语句里（这套表结构还没随版本发出去）。**v2 是第一条真正的追补条目**：只用 `ALTER TABLE conversations ADD COLUMN` 加两列，v1 建表语句一个字不改 —— 已升过 v1 的库不会重跑旧条目，改旧条目会让两台机器的表结构悄悄分叉。
+**迁移**：`meta.schemaVersion` + 顺序迁移脚本，启动时逐级在事务里跑；不识别任何旧数据（PRD L1）。R14 / R18 这类结构裁定直接落在 v1 建表语句里（这套表结构还没随版本发出去）。**v2 是第一条真正的追补条目**：只用 `ALTER TABLE conversations ADD COLUMN` 加两列，v1 建表语句一个字不改 —— 已升过 v1 的库不会重跑旧条目，改旧条目会让两台机器的表结构悄悄分叉。往后同一种写法：**v3** 加 `messages.source`（JSON，NULL = 不知道），**v4** 加会话行上那四列（两条阈值 / 自动交接开关 / 血缘）—— 全是 `ADD COLUMN`，不改旧条目。
 
 ---
 
@@ -315,9 +328,9 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 | 问（F-C17） | `PeerSessionService.ts:381-392` | 现读 agent 那一格 + ~300 字摘要，**不给全量消息** |
 | 发一句（F-C20） | `PeerSessionService.ts:538-551` | 一次投递；**不校验血缘**，回执只有收下 / 被拒 |
 | 工具面 | `packages/sdk/src/scope/plugins/peers/peerSessionTools.ts`、`PeerSessionsScopePlugin.ts:22-45` | 形状与用例归 SDK；宿主实现端口，**SDK 不依赖 host**。发话的工具就叫 `postMessage`（`send_to_session` 已删） |
-| 不问交接 | `app` 的变闲判断 | 看的是「派生会话」这一格（创建时写进会话行），**不看来源** |
+| 不问交接 | `app` 的变闲判断 | 看的是**会话行上的 `autoHandoff`**（创建时写死），**不看来源** |
 
-**旧形状已全部拆掉**（W3）：`settleTurn`（回投）、`onTurnStart`（记录复位）、`resultDelivered`、`rejectionOf`（血缘拒绝）都不存在；记录里只有 `sessionId` / `parentConversationId` / `label` / `depth` / `startedAt`，状态一律现读。并发限额保留，判据是现读 `busy`。
+**旧形状已全部拆掉**（W3）：`settleTurn`、`onTurnStart`（记录复位）、`resultDelivered`、`rejectionOf`（血缘拒绝）都不存在；**W10 之后进程内只剩一个可读名**（`label`）—— 血缘（`lineage`）、自动交接开关（`autoHandoff`）、开启时刻（`createdAt`）是会话行上的列，状态一律现读。并发限额保留，判据是「按血缘列反查封出来的那批」里现读 `busy` 的个数。
 
 ### 10.3 Scope / Agent / 配置生效 / 退出
 
@@ -381,7 +394,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 |---|---|
 | 子 Agent 消息回看（PRD F-I7） | **不是欠账，是结论**：子 agent 的消息不入库（`CORE.md` §17），`message.list { toolCallId }` 走内存（`ChatRunner.messagesOf`）；库里那条 `parentToolCallId` 只服务旧行 |
 | 客户端自造问题 | 契约只有 `question.list` / `question.answer`；问题由宿主内部产生（交接线 / 二次确认）。集成用例因此绕开契约直开库造一行 |
-| 平级会话阶段 3 | 超时与 `abort`、`/sessions` 的「agent 建的」标记、`peer_sessions` 表与跨重启的孤儿 —— 都还没有。**「补投」不再是欠账**：回投这件事本身作废（PRD 4.6：通信只有投递） |
+| 平级会话阶段 3 | 超时与 `abort`、`/sessions` 的「agent 建的」标记 —— 都还没有。**「补投」不再是欠账**：会话间通信只有投递（PRD 4.6）。**「跨重启的孤儿」半条出列**（W10）：血缘与会话本身的身份落到了 `conversations.lineage` / `autoHandoff` 上，重启之后仍认得它与谁开的它；**没有** `peer_sessions` 那张表，也不再需要 |
 | **inbox 未消费部分的持久化与恢复**（待做） | **要实时，不攒批**：`messages` 逐条 upsert/delete；`inbox` 挂三条事件 —— `inboxAdded` 插行、`inboxTaken` 删行（core 已补，排在落地之后）、`inboxCleared` 清空。**读的一半已就绪**（`agent.inboxPending`，用于对账重读：事件丢了也不致命）。**写的那一半一件都没有**：宿主没落这两样，core 也还没有「原样放回」的口子（`restore`，不能走 `push` —— 它会重写 `createdAt`）。恢复：`messages` 读回即真相；inbox 行读回后放回队列，**按 `messageId` 去重**（已在 `messages` 里的扔掉）。机制与理由见 `CORE.md` §3「未消费的条目要能存下来再放回去」。 |
 | 桌面端问答视图（W4） | `question.*` 在 `desktop/packages/main` 已接上（`chat.questions` / `chat.answerQuestion`），但整块视图、22 项零入口与真 GUI 竖切都未做 |
 | **desktop 未跟改（另一个仓）** | `desktop/packages/{main,shared,render}` 都 `link:` 本地 agents 包，但 `shared` / `render` 还把 `@ai-zen/agents-core` 钉在 `^4.1.0` —— 与 `5.0.0-alpha.0` 对不上，会在他俩的树里落两份 core。它读的 `InboxItem.source` 也已是判别结构。本仓没装 desktop 的依赖（那边连 `tsc` 都没有），所以**行级影响未核实**；动它要装 electron 那一套，属于另一个 workspace。 |
@@ -440,3 +453,4 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 | 2026-11-16 | **按「没有轮」重写宿主形状**（用户判词）：删掉「一次运行」这套骨架 —— `run`/`enqueue` 两条受理路合成一个 `deliver`、`TurnSettledFacts`+`settle()` 换成「变闲那一刻读当下事实」、`RunRegistry` 与助手占位行作废、`RunState` / `run.state` / `usage` 事件不再存在（状态只有四格 + 待办，用量与细节阶段归客户端自己算）；**回投整个作废**（PRD 4.6：会话间通信只有投递）；§5 整节重写成「投递 / 变闲那一刻 / 事件通道三条粒度」；A14、A15、§3、§4、§6 事件面、§10.1–10.2 落点表跟着重写。代码尚未跟上，待拆清单在 §10.1 / §10.2 末尾。**进程退出判据作废**：连接数为 0 不再触发任何收尾 —— agent 常驻就是常驻，有没有客户端连着与它无关；`checkExit` 那一套（含两个触发源）删 |
 | 2026-11-16 | 交接补上「换记忆」（PRD 4.5）：提交点之后旧记忆成为另一段会话（`已存档_<原名>`），原会话换上「系统提示 + 只带路径的断点消息」；三～四条语句在 `ConversationRepository.replaceMemory` 的一个 `tx` 里，崩在中间不会留下「旧的已存档、新的没上岗」；`HandoffService.agents` 改成必填依赖、`skillDirs` 改成 `cwd → 目录清单`（与 SDK 插件同一份口径） |
 | 2026-11-16 | 新增仓根 `CORE.md`：core（引擎）的需求与决策单独成文 —— 边界、五个动作（start / stop / abort / resume / kill）、双循环、一条队列 + `takeAll` / `asTakeAll`、三格状态、中断（signal + abortRx，寿命一圈）、两套收尾策略、`AgentError` 一个类三码、工具并行、subagent 属 core 概念、事件与钩子的命名口径（事件说发生了什么 / 钩子说缝在哪儿）、`messages` 唯一引用的时机规则。`PRD.md` 与 `PLAN.md` 各加一行指路，并把 §9 的 core 归属行改成「本表只划归属，需求见 CORE.md」 |
+| 2026-11-17 | **W10 补四列（PRD 1.4 的 11 格）**：`conversations` 加 `handoffThreshold` / `guardThreshold` / `autoHandoff` / `lineage`（迁移 v4，四条 `ADD COLUMN`，v1 建表语句一个字不改）。两条阈值从「只挂在模型上」变成会话行上的覆盖层（`null` = 跟模型走）；自动交接开关与血缘在**创建那一刻写死**（用户建 0 / 兄弟会话 1、血缘 = 父会话 id），于是 `PeerSessionService` 的进程内记录只剩一个可读名 —— 血缘、开关、深度、开启时刻全都不再从它读，「只限一层」与并发限额改按血缘列判（`listByLineage`），`status` 也不再因为重启而答 `gone`。交接的存档行照抄这四格（交接不产生新身份）。§7 补这张迁移与四列的分工表，§5.3 与 §10.2 跟上 |

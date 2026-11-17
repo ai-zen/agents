@@ -20,22 +20,28 @@ import type {
 
 /** 读写路径共用的列清单（顺序与 `toConversation` 的形状一致） */
 const COLUMNS =
-  "id, workspaceId, name, nameIsAuto, pinned, agentId, modelId, thinkingLevel, compactedAt, compactionMode, createdAt, updatedAt";
+  "id, workspaceId, name, nameIsAuto, pinned, agentId, modelId, thinkingLevel, compactedAt, compactionMode, handoffThreshold, guardThreshold, autoHandoff, lineage, createdAt, updatedAt";
 
 /**
  * 新建对话时显式写的那几列。
  *
  * 不复用 `COLUMNS`：压缩那两列（v2 加的）在新建时一定是 NULL（新会话没压过），把 NULL 写进
  * 列清单只会让占位符与入参两处各自多两项、还得对着数。让它们走表的缺省值更省事，也更准。
+ *
+ * 两条阈值同样不在新建时写值（`null` = 跟模型走），但它们在列表里：v4 的四列要么由创建处定
+ * 值（自动交接开关、血缘），要么由「跟模型走」这个 `null` 表意（阈值），所以这四列都显式写。
  */
 const INSERT_COLUMNS =
-  "id, workspaceId, name, nameIsAuto, pinned, agentId, modelId, thinkingLevel, createdAt, updatedAt";
+  "id, workspaceId, name, nameIsAuto, pinned, agentId, modelId, thinkingLevel, handoffThreshold, guardThreshold, autoHandoff, lineage, createdAt, updatedAt";
 
 /** 列表/搜索统一用这个顺序：置顶在前，再按创建时间倒序（PRD D13） */
 const ORDER_BY = "ORDER BY pinned DESC, createdAt DESC, id DESC";
 
 /**
  * 登记一条「新建对话」语句：`nameIsAuto` 落 1（名字是创建时起的原名）、`pinned` 落 0。
+ *
+ * 自动交接开关与血缘由入参定（**创建那一刻写死**）：用户建 = 0 + NULL 血缘，兄弟会话 = 1 +
+ * 父会话 id。两条阈值落 `null`（跟模型走），要单独调这一段就走会话行上的列。
  *
  * 导出的理由与 `registerMessageUpsert` 同一个：交接换记忆那一批要把这条与消息的两条塞进同一个事务。
  */
@@ -45,7 +51,8 @@ export function registerConversationInsert(
 ): TxStatement<RunResult> {
   const updatedAt = input.updatedAt ?? input.createdAt;
   return tx.run(
-    `INSERT INTO conversations (${INSERT_COLUMNS}) VALUES (?, ?, ?, 1, 0, ?, ?, ?, ?, ?)`,
+    `INSERT INTO conversations (${INSERT_COLUMNS})
+     VALUES (?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       input.id,
       input.workspaceId,
@@ -53,6 +60,10 @@ export function registerConversationInsert(
       input.agentId,
       input.modelId,
       input.thinkingLevel ?? null,
+      input.handoffThreshold ?? null,
+      input.guardThreshold ?? null,
+      input.autoHandoff === true ? 1 : 0,
+      input.lineage ?? null,
       input.createdAt,
       updatedAt,
     ],
@@ -60,7 +71,12 @@ export function registerConversationInsert(
 }
 
 function toConversation(row: ConversationRow): Conversation {
-  return { ...row, pinned: row.pinned !== 0, nameIsAuto: row.nameIsAuto !== 0 };
+  return {
+    ...row,
+    pinned: row.pinned !== 0,
+    nameIsAuto: row.nameIsAuto !== 0,
+    autoHandoff: row.autoHandoff !== 0,
+  };
 }
 
 /** LIKE 的通配符要转义，否则用户搜 "100%" 会变成任意匹配 */
@@ -128,6 +144,20 @@ export class ConversationRepository {
     const rows = await this.db.all<ConversationRow>(
       `SELECT ${COLUMNS} FROM conversations WHERE workspaceId = ? ${ORDER_BY}`,
       [workspaceId],
+    );
+    return rows.map(toConversation);
+  }
+
+  /**
+   * 谁由这段会话开的（血缘列反查）：兄弟会话的并发限额要数「我手头有几个还忙着」。
+   *
+   * 从前这件事走 `PeerSessionService` 的进程内记录，重启即失；血缘落库之后它是库里的事实 ——
+   * 重启前后数出来的是同一批。血缘列没有索引：这张表小，而这条查询只在开兄弟会话那一刻走一次。
+   */
+  async listByLineage(lineage: string): Promise<Conversation[]> {
+    const rows = await this.db.all<ConversationRow>(
+      `SELECT ${COLUMNS} FROM conversations WHERE lineage = ? ${ORDER_BY}`,
+      [lineage],
     );
     return rows.map(toConversation);
   }

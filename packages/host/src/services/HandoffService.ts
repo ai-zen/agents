@@ -660,8 +660,8 @@ export class HandoffService {
 
     await this.conversations.replaceMemory({
       conversationId: conversation.id,
-      // 存档那段：项目 / 助手 / 模型 / 思考档位照抄原会话，只有 id / 名字 / 创建时刻是新的
-      //（它就是交接那一刻生成的，所以按自己的时间排在列表里）
+      // 存档那段：项目 / 助手 / 模型 / 思考档位，**以及两条阈值、自动交接开关、血缘**都照抄原会话，
+      // 只有 id / 名字 / 创建时刻是新的（它就是交接那一刻生成的，所以按自己的时间排在列表里）
       archived: {
         id: archivedId,
         workspaceId: conversation.workspaceId,
@@ -669,6 +669,13 @@ export class HandoffService {
         agentId: conversation.agentId,
         modelId: conversation.modelId,
         thinkingLevel: conversation.thinkingLevel,
+        // 两条阈值照抄数值（不重算、也不重新解析模型）：存档段就是原会话当时那个样子
+        handoffThreshold: conversation.handoffThreshold,
+        guardThreshold: conversation.guardThreshold,
+        // 开关也照抄：它说的是「装不下时谁来拿主意」，跟着这段会话走，不跟着记忆走
+        autoHandoff: conversation.autoHandoff,
+        // 血缘照抄 = 交接不产生新身份：它还是同一条命的前半段，不是「模型开出来的兄弟」
+        lineage: conversation.lineage,
         createdAt: at,
       },
       // 两条写回原会话的消息：cwd 在前、断点在后（与创建时「cwd 最先写」同一口径）

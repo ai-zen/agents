@@ -1033,7 +1033,7 @@ describe("到交接线才提问（R59 / F-D2）", () => {
     });
     const parent = await seedConversation(app, workspace.id);
 
-    // 一段真的派生会话：父对话那边的模型开了一段（`PeerSessionService` 的进程内记录就是判据）
+    // 一段真的派生会话：父对话那边的模型开了一段（会话行上的 `autoHandoff` 就是判据）
     const caller = new FakeAgent();
     app.peerSessions.bind(caller, parent.id);
     const created = await app.peerSessions.create({
@@ -1062,7 +1062,7 @@ describe("到交接线才提问（R59 / F-D2）", () => {
     await wait(50);
 
     // 用量（1500）明明越过了交接线（1000），这段派生会话也不挂问题 ——
-    // 判据是**会话类型**（派生会话自己压），与这一轮的来源无关
+    // 判据是**会话行上的自动交接开关**（派生会话开着，自己压），与这一段的来源无关
     const pending = (await callMethod(app, "question.list", { state: "pending" })).questions;
     expect(pending.filter((question) => question.conversationId === created.sessionId)).toEqual([]);
   });

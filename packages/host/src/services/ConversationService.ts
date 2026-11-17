@@ -77,6 +77,22 @@ import { toAgentMessage } from "./MessageService.js";
 import { toFolderFact } from "./WorkspaceService.js";
 
 /**
+ * 「谁开的这段会话」—— 宿主内部的那一份入参，**不进 wire**。
+ *
+ * 血缘与自动交接开关在 `conversation.create` 这条路上都是「用户建的」：用户建的会话血缘为 NULL、
+ * 开关关（装不下时问一次）。只有平级会话开出来的子会话才带这两项（父会话 id + 开关开），而
+ * 那条路走的是宿主内部的 `PeerSessionService`，不经过客户端。
+ *
+ * 所以这两项不是契约面的一部分：谁也不能从外面把一段会话认成「不是我建的」。
+ */
+export interface ConversationOriginInput {
+  /** 谁开的这段会话（父会话 id）；不给 = 用户建的 */
+  lineage?: string | null;
+  /** 自动交接开关的初值；不给 = `false`（用户建的那一侧：装不下时问一次） */
+  autoHandoff?: boolean;
+}
+
+/**
  * 运行时注入给对话服务的窄接口。
  *
  * 只有两件运行时才知道的事：
@@ -323,7 +339,9 @@ export class ConversationService {
    * **这一行现在不写库**：只把 id 与身份留在草稿里（R56 / F-C2「没有用户消息就不写」）。
    * 首次 `conversation.send` 时由 {@link ensurePersisted} 用同一个 id 落库。
    */
-  async create(params: ConversationCreateParams): Promise<ConversationCreateResult> {
+  async create(
+    params: ConversationCreateParams & ConversationOriginInput,
+  ): Promise<ConversationCreateResult> {
     const workspace = await this.requireWorkspace(requireId(params.workspaceId, "workspaceId"));
     const config = await this.readConfig();
     const agent = await this.readAgent(requireId(params.agentId, "agentId"));
@@ -370,6 +388,12 @@ export class ConversationService {
       // 新建的会话没压过：两条压缩路径各写各的（`markCompacted`）
       compactedAt: null,
       compactionMode: null,
+      // 两条阈值不在这里定：NULL = 跟模型走，要给这一段单独调就写这两列
+      handoffThreshold: null,
+      guardThreshold: null,
+      // 谁开的这段会话、自动交接开不开：**创建那一刻写死**（用户建 0 / 兄弟会话 1）
+      autoHandoff: params.autoHandoff === true,
+      lineage: params.lineage ?? null,
       createdAt,
       updatedAt: createdAt,
     };
@@ -441,6 +465,11 @@ export class ConversationService {
         modelId: draft.modelId,
         // 草稿期间用户先调过档的话，落库时跟着写进去
         thinkingLevel: draft.thinkingLevel,
+        // v4 的四列：两条阈值跟模型走（NULL）、开关与血缘是创建时就定死的身份
+        handoffThreshold: draft.handoffThreshold,
+        guardThreshold: draft.guardThreshold,
+        autoHandoff: draft.autoHandoff,
+        lineage: draft.lineage,
         createdAt: draft.createdAt,
         updatedAt: draft.updatedAt,
       });
@@ -776,6 +805,12 @@ export class ConversationService {
       pinned: row.pinned,
       agentId: row.agentId,
       modelId: row.modelId,
+      // 两条阈值：NULL 是常态（跟模型走）—— 这一格给的是会话行上的事实，客户端自己不去猜
+      handoffThreshold: row.handoffThreshold,
+      guardThreshold: row.guardThreshold,
+      // 开关与血缘也是会话行上的事实：一个说明装不下时谁来拿主意，一个说明它从哪来
+      autoHandoff: row.autoHandoff,
+      lineage: row.lineage,
       createdAt: iso(row.createdAt),
       updatedAt: iso(row.updatedAt),
       // 这个数来自 `listByConversation` 的长度：只有**主线**消息（不含子 Agent 的，那些在同一个

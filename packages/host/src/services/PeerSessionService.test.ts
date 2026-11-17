@@ -36,9 +36,14 @@ function conversation(id: string, overrides: Partial<Conversation> = {}): Conver
     thinkingLevel: null,
     compactedAt: null,
     compactionMode: null,
+    // v4 的四列：用例摆出来的都是「用户建的那一侧」（阈值跟模型走、开关关、没血缘）
+    handoffThreshold: null,
+    guardThreshold: null,
+    autoHandoff: false,
+    lineage: null,
     nameIsAuto: true,
-    createdAt: 0,
-    updatedAt: 0,
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_000_000,
     ...overrides,
   };
 }
@@ -74,12 +79,21 @@ class FakeCreator implements PeerSessionConversationCreator {
     this.rows.set(PARENT_ID, conversation(PARENT_ID, { name: "父对话" }));
   }
 
-  async create(params: ConversationCreateParams): Promise<ConversationCreateResult> {
+  async create(params: ConversationCreateParams & { lineage: string; autoHandoff: boolean }): Promise<ConversationCreateResult> {
     this.created.push(params);
     if (this.failWith !== undefined) throw this.failWith;
     this.seq += 1;
     const id = `c-child-${this.seq}`;
-    this.rows.set(id, conversation(id, { workspaceId: params.workspaceId, agentId: params.agentId }));
+    // 血缘与开关在创建那一刻就落到「库里那一行」（v4：它们不再只活在进程内）
+    this.rows.set(
+      id,
+      conversation(id, {
+        workspaceId: params.workspaceId,
+        agentId: params.agentId,
+        lineage: params.lineage,
+        autoHandoff: params.autoHandoff,
+      }),
+    );
     return { conversation: { id } as unknown as ConversationView };
   }
 
@@ -131,13 +145,16 @@ function makeHarness(): Harness {
   const service = new PeerSessionService({
     conversations: {
       get: async (id) => creator.rows.get(id),
+      listByLineage: async (lineage) =>
+        [...creator.rows.values()]
+          .filter((row) => row.lineage === lineage)
+          .map((row) => ({ id: row.id })),
     },
     conversationCreator: creator,
     messages: {
       listByConversation: async (conversationId) => stored.get(conversationId) ?? [],
     },
     chatRunner: runner,
-    now: () => 1_700_000_000_000,
   });
   service.bind(caller, PARENT_ID);
 
@@ -166,9 +183,15 @@ describe("create：建会话 → 落真行 → 把第一句交出去 → 立刻�
     const created = await harness.service.create({ caller: harness.caller, prompt: "查一下登录页" });
 
     expect(created).toEqual({ ok: true, sessionId: "c-child-1", label: "会话 1" });
-    // 会话按 `conversation.create` 那条路开：同项目、同助手（模型交给三级解析）
+    // 会话按 `conversation.create` 那条路开：同项目、同助手（模型交给三级解析），
+    // 外加两项身份：谁开的（血缘）与自动交接开关的初值
     expect(harness.creator.created).toEqual([
-      { workspaceId: "ws-1", agentId: "default" },
+      {
+        workspaceId: "ws-1",
+        agentId: "default",
+        lineage: PARENT_ID,
+        autoHandoff: true,
+      },
     ]);
     // 先落真行再投（消息行要挂在这段对话上）
     expect(harness.creator.persisted).toEqual(["c-child-1"]);
@@ -182,19 +205,16 @@ describe("create：建会话 → 落真行 → 把第一句交出去 → 立刻�
     });
   });
 
-  it("记录里没有状态这一格：只有血缘、名字、层数与开出来的时刻", async () => {
+  it("进程内只留一个可读名：血缘、开关、层数、开启时刻都不在记录里", async () => {
     const harness = makeHarness();
-    await harness.service.create({ caller: harness.caller, prompt: "干点活" });
+    const created = await harness.service.create({ caller: harness.caller, prompt: "干点活" });
+    if (!created.ok) throw new Error("没建成");
 
-    const record = harness.service.record("c-child-1");
-    expect(Object.keys(record ?? {}).sort()).toEqual([
-      "depth",
-      "label",
-      "parentConversationId",
-      "sessionId",
-      "startedAt",
-    ]);
-    expect(record).toMatchObject({ parentConversationId: PARENT_ID, depth: 1 });
+    // 记录里就那一个名字：没有 process 内的血缘 / 深度 / 开启时刻
+    expect(harness.service.labelOf(created.sessionId)).toBe(created.label);
+    // 血缘与开关是**会话行上的列**（创建那一刻写死）
+    const child = harness.creator.rows.get(created.sessionId);
+    expect(child).toMatchObject({ lineage: PARENT_ID, autoHandoff: true });
   });
 
   it("调用方自己就是平级会话 → `depth_exceeded`，一段会话都不建", async () => {

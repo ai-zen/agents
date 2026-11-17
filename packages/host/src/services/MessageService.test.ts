@@ -276,6 +276,11 @@ describe("MessageService.list 的取法（A12）", () => {
           thinkingLevel: null,
           compactedAt: null,
           compactionMode: null,
+          // 草稿也是会话行形状：v4 那四列在草稿阶段就已定下（开关关、没有血缘）
+          handoffThreshold: null,
+          guardThreshold: null,
+          autoHandoff: false,
+          lineage: null,
           createdAt: 1,
           updatedAt: 1,
         },

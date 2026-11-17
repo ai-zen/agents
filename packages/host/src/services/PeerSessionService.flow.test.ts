@@ -41,11 +41,21 @@ function conversation(id: string, overrides: Partial<Conversation> = {}): Conver
     thinkingLevel: null,
     compactedAt: null,
     compactionMode: null,
+    // v4 的四列：用用例摆出来的都是「用户建的那一侧」（阈值跟模型走、开关关、没血缘）
+    handoffThreshold: null,
+    guardThreshold: null,
+    autoHandoff: false,
+    lineage: null,
     nameIsAuto: true,
     createdAt: 0,
     updatedAt: 0,
     ...overrides,
   };
+}
+
+/** 血缘反查（执行者那边只有会话行，没有进程内记录） */
+function childrenOf(rows: Map<string, Conversation>, lineage: string): { id: string }[] {
+  return [...rows.values()].filter((row) => row.lineage === lineage).map((row) => ({ id: row.id }));
 }
 
 /**
@@ -58,11 +68,20 @@ class RegisteringCreator implements PeerSessionConversationCreator {
   private seq = 0;
   constructor(private readonly rows: Map<string, Conversation>) {}
 
-  async create(params: ConversationCreateParams): Promise<ConversationCreateResult> {
+  async create(params: ConversationCreateParams & { lineage: string; autoHandoff: boolean }): Promise<ConversationCreateResult> {
     this.created.push(params);
     this.seq += 1;
     const id = `c-child-${this.seq}`;
-    this.rows.set(id, conversation(id, { workspaceId: params.workspaceId, agentId: params.agentId }));
+    // 血缘与开关在创建那一刻就落到「库里那一行」（v4：它们不再只活在进程内）
+    this.rows.set(
+      id,
+      conversation(id, {
+        workspaceId: params.workspaceId,
+        agentId: params.agentId,
+        lineage: params.lineage,
+        autoHandoff: params.autoHandoff,
+      }),
+    );
     return { conversation: { id } as unknown as ConversationView };
   }
 
@@ -124,11 +143,13 @@ function makeHarness(rounds: FakeRound[]): Harness {
   });
 
   const service = new PeerSessionService({
-    conversations: { get: async (id) => rows.get(id) },
+    conversations: {
+      get: async (id) => rows.get(id),
+      listByLineage: async (lineage) => childrenOf(rows, lineage),
+    },
     conversationCreator: new RegisteringCreator(rows),
     messages: { listByConversation: (conversationId) => store.listByConversation(conversationId) },
     chatRunner: runner,
-    now: () => 1_700_000_000_000,
   });
   service.bind(caller, PARENT_ID);
 

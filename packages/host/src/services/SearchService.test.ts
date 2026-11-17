@@ -42,6 +42,11 @@ function fakeSummarizer(): ConversationSummarizer & { calls: string[][] } {
       pinned: row.pinned,
       agentId: row.agentId ?? "",
       modelId: row.modelId ?? "",
+      // 搜索不关心 v4 那四列，但要跟会话行走（照拄一遍）
+      handoffThreshold: row.handoffThreshold ?? null,
+      guardThreshold: row.guardThreshold ?? null,
+      autoHandoff: row.autoHandoff ?? false,
+      lineage: row.lineage ?? null,
       createdAt: new Date(row.createdAt).toISOString(),
       updatedAt: new Date(row.updatedAt).toISOString(),
       messageCount: 0,

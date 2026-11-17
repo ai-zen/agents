@@ -47,8 +47,8 @@ export const PEER_SESSION_TOOL_NAMES = [
  * 前四格是活对象身上的直接事实（与宿主的 `ConversationStatus` 逐格对应）：`busy` 手上有活、
  * `idle` 闲着、`paused` 暂停（收话不动）、`dead` 没有 agent 对象。
  *
- * `gone` 只出现在 `read_session_status` 的答案里：这段会话找不到了（被删掉，或者宿主重启之后
- * 那份进程内记录没了 —— 那时它就是一段普通会话）。
+ * `gone` 只出现在 `read_session_status` 的答案里：这段会话找不到了（会话行被删了）。它不看
+ * 进程内存过什么 —— 血缘与会话本身在库里，重启之后仍是一段认得出的会话。
  *
  * 这里**没有** `running` / `failed` / `aborted` 这类值：失败是某条消息上的事实（那条消息的
  * `status` / `error`），不是一段对话此刻的状态；把「上一次失败了」挂成状态，就会在它下一次
@@ -96,7 +96,7 @@ export interface PeerSessionStatus {
 /**
  * `postMessage` 被拒绝的两种原因 —— 就是投递的两条判据。
  *
- * `gone`：这段会话不在（被删了，或者宿主重启之后那份进程内记录没了）；
+ * `gone`：这段会话不在（会话行被删了）；
  * `dead`：会话在，但那边没有 agent 对象，投过去也没有人会取件。
  *
  * 两者对模型是同一类答复：这句话没投出去，别等回音。

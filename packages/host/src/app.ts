@@ -304,7 +304,7 @@ export class HostApp {
   /**
    * 平级会话：模型在一段对话里开另一段对话，之后还能接着跟它说话。
    *
-   * 记录只活在进程内（不建表）：重启之后子会话就是一段普通会话，这里查不到它。
+   * 它自己只在进程内留一个可读名（`label`）：血缘与会话本身都在库里，重启之后照样认得。
    */
   readonly peerSessions: PeerSessionService;
   readonly autoNaming: AutoNaming;
@@ -504,10 +504,9 @@ export class HostApp {
       messages: this.messages,
       chatRunner: {
         deliver: (conversationId, input) => this.chatRunner.deliver(conversationId, input),
-        // 状态现读：平级会话的记录里不存状态（存了就要有人同步两份）
+        // 状态现读：平级会话那边只留可读名（什么都不存，存了就要有人同步两份）
         state: (conversationId) => this.chatRunner.state(conversationId),
       },
-      now: () => this.clock.now(),
     });
     // agent 工厂只造一次：交接的驱动者与普通对话用同一个（普通对话的 agent 常驻，装配一次跨
     // 多次投递复用；写文档的驱动者自己装配、用完即弃）
@@ -1057,9 +1056,10 @@ export class HostApp {
       handoff: (context) => this.handoffFor(context),
       // 档位名 → 参数补丁要用思考策略表；配置变更后会重读，所以这里给一个现读入口
       thinkingPresets: () => this.presets,
-      // 压缩的归一规则按**会话类型**分：派生会话（平级会话开出来的子会话）没人盯着它，
-      // 越线就自己压；用户会话把「要不要压」交还给宿主的提问路径（{@link askHandoffOnIdle}）。
-      isDerivedSession: (context) => this.peerSessions.isPeerSession(context.conversationId),
+      // 压缩的归一规则按**会话行上的自动交接开关**分（读库，不读进程内记录）：开着的那一段
+      // （兄弟会话）没人盯着它，越线就自己压；关着的那一段（用户建的）把「要不要压」交还给宿主
+      // 的提问路径（{@link askHandoffOnIdle}）。开关是会话行上的列，所以那条判断重启也不变形。
+      wantsAutoHandoff: (context) => this.autoHandoffOf(context.conversationId),
       // 插件压完记一笔：会话行上写 `auto`（`manual` 那条由 `HandoffService` 自己写）
       onCompacted: (context, mode) =>
         this.conversationService.markCompacted(context.conversationId, mode),
@@ -1099,23 +1099,32 @@ export class HostApp {
   }
 
   /**
+   * 这一段的自动交接开关（`conversations.autoHandoff` 那一列）：读库，不读进程内记录。
+   *
+   * `true` = 开（兄弟会话那一侧：撞线自己交班、不问）；`false` = 关（用户建的那一侧：装不下
+   * 时问一次）。关是常态，也是缺省值。会话行没了就当关：没有这一段可问。
+   */
+  private async autoHandoffOf(conversationId: string): Promise<boolean> {
+    const row = await this.conversations.get(conversationId);
+    return row?.autoHandoff === true;
+  }
+
+  /**
    * 变闲那一拍：到了交接线就问用户（R59 / F-D2 / D22）。
    *
    * **全部读当下事实** —— 没有任何「刚刚发生了什么」的东西传进来：这一步不带结果、不带用量、
    * 不带「谁发起的」。四条前提，任缺一条都不问：
    *
-   * 1. 不是派生会话（平级会话开出来的那一段自己压，`AutoMigratePlugin` 的 `resolveMode`
-   *    回 `"self"`；不问，否则用户亲自在子会话里说一句就会两套都上手）；
+   * 1. 自动交接开关是关的（会话行上那一列）：开着的那一段（兄弟会话）撞线自己交班，不问；
    * 2. 这段对话现在那个 agent 的历史里，最后一条带用量的助手消息越过交接线了（拿不到就不问：
    *    没有用量就没有“越线”这回事）；
-   * 3. 交接线来自**会话行上的模型**（`setModel` 之后就是新模型的阈值），`0` 表示这条线关着；
+   * 3. 交接线先看会话行上的覆盖值（`handoffThreshold`），没有就看**会话行上的模型**
+   *    （`setModel` 之后就是新模型的阈值），`0` 表示这条线关着；
    * 4. 已经挂着一道交接题就不问（多端看到的是同一道）。
    *
    * 问与答之后的事都归 `QuestionService`；问不出口只记日志（不重试，也不影响别的）。
    */
   private async askHandoffOnIdle(conversationId: string): Promise<void> {
-    if (this.peerSessions.isPeerSession(conversationId)) return;
-
     const agent = this.agentRegistry.get(conversationId);
     if (!agent) return;
     const promptTokens = lastPromptTokens(agent.messages);
@@ -1124,9 +1133,12 @@ export class HostApp {
     try {
       const conversation = await this.conversations.get(conversationId);
       if (!conversation) return;
+      // 开关开着的那一段不问：它自己压（PRD 4.5）
+      if (conversation.autoHandoff) return;
       const config = await this.readConfig();
       const model = config.models.find((item) => item.id === conversation.modelId);
-      const handoffTokens = model?.tokenThresholds.handoff ?? 0;
+      // 会话行上的覆盖值优先（`null` = 跟模型走）
+      const handoffTokens = conversation.handoffThreshold ?? model?.tokenThresholds.handoff ?? 0;
       if (handoffTokens <= 0) return;
       if (promptTokens < handoffTokens) return;
 

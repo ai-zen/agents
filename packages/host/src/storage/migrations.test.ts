@@ -234,6 +234,61 @@ describe("migrate", () => {
     expect(row).toEqual({ source: null });
   });
 
+  it("v4：老库升上来，四列都在且默认值正确（老行 autoHandoff = 1，语义落在「开」那一侧）", async () => {
+    const db = ownDatabase("upgrade-v3-to-v4.db");
+    // 只跑到 v3，模拟「上一版已经装上升过级的库」
+    const older = MIGRATIONS.filter((migration) => migration.version <= 3);
+    await db.tx((tx) => {
+      for (const migration of older) for (const statement of migration.statements) tx.run(statement);
+      tx.run("INSERT INTO meta (id, schemaVersion, createdAt) VALUES (1, 3, ?)", [1]);
+    });
+    await db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/v3', 1)");
+    await db.run(
+      `INSERT INTO conversations (id, workspaceId, name, agentId, modelId, createdAt, updatedAt)
+       VALUES ('c1', 'w1', '旧对话', 'a1', 'm1', 2, 2)`,
+    );
+
+    await migrate(db);
+
+    expect(await new MetaRepository(db).getSchemaVersion()).toBe(LATEST_VERSION);
+    const columns = await db.all<{ name: string; notnull: number; dflt_value: string | null }>(
+      "PRAGMA table_info('conversations')",
+    );
+    // 两条阈值与血缘可空、无缺省：NULL 就是「跟模型走」/「用户建的」
+    for (const name of ["handoffThreshold", "guardThreshold", "lineage"]) {
+      expect(columns.find((column) => column.name === name)).toMatchObject({
+        notnull: 0,
+        dflt_value: null,
+      });
+    }
+    // 自动交接开关非空、缺省 1：`ADD COLUMN ... NOT NULL` 在 SQLite 里必须给缺省值
+    expect(columns.find((column) => column.name === "autoHandoff")).toMatchObject({
+      notnull: 1,
+      dflt_value: "1",
+    });
+
+    const row = await db.get<{
+      handoffThreshold: number | null;
+      guardThreshold: number | null;
+      autoHandoff: number;
+      lineage: string | null;
+    }>(
+      "SELECT handoffThreshold, guardThreshold, autoHandoff, lineage FROM conversations WHERE id = 'c1'",
+    );
+    // 老行：阈值跟模型走、没有血缘；开关落在**「开」**这一侧。
+    // 代码里这一列的读法只有一条：1 = 开 = 撞线自己交班、不问（兄弟会话语义）；
+    // 0 = 关 = 装不下时问用户一次。老行读成 1 不是「认出它是兄弟会话」（v4 之前谁开的只活在
+    // 进程里、重启即失），而是两个值里选了「自己交班」那一侧：升级后的老会话不会因为这一列
+    // 新出现就开始弹题。写入方（创建处）一定显式写，所以这个缺省值只对 v4 之前的行与「将来
+    // 有人漏写」说话。
+    expect(row).toEqual({
+      handoffThreshold: null,
+      guardThreshold: null,
+      autoHandoff: 1,
+      lineage: null,
+    });
+  });
+
   it("迁移后仍然是 WAL 且外键约束是开着的", async () => {
     await migrate(db);
     const journal = await db.get<{ journal_mode: string }>("PRAGMA journal_mode");

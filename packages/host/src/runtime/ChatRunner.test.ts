@@ -55,6 +55,11 @@ function makeConversation(): Conversation {
     thinkingLevel: null,
     compactedAt: null,
     compactionMode: null,
+    // v4 的四列：两条阈值跟模型走、开关关（用户建的那侧）、没有血缘
+    handoffThreshold: null,
+    guardThreshold: null,
+    autoHandoff: false,
+    lineage: null,
     pinned: false,
     nameIsAuto: true,
     createdAt: 0,

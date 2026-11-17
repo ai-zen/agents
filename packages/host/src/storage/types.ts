@@ -67,15 +67,41 @@ export interface ConversationRow {
   compactedAt: number | null;
   /** 上一次压缩是谁促成的（`null` = 没压过）：`auto` = 派生会话自动压，`manual` = 用户答完问题后压 */
   compactionMode: CompactionMode | null;
+  /**
+   * 这段会话自己定的交接阈值（PRD 1.4 的「交接阈值」那一格）；`null` = 跟模型走。
+   *
+   * NULL 才是常态：模型上那份 `tokenThresholds.handoff` 是唯一出厂的数字，会话行这一列只是
+   * **覆盖层** —— 用户给这一段单独调过就写在这里，没调过就保持 NULL，读的时候退回模型那份。
+   */
+  handoffThreshold: number | null;
+  /** 这段会话自己定的防护阈值（硬线）；`null` = 跟模型走。口径同 `handoffThreshold` */
+  guardThreshold: number | null;
+  /**
+   * 0 / 1：自动交接开关（PRD 1.4 的「自动交接开关」那一格）。
+   *
+   * 1 = 开：撞线自己交班、不问（兄弟会话那一侧）；0 = 关：装不下时问用户一次（用户建的那一侧）。
+   * 初值由**谁开的这段会话**决定，创建那一刻写死（用户建 0 / 兄弟会话 1）。
+   */
+  autoHandoff: number;
+  /**
+   * 血缘：谁开的这段会话（父会话 id）；`null` = 用户建的（PRD 1.3 / 4.6）。
+   *
+   * 它只是**身份**：历史里显示「由会话 X 创建」、判「只限一层」（父自己也有血缘就不能再开）。
+   * 投递不看它 —— 血缘不是通行证。
+   */
+  lineage: string | null;
   createdAt: number;
   /** 最后一次结构性变化的时间；排序只看 pinned + createdAt，不看它（D13） */
   updatedAt: number;
 }
 
-export interface Conversation extends Omit<ConversationRow, "pinned" | "nameIsAuto"> {
+export interface Conversation
+  extends Omit<ConversationRow, "pinned" | "nameIsAuto" | "autoHandoff"> {
   pinned: boolean;
   /** 名字仍是自动起的那个（真值来自 `conversations.nameIsAuto` 列，不由名字反推） */
   nameIsAuto: boolean;
+  /** 自动交接开关（真值来自 `conversations.autoHandoff` 列）：开 = 撞线自己交班、不问 */
+  autoHandoff: boolean;
 }
 
 export interface ConversationCreateInput {
@@ -88,6 +114,17 @@ export interface ConversationCreateInput {
   modelId: string;
   /** 创建时就能定的思考档位（草稿期间用户先调过档、首次发消息才落库）；缺省 `null` = 跟随助手 */
   thinkingLevel?: string | null;
+  /** 这段会话自己的两条阈值；不给 = `null`（跟模型走，常态） */
+  handoffThreshold?: number | null;
+  guardThreshold?: number | null;
+  /**
+   * 自动交接开关的初值；不给 = `false`（用户建的那一侧：装不下时问一次）。
+   *
+   * **创建那一刻写死**：兄弟会话那条路显式给 `true`，之后就只跟着会话行走。
+   */
+  autoHandoff?: boolean;
+  /** 谁开的这段会话（父会话 id）；不给 = 用户建的 */
+  lineage?: string | null;
   createdAt: number;
   updatedAt?: number;
 }
