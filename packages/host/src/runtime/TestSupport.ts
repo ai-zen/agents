@@ -269,7 +269,7 @@ export interface FakeRound {
   fail?: Error;
   /** 依次吐出的增量（原样交给 core 的 `applyChunk`） */
   deltas?: AgentNS.Delta[];
-  /** 收尾片带的用量（会经 `applyChunk` 钉到那条助手消息上） */
+  /** 收尾片带的用量（不属于增量、不进 `applyChunk`：由 core 跑流那一侧钉到那条助手消息上） */
   usage?: AgentNS.Usage;
   /**
    * 这一轮模型要求的工具调用；给了就进「等工具」并再开一轮。

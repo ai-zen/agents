@@ -13,13 +13,14 @@ import type { ChatCompletionChunk } from "openai/resources/chat/completions";
 
 type AnyChunk = any;
 
-function chunk(delta: any, finish_reason: any = null): AnyChunk {
+function chunk(delta: any, finish_reason: any = null, extra: Record<string, unknown> = {}): AnyChunk {
   return {
     id: "chunk-1",
     object: "chat.completion.chunk",
     created: 0,
     model: "mock",
     choices: [{ index: 0, delta, finish_reason }],
+    ...extra,
   };
 }
 
@@ -252,6 +253,64 @@ describe("Agent 投递", () => {
     agent.kill();
     expect(codeOf(() => agent.push(user("三")))).toBe("closed");
 
+    await agent.start();
+  });
+});
+
+describe("Agent 流末的用量与结束原因", () => {
+  /**
+   * 这两格**不是增量**：`usage` 与 `finish_reason` 是那次响应的外层字段（`AgentNS.Delta`
+   * 里没有它们），由流处理这一侧钉到消息上 —— `applyChunk` 只处理那一片增量本身。
+   */
+  it("`usage` 与 `finish_reason` 钉在那条 assistant 消息上", async () => {
+    const { client } = createMockClient([
+      [
+        chunk({ content: "好" }),
+        chunk({}, "stop", { usage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 } }),
+      ],
+    ]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+    void agent.start();
+
+    agent.push(user("问一句"));
+    await settled(agent);
+
+    const assistant = agent.messages.at(-1)!;
+    expect(assistant.content).toBe("好");
+    expect(assistant.finish_reason).toBe(AgentNS.FinishReason.Stop);
+    expect(assistant.usage).toEqual({ prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 });
+
+    agent.stop();
+    await agent.start();
+  });
+
+  it("只有 usage、没有 choices 的片（部分端点如此）照样收下用量", async () => {
+    const { client } = createMockClient([
+      [
+        chunk({ content: "好" }),
+        {
+          id: "chunk-2",
+          object: "chat.completion.chunk",
+          created: 0,
+          model: "mock",
+          choices: [],
+          usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+        },
+      ],
+    ]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+    void agent.start();
+
+    agent.push(user("问一句"));
+    await settled(agent);
+
+    // 没有 choices 就没有增量、也没有结束原因，但用量照收
+    const assistant = agent.messages.at(-1)!;
+    expect(assistant.content).toBe("好");
+    expect(assistant.finish_reason).toBeUndefined();
+    expect(assistant.usage?.completion_tokens).toBe(2);
+
+    agent.stop();
     await agent.start();
   });
 });

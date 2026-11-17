@@ -96,16 +96,15 @@ describe("事件表", () => {
       at: NOW,
     };
 
-    // 按 core 的 chunk 形状把这一片喂给 applyChunk：字段名对不上就会攒不进去
-    const chunk = {
-      choices: [{ index: 0, delta: payload.delta, finish_reason: null }],
-      usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
-    };
-    applyChunk(receiver, chunk as unknown as Parameters<typeof applyChunk>[1]);
+    // 载荷里的那一片增量本身就是 `applyChunk` 的入参（都是 core 的 `AgentNS.Delta`，
+    // 中间不包 `choices[0]`）：字段名对不上就会攒不进去
+    applyChunk(receiver, payload.delta);
 
     expect(receiver.content).toBe("你好");
     expect(receiver.reasoning_content).toBe("先看文件");
-    expect(receiver.usage).toEqual({ prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 });
+    // 用量与结束原因不属于这一片增量：它们由跑流的那一侧钉到消息上（这里不该冒出来）
+    expect(receiver.usage).toBeUndefined();
+    expect(receiver.finish_reason).toBeUndefined();
   });
 
   it("conversation.changed 覆盖结构变化的那几种", () => {

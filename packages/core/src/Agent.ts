@@ -1051,6 +1051,8 @@ export class Agent extends AgentContext {
     try {
       this.emit("requestSent", { agent: this, body: ctx.body });
 
+      // 厂商的 chunk 类型只描述这层**外壳**：真正被攒进消息的是它里面的那一片增量
+      // （`choices[0].delta`，形状就是 core 的 `AgentNS.Delta`）。
       let stream: AsyncIterable<ChatCompletionChunk>;
       try {
         stream = (await this.client.chat.completions.create(ctx.body as any, {
@@ -1065,7 +1067,29 @@ export class Agent extends AgentContext {
       try {
         for await (const chunk of stream) {
           this.emit("delta", { agent: this, chunk, source: { message: assistant } });
-          applyChunk(assistant, chunk);
+
+          // `usage` 与 `finish_reason` 不是「这一片带来了什么」，它们是这次响应的外层字段：
+          // 不属于增量，也就不进 `applyChunk`，在调用方这一侧钉到消息上。
+          //
+          // 流式最后一个 chunk 才带 usage：钉到本轮 assistant 消息上（与 finish_reason 同处），
+          // 使用量随消息持久化，从而可按消息求和统计累计消耗（计费口径）与审计。
+          // core 不另存「上一轮用量」的快照：要读就读最后一条带 `usage` 的 assistant 消息。
+          if (chunk.usage) {
+            assistant.usage = chunk.usage as unknown as AgentNS.Usage;
+          }
+
+          const choice = chunk.choices?.[0];
+
+          if (choice?.finish_reason) {
+            assistant.finish_reason = choice.finish_reason as AgentNS.FinishReason;
+          }
+
+          // 只带 usage / finish_reason 的收尾片没有增量可攒（形状比 `AgentNS.Delta` 更宽：
+          // 厂商那边 `content` 可以是 `null`、`role` 多一个 `developer`，这里是同一个概念的
+          // 同一个位置，按 `Delta` 收）
+          if (choice?.delta) {
+            applyChunk(assistant, choice.delta as unknown as AgentNS.Delta);
+          }
         }
       } catch (error) {
         throw this.toAgentError(error, "stream-failed", inflight);

@@ -329,7 +329,7 @@ describe("AutoMigratePlugin", () => {
    * 起 → 投 → 等闲。跑到「闲」的那一刻 core 会分发 `onIdle`，插件应当在那时交接。
    */
   it("真跑一轮：agent 变闲时自动触发交接", async () => {
-    // 流的最后一片带 usage：`applyChunk` 把它钉到那条 assistant 消息上，插件从消息上读
+    // 流的最后一片带 usage：core 跑流时把它钉到那条 assistant 消息上，插件从消息上读
     const stream = [
       {
         id: "c1",

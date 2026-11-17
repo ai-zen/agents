@@ -11,9 +11,13 @@
  *   · 打开或重连时 `message.list` 拉回来的那一份快照（全量，或从本地最后一条 id 起的增量）。
  *
  * 攒的规则里最容易出错的是「一片增量怎么折进一条消息」：正文拼串、内容段数组、工具参数串的
- * 两种厂商行为、流末的 `usage` 与 `finish_reason` —— 每条都有自己的边界情形。所以这里
- * **不自己写**这套规则，直接调 core 的 `applyChunk`：宿主跑 agent 时攒消息用的就是它，同一份
- * 函数在两边跑，攒出来的那条消息与宿主存下来的逐字一致。这就是「完美镜像」的全部保证。
+ * 两种厂商行为 —— 每条都有自己的边界情形。所以这里**不自己写**这套规则，直接调 core 的
+ * `applyChunk`：宿主跑 agent 时攒消息用的就是它，同一份函数在两边跑，入参也是同一片东西
+ * （`message.delta` 载荷里的 `AgentNS.Delta` 原样）—— 于是攒出来的那条消息与宿主存下来的
+ * 逐字一致。这就是「完美镜像」的全部保证。
+ *
+ * 用量与结束原因**不在这片增量里**（它们是那次响应的外层字段，不进 `applyChunk`）：它们跟着
+ * `message.changed` 整条回来。
  *
  * ## 只管这三样东西
  *
@@ -110,26 +114,6 @@ export interface MirrorSnapshot {
   roster: SubAgentFact[];
   /** 非空就是「正在交接」（与四格分开：交接期间这段照旧是忙 / 闲 / 暂停） */
   handoff: { since: string } | null;
-}
-
-/**
- * `applyChunk` 吃的片类型。
- *
- * 它是厂商的 `ChatCompletionChunk`，客户端不为它去依赖 `openai`：类型从函数签名推出来，
- * 构造时转一下（下面 {@link chunkOf} 有说明）。
- */
-type Chunk = Parameters<typeof applyChunk>[1];
-
-/**
- * 一条 `AgentNS.Delta` → `applyChunk` 能吃的那一片。
- *
- * 事件载荷里的增量是 core 的 `AgentNS.Delta`（描述「这一片带来了什么」），而 `applyChunk`
- * 的入参是厂商 chunk（`choices[0].delta` 装同一份东西，另外可能带 `usage` / `finish_reason`）。
- * 这里只做形状搬运：包一层 `choices[0]`，`finish_reason` 给 `null`（增量片本来没有它；流末的
- * 结束原因由 `message.changed` 整条带回来）。
- */
-function chunkOf(delta: AgentNS.Delta): Chunk {
-  return { choices: [{ index: 0, delta, finish_reason: null }] } as unknown as Chunk;
 }
 
 /** 一段对话的镜像：主线一栏、子 Agent 各一栏、四格里那一格，外加名册与交接态 */
@@ -322,8 +306,10 @@ export class ConversationMirror {
     if (!message) return;
     // 快照里已经有它，补的那一批再折一遍就是同一段字写两遍
     if (replay && this.fromSnapshot.has(payload.messageId)) return;
-    // 与宿主攒消息用的是同一个函数：正文、内容段、工具参数串、流末用量都按同一套规则
-    applyChunk(message, chunkOf(payload.delta));
+    // 与宿主攒消息用的是同一个函数，入参也是同一片东西：`message.delta` 的载荷
+    // 就是 core 的 `AgentNS.Delta`，原样交给 `applyChunk`，不必包成别的形状。
+    // 用量与结束原因不在这里（它们不属于增量）：那条消息定下来时由 `message.changed` 整条带回来。
+    applyChunk(message, payload.delta);
   }
 
   /** 一条消息该放进哪一栏：给了 `toolCallId` 就是那一栏，没给就是主线 */
