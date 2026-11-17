@@ -86,7 +86,7 @@
 
 前提：**题不落库**，题的生命 = 这段对话活着的这段时间；题的去处只有「被答了」与「这段对话没了（含意外死）」；问不问只看 `autoHandoff`；**交接期间一律不收件**。
 
-- [ ] `migrations.ts`：加 v5 —— `DROP TABLE questions`（索引随表走）+ `ALTER TABLE conversations ADD COLUMN pendingHandoff TEXT`（待交接的 mode，`NULL` = 没有）。
+- [ ] `migrations.ts`：加 v5 —— `DROP TABLE questions`（索引随表走）+ `ALTER TABLE conversations ADD COLUMN pendingHandoff TEXT`（待交接的 mode，`NULL` = 没有）+ 删 `messages.parentToolCallId` 列与它的索引（库不再有第二种取法）。
 - [ ] `migrations.ts` v4：`autoHandoff … DEFAULT 1` → `DEFAULT 0`（旧库不迁移，删掉重来）。
 - [ ] 删 `storage/QuestionRepository.ts` 整个文件；`storage/types.ts` 里的 `Question*` 行类型一起删。
 - [ ] `QuestionService`：题改成**进程内对象**；`ask` 直接造对象 + 推事件；`list(conversationId)` 必填（删 `listAll` 与 `state` 过滤）；`blockingQuestions` / `assertSendable` 读内存；删掉整套「读坏了怎么办」防御层；加「这段对话没了」的清题入口（死那一刻清题 + 清待办）。
@@ -94,7 +94,7 @@
 - [ ] `wire/methods.ts`：`QuestionListParams.conversationId` 必填、删 `state`；删 `HandoffStartParams.questionId`；`conversation.send` 注释里的 `not_found` 改成 `conversation_dead`，并补「交接期间 `busy` / `handoff_in_progress`」。
 - [ ] `HandoffService`：删 `markQuestionAnswered` + `QuestionMarker`；入口判据换成下面那一处判据。
 - [ ] **答题顺序**：答完 → 判能否立刻交接 → 能就交接（批头才关输出闸）、不能就在会话行上留待交接标记；`onIdle` 那一拍先看待办，有就做、做完清掉。
-- [ ] **判据收成一处**：`{ ok: true } | { ok: false, reason: "no_agent" | "working" | "output_paused" | "handoff_in_progress" }`；`ConversationService.assertIdle` 只留「手上有活」，名字与注释说清它不是交接准入。
+- [ ] **判据收成一处**：`{ ok: true } | { ok: false, reason: "no_agent" | "working" | "output_paused" | "handoff_in_progress" }`，这四个词是全仓唯一的一套拒因（换模型 / 换思考档那类「手上有活」的判定复用 `working`，不另起 `not_idle`）；`ConversationService.assertIdle` 只留「手上有活」，名字与注释说清它不是交接准入。
 - [ ] `ConversationService`：`pendingCount` 改问 `QuestionService`（内存），不再查表。
 - [ ] `ChatRunner.deliver`：交接期间一律拒（`busy` / `handoff_in_progress`）。
 - [ ] `ChatRunner` / `ConversationBridge`：回滚水位从「记忆长度」换成「**交接指令的位置**」（按那条消息 id 截）。

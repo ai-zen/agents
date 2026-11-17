@@ -42,7 +42,7 @@
 
 - `stop` / `kill` 动的是**整条命**；`pauseOutput` / `abort` 动的是**下一批**。
 - `abort` **必然**伴随「不再取件」（掐完不能再往下走），但反过来不成立：`pauseOutput` 不必 abort。
-- **界面只提供 `abort`**（那个「中断」按钮）：用户按了就得马上停。`pauseOutput` 留给程序化和内部用（例如交接期间把这段按住）。
+- **界面上三个都有**：`pauseOutput`（暂停）、`resumeOutput`（继续）、`abort`（中断）。交接期间只给中断 —— 那期间暂停与继续一律拒，否则等于有人把闸开开。
 - 别把 `kill` 当成「更快的 `stop`」：它是不作答的 `stop`。
 
 ### `resumeOutput` 为什么是显式开关
@@ -493,7 +493,7 @@ subagent 是 core 的一等概念，不是外部业务。core 欠四样：
 
 - 模板注入（`messages` + `injectArgs` 深拷贝后替 `agent.messages`）—— 构造期换引用，§12 明确合法；
 - `onSubAgentStart` 可拒、`onSubAgentEnd` 收尾；
-- `sumUsage(agent.messages)` 钉到本次委派的 tool 消息上（收尸之后算，不再是 agent 自己的事；排在 `onSubAgentEnd` 之前）。
+- 用量不由 core 聚合：没有 `sumUsage`、没有 `Message.subAgentUsage`、没有 `lastUsage` —— 客户端从 `delta` 与消息上的 `usage` 自己推（公理 4：core 不算、不存、不报）。
 
 中断不再需要 `signal.addEventListener("abort", () => agent.abort())` 那段手工联动 —— 信号直接交给 `runOnce`。
 
