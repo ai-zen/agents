@@ -1,10 +1,9 @@
 /**
  * 交接的验收：谁写文档（自交接＝同一个驱动者 / 独立交接＝一次性驱动者）、文档真的落进
  * `<cwd>/.ai-zen/handoffs/`（D19）、模板来自磁盘上的 `handoff` Skill（读不到用兜底）、
- * 降级要说明（F-D7）、取消不报错（F-D7）、交接后新对话的身份与旧对话的存续（D18）、
- * 只产文档不换会话（F-D4）。
+ * 降级要说明（F-D7）、取消不报错（F-D7）、换记忆与存档会话（PRD 4.5）、只产文档不另开对话（F-D4）。
  *
- * 两件口径：
+ * 四件口径：
  *
  * 1. `start()` 只回「已经开始」，那一趟在后台跑。所以每个用例都靠一条 **`memory_replaced`**
  *    事件等它收尾 —— 提交与回滚都推它，于是「跑完了没有」这件事有一个确定的答案，
@@ -13,6 +12,9 @@
  *    不看状态事件，也不看模型说的话。
  * 3. 入口判据只有一条：**那段对话闲着才发起**。非空闲（忙 / 暂停 / 没有 agent）直接拒，
  *    交接全程不碰暂停、也不替谁放行。
+ * 4. 提交之后**旧记忆是另一段会话**（`已存档_<原名>`）、原会话只留「系统提示 + cwd 消息 +
+ *    断点消息」（cwd 在前：换完记忆这一段还得知道自己站在哪个目录里）；库里那几条语句
+ *    在同一批里，失败一段存档会话都不留。
  */
 
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
@@ -23,8 +25,8 @@ import { AgentNS } from "@ai-zen/agents-core";
 import { completeOnce, ConfigManager } from "@ai-zen/agents-sdk";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import type { ChatEventEmitter } from "../runtime/ChatRunner.js";
-import { createFakeScope, FakeAgent } from "../runtime/TestSupport.js";
+import type { ChatEventEmitter, ChatAgent } from "../runtime/ChatRunner.js";
+import { createFakeScope, FakeAgent, flushMicrotasks } from "../runtime/TestSupport.js";
 import type { FakeRound } from "../runtime/TestSupport.js";
 import type { AgentBuildContext, AgentFactory } from "../runtime/ChatRunner.js";
 import { AssetRepository } from "../storage/AssetRepository.js";
@@ -58,6 +60,9 @@ type SummaryClient = Parameters<typeof completeOnce>[0]["client"];
 
 /** 文档正文（要过 400 字节那道坎，所以写长一点） */
 const DOCUMENT_BODY = `## 任务目标\n\n把交接写完。\n\n${"正文。".repeat(200)}`;
+
+/** 驱动者开局手里那条系统提示（来自助手定义）：换记忆之后它得还在 */
+const DRIVER_SYSTEM_PROMPT = "你是这个项目的助手";
 
 function echoingClient(): SummaryClient {
   const client = {
@@ -331,7 +336,7 @@ async function seedHarness(): Promise<Harness> {
         },
         { deltas: [{ content: "写好了" }] },
       ];
-      const driver = options.driver ?? new RecordingAgent(rounds);
+      const driver = options.driver ?? new RecordingAgent(rounds, { system: DRIVER_SYSTEM_PROMPT });
       const runnerCalls: string[] = [];
       const instructions: string[] = [];
       const writesDocument = options.writesDocument ?? true;
@@ -374,6 +379,8 @@ async function seedHarness(): Promise<Harness> {
 
       const agents: HandoffAgentHolder = options.holder ?? { get: () => driver };
       const { log, emit } = watchEvents();
+      // 模板目录按 cwd 现算（生产上就是「项目里放一份同名 Skill 覆盖全局那份」）
+      const templateDirs = options.skillDirs ?? [join(skillsDir)];
 
       const service = new HandoffService({
         conversations,
@@ -382,13 +389,13 @@ async function seedHarness(): Promise<Harness> {
         conversationViews: conversationService,
         scopes,
         createAgent,
-        execute: options.execute ?? sdkExecutor(options.skillDirs ?? [join(skillsDir)]),
+        execute: options.execute ?? sdkExecutor(),
         agents,
         runner,
         ...(options.notices ? { notices: options.notices } : {}),
         questions,
         emit,
-        skillDirs: [join(skillsDir)],
+        skillDirs: () => templateDirs,
         now: () => 1_700_000_010_000,
       });
 
@@ -429,9 +436,8 @@ async function writeDocumentAt(path: string): Promise<void> {
  * 走真执行者是为了让用例能看到「读不到 Writer 就降级 summary」这类 SDK 事实，
  * 而只换掉最外层的 HTTP 那一跳。
  */
-function sdkExecutor(skillDirs: string[]): HandoffExecutor {
+function sdkExecutor(): HandoffExecutor {
   return createSdkHandoffExecutor({
-    skillDirs,
     client: echoingClient(),
     model: "handoff-model",
     logger: { info: () => {}, warn: () => {}, error: () => {} },
@@ -651,23 +657,22 @@ describe("独立交接（一次性驱动者 + 记忆副本）", () => {
     expect(context?.history.map((message) => message.id)).toEqual(["msg-user", "msg-assistant"]);
   });
 
-  it("交接之后开新对话（D18）：身份照抄，旧对话一行不动", async () => {
+  it("交接之后开新对话（D18）：身份照抄，开场是那条交接摘要", async () => {
     const built = harness.build();
-    const before = await harness.messages.listByConversation(conversationId);
     await built.service.start({ conversationId, mode: "summary", then: "new_conversation" });
     await built.settle();
 
     const rows = await harness.conversations.list();
-    expect(rows).toHaveLength(2);
-    const newRow = rows.find((row) => row.id !== conversationId);
     const oldRow = await harness.conversations.get(conversationId);
+    // 多出来的两段：存档（旧记忆）与交接新开的那一段
+    const created = rows.filter((row) => row.id !== conversationId);
+    expect(created).toHaveLength(2);
+    const archived = created.find((row) => row.name.startsWith("已存档_"));
+    const newRow = created.find((row) => row.id !== archived?.id);
+    expect(archived).toBeDefined();
     expect(newRow?.workspaceId).toBe(oldRow?.workspaceId);
     expect(newRow?.agentId).toBe(oldRow?.agentId);
     expect(newRow?.modelId).toBe(oldRow?.modelId);
-
-    // 旧的完整保留：消息与身份都没动
-    const after = await harness.messages.listByConversation(conversationId);
-    expect(after.map((message) => message.id)).toEqual(before.map((message) => message.id));
 
     // 新对话开场：先是会话创建时那条 hidden 的 cwd 消息，再是一条宿主注入的交接摘要
     const newId = newRow?.id ?? "";
@@ -705,11 +710,13 @@ describe("独立交接（一次性驱动者 + 记忆副本）", () => {
     expect(typeof row?.compactedAt).toBe("number");
   });
 
-  it("只产文档不换会话（F-D4）", async () => {
+  it("只产文档就只多出那段存档（F-D4）：不另开新对话", async () => {
     const built = harness.build();
     await built.service.start({ conversationId, mode: "summary", then: "document_only" });
     await built.settle();
-    expect(await harness.conversations.list()).toHaveLength(1);
+    const rows = await harness.conversations.list();
+    expect(rows).toHaveLength(2);
+    expect(rows.filter((row) => row.name.startsWith("已存档_"))).toHaveLength(1);
   });
 
   it("带 questionId 的那条路径：答完之后问题被标成已答", async () => {
@@ -739,6 +746,215 @@ describe("独立交接（一次性驱动者 + 记忆副本）", () => {
     const row = await harness.questions.get("q1");
     expect(row?.state).toBe("answered");
     expect(row?.answer).toMatchObject({ value: "summary" });
+  });
+});
+
+describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
+  it("提交之后：原会话剩「cwd + 断点」两条，旧记忆整段挂到 `已存档_<原名>` 名下", async () => {
+    const built = harness.build();
+    const before = await harness.messages.listByConversation(conversationId, undefined, {
+      includeHidden: true,
+    });
+    const original = await harness.conversations.get(conversationId);
+    await built.service.start({ conversationId, mode: "summary", then: "document_only" });
+    await built.settle();
+
+    // 原会话：库里剩两条 `hidden` 消息 —— cwd 在前、断点在后
+    const left = await harness.messages.listByConversation(conversationId, undefined, {
+      includeHidden: true,
+    });
+    expect(left).toHaveLength(2);
+
+    // 第一条：cwd 消息（旧记忆里那条创建时的已经随旧记忆搬走了，换完得重新知道自己在哪个目录）
+    const cwdRow = left[0];
+    expect(cwdRow?.role).toBe(AgentNS.Role.User);
+    expect(cwdRow?.data).toMatchObject({ hidden: true });
+    // 宿主注入的，所以来源是「宿主 / cwd」，不落成用户说的话
+    expect(cwdRow?.source).toMatchObject({ kind: "system", label: "cwd" });
+    expect(String(cwdRow?.content)).toContain(harness.projectDir);
+
+    // 第二条：断点消息，正文只有那份文档的路径
+    const breakpointRow = left[1];
+    expect(breakpointRow?.role).toBe(AgentNS.Role.System);
+    expect(breakpointRow?.data).toMatchObject({ hidden: true });
+    // 顺序是硬要求：cwd 排在断点之前（与创建时「cwd 最先写」同一口径）
+    expect(cwdRow?.seq).toBeLessThan(breakpointRow?.seq ?? 0);
+    const path = breakpointRow?.content as string;
+    expect(path.startsWith(handoffDirFor(harness.projectDir))).toBe(true);
+    expect(path.endsWith(".md")).toBe(true);
+    // 文档正文一个字都不进记忆：断点带的是路径，正文由需要细节的一方自己去读
+    expect(path.length).toBeLessThan(200);
+    expect(await readFile(path, "utf-8")).toContain("任务目标");
+    // `hidden` 的两条也不进默认可见集（不进条数、不给人看，但照常进上下文）
+    expect(await harness.messages.listByConversation(conversationId)).toHaveLength(0);
+
+    // 存档那段：名字加前缀、身份照抄、消息整段挂过去（`seq` / `createdAt` 原样不动）
+    const archived = (await harness.conversations.list()).find(
+      (row) => row.name === `已存档_${original?.name}`,
+    );
+    expect(archived).toBeDefined();
+    expect(archived?.workspaceId).toBe(original?.workspaceId);
+    expect(archived?.agentId).toBe(original?.agentId);
+    expect(archived?.modelId).toBe(original?.modelId);
+    expect(archived?.thinkingLevel).toBe(original?.thinkingLevel);
+    // 它就是交接那一刻生成的（按自己的时间排在列表里）
+    expect(archived?.createdAt).toBe(1_700_000_010_000);
+    const moved = await harness.messages.listByConversation(archived?.id ?? "", undefined, {
+      includeHidden: true,
+    });
+    expect(moved.map((row) => [row.id, row.seq, row.createdAt])).toEqual(
+      before.map((row) => [row.id, row.seq, row.createdAt]),
+    );
+  });
+
+  it("内存里原地换：不重建 agent、不动队列与两个开关，系统提示与 cwd 都还在", async () => {
+    const built = harness.build();
+    // 这段对话的记忆就是这个数组（换记忆是原地换，不是换一个数组、更不是换一个 agent）
+    const memory = built.driver.messages;
+    await built.service.start({ conversationId, mode: "self", then: "document_only" });
+    await built.settle();
+
+    expect(built.driver.messages).toBe(memory);
+    // 系统提示 + cwd 消息 + 断点消息：内存那份与库里同一份，cwd 同样在断点之前
+    expect(built.driver.messages).toHaveLength(3);
+    expect(built.driver.messages[0]?.content).toBe(DRIVER_SYSTEM_PROMPT);
+    const cwdMessage = built.driver.messages[1];
+    expect(cwdMessage?.role).toBe(AgentNS.Role.User);
+    expect(cwdMessage?.hidden).toBe(true);
+    expect(String(cwdMessage?.content)).toContain(harness.projectDir);
+    const breakpoint = built.driver.messages[2];
+    expect(breakpoint?.role).toBe(AgentNS.Role.System);
+    expect(breakpoint?.hidden).toBe(true);
+
+    // 落库与内存必须一致：同样的两条（同 id、同正文、同顺序）
+    const rows = await harness.messages.listByConversation(conversationId, undefined, {
+      includeHidden: true,
+    });
+    expect(rows.map((row) => row.id)).toEqual([cwdMessage?.id, breakpoint?.id]);
+    expect(rows[0]?.content).toBe(cwdMessage?.content);
+    expect(rows[1]?.content).toBe(breakpoint?.content);
+
+    // 换记忆不等于换人：没按过暂停、也没替谁恢复
+    expect(built.driverCalls).toEqual([]);
+    expect(built.driver.consumptionPaused).toBe(false);
+  });
+
+  it("推两条变更：先「这段的记忆换过了」，再「那段已存档的出现了」", async () => {
+    const built = harness.build();
+    await built.service.start({ conversationId, mode: "summary", then: "document_only" });
+    await built.settle();
+
+    const archived = (await harness.conversations.list()).find((row) =>
+      row.name.startsWith("已存档_"),
+    );
+    expect(
+      built.events.changed.map((change) => `${change.change}:${change.conversationId}`),
+    ).toEqual([`memory_replaced:${conversationId}`, `created:${archived?.id}`]);
+  });
+
+  it("存档是一段普通会话：能读、能删，删它不连坐原会话", async () => {
+    const built = harness.build();
+    await built.service.start({ conversationId, mode: "summary", then: "document_only" });
+    await built.settle();
+
+    const archived = (await harness.conversations.list()).find((row) =>
+      row.name.startsWith("已存档_"),
+    );
+    const archivedId = archived?.id ?? "";
+    // 它就是一段普通会话：消息照样取得出来
+    expect((await harness.messages.listByConversation(archivedId)).map((row) => row.id)).toEqual([
+      "msg-user",
+      "msg-assistant",
+    ]);
+
+    await harness.conversations.delete(archivedId);
+    expect(await harness.conversations.get(archivedId)).toBeUndefined();
+    expect(await harness.messages.listByConversation(archivedId)).toHaveLength(0);
+    // 删一段就是删那一段：原会话的 cwd 消息与断点消息都还在
+    expect(
+      await harness.messages.listByConversation(conversationId, undefined, { includeHidden: true }),
+    ).toHaveLength(2);
+  });
+
+  it("失败时不留存档会话，原会话的消息一条不动", async () => {
+    const before = await harness.messages.listByConversation(conversationId, undefined, {
+      includeHidden: true,
+    });
+    const built = harness.build({
+      execute: async () => {
+        throw new Error("模型没写出来");
+      },
+    });
+    await built.service.start({ conversationId, mode: "summary", then: "document_only" });
+    await built.settle();
+
+    // 库里本来就是交接前那一份：没有多出一段会话，也没有被换过的记忆
+    expect(await harness.conversations.list()).toHaveLength(1);
+    const after = await harness.messages.listByConversation(conversationId, undefined, {
+      includeHidden: true,
+    });
+    expect(after.map((row) => [row.id, row.seq, row.createdAt])).toEqual(
+      before.map((row) => [row.id, row.seq, row.createdAt]),
+    );
+    // 内存里也没被换过
+    expect(built.driver.messages).toHaveLength(1);
+    expect(built.driver.messages[0]?.content).toBe(DRIVER_SYSTEM_PROMPT);
+  });
+
+  it("驱动者在这期间没了：按失败收尾，不留存档会话", async () => {
+    const notices = new NoticeService({ notices: new NoticeRepository(harness.db) });
+    // 入口判据那一次还看得见它，后台那一趟开始时它已经不在了（对话被删 / 被硬杀）
+    const driver = new RecordingAgent();
+    let lookups = 0;
+    const built = harness.build({
+      notices,
+      driver,
+      holder: { get: () => (lookups++ === 0 ? driver : undefined) },
+    });
+    await built.service.start({ conversationId, mode: "self", then: "document_only" });
+    await built.settle();
+
+    expect(await harness.conversations.list()).toHaveLength(1);
+    const listed = await notices.list({});
+    const failed = listed.notices.find(
+      (notice) => notice.text.messageKey === "error.handoffFailed",
+    );
+    expect(String(failed?.text.params.reason)).toContain("the driver went away");
+  });
+
+  it("连着交接两次：系统提示不被搬走，旧 cwd 与旧断点也不被当成提示留下", async () => {
+    const built = harness.build();
+    await built.service.start({ conversationId, mode: "self", then: "document_only" });
+    await built.settle();
+    await waitIdle(built.driver);
+
+    await built.service.start({ conversationId, mode: "self", then: "document_only" });
+    await built.settle();
+
+    // 记忆仍然是「系统提示 + 一条 cwd + 一条断点」：第一次那两条属于旧记忆，不该留在原会话里
+    expect(built.driver.messages).toHaveLength(3);
+    expect(built.driver.messages[0]?.content).toBe(DRIVER_SYSTEM_PROMPT);
+    expect(built.driver.messages[1]?.role).toBe(AgentNS.Role.User);
+    expect(built.driver.messages[1]?.hidden).toBe(true);
+    expect(built.driver.messages[2]?.hidden).toBe(true);
+    // cwd 仍然只有一条（第一次那条随旧记忆搬去存档了），而且仍然排在断点之前
+    expect(
+      built.driver.messages.filter((message) => message.role === AgentNS.Role.User),
+    ).toHaveLength(1);
+
+    // 两段存档各自拿着交接前那一份：第一段是整段历史，第二段是上一次的 cwd + 断点
+    const archived = (await harness.conversations.list()).filter((row) =>
+      row.name.startsWith("已存档_"),
+    );
+    expect(archived).toHaveLength(2);
+    const counts = await Promise.all(
+      archived.map(async (row) =>
+        (
+          await harness.messages.listByConversation(row.id, undefined, { includeHidden: true })
+        ).length,
+      ),
+    );
+    expect(counts.sort((left, right) => left - right)).toEqual([2, 3]);
   });
 });
 
@@ -890,4 +1106,16 @@ describe("项目里的交接文档（F-D6：可反复打磨同一份）", () => 
 /** 让两次写入的 mtime 不同（有些文件系统的时间精度是秒级） */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** 等这个驱动者真的落到闲（再发起一次交接要它闲着，也要服务收完上一趟） */
+async function waitIdle(agent: ChatAgent): Promise<void> {
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    if (agent.state === "idle") {
+      await flushMicrotasks();
+      return;
+    }
+    await flushMicrotasks();
+  }
+  throw new Error("驱动者没有回到空闲");
 }

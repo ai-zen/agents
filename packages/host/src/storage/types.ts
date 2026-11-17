@@ -92,6 +92,28 @@ export interface ConversationCreateInput {
   updatedAt?: number;
 }
 
+/**
+ * 交接换记忆要的那一批（PRD 4.5）：旧记忆成为另一段会话，原会话腾空之后换上两条占位消息。
+ *
+ * 四样合起来是一件事，所以只有这一个入参类型：拆开传就会有人只做其中一两步，而那正是
+ * 「旧的已存档、新的没上岗」的来源。
+ */
+export interface ConversationMemorySwap {
+  /** 原会话：记忆要换掉的那一段，id 不变 */
+  conversationId: string;
+  /** 存档那一段的会话行：身份照抄原会话，id / 名字 / 创建时刻是新的（`已存档_<原名>`） */
+  archived: ConversationCreateInput;
+  /**
+   * 写回原会话的 cwd 消息：正文是「当前目录是哪儿」，`hidden`（不给人看，但照常进上下文）。
+   *
+   * 它排在断点**之前**：与创建时「cwd 最先写」同一口径，于是换完记忆的这段对话又知道自己
+   * 在哪个目录里干活（PRD 4.8）。
+   */
+  cwdContext: MessageUpsertInput;
+  /** 写回原会话的那条断点消息：正文只带交接文档路径，`hidden`（不给人看，但照常进上下文） */
+  breakpoint: MessageUpsertInput;
+}
+
 /* -------------------------------- messages -------------------------------- */
 
 export interface MessageRow {

@@ -30,7 +30,7 @@
 import type { SQLInputValue } from "node:sqlite";
 import type { AgentNS } from "@ai-zen/agents-core";
 
-import type { Database } from "./Database.js";
+import type { Database, RunResult, TxClient, TxStatement } from "./Database.js";
 import type {
   MessageRow,
   MessageSearchHit,
@@ -93,6 +93,20 @@ const UPSERT_SQL = `
     parentToolCallId = COALESCE(excluded.parentToolCallId, messages.parentToolCallId),
     updatedAt        = excluded.updatedAt
 `;
+
+/**
+ * 把「写一条消息」登记进一个已有的批次（`tx` 客户端），拿到那条语句的凭据。
+ *
+ * 导出的理由：交接换记忆那一批要把「插存档会话行」「把消息搬走」「写 cwd 与断点两条消息」
+ * 放进**同一个**事务（`ConversationRepository.replaceMemory`）。就地复制一份 `UPSERT_SQL` 会让
+ * `seq` 的口径多出第二份实现 —— 那正是「同一段对话里两条消息抢到同一个 seq」的来源。
+ */
+export function registerMessageUpsert(
+  tx: TxClient,
+  input: MessageUpsertInput,
+): TxStatement<RunResult> {
+  return tx.run(UPSERT_SQL, upsertParams(input));
+}
 
 /**
  * 从消息正文里抽出可检索的纯文本。
@@ -235,7 +249,7 @@ export class MessageRepository {
   async upsertMany(inputs: MessageUpsertInput[]): Promise<void> {
     if (inputs.length === 0) return;
     await this.db.tx((tx) => {
-      for (const input of inputs) tx.run(UPSERT_SQL, upsertParams(input));
+      for (const input of inputs) registerMessageUpsert(tx, input);
     });
   }
 

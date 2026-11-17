@@ -3,11 +3,20 @@
  *
  * 排序口径照 PRD D13：置顶优先，其次创建时间倒序。改名、活动、打开都**不**改变顺序，
  * 所以 `orderBy` 里没有 `updatedAt`。
+ *
+ * 唯一一处跨表的语句是 {@link ConversationRepository.replaceMemory}：交接换记忆时「插存档会话行 +
+ * 搬消息行 + 写两条占位消息」必须在同一个事务里（PRD 4.5），拆到两个仓储就只能是两个事务。
  */
 
 import type { CompactionMode } from "../wire/states.js";
-import type { Database } from "./Database.js";
-import type { Conversation, ConversationCreateInput, ConversationRow } from "./types.js";
+import type { Database, RunResult, TxClient, TxStatement } from "./Database.js";
+import { registerMessageUpsert } from "./MessageRepository.js";
+import type {
+  Conversation,
+  ConversationCreateInput,
+  ConversationMemorySwap,
+  ConversationRow,
+} from "./types.js";
 
 /** 读写路径共用的列清单（顺序与 `toConversation` 的形状一致） */
 const COLUMNS =
@@ -24,6 +33,31 @@ const INSERT_COLUMNS =
 
 /** 列表/搜索统一用这个顺序：置顶在前，再按创建时间倒序（PRD D13） */
 const ORDER_BY = "ORDER BY pinned DESC, createdAt DESC, id DESC";
+
+/**
+ * 登记一条「新建对话」语句：`nameIsAuto` 落 1（名字是创建时起的原名）、`pinned` 落 0。
+ *
+ * 导出的理由与 `registerMessageUpsert` 同一个：交接换记忆那一批要把这条与消息的两条塞进同一个事务。
+ */
+export function registerConversationInsert(
+  tx: TxClient,
+  input: ConversationCreateInput,
+): TxStatement<RunResult> {
+  const updatedAt = input.updatedAt ?? input.createdAt;
+  return tx.run(
+    `INSERT INTO conversations (${INSERT_COLUMNS}) VALUES (?, ?, ?, 1, 0, ?, ?, ?, ?, ?)`,
+    [
+      input.id,
+      input.workspaceId,
+      input.name,
+      input.agentId,
+      input.modelId,
+      input.thinkingLevel ?? null,
+      input.createdAt,
+      updatedAt,
+    ],
+  );
+}
 
 function toConversation(row: ConversationRow): Conversation {
   return { ...row, pinned: row.pinned !== 0, nameIsAuto: row.nameIsAuto !== 0 };
@@ -46,20 +80,40 @@ export class ConversationRepository {
    * 用户改名与自动命名各有自己的方法，不从这条路径走。
    */
   async create(input: ConversationCreateInput): Promise<void> {
-    const updatedAt = input.updatedAt ?? input.createdAt;
-    await this.db.run(
-      `INSERT INTO conversations (${INSERT_COLUMNS}) VALUES (?, ?, ?, 1, 0, ?, ?, ?, ?, ?)`,
-      [
-        input.id,
-        input.workspaceId,
-        input.name,
-        input.agentId,
-        input.modelId,
-        input.thinkingLevel ?? null,
-        input.createdAt,
-        updatedAt,
-      ],
-    );
+    await this.db.tx((tx) => registerConversationInsert(tx, input));
+  }
+
+  /**
+   * 交接换记忆（PRD 4.5）：旧记忆成为另一段会话，原会话腾空之后换上「cwd + 断点」两条消息。
+   *
+   * 五条语句一批提交，顺序不能换：
+   *   1. 插存档会话行（身份照抄原会话，只有 id / 名字 / 创建时刻是新的）；
+   *   2. 把原会话的**全部消息行**改挂到存档名下 —— `seq` / `createdAt` 一个字都不动，搬的是归属；
+   *   3. 消息的素材关系行跟着搬（`conversation_assets.conversationId` 也是「这条消息属于哪段
+   *      会话」的一份记录，不搬的话删原会话会把它名下那些素材引用一起级联删掉，而消息其实在存档里）；
+   *   4. 在原会话里写 cwd 消息（此时它已经腾空，`seq` 自然从 1 开始）；
+   *   5. 再写断点消息。
+   *
+   * 4 一定要登记在 5 之前：`seq` 是写的时候现算的，先登记的那条先拿到号 —— 换完记忆这一段
+   * 仍然是「cwd 消息在前、断点在后」，与创建时的口径一致（PRD 4.8）。
+   *
+   * 为什么这五条必须同一个事务：只成前几条就留下「旧记忆已经存档、原会话却空着」的第三种状态 ——
+   * 那正是交接要防的（崩溃安全）。失败整批回滚，库里回到交接前，一段存档会话都不会留下。
+   */
+  async replaceMemory(input: ConversationMemorySwap): Promise<void> {
+    await this.db.tx((tx) => {
+      registerConversationInsert(tx, input.archived);
+      tx.run("UPDATE messages SET conversationId = ? WHERE conversationId = ?", [
+        input.archived.id,
+        input.conversationId,
+      ]);
+      tx.run("UPDATE conversation_assets SET conversationId = ? WHERE conversationId = ?", [
+        input.archived.id,
+        input.conversationId,
+      ]);
+      registerMessageUpsert(tx, input.cwdContext);
+      registerMessageUpsert(tx, input.breakpoint);
+    });
   }
 
   async get(id: string): Promise<Conversation | undefined> {

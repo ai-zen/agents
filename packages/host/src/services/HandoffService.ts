@@ -29,6 +29,23 @@
  * `memory_replaced`。收尾只有这样一处 —— 漏一条这段对话就一直挂着交接态（那条标记只管
  * 「不写库」，但该摘的牌不该留着）。
  *
+ * ## 提交点之后：换记忆，不是换会话（PRD 4.5）
+ *
+ * 文档通过校验（`documentReady` + `describeDocument`）就是**提交点**。从那里往后：
+ *
+ *   1. **旧记忆成为另一段会话**：新插一行 `conversations`（名字 `已存档_<原名>`，项目 / 助手 /
+ *      模型 / 思考档位照抄，创建时刻是交接那一刻），把原会话的全部消息行改挂到它名下；
+ *   2. **原会话换记忆**：库里腾空之后写回两条占位消息 —— 先是「当前目录是哪儿」那条 `hidden`
+ *      的 cwd 消息（旧记忆里那条创建时的已经随旧记忆搬去存档了，PRD 4.8 要求驱动者随时知道
+ *      自己在哪个目录里干活），再是同样 `hidden` 的断点消息，正文只带交接文档路径（不带正文
+ *      —— 读的钱由需要细节的一方付）；内存里 `agent.messages` 原地换成同一份（不重建 agent、
+ *      不动它的队列与两个开关：换记忆不等于换人）；
+ *   3. **两条事件**：先 `memory_replaced`（这段的记忆换过了），再 `created`（那段 `已存档_…`
+ *      出现了）。
+ *
+ * 1 与 2 的落库部分在一个 `tx` 里（`ConversationRepository.replaceMemory`），所以崩在中间也不会
+ * 留下「旧的已存档、新的没上岗」的第三种状态；失败则整批回滚，一段存档会话都不留。
+ *
  * ## 「写完了没有」看工具结果，不看状态
  *
  * 判定不订阅状态事件，也不看模型说的话：硬事实有两样 —— **那次写文档的工具调用的结果**，
@@ -44,6 +61,7 @@
  * 还是留在那儿都无所谓 —— 记忆随后整段被替换，什么都留不下。
  */
 
+import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -62,6 +80,7 @@ import type { HandoffMode, SdkAgent } from "@ai-zen/agents-sdk";
 import { DEFAULT_LANGUAGE, render } from "../i18n/index.js";
 import type { Language, MessageKey } from "../i18n/index.js";
 import type { AgentFactory, ChatAgent, ChatEventEmitter } from "../runtime/ChatRunner.js";
+import { injectedContextOf } from "../runtime/ChatRunner.js";
 import type { ScopeRegistry } from "../runtime/ScopeRegistry.js";
 import type { MessageRepository } from "../storage/MessageRepository.js";
 import type { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
@@ -105,6 +124,9 @@ const MIN_HANDOFF_BYTES = 400;
 
 /** 写文档用的那个工具名（SDK 的 `WriteTool`：参数里是 `path` 与 `content`） */
 const WRITE_TOOL_NAME = "write";
+
+/** 存档那段会话的名字前缀（PRD 4.5：名字是 `已存档_<原名>`） */
+const ARCHIVED_NAME_PREFIX = "已存档_";
 
 /**
  * 等那次写文档的工具结果最多等多久（毫秒）。
@@ -195,6 +217,13 @@ export interface HandoffExecutionInput {
   handoffDir: string;
   /** 请求的执行者 */
   mode: HandoffMode;
+  /**
+   * `handoff` Skill 的查找目录（优先级从高到低），按这一次交接的项目目录现算。
+   *
+   * 跟着**每一次**交接给、不跟着执行者构造时定：一个执行者服务所有项目的对话，构造时定死
+   * 一份目录就会一直用内置兜底模板（项目里那份同名 Skill 永远读不到）。
+   */
+  skillDirs: string[];
   promptTokens?: number;
   handoffTokens?: number;
 }
@@ -217,9 +246,8 @@ export type HandoffExecutor = (input: HandoffExecutionInput) => Promise<HandoffE
 /** `completeOnce` 吃的那种客户端（类型直接从 SDK 的签名里取，不自己 import 第三方类型） */
 export type SummaryModelClient = Parameters<typeof completeOnce>[0]["client"];
 
+/** 「summary」那一跳的客户端 / 模型 / 参数与日志口（两种入口共用这一份形状） */
 export interface SdkHandoffExecutorOptions {
-  /** `handoff` Skill 的查找目录（优先级从高到低）；没给就用 SDK 的兜底模板 */
-  skillDirs?: string[];
   /** `summary` 模式用的客户端 / 模型 / 参数（不给就用 agent 自己的） */
   client?: SummaryModelClient;
   model?: string;
@@ -228,10 +256,16 @@ export interface SdkHandoffExecutorOptions {
   logger?: Logger;
 }
 
+/** 造 SDK 交接服务（插件那一路）还要一份模板目录：它是按 cwd 造出来的那一个 */
+export interface SdkHandoffServiceOptions extends SdkHandoffExecutorOptions {
+  /** `handoff` Skill 的查找目录（优先级从高到低）；没给就用 SDK 的兜底模板 */
+  skillDirs?: string[];
+}
+
 /** 按 cwd 造一个 SDK 的交接服务（接线层给 `createSdkAgentFactory` 的 `handoff` 注入点用） */
 export function createSdkHandoffService(
   cwd: string,
-  options: SdkHandoffExecutorOptions = {},
+  options: SdkHandoffServiceOptions = {},
 ): SdkHandoffService {
   return new SdkHandoffService({
     handoffDir: handoffDirFor(cwd),
@@ -256,7 +290,7 @@ export function createSdkHandoffExecutor(
   return async (input: HandoffExecutionInput): Promise<HandoffExecutionResult> => {
     const service = new SdkHandoffService({
       handoffDir: input.handoffDir,
-      skillDirs: options.skillDirs ?? [],
+      skillDirs: input.skillDirs,
       client: options.client,
       model: options.model,
       modelConfig: options.modelConfig,
@@ -333,10 +367,11 @@ export interface HandoffServiceDeps {
   /**
    * 活着的 agent 的持有者（`AgentRegistry.get`）。
    *
-   * 两处用到它：入口判据读它报的那一格（不是 `idle` 就不发起），自交接要的则是它手上那个
-   * 「同一个驱动者」。不注入时「没有 agent」那条入口判据永远成立（一律拒）。
+   * 两处用到它：入口判据读它报的那一格（不是 `idle` 就不发起），换记忆要的则是它手上那个
+   * **同一个驱动者** —— `agent.messages` 就是这段对话的记忆本身，换记忆要原地换它。所以它是
+   * 必填依赖：没有它既没有「这一段此刻挂着谁」的答案，也没有可换的记忆。
    */
-  agents?: HandoffAgentHolder;
+  agents: HandoffAgentHolder;
   /** 交接态与投递的口（`ChatRunner`）；不注入时自交接降级到独立交接 */
   runner?: HandoffRunnerPort;
   /** 答完之后把那条问题标成已答（`handoff.start` 直接调用时用得上） */
@@ -344,8 +379,14 @@ export interface HandoffServiceDeps {
   /** 通知通道（写好了 / 降级了 / 取消了 / 没走通，PRD 4.9） */
   notices?: NoticeService;
   emit?: ChatEventEmitter;
-  /** 交接文档模板用的 Skill 目录（自交接的指令与缺省执行者都用它） */
-  skillDirs?: string[];
+  /**
+   * `handoff` Skill 的查找目录：**按这次交接的项目目录现算**（`cwd → 目录清单`）。
+   *
+   * 与 SDK 插件（`createSdkAgentFactory` 的 `handoff` 注入点）同一份口径：项目里放一份同名 Skill
+   * 就能覆盖全局那份。这里是函数而不是一份固定清单：一个服务服务所有项目的对话，构造时定死
+   * 一份目录就只能一直用 SDK 的内置兜底模板。不给就是「只有兜底模板」。
+   */
+  skillDirs?: (cwd: string) => string[];
   /** 后台那一趟里不该打断主流程的差错（落日志用）；不注入就不记 */
   onError?: (error: unknown, context: string) => void;
   now?: () => number;
@@ -365,6 +406,34 @@ function isHandoffThen(value: string): value is HandoffThen {
   return value === "document_only" || value === "new_conversation";
 }
 
+/**
+ * 「驱动者没了」这一个失败事实（对话被删 / 被硬杀）。
+ *
+ * 它不是「文档没写出来」：那一段已经不在了，而换记忆换的正是它的 `messages`。
+ */
+function driverGone(conversationId: string): HostError {
+  return new HostError("internal", {
+    messageKey: "error.handoffFailed",
+    params: { reason: "the driver went away" },
+    detail: { conversationId, reason: "driver_gone" },
+  });
+}
+
+/**
+ * 这段记忆里的**系统提示**（`agent.messages` 开头那几条，由助手定义在装配时带进来）。
+ *
+ * 判据是「开头连续的、不隐藏的 `system` 消息」：交接断点也是 `role: system`，但它是 `hidden`
+ * 的 —— 它不是系统提示，是上一代留下的路标，换记忆时不该被当作提示留下来。
+ */
+function systemPromptOf(messages: readonly AgentNS.Message[]): AgentNS.Message[] {
+  const prompt: AgentNS.Message[] = [];
+  for (const message of messages) {
+    if (message.role !== AgentNS.Role.System || message.hidden === true) break;
+    prompt.push(message);
+  }
+  return prompt;
+}
+
 export class HandoffService {
   private readonly conversations: ConversationRepository;
   private readonly workspaces: WorkspaceRepository;
@@ -373,12 +442,12 @@ export class HandoffService {
   private readonly scopes: ScopeProvider;
   private readonly createAgent: AgentFactory;
   private readonly execute: HandoffExecutor;
-  private readonly agents?: HandoffAgentHolder;
+  private readonly agents: HandoffAgentHolder;
   private readonly runner?: HandoffRunnerPort;
   private readonly questions?: QuestionMarker;
   private readonly notices?: NoticeService;
   private readonly emit?: ChatEventEmitter;
-  private readonly skillDirs: string[];
+  private readonly skillDirs: (cwd: string) => string[];
   private readonly onError?: (error: unknown, context: string) => void;
   private readonly now: () => number;
   /**
@@ -397,13 +466,13 @@ export class HandoffService {
     this.conversationViews = deps.conversationViews;
     this.scopes = deps.scopes;
     this.createAgent = deps.createAgent;
-    this.execute = deps.execute ?? createSdkHandoffExecutor({ skillDirs: deps.skillDirs });
+    this.execute = deps.execute ?? createSdkHandoffExecutor();
     this.agents = deps.agents;
     this.runner = deps.runner;
     this.questions = deps.questions;
     this.notices = deps.notices;
     this.emit = deps.emit;
-    this.skillDirs = deps.skillDirs ?? [];
+    this.skillDirs = deps.skillDirs ?? (() => []);
     this.onError = deps.onError;
     this.now = deps.now ?? Date.now;
   }
@@ -458,7 +527,7 @@ export class HandoffService {
 
     // 入口判据：闲下来且不收件开关没翻才让跑。在干 / 不取件时手上的活还没完（待办里也可能压着
     // 别人的话），这时候投交接指令只能排在它后面；没有 agent 更是没有人可写。三种都是「等它闲了再来」
-    const agent = this.agents?.get(conversation.id);
+    const agent = this.agents.get(conversation.id);
     if (!agent || agent.state !== "idle" || agent.consumptionPaused) {
       throw new HostError("busy", {
         detail: { conversationId: conversation.id, reason: "not_idle" },
@@ -481,46 +550,174 @@ export class HandoffService {
   }
 
   /**
-   * 这一趟交接（后台）：写文档 → 提交或回滚 → 摘牌 → 告知。
+   * 这一趟交接（后台）：写文档 → 提交（换记忆）或回滚 → 摘牌 → 告知。
    *
    * **不抛**：四条结局（成功 / 降级 / 失败 / 取消）各自有一条出口，都从这里过。摘牌只有
    * `finally` 那一处 —— 漏一条这段对话就一直挂着交接态。
+   *
+   * `committed` 标的是「记忆已经换过」：它之后不能再把记忆截回交接前（那时 `agent.messages`
+   * 已经是新的一份，再截就是把刚换上的剪掉）。
    */
   private async runToEnd(run: HandoffRun): Promise<void> {
     const { conversation } = run;
+    const driver = this.agents.get(conversation.id);
     // 写文档那一趟之前记下长度：它写在这个驱动者的记忆里，而这批话不属于这段对话的记忆
-    const driver = run.mode === "self" ? this.agents?.get(conversation.id) : undefined;
-    const memoryBefore = driver?.messages.length ?? 0;
+    const memoryBefore = driver === undefined ? 0 : driver.messages.length;
+    let committed = false;
 
     try {
+      // 入口判据刚放行过，这一段转身就没了（对话被删 / 被硬杀）：没有驱动者就没有「同一个
+      // 驱动者」可写、也没有记忆可换，这一趟按失败收尾（记忆本来就是交接前的那一份）
+      if (driver === undefined) throw driverGone(conversation.id);
+
       const workspace = await this.requireWorkspace(conversation.workspaceId);
       const handoffDir = handoffDirFor(workspace.cwd);
+      // 模板目录按这次交接的项目目录现算（与 SDK 插件同一份口径）
+      const skillDirs = this.skillDirs(workspace.cwd);
       const executed =
         run.mode === "self"
-          ? await this.writeBySelfHandoff(conversation, handoffDir)
+          ? await this.writeBySelfHandoff(conversation, driver, handoffDir, skillDirs)
           : // 独立交接：另起一次性驱动者，拿记忆副本去写（保持原样）
-            await this.writeByIndependent(conversation, handoffDir, run.mode);
+            await this.writeByIndependent(conversation, handoffDir, run.mode, skillDirs);
 
       // 提交点：文档已经在盘上、够长。这里之后发生什么都不再回滚（PRD 4.5）
       const document = await this.describeDocument(executed.path, executed.usedMode);
+      // 换记忆：旧记忆成为另一段会话，原会话换上「cwd 消息 + 断点消息」
+      await this.commitMemory({
+        conversation,
+        driver,
+        document,
+        // cwd 取这段对话所属项目的目录：创建时那条 cwd 消息用的也是它
+        cwd: workspace.cwd,
+        language: run.language,
+      });
+      committed = true;
       await this.afterCommit({ run, document, usedMode: executed.usedMode });
     } catch (error) {
-      await this.rollback({ run, error, driver, memoryBefore });
+      await this.rollback({ run, error });
     } finally {
-      // 写文档那一趟说的话不属于这段对话（PRD 4.5：下一代接的是活，不是「关于交接的那场对话」）
-      this.restoreMemory(driver, memoryBefore);
+      // 没提交才把写文档那一趟从记忆里截掉（它从未落库）；提交之后记忆就是新的一份了
+      if (!committed) {
+        this.restoreMemory(driver, memoryBefore);
+        // 回滚也推一条「记忆换过了」：客户端据此整段重拉，把那些只在内存里的写作痕迹清掉
+        this.emitMemoryReplaced(conversation);
+      }
       // 收尾只有一处：摘牌。四条路都从这里过去
       this.inFlight.delete(conversation.id);
       this.runner?.endHandoff(conversation.id);
-      // 提交与回滚都推一条「记忆换过了」：客户端据此 `message.list` 全量整段替换，
-      // 把那些只在内存里的写作痕迹清掉（PLAN §5.3）
-      this.emit?.("conversation.changed", {
-        conversationId: conversation.id,
-        workspaceId: conversation.workspaceId ?? null,
-        change: "memory_replaced",
-        at: iso(this.now()),
-      });
     }
+  }
+
+  /**
+   * 换记忆（PRD 4.5 的提交点之后那一步）：旧记忆成为另一段会话，原会话换上「cwd + 断点消息」。
+   *
+   * 三步顺序是死的：
+   *   1. 库里一个批次（`ConversationRepository.replaceMemory`）：插存档会话行 + 把消息行改挂
+   *      过去 + 写 cwd 消息 + 写断点消息；
+   *   2. 内存里**原地**换成同一份（不重建 agent、不动它的队列与两个开关 —— 换记忆不等于换人）；
+   *   3. 推两条 `conversation.changed`：这段的记忆换过了、那段 `已存档_…` 出现了。
+   *
+   * ## 为什么要补一条 cwd 消息
+   *
+   * cwd 消息是**创建时**写进这段记忆的第一条，随后就不再有第二份。而换记忆是把旧记忆整段搬走
+   * —— 那条也一起走了。不补的话，原会话换完就只在上下文里看到一条交接文档路径，不知道自己在
+   * 哪个目录里干活（PRD 4.8）。所以这里用创建时同一个写法（`injectedContextOf`）再写一条，
+   * 位置也照创建时的口径：**排在断点之前**（cwd 最先写，断点是「到这里为止」的分隔）。
+   *
+   * 第 1 步失败就什么都不算换过（`runToEnd` 那边走回滚）：库里仍是交接前那一份、一段存档会话
+   * 都不留 —— 那个 `tx` 要么整批成，要么整批不成。
+   */
+  private async commitMemory(input: {
+    conversation: Conversation;
+    driver: ChatAgent;
+    document: HandoffDocument;
+    /** 这段对话所属项目的目录：cwd 消息的正文要它（创建时那条用的也是它） */
+    cwd: string;
+    /** 界面语言：cwd 消息的句子按它渲染（与创建时同一份文案） */
+    language: Language;
+  }): Promise<void> {
+    const { conversation, driver, document, cwd, language } = input;
+    const at = this.now();
+    const archivedId = randomUUID();
+    // cwd 消息：`hidden`（不给人看，但照常进上下文），正文与创建时那条同一个写法；它是宿主注入的，
+    // 所以 `source` 由宿主自己填成「宿主 / cwd」，不落成用户说的话（CORE.md §3）
+    const cwdContext = injectedContextOf(cwd, language);
+    const cwdMessage = new Message({
+      role: AgentNS.Role.User,
+      content: cwdContext,
+      status: AgentNS.MessageStatus.Completed,
+      source: { kind: "system", label: "cwd" },
+      hidden: true,
+    });
+    // 断点消息：`role: system` + `hidden`（不给人看，但照常进上下文），正文**只带路径** ——
+    // 谁要细节谁自己去读那份文件（读的钱由需要它的人付）
+    const breakpoint = new Message({
+      role: AgentNS.Role.System,
+      content: document.path,
+      status: AgentNS.MessageStatus.Completed,
+      hidden: true,
+    });
+
+    await this.conversations.replaceMemory({
+      conversationId: conversation.id,
+      // 存档那段：项目 / 助手 / 模型 / 思考档位照抄原会话，只有 id / 名字 / 创建时刻是新的
+      //（它就是交接那一刻生成的，所以按自己的时间排在列表里）
+      archived: {
+        id: archivedId,
+        workspaceId: conversation.workspaceId,
+        name: `${ARCHIVED_NAME_PREFIX}${conversation.name}`,
+        agentId: conversation.agentId,
+        modelId: conversation.modelId,
+        thinkingLevel: conversation.thinkingLevel,
+        createdAt: at,
+      },
+      // 两条写回原会话的消息：cwd 在前、断点在后（与创建时「cwd 最先写」同一口径）
+      cwdContext: {
+        id: cwdMessage.id,
+        conversationId: conversation.id,
+        role: AgentNS.Role.User as string,
+        status: AgentNS.MessageStatus.Completed as string,
+        omit: false,
+        content: cwdContext,
+        source: { kind: "system", label: "cwd" },
+        data: { hidden: true },
+        createdAt: at,
+      },
+      breakpoint: {
+        id: breakpoint.id,
+        conversationId: conversation.id,
+        role: AgentNS.Role.System as string,
+        status: AgentNS.MessageStatus.Completed as string,
+        omit: false,
+        content: document.path,
+        data: { hidden: true },
+        createdAt: at,
+      },
+    });
+
+    // 内存侧同步：**原地**换成同一份（`agent.messages` 是这段对话的记忆本身，不重建 agent）；
+    // 系统提示由助手定义带来，它不属于旧记忆，换完还得在。cwd 与断点同样是 cwd 在前
+    const prompt = systemPromptOf(driver.messages);
+    driver.messages.splice(0, driver.messages.length, ...prompt, cwdMessage, breakpoint);
+
+    // 先说「这段的记忆换过了」，再说「那段已存档的出现了」
+    this.emitMemoryReplaced(conversation);
+    this.emit?.("conversation.changed", {
+      conversationId: archivedId,
+      workspaceId: conversation.workspaceId,
+      change: "created",
+      at: iso(at),
+    });
+  }
+
+  /** 推一条「这段的记忆换过了」（提交与回滚各推一次：客户端据此整段重拉消息） */
+  private emitMemoryReplaced(conversation: Conversation): void {
+    this.emit?.("conversation.changed", {
+      conversationId: conversation.id,
+      workspaceId: conversation.workspaceId,
+      change: "memory_replaced",
+      at: iso(this.now()),
+    });
   }
 
   /**
@@ -576,18 +773,12 @@ export class HandoffService {
    *     不换手 —— 留下「已换手」的假象比失败更糟（PRD 4.5）；
    *   - **失败**（模型没写出来、盘写不进去、驱动者没了）：说明原因，记忆同样回到交接前。
    *
+   * 这里**不碰库**：写文档那一趟从未落库，一条 `tx` 也没跑过，所以库里本来就是交接前那一份
+   * （也不会多出一段存档会话）。截记忆与推 `memory_replaced` 在 `runToEnd` 的 `finally`。
    * 回滚**不动 inbox**：交接期间投进来的话压根没被搬过，收到什么就是什么。
    */
-  private async rollback(input: {
-    run: HandoffRun;
-    error: unknown;
-    driver: ChatAgent | undefined;
-    memoryBefore: number;
-  }): Promise<void> {
+  private async rollback(input: { run: HandoffRun; error: unknown }): Promise<void> {
     const { run, error } = input;
-    // 记忆回到交接前（自交接那一趟写在里面的东西截掉；它从来没落过库）
-    this.restoreMemory(input.driver, input.memoryBefore);
-
     if (error instanceof HandoffCancelledError) {
       await this.notify(run, {
         level: "info",
@@ -618,7 +809,8 @@ export class HandoffService {
    *   3. 两道都成立才算「写完了」；不成立就同一档再问一次，两次都不行就单向降级到独立交接。
    *
    * 三条边界：
-   *   - 没有驱动者就没有「同一个驱动者」这回事：单向降级到独立交接；
+   *   - 驱动者由 `runToEnd` 交进来（入口判据刚证明它在）：没有投递口就没有「投进去让它自己写」
+   *     这条路，单向降级到独立交接；
    *   - 投递不靠任何「先恢复收件」的前置：入口判据已经保证它此刻闲着，指令直接进它的待办；
    *   - 写不出来（工具结果等不到、盘上文件不存在或太短）也是单向降级 —— 反向永远不发生。
    *
@@ -626,12 +818,13 @@ export class HandoffService {
    */
   private async writeBySelfHandoff(
     conversation: Conversation,
+    driver: ChatAgent,
     handoffDir: string,
+    skillDirs: string[],
   ): Promise<HandoffExecutionResult> {
-    const driver = this.agents?.get(conversation.id);
     const runner = this.runner;
-    if (!driver || !runner) {
-      return await this.writeByIndependent(conversation, handoffDir, "summary");
+    if (!runner) {
+      return await this.writeByIndependent(conversation, handoffDir, "summary", skillDirs);
     }
 
     const path = join(handoffDir, SdkHandoffService.createHandoffFileName(this.date()));
@@ -640,7 +833,7 @@ export class HandoffService {
       const watched = this.watchDocumentWrite(driver, path);
       try {
         await runner.deliver(conversation.id, {
-          content: await this.instruction(path, retry),
+          content: await this.instruction(path, retry, skillDirs),
           // 这条指令是宿主注入的，不是用户说的话（`CORE.md` §3：所有 user 消息都要有来源）
           source: { kind: "system", label: "handoff" },
         });
@@ -648,13 +841,7 @@ export class HandoffService {
         // 工具结果被掐（用户把它叫停了＝放弃交接）：回到交接前，不降级也不重试
         if (outcome === "interrupted") throw new HandoffCancelledError();
         // 驱动者没了（对话被删 / 被硬杀）：不是「文档没写出来」，是这段对话已经不在了
-        if (outcome === "gone") {
-          throw new HostError("internal", {
-            messageKey: "error.handoffFailed",
-            params: { reason: "the driver went away" },
-            detail: { conversationId: conversation.id, reason: "driver_gone" },
-          });
-        }
+        if (outcome === "gone") throw driverGone(conversation.id);
       } finally {
         watched.dispose();
       }
@@ -662,7 +849,7 @@ export class HandoffService {
       if (await this.documentReady(path)) return { path, usedMode: "self" };
     }
     // 写不出来：单向降级到独立交接（另起一次性驱动者 + 记忆副本）
-    return await this.writeByIndependent(conversation, handoffDir, "summary");
+    return await this.writeByIndependent(conversation, handoffDir, "summary", skillDirs);
   }
 
   /**
@@ -675,6 +862,7 @@ export class HandoffService {
     conversation: Conversation,
     handoffDir: string,
     mode: HandoffMode,
+    skillDirs: string[],
   ): Promise<HandoffExecutionResult> {
     const scope = await this.scopes.create(conversation.workspaceId);
     const history = await this.loadHistory(conversation.id);
@@ -690,7 +878,7 @@ export class HandoffService {
     });
     // 历史逐条追加：agent 里已经有系统提示（来自助手定义），这里补上这段对话说过的话
     for (const message of history) agent.append(message);
-    return await this.execute({ agent, handoffDir, mode });
+    return await this.execute({ agent, handoffDir, mode, skillDirs });
   }
 
   /**
@@ -756,7 +944,11 @@ export class HandoffService {
   }
 
   /** 交给同一个驱动者的指令：模板来自磁盘上的 `handoff` Skill，读不到用 SDK 的兜底模板 */
-  private async instruction(handoffPath: string, retry: boolean): Promise<string> {
+  private async instruction(
+    handoffPath: string,
+    retry: boolean,
+    skillDirs: string[],
+  ): Promise<string> {
     if (retry) {
       return [
         `The handoff document does not exist or is too small to deliver: ${handoffPath}`,
@@ -764,16 +956,16 @@ export class HandoffService {
       ].join("\n");
     }
     return SdkHandoffService.createHandoffInstruction({
-      skillContent: await this.skillContent(),
+      skillContent: await this.skillContent(skillDirs),
       handoffPath,
       toolsAvailable: true,
     });
   }
 
-  /** 磁盘上的 `handoff` Skill 正文；读不到就回退到 SDK 的兜底模板 */
-  private async skillContent(): Promise<string> {
-    if (this.skillDirs.length > 0) {
-      const skill = await readSkill(this.skillDirs, HANDOFF_SKILL_ID, { silent: true });
+  /** 磁盘上的 `handoff` Skill 正文（项目里放一份同名 Skill 就覆盖全局那份）；读不到用兜底模板 */
+  private async skillContent(skillDirs: string[]): Promise<string> {
+    if (skillDirs.length > 0) {
+      const skill = await readSkill(skillDirs, HANDOFF_SKILL_ID, { silent: true });
       if (skill?.content?.trim()) return skill.content;
     }
     return FALLBACK_HANDOFF_TEMPLATE;
@@ -790,10 +982,10 @@ export class HandoffService {
   }
 
   /**
-   * 把写文档那一趟从记忆里截掉（长度回到 {@link HandoffRun} 记下的那个位置）。
+   * 把写文档那一趟从记忆里截掉（长度回到 `runToEnd` 记下的那个位置）。
    *
-   * 三种情形都是一句话：这批话不属于这段对话的记忆 —— 提交是「随旧记忆一起被替掉」，
-   * 回滚是「回到交接前」，失败是「压根没发生过」。它们本来就没落库（交接态下只跳过写库）。
+   * 只有没提交的那几种情形会走到它：这批话不属于这段对话的记忆 —— 取消是「回到交接前」，
+   * 失败是「压根没发生过」。提交之后不截：那时记忆已经换成新的一份了。
    */
   private restoreMemory(driver: ChatAgent | undefined, length: number): void {
     if (!driver || driver.messages.length <= length) return;

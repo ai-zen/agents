@@ -1,20 +1,27 @@
 /**
  * 自动命名（PRD D2 / F-C4）。
  *
- * 触发条件三件事同时成立才起名，缺一不动：
+ * 两件事同时成立才起名，缺一不动：
  *
- *   1. **这段对话里第一次说话的答复已经落地之后**（本文件按「这段对话里只有一条用户消息」判定：
- *      那个时刻就是这个形状，之后就不再满足）；
- *   2. **用户没改过名字**（`conversations.nameIsAuto`，R35 的那一列；不由名字内容反推）；
- *   3. **开关开着**（`AppConfig.autoTitle`，缺省视为开 —— 老配置里没有这个字段，用户的意图
+ *   1. **名字还是「创建时间默认值」**（{@link defaultConversationName}）—— 这是**唯一**的判据：
+ *      还是它 → 起名；不是它（用户改过、或已经自动起过）→ 永不再动；
+ *   2. **开关开着**（`AppConfig.autoTitle`，缺省视为开 —— 老配置里没有这个字段，用户的意图
  *      显然是「按出厂的样子跑」）。
+ *
+ * ## 为什么不数消息
+ *
+ * 交接换记忆是**原地换人**：旧记忆整段搬去 `已存档_<原名>`，原会话只剩自己那几条占位消息，
+ * 名字一个字都没动。于是「库里现在有几条消息 / 有几条用户消息」这种判据在换记忆前后会重新
+ * 说出「这一段还没起过名」—— 那不是事实，它只是那一段的形状变了。所以起名这件事不能拿
+ * 「库里现在有几条消息」当判据，只能问名字本身：它还是不是创建时那个默认值。
  *
  * 用哪一个模型：「取名模型」`AppConfig.namingModel`，没配就回落 `defaultModel`；两个都拿不到
  * 就**保持原名**（原名 = 创建时间，D2）。起不出名（调用失败 / 模型给了个空串）同样保持原名，
  * 不报错、不重试 —— 改名是锦上添花，不该在界面上留一条失败提示。
  *
  * 写回走 `applyAutoName`（而不是用户改名那个方法）：它把 `nameIsAuto` 置 1，于是「这个名字是
- * 自动起的」这个事实在库里继续成立（R35）。
+ * 自动起的」这个事实在库里继续成立（R35）。而它同时也是「起名这件事到此为止」的凭据：写回之后
+ * 名字不再是默认值，下一次调用会当场掉头。
  */
 
 import { AgentNS } from "@ai-zen/agents-core";
@@ -29,6 +36,7 @@ import type { ConversationRepository } from "../storage/ConversationRepository.j
 import type { MessageRepository } from "../storage/MessageRepository.js";
 import type { Conversation } from "../storage/types.js";
 import type { ProblemFact } from "../wire/index.js";
+import { defaultConversationName } from "./ConversationService.js";
 import { toAgentMessage } from "./MessageService.js";
 import type { NoticeService } from "./NoticeService.js";
 
@@ -62,8 +70,9 @@ export type AutoNameSkip =
   | "conversation_missing"
   | "config_unreadable"
   | "disabled"
+  /** 用户把名字改成了别的（`nameIsAuto` 为假）：这个名字归用户，永不再动 */
   | "renamed_by_user"
-  | "not_first_turn"
+  /** 名字不是默认值、也不是用户改的 —— 那就已经自动起过了，永不再动 */
   | "already_named"
   | "no_model"
   | "empty_title"
@@ -141,14 +150,6 @@ export class AutoNaming {
   private readonly notices?: NoticeService;
   private readonly emit?: ChatEventEmitter;
   private readonly now: () => number;
-  /**
-   * 本进程里已经起过名的对话。
-   *
-   * 库里的 `nameIsAuto` 区分不了「没起过」与「自动起过」（R35 两条都置 1），而「只有一条
-   * 用户消息」这条判定在连着调两次时会重复成立。这一份只防「同一进程内重复起名」，
-   * 重启后若仍是那个形状会再起一次 —— 那次起名同样只在那一个时刻发生。
-   */
-  private readonly named = new Set<string>();
 
   constructor(deps: AutoNamingDeps) {
     this.conversations = deps.conversations;
@@ -166,7 +167,8 @@ export class AutoNaming {
    * 变闲那一刻调一次（`app.ts` 把它接在 `ChatRunner.onIdle` 上）。
    *
    * 这个方法是幂等且可反复调用的：条件不成立时什么都不做（直接返回原因），所以接在每一次
-   * 变闲上都不会多做一次请求 —— 之后 `not_first_turn` 会把后面的调用全部挡住。
+   * 变闲上都不会多做一次请求 —— 起过名之后名字就不再是默认值，后面的调用都从这里掉头，
+   * 不必在内存里另记一份「谁起过了」。
    */
   async afterTurn(conversationId: string, language: Language = DEFAULT_LANGUAGE): Promise<AutoNameOutcome> {
     const conversation = await this.conversations.get(conversationId);
@@ -183,13 +185,13 @@ export class AutoNaming {
     }
 
     if (config.autoTitle === false) return skip("disabled", conversation.name, null);
-    if (!conversation.nameIsAuto) return skip("renamed_by_user", conversation.name, null);
-    if (this.named.has(conversation.id)) return skip("already_named", conversation.name, null);
 
-    const rows = await this.messages.listByConversation(conversation.id);
-    const messages = rows.map((row) => toAgentMessage(row));
-    const userMessages = messages.filter((message) => message.role === AgentNS.Role.User);
-    if (userMessages.length !== 1) return skip("not_first_turn", conversation.name, null);
+    // 判据只有这一条：名字还是不是那个「创建时间默认值」。不是它 → 永不再动（用户改过，
+    // 或已经自动起过 —— `nameIsAuto` 只用来把这两种情形分别说清楚，不参与「起不起名」）
+    if (conversation.name !== defaultConversationName(conversation.createdAt)) {
+      const reason: AutoNameSkip = conversation.nameIsAuto ? "already_named" : "renamed_by_user";
+      return skip(reason, conversation.name, null);
+    }
 
     // 取名模型：配了就用它，否则回落兜底模型；配置里找不到这个模型也等于「没有取名模型」
     const namingModelId = config.namingModel ?? config.defaultModel;
@@ -197,7 +199,9 @@ export class AutoNaming {
     const namingModel = config.models.find((model) => model.id === namingModelId);
     if (!namingModel) return skip("no_model", conversation.name, null);
 
-    const user = buildPrompt(userMessages, messages);
+    // 正文只取这一段的两端（第一条用户消息 + 最后一条助手回复）：不数条数，也就不必筛条数
+    const rows = await this.messages.listByConversation(conversation.id);
+    const user = buildPrompt(rows.map((row) => toAgentMessage(row)));
     if (user.length === 0) return skip("empty_title", conversation.name, null);
 
     let title: string;
@@ -213,7 +217,6 @@ export class AutoNaming {
 
     const updatedAt = this.now();
     await this.conversations.applyAutoName(conversation.id, name, updatedAt);
-    this.named.add(conversation.id);
     this.emit?.("conversation.changed", {
       conversationId: conversation.id,
       workspaceId: conversation.workspaceId,
@@ -248,9 +251,9 @@ export class AutoNaming {
   }
 }
 
-/** 喂给模型的正文：第一条用户消息 + 最后一条助手回复 */
-function buildPrompt(userMessages: AgentNS.Message[], messages: AgentNS.Message[]): string {
-  const first = userMessages[0];
+/** 喂给模型的正文：第一条用户消息 + 最后一条助手回复（取两端，不数条数） */
+function buildPrompt(messages: AgentNS.Message[]): string {
+  const first = messages.find((message) => message.role === AgentNS.Role.User);
   const userText = clip(first ? textOf(first.content) : "", PROMPT_CHARS);
   const lastAssistant = [...messages]
     .reverse()

@@ -166,8 +166,11 @@ function iso(ms: number): string {
  *
  * 用本地时区的 `YYYY-MM-DD HH:mm`：这是摆在侧栏里给人看的一句话，不是可排序的机器时间
  * （排序只按 `pinned` + `createdAt`，D13）。
+ *
+ * 导出的理由：自动命名要拿它当**唯一**的判据 —— 「名字还是不是创建时这个默认值」。
+ * 这个名字在一个地方算出来，判定与写入才对得上同一份口径。
  */
-function autoName(ms: number): string {
+export function defaultConversationName(ms: number): string {
   const date = new Date(ms);
   const pad = (value: number): string => String(value).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
@@ -357,7 +360,7 @@ export class ConversationService {
     const draft: Conversation = {
       id: randomUUID(),
       workspaceId: workspace.id,
-      name: autoName(createdAt),
+      name: defaultConversationName(createdAt),
       nameIsAuto: true,
       pinned: false,
       agentId: agent.id,
@@ -491,8 +494,7 @@ export class ConversationService {
       omit: false,
       content: injectedContextOf(workspace.cwd, language),
       // 宿主自己注入的那条消息，**宿主自己填 `source`**（`CORE.md` §3「一律带」/ §14
-      // 「宿主注入的由宿主自己填」）：它不是用户说的话，所以不能落成 `{ kind: "user" }` ——
-      // 否则「这段只有一条用户消息」那种判据会把它数进去。
+      // 「宿主注入的由宿主自己填」）：它不是用户说的话，所以不能落成 `{ kind: "user" }`。
       source: { kind: "system", label: "cwd" },
       data: { hidden: true },
       createdAt: this.now(),

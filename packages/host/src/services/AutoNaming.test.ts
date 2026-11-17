@@ -1,6 +1,7 @@
 /**
- * 自动命名的验收（D2 / F-C4 / R35）：只在「第一轮结束之后 + 用户没改过名字 + 开关开着」时才起名；
- * 用取名模型（缺省回落兜底模型）；起不出名就保持原名；写回时 `nameIsAuto` 继续为真。
+ * 自动命名的验收（D2 / F-C4 / R35）：只在「名字还是创建时间默认值 + 开关开着」时才起名；
+ * 用取名模型（缺省回落兜底模型）；起不出名就保持原名；写回时 `nameIsAuto` 继续为真；
+ * 判据里**没有**任何「数消息条数」的条件 —— 换记忆之后那一段不会再被重新起名。
  */
 
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
@@ -19,7 +20,11 @@ import { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
 import { migrate } from "../storage/migrations.js";
 import { AutoNaming } from "./AutoNaming.js";
 import type { TitleCompleter } from "./AutoNaming.js";
+import { defaultConversationName } from "./ConversationService.js";
 import { NoticeService } from "./NoticeService.js";
+
+/** 夹具里那段对话的原名：创建时间默认值（起名的判据就是「名字还是不是它」） */
+const DEFAULT_NAME = defaultConversationName(1);
 
 interface CompletionCall {
   system: string;
@@ -98,7 +103,7 @@ function buildHarness(configPath: string): Harness {
   return { dir, db, conversations, messages, notices, service, calls, behaviour, events };
 }
 
-/** 落一轮「用户 + 助手」 */
+/** 落一次「用户 + 助手」 */
 async function seedFirstTurn(harness: Harness, conversationId = "c1"): Promise<void> {
   await harness.messages.upsertMany([
     {
@@ -155,7 +160,7 @@ beforeEach(async () => {
   await conversations.create({
     id: "c1",
     workspaceId: "w1",
-    name: "2026-01-01 00:00",
+    name: DEFAULT_NAME,
     agentId: "a1",
     modelId: "m-big",
     createdAt: 1,
@@ -171,7 +176,7 @@ afterAll(async () => {
 });
 
 describe("自动命名的触发条件（D2 / F-C4）", () => {
-  it("第一轮之后、没改过名、开关开着 → 起名并写回（nameIsAuto 保持为真）", async () => {
+  it("名字还是创建时间默认值、开关开着 → 起名并写回（nameIsAuto 保持为真）", async () => {
     await seedFirstTurn(harness);
     const outcome = await harness.service.afterTurn("c1");
 
@@ -186,7 +191,7 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
     await harness.service.afterTurn("c1");
     expect(harness.calls).toHaveLength(1);
     expect(harness.calls[0]?.modelId).toBe("m-small");
-    // 喂给模型的是第一轮那两句
+    // 喂给模型的是开头那两句
     expect(harness.calls[0]?.user).toContain("登录页点提交没反应");
     expect(harness.calls[0]?.user).toContain("表单的 submit 事件没绑上");
   });
@@ -215,10 +220,10 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
     const outcome = await off.service.afterTurn("c1");
     expect(outcome).toMatchObject({ named: false, skipped: "disabled" });
     expect(off.calls).toHaveLength(0);
-    expect((await off.conversations.get("c1"))?.name).toBe("2026-01-01 00:00");
+    expect((await off.conversations.get("c1"))?.name).toBe(DEFAULT_NAME);
   });
 
-  it("第二轮之后不再起名（第一轮这个条件不成立了）", async () => {
+  it("第二次说话之后照样起名：判据里不数消息条数", async () => {
     await seedFirstTurn(harness);
     await harness.messages.upsert({
       id: "c1-u2",
@@ -229,12 +234,52 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
       createdAt: 4,
     });
 
+    // 名字还是默认值 → 还是该起名。这一段已经有两句用户话了，但「几句」不是判据
     const outcome = await harness.service.afterTurn("c1");
-    expect(outcome).toMatchObject({ named: false, skipped: "not_first_turn" });
-    expect(harness.calls).toHaveLength(0);
+    expect(outcome).toMatchObject({ named: true, name: "修复登录页" });
+    expect(harness.calls).toHaveLength(1);
   });
 
-  it("同一轮里连着调两次只起一次名", async () => {
+  it("换记忆之后不重新起名：名字已经不是默认值，库里有几条消息都不算数", async () => {
+    // 交接是**原地换人**：名字一个字不动，但库里那一段只剩一条 hidden 的断点 + 之后新说的话。
+    // 按「消息条数」判就会以为这是还没起过名的一段（那正是这条判据被删掉的理由）；
+    // 按名字判则永不再动 —— 它已经不是创建时间那个默认值了。
+    await harness.conversations.create({
+      id: "c2",
+      workspaceId: "w1",
+      name: "修复登录页",
+      agentId: "a1",
+      modelId: "m-big",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    await harness.messages.upsertMany([
+      {
+        id: "c2-breakpoint",
+        conversationId: "c2",
+        role: AgentNS.Role.System as string,
+        status: AgentNS.MessageStatus.Completed as string,
+        content: "/tmp/project/.ai-zen/handoffs/20260101-000000.md",
+        data: { hidden: true },
+        createdAt: 2,
+      },
+      {
+        id: "c2-u1",
+        conversationId: "c2",
+        role: AgentNS.Role.User as string,
+        status: AgentNS.MessageStatus.Completed as string,
+        content: "接着上次的来",
+        createdAt: 3,
+      },
+    ]);
+
+    const outcome = await harness.service.afterTurn("c2");
+    expect(outcome).toMatchObject({ named: false, name: "修复登录页", skipped: "already_named" });
+    expect(harness.calls).toHaveLength(0);
+    expect((await harness.conversations.get("c2"))?.name).toBe("修复登录页");
+  });
+
+  it("连着调两次只起一次名（第二次名字已不是默认值）", async () => {
     await seedFirstTurn(harness);
     await harness.service.afterTurn("c1");
     const again = await harness.service.afterTurn("c1");
@@ -252,7 +297,7 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
     const outcome = await noModel.service.afterTurn("c1");
     expect(outcome).toMatchObject({ named: false, skipped: "no_model" });
     expect(noModel.calls).toHaveLength(0);
-    expect((await noModel.conversations.get("c1"))?.name).toBe("2026-01-01 00:00");
+    expect((await noModel.conversations.get("c1"))?.name).toBe(DEFAULT_NAME);
   });
 
   it("配置指向一个不存在的模型也等于没有取名模型", async () => {
@@ -271,8 +316,8 @@ describe("起不出名就保持原名（D2）", () => {
     harness.behaviour.reply = async () => "   \n  ";
     const outcome = await harness.service.afterTurn("c1");
 
-    expect(outcome).toMatchObject({ named: false, name: "2026-01-01 00:00", skipped: "empty_title" });
-    expect((await harness.conversations.get("c1"))?.name).toBe("2026-01-01 00:00");
+    expect(outcome).toMatchObject({ named: false, name: DEFAULT_NAME, skipped: "empty_title" });
+    expect((await harness.conversations.get("c1"))?.name).toBe(DEFAULT_NAME);
   });
 
   it("调用失败：保持原名，事实记在 problem 里", async () => {
@@ -286,7 +331,7 @@ describe("起不出名就保持原名（D2）", () => {
     expect(outcome.skipped).toBe("call_failed");
     expect(outcome.problem?.messageKey).toBe("autoName.failed");
     expect(outcome.problem?.detail).toMatchObject({ reason: "端点 401" });
-    expect((await harness.conversations.get("c1"))?.name).toBe("2026-01-01 00:00");
+    expect((await harness.conversations.get("c1"))?.name).toBe(DEFAULT_NAME);
   });
 
   it("对话不存在时给个明确原因，不抛错（这是后台钩子）", async () => {

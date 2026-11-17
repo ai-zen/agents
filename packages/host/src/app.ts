@@ -554,6 +554,10 @@ export class HostApp {
       questions: this.questions,
       notices: this.noticeService,
       emit: (name, payload) => this.emitEvent(name, payload),
+      // 交接文档的模板来自磁盘上的 `handoff` Skill（F-D6）：与 SDK 插件同一份目录口径 ——
+      // 项目里放一份同名 Skill 就能覆盖全局那份。一个服务服务所有项目的对话，所以给的是
+      // 「cwd → 目录清单」；不给的话生产上会一直用 SDK 的内置兜底模板。
+      skillDirs: (cwd) => this.discoveryService.scopeAbilityPaths(cwd).skillsPaths,
       // 后台那一趟里不该打断交接的差错（通知没写进去、提交之后开新对话失败）落日志
       onError: (error, context) => {
         this.logger.error("交接出错", { context, error: describeError(error) });
