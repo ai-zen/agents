@@ -363,11 +363,12 @@ export interface LocalSectionExtensions {
 /**
  * 带本地扩展的内容段：core 的内容段 + `__` 开头的本机字段（交叉类型，不改 core）。
  *
- * 落库形态（`messages.content` 的 JSON）：
+ * 落库形态（`messages.content` 的 JSON）就是**发出去的那一份原样**：厂商产物（`file_id` /
+ * base64）与本地标记一起存，一个字都不清理（prompt caching 要的是前后两次请求的前缀逐字一致）。
  *
  * ```json
- * { "index": 1, "type": "image_url", "image_url": { "url": "" }, "__asset_id": "9f3c…" }
- * { "index": 2, "type": "file", "filename": "报表.pdf", "__asset_id": "c3d4…" }
+ * { "index": 1, "type": "image_url", "image_url": { "url": "data:image/png;base64,…" }, "__asset_id": "9f3c…" }
+ * { "index": 2, "type": "file", "file_id": "file-abc", "__asset_id": "c3d4…" }
  * ```
  */
 export type LocalMessageContentSection = AgentNS.MessageContentSection & LocalSectionExtensions;
@@ -413,8 +414,10 @@ export interface AssetRef {
  * 变成内容段的素材 id —— 素材怎么变成内容段（文件引用 / 内联 / 退化成文字）由宿主按
  * 实发模型决定（PRD F-H7），客户端只说「用了哪几张」。
  *
- * 落库的 content 里素材写成段上的 `__asset_id`（`image_url.url` / `file.file_id` 留空）：
- * 厂商的 `file_id`、base64、绝对路径都是「这一次发送的产物」，不进库。
+ * 落库的 content 里素材段上带着厂商产物（`image_url.url` 是 base64 / `file.file_id` 是厂商 id）
+ * 与本地标记 `__asset_id`，**原样入库**：落库那份就是发给厂商那份，不做任何清理 —— 清掉之后
+ * 重启或换端点，前后两次请求的前缀就对不上，prompt caching 全 miss。`__asset_id` 只是本地标记
+ * （客户端回显「这条消息用了哪份素材」、换模型 / 换厂商时 `resolveHistory` 兜底重建）。
  */
 export interface MessageInput {
   /** 用户输入的内容，core 原样 */
@@ -436,7 +439,12 @@ export type AttachmentDelivery = "file_reference" | "inline" | "text_fallback" |
 export interface AttachmentOutcome {
   assetId: string;
   deliveredAs: AttachmentDelivery;
-  /** 真正拼进消息的那个内容段，core 原样；没发出去时为空 */
+  /**
+   * 真正拼进消息的那个内容段，core 原样；没发出去时为空。
+   *
+   * 与落库的那一段是**同一个段**：上面带着厂商产物（`file_id` / 内联的 data URL），也带着本地
+   * 标记 `__asset_id`（客户端靠它回显「这条消息用了哪份素材」）。
+   */
   section: AgentNS.MessageContentSection | null;
   /** 没送达/降级时的人话原因 */
   problem: ProblemFact | null;

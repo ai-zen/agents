@@ -1,6 +1,6 @@
 /**
  * 素材服务：上传产物的落定与登记、取用时变成内容段（F-H7 / R44）、按引用清理（R33）、
- * 以及「落库只有 `__asset_id`」这条口径的两端。
+ * 以及段上 `__asset_id` 这条本地标记的两端（打上 / 按当前模型兜底重建）。
  *
  * 它围着 `assets` 这一份真相做五件事：
  *
@@ -10,7 +10,7 @@
  *   2. **取用**（{@link AssetService.prepareAttachments}）：`MessageInput.assetIds` → core 的内容段。
  *      走文件引用、内联 base64 还是退化成文字，由**实发模型与它所用端点**决定，判定逻辑用 SDK 的
  *      `fileToContentSection`（同一份口径，不在这里另写一遍）。没送出去的一律如实记账，不假装成功。
- *      同时给出「落库用」的那一份内容：素材在那里写成段上的 `__asset_id`（本地扩展字段）。
+ *      产出**只有一份**内容：段上带着厂商产物（`file_id` / base64），并挂本地标记 `__asset_id`。
  *   3. **重放**（{@link AssetService.resolveHistory}）：历史里的 `__asset_id` 在每轮发送前还原成
  *      当前模型能吃的内容段 —— 换了模型、重启之后再跑，同一条历史照样发得出去。发出去的那一份
  *      经 core 的 `formatContent` 按字段白名单重建，`__` 开头的键不会出网。
@@ -343,9 +343,11 @@ export class AssetService {
    *   - **全失败退回纯文本**：一张都没送出去时内容就是用户原来那段文字，
    *     既没有凭空多出来的段，也没有假装发出去的占位。
    *
-   * 同时给出**落库用**的那一份（`storedContent`）：素材在那里是段上的 `__asset_id`。
-   * 一份内容、两种形状是故意的 —— 发给模型的带着厂商产物（`file_id` / base64），存下的带的是引用，
-   * 否则这条消息绑在「这一次发送所用的端点」上，换模型 / 换端点 / 重启之后就发了。
+   * 产出**只有一份**内容：素材段上带着厂商产物（`file_id` / base64），同时挂着本地标记
+   * `__asset_id`。这一份既是发给模型的那一份，也是**原样落库**的那一份 —— 落库不做任何清理
+   * （prompt caching 要的是两次请求的 messages 前缀逐字一致，清掉厂商产物之后重启或换端点，
+   * 前缀就变了，缓存全 miss）。`__asset_id` 只给两件事用：客户端回显「这条消息用了哪份素材」，
+   * 以及换模型 / 换厂商时 {@link AssetService.resolveHistory} 在装配那一刻兜底重建。
    */
   async prepareAttachments(context: AttachmentPrepareContext): Promise<AttachmentPreparation> {
     const content = context.input.content;
@@ -376,7 +378,6 @@ export class AssetService {
     }
 
     const target = await this.resolveTarget(context.modelId);
-    const records: AssetRecord[] = [];
 
     for (const assetId of withinLimit) {
       const record = await this.assets.get(assetId);
@@ -393,17 +394,18 @@ export class AssetService {
         continue;
       }
 
-      records.push(record);
       const outcome = await this.sendAsset(record, target);
-      attachments.push(outcome);
-      if (outcome.section !== null) collected.push(outcome.section);
+      // 段上补本地标记：这一份会原样落库，`__asset_id` 让客户端认得出「用了哪份素材」，
+      // 也让换模型 / 换厂商时 `resolveHistory` 还能把它重建回来（出网时由 core 的白名单剥掉）
+      const section = outcome.section === null ? null : withAssetId(outcome.section, record.id);
+      attachments.push({ ...outcome, section });
+      if (section !== null) collected.push(section);
     }
 
     return {
-      content: formatContent(withSections(content, collected)),
+      // 只有这一份：用户打的字在前、素材段在后；送出去的那一份原样交给上层投递与落库
+      content: withSections(formatContent(content), collected),
       attachments,
-      // 落库的那一份：成不成功都记「用户挂过这几张」（失败事实在 `attachments` 里，不在库里）
-      storedContent: withSections(content, records.map(assetSectionOf)),
     };
   }
 
@@ -781,20 +783,19 @@ export function toAssetRef(row: AssetRecord): AssetRef {
 }
 
 /**
- * 素材 → 落库用的内容段。
+ * 段上补一个本地标记 `__asset_id`（指回 `assets` 表那一行）。
  *
- * 图片是 `image_url`（`url` 留空），其余是 `file`（`filename` 记原始名字，`file_id` / `file_data`
- * 都不出现）；两种都只带本地扩展字段 `__asset_id`。真字段留空是故意的：库里存的是「引用哪份
- * 素材」，而不是任何一种厂商产物。发送前由 {@link AssetService.resolveHistory} 按当时的模型
- * 换成它能吃的真段。
+ * 这**不是**「另一种落库形态」：落库的就是这一份，厂商产物（`file_id` / base64）原样在上面。
+ * 标记只给两件事用 —— 客户端回显「这条消息用了哪份素材」（`localAssetIdOf`），以及换模型 /
+ * 换厂商时 {@link AssetService.resolveHistory} 按当前模型把这一段重建一遍。
+ *
+ * 出网的那一份里没有它：core 的 `formatContent` 按字段白名单重建，`__` 开头的键留不下来。
  */
-export function assetSectionOf(row: AssetRecord): LocalMessageContentSection {
-  if (row.mime.startsWith("image/")) {
-    return { type: "image_url", image_url: { url: "" }, __asset_id: row.id };
-  }
-  return row.name === null
-    ? { type: "file", __asset_id: row.id }
-    : { type: "file", filename: row.name, __asset_id: row.id };
+function withAssetId(
+  section: AgentNS.MessageContentSection,
+  assetId: string,
+): LocalMessageContentSection {
+  return { ...(section as LocalMessageContentSection), __asset_id: assetId };
 }
 
 /**

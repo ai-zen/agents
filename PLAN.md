@@ -324,7 +324,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 | 装配期缓冲 | `ChatRunner` 的 `assemblingBuffers`（并进常驻桥 `ConversationBridge`） | agent 还没就位时先收着，装好按到达顺序一次推 —— 不等待、没有超时 |
 | 取件点 | `packages/core/src/Agent.ts`（`runLoops()` 内循环末）+ `Inbox.ts` | `high` 先取、`!needContinue` 才问 `low`；落地成 `Message.User` 并加来源注释 |
 | 落地即写库 | `ChatRunner.ts:1804-1821` | `persistLandedQueued`：先写行再 `linkQueuedAssets`，`createdAt` 取落地时刻 |
-| 来源注释 | `ChatRunner.ts:625-633` | `withSourceNote` 是唯一入口，拼装归 core 的 `inboxEntryContent` |
+| 来源注释 | core 的 `inboxEntryContent` | 落地那一刻统一生成；宿主没有第二个拼装点（也没有第二份内容） |
 | 待办回显 | `agent.inboxPending` → `wire/states.ts` 的 `InboxItem` | 现读，不存镜像；条数取证 |
 | 状态四格 | `AgentRegistry.get(id)?.state` | 忙 / 闲 / 暂停；查不到 = 死。不落库、不是字段、不推算 |
 | 变闲那一刻 | `ChatRunner` 的 `onIdle`（订的是 core 的 `state:idle`）→ `app` 的那一个判断 | 全宿主唯一一处：先看会话行上有没有待交接，再看要不要问交接线、要不要起名字 |

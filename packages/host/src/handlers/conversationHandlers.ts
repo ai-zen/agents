@@ -136,9 +136,10 @@ export function createConversationHandlers(deps: ConversationHandlerDeps): Handl
  *      排队不是绕过闸门的通道，所以这一步在投递之前。
  *   2. `ensurePersisted`（R56）：草稿在第一条用户消息之前不落库，这里把它写成真行（同 id）——
  *      消息行、素材关系行都按 `conversationId` 挂外键。
- *   3. **素材准备**（F-H7）：`assetIds` → 真正发出去的内容段，同时拿到「落库那一份」
- *      （段上只有 `__asset_id`）。走文件引用、内联还是降级成文字，取决于这段会话现在的模型与
- *      端点 —— 那是 `AssetService` 的事，本层只把它要的三样事实（会话、助手、模型）递过去。
+ *   3. **素材准备**（F-H7）：`assetIds` → 真正发出去的内容段（段上带着厂商产物与本地标记
+ *      `__asset_id`，这一份也就是原样落库的那一份）。走文件引用、内联还是降级成文字，
+ *      取决于这段会话现在的模型与端点 —— 那是 `AssetService` 的事，本层只把它要的三样事实
+ *      （会话、助手、模型）递过去。
  *   4. 投递：`ChatRunner.deliver`。它只判两件事 —— 对话在不在、agent 活不活；死的那一格
  *      只有创建者能把它叫起来（`mayStart`），界面上的发送按钮就是创建者之一，所以这里给 `true`。
  *   5. 回执：`userMessageId`（投递那一刻就定死，客户端按它画乐观回显）+ 每个附件的结局。
@@ -166,9 +167,8 @@ async function sendTurn(
   });
 
   const { userMessageId } = await deps.runner.deliver(params.conversationId, {
+    // 发出去的那一份就是落库的那一份：段上带着厂商产物（`file_id` / base64）与 `__asset_id`
     content: prepared.content,
-    // 落库那一份与发出去那一份可能不同（厂商的 file_id / base64 不进库）
-    ...(prepared.storedContent === undefined ? {} : { storedContent: prepared.storedContent }),
     source: { kind: "user" },
     mayStart: true,
   });

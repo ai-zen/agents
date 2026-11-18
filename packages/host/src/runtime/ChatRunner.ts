@@ -60,12 +60,13 @@
  * `bridges` 是**唯一**一张现场表：它记的恰好是「这段对话此刻有没有桥」，而桥在不在 = agent
  * 在不在（两者严丝合缝，所以不需要第二份账）。
  *
- * ## 投递的两样东西由调用方给
+ * ## 投递的内容由调用方给
  *
- * `deliver` 收的是 `{ content, source, storedContent?, mayStart? }`：
+ * `deliver` 收的是 `{ content, source, mayStart? }`：
  *
- * - `content` 是**发给模型的那一份**、`storedContent` 是**落库的那一份**（`__asset_id` 形态）；
- * - 两样都由**调用方**（`handlers/conversationHandlers.ts`）准备好再交进来 —— 本文件不自己做
+ * - `content` 是**发给模型的那一份**，也是**落库的那一份** —— 同一条消息只有一份内容，落库照抄
+ *   那一份，不做任何清理（prompt caching 要的是前后两次请求的前缀逐字一致）；
+ * - 它由**调用方**（`handlers/conversationHandlers.ts`）准备好再交进来 —— 本文件不自己做
  *   素材准备（选路要问模型与端点，那是素材层的事）。
  *
  * 回执**只有 `userMessageId`**：每张附件最后是怎么走的，由准备它的调用方回报给客户端 ——
@@ -98,7 +99,6 @@ import type { AgentNS } from "@ai-zen/agents-core";
 import {
   AgentError,
   AgentNS as AgentNSValue,
-  inboxEntryContent,
   reconcileAbortedMessages,
   reconcileAbortedToolRounds,
 } from "@ai-zen/agents-core";
@@ -279,20 +279,19 @@ export type ChatAgent = Agent;
  * 把已上传的素材变成真正发出去的内容段（PRD F-H7）。
  *
  * **本文件不再用这个口**（那一步搬到了调用方：发一次话的素材选路在
- * `handlers/conversationHandlers.ts` 那一层，它拿着这份产物里的 `content` / `storedContent`
+ * `handlers/conversationHandlers.ts` 那一层，它拿着这份产物里的 `content`
  * 投递进来，`attachments` 那份结局由它自己回报给客户端）。类型留在这里，是因为它还描述着
  * 「一次发送的素材产物」那个形状，`AssetService.prepareAttachments` 的返回值就是它。
  */
 export interface AttachmentPreparation {
-  /** 真正发给模型的内容（已按实发模型换成文件引用 / 内联 / 文字） */
+  /**
+   * 真正发给模型的内容（已按实发模型换成文件引用 / 内联 / 文字）。
+   *
+   * **只有这一份**：落库的就是它。段上的厂商产物（`file_id` / base64）与本地标记 `__asset_id`
+   * 一并原样存下去 —— 落库时清理会让两次请求的前缀对不上，prompt caching 全 miss。
+   */
   content: AgentNS.MessageContent;
   attachments: AttachmentOutcome[];
-  /**
-   * 落库用的内容（消息里只存我们自己的引用：段上的 `__asset_id`）。
-   *
-   * 不给时落库的就是 `content`：不是每个注入方都有「厂商产物不能进库」这回事。
-   */
-  storedContent?: AgentNS.MessageContent;
 }
 
 /** 素材准备（F-H7 的选路）—— 调用方那一侧的口子，本文件只留类型 */
@@ -330,10 +329,9 @@ export type MessageAssetLinker = (context: {
 /**
  * 一次投递的入参。
  *
- * 只有两样是必给的：`content`（发给模型的那一份）与 `source`（谁说的）。其余两样都是特定那条
- * 路的产物：
+ * 两样必给的：`content`（发给模型的那一份，也是落库的那一份）与 `source`（谁说的）。另一样是
+ * 特定那条路的产物：
  *
- * - `storedContent`：**落库那一份**（`__asset_id` 形态）。不给就用 `content`；
  * - `mayStart`：**允许把它叫起来**（给这段对话装上驱动者）。只有两个创建者给 `true` ——
  *   界面上的发送按钮、刚建出来的那段会话的第一句；其它来源给了也白给（这里只认 `true`，
  *   不认「真值」）。
@@ -345,8 +343,6 @@ export interface DeliveryInput {
   content: AgentNS.MessageContent;
   /** core 的判别结构：`{kind:"user"}` = 用户本人（不加来源注释），其余由 core 落地时加注释 */
   source: AgentNS.MessageSource;
-  /** 落库那一份（`__asset_id` 形态）；不给就用 content。注释同样要过 `withSourceNote` */
-  storedContent?: AgentNS.MessageContent;
   /**
    * **允许把它叫起来**（给这段对话装上驱动者）。
    *
@@ -475,42 +471,6 @@ export interface ChatRunnerOptions {
 
 /** 边流边写的缺省节流：200ms 一次，兼顾「客户端断了丢得少」与「写盘次数」 */
 export const DEFAULT_STREAM_WRITE_INTERVAL_MS = 200;
-
-// ---------------------------------------------------------------------------
-// 来源（core 的判别结构）
-// ---------------------------------------------------------------------------
-
-/** 唯一一个不需要加来源注释的 source：用户本人说的话（core 的 `{ kind: "user" }`） */
-const SOURCE_USER: AgentNS.MessageSource = { kind: "user" };
-
-/** 这条来源要不要在正文前面加一行「自动推送」注释（`{ kind: "user" }` 不加） */
-function needsNote(source: AgentNS.MessageSource | undefined): boolean {
-  return source !== undefined && source.kind !== "user";
-}
-
-/**
- * 正文按来源包一层：`{ kind: "user" }`（或缺省）原样返回，其他来源在正文最前面加一行
- * `// 这条消息来自 <label> 自动推送（<时间>）`。
- *
- * 拼装不在这里写第二遍：注释的形状（`注释\n\n正文` / 分段内容在最前面插一段 text）归 core 的
- * `inboxEntryContent`，宿主只是把同一个纯函数用在「宿主自己写落库那一份」这条路上 —— 于是
- * 自动推送的消息不论从 inbox 落地还是从库里读回来，读者看到的是同一行话。
- */
-function withSourceNote(
-  content: AgentNS.MessageContent,
-  source: AgentNS.MessageSource | undefined,
-  messageId: string,
-  createdAt: string,
-): AgentNS.MessageContent {
-  if (!needsNote(source)) return content;
-  return inboxEntryContent({
-    messageId,
-    source: source!,
-    priority: "high",
-    content,
-    createdAt,
-  });
-}
 
 // ---------------------------------------------------------------------------
 // core 消息 ⇄ 存储行
@@ -805,7 +765,7 @@ interface RawChunk {
 type DeliveryEntryInput = Omit<AgentNS.InboxEntryWithContent, "createdAt">;
 
 /**
- * 一条**已经投递、还没落地**的投递：推进 core 的入参 + 宿主替它记的那两样。
+ * 一条**已经投递、还没落地**的投递：推进 core 的入参 + 宿主替它记的投递时刻。
  *
  * 「落地」= core 把它攒成一条真消息并广播 `messageAdded`（那一刻才写库）。在那之前它只是一份
  * 入参：要么在 core 的队列里，要么还在装配窗口里。
@@ -817,8 +777,6 @@ type DeliveryEntryInput = Omit<AgentNS.InboxEntryWithContent, "createdAt">;
 interface DeliveryEntry {
   input: DeliveryEntryInput;
   createdAt: string;
-  /** 落库那一份（`__asset_id` 形态，已过 `withSourceNote`）；只在这条消息落地时用一次 */
-  storedContent?: AgentNS.MessageContent;
 }
 
 // ---------------------------------------------------------------------------
@@ -859,10 +817,8 @@ class ConversationBridge {
   private readonly createdAtOf = new Map<string, number>();
   /** 宿主已经认下来的 id（投递带来的 + 自己分配的），再见到就原样用 */
   private readonly knownIds = new Set<string>();
-  /** 投递进来、还没落地的消息 id（落地那一刻要用 `landingStored` 那一份内容写行） */
+  /** 投递进来、还没落地的消息 id（落地那一刻写它的行、记它的素材关系） */
   private readonly landingIds = new Set<string>();
-  /** 投递条目的**落库那一份**内容（`__asset_id` 形态）：核心看到的是厂商产物，库里要留引用 */
-  private readonly landingStored = new Map<string, AgentNS.MessageContent>();
   /**
    * 子 Agent 的消息 → 宿主分配的 id。
    *
@@ -920,8 +876,8 @@ class ConversationBridge {
    * 把一条投递推进 core 的队列。
    *
    * 三件事，顺序不能换：
-   *   1. 记下 id 与「落库那一份」—— 落地时 core 会带着同一个 id 回来（D5：客户端先画的那条与
-   *      落地的是同一条），那时才知道要写哪一份内容；
+   *   1. 记下 id —— 落地时 core 会带着同一个 id 回来（D5：客户端先画的那条与落地的是同一条），
+   *      那时才知道要写哪一行；
    *   2. `push`：**同步入队，立刻返回**；
    *   3. 起来：**`idle`、没收件开关没翻、且还没 `start()` 过**才 `start()`。不收件时不叫醒 ——
    *      那是用户的显式动作，投递只收不取（PRD 4.4）。已经在跑的自己会从队列里取，这里什么都不用做。
@@ -936,14 +892,6 @@ class ConversationBridge {
       this.knownIds.add(messageId);
       this.landingIds.add(messageId);
       this.createdAtOf.set(messageId, this.clock.now());
-      if (entry.storedContent !== undefined) {
-        // 落库那一份也要过**同一个**注释函数：不过这一道，「非 user 来源 + 带附件」的条目就会
-        // 分叉 —— 模型看到的那份带注释、库里那份是原始内容。`{kind:"user"}` 时它原样返回。
-        this.landingStored.set(
-          messageId,
-          withSourceNote(entry.storedContent, entry.input.source, messageId, entry.createdAt),
-        );
-      }
     }
 
     try {
@@ -1156,7 +1104,6 @@ class ConversationBridge {
     // 子 Agent 的消息 id 在 WeakMap 里：没见过的那条（压根没落过库）不必删
     const id = subAgent ? this.subAgentIds.get(message) : message.id;
     if (id === undefined) return;
-    this.landingStored.delete(id);
     this.writeChain = this.writeChain
       .then(() => this.options.messages.delete(id))
       .catch((error: unknown) => this.options.onError?.(error, "message-remove"));
@@ -1398,21 +1345,19 @@ class ConversationBridge {
   /**
    * 一条消息 → 一行。
    *
-   * 落库正文优先用**投递时记下的那一份**（与端点无关的 `__asset_id` 形态）：核心看到的是厂商的
-   * `file_id` / base64，那些都是「这一次发送的产物」，不该进库。
+   * 正文就是内存里那一份（`toRow` 原样搬）：落库的是**发出去的那一份**，一个字都不清理 ——
+   * prompt caching 要的是前后两次请求的前缀逐字一致，落库时清掉厂商产物，重启或换端点之后
+   * 前缀就变了，缓存全 miss。
    *
    * 子 agent 的消息走不到这里：它们不落库（`CORE.md` §17）。
    */
   private rowOf(message: AgentNS.Message, problem?: ProblemFact): MessageUpsertInput {
-    const row = toRow(
+    return toRow(
       message,
       this.conversationId,
       this.createdAtOf.get(message.id) ?? this.clock.now(),
       problem === undefined ? {} : { problem },
     );
-    const stored = this.landingStored.get(message.id);
-    if (stored !== undefined) row.content = stored as unknown as MessageUpsertInput["content"];
-    return row;
   }
 
   /** 节流：到点就写一条，不到点就排一个「到点再写」 */
@@ -1485,7 +1430,8 @@ class ConversationBridge {
   private async linkLandedAssets(message: AgentNS.Message): Promise<void> {
     const link = this.options.linkMessageAssets;
     if (!link) return;
-    const content = this.landingStored.get(message.id);
+    // 扫的就是落库那一份（= 内存里那一份）里的 `__asset_id`
+    const content = message.content;
     if (content === undefined) return;
     try {
       await link({ conversationId: this.conversationId, messageId: message.id, content });
@@ -1623,7 +1569,6 @@ export class ChatRunner {
         content: input.content,
       },
       createdAt,
-      ...(input.storedContent === undefined ? {} : { storedContent: input.storedContent }),
     };
 
     const live = this.options.agents.get(conversationId);

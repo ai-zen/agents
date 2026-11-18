@@ -1,6 +1,6 @@
 /**
  * 素材服务的验收：落定与登记（含全局去重）、`assetIds` → 内容段（F-H7 / R44）、
- * 两层缓存（`assets` + 可失效的 `asset_vendor_files`）、`__asset_id` 的生成 / 剥离 / 还原、
+ * 两层缓存（`assets` + 可失效的 `asset_vendor_files`）、`__asset_id` 的打上 / 剥离 / 还原、
  * 按 id 取内容（`asset.get`）、引用归零才删（R33）。
  *
  * 传输方式的选择交给 SDK 的 `fileToContentSection`（本服务不另写一套判定），所以用例里
@@ -22,6 +22,7 @@ import { Database } from "../storage/Database.js";
 import { migrate } from "../storage/migrations.js";
 import {
   MAX_ASSETS_PER_MESSAGE,
+  localAssetIdOf,
   type AssetRef,
   type AttachmentOutcome,
   type LocalMessageContentSection,
@@ -29,10 +30,10 @@ import {
 import { HostError } from "../wire/errors.js";
 import {
   AssetService,
-  assetSectionOf,
   assetIdsOf,
   type AssetVendorRegistry,
   type AttachmentModelContext,
+  type AttachmentPreparation,
   type AttachmentPrepareContext,
 } from "./AssetService.js";
 import { makeTempDir, type TempDir } from "../net/TestSupport.js";
@@ -351,7 +352,7 @@ describe("prepareAttachments", () => {
     const outcome = outcomeOf(first.attachments, ref.assetId);
     expect(outcome.deliveredAs).toBe("file_reference");
     // `file_id` 已经是引用，名字不跟着走（`filename` 只在 `file_data` 时才有意义，见 core 的类型）
-    expect(outcome.section).toEqual({ type: "file", file_id: "file-1" });
+    expect(outcome.section).toEqual({ type: "file", file_id: "file-1", __asset_id: ref.assetId });
     expect(outcome.section).not.toHaveProperty("filename");
     expect(uploadedFiles).toEqual([`${ref.assetId}.png`]);
 
@@ -361,6 +362,7 @@ describe("prepareAttachments", () => {
     expect(outcomeOf(second.attachments, ref.assetId).section).toEqual({
       type: "file",
       file_id: "file-1",
+      __asset_id: ref.assetId,
     });
     expect(uploadedFiles).toHaveLength(1);
   });
@@ -373,7 +375,12 @@ describe("prepareAttachments", () => {
 
     const outcome = outcomeOf(prepared.attachments, ref.assetId);
     expect(outcome.deliveredAs).toBe("text_fallback");
-    expect(outcome.section).toEqual({ type: "text", text: "[Image] photo.png（当前模型看不了图片）" });
+    // 退化成文字也留着引用：客户端照样能说「这条消息用了哪份素材」，换模型时还能重建回来
+    expect(outcome.section).toEqual({
+      type: "text",
+      text: "[Image] photo.png（当前模型看不了图片）",
+      __asset_id: ref.assetId,
+    });
     expect(outcome.problem?.messageKey).toBe("message.imageAsText");
     expect(outcome.problem?.message).toContain("Model One");
   });
@@ -653,42 +660,45 @@ describe("厂商 file_id 缓存", () => {
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// `__asset_id` 的生成（落库形态）、剥离（出网前）与还原（发送前）
+// `__asset_id` 打上（内容那一份）、剥离（出网前）与还原（发送前）
 // ---------------------------------------------------------------------------
 
 describe("__asset_id 两端", () => {
-  it("prepareAttachments 同时给出发送形态与落库形态；落库形态里只有 __asset_id", async () => {
+  it("prepareAttachments 只回一份内容：厂商产物与 __asset_id 同在，没有第二个内容字段", async () => {
     modelContext = { model: model(true), endpoint: endpoint(true) };
     const ref = await uploadAsset(imageBytes(16));
 
     const prepared = await service.prepareAttachments(prepare([ref.assetId]));
 
-    // 发送形态：厂商产物（file_id），会随端点/模型变；`filename` 不跟着 `file_id` 走
-    const sent = prepared.content as AgentNS.MessageContentSection[];
-    expect(sent[1]).toEqual({ type: "file", file_id: "file-1" });
-    expect(sent[1]).not.toHaveProperty("filename");
+    // 只有两格：内容一份、结局一份。`Record<keyof AttachmentPreparation, …>` 是穷举 ——
+    // 将来谁再加一格（比如又一形态的「落库内容」），这个字面量当场就编译不过
+    const shape: Record<keyof AttachmentPreparation, true> = {
+      attachments: true,
+      content: true,
+    };
+    expect(Object.keys(prepared).sort()).toEqual(Object.keys(shape).sort());
 
-    // 落库形态：真字段留空，引用只在扩展字段上
-    const stored = prepared.storedContent as AgentNS.MessageContentSection[];
-    expect(stored).toEqual([
+    // 这一份既是发给模型的（带着厂商的 `file_id`），也是原样落库的（`__asset_id` 就在同一段上）
+    const content = prepared.content as LocalMessageContentSection[];
+    expect(content).toEqual([
       { type: "text", text: "看看这张图" },
-      { type: "image_url", image_url: { url: "" }, __asset_id: ref.assetId },
+      { type: "file", file_id: "file-1", __asset_id: ref.assetId },
     ]);
-    const flat = JSON.stringify(stored);
-    expect(flat).not.toContain("file-1");
-    expect(flat).not.toContain("base64");
-    expect(flat).not.toContain(assetsDir);
-    expect(flat).not.toContain("asset://");
+    // 结局里报给客户端的那一段，就是拼进内容的那一段（不是另造一份）
+    expect(content[1]).toEqual(outcomeOf(prepared.attachments, ref.assetId).section);
+    // 客户端回显靠它认出「这条消息用了哪份素材」
+    expect(localAssetIdOf(content[1] as LocalMessageContentSection)).toBe(ref.assetId);
   });
 
-  it("非图片素材：filename 记名字，file_id / file_data 都不出现", async () => {
+  it("非图片素材也走同一份：`file_id` 与 `__asset_id` 同在那一段上", async () => {
+    modelContext = { model: model(true), endpoint: endpoint(true) };
     const ref = await uploadAsset(imageBytes(10), { mime: "application/pdf", name: "a.pdf" });
 
     const prepared = await service.prepareAttachments(prepare([ref.assetId]));
 
-    expect((prepared.storedContent as AgentNS.MessageContentSection[])[1]).toEqual({
+    expect((prepared.content as LocalMessageContentSection[])[1]).toEqual({
       type: "file",
-      filename: "a.pdf",
+      file_id: "file-1",
       __asset_id: ref.assetId,
     });
   });

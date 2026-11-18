@@ -13,7 +13,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { AgentNS as AgentNSValue } from "@ai-zen/agents-core";
+import { AgentNS as AgentNSValue, formatContent } from "@ai-zen/agents-core";
 
 import { createHost } from "../app.js";
 import type { HostApp } from "../app.js";
@@ -22,7 +22,7 @@ import type { ConnectionInfo } from "../net/index.js";
 import { makeTempDir, wait, type TempDir } from "../net/TestSupport.js";
 import type { AgentFactory } from "../runtime/index.js";
 import { deferred, FakeAgent, type Deferred } from "../runtime/TestSupport.js";
-import { HostError } from "../wire/index.js";
+import { HostError, localAssetIdOf } from "../wire/index.js";
 import type {
   ConversationAbortResult,
   ConversationDeleteResult,
@@ -30,6 +30,7 @@ import type {
   ConversationResumeResult,
   ConversationSendResult,
   ConversationView,
+  LocalMessageContentSection,
   MethodName,
   MethodParams,
   MethodResult,
@@ -57,6 +58,15 @@ const CONFIG = JSON.stringify(
         tokenThresholds: { handoff: 1200, guard: 1800 },
         // 带上出厂那张档位表：验「换思考档位」那一手时它要有可调的档
         reasoningPreset: "openai",
+        custom: true,
+      },
+      // 能看图的模型：附件会内联成 `image_url`（data URL），于是「厂商产物进不进库」才有东西可验
+      {
+        id: "vision-model",
+        name: "Vision Model",
+        endpointId: "fake",
+        vision: true,
+        tokenThresholds: { handoff: 1000, guard: 2000 },
         custom: true,
       },
     ],
@@ -92,12 +102,33 @@ function oneRound(): FakeAgent {
 
 interface Harness {
   app: HostApp;
+  dataRoot: TempDir;
   workspaceId: string;
   conversationId: string;
   workspaceDir: TempDir;
 }
 
-async function makeHarness(options: { createAgent?: AgentFactory } = {}): Promise<Harness> {
+/** 起一个（真 SQLite、真组装的）宿主；同一个数据根再起一次就是「重启」 */
+async function startHost(
+  dataRoot: TempDir,
+  createAgent?: AgentFactory,
+): Promise<HostApp> {
+  const app = await createHost({
+    aiZenDir: dataRoot.path,
+    port: 0,
+    local: true,
+    createAgent: createAgent ?? (async () => oneRound()),
+    exit: () => undefined,
+    logger: { warn: () => undefined, error: () => undefined },
+  });
+  await app.start();
+  apps.push(app);
+  return app;
+}
+
+async function makeHarness(
+  options: { createAgent?: AgentFactory; modelId?: string } = {},
+): Promise<Harness> {
   const dataRoot = await makeTempDir("ai-zen-conv-handlers-");
   temps.push(dataRoot);
   await fs.mkdir(join(dataRoot.path, "agents"), { recursive: true });
@@ -106,21 +137,13 @@ async function makeHarness(options: { createAgent?: AgentFactory } = {}): Promis
   const workspaceDir = await makeTempDir("ai-zen-conv-handlers-cwd-");
   temps.push(workspaceDir);
 
-  const app = await createHost({
-    aiZenDir: dataRoot.path,
-    port: 0,
-    local: true,
-    createAgent: options.createAgent ?? (async () => oneRound()),
-    exit: () => undefined,
-    logger: { warn: () => undefined, error: () => undefined },
-  });
-  await app.start();
-  apps.push(app);
+  const app = await startHost(dataRoot, options.createAgent);
 
   const { workspace } = await callMethod(app, "workspace.create", { cwd: workspaceDir.path });
-  const conversation = await seedConversation(app, workspace.id);
+  const conversation = await seedConversation(app, workspace.id, options.modelId);
   return {
     app,
+    dataRoot,
     workspaceId: workspace.id,
     conversationId: conversation.id,
     workspaceDir,
@@ -132,11 +155,15 @@ async function makeHarness(options: { createAgent?: AgentFactory } = {}): Promis
  *
  * 这里的用例要看的是别的东西（列表、四格、删除），所以直接把草稿落成真行。
  */
-async function seedConversation(app: HostApp, workspaceId: string): Promise<ConversationView> {
+async function seedConversation(
+  app: HostApp,
+  workspaceId: string,
+  modelId = "test-model",
+): Promise<ConversationView> {
   const created = await callMethod(app, "conversation.create", {
     workspaceId,
     agentId: "default",
-    modelId: "test-model",
+    modelId,
   });
   if (!created.conversation) throw new Error("conversation.create 没有建出对话");
   await app.conversationService.ensurePersisted(created.conversation.id);
@@ -187,6 +214,20 @@ async function uploadAsset(app: HostApp, conversationId: string): Promise<string
     conversationId,
   });
   return ref.assetId;
+}
+
+/**
+ * 直接读库里那一行（`message.list` 在对话活着时读的是内存，验「落库」要绕过它）。
+ *
+ * `content` 列存的是 JSON：解回来就是 core 的 `AgentNS.MessageContent`。
+ */
+async function persistedContentOf(app: HostApp, messageId: string): Promise<unknown> {
+  const row = await app.db.get<{ content: string }>(
+    "SELECT content FROM messages WHERE id = ?",
+    [messageId],
+  );
+  if (row === undefined) throw new Error(`库里没有 ${messageId}`);
+  return JSON.parse(row.content) as unknown;
 }
 
 /** 等这段对话真的闲下来（那一格是 idle、队里也空了），且写库推进完 */
@@ -316,6 +357,86 @@ describe("conversation.send", () => {
     );
     // 那一句没有进队
     expect(app.chatRunner.state(conversationId).inbox).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 附件：一条消息只有一份内容（落库照抄发出去的那一份）
+// ---------------------------------------------------------------------------
+
+describe("附件的落库形态：按原样持久化（prompt caching 要的是前缀逐字一致）", () => {
+  it("带附件的一次投递：库里那条的 content 与内存里那一份逐字相同（含厂商产物与 __asset_id）", async () => {
+    const { app, conversationId } = await makeHarness({ modelId: "vision-model" });
+    const assetId = await uploadAsset(app, conversationId);
+
+    const sent = await callMethod(app, "conversation.send", {
+      conversationId,
+      input: { content: "看图", assetIds: [assetId] },
+    });
+    // 端点没有 Files API、模型能看图 → 内联成 data URL（厂商产物就是那串 base64）
+    expect(sent.attachments[0]?.deliveredAs).toBe("inline");
+    await idle(app, conversationId);
+
+    const memory = app.chatRunner
+      .messagesOf(conversationId)
+      ?.find((message) => message.id === sent.userMessageId)?.content;
+    expect(memory).toBeDefined();
+    const stored = await persistedContentOf(app, sent.userMessageId);
+
+    // 库里那份 = 内存里那份，一个字都不清理
+    expect(JSON.stringify(stored)).toBe(JSON.stringify(memory));
+
+    const sections = stored as LocalMessageContentSection[];
+    expect(sections[0]).toEqual({ type: "text", text: "看图" });
+    // 厂商产物（内联的 base64 data URL）在库里
+    expect(sections[1]?.type).toBe("image_url");
+    const url = (sections[1] as { image_url: { url: string } }).image_url.url;
+    expect(url.startsWith("data:image/png;base64,")).toBe(true);
+    // 本地标记也在：客户端靠它回显「这条消息用了哪份素材」
+    expect(localAssetIdOf(sections[1] as LocalMessageContentSection)).toBe(assetId);
+  });
+
+  it("重启视角：同一个库重新装一遍，读回的那条 content 与投递时逐字相同", async () => {
+    const harness = await makeHarness({ modelId: "vision-model" });
+    const assetId = await uploadAsset(harness.app, harness.conversationId);
+
+    const sent = await callMethod(harness.app, "conversation.send", {
+      conversationId: harness.conversationId,
+      input: { content: "看图", assetIds: [assetId] },
+    });
+    await idle(harness.app, harness.conversationId);
+    const delivered = JSON.stringify(
+      harness.app.chatRunner
+        .messagesOf(harness.conversationId)
+        ?.find((message) => message.id === sent.userMessageId)?.content,
+    );
+
+    // 重启：同一个数据根再起一个宿主（内存里的现场全没了，只剩库里那一份）
+    await harness.app.stop("requested");
+    const restarted = await startHost(harness.dataRoot);
+
+    const page = await callMethod(restarted, "message.list", {
+      conversationId: harness.conversationId,
+    });
+    const readBack = page.messages.find((message) => message.id === sent.userMessageId)?.content;
+    expect(JSON.stringify(readBack)).toBe(delivered);
+
+    // 再装配一次（发一句就会把历史装进去）：库里那一行不被改写，前缀不变
+    await callMethod(restarted, "conversation.send", {
+      conversationId: harness.conversationId,
+      input: { content: "再说一句" },
+    });
+    await idle(restarted, harness.conversationId);
+    expect(JSON.stringify(await persistedContentOf(restarted, sent.userMessageId))).toBe(delivered);
+
+    // 装配时 `resolveHistory` 按当前模型把段重建了一遍（内存里那份不再带本地标记），
+    // 但**出网的那一份与落库那一份逐字相同** —— 前缀不变，缓存不 miss
+    const assembled = restarted.chatRunner
+      .messagesOf(harness.conversationId)
+      ?.find((message) => message.id === sent.userMessageId)?.content;
+    expect(JSON.stringify(formatContent(assembled ?? ""))).toBe(
+      JSON.stringify(formatContent(JSON.parse(delivered) as LocalMessageContentSection[])),
+    );
   });
 });
 
