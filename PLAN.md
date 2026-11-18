@@ -156,7 +156,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 ### 5.3 交接：只在空闲时发起，靠「不落库」隔离
 
 - **判据收在一处**：「能不能立刻接手这一批」＝ 有驱动者 + 手上没活 + 输出闸开着 + 不在交接中；否则拒（`busy`），`detail.reason` 分别是 `no_agent` / `working` / `output_paused` / `handoff_in_progress`。不做「先 abort 再按住」，也不做「等变闲」「放行一手」。
-- **交接期间不收件**：`deliver` 一律拒（`busy` / `handoff_in_progress`），界面上只给中断。那一批**收口即关输出闸**（批头关，不能更早 —— 闸一关连队里的货都取不到，提前关就是死锁），到记忆换完才开。这样「交接期间投进来的话跟着旧记忆一起被挪走」那条路根本不存在。待办积压由客户端 `/clear`（`conversation.clearInbox`）显式清。
+- **交接期间只关输出闸，不关输入闸**：别人投进来的话**照收**、排在 inbox 里（积压由客户端 `/clear` 清），但这一任不取 —— 那一批**收口即关输出闸**（批头关，不能更早 —— 闸一关连队里的货都取不到，提前关就是死锁），记忆换完再开。**交接完成即开闸**（不记交接前有没有关过闸）；**中断回滚后保持输出闸关**。**交接期间 `deliver` 不拒** —— 没有任何「拒」这一说。
 - **隔离靠「交接态」**（`beginHandoff` / `endHandoff`）：这段在写文档期间产生的消息**不进库**（否则「关于交接的那场对话」会进转录、进历史、进条数），但 `message.added` / `message.delta` / `message.changed` **照常推** —— 用户得看得见它在写。
 - **「写完了没有」看工具结果**：写文档那次工具调用的 `toolFinished` + 一次落盘校验（`MIN_HANDOFF_BYTES`）；两次都不成立 → 单向降级到独立交接，再不行就是失败通知。不看状态、不等 idle。
 - **提交与回滚都推 `memory_replaced`**，客户端据此 `message.list` 全量整段替换，把那批只在内存里的写作痕迹清掉。断线重连的客户端天然看不到它们（库里没有）。
@@ -172,7 +172,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 | 流式一片 | `message.delta` | core 的 `AgentNS.Delta` 原样 + `messageId`（**没有 seq**：有序连接上「漏一片」这个处境不存在，断线即作废、靠 `resync` 整段对齐） | 客户端跑同一个 `applyChunk` 增量 |
 | 一圈收口 | `message.changed` | 完整消息对象（此刻的 status / tool_calls / finish_reason / usage 都在上面） | 客户端整条替换；宿主覆盖写行 |
 | 事后改写 | `message.changed` / `message.removed` | 同上 ／ 被删的那条（中止、出错、`drop`、`omit`） | 同上 |
-| 状态 | `state` | `{ conversationId, status }`，取值 `busy` / `idle` / `paused` / `dead`（**变了才发**） | 客户端自己那四格 |
+| 状态 | `state` | `{ conversationId, status }`，`status` 只有 `working` / `idle`（**只读**，变了才发）；两道闸各有自己的事件（`output:paused` / `output:resumed`、`input:paused` / `input:resumed`）；**死活 = 有没有 agent 实例**，不在这条事件上（PRD 4.4 的四件事） | 客户端自己那四行 |
 | 出错 | `error` | core 的 `AgentError` 完整对象（`code` / `message` / `detail`）+ 它挂在哪条消息上 | 日志、排查、要技术细节的地方；**消息行里另存一份「回显用」的失败事实**（码 + 文案键 + 参数），活得比进程长（PRD 4.15） |
 
 - `conversation.changed` 的 `change` 取值里有 `handoff_started` 一格：交接**开始**那一刻推它（界面据此直说「正在交接」、输入框不给发、只留中断）；收口仍只有 `memory_replaced`。`[用户]`
