@@ -129,6 +129,7 @@ import {
 
 import { DEFAULT_LANGUAGE, render } from "../i18n/index.js";
 import type { MessageKey } from "../i18n/index.js";
+import type { InboxInsertInput, StoredInboxEntry } from "../storage/InboxRepository.js";
 import type { Conversation, MessageUpsertInput, StoredMessage } from "../storage/types.js";
 import { HostError } from "../wire/errors.js";
 import type { EventMap, EventName } from "../wire/events.js";
@@ -150,6 +151,26 @@ import { systemClock } from "./ScopeRegistry.js";
 // ---------------------------------------------------------------------------
 // 注入点（形状即契约，测试与接线层都按它做替身）
 // ---------------------------------------------------------------------------
+
+/**
+ * inbox 仓储里本文件用到的部分（`InboxRepository` 结构上满足）。
+ *
+ * 只有四个动作，正好是「inbox 一有变化就入库」那三条事件 + 装配时读一遍：
+ * 进来一条插一行、被取走删那几行、被清空清掉这段对话的行、装配时按顺序读回来。
+ *
+ * 这个口不注入就不持久化（`inboxPending` 那半仍旧现读，界面一样看得见）—— 但那就回到
+ * 「关掉就丢东西」了，所以 `app.ts` 一定给。
+ */
+export interface InboxStore {
+  /** 进队就是一次变化：落一行 */
+  insert(input: InboxInsertInput): Promise<void>;
+  /** 装配时按顺序读回这段对话还等着的那些（顺序即取件顺序） */
+  listByConversation(conversationId: string): Promise<StoredInboxEntry[]>;
+  /** 被取走 / 已经在记忆里（去重扔掉）：删那几行 */
+  deleteMany(messageIds: readonly string[]): Promise<number>;
+  /** 作废（`/clear`）：这段对话一条不剩 */
+  clearByConversation(conversationId: string): Promise<number>;
+}
 
 /** 消息仓储里本文件用到的部分（`MessageRepository` 结构上满足） */
 export interface MessageStore {
@@ -415,6 +436,15 @@ export interface ChatRunnerOptions {
   prepareHistory?: AttachmentHistoryResolver;
   /** 消息落库那一刻登记素材关系行（`conversation_assets`）。不注入就不记。 */
   linkMessageAssets?: MessageAssetLinker;
+  /**
+   * inbox 里那些还没被取走的条目（PRD 1.2 / 4.12）。不注入就不持久化。
+   *
+   * 两个方向都走它：**写**挂 core 的三条事件（`inboxAdded` / `inboxTaken` / `inboxCleared`，
+   * 逐条实时，见 {@link ConversationBridge}），**读**只在装配出一条新 agent 之后那一次
+   *（{@link ChatRunner} 的 `restoreInbox`）。排在队里那几条的**界面回显**不读它 ——
+   * 那半仍旧现读 `agent.inboxPending`（`state()`），库里这份只负责「关掉再打开还在」。
+   */
+  inbox?: InboxStore;
   /**
    * 一段变闲了（core 的 `state:idle`）。全宿主**唯一**一处「到点了要考虑点什么」的入口。
    *
@@ -779,6 +809,14 @@ class ConversationBridge {
   private readonly listeners: Array<() => void> = [];
   /** 写库串行链：事件是同步回调，接不住 Promise；串起来才保证落盘顺序 = 事件顺序 */
   private writeChain: Promise<void> = Promise.resolve();
+  /**
+   * inbox 行的写入链：与 {@link writeChain} 分开，因为这两组写的是两张不同的表。
+   *
+   * 串起来是**必须**的：三条事件是同步回调，接不住 Promise；并发发出去的话，「被取走」那一删
+   * 可能比「进队」那一插先落地 —— 于是那一条会永远留在库里（明明已经被取走了），下一次装配
+   * 就把它当成待办放回队列（一次幽灵投递）。串起来就只剩事件顺序一种顺序。
+   */
+  private inboxChain: Promise<void> = Promise.resolve();
   /** 边流边写的节流计时器（到点把 `streaming` 那一笔写下去） */
   private writeTimer?: () => void;
   private lastWriteAt = 0;
@@ -931,6 +969,9 @@ class ConversationBridge {
    *   - `subAgentFinished` **不订**：结束只改 core 名册上的 `endedAt`，宿主这边没有任何要写、
    *     要推的东西（子 agent 最后那句话已经随着 `message.changed` / `delta` 走过了）。
    *   - `failed` / `denied`：失败与被拒；
+   *   - `inboxAdded` / `inboxTaken` / `inboxCleared`：inbox 的三个变化 → `inbox` 表（逐条实时写，
+   *     `CORE.md` §3：持久化就挂在这三条上。不攒批也不靠定时快照：攒在手里的那一小会儿
+   *     正是「关掉就丢东西」本身）；
    *   - `state:working` / `state:idle`：core 的忙闲（循环的位置）→ 推 `state`；
    *     `output:paused` / `output:resumed` / `input:paused` / `input:resumed`：两道闸 → 各推
    *     自己那一条（**四件事各走各的，谁也不合成谁**，PRD 4.4）；
@@ -954,6 +995,10 @@ class ConversationBridge {
     );
     this.on(agent, "failed", (event) => this.onFailed(event.error, event.message));
     this.on(agent, "denied", (event) => this.onDenied(event));
+    // inbox 的三个时刻：进来一条 / 这些被取走 / 被清空（`CORE.md` §3）。三条各写各的行
+    this.on(agent, "inboxAdded", (event) => this.onInboxAdded(event.entry));
+    this.on(agent, "inboxTaken", (event) => this.onInboxTaken(event.entries));
+    this.on(agent, "inboxCleared", () => this.onInboxCleared());
     // 忙闲：`working` 立刻报（它接着就要动手）；`idle` 走 `onIdle`（先把写库冲干净再报）
     this.on(agent, "state:working", () => this.emitActivity(this.agent.state));
     this.on(agent, "state:idle", () => this.onIdle());
@@ -985,6 +1030,89 @@ class ConversationBridge {
         this.options.onError?.(error, "detach-listeners");
       }
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // inbox 的三个变化 → `inbox` 表
+  // -------------------------------------------------------------------------
+
+  /**
+   * 把一笔 inbox 的写排到 {@link inboxChain} 上。
+   *
+   * **写失败不让这一趟失败**：这一跳记的是「已经发生的事」（条目已经进队 / 已经被取走），core
+   * 那边那件事早做完了；持久化失败不该反过来把投递、取件或者 `/clear` 弄成失败（那三件在用户
+   * 那个视角里早就成了）。所以这里只把它记进 `onError`，与素材关系行（`linkMessageAssets`）同一
+   * 个处理口径：记一笔、不炸。
+   */
+  private writeInbox(what: string, action: () => Promise<unknown>): void {
+    this.inboxChain = this.inboxChain
+      .then(action)
+      .then(() => undefined)
+      .catch((error: unknown) => this.options.onError?.(error, what));
+  }
+
+  /**
+   * 进来一条：落一行。
+   *
+   * **钥匙（没有正文的条目）不入库**：它没有 `messageId`（那是主键，也是恢复时的去重键），也
+   * 没有 `source` 与正文 —— 重启之后无从重建，而它本来就不承载任何要接着等的内容（`CORE.md`
+   * §3）。同理，没有 id 的条目也不落：没有主键就没有「哪一行」可以去重、去删。
+   *
+   * 宿主推的每一条都在 `deliver` 那里定死了 id，所以上面那两个跳过在生产里撞不到 —— 它们挡住
+   * 的是「将来多一条不带 id 的投递路」，那种条目落库只会在库里留一行谁也认不出来的东西。
+   */
+  private onInboxAdded(entry: AgentNS.InboxEntry): void {
+    const store = this.options.inbox;
+    if (!store || entry.content === undefined || entry.messageId === undefined) return;
+    // 解构在这一层做：上面那句收窄之后，四个字段就是一条带正文的条目该有的样子
+    const { messageId, createdAt, source, content } = entry;
+    const input: InboxInsertInput = {
+      conversationId: this.conversationId,
+      messageId,
+      createdAt,
+      source,
+      content,
+    };
+    this.writeInbox("inbox-added", () => store.insert(input));
+  }
+
+  /**
+   * 这些条目被取走了：删那几行。
+   *
+   * `inboxTaken` 排在落地**之后**（`CORE.md` §3），所以走到这里时它们的消息已经在 `messages`
+   * 里了 —— 库里的这一行已经没有存在的理由。崩在「落地」与「这一删」之间也不要紧：那一行留着，
+   * 下一次装配按 `messageId` 去重时会被扔掉（见 `restoreInbox`）。
+   */
+  private onInboxTaken(entries: readonly AgentNS.InboxEntry[]): void {
+    const store = this.options.inbox;
+    if (!store) return;
+    const ids: string[] = [];
+    for (const entry of entries) {
+      // 钥匙没有 `messageId`（它没有主键，也不会有行），所以只收带正文的那种
+      if ("messageId" in entry && entry.messageId !== undefined) ids.push(entry.messageId);
+    }
+    if (ids.length === 0) return;
+    this.writeInbox("inbox-taken", () => store.deleteMany(ids));
+  }
+
+  /**
+   * 作废（`/clear`）：这段对话一条不剩。
+   *
+   * 载荷里就是被丢掉的那些条目，本来可以照着 id 一条条删；这里按对话清，因为清空**就是**
+   * 「这段对话此刻一条待办都不该有」—— 对着「库里该有几行」这件事它比逐个 id 更准确
+   * （事件丢过一条也不会留下孤行）。
+   *
+   * **例外：agent 正在收摊时不删行。** `kill()` 会先关输入闸、再把存量作废（`Agent.kill()` 里
+   * 定死的那条次序），于是它走的是同一条 `inboxCleared` —— 但那些条目**不是用户作废的**，是
+   * 「进程要退了」。库里那几行必须留着，否则「关掉再打开，那几句还在等」（PRD 1.2 / 4.12）只在
+   * 崩溃时成立、正常退出反而不成立。判据就用输入闸那一格：宿主里**只有** `kill()` 会关它（对话
+   * 被删 / 项目被删 / 进程收尾），前两种的行走外键级联消失，不靠这一删。
+   */
+  private onInboxCleared(): void {
+    const store = this.options.inbox;
+    if (!store) return;
+    if (this.agent.isInputPaused) return;
+    this.writeInbox("inbox-cleared", () => store.clearByConversation(this.conversationId));
   }
 
   // -------------------------------------------------------------------------
@@ -2009,7 +2137,62 @@ export class ChatRunner {
           : await this.storedHistory(conversationId, conversation, { repair: true });
       agent.messages.push(...assembled);
     }
+
+    // 历史装好之后才放回 inbox（PRD 4.12）：**顺序不能反** —— 去重要拿「记忆里现在有哪些
+    // messageId」来判，历史还没装进去就去看，落地过的那几条会被当成待办又放回队列。
+    // 只在新装出来的那个 agent 上做（`agent === live` 是复用：它手上那几条本来就在队列里，
+    // 再放一次就是两份）。
+    if (agent !== live) await this.restoreInbox(conversationId, agent);
+
     return agent;
+  }
+
+  /**
+   * 把库里**还没被取走**的条目放回 core 的队列（PRD 1.2 / 4.12：打开就是上次的样子，包括
+   * 没被处理的那几句话 —— 它们还在等）。
+   *
+   * 三条纪律：
+   *
+   * 1. **顺序按库里的 `seq`**（`listByConversation` 就是那个顺序）：入队顺序 = 取件顺序，
+   *    还原它才算「上次的样子」。
+   * 2. **去重**：某条待办的 `messageId` 已经在记忆里（`agent.messages`，就是 `messages` 表刚
+   *    读回来的那一份）= 它其实落地过了，只是 `inboxTaken` 那一删丢了（那条事件排在落地之后，
+   *    崩在两者之间就是这个样子）。**已经在记忆里了，扔掉它**，并且删掉那一行 —— 留着会在
+   *    历史里出现第二条一模一样的话，而前一条已经回答过了。
+   * 3. **形状原样**：`createdAt` / `source` / `content` / `messageId` 一个字段都不重算（这也是
+   *    不能走 `push()` 的理由）。表里没有 `priority` 这一格 —— 宿主推的每一条都是 `high`
+   *    （`deliver` 写死的那一格），恢复时按它放回。
+   *
+   * 装配窗口里还没推进 core 的那几条不在这里：它们**还没有行**（`inboxAdded` 是在进队列那一
+   * 刻才发的），所以这一跳看不见它们、也就不会把它们当成孤儿删掉 —— 它们在恢复之后才被推到
+   * 队尾（`assembleAndDrain`），那时才落行，顺序正好排在恢复回来的这几条后面。
+   *
+   * 失败不让装配失败（读不出来就当没有待办）：装配是为了让人接着说话，不能被这一跳拦下。
+   */
+  private async restoreInbox(conversationId: string, agent: ChatAgent): Promise<void> {
+    const store = this.options.inbox;
+    if (!store) return;
+    try {
+      const rows = await store.listByConversation(conversationId);
+      if (rows.length === 0) return;
+
+      const landed = new Set(agent.messages.map((message) => message.id));
+      const keep: StoredInboxEntry[] = [];
+      const dropped: string[] = [];
+      for (const row of rows) {
+        if (landed.has(row.messageId)) dropped.push(row.messageId);
+        else keep.push(row);
+      }
+
+      // 先删那些「其实已经落地」的行，再把剩下的原样放回队列：删在前，崩在中间也只是多留一行
+      // （下一次装配照样会把它认出来扔掉），反过来先放回队列则会多出一条待办。
+      if (dropped.length > 0) await store.deleteMany(dropped);
+      if (keep.length > 0) {
+        agent.restore(keep.map((entry) => ({ ...entry, priority: "high" as const })));
+      }
+    } catch (error) {
+      this.options.onError?.(error, "restore-inbox");
+    }
   }
 
   // ---- 结构性的三件 ----

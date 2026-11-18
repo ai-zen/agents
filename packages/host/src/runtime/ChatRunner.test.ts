@@ -26,6 +26,7 @@ import type { AgentNS } from "@ai-zen/agents-core";
 import { AgentNS as AgentNSValue } from "@ai-zen/agents-core";
 
 import type { Conversation } from "../storage/types.js";
+import type { InboxInsertInput, StoredInboxEntry } from "../storage/InboxRepository.js";
 import type { EventName } from "../wire/events.js";
 import type {
   ConversationChangedPayload,
@@ -35,7 +36,13 @@ import type {
   StatePayload,
 } from "../wire/events.js";
 import { AgentRegistry } from "./AgentRegistry.js";
-import type { ChatEventEmitter, ChatRunnerOptions, ConversationDeathKind, DeliveryInput } from "./ChatRunner.js";
+import type {
+  ChatEventEmitter,
+  ChatRunnerOptions,
+  ConversationDeathKind,
+  DeliveryInput,
+  InboxStore,
+} from "./ChatRunner.js";
 import { ChatRunner } from "./ChatRunner.js";
 import { ScopeRegistry } from "./ScopeRegistry.js";
 import {
@@ -75,10 +82,82 @@ function makeConversation(): Conversation {
   };
 }
 
+/**
+ * 记账式 inbox 仓储（结构上等于 `InboxRepository`，见那个文件的用例钉真表的列与级联）。
+ *
+ * `source` / `content` 存的时候走一遍 `JSON.stringify`、读的时候走 `JSON.parse` —— 与真仓储
+ * 同一个口径：库里只能有「原样」那一份，读回来要能原样还回去（内容一个字都不清理）。
+ */
+class RecordingInboxStore implements InboxStore {
+  /** 还排着的那几行（按入队顺序） */
+  readonly rows: Array<{
+    messageId: string;
+    conversationId: string;
+    /** JSON：core 的 `MessageSource` */
+    source: string;
+    /** JSON：core 的正文 */
+    content: string;
+    createdAt: string;
+    seq: number;
+  }> = [];
+  /** 每一笔写（按发生顺序）：验「先进队、后取走」这个次序 */
+  readonly writes: string[] = [];
+
+  async insert(input: InboxInsertInput): Promise<void> {
+    this.writes.push(`insert:${input.messageId}`);
+    const seq = this.rows.filter((row) => row.conversationId === input.conversationId).length + 1;
+    this.rows.push({
+      messageId: input.messageId,
+      conversationId: input.conversationId,
+      source: JSON.stringify(input.source),
+      content: JSON.stringify(input.content),
+      createdAt: input.createdAt,
+      seq,
+    });
+  }
+
+  async listByConversation(conversationId: string): Promise<StoredInboxEntry[]> {
+    return this.rows
+      .filter((row) => row.conversationId === conversationId)
+      .sort((a, b) => a.seq - b.seq)
+      .map((row) => ({
+        messageId: row.messageId,
+        createdAt: row.createdAt,
+        source: JSON.parse(row.source) as AgentNS.MessageSource,
+        content: JSON.parse(row.content) as AgentNS.MessageContent,
+      }));
+  }
+
+  async deleteMany(messageIds: readonly string[]): Promise<number> {
+    this.writes.push(`delete:${messageIds.join(",")}`);
+    let removed = 0;
+    for (const messageId of messageIds) {
+      const at = this.rows.findIndex((row) => row.messageId === messageId);
+      if (at < 0) continue;
+      this.rows.splice(at, 1);
+      removed += 1;
+    }
+    return removed;
+  }
+
+  async clearByConversation(conversationId: string): Promise<number> {
+    this.writes.push(`clear:${conversationId}`);
+    let removed = 0;
+    for (let index = this.rows.length - 1; index >= 0; index -= 1) {
+      if (this.rows[index]!.conversationId !== conversationId) continue;
+      this.rows.splice(index, 1);
+      removed += 1;
+    }
+    return removed;
+  }
+}
+
 interface Harness {
   runner: ChatRunner;
   registry: AgentRegistry;
   store: RecordingMessageStore;
+  /** inbox 的那张表（`inbox`） */
+  inbox: RecordingInboxStore;
   clock: ManualClock;
   /** 每一次推出去的事件（按发生顺序） */
   pushed: Array<{ name: EventName; payload: unknown }>;
@@ -101,9 +180,27 @@ interface Harness {
   rows(): Promise<Array<{ id: string; role: string; content: unknown; status: string }>>;
 }
 
-function createHarness(options: { rounds?: FakeRound[] } = {}): Harness {
+function createHarness(
+  options: {
+    rounds?: FakeRound[];
+    /**
+     * 与上一任共用同一份库（消息 + inbox）：模拟「进程没了，库还在」——
+     * 新的一条 runner 照着同一份库装第二次。
+     */
+    store?: RecordingMessageStore;
+    inbox?: RecordingInboxStore;
+    /**
+     * 装配出来的 agent 先关着输出闸。
+     *
+     * 用例要验的是「放回来的那几条还排着」，而不取件正是它们能留在队列里的那个情形 ——
+     * 闸一关，`deliver` 就不会把它们叫起来取走（闸本身怎么开怎么关是另一件事，不在这里验）。
+     */
+    pauseOnBuild?: boolean;
+  } = {},
+): Harness {
   const clock = new ManualClock();
-  const store = new RecordingMessageStore();
+  const store = options.store ?? new RecordingMessageStore();
+  const inbox = options.inbox ?? new RecordingInboxStore();
   const conversation = makeConversation();
   const { scope } = createFakeScope("/tmp/ai-zen-bridge");
   const scopes = new ScopeRegistry({ createScope: async () => scope });
@@ -117,7 +214,9 @@ function createHarness(options: { rounds?: FakeRound[] } = {}): Harness {
     scopes,
     createAgent: async (context) => {
       buildContexts.push(context.conversationId);
-      return new FakeAgent(options.rounds ?? [{ deltas: [{ content: "好" }] }]);
+      const built = new FakeAgent(options.rounds ?? [{ deltas: [{ content: "好" }] }]);
+      if (options.pauseOnBuild) built.pauseOutput();
+      return built;
     },
   });
 
@@ -127,6 +226,8 @@ function createHarness(options: { rounds?: FakeRound[] } = {}): Harness {
 
   const runnerOptions: ChatRunnerOptions = {
     messages: store,
+    // inbox 里还没被取走的那些（三条事件写它、装配时读它）
+    inbox,
     conversations: {
       get: async (id: string) => (id === conversation.id ? conversation : undefined),
     },
@@ -148,6 +249,7 @@ function createHarness(options: { rounds?: FakeRound[] } = {}): Harness {
     runner,
     registry: agents,
     store,
+    inbox,
     clock,
     pushed,
     idle,
@@ -930,5 +1032,197 @@ describe("ChatRunner.reconcile：装载即修复", () => {
     // 所以看仓储的记账）
     expect(harness.store.writes.slice(written).map((row) => row.id)).toEqual(["m2", "m3"]);
     expect(harness.store.peek("m3")?.status).toBe(AgentNSValue.MessageStatus.Aborted);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// inbox 落库：进队 / 取走 / 清空，三条事件各写各的行
+// ---------------------------------------------------------------------------
+
+/** 一次请求卡在工具里的脚本：投递照收，但那几条只能排着（没人取走） */
+function stuckInToolRound(toolGate: Promise<void>): FakeRound {
+  return {
+    deltas: [{ content: "先跑个工具" }],
+    toolCalls: [{ id: "t1", name: "echo" }],
+    toolGate,
+  };
+}
+
+describe("ChatRunner：inbox 落库（一有变化就入库）", () => {
+  it("进来一条落一行；被取走就删那一行（先进队、后离开）", async () => {
+    const toolGate = deferred<void>();
+    const harness = createHarness({ rounds: [stuckInToolRound(toolGate.promise)] });
+
+    await harness.deliver(userSays("第一条"));
+    await harness.waitFor(() => harness.registry.get(CONVERSATION_ID)?.state === "working");
+
+    // 第一条进来时落过一行，随即被取走 —— 库里那一行跟着没了
+    await harness.waitFor(() => harness.inbox.writes.length >= 2);
+    expect(harness.inbox.writes[0]).toMatch(/^insert:/);
+    expect(harness.inbox.writes[1]).toMatch(/^delete:/);
+    await harness.waitFor(() => harness.inbox.rows.length === 0);
+
+    // 它卡在工具里：后面这两条只能排队，各自落一行（逐条实时写，不攒批）
+    await harness.deliver(userSays("第二条"));
+    await harness.deliver(userSays("第三条"));
+    await harness.waitFor(() => harness.inbox.rows.length === 2);
+    expect(harness.inbox.rows.map((row) => row.content)).toEqual([
+      JSON.stringify("第二条"),
+      JSON.stringify("第三条"),
+    ]);
+    expect(harness.inbox.rows.map((row) => row.source)).toEqual([
+      JSON.stringify({ kind: "user" }),
+      JSON.stringify({ kind: "user" }),
+    ]);
+
+    toolGate.resolve();
+    await harness.waitIdle();
+    // 取走 = 删行：库里一条不剩
+    await harness.waitFor(() => harness.inbox.rows.length === 0);
+  });
+
+  it("`/clear` 之后库里干净（清空是作废，不是取件）", async () => {
+    const toolGate = deferred<void>();
+    const harness = createHarness({ rounds: [stuckInToolRound(toolGate.promise)] });
+
+    await harness.deliver(userSays("第一条"));
+    await harness.waitFor(() => harness.registry.get(CONVERSATION_ID)?.state === "working");
+    await harness.deliver(userSays("第二条"));
+    await harness.deliver(userSays("第三条"));
+    await harness.waitFor(() => harness.inbox.rows.length === 2);
+
+    // 不取件的时候也照样清（清空不看输出闸），库里那两行一起没
+    harness.runner.pause(CONVERSATION_ID);
+    expect(harness.runner.clearInbox(CONVERSATION_ID)).toBe(2);
+    await harness.waitFor(() => harness.inbox.rows.length === 0);
+    expect(harness.inbox.writes.at(-1)).toBe(`clear:${CONVERSATION_ID}`);
+
+    toolGate.resolve();
+    harness.runner.resume(CONVERSATION_ID);
+    await harness.waitIdle();
+    expect(harness.inbox.rows).toEqual([]);
+  });
+  it("进程收尾（把 agent 全 kill 掉）不作废库里那些待办：下次打开它们还在等", async () => {
+    const toolGate = deferred<void>();
+    const harness = createHarness({ rounds: [stuckInToolRound(toolGate.promise)] });
+
+    await harness.deliver(userSays("第一条"));
+    await harness.waitFor(() => harness.registry.get(CONVERSATION_ID)?.state === "working");
+    await harness.deliver(userSays("第二条"));
+    await harness.waitFor(() => harness.inbox.rows.length === 1);
+
+    // `HostApp.stop()` 那一步：进程要退了，agent 全部硬着陆（存量在内存里作废）——
+    // 但库里那几行是「上次没处理完的话」，必须留着（PRD 4.12：打开就是上次的样子）
+    harness.registry.disposeAll();
+    await harness.settle();
+    expect(harness.inbox.rows.map((row) => row.content)).toEqual([JSON.stringify("第二条")]);
+    expect(harness.inbox.writes.some((write) => write.startsWith("clear:"))).toBe(false);
+
+    toolGate.resolve();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 关掉再打开：还没被取走的那几句还在（PRD 1.2 / 4.12）
+// ---------------------------------------------------------------------------
+
+describe("ChatRunner：装配时把还没被取走的条目放回", () => {
+  it("未消费的那几句：顺序、createdAt、内容都与存下去的那一份逐字相同", async () => {
+    const toolGate = deferred<void>();
+    // 上一任与这一任共用同一份库（进程没了，库还在）
+    const store = new RecordingMessageStore();
+    const inbox = new RecordingInboxStore();
+
+    const before = createHarness({ store, inbox, rounds: [stuckInToolRound(toolGate.promise)] });
+    await before.deliver(userSays("第一句"));
+    await before.waitFor(() => before.registry.get(CONVERSATION_ID)?.state === "working");
+    await before.deliver(userSays("第二句"));
+    await before.deliver(userSays("第三句"));
+    await before.deliver(userSays("第四句"));
+    await before.waitFor(() => inbox.rows.length === 3);
+
+    // 把「存下来的那一刻」改成很久以前：这一格要验的正是「读回来的是存下来的那个值，
+    // 不是重启那一刻」，而真投递盖的时间在同一次用例里几乎落在同一毫秒
+    const longAgo = [
+      "2025-05-06T07:08:09.000Z",
+      "2025-05-06T07:08:10.000Z",
+      "2025-05-06T07:08:11.000Z",
+    ];
+    inbox.rows.forEach((row, index) => {
+      row.createdAt = longAgo[index]!;
+    });
+    // 存下去的那三行（这一刻的库里的事实）
+    const stored = inbox.rows.map((row) => ({ ...row }));
+
+    // 「关掉」= 丢掉旧的 runner 与 registry（不 kill：kill 是「作废存量」，这里要验的正相反）
+    const after = createHarness({ store, inbox, pauseOnBuild: true });
+    await after.deliver(userSays("重启后的一句"));
+
+    // 界面上看得见：放回来的那三句按原顺序排在队头，新投的那条在它们后面
+    const readout = after.runner.state(CONVERSATION_ID);
+    expect(readout.inbox.map((item) => item.preview)).toEqual([
+      "第二句",
+      "第三句",
+      "第四句",
+      "重启后的一句",
+    ]);
+    // createdAt 是当时存下来的那一刻，不是「重启那一刻」
+    expect(readout.inbox.slice(0, 3).map((item) => item.createdAt)).toEqual(longAgo);
+
+    // 队列里那三条就是库里读回来的那三条：id / 时间 / 正文逐字相同（一个字段都没被重算）
+    const restored = after.registry.get(CONVERSATION_ID)!.inboxPending.slice(0, 3);
+    expect(restored.map((entry) => JSON.stringify(entry.content))).toEqual(
+      stored.map((row) => row.content),
+    );
+    expect(restored.map((entry) => entry.createdAt)).toEqual(stored.map((row) => row.createdAt));
+    expect(restored.map((entry) => ("messageId" in entry ? entry.messageId : undefined))).toEqual(
+      stored.map((row) => row.messageId),
+    );
+    // 恢复不是新变化：没有为它们再插一行 —— 库里那三行各只出现一次，多出来的只有新投的那一条
+    const ids = inbox.rows.map((row) => row.messageId);
+    expect(ids.filter((id) => stored.some((row) => row.messageId === id))).toEqual(
+      stored.map((row) => row.messageId),
+    );
+    expect(ids).toHaveLength(stored.length + 1);
+  });
+
+  it("已经在记忆里的那条被扔掉（落地过、只是那一删丢了），它那一行也删掉", async () => {
+    const store = new RecordingMessageStore();
+    // 记忆里已经有这条消息：上一次它落地了，只是 `inboxTaken` 那一删没跑到
+    store.seed({
+      id: "m-已经落地",
+      conversationId: CONVERSATION_ID,
+      role: AgentNSValue.Role.User as string,
+      status: AgentNSValue.MessageStatus.Completed as string,
+      content: "落地过的一句",
+      createdAt: 1,
+    });
+    const inbox = new RecordingInboxStore();
+    await inbox.insert({
+      messageId: "m-已经落地",
+      conversationId: CONVERSATION_ID,
+      source: { kind: "user" },
+      content: "落地过的一句",
+      createdAt: "2026-01-02T03:04:05.000Z",
+    });
+    await inbox.insert({
+      messageId: "m-还在等",
+      conversationId: CONVERSATION_ID,
+      source: { kind: "user" },
+      content: "还在等的一句",
+      createdAt: "2026-01-02T03:04:06.000Z",
+    });
+
+    const harness = createHarness({ store, inbox, pauseOnBuild: true });
+    await harness.deliver(userSays("新的一句"));
+
+    // 队列里只有「还在等的那一句」与新投的这一句：落地过的那条没有放回来
+    const agent = harness.registry.get(CONVERSATION_ID)!;
+    expect(
+      agent.inboxPending.map((entry) => ("messageId" in entry ? entry.messageId : undefined)),
+    ).toEqual(["m-还在等", "srv-1"]);
+    // 那一行也被删掉了（不删的话，每重启一次就白读一遍）；库里只剩「还在等的」与新投的那一条
+    expect(inbox.rows.map((row) => row.messageId)).toEqual(["m-还在等", "srv-1"]);
+    expect(inbox.writes).toContain("delete:m-已经落地");
   });
 });

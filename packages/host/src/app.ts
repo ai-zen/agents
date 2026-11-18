@@ -95,6 +95,7 @@ import {
   WorkspaceRepository,
   migrate,
 } from "./storage/index.js";
+import { InboxRepository } from "./storage/InboxRepository.js";
 import type { HostUpgradeResult } from "./wire/index.js";
 import type { EventMap, EventName } from "./wire/events.js";
 
@@ -270,6 +271,8 @@ export class HostApp {
   readonly messages: MessageRepository;
   readonly assets: AssetRepository;
   readonly notices: NoticeRepository;
+  /** inbox 里还没被取走的那些条目（PRD 1.2 / 4.12）：`ChatRunner` 的三条事件写它、装配时读它 */
+  readonly inbox: InboxRepository;
   readonly credentials: CredentialRepository;
 
   // ---- 运行时 ----
@@ -387,6 +390,7 @@ export class HostApp {
     this.messages = new MessageRepository(db);
     this.assets = new AssetRepository(db);
     this.notices = new NoticeRepository(db);
+    this.inbox = new InboxRepository(db);
     this.credentials = new CredentialRepository(db);
 
     /** 助手与子 Agent 的定义仓储（配置层与助手/模型/配置三个服务共用同一份目录） */
@@ -617,6 +621,9 @@ export class HostApp {
       prepareHistory: (context) => this.assetService.resolveHistory(context),
       // 用户消息落库那一刻扫 content 里的 `__asset_id`，记成关系行（`conversation_assets`）
       linkMessageAssets: (context) => this.assetService.linkMessageAssets(context),
+      // inbox 里还没被取走的条目：`inboxAdded` / `inboxTaken` / `inboxCleared` 逐条实时写这张
+      // 表，装配出新 agent 之后按顺序读回来放回队列（PRD 1.2 / 4.12：关掉再打开，那几句还在）
+      inbox: this.inbox,
       // 变闲那一拍：读一次当下事实 —— 上一次答完留下的待交接先兑现（能就交接），再看要不要
       // 问交接线、要不要起个名字。这一跳**不带任何与「刚刚发生了什么」有关的东西**（没有用量、
       // 没有结论）—— 它就是「此刻它闲了」
