@@ -557,6 +557,31 @@ export interface ConversationResumeResult {
 }
 
 /**
+ * `conversation.kill` 入参：**用户按杀死**（PRD 4.4 里「会让它死的」三条路之一）。
+ *
+ * 杀死**不是删除**：会话行、消息、记忆一个字都不动，只是这一段没有 agent 了。杀死之后：在途
+ * 那一批掐断，没被取走的待办作废（库里那些行也一起删），界面上的「发话」还能把驱动者重新叫
+ * 起来 —— 别的来源一律报 `conversation_dead`（不复活，PRD 4.2 / 4.4）。
+ *
+ * 交接期间这一手拒（`busy` / `handoff_in_progress`）：那期间界面上只留中断，别的都不给
+ * （PRD 4.5，与 `conversation.pause` / `conversation.resume` 同一个口径）。
+ */
+export interface ConversationKillParams {
+  conversationId: string;
+}
+
+/**
+ * `conversation.kill` 出参。
+ *
+ * `killed: true` = 这一次真的把 agent 收掉了；`killed: false` = 这一段**本来就是死的**（没有
+ * agent），什么都没动，**也不是错误** —— 与 `conversation.pause` / `conversation.resume` 对死
+ * 对话回 `false` 同一个口径。
+ */
+export interface ConversationKillResult {
+  killed: boolean;
+}
+
+/**
  * `conversation.clearInbox` 入参。
  *
  * 待办是「已经收下、还没被取走」的那些话。**待办本身属于客户端自己的事**：有没有东西、
@@ -1982,6 +2007,8 @@ export interface MethodMap {
   "conversation.pause": { params: ConversationPauseParams; result: ConversationPauseResult };
   /** PRD 4.4：「继续」只开闸（压着的待办按原顺序接着跑），不投任何东西。 */
   "conversation.resume": { params: ConversationResumeParams; result: ConversationResumeResult };
+  /** PRD 4.4「用户按杀死」：收掉 agent（在途掐断、待办作废），会话行与消息一个字不动。 */
+  "conversation.kill": { params: ConversationKillParams; result: ConversationKillResult };
   /** 清空这段对话的待办（客户端自己决定什么时候清，宿主只回清掉几条）。 */
   "conversation.clearInbox": {
     params: ConversationClearInboxParams;
@@ -2167,6 +2194,7 @@ export const METHOD_NAMES = [
   "conversation.abort",
   "conversation.pause",
   "conversation.resume",
+  "conversation.kill",
   "conversation.clearInbox",
   "conversation.revert",
   "conversation.setModel",

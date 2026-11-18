@@ -27,6 +27,9 @@
  * 另有两个是**闸**的动作：{@link ChatRunner.pause}（只翻输出闸，不掐在途）与
  * {@link ChatRunner.resume}（只开闸，不投任何东西）。
  *
+ * 另有一手是**用户按杀死**：{@link ChatRunner.kill}（收掉 agent、在途掐断、待办作废，而会话行与
+ * 消息一个字不动 —— 那不是删除）。
+ *
  * 还有一条是**判据**：{@link ChatRunner.canHandoffNow} —— 「能不能立刻接手一批交接」全仓只此一处。
  *
  * 另外三件是**结构性**的，不属于「投递 / 中断 / 观测」那条路：`forget`（对话或项目被删）、
@@ -2213,7 +2216,7 @@ export class ChatRunner {
     }
   }
 
-  // ---- 结构性的三件 ----
+  // ---- 结构性的三件 + 用户按杀死（`kill`） ----
 
   /**
    * 进程要退了：此后 `kill()` 作废存量时，库里的 inbox 行**不删**（PRD 1.2 / 4.12「关掉再打开，
@@ -2244,6 +2247,36 @@ export class ChatRunner {
     // 硬着陆：桥已经灭了，`killed` 没人接；注册表随后报 `retired` 再走一次 `dropBridge`
     // （幂等，桥已不在）
     this.options.agents.kill(conversationId);
+  }
+
+  /**
+   * 杀死：**用户按的那一手**（`conversation.kill`；PRD 4.4「会让它死的三件」之一）。
+   *
+   * 与 {@link forget}（删对话）的差别只有一处：**会话行、消息、记忆一个字都不动**。杀死之后
+   * 这一段只是「没有 agent 了」（`state().alive === false`）—— 下一句话由人点发送时按库里的
+   * 事实重新装配，历史一句不少（PRD 4.2：投递不复活，只有创建者能把它叫起来）。
+   *
+   * 三步，顺序都是有理由的：
+   *   1. 交接期间拒（`busy` / `handoff_in_progress`）：那期间界面上只留中断（PRD 4.5），与
+   *      {@link pause} / {@link resume} 同一道门；
+   *   2. 没有 agent（没有桥）→ 回 `false`，什么都不做 —— 这一段本来就是死的，不是错误（与那两
+   *      手对死对话回 `false` 同一口径）；
+   *   3. 有 agent → **先 `agents.kill()`，再 `dropBridge("terminated")`**。顺序不能反：
+   *      `agent.kill()` 会同步广播 `inboxCleared`，桥上那条听见了才会去删库里的 inbox 行
+   *      （`onInboxCleared`）。桥先拆掉就听不到，那些行留成孤行 —— 下一次装配又被放回队列，
+   *      等于「杀了还复活」。
+   *
+   * 死活那一件事沿用现成的：桥灭补报一格 `agent_gone`（同一次死亡只报一条）。
+   */
+  kill(conversationId: string): boolean {
+    this.rejectIfHandingOff(conversationId);
+    const agent = this.options.agents.get(conversationId);
+    if (!agent) return false;
+    // 先硬着陆、再拆桥（理由见上：`inboxCleared` 得有人听）。
+    // 会话行 / 消息 / 记忆一概不碰 —— 这是杀死与删对话的唯一区别。
+    this.options.agents.kill(conversationId);
+    this.dropBridge(conversationId, "terminated");
+    return true;
   }
 
   /**
