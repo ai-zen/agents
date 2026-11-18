@@ -1063,3 +1063,113 @@ describe("Agent runOnce", () => {
     await agent.start();
   });
 });
+
+// ---------------------------------------------------------------------------
+// 恢复：把旧的条目原样放回队列（PRD 4.12）
+// ---------------------------------------------------------------------------
+
+describe("Agent 恢复：把旧条目原样放回", () => {
+  /**
+   * 一条「上一次存下来」的条目：`createdAt` 是很久以前那一刻，来源不是用户本人。
+   *
+   * 这两点是有意的 —— 它们正是「恢复 ≠ 投递」会被看出来的地方：投递会盖新的时间、也只带
+   * `{kind:"user"}` 时不加来源注释。
+   */
+  const stored: AgentNS.InboxEntryWithContent = {
+    messageId: "早先那条",
+    createdAt: "2026-01-02T03:04:05.000Z",
+    priority: "high",
+    source: { kind: "agent", label: "补测试" },
+    content: [{ type: "text", text: "把测试补上" }],
+  };
+
+  it("原样放回：四个字段一个不重算，且不发 inboxAdded", () => {
+    const { client } = createMockClient([]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+
+    const added: any[] = [];
+    agent.on("inboxAdded", (payload) => added.push(payload));
+
+    agent.restore([stored]);
+
+    // 队列里就是存下来的那一条：id / 时间 / 来源 / 正文一格都没被换掉
+    expect(agent.inboxPending).toEqual([stored]);
+    // 恢复不是新变化：库里那一行已经在，再发 `inboxAdded` 就会插出第二行
+    expect(added).toHaveLength(0);
+
+    agent.kill();
+  });
+
+  it("放回之后被取走：落地用的是存下来的 messageId 与 createdAt", async () => {
+    const { client } = createMockClient([textStream("补好了")]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+
+    void agent.start();
+    agent.restore([stored]);
+    await settled(agent);
+
+    const landed = agent.messages[0]!;
+    // id 用条目自带的那一个（客户端先画的就是它）
+    expect(landed.id).toBe("早先那条");
+    // 来源注释里那一刻时间是条目自己的 createdAt —— 不是「重启那一刻」（段序也没变：注释在前）
+    const sections = landed.content as AgentNS.MessageContentSection[];
+    expect(sections[0]).toMatchObject({ type: "text" });
+    expect((sections[0] as { text: string }).text).toContain("2026-01-02T03:04:05.000Z");
+    expect(sections[1]).toEqual({ type: "text", text: "把测试补上" });
+
+    agent.stop();
+    await agent.start();
+  });
+
+  it("顺序就是存下来的那个顺序（一条都不挪）", () => {
+    const { client } = createMockClient([]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+
+    agent.restore([
+      { ...stored, messageId: "第一条", content: "第一句" },
+      { ...stored, messageId: "第二条", content: "第二句" },
+      // 钥匙也在放回之列：它同样是一条「当时排着、没人取走」的条目
+      { createdAt: "2026-01-02T03:04:06.000Z", priority: "low", content: undefined },
+    ]);
+
+    expect(agent.inboxPending.map((entry) => entry.content)).toEqual([
+      "第一句",
+      "第二句",
+      undefined,
+    ]);
+
+    agent.kill();
+  });
+
+  it("该拒的三种：一次性 agent / 已经关门 / 形状不全（一条不合格就一条都不放）", () => {
+    const { client } = createMockClient([]);
+    const oneShot = new Agent({
+      client,
+      model: "m",
+      newMessageId: makeIds(),
+      lifetime: "one-shot",
+    });
+    // 一次性 agent 的寿命在调用栈里：没有「重启之后接着等」这回事
+    expect(() => oneShot.restore([stored])).toThrow(Error);
+    expect(() => oneShot.restore([stored])).not.toThrow(AgentError);
+
+    const closed = new Agent({ client, model: "m", newMessageId: makeIds() });
+    closed.stop();
+    expect(codeOf(() => closed.restore([stored]))).toBe("closed");
+
+    const healthy = new Agent({ client, model: "m", newMessageId: makeIds() });
+    // 半截条目：宁可当场炸，也不要把半截数据装进队列
+    const broken = [
+      { createdAt: "", priority: "low" as const, content: undefined },
+      { createdAt: "2026-01-02T03:04:05.000Z", priority: "high" as const, content: "没有来源" },
+    ] as unknown as AgentNS.InboxEntry[];
+    expect(() => healthy.restore([broken[0]!])).toThrow(Error);
+    expect(() => healthy.restore([broken[1]!])).toThrow(Error);
+    // 好的坏的混在一起时一条都不放：队列不装半截数据，也不装「合格的另一半」
+    expect(() => healthy.restore([stored, broken[0]!])).toThrow(Error);
+    expect(healthy.inboxPending).toHaveLength(0);
+
+    healthy.kill();
+    void oneShot.start();
+  });
+});

@@ -317,6 +317,41 @@ export interface AgentEvents {
 // ---------------------------------------------------------------------------
 
 /**
+ * 条目的**唯一形状**：`push()`（新投递）与 `restore()`（把旧条目放回队列）都从这里过。
+ *
+ * 一条概念一种形状 —— 两条路各写一套的话，迟早有一处少一格、或者多一格「反正也没人读」，
+ * 而条目是要落库再读回来的东西：形状漂一次，库里存的和队列里的就不是同一件事了。
+ *
+ * 它**只摆字段、不造值**：`createdAt` 与 `messageId` 都由调用方给 —— 新投递给「现在」与一个
+ * 新 mint 的 id，恢复给存下来的那两个。于是同一个形状承担两套语义，而代码只有这一份。
+ *
+ * 没有正文就是**钥匙**（`InboxKey`）：它只负责把这一回叫起来，不落地成消息，所以没有
+ * `messageId`、没有 `source`，`priority` 恒为 `low`（内循环只看 high，钥匙天然取不到）。
+ */
+function toInboxEntry(
+  fields:
+    | { createdAt: string; priority: "low"; content?: undefined }
+    | {
+        createdAt: string;
+        priority: "high" | "low";
+        messageId?: string;
+        source: AgentNS.MessageSource;
+        content: AgentNS.MessageContent;
+      },
+): AgentNS.InboxEntry {
+  if (fields.content === undefined) {
+    return { createdAt: fields.createdAt, priority: "low", content: undefined };
+  }
+  return {
+    messageId: fields.messageId,
+    createdAt: fields.createdAt,
+    priority: fields.priority,
+    source: fields.source,
+    content: fields.content,
+  };
+}
+
+/**
  * 能拒的钩子：返回 string 就是判决（这次不跑），**只有它们短路**后面的插件。
  *
  * 它们崩了还要**fail-closed** —— 坏的护栏放行等于没有护栏；
@@ -721,7 +756,7 @@ export class Agent extends AgentContext {
   }
 
   // -------------------------------------------------------------------------
-  // 投递：push / send / runOnce
+  // 投递：push / runOnce ／ 恢复：restore
   // -------------------------------------------------------------------------
 
   /**
@@ -748,16 +783,17 @@ export class Agent extends AgentContext {
       this.fed = true;
     }
 
-    const entry: AgentNS.InboxEntry =
+    const entry: AgentNS.InboxEntry = toInboxEntry(
       input?.content === undefined
-        ? { createdAt: new Date().toISOString(), priority: "low", content: undefined }
+        ? { createdAt: new Date().toISOString(), priority: "low" }
         : {
             messageId: input.messageId ?? this.newMessageId(),
             createdAt: new Date().toISOString(),
             priority: input.priority,
             source: input.source,
             content: input.content,
-          };
+          },
+    );
 
     try {
       this.inbox.push(entry);
@@ -776,6 +812,65 @@ export class Agent extends AgentContext {
 
     // 进队就是一次变化：持久化挂在 `inboxAdded` 上（`CORE.md` §3）。抛出去的那两种不是变化
     this.emit("inboxAdded", { agent: this, entry });
+  }
+
+  /**
+   * 把**旧的条目原样放回队列**（PRD 4.12：关掉再打开，没被处理的那几句还在等）。
+   *
+   * 与 {@link push} 只差一件事 —— 这些条目**不是新的**，而这一件事决定三处：
+   *
+   * 1. **不走 `push()`**。`push()` 会重新盖 `createdAt`（于是一重启，所有排着的条目都变成
+   *    「刚刚」），还会再发一条 `inboxAdded`。前者比丢了这个字段更坏：`createdAt` 存在的唯一
+   *    理由就是让模型判断时效（`CORE.md` §3），改掉它会让模型**确信**一条陈年通知是刚发生的，
+   *    顺序也会跟着错；后者会让订阅方再插一行（库里那一条就变成两条）。
+   * 2. **不发 `inboxAdded`**。库里的行已经在（恢复读的就是它），恢复不是新变化 —— 三条事件
+   *    说的是「有了变化」，不是「队列里现在有这些」。
+   * 3. **`createdAt` / `source` / `content` / `messageId` 一个字段都不重算**：形状由
+   *    {@link toInboxEntry} 摆（与 `push()` 同一份），值全部由调用方给 —— 存下来是什么就是
+   *    什么，这里不生成任何缺省值（生成一个就等于把事实换成了猜的）。
+   *
+   * 该拒的三种（`CORE.md` §3）：
+   * - **一次性 agent**：它只吃一次投递，寿命在调用栈里，恢复它没有任何去处（写错代码，抛裸
+   *   `Error`，与「在活着的 agent 上调 `runOnce()`」同一类）；
+   * - **已经关门 / 已经死了**：队列不会再有取件人，放回去只是喂给一个没人取的队列
+   *   （`AgentError("closed")`，与 `push()` 同一个码）；
+   * - **形状不全的条目**：宁可当场炸，也不要把半截数据装进队列 —— 半截条目会一路走到落地，
+   *   到那时错的地方已经离这里很远了。全部条目先全部校验，一条不合格就一条都不放回去。
+   */
+  restore(entries: readonly AgentNS.InboxEntry[]): void {
+    if (this.lifetime === "one-shot") {
+      throw new Error(
+        `restore() 不能用在一次性 agent(${this.id}) 上：它的寿命在调用栈里，没有「重启之后接着等」这回事`,
+      );
+    }
+    if (this.inbox.isDone) {
+      throw new AgentError("closed", `往已经关了的 agent(${this.id}) 恢复条目`);
+    }
+
+    for (const entry of entries) {
+      if (typeof entry.createdAt !== "string" || entry.createdAt === "") {
+        throw new Error("restore() 收到形状不全的条目：createdAt 必须是被存下来的那个时刻串");
+      }
+      if (entry.priority !== "high" && entry.priority !== "low") {
+        throw new Error("restore() 收到形状不全的条目：priority 只能是 high / low");
+      }
+      if (entry.content !== undefined && entry.source === undefined) {
+        throw new Error("restore() 收到形状不全的条目：带正文的条目必须带 source");
+      }
+    }
+    if (entries.length === 0) return;
+
+    // 形状走 `push()` 那一份（一条概念一种形状），值一个都不动
+    const restored = entries.map((entry) => toInboxEntry(entry));
+    try {
+      this.inbox.push(...restored);
+    } catch (error) {
+      // 关门那一种上面已经拦过了，这里只剩「输入闸暂时关着」：与 `push()` 同一个码
+      if (error instanceof QueueInputPausedError) {
+        throw new AgentError("input_paused", `agent(${this.id}) 的输入闸暂时关着`);
+      }
+      throw error;
+    }
   }
 
   /**
