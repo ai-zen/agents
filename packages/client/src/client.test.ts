@@ -275,7 +275,7 @@ describe("事件", () => {
 });
 
 describe("镜像：打开一段对话", () => {
-  it("打开那一刻还没读到四格：status 是 null，不是「死」", async () => {
+  it("打开那一刻还没读到四件事：每一格都是 null", async () => {
     let release: () => void = () => undefined;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -284,7 +284,7 @@ describe("镜像：打开一段对话", () => {
     const host = await startFake({
       methods: {
         "conversation.state": async (params) => {
-          // 卡住这一跳：镜像已经进表、四格还没读到
+          // 卡住这一跳：镜像已经进表、四件事还没读到
           await gate;
           return {
             state: conversationState((params as { conversationId: string }).conversationId),
@@ -298,18 +298,27 @@ describe("镜像：打开一段对话", () => {
     const opening = client.open("c1");
     await waitFor(() => host.frames.some((frame) => frame.method === "conversation.state"));
 
-    // 还没读到：这一格没有值（不借「死」那一格 —— 那是带「发话前先复活」动作的一格）
+    // 还没读到：四件都没有值（不借「死」占位，也不借「闲」占位）
     const pending = client.mirror("c1");
-    expect(pending?.status).toBeNull();
-    expect(pending?.snapshot().status).toBeNull();
+    expect(pending?.snapshot()).toMatchObject({
+      status: null,
+      inputPaused: null,
+      outputPaused: null,
+      alive: null,
+    });
 
     release();
     const mirror = await opening;
-    // 拿到读数之后才有一格
-    expect(mirror.status).toBe("idle");
+    // 拿到读数之后四件一次补齐（`fakeHost` 的缺省是「刚建出来、还没有 agent」那一份）
+    expect(mirror.snapshot()).toMatchObject({
+      status: "idle",
+      inputPaused: false,
+      outputPaused: false,
+      alive: false,
+    });
   });
 
-  it("先读四格、再拉全量，拉取期间到达的事件按顺序补上", async () => {
+  it("先读四件事、再拉全量，拉取期间到达的事件按顺序补上", async () => {
     let release: () => void = () => undefined;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -344,13 +353,14 @@ describe("镜像：打开一段对话", () => {
       delta: { content: "到一半" },
       at: "2026-01-01T00:00:02.000Z",
     });
-    host.push("state", { conversationId: "c1", status: "busy", at: "2026-01-01T00:00:03.000Z" });
+    host.push("state", { conversationId: "c1", status: "working", at: "2026-01-01T00:00:03.000Z" });
+    host.push("output:paused", { conversationId: "c1", at: "2026-01-01T00:00:04.000Z" });
     release();
 
     const mirror = await opening;
 
-    // 四格的现读值先到（idle），之后到达的 state 事件比它新，于是留在 busy
-    expect(mirror.status).toBe("busy");
+    // 读数的现读值先到（idle），之后到达的事件比它新：忙闲留在 working、输出闸关着
+    expect(mirror.snapshot()).toMatchObject({ status: "working", outputPaused: true });
     // 快照那一条 + 拉取期间新到的那一条，增量也折进去了
     expect(mirror.messages.map((message) => message.id)).toEqual(["m1", "m2"]);
     expect(mirror.messages[1]?.content).toBe("答到一半");
@@ -399,12 +409,15 @@ describe("镜像：打开一段对话", () => {
     expect(mirror.messages).toEqual([]);
     expect(client.mirror("c1")).toBeUndefined();
   });
-  it("`conversation.state` 的两格进镜像：名册铺栏、交接态非空即「正在交接」", async () => {
+  it("`conversation.state` 的其余几格进镜像：名册铺栏、交接态非空即「正在交接」", async () => {
     const host = await startFake({
       methods: {
         "conversation.state": () => ({
           state: conversationState("c1", {
-            status: "paused",
+            // 活着、手上没活、输出闸关着：四件事必须各报各的
+            status: "idle",
+            outputPaused: true,
+            alive: true,
             subAgents: [{ toolCallId: "call-1", name: "explore", state: "working" }],
             handoff: { since: "2026-01-01T00:00:05.000Z" },
           }),
@@ -415,11 +428,15 @@ describe("镜像：打开一段对话", () => {
     const client = await connect(host);
 
     const mirror = await client.open("c1");
-    expect(mirror.status).toBe("paused");
+    expect(mirror.snapshot()).toMatchObject({
+      status: "idle",
+      outputPaused: true,
+      alive: true,
+    });
     // 名册那一条先把栏摆出来（内容之后靠事件长）
     expect(mirror.roster).toEqual([{ toolCallId: "call-1", name: "explore", state: "working" }]);
     expect(mirror.subAgent("call-1")).toEqual([]);
-    // 非空就是「正在交接」（与四格分开：这段照旧是暂停格）
+    // 非空就是「正在交接」（与那四件事分开：这段照旧有自己的忙闲与两道闸）
     expect(mirror.handoff).toEqual({ since: "2026-01-01T00:00:05.000Z" });
 
     // 之后到达的消息事件按 toolCallId 归进那一栏，**不调 message.list { toolCallId }**
@@ -822,7 +839,9 @@ describe("类型（编译期）", () => {
     >();
     // 事件名与载荷按 `EventMap` 收窄：`state` 的载荷里只有那一格
     client.subscribe("state", (payload) => {
-      expectTypeOf(payload.status).toEqualTypeOf<import("@ai-zen/agents-host").ConversationStatus>();
+      expectTypeOf(payload.status).toEqualTypeOf<
+        import("@ai-zen/agents-host").ConversationActivity
+      >();
     });
     await client.close();
   });

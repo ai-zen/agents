@@ -6,9 +6,10 @@
  *   2. 重连补回来的那一份：锚点还在 → 替换 + 追加；锚点不在 → 整段替换。
  *   3. 打开期间攒下的那一批（`replay: true`）：属于快照已包含那些消息的增量不再折一遍。
  *   4. 与镜像无关的事件（`notice` / `question` / `error`）不认领；`conversation.changed` 认领，
- *      但只改交接态那一格：`handoff_started` 置成「正在交接」、`memory_replaced` 清回 `null`，
- *      其余 change 一格不动。
- *   5. `status`：还没读到是 `null`（不借「死」那一格占位），`applyReadout` 之后才有一格。
+ *      但它只改两处：死活那一格（`agent_started` / `agent_gone`）与交接态（`handoff_started` 置成
+ *      「正在交接」、`memory_replaced` 清回 `null`），其余 change 一格不动。
+ *   5. 四件事各占一格：忙闲来自 `state`、两道闸来自 `output:*` / `input:*`、死活来自
+ *      `conversation.changed`；还没读到是 `null`（不借「死」或「闲」占位），`applyReadout` 一次补齐。
  *
  * 这里全是纯函数与纯对象：不起 socket、不调契约方法。
  */
@@ -60,8 +61,33 @@ function conversationChangedEvent(
 }
 
 function mirrorOf(): ConversationMirror {
-  // 刚建出来还没读 `conversation.state`：那一格是 `null`（还没读到），不是四格里的任何一格
-  return new ConversationMirror({ conversationId: "c1", status: null });
+  // 刚建出来还没读 `conversation.state`：四件都是 `null`（还没读到），一格都不借来占位
+  return new ConversationMirror({ conversationId: "c1" });
+}
+
+/** 两道闸那四条事件的载荷：只带会话 id（哪一道、开还是关由事件名说） */
+function pauseEvent() {
+  return { conversationId: "c1", at: AT };
+}
+
+/** 分量读数的现读值（`conversation.state` 拿回来的那一份：四件事 + 名册 + 交接态） */
+function readout(overrides: {
+  status?: "working" | "idle";
+  inputPaused?: boolean;
+  outputPaused?: boolean;
+  alive?: boolean;
+  subAgents?: Array<{ toolCallId: string; name: string; state: "working" | "idle" | "ended" }>;
+  handoff?: { since: string } | null;
+} = {}) {
+  return {
+    status: "idle" as const,
+    inputPaused: false,
+    outputPaused: false,
+    alive: true,
+    subAgents: [],
+    handoff: null,
+    ...overrides,
+  };
 }
 
 describe("四条到达事件", () => {
@@ -103,29 +129,79 @@ describe("四条到达事件", () => {
     expect(mirror.subAgent("没有这一栏")).toEqual([]);
   });
 
-  it("还没读到四格时 status 就是 null（不借「死」占位）", () => {
+  it("还没读到四件事时每一格都是 null（既不借「死」也不借「闲」占位）", () => {
     const mirror = mirrorOf();
     // 打开对话的那一刻：事件还没到、`conversation.state` 也还没读
-    expect(mirror.status).toBeNull();
-    expect(mirror.snapshot().status).toBeNull();
+    expect(mirror.snapshot()).toMatchObject({
+      status: null,
+      inputPaused: null,
+      outputPaused: null,
+      alive: null,
+    });
 
-    // 读到现读值之后才有一格，之后照旧由 `state` 事件换下去
-    mirror.applyReadout({ status: "dead", subAgents: [], handoff: null });
-    expect(mirror.status).toBe("dead");
-    expect(mirror.snapshot().status).toBe("dead");
+    // 读到现读值之后四件一次补齐，之后各自被自己的事件换下去
+    mirror.applyReadout(readout({ status: "working", outputPaused: true, alive: true }));
+    expect(mirror.snapshot()).toMatchObject({
+      status: "working",
+      inputPaused: false,
+      outputPaused: true,
+      alive: true,
+    });
   });
 
-  it("构造函数给的 status 可以是四格里的某一格（重连时手里已经有读数）", () => {
-    const mirror = new ConversationMirror({ conversationId: "c1", status: "paused" });
-    expect(mirror.status).toBe("paused");
-  });
-
-  it("state 事件换掉那一格", () => {
+  it("`state` 只换忙闲那一格：两个值，不碰两道闸与死活", () => {
     const mirror = mirrorOf();
-    mirror.apply({ kind: "state", payload: stateEvent("busy") });
-    expect(mirror.status).toBe("busy");
-    mirror.apply({ kind: "state", payload: stateEvent("paused") });
-    expect(mirror.status).toBe("paused");
+    mirror.applyReadout(readout({ alive: true }));
+
+    mirror.apply({ kind: "state", payload: stateEvent("working") });
+    expect(mirror.snapshot()).toMatchObject({
+      status: "working",
+      inputPaused: false,
+      outputPaused: false,
+      alive: true,
+    });
+
+    mirror.apply({ kind: "state", payload: stateEvent("idle") });
+    expect(mirror.snapshot()).toMatchObject({ status: "idle", alive: true });
+  });
+
+  it("两道闸各换自己的那一格（关着 = `true`），忙闲与死活一格不动", () => {
+    const mirror = mirrorOf();
+    mirror.applyReadout(readout({ status: "idle" }));
+
+    mirror.apply({ kind: "output:paused", payload: pauseEvent() });
+    expect(mirror.snapshot()).toMatchObject({ outputPaused: true, inputPaused: false });
+
+    mirror.apply({ kind: "input:paused", payload: pauseEvent() });
+    expect(mirror.snapshot()).toMatchObject({ outputPaused: true, inputPaused: true });
+
+    mirror.apply({ kind: "output:resumed", payload: pauseEvent() });
+    expect(mirror.snapshot()).toMatchObject({
+      outputPaused: false,
+      inputPaused: true,
+      status: "idle",
+      alive: true,
+    });
+
+    mirror.apply({ kind: "input:resumed", payload: pauseEvent() });
+    expect(mirror.snapshot()).toMatchObject({ outputPaused: false, inputPaused: false });
+  });
+
+  it("死活那一格由 `agent_started` / `agent_gone` 换（不经过 `state`）", () => {
+    const mirror = mirrorOf();
+    mirror.apply({
+      kind: "conversation.changed",
+      payload: conversationChangedEvent("agent_started"),
+    });
+    expect(mirror.alive).toBe(true);
+
+    mirror.apply({
+      kind: "conversation.changed",
+      payload: conversationChangedEvent("agent_gone"),
+    });
+    expect(mirror.alive).toBe(false);
+    // 死了也照旧有自己的忙闲（「手上没活」与「没有 agent」是两件事）
+    expect(mirror.status).not.toBe(undefined);
   });
 
   it("lastMessageId 是主线最后一条（子 Agent 那几栏不参与）", () => {
@@ -138,13 +214,15 @@ describe("四条到达事件", () => {
 
   it("applyReadout 收下名册与交接态，名册只加栏不删栏", () => {
     const mirror = mirrorOf();
-    mirror.applyReadout({
-      status: "busy",
-      subAgents: [{ toolCallId: "call-1", name: "explore", state: "working" }],
-      handoff: { since: AT },
-    });
+    mirror.applyReadout(
+      readout({
+        status: "working",
+        subAgents: [{ toolCallId: "call-1", name: "explore", state: "working" }],
+        handoff: { since: AT },
+      }),
+    );
 
-    expect(mirror.status).toBe("busy");
+    expect(mirror.status).toBe("working");
     expect(mirror.roster).toEqual([{ toolCallId: "call-1", name: "explore", state: "working" }]);
     // 名册上有的栏先摆出来（还是空的），之后的事件往里面长
     expect(mirror.subAgent("call-1")).toEqual([]);
@@ -154,7 +232,7 @@ describe("四条到达事件", () => {
     expect(mirror.subAgent("call-1").map((message) => message.id)).toEqual(["s1"]);
 
     // 下一批开始了：名册空了，但说过的话还在那一栏里
-    mirror.applyReadout({ status: "idle", subAgents: [], handoff: null });
+    mirror.applyReadout(readout({ status: "idle" }));
     expect(mirror.roster).toEqual([]);
     expect(mirror.handoff).toBeNull();
     expect(mirror.subAgent("call-1").map((message) => message.id)).toEqual(["s1"]);
@@ -221,9 +299,9 @@ describe("交接态：`conversation.changed` 那一格", () => {
     }
   });
 
-  it("`conversation.changed` 只改那一格：消息与四格一个字不动", () => {
+  it("`conversation.changed` 只改它该改的那一格：消息与其余几格一个字不动", () => {
     const mirror = mirrorOf();
-    mirror.applyReadout({ status: "busy", subAgents: [], handoff: null });
+    mirror.applyReadout(readout({ status: "working", outputPaused: true }));
     mirror.apply({ kind: "message.added", payload: addedEvent(userMessage("m1", "问")) });
 
     mirror.apply({
@@ -231,10 +309,14 @@ describe("交接态：`conversation.changed` 那一格", () => {
       payload: conversationChangedEvent("handoff_started"),
     });
 
-    expect(mirror.status).toBe("busy");
+    expect(mirror.snapshot()).toMatchObject({
+      status: "working",
+      outputPaused: true,
+      alive: true,
+      handoff: { since: AT },
+    });
     expect(mirror.messages.map((message) => message.id)).toEqual(["m1"]);
     expect(mirror.roster).toEqual([]);
-    expect(mirror.handoff).toEqual({ since: AT });
   });
 });
 
@@ -314,19 +396,26 @@ describe("打开期间攒下的那一批（replay）", () => {
 });
 
 describe("toMirrorEvent", () => {
-  it("六个与镜像有关的事件各自折出来", () => {
+  it("与镜像有关的事件各自折出来", () => {
     expect(toMirrorEvent("message.added", addedEvent(userMessage("m1", "问")))?.kind).toBe("message.added");
     expect(toMirrorEvent("message.delta", deltaEvent("m1", { content: "x" }))?.kind).toBe("message.delta");
     expect(toMirrorEvent("message.changed", changedEvent(userMessage("m1", "问")))?.kind).toBe("message.changed");
     expect(toMirrorEvent("message.removed", removedEvent("m1"))?.kind).toBe("message.removed");
-    expect(toMirrorEvent("state", stateEvent("busy"))?.kind).toBe("state");
-    // `conversation.changed` 认领（交接态那两格用它）；里面是哪一格由 `apply` 那一步判
+    expect(toMirrorEvent("state", stateEvent("working"))?.kind).toBe("state");
+    // `conversation.changed` 认领（死活与交接态都用它）；里面是哪一格由 `apply` 那一步判
     expect(
       toMirrorEvent("conversation.changed", conversationChangedEvent("handoff_started"))?.kind,
     ).toBe("conversation.changed");
   });
 
-  it("另外三个事件不认领（它们说的不是消息，也不是四格）", () => {
+  it("两道闸的四条事件各自折成同名的那一格（名字自己说清哪一道、开还是关）", () => {
+    expect(toMirrorEvent("output:paused", pauseEvent())?.kind).toBe("output:paused");
+    expect(toMirrorEvent("output:resumed", pauseEvent())?.kind).toBe("output:resumed");
+    expect(toMirrorEvent("input:paused", pauseEvent())?.kind).toBe("input:paused");
+    expect(toMirrorEvent("input:resumed", pauseEvent())?.kind).toBe("input:resumed");
+  });
+
+  it("另外三个事件不认领（它们说的不是消息，也不是那四件事）", () => {
     for (const event of ["notice", "question", "error", "some.future.event"]) {
       expect(toMirrorEvent(event, { conversationId: "c1" })).toBeNull();
     }

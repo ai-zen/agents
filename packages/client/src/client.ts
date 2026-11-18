@@ -6,11 +6,11 @@
  * `connect` / `call` / `subscribe` / `close`，就这四件：
  *   · `connect` 里把**握手**一次做完（`host.hello`），拿到 `Client` 就能直接调方法；
  *   · `call` 的入参与出参由宿主的 `MethodMap` 推出来（`MethodParams` / `MethodResult`）；
- *   · `subscribe` 按 `EventMap` 收窄载荷（`message.added` / `message.delta` / `state` / … 九个事件）；
+ *   · `subscribe` 按 `EventMap` 收窄载荷（`message.added` / `message.delta` / `state` / … 十三条事件）；
  *   · `close` 之后不再可用，要恢复就 `reconnect()`。
  *
  * 另有一层不在 JSON-RPC 里的东西：{@link Client.open} 用的**镜像**（`mirror.ts` —— 按事件重建
- * `messages` 与四格），以及 {@link Client.sendBinary}（上传分片的二进制帧）。后者的帧格式收在
+ * `messages` 与那四件事），以及 {@link Client.sendBinary}（上传分片的二进制帧）。后者的帧格式收在
  * `chunkFrame.ts`，上传本身是一次三段式（见 `upload.ts`）。
  *
  * ## 握手：首帧 `host.hello`，凭证不进 URL
@@ -23,7 +23,7 @@
  * ## 不重放、不 ack
  *
  * 事件是 JSON-RPC 通知（无 `id`），断线即作废。重连之后由 {@link Client.resync} 把镜像补回来
- * （`conversation.state` 读四格 + `message.list({ after })` 拉增量，见 `mirror.ts`）。所以这里没有
+ * （`conversation.state` 读那四件事 + `message.list({ after })` 拉增量，见 `mirror.ts`）。所以这里没有
  * 「补发」的逻辑，也没有「确认收到」的往返。
  *
  * ## 传输用 Node 内建的全局 `WebSocket`
@@ -365,7 +365,7 @@ export class Client implements ContractCaller {
    * 这四步的先后不能换：
    *   1. **先订阅**：镜像先进 {@link Client.mirrors} 表，并给它开一个缓冲队列。从这一刻起，
    *      与镜像有关的事件一律先进队列 —— 拉取期间发生的事一条都不会丢。
-   *   2. **读四格**（`conversation.state`）：先读它，是因为之后再到达的事件总比这个读数值新，
+   *   2. **读四件事**（`conversation.state`）：先读它，是因为之后再到达的事件总比这个读数值新，
    *      补在它后面不会把状态往回拨；反过来的话（先读消息、后读状态），补的那一批就会把新的
    *      状态覆盖成旧的。
    *   3. **拉全量**（`message.list`，不带 `after`）：整段主线消息。
@@ -387,9 +387,9 @@ export class Client implements ContractCaller {
       return existing;
     }
 
-    // 状态先空着（`null` = 还没读到）：四格读到之前它什么都还不是，也不借「死」那一格占位 ——
-    // 死是带动作的一格（发话前先复活），而这里只是还没读到；`applyReadout` 之后才有一格
-    const mirror = new ConversationMirror({ conversationId, status: null });
+    // 四件事先空着（`null` = 还没读到）：既不借「死」占位（那会让界面去提示复活一段好端端的
+    // 对话），也不借「闲」占位（那会让界面以为它会理你）；`applyReadout` 之后四件一次补齐
+    const mirror = new ConversationMirror({ conversationId });
     this.mirrors.set(conversationId, mirror);
     try {
       await this.loadSnapshot(conversationId, mirror, "replace");
@@ -798,12 +798,12 @@ export class Client implements ContractCaller {
    *      {@link SnapshotMode}）；
    *   2. 失败时镜像怎么办 —— 首载把半份镜像整段丢掉（{@link Client.open}），另两处留着上一份。
    *
-   * 其余逐字相同，也正是这个方法的内容：先读 `conversation.state`（四格 + 名册 + 交接态一起收下，
+   * 其余逐字相同，也正是这个方法的内容：先读 `conversation.state`（四件事 + 名册 + 交接态一起收下，
    * 名册用来铺子 agent 那几栏），再拉消息，拉取期间到达的事件先攒后补
    * （{@link Client.snapshotWhileBuffering}）。三处各写一遍时，任何一处漏掉「先攒后补」或漏读
    * 一格都没人会发现；收在这里之后，`message.list` 再多一个参数也只改这一行。
    *
-   * 四格先读：之后再到达的事件总比这个读数值新，补在它后面不会把状态往回拨；反过来的话（先读
+   * 四件事先读：之后再到达的事件总比这个读数值新，补在它后面不会把状态往回拨；反过来的话（先读
    * 消息、后读状态），补的那一批就会把新的状态覆盖成旧的。交接态也在这里读到，于是重连中的窗口
    * 里「正在交接」不会一直挂着。
    */

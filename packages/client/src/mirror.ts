@@ -1,6 +1,6 @@
 /**
- * 一段对话的**镜像**：按到达的事件把 `messages` 重建出来，另外记住四格里的那一格、
- * 子 agent 名册与交接态。
+ * 一段对话的**镜像**：按到达的事件把 `messages` 重建出来，另外记住**四件事**（忙闲 / 输入闸 /
+ * 输出闸 / 死活）、子 agent 名册与交接态。
  *
  * ## 为什么要镜像，以及它凭什么与宿主逐字一致
  *
@@ -22,13 +22,19 @@
  * ## 只管这三样东西
  *
  * ① `messages`：主线一栏 + 按 `toolCallId` 归好的子 Agent 各栏；
- * ② 四格 `status`（忙 / 闲 / 暂停 / 死），来自 `state` 事件；还没读到时是 `null`
- *    （不是「死」—— 死是四格里带「发话前先复活」动作的那一格，拿它当「还没读到」的占位是借词），
- *    读到 `conversation.state` 的现读值之后才有一格；
+ * ② **四件事各占一格**（`PRD.md` 4.4）：忙闲 `status`（`working` / `idle`）、输入闸 `inputPaused`、
+ *    输出闸 `outputPaused`、死活 `alive`。它们各有自己的来路 —— 忙闲来自 `state`，两道闸来自
+ *    `output:paused` / `output:resumed` / `input:paused` / `input:resumed`，死活来自
+ *    `conversation.changed` 的 `agent_started` / `agent_gone`；打开对话时由 `conversation.state`
+ *    一次补齐。**没读到就是 `null`**（不是「死」，也不是「闲」：那两样都是要报给用户看的事实，
+ *    拿它们当「还没读到」的占位就是借词）；
  * ③ `conversation.state` 的另外两格：子 agent **名册**（只用来铺栏）与**交接态**
  *    （非空即「正在交接」）。交接态还有一条在线时的来路：`conversation.changed` 的
  *    `handoff_started` 把它置起来、`memory_replaced` 把它收掉（见 {@link ConversationMirror} 的
  *    `conversationChanged`）—— 不然长时间在线、不重拉读数的窗口永远学不到「交接开始了」。
+ *
+ * **四件事不合成一格**：`status` 说「它会不会马上动」，两道闸说「它收不收 / 取不取」，
+ * `alive` 说「还有没有那个对象」。按钮只读后三样（活着？闸开着？），与忙闲无关。
  *
  * 子 agent 那一栏的消息**一律来自事件**（每条消息事件都带 `toolCallId`）：子 agent 不入库，
  * 也就没有第二个地方可以补 —— 重连之后靠名册把栏铺回来，内容靠之后的事件继续长。
@@ -47,9 +53,9 @@
 import { applyChunk } from "@ai-zen/agents-core";
 import type {
   AgentNS,
+  ConversationActivity,
   ConversationChangeKind,
   ConversationState,
-  ConversationStatus,
   EventPayload,
 } from "@ai-zen/agents-host";
 
@@ -57,8 +63,12 @@ import type {
  * 与镜像有关的一条事件（事件名 + 载荷，判别结构）。
  *
  * 另外三个事件与镜像无关：`notice` / `question` / `error` —— 它们说的不是「哪条消息怎么了」，
- * 也不是四格。`conversation.changed` **认领**，但只认其中两格：`handoff_started` 与
- * `memory_replaced`（见 {@link ConversationMirror} 的 `conversationChanged`）。
+ * 也不是那四件事。`conversation.changed` **认领**，但只认其中三格：`agent_started` /
+ * `agent_gone`（死活）与交接态那两格 `handoff_started` / `memory_replaced`
+ * （见 {@link ConversationMirror} 的 `conversationChanged`）。
+ *
+ * 两道闸那四条事件**各自一格**（与宿主的事件名逐字相同）：名字自己就说清了「哪一道、开还是关」，
+ * 所以镜像这一层不再多造一个中间形状。
  */
 export type MirrorEvent =
   | { kind: "message.added"; payload: EventPayload<"message.added"> }
@@ -66,6 +76,10 @@ export type MirrorEvent =
   | { kind: "message.changed"; payload: EventPayload<"message.changed"> }
   | { kind: "message.removed"; payload: EventPayload<"message.removed"> }
   | { kind: "state"; payload: EventPayload<"state"> }
+  | { kind: "output:paused"; payload: EventPayload<"output:paused"> }
+  | { kind: "output:resumed"; payload: EventPayload<"output:resumed"> }
+  | { kind: "input:paused"; payload: EventPayload<"input:paused"> }
+  | { kind: "input:resumed"; payload: EventPayload<"input:resumed"> }
   | { kind: "conversation.changed"; payload: EventPayload<"conversation.changed"> };
 
 /**
@@ -86,6 +100,14 @@ export function toMirrorEvent(event: string, payload: unknown): MirrorEvent | nu
       return { kind: "message.removed", payload: payload as EventPayload<"message.removed"> };
     case "state":
       return { kind: "state", payload: payload as EventPayload<"state"> };
+    case "output:paused":
+      return { kind: "output:paused", payload: payload as EventPayload<"output:paused"> };
+    case "output:resumed":
+      return { kind: "output:resumed", payload: payload as EventPayload<"output:resumed"> };
+    case "input:paused":
+      return { kind: "input:paused", payload: payload as EventPayload<"input:paused"> };
+    case "input:resumed":
+      return { kind: "input:resumed", payload: payload as EventPayload<"input:resumed"> };
     case "conversation.changed":
       return {
         kind: "conversation.changed",
@@ -114,32 +136,45 @@ export interface SubAgentFact {
   state: AgentNS.AgentState | "ended";
 }
 
-/** 镜像的一份只读样子（给界面与用例看，不是另一份数据） */
+/**
+ * 镜像的一份只读样子（给界面与用例看，不是另一份数据）。
+ *
+ * 四件事各占一格，字段名与宿主 `conversation.state` 的同名同义。每一格 `null` = **还没读到**：
+ * 镜像刚建出来时（打开对话的这一刻）什么都还没读到，所以四件都是 `null` —— 不是「死」（界面会去
+ * 提示复活一段其实好端端的对话），也不是「闲」（界面会以为它会理你）。拿到读数（`applyReadout`）
+ * 之后四件一次补齐，之后各自由自己的事件换下去。
+ */
 export interface MirrorSnapshot {
   conversationId: string;
-  /**
-   * 四格里那一格；`null` = **还没读到**。
-   *
-   * 镜像刚建出来时（打开对话的这一刻）还没读 `conversation.state`，所以它什么都还不是：
-   * 不是「死」—— 死是四格里带「发话前先复活」动作的那一格，把「还没读到」报成死，界面就会
-   * 去提示复活一段其实好端端的对话。拿到读数（`applyReadout`）之后才有一格。
-   */
-  status: ConversationStatus | null;
+  /** 闲 / 忙（`working` / `idle`）：只读的观测值，来自 `state` */
+  status: ConversationActivity | null;
+  /** 输入闸：`true` = 关着（投递进不来），来自 `input:paused` / `input:resumed` */
+  inputPaused: boolean | null;
+  /** 输出闸：`true` = 关着（不取 inbox），来自 `output:paused` / `output:resumed` */
+  outputPaused: boolean | null;
+  /** 死活：这一段此刻有没有 agent 实例，来自 `agent_started` / `agent_gone` */
+  alive: boolean | null;
   /** 主线消息（不属于任何子 Agent 的那些），顺序即对话里的先后 */
   messages: readonly AgentNS.Message[];
   /** 按 `toolCallId` 归好的子 Agent 各栏 */
   subAgents: SubAgentColumn[];
   /** 名册（现读的那一份；没读过就是空） */
   roster: SubAgentFact[];
-  /** 非空就是「正在交接」（与四格分开：交接期间这段照旧是忙 / 闲 / 暂停） */
+  /** 非空就是「正在交接」（不在那四件事里：交接期间这一段照旧有自己的忙闲与两道闸） */
   handoff: { since: string } | null;
 }
 
-/** 一段对话的镜像：主线一栏、子 Agent 各一栏、四格里那一格，外加名册与交接态 */
+/** 一段对话的镜像：主线一栏、子 Agent 各一栏、四件事各一格，外加名册与交接态 */
 export class ConversationMirror {
   readonly conversationId: string;
-  /** 四格里那一格；还没读到就是 `null`（见 {@link MirrorSnapshot.status}） */
-  private statusValue: ConversationStatus | null;
+  /** 忙闲；还没读到就是 `null`（见 {@link MirrorSnapshot.status}） */
+  private statusValue: ConversationActivity | null = null;
+  /** 输入闸：`true` = 关着；还没读到就是 `null` */
+  private inputPausedValue: boolean | null = null;
+  /** 输出闸：`true` = 关着；还没读到就是 `null` */
+  private outputPausedValue: boolean | null = null;
+  /** 死活：有没有 agent 实例；还没读到就是 `null` */
+  private aliveValue: boolean | null = null;
   private main: AgentNS.Message[] = [];
   private readonly columns = new Map<string, AgentNS.Message[]>();
   private rosterValue: SubAgentFact[] = [];
@@ -154,19 +189,32 @@ export class ConversationMirror {
   private fromSnapshot = new Set<string>();
 
   /**
-   * `status` 是**打开这一刻已知的那一格**：还没读过 `conversation.state` 就给 `null`（还没读到）。
-   *
-   * 不给它一个四格里的值去占位：死是带动作的一格（发话前先复活），借来当「还不知道」的占位，
-   * 读的人就分不出「这段真的没驱动者」与「我还没读到」。
+   * 建出来时**四件都是 `null`（还没读到）**：打开对话的那一刻 `conversation.state` 还没回来，
+   * 而这四件都是要报给用户看的事实 —— 拿其中任何一个去占位，读的人就分不出「这段真的没人 /
+   * 真的不收话」与「我还没读到」。
    */
-  constructor(init: { conversationId: string; status: ConversationStatus | null }) {
+  constructor(init: { conversationId: string }) {
     this.conversationId = init.conversationId;
-    this.statusValue = init.status;
   }
 
-  /** 四格里的那一格；还没读到就是 `null` */
-  get status(): ConversationStatus | null {
+  /** 忙闲（`working` / `idle`）；还没读到就是 `null` */
+  get status(): ConversationActivity | null {
     return this.statusValue;
+  }
+
+  /** 输入闸：`true` = 关着；还没读到就是 `null` */
+  get inputPaused(): boolean | null {
+    return this.inputPausedValue;
+  }
+
+  /** 输出闸：`true` = 关着；还没读到就是 `null` */
+  get outputPaused(): boolean | null {
+    return this.outputPausedValue;
+  }
+
+  /** 死活：有没有 agent 实例；还没读到就是 `null` */
+  get alive(): boolean | null {
+    return this.aliveValue;
   }
 
   /** 名册（现读的那一份；客户端只用它铺栏） */
@@ -189,11 +237,14 @@ export class ConversationMirror {
     return this.columns.get(toolCallId) ?? [];
   }
 
-  /** 一份只读样子 */
+  /** 一份只读样子（四件事各一格，客户端一次拿到） */
   snapshot(): MirrorSnapshot {
     return {
       conversationId: this.conversationId,
       status: this.statusValue,
+      inputPaused: this.inputPausedValue,
+      outputPaused: this.outputPausedValue,
+      alive: this.aliveValue,
       messages: [...this.main],
       subAgents: [...this.columns.entries()].map(([toolCallId, messages]) => ({
         toolCallId,
@@ -209,26 +260,59 @@ export class ConversationMirror {
     return this.main.at(-1)?.id;
   }
 
-  /** 换一格（`state` 事件的载荷，或 `conversation.state` 的现读值） */
-  applyStatus(status: ConversationStatus): void {
+  /** 换忙闲这一格（`state` 事件的载荷） */
+  applyActivity(status: ConversationActivity): void {
     this.statusValue = status;
   }
 
+  /** 输出闸关了（`output:paused`）：从下一批起不取 inbox，手上那批照跑 */
+  applyOutputPaused(): void {
+    this.outputPausedValue = true;
+  }
+
+  /** 输出闸开了（`output:resumed`）：又开始取件 */
+  applyOutputResumed(): void {
+    this.outputPausedValue = false;
+  }
+
+  /** 输入闸关了（`input:paused`）：投递进不来（只有 `stop` / `kill` 关它） */
+  applyInputPaused(): void {
+    this.inputPausedValue = true;
+  }
+
+  /** 输入闸开了（`input:resumed`）：又开始收投递 */
+  applyInputResumed(): void {
+    this.inputPausedValue = false;
+  }
+
+  /** 换死活这一格（`agent_started` → `true`、`agent_gone` → `false`） */
+  applyAlive(alive: boolean): void {
+    this.aliveValue = alive;
+  }
+
   /**
-   * 收下 `conversation.state` 的三格（四格里的那一格 + 名册 + 交接态）。
+   * 收下 `conversation.state` 的全部四件事 + 名册 + 交接态。
    *
-   * 这也是 `status` 从 `null`（还没读到）**真正变成一格**的那一刻；之后由 `state` 事件一路换
-   * 下去（`applyStatus`）。
+   * 这也是那四件从 `null`（还没读到）**真正变成事实**的那一刻；之后各自被自己的事件换下去
+   * （`applyActivity` / `applyOutputPaused` 这一类 / `applyAlive`）。
    *
    * 名册只**加栏、不删栏**：它说的是「这一段此刻有哪几个子 agent」，而栏里的消息是事件一条
    * 一条攒起来的。名册被清空（下一批开始了）不等于那些话没说过 —— 所以已经攒下的栏原样留着。
    *
-   * 交接态非空就是「正在交接」：界面要把它与四格分开显示（交接期间输入框拦住、只留中断）。
+   * 交接态非空就是「正在交接」：界面要把它与那四件事分开显示（交接期间输入框拦住、只留中断）。
    * 读数只是它的一条来路：在线时 `handoff_started` 那条事件会把它置起来（见
    * {@link ConversationMirror} 的 `conversationChanged`），`memory_replaced` 会把它收掉。
    */
-  applyReadout(state: Pick<ConversationState, "status" | "subAgents" | "handoff">): void {
+  applyReadout(
+    state: Pick<
+      ConversationState,
+      "status" | "inputPaused" | "outputPaused" | "alive" | "subAgents" | "handoff"
+    >,
+  ): void {
     this.statusValue = state.status;
+    this.inputPausedValue = state.inputPaused;
+    this.outputPausedValue = state.outputPaused;
+    this.aliveValue = state.alive;
     this.rosterValue = [...state.subAgents];
     this.handoffValue = state.handoff;
     // 名册上有的栏先摆出来（空栏也是一栏），之后到达的事件往里面长
@@ -276,7 +360,19 @@ export class ConversationMirror {
   apply(event: MirrorEvent, options: { replay?: boolean } = {}): void {
     switch (event.kind) {
       case "state":
-        this.applyStatus(event.payload.status);
+        this.applyActivity(event.payload.status);
+        return;
+      case "output:paused":
+        this.applyOutputPaused();
+        return;
+      case "output:resumed":
+        this.applyOutputResumed();
+        return;
+      case "input:paused":
+        this.applyInputPaused();
+        return;
+      case "input:resumed":
+        this.applyInputResumed();
         return;
       case "message.added":
         this.added(event.payload.message, event.payload.toolCallId, options.replay === true);
@@ -323,7 +419,9 @@ export class ConversationMirror {
    * 镜像自己不去拉任何东西。
    */
   private conversationChanged(change: ConversationChangeKind, at: string): void {
-    if (change === "handoff_started") this.handoffValue = { since: at };
+    if (change === "agent_started") this.aliveValue = true;
+    else if (change === "agent_gone") this.aliveValue = false;
+    else if (change === "handoff_started") this.handoffValue = { since: at };
     else if (change === "memory_replaced") this.handoffValue = null;
   }
 

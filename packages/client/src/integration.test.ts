@@ -177,7 +177,7 @@ describe("调用与错误", () => {
 });
 
 describe("镜像对真实例（打开一段空对话）", () => {
-  it("四格读得回来，消息是空的", async () => {
+  it("四件事读得回来，消息是空的", async () => {
     const client = await connect("zh");
     const { workspace } = await client.call("workspace.create", { cwd: workspaceDir });
     const created = await client.call("conversation.create", {
@@ -190,8 +190,9 @@ describe("镜像对真实例（打开一段空对话）", () => {
     const mirror = await client.open(conversationId);
 
     expect(mirror.conversationId).toBe(conversationId);
-    // 刚建出来的会话没有 agent 对象：死格就是「连 agent 都没有」
-    expect(["dead", "idle"]).toContain(mirror.status);
+    // 刚建出来的会话没有 agent 对象：死活那一格是 false（忙闲与两道闸照旧各报各的）
+    expect(mirror.alive).toBe(false);
+    expect(mirror.status).toBe("idle");
     expect(mirror.messages).toEqual([]);
   });
 });
@@ -340,7 +341,7 @@ describe("上传（asset.begin / 二进制帧 / asset.end）对真实例", () =>
 async function idle(client: Client, conversationId: string): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const { state } = await client.call("conversation.state", { conversationId });
-    if (state.status !== "busy") return;
+    if (state.status !== "working") return;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error("这段对话一直没有闲下来");
