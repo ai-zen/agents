@@ -17,7 +17,7 @@ import type { MessageKey } from "../i18n/index.js";
  *   - 流式增量 = `AgentNS.Delta`；用量 = `AgentNS.Usage`（就在每条消息的 `usage` 上，要合计就
  *     自己把消息上的 `usage` 加起来 —— core 不算、不存、不报，也没有求和函数）。
  *
- * 本文件只装 core 没有的**产品事实**：对话此刻落在哪一格、待办的一行、思考档位、模型块、
+ * 本文件只装 core 没有的**产品事实**：对话此刻那四件事、待办的一行、思考档位、模型块、
  * 通知分档、问题对象、素材引用。外壳里的消息、内容、工具调用、用量字段装的就是 core 的
  * 那几个类型，没有第二份定义。
  *
@@ -65,17 +65,50 @@ export interface ProblemFact extends LocalizedText {
 }
 
 // ---------------------------------------------------------------------------
-// 对话此刻的读数（PRD 4.4 的四格 / PLAN §10.1）
+// 对话此刻的四件事（PRD 4.4 / CORE「对外报四件事」/ PLAN §5.4）
 // ---------------------------------------------------------------------------
 
 /**
- * 一段对话此刻处于哪一格 —— 只有四个值，死 = 连 agent 对象都没有。
+ * 手上有没有活（**只读的观测值**）：`working` 正在动、`idle` 手上没活。
  *
- * 这四格是**合成值**：core 只报两格（`state`：`working` / `idle`，由循环的位置决定），「暂停」是
- * **另一处状态**（`agent.isOutputPaused`：从下一批起不收件），死是「查不到对象」。不落库、
- * 不是会话字段、不推算。客户端要分得开「闲」与「暂停」，因为前者会理你、后者不会。
+ * 它就是 core 的 `agent.state` 那两格，**名字不改**（`busy` 只留给拒绝原因码
+ * `HostError("busy")`，不是状态值）。它只由循环的位置决定：取到一批就是 `working`，这批跑完
+ * 且队列真空就是 `idle` —— 输出闸关着也照样会落到 `idle`（闸不参与这一格）。
+ *
+ * 它与「两道闸」没有任何关系：闲不等于会取件（输出闸可能关着），忙也不等于在收话。
  */
-export type ConversationStatus = "dead" | "busy" | "idle" | "paused";
+export type ConversationActivity = "working" | "idle";
+
+/** 忙闲的取值表（两个，不多不少） */
+export const CONVERSATION_ACTIVITIES: readonly ConversationActivity[] = ["working", "idle"];
+
+/**
+ * 一段对话此刻的**四件事**，各占一格（PRD 4.4）：
+ *
+ * | 格 | 是什么 | 取值 |
+ * |---|---|---|
+ * | `status` | 闲 / 忙（只读的观测值） | {@link ConversationActivity} |
+ * | `inputPaused` | 输入闸：外面的话收不收 | `true` = 关着（投递进不来） |
+ * | `outputPaused` | 输出闸：agent 取不取 inbox | `true` = 关着（从下一批起不取） |
+ * | `alive` | 死活：有没有 agent 实例 | `true` / `false` |
+ *
+ * **四件事不压成一格**：「闲」与「输出闸关」必须分得开（一个是手上没活，一个是不取新活），
+ * 「没有 agent」也不是四件事里的其中一件（它说的是有没有那个对象）。把三项合成一个合成值
+ * （四个词）的旧写法已作废。
+ *
+ * 四件事都是**现读**，不落库、不是会话字段、不推算：`status` 读 `agent.state`、两道闸读
+ * `agent.isInputPaused` / `agent.isOutputPaused`、死活看“有没有那个 agent 对象”。
+ */
+export interface ConversationPresence {
+  /** 闲 / 忙（只读） */
+  status: ConversationActivity;
+  /** 输入闸：`true` = 关着（投递进不来；只有 `stop` / `kill` 关它） */
+  inputPaused: boolean;
+  /** 输出闸：`true` = 关着（从下一批起不取 inbox；手上那批照跑） */
+  outputPaused: boolean;
+  /** 死活：这一段此刻有没有 agent 实例（`false` = 死了，投递会报 `conversation_dead`） */
+  alive: boolean;
+}
 
 /**
  * 一条还没落成消息的排队条目（{@link ConversationState.inbox} 的一项）。
@@ -117,9 +150,10 @@ export interface SubAgentFact {
 }
 
 /**
- * 一段对话此刻的读数：落在哪一格、队里还压着什么、名册上有哪些子 agent、是不是正在交接。
+ * 一段对话此刻的读数：四件事（忙闲 / 输入闸 / 输出闸 / 死活）+ 队里还压着什么 + 名册上有哪些
+ * 子 agent + 是不是正在交接。
  *
- * 重连的客户端拿这一份把界面的四格与待办摆回原样，再按 `message.list`（带 `after`）补齐消息。
+ * 重连的客户端拿这一份把界面的那四行与待办一次摆回原样，再按 `message.list`（带 `after`）补齐消息。
  * 更细的阶段（请求中 / 思考中 / 输出中）与用量**不在这里**：客户端按到达的事件自己推、
  * 按消息上的 `usage` 自己合计。
  *
@@ -127,10 +161,8 @@ export interface SubAgentFact {
  * 它们只在这一个方法上出现 —— `conversation.list`（侧栏）不带，因为侧栏不需要为每段对话
  * 去问一次它的驱动者。
  */
-export interface ConversationState {
+export interface ConversationState extends ConversationPresence {
   conversationId: string;
-  /** 此刻的读数，不落库、不是会话字段 */
-  status: ConversationStatus;
   /**
    * 还没落成消息的排队条目（现读 agent 的队列，顺序即取件顺序）。
    *
@@ -150,7 +182,7 @@ export interface ConversationState {
   /**
    * 在交接态就是开始时刻；不在就是 `null`。
    *
-   * 它不是四格里的任何一格：交接期间这段对话照旧是忙 / 闲 / 暂停，而「正在交接」是另一件事，
+   * 它不在那四件里：交接期间这一段照旧有自己的忙闲与两道闸，而「正在交接」是另一件事，
    * 界面要分开显示（交接期间输入框拦住、只留中断按钮）。
    */
   handoff: { since: string } | null;
@@ -277,7 +309,7 @@ export const QUESTION_KINDS: readonly QuestionKind[] = ["handoff", "confirmation
  * 题的去处只有两个：**被答了**、**这段对话没了（含意外死）**（PRD 4.10）。所以没有「过期」、
  * 没有「被取消」，也没有「关掉」这个动作 —— 那三种都是持久化时代的格子（题存得久，就需要
  * 一套清理语义），而题的命只有这一段对话活着的时间。第二个去处不发「题没了」这个事件：
- * 那段对话的事由 `conversation.changed` / `state: dead` 说。
+ * 那段对话的事由 `conversation.changed`（`agent_gone`）说。
  *
  * 状态是宿主的事：题在内存里就一个对象，多端看到的是同一份（PRD 4.10）。
  */

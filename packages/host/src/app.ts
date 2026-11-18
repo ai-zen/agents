@@ -508,7 +508,7 @@ export class HostApp {
       messages: this.messages,
       chatRunner: {
         deliver: (conversationId, input) => this.chatRunner.deliver(conversationId, input),
-        // 状态现读：平级会话那边只留可读名（什么都不存，存了就要有人同步两份）
+        // 四件事现读：平级会话那边只留可读名（什么都不存，存了就要有人同步两份）
         state: (conversationId) => this.chatRunner.state(conversationId),
         // 摘要也现读：`read_session_status` 要的「最近一句」就是那一段 `agent.messages` 的尾巴
         // （不查库：状态与摘要必须同一刻、同一来源）
@@ -630,7 +630,7 @@ export class HostApp {
       // `retired` 什么都不做：退役不是「这段没了」，那是换个驱动者接着干（改配置 / 改模型 /
       // 改思考档 / 装配事实变化），题与待交接必须原样留着 —— 清掉它们等于用户改了个模型就丢了
       // 正在等的那道题。重建由下一次投递自己完成（`AgentRegistry.acquire`）。
-      // 不推事件 —— 那件事由 `state: dead` 与 `conversation.changed` 说（PRD 4.10）
+      // 不推事件 —— 那件事由 `conversation.changed` 的 `agent_gone` 说（PRD 4.10）
       onDead: (conversationId, kind) => {
         if (kind === "retired") return;
         void this.questionService.dropConversation(conversationId).catch((error: unknown) => {
@@ -1285,7 +1285,7 @@ export class HostApp {
   /**
    * 服务层要的那个窄接口（`ConversationRuntimePort`）。
    *
-   * 前两件是**现读**（`ChatRunner.state`）：这一段此刻落在哪一格、队里还压着几条。删掉之后
+   * 前两件是**现读**（`ChatRunner.state`）：这一段此刻那四件事、队里还压着几条。删掉之后
    * 的现场清理指向 `ChatRunner.forget`（摘桥 + agent 硬着陆）。换模型 / 换思考档位那一手要的
    * 两件也在这一格里：**手上有没有活**（`AgentRegistry.get` 拿到那个 agent，只读 `state`）与
    * **让这一段空闲的驱动者退役**（`AgentRegistry.invalidateConversation`）。
@@ -1294,7 +1294,8 @@ export class HostApp {
    */
   private createConversationRuntime(): ConversationRuntimePort {
     return {
-      status: (conversationId) => this.chatRunner.state(conversationId).status,
+      // 四件事原样给出去（`status` / `inputPaused` / `outputPaused` / `alive`），侧栏那一段用的就是它
+      presence: (conversationId) => this.chatRunner.state(conversationId),
       inboxPending: (conversationId) => this.chatRunner.state(conversationId).inbox.length,
       forget: (conversationId) => {
         this.chatRunner.forget(conversationId);

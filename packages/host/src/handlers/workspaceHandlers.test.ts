@@ -176,8 +176,8 @@ describe("workspace.remove 的跨层补齐", () => {
     // 什么都没动
     expect(app.scopeRegistry.workspaceIds().length).toBe(1);
     expect(await exists(assetPath)).toBe(true);
-    // 现场丢了：这段对话现在是死格（没有 agent 对象）
-    expect(app.chatRunner.state(conversation.id).status).toBe("dead");
+    // 现场丢了：这一段现在没有 agent 了
+    expect(app.chatRunner.state(conversation.id).alive).toBe(false);
     const still = await callMethod(app, "conversation.list", { workspaceId: workspace.id });
     expect(still.total).toBe(1);
   });

@@ -2,7 +2,7 @@
  * 平级会话与**真执行者**拼起来的验收：投一句真的进那一段、真的落库，而**父对话一个字都
  * 收不到**（没有「答完把结果投回去」这回事）；问状态读的是那一段此刻的那一格。
  *
- * 为什么单独一个文件：投递落地、来源注释、四格这些事只有「真 `ChatRunner` + 真 agent +
+ * 为什么单独一个文件：投递落地、来源注释、四件事这些事只有「真 `ChatRunner` + 真 agent +
  * 真仓储」的组合才看得见。服务自己的判断（深度、限额、拒绝、截断、来源名）在
  * `PeerSessionService.test.ts` 里钉。
  *
@@ -270,7 +270,7 @@ describe("问状态：那一格现读", () => {
       caller: harness.caller,
       sessionId: created.sessionId,
     });
-    // 「死」是四格里的最后一格（查不到对象），不是「不在了」：会话行还在；
+    // 「没有 agent」是死活那一格（查不到对象），不是「不在了」：会话行还在；
     // 也没有内存可读，所以最近一句是 null（会话行上的旧消息不是「它刚说的」）
     expect(status).toEqual({ found: true, status: "dead", label: created.label, lastMessage: null });
   });

@@ -14,8 +14,8 @@ import type {
   AssetRef,
   AttachmentOutcome,
   CompactionMode,
+  ConversationPresence,
   ConversationState,
-  ConversationStatus,
   FolderFact,
   HandoffRefusalReason,
   LocalizedText,
@@ -290,8 +290,12 @@ export interface WorkspaceRemoveResult {
  * 对话在列表里的样子（PRD F-C5 / D13）。
  *
  * `pinned` 与 `createdAt` 一起决定侧栏顺序：默认创建时间倒序、置顶优先；活动/打开/改名都不改顺序（D13）。
+ *
+ * 与 `conversation.state` 同一个口径，侧栏这一段也带**四件事各一格**（{@link ConversationPresence}：
+ * `status` / `inputPaused` / `outputPaused` / `alive`）—— 侧栏那个圆点与按钮只读这几格，不必为每段
+ * 对话再拉一次读数。四件事都是现读，不落库、不是会话字段。
  */
-export interface ConversationSummary {
+export interface ConversationSummary extends ConversationPresence {
   id: string;
   workspaceId: string;
   /** 可改的名字（PRD D1：改名不碰 id，名字是独立字段） */
@@ -321,8 +325,6 @@ export interface ConversationSummary {
   updatedAt: string;
   messageCount: number;
   lastMessageAt: string | null;
-  /** 此刻那一格：死 / 忙 / 闲 / 暂停（现读 agent，不落库、不是会话字段；侧栏那个圆点读它） */
-  status: ConversationStatus;
   /** 队里还压着几条（现读） */
   inboxPending: number;
   /** 是否有问题挂着没答（PRD F-I9） */
@@ -424,7 +426,7 @@ export interface ConversationStateParams {
   conversationId: string;
 }
 
-/** `conversation.state` 出参：一段对话此刻的读数（四格 + 待办） */
+/** `conversation.state` 出参：一段对话此刻的读数（四件事 + 待办 + 名册 + 交接态） */
 export interface ConversationStateResult {
   state: ConversationState;
 }
@@ -471,7 +473,7 @@ export interface ConversationDeleteResult {
  * `conversation.send` 入参（PRD 4.2 / 5.1：唯一的对外动作是投递）。
  *
  * 投递只有两条判据：目标在不在、活不活（PLAN §5.1）。忙不忙不是判据 —— 活着就收下入队，
- * 忙 / 闲 / 暂停一律收（暂停只收不取），什么时候取走是它自己的事，与投递方无关。
+ * 闲 / 忙一律收（输出闸关着也只收不取），什么时候取走是它自己的事，与投递方无关。
  * 所以这里没有「开一次」「排进哪一次」这种说法：进了队列就是进了队列。
  *
  * 用户输入用 core 的内容形状（`MessageInput`），图片的传输路径由宿主定（F-H7）。
@@ -524,7 +526,7 @@ export interface ConversationAbortResult {
 }
 
 /**
- * `conversation.pause` 入参：暂停这段对话（PRD 4.4：「暂停」是第三格）。
+ * `conversation.pause` 入参：暂停这段对话 —— **关输出闸**（PRD 4.4）。
  *
  * 暂停是**输出闸**：手上这批算已经开始，让它跑完；从下一批起不再取（收话不动）。
  * 它**不掐在途** —— 要立刻停就用中断（`conversation.abort`：掐在途 + 关输出闸）。
@@ -536,7 +538,7 @@ export interface ConversationPauseParams {
 
 /** `conversation.pause` 出参：打完之后这段是不是暂停着 */
 export interface ConversationPauseResult {
-  /** `paused` = 打完之后这段现在是不是暂停着（死对话没有闸可翻，所以是 `false`） */
+  /** `paused` = 打完之后这段的输出闸是不是关着（死对话没有闸可翻，所以是 `false`） */
   paused: boolean;
 }
 
@@ -549,7 +551,7 @@ export interface ConversationResumeParams {
   conversationId: string;
 }
 
-/** `conversation.resume` 出参：打完之后这段是不是暂停着（同 `conversation.pause` 那一格） */
+/** `conversation.resume` 出参：打完之后这段的输出闸是不是关着（同 `conversation.pause` 那一格） */
 export interface ConversationResumeResult {
   paused: boolean;
 }
@@ -1957,14 +1959,14 @@ export interface MethodMap {
   /** D11 / F-F9：连带删名下对话，删前给出代价；目录本身宿主不碰。 */
   "workspace.remove": { params: WorkspaceRemoveParams; result: WorkspaceRemoveResult };
 
-  // ---- conversation.*：一段对话的身份、历史、四格与待办 ----
+  // ---- conversation.*：一段对话的身份、历史、四件事与待办 ----
   /** F-C5 / D13：默认创建时间倒序 + 手动置顶。 */
   "conversation.list": { params: ConversationListParams; result: ConversationListResult };
   /** F-A3 / F-C7 / L7：开新会话；项目与助手在创建时定死（模型与档位归会话）。 */
   "conversation.create": { params: ConversationCreateParams; result: ConversationCreateResult };
   /** F-A6：按 id 打开（「接着上次聊」的记住工作归客户端）。 */
   "conversation.get": { params: ConversationGetParams; result: ConversationGetResult };
-  /** L5 / F-I3：重连拉此刻的读数（四格 + 待办），可连消息一次拿齐。 */
+  /** L5 / F-I3：重连拉此刻的读数（四件事 + 待办），可连消息一次拿齐。 */
   "conversation.state": { params: ConversationStateParams; result: ConversationStateResult };
   /** D1 / F-C3：改名不改身份、不改排序。 */
   "conversation.rename": { params: ConversationRenameParams; result: ConversationRenameResult };
@@ -1974,9 +1976,9 @@ export interface MethodMap {
   "conversation.delete": { params: ConversationDeleteParams; result: ConversationDeleteResult };
   /** F-C2 / F-H7 / F-D10：投递一句（忙也收、id 投递时就定、问题挡着则拒）。 */
   "conversation.send": { params: ConversationSendParams; result: ConversationSendResult };
-  /** D14：中止是用户的显式动作（打击在途的网络请求与工具，并停在暂停那一格）。 */
+  /** D14：中止是用户的显式动作（掐掉在途的网络请求与工具，并把输出闸关上）。 */
   "conversation.abort": { params: ConversationAbortParams; result: ConversationAbortResult };
-  /** PRD 4.4：「暂停」只翻输出闸（手上这批跑完、从下一批起不取件），不接在途。 */
+  /** PRD 4.4：「暂停」只翻输出闸（手上这批跑完、从下一批起不取件），不掐在途。 */
   "conversation.pause": { params: ConversationPauseParams; result: ConversationPauseResult };
   /** PRD 4.4：「继续」只开闸（压着的待办按原顺序接着跑），不投任何东西。 */
   "conversation.resume": { params: ConversationResumeParams; result: ConversationResumeResult };

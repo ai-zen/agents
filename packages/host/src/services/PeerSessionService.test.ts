@@ -16,7 +16,7 @@ import type { Conversation, StoredMessage } from "../storage/types.js";
 import type {
   ConversationCreateParams,
   ConversationCreateResult,
-  ConversationStatus,
+  ConversationPresence,
   ConversationView,
 } from "../wire/index.js";
 import { HostError } from "../wire/errors.js";
@@ -117,10 +117,19 @@ class FakeCreator implements PeerSessionConversationCreator {
   }
 }
 
-/** 执行者：只记「谁收到了什么」，状态与内存消息表由用例摆 */
+/** 没有 agent 的那一份读数（没摆过的会话就是这个） */
+const NO_AGENT: ConversationPresence = {
+  status: "idle",
+  inputPaused: false,
+  outputPaused: false,
+  alive: false,
+};
+
+/** 执行者：只记「谁收到了什么」，四件事与内存消息表由用例摆 */
 class FakeRunner implements PeerSessionRunner {
   readonly deliveries: Array<{ conversationId: string; input: DeliveryInput }> = [];
-  readonly statuses = new Map<string, ConversationStatus>();
+  /** 每段会话此刻的四件事（没摆过就是「没有 agent」那一份） */
+  readonly presences = new Map<string, ConversationPresence>();
   /** 每段会话此刻在内存里的消息（`agent.messages`）；没摆过就是 `null`（= 没有 agent 对象） */
   readonly memory = new Map<string, AgentNS.Message[]>();
   /** 让 `deliver` 抛这个错（试「目标不存在」那条） */
@@ -135,8 +144,24 @@ class FakeRunner implements PeerSessionRunner {
     return { userMessageId: `m-${this.deliveries.length}` };
   }
 
-  state(conversationId: string): { status: ConversationStatus } {
-    return { status: this.statuses.get(conversationId) ?? "dead" };
+  state(conversationId: string): ConversationPresence {
+    return this.presences.get(conversationId) ?? NO_AGENT;
+  }
+
+  /** 摆一段会话此刻的四件事（只写要改的那几格：其余按「有 agent、两道闸都开着」） */
+  setPresence(
+    conversationId: string,
+    presence: Partial<ConversationPresence> = {},
+  ): ConversationPresence {
+    const next: ConversationPresence = {
+      status: "idle",
+      inputPaused: false,
+      outputPaused: false,
+      alive: true,
+      ...presence,
+    };
+    this.presences.set(conversationId, next);
+    return next;
   }
 
   messagesOf(conversationId: string): AgentNS.Message[] | null {
@@ -261,7 +286,7 @@ describe("create：建会话 → 落真行 → 把第一句交出去 → 立刻�
     const harness = makeHarness();
     for (let index = 1; index <= 4; index += 1) {
       await harness.service.create({ caller: harness.caller, prompt: `活 ${index}` });
-      harness.runner.statuses.set(`c-child-${index}`, "busy");
+      harness.runner.setPresence(`c-child-${index}`, { status: "working" });
     }
 
     const refused = await harness.service.create({ caller: harness.caller, prompt: "第五个" });
@@ -274,13 +299,13 @@ describe("create：建会话 → 落真行 → 把第一句交出去 → 立刻�
     const harness = makeHarness();
     for (let index = 1; index <= 2; index += 1) {
       await harness.service.create({ caller: harness.caller, prompt: `活 ${index}` });
-      harness.runner.statuses.set(`c-child-${index}`, "busy");
+      harness.runner.setPresence(`c-child-${index}`, { status: "working" });
     }
-    // 另外两段开过、但现在闲着 / 暂停着
+    // 另外两段开过、但现在手上没活（一段闲着、一段输出闸关着）
     await harness.service.create({ caller: harness.caller, prompt: "闲的" });
     await harness.service.create({ caller: harness.caller, prompt: "停的" });
-    harness.runner.statuses.set("c-child-3", "idle");
-    harness.runner.statuses.set("c-child-4", "paused");
+    harness.runner.setPresence("c-child-3");
+    harness.runner.setPresence("c-child-4", { outputPaused: true });
 
     const created = await harness.service.create({ caller: harness.caller, prompt: "第三个忙的" });
 
@@ -314,7 +339,7 @@ describe("create：建会话 → 落真行 → 把第一句交出去 → 立刻�
 // 问状态：现读
 // ---------------------------------------------------------------------------
 
-describe("status：那一格现读，名字用进程内那条（没有就退回会话行）", () => {
+describe("status：四件事现读、投影成 SDK 那一格，名字用进程内那条（没有就退回会话行）", () => {
   it("会话行里没有它 → `found: false` + `status: null`（重启后 / 没见过的 id 都走这条）", async () => {
     const harness = makeHarness();
     await expect(
@@ -333,22 +358,33 @@ describe("status：那一格现读，名字用进程内那条（没有就退回�
     ).resolves.toEqual({ found: false, status: null });
   });
 
-  // 四格逐格同名：宿主说 `busy` / `idle` / `paused` / `dead`，SDK 报的就是这四个。
+  // 宿主这一侧报四件事，SDK 那个工具还只收一格四词：这里逐一验投影（四件事 → 那一格）。
   // 「找不到这一段」不是第五格（它是判别式的另一支：`found: false` + `status: null`），
   // 所以不在这一张表里。
-  for (const status of ["busy", "idle", "paused", "dead"] as const) {
-    it(`现读是 ${status} → 报 ${status}（逐格同名，不翻译）`, async () => {
+  const projections = [
+    { label: "手上有活 → busy", presence: { status: "working" as const }, word: "busy" as const },
+    { label: "活着且手上没活 → idle", presence: {}, word: "idle" as const },
+    { label: "输出闸关着 → paused", presence: { outputPaused: true }, word: "paused" as const },
+    { label: "没有 agent 了 → dead", presence: { alive: false }, word: "dead" as const },
+  ];
+  for (const projection of projections) {
+    it(`${projection.label}`, async () => {
       const harness = makeHarness();
       const created = await harness.service.create({ caller: harness.caller, prompt: "干点活" });
       if (!created.ok) throw new Error("没建成");
-      harness.runner.statuses.set(created.sessionId, status);
+      harness.runner.setPresence(created.sessionId, projection.presence);
 
       const result = await harness.service.status({
         caller: harness.caller,
         sessionId: created.sessionId,
       });
 
-      expect(result).toEqual({ found: true, status, label: created.label, lastMessage: null });
+      expect(result).toEqual({
+        found: true,
+        status: projection.word,
+        label: created.label,
+        lastMessage: null,
+      });
     });
   }
 
@@ -443,7 +479,7 @@ describe("status：那一格现读，名字用进程内那条（没有就退回�
     }
   });
 
-  it("返回里只有四格：没有 `startedAt`、没有消息数组 / 条数 / 历史", async () => {
+  it("返回里只有那几格：没有 `startedAt`、没有消息数组 / 条数 / 历史", async () => {
     const harness = makeHarness();
     const created = await harness.service.create({ caller: harness.caller, prompt: "干点活" });
     if (!created.ok) throw new Error("没建成");
@@ -475,7 +511,7 @@ describe("send：直接把这一句交出去，不看关系", () => {
   it("投给一段没有血缘的会话也照收（只投，不判「它跟我什么关系」）", async () => {
     const harness = makeHarness();
     harness.seed("c-stranger");
-    harness.runner.statuses.set("c-stranger", "idle");
+    harness.runner.setPresence("c-stranger");
 
     const result = await harness.service.send({
       caller: harness.caller,
@@ -513,11 +549,16 @@ describe("send：直接把这一句交出去，不看关系", () => {
   });
 
   // 回执不看那边忙不忙：投递那一刻能定下的只有「收下了」，状态是对未来的断言
-  for (const status of ["busy", "idle", "paused"] as const) {
-    it(`回执只有「收下了」：那边是 ${status} 也不带状态`, async () => {
+  const presences = [
+    { label: "手上有活", presence: { status: "working" as const } },
+    { label: "手上没活", presence: {} },
+    { label: "输出闸关着", presence: { outputPaused: true } },
+  ];
+  for (const variant of presences) {
+    it(`回执只有「收下了」：那边${variant.label}也不带状态`, async () => {
       const harness = makeHarness();
       harness.seed("c-stranger");
-      harness.runner.statuses.set("c-stranger", status);
+      harness.runner.setPresence("c-stranger", variant.presence);
 
       const result = await harness.service.send({
         caller: harness.caller,

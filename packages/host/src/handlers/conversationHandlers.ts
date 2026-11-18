@@ -3,12 +3,12 @@
  * 这几个动作。
  *
  * 这里只做「参数 → 交给服务或运行时 → 把结果翻译成契约形状」。业务判断不在这里：
- * 会话行归 `ConversationService`，投递 / 中断 / 四格归 `ChatRunner`，素材选路归
+ * 会话行归 `ConversationService`，投递 / 中断 / 四件事归 `ChatRunner`，素材选路归
  * `AssetService`。本文件唯一多做的一步是**把素材准备摆在投递之前**（见 {@link sendTurn}）：
  * 那是「这一次发送」的事，只有接线层同时看得见素材服务、会话行（要助手与模型）与执行者。
  *
  * 三件以前挂在这里、现在没有的事：
- *   - **没有运行状态那本账**：`conversation.state` 给的是四格 + 待办（`ChatRunner.state`
+ *   - **没有运行状态那本账**：`conversation.state` 给的是四件事 + 待办（`ChatRunner.state`
  *     现读），用量与更细的阶段由客户端按到达的事件自己算（PRD 硬规矩 7）；
  *   - **没有排队分支**：投递只有一条路（`ChatRunner.deliver`），它自己判「对话在不在、agent
  *     活不活」，忙不忙不是拒绝的理由；
@@ -227,7 +227,7 @@ async function abort(
  * `conversation.pause`：暂停这段对话 —— **只翻输出闸，不接在途**（PRD 4.4）。
  *
  * 手上那批算已经开始，让它跑完；从下一批起不再取。要立刻停就用 `conversation.abort`。
- * 回的是**打完之后这段是不是暂停着**（现读那一格，不是每次变量）：没有 agent（死的）回 `false`
+ * 回的是**打完之后这道输出闸是不是关着**（现读，不是每次变量）：没有 agent（死的）回 `false`
  * —— 没有闸可翻，也不是错误；交接期间直接拒（`busy` / `handoff_in_progress`），因为那期间
  * 闸归交接收口管。
  */
@@ -236,20 +236,20 @@ async function pause(
   conversationId: string,
 ): Promise<ConversationPauseResult> {
   deps.runner.pause(conversationId);
-  return { paused: deps.runner.state(conversationId).status === "paused" };
+  return { paused: deps.runner.state(conversationId).outputPaused };
 }
 
 /**
  * `conversation.resume`：继续 —— **只开闸，不投任何东西**（PRD 4.4）。
  *
- * 压着的待办按原顺序接着跑。回的那一格与 {@link pause} 同一口径（打完之后是不是暂停着）。
+ * 压着的待办按原顺序接着跑。回的那一格与 {@link pause} 同一口径（打完之后这道输出闸是不是关着）。
  */
 async function resume(
   deps: ConversationHandlerDeps,
   conversationId: string,
 ): Promise<ConversationResumeResult> {
   deps.runner.resume(conversationId);
-  return { paused: deps.runner.state(conversationId).status === "paused" };
+  return { paused: deps.runner.state(conversationId).outputPaused };
 }
 
 /**
@@ -259,7 +259,7 @@ async function resume(
  * 只在一处定义）—— 所以这里不再手工摆一遍字段，只在读之前先问一次服务层，让「这段对话没了」
  * 与「这段对话闲着」是两种答复。
  *
- * 四格 / 待办 / 子 agent 名册 / 交接态都是现读，不落库、不是会话字段（口径见
+ * 四件事 / 待办 / 子 agent 名册 / 交接态都是现读，不落库、不是会话字段（口径见
  * `ConversationState` 自己的注释）。`conversation.list` 不带它们：侧栏不需要为每段对话去问
  * 一次驱动者。
  *

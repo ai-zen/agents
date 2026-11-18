@@ -18,15 +18,15 @@ import { MessageRepository } from "../storage/MessageRepository.js";
 import { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
 import { migrate } from "../storage/migrations.js";
 import { HostError } from "../wire/errors.js";
-import type { ConversationStatus } from "../wire/index.js";
+import type { ConversationPresence } from "../wire/index.js";
 import type { ConversationRuntimePort } from "./ConversationService.js";
 import { WorkspaceService } from "./WorkspaceService.js";
 
 /** 只记「被通知忘了哪些对话」的假运行时：项目删除要连带通知它 */
 class FakeRuntime implements ConversationRuntimePort {
   readonly forgotten: string[] = [];
-  status(): ConversationStatus {
-    return "dead";
+  presence(): ConversationPresence {
+    return { status: "idle", inputPaused: false, outputPaused: false, alive: false };
   }
   inboxPending(): number {
     return 0;

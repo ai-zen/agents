@@ -62,12 +62,7 @@
 
 import type { Scope } from "@ai-zen/agents-sdk";
 
-import type {
-  AgentBuildContext,
-  AgentFactory,
-  AgentStatusValue,
-  ChatAgent,
-} from "./ChatRunner.js";
+import type { AgentBuildContext, AgentFactory, ChatAgent } from "./ChatRunner.js";
 
 /**
  * 造一个 agent 所需的一切 —— 就是装配事实减掉 `scope`。

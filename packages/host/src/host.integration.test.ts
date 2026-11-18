@@ -489,7 +489,7 @@ describe("端到端集成：真进程 + 真连接", () => {
     const conversationsAfter = (await callThrough(back, "conversation.list", { workspaceId: workspace.id })) as ConversationListResult;
     expect(conversationsAfter.conversations.map((item) => item.id)).toEqual([conversationId]);
     // F-I3 的那两格：刚重启的宿主上这段对话没有 agent、队里也空着（现读的结果，不是落库的字段）
-    expect(conversationsAfter.conversations[0]).toMatchObject({ status: "dead", inboxPending: 0 });
+    expect(conversationsAfter.conversations[0]).toMatchObject({ alive: false, inboxPending: 0 });
 
     // 题不落库：重启之后这一段上依然一道题都没有（PRD 4.10 的「题的生命只有这一段对话活着的时间」）
     const questionsAfter = (await callThrough(back, "question.list", { conversationId })) as QuestionListResult;

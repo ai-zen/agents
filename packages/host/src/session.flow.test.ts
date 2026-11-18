@@ -7,7 +7,7 @@
  * 七步（与交付报告一一对应）：
  *   1. 本地凭证从 `<数据根>/run/token` 拿到 → `hello` 成功；不带凭证 / 凭证不对被拒；
  *   2. `workspace.create` → `conversation.create`；
- *   3. `conversation.send` 一句：收 `message.delta` 与四格（忙 → 闲）；
+ *   3. `conversation.send` 一句：收 `message.delta` 与忙闲（忙 → 闲）；
  *   4. `message.list` 拉回这段对话的消息（用户 + 助手 + 工具结果）；
  *   5. `conversation.state` 返回读数（闲着、队里空着）；
  *   6. 客户端断开 → 宿主**不**收尾（关宿主是显式动作，PRD 4.12）；再连回来消息还在；
@@ -185,10 +185,10 @@ async function waitFor(condition: () => boolean, timeoutMs = 4000): Promise<void
 }
 
 /**
- * 读到这段对话重新闲下来为止，顺手把增量与四格收集起来。
+ * 读到这段对话重新闲下来为止，顺手把增量与忙闲收集起来。
  *
  * 投递之后只剩「消息自己的事件」（`message.added` / `message.delta` / `message.changed`）与
- * 「四格」（`state`）两类推送：前者是过程，后者说明它是不是还在干。读到 `state: idle`
+ * 「忙闲」（`state`）两类推送：前者是过程，后者说明它是不是还在干。读到 `status: idle`
  * 就算这一段的事说完了。
  */
 async function collectRun(timeoutMs = 5000): Promise<{
@@ -287,7 +287,7 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
     expect(acceptedResult.userMessageId.length).toBeGreaterThan(0);
 
     const run = await collectRun();
-    // 四格：这一段结束时报「闲」（更细的阶段由客户端按消息与增量自己推，宿主不报）
+    // 忙闲：这一段结束时报「闲」（更细的阶段由客户端按消息与增量自己推，宿主不报）
     expect(run.statuses).toContain("idle");
     // 增量都挂在同一条助手消息上
     expect(run.deltas.length).toBeGreaterThan(0);
@@ -329,20 +329,27 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
       expect(message.status).toBe(AgentNSValue.MessageStatus.Completed);
     }
 
-    // ---- 步骤 5：读数（四格 + 待办 + 子 agent 名册 + 交接态 + 时刻，没有用量也没有阶段） ----
+    // ---- 步骤 5：读数（四件事 + 待办 + 子 agent 名册 + 交接态 + 时刻，没有用量也没有阶段） ----
     client.request("conversation.state", { conversationId });
     const stateFrame = await nextResponse();
     if (!isSuccess(stateFrame)) throw new Error(`读数没拿到：${JSON.stringify(stateFrame)}`);
     const snapshot = (stateFrame.result as ConversationStateResult).state;
     expect(Object.keys(snapshot).sort()).toEqual([
+      "alive",
       "at",
       "conversationId",
       "handoff",
       "inbox",
+      "inputPaused",
+      "outputPaused",
       "status",
       "subAgents",
     ]);
+    // 四件事各占一格：这一段还在（有 agent）、手上没活、两道闸都开着
+    expect(snapshot.alive).toBe(true);
     expect(snapshot.status).toBe("idle");
+    expect(snapshot.inputPaused).toBe(false);
+    expect(snapshot.outputPaused).toBe(false);
     expect(snapshot.inbox).toEqual([]);
     // 这一段没派过子 agent、也不在交接态：两格都是现读，没有就是空的
     expect(snapshot.subAgents).toEqual([]);

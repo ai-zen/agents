@@ -835,7 +835,8 @@ function conversationKeyOfParams(params: unknown): string | null {
 /**
  * 事件载荷里的对话 id。
  *
- * 九个事件里七个直接在顶层带 `conversationId`；通知与问题是嵌套的，而且那个字段可以是
+ * 多数事件直接在顶层带 `conversationId`（忙闲、两道闸、出错、结构变化、三条消息事件）；通知与
+ * 问题是嵌套的，而且那个字段可以是
  * `null`（全局的：不受任何对话的缓冲影响）。这一处让 `push` 的调用方不必自己传 key。
  */
 function conversationKeyOf<E extends EventName>(event: E, payload: EventMap[E]): string | null {
@@ -849,6 +850,11 @@ function conversationKeyOf<E extends EventName>(event: E, payload: EventMap[E]):
     case "message.changed":
     case "message.removed":
     case "state":
+    // 两道闸那四条也带会话 id：它们同样要按「这一段有没有请求在飞」压住（R47）
+    case "output:paused":
+    case "output:resumed":
+    case "input:paused":
+    case "input:resumed":
     case "error":
     case "conversation.changed":
       return nonEmpty((payload as EventMap["state"]).conversationId);

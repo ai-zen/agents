@@ -66,7 +66,7 @@ import type {
   ConversationSetThinkingResult,
   ConversationSetThresholdsParams,
   ConversationSetThresholdsResult,
-  ConversationStatus,
+  ConversationPresence,
   ConversationSummary,
   ConversationView,
   MessageInput,
@@ -97,7 +97,7 @@ export interface ConversationOriginInput {
  * 运行时注入给对话服务的窄接口。
  *
  * 只有运行时才知道的几件事：
- *   - 这段对话此刻落在哪一格（四格现读，PRD 4.4：死 / 忙 / 闲 / 暂停）；
+ *   - 这段对话此刻那四件事（现读，PRD 4.4：忙闲 / 输入闸 / 输出闸 / 死活）；
  *   - 队里还压着几条（侧栏那一格现读的 `inboxPending`）；
  *   - 对话（或它的项目）被删掉之后，把这段对话的现场丢掉（`ChatRunner.forget`）；
  *   - 换模型 / 换思考档位这两手的两件事：它**手上有没有活**（`agentState`），以及改完之后让那个
@@ -109,8 +109,11 @@ export interface ConversationOriginInput {
  * 有一份先漂（D28：agent 用完即弃、对话不驻留）。
  */
 export interface ConversationRuntimePort {
-  /** 这段对话此刻那一格（`ChatRunner.state` 现读，不落库、不推算） */
-  status(conversationId: string): ConversationStatus;
+  /**
+   * 这段对话此刻的**四件事**（`ChatRunner.state` 现读，不落库、不推算）：忙闲 / 输入闸 / 输出闸 /
+   * 死活。侧栏那一段与 `conversation.state` 读的是同一份事实，所以这里给的就是那四件事。
+   */
+  presence(conversationId: string): ConversationPresence;
   /** 队里还压着几条没落成消息的条目（侧栏摘要的那一格） */
   inboxPending(conversationId: string): number;
   /** 对话（或它的项目）被删掉之后，丢掉这段对话的现场（摘桥 + agent 硬着陆） */
@@ -693,7 +696,7 @@ export class ConversationService {
   async revert(params: ConversationRevertParams): Promise<ConversationRevertResult> {
     const row = await this.requireConversation(params.conversationId);
     const anchorId = requireId(params.beforeMessageId, "beforeMessageId");
-    if (this.runtime.status(row.id) === "busy") {
+    if (this.runtime.presence(row.id).status === "working") {
       throw new HostError("busy", { detail: { conversationId: row.id, action: "revert" } });
     }
 
@@ -952,8 +955,8 @@ export class ConversationService {
       // 数的是同一批行（两边都不筛别的）—— 同一段对话不该有两个数。
       messageCount: stored.length,
       lastMessageAt: stored.length === 0 ? null : iso(latestCreatedAt(stored)),
-      // 侧栏那个圆点与「压着几条」都是**现读**：这一格不在库里，不是会话字段
-      status: this.runtime.status(row.id),
+      // 四件事与「压着几条」都是**现读**：这几格不在库里，不是会话字段
+      ...this.runtime.presence(row.id),
       inboxPending: this.runtime.inboxPending(row.id),
       hasPendingQuestion: pendingCount > 0,
       // 压缩那两格：成对出现，没压过就整对省略（空 = 没压过，不是「不知道」）
@@ -1093,7 +1096,7 @@ export class ConversationService {
    *
    * 它**不是交接准入** —— 交接那一条是「能不能立刻接手一批」的四条判据（`ChatRunner.canHandoffNow`，
    * 含输出闸与交接态）。这一手只问一件事：「手上那批活」在不在。所以：
-   *   - `isOutputPaused` 挡着（对外报「暂停」）也放行 —— 闸管的是「从下一批起还取不取」，不是「手上有没有活」；
+   *   - `isOutputPaused` 挡着（输出闸关着）也放行 —— 闸管的是「从下一批起还取不取」，不是「手上有没有活」；
    *   - 没有 agent（死的）也放行 —— 没有驱动者，就没有「手上那一批活」可打岔；
    *   - 交接态也不在这里判：那时没有一个「手上那批活」要等，而谁能不能动这一段由交接自己那一处说了算。
    *

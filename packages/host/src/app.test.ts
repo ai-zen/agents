@@ -248,8 +248,13 @@ describe("HostApp 的组装", () => {
     await expect(app.db.all("SELECT 1 AS one")).resolves.toBeDefined();
     // 运行时
     expect(app.scopeRegistry.workspaceIds().length).toBe(0);
-    // 服务层要的运行时事实（模型与档位在会话行上，不在这里）
-    expect(app.conversationRuntime.status("没有这段对话")).toBe("dead");
+    // 服务层要的运行时事实（模型与档位在会话行上，不在这里）：没有 agent 的那一份读数
+    expect(app.conversationRuntime.presence("没有这段对话")).toMatchObject({
+      status: "idle",
+      inputPaused: false,
+      outputPaused: false,
+      alive: false,
+    });
     expect(app.conversationRuntime.inboxPending("没有这段对话")).toBe(0);
     expect(typeof app.conversationRuntime.forget).toBe("function");
     // 服务
@@ -605,8 +610,8 @@ describe("删除路径", () => {
     expect(await app.assetService.get(ref.assetId)).toBeUndefined();
     expect(await app.assets.countReferences(ref.assetId)).toBe(0);
     expect(assetMessageId.length).toBeGreaterThan(0);
-    // 运行时那边这段对话的现场被丢掉了（现在是死格）
-    expect(app.chatRunner.state(conversation.id).status).toBe("dead");
+    // 运行时那边这段对话的现场被丢掉了（现在没有 agent 了）
+    expect(app.chatRunner.state(conversation.id).alive).toBe(false);
   });
 
   it("同一张图贴到两个对话：磁盘一份、素材一行、关系两行；删掉一个不算完，删掉最后一个才清字节", async () => {
@@ -1122,7 +1127,7 @@ describe("对话的三个钩子", () => {
     // 读数里没有问题这一格（问题归它自己的通道：`question.list`）；这一段此刻也没有 agent
     const snapshot = await callMethod(app, "conversation.state", { conversationId: conversation.id });
     expect("questions" in snapshot.state).toBe(false);
-    expect(snapshot.state.status).toBe("dead");
+    expect(snapshot.state.alive).toBe(false);
   });
 
   it("临时对话：跑完把消息交回来，库里一条都没有，也不推流式事件（R1 / R49）", async () => {

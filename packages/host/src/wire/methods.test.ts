@@ -192,7 +192,7 @@ describe("PRD §4 的落点能力都有方法承接", () => {
       "F-C7": ["conversation.create"],
       "F-C8": ["conversation.revert"],
       "F-C10": ["conversation.delete"],
-      "F-D1": ["conversation.state"], // 重连先拉读数（四格 + 待办）；阈值由客户端按消息上的 usage 算
+      "F-D1": ["conversation.state"], // 重连先拉读数（四件事 + 待办）；阈值由客户端按消息上的 usage 算
       "F-D2": ["question.list", "question.answer"],
       "F-D3": ["handoff.start"],
       "F-D4": ["handoff.start"],

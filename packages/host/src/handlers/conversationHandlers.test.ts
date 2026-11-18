@@ -1,5 +1,5 @@
 /**
- * `conversation.*` 的验收：投递、素材挂接、按连接语言重渲染、中止、四格与待办、删除时的现场丢弃。
+ * `conversation.*` 的验收：投递、素材挂接、按连接语言重渲染、中止、四件事与待办、删除时的现场丢弃。
  *
  * 「真正属于 core 的那部分」在用例里照原样跑（`FakeAgent` 走同一个 `applyChunk`），只有
  * 「流从哪来」换成了脚本 —— 所以这里验的是接线，不是模型。
@@ -153,7 +153,7 @@ async function makeHarness(
 /**
  * 建一段对话并让它落库（R56：`conversation.create` 只发 id，首次 `send` 才写 `conversations` 行）。
  *
- * 这里的用例要看的是别的东西（列表、四格、删除），所以直接把草稿落成真行。
+ * 这里的用例要看的是别的东西（列表、四件事、删除），所以直接把草稿落成真行。
  */
 async function seedConversation(
   app: HostApp,
@@ -450,7 +450,7 @@ describe("conversation.abort", () => {
     expect(result.signalled).toBe(false);
   });
 
-  it("在干着活时打到了 agent 上，并且落在「暂停」格（中断不是杀死）", async () => {
+  it("在干着活时打到了 agent 上，并把输出闸关上（中断不是杀死）", async () => {
     const gate: Deferred<void> = deferred();
     const agent = new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢慢说" }] }]);
     const { app, conversationId } = await makeHarness({ createAgent: async () => agent });
@@ -463,8 +463,9 @@ describe("conversation.abort", () => {
 
     expect(aborted.signalled).toBe(true);
     expect(agent.abortCalls).toBe(1);
-    // 掐完还在「暂停」格：能继续，不是死
-    expect(app.chatRunner.state(conversationId).status).toBe("paused");
+    // 掐完输出闸是关着的（能继续），而且它还活着 —— 中断不是杀死
+    expect(app.chatRunner.state(conversationId).outputPaused).toBe(true);
+    expect(app.chatRunner.state(conversationId).alive).toBe(true);
 
     gate.resolve();
     await wait(20);
@@ -472,7 +473,7 @@ describe("conversation.abort", () => {
 });
 
 describe("conversation.pause / conversation.resume（只翻输出闸）", () => {
-  it("暂停之后读数报 paused，继续之后报 idle；两份回执都是「打完之后还暂停着吗」", async () => {
+  it("暂停之后输出闸关着、继续之后开着；两份回执都是「打完之后还暂停着吗」", async () => {
     const { app, conversationId } = await makeHarness();
     await callMethod(app, "conversation.send", { conversationId, input: { content: "说一句" } });
     await idle(app, conversationId);
@@ -482,13 +483,16 @@ describe("conversation.pause / conversation.resume（只翻输出闸）", () => 
     });
     expect(Object.keys(paused)).toEqual(["paused"]);
     expect(paused.paused).toBe(true);
-    expect(app.chatRunner.state(conversationId).status).toBe("paused");
+    expect(app.chatRunner.state(conversationId).outputPaused).toBe(true);
+    // 关的是输出闸，不是别的：忙闲与死活一格都没动
+    expect(app.chatRunner.state(conversationId).status).toBe("idle");
+    expect(app.chatRunner.state(conversationId).alive).toBe(true);
 
     const resumed: ConversationResumeResult = await callMethod(app, "conversation.resume", {
       conversationId,
     });
     expect(resumed).toEqual({ paused: false });
-    expect(app.chatRunner.state(conversationId).status).toBe("idle");
+    expect(app.chatRunner.state(conversationId).outputPaused).toBe(false);
   });
 
   it("没有 agent（死的）→ `{ paused: false }`，不是错误", async () => {
@@ -571,30 +575,36 @@ describe("conversation.delete", () => {
 
     const removed = await callMethod(app, "conversation.delete", { conversationId });
     expect(removed.removed).toBe(true);
-    // 现场没了：这段对话现在是死格
-    expect(app.chatRunner.state(conversationId).status).toBe("dead");
+    // 现场没了：这一段现在没有 agent 了
+    expect(app.chatRunner.state(conversationId).alive).toBe(false);
     // 素材行随对话一起没了
     expect(await app.assetService.get(assetId)).toBeUndefined();
   });
 });
 
-describe("conversation.state：四格 + 待办 + 名册 + 交接态", () => {
-  it("形状就是那六样：会话 id、那一格、队里压着什么、子 agent 名册、交接态、读数的时刻", async () => {
+describe("conversation.state：四件事 + 待办 + 名册 + 交接态", () => {
+  it("形状就是那九样：会话 id、四件事各一格、队里压着什么、子 agent 名册、交接态、读数的时刻", async () => {
     const { app, conversationId } = await makeHarness();
 
     const { state } = await callMethod(app, "conversation.state", { conversationId });
 
     expect(Object.keys(state).sort()).toEqual([
+      "alive",
       "at",
       "conversationId",
       "handoff",
       "inbox",
+      "inputPaused",
+      "outputPaused",
       "status",
       "subAgents",
     ]);
     expect(state.conversationId).toBe(conversationId);
-    // 一次都没发过话：没有 agent 对象，也没有排着的投递 → 死
-    expect(state.status).toBe("dead");
+    // 一次都没发过话：没有 agent 对象（死活那一格是 false），两道闸也就没关着
+    expect(state.alive).toBe(false);
+    expect(state.inputPaused).toBe(false);
+    expect(state.outputPaused).toBe(false);
+    expect(state.status).toBe("idle");
     expect(state.inbox).toEqual([]);
     // 死了就没有名册（子 agent 的话只在它自己那个对象里），也没在交接
     expect(state.subAgents).toEqual([]);
@@ -602,7 +612,7 @@ describe("conversation.state：四格 + 待办 + 名册 + 交接态", () => {
     expect(Number.isNaN(Date.parse(state.at))).toBe(false);
   });
 
-  it("发出去之后报忙，闲下来之后报闲", async () => {
+  it("发出去之后报忙，闲下来之后报闲（忙闲只有这两个值）", async () => {
     const gate: Deferred<void> = deferred();
     const { app, conversationId } = await makeHarness({
       createAgent: async () => new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢" }] }]),
@@ -610,7 +620,8 @@ describe("conversation.state：四格 + 待办 + 名册 + 交接态", () => {
 
     await callMethod(app, "conversation.send", { conversationId, input: { content: "慢慢说" } });
     const during = await callMethod(app, "conversation.state", { conversationId });
-    expect(during.state.status).toBe("busy");
+    expect(during.state.status).toBe("working");
+    expect(during.state.alive).toBe(true);
 
     gate.resolve();
     await idle(app, conversationId);
@@ -707,7 +718,7 @@ describe("conversation.setModel / setThinking：只允许空闲时改（改完�
     });
 
     await callMethod(app, "conversation.send", { conversationId, input: { content: "慢慢说" } });
-    expect(app.chatRunner.state(conversationId).status).toBe("busy");
+    expect(app.chatRunner.state(conversationId).status).toBe("working");
     const before = await app.conversations.get(conversationId);
     const driver = app.agentRegistry.get(conversationId);
     expect(driver).toBeDefined();
@@ -737,10 +748,11 @@ describe("conversation.setModel / setThinking：只允许空闲时改（改完�
     const { app, conversationId } = await makeHarness();
     await callMethod(app, "conversation.send", { conversationId, input: { content: "先说一句" } });
     await idle(app, conversationId);
-    // 中断之后不再收件（对外报「暂停」），但手上一批活已经完了 —— 这是空闲，不是忙
+    // 中断之后输出闸关着，但手上一批活已经完了 —— 这是「闲 + 闸关」，不是忙
     const aborted = await callMethod(app, "conversation.abort", { conversationId });
     expect(aborted.signalled).toBe(true);
-    expect(app.chatRunner.state(conversationId).status).toBe("paused");
+    expect(app.chatRunner.state(conversationId).outputPaused).toBe(true);
+    expect(app.chatRunner.state(conversationId).status).toBe("idle");
 
     const changed = await callMethod(app, "conversation.setModel", {
       conversationId,
@@ -762,7 +774,7 @@ describe("conversation.setModel / setThinking：只允许空闲时改（改完�
 
   it("从来没有 agent 的对话也能改（没有驱动者就没有手上那批活）", async () => {
     const { app, conversationId } = await makeHarness();
-    expect(app.chatRunner.state(conversationId).status).toBe("dead");
+    expect(app.chatRunner.state(conversationId).alive).toBe(false);
 
     const changed = await callMethod(app, "conversation.setModel", {
       conversationId,
@@ -777,7 +789,7 @@ describe("conversation.setModel / setThinking：只允许空闲时改（改完�
 });
 
 describe("conversation.list：侧栏那一格（F-I3）", () => {
-  it("忙 / 闲与压着几条都是现读的", async () => {
+  it("四件事与压着几条都是现读的", async () => {
     const gate: Deferred<void> = deferred();
     const { app, conversationId, workspaceId } = await makeHarness({
       createAgent: async () => new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢" }] }]),
@@ -788,7 +800,9 @@ describe("conversation.list：侧栏那一格（F-I3）", () => {
 
     const during = await callMethod(app, "conversation.list", { workspaceId });
     const entry = during.conversations.find((item) => item.id === conversationId);
-    expect(entry?.status).toBe("busy");
+    expect(entry?.status).toBe("working");
+    expect(entry?.alive).toBe(true);
+    expect(entry?.outputPaused).toBe(false);
     expect(entry?.inboxPending).toBe(1);
 
     gate.resolve();
@@ -797,6 +811,7 @@ describe("conversation.list：侧栏那一格（F-I3）", () => {
     const after = await callMethod(app, "conversation.list", { workspaceId });
     const settled = after.conversations.find((item) => item.id === conversationId);
     expect(settled?.status).toBe("idle");
+    expect(settled?.alive).toBe(true);
     expect(settled?.inboxPending).toBe(0);
   });
 });

@@ -21,8 +21,8 @@
  * | 口 | 干什么 | 不等什么 |
  * |---|---|---|
  * | {@link ChatRunner.deliver} | 把一条内容塞进某段对话的队列 | 不等它被处理（`await` 的边界就是「已入队」） |
- * | {@link ChatRunner.abort} | 掐掉活着的 agent 手上那一批（落在「暂停」格，不是杀死） | —— |
- * | {@link ChatRunner.state} | 现读四格 + 待办 | 不落库、不推算、不存镜像 |
+ * | {@link ChatRunner.abort} | 掐掉活着的 agent 手上那一批（并把输出闸关上，不是杀死） | —— |
+ * | {@link ChatRunner.state} | 现读四件事 + 待办 | 不落库、不推算、不存镜像 |
  *
  * 另有两个是**闸**的动作：{@link ChatRunner.pause}（只翻输出闸，不掐在途）与
  * {@link ChatRunner.resume}（只开闸，不投任何东西）。
@@ -32,15 +32,20 @@
  * 另外三件是**结构性**的，不属于「投递 / 中断 / 观测」那条路：`forget`（对话或项目被删）、
  * `killScope`（整个 Scope 被处置）、`reconcile`（装载即修复）。
  *
- * ## 状态只有四格，而且全是读出来的
+ * ## 状态是四件事，而且全是读出来的
  *
- * 四格（{@link ConversationStatus}）是现读合成出来的（{@link statusOfAgent}），不是 core 上的某一格；
- * 哪几样合成它、为什么「暂停」不是「忙」里的一格，只在那一处写一次。
+ * 四件事（{@link ConversationPresence}：忙闲 / 输入闸 / 输出闸 / 死活）各占一格，**不合成一格**
+ * （PRD 4.4）：
+ *
+ *   - 忙闲 = core 的 `agent.state` 原样（`working` / `idle`，只由循环的位置决定），走 `state` 事件；
+ *   - 两道闸 = `agent.isInputPaused` / `agent.isOutputPaused`，各有自己的开/关事件；
+ *   - 死活 = 这一段此刻有没有 agent 实例，走 `conversation.changed` 的 `agent_started` / `agent_gone`。
+ *
  * 宿主不维护「请求中 / 思考中 / 输出中」，不算用量、不算速率 —— 那些由客户端按到达的事件自己推
  * （PRD 硬规矩 7）。
  *
- * 装配窗口是唯一的例外：那一刻 agent 还没装好，但已经缓冲了 N 条投递 —— 它们确实排着，所以
- * 报 `busy`（不是 `dead`）。真的没有 agent、也没有缓冲，才是死。
+ * 装配窗口的读法：那一刻 agent 还没装好（`alive: false`），但已经缓冲了 N 条投递 —— 它们确实排着，
+ * 所以在 `inbox` 里看得见。
  *
  * ## 常驻桥（{@link ConversationBridge}）：生与灭
  *
@@ -52,9 +57,9 @@
  *   换了人）创建，就地（同步）把监听订在 agent 上 —— agent 一被叫醒就立刻广播消息，迟一拍
  *   就漏。
  * - **灭**：agent 退役（`AgentRegistry` 的 `retired`）/ 被 kill / `forget` / `killScope` 时，
- *   先 `flushWrites()` 再摘监听、丢引用，**并且补报一条 `state: dead`**。灭 = 这段对话没有
+ *   先 `flushWrites()` 再摘监听、丢引用，**并且补报一条 `agent_gone`**。灭 = 这段对话没有
  *   agent 了，客户端必须知道：`stopped` / `killed` 是 core 自己说的那两种，退役（`retired`
- *   的五种理由）也一样让 agent 从账上消失 —— 不补这一条，界面就一直停在上一格「闲」。
+ *   的五种理由）也一样让 agent 从账上消失 —— 不补这一条，界面就一直以为它还在。
  *   同一次死亡只发一条。
  *
  * `bridges` 是**唯一**一张现场表：它记的恰好是「这段对话此刻有没有桥」，而桥在不在 = agent
@@ -130,8 +135,8 @@ import type { EventMap, EventName } from "../wire/events.js";
 import type {
   AttachmentOutcome,
   CompactionMode,
+  ConversationActivity,
   ConversationState,
-  ConversationStatus,
   HandoffRefusalReason,
   InboxItem,
   MessageInput,
@@ -211,39 +216,6 @@ export type AgentFactory = (context: AgentBuildContext) => Promise<ChatAgent>;
  * 给 `undefined` 就是「这段对话不装交接线插件」（装卸点会推一条警告，不静默）。
  */
 export type HandoffProvider = (context: AgentBuildContext) => HandoffService | undefined;
-
-/**
- * 活着的 agent 报给外面的那一格：忙 / 闲 / 暂停。
- *
- * 它**是合成值**，不是 core 上的某一格：core 只报 `working` / `idle`（取到一批就是 `working`、
- * 这批跑完且队列真空就是 `idle`），「收不收件」是**另一处开关**（`agent.isOutputPaused`）。
- * 两件事合起来才是外面看见的那一格 —— 不收件时一律报「暂停」，与手上有没有活无关。
- *
- * `ConversationStatus` 比它多一格「死」（= 连 agent 对象都没有）。
- */
-export type AgentStatusValue = "busy" | "idle" | "paused";
-
-/**
- * 两格 + 收不收件 → 对外报的那一格。**合成点只此一处**：别处不许再自己拼一份。
- *
- * 不收件时一律报「暂停」：core 的 `state` 说的是「它手上有没有活」，`isOutputPaused`
- * 管的是「从下一批起还收不收件」—— 两件事各有各的格，所以两者同时成立时（不收件中那批正在跑）
- * 也报得出来。
- */
-export function statusOfAgent(agent: ChatAgent): AgentStatusValue {
-  if (agent.isOutputPaused) return "paused";
-  return statusOfState(agent.state);
-}
-
-/**
- * core 那一格 → 对外那一格：只差一个名字（core 的 `working` 对外叫 `busy`）。
- *
- * 放在这里与 {@link statusOfAgent} 做伴的理由：名字的翻译也只许有一处，于是「`working` 到底是
- * 不是 `busy`」永远只有一个答案。contract（`ConversationStatus`）不改名，core 也不再叫 `busy`。
- */
-export function statusOfState(state: AgentNS.AgentState): AgentStatusValue {
-  return state === "working" ? "busy" : "idle";
-}
 
 /**
  * 「不能立刻接手交接」的四种缘由 —— **四个词，全仓唯一的一套拒因**（PLAN §5.3）。
@@ -369,7 +341,7 @@ export type SubAgentReadout = SubAgentFact;
  * 一段对话此刻的读数（{@link ChatRunner.state} 的返回）—— **就是 wire 的
  * {@link ConversationState}**：同一个形状只在契约里定义一次，这里直接用它，不再维护第二份。
  *
- * 四个字段全是**现读**：状态读 agent（四格见 {@link ConversationStatus}）、待办读队列、名册读
+ * 那几个字段全是**现读**：四件事读 agent（{@link ConversationPresence}）、待办读队列、名册读
  * core 的登记、交接读本文件那张标记表。没有一份是对别的什么东西的副本，所以也没有「什么时候
  * 刷新」这回事。`at` 是这份读数的时刻。
  */
@@ -386,7 +358,7 @@ export type ConversationReadout = ConversationState;
  *     个退役重建。对话还在，只是换了人 —— 题与待交接原样留着；
  *   - `forgotten`：对话被删（`forget`）。
  *
- * 报出去的是「为什么」，**不替调用方决定后果**：`state: dead` 在客户端看来都是「这段没有驱动
+ * 报出去的是「为什么」，**不替调用方决定后果**：`agent_gone` 在客户端看来都是「这段没有驱动
  * 者」，但「题还该不该留着」只有知道原因才判得对，所以原因必须跟着这一拍出门。
  */
 export type ConversationDeathKind = "terminated" | "retired" | "forgotten";
@@ -453,7 +425,7 @@ export interface ChatRunnerOptions {
    */
   onIdle?: (conversationId: string) => void;
   /**
-   * 一段对话**没有驱动者了**（报「死」那一拍，与 `state: dead` 同一次，不重报）。
+   * 一段对话**没有驱动者了**（报 `agent_gone` 那一拍，同一次死亡只报一条）。
    *
    * 四条灭点都会走到 `announceDead`：core 自己说的 `stopped` / `killed`、注册表的 `retired`
    * （配置变了 / 装配事实变了 / 对话被删 / 收尾）、投递撞上已关的门、以及 `forget`。把这四条收
@@ -830,8 +802,10 @@ class ConversationBridge {
 
   /** 桥已经被拆了：之后到达的事件一概不再处理（拆到一半还在飞的那些） */
   private closed = false;
-  /** 「死」这一格已经报过了（同一次死亡只发一条：`killed` 报过就不重报） */
+  /** 「没有 agent 了」这条已经报过了（同一次死亡只发一条：`killed` 报过就不重报） */
   private deadAnnounced = false;
+  /** 最近一次推出去的忙闲（`变了才发`：`onIdle` 那条路是「冲完写再看一眼」，可能一样） */
+  private lastActivity: AgentNS.AgentState | undefined;
   /**
    * 这条桥自己发现「我已经死了」（投递撞上已关门的 agent）时叫它：由持有者丢掉引用。
    *
@@ -957,11 +931,10 @@ class ConversationBridge {
    *   - `subAgentFinished` **不订**：结束只改 core 名册上的 `endedAt`，宿主这边没有任何要写、
    *     要推的东西（子 agent 最后那句话已经随着 `message.changed` / `delta` 走过了）。
    *   - `failed` / `denied`：失败与被拒；
-   *   - `state:working` / `state:idle`：core 的**两格**（循环的位置）；`output:paused` /
-   *     `output:resumed` 是**另一处开关**（从下一批起还收不收件）。两者在这里合成四格：
-   *     不收件时一律报「暂停」（{@link statusOfAgent}）。
-   *     「死」在桥灭的那一刻报：`stopped` / `killed` 是其中两种理由，退役 / 关门另两种理由由 `close` 补上；
-   *   - `stopped` / `killed`：agent 没了。
+   *   - `state:working` / `state:idle`：core 的忙闲（循环的位置）→ 推 `state`；
+   *     `output:paused` / `output:resumed` / `input:paused` / `input:resumed`：两道闸 → 各推
+   *     自己那一条（**四件事各走各的，谁也不合成谁**，PRD 4.4）；
+   *   - `stopped` / `killed`：agent 没了 → 桥灭时推一条 `agent_gone`（见 {@link announceDead}）。
    */
   private listen(): void {
     const agent = this.agent;
@@ -981,10 +954,14 @@ class ConversationBridge {
     );
     this.on(agent, "failed", (event) => this.onFailed(event.error, event.message));
     this.on(agent, "denied", (event) => this.onDenied(event));
-    this.on(agent, "state:working", () => this.emitState(statusOfAgent(agent)));
-    this.on(agent, "output:paused", () => this.emitState("paused"));
-    this.on(agent, "output:resumed", () => this.emitState(statusOfAgent(agent)));
+    // 忙闲：`working` 立刻报（它接着就要动手）；`idle` 走 `onIdle`（先把写库冲干净再报）
+    this.on(agent, "state:working", () => this.emitActivity(this.agent.state));
     this.on(agent, "state:idle", () => this.onIdle());
+    // 两道闸：core 只在真的翻了才发，所以这里不必去重
+    this.on(agent, "output:paused", () => this.emitPauseChange("output", true));
+    this.on(agent, "output:resumed", () => this.emitPauseChange("output", false));
+    this.on(agent, "input:paused", () => this.emitPauseChange("input", true));
+    this.on(agent, "input:resumed", () => this.emitPauseChange("input", false));
     this.on(agent, "stopped", () => this.onTerminated());
     this.on(agent, "killed", () => this.onTerminated());
   }
@@ -1265,7 +1242,7 @@ class ConversationBridge {
     return { ...message, id: this.subAgentIdOf(message) };
   }
 
-  // ---- 四格 ----
+  // ---- 四件事 ----
 
   /**
    * 变闲了（core 的 `state:idle`）：**全宿主唯一一处「到点了要考虑点什么」**。
@@ -1273,7 +1250,7 @@ class ConversationBridge {
    * 四步，顺序有理由：
    *   1. 把节流里挂着的那一笔写干净 —— 「它闲了」是一个读库的时点，读到落后一片的样子会奇怪；
    *   2. `agents.complete`：配置改过就换人（那件事的判据只在注册表里）；
-   *   3. 报「闲了」这一格；
+   *   3. 报忙闲（再读一次 `agent.state`：冲写那一下 await 回来了，它可能已经又忙起来了）；
    *   4. `onIdle`：读一次当下事实（派生会话？越软线？挂着题？），那件事在 `app.ts`。
    *
    * 这一跳**不是结算**：一毫秒后又来一条投递就又是忙。
@@ -1291,19 +1268,19 @@ class ConversationBridge {
       if (this.closed) return;
       this.options.agents.complete(this.conversationId);
       // 陈旧（`stale-on-idle`）就是在这一跳兑现的：登记被丢掉 → 桥跟着灭，那一刻已经报过
-      // 「死」了。再报一格「闲」会把客户端拉回那一格，反而让它一直停在那里。
+      // 「没有 agent 了」。再报一格忙闲会把客户端拉回「这一段还在」的错觉里。
       if (this.closed) return;
-      this.emitState(statusOfAgent(this.agent));
+      this.emitActivity(this.agent.state);
       this.options.onIdle?.(this.conversationId);
     })();
   }
 
   /**
-   * agent 自己说没了（core 的 `stopped` / `killed`）：桥自己灭，`close` 顺手报「死」。
+   * agent 自己说没了（core 的 `stopped` / `killed`）：桥自己灭，`close` 顺手报「没了」。
    *
    * 这两条是真死（`terminated`）：core 说没了就是没了，不会有驱动者接上来。
    *
-   * 不在这里直接 `emitState("dead")`：报「死」只有一个口（{@link announceDead}），否则
+   * 不在这里直接推 `agent_gone`：报「没有 agent 了」只有一个口（{@link announceDead}），否则
    * 「killed 报了、退役又报一遍」这种重发就没地方防。
    */
   private onTerminated(): void {
@@ -1312,10 +1289,13 @@ class ConversationBridge {
   }
 
   /**
-   * 报一格「死」并记下已经报过 —— **同一次死亡只发一条**。
+   * 报「这一段没有 agent 了」并记下已经报过 —— **同一次死亡只发一条**。
    *
    * 两条路会走到这里：core 说的那两种（`stopped` / `killed`），以及桥灭的其余理由（`retired`
    * 的五种、投递撞上已关的门、`forget`）。后几种是客户端看不见的，得由这里补上。
+   *
+   * 报的是**死活**这一件事（`conversation.changed` 的 `agent_gone`），不是忙闲：没有 agent 不等于
+   * 「手上没活」，两件事各有各的事件（PRD 4.4）。
    *
    * `kind` 原样交给调用方（{@link ChatRunnerOptions.onDead}）：本文件不管「题该不该跟着没」，
    * 但它把「为什么没有驱动者了」一并交出去 —— 退役那一条不是「这段没了」。
@@ -1323,17 +1303,60 @@ class ConversationBridge {
   private announceDead(kind: ConversationDeathKind): void {
     if (this.deadAnnounced) return;
     this.deadAnnounced = true;
-    this.emitState("dead");
-    // 与「报死」同一拍，不另开一条事件 —— 客户端看见 `state: dead` 就该知道这一段此刻没有
-    // 驱动者。`kind` 决定「跟着没的东西」是不是真的跟着没（PRD 4.10：退役不算没）。
+    this.emitLiveness(false);
+    // 与「报没了」同一拍：`kind` 决定「跟着没的东西」是不是真的跟着没（PRD 4.10：退役不算没）。
     this.options.onDead?.(this.conversationId, kind);
   }
 
-  /** 推一格（四格之一）。更细的阶段不在这里 —— 客户端按到达的事件自己推 */
-  private emitState(status: ConversationStatus): void {
+  /**
+   * 推一格忙闲（`state`）。**只报「手上有没有活」**，不掺闸、不掺死活。
+   *
+   * 值就是 `agent.state` 原样（`working` / `idle`）—— 宿主不给它换名字（`busy` 只留给拒绝原因码
+   * `HostError("busy")`）。更细的阶段不在这里：客户端按到达的事件自己推。
+   *
+   * `变了才发` 由 core 保证（`setState` 只在值变了才发事件），但这一条还要防「读当下的值」那一路
+   * （{@link onIdle} 冲完写再看一眼）：所以记着上一次报的那个值，一样就不发。
+   */
+  private emitActivity(status: AgentNS.AgentState): void {
+    if (this.lastActivity === status) return;
+    this.lastActivity = status;
     this.options.emit("state", {
       conversationId: this.conversationId,
       status,
+      at: this.nowIso(),
+    });
+  }
+
+  /**
+   * 推一道闸的动（`output:paused` / `output:resumed` / `input:paused` / `input:resumed`）：
+   * 载荷只带会话 id。
+   *
+   * 事件名自己就说清了「哪一道、开还是关」，所以载荷里不再带第二份答案；要完整读数就回宿主拉
+   * `conversation.state`。
+   */
+  private emitPauseChange(side: "input" | "output", paused: boolean): void {
+    const name = `${side}:${paused ? "paused" : "resumed"}` as const;
+    this.options.emit(name, { conversationId: this.conversationId, at: this.nowIso() });
+  }
+
+  /**
+   * 报「这一段有 agent 了」（`conversation.changed` 的 `agent_started`）。
+   *
+   * 由 {@link ChatRunner.bridgeFor} 在造出新桥那一拍叫：桥在不在 = agent 在不在，所以那一刻就是
+   * 「起来了」这一件事的落点。载荷里只有会话 id（`workspaceId` 给不出来就给 `null`：本方法是同步的，
+   * 而会话行是异步读的；客户端靠 `conversationId` 定位）。
+   */
+  announceStarted(): void {
+    if (this.closed) return;
+    this.emitLiveness(true);
+  }
+
+  /** 推一条死活（`agent_started` / `agent_gone`）：**这一件事不挤进 `state`** */
+  private emitLiveness(alive: boolean): void {
+    this.options.emit("conversation.changed", {
+      conversationId: this.conversationId,
+      workspaceId: null,
+      change: alive ? "agent_started" : "agent_gone",
       at: this.nowIso(),
     });
   }
@@ -1627,7 +1650,7 @@ export class ChatRunner {
    * 中断：打到**活着的** agent 上，返回打到没有。
    *
    * 它是「掐在途」，不是「杀死」：core 的 `abort()` = 掐掉在途请求与工具 + `pauseOutput()`
-   * （把不取件开关翻上，掐完不能再往下走）。于是中断完报出去就是「暂停」—— 还能继续，待办一条不丢
+   * （把输出闸关上，掐完不能再往下走）。于是中断完落在「闲 + 输出闸关」—— 还能继续，待办一条不丢
    * （PRD 4.4）。`abort` **必然**伴随不取件，反之不成立：`pauseOutput()` 只翻开关、不掐在途。
    *
    * 不收 `reason`：core 的 `abort()` 本来就不收原因（它只说「掐断」）。契约面那侧
@@ -1726,13 +1749,17 @@ export class ChatRunner {
   // ---- 现读 ----
 
   /**
-   * 现读：四格 + 待办 + 子 agent 名册 + 交接态。**不落库、不推算、不存镜像**。
+   * 现读：**四件事** + 待办 + 子 agent 名册 + 交接态。**不落库、不推算、不存镜像**。
    *
-   * - 没有 agent 对象、手上也没有缓冲的投递 = `dead`，待办报空；
-   * - 没有 agent 但**装配窗口里缓冲了几条** = `busy`：agent 还没装好，但那几条确实排着 ——
-   *   报 `dead` 等于跟客户端说「这些投递没有去处」，而它们马上就要被推进去；
-   * - 有就报两格 + 收不收件合成出来的那一格（不收件时一律报「暂停」，见 {@link statusOfAgent}）；
-   * - 待办现读 `agent.inboxPending`（顺序即取件顺序），再加上装配窗口里还没推进 core 的那几条。
+   * 四件事各占一格（{@link ConversationPresence}），一件也不合成另一件：
+   *
+   * - `alive`：这一段此刻有没有 agent 对象。没有就是 `false` —— 忙闲照样报（`idle`：没有人，
+   *   手上当然没有活），两道闸报「没关着」（`false`：没有对象就没有闸可关，与 `conversation.pause`
+   *   对死对话回 `{ paused: false }` 同一个口径）；
+   * - `status`：core 的 `agent.state` 原样（`working` / `idle`）；
+   * - `inputPaused` / `outputPaused`：`agent.isInputPaused` / `agent.isOutputPaused`；
+   * - 待办现读 `agent.inboxPending`（顺序即取件顺序），再加上装配窗口里还没推进 core 的那几条
+   *   —— 装配窗口那几条虽然还没有 agent 取（`alive: false`），但它们确实排着，所以在 `inbox` 里。
    *
    * 钥匙（没有正文的条目）不列进来：它不落地、没有来源，硬塞进一行只能给它编一个假 id。
    *
@@ -1751,13 +1778,20 @@ export class ChatRunner {
     );
 
     if (!agent) {
-      // 真的没有 agent、也没有缓冲，才是死。死了就没有名册：子 agent 的话只在它自己那个对象
-      // 里，agent 都没了，那些话也就一起没了（`CORE.md` §17）
-      if (buffered.length === 0) {
-        return { conversationId, status: "dead", inbox: [], subAgents: [], handoff: handoffReadout, at };
-      }
-      // 装配窗口：agent 还没装好，但这几条确实排着
-      return { conversationId, status: "busy", inbox: buffered, subAgents: [], handoff: handoffReadout, at };
+      // 没有 agent：死活那一格是 `false`，忙闲与两道闸按「没有对象」报（见方法注释）。
+      // 死了就没有名册：子 agent 的话只在它自己那个对象里，agent 都没了，那些话也就一起没了
+      // （`CORE.md` §17）
+      return {
+        conversationId,
+        status: "idle",
+        inputPaused: false,
+        outputPaused: false,
+        alive: false,
+        inbox: buffered,
+        subAgents: [],
+        handoff: handoffReadout,
+        at,
+      };
     }
 
     const bridge = this.bridges.get(conversationId);
@@ -1769,7 +1803,11 @@ export class ChatRunner {
 
     return {
       conversationId,
-      status: statusOfAgent(agent),
+      // 四件事各读各的：忙闲读 core 那一格、两道闸各读自己的开关、死活是「对象在不在」
+      status: agent.state,
+      inputPaused: agent.isInputPaused,
+      outputPaused: agent.isOutputPaused,
+      alive: true,
       inbox: [...buffered, ...pending],
       subAgents: agent.subAgents.map((entry) => ({
         toolCallId: entry.toolCallId,
@@ -1862,14 +1900,18 @@ export class ChatRunner {
    * 拿到这段对话的桥（没有就造一条，就地订上 agent 的事件）。
    *
    * 手里那条如果是**上一个** agent 的（装配事实变了被重建、配置改过被换掉），就地换一条：
-   * 旧的那条先灭（它订的是一个已经退役的 agent，再也不会有人往里推东西）。
+   * 旧的那条先灭（它订的是一个已经退役的 agent，再也不会有人往里推东西），新的那条接着报。
+   *
+   * 「有一段 agent 起来了」就是这一拍：造出一条新的桥，顺手推一条 `agent_started`（死活那一件
+   * 事，不走 `state`）。旧桥灭会先推 `agent_gone`，所以客户端看到的是「先没了、又有了」——
+   * 换人这一段确实是这样，不是在原地假装什么都没发生。
    */
   private bridgeFor(conversationId: string, agent: ChatAgent): ConversationBridge {
     const existing = this.bridges.get(conversationId);
     if (existing && existing.alive && existing.agent === agent) return existing;
     if (existing) {
       this.bridges.delete(conversationId);
-      // 旧的那条要灭：它订的是一个已经退役（或者是刚被顶掉的）agent，这一段也得报一格「死」。
+      // 旧的那条要灭：它订的是一个已经退役（或者是刚被顶掉的）agent，这一段也得报一条「没了」。
       // 这一路是「换人」：新装配的那个接着干，所以是 `retired`，不是真死。
       existing.close("retired");
     }
@@ -1883,6 +1925,8 @@ export class ChatRunner {
       () => this.handoffs.has(conversationId),
     );
     this.bridges.set(conversationId, bridge);
+    // 死活那一件事：这一段此刻有 agent 了（载荷里只有会话 id 与这一刻）
+    bridge.announceStarted();
     return bridge;
   }
 

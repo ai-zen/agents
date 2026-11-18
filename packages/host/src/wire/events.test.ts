@@ -16,13 +16,17 @@ const localized = (key: "question.handoff.prompt") =>
   ({ code: key, messageKey: key, params: {}, message: key }) as const;
 
 describe("事件表", () => {
-  it("就是 PLAN §6 的那九个事件", () => {
+  it("消息四件 + 忙闲一条 + 两道闸四条 + 出错 + 结构变化 + 通知 + 题：13 条", () => {
     expect([...EVENT_NAMES]).toEqual([
       "message.added",
       "message.delta",
       "message.changed",
       "message.removed",
       "state",
+      "output:paused",
+      "output:resumed",
+      "input:paused",
+      "input:resumed",
       "error",
       "conversation.changed",
       "notice",
@@ -102,14 +106,16 @@ describe("事件表", () => {
     expect(receiver.finish_reason).toBeUndefined();
   });
 
-  it("conversation.changed 覆盖结构变化的那几种", () => {
+  it("conversation.changed 覆盖结构变化的那几种（死活那一件也在这里）", () => {
     // 消息的增删改有自己的事件（带整条消息），所以这里没有「消息落库了」/「消息删了」两格，
-    // 也不带消息条数 —— 条数客户端自己数。
+    // 也不带消息条数 —— 条数客户端自己数。死活（有没有 agent 实例）也走这一条：它不是忙闲。
     const kinds: ConversationChangeKind[] = [
       "created",
       "renamed",
       "pinned",
       "settings_changed",
+      "agent_started",
+      "agent_gone",
       "handoff_started",
       "memory_replaced",
       "deleted",
@@ -125,13 +131,23 @@ describe("事件表", () => {
     }
   });
 
-  it("state 的载荷就是那一格本身（变了才发，不带别的）", () => {
-    const payload: EventPayload<"state"> = { conversationId: "c-1", status: "busy", at: NOW };
-    expect(payload.status).toBe("busy");
-    // 四格都装得下；死 = 宿主那边连 agent 对象都没有
-    for (const status of ["dead", "busy", "idle", "paused"] as const) {
+  it("state 只报忙闲（`working` / `idle`）：闸与死活不在这一条上", () => {
+    const payload: EventPayload<"state"> = { conversationId: "c-1", status: "working", at: NOW };
+    expect(payload.status).toBe("working");
+    for (const status of ["working", "idle"] as const) {
       const changed: EventPayload<"state"> = { ...payload, status };
       expect(changed.status).toBe(status);
+      // 载荷里只有「哪一段、手上有没有活、什么时候」：一道闸、一条死活都不许挤进来
+      expect(Object.keys(changed).sort()).toEqual(["at", "conversationId", "status"]);
+    }
+  });
+
+  it("两道闸各有自己的开与关：载荷只带会话 id（事件名已经说清哪一道、开还是关）", () => {
+    const names = ["output:paused", "output:resumed", "input:paused", "input:resumed"] as const;
+    for (const name of names) {
+      const payload: EventPayload<typeof name> = { conversationId: "c-1", at: NOW };
+      expect(Object.keys(payload).sort()).toEqual(["at", "conversationId"]);
+      expect(isEventName(name)).toBe(true);
     }
   });
 

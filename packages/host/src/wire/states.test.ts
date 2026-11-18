@@ -1,8 +1,8 @@
 import { AgentNS } from "@ai-zen/agents-core";
 import { describe, expect, it } from "vitest";
 
-import { statusOfState } from "../runtime/ChatRunner.js";
 import {
+  CONVERSATION_ACTIVITIES,
   MAX_ASSETS_PER_MESSAGE,
   MAX_ASSET_BYTES,
   NOTICE_LEVELS,
@@ -10,28 +10,62 @@ import {
   QUESTION_STATES,
   localAssetIdOf,
   type AttachmentOutcome,
-  type ConversationStatus,
+  type ConversationActivity,
+  type ConversationPresence,
   type LocalMessageContentSection,
   type MessageInput,
 } from "./states.js";
 
-describe("对话此刻的四格（PRD 4.4 / PLAN §10.1）", () => {
-  it("core 报两格（working / 闲），加一格「不收件」与一格「死」：对外恰好四个值，不多不少", () => {
-    // 前两格照 core 的 `AgentState`（`working` / `idle` = 循环的位置），宿主把它们翻成对外的两个
-    // 名字（`statusOfState`）；后两格是宿主自己那两件事：「不收件」= `agent.isOutputPaused`，
-    // 「死」= 宿主那边连 agent 对象都没有
-    const agentStates: AgentNS.AgentState[] = ["working", "idle"];
-    const all: ConversationStatus[] = [...agentStates.map(statusOfState), "paused", "dead"];
-    expect(all).toEqual(["busy", "idle", "paused", "dead"]);
+describe("对话此刻的四件事（PRD 4.4 / CORE「对外报四件事」）", () => {
+  it("忙闲就是 core 那一格：两个值，名字不改（`busy` 只留作拒绝原因码）", () => {
+    const coreStates: AgentNS.AgentState[] = ["working", "idle"];
+    const outward: ConversationActivity[] = [...coreStates];
+    expect(outward).toEqual(["working", "idle"]);
+    expect([...CONVERSATION_ACTIVITIES]).toEqual(["working", "idle"]);
 
-    // 两个方向都不多不少：core 的两格翻过来全在这一格里，而减掉它们只剩宿主那两件事
-    // （任一方向多了或少了值，下面两行就不再是 `true`，编译就红）
-    type OutwardFromCore = ReturnType<typeof statusOfState>;
-    type UnknownCoreState = Exclude<OutwardFromCore, ConversationStatus>;
+    // 一个方向都不多不少：core 报的那两格就是外面报的那两格（多一个或少一个，编译就红）
+    type UnknownCoreState = Exclude<AgentNS.AgentState, ConversationActivity>;
     const coreStatesAllKnown: UnknownCoreState extends never ? true : false = true;
-    type HostOnlyState = Exclude<ConversationStatus, OutwardFromCore>;
-    const hostOnlyStates: HostOnlyState extends "paused" | "dead" ? true : false = true;
-    expect(coreStatesAllKnown && hostOnlyStates).toBe(true);
+    type UnknownOutwardState = Exclude<ConversationActivity, AgentNS.AgentState>;
+    const outwardAllKnown: UnknownOutwardState extends never ? true : false = true;
+    expect(coreStatesAllKnown && outwardAllKnown).toBe(true);
+  });
+
+  it("四件事各占一格，不合成一格：闲 / 忙、输入闸、输出闸、死活", () => {
+    // 「闲但输出闸关着」与「忙」是两个不同的读数 —— 这是四件事必须分开的由来
+    const idleButNotTaking: ConversationPresence = {
+      status: "idle",
+      inputPaused: false,
+      outputPaused: true,
+      alive: true,
+    };
+    const working: ConversationPresence = {
+      status: "working",
+      inputPaused: false,
+      outputPaused: false,
+      alive: true,
+    };
+    const gone: ConversationPresence = {
+      status: "idle",
+      inputPaused: false,
+      outputPaused: false,
+      alive: false,
+    };
+
+    expect(Object.keys(idleButNotTaking).sort()).toEqual([
+      "alive",
+      "inputPaused",
+      "outputPaused",
+      "status",
+    ]);
+    // 「闲着」与「输出闸关着」同时成立：一个是手上没活，一个是不取新活
+    expect(idleButNotTaking.status).toBe("idle");
+    expect(idleButNotTaking.outputPaused).toBe(true);
+    expect(working.status).toBe("working");
+    expect(working.outputPaused).toBe(false);
+    // 死活不是忙闲里的一格：死了也可能「手上没活」，两者必须分得开
+    expect(gone.alive).toBe(false);
+    expect(gone.status).toBe("idle");
   });
 });
 

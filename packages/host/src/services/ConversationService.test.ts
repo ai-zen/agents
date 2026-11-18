@@ -21,11 +21,15 @@ import { AgentNS } from "@ai-zen/agents-core";
 import { HostError } from "../wire/errors.js";
 import { ConversationService } from "./ConversationService.js";
 import type { ConversationRuntimePort } from "./ConversationService.js";
-import type { ConversationCreateParams, ConversationStatus, ConversationView } from "../wire/index.js";
+import type {
+  ConversationCreateParams,
+  ConversationPresence,
+  ConversationView,
+} from "../wire/index.js";
 
 /**
- * 运行时只提供四件事实：这一刻落在哪一格、队里压着几条、删掉之后丢现场、换完模型让驱动者退役
- * （模型与档位本身在会话行上）
+ * 运行时只提供四件事实：这一刻那四件事（忙闲 / 两道闸 / 死活）、队里压着几条、删掉之后丢现场、
+ * 换完模型让驱动者退役（模型与档位本身在会话行上）
  */
 class FakeRuntime implements ConversationRuntimePort {
   /** 摆成「忙」的那几段（其余都是闲的） */
@@ -36,8 +40,14 @@ class FakeRuntime implements ConversationRuntimePort {
   /** 被要求「让这一段空闲的驱动者退役」的对话（换模型 / 换档位那一手） */
   readonly invalidated: string[] = [];
 
-  status(conversationId: string): ConversationStatus {
-    return this.running.has(conversationId) ? "busy" : "idle";
+  presence(conversationId: string): ConversationPresence {
+    // 这一段有驱动者（`running` 只表示它手上有活），两道闸都开着
+    return {
+      status: this.running.has(conversationId) ? "working" : "idle",
+      inputPaused: false,
+      outputPaused: false,
+      alive: true,
+    };
   }
   inboxPending(conversationId: string): number {
     return this.pending.get(conversationId) ?? 0;
@@ -409,21 +419,25 @@ describe("ConversationService.list（D13）", () => {
     expect(page.total).toBe(2);
   });
 
-  it("status 与 hasPendingQuestion 都从注入的那一侧现取", async () => {
+  it("忙闲与 hasPendingQuestion 都从注入的那一侧现取", async () => {
     const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     harness.runtime.running.add(created.conversation.id);
     // 题是进程内对象：这里摆一道挂着的（数从注入的那一侧现取）
     harness.questions.pending.set(created.conversation.id, 1);
 
     const listed = await harness.service.list({ workspaceId: "w1" });
-    expect(listed.conversations[0]).toMatchObject({ status: "busy", hasPendingQuestion: true });
+    expect(listed.conversations[0]).toMatchObject({
+      status: "working",
+      alive: true,
+      hasPendingQuestion: true,
+    });
 
     harness.runtime.running.delete(created.conversation.id);
     const again = await harness.service.get({ conversationId: created.conversation.id });
     expect(again.conversation.status).toBe("idle");
   });
 
-  it("条目带 status 与 inboxPending：两格都是现读的（F-I3）", async () => {
+  it("条目带那四件事与 inboxPending：都是现读的（F-I3）", async () => {
     const busy = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const idle = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     harness.runtime.running.add(busy.conversation.id);
@@ -432,7 +446,7 @@ describe("ConversationService.list（D13）", () => {
     const listed = await harness.service.list({ workspaceId: "w1" });
     const byId = new Map(listed.conversations.map((item) => [item.id, item]));
 
-    expect(byId.get(busy.conversation.id)).toMatchObject({ status: "busy", inboxPending: 2 });
+    expect(byId.get(busy.conversation.id)).toMatchObject({ status: "working", inboxPending: 2 });
     expect(byId.get(idle.conversation.id)).toMatchObject({ status: "idle", inboxPending: 0 });
     // 再也没有「跑 + 开始时刻」那一格：那是对「一次运行」的记账
     expect("run" in (byId.get(busy.conversation.id) ?? {})).toBe(false);

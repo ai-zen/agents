@@ -51,8 +51,11 @@ function fakeSummarizer(): ConversationSummarizer & { calls: string[][] } {
       updatedAt: new Date(row.updatedAt).toISOString(),
       messageCount: 0,
       lastMessageAt: null,
-      // 搜索服务不关心那两格：按「没有 agent、队里空着」给
-      status: "dead",
+      // 搜索服务不关心那四件事：按「没有 agent、手上没活、两道闸都开着、队里空着」给
+      status: "idle",
+      inputPaused: false,
+      outputPaused: false,
+      alive: false,
       inboxPending: 0,
       hasPendingQuestion: false,
     }));

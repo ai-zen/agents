@@ -1,6 +1,6 @@
 import type { AgentNS } from "@ai-zen/agents-core";
 
-import type { ConversationStatus, NoticeView, QuestionView } from "./states.js";
+import type { ConversationActivity, NoticeView, QuestionView } from "./states.js";
 
 /**
  * 事件（宿主 → 客户端的推送，见 PLAN §5.3 / §6）。
@@ -12,11 +12,16 @@ import type { ConversationStatus, NoticeView, QuestionView } from "./states.js";
  * 一条约定：事件只描述「发生了什么变化」，客户端需要完整对象时回宿主拉 ——
  * 这样多端同时在线时不会出现「一份数据在推送里长成另一种形状」。
  *
- * 九个事件分三种粒度（PLAN §5.3）：
+ * 十三个事件分五种粒度（PLAN §5.4）：
  *   - 一条消息的生死：`message.added` / `message.changed` / `message.removed`（每次都带**当时那条消息的完整对象**）；
  *   - 流式一片：`message.delta`（core 的 `AgentNS.Delta` 原样）；
- *   - 四格与出错：`state` / `error`；
+ *   - 忙闲、两道闸与出错：`state` / `output:paused` / `output:resumed` / `input:paused` /
+ *     `input:resumed` / `error`；
  *   - 另外三个是别的域的结构变化：`conversation.changed` / `notice` / `question`。
+ *
+ * **四件事各走各的事件**（PRD 4.4）：忙闲只有 `state` 一条，两道闸各有自己的开/关两条，
+ * 死活（有没有 agent 实例）走 `conversation.changed` 的 `agent_started` / `agent_gone` —— 它
+ * **不**挤在 `state` 里，因为「没有 agent」不是「手上没活」。
  *
  * 这里**没有**用量事件、没有「请求中 / 思考中 / 输出中」这类阶段事件：用量在每条消息的
  * `usage` 上，阶段由客户端按上面这批事件的到达自己推（PRD 硬规矩 7）。
@@ -108,17 +113,43 @@ export interface MessageRemovedPayload {
 }
 
 /**
- * `state`：一段对话换了一格（忙 / 闲 / 暂停 / 死）。
+ * `state`：这一段对话的**忙闲**变了（`working` / `idle`）。
  *
- * **变了才发**，载荷就是那一格本身：客户端据此把侧栏与输入框摆对（闲会理你、暂停不会、
- * 死要先复活）。更细的阶段不在这里 —— 想知道「在想还是在输出」，读那条助手消息的内容与
- * `delta`（CORE §4「其余一律读活对象」）。
+ * **只报一件事实：手上有没有活。** 两道闸各有自己的事件（{@link PauseChangeEventName}），死活走
+ * `conversation.changed` —— 四件事不压成一格。
+ *
+ * **变了才发**：客户端据此决定「它还会不会马上动」。更细的阶段不在这里 —— 想知道「在想还是在
+ * 输出」，读那条助手消息的内容与 `delta`（CORE §4「其余一律读活对象」）。
  */
 export interface StatePayload {
   conversationId: string;
-  /** 此刻那一格；死 = 宿主那边连 agent 对象都没有 */
-  status: ConversationStatus;
+  /** 手上有没有活：`working` / `idle`（只读；与两道闸无关） */
+  status: ConversationActivity;
   /** 这一格定下来的时刻 */
+  at: string;
+}
+
+/**
+ * 两道闸开合的那四个事件名：输出闸 `output:paused` / `output:resumed`、输入闸 `input:paused` /
+ * `input:resumed`（与 core 的事件同名同义）。
+ *
+ * 这一处只写一遍：另外三处（{@link EventMap} / {@link EVENT_NAMES} / 推送那一侧）都从它推出来。
+ */
+export type PauseChangeEventName =
+  | "output:paused"
+  | "output:resumed"
+  | "input:paused"
+  | "input:resumed";
+
+/**
+ * 一道闸开或关了：载荷只带会话 id（与 `at`）。
+ *
+ * 是哪一道、开还是关，**已经在事件名里**了（与 core 的 `output:paused` / `input:resumed` 同一个
+ * 写法）：载荷再带一份就是第二份事实。要填完整读数就回宿主拉 `conversation.state`。
+ */
+export interface PauseChangePayload {
+  conversationId: string;
+  /** 这一下的时刻 */
   at: string;
 }
 
@@ -153,9 +184,13 @@ export interface ErrorPayload {
  * 「消息落库了」「消息删了」这两格，也不带消息条数 —— 条数客户端自己数。
  *
  * - `created` / `renamed` / `pinned` / `settings_changed` / `deleted`：会话**行**上的事；
+ * - `agent_started` / `agent_gone`：**死活**这一件事（这一段此刻有没有 agent 实例）。前者 =
+ *   一个驱动者刚装好、后面有人取件了；后者 = 桥灭了（`stopped` / `killed` / 退役换人 /
+ *   对话被删 / 进程收尾）。两者都不带原因：原因在那条 `onDead` 流里（对客户端只需知道「有/没有」）。
+ *   *它们不叫 `state` 的那种值*：死活不是「手上没活」，两者必须分得开（PRD 4.4）。
  * - `handoff_started`：交接**开始**这一拍。界面上要直说「正在交接」（输入框不给发、只留
  *   中断），而那条 `memory_replaced` 是**收口**才有的 —— 所以开始这一拍必须自己说一声，
- *   否则客户端在交接期间一直以为这段还是普通的一格。
+ *   否则客户端在交接期间一直以为这段还是普通的一段。
  * - `memory_replaced`：这段对话的**记忆**被换过 —— 交接提交（记忆已经换掉）与交接回滚
  *   （记忆回到交接前）两处都推它。交接期间产生的那批消息只在内存里、从不落库（PLAN §5.3），
  *   所以客户端收到它就去 `message.list` 全量整段替换镜像，把那些痕迹清掉。
@@ -166,11 +201,13 @@ export type ConversationChangeKind =
   | "renamed"
   | "pinned"
   | "settings_changed"
+  | "agent_started"
+  | "agent_gone"
   | "handoff_started"
   | "memory_replaced"
   | "deleted";
 
-/** `conversation.changed`：改名、置顶、改设置、交接开始、换过记忆、删除这类会话上的结构变化 */
+/** `conversation.changed`：改名、置顶、改设置、agent 起来/没了、交接开始、换过记忆、删除这类会话上的结构变化 */
 export interface ConversationChangedPayload {
   conversationId: string;
   /** 所属 Workspace；对话被删后仍带上，便于客户端把它从对应列表里摘掉 */
@@ -198,11 +235,12 @@ export interface QuestionPayload {
 /**
  * 事件名 → 载荷。
  *
- * 名称按 PLAN §6 定：`message.added` / `message.delta` / `message.changed` / `message.removed` /
- * `state` / `error` / `conversation.changed` / `notice` / `question`。
+ * 名称按 PLAN §5.4 定：`message.added` / `message.delta` / `message.changed` / `message.removed` /
+ * `state` / `output:paused` / `output:resumed` / `input:paused` / `input:resumed` / `error` /
+ * `conversation.changed` / `notice` / `question`（共 **13** 条）。
  *
- * 前四个是客户端重建 `messages` 的全部原料，`state` 给那四格，`error` 给排查；
- * 宿主不在这之上再加聚合（没有 `run.state`，没有 `usage`）。
+ * 前四个是客户端重建 `messages` 的全部原料，`state` 给忙闲、四条闸事件给两道闸的开与关、
+ * `error` 给排查；宿主不在这之上再加聚合，也不报「这一段跑了多久」或用量。
  */
 export interface EventMap {
   "message.added": MessageAddedPayload;
@@ -210,6 +248,11 @@ export interface EventMap {
   "message.changed": MessageChangedPayload;
   "message.removed": MessageRemovedPayload;
   state: StatePayload;
+  // 两道闸那四条：名字自己就是「哪一道、开还是关」，载荷只带会话 id（见 `PauseChangePayload`）
+  "output:paused": PauseChangePayload;
+  "output:resumed": PauseChangePayload;
+  "input:paused": PauseChangePayload;
+  "input:resumed": PauseChangePayload;
   error: ErrorPayload;
   "conversation.changed": ConversationChangedPayload;
   notice: NoticePayload;
@@ -229,6 +272,10 @@ export const EVENT_NAMES = [
   "message.changed",
   "message.removed",
   "state",
+  "output:paused",
+  "output:resumed",
+  "input:paused",
+  "input:resumed",
   "error",
   "conversation.changed",
   "notice",

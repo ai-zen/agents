@@ -410,7 +410,7 @@ describe("推送（PRD L5 / R47）", () => {
 
     hub.push("state", {
       conversationId: "c-1",
-      status: "busy",
+      status: "working",
       at: NOW,
     });
     expect(isNotification(await first.queue.next())).toBe(true);

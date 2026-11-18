@@ -45,6 +45,7 @@
 import { AgentNS } from "@ai-zen/agents-core";
 import type { Agent } from "@ai-zen/agents-core";
 import type {
+  ConversationStatus as PeerSessionWord,
   PeerSessionCreateInput,
   PeerSessionCreated,
   PeerSessionPort,
@@ -58,7 +59,7 @@ import type { DeliveryInput } from "../runtime/ChatRunner.js";
 import type { StoredMessage } from "../storage/types.js";
 import { HostError } from "../wire/errors.js";
 import type { ConversationCreateParams, ConversationCreateResult } from "../wire/index.js";
-import type { ConversationStatus } from "../wire/states.js";
+import type { ConversationPresence } from "../wire/states.js";
 
 /**
  * 创建子会话时额外带上「谁开的、自动交接开不开」：这两项**创建那一刻写死**，之后只跟着行。
@@ -95,7 +96,7 @@ const STATUS_CHARS = 300;
  * 超出了就是一条结构化拒绝 `too_many_peers`：让模型先等一批干完、或者把活分给更少的会话，
  * 比让它一口气开 20 段把端点和额度烧光要好。
  *
- * 判据是**现读**：`chatRunner.state(sessionId).status === "busy"`。这一层不记「谁在忙」，
+ * 判据是**现读**：`chatRunner.state(sessionId).status === "working"`。这一层不记「谁在忙」，
  * 所以也不会与执行者那边漂。
  */
 const MAX_RUNNING_PEERS = 4;
@@ -172,8 +173,12 @@ export interface PeerSessionRunner {
     conversationId: string,
     input: DeliveryInput,
   ): Promise<{ userMessageId: string }>;
-  /** 现读：这一段此刻落在哪一格（忙 / 闲 / 暂停 / 死） */
-  state(conversationId: string): { status: ConversationStatus };
+  /**
+   * 现读：这一段此刻那**四件事**（忙闲 / 输入闸 / 输出闸 / 死活）。
+   *
+   * 与 `ChatRunner.state` 同一个口（结构上直接满足）：字段就是那四件事，不另做一份投影。
+   */
+  state(conversationId: string): ConversationPresence;
   /**
    * 这一段此刻**在内存里的**消息 —— 就是 `agent.messages` 本身（`ChatRunner.messagesOf` 结构上
    * 满足）：活着读内存，没有 agent 就是 `null`（那时也就不可能有人「刚说过一句」）。
@@ -231,17 +236,23 @@ function rejected(reason: PeerSessionRejectReason, hint: string): PeerSessionCre
 }
 
 /**
- * 现读的那一格 → `read_session_status` 报的那一格：**逐格同名**，不翻译也不补格子。
+ * 宿主的**四件事** → SDK 的 `read_session_status` 报的那一格（**过渡投影，不是第二份事实**）。
  *
- * 两端都是闭集：宿主说 `busy` / `idle` / `paused` / `dead`，SDK 报的就是这四个（两边的类型
- * 各自声明，词一模一样，见 SDK 的 `PeerSessionStatus`）。找不到那一段不是第五格：它是判别式的
- * 另一支（`{ found: false, status: null }`，见 {@link status}）。
+ * 宿主这一侧四件事已经各占一格（`PRD.md` 4.4），而 SDK 那个面向模型的工具现在还只收一格四词
+ * （见 SDK 的 `PeerSessionStatus`，本次不动它）。于是这里把它们投影回去，投影规则就是四件事的
+ * 定义本身：没有 agent 实例 → 那一段没有了；输出闸关着 → 它这会儿不取件；其余看忙闲。
+ *
+ * 找不到那一段不是第五格：它是判别式的另一支（`{ found: false, status: null }`）。
  *
  * 所以本文件没有 `failed`：失败是某一次回答上的事实（消息上的 `error` 与结束原因），不是
  * 一段对话此刻的状态；把「上一次失败了」挂在状态上，就会在它下一次好好回答时继续说假话。
+ *
+ * 等 SDK 那个工具也按四件事报（忙闲 + 两道闸 + 死活），这一段可以整段删掉。
  */
-function statusOf(status: ConversationStatus): ConversationStatus {
-  return status;
+function peerStatusOf(presence: ConversationPresence): PeerSessionWord {
+  if (!presence.alive) return "dead";
+  if (presence.outputPaused) return "paused";
+  return presence.status === "working" ? "busy" : "idle";
 }
 
 export class PeerSessionService implements PeerSessionPort {
@@ -394,7 +405,7 @@ export class PeerSessionService implements PeerSessionPort {
    */
   async status(input: { caller: Agent; sessionId: string }): Promise<PeerSessionStatus> {
     const row = await this.deps.conversations.get(input.sessionId);
-    // 找不到 = 判别式的另一支：`status: null`（四格都是活对象身上的事实，找不到就没有对象可读）
+    // 找不到 = 判别式的另一支：`status: null`（那些格都是活对象身上的事实，找不到就没有对象可读）
     if (!row) return { found: false, status: null };
 
     // 摘要从内存里取（不查库）：就是那一段自己的 `agent.messages`，与状态同一刻、同一来源
@@ -405,7 +416,7 @@ export class PeerSessionService implements PeerSessionPort {
 
     return {
       found: true,
-      status: statusOf(this.deps.chatRunner.state(input.sessionId).status),
+      status: peerStatusOf(this.deps.chatRunner.state(input.sessionId)),
       label: this.labels.get(row.id) ?? row.name,
       lastMessage,
     };
@@ -467,7 +478,8 @@ export class PeerSessionService implements PeerSessionPort {
     const children = await this.deps.conversations.listByLineage(parentConversationId);
     let count = 0;
     for (const child of children) {
-      if (this.deps.chatRunner.state(child.id).status === "busy") count += 1;
+      // 「忙」只看忙闲那一格：输出闸关着不算忙（它手上确实没活），那时也不占并发名额
+      if (this.deps.chatRunner.state(child.id).status === "working") count += 1;
     }
     return count;
   }

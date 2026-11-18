@@ -38,7 +38,7 @@ import { MessageRepository } from "../storage/MessageRepository.js";
 import { NoticeRepository } from "../storage/NoticeRepository.js";
 import { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
 import { migrate } from "../storage/migrations.js";
-import type { ConversationStatus } from "../wire/index.js";
+import type { ConversationPresence } from "../wire/index.js";
 import type { ConversationChangedPayload } from "../wire/events.js";
 import type { ConversationRuntimePort } from "./ConversationService.js";
 import { ConversationService } from "./ConversationService.js";
@@ -92,8 +92,9 @@ function echoingClient(onRequest?: (body: SummaryBody) => void): SummaryClient {
 
 /** 对话服务要的那个窄接口：交接用例不需要临时模型 / 临时档位，也没有活着的驱动者 */
 class FakeRuntime implements ConversationRuntimePort {
-  status(): ConversationStatus {
-    return "dead";
+  presence(): ConversationPresence {
+    // 没有 agent（死的）：忙闲报 `idle`（没有人，手上当然没活）、两道闸没关着
+    return { status: "idle", inputPaused: false, outputPaused: false, alive: false };
   }
   inboxPending(): number {
     return 0;
