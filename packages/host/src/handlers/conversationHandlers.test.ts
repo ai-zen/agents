@@ -622,6 +622,10 @@ describe("conversation.kill（用户按杀死：这不是删除）", () => {
     await waitInboxRows(app, conversationId, 2);
     const messagesBefore = await countMessages(app, conversationId);
     expect(messagesBefore).toBeGreaterThan(0);
+    // 会话行快照：杀死之后它得逐列相同（杀死不是删除）
+    const rowBefore = await app.db.get("SELECT * FROM conversations WHERE id = ?", [
+      conversationId,
+    ]);
 
     const killed: ConversationKillResult = await callMethod(app, "conversation.kill", {
       conversationId,
@@ -634,8 +638,11 @@ describe("conversation.kill（用户按杀死：这不是删除）", () => {
     // 库里那些没被取走的行也没了（先 `agents.kill` 再拆桥，那条 `inboxCleared` 才有人听）
     await waitInboxRows(app, conversationId, 0);
 
-    // 杀死不是删除：消息一条不少、会话行还在、`conversation.get` 照旧答得出
+    // 杀死不是删除：消息一条不少、会话行逐列未动、`conversation.get` 照旧答得出
     expect(await countMessages(app, conversationId)).toBe(messagesBefore);
+    expect(await app.db.get("SELECT * FROM conversations WHERE id = ?", [conversationId])).toEqual(
+      rowBefore,
+    );
     const still = await callMethod(app, "conversation.get", { conversationId });
     expect(still.conversation.id).toBe(conversationId);
 
