@@ -726,6 +726,83 @@ describe("Agent 工具段里按中断", () => {
   });
 });
 
+describe("Agent send：投递并等到空闲，但不关门", () => {
+  it("跑到空闲就返回，**不关门** —— agent 还站着、还能接着跑下一趟", async () => {
+    const { client, create } = createMockClient([textStream("一次性结果")]);
+    const agent = new Agent({
+      client,
+      model: "m",
+      newMessageId: makeIds(),
+      lifetime: "one-shot",
+      messages: [Message.System("sys"), Message.User("干件事", { kind: "agent", label: "测试" })],
+    });
+
+    const messages = await agent.send();
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(messages.at(-1)!.content).toBe("一次性结果");
+    // 不关门：输入闸还在、循环还在等下一件事（与 `runOnce` 那一步差的就是这个）
+    expect(agent.isInputPaused).toBe(false);
+    expect(agent.started).toBe(true);
+    expect(agent.state).toBe("idle");
+
+    agent.kill();
+    await agent.start();
+  });
+
+  it("「等闲」不是一步通过：这一批跑完之前不返回", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const create = vi.fn(async () => {
+      await gate;
+      return makeStream(textStream("迟到的结果"));
+    });
+    const agent = new Agent({
+      client: { chat: { completions: { create } } } as any,
+      model: "m",
+      newMessageId: makeIds(),
+      lifetime: "one-shot",
+      messages: [Message.User("干件事", { kind: "user" })],
+    });
+
+    let returned = false;
+    const done = agent.send().then((messages) => {
+      returned = true;
+      return messages;
+    });
+
+    await until(() => agent.state === "working");
+    // 这一批还在飞：不能假装「已经等到了」
+    expect(returned).toBe(false);
+
+    release();
+    const messages = await done;
+    expect(messages.at(-1)!.content).toBe("迟到的结果");
+
+    agent.kill();
+    await agent.start();
+  });
+
+  it("没有燃料就抛裸 Error（与 runOnce 同一个判据）", async () => {
+    const { client } = createMockClient([]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds(), lifetime: "one-shot" });
+
+    await expect(agent.send()).rejects.toThrow(/messages 是空的/);
+  });
+
+  it("常驻 agent 不许 send：常驻对话没有「等到跑完」这回事", async () => {
+    const { client } = createMockClient([]);
+    const agent = new Agent({
+      client,
+      model: "m",
+      newMessageId: makeIds(),
+      messages: [Message.User("x", { kind: "user" })],
+    });
+
+    await expect(agent.send()).rejects.toThrow(/常驻对话没有/);
+  });
+});
+
 describe("Agent runOnce", () => {
   it("「等闲」不是一步通过：这一批跑完之前不会关门", async () => {
     let release: () => void = () => {};
