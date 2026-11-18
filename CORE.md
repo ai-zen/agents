@@ -315,7 +315,7 @@ export type InboxInput =
 
 三处各有自己的事件（§10）：`state` 那一格按到达值分名 —— `state:working` / `state:idle`，载荷 `{ agent, from }`，所以「等到某一格」写成 `events.promise("state:idle")` 就行；输出闸另有 `output:paused` / `output:resumed`，输入闸另有 `input:paused` / `input:resumed`，载荷都是 `{ agent }`，「此刻还收不取件」「还接不接投递」分别现读 `agent.isOutputPaused` / `agent.isInputPaused`。
 
-**合成不归 core 管。** 宿主对外报的「忙 / 闲 / 暂停 / 死」是**两格 + 一个开关 + 「查不到对象」**合出来的（`PRD 4.4`）：`isOutputPaused` 为 true 一律报「暂停」，与手上有没有活无关。core 不合成，也不认识「暂停」这一格。
+**对外报四件事，不压成一格。** 手上有没有活（`state`）+ 输入闸 + 输出闸（`isOutputPaused`）+ 有没有这个对象（死活），宿主**各报各的**（`PRD 4.4`）。旧写法把三项合成「忙 / 闲 / 暂停 / 死」一格，必然有一项报不出来 —— 已作废。core 不合成，也不认识「暂停」这一格。
 
 ### 其余一律读活对象
 
