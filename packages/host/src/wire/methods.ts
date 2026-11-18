@@ -476,12 +476,13 @@ export interface ConversationDeleteResult {
  *
  * 用户输入用 core 的内容形状（`MessageInput`），图片的传输路径由宿主定（F-H7）。
  *
- * 三种拒因，各说一件事：
+ * 两种拒因，各说一件事：
  *   - 有问题在挡着这段对话（`question_pending`，D23 / F-D10）—— 排队不是绕过它的通道；
  *   - 目标是死的（宿主那边没有 agent 对象）时是 `conversation_dead`：界面上那个发送按钮先复活
- *     再投，那是客户端的事 —— 投递本身不叫醒死者（PRD 4.4）；
- *   - 这段**正在交接**时一律拒（`busy` / `handoff_in_progress`）：那期间投进来的话会跟着旧记忆
- *     一起被挪进存档，等于从新记忆里消失（PLAN §5.3）。等收口再发。
+ *     再投，那是客户端的事 —— 投递本身不叫醒死者（PRD 4.4）。
+ *
+ * **没有「正在交接」这个拒因**：交接期间只关输出闸、不关输入闸，话照收、排在 inbox 里，
+ * 只是这一任不取；交接完成即开闸，压着的按原顺序接着跑（PRD 4.5 / PLAN §5.3）。
  */
 export interface ConversationSendParams {
   conversationId: string;
@@ -525,8 +526,9 @@ export interface ConversationAbortResult {
 /**
  * `conversation.pause` 入参：暂停这段对话（PRD 4.4：「暂停」是第三格）。
  *
- * 暂停是**从下一批起不取件**那道闸：手上这批算已经开始，让它跑完；从下一批起不再取（收话不动）。
- * 它**不接在途** —— 要立刻停就用中断（`conversation.abort`：接在途 + 翻闸）。
+ * 暂停是**输出闸**：手上这批算已经开始，让它跑完；从下一批起不再取（收话不动）。
+ * 它**不掐在途** —— 要立刻停就用中断（`conversation.abort`：掐在途 + 关输出闸）。
+ * 交接期间这一手拒（`busy` / `handoff_in_progress`）：那期间闸归交接收口管。
  */
 export interface ConversationPauseParams {
   conversationId: string;

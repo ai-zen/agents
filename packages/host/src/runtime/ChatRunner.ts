@@ -1482,12 +1482,14 @@ export class ChatRunner {
    *
    * 存在这里而不是 agent 上：交接是**对话**的处境，而 agent 会换（配置改了、装配事实变了）。
    *
-   * 它管四件事：
+   * 它管三件事：
    *   - 桥**不写库**（{@link ConversationBridge} 的 `handoffActive`）—— 写文档那一趟马上要随旧记忆
    *     被替掉；
-   *   - `deliver` **一律拒**（交接期间不收件）；
    *   - `pause` / `resume` 拒（那期间闸归交接收口管）；
    *   - `canHandoffNow` 报 `handoff_in_progress`。
+   *
+   * **投递不在它管的范围里**：交接期间只关输出闸、不关输入闸 —— 别人的话照收、排在 inbox 里，
+   * 只是这一任不取（PRD 4.5 / PLAN §5.3）。
    *
    * 那期间 agent 自己照常跑（写文档这一趟就是它在跑）。
    */
@@ -1535,8 +1537,9 @@ export class ChatRunner {
    * （投递不看关系）、不判「它在不在干」（在不在干不是拒绝的理由，队列本来就收）、不判「这条会不会
    * 被处理」（不承诺）。
    *
-   * 唯一一个额外的拒因是**这段正在交接**：那时一律拒（`busy` / `handoff_in_progress`）——
-   * 这期间落进来的话会跟着旧记忆一起被挪进存档，等于从新记忆里消失。
+   * **交接期间照收**（PLAN §5.3 / PRD 4.5）：那期间只关输出闸、不关输入闸 —— 话进 inbox 排着，
+   * 这一任不取；记忆换完之后新驱动者按原顺序取走。所以这里没有「正在交接」这个拒因，
+   * 也没有任何别的「状态不对」的拒因。
    *
    * 回执里**没有状态、没有「叫醒了没有」、没有结果**：那三样都是对未来的断言，而未来只能靠
    * 观测（`state()` / 事件）。`await` 的边界就是「已入队」。
@@ -1545,12 +1548,6 @@ export class ChatRunner {
     conversationId: string,
     input: DeliveryInput,
   ): Promise<{ userMessageId: string }> {
-    // 交接期间**一律不收件**（PLAN §5.3 / PRD 4.5）：这一批一收口就关了输出闸，直到记忆换完才开。
-    // 判在读会话行之前：这段处在那样的处境里，就没有「收下」这回事。
-    // 于是下面 `mayStart` 那条开闸路径永远到不了（留着它不是死代码：它描述的是「闸关着、但
-    // 创建者可以叫醒」那条普通路径的语义，交接口那一层挡在前面而已）。
-    this.rejectIfHandingOff(conversationId);
-
     const conversation = await this.options.conversations.get(conversationId);
     if (!conversation) {
       throw new HostError("not_found", { params: { entity: "conversation" } });
@@ -1575,7 +1572,8 @@ export class ChatRunner {
     if (live) {
       // 用户点「发送」就是「继续」：中断之后闸还关着，先把闸开开再投 —— 不然这条只能排队，
       // 而他等的是一句回答。别的来源（自动推送 / 子 agent 回件）不开闸：那不是他按的。
-      if (input.mayStart === true) live.resumeOutput();
+      // 交接期间不开：那阵子输出闸归交接收口管（收口自己会开），投递只收不取。
+      if (input.mayStart === true && !this.handoffs.has(conversationId)) live.resumeOutput();
       this.bridgeFor(conversationId, live).push(entry);
       return { userMessageId };
     }
@@ -1650,7 +1648,8 @@ export class ChatRunner {
    * 就用 {@link abort}（那道是「掐在途 + 翻闸」）。
    *
    * 没有 agent（死的）就回 `false`：不是错误，那段对话真的一条待办都没有、也无闸可翻。
-   * 交接期间拒（`busy` / `handoff_in_progress`）：那期间闸开开是别人（交接收口）的事。
+   * 交接期间拒（`busy` / `handoff_in_progress`）：那期间输出闸的开与关是交接收口的事。
+   * （投递不拒 —— 输入闸在交接期间一直开着，见 {@link deliver}。）
    */
   pause(conversationId: string): boolean {
     this.rejectIfHandingOff(conversationId);
@@ -1696,7 +1695,11 @@ export class ChatRunner {
     return { ok: true };
   }
 
-  /** 交接期间那两个闸动不得（`pause` / `resume` 这一道门，拒因就是判据里那一个词） */
+  /**
+   * 交接期间那两个闸动不得（`pause` / `resume` 这一道门，拒因就是判据里那一个词）。
+   *
+   * 只给闸的两个动作（{@link pause} / {@link resume}）用：**投递不走这道门** —— 交接期间照收。
+   */
   private rejectIfHandingOff(conversationId: string): void {
     if (!this.handoffs.has(conversationId)) return;
     throw new HostError("busy", {

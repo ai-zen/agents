@@ -4,8 +4,8 @@
  * 断言的东西全是那三个口能说清的事实：
  *
  * - **投递**（`deliver`）：判两件事（对话在不在、agent 活不活）→ 入队；回执只有消息 id；
- * - **中断**（`abort`）：打到活着的 agent 上，落在「暂停」格，不是杀死；
- * - **现读**（`state`）：四格 + 待办，不落库、不推算。
+ * - **中断**（`abort`）：打到活着的 agent 上，关掉输出闸，不是杀死；
+ * - **现读**（`state`）：忙闲 + 两道闸 + 死活 + 待办，不落库、不推算。
  *
  * 加两条结构性的：桥的生灭（agent 退役 / 被删 → 桥灭）与「变闲那一刻」（`onIdle`）。
  *
@@ -413,11 +413,13 @@ describe("ChatRunner.pause / resume：只翻输出闸，不投任何东西", () 
     expect(harness.runner.resume(CONVERSATION_ID)).toBe(false);
   });
 
-  it("交接期间两个都拒（`busy` / `handoff_in_progress`）：那期间闸归交接收口管", async () => {
+  it("交接期间 pause / resume 仍拒（`busy` / `handoff_in_progress`），但投递照收", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "说完了" }] }] });
     await harness.deliver(userSays("说点什么"));
     await harness.waitIdle();
+    // 交接开始：输出闸由这次交接自己关上（生产上关在写文档那一批的批头）
     harness.runner.beginHandoff(CONVERSATION_ID);
+    harness.registry.get(CONVERSATION_ID)!.pauseOutput();
 
     expect(() => harness.runner.pause(CONVERSATION_ID)).toThrowError(
       expect.objectContaining({
@@ -431,8 +433,16 @@ describe("ChatRunner.pause / resume：只翻输出闸，不投任何东西", () 
         detail: { conversationId: CONVERSATION_ID, reason: "handoff_in_progress" },
       }) as unknown as Error,
     );
-    // 一个也没生效：闸还是原来那道
-    expect(harness.registry.get(CONVERSATION_ID)!.isOutputPaused).toBe(false);
+    // 一个也没生效：闸还是交接收口关上的那道
+    expect(harness.registry.get(CONVERSATION_ID)!.isOutputPaused).toBe(true);
+
+    // 投递不拒：交接期间只关输出闸、不关输入闸 —— 话照收，排在 inbox 里
+    await expect(harness.deliver(userSays("交接中说的话"))).resolves.toMatchObject({
+      userMessageId: expect.any(String),
+    });
+    expect(harness.runner.state(CONVERSATION_ID).inbox.map((item) => item.preview)).toEqual([
+      "交接中说的话",
+    ]);
   });
 });
 
@@ -502,29 +512,43 @@ describe("ChatRunner.canHandoffNow：能不能立刻接手一批交接", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 交接期间一律不收件 + 开始那一拍要报一声
+// 交接期间照收（只关输出闸）+ 开始那一拍要报一声
 // ---------------------------------------------------------------------------
 
-describe("ChatRunner：交接期间不收件，开始那一刻推一条 `handoff_started`", () => {
-  it("交接期间 deliver 被拒，队列一条也不涨", async () => {
+describe("ChatRunner：交接期间照收、只关输出闸；开始那一刻推一条 `handoff_started`", () => {
+  it("交接进行中投进来的话照收：投递成功、条目在 inbox 里，交接完成后按原顺序被取走", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "说完了" }] }] });
-    await harness.deliver(userSays("说点什么"));
+    await harness.deliver(userSays("交接前"));
     await harness.waitIdle();
-    const before = harness.runner.state(CONVERSATION_ID).inbox.length;
 
+    // 交接开始：输出闸关上（这一任不取），输入闸照开
     harness.runner.beginHandoff(CONVERSATION_ID);
-    await expect(harness.deliver(userSays("交接中说的话"))).rejects.toMatchObject({
-      code: "busy",
-      detail: { conversationId: CONVERSATION_ID, reason: "handoff_in_progress" },
-    });
-    // 不收件就是真的不收：待办长度没变（这句没有偷偷排进去）
-    expect(harness.runner.state(CONVERSATION_ID).inbox.length).toBe(before);
+    harness.registry.get(CONVERSATION_ID)!.pauseOutput();
 
-    // 摘牌之后又能收了（内存里那一段照样在，只是那阵子不收件）
+    const first = await harness.deliver(userSays("交接中第一句"));
+    const second = await harness.deliver(userSays("交接中第二句"));
+    // 投递成功：回执只有消息 id
+    expect(first.userMessageId).toEqual(expect.any(String));
+    expect(second.userMessageId).toEqual(expect.any(String));
+    // 两条都在 inbox 里，顺序即取件顺序
+    expect(harness.runner.state(CONVERSATION_ID).inbox.map((item) => item.preview)).toEqual([
+      "交接中第一句",
+      "交接中第二句",
+    ]);
+
+    // 交接收口：摘牌 + 开闸（生产上开闸在交接收口那一处）
     harness.runner.endHandoff(CONVERSATION_ID);
-    await expect(harness.deliver(userSays("交接完再说"))).resolves.toMatchObject({
-      userMessageId: expect.any(String),
-    });
+    harness.registry.get(CONVERSATION_ID)!.resumeOutput();
+    await harness.waitFor(() => harness.runner.state(CONVERSATION_ID).inbox.length === 0);
+    await harness.settle();
+
+    // 交接期间收下的那两句一句没丢，按原顺序落成了用户消息
+    const users = (await harness.rows()).filter((row) => row.role === AgentNSValue.Role.User);
+    expect(users.map((row) => row.content)).toEqual([
+      "交接前",
+      "交接中第一句",
+      "交接中第二句",
+    ]);
   });
 
   it("beginHandoff 之后收到一条 `conversation.changed`，`change === handoff_started`", () => {
