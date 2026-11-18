@@ -880,6 +880,9 @@ export class HostApp {
     // 手里还有在途的请求与排着的条目 —— 留着只会让它们在剩下的那几毫秒里继续烧 token。
     // 为何是 `kill` 而不是 `stop`：`stop` 是「存量走完」，而这里没人会来读那些结果（收尾流程
     // 接下来就关库），等它排空没有任何意义。也不等它排空：这一步不 await（“尽力 kill”）。
+    // 先告诉运行时「这是收尾」：接下来那批 `kill()` 会把存量作废，但库里的 inbox 行要留着 ——
+    // 关掉再打开，那几句还在等（PRD 1.2 / 4.12）；用户按杀死才连行一起删。
+    this.chatRunner.markShuttingDown();
     this.agentRegistry.disposeAll();
     try {
       await this.scopeRegistry.disposeAll();

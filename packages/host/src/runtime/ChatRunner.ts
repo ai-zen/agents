@@ -817,6 +817,17 @@ class ConversationBridge {
    * 就把它当成待办放回队列（一次幽灵投递）。串起来就只剩事件顺序一种顺序。
    */
   private inboxChain: Promise<void> = Promise.resolve();
+
+  /**
+   * 进程收尾中：`kill()` 作废存量时，库里的 inbox 行**留着**。
+   *
+   * 只有一条路会把它置起来（{@link markShuttingDown}，由宿主在 `disposeAll` 之前调）：
+   * 「关掉再打开，那几句还在等」（PRD 1.2 / 4.12）说的就是这一跳 —— 进程没了不等于用户把待办作废了。
+   *
+   * 不用「输入闸关了」当判据：用户按杀死也会关它，而按杀死**要**把待办作废（库里也删）。
+   * 删对话 / 删项目靠外键级联，不走这一跳。
+   */
+  private shuttingDown = false;
   /** 边流边写的节流计时器（到点把 `streaming` 那一笔写下去） */
   private writeTimer?: () => void;
   private lastWriteAt = 0;
@@ -882,6 +893,11 @@ class ConversationBridge {
   /** 桥还在不在（`ChatRunner` 靠它判「这条还能不能推」） */
   get alive(): boolean {
     return !this.closed;
+  }
+
+  /** 进程要退了：此后 `kill()` 作废存量时，库里的 inbox 行不删（见 {@link onInboxCleared}） */
+  markShuttingDown(): void {
+    this.shuttingDown = true;
   }
 
   /**
@@ -1102,16 +1118,18 @@ class ConversationBridge {
    * 「这段对话此刻一条待办都不该有」—— 对着「库里该有几行」这件事它比逐个 id 更准确
    * （事件丢过一条也不会留下孤行）。
    *
-   * **例外：agent 正在收摊时不删行。** `kill()` 会先关输入闸、再把存量作废（`Agent.kill()` 里
-   * 定死的那条次序），于是它走的是同一条 `inboxCleared` —— 但那些条目**不是用户作废的**，是
-   * 「进程要退了」。库里那几行必须留着，否则「关掉再打开，那几句还在等」（PRD 1.2 / 4.12）只在
-   * 崩溃时成立、正常退出反而不成立。判据就用输入闸那一格：宿主里**只有** `kill()` 会关它（对话
-   * 被删 / 项目被删 / 进程收尾），前两种的行走外键级联消失，不靠这一删。
+   * **例外：进程收尾时不删行。** 收尾走的是 `disposeAll` → `kill()`：它先关输入闸、再把存量
+   * 作废（`Agent.kill()` 里定死的那条次序），于是也走到这条 `inboxCleared` —— 但那些条目**不是
+   * 用户作废的**，是「进程要退了」。库里那几行必须留着，否则「关掉再打开，那几句还在等」
+   * （PRD 1.2 / 4.12）只在崩溃时成立、正常退出反而不成立。
+   *
+   * 判据是显式的 {@link shuttingDown}（宿主在 `disposeAll` 之前置它），**不是「输入闸关了」**：
+   * 用户按杀死也会关输入闸，而按杀死要连库里的行一起作废。
    */
   private onInboxCleared(): void {
     const store = this.options.inbox;
     if (!store) return;
-    if (this.agent.isInputPaused) return;
+    if (this.shuttingDown) return;
     this.writeInbox("inbox-cleared", () => store.clearByConversation(this.conversationId));
   }
 
@@ -2196,6 +2214,17 @@ export class ChatRunner {
   }
 
   // ---- 结构性的三件 ----
+
+  /**
+   * 进程要退了：此后 `kill()` 作废存量时，库里的 inbox 行**不删**（PRD 1.2 / 4.12「关掉再打开，
+   * 那几句还在等」）。
+   *
+   * 由宿主在 `agentRegistry.disposeAll()` **之前**调一次。放在这里而不是逐条传参：收尾是一个
+   * 进程级事实，它不属于某段对话。
+   */
+  markShuttingDown(): void {
+    for (const bridge of this.bridges.values()) bridge.markShuttingDown();
+  }
 
   /**
    * 对话（或它所在的项目）被删：**硬着陆**它那个 agent，丢掉桥。

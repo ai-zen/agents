@@ -1111,8 +1111,9 @@ describe("ChatRunner：inbox 落库（一有变化就入库）", () => {
     await harness.deliver(userSays("第二条"));
     await harness.waitFor(() => harness.inbox.rows.length === 1);
 
-    // `HostApp.stop()` 那一步：进程要退了，agent 全部硬着陆（存量在内存里作废）——
+    // `HostApp.stop()` 那一步：先标记「这是收尾」，再把 agent 全部硬着陆（存量在内存里作废）——
     // 但库里那几行是「上次没处理完的话」，必须留着（PRD 4.12：打开就是上次的样子）
+    harness.runner.markShuttingDown();
     harness.registry.disposeAll();
     await harness.settle();
     expect(harness.inbox.rows.map((row) => row.content)).toEqual([JSON.stringify("第二条")]);
