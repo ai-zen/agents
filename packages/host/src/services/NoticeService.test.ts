@@ -1,6 +1,6 @@
 /**
  * 通知服务的验收：独立通道（F-I8）、持久化（L3）、持续时间的两套单位（R15）、
- * 四档语气（PRD 4.9）、按语言渲染（D8）、清掉的方式（手动清 / 到点消失）。
+ * 四档语气（PRD 4.9）、按语言渲染（D8）、两个作用域（会话内 / 全局）与清掉的方式。
  */
 
 import { mkdtemp, rm } from "node:fs/promises";
@@ -328,7 +328,7 @@ describe("通知是独立通道，绝不进消息（F-I8）", () => {
     expect(conversations).toEqual([]);
   });
 
-  it("按对话挂着，也能按对话清掉", async () => {
+  it("按对话列 = 那一段的 + 全局的；按对话清只清那一段的", async () => {
     // 通知的对话归属是一列真值（外键开着），所以先要有那两个对话
     await harness.db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', 'p', '/tmp/p', 1)");
     for (const id of ["c1", "c2"]) {
@@ -351,25 +351,44 @@ describe("通知是独立通道，绝不进消息（F-I8）", () => {
       params: { summary: "另一段" },
       conversationId: "c2",
     });
-    await harness.service.create({ level: "info", code: "notice.settingsApplied", duration: 5 });
+    // 全局通知：不属于任何对话
+    const global = await harness.service.create({
+      level: "info",
+      code: "notice.settingsApplied",
+      duration: 5,
+    });
 
+    // 全局通知不属于任何一段，所以任何界面都得给：c1 的界面里它在
     const scoped = await harness.service.list({ conversationId: "c1" });
-    expect(scoped.notices).toHaveLength(1);
+    expect(scoped.notices).toHaveLength(2);
+    expect(scoped.notices.some((notice) => notice.id === global.id)).toBe(true);
     // 归属在真列上（`NoticeView.conversationId`），渲染参数里只有文案自己的东西
-    expect(scoped.notices[0]?.conversationId).toBe("c1");
-    expect(scoped.notices[0]?.text.params).toEqual({ summary: "一次" });
+    const ownNotice = scoped.notices.find((notice) => notice.conversationId === "c1");
+    expect(ownNotice?.text.params).toEqual({ summary: "一次" });
+    // 另一段对话的界面同样看得到全局的那条（只是看不到 c1 那条）
+    const other = await harness.service.list({ conversationId: "c2" });
+    expect(other.notices).toHaveLength(2);
+    expect(other.notices.some((notice) => notice.id === global.id)).toBe(true);
+    expect(other.notices.every((notice) => notice.conversationId !== "c1")).toBe(true);
+    expect((await harness.service.list()).notices).toHaveLength(3);
 
+    // 清「一段对话的」只清真挂在那段上的：全局通知不属于它，不跟着没
     const cleared = await harness.service.clear({ conversationId: "c1" });
     expect(cleared).toEqual({ cleared: 1 });
-    expect((await harness.service.list({ conversationId: "c1" })).notices).toHaveLength(0);
-    expect((await harness.service.list({ conversationId: "c2" })).notices).toHaveLength(1);
+    expect((await harness.service.list({ conversationId: "c1" })).notices.map((notice) => notice.id)).toEqual([global.id]);
+    expect((await harness.service.list({ conversationId: "c2" })).notices).toHaveLength(2);
     expect((await harness.service.list()).notices).toHaveLength(2);
+
+    // 清全部才是全部（要明说）
+    expect(await harness.service.clear()).toEqual({ cleared: 2 });
+    expect((await harness.service.list()).notices).toEqual([]);
   });
 
   it("clear 不给对话就清全部", async () => {
     await harness.service.create({ level: "info", code: "notice.settingsApplied", duration: 5 });
+    await harness.service.create({ level: "success", code: "notice.handoffWritten", params: { path: "/p/h.md" }, duration: 1 });
     await harness.service.create({ level: "error", code: "notice.logError", params: { summary: "e" } });
-    expect(await harness.service.clear()).toEqual({ cleared: 2 });
+    expect(await harness.service.clear()).toEqual({ cleared: 3 });
     expect((await harness.service.list()).notices).toEqual([]);
   });
 

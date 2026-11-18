@@ -256,10 +256,14 @@ export class NoticeService {
   }
 
   /**
-   * 现在该显示的通知（PRD L3）。
+   * 现在该显示的通知（PRD L3 / 4.9）。
    *
    * 先清掉已经到点的（`deleteExpired`），再按「永久 + 还没到点」读一遍：只按时间过滤而不清，
    * 表会一直涨；只清不按时间过滤，同一毫秒内到点的那条仍会被读出来。
+   *
+   * **按对话列 = 那一段的 + 全局的**：全局通知不属于任何对话，所以任何界面都得给
+   * （PRD 4.9：「它不属于任何一段，所以任何界面都得给」）。只列那段自己的，用户就只在
+   * 某一段对话里看得到「配置坏了」这类整机的事，换个对话又看不见了 —— 它凭什么叫全局。
    */
   async list(params: NoticeListParams = {}, language: Language = DEFAULT_LANGUAGE): Promise<NoticeListResult> {
     const now = this.now();
@@ -270,7 +274,10 @@ export class NoticeService {
       .map((notice) => toView(notice, language))
       .filter((view) => (params.level === undefined ? true : view.level === params.level))
       .filter((view) =>
-        params.conversationId === undefined ? true : view.conversationId === params.conversationId,
+        params.conversationId === undefined
+          ? true
+          : // 那一段的 + 全局的：`null` 是不属于任何对话的那些，哪儿都得看得见
+            view.conversationId === params.conversationId || view.conversationId === null,
       );
     return { notices: views };
   }
@@ -292,7 +299,16 @@ export class NoticeService {
     return { dismissed: changes > 0 };
   }
 
-  /** 清掉一批（不给 `conversationId` 就清全部） */
+  /**
+   * 清掉一批（PRD 4.9 的三个粒度里的后两个）。
+   *
+   * - 给了 `conversationId`：**只清挂在那段对话上的**；
+   * - 没给：清全部。
+   *
+   * 与 `list` 有意不同，别以为是漏改：列「那段对话的」要把全局的一起列出来（全局通知
+   * 不属于任何对话，所以任何界面都得给），而清「那段对话的」只清真挂在那段上的 ——
+   * 全局通知不属于那段，顺手把它清了就变成「清全部」了，而清全部必须由调用方明说。
+   */
   async clear(params: NoticeClearParams = {}): Promise<NoticeClearResult> {
     if (params.conversationId === undefined) {
       const cleared = await this.notices.clearAll();
