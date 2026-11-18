@@ -1,6 +1,6 @@
 /**
  * 通知服务的验收：独立通道（F-I8）、持久化（L3）、持续时间的两套单位（R15）、
- * 三档语气（R4）、按语言渲染（D8）、清掉的方式（手动清 / 到点消失）。
+ * 四档语气（PRD 4.9）、按语言渲染（D8）、清掉的方式（手动清 / 到点消失）。
  */
 
 import { mkdtemp, rm } from "node:fs/promises";
@@ -204,33 +204,66 @@ describe("通知持久化（L3：重启不丢）", () => {
   });
 });
 
-describe("三档语气（R4）", () => {
-  it("info / warning / error 各存各的，读回来不变形", async () => {
+describe("四档语气（PRD 4.9）", () => {
+  it("info / success / warning / error 四档都能写进去、都能读回来", async () => {
     // 每条间隔一毫秒：列表按创建时间升序，同一毫秒内只能靠 id 排，断言就没有意义了
     await harness.service.create({ level: "info", code: "notice.settingsApplied", duration: 5 });
+    harness.clock.value += 1;
+    // 「已保存」这类一秒提示归 success：带一个很短的持续时间
+    await harness.service.create({ level: "success", code: "notice.handoffWritten", params: { path: "/p/h.md" }, duration: 1 });
     harness.clock.value += 1;
     await harness.service.create({ level: "warning", code: "notice.logWarning", params: { summary: "w" } });
     harness.clock.value += 1;
     await harness.service.create({ level: "error", code: "notice.logError", params: { summary: "e" } });
 
     const listed = await harness.service.list();
-    expect(listed.notices.map((notice) => notice.level)).toEqual(["info", "warning", "error"]);
+    expect(listed.notices.map((notice) => notice.level)).toEqual([
+      "info",
+      "success",
+      "warning",
+      "error",
+    ]);
+    // 库里的那一列也是原值，不是读出时才猜的
+    const rows = await harness.db.all<NoticeRow>("SELECT level FROM notices ORDER BY createdAt ASC");
+    expect(rows.map((row) => row.level)).toEqual(["info", "success", "warning", "error"]);
   });
 
   it("按语气筛选", async () => {
     await harness.service.create({ level: "info", code: "notice.settingsApplied", duration: 5 });
+    harness.clock.value += 1;
+    await harness.service.create({ level: "success", code: "notice.handoffWritten", params: { path: "/p/h.md" }, duration: 1 });
+    harness.clock.value += 1;
     await harness.service.create({ level: "error", code: "notice.logError", params: { summary: "e" } });
 
     const errors = await harness.service.list({ level: "error" });
     expect(errors.notices).toHaveLength(1);
     expect(errors.notices[0]?.level).toBe("error");
+
+    const successes = await harness.service.list({ level: "success" });
+    expect(successes.notices.map((notice) => notice.level)).toEqual(["success"]);
   });
 
-  it("语气不在三档里就按参数不对拒", async () => {
+  it("语气不在四档里就按参数不对拒", async () => {
     await expect(
       // 越过类型的一档看宿主守不守
-      harness.service.create({ level: "success" as unknown as "info", code: "notice.settingsApplied" }),
+      harness.service.create({ level: "fatal" as unknown as "info", code: "notice.settingsApplied" }),
     ).rejects.toMatchObject({ code: "invalid_params" });
+  });
+
+  it("库里存的语气认不出来时按 info 摆（手改坏的数据不该让整条列表读不出来）", async () => {
+    // 绕过服务直接写一行认不出来的：仓里只有服务能建通知，所以这样造
+    await harness.notices.create({
+      id: "n-broken",
+      level: "fatal",
+      code: "notice.settingsApplied",
+      params: null,
+      durationMs: null,
+      conversationId: null,
+      createdAt: harness.clock.value,
+    });
+
+    const listed = await harness.service.list();
+    expect(listed.notices.map((notice) => notice.level)).toEqual(["info"]);
   });
 });
 

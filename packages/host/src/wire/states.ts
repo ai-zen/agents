@@ -247,15 +247,21 @@ export interface ModelState {
 // ---------------------------------------------------------------------------
 
 /**
- * 通知的三档语气。
+ * 通知的**四档语气**（PRD 4.9）：信息 / 成功 / 警告 / 错误。
  *
- * 语气决定界面怎么摆（颜色、要不要打断），内容才是 `NoticeView.text`。
- * `error` 与 `warning` 也是宿主日志上浮的通道（PRD F-J2）。
+ * 语气决定界面怎么摆（颜色、要不要打断），内容才是 `NoticeView.text`。四档各管什么：
+ *
+ * - `info`：说一声就好 —— 配置已生效、这段对话自动起了个名字这类；
+ * - `success`：「已保存」这种一秒提示，配一个很短的 `duration`，自己消失；
+ * - `warning`：快出问题了 —— 附件没发出去、MCP 连不上了，但还没坏；
+ * - `error`：已经出错了 —— 写库失败、请求挂了。
+ *
+ * `warning` / `error` 也是宿主日志上浮的通道（PRD F-J2）。
  */
-export type NoticeLevel = "info" | "warning" | "error";
+export type NoticeLevel = "info" | "success" | "warning" | "error";
 
-/** 三档语气表 */
-export const NOTICE_LEVELS: readonly NoticeLevel[] = ["info", "warning", "error"];
+/** 四档语气表（顺序照 PRD 4.9 的写法：信息 / 成功 / 警告 / 错误） */
+export const NOTICE_LEVELS: readonly NoticeLevel[] = ["info", "success", "warning", "error"];
 
 /**
  * 一条通知。

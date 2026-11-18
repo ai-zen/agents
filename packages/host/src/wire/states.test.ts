@@ -178,9 +178,9 @@ describe("契约出口（客户端只 import 宿主包就够）", () => {
   });
 });
 
-describe("通知三档（PRD L3 / F-I8）", () => {
-  it("三档语气", () => {
-    expect([...NOTICE_LEVELS]).toEqual(["info", "warning", "error"]);
+describe("通知四档（PRD 4.9 / F-I8）", () => {
+  it("四档语气：信息 / 成功 / 警告 / 错误", () => {
+    expect([...NOTICE_LEVELS]).toEqual(["info", "success", "warning", "error"]);
   });
 });
 

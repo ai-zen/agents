@@ -11,8 +11,12 @@
  * 3. **存码不存句子**（D8 / PLAN §8）：库里存的是「码 + 参数」，读出时按**调用方
  *    给的语言**渲染。语言挂在连接上，一条通知存死一种语言、换个语言连回来就错了。
  *
- * 语气三档 `info | warning | error`（R4）：「已保存」这种一秒提示是 `info` + 短 duration，
- * 不新增 success 档；`warning` / `error` 同时是宿主日志上浮的通道（PRD F-J2）。
+ * 语气四档 `info | success | warning | error`（PRD 4.9）：信息 / 成功 / 警告 / 错误，
+ * 「已保存」这种一秒提示归 `success` 并配一个很短的 duration；`warning` / `error` 同时是
+ * 宿主日志上浮的通道（PRD F-J2）。
+ *
+ * 语气取值只认 `NOTICE_LEVELS` 这一份（`wire/states.ts`）：写入时校验、读出时折叠非法值，
+ * 都用它，不在这里另写一份白名单。
  */
 
 import { randomUUID } from "node:crypto";
