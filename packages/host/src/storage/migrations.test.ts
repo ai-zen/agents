@@ -92,6 +92,7 @@ describe("migrate", () => {
       "asset_vendor_files",
       "notices",
       "credentials",
+      "inbox",
       "meta",
       "messages_fts",
     ]) {
@@ -343,6 +344,35 @@ describe("migrate", () => {
     expect(await db.all("SELECT id FROM messages")).toEqual([{ id: "m1" }]);
   });
 
+  it("v6：inbox 表按「条目上有什么就存什么」建起来，顺序列与按对话取的索引都在", async () => {
+    await migrate(db);
+
+    const columns = await db.all<{ name: string; type: string; notnull: number; pk: number }>(
+      "PRAGMA table_info('inbox')",
+    );
+    // 六列各就各位：主键 / 归属 / 来源 JSON / 内容 JSON / 入队时刻 ISO 串 / 顺序
+    expect(columns.map((column) => column.name)).toEqual([
+      "messageId",
+      "conversationId",
+      "source",
+      "content",
+      "createdAt",
+      "seq",
+    ]);
+    // messageId 是主键（全库的行都一样，主键列自己不带 notnull 标记）；其余五格都必须有值
+    expect(columns.find((column) => column.name === "messageId")?.pk).toBe(1);
+    for (const name of ["conversationId", "source", "content", "createdAt", "seq"]) {
+      expect(columns.find((column) => column.name === name)?.notnull).toBe(1);
+    }
+    // `createdAt` 是条目自带的 ISO 串，不是全库惯用的毫秒整数（存就存原样）
+    expect(columns.find((column) => column.name === "createdAt")?.type).toBe("TEXT");
+    expect(columns.find((column) => column.name === "seq")?.type).toBe("INTEGER");
+
+    const indexColumns = await db.all<{ name: string }>("PRAGMA index_info('idx_inbox_conversation')");
+    // 按对话取、且顺序即入队顺序（唯一的读取路径，一条复合索引就够）
+    expect(indexColumns.map((column) => column.name)).toEqual(["conversationId", "seq"]);
+  });
+
   it("迁移后仍然是 WAL 且外键约束是开着的", async () => {
     await migrate(db);
     const journal = await db.get<{ journal_mode: string }>("PRAGMA journal_mode");
@@ -395,6 +425,11 @@ describe("外键与级联", () => {
       `INSERT INTO notices (id, level, code, params, durationMs, conversationId, createdAt)
        VALUES ('n1', 'info', 'notice.settingsSaved', NULL, NULL, 'c1', 6)`,
     );
+    // 排在队列里还没被取走的一条待办：对话/工作区没了它也就没有去处（v6 的级联）
+    await db.run(
+      `INSERT INTO inbox (messageId, conversationId, source, content, createdAt, seq)
+       VALUES ('msg2', 'c1', '{"kind":"user"}', '"还没被处理的一句"', '2026-01-02T03:04:05.000Z', 1)`,
+    );
   }
 
   it("删 workspace 连带删它的 conversations / messages / 引用关系", async () => {
@@ -404,6 +439,8 @@ describe("外键与级联", () => {
     expect(await db.all("SELECT id FROM conversations")).toEqual([]);
     expect(await db.all("SELECT id FROM messages")).toEqual([]);
     expect(await db.all("SELECT assetId FROM conversation_assets")).toEqual([]);
+    // 待办行跟着对话/项目一起没：不留孤儿（v6 的级联）
+    expect(await db.all("SELECT messageId FROM inbox")).toEqual([]);
     // 素材行不跟着对话走：字节是全局的，删不删由「还几张引用」决定
     expect(await db.all("SELECT id FROM assets")).toEqual([{ id: "as1" }]);
   });
@@ -416,6 +453,8 @@ describe("外键与级联", () => {
     expect(await db.all("SELECT assetId FROM conversation_assets")).toEqual([]);
     // 通知是挂在对话上的：对话没了它也没有落脚的语义（题已经不落库了，没有这一层）
     expect(await db.all("SELECT id FROM notices")).toEqual([]);
+    // 待办也是：它是那段对话的待办，对话没了它也就没有去处（v6 的级联）
+    expect(await db.all("SELECT messageId FROM inbox")).toEqual([]);
     expect(await db.all("SELECT id FROM assets")).toEqual([{ id: "as1" }]);
   });
 

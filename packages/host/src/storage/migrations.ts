@@ -309,6 +309,49 @@ export const MIGRATIONS: Migration[] = [
       `ALTER TABLE messages DROP COLUMN parentToolCallId`,
     ],
   },
+  {
+    /**
+     * v6：`inbox` 表 —— 队列里**还没被取走**的那些条目落库（PRD 1.2 / 4.12）。
+     *
+     * 这是本仓唯一一个「关掉就丢东西」的洞：条目只活在 core 的队列里，进程一没就没了，
+     * 而 PRD 要的是「打开就是上次的样子，包括没被处理的那几句话 —— 它们还在等」。
+     *
+     * 建表而不是改旧表：此前库里根本没有这一格（那是缺的东西，不是错的列），所以这条是
+     * 纯加法，旧库跑一遍就多一张空表，行为不变（见本文件开头）。
+     *
+     * **列按「条目上有什么就存什么」**（`CORE.md` §3 的 `InboxEntryWithContent`），
+     * 内容一个字都不清理、不派生、不转换：
+     *
+     * - `messageId`：主键。它同时是恢复时的去重键（「这条已经落地过了就扔掉」），而同一个
+     *   id 也不会入队两次 —— 它是客户端乐观回显用的那个 id（PRD D5），投递方定死；
+     * - `conversationId`：这一条排在哪段对话的队列里。删对话 / 删工作区时条目跟着没 ——
+     *   它是那段对话的待办，对话没了它就没有去处（与 `notices` / `messages` 同一个口径）；
+     * - `source`：core 的 `MessageSource` 判别结构的 **JSON 原文**（不是字符串，见 v3 的口径）；
+     * - `content`：正文的 **JSON 原文**，字符串与多模态段数组都原样进去、原样读回来
+     *   （落库时清理会让两次请求的前缀对不上，prompt caching 全 miss）；
+     * - `createdAt`：条目的 ISO 串**原样**。这里是 TEXT 而不是全库惯用的 INTEGER 毫秒 ——
+     *   条目上那一格就是 ISO 串，存下来要读回同一个值（「一个字段都不重算」）；
+     * - `seq`：入队顺序。**必须要它**：`createdAt` 只到毫秒，同一毫秒进来的两条（一次批量
+     *   投递、重启后紧接着投）会撞在一起，光按 `createdAt` 排就还原不回它们本来的先后。
+     *   它在**一段对话内**递增（入队就是队尾，于是「顺序 = 取件顺序」这条在库里也成立）。
+     *
+     * 索引 `(conversationId, seq)`：装配时按对话一次取干、且按入队顺序 —— 这是唯一的读取路径，
+     * 两者一个复合索引就够，不再为 `seq` 单建一条。
+     */
+    version: 6,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS inbox (
+         messageId      TEXT PRIMARY KEY,
+         conversationId TEXT NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
+         source         TEXT NOT NULL,
+         content        TEXT NOT NULL,
+         createdAt      TEXT NOT NULL,
+         seq            INTEGER NOT NULL
+       )`,
+      // 按对话取，且顺序即入队顺序（恢复时要按它原样放回）
+      `CREATE INDEX IF NOT EXISTS idx_inbox_conversation ON inbox (conversationId, seq)`,
+    ],
+  },
 ];
 
 /**
