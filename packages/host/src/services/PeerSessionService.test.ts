@@ -358,21 +358,21 @@ describe("status：四件事现读、投影成 SDK 那一格，名字用进程�
     ).resolves.toEqual({ found: false, status: null });
   });
 
-  // 宿主这一侧报四件事，SDK 那个工具还只收一格四词：这里逐一验投影（四件事 → 那一格）。
-  // 「找不到这一段」不是第五格（它是判别式的另一支：`found: false` + `status: null`），
-  // 所以不在这一张表里。
-  const projections = [
-    { label: "手上有活 → busy", presence: { status: "working" as const }, word: "busy" as const },
-    { label: "活着且手上没活 → idle", presence: {}, word: "idle" as const },
-    { label: "输出闸关着 → paused", presence: { outputPaused: true }, word: "paused" as const },
-    { label: "没有 agent 了 → dead", presence: { alive: false }, word: "dead" as const },
+  // 宿主这一侧报四件事，SDK 那个工具报两件（忙不忙 + 死活）：这里逐一验这两个字段怎么出。
+  // **没有投影了** —— 四件事不再压回一格四词：输出闸关着也照旧报 `idle`（闸不对平级会话报）。
+  // 「找不到这一段」不是第三种情形（它是判别式的另一支：`found: false` + `status: null`）。
+  const mappings = [
+    { label: "手上有活 → working", presence: { status: "working" as const }, want: { status: "working" as const, alive: true } },
+    { label: "活着且手上没活 → idle", presence: {}, want: { status: "idle" as const, alive: true } },
+    { label: "输出闸关着 → 还是 idle（闸不给平级会话看）", presence: { outputPaused: true }, want: { status: "idle" as const, alive: true } },
+    { label: "没有 agent 了 → idle + alive: false", presence: { alive: false }, want: { status: "idle" as const, alive: false } },
   ];
-  for (const projection of projections) {
-    it(`${projection.label}`, async () => {
+  for (const mapping of mappings) {
+    it(`${mapping.label}`, async () => {
       const harness = makeHarness();
       const created = await harness.service.create({ caller: harness.caller, prompt: "干点活" });
       if (!created.ok) throw new Error("没建成");
-      harness.runner.setPresence(created.sessionId, projection.presence);
+      harness.runner.setPresence(created.sessionId, mapping.presence);
 
       const result = await harness.service.status({
         caller: harness.caller,
@@ -381,7 +381,7 @@ describe("status：四件事现读、投影成 SDK 那一格，名字用进程�
 
       expect(result).toEqual({
         found: true,
-        status: projection.word,
+        ...mapping.want,
         label: created.label,
         lastMessage: null,
       });
@@ -494,8 +494,8 @@ describe("status：四件事现读、投影成 SDK 那一格，名字用进程�
       sessionId: created.sessionId,
     });
 
-    // 只给「忙不忙 + 最近一句摘要」（加上那个名字）：多一格就是把对方的上下文搬过来了
-    expect(Object.keys(result).sort()).toEqual(["found", "label", "lastMessage", "status"]);
+    // 只给「忙不忙 + 死活 + 最近一句摘要」（加上那个名字）：多一格就是把对方的上下文搬过来了
+    expect(Object.keys(result).sort()).toEqual(["alive", "found", "label", "lastMessage", "status"]);
     expect("startedAt" in result).toBe(false);
     expect("messages" in result).toBe(false);
     expect("messageCount" in result).toBe(false);

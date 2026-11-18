@@ -45,7 +45,6 @@
 import { AgentNS } from "@ai-zen/agents-core";
 import type { Agent } from "@ai-zen/agents-core";
 import type {
-  ConversationStatus as PeerSessionWord,
   PeerSessionCreateInput,
   PeerSessionCreated,
   PeerSessionPort,
@@ -238,22 +237,17 @@ function rejected(reason: PeerSessionRejectReason, hint: string): PeerSessionCre
 /**
  * 宿主的**四件事** → SDK 的 `read_session_status` 报的那一格（**过渡投影，不是第二份事实**）。
  *
- * 宿主这一侧四件事已经各占一格（`PRD.md` 4.4），而 SDK 那个面向模型的工具现在还只收一格四词
- * （见 SDK 的 `PeerSessionStatus`，本次不动它）。于是这里把它们投影回去，投影规则就是四件事的
- * 定义本身：没有 agent 实例 → 那一段没有了；输出闸关着 → 它这会儿不取件；其余看忙闲。
+ * 宿主这一侧四件事已经各占一格（`PRD.md` 4.4），SDK 那个面向模型的工具也按同一口径报：
+ * 忙不忙（`status`）+ 死活（`alive`）。**不再有投影**：以前这里把四件事压回一格四词，
+ * 就是因为 SDK 当时只收那一格；现在两边同名同值，直接端过去。
  *
- * 找不到那一段不是第五格：它是判别式的另一支（`{ found: false, status: null }`）。
+ * 两道闸不对平级会话报（`PRD.md` 4.6 只要「忙不忙 + 最近一句摘要」）。
+ *
+ * 找不到那一段不是第五种情形：它是判别式的另一支（`{ found: false, status: null }`）。
  *
  * 所以本文件没有 `failed`：失败是某一次回答上的事实（消息上的 `error` 与结束原因），不是
  * 一段对话此刻的状态；把「上一次失败了」挂在状态上，就会在它下一次好好回答时继续说假话。
- *
- * 等 SDK 那个工具也按四件事报（忙闲 + 两道闸 + 死活），这一段可以整段删掉。
  */
-function peerStatusOf(presence: ConversationPresence): PeerSessionWord {
-  if (!presence.alive) return "dead";
-  if (presence.outputPaused) return "paused";
-  return presence.status === "working" ? "busy" : "idle";
-}
 
 export class PeerSessionService implements PeerSessionPort {
   /**
@@ -414,9 +408,11 @@ export class PeerSessionService implements PeerSessionPort {
       STATUS_CHARS,
     );
 
+    const presence = this.deps.chatRunner.state(input.sessionId);
     return {
       found: true,
-      status: peerStatusOf(this.deps.chatRunner.state(input.sessionId)),
+      status: presence.status,
+      alive: presence.alive,
       label: this.labels.get(row.id) ?? row.name,
       lastMessage,
     };

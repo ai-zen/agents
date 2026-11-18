@@ -70,7 +70,7 @@ export type {
   PeerSessionPort,
   PeerSessionCreated,
   PeerSessionStatus,
-  ConversationStatus,
+  PeerSessionActivity,
   PeerSessionRejectReason,
   PeerSessionCreateInput,
   PeerSessionSent,

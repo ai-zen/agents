@@ -232,8 +232,8 @@ describe("建完之后第一句真的进那一段；父对话一个字都收不�
   });
 });
 
-describe("问状态：那一格现读", () => {
-  it("它就在那儿闲着 → 答 idle（没有存下来的状态，全是现读）", async () => {
+describe("问状态：忙不忙与死活都是现读", () => {
+  it("它就那儿闲着 → 答 idle + alive（没有存下来的状态，全是现读）", async () => {
     const harness = makeHarness([{ deltas: [{ content: "回答" }] }]);
     await harness.warmUp();
     const created = await harness.service.create({ caller: harness.caller, prompt: "干点活" });
@@ -252,12 +252,13 @@ describe("问状态：那一格现读", () => {
     expect(status).toEqual({
       found: true,
       status: "idle",
+      alive: true,
       label: created.label,
       lastMessage: "回答",
     });
   });
 
-  it("那一段的 agent 不在了（有人杀了它）→ 答 dead：会话行还在，只是没人接着跑", async () => {
+  it("那一段的 agent 不在了（有人杀了它）→ 答 alive: false：会话行还在，只是没人接着跑", async () => {
     const harness = makeHarness([{ deltas: [{ content: "回答" }] }]);
     await harness.warmUp();
     const created = await harness.service.create({ caller: harness.caller, prompt: "干点活" });
@@ -270,9 +271,10 @@ describe("问状态：那一格现读", () => {
       caller: harness.caller,
       sessionId: created.sessionId,
     });
-    // 「没有 agent」是死活那一格（查不到对象），不是「不在了」：会话行还在；
-    // 也没有内存可读，所以最近一句是 null（会话行上的旧消息不是「它刚说的」）
-    expect(status).toEqual({ found: true, status: "dead", label: created.label, lastMessage: null });
+    // 「没有 agent」是死活那一件事（`alive: false`），不是另一个状态值；
+    // 也没有内存可读，所以最近一句是 null（会话行上的旧消息不是「它刚说的」），
+    // 忙闲也无可读 —— 拿 `idle` 占位，读的人要看的是 `alive`。
+    expect(status).toEqual({ found: true, status: "idle", alive: false, label: created.label, lastMessage: null });
   });
 
   it("那一段的会话行没了（用户删了它）→ 答 `found: false`，别让调用方等一个不会来的结果", async () => {

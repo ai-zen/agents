@@ -85,7 +85,7 @@ HostApp（根：组装、启动、退出）
 | `DiscoveryLayerView.scope` | 同上：MCP 5 层里只有 2 层非空 | 直接认「哪一层可写」，不再按 `editable` + `depth` 反推 |
 | `McpOauthView` 的掩码 | `DiscoveryService` + `services/secretMask.ts` 的 `maskSecret` | 与 `EndpointView` 的 `apiKeyMasked` / `apiKeySet` 同一套；回写省略 = 保留磁盘原值 |
 | `ModelInput.tokenThresholds` 可选 | `ModelService`：`create` 省略套出厂默认、`update` 省略不动 | 建模型不必自己抄两个数 |
-| `ConversationSummary.status` / `.inboxPending` / `.agent` | `ConversationService.toSummary` + 端口 `state` / `describeAgent`；状态是**查询那一刻现读**的四格，不落库、不是字段 | 侧栏说得出「这段现在忙 / 闲 / 暂停 / 死、队里还压着几条」与助手可用性；状态栏八块由客户端现拼（PRD F-I6） |
+| `ConversationSummary.status` / `.inputPaused` / `.outputPaused` / `.alive` / `.inboxPending` / `.agent` | `ConversationService.toSummary` + 端口 `presence` / `describeAgent`；**四件事各一格**，是**查询那一刻现读**的，不落库、不是字段 | 侧栏说得出「这段是闲还是忙、两道闸开着没有、它还活着吗、队里还压着几条」与助手可用性；状态栏八块由客户端现拼（PRD F-I6） |
 
 ---
 
@@ -101,7 +101,7 @@ HostApp（根：组装、启动、退出）
 
 **一段对话的诞生**（PRD R56 / F-D9）：`conversation.create` 只定身份并发一个 id，不写库；首次 `conversation.send` 时 `ConversationService.ensurePersisted` 才写行，**落行那一刻同时写这段对话的第一条消息**——一条 `role: user`、`hidden: true`、`source` 为 `{ kind: "system", label: "cwd" }` 的 cwd 消息，**正文就是那个路径**（不是一句渲染过的话 —— 这条消息是隐藏的、用户看不见，模型要的就是路径）。只在创建时写这一次；交接换完的记忆里**没有**这条（目录随时问 `cwd` 工具）。它最先写，所以 `seq` 在真实用户消息之前；之后每轮都不再写、也不往用户消息里拼任何东西。cwd 取 `workspaces.cwd`，`workspaceId` 创建即定死。
 
-**会话级模型与思考档位**（PRD L7 / R70–R72）：存在 `conversations.modelId` / `thinkingLevel` 上，改了就落库。装配 agent 时从这里取：`modelId` 直接给 SDK 的三级解析，`thinkingLevel` 按该模型引用的策略表展开成参数补丁、叠在助手定义的 `modelParams` 之上（同一模型才叠）。展开发生在 `ChatRunner.createSdkAgentFactory` 的 `conversationModelParams`，档位名本身不进请求；换模型时档位清空。**这两手只允许空闲时做**（判词）：非空闲一律拒（`busy` + `detail.reason = "working"`），一个字节都不写库；空闲时改完当场让那个驱动者退役（`AgentRegistry.invalidateConversation`），下一句话按新事实重新装配 —— 没有「忙的时候打标记、变闲再兑现」那一套（那套只服务全局配置生效，PRD 4.11 改配置不杀任何会话）。服务层要的运行时接口因此只剩四件（`ConversationRuntimePort`）：**现在忙不忙 / 队里几条**（现读 agent 那一格）、**删掉之后的现场丢弃**（`forget`）、**这一段手上有没有活**（`agentState`，没 agent 回 `null`）与**让这一段空闲的驱动者退役**（`invalidateAgent`）。
+**会话级模型与思考档位**（PRD L7 / R70–R72）：存在 `conversations.modelId` / `thinkingLevel` 上，改了就落库。装配 agent 时从这里取：`modelId` 直接给 SDK 的三级解析，`thinkingLevel` 按该模型引用的策略表展开成参数补丁、叠在助手定义的 `modelParams` 之上（同一模型才叠）。展开发生在 `ChatRunner.createSdkAgentFactory` 的 `conversationModelParams`，档位名本身不进请求；换模型时档位清空。**这两手只允许空闲时做**（判词）：非空闲一律拒（`busy` + `detail.reason = "working"`），一个字节都不写库；空闲时改完当场让那个驱动者退役（`AgentRegistry.invalidateConversation`），下一句话按新事实重新装配 —— 没有「忙的时候打标记、变闲再兑现」那一套（那套只服务全局配置生效，PRD 4.11 改配置不杀任何会话）。服务层要的运行时接口因此只剩四件（`ConversationRuntimePort`）：**四件事的现读**（`presence()`：忙闲 + 两道闸 + 死活，加上队里几条）、**删掉之后的现场丢弃**（`forget`）、**这一段手上有没有活**（`agentState`，没 agent 回 `null`）与**让这一段空闲的驱动者退役**（`invalidateAgent`）。
 
 **进程退出**（PRD 1.7 / 4.12）：**只有三个原因** —— 用户显式关闭（命令 + 一次二次确认）、进程被外部杀掉、机器没了。**连接数不参与任何判断**：agent 常驻的意思就是「有没有客户端连着，跟它活不活无关」，所以既没有「最后一个客户端走了就收尾」，也没有「把手上的活干完再退」—— 不自动退出这件事把这两条一起取消了（`checkExit` 与其两个触发源作废）。
 
@@ -122,7 +122,7 @@ conversation.send / postMessage / 定时器 / 外部程序
       ├─ 目标是死的（没有 agent）→ 拒（conversation_dead）；例外只有**创建者**：界面的
       │    发送按钮，以及「刚建出来那段会话的第一句」（create_session）—— 它们给 mayStart，
       │    于是先装配再投。别的来源一律叫不醒（PRD 1.2 / 4.2）
-      └─ 活着                    → 入队（忙 / 闲 / 暂停一律收；暂停只收不取）
+      └─ 活着                    → 入队（两道闸都不拦投递；输出闸关着就是只收不取）
             ├─ agent 不在（首次装配）→ reconcile + resolveHistory 读库 → acquire → 历史装进去
             └─ agent 在             → 直接 push；它自己从闲变忙、自己取走
       回执：收下了（userMessageId + 每个附件最后怎么走的）／被拒。
@@ -172,7 +172,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 | 流式一片 | `message.delta` | core 的 `AgentNS.Delta` 原样 + `messageId`（**没有 seq**：有序连接上「漏一片」这个处境不存在，断线即作废、靠 `resync` 整段对齐） | 客户端跑同一个 `applyChunk` 增量 |
 | 一圈收口 | `message.changed` | 完整消息对象（此刻的 status / tool_calls / finish_reason / usage 都在上面） | 客户端整条替换；宿主覆盖写行 |
 | 事后改写 | `message.changed` / `message.removed` | 同上 ／ 被删的那条（中止、出错、`drop`、`omit`） | 同上 |
-| 状态 | `state` | `{ conversationId, status }`，`status` 只有 `working` / `idle`（**只读**，变了才发）；两道闸各有自己的事件（`output:paused` / `output:resumed`、`input:paused` / `input:resumed`）；**死活 = 有没有 agent 实例**，不在这条事件上（PRD 4.4 的四件事） | 客户端自己那四行 |
+| 状态 | `state` | `{ conversationId, status }`，`status` 只有 `working` / `idle`（**只读**，变了才发）；两道闸各有自己的事件（`output:paused` / `output:resumed`、`input:paused` / `input:resumed`）；**死活 = 有没有 agent 实例**，走 `conversation.changed` 的 `agent_started` / `agent_gone`（不挤进 `state`） | 客户端自己那四个字段 |
 | 出错 | `error` | core 的 `AgentError` 完整对象（`code` / `message` / `detail`）+ 它挂在哪条消息上 | 日志、排查、要技术细节的地方；**消息行里另存一份「回显用」的失败事实**（码 + 文案键 + 参数），活得比进程长（PRD 4.15） |
 
 - `conversation.changed` 的 `change` 取值里有 `handoff_started` 一格：交接**开始**那一刻推它（界面据此直说「正在交接」、输入框不给发、只留中断）；收口仍只有 `memory_replaced`。`[用户]`
@@ -201,7 +201,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 - **点数沿革**：65 → 63（W3：+`agent.restoreFactory`、+`config.saveMcp` / `config.deleteMcp`，−`host.usage`、−`credential.list/create/revoke`、−`config.patchMcps`）→ 62（删 `host.capabilities`）→ 63（W6-E：+`conversation.clearInbox`，清空待办归客户端）→ 64（W11：+`conversation.setThresholds`，两条阈值的会话级覆盖有了写入口）→ **66**（W12：+`conversation.pause` / `conversation.resume`，暂停与继续各有自己的按钮）。
 - **`credential.*` 删的是契约面、不是能力**：`CredentialService`、`CredentialRepository`、`<数据根>/run/token`、`agents-host token create|list|revoke` 一字未动，`Credential*` 形状只留给那三个子命令。别因为 `grep credential.* wire/methods.ts` 找不到方法名就以为能力没了（PRD L13）。
 - **桥接名单 4 条**（不在 handler 表里）：`host.hello`、`host.setLanguage`、`asset.begin`、`asset.end` 由 `WsHub` 自己处理，其余 **62** 条进注入的 `HandlerTable`。理由：凭证与语言是**连接状态**；上传要按 `connectionId` 分帧落盘、断线按连接清理。分发顺序是 `hello` → 未握手拒绝 → 已知方法名校验 → 连接级方法 → 上传方法 → handler 表；表里没有的名字回 `unsupported`（`detail.reason = handler_not_registered`）。`handlers/index.test.ts` 钉住「每个方法要么在表里、要么在桥接名单里，且两边不重叠」。
-- **事件** 9 个：`message.added` / `message.delta` / `message.changed` / `message.removed` / `state` / `error` / `conversation.changed` / `notice` / `question`。前六个是客户端重建 `messages` 与那四格的全部原料（三条粒度见 §5.4），**宿主不在这之上再加聚合**：没有 `run.state`，没有 `usage`。
+- **事件** 13 个：`message.added` / `message.delta` / `message.changed` / `message.removed` / `state` / `output:paused` / `output:resumed` / `input:paused` / `input:resumed` / `error` / `conversation.changed` / `notice` / `question`。前四条拼出 `messages`，`state` 只说忙闲，四条闸事件各说一道闸（与 core 同名），死活走 `conversation.changed` 的 `agent_started` / `agent_gone`（见 §5.4），**宿主不在这之上再加聚合**：没有 `run.state`，没有 `usage`。
 - **业务码** 13 个（`src/wire/errors.ts` 的 `BizCode`），数字码只做粗分类。
 - **`message.list` 的取法**见 A12；`around` 的消费者只有桌面端（搜索命中定位），CLI 一阶段不消费。
 - **`hello`**：`{ token, language?, clientInfo }`。凭证不放 URL 查询串（会进日志与进程表）；未握手的连接只放行 `hello`。成功时回协商出的 `language`、`hostVersion`、`protocolVersion`、`startedAt`、附件上限 `limits`（能力清单已删，不再回）。
@@ -326,7 +326,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 | 落地即写库 | `ChatRunner.ts:1804-1821` | `persistLandedQueued`：先写行再 `linkQueuedAssets`，`createdAt` 取落地时刻 |
 | 来源注释 | core 的 `inboxEntryContent` | 落地那一刻统一生成；宿主没有第二个拼装点（也没有第二份内容） |
 | 待办回显 | `agent.inboxPending` → `wire/states.ts` 的 `InboxItem` | 现读，不存镜像；条数取证 |
-| 状态四格 | `AgentRegistry.get(id)?.state` | 忙 / 闲 / 暂停；查不到 = 死。不落库、不是字段、不推算 |
+| 四件事 | `AgentRegistry.get(id)?.state` + 两道闸 + 有没有那个对象 | 忙闲读 `state`、两个闸各现读一个开关、死活看对象在不在。不落库、不是字段、不推算 |
 | 变闲那一刻 | `ChatRunner` 的 `onIdle`（订的是 core 的 `state:idle`）→ `app` 的那一个判断 | 全宿主唯一一处：先看会话行上有没有待交接，再看要不要问交接线、要不要起名字 |
 | 历史只有一份 | `ChatRunner.run()` 的二分 + `attach` | 有 agent 就从它内存里取，首次装配才读库 |
 
@@ -364,8 +364,8 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 | 条 | 落点 | 一句话 |
 |---|---|---|
 | 会话草稿落库 | `packages/host/src/services/ConversationService.ts:409-430` | `ensurePersisted`：写行 + 那条 hidden 的 cwd 消息，并发去重 |
-| 运行时端口 | `ConversationService.ts`（`ConversationRuntimePort`）、`app.ts`（`createConversationRuntime`） | 哪一格 / 队里几条（现读）、`forget`、`agentState`、`invalidateAgent` |
-| 侧栏摘要 | `ConversationService.ts:766`（`toSummary`） | 主线条数 + 四格状态读数 + 待办条数 + 助手可用性 |
+| 运行时端口 | `ConversationService.ts`（`ConversationRuntimePort`）、`app.ts`（`createConversationRuntime`） | 四件事 + 队里几条（`presence()` 现读）、`forget`、`agentState`、`invalidateAgent` |
+| 侧栏摘要 | `ConversationService.ts:766`（`toSummary`） | 主线条数 + 四件事 + 待办条数 + 助手可用性 |
 | `message.list` 的 `around` | `packages/host/src/services/MessageService.ts:337`（`AROUND_WINDOW = 40`）、`:388`（`list`） | 命中不在可见集就回空页 + `anchor: null`，不报错 |
 | 两个条数口径 | `MessageRepository.countByConversation` / `listByConversation` | 只取数 / 取行，两处必须永远相等 |
 | 搜索下界 | `MessageRepository.ts:318` | `< 3 字符`退化 `LIKE`；`total` 是下界 |
