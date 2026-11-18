@@ -1,6 +1,6 @@
 /**
- * `conversation.*`：一段对话的身份、历史，以及「投递一句 / 中断 / 暂停 / 继续 / 清空待办 / 现读」
- * 这几个动作。
+ * `conversation.*`：一段对话的身份、历史，以及「投递一句 / 中断 / 暂停 / 继续 / 杀死 / 清空待办 /
+ * 现读」这几个动作。
  *
  * 这里只做「参数 → 交给服务或运行时 → 把结果翻译成契约形状」。业务判断不在这里：
  * 会话行归 `ConversationService`，投递 / 中断 / 四件事归 `ChatRunner`，素材选路归
@@ -27,6 +27,7 @@ import type {
   ConversationAbortResult,
   ConversationDeleteParams,
   ConversationDeleteResult,
+  ConversationKillResult,
   ConversationPauseResult,
   ConversationResumeResult,
   ConversationSendParams,
@@ -101,6 +102,11 @@ export function createConversationHandlers(deps: ConversationHandlerDeps): Handl
 
     "conversation.resume": async (context) =>
       await resume(deps, context.params.conversationId),
+
+    // 杀死：用户按的那一手（PRD 4.4 三条死路之一）。判据全在 `ChatRunner` 里（没有 agent 回
+    // `false`、交接期间拒），本层只把「这一次真的收掉了一个 agent 没有」递出去
+    "conversation.kill": async (context) =>
+      await kill(deps, context.params.conversationId),
 
     // 清空待办：直接转 core（`agent.clearInbox()`），本层不加任何判断
     "conversation.clearInbox": async (context) => ({
@@ -250,6 +256,24 @@ async function resume(
 ): Promise<ConversationResumeResult> {
   deps.runner.resume(conversationId);
   return { paused: deps.runner.state(conversationId).outputPaused };
+}
+
+/**
+ * `conversation.kill`：杀死 —— **用户按的那一手**（PRD 4.4 里三条死路之一）。
+ *
+ * 杀死**不是删除**：会话行、消息、记忆一个字都不动，只是这一段没有 agent 了（在途那一批
+ * 掐断、没被取走的待办作废，库里那几行也一起删）。杀死之后再投递报 `conversation_dead`
+ * （不复活）；只有「人点发送」才按库里的事实重新装配起来（PRD 4.2 / 4.4）。
+ *
+ * 回的是**这一次真的把 agent 收掉了没有**：`false` = 这一段本来就是死的（没有 agent）、
+ * 什么都没动，也**不是错误** —— 与 {@link pause} / {@link resume} 对死对话回 `false` 同一口径。
+ * 交接期间直接拒（`busy` / `handoff_in_progress`）：那期间界面上只留中断，别的都不给（PRD 4.5）。
+ */
+async function kill(
+  deps: ConversationHandlerDeps,
+  conversationId: string,
+): Promise<ConversationKillResult> {
+  return { killed: deps.runner.kill(conversationId) };
 }
 
 /**
