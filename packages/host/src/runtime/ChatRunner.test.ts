@@ -931,6 +931,150 @@ describe("ChatRunner：报「死」时带上为什么死", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 杀死：用户按的那一手（不是删除）
+// ---------------------------------------------------------------------------
+
+describe("ChatRunner.kill：用户按杀死（PRD 4.4 的三条死路之一）", () => {
+  it("杀掉活着的会话：alive 为 false、待办空、库里的 inbox 行一条不剩，而消息一条不少", async () => {
+    const toolGate = deferred<void>();
+    const harness = createHarness({ rounds: [stuckInToolRound(toolGate.promise)] });
+
+    // 第一条被取走、卡在工具里，后两句只能排着（各自落一行）
+    await harness.deliver(userSays("第一条"));
+    await harness.waitFor(() => harness.registry.get(CONVERSATION_ID)?.state === "working");
+    await harness.deliver(userSays("第二条"));
+    await harness.deliver(userSays("第三条"));
+    await harness.waitFor(() => harness.inbox.rows.length === 2);
+    const messageIds = (await harness.rows()).map((row) => row.id);
+
+    expect(harness.runner.kill(CONVERSATION_ID)).toBe(true);
+    await harness.settle();
+
+    // 库里的待办行跟着没了。这一条**只有**在「先 agents.kill、再拆桥」时才成立：
+    // `agent.kill()` 同步广播的 `inboxCleared` 得有人听（桥先拆掉，那些行就留成孤行，
+    // 下一次装配又被放回队列）
+    await harness.waitFor(() => harness.inbox.rows.length === 0);
+    expect(harness.inbox.writes.at(-1)).toBe(`clear:${CONVERSATION_ID}`);
+
+    // 死 = 这一段没有 agent 实例了，待办也空了
+    expect(harness.registry.get(CONVERSATION_ID)).toBeUndefined();
+    expect(harness.runner.state(CONVERSATION_ID)).toMatchObject({ alive: false, inbox: [] });
+
+    // 杀死不是删除：消息一行不少（在途那条只是被掐断，不是没了）
+    expect((await harness.rows()).map((row) => row.id)).toEqual(messageIds);
+
+    toolGate.resolve();
+    await harness.settle();
+  });
+
+  it("作废的那几条不会被下一次装配放回队列（杀了不会复活）", async () => {
+    const toolGate = deferred<void>();
+    // 上一任与这一任共用同一份库（进程没了 / 重开段对话，库还在）
+    const store = new RecordingMessageStore();
+    const inbox = new RecordingInboxStore();
+
+    const before = createHarness({ store, inbox, rounds: [stuckInToolRound(toolGate.promise)] });
+    await before.deliver(userSays("第一条"));
+    await before.waitFor(() => before.registry.get(CONVERSATION_ID)?.state === "working");
+    await before.deliver(userSays("第二条"));
+    await before.deliver(userSays("第三条"));
+    await before.waitFor(() => inbox.rows.length === 2);
+
+    expect(before.runner.kill(CONVERSATION_ID)).toBe(true);
+    await before.settle();
+    // 库里那两行被清了 —— 所以「关掉再打开」时它们没有东西可恢复
+    await before.waitFor(() => inbox.rows.length === 0);
+
+    const after = createHarness({ store, inbox, pauseOnBuild: true });
+    await after.deliver(userSays("重开之后的一句"));
+    expect(after.runner.state(CONVERSATION_ID).inbox.map((item) => item.preview)).toEqual([
+      "重开之后的一句",
+    ]);
+
+    toolGate.resolve();
+  });
+
+  it("杀完再投报 `conversation_dead`（不复活）；人点发送才重新装配起来，历史一句不少", async () => {
+    const harness = createHarness({ rounds: [{ deltas: [{ content: "好" }] }] });
+    await harness.deliver(userSays("第一句"));
+    await harness.waitIdle();
+
+    expect(harness.runner.kill(CONVERSATION_ID)).toBe(true);
+    await harness.settle();
+    expect(harness.runner.state(CONVERSATION_ID).alive).toBe(false);
+
+    // 任何投递都不复活会话（PRD 4.2 / 4.4）：报「这段没了」，而不是叫起一个新的
+    await expect(
+      harness.deliver(userSays("外面的一句", { mayStart: false })),
+    ).rejects.toMatchObject({ code: "conversation_dead" });
+    expect(harness.runner.state(CONVERSATION_ID).alive).toBe(false);
+    expect(harness.builds).toEqual([CONVERSATION_ID]);
+
+    // 界面上的发送按钮（创建者）：重新装配起来，记忆照旧在（会话行与消息一个字没动）
+    await harness.deliver(userSays("人发的一句", { mayStart: true }));
+    await harness.waitIdle();
+
+    expect(harness.runner.state(CONVERSATION_ID).alive).toBe(true);
+    expect(harness.builds).toEqual([CONVERSATION_ID, CONVERSATION_ID]);
+    expect(harness.runner.messagesOf(CONVERSATION_ID)!.map((message) => message.content)).toEqual([
+      "第一句",
+      "好",
+      "人发的一句",
+      "好",
+    ]);
+  });
+
+  it("本来就是死的：回 `false`，不抛错、一个字节都不写", () => {
+    const harness = createHarness();
+
+    expect(harness.runner.kill(CONVERSATION_ID)).toBe(false);
+
+    // 什么都没动：没有装配、没有落库、没有推事件
+    expect(harness.builds).toEqual([]);
+    expect(harness.store.writes).toEqual([]);
+    expect(harness.inbox.writes).toEqual([]);
+    expect(harness.pushed).toEqual([]);
+  });
+
+  it("交接期间拒（`busy` / `handoff_in_progress`）：agent 没被杀掉", async () => {
+    const harness = createHarness({ rounds: [{ deltas: [{ content: "好" }] }] });
+    await harness.deliver(userSays("一句"));
+    await harness.waitIdle();
+    harness.runner.beginHandoff(CONVERSATION_ID);
+
+    expect(() => harness.runner.kill(CONVERSATION_ID)).toThrowError(
+      expect.objectContaining({
+        code: "busy",
+        detail: { conversationId: CONVERSATION_ID, reason: "handoff_in_progress" },
+      }) as unknown as Error,
+    );
+    // 一个也没生效：agent 还在（读数仍报活着）
+    expect(harness.registry.get(CONVERSATION_ID)).toBeDefined();
+    expect(harness.runner.state(CONVERSATION_ID).alive).toBe(true);
+
+    harness.runner.endHandoff(CONVERSATION_ID);
+  });
+
+  it("杀死只报一条 `agent_gone`（core 的 `killed` 不重报），并带上「为什么死」", async () => {
+    const harness = createHarness({ rounds: [{ deltas: [{ content: "好" }] }] });
+    await harness.deliver(userSays("一句"));
+    await harness.waitIdle();
+
+    harness.runner.kill(CONVERSATION_ID);
+    await harness.settle();
+
+    const gone = (harness.eventsOf("conversation.changed") as ConversationChangedPayload[]).filter(
+      (payload) => payload.change === "agent_gone",
+    );
+    expect(gone).toEqual([
+      expect.objectContaining({ conversationId: CONVERSATION_ID, change: "agent_gone" }),
+    ]);
+    // 真死（`terminated`），不是「换一个驱动者接着干」的退役
+    expect(harness.dead).toEqual([{ conversationId: CONVERSATION_ID, kind: "terminated" }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 子 Agent
 // ---------------------------------------------------------------------------
 

@@ -26,6 +26,7 @@ import { HostError, localAssetIdOf } from "../wire/index.js";
 import type {
   ConversationAbortResult,
   ConversationDeleteResult,
+  ConversationKillResult,
   ConversationPauseResult,
   ConversationResumeResult,
   ConversationSendResult,
@@ -228,6 +229,31 @@ async function persistedContentOf(app: HostApp, messageId: string): Promise<unkn
   );
   if (row === undefined) throw new Error(`库里没有 ${messageId}`);
   return JSON.parse(row.content) as unknown;
+}
+
+/**
+ * 等库里的 `inbox` 行到几条（`inboxAdded` / `inboxCleared` 是同步事件，写库走自己的链，不能同拍拿到）。
+ */
+async function waitInboxRows(
+  app: HostApp,
+  conversationId: string,
+  expected: number,
+): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const rows = await app.inbox.listByConversation(conversationId);
+    if (rows.length === expected) return;
+    await wait(10);
+  }
+  throw new Error(`库里的 inbox 行没到 ${expected} 条`);
+}
+
+/** 库里这段对话的 `messages` 行数（验「杀死不删消息」要绕过内存） */
+async function countMessages(app: HostApp, conversationId: string): Promise<number> {
+  const row = await app.db.get<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM messages WHERE conversationId = ?",
+    [conversationId],
+  );
+  return row?.n ?? 0;
 }
 
 /** 等这段对话真的闲下来（那一格是 idle、队里也空了），且写库推进完 */
@@ -579,6 +605,73 @@ describe("conversation.delete", () => {
     expect(app.chatRunner.state(conversationId).alive).toBe(false);
     // 素材行随对话一起没了
     expect(await app.assetService.get(assetId)).toBeUndefined();
+  });
+});
+
+describe("conversation.kill（用户按杀死：这不是删除）", () => {
+  it("杀掉活着的会话：`{ killed: true }`；待办作废（库里那几行也删），消息与会话行一个字节没动", async () => {
+    const gate: Deferred<void> = deferred();
+    const { app, conversationId } = await makeHarness({
+      createAgent: async () => new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢慢说" }] }]),
+    });
+
+    // 第一句被取走、卡在流里，后两句只能排着（各自落一行）
+    await callMethod(app, "conversation.send", { conversationId, input: { content: "第一句" } });
+    await callMethod(app, "conversation.send", { conversationId, input: { content: "排一句" } });
+    await callMethod(app, "conversation.send", { conversationId, input: { content: "再排一句" } });
+    await waitInboxRows(app, conversationId, 2);
+    const messagesBefore = await countMessages(app, conversationId);
+    expect(messagesBefore).toBeGreaterThan(0);
+
+    const killed: ConversationKillResult = await callMethod(app, "conversation.kill", {
+      conversationId,
+    });
+    expect(Object.keys(killed)).toEqual(["killed"]);
+    expect(killed.killed).toBe(true);
+
+    // 死 = 这一段没有 agent 实例了：`alive: false`、待办空
+    expect(app.chatRunner.state(conversationId)).toMatchObject({ alive: false, inbox: [] });
+    // 库里那些没被取走的行也没了（先 `agents.kill` 再拆桥，那条 `inboxCleared` 才有人听）
+    await waitInboxRows(app, conversationId, 0);
+
+    // 杀死不是删除：消息一条不少、会话行还在、`conversation.get` 照旧答得出
+    expect(await countMessages(app, conversationId)).toBe(messagesBefore);
+    const still = await callMethod(app, "conversation.get", { conversationId });
+    expect(still.conversation.id).toBe(conversationId);
+
+    gate.resolve();
+    await wait(20);
+  });
+
+  it("本来就是死的：`{ killed: false }`，不抛错、也不产生任何写", async () => {
+    const { app, conversationId } = await makeHarness();
+
+    const killed: ConversationKillResult = await callMethod(app, "conversation.kill", {
+      conversationId,
+    });
+    expect(Object.keys(killed)).toEqual(["killed"]);
+    expect(killed.killed).toBe(false);
+    // 什么也没动：仍然没有 agent、库里一条待办行也没多出来
+    expect(app.chatRunner.state(conversationId).alive).toBe(false);
+    expect(await app.inbox.listByConversation(conversationId)).toEqual([]);
+  });
+
+  it("交接期间拒（`busy` / `handoff_in_progress`）：agent 没被杀掉", async () => {
+    const { app, conversationId } = await makeHarness();
+    await callMethod(app, "conversation.send", { conversationId, input: { content: "说一句" } });
+    await idle(app, conversationId);
+    app.chatRunner.beginHandoff(conversationId);
+
+    await expect(
+      callMethod(app, "conversation.kill", { conversationId }),
+    ).rejects.toMatchObject({
+      code: "busy",
+      detail: { conversationId, reason: "handoff_in_progress" },
+    });
+    // 一个也没生效：agent 还在
+    expect(app.chatRunner.state(conversationId).alive).toBe(true);
+
+    app.chatRunner.endHandoff(conversationId);
   });
 });
 
