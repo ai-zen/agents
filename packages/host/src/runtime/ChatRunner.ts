@@ -139,7 +139,6 @@ import type { EventMap, EventName } from "../wire/events.js";
 import type {
   AttachmentOutcome,
   CompactionMode,
-  SessionActivity,
   SessionState,
   HandoffRefusalReason,
   InboxItem,

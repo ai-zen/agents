@@ -7,7 +7,6 @@
  */
 
 import type { HandlerTable } from "../net/WsHub.js";
-import type { EventLocalizer } from "../services/NoticeService.js";
 import type { NoticeService } from "../services/NoticeService.js";
 
 export interface NoticeHandlerDeps {

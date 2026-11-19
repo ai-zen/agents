@@ -18,7 +18,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { isAbsolute, join, resolve } from "node:path";
+import { join } from "node:path";
 
 import { AgentNS } from "@ai-zen/agents-core";
 import { AgentRepository, resolveModel } from "@ai-zen/agents-sdk";
@@ -219,29 +219,6 @@ export function defaultSessionName(ms: number): string {
   const date = new Date(ms);
   const pad = (value: number): string => String(value).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-/**
- * cwd 归一化成绝对路径。
- *
- * 与 `WorkspaceService` 同一套口径（D9 的 cwd 一旦定死就不再变）：相对路径不能拿
- * 进程工作目录去解，否则同一个入参在不同启动方式下会得到两个项目。
- */
-function normalizeCwd(value: string): string {
-  const raw = typeof value === "string" ? value.trim() : "";
-  if (raw.length === 0) {
-    throw new HostError("invalid_params", {
-      params: { field: "cwd" },
-      detail: { field: "cwd", reason: "empty" },
-    });
-  }
-  if (!isAbsolute(raw)) {
-    throw new HostError("invalid_params", {
-      params: { field: "cwd" },
-      detail: { field: "cwd", reason: "not_absolute", cwd: value },
-    });
-  }
-  return resolve(raw);
 }
 
 /**

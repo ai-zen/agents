@@ -8,7 +8,6 @@ import { PickRequired } from "./Common.js";
 import { ToolCallContext } from "./ToolCallContext.js";
 import { Message } from "./Message.js";
 import { inboxEntryMessage } from "./Inbox.js";
-import { Tool } from "./Tool.js";
 import { reconcileAbortedToolRounds } from "./AbortedToolRounds.js";
 import { reconcileAbortedMessages } from "./AbortedMessages.js";
 import { applyChunk } from "./applyChunk.js";

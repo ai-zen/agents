@@ -1,5 +1,4 @@
 import type { Tool } from "@ai-zen/agents-core";
-import type { AgentDefinition } from "../../../types/index.js";
 import { createPeerSessionTools, PEER_SESSION_TOOL_NAMES } from "./peerSessionTools.js";
 import type { PeerSessionPort } from "./peerSessionTools.js";
 import type { Scope, FilterOutput } from "../../Scope.js";

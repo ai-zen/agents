@@ -42,7 +42,6 @@ import type {
   AgentDeleteResult,
   AgentGetParams,
   AgentGetResult,
-  AgentInput,
   AgentListParams,
   AgentListResult,
   AgentRestoreFactoryParams,

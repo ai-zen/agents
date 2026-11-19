@@ -523,7 +523,7 @@ export class AssetService {
         source: await this.sourceOf(record),
         endpoint: await this.vendorEndpoint(record, target.endpoint),
         model: target.model,
-        deps: this.conversionDeps(record, target),
+        deps: this.conversionDeps(record),
       });
 
       if (result.transport === "text") {
@@ -596,10 +596,7 @@ export class AssetService {
    *
    * 每张素材各自拿一个闭包（不共享可变状态），并发发送两张不同的图不会互相写错行。
    */
-  private conversionDeps(
-    record: AssetRecord,
-    target: AttachmentModelContext,
-  ): ToolEnvDeps | undefined {
+  private conversionDeps(record: AssetRecord): ToolEnvDeps | undefined {
     const vendor = this.vendorFiles;
     const base = this.options.toolEnv;
     if (!vendor) return base;

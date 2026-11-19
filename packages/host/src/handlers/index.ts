@@ -19,7 +19,7 @@
  */
 
 import type { HandlerTable } from "../net/index.js";
-import type { ChatEventEmitter, ChatRunner, ScopeRegistry } from "../runtime/index.js";
+import type { ChatRunner, ScopeRegistry } from "../runtime/index.js";
 import type { TransientRunner } from "../runtime/TransientRunner.js";
 import type { AgentService } from "../services/AgentService.js";
 import type { AssetService } from "../services/AssetService.js";

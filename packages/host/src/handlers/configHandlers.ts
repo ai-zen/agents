@@ -8,7 +8,7 @@
  */
 
 import { hasMessage, render, type Language } from "../i18n/index.js";
-import type { HandlerTable, MethodHandler } from "../net/WsHub.js";
+import type { HandlerTable } from "../net/WsHub.js";
 import type { ConfigService } from "../services/ConfigService.js";
 
 /** 本文件负责的方法名（其余域各有各的文件） */

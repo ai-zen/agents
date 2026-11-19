@@ -28,7 +28,6 @@ import type {
 import { DEFAULT_LANGUAGE, render, type MessageKey } from "../i18n/index.js";
 import { HostError } from "../wire/errors.js";
 import type {
-  ImageModelInput,
   ImageModelView,
   ModelCreateParams,
   ModelCreateResult,

@@ -34,7 +34,6 @@ import type { Language } from "../i18n/index.js";
 import type { ChatEventEmitter } from "../runtime/ChatRunner.js";
 import type { SessionRepository } from "../storage/SessionRepository.js";
 import type { MessageRepository } from "../storage/MessageRepository.js";
-import type { Session } from "../storage/types.js";
 import { defaultSessionName } from "./SessionService.js";
 import { toAgentMessage } from "./MessageService.js";
 import type { NoticeService } from "./NoticeService.js";

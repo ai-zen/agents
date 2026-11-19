@@ -111,7 +111,6 @@ import type {
   SessionCreateResult,
   SessionGetParams,
   SessionGetResult,
-  SessionView,
   HandoffDocument,
   HandoffDocumentInfo,
   HandoffListDocumentsParams,
@@ -570,8 +569,6 @@ export class HandoffDocumentService {
       const handoffDir = handoffDirFor(workspace.cwd);
       // 模板目录按这次交接的项目目录现算（与 SDK 插件同一份口径）
       const skillDirs = this.skillDirs(workspace.cwd);
-      // 落库接缝（两条路共用的那一个）：SDK 算好记忆就交给它，这里只把它落到库
-      const memoryCommitter = this.memoryCommitter(session.id);
       // 写文档 + 换记忆都交给 SDK：它拿这个 agent 去写（自交接）或拿这段记忆去摘要（独立摘要），
       // 降级方向、记忆长什么样都由它自己算（PRD 4.5）。宿主这一侧只剩「落到库」
       const executed = await this.execute({
@@ -656,7 +653,7 @@ export class HandoffDocumentService {
     memory: readonly AgentNS.Message[];
     document: HandoffDocument;
   }): Promise<void> {
-    const { session, driver, memory, document } = input;
+    const { session, driver, memory } = input;
     const at = this.now();
     const archivedId = randomUUID();
     // 系统提示：开头连续的、不隐藏的 system 消息（定义带来的，不落库）。断点也是 `role: system`，
