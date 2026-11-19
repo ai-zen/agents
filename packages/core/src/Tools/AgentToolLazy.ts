@@ -2,6 +2,7 @@ import { Agent, type SubAgentHookContext } from "../Agent.js";
 import { AgentNS } from "../AgentNS.js";
 import { ToolCallContext } from "../ToolCallContext.js";
 import { Tool } from "../Tool.js";
+import { sumUsage } from "../Usage.js";
 
 /**
  * AgentToolLazy —— 延迟构建 Agent 的委派工具。
@@ -87,6 +88,9 @@ export class AgentToolLazy implements Tool {
     } finally {
       offDenied();
       for (const off of forwarded) off();
+      // 把 subagent（含其孙级）的累计用量钉到本次委派的工具结果消息上，
+      // 使其随消息持久化、并可被 `sumUsage()` 统一求和
+      ctx.resultMessage.subAgentUsage = sumUsage(agent.messages);
       await ctx.agent.dispatchSubAgentHook("onSubAgentEnd", subCtx);
     }
 

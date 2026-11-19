@@ -1,8 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
 import { AgentToolLazy } from "./AgentToolLazy.js";
 import { Agent } from "../Agent.js";
+import { AgentNS } from "../AgentNS.js";
 import { Message } from "../Message.js";
 import { ToolCallContext } from "../ToolCallContext.js";
+import { addUsage, sumUsage } from "../Usage.js";
 
 // Helper: 创建 mock OpenAI client，始终返回固定文本
 function createMockClient(responseText = "mock回复") {
@@ -270,5 +272,173 @@ describe("AgentToolLazy subagent 委派边界", () => {
     expect(result).toBe("上下文超了");
     expect(result).not.toContain("{{task}}");
     expect(result).not.toBe("写代码");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 委派这一拍留下的用量事实
+// ---------------------------------------------------------------------------
+
+type AnyChunk = any;
+
+/** 一段回答的流：正文 + 收尾片。收尾片带这次响应的 `usage`（真实端点就是这么给的） */
+function usageStream(text: string, usage: AgentNS.Usage): AnyChunk[] {
+  return [
+    {
+      id: "c-1",
+      object: "chat.completion.chunk",
+      created: 0,
+      model: "mock",
+      choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
+    },
+    {
+      id: "c-2",
+      object: "chat.completion.chunk",
+      created: 0,
+      model: "mock",
+      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      usage,
+    },
+  ];
+}
+
+/** 一轮「要调一次工具」的流 */
+function toolCallStream(id: string, name: string, args: string): AnyChunk[] {
+  return [
+    {
+      id: "c-1",
+      object: "chat.completion.chunk",
+      created: 0,
+      model: "mock",
+      choices: [
+        {
+          index: 0,
+          delta: { tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: args } }] },
+          finish_reason: null,
+        },
+      ],
+    },
+    {
+      id: "c-2",
+      object: "chat.completion.chunk",
+      created: 0,
+      model: "mock",
+      choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+    },
+  ];
+}
+
+/** 每一轮按顺序取下一份流（用具那几轮就走完几轮） */
+function sequenceClient(rounds: AnyChunk[][]) {
+  let round = 0;
+  const create = vi.fn(async () => ({
+    async *[Symbol.asyncIterator]() {
+      for (const chunk of rounds[round++] ?? []) yield chunk;
+    },
+  }));
+  return { chat: { completions: { create } } } as any;
+}
+
+const usageOf = (prompt: number, completion: number, total: number): AgentNS.Usage => ({
+  prompt_tokens: prompt,
+  completion_tokens: completion,
+  total_tokens: total,
+});
+
+describe("AgentToolLazy 委派用量", () => {
+  const functionOf = (name: string) => ({
+    name,
+    description: "测试",
+    parameters: { type: "object", properties: {}, required: [] },
+  });
+
+  function ctxOf(host: Agent) {
+    return new ToolCallContext({
+      agent: host,
+      tool_call: { id: "call-1", function: { name: "lazyFn", arguments: JSON.stringify({ task: "写代码" }) } },
+      resultMessage: Message.Tool({ id: "result-1", function: { name: "lazyFn" } }),
+    });
+  }
+
+  it("委派跑完那一拍，把这次委派的全部用量写到结果那条 tool 消息上", async () => {
+    const sub = usageOf(100, 20, 120);
+    const child = new Agent({
+      client: sequenceClient([usageStream("查到了", sub)]),
+      model: "gpt-4",
+      lifetime: "one-shot",
+    });
+    const tool = new AgentToolLazy({
+      function: functionOf("lazyFn"),
+      messages: [Message.User("{{task}}")],
+      buildAgent: () => child,
+    });
+    const host = new Agent({
+      client: sequenceClient([usageStream("好", usageOf(1, 1, 2))]),
+      model: "gpt-4",
+      messages: [Message.System("主助手")],
+      tools: [tool],
+    });
+
+    const ctx = ctxOf(host);
+    await tool.exec(ctx);
+
+    // 这条 tool 消息上是「这次委派花了多少」—— 也就是 subagent 全部消息的累计
+    expect(ctx.resultMessage.subAgentUsage).toEqual(sumUsage(child.messages));
+    expect(ctx.resultMessage.subAgentUsage).toEqual(sub);
+    // 与它自身那次响应的 `usage` 互斥：tool 消息没有 `usage`
+    expect(ctx.resultMessage.usage).toBeUndefined();
+  });
+
+  it("嵌套一层：父那条上是整棵树的累计（含孙级、不重复计）", async () => {
+    const grandTotal = usageOf(300, 30, 330);
+    const childTotal = usageOf(200, 20, 220);
+
+    const grandchild = new Agent({
+      client: sequenceClient([usageStream("孙的结果", grandTotal)]),
+      model: "gpt-4",
+      lifetime: "one-shot",
+    });
+    const grandchildTool = new AgentToolLazy({
+      function: functionOf("grandFn"),
+      messages: [Message.User("{{task}}")],
+      buildAgent: () => grandchild,
+    });
+
+    // 子：先委派给孙，再给出结论
+    const child = new Agent({
+      client: sequenceClient([
+        toolCallStream("grand-call", "grandFn", JSON.stringify({ task: "查孙级" })),
+        usageStream("子的结论", childTotal),
+      ]),
+      model: "gpt-4",
+      lifetime: "one-shot",
+      tools: [grandchildTool],
+    });
+    const tool = new AgentToolLazy({
+      function: functionOf("lazyFn"),
+      messages: [Message.User("{{task}}")],
+      buildAgent: () => child,
+    });
+    const host = new Agent({
+      client: sequenceClient([usageStream("好", usageOf(1, 1, 2))]),
+      model: "gpt-4",
+      messages: [Message.System("主助手")],
+      tools: [tool],
+    });
+
+    const ctx = ctxOf(host);
+    await tool.exec(ctx);
+
+    // 孙级确实跑过：它自己的 messages 上就是那 330
+    expect(sumUsage(grandchild.messages)).toEqual(grandTotal);
+    // subagent 自己那条 tool 消息上是孙级那份（写法与父那一层同一个）
+    const childDelegation = child.messages.find((message) => message.subAgentUsage);
+    expect(childDelegation?.subAgentUsage).toEqual(grandTotal);
+    // 父那条 = 子自己的响应 + 孙级，一次求和即整棵树
+    expect(ctx.resultMessage.subAgentUsage).toEqual(addUsage(childTotal, grandTotal));
+    // 整段求和 = 整棵树一份，孙级没有被算两遍
+    expect(sumUsage([...host.messages, ctx.resultMessage])).toEqual(
+      addUsage(childTotal, grandTotal),
+    );
   });
 });
