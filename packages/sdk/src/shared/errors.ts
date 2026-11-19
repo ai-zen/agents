@@ -36,7 +36,7 @@ export class ContextOverflowError extends Error {
   constructor(promptTokens: number, guardTokens: number) {
     super(
       `🛑 Context critically over the limit: ${promptTokens} tokens used, above the blocking threshold of ${guardTokens}.` +
-        ` The conversation may have run away after reading an oversized file, so it has been interrupted — please inspect and start over.` +
+        ` The session may have run away after reading an oversized file, so it has been interrupted — please inspect and start over.` +
         ` (If you really need a longer context, raise tokenThresholds.guard for this model in config.json.)`,
     );
     this.name = "ContextOverflowError";

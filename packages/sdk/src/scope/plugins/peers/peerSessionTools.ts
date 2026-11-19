@@ -186,15 +186,15 @@ const LABEL_HINT =
 /** 拒绝各自的一句话：说清「为什么」与「接下来能做什么」（宿主没给 hint 时用它） */
 const REJECT_HINTS: Record<PeerSessionRejectReason, string> = {
   depth_exceeded:
-    "This conversation is itself a peer session, and peer sessions cannot open further ones " +
+    "This session is itself a peer session, and peer sessions cannot open further ones " +
     "(creating is one level only — posting a message is not limited this way). Do the work here " +
-    "instead, or report back and let the conversation that started this one open it.",
+    "instead, or report back and let the session that started this one open it.",
   model_unresolved:
     "No model could be resolved for that session (no session override, no modelId on the agent " +
     "definition, no global default model). Pass `modelId`, or pass an `agentId` that has a model " +
     "bound.",
   too_many_peers:
-    "This conversation already has the maximum number of peer sessions busy at the same time. " +
+    "This session already has the maximum number of peer sessions busy at the same time. " +
     "Wait until some of them are free (read_session_status tells me which one is idle), or give " +
     "the work to fewer sessions instead of opening another one.",
 };
@@ -208,7 +208,7 @@ const REJECT_HINTS: Record<PeerSessionRejectReason, string> = {
 const SEND_REJECT_HINTS: Record<PeerSessionSendRejectReason, string> = {
   gone:
     "There is no such session any more: it was deleted, or the host restarted and that in-process " +
-    "record is gone (it is now an ordinary conversation that still shows up in the session list). " +
+    "record is gone (it is now an ordinary session that still shows up in the session list). " +
     "Nothing was sent and no answer will arrive — do the work here instead.",
   dead:
     "That session exists but there is no agent behind it any more, so nobody will take the " +
@@ -223,8 +223,8 @@ const SEND_REJECT_HINTS: Record<PeerSessionSendRejectReason, string> = {
  */
 const EXCERPT_HINT =
   "`lastMessage` in this answer is only the beginning of the last thing it said (cut at 300 " +
-  "characters), and it is all I get: never its full conversation, never its history, no message " +
-  "count — do not use this answer to fetch context.";
+  "characters), and it is all I get: never that session's full transcript, never its history, " +
+  "no message count — do not use this answer to fetch context.";
 
 /**
  * 「收下了」那半句：只说两件当场能定下的事 —— ① 已进那边的 inbox；② 别轮询。
@@ -257,7 +257,7 @@ function statusHint(status: PeerSessionActivity, alive: boolean): string {
 /** 会话根本找不到（`found: false`）时给模型的一句话：这不是第五格，是「没有这一段」 */
 const NOT_FOUND_HINT =
   "There is no record of that session any more: it was deleted, or the host restarted and " +
-  "that in-process record is gone (in that case it is now an ordinary conversation that " +
+  "that in-process record is gone (in that case it is now an ordinary session that " +
   "still shows up in the session list). No answer will arrive there. If I only remember the " +
   "`label`, that session can no longer be looked up by it.";
 
@@ -276,7 +276,7 @@ function createSessionTool(port: PeerSessionPort): Tool {
     function: {
       name: CREATE_SESSION_TOOL,
       description: [
-        "Open a PEER SESSION: a separate conversation with its own agent that works on `prompt`",
+        "Open a PEER SESSION: a separate session with its own agent that works on `prompt`",
         "alongside this one (own context, own usage, and it stays readable in the session list",
         "afterwards). Use it for work that can happen in parallel with mine instead of blocking me.",
         "This call returns as soon as the session exists: it does not wait for any answer and no",
@@ -284,8 +284,8 @@ function createSessionTool(port: PeerSessionPort): Tool {
         "Talk to it afterwards with post_message; do not poll it — when that session has something",
         "for me it calls post_message on me itself.",
         "Creating is limited to one level (a peer session cannot open another one); posting a",
-        "message is not limited that way — any conversation may post a message to any other.",
-        "Remember the returned `label` as well as `sessionId`: in a long conversation I may no",
+        "message is not limited that way — any session may post a message to any other.",
+        "Remember the returned `label` as well as `sessionId`: in a long session I may no",
         "longer recall the id, and the label is how I refer to this session.",
       ].join(" "),
       parameters: {
@@ -295,13 +295,13 @@ function createSessionTool(port: PeerSessionPort): Tool {
             type: "string",
             description:
               "What that session should do. Write it as a self-contained task: the new session " +
-              "starts from an empty context and cannot see this conversation.",
+              "starts from an empty context and cannot see this session.",
           },
           agentId: {
             type: "string",
             description:
               "Agent (by id) that runs the new session (optional, defaults to the agent of this " +
-              "conversation)",
+              "session)",
           },
           modelId: {
             type: "string",
@@ -353,7 +353,7 @@ function readSessionStatusTool(port: PeerSessionPort): Tool {
         "About that session the answer gives exactly two facts: whether it is busy (that one state)",
         "and `lastMessage` — a short excerpt of the last thing it said (cut at 300 characters; null",
         "while it has not said anything yet); the `label` is only the name it was created with.",
-        "That excerpt is all I get: the answer is never the full conversation",
+        "That excerpt is all I get: the answer is never the full transcript",
         "and never its history, it carries no message list and no message count, and it does not",
         "say what that session is doing — so do not use it to fetch context.",
         "This is a single check, not a waiting loop: which of those states it is in (or that it",
@@ -369,8 +369,7 @@ function readSessionStatusTool(port: PeerSessionPort): Tool {
           sessionId: {
             type: "string",
             description:
-              "The sessionId returned by create_session (that id is also the conversation id of " +
-              "that session)",
+              "The sessionId returned by create_session (that is the peer session's own id)",
           },
         },
         required: ["sessionId"],
@@ -404,10 +403,10 @@ function post_messageTool(port: PeerSessionPort): Tool {
     function: {
       name: POST_MESSAGE_TOOL,
       description: [
-        "Post a message to another conversation (a session created by create_session, or any",
-        "conversation I know the id of) — it is how I talk to that side instead of opening a new",
-        "session. Whoever it is, the message is accepted as long as that conversation exists and",
-        "has a live agent: posting does not depend on how the two of us are related.",
+        "Post a message to another session (one created by create_session, or any session I know",
+        "the id of) — it is how I talk to that side instead of opening a new one. Whoever it is,",
+        "the message is accepted as long as that session exists and has a live agent: posting",
+        "does not depend on how the two of us are related.",
         "The call returns whether the message was taken. It does not wait for anything: no answer",
         "comes back here and nothing is delivered to me automatically — when that side has",
         "something to tell me it posts a message to me itself.",
@@ -422,14 +421,13 @@ function post_messageTool(port: PeerSessionPort): Tool {
           sessionId: {
             type: "string",
             description:
-              "The sessionId returned by create_session (that id is also the conversation id of " +
-              "that session)",
+              "The sessionId returned by create_session (that is the peer session's own id)",
           },
           content: {
             type: "string",
             description:
               "What to say to that side. Write it as a self-contained instruction: it cannot see " +
-              "this conversation, it only has its own history.",
+              "this session, it only has its own history.",
           },
         },
         required: ["sessionId", "content"],

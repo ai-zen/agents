@@ -408,7 +408,7 @@ describe("read_session_status：忙不忙 + 死活 + 「没有这一段」，只
     expect(description).not.toContain("failed");
     expect(description).not.toContain("aborted");
     // 摘要只是摘要：给了原文模型就会当上下文搬运（需求：只给「忙不忙 + 最近一句摘要」）
-    expect(description).toContain("never the full conversation");
+    expect(description).toContain("never the full transcript");
     expect(description).toContain("never its history");
     expect(description).toContain("`lastMessage`");
     expect(description).toContain("`label`");
@@ -425,7 +425,7 @@ describe("read_session_status：忙不忙 + 死活 + 「没有这一段」，只
       const result = (await call(statusTool, { sessionId: "s" })) as { hint: string };
 
       expect(result.hint).toContain("`lastMessage`");
-      expect(result.hint).toContain("never its full conversation");
+      expect(result.hint).toContain("never that session's full transcript");
       expect(result.hint).toContain("never its history");
     }
     const live = recordingPort({

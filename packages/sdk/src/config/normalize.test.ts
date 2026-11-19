@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { AppConfig, Model } from "../types/index.js";
-import { DEFAULT_HANDOFF_THRESHOLD, normalizeConfig, normalizeModelThresholds } from "./migrate.js";
+import { DEFAULT_HANDOFF_THRESHOLD, normalizeConfig, normalizeModelThresholds } from "./normalize.js";
 
 /** 一个模型（只填用例关心的那几格，其余走 type assertion） */
 function model(fields: Record<string, unknown> = {}): Model {

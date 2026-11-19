@@ -325,9 +325,9 @@ export class PeerSessionService implements PeerSessionPort {
     if (parent.lineage !== null) {
       return rejected(
         "depth_exceeded",
-        "This conversation is itself a peer session, and peer sessions cannot open further peer " +
+        "This session is itself a peer session, and peer sessions cannot open further peer " +
           "sessions (one level only). Do the work here instead, or report back and let the " +
-          "conversation that started this one spawn it.",
+          "session that started this one spawn it.",
       );
     }
 
@@ -337,7 +337,7 @@ export class PeerSessionService implements PeerSessionPort {
     if ((await this.busyPeersOf(parentSessionId)) >= MAX_RUNNING_PEERS) {
       return rejected(
         "too_many_peers",
-        `This conversation already has ${MAX_RUNNING_PEERS} peer sessions busy at the same ` +
+        `This session already has ${MAX_RUNNING_PEERS} peer sessions busy at the same ` +
           "time. Give the work to fewer sessions instead of opening another one.",
       );
     }
@@ -499,7 +499,7 @@ export class PeerSessionService implements PeerSessionPort {
     const sessionId = this.identities.get(caller);
     if (!sessionId) {
       throw new Error(
-        "Cannot reach a peer session: this agent is not bound to any conversation " +
+        "Cannot reach a peer session: this agent is not bound to any session " +
           "(the host must call PeerSessionService.bind(agent, sessionId) when it builds one)",
       );
     }

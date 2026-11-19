@@ -12,7 +12,7 @@ import {
 } from "./constants.js";
 import { FACTORY_SKILLS, isCustomSkill } from "./factory-skills.js";
 import { FACTORY_REASONING_PRESETS, REASONING_PRESETS_FILE } from "./reasoning-presets.js";
-import { normalizeConfig } from "./migrate.js";
+import { normalizeConfig } from "./normalize.js";
 
 /**
  * 配置坏了、已经按出厂恢复之后的回调（参数是坏掉的那个文件路径）。
@@ -49,7 +49,7 @@ export class ConfigManager {
    * 读取配置。文件不存在时返回出厂默认配置；文件坏了（解析不了 / 不是对象）时
    * 恢复出厂并写回磁盘，也返回出厂默认配置（见 `readRaw`）。
    *
-   * 读到即**补位**（`config/migrate.ts`）：缺字段或非法值补成出厂值，上层拿到的永远是
+   * 读到即**补位**（`config/normalize.ts`）：缺字段或非法值补成出厂值，上层拿到的永远是
    * 合法形状（阈值两条齐、中断策略合法、端点能力位不缺）。
    * 补位结果不在这里落盘——落盘只在 `ensureDefaultConfig()` 做一次。
    */

@@ -51,7 +51,7 @@ const MAX_TITLE_CHARS = 60;
  * 这是**给模型看**的提示，不是界面文案，所以不走 i18n 键空间（那套是给人看的句子）。
  */
 const TITLE_INSTRUCTION = [
-  "You name conversations. Read the exchange below and give it a short title.",
+  "You name sessions. Read the exchange below and give it a short title.",
   "Rules: at most 6 words, no quotes, no trailing punctuation, no preamble like \"Title:\".",
   "Name what the task actually is, in the language the user wrote in.",
   "Answer with the title only.",

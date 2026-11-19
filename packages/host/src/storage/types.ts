@@ -178,7 +178,7 @@ export interface MessageRow {
   data: string | null;
   /** 供全文检索的纯文本（从 content 抽出来的正文，不含 JSON 键名） */
   searchText: string;
-  /** JSON：这条 user 消息从哪儿来（core 的 `AgentNS.MessageSource`）；NULL = 不知道（旧行 / 非 user） */
+  /** JSON：这条 user 消息从哪儿来（core 的 `AgentNS.MessageSource`）；NULL = 不知道（非 user 消息，或写入时没给来源） */
   source: string | null;
   createdAt: number;
   updatedAt: number;
@@ -193,7 +193,7 @@ export interface StoredMessage {
   omit: boolean;
   /** 已反序列化的正文：core 的内容形状；`null` 表示这条消息没有正文 */
   content: AgentNS.MessageContent | null;
-  /** 这条消息的来源（core 的判别结构）；`null` = 没有记录（非 user 消息、或这一列出现之前的旧行） */
+  /** 这条消息的来源（core 的判别结构）；`null` = 不知道（非 user 消息，或写入时没给来源） */
   source: AgentNS.MessageSource | null;
   data: Record<string, unknown> | null;
   createdAt: number;

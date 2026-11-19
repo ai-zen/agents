@@ -330,7 +330,7 @@ export class HandoffService {
         ];
 
     return [
-      "You are now to write a task handoff document for this conversation. The following handoff rules are mandatory.",
+      "You are now to write a task handoff document for this session. The following handoff rules are mandatory.",
       "",
       "---",
       "",

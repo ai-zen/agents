@@ -545,7 +545,7 @@ export class SessionService {
     const row = await this.sessions.get(id);
     if (!row) {
       throw new HostError("internal", {
-        detail: { reason: "conversation vanished after insert", id },
+        detail: { reason: "session vanished after insert", id },
       });
     }
     // 草稿变成真行那一刻才第一次出现在其它窗口的侧栏里，所以这里补一条 `created`
