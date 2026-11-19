@@ -956,6 +956,139 @@ describe("Agent runOnce", () => {
     await agent.start();
   });
 
+  it("未知工具走 onUnknownTool，**不**走 onToolStart", async () => {
+    class Echo extends Tool {
+      function = { name: "echo", description: "e", parameters: {} } as any;
+      async exec() {
+        return "不该跑";
+      }
+    }
+    const { client } = createMockClient([
+      toolCallStream([{ id: "c1", name: "nope" }]),
+      textStream("好"),
+    ]);
+    const agent = new Agent({
+      client,
+      model: "m",
+      newMessageId: makeIds(),
+      tools: [new Echo()],
+    });
+
+    const seen: string[] = [];
+    const ctxs: any[] = [];
+    agent.use({
+      onToolStart: () => {
+        seen.push("onToolStart");
+      },
+      onUnknownTool: (ctx) => {
+        seen.push("onUnknownTool");
+        ctxs.push(ctx);
+      },
+    });
+
+    void agent.start();
+    agent.push(user("跑一下"));
+    await settled(agent);
+
+    // 两个钩子正交：工具不存在时只问「怎么回应它」，不问「要不要开始跑」
+    expect(seen).toEqual(["onUnknownTool"]);
+    expect(ctxs[0].toolCall.function.name).toBe("nope");
+    // 可用工具给全了 —— 插件靠它判「某个工具在不在」，不必自己去别处捞
+    expect(ctxs[0].availableTools.map((t: any) => t.function.name)).toEqual(["echo"]);
+
+    agent.stop();
+    await agent.start();
+  });
+
+  it("已知工具走 onToolStart，**不**走 onUnknownTool", async () => {
+    class Echo extends Tool {
+      function = { name: "echo", description: "e", parameters: {} } as any;
+      async exec() {
+        return "echo 的结果";
+      }
+    }
+    const { client } = createMockClient([
+      toolCallStream([{ id: "c1", name: "echo" }]),
+      textStream("好"),
+    ]);
+    const agent = new Agent({
+      client,
+      model: "m",
+      newMessageId: makeIds(),
+      tools: [new Echo()],
+    });
+
+    const seen: string[] = [];
+    agent.use({
+      onToolStart: () => {
+        seen.push("onToolStart");
+      },
+      onUnknownTool: () => {
+        seen.push("onUnknownTool");
+      },
+    });
+
+    void agent.start();
+    agent.push(user("跑一下"));
+    await settled(agent);
+
+    expect(seen).toEqual(["onToolStart"]);
+    const toolMsg = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
+    expect(toolMsg.content).toBe("echo 的结果");
+
+    agent.stop();
+    await agent.start();
+  });
+
+  it("onUnknownTool 返回 string：tool 消息正文就是它，denied 事件报的是 onUnknownTool", async () => {
+    const { client } = createMockClient([
+      toolCallStream([{ id: "c1", name: "nope" }]),
+      textStream("好"),
+    ]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+
+    const denieds: any[] = [];
+    agent.on("denied", (payload) => denieds.push(payload));
+    agent.use({ onUnknownTool: () => "没有这个工具，试试 call_mcp_tool" });
+
+    void agent.start();
+    agent.push(user("跑一下"));
+    await settled(agent);
+
+    const toolMsg = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
+    expect(toolMsg.content).toBe("没有这个工具，试试 call_mcp_tool");
+    expect(denieds).toHaveLength(1);
+    // 如实报是哪一道门拒的（下游按这个字段统计，报错钩子名会把人引偏）
+    expect(denieds[0].hook).toBe("onUnknownTool");
+    expect(denieds[0].detail.toolCall.function.name).toBe("nope");
+
+    agent.stop();
+    await agent.start();
+  });
+
+  it("onUnknownTool 返回 undefined：走默认「未知工具」文案，且不发 denied", async () => {
+    const { client } = createMockClient([
+      toolCallStream([{ id: "c1", name: "nope" }]),
+      textStream("好"),
+    ]);
+    const agent = new Agent({ client, model: "m", newMessageId: makeIds() });
+
+    const denieds: any[] = [];
+    agent.on("denied", (payload) => denieds.push(payload));
+    agent.use({ onUnknownTool: () => undefined });
+
+    void agent.start();
+    agent.push(user("跑一下"));
+    await settled(agent);
+
+    const toolMsg = agent.messages.find((m) => m.role === AgentNS.Role.Tool)!;
+    expect(toolMsg.content).toBe("未知工具: nope，没有找到对应的工具实现。");
+    expect(denieds).toHaveLength(0);
+
+    agent.stop();
+    await agent.start();
+  });
+
   it("门钩子抛错按「拒」处理（fail-closed），并把错报成 failed", async () => {
     class Echo extends Tool {
       function = { name: "echo", description: "e", parameters: {} } as any;

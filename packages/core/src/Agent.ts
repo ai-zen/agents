@@ -3,6 +3,7 @@ import EventBus from "@ai-zen/event-bus";
 import type { ChatCompletionChunk } from "openai/resources/chat/completions";
 import { AgentNS } from "./AgentNS.js";
 import { AgentContext } from "./AgentContext.js";
+import type { UnknownToolContext } from "./AgentContext.js";
 import { AgentError } from "./AgentError.js";
 import { PickRequired } from "./Common.js";
 import { ToolCallContext } from "./ToolCallContext.js";
@@ -101,13 +102,19 @@ export interface SubAgentEntry {
  * | `onOuterLoopStart` / `onOuterLoopEnd` | 不能 | 这一批的开始 / 结束 |
  * | `onInnerLoopStart` | **能拒** | 排在造 assistant 占位**之前**，拒了历史里一个字都不多 |
  * | `onInnerLoopEnd` | 不能 | 这一次请求结束 |
- * | `onToolStart` | **能拒** | 拒了就是「这个工具没给出有效结果」，原因作为 tool 消息回给模型 |
+ * | `onToolStart` | **能拒** | 工具**存在**，问「要不要开始跑」。拒了就是「这个工具没给出有效结果」，原因作为 tool 消息回给模型 |
+ * | `onUnknownTool` | **能拒** | 工具**不存在**，问「怎么回应模型」。拒（返回 string）= 那条 tool 消息的正文；不管（`undefined`）= 走默认的「未知工具: X」 |
  * | `onToolEnd` | 不能 | 工具跑完了 |
  * | `onSubAgentStart` | **能拒** | 拒了这次委派不跑 |
  * | `onSubAgentEnd` | 不能 | 委派结束（subagent 已经跑完，撤不回来了） |
  *
  * `onOuterLoopStart` **不能拒**：此刻这一批已经从队列里取出来了，拒了这批就没主了。
  * 「要不要处理这一批」的判决应该发生在投递之前 —— 投了就得有人跑。
+ *
+ * `onToolStart` 与 `onUnknownTool` 是**两个正交的钩子**，按「工具存不存在」二选一派发，
+ * 一次工具调用只发其中一个：前者问「这个工具要不要开始跑」，后者问「模型调了个不存在的
+ * 工具，要怎么回应它」（MCP / 权限场景下是刚需：提示改调 `call_mcp_tool`、提示权限被禁）。
+ * 把它们并成一个钩子的话，插件得自己判「工具在不在」才知道自己被叫来干什么。
  */
 export interface AgentPlugin {
   onInit?(): HookResult;
@@ -126,6 +133,8 @@ export interface AgentPlugin {
   onInnerLoopStart?(ctx: InnerLoopContext): HookResult;
   onInnerLoopEnd?(ctx: InnerLoopContext): HookResult;
   onToolStart?(ctx: ToolHookContext): HookResult;
+  /** 模型调了个**不存在**的工具（此时不派发 `onToolStart`）：返回 string 就是那条 tool 消息的正文 */
+  onUnknownTool?(ctx: UnknownToolContext): HookResult;
   onToolEnd?(ctx: ToolHookContext): HookResult;
   onSubAgentStart?(ctx: SubAgentHookContext): HookResult;
   onSubAgentEnd?(ctx: SubAgentHookContext): HookResult;
@@ -355,7 +364,12 @@ function toInboxEntry(
  * 它们崩了还要**fail-closed** —— 坏的护栏放行等于没有护栏；
  * 其余位置崩了当没说话（fail-open），只为不把 agent 打死。
  */
-const DENIABLE_HOOKS = new Set<string>(["onInnerLoopStart", "onToolStart", "onSubAgentStart"]);
+const DENIABLE_HOOKS = new Set<string>([
+  "onInnerLoopStart",
+  "onToolStart",
+  "onUnknownTool",
+  "onSubAgentStart",
+]);
 
 /** 在途的那一次请求（含它引出的工具）：寿命**只到这一次**，下一次是全新的 */
 interface Inflight {
@@ -485,6 +499,7 @@ export class Agent extends AgentContext {
       | OuterLoopContext
       | InnerLoopContext
       | ToolHookContext
+      | UnknownToolContext
       | SubAgentHookContext,
   ): Promise<string | undefined> {
     const deniable = DENIABLE_HOOKS.has(hook as string);
@@ -503,7 +518,7 @@ export class Agent extends AgentContext {
         const wrapped = error instanceof Error ? error : new Error(String(error));
         this.emit("failed", { agent: this, error: wrapped });
 
-        // 门（能拒的那三个）崩了就关上：坏的护栏不该放行。
+        // 门（能拒的那几个，见 {@link DENIABLE_HOOKS}）崩了就关上：坏的护栏不该放行。
         // 其余位置当它没说话，接着问下一个插件。
         if (deniable) return `插件 ${String(hook)} 抛错：${wrapped.message}`;
       }
@@ -1338,16 +1353,29 @@ export class Agent extends AgentContext {
     };
 
     try {
-      // ① 钩子拒 —— 停止的两条路之一。
+      // ① 门 —— **按工具在不在二选一**，一次调用只发一个钩子：
+      //    - 有实现 → `onToolStart`：问「这个工具要不要开始跑」；
+      //    - 没实现 → `onUnknownTool`：问「模型调了个不存在的工具，怎么回应它」。
+      //    两个问题不该由一个钩子回答 —— 合成一个的话，插件得自己判「工具在不在」
+      //    才知道自己被叫来干什么（`onToolStart` 也就成了「未知时照样发」）。
+      //
       //    返回的字符串**就是**这条 tool 消息的正文：拒绝理由与「未知工具提示」都要能
       //    直接写给模型读，core 不再在前面加自己的前缀话术。
-      const denied = await this.dispatchHook("onToolStart", { agent: this, toolCall: ctx });
+      const gate: "onToolStart" | "onUnknownTool" = matched ? "onToolStart" : "onUnknownTool";
+      const denied = matched
+        ? await this.dispatchHook("onToolStart", { agent: this, toolCall: ctx })
+        : await this.dispatchHook("onUnknownTool", {
+            toolCall: call,
+            availableTools: this.tools,
+          });
       if (denied !== undefined) {
         result.content = denied;
         finalize(AgentNS.MessageStatus.Completed);
+        // 如实报是**哪一道门**拒的：下游可能按这个字段统计（「未知工具被接管了几次」），
+        // 报错钩子名会把人引到另一边去查。
         this.emit("denied", {
           agent: this,
-          hook: "onToolStart",
+          hook: gate,
           reason: denied,
           detail: { toolCall: call },
         });
@@ -1356,7 +1384,7 @@ export class Agent extends AgentContext {
         result.content = `参数解析错误: ${ctx.parseError}\n请检查你提供的参数格式，确保是合法的 JSON。`;
         finalize(AgentNS.MessageStatus.Completed);
       } else if (!matched) {
-        // ③ 工具不存在 = 同一件事。钩子（如果有话要说）已经在上一步给出文案了
+        // ③ 工具不存在 = 同一件事。`onUnknownTool` 若没接管（返回 undefined），走这条默认文案
         result.content = `未知工具: ${call.function?.name}，没有找到对应的工具实现。`;
         finalize(AgentNS.MessageStatus.Completed);
       } else {
