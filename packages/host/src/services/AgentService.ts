@@ -33,6 +33,7 @@ import type {
 } from "@ai-zen/agents-sdk";
 
 import { DEFAULT_LANGUAGE, render, type MessageKey } from "../i18n/index.js";
+import { hasThinkingKey, thinkingSourceOf } from "./thinking.js";
 import { HostError } from "../wire/errors.js";
 import type {
   AgentCreateParams,
@@ -729,8 +730,14 @@ export class AgentService {
       preset: presetName,
       levels,
       selected: detected ?? null,
-      source: detected === undefined ? "following_default" : "manual",
-      params: detected === undefined ? {} : preset.levels[detected] ?? {},
+      source: thinkingSourceOf(detected, hasThinkingKey(params, preset.levels)),
+      // 手写过参数时把那一条原样交回去（它是事实，不是「没设过」）；凑成一档时给那一档的补丁
+      params:
+        detected !== undefined
+          ? (preset.levels[detected] ?? {})
+          : hasThinkingKey(params, preset.levels)
+            ? (params ?? {})
+            : {},
     };
   }
 

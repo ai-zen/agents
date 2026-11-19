@@ -407,6 +407,27 @@ describe("AgentService.setModel / setThinking", () => {
       source: "following_default",
     });
   });
+
+  it("带着思考键却凑不成任何一档 = custom（手写过参数，不是「没设过」）", async () => {
+    await writeJson(
+      join(dataRoot, "agents", "handwritten.json"),
+      definition("handwritten", {
+        modelId: "m-a1",
+        // 策略表里只有 low / high：这个值不在其中，于是拼不成任何一档 ——
+        // 但它显然是在说思考，所以不能报成「跟随默认」（PRD 1.5「配置即事实」）
+        modelParams: { reasoning_effort: "ultra" },
+      }),
+    );
+
+    const { agents } = await service.list();
+    const handwritten = agents.find((agent) => agent.id === "handwritten");
+    expect(handwritten?.thinking).toMatchObject({
+      selected: null,
+      source: "custom",
+      // 手写那份原样交回：它是事实，不是「没设过」
+      params: { reasoning_effort: "ultra" },
+    });
+  });
 });
 
 describe("AgentService：定义要能读回来（F-B2 / F-F5）", () => {

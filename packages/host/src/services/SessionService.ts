@@ -33,6 +33,7 @@ import type {
 } from "@ai-zen/agents-sdk";
 
 import type { SessionDraftStore } from "../runtime/SessionDrafts.js";
+import { hasThinkingKey } from "./thinking.js";
 import { SessionDrafts } from "../runtime/SessionDrafts.js";
 import type { ChatEventEmitter } from "../runtime/ChatRunner.js";
 import type { AssetRepository } from "../storage/AssetRepository.js";
@@ -1317,12 +1318,25 @@ export class SessionService {
     const detected = levels.find((level) =>
       matchesPatch(agent?.modelParams, preset.levels[level] ?? {}),
     );
+    // 手写在助手定义上、但凑不成任何一档（`detected === undefined` 且带着思考键）。
+    //
+    // 这一格不能直接用 `thinkingSourceOf()`：那一支会把「凑成一档」判成 `manual`，而**会话视图**
+    // 里那仍然是「这一段没选档、跟着助手走」（`following_default` + `selected` 给了那一档）。
+    // 两个视图问的问题不同：助手视图问「定义上写的是哪一档」，会话视图问「这一段自己选了吗」。
+    const handWritten =
+      detected === undefined && hasThinkingKey(agent?.modelParams, preset.levels);
     return {
       preset: presetName,
       levels,
       selected: detected ?? null,
-      source: "following_default",
-      params: detected ? preset.levels[detected] ?? {} : {},
+      source: handWritten ? "custom" : "following_default",
+      // 手写过参数时原样交回那一份（它是事实，不是「没设过」）；凑成一档时给那一档的补丁
+      params:
+        detected !== undefined
+          ? (preset.levels[detected] ?? {})
+          : handWritten
+            ? (agent?.modelParams ?? {})
+            : {},
     };
   }
 

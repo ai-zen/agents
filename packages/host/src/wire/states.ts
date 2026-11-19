@@ -194,8 +194,18 @@ export interface SessionState extends SessionPresence {
 // 思考强度与模型块（PRD F-B7 / F-I6）
 // ---------------------------------------------------------------------------
 
-/** 思考强度的取值来源：跟随默认 / 手动设了某档 / 这个模型不可调（PRD F-B7） */
-export type ThinkingSource = "following_default" | "manual" | "not_adjustable";
+/**
+ * 思考强度的取值来源（PRD F-B7 / 1.5「配置即事实」）。
+ *
+ *   · `manual` —— 选定的是某一档（档位名记在会话行 / 定义上的参数正好凑成那一档）；
+ *   · `custom` —— 定义上带着**属于这个策略的键**，却凑不成任何一档 = 有人手写过参数；
+ *   · `following_default` —— 没设过，跟着模型默认走；
+ *   · `not_adjustable` —— 这个模型引用的策略表里一档都没有。
+ *
+ * `custom` 与 `following_default` **必须分得开**：前者是「你改过」，后者是「你没设过」——
+ * 把两者说成一样，用户会以为自己那份没生效（或再设一次把手写值覆盖掉）。
+ */
+export type ThinkingSource = "following_default" | "manual" | "custom" | "not_adjustable";
 
 /**
  * 思考强度的状态（PRD F-B6 / F-B7）。

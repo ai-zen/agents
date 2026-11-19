@@ -1042,6 +1042,32 @@ describe("SessionService.setThinking（F-B6 / F-B7：会话级、落库）", () 
     });
   });
 
+  it("助手定义上手写了参数却凑不成任何一档 = custom（不是「没设过」）", async () => {
+    // 策略表里只有 low / high：ultra 拼不成一档，但它显然是在说思考
+    await writeAgentWithParams({ reasoning_effort: "ultra" });
+
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    expect(created.session.thinking).toEqual({
+      preset: "test-preset",
+      levels: ["low", "high"],
+      selected: null,
+      source: "custom",
+      // 手写那份原样交回：它是事实
+      params: { reasoning_effort: "ultra" },
+    });
+  });
+
+  it("而「只有温度、没有一个思考键」仍然是跟随默认（custom 不是「参数非空」）", async () => {
+    await writeAgentWithParams({ temperature: 0.2 });
+
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    expect(created.session.thinking).toMatchObject({
+      selected: null,
+      source: "following_default",
+      params: {},
+    });
+  });
+
   it("调档写进会话行，并回展开后的参数", async () => {
     const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
     const id = created.session.id;
