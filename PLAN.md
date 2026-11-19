@@ -85,7 +85,7 @@ HostApp（根：组装、启动、退出）
 | `DiscoveryLayerView.scope` | 同上：MCP 5 层里只有 2 层非空 | 直接认「哪一层可写」，不再按 `editable` + `depth` 反推 |
 | `McpOauthView` 的掩码 | `DiscoveryService` + `services/secretMask.ts` 的 `maskSecret` | 与 `EndpointView` 的 `apiKeyMasked` / `apiKeySet` 同一套；回写省略 = 保留磁盘原值 |
 | `ModelInput.tokenThresholds` 可选 | `ModelService`：`create` 省略套出厂默认、`update` 省略不动 | 建模型不必自己抄两个数 |
-| `SessionSummary.status` / `.inputPaused` / `.outputPaused` / `.alive` / `.inboxPending` / `.agent` | `SessionService.toSummary` + 端口 `presence` / `describeAgent`；**四件事各一格**，是**查询那一刻现读**的，不落库、不是字段 | 侧栏说得出「这段是闲还是忙、两道闸开着没有、它还活着吗、队里还压着几条」与助手可用性；状态栏八块由客户端现拼（PRD F-I6） |
+| `SessionSummary.status` / `.inputPaused` / `.outputPaused` / `.alive` / `.inboxPending` / `.agent` / `.createdBy` | `SessionService.toSummary` + 端口 `presence` / `describeAgent`；**四件事各一格**，是**查询那一刻现读**的，不落库、不是字段 | 侧栏说得出「这段是闲还是忙、两道闸开着没有、它还活着吗、队里还压着几条」与助手可用性；状态栏八块由客户端现拼（PRD F-I6） |
 
 ---
 

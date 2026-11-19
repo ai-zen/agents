@@ -45,7 +45,7 @@
 
 ## 2. 之后（功能缺口，需求已经定了）
 
-- [ ] **平级会话阶段 3**（PLAN §12）：只剩 **`session.list` 的派生字段 `createdBy: "user" | "agent"`**（谁建的，客户端不用自己判 `lineage`）。
+- [x] **平级会话阶段 3**（✅ 已做：`2c7f788` —— `SessionSummary.createdBy`，从 `lineage` 派生、不落库）。
   **没有「超时」这回事**（PRD 4.4 生死全手动）；`/sessions` 那条命令在 TUI，本仓没有 TUI 包，属跨仓。没有 `peer_sessions` 表（血缘在 `sessions.lineage`，这条不变）。
 - [ ] **定时器**（PRD 4.4「将来会有」）：只做一件事 —— 往 inbox 投递。能吵醒本来就活着的会话，不能造、不能复活。
 
