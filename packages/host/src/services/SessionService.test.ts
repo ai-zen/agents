@@ -20,7 +20,7 @@ import { AgentNS } from "@ai-zen/agents-core";
 
 import { HostError } from "../wire/errors.js";
 import { SessionService } from "./SessionService.js";
-import type { SessionRuntimePort } from "./SessionService.js";
+import type { SessionOriginInput, SessionRuntimePort } from "./SessionService.js";
 import type {
   SessionCreateParams,
   SessionPresence,
@@ -230,7 +230,7 @@ async function buildHarness(): Promise<Harness> {
  */
 async function createPersisted(
   service: SessionService,
-  params: SessionCreateParams,
+  params: SessionCreateParams & SessionOriginInput,
 ): Promise<{ session: SessionView }> {
   const created = await service.create(params);
   if (!created.session) throw new Error("session.create 没有建出会话");
@@ -469,6 +469,38 @@ describe("SessionService.list（D13）", () => {
     // 侧栏摘要与视图是同一份口径（摘要 extends 自同一个形状）
     const listed = await harness.service.list({ workspaceId: "w1" });
     expect(listed.sessions[0]?.compactionMode).toBe("auto");
+  });
+});
+
+describe("谁建的（PRD 4.6：`createdBy` 从血缘派生）", () => {
+  it("人建的会话：`createdBy` 是 `user`，血缘是 null", async () => {
+    const created = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+
+    const listed = await harness.service.list({ workspaceId: "w1" });
+    expect(listed.sessions[0]).toMatchObject({ createdBy: "user", lineage: null });
+    // 摘要与视图是同一处拼的：`get` 那一份也是同一个值
+    const view = await harness.service.get({ sessionId: created.session.id });
+    expect(view.session.createdBy).toBe("user");
+  });
+
+  it("`create_session` 开出来的平级会话：`createdBy` 是 `agent`，血缘是调用方会话的 id", async () => {
+    const parent = await createPersisted(harness.service, { workspaceId: "w1", agentId: "a1" });
+    // 与 `PeerSessionService.create` 交给会话服务的是同一份原点：血缘 + 开关开
+    const peer = await createPersisted(harness.service, {
+      workspaceId: "w1",
+      agentId: "a1",
+      lineage: parent.session.id,
+      autoHandoff: true,
+    });
+
+    const listed = await harness.service.list({ workspaceId: "w1" });
+    const byId = new Map(listed.sessions.map((item) => [item.id, item]));
+    expect(byId.get(peer.session.id)).toMatchObject({
+      createdBy: "agent",
+      lineage: parent.session.id,
+    });
+    // 调用方自己没被带偏：它还是人建的，血缘仍是 null
+    expect(byId.get(parent.session.id)).toMatchObject({ createdBy: "user", lineage: null });
   });
 });
 

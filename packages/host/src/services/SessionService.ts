@@ -948,6 +948,8 @@ export class SessionService {
       // 开关与血缘也是会话行上的事实：一个说明装不下时谁来拿主意，一个说明它从哪来
       autoHandoff: row.autoHandoff,
       lineage: row.lineage,
+      // 谁建的：**从血缘派生**（`null` = 人建的），不落库、也不是会话行上的列
+      createdBy: row.lineage === null ? "user" : "agent",
       createdAt: iso(row.createdAt),
       updatedAt: iso(row.updatedAt),
       // 这个数来自 `listBySession` 的长度：**不含 `hidden` 的**（会话创建时那条 cwd 消息、

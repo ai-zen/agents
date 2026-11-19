@@ -47,6 +47,8 @@ function fakeSummarizer(): SessionSummarizer & { calls: string[][] } {
       guardThreshold: row.guardThreshold ?? null,
       autoHandoff: row.autoHandoff ?? false,
       lineage: row.lineage ?? null,
+      // 派生字段也跟着走：这一份替身照抄会话服务的口径（无血缘 = 人建的）
+      createdBy: (row.lineage ?? null) === null ? "user" : "agent",
       createdAt: new Date(row.createdAt).toISOString(),
       updatedAt: new Date(row.updatedAt).toISOString(),
       messageCount: 0,

@@ -321,6 +321,16 @@ export interface SessionSummary extends SessionPresence {
   autoHandoff: boolean;
   /** 血缘：谁开的这段会话（父会话 id）；`null` = 用户建的。只用于展示「由会话 X 创建」 */
   lineage: string | null;
+  /**
+   * 这段会话是谁建的（PRD 4.6「防俄罗斯套娃」：要能标出哪些会话是 agent 建的）。
+   *
+   * **从 `lineage` 派生**，不是会话行上的新列、也不落库：`lineage === null` → `user`（人建的），
+   * 非 `null` → `agent`（别的会话开的）。库里只有 `lineage` 那一列，这一格每次拼摘要时算出来。
+   *
+   * 与 `lineage` 一起给：这一格答「要不要标出来」，`lineage` 答「由会话 X 创建」里的那个 X ——
+   * 客户端不必自己去解释 `lineage === null` 是什么意思。
+   */
+  createdBy: "user" | "agent";
   createdAt: string;
   updatedAt: string;
   messageCount: number;

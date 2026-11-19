@@ -790,6 +790,12 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
     expect(archived?.agentId).toBe(original?.agentId);
     expect(archived?.modelId).toBe(original?.modelId);
     expect(archived?.thinkingLevel).toBe(original?.thinkingLevel);
+    // 血缘照抄 = 交接不产生新身份：存档那段的派生标记（`createdBy`）于是与原会话一致
+    expect(archived?.lineage).toBe(original?.lineage);
+    const summaries = (await harness.sessionService.list({ workspaceId: "w1" })).sessions;
+    const createdByOf = (id: string | undefined) =>
+      summaries.find((item) => item.id === id)?.createdBy;
+    expect(createdByOf(archived?.id)).toBe(createdByOf(sessionId));
     // 它就是交接那一刻生成的（按自己的时间排在列表里）
     expect(archived?.createdAt).toBe(1_700_000_010_000);
     const moved = await harness.messages.listBySession(archived?.id ?? "", undefined, {
