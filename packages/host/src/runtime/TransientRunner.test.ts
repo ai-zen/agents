@@ -151,10 +151,7 @@ describe("只取 Scope，与 Workspace 无关（D3）", () => {
 
 describe("告诉模型「现在在哪个目录」（F-D9）", () => {
   it("cwd 是一条独立的 hidden 消息，发出去的正文就是用户打的那一句", async () => {
-    await harness.runner.run(
-      { cwd: "/tmp/project", input: { content: "一句话回答我" } },
-      "zh",
-    );
+    await harness.runner.run({ cwd: "/tmp/project", input: { content: "一句话回答我" } }, "zh");
 
     // 发出去的正文不再附注入段：模型第一次请求里最后一条 user 消息就是用户打的那句
     const request = harness.agents[0]?.requests[0] ?? [];
@@ -187,10 +184,12 @@ describe("失败与结局的说明", () => {
   });
 
   it("cwd 为空按参数不对拒", async () => {
-    await expect(harness.runner.run({ cwd: "   ", input: { content: "x" } })).rejects.toMatchObject({
-      code: "invalid_params",
-      detail: { field: "cwd" },
-    });
+    await expect(harness.runner.run({ cwd: "   ", input: { content: "x" } })).rejects.toMatchObject(
+      {
+        code: "invalid_params",
+        detail: { field: "cwd" },
+      },
+    );
     expect(harness.scopes.created).toEqual([]);
   });
 

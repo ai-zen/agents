@@ -1,9 +1,4 @@
-import {
-  DEFAULT_LANGUAGE,
-  render,
-  type Language,
-  type MessageKey,
-} from "../i18n/index.js";
+import { DEFAULT_LANGUAGE, render, type Language, type MessageKey } from "../i18n/index.js";
 
 /**
  * 业务码与错误类。

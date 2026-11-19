@@ -210,11 +210,24 @@ describe("四档语气（PRD 4.9）", () => {
     await harness.service.create({ level: "info", code: "notice.settingsApplied", duration: 5 });
     harness.clock.value += 1;
     // 「已保存」这类一秒提示归 success：带一个很短的持续时间
-    await harness.service.create({ level: "success", code: "notice.handoffWritten", params: { path: "/p/h.md" }, duration: 1 });
+    await harness.service.create({
+      level: "success",
+      code: "notice.handoffWritten",
+      params: { path: "/p/h.md" },
+      duration: 1,
+    });
     harness.clock.value += 1;
-    await harness.service.create({ level: "warning", code: "notice.logWarning", params: { summary: "w" } });
+    await harness.service.create({
+      level: "warning",
+      code: "notice.logWarning",
+      params: { summary: "w" },
+    });
     harness.clock.value += 1;
-    await harness.service.create({ level: "error", code: "notice.logError", params: { summary: "e" } });
+    await harness.service.create({
+      level: "error",
+      code: "notice.logError",
+      params: { summary: "e" },
+    });
 
     const listed = await harness.service.list();
     expect(listed.notices.map((notice) => notice.level)).toEqual([
@@ -224,16 +237,27 @@ describe("四档语气（PRD 4.9）", () => {
       "error",
     ]);
     // 库里的那一列也是原值，不是读出时才猜的
-    const rows = await harness.db.all<NoticeRow>("SELECT level FROM notices ORDER BY createdAt ASC");
+    const rows = await harness.db.all<NoticeRow>(
+      "SELECT level FROM notices ORDER BY createdAt ASC",
+    );
     expect(rows.map((row) => row.level)).toEqual(["info", "success", "warning", "error"]);
   });
 
   it("按语气筛选", async () => {
     await harness.service.create({ level: "info", code: "notice.settingsApplied", duration: 5 });
     harness.clock.value += 1;
-    await harness.service.create({ level: "success", code: "notice.handoffWritten", params: { path: "/p/h.md" }, duration: 1 });
+    await harness.service.create({
+      level: "success",
+      code: "notice.handoffWritten",
+      params: { path: "/p/h.md" },
+      duration: 1,
+    });
     harness.clock.value += 1;
-    await harness.service.create({ level: "error", code: "notice.logError", params: { summary: "e" } });
+    await harness.service.create({
+      level: "error",
+      code: "notice.logError",
+      params: { summary: "e" },
+    });
 
     const errors = await harness.service.list({ level: "error" });
     expect(errors.notices).toHaveLength(1);
@@ -246,7 +270,10 @@ describe("四档语气（PRD 4.9）", () => {
   it("语气不在四档里就按参数不对拒", async () => {
     await expect(
       // 越过类型的一档看宿主守不守
-      harness.service.create({ level: "fatal" as unknown as "info", code: "notice.settingsApplied" }),
+      harness.service.create({
+        level: "fatal" as unknown as "info",
+        code: "notice.settingsApplied",
+      }),
     ).rejects.toMatchObject({ code: "invalid_params" });
   });
 
@@ -312,7 +339,11 @@ describe("按语言渲染（D8）", () => {
     const english = localize("notice", payload, "en");
     expect(english.notice.text.message).toBe("Settings applied — no restart needed.");
     // 只有带 `LocalizedText` 的事件过这一层：其余事件原样搬运（同一个对象，不复制）
-    const other: EventMap["state"] = { sessionId: "c1", status: "idle", at: "2026-01-01T00:00:00.000Z" };
+    const other: EventMap["state"] = {
+      sessionId: "c1",
+      status: "idle",
+      at: "2026-01-01T00:00:00.000Z",
+    };
     expect(localize("state", other, "zh")).toBe(other);
   });
 });
@@ -330,7 +361,9 @@ describe("通知是独立通道，绝不进消息（F-I8）", () => {
 
   it("按会话列 = 那一段的 + 全局的；按会话清只清那一段的", async () => {
     // 通知的会话归属是一列真值（外键开着），所以先要有那两个会话
-    await harness.db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', 'p', '/tmp/p', 1)");
+    await harness.db.run(
+      "INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', 'p', '/tmp/p', 1)",
+    );
     for (const id of ["c1", "c2"]) {
       await harness.db.run(
         `INSERT INTO sessions (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
@@ -375,7 +408,9 @@ describe("通知是独立通道，绝不进消息（F-I8）", () => {
     // 清「一段会话的」只清真挂在那段上的：全局通知不属于它，不跟着没
     const cleared = await harness.service.clear({ sessionId: "c1" });
     expect(cleared).toEqual({ cleared: 1 });
-    expect((await harness.service.list({ sessionId: "c1" })).notices.map((notice) => notice.id)).toEqual([global.id]);
+    expect(
+      (await harness.service.list({ sessionId: "c1" })).notices.map((notice) => notice.id),
+    ).toEqual([global.id]);
     expect((await harness.service.list({ sessionId: "c2" })).notices).toHaveLength(2);
     expect((await harness.service.list()).notices).toHaveLength(2);
 
@@ -386,8 +421,17 @@ describe("通知是独立通道，绝不进消息（F-I8）", () => {
 
   it("clear 不给会话就清全部", async () => {
     await harness.service.create({ level: "info", code: "notice.settingsApplied", duration: 5 });
-    await harness.service.create({ level: "success", code: "notice.handoffWritten", params: { path: "/p/h.md" }, duration: 1 });
-    await harness.service.create({ level: "error", code: "notice.logError", params: { summary: "e" } });
+    await harness.service.create({
+      level: "success",
+      code: "notice.handoffWritten",
+      params: { path: "/p/h.md" },
+      duration: 1,
+    });
+    await harness.service.create({
+      level: "error",
+      code: "notice.logError",
+      params: { summary: "e" },
+    });
     expect(await harness.service.clear()).toEqual({ cleared: 3 });
     expect((await harness.service.list()).notices).toEqual([]);
   });

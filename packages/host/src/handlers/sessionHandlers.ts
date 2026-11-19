@@ -85,8 +85,7 @@ export function createSessionHandlers(deps: SessionHandlerDeps): HandlerTable {
     "session.setModel": async (context) => await deps.sessions.setModel(context.params),
 
     // 两条阈值：会话行上的覆盖层（PRD 1.4 / 4.7），宿主现读，所以本层连转发都不必绕道
-    "session.setThresholds": async (context) =>
-      await deps.sessions.setThresholds(context.params),
+    "session.setThresholds": async (context) => await deps.sessions.setThresholds(context.params),
 
     "session.delete": async (context) => await removeSession(deps, context.params),
 
@@ -99,23 +98,19 @@ export function createSessionHandlers(deps: SessionHandlerDeps): HandlerTable {
       started: await deps.runner.start(context.params.sessionId),
     }),
 
-    "session.state": async (context) =>
-      await readState(deps, context.params.sessionId),
+    "session.state": async (context) => await readState(deps, context.params.sessionId),
 
     "session.abort": async (context) => await abort(deps, context.params),
 
     // 暂停 / 继续：只翻输出闸（PRD 4.4）。判据全在 `ChatRunner` 里（没有 agent 回 `false`、
     // 交接期间拒），本层只把「打完之后是不是暂停着」现读回来
-    "session.pause": async (context) =>
-      await pause(deps, context.params.sessionId),
+    "session.pause": async (context) => await pause(deps, context.params.sessionId),
 
-    "session.resume": async (context) =>
-      await resume(deps, context.params.sessionId),
+    "session.resume": async (context) => await resume(deps, context.params.sessionId),
 
     // 杀死：用户按的那一手（PRD 4.4 三条死路之一）。判据全在 `ChatRunner` 里（没有 agent 回
     // `false`、交接期间拒），本层只把「这一次真的收掉了一个 agent 没有」递出去
-    "session.kill": async (context) =>
-      await kill(deps, context.params.sessionId),
+    "session.kill": async (context) => await kill(deps, context.params.sessionId),
 
     // 清空 inbox：直接转 core（`agent.clearInbox()`），本层不加任何判断
     "session.clearInbox": async (context) => ({
@@ -246,10 +241,7 @@ async function abort(
  * —— 没有闸可翻，也不是错误；交接期间直接拒（`busy` / `handoff_in_progress`），因为那期间
  * 闸归交接收口管。
  */
-async function pause(
-  deps: SessionHandlerDeps,
-  sessionId: string,
-): Promise<SessionPauseResult> {
+async function pause(deps: SessionHandlerDeps, sessionId: string): Promise<SessionPauseResult> {
   deps.runner.pause(sessionId);
   return { paused: deps.runner.state(sessionId).outputPaused };
 }
@@ -259,10 +251,7 @@ async function pause(
  *
  * inbox 里压着的条目按原顺序接着跑。回的那一格与 {@link pause} 同一口径（打完之后这道输出闸是不是关着）。
  */
-async function resume(
-  deps: SessionHandlerDeps,
-  sessionId: string,
-): Promise<SessionResumeResult> {
+async function resume(deps: SessionHandlerDeps, sessionId: string): Promise<SessionResumeResult> {
   deps.runner.resume(sessionId);
   return { paused: deps.runner.state(sessionId).outputPaused };
 }
@@ -278,10 +267,7 @@ async function resume(
  * 什么都没动，也**不是错误** —— 与 {@link pause} / {@link resume} 对死会话回 `false` 同一口径。
  * 交接期间直接拒（`busy` / `handoff_in_progress`）：那期间界面上只留中断，别的都不给（PRD 4.5）。
  */
-async function kill(
-  deps: SessionHandlerDeps,
-  sessionId: string,
-): Promise<SessionKillResult> {
+async function kill(deps: SessionHandlerDeps, sessionId: string): Promise<SessionKillResult> {
   return { killed: deps.runner.kill(sessionId) };
 }
 

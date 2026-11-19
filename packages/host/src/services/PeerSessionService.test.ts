@@ -91,7 +91,9 @@ class FakeCreator implements PeerSessionSessionCreator {
     this.rows.set(PARENT_ID, session(PARENT_ID, { name: "父会话" }));
   }
 
-  async create(params: SessionCreateParams & { lineage: string; autoHandoff: boolean }): Promise<SessionCreateResult> {
+  async create(
+    params: SessionCreateParams & { lineage: string; autoHandoff: boolean },
+  ): Promise<SessionCreateResult> {
     this.created.push(params);
     if (this.failWith !== undefined) throw this.failWith;
     this.seq += 1;
@@ -142,10 +144,7 @@ class FakeRunner implements PeerSessionRunner {
     return true;
   }
 
-  async deliver(
-    sessionId: string,
-    input: DeliveryInput,
-  ): Promise<{ userMessageId: string }> {
+  async deliver(sessionId: string, input: DeliveryInput): Promise<{ userMessageId: string }> {
     if (this.failWith !== undefined) throw this.failWith;
     this.deliveries.push({ sessionId, input });
     return { userMessageId: `m-${this.deliveries.length}` };
@@ -156,10 +155,7 @@ class FakeRunner implements PeerSessionRunner {
   }
 
   /** 摆一段会话此刻的四件事（只写要改的那几格：其余按「有 agent、两道闸都开着」） */
-  setPresence(
-    sessionId: string,
-    presence: Partial<SessionPresence> = {},
-  ): SessionPresence {
+  setPresence(sessionId: string, presence: Partial<SessionPresence> = {}): SessionPresence {
     const next: SessionPresence = {
       status: "idle",
       inputPaused: false,
@@ -238,7 +234,10 @@ describe("create：建会话 → 落真行 → 把第一句交出去 → 立刻�
   it("回执只有 sessionId 与 label，第一句以「父会话」为来源投进去", async () => {
     const harness = makeHarness();
 
-    const created = await harness.service.create({ caller: harness.caller, prompt: "查一下登录页" });
+    const created = await harness.service.create({
+      caller: harness.caller,
+      prompt: "查一下登录页",
+    });
 
     expect(created).toEqual({ ok: true, sessionId: "c-child-1", label: "会话 1" });
     // 会话按 `session.create` 那条路开：同项目、同助手（模型交给三级解析），
@@ -368,10 +367,26 @@ describe("status：四件事现读、投影成 SDK 那一格，名字用进程�
   // **没有投影了** —— 四件事不再压回一格四词：输出闸关着也照旧报 `idle`（闸不对平级会话报）。
   // 「找不到这一段」不是第三种情形（它是判别式的另一支：`found: false` + `status: null`）。
   const mappings = [
-    { label: "手上有活 → working", presence: { status: "working" as const }, want: { status: "working" as const, alive: true } },
-    { label: "活着且手上没活 → idle", presence: {}, want: { status: "idle" as const, alive: true } },
-    { label: "输出闸关着 → 还是 idle（闸不给平级会话看）", presence: { outputPaused: true }, want: { status: "idle" as const, alive: true } },
-    { label: "没有 agent 了 → idle + alive: false", presence: { alive: false }, want: { status: "idle" as const, alive: false } },
+    {
+      label: "手上有活 → working",
+      presence: { status: "working" as const },
+      want: { status: "working" as const, alive: true },
+    },
+    {
+      label: "活着且手上没活 → idle",
+      presence: {},
+      want: { status: "idle" as const, alive: true },
+    },
+    {
+      label: "输出闸关着 → 还是 idle（闸不给平级会话看）",
+      presence: { outputPaused: true },
+      want: { status: "idle" as const, alive: true },
+    },
+    {
+      label: "没有 agent 了 → idle + alive: false",
+      presence: { alive: false },
+      want: { status: "idle" as const, alive: false },
+    },
   ];
   for (const mapping of mappings) {
     it(`${mapping.label}`, async () => {
@@ -501,7 +516,13 @@ describe("status：四件事现读、投影成 SDK 那一格，名字用进程�
     });
 
     // 只给「忙不忙 + 死活 + 最近一句摘要」（加上那个名字）：多一格就是把对方的上下文搬过来了
-    expect(Object.keys(result).sort()).toEqual(["alive", "found", "label", "lastMessage", "status"]);
+    expect(Object.keys(result).sort()).toEqual([
+      "alive",
+      "found",
+      "label",
+      "lastMessage",
+      "status",
+    ]);
     expect("startedAt" in result).toBe(false);
     expect("messages" in result).toBe(false);
     expect("messageCount" in result).toBe(false);

@@ -44,7 +44,12 @@ function call<M extends MethodName>(
 function baseConfig(): AppConfig {
   return {
     endpoints: [
-      { id: "ep-a", name: "Endpoint A", baseUrl: "https://a.example/v1", apiKey: "sk-aaaaaaaa1111" },
+      {
+        id: "ep-a",
+        name: "Endpoint A",
+        baseUrl: "https://a.example/v1",
+        apiKey: "sk-aaaaaaaa1111",
+      },
       { id: "ep-empty", name: "Endpoint Empty", baseUrl: "https://e.example/v1", apiKey: "" },
     ],
     models: [
@@ -115,7 +120,12 @@ describe("createConfigHandlers", () => {
   it("config.saveEndpoint / config.deleteEndpoint 转发", async () => {
     const saved = await handlers["config.saveEndpoint"]!(
       call("config.saveEndpoint", {
-        endpoint: { id: "ep-b", name: "B", baseUrl: "https://b.example/v1", apiKey: "sk-bbbbbbbb2222" },
+        endpoint: {
+          id: "ep-b",
+          name: "B",
+          baseUrl: "https://b.example/v1",
+          apiKey: "sk-bbbbbbbb2222",
+        },
       }),
     );
     expect(saved.endpoint.apiKeyMasked).not.toContain("bbbbbbbb");
@@ -163,7 +173,12 @@ describe("localizeLocalizedTexts", () => {
         detail: { reason: "no_key" },
       },
       list: [
-        { code: "error.notFound", messageKey: "error.notFound", params: { entity: "端点" }, message: "en" },
+        {
+          code: "error.notFound",
+          messageKey: "error.notFound",
+          params: { entity: "端点" },
+          message: "en",
+        },
       ],
     };
     const zh = localizeLocalizedTexts(input, "zh");

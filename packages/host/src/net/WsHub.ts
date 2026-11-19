@@ -809,7 +809,7 @@ function extractId(text: string): JsonRpcId | null {
   const matched = /"id"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?)/.exec(text);
   const raw = matched?.[1];
   if (raw === undefined) return null;
-  if (raw.startsWith("\"")) {
+  if (raw.startsWith('"')) {
     try {
       return asId(JSON.parse(raw));
     } catch {

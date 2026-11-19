@@ -111,10 +111,7 @@ interface Harness {
 }
 
 /** 起一个（真 SQLite、真组装的）宿主；同一个数据根再起一次就是「重启」 */
-async function startHost(
-  dataRoot: TempDir,
-  createAgent?: AgentFactory,
-): Promise<HostApp> {
+async function startHost(dataRoot: TempDir, createAgent?: AgentFactory): Promise<HostApp> {
   const app = await createHost({
     aiZenDir: dataRoot.path,
     port: 0,
@@ -224,10 +221,9 @@ async function uploadAsset(app: HostApp, sessionId: string): Promise<string> {
  * `content` 列存的是 JSON：解回来就是 core 的 `AgentNS.MessageContent`。
  */
 async function persistedContentOf(app: HostApp, messageId: string): Promise<unknown> {
-  const row = await app.db.get<{ content: string }>(
-    "SELECT content FROM messages WHERE id = ?",
-    [messageId],
-  );
+  const row = await app.db.get<{ content: string }>("SELECT content FROM messages WHERE id = ?", [
+    messageId,
+  ]);
   if (row === undefined) throw new Error(`库里没有 ${messageId}`);
   return JSON.parse(row.content) as unknown;
 }
@@ -235,11 +231,7 @@ async function persistedContentOf(app: HostApp, messageId: string): Promise<unkn
 /**
  * 等库里的 `inbox` 行到几条（`inboxAdded` / `inboxCleared` 是同步事件，写库走自己的链，不能同拍拿到）。
  */
-async function waitInboxRows(
-  app: HostApp,
-  sessionId: string,
-  expected: number,
-): Promise<void> {
+async function waitInboxRows(app: HostApp, sessionId: string, expected: number): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const rows = await app.inbox.listBySession(sessionId);
     if (rows.length === expected) return;
@@ -317,12 +309,7 @@ describe("session.send", () => {
     const { app, sessionId } = await makeHarness();
     const assetId = await uploadAsset(app, sessionId);
 
-    const english = await pressSend(
-      app,
-      sessionId,
-      { content: "看图", assetIds: [assetId] },
-      "en",
-    );
+    const english = await pressSend(app, sessionId, { content: "看图", assetIds: [assetId] }, "en");
     await idle(app, sessionId);
     expect(english.attachments).toHaveLength(1);
     const outcome = english.attachments[0];
@@ -333,12 +320,7 @@ describe("session.send", () => {
       render("en", "message.imageAsText", outcome?.problem?.params ?? {}),
     );
 
-    const chinese = await pressSend(
-      app,
-      sessionId,
-      { content: "再看", assetIds: [assetId] },
-      "zh",
-    );
+    const chinese = await pressSend(app, sessionId, { content: "再看", assetIds: [assetId] }, "zh");
     await idle(app, sessionId);
     expect(chinese.attachments[0]?.problem?.message).toBe(
       render("zh", "message.imageAsText", chinese.attachments[0]?.problem?.params ?? {}),
@@ -425,9 +407,9 @@ describe("session.start（复活：只管「确保这段有 agent」）", () => 
     });
 
     // 不是草稿、库里也没有 → `not_found`
-    await expect(
-      callMethod(app, "session.start", { sessionId: "没有这段" }),
-    ).rejects.toMatchObject({ code: "not_found" });
+    await expect(callMethod(app, "session.start", { sessionId: "没有这段" })).rejects.toMatchObject(
+      { code: "not_found" },
+    );
   });
 
   it("死会话投递一律 `session_dead`：界面的发送按钮也一样（叫醒它是 `start` 的事）", async () => {
@@ -591,15 +573,11 @@ describe("session.pause / session.resume（只翻输出闸）", () => {
     const { app, sessionId } = await makeHarness();
     app.chatRunner.beginHandoff(sessionId);
 
-    await expect(
-      callMethod(app, "session.pause", { sessionId }),
-    ).rejects.toMatchObject({
+    await expect(callMethod(app, "session.pause", { sessionId })).rejects.toMatchObject({
       code: "busy",
       detail: { sessionId, reason: "handoff_in_progress" },
     });
-    await expect(
-      callMethod(app, "session.resume", { sessionId }),
-    ).rejects.toMatchObject({
+    await expect(callMethod(app, "session.resume", { sessionId })).rejects.toMatchObject({
       code: "busy",
       detail: { sessionId, reason: "handoff_in_progress" },
     });
@@ -665,7 +643,8 @@ describe("session.kill（用户按杀死：这不是删除）", () => {
   it("杀掉活着的会话：`{ killed: true }`；inbox 里的条目作废（库里那几行也删），消息与会话行一个字节没动", async () => {
     const gate: Deferred<void> = deferred();
     const { app, sessionId } = await makeHarness({
-      createAgent: async () => new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢慢说" }] }]),
+      createAgent: async () =>
+        new FakeAgent([{ gate: gate.promise, deltas: [{ content: "慢慢说" }] }]),
     });
 
     // 第一句被取走、卡在流里，后两句只能排着（各自落一行）
@@ -676,9 +655,7 @@ describe("session.kill（用户按杀死：这不是删除）", () => {
     const messagesBefore = await countMessages(app, sessionId);
     expect(messagesBefore).toBeGreaterThan(0);
     // 会话行快照：杀死之后它得逐列相同（杀死不是删除）
-    const rowBefore = await app.db.get("SELECT * FROM sessions WHERE id = ?", [
-      sessionId,
-    ]);
+    const rowBefore = await app.db.get("SELECT * FROM sessions WHERE id = ?", [sessionId]);
 
     const killed: SessionKillResult = await callMethod(app, "session.kill", {
       sessionId,
@@ -693,9 +670,7 @@ describe("session.kill（用户按杀死：这不是删除）", () => {
 
     // 杀死不是删除：消息一条不少、会话行逐列未动、`session.get` 照旧答得出
     expect(await countMessages(app, sessionId)).toBe(messagesBefore);
-    expect(await app.db.get("SELECT * FROM sessions WHERE id = ?", [sessionId])).toEqual(
-      rowBefore,
-    );
+    expect(await app.db.get("SELECT * FROM sessions WHERE id = ?", [sessionId])).toEqual(rowBefore);
     const still = await callMethod(app, "session.get", { sessionId });
     expect(still.session.id).toBe(sessionId);
 
@@ -722,9 +697,7 @@ describe("session.kill（用户按杀死：这不是删除）", () => {
     await idle(app, sessionId);
     app.chatRunner.beginHandoff(sessionId);
 
-    await expect(
-      callMethod(app, "session.kill", { sessionId }),
-    ).rejects.toMatchObject({
+    await expect(callMethod(app, "session.kill", { sessionId })).rejects.toMatchObject({
       code: "busy",
       detail: { sessionId, reason: "handoff_in_progress" },
     });
@@ -785,9 +758,9 @@ describe("session.state：四件事 + inbox + 名册 + 交接态", () => {
 
   it("会话不存在（也没有草稿）→ not_found", async () => {
     const { app } = await makeHarness();
-    await expect(
-      callMethod(app, "session.state", { sessionId: "没有这段" }),
-    ).rejects.toMatchObject({ code: "not_found" });
+    await expect(callMethod(app, "session.state", { sessionId: "没有这段" })).rejects.toMatchObject(
+      { code: "not_found" },
+    );
   });
 });
 

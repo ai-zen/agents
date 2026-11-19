@@ -75,13 +75,13 @@ function echoingClient(onRequest?: (body: SummaryBody) => void): SummaryClient {
         create: async (body: SummaryBody) => {
           onRequest?.(body);
           return {
-          choices: [
-            {
-              message: {
-                content: `${body.messages[0]?.content ?? ""}\n\n## Handoff from the model\n\n${DOCUMENT_BODY}`,
+            choices: [
+              {
+                message: {
+                  content: `${body.messages[0]?.content ?? ""}\n\n## Handoff from the model\n\n${DOCUMENT_BODY}`,
+                },
               },
-            },
-          ],
+            ],
           };
         },
       },
@@ -117,10 +117,7 @@ class RecordingAgent extends FakeAgent {
    */
   readonly definition: { messages: AgentNS.Message[] };
 
-  constructor(
-    rounds: FakeRound[] = [],
-    options: { system?: string } = {},
-  ) {
+  constructor(rounds: FakeRound[] = [], options: { system?: string } = {}) {
     super(rounds, options);
     this.definition = { messages: this.messages.slice(0, options.system === undefined ? 0 : 1) };
   }
@@ -838,12 +835,11 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
     await built.service.start({ sessionId, mode: "summary", then: "document_only" });
     await built.settle();
 
-    const archived = (await harness.sessions.list()).find((row) =>
-      row.name.startsWith("已存档_"),
-    );
-    expect(
-      built.events.changed.map((change) => `${change.change}:${change.sessionId}`),
-    ).toEqual([`memory_replaced:${sessionId}`, `created:${archived?.id}`]);
+    const archived = (await harness.sessions.list()).find((row) => row.name.startsWith("已存档_"));
+    expect(built.events.changed.map((change) => `${change.change}:${change.sessionId}`)).toEqual([
+      `memory_replaced:${sessionId}`,
+      `created:${archived?.id}`,
+    ]);
   });
 
   it("存档是一段普通会话：能读、能删，删它不连坐原会话", async () => {
@@ -851,9 +847,7 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
     await built.service.start({ sessionId, mode: "summary", then: "document_only" });
     await built.settle();
 
-    const archived = (await harness.sessions.list()).find((row) =>
-      row.name.startsWith("已存档_"),
-    );
+    const archived = (await harness.sessions.list()).find((row) => row.name.startsWith("已存档_"));
     const archivedId = archived?.id ?? "";
     // 它就是一段普通会话：消息照样取得出来
     expect((await harness.messages.listBySession(archivedId)).map((row) => row.id)).toEqual([
@@ -937,10 +931,9 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
     );
     expect(archived).toHaveLength(2);
     const counts = await Promise.all(
-      archived.map(async (row) =>
-        (
-          await harness.messages.listBySession(row.id, undefined, { includeHidden: true })
-        ).length,
+      archived.map(
+        async (row) =>
+          (await harness.messages.listBySession(row.id, undefined, { includeHidden: true })).length,
       ),
     );
     // 第一段是交接前那一整段（创建时的 cwd 消息 + 两条会话），第二段只有上一次那一条（断点）：
@@ -1131,9 +1124,9 @@ describe("取消与失败（F-D7）", () => {
     expect(built.driverCalls).toEqual(["pauseOutput", "resumeOutput"]);
     expect(built.driver.isOutputPaused).toBe(false);
     const listed = await notices.list({});
-    expect(
-      listed.notices.some((notice) => notice.text.messageKey === "error.handoffFailed"),
-    ).toBe(true);
+    expect(listed.notices.some((notice) => notice.text.messageKey === "error.handoffFailed")).toBe(
+      true,
+    );
   });
 
   it("执行者没把记忆交回来（一次都没叫落库接缝）→ 按失败收尾，不换记忆", async () => {
@@ -1141,7 +1134,10 @@ describe("取消与失败（F-D7）", () => {
     const built = harness.build({
       notices,
       // 既不抛、也不叫 `commitMemory`：文档没交回来，这一趟不能算成
-      execute: async () => ({ path: join(handoffDirFor(harness.projectDir), "不存在.md"), usedMode: "self" }),
+      execute: async () => ({
+        path: join(handoffDirFor(harness.projectDir), "不存在.md"),
+        usedMode: "self",
+      }),
     });
     await built.service.start({ sessionId, mode: "self", then: "document_only" });
     await built.settle();
@@ -1259,7 +1255,6 @@ describe("前置条件", () => {
       }),
     ).rejects.toMatchObject({ code: "invalid_params" });
   });
-
 });
 
 describe("项目里的交接文档（F-D6：可反复打磨同一份）", () => {
@@ -1289,9 +1284,9 @@ describe("项目里的交接文档（F-D6：可反复打磨同一份）", () => 
 
   it("项目不存在报 not_found", async () => {
     const built = harness.build();
-    await expect(built.service.listDocuments({ workspaceId: "没有这个项目" })).rejects.toMatchObject(
-      { code: "not_found" },
-    );
+    await expect(
+      built.service.listDocuments({ workspaceId: "没有这个项目" }),
+    ).rejects.toMatchObject({ code: "not_found" });
   });
 });
 

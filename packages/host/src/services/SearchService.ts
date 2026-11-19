@@ -121,9 +121,10 @@ export class SearchService {
     if (query.length === 0) return { hits: [], total: 0 };
 
     const limit = clampLimit(params.limit);
-    const offset = params.offset === undefined || !Number.isFinite(params.offset)
-      ? 0
-      : Math.max(Math.trunc(params.offset), 0);
+    const offset =
+      params.offset === undefined || !Number.isFinite(params.offset)
+        ? 0
+        : Math.max(Math.trunc(params.offset), 0);
     const scope = this.scopeOf(params);
     const fetched = await this.messageRepo.search(scope, query, offset + limit);
     const page = fetched.slice(offset);

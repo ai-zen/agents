@@ -150,7 +150,8 @@ export function applyChunk(receiver: AgentNS.Message, delta: AgentNS.Delta): voi
         if (deltaToolCall.function.arguments.startsWith(accumulated)) {
           receiver.tool_calls[index]["function"]!["arguments"] = deltaToolCall.function.arguments;
         } else {
-          receiver.tool_calls[index]["function"]!["arguments"] = accumulated + deltaToolCall.function.arguments;
+          receiver.tool_calls[index]["function"]!["arguments"] =
+            accumulated + deltaToolCall.function.arguments;
         }
       }
     }
@@ -170,7 +171,8 @@ export function applyChunk(receiver: AgentNS.Message, delta: AgentNS.Delta): voi
     }
 
     if (delta.function_call.arguments) {
-      receiver.function_call!.arguments = (receiver.function_call!.arguments ?? "") + delta.function_call.arguments;
+      receiver.function_call!.arguments =
+        (receiver.function_call!.arguments ?? "") + delta.function_call.arguments;
     }
   }
 

@@ -11,14 +11,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import {
-  Agent,
-  AgentNS,
-  AgentToolLazy,
-  CallbackTool,
-  Message,
-  Tool,
-} from "@ai-zen/agents-core";
+import { Agent, AgentNS, AgentToolLazy, CallbackTool, Message, Tool } from "@ai-zen/agents-core";
 import type { AppConfig, ScopePlugin } from "@ai-zen/agents-sdk";
 import { Scope } from "@ai-zen/agents-sdk";
 
@@ -422,8 +415,7 @@ export class FakeAgent extends Agent {
       agent.requests.push(
         agent.messages.filter(
           (message) =>
-            (message.status === undefined ||
-              message.status === AgentNS.MessageStatus.Completed) &&
+            (message.status === undefined || message.status === AgentNS.MessageStatus.Completed) &&
             !message.omit,
         ),
       );

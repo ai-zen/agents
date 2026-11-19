@@ -94,7 +94,9 @@ beforeEach(async () => {
   await fs.rm(assetsDir, { recursive: true, force: true });
   await fs.mkdir(assetsDir, { recursive: true });
 
-  await db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/w1', 1)");
+  await db.run(
+    "INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/w1', 1)",
+  );
   await db.run(
     `INSERT INTO sessions (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
      VALUES ('c1', 'w1', '会话', 0, 'agent-1', 'm-1', 2, 2)`,
@@ -196,7 +198,10 @@ async function uploadAsset(
   });
 }
 
-function prepare(assetIds: string[], content: AgentNS.MessageContent = "看看这张图"): AttachmentPrepareContext {
+function prepare(
+  assetIds: string[],
+  content: AgentNS.MessageContent = "看看这张图",
+): AttachmentPrepareContext {
   return {
     sessionId: "c1",
     agentId: "agent-1",
@@ -412,9 +417,7 @@ describe("prepareAttachments", () => {
       refs.push(await uploadAsset(imageBytes(8 + index)));
     }
 
-    const prepared = await service.prepareAttachments(
-      prepare(refs.map((ref) => ref.assetId)),
-    );
+    const prepared = await service.prepareAttachments(prepare(refs.map((ref) => ref.assetId)));
 
     expect(prepared.attachments).toHaveLength(MAX_ASSETS_PER_MESSAGE + 2);
     const deliverable = prepared.attachments.filter((item) => item.deliveredAs !== "dropped");
@@ -762,12 +765,24 @@ describe("__asset_id 两端", () => {
       {
         id: "m1",
         role: "user" as AgentNS.Role,
-        content: localSections({ type: "image_url", image_url: { url: "" }, __asset_id: ref.assetId }),
+        content: localSections({
+          type: "image_url",
+          image_url: { url: "" },
+          __asset_id: ref.assetId,
+        }),
       },
     ];
 
-    const first = await service.resolveHistory({ sessionId: "c1", modelId: "m-1", messages: history });
-    const second = await service.resolveHistory({ sessionId: "c1", modelId: "m-1", messages: history });
+    const first = await service.resolveHistory({
+      sessionId: "c1",
+      modelId: "m-1",
+      messages: history,
+    });
+    const second = await service.resolveHistory({
+      sessionId: "c1",
+      modelId: "m-1",
+      messages: history,
+    });
 
     // Files API：命中持久缓存，两轮拿到同一个 file_id，段逐字节相同
     expect(JSON.stringify(second[0]?.content)).toBe(JSON.stringify(first[0]?.content));
@@ -781,12 +796,24 @@ describe("__asset_id 两端", () => {
       {
         id: "m1",
         role: "user" as AgentNS.Role,
-        content: localSections({ type: "image_url", image_url: { url: "" }, __asset_id: ref.assetId }),
+        content: localSections({
+          type: "image_url",
+          image_url: { url: "" },
+          __asset_id: ref.assetId,
+        }),
       },
     ];
 
-    const first = await service.resolveHistory({ sessionId: "c1", modelId: "m-1", messages: history });
-    const second = await service.resolveHistory({ sessionId: "c1", modelId: "m-1", messages: history });
+    const first = await service.resolveHistory({
+      sessionId: "c1",
+      modelId: "m-1",
+      messages: history,
+    });
+    const second = await service.resolveHistory({
+      sessionId: "c1",
+      modelId: "m-1",
+      messages: history,
+    });
 
     const firstUrl = (first[0]?.content as { image_url: { url: string } }[])[0]?.image_url.url;
     const secondUrl = (second[0]?.content as { image_url: { url: string } }[])[0]?.image_url.url;
@@ -805,7 +832,11 @@ describe("__asset_id 两端", () => {
         {
           id: "m1",
           role: "user" as AgentNS.Role,
-          content: localSections({ type: "image_url", image_url: { url: "" }, __asset_id: ref.assetId }),
+          content: localSections({
+            type: "image_url",
+            image_url: { url: "" },
+            __asset_id: ref.assetId,
+          }),
         },
       ],
     });
@@ -849,7 +880,6 @@ describe("__asset_id 两端", () => {
   });
 });
 
-
 // ---------------------------------------------------------------------------
 // asset.get
 // ---------------------------------------------------------------------------
@@ -881,7 +911,9 @@ describe("getAsset", () => {
   });
 
   it("id 不认识：报 not_found（不是 internal）", async () => {
-    const error = (await service.getAsset({ assetId: "nope" }).catch((caught: unknown) => caught)) as HostError;
+    const error = (await service
+      .getAsset({ assetId: "nope" })
+      .catch((caught: unknown) => caught)) as HostError;
     expect(HostError.is(error)).toBe(true);
     expect(error.code).toBe("not_found");
   });

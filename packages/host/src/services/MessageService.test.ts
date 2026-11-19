@@ -241,15 +241,15 @@ describe("MessageService.list 的取法（A12）", () => {
 
     const page = await withDrafts.list({ sessionId: "draft-1" });
     expect(page.messages).toEqual([]);
-    await expect(withDrafts.list({ sessionId: "没有这段会话" })).rejects.toBeInstanceOf(
-      HostError,
-    );
+    await expect(withDrafts.list({ sessionId: "没有这段会话" })).rejects.toBeInstanceOf(HostError);
   });
 });
 
 describe("活着读内存，死了读库（PLAN §7）", () => {
   /** 一份「内存里长这样」的口：给什么就回什么，`null` 表示我这边没有 */
-  function liveOf(answer: (id: string, options?: { toolCallId?: string }) => AgentNS.Message[] | null) {
+  function liveOf(
+    answer: (id: string, options?: { toolCallId?: string }) => AgentNS.Message[] | null,
+  ) {
     return new MessageService({
       sessions,
       messages,
@@ -258,10 +258,31 @@ describe("活着读内存，死了读库（PLAN §7）", () => {
   }
 
   const inMemory: AgentNS.Message[] = [
-    { id: "live-1", role: AgentNS.Role.User, status: AgentNS.MessageStatus.Completed, content: "内存第一条" },
-    { id: "live-2", role: AgentNS.Role.Assistant, status: AgentNS.MessageStatus.Completed, content: "内存第二条" },
-    { id: "live-hidden", role: AgentNS.Role.User, status: AgentNS.MessageStatus.Completed, content: "交接注入的", hidden: true },
-    { id: "live-3", role: AgentNS.Role.User, status: AgentNS.MessageStatus.Completed, content: "内存第三条" },
+    {
+      id: "live-1",
+      role: AgentNS.Role.User,
+      status: AgentNS.MessageStatus.Completed,
+      content: "内存第一条",
+    },
+    {
+      id: "live-2",
+      role: AgentNS.Role.Assistant,
+      status: AgentNS.MessageStatus.Completed,
+      content: "内存第二条",
+    },
+    {
+      id: "live-hidden",
+      role: AgentNS.Role.User,
+      status: AgentNS.MessageStatus.Completed,
+      content: "交接注入的",
+      hidden: true,
+    },
+    {
+      id: "live-3",
+      role: AgentNS.Role.User,
+      status: AgentNS.MessageStatus.Completed,
+      content: "内存第三条",
+    },
   ];
 
   it("有 agent 就用内存那一份（顺序即数组顺序，不是库里的 seq）", async () => {
@@ -287,11 +308,7 @@ describe("活着读内存，死了读库（PLAN §7）", () => {
     // `around` 命中：窗口收在数组上（这几条全在窗口里）
     const around = await live.list({ sessionId: "c1", around: "live-2" });
     expect(around.anchor).toBe("live-2");
-    expect(around.messages.map((message) => message.id)).toEqual([
-      "live-1",
-      "live-2",
-      "live-3",
-    ]);
+    expect(around.messages.map((message) => message.id)).toEqual(["live-1", "live-2", "live-3"]);
 
     // `around` 不在 → 空页 + 空 anchor，不报错
     const empty = await live.list({ sessionId: "c1", around: "没有这条" });
@@ -309,8 +326,18 @@ describe("活着读内存，死了读库（PLAN §7）", () => {
 
   it("subagent 那一栏：名册上有就取它自己的消息，没有才回落到库", async () => {
     const sub: AgentNS.Message[] = [
-      { id: "sub-1", role: AgentNS.Role.User, status: AgentNS.MessageStatus.Completed, content: "派活" },
-      { id: "sub-2", role: AgentNS.Role.Assistant, status: AgentNS.MessageStatus.Completed, content: "做完了" },
+      {
+        id: "sub-1",
+        role: AgentNS.Role.User,
+        status: AgentNS.MessageStatus.Completed,
+        content: "派活",
+      },
+      {
+        id: "sub-2",
+        role: AgentNS.Role.Assistant,
+        status: AgentNS.MessageStatus.Completed,
+        content: "做完了",
+      },
     ];
     const live = liveOf((_id, options) => (options?.toolCallId === "call-1" ? sub : null));
 
@@ -455,7 +482,9 @@ describe("消息还原成 core 的形状（R21 / R22）", () => {
       ],
       data: {
         reasoning_content: "想了一下",
-        tool_calls: [{ id: "call-1", type: "function", function: { name: "read", arguments: "{}" } }],
+        tool_calls: [
+          { id: "call-1", type: "function", function: { name: "read", arguments: "{}" } },
+        ],
         finish_reason: "tool_calls",
         usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
         hidden: true,
@@ -532,7 +561,11 @@ describe("消息还原成 core 的形状（R21 / R22）", () => {
   it("正文原样透传：内容段不逐段重建（R30）", async () => {
     const content = [
       { index: 0, type: "text" as const, text: "看这两个文件" },
-      { index: 1, type: "image_url" as const, image_url: { url: "https://example.test/a.png", detail: "low" as const } },
+      {
+        index: 1,
+        type: "image_url" as const,
+        image_url: { url: "https://example.test/a.png", detail: "low" as const },
+      },
       { index: 2, type: "file" as const, file_id: "file-1", filename: "a.pdf" },
     ];
     await messages.upsert({

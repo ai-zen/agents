@@ -107,7 +107,9 @@ describe("消息相关概念用的是 core 的类型（R21 纠偏）", () => {
         { index: 2, type: "file", file_id: "file-1" },
       ],
       reasoning_content: "先看文件",
-      tool_calls: [{ index: 0, id: "t1", type: "function", function: { name: "read", arguments: "{}" } }],
+      tool_calls: [
+        { index: 0, id: "t1", type: "function", function: { name: "read", arguments: "{}" } },
+      ],
       usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
       omit: false,
       hidden: false,

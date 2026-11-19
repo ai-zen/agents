@@ -254,10 +254,7 @@ function requireMessages(value: unknown): AgentNS.Message[] {
  * 只比角色与内容：`Message.System()` 每次都生成新 id，落盘再读回来的 id 不会与出厂常量相等，
  * 拿 id 比永远比不中。SDK 判断「出厂提示词是否已被改过」用的也是这个口径。
  */
-function samePrompts(
-  left: readonly AgentNS.Message[],
-  right: readonly AgentNS.Message[],
-): boolean {
+function samePrompts(left: readonly AgentNS.Message[], right: readonly AgentNS.Message[]): boolean {
   if (left.length !== right.length) return false;
   return left.every(
     (message, index) =>
@@ -296,7 +293,8 @@ export class AgentService {
   constructor(options: AgentServiceOptions) {
     this.configManager = options.configManager;
     this.repos = {
-      agents: options.agents ?? new AgentRepository(join(options.configManager.basePath, DIR_AGENTS)),
+      agents:
+        options.agents ?? new AgentRepository(join(options.configManager.basePath, DIR_AGENTS)),
       "sub-agents":
         options.subAgents ??
         new AgentRepository(join(options.configManager.basePath, DIR_SUB_AGENTS)),
@@ -420,11 +418,12 @@ export class AgentService {
       }),
       messages: patch.messages === undefined ? base.messages : requireMessages(patch.messages),
       // 空串表示「清掉绑定」（三级解析会落到配置里的兜底模型）
-      modelId: patch.modelId === undefined
-        ? base.modelId
-        : patch.modelId === ""
-          ? undefined
-          : patch.modelId,
+      modelId:
+        patch.modelId === undefined
+          ? base.modelId
+          : patch.modelId === ""
+            ? undefined
+            : patch.modelId,
       custom: true,
       updatedAt: new Date(this.now()).toISOString(),
     };
@@ -434,7 +433,9 @@ export class AgentService {
     if (home !== found.home) await this.repos[found.home].delete(id);
 
     const presets = await this.configManager.readReasoningPresets();
-    return { agent: this.toView(config, presets, { id, home, definition: merged, brokenReason: null }) };
+    return {
+      agent: this.toView(config, presets, { id, home, definition: merged, brokenReason: null }),
+    };
   }
 
   /**
@@ -453,7 +454,8 @@ export class AgentService {
 
     const config = await this.configManager.read();
     const references = await this.referencesOf(config, id, found.definition);
-    const wasDefault = config.defaultAgent === id || (config.defaultAgent === undefined && id === DEFAULT_AGENT_ID);
+    const wasDefault =
+      config.defaultAgent === id || (config.defaultAgent === undefined && id === DEFAULT_AGENT_ID);
 
     if (params.dryRun === true) {
       return { removed: false, references, defaultsCleared: false };
@@ -491,7 +493,10 @@ export class AgentService {
         ? found.definition.modelParams
         : withoutThinkingParams(
             found.definition.modelParams,
-            reasoningPresetOf(previousModelId ? findModel(config, previousModelId) : undefined, presets),
+            reasoningPresetOf(
+              previousModelId ? findModel(config, previousModelId) : undefined,
+              presets,
+            ),
           );
 
     const updated: AgentDefinition = {
@@ -797,7 +802,9 @@ export class AgentService {
   }
 
   /** 要改定义时先把它读出来；读不出来（坏文件）就没有可改的内容 */
-  private async requireEditable(id: string): Promise<LoadedAgent & { definition: AgentDefinition }> {
+  private async requireEditable(
+    id: string,
+  ): Promise<LoadedAgent & { definition: AgentDefinition }> {
     const found = await this.load(id);
     if (!found) {
       throw new HostError("not_found", { params: { entity: "agent" }, detail: { agentId: id } });

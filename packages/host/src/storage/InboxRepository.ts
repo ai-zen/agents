@@ -114,10 +114,9 @@ export class InboxRepository {
   async deleteMany(messageIds: readonly string[]): Promise<number> {
     if (messageIds.length === 0) return 0;
     const placeholders = messageIds.map(() => "?").join(", ");
-    const result = await this.db.run(
-      `DELETE FROM inbox WHERE messageId IN (${placeholders})`,
-      [...messageIds],
-    );
+    const result = await this.db.run(`DELETE FROM inbox WHERE messageId IN (${placeholders})`, [
+      ...messageIds,
+    ]);
     return result.changes;
   }
 

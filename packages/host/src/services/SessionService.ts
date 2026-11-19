@@ -363,17 +363,18 @@ export class SessionService {
    * 的那段会话应该像没建过一样。
    */
   async list(params: SessionListParams = {}): Promise<SessionListResult> {
-    const rows = params.workspaceId === undefined
-      ? await this.sessions.list()
-      : await this.sessions.listByWorkspace(params.workspaceId);
+    const rows =
+      params.workspaceId === undefined
+        ? await this.sessions.list()
+        : await this.sessions.listByWorkspace(params.workspaceId);
 
-    const filtered = params.pinned === undefined
-      ? rows
-      : rows.filter((row) => row.pinned === params.pinned);
+    const filtered =
+      params.pinned === undefined ? rows : rows.filter((row) => row.pinned === params.pinned);
     const offset = params.offset === undefined ? 0 : Math.max(params.offset, 0);
-    const page = params.limit === undefined
-      ? filtered.slice(offset)
-      : filtered.slice(offset, offset + Math.max(params.limit, 0));
+    const page =
+      params.limit === undefined
+        ? filtered.slice(offset)
+        : filtered.slice(offset, offset + Math.max(params.limit, 0));
 
     return { sessions: await this.summarize(page), total: filtered.length };
   }
@@ -390,14 +391,13 @@ export class SessionService {
    * 第一次真正用到它时由 {@link ensurePersisted} 用同一个 id 落库：`session.start` 或
    * `session.send`，**谁先到谁写**（PLAN §4）。
    */
-  async create(
-    params: SessionCreateParams & SessionOriginInput,
-  ): Promise<SessionCreateResult> {
+  async create(params: SessionCreateParams & SessionOriginInput): Promise<SessionCreateResult> {
     const workspace = await this.requireWorkspace(requireId(params.workspaceId, "workspaceId"));
     const config = await this.readConfig();
     const agent = await this.readAgent(requireId(params.agentId, "agentId"));
 
-    const sessionModelId = params.modelId == null ? undefined : requireId(params.modelId, "modelId");
+    const sessionModelId =
+      params.modelId == null ? undefined : requireId(params.modelId, "modelId");
     const resolved = resolveModel({
       sessionModelId,
       agentModelId: agent.modelId,
@@ -591,10 +591,7 @@ export class SessionService {
   /** 按 id 打开一段会话（PRD F-A6：宿主只提供「按 id 打开」） */
   async get(params: SessionGetParams): Promise<SessionGetResult> {
     const session = await this.requireSession(params.sessionId);
-    const view = await this.composeView(
-      session,
-      await this.viewContext(await this.readConfig()),
-    );
+    const view = await this.composeView(session, await this.viewContext(await this.readConfig()));
     return { session: view };
   }
 
@@ -734,9 +731,7 @@ export class SessionService {
     const linkedIds = await this.assets.listAssetIdsByMessage(anchor.id);
     const assetIds = [...new Set([...linkedIds, ...assetIdsOf(anchor.content)])];
     const content = textOnlyContent(anchor.content);
-    const restoredInput: MessageInput = assetIds.length > 0
-      ? { content, assetIds }
-      : { content };
+    const restoredInput: MessageInput = assetIds.length > 0 ? { content, assetIds } : { content };
 
     // 关系行随消息级联消失：先记下这段区间的消息引用过哪些素材，删完再看谁归零了
     const doomedAssetIds = await this.collectAssetsOfMessages(removedMessageIds);
@@ -773,9 +768,10 @@ export class SessionService {
     this.assertNoWorkInHand(row.id);
     const config = await this.readConfig();
 
-    const modelId = params.modelId == null
-      ? await this.agentModelIdOf(row.agentId, config)
-      : requireId(params.modelId, "modelId");
+    const modelId =
+      params.modelId == null
+        ? await this.agentModelIdOf(row.agentId, config)
+        : requireId(params.modelId, "modelId");
     const model = config.models.find((item) => item.id === modelId);
     if (!model) {
       throw new HostError("not_found", {
@@ -866,9 +862,7 @@ export class SessionService {
    * 校验与建模型那一条同口径：给了就必须是正整数（`0` / 负数 / 小数都不收），两个都给且都不是
    * `null` 时要满足 `handoff < guard`（硬线得给软线留出余量）。
    */
-  async setThresholds(
-    params: SessionSetThresholdsParams,
-  ): Promise<SessionSetThresholdsResult> {
+  async setThresholds(params: SessionSetThresholdsParams): Promise<SessionSetThresholdsResult> {
     const row = await this.requireSession(params.sessionId);
     const handoffThreshold = requireThreshold(params.handoffThreshold, "handoffThreshold");
     const guardThreshold = requireThreshold(params.guardThreshold, "guardThreshold");
@@ -934,11 +928,7 @@ export class SessionService {
   }
 
   /** 一行会话 → 侧栏摘要；`pendingCount` 是挂在这段会话上还没答的问题数 */
-  private toSummary(
-    row: Session,
-    stored: StoredMessage[],
-    pendingCount: number,
-  ): SessionSummary {
+  private toSummary(row: Session, stored: StoredMessage[], pendingCount: number): SessionSummary {
     return {
       id: row.id,
       workspaceId: row.workspaceId,
@@ -993,10 +983,7 @@ export class SessionService {
   }
 
   /** 拼一段会话的完整形状（身份 / 模型 / 思考档 / 目录） */
-  private async composeView(
-    row: Session,
-    context: ViewContext,
-  ): Promise<SessionView> {
+  private async composeView(row: Session, context: ViewContext): Promise<SessionView> {
     const stored = await this.messages.listBySession(row.id);
     const workspace = await this.loadWorkspace(row.workspaceId, context);
     const agent = await this.loadAgent(row.agentId, context);
@@ -1046,11 +1033,7 @@ export class SessionService {
    * 只报「什么变了 + 够用的定位信息」，不搬整个对象（PLAN §6）。消息的增删改不在这里：
    * 那三件事有自己的事件（带整条消息），这里也没有消息条数 —— 条数客户端自己数。
    */
-  private emitChanged(
-    sessionId: string,
-    workspaceId: string,
-    change: SessionChangeKind,
-  ): void {
+  private emitChanged(sessionId: string, workspaceId: string, change: SessionChangeKind): void {
     this.emit?.("session.changed", {
       sessionId,
       workspaceId,
@@ -1195,15 +1178,9 @@ export class SessionService {
    * （创建时点名，或 `setModel` 改过）。助手没绑模型时它实际上用配置里的兜底，那一档也算
    * 「跟着助手走」：装配时用的参数口径与这里同一个判断（见 `ChatRunner` 的 `sessionModelParams`）。
    */
-  private modelSource(
-    row: Session,
-    agent: AgentDefinition | null,
-    config: AppConfig,
-  ): ModelSource {
+  private modelSource(row: Session, agent: AgentDefinition | null, config: AppConfig): ModelSource {
     const agentModelId = agent?.modelId ?? config.defaultModel;
-    return agentModelId !== undefined && agentModelId === row.modelId
-      ? "agent"
-      : "session";
+    return agentModelId !== undefined && agentModelId === row.modelId ? "agent" : "session";
   }
 
   /** 助手定义上那个模型（`/model` 不带 id 时回到它）；它没绑且没有兜底时报错 */
@@ -1261,10 +1238,7 @@ export class SessionService {
   }
 
   /** 把思考档位写进会话（`null` = 回到跟随助手定义），回写后的行 */
-  private async writeThinkingLevel(
-    row: Session,
-    thinkingLevel: string | null,
-  ): Promise<Session> {
+  private async writeThinkingLevel(row: Session, thinkingLevel: string | null): Promise<Session> {
     const updatedAt = this.now();
     const draft = this.drafts.get(row.id);
     if (draft) {
@@ -1327,8 +1301,7 @@ export class SessionService {
     // 这一格不能直接用 `thinkingSourceOf()`：那一支会把「凑成一档」判成 `manual`，而**会话视图**
     // 里那仍然是「这一段没选档、跟着助手走」（`following_default` + `selected` 给了那一档）。
     // 两个视图问的问题不同：助手视图问「定义上写的是哪一档」，会话视图问「这一段自己选了吗」。
-    const handWritten =
-      detected === undefined && hasThinkingKey(agent?.modelParams, preset.levels);
+    const handWritten = detected === undefined && hasThinkingKey(agent?.modelParams, preset.levels);
     return {
       preset: presetName,
       levels,

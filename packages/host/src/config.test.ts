@@ -102,12 +102,18 @@ describe("resolvePaths", () => {
 
 describe("resolveListenTarget", () => {
   it("本地实例只监听回环（PLAN A6）", () => {
-    expect(resolveListenTarget({ local: true })).toEqual({ host: LOOPBACK_HOST, port: DEFAULT_PORT });
+    expect(resolveListenTarget({ local: true })).toEqual({
+      host: LOOPBACK_HOST,
+      port: DEFAULT_PORT,
+    });
     expect(LOOPBACK_HOST).toBe("127.0.0.1");
   });
 
   it("对外实例监听 0.0.0.0", () => {
-    expect(resolveListenTarget({ local: false })).toEqual({ host: PUBLIC_HOST, port: DEFAULT_PORT });
+    expect(resolveListenTarget({ local: false })).toEqual({
+      host: PUBLIC_HOST,
+      port: DEFAULT_PORT,
+    });
     expect(PUBLIC_HOST).toBe("0.0.0.0");
   });
 
@@ -237,10 +243,6 @@ describe("<dataRoot>/host.json（D25 的「配置文件」那一档，裁定 R67
     expect(stamped).toHaveLength(2);
 
     // 三次都是同一份文件，每坏一次通知一次
-    expect(recovered).toEqual([
-      paths.hostConfigFile,
-      paths.hostConfigFile,
-      paths.hostConfigFile,
-    ]);
+    expect(recovered).toEqual([paths.hostConfigFile, paths.hostConfigFile, paths.hostConfigFile]);
   });
 });

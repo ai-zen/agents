@@ -199,7 +199,8 @@ async function callMethod<M extends MethodName>(
   return await handler({ method, params, connection: CONNECTION });
 }
 
-async function connect(app: HostApp): Promise<TestClient> {  const target = app.address;
+async function connect(app: HostApp): Promise<TestClient> {
+  const target = app.address;
   if (!target) throw new Error("宿主没在监听");
   const client = await TestClient.connect(`ws://127.0.0.1:${target.port}/`);
   clients.push(client);
@@ -364,9 +365,9 @@ describe("HostApp 的组装", () => {
     expect(recovered[0]?.text.message).toContain("factory settings");
 
     // 磁盘上已经是合法的出厂配置：下次启动不用再恢复一次
-    const onDisk = JSON.parse(
-      await fs.readFile(app.configManager.configPath, "utf8"),
-    ) as { models: unknown[] };
+    const onDisk = JSON.parse(await fs.readFile(app.configManager.configPath, "utf8")) as {
+      models: unknown[];
+    };
     expect(onDisk.models.length).toBeGreaterThan(0);
   });
 
@@ -733,8 +734,9 @@ describe("草稿会话上的上传（R56 / F-H8）", () => {
     const uploadId = (began as { uploadId: string }).uploadId;
 
     // 落库发生在 `asset.begin`：那一刻这段会话已经在库里，且带上了那条隐藏的 cwd 消息
-    expect((await app.db.all<{ id: string }>("SELECT id FROM sessions")).map((row) => row.id))
-      .toEqual([sessionId]);
+    expect(
+      (await app.db.all<{ id: string }>("SELECT id FROM sessions")).map((row) => row.id),
+    ).toEqual([sessionId]);
 
     client.sendBinary(encodeChunkFrame(uploadId, bytes.subarray(0, 1000)));
     client.sendBinary(encodeChunkFrame(uploadId, bytes.subarray(1000)));
@@ -794,7 +796,7 @@ async function hiddenMessagesOf(
     "SELECT content, data FROM messages WHERE sessionId = ? ORDER BY seq",
     [sessionId],
   );
-  return rows.filter((row) => row.data !== null && row.data.includes("\"hidden\":true"));
+  return rows.filter((row) => row.data !== null && row.data.includes('"hidden":true'));
 }
 
 /**
@@ -1135,7 +1137,12 @@ describe("会话的三个钩子", () => {
     const fixture = await makeFixture();
     const app = await startApp(fixture, {
       createAgent: async () =>
-        new FakeAgent([{ deltas: [{ content: "一次性回答" }], usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 } }]),
+        new FakeAgent([
+          {
+            deltas: [{ content: "一次性回答" }],
+            usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 },
+          },
+        ]),
     });
     // 一次性会话要一个 cwd 作为相对路径基准，但不需要登记成项目
     const client = await connect(app);
@@ -1201,10 +1208,7 @@ async function flushAsync(): Promise<void> {
 }
 
 /** 手写一次握手（不经过 harness 的 `connect`，因为这里要控制带不带 language） */
-async function handshake(
-  app: HostApp,
-  language?: "en" | "zh",
-): Promise<{ language: string }> {
+async function handshake(app: HostApp, language?: "en" | "zh"): Promise<{ language: string }> {
   const target = app.address;
   if (!target) throw new Error("宿主没在监听");
   const client = await TestClient.connect(`ws://127.0.0.1:${target.port}/`);
@@ -1251,7 +1255,6 @@ describe("缺省语言（D8 / 裁定 R58）", () => {
       code: "invalid_params",
     });
   });
-
 });
 
 // ---------------------------------------------------------------------------
@@ -1262,11 +1265,7 @@ describe("端口的三档来源（D25 / 裁定 R67）", () => {
   it("<dataRoot>/host.json 的 port 会被采用", async () => {
     const fixture = await makeFixture();
     const port = await freePort();
-    await fs.writeFile(
-      join(fixture.dataRoot.path, "host.json"),
-      JSON.stringify({ port }),
-      "utf8",
-    );
+    await fs.writeFile(join(fixture.dataRoot.path, "host.json"), JSON.stringify({ port }), "utf8");
 
     const app = await createHost({
       aiZenDir: fixture.dataRoot.path,

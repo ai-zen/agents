@@ -61,7 +61,14 @@ describe("createAssetHandlers", () => {
 /** 一份 `asset.get` 的最小结果 */
 function emptyGetResult(): AssetGetResult {
   return {
-    asset: { assetId: "asset-1", mime: "image/png", bytes: 4, name: null, width: null, height: null },
+    asset: {
+      assetId: "asset-1",
+      mime: "image/png",
+      bytes: 4,
+      name: null,
+      width: null,
+      height: null,
+    },
     variant: "original",
     data: "AAAA",
   };

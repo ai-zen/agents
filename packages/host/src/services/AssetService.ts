@@ -386,10 +386,14 @@ export class AssetService {
           assetId,
           deliveredAs: "dropped",
           section: null,
-          problem: this.problem("notice.attachmentDropped", { name: assetId }, {
-            assetId,
-            reason: "asset_not_found",
-          }),
+          problem: this.problem(
+            "notice.attachmentDropped",
+            { name: assetId },
+            {
+              assetId,
+              reason: "asset_not_found",
+            },
+          ),
         });
         continue;
       }
@@ -524,10 +528,14 @@ export class AssetService {
 
       if (result.transport === "text") {
         // 模型读不了图：给模型一句说明（不是给用户看的文案，所以不走 i18n）
-        const problem = this.problem("message.imageAsText", {
-          model: target.model?.name ?? target.model?.id ?? "",
-          name: label,
-        }, { assetId: record.id, reason: "model_without_vision", warning: result.warning });
+        const problem = this.problem(
+          "message.imageAsText",
+          {
+            model: target.model?.name ?? target.model?.id ?? "",
+            name: label,
+          },
+          { assetId: record.id, reason: "model_without_vision", warning: result.warning },
+        );
         if (!options.quiet) this.options.onProblem?.(problem, "附件退化成文字");
         return {
           assetId: record.id,
@@ -544,10 +552,14 @@ export class AssetService {
         problem: null,
       };
     } catch (error) {
-      const problem = this.problem("notice.attachmentDropped", { name: label }, {
-        assetId: record.id,
-        reason: error instanceof Error ? error.message : String(error),
-      });
+      const problem = this.problem(
+        "notice.attachmentDropped",
+        { name: label },
+        {
+          assetId: record.id,
+          reason: error instanceof Error ? error.message : String(error),
+        },
+      );
       if (!options.quiet) this.options.onProblem?.(problem, "附件没能发出去");
       return { assetId: record.id, deliveredAs: "dropped", section: null, problem };
     }
@@ -870,9 +882,10 @@ function unavailableSection(
   const label = record?.name ?? assetId;
   return {
     type: "text",
-    text: record === undefined
-      ? `[Attachment] ${label} is no longer available in this session.`
-      : `[Attachment] ${label} could not be sent with this request.`,
+    text:
+      record === undefined
+        ? `[Attachment] ${label} is no longer available in this session.`
+        : `[Attachment] ${label} could not be sent with this request.`,
   };
 }
 

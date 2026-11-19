@@ -39,7 +39,12 @@ function call<M extends MethodName>(
 function config(): AppConfig {
   return {
     endpoints: [
-      { id: "ep-a", name: "Endpoint A", baseUrl: "https://a.example/v1", apiKey: "sk-aaaaaaaa1111" },
+      {
+        id: "ep-a",
+        name: "Endpoint A",
+        baseUrl: "https://a.example/v1",
+        apiKey: "sk-aaaaaaaa1111",
+      },
       { id: "ep-b", name: "Endpoint B", baseUrl: "https://b.example/v1", apiKey: "" },
     ],
     models: [
@@ -117,7 +122,9 @@ describe("createModelHandlers", () => {
     expect(removed.removed).toBe(true);
 
     await expect(
-      Promise.resolve(handlers["model.restoreFactory"]!(call("model.restoreFactory", { modelId: "m-a1" }))),
+      Promise.resolve(
+        handlers["model.restoreFactory"]!(call("model.restoreFactory", { modelId: "m-a1" })),
+      ),
     ).rejects.toMatchObject({ code: "invalid_params" });
   });
 

@@ -111,10 +111,9 @@ describe("InboxRepository", () => {
 
     await repo.insert({ ...entryOf("m1"), content });
 
-    const row = await db.get<{ content: string }>(
-      "SELECT content FROM inbox WHERE messageId = ?",
-      ["m1"],
-    );
+    const row = await db.get<{ content: string }>("SELECT content FROM inbox WHERE messageId = ?", [
+      "m1",
+    ]);
     // 列里存的就是 `JSON.stringify` 的那一份（没有任何预处理）
     expect(row?.content).toBe(JSON.stringify(content));
 
@@ -139,9 +138,7 @@ describe("InboxRepository", () => {
     // 清空这一段：另一段一条不动
     expect(await repo.clearBySession("c1")).toBe(1);
     expect(await repo.listBySession("c1")).toEqual([]);
-    expect((await repo.listBySession("c2")).map((entry) => entry.messageId)).toEqual([
-      "other",
-    ]);
+    expect((await repo.listBySession("c2")).map((entry) => entry.messageId)).toEqual(["other"]);
   });
 
   it("同一个 messageId 不会落两行（主键挡住重复投递的那一条）", async () => {

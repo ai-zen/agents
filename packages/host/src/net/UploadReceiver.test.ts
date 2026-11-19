@@ -98,7 +98,10 @@ describe("三段式上传", () => {
     // 临时文件已经开了，但内容还是空的
     expect(await listDir(assetsDir)).toEqual([`.upload-${handleOf(began)}.part`]);
 
-    await receiver.receiveBinary(CONNECTION, encodeChunkFrame(handleOf(began), bytes.subarray(0, 1024)));
+    await receiver.receiveBinary(
+      CONNECTION,
+      encodeChunkFrame(handleOf(began), bytes.subarray(0, 1024)),
+    );
     const received = await receiver.receiveBinary(
       CONNECTION,
       encodeChunkFrame(handleOf(began), bytes.subarray(1024)),
@@ -149,10 +152,22 @@ describe("三段式上传", () => {
     expect(receiver.pendingCount(CONNECTION)).toBe(2);
 
     // 交错的帧：各回各的上传
-    await receiver.receiveBinary(CONNECTION, encodeChunkFrame(handleOf(beganFirst), first.subarray(0, 400)));
-    await receiver.receiveBinary(CONNECTION, encodeChunkFrame(handleOf(beganSecond), second.subarray(0, 900)));
-    await receiver.receiveBinary(CONNECTION, encodeChunkFrame(handleOf(beganFirst), first.subarray(400)));
-    await receiver.receiveBinary(CONNECTION, encodeChunkFrame(handleOf(beganSecond), second.subarray(900)));
+    await receiver.receiveBinary(
+      CONNECTION,
+      encodeChunkFrame(handleOf(beganFirst), first.subarray(0, 400)),
+    );
+    await receiver.receiveBinary(
+      CONNECTION,
+      encodeChunkFrame(handleOf(beganSecond), second.subarray(0, 900)),
+    );
+    await receiver.receiveBinary(
+      CONNECTION,
+      encodeChunkFrame(handleOf(beganFirst), first.subarray(400)),
+    );
+    await receiver.receiveBinary(
+      CONNECTION,
+      encodeChunkFrame(handleOf(beganSecond), second.subarray(900)),
+    );
 
     const endedSecond = await receiver.end(CONNECTION, {
       uploadId: handleOf(beganSecond),
@@ -210,7 +225,10 @@ describe("拒绝与清理", () => {
       bytes: bytes.byteLength,
       sessionId: "c1",
     });
-    await receiver.receiveBinary(CONNECTION, encodeChunkFrame(handleOf(began), bytes.subarray(0, 60)));
+    await receiver.receiveBinary(
+      CONNECTION,
+      encodeChunkFrame(handleOf(began), bytes.subarray(0, 60)),
+    );
 
     const error = await receiver
       .end(CONNECTION, { uploadId: handleOf(began), sha256: sha256(bytes) })
@@ -449,10 +467,14 @@ describe("二进制帧", () => {
       frame.set(header, 4);
       return frame;
     };
-    expect((captureError(() => decodeChunkFrame(headerOf("不是 JSON"))) as HostError).detail).toMatchObject({
+    expect(
+      (captureError(() => decodeChunkFrame(headerOf("不是 JSON"))) as HostError).detail,
+    ).toMatchObject({
       reason: "header_not_json",
     });
-    expect((captureError(() => decodeChunkFrame(headerOf("{}"))) as HostError).detail).toMatchObject({
+    expect(
+      (captureError(() => decodeChunkFrame(headerOf("{}"))) as HostError).detail,
+    ).toMatchObject({
       reason: "header_without_upload_id",
     });
   });

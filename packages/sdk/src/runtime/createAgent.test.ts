@@ -276,7 +276,7 @@ describe("createAgent", () => {
 
       const agent = await createAgent(scope, "my-agent");
 
-        expect(agent.modelConfig).toEqual({ temperature: 0.3, reasoning_effort: "low" });
+      expect(agent.modelConfig).toEqual({ temperature: 0.3, reasoning_effort: "low" });
     });
 
     it("全局兜底：没有任何一层的参数，只用模型出厂参数", async () => {
@@ -291,7 +291,7 @@ describe("createAgent", () => {
         modelParams: { reasoning_effort: "max" },
       });
 
-        expect(agent.modelConfig).toEqual({ thinking: { type: "enabled" } });
+      expect(agent.modelConfig).toEqual({ thinking: { type: "enabled" } });
     });
   });
 

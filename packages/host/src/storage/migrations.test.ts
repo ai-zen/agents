@@ -205,10 +205,13 @@ describe("migrate", () => {
     // 只跑到 v2，模拟「上一版已经装上升过级的库」
     const older = MIGRATIONS.filter((migration) => migration.version <= 2);
     await db.tx((tx) => {
-      for (const migration of older) for (const statement of migration.statements) tx.run(statement);
+      for (const migration of older)
+        for (const statement of migration.statements) tx.run(statement);
       tx.run("INSERT INTO meta (id, schemaVersion, createdAt) VALUES (1, 2, ?)", [1]);
     });
-    await db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/v2', 1)");
+    await db.run(
+      "INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/v2', 1)",
+    );
     await db.run(
       `INSERT INTO sessions (id, workspaceId, name, agentId, modelId, createdAt, updatedAt)
        VALUES ('c1', 'w1', '旧会话', 'a1', 'm1', 2, 2)`,
@@ -228,7 +231,9 @@ describe("migrate", () => {
     ).find((candidate) => candidate.name === "source");
     // 可空：旧行没有记过来源，那不是「用户说的」，而是「不知道」
     expect(column).toMatchObject({ notnull: 0, dflt_value: null });
-    const row = await db.get<{ source: string | null }>("SELECT source FROM messages WHERE id = 'm1'");
+    const row = await db.get<{ source: string | null }>(
+      "SELECT source FROM messages WHERE id = 'm1'",
+    );
     expect(row).toEqual({ source: null });
   });
 
@@ -237,10 +242,13 @@ describe("migrate", () => {
     // 只跑到 v3，模拟「上一版已经装上升过级的库」
     const older = MIGRATIONS.filter((migration) => migration.version <= 3);
     await db.tx((tx) => {
-      for (const migration of older) for (const statement of migration.statements) tx.run(statement);
+      for (const migration of older)
+        for (const statement of migration.statements) tx.run(statement);
       tx.run("INSERT INTO meta (id, schemaVersion, createdAt) VALUES (1, 3, ?)", [1]);
     });
-    await db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/v3', 1)");
+    await db.run(
+      "INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/v3', 1)",
+    );
     await db.run(
       `INSERT INTO sessions (id, workspaceId, name, agentId, modelId, createdAt, updatedAt)
        VALUES ('c1', 'w1', '旧会话', 'a1', 'm1', 2, 2)`,
@@ -291,10 +299,13 @@ describe("migrate", () => {
     // 只跑到 v4，模拟「上一版已经装上升过级的库」（那时还有 questions 表与 parentToolCallId）
     const older = MIGRATIONS.filter((migration) => migration.version <= 4);
     await db.tx((tx) => {
-      for (const migration of older) for (const statement of migration.statements) tx.run(statement);
+      for (const migration of older)
+        for (const statement of migration.statements) tx.run(statement);
       tx.run("INSERT INTO meta (id, schemaVersion, createdAt) VALUES (1, 4, ?)", [1]);
     });
-    await db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/v4', 1)");
+    await db.run(
+      "INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/v4', 1)",
+    );
     await db.run(
       `INSERT INTO sessions (id, workspaceId, name, agentId, modelId, createdAt, updatedAt)
        VALUES ('c1', 'w1', '旧会话', 'a1', 'm1', 2, 2)`,
@@ -316,7 +327,9 @@ describe("migrate", () => {
     const tables = await tableNames(db);
     expect(tables).not.toContain("questions");
     expect(
-      await db.all("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_questions_session'"),
+      await db.all(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_questions_session'",
+      ),
     ).toEqual([]);
 
     // 2. 会话行多一格待交接：可空，NULL = 没有待交接
@@ -496,7 +509,9 @@ describe("外键与级联", () => {
 
   it("FTS 索引与主表一致（integrity-check 通过）", async () => {
     await seed();
-    const result = await db.run("INSERT INTO messages_fts (messages_fts) VALUES ('integrity-check')");
+    const result = await db.run(
+      "INSERT INTO messages_fts (messages_fts) VALUES ('integrity-check')",
+    );
     expect(result.changes).toBeGreaterThanOrEqual(0);
   });
 });

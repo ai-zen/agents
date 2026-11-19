@@ -13,9 +13,7 @@
  */
 
 import type { AgentRepository } from "@ai-zen/agents-sdk";
-import {
-  DEFAULT_APP_CONFIG,
-} from "@ai-zen/agents-sdk";
+import { DEFAULT_APP_CONFIG } from "@ai-zen/agents-sdk";
 import type {
   AppConfig,
   ConfigManager,
@@ -132,10 +130,7 @@ export function findModel(config: AppConfig, modelId: string): Model | undefined
  * 两种用不了的原因都在配置层：端点没了（模型指向一个已删的端点），或端点还没配密钥
  * （F-A7 的「这个端点配好了没」）。模型自身的字段没有第三种「用不了」的形态。
  */
-export function modelUnavailableProblem(
-  config: AppConfig,
-  model: Model,
-): ProblemFact | null {
+export function modelUnavailableProblem(config: AppConfig, model: Model): ProblemFact | null {
   const endpoint = findEndpoint(config, model.endpointId);
   if (!endpoint) {
     return text("model.endpointMissing", { model: model.name, id: model.endpointId });
@@ -543,7 +538,11 @@ function validateModelShape(config: AppConfig, presets: ReasoningPresets, model:
   if (!findEndpoint(config, model.endpointId)) {
     throw new HostError("invalid_params", {
       params: { field: "model.endpointId" },
-      detail: { field: "model.endpointId", reason: "endpoint_not_found", endpointId: model.endpointId },
+      detail: {
+        field: "model.endpointId",
+        reason: "endpoint_not_found",
+        endpointId: model.endpointId,
+      },
     });
   }
   assertThresholds(model.tokenThresholds);

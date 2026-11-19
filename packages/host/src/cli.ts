@@ -244,7 +244,9 @@ async function runTokenCreate(paths: HostPaths, note: string | undefined): Promi
 async function runTokenList(paths: HostPaths): Promise<void> {
   const result = await withCredentials(paths, (credentials) => credentials.list());
   if (result.credentials.length === 0) {
-    process.stdout.write("还没有任何凭证。用 `agents-host token create --note <备注>` 创建一串。\n");
+    process.stdout.write(
+      "还没有任何凭证。用 `agents-host token create --note <备注>` 创建一串。\n",
+    );
     return;
   }
   for (const credential of result.credentials) {
@@ -323,9 +325,7 @@ async function runServe(parsed: ParsedArgs): Promise<void> {
 
 /** 版本：脚本里比对升级（PRD D4 / F-E3） */
 function runVersion(): void {
-  process.stdout.write(
-    `@ai-zen/agents-host ${resolveHostVersion()}（协议 ${PROTOCOL_VERSION}）\n`,
-  );
+  process.stdout.write(`@ai-zen/agents-host ${resolveHostVersion()}（协议 ${PROTOCOL_VERSION}）\n`);
 }
 
 /**
@@ -339,7 +339,9 @@ function describeFailure(error: unknown): string {
     const data = toErrorData(error, CLI_LANGUAGE);
     const detail = error.detail;
     const hint =
-      typeof detail === "object" && detail !== null && typeof (detail as { path?: unknown }).path === "string"
+      typeof detail === "object" &&
+      detail !== null &&
+      typeof (detail as { path?: unknown }).path === "string"
         ? `（${(detail as { path: string }).path}）`
         : "";
     return `${data.message}${hint}`;

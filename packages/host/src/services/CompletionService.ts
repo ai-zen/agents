@@ -501,11 +501,7 @@ function clampLimit(limit: number | undefined): number {
  * 前缀可以是路径形式（`src/co`）：目录部分当过滤基准，最后一段当「还差什么」；
  * 没有斜杠时（`@READ`）同时按路径开头与文件名开头匹配，这样根目录里的文件也找得到。
  */
-export function selectEntries(
-  paths: string[],
-  prefix: string,
-  limit: number,
-): FileEntryView[] {
+export function selectEntries(paths: string[], prefix: string, limit: number): FileEntryView[] {
   const normalized = normalizePath(prefix.trim());
   // 前缀以 `/` 结尾表示「这一层全要」：目录部分就是它，剩下要匹配的那一段为空
   const underDirectory = normalized.endsWith("/");

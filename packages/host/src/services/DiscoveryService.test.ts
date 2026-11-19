@@ -95,8 +95,7 @@ beforeEach(async () => {
   service = new DiscoveryService({
     configManager,
     homeDir: home,
-    findWorkspace: (workspaceId) =>
-      workspaceId === WORKSPACE_ID ? { cwd: project } : undefined,
+    findWorkspace: (workspaceId) => (workspaceId === WORKSPACE_ID ? { cwd: project } : undefined),
   });
 });
 
@@ -298,7 +297,9 @@ describe("DiscoveryService 读 MCP", () => {
   });
 
   it("没有传输方式、也推不出来的条目：transport 为 null 并报出问题", async () => {
-    await writeJson(join(dataRoot, "mcp.json"), { mcpServers: { odd: { description: "没写怎么起" } } });
+    await writeJson(join(dataRoot, "mcp.json"), {
+      mcpServers: { odd: { description: "没写怎么起" } },
+    });
     const { discovery } = await service.discover({ workspaceId: WORKSPACE_ID });
     const odd = layerAt(discovery.mcps, 3).entries.find((entry) => entry.id === "odd");
     expect(odd?.transport).toBeNull();
@@ -308,39 +309,38 @@ describe("DiscoveryService 读 MCP", () => {
   it("**读回来的条目原样写回去 == 一字未改**（F-F6：未知字段原样保留）", async () => {
     // 文件里的每一项都写全：六个传输入口 + oauth + 两个本版不认识的键 + 顶层多一个键
     const path = join(dataRoot, "mcp.json");
-    const original =
-      `${JSON.stringify(
-        {
-          $schema: "https://example.test/mcp.schema.json",
-          mcpServers: {
-            remote: {
-              type: "sse",
-              url: "https://api.example/sse",
-              headers: { Authorization: "Bearer t", "X-Trace": "on" },
-              description: "远程",
-              oauth: {
-                authorizationUrl: "https://auth.example/a",
-                tokenUrl: "https://auth.example/t",
-                clientId: "client-1",
-                clientSecret: "secret-1",
-                scope: "mcp",
-              },
-              "x-timeout": 30,
-              "x-tags": ["a", { nested: true }],
+    const original = `${JSON.stringify(
+      {
+        $schema: "https://example.test/mcp.schema.json",
+        mcpServers: {
+          remote: {
+            type: "sse",
+            url: "https://api.example/sse",
+            headers: { Authorization: "Bearer t", "X-Trace": "on" },
+            description: "远程",
+            oauth: {
+              authorizationUrl: "https://auth.example/a",
+              tokenUrl: "https://auth.example/t",
+              clientId: "client-1",
+              clientSecret: "secret-1",
+              scope: "mcp",
             },
-            local: {
-              type: "stdio",
-              command: "npx",
-              args: ["-y", "@modelcontextprotocol/server-x"],
-              env: { DEBUG: "1" },
-              disabled: false,
-              "x-quirk": null,
-            },
+            "x-timeout": 30,
+            "x-tags": ["a", { nested: true }],
+          },
+          local: {
+            type: "stdio",
+            command: "npx",
+            args: ["-y", "@modelcontextprotocol/server-x"],
+            env: { DEBUG: "1" },
+            disabled: false,
+            "x-quirk": null,
           },
         },
-        null,
-        2,
-      )}\n`;
+      },
+      null,
+      2,
+    )}\n`;
     await writeText(path, original);
 
     const before = await service.discover({ workspaceId: WORKSPACE_ID });
@@ -399,9 +399,9 @@ describe("DiscoveryService 读 MCP", () => {
       clientSecretMasked: maskSecret(CLIENT_SECRET),
       clientSecretSet: true,
     });
-    expect(remote?.oauth !== null && remote?.oauth !== undefined && "clientSecret" in remote.oauth).toBe(
-      false,
-    );
+    expect(
+      remote?.oauth !== null && remote?.oauth !== undefined && "clientSecret" in remote.oauth,
+    ).toBe(false);
     // 整个发现视图里搜不到明文
     expect(JSON.stringify(discovery)).not.toContain(CLIENT_SECRET);
 
@@ -606,9 +606,9 @@ describe("DiscoveryService 读 MCP", () => {
       project,
     );
     expect(layer.entries[0]?.enabled).toBe(true);
-    const written = JSON.parse(
-      await readFile(join(project, ".ai-zen", "mcp.json"), "utf-8"),
-    ) as { mcpServers: Record<string, Record<string, unknown>> };
+    const written = JSON.parse(await readFile(join(project, ".ai-zen", "mcp.json"), "utf-8")) as {
+      mcpServers: Record<string, Record<string, unknown>>;
+    };
     expect(written.mcpServers.a.disabled).toBe(false);
   });
 
@@ -678,7 +678,10 @@ describe("DiscoveryService 读目录类能力", () => {
   it("Skill 4 层、近的优先、坏掉的 SKILL.md 也要看得见", async () => {
     const skill = (name: string, description: string): string =>
       `---\nname: ${name}\ndescription: ${description}\n---\n\n# ${name}\n`;
-    await writeText(join(project, ".ai-zen", "skills", "handoff", "SKILL.md"), skill("handoff", "near"));
+    await writeText(
+      join(project, ".ai-zen", "skills", "handoff", "SKILL.md"),
+      skill("handoff", "near"),
+    );
     await writeText(join(dataRoot, "skills", "handoff", "SKILL.md"), skill("handoff", "far"));
     await writeText(join(dataRoot, "skills", "no-frontmatter", "SKILL.md"), "# 只有正文\n");
 
@@ -708,7 +711,10 @@ describe("DiscoveryService 读目录类能力", () => {
   });
 
   it("工具 2 层：加载不成的文件也列出来", async () => {
-    await writeText(join(project, ".agents", "tools", "not-a-tool.mjs"), "export const value = 1;\n");
+    await writeText(
+      join(project, ".agents", "tools", "not-a-tool.mjs"),
+      "export const value = 1;\n",
+    );
 
     const { discovery } = await service.discover({ workspaceId: WORKSPACE_ID });
 

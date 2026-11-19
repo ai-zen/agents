@@ -177,15 +177,18 @@ export class WorkspaceService {
       });
     }
 
-    const name = params.name === undefined || params.name.trim().length === 0
-      ? basename(cwd) || cwd
-      : params.name.trim();
+    const name =
+      params.name === undefined || params.name.trim().length === 0
+        ? basename(cwd) || cwd
+        : params.name.trim();
     const id = randomUUID();
     await this.workspaces.create({ id, name, cwd, createdAt: this.now() });
 
     const row = await this.workspaces.get(id);
     if (!row) {
-      throw new HostError("internal", { detail: { reason: "workspace vanished after insert", id } });
+      throw new HostError("internal", {
+        detail: { reason: "workspace vanished after insert", id },
+      });
     }
     return { workspace: await this.toView(row) };
   }
@@ -245,9 +248,10 @@ export class WorkspaceService {
   }
 
   private async requireRow(workspaceId: string): Promise<WorkspaceRow> {
-    const row = typeof workspaceId === "string" && workspaceId.length > 0
-      ? await this.workspaces.get(workspaceId)
-      : undefined;
+    const row =
+      typeof workspaceId === "string" && workspaceId.length > 0
+        ? await this.workspaces.get(workspaceId)
+        : undefined;
     if (!row) {
       throw new HostError("not_found", {
         params: { entity: "workspace" },

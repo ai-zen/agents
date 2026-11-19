@@ -18,7 +18,14 @@
 import type { AgentRepository } from "@ai-zen/agents-sdk";
 import type { AppConfig, ConfigManager, Endpoint } from "@ai-zen/agents-sdk";
 
-import { DEFAULT_LANGUAGE, LANGUAGES, normalizeLanguage, render, type Language, type MessageKey } from "../i18n/index.js";
+import {
+  DEFAULT_LANGUAGE,
+  LANGUAGES,
+  normalizeLanguage,
+  render,
+  type Language,
+  type MessageKey,
+} from "../i18n/index.js";
 import { HostError } from "../wire/errors.js";
 import { MAX_ASSETS_PER_MESSAGE, MAX_ASSET_BYTES } from "../wire/index.js";
 import type {
@@ -182,7 +189,8 @@ export class ConfigService {
     this.agents = options.agents;
     this.findWorkspace = options.findWorkspace;
     this.modelService =
-      options.models ?? new ModelService({ configManager: options.configManager, agents: options.agents });
+      options.models ??
+      new ModelService({ configManager: options.configManager, agents: options.agents });
     this.discoveryService =
       options.discovery ??
       new DiscoveryService({
@@ -243,7 +251,10 @@ export class ConfigService {
 
     if (sections.length === 0) {
       // 空补丁也要回报一次（客户端拿它当「已是最新」的确认），但不写盘
-      return { config: await this.toView(config), applied: await this.apply({ sections, config: false }) };
+      return {
+        config: await this.toView(config),
+        applied: await this.apply({ sections, config: false }),
+      };
     }
 
     await this.configManager.write(next);
@@ -389,7 +400,8 @@ export class ConfigService {
       applied: await this.apply({
         mcp: true,
         sections: ["mcp"],
-        workspaceIds: params.scope === "workspace" && params.workspaceId ? [params.workspaceId] : [],
+        workspaceIds:
+          params.scope === "workspace" && params.workspaceId ? [params.workspaceId] : [],
       }),
     };
   }
@@ -413,7 +425,8 @@ export class ConfigService {
       applied: await this.apply({
         mcp: true,
         sections: ["mcp"],
-        workspaceIds: params.scope === "workspace" && params.workspaceId ? [params.workspaceId] : [],
+        workspaceIds:
+          params.scope === "workspace" && params.workspaceId ? [params.workspaceId] : [],
       }),
     };
   }
@@ -563,7 +576,10 @@ export class ConfigService {
   }
 
   /** 上限合并（F-F8：工具输出上限） */
-  private mergeLimits(config: AppConfig, input: Partial<Pick<ConfigLimits, "maxToolOutput">>): Pick<AppConfig, "maxToolOutput"> {
+  private mergeLimits(
+    config: AppConfig,
+    input: Partial<Pick<ConfigLimits, "maxToolOutput">>,
+  ): Pick<AppConfig, "maxToolOutput"> {
     if (input.maxToolOutput === undefined) return { maxToolOutput: config.maxToolOutput };
     const value = input.maxToolOutput;
     if (!Number.isInteger(value) || value <= 0) {
@@ -581,10 +597,18 @@ export class ConfigService {
     input: Partial<ConfigBehavior>,
   ): Pick<AppConfig, "abortedMessageStrategy" | "abortedToolRoundStrategy" | "autoRefreshTools"> {
     if (input.abortedMessageStrategy !== undefined) {
-      requireChoice(input.abortedMessageStrategy, "behavior.abortedMessageStrategy", ABORTED_MESSAGE_STRATEGIES);
+      requireChoice(
+        input.abortedMessageStrategy,
+        "behavior.abortedMessageStrategy",
+        ABORTED_MESSAGE_STRATEGIES,
+      );
     }
     if (input.abortedToolRoundStrategy !== undefined) {
-      requireChoice(input.abortedToolRoundStrategy, "behavior.abortedToolRoundStrategy", ABORTED_TOOL_ROUND_STRATEGIES);
+      requireChoice(
+        input.abortedToolRoundStrategy,
+        "behavior.abortedToolRoundStrategy",
+        ABORTED_TOOL_ROUND_STRATEGIES,
+      );
     }
     if (input.autoRefreshTools !== undefined) {
       requireChoice(input.autoRefreshTools, "behavior.autoRefreshTools", AUTO_REFRESH_TOOLS);
@@ -636,7 +660,9 @@ export class ConfigService {
         issues.push({
           severity: "warning",
           code: "endpoint_no_key",
-          text: text("endpoint.noKey", { endpoint: endpoint.name === "" ? endpoint.id : endpoint.name }),
+          text: text("endpoint.noKey", {
+            endpoint: endpoint.name === "" ? endpoint.id : endpoint.name,
+          }),
           path: `endpoints[${index}].apiKey`,
         });
       }
@@ -831,7 +857,10 @@ function reloadChangeOf(reloaded: ConfigApplyReport["reloaded"]): ConfigApplyCha
 }
 
 /** `null` 表示清空（返回 `undefined`，写盘时字段消失，读出来就是「还没选」） */
-function pickDefault(current: string | undefined, incoming: string | null | undefined): string | undefined {
+function pickDefault(
+  current: string | undefined,
+  incoming: string | null | undefined,
+): string | undefined {
   if (incoming === undefined) return current;
   if (incoming === null) return undefined;
   return incoming.trim() === "" ? undefined : incoming.trim();

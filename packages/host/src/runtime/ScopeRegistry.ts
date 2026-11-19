@@ -346,9 +346,7 @@ function pathsFor(option: AbilityPathOption | undefined, cwd: string): string[] 
 }
 
 /** 造一个「按 SDK 装能力」的工厂；返回值直接喂给 `ScopeRegistry` 的 `createScope` */
-export function createWorkspaceScopeFactory(
-  options: WorkspaceScopeFactoryOptions,
-): ScopeFactory {
+export function createWorkspaceScopeFactory(options: WorkspaceScopeFactoryOptions): ScopeFactory {
   return async (workspaceId: string): Promise<Scope> => {
     const workspace = await options.resolveWorkspace(workspaceId);
     if (!workspace) {

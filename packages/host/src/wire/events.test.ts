@@ -79,7 +79,11 @@ describe("事件表", () => {
     // 内容段数组（图片 / 文件）走的也是同一份 Delta
     const sectionDelta: MessageDeltaPayload = {
       ...textDelta,
-      delta: { content: [{ index: 0, type: "image_url", image_url: { url: "https://example.test/a.png" } }] },
+      delta: {
+        content: [
+          { index: 0, type: "image_url", image_url: { url: "https://example.test/a.png" } },
+        ],
+      },
     };
     expect(Array.isArray(sectionDelta.delta.content) && sectionDelta.delta.content[0].type).toBe(
       "image_url",

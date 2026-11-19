@@ -19,10 +19,12 @@ export class WorkspaceRepository {
 
   async create(input: WorkspaceCreateInput): Promise<void> {
     // cwd 在表上唯一：同一个目录重复登记会在这里直接报 UNIQUE 约束错误
-    await this.db.run(
-      `INSERT INTO workspaces (${COLUMNS}) VALUES (?, ?, ?, ?)`,
-      [input.id, input.name, input.cwd, input.createdAt],
-    );
+    await this.db.run(`INSERT INTO workspaces (${COLUMNS}) VALUES (?, ?, ?, ?)`, [
+      input.id,
+      input.name,
+      input.cwd,
+      input.createdAt,
+    ]);
   }
 
   async get(id: string): Promise<WorkspaceRow | undefined> {

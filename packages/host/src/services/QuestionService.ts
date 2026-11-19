@@ -351,8 +351,7 @@ export class QuestionService {
    * 现读内存：题不落库，所以**不能**问库（问了永远得 0）。
    */
   countPending(sessionId: string): number {
-    return this.questionsOf(sessionId).filter((question) => question.state === "pending")
-      .length;
+    return this.questionsOf(sessionId).filter((question) => question.state === "pending").length;
   }
 
   /** 这段会话上还挂着、且正在挡着它的那些题（`session.send` 的前置检查用它） */

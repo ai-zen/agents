@@ -99,9 +99,7 @@ describe("handoff.* 接线", () => {
 
   it("非空闲被拒时原样抛给调用方（busy 是服务那边判的，接线层不改写）", async () => {
     const fake = fakeHandoff();
-    fake.fail(
-      new HostError("busy", { detail: { sessionId: "c1", reason: "working" } }),
-    );
+    fake.fail(new HostError("busy", { detail: { sessionId: "c1", reason: "working" } }));
     const handlers = createHandoffHandlers({ handoff: fake.service });
 
     await expect(

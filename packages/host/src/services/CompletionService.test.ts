@@ -236,10 +236,7 @@ describe("CompletionService：上限、超时、缓存", () => {
 
     // 假时钟到点：不等 5 秒
     clock.advance(5_000);
-    await waitFor(
-      () => clock.pending === 0 && git.calls.length === 1,
-      "超时之后的收尾",
-    );
+    await waitFor(() => clock.pending === 0 && git.calls.length === 1, "超时之后的收尾");
 
     const after = await service.files({ workspaceId: WORKSPACE_ID, prefix: "" });
     expect(after.state).toBe("unavailable");

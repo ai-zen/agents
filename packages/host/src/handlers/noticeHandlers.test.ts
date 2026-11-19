@@ -85,14 +85,20 @@ describe("notice.* 接线", () => {
     expect(
       await handlers["notice.dismiss"]?.(call("notice.dismiss", { noticeId: created.id }, "en")),
     ).toEqual({ dismissed: true });
-    expect(await handlers["notice.clear"]?.(call("notice.clear", {}, "en"))).toEqual({ cleared: 0 });
+    expect(await handlers["notice.clear"]?.(call("notice.clear", {}, "en"))).toEqual({
+      cleared: 0,
+    });
   });
 
   it("列表筛选参数也照传", async () => {
     const handlers = createNoticeHandlers({ notices: harness.notices });
     await harness.notices.create({ level: "info", code: "notice.settingsApplied", duration: 5 });
     harness.clock.value += 1;
-    await harness.notices.create({ level: "error", code: "notice.logError", params: { summary: "e" } });
+    await harness.notices.create({
+      level: "error",
+      code: "notice.logError",
+      params: { summary: "e" },
+    });
 
     const onlyErrors = await handlers["notice.list"]?.(
       call("notice.list", { level: "error" }, "en"),

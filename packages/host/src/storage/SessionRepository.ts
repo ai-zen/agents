@@ -12,12 +12,7 @@ import type { HandoffMode } from "../wire/methods.js";
 import type { CompactionMode } from "../wire/states.js";
 import type { Database, RunResult, TxClient, TxStatement } from "./Database.js";
 import { registerMessageUpsert } from "./MessageRepository.js";
-import type {
-  Session,
-  SessionCreateInput,
-  SessionMemorySwap,
-  SessionRow,
-} from "./types.js";
+import type { Session, SessionCreateInput, SessionMemorySwap, SessionRow } from "./types.js";
 
 /** 读写路径共用的列清单（顺序与 `toSession` 的形状一致） */
 const COLUMNS =
@@ -141,10 +136,7 @@ export class SessionRepository {
   }
 
   async get(id: string): Promise<Session | undefined> {
-    const row = await this.db.get<SessionRow>(
-      `SELECT ${COLUMNS} FROM sessions WHERE id = ?`,
-      [id],
-    );
+    const row = await this.db.get<SessionRow>(`SELECT ${COLUMNS} FROM sessions WHERE id = ?`, [id]);
     return row ? toSession(row) : undefined;
   }
 
@@ -203,10 +195,11 @@ export class SessionRepository {
   }
 
   async setPinned(id: string, pinned: boolean, updatedAt: number): Promise<number> {
-    const result = await this.db.run(
-      "UPDATE sessions SET pinned = ?, updatedAt = ? WHERE id = ?",
-      [pinned ? 1 : 0, updatedAt, id],
-    );
+    const result = await this.db.run("UPDATE sessions SET pinned = ?, updatedAt = ? WHERE id = ?", [
+      pinned ? 1 : 0,
+      updatedAt,
+      id,
+    ]);
     return result.changes;
   }
 
@@ -281,11 +274,7 @@ export class SessionRepository {
    *
    * @returns 改动的行数（会话已经不存在时是 0，不是错）
    */
-  async markCompacted(
-    id: string,
-    mode: CompactionMode,
-    compactedAt: number,
-  ): Promise<number> {
+  async markCompacted(id: string, mode: CompactionMode, compactedAt: number): Promise<number> {
     const result = await this.db.run(
       "UPDATE sessions SET compactedAt = ?, compactionMode = ? WHERE id = ?",
       [compactedAt, mode, id],

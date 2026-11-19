@@ -133,7 +133,9 @@ export async function clearLocalToken(paths: HostPaths): Promise<void> {
 // ---------------------------------------------------------------------------
 
 function isNotFound(error: unknown): boolean {
-  return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "ENOENT";
+  return (
+    typeof error === "object" && error !== null && (error as { code?: unknown }).code === "ENOENT"
+  );
 }
 
 function brokenHostFile(filePath: string, reason: string, cause?: unknown): HostError {

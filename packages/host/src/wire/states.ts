@@ -302,11 +302,7 @@ export interface NoticeView {
  * `question.answer` 的回执（`QuestionEffects.handoffDeferredReason`）—— 客户端据此知道「为什么
  * 没开始交接」，不必自己猜。所以它定义在契约这一层，运行时从它 import。
  */
-export type HandoffRefusalReason =
-  | "no_agent"
-  | "working"
-  | "output_paused"
-  | "handoff_in_progress";
+export type HandoffRefusalReason = "no_agent" | "working" | "output_paused" | "handoff_in_progress";
 
 /**
  * 问题的种类。

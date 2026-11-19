@@ -311,9 +311,9 @@ describe("ConfigService.patch / setDefaults", () => {
   });
 
   it("上限不是正整数、行为开关取值不认识都拒", async () => {
-    await expect(
-      service.patch({ patch: { limits: { maxToolOutput: 0 } } }),
-    ).rejects.toMatchObject({ code: "invalid_params" });
+    await expect(service.patch({ patch: { limits: { maxToolOutput: 0 } } })).rejects.toMatchObject({
+      code: "invalid_params",
+    });
     // 客户端可能传一个不认识的值进来：类型上拦不住，宿主要担
     await expect(
       service.patch({

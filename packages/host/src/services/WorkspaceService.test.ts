@@ -187,7 +187,10 @@ describe("WorkspaceService.remove", () => {
   async function seed() {
     const created = await service.create({ cwd: projectDir, name: "要删的项目" });
     const workspaceId = created.workspace.id;
-    for (const [id, createdAt] of [["c1", 2_000], ["c2", 3_000]] as const) {
+    for (const [id, createdAt] of [
+      ["c1", 2_000],
+      ["c2", 3_000],
+    ] as const) {
       await sessions.create({
         id,
         workspaceId,

@@ -75,7 +75,7 @@ describe("applyChunk：内容段数组（视觉 / 多段）", () => {
     expect(message.content).toEqual([{ index: 0, type: "text", text: "前半后半" }]);
   });
 
-  it("首片自带正文：只算一遍（`\"A\"` 不会变成 `\"AA\"`）", () => {
+  it('首片自带正文：只算一遍（`"A"` 不会变成 `"AA"`）', () => {
     const message = receiver();
     applyChunk(message, delta({ content: [{ index: 0, type: "text", text: "A" }] }));
     applyChunk(message, delta({ content: [{ index: 0, text: "B" }] }));
@@ -87,9 +87,7 @@ describe("applyChunk：内容段数组（视觉 / 多段）", () => {
     applyChunk(
       message,
       delta({
-        content: [
-          { index: 0, type: "image_url", image_url: { url: "https://example.com/a.png" } },
-        ],
+        content: [{ index: 0, type: "image_url", image_url: { url: "https://example.com/a.png" } }],
       }),
     );
     expect(message.content).toEqual([
@@ -152,9 +150,12 @@ describe("applyChunk：工具调用", () => {
 
   it("首片只给名字（没有 `arguments`），后续片续参数：不能拼出 `undefined{...}`", () => {
     const message = receiver();
-    applyChunk(message, delta({ tool_calls: [{ index: 0, id: "call_1", function: { name: "write" } }] }));
-    applyChunk(message, delta({ tool_calls: [{ index: 0, function: { arguments: "{\"path\"" } }] }));
-    applyChunk(message, delta({ tool_calls: [{ index: 0, function: { arguments: ":\"a.ts\"}" } }] }));
+    applyChunk(
+      message,
+      delta({ tool_calls: [{ index: 0, id: "call_1", function: { name: "write" } }] }),
+    );
+    applyChunk(message, delta({ tool_calls: [{ index: 0, function: { arguments: '{"path"' } }] }));
+    applyChunk(message, delta({ tool_calls: [{ index: 0, function: { arguments: ':"a.ts"}' } }] }));
 
     const call = message.tool_calls![0];
     expect(call.function!.name).toBe("write");
@@ -185,8 +186,18 @@ describe("applyChunk：工具调用", () => {
       message,
       delta({
         tool_calls: [
-          { index: 0, id: "call_1", type: "function", function: { name: "read", arguments: '{"p":1}' } },
-          { index: 1, id: "call_2", type: "function", function: { name: "exec", arguments: '{"cmd":"ls"}' } },
+          {
+            index: 0,
+            id: "call_1",
+            type: "function",
+            function: { name: "read", arguments: '{"p":1}' },
+          },
+          {
+            index: 1,
+            id: "call_2",
+            type: "function",
+            function: { name: "exec", arguments: '{"cmd":"ls"}' },
+          },
         ],
       }),
     );

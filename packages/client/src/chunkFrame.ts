@@ -59,7 +59,10 @@ export function decodeChunkFrame(frame: Uint8Array): { uploadId: string; chunk: 
     throw new Error(`上传分片帧的头被截断：声明 ${headerLength} 字节`);
   }
 
-  const headerBytes = frame.subarray(CHUNK_HEADER_LENGTH_BYTES, CHUNK_HEADER_LENGTH_BYTES + headerLength);
+  const headerBytes = frame.subarray(
+    CHUNK_HEADER_LENGTH_BYTES,
+    CHUNK_HEADER_LENGTH_BYTES + headerLength,
+  );
   let header: unknown;
   try {
     header = JSON.parse(new TextDecoder().decode(headerBytes)) as unknown;

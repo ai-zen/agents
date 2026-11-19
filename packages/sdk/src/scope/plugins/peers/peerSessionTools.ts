@@ -119,9 +119,7 @@ export type PeerSessionSendRejectReason = "gone" | "dead";
  * 成功只有 `ok`，一个字段都不多：投递那一刻能定下的只有「收下了」。那边忙不忙、什么时候取件
  * 都不是回执该说的话（那是对未来的断言）。
  */
-export type PeerSessionSent =
-  | { ok: true }
-  | { ok: false; reason: PeerSessionSendRejectReason };
+export type PeerSessionSent = { ok: true } | { ok: false; reason: PeerSessionSendRejectReason };
 
 /** `post_message` 的入参（`caller` 由插件从 `ToolCallContext` 取，不由模型给） */
 export interface PeerSessionSendInput {

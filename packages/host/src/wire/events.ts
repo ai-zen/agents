@@ -136,10 +136,7 @@ export interface StatePayload {
  * 这一处只写一遍：另外三处（{@link EventMap} / {@link EVENT_NAMES} / 推送那一侧）都从它推出来。
  */
 export type PauseChangeEventName =
-  | "output:paused"
-  | "output:resumed"
-  | "input:paused"
-  | "input:resumed";
+  "output:paused" | "output:resumed" | "input:paused" | "input:resumed";
 
 /**
  * 一道闸开或关了：载荷只带会话 id（与 `at`）。

@@ -50,7 +50,12 @@ async function readAgent(home: "agents" | "sub-agents", id: string): Promise<Age
 function baseConfig(): AppConfig {
   return {
     endpoints: [
-      { id: "ep-a", name: "Endpoint A", baseUrl: "https://a.example/v1", apiKey: "sk-aaaaaaaa1111" },
+      {
+        id: "ep-a",
+        name: "Endpoint A",
+        baseUrl: "https://a.example/v1",
+        apiKey: "sk-aaaaaaaa1111",
+      },
       { id: "ep-b", name: "Endpoint B", baseUrl: "https://b.example/v1", apiKey: "" },
     ],
     models: [
@@ -102,7 +107,10 @@ beforeEach(async () => {
     },
   });
 
-  await writeJson(join(dataRoot, "agents", "default.json"), definition("default", { modelId: "m-a1" }));
+  await writeJson(
+    join(dataRoot, "agents", "default.json"),
+    definition("default", { modelId: "m-a1" }),
+  );
   await writeJson(
     join(dataRoot, "agents", "writer.json"),
     definition("writer", { name: "Writer", modelId: "m-a2" }),
@@ -135,12 +143,7 @@ afterEach(async () => {
 describe("AgentService.list", () => {
   it("主助手与subagent 一起列，坏文件也占一行并说明原因（F-B5）", async () => {
     const { agents, defaultAgentId } = await service.list();
-    expect(agents.map((agent) => agent.id)).toEqual([
-      "broken",
-      "default",
-      "writer",
-      "sub-one",
-    ]);
+    expect(agents.map((agent) => agent.id)).toEqual(["broken", "default", "writer", "sub-one"]);
     expect(agents.find((agent) => agent.id === "sub-one")?.isSubAgent).toBe(true);
     expect(agents.find((agent) => agent.id === "default")?.isSubAgent).toBe(false);
 
@@ -153,10 +156,16 @@ describe("AgentService.list", () => {
   });
 
   it("模型没了 / 端点没密钥 / 没有可用模型，各有各的说法", async () => {
-    await writeJson(join(dataRoot, "agents", "missing-model.json"), definition("missing-model", {
-      modelId: "m-gone",
-    }));
-    await writeJson(join(dataRoot, "agents", "no-key.json"), definition("no-key", { modelId: "m-b1" }));
+    await writeJson(
+      join(dataRoot, "agents", "missing-model.json"),
+      definition("missing-model", {
+        modelId: "m-gone",
+      }),
+    );
+    await writeJson(
+      join(dataRoot, "agents", "no-key.json"),
+      definition("no-key", { modelId: "m-b1" }),
+    );
 
     const withKey = await service.list();
     const missingModel = withKey.agents.find((agent) => agent.id === "missing-model");
@@ -251,16 +260,31 @@ describe("AgentService.create / update", () => {
 
   it("id 重复、id 不像文件名、没有 system、模型不存在都拒", async () => {
     const runs: (() => Promise<unknown>)[] = [
-      () => service.create({ agent: { id: "default", name: "dup", messages: SYSTEM as AgentDefinition["messages"] } }),
-      () => service.create({ agent: { id: "../escape", name: "bad", messages: SYSTEM as AgentDefinition["messages"] } }),
-      () => service.create({ agent: { id: "empty", name: "e", messages: [] } }),
       () =>
         service.create({
-          agent: { id: "no-system", name: "n", messages: [{ role: "user", content: "hi" }] as AgentDefinition["messages"] },
+          agent: { id: "default", name: "dup", messages: SYSTEM as AgentDefinition["messages"] },
         }),
       () =>
         service.create({
-          agent: { id: "bad-model", name: "b", modelId: "m-gone", messages: SYSTEM as AgentDefinition["messages"] },
+          agent: { id: "../escape", name: "bad", messages: SYSTEM as AgentDefinition["messages"] },
+        }),
+      () => service.create({ agent: { id: "empty", name: "e", messages: [] } }),
+      () =>
+        service.create({
+          agent: {
+            id: "no-system",
+            name: "n",
+            messages: [{ role: "user", content: "hi" }] as AgentDefinition["messages"],
+          },
+        }),
+      () =>
+        service.create({
+          agent: {
+            id: "bad-model",
+            name: "b",
+            modelId: "m-gone",
+            messages: SYSTEM as AgentDefinition["messages"],
+          },
         }),
     ];
     for (const run of runs) {
@@ -281,10 +305,12 @@ describe("AgentService.create / update", () => {
   });
 
   it("坏文件读不出内容，改它就报 config_invalid", async () => {
-    await expect(service.update({ agentId: "broken", patch: { name: "x" } })).rejects.toMatchObject({
-      code: "config_invalid",
-      messageKey: "agent.fileBroken",
-    });
+    await expect(service.update({ agentId: "broken", patch: { name: "x" } })).rejects.toMatchObject(
+      {
+        code: "config_invalid",
+        messageKey: "agent.fileBroken",
+      },
+    );
   });
 });
 
@@ -377,14 +403,14 @@ describe("AgentService.setModel / setThinking", () => {
   });
 
   it("档位不认识、模型不可调，都拒", async () => {
-    await expect(
-      service.setThinking({ agentId: "default", level: "ultra" }),
-    ).rejects.toMatchObject({ code: "invalid_params" });
+    await expect(service.setThinking({ agentId: "default", level: "ultra" })).rejects.toMatchObject(
+      { code: "invalid_params" },
+    );
 
     await service.setModel({ agentId: "writer", modelId: "m-plain" });
-    await expect(
-      service.setThinking({ agentId: "writer", level: "high" }),
-    ).rejects.toMatchObject({ code: "unsupported" });
+    await expect(service.setThinking({ agentId: "writer", level: "high" })).rejects.toMatchObject({
+      code: "unsupported",
+    });
   });
 
   it("定义上的参数正好是一档时，状态是 manual；没有就是跟随默认", async () => {
@@ -392,10 +418,13 @@ describe("AgentService.setModel / setThinking", () => {
       join(dataRoot, "agents", "low.json"),
       definition("low", { modelId: "m-a1", modelParams: { reasoning_effort: "low" } }),
     );
-    await writeJson(join(dataRoot, "agents", "plain-params.json"), definition("plain-params", {
-      modelId: "m-a1",
-      modelParams: { temperature: 0.2 },
-    }));
+    await writeJson(
+      join(dataRoot, "agents", "plain-params.json"),
+      definition("plain-params", {
+        modelId: "m-a1",
+        modelParams: { temperature: 0.2 },
+      }),
+    );
 
     const { agents } = await service.list();
     const low = agents.find((agent) => agent.id === "low");
@@ -540,7 +569,9 @@ describe("AgentService.setThinking { level: null }（F-B6：撤回设值，不�
   it("思考参数是定义上唯一那份参数时，modelParams 整个从定义里去掉", async () => {
     // 先设一档，把思考参数写进定义
     await service.setThinking({ agentId: "default", level: "high" });
-    expect((await readAgent("agents", "default")).modelParams).toEqual({ reasoning_effort: "high" });
+    expect((await readAgent("agents", "default")).modelParams).toEqual({
+      reasoning_effort: "high",
+    });
 
     const { agent, thinking } = await service.setThinking({ agentId: "default", level: null });
 
@@ -551,9 +582,9 @@ describe("AgentService.setThinking { level: null }（F-B6：撤回设值，不�
   });
 
   it("未知档位名与空档位名照样按业务码拒（回归：null 分支没把校验写坏）", async () => {
-    await expect(
-      service.setThinking({ agentId: "default", level: "ultra" }),
-    ).rejects.toMatchObject({ code: "invalid_params" });
+    await expect(service.setThinking({ agentId: "default", level: "ultra" })).rejects.toMatchObject(
+      { code: "invalid_params" },
+    );
 
     await expect(service.setThinking({ agentId: "default", level: "" })).rejects.toMatchObject({
       code: "invalid_params",

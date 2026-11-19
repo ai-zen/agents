@@ -25,11 +25,7 @@ import type { ClientInfo } from "@ai-zen/agents-host";
 import { Client } from "./client.js";
 import { decodeChunkFrame } from "./chunkFrame.js";
 import { ClientError } from "./errors.js";
-import {
-  DEFAULT_MAX_ASSET_BYTES,
-  uploadAsset,
-  uploadAssets,
-} from "./upload.js";
+import { DEFAULT_MAX_ASSET_BYTES, uploadAsset, uploadAssets } from "./upload.js";
 import {
   FakeMethodError,
   helloResult,
@@ -53,7 +49,9 @@ function sha256(bytes: Uint8Array): string {
 
 /** 取下假宿主收到的全部二进制帧（opcode 2） */
 function binaryFrames(host: FakeHost): Uint8Array[] {
-  return host.messages.filter((message) => message.opcode === 0x2).map((m) => new Uint8Array(m.data));
+  return host.messages
+    .filter((message) => message.opcode === 0x2)
+    .map((m) => new Uint8Array(m.data));
 }
 
 /** 把某一个 `uploadId` 的帧按到达顺序拼回原字节 */
@@ -138,8 +136,7 @@ afterAll(async () => {
 /** 握手里的上限改成小值：这样超限用例不必真的分配 20MB */
 function helloLimits() {
   return {
-    "host.hello": () =>
-      helloResult({ limits: { maxAssetBytes: 1024, maxAssetsPerMessage: 4 } }),
+    "host.hello": () => helloResult({ limits: { maxAssetBytes: 1024, maxAssetsPerMessage: 4 } }),
   };
 }
 
@@ -260,7 +257,11 @@ describe("宿主的拒", () => {
     // 一个把收到的字节改掉一个位的宿主：它算出的摘要必然与客户端给的不同
     const strict = await startFakeHost({
       methods: {
-        "asset.begin": () => ({ uploadId: "up-x", maxBytes: DEFAULT_MAX_ASSET_BYTES, receivedBytes: 0 }),
+        "asset.begin": () => ({
+          uploadId: "up-x",
+          maxBytes: DEFAULT_MAX_ASSET_BYTES,
+          receivedBytes: 0,
+        }),
         "asset.end": () => {
           throw new FakeMethodError({
             code: "invalid_params",

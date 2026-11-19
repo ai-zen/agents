@@ -101,11 +101,11 @@ let workspaceDir = "";
 
 beforeAll(async () => {
   // 真编译一次（产物放在独立目录；同组的 serve.process.test.ts 用 dist/，两边不打架）
-  const built = spawnSync(
-    "npx",
-    ["tsc", "-p", "tsconfig.json", "--outDir", BUILD_DIR],
-    { cwd: PACKAGE_ROOT, encoding: "utf8", timeout: 300_000 },
-  );
+  const built = spawnSync("npx", ["tsc", "-p", "tsconfig.json", "--outDir", BUILD_DIR], {
+    cwd: PACKAGE_ROOT,
+    encoding: "utf8",
+    timeout: 300_000,
+  });
   await fs.access(CLI_ENTRY).catch(() => {
     throw new Error(`编译没有产出 ${CLI_ENTRY}：${built.stderr ?? ""}`);
   });
@@ -343,7 +343,10 @@ describe("端到端集成：真进程 + 真连接", () => {
     expect(endpoint?.apiKeyMasked).toContain("…");
     expect(JSON.stringify(configResult)).not.toContain(ENDPOINT_KEY);
     expect(configResult.config.configDir).toBe(dataRoot);
-    log("config.get", `endpoint=${endpoint?.id} apiKeyMasked=${endpoint?.apiKeyMasked} apiKeySet=${String(endpoint?.apiKeySet)}`);
+    log(
+      "config.get",
+      `endpoint=${endpoint?.id} apiKeyMasked=${endpoint?.apiKeyMasked} apiKeySet=${String(endpoint?.apiKeySet)}`,
+    );
 
     const models = (await callThrough(client, "model.list", {})) as ModelListResult;
     // 出厂托管的模型也会列出来（F-F3：不可用的也要看得见），所以按 id 找自己配的那一条
@@ -353,9 +356,12 @@ describe("端到端集成：真进程 + 真连接", () => {
     const agents = (await callThrough(client, "agent.list", {})) as AgentListResult;
     expect(agents.agents.map((agent) => agent.id)).toContain("default");
     expect(agents.defaultAgentId).toBe("default");
-    log("model/agent", `models 含 test-model=${String(testModel !== undefined)} agents=${agents.agents
-      .map((agent) => agent.id)
-      .join(",")} default=${String(agents.defaultAgentId)}`);
+    log(
+      "model/agent",
+      `models 含 test-model=${String(testModel !== undefined)} agents=${agents.agents
+        .map((agent) => agent.id)
+        .join(",")} default=${String(agents.defaultAgentId)}`,
+    );
 
     // =====================================================================
     // 4. notice.list（空）→ 触发一条通知 → 列出 → dismiss
@@ -384,9 +390,12 @@ describe("端到端集成：真进程 + 真连接", () => {
     expect(dismissed).toEqual({ dismissed: true });
     const afterDismiss = (await callThrough(client, "notice.list", {})) as NoticeListResult;
     expect(afterDismiss.notices.map((item) => item.id)).not.toContain(noticeId);
-    log("notice", `触发=${noticeId} 列出=${String(notice !== undefined)} dismiss=${
-      (dismissed as { dismissed: boolean }).dismissed
-    } 清后剩=${afterDismiss.notices.length}`);
+    log(
+      "notice",
+      `触发=${noticeId} 列出=${String(notice !== undefined)} dismiss=${
+        (dismissed as { dismissed: boolean }).dismissed
+      } 清后剩=${afterDismiss.notices.length}`,
+    );
 
     // =====================================================================
     // 6. completion.files：临时 git 仓库里能给出文件清单
@@ -418,9 +427,12 @@ describe("端到端集成：真进程 + 真连接", () => {
     })) as CompletionFilesResult;
     expect(narrowed.state).toBe("ready");
     expect(narrowed.entries.map((entry) => entry.path)).toContain("src/index.ts");
-    log("completion.files", `state=${completion.state} 顶层=${completion.entries
-      .map((entry) => entry.path)
-      .join(",")} prefix(src/)=${narrowed.entries.map((entry) => entry.path).join(",")}`);
+    log(
+      "completion.files",
+      `state=${completion.state} 顶层=${completion.entries
+        .map((entry) => entry.path)
+        .join(",")} prefix(src/)=${narrowed.entries.map((entry) => entry.path).join(",")}`,
+    );
 
     // =====================================================================
     // 5a. 问题：题只在进程里活着（PRD 4.10）—— 这段会话上没有题，拉两次都是空的
@@ -450,8 +462,12 @@ describe("端到端集成：真进程 + 真连接", () => {
 
     // `question.list` 只问「这一段现在有没有一道题」（PRD 4.10）：重启之后这段没有 agent、
     // 也没撞过线，所以两个窗口拉到的都是空 —— 题不落库，没有「重启之后还在」这回事
-    const listA = (await callThrough(windowA, "question.list", { sessionId })) as QuestionListResult;
-    const listB = (await callThrough(windowB, "question.list", { sessionId })) as QuestionListResult;
+    const listA = (await callThrough(windowA, "question.list", {
+      sessionId,
+    })) as QuestionListResult;
+    const listB = (await callThrough(windowB, "question.list", {
+      sessionId,
+    })) as QuestionListResult;
     expect(listA.questions).toEqual([]);
     expect(listB.questions).toEqual([]);
     // 没有题就不挡投递：这一句照常收下
@@ -486,13 +502,17 @@ describe("端到端集成：真进程 + 真连接", () => {
     const workspacesAfter = (await callThrough(back, "workspace.list", {})) as WorkspaceListResult;
     expect(workspacesAfter.workspaces.map((item) => item.id)).toEqual([workspace.id]);
 
-    const sessionsAfter = (await callThrough(back, "session.list", { workspaceId: workspace.id })) as SessionListResult;
+    const sessionsAfter = (await callThrough(back, "session.list", {
+      workspaceId: workspace.id,
+    })) as SessionListResult;
     expect(sessionsAfter.sessions.map((item) => item.id)).toEqual([sessionId]);
     // F-I3 的那两格：刚重启的宿主上这段会话没有 agent、队里也空着（现读的结果，不是落库的字段）
     expect(sessionsAfter.sessions[0]).toMatchObject({ alive: false, inboxPending: 0 });
 
     // 题不落库：重启之后这一段上依然一道题都没有（PRD 4.10 的「题的生命只有这一段会话活着的时间」）
-    const questionsAfter = (await callThrough(back, "question.list", { sessionId })) as QuestionListResult;
+    const questionsAfter = (await callThrough(back, "question.list", {
+      sessionId,
+    })) as QuestionListResult;
     expect(questionsAfter.questions).toEqual([]);
 
     const noticesAfter = (await callThrough(back, "notice.list", {})) as NoticeListResult;
@@ -505,7 +525,9 @@ describe("端到端集成：真进程 + 真连接", () => {
         .map((item) => item.id)
         .join(",")} session=${sessionsAfter.sessions
         .map((item) => item.id)
-        .join(",")} question=${questionsAfter.questions.length} 道 notice=${noticesAfter.notices.length} 条`,
+        .join(
+          ",",
+        )} question=${questionsAfter.questions.length} 道 notice=${noticesAfter.notices.length} 条`,
     );
 
     // 收尾：断连接 + 让进程自己走（最后一轮请求已经回包了）

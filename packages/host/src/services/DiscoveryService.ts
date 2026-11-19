@@ -473,11 +473,15 @@ export class DiscoveryService {
         }
         return {
           ...entry,
-          problem: problem("discovery.shadowed", { path: winner }, {
-            id: entry.id,
-            reason: "overridden",
-            by: winner,
-          }),
+          problem: problem(
+            "discovery.shadowed",
+            { path: winner },
+            {
+              id: entry.id,
+              reason: "overridden",
+              by: winner,
+            },
+          ),
         };
       });
       views.push({
@@ -512,9 +516,7 @@ export class DiscoveryService {
    * `broken` 与 `missing` 必须分开：`missing` 是「这里没有这一层」（正常），`broken` 是
    * 「文件在，但读不成配置」（用户改了、改坏了，界面要能看见并修）。
    */
-  private async readRawMcpFile(
-    path: string,
-  ): Promise<{
+  private async readRawMcpFile(path: string): Promise<{
     state: "missing" | "ok" | "broken";
     problem: ProblemFact | null;
     /** `mcpServers` 里的原始条目（保留未知字段） */
@@ -531,10 +533,14 @@ export class DiscoveryService {
       }
       return {
         state: "broken",
-        problem: problem("config.fileBroken", { path, reason: reasonOf(error) }, {
-          path,
-          reason: "unreadable",
-        }),
+        problem: problem(
+          "config.fileBroken",
+          { path, reason: reasonOf(error) },
+          {
+            path,
+            reason: "unreadable",
+          },
+        ),
         servers: {},
         rest: {},
       };
@@ -546,10 +552,14 @@ export class DiscoveryService {
     } catch (error) {
       return {
         state: "broken",
-        problem: problem("config.fileBroken", { path, reason: reasonOf(error) }, {
-          path,
-          reason: "invalid_json",
-        }),
+        problem: problem(
+          "config.fileBroken",
+          { path, reason: reasonOf(error) },
+          {
+            path,
+            reason: "invalid_json",
+          },
+        ),
         servers: {},
         rest: {},
       };
@@ -558,10 +568,14 @@ export class DiscoveryService {
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
       return {
         state: "broken",
-        problem: problem("config.fileBroken", { path, reason: "not a JSON object" }, {
-          path,
-          reason: "not_an_object",
-        }),
+        problem: problem(
+          "config.fileBroken",
+          { path, reason: "not a JSON object" },
+          {
+            path,
+            reason: "not_an_object",
+          },
+        ),
         servers: {},
         rest: {},
       };
@@ -569,13 +583,20 @@ export class DiscoveryService {
 
     const record = parsed as Record<string, unknown>;
     const servers = record.mcpServers;
-    if (servers !== undefined && (typeof servers !== "object" || servers === null || Array.isArray(servers))) {
+    if (
+      servers !== undefined &&
+      (typeof servers !== "object" || servers === null || Array.isArray(servers))
+    ) {
       return {
         state: "broken",
-        problem: problem("config.fileBroken", { path, reason: "mcpServers is not an object" }, {
-          path,
-          reason: "servers_not_an_object",
-        }),
+        problem: problem(
+          "config.fileBroken",
+          { path, reason: "mcpServers is not an object" },
+          {
+            path,
+            reason: "servers_not_an_object",
+          },
+        ),
         servers: {},
         rest: {},
       };
@@ -611,11 +632,15 @@ export class DiscoveryService {
         }
         return {
           ...entry,
-          problem: problem("discovery.shadowed", { path: winner }, {
-            id: entry.id,
-            reason: "overridden",
-            by: winner,
-          }),
+          problem: problem(
+            "discovery.shadowed",
+            { path: winner },
+            {
+              id: entry.id,
+              reason: "overridden",
+              by: winner,
+            },
+          ),
         };
       });
       views.push({
@@ -645,20 +670,28 @@ export class DiscoveryService {
       if (isNotFound(error)) return { state: "missing", problem: null, entries: [] };
       return {
         state: "broken",
-        problem: problem("config.fileBroken", { path: dir, reason: reasonOf(error) }, {
-          path: dir,
-          reason: "unreadable",
-        }),
+        problem: problem(
+          "config.fileBroken",
+          { path: dir, reason: reasonOf(error) },
+          {
+            path: dir,
+            reason: "unreadable",
+          },
+        ),
         entries: [],
       };
     }
     if (!info.isDirectory()) {
       return {
         state: "broken",
-        problem: problem("discovery.notADirectory", { path: dir }, {
-          path: dir,
-          reason: "not_a_directory",
-        }),
+        problem: problem(
+          "discovery.notADirectory",
+          { path: dir },
+          {
+            path: dir,
+            reason: "not_a_directory",
+          },
+        ),
         entries: [],
       };
     }
@@ -681,10 +714,14 @@ export class DiscoveryService {
     } catch (error) {
       return {
         state: "broken",
-        problem: problem("config.fileBroken", { path: dir, reason: reasonOf(error) }, {
-          path: dir,
-          reason: "discovery_failed",
-        }),
+        problem: problem(
+          "config.fileBroken",
+          { path: dir, reason: reasonOf(error) },
+          {
+            path: dir,
+            reason: "discovery_failed",
+          },
+        ),
         entries: [],
       };
     }
@@ -711,10 +748,14 @@ export class DiscoveryService {
           description: null,
           source: join(dir, name),
           enabled: false,
-          problem: problem("discovery.skillBroken", { name, reason: "no usable frontmatter" }, {
-            path: join(dir, name, "SKILL.md"),
-            reason: "invalid_frontmatter",
-          }),
+          problem: problem(
+            "discovery.skillBroken",
+            { name, reason: "no usable frontmatter" },
+            {
+              path: join(dir, name, "SKILL.md"),
+              reason: "invalid_frontmatter",
+            },
+          ),
         }),
       );
     }
@@ -734,10 +775,14 @@ export class DiscoveryService {
     } catch (error) {
       return {
         state: "broken",
-        problem: problem("config.fileBroken", { path: dir, reason: reasonOf(error) }, {
-          path: dir,
-          reason: "discovery_failed",
-        }),
+        problem: problem(
+          "config.fileBroken",
+          { path: dir, reason: reasonOf(error) },
+          {
+            path: dir,
+            reason: "discovery_failed",
+          },
+        ),
         entries: [],
       };
     }
@@ -766,10 +811,14 @@ export class DiscoveryService {
           description: null,
           source: join(dir, file),
           enabled: false,
-          problem: problem("discovery.toolUnloadable", { name, reason: "not a loadable tool" }, {
-            path: join(dir, file),
-            reason: "load_failed",
-          }),
+          problem: problem(
+            "discovery.toolUnloadable",
+            { name, reason: "not a loadable tool" },
+            {
+              path: join(dir, file),
+              reason: "load_failed",
+            },
+          ),
         }),
       );
     }
@@ -789,10 +838,14 @@ export class DiscoveryService {
     } catch (error) {
       return {
         state: "broken",
-        problem: problem("config.fileBroken", { path: dir, reason: reasonOf(error) }, {
-          path: dir,
-          reason: "discovery_failed",
-        }),
+        problem: problem(
+          "config.fileBroken",
+          { path: dir, reason: reasonOf(error) },
+          {
+            path: dir,
+            reason: "discovery_failed",
+          },
+        ),
         entries: [],
       };
     }
@@ -830,7 +883,10 @@ export class DiscoveryService {
           enabled: false,
           problem: problem(
             "discovery.subAgentBroken",
-            { name: id, reason: parsed === null ? "not readable as JSON" : "no function definition" },
+            {
+              name: id,
+              reason: parsed === null ? "not readable as JSON" : "no function definition",
+            },
             { path, reason: parsed === null ? "invalid_json" : "missing_function" },
           ),
         }),
@@ -944,10 +1000,14 @@ function mcpEntryView(id: string, value: unknown, source: string): DiscoveryEntr
       description: null,
       source,
       enabled: false,
-      problem: problem("discovery.mcpEntryInvalid", { name: id }, {
-        path: source,
-        reason: "entry_not_an_object",
-      }),
+      problem: problem(
+        "discovery.mcpEntryInvalid",
+        { name: id },
+        {
+          path: source,
+          reason: "entry_not_an_object",
+        },
+      ),
       transport: null,
       command: null,
       args: null,
@@ -960,7 +1020,8 @@ function mcpEntryView(id: string, value: unknown, source: string): DiscoveryEntr
   }
 
   const declared = raw.type ?? raw.transport ?? raw.transportType;
-  const inferred = typeof raw.command === "string" ? "stdio" : typeof raw.url === "string" ? "http" : null;
+  const inferred =
+    typeof raw.command === "string" ? "stdio" : typeof raw.url === "string" ? "http" : null;
   const resolved = typeof declared === "string" ? declared : inferred;
 
   return {
@@ -971,11 +1032,15 @@ function mcpEntryView(id: string, value: unknown, source: string): DiscoveryEntr
     enabled: raw.disabled !== true,
     problem:
       resolved === null || !isKnownTransport(resolved)
-        ? problem("discovery.mcpEntryInvalid", { name: id }, {
-            path: source,
-            reason: declared === undefined ? "missing_transport" : "unknown_transport",
-            transport: declared,
-          })
+        ? problem(
+            "discovery.mcpEntryInvalid",
+            { name: id },
+            {
+              path: source,
+              reason: declared === undefined ? "missing_transport" : "unknown_transport",
+              transport: declared,
+            },
+          )
         : null,
     transport: resolved !== null && isKnownTransport(resolved) ? resolved : null,
     command: typeof raw.command === "string" ? raw.command : null,
@@ -1172,7 +1237,10 @@ async function readJsonOrNull(path: string): Promise<unknown> {
 async function listSubdirectories(dir: string): Promise<string[]> {
   try {
     const entries = await fs.readdir(dir, { withFileTypes: true });
-    return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+    return entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
   } catch {
     // 走到这里只剩两种情形：调用前 `stat` 过了、目录刚被删掉，或没有读权限 ——
     // 两种都按「这一层没有条目」报（层本身的 broken 已经由 `readDirectory` 报过）
@@ -1183,7 +1251,10 @@ async function listSubdirectories(dir: string): Promise<string[]> {
 async function listFiles(dir: string): Promise<string[]> {
   try {
     const entries = await fs.readdir(dir, { withFileTypes: true });
-    return entries.filter((entry) => entry.isFile()).map((entry) => entry.name).sort();
+    return entries
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+      .sort();
   } catch {
     // 同 `listSubdirectories`：目录在 `stat` 之后刚被删、或没有读权限，按空报
     return [];

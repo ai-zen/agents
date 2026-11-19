@@ -49,9 +49,9 @@ describe("formatContentSection", () => {
   });
 
   it("file 段留 file_id / file_data / filename", () => {
-    expect(formatContentSection({ type: "file", file_id: "file-1", extra: 1 } as LooseSection)).toEqual(
-      { type: "file", file_id: "file-1" },
-    );
+    expect(
+      formatContentSection({ type: "file", file_id: "file-1", extra: 1 } as LooseSection),
+    ).toEqual({ type: "file", file_id: "file-1" });
     expect(
       formatContentSection({
         type: "file",
@@ -62,9 +62,11 @@ describe("formatContentSection", () => {
   });
 
   it("认不出的段类型只剩 type（有 index 就带上）", () => {
-    expect(formatContentSection({ type: "audio", url: "https://x/a.mp3" } as LooseSection)).toEqual({
-      type: "audio",
-    });
+    expect(formatContentSection({ type: "audio", url: "https://x/a.mp3" } as LooseSection)).toEqual(
+      {
+        type: "audio",
+      },
+    );
     expect(
       formatContentSection({ index: 2, type: "video", video_url: { url: "u" } } as LooseSection),
     ).toEqual({ index: 2, type: "video" });

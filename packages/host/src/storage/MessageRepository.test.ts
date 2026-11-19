@@ -100,7 +100,15 @@ describe("MessageRepository.upsert", () => {
     await repo.upsert(message({ id: "m1", status: "pending", content: "部分", createdAt: 100 }));
     const first = await repo.get("m1");
 
-    await repo.upsert(message({ id: "m1", status: "aborted", content: "部分内容（已中止）", omit: true, createdAt: 999 }));
+    await repo.upsert(
+      message({
+        id: "m1",
+        status: "aborted",
+        content: "部分内容（已中止）",
+        omit: true,
+        createdAt: 999,
+      }),
+    );
     const second = await repo.get("m1");
 
     expect(second?.content).toBe("部分内容（已中止）");
@@ -160,16 +168,40 @@ describe("一条取法：库里只有主线消息（CORE §17 / v5）", () => {
 describe("MessageRepository.search", () => {
   const seed = async (): Promise<void> => {
     await repo.upsert(
-      message({ id: "m1", sessionId: "c1", role: "user", content: "今天天气不错，我们去看海吧", createdAt: 100 }),
+      message({
+        id: "m1",
+        sessionId: "c1",
+        role: "user",
+        content: "今天天气不错，我们去看海吧",
+        createdAt: 100,
+      }),
     );
     await repo.upsert(
-      message({ id: "m2", sessionId: "c1", role: "assistant", content: "好的，海边风景很好", createdAt: 200 }),
+      message({
+        id: "m2",
+        sessionId: "c1",
+        role: "assistant",
+        content: "好的，海边风景很好",
+        createdAt: 200,
+      }),
     );
     await repo.upsert(
-      message({ id: "m3", sessionId: "c2", role: "user", content: "另一段会话讲的是数据库索引", createdAt: 300 }),
+      message({
+        id: "m3",
+        sessionId: "c2",
+        role: "user",
+        content: "另一段会话讲的是数据库索引",
+        createdAt: 300,
+      }),
     );
     await repo.upsert(
-      message({ id: "m4", sessionId: "c3", role: "user", content: "第三个项目里提到了天气与海", createdAt: 400 }),
+      message({
+        id: "m4",
+        sessionId: "c3",
+        role: "user",
+        content: "第三个项目里提到了天气与海",
+        createdAt: 400,
+      }),
     );
   };
 
@@ -190,17 +222,27 @@ describe("MessageRepository.search", () => {
   it("3 字查询也能叠加范围过滤（FTS 分支带 join）", async () => {
     await seed();
     // 3 个字 → 走 FTS5 分支，同时按会话 / 按 Workspace 过滤
-    expect((await repo.search({ sessionId: "c1" }, "天气不", 10)).map((hit) => hit.id)).toEqual(["m1"]);
+    expect((await repo.search({ sessionId: "c1" }, "天气不", 10)).map((hit) => hit.id)).toEqual([
+      "m1",
+    ]);
     expect((await repo.search({ sessionId: "c2" }, "天气不", 10)).map((hit) => hit.id)).toEqual([]);
-    expect((await repo.search({ workspaceId: "w1" }, "天气不", 10)).map((hit) => hit.id)).toEqual(["m1"]);
-    expect((await repo.search({ workspaceId: "w2" }, "天气不", 10)).map((hit) => hit.id)).toEqual([]);
+    expect((await repo.search({ workspaceId: "w1" }, "天气不", 10)).map((hit) => hit.id)).toEqual([
+      "m1",
+    ]);
+    expect((await repo.search({ workspaceId: "w2" }, "天气不", 10)).map((hit) => hit.id)).toEqual(
+      [],
+    );
     // c3 明明含有「天气与海」，但它属于 w2，被 w1 的过滤条件挡住
-    expect((await repo.search({ workspaceId: "w2" }, "天气与", 10)).map((hit) => hit.id)).toEqual(["m4"]);
+    expect((await repo.search({ workspaceId: "w2" }, "天气与", 10)).map((hit) => hit.id)).toEqual([
+      "m4",
+    ]);
   });
 
   it("改过内容之后，旧词搜不到、新词搜得到（FTS 触发器跟着更新）", async () => {
     await seed();
-    await repo.upsert(message({ id: "m1", sessionId: "c1", content: "今天下雨，不去看海了", createdAt: 100 }));
+    await repo.upsert(
+      message({ id: "m1", sessionId: "c1", content: "今天下雨，不去看海了", createdAt: 100 }),
+    );
 
     expect(await repo.search(undefined, "天气不", 10)).toEqual([]);
     expect((await repo.search(undefined, "今天下雨", 10)).map((hit) => hit.id)).toEqual(["m1"]);
@@ -209,7 +251,12 @@ describe("MessageRepository.search", () => {
   it("关键词里的特殊符号不会把查询语法搞坏", async () => {
     await seed();
     await repo.upsert(
-      message({ id: "m9", sessionId: "c1", content: '他说 "完成度 100%" 就行了 AND OR NOT', createdAt: 500 }),
+      message({
+        id: "m9",
+        sessionId: "c1",
+        content: '他说 "完成度 100%" 就行了 AND OR NOT',
+        createdAt: 500,
+      }),
     );
 
     await expect(repo.search(undefined, '100%"', 10)).resolves.toBeDefined();

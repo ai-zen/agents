@@ -104,8 +104,10 @@ export interface SessionRow {
   updatedAt: number;
 }
 
-export interface Session
-  extends Omit<SessionRow, "pinned" | "nameIsAuto" | "autoHandoff" | "pendingHandoff"> {
+export interface Session extends Omit<
+  SessionRow,
+  "pinned" | "nameIsAuto" | "autoHandoff" | "pendingHandoff"
+> {
   pinned: boolean;
   /** 名字仍是自动起的那个（真值来自 `sessions.nameIsAuto` 列，不由名字反推） */
   nameIsAuto: boolean;

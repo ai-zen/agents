@@ -26,16 +26,12 @@ export interface HandoffHandlerDeps {
 }
 
 /** 本域注册的方法 */
-export type HandoffHandlers = Pick<
-  HandlerTable,
-  "handoff.start" | "handoff.listDocuments"
->;
+export type HandoffHandlers = Pick<HandlerTable, "handoff.start" | "handoff.listDocuments">;
 
 export function createHandoffHandlers(deps: HandoffHandlerDeps): HandoffHandlers {
   return {
     "handoff.start": async (context) =>
       await deps.handoff.start(context.params, context.connection.language),
-    "handoff.listDocuments": async (context) =>
-      await deps.handoff.listDocuments(context.params),
+    "handoff.listDocuments": async (context) => await deps.handoff.listDocuments(context.params),
   };
 }

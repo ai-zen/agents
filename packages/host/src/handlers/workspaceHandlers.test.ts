@@ -206,9 +206,9 @@ describe("workspace.remove 的跨层补齐", () => {
     const remaining = await callMethod(app, "session.list", { workspaceId: workspace.id });
     expect(remaining.total).toBe(0);
     // 项目行本身也没了
-    await expect(
-      callMethod(app, "workspace.get", { workspaceId: workspace.id }),
-    ).rejects.toSatisfy((error: unknown) => HostError.is(error) && error.code === "not_found");
+    await expect(callMethod(app, "workspace.get", { workspaceId: workspace.id })).rejects.toSatisfy(
+      (error: unknown) => HostError.is(error) && error.code === "not_found",
+    );
   });
 });
 

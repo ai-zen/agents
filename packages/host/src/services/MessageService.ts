@@ -67,10 +67,7 @@ export interface MessageServiceDeps {
  * 没有 agent，或者名册上没有这个 subagent —— 调用方据此回落到库里。
  */
 export interface LiveMessageLookup {
-  messagesOf(
-    sessionId: string,
-    options?: { toolCallId?: string },
-  ): AgentNS.Message[] | null;
+  messagesOf(sessionId: string, options?: { toolCallId?: string }): AgentNS.Message[] | null;
 }
 
 /** 角色取值表：库里的字符串认不出来时归 `Unknown`，不猜 */
@@ -313,10 +310,8 @@ export class MessageService {
     // 内存优先（PLAN §7）：活着读内存，死了读库。`null` = 我这边没有 —— 没有 agent，
     // 或者名册上已经没有这个 subagent（那一批翻过去了 / 进程重启过）
     const live =
-      this.live?.messagesOf(
-        session.id,
-        toolCallId === undefined ? undefined : { toolCallId },
-      ) ?? null;
+      this.live?.messagesOf(session.id, toolCallId === undefined ? undefined : { toolCallId }) ??
+      null;
     if (live !== null) {
       return this.fromMemory(live, session.id, {
         includeHidden: options.includeHidden,

@@ -18,11 +18,7 @@
  */
 
 import type { HandlerTable } from "../net/index.js";
-import type {
-  HostReloadResult,
-  HostUpgradeParams,
-  HostUpgradeResult,
-} from "../wire/index.js";
+import type { HostReloadResult, HostUpgradeParams, HostUpgradeResult } from "../wire/index.js";
 import { PROTOCOL_VERSION } from "../wire/index.js";
 
 /** `host.*` 的实现要的持有者 */
@@ -40,9 +36,7 @@ export interface HostHandlerDeps {
 }
 
 /** `host.upgrade` 的实现（结论由单根算，本文件只转发入参） */
-export type HostUpgradeHandler = (
-  params: HostUpgradeParams,
-) => Promise<HostUpgradeResult>;
+export type HostUpgradeHandler = (params: HostUpgradeParams) => Promise<HostUpgradeResult>;
 
 export function createHostHandlers(deps: HostHandlerDeps): HandlerTable {
   return {

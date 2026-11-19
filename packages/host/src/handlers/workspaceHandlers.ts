@@ -10,10 +10,7 @@ import type { HandlerTable } from "../net/index.js";
 import type { ChatEventEmitter, ChatRunner, ScopeRegistry } from "../runtime/index.js";
 import type { SessionService } from "../services/SessionService.js";
 import type { WorkspaceService } from "../services/WorkspaceService.js";
-import type {
-  WorkspaceRemoveParams,
-  WorkspaceRemoveResult,
-} from "../wire/index.js";
+import type { WorkspaceRemoveParams, WorkspaceRemoveResult } from "../wire/index.js";
 
 /** `workspace.*` 的实现要的持有者 */
 export interface WorkspaceHandlerDeps {

@@ -179,9 +179,10 @@ function toStoredMessage(row: MessageRow): StoredMessage {
     omit: row.omit !== 0,
     content: toContent(parseJson(row.content)),
     source: toSource(parseJson(row.source)),
-    data: typeof data === "object" && data !== null && !Array.isArray(data)
-      ? (data as Record<string, unknown>)
-      : null,
+    data:
+      typeof data === "object" && data !== null && !Array.isArray(data)
+        ? (data as Record<string, unknown>)
+        : null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -191,7 +192,8 @@ function toStoredMessage(row: MessageRow): StoredMessage {
 function upsertParams(input: MessageUpsertInput): SQLInputValue[] {
   const searchText = toSearchText(input.content ?? null);
   const contentJson = JSON.stringify(input.content ?? null);
-  const dataJson = input.data === undefined || input.data === null ? null : JSON.stringify(input.data);
+  const dataJson =
+    input.data === undefined || input.data === null ? null : JSON.stringify(input.data);
   return [
     input.id,
     input.sessionId,
@@ -255,10 +257,7 @@ export class MessageRepository {
   }
 
   async get(id: string): Promise<StoredMessage | undefined> {
-    const row = await this.db.get<MessageRow>(
-      `SELECT ${COLUMNS} FROM messages WHERE id = ?`,
-      [id],
-    );
+    const row = await this.db.get<MessageRow>(`SELECT ${COLUMNS} FROM messages WHERE id = ?`, [id]);
     return row ? toStoredMessage(row) : undefined;
   }
 
@@ -296,13 +295,7 @@ export class MessageRepository {
                    (SELECT seq FROM messages WHERE id = ? AND sessionId = ?),
                    -1))
        ORDER BY seq ASC`,
-      [
-        sessionId,
-        options.includeHidden === true ? 1 : 0,
-        after ?? null,
-        after ?? null,
-        sessionId,
-      ],
+      [sessionId, options.includeHidden === true ? 1 : 0, after ?? null, after ?? null, sessionId],
     );
     return rows.map(toStoredMessage);
   }

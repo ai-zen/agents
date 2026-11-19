@@ -8,13 +8,7 @@
  * （`SpawnDeps.spawn`），否则会真的去联网拉一个包。
  */
 
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -73,8 +67,7 @@ function harness(config: {
   /** 建连脚本：返回 `null` 表示「现在连不上」，返回 `"unauthorized"` 表示「宿主拒了」 */
   onConnect?: (
     options: ClientOptions,
-  ) =>
-    { ok: true } | { ok: false; code: "host_unavailable" } | { ok: false; code: "unauthorized" };
+  ) => { ok: true } | { ok: false; code: "host_unavailable" } | { ok: false; code: "unauthorized" };
   /** spawn 时做什么（缺省什么都不做） */
   onSpawn?: (context: SpawnHostContext, files: Map<string, ScheduledFile>) => void;
   timeoutMs?: number;

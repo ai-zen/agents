@@ -13,7 +13,11 @@ import type { ChatCompletionChunk } from "openai/resources/chat/completions";
 
 type AnyChunk = any;
 
-function chunk(delta: any, finish_reason: any = null, extra: Record<string, unknown> = {}): AnyChunk {
+function chunk(
+  delta: any,
+  finish_reason: any = null,
+  extra: Record<string, unknown> = {},
+): AnyChunk {
   return {
     id: "chunk-1",
     object: "chat.completion.chunk",
@@ -169,10 +173,7 @@ describe("Agent 投递", () => {
     await settled(agent);
 
     const messages = agent.messages;
-    expect(messages.map((m) => m.role)).toEqual([
-      AgentNS.Role.User,
-      AgentNS.Role.Assistant,
-    ]);
+    expect(messages.map((m) => m.role)).toEqual([AgentNS.Role.User, AgentNS.Role.Assistant]);
     expect(messages[0]!.source).toEqual({ kind: "user" });
     expect(messages[1]!.content).toBe("你好");
     expect(agent.state).toBe("idle");
@@ -705,7 +706,12 @@ describe("Agent 工具段里按中断", () => {
       toolCallStream([{ id: "c1", name: "hang" }]),
       textStream("接着把话说完"),
     ]);
-    const agent = new Agent({ client, model: "m", newMessageId: makeIds(), tools: [new Hanging()] });
+    const agent = new Agent({
+      client,
+      model: "m",
+      newMessageId: makeIds(),
+      tools: [new Hanging()],
+    });
     void agent.start();
 
     agent.push(user("跑个会挂住的工具"));

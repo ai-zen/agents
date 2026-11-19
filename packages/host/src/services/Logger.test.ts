@@ -11,12 +11,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-  DEFAULT_MAX_BYTES,
-  DEFAULT_MAX_FILES,
-  Logger,
-  formatLine,
-} from "./Logger.js";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_FILES, Logger, formatLine } from "./Logger.js";
 
 const dirs: string[] = [];
 
@@ -50,9 +45,7 @@ describe("日志落盘（PRD F-J2）", () => {
     const text = (await readIfExists(join(dir, "host.log"))) ?? "";
     const lines = text.trimEnd().split("\n");
     expect(lines).toHaveLength(2);
-    expect(lines[0]).toBe(
-      "2026-01-02T03:04:05.000Z INFO  host 宿主开始监听 {\"port\":8790}",
-    );
+    expect(lines[0]).toBe('2026-01-02T03:04:05.000Z INFO  host 宿主开始监听 {"port":8790}');
     expect(lines[1]).toContain("WARN ");
     expect(lines[1]).toContain("上传收尾失败");
   });
@@ -121,9 +114,7 @@ describe("日志落盘（PRD F-J2）", () => {
     const line = formatLine(Date.UTC(2026, 0, 2, 0, 0, 0), "warn", "ws", "连接出错", {
       connectionId: "c-1",
     });
-    expect(line).toBe(
-      "2026-01-02T00:00:00.000Z WARN  ws 连接出错 {\"connectionId\":\"c-1\"}\n",
-    );
+    expect(line).toBe('2026-01-02T00:00:00.000Z WARN  ws 连接出错 {"connectionId":"c-1"}\n');
     // 循环引用也留一行（内容换成占位符），不让整条记录丢掉
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;

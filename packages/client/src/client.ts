@@ -578,7 +578,10 @@ export class Client implements ContractCaller {
    * 否则上传会卡在一个永远不会降下来的数字上。
    */
   private async drain(socket: WebSocket): Promise<void> {
-    while (typeof socket.bufferedAmount === "number" && socket.bufferedAmount > BINARY_HIGH_WATER_BYTES) {
+    while (
+      typeof socket.bufferedAmount === "number" &&
+      socket.bufferedAmount > BINARY_HIGH_WATER_BYTES
+    ) {
       await new Promise<void>((resolve) => setTimeout(resolve, BINARY_DRAIN_INTERVAL_MS));
       if (this.socket !== socket) throw this.lostError();
     }

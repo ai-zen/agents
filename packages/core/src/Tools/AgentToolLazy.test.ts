@@ -177,7 +177,8 @@ describe("AgentToolLazy subagent 委派边界", () => {
       description: "测试",
       parameters: { type: "object", properties: {}, required: [] },
     };
-    const buildAgent = () => new Agent({ client: createMockClient(), model: "gpt-4", lifetime: "one-shot" });
+    const buildAgent = () =>
+      new Agent({ client: createMockClient(), model: "gpt-4", lifetime: "one-shot" });
 
     expect(() => new AgentToolLazy({ function: fn, buildAgent })).not.toThrow();
     expect(
@@ -313,7 +314,9 @@ function toolCallStream(id: string, name: string, args: string): AnyChunk[] {
       choices: [
         {
           index: 0,
-          delta: { tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: args } }] },
+          delta: {
+            tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: args } }],
+          },
           finish_reason: null,
         },
       ],
@@ -355,7 +358,10 @@ describe("AgentToolLazy 委派用量", () => {
   function ctxOf(host: Agent) {
     return new ToolCallContext({
       agent: host,
-      tool_call: { id: "call-1", function: { name: "lazyFn", arguments: JSON.stringify({ task: "写代码" }) } },
+      tool_call: {
+        id: "call-1",
+        function: { name: "lazyFn", arguments: JSON.stringify({ task: "写代码" }) },
+      },
       resultMessage: Message.Tool({ id: "result-1", function: { name: "lazyFn" } }),
     });
   }

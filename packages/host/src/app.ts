@@ -26,7 +26,12 @@ import { join } from "node:path";
 
 import { AgentNS } from "@ai-zen/agents-core";
 import { AgentRepository, ConfigManager } from "@ai-zen/agents-sdk";
-import type { AppConfig, ConfigRecoveredHandler, HandoffService, ReasoningPresets } from "@ai-zen/agents-sdk";
+import type {
+  AppConfig,
+  ConfigRecoveredHandler,
+  HandoffService,
+  ReasoningPresets,
+} from "@ai-zen/agents-sdk";
 
 import { readHostSettings, resolveListenTarget, resolvePaths } from "./config.js";
 import type { ListenTarget, HostPaths } from "./config.js";
@@ -60,7 +65,11 @@ import type {
   ScopeFactory,
 } from "./runtime/index.js";
 import { SessionDrafts } from "./runtime/SessionDrafts.js";
-import { TransientRunner, cwdOfTransientScopeKey, transientAgentFactoryFrom } from "./runtime/TransientRunner.js";
+import {
+  TransientRunner,
+  cwdOfTransientScopeKey,
+  transientAgentFactoryFrom,
+} from "./runtime/TransientRunner.js";
 import {
   SessionService,
   CredentialService,
@@ -74,7 +83,11 @@ import { AssetService } from "./services/AssetService.js";
 import { AutoNaming } from "./services/AutoNaming.js";
 import { CompletionService } from "./services/CompletionService.js";
 import { ConfigService } from "./services/ConfigService.js";
-import type { ConfigApplyChange, ConfigApplyOutcome, ConfigApplyPort } from "./services/ConfigService.js";
+import type {
+  ConfigApplyChange,
+  ConfigApplyOutcome,
+  ConfigApplyPort,
+} from "./services/ConfigService.js";
 import { DiscoveryService } from "./services/DiscoveryService.js";
 import {
   createSdkHandoffService,
@@ -471,8 +484,7 @@ export class HostApp {
       // 列表读取只有一个来源：活着读内存，死了读库（PLAN §7）。`chatRunner` 在 §7 才造出来，
       // 所以这里只闭包一步（调用那一刻才去拿）
       live: {
-        messagesOf: (sessionId, options) =>
-          this.chatRunner.messagesOf(sessionId, options),
+        messagesOf: (sessionId, options) => this.chatRunner.messagesOf(sessionId, options),
       },
     });
     this.searchService = new SearchService({
@@ -733,7 +745,9 @@ export class HostApp {
     // D25 的中间那一档：只在这一档真的要被用到时才读（参数给了就不必读，坏文件也不该拦住显式端口）
     const configPort =
       options.configPort ??
-      (options.port === undefined ? (await readHostSettings(paths, recoveries.onRecovered)).port : undefined);
+      (options.port === undefined
+        ? (await readHostSettings(paths, recoveries.onRecovered)).port
+        : undefined);
 
     await mkdir(paths.dataRoot, { recursive: true });
     await mkdir(paths.runDir, { recursive: true });
@@ -1105,8 +1119,7 @@ export class HostApp {
       // 的提问路径（{@link askHandoffOnIdle}）。开关是会话行上的列，所以那条判断重启也不变形。
       wantsAutoHandoff: (context) => this.autoHandoffOf(context.sessionId),
       // 插件压完记一笔：会话行上写 `auto`（`manual` 那条由 `HandoffDocumentService` 自己写）
-      onCompacted: (context, mode) =>
-        this.sessionService.markCompacted(context.sessionId, mode),
+      onCompacted: (context, mode) => this.sessionService.markCompacted(context.sessionId, mode),
       // 自动交接的收口（成功/失败都到这儿，取消不到）：把闸开回来。
       // 自动那条路没有 `runToEnd` 那样的收尾，而开闸只在宿主交接收口做（PLAN §5.3）
       // —— 漏了这一格，平级会话越一次线就再也不取件。
@@ -1254,7 +1267,9 @@ export class HostApp {
       // 只看**还挂着**的那一道：已经答过的题留在对象里（多端要看到「答了 + 谁答的」），
       // 它不算「已经挂着一道交接题」
       if (
-        pending.questions.some((question) => question.kind === "handoff" && question.state === "pending")
+        pending.questions.some(
+          (question) => question.kind === "handoff" && question.state === "pending",
+        )
       ) {
         return;
       }
@@ -1326,9 +1341,7 @@ export class HostApp {
   }
 
   /** 素材转换要的实发模型与端点（F-H7 的判定依据：模型能不能看图、端点有没有 Files API） */
-  private async resolveModelContext(
-    modelId: string | null,
-  ): Promise<{
+  private async resolveModelContext(modelId: string | null): Promise<{
     model: AppConfig["models"][number] | null;
     endpoint: AppConfig["endpoints"][number] | null;
   }> {
@@ -1600,7 +1613,8 @@ export function compareVersions(left: string, right: string): number {
     const b = rightParts[index] ?? "0";
     const aNumber = Number(a);
     const bNumber = Number(b);
-    const bothNumeric = Number.isFinite(aNumber) && Number.isFinite(bNumber) && a !== "" && b !== "";
+    const bothNumeric =
+      Number.isFinite(aNumber) && Number.isFinite(bNumber) && a !== "" && b !== "";
     if (bothNumeric) {
       if (aNumber !== bNumber) return aNumber < bNumber ? -1 : 1;
       continue;

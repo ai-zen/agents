@@ -26,7 +26,13 @@ import type {
   WorkspaceCreateResult,
 } from "../wire/index.js";
 import { UploadReceiver, encodeChunkFrame, type UploadFinalizeRequest } from "./UploadReceiver.js";
-import { WsHub, type EventLocalizer, type HandlerTable, type HubLogger, type WsHubOptions } from "./WsHub.js";
+import {
+  WsHub,
+  type EventLocalizer,
+  type HandlerTable,
+  type HubLogger,
+  type WsHubOptions,
+} from "./WsHub.js";
 import {
   isError,
   isNotification,
@@ -49,7 +55,6 @@ let clients: TestClient[];
 let finalized: UploadFinalizeRequest[];
 let logged: { level: "warn" | "error"; message: string; detail?: unknown }[];
 let hubReference: WsHub | null;
-
 
 beforeEach(async () => {
   dir = await makeTempDir("ws-hub");
@@ -387,7 +392,12 @@ describe("推送（PRD L5 / R47）", () => {
         id: "n-1",
         level: "info",
         duration: 2,
-        text: { code: "notice.settingsApplied", messageKey: "notice.settingsApplied", params: {}, message: "" },
+        text: {
+          code: "notice.settingsApplied",
+          messageKey: "notice.settingsApplied",
+          params: {},
+          message: "",
+        },
         sessionId: null,
         createdAt: NOW,
       },

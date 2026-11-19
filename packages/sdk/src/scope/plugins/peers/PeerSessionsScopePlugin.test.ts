@@ -332,7 +332,13 @@ describe("read_session_status：忙不忙 + 死活 + 「没有这一段」，只
 
   it("找到了：found / status / alive / label / lastMessage 原样出现，并带上 hint", async () => {
     const { port, statuses } = recordingPort({
-      status: { found: true, status: "idle", alive: true, label: "会话 1", lastMessage: "登录页查过了" },
+      status: {
+        found: true,
+        status: "idle",
+        alive: true,
+        label: "会话 1",
+        lastMessage: "登录页查过了",
+      },
     });
     const [, statusTool] = createPeerSessionTools(port);
 
@@ -389,7 +395,10 @@ describe("read_session_status：忙不忙 + 死活 + 「没有这一段」，只
       status: { found: true, status: "idle", alive: false, label: "s", lastMessage: null },
     });
     const [, deadTool] = createPeerSessionTools(dead.port);
-    const deadResult = (await call(deadTool, { sessionId: "s" })) as { hint: string; alive: boolean };
+    const deadResult = (await call(deadTool, { sessionId: "s" })) as {
+      hint: string;
+      alive: boolean;
+    };
     expect(deadResult.alive).toBe(false);
     expect(deadResult.hint.toLowerCase()).toContain("no answer will arrive");
     expect(deadResult.hint).toContain("Do the work here instead");
@@ -438,7 +447,13 @@ describe("read_session_status：忙不忙 + 死活 + 「没有这一段」，只
 
   it("答案里只有「忙不忙 + 最近一句摘要」：没有 startedAt、没有消息数组、没有条数", async () => {
     const { port } = recordingPort({
-      status: { found: true, status: "working", alive: true, label: "s", lastMessage: "先看看登录页" },
+      status: {
+        found: true,
+        status: "working",
+        alive: true,
+        label: "s",
+        lastMessage: "先看看登录页",
+      },
     });
     const [, statusTool] = createPeerSessionTools(port);
 

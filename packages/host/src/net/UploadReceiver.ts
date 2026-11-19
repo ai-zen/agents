@@ -85,10 +85,7 @@ export type ExistingAssetLookup = (input: {
  * `language` 是那条「这段会话在哪个目录」的隐藏消息的渲染语言（D8）：上传是连接上的动作，
  * 只有接线层知道收件人说的是哪种语言，所以逐次传进来而不是在构造时定死。
  */
-export type SessionPersister = (
-  sessionId: string,
-  language: Language,
-) => Promise<void>;
+export type SessionPersister = (sessionId: string, language: Language) => Promise<void>;
 
 export interface UploadReceiverOptions {
   /** 数据根下的 `assets/`：临时文件与正式文件同目录，改名不必跨设备复制 */
@@ -199,7 +196,8 @@ export class UploadReceiver {
     await this.persistSession(sessionId, language);
 
     // 库里已有同一份字节时只回引用：磁盘上只有一份，两段会话各自在关系表里留一行
-    const existing = sha256 === null ? null : await this.lookupExisting({ sha256, bytes: declaredBytes });
+    const existing =
+      sha256 === null ? null : await this.lookupExisting({ sha256, bytes: declaredBytes });
     if (existing !== null) {
       return {
         deduped: true,
@@ -393,10 +391,7 @@ export class UploadReceiver {
    *
    * 查询本身失败时当作「没命中」：去重是省一次上传的优化，不能因为它的存储出错就把整个上传拒掉。
    */
-  private async lookupExisting(input: {
-    sha256: string;
-    bytes: number;
-  }): Promise<AssetRef | null> {
+  private async lookupExisting(input: { sha256: string; bytes: number }): Promise<AssetRef | null> {
     const find = this.findExisting;
     if (!find) return null;
     try {

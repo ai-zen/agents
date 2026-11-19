@@ -12,7 +12,12 @@ import { Scope } from "@ai-zen/agents-sdk";
 import type { AppConfig } from "@ai-zen/agents-sdk";
 
 import { createWorkspaceScopeFactory, ScopeBusyError, ScopeRegistry } from "./ScopeRegistry.js";
-import { createFakeScope, flushMicrotasks, ManualClock, RecordingScopePlugin } from "./TestSupport.js";
+import {
+  createFakeScope,
+  flushMicrotasks,
+  ManualClock,
+  RecordingScopePlugin,
+} from "./TestSupport.js";
 
 /** 记录每次创建：按 workspaceId 造一个真 Scope（一个 Workspace 一个 Scope） */
 function createTrackingFactory(): {
@@ -226,7 +231,11 @@ describe("ScopeRegistry：配置生效走 refresh，不销毁重建", () => {
   it("refreshWorkspace：就地刷同一个 Scope（重读配置 + 重新发现），不销毁也不重建", async () => {
     let config: AppConfig = { endpoints: [], models: [] };
     const plugin = new RecordingScopePlugin();
-    const scope = new Scope({ getConfig: () => config, agentsDir: "/tmp/ws/agents", cwd: "/tmp/ws" });
+    const scope = new Scope({
+      getConfig: () => config,
+      agentsDir: "/tmp/ws/agents",
+      cwd: "/tmp/ws",
+    });
     scope.use(plugin);
     await scope.init();
 

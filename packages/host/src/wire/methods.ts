@@ -3,11 +3,7 @@ import type {
   AbortedToolRoundStrategy,
   AgentNS,
 } from "@ai-zen/agents-core";
-import type {
-  AgentDefinition,
-  McpServerConfig,
-  TokenThresholds,
-} from "@ai-zen/agents-sdk";
+import type { AgentDefinition, McpServerConfig, TokenThresholds } from "@ai-zen/agents-sdk";
 
 import type { Language } from "../i18n/index.js";
 import type {
@@ -61,8 +57,6 @@ export interface ClientInfo {
   /** 运行平台（可选，仅供展示） */
   platform?: string;
 }
-
-
 
 /**
  * 一次删除的代价（PRD D11「删前明说代价」/ D17「先警告」/ F-F9「二次确认」）。

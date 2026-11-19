@@ -94,7 +94,10 @@ async function makeDataRoot(): Promise<TempDir> {
   return base;
 }
 
-async function startApp(dataRoot: TempDir, createAgent?: (context: AgentBuildContext) => Promise<FakeAgent>): Promise<HostApp> {
+async function startApp(
+  dataRoot: TempDir,
+  createAgent?: (context: AgentBuildContext) => Promise<FakeAgent>,
+): Promise<HostApp> {
   const app = await createHost({
     aiZenDir: dataRoot.path,
     port: 0,
@@ -119,10 +122,7 @@ async function callMethod<M extends MethodName>(
 }
 
 /** 建一个项目 + 一段（已落库的）会话 */
-async function seedSession(
-  app: HostApp,
-  workspaceId: string,
-): Promise<SessionView> {
+async function seedSession(app: HostApp, workspaceId: string): Promise<SessionView> {
   const created = await callMethod(app, "session.create", {
     workspaceId,
     agentId: "default",
@@ -166,10 +166,9 @@ describe("会话级模型：写库与重启（F-B4）", () => {
     });
     expect(changed.model).toMatchObject({ modelId: "plain-model", source: "session" });
     // 立刻写库（不是内存里的临时值）
-    const row = await app.db.get<{ modelId: string }>(
-      "SELECT modelId FROM sessions WHERE id = ?",
-      [session.id],
-    );
+    const row = await app.db.get<{ modelId: string }>("SELECT modelId FROM sessions WHERE id = ?", [
+      session.id,
+    ]);
     expect(row?.modelId).toBe("plain-model");
 
     // 重启：同一个数据根再起一个服务

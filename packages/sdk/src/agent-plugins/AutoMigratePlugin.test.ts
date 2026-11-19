@@ -51,7 +51,8 @@ async function goIdle(
   options: { promptTokens?: number; olderPromptTokens?: number } = {},
 ): Promise<void> {
   const messages: AgentNS.Message[] = [];
-  if (options.olderPromptTokens != null) messages.push(assistantWithUsage(options.olderPromptTokens));
+  if (options.olderPromptTokens != null)
+    messages.push(assistantWithUsage(options.olderPromptTokens));
   if (options.promptTokens != null) messages.push(assistantWithUsage(options.promptTokens));
   plugin.onOuterLoopStart({ agent: { messages }, entries: [] } as any);
   await plugin.onIdle();

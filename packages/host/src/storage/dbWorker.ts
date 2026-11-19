@@ -53,8 +53,7 @@ const sqlite = new DatabaseSync(dbPath);
 // 读回来的模式必须真的是 "wal" —— 文件系统不支持时（网络盘、只读目录等）会静默留在
 // delete 模式，那种情况下并发读写会互相卡住，与其带病运行不如让启动直接失败。
 const journal = sqlite.prepare("PRAGMA journal_mode = WAL").get() as
-  | { journal_mode?: string }
-  | undefined;
+  { journal_mode?: string } | undefined;
 if (journal?.journal_mode !== "wal") {
   throw new Error(
     `无法切换到 WAL 日志模式（当前为 ${String(journal?.journal_mode)}），数据库路径：${dbPath}`,
@@ -64,8 +63,7 @@ if (journal?.journal_mode !== "wal") {
 // 外键约束在 SQLite 里默认是关的，必须显式打开，级联删除才会生效
 sqlite.exec("PRAGMA foreign_keys = ON");
 const foreignKeys = sqlite.prepare("PRAGMA foreign_keys").get() as
-  | { foreign_keys?: number }
-  | undefined;
+  { foreign_keys?: number } | undefined;
 if (foreignKeys?.foreign_keys !== 1) {
   throw new Error("无法开启 foreign_keys，级联删除不会生效");
 }

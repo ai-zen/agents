@@ -18,12 +18,7 @@ import type { ConnectionInfo } from "../net/index.js";
 import { makeTempDir, wait, type TempDir } from "../net/TestSupport.js";
 import { FakeAgent } from "../runtime/TestSupport.js";
 import { METHOD_NAMES, PROTOCOL_VERSION } from "../wire/index.js";
-import type {
-  SessionView,
-  MethodName,
-  MethodParams,
-  MethodResult,
-} from "../wire/index.js";
+import type { SessionView, MethodName, MethodParams, MethodResult } from "../wire/index.js";
 
 const CONFIG = JSON.stringify(
   {
@@ -86,7 +81,10 @@ async function makeHarness(): Promise<Harness> {
     local: true,
     createAgent: async () =>
       new FakeAgent([
-        { deltas: [{ content: "好。" }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } },
+        {
+          deltas: [{ content: "好。" }],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        },
       ]),
     exit: (facts) => {
       exits.push(facts);

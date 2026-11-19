@@ -270,9 +270,12 @@ describe("题只活在进程里（PRD 4.10）", () => {
 
   it("答过的题也还在这段里（多端要看到「答了 + 谁答的」）", async () => {
     const id = await askHandoff(harness);
-    await harness.service.answer({ questionId: id, value: HANDOFF_OPTION_DECLINE }, {
-      answeredBy: "conn-2",
-    });
+    await harness.service.answer(
+      { questionId: id, value: HANDOFF_OPTION_DECLINE },
+      {
+        answeredBy: "conn-2",
+      },
+    );
 
     const listed = await harness.service.list({ sessionId: "c1" });
     expect(listed.questions[0]?.state).toBe("answered");
@@ -393,10 +396,11 @@ describe("答完之后接着往下走（PRD 4.10 / PLAN §5.2）", () => {
     await sessions.setAutoHandoff("c1", true, 10);
     expect((await sessions.get("c1"))?.autoHandoff).toBe(true);
 
-    const changedBefore = harness.events.filter(
-      (event) => event.name === "session.changed",
-    ).length;
-    const answered = await harness.service.answer({ questionId: id, value: HANDOFF_OPTION_DECLINE });
+    const changedBefore = harness.events.filter((event) => event.name === "session.changed").length;
+    const answered = await harness.service.answer({
+      questionId: id,
+      value: HANDOFF_OPTION_DECLINE,
+    });
 
     expect(harness.handoffCalls).toEqual([]);
     expect(answered.effects).toEqual({ handoffStarted: false, handoffDeferredReason: null });
@@ -417,9 +421,9 @@ describe("答完之后接着往下走（PRD 4.10 / PLAN §5.2）", () => {
 
   it("参数不对时按参数不对拒，题仍是 pending", async () => {
     const id = await askHandoff(harness);
-    await expect(
-      harness.service.answer({ questionId: id, value: "自交接" }),
-    ).rejects.toMatchObject({ code: "invalid_params" });
+    await expect(harness.service.answer({ questionId: id, value: "自交接" })).rejects.toMatchObject(
+      { code: "invalid_params" },
+    );
     const listed = await harness.service.list({ sessionId: "c1" });
     expect(listed.questions[0]?.state).toBe("pending");
   });

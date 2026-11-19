@@ -52,7 +52,7 @@ const MAX_TITLE_CHARS = 60;
  */
 const TITLE_INSTRUCTION = [
   "You name sessions. Read the exchange below and give it a short title.",
-  "Rules: at most 6 words, no quotes, no trailing punctuation, no preamble like \"Title:\".",
+  'Rules: at most 6 words, no quotes, no trailing punctuation, no preamble like "Title:".',
   "Name what the task actually is, in the language the user wrote in.",
   "Answer with the title only.",
 ].join("\n");
@@ -148,10 +148,7 @@ export class AutoNaming {
    * 是八种情形，它们就写在下面的分支上 —— 不包成返回值往外传，因为没有任何调用方会拿它分支
    * （从前那个 `skipped` 字段只有用例在读，那是用例在养一份生产不需要的形状）。
    */
-  async nameIfUnnamed(
-    sessionId: string,
-    language: Language = DEFAULT_LANGUAGE,
-  ): Promise<void> {
+  async nameIfUnnamed(sessionId: string, language: Language = DEFAULT_LANGUAGE): Promise<void> {
     const session = await this.sessions.get(sessionId);
     // 会话不在（刚被删）：后台钩子不该抛错
     if (!session) return;

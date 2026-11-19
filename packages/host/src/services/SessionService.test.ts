@@ -21,11 +21,7 @@ import { AgentNS } from "@ai-zen/agents-core";
 import { HostError } from "../wire/errors.js";
 import { SessionService } from "./SessionService.js";
 import type { SessionOriginInput, SessionRuntimePort } from "./SessionService.js";
-import type {
-  SessionCreateParams,
-  SessionPresence,
-  SessionView,
-} from "../wire/index.js";
+import type { SessionCreateParams, SessionPresence, SessionView } from "../wire/index.js";
 
 /**
  * 运行时只提供四件事实：这一刻那四件事（忙闲 / 两道闸 / 死活）、队里压着几条、删掉之后丢现场、
@@ -332,22 +328,26 @@ describe("SessionService.create（身份创建时定死，L7 / R18）", () => {
   });
 
   it("项目不存在时报 not_found，不写半成品行", async () => {
-    await expect(createPersisted(harness.service, { workspaceId: "没有这个项目", agentId: "a1" })).rejects.toMatchObject(
-      { code: "not_found" },
-    );
+    await expect(
+      createPersisted(harness.service, { workspaceId: "没有这个项目", agentId: "a1" }),
+    ).rejects.toMatchObject({ code: "not_found" });
     expect(await harness.sessions.list()).toEqual([]);
   });
 
   it("助手不存在时报 not_found", async () => {
-    await expect(createPersisted(harness.service, { workspaceId: "w1", agentId: "没有这个助手" })).rejects.toMatchObject(
-      { code: "not_found" },
-    );
+    await expect(
+      createPersisted(harness.service, { workspaceId: "w1", agentId: "没有这个助手" }),
+    ).rejects.toMatchObject({ code: "not_found" });
     expect(await harness.sessions.list()).toEqual([]);
   });
 
   it("点名要的模型不存在时报 not_found", async () => {
     await expect(
-      createPersisted(harness.service, { workspaceId: "w1", agentId: "a1", modelId: "没有这个模型" }),
+      createPersisted(harness.service, {
+        workspaceId: "w1",
+        agentId: "a1",
+        modelId: "没有这个模型",
+      }),
     ).rejects.toMatchObject({ code: "not_found" });
   });
 
@@ -738,11 +738,7 @@ describe("多端在线同步（L5 / D22：session.changed）", () => {
     await harness.service.delete({ sessionId: id });
 
     // 撤回不在 `session.changed` 里：消息有自己的事件（下面单独看）
-    expect(changes().map((payload) => payload.change)).toEqual([
-      "renamed",
-      "pinned",
-      "deleted",
-    ]);
+    expect(changes().map((payload) => payload.change)).toEqual(["renamed", "pinned", "deleted"]);
     for (const payload of changes()) {
       expect(payload.sessionId).toBe(id);
       expect(payload.workspaceId).toBe("w1");
@@ -993,9 +989,10 @@ describe("SessionService.setModel（F-B4 / D20：会话级、落库）", () => {
       createdAt: 4,
     });
 
-    await expect(
-      harness.service.setModel({ sessionId: id, modelId: "m2" }),
-    ).rejects.toMatchObject({ code: "model_unsupported", messageKey: "error.modelUnsupported" });
+    await expect(harness.service.setModel({ sessionId: id, modelId: "m2" })).rejects.toMatchObject({
+      code: "model_unsupported",
+      messageKey: "error.modelUnsupported",
+    });
     // 被拒绝时什么都没改
     expect((await harness.sessions.get(id))?.modelId).toBe("m1");
   });
@@ -1263,13 +1260,21 @@ describe("SessionService.setThresholds（PRD 1.4 / 4.7：会话行上的覆盖�
     ).rejects.toMatchObject({ code: "invalid_params" });
     // 硬线必须给软线留出余量（与建模型那条同口径：handoff < guard）
     await expect(
-      harness.service.setThresholds({ sessionId: id, handoffThreshold: 1000, guardThreshold: 1000 }),
+      harness.service.setThresholds({
+        sessionId: id,
+        handoffThreshold: 1000,
+        guardThreshold: 1000,
+      }),
     ).rejects.toMatchObject({
       code: "invalid_params",
       detail: { field: "guardThreshold", reason: "handoff_not_below_guard" },
     });
     await expect(
-      harness.service.setThresholds({ sessionId: id, handoffThreshold: 2000, guardThreshold: 1000 }),
+      harness.service.setThresholds({
+        sessionId: id,
+        handoffThreshold: 2000,
+        guardThreshold: 1000,
+      }),
     ).rejects.toMatchObject({ code: "invalid_params" });
     // 被拒绝时什么都没写
     expect((await harness.sessions.get(id))?.handoffThreshold).toBeNull();
@@ -1290,7 +1295,11 @@ describe("SessionService.setThresholds（PRD 1.4 / 4.7：会话行上的覆盖�
   it("还没落库的草稿也能改：落库时按草稿里的写", async () => {
     const created = await harness.service.create({ workspaceId: "w1", agentId: "a1" });
     const id = created.session?.id ?? "";
-    await harness.service.setThresholds({ sessionId: id, handoffThreshold: 100_000, guardThreshold: 150_000 });
+    await harness.service.setThresholds({
+      sessionId: id,
+      handoffThreshold: 100_000,
+      guardThreshold: 150_000,
+    });
 
     const row = await harness.service.ensurePersisted(id);
     expect(row.handoffThreshold).toBe(100_000);

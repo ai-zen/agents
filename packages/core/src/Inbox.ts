@@ -23,9 +23,7 @@ import { Message, generateMessageId } from "./Message.js";
  *
  * @returns 字符串内容返回 `注释\n\n 正文`；数组内容返回「注释段 + 原有各段」
  */
-export function inboxEntryContent(
-  entry: AgentNS.InboxEntryWithContent,
-): AgentNS.MessageContent {
+export function inboxEntryContent(entry: AgentNS.InboxEntryWithContent): AgentNS.MessageContent {
   if (entry.source.kind === "user") return entry.content;
 
   // 注释行 + 一个空行：与正文拉开，模型与终端里都不会把它读成正文的第一句

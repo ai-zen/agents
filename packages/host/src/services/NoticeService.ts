@@ -205,7 +205,10 @@ export class NoticeService {
    * 落库 → 推 `notice` 事件 → 返回渲染好的视图。落库在推送之前：推送只对在线连接有意义
    * （D5：断线即作废），而库里的那条是重连之后还能看到的真相（L3）。
    */
-  async create(input: NoticeCreateInput, language: Language = DEFAULT_LANGUAGE): Promise<NoticeView> {
+  async create(
+    input: NoticeCreateInput,
+    language: Language = DEFAULT_LANGUAGE,
+  ): Promise<NoticeView> {
     if (!(NOTICE_LEVELS as readonly string[]).includes(input.level)) {
       throw new HostError("invalid_params", {
         params: { field: "level" },
@@ -272,7 +275,10 @@ export class NoticeService {
    * （PRD 4.9：「它不属于任何一段，所以任何界面都得给」）。只列那段自己的，用户就只在
    * 某一段会话里看得到「配置坏了」这类整机的事，换个会话又看不见了 —— 它凭什么叫全局。
    */
-  async list(params: NoticeListParams = {}, language: Language = DEFAULT_LANGUAGE): Promise<NoticeListResult> {
+  async list(
+    params: NoticeListParams = {},
+    language: Language = DEFAULT_LANGUAGE,
+  ): Promise<NoticeListResult> {
     const now = this.now();
     await this.notices.deleteExpired(now);
     const active = await this.notices.listActive(now);

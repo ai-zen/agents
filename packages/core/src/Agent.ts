@@ -221,8 +221,7 @@ export interface MessageEvent {
  * 自己的消息、某个 subagent 的、还是 subagent 某个工具调用里的。
  */
 export type DeltaSource =
-  | { message: AgentNS.Message }
-  | { subAgent: Agent; toolCall?: AgentNS.ToolCall };
+  { message: AgentNS.Message } | { subAgent: Agent; toolCall?: AgentNS.ToolCall };
 
 export interface DeltaEvent {
   agent: Agent;
@@ -922,7 +921,9 @@ export class Agent extends AgentContext {
     options?: { signal?: AbortSignal },
   ): Promise<AgentNS.Message[]> {
     if (this.lifetime !== "one-shot") {
-      throw new Error("runOnce() 只能用在 lifetime 为 \"one-shot\" 的 agent 上：它会把这个 agent 关掉");
+      throw new Error(
+        'runOnce() 只能用在 lifetime 为 "one-shot" 的 agent 上：它会把这个 agent 关掉',
+      );
     }
     if (this.runPromise) {
       throw new Error("runOnce() 只能用在还没 start() 的 agent 上：它会把这个 agent 关掉");
@@ -1242,7 +1243,8 @@ export class Agent extends AgentContext {
         return false;
       }
 
-      const agentError = error instanceof AgentError ? error : new AgentError("stream-failed", String(error));
+      const agentError =
+        error instanceof AgentError ? error : new AgentError("stream-failed", String(error));
       assistant.status = AgentNS.MessageStatus.Error;
       // 同一个实例：既挂在这条消息上，也进 `failed` 事件
       assistant.error = agentError;
@@ -1298,7 +1300,9 @@ export class Agent extends AgentContext {
    * 一条 tool 消息回给模型，引擎不中断、不重试。
    */
   private async runTools(assistant: Message, inflight: Inflight): Promise<boolean> {
-    const calls = (assistant.tool_calls ?? []).filter((tc) => tc.type === "function" && tc.function);
+    const calls = (assistant.tool_calls ?? []).filter(
+      (tc) => tc.type === "function" && tc.function,
+    );
     if (calls.length === 0) return false;
 
     // 先按调用顺序把 tool 消息建好（Pending）：落地顺序由这里定死，与谁先跑完无关

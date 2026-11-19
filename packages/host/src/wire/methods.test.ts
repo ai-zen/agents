@@ -149,7 +149,12 @@ describe("PRD §4 的落点能力都有方法承接", () => {
 
   it("`session.transient` 回一条 core 的助手消息（内容/用量都在上面）", () => {
     const result: SessionTransientResult = {
-      message: { id: "m-1", role: AgentNS.Role.Assistant, content: "一次性回答", usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } },
+      message: {
+        id: "m-1",
+        role: AgentNS.Role.Assistant,
+        content: "一次性回答",
+        usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+      },
       problem: null,
     };
     expect(result.message.content).toBe("一次性回答");
@@ -240,12 +245,7 @@ describe("PRD §4 的落点能力都有方法承接", () => {
   });
 
   it("落点为 C 的能力不占宿主方法名（抽查：清屏、终端、剪贴板）", () => {
-    const forbidden = [
-      "session.clearScreen",
-      "terminal.restore",
-      "clipboard.read",
-      "editor.open",
-    ];
+    const forbidden = ["session.clearScreen", "terminal.restore", "clipboard.read", "editor.open"];
     for (const method of forbidden) {
       expect(isMethodName(method), method).toBe(false);
     }

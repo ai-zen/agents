@@ -79,7 +79,9 @@ export class CredentialService {
 
     const row = await this.credentials.get(id);
     if (!row) {
-      throw new HostError("internal", { detail: { reason: "credential vanished after insert", id } });
+      throw new HostError("internal", {
+        detail: { reason: "credential vanished after insert", id },
+      });
     }
     return {
       credential: {

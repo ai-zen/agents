@@ -48,18 +48,15 @@ export class NoticeRepository {
   }
 
   async create(input: NoticeCreateInput): Promise<void> {
-    await this.db.run(
-      `INSERT INTO notices (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [
-        input.id,
-        input.level,
-        input.code,
-        input.params === undefined || input.params === null ? null : JSON.stringify(input.params),
-        input.durationMs ?? null,
-        input.sessionId ?? null,
-        input.createdAt,
-      ],
-    );
+    await this.db.run(`INSERT INTO notices (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)`, [
+      input.id,
+      input.level,
+      input.code,
+      input.params === undefined || input.params === null ? null : JSON.stringify(input.params),
+      input.durationMs ?? null,
+      input.sessionId ?? null,
+      input.createdAt,
+    ]);
   }
 
   async get(id: string): Promise<Notice | undefined> {
@@ -94,9 +91,7 @@ export class NoticeRepository {
 
   /** 清掉挂在一段会话上的通知（`notice.clear({ sessionId })` 的读写路径） */
   async clearBySession(sessionId: string): Promise<number> {
-    const result = await this.db.run("DELETE FROM notices WHERE sessionId = ?", [
-      sessionId,
-    ]);
+    const result = await this.db.run("DELETE FROM notices WHERE sessionId = ?", [sessionId]);
     return result.changes;
   }
 

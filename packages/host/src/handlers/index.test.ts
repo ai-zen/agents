@@ -16,12 +16,7 @@ import type { HostApp } from "../app.js";
 import type { ConnectionInfo } from "../net/index.js";
 import { isError, makeTempDir, TestClient, type TempDir } from "../net/TestSupport.js";
 import { METHOD_NAMES } from "../wire/index.js";
-import type {
-  SessionView,
-  MethodName,
-  MethodParams,
-  MethodResult,
-} from "../wire/index.js";
+import type { SessionView, MethodName, MethodParams, MethodResult } from "../wire/index.js";
 import { BRIDGED_METHODS, createHandlers } from "./index.js";
 
 const CONFIG = JSON.stringify(

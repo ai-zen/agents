@@ -789,9 +789,7 @@ describe("重连：把镜像补回来", () => {
           return { state: sessionState(sessionId) };
         },
         "message.list": (params) =>
-          listed((params as { sessionId: string }).sessionId, [
-            userMessage("m1", "问"),
-          ]),
+          listed((params as { sessionId: string }).sessionId, [userMessage("m1", "问")]),
       },
     });
     const client = await connect(host);
@@ -839,9 +837,7 @@ describe("类型（编译期）", () => {
     >();
     // 事件名与载荷按 `EventMap` 收窄：`state` 的载荷里只有那一格
     client.subscribe("state", (payload) => {
-      expectTypeOf(payload.status).toEqualTypeOf<
-        import("@ai-zen/agents-host").SessionActivity
-      >();
+      expectTypeOf(payload.status).toEqualTypeOf<import("@ai-zen/agents-host").SessionActivity>();
     });
     await client.close();
   });

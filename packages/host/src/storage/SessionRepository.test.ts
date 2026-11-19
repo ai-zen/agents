@@ -181,7 +181,9 @@ describe("SessionRepository", () => {
   });
 
   it("名字是不是自动起的写在这一列上：用户改名置 0，自动命名置 1（R35）", async () => {
-    await repo.create(input({ id: "c1", workspaceId: "w1", name: "2026-11-12 10:00", createdAt: 100 }));
+    await repo.create(
+      input({ id: "c1", workspaceId: "w1", name: "2026-11-12 10:00", createdAt: 100 }),
+    );
     expect((await repo.get("c1"))?.nameIsAuto).toBe(true);
 
     // 用户改名：名字从此归用户，即使改成一个跟原名无关的字串也不靠内容推断
@@ -196,7 +198,9 @@ describe("SessionRepository", () => {
   });
 
   it("用户把名字改回原样也仍然是用户改的（不靠名字内容判断）", async () => {
-    await repo.create(input({ id: "c1", workspaceId: "w1", name: "2026-11-12 10:00", createdAt: 100 }));
+    await repo.create(
+      input({ id: "c1", workspaceId: "w1", name: "2026-11-12 10:00", createdAt: 100 }),
+    );
     await repo.renameByUser("c1", "2026-11-12 10:00", 200);
     expect((await repo.get("c1"))?.nameIsAuto).toBe(false);
   });

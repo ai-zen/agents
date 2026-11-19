@@ -71,7 +71,9 @@ class RegisteringCreator implements PeerSessionSessionCreator {
   private seq = 0;
   constructor(private readonly rows: Map<string, Session>) {}
 
-  async create(params: SessionCreateParams & { lineage: string; autoHandoff: boolean }): Promise<SessionCreateResult> {
+  async create(
+    params: SessionCreateParams & { lineage: string; autoHandoff: boolean },
+  ): Promise<SessionCreateResult> {
     this.created.push(params);
     this.seq += 1;
     const id = `c-child-${this.seq}`;
@@ -286,7 +288,13 @@ describe("问状态：忙不忙与死活都是现读", () => {
     // 「没有 agent」是死活那一件事（`alive: false`），不是另一个状态值；
     // 也没有内存可读，所以最近一句是 null（会话行上的旧消息不是「它刚说的」），
     // 忙闲也无可读 —— 拿 `idle` 占位，读的人要看的是 `alive`。
-    expect(status).toEqual({ found: true, status: "idle", alive: false, label: created.label, lastMessage: null });
+    expect(status).toEqual({
+      found: true,
+      status: "idle",
+      alive: false,
+      label: created.label,
+      lastMessage: null,
+    });
   });
 
   it("那一段的会话行没了（用户删了它）→ 答 `found: false`，别让调用方等一个不会来的结果", async () => {

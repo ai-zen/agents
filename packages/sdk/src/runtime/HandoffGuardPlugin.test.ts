@@ -113,7 +113,11 @@ function gateAgent() {
 
 /** 一条交接指令（`onOuterLoopStart` 按来源标签认出它） */
 function handoffEntry(): any {
-  return { priority: "low", source: { kind: "system", label: HANDOFF_SOURCE_LABEL }, content: "去写" };
+  return {
+    priority: "low",
+    source: { kind: "system", label: HANDOFF_SOURCE_LABEL },
+    content: "去写",
+  };
 }
 
 describe("HandoffGuardPlugin：写这份文档的结果", () => {
@@ -184,7 +188,10 @@ describe("HandoffGuardPlugin：写这份文档的结果", () => {
 
     // 这一批里没有交接那条指令（别人的话）
     const agent = gateAgent();
-    guard.onOuterLoopStart({ agent, entries: [{ priority: "low", source: { kind: "user" } }] } as any);
+    guard.onOuterLoopStart({
+      agent,
+      entries: [{ priority: "low", source: { kind: "user" } }],
+    } as any);
     guard.onOuterLoopEnd();
     await Promise.resolve();
 

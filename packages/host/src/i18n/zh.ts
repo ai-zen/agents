@@ -24,13 +24,15 @@ export const zh = {
   "error.portInvalid":
     "这个端口号不能用：{value}（来自 {source}）。端口要是 1..65535 的整数 —— 0 表示「让系统分配」，只在命令行里有效。",
   // 助手没有可用模型（结构化原因在 `detail` 里）
-  "error.modelUnresolved": "这个助手没有可用的模型 —— 给它挑一个模型，或者在设置里指定一个默认模型。",
+  "error.modelUnresolved":
+    "这个助手没有可用的模型 —— 给它挑一个模型，或者在设置里指定一个默认模型。",
   "error.notFactoryModel": "「{id}」不在出厂模型清单里，没有可以恢复的出厂版本。",
   "error.mcpUnavailable": "{name} 没有响应，这一次请求缺它的工具，其它能力照常。",
   "error.modelUnsupported": "这段会话里已经有图片，{model} 读不了图片，所以没有换过去。",
   "error.handoffDeclined": "这次不交接，会话继续往下跑。",
   "error.questionPending": "还有一个问题没回答（{question}）。先回答它，再发新内容。",
-  "error.contextGuard": "这段会话在第 {used} 个 token 时到了 {limit} 这条线，请求在发出去之前就停下了。",
+  "error.contextGuard":
+    "这段会话在第 {used} 个 token 时到了 {limit} 这条线，请求在发出去之前就停下了。",
   // 某个钩子在请求发出前拒了这一次请求（core 的 `denied` 事件）：历史上一个字都没多
   "error.denied": "这一次请求在发出去之前就被拦下了：{reason}",
 
@@ -78,7 +80,8 @@ export const zh = {
   "agent.notFactory": "{id} 不在出厂助手清单里，没有可恢复的出厂版本。",
 
   // ---- 配置检查（PRD F-A8：配错了要能当场修，问题指到具体字段）----
-  "config.issue.thresholdOrder": "{name} 的交接线（{handoff} 个 token）到了或者超过了硬线（{guard} 个 token）。",
+  "config.issue.thresholdOrder":
+    "{name} 的交接线（{handoff} 个 token）到了或者超过了硬线（{guard} 个 token）。",
   "config.issue.defaultMissing": "{field} 指向 {id}，那条已经不在清单里了。",
   "config.issue.defaultAgentMissing": "默认助手（{id}）已经不在助手定义里了。",
 

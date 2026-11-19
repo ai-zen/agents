@@ -486,7 +486,8 @@ export class HandoffService {
    * 跨实例的锁，也不持有取消句柄：取消只认调用方递进来的 `signal`。
    */
   private async withHandingOff<T>(fn: () => Promise<T>): Promise<T> {
-    if (this._handingOff) throw new Error("A handoff is already in progress, wait for it to finish");
+    if (this._handingOff)
+      throw new Error("A handoff is already in progress, wait for it to finish");
     this._handingOff = true;
     try {
       return await fn();

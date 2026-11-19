@@ -42,9 +42,7 @@ describe("帧守卫", () => {
     expect(isRequestFrame({ jsonrpc: "2.0", id: 1 })).toBe(false);
     expect(isRequestFrame({ jsonrpc: "2.0", id: 1, method: "" })).toBe(false);
     expect(isRequestFrame({ jsonrpc: "2.0", id: {}, method: "host.version" })).toBe(false);
-    expect(isRequestFrame({ jsonrpc: "2.0", id: Number.NaN, method: "host.version" })).toBe(
-      false,
-    );
+    expect(isRequestFrame({ jsonrpc: "2.0", id: Number.NaN, method: "host.version" })).toBe(false);
   });
 
   it("通知帧：无 id（或 id 为 null）", () => {
@@ -130,7 +128,10 @@ describe("parseFrame", () => {
   });
 
   it("缺 jsonrpc 版本时报 invalid_params", () => {
-    const error = expectHostError(() => parseFrame({ id: 1, method: "host.version" }), "invalid_params");
+    const error = expectHostError(
+      () => parseFrame({ id: 1, method: "host.version" }),
+      "invalid_params",
+    );
     expect(error.detail).toEqual({ reason: "bad_protocol", got: null });
   });
 

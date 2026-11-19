@@ -41,7 +41,10 @@ export function hasThinkingKey(params: ModelParams | undefined, levels: Thinking
  * 那一格 `source`：凑成了某一档 → `manual`；没凑成但参数里带着思考键 → `custom`；
  * 其余（没设过）→ `following_default`。`not_adjustable` 不在这里（那是「没有策略表」）。
  */
-export function thinkingSourceOf(detected: string | undefined, handWritten: boolean): ThinkingSource {
+export function thinkingSourceOf(
+  detected: string | undefined,
+  handWritten: boolean,
+): ThinkingSource {
   if (detected !== undefined) return "manual";
   return handWritten ? "custom" : "following_default";
 }

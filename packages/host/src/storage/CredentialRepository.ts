@@ -7,11 +7,7 @@
 
 import { createHash } from "node:crypto";
 import type { Database } from "./Database.js";
-import type {
-  CredentialCreateInput,
-  CredentialInfo,
-  CredentialRow,
-} from "./types.js";
+import type { CredentialCreateInput, CredentialInfo, CredentialRow } from "./types.js";
 
 const COLUMNS = "id, note, hash, createdAt, revokedAt";
 const INFO_COLUMNS = "id, note, createdAt, revokedAt";
@@ -34,10 +30,12 @@ export class CredentialRepository {
   }
 
   async create(input: CredentialCreateInput): Promise<void> {
-    await this.db.run(
-      `INSERT INTO credentials (${COLUMNS}) VALUES (?, ?, ?, ?, NULL)`,
-      [input.id, input.note, input.hash, input.createdAt],
-    );
+    await this.db.run(`INSERT INTO credentials (${COLUMNS}) VALUES (?, ?, ?, ?, NULL)`, [
+      input.id,
+      input.note,
+      input.hash,
+      input.createdAt,
+    ]);
   }
 
   async get(id: string): Promise<CredentialRow | undefined> {

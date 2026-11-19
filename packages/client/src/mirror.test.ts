@@ -54,10 +54,7 @@ function removedEvent(messageId: string, toolCallId?: string): EventPayload<"mes
   return { sessionId: "c1", messageId, at: AT, ...(toolCallId ? { toolCallId } : {}) };
 }
 
-function sessionChangedEvent(
-  change: SessionChangeKind,
-  at = AT,
-): EventPayload<"session.changed"> {
+function sessionChangedEvent(change: SessionChangeKind, at = AT): EventPayload<"session.changed"> {
   return { sessionId: "c1", workspaceId: "w1", change, at };
 }
 
@@ -72,14 +69,16 @@ function pauseEvent() {
 }
 
 /** 分量读数的现读值（`session.state` 拿回来的那一份：四件事 + 名册 + 交接态） */
-function readout(overrides: {
-  status?: "working" | "idle";
-  inputPaused?: boolean;
-  outputPaused?: boolean;
-  alive?: boolean;
-  subAgents?: Array<{ toolCallId: string; name: string; state: "working" | "idle" | "ended" }>;
-  handoff?: { since: string } | null;
-} = {}) {
+function readout(
+  overrides: {
+    status?: "working" | "idle";
+    inputPaused?: boolean;
+    outputPaused?: boolean;
+    alive?: boolean;
+    subAgents?: Array<{ toolCallId: string; name: string; state: "working" | "idle" | "ended" }>;
+    handoff?: { since: string } | null;
+  } = {},
+) {
   return {
     status: "idle" as const,
     inputPaused: false,
@@ -150,8 +149,14 @@ describe("四条到达事件", () => {
   it("subagent 的消息按 toolCallId 归栏，不进主线", () => {
     const mirror = mirrorOf();
     mirror.apply({ kind: "message.added", payload: addedEvent(userMessage("m1", "问")) });
-    mirror.apply({ kind: "message.added", payload: addedEvent(assistantMessage("s1", "子"), "call-1") });
-    mirror.apply({ kind: "message.delta", payload: deltaEvent("s1", { content: "agent" }, "call-1") });
+    mirror.apply({
+      kind: "message.added",
+      payload: addedEvent(assistantMessage("s1", "子"), "call-1"),
+    });
+    mirror.apply({
+      kind: "message.delta",
+      payload: deltaEvent("s1", { content: "agent" }, "call-1"),
+    });
 
     expect(mirror.messages.map((message) => message.id)).toEqual(["m1"]);
     expect(mirror.subAgent("call-1").map((message) => message.content)).toEqual(["子agent"]);
@@ -238,7 +243,10 @@ describe("四条到达事件", () => {
     const mirror = mirrorOf();
     expect(mirror.lastMessageId()).toBeUndefined();
     mirror.apply({ kind: "message.added", payload: addedEvent(userMessage("m1", "问")) });
-    mirror.apply({ kind: "message.added", payload: addedEvent(assistantMessage("s1", "子"), "call-1") });
+    mirror.apply({
+      kind: "message.added",
+      payload: addedEvent(assistantMessage("s1", "子"), "call-1"),
+    });
     expect(mirror.lastMessageId()).toBe("m1");
   });
 
@@ -258,7 +266,10 @@ describe("四条到达事件", () => {
     expect(mirror.subAgent("call-1")).toEqual([]);
     expect(mirror.handoff).toEqual({ since: AT });
 
-    mirror.apply({ kind: "message.added", payload: addedEvent(assistantMessage("s1", "子"), "call-1") });
+    mirror.apply({
+      kind: "message.added",
+      payload: addedEvent(assistantMessage("s1", "子"), "call-1"),
+    });
     expect(mirror.subAgent("call-1").map((message) => message.id)).toEqual(["s1"]);
 
     // 下一批开始了：名册空了，但说过的话还在那一栏里
@@ -354,7 +365,10 @@ describe("快照的两种接法", () => {
   it("replaceAll：整段替换主线，subagent 那几栏留着", () => {
     const mirror = mirrorOf();
     mirror.apply({ kind: "message.added", payload: addedEvent(userMessage("old", "旧的")) });
-    mirror.apply({ kind: "message.added", payload: addedEvent(assistantMessage("s1", "子"), "call-1") });
+    mirror.apply({
+      kind: "message.added",
+      payload: addedEvent(assistantMessage("s1", "子"), "call-1"),
+    });
 
     mirror.replaceAll([userMessage("x1", "现在的")]);
     expect(mirror.messages.map((message) => message.id)).toEqual(["x1"]);
@@ -401,7 +415,10 @@ describe("打开期间攒下的那一批（replay）", () => {
     mirror.replaceAll([userMessage("m0", "问"), assistantMessage("m1", "答到一半")]);
 
     // 拉取期间到过的那一片（快照已经含了它的效果）在补的时候被跳过
-    mirror.apply({ kind: "message.delta", payload: deltaEvent("m1", { content: "到一半" }) }, { replay: true });
+    mirror.apply(
+      { kind: "message.delta", payload: deltaEvent("m1", { content: "到一半" }) },
+      { replay: true },
+    );
     expect(mirror.messages[1]?.content).toBe("答到一半");
 
     // 补完之后到达的增量照常折
@@ -413,29 +430,41 @@ describe("打开期间攒下的那一批（replay）", () => {
   it("补的那一批里新出现的消息照常插入", () => {
     const mirror = mirrorOf();
     mirror.replaceAll([userMessage("m0", "问")]);
-    mirror.apply({ kind: "message.added", payload: addedEvent(assistantMessage("m1", "答")) }, { replay: true });
+    mirror.apply(
+      { kind: "message.added", payload: addedEvent(assistantMessage("m1", "答")) },
+      { replay: true },
+    );
     expect(mirror.messages.map((message) => message.id)).toEqual(["m0", "m1"]);
   });
 
   it("补的那一批里重复的一条 added 以快照为准", () => {
     const mirror = mirrorOf();
     mirror.replaceAll([userMessage("m1", "快照里的样子")]);
-    mirror.apply({ kind: "message.added", payload: addedEvent(userMessage("m1", "旧的样子")) }, { replay: true });
+    mirror.apply(
+      { kind: "message.added", payload: addedEvent(userMessage("m1", "旧的样子")) },
+      { replay: true },
+    );
     expect(mirror.messages[0]?.content).toBe("快照里的样子");
   });
 });
 
 describe("toMirrorEvent", () => {
   it("与镜像有关的事件各自折出来", () => {
-    expect(toMirrorEvent("message.added", addedEvent(userMessage("m1", "问")))?.kind).toBe("message.added");
-    expect(toMirrorEvent("message.delta", deltaEvent("m1", { content: "x" }))?.kind).toBe("message.delta");
-    expect(toMirrorEvent("message.changed", changedEvent(userMessage("m1", "问")))?.kind).toBe("message.changed");
+    expect(toMirrorEvent("message.added", addedEvent(userMessage("m1", "问")))?.kind).toBe(
+      "message.added",
+    );
+    expect(toMirrorEvent("message.delta", deltaEvent("m1", { content: "x" }))?.kind).toBe(
+      "message.delta",
+    );
+    expect(toMirrorEvent("message.changed", changedEvent(userMessage("m1", "问")))?.kind).toBe(
+      "message.changed",
+    );
     expect(toMirrorEvent("message.removed", removedEvent("m1"))?.kind).toBe("message.removed");
     expect(toMirrorEvent("state", stateEvent("working"))?.kind).toBe("state");
     // `session.changed` 认领（死活与交接态都用它）；里面是哪一格由 `apply` 那一步判
-    expect(
-      toMirrorEvent("session.changed", sessionChangedEvent("handoff_started"))?.kind,
-    ).toBe("session.changed");
+    expect(toMirrorEvent("session.changed", sessionChangedEvent("handoff_started"))?.kind).toBe(
+      "session.changed",
+    );
   });
 
   it("两道闸的四条事件各自折成同名的那一格（名字自己说清哪一道、开还是关）", () => {

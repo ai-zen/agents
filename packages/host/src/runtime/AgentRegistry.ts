@@ -79,10 +79,7 @@ export type AgentCreateInput = Omit<AgentBuildContext, "scope">;
  * `setThinking` 改，助手由 `session.create` 定死。其余入参（`sessionId` /
  * `workspaceId` / `history`）不是「事实变了」而是「归谁 / 内容多少」，不参与这套比较。
  */
-export type AgentAssemblyFacts = Pick<
-  AgentCreateInput,
-  "agentId" | "modelId" | "thinkingLevel"
->;
+export type AgentAssemblyFacts = Pick<AgentCreateInput, "agentId" | "modelId" | "thinkingLevel">;
 
 /**
  * 取 Scope 的口子（结构上 `ScopeRegistry` 满足）：只要 get-or-create 这一件事。
@@ -510,7 +507,6 @@ export class AgentRegistry {
     this.report(sessionId, "retired", reason);
   }
 
-
   /**
    * 摘掉一条登记（**只丢引用**），返回摘下来的那条 —— 不报事件、不记理由。
    *
@@ -534,5 +530,4 @@ export class AgentRegistry {
     this.onLifecycle?.(event);
     for (const observer of this.lifecycleObservers) observer(event);
   }
-
 }

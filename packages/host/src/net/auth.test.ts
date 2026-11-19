@@ -12,7 +12,12 @@ import { CredentialRepository, hashCredential } from "../storage/CredentialRepos
 import { Database } from "../storage/Database.js";
 import { migrate } from "../storage/migrations.js";
 import { CredentialService } from "../services/CredentialService.js";
-import { createLocalCredential, createTokenVerifier, LOCAL_CREDENTIAL_NOTE, verify } from "./auth.js";
+import {
+  createLocalCredential,
+  createTokenVerifier,
+  LOCAL_CREDENTIAL_NOTE,
+  verify,
+} from "./auth.js";
 import { readLocalToken } from "./discovery.js";
 import { makeTempDir, type TempDir } from "./TestSupport.js";
 

@@ -266,9 +266,7 @@ export type HandoffProvider = (context: AgentBuildContext) => HandoffService | u
 export type { HandoffRefusalReason };
 
 /** {@link ChatRunner.canHandoffNow} 的答案：能 / 不能（带缘由，好让调用方原样报给用户） */
-export type HandoffAvailability =
-  | { ok: true }
-  | { ok: false; reason: HandoffRefusalReason };
+export type HandoffAvailability = { ok: true } | { ok: false; reason: HandoffRefusalReason };
 
 /**
  * 本文件驱动的那个 agent —— **就是 core 的 `Agent` 本身**（`SdkAgent` extends 它）。
@@ -491,7 +489,9 @@ function toRole(value: string): AgentNS.Role {
 }
 
 function toStatus(value: string): AgentNS.MessageStatus {
-  return STATUSES.has(value) ? (value as AgentNS.MessageStatus) : AgentNSValue.MessageStatus.Unknown;
+  return STATUSES.has(value)
+    ? (value as AgentNS.MessageStatus)
+    : AgentNSValue.MessageStatus.Unknown;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1233,7 +1233,7 @@ class SessionBridge {
     via?: AgentNS.ToolCall,
   ): void {
     if (this.closed) return;
-    const toolCallId = subAgent ? via?.id ?? "" : undefined;
+    const toolCallId = subAgent ? (via?.id ?? "") : undefined;
     // subagent 的消息 id 在 WeakMap 里：没见过的那条（压根没落过库）不必删
     const id = subAgent ? this.subAgentIds.get(message) : message.id;
     if (id === undefined) return;
@@ -1548,10 +1548,13 @@ class SessionBridge {
       return;
     }
     if (this.writeTimer) return;
-    this.writeTimer = this.clock.setTimeout(() => {
-      this.writeTimer = undefined;
-      if (this.streaming) this.enqueueWrite(this.streaming);
-    }, interval - (now - this.lastWriteAt));
+    this.writeTimer = this.clock.setTimeout(
+      () => {
+        this.writeTimer = undefined;
+        if (this.streaming) this.enqueueWrite(this.streaming);
+      },
+      interval - (now - this.lastWriteAt),
+    );
   }
 
   /**
@@ -1731,10 +1734,7 @@ export class ChatRunner {
    * 回执里**没有状态、没有「叫醒了没有」、没有结果**：那三样都是对未来的断言，而未来只能靠
    * 观测（`state()` / 事件）。`await` 的边界就是「已入队」。
    */
-  async deliver(
-    sessionId: string,
-    input: DeliveryInput,
-  ): Promise<{ userMessageId: string }> {
+  async deliver(sessionId: string, input: DeliveryInput): Promise<{ userMessageId: string }> {
     const session = await this.options.sessions.get(sessionId);
     if (!session) {
       throw new HostError("not_found", { params: { entity: "session" } });
@@ -2021,10 +2021,7 @@ export class ChatRunner {
    * 返回的是 `agent.messages` **本身**，不是拷贝：它是唯一真相，交出去的那一份就是正在长的那一份
    * （`CORE.md` §12）。
    */
-  messagesOf(
-    sessionId: string,
-    options?: { toolCallId?: string },
-  ): AgentNS.Message[] | null {
+  messagesOf(sessionId: string, options?: { toolCallId?: string }): AgentNS.Message[] | null {
     const agent = this.options.agents.get(sessionId);
     if (!agent) return null;
 
@@ -2159,10 +2156,7 @@ export class ChatRunner {
    * 空闲的 agent 当场退役，于是投递到这里时它已经不在了 —— 不是靠「投递时发现手里那个不合用」。
    * `acquire` 里那一条「在但装配事实变了 → 丢掉重建」因此只是兜底（见下面 `agent !== live`）。
    */
-  private async ensureAgent(
-    sessionId: string,
-    session: Session,
-  ): Promise<ChatAgent> {
+  private async ensureAgent(sessionId: string, session: Session): Promise<ChatAgent> {
     const live = this.options.agents.get(sessionId);
     const history =
       live === undefined
@@ -2529,9 +2523,7 @@ function thinkingPatchOf(
  * 定义那份参数上，而只有定义在手才知道该叠什么。读不出来就当作没有（真正的报错由
  * `createAgent` 那句给出）。
  */
-async function readAgentDefinition(
-  context: AgentBuildContext,
-): Promise<AgentDefinition | null> {
+async function readAgentDefinition(context: AgentBuildContext): Promise<AgentDefinition | null> {
   try {
     return await new AgentRepository(context.scope.agentsDir).read(context.agentId);
   } catch {
@@ -2556,9 +2548,7 @@ export function createSdkAgentFactory(options: SdkAgentFactoryOptions = {}): Age
     // 会话行上的模型就是这段会话的模型（`session.setModel` 写的就是它），
     // 再往下的三级解析（助手定义 → 全局兜底）仍由 SDK 那一处算
     const modelId = context.modelId ?? undefined;
-    const sessionModel = context.scope.config.models.find(
-      (candidate) => candidate.id === modelId,
-    );
+    const sessionModel = context.scope.config.models.find((candidate) => candidate.id === modelId);
     const definition = await readAgentDefinition(context);
     const agent = await createAgent(context.scope, context.agentId, {
       modelId,
@@ -2584,9 +2574,7 @@ export function createSdkAgentFactory(options: SdkAgentFactoryOptions = {}): Age
 
     if (thresholds) {
       agent.use(new ContextGuardPlugin({ guardTokens: thresholds.guard, isSuspended }));
-      agent.use(
-        new SubAgentGuardInstallerPlugin({ guardTokens: thresholds.guard, isSuspended }),
-      );
+      agent.use(new SubAgentGuardInstallerPlugin({ guardTokens: thresholds.guard, isSuspended }));
       if (handoff) {
         const compacted = options.onCompacted;
         const settled = options.onHandoffSettled;
@@ -2617,9 +2605,7 @@ export function createSdkAgentFactory(options: SdkAgentFactoryOptions = {}): Age
     }
 
     const refreshWhen =
-      options.autoRefreshTools ??
-      context.scope.config.autoRefreshTools ??
-      "inner-loop-start";
+      options.autoRefreshTools ?? context.scope.config.autoRefreshTools ?? "inner-loop-start";
     if (refreshWhen !== "off") {
       agent.use(new AutoRefreshToolsPlugin({ when: refreshWhen }));
     }

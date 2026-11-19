@@ -98,9 +98,13 @@ afterAll(async () => {
 
 /** 起一个真的宿主进程（`--port 0`：端口由系统分配，只能从发现文件读） */
 function startProcess(): RunningHost {
-  const child = spawn(process.execPath, [CLI_ENTRY, "serve", "--port", "0", "--local", "--ai-zen-dir", dataRoot], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const child = spawn(
+    process.execPath,
+    [CLI_ENTRY, "serve", "--port", "0", "--local", "--ai-zen-dir", dataRoot],
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
   let out = "";
   let err = "";
   child.stdout?.on("data", (chunk: Buffer) => {
@@ -326,8 +330,7 @@ describe("进程冒烟：命令行起服务 → 连接 → 建项目/会话 → 
       agentId: "default",
       modelId: "test-model",
     });
-    const sessionId = (createdSession.result as { session: { id: string } })
-      .session.id;
+    const sessionId = (createdSession.result as { session: { id: string } }).session.id;
 
     const messages = await client.call("message.list", { sessionId });
     expect((messages.result as MessageListResult).messages).toEqual([]);
@@ -359,9 +362,9 @@ describe("进程冒烟：命令行起服务 → 连接 → 建项目/会话 → 
     await again.hello(restarted.token);
 
     const workspacesAfter = await again.call("workspace.list", {});
-    expect((workspacesAfter.result as WorkspaceListResult).workspaces.map((item) => item.id)).toEqual([
-      workspaceId,
-    ]);
+    expect(
+      (workspacesAfter.result as WorkspaceListResult).workspaces.map((item) => item.id),
+    ).toEqual([workspaceId]);
 
     const sessionsAfter = await again.call("session.list", { workspaceId });
     const afterList = sessionsAfter.result as SessionListResult;

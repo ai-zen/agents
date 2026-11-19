@@ -23,18 +23,22 @@ export const en = {
   "error.configInvalid": "The settings aren't usable yet: {reason}.",
   // 端口写得不对（D25 的三档来源里，显式给出的那个值不合法；裁定 R67）
   "error.portInvalid":
-    "That port number can't be used: {value} (from {source}). It has to be a whole number from 1 to 65535 — 0 means \"let the system pick one\" and only works on the command line.",
+    'That port number can\'t be used: {value} (from {source}). It has to be a whole number from 1 to 65535 — 0 means "let the system pick one" and only works on the command line.',
   // 助手没有可用模型（`session.create` 借 `config_invalid` 这个码，结构化原因在 `detail` 里）
   "error.modelUnresolved":
     "No model could be resolved for this assistant — pick a model for it, or set a default model in the settings.",
   // 恢复出厂时这次编辑的模型在出厂清单里没有对应定义（没有可用来替换的那一条）
   "error.notFactoryModel":
     "\"{id}\" isn't part of the factory model list, so there's no factory version to restore.",
-  "error.mcpUnavailable": "{name} isn't answering, so its tools are missing for this request. Everything else still works.",
-  "error.modelUnsupported": "{model} can't take the images already in this session, so the switch was refused.",
+  "error.mcpUnavailable":
+    "{name} isn't answering, so its tools are missing for this request. Everything else still works.",
+  "error.modelUnsupported":
+    "{model} can't take the images already in this session, so the switch was refused.",
   "error.handoffDeclined": "Handoff was declined, so this session carries on as it is.",
-  "error.questionPending": "There's an unanswered question ({question}). Answer it before sending something new.",
-  "error.contextGuard": "This session reached its {limit}-token limit at {used} tokens, so the request was stopped before it could fail.",
+  "error.questionPending":
+    "There's an unanswered question ({question}). Answer it before sending something new.",
+  "error.contextGuard":
+    "This session reached its {limit}-token limit at {used} tokens, so the request was stopped before it could fail.",
   // 某个钩子在请求发出前拒了这一次请求（core 的 `denied` 事件）：历史上一个字都没多
   "error.denied": "This request was stopped before it was sent: {reason}",
 
@@ -46,12 +50,14 @@ export const en = {
   "notice.logError": "Host error: {summary}",
   "notice.configRecovered": "Config file {path} was broken; factory settings restored.",
   "notice.handoffWritten": "Handoff document written to {path}.",
-  "notice.autoNamed": "Named this session \"{name}\".",
+  "notice.autoNamed": 'Named this session "{name}".',
 
   // ---- 问题对象（PRD D22 / F-I9）----
-  "question.handoff.prompt": "This session is at {percent}% of the context budget set for it. How should we continue?",
+  "question.handoff.prompt":
+    "This session is at {percent}% of the context budget set for it. How should we continue?",
   "question.handoff.self": "Let the assistant write the handoff itself",
-  "question.handoff.selfDetail": "Uses the full session and its tools — the best result, at the price of one more full input.",
+  "question.handoff.selfDetail":
+    "Uses the full session and its tools — the best result, at the price of one more full input.",
   "question.handoff.summary": "Summarise the history instead",
   "question.handoff.summaryDetail": "Cheaper and predictable, but the document is less faithful.",
   "question.handoff.decline": "Keep going in this session",
@@ -64,8 +70,10 @@ export const en = {
   // ---- 状态栏各块的标签（PRD F-I6：宿主给块名，客户端排版）----
 
   // ---- `@` 补全（PRD F-H5 / D7）----
-  "completion.scanning": "Still reading the project's file list — a few more characters and it will fill in.",
-  "completion.timedOut": "The file list took longer than {seconds}s to build, so it may be incomplete.",
+  "completion.scanning":
+    "Still reading the project's file list — a few more characters and it will fill in.",
+  "completion.timedOut":
+    "The file list took longer than {seconds}s to build, so it may be incomplete.",
   "completion.unavailable": "The file list isn't available here: {reason}",
   "completion.noFolder": "this project's folder isn't there anymore",
   "completion.truncated":
@@ -98,8 +106,7 @@ export const en = {
   "discovery.shadowed": "This entry is overridden by the closer {path}.",
   "discovery.mcpEntryInvalid":
     "{name} has neither a transport nor a command, so it can't be connected.",
-  "discovery.skillBroken":
-    "{name} has a SKILL.md that can't be used as a skill: {reason}",
+  "discovery.skillBroken": "{name} has a SKILL.md that can't be used as a skill: {reason}",
   "discovery.toolUnloadable": "{name} couldn't be loaded as a tool: {reason}",
   "discovery.subAgentBroken": "{name} isn't a usable sub-agent definition: {reason}",
   "handoff.degraded": "The handoff fell back to {mode}: {reason}",
@@ -116,6 +123,5 @@ export const en = {
   "handoff.newSessionSummary":
     "This session continues an earlier one. The handoff document is at {path} — read it first, then carry on with the task.\n\nSummary of the handoff:\n{summary}",
   // 降级的原因（`handoff.degraded` 的 {reason} 就是这句话）
-  "handoff.degradeReason.fallback":
-    "the assistant couldn't write the document itself this time",
+  "handoff.degradeReason.fallback": "the assistant couldn't write the document itself this time",
 } as const;

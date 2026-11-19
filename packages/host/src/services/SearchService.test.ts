@@ -165,9 +165,10 @@ describe("SearchService.sessions（按名称）", () => {
       createdAt: 30,
     });
 
-    expect(
-      (await service.sessions({ query: "索引" })).hits.map((hit) => hit.session.id),
-    ).toEqual(["c3", "c1"]);
+    expect((await service.sessions({ query: "索引" })).hits.map((hit) => hit.session.id)).toEqual([
+      "c3",
+      "c1",
+    ]);
     expect(
       (await service.sessions({ query: "索引", workspaceId: "w1" })).hits.map(
         (hit) => hit.session.id,

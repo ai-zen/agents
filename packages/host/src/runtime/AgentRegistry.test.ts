@@ -17,11 +17,7 @@ import { describe, expect, it } from "vitest";
 import type { AgentNS } from "@ai-zen/agents-core";
 
 import { AgentRegistry } from "./AgentRegistry.js";
-import type {
-  AgentAssemblyFacts,
-  AgentCreateInput,
-  AgentLifecycleEvent,
-} from "./AgentRegistry.js";
+import type { AgentAssemblyFacts, AgentCreateInput, AgentLifecycleEvent } from "./AgentRegistry.js";
 import type { AgentBuildContext, ChatAgent } from "./ChatRunner.js";
 import { ScopeBusyError, ScopeRegistry } from "./ScopeRegistry.js";
 import { createFakeScope, deferred, FakeAgent, RecordingScopePlugin } from "./TestSupport.js";
@@ -266,7 +262,10 @@ describe("AgentRegistry：acquire 把「在就复用 / 不合用就重建」合�
     );
     expect(byThinking).toBe(harness.created[1]);
 
-    const byAgent = await harness.agents.acquire(input({ agentId: "a2" }), facts({ agentId: "a2" }));
+    const byAgent = await harness.agents.acquire(
+      input({ agentId: "a2" }),
+      facts({ agentId: "a2" }),
+    );
     expect(byAgent).toBe(harness.created[2]);
     expect(harness.builds).toHaveLength(3);
   });
@@ -275,10 +274,11 @@ describe("AgentRegistry：acquire 把「在就复用 / 不合用就重建」合�
     const harness = createHarness();
     const first = await harness.agents.acquire(input({ thinkingLevel: null }), facts());
 
-    const second = await harness.agents.acquire(
-      input({ thinkingLevel: null }),
-      { agentId: "default", modelId: "model-1", thinkingLevel: undefined as unknown as null },
-    );
+    const second = await harness.agents.acquire(input({ thinkingLevel: null }), {
+      agentId: "default",
+      modelId: "model-1",
+      thinkingLevel: undefined as unknown as null,
+    });
 
     expect(second).toBe(first);
     expect(harness.builds).toHaveLength(1);
@@ -326,10 +326,7 @@ describe("AgentRegistry：kill 硬着陆 + 丢引用（会话 / 项目被删那�
     const harness = createHarness();
     await harness.agents.acquire(input({ sessionId: "c-1" }), facts());
     await harness.agents.acquire(input({ sessionId: "c-2" }), facts());
-    await harness.agents.acquire(
-      input({ sessionId: "c-3", workspaceId: "ws-2" }),
-      facts(),
-    );
+    await harness.agents.acquire(input({ sessionId: "c-3", workspaceId: "ws-2" }), facts());
 
     expect(harness.agents.sessionIds(WORKSPACE_ID).sort()).toEqual(["c-1", "c-2"]);
     expect(harness.agents.sessionIds("ws-2")).toEqual(["c-3"]);
@@ -418,10 +415,7 @@ describe("AgentRegistry：invalidate（配置改过的生效手段）", () => {
 
     expect(harness.agents.get(SESSION_ID)).toBeUndefined();
     expect((agent as FakeAgent).abortCalls).toBe(0);
-    expect(harness.trace()).toEqual([
-      "built:never-built",
-      "retired:stale-on-idle",
-    ]);
+    expect(harness.trace()).toEqual(["built:never-built", "retired:stale-on-idle"]);
   });
 
   it("只碰这个 Workspace 的 agent（别的项目一个不动）", async () => {

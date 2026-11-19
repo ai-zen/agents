@@ -35,7 +35,12 @@ async function readConfig(): Promise<AppConfig> {
 function baseConfig(): AppConfig {
   return {
     endpoints: [
-      { id: "ep-a", name: "Endpoint A", baseUrl: "https://a.example/v1", apiKey: "sk-aaaaaaaa1111" },
+      {
+        id: "ep-a",
+        name: "Endpoint A",
+        baseUrl: "https://a.example/v1",
+        apiKey: "sk-aaaaaaaa1111",
+      },
       { id: "ep-b", name: "Endpoint B", baseUrl: "https://b.example/v1", apiKey: "" },
     ],
     models: [
@@ -79,7 +84,9 @@ function agentDefinition(id: string, modelId: string): AgentDefinition {
   return {
     id,
     name: id,
-    messages: [{ role: "system", content: "you are a test" } as AgentDefinition["messages"][number]],
+    messages: [
+      { role: "system", content: "you are a test" } as AgentDefinition["messages"][number],
+    ],
     modelId,
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
@@ -240,8 +247,9 @@ describe("ModelService.create / update", () => {
           factory.tokenThresholds.guard === model.tokenThresholds.guard,
       ),
     ).toBe(true);
-    expect((await readConfig()).models.find((item) => item.id === "m-plain")?.tokenThresholds)
-      .toEqual(model.tokenThresholds);
+    expect(
+      (await readConfig()).models.find((item) => item.id === "m-plain")?.tokenThresholds,
+    ).toEqual(model.tokenThresholds);
   });
 
   it("传了阈值就用传的", async () => {
@@ -263,9 +271,9 @@ describe("ModelService.create / update", () => {
     const { model } = await service.update({ modelId: "m-a1", patch: { name: "只改名" } });
 
     expect(model.tokenThresholds).toEqual({ handoff: 100, guard: 150 });
-    expect(
-      (await readConfig()).models.find((item) => item.id === "m-a1")?.tokenThresholds,
-    ).toEqual({ handoff: 100, guard: 150 });
+    expect((await readConfig()).models.find((item) => item.id === "m-a1")?.tokenThresholds).toEqual(
+      { handoff: 100, guard: 150 },
+    );
   });
 
   it("编辑即转自定义（否则下轮初始化会被出厂定义冲回去）", async () => {

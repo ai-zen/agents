@@ -32,11 +32,7 @@ import { DEFAULT_LANGUAGE, render } from "../i18n/index.js";
 import type { Language } from "../i18n/index.js";
 import type { AgentFactory, ChatAgent } from "./ChatRunner.js";
 import { HostError } from "../wire/errors.js";
-import type {
-  SessionTransientParams,
-  SessionTransientResult,
-  ProblemFact,
-} from "../wire/index.js";
+import type { SessionTransientParams, SessionTransientResult, ProblemFact } from "../wire/index.js";
 
 /**
  * 一次性会话借 Scope 用的键：按目录，不按 Workspace。
@@ -162,7 +158,11 @@ export class TransientRunner {
       // 「等」的地方（`CORE.md` §1 的 `runOnce`）。它起 → 塞 → 等闲 → 关门 → 死透，然后把
       // 跑出来的消息交回来。常驻会话不能这么用：那会把一个长期会话关掉。
       agent.lifetime = "one-shot";
-      await agent.runOnce({ content: params.input.content, source: { kind: "user" }, priority: "high" });
+      await agent.runOnce({
+        content: params.input.content,
+        source: { kind: "user" },
+        priority: "high",
+      });
       const message = lastAssistant(agent.messages);
       if (!message) {
         throw new HostError("internal", {
@@ -219,7 +219,10 @@ function lastAssistant(messages: AgentNS.Message[]): AgentNS.Message | null {
 /** 跑完了但结局不好：消息自己的状态就是事实（core 的口径），这里把它翻成一句说明 */
 function problemOf(message: AgentNS.Message, language: Language): ProblemFact | null {
   const status = message.status;
-  if (status !== AgentNSValue.MessageStatus.Error && status !== AgentNSValue.MessageStatus.Aborted) {
+  if (
+    status !== AgentNSValue.MessageStatus.Error &&
+    status !== AgentNSValue.MessageStatus.Aborted
+  ) {
     return null;
   }
   const reason = status === AgentNSValue.MessageStatus.Aborted ? "aborted" : "error";

@@ -148,9 +148,7 @@ export interface PeerSessionSessionCreator {
    * 开一段会话，并当场把「谁开的」（血缘）与自动交接开关的初值写进去 ——
    * 这两项是创建那一刻的身份，不在后面补。
    */
-  create(
-    params: SessionCreateParams & PeerSessionOriginInput,
-  ): Promise<SessionCreateResult>;
+  create(params: SessionCreateParams & PeerSessionOriginInput): Promise<SessionCreateResult>;
   /**
    * 草稿落成库里那一行。
    *
@@ -176,10 +174,7 @@ export interface PeerSessionRunner {
    * 目标不存在时按 `HostError` 抛（`not_found` / `session_dead`）—— **死会话不会因为投递而
    * 复活**，所以创建者得先调 {@link start}（见下方 `create`）。
    */
-  deliver(
-    sessionId: string,
-    input: DeliveryInput,
-  ): Promise<{ userMessageId: string }>;
+  deliver(sessionId: string, input: DeliveryInput): Promise<{ userMessageId: string }>;
   /**
    * 现读：这一段此刻那**四件事**（忙闲 / 输入闸 / 输出闸 / 死活）。
    *
@@ -203,18 +198,19 @@ export interface PeerSessionServiceDeps {
    * 外加「这段会话还在不在」。自动交接开关不在这里要：只有宿主那两个判定读它。
    */
   sessions: {
-    get(
-      id: string,
-    ): Promise<{
-      id: string;
-      workspaceId: string;
-      agentId: string;
-      name: string;
-      /** 谁开的这段会话；`null` = 用户建的（本文件用它判「只限一层」） */
-      lineage: string | null;
-      /** 开出来的时刻（会话行上的事实；`read_session_status` 不报这一格 —— 需求里没有它） */
-      createdAt: number;
-    } | undefined>;
+    get(id: string): Promise<
+      | {
+          id: string;
+          workspaceId: string;
+          agentId: string;
+          name: string;
+          /** 谁开的这段会话；`null` = 用户建的（本文件用它判「只限一层」） */
+          lineage: string | null;
+          /** 开出来的时刻（会话行上的事实；`read_session_status` 不报这一格 —— 需求里没有它） */
+          createdAt: number;
+        }
+      | undefined
+    >;
     /**
      * 谁由这段会话开的（血缘列反查）：并发限额要数「我手头有几个还忙着」。
      *

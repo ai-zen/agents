@@ -183,7 +183,13 @@ function invalidPort(field: string, value: unknown, source: string): HostError {
   return new HostError("config_invalid", {
     messageKey: "error.portInvalid",
     params: { value: String(value), source },
-    detail: { field, value, source, reason: "not_a_usable_port", allowed: "1..65535, 0 (launch argument only)" },
+    detail: {
+      field,
+      value,
+      source,
+      reason: "not_a_usable_port",
+      allowed: "1..65535, 0 (launch argument only)",
+    },
   });
 }
 
@@ -281,8 +287,6 @@ async function exists(path: string): Promise<boolean> {
 
 function isMissingFile(error: unknown): boolean {
   return (
-    typeof error === "object" &&
-    error !== null &&
-    (error as { code?: unknown }).code === "ENOENT"
+    typeof error === "object" && error !== null && (error as { code?: unknown }).code === "ENOENT"
   );
 }

@@ -48,11 +48,7 @@ function walk(value: unknown, language: Language, depth: number): unknown {
 
   const record = value as Record<string, unknown>;
   if (isLocalizedText(record) && hasMessage(record.messageKey)) {
-    const message = render(
-      language,
-      record.messageKey,
-      record.params as Record<string, unknown>,
-    );
+    const message = render(language, record.messageKey, record.params as Record<string, unknown>);
     const detail = "detail" in record ? { detail: walk(record.detail, language, depth + 1) } : {};
     return { ...record, message, ...detail };
   }
@@ -98,7 +94,10 @@ export function createConfigHandlers(deps: ConfigHandlerDeps): ConfigHandlers {
         context.connection.language,
       ),
     "config.saveMcp": async (context) =>
-      localizeLocalizedTexts(await deps.config.saveMcp(context.params), context.connection.language),
+      localizeLocalizedTexts(
+        await deps.config.saveMcp(context.params),
+        context.connection.language,
+      ),
     "config.deleteMcp": async (context) =>
       localizeLocalizedTexts(
         await deps.config.deleteMcp(context.params),

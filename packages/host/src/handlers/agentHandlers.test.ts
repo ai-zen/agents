@@ -126,13 +126,13 @@ describe("createAgentHandlers", () => {
     // 这个模型没有思考策略：服务层拒，接线壳原样把错误抛出去
     await expect(
       Promise.resolve(
-        handlers["agent.setThinking"]!(call("agent.setThinking", { agentId: "writer", level: "high" })),
+        handlers["agent.setThinking"]!(
+          call("agent.setThinking", { agentId: "writer", level: "high" }),
+        ),
       ),
     ).rejects.toMatchObject({ code: "unsupported" });
 
-    const removed = await handlers["agent.delete"]!(
-      call("agent.delete", { agentId: "writer" }),
-    );
+    const removed = await handlers["agent.delete"]!(call("agent.delete", { agentId: "writer" }));
     expect(removed.removed).toBe(true);
   });
 });

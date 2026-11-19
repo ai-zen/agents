@@ -15,10 +15,25 @@ export {
 } from "./discovery.js";
 export type { HostFileInfo } from "./discovery.js";
 
-export { createLocalCredential, createTokenVerifier, LOCAL_CREDENTIAL_NOTE, verify } from "./auth.js";
-export type { LocalCredentialOptions, LocalCredentialResult, TokenVerifier, VerifiedCredential } from "./auth.js";
+export {
+  createLocalCredential,
+  createTokenVerifier,
+  LOCAL_CREDENTIAL_NOTE,
+  verify,
+} from "./auth.js";
+export type {
+  LocalCredentialOptions,
+  LocalCredentialResult,
+  TokenVerifier,
+  VerifiedCredential,
+} from "./auth.js";
 
-export { decodeChunkFrame, encodeChunkFrame, formatBytes, UploadReceiver } from "./UploadReceiver.js";
+export {
+  decodeChunkFrame,
+  encodeChunkFrame,
+  formatBytes,
+  UploadReceiver,
+} from "./UploadReceiver.js";
 export type {
   UploadFinalizeRequest,
   UploadFinalizer,

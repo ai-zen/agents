@@ -98,11 +98,7 @@ import type { HandoffMode, MemoryCommit, SdkAgent } from "@ai-zen/agents-sdk";
 
 import { DEFAULT_LANGUAGE, render } from "../i18n/index.js";
 import type { Language, MessageKey } from "../i18n/index.js";
-import type {
-  ChatAgent,
-  ChatEventEmitter,
-  HandoffAvailability,
-} from "../runtime/ChatRunner.js";
+import type { ChatAgent, ChatEventEmitter, HandoffAvailability } from "../runtime/ChatRunner.js";
 import { toRow } from "../runtime/ChatRunner.js";
 import type { MessageRepository } from "../storage/MessageRepository.js";
 import type { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
@@ -292,9 +288,7 @@ export function createSdkHandoffService(
  *   - `HandoffAbortedError`（用户取消）→ {@link HandoffCancelledError}（取消不是失败）；
  *   - 返回的 `mode` 是**实际**用的那一档，降级时与请求的不同（F-D7 要说明的就是它）。
  */
-export function createSdkHandoffExecutor(
-  options: SdkHandoffExecutorOptions = {},
-): HandoffExecutor {
+export function createSdkHandoffExecutor(options: SdkHandoffExecutorOptions = {}): HandoffExecutor {
   return async (input: HandoffExecutionInput): Promise<HandoffExecutionResult> => {
     const commitMemory = input.commitMemory;
     const service = new SdkHandoffService({
@@ -668,9 +662,7 @@ export class HandoffDocumentService {
     // 系统提示：开头连续的、不隐藏的 system 消息（定义带来的，不落库）。断点也是 `role: system`，
     // 但它 `hidden` —— 它不是提示，是上一代留下的路标。
     const promptLength = systemPromptOf(memory).length;
-    const rows = memory
-      .slice(promptLength)
-      .map((message) => toRow(message, session.id, at));
+    const rows = memory.slice(promptLength).map((message) => toRow(message, session.id, at));
 
     await this.sessions.replaceMemory({
       sessionId: session.id,
@@ -824,10 +816,7 @@ export class HandoffDocumentService {
   private async notify(run: HandoffRun, notice: HandoffNotice): Promise<void> {
     if (!this.notices) return;
     try {
-      await this.notices.create(
-        { ...notice, sessionId: run.session.id },
-        run.language,
-      );
+      await this.notices.create({ ...notice, sessionId: run.session.id }, run.language);
     } catch (error) {
       this.onError?.(error, "handoff-notice");
     }
@@ -878,9 +867,7 @@ export class HandoffDocumentService {
     // 旧的那段被压下去了：会话行上记一笔（`manual`）。这一步顺手推了旧会话的
     // `session.changed`（`settings_changed`），所以下面不再为它单独推一条。
     // 写失败不影响已经做完的交接（文档在、新会话也开了）：标记是观测事实，不是交接的一步。
-    await this.sessionViews
-      .markCompacted(session.id, "manual")
-      .catch(() => undefined);
+    await this.sessionViews.markCompacted(session.id, "manual").catch(() => undefined);
 
     const summary = await this.excerpt(document.path);
     const content = render(language, "handoff.newSessionSummary", {

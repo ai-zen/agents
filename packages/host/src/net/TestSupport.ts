@@ -57,16 +57,20 @@ export interface ReceivedErrorData {
 
 export type ReceivedFrame =
   | { jsonrpc: "2.0"; id: JsonRpcId; result: unknown }
-  | { jsonrpc: "2.0"; id: JsonRpcId | null; error: { code: number; message: string; data: ReceivedErrorData } }
+  | {
+      jsonrpc: "2.0";
+      id: JsonRpcId | null;
+      error: { code: number; message: string; data: ReceivedErrorData };
+    }
   | { jsonrpc: "2.0"; method: string; params: unknown };
 
-export function isSuccess(frame: ReceivedFrame): frame is { jsonrpc: "2.0"; id: JsonRpcId; result: unknown } {
+export function isSuccess(
+  frame: ReceivedFrame,
+): frame is { jsonrpc: "2.0"; id: JsonRpcId; result: unknown } {
   return "result" in frame;
 }
 
-export function isError(
-  frame: ReceivedFrame,
-): frame is {
+export function isError(frame: ReceivedFrame): frame is {
   jsonrpc: "2.0";
   id: JsonRpcId | null;
   error: { code: number; message: string; data: ReceivedErrorData };
@@ -179,10 +183,7 @@ export class TestClient {
   }
 
   /** 发一个请求并等它的响应（前提：这中间不会有推送插进来） */
-  async call(
-    method: string,
-    params: unknown = {},
-  ): Promise<{ id: JsonRpcId; result: unknown }> {
+  async call(method: string, params: unknown = {}): Promise<{ id: JsonRpcId; result: unknown }> {
     const id = this.request(method, params);
     const frame = await this.queue.next();
     if (!isSuccess(frame)) {
@@ -197,7 +198,10 @@ export class TestClient {
    *
    * 凭证与语言按用例给；`clientInfo` 用固定值（宿主只做形状校验，不会拿它做判断）。
    */
-  async hello(token: string, options: { language?: string } = {}): Promise<{ id: JsonRpcId; result: unknown }> {
+  async hello(
+    token: string,
+    options: { language?: string } = {},
+  ): Promise<{ id: JsonRpcId; result: unknown }> {
     return await this.call("host.hello", {
       token,
       language: options.language,

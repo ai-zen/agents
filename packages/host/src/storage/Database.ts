@@ -74,8 +74,7 @@ type RequestPayload =
   | { kind: "batch"; statements: TxBatchStatement[] };
 
 type WorkerResponse =
-  | { id: number; ok: true; result?: unknown }
-  | { id: number; ok: false; error: string };
+  { id: number; ok: true; result?: unknown } | { id: number; ok: false; error: string };
 
 interface Pending {
   resolve: (value: unknown) => void;
@@ -159,7 +158,9 @@ export class Database {
    *
    * 回调抛错时还什么都没发出去，等于什么都没写，直接向上抛。
    */
-  async tx<const S extends TxPlan>(fn: (client: TxClient) => S | Promise<S>): Promise<TxOutcome<S>> {
+  async tx<const S extends TxPlan>(
+    fn: (client: TxClient) => S | Promise<S>,
+  ): Promise<TxOutcome<S>> {
     this.assertOpen();
     const batch: TxBatchStatement[] = [];
     const register = <T>(kind: TxKind, sql: string, params: SQLInputValue[]): TxStatement<T> => {
@@ -169,7 +170,8 @@ export class Database {
     };
     const client: TxClient = {
       all: <T>(sql: string, params: SQLInputValue[] = []) => register<T[]>("all", sql, params),
-      get: <T>(sql: string, params: SQLInputValue[] = []) => register<T | undefined>("get", sql, params),
+      get: <T>(sql: string, params: SQLInputValue[] = []) =>
+        register<T | undefined>("get", sql, params),
       run: (sql: string, params: SQLInputValue[] = []) => register<RunResult>("run", sql, params),
     };
 

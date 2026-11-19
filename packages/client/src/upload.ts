@@ -102,8 +102,7 @@ export type UploadAssetOptions = {
   /** 每片多少字节，缺省 {@link DEFAULT_CHUNK_SIZE} */
   chunkSize?: number;
 } & (
-  | { path: string; mime?: string; name?: string }
-  | { data: Uint8Array; mime: string; name?: string }
+  { path: string; mime?: string; name?: string } | { data: Uint8Array; mime: string; name?: string }
 );
 
 /** `uploadAssets` 的入参：一次给多份内容（一次拖进几张图就是几条） */
