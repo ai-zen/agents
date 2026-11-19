@@ -2,7 +2,7 @@ import { AgentNS } from "@ai-zen/agents-core";
 import { describe, expect, it } from "vitest";
 
 import {
-  CONVERSATION_ACTIVITIES,
+  SESSION_ACTIVITIES,
   MAX_ASSETS_PER_MESSAGE,
   MAX_ASSET_BYTES,
   NOTICE_LEVELS,
@@ -10,8 +10,8 @@ import {
   QUESTION_STATES,
   localAssetIdOf,
   type AttachmentOutcome,
-  type ConversationActivity,
-  type ConversationPresence,
+  type SessionActivity,
+  type SessionPresence,
   type LocalMessageContentSection,
   type MessageInput,
 } from "./states.js";
@@ -19,33 +19,33 @@ import {
 describe("对话此刻的四件事（PRD 4.4 / CORE「对外报四件事」）", () => {
   it("忙闲就是 core 那一格：两个值，名字不改（`busy` 只留作拒绝原因码）", () => {
     const coreStates: AgentNS.AgentState[] = ["working", "idle"];
-    const outward: ConversationActivity[] = [...coreStates];
+    const outward: SessionActivity[] = [...coreStates];
     expect(outward).toEqual(["working", "idle"]);
-    expect([...CONVERSATION_ACTIVITIES]).toEqual(["working", "idle"]);
+    expect([...SESSION_ACTIVITIES]).toEqual(["working", "idle"]);
 
     // 一个方向都不多不少：core 报的那两格就是外面报的那两格（多一个或少一个，编译就红）
-    type UnknownCoreState = Exclude<AgentNS.AgentState, ConversationActivity>;
+    type UnknownCoreState = Exclude<AgentNS.AgentState, SessionActivity>;
     const coreStatesAllKnown: UnknownCoreState extends never ? true : false = true;
-    type UnknownOutwardState = Exclude<ConversationActivity, AgentNS.AgentState>;
+    type UnknownOutwardState = Exclude<SessionActivity, AgentNS.AgentState>;
     const outwardAllKnown: UnknownOutwardState extends never ? true : false = true;
     expect(coreStatesAllKnown && outwardAllKnown).toBe(true);
   });
 
   it("四件事各占一格，不合成一格：闲 / 忙、输入闸、输出闸、死活", () => {
     // 「闲但输出闸关着」与「忙」是两个不同的读数 —— 这是四件事必须分开的由来
-    const idleButNotTaking: ConversationPresence = {
+    const idleButNotTaking: SessionPresence = {
       status: "idle",
       inputPaused: false,
       outputPaused: true,
       alive: true,
     };
-    const working: ConversationPresence = {
+    const working: SessionPresence = {
       status: "working",
       inputPaused: false,
       outputPaused: false,
       alive: true,
     };
-    const gone: ConversationPresence = {
+    const gone: SessionPresence = {
       status: "idle",
       inputPaused: false,
       outputPaused: false,

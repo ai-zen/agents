@@ -5,8 +5,8 @@
  *
  * 交接要跑一阵（写文档、换记忆、旧记忆成另一段会话），而这个方法是一个 RPC —— 它有回执、
  * 要尽快返回。所以它不等那一趟跑完：文档路径、有没有降级、成功 / 取消 / 失败，全部走
- * **通知**（`NoticeService`，PRD 4.9）与 `conversation.changed` 的 `memory_replaced` 告知，
- * 界面要知道「现在正在交接」就读 `conversation.state.handoff`。
+ * **通知**（`NoticeService`，PRD 4.9）与 `session.changed` 的 `memory_replaced` 告知，
+ * 界面要知道「现在正在交接」就读 `session.state.handoff`。
  *
  * ## 接线层不替它做任何编排
  *

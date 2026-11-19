@@ -17,7 +17,7 @@ import type { ConnectionInfo } from "../net/index.js";
 import { isError, makeTempDir, TestClient, type TempDir } from "../net/TestSupport.js";
 import { METHOD_NAMES } from "../wire/index.js";
 import type {
-  ConversationView,
+  SessionView,
   MethodName,
   MethodParams,
   MethodResult,
@@ -83,19 +83,19 @@ async function startApp(): Promise<{ app: HostApp; workspaceDir: TempDir }> {
 }
 
 /**
- * 建一段对话并让它落库（R56：`conversation.create` 只发 id，首次 `send` 才写 `conversations` 行）。
+ * 建一段对话并让它落库（R56：`session.create` 只发 id，首次 `send` 才写 `sessions` 行）。
  *
  * 这里的用例要看的是别的东西（列表、搜索结果、项目删除），所以直接把草稿落成真行。
  */
-async function seedConversation(app: HostApp, workspaceId: string): Promise<ConversationView> {
-  const created = await callMethod(app, "conversation.create", {
+async function seedSession(app: HostApp, workspaceId: string): Promise<SessionView> {
+  const created = await callMethod(app, "session.create", {
     workspaceId,
     agentId: "default",
     modelId: "test-model",
   });
-  if (!created.conversation) throw new Error("conversation.create 没有建出对话");
-  await app.conversationService.ensurePersisted(created.conversation.id);
-  return created.conversation;
+  if (!created.session) throw new Error("session.create 没有建出对话");
+  await app.sessionService.ensurePersisted(created.session.id);
+  return created.session;
 }
 
 async function callMethod<M extends MethodName>(
@@ -166,7 +166,7 @@ describe("handler 表", () => {
     const token = (await fs.readFile(app.paths.tokenFile, "utf8")).trim();
     await client.hello(token);
 
-    for (const method of ["nope.nothing", "conversation.explode"]) {
+    for (const method of ["nope.nothing", "session.explode"]) {
       client.request(method, {});
       const frame = await client.queue.next();
       expect(isError(frame)).toBe(true);
@@ -184,16 +184,16 @@ describe("只转发的两个域", () => {
   it("message.list / search.* 都接到服务层", async () => {
     const { app, workspaceDir } = await startApp();
     const { workspace } = await callMethod(app, "workspace.create", { cwd: workspaceDir.path });
-    const conversation = await seedConversation(app, workspace.id);
+    const session = await seedSession(app, workspace.id);
 
-    const page = await callMethod(app, "message.list", { conversationId: conversation.id });
+    const page = await callMethod(app, "message.list", { sessionId: session.id });
     expect(page.messages).toEqual([]);
     expect(page.anchor).toBeNull();
 
-    const searched = await callMethod(app, "search.conversations", {
-      query: conversation.name,
+    const searched = await callMethod(app, "search.sessions", {
+      query: session.name,
     });
-    expect(searched.hits.map((hit) => hit.conversation.id)).toContain(conversation.id);
+    expect(searched.hits.map((hit) => hit.session.id)).toContain(session.id);
 
     const fullText = await callMethod(app, "search.messages", { query: "没有这段话" });
     expect(fullText.hits).toEqual([]);

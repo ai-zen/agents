@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   EVENT_NAMES,
   isEventName,
-  type ConversationChangeKind,
+  type SessionChangeKind,
   type EventName,
   type EventPayload,
   type MessageDeltaPayload,
@@ -28,7 +28,7 @@ describe("事件表", () => {
       "input:paused",
       "input:resumed",
       "error",
-      "conversation.changed",
+      "session.changed",
       "notice",
       "question",
     ]);
@@ -49,7 +49,7 @@ describe("事件表", () => {
 
   it("message.delta 的增量就是 core 的 Delta，属于哪一段由它自己的字段说明", () => {
     const textDelta: MessageDeltaPayload = {
-      conversationId: "c-1",
+      sessionId: "c-1",
       messageId: "m-2",
       delta: { content: "你好" },
       at: NOW,
@@ -89,7 +89,7 @@ describe("事件表", () => {
   it("message.delta 的增量能用 core 的 applyChunk 攒成一条消息", () => {
     const receiver: AgentNS.Message = { id: "m-2", role: AgentNS.Role.Assistant };
     const payload: MessageDeltaPayload = {
-      conversationId: "c-1",
+      sessionId: "c-1",
       messageId: "m-2",
       delta: { content: "你好", reasoning_content: "先看文件" },
       at: NOW,
@@ -106,10 +106,10 @@ describe("事件表", () => {
     expect(receiver.finish_reason).toBeUndefined();
   });
 
-  it("conversation.changed 覆盖结构变化的那几种（死活那一件也在这里）", () => {
+  it("session.changed 覆盖结构变化的那几种（死活那一件也在这里）", () => {
     // 消息的增删改有自己的事件（带整条消息），所以这里没有「消息落库了」/「消息删了」两格，
     // 也不带消息条数 —— 条数客户端自己数。死活（有没有 agent 实例）也走这一条：它不是忙闲。
-    const kinds: ConversationChangeKind[] = [
+    const kinds: SessionChangeKind[] = [
       "created",
       "renamed",
       "pinned",
@@ -121,8 +121,8 @@ describe("事件表", () => {
       "deleted",
     ];
     for (const change of kinds) {
-      const payload: EventPayload<"conversation.changed"> = {
-        conversationId: "c-1",
+      const payload: EventPayload<"session.changed"> = {
+        sessionId: "c-1",
         workspaceId: "w-1",
         change,
         at: NOW,
@@ -132,21 +132,21 @@ describe("事件表", () => {
   });
 
   it("state 只报忙闲（`working` / `idle`）：闸与死活不在这一条上", () => {
-    const payload: EventPayload<"state"> = { conversationId: "c-1", status: "working", at: NOW };
+    const payload: EventPayload<"state"> = { sessionId: "c-1", status: "working", at: NOW };
     expect(payload.status).toBe("working");
     for (const status of ["working", "idle"] as const) {
       const changed: EventPayload<"state"> = { ...payload, status };
       expect(changed.status).toBe(status);
       // 载荷里只有「哪一段、手上有没有活、什么时候」：一道闸、一条死活都不许挤进来
-      expect(Object.keys(changed).sort()).toEqual(["at", "conversationId", "status"]);
+      expect(Object.keys(changed).sort()).toEqual(["at", "sessionId", "status"]);
     }
   });
 
   it("两道闸各有自己的开与关：载荷只带会话 id（事件名已经说清哪一道、开还是关）", () => {
     const names = ["output:paused", "output:resumed", "input:paused", "input:resumed"] as const;
     for (const name of names) {
-      const payload: EventPayload<typeof name> = { conversationId: "c-1", at: NOW };
-      expect(Object.keys(payload).sort()).toEqual(["at", "conversationId"]);
+      const payload: EventPayload<typeof name> = { sessionId: "c-1", at: NOW };
+      expect(Object.keys(payload).sort()).toEqual(["at", "sessionId"]);
       expect(isEventName(name)).toBe(true);
     }
   });
@@ -158,7 +158,7 @@ describe("事件表", () => {
         level: "warning",
         duration: null,
         text: localized("question.handoff.prompt"),
-        conversationId: "c-1",
+        sessionId: "c-1",
         createdAt: NOW,
       },
       at: NOW,
@@ -168,7 +168,7 @@ describe("事件表", () => {
     const question: EventPayload<"question"> = {
       question: {
         id: "q-1",
-        conversationId: "c-1",
+        sessionId: "c-1",
         kind: "handoff",
         state: "pending",
         prompt: localized("question.handoff.prompt"),

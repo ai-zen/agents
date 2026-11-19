@@ -13,7 +13,7 @@
  * 合成一条通知）的持有者是配置服务。
  *
  * 用量不在这一域（裁定 2026-11-13）：F-I5 的「本轮 / 累计（含子 Agent）/ 速率」由
- * `conversation.state` 的 `usage`（`UsageSnapshot`）给，`host.usage` 的「按项目 / 整机」聚合
+ * `session.state` 的 `usage`（`UsageSnapshot`）给，`host.usage` 的「按项目 / 整机」聚合
  * 没有任何客户端消费，已从契约面删除。
  */
 

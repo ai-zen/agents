@@ -14,7 +14,7 @@ export interface SearchHandlerDeps {
 
 export function createSearchHandlers(deps: SearchHandlerDeps): HandlerTable {
   return {
-    "search.conversations": async (context) => await deps.search.conversations(context.params),
+    "search.sessions": async (context) => await deps.search.sessions(context.params),
     "search.messages": async (context) => await deps.search.messages(context.params),
   };
 }

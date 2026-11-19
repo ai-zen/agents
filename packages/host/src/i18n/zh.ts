@@ -14,7 +14,7 @@ export const zh = {
   "error.notFound": "找不到这个 id 对应的{entity}。",
   "error.busy": "这段对话还在跑上一轮。等它跑完，或者先停下它。",
   // 对话存在但没人驱动它（PRD 1.2）：外面投不进去，只有从界面上发话会先把它叫起来
-  "error.conversationDead":
+  "error.sessionDead":
     "这段对话现在是死的，外面投不进去 —— 只有在界面上发一句话，才会先把它叫起来再投。",
   "error.payloadTooLarge": "这个文件是 {size}，超过了 {limit} 的上限。",
   "error.unsupported": "宿主处理不了{what}。",
@@ -96,7 +96,7 @@ export const zh = {
   "notice.unknown": "宿主有一条通知（{code}）。",
   "error.handoffFailed": "交接没走通：{reason}",
   "error.transientFailed": "这次一次性请求没跑完：{reason}",
-  "handoff.newConversationSummary":
+  "handoff.newSessionSummary":
     "这段对话接着上一段。交接文档在 {path}，先读它，再接着做这件事。\n\n交接摘要：\n{summary}",
   "handoff.degradeReason.fallback": "这次助手自己没能把文档写出来",
 } satisfies Record<keyof typeof en, string>;

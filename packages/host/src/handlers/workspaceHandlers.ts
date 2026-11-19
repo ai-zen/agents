@@ -8,7 +8,7 @@
 
 import type { HandlerTable } from "../net/index.js";
 import type { ChatEventEmitter, ChatRunner, ScopeRegistry } from "../runtime/index.js";
-import type { ConversationService } from "../services/ConversationService.js";
+import type { SessionService } from "../services/SessionService.js";
 import type { WorkspaceService } from "../services/WorkspaceService.js";
 import type {
   WorkspaceRemoveParams,
@@ -19,17 +19,17 @@ import type {
 export interface WorkspaceHandlerDeps {
   workspaces: WorkspaceService;
   /** 删项目要连带它的对话一起清（PRD D11）：删之前先记下名下有哪几段 */
-  conversations: ConversationService;
+  sessions: SessionService;
   /** 名下的对话在运行时里可能还留着现场，删之前一并丢掉 */
   runner: ChatRunner;
   /** 删项目要把它的 Scope 一起销毁（MCP 连接在这里断开） */
   scopes: ScopeRegistry;
   /**
-   * 推 `conversation.changed`（L5 / D22：删项目带走的那几段对话也要让别的窗口知道）。
+   * 推 `session.changed`（L5 / D22：删项目带走的那几段对话也要让别的窗口知道）。
    * 不注入时不推。
    */
   emit?: ChatEventEmitter;
-  /** 时间戳（`conversation.changed.at`）；缺省用 `Date.now` */
+  /** 时间戳（`session.changed.at`）；缺省用 `Date.now` */
   now?: () => string;
 }
 
@@ -69,14 +69,14 @@ async function removeWorkspace(
   const doomed =
     params.dryRun === true
       ? []
-      : (await deps.conversations.list({ workspaceId: params.workspaceId })).conversations;
+      : (await deps.sessions.list({ workspaceId: params.workspaceId })).sessions;
 
   const report = await deps.workspaces.remove(params);
   if (params.dryRun !== true && report.removed) {
-    for (const conversation of doomed) {
-      deps.runner.forget(conversation.id);
-      deps.emit?.("conversation.changed", {
-        conversationId: conversation.id,
+    for (const session of doomed) {
+      deps.runner.forget(session.id);
+      deps.emit?.("session.changed", {
+        sessionId: session.id,
         workspaceId: params.workspaceId,
         change: "deleted",
         at: (deps.now ?? (() => new Date().toISOString()))(),

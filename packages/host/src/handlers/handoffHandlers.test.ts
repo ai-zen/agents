@@ -4,7 +4,7 @@
  * 两条口径：
  *
  * 1. `handoff.start` 只回「已经开始」，所以这里**没有**「取消 / 失败怎么回给调用方」这两条 ——
- *    那一趟在后台跑，结局走通知与 `conversation.changed`（见 `services/HandoffDocumentService.test.ts`）。
+ *    那一趟在后台跑，结局走通知与 `session.changed`（见 `services/HandoffDocumentService.test.ts`）。
  * 2. 接线层**不掐在途、不编排**（那条中断语义已作废）：入口判据「非空闲就拒」在服务里，
  *    本域的 deps 因此不再要 `runner`。
  */
@@ -85,12 +85,12 @@ describe("handoff.* 接线", () => {
     const handlers = createHandoffHandlers({ handoff: fake.service });
 
     const returned = await handlers["handoff.start"]?.(
-      call("handoff.start", { conversationId: "c1", mode: "self", then: "new_conversation" }, "zh"),
+      call("handoff.start", { sessionId: "c1", mode: "self", then: "new_session" }, "zh"),
     );
 
     expect(fake.calls).toEqual([
       {
-        params: { conversationId: "c1", mode: "self", then: "new_conversation" },
+        params: { sessionId: "c1", mode: "self", then: "new_session" },
         language: "zh",
       },
     ]);
@@ -100,13 +100,13 @@ describe("handoff.* 接线", () => {
   it("非空闲被拒时原样抛给调用方（busy 是服务那边判的，接线层不改写）", async () => {
     const fake = fakeHandoff();
     fake.fail(
-      new HostError("busy", { detail: { conversationId: "c1", reason: "working" } }),
+      new HostError("busy", { detail: { sessionId: "c1", reason: "working" } }),
     );
     const handlers = createHandoffHandlers({ handoff: fake.service });
 
     await expect(
       handlers["handoff.start"]?.(
-        call("handoff.start", { conversationId: "c1", mode: "self", then: "document_only" }, "zh"),
+        call("handoff.start", { sessionId: "c1", mode: "self", then: "document_only" }, "zh"),
       ),
     ).rejects.toMatchObject({ code: "busy", detail: { reason: "working" } });
   });
@@ -125,7 +125,7 @@ describe("handoff.* 接线", () => {
       handlers["handoff.start"]?.(
         call(
           "handoff.start",
-          { conversationId: "c1", mode: "prune" as unknown as "self", then: "document_only" },
+          { sessionId: "c1", mode: "prune" as unknown as "self", then: "document_only" },
           "en",
         ),
       ),

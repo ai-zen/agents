@@ -2,7 +2,7 @@
  * `host.*` 的验收：版本报的是事实、收尾请求走单根。
  *
  * `host.hello` / `host.setLanguage` 由接线层接管（语言是连接状态），不在这里验。
- * `host.usage` 已从契约面删除（裁定 2026-11-13，F-I5 的落点是 `conversation.state`），
+ * `host.usage` 已从契约面删除（裁定 2026-11-13，F-I5 的落点是 `session.state`），
  * 它的用例也一起删了。
  */
 
@@ -19,7 +19,7 @@ import { makeTempDir, wait, type TempDir } from "../net/TestSupport.js";
 import { FakeAgent } from "../runtime/TestSupport.js";
 import { METHOD_NAMES, PROTOCOL_VERSION } from "../wire/index.js";
 import type {
-  ConversationView,
+  SessionView,
   MethodName,
   MethodParams,
   MethodResult,
@@ -59,7 +59,7 @@ interface Harness {
   app: HostApp;
   workspaceDir: TempDir;
   workspaceId: string;
-  conversationId: string;
+  sessionId: string;
   exits: ExitFacts[];
 }
 
@@ -97,30 +97,30 @@ async function makeHarness(): Promise<Harness> {
   apps.push(app);
 
   const { workspace } = await callMethod(app, "workspace.create", { cwd: workspaceDir.path });
-  const conversation = await seedConversation(app, workspace.id);
+  const session = await seedSession(app, workspace.id);
   return {
     app,
     workspaceDir,
     workspaceId: workspace.id,
-    conversationId: conversation.id,
+    sessionId: session.id,
     exits,
   };
 }
 
 /**
- * 建一段对话并让它落库（R56：`conversation.create` 只发 id，首次 `send` 才写 `conversations` 行）。
+ * 建一段对话并让它落库（R56：`session.create` 只发 id，首次 `send` 才写 `sessions` 行）。
  *
  * 这里的用例要看的是别的东西（列表、搜索结果、项目删除），所以直接把草稿落成真行。
  */
-async function seedConversation(app: HostApp, workspaceId: string): Promise<ConversationView> {
-  const created = await callMethod(app, "conversation.create", {
+async function seedSession(app: HostApp, workspaceId: string): Promise<SessionView> {
+  const created = await callMethod(app, "session.create", {
     workspaceId,
     agentId: "default",
     modelId: "test-model",
   });
-  if (!created.conversation) throw new Error("conversation.create 没有建出对话");
-  await app.conversationService.ensurePersisted(created.conversation.id);
-  return created.conversation;
+  if (!created.session) throw new Error("session.create 没有建出对话");
+  await app.sessionService.ensurePersisted(created.session.id);
+  return created.session;
 }
 
 async function callMethod<M extends MethodName>(

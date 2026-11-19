@@ -14,8 +14,8 @@ import type {
   AssetRef,
   AttachmentOutcome,
   CompactionMode,
-  ConversationPresence,
-  ConversationState,
+  SessionPresence,
+  SessionState,
   FolderFact,
   HandoffRefusalReason,
   LocalizedText,
@@ -71,7 +71,7 @@ export interface ClientInfo {
  * 账，客户端不需要自己拼。
  */
 export interface RemovalConsequences {
-  conversations: number;
+  sessions: number;
   messages: number;
   assets: number;
 }
@@ -213,7 +213,7 @@ export interface WorkspaceView {
   folder: FolderFact;
   createdAt: string;
   updatedAt: string;
-  conversationCount: number;
+  sessionCount: number;
   /** 最近一次有对话活动的时间（没有则为空） */
   lastActivityAt: string | null;
 }
@@ -283,7 +283,7 @@ export interface WorkspaceRemoveResult {
 }
 
 // ---------------------------------------------------------------------------
-// conversation.*
+// session.*
 // ---------------------------------------------------------------------------
 
 /**
@@ -291,11 +291,11 @@ export interface WorkspaceRemoveResult {
  *
  * `pinned` 与 `createdAt` 一起决定侧栏顺序：默认创建时间倒序、置顶优先；活动/打开/改名都不改顺序（D13）。
  *
- * 与 `conversation.state` 同一个口径，侧栏这一段也带**四件事各一格**（{@link ConversationPresence}：
+ * 与 `session.state` 同一个口径，侧栏这一段也带**四件事各一格**（{@link SessionPresence}：
  * `status` / `inputPaused` / `outputPaused` / `alive`）—— 侧栏那个圆点与按钮只读这几格，不必为每段
  * 对话再拉一次读数。四件事都是现读，不落库、不是会话字段。
  */
-export interface ConversationSummary extends ConversationPresence {
+export interface SessionSummary extends SessionPresence {
   id: string;
   workspaceId: string;
   /** 可改的名字（PRD D1：改名不碰 id，名字是独立字段） */
@@ -312,7 +312,7 @@ export interface ConversationSummary extends ConversationPresence {
    *
    * 它与会话行上的另一格 `guardThreshold` 一起构成 PRD 1.4 那两格：模型上那份是出厂的数字，
    * 这两列是**这一段自己的覆盖**。`null` 才是常态（没给这一段单独调过）。要改它走
-   * `conversation.setThresholds`（省略 = 不动、显式 `null` = 回到跟模型走）。
+   * `session.setThresholds`（省略 = 不动、显式 `null` = 回到跟模型走）。
    */
   handoffThreshold: number | null;
   /** 这段会话自己定的防护阈值（硬线）；`null` = 跟模型走。口径同上 */
@@ -344,9 +344,9 @@ export interface ConversationSummary extends ConversationPresence {
  * 一段对话的当前模型事实（PRD F-B4 / F-B8）。
  *
  * `source` 说这个模型是谁定的：`agent` = 助手定义上那个（这段会话没换过）；
- * `conversation` = 这段会话自己定的（创建时点名或 `conversation.setModel` 改过）。
+ * `session` = 这段会话自己定的（创建时点名或 `session.setModel` 改过）。
  */
-export type ConversationModelState = ModelState;
+export type SessionModelState = ModelState;
 
 /** 一段对话的完整样子 */
 /**
@@ -356,22 +356,22 @@ export type ConversationModelState = ModelState;
  * （`AgentService.describe`）。定义已经没了（助手被删，L7 允许对话留着旧 id）或文件读不出来时
  * 这两项都是 `null` —— 说「不知道」而不是编一个看起来像真的名字。
  */
-export interface ConversationAgentState {
+export interface SessionAgentState {
   agentId: string;
   name: string | null;
   available: boolean | null;
 }
 
-export interface ConversationView extends ConversationSummary {
-  agent: ConversationAgentState;
-  model: ConversationModelState;
+export interface SessionView extends SessionSummary {
+  agent: SessionAgentState;
+  model: SessionModelState;
   thinking: ThinkingState;
   /** 对话所属 Workspace 的目录事实（PRD D12） */
   folder: FolderFact;
 }
 
-/** `conversation.list` 入参（PRD F-C5 / D13：按 Workspace 列表、按置顶筛） */
-export interface ConversationListParams {
+/** `session.list` 入参（PRD F-C5 / D13：按 Workspace 列表、按置顶筛） */
+export interface SessionListParams {
   workspaceId?: string;
   /** true 只看置顶，false 只看未置顶，不传全要 */
   pinned?: boolean;
@@ -379,22 +379,22 @@ export interface ConversationListParams {
   offset?: number;
 }
 
-/** `conversation.list` 出参：按侧栏顺序排好的结果 + 总数 */
-export interface ConversationListResult {
-  conversations: ConversationSummary[];
+/** `session.list` 出参：按侧栏顺序排好的结果 + 总数 */
+export interface SessionListResult {
+  sessions: SessionSummary[];
   total: number;
 }
 
 /**
- * `conversation.create` 入参（PRD F-A3「开新会话、别续接」/ F-C7 / D9 / D10 / L7）。
+ * `session.create` 入参（PRD F-A3「开新会话、别续接」/ F-C7 / D9 / D10 / L7）。
  *
  * 项目与助手在创建时定死（PRD L7）；模型先取助手定义上那个（也可在这里点名），之后归这段会话
- * —— 换它走 `conversation.setModel`，改「以后的对话」用哪个模型走 `agent.setModel`。
+ * —— 换它走 `session.setModel`，改「以后的对话」用哪个模型走 `agent.setModel`。
  *
  * 定位项目两条路（D10）：`workspaceId` 是「已经登记过的项目」；`cwd` 是从目录出发
  * —— 那个目录还没登记成项目时，宿主不建对话，而是问一次要不要登记（见出参）。
  */
-export interface ConversationCreateParams {
+export interface SessionCreateParams {
   /** 已经登记的项目 id */
   workspaceId: string;
   agentId: string;
@@ -403,74 +403,74 @@ export interface ConversationCreateParams {
 }
 
 /**
- * `conversation.create` 出参。
+ * `session.create` 出参。
  *
  * 一定建出了草稿（R56：这行还没落库，首次 `send` 才写）。
  */
-export interface ConversationCreateResult {
-  conversation: ConversationView;
+export interface SessionCreateResult {
+  session: SessionView;
 }
 
-/** `conversation.get` 入参（PRD F-A6：宿主只提供「按 id 打开」） */
-export interface ConversationGetParams {
-  conversationId: string;
+/** `session.get` 入参（PRD F-A6：宿主只提供「按 id 打开」） */
+export interface SessionGetParams {
+  sessionId: string;
 }
 
-/** `conversation.get` 出参 */
-export interface ConversationGetResult {
-  conversation: ConversationView;
+/** `session.get` 出参 */
+export interface SessionGetResult {
+  session: SessionView;
 }
 
-/** `conversation.state` 入参（PRD L5：重连先拉读数） */
-export interface ConversationStateParams {
-  conversationId: string;
+/** `session.state` 入参（PRD L5：重连先拉读数） */
+export interface SessionStateParams {
+  sessionId: string;
 }
 
-/** `conversation.state` 出参：一段对话此刻的读数（四件事 + 待办 + 名册 + 交接态） */
-export interface ConversationStateResult {
-  state: ConversationState;
+/** `session.state` 出参：一段对话此刻的读数（四件事 + 待办 + 名册 + 交接态） */
+export interface SessionStateResult {
+  state: SessionState;
 }
 
-/** `conversation.rename` 入参（PRD D1 / F-C3：改名不改身份、不改排序） */
-export interface ConversationRenameParams {
-  conversationId: string;
+/** `session.rename` 入参（PRD D1 / F-C3：改名不改身份、不改排序） */
+export interface SessionRenameParams {
+  sessionId: string;
   name: string;
 }
 
-/** `conversation.rename` 出参 */
-export interface ConversationRenameResult {
-  conversation: ConversationView;
+/** `session.rename` 出参 */
+export interface SessionRenameResult {
+  session: SessionView;
 }
 
-/** `conversation.pin` 入参（PRD F-C5 / D13：手动置顶） */
-export interface ConversationPinParams {
-  conversationId: string;
+/** `session.pin` 入参（PRD F-C5 / D13：手动置顶） */
+export interface SessionPinParams {
+  sessionId: string;
   pinned: boolean;
 }
 
-/** `conversation.pin` 出参 */
-export interface ConversationPinResult {
-  conversation: ConversationView;
+/** `session.pin` 出参 */
+export interface SessionPinResult {
+  session: SessionView;
 }
 
 /**
- * `conversation.delete` 入参（PRD F-C10 / D17 / F-F9）。
+ * `session.delete` 入参（PRD F-C10 / D17 / F-F9）。
  *
  * 硬删，图片按引用清理；`dryRun: true` 先算代价，供「删除前警告」使用。
  */
-export interface ConversationDeleteParams {
-  conversationId: string;
+export interface SessionDeleteParams {
+  sessionId: string;
   dryRun?: boolean;
 }
 
-/** `conversation.delete` 出参 */
-export interface ConversationDeleteResult {
+/** `session.delete` 出参 */
+export interface SessionDeleteResult {
   removed: boolean;
   consequences: RemovalConsequences;
 }
 
 /**
- * `conversation.send` 入参（PRD 4.2 / 5.1：唯一的对外动作是投递）。
+ * `session.send` 入参（PRD 4.2 / 5.1：唯一的对外动作是投递）。
  *
  * 投递只有两条判据：目标在不在、活不活（PLAN §5.1）。忙不忙不是判据 —— 活着就收下入队，
  * 闲 / 忙一律收（输出闸关着也只收不取），什么时候取走是它自己的事，与投递方无关。
@@ -480,22 +480,22 @@ export interface ConversationDeleteResult {
  *
  * 两种拒因，各说一件事：
  *   - 有问题在挡着这段对话（`question_pending`，D23 / F-D10）—— 排队不是绕过它的通道；
- *   - 目标是死的（宿主那边没有 agent 对象）时是 `conversation_dead`：界面上那个发送按钮先复活
+ *   - 目标是死的（宿主那边没有 agent 对象）时是 `session_dead`：界面上那个发送按钮先复活
  *     再投，那是客户端的事 —— 投递本身不叫醒死者（PRD 4.4）。
  *
  * **没有「正在交接」这个拒因**：交接期间只关输出闸、不关输入闸，话照收、排在 inbox 里，
  * 只是这一任不取；交接完成即开闸，压着的按原顺序接着跑（PRD 4.5 / PLAN §5.3）。
  */
-export interface ConversationSendParams {
-  conversationId: string;
+export interface SessionSendParams {
+  sessionId: string;
   input: MessageInput;
 }
 
 /**
- * `conversation.send` 出参：收下了（PLAN §5.1 的「回执只有收下 / 被拒」）。
+ * `session.send` 出参：收下了（PLAN §5.1 的「回执只有收下 / 被拒」）。
  *
  * 回执里没有状态、没有「叫醒了没有」、没有结果 —— 那三样都是对未来的断言，而未来只能靠
- * 观测（`conversation.state` + 事件）去读。只有两样是投递那一刻就定下、过后也不会变的：
+ * 观测（`session.state` + 事件）去读。只有两样是投递那一刻就定下、过后也不会变的：
  * `userMessageId` 与每个附件的结局。
  *
  * `userMessageId` 就是**落地那条消息的 id**：宿主在入队这一刻就定死它，客户端先按它画一条
@@ -505,7 +505,7 @@ export interface ConversationSendParams {
  * 失败与降级都带原因，拿不到结果时不报成功（F-H7）。收下但还没被取走的那一条同样走一遍
  * 素材准备，结局照常回 —— 排队不等于「附件被静默丢掉」。
  */
-export interface ConversationSendResult {
+export interface SessionSendResult {
   /** 投递那一刻就定死的消息 id：落地那条消息用的就是它 */
   userMessageId: string;
   /** 每个附件最后是怎么走的（沿用现有 AttachmentOutcome 形状） */
@@ -513,103 +513,103 @@ export interface ConversationSendResult {
 }
 
 /**
- * `conversation.abort` 入参（PRD D14：中止是用户的显式动作，不排队、不自动打断）。
+ * `session.abort` 入参（PRD D14：中止是用户的显式动作，不排队、不自动打断）。
  */
-export interface ConversationAbortParams {
-  conversationId: string;
+export interface SessionAbortParams {
+  sessionId: string;
   reason?: string;
 }
 
-/** `conversation.abort` 出参：打到了没有（`signalled: false` = 那个对象本来就不在，无从下手） */
-export interface ConversationAbortResult {
+/** `session.abort` 出参：打到了没有（`signalled: false` = 那个对象本来就不在，无从下手） */
+export interface SessionAbortResult {
   signalled: boolean;
 }
 
 /**
- * `conversation.pause` 入参：暂停这段对话 —— **关输出闸**（PRD 4.4）。
+ * `session.pause` 入参：暂停这段对话 —— **关输出闸**（PRD 4.4）。
  *
  * 暂停是**输出闸**：手上这批算已经开始，让它跑完；从下一批起不再取（收话不动）。
- * 它**不掐在途** —— 要立刻停就用中断（`conversation.abort`：掐在途 + 关输出闸）。
+ * 它**不掐在途** —— 要立刻停就用中断（`session.abort`：掐在途 + 关输出闸）。
  * 交接期间这一手拒（`busy` / `handoff_in_progress`）：那期间闸归交接收口管。
  */
-export interface ConversationPauseParams {
-  conversationId: string;
+export interface SessionPauseParams {
+  sessionId: string;
 }
 
-/** `conversation.pause` 出参：打完之后这段是不是暂停着 */
-export interface ConversationPauseResult {
+/** `session.pause` 出参：打完之后这段是不是暂停着 */
+export interface SessionPauseResult {
   /** `paused` = 打完之后这段的输出闸是不是关着（死对话没有闸可翻，所以是 `false`） */
   paused: boolean;
 }
 
 /**
- * `conversation.resume` 入参：继续（PRD 4.4：「继续」按钮）。
+ * `session.resume` 入参：继续（PRD 4.4：「继续」按钮）。
  *
  * **只开闸，不投任何东西**：压着的待办按原顺序接着跑。
  */
-export interface ConversationResumeParams {
-  conversationId: string;
+export interface SessionResumeParams {
+  sessionId: string;
 }
 
-/** `conversation.resume` 出参：打完之后这段的输出闸是不是关着（同 `conversation.pause` 那一格） */
-export interface ConversationResumeResult {
+/** `session.resume` 出参：打完之后这段的输出闸是不是关着（同 `session.pause` 那一格） */
+export interface SessionResumeResult {
   paused: boolean;
 }
 
 /**
- * `conversation.kill` 入参：**用户按杀死**（PRD 4.4 里「会让它死的」三条路之一）。
+ * `session.kill` 入参：**用户按杀死**（PRD 4.4 里「会让它死的」三条路之一）。
  *
  * 杀死**不是删除**：会话行、消息、记忆一个字都不动，只是这一段没有 agent 了。杀死之后：在途
  * 那一批掐断，没被取走的待办作废（库里那些行也一起删），界面上的「发话」还能把驱动者重新叫
- * 起来 —— 别的来源一律报 `conversation_dead`（不复活，PRD 4.2 / 4.4）。
+ * 起来 —— 别的来源一律报 `session_dead`（不复活，PRD 4.2 / 4.4）。
  *
  * 交接期间这一手拒（`busy` / `handoff_in_progress`）：那期间界面上只留中断，别的都不给
- * （PRD 4.5，与 `conversation.pause` / `conversation.resume` 同一个口径）。
+ * （PRD 4.5，与 `session.pause` / `session.resume` 同一个口径）。
  */
-export interface ConversationKillParams {
-  conversationId: string;
+export interface SessionKillParams {
+  sessionId: string;
 }
 
 /**
- * `conversation.kill` 出参。
+ * `session.kill` 出参。
  *
  * `killed: true` = 这一次真的把 agent 收掉了；`killed: false` = 这一段**本来就是死的**（没有
- * agent），什么都没动，**也不是错误** —— 与 `conversation.pause` / `conversation.resume` 对死
+ * agent），什么都没动，**也不是错误** —— 与 `session.pause` / `session.resume` 对死
  * 对话回 `false` 同一个口径。
  */
-export interface ConversationKillResult {
+export interface SessionKillResult {
   killed: boolean;
 }
 
 /**
- * `conversation.clearInbox` 入参。
+ * `session.clearInbox` 入参。
  *
  * 待办是「已经收下、还没被取走」的那些话。**待办本身属于客户端自己的事**：有没有东西、
- * 有几条，它从 `conversation.state.inbox` 就看得到；要清空就调这个方法，不必自己一条一条
+ * 有几条，它从 `session.state.inbox` 就看得到；要清空就调这个方法，不必自己一条一条
  * 算帐。宿主这一侧只是把它交到 core（`agent.clearInbox()`）。
  */
-export interface ConversationClearInboxParams {
-  conversationId: string;
+export interface SessionClearInboxParams {
+  sessionId: string;
 }
 
-/** `conversation.clearInbox` 出参：清掉了几条（`0` = 本来就没东西，不是错误） */
-export interface ConversationClearInboxResult {
+/** `session.clearInbox` 出参：清掉了几条（`0` = 本来就没东西，不是错误） */
+export interface SessionClearInboxResult {
   cleared: number;
 }
 
 /**
- * `conversation.revert` 入参（PRD F-C8 / D24）。
+ * `session.revert` 入参（PRD F-C8 / D24）。
  *
  * 撤回到某条用户消息**之前**：其后消息硬删，被撤回的内容回填输入框（回填内容由宿主给事实）。
  */
-export interface ConversationRevertParams {
-  conversationId: string;
+export interface SessionRevertParams {
+  sessionId: string;
   /** 撤回点：这条用户消息及其之后的内容都会被删 */
   beforeMessageId: string;
 }
 
-/** `conversation.revert` 出参 */
-export interface ConversationRevertResult {
+/** `session.revert` 出参 */
+export interface SessionRevertResult {
   /** 被删掉的消息 id（按原顺序） */
   removedMessageIds: string[];
   /** 回填到输入框的内容（core 的内容形状 + 素材引用，PRD F-C8） */
@@ -617,48 +617,48 @@ export interface ConversationRevertResult {
 }
 
 /**
- * `conversation.setModel` 入参（PRD F-B4 / F-B8 / D20）。
+ * `session.setModel` 入参（PRD F-B4 / F-B8 / D20）。
  *
  * 换的是**这段会话**的模型：写完就落库，重开、重启都还是它；换模型同时把这段会话的
  * 思考档位清成「跟随助手默认」（档位属于模型）。历史里有图而新模型读不了图时拒绝
  * （业务码 `model_unsupported`）。改助手默认模型是另一个动作，见 `agent.setModel`。
  */
-export interface ConversationSetModelParams {
-  conversationId: string;
+export interface SessionSetModelParams {
+  sessionId: string;
   /** `null` 表示回到助手定义上那个模型 */
   modelId: string | null;
 }
 
 /**
- * `conversation.setModel` 出参。
+ * `session.setModel` 出参。
  *
  * 上下文占用不在这里给：它由客户端按消息上的 `usage` 自己算（宿主不算、不存、不报），
  * 阈值也不需要随这一次写入带过去。
  */
-export interface ConversationSetModelResult {
-  conversation: ConversationView;
-  model: ConversationModelState;
+export interface SessionSetModelResult {
+  session: SessionView;
+  model: SessionModelState;
 }
 
 /**
- * `conversation.setThinking` 入参（PRD F-B6 / F-B7）。
+ * `session.setThinking` 入参（PRD F-B6 / F-B7）。
  *
  * 改的是**这段会话**的思考档位：档位名落库，装配 agent 时按当前模型的思考策略表展开成
  * 参数补丁。与 `agent.setThinking`（改助手的默认）分开。
  */
-export interface ConversationSetThinkingParams {
-  conversationId: string;
+export interface SessionSetThinkingParams {
+  sessionId: string;
   /** 档位名（来自 `ThinkingState.levels`）；`null` = 回到跟随助手默认 */
   level: string | null;
 }
 
-/** `conversation.setThinking` 出参：展开后的参数与来源（PRD F-B7） */
-export interface ConversationSetThinkingResult {
+/** `session.setThinking` 出参：展开后的参数与来源（PRD F-B7） */
+export interface SessionSetThinkingResult {
   thinking: ThinkingState;
 }
 
 /**
- * `conversation.setThresholds` 入参（PRD 1.4 / 4.7：两条阈值有上游默认、会话可覆盖）。
+ * `session.setThresholds` 入参（PRD 1.4 / 4.7：两条阈值有上游默认、会话可覆盖）。
  *
  * 两条阈值量的都是「请求前的输入用量」（绝对 token 数）：`handoffThreshold` 是**软线**
  * （交接阈值，到它就该换手）、`guardThreshold` 是**硬线**（防护阈值，这一次请求不发）。
@@ -670,8 +670,8 @@ export interface ConversationSetThinkingResult {
  * 它们**不进驱动者的出厂配置**（出厂配置 = 模型 + 它的参数），由宿主现读，所以改完不用
  * 重建驱动者 —— 那是 `setModel` / `setThinking` 才要付的代价。
  */
-export interface ConversationSetThresholdsParams {
-  conversationId: string;
+export interface SessionSetThresholdsParams {
+  sessionId: string;
   /** 交接阈值（软线）；省略 = 不动，`null` = 跟模型走 */
   handoffThreshold?: number | null;
   /** 防护阈值（硬线）；省略 = 不动，`null` = 跟模型走 */
@@ -679,22 +679,22 @@ export interface ConversationSetThresholdsParams {
 }
 
 /**
- * `conversation.setThresholds` 出参。
+ * `session.setThresholds` 出参。
  *
- * 给的是改完之后的完整视图：那两格就在 `ConversationSummary` 上，客户端不必再为「改成了多少」
+ * 给的是改完之后的完整视图：那两格就在 `SessionSummary` 上，客户端不必再为「改成了多少」
  * 单独拉一次。上下文占用同样不在这里给（它由客户端按消息上的 `usage` 自己算）。
  */
-export interface ConversationSetThresholdsResult {
-  conversation: ConversationView;
+export interface SessionSetThresholdsResult {
+  session: SessionView;
 }
 
 /**
- * `conversation.transient` 入参（PRD F-A2 / D3 / 4.3：一次性对话）。
+ * `session.transient` 入参（PRD F-A2 / D3 / 4.3：一次性对话）。
  *
  * 跑到头就散：结果回来之后内存清空，无 id、不可 attach、不入库、不进列表；只借 Scope，
  * 与 Workspace 无关，所以这里要显式的 `cwd` 而不是 `workspaceId`。
  */
-export interface ConversationTransientParams {
+export interface SessionTransientParams {
   /** 在哪个目录里跑（相对路径的解析基准） */
   cwd: string;
   input: MessageInput;
@@ -703,14 +703,14 @@ export interface ConversationTransientParams {
 }
 
 /**
- * `conversation.transient` 出参：那条助手消息（不产生任何可回看的 id）。
+ * `session.transient` 出参：那条助手消息（不产生任何可回看的 id）。
  *
  * 内容、思考、工具调用、结束原因、用量都在 core 的 `AgentNS.Message` 上；要「一共花了多少」，
  * 就把消息上的 `usage` 拿出来自己加（core 不算、不存、不报用量）。
  *
  * 子 Agent 不另给快照：它们说过的话在消息里，真要翻就按那个委派的工具调用 id 取（F-I7）。
  */
-export interface ConversationTransientResult {
+export interface SessionTransientResult {
   /** 那条助手消息，core 原样 */
   message: AgentNS.Message;
   problem: ProblemFact | null;
@@ -742,7 +742,7 @@ export interface ConversationTransientResult {
  * 「这条不给人看」。要它们就显式要（`includeHidden: true`）。
  */
 export interface MessageListParams {
-  conversationId: string;
+  sessionId: string;
   after?: string;
   toolCallId?: string;
   /**
@@ -774,7 +774,7 @@ export interface MessageListParams {
  * 看 `hidden`（PRD F-D9），内容与工具调用看 `content` / `tool_calls` / `reasoning_content`。
  */
 export interface MessageListResult {
-  conversationId: string;
+  sessionId: string;
   /**
    * 被 `after` / `around` 命中的那条消息 id（没命中或没给则为空）。
    *
@@ -791,12 +791,12 @@ export interface MessageListResult {
 /**
  * `question.list` 入参（PRD 4.10：**这段对话现在有没有一道题**）。
  *
- * `conversationId` 必填：题不落库，它只活在「这一段对话活着」的这段时间里 —— 「全库问题列表」
+ * `sessionId` 必填：题不落库，它只活在「这一段对话活着」的这段时间里 —— 「全库问题列表」
  * 是持久化时代的形状（要给重启后重开看，才需要一个跨对话的入口），现在没有那个消费者。
  * 也没有 `state` 过滤：两个状态（`pending` / `answered`）一起给，客户端自己看那一格。
  */
 export interface QuestionListParams {
-  conversationId: string;
+  sessionId: string;
 }
 
 /** `question.list` 出参 */
@@ -808,7 +808,7 @@ export interface QuestionListResult {
  * `question.answer` 出参里的后续动作（PRD 4.10：先答完，再判能不能立刻交接）。
  *
  * 只回「触发了什么」，**不等那件事做完**：交接要不要另起驱动者、文档写到哪、有没有降级、
- * 用了几秒 —— 都是「交接自己怎么走的」，它的载体是通知（`notice`）与 `conversation.changed`
+ * 用了几秒 —— 都是「交接自己怎么走的」，它的载体是通知（`notice`）与 `session.changed`
  * 里的 `memory_replaced`，不该憋在这个回执里。
  */
 export interface QuestionEffects {
@@ -845,7 +845,7 @@ export interface QuestionAnswerResult {
 
 /** `notice.list` 入参（PRD L3 / F-I8：通知是独立通道，持久化、可手动清） */
 export interface NoticeListParams {
-  conversationId?: string;
+  sessionId?: string;
   level?: NoticeLevel;
 }
 
@@ -864,9 +864,9 @@ export interface NoticeDismissResult {
   dismissed: boolean;
 }
 
-/** `notice.clear` 入参：清掉一批（不给 `conversationId` 就清全部） */
+/** `notice.clear` 入参：清掉一批（不给 `sessionId` 就清全部） */
 export interface NoticeClearParams {
-  conversationId?: string;
+  sessionId?: string;
 }
 
 /** `notice.clear` 出参 */
@@ -1463,7 +1463,7 @@ export interface AgentDeleteResult {
 /**
  * `agent.setModel` 入参（PRD F-B4 / F-B1：改助手默认模型，影响以后的对话）。
  *
- * 与 `conversation.setModel`（改这一段会话的模型、存会话行）是两个动作、两个入口。
+ * 与 `session.setModel`（改这一段会话的模型、存会话行）是两个动作、两个入口。
  */
 export interface AgentSetModelParams {
   agentId: string;
@@ -1482,7 +1482,7 @@ export interface AgentSetModelResult {
  * `level: null` 是撤回设值：把定义里的思考参数删掉，助手的思考回到「参数即真相」的那份来源
  * （模型的默认参数），`ThinkingState.source` 跟着回落到 `following_default`。
  *
- * 与会话那一侧的 `conversation.setThinking(null)` 是两件事：那边改的是会话行上的档位名
+ * 与会话那一侧的 `session.setThinking(null)` 是两件事：那边改的是会话行上的档位名
  * （这段对话回到跟随助手定义），这边改的是**助手的定义文件**（以后的对话都跟着变）。
  */
 export interface AgentSetThinkingParams {
@@ -1687,11 +1687,11 @@ export interface AssetBeginParams {
   /**
    * 这段素材归属哪段对话（必填）。
    *
-   * 素材行在库里按 `conversationId` 挂外键，落定那一刻这段对话必须已经存在；草稿对话
-   * （`conversation.create` 之后还没发过消息，R56）在 `asset.begin` 这一步落库，
-   * 与「第一次 `conversation.send`」同义。
+   * 素材行在库里按 `sessionId` 挂外键，落定那一刻这段对话必须已经存在；草稿对话
+   * （`session.create` 之后还没发过消息，R56）在 `asset.begin` 这一步落库，
+   * 与「第一次 `session.send`」同义。
    */
-  conversationId: string;
+  sessionId: string;
 }
 
 /**
@@ -1821,7 +1821,7 @@ export interface CompletionFilesResult {
 export type HandoffMode = "self" | "summary";
 
 /** 交接之后做什么：只产出文档，还是顺带开一段新对话（PRD F-D4 / F-D5 / D18） */
-export type HandoffThen = "document_only" | "new_conversation";
+export type HandoffThen = "document_only" | "new_session";
 
 /** 交接文档（PRD F-D6 / D19：写进项目 `<cwd>/.ai-zen/handoffs/`） */
 export interface HandoffDocument {
@@ -1849,7 +1849,7 @@ export interface HandoffDocumentInfo {
  * 就是第二份事实。
  */
 export interface HandoffStartParams {
-  conversationId: string;
+  sessionId: string;
   /** 执行者（PRD F-D2 的「自交接」= self，「独立摘要」= summary） */
   mode: HandoffMode;
   /** 后面接什么（PRD F-D4：只产文档；F-D5：一步完成交接 + 开新会话） */
@@ -1863,8 +1863,8 @@ export interface HandoffStartParams {
  * 它有回执、要尽快返回，所以它只回「开始了吗」，不回「做完了什么样」。
  *
  * 文档路径、有没有降级、成功 / 取消 / 失败，全部走**通知**（`NoticeService`，PRD 4.9）与
- * `conversation.changed` 的 `memory_replaced`（提交与回滚各一条）告知；界面要知道「现在正在
- * 交接」就读 `conversation.state.handoff`。
+ * `session.changed` 的 `memory_replaced`（提交与回滚各一条）告知；界面要知道「现在正在
+ * 交接」就读 `session.state.handoff`。
  *
  * 这里**没有** `path` 这一格：它要等写完才有，而本方法不等写完。
  */
@@ -1889,23 +1889,23 @@ export interface HandoffListDocumentsResult {
 // search.*
 // ---------------------------------------------------------------------------
 
-/** `search.conversations` 入参（PRD F-C6 / D16：按名称搜 + Workspace 过滤） */
-export interface SearchConversationsParams {
+/** `search.sessions` 入参（PRD F-C6 / D16：按名称搜 + Workspace 过滤） */
+export interface SearchSessionsParams {
   query: string;
   workspaceId?: string;
   limit?: number;
 }
 
 /** 按名搜到的一段对话 */
-export interface ConversationHit {
-  conversation: ConversationSummary;
+export interface SessionHit {
+  session: SessionSummary;
   /** 名字里命中的那一段（供高亮） */
   matchedName: string;
 }
 
-/** `search.conversations` 出参 */
-export interface SearchConversationsResult {
-  hits: ConversationHit[];
+/** `search.sessions` 出参 */
+export interface SearchSessionsResult {
+  hits: SessionHit[];
 }
 
 /**
@@ -1916,15 +1916,15 @@ export interface SearchConversationsResult {
 export interface SearchMessagesParams {
   query: string;
   workspaceId?: string;
-  conversationId?: string;
+  sessionId?: string;
   limit?: number;
   offset?: number;
 }
 
 /** 一条消息命中 */
 export interface MessageHit {
-  conversationId: string;
-  conversationName: string;
+  sessionId: string;
+  sessionName: string;
   messageId: string;
   /** 命中消息的角色，core 原样 */
   role: AgentNS.Role;
@@ -1984,54 +1984,54 @@ export interface MethodMap {
   /** D11 / F-F9：连带删名下对话，删前给出代价；目录本身宿主不碰。 */
   "workspace.remove": { params: WorkspaceRemoveParams; result: WorkspaceRemoveResult };
 
-  // ---- conversation.*：一段对话的身份、历史、四件事与待办 ----
+  // ---- session.*：一段对话的身份、历史、四件事与待办 ----
   /** F-C5 / D13：默认创建时间倒序 + 手动置顶。 */
-  "conversation.list": { params: ConversationListParams; result: ConversationListResult };
+  "session.list": { params: SessionListParams; result: SessionListResult };
   /** F-A3 / F-C7 / L7：开新会话；项目与助手在创建时定死（模型与档位归会话）。 */
-  "conversation.create": { params: ConversationCreateParams; result: ConversationCreateResult };
+  "session.create": { params: SessionCreateParams; result: SessionCreateResult };
   /** F-A6：按 id 打开（「接着上次聊」的记住工作归客户端）。 */
-  "conversation.get": { params: ConversationGetParams; result: ConversationGetResult };
+  "session.get": { params: SessionGetParams; result: SessionGetResult };
   /** L5 / F-I3：重连拉此刻的读数（四件事 + 待办），可连消息一次拿齐。 */
-  "conversation.state": { params: ConversationStateParams; result: ConversationStateResult };
+  "session.state": { params: SessionStateParams; result: SessionStateResult };
   /** D1 / F-C3：改名不改身份、不改排序。 */
-  "conversation.rename": { params: ConversationRenameParams; result: ConversationRenameResult };
+  "session.rename": { params: SessionRenameParams; result: SessionRenameResult };
   /** F-C5 / D13：手动置顶。 */
-  "conversation.pin": { params: ConversationPinParams; result: ConversationPinResult };
+  "session.pin": { params: SessionPinParams; result: SessionPinResult };
   /** F-C10 / D17：硬删，图片按引用清理；删除前给出代价。 */
-  "conversation.delete": { params: ConversationDeleteParams; result: ConversationDeleteResult };
+  "session.delete": { params: SessionDeleteParams; result: SessionDeleteResult };
   /** F-C2 / F-H7 / F-D10：投递一句（忙也收、id 投递时就定、问题挡着则拒）。 */
-  "conversation.send": { params: ConversationSendParams; result: ConversationSendResult };
+  "session.send": { params: SessionSendParams; result: SessionSendResult };
   /** D14：中止是用户的显式动作（掐掉在途的网络请求与工具，并把输出闸关上）。 */
-  "conversation.abort": { params: ConversationAbortParams; result: ConversationAbortResult };
+  "session.abort": { params: SessionAbortParams; result: SessionAbortResult };
   /** PRD 4.4：「暂停」只翻输出闸（手上这批跑完、从下一批起不取件），不掐在途。 */
-  "conversation.pause": { params: ConversationPauseParams; result: ConversationPauseResult };
+  "session.pause": { params: SessionPauseParams; result: SessionPauseResult };
   /** PRD 4.4：「继续」只开闸（压着的待办按原顺序接着跑），不投任何东西。 */
-  "conversation.resume": { params: ConversationResumeParams; result: ConversationResumeResult };
+  "session.resume": { params: SessionResumeParams; result: SessionResumeResult };
   /** PRD 4.4「用户按杀死」：收掉 agent（在途掐断、待办作废），会话行与消息一个字不动。 */
-  "conversation.kill": { params: ConversationKillParams; result: ConversationKillResult };
+  "session.kill": { params: SessionKillParams; result: SessionKillResult };
   /** 清空这段对话的待办（客户端自己决定什么时候清，宿主只回清掉几条）。 */
-  "conversation.clearInbox": {
-    params: ConversationClearInboxParams;
-    result: ConversationClearInboxResult;
+  "session.clearInbox": {
+    params: SessionClearInboxParams;
+    result: SessionClearInboxResult;
   };
   /** F-C8 / D24：撤回到某条用户消息之前，其后硬删，内容回填输入框。 */
-  "conversation.revert": { params: ConversationRevertParams; result: ConversationRevertResult };
+  "session.revert": { params: SessionRevertParams; result: SessionRevertResult };
   /** F-B4 / F-B8 / D20：换这段会话的模型（存会话行）+ 拒绝降级。 */
-  "conversation.setModel": { params: ConversationSetModelParams; result: ConversationSetModelResult };
+  "session.setModel": { params: SessionSetModelParams; result: SessionSetModelResult };
   /** F-B6 / F-B7：调这段会话的思考档位（存档位名）；展开成参数在装配 agent 那一刻。 */
-  "conversation.setThinking": {
-    params: ConversationSetThinkingParams;
-    result: ConversationSetThinkingResult;
+  "session.setThinking": {
+    params: SessionSetThinkingParams;
+    result: SessionSetThinkingResult;
   };
   /** PRD 1.4 / 4.7：两条阈值的会话级覆盖（省略不动、`null` 回到跟模型走、不进出厂配置）。 */
-  "conversation.setThresholds": {
-    params: ConversationSetThresholdsParams;
-    result: ConversationSetThresholdsResult;
+  "session.setThresholds": {
+    params: SessionSetThresholdsParams;
+    result: SessionSetThresholdsResult;
   };
   /** F-A2 / D3：一次性对话，跑到头就散、零痕迹。 */
-  "conversation.transient": {
-    params: ConversationTransientParams;
-    result: ConversationTransientResult;
+  "session.transient": {
+    params: SessionTransientParams;
+    result: SessionTransientResult;
   };
 
   // ---- message.*：历史 ----
@@ -2147,9 +2147,9 @@ export interface MethodMap {
 
   // ---- search.*：找得到旧对话（F-C6 / D16）----
   /** F-C6 / D16：按名称搜对话，可按项目过滤。 */
-  "search.conversations": {
-    params: SearchConversationsParams;
-    result: SearchConversationsResult;
+  "search.sessions": {
+    params: SearchSessionsParams;
+    result: SearchSessionsResult;
   };
   /** F-C6 / D16：按聊天内容全文搜。 */
   "search.messages": { params: SearchMessagesParams; result: SearchMessagesResult };
@@ -2183,24 +2183,24 @@ export const METHOD_NAMES = [
   "workspace.get",
   "workspace.rename",
   "workspace.remove",
-  "conversation.list",
-  "conversation.create",
-  "conversation.get",
-  "conversation.state",
-  "conversation.rename",
-  "conversation.pin",
-  "conversation.delete",
-  "conversation.send",
-  "conversation.abort",
-  "conversation.pause",
-  "conversation.resume",
-  "conversation.kill",
-  "conversation.clearInbox",
-  "conversation.revert",
-  "conversation.setModel",
-  "conversation.setThinking",
-  "conversation.setThresholds",
-  "conversation.transient",
+  "session.list",
+  "session.create",
+  "session.get",
+  "session.state",
+  "session.rename",
+  "session.pin",
+  "session.delete",
+  "session.send",
+  "session.abort",
+  "session.pause",
+  "session.resume",
+  "session.kill",
+  "session.clearInbox",
+  "session.revert",
+  "session.setModel",
+  "session.setThinking",
+  "session.setThresholds",
+  "session.transient",
   "message.list",
   "question.list",
   "question.answer",
@@ -2237,7 +2237,7 @@ export const METHOD_NAMES = [
   "completion.files",
   "handoff.start",
   "handoff.listDocuments",
-  "search.conversations",
+  "search.sessions",
   "search.messages",
 ] as const satisfies readonly MethodName[];
 

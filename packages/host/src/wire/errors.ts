@@ -43,7 +43,7 @@ export type BizCode =
    *
    * 与 `busy` 同档：两者说的都是「这段对话此刻不接这一手」，区别只在那一格是忙还是死。
    */
-  | "conversation_dead"
+  | "session_dead"
   /** 上传或请求体超限（PRD D5：图片 20MB/张） */
   | "payload_too_large"
   /** 协议里我们不用的那部分，或某个能力在本宿主不提供（PLAN A4） */
@@ -69,7 +69,7 @@ export const BIZ_CODES: readonly BizCode[] = [
   "invalid_params",
   "not_found",
   "busy",
-  "conversation_dead",
+  "session_dead",
   "payload_too_large",
   "unsupported",
   "internal",
@@ -87,7 +87,7 @@ const DEFAULT_MESSAGE_KEY: Record<BizCode, MessageKey> = {
   invalid_params: "error.invalidParams",
   not_found: "error.notFound",
   busy: "error.busy",
-  conversation_dead: "error.conversationDead",
+  session_dead: "error.sessionDead",
   payload_too_large: "error.payloadTooLarge",
   unsupported: "error.unsupported",
   internal: "error.internal",
@@ -120,7 +120,7 @@ const JSON_RPC_CODE: Record<BizCode, number> = {
   handoff_declined: -32011,
   question_pending: -32012,
   context_guard: -32013,
-  conversation_dead: -32014,
+  session_dead: -32014,
 };
 
 /** 业务码对应的 JSON-RPC 数字码 */

@@ -5,9 +5,9 @@ import {
   METHOD_NAMES,
   PROTOCOL_VERSION,
   isMethodName,
-  type ConversationSendParams,
-  type ConversationSendResult,
-  type ConversationTransientResult,
+  type SessionSendParams,
+  type SessionSendResult,
+  type SessionTransientResult,
   type MessageHit,
   type MessageListParams,
   type MessageListResult,
@@ -17,7 +17,7 @@ import {
 const DOMAINS: readonly string[] = [
   "host",
   "workspace",
-  "conversation",
+  "session",
   "message",
   "question",
   "notice",
@@ -51,11 +51,11 @@ describe("方法表", () => {
   });
 
   it("isMethodName 只认表里的名字", () => {
-    expect(isMethodName("conversation.send")).toBe(true);
+    expect(isMethodName("session.send")).toBe(true);
     for (const method of METHOD_NAMES) {
       expect(isMethodName(method)).toBe(true);
     }
-    expect(isMethodName("conversation.explode")).toBe(false);
+    expect(isMethodName("session.explode")).toBe(false);
     expect(isMethodName(undefined)).toBe(false);
   });
 
@@ -72,27 +72,27 @@ describe("方法表", () => {
 });
 
 describe("PRD §4 的落点能力都有方法承接", () => {
-  it("`message.list` 支持 { conversationId, after?, around? }（A12 / F-C6）", () => {
-    const all: MessageListParams = { conversationId: "c-1" };
-    const tail: MessageListParams = { conversationId: "c-1", after: "m-9" };
-    const located: MessageListParams = { conversationId: "c-1", around: "m-4" };
-    const subagent: MessageListParams = { conversationId: "c-1", toolCallId: "t-1" };
-    expect(Object.keys(all)).toEqual(["conversationId"]);
+  it("`message.list` 支持 { sessionId, after?, around? }（A12 / F-C6）", () => {
+    const all: MessageListParams = { sessionId: "c-1" };
+    const tail: MessageListParams = { sessionId: "c-1", after: "m-9" };
+    const located: MessageListParams = { sessionId: "c-1", around: "m-4" };
+    const subagent: MessageListParams = { sessionId: "c-1", toolCallId: "t-1" };
+    expect(Object.keys(all)).toEqual(["sessionId"]);
     expect(tail.after).toBe("m-9");
     // F-C6 的定位：以某条为中心取一窗（消费者是桌面端的搜索命中跳转）
     expect(located.around).toBe("m-4");
     expect(subagent.toolCallId).toBe("t-1");
   });
 
-  it("`conversation.send` 入参用 core 的内容形状，出参给出落地的消息 id 与附件结局", () => {
-    const params: ConversationSendParams = {
-      conversationId: "c-1",
+  it("`session.send` 入参用 core 的内容形状，出参给出落地的消息 id 与附件结局", () => {
+    const params: SessionSendParams = {
+      sessionId: "c-1",
       input: {
         content: [{ type: "text", text: "看一眼这张图" }],
         assetIds: ["a-1"],
       },
     };
-    const result: ConversationSendResult = {
+    const result: SessionSendResult = {
       userMessageId: "m-1",
       attachments: [
         {
@@ -110,7 +110,7 @@ describe("PRD §4 的落点能力都有方法承接", () => {
 
   it("`message.list` 的消息数组就是 core 的 Message，不重新包装字段", () => {
     const result: MessageListResult = {
-      conversationId: "c-1",
+      sessionId: "c-1",
       anchor: "m-2",
       messages: [
         {
@@ -147,8 +147,8 @@ describe("PRD §4 的落点能力都有方法承接", () => {
     ]);
   });
 
-  it("`conversation.transient` 回一条 core 的助手消息（内容/用量都在上面）", () => {
-    const result: ConversationTransientResult = {
+  it("`session.transient` 回一条 core 的助手消息（内容/用量都在上面）", () => {
+    const result: SessionTransientResult = {
       message: { id: "m-1", role: AgentNS.Role.Assistant, content: "一次性回答", usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } },
       problem: null,
     };
@@ -158,8 +158,8 @@ describe("PRD §4 的落点能力都有方法承接", () => {
 
   it("搜索命中的角色用 core 的 Role", () => {
     const hit: MessageHit = {
-      conversationId: "c-1",
-      conversationName: "聊聊",
+      sessionId: "c-1",
+      sessionName: "聊聊",
       messageId: "m-3",
       role: AgentNS.Role.User,
       snippet: "…图片内容…",
@@ -172,27 +172,27 @@ describe("PRD §4 的落点能力都有方法承接", () => {
     // 落点为 S / S+C 的能力各自有承接方法；这张表是 PM 复核用的对照关系
     const coverage: Record<string, MethodName[]> = {
       "F-A1": ["host.hello"], // 判定这次调用算不算一段对话
-      "F-A2": ["conversation.transient"], // 临时对话
-      "F-A3": ["conversation.create"], // 开新会话、别续接
+      "F-A2": ["session.transient"], // 临时对话
+      "F-A3": ["session.create"], // 开新会话、别续接
       "F-A8": ["config.get", "config.patch"], // 配错要能当场修
       "F-B1": ["agent.setModel", "agent.list"], // 模型唯一真相源
       "F-B2": ["agent.list", "agent.get", "agent.create", "agent.update"], // 助手定义
       "F-B3": ["agent.list"], // 默认助手
-      "F-B4": ["conversation.setModel", "agent.setModel"], // 两个动作两个入口
+      "F-B4": ["session.setModel", "agent.setModel"], // 两个动作两个入口
       "F-B5": ["agent.list", "config.setDefaults"], // 不可用也列出
-      "F-B6": ["conversation.setThinking", "agent.setThinking"], // 写参数不写档位名
-      "F-B7": ["conversation.state", "agent.list"], // 状态能区分来源
-      "F-B8": ["conversation.setModel"], // 拒绝降级
-      "F-C1": ["conversation.get"],
-      "F-C2": ["conversation.send"], // 落盘时机
-      "F-C3": ["conversation.rename"],
-      "F-C4": ["conversation.rename", "config.setDefaults"], // 自动命名 + 取名模型
-      "F-C5": ["conversation.list", "conversation.pin"],
-      "F-C6": ["search.conversations", "search.messages"],
-      "F-C7": ["conversation.create"],
-      "F-C8": ["conversation.revert"],
-      "F-C10": ["conversation.delete"],
-      "F-D1": ["conversation.state"], // 重连先拉读数（四件事 + 待办）；阈值由客户端按消息上的 usage 算
+      "F-B6": ["session.setThinking", "agent.setThinking"], // 写参数不写档位名
+      "F-B7": ["session.state", "agent.list"], // 状态能区分来源
+      "F-B8": ["session.setModel"], // 拒绝降级
+      "F-C1": ["session.get"],
+      "F-C2": ["session.send"], // 落盘时机
+      "F-C3": ["session.rename"],
+      "F-C4": ["session.rename", "config.setDefaults"], // 自动命名 + 取名模型
+      "F-C5": ["session.list", "session.pin"],
+      "F-C6": ["search.sessions", "search.messages"],
+      "F-C7": ["session.create"],
+      "F-C8": ["session.revert"],
+      "F-C10": ["session.delete"],
+      "F-D1": ["session.state"], // 重连先拉读数（四件事 + 待办）；阈值由客户端按消息上的 usage 算
       "F-D2": ["question.list", "question.answer"],
       "F-D3": ["handoff.start"],
       "F-D4": ["handoff.start"],
@@ -200,7 +200,7 @@ describe("PRD §4 的落点能力都有方法承接", () => {
       "F-D6": ["handoff.start", "handoff.listDocuments"],
       "F-D7": ["handoff.start"], // 降级要说明
       "F-D9": ["message.list"], // 注入标记在消息上
-      "F-D10": ["conversation.send", "question.answer"],
+      "F-D10": ["session.send", "question.answer"],
       "F-E1": ["host.shutdown", "host.reload"],
       "F-E2": ["config.patch"],
       "F-E3": ["host.upgrade", "host.version"],
@@ -213,18 +213,18 @@ describe("PRD §4 的落点能力都有方法承接", () => {
       "F-F6": ["config.getDiscovery", "config.saveMcp", "config.deleteMcp"],
       "F-F7": ["config.setDefaults"],
       "F-F8": ["config.patch"],
-      "F-F9": ["conversation.delete", "workspace.remove"],
+      "F-F9": ["session.delete", "workspace.remove"],
       "F-G1": ["config.getDiscovery", "config.saveMcp", "config.deleteMcp"],
       "F-G2": ["config.getDiscovery"],
       "F-G3": ["agent.create", "agent.update"],
       "F-H5": ["completion.files"],
-      "F-H7": ["conversation.send"],
+      "F-H7": ["session.send"],
       "F-H8": ["asset.begin", "asset.end"],
       "F-I2": ["message.list"],
-      "F-I3": ["conversation.state"],
-      "F-I5": ["conversation.state"], // 用量在每条消息的 `usage` 上，客户端自己合计（子 Agent 的那份也在）
-      "F-I6": ["conversation.state"],
-      "F-I7": ["message.list", "conversation.state"],
+      "F-I3": ["session.state"],
+      "F-I5": ["session.state"], // 用量在每条消息的 `usage` 上，客户端自己合计（子 Agent 的那份也在）
+      "F-I6": ["session.state"],
+      "F-I7": ["message.list", "session.state"],
       "F-I8": ["notice.list", "notice.dismiss", "notice.clear"],
       "F-I9": ["question.list", "question.answer"],
       "F-J1": ["host.hello", "host.setLanguage"],
@@ -241,7 +241,7 @@ describe("PRD §4 的落点能力都有方法承接", () => {
 
   it("落点为 C 的能力不占宿主方法名（抽查：清屏、终端、剪贴板）", () => {
     const forbidden = [
-      "conversation.clearScreen",
+      "session.clearScreen",
       "terminal.restore",
       "clipboard.read",
       "editor.open",

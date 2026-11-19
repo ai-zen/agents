@@ -25,7 +25,7 @@ import type { AgentService } from "../services/AgentService.js";
 import type { AssetService } from "../services/AssetService.js";
 import type { CompletionService } from "../services/CompletionService.js";
 import type { ConfigService } from "../services/ConfigService.js";
-import type { ConversationService } from "../services/ConversationService.js";
+import type { SessionService } from "../services/SessionService.js";
 import type { HandoffDocumentService } from "../services/HandoffDocumentService.js";
 import type { MessageService } from "../services/MessageService.js";
 import type { ModelService } from "../services/ModelService.js";
@@ -39,7 +39,7 @@ import { createAgentHandlers } from "./agentHandlers.js";
 import { createAssetHandlers } from "./assetHandlers.js";
 import { createCompletionHandlers } from "./completionHandlers.js";
 import { createConfigHandlers } from "./configHandlers.js";
-import { createConversationHandlers } from "./conversationHandlers.js";
+import { createSessionHandlers } from "./sessionHandlers.js";
 import { createHandoffHandlers } from "./handoffHandlers.js";
 import { createMessageHandlers } from "./messageHandlers.js";
 import { createModelHandlers } from "./modelHandlers.js";
@@ -53,7 +53,7 @@ export type { AgentHandlerDeps } from "./agentHandlers.js";
 export type { AssetHandlerDeps } from "./assetHandlers.js";
 export type { CompletionHandlerDeps } from "./completionHandlers.js";
 export type { ConfigHandlerDeps } from "./configHandlers.js";
-export type { ConversationHandlerDeps } from "./conversationHandlers.js";
+export type { SessionHandlerDeps } from "./sessionHandlers.js";
 export type { HandoffHandlerDeps } from "./handoffHandlers.js";
 export type { MessageHandlerDeps } from "./messageHandlers.js";
 export type { ModelHandlerDeps } from "./modelHandlers.js";
@@ -91,7 +91,7 @@ export interface HandlerDeps {
   startedAt: string;
   // ---- 服务 ----
   workspaces: WorkspaceService;
-  conversations: ConversationService;
+  sessions: SessionService;
   messages: MessageService;
   search: SearchService;
   assets: AssetService;
@@ -110,18 +110,18 @@ export interface HandlerDeps {
   transient: TransientRunner;
 
   // ---- 配置与时钟 ----
-  /** 刷新思考策略表快照（`conversation.setThinking` 之前调一次） */
+  /** 刷新思考策略表快照（`session.setThinking` 之前调一次） */
   refreshThinkingPresets: () => Promise<void>;
   /** 时钟：契约里的时间一律 ISO 8601 字符串 */
   now: () => string;
-  /** 写一条日志（`conversation.abort` 的 `reason` 只有这一个去处） */
+  /** 写一条日志（`session.abort` 的 `reason` 只有这一个去处） */
   log: (message: string, detail?: unknown) => void;
-  /** 推事件（`conversation.changed` 这类多端同步信号）；不注入时不推 */
+  /** 推事件（`session.changed` 这类多端同步信号）；不注入时不推 */
   emit?: <E extends EventName>(name: E, payload: EventMap[E]) => void;
 
   // ---- 跨服务的对话钩子 ----
   /** 有挡着的问题就拒发（D23）；发之前问一句 */
-  assertSendable: (conversationId: string) => Promise<void>;
+  assertSendable: (sessionId: string) => Promise<void>;
 
   // ---- 进程动作 ----
   /** 请求收尾（`host.shutdown`） */
@@ -148,14 +148,14 @@ export function createHandlers(deps: HandlerDeps): HandlerTable {
     ...createHostHandlers(deps),
     ...createWorkspaceHandlers({
       workspaces: deps.workspaces,
-      conversations: deps.conversations,
+      sessions: deps.sessions,
       runner: deps.runner,
       scopes: deps.scopes,
       emit: deps.emit,
       now: deps.now,
     }),
-    ...createConversationHandlers({
-      conversations: deps.conversations,
+    ...createSessionHandlers({
+      sessions: deps.sessions,
       messages: deps.messages,
       // 素材准备搬到了接线层：发一句之前的选路要问模型与端点，那是素材服务的事
       assets: deps.assets,

@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { Language } from "../i18n/index.js";
 import type { MethodCallContext } from "../net/WsHub.js";
-import { ConversationRepository } from "../storage/ConversationRepository.js";
+import { SessionRepository } from "../storage/SessionRepository.js";
 import { Database } from "../storage/Database.js";
 import { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
 import { migrate } from "../storage/migrations.js";
@@ -40,7 +40,7 @@ interface Harness {
   dir: string;
   db: Database;
   questions: QuestionService;
-  conversations: ConversationRepository;
+  sessions: SessionRepository;
 }
 
 async function setup(): Promise<Harness> {
@@ -48,9 +48,9 @@ async function setup(): Promise<Harness> {
   const db = new Database(join(dir, "ai-zen.db"));
   await migrate(db);
   const workspaces = new WorkspaceRepository(db);
-  const conversations = new ConversationRepository(db);
+  const sessions = new SessionRepository(db);
   await workspaces.create({ id: "w1", name: "项目一", cwd: join(dir, "p"), createdAt: 1 });
-  await conversations.create({
+  await sessions.create({
     id: "c1",
     workspaceId: "w1",
     name: "2026-01-01 00:00",
@@ -62,13 +62,13 @@ async function setup(): Promise<Harness> {
   });
 
   const questions = new QuestionService({
-    conversations,
+    sessions,
     // 这段现在能立刻接手交接
     availability: { canHandoffNow: () => ({ ok: true }) },
     handoff: { start: async () => ({ started: true }) },
     now: () => 1_700_000_000_000,
   });
-  return { dir, db, questions, conversations };
+  return { dir, db, questions, sessions };
 }
 
 let harness: Harness;
@@ -86,16 +86,16 @@ describe("question.* 接线", () => {
   it("列表按连接语言渲染", async () => {
     const handlers = createQuestionHandlers({ questions: harness.questions });
     await harness.questions.askHandoff({
-      conversationId: "c1",
+      sessionId: "c1",
       promptTokens: 500,
       handoffTokens: 1000,
     });
 
     const chinese = await handlers["question.list"]?.(
-      call("question.list", { conversationId: "c1" }, "zh"),
+      call("question.list", { sessionId: "c1" }, "zh"),
     );
     const english = await handlers["question.list"]?.(
-      call("question.list", { conversationId: "c1" }, "en"),
+      call("question.list", { sessionId: "c1" }, "en"),
     );
 
     expect(chinese?.questions[0]?.prompt.message).toContain("接下来怎么办");
@@ -105,7 +105,7 @@ describe("question.* 接线", () => {
   it("回答时把「哪条连接答的」写进回答里", async () => {
     const handlers = createQuestionHandlers({ questions: harness.questions });
     const asked = await harness.questions.askHandoff({
-      conversationId: "c1",
+      sessionId: "c1",
       promptTokens: 500,
       handoffTokens: 1000,
     });
@@ -118,14 +118,14 @@ describe("question.* 接线", () => {
     expect(answered?.effects).toEqual({ handoffStarted: false, handoffDeferredReason: null });
     expect(await harness.questions.readPendingHandoff("c1")).toBeNull();
 
-    const listed = await harness.questions.list({ conversationId: "c1" });
+    const listed = await harness.questions.list({ sessionId: "c1" });
     expect(listed.questions[0]?.state).toBe("answered");
   });
 
   it("答「自交接」时把「触发了交接」这一格带回来（不等它跑完）", async () => {
     const handlers = createQuestionHandlers({ questions: harness.questions });
     const asked = await harness.questions.askHandoff({
-      conversationId: "c1",
+      sessionId: "c1",
       promptTokens: 500,
       handoffTokens: 1000,
     });

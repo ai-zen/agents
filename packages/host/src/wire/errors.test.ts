@@ -80,14 +80,14 @@ describe("HostError", () => {
 
   it("data 里同时能带 code / message / detail / params", () => {
     const error = new HostError("invalid_params", {
-      params: { field: "conversationId" },
-      detail: { failures: [{ path: "conversationId", reason: "missing" }] },
+      params: { field: "sessionId" },
+      detail: { failures: [{ path: "sessionId", reason: "missing" }] },
     });
     const data = error.toErrorData("en");
     expect(data.code).toBe("invalid_params");
-    expect(data.message).toContain("conversationId");
-    expect(data.params).toEqual({ field: "conversationId" });
-    expect(data.detail).toEqual({ failures: [{ path: "conversationId", reason: "missing" }] });
+    expect(data.message).toContain("sessionId");
+    expect(data.params).toEqual({ field: "sessionId" });
+    expect(data.detail).toEqual({ failures: [{ path: "sessionId", reason: "missing" }] });
   });
 
   it("没有 detail 时 data 里不出现 detail 字段", () => {
@@ -96,7 +96,7 @@ describe("HostError", () => {
   });
 
   it("可以换文案键与追加 detail，都返回新实例", () => {
-    const base = new HostError("not_found", { params: { entity: "conversation" } });
+    const base = new HostError("not_found", { params: { entity: "session" } });
     const withMessage = base.withMessage("error.payloadTooLarge", {
       size: "3MB",
       limit: "20MB",
@@ -104,11 +104,11 @@ describe("HostError", () => {
     expect(withMessage.code).toBe("not_found");
     expect(withMessage.messageKey).toBe("error.payloadTooLarge");
     expect(withMessage.toErrorData("en").message).toContain("3MB");
-    expect(base.toErrorData("en").message).toContain("conversation");
+    expect(base.toErrorData("en").message).toContain("session");
 
-    const withDetail = base.withDetail({ conversationId: "c-1" });
-    expect(withDetail.detail).toEqual({ conversationId: "c-1" });
-    expect(withDetail.params).toEqual({ entity: "conversation" });
+    const withDetail = base.withDetail({ sessionId: "c-1" });
+    expect(withDetail.detail).toEqual({ sessionId: "c-1" });
+    expect(withDetail.params).toEqual({ entity: "session" });
   });
 
   it("Error.message 有一句默认语言的渲染结果，日志里不会是空串", () => {

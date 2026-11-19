@@ -17,7 +17,7 @@ import type { ConnectionInfo } from "../net/index.js";
 import { makeTempDir, type TempDir } from "../net/TestSupport.js";
 import { HostError } from "../wire/index.js";
 import type {
-  ConversationView,
+  SessionView,
   LocalMessageContentSection,
   MethodName,
   MethodParams,
@@ -81,19 +81,19 @@ async function startApp(): Promise<HostApp> {
 }
 
 /**
- * 建一段对话并让它落库（R56：`create` 只发 id，首次 `send` 才写 `conversations` 行）。
+ * 建一段对话并让它落库（R56：`create` 只发 id，首次 `send` 才写 `sessions` 行）。
  *
  * 这些用例要看的是「项目被删时名下对话怎么处理」，所以直接把草稿落成真行，不跑一轮。
  */
-async function seedConversation(app: HostApp, workspaceId: string): Promise<ConversationView> {
-  const created = await callMethod(app, "conversation.create", {
+async function seedSession(app: HostApp, workspaceId: string): Promise<SessionView> {
+  const created = await callMethod(app, "session.create", {
     workspaceId,
     agentId: "default",
     modelId: "test-model",
   });
-  if (!created.conversation) throw new Error("conversation.create 没有建出对话");
-  await app.conversationService.ensurePersisted(created.conversation.id);
-  return created.conversation;
+  if (!created.session) throw new Error("session.create 没有建出对话");
+  await app.sessionService.ensurePersisted(created.session.id);
+  return created.session;
 }
 
 async function callMethod<M extends MethodName>(
@@ -160,8 +160,8 @@ describe("workspace.remove 的跨层补齐", () => {
     const app = await startApp();
     const cwd = await makeTemp("ai-zen-ws-handlers-cwd-");
     const { workspace } = await callMethod(app, "workspace.create", { cwd: cwd.path });
-    const conversation = await seedConversation(app, workspace.id);
-    const assetPath = await seedAsset(app, conversation.id);
+    const session = await seedSession(app, workspace.id);
+    const assetPath = await seedAsset(app, session.id);
 
     await app.scopeRegistry.create(workspace.id);
     expect(app.scopeRegistry.workspaceIds().length).toBe(1);
@@ -171,14 +171,14 @@ describe("workspace.remove 的跨层补齐", () => {
       dryRun: true,
     });
     expect(dryRun.removed).toBe(false);
-    expect(dryRun.consequences.conversations).toBe(1);
+    expect(dryRun.consequences.sessions).toBe(1);
     expect(dryRun.consequences.assets).toBe(1);
     // 什么都没动
     expect(app.scopeRegistry.workspaceIds().length).toBe(1);
     expect(await exists(assetPath)).toBe(true);
     // 现场丢了：这一段现在没有 agent 了
-    expect(app.chatRunner.state(conversation.id).alive).toBe(false);
-    const still = await callMethod(app, "conversation.list", { workspaceId: workspace.id });
+    expect(app.chatRunner.state(session.id).alive).toBe(false);
+    const still = await callMethod(app, "session.list", { workspaceId: workspace.id });
     expect(still.total).toBe(1);
   });
 
@@ -186,8 +186,8 @@ describe("workspace.remove 的跨层补齐", () => {
     const app = await startApp();
     const cwd = await makeTemp("ai-zen-ws-handlers-cwd-");
     const { workspace } = await callMethod(app, "workspace.create", { cwd: cwd.path });
-    const conversation = await seedConversation(app, workspace.id);
-    const assetPath = await seedAsset(app, conversation.id);
+    const session = await seedSession(app, workspace.id);
+    const assetPath = await seedAsset(app, session.id);
 
     await app.scopeRegistry.create(workspace.id);
     expect(app.scopeRegistry.workspaceIds().length).toBe(1);
@@ -199,11 +199,11 @@ describe("workspace.remove 的跨层补齐", () => {
     const removed = await callMethod(app, "workspace.remove", { workspaceId: workspace.id });
     expect(removed.removed).toBe(true);
     expect(killScope).toHaveBeenCalledWith(workspace.id);
-    expect(removed.consequences.conversations).toBe(1);
+    expect(removed.consequences.sessions).toBe(1);
     // Scope 销毁 = MCP 连接在这里断开
     expect(app.scopeRegistry.workspaceIds().length).toBe(0);
     expect(await exists(assetPath)).toBe(false);
-    const remaining = await callMethod(app, "conversation.list", { workspaceId: workspace.id });
+    const remaining = await callMethod(app, "session.list", { workspaceId: workspace.id });
     expect(remaining.total).toBe(0);
     // 项目行本身也没了
     await expect(
@@ -218,7 +218,7 @@ function localSections(...sections: LocalMessageContentSection[]): LocalMessageC
 }
 
 /** 造一条素材行 + 一条引用它的消息，返回素材在磁盘上的绝对路径 */
-async function seedAsset(app: HostApp, conversationId: string): Promise<string> {
+async function seedAsset(app: HostApp, sessionId: string): Promise<string> {
   const tempPath = join(app.paths.assetsDir, ".upload-ws.part");
   await fs.writeFile(tempPath, "png-bytes");
   const ref = await app.assetService.finalizeUpload({
@@ -229,20 +229,20 @@ async function seedAsset(app: HostApp, conversationId: string): Promise<string> 
     sha256: "not-checked-here",
     name: "a.png",
     purpose: "message_image",
-    conversationId,
+    sessionId,
   });
   // 归属只在关系行上：素材要先被一条消息引用，才会算进「删项目会少多少素材」
   const messageId = `msg-${ref.assetId}`;
   await app.messages.upsert({
     id: messageId,
-    conversationId,
+    sessionId,
     role: "user",
     status: "completed",
     content: localSections({ type: "image_url", image_url: { url: "" }, __asset_id: ref.assetId }),
     createdAt: Date.now(),
   });
   await app.assets.linkAsset({
-    conversationId,
+    sessionId,
     messageId,
     assetId: ref.assetId,
     createdAt: Date.now(),

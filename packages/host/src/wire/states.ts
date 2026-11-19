@@ -77,17 +77,17 @@ export interface ProblemFact extends LocalizedText {
  *
  * 它与「两道闸」没有任何关系：闲不等于会取件（输出闸可能关着），忙也不等于在收话。
  */
-export type ConversationActivity = "working" | "idle";
+export type SessionActivity = "working" | "idle";
 
 /** 忙闲的取值表（两个，不多不少） */
-export const CONVERSATION_ACTIVITIES: readonly ConversationActivity[] = ["working", "idle"];
+export const SESSION_ACTIVITIES: readonly SessionActivity[] = ["working", "idle"];
 
 /**
  * 一段对话此刻的**四件事**，各占一格（PRD 4.4）：
  *
  * | 格 | 是什么 | 取值 |
  * |---|---|---|
- * | `status` | 闲 / 忙（只读的观测值） | {@link ConversationActivity} |
+ * | `status` | 闲 / 忙（只读的观测值） | {@link SessionActivity} |
  * | `inputPaused` | 输入闸：外面的话收不收 | `true` = 关着（投递进不来） |
  * | `outputPaused` | 输出闸：agent 取不取 inbox | `true` = 关着（从下一批起不取） |
  * | `alive` | 死活：有没有 agent 实例 | `true` / `false` |
@@ -99,21 +99,21 @@ export const CONVERSATION_ACTIVITIES: readonly ConversationActivity[] = ["workin
  * 四件事都是**现读**，不落库、不是会话字段、不推算：`status` 读 `agent.state`、两道闸读
  * `agent.isInputPaused` / `agent.isOutputPaused`、死活看“有没有那个 agent 对象”。
  */
-export interface ConversationPresence {
+export interface SessionPresence {
   /** 闲 / 忙（只读） */
-  status: ConversationActivity;
+  status: SessionActivity;
   /** 输入闸：`true` = 关着（投递进不来；只有 `stop` / `kill` 关它） */
   inputPaused: boolean;
   /** 输出闸：`true` = 关着（从下一批起不取 inbox；手上那批照跑） */
   outputPaused: boolean;
-  /** 死活：这一段此刻有没有 agent 实例（`false` = 死了，投递会报 `conversation_dead`） */
+  /** 死活：这一段此刻有没有 agent 实例（`false` = 死了，投递会报 `session_dead`） */
   alive: boolean;
 }
 
 /**
- * 一条还没落成消息的排队条目（{@link ConversationState.inbox} 的一项）。
+ * 一条还没落成消息的排队条目（{@link SessionState.inbox} 的一项）。
  *
- * 它是宿主拼好的一行摘要，不是 `content` 原文 —— 理由见 {@link ConversationState.inbox}。
+ * 它是宿主拼好的一行摘要，不是 `content` 原文 —— 理由见 {@link SessionState.inbox}。
  */
 export interface InboxItem {
   messageId: string;
@@ -132,7 +132,7 @@ export interface InboxItem {
 }
 
 /**
- * 子 agent 名册的一行（{@link ConversationState.subAgents}）。
+ * 子 agent 名册的一行（{@link SessionState.subAgents}）。
  *
  * 子 agent 不是一段会话、不入库（`CORE.md` §17）：它的话只在它自己那个对象里，名册在父
  * 身上。所以这一栏只能是**现读**，没有第二个来源可读。
@@ -158,11 +158,11 @@ export interface SubAgentFact {
  * 按消息上的 `usage` 自己合计。
  *
  * `subAgents` / `handoff` 两格与前面那几格同一个口径：**现读**，不落库、不是会话字段、不推算。
- * 它们只在这一个方法上出现 —— `conversation.list`（侧栏）不带，因为侧栏不需要为每段对话
+ * 它们只在这一个方法上出现 —— `session.list`（侧栏）不带，因为侧栏不需要为每段对话
  * 去问一次它的驱动者。
  */
-export interface ConversationState extends ConversationPresence {
-  conversationId: string;
+export interface SessionState extends SessionPresence {
+  sessionId: string;
   /**
    * 还没落成消息的排队条目（现读 agent 的队列，顺序即取件顺序）。
    *
@@ -204,8 +204,8 @@ export type ThinkingSource = "following_default" | "manual" | "not_adjustable";
  * `params` 是这一档**展开后的请求参数**（档位名存在会话行上，展开发生在装配 agent 那一刻）。
  * `following_default` 表示这段会话没设过档位，用的是助手定义上的那份参数。
  *
- * 它是会话行视图（`ConversationView.thinking` / `AgentView.thinking`）的一格，不在
- * `conversation.state` 的读数里：档位没变就不必每次读数都带一遍。
+ * 它是会话行视图（`SessionView.thinking` / `AgentView.thinking`）的一格，不在
+ * `session.state` 的读数里：档位没变就不必每次读数都带一遍。
  */
 export interface ThinkingState {
   /** 引用的思考策略名（模型上配的那个） */
@@ -224,9 +224,9 @@ export interface ThinkingState {
  * 一段会话现在用的模型来自哪里（PRD F-B4 里「会话级」与「助手定义」两个动作的区别）。
  *
  * `agent` = 会话行上那个模型就是助手定义绑的那个（没换过）；
- * `conversation` = 会话行上是另一个模型（创建时点名，或 `conversation.setModel` 改过）。
+ * `session` = 会话行上是另一个模型（创建时点名，或 `session.setModel` 改过）。
  */
-export type ModelSource = "agent" | "conversation";
+export type ModelSource = "agent" | "session";
 
 /**
  * 模型块的事实（PRD F-I6 的状态栏块）。
@@ -276,7 +276,7 @@ export interface NoticeView {
   duration: number | null;
   text: LocalizedText;
   /** 与哪段对话有关；`null` 表示全局通知 */
-  conversationId: string | null;
+  sessionId: string | null;
   createdAt: string;
 }
 
@@ -315,7 +315,7 @@ export const QUESTION_KINDS: readonly QuestionKind[] = ["handoff", "confirmation
  * 题的去处只有两个：**被答了**、**这段对话没了（含意外死）**（PRD 4.10）。所以没有「过期」、
  * 没有「被取消」，也没有「关掉」这个动作 —— 那三种都是持久化时代的格子（题存得久，就需要
  * 一套清理语义），而题的命只有这一段对话活着的时间。第二个去处不发「题没了」这个事件：
- * 那段对话的事由 `conversation.changed`（`agent_gone`）说。
+ * 那段对话的事由 `session.changed`（`agent_gone`）说。
  *
  * 状态是宿主的事：题在内存里就一个对象，多端看到的是同一份（PRD 4.10）。
  */
@@ -348,7 +348,7 @@ export interface QuestionAnswer {
 export interface QuestionView {
   id: string;
   /** 与哪段对话有关：问题总是为某一段对话停下来问的 */
-  conversationId: string;
+  sessionId: string;
   kind: QuestionKind;
   state: QuestionState;
   prompt: LocalizedText;
@@ -493,13 +493,13 @@ export interface AttachmentOutcome {
 // ---------------------------------------------------------------------------
 
 /**
- * 一次压缩是谁促成的（`conversations.compactionMode` 的取值）。
+ * 一次压缩是谁促成的（`sessions.compactionMode` 的取值）。
  *
  * 两条路径各自落一种，于是「这段会话为什么被压了」在数据上答得出来：
  *   - `auto`：派生会话（平级会话开出来的那一段）越过交接线，`AutoMigratePlugin` 自己压的；
  *   - `manual`：用户在交接问题上答了「自交接 / 独立摘要」，宿主答完才压的。
  *
- * 它与 `compactedAt` 是会话行上的一格，跟着 `ConversationSummary` / `ConversationView` 走，
- * 不在 `conversation.state` 的读数里。
+ * 它与 `compactedAt` 是会话行上的一格，跟着 `SessionSummary` / `SessionView` 走，
+ * 不在 `session.state` 的读数里。
  */
 export type CompactionMode = "auto" | "manual";
