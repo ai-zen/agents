@@ -49,8 +49,9 @@ export class WorkspaceRepository {
   }
 
   /**
-   * 删 Workspace：它名下的 sessions / messages / assets / questions 靠外键级联清掉
-   * （PRD D11：删项目连带删它名下的会话）。目录本身不在存储层职能范围内。
+   * 删 Workspace：它名下的 sessions / messages / inbox / session_assets / notices 靠外键级联
+   * 清掉（PRD D11：删项目连带删它名下的会话）。素材行不跟着走 —— 字节是全局的，删不删由
+   * 「还有几张会话引用」决定。目录本身不在存储层职能范围内。
    */
   async delete(id: string): Promise<number> {
     const result = await this.db.run("DELETE FROM workspaces WHERE id = ?", [id]);

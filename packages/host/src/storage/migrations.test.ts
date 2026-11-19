@@ -1,5 +1,9 @@
 /**
- * 建表与迁移的验收：全新库能建起来、重复迁移幂等、外键级联真的删、FTS 索引与主表一致。
+ * 建表与迁移的验收：全新库一次建齐当前形状、重复迁移幂等、外键级联真的删、FTS 索引与主表一致。
+ *
+ * 这里钉的是**当前形状**本身（有哪些表、哪些列、哪些索引与触发器、哪些东西特意不存在），
+ * 不是它是怎么长出来的 —— 库里没有旧版本（PRD 1.9「明确不做」：迁移或识别旧数据），
+ * 所以没有「跑过某一级之后多出两列」这类只描述演进过程的断言。
  *
  * 库与迁移整个文件只建一次（临时目录里，结束后删掉，不碰仓库与用户数据根），每个用例只清表；
  * 两条天生要全新库的用例（没迁移过的、要看着迁移刚跑过一趟的）自己另开一个库。
@@ -49,7 +53,7 @@ beforeEach(async () => {
     tx.run("DELETE FROM notices"),
     // workspaces 必须在 assets 之前：删 workspace 级联删掉 session_assets 关系行，
     // 之后 assets 的 ON DELETE RESTRICT 才不会拦
-    tx.run("DELETE FROM workspaces"), // 级联 sessions → messages → session_assets
+    tx.run("DELETE FROM workspaces"), // 级联 sessions → messages / inbox / session_assets
     tx.run("DELETE FROM assets"), // 级联 asset_vendor_files
     tx.run("DELETE FROM credentials"),
   ]);
@@ -68,6 +72,150 @@ async function tableNames(database: Database): Promise<string[]> {
   return rows.map((row) => row.name);
 }
 
+/** 一条列的全貌：[列名, 类型, 非空, 缺省值, 主键序号（0 = 不是主键）] */
+type ColumnShape = [string, string, number, string | null, number];
+
+/**
+ * 当前形状的显式清单：十张表各有哪几列、什么类型、可不可空、缺省值是什么。
+ *
+ * **列的顺序也在里面** —— SQLite 里它就是表的一部分（`SELECT *` 的顺序），
+ * 顺序一乱，两个库就不是同一个形状了。
+ *
+ * `messages_fts` 与它那几张 `messages_fts_*` 影子表不在这里：虚表的列由 fts5 定，见下面
+ * 「全文检索」那条用例与 FTS 的完整性检查。
+ */
+const EXPECTED_COLUMNS: Record<string, ColumnShape[]> = {
+  meta: [
+    ["id", "INTEGER", 0, null, 1],
+    ["schemaVersion", "INTEGER", 1, null, 0],
+    ["createdAt", "INTEGER", 1, null, 0],
+  ],
+  workspaces: [
+    ["id", "TEXT", 0, null, 1],
+    ["name", "TEXT", 1, null, 0],
+    ["cwd", "TEXT", 1, null, 0],
+    ["createdAt", "INTEGER", 1, null, 0],
+  ],
+  sessions: [
+    ["id", "TEXT", 0, null, 1],
+    ["workspaceId", "TEXT", 1, null, 0],
+    ["name", "TEXT", 1, null, 0],
+    ["nameIsAuto", "INTEGER", 1, "1", 0],
+    ["pinned", "INTEGER", 1, "0", 0],
+    ["agentId", "TEXT", 1, null, 0],
+    ["modelId", "TEXT", 1, null, 0],
+    ["thinkingLevel", "TEXT", 0, null, 0],
+    ["createdAt", "INTEGER", 1, null, 0],
+    ["updatedAt", "INTEGER", 1, null, 0],
+    ["compactedAt", "INTEGER", 0, null, 0],
+    ["compactionMode", "TEXT", 0, null, 0],
+    ["handoffThreshold", "INTEGER", 0, null, 0],
+    ["guardThreshold", "INTEGER", 0, null, 0],
+    ["autoHandoff", "INTEGER", 1, "0", 0],
+    ["lineage", "TEXT", 0, null, 0],
+    ["pendingHandoff", "TEXT", 0, null, 0],
+  ],
+  messages: [
+    ["id", "TEXT", 0, null, 1],
+    ["sessionId", "TEXT", 1, null, 0],
+    ["seq", "INTEGER", 1, null, 0],
+    ["role", "TEXT", 1, null, 0],
+    ["status", "TEXT", 1, null, 0],
+    ["omit", "INTEGER", 1, "0", 0],
+    ["content", "TEXT", 1, "''", 0],
+    ["data", "TEXT", 0, null, 0],
+    ["searchText", "TEXT", 1, "''", 0],
+    ["createdAt", "INTEGER", 1, null, 0],
+    ["updatedAt", "INTEGER", 1, null, 0],
+    ["source", "TEXT", 0, null, 0],
+  ],
+  inbox: [
+    ["messageId", "TEXT", 0, null, 1],
+    ["sessionId", "TEXT", 1, null, 0],
+    ["source", "TEXT", 1, null, 0],
+    ["content", "TEXT", 1, null, 0],
+    ["createdAt", "TEXT", 1, null, 0],
+    ["seq", "INTEGER", 1, null, 0],
+  ],
+  assets: [
+    ["id", "TEXT", 0, null, 1],
+    ["name", "TEXT", 0, null, 0],
+    ["path", "TEXT", 1, null, 0],
+    ["mime", "TEXT", 1, null, 0],
+    ["bytes", "INTEGER", 1, null, 0],
+    ["sha256", "TEXT", 1, null, 0],
+    ["width", "INTEGER", 0, null, 0],
+    ["height", "INTEGER", 0, null, 0],
+    ["createdAt", "INTEGER", 1, null, 0],
+  ],
+  session_assets: [
+    ["sessionId", "TEXT", 1, null, 0],
+    ["messageId", "TEXT", 1, null, 0],
+    ["assetId", "TEXT", 1, null, 0],
+    ["createdAt", "INTEGER", 1, null, 0],
+  ],
+  asset_vendor_files: [
+    ["assetId", "TEXT", 1, null, 0],
+    ["endpointId", "TEXT", 1, null, 0],
+    ["vendorFileId", "TEXT", 1, null, 0],
+    ["createdAt", "INTEGER", 1, null, 0],
+  ],
+  notices: [
+    ["id", "TEXT", 0, null, 1],
+    ["level", "TEXT", 1, null, 0],
+    ["code", "TEXT", 1, null, 0],
+    ["params", "TEXT", 0, null, 0],
+    ["durationMs", "INTEGER", 0, null, 0],
+    ["sessionId", "TEXT", 0, null, 0],
+    ["createdAt", "INTEGER", 1, null, 0],
+  ],
+  credentials: [
+    ["id", "TEXT", 0, null, 1],
+    ["note", "TEXT", 1, "''", 0],
+    ["hash", "TEXT", 1, null, 0],
+    ["createdAt", "INTEGER", 1, null, 0],
+    ["revokedAt", "INTEGER", 0, null, 0],
+  ],
+};
+
+/** 全部表（含 FTS5 的虚表与它自己那四张影子表），按名字排好 —— 多一张少一张都算形状变了 */
+const EXPECTED_TABLES = [
+  "asset_vendor_files",
+  "assets",
+  "credentials",
+  "inbox",
+  "messages",
+  "messages_fts",
+  "messages_fts_config",
+  "messages_fts_data",
+  "messages_fts_docsize",
+  "messages_fts_idx",
+  "meta",
+  "notices",
+  "session_assets",
+  "sessions",
+  "workspaces",
+];
+
+/** 自己起的索引（不含主键 / UNIQUE 自动生成的那批 `sqlite_autoindex_*`）与它们的列 */
+const EXPECTED_INDEXES: Record<string, string[]> = {
+  idx_sessions_workspace: ["workspaceId", "pinned", "createdAt"],
+  idx_messages_session_seq: ["sessionId", "seq"],
+  idx_inbox_session: ["sessionId", "seq"],
+  idx_session_assets_asset: ["assetId"],
+  idx_session_assets_session: ["sessionId"],
+  idx_notices_createdAt: ["createdAt"],
+  idx_notices_session: ["sessionId"],
+  idx_credentials_hash: ["hash"],
+};
+
+/** FTS 同步靠这三条触发器（都在 messages 上） */
+const EXPECTED_TRIGGERS = [
+  "messages_fts_after_delete",
+  "messages_fts_after_insert",
+  "messages_fts_after_update",
+];
+
 describe("migrate", () => {
   it("全新库跑一次就建齐所有表，版本号落到最新", async () => {
     // 这条要的是「迁移刚刚真的跑过一趟」（下面断言建库时间 >= 本用例开始），
@@ -77,7 +225,10 @@ describe("migrate", () => {
     await migrate(db);
 
     const meta = new MetaRepository(db);
-    expect(await meta.getSchemaVersion()).toBe(MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 1);
+    // 一条迁移都没跑过 = 空库；跑完一级就是当前形状，所以最新版本号是 1
+    expect(MIGRATIONS).toHaveLength(1);
+    expect(await meta.getSchemaVersion()).toBe(1);
+    expect(LATEST_VERSION).toBe(1);
     expect((await meta.getState())?.createdAt).toBeGreaterThan(0);
     // 建库时间就是这一跳写的（不是 0、也不是未来时间）
     expect((await meta.getState())?.createdAt).toBeGreaterThanOrEqual(before);
@@ -87,12 +238,12 @@ describe("migrate", () => {
       "workspaces",
       "sessions",
       "messages",
+      "inbox",
       "assets",
       "session_assets",
       "asset_vendor_files",
       "notices",
       "credentials",
-      "inbox",
       "meta",
       "messages_fts",
     ]) {
@@ -100,16 +251,72 @@ describe("migrate", () => {
     }
   });
 
-  it("重复迁移不炸，版本号不会倒退", async () => {
-    // 这条验的是「全新库上第一次 migrate 真的跑完、再跑两次也不炸」：
-    // 共享库已经迁过，第一次就退化成空跑了，所以自己开一个全新库
-    const db = ownDatabase("fresh-migrate-repeat.db");
+  it("新库跑完就是最终形状：表 / 列 / 索引 / 触发器逐项对上", async () => {
+    // 这条要一个刚建出来的库，所以自己开一个
+    const db = ownDatabase("fresh-shape.db");
     await migrate(db);
-    await expect(migrate(db)).resolves.toBeUndefined();
-    await expect(migrate(db)).resolves.toBeUndefined();
 
+    // 1. 表：一张不多、一张不少
+    expect(await tableNames(db)).toEqual(EXPECTED_TABLES);
+
+    // 2. 列：每张表的列名、类型、可不可空、缺省值、主键，按顺序逐格对上
+    for (const [table, expected] of Object.entries(EXPECTED_COLUMNS)) {
+      const columns = await db.all<{
+        name: string;
+        type: string;
+        notnull: number;
+        dflt_value: string | null;
+        pk: number;
+      }>(`PRAGMA table_info('${table}')`);
+      expect(
+        columns.map((column) => [
+          column.name,
+          column.type,
+          column.notnull,
+          column.dflt_value,
+          column.pk,
+        ]),
+      ).toEqual(expected);
+    }
+
+    // 3. 索引：自己起的那些都在，且都在该在的列上
+    const indexRows = await db.all<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name",
+    );
+    expect(indexRows.map((row) => row.name)).toEqual(Object.keys(EXPECTED_INDEXES).sort());
+    for (const [name, expected] of Object.entries(EXPECTED_INDEXES)) {
+      const columns = await db.all<{ name: string }>(`PRAGMA index_info('${name}')`);
+      expect(columns.map((column) => column.name)).toEqual(expected);
+    }
+
+    // 4. 触发器：FTS 同步那三条
+    const triggers = await db.all<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name",
+    );
+    expect(triggers.map((row) => row.name)).toEqual(EXPECTED_TRIGGERS);
+  });
+
+  it("同一个库跑两次是幂等的：已经是最新版本时一条语句都不执行", async () => {
+    // 共享库已经迁过，但这里要看「第一次真的跑过之后」的对照，所以自己开一个全新库
+    const db = ownDatabase("fresh-migrate-idempotent.db");
     const meta = new MetaRepository(db);
-    expect(await meta.getSchemaVersion()).toBe(MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 1);
+
+    await migrate(db);
+    const first = await meta.getState();
+    expect(first?.schemaVersion).toBe(LATEST_VERSION);
+
+    // 再跑两次：不炸，版本号不倒退，建库时间也不被重写（那一格只在迁移那一跳写一次）
+    await expect(migrate(db)).resolves.toBeUndefined();
+    await expect(migrate(db)).resolves.toBeUndefined();
+    expect(await meta.getState()).toEqual(first);
+    expect(await meta.getSchemaVersion()).toBe(LATEST_VERSION);
+
+    // 「不再执行」不是从「没有副作用」猜出来的：把一张表删掉再 migrate，它不会被建回来 ——
+    // 版本号已经是最新，整条迁移被跳过。这正是幂等要的那件事（而不是「重复跑也不报错」）。
+    await db.run("DROP TABLE inbox");
+    await migrate(db);
+    expect(await tableNames(db)).not.toContain("inbox");
+    expect(await meta.getSchemaVersion()).toBe(LATEST_VERSION);
   });
 
   it("表结构钉住 cwd 唯一与身份列非空", async () => {
@@ -141,9 +348,8 @@ describe("migrate", () => {
     expect(sessionColumns.find((column) => column.name === "thinkingLevel")?.notnull).toBe(0);
   });
 
-  it("表结构钉住两列真值：名字是否自动起（R35）与subagent 的父工具调用（R37）", async () => {
+  it("表结构钉住两列真值：名字是否自动起（R35）与「消息只有一套取法」", async () => {
     await migrate(db);
-    void LATEST_VERSION;
 
     type ColumnInfo = { name: string; notnull: number; dflt_value: string | null };
     const sessionColumns = await db.all<ColumnInfo>("PRAGMA table_info('sessions')");
@@ -152,178 +358,84 @@ describe("migrate", () => {
     expect(nameIsAuto).toMatchObject({ notnull: 1, dflt_value: "1" });
 
     const messageColumns = await db.all<ColumnInfo>("PRAGMA table_info('messages')");
-    // v5 之后库里只有一套取法：`parentToolCallId` 那一列已经不在了
+    // 消息只有一套取法：subagent 的话不入库（CORE.md §17），所以没有
+    // `parentToolCallId` 那种「挂在哪次工具调用上」的列，也没有按它取的索引
     expect(messageColumns.some((column) => column.name === "parentToolCallId")).toBe(false);
+    expect(
+      await db.all(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_messages_parent_tool_call'",
+      ),
+    ).toEqual([]);
   });
 
-  it("v2：新库直接到最新版本，压缩两列存在且可空", async () => {
-    const db = ownDatabase("fresh-v2.db");
+  it("sessions 行上的格子：哪些可空、自动交接开关的缺省落在「问」那一侧（0）", async () => {
     await migrate(db);
 
-    // 版本号跟的是「最新那一级」（v3 加的是 messages.source）
-    expect(await new MetaRepository(db).getSchemaVersion()).toBe(LATEST_VERSION);
-    const columns = await db.all<{ name: string; notnull: number; dflt_value: string | null }>(
-      "PRAGMA table_info('sessions')",
-    );
-    for (const name of ["compactedAt", "compactionMode"]) {
-      const column = columns.find((candidate) => candidate.name === name);
-      // 可空、无缺省：NULL 就是「从来没压过」
-      expect(column).toMatchObject({ notnull: 0, dflt_value: null });
-    }
-  });
-
-  it("v2：已经升过 v1 的库跑一次 upgrade，两列补上且旧行是 NULL", async () => {
-    const db = ownDatabase("upgrade-v1-to-v2.db");
-    // 只跑 v1 那一条，模拟「上一版已经装上升过级的库」
-    const v1 = MIGRATIONS.find((migration) => migration.version === 1);
-    if (!v1) throw new Error("MIGRATIONS 里没有 v1");
-    await db.tx((tx) => {
-      for (const statement of v1.statements) tx.run(statement);
-      tx.run("INSERT INTO meta (id, schemaVersion, createdAt) VALUES (1, 1, ?)", [1]);
-    });
-    // 旧库里的一行（v1 的表结构里没有压缩那两列）
-    await db.run(
-      "INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目一', '/tmp/v1', 1)",
-    );
-    await db.run(
-      `INSERT INTO sessions (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
-       VALUES ('c1', 'w1', '旧会话', 0, 'a1', 'm1', 2, 2)`,
-    );
-
-    await migrate(db);
-
-    expect(await new MetaRepository(db).getSchemaVersion()).toBe(LATEST_VERSION);
-    const row = await db.get<{ compactedAt: number | null; compactionMode: string | null }>(
-      "SELECT compactedAt, compactionMode FROM sessions WHERE id = 'c1'",
-    );
-    // 旧数据的真相就是「没压过」：两列都是 NULL
-    expect(row).toEqual({ compactedAt: null, compactionMode: null });
-  });
-
-  it("v3：messages 多一列 source（存来源判别结构的 JSON），旧行是 NULL", async () => {
-    const db = ownDatabase("upgrade-v2-to-v3.db");
-    // 只跑到 v2，模拟「上一版已经装上升过级的库」
-    const older = MIGRATIONS.filter((migration) => migration.version <= 2);
-    await db.tx((tx) => {
-      for (const migration of older)
-        for (const statement of migration.statements) tx.run(statement);
-      tx.run("INSERT INTO meta (id, schemaVersion, createdAt) VALUES (1, 2, ?)", [1]);
-    });
-    await db.run(
-      "INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/v2', 1)",
-    );
-    await db.run(
-      `INSERT INTO sessions (id, workspaceId, name, agentId, modelId, createdAt, updatedAt)
-       VALUES ('c1', 'w1', '旧会话', 'a1', 'm1', 2, 2)`,
-    );
-    await db.run(
-      `INSERT INTO messages (id, sessionId, seq, role, status, content, createdAt, updatedAt)
-       VALUES ('m1', 'c1', 1, 'user', 'completed', '"老消息"', 3, 3)`,
-    );
-
-    await migrate(db);
-
-    expect(await new MetaRepository(db).getSchemaVersion()).toBe(LATEST_VERSION);
-    const column = (
-      await db.all<{ name: string; notnull: number; dflt_value: string | null }>(
-        "PRAGMA table_info('messages')",
-      )
-    ).find((candidate) => candidate.name === "source");
-    // 可空：旧行没有记过来源，那不是「用户说的」，而是「不知道」
-    expect(column).toMatchObject({ notnull: 0, dflt_value: null });
-    const row = await db.get<{ source: string | null }>(
-      "SELECT source FROM messages WHERE id = 'm1'",
-    );
-    expect(row).toEqual({ source: null });
-  });
-
-  it("v4：老库升上来，四列都在；自动交接开关的缺省值落在「问」那一侧（0）", async () => {
-    const db = ownDatabase("upgrade-v3-to-v4.db");
-    // 只跑到 v3，模拟「上一版已经装上升过级的库」
-    const older = MIGRATIONS.filter((migration) => migration.version <= 3);
-    await db.tx((tx) => {
-      for (const migration of older)
-        for (const statement of migration.statements) tx.run(statement);
-      tx.run("INSERT INTO meta (id, schemaVersion, createdAt) VALUES (1, 3, ?)", [1]);
-    });
-    await db.run(
-      "INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/v3', 1)",
-    );
-    await db.run(
-      `INSERT INTO sessions (id, workspaceId, name, agentId, modelId, createdAt, updatedAt)
-       VALUES ('c1', 'w1', '旧会话', 'a1', 'm1', 2, 2)`,
-    );
-
-    await migrate(db);
-
-    expect(await new MetaRepository(db).getSchemaVersion()).toBe(LATEST_VERSION);
-    const columns = await db.all<{ name: string; notnull: number; dflt_value: string | null }>(
-      "PRAGMA table_info('sessions')",
-    );
-    // 两条阈值与血缘可空、无缺省：NULL 就是「跟模型走」/「用户建的」
-    for (const name of ["handoffThreshold", "guardThreshold", "lineage"]) {
+    type ColumnInfo = { name: string; notnull: number; dflt_value: string | null };
+    const columns = await db.all<ColumnInfo>("PRAGMA table_info('sessions')");
+    // 压缩两格 + 两条阈值 + 血缘：可空、无缺省。NULL 分别是「从来没压过」/「跟模型走」/「用户建的」
+    for (const name of [
+      "compactedAt",
+      "compactionMode",
+      "handoffThreshold",
+      "guardThreshold",
+      "lineage",
+    ]) {
       expect(columns.find((column) => column.name === name)).toMatchObject({
         notnull: 0,
         dflt_value: null,
       });
     }
-    // 自动交接开关非空、缺省 **0**：`ADD COLUMN ... NOT NULL` 在 SQLite 里必须给缺省值，
-    // 而 0 就是常态那一侧 —— 撞线停下来问一句（PRD 4.10）。「不问」是例外（平级会话，
-    // 创建那一刻显式写 1）。
+    // 待交接那一格也可空：NULL = 没有待交接
+    expect(columns.find((column) => column.name === "pendingHandoff")).toMatchObject({
+      notnull: 0,
+      dflt_value: null,
+    });
+    // 自动交接开关非空、缺省 **0**：0 就是常态那一侧 —— 撞线停下来问一句（PRD 4.10）。
+    // 「不问」是例外（平级会话，创建那一刻显式写 1），而缺省值只在这种时候说话：写入方漏写了。
     expect(columns.find((column) => column.name === "autoHandoff")).toMatchObject({
       notnull: 1,
       dflt_value: "0",
     });
-
-    const row = await db.get<{
-      handoffThreshold: number | null;
-      guardThreshold: number | null;
-      autoHandoff: number;
-      lineage: string | null;
-    }>(
-      "SELECT handoffThreshold, guardThreshold, autoHandoff, lineage FROM sessions WHERE id = 'c1'",
-    );
-    // 旧库不迁移（用户：「旧户直接删了都没关系」）：漏写那一列的行读成 0，
-    // 也就是「撞线问一句」。猜错的代价不对称：多问一句用户答「不交接」就再也不问；
-    // 猜成「不问」则是用户从头到尾不知道发生过什么。
-    expect(row).toEqual({
-      handoffThreshold: null,
-      guardThreshold: null,
-      autoHandoff: 0,
-      lineage: null,
-    });
   });
 
-  it("v5：题表没了、会话行多一格待交接、消息表删掉第二套取法", async () => {
-    const db = ownDatabase("upgrade-v4-to-v5.db");
-    // 只跑到 v4，模拟「上一版已经装上升过级的库」（那时还有 questions 表与 parentToolCallId）
-    const older = MIGRATIONS.filter((migration) => migration.version <= 4);
-    await db.tx((tx) => {
-      for (const migration of older)
-        for (const statement of migration.statements) tx.run(statement);
-      tx.run("INSERT INTO meta (id, schemaVersion, createdAt) VALUES (1, 4, ?)", [1]);
-    });
+  it("messages 的来源列：存判别结构的 JSON，可空 = 不知道", async () => {
+    await migrate(db);
+
+    const column = (
+      await db.all<{ name: string; notnull: number; dflt_value: string | null }>(
+        "PRAGMA table_info('messages')",
+      )
+    ).find((candidate) => candidate.name === "source");
+    // 可空：没记过来源的行读出来是 `source: null`（「不知道」，不是「用户说的」）
+    expect(column).toMatchObject({ notnull: 0, dflt_value: null });
+
+    // 落进去的是那段 JSON，读回来还是它（不是字符串 `"user"`）
     await db.run(
-      "INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/v4', 1)",
+      "INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/s', 1)",
     );
     await db.run(
       `INSERT INTO sessions (id, workspaceId, name, agentId, modelId, createdAt, updatedAt)
-       VALUES ('c1', 'w1', '旧会话', 'a1', 'm1', 2, 2)`,
+       VALUES ('c1', 'w1', '会话', 'a1', 'm1', 2, 2)`,
     );
     await db.run(
-      `INSERT INTO messages (id, sessionId, seq, role, status, content, searchText, createdAt, updatedAt)
-       VALUES ('m1', 'c1', 1, 'user', 'completed', '"老消息"', '老消息', 3, 3)`,
+      `INSERT INTO messages (id, sessionId, seq, role, status, content, source, createdAt, updatedAt)
+       VALUES ('m1', 'c1', 1, 'user', 'completed', '"你好"', '{"kind":"agent","label":"助手"}', 3, 3)`,
     );
-    // 旧库里挂着的一道题：v5 之后它不该再有任何落点
     await db.run(
-      `INSERT INTO questions (id, sessionId, kind, payload, state, createdAt, updatedAt)
-       VALUES ('q1', 'c1', 'handoff', '{}', 'pending', 4, 4)`,
+      `INSERT INTO messages (id, sessionId, seq, role, status, content, createdAt, updatedAt)
+       VALUES ('m2', 'c1', 2, 'system', 'completed', '"cwd"', 4, 4)`,
     );
+    expect(await db.all("SELECT source FROM messages ORDER BY seq")).toEqual([
+      { source: '{"kind":"agent","label":"助手"}' },
+      { source: null },
+    ]);
+  });
 
+  it("库里不该有的东西：没有题表，也没有第二套取法的列与索引", async () => {
     await migrate(db);
 
-    expect(await new MetaRepository(db).getSchemaVersion()).toBe(LATEST_VERSION);
-    // 1. 题表与它的索引一起消失
+    // 题改成进程内对象（PRD 4.10 的「只做实时」）：表与它的索引都不该存在
     const tables = await tableNames(db);
     expect(tables).not.toContain("questions");
     expect(
@@ -332,21 +444,7 @@ describe("migrate", () => {
       ),
     ).toEqual([]);
 
-    // 2. 会话行多一格待交接：可空，NULL = 没有待交接
-    const sessionColumns = await db.all<{
-      name: string;
-      notnull: number;
-      dflt_value: string | null;
-    }>("PRAGMA table_info('sessions')");
-    expect(sessionColumns.find((column) => column.name === "pendingHandoff")).toMatchObject({
-      notnull: 0,
-      dflt_value: null,
-    });
-    expect(await db.get("SELECT pendingHandoff FROM sessions WHERE id = 'c1'")).toEqual({
-      pendingHandoff: null,
-    });
-
-    // 3. 消息表删掉那个列与它的索引（旧行照旧读得出来）
+    // 消息的第二套取法（parentToolCallId）连同它的索引一起不该存在
     const messageColumns = await db.all<{ name: string }>("PRAGMA table_info('messages')");
     expect(messageColumns.some((column) => column.name === "parentToolCallId")).toBe(false);
     expect(
@@ -354,10 +452,9 @@ describe("migrate", () => {
         "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_messages_parent_tool_call'",
       ),
     ).toEqual([]);
-    expect(await db.all("SELECT id FROM messages")).toEqual([{ id: "m1" }]);
   });
 
-  it("v6：inbox 表按「条目上有什么就存什么」建起来，顺序列与按会话取的索引都在", async () => {
+  it("inbox 表按「条目上有什么就存什么」建起来，顺序列与按会话取的索引都在", async () => {
     await migrate(db);
 
     const columns = await db.all<{ name: string; type: string; notnull: number; pk: number }>(
@@ -438,7 +535,7 @@ describe("外键与级联", () => {
       `INSERT INTO notices (id, level, code, params, durationMs, sessionId, createdAt)
        VALUES ('n1', 'info', 'notice.settingsSaved', NULL, NULL, 'c1', 6)`,
     );
-    // 排在队列里还没被取走的一条条目：会话/工作区没了它也就没有去处（v6 的级联）
+    // 排在队列里还没被取走的一条条目：会话/工作区没了它也就没有去处（inbox 的级联）
     await db.run(
       `INSERT INTO inbox (messageId, sessionId, source, content, createdAt, seq)
        VALUES ('msg2', 'c1', '{"kind":"user"}', '"还没被处理的一句"', '2026-01-02T03:04:05.000Z', 1)`,
@@ -452,7 +549,7 @@ describe("外键与级联", () => {
     expect(await db.all("SELECT id FROM sessions")).toEqual([]);
     expect(await db.all("SELECT id FROM messages")).toEqual([]);
     expect(await db.all("SELECT assetId FROM session_assets")).toEqual([]);
-    // inbox 行跟着会话/项目一起没：不留孤儿（v6 的级联）
+    // inbox 行跟着会话/项目一起没：不留孤儿
     expect(await db.all("SELECT messageId FROM inbox")).toEqual([]);
     // 素材行不跟着会话走：字节是全局的，删不删由「还几张引用」决定
     expect(await db.all("SELECT id FROM assets")).toEqual([{ id: "as1" }]);
@@ -466,7 +563,7 @@ describe("外键与级联", () => {
     expect(await db.all("SELECT assetId FROM session_assets")).toEqual([]);
     // 通知是挂在会话上的：会话没了它也没有落脚的语义（题已经不落库了，没有这一层）
     expect(await db.all("SELECT id FROM notices")).toEqual([]);
-    // 条目也是：它排在那个会话的 inbox 里，会话没了它也就没有去处（v6 的级联）
+    // 条目也是：它排在那个会话的 inbox 里，会话没了它也就没有去处
     expect(await db.all("SELECT messageId FROM inbox")).toEqual([]);
     expect(await db.all("SELECT id FROM assets")).toEqual([{ id: "as1" }]);
   });

@@ -12,7 +12,7 @@
  *    在 trigram 下必然搜不到，这里退化到 `LIKE` 子串匹配。
  *
  * 3. **表里只有主线消息**：subagent 的话不入库（`CORE.md` §17），所以「这段会话有多少条消息」
- *    只有一条取法（`parentToolCallId` 那一列已随 v5 删除）。
+ *    只有一条取法 —— 表上也没有「这条消息挂在哪次工具调用上」那种归属列（见 migrations.ts）。
  *
  * 4. **`hidden` 的两条读数**：`hidden` 是 core 的 `Message.hidden`，落在 `data` 列的 JSON 里
  *    （没有单独的列）。给用户看的读取路径（`message.list`、侧栏条数、删除代价）默认把它
@@ -270,8 +270,8 @@ export class MessageRepository {
    *   它的内容已经变了，得重新拿最新的。
    * - 给了 `after` 但库里没有这个 id（已删除、或换了库）：退回整段历史。
    *
-   * 读到的是这段会话的全部行：subagent 的话不入库（`CORE.md` §17），所以这里不需要再筛
-   * 一次归属（`parentToolCallId` 那一列已随 v5 删掉）。
+   * 读到的是这段会话的全部行：subagent 的话不入库（`CORE.md` §17），表上也没有归属列，
+   * 所以这里不需要再筛一次。
    *
    * 三种情况收敛成一条 SQL：找不到时 `COALESCE` 把下界降成 -1，条件恒真。
    *
