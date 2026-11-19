@@ -262,11 +262,18 @@ export class AssetService {
         height: size?.height ?? null,
         createdAt: this.now(),
       });
-      // 没插进去：库里已经有一份同摘要的字节，刚改名的那份是多余的
-      if (!created) await fs.rm(finalPath, { force: true }).catch(() => undefined);
+      // 没插进去：库里已经有一份同摘要的字节，刚改名的那份是多余的。删不掉（EACCES / EPERM）
+      // 就是永久漏一份没人引用的字节 —— `sweepUnreferenced()` 按行查，没有行就永远扫不到
+      if (!created) {
+        await fs.rm(finalPath, { force: true }).catch((error: unknown) => {
+          this.report(error, "删除重复素材文件失败");
+        });
+      }
       return toAssetRef(row);
     } catch (error) {
-      await fs.rm(finalPath, { force: true }).catch(() => undefined);
+      await fs.rm(finalPath, { force: true }).catch((cleanupError: unknown) => {
+        this.report(cleanupError, "删除素材文件失败");
+      });
       throw this.registrationError(error);
     }
   }

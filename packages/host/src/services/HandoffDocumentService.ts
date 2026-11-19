@@ -864,7 +864,10 @@ export class HandoffDocumentService {
     // 旧的那段被压下去了：会话行上记一笔（`manual`）。这一步顺手推了旧会话的
     // `session.changed`（`settings_changed`），所以下面不再为它单独推一条。
     // 写失败不影响已经做完的交接（文档在、新会话也开了）：标记是观测事实，不是交接的一步。
-    await this.sessionViews.markCompacted(session.id, "manual").catch(() => undefined);
+    // 但它也不是"写不进去就不说"：`compactedAt` 是侧栏「已压缩」的唯一来源。
+    await this.sessionViews.markCompacted(session.id, "manual").catch((error: unknown) => {
+      this.onError?.(error, "handoff-mark-compacted");
+    });
 
     const summary = await this.excerpt(document.path);
     const content = render(language, "handoff.newSessionSummary", {
