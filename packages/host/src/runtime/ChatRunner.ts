@@ -144,7 +144,6 @@ import type {
   InboxItem,
   MessageInput,
   ProblemFact,
-  SubAgentFact,
 } from "../wire/states.js";
 import type { AgentLifecycleReason, AgentRegistry } from "./AgentRegistry.js";
 import type { Clock, ScopeRegistry } from "./ScopeRegistry.js";
@@ -349,16 +348,6 @@ export interface DeliveryInput {
 
 /** 装载/重启后的修复结果：修好之后的消息（顺序即会话顺序，core 原样） */
 export type ReconcileResult = AgentNS.Message[];
-
-/**
- * subagent 那一栏的一行 —— **就是 wire 的 {@link SubAgentFact}**（`session.state` 的
- * `subAgents` 那一段，客户端照同一份形状铺栏）。
- *
- * 形状只定义一次：这一栏就是现读 core 名册，宿主没有第二份，所以也不该有第二个类型。
- * 为什么名册上有了结束时刻就报 `ended`、而不是 subagent 自己那一格，见
- * {@link SubAgentFact.state} —— 解释只留在那一处。
- */
-export type SubAgentReadout = SubAgentFact;
 
 /**
  * 一段会话此刻的读数（{@link ChatRunner.state} 的返回）—— **就是 wire 的

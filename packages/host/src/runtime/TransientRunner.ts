@@ -92,7 +92,6 @@ export interface TransientRunnerDeps {
   createAgent: TransientAgentFactory;
   /** 配置唯一入口：没点名助手时用它读默认助手（`AppConfig.defaultAgent`） */
   configManager: ConfigManager;
-  now?: () => number;
 }
 
 /** 一次一次性会话的结果里，`problem` 是「跑完了但这一次不算成功」时的那份说明 */
@@ -100,13 +99,11 @@ export class TransientRunner {
   private readonly scopes: TransientScopes;
   private readonly createAgent: TransientAgentFactory;
   private readonly configManager: ConfigManager;
-  private readonly now: () => number;
 
   constructor(deps: TransientRunnerDeps) {
     this.scopes = deps.scopes;
     this.createAgent = deps.createAgent;
     this.configManager = deps.configManager;
-    this.now = deps.now ?? Date.now;
   }
 
   /**

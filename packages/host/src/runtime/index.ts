@@ -55,7 +55,6 @@ export type {
   MessageStore,
   ReconcileResult,
   SdkAgentFactoryOptions,
-  SubAgentReadout,
 } from "./ChatRunner.js";
 
 export { SessionDrafts } from "./SessionDrafts.js";

@@ -224,32 +224,6 @@ export namespace AgentNS {
     omit?: boolean;
   }
 
-  export interface StreamChoice {
-    delta?: Delta;
-    index: number;
-    finish_reason: FinishReason | null;
-    finish_details?: any;
-  }
-
-  export interface StreamResponseData {
-    error?: { code: string; message: string };
-    choices?: StreamChoice[];
-    usage?: Usage;
-  }
-
-  export interface Choice {
-    message?: Message;
-    index: number;
-    finish_reason: FinishReason | null;
-    finish_details?: any;
-  }
-
-  export interface ResponseData {
-    error?: { code: string; message: string };
-    choices?: Choice[];
-    usage?: Usage;
-  }
-
   export interface Usage {
     prompt_tokens: number;
     completion_tokens: number;

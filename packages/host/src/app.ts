@@ -676,7 +676,6 @@ export class HostApp {
       scopes: this.scopeRegistry,
       createAgent: transientAgentFactoryFrom(createAgent),
       configManager: this.configManager,
-      now: () => this.clock.now(),
     });
 
     // ---- 8. 上传接收（同一条 WS 上的二进制分帧） ----
