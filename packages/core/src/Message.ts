@@ -14,6 +14,7 @@ export class Message implements AgentNS.Message {
   status?: AgentNS.MessageStatus | undefined;
   finish_reason?: AgentNS.FinishReason | undefined;
   usage?: AgentNS.Usage | undefined;
+  subAgentUsage?: AgentNS.Usage | undefined;
   hidden?: boolean | undefined;
   omit?: boolean | undefined;
   source?: AgentNS.MessageSource | undefined;
@@ -32,6 +33,7 @@ export class Message implements AgentNS.Message {
     this.status = options.status;
     this.finish_reason = options.finish_reason;
     this.usage = options.usage;
+    this.subAgentUsage = options.subAgentUsage;
     this.hidden = options.hidden;
     this.omit = options.omit;
     this.source = options.source;
