@@ -249,7 +249,14 @@ async function countMessages(app: HostApp, sessionId: string): Promise<number> {
   return row?.n ?? 0;
 }
 
-/** 等这段会话真的闲下来（那一格是 idle、队里也空了），且写库推进完 */
+/**
+ * 等这段会话真的闲下来（那一格是 idle、队里也空了）。
+ *
+ * **它不等于「写库推进完」**：`state()` 现读的是 core 的 `agent.state`，而写库那条链是在
+ * `onIdle` 里才被 `flushWrites()` 收干净的 —— 事件触发时 `agent.state` 已经是 idle 了，
+ * 所以本方法可以在某一笔写还没落地时就返回。凡是要断言「库里那几行」的地方，等的是那一行
+ * 本身（见 {@link until}），不是「会话闲了」。
+ */
 async function idle(app: HostApp, sessionId: string): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const now = app.chatRunner.state(sessionId);
@@ -257,6 +264,29 @@ async function idle(app: HostApp, sessionId: string): Promise<void> {
     await wait(10);
   }
   throw new Error("这段会话没有闲下来");
+}
+
+/**
+ * 等到 `check()` 成立就返回；超时抛错，错误里说清等的是什么。
+ *
+ * **别用「睡够一会儿」代替它**：那是赌「够久」，而这里要的是「真的发生了」。全量跑时事件
+ * 循环被别的用例占着，同一个时长有时够、有时不够 —— 同一份代码时红时绿，红的那次还只报个
+ * `expected [] to deeply equal [...]`，看不出在等什么。
+ *
+ * 条件只读状态（这里是一次仓储查询），断言照旧原样写在后面：失败信息才指得准。
+ */
+async function until(
+  check: () => boolean | Promise<boolean>,
+  what: string,
+  timeoutMs = 2000,
+): Promise<void> {
+  const start = Date.now();
+  while (!(await check())) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`等不到：${what}（上限 ${timeoutMs}ms）`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }
 
 /**
@@ -293,7 +323,14 @@ describe("session.send", () => {
     // 回执里没有状态、没有「叫醒了没有」、没有结果
     expect(Object.keys(sent).sort()).toEqual(["attachments", "userMessageId"]);
     expect(sent.userMessageId.length).toBeGreaterThan(0);
-    // 消息落库那一刻扫 content 里的 `__asset_id` 写关系行
+    // 消息落库那一刻扫 content 里的 `__asset_id` 写关系行。这两步在 `persistLanded` 里是
+    // **先写消息行、再记素材关系行**（串在同一条写库链上），而 `session.send` 的回执在入队那
+    // 一刻就回来了 —— 回执比这两步都早。所以这里等的是**那一行真的出现**（`session_assets`
+    // 里这个 messageId 那一行），不是「会话闲了」、更不是「睡了够久」。
+    await until(
+      async () => (await app.assets.listAssetIdsByMessage(sent.userMessageId)).length > 0,
+      `素材关系行落库（messageId=${sent.userMessageId}）`,
+    );
     await idle(app, sessionId);
     expect(await app.assets.listAssetIdsByMessage(sent.userMessageId)).toEqual([assetId]);
     expect(await app.assets.countSessions(assetId)).toBe(1);

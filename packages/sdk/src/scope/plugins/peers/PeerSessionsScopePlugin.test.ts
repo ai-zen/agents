@@ -64,7 +64,18 @@ function recordingPort(answers: {
     },
     async status(input) {
       statuses.push(input);
-      return answers.status ?? { found: true, status: "busy", label: "会话 1", lastMessage: null };
+      // 默认答案照着 `PeerSessionStatus` 那两支里的「有这一段」写：忙不忙只有 `working` / `idle`
+      // 两格，死活是同一条答复里另给的 `alive`（`fd97841` 正交化之后就是这样；原来这里写的是
+      // 四词投影时代的 `status: "busy"`，那一格早已不存在）。
+      return (
+        answers.status ?? {
+          found: true,
+          status: "working",
+          alive: true,
+          label: "会话 1",
+          lastMessage: null,
+        }
+      );
     },
     async send(input) {
       sends.push(input);
