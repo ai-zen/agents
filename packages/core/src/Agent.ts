@@ -1543,7 +1543,8 @@ export class Agent extends AgentContext {
   // -------------------------------------------------------------------------
 
   formatTools() {
-    if (!this.tools?.length) return undefined;
+    // `tools` 不是可选的（`AgentContext` 构造时 `?? []`），没有「可能没有它」这条路
+    if (this.tools.length === 0) return undefined;
     return this.tools.map((tool) => ({
       type: "function",
       function: {

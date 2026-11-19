@@ -343,13 +343,10 @@ export class Client implements ContractCaller {
     this.socket = null;
     this.helloResult = null;
     this.failPending(this.lostError());
-    if (previous) {
-      try {
-        previous.close();
-      } catch {
-        // 已经在关 / 从没连上：没有可做的事，连接到此为止
-      }
-    }
+    // `close()` 不抛：它只是把 readyState 推到 CLOSING（已经在关 / 从没连上都一样安静）。
+    // 以前这里套着一层 `catch {}`，`catch` 里写着「已经在关 / 从没连上」—— 那是给一个不存在
+    // 的失败编理由：真要有东西从这里抛出来，那就是我们自己写错了，该炸在这里。
+    if (previous) previous.close();
 
     await this.dial();
     await this.resyncAll();
@@ -450,12 +447,9 @@ export class Client implements ContractCaller {
         params: { endpoint: this.endpoint },
       }),
     );
+    // 同 `doReconnect`：`close()` 不抛，没有要接的失败
     if (!socket) return;
-    try {
-      socket.close();
-    } catch {
-      // 已经在关 / 从没连上
-    }
+    socket.close();
   }
 
   // -------------------------------------------------------------------------
@@ -484,13 +478,13 @@ export class Client implements ContractCaller {
     } catch (error) {
       if (this.socket === socket) {
         this.socket = null;
-        try {
-          socket.close();
-        } catch {
-          // 同上：能关到就关，关不到也没有可做的事
-        }
+        socket.close();
       }
-      throw error instanceof ClientError ? error : this.lostError();
+      // 原样往外抛，不改码：`handshake` 只会以 `ClientError` 拒绝（它自己就把别的收敛掉了），
+      // 所以走到这里的非 `ClientError` 只可能是**我们自己写错了**。以前这里把它翻成
+      // `connection_lost`，于是 core 外面那一层的 `isNotReady()` 把框架 bug 当成「宿主还没起来」、
+      // 轮询到超时才报 `host_unavailable` —— 错误被吞之后，上游只看到一个超时。
+      throw error;
     }
   }
 
@@ -588,11 +582,8 @@ export class Client implements ContractCaller {
   }
 
   private dropSocket(socket: WebSocket): void {
-    try {
-      socket.close();
-    } catch {
-      // 从没连上 / 已经在关
-    }
+    // `close()` 不抛（见 `doReconnect`）
+    socket.close();
     if (this.socket === socket) this.socket = null;
   }
 
@@ -777,8 +768,12 @@ export class Client implements ContractCaller {
     const sessionId = typeof fact.sessionId === "string" ? fact.sessionId : "";
     const mirror = this.mirrors.get(sessionId);
     if (!mirror) return;
-    // 拉失败不吵：镜像留在上一份，下一次 `resync`（或再一条 `memory_replaced`）会补上
-    void this.reloadMirror(sessionId, mirror).catch(() => undefined);
+    // 拉失败**必须有人听见**：镜像留在上一份 = 界面继续显示库里已经不存在的那些消息，而这件事
+    // 没有第二次机会（再一条 `memory_replaced` 是下一次交接）。`onSync` 正是订阅方（cli / desktop）
+    // 拿来显示「补拉失败」的那一格，`resyncAll` 也走它 —— 于是两条补拉路径的失败落在同一个口上。
+    void this.reloadMirror(sessionId, mirror).catch((error: unknown) => {
+      this.notifySync({ ok: false, sessionId, error: toClientError(error) });
+    });
   }
 
   /**

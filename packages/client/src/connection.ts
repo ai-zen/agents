@@ -634,7 +634,8 @@ function lastMeaningfulLine(path: string): string {
   const lines = text.split(/\r?\n/);
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     // npm 的进度行带颜色/光标控制：上屏之前抹掉，屏幕上不该出现裸的控制序列
-    const line = (lines[index] ?? "").replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").trim();
+    // （`index` 由 `split` 产出，这一格一定存在；以前那个 `?? ""` 接的是一个不存在的洞）
+    const line = lines[index]!.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").trim();
     if (line !== "") return line;
   }
   return "";

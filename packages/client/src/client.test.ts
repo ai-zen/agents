@@ -537,6 +537,41 @@ describe("镜像：打开一段会话", () => {
     expect(mirror.handoff).toBeNull();
   });
 
+  it("`memory_replaced` 的重拉失败报在 onSync 上（不是悄悄留在旧镜像上）", async () => {
+    let stateCalls = 0;
+    const host = await startFake({
+      methods: {
+        "session.state": (params) => {
+          stateCalls += 1;
+          // 首载那一读照常回；`memory_replaced` 之后的重拉当场失败
+          if (stateCalls > 1) {
+            throw new FakeMethodError({ code: "not_found", message: "这段会话不存在了" });
+          }
+          return { state: sessionState((params as { sessionId: string }).sessionId) };
+        },
+        "message.list": () => listed("c1", [userMessage("m1", "旧记忆里的那句")]),
+      },
+    });
+    const client = await connect(host);
+    const outcomes: SyncOutcome[] = [];
+    client.onSync((outcome) => outcomes.push(outcome));
+    await client.open("c1");
+
+    host.push("session.changed", {
+      sessionId: "c1",
+      workspaceId: "w1",
+      change: "memory_replaced",
+      at: "2026-01-01T00:00:09.000Z",
+    });
+
+    // 补不上就得说出来：界面继续显示的那几条在库里已经不存在了，静默留在旧镜像上没人会知道
+    await waitFor(() => outcomes.length === 1);
+    expect(outcomes[0]?.ok).toBe(false);
+    if (outcomes[0] && !outcomes[0].ok) expect(outcomes[0].error.code).toBe("not_found");
+    // 镜像仍旧是上一份（失败不半途改它），失败的**这件事**由 onSync 说
+    expect(client.mirror("c1")?.messages.map((message) => message.id)).toEqual(["m1"]);
+  });
+
   it("`memory_replaced` → 全量整段替换镜像，顺带把「正在交接」收掉", async () => {
     // 这段记忆「换过之后」的样子，由假宿主在下面换掉
     let current = [userMessage("m1", "旧记忆里的那句")];
