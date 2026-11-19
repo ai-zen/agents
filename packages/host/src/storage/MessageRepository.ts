@@ -20,8 +20,8 @@
  *
  * 5. **`source` 是判别结构**：core 的 `AgentNS.MessageSource`（`{kind:"user"}` /
  *    `{kind:"agent",label}` / `{kind:"system",label}`）在本表是一列 `TEXT`，存它的 JSON。
- *    写入时序列化、读回来反序列化，两个方向同一个形状；旧行这一列是 NULL（= 没记过），
- *    兼容与升级策略在 {@link toSource}。
+ *    写入时序列化、读回来反序列化，两个方向同一个形状；NULL（= 不知道来源）的含义与
+ *    反序列化规则见 {@link toSource}。
  *
  * FTS 索引的同步交给 `messages` 上的触发器（同样在 migrations.ts 里建），所以本文件
  * 写消息时只写 `messages` 表，不需要额外维护索引。
@@ -149,19 +149,16 @@ function toContent(value: unknown): AgentNS.MessageContent | null {
 /**
  * `source` 列的反序列化：core 的 `AgentNS.MessageSource` 是**判别结构**，库里存的是它的 JSON。
  *
- * 三种输入都要接住：
+ * 三种输入：
  *   1. 合法的判别结构（`{kind:"user"}` / `{kind:"agent",label}` / `{kind:"system",label}`）
  *      —— 原样返回；`label` 不是字符串的按空串算（宁可少一句话，不要让整行读不出来）；
- *   2. **旧形态：一个字符串**（这一列出现之前把来源当自由字符串的写法，或手写的 `'user'`）。
- *      读回来升成结构：`"user"` → `{kind:"user"}`，其余 → `{kind:"system", label: 那个串}`；
- *   3. NULL / 坏数据 → `null`，意思是「没有记过来源」，**不默认成用户**（`CORE.md` §3：
- *      不做「没有 source 就是用户」那种缺省）。
+ *   2. NULL → `null`，意思是「不知道来源」，**不默认成用户**（`CORE.md` §3：不做「没有
+ *      source 就是用户」那种缺省）。新建会话的第一条 cwd 消息就是这种，历史行也靠它区分
+ *      「那行的来源没人记过」；
+ *   3. 其它（能解析成 JSON、但不是上面的判别结构）→ 同样 `null`：认不出来就当「不知道」，
+ *      不猜它是用户还是系统。
  */
 function toSource(value: unknown): AgentNS.MessageSource | null {
-  if (typeof value === "string") {
-    if (value === "user") return { kind: "user" };
-    return { kind: "system", label: value };
-  }
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const record = value as { kind?: unknown; label?: unknown };
   if (record.kind === "user") return { kind: "user" };

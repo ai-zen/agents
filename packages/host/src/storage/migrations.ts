@@ -238,9 +238,9 @@ export const MIGRATIONS: Migration[] = [
      * （`{kind:"user"}` / `{kind:"agent", label}` / `{kind:"system", label}`）：用字符串就得
      * 把 `"user"` 当保留字，一个恰好叫 `user` 的 agent 就把它顶翻了（`CORE.md` §3）。
      *
-     * 存的是那段 JSON（`TEXT`），读回来反序列化成同一个形状。旧行这一列是 NULL —— 那不是
-     * 「用户说的」，而是「不知道」：这一列出现之前的行没有记过来源。`MessageRepository` 的
-     * `toSource` 还兼容「这一列里存的是字符串」的旧形态（早先把来源当自由字符串那种写法）。
+     * 存的是那段 JSON（`TEXT`），读回来反序列化成同一个形状。这一列是 NULL 的行 —— 那一行
+     * 就没记过来源 —— 不是「用户说的」，而是「不知道」：新建会话的第一条 cwd 消息、以及 `source`
+     * 一列出现之前就写下的行，读出来都是 `source: null`（见 `MessageRepository.toSource`）。
      */
     version: 3,
     statements: [`ALTER TABLE messages ADD COLUMN source TEXT`],

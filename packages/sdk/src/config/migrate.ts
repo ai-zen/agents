@@ -1,63 +1,49 @@
 /**
- * 配置字段迁移 —— 历史形状升级到当前形状
+ * 配置补位 —— 缺字段 / 非法值在启动时补成出厂值
  *
- * 三条遗留字段被淘汰：
+ * 依据 PRD 3.4：配置里少了字段、或值不合法，启动时补成出厂值。补完之后「配置即事实」——
+ * 文件里写着的就是运行时用的，使用方不必各自 `?? 出厂值` 地兵分两路兜底。
  *
- * 1. `Model.maxContextTokens` / `Model.maxContextChars` → **`Model.tokenThresholds`**
- *    旧名字一直在误导：它既不是「模型的真实上下文窗口」，也不是单一概念。现在拆成两条线：
- *    `handoff`（交接阈值，软线）与 `guard`（强行阻断阈值，硬线）。
- *    `maxContextChars` 是 token 口径之前的历史遗留，按 `floor(chars / 4)` 折成 tokens
- *    （与旧代码的回退算法一致）后并入 `handoff`。
- * 2. **`Model.reasoning` → `Model.reasoningPreset`**
- *    老配置用 `reasoning: { efforts, disable? }` 在模型上声明思考能力，现在是
- *    「引用策略表里的名字」。未标 `custom` 的模型会被出厂定义整块覆盖，但**标了 `custom`
- *    的模型会原地保留**，于是留下一个无人认识的 `reasoning` 死字段，同时因为缺
- *    `reasoningPreset` 而默默失去调档能力。这里删掉旧字段，并按**同 id 的出厂模型**
- *    补上正确的策略名（同一 id 即同一厂商型号，协议能力不会因用户改过参数而变）。
+ * 这里**不是**迁移：本仓没有发过旧版本（PRD 1.9「不做…迁移或识别旧数据」），所以文件里
+ * 没有一行「读旧形状」的代码。补位只往**空位**里放出厂值，用户写下的值一个都不改：
  *
- * 另有一类「缺省值缺位」的迁移：`Endpoint.capabilities`（见 `normalizeEndpointCapabilities`）。
+ * - `Model.tokenThresholds`：`handoff`（交接线，软）与 `guard`（阻断线，硬）两条整数阈值，
+ *   缺哪条补哪条（见 `normalizeModelThresholds`）；
+ * - `AppConfig.abortedMessageStrategy` / `abortedToolRoundStrategy`：缺失或非法 → 出厂默认
+ *   （见 `normalizeAbortStrategies`）；
+ * - `Endpoint.capabilities`：整块缺失 → 同 id 出厂端点的能力位
+ *   （见 `normalizeEndpointCapabilities`）。
  *
- * ## `defaultModel` 是**反例**：它不需要迁移，也绝不能清
+ * ## `defaultModel` 在这里不出现，是有意的
  *
- * 模型解析是三级（`会话级覆盖 > Agent 定义 > 本字段`，唯一实现在
- * `runtime/resolveModel.ts`），`defaultModel` 就是**全局兜底层**。字段名从未变过，
- * 所以这里**什么都不用搬**：老配置里写着的原样保留、继续生效。绝对不能再清 ——
- * 清掉等于用户升级一次就静默丢一次自己配的兜底模型，而这属于「默认值缺位」里最坏的
- * 一种：丢的是用户明确填过的值。
+ * 模型解析是三级（`会话级覆盖 > Agent 定义 > 本字段`，唯一实现在 `runtime/resolveModel.ts`），
+ * `defaultModel` 就是**全局兜底层**。用户没配就没有兜底层，`createAgent` 会给出明确报错 ——
+ * 那不是「缺省值缺位」，而是「用户没表态」。所以这里既不补也不清：清掉等于用户升级一次
+ * 就静默丢一次自己配的兜底模型。
  *
- * 迁移时机：`ConfigManager.read()` 读出即迁（内存里永远是当前形状）；
- * 落盘由 `ensureDefaultConfig()` 负责 —— 它比较迁移结果与磁盘原文，不同才写回，
- * 因此迁移只发生一次，且不会在每次启动时无谓地改写文件。
+ * 时机：`ConfigManager.read()` 读出即补位（内存里永远是当前形状）；落盘由
+ * `ensureDefaultConfig()` 负责 —— 它比较补位结果与磁盘原文，不同才写回，因此补位只发生
+ * 一次，且不会在每次启动时无谓地改写文件。
  */
 
 import type { AppConfig, Model, TokenThresholds } from "../types/index.js";
 import { DEFAULT_APP_CONFIG } from "./constants.js";
 
-/** 当前字段名 */
-export const TOKEN_THRESHOLDS_KEY = "tokenThresholds";
-
-/** 已淘汰的旧字段名（仅迁移代码认识它们） */
-export const LEGACY_TOKEN_FIELD = "maxContextTokens";
-export const LEGACY_CHARS_FIELD = "maxContextChars";
-export const LEGACY_REASONING_FIELD = "reasoning";
+/** `Model` 上两条阈值的字段名（当前唯一的形状） */
+const TOKEN_THRESHOLDS_KEY = "tokenThresholds";
 
 /**
- * 旧数据缺失阈值时的交接阈值兜底。
+ * `handoff` 缺失时的兜底。
  *
- * 与 CLI 新建模型的默认值一致；宁可给一个保守值，也不要让模型缺阈值——
+ * 与 CLI 新建模型的默认值一致；宁可给一个保守值，也不要让模型缺阈值 ——
  * 缺阈值意味着既没有交接触发、也没有阻断保护。
  */
 export const DEFAULT_HANDOFF_THRESHOLD = 128_000;
 
-/** 旧形状的模型条目（运行时才需要认识这些字段） */
-type LegacyModel = Model & {
-  [LEGACY_TOKEN_FIELD]?: unknown;
-  [LEGACY_CHARS_FIELD]?: unknown;
-  [LEGACY_REASONING_FIELD]?: unknown;
-  /** 中间版本曾用过的单值字段（未发布，仅防御性兼容） */
-  tokenThreshold?: unknown;
-};
+/** 缺 `guard` 时按 `handoff` 的这个倍数补：硬线在软线的 1.5 倍处（护栏的出厂口径） */
+const GUARD_RATIO = 1.5;
 
+/** 阈值只认正整数：0、负数、小数、非数字一律视为「这一格没填」 */
 function toPositiveInt(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
   return Math.floor(value);
@@ -73,85 +59,41 @@ function readThresholds(value: unknown): Partial<TokenThresholds> {
 }
 
 /**
- * 迁移单个模型条目。
+ * 补齐单个模型缺失的阈值。
  *
- * 优先级：已有 `tokenThresholds` 的成员 > 旧 tokens 字段 > 旧 chars 字段折算 > 兜底默认。
- * 旧字段一律删除（连同一份数据里残留的脏值），保证迁移后的形状唯一。
- * 已有 `handoff` 但缺 `guard` 时按 1.5 倍补齐。
+ * - 两条都在（都是合法正整数）→ 原样返回，`changed: false` 且连对象引用都不换；
+ * - 只有 `handoff` → `guard` 按 1.5 倍补；
+ * - 只有 `guard` → `handoff` 补 `DEFAULT_HANDOFF_THRESHOLD`（硬线是用户自己的选择，不动）；
+ * - 两条都缺，或值不合法 → 两条都补出厂值。
+ *
+ * `changed` 就是「要不要写盘」的判据；入参对象不被就地修改（调用方手里的旧对象保持原样）。
  */
-export function migrateModelThresholds(model: Model): { model: Model; changed: boolean } {
-  const source = model as LegacyModel;
+export function normalizeModelThresholds(model: Model): { model: Model; changed: boolean } {
   const current = readThresholds(
-    (source as unknown as Record<string, unknown>)[TOKEN_THRESHOLDS_KEY],
+    (model as unknown as Record<string, unknown>)[TOKEN_THRESHOLDS_KEY],
   );
-  const legacyTokens = toPositiveInt(source[LEGACY_TOKEN_FIELD]);
-  const legacyChars = toPositiveInt(source[LEGACY_CHARS_FIELD]);
-  const legacySingle = toPositiveInt(source.tokenThreshold);
-
-  const hasLegacy =
-    LEGACY_TOKEN_FIELD in source || LEGACY_CHARS_FIELD in source || "tokenThreshold" in source;
-  const complete = current.handoff !== undefined && current.guard !== undefined;
-
-  if (!hasLegacy && complete) return { model, changed: false };
-
-  const fromChars =
-    legacyChars !== undefined ? Math.max(1, Math.floor(legacyChars / 4)) : undefined;
-  const handoff =
-    current.handoff ?? legacyTokens ?? fromChars ?? legacySingle ?? DEFAULT_HANDOFF_THRESHOLD;
-  // 旧数据里没有 guard 这一项：按 1.5 倍（历史上护栏用的默认倍数）折算一次，
-  // 让迁移后的实际行为与迁移前一致。这是**一次性**换算，落盘后两个值都是整数，
-  // 运行时不再有任何倍数关系（想调硬线就直接改 guard 的数字）。
-  const guard = current.guard ?? Math.round(handoff * 1.5);
-
-  const next: Record<string, unknown> = { ...(source as unknown as Record<string, unknown>) };
-  delete next[LEGACY_TOKEN_FIELD];
-  delete next[LEGACY_CHARS_FIELD];
-  delete next.tokenThreshold;
-  next[TOKEN_THRESHOLDS_KEY] = { handoff, guard };
-
-  return { model: next as unknown as Model, changed: true };
-}
-
-/**
- * 迁移单个模型的思考能力声明：`reasoning` → `reasoningPreset`。
- *
- * 只处理「旧字段存在」这一种情况：字段一旦落盘消失，用户后续主动删掉
- * `reasoningPreset`（表示「这个模型我不想调档」）就不会被反复补回来。
- */
-export function migrateModelReasoning(model: Model): { model: Model; changed: boolean } {
-  const source = model as unknown as Record<string, unknown>;
-  if (!(LEGACY_REASONING_FIELD in source)) return { model, changed: false };
-
-  const next: Record<string, unknown> = { ...source };
-  delete next[LEGACY_REASONING_FIELD];
-
-  // 同 id 的出厂模型能告诉我们「这个型号属于哪套协议」
-  if (next.reasoningPreset === undefined) {
-    const factory = (DEFAULT_APP_CONFIG.models ?? []).find((item) => item.id === model.id);
-    if (factory?.reasoningPreset) next.reasoningPreset = factory.reasoningPreset;
+  if (current.handoff !== undefined && current.guard !== undefined) {
+    return { model, changed: false };
   }
 
-  return { model: next as unknown as Model, changed: true };
+  const handoff = current.handoff ?? DEFAULT_HANDOFF_THRESHOLD;
+  const guard = current.guard ?? Math.round(handoff * GUARD_RATIO);
+
+  return { model: { ...model, tokenThresholds: { handoff, guard } }, changed: true };
 }
 
 /**
- * 迁移整个配置。只处理会话模型（`models`）——
- * 图片模型（`imageModels`）既没有上下文阈值、也没有思考概念。
+ * 收敛整个配置：模型阈值 + 中断策略 + 端点能力位。
  *
- * 同时做两件字段级收敛：
- * - **保留** `defaultModel`（三级解析的全局兜底层，见文件头）：它不在这里被删、
- *   也不在这里被补 —— 用户没配就没有兜底层，`createAgent` 会给出明确报错；
- * - 补齐中断策略（`abortedMessageStrategy` / `abortedToolRoundStrategy`）：把缺失或
- *   非法值写成出厂默认。这样「配置即事实」——文件里写着的就是运行时用的，不再需要
- *   使用方各自 `?? "keep"` 地兵分两路兜底。
+ * 只处理会话模型（`models`）—— 图片模型（`imageModels`）既没有上下文阈值、也没有思考概念。
+ * 无改动时返回**原对象**（调用方靠 `changed` / 引用相等判断「不用写盘」）。
  */
-export function migrateConfig(config: AppConfig): { config: AppConfig; changed: boolean } {
+export function normalizeConfig(config: AppConfig): { config: AppConfig; changed: boolean } {
   let changed = false;
   const models = (config.models ?? []).map((model) => {
-    const thresholds = migrateModelThresholds(model);
-    const reasoning = migrateModelReasoning(thresholds.model);
-    if (thresholds.changed || reasoning.changed) changed = true;
-    return reasoning.model;
+    const thresholds = normalizeModelThresholds(model);
+    if (thresholds.changed) changed = true;
+    return thresholds.model;
   });
 
   const next = {
@@ -199,17 +141,17 @@ export function normalizeAbortStrategies(config: AppConfig): boolean {
  *
  * ## 为什么要补
  *
- * `capabilities.filesApi` 是后来才引入的能力位 —— 它把 `view_image` 的判定从「端点 id
+ * `capabilities.filesApi` 是能力位里的一项 —— 它把 `view_image` 的判定从「端点 id
  * 是不是 `deepseek`」改成「看这一位」，而出厂只有 deepseek 打了 `true`。
  * 但端点**不参与出厂托管**（`ConfigManager.syncManagedModels` 明写「保持用户配置」），
- * 迁移此前也完全不碰 `endpoints` —— 于是在这之前就已写下的配置，其 deepseek
- * 端点永远缺 `capabilities`，`supportsFilesApi()` 恒为 `false`：
+ * 这一格也就没有别的路径会补 —— 只要配置里它是空的，这个 deepseek 端点的
+ * `supportsFilesApi()` 就恒为 `false`：
  *
- *   · 出厂承诺的「deepseek 走 Files API」对这些用户从未生效；
+ *   · 出厂承诺的「deepseek 走 Files API」对这些配置从未生效；
  *   · 而且**全程静默** —— 「未声明能力位」和「缺 apiKey」两个分支都不发 warning，
  *     图片 / `view_image` / MCP 媒体就悄悄退化成 base64 内联，请求体随历史膨胀。
  *
- * 这是「默认值缺位」，不是「用户选择」，所以由迁移补 —— 与模型清单不同，端点本身仍然
+ * 这是「默认值缺位」，不是「用户选择」，所以由这里补 —— 与模型清单不同，端点本身仍然
  * 归用户所有，我们只往**空位**里放出厂默认。
  *
  * ## 边界：只补整体缺失，绝不覆盖

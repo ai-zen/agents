@@ -41,7 +41,14 @@ import type {
 import type { EventMap, EventName } from "../wire/events.js";
 import type { LocalizedText, QuestionView } from "../wire/states.js";
 
-/** 库里那条 `code` 认不出来时用的文案键（配置被手改坏、旧版本写进去的码） */
+/**
+ * 库里那条 `code` 在文案字典里查不到时用的兜底键。
+ *
+ * 不是给旧版本留的窗户：`notices` 的行比写它的代码活得久 —— 通知落库之后一直躺着
+ * （`log()` 发的就是永久通知，只能被手动清掉），而文案键会随功能一起被删（`notice.*`
+ * 历史上就删过一批），库本身也是可以被手改的磁盘文件。读的那一刻认不出这个码，
+ * 用户至少能看到「有一条通知（{code}）」，而不是整个列表读崩或者这条静默消失。
+ */
 const UNKNOWN_CODE_KEY: MessageKey = "notice.unknown";
 
 /** 造一条通知的入参（内部入口；`notice.*` 三个方法只读 / 只清） */

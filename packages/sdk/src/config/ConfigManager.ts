@@ -12,7 +12,7 @@ import {
 } from "./constants.js";
 import { FACTORY_SKILLS, isCustomSkill } from "./factory-skills.js";
 import { FACTORY_REASONING_PRESETS, REASONING_PRESETS_FILE } from "./reasoning-presets.js";
-import { migrateConfig } from "./migrate.js";
+import { normalizeConfig } from "./migrate.js";
 
 /**
  * 配置坏了、已经按出厂恢复之后的回调（参数是坏掉的那个文件路径）。
@@ -49,17 +49,17 @@ export class ConfigManager {
    * 读取配置。文件不存在时返回出厂默认配置；文件坏了（解析不了 / 不是对象）时
    * 恢复出厂并写回磁盘，也返回出厂默认配置（见 `readRaw`）。
    *
-   * 读到即**迁移**（`config/migrate.ts`）：上层拿到的永远是当前字段形状，
-   * 旧字段（`maxContextTokens` / `maxContextChars`）不会漏到调用方。
-   * 迁移结果不在这里落盘——落盘只在 `ensureDefaultConfig()` 做一次。
+   * 读到即**补位**（`config/migrate.ts`）：缺字段或非法值补成出厂值，上层拿到的永远是
+   * 合法形状（阈值两条齐、中断策略合法、端点能力位不缺）。
+   * 补位结果不在这里落盘——落盘只在 `ensureDefaultConfig()` 做一次。
    */
   async read(): Promise<AppConfig> {
     const raw = await this.readRaw();
-    return raw ? migrateConfig(raw).config : { ...DEFAULT_APP_CONFIG };
+    return raw ? normalizeConfig(raw).config : { ...DEFAULT_APP_CONFIG };
   }
 
   /**
-   * 读磁盘原文（不做任何迁移/同步），供 `ensureDefaultConfig()` 对比写盘用。
+   * 读磁盘原文（不做任何补位/同步），供 `ensureDefaultConfig()` 对比写盘用。
    *
    * 文件在但读不成配置（JSON 解析不了、或者解析出来不是对象）就是一档「坏」：先把坏文件
    * 改名留档，再用出厂配置写回磁盘，再回调一次，返回出厂配置。写回是为了让下次启动不再
@@ -135,9 +135,9 @@ export class ConfigManager {
       return { ...DEFAULT_APP_CONFIG };
     }
 
-    // 先迁移历史字段，再同步出厂模型清单；两者结果与磁盘原文不同才写盘
-    const migrated = migrateConfig(onDisk).config;
-    const synced = syncManagedModels(migrated);
+    // 先把缺的字段补成出厂值，再同步出厂模型清单；两者结果与磁盘原文不同才写盘
+    const normalized = normalizeConfig(onDisk).config;
+    const synced = syncManagedModels(normalized);
     if (JSON.stringify(synced) !== JSON.stringify(onDisk)) {
       await this.write(synced);
     }
@@ -281,7 +281,7 @@ export class ConfigManager {
     subAgent: AgentDefinition | null;
   }> {
     await this.ensureDirs();
-    // 先把配置读到当前形状（内含迁移），再从里面取 `defaultModel` 去补默认 Agent 的模型
+    // 先把配置读到当前形状（内含补位），再从里面取 `defaultModel` 去补默认 Agent 的模型
     const config = await this.ensureDefaultConfig();
     this.knownModelIds = new Set((config.models ?? []).map((m) => m.id));
     const agent = await this.ensureDefaultAgent(config.defaultModel);
