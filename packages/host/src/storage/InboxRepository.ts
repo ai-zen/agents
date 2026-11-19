@@ -29,7 +29,7 @@ import type { Database } from "./Database.js";
 /** 库里那一行的原样形状（`source` / `content` 还是 JSON 字符串） */
 export interface InboxRow {
   messageId: string;
-  conversationId: string;
+  sessionId: string;
   /** JSON：core 的 `AgentNS.MessageSource` 判别结构 */
   source: string;
   /** JSON：core 的 `AgentNS.MessageContent`（字符串或多模态段数组） */
@@ -56,7 +56,7 @@ export interface StoredInboxEntry {
 export interface InboxInsertInput {
   /** 落地成 User 消息时用的那个 id（投递方定死）：主键，也是恢复时的去重键 */
   messageId: string;
-  conversationId: string;
+  sessionId: string;
   /** core 的判别结构；原样序列化 */
   source: AgentNS.MessageSource;
   /** 正文原样序列化（不做任何清理、不转纯文本） */
@@ -65,7 +65,7 @@ export interface InboxInsertInput {
   createdAt: string;
 }
 
-const COLUMNS = "messageId, conversationId, source, content, createdAt, seq";
+const COLUMNS = "messageId, sessionId, source, content, createdAt, seq";
 
 export class InboxRepository {
   private readonly db: Database;
@@ -85,14 +85,14 @@ export class InboxRepository {
     await this.db.run(
       `INSERT INTO inbox (${COLUMNS})
        VALUES (?, ?, ?, ?, ?,
-               (SELECT COALESCE(MAX(seq), 0) + 1 FROM inbox WHERE conversationId = ?))`,
+               (SELECT COALESCE(MAX(seq), 0) + 1 FROM inbox WHERE sessionId = ?))`,
       [
         input.messageId,
-        input.conversationId,
+        input.sessionId,
         JSON.stringify(input.source),
         JSON.stringify(input.content),
         input.createdAt,
-        input.conversationId,
+        input.sessionId,
       ],
     );
   }
@@ -102,10 +102,10 @@ export class InboxRepository {
    *
    * 反序列化只做「JSON 文本 → 值」这一件事：存进去是什么形状，读回来就是什么形状。
    */
-  async listByConversation(conversationId: string): Promise<StoredInboxEntry[]> {
+  async listBySession(sessionId: string): Promise<StoredInboxEntry[]> {
     const rows = await this.db.all<InboxRow>(
-      `SELECT ${COLUMNS} FROM inbox WHERE conversationId = ? ORDER BY seq ASC`,
-      [conversationId],
+      `SELECT ${COLUMNS} FROM inbox WHERE sessionId = ? ORDER BY seq ASC`,
+      [sessionId],
     );
     return rows.map(toEntry);
   }
@@ -122,8 +122,8 @@ export class InboxRepository {
   }
 
   /** 清掉一段对话的全部待办（`inboxCleared` 的落点）。返回真的删掉几条 */
-  async clearByConversation(conversationId: string): Promise<number> {
-    const result = await this.db.run("DELETE FROM inbox WHERE conversationId = ?", [conversationId]);
+  async clearBySession(sessionId: string): Promise<number> {
+    const result = await this.db.run("DELETE FROM inbox WHERE sessionId = ?", [sessionId]);
     return result.changes;
   }
 }

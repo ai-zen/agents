@@ -17,7 +17,7 @@ export {
 } from "./ScopeRegistry.js";
 export type {
   Clock,
-  LiveConversationsQuery,
+  LiveSessionsQuery,
   ScopeFactory,
   ScopeRegistryOptions,
   WorkspaceScopeFactoryOptions,
@@ -47,8 +47,8 @@ export type {
   ChatAgent,
   ChatEventEmitter,
   ChatRunnerOptions,
-  ConversationReadout,
-  ConversationStore,
+  SessionReadout,
+  SessionStore,
   DeliveryInput,
   HandoffProvider,
   MessageAssetLinker,
@@ -58,5 +58,5 @@ export type {
   SubAgentReadout,
 } from "./ChatRunner.js";
 
-export { ConversationDrafts } from "./ConversationDrafts.js";
-export type { ConversationDraftStore } from "./ConversationDrafts.js";
+export { SessionDrafts } from "./SessionDrafts.js";
+export type { SessionDraftStore } from "./SessionDrafts.js";

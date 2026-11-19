@@ -96,11 +96,11 @@ beforeEach(async () => {
 
   await db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/w1', 1)");
   await db.run(
-    `INSERT INTO conversations (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
+    `INSERT INTO sessions (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
      VALUES ('c1', 'w1', '对话', 0, 'agent-1', 'm-1', 2, 2)`,
   );
   await db.run(
-    `INSERT INTO messages (id, conversationId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
+    `INSERT INTO messages (id, sessionId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
      VALUES ('msg-1', 'c1', 1, 'user', 'completed', 0, '"hi"', 'hi', 3, 3)`,
   );
 
@@ -178,7 +178,7 @@ function jpegBytes(width: number, height: number): Buffer {
 /** 走一遍「上传收完 → 落定登记」：临时文件进、正式素材出 */
 async function uploadAsset(
   bytes: Uint8Array,
-  options: { mime?: string; name?: string | null; conversationId?: string } = {},
+  options: { mime?: string; name?: string | null; sessionId?: string } = {},
 ): Promise<AssetRef> {
   await fs.mkdir(assetsDir, { recursive: true });
   const uploadId = randomUUID();
@@ -192,13 +192,13 @@ async function uploadAsset(
     sha256: createHash("sha256").update(bytes).digest("hex"),
     name: options.name === undefined ? "photo.png" : options.name,
     purpose: "message_image",
-    conversationId: options.conversationId ?? "c1",
+    sessionId: options.sessionId ?? "c1",
   });
 }
 
 function prepare(assetIds: string[], content: AgentNS.MessageContent = "看看这张图"): AttachmentPrepareContext {
   return {
-    conversationId: "c1",
+    sessionId: "c1",
     agentId: "agent-1",
     modelId: "m-1",
     input: { content, assetIds },
@@ -219,10 +219,10 @@ function localSections(...sections: LocalMessageContentSection[]): LocalMessageC
 /** 走一遍「消息落库那一刻」：把内容里的 `__asset_id` 记成关系行 */
 async function linkToMessage(
   assetId: string,
-  options: { messageId?: string; conversationId?: string } = {},
+  options: { messageId?: string; sessionId?: string } = {},
 ): Promise<number> {
   return await service.linkMessageAssets({
-    conversationId: options.conversationId ?? "c1",
+    sessionId: options.sessionId ?? "c1",
     messageId: options.messageId ?? "msg-1",
     content: localSections({ type: "image_url", image_url: { url: "" }, __asset_id: assetId }),
   });
@@ -305,8 +305,8 @@ describe("finalizeUpload", () => {
     expect(await linkToMessage(ref.assetId)).toBe(1);
     expect(await linkToMessage(ref.assetId)).toBe(0);
     expect((await repo.listByMessage("msg-1")).map((row) => row.id)).toEqual([ref.assetId]);
-    expect((await repo.listByConversation("c1")).map((row) => row.id)).toEqual([ref.assetId]);
-    expect(await repo.countConversations(ref.assetId)).toBe(1);
+    expect((await repo.listBySession("c1")).map((row) => row.id)).toEqual([ref.assetId]);
+    expect(await repo.countSessions(ref.assetId)).toBe(1);
   });
 
   it("linkMessageAssets：认不得的素材 id 不炸整轮（只少记一行）", async () => {
@@ -485,23 +485,23 @@ describe("按引用清理", () => {
 
   it("还有别的对话在引用：行与文件都留下", async () => {
     await db.run(
-      `INSERT INTO conversations (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
+      `INSERT INTO sessions (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
        VALUES ('c2', 'w1', '另一段', 0, 'agent-1', 'm-1', 2, 2)`,
     );
     await db.run(
-      `INSERT INTO messages (id, conversationId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
+      `INSERT INTO messages (id, sessionId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
        VALUES ('msg-2', 'c2', 1, 'user', 'completed', 0, '"hi"', 'hi', 3, 3)`,
     );
     const ref = await uploadAsset(imageBytes(8));
     await linkToMessage(ref.assetId, { messageId: "msg-1" });
-    await linkToMessage(ref.assetId, { messageId: "msg-2", conversationId: "c2" });
+    await linkToMessage(ref.assetId, { messageId: "msg-2", sessionId: "c2" });
     // 删掉第一个对话：它那一行关系跟着走，第二个对话那一行还在
-    await db.run("DELETE FROM conversations WHERE id = ?", ["c1"]);
+    await db.run("DELETE FROM sessions WHERE id = ?", ["c1"]);
 
     expect(await service.sweepUnreferenced([ref.assetId])).toEqual([]);
     expect(await repo.get(ref.assetId)).toBeDefined();
     expect(await fs.readdir(assetsDir)).toEqual([`${ref.assetId}.png`]);
-    expect(await repo.countConversations(ref.assetId)).toBe(1);
+    expect(await repo.countSessions(ref.assetId)).toBe(1);
   });
 
   it("只删文件（行已被级联删掉的场合）", async () => {
@@ -556,16 +556,16 @@ describe("全局去重", () => {
 
   it("两个不同对话上传同一张图：素材一行、磁盘一份、关系两行", async () => {
     await db.run(
-      `INSERT INTO conversations (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
+      `INSERT INTO sessions (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
        VALUES ('c2', 'w1', '另一段', 0, 'agent-1', 'm-1', 2, 2)`,
     );
     await db.run(
-      `INSERT INTO messages (id, conversationId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
+      `INSERT INTO messages (id, sessionId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
        VALUES ('msg-2', 'c2', 1, 'user', 'completed', 0, '"hi"', 'hi', 3, 3)`,
     );
     const bytes = imageBytes(32);
     const first = await uploadAsset(bytes);
-    const second = await uploadAsset(bytes, { conversationId: "c2" });
+    const second = await uploadAsset(bytes, { sessionId: "c2" });
 
     // 引用是同一份素材（数据库里只有一行、盘上只有一份）
     expect(second.assetId).toBe(first.assetId);
@@ -573,9 +573,9 @@ describe("全局去重", () => {
 
     // 归属靠关系行：每个对话各一行
     await linkToMessage(first.assetId, { messageId: "msg-1" });
-    await linkToMessage(second.assetId, { messageId: "msg-2", conversationId: "c2" });
-    expect(await repo.listConversationIds(first.assetId)).toEqual(["c1", "c2"]);
-    expect(await repo.countConversations(first.assetId)).toBe(2);
+    await linkToMessage(second.assetId, { messageId: "msg-2", sessionId: "c2" });
+    expect(await repo.listSessionIds(first.assetId)).toEqual(["c1", "c2"]);
+    expect(await repo.countSessions(first.assetId)).toBe(2);
   });
 
   it("findExistingAsset：同摘要 + 同字节才算命中，字节数对不上不算", async () => {
@@ -733,7 +733,7 @@ describe("__asset_id 两端", () => {
     ];
 
     const resolved = await service.resolveHistory({
-      conversationId: "c1",
+      sessionId: "c1",
       modelId: "m-1",
       messages: history,
     });
@@ -766,8 +766,8 @@ describe("__asset_id 两端", () => {
       },
     ];
 
-    const first = await service.resolveHistory({ conversationId: "c1", modelId: "m-1", messages: history });
-    const second = await service.resolveHistory({ conversationId: "c1", modelId: "m-1", messages: history });
+    const first = await service.resolveHistory({ sessionId: "c1", modelId: "m-1", messages: history });
+    const second = await service.resolveHistory({ sessionId: "c1", modelId: "m-1", messages: history });
 
     // Files API：命中持久缓存，两轮拿到同一个 file_id，段逐字节相同
     expect(JSON.stringify(second[0]?.content)).toBe(JSON.stringify(first[0]?.content));
@@ -785,8 +785,8 @@ describe("__asset_id 两端", () => {
       },
     ];
 
-    const first = await service.resolveHistory({ conversationId: "c1", modelId: "m-1", messages: history });
-    const second = await service.resolveHistory({ conversationId: "c1", modelId: "m-1", messages: history });
+    const first = await service.resolveHistory({ sessionId: "c1", modelId: "m-1", messages: history });
+    const second = await service.resolveHistory({ sessionId: "c1", modelId: "m-1", messages: history });
 
     const firstUrl = (first[0]?.content as { image_url: { url: string } }[])[0]?.image_url.url;
     const secondUrl = (second[0]?.content as { image_url: { url: string } }[])[0]?.image_url.url;
@@ -799,7 +799,7 @@ describe("__asset_id 两端", () => {
     const ref = await uploadAsset(imageBytes(16));
 
     const resolved = await service.resolveHistory({
-      conversationId: "c1",
+      sessionId: "c1",
       modelId: "m-1",
       messages: [
         {
@@ -817,7 +817,7 @@ describe("__asset_id 两端", () => {
 
   it("resolveHistory：素材已经不在时给一句文字说明（不把 __asset_id 交给厂商）", async () => {
     const resolved = await service.resolveHistory({
-      conversationId: "c1",
+      sessionId: "c1",
       modelId: "m-1",
       messages: [
         {
@@ -839,7 +839,7 @@ describe("__asset_id 两端", () => {
       { id: "m1", role: "user" as AgentNS.Role, content: "只有文字" },
     ];
     const resolved = await service.resolveHistory({
-      conversationId: "c1",
+      sessionId: "c1",
       modelId: "m-1",
       messages: history,
     });

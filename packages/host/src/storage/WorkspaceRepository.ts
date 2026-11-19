@@ -47,7 +47,7 @@ export class WorkspaceRepository {
   }
 
   /**
-   * 删 Workspace：它名下的 conversations / messages / assets / questions 靠外键级联清掉
+   * 删 Workspace：它名下的 sessions / messages / assets / questions 靠外键级联清掉
    * （PRD D11：删项目连带删它名下的对话）。目录本身不在存储层职能范围内。
    */
   async delete(id: string): Promise<number> {

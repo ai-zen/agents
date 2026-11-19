@@ -1,10 +1,10 @@
 /**
- * `conversations` 表仓储：只做 SQL，不含业务判断。
+ * `sessions` 表仓储：只做 SQL，不含业务判断。
  *
  * 排序口径照 PRD D13：置顶优先，其次创建时间倒序。改名、活动、打开都**不**改变顺序，
  * 所以 `orderBy` 里没有 `updatedAt`。
  *
- * 唯一一处跨表的语句是 {@link ConversationRepository.replaceMemory}：交接换记忆时「插存档会话行 +
+ * 唯一一处跨表的语句是 {@link SessionRepository.replaceMemory}：交接换记忆时「插存档会话行 +
  * 搬消息行 + 写两条占位消息」必须在同一个事务里（PRD 4.5），拆到两个仓储就只能是两个事务。
  */
 
@@ -13,13 +13,13 @@ import type { CompactionMode } from "../wire/states.js";
 import type { Database, RunResult, TxClient, TxStatement } from "./Database.js";
 import { registerMessageUpsert } from "./MessageRepository.js";
 import type {
-  Conversation,
-  ConversationCreateInput,
-  ConversationMemorySwap,
-  ConversationRow,
+  Session,
+  SessionCreateInput,
+  SessionMemorySwap,
+  SessionRow,
 } from "./types.js";
 
-/** 读写路径共用的列清单（顺序与 `toConversation` 的形状一致） */
+/** 读写路径共用的列清单（顺序与 `toSession` 的形状一致） */
 const COLUMNS =
   "id, workspaceId, name, nameIsAuto, pinned, agentId, modelId, thinkingLevel, compactedAt, compactionMode, handoffThreshold, guardThreshold, pendingHandoff, autoHandoff, lineage, createdAt, updatedAt";
 
@@ -46,13 +46,13 @@ const ORDER_BY = "ORDER BY pinned DESC, createdAt DESC, id DESC";
  *
  * 导出的理由与 `registerMessageUpsert` 同一个：交接换记忆那一批要把这条与消息的两条塞进同一个事务。
  */
-export function registerConversationInsert(
+export function registerSessionInsert(
   tx: TxClient,
-  input: ConversationCreateInput,
+  input: SessionCreateInput,
 ): TxStatement<RunResult> {
   const updatedAt = input.updatedAt ?? input.createdAt;
   return tx.run(
-    `INSERT INTO conversations (${INSERT_COLUMNS})
+    `INSERT INTO sessions (${INSERT_COLUMNS})
      VALUES (?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       input.id,
@@ -71,7 +71,7 @@ export function registerConversationInsert(
   );
 }
 
-function toConversation(row: ConversationRow): Conversation {
+function toSession(row: SessionRow): Session {
   return {
     ...row,
     pinned: row.pinned !== 0,
@@ -94,7 +94,7 @@ function escapeLike(keyword: string): string {
   return keyword.replace(/[\\%_]/g, (match) => `\\${match}`);
 }
 
-export class ConversationRepository {
+export class SessionRepository {
   private readonly db: Database;
 
   constructor(db: Database) {
@@ -105,8 +105,8 @@ export class ConversationRepository {
    * 新建对话：名字是创建时按时间起的原名，所以 `nameIsAuto` 落 1（R35）。
    * 用户改名与自动命名各有自己的方法，不从这条路径走。
    */
-  async create(input: ConversationCreateInput): Promise<void> {
-    await this.db.tx((tx) => registerConversationInsert(tx, input));
+  async create(input: SessionCreateInput): Promise<void> {
+    await this.db.tx((tx) => registerSessionInsert(tx, input));
   }
 
   /**
@@ -115,7 +115,7 @@ export class ConversationRepository {
    * 四步一批提交，顺序不能换：
    *   1. 插存档会话行（身份照抄原会话，只有 id / 名字 / 创建时刻是新的）；
    *   2. 把原会话的**全部消息行**改挂到存档名下 —— `seq` / `createdAt` 一个字都不动，搬的是归属；
-   *   3. 消息的素材关系行跟着搬（`conversation_assets.conversationId` 也是「这条消息属于哪段
+   *   3. 消息的素材关系行跟着搬（`session_assets.sessionId` 也是「这条消息属于哪段
    *      会话」的一份记录，不搬的话删原会话会把它名下那些素材引用一起级联删掉，而消息其实在存档里）；
    *   4. 按顺序写回新记忆的那几条行（此时原会话已经腾空，`seq` 自然从 1 开始）。
    *
@@ -125,35 +125,35 @@ export class ConversationRepository {
    * 为什么这四步必须同一个事务：只成前几步就留下「旧记忆已经存档、原会话却空着」的第三种状态 ——
    * 那正是交接要防的（崩溃安全）。失败整批回滚，库里回到交接前，一段存档会话都不会留下。
    */
-  async replaceMemory(input: ConversationMemorySwap): Promise<void> {
+  async replaceMemory(input: SessionMemorySwap): Promise<void> {
     await this.db.tx((tx) => {
-      registerConversationInsert(tx, input.archived);
-      tx.run("UPDATE messages SET conversationId = ? WHERE conversationId = ?", [
+      registerSessionInsert(tx, input.archived);
+      tx.run("UPDATE messages SET sessionId = ? WHERE sessionId = ?", [
         input.archived.id,
-        input.conversationId,
+        input.sessionId,
       ]);
-      tx.run("UPDATE conversation_assets SET conversationId = ? WHERE conversationId = ?", [
+      tx.run("UPDATE session_assets SET sessionId = ? WHERE sessionId = ?", [
         input.archived.id,
-        input.conversationId,
+        input.sessionId,
       ]);
       for (const row of input.memory) registerMessageUpsert(tx, row);
     });
   }
 
-  async get(id: string): Promise<Conversation | undefined> {
-    const row = await this.db.get<ConversationRow>(
-      `SELECT ${COLUMNS} FROM conversations WHERE id = ?`,
+  async get(id: string): Promise<Session | undefined> {
+    const row = await this.db.get<SessionRow>(
+      `SELECT ${COLUMNS} FROM sessions WHERE id = ?`,
       [id],
     );
-    return row ? toConversation(row) : undefined;
+    return row ? toSession(row) : undefined;
   }
 
-  async listByWorkspace(workspaceId: string): Promise<Conversation[]> {
-    const rows = await this.db.all<ConversationRow>(
-      `SELECT ${COLUMNS} FROM conversations WHERE workspaceId = ? ${ORDER_BY}`,
+  async listByWorkspace(workspaceId: string): Promise<Session[]> {
+    const rows = await this.db.all<SessionRow>(
+      `SELECT ${COLUMNS} FROM sessions WHERE workspaceId = ? ${ORDER_BY}`,
       [workspaceId],
     );
-    return rows.map(toConversation);
+    return rows.map(toSession);
   }
 
   /**
@@ -162,18 +162,18 @@ export class ConversationRepository {
    * 从前这件事走 `PeerSessionService` 的进程内记录，重启即失；血缘落库之后它是库里的事实 ——
    * 重启前后数出来的是同一批。血缘列没有索引：这张表小，而这条查询只在开兄弟会话那一刻走一次。
    */
-  async listByLineage(lineage: string): Promise<Conversation[]> {
-    const rows = await this.db.all<ConversationRow>(
-      `SELECT ${COLUMNS} FROM conversations WHERE lineage = ? ${ORDER_BY}`,
+  async listByLineage(lineage: string): Promise<Session[]> {
+    const rows = await this.db.all<SessionRow>(
+      `SELECT ${COLUMNS} FROM sessions WHERE lineage = ? ${ORDER_BY}`,
       [lineage],
     );
-    return rows.map(toConversation);
+    return rows.map(toSession);
   }
 
   /** 全部对话（跨 Workspace），排序口径同上 */
-  async list(): Promise<Conversation[]> {
-    const rows = await this.db.all<ConversationRow>(`SELECT ${COLUMNS} FROM conversations ${ORDER_BY}`);
-    return rows.map(toConversation);
+  async list(): Promise<Session[]> {
+    const rows = await this.db.all<SessionRow>(`SELECT ${COLUMNS} FROM sessions ${ORDER_BY}`);
+    return rows.map(toSession);
   }
 
   /**
@@ -182,7 +182,7 @@ export class ConversationRepository {
    */
   async renameByUser(id: string, name: string, updatedAt: number): Promise<number> {
     const result = await this.db.run(
-      "UPDATE conversations SET name = ?, nameIsAuto = 0, updatedAt = ? WHERE id = ?",
+      "UPDATE sessions SET name = ?, nameIsAuto = 0, updatedAt = ? WHERE id = ?",
       [name, updatedAt, id],
     );
     return result.changes;
@@ -196,7 +196,7 @@ export class ConversationRepository {
    */
   async applyAutoName(id: string, name: string, updatedAt: number): Promise<number> {
     const result = await this.db.run(
-      "UPDATE conversations SET name = ?, nameIsAuto = 1, updatedAt = ? WHERE id = ?",
+      "UPDATE sessions SET name = ?, nameIsAuto = 1, updatedAt = ? WHERE id = ?",
       [name, updatedAt, id],
     );
     return result.changes;
@@ -204,7 +204,7 @@ export class ConversationRepository {
 
   async setPinned(id: string, pinned: boolean, updatedAt: number): Promise<number> {
     const result = await this.db.run(
-      "UPDATE conversations SET pinned = ?, updatedAt = ? WHERE id = ?",
+      "UPDATE sessions SET pinned = ?, updatedAt = ? WHERE id = ?",
       [pinned ? 1 : 0, updatedAt, id],
     );
     return result.changes;
@@ -218,7 +218,7 @@ export class ConversationRepository {
    */
   async setModel(id: string, modelId: string, updatedAt: number): Promise<number> {
     const result = await this.db.run(
-      "UPDATE conversations SET modelId = ?, thinkingLevel = NULL, updatedAt = ? WHERE id = ?",
+      "UPDATE sessions SET modelId = ?, thinkingLevel = NULL, updatedAt = ? WHERE id = ?",
       [modelId, updatedAt, id],
     );
     return result.changes;
@@ -231,7 +231,7 @@ export class ConversationRepository {
     updatedAt: number,
   ): Promise<number> {
     const result = await this.db.run(
-      "UPDATE conversations SET thinkingLevel = ?, updatedAt = ? WHERE id = ?",
+      "UPDATE sessions SET thinkingLevel = ?, updatedAt = ? WHERE id = ?",
       [thinkingLevel, updatedAt, id],
     );
     return result.changes;
@@ -266,7 +266,7 @@ export class ConversationRepository {
     // 两格都没给就不发语句：空 UPDATE 只会白写一次 `updatedAt`
     if (assignments.length === 0) return 0;
     const result = await this.db.run(
-      `UPDATE conversations SET ${assignments.join(", ")}, updatedAt = ? WHERE id = ?`,
+      `UPDATE sessions SET ${assignments.join(", ")}, updatedAt = ? WHERE id = ?`,
       [...values, updatedAt, id],
     );
     return result.changes;
@@ -287,7 +287,7 @@ export class ConversationRepository {
     compactedAt: number,
   ): Promise<number> {
     const result = await this.db.run(
-      "UPDATE conversations SET compactedAt = ?, compactionMode = ? WHERE id = ?",
+      "UPDATE sessions SET compactedAt = ?, compactionMode = ? WHERE id = ?",
       [compactedAt, mode, id],
     );
     return result.changes;
@@ -302,7 +302,7 @@ export class ConversationRepository {
    * @returns 改动的行数（对话已经不在了就是 0，不是错：待交接随对话一起没，没什么好写的）
    */
   async setPendingHandoff(id: string, mode: HandoffMode | null): Promise<number> {
-    const result = await this.db.run("UPDATE conversations SET pendingHandoff = ? WHERE id = ?", [
+    const result = await this.db.run("UPDATE sessions SET pendingHandoff = ? WHERE id = ?", [
       mode,
       id,
     ]);
@@ -314,7 +314,7 @@ export class ConversationRepository {
    *
    * 只有一条路会写它：用户答完交接题选了「不交接」（PRD 4.10 的「答案的后果要落」）——
    * 关掉之后下一次撞线不再问，否则等于没记住。创建那一刻的初值不走这里（见
-   * `registerConversationInsert`：用户建 0 / 兄弟会话 1）。
+   * `registerSessionInsert`：用户建 0 / 兄弟会话 1）。
    *
    * 它是一格会话设置，所以照别处的口径记一次修改时间（同 `setPinned` / `setThresholds`）。
    *
@@ -322,7 +322,7 @@ export class ConversationRepository {
    */
   async setAutoHandoff(id: string, autoHandoff: boolean, updatedAt: number): Promise<number> {
     const result = await this.db.run(
-      "UPDATE conversations SET autoHandoff = ?, updatedAt = ? WHERE id = ?",
+      "UPDATE sessions SET autoHandoff = ?, updatedAt = ? WHERE id = ?",
       [autoHandoff ? 1 : 0, updatedAt, id],
     );
     return result.changes;
@@ -330,7 +330,7 @@ export class ConversationRepository {
 
   /** 硬删对话（PRD D17），消息与素材行随之级联删除 */
   async delete(id: string): Promise<number> {
-    const result = await this.db.run("DELETE FROM conversations WHERE id = ?", [id]);
+    const result = await this.db.run("DELETE FROM sessions WHERE id = ?", [id]);
     return result.changes;
   }
 
@@ -344,25 +344,25 @@ export class ConversationRepository {
     keyword: string,
     workspaceId: string | undefined,
     limit: number,
-  ): Promise<Conversation[]> {
+  ): Promise<Session[]> {
     const pattern = `%${escapeLike(keyword)}%`;
     if (workspaceId === undefined) {
-      const rows = await this.db.all<ConversationRow>(
-        `SELECT ${COLUMNS} FROM conversations
+      const rows = await this.db.all<SessionRow>(
+        `SELECT ${COLUMNS} FROM sessions
          WHERE name LIKE ? ESCAPE '\\'
          ${ORDER_BY}
          LIMIT ?`,
         [pattern, limit],
       );
-      return rows.map(toConversation);
+      return rows.map(toSession);
     }
-    const rows = await this.db.all<ConversationRow>(
-      `SELECT ${COLUMNS} FROM conversations
+    const rows = await this.db.all<SessionRow>(
+      `SELECT ${COLUMNS} FROM sessions
        WHERE workspaceId = ? AND name LIKE ? ESCAPE '\\'
        ${ORDER_BY}
        LIMIT ?`,
       [workspaceId, pattern, limit],
     );
-    return rows.map(toConversation);
+    return rows.map(toSession);
   }
 }

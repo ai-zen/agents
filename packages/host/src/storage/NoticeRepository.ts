@@ -6,14 +6,14 @@
  *
  * `durationMs` 为 null 表示永久存在；有值时到点消失，靠 `deleteExpired` 清掉。
  *
- * `conversationId` 是「这条通知与哪段对话有关」的真值列（可空 = 全域通知），
+ * `sessionId` 是「这条通知与哪段对话有关」的真值列（可空 = 全域通知），
  * 按对话过滤与按对话清除都走它。
  */
 
 import type { Database } from "./Database.js";
 import type { Notice, NoticeCreateInput, NoticeRow } from "./types.js";
 
-const COLUMNS = "id, level, code, params, durationMs, conversationId, createdAt";
+const COLUMNS = "id, level, code, params, durationMs, sessionId, createdAt";
 
 function parseParams(value: string | null): Record<string, unknown> | null {
   if (value === null) return null;
@@ -35,7 +35,7 @@ function toNotice(row: NoticeRow): Notice {
     code: row.code,
     params: parseParams(row.params),
     durationMs: row.durationMs,
-    conversationId: row.conversationId,
+    sessionId: row.sessionId,
     createdAt: row.createdAt,
   };
 }
@@ -56,7 +56,7 @@ export class NoticeRepository {
         input.code,
         input.params === undefined || input.params === null ? null : JSON.stringify(input.params),
         input.durationMs ?? null,
-        input.conversationId ?? null,
+        input.sessionId ?? null,
         input.createdAt,
       ],
     );
@@ -92,10 +92,10 @@ export class NoticeRepository {
     return result.changes;
   }
 
-  /** 清掉挂在一段对话上的通知（`notice.clear({ conversationId })` 的读写路径） */
-  async clearByConversation(conversationId: string): Promise<number> {
-    const result = await this.db.run("DELETE FROM notices WHERE conversationId = ?", [
-      conversationId,
+  /** 清掉挂在一段对话上的通知（`notice.clear({ sessionId })` 的读写路径） */
+  async clearBySession(sessionId: string): Promise<number> {
+    const result = await this.db.run("DELETE FROM notices WHERE sessionId = ?", [
+      sessionId,
     ]);
     return result.changes;
   }

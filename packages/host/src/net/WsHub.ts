@@ -10,8 +10,8 @@
  *      （接线层自己代管的只有 `host.hello` / `host.setLanguage` 与上传三段）。
  *      业务逻辑一律不在本文件里。
  *   3. **推送**：JSON-RPC 通知（无 id），`params` 就是事件载荷。不重放、不需要 ack（PRD L5：
- *      断线重连由客户端自己拉）。受理即返回的方法（`conversation.send` 这类）会产生「事件早于回包」
- *      的顺序问题，所以按 `conversationId` 缓冲，回包写完再按序放行（裁定 R47）。
+ *      断线重连由客户端自己拉）。受理即返回的方法（`session.send` 这类）会产生「事件早于回包」
+ *      的顺序问题，所以按 `sessionId` 缓冲，回包写完再按序放行（裁定 R47）。
  *   4. **上传帧**：二进制帧交给 `UploadReceiver` 落盘；连接断开时把它名下未完成的上传清掉。
  *
  * 错误一律走 JSON-RPC `error`：`data.code` 是稳定业务码、`data.message` 是按**这条连接的语言**
@@ -172,7 +172,7 @@ interface ConnectionState {
   clientInfo: ClientInfo | null;
   credentialId: string | null;
   authorized: boolean;
-  /** conversationId → 压着还没放行的推送 */
+  /** sessionId → 压着还没放行的推送 */
   deferred: Map<string, DeferredPush>;
 }
 
@@ -307,10 +307,10 @@ export class WsHub {
    * 推一个事件给所有已握手的连接。
    *
    * 形状与 `ChatRunner` 的 `ChatEventEmitter` 一致，所以单根可以把它直接当 `emit` 注入。
-   * 事件里带 `conversationId` 的（全部事件都带）会受该对话的缓冲控制：有请求还没回包时先排队。
+   * 事件里带 `sessionId` 的（全部事件都带）会受该对话的缓冲控制：有请求还没回包时先排队。
    */
   push<E extends EventName>(event: E, payload: EventMap[E]): void {
-    const key = conversationKeyOf(event, payload);
+    const key = sessionKeyOf(event, payload);
     for (const state of this.connections.values()) {
       this.dispatch(state, key, () => this.frameFor(state, event, payload));
     }
@@ -488,7 +488,7 @@ export class WsHub {
     method: string,
     params: unknown,
   ): Promise<void> {
-    const holdKey = conversationKeyOfParams(params);
+    const holdKey = sessionKeyOfParams(params);
     if (holdKey !== null) this.defer(state, holdKey);
 
     let response: JsonRpcResponseFrame;
@@ -510,7 +510,7 @@ export class WsHub {
     method: string,
     params: unknown,
   ): Promise<void> {
-    const holdKey = conversationKeyOfParams(params);
+    const holdKey = sessionKeyOfParams(params);
     if (holdKey !== null) this.defer(state, holdKey);
     try {
       await this.invoke(state, method, params);
@@ -650,7 +650,7 @@ export class WsHub {
   // 推送：该压就压、该写就写（R47）
   // -------------------------------------------------------------------------
 
-  /** 压住一段对话的推送：每来一个带 `conversationId` 的请求，这一段的深度加一 */
+  /** 压住一段对话的推送：每来一个带 `sessionId` 的请求，这一段的深度加一 */
   private defer(state: ConnectionState, key: string): void {
     const existing = state.deferred.get(key);
     if (existing) {
@@ -689,12 +689,12 @@ export class WsHub {
    */
   private dispatch(
     state: ConnectionState,
-    conversationId: string | null,
+    sessionId: string | null,
     makeFrame: () => JsonRpcNotificationFrame,
   ): void {
     if (!state.authorized) return;
-    if (conversationId !== null) {
-      const push = state.deferred.get(conversationId);
+    if (sessionId !== null) {
+      const push = state.deferred.get(sessionId);
       if (push) {
         // 压着的是一段「怎么造这一帧」的意图，不是某个已经渲染好的帧：放行时用那时的语言重算
         push.queue.push(makeFrame);
@@ -825,26 +825,26 @@ function asId(value: unknown): JsonRpcId | null {
   return null;
 }
 
-/** 请求参数里的 `conversationId`：有就按它缓冲该对话的推送（R47） */
-function conversationKeyOfParams(params: unknown): string | null {
+/** 请求参数里的 `sessionId`：有就按它缓冲该对话的推送（R47） */
+function sessionKeyOfParams(params: unknown): string | null {
   if (typeof params !== "object" || params === null || Array.isArray(params)) return null;
-  const value = (params as Record<string, unknown>).conversationId;
+  const value = (params as Record<string, unknown>).sessionId;
   return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
 }
 
 /**
  * 事件载荷里的对话 id。
  *
- * 多数事件直接在顶层带 `conversationId`（忙闲、两道闸、出错、结构变化、三条消息事件）；通知与
+ * 多数事件直接在顶层带 `sessionId`（忙闲、两道闸、出错、结构变化、三条消息事件）；通知与
  * 问题是嵌套的，而且那个字段可以是
  * `null`（全局的：不受任何对话的缓冲影响）。这一处让 `push` 的调用方不必自己传 key。
  */
-function conversationKeyOf<E extends EventName>(event: E, payload: EventMap[E]): string | null {
+function sessionKeyOf<E extends EventName>(event: E, payload: EventMap[E]): string | null {
   switch (event) {
     case "notice":
-      return nonEmpty((payload as EventMap["notice"]).notice.conversationId);
+      return nonEmpty((payload as EventMap["notice"]).notice.sessionId);
     case "question":
-      return nonEmpty((payload as EventMap["question"]).question.conversationId);
+      return nonEmpty((payload as EventMap["question"]).question.sessionId);
     case "message.added":
     case "message.delta":
     case "message.changed":
@@ -856,8 +856,8 @@ function conversationKeyOf<E extends EventName>(event: E, payload: EventMap[E]):
     case "input:paused":
     case "input:resumed":
     case "error":
-    case "conversation.changed":
-      return nonEmpty((payload as EventMap["state"]).conversationId);
+    case "session.changed":
+      return nonEmpty((payload as EventMap["state"]).sessionId);
     default:
       return null;
   }

@@ -40,11 +40,11 @@ beforeEach(async () => {
     "/tmp/inbox-one",
     1,
   ]);
-  for (const conversationId of ["c1", "c2"]) {
+  for (const sessionId of ["c1", "c2"]) {
     await db.run(
-      `INSERT INTO conversations (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
+      `INSERT INTO sessions (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
        VALUES (?, 'w1', '对话', 0, 'agent-1', 'model-1', 2, 2)`,
-      [conversationId],
+      [sessionId],
     );
   }
 });
@@ -57,11 +57,11 @@ afterAll(async () => {
 /** 一条待办的入参（每格都能改，好让用例只改它关心的那一格） */
 function entryOf(
   messageId: string,
-  extra: Partial<{ conversationId: string; createdAt: string }> = {},
+  extra: Partial<{ sessionId: string; createdAt: string }> = {},
 ): Parameters<InboxRepository["insert"]>[0] {
   return {
     messageId,
-    conversationId: extra.conversationId ?? "c1",
+    sessionId: extra.sessionId ?? "c1",
     createdAt: extra.createdAt ?? "2026-01-02T03:04:05.000Z",
     source: { kind: "user" },
     content: "一句话",
@@ -77,7 +77,7 @@ describe("InboxRepository", () => {
       content: "把测试补上",
     });
 
-    const entries = await repo.listByConversation("c1");
+    const entries = await repo.listBySession("c1");
     expect(entries).toEqual([
       {
         messageId: "m1",
@@ -94,7 +94,7 @@ describe("InboxRepository", () => {
       },
     ]);
     // 只看这一段对话的：别的对话的行不混进来
-    expect(await repo.listByConversation("c2")).toEqual([]);
+    expect(await repo.listBySession("c2")).toEqual([]);
   });
 
   it("内容按原样：多模态段与 `__asset_id` 逐字往返（库里存的就是那一份 JSON）", async () => {
@@ -118,7 +118,7 @@ describe("InboxRepository", () => {
     // 列里存的就是 `JSON.stringify` 的那一份（没有任何预处理）
     expect(row?.content).toBe(JSON.stringify(content));
 
-    const [entry] = await repo.listByConversation("c1");
+    const [entry] = await repo.listBySession("c1");
     // 读回来再序列化一次，与内存里那份逐字相同
     expect(JSON.stringify(entry?.content)).toBe(JSON.stringify(content));
   });
@@ -127,19 +127,19 @@ describe("InboxRepository", () => {
     await repo.insert(entryOf("m1"));
     await repo.insert(entryOf("m2"));
     await repo.insert(entryOf("m3"));
-    await repo.insert(entryOf("other", { conversationId: "c2" }));
+    await repo.insert(entryOf("other", { sessionId: "c2" }));
 
     // 被取走两条：只剩那一条
     expect(await repo.deleteMany(["m1", "m2"])).toBe(2);
-    expect((await repo.listByConversation("c1")).map((entry) => entry.messageId)).toEqual(["m3"]);
+    expect((await repo.listBySession("c1")).map((entry) => entry.messageId)).toEqual(["m3"]);
 
     // 空数组什么都不做（`inboxTaken` 里可能一条 id 都没有）
     expect(await repo.deleteMany([])).toBe(0);
 
     // 清空这一段：另一段一条不动
-    expect(await repo.clearByConversation("c1")).toBe(1);
-    expect(await repo.listByConversation("c1")).toEqual([]);
-    expect((await repo.listByConversation("c2")).map((entry) => entry.messageId)).toEqual([
+    expect(await repo.clearBySession("c1")).toBe(1);
+    expect(await repo.listBySession("c1")).toEqual([]);
+    expect((await repo.listBySession("c2")).map((entry) => entry.messageId)).toEqual([
       "other",
     ]);
   });
@@ -151,20 +151,20 @@ describe("InboxRepository", () => {
 
   it("删对话 / 删工作区之后没有孤儿行（外键级联）", async () => {
     await repo.insert(entryOf("m1"));
-    await repo.insert(entryOf("m2", { conversationId: "c2" }));
+    await repo.insert(entryOf("m2", { sessionId: "c2" }));
 
-    await db.run("DELETE FROM conversations WHERE id = ?", ["c1"]);
-    expect(await repo.listByConversation("c1")).toEqual([]);
+    await db.run("DELETE FROM sessions WHERE id = ?", ["c1"]);
+    expect(await repo.listBySession("c1")).toEqual([]);
     // 另一段照旧：级联只带走被删的那一段
-    expect((await repo.listByConversation("c2")).map((entry) => entry.messageId)).toEqual(["m2"]);
+    expect((await repo.listBySession("c2")).map((entry) => entry.messageId)).toEqual(["m2"]);
 
     await db.run("DELETE FROM workspaces WHERE id = ?", ["w1"]);
-    expect(await repo.listByConversation("c2")).toEqual([]);
+    expect(await repo.listBySession("c2")).toEqual([]);
     expect(await db.all("SELECT messageId FROM inbox")).toEqual([]);
   });
 
   it("指向不存在对话的条目插不进去（外键真的在拦）", async () => {
-    await expect(repo.insert(entryOf("m1", { conversationId: "没有这段对话" }))).rejects.toThrow(
+    await expect(repo.insert(entryOf("m1", { sessionId: "没有这段对话" }))).rejects.toThrow(
       /FOREIGN KEY/i,
     );
   });

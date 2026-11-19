@@ -1,5 +1,5 @@
 /**
- * 素材的三张表：`assets`（资源的唯一真相）、`conversation_assets`（谁引用了它）与
+ * 素材的三张表：`assets`（资源的唯一真相）、`session_assets`（谁引用了它）与
  * `asset_vendor_files`（它的一部分可失效缓存）。
  *
  * 三张表的 SQL 放在同一个文件里，是因为它们的生命周期绑在一起，而另外两张都没有独立含义：
@@ -7,7 +7,7 @@
  *   - `assets` 一行 = 数据根下一份文件 + 它的类型、大小、摘要、像素尺寸。`sha256` 全库唯一：
  *     同一份字节在整台机器上只有一行、一份磁盘，所以这一行是「这张图是什么」的唯一答案。
  *     它不记「属于哪段对话」——一张图可以同时被好几段对话引用。
- *   - `conversation_assets` 一行 = 「某条消息引用了某份素材」。归属与「几张会话引用了它」都从
+ *   - `session_assets` 一行 = 「某条消息引用了某份素材」。归属与「几张会话引用了它」都从
  *     这张表算；消息被删（撤回 / 删对话）时关系行跟着级联消失，不需要谁去减计数。
  *     `assetId` 用 `ON DELETE RESTRICT`：还有引用时素材行在库里删不掉（护栏）。
  *   - `asset_vendor_files` 一行 = 「这个素材在这个端点上对应厂商的哪个 file_id」。厂商的
@@ -24,7 +24,7 @@ import type {
   AssetRow,
   AssetVendorFileRow,
   AssetVendorFileUpsertInput,
-  ConversationAssetRow,
+  SessionAssetRow,
 } from "./types.js";
 
 const COLUMNS = "id, name, path, mime, bytes, sha256, width, height, createdAt";
@@ -112,14 +112,14 @@ export class AssetRepository {
   }
 
   /** 一段对话引用的全部素材（同一份素材被这段对话里两条消息引用时只出现一次） */
-  async listByConversation(conversationId: string): Promise<AssetRow[]> {
+  async listBySession(sessionId: string): Promise<AssetRow[]> {
     return this.db.all<AssetRow>(
       `SELECT DISTINCT ${columnList("a")}
          FROM assets a
-         JOIN conversation_assets ca ON ca.assetId = a.id
-        WHERE ca.conversationId = ?
+         JOIN session_assets ca ON ca.assetId = a.id
+        WHERE ca.sessionId = ?
         ORDER BY a.createdAt ASC, a.id ASC`,
-      [conversationId],
+      [sessionId],
     );
   }
 
@@ -128,7 +128,7 @@ export class AssetRepository {
     return this.db.all<AssetRow>(
       `SELECT DISTINCT ${columnList("a")}
          FROM assets a
-         JOIN conversation_assets ca ON ca.assetId = a.id
+         JOIN session_assets ca ON ca.assetId = a.id
         WHERE ca.messageId = ?
         ORDER BY a.createdAt ASC, a.id ASC`,
       [messageId],
@@ -139,12 +139,12 @@ export class AssetRepository {
    * 记一行「这条消息引用了这份素材」。已经记过（同一 message + asset）时返回 0，
    * 否则返回 1：消息落库那一刻扫 `content` 里的 `__asset_id` 写行，重复写是常态。
    */
-  async linkAsset(input: ConversationAssetRow): Promise<number> {
+  async linkAsset(input: SessionAssetRow): Promise<number> {
     const result = await this.db.run(
-      `INSERT INTO conversation_assets (conversationId, messageId, assetId, createdAt)
+      `INSERT INTO session_assets (sessionId, messageId, assetId, createdAt)
        VALUES (?, ?, ?, ?)
        ON CONFLICT (messageId, assetId) DO NOTHING`,
-      [input.conversationId, input.messageId, input.assetId, input.createdAt],
+      [input.sessionId, input.messageId, input.assetId, input.createdAt],
     );
     return result.changes;
   }
@@ -152,36 +152,36 @@ export class AssetRepository {
   /** 这份素材被几行引用（含同一段对话里的多条消息） */
   async countReferences(assetId: string): Promise<number> {
     const row = await this.db.get<{ n: number }>(
-      "SELECT COUNT(*) AS n FROM conversation_assets WHERE assetId = ?",
+      "SELECT COUNT(*) AS n FROM session_assets WHERE assetId = ?",
       [assetId],
     );
     return row?.n ?? 0;
   }
 
-  /** 「几张会话引用了它」：`COUNT(DISTINCT conversationId)` */
-  async countConversations(assetId: string): Promise<number> {
+  /** 「几张会话引用了它」：`COUNT(DISTINCT sessionId)` */
+  async countSessions(assetId: string): Promise<number> {
     const row = await this.db.get<{ n: number }>(
-      "SELECT COUNT(DISTINCT conversationId) AS n FROM conversation_assets WHERE assetId = ?",
+      "SELECT COUNT(DISTINCT sessionId) AS n FROM session_assets WHERE assetId = ?",
       [assetId],
     );
     return row?.n ?? 0;
   }
 
   /** 一份素材被哪些对话引用（「贴到过哪几个项目」） */
-  async listConversationIds(assetId: string): Promise<string[]> {
-    const rows = await this.db.all<{ conversationId: string }>(
-      `SELECT DISTINCT conversationId FROM conversation_assets
+  async listSessionIds(assetId: string): Promise<string[]> {
+    const rows = await this.db.all<{ sessionId: string }>(
+      `SELECT DISTINCT sessionId FROM session_assets
         WHERE assetId = ?
-        ORDER BY conversationId ASC`,
+        ORDER BY sessionId ASC`,
       [assetId],
     );
-    return rows.map((row) => row.conversationId);
+    return rows.map((row) => row.sessionId);
   }
 
   /** 一条消息引用了哪些素材 id（撤回要回填输入框时用；关系行随消息级联删除，先读一次） */
   async listAssetIdsByMessage(messageId: string): Promise<string[]> {
     const rows = await this.db.all<{ assetId: string }>(
-      `SELECT DISTINCT assetId FROM conversation_assets
+      `SELECT DISTINCT assetId FROM session_assets
         WHERE messageId = ?
         ORDER BY assetId ASC`,
       [messageId],
@@ -190,12 +190,12 @@ export class AssetRepository {
   }
 
   /** 一段对话引用过哪些素材 id（删对话前先读一次：删完之后关系行就没了） */
-  async listAssetIdsByConversation(conversationId: string): Promise<string[]> {
+  async listAssetIdsBySession(sessionId: string): Promise<string[]> {
     const rows = await this.db.all<{ assetId: string }>(
-      `SELECT DISTINCT assetId FROM conversation_assets
-        WHERE conversationId = ?
+      `SELECT DISTINCT assetId FROM session_assets
+        WHERE sessionId = ?
         ORDER BY assetId ASC`,
-      [conversationId],
+      [sessionId],
     );
     return rows.map((row) => row.assetId);
   }
@@ -213,7 +213,7 @@ export class AssetRepository {
     const result = await this.db.run(
       `DELETE FROM assets
         WHERE id = ?
-          AND NOT EXISTS (SELECT 1 FROM conversation_assets WHERE assetId = ?)`,
+          AND NOT EXISTS (SELECT 1 FROM session_assets WHERE assetId = ?)`,
       [id, id],
     );
     return result.changes;

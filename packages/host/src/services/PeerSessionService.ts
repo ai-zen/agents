@@ -3,7 +3,7 @@
  *
  * 对应技术方案 `.ai-zen/plans/20261115-peer-sessions.md`。本文件只做四件事：
  *
- * 1. **建**：按 `conversation.create` 同一条路开一段会话（草稿 → 落真行），拿到 conversationId
+ * 1. **建**：按 `session.create` 同一条路开一段会话（草稿 → 落真行），拿到 sessionId
  *    就是 `sessionId`，把第一句交出去，**立刻返回**（不等它回答完 —— 等待就等于子代理，那已经
  *    存在了）。
  * 2. **记**：进程内 `Map<sessionId, label>` —— **只记可读名**。血缘、自动交接开关、深度、
@@ -21,7 +21,7 @@
  *
  * 从前这里存「谁开的、几层、什么时候开的」，那些都是**身份**，而身份只在进程里活着的后果是
  * 重启就大面积说假话（父会话找不到自己的孩子、子会话自己也不认得）。v4 把它们搬到会话行上：
- * 血缘是 `conversations.lineage`、自动交接开关是 `conversations.autoHandoff`、开启时刻就是
+ * 血缘是 `sessions.lineage`、自动交接开关是 `sessions.autoHandoff`、开启时刻就是
  * `createdAt`。「只限一层」不再看进程内记的深度，而是看**父会话自己有没有血缘**。
  *
  * 剩下没地方放的就是 `label`：它是模型在 `create_session` 里自己起的那个名字（模型记不住
@@ -30,8 +30,8 @@
  *
  * ## 「谁在调我」为什么靠 `bind`
  *
- * core 的 `Agent` 上没有 `conversationId`（那是宿主的财产），所以宿主在造出 agent 之后调
- * {@link PeerSessionService.bind} 记一笔 `WeakMap`（agent → conversationId），工具回调里用
+ * core 的 `Agent` 上没有 `sessionId`（那是宿主的财产），所以宿主在造出 agent 之后调
+ * {@link PeerSessionService.bind} 记一笔 `WeakMap`（agent → sessionId），工具回调里用
  * `ctx.agent` 认领调用方。**不给 core 的 `Agent` 加字段**：那是另一个包的类型，而且是
  * 「用完即弃」的对象，宿主侧记一笔就够，也不会泄漏（WeakMap 跟着 agent 一起回收）。
  *
@@ -57,13 +57,13 @@ import type {
 import type { DeliveryInput } from "../runtime/ChatRunner.js";
 import type { StoredMessage } from "../storage/types.js";
 import { HostError } from "../wire/errors.js";
-import type { ConversationCreateParams, ConversationCreateResult } from "../wire/index.js";
-import type { ConversationPresence } from "../wire/states.js";
+import type { SessionCreateParams, SessionCreateResult } from "../wire/index.js";
+import type { SessionPresence } from "../wire/states.js";
 
 /**
  * 创建子会话时额外带上「谁开的、自动交接开不开」：这两项**创建那一刻写死**，之后只跟着行。
  *
- * 它们是宿主内部的事实（`ConversationOriginInput`），不从客户端收：谁也不能从外面把一段会话
+ * 它们是宿主内部的事实（`SessionOriginInput`），不从客户端收：谁也不能从外面把一段会话
  * 认成「不是我建的」。
  */
 type PeerSessionOriginInput = {
@@ -142,22 +142,22 @@ function clip(text: string, limit: number): string | null {
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}…` : trimmed;
 }
 
-/** 子会话的诞生：与 `conversation.create` 处理器同一条路（草稿 + 三级模型解析） */
-export interface PeerSessionConversationCreator {
+/** 子会话的诞生：与 `session.create` 处理器同一条路（草稿 + 三级模型解析） */
+export interface PeerSessionSessionCreator {
   /**
    * 开一段会话，并当场把「谁开的」（血缘）与自动交接开关的初值写进去 ——
    * 这两项是创建那一刻的身份，不在后面补。
    */
   create(
-    params: ConversationCreateParams & PeerSessionOriginInput,
-  ): Promise<ConversationCreateResult>;
+    params: SessionCreateParams & PeerSessionOriginInput,
+  ): Promise<SessionCreateResult>;
   /**
    * 草稿落成库里那一行。
    *
-   * 消息行、素材关系行都按 `conversationId` 挂外键，所以子会话收到第一句之前必须走这一道 ——
-   * 与 `conversation.send` 里那一句同义。
+   * 消息行、素材关系行都按 `sessionId` 挂外键，所以子会话收到第一句之前必须走这一道 ——
+   * 与 `session.send` 里那一句同义。
    */
-  ensurePersisted(conversationId: string): Promise<unknown>;
+  ensurePersisted(sessionId: string): Promise<unknown>;
 }
 
 /** 执行者（`ChatRunner` 结构上满足）：本文件只用它的两个口 —— 投一句、现读一格 */
@@ -166,10 +166,10 @@ export interface PeerSessionRunner {
    * 把一条内容投给某段对话（**唯一**的投递入口）。
    *
    * 它自己判「对话在不在、agent 活不活」；`await` 的边界就是「已入队」，回执只有消息 id。
-   * 目标不存在时按 `HostError` 抛（`not_found` / `conversation_dead`）。
+   * 目标不存在时按 `HostError` 抛（`not_found` / `session_dead`）。
    */
   deliver(
-    conversationId: string,
+    sessionId: string,
     input: DeliveryInput,
   ): Promise<{ userMessageId: string }>;
   /**
@@ -177,14 +177,14 @@ export interface PeerSessionRunner {
    *
    * 与 `ChatRunner.state` 同一个口（结构上直接满足）：字段就是那四件事，不另做一份投影。
    */
-  state(conversationId: string): ConversationPresence;
+  state(sessionId: string): SessionPresence;
   /**
    * 这一段此刻**在内存里的**消息 —— 就是 `agent.messages` 本身（`ChatRunner.messagesOf` 结构上
    * 满足）：活着读内存，没有 agent 就是 `null`（那时也就不可能有人「刚说过一句」）。
    *
    * 摘要走这一口而不走 `deps.messages`：状态与摘要是同一刻的同一段，两者必须同源。
    */
-  messagesOf(conversationId: string): AgentNS.Message[] | null;
+  messagesOf(sessionId: string): AgentNS.Message[] | null;
 }
 
 /** 平级会话服务的依赖（窄接口：本文件不认识整个宿主） */
@@ -194,7 +194,7 @@ export interface PeerSessionServiceDeps {
    * 来源名由宿主解析，不许调用方传）、**血缘**（判「只限一层」）、**开启时刻**（`startedAt`），
    * 外加「这段会话还在不在」。自动交接开关不在这里要：只有宿主那两个判定读它。
    */
-  conversations: {
+  sessions: {
     get(
       id: string,
     ): Promise<{
@@ -215,7 +215,7 @@ export interface PeerSessionServiceDeps {
     listByLineage(lineage: string): Promise<{ id: string }[]>;
   };
   /** 子会话的诞生 */
-  conversationCreator: PeerSessionConversationCreator;
+  sessionCreator: PeerSessionSessionCreator;
   /**
    * 消息仓储。
    *
@@ -224,7 +224,7 @@ export interface PeerSessionServiceDeps {
    * 查库会把两件事搞错 —— 写库是异步的（刚说的那句话可能还没落行），而且状态与摘要会从
    * 「同一刻的同一段」变成两个来源。接线照旧给着，清它归后面那一批收零调用符号。
    */
-  messages: { listByConversation(conversationId: string): Promise<StoredMessage[]> };
+  messages: { listBySession(sessionId: string): Promise<StoredMessage[]> };
   /** 执行者 */
   chatRunner: PeerSessionRunner;
 }
@@ -277,10 +277,10 @@ export class PeerSessionService implements PeerSessionPort {
    * 登记「这个 agent 是哪段会话的」。
    *
    * 由 agent 工厂在造出 agent 之后调用（`app.ts` 的 `defaultAgentFactory`）：core 的 `Agent`
-   * 上没有 `conversationId`，而工具只拿得到 `ctx.agent` —— 认领调用方就靠这一笔。
+   * 上没有 `sessionId`，而工具只拿得到 `ctx.agent` —— 认领调用方就靠这一笔。
    */
-  bind(agent: object, conversationId: string): void {
-    this.identities.set(agent, conversationId);
+  bind(agent: object, sessionId: string): void {
+    this.identities.set(agent, sessionId);
   }
 
   /** 取某个 `sessionId` 的可读名（只给用例与排查看；业务读取走 {@link status}） */
@@ -300,13 +300,13 @@ export class PeerSessionService implements PeerSessionPort {
    * `postMessage`、或者自己接着干活。等待等于子代理，而那已经存在了。
    */
   async create(input: PeerSessionCreateInput): Promise<PeerSessionCreated> {
-    const parentConversationId = this.identityOf(input.caller);
-    const parent = await this.deps.conversations.get(parentConversationId);
+    const parentSessionId = this.identityOf(input.caller);
+    const parent = await this.deps.sessions.get(parentSessionId);
     if (!parent) {
       // 父对话已经不在了（被删）：没有可继承的项目 / 助手，也没有可回的地方
       throw new HostError("not_found", {
-        params: { entity: "conversation" },
-        detail: { conversationId: parentConversationId, reason: "parent_gone" },
+        params: { entity: "session" },
+        detail: { sessionId: parentSessionId, reason: "parent_gone" },
       });
     }
 
@@ -326,7 +326,7 @@ export class PeerSessionService implements PeerSessionPort {
     // 2. 并发限额：这个父对话手头忙着的平级会话满了就不建（在 `create` 之前判：拒绝不许留下
     //    副作用 —— 一段建出来又没人管的会话比一条拒绝糟得多）。
     //    数的是血缘列反查出来的那批（库里的事实），忙不忙现读执行者。
-    if ((await this.busyPeersOf(parentConversationId)) >= MAX_RUNNING_PEERS) {
+    if ((await this.busyPeersOf(parentSessionId)) >= MAX_RUNNING_PEERS) {
       return rejected(
         "too_many_peers",
         `This conversation already has ${MAX_RUNNING_PEERS} peer sessions busy at the same ` +
@@ -334,16 +334,16 @@ export class PeerSessionService implements PeerSessionPort {
       );
     }
 
-    // 3. 子会话：与 `conversation.create` 同一条路（`agentId` 缺省 = 父对话那一个，模型走三级解析）。
+    // 3. 子会话：与 `session.create` 同一条路（`agentId` 缺省 = 父对话那一个，模型走三级解析）。
     //    血缘与自动交接开关在这里给：谁开的这段会话 + 默认开（撞线自己交班、不问）——
     //    这两项在创建那一刻写进会话行，之后不再从进程内读。
-    let created: ConversationCreateResult;
+    let created: SessionCreateResult;
     try {
-      created = await this.deps.conversationCreator.create({
+      created = await this.deps.sessionCreator.create({
         workspaceId: parent.workspaceId,
         agentId: input.agentId ?? parent.agentId,
         ...(input.modelId === undefined ? {} : { modelId: input.modelId }),
-        lineage: parentConversationId,
+        lineage: parentSessionId,
         autoHandoff: true,
       });
     } catch (error) {
@@ -358,9 +358,9 @@ export class PeerSessionService implements PeerSessionPort {
       throw error;
     }
 
-    const sessionId = created.conversation.id;
+    const sessionId = created.session.id;
     // 4. 草稿落成真行：消息要挂在这段对话上（外键）
-    await this.deps.conversationCreator.ensurePersisted(sessionId);
+    await this.deps.sessionCreator.ensurePersisted(sessionId);
 
     // 5. 先记名字：投出去之后马上就有工具回执，名字必须在那一刻之前就在（`read_session_status`
     //    可能紧跟着到达）。血缘已经在第 3 步落库了，这里只留可读名。
@@ -370,7 +370,7 @@ export class PeerSessionService implements PeerSessionPort {
     // 6. 把第一句交出去（受理即回）：来源写「父对话」，正文最前面那行注释由 core 加。
     //
     //    `mayStart: true` 是因为这里就是创建者：**刚建出来的对话由创建者装上驱动者**。
-    //    执行者的判据一个字不改 —— 「投给已存在但没有驱动者的对话」仍然是 `conversation_dead`，
+    //    执行者的判据一个字不改 —— 「投给已存在但没有驱动者的对话」仍然是 `session_dead`，
     //    那条判据是这套模型的一部分。
     await this.deps.chatRunner.deliver(sessionId, {
       content: input.prompt,
@@ -398,7 +398,7 @@ export class PeerSessionService implements PeerSessionPort {
    * 的上下文搬过来，token 会炸（`PRD.md` 2.3）；也**没有** `startedAt`：需求里没有这一格。
    */
   async status(input: { caller: Agent; sessionId: string }): Promise<PeerSessionStatus> {
-    const row = await this.deps.conversations.get(input.sessionId);
+    const row = await this.deps.sessions.get(input.sessionId);
     // 找不到 = 判别式的另一支：`status: null`（那些格都是活对象身上的事实，找不到就没有对象可读）
     if (!row) return { found: false, status: null };
 
@@ -423,7 +423,7 @@ export class PeerSessionService implements PeerSessionPort {
    *
    * 只有一件事要做：`deliver`。**不看关系** —— 谁都能给谁说话（投递不看关系是整套模型的
    * 一条硬规矩）；「目标不在」是唯一会失败的情形，而那是 `HostError`（`not_found` /
-   * `conversation_dead`），不是一条「拒绝」返回值。
+   * `session_dead`），不是一条「拒绝」返回值。
    *
    * 回执只有「收下了」（`{ ok: true }`）：它忙不忙、什么时候取件、取走之后做什么，都不是
    * 投递这一刻能定下的事实 —— 本工具从不等结果，也不回状态。
@@ -435,8 +435,8 @@ export class PeerSessionService implements PeerSessionPort {
    * 之后退回行上的 `name`。
    */
   async send(input: PeerSessionSendInput): Promise<PeerSessionSent> {
-    const callerConversationId = this.identityOf(input.caller);
-    const source = senderSource(await this.nameOf(callerConversationId));
+    const callerSessionId = this.identityOf(input.caller);
+    const source = senderSource(await this.nameOf(callerSessionId));
     await this.deps.chatRunner.deliver(input.sessionId, {
       content: input.content,
       source,
@@ -451,15 +451,15 @@ export class PeerSessionService implements PeerSessionPort {
    * 名字有两处来源：进程内那个 `label`（模型认识的那个名字，重启前开的那一段才有），
    * 否则用会话行上的 `name`（用户给这段会话起的名字）。两者都是**宿主的事实**，不进工具参数。
    */
-  private async nameOf(conversationId: string): Promise<string> {
-    const label = this.labels.get(conversationId);
+  private async nameOf(sessionId: string): Promise<string> {
+    const label = this.labels.get(sessionId);
     if (label !== undefined) return label;
-    const row = await this.deps.conversations.get(conversationId);
+    const row = await this.deps.sessions.get(sessionId);
     if (!row) {
       // 会话行都没了：这条消息没有可信的署名（编一个名字出来只会让目标误会来源）
       throw new HostError("not_found", {
-        params: { entity: "conversation" },
-        detail: { conversationId, reason: "caller_gone" },
+        params: { entity: "session" },
+        detail: { sessionId, reason: "caller_gone" },
       });
     }
     return row.name;
@@ -470,8 +470,8 @@ export class PeerSessionService implements PeerSessionPort {
    *
    * 「谁是我的孩子」不再数进程内记录：血缘落库之后它是库里的事实，重启也不丢。
    */
-  private async busyPeersOf(parentConversationId: string): Promise<number> {
-    const children = await this.deps.conversations.listByLineage(parentConversationId);
+  private async busyPeersOf(parentSessionId: string): Promise<number> {
+    const children = await this.deps.sessions.listByLineage(parentSessionId);
     let count = 0;
     for (const child of children) {
       // 「忙」只看忙闲那一格：输出闸关着不算忙（它手上确实没活），那时也不占并发名额
@@ -482,14 +482,14 @@ export class PeerSessionService implements PeerSessionPort {
 
   /** 调用方是哪段会话的（没登记过就是接线漏了：编一个会话 id 出来只会更糟） */
   private identityOf(caller: Agent): string {
-    const conversationId = this.identities.get(caller);
-    if (!conversationId) {
+    const sessionId = this.identities.get(caller);
+    if (!sessionId) {
       throw new Error(
         "Cannot reach a peer session: this agent is not bound to any conversation " +
-          "(the host must call PeerSessionService.bind(agent, conversationId) when it builds one)",
+          "(the host must call PeerSessionService.bind(agent, sessionId) when it builds one)",
       );
     }
-    return conversationId;
+    return sessionId;
   }
 
   private nextLabel(): string {
@@ -501,7 +501,7 @@ export class PeerSessionService implements PeerSessionPort {
 /**
  * 这次失败是不是「三级解析拿不到模型」。
  *
- * 判据是 `ConversationService.create` 的两条模型失败：解析不出来与解析出的模型不在配置里，
+ * 判据是 `SessionService.create` 的两条模型失败：解析不出来与解析出的模型不在配置里，
  * 它们都是 `config_invalid`（文案键 `error.modelUnresolved`）；点名要的模型不存在则是
  * `not_found` + `params.entity === "model"`。**只看码、不看文案**：文案会翻译。
  */

@@ -16,7 +16,7 @@
  *    {@link QuestionService.answer}：**先答完，再判能不能立刻交接**。
  * 3. **答题不被「忙」拦住**（PRD 4.10）：忙不是答题的拒因 —— 那段正忙着就把「待交接」写在会话行
  *    上（`pendingHandoff`），等它闲下来再做。所以这里没有「非 idle 就 busy」那道前置检查。
- * 4. **死的那一刻跟着没**（`dropConversation`）：对话没了（被删、被硬着陆、agent 自己停了），
+ * 4. **死的那一刻跟着没**（`dropSession`）：对话没了（被删、被硬着陆、agent 自己停了），
  *    挂在上面的题一起清掉 —— 不存在「死对话上挂着的题」。退役不算没（那是换个驱动者接着干）。
  */
 
@@ -27,7 +27,7 @@ import type { ConfigManager } from "@ai-zen/agents-sdk";
 import { DEFAULT_LANGUAGE, render } from "../i18n/index.js";
 import type { Language, MessageKey } from "../i18n/index.js";
 import type { ChatEventEmitter } from "../runtime/ChatRunner.js";
-import type { ConversationRepository } from "../storage/ConversationRepository.js";
+import type { SessionRepository } from "../storage/SessionRepository.js";
 import type { MessageRepository } from "../storage/MessageRepository.js";
 import { HostError } from "../wire/errors.js";
 import type {
@@ -65,12 +65,12 @@ export interface QuestionOptionInput {
 /** 内部「问一个问题」的入口（交接线那一条） */
 export interface AskQuestionInput {
   /** 挂在哪段对话上（问题总是为某一段对话停下来问的） */
-  conversationId: string;
+  sessionId: string;
   kind: QuestionKind;
   prompt: LocalizedSource;
   options: QuestionOptionInput[];
   /**
-   * 是否挡着这段对话（挡着时 `conversation.send` 会被拒，业务码 `question_pending`）。
+   * 是否挡着这段对话（挡着时 `session.send` 会被拒，业务码 `question_pending`）。
    *
    * 缺省挡着：问题就是为「停下来问」而造的。
    */
@@ -112,12 +112,12 @@ export interface QuestionHandoffPort {
  * 没开始（`PLAN §5.2` / §5.3）。
  */
 export interface QuestionHandoffAvailabilityPort {
-  canHandoffNow(conversationId: string): { ok: true } | { ok: false; reason: HandoffRefusalReason };
+  canHandoffNow(sessionId: string): { ok: true } | { ok: false; reason: HandoffRefusalReason };
 }
 
 /** 硬线判定口：这段对话现在是不是已经过了硬线（PRD F-D1 / D23） */
 export interface QuestionGuardProbe {
-  overGuard(conversationId: string): Promise<boolean>;
+  overGuard(sessionId: string): Promise<boolean>;
 }
 
 export interface QuestionServiceDeps {
@@ -125,14 +125,14 @@ export interface QuestionServiceDeps {
    * 会话行：两处要用它 —— 待交接那一格（`pendingHandoff` 的写读）与「不交接」时关掉自动交接
    * 开关（PRD 4.10 的「答案的后果要落」）。题本身**不**经它落库。
    */
-  conversations: ConversationRepository;
+  sessions: SessionRepository;
   /** 能不能立刻交接（判据在 `ChatRunner.canHandoffNow`，这里只读）；不注入时按「能」处理 */
   availability?: QuestionHandoffAvailabilityPort;
   /** 硬线判定；不注入时按「没过线」处理 */
   guard?: QuestionGuardProbe;
   /** 交接入口（答完接着交接，D22）；不注入时答完只改状态、不触发交接 */
   handoff?: QuestionHandoffPort;
-  /** 推 `question` 事件（多端看到同一个，D22）；推 `conversation.changed` 用同一个出口 */
+  /** 推 `question` 事件（多端看到同一个，D22）；推 `session.changed` 用同一个出口 */
   emit?: ChatEventEmitter;
   now?: () => number;
   newId?: () => string;
@@ -150,7 +150,7 @@ export const HANDOFF_OPTION_DECLINE = "decline";
  */
 interface QuestionRecord {
   id: string;
-  conversationId: string;
+  sessionId: string;
   kind: QuestionKind;
   /** 出网的稳定码（缺省 = `prompt.messageKey`） */
   code: string;
@@ -205,7 +205,7 @@ function toView(question: QuestionRecord, language: Language): QuestionView {
         };
   return {
     id: question.id,
-    conversationId: question.conversationId,
+    sessionId: question.sessionId,
     kind: question.kind,
     state: question.state,
     prompt: localizeText(question.code, question.prompt, language),
@@ -218,7 +218,7 @@ function toView(question: QuestionRecord, language: Language): QuestionView {
 }
 
 export class QuestionService {
-  private readonly conversations: ConversationRepository;
+  private readonly sessions: SessionRepository;
   private readonly availability?: QuestionHandoffAvailabilityPort;
   private readonly guard?: QuestionGuardProbe;
   private readonly handoff?: QuestionHandoffPort;
@@ -234,7 +234,7 @@ export class QuestionService {
   private readonly questions = new Map<string, QuestionRecord>();
 
   constructor(deps: QuestionServiceDeps) {
-    this.conversations = deps.conversations;
+    this.sessions = deps.sessions;
     this.availability = deps.availability;
     this.guard = deps.guard;
     this.handoff = deps.handoff;
@@ -248,7 +248,7 @@ export class QuestionService {
    *
    * 直接造对象 + 推 `question` 事件：没有「先落库再读回来」那一趟，所以也不会有
    * 「刚插进去就不见了」这种中间态。题挂着期间它挡着这段对话（`blocking`），
-   * `conversation.send` 由 {@link assertSendable} 拒。
+   * `session.send` 由 {@link assertSendable} 拒。
    *
    * 入参不做形状校验：`kind` 与 `messageKey` 的类型本身就是闭集（`QuestionKind` /
    * `MessageKey`），候选项是常量字面量。
@@ -257,7 +257,7 @@ export class QuestionService {
     const createdAt = this.now();
     const question: QuestionRecord = {
       id: this.newId(),
-      conversationId: input.conversationId,
+      sessionId: input.sessionId,
       kind: input.kind,
       code: input.code ?? input.prompt.messageKey,
       prompt: { messageKey: input.prompt.messageKey, params: input.prompt.params ?? {} },
@@ -292,7 +292,7 @@ export class QuestionService {
    */
   async askHandoff(
     input: {
-      conversationId: string;
+      sessionId: string;
       promptTokens: number;
       handoffTokens: number;
       blocking?: boolean;
@@ -305,7 +305,7 @@ export class QuestionService {
         : 100;
     return await this.ask(
       {
-        conversationId: input.conversationId,
+        sessionId: input.sessionId,
         kind: "handoff",
         code: "question.handoff.prompt",
         prompt: { messageKey: "question.handoff.prompt", params: { percent } },
@@ -331,7 +331,7 @@ export class QuestionService {
   /**
    * 这段对话上的题（按创建顺序）。
    *
-   * `conversationId` **必填**：没有「全库问题列表」这种读法（PRD 4.10 的「明确不做」）——
+   * `sessionId` **必填**：没有「全库问题列表」这种读法（PRD 4.10 的「明确不做」）——
    * 题只属于某一段对话，问「全库有什么题」是为了持久化才存在的形状。也没有 `state` 过滤：
    * 客户端要的那句话就是「这段现在有没有一道题」。
    */
@@ -339,9 +339,9 @@ export class QuestionService {
     params: QuestionListParams,
     language: Language = DEFAULT_LANGUAGE,
   ): Promise<QuestionListResult> {
-    const conversationId = params.conversationId;
+    const sessionId = params.sessionId;
     return {
-      questions: this.questionsOf(conversationId).map((question) => toView(question, language)),
+      questions: this.questionsOf(sessionId).map((question) => toView(question, language)),
     };
   }
 
@@ -350,14 +350,14 @@ export class QuestionService {
    *
    * 现读内存：题不落库，所以**不能**问库（问了永远得 0）。
    */
-  countPending(conversationId: string): number {
-    return this.questionsOf(conversationId).filter((question) => question.state === "pending")
+  countPending(sessionId: string): number {
+    return this.questionsOf(sessionId).filter((question) => question.state === "pending")
       .length;
   }
 
-  /** 这段对话上还挂着、且正在挡着它的那些题（`conversation.send` 的前置检查用它） */
-  async blockingQuestions(conversationId: string): Promise<QuestionView[]> {
-    return this.questionsOf(conversationId)
+  /** 这段对话上还挂着、且正在挡着它的那些题（`session.send` 的前置检查用它） */
+  async blockingQuestions(sessionId: string): Promise<QuestionView[]> {
+    return this.questionsOf(sessionId)
       .filter((question) => question.state === "pending" && question.blocking)
       .map((question) => toView(question, DEFAULT_LANGUAGE));
   }
@@ -368,13 +368,13 @@ export class QuestionService {
    * 只在真有 `blocking` 的问题时抛 `question_pending`，并把那条问题的提问当参数带上：
    * 用户看到的是「哪个问题在挡着」，不是一句抽象的「还有问题没答」。
    */
-  async assertSendable(conversationId: string): Promise<void> {
-    const blocking = await this.blockingQuestions(conversationId);
+  async assertSendable(sessionId: string): Promise<void> {
+    const blocking = await this.blockingQuestions(sessionId);
     const first = blocking[0];
     if (!first) return;
     throw new HostError("question_pending", {
       params: { question: first.prompt.message },
-      detail: { conversationId, questionId: first.id, kind: first.kind },
+      detail: { sessionId, questionId: first.id, kind: first.kind },
     });
   }
 
@@ -423,14 +423,14 @@ export class QuestionService {
       });
     }
 
-    const conversationId = question.conversationId;
+    const sessionId = question.sessionId;
     const handoffMode = handoffModeOf(question.kind, value);
     // 越线之后仍然选「就在这段里继续」：宿主也拒（D23），题继续挂着等人处理
     if (question.kind === "handoff" && handoffMode === null && this.guard) {
-      if (await this.guard.overGuard(conversationId)) {
+      if (await this.guard.overGuard(sessionId)) {
         throw new HostError("context_guard", {
           detail: {
-            conversationId,
+            sessionId,
             questionId: question.id,
             reason: "over_guard",
             nextStep: "handoff",
@@ -452,7 +452,7 @@ export class QuestionService {
         kind: question.kind,
         value,
         handoffMode,
-        conversationId,
+        sessionId,
       },
       language,
     );
@@ -470,7 +470,7 @@ export class QuestionService {
    *   为什么没开始；`null` 表示「要么当场开始了、要么这道题不需要交接」。
    * - **选了「不交接」**：把这段会话的自动交接开关关掉（PRD 4.10 的「答案的后果要落」）——
    *   否则下一次撞线又问一遍，等于没记住。关掉是写会话行，所以顺手推一条
-   *   `conversation.changed(settings_changed)`：别的窗口的状态栏得跟着变。
+   *   `session.changed(settings_changed)`：别的窗口的状态栏得跟着变。
    * - 别的种类（`confirmation`）：没有后续动作。
    *
    * 不等交接跑完：回执只有「开始了 / 留了待办」，文档写到哪走通知（PRD 4.9）。
@@ -480,7 +480,7 @@ export class QuestionService {
       kind: QuestionKind;
       value: string;
       handoffMode: HandoffMode | null;
-      conversationId: string;
+      sessionId: string;
     },
     language: Language,
   ): Promise<QuestionEffects> {
@@ -489,14 +489,14 @@ export class QuestionService {
     if (input.handoffMode === null) {
       // 「不交接」：关掉自动交接开关，以后不问（PRD 4.10）
       const offAt = this.now();
-      await this.conversations.setAutoHandoff(input.conversationId, false, offAt);
+      await this.sessions.setAutoHandoff(input.sessionId, false, offAt);
       // 开关是会话行上的一格，别的窗口的状态栏上必须看得见它变了。
       //
       // 同一个理由与写法照 `ChatRunner.beginHandoff`：这一格是本服务的动作，而会话行是异步读的
       // ——推送这一拍拿不到 `workspaceId`，就照实给 `null`（载荷里那一格本来就可空，客户端拿
-      // `conversationId` 定位，不靠 `workspaceId`）。
-      this.emit?.("conversation.changed", {
-        conversationId: input.conversationId,
+      // `sessionId` 定位，不靠 `workspaceId`）。
+      this.emit?.("session.changed", {
+        sessionId: input.sessionId,
         workspaceId: null,
         change: "settings_changed",
         at: iso(offAt),
@@ -506,18 +506,18 @@ export class QuestionService {
 
     if (!this.handoff) return noEffects(null);
 
-    const availability = this.availability?.canHandoffNow(input.conversationId) ?? { ok: true };
+    const availability = this.availability?.canHandoffNow(input.sessionId) ?? { ok: true };
     if (!availability.ok) {
       // 这段不闲（或没有驱动者 / 闸关着 / 已在交接）：留一条待办，等下一次变闲再做
-      await this.writePendingHandoff(input.conversationId, input.handoffMode);
+      await this.writePendingHandoff(input.sessionId, input.handoffMode);
       return { handoffStarted: false, handoffDeferredReason: availability.reason };
     }
 
     await this.handoff.start(
       {
-        conversationId: input.conversationId,
+        sessionId: input.sessionId,
         mode: input.handoffMode,
-        then: "new_conversation",
+        then: "new_session",
       },
       language,
     );
@@ -534,16 +534,16 @@ export class QuestionService {
    * **退役不走这里**：改配置 / 改模型 / 改思考档 / 装配事实变化之后旧驱动者退役、新驱动者重建，
    * 对话接着往下走 —— 题与待交接原样留着（清掉它们等于用户改了个模型就丢了正在等的那道题）。
    *
-   * **不推事件**：「题没了」这件事由 `conversation.changed`（`agent_gone` / `deleted`）说，
+   * **不推事件**：「题没了」这件事由 `session.changed`（`agent_gone` / `deleted`）说，
    * 多推一条只会让客户端去处理一个它没有槽位的东西。
    *
    * 清会话行那一步对「对话已被删」是空操作（行本来就不在了），不需要分支。
    */
-  async dropConversation(conversationId: string): Promise<void> {
+  async dropSession(sessionId: string): Promise<void> {
     for (const [id, question] of this.questions) {
-      if (question.conversationId === conversationId) this.questions.delete(id);
+      if (question.sessionId === sessionId) this.questions.delete(id);
     }
-    await this.conversations.setPendingHandoff(conversationId, null);
+    await this.sessions.setPendingHandoff(sessionId, null);
   }
 
   /**
@@ -552,21 +552,21 @@ export class QuestionService {
    * 它是「答完之后这段不闲」留下的那一笔：读它的是变闲那一拍（`app.ts` 的 `onIdle`），
    * 兑现或判不能兑现之后由它清掉。
    */
-  async readPendingHandoff(conversationId: string): Promise<HandoffMode | null> {
-    const conversation = await this.conversations.get(conversationId);
-    return conversation?.pendingHandoff ?? null;
+  async readPendingHandoff(sessionId: string): Promise<HandoffMode | null> {
+    const session = await this.sessions.get(sessionId);
+    return session?.pendingHandoff ?? null;
   }
 
   /** 写下待交接（`null` = 清掉）。对话已经不在了就是空操作（`setPendingHandoff` 回 0） */
-  async writePendingHandoff(conversationId: string, mode: HandoffMode | null): Promise<void> {
-    await this.conversations.setPendingHandoff(conversationId, mode);
+  async writePendingHandoff(sessionId: string, mode: HandoffMode | null): Promise<void> {
+    await this.sessions.setPendingHandoff(sessionId, mode);
   }
 
   /** 这段对话上的题（创建顺序） */
-  private questionsOf(conversationId: string): QuestionRecord[] {
+  private questionsOf(sessionId: string): QuestionRecord[] {
     const found: QuestionRecord[] = [];
     for (const question of this.questions.values()) {
-      if (question.conversationId === conversationId) found.push(question);
+      if (question.sessionId === sessionId) found.push(question);
     }
     return found;
   }
@@ -610,21 +610,21 @@ function handoffModeOf(kind: QuestionKind, value: string): HandoffMode | null {
  * 口径与 `app.ts` 那条变闲时的判断一致：都看最近一条带用量的消息的 `usage.prompt_tokens`。
  * 两处都是现读会话行：那一列改了不必重建驱动者（PRD 1.4）。
  */
-export function createConversationGuardProbe(deps: {
-  conversations: ConversationRepository;
+export function createSessionGuardProbe(deps: {
+  sessions: SessionRepository;
   messages: MessageRepository;
   configManager: ConfigManager;
 }): QuestionGuardProbe {
   return {
-    async overGuard(conversationId: string): Promise<boolean> {
-      const conversation = await deps.conversations.get(conversationId);
-      if (!conversation) return false;
+    async overGuard(sessionId: string): Promise<boolean> {
+      const session = await deps.sessions.get(sessionId);
+      if (!session) return false;
       const config = await deps.configManager.read();
-      const model = config.models.find((candidate) => candidate.id === conversation.modelId);
-      const guardThreshold = conversation.guardThreshold ?? model?.tokenThresholds.guard ?? 0;
+      const model = config.models.find((candidate) => candidate.id === session.modelId);
+      const guardThreshold = session.guardThreshold ?? model?.tokenThresholds.guard ?? 0;
       if (guardThreshold <= 0) return false;
 
-      const rows = await deps.messages.listByConversation(conversationId);
+      const rows = await deps.messages.listBySession(sessionId);
       for (let index = rows.length - 1; index >= 0; index -= 1) {
         const row = rows[index];
         const usage = row ? readUsage(row.data) : null;

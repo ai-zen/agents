@@ -12,27 +12,27 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { AgentNS } from "@ai-zen/agents-core";
 
 import { AssetRepository } from "../storage/AssetRepository.js";
-import { ConversationRepository } from "../storage/ConversationRepository.js";
+import { SessionRepository } from "../storage/SessionRepository.js";
 import { Database } from "../storage/Database.js";
 import { MessageRepository } from "../storage/MessageRepository.js";
 import { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
 import { migrate } from "../storage/migrations.js";
 import { HostError } from "../wire/errors.js";
-import type { ConversationPresence } from "../wire/index.js";
-import type { ConversationRuntimePort } from "./ConversationService.js";
+import type { SessionPresence } from "../wire/index.js";
+import type { SessionRuntimePort } from "./SessionService.js";
 import { WorkspaceService } from "./WorkspaceService.js";
 
 /** 只记「被通知忘了哪些对话」的假运行时：项目删除要连带通知它 */
-class FakeRuntime implements ConversationRuntimePort {
+class FakeRuntime implements SessionRuntimePort {
   readonly forgotten: string[] = [];
-  presence(): ConversationPresence {
+  presence(): SessionPresence {
     return { status: "idle", inputPaused: false, outputPaused: false, alive: false };
   }
   inboxPending(): number {
     return 0;
   }
-  forget(conversationId: string): void {
-    this.forgotten.push(conversationId);
+  forget(sessionId: string): void {
+    this.forgotten.push(sessionId);
   }
   /** 项目这一层不换模型：这一段永远「没有 agent」 */
   agentState(): AgentNS.AgentState | null {
@@ -47,7 +47,7 @@ let missingDir: string;
 let db: Database;
 let service: WorkspaceService;
 let runtime: FakeRuntime;
-let conversations: ConversationRepository;
+let sessions: SessionRepository;
 let messages: MessageRepository;
 let assets: AssetRepository;
 let sweeps: string[][];
@@ -63,14 +63,14 @@ beforeAll(async () => {
 
   db = new Database(join(dir, "ai-zen.db"));
   await migrate(db);
-  conversations = new ConversationRepository(db);
+  sessions = new SessionRepository(db);
   messages = new MessageRepository(db);
   assets = new AssetRepository(db);
 });
 
 beforeEach(async () => {
   // 只清业务表；`meta` 绝不碰（migrate 靠 meta.schemaVersion 判断跑不跑）。
-  // `workspaces` 级联 conversations → messages → conversation_assets，删完再删素材行。
+  // `workspaces` 级联 sessions → messages → session_assets，删完再删素材行。
   await db.tx((tx) => [
     tx.run("DELETE FROM notices"),
     tx.run("DELETE FROM workspaces"),
@@ -84,7 +84,7 @@ beforeEach(async () => {
   clock = 1_000;
   service = new WorkspaceService({
     workspaces: new WorkspaceRepository(db),
-    conversations,
+    sessions,
     messages,
     assets,
     // 删完项目之后「还剩几张引用」归素材层判：这里只记下它被问过哪几个素材
@@ -107,7 +107,7 @@ describe("WorkspaceService.create", () => {
     const result = await service.create({ cwd: `${projectDir}/` });
     expect(result.workspace.name).toBe("project");
     expect(result.workspace.folder).toEqual({ cwd: projectDir, exists: true });
-    expect(result.workspace.conversationCount).toBe(0);
+    expect(result.workspace.sessionCount).toBe(0);
     expect(result.workspace.lastActivityAt).toBeNull();
   });
 
@@ -146,7 +146,7 @@ describe("WorkspaceService.list", () => {
 
   it("最近活动时间来自它名下对话的变化时间", async () => {
     const created = await service.create({ cwd: projectDir });
-    await conversations.create({
+    await sessions.create({
       id: "c1",
       workspaceId: created.workspace.id,
       name: "一段对话",
@@ -157,7 +157,7 @@ describe("WorkspaceService.list", () => {
     });
 
     const got = await service.get({ workspaceId: created.workspace.id });
-    expect(got.workspace.conversationCount).toBe(1);
+    expect(got.workspace.sessionCount).toBe(1);
     expect(got.workspace.lastActivityAt).toBe(new Date(9_000).toISOString());
     expect(got.workspace.updatedAt).toBe(new Date(9_000).toISOString());
   });
@@ -188,7 +188,7 @@ describe("WorkspaceService.remove", () => {
     const created = await service.create({ cwd: projectDir, name: "要删的项目" });
     const workspaceId = created.workspace.id;
     for (const [id, createdAt] of [["c1", 2_000], ["c2", 3_000]] as const) {
-      await conversations.create({
+      await sessions.create({
         id,
         workspaceId,
         name: id,
@@ -199,7 +199,7 @@ describe("WorkspaceService.remove", () => {
     }
     await messages.upsert({
       id: "m1",
-      conversationId: "c1",
+      sessionId: "c1",
       role: "user",
       status: "completed",
       content: "一句话",
@@ -207,7 +207,7 @@ describe("WorkspaceService.remove", () => {
     });
     await messages.upsert({
       id: "m2",
-      conversationId: "c1",
+      sessionId: "c1",
       role: "assistant",
       status: "completed",
       content: "一句回复",
@@ -215,7 +215,7 @@ describe("WorkspaceService.remove", () => {
     });
     await messages.upsert({
       id: "m3",
-      conversationId: "c2",
+      sessionId: "c2",
       role: "user",
       status: "completed",
       content: "另一段的一句话",
@@ -231,7 +231,7 @@ describe("WorkspaceService.remove", () => {
     });
     // 归属只在关系行上（消息 c1 里那张图）
     await assets.linkAsset({
-      conversationId: "c1",
+      sessionId: "c1",
       messageId: "m1",
       assetId: "as1",
       createdAt: 2_160,
@@ -244,10 +244,10 @@ describe("WorkspaceService.remove", () => {
     const report = await service.remove({ workspaceId, dryRun: true });
 
     expect(report.removed).toBe(false);
-    expect(report.consequences).toEqual({ conversations: 2, messages: 3, assets: 1 });
+    expect(report.consequences).toEqual({ sessions: 2, messages: 3, assets: 1 });
     expect(report.assetIds).toEqual(["as1"]);
     // 什么都没动
-    expect(await conversations.get("c1")).toBeDefined();
+    expect(await sessions.get("c1")).toBeDefined();
     expect(sweeps).toEqual([]);
   });
 
@@ -256,9 +256,9 @@ describe("WorkspaceService.remove", () => {
     const report = await service.remove({ workspaceId });
 
     expect(report.removed).toBe(true);
-    expect(await conversations.get("c1")).toBeUndefined();
-    expect(await conversations.get("c2")).toBeUndefined();
-    expect(await messages.countByConversation("c1")).toBe(0);
+    expect(await sessions.get("c1")).toBeUndefined();
+    expect(await sessions.get("c2")).toBeUndefined();
+    expect(await messages.countBySession("c1")).toBe(0);
     expect(await service.list()).toEqual({ workspaces: [] });
     // 运行时被通知忘掉这两段对话
     expect(runtime.forgotten.sort()).toEqual(["c1", "c2"]);

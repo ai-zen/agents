@@ -14,7 +14,7 @@ import { stat } from "node:fs/promises";
 import { basename, isAbsolute, resolve } from "node:path";
 
 import type { AssetRepository } from "../storage/AssetRepository.js";
-import type { ConversationRepository } from "../storage/ConversationRepository.js";
+import type { SessionRepository } from "../storage/SessionRepository.js";
 import type { MessageRepository } from "../storage/MessageRepository.js";
 import type { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
 import type { WorkspaceRow } from "../storage/types.js";
@@ -34,7 +34,7 @@ import type {
   WorkspaceRenameResult,
   WorkspaceView,
 } from "../wire/index.js";
-import type { ConversationRuntimePort, AssetSweeper } from "./ConversationService.js";
+import type { SessionRuntimePort, AssetSweeper } from "./SessionService.js";
 
 /**
  * `workspace.remove` 的结果。
@@ -51,7 +51,7 @@ export interface WorkspaceRemovalReport extends WorkspaceRemoveResult {
 /** Workspace 服务的依赖；由单根组装后注入，服务自己不取任何全局路径 */
 export interface WorkspaceServiceDeps {
   workspaces: WorkspaceRepository;
-  conversations: ConversationRepository;
+  sessions: SessionRepository;
   messages: MessageRepository;
   assets: AssetRepository;
   /** 引用归零的素材交给它删行删文件；不注入时字节会留在盘上（引用行已经没了） */
@@ -60,7 +60,7 @@ export interface WorkspaceServiceDeps {
    * 运行时钩子：删项目会连带删掉它名下的对话，这些对话在运行时里可能还留着现场
    * （`ChatRunner` 手上那条桥、`AgentRegistry` 里那个 agent），删之前一并请它扔掉。
    */
-  runtime: ConversationRuntimePort;
+  runtime: SessionRuntimePort;
   /** 时钟，测试注入用；缺省 `Date.now` */
   now?: () => number;
 }
@@ -126,16 +126,16 @@ function normalizeCwd(value: string): string {
 
 export class WorkspaceService {
   private readonly workspaces: WorkspaceRepository;
-  private readonly conversations: ConversationRepository;
+  private readonly sessions: SessionRepository;
   private readonly messages: MessageRepository;
   private readonly assets: AssetRepository;
   private readonly sweepAssets?: AssetSweeper;
-  private readonly runtime: ConversationRuntimePort;
+  private readonly runtime: SessionRuntimePort;
   private readonly now: () => number;
 
   constructor(deps: WorkspaceServiceDeps) {
     this.workspaces = deps.workspaces;
-    this.conversations = deps.conversations;
+    this.sessions = deps.sessions;
     this.messages = deps.messages;
     this.assets = deps.assets;
     this.sweepAssets = deps.sweepAssets;
@@ -212,20 +212,20 @@ export class WorkspaceService {
    */
   async remove(params: WorkspaceRemoveParams): Promise<WorkspaceRemovalReport> {
     const row = await this.requireRow(params.workspaceId);
-    const conversations = await this.conversations.listByWorkspace(row.id);
+    const sessions = await this.sessions.listByWorkspace(row.id);
 
     const consequences: RemovalConsequences = {
-      conversations: conversations.length,
+      sessions: sessions.length,
       messages: 0,
       assets: 0,
     };
     const assetIds = new Set<string>();
-    for (const conversation of conversations) {
-      // 这个数来自 `countByConversation`：每段对话在 `messages` 表里的全部行（子 Agent 的话
-      // 从来不入库，`CORE.md` §17）。侧栏摘要的 `messageCount` 走 `listByConversation`，两者
+    for (const session of sessions) {
+      // 这个数来自 `countBySession`：每段对话在 `messages` 表里的全部行（子 Agent 的话
+      // 从来不入库，`CORE.md` §17）。侧栏摘要的 `messageCount` 走 `listBySession`，两者
       // 数的是同一批行、口径永远相等 —— 一个只取数、一个取行，没有第二套算法。
-      consequences.messages += await this.messages.countByConversation(conversation.id);
-      const assets = await this.assets.listByConversation(conversation.id);
+      consequences.messages += await this.messages.countBySession(session.id);
+      const assets = await this.assets.listBySession(session.id);
       consequences.assets += assets.length;
       for (const asset of assets) assetIds.add(asset.id);
     }
@@ -235,8 +235,8 @@ export class WorkspaceService {
     }
 
     // 先请运行时忘掉这些对话，再删行：反过来会在运行时里留下指向已删记录的覆盖项
-    for (const conversation of conversations) {
-      await this.runtime.forget(conversation.id);
+    for (const session of sessions) {
+      await this.runtime.forget(session.id);
     }
     const changes = await this.workspaces.delete(row.id);
     // 关系行已经随外键没了：归零的那几份素材才删行删文件
@@ -264,10 +264,10 @@ export class WorkspaceService {
    * 都没有时就是创建时间。`lastActivityAt` 同理来自对话的 `updatedAt`（新增消息会推进它）。
    */
   private async toView(row: WorkspaceRow): Promise<WorkspaceView> {
-    const conversations = await this.conversations.listByWorkspace(row.id);
-    const lastActivityAt = conversations.reduce<number | null>(
-      (latest, conversation) =>
-        latest === null || conversation.updatedAt > latest ? conversation.updatedAt : latest,
+    const sessions = await this.sessions.listByWorkspace(row.id);
+    const lastActivityAt = sessions.reduce<number | null>(
+      (latest, session) =>
+        latest === null || session.updatedAt > latest ? session.updatedAt : latest,
       null,
     );
     return {
@@ -276,7 +276,7 @@ export class WorkspaceService {
       folder: await toFolderFact(row.cwd),
       createdAt: iso(row.createdAt),
       updatedAt: iso(lastActivityAt ?? row.createdAt),
-      conversationCount: conversations.length,
+      sessionCount: sessions.length,
       lastActivityAt: lastActivityAt === null ? null : iso(lastActivityAt),
     };
   }

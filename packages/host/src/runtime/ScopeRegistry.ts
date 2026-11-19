@@ -16,11 +16,11 @@
  *     （PLAN §4 曾经唯一的那个空闲计时已撤掉）。
  *
  * 「这个 Scope 上还活着几个 agent」是 `AgentRegistry` 的账，不是这里的账：本文件只在
- * `dispose` 时**问一句**（{@link ScopeRegistryOptions.liveConversations}），有活的就拒绝。
+ * `dispose` 时**问一句**（{@link ScopeRegistryOptions.liveSessions}），有活的就拒绝。
  *
  * ## 回收自下而上：撞上活着的 agent 就拒绝，不级联
  *
- * `dispose` 遇到还活着的 agent 时抛 {@link ScopeBusyError}（带着 `conversationId` 列表），
+ * `dispose` 遇到还活着的 agent 时抛 {@link ScopeBusyError}（带着 `sessionId` 列表），
  * 而不是顺手把那些对话掐掉：级联会静默掐死正在跑的对话，而显式 API 的价值就是「动作要有意识」。
  * 调用方的顺序是：先让会话停下（`ChatRunner.abort` / `forget`）+ 丢掉 agent
  * （`AgentRegistry.kill` / `killAll`），再回来销毁 Scope。
@@ -53,7 +53,7 @@ import type { PeerSessionPort } from "@ai-zen/agents-sdk";
  *
  * 本文件自己**完全不用**它：空闲计时已撤，构造参数里也不再有 `clock`。导出留着是因为
  * 真正的消费者在别处，用的还是同一个口径：`ChatRunner.ts` 里两个类都拿它（`ChatRunner` 用
- * `now()` 记时间戳，`ConversationBridge` 用它做写库节流的计时与消息落库时间）与接线层
+ * `now()` 记时间戳，`SessionBridge` 用它做写库节流的计时与消息落库时间）与接线层
  * `app.ts`（`options.clock` 注入点，再往下分给各服务），`runtime/index.ts` 只是转手再导出；
  * 测试助手 `TestSupport.ManualClock` 实现的就是它。`services/CompletionService` **不在**此列
  * —— 它自带形状相同的 `CompletionClock` / `systemCompletionClock`，不引用这一份。
@@ -99,34 +99,34 @@ export type ScopeFactory = (workspaceId: string) => Promise<Scope>;
  * 只有 `dispose` 用它：撞上活的就拒绝。不注入时当作「没有活着的 agent」
  * （单独用本文件的小工具、用例里的假注册表都属于这种情形）。
  */
-export type LiveConversationsQuery = (workspaceId: string) => string[];
+export type LiveSessionsQuery = (workspaceId: string) => string[];
 
 /**
  * 还活着的 agent 挡着，Scope 不能销毁。
  *
- * 形状是有意的扁的：`conversationIds` 直接可以报给调用方/日志，不必再去别处查一遍。
+ * 形状是有意的扁的：`sessionIds` 直接可以报给调用方/日志，不必再去别处查一遍。
  */
 export class ScopeBusyError extends Error {
   readonly workspaceId: string;
   /** 还活着的对话（`AgentRegistry` 里的那些），按登记顺序 */
-  readonly conversationIds: string[];
+  readonly sessionIds: string[];
 
-  constructor(workspaceId: string, conversationIds: string[]) {
+  constructor(workspaceId: string, sessionIds: string[]) {
     super(
-      `Scope "${workspaceId}" is still running ${conversationIds.length} conversation(s): ` +
-        `${conversationIds.join(", ")}`,
+      `Scope "${workspaceId}" is still running ${sessionIds.length} session(s): ` +
+        `${sessionIds.join(", ")}`,
     );
     this.name = "ScopeBusyError";
     this.workspaceId = workspaceId;
-    this.conversationIds = [...conversationIds];
+    this.sessionIds = [...sessionIds];
   }
 }
 
 export interface ScopeRegistryOptions {
   /** 懒创建：只有 `create` 到不存在的 key 时才叫它 */
   createScope: ScopeFactory;
-  /** 查「这个 Scope 上还活着哪几段对话」（`AgentRegistry.conversationIds` 结构上满足） */
-  liveConversations?: LiveConversationsQuery;
+  /** 查「这个 Scope 上还活着哪几段对话」（`AgentRegistry.sessionIds` 结构上满足） */
+  liveSessions?: LiveSessionsQuery;
   /** 销毁 / 刷新 Scope 时抛出的错误往哪里报（缺省吞掉：这事失败不该让调用方以为业务失败了） */
   onError?: (error: unknown, workspaceId: string) => void;
 }
@@ -155,12 +155,12 @@ class ScopeEntry {
 export class ScopeRegistry {
   private readonly entries = new Map<string, ScopeEntry>();
   private readonly createScope: ScopeFactory;
-  private readonly liveConversations?: LiveConversationsQuery;
+  private readonly liveSessions?: LiveSessionsQuery;
   private readonly onError?: (error: unknown, workspaceId: string) => void;
 
   constructor(options: ScopeRegistryOptions) {
     this.createScope = options.createScope;
-    this.liveConversations = options.liveConversations;
+    this.liveSessions = options.liveSessions;
     this.onError = options.onError;
   }
 
@@ -232,7 +232,7 @@ export class ScopeRegistry {
   /**
    * 销毁某一个 Scope —— Workspace 被删（或别的「这个能力容器不要了」的显式场合）时用。
    *
-   * **撞上还活着的 agent 就拒绝**（{@link ScopeBusyError}，带着 `conversationId` 列表）：
+   * **撞上还活着的 agent 就拒绝**（{@link ScopeBusyError}，带着 `sessionId` 列表）：
    * 不级联、不静默掐掉正在跑的对话。调用方要先停会话、丢掉 agent，再回来调它。
    *
    * 不存在就什么也不做（幂等）；销毁之后再 `create` 得到新实例。
@@ -241,7 +241,7 @@ export class ScopeRegistry {
     const entry = this.entries.get(workspaceId);
     if (!entry) return;
 
-    const live = this.liveConversations?.(workspaceId) ?? [];
+    const live = this.liveSessions?.(workspaceId) ?? [];
     if (live.length > 0) throw new ScopeBusyError(workspaceId, live);
 
     await this.disposeEntry(entry);

@@ -33,8 +33,8 @@ import type { Language } from "../i18n/index.js";
 import type { AgentFactory, ChatAgent } from "./ChatRunner.js";
 import { HostError } from "../wire/errors.js";
 import type {
-  ConversationTransientParams,
-  ConversationTransientResult,
+  SessionTransientParams,
+  SessionTransientResult,
   ProblemFact,
 } from "../wire/index.js";
 
@@ -68,19 +68,19 @@ export type TransientAgentFactory = (context: {
 }) => Promise<ChatAgent>;
 
 /** 临时对话在装配时用的身份占位（`AgentFactory` 的入参里有这两项，临时对话没有真值） */
-const TRANSIENT_IDENTITY = "conversation.transient";
+const TRANSIENT_IDENTITY = "session.transient";
 
 /**
  * 把通用的 `AgentFactory` 适配成临时对话用的那个形状。
  *
- * `conversationId` / `workspaceId` 填一个显式占位：工厂里可能把它们写进钩子载荷（日志、
+ * `sessionId` / `workspaceId` 填一个显式占位：工厂里可能把它们写进钩子载荷（日志、
  * 交接服务的决策），填 `""` 会让日志里出现一个空身份，填占位符至少看得出来这是临时对话。
  * `thinkingLevel` 恒为 `null`：临时对话没有会话行，也就没有会话级档位，跟助手定义上的那份。
  */
 export function transientAgentFactoryFrom(createAgent: AgentFactory): TransientAgentFactory {
   return async (context) =>
     await createAgent({
-      conversationId: TRANSIENT_IDENTITY,
+      sessionId: TRANSIENT_IDENTITY,
       workspaceId: TRANSIENT_IDENTITY,
       agentId: context.agentId,
       modelId: context.modelId,
@@ -123,9 +123,9 @@ export class TransientRunner {
    * （消息停在 error / aborted）时用 `problem` 说明，`message` 照样带回去。
    */
   async run(
-    params: ConversationTransientParams,
+    params: SessionTransientParams,
     language: Language = DEFAULT_LANGUAGE,
-  ): Promise<ConversationTransientResult> {
+  ): Promise<SessionTransientResult> {
     const cwd = typeof params.cwd === "string" ? params.cwd.trim() : "";
     if (cwd.length === 0) {
       throw new HostError("invalid_params", {
@@ -171,7 +171,7 @@ export class TransientRunner {
           detail: { cwd, agentId },
         });
       }
-      // 子 Agent 不另给快照（`ConversationTransientResult`）：它们说过的话在那条委派的消息里，
+      // 子 Agent 不另给快照（`SessionTransientResult`）：它们说过的话在那条委派的消息里，
       // 真要翻就按工具调用 id 取（F-I7）
       return { message, problem: problemOf(message, language) };
     } catch (error) {

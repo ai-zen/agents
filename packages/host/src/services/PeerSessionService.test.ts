@@ -12,20 +12,20 @@ import type { Agent } from "@ai-zen/agents-core";
 
 import type { DeliveryInput } from "../runtime/ChatRunner.js";
 import { FakeAgent } from "../runtime/TestSupport.js";
-import type { Conversation, StoredMessage } from "../storage/types.js";
+import type { Session, StoredMessage } from "../storage/types.js";
 import type {
-  ConversationCreateParams,
-  ConversationCreateResult,
-  ConversationPresence,
-  ConversationView,
+  SessionCreateParams,
+  SessionCreateResult,
+  SessionPresence,
+  SessionView,
 } from "../wire/index.js";
 import { HostError } from "../wire/errors.js";
 import { PeerSessionService } from "./PeerSessionService.js";
-import type { PeerSessionConversationCreator, PeerSessionRunner } from "./PeerSessionService.js";
+import type { PeerSessionSessionCreator, PeerSessionRunner } from "./PeerSessionService.js";
 
 const PARENT_ID = "c-parent";
 
-function conversation(id: string, overrides: Partial<Conversation> = {}): Conversation {
+function session(id: string, overrides: Partial<Session> = {}): Session {
   return {
     id,
     workspaceId: "ws-1",
@@ -51,10 +51,10 @@ function conversation(id: string, overrides: Partial<Conversation> = {}): Conver
 }
 
 /** 一段会话里的一行消息（只填本服务读到的那几格） */
-function row(conversationId: string, role: string, text: string, seq = 1): StoredMessage {
+function row(sessionId: string, role: string, text: string, seq = 1): StoredMessage {
   return {
-    id: `${conversationId}-m${seq}`,
-    conversationId,
+    id: `${sessionId}-m${seq}`,
+    sessionId,
     source: null,
     seq,
     role,
@@ -78,20 +78,20 @@ function said(role: AgentNS.Role, content: AgentNS.MessageContent): AgentNS.Mess
   return { id: `said-${saidSeq}`, role, content };
 }
 
-/** 子会话的诞生：与 `conversation.create` 一样把新会话登记进「库里」 */
-class FakeCreator implements PeerSessionConversationCreator {
-  readonly created: ConversationCreateParams[] = [];
+/** 子会话的诞生：与 `session.create` 一样把新会话登记进「库里」 */
+class FakeCreator implements PeerSessionSessionCreator {
+  readonly created: SessionCreateParams[] = [];
   readonly persisted: string[] = [];
-  readonly rows = new Map<string, Conversation>();
+  readonly rows = new Map<string, Session>();
   /** 让 `create` 抛这个错（试「模型解析不出来」那条） */
   failWith?: unknown;
   private seq = 0;
 
   constructor() {
-    this.rows.set(PARENT_ID, conversation(PARENT_ID, { name: "父对话" }));
+    this.rows.set(PARENT_ID, session(PARENT_ID, { name: "父对话" }));
   }
 
-  async create(params: ConversationCreateParams & { lineage: string; autoHandoff: boolean }): Promise<ConversationCreateResult> {
+  async create(params: SessionCreateParams & { lineage: string; autoHandoff: boolean }): Promise<SessionCreateResult> {
     this.created.push(params);
     if (this.failWith !== undefined) throw this.failWith;
     this.seq += 1;
@@ -99,26 +99,26 @@ class FakeCreator implements PeerSessionConversationCreator {
     // 血缘与开关在创建那一刻就落到「库里那一行」（v4：它们不再只活在进程内）
     this.rows.set(
       id,
-      conversation(id, {
+      session(id, {
         workspaceId: params.workspaceId,
         agentId: params.agentId,
         lineage: params.lineage,
         autoHandoff: params.autoHandoff,
       }),
     );
-    return { conversation: { id } as unknown as ConversationView };
+    return { session: { id } as unknown as SessionView };
   }
 
-  async ensurePersisted(conversationId: string): Promise<Conversation> {
-    this.persisted.push(conversationId);
-    const found = this.rows.get(conversationId);
-    if (!found) throw new Error(`conversation ${conversationId} not registered`);
+  async ensurePersisted(sessionId: string): Promise<Session> {
+    this.persisted.push(sessionId);
+    const found = this.rows.get(sessionId);
+    if (!found) throw new Error(`session ${sessionId} not registered`);
     return found;
   }
 }
 
 /** 没有 agent 的那一份读数（没摆过的会话就是这个） */
-const NO_AGENT: ConversationPresence = {
+const NO_AGENT: SessionPresence = {
   status: "idle",
   inputPaused: false,
   outputPaused: false,
@@ -127,45 +127,45 @@ const NO_AGENT: ConversationPresence = {
 
 /** 执行者：只记「谁收到了什么」，四件事与内存消息表由用例摆 */
 class FakeRunner implements PeerSessionRunner {
-  readonly deliveries: Array<{ conversationId: string; input: DeliveryInput }> = [];
+  readonly deliveries: Array<{ sessionId: string; input: DeliveryInput }> = [];
   /** 每段会话此刻的四件事（没摆过就是「没有 agent」那一份） */
-  readonly presences = new Map<string, ConversationPresence>();
+  readonly presences = new Map<string, SessionPresence>();
   /** 每段会话此刻在内存里的消息（`agent.messages`）；没摆过就是 `null`（= 没有 agent 对象） */
   readonly memory = new Map<string, AgentNS.Message[]>();
   /** 让 `deliver` 抛这个错（试「目标不存在」那条） */
   failWith?: unknown;
 
   async deliver(
-    conversationId: string,
+    sessionId: string,
     input: DeliveryInput,
   ): Promise<{ userMessageId: string }> {
     if (this.failWith !== undefined) throw this.failWith;
-    this.deliveries.push({ conversationId, input });
+    this.deliveries.push({ sessionId, input });
     return { userMessageId: `m-${this.deliveries.length}` };
   }
 
-  state(conversationId: string): ConversationPresence {
-    return this.presences.get(conversationId) ?? NO_AGENT;
+  state(sessionId: string): SessionPresence {
+    return this.presences.get(sessionId) ?? NO_AGENT;
   }
 
   /** 摆一段会话此刻的四件事（只写要改的那几格：其余按「有 agent、两道闸都开着」） */
   setPresence(
-    conversationId: string,
-    presence: Partial<ConversationPresence> = {},
-  ): ConversationPresence {
-    const next: ConversationPresence = {
+    sessionId: string,
+    presence: Partial<SessionPresence> = {},
+  ): SessionPresence {
+    const next: SessionPresence = {
       status: "idle",
       inputPaused: false,
       outputPaused: false,
       alive: true,
       ...presence,
     };
-    this.presences.set(conversationId, next);
+    this.presences.set(sessionId, next);
     return next;
   }
 
-  messagesOf(conversationId: string): AgentNS.Message[] | null {
-    return this.memory.get(conversationId) ?? null;
+  messagesOf(sessionId: string): AgentNS.Message[] | null {
+    return this.memory.get(sessionId) ?? null;
   }
 }
 
@@ -176,9 +176,9 @@ interface Harness {
   /** 调用方（父对话那段会话里装配出来的 agent） */
   caller: Agent;
   /** 摆一段会话的「库里那一行」与它的消息 */
-  seed(conversationId: string, messages?: StoredMessage[]): void;
+  seed(sessionId: string, messages?: StoredMessage[]): void;
   /** 摆「那一段此刻在内存里说了什么」（`agent.messages`：状态与摘要都从这里现读） */
-  say(conversationId: string, ...messages: AgentNS.Message[]): void;
+  say(sessionId: string, ...messages: AgentNS.Message[]): void;
 }
 
 function makeHarness(): Harness {
@@ -188,16 +188,16 @@ function makeHarness(): Harness {
   const caller = new FakeAgent();
 
   const service = new PeerSessionService({
-    conversations: {
+    sessions: {
       get: async (id) => creator.rows.get(id),
       listByLineage: async (lineage) =>
         [...creator.rows.values()]
           .filter((row) => row.lineage === lineage)
           .map((row) => ({ id: row.id })),
     },
-    conversationCreator: creator,
+    sessionCreator: creator,
     messages: {
-      listByConversation: async (conversationId) => stored.get(conversationId) ?? [],
+      listBySession: async (sessionId) => stored.get(sessionId) ?? [],
     },
     chatRunner: runner,
   });
@@ -208,17 +208,17 @@ function makeHarness(): Harness {
     creator,
     runner,
     caller,
-    seed: (conversationId, messages = []) => {
-      if (!creator.rows.has(conversationId)) {
-        creator.rows.set(conversationId, conversation(conversationId));
+    seed: (sessionId, messages = []) => {
+      if (!creator.rows.has(sessionId)) {
+        creator.rows.set(sessionId, session(sessionId));
       }
-      stored.set(conversationId, messages);
+      stored.set(sessionId, messages);
     },
-    say: (conversationId, ...messages) => {
-      if (!creator.rows.has(conversationId)) {
-        creator.rows.set(conversationId, conversation(conversationId));
+    say: (sessionId, ...messages) => {
+      if (!creator.rows.has(sessionId)) {
+        creator.rows.set(sessionId, session(sessionId));
       }
-      runner.memory.set(conversationId, messages);
+      runner.memory.set(sessionId, messages);
     },
   };
 }
@@ -234,7 +234,7 @@ describe("create：建会话 → 落真行 → 把第一句交出去 → 立刻�
     const created = await harness.service.create({ caller: harness.caller, prompt: "查一下登录页" });
 
     expect(created).toEqual({ ok: true, sessionId: "c-child-1", label: "会话 1" });
-    // 会话按 `conversation.create` 那条路开：同项目、同助手（模型交给三级解析），
+    // 会话按 `session.create` 那条路开：同项目、同助手（模型交给三级解析），
     // 外加两项身份：谁开的（血缘）与自动交接开关的初值
     expect(harness.creator.created).toEqual([
       {
@@ -247,7 +247,7 @@ describe("create：建会话 → 落真行 → 把第一句交出去 → 立刻�
     // 先落真行再投（消息行要挂在这段对话上）
     expect(harness.creator.persisted).toEqual(["c-child-1"]);
     const delivery = harness.runner.deliveries[0]!;
-    expect(delivery.conversationId).toBe("c-child-1");
+    expect(delivery.sessionId).toBe("c-child-1");
     expect(delivery.input).toEqual({
       content: "查一下登录页",
       source: { kind: "agent", label: "父对话" },
@@ -522,7 +522,7 @@ describe("send：直接把这一句交出去，不看关系", () => {
     // 回执只有「收下了」：那边闲着这件事不在回执里
     expect(result).toEqual({ ok: true });
     expect(harness.runner.deliveries[0]).toEqual({
-      conversationId: "c-stranger",
+      sessionId: "c-stranger",
       input: { content: "帮我看看这个", source: { kind: "agent", label: "会话「父对话」" } },
     });
   });
@@ -573,11 +573,11 @@ describe("send：直接把这一句交出去，不看关系", () => {
 
   it("目标不存在 → 执行者的错误原样上抛（这里不编一条「拒绝」出来）", async () => {
     const harness = makeHarness();
-    harness.runner.failWith = new HostError("conversation_dead");
+    harness.runner.failWith = new HostError("session_dead");
 
     await expect(
       harness.service.send({ caller: harness.caller, sessionId: "c-missing", content: "说一句" }),
-    ).rejects.toMatchObject({ code: "conversation_dead" });
+    ).rejects.toMatchObject({ code: "session_dead" });
   });
 
   it("调用方那段会话行都没了 → `not_found`（这条消息没有可信的署名）", async () => {

@@ -21,7 +21,7 @@ export type { Migration } from "./migrations.js";
 
 export { MetaRepository } from "./MetaRepository.js";
 export { WorkspaceRepository } from "./WorkspaceRepository.js";
-export { ConversationRepository } from "./ConversationRepository.js";
+export { SessionRepository } from "./SessionRepository.js";
 export { MessageRepository } from "./MessageRepository.js";
 export { AssetRepository } from "./AssetRepository.js";
 export { NoticeRepository } from "./NoticeRepository.js";

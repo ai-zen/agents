@@ -91,7 +91,7 @@ describe("三段式上传", () => {
       mime: "image/png",
       bytes: bytes.byteLength,
       name: "photo.png",
-      conversationId: "c1",
+      sessionId: "c1",
     });
     expect(began.receivedBytes).toBe(0);
     expect(began.maxBytes).toBe(MAX_ASSET_BYTES);
@@ -123,7 +123,7 @@ describe("三段式上传", () => {
       mime: "image/png",
       bytes: bytes.byteLength,
       sha256: sha256(bytes),
-      conversationId: "c1",
+      sessionId: "c1",
       purpose: "message_image",
     });
     expect(receiver.pendingCount()).toBe(0);
@@ -137,13 +137,13 @@ describe("三段式上传", () => {
       purpose: "message_image",
       mime: "image/png",
       bytes: first.byteLength,
-      conversationId: "c1",
+      sessionId: "c1",
     });
     const beganSecond = await receiver.begin(CONNECTION, {
       purpose: "message_image",
       mime: "image/jpeg",
       bytes: second.byteLength,
-      conversationId: "c1",
+      sessionId: "c1",
     });
     expect(handleOf(beganFirst)).not.toBe(handleOf(beganSecond));
     expect(receiver.pendingCount(CONNECTION)).toBe(2);
@@ -176,7 +176,7 @@ describe("拒绝与清理", () => {
         purpose: "message_image",
         mime: "image/png",
         bytes: MAX_ASSET_BYTES + 1,
-        conversationId: "c1",
+        sessionId: "c1",
       })
       .catch((caught: unknown) => caught);
 
@@ -189,17 +189,17 @@ describe("拒绝与清理", () => {
 
   it("缺对话归属时拒（库里的素材行要挂在一段对话上）", async () => {
     // 入参是网络上来的 JSON：类型上是必填字段，运行时仍然可能没带（契约不替客户端把关）
-    const withoutConversation = {
+    const withoutSession = {
       purpose: "message_image",
       mime: "image/png",
       bytes: 10,
     } as unknown as AssetBeginParams;
     const error = await receiver
-      .begin(CONNECTION, withoutConversation)
+      .begin(CONNECTION, withoutSession)
       .catch((caught: unknown) => caught);
 
     expect((error as HostError).code).toBe("invalid_params");
-    expect((error as HostError).detail).toMatchObject({ field: "conversationId" });
+    expect((error as HostError).detail).toMatchObject({ field: "sessionId" });
   });
 
   it("总长不符：删临时文件并报错", async () => {
@@ -208,7 +208,7 @@ describe("拒绝与清理", () => {
       purpose: "message_image",
       mime: "image/png",
       bytes: bytes.byteLength,
-      conversationId: "c1",
+      sessionId: "c1",
     });
     await receiver.receiveBinary(CONNECTION, encodeChunkFrame(handleOf(began), bytes.subarray(0, 60)));
 
@@ -232,7 +232,7 @@ describe("拒绝与清理", () => {
       purpose: "message_image",
       mime: "image/png",
       bytes: bytes.byteLength,
-      conversationId: "c1",
+      sessionId: "c1",
     });
     await receiver.receiveBinary(CONNECTION, encodeChunkFrame(handleOf(began), bytes));
 
@@ -249,7 +249,7 @@ describe("拒绝与清理", () => {
       purpose: "message_image",
       mime: "image/png",
       bytes: 10,
-      conversationId: "c1",
+      sessionId: "c1",
     });
 
     const error = await receiver
@@ -266,7 +266,7 @@ describe("拒绝与清理", () => {
       purpose: "message_image",
       mime: "image/png",
       bytes: 100,
-      conversationId: "c1",
+      sessionId: "c1",
     });
     await receiver.receiveBinary(CONNECTION, encodeChunkFrame(handleOf(began), payload(50)));
     expect((await listDir(assetsDir)).length).toBe(1);
@@ -294,7 +294,7 @@ describe("拒绝与清理", () => {
       purpose: "message_image",
       mime: "image/png",
       bytes: bytes.byteLength,
-      conversationId: "c1",
+      sessionId: "c1",
     });
     await failing.receiveBinary(CONNECTION, encodeChunkFrame(handleOf(began), bytes));
 
@@ -311,8 +311,8 @@ describe("草稿对话的落库（R56）", () => {
     const withHook = new UploadReceiver({
       assetsDir,
       finalize: fakeFinalize,
-      ensureConversation: async (conversationId, language) => {
-        ensured.push([conversationId, language]);
+      ensureSession: async (sessionId, language) => {
+        ensured.push([sessionId, language]);
         // 落库先于开临时文件：这一刻 assets/ 里什么都不该有
         expect(await listDir(assetsDir)).toEqual([]);
       },
@@ -320,7 +320,7 @@ describe("草稿对话的落库（R56）", () => {
 
     const began = await withHook.begin(
       CONNECTION,
-      { purpose: "message_image", mime: "image/png", bytes: 4, conversationId: "draft-1" },
+      { purpose: "message_image", mime: "image/png", bytes: 4, sessionId: "draft-1" },
       "zh",
     );
 
@@ -334,7 +334,7 @@ describe("草稿对话的落库（R56）", () => {
     const withHook = new UploadReceiver({
       assetsDir,
       finalize: fakeFinalize,
-      ensureConversation: async (_conversationId, language) => {
+      ensureSession: async (_sessionId, language) => {
         ensured.push(language);
       },
     });
@@ -343,7 +343,7 @@ describe("草稿对话的落库（R56）", () => {
       purpose: "message_image",
       mime: "image/png",
       bytes: 4,
-      conversationId: "draft-1",
+      sessionId: "draft-1",
     });
 
     expect(ensured).toEqual(["en"]);
@@ -354,10 +354,10 @@ describe("草稿对话的落库（R56）", () => {
     const withHook = new UploadReceiver({
       assetsDir,
       finalize: fakeFinalize,
-      ensureConversation: async (conversationId) => {
+      ensureSession: async (sessionId) => {
         throw new HostError("not_found", {
-          params: { entity: "conversation" },
-          detail: { conversationId },
+          params: { entity: "session" },
+          detail: { sessionId },
         });
       },
     });
@@ -367,14 +367,14 @@ describe("草稿对话的落库（R56）", () => {
         purpose: "message_image",
         mime: "image/png",
         bytes: 4,
-        conversationId: "no-such-conversation",
+        sessionId: "no-such-session",
       })
       .catch((caught: unknown) => caught);
 
     expect(HostError.is(error)).toBe(true);
     expect((error as HostError).code).toBe("not_found");
     expect((error as HostError).detail).toMatchObject({
-      conversationId: "no-such-conversation",
+      sessionId: "no-such-session",
     });
     expect(await listDir(assetsDir)).toEqual([]);
     expect(withHook.pendingCount()).toBe(0);
@@ -386,7 +386,7 @@ describe("草稿对话的落库（R56）", () => {
     const withHook = new UploadReceiver({
       assetsDir,
       finalize: fakeFinalize,
-      ensureConversation: async () => {
+      ensureSession: async () => {
         throw new Error("disk I/O error");
       },
       onError: (_error, context) => {
@@ -399,15 +399,15 @@ describe("草稿对话的落库（R56）", () => {
         purpose: "message_image",
         mime: "image/png",
         bytes: 4,
-        conversationId: "draft-1",
+        sessionId: "draft-1",
       })
       .catch((caught: unknown) => caught);
 
     expect(HostError.is(error)).toBe(true);
     expect((error as HostError).code).toBe("internal");
     expect((error as HostError).detail).toMatchObject({
-      reason: "conversation_persist_failed",
-      conversationId: "draft-1",
+      reason: "session_persist_failed",
+      sessionId: "draft-1",
     });
     // 原始错误也进了日志口子
     expect(reported).toEqual(["让对话落库失败"]);
@@ -503,7 +503,7 @@ describe("全局去重（begin 命中即结束）", () => {
       bytes: EXISTING.bytes,
       name: "photo.png",
       sha256: "a".repeat(64),
-      conversationId: "c1",
+      sessionId: "c1",
     });
 
     expect(began).toEqual({
@@ -527,8 +527,8 @@ describe("全局去重（begin 命中即结束）", () => {
     const deduping = new UploadReceiver({
       assetsDir,
       finalize: fakeFinalize,
-      ensureConversation: async (conversationId) => {
-        ensured.push(conversationId);
+      ensureSession: async (sessionId) => {
+        ensured.push(sessionId);
       },
       findExisting: async () => EXISTING,
     });
@@ -538,7 +538,7 @@ describe("全局去重（begin 命中即结束）", () => {
       mime: "image/png",
       bytes: EXISTING.bytes,
       sha256: "a".repeat(64),
-      conversationId: "draft-1",
+      sessionId: "draft-1",
     });
 
     expect(began.deduped).toBe(true);
@@ -552,10 +552,10 @@ describe("全局去重（begin 命中即结束）", () => {
     const deduping = new UploadReceiver({
       assetsDir,
       finalize: fakeFinalize,
-      ensureConversation: async (conversationId) => {
+      ensureSession: async (sessionId) => {
         throw new HostError("not_found", {
-          params: { entity: "conversation" },
-          detail: { conversationId },
+          params: { entity: "session" },
+          detail: { sessionId },
         });
       },
       findExisting: async () => EXISTING,
@@ -567,7 +567,7 @@ describe("全局去重（begin 命中即结束）", () => {
         mime: "image/png",
         bytes: EXISTING.bytes,
         sha256: "a".repeat(64),
-        conversationId: "no-such-conversation",
+        sessionId: "no-such-session",
       }),
     ).rejects.toMatchObject({ code: "not_found" });
     await deduping.dispose();
@@ -586,7 +586,7 @@ describe("全局去重（begin 命中即结束）", () => {
       mime: "image/png",
       bytes: bytes.byteLength,
       sha256: sha256(bytes),
-      conversationId: "c1",
+      sessionId: "c1",
     });
     expect(missed.deduped).toBe(false);
     expect(missed.asset).toBeNull();
@@ -597,7 +597,7 @@ describe("全局去重（begin 命中即结束）", () => {
       purpose: "message_image",
       mime: "image/png",
       bytes: bytes.byteLength,
-      conversationId: "c1",
+      sessionId: "c1",
     });
     expect(noDigest.deduped).toBe(false);
     expect(deduping.pendingCount(CONNECTION)).toBe(2);
@@ -617,7 +617,7 @@ describe("全局去重（begin 命中即结束）", () => {
         mime: "image/png",
         bytes: 4,
         sha256: "not-a-digest",
-        conversationId: "c1",
+        sessionId: "c1",
       }),
     ).rejects.toMatchObject({ code: "invalid_params" });
     await deduping.dispose();
@@ -638,7 +638,7 @@ describe("全局去重（begin 命中即结束）", () => {
       mime: "image/png",
       bytes: 4,
       sha256: "b".repeat(64),
-      conversationId: "c1",
+      sessionId: "c1",
     });
     expect(began.deduped).toBe(false);
     expect(deduping.pendingCount(CONNECTION)).toBe(1);

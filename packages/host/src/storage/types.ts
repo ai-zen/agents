@@ -38,9 +38,9 @@ export interface WorkspaceCreateInput {
   createdAt: number;
 }
 
-/* ------------------------------ conversations ----------------------------- */
+/* ------------------------------ sessions ----------------------------- */
 
-export interface ConversationRow {
+export interface SessionRow {
   id: string;
   workspaceId: string;
   name: string;
@@ -50,7 +50,7 @@ export interface ConversationRow {
   pinned: number;
   /** 创建时定死的助手（PRD L7），此处只存 id；定义本身在配置层 */
   agentId: string;
-  /** 这段会话现在用的模型：创建时取助手定义上那个，之后可以由 `conversation.setModel` 改 */
+  /** 这段会话现在用的模型：创建时取助手定义上那个，之后可以由 `session.setModel` 改 */
   modelId: string;
   /**
    * 这段会话选的思考档位名；`null` = 跟随助手定义上的那份参数。
@@ -104,18 +104,18 @@ export interface ConversationRow {
   updatedAt: number;
 }
 
-export interface Conversation
-  extends Omit<ConversationRow, "pinned" | "nameIsAuto" | "autoHandoff" | "pendingHandoff"> {
+export interface Session
+  extends Omit<SessionRow, "pinned" | "nameIsAuto" | "autoHandoff" | "pendingHandoff"> {
   pinned: boolean;
-  /** 名字仍是自动起的那个（真值来自 `conversations.nameIsAuto` 列，不由名字反推） */
+  /** 名字仍是自动起的那个（真值来自 `sessions.nameIsAuto` 列，不由名字反推） */
   nameIsAuto: boolean;
-  /** 自动交接开关（真值来自 `conversations.autoHandoff` 列）：开 = 撞线自己交班、不问 */
+  /** 自动交接开关（真值来自 `sessions.autoHandoff` 列）：开 = 撞线自己交班、不问 */
   autoHandoff: boolean;
-  /** 待交接的 mode（真值来自 `conversations.pendingHandoff` 列）；`null` = 没有待办 */
+  /** 待交接的 mode（真值来自 `sessions.pendingHandoff` 列）；`null` = 没有待办 */
   pendingHandoff: HandoffMode | null;
 }
 
-export interface ConversationCreateInput {
+export interface SessionCreateInput {
   id: string;
   workspaceId: string;
   name: string;
@@ -146,11 +146,11 @@ export interface ConversationCreateInput {
  * 三样合起来是一件事，所以只有这一个入参类型：拆开传就会有人只做其中一两步，而那正是
  * 「旧的已存档、新的没上岗」的来源。
  */
-export interface ConversationMemorySwap {
+export interface SessionMemorySwap {
   /** 原会话：记忆要换掉的那一段，id 不变 */
-  conversationId: string;
+  sessionId: string;
   /** 存档那一段的会话行：身份照抄原会话，id / 名字 / 创建时刻是新的（`已存档_<原名>`） */
-  archived: ConversationCreateInput;
+  archived: SessionCreateInput;
   /**
    * 写回原会话的那几条消息行 —— 就是 SDK 算好的新记忆里除系统提示之外的那几条。
    *
@@ -165,7 +165,7 @@ export interface ConversationMemorySwap {
 
 export interface MessageRow {
   id: string;
-  conversationId: string;
+  sessionId: string;
   /** 同一对话内单调递增的序号，用于稳定排序与 `after` 游标 */
   seq: number;
   role: string;
@@ -186,7 +186,7 @@ export interface MessageRow {
 
 export interface StoredMessage {
   id: string;
-  conversationId: string;
+  sessionId: string;
   seq: number;
   role: string;
   status: string;
@@ -206,7 +206,7 @@ export interface StoredMessage {
  */
 export interface MessageUpsertInput {
   id: string;
-  conversationId: string;
+  sessionId: string;
   role: string;
   status: string;
   /** core 的内容形状；不给表示这条消息没有正文 */
@@ -224,13 +224,13 @@ export interface MessageUpsertInput {
  * 之所以做成二选一的联合类型而不是两个可选字段，是因为「两个都没给」在语义上等于
  * 全库搜索，而 PRD D16 只要求「按 Workspace 过滤」，不给就不该搜全库。
  */
-export type MessageSearchScope = { conversationId: string } | { workspaceId: string } | undefined;
+export type MessageSearchScope = { sessionId: string } | { workspaceId: string } | undefined;
 
 /** 全文搜索命中项：带上对话名与命中附近的片段，前端不用再查一遍 */
 export interface MessageSearchHit {
   id: string;
-  conversationId: string;
-  conversationName: string;
+  sessionId: string;
+  sessionName: string;
   workspaceId: string;
   role: string;
   /** 命中位置前后截取的正文片段 */
@@ -269,7 +269,7 @@ export interface AssetCreateInput {
   createdAt: number;
 }
 
-/* ----------------------------- conversation_assets ------------------------ */
+/* ----------------------------- session_assets ------------------------ */
 
 /**
  * 关系行：某条消息引用了某份素材。
@@ -277,8 +277,8 @@ export interface AssetCreateInput {
  * 一行就是一次「引用」；同一对 `(messageId, assetId)` 只有一行（唯一约束）。
  * 素材的归属、以及「几张会话引用了它」都从这张表算，`assets` 行上不再记对话 / 消息。
  */
-export interface ConversationAssetRow {
-  conversationId: string;
+export interface SessionAssetRow {
+  sessionId: string;
   messageId: string;
   assetId: string;
   createdAt: number;
@@ -319,7 +319,7 @@ export interface NoticeRow {
   /** 毫秒数；null 表示永久存在，只能手动清（PRD L3） */
   durationMs: number | null;
   /** 这条通知与哪段对话有关；null 表示全局通知（对话删掉时随之级联删除） */
-  conversationId: string | null;
+  sessionId: string | null;
   createdAt: number;
 }
 
@@ -330,7 +330,7 @@ export interface Notice {
   params: Record<string, unknown> | null;
   durationMs: number | null;
   /** 这条通知与哪段对话有关；null 表示全局通知 */
-  conversationId: string | null;
+  sessionId: string | null;
   createdAt: number;
 }
 
@@ -341,7 +341,7 @@ export interface NoticeCreateInput {
   params?: Record<string, unknown> | null;
   durationMs?: number | null;
   /** 挂在哪段对话上；不给表示全局通知 */
-  conversationId?: string | null;
+  sessionId?: string | null;
   createdAt: number;
 }
 

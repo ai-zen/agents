@@ -61,7 +61,7 @@ export interface UploadFinalizeRequest {
   sha256: string;
   name: string | null;
   purpose: AssetPurpose;
-  conversationId: string;
+  sessionId: string;
 }
 
 /** 落定：把临时文件变成正式素材并登记引用 */
@@ -85,8 +85,8 @@ export type ExistingAssetLookup = (input: {
  * `language` 是那条「这段对话在哪个目录」的隐藏消息的渲染语言（D8）：上传是连接上的动作，
  * 只有接线层知道收件人说的是哪种语言，所以逐次传进来而不是在构造时定死。
  */
-export type ConversationPersister = (
-  conversationId: string,
+export type SessionPersister = (
+  sessionId: string,
   language: Language,
 ) => Promise<void>;
 
@@ -96,13 +96,13 @@ export interface UploadReceiverOptions {
   /** 收完之后做什么（缺省实现见 `AssetService.finalizeUpload`） */
   finalize: UploadFinalizer;
   /**
-   * 上传前把这段对话落成库里的行（R56：`conversation.create` 只发 id 与身份）。
+   * 上传前把这段对话落成库里的行（R56：`session.create` 只发 id 与身份）。
    *
-   * 素材行按 `conversationId` 挂外键，所以「新对话第一条消息就带图」这条路上，对话的落库发生在
+   * 素材行按 `sessionId` 挂外键，所以「新对话第一条消息就带图」这条路上，对话的落库发生在
    * `asset.begin`（与「第一次 `send`」同义）。实现方要自己幂等（同一段对话反复调只落一行）；
    * 不注入时上传不碰对话表。
    */
-  ensureConversation?: ConversationPersister;
+  ensureSession?: SessionPersister;
   /**
    * `asset.begin` 带了 `sha256` 时先问一句「库里是不是已经有它」。
    *
@@ -122,7 +122,7 @@ interface UploadSession {
   purpose: AssetPurpose;
   mime: string;
   name: string | null;
-  conversationId: string;
+  sessionId: string;
   declaredBytes: number;
   tempPath: string;
   handle: FileHandle;
@@ -156,7 +156,7 @@ export class UploadReceiver {
   private readonly onError?: (error: unknown, context: string) => void;
   /** 单张上限；`hello` 的 `limits` 也从这里取，两边不各写一个数 */
   readonly maxAssetBytes: number;
-  private readonly ensureConversation?: ConversationPersister;
+  private readonly ensureSession?: SessionPersister;
   private readonly findExisting?: ExistingAssetLookup;
   /** connectionId → uploadId → 进行中的上传 */
   private readonly sessions = new Map<string, Map<string, UploadSession>>();
@@ -165,7 +165,7 @@ export class UploadReceiver {
     this.assetsDir = options.assetsDir;
     this.finalize = options.finalize;
     this.maxAssetBytes = options.maxAssetBytes ?? MAX_ASSET_BYTES;
-    this.ensureConversation = options.ensureConversation;
+    this.ensureSession = options.ensureSession;
     this.findExisting = options.findExisting;
     this.onError = options.onError;
   }
@@ -191,12 +191,12 @@ export class UploadReceiver {
     const purpose = requirePurpose(params.purpose);
     const mime = requireMime(params.mime);
     const declaredBytes = requireDeclaredBytes(params.bytes, this.maxAssetBytes);
-    const conversationId = requireConversationId(params.conversationId);
+    const sessionId = requireSessionId(params.sessionId);
     const name = normalizeName(params.name);
     const sha256 = params.sha256 === undefined ? null : normalizeDigest(params.sha256);
 
     // 草稿对话在库里还没有行（R56），而「这段对话存在」是上传的前提：先落库再收字节
-    await this.persistConversation(conversationId, language);
+    await this.persistSession(sessionId, language);
 
     // 库里已有同一份字节时只回引用：磁盘上只有一份，两段对话各自在关系表里留一行
     const existing = sha256 === null ? null : await this.lookupExisting({ sha256, bytes: declaredBytes });
@@ -222,7 +222,7 @@ export class UploadReceiver {
       purpose,
       mime,
       name,
-      conversationId,
+      sessionId,
       declaredBytes,
       tempPath,
       handle,
@@ -310,7 +310,7 @@ export class UploadReceiver {
         sha256: digest,
         name: session.name,
         purpose: session.purpose,
-        conversationId: session.conversationId,
+        sessionId: session.sessionId,
       });
       return { asset };
     } catch (error) {
@@ -364,16 +364,16 @@ export class UploadReceiver {
    * 变成一句 internal。其余异常（写库失败这类）收敛成 `internal` 并留一个原因，原始错误同时
    * 交给 `onError` 进日志。
    */
-  private async persistConversation(conversationId: string, language: Language): Promise<void> {
-    const ensure = this.ensureConversation;
+  private async persistSession(sessionId: string, language: Language): Promise<void> {
+    const ensure = this.ensureSession;
     if (!ensure) return;
     try {
-      await ensure(conversationId, language);
+      await ensure(sessionId, language);
     } catch (error) {
       if (HostError.is(error)) throw error;
       this.onError?.(error, "让对话落库失败");
       throw new HostError("internal", {
-        detail: { reason: "conversation_persist_failed", conversationId },
+        detail: { reason: "session_persist_failed", sessionId },
         cause: error,
       });
     }
@@ -580,15 +580,15 @@ function requireDeclaredBytes(value: unknown, limit: number): number {
 /**
  * 上传必须归属一段对话。
  *
- * `asset.begin` 要这段对话在库里存在（草稿先落库），因为素材的引用关系（`conversation_assets`）
+ * `asset.begin` 要这段对话在库里存在（草稿先落库），因为素材的引用关系（`session_assets`）
  * 与「图片按引用清理」都按对话走；没有归属的上传只能留下一个没人认领的文件。所以这里直接拒
  * （而不是先收完再失败）。
  */
-function requireConversationId(value: unknown): string {
+function requireSessionId(value: unknown): string {
   if (typeof value === "string" && value.trim() !== "") return value.trim();
   throw new HostError("invalid_params", {
-    params: { field: "conversationId" },
-    detail: { field: "conversationId", reason: "conversation_required" },
+    params: { field: "sessionId" },
+    detail: { field: "sessionId", reason: "session_required" },
   });
 }
 

@@ -29,9 +29,9 @@ beforeEach(async () => {
   await db.tx((tx) => [
     // meta 不清：migrate 靠它判断跑不跑
     tx.run("DELETE FROM notices"),
-    // workspaces 必须在 assets 之前：删 workspace 级联删掉 conversation_assets 关系行，
+    // workspaces 必须在 assets 之前：删 workspace 级联删掉 session_assets 关系行，
     // 之后 assets 的 ON DELETE RESTRICT 才不会拦。messages 的 FTS 索引由触发器跟着维护
-    tx.run("DELETE FROM workspaces"), // 级联 conversations → messages → conversation_assets
+    tx.run("DELETE FROM workspaces"), // 级联 sessions → messages → session_assets
     tx.run("DELETE FROM assets"), // 级联 asset_vendor_files
     tx.run("DELETE FROM credentials"),
   ]);
@@ -55,7 +55,7 @@ beforeEach(async () => {
     ["c3", "w2", "对话三", 30],
   ] as const) {
     await db.run(
-      `INSERT INTO conversations (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
+      `INSERT INTO sessions (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
        VALUES (?, ?, ?, 0, ?, ?, ?, ?)`,
       [id, workspaceId, name, "agent-1", "model-1", createdAt, createdAt],
     );
@@ -69,7 +69,7 @@ afterAll(async () => {
 
 function message(overrides: Partial<MessageUpsertInput> & { id: string }): MessageUpsertInput {
   return {
-    conversationId: "c1",
+    sessionId: "c1",
     role: "user",
     status: "completed",
     content: "",
@@ -111,17 +111,17 @@ describe("MessageRepository.upsert", () => {
     expect(second?.createdAt).toBe(100);
     expect(second?.updatedAt).toBe(999);
     // 覆盖不是新增
-    expect(await repo.countByConversation("c1")).toBe(1);
+    expect(await repo.countBySession("c1")).toBe(1);
   });
 
   it("seq 在一段对话内单调递增，换一段对话重新从 1 开始", async () => {
     await repo.upsert(message({ id: "m1" }));
     await repo.upsert(message({ id: "m2" }));
     await repo.upsert(message({ id: "m3" }));
-    await repo.upsert(message({ id: "other", conversationId: "c2" }));
+    await repo.upsert(message({ id: "other", sessionId: "c2" }));
 
     const seqs = await db.all<{ id: string; seq: number }>(
-      "SELECT id, seq FROM messages WHERE conversationId = 'c1' ORDER BY seq",
+      "SELECT id, seq FROM messages WHERE sessionId = 'c1' ORDER BY seq",
     );
     expect(seqs).toEqual([
       { id: "m1", seq: 1 },
@@ -136,11 +136,11 @@ describe("MessageRepository.upsert", () => {
       repo.upsertMany([
         message({ id: "ok-1" }),
         // 对话不存在 → 外键失败 → 前一条也要回滚
-        message({ id: "bad", conversationId: "nope" }),
+        message({ id: "bad", sessionId: "nope" }),
       ]),
     ).rejects.toThrow();
 
-    expect(await repo.countByConversation("c1")).toBe(0);
+    expect(await repo.countBySession("c1")).toBe(0);
   });
 });
 
@@ -151,25 +151,25 @@ describe("一条取法：库里只有主线消息（CORE §17 / v5）", () => {
     // `hidden` 两边都不算：它在界面上从来没出现过
     await repo.upsert(message({ id: "cwd", data: { hidden: true }, createdAt: 50 }));
 
-    const listed = await repo.listByConversation("c1");
+    const listed = await repo.listBySession("c1");
     expect(listed.map((row) => row.id)).toEqual(["m1", "m2"]);
-    expect(await repo.countByConversation("c1")).toBe(listed.length);
+    expect(await repo.countBySession("c1")).toBe(listed.length);
   });
 });
 
 describe("MessageRepository.search", () => {
   const seed = async (): Promise<void> => {
     await repo.upsert(
-      message({ id: "m1", conversationId: "c1", role: "user", content: "今天天气不错，我们去看海吧", createdAt: 100 }),
+      message({ id: "m1", sessionId: "c1", role: "user", content: "今天天气不错，我们去看海吧", createdAt: 100 }),
     );
     await repo.upsert(
-      message({ id: "m2", conversationId: "c1", role: "assistant", content: "好的，海边风景很好", createdAt: 200 }),
+      message({ id: "m2", sessionId: "c1", role: "assistant", content: "好的，海边风景很好", createdAt: 200 }),
     );
     await repo.upsert(
-      message({ id: "m3", conversationId: "c2", role: "user", content: "另一段对话讲的是数据库索引", createdAt: 300 }),
+      message({ id: "m3", sessionId: "c2", role: "user", content: "另一段对话讲的是数据库索引", createdAt: 300 }),
     );
     await repo.upsert(
-      message({ id: "m4", conversationId: "c3", role: "user", content: "第三个项目里提到了天气与海", createdAt: 400 }),
+      message({ id: "m4", sessionId: "c3", role: "user", content: "第三个项目里提到了天气与海", createdAt: 400 }),
     );
   };
 
@@ -190,8 +190,8 @@ describe("MessageRepository.search", () => {
   it("3 字查询也能叠加范围过滤（FTS 分支带 join）", async () => {
     await seed();
     // 3 个字 → 走 FTS5 分支，同时按对话 / 按 Workspace 过滤
-    expect((await repo.search({ conversationId: "c1" }, "天气不", 10)).map((hit) => hit.id)).toEqual(["m1"]);
-    expect((await repo.search({ conversationId: "c2" }, "天气不", 10)).map((hit) => hit.id)).toEqual([]);
+    expect((await repo.search({ sessionId: "c1" }, "天气不", 10)).map((hit) => hit.id)).toEqual(["m1"]);
+    expect((await repo.search({ sessionId: "c2" }, "天气不", 10)).map((hit) => hit.id)).toEqual([]);
     expect((await repo.search({ workspaceId: "w1" }, "天气不", 10)).map((hit) => hit.id)).toEqual(["m1"]);
     expect((await repo.search({ workspaceId: "w2" }, "天气不", 10)).map((hit) => hit.id)).toEqual([]);
     // c3 明明含有「天气与海」，但它属于 w2，被 w1 的过滤条件挡住
@@ -200,7 +200,7 @@ describe("MessageRepository.search", () => {
 
   it("改过内容之后，旧词搜不到、新词搜得到（FTS 触发器跟着更新）", async () => {
     await seed();
-    await repo.upsert(message({ id: "m1", conversationId: "c1", content: "今天下雨，不去看海了", createdAt: 100 }));
+    await repo.upsert(message({ id: "m1", sessionId: "c1", content: "今天下雨，不去看海了", createdAt: 100 }));
 
     expect(await repo.search(undefined, "天气不", 10)).toEqual([]);
     expect((await repo.search(undefined, "今天下雨", 10)).map((hit) => hit.id)).toEqual(["m1"]);
@@ -209,7 +209,7 @@ describe("MessageRepository.search", () => {
   it("关键词里的特殊符号不会把查询语法搞坏", async () => {
     await seed();
     await repo.upsert(
-      message({ id: "m9", conversationId: "c1", content: '他说 "完成度 100%" 就行了 AND OR NOT', createdAt: 500 }),
+      message({ id: "m9", sessionId: "c1", content: '他说 "完成度 100%" 就行了 AND OR NOT', createdAt: 500 }),
     );
 
     await expect(repo.search(undefined, '100%"', 10)).resolves.toBeDefined();
@@ -229,19 +229,19 @@ describe("MessageRepository.deleteAfter（撤回，PRD D24）", () => {
   it("默认删掉锚点之后的消息", async () => {
     await seed();
     expect(await repo.deleteAfter("c1", "m2")).toBe(2);
-    expect((await repo.listByConversation("c1")).map((row) => row.id)).toEqual(["m1", "m2"]);
+    expect((await repo.listBySession("c1")).map((row) => row.id)).toEqual(["m1", "m2"]);
   });
 
   it("includeSelf 时连锚点一起删", async () => {
     await seed();
     expect(await repo.deleteAfter("c1", "m3", { includeSelf: true })).toBe(2);
-    expect((await repo.listByConversation("c1")).map((row) => row.id)).toEqual(["m1", "m2"]);
+    expect((await repo.listBySession("c1")).map((row) => row.id)).toEqual(["m1", "m2"]);
   });
 
   it("锚点不在该对话里时一条也不删", async () => {
     await seed();
-    await repo.upsert(message({ id: "other", conversationId: "c2", createdAt: 500 }));
+    await repo.upsert(message({ id: "other", sessionId: "c2", createdAt: 500 }));
     expect(await repo.deleteAfter("c1", "other")).toBe(0);
-    expect(await repo.countByConversation("c1")).toBe(4);
+    expect(await repo.countBySession("c1")).toBe(4);
   });
 });

@@ -6,10 +6,10 @@
  *
  * 七步（与交付报告一一对应）：
  *   1. 本地凭证从 `<数据根>/run/token` 拿到 → `hello` 成功；不带凭证 / 凭证不对被拒；
- *   2. `workspace.create` → `conversation.create`；
- *   3. `conversation.send` 一句：收 `message.delta` 与忙闲（忙 → 闲）；
+ *   2. `workspace.create` → `session.create`；
+ *   3. `session.send` 一句：收 `message.delta` 与忙闲（忙 → 闲）；
  *   4. `message.list` 拉回这段对话的消息（用户 + 助手 + 工具结果）；
- *   5. `conversation.state` 返回读数（闲着、队里空着）；
+ *   5. `session.state` 返回读数（闲着、队里空着）；
  *   6. 客户端断开 → 宿主**不**收尾（关宿主是显式动作，PRD 4.12）；再连回来消息还在；
  *   7. `host.shutdown` → 进程收尾一次（`ExitFacts` 里 `scopes: 1`：收尾那一刻还持有 Scope，
  *      随后连同 MCP 连接一起销毁）→ 用**同一个数据根**再起一个，消息仍拿得回来。
@@ -39,9 +39,9 @@ import {
 import type { AgentFactory } from "./runtime/index.js";
 import { FakeAgent } from "./runtime/TestSupport.js";
 import type {
-  ConversationCreateResult,
-  ConversationSendResult,
-  ConversationStateResult,
+  SessionCreateResult,
+  SessionSendResult,
+  SessionStateResult,
   MessageDeltaPayload,
   MessageListResult,
   StatePayload,
@@ -264,24 +264,24 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
     const workspace = (created.result as WorkspaceCreateResult).workspace;
     expect(workspace.folder.exists).toBe(true);
 
-    const conversationCreated = await client.call("conversation.create", {
+    const sessionCreated = await client.call("session.create", {
       workspaceId: workspace.id,
       agentId: "default",
       modelId: "test-model",
     });
-    const createdConversation = (conversationCreated.result as ConversationCreateResult).conversation;
-    if (!createdConversation) throw new Error("conversation.create 没有建出对话");
-    const conversationId = createdConversation.id;
-    expect(conversationId.length).toBeGreaterThan(0);
+    const createdSession = (sessionCreated.result as SessionCreateResult).session;
+    if (!createdSession) throw new Error("session.create 没有建出对话");
+    const sessionId = createdSession.id;
+    expect(sessionId.length).toBeGreaterThan(0);
 
     // ---- 步骤 3：投一句（回执只有那条用户消息的 id，其余靠事件） ----
-    client.request("conversation.send", {
-      conversationId,
+    client.request("session.send", {
+      sessionId,
       input: { content: "你好" },
     });
     const accepted = await nextResponse();
     if (!isSuccess(accepted)) throw new Error(`受理没成功：${JSON.stringify(accepted)}`);
-    const acceptedResult = accepted.result as ConversationSendResult;
+    const acceptedResult = accepted.result as SessionSendResult;
     // 回执只有用户消息 id 与附件结局：没有状态、没有「叫醒了没有」、没有结果
     expect(Object.keys(acceptedResult).sort()).toEqual(["attachments", "userMessageId"]);
     expect(acceptedResult.userMessageId.length).toBeGreaterThan(0);
@@ -295,7 +295,7 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
     expect(assistantMessageId.length).toBeGreaterThan(0);
 
     // ---- 步骤 4：消息拉回来是 core 的形状 ----
-    const listed = await client.call("message.list", { conversationId });
+    const listed = await client.call("message.list", { sessionId });
     const page = listed.result as MessageListResult;
     expect(page.anchor).toBeNull();
     expect(page.messages.map((message) => message.role)).toEqual([
@@ -310,7 +310,7 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
     expect(page.messages[0]?.content).toBe("你好");
     expect(page.messages[0]?.hidden).toBeUndefined();
     // 而库里最先写的那条是隐藏的 cwd 消息：`seq` 在用户消息之前，默认不出网
-    const withHidden = await client.call("message.list", { conversationId, includeHidden: true });
+    const withHidden = await client.call("message.list", { sessionId, includeHidden: true });
     const cwdMessage = (withHidden.result as MessageListResult).messages[0];
     expect(cwdMessage?.role).toBe(AgentNSValue.Role.User);
     expect(cwdMessage?.hidden).toBe(true);
@@ -330,18 +330,18 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
     }
 
     // ---- 步骤 5：读数（四件事 + 待办 + 子 agent 名册 + 交接态 + 时刻，没有用量也没有阶段） ----
-    client.request("conversation.state", { conversationId });
+    client.request("session.state", { sessionId });
     const stateFrame = await nextResponse();
     if (!isSuccess(stateFrame)) throw new Error(`读数没拿到：${JSON.stringify(stateFrame)}`);
-    const snapshot = (stateFrame.result as ConversationStateResult).state;
+    const snapshot = (stateFrame.result as SessionStateResult).state;
     expect(Object.keys(snapshot).sort()).toEqual([
       "alive",
       "at",
-      "conversationId",
       "handoff",
       "inbox",
       "inputPaused",
       "outputPaused",
+      "sessionId",
       "status",
       "subAgents",
     ]);
@@ -354,7 +354,7 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
     // 这一段没派过子 agent、也不在交接态：两格都是现读，没有就是空的
     expect(snapshot.subAgents).toEqual([]);
     expect(snapshot.handoff).toBeNull();
-    expect(snapshot.conversationId).toBe(conversationId);
+    expect(snapshot.sessionId).toBe(sessionId);
 
     // ---- 步骤 6：最后一个客户端断开，宿主**不**收尾（关宿主是显式动作，PRD 4.12） ----
     await client.close();
@@ -366,7 +366,7 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
     // 再连回来：还是同一个进程，消息一条不少
     client = await TestClient.connect(url);
     await client.hello(localToken);
-    const relisted = await client.call("message.list", { conversationId });
+    const relisted = await client.call("message.list", { sessionId });
     const restored = relisted.result as MessageListResult;
     expect(restored.messages.map((message) => message.id)).toEqual(
       page.messages.map((message) => message.id),
@@ -374,7 +374,7 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
 
     // ---- 步骤 7：显式关宿主 → 收尾一次（Scope 与 MCP 连接一起拆）→ 同一个数据根再起一个 ----
     // 先让这个进程手里真的有一个 Scope：跑过一段对话之后它就拿着（它不会自己消失）
-    client.request("conversation.send", { conversationId, input: { content: "第二句" } });
+    client.request("session.send", { sessionId, input: { content: "第二句" } });
     const secondAccepted = await nextResponse();
     expect(isSuccess(secondAccepted)).toBe(true);
     expect(app.scopeRegistry.workspaceIds()).toEqual([workspace.id]);
@@ -382,7 +382,7 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
 
     // 连发两轮之后库里的 cwd 消息仍然只有一条（每段不再注入，F-D9）
     const afterSecond = await client.call("message.list", {
-      conversationId,
+      sessionId,
       includeHidden: true,
     });
     const hiddenMessages = (afterSecond.result as MessageListResult).messages.filter(
@@ -416,7 +416,7 @@ describe("端到端冒烟：本地凭证 → 项目 → 对话 → 一轮 → �
     client = await TestClient.connect(`ws://127.0.0.1:${secondTarget?.port ?? 0}/`);
     await client.hello(secondToken ?? "");
 
-    const afterRestart = await client.call("message.list", { conversationId });
+    const afterRestart = await client.call("message.list", { sessionId });
     const reloaded = afterRestart.result as MessageListResult;
     expect(reloaded.messages.slice(0, 4).map((message) => message.content)).toContain("你好。");
     expect(reloaded.messages.map((message) => message.id)).toContain(acceptedResult.userMessageId);

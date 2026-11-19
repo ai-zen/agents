@@ -1,6 +1,6 @@
 /**
  * `AssetRepository` 的验收：素材行只存引用、去重是全局的（`sha256` 唯一）、
- * 引用关系在 `conversation_assets`（级联删 / 归零才删护栏），以及
+ * 引用关系在 `session_assets`（级联删 / 归零才删护栏），以及
  * `asset_vendor_files` 这张可失效缓存的四个动作。
  */
 
@@ -28,9 +28,9 @@ beforeEach(async () => {
   await db.tx((tx) => [
     // meta 不清：migrate 靠它判断跑不跑
     tx.run("DELETE FROM notices"),
-    // workspaces 必须在 assets 之前：删 workspace 级联删掉 conversation_assets 关系行，
+    // workspaces 必须在 assets 之前：删 workspace 级联删掉 session_assets 关系行，
     // 之后 assets 的 ON DELETE RESTRICT 才不会拦
-    tx.run("DELETE FROM workspaces"), // 级联 conversations → messages → conversation_assets
+    tx.run("DELETE FROM workspaces"), // 级联 sessions → messages → session_assets
     tx.run("DELETE FROM assets"), // 级联 asset_vendor_files
     tx.run("DELETE FROM credentials"),
   ]);
@@ -41,19 +41,19 @@ beforeEach(async () => {
     "/tmp/one",
     1,
   ]);
-  for (const conversationId of ["c1", "c2"]) {
+  for (const sessionId of ["c1", "c2"]) {
     await db.run(
-      `INSERT INTO conversations (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
+      `INSERT INTO sessions (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
        VALUES (?, 'w1', '对话', 0, 'agent-1', 'model-1', 2, 2)`,
-      [conversationId],
+      [sessionId],
     );
   }
   await db.run(
-    `INSERT INTO messages (id, conversationId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
+    `INSERT INTO messages (id, sessionId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
      VALUES ('m1', 'c1', 1, 'user', 'completed', 0, '"hi"', 'hi', 3, 3)`,
   );
   await db.run(
-    `INSERT INTO messages (id, conversationId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
+    `INSERT INTO messages (id, sessionId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
      VALUES ('m2', 'c2', 1, 'user', 'completed', 0, '"hi"', 'hi', 3, 3)`,
   );
 });
@@ -90,74 +90,74 @@ describe("AssetRepository", () => {
       createdAt: 10,
     });
     // 归属不在这一行上：它只由关系行回答
-    expect(row && "conversationId" in row).toBe(false);
+    expect(row && "sessionId" in row).toBe(false);
     expect(row && "messageId" in row).toBe(false);
-    expect(await repo.listByConversation("c1")).toEqual([]);
+    expect(await repo.listBySession("c1")).toEqual([]);
   });
 
   it("关系行：同一对 message + asset 只一行，重复写返回 0", async () => {
     await seedAsset();
 
-    const link = { conversationId: "c1", messageId: "m1", assetId: "a1", createdAt: 20 };
+    const link = { sessionId: "c1", messageId: "m1", assetId: "a1", createdAt: 20 };
     expect(await repo.linkAsset(link)).toBe(1);
     expect(await repo.linkAsset(link)).toBe(0);
 
     expect((await repo.listByMessage("m1")).map((row) => row.id)).toEqual(["a1"]);
-    expect((await repo.listByConversation("c1")).map((row) => row.id)).toEqual(["a1"]);
+    expect((await repo.listBySession("c1")).map((row) => row.id)).toEqual(["a1"]);
     expect(await repo.listAssetIdsByMessage("m1")).toEqual(["a1"]);
-    expect(await repo.listAssetIdsByConversation("c1")).toEqual(["a1"]);
+    expect(await repo.listAssetIdsBySession("c1")).toEqual(["a1"]);
   });
 
   it("同一段对话里两条消息引用同一份素材：素材只出现一次", async () => {
     await seedAsset();
     await db.run(
-      `INSERT INTO messages (id, conversationId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
+      `INSERT INTO messages (id, sessionId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
        VALUES ('m3', 'c1', 2, 'user', 'completed', 0, '"again"', 'again', 4, 4)`,
     );
-    await repo.linkAsset({ conversationId: "c1", messageId: "m1", assetId: "a1", createdAt: 20 });
-    await repo.linkAsset({ conversationId: "c1", messageId: "m3", assetId: "a1", createdAt: 21 });
+    await repo.linkAsset({ sessionId: "c1", messageId: "m1", assetId: "a1", createdAt: 20 });
+    await repo.linkAsset({ sessionId: "c1", messageId: "m3", assetId: "a1", createdAt: 21 });
 
-    expect((await repo.listByConversation("c1")).map((row) => row.id)).toEqual(["a1"]);
+    expect((await repo.listBySession("c1")).map((row) => row.id)).toEqual(["a1"]);
     expect(await repo.countReferences("a1")).toBe(2);
-    expect(await repo.countConversations("a1")).toBe(1);
+    expect(await repo.countSessions("a1")).toBe(1);
   });
 
-  it("「几张会话引用了它」= COUNT(DISTINCT conversationId)", async () => {
+  it("「几张会话引用了它」= COUNT(DISTINCT sessionId)", async () => {
     await seedAsset();
-    await repo.linkAsset({ conversationId: "c1", messageId: "m1", assetId: "a1", createdAt: 20 });
-    await repo.linkAsset({ conversationId: "c2", messageId: "m2", assetId: "a1", createdAt: 21 });
+    await repo.linkAsset({ sessionId: "c1", messageId: "m1", assetId: "a1", createdAt: 20 });
+    await repo.linkAsset({ sessionId: "c2", messageId: "m2", assetId: "a1", createdAt: 21 });
 
-    expect(await repo.countConversations("a1")).toBe(2);
-    expect(await repo.listConversationIds("a1")).toEqual(["c1", "c2"]);
+    expect(await repo.countSessions("a1")).toBe(2);
+    expect(await repo.listSessionIds("a1")).toEqual(["c1", "c2"]);
   });
 
   it("删消息：关系行跟着走，素材行还在（别人的引用不受影响）", async () => {
     await seedAsset();
-    await repo.linkAsset({ conversationId: "c1", messageId: "m1", assetId: "a1", createdAt: 20 });
-    await repo.linkAsset({ conversationId: "c2", messageId: "m2", assetId: "a1", createdAt: 21 });
+    await repo.linkAsset({ sessionId: "c1", messageId: "m1", assetId: "a1", createdAt: 20 });
+    await repo.linkAsset({ sessionId: "c2", messageId: "m2", assetId: "a1", createdAt: 21 });
 
     await db.run("DELETE FROM messages WHERE id = ?", ["m1"]);
 
     expect(await repo.listAssetIdsByMessage("m1")).toEqual([]);
     expect(await repo.get("a1")).toBeDefined();
-    expect(await repo.countConversations("a1")).toBe(1);
+    expect(await repo.countSessions("a1")).toBe(1);
   });
 
   it("删对话：只带走它自己的关系行", async () => {
     await seedAsset();
-    await repo.linkAsset({ conversationId: "c1", messageId: "m1", assetId: "a1", createdAt: 20 });
-    await repo.linkAsset({ conversationId: "c2", messageId: "m2", assetId: "a1", createdAt: 21 });
+    await repo.linkAsset({ sessionId: "c1", messageId: "m1", assetId: "a1", createdAt: 20 });
+    await repo.linkAsset({ sessionId: "c2", messageId: "m2", assetId: "a1", createdAt: 21 });
 
-    await db.run("DELETE FROM conversations WHERE id = ?", ["c1"]);
+    await db.run("DELETE FROM sessions WHERE id = ?", ["c1"]);
 
-    expect(await repo.listByConversation("c1")).toEqual([]);
-    expect((await repo.listByConversation("c2")).map((row) => row.id)).toEqual(["a1"]);
+    expect(await repo.listBySession("c1")).toEqual([]);
+    expect((await repo.listBySession("c2")).map((row) => row.id)).toEqual(["a1"]);
     expect(await repo.get("a1")).toBeDefined();
   });
 
   it("还有引用时素材行物理删不掉（RESTRICT 护栏）", async () => {
     await seedAsset();
-    await repo.linkAsset({ conversationId: "c1", messageId: "m1", assetId: "a1", createdAt: 20 });
+    await repo.linkAsset({ sessionId: "c1", messageId: "m1", assetId: "a1", createdAt: 20 });
 
     await expect(db.run("DELETE FROM assets WHERE id = ?", ["a1"])).rejects.toThrow();
     // 「归零才删」这条语句同样删不掉（返回 0 而不是抛错）
@@ -167,7 +167,7 @@ describe("AssetRepository", () => {
 
   it("引用归零之后才删得掉", async () => {
     await seedAsset();
-    await repo.linkAsset({ conversationId: "c1", messageId: "m1", assetId: "a1", createdAt: 20 });
+    await repo.linkAsset({ sessionId: "c1", messageId: "m1", assetId: "a1", createdAt: 20 });
     await db.run("DELETE FROM messages WHERE id = ?", ["m1"]);
 
     expect(await repo.countReferences("a1")).toBe(0);
@@ -215,10 +215,10 @@ describe("全局去重（按 sha256，不分对话）", () => {
 
 describe("asset_vendor_files（厂商 file_id 的缓存）", () => {
   /** 先有一条素材，缓存行都挂在它上面 */
-  async function seedLinkedAsset(id = "a1", conversationId = "c1", digest = "digest-1") {
+  async function seedLinkedAsset(id = "a1", sessionId = "c1", digest = "digest-1") {
     await seedAsset(id, digest);
-    const messageId = conversationId === "c1" ? "m1" : "m2";
-    await repo.linkAsset({ conversationId, messageId, assetId: id, createdAt: 20 });
+    const messageId = sessionId === "c1" ? "m1" : "m2";
+    await repo.linkAsset({ sessionId, messageId, assetId: id, createdAt: 20 });
   }
 
   it("upsert 写入、再写覆盖 file_id（同一对 asset+endpoint 只有一行）", async () => {

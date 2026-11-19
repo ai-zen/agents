@@ -10,29 +10,29 @@ import { join } from "node:path";
 import { AgentNS } from "@ai-zen/agents-core";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { ConversationRepository } from "../storage/ConversationRepository.js";
+import { SessionRepository } from "../storage/SessionRepository.js";
 import { Database } from "../storage/Database.js";
 import { MessageRepository } from "../storage/MessageRepository.js";
 import { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
 import { migrate } from "../storage/migrations.js";
-import type { Conversation } from "../storage/types.js";
-import type { ConversationSummary } from "../wire/index.js";
-import type { ConversationSummarizer } from "./SearchService.js";
+import type { Session } from "../storage/types.js";
+import type { SessionSummary } from "../wire/index.js";
+import type { SessionSummarizer } from "./SearchService.js";
 import { SearchService } from "./SearchService.js";
 
 let dir: string;
 let db: Database;
 let service: SearchService;
-let conversations: ConversationRepository;
+let sessions: SessionRepository;
 let messages: MessageRepository;
 
 /**
  * 摘要由对话服务提供；这里按「入参顺序即出参顺序」的约定给一份最小实现，
  * 顺便记录服务是不是真的把它传了下来。
  */
-function fakeSummarizer(): ConversationSummarizer & { calls: string[][] } {
+function fakeSummarizer(): SessionSummarizer & { calls: string[][] } {
   const calls: string[][] = [];
-  const summarize = async (rows: Conversation[]): Promise<ConversationSummary[]> => {
+  const summarize = async (rows: Session[]): Promise<SessionSummary[]> => {
     calls.push(rows.map((row) => row.id));
     return rows.map((row) => ({
       id: row.id,
@@ -71,7 +71,7 @@ beforeAll(async () => {
   db = new Database(join(dir, "ai-zen.db"));
   await migrate(db);
 
-  conversations = new ConversationRepository(db);
+  sessions = new SessionRepository(db);
   messages = new MessageRepository(db);
 });
 
@@ -87,11 +87,11 @@ beforeEach(async () => {
 
   const workspaces = new WorkspaceRepository(db);
   summarizer = fakeSummarizer();
-  service = new SearchService({ conversations, messages, summarize: summarizer });
+  service = new SearchService({ sessions, messages, summarize: summarizer });
 
   await workspaces.create({ id: "w1", name: "项目一", cwd: "/tmp/one", createdAt: 1 });
   await workspaces.create({ id: "w2", name: "项目二", cwd: "/tmp/two", createdAt: 2 });
-  await conversations.create({
+  await sessions.create({
     id: "c1",
     workspaceId: "w1",
     name: "数据库索引重构计划",
@@ -99,7 +99,7 @@ beforeEach(async () => {
     modelId: "m1",
     createdAt: 10,
   });
-  await conversations.create({
+  await sessions.create({
     id: "c2",
     workspaceId: "w2",
     name: "周末的闲聊",
@@ -110,7 +110,7 @@ beforeEach(async () => {
 
   await messages.upsert({
     id: "msg-1",
-    conversationId: "c1",
+    sessionId: "c1",
     role: "user",
     status: "completed",
     content: "今天天气不错，我们去看海吧",
@@ -118,7 +118,7 @@ beforeEach(async () => {
   });
   await messages.upsert({
     id: "msg-2",
-    conversationId: "c2",
+    sessionId: "c2",
     role: "assistant",
     status: "completed",
     content: "第三个项目里提到了天气与海",
@@ -131,17 +131,17 @@ afterAll(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-describe("SearchService.conversations（按名称）", () => {
+describe("SearchService.sessions（按名称）", () => {
   it("命中名字并回高亮片段，摘要按同一顺序带上", async () => {
-    const result = await service.conversations({ query: "索引" });
+    const result = await service.sessions({ query: "索引" });
     expect(result.hits).toHaveLength(1);
-    expect(result.hits[0]?.conversation.id).toBe("c1");
+    expect(result.hits[0]?.session.id).toBe("c1");
     expect(result.hits[0]?.matchedName).toBe("索引");
     expect(summarizer.calls).toEqual([["c1"]]);
   });
 
   it("高亮片段取名字里命中的那一段（大小写无关）", async () => {
-    await conversations.create({
+    await sessions.create({
       id: "c3",
       workspaceId: "w1",
       name: "Fix The Parser",
@@ -149,12 +149,12 @@ describe("SearchService.conversations（按名称）", () => {
       modelId: "m1",
       createdAt: 30,
     });
-    const result = await service.conversations({ query: "the" });
+    const result = await service.sessions({ query: "the" });
     expect(result.hits[0]?.matchedName).toBe("The");
   });
 
   it("可按 Workspace 过滤", async () => {
-    await conversations.create({
+    await sessions.create({
       id: "c3",
       workspaceId: "w2",
       name: "索引笔记",
@@ -164,21 +164,21 @@ describe("SearchService.conversations（按名称）", () => {
     });
 
     expect(
-      (await service.conversations({ query: "索引" })).hits.map((hit) => hit.conversation.id),
+      (await service.sessions({ query: "索引" })).hits.map((hit) => hit.session.id),
     ).toEqual(["c3", "c1"]);
     expect(
-      (await service.conversations({ query: "索引", workspaceId: "w1" })).hits.map(
-        (hit) => hit.conversation.id,
+      (await service.sessions({ query: "索引", workspaceId: "w1" })).hits.map(
+        (hit) => hit.session.id,
       ),
     ).toEqual(["c1"]);
   });
 
   it("空查询回空结果，不当错误", async () => {
-    expect(await service.conversations({ query: "   " })).toEqual({ hits: [] });
+    expect(await service.sessions({ query: "   " })).toEqual({ hits: [] });
   });
 
   it("LIKE 的通配符不会变成任意匹配", async () => {
-    await conversations.create({
+    await sessions.create({
       id: "c4",
       workspaceId: "w1",
       name: "完成度 100% 的那次",
@@ -186,16 +186,16 @@ describe("SearchService.conversations（按名称）", () => {
       modelId: "m1",
       createdAt: 40,
     });
-    expect((await service.conversations({ query: "100%" })).hits.map((hit) => hit.conversation.id)).toEqual([
+    expect((await service.sessions({ query: "100%" })).hits.map((hit) => hit.session.id)).toEqual([
       "c4",
     ]);
-    expect((await service.conversations({ query: "%" })).hits.map((hit) => hit.conversation.id)).toEqual([
+    expect((await service.sessions({ query: "%" })).hits.map((hit) => hit.session.id)).toEqual([
       "c4",
     ]);
   });
 
   it("limit 生效", async () => {
-    const result = await service.conversations({ query: "的", limit: 1 });
+    const result = await service.sessions({ query: "的", limit: 1 });
     expect(result.hits).toHaveLength(1);
   });
 });
@@ -205,8 +205,8 @@ describe("SearchService.messages（按内容）", () => {
     const result = await service.messages({ query: "天气不" });
     expect(result.hits.map((hit) => hit.messageId)).toEqual(["msg-1"]);
     expect(result.hits[0]).toMatchObject({
-      conversationId: "c1",
-      conversationName: "数据库索引重构计划",
+      sessionId: "c1",
+      sessionName: "数据库索引重构计划",
       role: AgentNS.Role.User,
     });
     expect(result.hits[0]?.createdAt).toBe(new Date(100).toISOString());
@@ -224,7 +224,7 @@ describe("SearchService.messages（按内容）", () => {
   });
 
   it("可按对话过滤", async () => {
-    const result = await service.messages({ query: "天气", conversationId: "c1" });
+    const result = await service.messages({ query: "天气", sessionId: "c1" });
     expect(result.hits.map((hit) => hit.messageId)).toEqual(["msg-1"]);
   });
 

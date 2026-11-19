@@ -21,8 +21,8 @@ import { makeTempDir, wait, type TempDir } from "./net/TestSupport.js";
 import type { AgentBuildContext } from "./runtime/index.js";
 import { FakeAgent } from "./runtime/TestSupport.js";
 import type {
-  ConversationCreateResult,
-  ConversationView,
+  SessionCreateResult,
+  SessionView,
   MethodName,
   MethodParams,
   MethodResult,
@@ -119,18 +119,18 @@ async function callMethod<M extends MethodName>(
 }
 
 /** 建一个项目 + 一段（已落库的）对话 */
-async function seedConversation(
+async function seedSession(
   app: HostApp,
   workspaceId: string,
-): Promise<ConversationView> {
-  const created = await callMethod(app, "conversation.create", {
+): Promise<SessionView> {
+  const created = await callMethod(app, "session.create", {
     workspaceId,
     agentId: "default",
   });
-  const conversation = created.conversation as ConversationCreateResult["conversation"];
-  if (!conversation) throw new Error("conversation.create 没有建出对话");
-  await app.conversationService.ensurePersisted(conversation.id);
-  return conversation;
+  const session = created.session as SessionCreateResult["session"];
+  if (!session) throw new Error("session.create 没有建出对话");
+  await app.sessionService.ensurePersisted(session.id);
+  return session;
 }
 
 /** 建一个项目（同一个目录只能登记一次） */
@@ -157,31 +157,31 @@ describe("会话级模型：写库与重启（F-B4）", () => {
 
     const app = await startApp(dataRoot);
     const workspaceId = await seedWorkspace(app, workspaceDir.path);
-    const conversation = await seedConversation(app, workspaceId);
-    expect(conversation.model).toMatchObject({ modelId: "test-model", source: "agent" });
+    const session = await seedSession(app, workspaceId);
+    expect(session.model).toMatchObject({ modelId: "test-model", source: "agent" });
 
-    const changed = await callMethod(app, "conversation.setModel", {
-      conversationId: conversation.id,
+    const changed = await callMethod(app, "session.setModel", {
+      sessionId: session.id,
       modelId: "plain-model",
     });
-    expect(changed.model).toMatchObject({ modelId: "plain-model", source: "conversation" });
+    expect(changed.model).toMatchObject({ modelId: "plain-model", source: "session" });
     // 立刻写库（不是内存里的临时值）
     const row = await app.db.get<{ modelId: string }>(
-      "SELECT modelId FROM conversations WHERE id = ?",
-      [conversation.id],
+      "SELECT modelId FROM sessions WHERE id = ?",
+      [session.id],
     );
     expect(row?.modelId).toBe("plain-model");
 
     // 重启：同一个数据根再起一个服务
     await app.stop("requested");
     const restarted = await startApp(dataRoot);
-    const reopened = await callMethod(restarted, "conversation.get", {
-      conversationId: conversation.id,
+    const reopened = await callMethod(restarted, "session.get", {
+      sessionId: session.id,
     });
-    expect(reopened.conversation.model).toMatchObject({
+    expect(reopened.session.model).toMatchObject({
       modelId: "plain-model",
-      source: "conversation",
+      source: "session",
     });
-    expect(reopened.conversation.modelId).toBe("plain-model");
+    expect(reopened.session.modelId).toBe("plain-model");
   });
 });

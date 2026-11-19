@@ -24,7 +24,7 @@
  *
  * `start()` 是一个 RPC 的入口，它只回「已经开始」（`{ started: true }`）：写文档要跑一阵，让
  * 回执憋在那里等于把「一次运行的产出」重新发明一遍。剩下的那一趟在本文件的私有方法里跑完，
- * 结果通过**通知**（完成 / 降级 / 取消 / 失败，PRD 4.9）与 `conversation.changed` 的
+ * 结果通过**通知**（完成 / 降级 / 取消 / 失败，PRD 4.9）与 `session.changed` 的
  * `memory_replaced`（提交与回滚各一条）告知。
  *
  * ## 四条结局，一处收尾
@@ -37,7 +37,7 @@
  *
  * 文档落在盘上（`describeDocument` 从磁盘取大小与写入时刻）就是**提交点**。从那里往后：
  *
- *   1. **旧记忆成为另一段会话**：新插一行 `conversations`（名字 `已存档_<原名>`，项目 / 助手 /
+ *   1. **旧记忆成为另一段会话**：新插一行 `sessions`（名字 `已存档_<原名>`，项目 / 助手 /
  *      模型 / 思考档位以及两条阈值、自动交接开关、血缘**照抄**，创建时刻是交接那一刻），
  *      把原会话的全部消息行改挂到它名下；
  *   2. **原会话换记忆**：把 **SDK 算好的那份记忆**写到原会话名下（系统提示那几条 + 一条
@@ -52,7 +52,7 @@
  * - 「换完之后记忆长什么样」**只有 SDK 一处算** —— 哪些旧消息留（`omit` / `prune`）、断点消息的
  *   形状、文档够不够长（不到 400 字节算没写出来）全在 SDK 的 `HandoffService.migrate()` 里算完，
  *   外部使用者用 SDK 时也是同一份；
- * - 宿主**只做「把这份记忆落到库」**：就是本文件那个 `tx`（`ConversationRepository.replaceMemory`）
+ * - 宿主**只做「把这份记忆落到库」**：就是本文件那个 `tx`（`SessionRepository.replaceMemory`）
  *   加两条事件。断点消息就是 SDK 算出来的那一条，这里不自己拼。
  *
  * 1 与 2 的落库部分在一个 `tx` 里，所以崩在中间也不会留下「旧的已存档、新的没上岗」的第三种状态；
@@ -106,16 +106,16 @@ import type {
 import { toRow } from "../runtime/ChatRunner.js";
 import type { MessageRepository } from "../storage/MessageRepository.js";
 import type { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
-import type { Conversation, WorkspaceRow } from "../storage/types.js";
-import type { ConversationRepository } from "../storage/ConversationRepository.js";
+import type { Session, WorkspaceRow } from "../storage/types.js";
+import type { SessionRepository } from "../storage/SessionRepository.js";
 import { HostError } from "../wire/errors.js";
 import type {
   CompactionMode,
-  ConversationCreateParams,
-  ConversationCreateResult,
-  ConversationGetParams,
-  ConversationGetResult,
-  ConversationView,
+  SessionCreateParams,
+  SessionCreateResult,
+  SessionGetParams,
+  SessionGetResult,
+  SessionView,
   HandoffDocument,
   HandoffDocumentInfo,
   HandoffListDocumentsParams,
@@ -147,9 +147,9 @@ const ARCHIVED_NAME_PREFIX = "已存档_";
  * 投递不在这里：写文档那条指令由 SDK 直接投给它要的那个驱动者，宿主不居中转发。
  */
 export interface HandoffRunnerPort {
-  canHandoffNow(conversationId: string): HandoffAvailability;
-  beginHandoff(conversationId: string): void;
-  endHandoff(conversationId: string): void;
+  canHandoffNow(sessionId: string): HandoffAvailability;
+  beginHandoff(sessionId: string): void;
+  endHandoff(sessionId: string): void;
 }
 
 /**
@@ -158,26 +158,26 @@ export interface HandoffRunnerPort {
  * 自交接要的是**同一个驱动者**：`agent.messages` 就是这段对话的记忆本身，换记忆要原地换它。
  */
 export interface HandoffAgentHolder {
-  get(conversationId: string): ChatAgent | undefined;
+  get(sessionId: string): ChatAgent | undefined;
 }
 
-/** 对话视图的窄接口（结构上 `ConversationService` 满足：开新对话、取旧对话的完整形状） */
-export interface HandoffConversationPort {
-  create(params: ConversationCreateParams): Promise<ConversationCreateResult>;
-  get(params: ConversationGetParams): Promise<ConversationGetResult>;
+/** 对话视图的窄接口（结构上 `SessionService` 满足：开新对话、取旧对话的完整形状） */
+export interface HandoffSessionPort {
+  create(params: SessionCreateParams): Promise<SessionCreateResult>;
+  get(params: SessionGetParams): Promise<SessionGetResult>;
   /**
-   * 把刚 `create` 出来的对话落成真行（R56：首次发消息时才写 `conversations`）。
+   * 把刚 `create` 出来的对话落成真行（R56：首次发消息时才写 `sessions`）。
    *
    * 交接开的新对话第一条就是宿主写的摘要，于是它（与普通对话的首发一样）马上就有行。
    */
-  ensurePersisted(conversationId: string): Promise<unknown>;
+  ensurePersisted(sessionId: string): Promise<unknown>;
   /**
    * 把「这段会话被压过」记到会话行上（`compactedAt` / `compactionMode`）。
    *
    * 交接开新对话（D18）就是这条路径：它与派生会话的自压（插件里的 `auto`）是两种来源，
    * 所以标记要写得能区分（这里一律 `manual`）。
    */
-  markCompacted(conversationId: string, mode: CompactionMode): Promise<void>;
+  markCompacted(sessionId: string, mode: CompactionMode): Promise<void>;
 }
 
 /** 取消交接（用户按了取消 / 中断）。与「交接失败」分开：前者回到交接前，后者要说明原因。 */
@@ -336,18 +336,18 @@ interface HandoffNotice {
 
 /** 一次交接的环境（`start` 收下它之后由后台那一趟跑完） */
 interface HandoffRun {
-  conversation: Conversation;
+  session: Session;
   mode: HandoffMode;
   then: HandoffThen;
   language: Language;
 }
 
 export interface HandoffDocumentServiceDeps {
-  conversations: ConversationRepository;
+  sessions: SessionRepository;
   workspaces: WorkspaceRepository;
   messages: MessageRepository;
   /** 开新对话 / 取旧对话的完整形状 */
-  conversationViews: HandoffConversationPort;
+  sessionViews: HandoffSessionPort;
   /** 写文档那一步（两种执行者都从这里进）；缺省走 SDK */
   execute?: HandoffExecutor;
   /**
@@ -394,7 +394,7 @@ function isHandoffMode(value: string): value is HandoffMode {
 
 /** 交接之后做什么：只产文档 / 顺带开一段新对话（F-D4 / F-D5） */
 function isHandoffThen(value: string): value is HandoffThen {
-  return value === "document_only" || value === "new_conversation";
+  return value === "document_only" || value === "new_session";
 }
 
 /**
@@ -402,11 +402,11 @@ function isHandoffThen(value: string): value is HandoffThen {
  *
  * 它不是「文档没写出来」：那一段已经不在了，而换记忆换的正是它的 `messages`。
  */
-function driverGone(conversationId: string): HostError {
+function driverGone(sessionId: string): HostError {
   return new HostError("internal", {
     messageKey: "error.handoffFailed",
     params: { reason: "the driver went away" },
-    detail: { conversationId, reason: "driver_gone" },
+    detail: { sessionId, reason: "driver_gone" },
   });
 }
 
@@ -416,11 +416,11 @@ function driverGone(conversationId: string): HostError {
  * 它不是「文档不在盘上」（那是 `describeDocument` 的 `document_missing`）：这一条说的是执行者
  * 根本没把「写完了」那一拍交回来 —— 没换记忆、也没得可换，这一趟按失败收尾。
  */
-function documentNotReturned(conversationId: string): HostError {
+function documentNotReturned(sessionId: string): HostError {
   return new HostError("internal", {
     messageKey: "error.handoffFailed",
     params: { reason: "the handoff document never came back" },
-    detail: { conversationId, reason: "document_not_returned" },
+    detail: { sessionId, reason: "document_not_returned" },
   });
 }
 
@@ -440,10 +440,10 @@ function systemPromptOf(messages: readonly AgentNS.Message[]): AgentNS.Message[]
 }
 
 export class HandoffDocumentService {
-  private readonly conversations: ConversationRepository;
+  private readonly sessions: SessionRepository;
   private readonly workspaces: WorkspaceRepository;
   private readonly messages: MessageRepository;
-  private readonly conversationViews: HandoffConversationPort;
+  private readonly sessionViews: HandoffSessionPort;
   private readonly execute: HandoffExecutor;
   private readonly agents: HandoffAgentHolder;
   private readonly runner: HandoffRunnerPort;
@@ -462,10 +462,10 @@ export class HandoffDocumentService {
   private readonly inFlight = new Set<string>();
 
   constructor(deps: HandoffDocumentServiceDeps) {
-    this.conversations = deps.conversations;
+    this.sessions = deps.sessions;
     this.workspaces = deps.workspaces;
     this.messages = deps.messages;
-    this.conversationViews = deps.conversationViews;
+    this.sessionViews = deps.sessionViews;
     this.execute = deps.execute ?? createSdkHandoffExecutor();
     this.agents = deps.agents;
     this.runner = deps.runner;
@@ -487,18 +487,18 @@ export class HandoffDocumentService {
    *
    * 过了判据之后三步，然后立刻返回：
    *   1. **挂牌**（`beginHandoff`）——这一趟写出来的消息不落库，但事件照推；它还顺手推一条
-   *      `conversation.changed(handoff_started)`，让界面直说「正在交接」；
+   *      `session.changed(handoff_started)`，让界面直说「正在交接」；
    *   2. 登记 `inFlight`（同一段不并排放两趟）；
    *   3. 起一趟后台的活把它跑完（写 → 提交或回滚 → 摘牌 → 开闸 → 告知）。
    *
    * 回执只有「已经开始」（{@link HandoffStartResult}）：文档路径、有没有降级、成功还是取消，
-   * 走通知与 `conversation.changed`。
+   * 走通知与 `session.changed`。
    */
   async start(
     params: HandoffStartParams,
     language: Language = DEFAULT_LANGUAGE,
   ): Promise<HandoffStartResult> {
-    const conversation = await this.requireConversation(params.conversationId);
+    const session = await this.requireSession(params.sessionId);
     if (!isHandoffMode(params.mode)) {
       throw new HostError("invalid_params", {
         params: { field: "mode" },
@@ -511,33 +511,33 @@ export class HandoffDocumentService {
         detail: {
           field: "then",
           value: params.then,
-          allowed: ["document_only", "new_conversation"],
+          allowed: ["document_only", "new_session"],
         },
       });
     }
 
     // 同一段不并排放两趟（见 {@link inFlight}）
-    if (this.inFlight.has(conversation.id)) {
+    if (this.inFlight.has(session.id)) {
       throw new HostError("busy", {
-        detail: { conversationId: conversation.id, reason: "handoff_in_progress" },
+        detail: { sessionId: session.id, reason: "handoff_in_progress" },
       });
     }
 
     // 入口判据：**能不能立刻接手这一批**（四条，全仓只有这一处判据）。拒因原样报给调用方：
     // 没有驱动者 / 手上有活 / 输出闸关着 / 已经在交 —— 四种都是「等它行了再来」
-    const available = this.runner.canHandoffNow(conversation.id);
+    const available = this.runner.canHandoffNow(session.id);
     if (!available.ok) {
       throw new HostError("busy", {
-        detail: { conversationId: conversation.id, reason: available.reason },
+        detail: { sessionId: session.id, reason: available.reason },
       });
     }
 
-    this.runner.beginHandoff(conversation.id);
-    this.inFlight.add(conversation.id);
+    this.runner.beginHandoff(session.id);
+    this.inFlight.add(session.id);
 
     // 后台跑完那一趟：本方法不等它（它要是抛出来，只可能是写库这类不该打扰回执的差错）
     void this.runToEnd({
-      conversation,
+      session,
       mode: params.mode,
       then: params.then,
       language,
@@ -558,8 +558,8 @@ export class HandoffDocumentService {
    *   - `cancelled`：用户把它叫停了。它决定收口开不开闸（见 `finally`）。
    */
   private async runToEnd(run: HandoffRun): Promise<void> {
-    const { conversation } = run;
-    const driver = this.agents.get(conversation.id);
+    const { session } = run;
+    const driver = this.agents.get(session.id);
     // 写文档那一趟之前记下长度：它写在这个驱动者的记忆里，而这批话不属于这段对话的记忆
     const memoryBefore = driver === undefined ? 0 : driver.messages.length;
     let committed = false;
@@ -570,14 +570,14 @@ export class HandoffDocumentService {
     try {
       // 入口判据刚放行过，这一段转身就没了（对话被删 / 被硬杀）：没有驱动者就没有「同一个
       // 驱动者」可写、也没有记忆可换，这一趟按失败收尾（记忆本来就是交接前的那一份）
-      if (driver === undefined) throw driverGone(conversation.id);
+      if (driver === undefined) throw driverGone(session.id);
 
-      const workspace = await this.requireWorkspace(conversation.workspaceId);
+      const workspace = await this.requireWorkspace(session.workspaceId);
       const handoffDir = handoffDirFor(workspace.cwd);
       // 模板目录按这次交接的项目目录现算（与 SDK 插件同一份口径）
       const skillDirs = this.skillDirs(workspace.cwd);
       // 落库接缝（两条路共用的那一个）：SDK 算好记忆就交给它，这里只把它落到库
-      const memoryCommitter = this.memoryCommitter(conversation.id);
+      const memoryCommitter = this.memoryCommitter(session.id);
       // 写文档 + 换记忆都交给 SDK：它拿这个驱动者去写（自交接）或拿这段记忆去摘要（独立摘要），
       // 降级方向、记忆长什么样都由它自己算（PRD 4.5）。宿主这一侧只剩「落到库」
       const executed = await this.execute({
@@ -589,13 +589,13 @@ export class HandoffDocumentService {
           // 文件事实从磁盘取（大小与写入时刻不由执行者自己报：它可能是模型）
           document = await this.describeDocument(commit.handoffPath, commit.mode);
           // 记忆：旧记忆成为另一段会话，原会话换上 SDK 算好的那一份
-          await this.commitMemory({ conversation, driver, memory: commit.memory, document });
+          await this.commitMemory({ session, driver, memory: commit.memory, document });
           committed = true;
         },
       });
 
       // 执行者跑完了却一次都没落过库：文档没交回来（这一趟不算成）
-      if (!committed || document === undefined) throw documentNotReturned(conversation.id);
+      if (!committed || document === undefined) throw documentNotReturned(session.id);
 
       await this.afterCommit({ run, document, usedMode: executed.usedMode });
     } catch (error) {
@@ -606,11 +606,11 @@ export class HandoffDocumentService {
       if (!committed) {
         this.restoreMemory(driver, memoryBefore);
         // 回滚也推一条「记忆换过了」：客户端据此整段重拉，把那些只在内存里的写作痕迹清掉
-        this.emitMemoryReplaced(conversation);
+        this.emitMemoryReplaced(session);
       }
       // 收尾只有一处：摘牌。四条路都从这里过去
-      this.inFlight.delete(conversation.id);
-      this.runner.endHandoff(conversation.id);
+      this.inFlight.delete(session.id);
+      this.runner.endHandoff(session.id);
       // 开闸也在收口这一处（只有宿主知道「记忆换完了」）：成功与失败都开 —— 进来时那道闸必然
       // 是开的（入口判据会拒 `output_paused`），所以这里不需要记「原来开着还是关着」。
       // **取消不开**：用户按了中断，闸是 `abort` 关上的，回滚之后就该保持暂停（PRD 4.4）。
@@ -629,13 +629,13 @@ export class HandoffDocumentService {
    * 因为这两个都可能在这一趟期间没了（对话被删 / 驱动者被硬杀）—— 那时没有可换的记忆，
    * 报一个失败事实上去。
    */
-  memoryCommitter(conversationId: string): (commit: MemoryCommit) => Promise<void> {
+  memoryCommitter(sessionId: string): (commit: MemoryCommit) => Promise<void> {
     return async (commit) => {
-      const conversation = await this.conversations.get(conversationId);
-      const driver = this.agents.get(conversationId);
-      if (!conversation || !driver) throw driverGone(conversationId);
+      const session = await this.sessions.get(sessionId);
+      const driver = this.agents.get(sessionId);
+      if (!session || !driver) throw driverGone(sessionId);
       const document = await this.describeDocument(commit.handoffPath, commit.mode);
-      await this.commitMemory({ conversation, driver, memory: commit.memory, document });
+      await this.commitMemory({ session, driver, memory: commit.memory, document });
     };
   }
 
@@ -643,10 +643,10 @@ export class HandoffDocumentService {
    * 把 **SDK 算好的那份记忆**落到库（宿主只做这一步，`PRD.md` 4.5）。
    *
    * 三步顺序是死的：
-   *   1. 库里一个批次（`ConversationRepository.replaceMemory`）：插存档会话行 + 把旧消息行改挂
+   *   1. 库里一个批次（`SessionRepository.replaceMemory`）：插存档会话行 + 把旧消息行改挂
    *      过去 + 原会话写上新记忆的那几条行；
    *   2. 内存里**原地**换成同一份（不重建 agent、不动它的队列与两个开关 —— 换记忆不等于换人）；
-   *   3. 推两条 `conversation.changed`：这段的记忆换过了、那段 `已存档_…` 出现了。
+   *   3. 推两条 `session.changed`：这段的记忆换过了、那段 `已存档_…` 出现了。
    *
    * **哪些行要写**：新记忆开头那几条**不隐藏的 system 消息**是助手定义带来的系统提示，它们不是
    * 库里的行（创建对话时也不写它们），所以跳过；其余每一条都按原样写成行 —— 宿主用的策略是
@@ -656,13 +656,13 @@ export class HandoffDocumentService {
    * 都不留 —— 那个 `tx` 要么整批成，要么整批不成。
    */
   private async commitMemory(input: {
-    conversation: Conversation;
+    session: Session;
     driver: ChatAgent;
     /** SDK 算好的那份记忆（含开头那几条系统提示） */
     memory: readonly AgentNS.Message[];
     document: HandoffDocument;
   }): Promise<void> {
-    const { conversation, driver, memory, document } = input;
+    const { session, driver, memory, document } = input;
     const at = this.now();
     const archivedId = randomUUID();
     // 系统提示：开头连续的、不隐藏的 system 消息（定义带来的，不落库）。断点也是 `role: system`，
@@ -670,26 +670,26 @@ export class HandoffDocumentService {
     const promptLength = systemPromptOf(memory).length;
     const rows = memory
       .slice(promptLength)
-      .map((message) => toRow(message, conversation.id, at));
+      .map((message) => toRow(message, session.id, at));
 
-    await this.conversations.replaceMemory({
-      conversationId: conversation.id,
+    await this.sessions.replaceMemory({
+      sessionId: session.id,
       // 存档那段：项目 / 助手 / 模型 / 思考档位，**以及两条阈值、自动交接开关、血缘**都照抄原会话，
       // 只有 id / 名字 / 创建时刻是新的（它就是交接那一刻生成的，所以按自己的时间排在列表里）
       archived: {
         id: archivedId,
-        workspaceId: conversation.workspaceId,
-        name: `${ARCHIVED_NAME_PREFIX}${conversation.name}`,
-        agentId: conversation.agentId,
-        modelId: conversation.modelId,
-        thinkingLevel: conversation.thinkingLevel,
+        workspaceId: session.workspaceId,
+        name: `${ARCHIVED_NAME_PREFIX}${session.name}`,
+        agentId: session.agentId,
+        modelId: session.modelId,
+        thinkingLevel: session.thinkingLevel,
         // 两条阈值照抄数值（不重算、也不重新解析模型）：存档段就是原会话当时那个样子
-        handoffThreshold: conversation.handoffThreshold,
-        guardThreshold: conversation.guardThreshold,
+        handoffThreshold: session.handoffThreshold,
+        guardThreshold: session.guardThreshold,
         // 开关也照抄：它说的是「装不下时谁来拿主意」，跟着这段会话走，不跟着记忆走
-        autoHandoff: conversation.autoHandoff,
+        autoHandoff: session.autoHandoff,
         // 血缘照抄 = 交接不产生新身份：它还是同一条命的前半段，不是「模型开出来的兄弟」
-        lineage: conversation.lineage,
+        lineage: session.lineage,
         createdAt: at,
       },
       // 写回原会话的就是 SDK 算好的那几条（断点消息也是它给的那一条，这里不再自己拼一条）
@@ -701,10 +701,10 @@ export class HandoffDocumentService {
     driver.messages.splice(0, driver.messages.length, ...memory);
 
     // 先说「这段的记忆换过了」，再说「那段已存档的出现了」
-    this.emitMemoryReplaced(conversation);
-    this.emit?.("conversation.changed", {
-      conversationId: archivedId,
-      workspaceId: conversation.workspaceId,
+    this.emitMemoryReplaced(session);
+    this.emit?.("session.changed", {
+      sessionId: archivedId,
+      workspaceId: session.workspaceId,
       change: "created",
       at: iso(at),
     });
@@ -720,15 +720,15 @@ export class HandoffDocumentService {
    * 成功与失败都开（失败之后这一段还得能收件），**取消不开**：那是用户按的停 —— 插件在取消那条路上
    * 一个回声都不发，所以这里也就不会被叫到。
    */
-  settleAutoHandoff(conversationId: string): void {
-    this.agents.get(conversationId)?.resumeOutput();
+  settleAutoHandoff(sessionId: string): void {
+    this.agents.get(sessionId)?.resumeOutput();
   }
 
   /** 推一条「这段的记忆换过了」（提交与回滚各推一次：客户端据此整段重拉消息） */
-  private emitMemoryReplaced(conversation: Conversation): void {
-    this.emit?.("conversation.changed", {
-      conversationId: conversation.id,
-      workspaceId: conversation.workspaceId,
+  private emitMemoryReplaced(session: Session): void {
+    this.emit?.("session.changed", {
+      sessionId: session.id,
+      workspaceId: session.workspaceId,
       change: "memory_replaced",
       at: iso(this.now()),
     });
@@ -767,9 +767,9 @@ export class HandoffDocumentService {
         // 一条「写好了」的提示停留几秒就够，它说的是「刚刚发生了什么」
         duration: 8,
       });
-      // 后面接什么（D18 / F-D5）：开新对话这一步自己会推一条 `conversation.changed(created)`
-      if (run.then === "new_conversation") {
-        await this.openFollowUpConversation(run.conversation, document, run.language);
+      // 后面接什么（D18 / F-D5）：开新对话这一步自己会推一条 `session.changed(created)`
+      if (run.then === "new_session") {
+        await this.openFollowUpSession(run.session, document, run.language);
       }
     } catch (error) {
       this.onError?.(error, "handoff-after-commit");
@@ -825,7 +825,7 @@ export class HandoffDocumentService {
     if (!this.notices) return;
     try {
       await this.notices.create(
-        { ...notice, conversationId: run.conversation.id },
+        { ...notice, sessionId: run.session.id },
         run.language,
       );
     } catch (error) {
@@ -855,35 +855,35 @@ export class HandoffDocumentService {
    * 是**宿主注入**的交接摘要（`hidden`：不是用户打的字，界面上可以折起来），系统提示仍由
    * 助手定义提供 —— 接手的那一段装配 agent 时会自然带上。
    */
-  private async openFollowUpConversation(
-    conversation: Conversation,
+  private async openFollowUpSession(
+    session: Session,
     document: HandoffDocument,
     language: Language,
   ): Promise<string> {
-    const created = await this.conversationViews.create({
-      workspaceId: conversation.workspaceId,
-      agentId: conversation.agentId,
-      modelId: conversation.modelId,
+    const created = await this.sessionViews.create({
+      workspaceId: session.workspaceId,
+      agentId: session.agentId,
+      modelId: session.modelId,
     });
-    if (!created.conversation) {
+    if (!created.session) {
       // 交接开新对话给的是已有项目（`workspaceId`），不会走到「目录待登记」那条路
       throw new HostError("internal", {
-        detail: { reason: "conversation_not_created", workspaceId: conversation.workspaceId },
+        detail: { reason: "session_not_created", workspaceId: session.workspaceId },
       });
     }
-    const newConversationId = created.conversation.id;
-    // 摘要写得进库的前提是这段对话已经有行了（R56：消息的外键指向 `conversations`）
-    await this.conversationViews.ensurePersisted(newConversationId);
+    const newSessionId = created.session.id;
+    // 摘要写得进库的前提是这段对话已经有行了（R56：消息的外键指向 `sessions`）
+    await this.sessionViews.ensurePersisted(newSessionId);
 
     // 旧的那段被压下去了：会话行上记一笔（`manual`）。这一步顺手推了旧对话的
-    // `conversation.changed`（`settings_changed`），所以下面不再为它单独推一条。
+    // `session.changed`（`settings_changed`），所以下面不再为它单独推一条。
     // 写失败不影响已经做完的交接（文档在、新对话也开了）：标记是观测事实，不是交接的一步。
-    await this.conversationViews
-      .markCompacted(conversation.id, "manual")
+    await this.sessionViews
+      .markCompacted(session.id, "manual")
       .catch(() => undefined);
 
     const summary = await this.excerpt(document.path);
-    const content = render(language, "handoff.newConversationSummary", {
+    const content = render(language, "handoff.newSessionSummary", {
       path: document.path,
       summary,
     });
@@ -896,7 +896,7 @@ export class HandoffDocumentService {
     const createdAt = this.now();
     await this.messages.upsert({
       id: message.id,
-      conversationId: newConversationId,
+      sessionId: newSessionId,
       role: AgentNS.Role.System as string,
       status: AgentNS.MessageStatus.Completed as string,
       omit: false,
@@ -905,13 +905,13 @@ export class HandoffDocumentService {
       createdAt,
     });
 
-    this.emit?.("conversation.changed", {
-      conversationId: newConversationId,
-      workspaceId: conversation.workspaceId,
+    this.emit?.("session.changed", {
+      sessionId: newSessionId,
+      workspaceId: session.workspaceId,
       change: "created",
       at: iso(createdAt),
     });
-    return newConversationId;
+    return newSessionId;
   }
 
   /** 交接文档的摘要片段（读不出来就给空串：新对话仍然指向文档路径） */
@@ -960,13 +960,13 @@ export class HandoffDocumentService {
     return { documents };
   }
 
-  private async requireConversation(conversationId: string): Promise<Conversation> {
-    const id = typeof conversationId === "string" ? conversationId.trim() : "";
-    const row = id.length === 0 ? undefined : await this.conversations.get(id);
+  private async requireSession(sessionId: string): Promise<Session> {
+    const id = typeof sessionId === "string" ? sessionId.trim() : "";
+    const row = id.length === 0 ? undefined : await this.sessions.get(id);
     if (!row) {
       throw new HostError("not_found", {
-        params: { entity: "conversation" },
-        detail: { conversationId },
+        params: { entity: "session" },
+        detail: { sessionId },
       });
     }
     return row;

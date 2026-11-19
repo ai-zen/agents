@@ -32,16 +32,16 @@ import { createFakeScope, FakeAgent, flushMicrotasks } from "../runtime/TestSupp
 import type { FakeRound } from "../runtime/TestSupport.js";
 import type { AgentBuildContext, AgentFactory } from "../runtime/ChatRunner.js";
 import { AssetRepository } from "../storage/AssetRepository.js";
-import { ConversationRepository } from "../storage/ConversationRepository.js";
+import { SessionRepository } from "../storage/SessionRepository.js";
 import { Database } from "../storage/Database.js";
 import { MessageRepository } from "../storage/MessageRepository.js";
 import { NoticeRepository } from "../storage/NoticeRepository.js";
 import { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
 import { migrate } from "../storage/migrations.js";
-import type { ConversationPresence } from "../wire/index.js";
-import type { ConversationChangedPayload } from "../wire/events.js";
-import type { ConversationRuntimePort } from "./ConversationService.js";
-import { ConversationService } from "./ConversationService.js";
+import type { SessionPresence } from "../wire/index.js";
+import type { SessionChangedPayload } from "../wire/events.js";
+import type { SessionRuntimePort } from "./SessionService.js";
+import { SessionService } from "./SessionService.js";
 import {
   createSdkHandoffExecutor,
   createSdkHandoffService,
@@ -91,8 +91,8 @@ function echoingClient(onRequest?: (body: SummaryBody) => void): SummaryClient {
 }
 
 /** 对话服务要的那个窄接口：交接用例不需要临时模型 / 临时档位，也没有活着的驱动者 */
-class FakeRuntime implements ConversationRuntimePort {
-  presence(): ConversationPresence {
+class FakeRuntime implements SessionRuntimePort {
+  presence(): SessionPresence {
     // 没有 agent（死的）：忙闲报 `idle`（没有人，手上当然没活）、两道闸没关着
     return { status: "idle", inputPaused: false, outputPaused: false, alive: false };
   }
@@ -139,21 +139,21 @@ class RecordingAgent extends FakeAgent {
 /** 一份事件记录（用例靠 `memory_replaced` 等交接收尾） */
 interface EventLog {
   events: Array<{ name: string; payload: unknown }>;
-  changed: ConversationChangedPayload[];
+  changed: SessionChangedPayload[];
   settled: Promise<void>;
 }
 
 function watchEvents(): { log: EventLog; emit: ChatEventEmitter } {
   const events: Array<{ name: string; payload: unknown }> = [];
-  const changed: ConversationChangedPayload[] = [];
+  const changed: SessionChangedPayload[] = [];
   let settle: () => void = () => undefined;
   const settled = new Promise<void>((resolve) => {
     settle = resolve;
   });
   const emit: ChatEventEmitter = (name, payload) => {
     events.push({ name, payload });
-    if (name === "conversation.changed") {
-      const fact = payload as ConversationChangedPayload;
+    if (name === "session.changed") {
+      const fact = payload as SessionChangedPayload;
       changed.push(fact);
       // 提交与回滚都会推这一条：它就是这个服务「这一趟收尾了」的唯一信号
       if (fact.change === "memory_replaced") settle();
@@ -187,9 +187,9 @@ interface Harness {
   projectDir: string;
   skillsDir: string;
   db: Database;
-  conversations: ConversationRepository;
+  sessions: SessionRepository;
   messages: MessageRepository;
-  conversationService: ConversationService;
+  sessionService: SessionService;
   build(options?: {
     execute?: HandoffExecutor;
     notices?: NoticeService;
@@ -209,7 +209,7 @@ let skillsDir: string;
 let db: Database;
 let configPath: string;
 let workspaces: WorkspaceRepository;
-let conversations: ConversationRepository;
+let sessions: SessionRepository;
 let messages: MessageRepository;
 
 /**
@@ -225,7 +225,7 @@ async function prepareStatic(): Promise<void> {
   await migrate(db);
 
   workspaces = new WorkspaceRepository(db);
-  conversations = new ConversationRepository(db);
+  sessions = new SessionRepository(db);
   messages = new MessageRepository(db);
 
   configPath = join(dir, "config.json");
@@ -279,8 +279,8 @@ async function prepareStatic(): Promise<void> {
 async function seedHarness(): Promise<Harness> {
   await workspaces.create({ id: "w1", name: "项目一", cwd: projectDir, createdAt: 1 });
 
-  const conversationService = new ConversationService({
-    conversations,
+  const sessionService = new SessionService({
+    sessions,
     messages,
     workspaces,
     assets: new AssetRepository(db),
@@ -291,17 +291,17 @@ async function seedHarness(): Promise<Harness> {
     now: () => 1_700_000_000_000,
   });
 
-  const created = await conversationService.create({ workspaceId: "w1", agentId: "a1" });
-  if (!created.conversation) throw new Error("conversation.create 没有建出对话");
-  const conversationId = created.conversation.id;
+  const created = await sessionService.create({ workspaceId: "w1", agentId: "a1" });
+  if (!created.session) throw new Error("session.create 没有建出对话");
+  const sessionId = created.session.id;
   // R56：`create` 只发 id，落库发生在首次 `send`；夹具里直接落库（后面要往它名下写消息）
-  await conversationService.ensurePersisted(conversationId);
+  await sessionService.ensurePersisted(sessionId);
 
   // 一段有内容的对话：用户说一句 + 助手回一句
   await messages.upsertMany([
     {
       id: "msg-user",
-      conversationId,
+      sessionId,
       role: AgentNS.Role.User as string,
       status: AgentNS.MessageStatus.Completed as string,
       content: "帮我看看这个仓库的测试为什么慢",
@@ -309,7 +309,7 @@ async function seedHarness(): Promise<Harness> {
     },
     {
       id: "msg-assistant",
-      conversationId,
+      sessionId,
       role: AgentNS.Role.Assistant as string,
       status: AgentNS.MessageStatus.Completed as string,
       content: "慢在 storage 的每个用例都新开库。",
@@ -322,9 +322,9 @@ async function seedHarness(): Promise<Harness> {
     projectDir,
     skillsDir,
     db,
-    conversations,
+    sessions,
     messages,
-    conversationService,
+    sessionService,
     build: (options = {}) => {
       /**
        * 驱动者的脚本：先要一次写工具调用，工具跑完再回一句「写好了」。
@@ -377,20 +377,20 @@ async function seedHarness(): Promise<Harness> {
        * —— 生产上这四条收在 `ChatRunner.canHandoffNow` 一处，这里只是把那个口的契约演出来。
        */
       const runner: HandoffRunnerPort = {
-        canHandoffNow: (conversationId) => {
+        canHandoffNow: (sessionId) => {
           if (handingOff) return { ok: false, reason: "handoff_in_progress" };
-          const live = (options.holder ?? { get: () => driver }).get(conversationId);
+          const live = (options.holder ?? { get: () => driver }).get(sessionId);
           if (!live) return { ok: false, reason: "no_agent" };
           if (live.state !== "idle") return { ok: false, reason: "working" };
           if (live.isOutputPaused) return { ok: false, reason: "output_paused" };
           return { ok: true };
         },
-        beginHandoff: (conversationId) => {
-          runnerCalls.push(`begin:${conversationId}`);
+        beginHandoff: (sessionId) => {
+          runnerCalls.push(`begin:${sessionId}`);
           handingOff = true;
         },
-        endHandoff: (conversationId) => {
-          runnerCalls.push(`end:${conversationId}`);
+        endHandoff: (sessionId) => {
+          runnerCalls.push(`end:${sessionId}`);
           handingOff = false;
           ends += 1;
           for (const wake of endWaiters.splice(0)) wake();
@@ -403,10 +403,10 @@ async function seedHarness(): Promise<Harness> {
       const templateDirs = options.skillDirs ?? [join(skillsDir)];
 
       const service = new HandoffDocumentService({
-        conversations,
+        sessions,
         workspaces,
         messages,
-        conversationViews: conversationService,
+        sessionViews: sessionService,
         execute: options.execute ?? sdkExecutor(),
         agents,
         runner,
@@ -461,7 +461,7 @@ function sdkExecutor(onRequest?: (body: SummaryBody) => void): HandoffExecutor {
 }
 
 let harness: Harness;
-let conversationId: string;
+let sessionId: string;
 
 // 整个文件共用一个库：`new + migrate` 每用例 55ms，清表只是一条 DELETE 批次。
 beforeAll(async () => {
@@ -470,7 +470,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   // 只清业务表；`meta` 绝不碰（migrate 靠 meta.schemaVersion 判断跑不跑）。
-  // `workspaces` 级联 conversations → messages → conversation_assets，删完再删素材行。
+  // `workspaces` 级联 sessions → messages → session_assets，删完再删素材行。
   await db.tx((tx) => [
     tx.run("DELETE FROM notices"),
     tx.run("DELETE FROM workspaces"),
@@ -482,8 +482,8 @@ beforeEach(async () => {
   await rm(join(projectDir, ".ai-zen"), { recursive: true, force: true });
 
   harness = await seedHarness();
-  const rows = await harness.conversations.list();
-  conversationId = rows[0]?.id ?? "";
+  const rows = await harness.sessions.list();
+  sessionId = rows[0]?.id ?? "";
 });
 
 afterAll(async () => {
@@ -494,7 +494,7 @@ afterAll(async () => {
 describe("自交接：同一个驱动者写（PRD 4.5）", () => {
   it("不另造驱动者：文档由这段对话自己的那个 agent 写出来", async () => {
     const built = harness.build();
-    await built.service.start({ conversationId, mode: "self", then: "document_only" });
+    await built.service.start({ sessionId, mode: "self", then: "document_only" });
     await built.settle();
 
     // 指令确实投给了它（宿主没有另起一个驱动者），而且带着磁盘上那份 Skill 的正文
@@ -506,7 +506,7 @@ describe("自交接：同一个驱动者写（PRD 4.5）", () => {
 
   it("读不到 Skill 时用 SDK 的兜底模板", async () => {
     const built = harness.build({ skillDirs: [] });
-    await built.service.start({ conversationId, mode: "self", then: "document_only" });
+    await built.service.start({ sessionId, mode: "self", then: "document_only" });
     await built.settle();
 
     expect(built.instructions[0]).toContain("# Handoff Document");
@@ -515,11 +515,11 @@ describe("自交接：同一个驱动者写（PRD 4.5）", () => {
 
   it("交接期间挂牌、写完摘牌（只跳过写库，事件照推）", async () => {
     const built = harness.build();
-    await built.service.start({ conversationId, mode: "self", then: "document_only" });
+    await built.service.start({ sessionId, mode: "self", then: "document_only" });
     await built.settle();
 
     // 挂牌在指令落地之前，摘牌在收尾那一处（投递不经过宿主：写文档那条指令由 SDK 投）
-    expect(built.runnerCalls).toEqual([`begin:${conversationId}`, `end:${conversationId}`]);
+    expect(built.runnerCalls).toEqual([`begin:${sessionId}`, `end:${sessionId}`]);
   });
 
   it("「写完了」看那次写工具的结果：工具结果到了 + 盘上够长 → 当场提交", async () => {
@@ -530,7 +530,7 @@ describe("自交接：同一个驱动者写（PRD 4.5）", () => {
       toolFinished.push(payload.toolCall?.function?.name ?? "?");
     });
 
-    await built.service.start({ conversationId, mode: "self", then: "document_only" });
+    await built.service.start({ sessionId, mode: "self", then: "document_only" });
     await built.settle();
 
     // 判定链：那次写文档的工具调用跑完 → 落盘校验 → 提交。不靠状态事件，也不看模型说的话
@@ -554,7 +554,7 @@ describe("自交接：同一个驱动者写（PRD 4.5）", () => {
       outcomes.push(payload.toolCall?.function?.name ?? "?");
     });
 
-    await built.service.start({ conversationId, mode: "self", then: "document_only" });
+    await built.service.start({ sessionId, mode: "self", then: "document_only" });
     await built.settle();
 
     // 一条指令、恰一次写工具的结果、盘上一份文档：这三个就是那一链的全部事实
@@ -578,7 +578,7 @@ describe("自交接：同一个驱动者写（PRD 4.5）", () => {
       { system: DRIVER_SYSTEM_PROMPT },
     );
     const built = harness.build({ notices, driver });
-    await built.service.start({ conversationId, mode: "self", then: "document_only" });
+    await built.service.start({ sessionId, mode: "self", then: "document_only" });
     await built.settle();
 
     // 只投一次：没写出来就是没写成 → 降级到摘要那一档（它把文档写进了同一个目录）
@@ -602,7 +602,7 @@ describe("自交接：同一个驱动者写（PRD 4.5）", () => {
     built.driver.calls.length = 0;
 
     await expect(
-      built.service.start({ conversationId, mode: "self", then: "document_only" }),
+      built.service.start({ sessionId, mode: "self", then: "document_only" }),
     ).rejects.toMatchObject({ code: "busy", detail: { reason: "output_paused" } });
 
     // 开关还开着（没人去动它）、一条指令未投
@@ -624,7 +624,7 @@ describe("自交接：同一个驱动者写（PRD 4.5）", () => {
     const working = new Promise<void>((resolve) => {
       driver.on("state:working", () => resolve());
     });
-    await built.service.start({ conversationId, mode: "self", then: "document_only" });
+    await built.service.start({ sessionId, mode: "self", then: "document_only" });
     await working;
     driver.abort();
     await built.settle();
@@ -643,7 +643,7 @@ describe("独立交接（一次性驱动者 + 记忆副本）", () => {
   it("文档真的落在 <cwd>/.ai-zen/handoffs/ 下，大小从磁盘取，写完落一条通知", async () => {
     const notices = new NoticeService({ notices: new NoticeRepository(harness.db) });
     const built = harness.build({ notices });
-    await built.service.start({ conversationId, mode: "summary", then: "document_only" });
+    await built.service.start({ sessionId, mode: "summary", then: "document_only" });
     await built.settle();
 
     const dir = handoffDirFor(harness.projectDir);
@@ -657,7 +657,7 @@ describe("独立交接（一次性驱动者 + 记忆副本）", () => {
       (notice) => notice.text.messageKey === "notice.handoffWritten",
     );
     expect(writtenNotice?.text.params).toEqual({ path });
-    expect(writtenNotice?.conversationId).toBe(conversationId);
+    expect(writtenNotice?.sessionId).toBe(sessionId);
     // 文件事实从磁盘取：大小与盘上那一份一致
     expect((await stat(path)).size).toBeGreaterThan(0);
   });
@@ -680,7 +680,7 @@ describe("独立交接（一次性驱动者 + 记忆副本）", () => {
         asked = String(body.messages[1]?.content ?? "");
       }),
     });
-    await built.service.start({ conversationId, mode: "summary", then: "document_only" });
+    await built.service.start({ sessionId, mode: "summary", then: "document_only" });
     await built.settle();
 
     // 发给模型的是这段记忆（序列化后那句一句都在），已经 omit 的那条不在里面
@@ -691,13 +691,13 @@ describe("独立交接（一次性驱动者 + 记忆副本）", () => {
 
   it("交接之后开新对话（D18）：身份照抄，开场是那条交接摘要", async () => {
     const built = harness.build();
-    await built.service.start({ conversationId, mode: "summary", then: "new_conversation" });
+    await built.service.start({ sessionId, mode: "summary", then: "new_session" });
     await built.settle();
 
-    const rows = await harness.conversations.list();
-    const oldRow = await harness.conversations.get(conversationId);
+    const rows = await harness.sessions.list();
+    const oldRow = await harness.sessions.get(sessionId);
     // 多出来的两段：存档（旧记忆）与交接新开的那一段
-    const created = rows.filter((row) => row.id !== conversationId);
+    const created = rows.filter((row) => row.id !== sessionId);
     expect(created).toHaveLength(2);
     const archived = created.find((row) => row.name.startsWith("已存档_"));
     const newRow = created.find((row) => row.id !== archived?.id);
@@ -708,7 +708,7 @@ describe("独立交接（一次性驱动者 + 记忆副本）", () => {
 
     // 新对话开场：先是会话创建时那条 hidden 的 cwd 消息，再是一条宿主注入的交接摘要
     const newId = newRow?.id ?? "";
-    const seeded = await harness.messages.listByConversation(newId, undefined, {
+    const seeded = await harness.messages.listBySession(newId, undefined, {
       includeHidden: true,
     });
     expect(seeded).toHaveLength(2);
@@ -717,36 +717,36 @@ describe("独立交接（一次性驱动者 + 记忆副本）", () => {
     expect(seeded[1]?.role).toBe(AgentNS.Role.System);
     expect(seeded[1]?.data).toMatchObject({ hidden: true });
 
-    // 开新对话这件事靠一条 `conversation.changed(created)` 告知界面
+    // 开新对话这件事靠一条 `session.changed(created)` 告知界面
     expect(
       built.events.changed.some(
-        (change) => change.change === "created" && change.conversationId === newId,
+        (change) => change.change === "created" && change.sessionId === newId,
       ),
     ).toBe(true);
   });
 
-  it("压缩标记落在被压的那一段上：`new_conversation` 记 manual，`document_only` 不记", async () => {
+  it("压缩标记落在被压的那一段上：`new_session` 记 manual，`document_only` 不记", async () => {
     const only = harness.build();
-    await only.service.start({ conversationId, mode: "summary", then: "document_only" });
+    await only.service.start({ sessionId, mode: "summary", then: "document_only" });
     await only.settle();
-    expect(await harness.conversations.get(conversationId)).toMatchObject({
+    expect(await harness.sessions.get(sessionId)).toMatchObject({
       compactedAt: null,
       compactionMode: null,
     });
 
     const next = harness.build();
-    await next.service.start({ conversationId, mode: "summary", then: "new_conversation" });
+    await next.service.start({ sessionId, mode: "summary", then: "new_session" });
     await next.settle();
-    const row = await harness.conversations.get(conversationId);
+    const row = await harness.sessions.get(sessionId);
     expect(row?.compactionMode).toBe("manual");
     expect(typeof row?.compactedAt).toBe("number");
   });
 
   it("只产文档就只多出那段存档（F-D4）：不另开新对话", async () => {
     const built = harness.build();
-    await built.service.start({ conversationId, mode: "summary", then: "document_only" });
+    await built.service.start({ sessionId, mode: "summary", then: "document_only" });
     await built.settle();
-    const rows = await harness.conversations.list();
+    const rows = await harness.sessions.list();
     expect(rows).toHaveLength(2);
     expect(rows.filter((row) => row.name.startsWith("已存档_"))).toHaveLength(1);
   });
@@ -755,15 +755,15 @@ describe("独立交接（一次性驱动者 + 记忆副本）", () => {
 describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
   it("提交之后：原会话只剩 SDK 算好的那条断点，旧记忆整段挂到 `已存档_<原名>` 名下", async () => {
     const built = harness.build();
-    const before = await harness.messages.listByConversation(conversationId, undefined, {
+    const before = await harness.messages.listBySession(sessionId, undefined, {
       includeHidden: true,
     });
-    const original = await harness.conversations.get(conversationId);
-    await built.service.start({ conversationId, mode: "summary", then: "document_only" });
+    const original = await harness.sessions.get(sessionId);
+    await built.service.start({ sessionId, mode: "summary", then: "document_only" });
     await built.settle();
 
     // 原会话：库里只剩一条 `hidden` 消息 —— SDK 算出来的那条断点（交接后没有 cwd 消息）
-    const left = await harness.messages.listByConversation(conversationId, undefined, {
+    const left = await harness.messages.listBySession(sessionId, undefined, {
       includeHidden: true,
     });
     expect(left).toHaveLength(1);
@@ -779,10 +779,10 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
     expect(path.length).toBeLessThan(200);
     expect(await readFile(path, "utf-8")).toContain("任务目标");
     // `hidden` 的那一条也不进默认可见集（不进条数、不给人看，但照常进上下文）
-    expect(await harness.messages.listByConversation(conversationId)).toHaveLength(0);
+    expect(await harness.messages.listBySession(sessionId)).toHaveLength(0);
 
     // 存档那段：名字加前缀、身份照抄、消息整段挂过去（`seq` / `createdAt` 原样不动）
-    const archived = (await harness.conversations.list()).find(
+    const archived = (await harness.sessions.list()).find(
       (row) => row.name === `已存档_${original?.name}`,
     );
     expect(archived).toBeDefined();
@@ -792,7 +792,7 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
     expect(archived?.thinkingLevel).toBe(original?.thinkingLevel);
     // 它就是交接那一刻生成的（按自己的时间排在列表里）
     expect(archived?.createdAt).toBe(1_700_000_010_000);
-    const moved = await harness.messages.listByConversation(archived?.id ?? "", undefined, {
+    const moved = await harness.messages.listBySession(archived?.id ?? "", undefined, {
       includeHidden: true,
     });
     expect(moved.map((row) => [row.id, row.seq, row.createdAt])).toEqual(
@@ -804,7 +804,7 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
     const built = harness.build();
     // 这段对话的记忆就是这个数组（换记忆是原地换，不是换一个数组、更不是换一个 agent）
     const memory = built.driver.messages;
-    await built.service.start({ conversationId, mode: "self", then: "document_only" });
+    await built.service.start({ sessionId, mode: "self", then: "document_only" });
     await built.settle();
 
     expect(built.driver.messages).toBe(memory);
@@ -816,7 +816,7 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
     expect(breakpoint?.hidden).toBe(true);
 
     // 落库与内存必须一致：同一条（同 id、同正文）
-    const rows = await harness.messages.listByConversation(conversationId, undefined, {
+    const rows = await harness.messages.listBySession(sessionId, undefined, {
       includeHidden: true,
     });
     expect(rows.map((row) => row.id)).toEqual([breakpoint?.id]);
@@ -829,43 +829,43 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
 
   it("推两条变更：先「这段的记忆换过了」，再「那段已存档的出现了」", async () => {
     const built = harness.build();
-    await built.service.start({ conversationId, mode: "summary", then: "document_only" });
+    await built.service.start({ sessionId, mode: "summary", then: "document_only" });
     await built.settle();
 
-    const archived = (await harness.conversations.list()).find((row) =>
+    const archived = (await harness.sessions.list()).find((row) =>
       row.name.startsWith("已存档_"),
     );
     expect(
-      built.events.changed.map((change) => `${change.change}:${change.conversationId}`),
-    ).toEqual([`memory_replaced:${conversationId}`, `created:${archived?.id}`]);
+      built.events.changed.map((change) => `${change.change}:${change.sessionId}`),
+    ).toEqual([`memory_replaced:${sessionId}`, `created:${archived?.id}`]);
   });
 
   it("存档是一段普通会话：能读、能删，删它不连坐原会话", async () => {
     const built = harness.build();
-    await built.service.start({ conversationId, mode: "summary", then: "document_only" });
+    await built.service.start({ sessionId, mode: "summary", then: "document_only" });
     await built.settle();
 
-    const archived = (await harness.conversations.list()).find((row) =>
+    const archived = (await harness.sessions.list()).find((row) =>
       row.name.startsWith("已存档_"),
     );
     const archivedId = archived?.id ?? "";
     // 它就是一段普通会话：消息照样取得出来
-    expect((await harness.messages.listByConversation(archivedId)).map((row) => row.id)).toEqual([
+    expect((await harness.messages.listBySession(archivedId)).map((row) => row.id)).toEqual([
       "msg-user",
       "msg-assistant",
     ]);
 
-    await harness.conversations.delete(archivedId);
-    expect(await harness.conversations.get(archivedId)).toBeUndefined();
-    expect(await harness.messages.listByConversation(archivedId)).toHaveLength(0);
+    await harness.sessions.delete(archivedId);
+    expect(await harness.sessions.get(archivedId)).toBeUndefined();
+    expect(await harness.messages.listBySession(archivedId)).toHaveLength(0);
     // 删一段就是删那一段：原会话那条断点还在
     expect(
-      await harness.messages.listByConversation(conversationId, undefined, { includeHidden: true }),
+      await harness.messages.listBySession(sessionId, undefined, { includeHidden: true }),
     ).toHaveLength(1);
   });
 
   it("失败时不留存档会话，原会话的消息一条不动", async () => {
-    const before = await harness.messages.listByConversation(conversationId, undefined, {
+    const before = await harness.messages.listBySession(sessionId, undefined, {
       includeHidden: true,
     });
     const built = harness.build({
@@ -873,12 +873,12 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
         throw new Error("模型没写出来");
       },
     });
-    await built.service.start({ conversationId, mode: "summary", then: "document_only" });
+    await built.service.start({ sessionId, mode: "summary", then: "document_only" });
     await built.settle();
 
     // 库里本来就是交接前那一份：没有多出一段会话，也没有被换过的记忆
-    expect(await harness.conversations.list()).toHaveLength(1);
-    const after = await harness.messages.listByConversation(conversationId, undefined, {
+    expect(await harness.sessions.list()).toHaveLength(1);
+    const after = await harness.messages.listBySession(sessionId, undefined, {
       includeHidden: true,
     });
     expect(after.map((row) => [row.id, row.seq, row.createdAt])).toEqual(
@@ -899,10 +899,10 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
       driver,
       holder: { get: () => (lookups++ === 0 ? driver : undefined) },
     });
-    await built.service.start({ conversationId, mode: "self", then: "document_only" });
+    await built.service.start({ sessionId, mode: "self", then: "document_only" });
     await built.settle();
 
-    expect(await harness.conversations.list()).toHaveLength(1);
+    expect(await harness.sessions.list()).toHaveLength(1);
     const listed = await notices.list({});
     const failed = listed.notices.find(
       (notice) => notice.text.messageKey === "error.handoffFailed",
@@ -912,11 +912,11 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
 
   it("连着交接两次：系统提示不被搬走，旧断点也不被当成提示留下", async () => {
     const built = harness.build();
-    await built.service.start({ conversationId, mode: "self", then: "document_only" });
+    await built.service.start({ sessionId, mode: "self", then: "document_only" });
     await built.settle();
     await waitIdle(built.driver);
 
-    await built.service.start({ conversationId, mode: "self", then: "document_only" });
+    await built.service.start({ sessionId, mode: "self", then: "document_only" });
     await built.settle();
 
     // 记忆仍然是「系统提示 + 一条断点」：第一次那条属于旧记忆，不该留在原会话里
@@ -926,14 +926,14 @@ describe("换记忆：旧记忆成为另一段会话（PRD 4.5）", () => {
     expect(built.driver.messages[1]?.role).toBe(AgentNS.Role.System);
 
     // 两段存档各自拿着交接前那一份：第一段是整段历史，第二段是上一次那条断点（库里一条行）
-    const archived = (await harness.conversations.list()).filter((row) =>
+    const archived = (await harness.sessions.list()).filter((row) =>
       row.name.startsWith("已存档_"),
     );
     expect(archived).toHaveLength(2);
     const counts = await Promise.all(
       archived.map(async (row) =>
         (
-          await harness.messages.listByConversation(row.id, undefined, { includeHidden: true })
+          await harness.messages.listBySession(row.id, undefined, { includeHidden: true })
         ).length,
       ),
     );
@@ -959,7 +959,7 @@ describe("自动交接：兄弟会话越线（插件那一路）", () => {
       model: "handoff-model",
       logger: { info: () => {}, warn: () => {}, error: () => {} },
       // **两条路注入同一份落库回调**
-      commitMemory: built.service.memoryCommitter(conversationId),
+      commitMemory: built.service.memoryCommitter(sessionId),
     });
     return new AutoMigratePlugin({
       service,
@@ -968,11 +968,11 @@ describe("自动交接：兄弟会话越线（插件那一路）", () => {
       resolveMode: async () => "self" as const,
       onMigrated: async (info) => {
         onMode?.(info.mode);
-        await harness.conversationService.markCompacted(conversationId, "auto");
-        built.service.settleAutoHandoff(conversationId);
+        await harness.sessionService.markCompacted(sessionId, "auto");
+        built.service.settleAutoHandoff(sessionId);
       },
       onFailed: async () => {
-        built.service.settleAutoHandoff(conversationId);
+        built.service.settleAutoHandoff(sessionId);
       },
     });
   }
@@ -990,8 +990,8 @@ describe("自动交接：兄弟会话越线（插件那一路）", () => {
 
   it("越线：记忆真的换了、闸开了、压缩标记记了", async () => {
     // 这一段的会话行上写着「自动交接开」（兄弟会话就是这么建出来的）
-    await harness.conversations.setAutoHandoff(conversationId, true, 1_700_000_005_000);
-    const before = await harness.messages.listByConversation(conversationId, undefined, {
+    await harness.sessions.setAutoHandoff(sessionId, true, 1_700_000_005_000);
+    const before = await harness.messages.listBySession(sessionId, undefined, {
       includeHidden: true,
     });
 
@@ -1006,17 +1006,17 @@ describe("自动交接：兄弟会话越线（插件那一路）", () => {
     await plugin.onIdle();
 
     // ① 记忆真的换了：旧记忆整段成了「已存档_」那段，原会话只剩 SDK 算好的那条断点
-    const conversations = await harness.conversations.list();
-    expect(conversations).toHaveLength(2);
-    const archived = conversations.find((row) => row.name.startsWith("已存档_"));
+    const sessions = await harness.sessions.list();
+    expect(sessions).toHaveLength(2);
+    const archived = sessions.find((row) => row.name.startsWith("已存档_"));
     expect(
       (
-        await harness.messages.listByConversation(archived?.id ?? "", undefined, {
+        await harness.messages.listBySession(archived?.id ?? "", undefined, {
           includeHidden: true,
         })
       ).map((row) => row.id),
     ).toEqual(before.map((row) => row.id));
-    const left = await harness.messages.listByConversation(conversationId, undefined, {
+    const left = await harness.messages.listBySession(sessionId, undefined, {
       includeHidden: true,
     });
     expect(left).toHaveLength(1);
@@ -1037,14 +1037,14 @@ describe("自动交接：兄弟会话越线（插件那一路）", () => {
     expect(built.driver.isOutputPaused).toBe(false);
 
     // ④ 压缩标记记了（`auto`：插件压的那条路）
-    const row = await harness.conversations.get(conversationId);
+    const row = await harness.sessions.get(sessionId);
     expect(row?.compactionMode).toBe("auto");
     expect(row?.compactedAt).not.toBeNull();
     expect(modes).toEqual(["self"]);
   });
 
   it("文档不到 400 字节 → 降级到独立摘要（不是静默成功）", async () => {
-    await harness.conversations.setAutoHandoff(conversationId, true, 1_700_000_005_000);
+    await harness.sessions.setAutoHandoff(sessionId, true, 1_700_000_005_000);
     // 模型调了写工具，但只写了几个字：SDK 判「没写出来」，单向降级摘要
     const rounds: FakeRound[] = [
       {
@@ -1076,13 +1076,13 @@ describe("自动交接：兄弟会话越线（插件那一路）", () => {
     // 降级是事实：实际执行者是 `summary`（插件回声报的就是它，不报请求的那个）
     expect(modes).toEqual(["summary"]);
     // 换上去的那份文档是摘要那一次写的（降级之后照样换记忆，不是假装成功也不是什么都不做）
-    const left = await harness.messages.listByConversation(conversationId, undefined, {
+    const left = await harness.messages.listBySession(sessionId, undefined, {
       includeHidden: true,
     });
     expect(left).toHaveLength(1);
     const path = left[0]?.content as string;
     expect(await readFile(path, "utf-8")).toContain("## Handoff from the model");
-    expect(await harness.conversations.list()).toHaveLength(2);
+    expect(await harness.sessions.list()).toHaveLength(2);
   });
 });
 
@@ -1096,10 +1096,10 @@ describe("取消与失败（F-D7）", () => {
       },
     });
 
-    await built.service.start({ conversationId, mode: "summary", then: "new_conversation" });
+    await built.service.start({ sessionId, mode: "summary", then: "new_session" });
     await built.settle();
 
-    expect(await harness.conversations.list()).toHaveLength(1);
+    expect(await harness.sessions.list()).toHaveLength(1);
     const dir = handoffDirFor(harness.projectDir);
     await expect(readdir(dir)).rejects.toBeTruthy();
     const listed = await notices.list({});
@@ -1118,7 +1118,7 @@ describe("取消与失败（F-D7）", () => {
         throw new Error("模型没写出来");
       },
     });
-    await built.service.start({ conversationId, mode: "self", then: "document_only" });
+    await built.service.start({ sessionId, mode: "self", then: "document_only" });
     await built.settle();
 
     // 失败也算收口：开闸在收口那一处（进来时闸必然是开的，所以不需要记它原来开着还是关着）
@@ -1137,11 +1137,11 @@ describe("取消与失败（F-D7）", () => {
       // 既不抛、也不叫 `commitMemory`：文档没交回来，这一趟不能算成
       execute: async () => ({ path: join(handoffDirFor(harness.projectDir), "不存在.md"), usedMode: "self" }),
     });
-    await built.service.start({ conversationId, mode: "self", then: "document_only" });
+    await built.service.start({ sessionId, mode: "self", then: "document_only" });
     await built.settle();
 
     // 一次也没换记忆：旧记忆还在、没有存档会话
-    expect(await harness.conversations.list()).toHaveLength(1);
+    expect(await harness.sessions.list()).toHaveLength(1);
     const listed = await notices.list({});
     const failed = listed.notices.find(
       (notice) => notice.text.messageKey === "error.handoffFailed",
@@ -1160,11 +1160,11 @@ describe("取消与失败（F-D7）", () => {
         return { path, usedMode: "self" };
       },
     });
-    await built.service.start({ conversationId, mode: "self", then: "document_only" });
+    await built.service.start({ sessionId, mode: "self", then: "document_only" });
     await built.settle();
 
     // 没换过记忆：一段存档都不多、原会话的消息一条不动
-    expect(await harness.conversations.list()).toHaveLength(1);
+    expect(await harness.sessions.list()).toHaveLength(1);
     const listed = await notices.list({});
     const failed = listed.notices.find(
       (notice) => notice.text.messageKey === "error.handoffFailed",
@@ -1182,7 +1182,7 @@ describe("取消与失败（F-D7）", () => {
       },
     });
 
-    await built.service.start({ conversationId, mode: "summary", then: "document_only" });
+    await built.service.start({ sessionId, mode: "summary", then: "document_only" });
     await built.settle();
 
     const listed = await notices.list({});
@@ -1209,7 +1209,7 @@ describe("前置条件", () => {
     await working;
 
     await expect(
-      built.service.start({ conversationId, mode: "self", then: "document_only" }),
+      built.service.start({ sessionId, mode: "self", then: "document_only" }),
     ).rejects.toMatchObject({ code: "busy", detail: { reason: "working" } });
 
     // 拒绝就是拒绝：没挂牌、没投递，驱动者也没被打断（掐在途那套编排已经作废）
@@ -1222,7 +1222,7 @@ describe("前置条件", () => {
   it("没有 agent 也不让跑：没有人可写（busy + no_agent）", async () => {
     const built = harness.build({ holder: { get: () => undefined } });
     await expect(
-      built.service.start({ conversationId, mode: "self", then: "document_only" }),
+      built.service.start({ sessionId, mode: "self", then: "document_only" }),
     ).rejects.toMatchObject({ code: "busy", detail: { reason: "no_agent" } });
     // 什么都没开始：没挂牌、没投指令
     expect(built.runnerCalls).toEqual([]);
@@ -1232,7 +1232,7 @@ describe("前置条件", () => {
   it("对话不存在报 not_found（这一条在返回「已经开始」之前）", async () => {
     const built = harness.build();
     await expect(
-      built.service.start({ conversationId: "没有这段", mode: "summary", then: "document_only" }),
+      built.service.start({ sessionId: "没有这段", mode: "summary", then: "document_only" }),
     ).rejects.toMatchObject({ code: "not_found" });
   });
 
@@ -1240,14 +1240,14 @@ describe("前置条件", () => {
     const built = harness.build();
     await expect(
       built.service.start({
-        conversationId,
+        sessionId,
         mode: "prune" as unknown as "summary",
         then: "document_only",
       }),
     ).rejects.toMatchObject({ code: "invalid_params" });
     await expect(
       built.service.start({
-        conversationId,
+        sessionId,
         mode: "summary",
         then: "migrate" as unknown as "document_only",
       }),

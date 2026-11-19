@@ -29,9 +29,9 @@
 
 import { AgentNS } from "@ai-zen/agents-core";
 
-import type { ConversationRepository } from "../storage/ConversationRepository.js";
+import type { SessionRepository } from "../storage/SessionRepository.js";
 import type { MessageRepository } from "../storage/MessageRepository.js";
-import type { Conversation, StoredMessage } from "../storage/types.js";
+import type { Session, StoredMessage } from "../storage/types.js";
 import { HostError } from "../wire/errors.js";
 import type { MessageListParams, MessageListResult } from "../wire/index.js";
 
@@ -42,12 +42,12 @@ import type { MessageListParams, MessageListResult } from "../wire/index.js";
  * 读取路径不把一段刚建好的对话当成「不存在」。
  */
 export interface MessageDraftLookup {
-  get(conversationId: string): Conversation | undefined;
+  get(sessionId: string): Session | undefined;
 }
 
 /** 消息服务依赖 */
 export interface MessageServiceDeps {
-  conversations: ConversationRepository;
+  sessions: SessionRepository;
   messages: MessageRepository;
   /** 草稿注册表（R56）；不注入时只认库里已有的行 */
   drafts?: MessageDraftLookup;
@@ -68,7 +68,7 @@ export interface MessageServiceDeps {
  */
 export interface LiveMessageLookup {
   messagesOf(
-    conversationId: string,
+    sessionId: string,
     options?: { toolCallId?: string },
   ): AgentNS.Message[] | null;
 }
@@ -267,13 +267,13 @@ interface MemoryView {
 }
 
 export class MessageService {
-  private readonly conversations: ConversationRepository;
+  private readonly sessions: SessionRepository;
   private readonly messages: MessageRepository;
   private readonly drafts?: MessageDraftLookup;
   private readonly live?: LiveMessageLookup;
 
   constructor(deps: MessageServiceDeps) {
-    this.conversations = deps.conversations;
+    this.sessions = deps.sessions;
     this.messages = deps.messages;
     this.drafts = deps.drafts;
     this.live = deps.live;
@@ -302,7 +302,7 @@ export class MessageService {
    * 「这条不给人看」。要看到它们（排查、或客户端显式要）就传 `includeHidden`。
    */
   async list(params: MessageListParams): Promise<MessageListResult> {
-    const conversation = await this.requireConversation(params.conversationId);
+    const session = await this.requireSession(params.sessionId);
     const options = { includeHidden: params.includeHidden === true };
     const around = idParam(params.around);
     const after = idParam(params.after);
@@ -312,11 +312,11 @@ export class MessageService {
     // 或者名册上已经没有这个子 agent（那一批翻过去了 / 进程重启过）
     const live =
       this.live?.messagesOf(
-        conversation.id,
+        session.id,
         toolCallId === undefined ? undefined : { toolCallId },
       ) ?? null;
     if (live !== null) {
-      return this.fromMemory(live, conversation.id, {
+      return this.fromMemory(live, session.id, {
         includeHidden: options.includeHidden,
         after,
         around,
@@ -328,7 +328,7 @@ export class MessageService {
     let anchor: string | null = null;
     if (around === undefined && after !== undefined) {
       const anchorRow = await this.messages.get(after);
-      if (anchorRow && anchorRow.conversationId === conversation.id) {
+      if (anchorRow && anchorRow.sessionId === session.id) {
         anchor = anchorRow.id;
       }
     }
@@ -336,16 +336,16 @@ export class MessageService {
     if (toolCallId !== undefined) {
       // 子 Agent 的话**不入库**（`CORE.md` §17）：这一段没有驱动者（或者名册上已经没有那个子
       // agent）时，那一栏就是空的。库里没有第二份可读（`parentToolCallId` 随 v5 删了）。
-      return this.respond(conversation.id, [], anchor, around);
+      return this.respond(session.id, [], anchor, around);
     }
 
     // `around` 要的是「整段之后再取窗」，所以这一跳不带 `after`（带了就只剩后半段）
-    const rows = await this.messages.listByConversation(
-      conversation.id,
+    const rows = await this.messages.listBySession(
+      session.id,
       around === undefined ? after : undefined,
       options,
     );
-    return this.respond(conversation.id, rows, anchor, around);
+    return this.respond(session.id, rows, anchor, around);
   }
 
   /**
@@ -356,7 +356,7 @@ export class MessageService {
    */
   private fromMemory(
     messages: AgentNS.Message[],
-    conversationId: string,
+    sessionId: string,
     view: MemoryView,
   ): MessageListResult {
     const visible = view.includeHidden
@@ -365,38 +365,38 @@ export class MessageService {
 
     if (view.around !== undefined) {
       const window = windowAround(visible, view.around, AROUND_WINDOW);
-      if (window === null) return { conversationId, anchor: null, messages: [] };
-      return { conversationId, anchor: view.around, messages: [...window] };
+      if (window === null) return { sessionId, anchor: null, messages: [] };
+      return { sessionId, anchor: view.around, messages: [...window] };
     }
 
     if (view.after !== undefined) {
       const index = visible.findIndex((message) => message.id === view.after);
       if (index >= 0) {
         return {
-          conversationId,
+          sessionId,
           anchor: view.after,
           messages: view.column ? [...visible] : visible.slice(index),
         };
       }
     }
-    return { conversationId, anchor: null, messages: [...visible] };
+    return { sessionId, anchor: null, messages: [...visible] };
   }
 
   /** 把一次读到的行拼成出参；`around` 给了就收成一窗（命中不在里面就是空页） */
   private respond(
-    conversationId: string,
+    sessionId: string,
     rows: StoredMessage[],
     anchor: string | null,
     around: string | undefined,
   ): MessageListResult {
     if (around === undefined) {
-      return { conversationId, anchor, messages: rows.map((row) => toAgentMessage(row)) };
+      return { sessionId, anchor, messages: rows.map((row) => toAgentMessage(row)) };
     }
     const window = windowAround(rows, around, AROUND_WINDOW);
     if (window === null) {
-      return { conversationId, anchor: null, messages: [] };
+      return { sessionId, anchor: null, messages: [] };
     }
-    return { conversationId, anchor: around, messages: window.map((row) => toAgentMessage(row)) };
+    return { sessionId, anchor: around, messages: window.map((row) => toAgentMessage(row)) };
   }
 
   /**
@@ -405,15 +405,15 @@ export class MessageService {
    * 草稿还没有任何消息，所以读它总是得到空集 —— 但它不该被读成「找不到这段对话」：
    * 客户端刚 `create` 完就会拉一次消息与现场。
    */
-  private async requireConversation(conversationId: string) {
-    const id = typeof conversationId === "string" ? conversationId.trim() : "";
-    const row = id.length === 0 ? undefined : await this.conversations.get(id);
+  private async requireSession(sessionId: string) {
+    const id = typeof sessionId === "string" ? sessionId.trim() : "";
+    const row = id.length === 0 ? undefined : await this.sessions.get(id);
     if (row) return row;
     const draft = id.length === 0 ? undefined : this.drafts?.get(id);
     if (draft) return draft;
     throw new HostError("not_found", {
-      params: { entity: "conversation" },
-      detail: { conversationId },
+      params: { entity: "session" },
+      detail: { sessionId },
     });
   }
 }

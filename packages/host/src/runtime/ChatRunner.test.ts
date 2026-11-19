@@ -25,12 +25,12 @@ import { describe, expect, it } from "vitest";
 import type { AgentNS } from "@ai-zen/agents-core";
 import { AgentNS as AgentNSValue } from "@ai-zen/agents-core";
 
-import type { Conversation } from "../storage/types.js";
+import type { Session } from "../storage/types.js";
 import type { InboxInsertInput, StoredInboxEntry } from "../storage/InboxRepository.js";
 import type { EventName } from "../wire/events.js";
 import type {
-  ConversationChangedPayload,
-  ConversationChangeKind,
+  SessionChangedPayload,
+  SessionChangeKind,
   MessageAddedPayload,
   MessageChangedPayload,
   StatePayload,
@@ -39,7 +39,7 @@ import { AgentRegistry } from "./AgentRegistry.js";
 import type {
   ChatEventEmitter,
   ChatRunnerOptions,
-  ConversationDeathKind,
+  SessionDeathKind,
   DeliveryInput,
   InboxStore,
 } from "./ChatRunner.js";
@@ -55,12 +55,12 @@ import {
   type FakeRound,
 } from "./TestSupport.js";
 
-const CONVERSATION_ID = "c-bridge";
+const SESSION_ID = "c-bridge";
 const WORKSPACE_ID = "ws-1";
 
-function makeConversation(): Conversation {
+function makeSession(): Session {
   return {
-    id: CONVERSATION_ID,
+    id: SESSION_ID,
     workspaceId: WORKSPACE_ID,
     name: "对话",
     agentId: "default",
@@ -92,7 +92,7 @@ class RecordingInboxStore implements InboxStore {
   /** 还排着的那几行（按入队顺序） */
   readonly rows: Array<{
     messageId: string;
-    conversationId: string;
+    sessionId: string;
     /** JSON：core 的 `MessageSource` */
     source: string;
     /** JSON：core 的正文 */
@@ -105,10 +105,10 @@ class RecordingInboxStore implements InboxStore {
 
   async insert(input: InboxInsertInput): Promise<void> {
     this.writes.push(`insert:${input.messageId}`);
-    const seq = this.rows.filter((row) => row.conversationId === input.conversationId).length + 1;
+    const seq = this.rows.filter((row) => row.sessionId === input.sessionId).length + 1;
     this.rows.push({
       messageId: input.messageId,
-      conversationId: input.conversationId,
+      sessionId: input.sessionId,
       source: JSON.stringify(input.source),
       content: JSON.stringify(input.content),
       createdAt: input.createdAt,
@@ -116,9 +116,9 @@ class RecordingInboxStore implements InboxStore {
     });
   }
 
-  async listByConversation(conversationId: string): Promise<StoredInboxEntry[]> {
+  async listBySession(sessionId: string): Promise<StoredInboxEntry[]> {
     return this.rows
-      .filter((row) => row.conversationId === conversationId)
+      .filter((row) => row.sessionId === sessionId)
       .sort((a, b) => a.seq - b.seq)
       .map((row) => ({
         messageId: row.messageId,
@@ -140,11 +140,11 @@ class RecordingInboxStore implements InboxStore {
     return removed;
   }
 
-  async clearByConversation(conversationId: string): Promise<number> {
-    this.writes.push(`clear:${conversationId}`);
+  async clearBySession(sessionId: string): Promise<number> {
+    this.writes.push(`clear:${sessionId}`);
     let removed = 0;
     for (let index = this.rows.length - 1; index >= 0; index -= 1) {
-      if (this.rows[index]!.conversationId !== conversationId) continue;
+      if (this.rows[index]!.sessionId !== sessionId) continue;
       this.rows.splice(index, 1);
       removed += 1;
     }
@@ -164,7 +164,7 @@ interface Harness {
   /** 变闲那一刻被叫到的那几段对话 */
   idle: string[];
   /** 报「死」那一拍的记录（对话 id + **为什么**：真死 / 退役重建 / 对话被删） */
-  dead: Array<{ conversationId: string; kind: ConversationDeathKind }>;
+  dead: Array<{ sessionId: string; kind: SessionDeathKind }>;
   /** 装配过几次（每装配一次 agent 记一笔：复活那条用例要看它） */
   builds: string[];
   /** 投递（省掉重复的 `source` 样板：不给就按用户本人说） */
@@ -201,19 +201,19 @@ function createHarness(
   const clock = new ManualClock();
   const store = options.store ?? new RecordingMessageStore();
   const inbox = options.inbox ?? new RecordingInboxStore();
-  const conversation = makeConversation();
+  const session = makeSession();
   const { scope } = createFakeScope("/tmp/ai-zen-bridge");
   const scopes = new ScopeRegistry({ createScope: async () => scope });
   const pushed: Array<{ name: EventName; payload: unknown }> = [];
   const idle: string[] = [];
-  const dead: Array<{ conversationId: string; kind: ConversationDeathKind }> = [];
+  const dead: Array<{ sessionId: string; kind: SessionDeathKind }> = [];
   const buildContexts: string[] = [];
   let idCursor = 0;
 
   const agents = new AgentRegistry({
     scopes,
     createAgent: async (context) => {
-      buildContexts.push(context.conversationId);
+      buildContexts.push(context.sessionId);
       const built = new FakeAgent(options.rounds ?? [{ deltas: [{ content: "好" }] }]);
       if (options.pauseOnBuild) built.pauseOutput();
       return built;
@@ -228,8 +228,8 @@ function createHarness(
     messages: store,
     // inbox 里还没被取走的那些（三条事件写它、装配时读它）
     inbox,
-    conversations: {
-      get: async (id: string) => (id === conversation.id ? conversation : undefined),
+    sessions: {
+      get: async (id: string) => (id === session.id ? session : undefined),
     },
     scopes,
     agents,
@@ -238,9 +238,9 @@ function createHarness(
     newId: () => `srv-${(idCursor += 1)}`,
     // 每到一片就写一次：用例要看的正是「落库跟着事件走」，节流会把那一刻推后
     streamWriteIntervalMs: 0,
-    onIdle: (conversationId) => void idle.push(conversationId),
-    onDead: (conversationId, kind) => {
-      dead.push({ conversationId, kind });
+    onIdle: (sessionId) => void idle.push(sessionId),
+    onDead: (sessionId, kind) => {
+      dead.push({ sessionId, kind });
     },
   };
   const runner = new ChatRunner(runnerOptions);
@@ -255,7 +255,7 @@ function createHarness(
     idle,
     dead,
     builds: buildContexts,
-    deliver: (input) => runner.deliver(CONVERSATION_ID, input),
+    deliver: (input) => runner.deliver(SESSION_ID, input),
     settle: async () => {
       for (let i = 0; i < 16; i += 1) await flushMicrotasks();
     },
@@ -269,7 +269,7 @@ function createHarness(
     async waitIdle() {
       // `state` 的初值也是 idle，所以「起来了」与「那一格」要一起看
       await harness.waitFor(() => {
-        const agent = agents.get(CONVERSATION_ID);
+        const agent = agents.get(SESSION_ID);
         return agent !== undefined && agent.started && agent.state === "idle";
       });
       await harness.settle();
@@ -277,7 +277,7 @@ function createHarness(
     eventsOf: (name) =>
       pushed.filter((event) => event.name === name).map((event) => event.payload),
     rows: async () => {
-      const rows = await store.listByConversation(CONVERSATION_ID);
+      const rows = await store.listBySession(SESSION_ID);
       return rows.map((row) => ({
         id: row.id,
         role: row.role,
@@ -290,13 +290,13 @@ function createHarness(
 }
 
 /**
- * 推出去的最后一条 `conversation.changed` 是哪种变化（死活与交接都走这一条）。
+ * 推出去的最后一条 `session.changed` 是哪种变化（死活与交接都走这一条）。
  *
- * 死活没有自己的事件名：它只是 `conversation.changed` 的两种 `change`（`agent_started` /
+ * 死活没有自己的事件名：它只是 `session.changed` 的两种 `change`（`agent_started` /
  * `agent_gone`）—— 这样「没有 agent」就不会被挤回 `state` 那一格。
  */
-function lastChange(harness: Harness, name: EventName): ConversationChangeKind | undefined {
-  const events = harness.eventsOf(name).map((it) => it as ConversationChangedPayload);
+function lastChange(harness: Harness, name: EventName): SessionChangeKind | undefined {
+  const events = harness.eventsOf(name).map((it) => it as SessionChangedPayload);
   return events.at(-1)?.change;
 }
 
@@ -379,7 +379,7 @@ describe("ChatRunner.deliver：投递进来，事件到了写一条", () => {
 // ---------------------------------------------------------------------------
 
 describe("ChatRunner.deliver：死对话一律拒，只有创建者能叫起来（`mayStart`）", () => {
-  it("外部来源投到死对话 → `conversation_dead`；`mayStart` 才装配起来接着跑", async () => {
+  it("外部来源投到死对话 → `session_dead`；`mayStart` 才装配起来接着跑", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "接着来。" }] }] });
 
     // 先把这一段跑起来，让它有历史（第一句 + 它的回答）
@@ -388,12 +388,12 @@ describe("ChatRunner.deliver：死对话一律拒，只有创建者能叫起来�
     expect((await harness.rows()).length).toBe(2);
 
     // 用户按杀死（= 硬着陆，不可复活）
-    harness.runner.forget(CONVERSATION_ID);
+    harness.runner.forget(SESSION_ID);
     await harness.settle();
-    expect(harness.registry.get(CONVERSATION_ID)).toBeUndefined();
-    // 读数的形状就是 wire 的 `ConversationState`：这一段是谁、四件事各一格、以及这一刻是什么时候
-    expect(harness.runner.state(CONVERSATION_ID)).toEqual({
-      conversationId: CONVERSATION_ID,
+    expect(harness.registry.get(SESSION_ID)).toBeUndefined();
+    // 读数的形状就是 wire 的 `SessionState`：这一段是谁、四件事各一格、以及这一刻是什么时候
+    expect(harness.runner.state(SESSION_ID)).toEqual({
+      sessionId: SESSION_ID,
       // 没有 agent：死活那一格是 false；忙闲与两道闸按「没有对象」报
       alive: false,
       status: "idle",
@@ -410,18 +410,18 @@ describe("ChatRunner.deliver：死对话一律拒，只有创建者能叫起来�
     await expect(
       harness.deliver(userSays("外面的一句", { mayStart: false })),
     ).rejects.toMatchObject({
-      code: "conversation_dead",
+      code: "session_dead",
     });
-    expect(harness.registry.get(CONVERSATION_ID)).toBeUndefined();
+    expect(harness.registry.get(SESSION_ID)).toBeUndefined();
 
     // 界面那个发送按钮（创建者）：把它叫起来、再投递
     await harness.deliver(userSays("界面发的一句", { mayStart: true }));
     await harness.waitIdle();
 
-    const revived = harness.registry.get(CONVERSATION_ID);
+    const revived = harness.registry.get(SESSION_ID);
     expect(revived).toBeDefined();
     // 真的重新装配了一个（不是把死的那个又挂上去：那个已经关门，不可复活）
-    expect(harness.builds).toEqual([CONVERSATION_ID, CONVERSATION_ID]);
+    expect(harness.builds).toEqual([SESSION_ID, SESSION_ID]);
     // 历史一条不少地装进新 agent（先前的两句 + 这一次的两句）
     expect(revived!.messages.map((message) => message.content)).toEqual([
       "第一句",
@@ -440,14 +440,14 @@ describe("ChatRunner.deliver：死对话一律拒，只有创建者能叫起来�
   it("`mayStart` 只认 `true`：给了别的真值也叫不起来", async () => {
     const harness = createHarness();
     await expect(
-      harness.runner.deliver(CONVERSATION_ID, {
+      harness.runner.deliver(SESSION_ID, {
         content: "偷偷叫起来",
         source: { kind: "system", label: "timer" },
         // 类型上就不该是别的值；这一条防的是「真值判断」被写回来
         mayStart: false,
       }),
-    ).rejects.toMatchObject({ code: "conversation_dead" });
-    expect(harness.registry.get(CONVERSATION_ID)).toBeUndefined();
+    ).rejects.toMatchObject({ code: "session_dead" });
+    expect(harness.registry.get(SESSION_ID)).toBeUndefined();
   });
 });
 
@@ -463,13 +463,13 @@ describe("ChatRunner.abort：打到活着的 agent 上", () => {
     });
 
     await harness.deliver(userSays("开跑"));
-    await harness.waitFor(() => harness.registry.get(CONVERSATION_ID)?.state === "working");
+    await harness.waitFor(() => harness.registry.get(SESSION_ID)?.state === "working");
 
-    expect(harness.runner.abort(CONVERSATION_ID)).toBe(true);
+    expect(harness.runner.abort(SESSION_ID)).toBe(true);
     // 中断完输出闸关着（还能继续），agent 还在：这两件事各是一格
-    expect(harness.runner.state(CONVERSATION_ID).outputPaused).toBe(true);
-    expect(harness.runner.state(CONVERSATION_ID).alive).toBe(true);
-    expect(harness.registry.get(CONVERSATION_ID)).toBeDefined();
+    expect(harness.runner.state(SESSION_ID).outputPaused).toBe(true);
+    expect(harness.runner.state(SESSION_ID).alive).toBe(true);
+    expect(harness.registry.get(SESSION_ID)).toBeDefined();
 
     gate.resolve();
     await harness.settle();
@@ -481,9 +481,9 @@ describe("ChatRunner.abort：打到活着的 agent 上", () => {
     );
 
     // 死对话：没有可掐的东西
-    harness.runner.forget(CONVERSATION_ID);
+    harness.runner.forget(SESSION_ID);
     await harness.settle();
-    expect(harness.runner.abort(CONVERSATION_ID)).toBe(false);
+    expect(harness.runner.abort(SESSION_ID)).toBe(false);
   });
 
   it("中断之后：用户点发送＝继续（开闸），别的来源不开闸", async () => {
@@ -493,19 +493,19 @@ describe("ChatRunner.abort：打到活着的 agent 上", () => {
     });
 
     await harness.deliver(userSays("开跑"));
-    await harness.waitFor(() => harness.registry.get(CONVERSATION_ID)?.state === "working");
-    harness.runner.abort(CONVERSATION_ID);
+    await harness.waitFor(() => harness.registry.get(SESSION_ID)?.state === "working");
+    harness.runner.abort(SESSION_ID);
     gate.resolve();
     await harness.settle();
-    expect(harness.runner.state(CONVERSATION_ID).outputPaused).toBe(true);
+    expect(harness.runner.state(SESSION_ID).outputPaused).toBe(true);
 
     // 自动推来的那一条：只是排队，不替他把闸开开（那不是他按的）
     await harness.deliver(userSays("外面推的", { mayStart: false }));
-    expect(harness.registry.get(CONVERSATION_ID)!.isOutputPaused).toBe(true);
+    expect(harness.registry.get(SESSION_ID)!.isOutputPaused).toBe(true);
 
     // 用户点发送：开闸
     await harness.deliver(userSays("继续"));
-    expect(harness.registry.get(CONVERSATION_ID)!.isOutputPaused).toBe(false);
+    expect(harness.registry.get(SESSION_ID)!.isOutputPaused).toBe(false);
   });
 });
 
@@ -518,21 +518,21 @@ describe("ChatRunner.pause / resume：只翻输出闸，不投任何东西", () 
     const harness = createHarness({ rounds: [{ deltas: [{ content: "说完了" }] }] });
     await harness.deliver(userSays("说点什么"));
     await harness.waitIdle();
-    expect(harness.runner.state(CONVERSATION_ID).outputPaused).toBe(false);
+    expect(harness.runner.state(SESSION_ID).outputPaused).toBe(false);
 
-    expect(harness.runner.pause(CONVERSATION_ID)).toBe(true);
+    expect(harness.runner.pause(SESSION_ID)).toBe(true);
     // 关的是输出闸；它照样活着、手上照样没活（「闲」与「闸关」必须分得开）
-    expect(harness.runner.state(CONVERSATION_ID).outputPaused).toBe(true);
-    expect(harness.runner.state(CONVERSATION_ID)).toMatchObject({
+    expect(harness.runner.state(SESSION_ID).outputPaused).toBe(true);
+    expect(harness.runner.state(SESSION_ID)).toMatchObject({
       status: "idle",
       alive: true,
       inputPaused: false,
     });
-    expect(harness.registry.get(CONVERSATION_ID)!.isOutputPaused).toBe(true);
+    expect(harness.registry.get(SESSION_ID)!.isOutputPaused).toBe(true);
 
-    expect(harness.runner.resume(CONVERSATION_ID)).toBe(true);
+    expect(harness.runner.resume(SESSION_ID)).toBe(true);
     // 继续只开闸，不投任何东西：待办仍是空的
-    expect(harness.runner.state(CONVERSATION_ID)).toMatchObject({
+    expect(harness.runner.state(SESSION_ID)).toMatchObject({
       status: "idle",
       outputPaused: false,
       inbox: [],
@@ -541,8 +541,8 @@ describe("ChatRunner.pause / resume：只翻输出闸，不投任何东西", () 
 
   it("没有 agent（死的）回 false —— 没有闸可翻，不是错误", () => {
     const harness = createHarness();
-    expect(harness.runner.pause(CONVERSATION_ID)).toBe(false);
-    expect(harness.runner.resume(CONVERSATION_ID)).toBe(false);
+    expect(harness.runner.pause(SESSION_ID)).toBe(false);
+    expect(harness.runner.resume(SESSION_ID)).toBe(false);
   });
 
   it("交接期间 pause / resume 仍拒（`busy` / `handoff_in_progress`），但投递照收", async () => {
@@ -550,29 +550,29 @@ describe("ChatRunner.pause / resume：只翻输出闸，不投任何东西", () 
     await harness.deliver(userSays("说点什么"));
     await harness.waitIdle();
     // 交接开始：输出闸由这次交接自己关上（生产上关在写文档那一批的批头）
-    harness.runner.beginHandoff(CONVERSATION_ID);
-    harness.registry.get(CONVERSATION_ID)!.pauseOutput();
+    harness.runner.beginHandoff(SESSION_ID);
+    harness.registry.get(SESSION_ID)!.pauseOutput();
 
-    expect(() => harness.runner.pause(CONVERSATION_ID)).toThrowError(
+    expect(() => harness.runner.pause(SESSION_ID)).toThrowError(
       expect.objectContaining({
         code: "busy",
-        detail: { conversationId: CONVERSATION_ID, reason: "handoff_in_progress" },
+        detail: { sessionId: SESSION_ID, reason: "handoff_in_progress" },
       }) as unknown as Error,
     );
-    expect(() => harness.runner.resume(CONVERSATION_ID)).toThrowError(
+    expect(() => harness.runner.resume(SESSION_ID)).toThrowError(
       expect.objectContaining({
         code: "busy",
-        detail: { conversationId: CONVERSATION_ID, reason: "handoff_in_progress" },
+        detail: { sessionId: SESSION_ID, reason: "handoff_in_progress" },
       }) as unknown as Error,
     );
     // 一个也没生效：闸还是交接收口关上的那道
-    expect(harness.registry.get(CONVERSATION_ID)!.isOutputPaused).toBe(true);
+    expect(harness.registry.get(SESSION_ID)!.isOutputPaused).toBe(true);
 
     // 投递不拒：交接期间只关输出闸、不关输入闸 —— 话照收，排在 inbox 里
     await expect(harness.deliver(userSays("交接中说的话"))).resolves.toMatchObject({
       userMessageId: expect.any(String),
     });
-    expect(harness.runner.state(CONVERSATION_ID).inbox.map((item) => item.preview)).toEqual([
+    expect(harness.runner.state(SESSION_ID).inbox.map((item) => item.preview)).toEqual([
       "交接中说的话",
     ]);
   });
@@ -585,18 +585,18 @@ describe("ChatRunner.pause / resume：只翻输出闸，不投任何东西", () 
 describe("ChatRunner：四件事各走各的事件（忙闲 / 两道闸 / 死活）", () => {
   it("agent 起来报 `agent_started`；没了报 `agent_gone`（死活不挤进 `state`）", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "说完了" }] }] });
-    expect(lastChange(harness, "conversation.changed")).toBeUndefined();
+    expect(lastChange(harness, "session.changed")).toBeUndefined();
 
     await harness.deliver(userSays("说点什么"));
     await harness.waitIdle();
     // 装配出驱动者那一拍：这一段有了 agent
-    expect(harness.eventsOf("conversation.changed")).toContainEqual(
-      expect.objectContaining({ conversationId: CONVERSATION_ID, change: "agent_started" }),
+    expect(harness.eventsOf("session.changed")).toContainEqual(
+      expect.objectContaining({ sessionId: SESSION_ID, change: "agent_started" }),
     );
 
-    harness.runner.forget(CONVERSATION_ID);
+    harness.runner.forget(SESSION_ID);
     await harness.settle();
-    expect(lastChange(harness, "conversation.changed")).toBe("agent_gone");
+    expect(lastChange(harness, "session.changed")).toBe("agent_gone");
     // 忙闲那条事件里只有 `working` / `idle`：死活一个字都没进过 `state`
     const states = harness.eventsOf("state").map((it) => it as StatePayload);
     expect(states.map((payload) => payload.status)).toEqual(["working", "idle"]);
@@ -607,20 +607,20 @@ describe("ChatRunner：四件事各走各的事件（忙闲 / 两道闸 / 死活
     await harness.deliver(userSays("说点什么"));
     await harness.waitIdle();
 
-    harness.runner.pause(CONVERSATION_ID);
-    harness.runner.resume(CONVERSATION_ID);
+    harness.runner.pause(SESSION_ID);
+    harness.runner.resume(SESSION_ID);
     // 载荷只带会话 id（哪一道、开还是关由事件名说）
     expect(harness.eventsOf("output:paused")).toEqual([
-      { conversationId: CONVERSATION_ID, at: expect.any(String) },
+      { sessionId: SESSION_ID, at: expect.any(String) },
     ]);
     expect(harness.eventsOf("output:resumed")).toEqual([
-      { conversationId: CONVERSATION_ID, at: expect.any(String) },
+      { sessionId: SESSION_ID, at: expect.any(String) },
     ]);
 
     // 输入闸只有关门这一种生产（`stop` / `kill`）：关上门就报 `input:paused`
-    harness.registry.get(CONVERSATION_ID)!.pauseInput();
+    harness.registry.get(SESSION_ID)!.pauseInput();
     expect(harness.eventsOf("input:paused")).toEqual([
-      { conversationId: CONVERSATION_ID, at: expect.any(String) },
+      { sessionId: SESSION_ID, at: expect.any(String) },
     ]);
     // 两道闸的动一条也没混进忙闲那一条
     const states = harness.eventsOf("state").map((it) => it as StatePayload);
@@ -635,7 +635,7 @@ describe("ChatRunner：四件事各走各的事件（忙闲 / 两道闸 / 死活
 describe("ChatRunner.canHandoffNow：能不能立刻接手一批交接", () => {
   it("没有驱动者 → `no_agent`", () => {
     const harness = createHarness();
-    expect(harness.runner.canHandoffNow(CONVERSATION_ID)).toEqual({
+    expect(harness.runner.canHandoffNow(SESSION_ID)).toEqual({
       ok: false,
       reason: "no_agent",
     });
@@ -647,9 +647,9 @@ describe("ChatRunner.canHandoffNow：能不能立刻接手一批交接", () => {
       rounds: [{ gate: gate.promise, deltas: [{ content: "说到一半" }] }],
     });
     await harness.deliver(userSays("开跑"));
-    await harness.waitFor(() => harness.registry.get(CONVERSATION_ID)?.state === "working");
+    await harness.waitFor(() => harness.registry.get(SESSION_ID)?.state === "working");
 
-    expect(harness.runner.canHandoffNow(CONVERSATION_ID)).toEqual({
+    expect(harness.runner.canHandoffNow(SESSION_ID)).toEqual({
       ok: false,
       reason: "working",
     });
@@ -662,9 +662,9 @@ describe("ChatRunner.canHandoffNow：能不能立刻接手一批交接", () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "说完了" }] }] });
     await harness.deliver(userSays("说点什么"));
     await harness.waitIdle();
-    harness.registry.get(CONVERSATION_ID)!.pauseOutput();
+    harness.registry.get(SESSION_ID)!.pauseOutput();
 
-    expect(harness.runner.canHandoffNow(CONVERSATION_ID)).toEqual({
+    expect(harness.runner.canHandoffNow(SESSION_ID)).toEqual({
       ok: false,
       reason: "output_paused",
     });
@@ -674,11 +674,11 @@ describe("ChatRunner.canHandoffNow：能不能立刻接手一批交接", () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "说完了" }] }] });
     await harness.deliver(userSays("说点什么"));
     await harness.waitIdle();
-    harness.runner.beginHandoff(CONVERSATION_ID);
+    harness.runner.beginHandoff(SESSION_ID);
     // 交接期间闸也是关着的那一种处境：报的仍然是在交接，不是 output_paused
-    harness.registry.get(CONVERSATION_ID)!.pauseOutput();
+    harness.registry.get(SESSION_ID)!.pauseOutput();
 
-    expect(harness.runner.canHandoffNow(CONVERSATION_ID)).toEqual({
+    expect(harness.runner.canHandoffNow(SESSION_ID)).toEqual({
       ok: false,
       reason: "handoff_in_progress",
     });
@@ -689,7 +689,7 @@ describe("ChatRunner.canHandoffNow：能不能立刻接手一批交接", () => {
     await harness.deliver(userSays("说点什么"));
     await harness.waitIdle();
 
-    expect(harness.runner.canHandoffNow(CONVERSATION_ID)).toEqual({ ok: true });
+    expect(harness.runner.canHandoffNow(SESSION_ID)).toEqual({ ok: true });
   });
 });
 
@@ -704,8 +704,8 @@ describe("ChatRunner：交接期间照收、只关输出闸；开始那一刻推
     await harness.waitIdle();
 
     // 交接开始：输出闸关上（这一任不取），输入闸照开
-    harness.runner.beginHandoff(CONVERSATION_ID);
-    harness.registry.get(CONVERSATION_ID)!.pauseOutput();
+    harness.runner.beginHandoff(SESSION_ID);
+    harness.registry.get(SESSION_ID)!.pauseOutput();
 
     const first = await harness.deliver(userSays("交接中第一句"));
     const second = await harness.deliver(userSays("交接中第二句"));
@@ -713,15 +713,15 @@ describe("ChatRunner：交接期间照收、只关输出闸；开始那一刻推
     expect(first.userMessageId).toEqual(expect.any(String));
     expect(second.userMessageId).toEqual(expect.any(String));
     // 两条都在 inbox 里，顺序即取件顺序
-    expect(harness.runner.state(CONVERSATION_ID).inbox.map((item) => item.preview)).toEqual([
+    expect(harness.runner.state(SESSION_ID).inbox.map((item) => item.preview)).toEqual([
       "交接中第一句",
       "交接中第二句",
     ]);
 
     // 交接收口：摘牌 + 开闸（生产上开闸在交接收口那一处）
-    harness.runner.endHandoff(CONVERSATION_ID);
-    harness.registry.get(CONVERSATION_ID)!.resumeOutput();
-    await harness.waitFor(() => harness.runner.state(CONVERSATION_ID).inbox.length === 0);
+    harness.runner.endHandoff(SESSION_ID);
+    harness.registry.get(SESSION_ID)!.resumeOutput();
+    await harness.waitFor(() => harness.runner.state(SESSION_ID).inbox.length === 0);
     await harness.settle();
 
     // 交接期间收下的那两句一句没丢，按原顺序落成了用户消息
@@ -733,16 +733,16 @@ describe("ChatRunner：交接期间照收、只关输出闸；开始那一刻推
     ]);
   });
 
-  it("beginHandoff 之后收到一条 `conversation.changed`，`change === handoff_started`", () => {
+  it("beginHandoff 之后收到一条 `session.changed`，`change === handoff_started`", () => {
     const harness = createHarness();
-    harness.runner.beginHandoff(CONVERSATION_ID);
+    harness.runner.beginHandoff(SESSION_ID);
 
     const changed = harness
-      .eventsOf("conversation.changed")
-      .map((it) => it as ConversationChangedPayload);
+      .eventsOf("session.changed")
+      .map((it) => it as SessionChangedPayload);
     expect(changed).toEqual([
       {
-        conversationId: CONVERSATION_ID,
+        sessionId: SESSION_ID,
         // 同步挂牌时读不到会话行：那一格给 `null`（客户端靠 id 定位）
         workspaceId: null,
         change: "handoff_started",
@@ -750,7 +750,7 @@ describe("ChatRunner：交接期间照收、只关输出闸；开始那一刻推
       },
     ]);
     // 交接态本身也读得出来（`state.handoff` 非空）
-    expect(harness.runner.state(CONVERSATION_ID).handoff).not.toBeNull();
+    expect(harness.runner.state(SESSION_ID).handoff).not.toBeNull();
   });
 });
 
@@ -772,11 +772,11 @@ describe("ChatRunner.state：现读四件事与待办", () => {
     });
 
     await harness.deliver(userSays("第一条"));
-    await harness.waitFor(() => harness.registry.get(CONVERSATION_ID)?.state === "working");
+    await harness.waitFor(() => harness.registry.get(SESSION_ID)?.state === "working");
 
     // 它正卡在工具里：下一条只能排着
     await harness.deliver(userSays("第二条"));
-    const readout = harness.runner.state(CONVERSATION_ID);
+    const readout = harness.runner.state(SESSION_ID);
     expect(readout.status).toBe("working");
     expect(readout.inbox.map((item) => item.preview)).toEqual(["第二条"]);
     expect(readout.inbox[0]!.source).toEqual({ kind: "user" });
@@ -785,16 +785,16 @@ describe("ChatRunner.state：现读四件事与待办", () => {
     await harness.waitIdle();
 
     // 取件点把它带走了：排队区空，它落成了库里的一条 user
-    expect(harness.runner.state(CONVERSATION_ID).inbox).toEqual([]);
+    expect(harness.runner.state(SESSION_ID).inbox).toEqual([]);
     const users = (await harness.rows()).filter((row) => row.role === AgentNSValue.Role.User);
     expect(users.map((row) => row.content)).toEqual(["第一条", "第二条"]);
   });
 
   it("没 agent 就是死：死活是独立一格，不是忙闲里的一格", async () => {
     const harness = createHarness();
-    // 读数的形状就是 wire 的 `ConversationState`：这一段是谁、四件事各一格、以及这一刻是什么时候
-    expect(harness.runner.state(CONVERSATION_ID)).toEqual({
-      conversationId: CONVERSATION_ID,
+    // 读数的形状就是 wire 的 `SessionState`：这一段是谁、四件事各一格、以及这一刻是什么时候
+    expect(harness.runner.state(SESSION_ID)).toEqual({
+      sessionId: SESSION_ID,
       alive: false,
       status: "idle",
       inputPaused: false,
@@ -808,7 +808,7 @@ describe("ChatRunner.state：现读四件事与待办", () => {
 
     await harness.deliver(userSays("起来"));
     await harness.waitIdle();
-    expect(harness.runner.state(CONVERSATION_ID).status).toBe("idle");
+    expect(harness.runner.state(SESSION_ID).status).toBe("idle");
   });
 });
 
@@ -825,7 +825,7 @@ describe("ChatRunner：变闲那一刻", () => {
     await harness.waitFor(() => harness.idle.length === 1);
 
     // 这一跳只是「此刻它闲了」，不带任何结果
-    expect(harness.idle).toEqual([CONVERSATION_ID]);
+    expect(harness.idle).toEqual([SESSION_ID]);
     const states = harness.eventsOf("state").map((it) => it as StatePayload);
     expect(states.map((payload) => payload.status)).toEqual(["working", "idle"]);
     // 「闲了」那一刻库里已经是完整的两行（不是落后一片的样子）
@@ -844,14 +844,14 @@ describe("ChatRunner：一段对话一条桥", () => {
 
     await harness.deliver(userSays("第一句"));
     await harness.waitIdle();
-    const first = harness.registry.get(CONVERSATION_ID);
+    const first = harness.registry.get(SESSION_ID);
 
     await harness.deliver(userSays("第二句"));
     await harness.waitFor(() => harness.idle.length === 2);
     await harness.settle();
 
     // 桥是常驻的：同一个 agent（一段对话一个），历史在它内存里接着长
-    expect(harness.registry.get(CONVERSATION_ID)).toBe(first);
+    expect(harness.registry.get(SESSION_ID)).toBe(first);
     expect(first!.messages.map((message) => message.content)).toEqual([
       "第一句",
       "回答",
@@ -870,23 +870,23 @@ describe("ChatRunner：一段对话一条桥", () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "回答" }] }] });
     await harness.deliver(userSays("一句"));
     await harness.waitIdle();
-    const agent = harness.registry.get(CONVERSATION_ID)!;
+    const agent = harness.registry.get(SESSION_ID)!;
 
-    harness.runner.forget(CONVERSATION_ID);
+    harness.runner.forget(SESSION_ID);
     await harness.settle();
 
-    expect(harness.registry.get(CONVERSATION_ID)).toBeUndefined();
+    expect(harness.registry.get(SESSION_ID)).toBeUndefined();
     // 硬着陆 = 真的死了（push 会抛 `closed`），不是「从账上消失而已」
     expect(() =>
       agent.push({ content: "往死的那一个投", priority: "high", source: { kind: "user" } }),
     ).toThrow();
     // 桥跟着灭：最后报的是「这一段没有 agent 了」，之后不再往外推任何东西
-    expect(lastChange(harness, "conversation.changed")).toBe("agent_gone");
+    expect(lastChange(harness, "session.changed")).toBe("agent_gone");
     const pushedAtDeath = harness.pushed.length;
     await harness.settle();
     expect(harness.pushed.length).toBe(pushedAtDeath);
-    // 读数的形状就是 wire 的 `ConversationState`：这一段是谁、以及这一刻是什么时候，也一起报
-    expect(harness.runner.state(CONVERSATION_ID)).toMatchObject({ alive: false, inbox: [] });
+    // 读数的形状就是 wire 的 `SessionState`：这一段是谁、以及这一刻是什么时候，也一起报
+    expect(harness.runner.state(SESSION_ID)).toMatchObject({ alive: false, inbox: [] });
   });
 });
 
@@ -896,11 +896,11 @@ describe("ChatRunner：报「死」时带上为什么死", () => {
     await harness.deliver(userSays("一句"));
     await harness.waitIdle();
 
-    harness.registry.kill(CONVERSATION_ID);
+    harness.registry.kill(SESSION_ID);
     await harness.settle();
 
-    // 注册表随后还会报一条 `retired`（`conversation-deleted`）：桥已经灭了，不重报
-    expect(harness.dead).toEqual([{ conversationId: CONVERSATION_ID, kind: "terminated" }]);
+    // 注册表随后还会报一条 `retired`（`session-deleted`）：桥已经灭了，不重报
+    expect(harness.dead).toEqual([{ sessionId: SESSION_ID, kind: "terminated" }]);
   });
 
   it("退役（换模型 / 换思考档 / 配置变了）：`retired` —— 不是「这段没了」", async () => {
@@ -908,13 +908,13 @@ describe("ChatRunner：报「死」时带上为什么死", () => {
     await harness.deliver(userSays("一句"));
     await harness.waitIdle();
 
-    // 空闲时改装配事实：当场退役（`ConversationService.setModel` / `setThinking` 走的就是这一手）
-    expect(harness.registry.invalidateConversation(CONVERSATION_ID)).toBe(true);
+    // 空闲时改装配事实：当场退役（`SessionService.setModel` / `setThinking` 走的就是这一手）
+    expect(harness.registry.invalidateSession(SESSION_ID)).toBe(true);
     await harness.settle();
 
-    expect(harness.dead).toEqual([{ conversationId: CONVERSATION_ID, kind: "retired" }]);
+    expect(harness.dead).toEqual([{ sessionId: SESSION_ID, kind: "retired" }]);
     // 「没有 agent 了」照报（那一瞬确实没有驱动者），但**为什么**是退役，下游据此把题留着
-    expect(lastChange(harness, "conversation.changed")).toBe("agent_gone");
+    expect(lastChange(harness, "session.changed")).toBe("agent_gone");
   });
 
   it("forget：`forgotten`（对话被删，不是意外死）", async () => {
@@ -922,11 +922,11 @@ describe("ChatRunner：报「死」时带上为什么死", () => {
     await harness.deliver(userSays("一句"));
     await harness.waitIdle();
 
-    harness.runner.forget(CONVERSATION_ID);
+    harness.runner.forget(SESSION_ID);
     await harness.settle();
 
     // 先报「对话被删」再硬着陆：`kill` 同步广播的 `killed`（terminated）不会抢在前面
-    expect(harness.dead).toEqual([{ conversationId: CONVERSATION_ID, kind: "forgotten" }]);
+    expect(harness.dead).toEqual([{ sessionId: SESSION_ID, kind: "forgotten" }]);
   });
 });
 
@@ -941,24 +941,24 @@ describe("ChatRunner.kill：用户按杀死（PRD 4.4 的三条死路之一）",
 
     // 第一条被取走、卡在工具里，后两句只能排着（各自落一行）
     await harness.deliver(userSays("第一条"));
-    await harness.waitFor(() => harness.registry.get(CONVERSATION_ID)?.state === "working");
+    await harness.waitFor(() => harness.registry.get(SESSION_ID)?.state === "working");
     await harness.deliver(userSays("第二条"));
     await harness.deliver(userSays("第三条"));
     await harness.waitFor(() => harness.inbox.rows.length === 2);
     const messageIds = (await harness.rows()).map((row) => row.id);
 
-    expect(harness.runner.kill(CONVERSATION_ID)).toBe(true);
+    expect(harness.runner.kill(SESSION_ID)).toBe(true);
     await harness.settle();
 
     // 库里的待办行跟着没了。这一条**只有**在「先 agents.kill、再拆桥」时才成立：
     // `agent.kill()` 同步广播的 `inboxCleared` 得有人听（桥先拆掉，那些行就留成孤行，
     // 下一次装配又被放回队列）
     await harness.waitFor(() => harness.inbox.rows.length === 0);
-    expect(harness.inbox.writes.at(-1)).toBe(`clear:${CONVERSATION_ID}`);
+    expect(harness.inbox.writes.at(-1)).toBe(`clear:${SESSION_ID}`);
 
     // 死 = 这一段没有 agent 实例了，待办也空了
-    expect(harness.registry.get(CONVERSATION_ID)).toBeUndefined();
-    expect(harness.runner.state(CONVERSATION_ID)).toMatchObject({ alive: false, inbox: [] });
+    expect(harness.registry.get(SESSION_ID)).toBeUndefined();
+    expect(harness.runner.state(SESSION_ID)).toMatchObject({ alive: false, inbox: [] });
 
     // 杀死不是删除：消息一行不少（在途那条只是被掐断，不是没了）
     expect((await harness.rows()).map((row) => row.id)).toEqual(messageIds);
@@ -975,48 +975,48 @@ describe("ChatRunner.kill：用户按杀死（PRD 4.4 的三条死路之一）",
 
     const before = createHarness({ store, inbox, rounds: [stuckInToolRound(toolGate.promise)] });
     await before.deliver(userSays("第一条"));
-    await before.waitFor(() => before.registry.get(CONVERSATION_ID)?.state === "working");
+    await before.waitFor(() => before.registry.get(SESSION_ID)?.state === "working");
     await before.deliver(userSays("第二条"));
     await before.deliver(userSays("第三条"));
     await before.waitFor(() => inbox.rows.length === 2);
 
-    expect(before.runner.kill(CONVERSATION_ID)).toBe(true);
+    expect(before.runner.kill(SESSION_ID)).toBe(true);
     await before.settle();
     // 库里那两行被清了 —— 所以「关掉再打开」时它们没有东西可恢复
     await before.waitFor(() => inbox.rows.length === 0);
 
     const after = createHarness({ store, inbox, pauseOnBuild: true });
     await after.deliver(userSays("重开之后的一句"));
-    expect(after.runner.state(CONVERSATION_ID).inbox.map((item) => item.preview)).toEqual([
+    expect(after.runner.state(SESSION_ID).inbox.map((item) => item.preview)).toEqual([
       "重开之后的一句",
     ]);
 
     toolGate.resolve();
   });
 
-  it("杀完再投报 `conversation_dead`（不复活）；人点发送才重新装配起来，历史一句不少", async () => {
+  it("杀完再投报 `session_dead`（不复活）；人点发送才重新装配起来，历史一句不少", async () => {
     const harness = createHarness({ rounds: [{ deltas: [{ content: "好" }] }] });
     await harness.deliver(userSays("第一句"));
     await harness.waitIdle();
 
-    expect(harness.runner.kill(CONVERSATION_ID)).toBe(true);
+    expect(harness.runner.kill(SESSION_ID)).toBe(true);
     await harness.settle();
-    expect(harness.runner.state(CONVERSATION_ID).alive).toBe(false);
+    expect(harness.runner.state(SESSION_ID).alive).toBe(false);
 
     // 任何投递都不复活会话（PRD 4.2 / 4.4）：报「这段没了」，而不是叫起一个新的
     await expect(
       harness.deliver(userSays("外面的一句", { mayStart: false })),
-    ).rejects.toMatchObject({ code: "conversation_dead" });
-    expect(harness.runner.state(CONVERSATION_ID).alive).toBe(false);
-    expect(harness.builds).toEqual([CONVERSATION_ID]);
+    ).rejects.toMatchObject({ code: "session_dead" });
+    expect(harness.runner.state(SESSION_ID).alive).toBe(false);
+    expect(harness.builds).toEqual([SESSION_ID]);
 
     // 界面上的发送按钮（创建者）：重新装配起来，记忆照旧在（会话行与消息一个字没动）
     await harness.deliver(userSays("人发的一句", { mayStart: true }));
     await harness.waitIdle();
 
-    expect(harness.runner.state(CONVERSATION_ID).alive).toBe(true);
-    expect(harness.builds).toEqual([CONVERSATION_ID, CONVERSATION_ID]);
-    expect(harness.runner.messagesOf(CONVERSATION_ID)!.map((message) => message.content)).toEqual([
+    expect(harness.runner.state(SESSION_ID).alive).toBe(true);
+    expect(harness.builds).toEqual([SESSION_ID, SESSION_ID]);
+    expect(harness.runner.messagesOf(SESSION_ID)!.map((message) => message.content)).toEqual([
       "第一句",
       "好",
       "人发的一句",
@@ -1027,7 +1027,7 @@ describe("ChatRunner.kill：用户按杀死（PRD 4.4 的三条死路之一）",
   it("本来就是死的：回 `false`，不抛错、一个字节都不写", () => {
     const harness = createHarness();
 
-    expect(harness.runner.kill(CONVERSATION_ID)).toBe(false);
+    expect(harness.runner.kill(SESSION_ID)).toBe(false);
 
     // 什么都没动：没有装配、没有落库、没有推事件
     expect(harness.builds).toEqual([]);
@@ -1040,19 +1040,19 @@ describe("ChatRunner.kill：用户按杀死（PRD 4.4 的三条死路之一）",
     const harness = createHarness({ rounds: [{ deltas: [{ content: "好" }] }] });
     await harness.deliver(userSays("一句"));
     await harness.waitIdle();
-    harness.runner.beginHandoff(CONVERSATION_ID);
+    harness.runner.beginHandoff(SESSION_ID);
 
-    expect(() => harness.runner.kill(CONVERSATION_ID)).toThrowError(
+    expect(() => harness.runner.kill(SESSION_ID)).toThrowError(
       expect.objectContaining({
         code: "busy",
-        detail: { conversationId: CONVERSATION_ID, reason: "handoff_in_progress" },
+        detail: { sessionId: SESSION_ID, reason: "handoff_in_progress" },
       }) as unknown as Error,
     );
     // 一个也没生效：agent 还在（读数仍报活着）
-    expect(harness.registry.get(CONVERSATION_ID)).toBeDefined();
-    expect(harness.runner.state(CONVERSATION_ID).alive).toBe(true);
+    expect(harness.registry.get(SESSION_ID)).toBeDefined();
+    expect(harness.runner.state(SESSION_ID).alive).toBe(true);
 
-    harness.runner.endHandoff(CONVERSATION_ID);
+    harness.runner.endHandoff(SESSION_ID);
   });
 
   it("杀死只报一条 `agent_gone`（core 的 `killed` 不重报），并带上「为什么死」", async () => {
@@ -1060,17 +1060,17 @@ describe("ChatRunner.kill：用户按杀死（PRD 4.4 的三条死路之一）",
     await harness.deliver(userSays("一句"));
     await harness.waitIdle();
 
-    harness.runner.kill(CONVERSATION_ID);
+    harness.runner.kill(SESSION_ID);
     await harness.settle();
 
-    const gone = (harness.eventsOf("conversation.changed") as ConversationChangedPayload[]).filter(
+    const gone = (harness.eventsOf("session.changed") as SessionChangedPayload[]).filter(
       (payload) => payload.change === "agent_gone",
     );
     expect(gone).toEqual([
-      expect.objectContaining({ conversationId: CONVERSATION_ID, change: "agent_gone" }),
+      expect.objectContaining({ sessionId: SESSION_ID, change: "agent_gone" }),
     ]);
     // 真死（`terminated`），不是「换一个驱动者接着干」的退役
-    expect(harness.dead).toEqual([{ conversationId: CONVERSATION_ID, kind: "terminated" }]);
+    expect(harness.dead).toEqual([{ sessionId: SESSION_ID, kind: "terminated" }]);
   });
 });
 
@@ -1107,7 +1107,7 @@ describe("ChatRunner：子 Agent 的消息不落库，只推事件", () => {
     // 而它的话只在它自己那个对象里（要查就走 `messagesOf` 的名册那条路）。于是落库那份里只有
     // 主线的消息：子 agent 开局那条（`sub-u`）与它后面写出来的那句都不在里面
     const mainline = new Set(
-      (harness.runner.messagesOf(CONVERSATION_ID) ?? []).map((message) => message.id),
+      (harness.runner.messagesOf(SESSION_ID) ?? []).map((message) => message.id),
     );
     expect(harness.store.writes.filter((row) => !mainline.has(row.id))).toEqual([]);
     expect(harness.store.writes.some((row) => row.id === "sub-u")).toBe(false);
@@ -1119,11 +1119,11 @@ describe("ChatRunner：子 Agent 的消息不落库，只推事件", () => {
     expect(added.some((payload) => payload.toolCallId === "t1")).toBe(true);
 
     // 名册：现读 core 的登记，跑完只看 `endedAt` 标上（不移除）
-    const readout = harness.runner.state(CONVERSATION_ID);
+    const readout = harness.runner.state(SESSION_ID);
     expect(readout.subAgents).toEqual([{ toolCallId: "t1", name: "delegate", state: "ended" }]);
 
     // 它说过的话顺「父的名册 → 那个子 agent → 它的 `messages`」取：开局的任务 + 它的回答
-    const subMessages = harness.runner.messagesOf(CONVERSATION_ID, { toolCallId: "t1" });
+    const subMessages = harness.runner.messagesOf(SESSION_ID, { toolCallId: "t1" });
     expect(subMessages?.map((message) => message.content)).toEqual(["办一下", "办好了"]);
   });
 });
@@ -1137,7 +1137,7 @@ describe("ChatRunner.reconcile：装载即修复", () => {
     const harness = createHarness();
     harness.store.seed({
       id: "m1",
-      conversationId: CONVERSATION_ID,
+      sessionId: SESSION_ID,
       role: AgentNSValue.Role.User as string,
       status: AgentNSValue.MessageStatus.Completed as string,
       content: "说过的话",
@@ -1145,7 +1145,7 @@ describe("ChatRunner.reconcile：装载即修复", () => {
     });
     harness.store.seed({
       id: "m2",
-      conversationId: CONVERSATION_ID,
+      sessionId: SESSION_ID,
       role: AgentNSValue.Role.Assistant as string,
       status: AgentNSValue.MessageStatus.Pending as string,
       content: "说到一半",
@@ -1153,7 +1153,7 @@ describe("ChatRunner.reconcile：装载即修复", () => {
     });
     harness.store.seed({
       id: "m3",
-      conversationId: CONVERSATION_ID,
+      sessionId: SESSION_ID,
       role: AgentNSValue.Role.Assistant as string,
       status: AgentNSValue.MessageStatus.Writing as string,
       content: null,
@@ -1163,7 +1163,7 @@ describe("ChatRunner.reconcile：装载即修复", () => {
     // 造这三行时的写不算：下面比的是「修复这一跳又写了哪几行」
     const written = harness.store.writes.length;
 
-    const messages = await harness.runner.reconcile(CONVERSATION_ID);
+    const messages = await harness.runner.reconcile(SESSION_ID);
 
     expect(messages.map((message) => message.status)).toEqual([
       AgentNSValue.MessageStatus.Completed,
@@ -1198,7 +1198,7 @@ describe("ChatRunner：inbox 落库（一有变化就入库）", () => {
     const harness = createHarness({ rounds: [stuckInToolRound(toolGate.promise)] });
 
     await harness.deliver(userSays("第一条"));
-    await harness.waitFor(() => harness.registry.get(CONVERSATION_ID)?.state === "working");
+    await harness.waitFor(() => harness.registry.get(SESSION_ID)?.state === "working");
 
     // 第一条进来时落过一行，随即被取走 —— 库里那一行跟着没了
     await harness.waitFor(() => harness.inbox.writes.length >= 2);
@@ -1230,19 +1230,19 @@ describe("ChatRunner：inbox 落库（一有变化就入库）", () => {
     const harness = createHarness({ rounds: [stuckInToolRound(toolGate.promise)] });
 
     await harness.deliver(userSays("第一条"));
-    await harness.waitFor(() => harness.registry.get(CONVERSATION_ID)?.state === "working");
+    await harness.waitFor(() => harness.registry.get(SESSION_ID)?.state === "working");
     await harness.deliver(userSays("第二条"));
     await harness.deliver(userSays("第三条"));
     await harness.waitFor(() => harness.inbox.rows.length === 2);
 
     // 不取件的时候也照样清（清空不看输出闸），库里那两行一起没
-    harness.runner.pause(CONVERSATION_ID);
-    expect(harness.runner.clearInbox(CONVERSATION_ID)).toBe(2);
+    harness.runner.pause(SESSION_ID);
+    expect(harness.runner.clearInbox(SESSION_ID)).toBe(2);
     await harness.waitFor(() => harness.inbox.rows.length === 0);
-    expect(harness.inbox.writes.at(-1)).toBe(`clear:${CONVERSATION_ID}`);
+    expect(harness.inbox.writes.at(-1)).toBe(`clear:${SESSION_ID}`);
 
     toolGate.resolve();
-    harness.runner.resume(CONVERSATION_ID);
+    harness.runner.resume(SESSION_ID);
     await harness.waitIdle();
     expect(harness.inbox.rows).toEqual([]);
   });
@@ -1251,7 +1251,7 @@ describe("ChatRunner：inbox 落库（一有变化就入库）", () => {
     const harness = createHarness({ rounds: [stuckInToolRound(toolGate.promise)] });
 
     await harness.deliver(userSays("第一条"));
-    await harness.waitFor(() => harness.registry.get(CONVERSATION_ID)?.state === "working");
+    await harness.waitFor(() => harness.registry.get(SESSION_ID)?.state === "working");
     await harness.deliver(userSays("第二条"));
     await harness.waitFor(() => harness.inbox.rows.length === 1);
 
@@ -1280,7 +1280,7 @@ describe("ChatRunner：装配时把还没被取走的条目放回", () => {
 
     const before = createHarness({ store, inbox, rounds: [stuckInToolRound(toolGate.promise)] });
     await before.deliver(userSays("第一句"));
-    await before.waitFor(() => before.registry.get(CONVERSATION_ID)?.state === "working");
+    await before.waitFor(() => before.registry.get(SESSION_ID)?.state === "working");
     await before.deliver(userSays("第二句"));
     await before.deliver(userSays("第三句"));
     await before.deliver(userSays("第四句"));
@@ -1304,7 +1304,7 @@ describe("ChatRunner：装配时把还没被取走的条目放回", () => {
     await after.deliver(userSays("重启后的一句"));
 
     // 界面上看得见：放回来的那三句按原顺序排在队头，新投的那条在它们后面
-    const readout = after.runner.state(CONVERSATION_ID);
+    const readout = after.runner.state(SESSION_ID);
     expect(readout.inbox.map((item) => item.preview)).toEqual([
       "第二句",
       "第三句",
@@ -1315,7 +1315,7 @@ describe("ChatRunner：装配时把还没被取走的条目放回", () => {
     expect(readout.inbox.slice(0, 3).map((item) => item.createdAt)).toEqual(longAgo);
 
     // 队列里那三条就是库里读回来的那三条：id / 时间 / 正文逐字相同（一个字段都没被重算）
-    const restored = after.registry.get(CONVERSATION_ID)!.inboxPending.slice(0, 3);
+    const restored = after.registry.get(SESSION_ID)!.inboxPending.slice(0, 3);
     expect(restored.map((entry) => JSON.stringify(entry.content))).toEqual(
       stored.map((row) => row.content),
     );
@@ -1336,7 +1336,7 @@ describe("ChatRunner：装配时把还没被取走的条目放回", () => {
     // 记忆里已经有这条消息：上一次它落地了，只是 `inboxTaken` 那一删没跑到
     store.seed({
       id: "m-已经落地",
-      conversationId: CONVERSATION_ID,
+      sessionId: SESSION_ID,
       role: AgentNSValue.Role.User as string,
       status: AgentNSValue.MessageStatus.Completed as string,
       content: "落地过的一句",
@@ -1345,14 +1345,14 @@ describe("ChatRunner：装配时把还没被取走的条目放回", () => {
     const inbox = new RecordingInboxStore();
     await inbox.insert({
       messageId: "m-已经落地",
-      conversationId: CONVERSATION_ID,
+      sessionId: SESSION_ID,
       source: { kind: "user" },
       content: "落地过的一句",
       createdAt: "2026-01-02T03:04:05.000Z",
     });
     await inbox.insert({
       messageId: "m-还在等",
-      conversationId: CONVERSATION_ID,
+      sessionId: SESSION_ID,
       source: { kind: "user" },
       content: "还在等的一句",
       createdAt: "2026-01-02T03:04:06.000Z",
@@ -1362,7 +1362,7 @@ describe("ChatRunner：装配时把还没被取走的条目放回", () => {
     await harness.deliver(userSays("新的一句"));
 
     // 队列里只有「还在等的那一句」与新投的这一句：落地过的那条没有放回来
-    const agent = harness.registry.get(CONVERSATION_ID)!;
+    const agent = harness.registry.get(SESSION_ID)!;
     expect(
       agent.inboxPending.map((entry) => ("messageId" in entry ? entry.messageId : undefined)),
     ).toEqual(["m-还在等", "srv-1"]);

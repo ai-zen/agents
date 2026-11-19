@@ -9,7 +9,7 @@
  *     `@` 补全、以及重启之后数据还在。
  *
  * 两条口径与用例的做法有关：
- *   1. **不连模型**：这个环境里没有真密钥，所以不跑 `conversation.send`（那一轮的端到端由
+ *   1. **不连模型**：这个环境里没有真密钥，所以不跑 `session.send`（那一轮的端到端由
  *      `session.flow.test.ts` 用假 agent 覆盖）。
  *   2. **问题的产生方在宿主内部**：契约里没有「提一个问题」的方法（问题来自交接线、
  *      登记项目、不可撤销动作的二次确认），所以这一条用例在进程之间用同一个库把一行问题
@@ -30,10 +30,10 @@ import type {
   CompletionFilesResult,
   ConfigGetResult,
   ConfigPatchResult,
-  ConversationCreateResult,
-  ConversationGetResult,
-  ConversationListResult,
-  ConversationSendResult,
+  SessionCreateResult,
+  SessionGetResult,
+  SessionListResult,
+  SessionSendResult,
   ModelListResult,
   NoticeListResult,
   QuestionAnswerResult,
@@ -279,7 +279,7 @@ describe("端到端集成：真进程 + 真连接", () => {
     log("握手", `language=${helloResult.language} 协议=${helloResult.protocolVersion}`);
 
     // =====================================================================
-    // 2. workspace.create → conversation.create → conversation.list
+    // 2. workspace.create → session.create → session.list
     // =====================================================================
     const createdWorkspace = (await callThrough(client, "workspace.create", {
       cwd: workspaceDir,
@@ -289,46 +289,46 @@ describe("端到端集成：真进程 + 真连接", () => {
     expect(workspace.id.length).toBeGreaterThan(0);
     expect(workspace.folder.exists).toBe(true);
 
-    const createdConversation = (await callThrough(client, "conversation.create", {
+    const createdSession = (await callThrough(client, "session.create", {
       workspaceId: workspace.id,
       agentId: "default",
       modelId: "test-model",
-    })) as ConversationCreateResult;
-    if (!createdConversation.conversation) throw new Error("conversation.create 没有建出对话");
-    const conversationId = createdConversation.conversation.id;
-    expect(conversationId.length).toBeGreaterThan(0);
+    })) as SessionCreateResult;
+    if (!createdSession.session) throw new Error("session.create 没有建出对话");
+    const sessionId = createdSession.session.id;
+    expect(sessionId.length).toBeGreaterThan(0);
 
     // R56 / F-C2：空会话不落库 —— 建了不发就断线，它应该像没建过一样
-    const draftGotten = (await callThrough(client, "conversation.get", {
-      conversationId,
-    })) as ConversationGetResult;
-    expect(draftGotten.conversation.id).toBe(conversationId);
-    const listBeforeSend = (await callThrough(client, "conversation.list", {
+    const draftGotten = (await callThrough(client, "session.get", {
+      sessionId,
+    })) as SessionGetResult;
+    expect(draftGotten.session.id).toBe(sessionId);
+    const listBeforeSend = (await callThrough(client, "session.list", {
       workspaceId: workspace.id,
-    })) as ConversationListResult;
+    })) as SessionListResult;
     expect(listBeforeSend.total).toBe(0);
     log(
       "空会话（R56）",
-      `conversation=${conversationId} get 能拿到=${String(draftGotten.conversation.id === conversationId)} 列表 total=${listBeforeSend.total}`,
+      `session=${sessionId} get 能拿到=${String(draftGotten.session.id === sessionId)} 列表 total=${listBeforeSend.total}`,
     );
 
     // 发一条：首次 send 用同一个 id 落库（这里连不上假端点，那一轮会以失败结算，
     // 但「受理已落库」这件事与模型有没有答无关）
-    const sent = (await callThrough(client, "conversation.send", {
-      conversationId,
+    const sent = (await callThrough(client, "session.send", {
+      sessionId,
       input: { content: "你好" },
-    })) as ConversationSendResult;
+    })) as SessionSendResult;
     expect(sent.userMessageId.length).toBeGreaterThan(0);
 
-    const conversations = (await callThrough(client, "conversation.list", {
+    const sessions = (await callThrough(client, "session.list", {
       workspaceId: workspace.id,
-    })) as ConversationListResult;
-    expect(conversations.total).toBe(1);
-    expect(conversations.conversations[0]?.id).toBe(conversationId);
-    expect(conversations.conversations[0]?.workspaceId).toBe(workspace.id);
+    })) as SessionListResult;
+    expect(sessions.total).toBe(1);
+    expect(sessions.sessions[0]?.id).toBe(sessionId);
+    expect(sessions.sessions[0]?.workspaceId).toBe(workspace.id);
     log(
       "建库对象",
-      `workspace=${workspace.id} conversation=${conversationId} 发出后列表 total=${conversations.total}`,
+      `workspace=${workspace.id} session=${sessionId} 发出后列表 total=${sessions.total}`,
     );
 
     // =====================================================================
@@ -450,15 +450,15 @@ describe("端到端集成：真进程 + 真连接", () => {
 
     // `question.list` 只问「这一段现在有没有一道题」（PRD 4.10）：重启之后这段没有 agent、
     // 也没撞过线，所以两个窗口拉到的都是空 —— 题不落库，没有「重启之后还在」这回事
-    const listA = (await callThrough(windowA, "question.list", { conversationId })) as QuestionListResult;
-    const listB = (await callThrough(windowB, "question.list", { conversationId })) as QuestionListResult;
+    const listA = (await callThrough(windowA, "question.list", { sessionId })) as QuestionListResult;
+    const listB = (await callThrough(windowB, "question.list", { sessionId })) as QuestionListResult;
     expect(listA.questions).toEqual([]);
     expect(listB.questions).toEqual([]);
     // 没有题就不挡投递：这一句照常收下
-    const accepted = (await callThrough(windowA, "conversation.send", {
-      conversationId,
+    const accepted = (await callThrough(windowA, "session.send", {
+      sessionId,
       input: { content: "你好" },
-    })) as ConversationSendResult;
+    })) as SessionSendResult;
     expect(typeof accepted.userMessageId).toBe("string");
     log("question", `重启之后这一段上挂着 ${listA.questions.length} 道题（题只在进程里）`);
 
@@ -486,13 +486,13 @@ describe("端到端集成：真进程 + 真连接", () => {
     const workspacesAfter = (await callThrough(back, "workspace.list", {})) as WorkspaceListResult;
     expect(workspacesAfter.workspaces.map((item) => item.id)).toEqual([workspace.id]);
 
-    const conversationsAfter = (await callThrough(back, "conversation.list", { workspaceId: workspace.id })) as ConversationListResult;
-    expect(conversationsAfter.conversations.map((item) => item.id)).toEqual([conversationId]);
+    const sessionsAfter = (await callThrough(back, "session.list", { workspaceId: workspace.id })) as SessionListResult;
+    expect(sessionsAfter.sessions.map((item) => item.id)).toEqual([sessionId]);
     // F-I3 的那两格：刚重启的宿主上这段对话没有 agent、队里也空着（现读的结果，不是落库的字段）
-    expect(conversationsAfter.conversations[0]).toMatchObject({ alive: false, inboxPending: 0 });
+    expect(sessionsAfter.sessions[0]).toMatchObject({ alive: false, inboxPending: 0 });
 
     // 题不落库：重启之后这一段上依然一道题都没有（PRD 4.10 的「题的生命只有这一段对话活着的时间」）
-    const questionsAfter = (await callThrough(back, "question.list", { conversationId })) as QuestionListResult;
+    const questionsAfter = (await callThrough(back, "question.list", { sessionId })) as QuestionListResult;
     expect(questionsAfter.questions).toEqual([]);
 
     const noticesAfter = (await callThrough(back, "notice.list", {})) as NoticeListResult;
@@ -503,7 +503,7 @@ describe("端到端集成：真进程 + 真连接", () => {
       "重启后",
       `端口 ${host.port} → ${restarted.port} → ${afterRestart.port}；workspace=${workspacesAfter.workspaces
         .map((item) => item.id)
-        .join(",")} conversation=${conversationsAfter.conversations
+        .join(",")} session=${sessionsAfter.sessions
         .map((item) => item.id)
         .join(",")} question=${questionsAfter.questions.length} 道 notice=${noticesAfter.notices.length} 条`,
     );

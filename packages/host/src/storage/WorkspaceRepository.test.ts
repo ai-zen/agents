@@ -27,9 +27,9 @@ beforeEach(async () => {
   await db.tx((tx) => [
     // meta 不清：migrate 靠它判断跑不跑
     tx.run("DELETE FROM notices"),
-    // workspaces 必须在 assets 之前：删 workspace 级联删掉 conversation_assets 关系行，
+    // workspaces 必须在 assets 之前：删 workspace 级联删掉 session_assets 关系行，
     // 之后 assets 的 ON DELETE RESTRICT 才不会拦
-    tx.run("DELETE FROM workspaces"), // 级联 conversations → messages → conversation_assets
+    tx.run("DELETE FROM workspaces"), // 级联 sessions → messages → session_assets
     tx.run("DELETE FROM assets"), // 级联 asset_vendor_files
     tx.run("DELETE FROM credentials"),
   ]);
@@ -88,13 +88,13 @@ describe("WorkspaceRepository", () => {
   it("删掉 Workspace 时它名下的对话一并消失（PRD D11）", async () => {
     await repo.create({ id: "w1", name: "项目一", cwd: "/tmp/one", createdAt: 100 });
     await db.run(
-      `INSERT INTO conversations (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
+      `INSERT INTO sessions (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
        VALUES (?, ?, ?, 0, ?, ?, ?, ?)`,
       ["c1", "w1", "对话", "agent-1", "model-1", 100, 100],
     );
 
     expect(await repo.delete("w1")).toBe(1);
     expect(await repo.get("w1")).toBeUndefined();
-    expect(await db.all("SELECT id FROM conversations")).toEqual([]);
+    expect(await db.all("SELECT id FROM sessions")).toEqual([]);
   });
 });

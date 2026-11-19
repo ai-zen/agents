@@ -258,7 +258,7 @@ describe("四档语气（PRD 4.9）", () => {
       code: "notice.settingsApplied",
       params: null,
       durationMs: null,
-      conversationId: null,
+      sessionId: null,
       createdAt: harness.clock.value,
     });
 
@@ -312,7 +312,7 @@ describe("按语言渲染（D8）", () => {
     const english = localize("notice", payload, "en");
     expect(english.notice.text.message).toBe("Settings applied — no restart needed.");
     // 只有带 `LocalizedText` 的事件过这一层：其余事件原样搬运（同一个对象，不复制）
-    const other: EventMap["state"] = { conversationId: "c1", status: "idle", at: "2026-01-01T00:00:00.000Z" };
+    const other: EventMap["state"] = { sessionId: "c1", status: "idle", at: "2026-01-01T00:00:00.000Z" };
     expect(localize("state", other, "zh")).toBe(other);
   });
 });
@@ -324,8 +324,8 @@ describe("通知是独立通道，绝不进消息（F-I8）", () => {
     expect(harness.events.map((event) => event.name)).toEqual(["notice"]);
     const messages = await harness.db.all<{ id: string }>("SELECT id FROM messages");
     expect(messages).toEqual([]);
-    const conversations = await harness.db.all<{ id: string }>("SELECT id FROM conversations");
-    expect(conversations).toEqual([]);
+    const sessions = await harness.db.all<{ id: string }>("SELECT id FROM sessions");
+    expect(sessions).toEqual([]);
   });
 
   it("按对话列 = 那一段的 + 全局的；按对话清只清那一段的", async () => {
@@ -333,7 +333,7 @@ describe("通知是独立通道，绝不进消息（F-I8）", () => {
     await harness.db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', 'p', '/tmp/p', 1)");
     for (const id of ["c1", "c2"]) {
       await harness.db.run(
-        `INSERT INTO conversations (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
+        `INSERT INTO sessions (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
          VALUES (?, 'w1', ?, 0, 'a', 'm', 1, 1)`,
         [id, id],
       );
@@ -343,13 +343,13 @@ describe("通知是独立通道，绝不进消息（F-I8）", () => {
       level: "warning",
       code: "notice.logWarning",
       params: { summary: "一次" },
-      conversationId: "c1",
+      sessionId: "c1",
     });
     await harness.service.create({
       level: "warning",
       code: "notice.logWarning",
       params: { summary: "另一段" },
-      conversationId: "c2",
+      sessionId: "c2",
     });
     // 全局通知：不属于任何对话
     const global = await harness.service.create({
@@ -359,24 +359,24 @@ describe("通知是独立通道，绝不进消息（F-I8）", () => {
     });
 
     // 全局通知不属于任何一段，所以任何界面都得给：c1 的界面里它在
-    const scoped = await harness.service.list({ conversationId: "c1" });
+    const scoped = await harness.service.list({ sessionId: "c1" });
     expect(scoped.notices).toHaveLength(2);
     expect(scoped.notices.some((notice) => notice.id === global.id)).toBe(true);
-    // 归属在真列上（`NoticeView.conversationId`），渲染参数里只有文案自己的东西
-    const ownNotice = scoped.notices.find((notice) => notice.conversationId === "c1");
+    // 归属在真列上（`NoticeView.sessionId`），渲染参数里只有文案自己的东西
+    const ownNotice = scoped.notices.find((notice) => notice.sessionId === "c1");
     expect(ownNotice?.text.params).toEqual({ summary: "一次" });
     // 另一段对话的界面同样看得到全局的那条（只是看不到 c1 那条）
-    const other = await harness.service.list({ conversationId: "c2" });
+    const other = await harness.service.list({ sessionId: "c2" });
     expect(other.notices).toHaveLength(2);
     expect(other.notices.some((notice) => notice.id === global.id)).toBe(true);
-    expect(other.notices.every((notice) => notice.conversationId !== "c1")).toBe(true);
+    expect(other.notices.every((notice) => notice.sessionId !== "c1")).toBe(true);
     expect((await harness.service.list()).notices).toHaveLength(3);
 
     // 清「一段对话的」只清真挂在那段上的：全局通知不属于它，不跟着没
-    const cleared = await harness.service.clear({ conversationId: "c1" });
+    const cleared = await harness.service.clear({ sessionId: "c1" });
     expect(cleared).toEqual({ cleared: 1 });
-    expect((await harness.service.list({ conversationId: "c1" })).notices.map((notice) => notice.id)).toEqual([global.id]);
-    expect((await harness.service.list({ conversationId: "c2" })).notices).toHaveLength(2);
+    expect((await harness.service.list({ sessionId: "c1" })).notices.map((notice) => notice.id)).toEqual([global.id]);
+    expect((await harness.service.list({ sessionId: "c2" })).notices).toHaveLength(2);
     expect((await harness.service.list()).notices).toHaveLength(2);
 
     // 清全部才是全部（要明说）

@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { AgentNS } from "@ai-zen/agents-core";
 import { ConfigManager } from "@ai-zen/agents-sdk";import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { ConversationRepository } from "../storage/ConversationRepository.js";
+import { SessionRepository } from "../storage/SessionRepository.js";
 import { Database } from "../storage/Database.js";
 import { MessageRepository } from "../storage/MessageRepository.js";
 import { NoticeRepository } from "../storage/NoticeRepository.js";
@@ -23,11 +23,11 @@ import { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
 import { migrate } from "../storage/migrations.js";
 import { AutoNaming } from "./AutoNaming.js";
 import type { TitleCompleter } from "./AutoNaming.js";
-import { defaultConversationName } from "./ConversationService.js";
+import { defaultSessionName } from "./SessionService.js";
 import { NoticeService } from "./NoticeService.js";
 
 /** 夹具里那段对话的原名：创建时间默认值（起名的判据就是「名字还是不是它」） */
-const DEFAULT_NAME = defaultConversationName(1);
+const DEFAULT_NAME = defaultSessionName(1);
 
 interface CompletionCall {
   system: string;
@@ -38,7 +38,7 @@ interface CompletionCall {
 interface Harness {
   dir: string;
   db: Database;
-  conversations: ConversationRepository;
+  sessions: SessionRepository;
   messages: MessageRepository;
   notices: NoticeRepository;
   service: AutoNaming;
@@ -66,7 +66,7 @@ async function setup(config: Record<string, unknown> = BASE_CONFIG): Promise<Har
 let dir: string;
 let db: Database;
 let workspaces: WorkspaceRepository;
-let conversations: ConversationRepository;
+let sessions: SessionRepository;
 let messages: MessageRepository;
 let notices: NoticeRepository;
 /** 这个用例里已经写过几份配置文件（每次 `setup` 一份，互不覆盖） */
@@ -92,7 +92,7 @@ function buildHarness(configPath: string): Harness {
 
   const noticeService = new NoticeService({ notices, now: () => 1_700_000_100_000 });
   const service = new AutoNaming({
-    conversations,
+    sessions,
     messages,
     configManager: new ConfigManager(configPath),
     complete,
@@ -103,23 +103,23 @@ function buildHarness(configPath: string): Harness {
     },
   });
 
-  return { dir, db, conversations, messages, notices, service, calls, behaviour, events };
+  return { dir, db, sessions, messages, notices, service, calls, behaviour, events };
 }
 
 /** 落一次「用户 + 助手」 */
-async function seedFirstTurn(harness: Harness, conversationId = "c1"): Promise<void> {
+async function seedFirstTurn(harness: Harness, sessionId = "c1"): Promise<void> {
   await harness.messages.upsertMany([
     {
-      id: `${conversationId}-u1`,
-      conversationId,
+      id: `${sessionId}-u1`,
+      sessionId,
       role: AgentNS.Role.User as string,
       status: AgentNS.MessageStatus.Completed as string,
       content: "登录页点提交没反应",
       createdAt: 2,
     },
     {
-      id: `${conversationId}-a1`,
-      conversationId,
+      id: `${sessionId}-a1`,
+      sessionId,
       role: AgentNS.Role.Assistant as string,
       status: AgentNS.MessageStatus.Completed as string,
       content: "表单的 submit 事件没绑上，我加上了。",
@@ -139,7 +139,7 @@ let harness: Harness;
  * 后果都可以直接断言（改没改名、发没发请求、抛没抛），后者才是用例该钉的东西。
  */
 type AutoNameSkip =
-  | "conversation_missing"
+  | "session_missing"
   | "config_unreadable"
   | "disabled"
   /** 用户把名字改成了别的（`nameIsAuto` 为假）：这个名字归用户，永不再动 */
@@ -152,7 +152,7 @@ type AutoNameSkip =
 
 /** 八格里每一格对应哪一条用例（漏一格写在 `Record` 里就编译不过） */
 const COVERED: Record<AutoNameSkip, string> = {
-  conversation_missing: "对话不存在时不抛错、不发请求",
+  session_missing: "对话不存在时不抛错、不发请求",
   config_unreadable: "配置读不出来：保持原名、不发请求",
   disabled: "开关关着就一次请求都不发",
   renamed_by_user: "用户改过名字就不动它",
@@ -169,7 +169,7 @@ beforeAll(async () => {
   await migrate(db);
 
   workspaces = new WorkspaceRepository(db);
-  conversations = new ConversationRepository(db);
+  sessions = new SessionRepository(db);
   messages = new MessageRepository(db);
   notices = new NoticeRepository(db);
 });
@@ -191,7 +191,7 @@ beforeEach(async () => {
   configSeq = 0;
 
   await workspaces.create({ id: "w1", name: "项目一", cwd: join(dir, "project"), createdAt: 1 });
-  await conversations.create({
+  await sessions.create({
     id: "c1",
     workspaceId: "w1",
     name: DEFAULT_NAME,
@@ -216,7 +216,7 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
         "already_named",
         "call_failed",
         "config_unreadable",
-        "conversation_missing",
+        "session_missing",
         "disabled",
         "empty_title",
         "no_model",
@@ -229,7 +229,7 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
     await seedFirstTurn(harness);
     await harness.service.nameIfUnnamed("c1");
 
-    const row = await harness.conversations.get("c1");
+    const row = await harness.sessions.get("c1");
     expect(row?.name).toBe("修复登录页");
     expect(row?.nameIsAuto).toBe(true);
     expect(harness.calls).toHaveLength(1);
@@ -255,12 +255,12 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
 
   it("用户改过名字就不动它（nameIsAuto 为假）", async () => {
     await seedFirstTurn(harness);
-    await harness.conversations.renameByUser("c1", "我自己起的名字", 10);
+    await harness.sessions.renameByUser("c1", "我自己起的名字", 10);
 
     await harness.service.nameIfUnnamed("c1");
     expect(harness.calls).toHaveLength(0);
     expect(harness.events).toHaveLength(0);
-    expect((await harness.conversations.get("c1"))?.name).toBe("我自己起的名字");
+    expect((await harness.sessions.get("c1"))?.name).toBe("我自己起的名字");
   });
 
   it("开关关掉就一次请求都不发", async () => {
@@ -269,14 +269,14 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
 
     await off.service.nameIfUnnamed("c1");
     expect(off.calls).toHaveLength(0);
-    expect((await off.conversations.get("c1"))?.name).toBe(DEFAULT_NAME);
+    expect((await off.sessions.get("c1"))?.name).toBe(DEFAULT_NAME);
   });
 
   it("配置读不出来：保持原名、不发请求", async () => {
     // 真的读坏一份配置很难造（`ConfigManager` 会恢复出厂），所以这里换一个会抛的读盘口：
     // 这一格要验的是「读不出配置就当场收手」，不是配置怎么坏的
     const broken = new AutoNaming({
-      conversations: harness.conversations,
+      sessions: harness.sessions,
       messages: harness.messages,
       configManager: {
         read: async () => {
@@ -293,14 +293,14 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
 
     await broken.nameIfUnnamed("c1");
     expect(harness.calls).toHaveLength(0);
-    expect((await harness.conversations.get("c1"))?.name).toBe(DEFAULT_NAME);
+    expect((await harness.sessions.get("c1"))?.name).toBe(DEFAULT_NAME);
   });
 
   it("第二次说话之后照样起名：判据里不数消息条数", async () => {
     await seedFirstTurn(harness);
     await harness.messages.upsert({
       id: "c1-u2",
-      conversationId: "c1",
+      sessionId: "c1",
       role: AgentNS.Role.User as string,
       status: AgentNS.MessageStatus.Completed as string,
       content: "再帮我看看样式",
@@ -309,7 +309,7 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
 
     // 名字还是默认值 → 还是该起名。这一段已经有两句用户话了，但「几句」不是判据
     await harness.service.nameIfUnnamed("c1");
-    expect((await harness.conversations.get("c1"))?.name).toBe("修复登录页");
+    expect((await harness.sessions.get("c1"))?.name).toBe("修复登录页");
     expect(harness.calls).toHaveLength(1);
   });
 
@@ -317,7 +317,7 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
     // 交接是**原地换人**：名字一个字不动，但库里那一段只剩一条 hidden 的断点 + 之后新说的话。
     // 按「消息条数」判就会以为这是还没起过名的一段（那正是这条判据被删掉的理由）；
     // 按名字判则永不再动 —— 它已经不是创建时间那个默认值了。
-    await harness.conversations.create({
+    await harness.sessions.create({
       id: "c2",
       workspaceId: "w1",
       name: "修复登录页",
@@ -329,7 +329,7 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
     await harness.messages.upsertMany([
       {
         id: "c2-breakpoint",
-        conversationId: "c2",
+        sessionId: "c2",
         role: AgentNS.Role.System as string,
         status: AgentNS.MessageStatus.Completed as string,
         content: "/tmp/project/.ai-zen/handoffs/20260101-000000.md",
@@ -338,7 +338,7 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
       },
       {
         id: "c2-u1",
-        conversationId: "c2",
+        sessionId: "c2",
         role: AgentNS.Role.User as string,
         status: AgentNS.MessageStatus.Completed as string,
         content: "接着上次的来",
@@ -349,7 +349,7 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
     await harness.service.nameIfUnnamed("c2");
     expect(harness.calls).toHaveLength(0);
     expect(harness.events).toHaveLength(0);
-    expect((await harness.conversations.get("c2"))?.name).toBe("修复登录页");
+    expect((await harness.sessions.get("c2"))?.name).toBe("修复登录页");
   });
 
   it("连着调两次只起一次名（第二次名字已不是默认值）", async () => {
@@ -370,7 +370,7 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
 
     await noModel.service.nameIfUnnamed("c1");
     expect(noModel.calls).toHaveLength(0);
-    expect((await noModel.conversations.get("c1"))?.name).toBe(DEFAULT_NAME);
+    expect((await noModel.sessions.get("c1"))?.name).toBe(DEFAULT_NAME);
   });
 
   it("配置指向一个不存在的模型也等于没有取名模型", async () => {
@@ -379,7 +379,7 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
 
     await broken.service.nameIfUnnamed("c1");
     expect(broken.calls).toHaveLength(0);
-    expect((await broken.conversations.get("c1"))?.name).toBe(DEFAULT_NAME);
+    expect((await broken.sessions.get("c1"))?.name).toBe(DEFAULT_NAME);
   });
 });
 
@@ -389,7 +389,7 @@ describe("起不出名就保持原名（D2）", () => {
     harness.behaviour.reply = async () => "   \n  ";
 
     await harness.service.nameIfUnnamed("c1");
-    expect((await harness.conversations.get("c1"))?.name).toBe(DEFAULT_NAME);
+    expect((await harness.sessions.get("c1"))?.name).toBe(DEFAULT_NAME);
     expect(harness.events).toHaveLength(0);
   });
 
@@ -402,7 +402,7 @@ describe("起不出名就保持原名（D2）", () => {
     await expect(harness.service.nameIfUnnamed("c1")).resolves.toBeUndefined();
     expect(harness.calls).toHaveLength(1);
     expect(harness.events).toHaveLength(0);
-    expect((await harness.conversations.get("c1"))?.name).toBe(DEFAULT_NAME);
+    expect((await harness.sessions.get("c1"))?.name).toBe(DEFAULT_NAME);
   });
 
   it("对话不存在时不抛错（这是后台钩子）", async () => {
@@ -417,7 +417,7 @@ describe("标题清洗", () => {
     harness.behaviour.reply = async () => 'Title: "修复登录页。"\n\n理由是用户说提交没反应';
 
     await harness.service.nameIfUnnamed("c1");
-    expect((await harness.conversations.get("c1"))?.name).toBe("修复登录页");
+    expect((await harness.sessions.get("c1"))?.name).toBe("修复登录页");
   });
 
   it("超长的名字截到侧栏放得下", async () => {
@@ -425,18 +425,18 @@ describe("标题清洗", () => {
     harness.behaviour.reply = async () => "很".repeat(200);
 
     await harness.service.nameIfUnnamed("c1");
-    expect((await harness.conversations.get("c1"))?.name).toHaveLength(60);
+    expect((await harness.sessions.get("c1"))?.name).toHaveLength(60);
   });
 });
 
 describe("起名之后的副作用", () => {
-  it("推一条 conversation.changed(renamed) 与一条 info 通知", async () => {
+  it("推一条 session.changed(renamed) 与一条 info 通知", async () => {
     await seedFirstTurn(harness);
     await harness.service.nameIfUnnamed("c1", "zh");
 
     expect(harness.events).toHaveLength(1);
-    expect(harness.events[0]?.name).toBe("conversation.changed");
-    expect(harness.events[0]?.payload).toMatchObject({ conversationId: "c1", change: "renamed" });
+    expect(harness.events[0]?.name).toBe("session.changed");
+    expect(harness.events[0]?.payload).toMatchObject({ sessionId: "c1", change: "renamed" });
 
     const notices = new NoticeService({ notices: harness.notices, now: () => 1_700_000_100_000 });
     const listed = await notices.list({}, "zh");

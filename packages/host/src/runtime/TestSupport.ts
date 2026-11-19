@@ -181,13 +181,13 @@ export class RecordingMessageStore implements MessageStore {
     this.rows.delete(id);
   }
 
-  async listByConversation(
-    conversationId: string,
+  async listBySession(
+    sessionId: string,
     after?: string,
     options: { includeHidden?: boolean } = {},
   ): Promise<StoredMessage[]> {
     const ordered = [...this.rows.values()]
-      .filter((entry) => entry.row.conversationId === conversationId)
+      .filter((entry) => entry.row.sessionId === sessionId)
       .sort((a, b) => a.order - b.order)
       .map((entry) => entry.row)
       // 与真仓储同一个口径：`data.hidden` 为真的消息默认不返回
@@ -225,7 +225,7 @@ function cloneRow(row: MessageUpsertInput): MessageUpsertInput {
 function toStored(row: MessageUpsertInput, seq: number): StoredMessage {
   return {
     id: row.id,
-    conversationId: row.conversationId,
+    sessionId: row.sessionId,
     seq,
     role: row.role,
     status: row.status,

@@ -46,7 +46,7 @@ const TRIGRAM_MIN_LENGTH = 3;
 const SNIPPET_LENGTH = 160;
 
 const COLUMNS =
-  "id, conversationId, seq, role, status, omit, content, data, searchText, source, createdAt, updatedAt";
+  "id, sessionId, seq, role, status, omit, content, data, searchText, source, createdAt, updatedAt";
 
 /**
  * 「这条消息给用户看」的条件：`data.hidden` 不为真。
@@ -66,14 +66,14 @@ export interface MessageListOptions {
  * 写入语句：`seq` 取同对话当前最大值 + 1；同一 id 再写时只覆盖内容类字段。
  *
  * `MAX(seq)` 与插入在同一条语句里完成，worker 又是单线程串行执行，所以不会出现两条
- * 消息抢到同一个 seq（`UNIQUE (conversationId, seq)` 是最后一道防线）。
+ * 消息抢到同一个 seq（`UNIQUE (sessionId, seq)` 是最后一道防线）。
  */
 const UPSERT_SQL = `
   INSERT INTO messages (${COLUMNS})
   VALUES (
     ?,
     ?,
-    (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE conversationId = ?),
+    (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE sessionId = ?),
     ?, ?, ?, ?, ?, ?, ?,
     ?, ?
   )
@@ -94,7 +94,7 @@ const UPSERT_SQL = `
  * 把「写一条消息」登记进一个已有的批次（`tx` 客户端），拿到那条语句的凭据。
  *
  * 导出的理由：交接换记忆那一批要把「插存档会话行」「把消息搬走」「写 cwd 与断点两条消息」
- * 放进**同一个**事务（`ConversationRepository.replaceMemory`）。就地复制一份 `UPSERT_SQL` 会让
+ * 放进**同一个**事务（`SessionRepository.replaceMemory`）。就地复制一份 `UPSERT_SQL` 会让
  * `seq` 的口径多出第二份实现 —— 那正是「同一段对话里两条消息抢到同一个 seq」的来源。
  */
 export function registerMessageUpsert(
@@ -175,7 +175,7 @@ function toStoredMessage(row: MessageRow): StoredMessage {
   const data = parseJson(row.data);
   return {
     id: row.id,
-    conversationId: row.conversationId,
+    sessionId: row.sessionId,
     seq: row.seq,
     role: row.role,
     status: row.status,
@@ -197,8 +197,8 @@ function upsertParams(input: MessageUpsertInput): SQLInputValue[] {
   const dataJson = input.data === undefined || input.data === null ? null : JSON.stringify(input.data);
   return [
     input.id,
-    input.conversationId,
-    input.conversationId,
+    input.sessionId,
+    input.sessionId,
     input.role,
     input.status,
     input.omit ? 1 : 0,
@@ -251,7 +251,7 @@ export class MessageRepository {
    * 物理删掉一条消息（core 的「丢」= 真删，`CORE.md` §6）。
    *
    * 运行时的 `messageRemoved` 事件走它：core 在一圈开头修历史时删掉的残局，库里也必须消失 ——
-   * 否则用户会看见一条模型那边已经不存在的消息。关系行（`conversation_assets`）跟着外键级联走。
+   * 否则用户会看见一条模型那边已经不存在的消息。关系行（`session_assets`）跟着外键级联走。
    */
   async delete(id: string): Promise<void> {
     await this.db.run(`DELETE FROM messages WHERE id = ?`, [id]);
@@ -279,32 +279,32 @@ export class MessageRepository {
    *
    * 三种情况收敛成一条 SQL：找不到时 `COALESCE` 把下界降成 -1，条件恒真。
    *
-   * **它与 {@link countByConversation} 数的是同一批行**（两边都只看 `hidden`）：同一段对话
+   * **它与 {@link countBySession} 数的是同一批行**（两边都只看 `hidden`）：同一段对话
    * 那句「有多少条消息」不应该有两个数。
    *
    * `hidden` 的消息默认不在结果里（侧栏条数、`message.list` 都用这条默认）。要看的那一侧
    * （模型的历史、排查）传 `includeHidden`。
    */
-  async listByConversation(
-    conversationId: string,
+  async listBySession(
+    sessionId: string,
     after?: string,
     options: MessageListOptions = {},
   ): Promise<StoredMessage[]> {
     const rows = await this.db.all<MessageRow>(
       `SELECT ${COLUMNS} FROM messages
-       WHERE conversationId = ?
+       WHERE sessionId = ?
          AND (? = 1 OR ${VISIBLE_ONLY})
          AND (? IS NULL
               OR seq >= COALESCE(
-                   (SELECT seq FROM messages WHERE id = ? AND conversationId = ?),
+                   (SELECT seq FROM messages WHERE id = ? AND sessionId = ?),
                    -1))
        ORDER BY seq ASC`,
       [
-        conversationId,
+        sessionId,
         options.includeHidden === true ? 1 : 0,
         after ?? null,
         after ?? null,
-        conversationId,
+        sessionId,
       ],
     );
     return rows.map(toStoredMessage);
@@ -347,27 +347,27 @@ export class MessageRepository {
       params.push(`%${escapeLike(trimmed)}%`);
     }
 
-    if (scope && "conversationId" in scope) {
-      conditions.push("m.conversationId = ?");
-      params.push(scope.conversationId);
+    if (scope && "sessionId" in scope) {
+      conditions.push("m.sessionId = ?");
+      params.push(scope.sessionId);
     } else if (scope && "workspaceId" in scope) {
       conditions.push("c.workspaceId = ?");
       params.push(scope.workspaceId);
     }
 
     const sql = useFts
-      ? `SELECT m.id, m.conversationId, c.name AS conversationName, c.workspaceId AS workspaceId,
+      ? `SELECT m.id, m.sessionId, c.name AS sessionName, c.workspaceId AS workspaceId,
                 m.role, m.createdAt, ${snippet}
          FROM messages_fts
          JOIN messages m ON m.rowid = messages_fts.rowid
-         JOIN conversations c ON c.id = m.conversationId
+         JOIN sessions c ON c.id = m.sessionId
          WHERE ${conditions.join(" AND ")}
          ORDER BY m.createdAt DESC, m.seq DESC
          LIMIT ?`
-      : `SELECT m.id, m.conversationId, c.name AS conversationName, c.workspaceId AS workspaceId,
+      : `SELECT m.id, m.sessionId, c.name AS sessionName, c.workspaceId AS workspaceId,
                 m.role, m.createdAt, ${snippet}
          FROM messages m
-         JOIN conversations c ON c.id = m.conversationId
+         JOIN sessions c ON c.id = m.sessionId
          WHERE ${conditions.join(" AND ")}
          ORDER BY m.createdAt DESC, m.seq DESC
          LIMIT ?`;
@@ -382,18 +382,18 @@ export class MessageRepository {
    * 锚点不在该对话里时 `seq` 子查询为 NULL，条件不成立，一条也不会删。
    */
   async deleteAfter(
-    conversationId: string,
+    sessionId: string,
     messageId: string,
     options: { includeSelf?: boolean } = {},
   ): Promise<number> {
     const comparison = options.includeSelf ? ">=" : ">";
     const result = await this.db.run(
       `DELETE FROM messages
-       WHERE conversationId = ?
+       WHERE sessionId = ?
          AND seq ${comparison} (
-           SELECT seq FROM messages WHERE id = ? AND conversationId = ?
+           SELECT seq FROM messages WHERE id = ? AND sessionId = ?
          )`,
-      [conversationId, messageId, conversationId],
+      [sessionId, messageId, sessionId],
     );
     return result.changes;
   }
@@ -401,16 +401,16 @@ export class MessageRepository {
   /**
    * 数一段对话在 `messages` 表里的行数（PRD D17 / F-F9 的代价一侧用它）。
    *
-   * 与 {@link listByConversation} 数的是**同一批行**（两边都只看 `hidden`）：同一个问题
+   * 与 {@link listBySession} 数的是**同一批行**（两边都只看 `hidden`）：同一个问题
    * （「这段对话有多少条消息」）只应该有一个数。
    *
    * `hidden` 的消息两边都不算：它在界面上从来没出现过，删掉它数进代价里会让用户看到
    * 一个对不上的数字。
    */
-  async countByConversation(conversationId: string): Promise<number> {
+  async countBySession(sessionId: string): Promise<number> {
     const row = await this.db.get<{ n: number }>(
-      `SELECT count(*) AS n FROM messages WHERE conversationId = ? AND ${VISIBLE_ONLY}`,
-      [conversationId],
+      `SELECT count(*) AS n FROM messages WHERE sessionId = ? AND ${VISIBLE_ONLY}`,
+      [sessionId],
     );
     return row?.n ?? 0;
   }

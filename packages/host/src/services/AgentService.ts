@@ -99,7 +99,7 @@ type AgentHome = "agents" | "sub-agents";
 /**
  * 一个助手的最小只读事实：它现在叫什么、现在能不能用。
  *
- * `describe()` 的返回值。状态栏的助手块（`conversation.state`）只要这两条：它不展示提示词、
+ * `describe()` 的返回值。状态栏的助手块（`session.state`）只要这两条：它不展示提示词、
  * 权限、思考档位，所以不必把整份 `AgentView` 搬过去。
  */
 export interface AgentDescription {
@@ -521,7 +521,7 @@ export class AgentService {
    *
    * `level: null` 是撤回设值：把定义里属于思考策略的那些参数删掉，其余参数照旧留着；
    * 删完不剩任何参数时 `modelParams` 整个从定义里去掉，让「参数即真相」回到模型的默认参数。
-   * 与会话那一侧的 `conversation.setThinking(null)`（改成会话行上的档位名）是两件事。
+   * 与会话那一侧的 `session.setThinking(null)`（改成会话行上的档位名）是两件事。
    */
   async setThinking(params: AgentSetThinkingParams): Promise<AgentSetThinkingResult> {
     const id = requireId(params.agentId, "agentId");

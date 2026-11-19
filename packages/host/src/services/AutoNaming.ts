@@ -3,7 +3,7 @@
  *
  * 两件事同时成立才起名，缺一不动：
  *
- *   1. **名字还是「创建时间默认值」**（{@link defaultConversationName}）—— 这是**唯一**的判据：
+ *   1. **名字还是「创建时间默认值」**（{@link defaultSessionName}）—— 这是**唯一**的判据：
  *      还是它 → 起名；不是它（用户改过、或已经自动起过）→ 永不再动；
  *   2. **开关开着**（`AppConfig.autoTitle`，缺省视为开 —— 老配置里没有这个字段，用户的意图
  *      显然是「按出厂的样子跑」）。
@@ -32,10 +32,10 @@ import { completeOnce, createModelFromConfig } from "@ai-zen/agents-sdk";
 import { DEFAULT_LANGUAGE } from "../i18n/index.js";
 import type { Language } from "../i18n/index.js";
 import type { ChatEventEmitter } from "../runtime/ChatRunner.js";
-import type { ConversationRepository } from "../storage/ConversationRepository.js";
+import type { SessionRepository } from "../storage/SessionRepository.js";
 import type { MessageRepository } from "../storage/MessageRepository.js";
-import type { Conversation } from "../storage/types.js";
-import { defaultConversationName } from "./ConversationService.js";
+import type { Session } from "../storage/types.js";
+import { defaultSessionName } from "./SessionService.js";
 import { toAgentMessage } from "./MessageService.js";
 import type { NoticeService } from "./NoticeService.js";
 
@@ -65,7 +65,7 @@ export type TitleCompleter = (input: {
 }) => Promise<string>;
 
 export interface AutoNamingDeps {
-  conversations: ConversationRepository;
+  sessions: SessionRepository;
   messages: MessageRepository;
   configManager: ConfigManager;
   /** 取名调用；缺省走 SDK 的 `completeOnce`（与交接摘要共用同一份请求体形状） */
@@ -117,7 +117,7 @@ function sanitizeTitle(raw: string): string {
 }
 
 export class AutoNaming {
-  private readonly conversations: ConversationRepository;
+  private readonly sessions: SessionRepository;
   private readonly messages: MessageRepository;
   private readonly configManager: ConfigManager;
   private readonly complete: TitleCompleter;
@@ -126,7 +126,7 @@ export class AutoNaming {
   private readonly now: () => number;
 
   constructor(deps: AutoNamingDeps) {
-    this.conversations = deps.conversations;
+    this.sessions = deps.sessions;
     this.messages = deps.messages;
     this.configManager = deps.configManager;
     this.complete =
@@ -149,12 +149,12 @@ export class AutoNaming {
    * （从前那个 `skipped` 字段只有用例在读，那是用例在养一份生产不需要的形状）。
    */
   async nameIfUnnamed(
-    conversationId: string,
+    sessionId: string,
     language: Language = DEFAULT_LANGUAGE,
   ): Promise<void> {
-    const conversation = await this.conversations.get(conversationId);
+    const session = await this.sessions.get(sessionId);
     // 对话不在（刚被删）：后台钩子不该抛错
-    if (!conversation) return;
+    if (!session) return;
 
     let config: AppConfig;
     try {
@@ -169,7 +169,7 @@ export class AutoNaming {
 
     // 判据只有这一条：名字还是不是那个「创建时间默认值」。不是它 → 永不再动（用户改过，
     // 或已经自动起过 —— `nameIsAuto` 只用来把这两种情形分别说清楚，不参与「起不起名」）
-    if (conversation.name !== defaultConversationName(conversation.createdAt)) return;
+    if (session.name !== defaultSessionName(session.createdAt)) return;
 
     // 取名模型：配了就用它，否则回落兜底模型；配置里找不到这个模型也等于「没有取名模型」
     const namingModelId = config.namingModel ?? config.defaultModel;
@@ -178,7 +178,7 @@ export class AutoNaming {
     if (!namingModel) return;
 
     // 正文只取这一段的两端（第一条用户消息 + 最后一条助手回复）：不数条数，也就不必筛条数
-    const rows = await this.messages.listByConversation(conversation.id);
+    const rows = await this.messages.listBySession(session.id);
     const user = buildPrompt(rows.map((row) => toAgentMessage(row)));
     if (user.length === 0) return;
 
@@ -195,10 +195,10 @@ export class AutoNaming {
     if (name.length === 0) return;
 
     const updatedAt = this.now();
-    await this.conversations.applyAutoName(conversation.id, name, updatedAt);
-    this.emit?.("conversation.changed", {
-      conversationId: conversation.id,
-      workspaceId: conversation.workspaceId,
+    await this.sessions.applyAutoName(session.id, name, updatedAt);
+    this.emit?.("session.changed", {
+      sessionId: session.id,
+      workspaceId: session.workspaceId,
       change: "renamed",
       at: iso(updatedAt),
     });
@@ -209,7 +209,7 @@ export class AutoNaming {
           code: "notice.autoNamed",
           params: { name },
           duration: 5,
-          conversationId: conversation.id,
+          sessionId: session.id,
         },
         language,
       );

@@ -57,7 +57,7 @@ export interface NoticeCreateInput {
   /** 秒；不给或给 `null` 表示永久，直到被手动清掉（PRD L3） */
   duration?: number | null;
   /** 与哪段对话有关；不给表示全局通知 */
-  conversationId?: string | null;
+  sessionId?: string | null;
 }
 
 export interface NoticeServiceDeps {
@@ -119,7 +119,7 @@ function toView(notice: Notice, language: Language): NoticeView {
     level: toLevel(notice.level),
     duration: notice.durationMs === null ? null : notice.durationMs / 1000,
     text,
-    conversationId: notice.conversationId,
+    sessionId: notice.sessionId,
     createdAt: iso(notice.createdAt),
   };
 }
@@ -223,7 +223,7 @@ export class NoticeService {
       code: input.code,
       params: Object.keys(params).length > 0 ? params : null,
       durationMs,
-      conversationId: input.conversationId ?? null,
+      sessionId: input.sessionId ?? null,
       createdAt,
     };
     await this.notices.create(row);
@@ -274,10 +274,10 @@ export class NoticeService {
       .map((notice) => toView(notice, language))
       .filter((view) => (params.level === undefined ? true : view.level === params.level))
       .filter((view) =>
-        params.conversationId === undefined
+        params.sessionId === undefined
           ? true
           : // 那一段的 + 全局的：`null` 是不属于任何对话的那些，哪儿都得看得见
-            view.conversationId === params.conversationId || view.conversationId === null,
+            view.sessionId === params.sessionId || view.sessionId === null,
       );
     return { notices: views };
   }
@@ -302,7 +302,7 @@ export class NoticeService {
   /**
    * 清掉一批（PRD 4.9 的三个粒度里的后两个）。
    *
-   * - 给了 `conversationId`：**只清挂在那段对话上的**；
+   * - 给了 `sessionId`：**只清挂在那段对话上的**；
    * - 没给：清全部。
    *
    * 与 `list` 有意不同，别以为是漏改：列「那段对话的」要把全局的一起列出来（全局通知
@@ -310,11 +310,11 @@ export class NoticeService {
    * 全局通知不属于那段，顺手把它清了就变成「清全部」了，而清全部必须由调用方明说。
    */
   async clear(params: NoticeClearParams = {}): Promise<NoticeClearResult> {
-    if (params.conversationId === undefined) {
+    if (params.sessionId === undefined) {
       const cleared = await this.notices.clearAll();
       return { cleared };
     }
-    const cleared = await this.notices.clearByConversation(params.conversationId);
+    const cleared = await this.notices.clearBySession(params.sessionId);
     return { cleared };
   }
 }

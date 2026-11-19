@@ -23,14 +23,14 @@ import {
   RecordingMessageStore,
   type FakeRound,
 } from "../runtime/TestSupport.js";
-import type { Conversation } from "../storage/types.js";
-import type { ConversationCreateParams, ConversationCreateResult, ConversationView } from "../wire/index.js";
+import type { Session } from "../storage/types.js";
+import type { SessionCreateParams, SessionCreateResult, SessionView } from "../wire/index.js";
 import { PeerSessionService } from "./PeerSessionService.js";
-import type { PeerSessionConversationCreator } from "./PeerSessionService.js";
+import type { PeerSessionSessionCreator } from "./PeerSessionService.js";
 
 const PARENT_ID = "c-parent";
 
-function conversation(id: string, overrides: Partial<Conversation> = {}): Conversation {
+function session(id: string, overrides: Partial<Session> = {}): Session {
   return {
     id,
     workspaceId: "ws-1",
@@ -56,40 +56,40 @@ function conversation(id: string, overrides: Partial<Conversation> = {}): Conver
 }
 
 /** 血缘反查（执行者那边只有会话行，没有进程内记录） */
-function childrenOf(rows: Map<string, Conversation>, lineage: string): { id: string }[] {
+function childrenOf(rows: Map<string, Session>, lineage: string): { id: string }[] {
   return [...rows.values()].filter((row) => row.lineage === lineage).map((row) => ({ id: row.id }));
 }
 
 /**
- * 子会话的诞生：与 `conversation.create` 一样把新会话登记进「库里」（执行者只认那一行）。
+ * 子会话的诞生：与 `session.create` 一样把新会话登记进「库里」（执行者只认那一行）。
  *
  * id 从 `c-child-1` 开始按序给：用例要靠它提前把那一段叫起来（见 {@link Harness.warmUp}）。
  */
-class RegisteringCreator implements PeerSessionConversationCreator {
-  readonly created: ConversationCreateParams[] = [];
+class RegisteringCreator implements PeerSessionSessionCreator {
+  readonly created: SessionCreateParams[] = [];
   private seq = 0;
-  constructor(private readonly rows: Map<string, Conversation>) {}
+  constructor(private readonly rows: Map<string, Session>) {}
 
-  async create(params: ConversationCreateParams & { lineage: string; autoHandoff: boolean }): Promise<ConversationCreateResult> {
+  async create(params: SessionCreateParams & { lineage: string; autoHandoff: boolean }): Promise<SessionCreateResult> {
     this.created.push(params);
     this.seq += 1;
     const id = `c-child-${this.seq}`;
     // 血缘与开关在创建那一刻就落到「库里那一行」（v4：它们不再只活在进程内）
     this.rows.set(
       id,
-      conversation(id, {
+      session(id, {
         workspaceId: params.workspaceId,
         agentId: params.agentId,
         lineage: params.lineage,
         autoHandoff: params.autoHandoff,
       }),
     );
-    return { conversation: { id } as unknown as ConversationView };
+    return { session: { id } as unknown as SessionView };
   }
 
-  async ensurePersisted(conversationId: string): Promise<Conversation> {
-    const row = this.rows.get(conversationId);
-    if (!row) throw new Error(`conversation ${conversationId} not registered`);
+  async ensurePersisted(sessionId: string): Promise<Session> {
+    const row = this.rows.get(sessionId);
+    if (!row) throw new Error(`session ${sessionId} not registered`);
     return row;
   }
 }
@@ -111,17 +111,17 @@ interface Harness {
   /** 把后台的写库推进到「没有立即的后续」为止 */
   flush(): Promise<void>;
   /** 把一段会话从「库里」删掉（用户删了它：会话行不再在了） */
-  drop(conversationId: string): void;
+  drop(sessionId: string): void;
   waitFor(check: () => boolean): Promise<void>;
   /** 某段对话主线的行 */
-  rows(conversationId: string): Promise<Array<{ role: string; content: unknown }>>;
+  rows(sessionId: string): Promise<Array<{ role: string; content: unknown }>>;
 }
 
 function makeHarness(rounds: FakeRound[]): Harness {
   const clock = new ManualClock();
   const store = new RecordingMessageStore();
-  const rows = new Map<string, Conversation>();
-  rows.set(PARENT_ID, conversation(PARENT_ID, { name: "父对话" }));
+  const rows = new Map<string, Session>();
+  rows.set(PARENT_ID, session(PARENT_ID, { name: "父对话" }));
   const { scope } = createFakeScope("/tmp/ai-zen-peers");
   const scopes = new ScopeRegistry({ createScope: async () => scope });
   const agents = new Map<string, FakeAgent>();
@@ -131,14 +131,14 @@ function makeHarness(rounds: FakeRound[]): Harness {
     scopes,
     createAgent: async (context) => {
       const agent = new FakeAgent(rounds);
-      agents.set(context.conversationId, agent);
+      agents.set(context.sessionId, agent);
       return agent;
     },
   });
 
   const runner = new ChatRunner({
     messages: store,
-    conversations: { get: async (id) => rows.get(id) },
+    sessions: { get: async (id) => rows.get(id) },
     scopes,
     agents: registry,
     emit: () => undefined,
@@ -147,12 +147,12 @@ function makeHarness(rounds: FakeRound[]): Harness {
   });
 
   const service = new PeerSessionService({
-    conversations: {
+    sessions: {
       get: async (id) => rows.get(id),
       listByLineage: async (lineage) => childrenOf(rows, lineage),
     },
-    conversationCreator: new RegisteringCreator(rows),
-    messages: { listByConversation: (conversationId) => store.listByConversation(conversationId) },
+    sessionCreator: new RegisteringCreator(rows),
+    messages: { listBySession: (sessionId) => store.listBySession(sessionId) },
     chatRunner: runner,
   });
   service.bind(caller, PARENT_ID);
@@ -166,8 +166,8 @@ function makeHarness(rounds: FakeRound[]): Harness {
     flush: async () => {
       for (let index = 0; index < 20; index += 1) await flushMicrotasks();
     },
-    drop: (conversationId) => {
-      rows.delete(conversationId);
+    drop: (sessionId) => {
+      rows.delete(sessionId);
     },
     waitFor: async (check) => {
       for (let index = 0; index < 200; index += 1) {
@@ -176,12 +176,12 @@ function makeHarness(rounds: FakeRound[]): Harness {
       }
       throw new Error("条件没有到达");
     },
-    rows: async (conversationId) => {
-      const stored = await store.listByConversation(conversationId);
+    rows: async (sessionId) => {
+      const stored = await store.listBySession(sessionId);
       return stored.map((row) => ({ role: row.role, content: row.content }));
     },
     warmUp: async () => {
-      rows.set("c-child-1", conversation("c-child-1"));
+      rows.set("c-child-1", session("c-child-1"));
       await runner.deliver("c-child-1", {
         content: "热身",
         source: { kind: "user" },

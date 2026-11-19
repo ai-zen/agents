@@ -2,7 +2,7 @@
  * 问题对象的验收，按「题不落库」之后的口径（PRD 4.10 / PLAN §5.2）：
  *
  *   - 题只活在进程里：造题后库里什么也不写，重开库题就没了；
- *   - 死的那一刻跟着没，且不再挡 `conversation.send`；
+ *   - 死的那一刻跟着没，且不再挡 `session.send`；
  *   - 答题**不被「忙」拦住**：先答完，再判能不能立刻交接 —— 能就当场交接，不能就在会话行上留
  *     `pendingHandoff`；
  *   - 「不交接」把自动交接开关关掉（答案的后果要落），并推一条 `settings_changed`；
@@ -17,14 +17,14 @@ import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import type { HandoffRefusalReason } from "../runtime/ChatRunner.js";
-import { ConversationRepository } from "../storage/ConversationRepository.js";
+import { SessionRepository } from "../storage/SessionRepository.js";
 import { Database } from "../storage/Database.js";
 import { MessageRepository } from "../storage/MessageRepository.js";
 import { WorkspaceRepository } from "../storage/WorkspaceRepository.js";
 import { migrate } from "../storage/migrations.js";
 import type { HandoffStartParams } from "../wire/index.js";
 import {
-  createConversationGuardProbe,
+  createSessionGuardProbe,
   HANDOFF_OPTION_DECLINE,
   HANDOFF_OPTION_SELF,
   QuestionService,
@@ -39,7 +39,7 @@ interface HandoffCall {
 interface Harness {
   /** 服务（多端 = 多条连接共用的就是这同一个对象） */
   service: QuestionService;
-  conversations: ConversationRepository;
+  sessions: SessionRepository;
   /**
    * 交接能不能立刻开始（`ChatRunner.canHandoffNow` 的替身）。
    *
@@ -53,7 +53,7 @@ interface Harness {
 
 let dir: string;
 let db: Database;
-let conversations: ConversationRepository;
+let sessions: SessionRepository;
 let workspaces: WorkspaceRepository;
 
 /** 实例级状态（事件、假判据、交接替身）每用例重建；仓储与库复用 */
@@ -69,7 +69,7 @@ function makeHarness(): Harness {
 
   const make = (): QuestionService =>
     new QuestionService({
-      conversations,
+      sessions,
       // 能不能立刻交接：全仓只有一处判据，这里给它的替身
       availability: { canHandoffNow: () => availability.result },
       guard: { overGuard: async () => guard.overGuard } satisfies QuestionGuardProbe,
@@ -88,7 +88,7 @@ function makeHarness(): Harness {
 
   return {
     service: make(),
-    conversations,
+    sessions,
     availability,
     guard,
     handoffCalls,
@@ -97,9 +97,9 @@ function makeHarness(): Harness {
 }
 
 /** 问一个交接问题（最常用的一条） */
-async function askHandoff(harness: Harness, conversationId = "c1"): Promise<string> {
+async function askHandoff(harness: Harness, sessionId = "c1"): Promise<string> {
   const asked = await harness.service.askHandoff({
-    conversationId,
+    sessionId,
     promptTokens: 800,
     handoffTokens: 1000,
   });
@@ -113,7 +113,7 @@ beforeAll(async () => {
   db = new Database(join(dir, "ai-zen.db"));
   await migrate(db);
 
-  conversations = new ConversationRepository(db);
+  sessions = new SessionRepository(db);
   workspaces = new WorkspaceRepository(db);
 });
 
@@ -129,7 +129,7 @@ beforeEach(async () => {
   await rm(join(dir, "config.json"), { force: true });
 
   await workspaces.create({ id: "w1", name: "项目一", cwd: join(dir, "project"), createdAt: 1 });
-  await conversations.create({
+  await sessions.create({
     id: "c1",
     workspaceId: "w1",
     name: "2026-01-01 00:00",
@@ -140,7 +140,7 @@ beforeEach(async () => {
     createdAt: 1,
     updatedAt: 1,
   });
-  await conversations.create({
+  await sessions.create({
     id: "c2",
     workspaceId: "w1",
     name: "2026-01-01 00:01",
@@ -162,7 +162,7 @@ afterAll(async () => {
 describe("题只活在进程里（PRD 4.10）", () => {
   it("造题之后库里什么也不写（表都不存在了）", async () => {
     const asked = await harness.service.askHandoff({
-      conversationId: "c1",
+      sessionId: "c1",
       promptTokens: 800,
       handoffTokens: 1000,
     });
@@ -170,7 +170,7 @@ describe("题只活在进程里（PRD 4.10）", () => {
     expect(asked.id.length).toBeGreaterThan(0);
     expect(asked.state).toBe("pending");
     expect(asked.kind).toBe("handoff");
-    expect(asked.conversationId).toBe("c1");
+    expect(asked.sessionId).toBe("c1");
     expect(asked.blocking).toBe(true);
     expect(asked.options.map((option) => option.value)).toEqual(["self", "summary", "decline"]);
     expect(asked.prompt.params).toEqual({ percent: 80 });
@@ -190,14 +190,14 @@ describe("题只活在进程里（PRD 4.10）", () => {
     const own = new Database(ownFile);
     try {
       await migrate(own);
-      const ownConversations = new ConversationRepository(own);
+      const ownSessions = new SessionRepository(own);
       await new WorkspaceRepository(own).create({
         id: "w1",
         name: "项目一",
         cwd: join(ownDir, "project"),
         createdAt: 1,
       });
-      await ownConversations.create({
+      await ownSessions.create({
         id: "c1",
         workspaceId: "w1",
         name: "2026-01-01 00:00",
@@ -208,11 +208,11 @@ describe("题只活在进程里（PRD 4.10）", () => {
       });
 
       const service = new QuestionService({
-        conversations: ownConversations,
+        sessions: ownSessions,
         handoff: { start: async () => ({ started: true }) },
       });
       const asked = await service.askHandoff({
-        conversationId: "c1",
+        sessionId: "c1",
         promptTokens: 800,
         handoffTokens: 1000,
       });
@@ -223,9 +223,9 @@ describe("题只活在进程里（PRD 4.10）", () => {
       reopened = new Database(ownFile);
       await migrate(reopened);
       const reopenedService = new QuestionService({
-        conversations: new ConversationRepository(reopened),
+        sessions: new SessionRepository(reopened),
       });
-      const listed = await reopenedService.list({ conversationId: "c1" });
+      const listed = await reopenedService.list({ sessionId: "c1" });
       expect(listed.questions).toEqual([]);
     } finally {
       await own.close();
@@ -236,8 +236,8 @@ describe("题只活在进程里（PRD 4.10）", () => {
 
   it("库里存的是码 + 参数，按连接语言渲染出句子", async () => {
     const id = await askHandoff(harness);
-    const chinese = await harness.service.list({ conversationId: "c1" }, "zh");
-    const english = await harness.service.list({ conversationId: "c1" }, "en");
+    const chinese = await harness.service.list({ sessionId: "c1" }, "zh");
+    const english = await harness.service.list({ sessionId: "c1" }, "en");
 
     expect(chinese.questions[0]?.id).toBe(id);
     expect(chinese.questions[0]?.prompt.message).toContain("接下来怎么办");
@@ -250,7 +250,7 @@ describe("题只活在进程里（PRD 4.10）", () => {
     expect(english.questions[0]?.options.map((option) => option.label.message)).toEqual([
       "Let the assistant write the handoff itself",
       "Summarise the history instead",
-      "Keep going in this conversation",
+      "Keep going in this session",
     ]);
     expect(chinese.questions[0]?.prompt.params).toEqual({ percent: 80 });
   });
@@ -258,13 +258,13 @@ describe("题只活在进程里（PRD 4.10）", () => {
   it("list 只看这一段对话（没有跨对话的那个入口）", async () => {
     const first = await askHandoff(harness);
     const second = (
-      await harness.service.askHandoff({ conversationId: "c2", promptTokens: 800, handoffTokens: 1000 })
+      await harness.service.askHandoff({ sessionId: "c2", promptTokens: 800, handoffTokens: 1000 })
     ).id;
 
-    const scoped = await harness.service.list({ conversationId: "c1" });
+    const scoped = await harness.service.list({ sessionId: "c1" });
     expect(scoped.questions.map((question) => question.id)).toEqual([first]);
 
-    const other = await harness.service.list({ conversationId: "c2" });
+    const other = await harness.service.list({ sessionId: "c2" });
     expect(other.questions.map((question) => question.id)).toEqual([second]);
   });
 
@@ -274,7 +274,7 @@ describe("题只活在进程里（PRD 4.10）", () => {
       answeredBy: "conn-2",
     });
 
-    const listed = await harness.service.list({ conversationId: "c1" });
+    const listed = await harness.service.list({ sessionId: "c1" });
     expect(listed.questions[0]?.state).toBe("answered");
     expect(listed.questions[0]?.answer).toMatchObject({ value: "decline", answeredBy: "conn-2" });
     expect(listed.questions[0]?.answer?.answeredAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
@@ -288,9 +288,9 @@ describe("题只活在进程里（PRD 4.10）", () => {
     ).rejects.toMatchObject({ code: "not_found" });
   });
 
-  it("不给 conversationId 是类型错误（没有「全库问题列表」这种读法）", async () => {
+  it("不给 sessionId 是类型错误（没有「全库问题列表」这种读法）", async () => {
     await askHandoff(harness);
-    // @ts-expect-error `conversationId` 必填：题只属于某一段对话（PRD 4.10 的「明确不做」）
+    // @ts-expect-error `sessionId` 必填：题只属于某一段对话（PRD 4.10 的「明确不做」）
     const listed = await harness.service.list({});
     // 运行时也读不到别人的题：没有「跨对话」这个入口
     expect(listed.questions).toEqual([]);
@@ -301,22 +301,22 @@ describe("死的那一刻跟着没（PRD 4.10）", () => {
   it("清掉挂着的题、清掉会话行上的待交接", async () => {
     await askHandoff(harness);
     await harness.service.writePendingHandoff("c1", "summary");
-    expect((await conversations.get("c1"))?.pendingHandoff).toBe("summary");
+    expect((await sessions.get("c1"))?.pendingHandoff).toBe("summary");
 
-    await harness.service.dropConversation("c1");
+    await harness.service.dropSession("c1");
 
-    expect((await harness.service.list({ conversationId: "c1" })).questions).toEqual([]);
+    expect((await harness.service.list({ sessionId: "c1" })).questions).toEqual([]);
     expect(harness.service.countPending("c1")).toBe(0);
-    expect((await conversations.get("c1"))?.pendingHandoff).toBeNull();
+    expect((await sessions.get("c1"))?.pendingHandoff).toBeNull();
   });
 
-  it("题没了之后不再挡 conversation.send", async () => {
+  it("题没了之后不再挡 session.send", async () => {
     await askHandoff(harness);
     await expect(harness.service.assertSendable("c1")).rejects.toMatchObject({
       code: "question_pending",
     });
 
-    await harness.service.dropConversation("c1");
+    await harness.service.dropSession("c1");
 
     await expect(harness.service.assertSendable("c1")).resolves.toBeUndefined();
   });
@@ -324,8 +324,8 @@ describe("死的那一刻跟着没（PRD 4.10）", () => {
   it("已经答过的题也一起清（题的生命只有这段对话活着的时间）", async () => {
     const id = await askHandoff(harness);
     await harness.service.answer({ questionId: id, value: HANDOFF_OPTION_DECLINE });
-    await harness.service.dropConversation("c1");
-    expect((await harness.service.list({ conversationId: "c1" })).questions).toEqual([]);
+    await harness.service.dropSession("c1");
+    expect((await harness.service.list({ sessionId: "c1" })).questions).toEqual([]);
   });
 });
 
@@ -345,7 +345,7 @@ describe("答题不被「忙」拦住（PRD 4.10）", () => {
     });
     expect(harness.handoffCalls).toEqual([]);
     // 待交接落在会话行上（带着 mode），等下一次变闲再做
-    expect((await conversations.get("c1"))?.pendingHandoff).toBe("self");
+    expect((await sessions.get("c1"))?.pendingHandoff).toBe("self");
     // 题不再是 pending：它不再挡这一段
     expect(harness.service.countPending("c1")).toBe(0);
   });
@@ -369,9 +369,9 @@ describe("答完之后接着往下走（PRD 4.10 / PLAN §5.2）", () => {
 
     expect(harness.handoffCalls).toHaveLength(1);
     expect(harness.handoffCalls[0]?.params).toEqual({
-      conversationId: "c1",
+      sessionId: "c1",
       mode: "self",
-      then: "new_conversation",
+      then: "new_session",
     });
     // 交接回合说的是这条连接的语言
     expect(harness.handoffCalls[0]?.language).toBe("zh");
@@ -387,14 +387,14 @@ describe("答完之后接着往下走（PRD 4.10 / PLAN §5.2）", () => {
   });
 
   it("选「不交接」：不触发交接，关掉自动交接开关，并推一条 `settings_changed`", async () => {
-    expect((await conversations.get("c1"))?.autoHandoff).toBe(false);
+    expect((await sessions.get("c1"))?.autoHandoff).toBe(false);
     // 先开一次，验证这一手真的写了库
     const id = await askHandoff(harness);
-    await conversations.setAutoHandoff("c1", true, 10);
-    expect((await conversations.get("c1"))?.autoHandoff).toBe(true);
+    await sessions.setAutoHandoff("c1", true, 10);
+    expect((await sessions.get("c1"))?.autoHandoff).toBe(true);
 
     const changedBefore = harness.events.filter(
-      (event) => event.name === "conversation.changed",
+      (event) => event.name === "session.changed",
     ).length;
     const answered = await harness.service.answer({ questionId: id, value: HANDOFF_OPTION_DECLINE });
 
@@ -402,14 +402,14 @@ describe("答完之后接着往下走（PRD 4.10 / PLAN §5.2）", () => {
     expect(answered.effects).toEqual({ handoffStarted: false, handoffDeferredReason: null });
     expect(answered.question.state).toBe("answered");
     // 以后不问
-    expect((await conversations.get("c1"))?.autoHandoff).toBe(false);
+    expect((await sessions.get("c1"))?.autoHandoff).toBe(false);
 
     // 这一格是会话行上的设置：别的窗口的状态栏得跟着变 —— 恰好多一条，`workspaceId` 照实给 `null`
     // （会话行是异步读的，同一个口径见 `ChatRunner.beginHandoff`）
-    const changed = harness.events.filter((event) => event.name === "conversation.changed");
+    const changed = harness.events.filter((event) => event.name === "session.changed");
     expect(changed).toHaveLength(changedBefore + 1);
     expect(changed.at(-1)?.payload).toMatchObject({
-      conversationId: "c1",
+      sessionId: "c1",
       workspaceId: null,
       change: "settings_changed",
     });
@@ -420,7 +420,7 @@ describe("答完之后接着往下走（PRD 4.10 / PLAN §5.2）", () => {
     await expect(
       harness.service.answer({ questionId: id, value: "自交接" }),
     ).rejects.toMatchObject({ code: "invalid_params" });
-    const listed = await harness.service.list({ conversationId: "c1" });
+    const listed = await harness.service.list({ sessionId: "c1" });
     expect(listed.questions[0]?.state).toBe("pending");
   });
 });
@@ -433,7 +433,7 @@ describe("同一个对象、多条连接（PRD 4.10）", () => {
       { answeredBy: "conn-2" },
     );
 
-    const fromFirst = await harness.service.list({ conversationId: "c1" });
+    const fromFirst = await harness.service.list({ sessionId: "c1" });
     expect(fromFirst.questions[0]?.state).toBe("answered");
     expect(fromFirst.questions[0]?.answer).toMatchObject({
       value: "self",
@@ -455,7 +455,7 @@ describe("同一个对象、多条连接（PRD 4.10）", () => {
   it("每次状态变化都推一条 question 事件（题没了不推事件）", async () => {
     const id = await askHandoff(harness);
     await harness.service.answer({ questionId: id, value: HANDOFF_OPTION_SELF });
-    await harness.service.dropConversation("c1");
+    await harness.service.dropSession("c1");
     expect(harness.events.map((event) => event.name)).toEqual(["question", "question"]);
   });
 });
@@ -469,11 +469,11 @@ describe("越过硬线两端都拒绝，题继续挂着（D23 / F-D10）", () =>
       harness.service.answer({ questionId: id, value: HANDOFF_OPTION_DECLINE }),
     ).rejects.toMatchObject({ code: "context_guard", detail: { reason: "over_guard" } });
 
-    const listed = await harness.service.list({ conversationId: "c1" });
+    const listed = await harness.service.list({ sessionId: "c1" });
     expect(listed.questions[0]?.state).toBe("pending");
     expect(listed.questions[0]?.answer).toBeNull();
     // 那一手也没把开关关掉（拒就是拒，一个字节都不写）
-    expect((await conversations.get("c1"))?.autoHandoff).toBe(false);
+    expect((await sessions.get("c1"))?.autoHandoff).toBe(false);
   });
 
   it("过了硬线选交接照旧可以（交接是越线的出路）", async () => {
@@ -489,7 +489,7 @@ describe("越过硬线两端都拒绝，题继续挂着（D23 / F-D10）", () =>
     const id = await askHandoff(harness);
     await expect(harness.service.assertSendable("c1")).rejects.toMatchObject({
       code: "question_pending",
-      detail: { conversationId: "c1", questionId: id, kind: "handoff" },
+      detail: { sessionId: "c1", questionId: id, kind: "handoff" },
     });
   });
 
@@ -500,7 +500,7 @@ describe("越过硬线两端都拒绝，题继续挂着（D23 / F-D10）", () =>
   });
 });
 
-describe("硬线判定（createConversationGuardProbe）", () => {
+describe("硬线判定（createSessionGuardProbe）", () => {
   it("按模型的 guard 阈值与最近一条带用量的消息判定", async () => {
     const { writeFile } = await import("node:fs/promises");
     const configPath = join(dir, "config.json");
@@ -515,8 +515,8 @@ describe("硬线判定（createConversationGuardProbe）", () => {
 
     const { ConfigManager } = await import("@ai-zen/agents-sdk");
     const messages = new MessageRepository(db);
-    const probe = createConversationGuardProbe({
-      conversations,
+    const probe = createSessionGuardProbe({
+      sessions,
       messages,
       configManager: new ConfigManager(configPath),
     });
@@ -526,7 +526,7 @@ describe("硬线判定（createConversationGuardProbe）", () => {
 
     await messages.upsert({
       id: "msg-1",
-      conversationId: "c1",
+      sessionId: "c1",
       role: "assistant",
       status: "completed",
       content: "答完了",
@@ -537,7 +537,7 @@ describe("硬线判定（createConversationGuardProbe）", () => {
 
     await messages.upsert({
       id: "msg-2",
-      conversationId: "c1",
+      sessionId: "c1",
       role: "assistant",
       status: "completed",
       content: "又答了一轮",

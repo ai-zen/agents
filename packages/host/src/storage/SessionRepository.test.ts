@@ -1,5 +1,5 @@
 /**
- * `ConversationRepository` 的验收：身份字段落库且必填、侧栏排序口径（置顶 + 创建时间倒序，
+ * `SessionRepository` 的验收：身份字段落库且必填、侧栏排序口径（置顶 + 创建时间倒序，
  * PRD D13）、改名不改顺序、名字是不是自动起的（R35）、按名字搜索与 LIKE 通配符转义。
  */
 
@@ -9,35 +9,35 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "./Database.js";
 import { migrate } from "./migrations.js";
-import { ConversationRepository } from "./ConversationRepository.js";
-import type { ConversationCreateInput } from "./types.js";
+import { SessionRepository } from "./SessionRepository.js";
+import type { SessionCreateInput } from "./types.js";
 
 let dir: string;
 let db: Database;
-let repo: ConversationRepository;
+let repo: SessionRepository;
 
 /** 对话身份（助手 / 模型）是必填的：不关心这两列的用例摊上这一份 */
 const IDENTITY = { agentId: "agent-1", modelId: "model-1" } as const;
 
-function input(fields: Omit<ConversationCreateInput, "agentId" | "modelId">): ConversationCreateInput {
+function input(fields: Omit<SessionCreateInput, "agentId" | "modelId">): SessionCreateInput {
   return { ...IDENTITY, ...fields };
 }
 
 // 库与迁移整个文件只做一次（起 worker + migrate 是每条用例的大头），每个用例只清表。
 beforeAll(async () => {
-  dir = await mkdtemp(join(tmpdir(), "ai-zen-storage-conversations-"));
+  dir = await mkdtemp(join(tmpdir(), "ai-zen-storage-sessions-"));
   db = new Database(join(dir, "ai-zen.db"));
   await migrate(db);
-  repo = new ConversationRepository(db);
+  repo = new SessionRepository(db);
 });
 
 beforeEach(async () => {
   await db.tx((tx) => [
     // meta 不清：migrate 靠它判断跑不跑
     tx.run("DELETE FROM notices"),
-    // workspaces 必须在 assets 之前：删 workspace 级联删掉 conversation_assets 关系行，
+    // workspaces 必须在 assets 之前：删 workspace 级联删掉 session_assets 关系行，
     // 之后 assets 的 ON DELETE RESTRICT 才不会拦
-    tx.run("DELETE FROM workspaces"), // 级联 conversations → messages → conversation_assets
+    tx.run("DELETE FROM workspaces"), // 级联 sessions → messages → session_assets
     tx.run("DELETE FROM assets"), // 级联 asset_vendor_files
     tx.run("DELETE FROM credentials"),
   ]);
@@ -61,7 +61,7 @@ afterAll(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-describe("ConversationRepository", () => {
+describe("SessionRepository", () => {
   it("创建时定下的项目与助手、加上模型与档位，能原样读回", async () => {
     await repo.create({
       id: "c1",
@@ -72,8 +72,8 @@ describe("ConversationRepository", () => {
       createdAt: 500,
     });
 
-    const conversation = await repo.get("c1");
-    expect(conversation).toEqual({
+    const session = await repo.get("c1");
+    expect(session).toEqual({
       id: "c1",
       workspaceId: "w1",
       name: "2026-11-12 10:00",
@@ -204,14 +204,14 @@ describe("ConversationRepository", () => {
   it("身份列不能为空：绕过仓储直接插 NULL 也被数据库拒（R18）", async () => {
     await expect(
       db.run(
-        `INSERT INTO conversations (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
+        `INSERT INTO sessions (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
          VALUES ('c-null', 'w1', '半成品', 0, NULL, 'model-1', 100, 100)`,
       ),
     ).rejects.toThrow(/NOT NULL/i);
 
     await expect(
       db.run(
-        `INSERT INTO conversations (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
+        `INSERT INTO sessions (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
          VALUES ('c-null2', 'w1', '半成品', 0, 'agent-1', NULL, 100, 100)`,
       ),
     ).rejects.toThrow(/NOT NULL/i);

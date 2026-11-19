@@ -6,7 +6,7 @@
  *   - 分发走注入的 handler 表，没注册的方法回 `unsupported`；
  *   - 错误出网是「业务码 + 按这条连接语言渲染的句子 + detail」，非业务错误只说 internal；
  *   - 推送是通知帧（无 id），不重放；
- *   - `conversation.send` 这类方法的推送排在回包之后（R47），且按对话分别缓冲；
+ *   - `session.send` 这类方法的推送排在回包之后（R47），且按对话分别缓冲；
  *   - 二进制帧四段上传，超限在 `begin` 就拒，断线清掉临时文件。
  */
 
@@ -20,7 +20,7 @@ import { render, type Language } from "../i18n/index.js";
 import { MAX_ASSET_BYTES, PROTOCOL_VERSION, HostError } from "../wire/index.js";
 import type {
   AssetRef,
-  ConversationSendResult,
+  SessionSendResult,
   EventMap,
   EventName,
   WorkspaceCreateResult,
@@ -85,22 +85,22 @@ function handlers(): HandlerTable {
         folder: { cwd: context.params.cwd, exists: true },
         createdAt: NOW,
         updatedAt: NOW,
-        conversationCount: 0,
+        sessionCount: 0,
         lastActivityAt: null,
       },
     }),
 
     // 受理即返回、事件紧跟：R47 要缓冲的正是这种
-    "conversation.send": (context): ConversationSendResult => {
+    "session.send": (context): SessionSendResult => {
       pushFromHandler("message.delta", {
-        conversationId: context.params.conversationId,
+        sessionId: context.params.sessionId,
         messageId: "m-1",
         delta: { content: "hi" },
         at: NOW,
       });
       // 另一段对话的推送不该跟着被拦住
       pushFromHandler("message.delta", {
-        conversationId: "another-conversation",
+        sessionId: "another-session",
         messageId: "m-2",
         delta: { content: "other" },
         at: NOW,
@@ -112,8 +112,8 @@ function handlers(): HandlerTable {
     },
 
     // 业务错误：按连接语言渲染
-    "conversation.get": () => {
-      throw new HostError("not_found", { params: { entity: "conversation" } });
+    "session.get": () => {
+      throw new HostError("not_found", { params: { entity: "session" } });
     },
 
     // 非业务错误：只许说 internal，细节进日志
@@ -258,15 +258,15 @@ describe("握手与鉴权（PLAN A5 / D8）", () => {
     expect(hub.connectionInfos().filter((info) => info.language === "zh")).toHaveLength(1);
 
     // 另一条连接的语言不受影响：同一次错误的文案各不相同
-    first.request("conversation.get", { conversationId: "c-1" });
-    second.request("conversation.get", { conversationId: "c-1" });
+    first.request("session.get", { sessionId: "c-1" });
+    second.request("session.get", { sessionId: "c-1" });
     const firstError = await first.queue.next();
     const secondError = await second.queue.next();
     expect(isError(firstError) && firstError.error.data.message).toBe(
-      render("zh", "error.notFound", { entity: "conversation" }),
+      render("zh", "error.notFound", { entity: "session" }),
     );
     expect(isError(secondError) && secondError.error.data.message).toBe(
-      render("en", "error.notFound", { entity: "conversation" }),
+      render("en", "error.notFound", { entity: "session" }),
     );
   });
 });
@@ -288,7 +288,7 @@ describe("分发与错误（PLAN §6）", () => {
         folder: { cwd: "/tmp/proj", exists: true },
         createdAt: NOW,
         updatedAt: NOW,
-        conversationCount: 0,
+        sessionCount: 0,
         lastActivityAt: null,
       },
     });
@@ -320,12 +320,12 @@ describe("分发与错误（PLAN §6）", () => {
     await startHub();
     const client = await connectAuthorized("zh");
 
-    client.request("conversation.get", { conversationId: "c-1" });
+    client.request("session.get", { sessionId: "c-1" });
     const frame = await client.queue.next();
     expect(isError(frame)).toBe(true);
     if (!isError(frame)) return;
     expect(frame.error.data.code).toBe("not_found");
-    expect(frame.error.data.message).toBe(render("zh", "error.notFound", { entity: "conversation" }));
+    expect(frame.error.data.message).toBe(render("zh", "error.notFound", { entity: "session" }));
     // JSON-RPC 的 message 与 data.message 是同一句人话
     expect(frame.error.message).toBe(frame.error.data.message);
     expect(frame.error.code).toBe(-32004);
@@ -335,7 +335,7 @@ describe("分发与错误（PLAN §6）", () => {
     await startHub();
     const client = await connectAuthorized();
 
-    client.request("message.list", { conversationId: "c-1" });
+    client.request("message.list", { sessionId: "c-1" });
     const frame = await client.queue.next();
     expect(isError(frame) && frame.error.data.code).toBe("internal");
     const wire = JSON.stringify(frame);
@@ -388,7 +388,7 @@ describe("推送（PRD L5 / R47）", () => {
         level: "info",
         duration: 2,
         text: { code: "notice.settingsApplied", messageKey: "notice.settingsApplied", params: {}, message: "" },
-        conversationId: null,
+        sessionId: null,
         createdAt: NOW,
       },
       at: NOW,
@@ -409,7 +409,7 @@ describe("推送（PRD L5 / R47）", () => {
     await first.queue.next();
 
     hub.push("state", {
-      conversationId: "c-1",
+      sessionId: "c-1",
       status: "working",
       at: NOW,
     });
@@ -422,14 +422,14 @@ describe("推送（PRD L5 / R47）", () => {
     expect(second.queue.size()).toBe(0);
 
     // 在线时照推
-    hub.push("conversation.changed", {
-      conversationId: "c-1",
+    hub.push("session.changed", {
+      sessionId: "c-1",
       workspaceId: "ws-1",
       change: "renamed",
       at: NOW,
     });
     const frame = await second.queue.next();
-    expect(isNotification(frame) && frame.method).toBe("conversation.changed");
+    expect(isNotification(frame) && frame.method).toBe("session.changed");
   });
 
   it("推送可按连接语言渲染（D8：语言挂在连接上）", async () => {
@@ -465,7 +465,7 @@ describe("推送（PRD L5 / R47）", () => {
           params: {},
           message: "（产生现场渲染的那份）",
         },
-        conversationId: null,
+        sessionId: null,
         createdAt: NOW,
       },
       at: NOW,
@@ -483,8 +483,8 @@ describe("推送（PRD L5 / R47）", () => {
     await startHub();
     const client = await connect();
 
-    hub.push("conversation.changed", {
-      conversationId: "c-1",
+    hub.push("session.changed", {
+      sessionId: "c-1",
       workspaceId: "ws-1",
       change: "renamed",
       at: NOW,
@@ -494,23 +494,23 @@ describe("推送（PRD L5 / R47）", () => {
     expect(client.queue.size()).toBe(0);
   });
 
-  it("conversation.send 的推送排在回包之后，另一段对话的推送不受影响", async () => {
+  it("session.send 的推送排在回包之后，另一段对话的推送不受影响", async () => {
     await startHub();
     const client = await connectAuthorized();
 
-    client.request("conversation.send", { conversationId: "c-1", input: { content: "hi" } });
+    client.request("session.send", { sessionId: "c-1", input: { content: "hi" } });
 
     // 1) 另一段对话的增量先到（它没被缓冲）
     const other = await client.queue.next();
     expect(isNotification(other) && other.method).toBe("message.delta");
-    expect(isNotification(other) && (other.params as { conversationId: string }).conversationId).toBe(
-      "another-conversation",
+    expect(isNotification(other) && (other.params as { sessionId: string }).sessionId).toBe(
+      "another-session",
     );
 
     // 2) 然后是回包（受理即返回，客户端据此拿到那条用户消息的 id）
     const response = await client.queue.next();
     expect(isSuccess(response)).toBe(true);
-    expect((response as { result: ConversationSendResult }).result).toMatchObject({
+    expect((response as { result: SessionSendResult }).result).toMatchObject({
       userMessageId: "u-1",
       attachments: [],
     });
@@ -518,7 +518,7 @@ describe("推送（PRD L5 / R47）", () => {
     // 3) 最后才是这段对话被缓冲的增量
     const buffered = await client.queue.next();
     expect(isNotification(buffered) && buffered.method).toBe("message.delta");
-    expect((buffered as { params: { conversationId: string } }).params.conversationId).toBe("c-1");
+    expect((buffered as { params: { sessionId: string } }).params.sessionId).toBe("c-1");
 
     // 缓冲队列已经放空
     await wait(50);
@@ -543,7 +543,7 @@ describe("二进制上传（A11 / PRD D5、F-H8）", () => {
       mime: "image/png",
       bytes: bytes.byteLength,
       name: "photo.png",
-      conversationId: "c-1",
+      sessionId: "c-1",
     });
     const { uploadId, receivedBytes } = began.result as { uploadId: string; receivedBytes: number };
     expect(receivedBytes).toBe(0);
@@ -566,7 +566,7 @@ describe("二进制上传（A11 / PRD D5、F-H8）", () => {
     expect(await listDir(assetsDir)).toEqual([`${uploadId}.png`]);
     const written = await fs.readFile(join(assetsDir, `${uploadId}.png`));
     expect(new Uint8Array(written)).toEqual(bytes);
-    expect(finalized[0]).toMatchObject({ conversationId: "c-1", purpose: "message_image" });
+    expect(finalized[0]).toMatchObject({ sessionId: "c-1", purpose: "message_image" });
   });
 
   it("超限在 begin 就拒（payload_too_large），不建临时文件", async () => {
@@ -577,7 +577,7 @@ describe("二进制上传（A11 / PRD D5、F-H8）", () => {
       purpose: "message_image",
       mime: "image/png",
       bytes: MAX_ASSET_BYTES + 1,
-      conversationId: "c-1",
+      sessionId: "c-1",
     });
     const frame = await client.queue.next();
     expect(isError(frame) && frame.error.data.code).toBe("payload_too_large");
@@ -593,7 +593,7 @@ describe("二进制上传（A11 / PRD D5、F-H8）", () => {
       purpose: "message_image",
       mime: "image/png",
       bytes: bytes.byteLength,
-      conversationId: "c-1",
+      sessionId: "c-1",
     });
     const uploadId = (began.result as { uploadId: string }).uploadId;
     client.sendBinary(encodeChunkFrame(uploadId, bytes));
@@ -614,7 +614,7 @@ describe("二进制上传（A11 / PRD D5、F-H8）", () => {
       purpose: "message_image",
       mime: "image/png",
       bytes: 100,
-      conversationId: "c-1",
+      sessionId: "c-1",
     });
     const uploadId = (began.result as { uploadId: string }).uploadId;
     client.sendBinary(encodeChunkFrame(uploadId, new Uint8Array(10)));
@@ -664,7 +664,7 @@ describe("二进制上传（A11 / PRD D5、F-H8）", () => {
       purpose: "message_image",
       mime: "image/png",
       bytes: 4,
-      conversationId: "c-1",
+      sessionId: "c-1",
     });
     const uploadId = (began.result as { uploadId: string }).uploadId;
     client.sendBinary(encodeChunkFrame(uploadId, new Uint8Array(5)));
@@ -697,8 +697,8 @@ describe("二进制上传（A11 / PRD D5、F-H8）", () => {
     const uploads = new UploadReceiver({
       assetsDir,
       finalize: fakeFinalize,
-      ensureConversation: async (conversationId, language) => {
-        ensured.push([conversationId, language]);
+      ensureSession: async (sessionId, language) => {
+        ensured.push([sessionId, language]);
       },
     });
     await startHub({ uploads });
@@ -708,7 +708,7 @@ describe("二进制上传（A11 / PRD D5、F-H8）", () => {
       purpose: "message_image",
       mime: "image/png",
       bytes: 4,
-      conversationId: "draft-1",
+      sessionId: "draft-1",
     });
 
     expect(ensured).toEqual([["draft-1", "zh"]]);
@@ -718,10 +718,10 @@ describe("二进制上传（A11 / PRD D5、F-H8）", () => {
     const uploads = new UploadReceiver({
       assetsDir,
       finalize: fakeFinalize,
-      ensureConversation: async (conversationId) => {
+      ensureSession: async (sessionId) => {
         throw new HostError("not_found", {
-          params: { entity: "conversation" },
-          detail: { conversationId },
+          params: { entity: "session" },
+          detail: { sessionId },
         });
       },
     });
@@ -732,15 +732,15 @@ describe("二进制上传（A11 / PRD D5、F-H8）", () => {
       purpose: "message_image",
       mime: "image/png",
       bytes: 4,
-      conversationId: "no-such-conversation",
+      sessionId: "no-such-session",
     });
     const frame = await client.queue.next();
     expect(isError(frame)).toBe(true);
     if (!isError(frame)) return;
     expect(frame.error.data.code).toBe("not_found");
-    expect(frame.error.data.detail).toMatchObject({ conversationId: "no-such-conversation" });
+    expect(frame.error.data.detail).toMatchObject({ sessionId: "no-such-session" });
     // 句子按这条连接的语言渲染
-    expect(frame.error.data.message).toBe(render("zh", "error.notFound", { entity: "conversation" }));
+    expect(frame.error.data.message).toBe(render("zh", "error.notFound", { entity: "session" }));
     expect(await listDir(assetsDir)).toEqual([]);
   });
 });

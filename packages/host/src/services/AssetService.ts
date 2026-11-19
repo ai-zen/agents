@@ -21,7 +21,7 @@
  *        - 哪个端点上都没有 → 上传一次并写回。
  *      发送失败就报失败：不自动重试、不判失效、不清缓存。
  *   5. **清理**（{@link AssetService.sweepUnreferenced}）：引用归零的素材才删行、删文件。关系行
- *      （`conversation_assets`）由外键级联删，所以这里判的是「删完之后还剩几张引用」。
+ *      （`session_assets`）由外键级联删，所以这里判的是「删完之后还剩几张引用」。
  *      这一层是碰 `assets/` 下**正式文件**的地方（临时文件的生与死归上传接收器）。
  *
  * 它被 `ChatRunner` 当作 `prepareAttachments` / `prepareHistory` / `linkMessageAssets` 注入
@@ -117,7 +117,7 @@ export interface AssetRegistry {
   findByDigest(sha256: string): Promise<AssetRecord | undefined>;
   /** 记一行「这条消息引用了这份素材」；已经有这一行时返回 0 */
   linkAsset(input: {
-    conversationId: string;
+    sessionId: string;
     messageId: string;
     assetId: string;
     createdAt: number;
@@ -233,8 +233,8 @@ export class AssetService {
    * 两个上传撞在一起），唯一约束会挡住插入，这时把刚写出去的文件删掉、回库里既有那一行 ——
    * 全局去重的目的（整台机器只占一份磁盘）因此对两条路都成立。
    *
-   * 「这段素材归哪段对话」不在这张表上：归属在消息落库那一刻写进 `conversation_assets`
-   * （{@link AssetService.linkMessageAssets}），所以这个入参里的 `conversationId` 不参与登记。
+   * 「这段素材归哪段对话」不在这张表上：归属在消息落库那一刻写进 `session_assets`
+   * （{@link AssetService.linkMessageAssets}），所以这个入参里的 `sessionId` 不参与登记。
    *
    * 文件落到正式位置之后读一次文件头，把像素尺寸一并登记（{@link readImageSizeFromFile}）：
    * 客户端拿 `width` / `height` 先排占位框，图显示出来时界面不会跳。量不到就是 `null`。
@@ -279,7 +279,7 @@ export class AssetService {
    * 就当作没命中，让客户端老老实实传一遍。
    *
    * 去重是**全局**的：另一段对话传过的同一张图也算命中，命中之后两个对话各自在
-   * `conversation_assets` 里留一行引用，磁盘上仍然只有一份。
+   * `session_assets` 里留一行引用，磁盘上仍然只有一份。
    */
   async findExistingAsset(input: { sha256: string; bytes: number }): Promise<AssetRef | null> {
     const row = await this.assets.findByDigest(input.sha256);
@@ -311,7 +311,7 @@ export class AssetService {
     for (const assetId of assetIdsOf(context.content)) {
       try {
         linked += await this.assets.linkAsset({
-          conversationId: context.conversationId,
+          sessionId: context.sessionId,
           messageId: context.messageId,
           assetId,
           createdAt: this.now(),
@@ -420,7 +420,7 @@ export class AssetService {
    * 是本机扩展，出网的那一份里不该有它们。没有引用时不读盘、不上传。
    */
   async resolveHistory(context: {
-    conversationId: string;
+    sessionId: string;
     modelId: string | null;
     messages: AgentNS.Message[];
   }): Promise<AgentNS.Message[]> {
@@ -802,7 +802,7 @@ function withAssetId(
  * 一条内容里的全部素材 id（按出现顺序、去重）。
  *
  * 撤回时的“回填输入框”（R62）与消息落库时的关系行都靠它复原「这条消息挂了哪几张图」：
- * `assets` 行上不再记消息，`conversation_assets` 才是那个事实，而它的来源是 content。
+ * `assets` 行上不再记消息，`session_assets` 才是那个事实，而它的来源是 content。
  */
 export function assetIdsOf(content: AgentNS.MessageContent | undefined): string[] {
   if (!Array.isArray(content)) return [];
@@ -871,7 +871,7 @@ function unavailableSection(
   return {
     type: "text",
     text: record === undefined
-      ? `[Attachment] ${label} is no longer available in this conversation.`
+      ? `[Attachment] ${label} is no longer available in this session.`
       : `[Attachment] ${label} could not be sent with this request.`,
   };
 }

@@ -47,9 +47,9 @@ beforeEach(async () => {
   await db.tx((tx) => [
     // meta 不清：migrate 靠它判断跑不跑
     tx.run("DELETE FROM notices"),
-    // workspaces 必须在 assets 之前：删 workspace 级联删掉 conversation_assets 关系行，
+    // workspaces 必须在 assets 之前：删 workspace 级联删掉 session_assets 关系行，
     // 之后 assets 的 ON DELETE RESTRICT 才不会拦
-    tx.run("DELETE FROM workspaces"), // 级联 conversations → messages → conversation_assets
+    tx.run("DELETE FROM workspaces"), // 级联 sessions → messages → session_assets
     tx.run("DELETE FROM assets"), // 级联 asset_vendor_files
     tx.run("DELETE FROM credentials"),
   ]);
@@ -85,10 +85,10 @@ describe("migrate", () => {
     const names = await tableNames(db);
     for (const expected of [
       "workspaces",
-      "conversations",
+      "sessions",
       "messages",
       "assets",
-      "conversation_assets",
+      "session_assets",
       "asset_vendor_files",
       "notices",
       "credentials",
@@ -131,14 +131,14 @@ describe("migrate", () => {
     // cwd 上有一条唯一索引（id 主键那条另算）
     expect(uniqueIndexColumns).toContainEqual(["cwd"]);
 
-    const conversationColumns = await db.all<{ name: string; notnull: number }>(
-      "PRAGMA table_info('conversations')",
+    const sessionColumns = await db.all<{ name: string; notnull: number }>(
+      "PRAGMA table_info('sessions')",
     );
     for (const name of ["agentId", "modelId"]) {
-      expect(conversationColumns.find((column) => column.name === name)?.notnull).toBe(1);
+      expect(sessionColumns.find((column) => column.name === name)?.notnull).toBe(1);
     }
     // 思考档位存档位名，可空 = 跟随助手定义（F-B6）
-    expect(conversationColumns.find((column) => column.name === "thinkingLevel")?.notnull).toBe(0);
+    expect(sessionColumns.find((column) => column.name === "thinkingLevel")?.notnull).toBe(0);
   });
 
   it("表结构钉住两列真值：名字是否自动起（R35）与子 Agent 的父工具调用（R37）", async () => {
@@ -146,8 +146,8 @@ describe("migrate", () => {
     void LATEST_VERSION;
 
     type ColumnInfo = { name: string; notnull: number; dflt_value: string | null };
-    const conversationColumns = await db.all<ColumnInfo>("PRAGMA table_info('conversations')");
-    const nameIsAuto = conversationColumns.find((column) => column.name === "nameIsAuto");
+    const sessionColumns = await db.all<ColumnInfo>("PRAGMA table_info('sessions')");
+    const nameIsAuto = sessionColumns.find((column) => column.name === "nameIsAuto");
     // 非空且默认 1：创建时的原名算自动起的名字
     expect(nameIsAuto).toMatchObject({ notnull: 1, dflt_value: "1" });
 
@@ -163,7 +163,7 @@ describe("migrate", () => {
     // 版本号跟的是「最新那一级」（v3 加的是 messages.source）
     expect(await new MetaRepository(db).getSchemaVersion()).toBe(LATEST_VERSION);
     const columns = await db.all<{ name: string; notnull: number; dflt_value: string | null }>(
-      "PRAGMA table_info('conversations')",
+      "PRAGMA table_info('sessions')",
     );
     for (const name of ["compactedAt", "compactionMode"]) {
       const column = columns.find((candidate) => candidate.name === name);
@@ -186,7 +186,7 @@ describe("migrate", () => {
       "INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目一', '/tmp/v1', 1)",
     );
     await db.run(
-      `INSERT INTO conversations (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
+      `INSERT INTO sessions (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
        VALUES ('c1', 'w1', '旧对话', 0, 'a1', 'm1', 2, 2)`,
     );
 
@@ -194,7 +194,7 @@ describe("migrate", () => {
 
     expect(await new MetaRepository(db).getSchemaVersion()).toBe(LATEST_VERSION);
     const row = await db.get<{ compactedAt: number | null; compactionMode: string | null }>(
-      "SELECT compactedAt, compactionMode FROM conversations WHERE id = 'c1'",
+      "SELECT compactedAt, compactionMode FROM sessions WHERE id = 'c1'",
     );
     // 旧数据的真相就是「没压过」：两列都是 NULL
     expect(row).toEqual({ compactedAt: null, compactionMode: null });
@@ -210,11 +210,11 @@ describe("migrate", () => {
     });
     await db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/v2', 1)");
     await db.run(
-      `INSERT INTO conversations (id, workspaceId, name, agentId, modelId, createdAt, updatedAt)
+      `INSERT INTO sessions (id, workspaceId, name, agentId, modelId, createdAt, updatedAt)
        VALUES ('c1', 'w1', '旧对话', 'a1', 'm1', 2, 2)`,
     );
     await db.run(
-      `INSERT INTO messages (id, conversationId, seq, role, status, content, createdAt, updatedAt)
+      `INSERT INTO messages (id, sessionId, seq, role, status, content, createdAt, updatedAt)
        VALUES ('m1', 'c1', 1, 'user', 'completed', '"老消息"', 3, 3)`,
     );
 
@@ -242,7 +242,7 @@ describe("migrate", () => {
     });
     await db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/v3', 1)");
     await db.run(
-      `INSERT INTO conversations (id, workspaceId, name, agentId, modelId, createdAt, updatedAt)
+      `INSERT INTO sessions (id, workspaceId, name, agentId, modelId, createdAt, updatedAt)
        VALUES ('c1', 'w1', '旧对话', 'a1', 'm1', 2, 2)`,
     );
 
@@ -250,7 +250,7 @@ describe("migrate", () => {
 
     expect(await new MetaRepository(db).getSchemaVersion()).toBe(LATEST_VERSION);
     const columns = await db.all<{ name: string; notnull: number; dflt_value: string | null }>(
-      "PRAGMA table_info('conversations')",
+      "PRAGMA table_info('sessions')",
     );
     // 两条阈值与血缘可空、无缺省：NULL 就是「跟模型走」/「用户建的」
     for (const name of ["handoffThreshold", "guardThreshold", "lineage"]) {
@@ -273,7 +273,7 @@ describe("migrate", () => {
       autoHandoff: number;
       lineage: string | null;
     }>(
-      "SELECT handoffThreshold, guardThreshold, autoHandoff, lineage FROM conversations WHERE id = 'c1'",
+      "SELECT handoffThreshold, guardThreshold, autoHandoff, lineage FROM sessions WHERE id = 'c1'",
     );
     // 旧库不迁移（用户：「旧户直接删了都没关系」）：漏写那一列的行读成 0，
     // 也就是「撞线问一句」。猜错的代价不对称：多问一句用户答「不交接」就再也不问；
@@ -296,16 +296,16 @@ describe("migrate", () => {
     });
     await db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES ('w1', '项目', '/tmp/v4', 1)");
     await db.run(
-      `INSERT INTO conversations (id, workspaceId, name, agentId, modelId, createdAt, updatedAt)
+      `INSERT INTO sessions (id, workspaceId, name, agentId, modelId, createdAt, updatedAt)
        VALUES ('c1', 'w1', '旧对话', 'a1', 'm1', 2, 2)`,
     );
     await db.run(
-      `INSERT INTO messages (id, conversationId, seq, role, status, content, searchText, createdAt, updatedAt)
+      `INSERT INTO messages (id, sessionId, seq, role, status, content, searchText, createdAt, updatedAt)
        VALUES ('m1', 'c1', 1, 'user', 'completed', '"老消息"', '老消息', 3, 3)`,
     );
     // 旧库里挂着的一道题：v5 之后它不该再有任何落点
     await db.run(
-      `INSERT INTO questions (id, conversationId, kind, payload, state, createdAt, updatedAt)
+      `INSERT INTO questions (id, sessionId, kind, payload, state, createdAt, updatedAt)
        VALUES ('q1', 'c1', 'handoff', '{}', 'pending', 4, 4)`,
     );
 
@@ -316,20 +316,20 @@ describe("migrate", () => {
     const tables = await tableNames(db);
     expect(tables).not.toContain("questions");
     expect(
-      await db.all("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_questions_conversation'"),
+      await db.all("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_questions_session'"),
     ).toEqual([]);
 
     // 2. 会话行多一格待交接：可空，NULL = 没有待办
-    const conversationColumns = await db.all<{
+    const sessionColumns = await db.all<{
       name: string;
       notnull: number;
       dflt_value: string | null;
-    }>("PRAGMA table_info('conversations')");
-    expect(conversationColumns.find((column) => column.name === "pendingHandoff")).toMatchObject({
+    }>("PRAGMA table_info('sessions')");
+    expect(sessionColumns.find((column) => column.name === "pendingHandoff")).toMatchObject({
       notnull: 0,
       dflt_value: null,
     });
-    expect(await db.get("SELECT pendingHandoff FROM conversations WHERE id = 'c1'")).toEqual({
+    expect(await db.get("SELECT pendingHandoff FROM sessions WHERE id = 'c1'")).toEqual({
       pendingHandoff: null,
     });
 
@@ -353,7 +353,7 @@ describe("migrate", () => {
     // 六列各就各位：主键 / 归属 / 来源 JSON / 内容 JSON / 入队时刻 ISO 串 / 顺序
     expect(columns.map((column) => column.name)).toEqual([
       "messageId",
-      "conversationId",
+      "sessionId",
       "source",
       "content",
       "createdAt",
@@ -361,16 +361,16 @@ describe("migrate", () => {
     ]);
     // messageId 是主键（全库的行都一样，主键列自己不带 notnull 标记）；其余五格都必须有值
     expect(columns.find((column) => column.name === "messageId")?.pk).toBe(1);
-    for (const name of ["conversationId", "source", "content", "createdAt", "seq"]) {
+    for (const name of ["sessionId", "source", "content", "createdAt", "seq"]) {
       expect(columns.find((column) => column.name === name)?.notnull).toBe(1);
     }
     // `createdAt` 是条目自带的 ISO 串，不是全库惯用的毫秒整数（存就存原样）
     expect(columns.find((column) => column.name === "createdAt")?.type).toBe("TEXT");
     expect(columns.find((column) => column.name === "seq")?.type).toBe("INTEGER");
 
-    const indexColumns = await db.all<{ name: string }>("PRAGMA index_info('idx_inbox_conversation')");
+    const indexColumns = await db.all<{ name: string }>("PRAGMA index_info('idx_inbox_session')");
     // 按对话取、且顺序即入队顺序（唯一的读取路径，一条复合索引就够）
-    expect(indexColumns.map((column) => column.name)).toEqual(["conversationId", "seq"]);
+    expect(indexColumns.map((column) => column.name)).toEqual(["sessionId", "seq"]);
   });
 
   it("迁移后仍然是 WAL 且外键约束是开着的", async () => {
@@ -391,7 +391,7 @@ describe("migrate", () => {
 });
 
 describe("外键与级联", () => {
-  /** 建一套 "workspace → conversation → message → asset" 的最小数据 */
+  /** 建一套 "workspace → session → message → asset" 的最小数据 */
   async function seed(): Promise<void> {
     await migrate(db);
     await db.run("INSERT INTO workspaces (id, name, cwd, createdAt) VALUES (?, ?, ?, ?)", [
@@ -401,12 +401,12 @@ describe("外键与级联", () => {
       1,
     ]);
     await db.run(
-      `INSERT INTO conversations (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
+      `INSERT INTO sessions (id, workspaceId, name, pinned, agentId, modelId, createdAt, updatedAt)
        VALUES (?, ?, ?, 0, ?, ?, ?, ?)`,
       ["c1", "w1", "对话一", "a1", "m1", 2, 2],
     );
     await db.run(
-      `INSERT INTO messages (id, conversationId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
+      `INSERT INTO messages (id, sessionId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
        VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
       ["msg1", "c1", 1, "user", "completed", '"你好"', "你好", 3, 3],
     );
@@ -416,41 +416,41 @@ describe("外键与级联", () => {
       ["as1", "a.png", "assets/a.png", "image/png", 1024, "digest-1", 4],
     );
     await db.run(
-      `INSERT INTO conversation_assets (conversationId, messageId, assetId, createdAt)
+      `INSERT INTO session_assets (sessionId, messageId, assetId, createdAt)
        VALUES (?, ?, ?, ?)`,
       ["c1", "msg1", "as1", 5],
     );
     // 挂在对话上的通知：级联的另一半（这张表的 CASCADE 只在这里钉）
     await db.run(
-      `INSERT INTO notices (id, level, code, params, durationMs, conversationId, createdAt)
+      `INSERT INTO notices (id, level, code, params, durationMs, sessionId, createdAt)
        VALUES ('n1', 'info', 'notice.settingsSaved', NULL, NULL, 'c1', 6)`,
     );
     // 排在队列里还没被取走的一条待办：对话/工作区没了它也就没有去处（v6 的级联）
     await db.run(
-      `INSERT INTO inbox (messageId, conversationId, source, content, createdAt, seq)
+      `INSERT INTO inbox (messageId, sessionId, source, content, createdAt, seq)
        VALUES ('msg2', 'c1', '{"kind":"user"}', '"还没被处理的一句"', '2026-01-02T03:04:05.000Z', 1)`,
     );
   }
 
-  it("删 workspace 连带删它的 conversations / messages / 引用关系", async () => {
+  it("删 workspace 连带删它的 sessions / messages / 引用关系", async () => {
     await seed();
     await db.run("DELETE FROM workspaces WHERE id = ?", ["w1"]);
 
-    expect(await db.all("SELECT id FROM conversations")).toEqual([]);
+    expect(await db.all("SELECT id FROM sessions")).toEqual([]);
     expect(await db.all("SELECT id FROM messages")).toEqual([]);
-    expect(await db.all("SELECT assetId FROM conversation_assets")).toEqual([]);
+    expect(await db.all("SELECT assetId FROM session_assets")).toEqual([]);
     // 待办行跟着对话/项目一起没：不留孤儿（v6 的级联）
     expect(await db.all("SELECT messageId FROM inbox")).toEqual([]);
     // 素材行不跟着对话走：字节是全局的，删不删由「还几张引用」决定
     expect(await db.all("SELECT id FROM assets")).toEqual([{ id: "as1" }]);
   });
 
-  it("删 conversation 连带删 messages / 引用关系 / 通知（素材行留着）", async () => {
+  it("删 session 连带删 messages / 引用关系 / 通知（素材行留着）", async () => {
     await seed();
-    await db.run("DELETE FROM conversations WHERE id = ?", ["c1"]);
+    await db.run("DELETE FROM sessions WHERE id = ?", ["c1"]);
 
     expect(await db.all("SELECT id FROM messages")).toEqual([]);
-    expect(await db.all("SELECT assetId FROM conversation_assets")).toEqual([]);
+    expect(await db.all("SELECT assetId FROM session_assets")).toEqual([]);
     // 通知是挂在对话上的：对话没了它也没有落脚的语义（题已经不落库了，没有这一层）
     expect(await db.all("SELECT id FROM notices")).toEqual([]);
     // 待办也是：它是那段对话的待办，对话没了它也就没有去处（v6 的级联）
@@ -462,7 +462,7 @@ describe("外键与级联", () => {
     await seed();
     await db.run("DELETE FROM messages WHERE id = ?", ["msg1"]);
 
-    expect(await db.all("SELECT assetId FROM conversation_assets")).toEqual([]);
+    expect(await db.all("SELECT assetId FROM session_assets")).toEqual([]);
     const assets = await db.all<{ id: string; path: string }>("SELECT id, path FROM assets");
     expect(assets).toEqual([{ id: "as1", path: "assets/a.png" }]);
   });
@@ -488,7 +488,7 @@ describe("外键与级联", () => {
     await migrate(db);
     await expect(
       db.run(
-        `INSERT INTO messages (id, conversationId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
+        `INSERT INTO messages (id, sessionId, seq, role, status, omit, content, searchText, createdAt, updatedAt)
          VALUES ('x', 'does-not-exist', 1, 'user', 'completed', 0, '""', '', 1, 1)`,
       ),
     ).rejects.toThrow(/FOREIGN KEY/i);

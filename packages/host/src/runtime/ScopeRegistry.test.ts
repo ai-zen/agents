@@ -100,7 +100,7 @@ describe("ScopeRegistry：没有自动回收", () => {
     expect(clock.pending()).toBe(0);
   });
 
-  it("构造函数不再接受 clock / idleTimeoutMs（只认 createScope / liveConversations / onError）", () => {
+  it("构造函数不再接受 clock / idleTimeoutMs（只认 createScope / liveSessions / onError）", () => {
     // 类型层面已经把这两个参数删掉了（下面两条 @ts-expect-error 就是在钉这件事），
     // 运行时多塞进去的键也不会被读到 —— 没有空闲回收的代码路径了
     const createScope = async () => createFakeScope().scope;
@@ -145,13 +145,13 @@ describe("ScopeRegistry：显式 dispose", () => {
     expect(disposeCalls()).toBe(0);
   });
 
-  it("撞上还活着的 agent 就拒绝，错误里带着 conversationId 列表；agent 丢掉之后就能销毁", async () => {
+  it("撞上还活着的 agent 就拒绝，错误里带着 sessionId 列表；agent 丢掉之后就能销毁", async () => {
     const { factory, disposeCalls } = createTrackingFactory();
     // 活着的 agent 由 `AgentRegistry` 报（这里用同一形状的假件）
     let live = ["c-1", "c-2"];
     const registry = new ScopeRegistry({
       createScope: factory,
-      liveConversations: (workspaceId) => (workspaceId === "ws-1" ? live : []),
+      liveSessions: (workspaceId) => (workspaceId === "ws-1" ? live : []),
     });
 
     await registry.create("ws-1");
@@ -159,7 +159,7 @@ describe("ScopeRegistry：显式 dispose", () => {
     const error = await registry.dispose("ws-1").catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(ScopeBusyError);
     expect((error as ScopeBusyError).workspaceId).toBe("ws-1");
-    expect((error as ScopeBusyError).conversationIds).toEqual(["c-1", "c-2"]);
+    expect((error as ScopeBusyError).sessionIds).toEqual(["c-1", "c-2"]);
     expect((error as Error).message).toContain("c-1");
     // 拒绝就是拒绝：Scope 还在，谁也没被掐掉
     expect(registry.workspaceIds()).toEqual(["ws-1"]);
@@ -172,7 +172,7 @@ describe("ScopeRegistry：显式 dispose", () => {
     expect(disposeCalls()).toBe(1);
   });
 
-  it("不注入 liveConversations 时当作「没有活着的 agent」（单独用本文件的场合）", async () => {
+  it("不注入 liveSessions 时当作「没有活着的 agent」（单独用本文件的场合）", async () => {
     const { factory, disposeCalls } = createTrackingFactory();
     const registry = new ScopeRegistry({ createScope: factory });
 
@@ -187,7 +187,7 @@ describe("ScopeRegistry：显式 dispose", () => {
     const registry = new ScopeRegistry({
       createScope: factory,
       // 收尾时「还有 agent 活着」不是要挡住销毁的理由
-      liveConversations: () => ["c-1"],
+      liveSessions: () => ["c-1"],
     });
 
     await registry.create("ws-a");
