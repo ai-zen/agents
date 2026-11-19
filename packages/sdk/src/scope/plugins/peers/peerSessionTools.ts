@@ -6,7 +6,7 @@ import type { Agent, Tool, ToolCallContext } from "@ai-zen/agents-core";
  *
  * 端口（{@link PeerSessionPort}）由宿主实现：开一段会话、把一句话投进去、现读它此刻落在哪一格，
  * 都是宿主的事（会话是宿主的财产，SDK 不认识会话）。SDK 这一侧只有三样东西：参数说明、
- * **给模型看的那几句话**（别轮询：她说完会自己 `postMessage` 回来；记不住 `sessionId` 就靠
+ * **给模型看的那几句话**（别轮询：她说完会自己 `post_message` 回来；记不住 `sessionId` 就靠
  * `label`），以及三个工具各自的返回形状。
  *
  * ## 为什么这几句话必须同时出现在 description 与返回文案两处
@@ -16,13 +16,13 @@ import type { Agent, Tool, ToolCallContext } from "@ai-zen/agents-core";
  *
  * ## 投递不承诺任何未来
  *
- * `postMessage` 的回执只有「收下了」。那边忙不忙、什么时候取件、取走之后会做什么，**都不是
+ * `post_message` 的回执只有「收下了」。那边忙不忙、什么时候取件、取走之后会做什么，**都不是
  * 这一句话能定下的**，写在回执里就是对未来的断言 —— 而未来只能靠观测（`read_session_status`）
  * 与对方自己发来的话去读。所以本文件的回执里没有「把它叫起来了」「排在它手头那批后面」这类话。
  *
  * ## 投递不看关系
  *
- * 谁都能给谁投：`postMessage` 只问「目标在不在、活不活」，不问「你俩是什么关系」。平级之间
+ * 谁都能给谁投：`post_message` 只问「目标在不在、活不活」，不问「你俩是什么关系」。平级之间
  * 能不能互发、发了对方理不理，靠的是 agent 自己的知识（它在提示里就知道自己跟谁在说话），
  * 不是一道校验。只有**创建**还有「只限一层」这条产品限制，它写在 `create_session` 那边。
  */
@@ -31,8 +31,8 @@ import type { Agent, Tool, ToolCallContext } from "@ai-zen/agents-core";
 export const CREATE_SESSION_TOOL = "create_session";
 /** `read_session_status`：只问状态 + 一句摘要，绝不返回全量消息 */
 export const READ_SESSION_STATUS_TOOL = "read_session_status";
-/** `postMessage`：给另一段会话投一句话（不等结果，投递不看关系） */
-export const POST_MESSAGE_TOOL = "postMessage";
+/** `post_message`：给另一段会话投一句话（不等结果，投递不看关系） */
+export const POST_MESSAGE_TOOL = "post_message";
 
 /** 本插件向 `tools` 维度贡献的候选名（顺序即展示顺序） */
 export const PEER_SESSION_TOOL_NAMES = [
@@ -61,7 +61,7 @@ export type PeerSessionActivity = "working" | "idle";
  * 「这个助手没有可用模型，换一个」「手头那几个还忙，先等一等或分给更少的会话」），异常只会
  * 把它这一步打断。
  *
- * 三条都是**创建**的限制：`postMessage` 没有「只限一层」「限额」这类判据 —— 投递只看目标
+ * 三条都是**创建**的限制：`post_message` 没有「只限一层」「限额」这类判据 —— 投递只看目标
  * 在不在、活不活。
  */
 export type PeerSessionRejectReason = "depth_exceeded" | "model_unresolved" | "too_many_peers";
@@ -104,7 +104,7 @@ export type PeerSessionStatus =
     };
 
 /**
- * `postMessage` 被拒绝的两种原因 —— 就是投递的两条判据。
+ * `post_message` 被拒绝的两种原因 —— 就是投递的两条判据。
  *
  * `gone`：这段会话不在（会话行被删了）；
  * `dead`：会话在，但那边没有 agent 对象，投过去也没有人会取件。
@@ -114,7 +114,7 @@ export type PeerSessionStatus =
 export type PeerSessionSendRejectReason = "gone" | "dead";
 
 /**
- * `postMessage` 的答案。
+ * `post_message` 的答案。
  *
  * 成功只有 `ok`，一个字段都不多：投递那一刻能定下的只有「收下了」。那边忙不忙、什么时候取件
  * 都不是回执该说的话（那是对未来的断言）。
@@ -123,7 +123,7 @@ export type PeerSessionSent =
   | { ok: true }
   | { ok: false; reason: PeerSessionSendRejectReason };
 
-/** `postMessage` 的入参（`caller` 由插件从 `ToolCallContext` 取，不由模型给） */
+/** `post_message` 的入参（`caller` 由插件从 `ToolCallContext` 取，不由模型给） */
 export interface PeerSessionSendInput {
   /** 谁在调这个工具（`ctx.agent`）—— 宿主据此认领「哪一段会话在说话」与消息署名 */
   caller: Agent;
@@ -171,13 +171,13 @@ export interface PeerSessionPort {
 }
 
 /**
- * 「别轮询」那半句：**她说完会自己 postMessage 回来**。
+ * 「别轮询」那半句：**她说完会自己 post_message 回来**。
  *
  * 这是唯一一句能替模型省下轮询的话：投递不看关系（谁都能给谁投），所以对方真有话要说时不必
  * 等谁去问。
  */
 const NO_POLL_HINT =
-  "Do not poll it: when that session has something for me it calls postMessage on me itself.";
+  "Do not poll it: when that session has something for me it calls post_message on me itself.";
 
 /** 「靠 label 认会话」那半句：`sessionId` 是 UUID，长会话里记不住 */
 const LABEL_HINT =
@@ -200,7 +200,7 @@ const REJECT_HINTS: Record<PeerSessionRejectReason, string> = {
 };
 
 /**
- * `postMessage` 被拒绝的两种原因各自的一句话（端口只回原因，不给文案）。
+ * `post_message` 被拒绝的两种原因各自的一句话（端口只回原因，不给文案）。
  *
  * 两条都要说清「这句话没投出去、不会有人回音」，否则模型会等一条永远不会到的话。两者都不建议
  * 重试：目标还在就等它自己说话，目标已经不在就自己把活干掉。
@@ -230,7 +230,7 @@ const EXCERPT_HINT =
  * 「收下了」那半句：只说两件当场能定下的事 —— ① 已进那边的 inbox；② 别轮询。
  *
  * **不写**「它现在在忙 / 会把它叫起来」，也不写「不会自动推给我」：后者与「她说完会自己
- * postMessage 回来」相互打脸，而且两者都是对未来的断言。真正能说的只有
+ * post_message 回来」相互打脸，而且两者都是对未来的断言。真正能说的只有
  * {@link NO_POLL_HINT} 那一句（“真要说话时会自己发过来”），它刚好把「别轮询」说清。
  */
 const SEND_ACCEPTED_HINT =
@@ -267,7 +267,7 @@ const NOT_FOUND_HINT =
  * 三个工具都是即时返回的 `CallbackTool`：真正的等待在宿主那一侧（那边的 agent 自己跑）。
  */
 export function createPeerSessionTools(port: PeerSessionPort): Tool[] {
-  return [createSessionTool(port), readSessionStatusTool(port), postMessageTool(port)];
+  return [createSessionTool(port), readSessionStatusTool(port), post_messageTool(port)];
 }
 
 /** `create_session({ prompt, agentId?, modelId?, label? })` → `{ sessionId, label }` */
@@ -281,8 +281,8 @@ function createSessionTool(port: PeerSessionPort): Tool {
         "afterwards). Use it for work that can happen in parallel with mine instead of blocking me.",
         "This call returns as soon as the session exists: it does not wait for any answer and no",
         "answer is delivered to me here.",
-        "Talk to it afterwards with postMessage; do not poll it — when that session has something",
-        "for me it calls postMessage on me itself.",
+        "Talk to it afterwards with post_message; do not poll it — when that session has something",
+        "for me it calls post_message on me itself.",
         "Creating is limited to one level (a peer session cannot open another one); posting a",
         "message is not limited that way — any conversation may post a message to any other.",
         "Remember the returned `label` as well as `sessionId`: in a long conversation I may no",
@@ -359,7 +359,7 @@ function readSessionStatusTool(port: PeerSessionPort): Tool {
         "This is a single check, not a waiting loop: which of those states it is in (or that it",
         "is not there any more) is a fact about this moment only, and it does not tell me when",
         "anything will happen. Do not poll —",
-        "when that session has something for me it calls postMessage on me itself.",
+        "when that session has something for me it calls post_message on me itself.",
         "If I no longer remember the `sessionId`, the `label` returned by create_session is what",
         "identifies the session — it comes back in the answer, so I can tell them apart.",
       ].join(" "),
@@ -398,8 +398,8 @@ function readSessionStatusTool(port: PeerSessionPort): Tool {
   });
 }
 
-/** `postMessage({ sessionId, content })` → `{ accepted, hint }` / `{ rejected, hint }` */
-function postMessageTool(port: PeerSessionPort): Tool {
+/** `post_message({ sessionId, content })` → `{ accepted, hint }` / `{ rejected, hint }` */
+function post_messageTool(port: PeerSessionPort): Tool {
   return new CallbackTool({
     function: {
       name: POST_MESSAGE_TOOL,

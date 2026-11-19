@@ -116,7 +116,7 @@ HostApp（根：组装、启动、退出）
 ### 5.1 唯一的对外动作：投递
 
 ```
-session.send / postMessage / 定时器 / 外部程序
+session.send / post_message / 定时器 / 外部程序
  └─ ChatRunner.deliver(sessionId, { content, source, attachments? })
       ├─ 目标不存在              → 拒（not_found），错回给投递方那次调用
       ├─ 目标是死的（没有 agent）→ 拒（session_dead）；例外只有**创建者**：界面的
@@ -343,7 +343,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 | 模型解析失败的识别 | `PeerSessionService.ts:636-647`（调用点 `:328`） | 只看码不看文案，于是「拿不到模型」是结构化拒绝而不是抛错 |
 | 问（F-C17） | `PeerSessionService.ts:381-392` | 现读 agent 那一格 + ~300 字摘要，**不给全量消息** |
 | 发一句（F-C20） | `PeerSessionService.ts:538-551` | 一次投递；**不校验血缘**，回执只有收下 / 被拒 |
-| 工具面 | `packages/sdk/src/scope/plugins/peers/peerSessionTools.ts`、`PeerSessionsScopePlugin.ts:22-45` | 形状与用例归 SDK；宿主实现端口，**SDK 不依赖 host**。发话的工具就叫 `postMessage`（`send_to_session` 已删） |
+| 工具面 | `packages/sdk/src/scope/plugins/peers/peerSessionTools.ts`、`PeerSessionsScopePlugin.ts:22-45` | 形状与用例归 SDK；宿主实现端口，**SDK 不依赖 host**。发话的工具就叫 `post_message`（`send_to_session` 已删） |
 | 不问交接 | `app` 的变闲判断 | 看的是**会话行上的 `autoHandoff`**（创建时写死），**不看来源** |
 
 **旧形状已全部拆掉**（W3）：`settleTurn`、`onTurnStart`（记录复位）、`resultDelivered`、`rejectionOf`（血缘拒绝）都不存在；**W10 之后进程内只剩一个可读名**（`label`）—— 血缘（`lineage`）、自动交接开关（`autoHandoff`）、开启时刻（`createdAt`）是会话行上的列，状态一律现读。并发限额保留，判据是「按血缘列反查封出来的那批」里现读 `busy` 的个数。

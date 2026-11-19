@@ -1,7 +1,7 @@
 /**
  * 平级会话插件（SDK 侧）的验收：**不给端口就不产出任何工具**，给了端口就三个工具，
  * 而且三个工具只做三件事 —— 把参数送给端口、把结构化拒绝原样交回模型、把「别轮询（她会自己
- * postMessage 回来）/ 不等结果 / 靠 label」这几句话写进 description 与返回文案。
+ * post_message 回来）/ 不等结果 / 靠 label」这几句话写进 description 与返回文案。
  *
  * 会话怎么建、那一格怎么现读全在宿主那一侧（`PeerSessionService`），本文件不重复验那些。
  */
@@ -130,8 +130,8 @@ describe("PeerSessionsScopePlugin：端口决定能力面", () => {
     expect(PeerSessionsScopePlugin.ID).toBe("peer-sessions");
   });
 
-  it("发消息那个工具的名字是 `postMessage`（`send_to_session` 不再存在）", () => {
-    expect(POST_MESSAGE_TOOL).toBe("postMessage");
+  it("发消息那个工具的名字是 `post_message`（`send_to_session` 不再存在）", () => {
+    expect(POST_MESSAGE_TOOL).toBe("post_message");
     const names = [...PEER_SESSION_TOOL_NAMES] as string[];
     expect(names).not.toContain("send_to_session");
   });
@@ -168,19 +168,19 @@ describe("create_session：建完即回，参数原样交给端口", () => {
     expect(creates[0]).toEqual({ caller: fakeAgent, prompt: "跑一下" });
   });
 
-  it("description 与返回文案都写着「别轮询（她会自己 postMessage 回来）」与「靠 label」", async () => {
+  it("description 与返回文案都写着「别轮询（她会自己 post_message 回来）」与「靠 label」", async () => {
     const { port } = recordingPort({});
     const [createTool] = createPeerSessionTools(port);
 
     const description = createTool.function.description ?? "";
     const lower = description.toLowerCase();
     expect(lower).toContain("do not poll");
-    expect(description).toContain("postMessage");
+    expect(description).toContain("post_message");
     expect(description).toContain("`label`");
 
     const result = (await call(createTool, { prompt: "x" })) as { hint: string };
     expect(result.hint.toLowerCase()).toContain("do not poll");
-    expect(result.hint).toContain("postMessage");
+    expect(result.hint).toContain("post_message");
     expect(result.hint).toContain("label");
   });
 
@@ -229,7 +229,7 @@ describe("create_session：建完即回，参数原样交给端口", () => {
   });
 });
 
-describe("postMessage：只回「收下了」", () => {
+describe("post_message：只回「收下了」", () => {
   it("参数原样交给端口（caller 是 ctx.agent），回执只有 accepted 与 hint", async () => {
     const { port, sends } = recordingPort({});
     const [, , postTool] = createPeerSessionTools(port);
@@ -245,7 +245,7 @@ describe("postMessage：只回「收下了」", () => {
     expect("state" in result).toBe(false);
     expect(typeof result.hint).toBe("string");
     expect(result.hint).toContain("does not come back");
-    // 不写「不会自动推给我」那种对未来的断言（它与「她会自己 postMessage 回来」打脸）：
+    // 不写「不会自动推给我」那种对未来的断言（它与「她会自己 post_message 回来」打脸）：
     // 收下之后能说的只有「进了那边的 inbox」＋「别轮询」
     const hint = String(result.hint).toLowerCase();
     expect(hint).not.toContain("nothing is pushed");
@@ -378,9 +378,9 @@ describe("read_session_status：忙不忙 + 死活 + 「没有这一段」，只
       };
       expect(result.status).toBe(status);
       expect(result.alive).toBe(true);
-      // 活着 → 她说完会自己 postMessage 回来，别轮询
+      // 活着 → 她说完会自己 post_message 回来，别轮询
       expect(result.hint.toLowerCase()).toContain("do not poll");
-      expect(result.hint).toContain("postMessage");
+      expect(result.hint).toContain("post_message");
     }
 
     // 死不是第三个状态值：它还是 `status: "idle"`（没有 agent 就没有「在不在干」这回事），

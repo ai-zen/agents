@@ -100,7 +100,7 @@ const STATUS_CHARS = 300;
  */
 const MAX_RUNNING_PEERS = 4;
 
-/** `postMessage` 正文注释里的来源：`会话「<调用者的名字>」`（拼注释归 core） */
+/** `post_message` 正文注释里的来源：`会话「<调用者的名字>」`（拼注释归 core） */
 function senderSource(name: string): AgentNS.MessageSource {
   return { kind: "agent", label: `会话「${name}」` };
 }
@@ -190,7 +190,7 @@ export interface PeerSessionRunner {
 /** 平级会话服务的依赖（窄接口：本文件不认识整个宿主） */
 export interface PeerSessionServiceDeps {
   /**
-   * 只读会话那一行：项目 / 助手 / 模型的口径来源、**名字**（`postMessage` 的来源名用它 ——
+   * 只读会话那一行：项目 / 助手 / 模型的口径来源、**名字**（`post_message` 的来源名用它 ——
    * 来源名由宿主解析，不许调用方传）、**血缘**（判「只限一层」）、**开启时刻**（`startedAt`），
    * 外加「这段会话还在不在」。自动交接开关不在这里要：只有宿主那两个判定读它。
    */
@@ -297,7 +297,7 @@ export class PeerSessionService implements PeerSessionPort {
    * 模型反而误导它。
    *
    * 这里**不挂任何「等它答完」的东西**：回答本身会以消息的形式出现，父会话要看就说一句
-   * `postMessage`、或者自己接着干活。等待等于子代理，而那已经存在了。
+   * `post_message`、或者自己接着干活。等待等于子代理，而那已经存在了。
    */
   async create(input: PeerSessionCreateInput): Promise<PeerSessionCreated> {
     const parentSessionId = this.identityOf(input.caller);
@@ -419,7 +419,7 @@ export class PeerSessionService implements PeerSessionPort {
   }
 
   /**
-   * 跟一段平级会话**接着说话**（`postMessage`）。
+   * 跟一段平级会话**接着说话**（`post_message`）。
    *
    * 只有一件事要做：`deliver`。**不看关系** —— 谁都能给谁说话（投递不看关系是整套模型的
    * 一条硬规矩）；「目标不在」是唯一会失败的情形，而那是 `HostError`（`not_found` /

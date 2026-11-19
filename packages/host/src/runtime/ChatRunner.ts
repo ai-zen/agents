@@ -343,7 +343,7 @@ export interface DeliveryInput {
    * **允许把它叫起来**（给这段会话装上 agent）。
    *
    * 只有两个创建者给 `true`：界面上的发送按钮、刚建出来的那段会话的第一句。其它来源
-   * （`postMessage`、定时器、外部程序）一律不给 —— 死会话叫不醒。
+   * （`post_message`、定时器、外部程序）一律不给 —— 死会话叫不醒。
    */
   mayStart?: boolean;
 }

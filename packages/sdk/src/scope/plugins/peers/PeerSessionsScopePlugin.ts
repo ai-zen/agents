@@ -7,7 +7,7 @@ import type { ScopeCandidates, ScopePlugin } from "../../ScopePlugin.js";
 
 /**
  * 平级会话插件 —— 把宿主给的端口装成三个工具（`create_session` / `read_session_status` /
- * `postMessage`）。
+ * `post_message`）。
  *
  * 与 `SubAgentsScopePlugin` 同构（`id` / `candidates` / `instantiate`）：自己不发现任何东西
  * （平级会话不是磁盘上的定义，是宿主的运行时能力），候选名是固定的三个。
