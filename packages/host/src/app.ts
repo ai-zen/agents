@@ -1380,13 +1380,15 @@ export class HostApp {
    * 连接没声明语言时用哪一种（PRD D8 / 裁定 R58）。
    *
    * 真相在 `config.json` 的 `language`（可经 `config.setDefaults` 改），所以每一跳都现读；
-   * 配置读不出来或没写这个字段时回落英文 —— 语言这件事不该让握手失败。
+   * 配置读不出来或没写这个字段时回落 `DEFAULT_LANGUAGE` —— 语言这件事不该让握手失败，
+   * 但失败要留一行（`WsHub.resolveDefaultLanguage()` 读同一份配置、也是这么做的）。
    */
   private async configuredLanguage(): Promise<Language> {
     try {
       const config = await this.configManager.read();
       return normalizeLanguage(config.language);
-    } catch {
+    } catch (error) {
+      this.logger.warn("读缺省语言失败，回落到缺省值", { error: describeError(error) });
       return DEFAULT_LANGUAGE;
     }
   }

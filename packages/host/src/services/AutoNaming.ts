@@ -16,8 +16,11 @@
  * 「库里现在有几条消息」当判据，只能问名字本身：它还是不是创建时那个默认值。
  *
  * 用哪一个模型：「取名模型」`AppConfig.namingModel`，没配就回落 `defaultModel`；两个都拿不到
- * 就**保持原名**（原名 = 创建时间，D2）。起不出名（调用失败 / 模型给了个空串）同样保持原名，
- * 不报错、不重试 —— 改名是锦上添花，不该在界面上留一条失败提示。
+ * 就**保持原名**（原名 = 创建时间，D2）—— 那是「不该起名」，沉默是对的。模型给了个空串同理。
+ *
+ * 而「配置读不出来」「叫模型失败（端点 401 / 超时）」**原样抛给调用方**：那不是「不该起名」，
+ * 是「这次没起成」，得留痕 —— 出口是 `app.ts` 那条 `logger.warn("自动命名失败")`。从前这两处
+ * 各自 `return`，而注释还写着「不值得把错丢到日志以外的地方」，可它连日志都没丢。
  *
  * 写回走 `applyAutoName`（而不是用户改名那个方法）：它把 `nameIsAuto` 置 1，于是「这个名字是
  * 自动起的」这个事实在库里继续成立（R35）。而它同时也是「起名这件事到此为止」的凭据：写回之后
@@ -26,7 +29,7 @@
 
 import { AgentNS } from "@ai-zen/agents-core";
 
-import type { AppConfig, ConfigManager } from "@ai-zen/agents-sdk";
+import type { ConfigManager } from "@ai-zen/agents-sdk";
 import { completeOnce, createModelFromConfig } from "@ai-zen/agents-sdk";
 
 import { DEFAULT_LANGUAGE } from "../i18n/index.js";
@@ -144,7 +147,7 @@ export class AutoNaming {
    * 不必在内存里另记一份「谁起过了」。
    *
    * 回 `void`：它是后台钩子，调用方不要结果（`app.ts` 那一侧也只看它抛不抛）。「为什么没起名」
-   * 是八种情形，它们就写在下面的分支上 —— 不包成返回值往外传，因为没有任何调用方会拿它分支
+   * 是六种情形，它们就写在下面的分支上 —— 不包成返回值往外传，因为没有任何调用方会拿它分支
    * （从前那个 `skipped` 字段只有用例在读，那是用例在养一份生产不需要的形状）。
    */
   async nameIfUnnamed(sessionId: string, language: Language = DEFAULT_LANGUAGE): Promise<void> {
@@ -152,13 +155,7 @@ export class AutoNaming {
     // 会话不在（刚被删）：后台钩子不该抛错
     if (!session) return;
 
-    let config: AppConfig;
-    try {
-      config = await this.configManager.read();
-    } catch {
-      // 配置读不出来：保持原名（名字是锦上添花，不值得为它丢一个错到日志以外的地方）
-      return;
-    }
+    const config = await this.configManager.read();
 
     // 开关关着：一次请求都不发
     if (config.autoTitle === false) return;
@@ -178,13 +175,7 @@ export class AutoNaming {
     const user = buildPrompt(rows.map((row) => toAgentMessage(row)));
     if (user.length === 0) return;
 
-    let title: string;
-    try {
-      title = await this.complete({ system: TITLE_INSTRUCTION, user, modelId: namingModel.id });
-    } catch {
-      // 调用失败（端点报错 / 超时）：保持原名，不重试、不报错
-      return;
-    }
+    const title = await this.complete({ system: TITLE_INSTRUCTION, user, modelId: namingModel.id });
 
     const name = sanitizeTitle(title);
     // 模型给了个空串（或者只有标点 / 引号）：同样保持原名

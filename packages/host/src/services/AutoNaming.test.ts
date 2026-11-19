@@ -3,9 +3,9 @@
  * 用取名模型（缺省回落兜底模型）；起不出名就保持原名；写回时 `nameIsAuto` 继续为真；
  * 判据里**没有**任何「数消息条数」的条件 —— 换记忆之后那一段不会再被重新起名。
  *
- * 断言的全是**看得见的后果**：名字变了没有、请求发了几次、推了几条事件。`nameIfUnnamed` 回的是
- * `void`（生产侧那个后台钩子只要它不抛），所以「为什么没起名」不靠返回值而是靠这些后果去钉 ——
- * 那八格的清单也就住在这里（见下面的 `AutoNameSkip`）。
+ * 断言的全是**看得见的后果**：名字变了没有、请求发了几次、推了几条事件、抛没抛。`nameIfUnnamed`
+ * 回的是 `void`（生产侧那个后台钩子只要它不抛），所以「为什么没起名」不靠返回值而是靠这些后果
+ * 去钉 —— 那六格的清单也就住在这里（见下面的 `AutoNameSkip`）。
  */
 
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
@@ -132,35 +132,34 @@ async function seedFirstTurn(harness: Harness, sessionId = "c1"): Promise<void> 
 let harness: Harness;
 
 /**
- * 「为什么这次没起名」的八格闭集 —— **只住在这里**。
+ * 「为什么这次没起名」的六格闭集 —— **只住在这里**。
  *
  * 从前它是 `AutoNaming` 对外的一份返回值（`{ named, name, skipped, problem }`），而生产侧没有
  * 任何调用方读它（`app.ts` 那一侧本来就 `void` 掉返回值、`.catch` 只记日志）。既然没人分支，
- * 就不该让一个八格联合类型住在生产代码里：它能表达的只是「现在走的是哪一条返回」，而每一条的
+ * 就不该让一个联合类型住在生产代码里：它能表达的只是「现在走的是哪一条返回」，而每一条的
  * 后果都可以直接断言（改没改名、发没发请求、抛没抛），后者才是用例该钉的东西。
+ *
+ * 「配置读不出来」与「叫模型失败」不在这六格里：它们不是「没起名」，是「这次没起成」，已经
+ * 改为把失败抛给调用方（出口是 `app.ts` 的 `logger.warn`）。
  */
 type AutoNameSkip =
   | "session_missing"
-  | "config_unreadable"
   | "disabled"
   /** 用户把名字改成了别的（`nameIsAuto` 为假）：这个名字归用户，永不再动 */
   | "renamed_by_user"
   /** 名字不是默认值、也不是用户改的 —— 那就已经自动起过了，永不再动 */
   | "already_named"
   | "no_model"
-  | "empty_title"
-  | "call_failed";
+  | "empty_title";
 
-/** 八格里每一格对应哪一条用例（漏一格写在 `Record` 里就编译不过） */
+/** 六格里每一格对应哪一条用例（漏一格写在 `Record` 里就编译不过） */
 const COVERED: Record<AutoNameSkip, string> = {
   session_missing: "会话不存在时不抛错、不发请求",
-  config_unreadable: "配置读不出来：保持原名、不发请求",
   disabled: "开关关着就一次请求都不发",
   renamed_by_user: "用户改过名字就不动它",
   already_named: "已经自动起过（含换记忆之后）就不再动",
   no_model: "没有可用的取名模型就保持原名",
   empty_title: "模型给了空串：保持原名、不报错",
-  call_failed: "调用失败：保持原名、不抛错",
 };
 
 // 整个文件共用一个库：`new + migrate` 每用例 55ms，清表只是一条 DELETE 批次。
@@ -211,12 +210,10 @@ afterAll(async () => {
 });
 
 describe("自动命名的触发条件（D2 / F-C4）", () => {
-  it("八格闭集都有用例钉着（它们从前是返回值里的 `skipped`）", () => {
+  it("六格闭集都有用例钉着（它们从前是返回值里的 `skipped`）", () => {
     expect(Object.keys(COVERED).sort()).toEqual(
       [
         "already_named",
-        "call_failed",
-        "config_unreadable",
         "session_missing",
         "disabled",
         "empty_title",
@@ -273,9 +270,9 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
     expect((await off.sessions.get("c1"))?.name).toBe(DEFAULT_NAME);
   });
 
-  it("配置读不出来：保持原名、不发请求", async () => {
+  it("配置读不出来：把失败交给调用方，不发请求", async () => {
     // 真的读坏一份配置很难造（`ConfigManager` 会恢复出厂），所以这里换一个会抛的读盘口：
-    // 这一格要验的是「读不出配置就当场收手」，不是配置怎么坏的
+    // 这一格验的是「读不出配置就把失败交出去」，不是配置怎么坏的
     const broken = new AutoNaming({
       sessions: harness.sessions,
       messages: harness.messages,
@@ -292,7 +289,7 @@ describe("自动命名的触发条件（D2 / F-C4）", () => {
     });
     await seedFirstTurn(harness);
 
-    await broken.nameIfUnnamed("c1");
+    await expect(broken.nameIfUnnamed("c1")).rejects.toThrow("配置读不出来");
     expect(harness.calls).toHaveLength(0);
     expect((await harness.sessions.get("c1"))?.name).toBe(DEFAULT_NAME);
   });
@@ -394,21 +391,23 @@ describe("起不出名就保持原名（D2）", () => {
     expect(harness.events).toHaveLength(0);
   });
 
-  it("调用失败：保持原名、不抛错（后台钩子不把失败变成一个新事件）", async () => {
+  it("会话不存在时不抛错（这是后台钩子）", async () => {
+    await expect(harness.service.nameIfUnnamed("没有这段")).resolves.toBeUndefined();
+    expect(harness.calls).toHaveLength(0);
+  });
+});
+
+describe("起不成名是一次失败，交给调用方（出口在 `app.ts` 的 `logger.warn`）", () => {
+  it("端点 401：抛给调用方，名字一动不动，也不推事件", async () => {
     await seedFirstTurn(harness);
     harness.behaviour.reply = async () => {
       throw new Error("端点 401");
     };
 
-    await expect(harness.service.nameIfUnnamed("c1")).resolves.toBeUndefined();
+    await expect(harness.service.nameIfUnnamed("c1")).rejects.toThrow("端点 401");
     expect(harness.calls).toHaveLength(1);
     expect(harness.events).toHaveLength(0);
     expect((await harness.sessions.get("c1"))?.name).toBe(DEFAULT_NAME);
-  });
-
-  it("会话不存在时不抛错（这是后台钩子）", async () => {
-    await expect(harness.service.nameIfUnnamed("没有这段")).resolves.toBeUndefined();
-    expect(harness.calls).toHaveLength(0);
   });
 });
 
