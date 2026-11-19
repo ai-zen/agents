@@ -1175,7 +1175,7 @@ export class HostApp {
    * 1. 上一次答完留下的待交接（`pendingHandoff`）现在能兑现就兑现 —— 那时这段不闲，所以没交接；
    * 2. 兑现了就不再问交接线（已经在交接，没理由再问一道）；没兑现（没事 / 仍然接不了）就照旧问。
    *
-   * 两件事都只读当下事实：没有「刚才那一轮的结果」，也没有用量以外的输入。
+   * 两件事都只读当下事实：没有「上一次回答的结果」，也没有用量以外的输入。
    */
   private async handoffOnIdle(sessionId: string): Promise<void> {
     const started = await this.runPendingHandoff(sessionId);

@@ -12,7 +12,7 @@ export const zh = {
   "error.unauthorized": "这个访问密钥没被接受，检查一下密钥再试一次。",
   "error.invalidParams": "这次请求里有不对的地方：{field}。",
   "error.notFound": "找不到这个 id 对应的{entity}。",
-  "error.busy": "这段会话还在跑上一轮。等它跑完，或者先停下它。",
+  "error.busy": "这段会话还在忙。等它跑完，或者先停下它。",
   // 会话存在但没人驱动它（PRD 1.2）：外面投不进去，只有从界面上发话会先把它叫起来
   "error.sessionDead":
     "这段会话现在是死的，外面投不进去 —— 只有在界面上发一句话，才会先把它叫起来再投。",
@@ -26,13 +26,13 @@ export const zh = {
   // 助手没有可用模型（结构化原因在 `detail` 里）
   "error.modelUnresolved": "这个助手没有可用的模型 —— 给它挑一个模型，或者在设置里指定一个默认模型。",
   "error.notFactoryModel": "「{id}」不在出厂模型清单里，没有可以恢复的出厂版本。",
-  "error.mcpUnavailable": "{name} 没有响应，这一轮缺它的工具，其它能力照常。",
+  "error.mcpUnavailable": "{name} 没有响应，这一次请求缺它的工具，其它能力照常。",
   "error.modelUnsupported": "这段会话里已经有图片，{model} 读不了图片，所以没有换过去。",
   "error.handoffDeclined": "这次不交接，会话继续往下跑。",
   "error.questionPending": "还有一个问题没回答（{question}）。先回答它，再发新内容。",
   "error.contextGuard": "这段会话在第 {used} 个 token 时到了 {limit} 这条线，请求在发出去之前就停下了。",
-  // 某个钩子在请求发出前拒了这一圈（core 的 `denied` 事件）：历史上一个字都没多
-  "error.denied": "这一轮在发出去之前就被拦下了：{reason}",
+  // 某个钩子在请求发出前拒了这一次请求（core 的 `denied` 事件）：历史上一个字都没多
+  "error.denied": "这一次请求在发出去之前就被拦下了：{reason}",
 
   // ---- 通知：三档语气 + 是否到点消失（PRD L3 / F-I8）----
   "notice.settingsApplied": "配置已生效，不用重启。",

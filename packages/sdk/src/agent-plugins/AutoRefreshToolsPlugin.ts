@@ -8,12 +8,12 @@ import type { SdkAgent } from "../runtime/SdkAgent.js";
  *
  * | 档位 | 钩子 | 会话中新装的 MCP / skill / 工具什么时候能被模型看见 |
  * |------|------|---------------------------------------------|
- * | `inner-loop-start` | `onInnerLoopStart`（每次请求发出前） | 同一轮里下一次请求就看见（含工具回合的空档） |
- * | `outer-loop-start` | `onOuterLoopStart`（每一批事件开头，一圈只刷一次） | 下一轮会话才看见；一轮只刷一次，开销最小 |
+ * | `inner-loop-start` | `onInnerLoopStart`（每次请求发出前） | 这一次回答里的下一次请求就看见（含工具回合的空档） |
+ * | `outer-loop-start` | `onOuterLoopStart`（每一批事件开头，一批只刷一次） | 下一次被叫起来才看见；一批只刷一次，开销最小 |
  * | `off` | 不装插件 | 只靠 `/reload` |
  *
- * 为什么不是「每轮固定刷一次」：一次 `refresh()` 会重扫 MCP 配置、按需建连接，
- * 长工具链的一轮里可能要跑好几次。默认 `inner-loop-start` 是时效优先的取舍，
+ * 为什么不是「每次请求固定刷一次」：一次 `refresh()` 会重扫 MCP 配置、按需建连接，
+ * 一条长工具链里可能要跑好几次。默认 `inner-loop-start` 是时效优先的取舍，
  * 嫌开销大就换成 `outer-loop-start`。
  *
  * 档位名沿用 `outer-loop-start`（配置里写着它）：它映射到的钩子就是 core 的外循环开头
@@ -40,13 +40,13 @@ export class AutoRefreshToolsPlugin implements AgentPlugin {
     this.when = options.when ?? "inner-loop-start";
   }
 
-  /** 内循环开始（每次请求前）：能力变化在同一轮里就能生效 */
+  /** 内循环开始（每次请求前）：能力变化在同一次回答里就能生效 */
   async onInnerLoopStart(ctx: InnerLoopContext): Promise<void> {
     if (this.when !== "inner-loop-start") return;
     await refreshTools(ctx.agent as SdkAgent);
   }
 
-  /** 外循环开始（这一批事件的开头）：最省，代价是要等到下一轮 */
+  /** 外循环开始（这一批事件的开头）：最省，代价是要等到下一次被叫起来 */
   async onOuterLoopStart(ctx: OuterLoopContext): Promise<void> {
     if (this.when !== "outer-loop-start") return;
     await refreshTools(ctx.agent as SdkAgent);

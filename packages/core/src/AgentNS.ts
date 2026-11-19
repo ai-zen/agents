@@ -93,10 +93,10 @@ export namespace AgentNS {
     /**
      * 产生本条 assistant 消息的那次 API 响应的 token 用量。
      * 由流式响应的最后一个 chunk 写入；仅 assistant 消息会有值。
-     * 「上一轮的用量」就是本会话最后一条带 `usage` 的 assistant 消息 —— 读法只有这一种，
+     * 「上一次回答的用量」就是本会话最后一条带 `usage` 的 assistant 消息 —— 读法只有这一种，
      * 不存在第二份快照。
      * 将本会话全部 assistant 消息的 `usage` 求和，即计费口径的累计消耗
-     * （每轮请求都会重发完整历史，故求和 = 实际消耗）。
+     * （每次请求都会重发完整历史，故求和 = 实际消耗）。
      */
     usage?: Usage;
     /**
@@ -123,7 +123,7 @@ export namespace AgentNS {
      * 这条消息自己出的错 —— 与 `failed` 事件载荷是**同一个实例**，不另造一个形状。
      *
      * 错误文本绝不要塞进 `content`：`content` 是模型说的话，塞进去之后只要「保留半截」
-     * 策略一生效，模型下一轮就会看到自己「说」了一段 `ECONNREFUSED`。
+     * 策略一生效，模型下一次请求就会看到自己「说」了一段 `ECONNREFUSED`。
      * 例外是 `role: tool`：那条消息的 `content` 本来就是给模型读的**结果**。
      */
     error?: AgentError;
@@ -162,7 +162,7 @@ export namespace AgentNS {
   }
 
   /**
-   * **钥匙**：把这一圈叫起来，自己不落地成任何消息。
+   * **钥匙**：只为把它叫起来，自己不落地成任何消息。
    *
    * 存在的唯一理由是「输入已经在 `messages` 里了」—— 委派的 subagent、装载好历史的一次性
    * 会话，都是这种情形：燃料装好了，只差拧一下。没有正文就没有消息，所以没有 `messageId`，

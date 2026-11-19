@@ -19,7 +19,7 @@ export class SdkError extends Error {
  * 上下文超限错误。由 ContextGuardPlugin 在请求前**用来拼拒绝理由**。
  *
  * 注意：它现在不再被抛出。core 重写之后，钩子里的异常会穿到 `start()` 外面把整个循环
- * 打死（agent 变成僵尸），所以护栏改成「返回字符串 = 拒这一圈」（`onInnerLoopStart`），
+ * 打死（agent 变成僵尸），所以护栏改成「返回字符串 = 拒这一次请求」（`onInnerLoopStart`），
  * 理由那句文案就来自这个类的 `message`。结构化字段（用量 / 阈值）**没有通道交出去**——
  * 拒绝理由只有字符串这一种形状；宿主若必须按数字渲染文案，需要 core 提供带结构载荷的
  * `denied`。

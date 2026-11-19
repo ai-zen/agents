@@ -60,7 +60,7 @@ export type BizCode =
   | "handoff_declined"
   /** 还有问题挂着没答，且它在挡着这段会话（PRD D22 / D23 / F-D10） */
   | "question_pending"
-  /** 上下文到了硬线，本轮不再发出请求（PRD F-D1 / D23） */
+  /** 上下文到了硬线，这一次请求不再发出（PRD F-D1 / D23） */
   | "context_guard";
 
 /** 全部业务码；用于校验与测试遍历 */

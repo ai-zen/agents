@@ -39,7 +39,7 @@ export interface AutoMigrateOptions {
    * 迁移完成之后的回声（可选）：`mode` 是**实际**用的执行者（`self` 降级到 `summary` 时以
    * 服务报的为准）。宿主据此落「这段会话压缩过」这类观测事实 —— 插件自己不认识存储层。
    *
-   * 钩子抛错只记一条日志：迁移已经完成，标不出来是观测问题，不该反过来让这一轮报错。
+   * 钩子抛错只记一条日志：迁移已经完成，标不出来是观测问题，不该反过来让这一次交接报错。
    */
   onMigrated?: (info: AutoMigrateTriggerInfo & { mode: HandoffMode }) => void | Promise<void>;
   /**
@@ -69,13 +69,13 @@ export interface AutoMigrateOptions {
  * ## 为什么落在 `onIdle`（旧的 `onAfterSend` 已删除）
  *
  * 迁移是「**彻底不动了才做**」的事：它要在原会话里再跑一个交接回合写文档，换记忆则在
- * 宿主那一侧（服务只管产出文档）。「这一圈答完了」还不够 ——
+ * 宿主那一侧（服务只管产出文档）。「这一次回答完了」还不够 ——
  * 内循环可能还要接着跑工具、队列里可能还压着别的投递，那些都还在写同一个数组。
  * `onIdle` 的语义正是「手上没活、队列也空」（`CORE.md` §4），此刻开工才不会
- * 踩到正在跑的圈；而 `onOuterLoopEnd` 只保证「这一批跑完了」，队列里可能还有货。
+ * 踩到正在跑的那一次请求；而 `onOuterLoopEnd` 只保证「这一批跑完了」，队列里可能还有货。
  *
  * ## 两层让行（缺一不可）
- *   - `service.handingOff`：交接回合本身就是「往同一个 agent 里再投一轮」，它跑完后 agent 又会
+ *   - `service.handingOff`：交接回合本身就是「往同一个 agent 里再投一次」，它跑完后 agent 又会
  *     变闲一次，`onIdle` 会再次到这里；不跳过就会「交接触发交接 → 交接再交接」无限递归；
  *   - 交接回合结束后的用量也仍可能超阈值，故 handingOff 判断必须覆盖整个交接过程。
  *
@@ -108,7 +108,7 @@ export class AutoMigratePlugin implements AgentPlugin {
     // 交接进行中（本服务这一趟还在跑）：让行（防递归）
     if (service.handingOff) return;
 
-    // 上一轮 prompt 用量：只从消息上读（与 `ContextGuardPlugin` 同一份事实、同一个读法）
+    // 上一次回答的 prompt 用量：只从消息上读（与 `ContextGuardPlugin` 同一份事实、同一个读法）
     const promptTokens = lastPromptTokens(agent);
     if (promptTokens == null) return;
     if (promptTokens <= handoffTokens) return;
@@ -137,7 +137,7 @@ export class AutoMigratePlugin implements AgentPlugin {
       // 凭空多一条「迁移失败」（默认 logger 是 console.error，TUI 下直接撕画面）
       if (err instanceof HandoffAbortedError) return;
       // agent 已经关门/被硬杀（`stop()` / `kill()` 之后又走到 idle）：没什么可交接的。
-      // 不报错、也不降级 summary —— 那会为一个已经没有的会话白烧一轮全量输入。
+      // 不报错、也不降级 summary —— 那会为一个已经没有的会话白烧一次全量输入。
       if (err instanceof AgentError && err.code === "closed") return;
       getLogger().error(`[autoMigrate] handoff failed: ${err?.message ?? err}`);
       await this.notifyFailed(onFailed, { promptTokens, handoffTokens, error: err });

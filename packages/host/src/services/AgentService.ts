@@ -200,7 +200,7 @@ function matchesPatch(params: ModelParams | undefined, patch: ModelParams): bool
  * 去掉「属于某个思考策略档位」的那些参数键，回剩下的参数（没有剩下时 `undefined`）。
  *
  * 判断一个键是不是思考参数只看一件事：它在策略表里出现过（SDK 那套表就是这么定的，
- * 不硬编码任何键名）。换模型之后旧档位的键留在定义上，下一轮就会把旧模型才认的参数
+ * 不硬编码任何键名）。换模型之后旧档位的键留在定义上，下一次请求就会把旧模型才认的参数
  * 发给新模型。
  */
 function withoutThinkingParams(

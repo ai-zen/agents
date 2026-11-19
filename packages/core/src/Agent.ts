@@ -18,18 +18,18 @@ import { formatContentSection } from "./formatContent.js";
 // 钩子：缝在哪儿（说位置，不说发生了什么事 —— 后者归事件）
 // ---------------------------------------------------------------------------
 
-/** 钩子统一返回值：返回 string = 拒（这一圈/这次调用不跑），返回 undefined/void = 放行 */
+/** 钩子统一返回值：返回 string = 拒（这次请求/这次调用不跑），返回 undefined/void = 放行 */
 export type HookResult = string | void | Promise<string | void>;
 
-/** 外循环一圈的上下文（这一批事件） */
+/** 外循环（这一批事件）的上下文 */
 export interface OuterLoopContext {
   agent: Agent;
-  /** 这一圈取到的这批条目（可能含只拧钥匙不带正文的） */
+  /** 这一批取到的条目（可能含只拧钥匙不带正文的） */
   entries: AgentNS.InboxEntry[];
 }
 
 /**
- * 内循环一圈的上下文。
+ * 内循环（这一次请求）的上下文。
  *
  * `body` 是**这次要发出去的请求体**，不是 `agent.messages` —— 它是按白名单重排的一份快照，
  * 一次性的。钩子可以直接改它的 `messages`：素材还原（库里只存引用、发送时才变成真东西）
@@ -44,7 +44,7 @@ export interface InnerLoopContext {
  * 死活与状态类钩子的上下文。
  *
  * 为什么它们也要带 `agent`：插件在这几个时刻通常正需要读/改它（例如「闲下来之后把会话
- * 重开一轮」要先拿到 agent）。不带就得先去别的钩子里「认领」一个，那是多余的中间态。
+ * 重来一次」要先拿到 agent）。不带就得先去别的钩子里「认领」一个，那是多余的中间态。
  */
 export interface LifecycleContext {
   agent: Agent;
@@ -99,9 +99,9 @@ export interface SubAgentEntry {
  * | `onInit` | 不能 | 注册后初始化（`init()`），与死活无关 |
  * | `onStart` / `onOutputPaused` / `onOutputResumed` / `onIdle` / `onStop` / `onKill` | 不能 | 死活与状态的边 |
  * | `onAbort` | 不能 | 有人按了停（闸本来关着也照发） |
- * | `onOuterLoopStart` / `onOuterLoopEnd` | 不能 | 一圈的开始 / 结束 |
+ * | `onOuterLoopStart` / `onOuterLoopEnd` | 不能 | 这一批的开始 / 结束 |
  * | `onInnerLoopStart` | **能拒** | 排在造 assistant 占位**之前**，拒了历史里一个字都不多 |
- * | `onInnerLoopEnd` | 不能 | 一圈结束 |
+ * | `onInnerLoopEnd` | 不能 | 这一次请求结束 |
  * | `onToolStart` | **能拒** | 拒了就是「这个工具没给出有效结果」，原因作为 tool 消息回给模型 |
  * | `onToolEnd` | 不能 | 工具跑完了 |
  * | `onSubAgentStart` | **能拒** | 拒了这次委派不跑 |
@@ -359,7 +359,7 @@ function toInboxEntry(
  */
 const DENIABLE_HOOKS = new Set<string>(["onInnerLoopStart", "onToolStart", "onSubAgentStart"]);
 
-/** 在途的那一圈（一次请求 + 它引出的工具）：寿命**只到这一圈**，下一圈是全新的 */
+/** 在途的那一次请求（含它引出的工具）：寿命**只到这一次**，下一次是全新的 */
 interface Inflight {
   controller: AbortController;
   /** `Promise.race` 的伙伴：不管对方听不听话，`await` 立刻返回 */
@@ -431,7 +431,7 @@ export class Agent extends AgentContext {
 
   /** `start()` 的那句 promise：到死才 resolve，且不 reject */
   private runPromise?: Promise<void>;
-  /** 在途的那一圈（没有正在发请求 / 跑工具的一圈时是 `undefined`） */
+  /** 在途的那一次请求（没有正在发请求 / 跑工具时是 `undefined`） */
   private inflight?: Inflight;
 
   constructor(options: PickRequired<AgentContext, "client" | "model">) {
@@ -577,7 +577,7 @@ export class Agent extends AgentContext {
   /**
    * 起来等事件。返回一个**到死才 resolve** 的 promise，且**永不 reject**。
    *
-   * 幂等：重复调返回同一句 promise。失败不终结 agent —— 一轮请求挂了就是一轮挂了，
+   * 幂等：重复调返回同一句 promise。失败不终结 agent —— 一次请求挂了就是一次挂了，
    * 记在那条消息的 `error` 上、报一个 `failed` 事件，循环接着等下一个事件。
    * core 自己写崩了也走这条路（报 `failed` 再退出循环）：它不该让调用方在 `await` 上
    * 接到一个「框架 bug」形状的拒绝，那样调用方只能把 bug 当业务处理。
@@ -745,7 +745,7 @@ export class Agent extends AgentContext {
    *
    * 开的是队列的输出闸：挂在闸上的消费者被**一次性全部放行**，按原顺序接着取 ——
    * 队列里有货的话，外循环一被放行就自己取走、自己报 `working`，那件事归它报，这里不替它说。
-   * 也不在这里顺手取件：用户手快连点 `abort` / `resumeOutput` 时这一圈还在收尸，
+   * 也不在这里顺手取件：用户手快连点 `abort` / `resumeOutput` 时这一次请求还在收尸，
    * 此刻去取件就变成两个东西同时写 `messages`。
    */
   resumeOutput(): void {
@@ -771,7 +771,7 @@ export class Agent extends AgentContext {
    * 两个码都由 core 定，判断依据是队列自己的两格（`QueueInputPausedError` 只说「不收」，
    * `isDone` 才分得出是哪一种）。队列不认识 agent 的码，这边也不去猜队列的内部状态。
    *
-   * 不给 `input`（或给一个没有正文的）= 拧钥匙：只把这一圈叫起来，不落地任何消息。
+   * 不给 `input`（或给一个没有正文的）= 拧钥匙：只把它叫起来，不落地任何消息。
    */
   push(input?: AgentNS.InboxInput): void {
     // 一次性 agent 只有一条因果链：发起它的那一次投递。之后关收，
@@ -986,7 +986,7 @@ export class Agent extends AgentContext {
    * 三个时刻：派遣时加一项、结束时把 `endedAt` 填上（不移除）、外循环每一批的开头清空上一批。
    *
    * 三条纪律：
-   * - **它不参与任何内部判断**：内循环、取件、续圈、`state` 那一格、中断都不看它。清空点选在哪儿
+   * - **它不参与任何内部判断**：内循环、取件、续下一次请求、`state` 那一格、中断都不看它。清空点选在哪儿
    *   因此不影响正确性，只影响「外面什么时候读到空」；
    * - **它是名册，不是消息的唯一真相**：subagent 说过的话在 `entry.agent.messages` 里，
    *   这里只存指针；所以它跟着 agent 活在内存里，一死、一重启就一起没了（不入库）；
@@ -1058,7 +1058,7 @@ export class Agent extends AgentContext {
 
       this.setState("working");
 
-      // ① 修一遍历史 —— **唯一一次**回头看历史的地方（`CORE.md` §6），在进圈之前
+      // ① 修一遍历史 —— **唯一一次**回头看历史的地方（`CORE.md` §6），在发请求之前
       this.repair();
 
       // ② 落地：带正文的落一条 user 消息，钥匙什么都不落
@@ -1118,7 +1118,7 @@ export class Agent extends AgentContext {
    * 续行条件只有一条：**刚才有工具调用**。工具是模型要的，跑完必须把结果再喂回去问一次；
    * 没有工具调用就是这一次说完了。没有第二个判据。
    *
-   * **这一圈不看那个闸**：不取件是队列输出闸的事（`inbox.isOutputPaused`），而闸只在**取件**
+   * **这一次请求不看那个闸**：不取件是队列输出闸的事（`inbox.isOutputPaused`），而闸只在**取件**
    * 那一刻起作用；手上已经取出来的那批算已经开始 —— 它要把这一批跑完，从下一批起才不再取
    * （`CORE.md` §2）。所以下面只判 `killed`：死了才不发请求。要立刻停用 `abort`。
    */
@@ -1148,7 +1148,7 @@ export class Agent extends AgentContext {
       await this.dispatchHook("onInnerLoopEnd", ctx);
 
       if (!hadTools) return;
-      // 唯一的取件点：这一圈刚收尾（工具结果已进 messages）、下一圈还没开始。
+      // 唯一的取件点：这一次请求刚收尾（工具结果已进 messages）、下一次还没开始。
       // 内循环只看 high —— 低优先级与钥匙它连看都不看。
       this.landHigh();
     }
@@ -1170,7 +1170,7 @@ export class Agent extends AgentContext {
     return { agent: this, body };
   }
 
-  /** 这一圈：发请求 → 收流 → 跑工具。返回「刚才有没有工具调用」 */
+  /** 这一次请求：发请求 → 收流 → 跑工具。返回「刚才有没有工具调用」 */
   private async runTurn(assistant: Message, ctx: InnerLoopContext): Promise<boolean> {
     const inflight = this.newTurn();
     this.inflight = inflight;
@@ -1198,9 +1198,9 @@ export class Agent extends AgentContext {
           // `usage` 与 `finish_reason` 不是「这一片带来了什么」，它们是这次响应的外层字段：
           // 不属于增量，也就不进 `applyChunk`，在调用方这一侧钉到消息上。
           //
-          // 流式最后一个 chunk 才带 usage：钉到本轮 assistant 消息上（与 finish_reason 同处），
+          // 流式最后一个 chunk 才带 usage：钉到这次回答的 assistant 消息上（与 finish_reason 同处），
           // 使用量随消息持久化，从而可按消息求和统计累计消耗（计费口径）与审计。
-          // core 不另存「上一轮用量」的快照：要读就读最后一条带 `usage` 的 assistant 消息。
+          // core 不另存「上一次回答的用量」的快照：要读就读最后一条带 `usage` 的 assistant 消息。
           if (chunk.usage) {
             assistant.usage = chunk.usage as unknown as AgentNS.Usage;
           }
@@ -1231,11 +1231,11 @@ export class Agent extends AgentContext {
       this.emit("responseFinished", { agent: this, message: assistant });
 
       const hadTools = await this.runTools(assistant, inflight);
-      // 工具段里按了中断：这一批到此为止 —— 再向模型要一圈，它就会把整段话接着说完，
+      // 跑工具的时候按了中断：这一批到此为止 —— 再向模型要一次，它就会把整段话接着说完，
       // 用户按的那一下等于没按（`abortRx` 只让正在跑的工具立刻返回，不知道之后该不该续）
       return inflight.controller.signal.aborted ? false : hadTools;
     } catch (error) {
-      // 被掐断的那一轮不是「出错」：它有自己的状态，也不报 `failed`
+      // 被掐断的那一次回答不是「出错」：它有自己的状态，也不报 `failed`
       if (inflight.controller.signal.aborted) {
         assistant.status = AgentNS.MessageStatus.Aborted;
         this.touch(assistant);
@@ -1266,7 +1266,7 @@ export class Agent extends AgentContext {
     return new AgentError(code, message, { cause: error });
   }
 
-  /** 这一圈的中断装置：全新的 controller + `abortRx`，寿命只到这一圈 */
+  /** 这一次请求的中断装置：全新的 controller + `abortRx`，寿命只到这一次 */
   private newTurn(): Inflight {
     const controller = new AbortController();
     return {
@@ -1280,7 +1280,7 @@ export class Agent extends AgentContext {
   /**
    * 掐在途：`abort()` 与 `kill()` 都走它。
    *
-   * 名字留着 —— 它说的是**动作**。而「这一圈被掐过没有」**不另存一格**：
+   * 名字留着 —— 它说的是**动作**。而「这一次请求被掐过没有」**不另存一格**：
    * `controller.signal.aborted` 就是那一格，多存一份 `aborted` 迟早会与 controller 不同步。
    */
   private abortTurn(): void {
@@ -1292,10 +1292,10 @@ export class Agent extends AgentContext {
   // -------------------------------------------------------------------------
 
   /**
-   * 并行跑同一圈里的多个工具，**按调用顺序落地** tool 消息（不按完成顺序）。
+   * 并行跑同一次请求里的多个工具，**按调用顺序落地** tool 消息（不按完成顺序）。
    *
    * 失败即「没给出有效结果」：参数烂、执行挂、工具不存在、钩子拒 —— 同一件事，
-   * 一条 tool 消息回给模型，引擎不停圈、不重试。
+   * 一条 tool 消息回给模型，引擎不中断、不重试。
    */
   private async runTools(assistant: Message, inflight: Inflight): Promise<boolean> {
     const calls = (assistant.tool_calls ?? []).filter((tc) => tc.type === "function" && tc.function);

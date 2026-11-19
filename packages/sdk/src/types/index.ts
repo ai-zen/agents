@@ -102,8 +102,8 @@ export interface Endpoint {
  * 两个阈值语义不同，消费方也不同：
  *   - `handoff`：软线。`AutoMigratePlugin` 在 agent 闲下来之后拿 `usage.prompt_tokens` 比它，
  *     超过即触发任务交接（交接本身还要再发 1~2 次请求，所以这条线必须留足余量）。
- *   - `guard`：硬线。`ContextGuardPlugin` 在**每次请求前**比它，超过即**拒这一圈**
- *     （`onInnerLoopStart` 返回理由 → core 报 `denied`，这一轮压根没发出去）——
+ *   - `guard`：硬线。`ContextGuardPlugin` 在**每次请求前**比它，超过即**拒这一次请求**
+ *     （`onInnerLoopStart` 返回理由 → core 报 `denied`，这一次请求压根没发出去）——
  *     这是最后一道保护，宁可报错也不要发出必然失败的请求。
  *
  * 建议 `guard ≈ handoff × 1.5`，给交接留出缓冲；两者都是绝对值，配置里写多少就是多少，
@@ -112,7 +112,7 @@ export interface Endpoint {
 export interface TokenThresholds {
   /** 交接阈值（软线）：prompt_tokens 超过它 → 触发任务交接 */
   handoff: number;
-  /** 强行阻断阈值（硬线）：请求前用量超过它 → 中断本轮并报错 */
+  /** 强行阻断阈值（硬线）：请求前用量超过它 → 中断这一次请求并报错 */
   guard: number;
 }
 
@@ -274,9 +274,9 @@ export interface AppConfig {
   /**
    * 被中断的 assistant 消息（已输出的思考 / 正文）如何处置。
    *
-   * - `keep`：保留已输出的部分（恢复为 `Completed`）—— 模型下一轮能接着半截往下说，
+   * - `keep`：保留已输出的部分（恢复为 `Completed`）—— 模型下一次请求能接着半截往下说，
    *   不会「失忆重来」。**出厂默认**。
-   * - `drop`：丢弃（保持 `Aborted`，不进下一轮上下文）。core 的库级默认。
+   * - `drop`：丢弃（保持 `Aborted`，不进下一次请求的上下文）。core 的库级默认。
    *
    * 只管**不带工具调用**的消息；工具轮次由 {@link abortedToolRoundStrategy} 决定。
    * 缺省时由 `createAgent()` 回落 core 默认值（`drop`），出厂配置已写 `keep`。
@@ -295,12 +295,12 @@ export interface AppConfig {
   abortedToolRoundStrategy?: AbortedToolRoundStrategy;
 
   /**
-   * 每轮刷新工具清单（MCP server / skill / 用户工具）的时机。
+   * 刷新工具清单（MCP server / skill / 用户工具）的时机。
    *
    * - `inner-loop-start`：`onInnerLoopStart`，**每次请求前**刷（每次工具回合都能看见新装的
    *   能力）。**出厂默认**；
-   * - `outer-loop-start`：`onOuterLoopStart`，每一批事件开头刷一次（一圈一次），
-   *   要等下一轮才生效，开销最小；
+   * - `outer-loop-start`：`onOuterLoopStart`，每一批事件开头刷一次（一批一次），
+   *   要等下一次被叫起来才生效，开销最小；
    * - `off`：不刷，只靠 `/reload`。
    *
    * 缺省（`undefined`）按 `inner-loop-start` 算 —— 装配方读它时不要写「undefined 就不装」。

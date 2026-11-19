@@ -17,8 +17,8 @@ export interface UnknownToolContext {
 /**
  * AgentContext — 所有 Agent 的基类，只放**构造期**就定下来的配置。
  *
- * 本轮（`CORE.md`）把可变的运行状态全部搬进 `Agent`：这里没有 `runStatus`，也没有
- * 「目前第几圈」。扩展方式是插件（`Agent.use`）与钩子（`CORE.md` §11）。
+ * 这一次重写（`CORE.md`）把可变的运行状态全部搬进 `Agent`：这里没有 `runStatus`，也没有
+ * 任何「现在是第几次」的计数。扩展方式是插件（`Agent.use`）与钩子（`CORE.md` §11）。
  */
 export class AgentContext {
   /**

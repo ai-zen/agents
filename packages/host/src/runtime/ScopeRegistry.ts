@@ -61,7 +61,7 @@ import type { PeerSessionPort } from "@ai-zen/agents-sdk";
  * 归属上这里只是「历史上的家」：它本来为 Scope 的空闲回收而生，回收撤掉之后没有任何
  * ScopeRegistry 的代码碰它。真要收拢，它该搬到一个不依赖任何东西的叶子模块
  * （如 `runtime/clock.ts`），这样 `ChatRunner` 不必为了一个时钟去 import ScopeRegistry。
- * 本轮不动导出（那会牵动一圈 import）。
+ * 这一次重写不动导出（那会牵动一串 import）。
  */
 export interface Clock {
   /** 当前时刻（毫秒，`Date.now()` 口径） */
@@ -203,7 +203,7 @@ export class ScopeRegistry {
    * 就地刷新某一个 Scope —— 配置改完之后用（PRD F-E2：改完即生效）。
    *
    * 刷的是 `Scope.refresh()`：重读配置 + 各插件重新发现（MCP 连接跟着对账），**实例还是同一个**。
-   * 所以正在跑的那一轮不会被抽掉能力，而它读到的配置已经是磁盘上新那一份。
+   * 所以正在跑的那一次请求不会被抽掉能力，而它读到的配置已经是磁盘上新那一份。
    *
    * 只对已经存在的条目动手：不存在就什么也不做（不为刷新去创建一个 Scope —— 下一段会话
    * `create` 时会按新配置建）。正在创建中的条目等它建完再刷。

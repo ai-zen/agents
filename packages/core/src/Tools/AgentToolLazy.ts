@@ -75,7 +75,7 @@ export class AgentToolLazy implements Tool {
     const before = agent.messages.length;
     const forwarded = this.forward(agent, ctx);
 
-    // subagent 自己那一圈被拒时，它一个字都不会产出；理由只在 `denied` 事件里
+    // subagent 这一次请求被拒时，它一个字都不会产出；理由只在 `denied` 事件里
     let refused: string | undefined;
     const offDenied = agent.on("denied", (payload) => {
       refused = payload.reason;
@@ -94,10 +94,10 @@ export class AgentToolLazy implements Tool {
       await ctx.agent.dispatchSubAgentHook("onSubAgentEnd", subCtx);
     }
 
-    // 被拒的一圈不产生任何消息。此时交回「最后一条消息的内容」，父模型读到的会是**它自己
+    // 被拒的那一次请求不产生任何消息。此时交回「最后一条消息的内容」，父模型读到的会是**它自己
     // 那句问题原文** —— 等于 subagent 装傻复读了一遍。这种情况必须显式说「没产出」。
     if (agent.messages.length <= before) {
-      return refused ?? "subagent 没有产出：这一圈被拒绝了，或者它一个字也没说";
+      return refused ?? "subagent 没有产出：这次请求被拒了，或者它一个字也没说";
     }
 
     return agent.messages.at(-1)?.content ?? "";

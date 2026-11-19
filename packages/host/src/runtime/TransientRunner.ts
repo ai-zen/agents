@@ -1,15 +1,15 @@
 /**
- * 一次性会话（PRD D3 / F-A2 / R1 / R49）：一次请求跑一轮，零痕迹。
+ * 一次性会话（PRD D3 / F-A2 / R1 / R49）：一次请求、一个答案，零痕迹。
  *
  * 五件「没有」就是它的定义：**没有 id、不落库、不进会话列表、不可 attach、不推流式事件**。
- * 所以本文件的结构是刻意做窄的 —— 它没有库、没有事件出口、没有轮次注册表，只有「要一个
- * Scope、跑一轮、把结果一次交回去」。做不到的事情（落库、推流）在这里不是被判断掉，而是
- * 根本没有可用的通道。
+ * 所以本文件的结构是刻意做窄的 —— 它没有库、没有事件出口、没有「在跑的请求」那本账，只有
+ * 「要一个 Scope、跑一次、把结果一次交回去」。做不到的事情（落库、推流）在这里不是被判断掉，
+ * 而是根本没有可用的通道。
  *
  * ## 为什么单独一个文件而不是给 `ChatRunner` 加开关
  *
  * `ChatRunner` 的骨架是「落库 + 推流 + 边流边写」，这三件事对一次性会话全是多余的；
- * 加开关会让每一条写库路径后面都跟一个 `if`，而一次性会话在语义上又确实是一次「跑一轮」。
+ * 加开关会让每一条写库路径后面都跟一个 `if`，而一次性会话在语义上又确实就是「跑一次就散」。
  * 于是执行逻辑复用 core 的同一套（`agent.runOnce()` 跑完那一组内循环），落库与推送这一层换掉。
  *
  * ## Scope 的口径
@@ -63,7 +63,7 @@ export type TransientAgentFactory = (context: {
   scope: Scope;
   agentId: string;
   modelId: string | null;
-  /** 这一轮开始前的历史；一次性会话永远是空数组 */
+  /** 这一次请求开始前的历史；一次性会话永远是空数组 */
   history: AgentNS.Message[];
 }) => Promise<ChatAgent>;
 
@@ -99,7 +99,7 @@ export interface TransientRunnerDeps {
   now?: () => number;
 }
 
-/** 一次一次性会话的结果里，`problem` 是「跑完了但这轮不算成功」时的那份说明 */
+/** 一次一次性会话的结果里，`problem` 是「跑完了但这一次不算成功」时的那份说明 */
 export class TransientRunner {
   private readonly scopes: TransientScopes;
   private readonly createAgent: TransientAgentFactory;
@@ -114,12 +114,12 @@ export class TransientRunner {
   }
 
   /**
-   * 跑一轮，把结果一次交回去。
+   * 跑一次，把结果一次交回去。
    *
    * `cwd` 必填（契约要求）：一次性会话的目录基准不能靠进程工作目录猜 —— 宿主是常驻进程，
    * 它的 cwd 由启动方式决定，与调用方想的那个目录没有关系。
    *
-   * 失败走 `HostError`（没有会话可回看，说不出「哪一轮失败了」）；跑完但结局不好
+   * 失败走 `HostError`（没有会话可回看，说不出「哪一次失败了」）；跑完但结局不好
    * （消息停在 error / aborted）时用 `problem` 说明，`message` 照样带回去。
    */
   async run(
@@ -181,7 +181,7 @@ export class TransientRunner {
     // （agent 本身仍然跑完即弃，D28）
   }
 
-  /** 这一轮用哪个助手：入参点名优先，否则配置里的默认助手（没有就说不清用哪个） */
+  /** 这一次用哪个助手：入参点名优先，否则配置里的默认助手（没有就说不清用哪个） */
   private async resolveAgentId(agentId: string | undefined): Promise<string> {
     if (typeof agentId === "string" && agentId.trim().length > 0) return agentId.trim();
     const config = await this.configManager.read();
@@ -207,7 +207,7 @@ export class TransientRunner {
   }
 }
 
-/** 这一轮产出的那条助手消息：取最后一条（工具轮次会有多条，最后一条才是最终答复） */
+/** 这一次产出的那条助手消息：取最后一条（工具轮次会有多条，最后一条才是最终答复） */
 function lastAssistant(messages: AgentNS.Message[]): AgentNS.Message | null {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];

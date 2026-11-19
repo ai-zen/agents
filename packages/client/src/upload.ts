@@ -203,7 +203,7 @@ export async function uploadAsset(
  *      `failures`（`asset_count_exceeded`）—— 调用方需要能逐张说一句人话。前 `limit` 张照常上传：
  *      宿主 `prepareAttachments` 的口径也是「取前 N 张 + 逐条报告超出的」。
  *   2. **一份失败不连累其它份**：某一张读取失败/宿主拒了，它进 `failures`，剩下的继续。
- *      这比整批抛出去更接近用户想要的结果（「四张里有一张不行」不该等于「这轮什么都不发」）。
+ *      这比整批抛出去更接近用户想要的结果（「四张里有一张不行」不该等于「这一次什么都不发」）。
  *   3. 顺序串行：一次拖进来的几张图一块发，并发写同一条 socket 反而是给宿主的接收链排队。
  */
 export async function uploadAssets(

@@ -13,7 +13,7 @@ export const en = {
   "error.unauthorized": "That access key wasn't accepted. Check the key and try again.",
   "error.invalidParams": "Part of this request doesn't look right: {field}.",
   "error.notFound": "There's no {entity} with that id.",
-  "error.busy": "This session is still working on the previous turn. Stop it or wait for it to finish.",
+  "error.busy": "This session is still busy. Stop it or wait for it to finish.",
   // 会话存在但没人驱动它（PRD 1.2）：外面投不进去，只有从界面上发话会先把它叫起来
   "error.sessionDead":
     "This session has nothing driving it right now, so nothing can be sent into it from outside. Sending from the app wakes it up first.",
@@ -30,13 +30,13 @@ export const en = {
   // 恢复出厂时这次编辑的模型在出厂清单里没有对应定义（没有可用来替换的那一条）
   "error.notFactoryModel":
     "\"{id}\" isn't part of the factory model list, so there's no factory version to restore.",
-  "error.mcpUnavailable": "{name} isn't answering, so its tools are missing this turn. Everything else still works.",
+  "error.mcpUnavailable": "{name} isn't answering, so its tools are missing for this request. Everything else still works.",
   "error.modelUnsupported": "{model} can't take the images already in this session, so the switch was refused.",
   "error.handoffDeclined": "Handoff was declined, so this session carries on as it is.",
   "error.questionPending": "There's an unanswered question ({question}). Answer it before sending something new.",
   "error.contextGuard": "This session reached its {limit}-token limit at {used} tokens, so the request was stopped before it could fail.",
-  // 某个钩子在请求发出前拒了这一圈（core 的 `denied` 事件）：历史上一个字都没多
-  "error.denied": "This turn was stopped before it was sent: {reason}",
+  // 某个钩子在请求发出前拒了这一次请求（core 的 `denied` 事件）：历史上一个字都没多
+  "error.denied": "This request was stopped before it was sent: {reason}",
 
   // ---- 通知：三档语气，`duration` 决定是否到点消失（PRD L3 / F-I8）----
   "notice.settingsApplied": "Settings applied — no restart needed.",
@@ -110,7 +110,7 @@ export const en = {
   "notice.unknown": "A notice from the host ({code}).",
   // 交接本身失败（写不出文档、摘要请求出错）；用户取消不算失败，走 `error.handoffDeclined`
   "error.handoffFailed": "The handoff didn't go through: {reason}",
-  // 一次性会话（D3）：一次请求跑一轮，失败时没有会话可回看，只能在这一句里说清
+  // 一次性会话（D3）：一次请求就一个答案，失败时没有会话可回看，只能在这一句里说清
   "error.transientFailed": "That one-off request didn't finish: {reason}",
   // 交接之后新开的那段会话，开场带上交接文档的位置与摘要（D18）
   "handoff.newSessionSummary":

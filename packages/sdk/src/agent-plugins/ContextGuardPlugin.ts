@@ -6,12 +6,12 @@ export interface ContextGuardOptions {
   /**
    * 强行阻断阈值（tokens，绝对值）。
    *
-   * 语义只有一条：请求前上一轮用量超过它 → 中断本轮。没有倍数、没有放宽档——
+   * 语义只有一条：请求前上一次回答的用量超过它 → 中断这一次请求。没有倍数、没有放宽档——
    * 想调松就把它调大，「安全边界写多少就是多少」比「隐式乘以某个系数」可预测得多。
    */
   guardTokens: number;
   /**
-   * 临时让行：返回 `true` 时本轮不做超限判定（默认 `false`）。
+   * 临时让行：返回 `true` 时这一次请求不做超限判定（默认 `false`）。
    *
    * 用于交接回合 —— 那种回合本身就是「上下文已满」时才发起的，若不放宽必定被打回。
    * 语义是「谁做限制谁放宽」：限制在护栏自己身上，放宽也必须由护栏自己表达，
@@ -23,8 +23,8 @@ export interface ContextGuardOptions {
 /**
  * 上下文安全护栏插件。
  *
- * 在每次内循环**发请求前**检测上一轮用量（usage.prompt_tokens）：超过 `guardTokens`
- * 就**拒绝这一圈**，交由上层向用户报错。
+ * 在每次内循环**发请求前**检测上一次回答的用量（usage.prompt_tokens）：超过 `guardTokens`
+ * 就**拒绝这一次请求**，交由上层向用户报错。
  *
  * 与自动交接插件职责分离：
  * - `ContextGuardPlugin`：硬线，只做「严重超限即中断」的安全兜底，绝不继续会话/交接；
@@ -44,7 +44,7 @@ export interface ContextGuardOptions {
  *
  * ## 为什么是「返回字符串」而不是「抛错」
  *
- * 新 core（`CORE.md` §11）里 `onInnerLoopStart` 能拒：**返回 string = 这一圈压根没发出去**
+ * 新 core（`CORE.md` §11）里 `onInnerLoopStart` 能拒：**返回 string = 这一次请求压根没发出去**
  * —— 不会留下一类「永远 Pending 的助手占位」，core 报一个 `denied` 事件（带钩子名与理由），
  * 然后回外循环等下一个事件，循环还活着。
  *
@@ -62,14 +62,14 @@ export class ContextGuardPlugin implements AgentPlugin {
     this.isSuspended = options.isSuspended;
   }
 
-  /** 返回 string = 拒这一圈（这一圈不会发出去，历史里一个字都不多） */
+  /** 返回 string = 拒这一次请求（这一次不会发出去，历史里一个字都不多） */
   async onInnerLoopStart(ctx: InnerLoopContext): Promise<string | undefined> {
     // 交接回合让行（见 `isSuspended`）
     if (this.isSuspended?.()) return;
 
-    // 上一轮的 prompt 用量：只从消息上读（同一份事实、不另立快照，见 `lastPromptTokens`）
+    // 上一次回答的 prompt 用量：只从消息上读（同一份事实、不另立快照，见 `lastPromptTokens`）
     const promptTokens = lastPromptTokens(ctx.agent);
-    // 首轮请求前尚无用量数据，跳过（只能在发出首轮请求、拿到 usage 后才有据可查）
+    // 第一条请求之前尚无用量数据，跳过（只能在发出第一条请求、拿到 usage 后才有据可查）
     if (promptTokens == null) return;
 
     if (promptTokens > this.guardTokens) {

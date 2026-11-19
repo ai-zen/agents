@@ -38,7 +38,7 @@ export interface FilterOptions {
  * 取配置的端口 —— `Scope` 不再收一份配置快照，而是收「怎么拿到当下这一份」。
  *
  * 配置的本质是磁盘上那几个 json：改完之后该由下一次 `refresh()` 现读读到，
- * 而不是把整个 Scope 拆掉重建（拆掉会连带别的能力一起重来，且正在跑的那一轮
+ * 而不是把整个 Scope 拆掉重建（拆掉会连带别的能力一起重来，且正在跑的那一次请求
  * 会被抽掉能力）。端口可以是同步的（测试里给一份常量），也可以是异步的
  * （宿主给 `ConfigManager.read()`）。
  */
@@ -63,7 +63,7 @@ export type ScopeConfigSource = () => AppConfig | Promise<AppConfig>;
  * 设计原则：
  *   - Scope 只做编排：三阶段管线骨架（发现 → 过滤 → 实例化）+ 生命周期
  *   - 能力来源（内置/用户工具、Skill、MCP、SubAgent）全部疏散到 ScopePlugin，各自自持
- *   - config 随 `refresh()` 更新（每轮现读端口），cwd / agentsDir 创建之后不变
+ *   - config 随 `refresh()` 更新（每次现读端口），cwd / agentsDir 创建之后不变
  */
 export class Scope {
   /** 取配置的端口：每次 `refresh()` 都问它要一份 */

@@ -92,7 +92,7 @@ export async function readSettings(file: string): Promise<ConnectionSettings | n
  * 写配置：先写 `.tmp` 再 `rename`，权限 `0600`。
  *
  * 关键在 `rename`：同一文件系统内它是原子的，读方要么看到旧内容、要么看到新内容。`mode` 只在
- * 「这次新建的文件」上生效，`.tmp` 若是上一轮崩溃留下的，权限不会自己变回 `0600`，所以显式再
+ * 「这次新建的文件」上生效，`.tmp` 若是上一次崩溃留下的，权限不会自己变回 `0600`，所以显式再
  * `chmod` 一次。
  */
 export async function writeSettings(file: string, settings: ConnectionSettings): Promise<void> {

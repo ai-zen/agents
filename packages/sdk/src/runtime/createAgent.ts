@@ -21,7 +21,7 @@ export interface CreateAgentOptions {
   /**
    * 被中断的 assistant 消息（已输出的内容 / 思考）如何处置（未传时取 `scope.config`，
    * 再缺则用 core 默认 `drop`）。
-   * `keep` 可让模型在下一轮接着半截往下说，而不是忘掉自己说过什么。
+   * `keep` 可让模型在下一次请求接着半截往下说，而不是忘掉自己说过什么。
    */
   abortedMessageStrategy?: AbortedMessageStrategy;
   /**

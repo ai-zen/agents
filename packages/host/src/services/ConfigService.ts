@@ -287,7 +287,7 @@ export class ConfigService {
         appliedAt: new Date(this.now()).toISOString(),
         reloaded,
         refreshedWorkspaceIds: outcome.refreshedWorkspaceIds ?? [],
-        // 重载本身不需要重启：受影响的 Scope 已经就地刷过，剩下的下一轮发现会读到新磁盘状态
+        // 重载本身不需要重启：受影响的 Scope 已经就地刷过，剩下的下一次发现会读到新磁盘状态
         restartRequired: false,
         noticeId: outcome.noticeId ?? null,
       },

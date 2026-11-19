@@ -151,7 +151,7 @@ export interface HostUpgradeParams {
 /** `upgrade` 的三种结论：已经最新 / 已安排重启 / 没有可升的东西 */
 export type HostUpgradeState = "already_latest" | "restart_scheduled" | "not_available";
 
-/** `upgrade` 出参（PRD F-E3：确认升级真的完成后立即重启，不等在跑的轮次） */
+/** `upgrade` 出参（PRD F-E3：确认升级真的完成后立即重启，不等在跑的请求） */
 export interface HostUpgradeResult {
   state: HostUpgradeState;
   /** 当前运行的版本 */
@@ -1053,7 +1053,7 @@ export interface ConfigBehavior {
   abortedMessageStrategy: AbortedMessageStrategy;
   /** 被中断的工具轮次怎么归一（PRD D15） */
   abortedToolRoundStrategy: AbortedToolRoundStrategy;
-  /** 每轮刷新工具的时机（PRD F-E2：改完配置即生效的那条链） */
+  /** 刷新工具的时机（PRD F-E2：改完配置即生效的那条链） */
   autoRefreshTools: "off" | "outer-loop-start" | "inner-loop-start";
 }
 
@@ -1123,7 +1123,7 @@ export interface ConfigApplyReport {
   /**
    * 这些 Workspace 的 Scope 已**就地刷新**（重读配置 + 重新发现能力）。
    *
-   * 不是被重建：Scope 实例还是同一个，正在跑的那一轮也不会被抽掉能力。
+   * 不是被重建：Scope 实例还是同一个，正在跑的那一次请求也不会被抽掉能力。
    */
   refreshedWorkspaceIds: string[];
   /** 是否还需要重启才生效（配置变更靠刷新能力生效，PRD F-E2） */
@@ -1996,7 +1996,7 @@ export interface MethodMap {
   "host.hello": { params: HostHelloParams; result: HostHelloResult };
   /** F-E3 / D4：升级要能确认「磁盘上的版本已更新」，所以先得能报版本。 */
   "host.version": { params: NoParams; result: HostVersionResult };
-  /** F-E3 / D4：检测版本号 → 确认升级完成 → 立即重启，不等在跑的轮次。 */
+  /** F-E3 / D4：检测版本号 → 确认升级完成 → 立即重启，不等在跑的请求。 */
   "host.upgrade": { params: HostUpgradeParams; result: HostUpgradeResult };
   /** F-E1：命令清单里的「退出」在宿主这一侧的动作。 */
   "host.shutdown": { params: HostShutdownParams; result: HostShutdownResult };

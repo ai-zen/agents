@@ -1,14 +1,14 @@
 import type { Agent, AgentNS } from "@ai-zen/agents-core";
 
 /**
- * 「跑一轮」的测试件 —— 新 core 没有 `send()` 之后，用例里那句 `await agent.send(text)`
+ * 「跑一次」的测试件 —— 新 core 没有 `send()` 之后，用例里那句 `await agent.send(text)`
  * 的等价物只有一条路：**起 → 投 → 等闲**（`CORE.md` §1「投递的两个口子」）。
  *
  * 为什么不直接 `runOnce()`：`runOnce` 只给 `lifetime: "one-shot"` 的 agent 用，而且跑完
- * 就死透（复活 = 新建）。用例里的大多数 agent 是常驻的、要连跑多轮（多轮会话、插件在
- * 第二圈的行为），所以这里走常驻那条路：`start()` + `push()` + 订阅 `state` 等闲。
+ * 就死透（复活 = 新建）。用例里的大多数 agent 是常驻的、要连跑多次（多次会话、插件在
+ * 第二次请求的行为），所以这里走常驻那条路：`start()` + `push()` + 订阅 `state` 等闲。
  *
- * `start()` 幂等（已起来就返回同一句 promise），所以同一轮可以反复调；收尾别忘了
+ * `start()` 幂等（已起来就返回同一句 promise），所以同一次可以反复调；收尾别忘了
  * {@link stopAgent} —— 「到死才 resolve」的那句 promise 得有人等它。
  */
 
@@ -22,12 +22,12 @@ export async function until(predicate: () => boolean, timeoutMs = 3000): Promise
 }
 
 /**
- * 往常驻 agent 投一条用户消息并等这一轮收完（外循环回到「等」）。
+ * 往常驻 agent 投一条用户消息并等这一批跑完（外循环回到「等」）。
  *
  * 返回 `agent.messages` 本身（活对象，不拷贝）。
  *
  * 等的做法与 `HandoffService` 里那处一致：先订阅 `state`，再 `push` —— `push` 之后状态
- * 已经变了，晚一步订阅就错过「这一轮开始了」那一拍，随后第一次报闲会被当成「我这一轮跑完了」。
+ * 已经变了，晚一步订阅就错过「这一批开始了」那一拍，随后第一次报闲会被当成「我这一次跑完了」。
  */
 export async function runRound(
   agent: Agent,
@@ -61,10 +61,10 @@ export async function stopAgent(agent: Agent): Promise<void> {
 }
 
 /**
- * 「跑一轮就收工」：{@link runRound} + {@link stopAgent}。
+ * 「跑一次就收工」：{@link runRound} + {@link stopAgent}。
  *
  * 这是 `await agent.send(text)` 最接近的替换（老 `send` 也是「发出去、等这一段跑完、返回
- * messages」）。**只适用于不需要接着跑的用例** —— 多轮会话要用 {@link runRound}。
+ * messages」）。**只适用于不需要接着跑的用例** —— 多次会话要用 {@link runRound}。
  */
 export async function sendRound(
   agent: Agent,

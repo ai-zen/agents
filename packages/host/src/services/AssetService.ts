@@ -11,7 +11,7 @@
  *      走文件引用、内联 base64 还是退化成文字，由**实发模型与它所用端点**决定，判定逻辑用 SDK 的
  *      `fileToContentSection`（同一份口径，不在这里另写一遍）。没送出去的一律如实记账，不假装成功。
  *      产出**只有一份**内容：段上带着厂商产物（`file_id` / base64），并挂本地标记 `__asset_id`。
- *   3. **重放**（{@link AssetService.resolveHistory}）：历史里的 `__asset_id` 在每轮发送前还原成
+ *   3. **重放**（{@link AssetService.resolveHistory}）：历史里的 `__asset_id` 在每次发送前还原成
  *      当前模型能吃的内容段 —— 换了模型、重启之后再跑，同一条历史照样发得出去。发出去的那一份
  *      经 core 的 `formatContent` 按字段白名单重建，`__` 开头的键不会出网。
  *   4. **厂商 file_id 的缓存**：`assets` 是真相；厂商的 `file_id` 是端点维度资源，落在
@@ -303,7 +303,7 @@ export class AssetService {
    * 消息落库那一刻：扫 `content` 里的 `__asset_id` 记关系行（同一 message + asset 只一行）。
    *
    * 关系行是「谁引用了它」的唯一记录，所以它跟消息行同一步写：之后撤回、删会话、删消息都由
-   * 外键级联删关系行，不需要谁去减计数。写不进去（素材 id 认不得、库出错）不让这一轮失败 ——
+   * 外键级联删关系行，不需要谁去减计数。写不进去（素材 id 认不得、库出错）不让这一次发送失败 ——
    * 后果只是这份素材的引用少记一次，{@link AssetService.sweepUnreferenced} 因此会晚一步删。
    */
   async linkMessageAssets(context: MessageAssetLinkContext): Promise<number> {
@@ -412,7 +412,7 @@ export class AssetService {
   /**
    * 历史里的 `__asset_id` → 当前模型能吃的内容段（`ChatRunner` 的 `prepareHistory`）。
    *
-   * 每轮发送前跑一次，因为「能不能吃」跟着模型 / 端点变：换个支持 Files API 的端点就会走文件引用，
+   * 每次发送前跑一次，因为「能不能吃」跟着模型 / 端点变：换个支持 Files API 的端点就会走文件引用，
    * 换个不支持视觉的模型就退化成一句文字提示。还原不出来的那一段换成一句文字说明而不是把
    * 引用原样交给厂商（那会让整条请求 400）。
    *
@@ -502,11 +502,11 @@ export class AssetService {
    * 名字按它对模型做的事取（`sendAsset`）：它把一张素材送进这一份内容，不是「投递一条消息」
    * —— 宿主里叫 `deliver` 的是那一件事（`ChatRunner.deliver`）。
    *
-   * 抛错不往上扔：一张图没送出去不该让整轮消息发不出去（F-H7 的「全失败退回纯文本」前提是
+   * 抛错不往上扔：一张图没送出去不该让整个请求发不出去（F-H7 的「全失败退回纯文本」前提是
    * 其余内容照发），所以这里收敛成一个 `dropped` 的结局并上报。
    *
-   * `quiet` 是历史重放用的：重放是每一轮的内部动作，一张旧图今天没送出去不等于用户刚做错了什么，
-   * 不再往 `onProblem` 里塞一条（发送链上的告警留给“用户这一轮挂的图”）。
+   * `quiet` 是历史重放用的：重放是每次发送的内部动作，一张旧图今天没送出去不等于用户刚做错了什么，
+   * 不再往 `onProblem` 里塞一条（发送链上的告警留给“用户这一次挂的图”）。
    */
   private async sendAsset(
     record: AssetRecord,
@@ -612,7 +612,7 @@ export class AssetService {
           createdAt: this.now(),
         });
       } catch (error) {
-        // 写回失败：这一轮照常发（id 已经拿到了），下一轮只是多传一次
+        // 写回失败：这一次照常发（id 已经拿到了），下一次只是多传一次
         this.report(error, "写厂商文件缓存失败");
       }
       return vendorFileId;
@@ -641,7 +641,7 @@ export class AssetService {
   /**
    * 按 id 找模型与端点。
    *
-   * 解析失败不让整轮崩掉：拿不到能力信息就按「没有端点能力、也没有模型信息」继续 ——
+   * 解析失败不让整个请求崩掉：拿不到能力信息就按「没有端点能力、也没有模型信息」继续 ——
    * 后果是图片走内联、超过内联上限的那张如实报「发不出去」，而不是整条消息失败。
    */
   private async resolveTarget(modelId: string | null): Promise<AttachmentModelContext> {
@@ -734,7 +734,7 @@ export class AssetService {
   /**
    * 一条给人看的事实（`LocalizedText` 的血缘：码 + 文案键 + 参数 + 当前语言下的句子）。
    *
-   * 这里的语言用默认语言：素材转换发生在 `ChatRunner` 那一轮里，那一层拿不到「这是哪条连接」。
+   * 这里的语言用默认语言：素材转换发生在 `ChatRunner` 那一次请求里，那一层拿不到「这是哪条连接」。
    * 客户端要按自己连接的语言显示时，用 `messageKey` + `params` 重新渲染即可（D8 的存码不存句子）。
    */
   private problem(
@@ -833,7 +833,7 @@ function noVisionSection(label: string): AgentNS.MessageContentSection {
  *
  * 同一个 `(素材, 端点)` 每次进来的 `source` 都是同一份字节，`upload` 命中持久缓存时拿到的也是
  * 同一个 `file_id`，所以这里不做任何跟「这一次」有关的加工（时间戳、随机名、重新编码）——
- * 连发两轮得到的段逐字节相同。
+ * 连发两次得到的段逐字节相同。
  */
 function replacementSection(
   section: AgentNS.MessageContentSection,

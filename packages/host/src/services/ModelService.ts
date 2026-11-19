@@ -260,7 +260,7 @@ export class ModelService {
     return { model: this.toView(next, model, presets) };
   }
 
-  /** 编辑模型（编辑即转自定义，F-F3 —— 否则下轮初始化会被出厂定义冲回去） */
+  /** 编辑模型（编辑即转自定义，F-F3 —— 否则下次初始化会被出厂定义冲回去） */
   async update(params: ModelUpdateParams): Promise<ModelUpdateResult> {
     const config = await this.readConfig();
     const modelId = requireText(params.modelId, "modelId");

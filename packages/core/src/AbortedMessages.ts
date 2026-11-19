@@ -66,7 +66,7 @@ export function reconcileAbortedMessages(
     if (strategy === "keep") {
       // 一个字都没输出就中断：不留空消息
       if (!hasContent(m) && !hasText(m.reasoning_content)) continue;
-      // 恢复为 Completed → 进入 formatHistory，模型下一轮能看到自己说过的话
+      // 恢复为 Completed → 进入 formatHistory，模型下一次请求能看到自己说过的话
       m.status = AgentNS.MessageStatus.Completed;
       continue;
     }

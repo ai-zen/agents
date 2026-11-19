@@ -3,7 +3,7 @@
  *
  * 三处与别处不同的地方：
  *
- * 1. **边流边写**：一轮生成过程中同一条助手消息会被反复写（PRD D15）。`upsert` 按 id
+ * 1. **边流边写**：一次回答的生成过程中同一条助手消息会被反复写（PRD D15）。`upsert` 按 id
  *    覆盖正文 / 状态 / omit，但 `seq` 与 `createdAt` 保留第一次写入时的值 —— 否则消息
  *    会在流式过程中不断「往后跳」。
  *
@@ -235,7 +235,7 @@ export class MessageRepository {
   }
 
   /**
-   * 批量写入（一轮结束时的「写一次」）：整批放在一个事务里，避免中途断开留下半轮历史。
+   * 批量写入（一次回答结束时的「写一次」）：整批放在一个事务里，避免中途断开留下半截历史。
    */
   async upsertMany(inputs: MessageUpsertInput[]): Promise<void> {
     if (inputs.length === 0) return;
@@ -247,7 +247,7 @@ export class MessageRepository {
   /**
    * 物理删掉一条消息（core 的「丢」= 真删，`CORE.md` §6）。
    *
-   * 运行时的 `messageRemoved` 事件走它：core 在一圈开头修历史时删掉的残局，库里也必须消失 ——
+   * 运行时的 `messageRemoved` 事件走它：core 在一次请求开头修历史时删掉的残局，库里也必须消失 ——
    * 否则用户会看见一条模型那边已经不存在的消息。关系行（`session_assets`）跟着外键级联走。
    */
   async delete(id: string): Promise<void> {

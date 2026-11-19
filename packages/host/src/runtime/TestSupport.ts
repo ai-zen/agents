@@ -81,7 +81,7 @@ export class ManualClock implements Clock {
   }
 }
 
-/** 让一轮「立刻返回的 Promise」都跑完（用例里等后台任务推进到下一个 await 点用） */
+/** 让一批「立刻返回的 Promise」都跑完（用例里等后台任务推进到下一个 await 点用） */
 export function flushMicrotasks(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
@@ -257,7 +257,7 @@ function usageChunk(usage: AgentNS.Usage): unknown {
   return { choices: [], usage };
 }
 
-/** 一轮「请求」要吐的东西（脚本） */
+/** 一次「请求」要吐的东西（脚本） */
 export interface FakeRound {
   /**
    * 请求已经发出、第一片还没来之前等这个 Promise。
@@ -272,7 +272,7 @@ export interface FakeRound {
   /** 收尾片带的用量（不属于增量、不进 `applyChunk`：由 core 跑流那一侧钉到那条助手消息上） */
   usage?: AgentNS.Usage;
   /**
-   * 这一轮模型要求的工具调用；给了就进「等工具」并再开一轮。
+   * 这一次请求模型要求的工具调用；给了就进「等工具」并再发一次请求。
    *
    * `arguments` 可以给一个函数：参数按**这一次请求体**现算。交接那条路要的正是这种 ——
    * 文档路径写在刚推进去的指令里，模型那一刻才看得见它。
@@ -285,7 +285,7 @@ export interface FakeRound {
   /** 工具真正「跑」之前等这个（用例在「等工具」处插中止） */
   toolGate?: Promise<void>;
   /**
-   * 这一轮的那个工具是一次**真委派**：core 的 `AgentToolLazy` 会造一个一次性 subagent、
+   * 这一次请求里的那个工具是一次**真委派**：core 的 `AgentToolLazy` 会造一个一次性 subagent、
    * 转发它的事件、把它的用量钉在工具消息上 —— 这里只给出那个 subagent 的脚本。
    */
   subAgent?: {
@@ -294,9 +294,9 @@ export interface FakeRound {
     messages: AgentNS.Message[];
     /** subagent 吐的正文片（每片一次 `delta`，由 core 转发到父身上） */
     stream?: string[];
-    /** subagent 这一轮的请求直接失败（core 收成 `failed`，那条助手消息落成 `error`） */
+    /** subagent 这一次请求直接失败（core 收成 `failed`，那条助手消息落成 `error`） */
     fail?: Error;
-    /** subagent 这一轮的用量 */
+    /** subagent 这一次回答的用量 */
     usage?: AgentNS.Usage;
   };
 }
@@ -305,7 +305,7 @@ export interface FakeRound {
 type AgentClient = ConstructorParameters<typeof Agent>[0]["client"];
 type StreamResult = Awaited<ReturnType<AgentClient["chat"]["completions"]["create"]>>;
 
-/** 把脚本里的一轮变成一片异步流（`body` = 这一次请求体：参数里的函数按它现算） */
+/** 把脚本里的一次请求变成一片异步流（`body` = 这一次请求体：参数里的函数按它现算） */
 async function* streamOf(
   round: FakeRound,
   signal?: AbortSignal,
@@ -390,7 +390,7 @@ class FakeSubAgent extends Agent {
  *
  * ## 为什么必须是真 `Agent`
  *
- * 从前这里是一份宿主自己写的窄接口假件：它自己实现了一遍 `send()` / 轮末取件 / 事件广播。
+ * 从前这里是一份宿主自己写的窄接口假件：它自己实现了一遍 `send()` / 收尾取件 / 事件广播。
  * 后果是「假件与真件的形状不一致」—— 宿主对着假件的形状写对了，真 core 上却是另一回事，
  * 而类型检查根本不看 core（`ChatAgent` 那层挡板）。现在假件直接 `extends Agent`，走 core 真的
  * 循环、真的 `push` 取件、真的 `messageAdded` / `delta` / `state` 事件。宿主的接线于是验的是
@@ -398,9 +398,9 @@ class FakeSubAgent extends Agent {
  *
  * ## 脚本能控什么
  *
- * 每一轮一次 `chat.completions.create`：`gate`（等首字前）、`deltas`、`usage`、`toolCalls`
+ * 每次请求一次 `chat.completions.create`：`gate`（等首字前）、`deltas`、`usage`、`toolCalls`
  * （真的去查 `tools` 并 `exec`）、`subAgent`（走 core 的 `AgentToolLazy`，血缘 / 事件转发 /
- * 用量都在 core 里发生）。脚本用完之后的请求回一句「（脚本用完了）」，于是这一轮自然结束。
+ * 用量都在 core 里发生）。脚本用完之后的请求回一句「（脚本用完了）」，于是这一次自然结束。
  */
 export class FakeAgent extends Agent {
   /** 每一次请求发出那一刻的 `messages` 快照（模型看到的就是它的前身） */
@@ -442,7 +442,7 @@ export class FakeAgent extends Agent {
       tools: toolsOf(rounds),
     });
     box.agent = this;
-    // 脚本是「一轮一段」的：每一批（`state → working`）都从第一轮重新演。
+    // 脚本是「一次一段」的：每一批（`state → working`）都从第一次重新演。
     // 不重置的话，第二次发话就没有脚本可放（拿到的只会是「脚本用完了」那一句）。
     this.on("state:working", () => {
       script.cursor = 0;
@@ -459,7 +459,7 @@ export class FakeAgent extends Agent {
 /**
  * 脚本里出现过的工具 → 真的工具实现。
  *
- * - 某一轮带了 `subAgent` 时，那一轮的**第一个**工具是委派：走 core 的 `AgentToolLazy`
+ * - 某一次请求带了 `subAgent` 时，那一次请求的**第一个**工具是委派：走 core 的 `AgentToolLazy`
  *   （血缘、事件转发、用量汇总都在 core 里发生，这里只给 subagent 的脚本）；
  * - `write` 是**真的写盘**（参数里给 `path` 与 `content`）：交接那条路要的事实就是「盘上有
  *   没有这份文档」，回声工具演不出来；

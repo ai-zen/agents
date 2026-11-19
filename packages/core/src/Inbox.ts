@@ -42,7 +42,7 @@ export function inboxEntryContent(
  * 内容由 {@link inboxEntryContent} 决定；这里只负责「消息」这一层：角色、状态、id、来源。
  * 状态给 `Completed`，与 `Message.User()` 一致 —— 它是用户已经说完的话，不是待写占位。
  *
- * **钥匙（没有正文的条目）返回 `undefined`**：它只负责把这一圈叫起来，历史里一个字都不多加。
+ * **钥匙（没有正文的条目）返回 `undefined`**：它只负责把人叫起来，历史里一个字都不多加。
  */
 export function inboxEntryMessage(entry: AgentNS.InboxEntry): AgentNS.Message | undefined {
   if (entry.content === undefined) return undefined;
