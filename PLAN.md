@@ -99,7 +99,7 @@ HostApp（根：组装、启动、退出）
 
 **Scope 被销毁的两个原因（都是显式动作）**：① Workspace 被删（`dispose(workspaceId)`）；② 进程收尾（`disposeAll()`）。前者撞上还活着的 agent 会拒绝，调用方顺序是「先停会话 / 丢掉 agent，再销毁 Scope」；后者不拒绝。**配置改动不是销毁原因**：`refreshWorkspace(id)` 就地把配置重读一遍、各插件重新发现一轮（MCP 连接按新声明对账断开），实例还是同一个，正在干活的那个也不会被抽掉能力；刷完再对同一个 Workspace 调一次 `agents.invalidate`（PRD D34）。
 
-**一段会话的诞生**（PRD R56 / F-D9）：`session.create` 只定身份并发一个 id，不写库；首次 `session.send` 时 `SessionService.ensurePersisted` 才写行，**落行那一刻同时写这段会话的第一条消息**——一条 `role: user`、`hidden: true`、`source` 为 `{ kind: "system", label: "cwd" }` 的 cwd 消息，**正文就是那个路径**（不是一句渲染过的话 —— 这条消息是隐藏的、用户看不见，模型要的就是路径）。只在创建时写这一次；交接换完的记忆里**没有**这条（目录随时问 `cwd` 工具）。它最先写，所以 `seq` 在真实用户消息之前；之后每轮都不再写、也不往用户消息里拼任何东西。cwd 取 `workspaces.cwd`，`workspaceId` 创建即定死。
+**一段会话的诞生**（PRD R56 / F-D9）：`session.create` 只定身份并发一个 id，不写库；**第一次真正用到它**（`session.start` 或 `session.send`，谁先到谁写）时 `SessionService.ensurePersisted` 才写行，**落行那一刻同时写这段会话的第一条消息**——一条 `role: user`、`hidden: true`、`source` 为 `{ kind: "system", label: "cwd" }` 的 cwd 消息，**正文就是那个路径**（不是一句渲染过的话 —— 这条消息是隐藏的、用户看不见，模型要的就是路径）。只在创建时写这一次；交接换完的记忆里**没有**这条（目录随时问 `cwd` 工具）。它最先写，所以 `seq` 在真实用户消息之前；之后每轮都不再写、也不往用户消息里拼任何东西。cwd 取 `workspaces.cwd`，`workspaceId` 创建即定死。
 
 **会话级模型与思考档位**（PRD L7 / R70–R72）：存在 `sessions.modelId` / `thinkingLevel` 上，改了就落库。装配 agent 时从这里取：`modelId` 直接给 SDK 的三级解析，`thinkingLevel` 按该模型引用的策略表展开成参数补丁、叠在助手定义的 `modelParams` 之上（同一模型才叠）。展开发生在 `ChatRunner.createSdkAgentFactory` 的 `sessionModelParams`，档位名本身不进请求；换模型时档位清空。**这两手只允许空闲时做**（判词）：非空闲一律拒（`busy` + `detail.reason = "working"`），一个字节都不写库；空闲时改完当场让那个 agent 退役（`AgentRegistry.invalidateSession`），下一句话按新事实重新装配 —— 没有「忙的时候打标记、变闲再兑现」那一套（那套只服务全局配置生效，PRD 4.11 改配置不杀任何会话）。服务层要的运行时接口因此只剩四件（`SessionRuntimePort`）：**四件事的现读**（`presence()`：忙闲 + 两道闸 + 死活，加上队里几条）、**删掉之后的现场丢弃**（`forget`）、**这一段手上有没有活**（`agentState`，没 agent 回 `null`）与**让这一段空闲的 agent 退役**（`invalidateAgent`）。
 
@@ -113,32 +113,57 @@ HostApp（根：组装、启动、退出）
 
 宿主与一段会话之间只有三个口：**投递**（往里塞）、**中断**（掐在途）、**观测**（读当下 + 收事件）。没有「开始一次运行」「结算一次运行」这种口 —— 那要先有边界，而边界不存在。
 
-### 5.1 唯一的对外动作：投递
+### 5.1 四个动作各管一件事（P0：接口正交，复合动作归客户端）
+
+**宿主只给正交的动作，每个只做一件事**，不顺手替别人做。复合动作（「按发送」到底意味着什么）由客户端按当时的实际处境编排。
+
+| 方法 | 只做 | 绝不碰 |
+|---|---|---|
+| `session.send` | 收进队列 | 不复活、不动闸、不判阶段 |
+| `session.start` | 确保这段有 agent（装配 / 复用；活着就是幂等 no-op；草稿会先落库） | 不投递、不动闸 |
+| `session.resume` | 开输出闸 | 不投递 |
+| `session.pause` | 关输出闸 | 不掐在途 |
+| `session.abort` | 掐在途的请求与工具 **+ 关输出闸** | 不清 inbox |
+
+**`mayStart` 已作废。** PRD 1.2 的原话是「客户端点发送时先判这段是死是活，**死的就调接口复活、再投递**」—— 三件事、客户端编排。把它压成一个隐式参数塞进 `deliver`，等于让 `send` 同时干「投递 + 开闸 + 复活 + 判阶段」四件，而这四件各有自己的判据与失败语义（投递只管收下；开闸只管换一道开关；复活要装配，可能会失败；判阶段是读状态）。
+
+于是投递本身只剩一件事：
 
 ```
 session.send / post_message / 定时器 / 外部程序
- └─ ChatRunner.deliver(sessionId, { content, source, attachments? })
-      ├─ 目标不存在              → 拒（not_found），错回给投递方那次调用
-      ├─ 目标是死的（没有 agent）→ 拒（session_dead）；例外只有**创建者**：界面的
-      │    发送按钮，以及「刚建出来那段会话的第一句」（create_session）—— 它们给 mayStart，
-      │    于是先装配再投。别的来源一律叫不醒（PRD 1.2 / 4.2）
-      └─ 活着                    → 入队（两道闸都不拦投递；输出闸关着就是只收不取）
-            ├─ agent 不在（首次装配）→ reconcile + resolveHistory 读库 → acquire → 历史装进去
-            └─ agent 在             → 直接 push；它自己从闲变忙、自己取走
+ └─ ChatRunner.deliver(sessionId, { content, source })
+      ├─ 目标不存在 → 拒（not_found），错回给投递方那次调用
+      ├─ 目标是死的 → 拒（session_dead）；**叫不醒任何人，包括界面的发送按钮** ——
+      │      那件事客户端先用 `session.start` 做完再来
+      └─ 活着       → 入队（两道闸都不拦投递；输出闸关着就是只收不取）
       回执：收下了（userMessageId + 每个附件最后怎么走的）／被拒。
 ```
+
+**「谁能复活」从此不在宿主这一层判。** PRD 1.2 明写「谁能给谁投、能复活谁，宿主不做任何限制」；「agent 不能复活会话」靠的是 **agent 手上没有那个工具**（§10.2、PRD 4.6），不是靠一个只有某个调用方会给的参数。**别把 `mayStart` 加回来** —— 加回来就把这条边界挪成「宿主按参数猜来源」，而参数是可以伪造的。
+
+**客户端按发送时编排三步**（TUI 上只有「发送」与「继续 ⇄ 中断」两个位置，PRD 4.4）：
+
+```
+await session.start()    // 只在 !alive 时：复活（草稿会话它会先落库，见 §4）
+await session.resume()   // 只在 outputPaused 时：开闸（"用户点发送就是继续"）
+await session.send()     // 投递
+```
+
+**交接期间因此不需要任何特判**：那段必然活着（`start` 用不上）、`resume` 会被宿主拒（`handoff_in_progress`）、剩下的只有 `send` —— 「交接期间发送只投递」是正交的**推论**，不是一条分支。从前 `deliver` 里那句 `!handoffs.has()` 正是把复合动作塞进 `send` 才长出来的。
 
 **判据只有两条**：目标在不在、活不活。不判「有没有资格发给我」（投递不看关系，A14）；不判「它忙不忙」（忙不是拒绝的理由，队列本来就收）；不判「这条会不会被处理」（PRD 4.13 不承诺）。
 
 **回执里没有状态、没有「叫醒了没有」、没有结果**：那三样都是对未来的断言，而未来只能靠观测。
 
-**投递不等**。`await` 的边界就是「已入队」：读库、装配、push 都在这一条里做完，之后的事归 agent 自己。唯一允许等的是**一次性会话**（没有第二个触发方，PRD 4.3）—— 那里用 `runOnce` 跑到头。
+**投递不等**。`await` 的边界就是「已入队」：push 完就回，之后的事归 agent 自己。唯一允许等的是**一次性会话**（没有第二个触发方，PRD 4.3）—— 那里用 `runOnce` 跑到头。
 
-**装配期间的投递**先收着，装好按到达顺序一次推给它 —— 不等待、没有超时、不丢。
+**装配期间的投递**先收着，装好按到达顺序一次推给它 —— 不等待、没有超时、不丢。装配由 `session.start` 触发（或它引发的首次装配），缓冲归 `ChatRunner`。
 
 **inbox（队列）每一刻现读** `agent.inboxPending`，不存镜像：一份会与真队列分叉的副本没有存在的理由。
 
 ### 5.2 唯一的判断：变闲那一刻
+
+> **前置：先做完 §5.1 的 P0（接口正交）。** 那一单把「投递里内嵌的开闸与复活」拆出去，`deliver` 因此只剩入队一件事；本节的判断不受影响（它读的是会话行与消息上的事实），但 `deliver` 的两条拒因会跟着变少一条。
 
 agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下事实**的判断 —— 整个宿主只有这一处「到点了要考虑点什么」：
 
@@ -196,9 +221,9 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 
 ## 6. 契约面
 
-- **方法**：`<域>.<动作>`，共 **67** 条、13 个域（`src/wire/methods.ts` 的 `METHOD_NAMES`）。分域点数：`host` 6、`workspace` 5、`session` 18、`message` 1、`question` 2、`notice` 3、`config` 8、`agent` 8、`model` 8、`asset` 3、`completion` 1、`handoff` 2、`search` 2。
+- **方法**：`<域>.<动作>`，共 **68** 条、13 个域（`src/wire/methods.ts` 的 `METHOD_NAMES`）。分域点数：`host` 6、`workspace` 5、`session` 19、`message` 1、`question` 2、`notice` 3、`config` 8、`agent` 8、`model` 8、`asset` 3、`completion` 1、`handoff` 2、`search` 2。
 - **暂停与继续**：`session.pause` / `session.resume`，入参 `{ sessionId }`、出参 `{ paused: boolean }`。暂停**只翻输出闸、不掐在途**（手上这批跑完、从下一批起不取）；继续**只开闸、不投任何东西**（压着的 inbox 按原顺序接着跑）。没有 agent 时回 `{ paused: false }`（不是错误）；**交接期间两者都拒**（`busy` / `handoff_in_progress`）。`[用户]`
-- **点数沿革**：65 → 63（W3：+`agent.restoreFactory`、+`config.saveMcp` / `config.deleteMcp`，−`host.usage`、−`credential.list/create/revoke`、−`config.patchMcps`）→ 62（删 `host.capabilities`）→ 63（W6-E：+`session.clearInbox`，清空 inbox 归客户端）→ 64（W11：+`session.setThresholds`，两条阈值的会话级覆盖有了写入口）→ **66**（W12：+`session.pause` / `session.resume`，暂停与继续各有自己的按钮）→ **67**（+`session.kill`，用户按杀死有了入口）。
+- **点数沿革**：65 → 63（W3：+`agent.restoreFactory`、+`config.saveMcp` / `config.deleteMcp`，−`host.usage`、−`credential.list/create/revoke`、−`config.patchMcps`）→ 62（删 `host.capabilities`）→ 63（W6-E：+`session.clearInbox`，清空 inbox 归客户端）→ 64（W11：+`session.setThresholds`，两条阈值的会话级覆盖有了写入口）→ **66**（W12：+`session.pause` / `session.resume`，暂停与继续各有自己的按钮）→ **67**（+`session.kill`，用户按杀死有了入口）→ **68**（P0：+`session.start` —— 复活从 `session.send` 的 `mayStart` 里析出来，见 §5.1）。
 - **`credential.*` 删的是契约面、不是能力**：`CredentialService`、`CredentialRepository`、`<数据根>/run/token`、`agents-host token create|list|revoke` 一字未动，`Credential*` 形状只留给那三个子命令。别因为 `grep credential.* wire/methods.ts` 找不到方法名就以为能力没了（PRD L13）。
 - **桥接名单 4 条**（不在 handler 表里）：`host.hello`、`host.setLanguage`、`asset.begin`、`asset.end` 由 `WsHub` 自己处理，其余 **63** 条进注入的 `HandlerTable`。理由：凭证与语言是**连接状态**；上传要按 `connectionId` 分帧落盘、断线按连接清理。分发顺序是 `hello` → 未握手拒绝 → 已知方法名校验 → 连接级方法 → 上传方法 → handler 表；表里没有的名字回 `unsupported`（`detail.reason = handler_not_registered`）。`handlers/index.test.ts` 钉住「每个方法要么在表里、要么在桥接名单里，且两边不重叠」。
 - **事件** 13 个：`message.added` / `message.delta` / `message.changed` / `message.removed` / `state` / `output:paused` / `output:resumed` / `input:paused` / `input:resumed` / `error` / `session.changed` / `notice` / `question`。前四条拼出 `messages`，`state` 只说忙闲，四条闸事件各说一道闸（与 core 同名），死活走 `session.changed` 的 `agent_started` / `agent_gone`（见 §5.4），**宿主不在这之上再加聚合**：没有 `run.state`，没有 `usage`。
@@ -322,7 +347,8 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 
 | 条 | 落点 | 一句话 |
 |---|---|---|
-| 投递入口 | `ChatRunner.deliver` | 判两件（目标在不在、活不活）→ 入队；回执只有收下 / 被拒 |
+| 投递入口 | `ChatRunner.deliver` | **只做入队一件事**：判两件（目标在不在、活不活）→ 入队；回执只有收下 / 被拒（§5.1 的 P0） |
+| 复活入口 | `ChatRunner.start`（`session.start`） | 确保这段有 agent：草稿先 `ensurePersisted` → `acquire`（复用或装配）；活着就是幂等 no-op。**投递不会叫醒任何人** |
 | 装配期缓冲 | `ChatRunner` 的 `assemblingBuffers`（并进常驻桥 `SessionBridge`） | agent 还没就位时先收着，装好按到达顺序一次推 —— 不等待、没有超时 |
 | 取件点 | `packages/core/src/Agent.ts`（`runLoops()` 内循环末）+ `Inbox.ts` | `high` 先取、`!needContinue` 才问 `low`；落地成 `Message.User` 并加来源注释 |
 | 落地即写库 | `ChatRunner.ts:1804-1821` | `persistLandedQueued`：先写行再 `linkQueuedAssets`，`createdAt` 取落地时刻 |
@@ -391,6 +417,7 @@ agent 从忙落到闲的那一拍（core 的 `state:idle`）做一次**读当下
 
 | 波 | 目标 | 状态 |
 |---|---|---|
+| **P0 接口正交** | 四个动作各管一件事（§5.1）：`mayStart` 作废，复活析成 `session.start`，`deliver` 只剩入队；复合动作（复活 → 开闸 → 投递）由客户端编排。接口面加 `session.start`（67 → 68） | ⬜ 未开始 |
 | **W1 契约补齐** | 用户裁定的契约面 12 条落进 `wire`（`AgentView.messages/function`、`agent.restoreFactory`、`setThinking(null)`、MCP 传输字段与 `extra`、`saveMcp`/`deleteMcp`、`DiscoveryLayerView.scope`、阈值可选、`message.list(around)`、删 `host.usage` 与 `credential.*` 的 wire 面、保留 `upgrade`/`shutdown`、图片模型不补恢复出厂） | ✅ 完成 |
 | **W2 CLI 收口** | `npx` 现下现起 + 下载屏 + `/ws` + `/shutdown` + 命令集增删；同批发 `agents-host@0.1.0-alpha.1` | ✅ 完成 |
 | **W3 归档与文档** | `cli-old` 降级为只读归档、旧包名清干净、文档跟上新契约 | ✅ 完成 |
